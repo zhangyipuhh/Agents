@@ -1,4 +1,5 @@
-
+#!usr/bin/env python
+# -*- coding: utf-8 -*-
 
 # --- Step 1: 定义工具和模型 ---
 from langchain.tools import tool

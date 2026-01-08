@@ -1,3 +1,5 @@
+#!usr/bin/env python
+# -*- coding: utf-8 -*-
 # 简化版流式测试
 from langchain_deepseek import ChatDeepSeek
 from langgraph.graph import StateGraph, START, END

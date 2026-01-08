@@ -1,5 +1,5 @@
-# Step 1: Define tools and model
-
+#!usr/bin/env python
+# -*- coding: utf-8 -*-
 from langchain.tools import tool
 from langchain.chat_models import init_chat_model
 from langchain_deepseek import ChatDeepSeek
