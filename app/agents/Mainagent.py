@@ -1,32 +1,48 @@
 #!usr/bin/env python
 # -*- coding: utf-8 -*-
-from langchain_core.tools import tool
+import json
+from langchain.tools import tool
 from langgraph.graph import StateGraph, START, END
 from app.agents.llmcalls.model_factory import ModelFactory
 from app.agents.config.config import LLM_CONFIG, PROMPT_TEMPLATE
 from app.agents.states.mainstates import MessagesState
-from app.agents.tools.maintools import audit_contract_clause
+from app.agents.tools.maintools import audit_contract_clause,search_database
 from app.agents.continues.maincontinues import should_continue
 from langchain.messages import ToolMessage, AIMessage,HumanMessage,SystemMessage
 
+
 @tool
-def audit_contract_clause(self, clause_text: str) -> str:
-    """
-    审计合同条款的合规性。
-        
+def multiply(a: int, b: int) -> int:
+    """Multiply `a` and `b`.
+
     Args:
-        clause_text: 需要审计的合同条款文本内容 必填
-            
-     Returns:
-        审计结果，包含违规项说明和参考依据
+        a: First int
+        b: Second int
     """
-    # 模拟逻辑：实际这里你会调用之前的 ContractCheckTool
-    if "90天" in clause_text:
-        return "发现违规：【R001】账期限制。公司规定不得超过60天。参考依据：财务指引_v2.pdf"
-    elif "50%" in clause_text:
-        return "发现违规：【R002】违约金上限。公司规定不得超过30%。参考依据：法务手册.pdf"
-    else:
-        return "未发现明显违规项。"
+    return a * b
+
+
+@tool
+def add(a: int, b: int) -> int:
+    """Adds `a` and `b`.
+
+    Args:
+        a: First int
+        b: Second int
+    """
+    return a + b
+
+
+@tool
+def divide(a: int, b: int) -> float:
+    """Divide `a` and `b`.
+
+    Args:
+        a: First int
+        b: Second int
+    """
+    return a / b
+
 class MainAgent:
     def __init__(self):
         self.model_factory = ModelFactory()
@@ -34,7 +50,7 @@ class MainAgent:
         #1.初始化模型
         self.model = self.model_factory.create_model(model_type=LLM_CONFIG["model_type"],model_name=LLM_CONFIG["model_name"], api_key=LLM_CONFIG["api_key"], temperature=0, base_url=LLM_CONFIG["base_url"])
         #2.绑定工具
-        self.tools = [audit_contract_clause]
+        self.tools = [audit_contract_clause,search_database,multiply,add,divide]
         self.model_with_tools = self.model.bind_tools(self.tools)
     def CreateAgent(self, prompt: str=None):
 
@@ -131,7 +147,7 @@ class MainAgent:
         
         full_content = ""
         tool_calls_list = []
-        
+        args_list = "" #存储参数的，流式输出时参数要特殊处理
         try:
             for chunk in self.model_with_tools.stream(existing_messages):
                 # 处理不同类型的 chunk
@@ -144,8 +160,18 @@ class MainAgent:
                     if not tool_calls_list:
                         print("\n🔧 [准备调用工具]", flush=True)
                     for tc in chunk.tool_calls:
-                        print(f"   工具: {tc['name']}, 参数: {tc['args']}", flush=True)
+                        if "name" not in tc or not tc["name"]:
+                            continue
+                        print(f"   工具: {tc['name']}", flush=True)
                         tool_calls_list.append(tc)
+                elif hasattr(chunk, 'content_blocks') and chunk.content_blocks:
+                    for block in chunk.content_blocks:
+                        if "type" in block and block["type"] == "tool_call_chunk" and "args" in block and block["args"]:
+                            print(f"  {block['args']}", end="", flush=True)
+                            args_list += block["args"]
+                            
+                           # print( block["args"], end="", flush=True)
+                        
         except Exception as e:
             print(f"\n[流式输出错误]: {e}", flush=True)
             # 如果流式输出失败，回退到 invoke
@@ -157,12 +183,14 @@ class MainAgent:
                 tool_calls_list = response.tool_calls
         
         print()  # 换行
-        
+        #用args_list替换tc的参数占位符
+        for tc in tool_calls_list:
+            tc["args"] = json.loads('{"'+args_list.replace(" ",""))
         # 过滤掉无效的工具调用
         valid_tool_calls = []
         for tc in tool_calls_list:
             # 检查工具调用是否有效
-            if tc.get("name") and tc.get("id"):  # 确保有 name 和 id
+            if tc.get("name") and tc.get("id") and " " not in tc.get("name"):  # 确保 name 非空且不含空格，id 非空
                 valid_tool_calls.append(tc)
         
         print(f"DEBUG: 有效工具调用数量: {len(valid_tool_calls)}")
@@ -178,6 +206,7 @@ class MainAgent:
             # 如果没有工具调用，创建普通消息
             response = AIMessage(content=full_content)
         
+ 
         return {
             "messages": [response],
             "checked_rules_count": state.get("checked_rules_count", 0) + 1
@@ -192,6 +221,9 @@ if __name__ == "__main__":
 
     inputs = {
         "messages": [HumanMessage(content="合同条款是甲方应在收到发票后90天内付款。")]
+        #"messages": [HumanMessage(content="查询客户数据库中所有状态为'已付款'的客户。")]
+        # 测试工具调用
+        #"messages": [HumanMessage(content="计算 5 乘以 3 等于多少？")]
     }
     print("DEBUG: inputs 已创建")
     print("=" * 50)
