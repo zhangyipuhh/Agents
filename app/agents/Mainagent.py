@@ -51,7 +51,7 @@ class MainAgent:
         
         # 检查是否有工具调用
         if not hasattr(llm_response, 'tool_calls') or not llm_response.tool_calls:
-            print("⚠️ [警告] 没有检测到工具调用", flush=True)
+            #print("⚠️ [警告] 没有检测到工具调用", flush=True)
             return state
         
         tool_messages = []
@@ -62,8 +62,8 @@ class MainAgent:
             tool_args = tool_call.get("args", {})
             tool_id = tool_call.get("id")
             
-            print(f"🔧 [执行工具] {tool_name}", flush=True)
-            print(f"   参数: {tool_args}", flush=True)
+            #print(f"🔧 [执行工具] {tool_name}", flush=True)
+            #print(f"   参数: {tool_args}", flush=True)
             
             try:
                 # 根据工具名称执行对应的工具
@@ -79,11 +79,11 @@ class MainAgent:
                 )
                 tool_messages.append(tool_msg)
                 
-                print(f"✅ [工具执行完成]", flush=True)
-                print(f"   结果: {result[:100]}{'...' if len(result) > 100 else ''}", flush=True)
+                #print(f"✅ [工具执行完成]", flush=True)
+                #print(f"   结果: {result[:100]}{'...' if len(result) > 100 else ''}", flush=True)
                 
             except Exception as e:
-                print(f"❌ [工具执行错误] {e}", flush=True)
+                #print(f"❌ [工具执行错误] {e}", flush=True)
                 # 创建错误消息
                 error_msg = ToolMessage(
                     content=f"工具执行失败: {str(e)}",
@@ -122,36 +122,37 @@ class MainAgent:
                 # 处理不同类型的 chunk
                 if hasattr(chunk, 'content') and chunk.content:
                     # 真正的流式输出：逐字返回
-                    print(chunk.content, end="", flush=True)
+                    #print(chunk.content, end="", flush=True)
                     full_content += chunk.content
                 elif hasattr(chunk, 'tool_calls') and chunk.tool_calls:
                     # 如果有工具调用，收集工具调用信息
                     if not tool_calls_list:
-                        print("\n🔧 [准备调用工具]", flush=True)
+                        pass
+                        #print("\n🔧 [准备调用工具]", flush=True)
                     for tc in chunk.tool_calls:
                         if "name" not in tc or not tc["name"]:
                             continue
-                        print(f"   工具: {tc['name']}", flush=True)
+                        #print(f"   工具: {tc['name']}", flush=True)
                         tool_calls_list.append(tc)
                 elif hasattr(chunk, 'content_blocks') and chunk.content_blocks:
                     for block in chunk.content_blocks:
                         if "type" in block and block["type"] == "tool_call_chunk" and "args" in block and block["args"]:
-                            print(f"  {block['args']}", end="", flush=True)
+                            #print(f"  {block['args']}", end="", flush=True)
                             args_list += block["args"]
                             
                            # print( block["args"], end="", flush=True)
                         
         except Exception as e:
-            print(f"\n[流式输出错误]: {e}", flush=True)
+            #print(f"\n[流式输出错误]: {e}", flush=True)
             # 如果流式输出失败，回退到 invoke
             response = model_with_tools.invoke(existing_messages)
             if hasattr(response, 'content') and response.content:
-                print(response.content, flush=True)
+                #print(response.content, flush=True)
                 full_content = response.content
             if hasattr(response, 'tool_calls') and response.tool_calls:
                 tool_calls_list = response.tool_calls
         
-        print()  # 换行
+        #print()  # 换行
         #用args_list替换tc的参数占位符
         for tc in tool_calls_list:
             tc["args"] = json.loads('{"'+args_list.replace(" ",""))
@@ -162,7 +163,7 @@ class MainAgent:
             if tc.get("name") and tc.get("id") and " " not in tc.get("name"):  # 确保 name 非空且不含空格，id 非空
                 valid_tool_calls.append(tc)
         
-        print(f"DEBUG: 有效工具调用数量: {len(valid_tool_calls)}")
+        #print(f"DEBUG: 有效工具调用数量: {len(valid_tool_calls)}")
         
         # 构造 AIMessage
         if valid_tool_calls:
