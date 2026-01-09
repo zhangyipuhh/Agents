@@ -1,9 +1,6 @@
 #!usr/bin/env python
 # -*- coding: utf-8 -*-
 import json
-import asyncio
-import threading
-
 from langgraph.graph import StateGraph, START, END
 from app.agents.llmcalls.model_factory import ModelFactory
 from app.agents.config.config import LLM_CONFIG, PROMPT_TEMPLATE
@@ -11,24 +8,6 @@ from app.agents.states.mainstates import MessagesState
 from app.agents.tools.maintools import MainTools
 from app.agents.continues.maincontinues import should_continue
 from langchain.messages import ToolMessage, AIMessage,HumanMessage,SystemMessage
-
-# 全局流式输出队列
-stream_queue = None
-stream_lock = threading.Lock()
-
-
-def get_stream_queue():
-    """获取流式输出队列"""
-    return stream_queue
-
-
-def set_stream_queue(q):
-    """设置流式输出队列"""
-    global stream_queue
-    with stream_lock:
-        stream_queue = q
-    with stream_lock:
-        stream_queue = q
 
 
 
@@ -89,12 +68,17 @@ class MainAgent:
             try:
                 # 根据工具名称执行对应的工具
                 result = self.tool_dict[tool_name].invoke(tool_args)
+                
+                
+               
+                
                 # 创建 ToolMessage
                 tool_msg = ToolMessage(
                     content=result,
                     tool_call_id=tool_id
                 )
                 tool_messages.append(tool_msg)
+                
                 print(f"✅ [工具执行完成]", flush=True)
                 print(f"   结果: {result[:100]}{'...' if len(result) > 100 else ''}", flush=True)
                 
@@ -114,11 +98,7 @@ class MainAgent:
     
 
     def llm_call(self, state: dict):
-        """LLM 决定是否调用审批工具（真正的流式输出）
-        
-        Args:
-            state: 当前状态
-        """
+        """LLM 决定是否调用审批工具（真正的流式输出）"""
         
         # 获取当前的消息列表
         existing_messages = state["messages"]
@@ -137,10 +117,6 @@ class MainAgent:
         full_content = ""
         tool_calls_list = []
         args_list = "" #存储参数的，流式输出时参数要特殊处理
-        
-        # 获取当前线程的流式输出队列
-        stream_q = get_stream_queue()
-        
         try:
             for chunk in self.model_with_tools.stream(existing_messages):
                 # 处理不同类型的 chunk
@@ -148,12 +124,6 @@ class MainAgent:
                     # 真正的流式输出：逐字返回
                     print(chunk.content, end="", flush=True)
                     full_content += chunk.content
-                    # 将流式内容放入队列
-                    if stream_q:
-                        try:
-                            stream_q.put({"type": "content", "data": chunk.content}, block=False)
-                        except queue.Full:
-                            pass
                 elif hasattr(chunk, 'tool_calls') and chunk.tool_calls:
                     # 如果有工具调用，收集工具调用信息
                     if not tool_calls_list:
@@ -163,33 +133,16 @@ class MainAgent:
                             continue
                         print(f"   工具: {tc['name']}", flush=True)
                         tool_calls_list.append(tc)
-                        # 将工具调用信息放入队列
-                        if stream_q:
-                            try:
-                                stream_q.put({"type": "tool_call", "data": {"name": tc["name"]}}, block=False)
-                            except queue.Full:
-                                pass
                 elif hasattr(chunk, 'content_blocks') and chunk.content_blocks:
                     for block in chunk.content_blocks:
                         if "type" in block and block["type"] == "tool_call_chunk" and "args" in block and block["args"]:
                             print(f"  {block['args']}", end="", flush=True)
                             args_list += block["args"]
-                            # 将工具参数放入队列
-                            if stream_q:
-                                try:
-                                    stream_q.put({"type": "tool_args", "data": block["args"]}, block=False)
-                                except queue.Full:
-                                    pass
                             
                            # print( block["args"], end="", flush=True)
                         
         except Exception as e:
             print(f"\n[流式输出错误]: {e}", flush=True)
-            # 将错误信息放入队列
-            try:
-                stream_q.put({"type": "error", "data": str(e)}, block=False)
-            except queue.Full:
-                pass
             # 如果流式输出失败，回退到 invoke
             response = model_with_tools.invoke(existing_messages)
             if hasattr(response, 'content') and response.content:
