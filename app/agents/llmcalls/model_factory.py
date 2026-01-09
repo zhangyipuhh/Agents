@@ -3,6 +3,7 @@
 from typing import Optional
 from app.agents.llmcalls.deepseek import create_model as create_deepseek_model
 from app.agents.llmcalls.ollama import create_model as create_ollama_model 
+from app.agents.llmcalls.openai import create_model as create_openai_model
 
 class ModelFactory:
     """模型工厂类，用于创建不同类型的LLM模型实例"""
@@ -10,8 +11,13 @@ class ModelFactory:
     _model_creators = {
         'deepseek': create_deepseek_model,
         'ollama': create_ollama_model,
+        'openai': create_openai_model,
     }
-    
+    def __init__(self):
+        self._model_creators = {
+            'deepseek': create_deepseek_model,
+            'ollama': create_ollama_model,
+        }
     @classmethod
     def create_model(
         cls,
