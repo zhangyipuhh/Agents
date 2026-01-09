@@ -49,7 +49,7 @@ class MessagesState(TypedDict):
 from langchain.messages import SystemMessage, AIMessage
 
 def llm_call(state: dict):
-    """LLM 决定是否调用审批工具（真正的流式输出）"""
+    """LLM 决定是否调用审批工具（一次性输出）"""
     
     # 获取当前的消息列表
     existing_messages = state["messages"]
@@ -62,45 +62,28 @@ def llm_call(state: dict):
         # 将系统消息插入到最前面
         existing_messages = [system_msg] + existing_messages
     
-    # 使用 stream 逐字输出，不使用 invoke
-    print("🤖 [AI思考中]...", end="", flush=True)
+    # 使用 invoke 一次性输出
+    print("🤖 [AI思考中]...", flush=True)
     
-    # 收集完整的响应内容
-    full_content = ""
-    tool_calls_list = []
+    response = model_with_tools.invoke(existing_messages)
     
-    try:
-        for chunk in model_with_tools.stream(existing_messages):
-            # 处理不同类型的 chunk
-            if hasattr(chunk, 'content') and chunk.content:
-                # 真正的流式输出：逐字返回
-                print(chunk.content, end="", flush=True)
-                full_content += chunk.content
-            elif hasattr(chunk, 'tool_calls') and chunk.tool_calls:
-                # 如果有工具调用，收集工具调用信息
-                if not tool_calls_list:
-                    print("\n🔧 [准备调用工具]", flush=True)
-                for tc in chunk.tool_calls:
-                    print(f"   工具: {tc['name']}, 参数: {tc['args']}", flush=True)
-                    tool_calls_list.append(tc)
-    except Exception as e:
-        print(f"\n[流式输出错误]: {e}", flush=True)
-        # 如果流式输出失败，回退到 invoke
-        response = model_with_tools.invoke(existing_messages)
-        if hasattr(response, 'content') and response.content:
-            print(response.content, flush=True)
-            full_content = response.content
-        if hasattr(response, 'tool_calls') and response.tool_calls:
-            tool_calls_list = response.tool_calls
+    if hasattr(response, 'content') and response.content:
+        print(response.content, flush=True)
+    
+    if hasattr(response, 'tool_calls') and response.tool_calls:
+        print("\n🔧 [准备调用工具]", flush=True)
+        for tc in response.tool_calls:
+            print(f"   工具: {tc['name']}, 参数: {tc['args']}", flush=True)
     
     print()  # 换行
     
     # 过滤掉无效的工具调用
     valid_tool_calls = []
-    for tc in tool_calls_list:
-        # 检查工具调用是否有效
-        if tc.get("name") and tc.get("id"):  # 确保有 name 和 id
-            valid_tool_calls.append(tc)
+    if hasattr(response, 'tool_calls') and response.tool_calls:
+        for tc in response.tool_calls:
+            # 检查工具调用是否有效
+            if tc.get("name") and tc.get("id"):  # 确保有 name 和 id
+                valid_tool_calls.append(tc)
     
     print(f"DEBUG: 有效工具调用数量: {len(valid_tool_calls)}")
     
@@ -108,12 +91,12 @@ def llm_call(state: dict):
     if valid_tool_calls:
         # 如果有有效的工具调用，创建包含 tool_calls 的消息
         response = AIMessage(
-            content=full_content,
+            content=response.content if hasattr(response, 'content') else "",
             tool_calls=valid_tool_calls
         )
     else:
         # 如果没有工具调用，创建普通消息
-        response = AIMessage(content=full_content)
+        response = AIMessage(content=response.content if hasattr(response, 'content') else "")
     
     return {
         "messages": [response],
@@ -206,9 +189,9 @@ tool_subgraph.add_edge("subgraph_end", END)
 # 编译子图
 tool_subgraph_compiled = tool_subgraph.compile()
 
-# 定义主图的 tool_node，它调用子图（真正的流式输出）
+# 定义主图的 tool_node，它调用子图
 def tool_node(state: dict):
-    """执行工具调用（调用子图，真正的流式输出）"""
+    """执行工具调用（调用子图）"""
     result = []
     last_message = state["messages"][-1]
     
@@ -275,38 +258,23 @@ agent_builder.add_edge("tool_node", "llm_call")
 
 agent = agent_builder.compile()
 
-# --- 运行测试 (使用 stream) ---
+# --- 运行测试 ---
 from langchain.messages import HumanMessage
 
 print("DEBUG: 开始执行代码")
 
 inputs = {
-    "messages": [HumanMessage(content="合同条款：甲方应在收到发票后90天内付款。")]
+    "messages": [HumanMessage(content="合同条款为甲方应在收到发票后90天内付款。")]
 
 }
 
 print("DEBUG: inputs 已创建")
 print("=" * 50)
-print("🚀 开始流式审批")
+print("🚀 开始审批")
 print("=" * 50)
 
-# 使用 .stream() 替代 .invoke()
-# stream_mode="values" 表示获取完整的状态更新
-for event in agent.stream(inputs, stream_mode="values"):
-    # event 是完整的状态更新
-    # 只在节点切换时打印分隔线，因为内容已经在节点内部逐字输出了
-    if "messages" in event and len(event["messages"]) > 0:
-        # 检查是否有新的消息
-        last_msg = event["messages"][-1]
-        print("\n" + "-" * 50)
-        if isinstance(last_msg, AIMessage):
-            if last_msg.tool_calls:
-                print(f"📍 节点: llm_call (准备调用工具)")
-            else:
-                print(f"📍 节点: llm_call")
-        elif isinstance(last_msg, ToolMessage):
-            print(f"📍 节点: tool_node")
-        print("-" * 50)
+# 使用 .invoke() 执行
+result = agent.invoke(inputs)
 
 print("\n" + "=" * 50)
 print("✅ 审批完成")
