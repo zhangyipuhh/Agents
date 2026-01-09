@@ -160,7 +160,7 @@ async def main():
     print("DEBUG: 开始执行代码")
 
     inputs = {
-        "messages": [HumanMessage(content="民法是什么")]
+        "messages": [HumanMessage(content="合同条款是甲方应在收到发票后90天内付款。")]
         #"messages": [HumanMessage(content="查询客户数据库中所有状态为'已付款'的客户。")]
         # 测试工具调用
         #"messages": [HumanMessage(content="计算 5 乘以 3 等于多少？")]
