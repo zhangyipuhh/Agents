@@ -1,47 +1,16 @@
 #!usr/bin/env python
 # -*- coding: utf-8 -*-
 import json
-from langchain.tools import tool
+
 from langgraph.graph import StateGraph, START, END
 from app.agents.llmcalls.model_factory import ModelFactory
 from app.agents.config.config import LLM_CONFIG, PROMPT_TEMPLATE
 from app.agents.states.mainstates import MessagesState
-from app.agents.tools.maintools import audit_contract_clause,search_database
+from app.agents.tools.maintools import MainTools
 from app.agents.continues.maincontinues import should_continue
 from langchain.messages import ToolMessage, AIMessage,HumanMessage,SystemMessage
 
 
-@tool
-def multiply(a: int, b: int) -> int:
-    """Multiply `a` and `b`.
-
-    Args:
-        a: First int
-        b: Second int
-    """
-    return a * b
-
-
-@tool
-def add(a: int, b: int) -> int:
-    """Adds `a` and `b`.
-
-    Args:
-        a: First int
-        b: Second int
-    """
-    return a + b
-
-
-@tool
-def divide(a: int, b: int) -> float:
-    """Divide `a` and `b`.
-
-    Args:
-        a: First int
-        b: Second int
-    """
-    return a / b
 
 class MainAgent:
     def __init__(self):
@@ -50,7 +19,9 @@ class MainAgent:
         #1.初始化模型
         self.model = self.model_factory.create_model(model_type=LLM_CONFIG["model_type"],model_name=LLM_CONFIG["model_name"], api_key=LLM_CONFIG["api_key"], temperature=0, base_url=LLM_CONFIG["base_url"])
         #2.绑定工具
-        self.tools = [audit_contract_clause,search_database,multiply,add,divide]
+        self.main_tools = MainTools()
+        self.tools = self.main_tools.get_static_method_list()
+        self.tool_dict = self.main_tools.get_static_methods()
         self.model_with_tools = self.model.bind_tools(self.tools)
     def CreateAgent(self, prompt: str=None):
 
@@ -97,11 +68,10 @@ class MainAgent:
             
             try:
                 # 根据工具名称执行对应的工具
-                if tool_name == "audit_contract_clause":
-                    # 使用 invoke 方法调用工具
-                    result = audit_contract_clause.invoke(tool_args)
-                else:
-                    result = f"未知工具: {tool_name}"
+                result = self.tool_dict[tool_name].invoke(tool_args)
+                
+                
+               
                 
                 # 创建 ToolMessage
                 tool_msg = ToolMessage(
