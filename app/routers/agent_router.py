@@ -76,7 +76,7 @@ async def generate_response(request: AgentRequest) -> AsyncGenerator[str, None]:
         # 使用 astream_events 获取实时更新
         # version="v1": 指定事件流的版本
         # 循环遍历Agent执行过程中的所有事件
-        async for event in agent.astream_events(inputs, version="v1"):
+        async for event in agent.astream_events(inputs, version="v1", subgraphs=True):
             # 直接将event对象转换为JSON并发送给前端
             # ensure_ascii=False: 支持中文字符
             # default=str: 处理无法序列化的对象
