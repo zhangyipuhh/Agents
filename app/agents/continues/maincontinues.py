@@ -50,7 +50,10 @@ def should_continue(state: MessagesState) -> Literal["tool_node", END]:
 
     # 检查最后一条消息是否包含工具调用
     # tool_calls属性存在且不为空表示Agent请求调用工具
-    if last_message.tool_calls:
+    # 防御性编程：检查对象是否有 tool_calls 属性
+    # 并且 tool_calls 列表不为空
+    # 使用 getattr 防止某些非标准消息对象没有 tool_calls 属性而报错
+    if getattr(last_message, "tool_calls", None):
         # 返回工具节点名称，指示图流程跳转到工具执行节点
         return "tool_node"
     
