@@ -86,6 +86,7 @@ async def generate_response(request: AgentRequest) -> AsyncGenerator[str, None]:
         yield "event: end\ndata: {\"type\": \"end\", \"message\": \"会话结束\"}\n\n"
     except Exception as e:
         # 捕获异常并将错误信息转换为SSE格式发送给前端
+        print(f"Error: {e}")
         yield f"event: error\ndata: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
 
 
