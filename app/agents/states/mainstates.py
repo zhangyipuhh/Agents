@@ -12,6 +12,7 @@ Author: 张镒谱
 
 from langchain.messages import AnyMessage
 from typing_extensions import TypedDict, Annotated
+from app.agents.config.config import SubGraphType
 import operator
 
 
@@ -24,9 +25,9 @@ class MessagesState(TypedDict):
 
     Attributes:
         messages: 消息列表，使用operator.add实现累加操作，支持智能体间的消息传递
-        checked_rules_count: 规则检查计数器，记录已检查的规则数量，用于追踪工作流进度
+        subgraph_type: 子图类型，标识当前正在处理的子图类型，用于路由和状态管理
     """
     # 消息列表：使用operator.add实现累加，确保多智能体场景下消息能够正确合并
     messages: Annotated[list[AnyMessage], operator.add]
-    # 规则检查计数器：记录已检查的规则数量，用于工作流进度追踪和状态监控
-    checked_rules_count: int
+    # 子图类型：标识当前正在处理的子图类型，用于路由和状态管理
+    subgraph_type: SubGraphType
