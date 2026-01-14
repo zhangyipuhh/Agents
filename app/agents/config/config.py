@@ -17,6 +17,7 @@ author 张镒谱
 """
 import os
 from dotenv import load_dotenv
+from enum import Enum
 
 # 从.env文件中加载环境变量
 # 这会将.env文件中的变量加载到os.environ中，供后续代码使用
@@ -43,4 +44,12 @@ PROMPT_TEMPLATE = {
     # 该提示词告诉Agent它是自然资源业务任务，需要通过工具回答问题，不能凭空编造答案
     "main": "你是自然资源业务任务，通过合适的工具回答问题，不能凭空回答。"
 }
+class SubGraphType(str, Enum):
+    """
+    子图类型枚举类
+
+    用于标识和区分不同的子图类型，便于在代码中统一引用和管理。
+    """
+    audit_contract_clause = "audit_contract_clause"
+    search_database = "search_database"
 
