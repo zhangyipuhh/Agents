@@ -59,9 +59,7 @@ class MainAgent:
 
     def __init__(self):
         """
-        初始化主智能体
-
-        创建模型工厂、初始化消息状态、创建LLM模型、绑定工具集。
+        初始化主智能体（同步基础初始化）
         """
         # 创建模型工厂实例
         self.model_factory = ModelFactory()
@@ -71,7 +69,6 @@ class MainAgent:
         self.mcpservers_tools = MCPServersTools()
         
         # 步骤1：初始化LLM模型
-        # 从配置中读取模型类型、名称、API密钥、温度和基础URL
         self.model = self.model_factory.create_model(
             model_type=LLM_CONFIG["model_type"],
             model_name=LLM_CONFIG["model_name"],
@@ -80,15 +77,67 @@ class MainAgent:
             base_url=LLM_CONFIG["base_url"]
         )
 
-        # 步骤2：绑定工具到模型
-        # 创建主工具集实例
+        # 步骤2：创建主工具集实例（同步部分）
         self.main_tools = MainTools()
-        # 获取工具列表（用于绑定到模型）
-        self.tools = self.main_tools.get_static_method_list()+self.mcpservers_tools.get_mcp_method_list()
-        # 获取工具字典（用于工具节点调用）
-        self.tool_dict = self.main_tools.get_static_methods().update(self.mcpservers_tools.get_mcp_methods())
-        # 将工具绑定到模型，使模型能够调用这些工具
+        # 异步属性初始化为 None
+        self.mcp_tools: list = []
+        self.tools: list = []
+        self.tool_dict: dict = {}
+        self.model_with_tools = None
+
+    async def init_async(self):
+        """
+        异步初始化方法
+        在 __init__ 后调用，完成异步初始化工作
+        """
+        try:
+            print("开始获取MCP工具列表...")
+            # 获取MCP工具列表（异步）
+            self.mcp_tools = await self.mcpservers_tools.get_mcp_method_list()
+            print(f"MCP工具列表获取完成，共 {len(self.mcp_tools)} 个工具")
+            
+            print("获取静态工具列表...")
+            # 获取工具列表
+            static_tools = self.main_tools.get_static_method_list()
+            print(f"静态工具列表，共 {len(static_tools)} 个工具")
+            
+            self.tools = static_tools + self.mcp_tools
+            print(f"合并后工具列表，共 {len(self.tools)} 个工具")
+            
+            # 获取工具字典
+            print("获取工具字典...")
+            self.tool_dict = self.main_tools.get_static_methods()
+            # 更新字典（不返回值，直接修改原字典）
+            self.tool_dict.update(self.mcpservers_tools.get_mcp_methods())
+            print(f"工具字典共 {len(self.tool_dict)} 个工具")
+            
+            # 绑定工具到模型
+            print("绑定工具到模型...")
+            self.model_with_tools = self.model.bind_tools(self.tools)
+            print("初始化完成！")
+            
+        except Exception as e:
+            print(f"MainAgent.init_async 错误: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+        # 绑定工具到模型
         self.model_with_tools = self.model.bind_tools(self.tools)
+
+    @classmethod
+    async def create(cls):
+        """
+        异步工厂方法：创建并初始化主智能体
+        
+        Returns:
+            MainAgent: 完全初始化好的主智能体实例
+        """
+        print("开始创建MainAgent...")
+        instance = cls()
+        print("同步初始化完成，开始异步初始化...")
+        await instance.init_async()
+        print("MainAgent创建完成！")
+        return instance
 
     def CreateAgent(self, prompt: str = None):
         """
@@ -222,24 +271,25 @@ class MainAgent:
         else:
             return "llm_call"
 
-    def create_subgraph_a(self, state: MessagesState):
+    async def create_subgraph_a(self, state: MessagesState):
         """
         子图A：合同条款审计
 
-        使用专门的合同审计智能体处理合同条款相关任务。
-        将当前状态传递给子图，获取审计结果后返回。
+        使用专门的合同审计智能体处理数据库查询任务。
+        将当前状态传递给子图，获取搜索结果后返回。
 
         Args:
             state: 当前工作流状态，包含消息列表
 
         Returns:
-            dict: 更新后的状态，包含审计结果消息
+            dict: 更新后的状态，包含搜索结果消息
         """
         audit_agent = AuditContractClauseAgent()
-        result = audit_agent.invoke(state)
+        agent = audit_agent.CreateAgent()
+        result = await agent.ainvoke(state)
         return result
 
-    def create_subgraph_b(self, state: MessagesState):
+    async def create_subgraph_b(self, state: MessagesState):
         """
         子图B：数据库搜索
 
@@ -253,5 +303,6 @@ class MainAgent:
             dict: 更新后的状态，包含搜索结果消息
         """
         search_agent = SearchDatabaseAgent()
-        result = search_agent.invoke(state)
+        agent = search_agent.CreateAgent()
+        result = await agent.ainvoke(state)
         return result
