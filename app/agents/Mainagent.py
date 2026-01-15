@@ -36,11 +36,8 @@ class MainAgent:
         tools: 工具列表，用于绑定到模型
         tool_dict: 工具字典，键为工具名，值为工具对象
         model_with_tools: 绑定了工具的模型实例
-        _config_cache: 类级别的配置缓存（共享配置）
     """
 
-    _config_cache: dict | None = None
-    _tools_cache: dict | None = None
     """
     主智能体类
 
