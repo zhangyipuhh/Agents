@@ -67,8 +67,8 @@ async def generate_response(request: AgentRequest) -> AsyncGenerator[str, None]:
             "messages": [HumanMessage(content=request.message)]
         }
         
-        # 创建MainAgent实例
-        main_agent = MainAgent()
+        # 使用异步工厂方法创建MainAgent实例
+        main_agent = await MainAgent.create()
         
         # 创建Agent实例，该实例将处理用户请求
         agent = main_agent.CreateAgent()
