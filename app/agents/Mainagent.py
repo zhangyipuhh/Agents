@@ -31,7 +31,7 @@ class MainAgent:
     负责构建和管理智能体工作流，包括模型初始化、工具绑定、状态图构建和执行。
     支持流式输出和工具调用，通过条件边实现智能体的自主决策。
 
-    Attributes:
+        Attributes:
         model: LLM模型实例，用于生成响应和工具调用决策
         tools: 工具列表，用于绑定到模型
         tool_dict: 工具字典，键为工具名，值为工具对象
@@ -104,12 +104,6 @@ class MainAgent:
             编译后的状态图对象，可执行工作流
         """
         # 步骤3：定义状态图结构
-        # 创建状态图，使用MessagesState作为状态类型
-
-        
-        
-        
-        # 步骤4：连接状态图节点和边
         graph = (
             StateGraph(MessagesState)
             # 添加LLM调用节点，处理消息生成和工具调用决策
@@ -174,314 +168,90 @@ class MainAgent:
             tool_id = tool_call.get("id")
 
             try:
-                # 调用工具并获取结果
                 result = self.tool_dict[tool_name].invoke(tool_args)
-                # 创建工具消息对象
-                tool_msg = ToolMessage(
-                    content=result,
-                    tool_call_id=tool_id
+                tool_messages.append(
+                    ToolMessage(content=str(result), tool_call_id=tool_id)
                 )
-                # 将工具消息添加到结果列表
-                tool_messages.append(tool_msg)
-
             except Exception as e:
-                # 工具执行失败，创建错误消息
-                error_msg = ToolMessage(
-                    content=f"工具执行失败: {str(e)}",
-                    tool_call_id=tool_id
+                error_msg = f"工具调用失败: {tool_name}, 错误: {str(e)}"
+                tool_messages.append(
+                    ToolMessage(content=error_msg, tool_call_id=tool_id)
                 )
-                # 将错误消息添加到结果列表
-                tool_messages.append(error_msg)
 
-        # 返回更新后的状态，包含工具执行结果
-        return {
-            "messages": tool_messages
-        }
+        return {"messages": tool_messages}
 
-    def llm_call(self, state: dict):
+    async def llm_call(self, state: MessagesState):
         """
         LLM调用节点
 
-        使用绑定了工具的LLM模型处理消息，支持流式输出。
-        根据输入生成响应或工具调用决策，自动添加系统提示词。
+        使用绑定了工具的模型生成响应，支持工具调用决策。
+        消息历史会累积，形成对话上下文。
 
-        Args:
-            state: 当前工作流状态，包含消息列表和规则检查计数
-
-        Returns:
-            dict: 更新后的状态，包含LLM响应消息和递增的规则检查计数
-        """
-        print(f"当前消息列表: 进入模型调用函数")
-        # 获取当前的消息列表
-        existing_messages = state["messages"]
-
-        # 检查消息列表中是否已包含系统消息
-        has_system_message = any(msg.type == "system" for msg in existing_messages)
-        # 如果没有系统消息，添加系统提示词到消息列表开头
-        if not has_system_message:
-            system_msg = SystemMessage(content=PROMPT_TEMPLATE["main"])
-            # 将系统消息插入到最前面
-            existing_messages = [system_msg] + existing_messages
-
-        # 初始化流式输出变量
-        full_content = ""  # 存储完整的文本内容
-        tool_calls_list = []  # 存储工具调用列表
-        args_list = ""  # 存储工具参数，流式输出时参数需要特殊处理
-
-        try:
-            # 流式调用模型，逐块处理响应
-            for chunk in self.model_with_tools.stream(existing_messages):
-                # 分支1：处理文本内容块
-                if hasattr(chunk, 'content') and chunk.content:
-                    # 累加文本内容
-                    full_content += chunk.content
-                # 分支2：处理工具调用块
-                elif hasattr(chunk, 'tool_calls') and chunk.tool_calls:
-                    # 遍历工具调用
-                    for tc in chunk.tool_calls:
-                        # 跳过无效的工具调用（没有名称）
-                        if "name" not in tc or not tc["name"]:
-                            continue
-                        # 添加有效的工具调用
-                        tool_calls_list.append(tc)
-                # 分支3：处理内容块（包含工具参数）
-                elif hasattr(chunk, 'content_blocks') and chunk.content_blocks:
-                    # 遍历内容块
-                    for block in chunk.content_blocks:
-                        # 检查是否为工具参数块
-                        if "type" in block and block["type"] == "tool_call_chunk" and "args" in block and block["args"]:
-                            # 累加工具参数
-                            args_list += block["args"]
-
-        except Exception as e:
-            # 流式输出失败，回退到非流式调用
-            # 调用模型获取完整响应
-            response = self.model_with_tools.invoke(existing_messages)
-            # 处理文本内容
-            if hasattr(response, 'content') and response.content:
-                full_content = response.content
-            # 处理工具调用
-            if hasattr(response, 'tool_calls') and response.tool_calls:
-                tool_calls_list = response.tool_calls
-
-        # 处理工具参数：将流式收集的参数字符串解析为JSON并替换到工具调用中
-        for tc in tool_calls_list:
-            # 将参数字符串转换为JSON对象
-            tc["args"] = json.loads('{"' + args_list.replace(" ", ""))
-
-        # 过滤无效的工具调用
-        valid_tool_calls = []
-        for tc in tool_calls_list:
-            # 检查工具调用是否有效：名称非空、ID非空、名称不含空格
-            if tc.get("name") and tc.get("id") and " " not in tc.get("name"):
-                # 添加到有效工具调用列表
-                valid_tool_calls.append(tc)
-
-        # 构造AI消息对象
-        if valid_tool_calls:
-            # 分支1：有有效的工具调用，创建包含工具调用的消息
-            response = AIMessage(
-                content=full_content,
-                tool_calls=valid_tool_calls
-            )
-        else:
-            # 分支2：没有工具调用，创建普通文本消息
-            response = AIMessage(content=full_content)
-
-        # 返回更新后的状态
-        return {
-            "messages": [response],
-            # 递增规则检查计数器
-            "checked_rules_count": state.get("checked_rules_count", 0) + 1
-        }
-    def route_after_tool(self, state: MessagesState) -> Literal["subgraph_a", "subgraph_b", "llm_call"]:
-        """
-        工具节点执行后的路由函数
-        
-        根据最后一条消息的类型和内容，决定下一步跳转到哪个节点：
-        - 如果是合同审计工具且发现违规，跳转到子图A（违规处理流程）
-        - 如果是合同审计工具且未发现违规，跳转到子图B（正常流程）
-        - 其他情况返回LLM调用节点继续处理
-        
         Args:
             state: 当前工作流状态，包含消息列表
-            
+
         Returns:
-            str: 下一步执行的目标节点名称
-                - "subgraph_a": 违规处理子图
-                - "subgraph_b": 正常流程子图  
-                - "llm_call": 返回LLM继续处理
+            dict: 更新后的状态，包含AI响应消息
         """
-        # 获取消息列表
         messages = state["messages"]
-        
-        # 获取最后一条消息
-        last_message = messages[-1]
-        
-        # 情况1：最后一条消息是工具执行结果
-        if isinstance(last_message, ToolMessage):
-            content = last_message.content
-            
-            # 分支1：合同审计发现违规
-            if "subgraph_a" in content:
-                return "subgraph_a"
-            
-            # 分支2：合同审计未发现违规
-            elif "subgraph_b" in content:
-                return "subgraph_b"
-            
-            # 分支3：其他工具执行结果，返回LLM继续处理
-            else:
-                return "llm_call"
-        
-        # 情况2：最后一条消息是AI消息（包含工具调用信息）
-        elif isinstance(last_message, AIMessage):
-            # 检查是否包含工具调用
-            if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
-                # 获取第一个工具调用的名称
-                tool_name = last_message.tool_calls[0].get("name", "")
-                
-                # 分支1：合同审计工具
-                if tool_name == "audit_contract_clause":
-                    # 需要等待工具执行结果，返回llm_call继续
-                    return "llm_call"
-                
-                # 分支2：数据库搜索工具
-                elif tool_name == "search_database":
-                    # 直接返回llm_call继续处理
-                    return "llm_call"
-                
-                # 分支3：其他工具
-                else:
-                    return "llm_call"
-            
-            # 没有工具调用，返回llm_call
-            else:
-                return "llm_call"
-        
-        # 情况3：其他类型的消息，返回llm_call
+        response = await self.model_with_tools.ainvoke(messages)
+        return {"messages": [response]}
+
+    def route_after_tool(self, state: MessagesState):
+        """
+        工具执行后路由决策
+
+        根据最后一条工具消息的内容，决定下一个处理节点。
+        支持合同条款审计和数据库搜索两种子图类型。
+
+        Args:
+            state: 当前工作流状态，包含消息列表
+
+        Returns:
+            str: 下一个节点的名称
+        """
+        last_message = state["messages"][-1]
+        if not isinstance(last_message, ToolMessage):
+            return "llm_call"
+
+        content = last_message.content
+        if "subgraph_b" in content:
+            return "subgraph_b"
+        elif "subgraph_a" in content:
+            return "subgraph_a"
         else:
             return "llm_call"
-# e:\laboratory\AI\Agents\app\agents\Mainagent.py
-# 子图调用函数（修复版本）
 
-    #子图测试
-    async def create_subgraph_a(self, state: MessagesState):
+    def create_subgraph_a(self, state: MessagesState):
         """
-        创建违规处理子图
-        
-        使用 ainvoke 执行子图，子图的流式输出通过主图的 astream_events 监听实现。
-        
+        子图A：合同条款审计
+
+        使用专门的合同审计智能体处理合同条款相关任务。
+        将当前状态传递给子图，获取审计结果后返回。
+
         Args:
             state: 当前工作流状态，包含消息列表
-            
+
         Returns:
-            dict: 子图执行后的状态
+            dict: 更新后的状态，包含审计结果消息
         """
         audit_agent = AuditContractClauseAgent()
-        agent = audit_agent.CreateAgent()
-        result = await agent.ainvoke(state)
+        result = audit_agent.invoke(state)
         return result
-    
-    async def create_subgraph_b(self, state: MessagesState):
+
+    def create_subgraph_b(self, state: MessagesState):
         """
-        创建正常流程子图
-        
-        使用 ainvoke 执行子图，子图的流式输出通过主图的 astream_events 监听实现。
-        
+        子图B：数据库搜索
+
+        使用专门的数据库搜索智能体处理数据库查询任务。
+        将当前状态传递给子图，获取搜索结果后返回。
+
         Args:
             state: 当前工作流状态，包含消息列表
-            
+
         Returns:
-            dict: 子图执行后的状态
+            dict: 更新后的状态，包含搜索结果消息
         """
         search_agent = SearchDatabaseAgent()
-        agent = search_agent.CreateAgent()
-        result = await agent.ainvoke(state)
+        result = search_agent.invoke(state)
         return result
-    
-    
-    
-    
-import asyncio
-
-
-async def main():
-    """
-    主函数：演示智能体的执行流程
-
-    创建智能体实例，执行工作流，监听并输出流式事件。
-    展示智能体如何处理合同条款审计任务。
-    """
-    print("DEBUG: 开始执行代码")
-    print("=" * 50)
-    print(" 主图执行流程测试")
-    print("=" * 50)
-    
-    # 创建主图实例
-    from app.agents.Mainagent import MainAgent
-    from app.agents.states.mainstates import MessagesState
-    
-    # 创建主智能体实例并编译图
-    main_agent = MainAgent()
-    graph = main_agent.CreateAgent()
-    
-    # 定义测试输入：模拟触发子图B的场景
-    # 当LLM决定调用search_database工具时，应该跳转到subgraph_b
-    inputs = {
-        "messages": [HumanMessage(content="查询数据库中的合同记录")]
-    }
-    
-    print("\n🚀 启动主图测试...")
-    print("-" * 50)
-    
-    # 异步监听主图事件
-    async for event in graph.astream_events(inputs, version="v1", subgraphs=True):
-        event_type = event["event"]
-        data = event.get("data", {})
-        
-        # 处理智能体步骤事件
-        if event_type == "on_chain_stream":
-            step_output = data.get("chunk", {})
-            if step_output and isinstance(step_output, dict) and 'messages' in step_output:
-                messages = step_output["messages"]
-                for msg in messages:
-                    if isinstance(msg, AIMessage) and msg.content:
-                        print(f"🔄 处理步骤: {msg.content}")
-        
-        # 处理节点开始事件
-        elif event_type == "on_chain_start":
-            node_name = data.get("name", "Unknown")
-            print(f"📍 进入节点: {node_name}")
-        
-        # 处理工具调用事件
-        elif event_type == "on_tool_start":
-            tool_name = data.get("name", "Unknown")
-            print(f"🔧 开始执行工具: {tool_name}")
-        
-        elif event_type == "on_tool_end":
-            tool_name = data.get("name", "Unknown")
-            print(f"✅ 工具执行完成: {tool_name}")
-        
-        # 处理子图相关事件
-        elif "subgraph" in event_type:
-            if event_type == "on_subgraph_start":
-                node_name = data.get("name", "Unknown")
-                print(f"📦 进入子图: {node_name}")
-            elif event_type == "on_subgraph_end":
-                node_name = data.get("name", "Unknown")
-                print(f"📦 子图完成: {node_name}")
-        
-        # 处理链结束事件
-        elif event_type == "on_chain_end":
-            print("\n✅ 主图测试完成")
-    
-    # 输出完成信息
-    print("\n" + "=" * 50)
-    print("✅ 所有测试执行完成")
-    print("=" * 50)
-
-
-if __name__ == "__main__":
-    # 运行异步主函数
-    asyncio.run(main())
