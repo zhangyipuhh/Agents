@@ -1,0 +1,108 @@
+[
+   {
+        "index": 1,
+        "clause_name": "第一条",
+        "judge_rules":[] ,  
+        "init_message": {}, 
+        "is_judge": "False",
+        "clause_content": ""
+   },
+   {
+        "index": 2,
+        "clause_name": "第二条",
+        "judge_rules":[] ,  
+        "init_message": {}, 
+        "is_judge": "False",
+        "clause_content": ""
+    },   
+    {
+        "index": 3,
+        "clause_name": "第三条",
+        "judge_rules":[] ,  
+        "init_message": {}, 
+        "is_judge": "False",
+        "clause_content": ""
+   },   
+   {
+        "index": 4,
+        "clause_name": "第四条",
+        "judge_rules":[] ,  
+        "init_message": {}, 
+        "is_judge": "False",
+        "clause_content": ""
+   },   
+   {
+    "index": 5,
+    "clause_name": "第五条",
+    "judge_rules":[
+        {
+            "judge_rule_index":1,
+            "judge_rule_name": "检查不动产单元编码是否与宗地图中一致",
+            "method_type": "compare",
+            "method_config":{
+                "field1": {
+                    "clause_index": 5,
+                    "field": "bdcdyh"
+                },
+                "field2": {
+                    "embedding_result":{
+                        "key_words":[],
+                        "prompt": "宗地图",
+                        "is_iregex": "True",
+                        "regex": ".^[0-9]{12}GB[0-9]{5}W[0]{8}$"
+                    }
+                },
+                "compare": "equal"
+            }
+        },
+        {
+            "judge_rule_index":2,
+            "judge_rule_name": "检查不动产单元号格式是否正确",
+            "method_type": "regex",
+            "method_config":{
+                "is_use_embedding": "False",
+                "embedding_prompt":{
+                    "key_words":[],
+                    "prompt": "",
+                    "is_iregex": "",
+                    "regex": ""
+                },
+                "field1": "bdcdyh",
+                "regex": "^[0-9]{12}[A-Z]{2}[0-9]{6}W0{8}$"
+            }
+        }
+
+    ] ,  
+    "results": [],
+    "init_message":[
+        {
+            "index": 1,
+            "bdcdyh": "",
+            "prompet": "提取不动产单元代码",
+            "regex": ""
+        },
+        {
+            "index": 2,
+            "dxzdmj": "",
+            "prompet": "提取大写宗地面积"
+        },
+        {
+            "index": 3,
+            "xxzdmj": "",
+            "prompet": "提取小写宗地面积"
+        },
+        {
+            "index": 4,
+            "dxcrzdmj": "",
+            "prompet": "提取大写出让宗地面积"
+        },
+        {
+            "index": 5,
+            "xxcrzdmj": "",
+            "prompet": "提取小写出让宗地面积"
+        }
+    ], 
+    "is_judge": "False",
+    "clause_content": ""
+   }
+]
