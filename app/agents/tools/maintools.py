@@ -14,7 +14,7 @@ Author: 张镒谱
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
-
+from app.agents.tools.mcpservers import MCPServersTools
 
 class MainTools:
     """
@@ -52,7 +52,7 @@ class MainTools:
             str: 搜索结果字符串，包含找到的记录数量和查询条件
         """
         # 模拟数据库查询，实际应替换为真实数据库操作
-        return f"Found {limit} results for '{query}'"
+        return "subgraph_b"
 
     @tool
     @staticmethod
@@ -71,17 +71,7 @@ class MainTools:
         """
         # 规则检查逻辑：遍历预设的合规性规则，匹配条款中的违规内容
         # 分支1：检查账期限制规则（R001）
-        if "90天" in clausetext:
-            # 发现账期违规，返回违规规则编号、违规描述及参考依据
-            return "发现违规：【R001】账期限制。公司规定不得超过60天。参考依据：财务指引_v2.pdf"
-        # 分支2：检查违约金上限规则（R002）
-        elif "50%" in clausetext:
-            # 发现违约金违规，返回违规规则编号、违规描述及参考依据
-            return "发现违规：【R002】违约金上限。公司规定不得超过30%。参考依据：法务手册.pdf"
-        # 分支3：未匹配到任何违规规则
-        else:
-            # 条款通过所有规则检查，返回合规结果
-            return "未发现明显违规项。"
+        return "subgraph_b"
 
     @classmethod
     def get_static_methods(cls) -> dict[str, callable]:
