@@ -40,6 +40,7 @@
             "judge_rule_name": "检查不动产单元编码是否与宗地图中一致",
             "method_type": "compare",
             "method_config":{
+                "compare_type": "text",
                 "field1": {
                     "clause_index": 5,
                     "field": "bdcdyh"
@@ -60,15 +61,48 @@
             "judge_rule_name": "检查不动产单元号格式是否正确",
             "method_type": "regex",
             "method_config":{
-                "is_use_embedding": "False",
-                "embedding_prompt":{
-                    "key_words":[],
-                    "prompt": "",
-                    "is_iregex": "",
-                    "regex": ""
+                "field1": {
+                    "clause_index": 5,
+                    "field": "bdcdyh"
                 },
-                "field1": "bdcdyh",
                 "regex": "^[0-9]{12}[A-Z]{2}[0-9]{6}W0{8}$"
+            }
+        },
+        {
+            "judge_rule_index":3,
+            "judge_rule_name": "宗地面积是否为成交确认书中宗地面积",
+            "method_type": "compare",
+            "method_config":{
+                "compare_type": "number",
+                "field1": {
+                    "embedding_result":{
+                        "key_words":["成交确认书"],
+                        "prompt": "宗地面积",
+                        "is_iregex": "True",
+                        "regex": "^[0-9]+(\\.[0-9]+)?$"
+                    }
+                },
+                "field2": {
+                    "clause_index": 5,
+                    "field": "xxzdmj"
+                },
+                "compare": "equal"
+            }
+        },
+        {
+            "judge_rule_index":4,
+            "judge_rule_name": "宗地面积小写是否一致",
+            "method_type": "llm",
+            "method_config":{
+                "field1": {
+                    "clause_index": 5,
+                    "field": "dxzdmj"
+                },
+                "field2": {
+                    "clause_index": 5,
+                    "field": "xxzdmj"
+                },
+                "prompt": "检查#1与#2的大小写数值是否一致"
             }
         }
 
