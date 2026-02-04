@@ -182,7 +182,7 @@ class MainAgent:
         # 编译并返回状态图
         return graph.compile()
 
-    def tool_node(self, state: MessagesState):
+    async def tool_node(self, state: MessagesState):
         """
         工具执行节点
 
@@ -214,7 +214,7 @@ class MainAgent:
             tool_id = tool_call.get("id")
 
             try:
-                result = self.tool_dict[tool_name].invoke(tool_args)
+                result = await self.tool_dict[tool_name].ainvoke(tool_args)
                 tool_messages.append(
                     ToolMessage(content=str(result), tool_call_id=tool_id)
                 )
