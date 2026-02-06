@@ -18,6 +18,8 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers.agent_router import router as agent_router
+from app.routers.file_router import router as file_router
+from app.routers.session_router import router as session_router
 
 # 移除对不存在的模块的引用
 # from core.exception import register_exceptions
@@ -71,6 +73,12 @@ def create_app():
     
     # 将agent路由器注册到应用中，处理agent相关的API请求
     app.include_router(agent_router)
+    
+    # 将file路由器注册到应用中，处理文件上传下载相关的API请求
+    app.include_router(file_router)
+    
+    # 将session路由器注册到应用中，处理会话管理相关的API请求
+    app.include_router(session_router)
     
     # 移除对不存在的路由器的引用
     # 移除对不存在的异常处理器的引用
