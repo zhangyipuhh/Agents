@@ -12,9 +12,10 @@ Date: 2026/2/6
 Author: 张镒谱
 """
 import uuid
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from app.utils.files.fileTransfer import FileTransfer
+from app.utils.Session.SessionCache import session_cache
 
 
 class SessionCreateResponse(BaseModel):
@@ -55,17 +56,24 @@ router = APIRouter(prefix='/api/session', tags=['Session Management'])
 
 
 @router.post('/create', response_model=SessionCreateResponse)
-async def create_session():
+async def create_session(request: Request):
     """
     创建新会话API端点
     
     生成一个新的会话ID，用于隔离不同用户的文件。
+    需要提供有效的 JWT token。
     
     工作流程：
-    1. 生成唯一的会话ID（使用UUID）
-    2. 创建对应的会话目录
-    3. 返回会话ID
+    1. 从请求头获取 JWT token
+    2. 验证 token 并获取用户名
+    3. 生成唯一的会话ID（使用UUID）
+    4. 创建对应的会话目录
+    5. 将 session_id 与用户名映射存入缓存
+    6. 返回会话ID
     
+    Args:
+        request (Request): FastAPI 请求对象
+        
     Returns:
         SessionCreateResponse: 包含生成的会话ID和成功消息
         
@@ -73,31 +81,47 @@ async def create_session():
         HTTPException: 当创建会话失败时抛出500错误
     """
     try:
+        # 从 request.state 获取用户名（由 JWT 中间件设置）
+        username = request.state.username
+        
+        if not username:
+            raise HTTPException(status_code=401, detail="未认证")
+        
         session_id = str(uuid.uuid4())
         session_dir = file_transfer._get_session_dir(session_id)
+        
+        # 将 session_id 与用户名映射存入缓存
+        session_cache.add_session(session_id, username)
         
         return SessionCreateResponse(
             session_id=session_id,
             message="会话创建成功"
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"创建会话失败: {str(e)}")
 
 
 @router.delete('/delete/{session_id}', response_model=SessionDeleteResponse)
-async def delete_session(session_id: str):
+async def delete_session(session_id: str, request: Request):
     """
     删除会话API端点
     
     删除指定会话的整个目录及其所有文件。
+    需要提供有效的 JWT token。
     
     工作流程：
-    1. 接收会话ID参数
-    2. 删除该会话目录及其所有文件
-    3. 返回删除结果
+    1. 从请求头获取 JWT token
+    2. 验证 token 并获取用户名
+    3. 验证 session_id 是否属于该用户
+    4. 删除该会话目录及其所有文件
+    5. 从缓存中删除 session_id
+    6. 返回删除结果
     
     Args:
         session_id (str): 要删除的会话ID
+        request (Request): FastAPI 请求对象
         
     Returns:
         SessionDeleteResponse: 包含删除结果的响应对象
@@ -106,10 +130,29 @@ async def delete_session(session_id: str):
         HTTPException: 当删除过程中发生错误时抛出500错误
     """
     try:
+        # 从 request.state 获取用户名（由 JWT 中间件设置）
+        username = request.state.username
+        
+        if not username:
+            raise HTTPException(status_code=401, detail="未认证")
+        
+        # 验证 session_id 是否属于该用户
+        is_valid = session_cache.verify_session(session_id, username)
+        
+        if not is_valid:
+            raise HTTPException(status_code=403, detail="无权删除该会话")
+        
+        # 删除会话目录
         success = await file_transfer.delete_session(session_id)
+        
+        # 从缓存中删除 session_id
+        session_cache.delete_session(session_id)
+        
         return SessionDeleteResponse(
             success=success,
             message="会话删除成功" if success else "会话不存在"
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"删除会话失败: {str(e)}")

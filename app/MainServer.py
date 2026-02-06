@@ -15,11 +15,13 @@ Author: 张镒谱
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers.agent_router import router as agent_router
 from app.routers.file_router import router as file_router
 from app.routers.session_router import router as session_router
+from app.routers.auth_router import router as auth_router
+from app.utils.auth.Safety import jwt_auth, auth_middleware, session_auth_middleware
 
 # 移除对不存在的模块的引用
 # from core.exception import register_exceptions
@@ -40,6 +42,18 @@ async def lifespan(app: FastAPI):
     Yields:
         None: 应用运行期间的控制权
     """
+    # 添加登录接口到白名单
+    jwt_auth.add_to_whitelist("/api/auth/login")
+    
+    # 添加 Swagger 文档路径到白名单
+    jwt_auth.add_to_whitelist("/docs")
+    jwt_auth.add_to_whitelist("/openapi.json")
+    jwt_auth.add_to_whitelist("/redoc")
+    
+    # session/create 需要 JWT 认证，所以不在白名单中
+    # session/delete 需要 JWT + session 验证，所以也不在白名单中
+    # 其他所有接口都需要验证 session（由 session_auth_middleware 处理）
+    
     yield
 
 
@@ -70,6 +84,15 @@ def create_app():
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # 添加Session认证中间件（先注册，后执行）
+    app.middleware("http")(session_auth_middleware)
+    # 添加JWT认证中间件（后注册，先执行）
+    app.middleware("http")(auth_middleware)
+    
+
+    
+    # 将auth路由器注册到应用中，处理认证相关的API请求
+    app.include_router(auth_router)
     
     # 将agent路由器注册到应用中，处理agent相关的API请求
     app.include_router(agent_router)

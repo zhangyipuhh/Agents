@@ -17,7 +17,7 @@
 Date: 2026/2/6
 Author: 张镒谱
 """
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Request
 from fastapi.responses import FileResponse
 from typing import List
 from pydantic import BaseModel
@@ -32,10 +32,8 @@ class FileDeleteRequest(BaseModel):
     
     Attributes:
         uuids (List[str]): 要删除的文件UUID列表
-        session_id (str): 会话ID，用于隔离不同用户的文件
     """
     uuids: List[str]
-    session_id: str = "default"
 
 
 class FileDeleteResponse(BaseModel):
@@ -110,7 +108,7 @@ router = APIRouter(prefix='/api/files', tags=['File Management'])
 
 
 @router.post('/upload', response_model=FileUploadResponse)
-async def upload_files(files: List[UploadFile] = File(...), session_id: str = "default"):
+async def upload_files(request: Request, files: List[UploadFile] = File(...)):
     """
     批量上传文件API端点
     
@@ -125,8 +123,8 @@ async def upload_files(files: List[UploadFile] = File(...), session_id: str = "d
     4. 返回所有文件的ID（无扩展名）和文件名（无扩展名）列表
     
     Args:
+        request (Request): FastAPI 请求对象，包含 session_id
         files (List[UploadFile]): 要上传的文件列表，使用FastAPI的File表单数据
-        session_id (str): 会话ID，用于隔离不同用户的文件，默认为"default"
         
     Returns:
         FileUploadResponse: 包含上传成功的文件ID列表和数量，每个文件包含 id 和 filename
@@ -135,6 +133,7 @@ async def upload_files(files: List[UploadFile] = File(...), session_id: str = "d
         HTTPException: 当上传过程中发生错误时抛出500错误
     """
     try:
+        session_id = getattr(request.state, "session_id", "default")
         uploaded_files = await file_transfer.upload_files(files, session_id)
         return FileUploadResponse(
             fileids=uploaded_files,
@@ -147,7 +146,7 @@ async def upload_files(files: List[UploadFile] = File(...), session_id: str = "d
 
 
 @router.get('/download/{file_uuid}')
-async def download_file(file_uuid: str, session_id: str = "default"):
+async def download_file(request: Request, file_uuid: str):
     """
     下载文件API端点
     
@@ -159,8 +158,8 @@ async def download_file(file_uuid: str, session_id: str = "default"):
     3. 返回文件内容
     
     Args:
+        request (Request): FastAPI 请求对象，包含 session_id
         file_uuid (str): 要下载的文件UUID
-        session_id (str): 会话ID，用于隔离不同用户的文件，默认为"default"
         
     Returns:
         FileResponse: 文件响应对象，包含文件内容
@@ -169,6 +168,7 @@ async def download_file(file_uuid: str, session_id: str = "default"):
         HTTPException: 当文件不存在时抛出404错误
     """
     try:
+        session_id = getattr(request.state, "session_id", "default")
         file_path = file_transfer.get_file_path(file_uuid, session_id)
         return FileResponse(
             path=str(file_path),
@@ -182,7 +182,7 @@ async def download_file(file_uuid: str, session_id: str = "default"):
 
 
 @router.get('/info/{file_uuid}', response_model=FileInfo)
-async def get_file_info(file_uuid: str, session_id: str = "default"):
+async def get_file_info(request: Request, file_uuid: str):
     """
     获取文件信息API端点
     
@@ -194,8 +194,8 @@ async def get_file_info(file_uuid: str, session_id: str = "default"):
     3. 返回文件信息
     
     Args:
+        request (Request): FastAPI 请求对象，包含 session_id
         file_uuid (str): 要查询的文件UUID
-        session_id (str): 会话ID，用于隔离不同用户的文件，默认为"default"
         
     Returns:
         FileInfo: 包含文件详细信息的对象
@@ -204,6 +204,7 @@ async def get_file_info(file_uuid: str, session_id: str = "default"):
         HTTPException: 当文件不存在时抛出404错误
     """
     try:
+        session_id = getattr(request.state, "session_id", "default")
         file_info = await file_transfer.get_file_info(file_uuid, session_id)
         return FileInfo(**file_info)
     except HTTPException:
@@ -213,7 +214,7 @@ async def get_file_info(file_uuid: str, session_id: str = "default"):
 
 
 @router.delete('/delete', response_model=FileDeleteResponse)
-async def delete_files(request: FileDeleteRequest):
+async def delete_files(request: Request, delete_request: FileDeleteRequest):
     """
     批量删除文件API端点
     
@@ -225,20 +226,22 @@ async def delete_files(request: FileDeleteRequest):
     3. 返回删除结果，包括成功和失败的文件列表
     
     Args:
-        request (FileDeleteRequest): 包含要删除的文件UUID列表和会话ID的请求对象
+        request (Request): FastAPI 请求对象，包含 session_id
+        delete_request (FileDeleteRequest): 包含要删除的文件UUID列表的请求对象
         
     Returns:
         FileDeleteResponse: 包含删除结果的响应对象
     """
     try:
-        result = await file_transfer.delete_files(request.uuids, request.session_id)
+        session_id = getattr(request.state, "session_id", "default")
+        result = await file_transfer.delete_files(delete_request.uuids, session_id)
         return FileDeleteResponse(**result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"删除失败: {str(e)}")
 
 
 @router.get('/list', response_model=FileListResponse)
-async def list_files(session_id: str = "default"):
+async def list_files(request: Request):
     """
     列出所有文件API端点
     
@@ -250,12 +253,13 @@ async def list_files(session_id: str = "default"):
     3. 返回文件列表
     
     Args:
-        session_id (str): 会话ID，用于隔离不同用户的文件，默认为"default"
+        request (Request): FastAPI 请求对象，包含 session_id
         
     Returns:
         FileListResponse: 包含所有文件信息的列表和总数
     """
     try:
+        session_id = getattr(request.state, "session_id", "default")
         files = await file_transfer.list_files(session_id)
         return FileListResponse(
             files=[FileInfo(**file) for file in files],
