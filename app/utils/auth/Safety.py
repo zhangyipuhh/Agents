@@ -20,7 +20,7 @@ from typing import Optional, List
 from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from app.utils.files.SessionCache import session_cache
+from app.utils.Session.SessionCache import session_cache
 
 
 class JWTAuth:
