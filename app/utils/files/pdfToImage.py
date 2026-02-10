@@ -11,7 +11,7 @@ Author: 张镒谱
 import fitz  # PyMuPDF
 from concurrent.futures import ThreadPoolExecutor
 
-def convert_page(page, output_dir, dpi=200, output_format='png'):
+def convert_page(page, output_dir, dpi=200, output_format='jpg'):
     """转换单页
     
     Args:
@@ -25,7 +25,7 @@ def convert_page(page, output_dir, dpi=200, output_format='png'):
     pix.save(output_path)
     return output_path
 
-def pdf_to_images_parallel(pdf_path, output_dir, dpi=300, max_workers=4, output_format='png'):
+def pdf_to_images_parallel(pdf_path, output_dir, dpi=300, max_workers=4, output_format='jpg'):
     """并行转换
     
     Args:
