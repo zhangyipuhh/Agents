@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse
 from typing import List
 from pydantic import BaseModel
 from app.utils.files.fileTransfer import FileTransfer
+from app.utils.files.pdfToImage import convert_pdfs_to_images
 
 
 class FileDeleteRequest(BaseModel):
@@ -95,6 +96,42 @@ class FileUploadResponse(BaseModel):
         count (int): 上传成功的文件数量
     """
     fileids: List[dict]
+    count: int
+
+
+class PdfConvertRequest(BaseModel):
+    """
+    PDF转图片请求模型
+    
+    定义PDF转图片请求的数据结构。
+    
+    Attributes:
+        file_ids (List[str]): 要转换的PDF文件ID列表
+        dpi (int): 输出图片的DPI，默认为300
+        max_workers (int): 最大并行工作线程数，默认为4
+        output_format (str): 输出格式，支持 'png', 'jpg', 'jpeg', 'tiff', 'bmp'，默认为'jpg'
+    """
+    file_ids: List[str]
+    dpi: int = 300
+    max_workers: int = 4
+    output_format: str = 'jpg'
+
+
+class PdfConvertResponse(BaseModel):
+    """
+    PDF转图片响应模型
+    
+    定义PDF转图片操作后的响应数据结构。
+    
+    Attributes:
+        step_id (str): 生成的步骤ID
+        session_id (str): 会话ID
+        file_ids (List[str]): 已转换的文件ID列表
+        count (int): 转换的文件数量
+    """
+    step_id: str
+    session_id: str
+    file_ids: List[str]
     count: int
 
 
@@ -267,3 +304,52 @@ async def list_files(request: Request):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取文件列表失败: {str(e)}")
+
+
+@router.post('/convert', response_model=PdfConvertResponse)
+async def convert_pdfs_to_images_endpoint(request: Request, convert_request: PdfConvertRequest):
+    """
+    批量转换PDF为图片API端点
+    
+    将指定会话中的多个PDF文件转换为图片，并按照 session_id/step_id/file_id 的目录结构存储。
+    
+    工作流程：
+    1. 接收要转换的PDF文件ID列表和会话ID
+    2. 在upload目录中查找对应的PDF文件
+    3. 创建 session_id/step_id/file_id 的目录结构
+    4. 将每个PDF文件的每一页转换为图片
+    5. 返回生成的step_id
+    
+    Args:
+        request (Request): FastAPI 请求对象，包含 session_id
+        convert_request (PdfConvertRequest): 包含要转换的文件ID列表和转换参数的请求对象
+        
+    Returns:
+        PdfConvertResponse: 包含生成的step_id、会话ID、已转换的文件ID列表和数量
+        
+    Raises:
+        HTTPException: 当转换过程中发生错误时抛出
+    """
+    try:
+        session_id = getattr(request.state, "session_id", "default")
+        
+        step_id = convert_pdfs_to_images(
+            session_id=session_id,
+            file_ids=convert_request.file_ids,
+            dpi=convert_request.dpi,
+            max_workers=convert_request.max_workers,
+            output_format=convert_request.output_format
+        )
+        
+        return PdfConvertResponse(
+            step_id=step_id,
+            session_id=session_id,
+            file_ids=convert_request.file_ids,
+            count=len(convert_request.file_ids)
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF转换失败: {str(e)}")

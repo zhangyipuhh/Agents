@@ -8,6 +8,10 @@
 Date: 2026/2/9
 Author: 张镒谱
 """
+import os
+import uuid
+from pathlib import Path
+from typing import List
 import fitz  # PyMuPDF
 from concurrent.futures import ThreadPoolExecutor
 
@@ -49,12 +53,76 @@ def pdf_to_images_parallel(pdf_path, output_dir, dpi=300, max_workers=4, output_
     
     doc.close()
 
+def convert_pdfs_to_images(session_id: str, file_ids: List[str], dpi: int = 300, max_workers: int = 4, output_format: str = 'jpg') -> str:
+    """批量转换PDF文件为图片
+    
+    将指定会话中的多个PDF文件转换为图片，并按照 session_id/step_id/file_id 的目录结构存储。
+    
+    Args:
+        session_id: 会话ID，用于标识用户会话
+        file_ids: PDF文件的ID列表（不带扩展名的UUID）
+        dpi: 输出图片的DPI（清晰度），默认为300
+        max_workers: 最大并行工作线程数，默认为4
+        output_format: 输出格式，支持 'png', 'jpg', 'jpeg', 'tiff', 'bmp'，默认为'jpg'
+    
+    Returns:
+        str: 生成的step_id
+    
+    Raises:
+        FileNotFoundError: 当指定的PDF文件不存在时抛出
+        ValueError: 当file_ids列表为空时抛出
+    """
+    upload_dir = "app/data/upload"
+    output_dir = "app/data/upload"
+    
+    if not file_ids:
+        raise ValueError("file_ids列表不能为空")
+    
+    # 生成唯一的step_id
+    step_id = str(uuid.uuid4())
+    
+    # 构建会话目录路径
+    session_upload_dir = Path(upload_dir) / session_id
+    
+    # 构建输出目录路径：session_id/step_id
+    step_output_dir = Path(output_dir) / session_id / step_id
+    step_output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 遍历每个file_id
+    for file_id in file_ids:
+        # 直接构建PDF文件路径：upload_dir/session_id/file_id.pdf
+        pdf_file = Path(upload_dir) / session_id / f"{file_id}.pdf"
+        
+        if not pdf_file.exists():
+            raise FileNotFoundError(f"找不到PDF文件: {file_id}")
+        
+        # 为每个file_id创建单独的子目录
+        file_output_dir = step_output_dir / file_id
+        file_output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 转换PDF为图片
+        doc = fitz.open(str(pdf_file))
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
+            for page in doc:
+                future = executor.submit(convert_page, page, str(file_output_dir), dpi, output_format)
+                futures.append(future)
+            
+            for future in futures:
+                result = future.result()
+                print(f"已保存: {result}")
+        
+        doc.close()
+    
+    return step_id
+
 if __name__ == '__main__':
     # 使用示例 - 输出为 JPG
     pdf_to_images_parallel(
         r'D:\documents\多测项目规整20260107\1、未来花珺\未来花珺建筑工程竣工测量成果报告书.pdf', 
         r'E:\laboratory\AI\Agents\app\data\upload', 
-        dpi=200, 
+        dpi=100, 
         max_workers=6,
         output_format='jpg'
     )
