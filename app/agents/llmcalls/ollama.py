@@ -42,7 +42,7 @@ def create_model(model_name: str, api_key: str, temperature: float = 0, base_url
     # 创建并返回ChatOllama实例
     # 将所有配置参数传递给ChatOllama构造函数
     return ChatOllama(
-        model_name=model_name,
+        model=model_name,
         api_key=api_key,
         temperature=temperature,
         base_url=base_url
