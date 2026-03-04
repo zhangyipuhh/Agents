@@ -21,6 +21,7 @@ from app.routers.agent_router import router as agent_router
 from app.routers.file_router import router as file_router
 from app.routers.session_router import router as session_router
 from app.routers.auth_router import router as auth_router
+from app.routers.contract_router import router as contract_router
 from app.utils.auth.Safety import jwt_auth, auth_middleware, session_auth_middleware
 
 # 移除对不存在的模块的引用
@@ -102,6 +103,9 @@ def create_app():
     
     # 将session路由器注册到应用中，处理会话管理相关的API请求
     app.include_router(session_router)
+    
+    # 将contract路由器注册到应用中，处理合同审批相关的API请求
+    app.include_router(contract_router)
     
     # 移除对不存在的路由器的引用
     # 移除对不存在的异常处理器的引用
