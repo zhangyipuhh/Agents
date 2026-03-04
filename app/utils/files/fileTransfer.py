@@ -16,6 +16,7 @@ Author: 张镒谱
 """
 import os
 import uuid
+import base64
 from pathlib import Path
 from typing import List, Optional
 from fastapi import UploadFile, HTTPException
@@ -94,11 +95,11 @@ class FileTransfer:
         """
         批量上传文件
         
-        将多个文件上传到指定会话目录，每个文件使用UUID命名。
+        将多个文件上传到指定会话目录，每个文件使用 UUID 命名。
         
         Args:
             files (List[UploadFile]): 要上传的文件列表
-            session_id (str): 会话ID
+            session_id (str): 会话 ID
             
         Returns:
             List[dict]: 上传成功后的文件信息列表，每个元素包含 id（UUID，无扩展名）和 filename（原始文件名，无扩展名）
@@ -110,16 +111,16 @@ class FileTransfer:
         
         for file in files:
             try:
-                # 生成UUID文件名（带扩展名）
+                # 生成 UUID 文件名（带扩展名）
                 file_uuid_with_ext = self._get_file_uuid_with_extension(file.filename)
                 file_path = self._get_file_path(file_uuid_with_ext, session_id)
                 
-                # 使用aiofiles异步保存文件
+                # 使用 aiofiles 异步保存文件
                 async with aiofiles.open(file_path, "wb") as buffer:
                     content = await file.read()
                     await buffer.write(content)
                 
-                # 获取UUID（去除扩展名）
+                # 获取 UUID（去除扩展名）
                 file_uuid = Path(file_uuid_with_ext).stem
                 
                 # 获取原始文件名（去除扩展名）
@@ -134,7 +135,60 @@ class FileTransfer:
                 # 如果上传失败，删除已上传的文件
                 for file_info in uploaded_files:
                     await self.delete_file(file_info["id"], session_id)
-                raise HTTPException(status_code=500, detail=f"文件上传失败: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"文件上传失败：{str(e)}")
+        
+        return uploaded_files
+    
+    async def upload_base64_files(self, files: List[dict], session_id: str) -> List[dict]:
+        """
+        批量上传 base64 编码的文件
+        
+        将多个 base64 编码的文件上传到指定会话目录，每个文件使用 UUID 命名。
+        
+        Args:
+            files (List[dict]): 要上传的文件列表，每个元素包含 filename 和 base64_data
+            session_id (str): 会话 ID
+            
+        Returns:
+            List[dict]: 上传成功后的文件信息列表，每个元素包含 id（UUID，无扩展名）和 filename（原始文件名，无扩展名）
+            
+        Raises:
+            HTTPException: 当上传或解码过程中发生错误时抛出
+        """
+        uploaded_files = []
+        
+        for file_info in files:
+            try:
+                filename = file_info["filename"]
+                base64_data = file_info["base64_data"]
+                
+                # 生成 UUID 文件名（带扩展名）
+                file_uuid_with_ext = self._get_file_uuid_with_extension(filename)
+                file_path = self._get_file_path(file_uuid_with_ext, session_id)
+                
+                # 解码 base64 数据
+                file_content = base64.b64decode(base64_data)
+                
+                # 使用 aiofiles 异步保存文件
+                async with aiofiles.open(file_path, "wb") as buffer:
+                    await buffer.write(file_content)
+                
+                # 获取 UUID（去除扩展名）
+                file_uuid = Path(file_uuid_with_ext).stem
+                
+                # 获取原始文件名（去除扩展名）
+                original_filename = Path(filename).stem
+                
+                uploaded_files.append({
+                    "id": file_uuid,
+                    "filename": original_filename
+                })
+                
+            except Exception as e:
+                # 如果上传失败，删除已上传的文件
+                for file_info in uploaded_files:
+                    await self.delete_file(file_info["id"], session_id)
+                raise HTTPException(status_code=500, detail=f"Base64 文件上传失败：{str(e)}")
         
         return uploaded_files
     

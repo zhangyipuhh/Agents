@@ -99,6 +99,32 @@ class FileUploadResponse(BaseModel):
     count: int
 
 
+class Base64FileUpload(BaseModel):
+    """
+    Base64 文件上传请求模型
+    
+    定义通过 base64 编码上传单个文件的数据结构。
+    
+    Attributes:
+        filename (str): 原始文件名（用于提取扩展名）
+        base64_data (str): base64 编码的文件内容
+    """
+    filename: str
+    base64_data: str
+
+
+class Base64UploadRequest(BaseModel):
+    """
+    Base64 批量文件上传请求模型
+    
+    定义通过 base64 编码批量上传文件的请求数据结构。
+    
+    Attributes:
+        files (List[Base64FileUpload]): 要上传的文件列表，每个文件包含文件名和 base64 数据
+    """
+    files: List[Base64FileUpload]
+
+
 class PdfConvertRequest(BaseModel):
     """
     PDF转图片请求模型
@@ -179,7 +205,55 @@ async def upload_files(request: Request, files: List[UploadFile] = File(...)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"上传失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"上传失败：{str(e)}")
+
+
+@router.post('/upload-base64', response_model=FileUploadResponse)
+async def upload_base64_files(request: Request, upload_request: Base64UploadRequest):
+    """
+    批量上传 base64 编码文件 API 端点
+    
+    接收多个 base64 编码的文件并上传到服务器，每个文件使用 UUID 命名。
+    支持同时上传多个文件，返回所有上传文件的 ID 和文件名列表。
+    文件将存储在指定会话的目录中，实现会话隔离。
+    
+    工作流程：
+    1. 接收多个 base64 编码的文件和会话 ID
+    2. 为每个文件生成 UUID 文件名
+    3. 解码 base64 数据并保存到对应会话的上传目录
+    4. 返回所有文件的 ID（无扩展名）和文件名（无扩展名）列表
+    
+    Args:
+        request (Request): FastAPI 请求对象，包含 session_id
+        upload_request (Base64UploadRequest): 包含 base64 文件列表的请求对象
+        
+    Returns:
+        FileUploadResponse: 包含上传成功的文件 ID 列表和数量，每个文件包含 id 和 filename
+        
+    Raises:
+        HTTPException: 当上传过程中发生错误时抛出 500 错误
+    """
+    try:
+        session_id = getattr(request.state, "session_id", "default")
+        
+        # 将 Pydantic 模型转换为字典列表
+        files_data = [
+            {
+                "filename": file_item.filename,
+                "base64_data": file_item.base64_data
+            }
+            for file_item in upload_request.files
+        ]
+        
+        uploaded_files = await file_transfer.upload_base64_files(files_data, session_id)
+        return FileUploadResponse(
+            fileids=uploaded_files,
+            count=len(uploaded_files)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Base64 上传失败：{str(e)}")
 
 
 @router.get('/download/{file_uuid}')
