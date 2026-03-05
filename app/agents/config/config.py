@@ -44,6 +44,14 @@ PROMPT_TEMPLATE = {
     # 该提示词告诉Agent它是自然资源业务任务，需要通过工具回答问题，不能凭空编造答案
     "main": "你是自然资源业务任务，通过合适的工具回答问题，不能凭空回答。"
 }
+
+#word 结果输出配置
+WORD_OUTPUT_CONFIG = {
+    "highlight_color": "FF0000",  # 红色高亮
+    "output_dir": "app\agents\data\output"
+}
+
+
 class SubGraphType(str, Enum):
     """
     子图类型枚举类
@@ -52,4 +60,6 @@ class SubGraphType(str, Enum):
     """
     audit_contract_clause = "audit_contract_clause"
     search_database = "search_database"
+
+
 

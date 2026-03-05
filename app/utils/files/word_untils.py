@@ -12,7 +12,7 @@ from docx import Document
 from docx.shared import RGBColor
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
-from api.app.config import OUTPUT_CONFIG
+from app.agents.config.config import WORD_OUTPUT_CONFIG
 
 class WordProcessor:
     """Word处理器类"""
@@ -164,19 +164,19 @@ class WordProcessor:
         """
         if output_path is None:
             # 创建输出目录
-            os.makedirs(OUTPUT_CONFIG["output_dir"], exist_ok=True)
+            os.makedirs(WORD_OUTPUT_CONFIG["output_dir"], exist_ok=True)
             
             # 生成输出文件名
             file_name = os.path.basename(doc_path)
             base_name, ext = os.path.splitext(file_name)
-            output_path = os.path.join(OUTPUT_CONFIG["output_dir"], f"{base_name}_标记{ext}")
+            output_path = os.path.join(WORD_OUTPUT_CONFIG["output_dir"], f"{base_name}_标记{ext}")
         
         try:
             # 加载文档
             doc = Document(doc_path)
             
             # 高亮颜色
-            highlight_color = OUTPUT_CONFIG["highlight_color"]
+            highlight_color = WORD_OUTPUT_CONFIG["highlight_color"]
             color = RGBColor.from_string(highlight_color)
             
             # 编译正则表达式用于匹配文本
