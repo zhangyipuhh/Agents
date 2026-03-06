@@ -194,14 +194,25 @@ if __name__ == "__main__":
             file_paths=["/path/to/file1.pdf", "/path/to/file2.docx"],
             file_ids=["file_001", "file_002"]
         )
-        print(result)
         result = await agent.invoke(
             session_id="user_123",
             prompt="你还能干什么",
             file_paths=["/path/to/file1.pdf", "/path/to/file2.docx"],
             file_ids=["file_001", "file_002"]
         )
-        print(result)
+        result = await agent.invoke(
+            session_id="user_123",
+            prompt="民法第四条是什么",
+            file_paths=["/path/to/file1.pdf", "/path/to/file2.docx"],
+            file_ids=["file_001", "file_002"]
+        )
+        result = await agent.invoke(
+            session_id="user_123",
+            prompt="总结我们的对话",
+            file_paths=["/path/to/file1.pdf", "/path/to/file2.docx"],
+            file_ids=["file_001", "file_002"]
+        )
+        result["messages"][-1].pretty_print()
         # 查看 checkpoint 内容
         checkpoint = await agent.inspect_checkpoint(session_id="user_123")
         print(f"\n=== Checkpoint 信息 ===")
