@@ -134,7 +134,7 @@ class AuditDocumentAgent:
 
     async def inspect_checkpoint(self, session_id: str = None):
         """检查指定 session 的 checkpoint 内容
-        
+           测试用，实际功能不涉及
         Args:
             session_id: 会话 ID
             
