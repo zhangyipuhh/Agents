@@ -21,6 +21,7 @@ from langgraph.graph import MessagesState
 from langgraph.prebuilt import ToolNode
 from app.agents.subgraphs.audit_document.tools import get_audit_tools
 from app.agents.llmcalls.model_factory import ModelFactory
+from app.utils.memory.checkpoint import get_global_checkpointer
 
 
 class AuditDocumentAgent:
@@ -45,7 +46,7 @@ class AuditDocumentAgent:
         self._api_key = api_key
         self._base_url = base_url
 
-    async def __ainit__(self):
+    async def __ainit__(self, db_path: str = ":memory:"):
         self.model = ModelFactory.create_model(
             model_type=self._model_type,
             model_name=self._model_name,
@@ -55,6 +56,8 @@ class AuditDocumentAgent:
         )
         self.tools = get_audit_tools()
         self.tool_node = ToolNode(self.tools)
+        # 使用全局单例 checkpointer
+        self.checkpointer = get_global_checkpointer(db_path)
         self._build_graph()
 
     def _should_continue(self, state: MessagesState) -> Literal["tools", "end"]:
@@ -77,7 +80,8 @@ class AuditDocumentAgent:
                             - 合同文件（Word 或 PDF）：请调用 parse_contract_tool
                             - 成交确认书（PDF）：请调用 parse_transaction_tool
                             - 会议纪要（PDF）：请调用 parse_meeting_minutes_tool
-                            请根据用户描述或文件内容自行判断文件类型，然后直接调用相应的解析工具。"""
+                            请根据用户描述或文件内容自行判断文件类型，然后直接调用相应的解析工具。
+                            """
 
         llm = self.model.bind_tools(self.tools)
         response = await llm.ainvoke([("system", system_prompt)] + messages)
@@ -103,17 +107,22 @@ class AuditDocumentAgent:
         )
 
         workflow.add_edge("tools", "llm_call")
-
-        self.graph = workflow.compile()
+        # 编译图，添加 checkpointer全局记忆功能
+        self.graph = workflow.compile(checkpointer=self.checkpointer)
 
     async def invoke(
         self,
         prompt: str,
         file_paths: list,
         file_ids: list,
-        session_id: str = None
+        session_id: str = None,
+        db_path: str = ":memory:",
+        **kwargs
     ):
-        await self.__ainit__()
+        await self.__ainit__(db_path=db_path)
+
+        # 使用 session_id 作为 thread_id，确保同一用户的对话共享记忆
+        config = {"configurable": {"thread_id": session_id or "default"}}
 
         input_state = {
             "messages": [("user", prompt)],
@@ -121,7 +130,38 @@ class AuditDocumentAgent:
             "file_ids": file_ids
         }
 
-        return await self.graph.ainvoke(input_state)
+        return await self.graph.ainvoke(input_state, config, **kwargs)
+
+    async def inspect_checkpoint(self, session_id: str = None):
+        """检查指定 session 的 checkpoint 内容
+        
+        Args:
+            session_id: 会话 ID
+            
+        Returns:
+            dict: Checkpoint 的详细内容
+        """
+        config = {"configurable": {"thread_id": session_id or "default"}}
+        state = self.graph.get_state(config)
+        
+        # 提取 checkpoint 信息
+        checkpoint_info = {
+            "thread_id": session_id or "default",
+            "checkpoint_id": state.checkpoint_id if hasattr(state, 'checkpoint_id') else None,
+            "messages_count": len(state.values.get("messages", [])),
+            "messages": [
+                {
+                    "type": msg.__class__.__name__,
+                    "content": str(msg.content)[:100] if hasattr(msg, "content") else "N/A",
+                    "tool_calls": [tc["name"] for tc in getattr(msg, "tool_calls", [])] if hasattr(msg, "tool_calls") else None
+                }
+                for msg in state.values.get("messages", [])
+            ],
+            "file_paths": state.values.get("file_paths", []),
+            "file_ids": state.values.get("file_ids", [])
+        }
+        
+        return checkpoint_info
 
 
 async def get_audit_document_agent(
@@ -149,10 +189,26 @@ if __name__ == "__main__":
             api_key="sk-d5652bb2e21c43debd1f22fbed6468cf"
         )
         result = await agent.invoke(
+            session_id="user_123",
             prompt="请解析这些文件",
             file_paths=["/path/to/file1.pdf", "/path/to/file2.docx"],
             file_ids=["file_001", "file_002"]
         )
         print(result)
+        result = await agent.invoke(
+            session_id="user_123",
+            prompt="你还能干什么",
+            file_paths=["/path/to/file1.pdf", "/path/to/file2.docx"],
+            file_ids=["file_001", "file_002"]
+        )
+        print(result)
+        # 查看 checkpoint 内容
+        checkpoint = await agent.inspect_checkpoint(session_id="user_123")
+        print(f"\n=== Checkpoint 信息 ===")
+        print(f"消息数: {checkpoint['messages_count']}")
+        for msg in checkpoint['messages']:
+            print(f"- {msg['type']}: {msg['content']}")
+            if msg['tool_calls']:
+                print(f"  工具调用: {msg['tool_calls']}")
 
     asyncio.run(main())
