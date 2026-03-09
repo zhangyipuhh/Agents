@@ -23,7 +23,6 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.graph import MessagesState
 from langgraph.prebuilt import ToolNode
-from langgraph.types import Runtime
 from langchain_core.messages import AnyMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langmem.short_term import SummarizationNode, RunningSummary
@@ -173,13 +172,11 @@ class AuditDocumentAgent:
         messages = state["summarized_messages"]
 
         # 系统提示词，指导模型如何根据文件类型调用相应的解析工具
-        system_prompt = f"""你是一个合同审批解析助手。请根据用户上传的文件调用相应的解析工具。
-
-                            用户可能上传以下类型的文件：
-                            - 合同文件（Word 或 PDF）：请调用 parse_contract_tool
+        system_prompt = f"""你是一个合同审批解析助手
+                            - 合同文件（Word）：请调用 parse_contract_tool
                             - 成交确认书（PDF）：请调用 parse_transaction_tool
                             - 会议纪要（PDF）：请调用 parse_meeting_minutes_tool
-                            请根据用户描述或文件内容自行判断文件类型，然后直接调用相应的解析工具。
+                            根据用户描述或文件内容自行判断文件类型，然后直接调用相应的解析工具。
                             """
 
         # 绑定工具到模型，使模型能够调用工具
@@ -280,7 +277,8 @@ class AuditDocumentAgent:
         # 构建上下文（包含静态的文件路径和文件 ID）
         context = {
             "file_paths": file_paths,
-            "file_ids": file_ids
+            "file_ids": file_ids,
+            "session_id": session_id
         }
 
         # 执行图，传入上下文
@@ -410,10 +408,11 @@ if __name__ == "__main__":
         # 执行多次对话，测试摘要功能
         result = await agent.invoke(
             session_id="user_123",
-            prompt="请解析这些文件",
+            prompt="使用合同解析工具",
             file_paths=["/path/to/file1.pdf", "/path/to/file2.docx"],
             file_ids=["file_001", "file_002"]
         )
+        result["messages"][-1].pretty_print()
         result = await agent.invoke(
             session_id="user_123",
             prompt="你还能干什么",
@@ -426,7 +425,7 @@ if __name__ == "__main__":
             file_paths=["/path/to/file1.pdf", "/path/to/file2.docx"],
             file_ids=["file_001", "file_002"]
         )
-        result["messages"][-1].pretty_print()
+
         result = await agent.invoke(
             session_id="user_123",
             prompt="你是谁",
