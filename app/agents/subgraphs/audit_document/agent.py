@@ -158,21 +158,19 @@ class AuditDocumentAgent:
             return "tools"
         return "end"
 
-    async def _llm_call(self, state: MessagesState):
+    async def _llm_call(self, state: LLMInputState):
         """LLM 调用节点
         
         根据系统提示词和用户消息，调用模型进行推理。
         系统提示词指导模型根据上传的文件类型调用相应的解析工具。
         
         Args:
-            state: 消息状态，包含 messages
-            runtime: 运行时上下文，包含 file_paths 和 file_ids
+            state: 包含 summarized_messages 的输入状态
             
         Returns:
             包含模型响应消息的字典
         """
-        messages = state["messages"]
-
+        messages = state["summarized_messages"]
 
         # 系统提示词，指导模型如何根据文件类型调用相应的解析工具
         system_prompt = f"""你是一个合同审批解析助手。请根据用户上传的文件调用相应的解析工具。
@@ -216,42 +214,12 @@ class AuditDocumentAgent:
             max_summary_tokens=self._max_summary_tokens,
         )
         
-        def call_model(state: LLMInputState):
-            """同步调用 LLM 的辅助函数
-            
-            将摘要后的消息传递给模型，生成回复。
-            
-            Args:
-                state: 包含摘要消息的输入状态
-                
-            Returns:
-                包含模型响应消息的字典
-            """
-            messages = state["summarized_messages"]
-            
-
-            # 系统提示词，指导模型根据文件类型调用相应的解析工具
-            system_prompt = f"""你是一个合同审批解析助手。请根据用户上传的文件调用相应的解析工具。
-
-                                用户可能上传以下类型的文件：
-                                - 合同文件（Word 或 PDF）：请调用 parse_contract_tool
-                                - 成交确认书（PDF）：请调用 parse_transaction_tool
-                                - 会议纪要（PDF）：请调用 parse_meeting_minutes_tool
-                                请根据用户描述或文件内容自行判断文件类型，然后直接调用相应的解析工具。
-                                """
-
-            # 绑定工具到模型
-            llm = self.model.bind_tools(self.tools)
-            # 同步调用模型
-            response = llm.invoke([("system", system_prompt)] + messages)
-            return {"messages": [response]}
-        
         # 创建状态图，传入 context_schema 作为静态上下文
         workflow = StateGraph(State, context_schema=Context)
 
         # 添加节点
         workflow.add_node("summarize", summarization_node)
-        workflow.add_node("llm_call", call_model)
+        workflow.add_node("llm_call", self._llm_call)
         workflow.add_node("tools", self.tool_node)
 
         # 添加边
