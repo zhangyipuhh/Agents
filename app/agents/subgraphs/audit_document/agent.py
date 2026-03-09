@@ -335,7 +335,7 @@ class AuditDocumentAgent:
             "messages": [
                 {
                     "type": msg.__class__.__name__,
-                    "content": str(msg.content)[:100] if hasattr(msg, "content") else "N/A",
+                    "content": str(msg.content) if hasattr(msg, "content") else "N/A",
                     "tool_calls": [tc["name"] for tc in getattr(msg, "tool_calls", [])] if hasattr(msg, "tool_calls") else None
                 }
                 for msg in state.values.get("messages", [])
@@ -445,6 +445,7 @@ if __name__ == "__main__":
             file_paths=["/path/to/file1.pdf", "/path/to/file2.docx"],
             file_ids=["file_001", "file_002"]
         )
+        result["messages"][-1].pretty_print()
         result = await agent.invoke(
             session_id="user_123",
             prompt="你是谁",
