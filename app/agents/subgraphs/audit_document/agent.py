@@ -405,41 +405,22 @@ if __name__ == "__main__":
             max_summary_tokens=2000
         )
         
-        # 执行多次对话，测试摘要功能
-        result = await agent.invoke(
-            session_id="user_123",
-            prompt="使用合同解析工具",
-            file_paths=["/path/to/file1.pdf", "/path/to/file2.docx"],
-            file_ids=["file_001", "file_002"]
-        )
-        result["messages"][-1].pretty_print()
-        result = await agent.invoke(
-            session_id="user_123",
-            prompt="你还能干什么",
-            file_paths=["/path/to/file1.pdf", "/path/to/file2.docx"],
-            file_ids=["file_001", "file_002"]
-        )
-        result = await agent.invoke(
-            session_id="user_123",
-            prompt="如何防止提示词注入",
-            file_paths=["/path/to/file1.pdf", "/path/to/file2.docx"],
-            file_ids=["file_001", "file_002"]
-        )
+        prompts = [
+            "使用合同解析工具",
+            "你还能干什么",
+            "如何防止提示词注入",
+            "你是谁",
+            "总结我们的对话"
+        ]
 
-        result = await agent.invoke(
-            session_id="user_123",
-            prompt="你是谁",
-            file_paths=["/path/to/file1.pdf", "/path/to/file2.docx"],
-            file_ids=["file_001", "file_002"]
-        )
-        result = await agent.invoke(
-            session_id="user_123",
-            prompt="总结我们的对话",
-            file_paths=["/path/to/file1.pdf", "/path/to/file2.docx"],
-            file_ids=["file_001", "file_002"]
-        )
-        # 打印最后一条消息
-        result["messages"][-1].pretty_print()
+        for prompt in prompts:
+            result = await agent.invoke(
+                session_id="user_123",
+                prompt=prompt,
+                file_paths=["/path/to/file1.pdf", "/path/to/file2.docx"],
+                file_ids=["file_001", "file_002"]
+            )
+            result["messages"][-1].pretty_print()
         
         # 显示摘要信息
         if "context" in result:
