@@ -20,10 +20,11 @@ Author: 张镒谱
 import asyncio
 from typing import Literal, Any, TypedDict
 from langgraph.graph import StateGraph, START, END
-from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 from langgraph.graph import MessagesState
 from langgraph.prebuilt import ToolNode
+from langgraph.types import Runtime
+from langchain_core.messages import AnyMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langmem.short_term import SummarizationNode, RunningSummary
 from app.agents.subgraphs.audit_document.tools import get_audit_tools
@@ -37,6 +38,15 @@ class State(MessagesState):
     包含对话消息和上下文摘要信息
     """
     context: dict[str, RunningSummary]
+
+
+class Context(TypedDict):
+    """静态上下文类，包含文件路径和文件 ID
+    
+    这些数据在对话过程中保持不变，作为静态上下文传入 StateGraph
+    """
+    file_paths: list[str]
+    file_ids: list[str]
 
 
 class LLMInputState(TypedDict):
@@ -155,14 +165,14 @@ class AuditDocumentAgent:
         系统提示词指导模型根据上传的文件类型调用相应的解析工具。
         
         Args:
-            state: 消息状态，包含 messages、file_paths、file_ids
+            state: 消息状态，包含 messages
+            runtime: 运行时上下文，包含 file_paths 和 file_ids
             
         Returns:
             包含模型响应消息的字典
         """
         messages = state["messages"]
-        file_paths = state.get("file_paths", [])
-        file_ids = state.get("file_ids", [])
+
 
         # 系统提示词，指导模型如何根据文件类型调用相应的解析工具
         system_prompt = f"""你是一个合同审批解析助手。请根据用户上传的文件调用相应的解析工具。
@@ -212,14 +222,13 @@ class AuditDocumentAgent:
             将摘要后的消息传递给模型，生成回复。
             
             Args:
-                state: 包含摘要消息和上下文的输入状态
+                state: 包含摘要消息的输入状态
                 
             Returns:
                 包含模型响应消息的字典
             """
             messages = state["summarized_messages"]
-            file_paths = state.get("file_paths", [])
-            file_ids = state.get("file_ids", [])
+            
 
             # 系统提示词，指导模型根据文件类型调用相应的解析工具
             system_prompt = f"""你是一个合同审批解析助手。请根据用户上传的文件调用相应的解析工具。
@@ -237,8 +246,8 @@ class AuditDocumentAgent:
             response = llm.invoke([("system", system_prompt)] + messages)
             return {"messages": [response]}
         
-        # 创建状态图
-        workflow = StateGraph(State)
+        # 创建状态图，传入 context_schema 作为静态上下文
+        workflow = StateGraph(State, context_schema=Context)
 
         # 添加节点
         workflow.add_node("summarize", summarization_node)
@@ -295,15 +304,19 @@ class AuditDocumentAgent:
         # 使用 session_id 作为 thread_id，确保同一用户的对话共享记忆
         config = {"configurable": {"thread_id": session_id or "default"}}
 
-        # 构建输入状态
+        # 构建输入状态（只包含消息）
         input_state = {
-            "messages": [("user", prompt)],
+            "messages": [("user", prompt)]
+        }
+
+        # 构建上下文（包含静态的文件路径和文件 ID）
+        context = {
             "file_paths": file_paths,
             "file_ids": file_ids
         }
 
-        # 执行图
-        result = await self.graph.ainvoke(input_state, config, **kwargs)
+        # 执行图，传入上下文
+        result = await self.graph.ainvoke(input_state, config, context=context, **kwargs)
         
         # 添加 context 信息（如果可用）
         if hasattr(self, 'summarization_node') and "context" in result:
