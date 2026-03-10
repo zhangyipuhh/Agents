@@ -7,7 +7,7 @@
 实现多轮对话。
 通过传入 state_class 和 context_class 来定义状态类和上下文类。
 通过传入checkpointer来设置检查点。
-
+使用 AgentConfig 来配置模型、Token 及存储等相关参数。
 
 工作流:
     START → summarize → llm_call → END (自动循环调用工具直到完成)
@@ -24,19 +24,12 @@ import asyncio
 from typing import Literal, TypedDict
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph import MessagesState
-from langgraph.prebuilt import ToolNode
-from langgraph.store.base import BaseStore
 from langchain_core.messages import AnyMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langmem.short_term import SummarizationNode, RunningSummary
-from app.agents.subgraphs.audit_document.tools import get_audit_tools
 from app.agents.llmcalls.model_factory import ModelFactory
 from app.utils.memory.checkpoint import get_global_checkpointer
-
-
-
-
-
+from app.agents.agent.AgentConfig import AgentConfig
 
 
 class LLMInputState(TypedDict):
@@ -68,52 +61,37 @@ class AuditDocumentAgent:
 
     def __init__(
         self,
-        state_class: type[MessagesState],      # 传入 State 类
-        context_class: type[TypedDict],          # 传入 Context 类
-        model_type: str ,
-        model_name: str ,
-        temperature: float = 0,
-        api_key: str = None,
-        base_url: str = None,
-        max_tokens: int = 256,
-        max_tokens_before_summary: int = 256,
-        max_summary_tokens: int = 128,
-        checkpointer: Checkpointer = None,
-        store: BaseStore = None,
-        system_prompt: str = None,
+        config: AgentConfig
     ):
         """
         初始化智能体
         
         Args:
-            state_class: 状态类，必填。需要传入一个继承自 MessagesState 的 TypedDict 类型。
-            context_class: 上下文类，必填。需要传入一个 TypedDict 类型，定义对话上下文结构。
-            model_type: 模型类型，必填。如 "ollama"、"deepseek" 等。
-            model_name: 模型名称，必填。如 "llama3.2"、"deepseek-chat" 等。
-            temperature: 模型温度参数（默认 0），可选，控制生成多样性（0-1，越高越随机）。
-            api_key: API 密钥（可选），用于访问远程模型服务。
-            base_url: API 基础 URL（可选），指定模型服务的地址。
-            max_tokens: 最大 token 数（默认 256），可选，限制单次生成的最大长度。
-            max_tokens_before_summary: 触发摘要的 token 阈值（默认 256），可选，当消息超过此值时触发摘要。
-            max_summary_tokens: 摘要后的最大 token 数（默认 128），可选，控制摘要的长度。
-            checkpointer: 检查点器（可选），用于持久化对话状态。
-            store: 存储库（可选），用于长期跨会话记忆存储。
-            system_prompt: 系统提示词（可选），用于设置 AI 的行为角色。
+            config: 配置实例，必填。需传入 AgentConfig 或其子类的实例，
+                   内部包含模型、Token 及存储等相关配置。
         """
-        self._model_type = model_type
-        self._model_name = model_name
-        self._temperature = temperature
-        self._api_key = api_key
-        self._base_url = base_url
-        self._max_tokens = max_tokens
-        self._max_tokens_before_summary = max_tokens_before_summary
-        self._max_summary_tokens = max_summary_tokens
-        self.checkpointer = checkpointer
-        self.store = store
-    async def __ainit__(self, db_path: str = ":memory:"):
+        self._config = config
+        self._model_type = config.model_type
+        self._model_name = config.model_name
+        self._temperature = config.temperature
+        self._api_key = config.api_key
+        self._base_url = config.base_url
+        self._max_tokens = config.max_tokens
+        self._max_tokens_before_summary = config.max_tokens_before_summary
+        self._max_summary_tokens = config.max_summary_tokens
+        self.checkpointer = config.checkpointer
+        self.store = config.store
+        self.system_prompt = config.system_prompt
+
+    async def __ainit__(self):
         """异步初始化方法
         
         创建模型实例、工具节点和检查点器，构建工作流图。
+        
+        为什么使用异步初始化：
+        - 模型加载、工具初始化等操作涉及 I/O 或异步调用
+        - db_path 是运行时参数，创建时才能确定
+        - 采用延迟加载模式，节省内存和启动时间
         
         Args:
             db_path: 数据库路径，用于持久化对话记忆，默认使用内存数据库
@@ -126,12 +104,9 @@ class AuditDocumentAgent:
             temperature=self._temperature,
             base_url=self._base_url
         )
-        # 获取审计工具列表
-        self.tools = get_audit_tools()
-        # 创建工具节点，用于执行工具调用
-        self.tool_node = ToolNode(self.tools)
-        # 使用全局单例检查点器，实现跨会话的记忆共享
-        self.checkpointer = self.checkpointer
+        # 获取审计工具列表,创建工具节点，用于执行工具调用
+        self.tools,self.tool_node = self._config.get_tools()
+        
         # 创建摘要模型，绑定最大生成 token 数
         self.summarization_model = self.model.bind(max_tokens=self._max_summary_tokens)
         # 构建工作流图
@@ -174,21 +149,7 @@ class AuditDocumentAgent:
         messages = state["summarized_messages"]
 
         # 系统提示词，指导模型如何根据文件类型调用相应的解析工具
-        system_prompt = f"""你是一个合同审批解析助手。根据以下规则直接调用对应工具，无需询问用户是否上传文件：
-
-## 强制调用规则
-当用户明确指令"直接调用[工具名]"或"执行[操作]"时，**立即调用对应工具**，不要询问文件来源。
-
-- 用户说"直接调用合同解析工具" → 立即调用 parse_contract_tool
-- 用户说"直接调用成交确认书解析" → 立即调用 parse_transaction_tool  
-- 用户说"直接调用会议纪要解析" → 立即调用 parse_meeting_minutes_tool
-
-## 参数传递说明
-合同文件地址已通过系统后台传入，你只需执行工具调用，无需关心文件来源。
-
-## 执行要求
-不要回复"需要您提供合同内容"等确认话术，直接执行工具调用。
-                            """
+        system_prompt = self.system_prompt or ""
 
         # 绑定工具到模型，使模型能够调用工具
         llm = self.model.bind_tools(self.tools)
