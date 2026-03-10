@@ -11,11 +11,12 @@ Date: 2026-03-10
 Author: 张镒谱
 """
 
-from typing import TypedDict, Optional, Any
+from typing import TypedDict, Optional
 from dataclasses import dataclass, field
 from langgraph.graph import MessagesState
 from langgraph.store.base import BaseStore
 from langgraph.prebuilt import ToolNode
+from langgraph.checkpoint.base import BaseSaver
 
 @dataclass(kw_only=True)
 class AgentConfig:
@@ -48,16 +49,16 @@ class AgentConfig:
     base_url: Optional[str] = field(default=None)
     """API 基础 URL，指定模型服务的地址。如果为 None，则使用默认地址"""
     
-    max_tokens: int = field(default=256)
+    max_tokens: int = field(default=999999999)
     """最大 token 数，限制单次生成的最大长度，防止生成过长响应，默认 256"""
     
-    max_tokens_before_summary: int = field(default=256)
+    max_tokens_before_summary: int = field(default=999999999)
     """触发摘要的 token 阈值，当消息历史超过此值时触发摘要操作，默认 256"""
     
-    max_summary_tokens: int = field(default=128)
+    max_summary_tokens: int = field(default=999999999)
     """摘要后的最大 token 数，控制摘要的长度，避免摘要过于冗长，默认 128"""
     
-    checkpointer: Any = field(default=None)
+    checkpointer: BaseSaver = field(default=None)
     """检查点器，用于持久化对话状态，支持断点续训和状态恢复，默认 None"""
     
     store: Optional[BaseStore] = field(default=None)
