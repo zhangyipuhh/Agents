@@ -1,28 +1,31 @@
 #!/usr/bin/python
 # -*- coding:utf-8 -*-
 """
-合同审批解析附件智能体模块
+通用agent模块
 
 基于 LangGraph v1.0 。
-使用 MessagesState 和 add_messages 实现多轮对话。
+实现多轮对话。
+通过传入 state_class 和 context_class 来定义状态类和上下文类。
+通过传入checkpointer来设置检查点。
+
 
 工作流:
     START → summarize → llm_call → END (自动循环调用工具直到完成)
 
 摘要功能:
-    - 使用 SummarizationNode 自动管理对话摘要
+    - 使用 SummarizationNode 自动管理对话摘要，里面包含trim_messages的逻辑
     - 保留最新对话，自动摘要旧消息
-    - 与 trim_messages 配合使用，确保上下文长度合适
 
-Date: 2026-03-010
+
+Date: 2026-03-10
 Author: 张镒谱
 """
 import asyncio
-from typing import Literal, Any, TypedDict
+from typing import Literal, TypedDict
 from langgraph.graph import StateGraph, START, END
-from langgraph.graph.message import add_messages
 from langgraph.graph import MessagesState
 from langgraph.prebuilt import ToolNode
+from langgraph.store.base import BaseStore
 from langchain_core.messages import AnyMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langmem.short_term import SummarizationNode, RunningSummary
@@ -31,21 +34,9 @@ from app.agents.llmcalls.model_factory import ModelFactory
 from app.utils.memory.checkpoint import get_global_checkpointer
 
 
-class State(MessagesState):
-    """智能体状态类，继承自 MessagesState
-    
-    包含对话消息和上下文摘要信息
-    """
-    context: dict[str, RunningSummary]
 
 
-class Context(TypedDict):
-    """静态上下文类，包含文件路径和文件 ID
-    
-    这些数据在对话过程中保持不变，作为静态上下文传入 StateGraph
-    """
-    file_paths: list[str]
-    file_ids: list[str]
+
 
 
 class LLMInputState(TypedDict):
@@ -77,27 +68,37 @@ class AuditDocumentAgent:
 
     def __init__(
         self,
-        model_type: str = "ollama",
-        model_name: str = "llama3.2",
+        state_class: type[MessagesState],      # 传入 State 类
+        context_class: type[TypedDict],          # 传入 Context 类
+        model_type: str ,
+        model_name: str ,
         temperature: float = 0,
         api_key: str = None,
         base_url: str = None,
         max_tokens: int = 256,
         max_tokens_before_summary: int = 256,
-        max_summary_tokens: int = 128
+        max_summary_tokens: int = 128,
+        checkpointer: Checkpointer = None,
+        store: BaseStore = None,
+        system_prompt: str = None,
     ):
         """
         初始化智能体
         
         Args:
-            model_type: 模型类型（如 "ollama"、"deepseek" 等）
-            model_name: 模型名称（如 "llama3.2"、"deepseek-chat" 等）
-            temperature: 模型温度参数，控制生成多样性（0-1，越高越随机）
-            api_key: API 密钥，用于访问远程模型服务
-            base_url: API 基础 URL，指定模型服务的地址
-            max_tokens: 最大 token 数，限制单次生成的最大长度
-            max_tokens_before_summary: 触发摘要的 token 阈值，当消息超过此值时触发摘要
-            max_summary_tokens: 摘要后的最大 token 数，控制摘要的长度
+            state_class: 状态类，必填。需要传入一个继承自 MessagesState 的 TypedDict 类型。
+            context_class: 上下文类，必填。需要传入一个 TypedDict 类型，定义对话上下文结构。
+            model_type: 模型类型，必填。如 "ollama"、"deepseek" 等。
+            model_name: 模型名称，必填。如 "llama3.2"、"deepseek-chat" 等。
+            temperature: 模型温度参数（默认 0），可选，控制生成多样性（0-1，越高越随机）。
+            api_key: API 密钥（可选），用于访问远程模型服务。
+            base_url: API 基础 URL（可选），指定模型服务的地址。
+            max_tokens: 最大 token 数（默认 256），可选，限制单次生成的最大长度。
+            max_tokens_before_summary: 触发摘要的 token 阈值（默认 256），可选，当消息超过此值时触发摘要。
+            max_summary_tokens: 摘要后的最大 token 数（默认 128），可选，控制摘要的长度。
+            checkpointer: 检查点器（可选），用于持久化对话状态。
+            store: 存储库（可选），用于长期跨会话记忆存储。
+            system_prompt: 系统提示词（可选），用于设置 AI 的行为角色。
         """
         self._model_type = model_type
         self._model_name = model_name
@@ -107,7 +108,8 @@ class AuditDocumentAgent:
         self._max_tokens = max_tokens
         self._max_tokens_before_summary = max_tokens_before_summary
         self._max_summary_tokens = max_summary_tokens
-
+        self.checkpointer = checkpointer
+        self.store = store
     async def __ainit__(self, db_path: str = ":memory:"):
         """异步初始化方法
         
@@ -129,7 +131,7 @@ class AuditDocumentAgent:
         # 创建工具节点，用于执行工具调用
         self.tool_node = ToolNode(self.tools)
         # 使用全局单例检查点器，实现跨会话的记忆共享
-        self.checkpointer = get_global_checkpointer(db_path)
+        self.checkpointer = self.checkpointer
         # 创建摘要模型，绑定最大生成 token 数
         self.summarization_model = self.model.bind(max_tokens=self._max_summary_tokens)
         # 构建工作流图
@@ -219,9 +221,10 @@ class AuditDocumentAgent:
             max_tokens_before_summary=self._max_tokens_before_summary,
             max_summary_tokens=self._max_summary_tokens,
         )
-        
-        # 创建状态图，传入 context_schema 作为静态上下文
-        workflow = StateGraph(State, context_schema=Context)
+        # state传入的使会话中可能被操作的变量，就是变化的量
+        # context传入的是会话中可能被操作的静态变量，就是不变的量
+        # 创建状态图，传入 state_class 和 context_class 作为静态上下文
+        workflow = StateGraph(State=state_class, context_schema=context_class)
 
         # 添加节点
         workflow.add_node("summarize", summarization_node)
@@ -246,7 +249,7 @@ class AuditDocumentAgent:
         workflow.add_edge("tools", "llm_call")
         
         # 编译图，添加 checkpointer 实现全局记忆功能
-        self.graph = workflow.compile(checkpointer=self.checkpointer)
+        self.graph = workflow.compile(checkpointer=self.checkpointer, store=self.store)
 
     async def invoke(
         self,
@@ -413,6 +416,9 @@ if __name__ == "__main__":
             max_tokens_before_summary=1000,
             max_summary_tokens=2000
         )
+        checkpointer = get_global_checkpointer(db_path="./checkpoints.db")
+        # 设置检查点
+        #agent.graph.set_checkpointer(checkpointer)
         
         prompts = [
             "直接调用合同解析工具，合同内容：‘国有建设用地使用权出让合同’"
