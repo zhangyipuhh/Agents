@@ -15,7 +15,7 @@ from typing import TypedDict, Optional, Any
 from dataclasses import dataclass, field
 from langgraph.graph import MessagesState
 from langgraph.store.base import BaseStore
-
+from langgraph.prebuilt import ToolNode
 
 @dataclass(kw_only=True)
 class AgentConfig:
@@ -65,3 +65,17 @@ class AgentConfig:
     
     system_prompt: Optional[str] = field(default=None)
     """系统提示词，用于设置 AI 的行为角色、性格和约束条件，默认 None"""
+    
+    def get_tools(self) -> tuple[list[str], ToolNode]:
+        """
+        获取所有审计文档工具名称列表
+
+        返回:
+            tuple[list[str], ToolNode]: 工具名称列表和对应的 ToolNode 对象
+
+        注意:
+            此方法需要子类重写，在子类中添加工具到 tools 列表
+        """
+        tools: list[str] = []
+
+        return tools, ToolNode(tools)
