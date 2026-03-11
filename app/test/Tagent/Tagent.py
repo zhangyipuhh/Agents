@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 
 
 from app.agents.agent.agent import get_audit_document_agent, AuditDocumentAgent
@@ -31,6 +32,8 @@ if __name__ == "__main__":
         print(f"\n开始对话（最多 {max_rounds} 轮，输入 'quit' 或 'exit' 退出）\n")
         
         for round_num in range(1, max_rounds + 1):
+            #测试关闭多轮对话，每次初始化新id
+            #sid=str(uuid.uuid4())
             try:
                 user_input = input(f"[轮次 {round_num}] 请输入: ").strip()
                 
