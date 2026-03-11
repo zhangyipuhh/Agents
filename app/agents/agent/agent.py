@@ -30,7 +30,7 @@ from langchain_core.messages.utils import count_tokens_approximately
 from langmem.short_term import SummarizationNode, RunningSummary
 from app.agents.llmcalls.model_factory import ModelFactory
 from app.utils.memory.checkpoint import get_global_checkpointer
-from app.agents.agent.AgentConfig import AgentConfig, AgentContext, AgentState
+from app.agents.agent.AgentConfig import AgentConfig, AgentContext, AgentState, ExecuteConfig
 
 
 class LLMInputState(TypedDict):
@@ -217,7 +217,7 @@ class AuditDocumentAgent:
         self,
         input_state: AgentState,
         context: AgentContext,
-        config: AgentConfig,
+        config: ExecuteConfig,
     ):
         """调用智能体执行任务
         
