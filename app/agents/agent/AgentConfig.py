@@ -11,12 +11,54 @@ Date: 2026-03-10
 Author: 张镒谱
 """
 
-from typing import TypedDict, Optional
+from typing import TypedDict, Optional, Any
 from dataclasses import dataclass, field
 from langgraph.graph import MessagesState
 from langgraph.store.base import BaseStore
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.base import BaseSaver
+
+
+class ConfigurableConfig(TypedDict):
+    """可配置参数内部类，用于配置 LangGraph 运行时的各种参数"""
+
+    thread_id: str = "default"
+    """线程ID，用于区分不同会话，相同 thread_id 的对话共享记忆"""
+
+    recursion_limit: int = 25
+    """最大递归深度，控制图执行的最大步数"""
+
+class ExecuteConfig(TypedDict):
+    """
+    LangGraph 可运行配置结构
+
+    用于配置 LangGraph 运行时的各种参数，如线程ID、回调等。
+    与 LangGraph 的 invoke 方法的 config 参数兼容。
+    """
+
+    configurable: ConfigurableConfig 
+    """可配置参数，如 thread_id（线程ID，用于区分不同会话）等"""
+
+class AgentState(MessagesState):
+    """
+    状态类，需要传入一个继承自 MessagesState 的 TypedDict 类型，用于管理对话状态，在会话中是可被操作的值
+    具体实现的agent需要继承该类
+    """
+    error_limit: int = 5
+    """最大错误次数，控制图执行的最大错误次数，这里的5是类型提示语法的一部分，不是默认值，必须在初始化时指定"""
+    limit: int = 25
+    """最大递归深度，控制图执行的最大步数，这里的25是类型提示语法的一部分，不是默认值，必须在初始化时指定"""
+
+class AgentContext(TypedDict):
+    """
+    上下文类，需要传入一个 TypedDict 类型，定义对话上下文结构，不可变
+    上下文类是一个 TypedDict 类型，用于定义对话上下文的结构。
+    上下文类的字段会被添加到状态类中，用于在会话中传递上下文信息。
+    """
+    session_id: str =default 
+    """默认会话 ID，用于区分不同用户的对话，相同 session_id 的对话共享记忆，默认 "default"""
+    max_tokens: int = 999999999
+    """最大 token 数，限制单次生成的最大长度，防止生成过长响应"""
 
 @dataclass(kw_only=True)
 class AgentConfig:
@@ -34,14 +76,14 @@ class AgentConfig:
     model_name: str
     """模型名称，如 "llama3.2"、"deepseek-chat"、"gpt-4" 等，指定具体的模型"""
     
-    state_class: type[MessagesState] = field(default=None)
+    state_class: type[AgentState] = field(default=None)
     """
-    状态类，需要传入一个继承自 MessagesState 的 TypedDict 类型，用于管理对话状态，在会话中是可被操作的值
+    状态类，需要传入一个继承自 AgentState 的 TypedDict 类型，用于管理对话状态，在会话中是可被操作的值   
     """
     
-    context_class: type[TypedDict] = field(default=None)
+    context_class: type[AgentContext] = field(default=None)
     """
-    上下文类，需要传入一个 TypedDict 类型，定义对话上下文结构，不可变
+    上下文类，需要传入一个 AgentContext 类型，定义对话上下文结构，不可变
     上下文类是一个 TypedDict 类型，用于定义对话上下文的结构。
     上下文类的字段会被添加到状态类中，用于在会话中传递上下文信息。
     """ 
@@ -119,6 +161,10 @@ class AgentConfig:
     
     system_prompt: Optional[str] = field(default=None)
     """系统提示词，用于设置 AI 的行为角色、性格和约束条件，默认 None"""
+    
+
+
+    
     
     def get_tools(self) -> tuple[list[str], ToolNode]:
         """
