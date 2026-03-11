@@ -55,10 +55,9 @@ class AgentContext(TypedDict):
     上下文类是一个 TypedDict 类型，用于定义对话上下文的结构。
     上下文类的字段会被添加到状态类中，用于在会话中传递上下文信息。
     """
-    session_id: str =default 
+    session_id: str = "default"
     """默认会话 ID，用于区分不同用户的对话，相同 session_id 的对话共享记忆，默认 "default"""
-    max_tokens: int = 999999999
-    """最大 token 数，限制单次生成的最大长度，防止生成过长响应"""
+
 
 @dataclass(kw_only=True)
 class AgentConfig:
@@ -162,7 +161,8 @@ class AgentConfig:
     system_prompt: Optional[str] = field(default=None)
     """系统提示词，用于设置 AI 的行为角色、性格和约束条件，默认 None"""
     
-
+    max_input_tokens: int = field(default=999999999)
+    """最大输入 token 数，限制单次输入的最大长度，防止输入过长导致上下文超限，默认 999999999"""
 
     
     
