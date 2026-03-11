@@ -35,10 +35,16 @@ class AgentConfig:
     """模型名称，如 "llama3.2"、"deepseek-chat"、"gpt-4" 等，指定具体的模型"""
     
     state_class: type[MessagesState] = field(default=None)
-    """状态类，需要传入一个继承自 MessagesState 的 TypedDict 类型，用于管理对话状态"""
+    """
+    状态类，需要传入一个继承自 MessagesState 的 TypedDict 类型，用于管理对话状态，在会话中是可被操作的值
+    """
     
     context_class: type[TypedDict] = field(default=None)
-    """上下文类，需要传入一个 TypedDict 类型，定义对话上下文结构"""
+    """
+    上下文类，需要传入一个 TypedDict 类型，定义对话上下文结构，不可变
+    上下文类是一个 TypedDict 类型，用于定义对话上下文的结构。
+    上下文类的字段会被添加到状态类中，用于在会话中传递上下文信息。
+    """ 
     
     temperature: float = field(default=0)
     """模型温度参数，控制生成多样性。取值范围 0-1，越高越随机，默认 0"""
@@ -50,19 +56,66 @@ class AgentConfig:
     """API 基础 URL，指定模型服务的地址。如果为 None，则使用默认地址"""
     
     max_tokens: int = field(default=999999999)
-    """最大 token 数，限制单次生成的最大长度，防止生成过长响应，默认 256"""
+    """最大 token 数，限制单次生成的最大长度，防止生成过长响应，默认 999999999"""
     
     max_tokens_before_summary: int = field(default=999999999)
-    """触发摘要的 token 阈值，当消息历史超过此值时触发摘要操作，默认 256"""
+    """触发摘要的 token 阈值，当消息历史超过此值时触发摘要操作，默认 999999999"""
     
     max_summary_tokens: int = field(default=999999999)
-    """摘要后的最大 token 数，控制摘要的长度，避免摘要过于冗长，默认 128"""
+    """摘要后的最大 token 数，控制摘要的长度，避免摘要过于冗长，默认 999999999"""
     
     checkpointer: BaseSaver = field(default=None)
-    """检查点器，用于持久化对话状态，支持断点续训和状态恢复，默认 None"""
+    """
+    检查点器，用于持久化对话状态，支持断点续训和状态恢复，默认 None
+    如果每次重新定义checkpointer，需要确保session_id一致，否则会导致状态丢失
+    
+    重要：每次传入不同的检查点实例，相当于关闭多轮对话。多轮对话的前提是使用同一个检查点实例（通常为全局单例），
+    并通过 session_id 来区分不同的会话。
+    """
     
     store: Optional[BaseStore] = field(default=None)
-    """存储库，用于长期跨会话记忆存储，支持跨会话上下文共享，默认 None"""
+    """存储库，用于长期跨会话记忆存储，支持跨会话上下文共享，默认 None
+    
+    LangGraph Store 存储结构：
+        - namespace: 命名空间，用于区分不同类型的数据，类型为 tuple，如 ("audit_documents",)
+        - key: 使用 session_id 作为 key，关联同一用户的文档数据
+        - value: 存储文档解析结果（合同条款、成交确认书图片、会议纪要文本块等）
+    
+    示例用法：
+        # 1. 创建 Store
+        from langgraph.store.memory import InMemoryStore
+        store = InMemoryStore(namespace=("audit_documents",))
+        
+        # 2. 写入数据
+        store.put(
+            ("audit_documents",),  # namespace
+            "session_001",           # key (session_id)
+            {
+                "file_id": "file_001",
+                "type": "contract",
+                "clauses": [
+                    {"clause_title": "第一条", "clause_content": "..."},
+                    {"clitude_title": "第二条", "clause_content": "..."}
+                ]
+            }
+        )
+        
+        # 3. 读取数据
+        result = store.get(("audit_documents",), "session_001")
+        print(result.value)  # {'file_id': 'file_001', 'type': 'contract', ...}
+        
+        # 4. 查询同一命名空间下的所有数据
+        all_docs = store.search(("audit_documents",))
+        for doc in all_docs:
+            print(doc.key, doc.value)
+        
+        # 5. 传入 AgentConfig
+        config = AgentConfig(
+            model_type="deepseek",
+            model_name="deepseek-chat",
+            store=store
+        )
+    """
     
     system_prompt: Optional[str] = field(default=None)
     """系统提示词，用于设置 AI 的行为角色、性格和约束条件，默认 None"""
