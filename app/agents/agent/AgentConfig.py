@@ -25,8 +25,7 @@ class ConfigurableConfig(TypedDict):
     thread_id: str = "default"
     """线程ID，用于区分不同会话，相同 thread_id 的对话共享记忆"""
 
-    recursion_limit: int = 25
-    """最大递归深度，控制图执行的最大步数"""
+    
 
 class ExecuteConfig(TypedDict):
     """
