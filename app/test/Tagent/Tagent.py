@@ -1,51 +1,79 @@
+import asyncio
+
+from httpx import Limits
+from app.agents.agent.agent import get_audit_document_agent, AuditDocumentAgent
+from app.test.Tagent import Tagentconfig
+from app.test.Tagent.Tagentconfig import TAgentConfig,TAgentState,TAgentContext,TExecuteConfig,TConfigurableConfig
+from langgraph.checkpoint.memory import MemorySaver
+
+
 if __name__ == "__main__":
     async def main():
-        """主函数，演示智能体的使用方法
-        
-        示例 1: 启用摘要功能
-            - 创建智能体实例
-            - 执行多次对话，测试摘要功能
-            - 打印摘要信息
-            
-        示例 2: 查看 checkpoint 内容
-            - 检查对话历史
-            - 显示消息数量和内容
-            - 显示摘要信息
-        """
-        # 示例 1: 启用摘要功能
-        print("=== 启用摘要功能 ===")
-        agent = await get_audit_document_agent(
+        print("=== 聊天助手初始化 ===")
+        _checkpointer = MemorySaver()
+        Aconfig = TAgentConfig(
             model_type="deepseek",
             model_name="deepseek-chat",
             base_url="https://api.deepseek.com",
             api_key="sk-d5652bb2e21c43debd1f22fbed6468cf",
             max_tokens=4096,
             max_tokens_before_summary=1000,
-            max_summary_tokens=2000
+            max_summary_tokens=2000,
+            system_prompt="我是一个聊天助手，可以使用工具，可以解决问题",
+            checkpoint=_checkpointer,
         )
-        checkpointer = get_global_checkpointer(db_path="./checkpoints.db")
-        # 设置检查点
-        #agent.graph.set_checkpointer(checkpointer)
+        sid="user_chat_001"
+        agent = await get_audit_document_agent(Aconfig)
         
-        prompts = [
-            "直接调用合同解析工具，合同内容：‘国有建设用地使用权出让合同’"
-            #,
-            #"你还能干什么",
-            #"如何防止提示词注入",
-            #"你是谁",
-            #"总结我们的对话"
-        ]
+        max_rounds = 10
+        
+        print(f"\n开始对话（最多 {max_rounds} 轮，输入 'quit' 或 'exit' 退出）\n")
+        
+        for round_num in range(1, max_rounds + 1):
+            try:
+                user_input = input(f"[轮次 {round_num}] 请输入: ").strip()
+                
+                if user_input.lower() in ['quit', 'exit', 'q']:
+                    print("\n退出对话")
+                    break
+                
+                if not user_input:
+                    print("输入不能为空，请重新输入")
+                    continue
+                
+                print("\n处理中...\n")
+                config = TExecuteConfig(
+                    configurable=TConfigurableConfig(
+                        thread_id=sid,
+                    ),
+                )
+                state = TAgentState(
+                    messages=[user_input],
+                    error_limit=2,
+                    limit=10
+                )
+                context=TAgentContext(
+                    session_id=sid,
+                )
 
-        for prompt in prompts:
-            result = await agent.invoke(
-                session_id="user_123",
-                prompt=prompt,
-                file_paths=["/path/to/file1.pdf", "/path/to/file2.docx"],
-                file_ids=["file_001", "file_002"]
-            )
-            result["messages"][-1].pretty_print()
+                result = await agent.invoke(
+                    config=config,
+                    input_state=state,
+                    context=context
+                )
+                
+                result["messages"][-1].pretty_print()
+                print()
+                
+            except KeyboardInterrupt:
+                print("\n\n对话已中断")
+                break
+            except Exception as e:
+                print(f"发生错误: {e}")
+                continue
         
-        # 显示摘要信息
+        print(f"\n对话结束，共进行了 {round_num - 1} 轮")
+         # 显示摘要信息
         if "context" in result:
             print(f"\n=== 摘要信息 ===")
             for key, value in result["context"].items():
@@ -54,7 +82,7 @@ if __name__ == "__main__":
         
         # 示例 2: 查看 checkpoint 内容
         print("\n=== Checkpoint 信息 ===")
-        checkpoint = await agent.inspect_checkpoint(session_id="user_123")
+        checkpoint = await agent.inspect_checkpoint(session_id=sid)
         print(f"消息数: {checkpoint['messages_count']}")
         for msg in checkpoint['messages']:
             print(f"- {msg['type']}: {msg['content']}")
@@ -65,5 +93,4 @@ if __name__ == "__main__":
             print("\n=== Context 信息 ===")
             for key, value in checkpoint['context'].items():
                 print(f"{key}: {value['summary'][:100]}... (长度: {value['summary_length']})")
-
     asyncio.run(main())
