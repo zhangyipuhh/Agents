@@ -67,7 +67,7 @@ async def _async_main():
         max_tokens=4096,
         max_tokens_before_summary=1000,
         max_summary_tokens=2000,
-        system_prompt="我是一个聊天助手，可以使用工具，可以解决问题",
+        system_prompt="我是一个聊天助手，可以使用工具，可以解决问题,当问时间时必须使用get_current_time工具，需要加法计算时必须使用add工具",
         checkpointer=_checkpointer,
     )
     
