@@ -21,6 +21,7 @@ Date: 2026-03-10
 Author: 张镒谱
 """
 import asyncio
+from email import message
 from typing import Literal, TypedDict
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph import MessagesState
@@ -29,7 +30,7 @@ from langchain_core.messages.utils import count_tokens_approximately
 from langmem.short_term import SummarizationNode, RunningSummary
 from app.agents.llmcalls.model_factory import ModelFactory
 from app.utils.memory.checkpoint import get_global_checkpointer
-from app.agents.agent.AgentConfig import AgentConfig
+from app.agents.agent.AgentConfig import AgentConfig, AgentContext, AgentState
 
 
 class LLMInputState(TypedDict):
@@ -185,7 +186,7 @@ class AuditDocumentAgent:
         )
         # state传入的使会话中可能被操作的变量，就是变化的量，这里只是格式，实际运行时会有具体的值
         # context传入的是会话中可能被操作的静态变量，就是不变的量，这里只是格式，实际运行时会有具体的值
-        workflow = StateGraph(State=state_class, context_schema=context_class)
+        workflow = StateGraph(State=AgentState, context_schema=AgentContext)  
 
         # 添加节点
         workflow.add_node("summarize", summarization_node)
@@ -214,16 +215,18 @@ class AuditDocumentAgent:
 
     async def invoke(
         self,
-        prompt: str,
-        session_id: str 
+        input_state: AgentState,
+        context: AgentContext,
+        config: AgentConfig,
     ):
         """调用智能体执行任务
         
-        将用户提示传入工作流，执行对话并返回结果。
+        将用户输入状态、上下文和配置传入工作流，执行对话并返回结果。
         
         Args:
-            prompt: 用户提示或问题
-            session_id: 会话 ID，用于区分不同用户的对话，相同 session_id 的对话共享记忆
+            input_state: 输入状态，包含 summarized_messages 和 context
+            context: 上下文实例，用于传递静态变量
+            config: 运行配置，包含 thread_id 等信息
             
         Returns:
             dict: 执行结果，包含 messages（消息列表）和 context（上下文摘要信息）
@@ -232,24 +235,7 @@ class AuditDocumentAgent:
         if not hasattr(self, 'graph') or self.graph is None:
             await self.__ainit__()
         
-        # 使用 run_config 作为基础配置，并用 session_id 更新 thread_id
-        config = self.run_config.copy() if self.run_config else {}
-        if "configurable" not in config:
-            config["configurable"] = {}
-        config["configurable"]["thread_id"] = session_id or config["configurable"].get("thread_id", "default")
-
-        # 构建输入状态（只包含消息）
-        input_state = {
-            "messages": [("user", prompt)]
-        }
-
-        # 构建上下文（包含静态的文件路径和文件 ID）
-        context = {
-            "file_paths": file_paths,
-            "file_ids": file_ids,
-            "session_id": session_id
-        }
-
+  
         ''' 
         执行图，传入上下文
         与StateGraph(State=state_class, context_schema=context_class)
