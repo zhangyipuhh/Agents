@@ -83,7 +83,7 @@ class AuditDocumentAgent:
         self.checkpointer = config.checkpointer
         self.store = config.store
         self.system_prompt = config.system_prompt
-        self.run_config = config.run_config
+  
 
     async def __ainit__(self):
         """异步初始化方法
