@@ -82,6 +82,7 @@ class AuditDocumentAgent:
         self.checkpointer = config.checkpointer
         self.store = config.store
         self.system_prompt = config.system_prompt
+        self.run_config = config.run_config
 
     async def __ainit__(self):
         """异步初始化方法
@@ -182,9 +183,8 @@ class AuditDocumentAgent:
             max_tokens_before_summary=self._max_tokens_before_summary,
             max_summary_tokens=self._max_summary_tokens,
         )
-        # state传入的使会话中可能被操作的变量，就是变化的量
-        # context传入的是会话中可能被操作的静态变量，就是不变的量
-        # 创建状态图，传入 state_class 和 context_class 作为静态上下文
+        # state传入的使会话中可能被操作的变量，就是变化的量，这里只是格式，实际运行时会有具体的值
+        # context传入的是会话中可能被操作的静态变量，就是不变的量，这里只是格式，实际运行时会有具体的值
         workflow = StateGraph(State=state_class, context_schema=context_class)
 
         # 添加节点
@@ -215,32 +215,28 @@ class AuditDocumentAgent:
     async def invoke(
         self,
         prompt: str,
-        file_paths: list,
-        file_ids: list,
-        session_id: str = None,
-        db_path: str = ":memory:",
-        **kwargs
+        session_id: str 
     ):
         """调用智能体执行任务
         
-        将用户提示和文件信息传入工作流，执行对话并返回结果。
+        将用户提示传入工作流，执行对话并返回结果。
         
         Args:
             prompt: 用户提示或问题
-            file_paths: 文件路径列表，包含需要解析的文件路径
-            file_ids: 文件 ID 列表，用于标识和追踪文件
             session_id: 会话 ID，用于区分不同用户的对话，相同 session_id 的对话共享记忆
-            db_path: 数据库路径，用于持久化对话记忆
-            **kwargs: 其他传递给图执行的参数
             
         Returns:
             dict: 执行结果，包含 messages（消息列表）和 context（上下文摘要信息）
         """
-        # 异步初始化智能体
-        await self.__ainit__(db_path=db_path)
+        # 延迟初始化：如果 graph 尚未创建，则先初始化
+        if not hasattr(self, 'graph') or self.graph is None:
+            await self.__ainit__()
         
-        # 使用 session_id 作为 thread_id，确保同一用户的对话共享记忆
-        config = {"configurable": {"thread_id": session_id or "default"}}
+        # 使用 run_config 作为基础配置，并用 session_id 更新 thread_id
+        config = self.run_config.copy() if self.run_config else {}
+        if "configurable" not in config:
+            config["configurable"] = {}
+        config["configurable"]["thread_id"] = session_id or config["configurable"].get("thread_id", "default")
 
         # 构建输入状态（只包含消息）
         input_state = {
@@ -254,7 +250,11 @@ class AuditDocumentAgent:
             "session_id": session_id
         }
 
-        # 执行图，传入上下文
+        ''' 
+        执行图，传入上下文
+        与StateGraph(State=state_class, context_schema=context_class)
+        中的context_schema与context对应,state_schema与input_state对应,在每次调用时传入具体值
+        '''
         result = await self.graph.ainvoke(input_state, config, context=context, **kwargs)
         
         # 添加 context 信息（如果可用）
@@ -275,7 +275,10 @@ class AuditDocumentAgent:
             dict: Checkpoint 的详细内容，包括消息数量、消息内容、文件信息和摘要信息
         """
         # 构建配置
-        config = {"configurable": {"thread_id": session_id or "default"}}
+        config = self.run_config.copy() if self.run_config else {}
+        if "configurable" not in config:
+            config["configurable"] = {}
+        config["configurable"]["thread_id"] = session_id or config["configurable"].get("thread_id", "default")
         # 获取当前状态
         state = self.graph.get_state(config)
         
@@ -310,44 +313,19 @@ class AuditDocumentAgent:
 
 
 async def get_audit_document_agent(
-    model_type: str = "ollama",
-    model_name: str = "llama3.2",
-    temperature: float = 0,
-    api_key: str = None,
-    base_url: str = None,
-    max_tokens: int = 256,
-    max_tokens_before_summary: int = 200,
-    max_summary_tokens: int = 128
+    config: AgentConfig
 ) -> AuditDocumentAgent:
     """获取审计文档智能体实例的工厂函数
     
     创建并初始化 AuditDocumentAgent 实例，简化智能体的创建过程。
     
     Args:
-        model_type: 模型类型
-        model_name: 模型名称
-        temperature: 温度参数
-        api_key: API 密钥
-        base_url: API 基础 URL
-        max_tokens: 最大 token 数
-        max_tokens_before_summary: 触发摘要的 token 阈值
-        max_summary_tokens: 摘要后的最大 token 数
+        config: AgentConfig 配置实例，包含模型、Token、检查点器、存储库、系统提示词等所有配置
         
     Returns:
         AuditDocumentAgent: 初始化完成的智能体实例
     """
-    # 创建智能体实例
-    agent = AuditDocumentAgent(
-        model_type=model_type,
-        model_name=model_name,
-        temperature=temperature,
-        api_key=api_key,
-        base_url=base_url,
-        max_tokens=max_tokens,
-        max_tokens_before_summary=max_tokens_before_summary,
-        max_summary_tokens=max_summary_tokens
-    )
-    # 异步初始化
+    agent = AuditDocumentAgent(config=config)
     await agent.__ainit__()
     return agent
 
