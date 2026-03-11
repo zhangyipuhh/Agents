@@ -241,7 +241,7 @@ class AuditDocumentAgent:
         与StateGraph(State=state_class, context_schema=context_class)
         中的context_schema与context对应,state_schema与input_state对应,在每次调用时传入具体值
         '''
-        result = await self.graph.ainvoke(input_state, config, context=context, **kwargs)
+        result = await self.graph.ainvoke(input_state, config, context=context)
         
         # 添加 context 信息（如果可用）
         if hasattr(self, 'summarization_node') and "context" in result:
@@ -260,11 +260,8 @@ class AuditDocumentAgent:
         Returns:
             dict: Checkpoint 的详细内容，包括消息数量、消息内容、文件信息和摘要信息
         """
-        # 构建配置
-        config = self.run_config.copy() if self.run_config else {}
-        if "configurable" not in config:
-            config["configurable"] = {}
-        config["configurable"]["thread_id"] = session_id or config["configurable"].get("thread_id", "default")
+         # 构建配置
+        config = {"configurable": {"thread_id": session_id or "default"}}
         # 获取当前状态
         state = self.graph.get_state(config)
         
