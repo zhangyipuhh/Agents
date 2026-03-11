@@ -15,7 +15,7 @@ Author: 张镒谱
 
 from dataclasses import dataclass, field
 from langgraph.prebuilt import ToolNode
-from api.agents.agent.AgentConfig import ConfigurableConfig as BaseConfigurableConfig, AgentState as BaseAgentState, AgentContext as BaseAgentContext, AgentConfig as BaseAgentConfig, ExecuteConfig as BaseExecuteConfig
+from app.agents.agent.AgentConfig import ConfigurableConfig as BaseConfigurableConfig, AgentState as BaseAgentState, AgentContext as BaseAgentContext, AgentConfig as BaseAgentConfig, ExecuteConfig as BaseExecuteConfig
 
 class TConfigurableConfig(BaseConfigurableConfig):
     """

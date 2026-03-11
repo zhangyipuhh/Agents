@@ -1,14 +1,15 @@
 import asyncio
 
-from httpx import Limits
-from app.agents.agent.agent import get_audit_document_agent, AuditDocumentAgent
-from app.test.Tagent import Tagentconfig
-from app.test.Tagent.Tagentconfig import TAgentConfig,TAgentState,TAgentContext,TExecuteConfig,TConfigurableConfig
-from langgraph.checkpoint.memory import MemorySaver
 
+from app.agents.agent.agent import get_audit_document_agent, AuditDocumentAgent
+from app.test.Tagent.TagentConfig import TAgentConfig,TAgentState,TAgentContext,TExecuteConfig,TConfigurableConfig
+from langgraph.checkpoint.memory import MemorySaver
+from rich.console import Console
+from rich.markdown import Markdown
 
 if __name__ == "__main__":
     async def main():
+        console = Console()
         print("=== 聊天助手初始化 ===")
         _checkpointer = MemorySaver()
         Aconfig = TAgentConfig(
@@ -20,7 +21,7 @@ if __name__ == "__main__":
             max_tokens_before_summary=1000,
             max_summary_tokens=2000,
             system_prompt="我是一个聊天助手，可以使用工具，可以解决问题",
-            checkpoint=_checkpointer,
+            checkpointer=_checkpointer,
         )
         sid="user_chat_001"
         agent = await get_audit_document_agent(Aconfig)
@@ -44,8 +45,8 @@ if __name__ == "__main__":
                 print("\n处理中...\n")
                 config = TExecuteConfig(
                     configurable=TConfigurableConfig(
-                        thread_id=sid,
-                    ),
+                        thread_id=sid
+                    )
                 )
                 state = TAgentState(
                     messages=[user_input],
@@ -53,7 +54,7 @@ if __name__ == "__main__":
                     limit=10
                 )
                 context=TAgentContext(
-                    session_id=sid,
+                    session_id=sid
                 )
 
                 result = await agent.invoke(
@@ -62,7 +63,11 @@ if __name__ == "__main__":
                     context=context
                 )
                 
-                result["messages"][-1].pretty_print()
+                #result["messages"][-1].pretty_print()
+                
+                # 打印 Markdown
+                md = Markdown(result["messages"][-1].content)
+                console.print(md)
                 print()
                 
             except KeyboardInterrupt:
@@ -73,12 +78,7 @@ if __name__ == "__main__":
                 continue
         
         print(f"\n对话结束，共进行了 {round_num - 1} 轮")
-         # 显示摘要信息
-        if "context" in result:
-            print(f"\n=== 摘要信息 ===")
-            for key, value in result["context"].items():
-                if hasattr(value, 'summary'):
-                    print(f"{key}: {value.summary}")
+        
         
         # 示例 2: 查看 checkpoint 内容
         print("\n=== Checkpoint 信息 ===")
