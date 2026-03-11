@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from langgraph.graph import MessagesState
 from langgraph.store.base import BaseStore
 from langgraph.prebuilt import ToolNode
-from langgraph.checkpoint.base import BaseSaver
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
 
 class ConfigurableConfig(TypedDict):
@@ -25,7 +25,7 @@ class ConfigurableConfig(TypedDict):
     thread_id: str = "default"
     """线程ID，用于区分不同会话，相同 thread_id 的对话共享记忆"""
 
-    
+
 
 class ExecuteConfig(TypedDict):
     """
@@ -104,7 +104,7 @@ class AgentConfig:
     max_summary_tokens: int = field(default=999999999)
     """摘要后的最大 token 数，控制摘要的长度，避免摘要过于冗长，默认 999999999"""
     
-    checkpointer: BaseSaver = field(default=None)
+    checkpointer: BaseCheckpointSaver = field(default=None)
     """
     检查点器，用于持久化对话状态，支持断点续训和状态恢复，默认 None
     如果每次重新定义checkpointer，需要确保session_id一致，否则会导致状态丢失
