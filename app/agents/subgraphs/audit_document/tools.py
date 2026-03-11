@@ -297,52 +297,90 @@ class AuditDocumentTools:
 _audit_tools_instance = AuditDocumentTools()
 
 
-@tool
-def parse_contract_tool(runtime: Runtime[AppContext]) -> str:
+@tool(description="合同解析工具")
+def parse_contract_tool(runtime: Any) -> str:
+    """解析合同文件，提取关键条款信息"""
+    context = runtime.context
+    file_paths = context.get("file_paths", [])
+    file_ids = context.get("file_ids", [])
+    session_id = context.get("session_id", "")
+    
+    file_path = file_paths[0] if file_paths else ""
+    file_id = file_ids[0] if file_ids else ""
+    
     result = _audit_tools_instance.parse_contract(
-        file_path=runtime.input.file_path,
-        file_id=runtime.input.file_id,
-        session_id=runtime.input.session_id,
-        file_name=runtime.input.file_name
+        file_path=file_path,
+        file_id=file_id,
+        session_id=session_id,
+        file_name=""
     )
     return str(result)
 
 
 @tool
-def parse_transaction_tool(runtime: Runtime[AppContext]) -> str:
+def parse_transaction_tool(runtime: Any) -> str:
+    """解析成交确认书，提取交易信息"""
+    context = runtime.context
+    file_paths = context.get("file_paths", [])
+    file_ids = context.get("file_ids", [])
+    session_id = context.get("session_id", "")
+    
+    file_path = file_paths[0] if file_paths else ""
+    file_id = file_ids[0] if file_ids else ""
+    
     result = _audit_tools_instance.parse_transaction(
-        file_path=runtime.input.file_path,
-        file_id=runtime.input.file_id,
-        session_id=runtime.input.session_id,
-        file_name=runtime.input.file_name
+        file_path=file_path,
+        file_id=file_id,
+        session_id=session_id,
+        file_name=""
     )
     return str(result)
 
 
 @tool
-def parse_meeting_minutes_tool(runtime: Runtime[AppContext]) -> str:
+def parse_meeting_minutes_tool(runtime: Any) -> str:
+    """解析会议纪要，提取决策事项"""
+    context = runtime.context
+    file_paths = context.get("file_paths", [])
+    file_ids = context.get("file_ids", [])
+    session_id = context.get("session_id", "")
+    
+    file_path = file_paths[0] if file_paths else ""
+    file_id = file_ids[0] if file_ids else ""
+    
     result = _audit_tools_instance.parse_meeting_minutes(
-        file_path=runtime.input.file_path,
-        file_id=runtime.input.file_id,
-        session_id=runtime.input.session_id,
-        file_name=runtime.input.file_name
+        file_path=file_path,
+        file_id=file_id,
+        session_id=session_id,
+        file_name=""
     )
     return str(result)
 
 
 @tool
-def save_to_memory_tool(runtime: Runtime[AppContext]) -> str:
+def save_to_memory_tool(runtime: Any) -> str:
+    """将解析内容保存到长期记忆"""
+    context = runtime.context
+    session_id = context.get("session_id", "")
+    file_id = context.get("file_ids", [None])[0] if context.get("file_ids") else None
+    file_type = "document"
+    content = {}
+    file_name = ""
+    
+    if file_id is None:
+        return '{"status": "error", "file_id": null, "message": "缺少文件ID"}'
+    
     success = document_memory_store.save_document(
-        session_id=runtime.input.session_id,
-        file_id=runtime.input.file_id,
-        file_type=runtime.input.file_type,
-        content=runtime.input.content,
-        file_name=runtime.input.file_name
+        session_id=session_id,
+        file_id=file_id,
+        file_type=file_type,
+        content=content,
+        file_name=file_name
     )
     if success:
-        return f'{{"status": "success", "file_id": "{runtime.input.file_id}", "message": "文件已成功保存到长期记忆"}}'
+        return f'{{"status": "success", "file_id": "{file_id}", "message": "文件已成功保存到长期记忆"}}'
     else:
-        return f'{{"status": "error", "file_id": "{runtime.input.file_id}", "message": "文件保存失败"}}'
+        return f'{{"status": "error", "file_id": "{file_id}", "message": "文件保存失败"}}'
 
 
 def get_audit_tools() -> List[BaseTool]:
