@@ -186,7 +186,7 @@ class AuditDocumentAgent:
         )
         # state传入的使会话中可能被操作的变量，就是变化的量，这里只是格式，实际运行时会有具体的值
         # context传入的是会话中可能被操作的静态变量，就是不变的量，这里只是格式，实际运行时会有具体的值
-        workflow = StateGraph(state_schema=AgentState, context_schema=AgentContext)
+        workflow = StateGraph(AgentState, AgentContext)
 
         # 添加节点
         workflow.add_node("summarize", summarization_node)
