@@ -92,5 +92,5 @@ if __name__ == "__main__":
         if checkpoint.get('context'):
             print("\n=== Context 信息 ===")
             for key, value in checkpoint['context'].items():
-                print(f"{key}: {value['summary'][:100]}... (长度: {value['summary_length']})")
+                print(f"{key}: {value['summary']} (长度: {value['summary_length']})")
     asyncio.run(main())
