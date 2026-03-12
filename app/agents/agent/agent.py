@@ -22,7 +22,8 @@ Author: 张镒谱
 """
 import asyncio
 from email import message
-from typing import Literal, TypedDict
+from typing import Literal
+from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph import MessagesState
 from langchain_core.messages import AnyMessage
@@ -149,7 +150,7 @@ class AuditDocumentAgent:
             包含模型响应消息的字典
         """
         messages = state["summarized_messages"]
-
+        #messages = state["messages"]
         # 系统提示词，指导模型如何根据文件类型调用相应的解析工具
         system_prompt = self.system_prompt or ""
 
@@ -208,8 +209,9 @@ class AuditDocumentAgent:
         )
 
         # 工具执行完成后回到 llm_call 继续调用
-        workflow.add_edge("tools", "llm_call")
-        
+        # workflow.add_edge("tools", "llm_call")
+         # 这样 ToolMessage 会被 summarize 节点处理（trim、摘要等）
+        workflow.add_edge("tools", "summarize")
         # 编译图，添加 checkpointer 实现全局记忆功能
         self.graph = workflow.compile(checkpointer=self.checkpointer, store=self.store)
 
