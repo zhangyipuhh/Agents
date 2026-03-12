@@ -105,7 +105,8 @@ def llm_call(state: dict):
 
 # --- Step 4: 定义工具节点为子流程 (子图) ---
 from langchain.messages import ToolMessage, AIMessage
-from typing import TypedDict, Annotated, List
+from typing import Annotated, List
+from typing_extensions import TypedDict
 import operator
 
 # 定义子图的状态
