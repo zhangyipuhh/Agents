@@ -18,7 +18,8 @@ Date: 2026-03-06
 Author: 张镒谱
 """
 import asyncio
-from typing import Literal, Any, TypedDict
+from typing import Literal, Any
+from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.graph import MessagesState
