@@ -12,6 +12,7 @@ Author: 张镒谱
 
 from pathlib import Path
 from typing import Optional, List
+import chardet
 from langchain_community.document_loaders import TextLoader as LangChainTextLoader
 from langchain_core.documents import Document
 
@@ -40,6 +41,23 @@ class TextLoader:
         self.encoding = encoding
         self._loader: Optional[LangChainTextLoader] = None
 
+    def _detect_encoding(self) -> str:
+        """
+        自动检测文件编码
+        
+        使用 chardet 库检测文件编码，如果检测失败则返回默认编码。
+        
+        Returns:
+            str: 检测到的编码格式
+        """
+        with open(self.file_path, "rb") as f:
+            raw_data = f.read(10000)
+            result = chardet.detect(raw_data)
+            detected = result.get("encoding")
+            if detected:
+                return detected
+        return self.encoding
+
     def _get_loader(self) -> LangChainTextLoader:
         """
         获取底层的 langchain TextLoader 实例
@@ -54,7 +72,7 @@ class TextLoader:
         if self._loader is None:
             self._loader = LangChainTextLoader(
                 str(self.file_path),
-                encoding=self.encoding
+                encoding=self._detect_encoding()
             )
         return self._loader
 
