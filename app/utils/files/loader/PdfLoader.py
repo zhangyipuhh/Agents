@@ -16,7 +16,7 @@ from langchain_community.document_loaders import PyPDFLoader as LangChainPyPDFLo
 from langchain_core.documents import Document
 
 
-class PdfLoader:
+class PDFLoader:
     """
     PDF 文件加载器
     
@@ -86,6 +86,6 @@ class PdfLoader:
 
 
 if __name__ == "__main__":
-    loader = PdfLoader("D:\DocumentLoader\PdfLoader.pdf")
+    loader = PDFLoader("D:\DocumentLoader\PdfLoader.pdf")
     documents = loader.load()
     print(documents)
