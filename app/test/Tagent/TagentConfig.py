@@ -15,7 +15,11 @@ Author: 张镒谱
 
 from dataclasses import dataclass, field
 from langgraph.prebuilt import ToolNode
-from app.agents.agent.AgentConfig import ConfigurableConfig as BaseConfigurableConfig, AgentState as BaseAgentState, AgentContext as BaseAgentContext, AgentConfig as BaseAgentConfig, ExecuteConfig as BaseExecuteConfig
+from app.agents.agent.AgentConfig import ConfigurableConfig as BaseConfigurableConfig, AgentState as BaseAgentState, AgentConfig as BaseAgentConfig, ExecuteConfig as BaseExecuteConfig
+from app.test.Tagent.Ttools import get_current_time,add
+from app.test.Tagent.TagentContext import TAgentContext
+
+
 
 class TConfigurableConfig(BaseConfigurableConfig):
     """
@@ -40,12 +44,7 @@ class TAgentState(BaseAgentState):
     """
  
 
-class TAgentContext(BaseAgentContext):
-    """
-    上下文类，需要传入一个 TypedDict 类型，定义对话上下文结构，不可变
-    上下文类是一个 TypedDict 类型，用于定义对话上下文的结构。
-    上下文类的字段会被添加到状态类中，用于在会话中传递上下文信息。
-    """
+
  
 
 
@@ -80,6 +79,6 @@ class TAgentConfig(BaseAgentConfig):
         注意:
             此方法需要子类重写，在子类中添加工具到 tools 列表
         """
-        tools: list[str] = []
+        tools: list[str] = [get_current_time,add]
 
         return tools, ToolNode(tools)
