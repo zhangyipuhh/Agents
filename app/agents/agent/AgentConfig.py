@@ -11,7 +11,8 @@ Date: 2026-03-10
 Author: 张镒谱
 """
 
-from typing import TypedDict, Optional, Any
+from typing import Optional, Any
+from typing_extensions import TypedDict
 from dataclasses import dataclass, field
 from langgraph.graph import MessagesState
 from langgraph.store.base import BaseStore
