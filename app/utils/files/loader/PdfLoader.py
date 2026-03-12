@@ -5,6 +5,9 @@ PdfLoader 模块
 
 提供 PDF 文件加载功能，基于 langchain 的 PyPDFLoader 进行封装，
 支持延迟加载、文件存在性检查等扩展功能。
+这里后期可以使用mineru升级，导出带格式扫描或非扫描的PDF文件，
+例如：导出带格式的PDF文件，包含页码、标题、内容等信息。
+
 
 Date: 2026-03-12
 Author: 张镒谱
