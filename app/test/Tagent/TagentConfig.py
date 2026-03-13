@@ -16,7 +16,7 @@ Author: 张镒谱
 from dataclasses import dataclass, field
 from langgraph.prebuilt import ToolNode
 from app.agents.agent.AgentConfig import ConfigurableConfig as BaseConfigurableConfig, AgentState as BaseAgentState, AgentConfig as BaseAgentConfig, ExecuteConfig as BaseExecuteConfig
-from app.test.Tagent.Ttools import get_current_time,add
+from app.test.Tagent.Ttools import Ttools
 from app.test.Tagent.TagentContext import TAgentContext
 
 
@@ -75,10 +75,8 @@ class TAgentConfig(BaseAgentConfig):
 
         返回:
             tuple[list[str], ToolNode]: 工具名称列表和对应的 ToolNode 对象
-
-        注意:
-            此方法需要子类重写，在子类中添加工具到 tools 列表
         """
-        tools: list[str] = [get_current_time,add]
+        tools: list[str] = list(super().get_tools()[0])
+        tools.extend(Ttools.get_tool_names())
 
         return tools, ToolNode(tools)
