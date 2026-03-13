@@ -183,7 +183,8 @@ async def _async_main():
             print(f"{key}: {value['summary']} (长度: {value['summary_length']})")
 
 
-# 程序入口点
-# 当直接运行此脚本时触发main函数
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n程序被用户中断")

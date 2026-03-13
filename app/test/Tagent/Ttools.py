@@ -18,19 +18,7 @@ from langchain.messages import ToolMessage
 from langgraph.types import Command
 
 
-class Ttools:
-    TOOL_NAMES: ClassVar[list[str]] = [
-        "add",
-    ]
 
-    @staticmethod
-    def get_tool_names() -> list[str]:
-        return Ttools.TOOL_NAMES
-    
-    @staticmethod
-    def get_tools() -> list:
-        from app.test.Tagent.Ttools import add
-        return [add]    
 
 
 
