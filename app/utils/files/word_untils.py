@@ -590,9 +590,9 @@ if __name__ == "__main__":
     word_processor = WordProcessor()
     
     #替换文本测试
-    contract_text,paragraph_data = word_processor.read_contract_word(r"E:\laboratory\AI\AIagent_env\api\data\documents\辽宁消应特种装备出让合同——1.docx",r'^\s*(第[\u4e00-\u9fa5\d]+条)',r'\1条款')
+    contract_text,paragraph_data = word_processor.read_contract_word(r"D:\DocumentLoader\WordLoader.docx",r'^\s*(第[\u4e00-\u9fa5\d]+条)',r'\1条款')
     print(contract_text)
     print(paragraph_data)
     #添加标记测试
-    word_processor.highlight_text_in_specific_paragraph(r"E:\laboratory\AI\AIagent_env\api\data\documents\辽宁消应特种装备出让合同——1.docx", ["210113005010GB90004","本合同","本合同"],[45,46,47], (255, 0, 0), r"E:\laboratory\AI\AIagent_env\api\data\documents\辽宁消应特种装备出让合同——1mark.docx")
+    word_processor.highlight_text_in_specific_paragraph(r"WordLoader.docx", ["210113005010GB90004","本合同","本合同"],[45,46,47], (255, 0, 0), r"E:\laboratory\AI\AIagent_env\api\data\documents\辽宁消应特种装备出让合同——1mark.docx")
     #添加标记测试
