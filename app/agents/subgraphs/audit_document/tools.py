@@ -239,7 +239,7 @@ class AuditDocumentTools:
         Returns:
             包含解析状态和摘要信息的字典
         """
-        from langchain.text_splitter import RecursiveCharacterTextSplitter
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
 
         text = self._pdf_processor.read_pdf(file_path)
 
