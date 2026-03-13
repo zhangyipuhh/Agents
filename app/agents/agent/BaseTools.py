@@ -49,7 +49,7 @@ def _save_chunks_to_store(
     session_id: str,
     file_id: str,
     chunks: List[str],
-    store: Any
+    store: any
 ) -> bool:
     """
     将文本块保存到 store
@@ -142,13 +142,17 @@ def open_file(
         # 分块处理
         chunks = _split_content(full_content, chunk_size=4000, chunk_overlap=200)
 
+        # 检查分块是否为空
+        if not chunks or len(chunks) == 0:
+            return f'{{"status": "没有文件缓存", "next_step": "没有文件缓存需要读取"}}'
+
         # 生成文件ID
         file_id = str(uuid.uuid4())
 
         # 保存到 store (使用 runtime.store)
         _save_chunks_to_store(session_id, file_id, chunks, runtime.store)
-
-        return f'{{"file_name": "{file_id}", "status": "文件读取完成", "total_chunks": {len(chunks)}}}'
+        
+        return f'{{"cache_id": "{file_id}", "status": "文件缓存完成", "total_chunks": {len(chunks)}, "next_step": "请使用缓存工具读取文档内容"}}'
 
     except Exception as e:
         return f'{{"error": "加载失败: {e}"}}'
@@ -206,20 +210,20 @@ def load_web_page(
         return f'{{"error": "加载网页失败: {e}"}}'
 
 
-@tool(description="从存储中读取文档的下一块内容。每次调用返回一块，从第1块开始，直到返回 name=\"X/X\" 表示已读完。")
+@tool(description="缓存工具从存储中读取已经缓存文档的下一块内容。每次调用返回一块，从第1块开始，直到返回 name=\"X/X\" 表示已读完。")
 def read_next_chunk(
-    file_name: str,
+    cache_id: str,
     runtime: ToolRuntime[AgentContext],
 ) -> str:
     """
-    读取文档下一块内容工具
-
+    缓存工具
+    读取的内容是缓存在内存中的，每次调用返回一块，从第1块开始，直到返回 name=\"X/X\" 表示已读完。
     从存储中按顺序读取文档的每一块内容。
     首次调用返回第1块，再次调用返回第2块，依此类推。
     当返回的 name 字段等于总块数（如 "4/4"）时，表示已读完。
 
     Args:
-        file_name (str): 文件ID，由 open_file 或 load_web_page 返回
+        cache_id (str): 缓存ID，由 open_file 或 load_web_page 返回
         runtime (ToolRuntime[AgentContext]): 工具运行时上下文，包含会话信息
 
     Returns:
@@ -231,16 +235,16 @@ def read_next_chunk(
 
     try:
         # 从 store 获取文档数据 (使用 runtime.store)
-        result = runtime.store.get(namespace, file_name)
+        result = runtime.store.get(namespace, cache_id)
 
         if not result or not result.value:
-            return f'{{"error": "未找到文件: {file_name}"}}'
+            return f'{{"error": "未找到缓存: {cache_id}"}}'
 
         chunks = result.value
 
         # 查找当前应该返回的块（找到第一个未读的）
         # 通过检查 state 中的读取进度
-        progress_key = f"file_chunk_read_progess_{file_name}"
+        progress_key = f"file_chunk_read_progess_{cache_id}"
         current_index = runtime.state.get(progress_key, 1)
 
         if current_index > len(chunks):
@@ -255,7 +259,10 @@ def read_next_chunk(
         # 判断是否最后一块
         is_last = current_index == len(chunks)
 
-        return f'{{"index": {chunk["index"]}, "name": "{chunk["name"]}", "content": {repr(chunk["content"])}, "is_last": {str(is_last).lower()}}}'
+        # 构建下一步提示
+        next_step = "" if is_last else "继续执行 read_next_chunk 工具读取下一块"
+
+        return f'{{"index": {chunk["index"]}, "name": "{chunk["name"]}", "content": {repr(chunk["content"])}, "is_last": {str(is_last).lower()}, "next_step": "{next_step}"}}'
 
     except Exception as e:
         return f'{{"error": "读取失败: {e}"}}'
