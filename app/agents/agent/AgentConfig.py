@@ -18,7 +18,7 @@ from langgraph.graph import MessagesState
 from langgraph.store.base import BaseStore
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.base import BaseCheckpointSaver
-
+from app.agents.agent.AgentContext import AgentContext
 
 class ConfigurableConfig(TypedDict):
     """可配置参数内部类，用于配置 LangGraph 运行时的各种参数"""
@@ -49,14 +49,7 @@ class AgentState(MessagesState):
     limit: int = 25
     """最大递归深度，控制图执行的最大步数，这里的25是类型提示语法的一部分，不是默认值，必须在初始化时指定"""
 
-class AgentContext(TypedDict):
-    """
-    上下文类，需要传入一个 TypedDict 类型，定义对话上下文结构，不可变
-    上下文类是一个 TypedDict 类型，用于定义对话上下文的结构。
-    上下文类的字段会被添加到状态类中，用于在会话中传递上下文信息。
-    """
-    session_id: str = "default"
-    """默认会话 ID，用于区分不同用户的对话，相同 session_id 的对话共享记忆，默认 "default"""
+
 
 
 @dataclass(kw_only=True)
