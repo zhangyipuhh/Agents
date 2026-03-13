@@ -19,6 +19,8 @@ from langgraph.store.base import BaseStore
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from app.agents.agent.AgentContext import AgentContext
+from app.agents.agent.BaseTools import BaseTools
+
 
 class ConfigurableConfig(TypedDict):
     """可配置参数内部类，用于配置 LangGraph 运行时的各种参数"""
@@ -169,6 +171,6 @@ class AgentConfig:
         注意:
             此方法需要子类重写，在子类中添加工具到 tools 列表
         """
-        tools: list[str] = []
+        tools: list[str] = BaseTools.TOOL_NAMES
 
         return tools, ToolNode(tools)
