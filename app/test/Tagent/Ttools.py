@@ -11,7 +11,8 @@ Author: 张镒谱
 """
 
 from datetime import datetime
-from app.agents.agent.AgentContext import AgentContext
+from typing import ClassVar
+
 from langchain.tools import tool, ToolRuntime
 from langchain.messages import ToolMessage
 from langgraph.types import Command
@@ -24,13 +25,18 @@ class Ttools:
 
     @staticmethod
     def get_tool_names() -> list[str]:
-        return Ttools.TOOL_NAMES    
+        return Ttools.TOOL_NAMES
+    
+    @staticmethod
+    def get_tools() -> list:
+        from app.test.Tagent.Ttools import add
+        return [add]    
 
 
 
 
 @tool(description="对列表中的数字进行求和")
-def add(numbers: list, runtime: ToolRuntime[AgentContext]) -> float:
+def add(numbers: list, runtime: ToolRuntime) -> float:
     """
     数值求和工具
     

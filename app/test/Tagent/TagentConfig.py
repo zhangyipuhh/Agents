@@ -16,7 +16,8 @@ Author: 张镒谱
 from dataclasses import dataclass, field
 from langgraph.prebuilt import ToolNode
 from app.agents.agent.AgentConfig import ConfigurableConfig as BaseConfigurableConfig, AgentState as BaseAgentState, AgentConfig as BaseAgentConfig, ExecuteConfig as BaseExecuteConfig
-from app.test.Tagent.Ttools import Ttools
+
+from app.test.Tagent.Ttools import Ttools, add
 from app.test.Tagent.TagentContext import TAgentContext
 
 
@@ -76,7 +77,10 @@ class TAgentConfig(BaseAgentConfig):
         返回:
             tuple[list[str], ToolNode]: 工具名称列表和对应的 ToolNode 对象
         """
-        tools: list[str] = list(super().get_tools()[0])
-        tools.extend(Ttools.get_tool_names())
+        tool_names: list[str] = list(super().get_tools()[0])
+        tool_names.extend(Ttools.get_tool_names())
 
-        return tools, ToolNode(tools)
+        tool_objects = list(super().get_tools()[1]._tools_by_name.values())
+        tool_objects.append(add)
+
+        return tool_names, ToolNode(tool_objects)
