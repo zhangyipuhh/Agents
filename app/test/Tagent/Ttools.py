@@ -11,36 +11,26 @@ Author: 张镒谱
 """
 
 from datetime import datetime
-from app.test.Tagent.TagentContext import TAgentContext
+from app.agents.agent.AgentContext import AgentContext
 from langchain.tools import tool, ToolRuntime
 from langchain.messages import ToolMessage
 from langgraph.types import Command
 
-@tool(description="获取当前时间") 
-def get_current_time(runtime: ToolRuntime[TAgentContext]) -> str:
-    """
-    获取当前时间工具
-    
-    返回当前系统时间字符串，格式为 YYYY-MM-DD HH:MM:SS，并附带会话ID。
-    用于Agent了解当前时间上下文，支持时间敏感的任务处理。
-    
-    Args:
-        runtime (ToolRuntime[TAgentContext]): 工具运行时上下文，包含会话信息
-        
-    Returns:
-        str: 格式化的时间字符串，格式 "YYYY-MM-DD HH:MM:SS (session_id: xxx)"
-    """
-    # 获取当前系统时间并格式化为字符串
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
- 
- 
-    # 会话ID用于追踪和调试，将session_id附加到返回结果中
-    return  current_time + f" (session_id: {runtime.context.get('session_id', 'default')}) "  
+
+class Ttools:
+    TOOL_NAMES: ClassVar[list[str]] = [
+        "add",
+    ]
+
+    @staticmethod
+    def get_tool_names() -> list[str]:
+        return Ttools.TOOL_NAMES    
+
 
 
 
 @tool(description="对列表中的数字进行求和")
-def add(numbers: list, runtime: ToolRuntime[TAgentContext]) -> float:
+def add(numbers: list, runtime: ToolRuntime[AgentContext]) -> float:
     """
     数值求和工具
     
