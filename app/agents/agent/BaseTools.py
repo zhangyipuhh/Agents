@@ -5,10 +5,13 @@ BaseTools - Agent基础工具模块
 
 该模块定义了Agent可用的基础工具函数，包括获取当前时间、文件加载和文档分块读取功能。
 
+设计核心原则：不要让 AI 看到它可能想解释的东西。状态码 + 系统规则 > 自然语言描述。
+
 Date: 2026-03-13
 Author: 张镒谱
 """
 
+import json
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -80,6 +83,43 @@ def _save_chunks_to_store(
     return True
 
 
+def _cache_content(
+    content: str,
+    session_id: str,
+    store: any,
+    chunk_size: int = 4000,
+    chunk_overlap: int = 200,
+) -> str:
+    """
+    将内容分块并缓存到 store
+
+    Args:
+        content: 待缓存的内容
+        session_id: 会话 ID
+        store: store 实例
+        chunk_size: 每个块的最大字符数
+        chunk_overlap: 块之间的重叠字符数
+
+    Returns:
+        str: JSON格式结果字符串
+    """
+    chunks = _split_content(content, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+
+    if not chunks or len(chunks) == 0:
+        return f'{{"status": "没有文件缓存", "next_step": "没有文件缓存需要读取"}}'
+
+    file_id = str(uuid.uuid4())
+    _save_chunks_to_store(session_id, file_id, chunks, store)
+
+    return json.dumps({
+            "cache_id": file_id,
+            "status": "cached",  # 改为简洁状态
+            "total_chunks": len(chunks),
+            "next_tool": "read_cached_chunk",  # 明确工具名
+            "next_step": f"请调用 read_cached_chunk 工具，传入 cache_id='{file_id}' 读取第1块内容"
+        }, ensure_ascii=False)
+
+
 @tool(description="获取当前时间必须调用此工具")
 def get_current_time(runtime: ToolRuntime[AgentContext]) -> str:
     """
@@ -98,7 +138,11 @@ def get_current_time(runtime: ToolRuntime[AgentContext]) -> str:
     return current_time + f" (session_id: {runtime.context.get('session_id', 'default')})"
 
 
-@tool(description="打开并读取文件内容，支持文本、PDF、Word、CSV、JSON、Markdown等格式。文件会被分块存储，使用 read_next_chunk 工具逐块读取。")
+@tool(description="""
+【本地文件加载】加载本地文件（PDF/Word/CSV等）并分块缓存。
+⚠️ 这是第一步：加载文件。加载后必须使用 read_cached_chunk 读取内容。
+返回 cache_id，用于后续 read_cached_chunk 调用。
+""")
 def open_file(
     file_path: Union[str, Path],
     runtime: ToolRuntime[AgentContext],
@@ -107,7 +151,7 @@ def open_file(
     文件加载工具
 
     智能识别文件类型并加载内容，将文档分块后存入存储，返回文件ID。
-    需要使用 read_next_chunk 工具逐块读取内容。
+    需要使用 read_cached_chunk 工具逐块读取内容。
 
     Args:
         file_path (Union[str, Path]): 必填 文件或文件夹路径，支持相对路径和绝对路径
@@ -136,29 +180,18 @@ def open_file(
         if not docs:
             return f'{{"error": "未加载到任何内容: {file_path}"}}'
 
-        # 合并所有文档内容
         full_content = "\n\n".join([doc.page_content for doc in docs])
-
-        # 分块处理
-        chunks = _split_content(full_content, chunk_size=4000, chunk_overlap=200)
-
-        # 检查分块是否为空
-        if not chunks or len(chunks) == 0:
-            return f'{{"status": "没有文件缓存", "next_step": "没有文件缓存需要读取"}}'
-
-        # 生成文件ID
-        file_id = str(uuid.uuid4())
-
-        # 保存到 store (使用 runtime.store)
-        _save_chunks_to_store(session_id, file_id, chunks, runtime.store)
-        
-        return f'{{"cache_id": "{file_id}", "status": "文件缓存完成", "total_chunks": {len(chunks)}, "next_step": "请使用缓存工具读取文档内容"}}'
+        return _cache_content(full_content, session_id, runtime.store)
 
     except Exception as e:
         return f'{{"error": "加载失败: {e}"}}'
 
 
-@tool(description="加载指定URL的网页内容。内容会被分块存储，使用 read_next_chunk 工具逐块读取。")
+@tool(description="""
+【网页加载】加载网页URL内容并分块缓存。  
+⚠️ 这是第一步：加载网页。加载后必须使用 read_cached_chunk 读取内容。
+返回 cache_id，用于后续 read_cached_chunk 调用。
+""")
 def load_web_page(
     url: str,
     runtime: ToolRuntime[AgentContext],
@@ -167,7 +200,7 @@ def load_web_page(
     网页加载工具
 
     加载指定URL的网页内容，将内容分块后存入存储，返回文件ID。
-    需要使用 read_next_chunk 工具逐块读取内容。
+    需要使用 read_cached_chunk 工具逐块读取内容。
 
     Args:
         url (str): 必填 要加载的网页URL
@@ -192,26 +225,19 @@ def load_web_page(
         if not docs:
             return f'{{"error": "未从 {url} 加载到任何内容"}}'
 
-        # 合并所有文档内容
         full_content = "\n\n".join([doc.page_content for doc in docs])
-
-        # 分块处理
-        chunks = _split_content(full_content, chunk_size=4000, chunk_overlap=200)
-
-        # 生成文件ID
-        file_id = str(uuid.uuid4())
-
-        # 保存到 store (使用 runtime.store)
-        _save_chunks_to_store(session_id, file_id, chunks, runtime.store)
-
-        return f'{{"file_name": "{file_id}", "status": "文件读取完成", "total_chunks": {len(chunks)}}}'
+        return _cache_content(full_content, session_id, runtime.store)
 
     except Exception as e:
-        return f'{{"error": "加载网页失败: {e}"}}'
+        return f'{{"error": "加载失败: {e}"}}'
 
 
-@tool(description="缓存工具从存储中读取已经缓存文档的下一块内容。每次调用返回一块，从第1块开始，直到返回 name=\"X/X\" 表示已读完。")
-def read_next_chunk(
+@tool(description="""
+【第二步-读取缓存】读取已缓存文档的分块内容。
+前置条件：必须先调用 open_file 或 load_web_page 获取 cache_id。
+行为：每次调用返回一块，自动推进进度，is_last=true 时表示读完。
+""")
+def read_cached_chunk(
     cache_id: str,
     runtime: ToolRuntime[AgentContext],
 ) -> str:
@@ -254,15 +280,21 @@ def read_next_chunk(
         chunk = chunks[current_index - 1]
 
         # 更新读取进度
-        runtime.state[progress_key] = current_index + 1
+        runtime.state.set(progress_key, current_index + 1)
 
         # 判断是否最后一块
         is_last = current_index == len(chunks)
 
-        # 构建下一步提示
-        next_step = "" if is_last else "继续执行 read_next_chunk 工具读取下一块"
 
-        return f'{{"index": {chunk["index"]}, "name": "{chunk["name"]}", "content": {repr(chunk["content"])}, "is_last": {str(is_last).lower()}, "next_step": "{next_step}"}}'
+
+        return json.dumps({
+                "index": chunk["index"],
+                "name": chunk["name"], 
+                "content": chunk["content"],
+                "is_last": is_last,
+                "next_tool": None if is_last else "read_cached_chunk",
+                "next_step": "文档读取完毕" if is_last else f"继续调用 read_cached_chunk(cache_id='{cache_id}') 读取下一块"
+            }, ensure_ascii=False)
 
     except Exception as e:
         return f'{{"error": "读取失败: {e}"}}'
