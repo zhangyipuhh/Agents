@@ -171,6 +171,7 @@ class AgentConfig:
         注意:
             此方法需要子类重写，在子类中添加工具到 tools 列表
         """
-        tools: list[str] = BaseTools.TOOL_NAMES
+        tool_names: list[str] = BaseTools.TOOL_NAMES
+        tool_objects = BaseTools.get_tools()
 
-        return tools, ToolNode(tools)
+        return tool_names, ToolNode(tool_objects)
