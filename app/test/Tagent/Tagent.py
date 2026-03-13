@@ -64,9 +64,9 @@ async def _async_main():
         model_name="deepseek-chat",
         base_url="https://api.deepseek.com",
         api_key="sk-d5652bb2e21c43debd1f22fbed6468cf",
-        max_tokens=4096,
-        max_tokens_before_summary=1000,
-        max_summary_tokens=2000,
+        max_tokens=20000,
+        max_tokens_before_summary=16000,
+        max_summary_tokens=4000,
         system_prompt="我是一个聊天助手，可以使用工具，可以解决问题,当问时间时必须使用get_current_time工具，需要加法计算时必须使用add工具，看到工具结果后再回复用户",
         checkpointer=_checkpointer,
     )
