@@ -12,7 +12,6 @@ Author: 张镒谱
 from datetime import datetime
 from pathlib import Path
 from typing import Union, ClassVar
-from app.agents.agent.AgentContext import AgentContext
 from langchain.tools import tool, ToolRuntime
 
 
@@ -27,10 +26,15 @@ class BaseTools:
     def get_tool_names() -> list[str]:
         return BaseTools.TOOL_NAMES
 
+    @staticmethod
+    def get_tools() -> list:
+        from app.agents.agent.BaseTools import get_current_time, open_file, load_web_page
+        return [get_current_time, open_file, load_web_page]
 
+    
 
 @tool(description="获取当前时间")
-def get_current_time(runtime: ToolRuntime[AgentContext]) -> str:
+def get_current_time(runtime: ToolRuntime) -> str:
     """
     获取当前时间工具
 
@@ -38,7 +42,7 @@ def get_current_time(runtime: ToolRuntime[AgentContext]) -> str:
     用于Agent了解当前时间上下文，支持时间敏感的任务处理。
 
     Args:
-        runtime (ToolRuntime[AgentContext]): 工具运行时上下文，包含会话信息
+        runtime (ToolRuntime): 工具运行时上下文，包含会话信息
 
     Returns:
         str: 格式化的时间字符串，格式 "YYYY-MM-DD HH:MM:SS (session_id: xxx)"
@@ -50,7 +54,7 @@ def get_current_time(runtime: ToolRuntime[AgentContext]) -> str:
 @tool(description="打开并读取文件内容，支持文本、PDF、Word、CSV、JSON、Markdown等格式")
 def open_file(
     file_path: Union[str, Path],
-    runtime: ToolRuntime[AgentContext],
+    runtime: ToolRuntime,
 ) -> str:
     """
     文件加载工具
@@ -59,7 +63,7 @@ def open_file(
 
     Args:
         file_path (Union[str, Path]): 必填 文件或文件夹路径，支持相对路径和绝对路径
-        runtime (ToolRuntime[AgentContext]): 工具运行时上下文
+        runtime (ToolRuntime): 工具运行时上下文
 
     Returns:
         str: 加载结果字符串，包含文档内容或错误信息
@@ -98,7 +102,7 @@ def open_file(
 @tool(description="加载指定URL的网页内容")
 def load_web_page(
     url: str,
-    runtime: ToolRuntime[AgentContext],
+    runtime: ToolRuntime,
 ) -> str:
     """
     网页加载工具
@@ -106,8 +110,8 @@ def load_web_page(
     加载指定URL的网页内容。
 
     Args:
-        url (str): 必填 要加载的网页URL
-        runtime (ToolRuntime[AgentContext]): 工具运行时上下文
+        url (str): 必填 要加载的网页URL ，需要读取url内容时使用
+        runtime (ToolRuntime): 工具运行时上下文
 
     Returns:
         str: 加载的网页内容
