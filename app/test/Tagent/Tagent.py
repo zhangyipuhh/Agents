@@ -15,7 +15,7 @@ from app.test.Tagent.TagentConfig import TAgentConfig,TAgentState,TAgentContext,
 from langgraph.checkpoint.memory import MemorySaver
 from rich.console import Console
 from rich.markdown import Markdown
-
+from langgraph.store.memory import InMemoryStore
 
 def main():
     """
@@ -92,6 +92,7 @@ async def _async_main():
         max_summary_tokens=4000,
         system_prompt=prompt,
         checkpointer=_checkpointer,
+        store=InMemoryStore()
     )
     
     # 会话ID，用于关联同一对话的所有消息
