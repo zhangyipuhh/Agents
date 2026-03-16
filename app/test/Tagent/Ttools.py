@@ -12,14 +12,12 @@ Author: 张镒谱
 
 import base64
 import os
-from datetime import datetime
-from typing import ClassVar
-from app.agents.config import LLM_VISION_CONFIG
+from app.agents.config.config import LLM_VISION_CONFIG
 from langchain.tools import tool, ToolRuntime
 from langchain.messages import ToolMessage, HumanMessage
 from langchain.chat_models import init_chat_model
 from langgraph.types import Command
-from app.agents.llmcalls import ModelFactory
+from app.agents.llmcalls.model_factory import ModelFactory
 
 @tool(description="对列表中的数字进行求和")
 def add(numbers: list, runtime: ToolRuntime) -> Command:
@@ -51,7 +49,7 @@ def add(numbers: list, runtime: ToolRuntime) -> Command:
         }
     )
 @tool(description="使用多模态模型识别图片内容")
-def recognize_images(image_paths: list[str], runtime: ToolRuntime) -> str:
+def recognize_images(image_paths: list[str], runtime: ToolRuntime) -> Command:
     """
     图片识别工具
     
@@ -124,6 +122,71 @@ def recognize_images(image_paths: list[str], runtime: ToolRuntime) -> str:
     
     try:
         response = model.invoke([message])
-        return f"图片识别结果：\n{response.content}"
+        return  Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=response.content,
+                        tool_call_id=runtime.tool_call_id
+                    )
+                ]
+            }
+        )
     except Exception as e:
-        return f"错误：模型调用失败，原因：{str(e)}"
+        return  Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=f"错误：模型调用失败，原因：{str(e)}",
+                        tool_call_id=runtime.tool_call_id
+                    )
+                ]
+            }
+        )
+if __name__ == "__main__":
+    import base64
+    test_images = [
+        r"app\data\upload\418353f9-0902-4641-b4b7-12f516bc3faf\35d43c19-5e2c-4d53-b962-3bb90aba70d3\c2f44085-5ae9-4a18-9b8c-795aa43a279c\page_006.jpg",
+        r"app\data\upload\418353f9-0902-4641-b4b7-12f516bc3faf\35d43c19-5e2c-4d53-b962-3bb90aba70d3\c2f44085-5ae9-4a18-9b8c-795aa43a279c\page_013.jpg",
+        r"app\data\upload\418353f9-0902-4641-b4b7-12f516bc3faf\35d43c19-5e2c-4d53-b962-3bb90aba70d3\c2f44085-5ae9-4a18-9b8c-795aa43a279c\page_017.jpg"
+    ]
+    
+    model_name = LLM_VISION_CONFIG["model_name"]
+    model = ModelFactory.create_model( 
+        model_type=LLM_VISION_CONFIG["model_type"],
+        model_name=model_name,
+        temperature=LLM_VISION_CONFIG["temperature"],
+        api_key=LLM_VISION_CONFIG["api_key"],
+        base_url=LLM_VISION_CONFIG["base_url"]
+    )
+    
+    content_parts = [
+        {"type": "text", "text": "请详细描述以下图片的内容。如果有多个图片，请分别描述每张图片。"}
+    ]
+    
+    for image_path in test_images:
+        if not os.path.exists(image_path):
+            print(f"错误：图片文件不存在 - {image_path}")
+            continue
+        
+        with open(image_path, "rb") as image_file:
+            encoded_image = base64.b64encode(image_file.read()).decode("utf-8")
+        
+        ext = os.path.splitext(image_path)[1].lower()
+        mime_type = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".bmp": "image/bmp"
+        }.get(ext, "image/jpeg")
+        
+        content_parts.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime_type};base64,{encoded_image}"}
+        })
+    
+    message = HumanMessage(content=content_parts)
+    response = model.invoke([message])
+    print(response.content)

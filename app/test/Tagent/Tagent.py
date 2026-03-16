@@ -100,8 +100,8 @@ async def _async_main():
     sid="user_chat_001"
     
     # 初始化Agent实例
-    # 根据配置创建审计文档Agent，准备处理用户请求
-    agent = await get_audit_document_agent(Aconfig)
+    # 根据配置创建Agent，准备处理用户请求
+    agent = await get_agent(Aconfig)
     
     # 设置最大对话轮数，防止无限循环
     max_rounds = 10
