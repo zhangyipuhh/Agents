@@ -17,7 +17,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Union, List, Dict, Any
 from langchain.tools import tool, ToolRuntime
+from langchain_core.messages import ToolMessage
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langgraph.types import Command
 from app.agents.agent.AgentContext import AgentContext
 from app.utils.files.DocumentLoader import DocumentLoader
 
@@ -240,7 +242,7 @@ def load_web_page(
 def read_cached_chunk(
     cache_id: str,
     runtime: ToolRuntime[AgentContext],
-) -> str:
+) -> Command:
     """
     缓存工具
     读取的内容是缓存在内存中的，每次调用返回一块，从第1块开始，直到返回 name=\"X/X\" 表示已读完。
@@ -270,7 +272,7 @@ def read_cached_chunk(
 
         # 查找当前应该返回的块（找到第一个未读的）
         # 通过检查 state 中的读取进度
-        progress_key = f"file_chunk_read_progess_{cache_id}"
+        progress_key = f"file_chunk_read_progress"
         current_index = runtime.state.get(progress_key, 1)
 
         if current_index > len(chunks):
@@ -279,22 +281,44 @@ def read_cached_chunk(
         # 获取当前块
         chunk = chunks[current_index - 1]
 
-        # 更新读取进度
-        runtime.state.set(progress_key, current_index + 1)
-
         # 判断是否最后一块
         is_last = current_index == len(chunks)
 
+        # 准备返回内容
+        content = json.dumps({
+            "index": chunk["index"],
+            "name": chunk["name"],
+            "content": chunk["content"],
+            "is_last": is_last,
+            "next_tool": None if is_last else "read_cached_chunk",
+            "next_step": "文档读取完毕" if is_last else f"继续调用 read_cached_chunk(cache_id='{cache_id}') 读取下一块"
+        }, ensure_ascii=False)
 
-
-        return json.dumps({
-                "index": chunk["index"],
-                "name": chunk["name"], 
-                "content": chunk["content"],
-                "is_last": is_last,
-                "next_tool": None if is_last else "read_cached_chunk",
-                "next_step": "文档读取完毕" if is_last else f"继续调用 read_cached_chunk(cache_id='{cache_id}') 读取下一块"
-            }, ensure_ascii=False)
+        # 使用 Command 返回工具结果和状态更新
+        # update 参数用于更新 state 中的字段
+        # 注意：messages 需要使用 ToolMessage，且需要 tool_call_id
+        return Command(
+            update={
+                "file_chunk_read_progress": current_index + 1,
+                # 可以添加更多状态更新
+                # "last_read_time": datetime.now().isoformat(),
+                "messages": [
+                    ToolMessage(
+                        content=content,
+                        tool_call_id=tool_call_id
+                    )
+                ]
+            }
+        )
 
     except Exception as e:
-        return f'{{"error": "读取失败: {e}"}}'
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps({"error": f"读取失败: {e}"}),
+                        tool_call_id=tool_call_id
+                    )
+                ]
+            }
+        )
