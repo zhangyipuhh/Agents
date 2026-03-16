@@ -91,7 +91,7 @@ def _cache_content(
     store: any,
     chunk_size: int = 4000,
     chunk_overlap: int = 200,
-) -> str:
+) -> Command:
     """
     将内容分块并缓存到 store
 
@@ -112,14 +112,26 @@ def _cache_content(
 
     file_id = str(uuid.uuid4())
     _save_chunks_to_store(session_id, file_id, chunks, store)
-
-    return json.dumps({
-            "cache_id": file_id,
-            "status": "cached",  # 改为简洁状态
-            "total_chunks": len(chunks),
-            "next_tool": "read_cached_chunk",  # 明确工具名
-            "next_step": f"请调用 read_cached_chunk 工具，传入 cache_id='{file_id}' 读取第1块内容"
-        }, ensure_ascii=False)
+    
+    content=json.dumps({
+                        "cache_id": file_id,
+                        "status": "cached",  # 改为简洁状态
+                        "total_chunks": len(chunks),
+                        "next_tool": "read_cached_chunk",  # 明确工具名
+                        "next_step": f"请调用 read_cached_chunk 工具，传入 cache_id='{file_id}' 读取第1块内容"
+                    }, ensure_ascii=False)
+    # 初始化文件读取进度为1
+    return Command(
+        update={
+            "file_chunk_read_progress": 1,
+            "messages": [
+                ToolMessage(
+                    content=content,
+                    tool_call_id=runtime.tool_call_id
+                )
+            ]
+        }
+    )
 
 
 @tool(description="获取当前时间必须调用此工具")
@@ -148,7 +160,7 @@ def get_current_time(runtime: ToolRuntime[AgentContext]) -> str:
 def open_file(
     file_path: Union[str, Path],
     runtime: ToolRuntime[AgentContext],
-) -> str:
+) -> Command:
     """
     文件加载工具
 
@@ -186,7 +198,16 @@ def open_file(
         return _cache_content(full_content, session_id, runtime.store)
 
     except Exception as e:
-        return f'{{"error": "加载失败: {e}"}}'
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=f'{{"error": "加载失败: {e}"}}',
+                        tool_call_id=runtime.tool_call_id
+                    )
+                ]
+            }
+        )
 
 
 @tool(description="""
@@ -197,7 +218,7 @@ def open_file(
 def load_web_page(
     url: str,
     runtime: ToolRuntime[AgentContext],
-) -> str:
+) -> Command:
     """
     网页加载工具
 
@@ -231,7 +252,16 @@ def load_web_page(
         return _cache_content(full_content, session_id, runtime.store)
 
     except Exception as e:
-        return f'{{"error": "加载失败: {e}"}}'
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=f'{{"error": "加载失败: {e}"}}',
+                        tool_call_id=runtime.tool_call_id
+                    )
+                ]
+            }
+        )
 
 
 @tool(description="""
