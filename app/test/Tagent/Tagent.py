@@ -146,7 +146,8 @@ async def _async_main():
             state = TAgentState(
                 messages=[user_input],
                 error_limit=2,
-                limit=10
+                limit=10,
+                file_chunk_read_progress=1
             )
             
             # 构建执行上下文
