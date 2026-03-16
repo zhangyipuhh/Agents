@@ -305,7 +305,7 @@ def read_cached_chunk(
                 "messages": [
                     ToolMessage(
                         content=content,
-                        tool_call_id=tool_call_id
+                        tool_call_id=runtime.tool_call_id
                     )
                 ]
             }
