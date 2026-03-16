@@ -45,9 +45,9 @@ class LLMInputState(TypedDict):
     context: dict[str, RunningSummary]
 
 
-class AuditDocumentAgent:
+class Agent:
     """
-    合同审批解析智能体
+    通用智能体
     
     使用 LangGraph MessagesState 实现多轮对话，
     工具在内部解析并保存到长期记忆，返回摘要信息。
@@ -297,20 +297,20 @@ class AuditDocumentAgent:
         return checkpoint_info
 
 
-async def get_audit_document_agent(
+async def get_agent(
     config: AgentConfig
-) -> AuditDocumentAgent:
-    """获取审计文档智能体实例的工厂函数
+) -> Agent:
+    """获取通用智能体实例的工厂函数
     
-    创建并初始化 AuditDocumentAgent 实例，简化智能体的创建过程。
+    创建并初始化 Agent 实例，简化智能体的创建过程。
     
     Args:
         config: AgentConfig 配置实例，包含模型、Token、检查点器、存储库、系统提示词等所有配置
         
     Returns:
-        AuditDocumentAgent: 初始化完成的智能体实例
+        Agent: 初始化完成的智能体实例
     """
-    agent = AuditDocumentAgent(config=config)
+    agent = Agent(config=config)
     await agent.__ainit__()
     return agent
 
