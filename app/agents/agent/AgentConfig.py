@@ -19,7 +19,7 @@ from langgraph.store.base import BaseStore
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from app.agents.agent.AgentContext import AgentContext
-from app.agents.agent.BaseTools import get_current_time, open_file, load_web_page
+from app.agents.agent.BaseTools import get_current_time, open_file, load_web_page, read_cached_chunk
 
 
 class ConfigurableConfig(TypedDict):
@@ -50,7 +50,7 @@ class AgentState(MessagesState):
     """最大错误次数，控制图执行的最大错误次数，这里的5是类型提示语法的一部分，不是默认值，必须在初始化时指定"""
     limit: int = 25
     """最大递归深度，控制图执行的最大步数，这里的25是类型提示语法的一部分，不是默认值，必须在初始化时指定"""
-    file_chunk_read_progess: int = 1
+    file_chunk_read_progress: int = 1
     """文件读取进度，记录当前读取到的文件位置，用于连续读文件,默认从文件开头开始读取"""
 
 
@@ -121,7 +121,7 @@ class AgentConfig:
     示例用法：
         # 1. 创建 Store
         from langgraph.store.memory import InMemoryStore
-        store = InMemoryStore(namespace=("audit_documents",))
+        store = InMemoryStore()
         
         # 2. 写入数据
         store.put(
@@ -132,7 +132,7 @@ class AgentConfig:
                 "type": "contract",
                 "clauses": [
                     {"clause_title": "第一条", "clause_content": "..."},
-                    {"clitude_title": "第二条", "clause_content": "..."}
+                    {"clatitude_title": "第二条", "clause_content": "..."}
                 ]
             }
         )
@@ -172,6 +172,6 @@ class AgentConfig:
         注意:
             此方法需要子类重写，在子类中添加工具到 tools 列表
         """
-        tools: list[str] = [get_current_time, open_file, load_web_page]
+        tools: list[str] = [get_current_time, open_file, load_web_page, read_cached_chunk]
 
         return tools, ToolNode(tools)
