@@ -34,7 +34,9 @@ LLM_CONFIG = {
     # 基础URL：大模型API服务的地址端点
     "base_url": os.getenv("model_api_base"),
     # 模型类型：标识模型的类型或版本，用于区分不同类型的模型
-    "model_type": os.getenv("model_type")
+    "model_type": os.getenv("model_type"),
+    # 温度：控制模型输出的随机性，值越高输出越随机，值越低输出越确定
+    "temperature": float(os.getenv("model_temperature"))
 }
 # 视觉模型配置字典
 # 存储视觉模型连接和调用所需的配置信息
@@ -42,7 +44,8 @@ LLM_VISION_CONFIG = {
     "model_name": os.getenv("model_name_vision"),
     "api_key": os.getenv("model_api_key_vision"),
     "base_url": os.getenv("model_api_base_vision"),
-    "model_type": os.getenv("model_type_vision")
+    "model_type": os.getenv("model_type_vision"),
+    "temperature": float(os.getenv("model_temperature_vision"))
 }
 # 提示词模板字典
 # 存储Agent使用的各种提示词模板，用于指导Agent的行为和响应方式
