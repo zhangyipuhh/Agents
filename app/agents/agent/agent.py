@@ -32,7 +32,7 @@ from langmem.short_term import SummarizationNode, RunningSummary
 from app.agents.llmcalls.model_factory import ModelFactory
 from app.utils.memory.checkpoint import get_global_checkpointer
 from app.agents.agent.AgentConfig import AgentConfig, AgentContext, AgentState, ExecuteConfig
-
+from app.agents.config.config import LLM_VISION_CONFIG,LLM_CONFIG
 
 class LLMInputState(TypedDict):
     """LLM 输入状态的类型定义
@@ -73,11 +73,11 @@ class AuditDocumentAgent:
                    内部包含模型、Token 及存储等相关配置。
         """
         self._config = config
-        self._model_type = config.model_type
-        self._model_name = config.model_name
+        self._model_type = config.model_type or LLM_CONFIG["model_type"]
+        self._model_name = config.model_name or LLM_CONFIG["model_name"]
         self._temperature = config.temperature
-        self._api_key = config.api_key
-        self._base_url = config.base_url
+        self._api_key = config.api_key or LLM_CONFIG["api_key"]
+        self._base_url = config.base_url or LLM_CONFIG["base_url"]
         self._max_tokens = config.max_tokens
         self._max_tokens_before_summary = config.max_tokens_before_summary
         self._max_summary_tokens = config.max_summary_tokens
