@@ -271,9 +271,9 @@ def open_file_by_id(
     """
     session_id = runtime.context.get('session_id', 'default')
     namespace = runtime.context.get('namespace', Namespace())
-    # 通过 id 在 store 中查找文件路径
+    # 通过 id 在 store 中查找文件路径,这个file_id是公用的，通过外部方法更新,传递给当前会话，只能当前会话看到
     # 数据格式 file_paths 是一个 dict{file_id_1: file_path_1, file_id_2: file_path_2, ...}
-    file_paths = runtime.store.get((namespace, session_id), session_id, default=None)
+    file_paths = runtime.store.get((namespace, session_id), "file_id", default=None)
     # 从 file_paths 中查找 file_id 对应的文件路径
     file_path = file_paths.get(file_id, None) if file_paths else None
 
