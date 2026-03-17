@@ -10,6 +10,7 @@ Date: 2026-03-13
 Author: 张镒谱
 """
 
+from argparse import Namespace
 from typing_extensions import TypedDict
 
 
@@ -30,3 +31,4 @@ class AgentContext(TypedDict):
 
     session_id: str = "default"
     """会话 ID，用于区分不同用户的对话，相同 session_id 的对话共享记忆，默认 "default"""
+    namespace: Namespace = Namespace()
