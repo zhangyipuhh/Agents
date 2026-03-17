@@ -10,6 +10,7 @@ Author: 张镒谱
 """
 
 import asyncio
+import uuid
 from app.agents.agent.agent import get_audit_document_agent
 from app.test.Tagent.TagentConfig import TAgentConfig,TAgentState,TAgentContext,TExecuteConfig,TConfigurableConfig
 from langgraph.checkpoint.memory import MemorySaver
@@ -82,6 +83,7 @@ async def _async_main():
     # max_summary_tokens: 摘要的最大token数
     # system_prompt: 系统提示词，定义Agent角色
     # checkpointer: 状态持久化组件
+    store=InMemoryStore()
     Aconfig = TAgentConfig(
         model_type="deepseek",
         model_name="deepseek-chat",
@@ -92,7 +94,7 @@ async def _async_main():
         max_summary_tokens=4000,
         system_prompt=prompt,
         checkpointer=_checkpointer,
-        store=InMemoryStore()
+        store=store
     )
     
     # 会话ID，用于关联同一对话的所有消息
@@ -105,7 +107,17 @@ async def _async_main():
     
     # 设置最大对话轮数，防止无限循环
     max_rounds = 10
+    #模拟审批过程
+    f"""_summary_
     
+    整个过程是主智能体驱动的，通过store中的状态，判断是否有必要条件，是否需要调用其他智能体.
+    1.生成store_id ,几个智能体公用一个id.
+    2.上传文件使用上传文件智能体，判断是否是扫描件或者图片，如果是扫描件或者图片，将pdf转换为图片再转为base64编码存入store，图片直接转为base64编码存入store，使用store_id作为空间 ，使用解析出的文件名称作为作为key，返回文件名称,session_id 和 地址数组，这个数组是一个二维数组，每个值三个地址，3张为一组，每组与上一组重叠1张.
+    3.返回图片的调用成交确认书/会议纪要智能体，循环传入文件名称、上一步返回的session_id 和 地址数组，返回完成的页码范围，解析的内容存入store ，使用store_id作为空间，使用文件名称作为key.，同时更新store中的参考文件列表key ，命名空间也是store_id.
+    4.上产合同，必须是word， 调用的是上传文件智能体， 上传后返回文件名称，session_id 和 地址数组，这个数组是一个二维数组，每个值三个地址，3张为一组，每组与上一组重叠1张.
+    5.调用合同智能体，传入文件名称、上一步返回的session_id，返回完成的页码范围，解析的内容存入store ，使用store_id作为空间，使用文件名称作为key.同时更新store中的参考文件列表key ，命名空间也是store_id.
+    6.调用住智能体，触发检查，根据成交确认书、会议纪要的内容检查合同是否符合要求，生成(条款：问题)字典存入state中，同时向用户返回结果返回检查结果
+    """
     print(f"\n开始对话（最多 {max_rounds} 轮，输入 'quit' 或 'exit' 退出）\n")
     
     # 对话主循环 - 持续接收用户输入直到达到最大轮次或用户退出
