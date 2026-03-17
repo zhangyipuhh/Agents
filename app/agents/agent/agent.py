@@ -170,9 +170,9 @@ class Agent:
             
             image_contents = []
             for image_id in image_paths:
-                #这里存放的是一个dict id 和 base64的映射关系
+                #这里存放的是一个dict id 和 base64的映射关系,每次会话传入
                 #例 {"image_id_1": "base64_1", "image_id_2": "base64_2"}
-                result = self.store.get(namespace, f"image_paths",None)
+                result = state.get("image_paths_id", [])
                 if result and result.value:
                     image_contents.append(result.value.get(image_id, ""))
             # 将图片内容添加到消息中，使用OpenAI风格的多模态格式
