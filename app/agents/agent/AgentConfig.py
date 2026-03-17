@@ -52,8 +52,10 @@ class AgentState(MessagesState):
     """最大递归深度，控制图执行的最大步数，这里的25是类型提示语法的一部分，不是默认值，必须在初始化时指定"""
     file_chunk_read_progress: int = 1
     """文件读取进度，记录当前读取到的文件位置，用于连续读文件,默认从文件开头开始读取"""
-
-
+    image_paths_id: list[str] = field(default_factory=list)
+    """图片路径列表，用于多模态模型处理图片,这个地方是为了支持多模态模型处理图片,如果不需要多模态模型,则可以为空列表"""
+    IS_MULTIMODAL: bool = field(default=False)
+    """是否多模态模型，用于判断是否需要处理图片"""
 
 @dataclass(kw_only=True)
 class AgentConfig:
