@@ -22,24 +22,37 @@ from typing import List, Optional
 from fastapi import UploadFile, HTTPException
 import aiofiles
 
+from app.utils.files.pdf_untils import PDFProcessor
+
 
 class FileTransfer:
     """
     文件传输工具类
-    
+
     提供文件上传、下载、获取和删除的核心功能实现。
     所有文件使用UUID命名存储，确保文件名的唯一性和安全性。
     支持会话隔离，每个会话的文件存储在独立的目录中。
     """
-    
+
     def __init__(self, upload_dir: str = "app/data/upload"):
         """
         初始化文件传输工具
-        
+
         Args:
             upload_dir (str): 文件上传目录的路径，默认为"app/data/upload"
+                                   支持相对路径（基于项目根目录）或绝对路径
         """
-        self.upload_dir = Path(upload_dir)
+        upload_path = Path(upload_dir)
+
+        # 如果是相对路径，基于当前文件位置计算绝对路径
+        if not upload_path.is_absolute():
+            # 当前文件所在目录: app/utils/files/
+            current_file_dir = Path(__file__).parent
+            # 项目根目录: 向上三级到 Agents/
+            project_root = current_file_dir.parent.parent.parent
+            upload_path = project_root / upload_dir
+
+        self.upload_dir = upload_path.resolve()
         self._ensure_upload_dir()
     
     def _ensure_upload_dir(self):
@@ -81,31 +94,79 @@ class FileTransfer:
     def _get_file_uuid_with_extension(self, original_filename: str) -> str:
         """
         生成带扩展名的UUID文件名
-        
+
         Args:
             original_filename (str): 原始文件名，用于提取文件扩展名
-            
+
         Returns:
             str: UUID文件名，保留原始文件的扩展名
         """
         file_extension = Path(original_filename).suffix
         return f"{uuid.uuid4()}{file_extension}"
+
+    def _get_file_type(self, filename: str, file_path: Optional[str] = None) -> str:
+        """
+        根据文件后缀名判断文件类型
+
+        文件类型分类：
+        - doc: 文档类文件（doc, docx, txt, xls, xlsx, ppt, pptx 等）
+        - img: 图片类文件（jpg, jpeg, png, gif, bmp, webp, svg 等）
+        - scan: 扫描件类文件（tif, tiff, 扫描版pdf）
+
+        Args:
+            filename (str): 文件名
+            file_path (Optional[str]): 文件路径，用于检测PDF是否为扫描件
+
+        Returns:
+            str: 文件类型（doc/img/scan）
+        """
+        extension = Path(filename).suffix.lower()
+
+        scan_extensions = {'.tif', '.tiff'}
+        img_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico', '.raw', '.heic', '.heif'}
+        doc_extensions = {'.doc', '.docx', '.txt', '.rtf', '.xls', '.xlsx', '.ppt', '.pptx', '.csv', '.md', '.html', '.htm', '.xml', '.json', '.yaml', '.yml'}
+
+        # 如果是PDF文件，需要检测是否为扫描件
+        if extension == '.pdf':
+            if file_path and Path(file_path).exists():
+                pdf_processor = PDFProcessor()
+                if pdf_processor.is_scanned_pdf(file_path):
+                    return 'scan'
+            return 'doc'
+
+        if extension in scan_extensions:
+            return 'scan'
+        elif extension in img_extensions:
+            return 'img'
+        elif extension in doc_extensions:
+            return 'doc'
+        else:
+            return 'doc'
     
     async def upload_files(self, files: List[UploadFile], session_id: str) -> List[dict]:
         """
         批量上传文件
-        
+
         将多个文件上传到指定会话目录，每个文件使用 UUID 命名。
-        
+
         Args:
             files (List[UploadFile]): 要上传的文件列表
             session_id (str): 会话 ID
-            
+
         Returns:
             List[dict]: 上传成功后的文件信息列表，每个元素包含 id（UUID，无扩展名）和 filename（原始文件名，无扩展名）
-            
+
         Raises:
             HTTPException: 当上传过程中发生错误时抛出
+
+        Examples:
+            >>> files = [UploadFile(filename="document.pdf", ...), UploadFile(filename="image.png", ...)]
+            >>> result = await file_transfer.upload_files(files, "session_123")
+            >>> print(result)
+            [
+                {"id": "550e8400-e29b-41d4-a716-446655440000", "filename": "document"},
+                {"id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8", "filename": "image"}
+            ]
         """
         uploaded_files = []
         
@@ -125,12 +186,16 @@ class FileTransfer:
                 
                 # 获取原始文件名（去除扩展名）
                 original_filename = Path(file.filename).stem
-                
+
+                # 获取文件类型（传入文件路径以检测PDF是否为扫描件）
+                file_type = self._get_file_type(file.filename, str(file_path))
+
                 uploaded_files.append({
                     "id": file_uuid,
-                    "filename": original_filename
+                    "filename": original_filename,
+                    "file_type": file_type
                 })
-                
+
             except Exception as e:
                 # 如果上传失败，删除已上传的文件
                 for file_info in uploaded_files:
@@ -142,16 +207,18 @@ class FileTransfer:
     async def upload_base64_files(self, files: List[dict], session_id: str) -> List[dict]:
         """
         批量上传 base64 编码的文件
-        
+
         将多个 base64 编码的文件上传到指定会话目录，每个文件使用 UUID 命名。
-        
+        文件存储位置: {upload_dir}/{session_id}/{uuid}.{ext}
+        例如: app/data/upload/session_123/550e8400-e29b-41d4-a716-446655440000.pdf
+
         Args:
             files (List[dict]): 要上传的文件列表，每个元素包含 filename 和 base64_data
             session_id (str): 会话 ID
-            
+
         Returns:
             List[dict]: 上传成功后的文件信息列表，每个元素包含 id（UUID，无扩展名）和 filename（原始文件名，无扩展名）
-            
+
         Raises:
             HTTPException: 当上传或解码过程中发生错误时抛出
         """
@@ -178,12 +245,16 @@ class FileTransfer:
                 
                 # 获取原始文件名（去除扩展名）
                 original_filename = Path(filename).stem
-                
+
+                # 获取文件类型（传入文件路径以检测PDF是否为扫描件）
+                file_type = self._get_file_type(filename, str(file_path))
+
                 uploaded_files.append({
                     "id": file_uuid,
-                    "filename": original_filename
+                    "filename": original_filename,
+                    "file_type": file_type
                 })
-                
+
             except Exception as e:
                 # 如果上传失败，删除已上传的文件
                 for file_info in uploaded_files:
@@ -195,31 +266,57 @@ class FileTransfer:
     def get_file_path(self, file_uuid: str, session_id: str) -> Path:
         """
         通过UUID和会话ID获取文件路径
-        
+
         支持传入带扩展名或不带扩展名的UUID。
         如果传入不带扩展名的UUID，会自动查找匹配的文件。
-        
+
+        查找逻辑：
+            1. 首先尝试直接查找（假设传入的是带扩展名的完整文件名）
+            2. 如果未找到，遍历会话目录，匹配文件名（不含扩展名）等于file_uuid的文件
+
         Args:
             file_uuid (str): 文件的UUID（可以带或不带扩展名）
             session_id (str): 会话ID
-            
+
         Returns:
             Path: 文件的完整路径
-            
+
         Raises:
             HTTPException: 当文件不存在时抛出404错误
+
+        Examples:
+            >>> # 方式1：传入不带扩展名的UUID
+            >>> file_path = file_transfer.get_file_path(
+            ...     "550e8400-e29b-41d4-a716-446655440000",
+            ...     "session_123"
+            ... )
+            >>> print(file_path)
+            PosixPath('app/data/upload/session_123/550e8400-e29b-41d4-a716-446655440000.pdf')
+
+            >>> # 方式2：传入带扩展名的UUID
+            >>> file_path = file_transfer.get_file_path(
+            ...     "550e8400-e29b-41d4-a716-446655440000.pdf",
+            ...     "session_123"
+            ... )
+            >>> print(file_path)
+            PosixPath('app/data/upload/session_123/550e8400-e29b-41d4-a716-446655440000.pdf')
+
+            >>> # 文件不存在的情况
+            >>> file_path = file_transfer.get_file_path("not-exist-uuid", "session_123")
+            HTTPException: 404 文件不存在: not-exist-uuid
         """
         session_dir = self._get_session_dir(session_id)
         file_path = session_dir / file_uuid
-        
+
+        # 首先尝试直接查找（传入的是带扩展名的完整文件名）
         if file_path.exists():
             return file_path
-        
-        # 如果直接查找失败，尝试查找以该UUID开头的文件
+
+        # 如果直接查找失败，遍历会话目录，匹配文件名（不含扩展名）
         for existing_file in session_dir.iterdir():
             if existing_file.is_file() and existing_file.stem == file_uuid:
                 return existing_file
-        
+
         raise HTTPException(status_code=404, detail=f"文件不存在: {file_uuid}")
     
     async def get_file_info(self, file_uuid: str, session_id: str) -> dict:
@@ -247,7 +344,53 @@ class FileTransfer:
             "created_time": stat.st_ctime,
             "modified_time": stat.st_mtime
         }
-    
+
+    async def get_file_as_base64(self, file_uuid: str, session_id: str) -> dict:
+        """
+        通过UUID和会话ID获取文件，并返回base64编码的内容
+
+        文件存储位置: {upload_dir}/{session_id}/{uuid}.{ext}
+        例如: app/data/upload/session_123/550e8400-e29b-41d4-a716-446655440000.pdf
+
+        Args:
+            file_uuid (str): 文件的UUID（可带或不带扩展名）
+            session_id (str): 会话ID
+
+        Returns:
+            dict: 包含文件名和base64编码内容的字典
+            {
+                "filename": "550e8400-e29b-41d4-a716-446655440000.pdf",
+                "base64_data": "JVBERi0xLjQKJcOkw7zDtsO..."
+            }
+
+        Raises:
+            HTTPException: 当文件不存在或读取失败时抛出404/500错误
+
+        Examples:
+            >>> result = await file_transfer.get_file_as_base64(
+            ...     "550e8400-e29b-41d4-a716-446655440000",
+            ...     "session_123"
+            ... )
+            >>> print(result["filename"])
+            550e8400-e29b-41d4-a716-446655440000.pdf
+        """
+        file_path = self.get_file_path(file_uuid, session_id)
+
+        try:
+            async with aiofiles.open(file_path, "rb") as buffer:
+                file_content = await buffer.read()
+
+            base64_data = base64.b64encode(file_content).decode("utf-8")
+
+            return {
+                "filename": file_path.name,
+                "base64_data": base64_data
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"文件读取失败: {str(e)}")
+
     async def delete_file(self, file_uuid: str, session_id: str) -> bool:
         """
         通过UUID和会话ID删除文件

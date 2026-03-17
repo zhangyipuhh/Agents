@@ -79,10 +79,10 @@ class PDFProcessor:
     def extract_pdf_by_pages(self, file_path: str,page_num: int) ->str:
         """
         按页提取PDF内容，返回指定页数之前的内容
-        
+
         Args:
             file_path: PDF文件路径
-            
+
         Returns:
             列表，每个元素为元组 (页内容, 元数据)
         """
@@ -100,6 +100,62 @@ class PDFProcessor:
         except Exception as e:
             print(f"从PDF提取文本时出错: {str(e)}")
             return ""
+
+    def is_scanned_pdf(self, file_path: str, sample_pages: int = 3) -> bool:
+        """
+        检测PDF是否为扫描件
+
+        通过检查PDF页面中是否包含可提取的文本来判断。
+        如果页面中没有可提取的文本或文本内容极少，则认为是扫描件。
+
+        Args:
+            file_path: PDF文件路径
+            sample_pages: 要检查的页数，默认检查前3页
+
+        Returns:
+            bool: 如果是扫描件返回True，否则返回False
+        """
+        try:
+            with open(file_path, 'rb') as file:
+                pdf_reader = pypdf.PdfReader(file)
+                total_pages = len(pdf_reader.pages)
+
+                # 如果PDF没有页面，认为是扫描件
+                if total_pages == 0:
+                    return True
+
+                # 确定要检查的页数
+                pages_to_check = min(sample_pages, total_pages)
+
+                total_text_length = 0
+                for i in range(pages_to_check):
+                    page = pdf_reader.pages[i]
+                    text = page.extract_text()
+                    if text:
+                        total_text_length += len(text.strip())
+
+                # 如果平均每页文本少于50个字符，认为是扫描件
+                avg_text_length = total_text_length / pages_to_check
+                return avg_text_length < 50
+
+        except Exception as e:
+            print(f"检测PDF扫描件时出错: {str(e)}")
+            # 出错时默认认为是扫描件
+            return True
+
+    def extract_text_from_scanned_pdf(self, file_path: str) -> str:
+        """
+        从扫描PDF中提取文本（使用OCR）
+
+        Args:
+            file_path: PDF文件路径
+
+        Returns:
+            提取的文本
+        """
+        # 这里可以集成OCR功能，暂时返回空字符串
+        print(f"扫描PDF OCR功能待实现: {file_path}")
+        return ""
     
 if __name__ == "__main__":
     pdf_processor = PDFProcessor()
