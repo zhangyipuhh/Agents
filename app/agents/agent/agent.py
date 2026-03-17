@@ -73,6 +73,7 @@ class Agent:
                    内部包含模型、Token 及存储等相关配置。
         """
         self._config = config
+        self._config.IS_MULTIMODAL = self._config.is_multimodal
         self._model_type = config.model_type or LLM_CONFIG["model_type"]
         self._model_name = config.model_name or LLM_CONFIG["model_name"]
         self._temperature = config.temperature
@@ -84,7 +85,9 @@ class Agent:
         self.checkpointer = config.checkpointer
         self.store = config.store
         self.system_prompt = config.system_prompt
+
   
+
 
     async def __ainit__(self):
         """异步初始化方法
@@ -137,7 +140,7 @@ class Agent:
             return "tools"
         return "end"
 
-    async def _llm_call(self, state: LLMInputState):
+    async def _llm_call(self, state: LLMInputState, config: dict):
         """LLM 调用节点
         
         根据系统提示词和用户消息，调用模型进行推理。
@@ -145,6 +148,7 @@ class Agent:
         
         Args:
             state: 包含 summarized_messages 的输入状态
+            config: 包含 configurable 配置的字典，用于获取 thread_id 作为 namespace
             
         Returns:
             包含模型响应消息的字典
@@ -153,6 +157,30 @@ class Agent:
         #messages = state["messages"]
         # 系统提示词，指导模型如何根据文件类型调用相应的解析工具
         system_prompt = self.system_prompt or ""
+        # 从状态中获取图片路径列表,如果传入了需要处理图片,则从状态中获取图片路径列表
+        image_paths = state.get("image_paths_id", [])   
+        # 如果是多模态模型,则需要处理图片
+        if self._config.IS_MULTIMODAL and image_paths and self.store:
+            # 从存储中获取图片内容
+            # 注意：图片只添加到本地 messages，不更新 state
+            # 这样下次 invoke 时图片不会保留在对话历史中
+            # 使用 thread_id 作为 namespace
+            thread_id = config.get("configurable", {}).get("thread_id", "default")
+            namespace = (thread_id,)
+            
+            image_contents = []
+            for image_id in image_paths:
+                #这里存放的是一个dict id 和 base64的映射关系
+                #例 {"image_id_1": "base64_1", "image_id_2": "base64_2"}
+                result = self.store.get(namespace, f"image_{image_id}")
+                if result and result.value:
+                    image_contents.append(result.value)
+            # 将图片内容添加到消息中，使用OpenAI风格的多模态格式
+            for content in image_contents:
+                messages.append({
+                    "type": "image_url",
+                    "image_url": {"url": content}
+                })
 
         # 绑定工具到模型，使模型能够调用工具
         llm = self.model.bind_tools(self.tools)
