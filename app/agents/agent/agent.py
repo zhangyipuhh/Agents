@@ -140,7 +140,7 @@ class Agent:
             return "tools"
         return "end"
 
-    async def _llm_call(self, state: LLMInputState, config: dict):
+    async def _llm_call(self, state: LLMInputState):
         """LLM 调用节点
         
         根据系统提示词和用户消息，调用模型进行推理。
@@ -165,16 +165,16 @@ class Agent:
             # 注意：图片只添加到本地 messages，不更新 state
             # 这样下次 invoke 时图片不会保留在对话历史中
             # 使用 thread_id 作为 namespace
-            thread_id = config.get("configurable", {}).get("thread_id", "default")
-            namespace = (thread_id,)
+            thread_id = state.get("configurable", {}).get("thread_id", "default")
+            namespace = (state.namespace, thread_id)
             
             image_contents = []
             for image_id in image_paths:
                 #这里存放的是一个dict id 和 base64的映射关系
                 #例 {"image_id_1": "base64_1", "image_id_2": "base64_2"}
-                result = self.store.get(namespace, f"image_{image_id}")
+                result = self.store.get(namespace, f"image_paths",None)
                 if result and result.value:
-                    image_contents.append(result.value)
+                    image_contents.append(result.value.get(image_id, ""))
             # 将图片内容添加到消息中，使用OpenAI风格的多模态格式
             for content in image_contents:
                 messages.append({
