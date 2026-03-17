@@ -36,7 +36,9 @@ LLM_CONFIG = {
     # 模型类型：标识模型的类型或版本，用于区分不同类型的模型
     "model_type": os.getenv("model_type"),
     # 温度：控制模型输出的随机性，值越高输出越随机，值越低输出越确定
-    "temperature": float(os.getenv("model_temperature"))
+    "temperature": float(os.getenv("model_temperature")),
+    # 是否开启多模态：是否支持同时处理文本和图片等多模态输入
+    "is_multimodal": os.getenv("is_multimodal") =="true",
 }
 # 视觉模型配置字典
 # 存储视觉模型连接和调用所需的配置信息
