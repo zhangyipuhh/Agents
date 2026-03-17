@@ -19,7 +19,7 @@ from langgraph.store.base import BaseStore
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from app.agents.agent.AgentContext import AgentContext
-from app.agents.agent.BaseTools import get_current_time, open_file, load_web_page, read_cached_chunk
+from app.agents.agent.BaseTools import get_current_time, open_file, load_web_page, read_cached_chunk,open_file_by_id
 
 
 class ConfigurableConfig(TypedDict):
@@ -174,6 +174,6 @@ class AgentConfig:
         注意:
             此方法需要子类重写，在子类中添加工具到 tools 列表
         """
-        tools: list[str] = [get_current_time, open_file, load_web_page, read_cached_chunk]
+        tools: list[str] = [get_current_time, open_file, load_web_page, read_cached_chunk,open_file_by_id]
 
         return tools, ToolNode(tools)
