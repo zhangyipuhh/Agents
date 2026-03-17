@@ -85,6 +85,77 @@ def _save_chunks_to_store(
     return True
 
 
+def _load_and_cache_file(
+    file_path: Union[str, Path],
+    session_id: str,
+    store: any,
+    tool_call_id: str,
+) -> Command:
+    """
+    加载文件内容并缓存到 store
+
+    Args:
+        file_path: 文件路径
+        session_id: 会话 ID
+        store: store 实例
+        tool_call_id: 工具调用 ID，用于返回 ToolMessage
+
+    Returns:
+        Command: 包含缓存结果或错误信息
+    """
+    glob = "**/*"
+
+    try:
+        path = Path(file_path)
+
+        if not path.exists():
+            return Command(
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=f'{{"error": "文件或文件夹不存在: {file_path}"}}',
+                            tool_call_id=tool_call_id
+                        )
+                    ]
+                }
+            )
+
+        loader = DocumentLoader(
+            path=path,
+            glob=glob,
+            silent_errors=True,
+        )
+
+        docs = loader.load()
+
+        if not docs:
+            return Command(
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=f'{{"error": "未加载到任何内容: {file_path}"}}',
+                            tool_call_id=tool_call_id
+                        )
+                    ]
+                }
+            )
+
+        full_content = "\n\n".join([doc.page_content for doc in docs])
+        return _cache_content(full_content, session_id, store)
+
+    except Exception as e:
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=f'{{"error": "加载失败: {e}"}}',
+                        tool_call_id=tool_call_id
+                    )
+                ]
+            }
+        )
+
+
 def _cache_content(
     content: str,
     session_id: str,
@@ -154,7 +225,7 @@ def get_current_time(runtime: ToolRuntime[AgentContext]) -> str:
 
 @tool(description="""
 【本地文件加载】加载本地文件（PDF/Word/CSV等）并分块缓存。
-⚠️ 这是第一步：加载文件。加载后必须使用 read_cached_chunk 读取内容。
+⚠️ 这是第一步：通过物理路径加载文件。加载后必须使用 read_cached_chunk 读取内容。
 返回 cache_id，用于后续 read_cached_chunk 调用。
 """)
 def open_file(
@@ -174,40 +245,41 @@ def open_file(
     Returns:
         str: JSON格式结果，包含 file_name 和状态信息
     """
-    glob = "**/*"
     session_id = runtime.context.get('session_id', 'default')
+    return _load_and_cache_file(file_path, session_id, runtime.store, runtime.tool_call_id)
+@tool(description="""
+【本地文件加载】加载本地文件（PDF/Word/CSV等）并分块缓存。
+⚠️ 这是第一步：通过文件ID加载文件。加载后必须使用 read_cached_chunk 读取内容。
+返回 cache_id，用于后续 read_cached_chunk 调用。
+""")
+def open_file_by_id(
+    file_id: str,
+    runtime: ToolRuntime[AgentContext],
+) -> Command:
+    """
+    文件加载工具（通过文件ID）
 
-    try:
-        path = Path(file_path)
+    通过文件ID从 store 中查找文件路径，加载内容后将文档分块存入存储，返回文件ID。
+    需要使用 read_cached_chunk 工具逐块读取内容。
 
-        if not path.exists():
-            return f'{{"error": "文件或文件夹不存在: {file_path}"}}'
+    Args:
+        file_id (str): 必填 文件ID，用于查找文件路径
+        runtime (ToolRuntime[AgentContext]): 工具运行时上下文，包含会话信息
 
-        loader = DocumentLoader(
-            path=path,
-            glob=glob,
-            silent_errors=True,
-        )
+    Returns:
+        str: JSON格式结果，包含 file_name 和状态信息
+    """
+    session_id = runtime.context.get('session_id', 'default')
+    namespace = runtime.context.get('namespace', Namespace())
+    # 通过 id 在 store 中查找文件路径
+    # 数据格式 file_paths 是一个 dict{file_id_1: file_path_1, file_id_2: file_path_2, ...}
+    file_paths = runtime.store.get((namespace, session_id), session_id, default=None)
+    # 从 file_paths 中查找 file_id 对应的文件路径
+    file_path = file_paths.get(file_id, None) if file_paths else None
 
-        docs = loader.load()
+    
 
-        if not docs:
-            return f'{{"error": "未加载到任何内容: {file_path}"}}'
-
-        full_content = "\n\n".join([doc.page_content for doc in docs])
-        return _cache_content(full_content, session_id, runtime.store)
-
-    except Exception as e:
-        return Command(
-            update={
-                "messages": [
-                    ToolMessage(
-                        content=f'{{"error": "加载失败: {e}"}}',
-                        tool_call_id=runtime.tool_call_id
-                    )
-                ]
-            }
-        )
+    return _load_and_cache_file(file_path, session_id, runtime.store, runtime.tool_call_id)
 
 
 @tool(description="""
