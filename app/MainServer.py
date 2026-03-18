@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers.agent_router import router as agent_router
+#from app.routers.agent_router import router as agent_router
 from app.routers.file_router import router as file_router
 from app.routers.session_router import router as session_router
 from app.routers.auth_router import router as auth_router
@@ -96,7 +96,7 @@ def create_app():
     app.include_router(auth_router)
     
     # 将agent路由器注册到应用中，处理agent相关的API请求
-    app.include_router(agent_router)
+    #app.include_router(agent_router)
     
     # 将file路由器注册到应用中，处理文件上传下载相关的API请求
     app.include_router(file_router)
