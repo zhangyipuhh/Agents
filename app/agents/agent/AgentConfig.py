@@ -54,8 +54,7 @@ class AgentState(MessagesState):
     """文件读取进度，记录当前读取到的文件位置，用于连续读文件,默认从文件开头开始读取"""
     image_paths_id: list[str] = field(default_factory=list)
     """图片路径列表，用于多模态模型处理图片,这个地方是为了支持多模态模型处理图片,如果不需要多模态模型,则可以为空列表"""
-    IS_MULTIMODAL: bool = field(default=False)
-    """是否多模态模型，用于判断是否需要处理图片"""
+
 
 @dataclass(kw_only=True)
 class AgentConfig:
@@ -162,7 +161,8 @@ class AgentConfig:
     max_input_tokens: int = field(default=999999999)
     """最大输入 token 数，限制单次输入的最大长度，防止输入过长导致上下文超限，默认 999999999"""
 
-    
+    IS_MULTIMODAL: bool = field(default=False)
+    """是否多模态模型，用于判断是否需要处理图片"""
     
     def get_tools(self) -> tuple[list[str], ToolNode]:
         """
