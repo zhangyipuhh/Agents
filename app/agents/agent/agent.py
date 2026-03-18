@@ -277,7 +277,7 @@ class Agent:
         if hasattr(self, 'summarization_node') and "context" in result:
             result["context"] = result["context"]
         
-        return result
+        return result["messages"][-1].content
 
     async def inspect_checkpoint(self, session_id: str = None):
         """检查指定 session 的 checkpoint 内容
