@@ -431,7 +431,7 @@ class FileUploadHandler:
             Dict[str, List]: 处理结果，格式为:
                 {
                     "doc": [fileid1, fileid2, ...],  # 文档文件 ID 列表
-                    "img": [image_group1, image_group2, ...]  # 图片分组列表
+                    "img": [[img_id1, img_id2, img_id3], [img_id2, img_id3, img_id4], ...]  # 图片分组列表，每组3个连续图片ID
                 }
                 
         Raises:
