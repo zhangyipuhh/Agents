@@ -16,7 +16,10 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, Request, status
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from pathlib import Path
 #from app.routers.agent_router import router as agent_router
 from app.routers.file_router import router as file_router
 from app.routers.session_router import router as session_router
@@ -50,6 +53,15 @@ async def lifespan(app: FastAPI):
     jwt_auth.add_to_whitelist("/docs")
     jwt_auth.add_to_whitelist("/openapi.json")
     jwt_auth.add_to_whitelist("/redoc")
+    # Swagger UI 静态资源
+    jwt_auth.add_to_whitelist("/swagger-ui-bundle.js")
+    jwt_auth.add_to_whitelist("/swagger-ui-standalone-preset.js")
+    jwt_auth.add_to_whitelist("/swagger-ui.css")
+    jwt_auth.add_to_whitelist("/oauth2-redirect.html")
+    # 前端页面
+    jwt_auth.add_to_whitelist("/")
+    jwt_auth.add_to_whitelist("/htagent.html")
+    jwt_auth.add_to_whitelist("/static")
     
     # session/create 需要 JWT 认证，所以不在白名单中
     # session/delete 需要 JWT + session 验证，所以也不在白名单中
@@ -106,6 +118,11 @@ def create_app():
     
     # 将contract路由器注册到应用中，处理合同审批相关的API请求
     app.include_router(contract_router)
+    
+    # 托管前端静态文件 - 直接挂载到根路径，html=True 自动查找 index.html
+    frontend_path = Path(__file__).parent / "html" / "clint"
+    if frontend_path.exists():
+        app.mount("/", StaticFiles(directory=str(frontend_path), html=True), name="static")
     
     # 移除对不存在的路由器的引用
     # 移除对不存在的异常处理器的引用
