@@ -27,14 +27,13 @@ class HtConfigurableConfig(BaseConfigurableConfig):
 
 class HtExecuteConfig(BaseExecuteConfig):
     """
-    LangGraph 可运行配置结构
+    LangGraph 可运行配置结构，继承自 BaseExecuteConfig
 
     用于配置 LangGraph 运行时的各种参数，如线程ID、回调等。
     与 LangGraph 的 invoke 方法的 config 参数兼容。
     """
 
-    configurable: HtConfigurableConfig 
-    """可配置参数，如 thread_id（线程ID，用于区分不同会话）等"""
+
 
 class HtAgentState(BaseAgentState):
     """
