@@ -832,13 +832,19 @@
             }
         }
 
+        // 获取最新 token
+        function getToken() {
+            return localStorage.getItem('token') || state.token;
+        }
+
         // 创建会话
         async function createSession() {
             try {
+                const token = getToken();
                 const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.createSession}`, {
                     method: 'POST',
                     headers: {
-                        'Authorization': `Bearer ${state.token}`
+                        'Authorization': `Bearer ${token}`
                     }
                 });
 
@@ -882,6 +888,7 @@
             if (!files.length) return;
 
             try {
+                const token = getToken();
                 const formData = new FormData();
                 for (const file of files) {
                     formData.append('files', file);
@@ -890,7 +897,7 @@
                 const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.uploadFile}`, {
                     method: 'POST',
                     headers: {
-                        'Authorization': `Bearer ${state.token}`,
+                        'Authorization': `Bearer ${token}`,
                         'X-Session-ID': state.sessionId
                     },
                     body: formData
@@ -1048,11 +1055,12 @@
                 // 添加加载指示器
                 addTypingIndicator();
 
+                const token = getToken();
                 const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.chat}`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${state.token}`,
+                        'Authorization': `Bearer ${token}`,
                         'X-Session-ID': state.sessionId
                     },
                     body: JSON.stringify({
