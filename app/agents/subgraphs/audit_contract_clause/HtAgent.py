@@ -12,7 +12,7 @@ Author: 张镒谱
 import asyncio
 import uuid
 from app.agents.agent.agent import get_agent
-from app.test.htAgent.HtAgentConfig import HtAgentConfig, HtAgentState, HtAgentContext, HtExecuteConfig, HtConfigurableConfig
+from app.agents.subgraphs.audit_contract_clause.config.HtAgentConfig import HtAgentConfig, HtAgentState, HtAgentContext, HtExecuteConfig, HtConfigurableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
 from rich.console import Console

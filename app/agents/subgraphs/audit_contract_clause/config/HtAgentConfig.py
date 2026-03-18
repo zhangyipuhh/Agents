@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from langgraph.prebuilt import ToolNode
 from app.agents.agent.AgentConfig import ConfigurableConfig as BaseConfigurableConfig, AgentState as BaseAgentState, AgentConfig as BaseAgentConfig, ExecuteConfig as BaseExecuteConfig
 
-from app.test.htAgent.HtAgentContext import HtAgentContext
+from app.agents.subgraphs.audit_contract_clause.config.HtAgentContext import HtAgentContext
 
 
 class HtConfigurableConfig(BaseConfigurableConfig):
@@ -75,7 +75,7 @@ class HtAgentConfig(BaseAgentConfig):
         返回:
             tuple[list[str], ToolNode]: 工具名称列表和对应的 ToolNode 对象
         """
-        from app.test.htAgent.HtTools import warn_issue, check_approval, validate_prerequisites
+        from app.agents.subgraphs.audit_contract_clause.tools.HtTools import warn_issue, check_approval, validate_prerequisites
         
         base_tools, base_tool_node = super().get_tools()
         tools = list(base_tools) + [warn_issue, check_approval, validate_prerequisites]
