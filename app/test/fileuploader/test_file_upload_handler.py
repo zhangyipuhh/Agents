@@ -59,7 +59,7 @@ from pathlib import Path
 from unittest.mock import Mock, MagicMock, AsyncMock, patch, mock_open
 from typing import Dict, Any, List
 
-from app.test.fileuploader.file_upload_handler import FileUploadHandler
+from app.utils.files.file_upload_handler import FileUploadHandler
 
 
 class TestFileUploadHandlerInit:
