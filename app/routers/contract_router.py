@@ -52,6 +52,15 @@ class ChatResponse(BaseModel):
     session_id: str
 
 
+class GetStoreValueRequest(BaseModel):
+    id: str
+
+
+class GetStoreValueResponse(BaseModel):
+    value: Optional[dict]
+    id: str
+
+
 @router.post('/uploadfile', response_model=FileUploadResponse)
 async def upload_contract_files(
     request: Request,
@@ -129,3 +138,36 @@ async def chat(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"对话处理失败：{str(e)}")
+
+
+@router.post('/store/value', response_model=GetStoreValueResponse)
+async def get_store_value(
+    request: GetStoreValueRequest
+):
+    """
+    根据 id 获取 store 中存储的值
+    
+    Args:
+        request: 包含 id 的请求对象
+        
+    Returns:
+        GetStoreValueResponse: 包含存储的值和 id
+    """
+    try:
+        # 使用 store.get 方法获取存储的值
+        # namespace 使用 store_id，key 使用传入的 id
+        result = store.get(
+            namespace=(store_id,),
+            key=request.id
+        )
+        
+        # 提取 value 值
+        value = result.value if result else None
+        
+        return GetStoreValueResponse(
+            value=value,
+            id=request.id
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取存储值失败：{str(e)}")
