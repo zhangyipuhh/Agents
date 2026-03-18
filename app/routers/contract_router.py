@@ -5,11 +5,14 @@
 
 本模块定义了合同审批解析附件智能体相关的 API 路由。
 主要功能包括：
-- 文件上传处理服务
-- 聊天对话服务
+- 文件上传处理服务：将上传的合同文件存储到指定目录，同时将 file_id 与文件路径的映射关系存储到 LangGraph Store
+  - file_id: 存储文件唯一标识符与文件路径的映射，结构为 {file_id: file_path, ...}
+- 图片转换处理服务：将 PDF 文件转换为图片，同时将 image_paths 与图片 base64 数据的映射关系存储到 LangGraph Store
+  - image_paths: 存储图片唯一标识符与 base64 数据的映射，结构为 {image_id: base64_data, ...}
+- 聊天对话服务：与合同审批AI助手进行多轮对话
 
 Date: 2026-03-18
-Author: AI Assistant
+Author: 张镒谱
 """
 from fastapi import APIRouter, UploadFile, File, HTTPException, Request
 from typing import List, Optional
