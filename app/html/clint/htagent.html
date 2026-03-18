@@ -832,15 +832,40 @@
             }
         }
 
-        // 获取最新 token
-        function getToken() {
-            return localStorage.getItem('token') || state.token;
+        // 获取最新 token（自动调用登录接口获取新 token）
+        async function getToken() {
+            try {
+                const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.login}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ 
+                        username: state.username, 
+                        password: '123456' 
+                    })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.detail || '获取 token 失败');
+                }
+
+                state.token = data.access_token;
+                localStorage.setItem('token', state.token);
+                return state.token;
+            } catch (error) {
+                console.error('获取 token 失败:', error);
+                // 如果自动获取失败，返回已有的 token
+                return localStorage.getItem('token') || state.token;
+            }
         }
 
         // 创建会话
         async function createSession() {
             try {
-                const token = getToken();
+                const token = await getToken();
                 const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.createSession}`, {
                     method: 'POST',
                     headers: {
@@ -888,7 +913,7 @@
             if (!files.length) return;
 
             try {
-                const token = getToken();
+                const token = await getToken();
                 const formData = new FormData();
                 for (const file of files) {
                     formData.append('files', file);
@@ -1055,7 +1080,7 @@
                 // 添加加载指示器
                 addTypingIndicator();
 
-                const token = getToken();
+                const token = await getToken();
                 const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.chat}`, {
                     method: 'POST',
                     headers: {

@@ -57,6 +57,7 @@ class ChatResponse(BaseModel):
 
 class GetStoreValueRequest(BaseModel):
     id: str
+    session_id: Optional[str] = None
 
 
 class GetStoreValueResponse(BaseModel):
@@ -145,23 +146,28 @@ async def chat(
 
 @router.post('/store/value', response_model=GetStoreValueResponse)
 async def get_store_value(
-    request: GetStoreValueRequest
+    request: Request,
+    body: GetStoreValueRequest
 ):
     """
     根据 id 获取 store 中存储的值
     
     Args:
-        request: 包含 id 的请求对象
+        request: FastAPI 请求对象
+        body: 包含 id 和可选 session_id 的请求对象
         
     Returns:
         GetStoreValueResponse: 包含存储的值和 id
     """
     try:
+        # 获取 session_id，优先使用请求体中的，否则从 request.state 获取
+        session_id = body.session_id or getattr(request.state, "session_id", "default")
+        
         # 使用 store.get 方法获取存储的值
-        # namespace 使用 store_id，key 使用传入的 id
+        # namespace 使用 (store_id, session_id)，key 使用传入的 id
         result = store.get(
-            namespace=(store_id,),
-            key=request.id
+            namespace=(store_id, session_id),
+            key=body.id
         )
         
         # 提取 value 值
@@ -169,7 +175,7 @@ async def get_store_value(
         
         return GetStoreValueResponse(
             value=value,
-            id=request.id
+            id=body.id
         )
         
     except Exception as e:
