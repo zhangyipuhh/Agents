@@ -20,7 +20,7 @@ from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from app.agents.agent.AgentContext import AgentContext
 from app.agents.agent.BaseTools import get_current_time, open_file, load_web_page, read_cached_chunk,open_file_by_id
-
+from app.agents.config.config import LLM_CONFIG
 
 class ConfigurableConfig(TypedDict):
     """可配置参数内部类，用于配置 LangGraph 运行时的各种参数"""
@@ -67,10 +67,10 @@ class AgentConfig:
     支持继承，子类可重写默认值或添加新字段。
     """
 
-    model_type: str
+    model_type: str = field(default=LLM_CONFIG["model_type"])
     """模型类型，如 "ollama"、"deepseek"、"openai" 等，指定使用的模型服务商"""
     
-    model_name: str
+    model_name: str = field(default=LLM_CONFIG["model_name"])   
     """模型名称，如 "llama3.2"、"deepseek-chat"、"gpt-4" 等，指定具体的模型"""
     
     state_class: type[AgentState] = field(default=None)
@@ -88,10 +88,10 @@ class AgentConfig:
     temperature: float = field(default=0)
     """模型温度参数，控制生成多样性。取值范围 0-1，越高越随机，默认 0"""
     
-    api_key: Optional[str] = field(default=None)
+    api_key: Optional[str] = field(default=LLM_CONFIG["api_key"])
     """API 密钥，用于访问远程模型服务。如果为 None，则使用环境变量或本地模型"""
     
-    base_url: Optional[str] = field(default=None)
+    base_url: Optional[str] = field(default=LLM_CONFIG["base_url"])
     """API 基础 URL，指定模型服务的地址。如果为 None，则使用默认地址"""
     
     max_tokens: int = field(default=999999999)

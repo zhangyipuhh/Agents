@@ -73,7 +73,7 @@ class Agent:
                    内部包含模型、Token 及存储等相关配置。
         """
         self._config = config
-        self._config.IS_MULTIMODAL = self._config.is_multimodal
+        self._config.IS_MULTIMODAL = self._config.IS_MULTIMODAL
         self._model_type = config.model_type or LLM_CONFIG["model_type"]
         self._model_name = config.model_name or LLM_CONFIG["model_name"]
         self._temperature = config.temperature
