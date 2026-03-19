@@ -30,4 +30,7 @@ class AgentContext(TypedDict):
 
     session_id: str = "default"
     """会话 ID，用于区分不同用户的对话，相同 session_id 的对话共享记忆，默认 "default"""
-    namespace: dict
+    namespace: dict = {}
+    store_id: str = "default"
+    """存储 ID，用于区分不同用户的存储空间，相同 store_id 的存储空间共享记忆，默认 "default"""
+   

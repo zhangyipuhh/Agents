@@ -94,6 +94,8 @@ async def _async_main():
     # system_prompt: 系统提示词，定义Agent角色
     # checkpointer: 状态持久化组件
     store = InMemoryStore()
+    store_id = "store_id"
+    
     Aconfig = TAgentConfig(
         max_tokens=20000,
         max_tokens_before_summary=16000,
@@ -113,6 +115,7 @@ async def _async_main():
     
     # 设置最大对话轮数，防止无限循环
     max_rounds = 10
+    namespace = (store_id,sid)
     
     print(f"\n开始对话（最多 {max_rounds} 轮，输入 'quit' 或 'exit' 退出）")
     print("提示：每轮对话可以输入 'upload' 来上传文件或图片\n")
@@ -210,7 +213,8 @@ async def _async_main():
             # 构建执行上下文
             # session_id: 会话唯一标识，用于状态追踪
             context = TAgentContext(
-                session_id=sid
+                session_id=sid,
+                store_id=store_id
             )
 
             # 调用Agent处理用户输入

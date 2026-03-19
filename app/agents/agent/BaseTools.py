@@ -24,9 +24,11 @@ from app.agents.agent.AgentContext import AgentContext
 from app.utils.files.DocumentLoader import DocumentLoader
 
 
-def _get_namespace(session_id: str) -> tuple:
+def _get_namespace(runtime: ToolRuntime) -> tuple:
     """获取文件存储的命名空间"""
-    return (f"{session_id}_file",)
+    store_id = runtime.context.get("store_id", "default")
+    session_id = runtime.context.get("session_id", "default")
+    return (store_id, session_id)
 
 
 def _split_content(content: str, chunk_size: int = 4000, chunk_overlap: int = 50) -> List[str]:
@@ -68,7 +70,7 @@ def _save_chunks_to_store(
     Returns:
         bool: 是否保存成功
     """
-    namespace = _get_namespace(session_id)
+    namespace = _get_namespace()
 
     # 构建存储结构: [{index: 1, name: "1/4", content: "..."}, ...]
     chunk_data = [
@@ -270,10 +272,10 @@ def open_file_by_id(
         str: JSON格式结果，包含 file_name 和状态信息
     """
     session_id = runtime.context.get('session_id', 'default')
-    namespace = runtime.context.get('namespace', {})
+    namespace = _get_namespace()
     # 通过 id 在 store 中查找文件路径,这个file_id是公用的，通过外部方法更新,传递给当前会话，只能当前会话看到
     # 数据格式 file_paths 是一个 dict{file_id_1: file_path_1, file_id_2: file_path_2, ...}
-    file_paths = runtime.store.get((namespace, session_id), "file_id", default=None)
+    file_paths = runtime.store.get(namespace, "file_id", default=None)
     # 从 file_paths 中查找 file_id 对应的文件路径
     file_path = file_paths.get(file_id, None) if file_paths else None
 
