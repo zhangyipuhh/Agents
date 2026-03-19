@@ -424,3 +424,86 @@ def read_cached_chunk(
                 ]
             }
         )
+@tool(description="""
+【读取部分缓存】读取已缓存文档的部分内容。
+前置条件：提示词中明确指定要调用的方法。
+""")
+def read_cached_chunk_range(
+    cache_id: str,
+    runtime: ToolRuntime[AgentContext],
+    start_index: int=1,
+    end_index: int=1,
+) -> Command:
+    """
+    该工具需要有明确调用的场景，通常不使用。
+    读取指定范围的文档内容。
+    start_index 为开始索引，end_index 为结束索引。
+
+    Args:
+        cache_id (str): 缓存ID，由 open_file 或 load_web_page 返回
+        runtime (ToolRuntime[AgentContext]): 工具运行时上下文，包含会话信息
+        start_index (int): 开始索引，默认1
+        end_index (int): 结束索引，默认1
+
+    Returns:
+        str: JSON格式结果，包含 index、name、content 和 is_last 字段
+              如果已读完，返回提示信息
+    """
+    session_id = runtime.context.get('session_id', 'default')
+    namespace = _get_namespace(session_id)
+
+    try:
+        # 从 store 获取文档数据 (使用 runtime.store)
+        result = runtime.store.get(namespace, cache_id)
+
+        if not result or not result.value:
+            return f'{{"error": "未找到缓存: {cache_id}"}}'
+
+        chunks = result.value
+
+
+        if end_index > len(chunks):
+            end_index = len(chunks)
+        chunk_range = chunks[start_index - 1:end_index]
+
+        chunk_content = ""
+        for c in chunk_range:
+            chunk_content += c["content"]
+
+        # 准备返回内容
+        content = json.dumps({
+            "index": start_index,
+            "name": f"第{start_index}至第{end_index}块节",
+            "content": chunk_content,
+            "is_last": True,
+            "next_tool":  None,
+            "next_step": "文档读取完毕" 
+        }, ensure_ascii=False)
+
+        # 使用 Command 返回工具结果和状态更新
+        # update 参数用于更新 state 中的字段
+        # 注意：messages 需要使用 ToolMessage，且需要 tool_call_id
+        return Command(
+            update={
+                # 可以添加更多状态更新
+                # "last_read_time": datetime.now().isoformat(),
+                "messages": [
+                    ToolMessage(
+                        content=content,
+                        tool_call_id=runtime.tool_call_id
+                    )
+                ]
+            }
+        )
+
+    except Exception as e:
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps({"error": f"读取失败: {e}"}),
+                        tool_call_id=tool_call_id
+                    )
+                ]
+            }
+        )
