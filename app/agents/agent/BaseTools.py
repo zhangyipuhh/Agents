@@ -24,11 +24,7 @@ from app.agents.agent.AgentContext import AgentContext
 from app.utils.files.DocumentLoader import DocumentLoader
 
 
-def _get_namespace(runtime: ToolRuntime) -> tuple:
-    """获取文件存储的命名空间"""
-    store_id = runtime.context.get("store_id", "default")
-    session_id = runtime.context.get("session_id", "default")
-    return (store_id, session_id)
+
 
 
 def _split_content(content: str, chunk_size: int = 4000, chunk_overlap: int = 50) -> List[str]:
@@ -53,6 +49,7 @@ def _split_content(content: str, chunk_size: int = 4000, chunk_overlap: int = 50
 
 
 def _save_chunks_to_store(
+    store_id: str,
     session_id: str,
     file_id: str,
     chunks: List[str],
@@ -62,6 +59,7 @@ def _save_chunks_to_store(
     将文本块保存到 store
 
     Args:
+        store_id: 存储 ID
         session_id: 会话 ID
         file_id: 文件 ID (UUID)
         chunks: 文本块列表
@@ -70,7 +68,7 @@ def _save_chunks_to_store(
     Returns:
         bool: 是否保存成功
     """
-    namespace = _get_namespace()
+    namespace = (store_id, session_id)
 
     # 构建存储结构: [{index: 1, name: "1/4", content: "..."}, ...]
     chunk_data = [
@@ -90,6 +88,7 @@ def _save_chunks_to_store(
 def _load_and_cache_file(
     file_path: Union[str, Path],
     session_id: str,
+    store_id: str,
     store: any,
     tool_call_id: str,
 ) -> Command:
@@ -99,6 +98,7 @@ def _load_and_cache_file(
     Args:
         file_path: 文件路径
         session_id: 会话 ID
+        store_id: 存储 ID
         store: store 实例
         tool_call_id: 工具调用 ID，用于返回 ToolMessage
 
@@ -111,16 +111,7 @@ def _load_and_cache_file(
         path = Path(file_path)
 
         if not path.exists():
-            return Command(
-                update={
-                    "messages": [
-                        ToolMessage(
-                            content=f'{{"error": "文件或文件夹不存在: {file_path}"}}',
-                            tool_call_id=tool_call_id
-                        )
-                    ]
-                }
-            )
+            raise FileNotFoundError(f"文件或文件夹不存在: {file_path}")
 
         loader = DocumentLoader(
             path=path,
@@ -131,19 +122,10 @@ def _load_and_cache_file(
         docs = loader.load()
 
         if not docs:
-            return Command(
-                update={
-                    "messages": [
-                        ToolMessage(
-                            content=f'{{"error": "未加载到任何内容: {file_path}"}}',
-                            tool_call_id=tool_call_id
-                        )
-                    ]
-                }
-            )
+            raise ValueError(f"未加载到任何内容: {file_path}")
 
         full_content = "\n\n".join([doc.page_content for doc in docs])
-        return _cache_content(full_content, session_id, store)
+        return _cache_content(full_content, session_id, store_id, store)
 
     except Exception as e:
         return Command(
@@ -161,6 +143,7 @@ def _load_and_cache_file(
 def _cache_content(
     content: str,
     session_id: str,
+    store_id: str,
     store: any,
     chunk_size: int = 4000,
     chunk_overlap: int = 200,
@@ -171,6 +154,7 @@ def _cache_content(
     Args:
         content: 待缓存的内容
         session_id: 会话 ID
+        store_id: 存储 ID
         store: store 实例
         chunk_size: 每个块的最大字符数
         chunk_overlap: 块之间的重叠字符数
@@ -181,10 +165,10 @@ def _cache_content(
     chunks = _split_content(content, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
     if not chunks or len(chunks) == 0:
-        return f'{{"status": "没有文件缓存", "next_step": "没有文件缓存需要读取"}}'
+        raise ValueError("内容为空，无法缓存")
 
     file_id = str(uuid.uuid4())
-    _save_chunks_to_store(session_id, file_id, chunks, store)
+    _save_chunks_to_store(store_id, session_id, file_id, chunks, store)
     
     content=json.dumps({
                         "cache_id": file_id,
@@ -248,7 +232,8 @@ def open_file(
         str: JSON格式结果，包含 file_name 和状态信息
     """
     session_id = runtime.context.get('session_id', 'default')
-    return _load_and_cache_file(file_path, session_id, runtime.store, runtime.tool_call_id)
+    store_id = runtime.context.get('store_id', 'default')
+    return _load_and_cache_file(file_path, session_id, store_id, runtime.tool_call_id)
 @tool(description="""
 【本地文件加载】加载本地文件（PDF/Word/CSV等）并分块缓存。
 ⚠️ 这是第一步：通过文件ID加载文件。加载后必须使用 read_cached_chunk 读取内容。
@@ -272,7 +257,8 @@ def open_file_by_id(
         str: JSON格式结果，包含 file_name 和状态信息
     """
     session_id = runtime.context.get('session_id', 'default')
-    namespace = _get_namespace()
+    store_id = runtime.context.get('store_id', 'default')
+    namespace = (store_id, session_id)
     # 通过 id 在 store 中查找文件路径,这个file_id是公用的，通过外部方法更新,传递给当前会话，只能当前会话看到
     # 数据格式 file_paths 是一个 dict{file_id_1: file_path_1, file_id_2: file_path_2, ...}
     file_paths = runtime.store.get(namespace, "file_id", default=None)
@@ -281,7 +267,7 @@ def open_file_by_id(
 
     
 
-    return _load_and_cache_file(file_path, session_id, runtime.store, runtime.tool_call_id)
+    return _load_and_cache_file(file_path, session_id, store_id, runtime.store, runtime.tool_call_id)
 
 
 @tool(description="""
@@ -310,7 +296,7 @@ def load_web_page(
     max_length = 1000000
     include_links = False
     session_id = runtime.context.get('session_id', 'default')
-
+    store_id = runtime.context.get('store_id', 'default')
     try:
         docs = DocumentLoader.load_url(
             url=url,
@@ -320,10 +306,10 @@ def load_web_page(
         )
 
         if not docs:
-            return f'{{"error": "未从 {url} 加载到任何内容"}}'
+            raise ValueError(f"未从 {url} 加载到任何内容")
 
         full_content = "\n\n".join([doc.page_content for doc in docs])
-        return _cache_content(full_content, session_id, runtime.store)
+        return _cache_content(full_content, session_id, store_id, runtime.store)
 
     except Exception as e:
         return Command(
@@ -363,14 +349,15 @@ def read_cached_chunk(
               如果已读完，返回提示信息
     """
     session_id = runtime.context.get('session_id', 'default')
-    namespace = _get_namespace(session_id)
+    store_id = runtime.context.get('store_id', 'default')
+    namespace = (store_id, session_id)
 
     try:
         # 从 store 获取文档数据 (使用 runtime.store)
         result = runtime.store.get(namespace, cache_id)
 
         if not result or not result.value:
-            return f'{{"error": "未找到缓存: {cache_id}"}}'
+            raise ValueError(f"未找到缓存: {cache_id}")
 
         chunks = result.value
 
@@ -404,7 +391,7 @@ def read_cached_chunk(
         return Command(
             update={
                 "file_chunk_read_progress": current_index + 1,
-                # 可以添加更多状态更新
+                # 可以添加更多状态更新字段
                 # "last_read_time": datetime.now().isoformat(),
                 "messages": [
                     ToolMessage(
