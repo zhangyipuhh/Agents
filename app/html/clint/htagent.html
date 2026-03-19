@@ -722,7 +722,7 @@
         const API_ENDPOINTS = {
             login: '/api/auth/login',
             createSession: '/api/session/create',
-            uploadFile: '/api/contract/uploadfile',
+            uploadFile: '/api/files/upload',
             chat: '/api/contract/chat'
         };
 
@@ -913,37 +913,79 @@
             if (!files.length) return;
 
             try {
+                // 确保 sessionId 存在
+                if (!state.sessionId) {
+                    console.log('SessionID 不存在，尝试创建会话...');
+                    await createSession();
+                    if (!state.sessionId) {
+                        throw new Error('无法创建会话，请重新登录');
+                    }
+                }
+
                 const token = await getToken();
                 console.log('Upload - Token:', token ? token.substring(0, 20) + '...' : 'null');
                 console.log('Upload - SessionID:', state.sessionId);
+                console.log('Upload - Files count:', files.length);
+                console.log('Upload - First file:', files[0]?.name, files[0]?.type, files[0]?.size);
                 
                 const formData = new FormData();
-                for (const file of files) {
-                    formData.append('files', file);
+                // 将 FileList 转换为数组，确保兼容性
+                const filesArray = Array.from(files);
+                console.log('Files array length:', filesArray.length);
+                
+                // 使用 for 循环添加文件，确保每个文件都被正确添加
+                for (let i = 0; i < filesArray.length; i++) {
+                    const file = filesArray[i];
+                    formData.append('files', file, file.name);
+                    console.log(`Appending file ${i}:`, file.name, file.type, file.size);
                 }
 
-                const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.uploadFile}`, {
+                // 检查 FormData 内容
+                console.log('FormData entries:');
+                for (let pair of formData.entries()) {
+                    console.log(pair[0], pair[1] instanceof File ? `File: ${pair[1].name}, size: ${pair[1].size}` : pair[1]);
+                }
+
+                console.log('Fetch URL:', `${API_BASE_URL}${API_ENDPOINTS.uploadFile}`);
+                console.log('Headers:', { 'Authorization': token ? 'Bearer ' + token.substring(0, 20) + '...' : 'null', 'X-Session-ID': state.sessionId });
+
+                // 使用 fetch API 发送请求
+                // 注意：当 body 是 FormData 时，不要设置 Content-Type，浏览器会自动设置
+                const fetchResponse = await fetch(`${API_BASE_URL}${API_ENDPOINTS.uploadFile}`, {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${token}`,
-                        'X-Session-ID': state.sessionId
+                        'X-Session-ID': state.sessionId || ''
                     },
                     body: formData
                 });
-
-                console.log('Upload response status:', response.status);
-                const data = await response.json();
-                console.log('Upload response data:', data);
+                
+                console.log('Upload response status:', fetchResponse.status);
+                const responseData = await fetchResponse.json();
+                console.log('Upload response data:', JSON.stringify(responseData));
+                
+                const response = { status: fetchResponse.status, ok: fetchResponse.ok };
 
                 if (!response.ok) {
-                    throw new Error(data.detail || '上传失败');
+                    // 详细显示错误信息
+                    let errorMsg = '上传失败';
+                    if (responseData.detail) {
+                        if (Array.isArray(responseData.detail)) {
+                            errorMsg = responseData.detail.map(e => e.msg || e.loc?.join('.') || e).join(', ');
+                        } else if (typeof responseData.detail === 'string') {
+                            errorMsg = responseData.detail;
+                        } else {
+                            errorMsg = JSON.stringify(responseData.detail);
+                        }
+                    }
+                    throw new Error(errorMsg);
                 }
 
                 // 添加文件到列表
-                for (let i = 0; i < files.length; i++) {
-                    const file = files[i];
+                for (let i = 0; i < filesArray.length; i++) {
+                    const file = filesArray[i];
                     const fileInfo = {
-                        id: data.fileids[i]?.id || Date.now(),
+                        id: responseData.fileids[i]?.id || Date.now(),
                         name: file.name,
                         type: file.type,
                         isImage: file.type.startsWith('image/'),
