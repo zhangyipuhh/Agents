@@ -104,7 +104,7 @@ async def _async_main():
         checkpointer=_checkpointer,
         store=store
     )
-    store_id = uuid.uuid4()  # 公用内存id
+    store_id = "store_id"  # 公用内存id
     # 会话ID，用于关联同一对话的所有消息
     # 固定ID可实现多轮对话，注释掉则每次生成新ID（关闭多轮对话）
     sid = "user_chat_001"
@@ -227,7 +227,7 @@ async def _async_main():
             
             # 使用Rich库渲染Markdown格式的响应
             # 将Agent返回的最后一条消息内容转换为Markdown并美化输出
-            md = Markdown(result["messages"][-1].content)
+            md = Markdown(result)
             console.print(md)
             print()
             
