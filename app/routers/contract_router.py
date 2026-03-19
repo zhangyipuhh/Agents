@@ -23,6 +23,7 @@ from langgraph.store.memory import InMemoryStore
 
 from app.utils.files.file_upload_handler import FileUploadHandler
 from app.agents.subgraphs.audit_contract_clause.HtAgent import HtAgent
+from app.agents.subgraphs.Doc_Agent.DocAgent import DocAgent
 
 
 _checkpointer = MemorySaver()
@@ -34,6 +35,12 @@ router = APIRouter(prefix='/api/contract', tags=['Contract Audit'])
 
 # 初始化 HtAgent 实例
 ht_agent = HtAgent(
+    checkpointer=_checkpointer,
+    store=store,
+)
+
+# 初始化 DocAgent 实例
+doc_agent = DocAgent(
     checkpointer=_checkpointer,
     store=store,
 )
@@ -63,6 +70,18 @@ class GetStoreValueRequest(BaseModel):
 class GetStoreValueResponse(BaseModel):
     value: Optional[dict]
     id: str
+
+
+class DocChatRequest(BaseModel):
+    message: str
+    session_id: Optional[str] = None
+    host_session_id: Optional[str] = None
+
+
+class DocChatResponse(BaseModel):
+    response: str
+    session_id: str
+    host_session_id: str
 
 
 @router.post('/uploadfile', response_model=FileUploadResponse)
@@ -142,6 +161,44 @@ async def chat(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"对话处理失败：{str(e)}")
+
+
+@router.post('/doc_chat', response_model=DocChatResponse)
+async def doc_chat(
+    request: Request,
+    doc_chat_request: DocChatRequest
+):
+    """
+    文档处理聊天接口
+    
+    与文档处理AI助手进行对话，支持多轮对话和文档处理流程。
+    
+    Args:
+        request: FastAPI 请求对象
+        doc_chat_request: 聊天请求，包含用户消息、会话ID和发起会话ID
+        
+    Returns:
+        DocChatResponse: 包含AI助手的回复、会话ID和发起会话ID
+    """
+    try:
+        session_id = doc_chat_request.session_id or getattr(request.state, "session_id", "default")
+        
+        host_session_id = doc_chat_request.host_session_id or session_id
+        
+        result = await doc_agent.invoke(
+            user_input=doc_chat_request.message,
+            session_id=session_id,
+            host_session_id=host_session_id,
+        )
+        
+        return DocChatResponse(
+            response=result,
+            session_id=session_id,
+            host_session_id=host_session_id
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"文档对话处理失败：{str(e)}")
 
 
 @router.post('/store/value', response_model=GetStoreValueResponse)
