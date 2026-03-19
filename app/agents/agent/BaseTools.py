@@ -11,6 +11,7 @@ Date: 2026-03-13
 Author: 张镒谱
 """
 
+from imaplib import Commands
 import json
 import uuid
 from datetime import datetime
@@ -91,7 +92,7 @@ def _load_and_cache_file(
     store_id: str,
     store: any,
     tool_call_id: str,
-) -> Command:
+) -> str:
     """
     加载文件内容并缓存到 store
 
@@ -147,7 +148,7 @@ def _cache_content(
     store: any,
     chunk_size: int = 4000,
     chunk_overlap: int = 200,
-) -> Command:
+) -> str:
     """
     将内容分块并缓存到 store
 
@@ -178,17 +179,7 @@ def _cache_content(
                         "next_step": f"请调用 read_cached_chunk 工具，传入 cache_id='{file_id}' 读取第1块内容"
                     }, ensure_ascii=False)
     # 初始化文件读取进度为1
-    return Command(
-        update={
-            "file_chunk_read_progress": 1,
-            "messages": [
-                ToolMessage(
-                    content=content,
-                    tool_call_id=runtime.tool_call_id
-                )
-            ]
-        }
-    )
+    return content
 
 
 @tool(description="获取当前时间必须调用此工具")
@@ -233,7 +224,18 @@ def open_file(
     """
     session_id = runtime.context.get('session_id', 'default')
     store_id = runtime.context.get('store_id', 'default')
-    return _load_and_cache_file(file_path, session_id, store_id, runtime.tool_call_id)
+    content = _load_and_cache_file(file_path, session_id, store_id, runtime.store, runtime.tool_call_id)
+    return Command(
+        update={
+            "file_chunk_read_progress": 1,
+            "messages": [
+                ToolMessage(
+                    content=content,
+                    tool_call_id=runtime.tool_call_id
+                )
+            ]
+        }
+    )
 @tool(description="""
 【本地文件加载】加载本地文件（PDF/Word/CSV等）并分块缓存。
 ⚠️ 这是第一步：通过文件ID加载文件。加载后必须使用 read_cached_chunk 读取内容。
@@ -267,7 +269,18 @@ def open_file_by_id(
 
     
 
-    return _load_and_cache_file(file_path, session_id, store_id, runtime.store, runtime.tool_call_id)
+    content = _load_and_cache_file(file_path, session_id, store_id, runtime.store, runtime.tool_call_id)
+    return Command(
+        update={
+            "file_chunk_read_progress": 1,
+            "messages": [
+                ToolMessage(
+                    content=content,
+                    tool_call_id=runtime.tool_call_id
+                )
+            ]
+        }
+    )
 
 
 @tool(description="""
@@ -307,9 +320,20 @@ def load_web_page(
 
         if not docs:
             raise ValueError(f"未从 {url} 加载到任何内容")
-
+        
         full_content = "\n\n".join([doc.page_content for doc in docs])
-        return _cache_content(full_content, session_id, store_id, runtime.store)
+        content = _cache_content(full_content, session_id, store_id, runtime.store)
+        return Command(
+            update={
+                "file_chunk_read_progress": 1,
+                "messages": [
+                    ToolMessage(
+                        content=content,
+                        tool_call_id=runtime.tool_call_id
+                    )
+                ]
+            }
+        )
 
     except Exception as e:
         return Command(
