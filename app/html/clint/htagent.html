@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>合同审批智能体</title>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.bootcdn.net/ajax/libs/marked/12.0.0/marked.min.js"></script>
     <style>
         :root {
             --primary-color: #4A90D9;
@@ -718,7 +718,7 @@
         console.log('脚本开始加载...');
         
         // API 配置
-        const API_BASE_URL = 'http://localhost:8000';
+        const API_BASE_URL = window.location.origin;
         const API_ENDPOINTS = {
             login: '/api/auth/login',
             createSession: '/api/session/create',
@@ -914,6 +914,9 @@
 
             try {
                 const token = await getToken();
+                console.log('Upload - Token:', token ? token.substring(0, 20) + '...' : 'null');
+                console.log('Upload - SessionID:', state.sessionId);
+                
                 const formData = new FormData();
                 for (const file of files) {
                     formData.append('files', file);
@@ -928,7 +931,9 @@
                     body: formData
                 });
 
+                console.log('Upload response status:', response.status);
                 const data = await response.json();
+                console.log('Upload response data:', data);
 
                 if (!response.ok) {
                     throw new Error(data.detail || '上传失败');
@@ -1019,8 +1024,16 @@
 
             if (role === 'ai') {
                 // 确保 marked 已加载
-                if (typeof marked !== 'undefined' && marked.parse) {
-                    contentDiv.innerHTML = marked.parse(content);
+                console.log('marked loaded:', typeof marked !== 'undefined');
+                if (typeof marked !== 'undefined') {
+                    try {
+                        // 新版 marked 使用 marked.parse() 或 marked()
+                        const parseFunc = marked.parse || marked;
+                        contentDiv.innerHTML = parseFunc(content);
+                    } catch (e) {
+                        console.error('marked parse error:', e);
+                        contentDiv.textContent = content;
+                    }
                 } else {
                     contentDiv.textContent = content;
                 }
