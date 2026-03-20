@@ -10,13 +10,9 @@ Author: 张镒谱
 """
 
 from .DocTools import (
-    get_reference_files,
-    get_contract_content,
-    write_approval_result,
+    split_file,
 )
 
 __all__ = [
-    "get_reference_files",
-    "get_contract_content",
-    "write_approval_result",
+    "split_file",
 ]
