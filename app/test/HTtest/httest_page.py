@@ -14,10 +14,12 @@
 Date: 2026-03-19
 Author: 张镒谱
 """
+import logging
 import os
 import sys
 import json
 import csv
+import uuid
 import logging
 from datetime import datetime
 from typing import Optional, List, Dict, Any
@@ -302,6 +304,8 @@ class FileUploader:
             if result.get("image_groups"):
                 print(f"图片转换完成: {len(result['image_groups'])} 组")
             
+            self._process_doc_files(result)
+            
             return result
         except Exception as e:
             print(f"上传失败: {e}")
@@ -322,6 +326,67 @@ class FileUploader:
         """
         self.uploaded_files = []
         print("已清空上传文件列表")
+    
+    def _process_doc_files(self, upload_result: Dict[str, Any]) -> None:
+        """
+        处理 doc 类型的文件，自动调用 doc_chat 和 get_store_value
+        
+        Args:
+            upload_result: 上传结果，包含 fileids、count、image_groups
+        """
+        fileids = upload_result.get("fileids", [])
+        
+        if not fileids:
+            return
+        
+        host_session_id = self.api_client.session_id
+        
+        if not host_session_id:
+            logger.warning("未找到主会话 ID，跳过 doc 文件自动处理")
+            return
+        
+        for file_info in fileids:
+            file_id = file_info.get("id")
+            file_type = file_info.get("file_type")
+            
+            if file_type != "doc":
+                logger.info(f"跳过非文档文件 {file_id}，类型: {file_type}")
+                continue
+            
+            if not file_id:
+                logger.info(f"跳过无 ID 的文档文件 {file_id}")
+                continue
+            
+            try:
+                doc_session_id = str(uuid.uuid4())
+                
+                logger.info(f"\n正在处理文档文件 (ID: {file_id})...")
+                
+                message = f"cache_id是{file_id}"
+                
+                doc_chat_result = self.api_client.doc_chat(
+                    message=message,
+                    session_id=doc_session_id,
+                    host_session_id=host_session_id
+                )
+                
+                doc_chat_response = doc_chat_result.get("response", "无响应")
+                
+                store_result = self.api_client.get_store_value(
+                    id=file_id,
+                    session_id=doc_session_id
+                )
+                
+                store_value = store_result.get("value")
+                
+                logger.info(f"\n文档处理完成！")
+                logger.info(f"文件 ID: {file_id}")
+                logger.info(f"处理结果: {doc_chat_response}")
+                logger.info(f"存储值: {store_value}")
+                
+            except Exception as e:
+                logger.error(f"处理文档文件 {file_id} 失败: {e}")
+                logger.error(f"处理文档文件失败: {e}")
 
 
 class FileParser:
