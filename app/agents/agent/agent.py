@@ -156,7 +156,7 @@ class Agent:
             包含模型响应消息的字典
         """
         messages = state["summarized_messages"]
-        logging.info(f"对话历史: {messages[-1]['content']}")
+        logging.info(f"对话历史: {messages[-1].content}")
         #messages = state["messages"]
         # 系统提示词，指导模型如何根据文件类型调用相应的解析工具
         system_prompt = self.system_prompt or ""
@@ -176,7 +176,7 @@ class Agent:
             for image_id in image_paths:
                 #这里存放的是一个dict id 和 base64的映射关系,每次会话传入
                 #例image_path返回  {"image_id_1": "base64_1", "image_id_2": "base64_2"}
-                result = self.store.get(namespace, "image_paths", default=None)
+                result = self.store.get(namespace, "image_paths")
                 content = result.value.get(image_id, "")
                 logging.info(f"image_id: {image_id}, content: {content}")
                 if content:
