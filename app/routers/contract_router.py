@@ -74,13 +74,12 @@ class GetStoreValueRequest(BaseModel):
 
 
 class GetStoreValueResponse(BaseModel):
-    value: Optional[dict]
+    value: Optional[Union[dict, List[dict]]]
     id: str
 
 
 class DocChatRequest(BaseModel):
     message: str
-    session_id: Optional[str] = None
     host_session_id: Optional[str] = None
 
 
@@ -192,7 +191,7 @@ async def doc_chat(
         DocChatResponse: 包含AI助手的回复、会话ID和发起会话ID
     """
     try:
-        session_id = doc_chat_request.session_id or getattr(request.state, "session_id", "default")
+        session_id = getattr(request.state, "session_id", "default")
         host_session_id = doc_chat_request.host_session_id or session_id
         
         logger.debug(f"[DEBUG] doc_chat 请求: message={doc_chat_request.message}, session_id={session_id}, host_session_id={host_session_id}")
@@ -244,6 +243,8 @@ async def get_store_value(
         
         # 提取 value 值
         value = result.value if result else None
+        
+        logger.info(f"[INFO] get_store_value 方法 ，store_id: {store_id}， id: {body.id}， value: {value}")
         
         return GetStoreValueResponse(
             value=value,
