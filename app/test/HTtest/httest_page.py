@@ -708,19 +708,19 @@ class HTTestPage:
         """
         显示页面头部信息
         """
-        print("\n" + "=" * 60)
-        print("        合同审批综合测试页面")
-        print("=" * 60)
-        print(f"当前循环: 第 {self.cycle_count} 轮")
+        logger.info("\n" + "=" * 60)
+        logger.info("        合同审批综合测试页面")
+        logger.info("=" * 60)
+        logger.info(f"当前循环: 第 {self.cycle_count} 轮")
         if self.api_client.session_id:
-            print(f"会话 ID: {self.api_client.session_id}")
-        print("=" * 60)
+            logger.info(f"会话 ID: {self.api_client.session_id}")
+        logger.info("=" * 60)
     
     def display_menu(self) -> None:
         """
         显示操作菜单
         """
-        print("\n请选择下一步操作:")
+        logger.info("\n请选择下一步操作:")
         for key, value in self.MENU_OPTIONS.items():
             print(f"  {key}. {value}")
     
@@ -735,14 +735,14 @@ class HTTestPage:
             choice = input("\n请输入选项编号: ").strip()
             if choice in self.MENU_OPTIONS:
                 return choice
-            print("无效选项，请重新输入")
+            logger.info("无效选项，请重新输入")
     
     def handle_chat(self) -> None:
         """
         处理继续交流功能
         """
-        print("\n进入聊天模式 (输入 'back' 返回主菜单)")
-        print("-" * 50)
+        logger.info("\n进入聊天模式 (输入 'back' 返回主菜单)")
+        logger.info("-" * 50)
         
         while True:
             message = input("\n请输入消息: ").strip()
@@ -756,26 +756,26 @@ class HTTestPage:
             try:
                 self.chat_history.add_message("user", message)
                 
-                print("\n智能体正在思考...")
+                logger.info("\n智能体正在思考...")
                 result = self.api_client.chat(message)
                 
                 response = result.get("response", "无响应")
                 self.chat_history.add_message("assistant", response)
                 
-                print(f"\n智能体: {response}")
+                logger.info(f"\n智能体: {response}")
                 
             except Exception as e:
-                print(f"\n发送失败: {e}")
+                logger.error(f"\n发送失败: {e}")
     
     def handle_upload(self) -> None:
         """
         处理文件上传功能
         """
-        print("\n文件上传")
-        print("-" * 50)
-        print("支持的文件类型: txt, csv, json, pdf, doc, docx, jpg, jpeg, png, gif")
-        print("输入文件路径，多个文件用逗号分隔")
-        print("输入 'back' 返回主菜单")
+        logger.info("\n文件上传")
+        logger.info("-" * 50)
+        logger.info("支持的文件类型: txt, csv, json, pdf, doc, docx, jpg, jpeg, png, gif")
+        logger.info("输入文件路径，多个文件用逗号分隔")
+        logger.info("输入 'back' 返回主菜单")
         
         while True:
             file_input = input("\n请输入文件路径: ").strip()
@@ -791,16 +791,16 @@ class HTTestPage:
             try:
                 self.file_uploader.upload_files(file_paths)
             except Exception as e:
-                print(f"上传出错: {e}")
+                logger.error(f"上传出错: {e}")
     
     def handle_parse(self) -> None:
         """
         处理文件解析功能
         """
-        print("\n文件解析")
-        print("-" * 50)
-        print("支持的文件类型: txt, csv, json")
-        print("输入 'back' 返回主菜单")
+        logger.info("\n文件解析")
+        logger.info("-" * 50)
+        logger.info("支持的文件类型: txt, csv, json")
+        logger.info("输入 'back' 返回主菜单")
         
         while True:
             file_path = input("\n请输入文件路径: ").strip()
@@ -822,13 +822,13 @@ class HTTestPage:
         """
         处理审批功能
         """
-        print("\n审批流程")
-        print("-" * 50)
+        logger.info("\n审批流程")
+        logger.info("-" * 50)
         
         try:
             self.approval_handler.execute_approval()
         except Exception as e:
-            print(f"审批出错: {e}")
+            logger.error(f"审批出错: {e}")
     
     def handle_history(self) -> None:
         """
@@ -840,10 +840,10 @@ class HTTestPage:
         """
         运行测试页面主循环
         """
-        print("\n正在初始化...")
+        logger.info("\n正在初始化...")
         
         if not self._initialize():
-            print("初始化失败，请检查服务器连接")
+            logger.error("初始化失败，请检查服务器连接")
             return
         
         while self.is_running:
@@ -855,7 +855,7 @@ class HTTestPage:
             
             if choice == "0":
                 self.is_running = False
-                print("\n感谢使用，再见！")
+                logger.info("\n感谢使用，再见！")
             elif choice == "1":
                 self.handle_chat()
             elif choice == "2":
@@ -885,10 +885,10 @@ class HTTestPage:
             token = login_result.json().get("access_token")
             
             if not token:
-                print("登录失败：未获取到令牌")
+                logger.error("登录失败：未获取到令牌")
                 return False
             
-            print("登录成功")
+            logger.info("登录成功")
             
             session_result = requests.post(
                 f"{self.api_client.base_url}/api/session/create",
@@ -898,17 +898,17 @@ class HTTestPage:
             session_id = session_result.json().get("session_id")
             
             if not session_id:
-                print("创建会话失败：未获取到会话 ID")
+                logger.error("创建会话失败：未获取到会话 ID")
                 return False
             
-            print(f"会话创建成功: {session_id}")
+            logger.info(f"会话创建成功: {session_id}")
             
             self.api_client.set_auth(token, session_id)
             
             return True
             
         except Exception as e:
-            print(f"初始化失败: {e}")
+            logger.error(f"初始化失败: {e}")
             return False
 
 
