@@ -95,15 +95,20 @@ def split_file(type: str, cache_id: str, file_id: str, runtime: ToolRuntime) -> 
             if not isinstance(chunks, list) or not chunks:
                 raise ValueError("未加载到任何内容")
             
-            # 3. 构建存储结构，name改为type
-            chunk_data = [
-                {
+            # 3. 构建滚动窗口式存储结构，三个chunk为一组，步长为1
+            window_size = 3
+            chunk_data = []
+            for i in range(len(chunks) - window_size + 1):
+                window_chunks = chunks[i:i + window_size]
+                combined_content = "\n\n".join([
+                    chunk.get("content", "") if isinstance(chunk, dict) else str(chunk)
+                    for chunk in window_chunks
+                ])
+                chunk_data.append({
                     "index": i + 1,
                     "name": type,
-                    "content": chunk.get("content", "") if isinstance(chunk, dict) else str(chunk)
-                }
-                for i, chunk in enumerate(chunks)
-            ]
+                    "content": combined_content
+                })
         
         
         
