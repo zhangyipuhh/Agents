@@ -238,7 +238,7 @@ async def get_store_value(
         # 使用 store.get 方法获取存储的值
         # namespace 使用 (store_id, session_id)，key 使用传入的 id
         result = store.get(
-            namespace=(store_id, session_id),
+            namespace=(store_id,),
             key=body.id
         )
         
