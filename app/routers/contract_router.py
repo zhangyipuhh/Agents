@@ -17,7 +17,7 @@ Author: 张镒谱
 
 import logging
 from fastapi import APIRouter, UploadFile, File, HTTPException, Request
-from typing import List, Optional
+from typing import List, Optional, Union
 from pydantic import BaseModel
 
 from langgraph.checkpoint.memory import MemorySaver
