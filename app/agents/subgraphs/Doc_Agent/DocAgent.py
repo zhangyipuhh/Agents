@@ -40,6 +40,7 @@ class DocAgent:
         self,
         checkpointer: BaseCheckpointSaver,
         store: BaseStore,
+        store_id: Optional[str] = None,
         system_prompt: Optional[str] = None,
         max_tokens: int = 20000,
         max_tokens_before_summary: int = 16000,
@@ -57,7 +58,8 @@ class DocAgent:
             max_summary_tokens: 摘要最大 token 数，默认 4000
         """
         self.checkpointer = checkpointer
-        self.store = store
+        self.store = store        
+        self.store_id = store_id        
         self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
         self.max_tokens = max_tokens
         self.max_tokens_before_summary = max_tokens_before_summary
@@ -82,7 +84,7 @@ class DocAgent:
         self,
         user_input: str,
         session_id: str,
-        host_session_id: Optional[str] = None,
+        host_session_id: Optional[str] = None
         error_limit: int = 2,
         limit: int = 10,
         **kwargs,
@@ -116,6 +118,7 @@ class DocAgent:
         context = DocAgentContext(
             session_id=session_id,
             host_session_id=host_session_id or session_id,
+            store_id=self.store_id,
         )
 
         result = await agent.invoke(

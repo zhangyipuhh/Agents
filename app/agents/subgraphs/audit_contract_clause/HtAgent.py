@@ -202,6 +202,7 @@ class HtAgent:
         self,
         checkpointer: BaseCheckpointSaver,
         store: BaseStore,
+        store_id: Optional[str] = None,
         system_prompt: Optional[str] = None,
         max_tokens: int = 20000,
         max_tokens_before_summary: int = 16000,
@@ -220,6 +221,7 @@ class HtAgent:
         """
         self.checkpointer = checkpointer
         self.store = store
+        self.store_id = store_id        
         self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
         self.max_tokens = max_tokens
         self.max_tokens_before_summary = max_tokens_before_summary
@@ -273,7 +275,7 @@ class HtAgent:
             limit=limit,
         )
 
-        context = HtAgentContext(session_id=session_id)
+        context = HtAgentContext(session_id=session_id, store_id=self.store_id)
 
         result = await agent.invoke(
             config=config,
