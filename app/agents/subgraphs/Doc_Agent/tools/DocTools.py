@@ -14,186 +14,99 @@ from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
+from app.utils.files.DocumentLoader import DocumentLoader
 
-@tool(description="从store中获取参考文件内容")
-def get_reference_files(key: str, runtime: ToolRuntime) -> Command:
+
+@tool(name="split_file", description="将文件内容切分成多个块")
+def split_file(type: str, cache_id: str, file_id: str, runtime: ToolRuntime) -> Command:
     """
-    获取参考文件工具
+    切分文件工具
     
-    从store中获取参考文件内容，使用namespace为(session_id_ht,)和指定的key查找参考文件。
+    从store中获取文件内容，使用cache_id查找缓存的文件块，拼装后使用DocumentLoader重新切分并存储。
     
     Args:
-        key (str): 必填，参考文件的键名
+        cache_id (str): 必填，缓存ID，用于查找存储的文件块
+        type (str): 必填，文件类型，可选值为"合同"、"成交确认书"、"会议纪要"
+        file_id (str): 必填，文件的ID，用于存储切分后的内容
         runtime (ToolRuntime): 工具运行时上下文
         
     Returns:
-        Command: 包含ToolMessage和参考文件内容的命令对象
+        Command: 包含ToolMessage和切分后的文件内容的命令对象    
     """
     session_id = runtime.context.get('session_id', 'default')
-    
+    store_id = runtime.context.get('store_id', 'default')
+    namespace = (store_id, session_id)
     try:
-        namespace = (f"{session_id}_ht",)
-        result = runtime.store.get(namespace, key)
+        # 1. 从缓存中获取所有块
+        result = runtime.store.get(namespace, cache_id)
         
         if not result or not result.value:
-            return Command(
-                update={
-                    "messages": [
-                        ToolMessage(
-                            content=json.dumps({
-                                "status": "not_found",
-                                "error": f"未找到参考文件: {key}"
-                            }, ensure_ascii=False),
-                            tool_call_id=runtime.tool_call_id
-                        )
-                    ]
+            raise ValueError(f"未找到缓存: {cache_id}")
+        
+        chunks = result.value
+        
+        # 2. 根据文件类型选择不同的处理方式
+        import re
+        
+        if type == "合同":
+            # 合同类型：先合并内容，再使用正则匹配"第X条"进行切分
+            if isinstance(chunks, list):
+                full_content = "\n\n".join([chunk.get("content", "") for chunk in chunks])
+            else:
+                full_content = str(chunks)
+            
+            pattern = r'^\s*(第[\u4e00-\u9fa5\d]+条)'
+            lines = full_content.split('\n')
+            paragraph_data = []
+            _tmp_index = 0
+            
+            for idx, line in enumerate(lines):
+                text = line.strip()
+                if not text:
+                    continue
+                    
+                # 检查是否匹配条款模式
+                _is_match = re.match(pattern, text)
+                if _is_match:
+                    _tmp_index += 1
+                
+                paragraph_data.append({
+                    "paragraph_type": _tmp_index,
+                    "paragraph_num": idx,
+                    "paragraph_text": text
+                })
+            
+            if not paragraph_data:
+                raise ValueError("合同解析未获取到任何段落数据")
+            
+            # 3. 构建存储结构，name改为type
+            chunk_data = [
+                {
+                    "index": i + 1,
+                    "name": type,
+                    "content": para["paragraph_text"],
+                    "paragraph_type": para["paragraph_type"],
+                    "paragraph_num": para["paragraph_num"]
                 }
-            )
-        
-        file_content = result.value
-        
-        if isinstance(file_content, list):
-            content_info = {
-                "status": "success",
-                "key": key,
-                "type": "chunks",
-                "total_chunks": len(file_content),
-                "content": file_content
-            }
+                for i, para in enumerate(paragraph_data)
+            ]
         else:
-            content_info = {
-                "status": "success",
-                "key": key,
-                "type": "single",
-                "content": file_content
-            }
-        
-        return Command(
-            update={
-                "messages": [
-                    ToolMessage(
-                        content=json.dumps(content_info, ensure_ascii=False),
-                        tool_call_id=runtime.tool_call_id
-                    )
-                ]
-            }
-        )
-        
-    except Exception as e:
-        return Command(
-            update={
-                "messages": [
-                    ToolMessage(
-                        content=json.dumps({
-                            "status": "error",
-                            "error": f"获取参考文件失败: {str(e)}"
-                        }, ensure_ascii=False),
-                        tool_call_id=runtime.tool_call_id
-                    )
-                ]
-            }
-        )
-
-
-@tool(description="从store中获取合同内容")
-def get_contract_content(runtime: ToolRuntime) -> Command:
-    """
-    获取合同内容工具
-    
-    从store中获取合同内容，使用namespace为(session_id_ht,)和key为"ht"查找合同内容。
-    
-    Args:
-        runtime (ToolRuntime): 工具运行时上下文
-        
-    Returns:
-        Command: 包含ToolMessage和合同内容的命令对象
-    """
-    session_id = runtime.context.get('session_id', 'default')
-    
-    try:
-        namespace = (f"{session_id}_ht",)
-        result = runtime.store.get(namespace, "ht")
-        
-        if not result or not result.value:
-            return Command(
-                update={
-                    "messages": [
-                        ToolMessage(
-                            content=json.dumps({
-                                "status": "not_found",
-                                "error": "未找到合同内容"
-                            }, ensure_ascii=False),
-                            tool_call_id=runtime.tool_call_id
-                        )
-                    ]
+            # 其他类型：直接循环 chunks，修改 name 字段
+            if not isinstance(chunks, list) or not chunks:
+                raise ValueError("未加载到任何内容")
+            
+            # 3. 构建存储结构，name改为type
+            chunk_data = [
+                {
+                    "index": i + 1,
+                    "name": type,
+                    "content": chunk.get("content", "") if isinstance(chunk, dict) else str(chunk)
                 }
-            )
+                for i, chunk in enumerate(chunks)
+            ]
         
-        contract_content = result.value
-        
-        if isinstance(contract_content, list):
-            content_info = {
-                "status": "success",
-                "key": "ht",
-                "type": "chunks",
-                "total_chunks": len(contract_content),
-                "content": contract_content
-            }
-        else:
-            content_info = {
-                "status": "success",
-                "key": "ht",
-                "type": "single",
-                "content": contract_content
-            }
-        
-        return Command(
-            update={
-                "messages": [
-                    ToolMessage(
-                        content=json.dumps(content_info, ensure_ascii=False),
-                        tool_call_id=runtime.tool_call_id
-                    )
-                ]
-            }
-        )
-        
-    except Exception as e:
-        return Command(
-            update={
-                "messages": [
-                    ToolMessage(
-                        content=json.dumps({
-                            "status": "error",
-                            "error": f"获取合同内容失败: {str(e)}"
-                        }, ensure_ascii=False),
-                        tool_call_id=runtime.tool_call_id
-                    )
-                ]
-            }
-        )
-
-
-@tool(description="将审批结果写入store")
-def write_approval_result(result_content: str, runtime: ToolRuntime) -> Command:
-    """
-    写入审批结果工具
-    
-    将审批结果写入store，使用namespace为(host_session_id_result,)和key为"result"存储结果。
-    
-    Args:
-        result_content (str): 必填，审批结果内容
-        runtime (ToolRuntime): 工具运行时上下文
-        
-    Returns:
-        Command: 包含ToolMessage和写入状态的命令对象
-    """
-    host_session_id = runtime.context.get('host_session_id', 'default')
-    
-    try:
-        namespace = (f"{host_session_id}_result",)
-        
-        runtime.store.put(namespace, "result", result_content)
+        # 5. 存储到store的file_id键下（使用session_id_file命名空间），file_id的原内容就被覆盖了。这里要注意
+        runtime.store.put(namespace, file_id, chunk_data)
         
         return Command(
             update={
@@ -201,9 +114,10 @@ def write_approval_result(result_content: str, runtime: ToolRuntime) -> Command:
                     ToolMessage(
                         content=json.dumps({
                             "status": "success",
-                            "message": "审批结果已成功写入",
-                            "namespace": f"{host_session_id}_result",
-                            "key": "result"
+                            "file_id": file_id,
+                            "type": type,
+                            "total_chunks": len(chunk_data),
+                            "message": f"文件已成功切分为 {len(chunk_data)} 个块"
                         }, ensure_ascii=False),
                         tool_call_id=runtime.tool_call_id
                     )
@@ -218,10 +132,12 @@ def write_approval_result(result_content: str, runtime: ToolRuntime) -> Command:
                     ToolMessage(
                         content=json.dumps({
                             "status": "error",
-                            "error": f"写入审批结果失败: {str(e)}"
+                            "error": f"切分文件失败: {str(e)}"
                         }, ensure_ascii=False),
                         tool_call_id=runtime.tool_call_id
                     )
                 ]
             }
         )
+
+
