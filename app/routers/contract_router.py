@@ -14,12 +14,16 @@
 Date: 2026-03-18
 Author: 张镒谱
 """
+
+import logging
 from fastapi import APIRouter, UploadFile, File, HTTPException, Request
 from typing import List, Optional
 from pydantic import BaseModel
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
+
+logger = logging.getLogger(__name__)
 
 from app.utils.files.file_upload_handler import FileUploadHandler
 from app.agents.subgraphs.audit_contract_clause.HtAgent import HtAgent
@@ -148,6 +152,8 @@ async def chat(
         # 获取 session_id，优先使用请求体中的，否则从 request.state 获取
         session_id = chat_request.session_id or getattr(request.state, "session_id", "default")
         
+        logger.debug(f"[DEBUG] chat 请求: message={chat_request.message}, session_id={session_id}")
+        
         # 调用 HtAgent 进行对话
         result = await ht_agent.invoke(
             user_input=chat_request.message,
@@ -160,6 +166,9 @@ async def chat(
         )
         
     except Exception as e:
+        import traceback
+        logger.error(f"[ERROR] chat 异常: {e}")
+        logger.error(f"[ERROR] 异常堆栈: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"对话处理失败：{str(e)}")
 
 
@@ -182,8 +191,9 @@ async def doc_chat(
     """
     try:
         session_id = doc_chat_request.session_id or getattr(request.state, "session_id", "default")
-        
         host_session_id = doc_chat_request.host_session_id or session_id
+        
+        logger.debug(f"[DEBUG] doc_chat 请求: message={doc_chat_request.message}, session_id={session_id}, host_session_id={host_session_id}")
         
         result = await doc_agent.invoke(
             user_input=doc_chat_request.message,
@@ -198,6 +208,9 @@ async def doc_chat(
         )
         
     except Exception as e:
+        import traceback
+        logger.error(f"[ERROR] doc_chat 异常: {e}")
+        logger.error(f"[ERROR] 异常堆栈: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"文档对话处理失败：{str(e)}")
 
 
