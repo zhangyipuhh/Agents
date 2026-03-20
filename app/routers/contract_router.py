@@ -41,12 +41,14 @@ router = APIRouter(prefix='/api/contract', tags=['Contract Audit'])
 ht_agent = HtAgent(
     checkpointer=_checkpointer,
     store=store,
+    store_id=store_id,
 )
 
 # 初始化 DocAgent 实例
 doc_agent = DocAgent(
     checkpointer=_checkpointer,
     store=store,
+    store_id=store_id,
 )
 
 
