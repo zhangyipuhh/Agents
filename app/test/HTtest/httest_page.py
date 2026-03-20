@@ -277,8 +277,6 @@ class APIClient:
             文档聊天响应，包含 response、session_id、host_session_id
         """
         data = {"message": message}
-        if session_id:
-            data["session_id"] = session_id
         if host_session_id:
             data["host_session_id"] = host_session_id
         
