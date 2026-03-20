@@ -13,6 +13,7 @@ Date: 2025/4/11 12:07
 Author: 张镒谱
 """
 from contextlib import asynccontextmanager
+import logging
 
 import uvicorn
 from fastapi import FastAPI, Request, status
@@ -82,7 +83,12 @@ def create_app():
     Returns:
         FastAPI: 配置完成的FastAPI应用实例
     """
-    # 创建FastAPI应用实例，传入生命周期管理器
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | %(message)s',
+        datefmt='%H:%M:%S'
+    )
+    
     app = FastAPI(lifespan=lifespan)
 
     # 配置CORS中间件，允许所有来源、方法和请求头的跨域请求
