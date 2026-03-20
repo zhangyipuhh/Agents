@@ -165,24 +165,25 @@ class Agent:
             # 从存储中获取图片内容
             # 注意：图片只添加到本地 messages，不更新 state
             # 这样下次 invoke 时图片不会保留在对话历史中
-            # 使用 thread_id 作为 namespace
-            thread_id = state.get("configurable", {}).get("thread_id", "default")
-            namespace = (state.namespace, thread_id)
-            
+            # 使用 session_id\store_id 作为 namespace
+            session_id = state.get("session_id", "default")
+            store_id = state.get("store_id", "default")
+            namespace = (store_id, session_id)
+            logging.info(f"namespace: {namespace}")
             image_contents = []
             for image_id in image_paths:
                 #这里存放的是一个dict id 和 base64的映射关系,每次会话传入
-                #例 {"image_id_1": "base64_1", "image_id_2": "base64_2"}
-                result = state.get("image_paths_id", [])
-                if result and result.value:
-                    image_contents.append(result.value.get(image_id, ""))
-            # 将图片内容添加到消息中，使用OpenAI风格的多模态格式
-            for content in image_contents:
-                messages.append({
+                #例image_path返回  {"image_id_1": "base64_1", "image_id_2": "base64_2"}
+                result = self.store.get(namespace, "image_paths", default=None)
+                content = result.value.get(image_id, "")
+                logging.info(f"image_id: {image_id}, content: {content}")
+                if content:
+                    image_contents.append(content)
+                    # 将图片内容添加到消息中，使用OpenAI风格的多模态格式
+                    messages.append({
                     "type": "image_url",
                     "image_url": {"url": content}
                 })
-
         # 绑定工具到模型，使模型能够调用工具
         llm = self.model.bind_tools(self.tools)
         # 调用模型，传入系统提示词和历史消息
