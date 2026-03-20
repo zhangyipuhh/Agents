@@ -140,7 +140,7 @@ def _load_and_cache_file(
                 "messages": [
                     ToolMessage(
                         content=f'{{"error": "加载失败: {e}"}}',
-                        tool_call_id=tool_call_id
+                        tool_call_id=runtime.tool_call_id
                     )
                 ]
             }
@@ -471,7 +471,7 @@ def read_cached_chunk(
                 "messages": [
                     ToolMessage(
                         content=json.dumps({"error": f"读取失败: {e}"}),
-                        tool_call_id=tool_call_id
+                        tool_call_id=runtime.tool_call_id
                     )
                 ]
             }
@@ -554,7 +554,7 @@ def read_cached_chunk_range(
                 "messages": [
                     ToolMessage(
                         content=json.dumps({"error": f"读取失败: {e}"}),
-                        tool_call_id=tool_call_id
+                        tool_call_id=runtime.tool_call_id
                     )
                 ]
             }
