@@ -84,7 +84,7 @@ class DocAgent:
         self,
         user_input: str,
         session_id: str,
-        host_session_id: Optional[str] = None
+        host_session_id: Optional[str] = None,
         error_limit: int = 2,
         limit: int = 10,
         **kwargs,
