@@ -14,7 +14,7 @@
 Date: 2026-03-19
 Author: 张镒谱
 """
-import logging
+
 import os
 import sys
 import json
@@ -116,11 +116,34 @@ class APIClient:
             session_id = session_result.json().get("session_id")
             if session_id:
                 self.session_id = session_id
+                # 更新 headers 中的 X-Session-ID
+                if self.token:
+                    self.headers = {
+                        "Authorization": f"Bearer {self.token}",
+                        "X-Session-ID": session_id
+                    }
                 logger.info(f"会话创建成功: {session_id}")
             return session_id
         except Exception as e:
             logger.error(f"会话创建失败: {e}")
             return None
+    
+    def _get_auth_headers(self, session_id: Optional[str] = None) -> Dict[str, str]:
+        """
+        获取认证请求头，每次都会刷新 token
+        
+        Args:
+            session_id: 可选的会话 ID，如果不提供则使用 self.session_id
+            
+        Returns:
+            包含最新 token 的请求头字典
+        """
+        self.refresh_token()
+        headers = {}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+            headers["X-Session-ID"] = session_id or self.session_id or ""
+        return headers
     
     def _request(
         self, 
@@ -143,8 +166,9 @@ class APIClient:
             RequestException: 请求失败时抛出
         """
         url = f"{self.base_url}{endpoint}"
-        headers = kwargs.pop('headers', {})
-        headers.update(self.headers)
+        # 先使用 self.headers 作为基础，然后用传入的 headers 覆盖
+        headers = dict(self.headers)
+        headers.update(kwargs.pop('headers', {}))
         
         try:
             response = requests.request(
@@ -157,6 +181,13 @@ class APIClient:
             return response.json()
         except RequestException as e:
             logger.error(f"请求失败: {method} {url}, 错误: {e}")
+            # 尝试获取服务器返回的错误详情
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_detail = e.response.text
+                    logger.error(f"服务器错误详情: {error_detail}")
+                except:
+                    pass
             raise
     
     def upload_contract_files(
@@ -185,7 +216,7 @@ class APIClient:
             return {"fileids": [], "count": 0, "image_groups": []}
         
         try:
-            headers = {k: v for k, v in self.headers.items()}
+            headers = self._get_auth_headers()
             result = self._request(
                 "POST",
                 "/api/contract/uploadfile",
@@ -216,10 +247,16 @@ class APIClient:
         if session_id:
             data["session_id"] = session_id
         
+        headers = self._get_auth_headers()
+        
+        logger.info(f"chat 请求数据: {data}")
+        logger.info(f"chat 请求头: {headers}")
+        
         return self._request(
             "POST",
             "/api/contract/chat",
-            json=data
+            json=data,
+            headers=headers
         )
     
     def doc_chat(
@@ -245,10 +282,16 @@ class APIClient:
         if host_session_id:
             data["host_session_id"] = host_session_id
         
+        headers = self._get_auth_headers(session_id=session_id)
+        
+        logger.info(f"doc_chat 请求数据: {data}")
+        logger.info(f"doc_chat 请求头: {headers}")
+        
         return self._request(
             "POST",
             "/api/contract/doc_chat",
-            json=data
+            json=data,
+            headers=headers
         )
     
     def get_store_value(
@@ -270,10 +313,13 @@ class APIClient:
         if session_id:
             data["session_id"] = session_id
         
+        headers = self._get_auth_headers(session_id=session_id)
+        
         return self._request(
             "POST",
             "/api/contract/store/value",
-            json=data
+            json=data,
+            headers=headers
         )
 
 
@@ -390,6 +436,7 @@ class FileUploader:
         if not fileids:
             return
         
+        # 保存主会话 ID，必须在创建新会话之前保存
         host_session_id = self.api_client.session_id
         
         if not host_session_id:
