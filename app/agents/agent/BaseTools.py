@@ -153,8 +153,8 @@ def _cache_content(
     session_id: str,
     store_id: str,
     store: any,
-    chunk_size: int = 4000,
-    chunk_overlap: int = 200,
+    chunk_size: int = 2000,
+    chunk_overlap: int = 100,
 ) -> str:
     """
     将内容分块并缓存到 store
@@ -412,7 +412,7 @@ def read_cached_chunk(
         str: JSON格式结果，包含 index、name、content 和 is_last 字段
               如果已读完，返回提示信息
     """
-    session_id = runtime.context.get('session_id', 'default')
+    #session_id = runtime.context.get('session_id', 'default')
     store_id = runtime.context.get('store_id', 'default')
     namespace = (store_id, )
 
