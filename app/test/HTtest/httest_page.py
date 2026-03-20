@@ -71,6 +71,57 @@ class APIClient:
             "X-Session-ID": session_id
         }
     
+    def refresh_token(self) -> Optional[str]:
+        """
+        重新登录获取新的 token
+        
+        Returns:
+            新的 token，如果失败返回 None
+        """
+        try:
+            login_result = requests.post(
+                f"{self.base_url}/api/auth/login",
+                json={"username": "admin", "password": "123456"}
+            )
+            login_result.raise_for_status()
+            token = login_result.json().get("access_token")
+            if token:
+                self.token = token
+                logger.info("Token 刷新成功")
+            return token
+        except Exception as e:
+            logger.error(f"Token 刷新失败: {e}")
+            return None
+    
+    def create_session(self) -> Optional[str]:
+        """
+        创建新会话
+        
+        Returns:
+            新的 session_id，如果失败返回 None
+        """
+        if not self.token:
+            self.refresh_token()
+        
+        if not self.token:
+            logger.error("无法创建会话：token 为空")
+            return None
+        
+        try:
+            session_result = requests.post(
+                f"{self.base_url}/api/session/create",
+                headers={"Authorization": f"Bearer {self.token}"}
+            )
+            session_result.raise_for_status()
+            session_id = session_result.json().get("session_id")
+            if session_id:
+                self.session_id = session_id
+                logger.info(f"会话创建成功: {session_id}")
+            return session_id
+        except Exception as e:
+            logger.error(f"会话创建失败: {e}")
+            return None
+    
     def _request(
         self, 
         method: str, 
@@ -345,6 +396,10 @@ class FileUploader:
             logger.warning("未找到主会话 ID，跳过 doc 文件自动处理")
             return
         
+        if not self.api_client.token:
+            logger.warning("未找到认证 token，跳过 doc 文件自动处理")
+            return
+        
         for file_info in fileids:
             file_id = file_info.get("id")
             file_type = file_info.get("file_type")
@@ -358,11 +413,17 @@ class FileUploader:
                 continue
             
             try:
-                doc_session_id = str(uuid.uuid4())
+                # 创建新会话（自动刷新 token）
+                doc_session_id = self.api_client.create_session()
+                
+                if not doc_session_id:
+                    logger.error(f"为文档 {file_id} 创建会话失败")
+                    continue
                 
                 logger.info(f"\n正在处理文档文件 (ID: {file_id})...")
+                logger.info(f"文档会话 ID: {doc_session_id}")
                 
-                message = f"cache_id是{file_id}"
+                message = f"识别文档 ，file_id是{file_id}"
                 
                 doc_chat_result = self.api_client.doc_chat(
                     message=message,
