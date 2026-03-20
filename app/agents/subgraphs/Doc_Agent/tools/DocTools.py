@@ -14,6 +14,11 @@ from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
+from logging import getLogger
+
+
+
+logger = getLogger(__name__)
 
 
 
@@ -115,6 +120,7 @@ def split_file(type: str, cache_id: str, file_id: str, runtime: ToolRuntime) -> 
         
         # 5. 存储到store的file_id键下（使用store_id命名空间），file_id的原内容就被覆盖了。这里要注意
         runtime.store.put(namespace, file_id, chunk_data)
+        logger.info(f"[INFO]split_file方法 ，store_id: {store_id}， 切分文件工具: {file_id} 已成功切分为 {len(chunk_data)} 个块")
         
         return Command(
             update={
