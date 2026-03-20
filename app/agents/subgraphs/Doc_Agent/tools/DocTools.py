@@ -53,48 +53,74 @@ def split_file(type: str, cache_id: str, file_id: str, runtime: ToolRuntime) -> 
         # 2. 根据文件类型选择不同的处理方式
         import re
         
-        if type == "合同":
-            # 合同类型：先合并内容，再使用正则匹配"第X条"进行切分
+        if type == "供地合同":
+            # 合同类型：先合并内容，再使用正则匹配"第X条"条款进行切分
             if isinstance(chunks, list):
                 full_content = "\n\n".join([chunk.get("content", "") for chunk in chunks])
             else:
                 full_content = str(chunks)
             
-            pattern = r'^\s*(第[\u4e00-\u9fa5\d]+条)'
-            lines = full_content.split('\n')
-            paragraph_data = []
-            _tmp_index = 0
+            # 步骤0: 截取第一条之前的内容（从电子监管号开始到第一条之前）
+            preamble_content = ""
+            preamble_pattern = r'(电\s*子\s*监\s*管\s*号.*?)(?=第[一二三四五六七八九十百千万亿]+条|$)'
+            preamble_match = re.search(preamble_pattern, full_content, re.DOTALL)
+            if preamble_match:
+                preamble_content = preamble_match.group(1).strip()
+                # 从full_content中移除 preamble 部分，避免重复
+                full_content = full_content[preamble_match.end():].strip()
             
-            for idx, line in enumerate(lines):
-                text = line.strip()
-                if not text:
-                    continue
-                    
-                # 检查是否匹配条款模式
-                _is_match = re.match(pattern, text)
-                if _is_match:
-                    _tmp_index += 1
-                
-                paragraph_data.append({
-                    "paragraph_type": _tmp_index,
-                    "paragraph_num": idx,
-                    "paragraph_text": text
-                })
+            # 步骤1: 将"第X条"替换为"第X条条款"
+            pattern = r'^\s*(第[一二三四五六七八九十百千万亿]+条)'
+            full_content = re.sub(pattern, r'\1条款', full_content, flags=re.MULTILINE)
             
-            if not paragraph_data:
-                raise ValueError("合同解析未获取到任何段落数据")
+            # 步骤2: 定义正则表达式模式，用于匹配每两个第几条条款之间的内容
+            pattern = r'(第[\u4e00-\u9fa5\d]+条\s*条款)(.*?)(?=\s*第[\u4e00-\u9fa5\d]+条\s*条款|$)'
+            
+            # 使用正则表达式查找所有匹配的条款内容
+            clause_matches = re.findall(pattern, full_content, re.DOTALL)
+            
+            # 去除多余的空格并过滤空内容
+            formatted_chunks = []
+            for clause in clause_matches:
+                title = clause[0].strip()
+                content = clause[1].strip()
+                if title or content:
+                    formatted_chunks.append((title, content))
+            
+            # 输出每个条款的内容
+            for i, chunk in enumerate(formatted_chunks):
+                print(f"===================================正在记忆第{i+1}条条款...")
+                clause_title = chunk[0] if isinstance(chunk, tuple) else ""
+                clause_content = chunk[1] if isinstance(chunk, tuple) else chunk
+            
+            if not formatted_chunks:
+                raise ValueError("合同解析未获取到任何条款数据")
             
             # 3. 构建存储结构，name改为type
-            chunk_data = [
-                {
-                    "index": i + 1,
+            # 先添加 preamble 作为第一个 chunk，然后添加条款
+            chunk_data = []
+            
+            # 添加 preamble（第一条之前的内容）
+            if preamble_content:
+                chunk_data.append({
+                    "index": 1,
                     "name": type,
-                    "content": para["paragraph_text"],
-                    "paragraph_type": para["paragraph_type"],
-                    "paragraph_num": para["paragraph_num"]
-                }
-                for i, para in enumerate(paragraph_data)
-            ]
+                    "content": preamble_content
+                })
+            
+            # 添加条款内容，每三条合并为一组
+            group_size = 3
+            for i in range(0, len(formatted_chunks), group_size):
+                group_chunks = formatted_chunks[i:i + group_size]
+                combined_content = "\n\n".join([
+                    clause[0] + clause[1] if isinstance(clause, tuple) else clause
+                    for clause in group_chunks
+                ])
+                chunk_data.append({
+                    "index": len(chunk_data) + 1,
+                    "name": type,
+                    "content": combined_content
+                })
         else:
             # 其他类型：直接循环 chunks，修改 name 字段
             if not isinstance(chunks, list) or not chunks:
