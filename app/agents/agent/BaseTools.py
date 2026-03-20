@@ -7,6 +7,7 @@ BaseTools - Agent基础工具模块
 
 设计核心原则：不要让 AI 看到它可能想解释的东西。状态码 + 系统规则 > 自然语言描述。
 
+namespace = (store_id,) 只要保证多个智能体在使用时，store_id是唯一的，就可以避免冲突，因为id是唯一的，file_id或者image_path是公用的，但是取值的时候需要使用id获取
 Date: 2026-03-13
 Author: 张镒谱
 """
@@ -69,7 +70,7 @@ def _save_chunks_to_store(
     Returns:
         bool: 是否保存成功
     """
-    namespace = (store_id, session_id)
+    namespace = (store_id,)
 
     # 构建存储结构: [{index: 1, name: "1/4", content: "..."}, ...]
     chunk_data = [
@@ -270,7 +271,7 @@ def open_file_by_id(
     """
     session_id = runtime.context.get('session_id', 'default')
     store_id = runtime.context.get('store_id', 'default')
-    namespace = (store_id, session_id)
+    namespace = (store_id, )
     # 通过 id 在 store 中查找文件路径,这个file_id是公用的，通过外部方法更新,传递给当前会话，只能当前会话看到
     # 数据格式 file_paths 是一个 dict{file_id_1: file_path_1, file_id_2: file_path_2, ...}
     file_paths_result = runtime.store.get(namespace, "file_id")
@@ -413,7 +414,7 @@ def read_cached_chunk(
     """
     session_id = runtime.context.get('session_id', 'default')
     store_id = runtime.context.get('store_id', 'default')
-    namespace = (store_id, session_id)
+    namespace = (store_id, )
 
     try:
         # 从 store 获取文档数据 (使用 runtime.store)
