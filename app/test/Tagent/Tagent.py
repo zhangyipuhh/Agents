@@ -10,6 +10,7 @@ Author: 张镒谱
 """
 
 import asyncio
+import logging
 import uuid
 import base64
 from pathlib import Path
@@ -50,7 +51,11 @@ async def _async_main():
     """
     console = Console()
     print("=== 聊天助手初始化 ===")
-    
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | %(message)s',
+        datefmt='%H:%M:%S'
+    )
     # 初始化内存检查点，用于保存和恢复对话状态
     # MemorySaver将状态存储在内存中，支持多轮对话的上下文保持
     _checkpointer = MemorySaver()

@@ -10,7 +10,7 @@ BaseTools - Agent基础工具模块
 Date: 2026-03-13
 Author: 张镒谱
 """
-
+import logging
 from imaplib import Commands
 import json
 import uuid
