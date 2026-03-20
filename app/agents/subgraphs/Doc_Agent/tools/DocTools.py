@@ -33,9 +33,9 @@ def split_file(type: str, cache_id: str, file_id: str, runtime: ToolRuntime) -> 
     Returns:
         Command: 包含ToolMessage和切分后的文件内容的命令对象    
     """
-    session_id = runtime.context.get('session_id', 'default')
+    #session_id = runtime.context.get('session_id', 'default')
     store_id = runtime.context.get('store_id', 'default')
-    namespace = (store_id, session_id)
+    namespace = (store_id,)
     try:
         # 1. 从缓存中获取所有块
         result = runtime.store.get(namespace, cache_id)
@@ -105,7 +105,10 @@ def split_file(type: str, cache_id: str, file_id: str, runtime: ToolRuntime) -> 
                 for i, chunk in enumerate(chunks)
             ]
         
-        # 5. 存储到store的file_id键下（使用session_id_file命名空间），file_id的原内容就被覆盖了。这里要注意
+        
+        
+        
+        # 5. 存储到store的file_id键下（使用store_id命名空间），file_id的原内容就被覆盖了。这里要注意
         runtime.store.put(namespace, file_id, chunk_data)
         
         return Command(
