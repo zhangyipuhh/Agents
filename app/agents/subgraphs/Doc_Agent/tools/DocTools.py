@@ -14,10 +14,10 @@ from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
-from app.utils.files.DocumentLoader import DocumentLoader
 
 
-@tool(name="split_file", description="将文件内容切分成多个块")
+
+@tool(description="将文件内容切分成多个块")
 def split_file(type: str, cache_id: str, file_id: str, runtime: ToolRuntime) -> Command:
     """
     切分文件工具
