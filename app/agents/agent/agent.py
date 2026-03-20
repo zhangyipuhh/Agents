@@ -154,6 +154,7 @@ class Agent:
             包含模型响应消息的字典
         """
         messages = state["summarized_messages"]
+        logging.info(f"对话历史: {messages}")
         #messages = state["messages"]
         # 系统提示词，指导模型如何根据文件类型调用相应的解析工具
         system_prompt = self.system_prompt or ""
@@ -276,8 +277,9 @@ class Agent:
         # 添加 context 信息（如果可用）
         if hasattr(self, 'summarization_node') and "context" in result:
             result["context"] = result["context"]
-        
-        return result["messages"][-1].content
+        res_content=result["messages"][-1].content
+        logging.info(f"AI回复: {res_content}")
+        return res_content
 
     async def inspect_checkpoint(self, session_id: str = None):
         """检查指定 session 的 checkpoint 内容
