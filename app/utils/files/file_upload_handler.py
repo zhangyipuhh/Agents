@@ -56,12 +56,12 @@ class FileUploadHandler:
         # 保存上传目录路径，供后续文件处理使用
         self.upload_dir = self.file_transfer.upload_dir
     
-    def _get_namespace(self, store_id: str, session_id: str) -> Tuple[str, str]:
+    def _get_namespace(self, store_id: str) -> Tuple[str]:
         """
         构建 LangGraph Store 的 namespace
         
         namespace 用于在 Store 中隔离不同会话的文件数据，
-        采用 (store_id, session_id) 的二维结构确保数据唯一性。
+        采用 (store_id,) 的一维结构确保数据唯一性。
         
         Args:
             store_id (str): 存储 ID，用于区分不同的存储空间
@@ -70,7 +70,7 @@ class FileUploadHandler:
         Returns:
             Tuple[str, str]: namespace 元组，格式为 (store_id, session_id)
         """
-        return (store_id, session_id)
+        return (store_id,)
     
     def _group_images(self, image_ids: List[str]) -> List[List[str]]:
         """
@@ -471,7 +471,7 @@ class FileUploadHandler:
                 img_files.append(file_info)
         
         # 构建 LangGraph Store 的 namespace
-        namespace = self._get_namespace(store_id, session_id)
+        namespace = self._get_namespace(store_id, )
         
         # 收集所有图片ID，用于后续分组
         all_image_ids = []
