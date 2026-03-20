@@ -87,7 +87,7 @@ def _save_chunks_to_store(
 
 
 def _load_and_cache_file(
-    file_path: Union[str, Path],
+    file_path: Union[str, Path, List[Union[str, Path]]],
     session_id: str,
     store_id: str,
     store: any,
@@ -95,9 +95,10 @@ def _load_and_cache_file(
 ) -> str:
     """
     加载文件内容并缓存到 store
+    支持单个文件路径或文件路径列表，多个文件会统一分块返回一个cache_id。
 
     Args:
-        file_path: 文件路径
+        file_path: 文件路径或文件路径列表
         session_id: 会话 ID
         store_id: 存储 ID
         store: store 实例
@@ -109,23 +110,28 @@ def _load_and_cache_file(
     glob = "**/*"
 
     try:
-        path = Path(file_path)
+        paths = [file_path] if not isinstance(file_path, list) else file_path
+        all_contents = []
+        
+        for fp in paths:
+            path = Path(fp)
+            if not path.exists():
+                raise FileNotFoundError(f"文件或文件夹不存在: {fp}")
 
-        if not path.exists():
-            raise FileNotFoundError(f"文件或文件夹不存在: {file_path}")
+            loader = DocumentLoader(
+                path=path,
+                glob=glob,
+                silent_errors=True,
+            )
 
-        loader = DocumentLoader(
-            path=path,
-            glob=glob,
-            silent_errors=True,
-        )
+            docs = loader.load()
+            if docs:
+                all_contents.append(f"=== File: {fp} ===\n" + "\n\n".join([doc.page_content for doc in docs]))
 
-        docs = loader.load()
+        if not all_contents:
+            raise ValueError(f"未从任何文件加载到内容")
 
-        if not docs:
-            raise ValueError(f"未加载到任何内容: {file_path}")
-
-        full_content = "\n\n".join([doc.page_content for doc in docs])
+        full_content = "\n\n".join(all_contents)
         return _cache_content(full_content, session_id, store_id, store)
 
     except Exception as e:
@@ -204,9 +210,10 @@ def get_current_time(runtime: ToolRuntime[AgentContext]) -> str:
 【本地文件加载】加载本地文件（PDF/Word/CSV等）并分块缓存。
 ⚠️ 这是第一步：通过物理路径加载文件。加载后必须使用 read_cached_chunk 读取内容。
 返回 cache_id，用于后续 read_cached_chunk 调用。
+支持单个文件路径或路径列表，多个文件会统一分块返回一个cache_id。
 """)
 def open_file(
-    file_path: Union[str, Path],
+    file_path: Union[str, Path, List[Union[str, Path]]],
     runtime: ToolRuntime[AgentContext],
 ) -> Command:
     """
@@ -214,9 +221,10 @@ def open_file(
 
     智能识别文件类型并加载内容，将文档分块后存入存储，返回文件ID。
     需要使用 read_cached_chunk 工具逐块读取内容。
+    支持单个文件路径或路径列表，多个文件会统一分块返回一个cache_id。
 
     Args:
-        file_path (Union[str, Path]): 必填 文件或文件夹路径，支持相对路径和绝对路径
+        file_path (Union[str, Path, List[Union[str, Path]]]): 必填 文件或文件夹路径，支持相对路径和绝对路径
         runtime (ToolRuntime[AgentContext]): 工具运行时上下文，包含会话信息
 
     Returns:
@@ -240,9 +248,10 @@ def open_file(
 【本地文件加载】加载本地文件（PDF/Word/CSV等）并分块缓存。
 ⚠️ 这是第一步：通过文件ID加载文件。加载后必须使用 read_cached_chunk 读取内容。
 返回 cache_id，用于后续 read_cached_chunk 调用。
+支持单个文件ID或ID列表，多个文件会统一分块返回一个cache_id。
 """)
 def open_file_by_id(
-    file_id: str,
+    file_id: Union[str, List[str]],
     runtime: ToolRuntime[AgentContext],
 ) -> Command:
     """
@@ -250,9 +259,10 @@ def open_file_by_id(
 
     通过文件ID从 store 中查找文件路径，加载内容后将文档分块存入存储，返回文件ID。
     需要使用 read_cached_chunk 工具逐块读取内容。
+    支持单个文件ID或ID列表，多个文件会统一分块返回一个cache_id。
 
     Args:
-        file_id (str): 必填 文件ID，用于查找文件路径
+        file_id (Union[str, List[str]]): 必填 文件ID或ID列表，用于查找文件路径
         runtime (ToolRuntime[AgentContext]): 工具运行时上下文，包含会话信息
 
     Returns:
@@ -264,12 +274,29 @@ def open_file_by_id(
     # 通过 id 在 store 中查找文件路径,这个file_id是公用的，通过外部方法更新,传递给当前会话，只能当前会话看到
     # 数据格式 file_paths 是一个 dict{file_id_1: file_path_1, file_id_2: file_path_2, ...}
     file_paths = runtime.store.get(namespace, "file_id", default=None)
-    # 从 file_paths 中查找 file_id 对应的文件路径
-    file_path = file_paths.get(file_id, None) if file_paths else None
-
+    logging.info(f"file_paths: {file_paths}")
     
+    ids = [file_id] if isinstance(file_id, str) else file_id
+    logging.info(f"open_file_by_id获取得文件ID: {ids}")
+    paths = []
+    for fid in ids:
+        path = file_paths.get(fid, None) if file_paths else None
+        if path:
+            paths.append(path)
+    
+    if not paths:
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=f'{{"error": "未找到任何有效的文件路径"}}',
+                        tool_call_id=runtime.tool_call_id
+                    )
+                ]
+            }
+        )
 
-    content = _load_and_cache_file(file_path, session_id, store_id, runtime.store, runtime.tool_call_id)
+    content = _load_and_cache_file(paths, session_id, store_id, runtime.store, runtime.tool_call_id)
     return Command(
         update={
             "file_chunk_read_progress": 1,
@@ -287,9 +314,10 @@ def open_file_by_id(
 【网页加载】加载网页URL内容并分块缓存。  
 ⚠️ 这是第一步：加载网页。加载后必须使用 read_cached_chunk 读取内容。
 返回 cache_id，用于后续 read_cached_chunk 调用。
+支持单个URL或URL列表，多个URL会统一分块返回一个cache_id。
 """)
 def load_web_page(
-    url: str,
+    url: Union[str, List[str]],
     runtime: ToolRuntime[AgentContext],
 ) -> Command:
     """
@@ -297,9 +325,10 @@ def load_web_page(
 
     加载指定URL的网页内容，将内容分块后存入存储，返回文件ID。
     需要使用 read_cached_chunk 工具逐块读取内容。
+    支持单个URL或URL列表，多个URL会统一分块返回一个cache_id。
 
     Args:
-        url (str): 必填 要加载的网页URL
+        url (Union[str, List[str]]): 必填 要加载的网页URL或URL列表
         runtime (ToolRuntime[AgentContext]): 工具运行时上下文，包含会话信息
 
     Returns:
@@ -310,19 +339,27 @@ def load_web_page(
     include_links = False
     session_id = runtime.context.get('session_id', 'default')
     store_id = runtime.context.get('store_id', 'default')
+    
+    urls = [url] if isinstance(url, str) else url
+    
     try:
-        docs = DocumentLoader.load_url(
-            url=url,
-            extract_type=extract_type,
-            max_length=max_length,
-            include_links=include_links,
-        )
-
-        if not docs:
-            raise ValueError(f"未从 {url} 加载到任何内容")
+        all_contents = []
+        for u in urls:
+            docs = DocumentLoader.load_url(
+                url=u,
+                extract_type=extract_type,
+                max_length=max_length,
+                include_links=include_links,
+            )
+            if docs:
+                all_contents.append(f"=== URL: {u} ===\n" + "\n\n".join([doc.page_content for doc in docs]))
         
-        full_content = "\n\n".join([doc.page_content for doc in docs])
+        if not all_contents:
+            raise ValueError(f"未从任何URL加载到内容")
+        
+        full_content = "\n\n".join(all_contents)
         content = _cache_content(full_content, session_id, store_id, runtime.store)
+        logging.info(f"load_web_page_content: {content}")
         return Command(
             update={
                 "file_chunk_read_progress": 1,
@@ -336,6 +373,7 @@ def load_web_page(
         )
 
     except Exception as e:
+        logging.error(f"load_web_page_error: {e}")
         return Command(
             update={
                 "messages": [
