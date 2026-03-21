@@ -18,7 +18,7 @@ from app.features.contract_approval_agent.config.ApprovalAgentConfig import (
     ApprovalExecuteConfig,
     ApprovalConfigurableConfig,
 )
-from app.features.contract_approval_agent.config.config import DEFAULT_SYSTEM_PROMPT
+from app.features.contract_approval_agent.config.prompts import DEFAULT_SYSTEM_PROMPT
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.store.base import BaseStore
 

@@ -18,7 +18,7 @@ from app.features.contract_document_agent.config.DocAgentConfig import (
     DocExecuteConfig,
     DocConfigurableConfig,
 )
-from app.features.contract_document_agent.config.config import DEFAULT_SYSTEM_PROMPT
+from app.features.contract_document_agent.config.prompts import DEFAULT_SYSTEM_PROMPT
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.store.base import BaseStore
 

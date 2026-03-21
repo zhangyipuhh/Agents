@@ -16,7 +16,7 @@ from app.agents.subgraphs.ApprovalAgent.config.ApprovalAgentConfig import (
     ApprovalConfigurableConfig,
 )
 from app.agents.subgraphs.ApprovalAgent.config.ApprovalAgentContext import ApprovalAgentContext
-from app.agents.subgraphs.ApprovalAgent.config.config import DEFAULT_SYSTEM_PROMPT
+from app.features.contract_approval_agent.config.prompts import DEFAULT_SYSTEM_PROMPT
 
 __all__ = [
     "ApprovalAgentConfig",

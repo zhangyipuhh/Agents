@@ -1,9 +1,9 @@
 #!/usr/bin/python
 # -*- coding:utf-8 -*-
 """
-ApprovalAgent 配置模块
+ApprovalAgent 提示词模块
 
-该模块定义了 ApprovalAgent 的系统提示词和其他配置常量。
+该模块定义了 ApprovalAgent 的系统提示词。
 
 Date: 2026-03-19
 Author: 张镒谱

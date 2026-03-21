@@ -16,7 +16,7 @@ from app.features.contract_document_agent.config.DocAgentConfig import (
     DocConfigurableConfig,
 )
 from app.features.contract_document_agent.config.DocAgentContext import DocAgentContext
-from app.features.contract_document_agent.config.config import DEFAULT_SYSTEM_PROMPT
+from app.features.contract_document_agent.config.prompts import DEFAULT_SYSTEM_PROMPT
 
 __all__ = [
     "DocAgentConfig",
