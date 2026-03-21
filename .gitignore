@@ -8,9 +8,14 @@
 !.gitignore
 # 包含 app 目录
 !app/
-
 # 包含 app 目录下的所有文件
 !app/**
+!web/
+!web/**
+!mcpServer/
+!mcpServer/**
+!mcpClient/
+!mcpClient/**
 
 # 排除 app 目录下的 Python 缓存文件
 app/**/__pycache__/
@@ -20,6 +25,19 @@ app/**/*.pyd
 app/**/*.so
 app/test/语法解释.md
 app/agents/subgraphs/audit_contract_clause/config/rules.md
+#排除mcpServer和mcpClient目录
+# 排除 app 目录下的 Python 缓存文件
+mcpServer/**/__pycache__/
+mcpServer/**/*.pyc
+mcpServer/**/*.pyo
+mcpServer/**/*.pyd
+mcpServer/**/*.so
+mcpClient/**/__pycache__/
+mcpClient/**/*.pyc
+mcpClient/**/*.pyo
+mcpClient/**/*.pyd
+mcpClient/**/*.so
+
 .env
 
 app/test/extract_pdf_pages.py
