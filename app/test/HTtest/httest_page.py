@@ -434,7 +434,6 @@ class FileUploader:
         if not fileids:
             return
         
-        # 保存主会话 ID，必须在创建新会话之前保存
         host_session_id = self.api_client.session_id
         
         if not host_session_id:
@@ -458,7 +457,6 @@ class FileUploader:
                 continue
             
             try:
-                # 创建新会话（自动刷新 token）
                 doc_session_id = self.api_client.create_session()
                 
                 if not doc_session_id:
@@ -468,7 +466,7 @@ class FileUploader:
                 logger.info(f"\n正在处理文档文件 (ID: {file_id})...")
                 logger.info(f"文档会话 ID: {doc_session_id}")
                 
-                message = f"识别文档 ，file_id是{file_id}"
+                message = f"识别文档类型并切分全部文档 ，file_id是{file_id}"
                 
                 doc_chat_result = self.api_client.doc_chat(
                     message=message,
@@ -485,14 +483,65 @@ class FileUploader:
                 
                 store_value = store_result.get("value")
                 
-                logger.info(f"\n文档处理完成！")
+                logger.info(f"\n文档识别完成！")
                 logger.info(f"文件 ID: {file_id}")
                 logger.info(f"处理结果: {doc_chat_response}")
                 logger.info(f"存储值: {store_value}")
                 
+                if isinstance(store_value, list):
+                    self._process_doc_content_list(
+                        store_value, 
+                        doc_session_id, 
+                        host_session_id, 
+                        file_id
+                    )
+                else:
+                    logger.info(f"存储值类型不支持循环处理: {type(store_value)}")
+                
             except Exception as e:
                 logger.error(f"处理文档文件 {file_id} 失败: {e}")
-                logger.error(f"处理文档文件失败: {e}")
+    
+    def _process_doc_content_list(
+        self, 
+        content_list: List[Dict[str, Any]], 
+        doc_session_id: str, 
+        host_session_id: str,
+        file_id: str
+    ) -> None:
+        """
+        处理文档内容列表，循环调用 doc_chat 接口
+        
+        Args:
+            content_list: 文档内容列表，格式 [{'index': 1, 'name': '供地合同', 'content': '...'}, ...]
+            doc_session_id: 文档会话 ID
+            host_session_id: 主会话 ID
+            file_id: 文件 ID
+        """
+        logger.info(f"\n开始处理文档内容列表，共 {len(content_list)} 条...")
+        
+        for item in content_list:
+            index = item.get("index")
+            name = item.get("name", "未知文档")
+            content = item.get("content", "")
+            
+            message = f"{name}信息提取，内容{content}"
+            
+            logger.info(f"处理第 {index} 条: {name}")
+            
+            try:
+                doc_chat_result = self.api_client.doc_chat(
+                    message=message,
+                    session_id=doc_session_id,
+                    host_session_id=host_session_id
+                )
+                
+                doc_chat_response = doc_chat_result.get("response", "无响应")
+                logger.debug(f"处理结果: {doc_chat_response}")
+                
+            except Exception as e:
+                logger.error(f"处理第 {index} 条失败: {e}")
+        
+        logger.info(f"\n文档内容列表处理完成！文件 ID: {file_id}")
 
 
 class FileParser:
