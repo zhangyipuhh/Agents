@@ -21,7 +21,10 @@ from app.core.agent.AgentConfig import (
 )
 from app.features.contract_document_agent.config.DocAgentContext import DocAgentContext
 from app.features.contract_document_agent.tools.DocTools import (
-split_file
+    split_file,
+    get_extraction_rule_id,
+    get_extraction_rule_detail,
+    save_extraction_result
 )
 
 class DocConfigurableConfig(BaseConfigurableConfig):
@@ -76,6 +79,6 @@ class DocAgentConfig(BaseAgentConfig):
 
 
         base_tools, base_tool_node = super().get_tools()
-        tools = list(base_tools) + [split_file]
+        tools = list(base_tools) + [split_file, get_extraction_rule_id, get_extraction_rule_detail, save_extraction_result]
 
         return tools, ToolNode(tools)
