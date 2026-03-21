@@ -594,5 +594,5 @@ if __name__ == "__main__":
     print(contract_text)
     print(paragraph_data)
     #添加标记测试
-    word_processor.highlight_text_in_specific_paragraph(r"WordLoader.docx", ["210113005010GB90004","本合同","本合同"],[45,46,47], (255, 0, 0), r"E:\laboratory\AI\AIagent_env\api\data\documents\辽宁消应特种装备出让合同——1mark.docx")
+    word_processor.highlight_text_in_specific_paragraph(r"WordLoader.docx", ["210113005010GB90004","本合同","本合同"],[45,46,47], (255, 0, 0), r"D:\DocumentLoader\WordLoader——1mark.docx")
     #添加标记测试
