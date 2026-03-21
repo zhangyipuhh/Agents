@@ -1,0 +1,27 @@
+# 忽略所有文件
+*
+
+# 包含 requirements.txt
+!requirements.txt
+!readme.md
+!.env.example
+!.gitignore
+# 包含 app 目录
+!app/
+
+# 包含 app 目录下的所有文件
+!app/**
+
+# 排除 app 目录下的 Python 缓存文件
+app/**/__pycache__/
+app/**/*.pyc
+app/**/*.pyo
+app/**/*.pyd
+app/**/*.so
+app/test/语法解释.md
+app/agents/subgraphs/audit_contract_clause/config/rules.md
+.env
+
+app/test/extract_pdf_pages.py
+app/test/rename_full_md.py
+app/data
