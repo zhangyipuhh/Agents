@@ -24,42 +24,118 @@
 
 ## 项目结构
 
+项目采用三层架构设计，清晰分离核心、功能和共享模块：
+
 ```
 Agents/
 ├── .env.example              # 环境变量配置模板
 ├── .gitignore                # Git 忽略规则
 ├── readme.md                 # 项目说明文档
 ├── requirements.txt          # 依赖清单
-└── app/
-    ├── MainServer.py          # 应用入口，FastAPI 服务配置
-    ├── agents/                # 智能体模块
-    │   ├── Mainagent.py       # 主智能体
-    │   ├── agent/             # 智能体基础组件
-    │   ├── config/            # 配置管理
-    │   ├── llmcalls/          # LLM 调用封装
-    │   ├── states/            # 状态管理
-    │   ├── tools/             # 工具集
-    │   ├── continues/         # 条件判断逻辑
-    │   └── subgraphs/         # 子智能体
-    │       ├── ApprovalAgent/ # 审批智能体
-    │       ├── Doc_Agent/     # 文档处理智能体
-    │       ├── audit_contract_clause/ # 合同条款审计
-    │       ├── audit_document/ # 文档审计
-    │       ├── readFile/      # 文件读取
-    │       └── search_database/ # 数据库搜索
-    ├── routers/               # API 路由
-    │   ├── agent_router.py    # 智能体 API
-    │   ├── auth_router.py     # 认证 API
-    │   ├── contract_router.py # 合同 API
-    │   ├── file_router.py     # 文件 API
-    │   └── session_router.py  # 会话 API
-    ├── utils/                 # 工具模块
-    │   ├── auth/              # 认证工具
-    │   ├── files/             # 文件处理工具
-    │   ├── memory/            # 记忆存储
-    │   └── Session/           # 会话缓存
-    ├── html/                  # 前端页面
-    └── test/                  # 测试文件
+├── app/
+│   ├── core/                 # 核心模块
+│   │   ├── agent/            # 智能体基础组件
+│   │   │   ├── AgentConfig.py    # 智能体配置基类
+│   │   │   ├── AgentContext.py   # 智能体上下文基类
+│   │   │   └── agent.py          # 智能体基类
+│   │   ├── config/           # 配置管理
+│   │   │   ├── __init__.py
+│   │   │   └── config.py         # 全局配置
+│   │   ├── llmcalls/         # LLM 调用封装
+│   │   │   ├── __init__.py
+│   │   │   ├── deepseek.py       # DeepSeek 模型
+│   │   │   ├── model_factory.py  # 模型工厂
+│   │   │   ├── ollama.py         # Ollama 模型
+│   │   │   └── openai.py         # OpenAI 模型
+│   │   ├── tools/            # 基础工具
+│   │   │   └── BaseTools.py      # 工具基类
+│   │   └── server.py             # 服务配置
+│   ├── features/             # 功能模块
+│   │   ├── Tagent/           # T 智能体
+│   │   │   ├── config/
+│   │   │   │   ├── TagentConfig.py
+│   │   │   │   └── TagentContext.py
+│   │   │   ├── tools/
+│   │   │   │   └── Ttools.py
+│   │   │   └── Tagent.py
+│   │   ├── audit_document_agent/ # 文档审计智能体
+│   │   │   ├── tools/
+│   │   │   │   └── tools.py
+│   │   │   └── agent.py
+│   │   ├── contract_approval_agent/ # 合同审批智能体
+│   │   │   └── ApprovalAgent/
+│   │   │       ├── config/
+│   │   │       │   ├── ApprovalAgentConfig.py
+│   │   │       │   ├── ApprovalAgentContext.py
+│   │   │       │   └── config.py
+│   │   │       ├── tools/
+│   │   │       │   └── ApprovalAgentTools.py
+│   │   │       └── ApprovalAgent.py
+│   │   ├── contract_document_agent/ # 文档处理智能体
+│   │   │   ├── config/
+│   │   │   │   ├── DocAgentConfig.py
+│   │   │   │   └── DocAgentContext.py
+│   │   │   ├── tools/
+│   │   │   │   └── DocTools.py
+│   │   │   └── DocAgent.py
+│   │   ├── contract_host_agent/ # 合同主机智能体
+│   │   │   ├── config/
+│   │   │   │   ├── HtAgentConfig.py
+│   │   │   │   └── HtAgentContext.py
+│   │   │   ├── tools/
+│   │   │   │   └── HtTools.py
+│   │   │   ├── HtAgent.py
+│   │   │   ├── client.py
+│   │   │   └── contract_router.py
+│   │   ├── search_database/  # 数据库搜索智能体
+│   │   │   └── agent.py
+│   │   └── stream_Agent/     # 流式主智能体
+│   │       ├── config/
+│   │       │   ├── config.py
+│   │       │   ├── maincontinues.py
+│   │       │   └── mainstates.py
+│   │       ├── tools/
+│   │       │   ├── maintools.py
+│   │       │   └── mcpservers.py
+│   │       ├── Mainagent.py
+│   │       └── agent_router.py
+│   ├── shared/               # 共享模块
+│   │   ├── routers/          # API 路由
+│   │   │   ├── auth_router.py    # 认证 API
+│   │   │   ├── file_router.py    # 文件 API
+│   │   │   └── session_router.py # 会话 API
+│   │   └── utils/            # 工具模块
+│   │       ├── Session/
+│   │       │   └── SessionCache.py
+│   │       ├── auth/
+│   │       │   ├── Safety.py
+│   │       │   └── createpassword.py
+│   │       ├── files/
+│   │       │   ├── loader/       # 文档加载器
+│   │       │   │   ├── CSVLoader.py
+│   │       │   │   ├── JSONLoader.py
+│   │       │   │   ├── MarkdownLoader.py
+│   │       │   │   ├── PDFLoader.py
+│   │       │   │   ├── TextLoader.py
+│   │       │   │   ├── WebLoader.py
+│   │       │   │   └── WordLoader.py
+│   │       │   ├── DocumentLoader.py
+│   │       │   ├── fileTransfer.py
+│   │       │   ├── file_upload_handler.py
+│   │       │   ├── pdfToImage.py
+│   │       │   └── word_untils.py
+│   │       └── memory/
+│   │           ├── checkpoint.py
+│   │           ├── document_memory_store.py
+│   │           └── key_value_memory_store.py
+│   ├── test/                 # 测试文件
+│   ├── __init__.py
+│   └── main.py               # 应用入口
+└── web/
+    └── html/                 # 前端页面
+        ├── clnt/
+        │   └── htagent.html
+        └── Agent.html
 ```
 
 ## 快速开始
@@ -125,10 +201,10 @@ model_api_base_vision="https://api.openai.com/v1"
 
 ```bash
 # 直接运行
-python -m app.MainServer
+python -m app.main
 
 # 或使用 uvicorn
-uvicorn app.MainServer:app --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 服务启动后访问：
@@ -137,16 +213,27 @@ uvicorn app.MainServer:app --host 0.0.0.0 --port 8000
 
 ## 核心模块
 
+### 架构设计
+
+项目采用三层架构：
+
+| 层级 | 目录 | 职责 |
+|------|------|------|
+| 核心层 | `app/core/` | 智能体基类、配置管理、LLM 调用封装、基础工具 |
+| 功能层 | `app/features/` | 各类专业智能体实现 |
+| 共享层 | `app/shared/` | API 路由、工具函数、会话管理、文件处理 |
+
 ### 主智能体 (MainAgent)
 
-主智能体是系统的核心协调者，负责：
+主智能体位于 `app/features/stream_Agent/Mainagent.py`，是系统的核心协调者，负责：
+
 - 构建和管理 LangGraph 状态图工作流
 - 绑定和管理工具集
 - 协调子智能体的调用
 - 处理流式响应输出
 
 ```python
-from app.agents.Mainagent import MainAgent
+from app.features.stream_Agent.Mainagent import MainAgent
 
 # 创建智能体实例
 agent = await MainAgent.create()
@@ -157,14 +244,14 @@ result = agent.CreateAgent()
 
 ### 子智能体
 
-| 智能体 | 功能描述 |
-|--------|----------|
-| ApprovalAgent | 审批流程处理，支持多轮对话和状态管理 |
-| DocAgent | 文档处理，支持多种文档格式的解析和理解 |
-| HtAgent | 合同审批，专门处理自然资源业务合同审批 |
-| audit_document | 文档审计，检查文档合规性 |
-| readFile | 文件读取，支持 PDF/Word/CSV/JSON 等格式 |
-| search_database | 数据库搜索，提供数据查询能力 |
+| 智能体 | 目录 | 功能描述 |
+|--------|------|----------|
+| ApprovalAgent | `features/contract_approval_agent/` | 审批流程处理，支持多轮对话和状态管理 |
+| DocAgent | `features/contract_document_agent/` | 文档处理，支持多种文档格式的解析和理解 |
+| HtAgent | `features/contract_host_agent/` | 合同审批，专门处理自然资源业务合同审批 |
+| Tagent | `features/Tagent/` | 通用智能体，提供基础对话能力 |
+| audit_document_agent | `features/audit_document_agent/` | 文档审计，检查文档合规性 |
+| search_database | `features/search_database/` | 数据库搜索，提供数据查询能力 |
 
 ## API 文档
 
@@ -195,16 +282,17 @@ Content-Type: application/json
 
 ### 添加新智能体
 
-1. 在 `app/agents/subgraphs/` 创建智能体目录
-2. 实现智能体类，继承基础配置
-3. 定义工具和状态
-4. 在 `MainAgent` 中注册子图
+1. 在 `app/features/` 创建智能体目录
+2. 实现智能体类，继承 `app/core/agent/` 中的基类
+3. 在 `config/` 子目录定义配置和上下文
+4. 在 `tools/` 子目录定义工具
+5. 在 `MainAgent` 中注册子图
 
 ### 添加新工具
 
-1. 在 `app/agents/tools/` 中定义工具函数
+1. 在智能体的 `tools/` 目录中定义工具函数
 2. 使用 `@tool` 装饰器声明工具
-3. 在 `MainTools` 类中注册工具
+3. 继承 `BaseTools` 基类
 
 ```python
 from langchain.tools import tool
@@ -217,10 +305,12 @@ def my_tool(param: str) -> str:
 
 ### 配置管理
 
-配置文件位于 `app/agents/config/config.py`，支持：
+全局配置文件位于 `app/core/config/config.py`，支持：
 - LLM 模型配置
 - 提示词模板配置
 - 工具参数配置
+
+各智能体独立配置位于 `app/features/<agent_name>/config/` 目录。
 
 ## 作者
 

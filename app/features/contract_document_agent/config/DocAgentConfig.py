@@ -20,7 +20,9 @@ from app.core.agent.AgentConfig import (
     ExecuteConfig as BaseExecuteConfig,
 )
 from app.features.contract_document_agent.config.DocAgentContext import DocAgentContext
-
+from app.features.contract_document_agent.tools.DocTools import (
+split_file
+)
 
 class DocConfigurableConfig(BaseConfigurableConfig):
     """
@@ -71,9 +73,7 @@ class DocAgentConfig(BaseAgentConfig):
         返回:
             tuple[list[str], ToolNode]: 工具名称列表和对应的 ToolNode 对象
         """
-        from app.agents.subgraphs.Doc_Agent.tools.DocTools import (
-            split_file
-        )
+
 
         base_tools, base_tool_node = super().get_tools()
         tools = list(base_tools) + [split_file]

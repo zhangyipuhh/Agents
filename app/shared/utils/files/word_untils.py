@@ -12,7 +12,7 @@ from docx import Document
 from docx.shared import RGBColor
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
-from app.shared.agents.config.config import WORD_OUTPUT_CONFIG
+from app.core.config.config import WORD_OUTPUT_CONFIG
 
 class WordProcessor:
     """Word处理器类"""

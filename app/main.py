@@ -17,7 +17,7 @@ from app.core.server import create_app
 from app.shared.routers.file_router import router as file_router
 from app.shared.routers.session_router import router as session_router
 from app.shared.routers.auth_router import router as auth_router
-from app.features.contract_host_agent.routers.contract_router import router as contract_router
+from app.features.contract_host_agent.router.contract_router import router as contract_router
 
 
 app = create_app()
@@ -37,4 +37,7 @@ register_routers()
 
 
 if __name__ == '__main__':
-    uvicorn.run("app.main:app", host='0.0.0.0', port=8000, reload=False)
+    #开发环境
+    uvicorn.run("app.main:app", host='0.0.0.0', port=8000, reload=True, reload_dirs=["app"], reload_delay=0.5)
+    #生产环境
+    # uvicorn.run("app.main:app", host='0.0.0.0', port=8000, reload=False)

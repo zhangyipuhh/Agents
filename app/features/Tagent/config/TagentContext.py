@@ -1,4 +1,4 @@
-from app.agents.agent.AgentContext import AgentContext as BaseAgentContext
+from app.core.agent.AgentContext import AgentContext as BaseAgentContext
 
 
 class TAgentContext(BaseAgentContext):
