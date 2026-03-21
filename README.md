@@ -26,37 +26,40 @@
 
 ```
 Agents/
-├── app/
-│   ├── MainServer.py          # 应用入口，FastAPI 服务配置
-│   ├── agents/                 # 智能体模块
-│   │   ├── Mainagent.py       # 主智能体
-│   │   ├── agent/             # 智能体基础组件
-│   │   ├── config/            # 配置管理
-│   │   ├── llmcalls/          # LLM 调用封装
-│   │   ├── states/            # 状态管理
-│   │   ├── tools/             # 工具集
-│   │   ├── continues/         # 条件判断逻辑
-│   │   └── subgraphs/         # 子智能体
-│   │       ├── ApprovalAgent/ # 审批智能体
-│   │       ├── Doc_Agent/     # 文档处理智能体
-│   │       ├── audit_contract_clause/ # 合同条款审计
-│   │       ├── audit_document/ # 文档审计
-│   │       ├── readFile/      # 文件读取
-│   │       └── search_database/ # 数据库搜索
-│   ├── routers/               # API 路由
-│   │   ├── agent_router.py    # 智能体 API
-│   │   ├── auth_router.py     # 认证 API
-│   │   ├── contract_router.py # 合同 API
-│   │   ├── file_router.py     # 文件 API
-│   │   └── session_router.py  # 会话 API
-│   ├── utils/                 # 工具模块
-│   │   ├── auth/              # 认证工具
-│   │   ├── files/             # 文件处理工具
-│   │   ├── memory/            # 记忆存储
-│   │   └── Session/           # 会话缓存
-│   ├── html/                  # 前端页面
-│   └── test/                  # 测试文件
-└── requirements.txt           # 依赖清单
+├── .env.example              # 环境变量配置模板
+├── .gitignore                # Git 忽略规则
+├── readme.md                 # 项目说明文档
+├── requirements.txt          # 依赖清单
+└── app/
+    ├── MainServer.py          # 应用入口，FastAPI 服务配置
+    ├── agents/                # 智能体模块
+    │   ├── Mainagent.py       # 主智能体
+    │   ├── agent/             # 智能体基础组件
+    │   ├── config/            # 配置管理
+    │   ├── llmcalls/          # LLM 调用封装
+    │   ├── states/            # 状态管理
+    │   ├── tools/             # 工具集
+    │   ├── continues/         # 条件判断逻辑
+    │   └── subgraphs/         # 子智能体
+    │       ├── ApprovalAgent/ # 审批智能体
+    │       ├── Doc_Agent/     # 文档处理智能体
+    │       ├── audit_contract_clause/ # 合同条款审计
+    │       ├── audit_document/ # 文档审计
+    │       ├── readFile/      # 文件读取
+    │       └── search_database/ # 数据库搜索
+    ├── routers/               # API 路由
+    │   ├── agent_router.py    # 智能体 API
+    │   ├── auth_router.py     # 认证 API
+    │   ├── contract_router.py # 合同 API
+    │   ├── file_router.py     # 文件 API
+    │   └── session_router.py  # 会话 API
+    ├── utils/                 # 工具模块
+    │   ├── auth/              # 认证工具
+    │   ├── files/             # 文件处理工具
+    │   ├── memory/            # 记忆存储
+    │   └── Session/           # 会话缓存
+    ├── html/                  # 前端页面
+    └── test/                  # 测试文件
 ```
 
 ## 快速开始
@@ -85,16 +88,38 @@ pip install -r requirements.txt
 
 ### 配置说明
 
-在 `app/agents/config/config.py` 中配置 LLM 参数：
+项目使用环境变量管理敏感配置：
 
-```python
-LLM_CONFIG = {
-    "model_type": "openai",      # 可选: openai, deepseek, ollama
-    "model_name": "gpt-4",
-    "api_key": "your-api-key",
-    "base_url": "https://api.openai.com/v1"
-}
+1. 复制配置模板：
+```bash
+cp .env.example .env
 ```
+
+2. 编辑 `.env` 文件，填入真实配置：
+```env
+# 大模型配置
+model_type="openai"
+model_name="gpt-4"
+model_api_key="your-api-key"
+model_api_base="https://api.openai.com/v1"
+model_temperature=0.2
+
+# 视觉模型配置（可选）
+model_type_vision="openai"
+model_name_vision="gpt-4-vision"
+model_api_key_vision="your-api-key"
+model_api_base_vision="https://api.openai.com/v1"
+```
+
+| 配置项 | 说明 |
+|--------|------|
+| `model_type` | 模型类型：openai / deepseek / ollama |
+| `model_name` | 模型名称 |
+| `model_api_key` | API 密钥 |
+| `model_api_base` | API 地址 |
+| `is_multimodal` | 是否支持多模态 |
+
+> ⚠️ **注意**：`.env` 文件包含敏感信息，已添加到 `.gitignore`，不会被提交到 Git。
 
 ### 启动服务
 
