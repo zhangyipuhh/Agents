@@ -13,7 +13,7 @@ import json
 from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
-
+from app.utils.files.word_untils import WordProcessor
 from logging import getLogger
 
 
@@ -54,30 +54,42 @@ def split_file(type: str, cache_id: str, file_id: str, runtime: ToolRuntime) -> 
         import re
         
         if type == "供地合同":
+            word_processor = WordProcessor()
+            #获取合同文件路径,后续用于审批结果存储
+            file_paths_result = runtime.store.get(namespace, "file_id")
+            file_paths = file_paths_result.value if file_paths_result else None
+            path = file_paths.get(file_id, None) if file_paths else None
+            # 存储合同文件路径
+            if not path:
+                raise ValueError(f"未找到文件路径: {file_id}")
+            runtime.store.put(namespace, "ht_file_path", path)
+            # 读取合同文件内容，并将条款前的空格去除，同时将"第几条"替换为"第几条款"
+            contract_text,paragraph_data =word_processor.read_contract_word(path, pattern=  r'^\s*(第[一二三四五六七八九十百千万亿]+条)', pattern_replace=r'\1条款')
+            
+
+            #存储合同段落信息
+            runtime.store.put(namespace, "ht_paragraph_data", paragraph_data)
+
+            
             # 合同类型：先合并内容，再使用正则匹配"第X条"条款进行切分
-            if isinstance(chunks, list):
-                full_content = "\n\n".join([chunk.get("content", "") for chunk in chunks])
-            else:
-                full_content = str(chunks)
+            
             
             # 步骤0: 截取第一条之前的内容（从电子监管号开始到第一条之前）
             preamble_content = ""
             preamble_pattern = r'(电\s*子\s*监\s*管\s*号.*?)(?=第[一二三四五六七八九十百千万亿]+条|$)'
-            preamble_match = re.search(preamble_pattern, full_content, re.DOTALL)
+            preamble_match = re.search(preamble_pattern, contract_text, re.DOTALL)
             if preamble_match:
                 preamble_content = preamble_match.group(1).strip()
-                # 从full_content中移除 preamble 部分，避免重复
-                full_content = full_content[preamble_match.end():].strip()
+                # 从contract_text中移除 preamble 部分，避免重复
+                contract_text = contract_text[preamble_match.end():].strip()
             
-            # 步骤1: 将"第X条"替换为"第X条条款"
-            pattern = r'^\s*(第[一二三四五六七八九十百千万亿]+条)'
-            full_content = re.sub(pattern, r'\1条款', full_content, flags=re.MULTILINE)
+
             
             # 步骤2: 定义正则表达式模式，用于匹配每两个第几条条款之间的内容
             pattern = r'(第[\u4e00-\u9fa5\d]+条\s*条款)(.*?)(?=\s*第[\u4e00-\u9fa5\d]+条\s*条款|$)'
             
             # 使用正则表达式查找所有匹配的条款内容
-            clause_matches = re.findall(pattern, full_content, re.DOTALL)
+            clause_matches = re.findall(pattern, contract_text, re.DOTALL)
             
             # 去除多余的空格并过滤空内容
             formatted_chunks = []
