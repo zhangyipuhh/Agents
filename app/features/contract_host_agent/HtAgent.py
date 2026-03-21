@@ -275,7 +275,10 @@ class HtAgent:
             limit=limit,
         )
 
-        context = HtAgentContext(session_id=session_id, store_id=self.store_id)
+        context = HtAgentContext(
+            session_id=session_id, 
+            store_id=self.store_id or session_id
+        )
 
         result = await agent.invoke(
             config=config,
