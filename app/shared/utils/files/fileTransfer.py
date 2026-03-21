@@ -44,12 +44,9 @@ class FileTransfer:
         """
         upload_path = Path(upload_dir)
 
-        # 如果是相对路径，基于当前文件位置计算绝对路径
         if not upload_path.is_absolute():
-            # 当前文件所在目录: app/utils/files/
             current_file_dir = Path(__file__).parent
-            # 项目根目录: 向上三级到 Agents/
-            project_root = current_file_dir.parent.parent.parent
+            project_root = current_file_dir.parent.parent.parent.parent.parent
             upload_path = project_root / upload_dir
 
         self.upload_dir = upload_path.resolve()

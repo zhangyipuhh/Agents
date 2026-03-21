@@ -17,13 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 def _get_project_root() -> Path:
-    """
-    获取项目根目录
-
-    Returns:
-        Path: 项目根目录的绝对路径
-    """
-    return Path(__file__).parent.parent.parent.parent
+    return Path(__file__).parent.parent.parent.parent.parent
 
 
 def _resolve_path(path: str) -> Path:
