@@ -513,7 +513,7 @@ class FileUploader:
         
         Args:
             content_list: 文档内容列表，格式 [{'index': 1, 'name': '供地合同', 'content': '...'}, ...]
-            doc_session_id: 文档会话 ID
+            doc_session_id: 文档会话 ID（不再使用，保留参数兼容性）
             host_session_id: 主会话 ID
             file_id: 文件 ID
         """
@@ -524,14 +524,19 @@ class FileUploader:
             name = item.get("name", "未知文档")
             content = item.get("content", "")
             
-            message = f"{name}信息提取，内容{content}"
+            new_doc_session_id = self.api_client.create_session()
+            if not new_doc_session_id:
+                logger.error(f"为第 {index} 条创建会话失败")
+                continue
             
-            logger.info(f"处理第 {index} 条: {name}")
+            message = f"{name}信息提取，内容:'{content}'"
+            
+            logger.info(f"处理第 {index} 条: {name}, session_id: {new_doc_session_id}")
             
             try:
                 doc_chat_result = self.api_client.doc_chat(
                     message=message,
-                    session_id=doc_session_id,
+                    session_id=new_doc_session_id,
                     host_session_id=host_session_id
                 )
                 
