@@ -529,7 +529,7 @@ class FileUploader:
                 logger.error(f"为第 {index} 条创建会话失败")
                 continue
             
-            message = f"{name}信息提取，内容:'{content}'"
+            message = f"请从以下{name}文档内容中提取关键信息，内容为:'{content}'"
             
             logger.info(f"处理第 {index} 条: {name}, session_id: {new_doc_session_id}")
             
