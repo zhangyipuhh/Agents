@@ -11,15 +11,61 @@ Author: 张镒谱
 
 import json
 import time
+from typing import Literal
+from pydantic import BaseModel, Field, field_validator
 from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 from app.shared.utils.files.word_untils import WordProcessor
+from app.features.contract_document_agent.config.prompts import EXTRACTION_CONFIG, DOC_TYPE_RULE_MAPPING
 from logging import getLogger
 
 
 
 logger = getLogger(__name__)
+
+
+class QAItem(BaseModel):
+    question: str = Field(..., description="问题内容")
+    answer: str = Field(..., description="答案内容")
+
+
+class ExtractionItem(BaseModel):
+    index: str = Field(..., description="索引标识，如'基础信息'、'第一条'、'第五条'等")
+    content: list[QAItem] = Field(default_factory=list, description="问题答案列表")
+
+    @field_validator('content', mode='before')
+    @classmethod
+    def validate_content(cls, v):
+        if not isinstance(v, list):
+            raise ValueError('content 必须是列表')
+        return v
+
+
+class ExtractedData(BaseModel):
+    items: list[ExtractionItem] = Field(..., description="提取数据列表")
+
+    @field_validator('items', mode='before')
+    @classmethod
+    def convert_legacy_format(cls, v):
+        if not isinstance(v, list):
+            raise ValueError('extracted_data 必须是列表')
+        
+        converted = []
+        for item in v:
+            if isinstance(item, dict):
+                if 'index' in item and 'content' in item:
+                    converted.append(item)
+                elif 'question' in item and 'answer' in item:
+                    converted.append({
+                        "index": "基础信息",
+                        "content": [{"question": item['question'], "answer": item['answer']}]
+                    })
+                else:
+                    raise ValueError(f'无法识别的数据格式: {item}')
+            else:
+                raise ValueError(f'数据项必须是字典: {item}')
+        return converted
 
 
 
@@ -104,12 +150,6 @@ def split_file(type: str, cache_id: str, file_id: str, runtime: ToolRuntime) -> 
                 if title or content:
                     formatted_chunks.append((title, content))
             
-            # 输出每个条款的内容
-            for i, chunk in enumerate(formatted_chunks):
-                print(f"===================================正在记忆第{i+1}条条款...")
-                clause_title = chunk[0] if isinstance(chunk, tuple) else ""
-                clause_content = chunk[1] if isinstance(chunk, tuple) else chunk
-            
             if not formatted_chunks:
                 raise ValueError("合同解析未获取到任何条款数据")
             
@@ -146,17 +186,29 @@ def split_file(type: str, cache_id: str, file_id: str, runtime: ToolRuntime) -> 
             # 3. 构建滚动窗口式存储结构，三个chunk为一组，步长为1
             window_size = 3
             chunk_data = []
-            for i in range(len(chunks) - window_size + 1):
-                window_chunks = chunks[i:i + window_size]
+            
+            if len(chunks) < window_size:
                 combined_content = "\n\n".join([
                     chunk.get("content", "") if isinstance(chunk, dict) else str(chunk)
-                    for chunk in window_chunks
+                    for chunk in chunks
                 ])
                 chunk_data.append({
-                    "index": i + 1,
+                    "index": 1,
                     "name": type,
                     "content": combined_content
                 })
+            else:
+                for i in range(len(chunks) - window_size + 1):
+                    window_chunks = chunks[i:i + window_size]
+                    combined_content = "\n\n".join([
+                        chunk.get("content", "") if isinstance(chunk, dict) else str(chunk)
+                        for chunk in window_chunks
+                    ])
+                    chunk_data.append({
+                        "index": i + 1,
+                        "name": type,
+                        "content": combined_content
+                    })
         
         
         
@@ -216,25 +268,24 @@ def get_extraction_rule_id(doc_type: str, clause_numbers: list[str], runtime: To
         
     Example:
         >>> get_extraction_rule_id("供地合同", ["第一条", "第三条"])
-        >>> # 返回: {"rule_id": "rule_contract_供地合同_clauses_2", ...}
+        >>> # 返回: {"rule_id": "rule_contract_供地合同_clauses", ...}
     """
     store_id = runtime.context.get('store_id', 'default')
     logger.info(f"[get_extraction_rule_id] store_id: {store_id}, doc_type: {doc_type}, clause_numbers: {clause_numbers}")
     
     try:
-        rule_id = ""
+        if doc_type not in DOC_TYPE_RULE_MAPPING:
+            raise ValueError(f"不支持的文档类型: {doc_type}")
+        
+        mapping = DOC_TYPE_RULE_MAPPING[doc_type]
         
         if doc_type == "供地合同":
             if clause_numbers:
-                rule_id = f"rule_contract_{doc_type}_clauses_{len(clause_numbers)}"
+                rule_id = mapping["clauses"]
             else:
-                rule_id = f"rule_contract_{doc_type}_all"
-        elif doc_type == "成交确认书":
-            rule_id = "rule_confirmation"
-        elif doc_type == "会议纪要":
-            rule_id = "rule_meeting_minutes"
+                rule_id = mapping["all"]
         else:
-            raise ValueError(f"不支持的文档类型: {doc_type}")
+            rule_id = mapping["default"]
         
         logger.info(f"[get_extraction_rule_id] 生成规则ID: {rule_id}")
         
@@ -290,92 +341,31 @@ def get_extraction_rule_detail(rule_id: str, runtime: ToolRuntime) -> Command:
         
     Example:
         >>> get_extraction_rule_detail("rule_contract_供地合同_all")
-        >>> # 返回: {"fields": [...], "output_template": {...}, ...}
+        >>> # 返回: {"questions": [...], "output_format": {...}, ...}
     """
     store_id = runtime.context.get('store_id', 'default')
     logger.info(f"[get_extraction_rule_detail] store_id: {store_id}, rule_id: {rule_id}")
     
     try:
-        extraction_rules = {
-            "rule_contract_供地合同_all": {
-                "doc_type": "供地合同",
-                "fields": [
-                    {"name": "合同编号", "description": "合同唯一标识", "required": True},
-                    {"name": "出让方", "description": "土地出让方名称", "required": True},
-                    {"name": "受让方", "description": "土地受让方名称", "required": True},
-                    {"name": "地块位置", "description": "土地具体位置", "required": True},
-                    {"name": "面积", "description": "土地面积（平方米）", "required": True},
-                    {"name": "用途", "description": "土地用途", "required": True},
-                    {"name": "出让年限", "description": "土地出让年限", "required": True},
-                    {"name": "成交价格", "description": "土地成交价格", "required": True},
-                    {"name": "付款方式", "description": "付款方式和期限", "required": False},
-                    {"name": "违约责任", "description": "违约责任条款", "required": False}
-                ],
-                "output_template": {
-                    "合同编号": "",
-                    "出让方": "",
-                    "受让方": "",
-                    "地块位置": "",
-                    "面积": "",
-                    "用途": "",
-                    "出让年限": "",
-                    "成交价格": "",
-                    "付款方式": "",
-                    "违约责任": ""
-                }
-            },
-            "rule_confirmation": {
-                "doc_type": "成交确认书",
-                "fields": [
-                    {"name": "确认书编号", "description": "确认书唯一标识", "required": True},
-                    {"name": "成交标的", "description": "成交的土地或项目", "required": True},
-                    {"name": "成交价格", "description": "成交金额", "required": True},
-                    {"name": "竞得人", "description": "竞得方名称", "required": True},
-                    {"name": "成交时间", "description": "成交日期", "required": True},
-                    {"name": "签约时限", "description": "签约截止时间", "required": False}
-                ],
-                "output_template": {
-                    "确认书编号": "",
-                    "成交标的": "",
-                    "成交价格": "",
-                    "竞得人": "",
-                    "成交时间": "",
-                    "签约时限": ""
-                }
-            },
-            "rule_meeting_minutes": {
-                "doc_type": "会议纪要",
-                "fields": [
-                    {"name": "会议时间", "description": "会议召开时间", "required": True},
-                    {"name": "会议地点", "description": "会议召开地点", "required": True},
-                    {"name": "主持人", "description": "会议主持人", "required": True},
-                    {"name": "参会人员", "description": "参会人员名单", "required": True},
-                    {"name": "会议议题", "description": "会议讨论的主要议题", "required": True},
-                    {"name": "决议事项", "description": "会议达成的决议", "required": True},
-                    {"name": "行动计划", "description": "后续行动计划", "required": False}
-                ],
-                "output_template": {
-                    "会议时间": "",
-                    "会议地点": "",
-                    "主持人": "",
-                    "参会人员": "",
-                    "会议议题": "",
-                    "决议事项": "",
-                    "行动计划": ""
-                }
-            }
-        }
-        
-        if rule_id.startswith("rule_contract_供地合同_clauses_"):
-            rule_detail = extraction_rules["rule_contract_供地合同_all"].copy()
-            rule_detail["rule_id"] = rule_id
-        elif rule_id in extraction_rules:
-            rule_detail = extraction_rules[rule_id]
-            rule_detail["rule_id"] = rule_id
-        else:
+        if rule_id not in EXTRACTION_CONFIG:
             raise ValueError(f"未找到规则ID: {rule_id}")
         
-        logger.info(f"[get_extraction_rule_detail] 返回规则详情，字段数: {len(rule_detail['fields'])}")
+        config = EXTRACTION_CONFIG[rule_id]
+        rule_detail = {
+            "rule_id": rule_id,
+            "doc_type": config["doc_type"],
+            "questions": config["questions"],
+            "output_example": config["output_example"]
+        }
+        
+        if "clause_questions" in config:
+            rule_detail["clause_questions"] = config["clause_questions"]
+        
+        question_count = len(config["questions"])
+        if "clause_questions" in config:
+            question_count += sum(len(v) for v in config["clause_questions"].values())
+        
+        logger.info(f"[get_extraction_rule_detail] 返回规则详情，问题数: {question_count}")
         
         return Command(
             update={
@@ -384,7 +374,7 @@ def get_extraction_rule_detail(rule_id: str, runtime: ToolRuntime) -> Command:
                         content=json.dumps({
                             "status": "success",
                             "rule_detail": rule_detail,
-                            "message": f"已获取规则详情，共{len(rule_detail['fields'])}个提取字段"
+                            "message": f"已获取规则详情，共{question_count}个问题"
                         }, ensure_ascii=False),
                         tool_call_id=runtime.tool_call_id
                     )
@@ -409,8 +399,8 @@ def get_extraction_rule_detail(rule_id: str, runtime: ToolRuntime) -> Command:
         )
 
 
-@tool(description="保存提取的结构化数据。参数：doc_type(文档类型)、extracted_data(JSON格式数据，需符合提取规则定义的格式)。返回保存状态和记录ID。")
-def save_extraction_result(doc_type: str, extracted_data: dict, runtime: ToolRuntime) -> Command:
+@tool(description="保存提取的结构化数据。参数：doc_type(文档类型)、extracted_data(JSON格式数据)。统一格式：[{\"index\": \"索引标识\", \"content\": [{\"question\": \"问题\", \"answer\": \"答案\"}]}]。index可以是'基础信息'、'第一条'等。返回保存状态和记录ID。")
+def save_extraction_result(doc_type: str, extracted_data: list, runtime: ToolRuntime) -> Command:
     """
     保存提取结果
     
@@ -419,33 +409,62 @@ def save_extraction_result(doc_type: str, extracted_data: dict, runtime: ToolRun
         - 当用户要求"保存提取结果"、"记录关键信息"时
     
     Args:
-        doc_type: 文档类型
-        extracted_data: 提取的结构化数据，需符合提取规则定义的格式
+        doc_type: 文档类型（供地合同/成交确认书/会议纪要）
+        extracted_data: 提取的结构化数据，统一格式为:
+            [{"index": "索引标识", "content": [{"question": "...", "answer": "..."}]}]
+            - index: 索引标识，如"基础信息"、"第一条"、"第五条"等
+            - content: 问题答案列表
         runtime: 工具运行时上下文
         
     Returns:
         Command: 包含保存状态的命令对象
         
+    存储结构:
+        reference = {
+            session_id: {
+                "成交确认书": [],
+                "会议纪要": [],
+                "供地合同": []
+            }
+        }
+        
     Example:
-        >>> save_extraction_result("供地合同", {"合同编号": "HT001", "出让方": "XXX", ...})
-        >>> # 返回: {"record_id": "record_供地合同_a1b2c3d4", ...}
+        >>> # 所有类型统一格式
+        >>> save_extraction_result("供地合同", [
+        ...     {"index": "基础信息", "content": [{"question": "合同编号是多少？", "answer": "合同编号为HT2024001"}]},
+        ...     {"index": "第五条", "content": [{"question": "合同第五条的不动产单元号是多少？", "answer": "合同第五条的不动产单元号为234455666666"}]}
+        ... ])
+        >>> save_extraction_result("成交确认书", [
+        ...     {"index": "基础信息", "content": [{"question": "成交价格是多少？", "answer": "成交价格为5000万元"}]}
+        ... ])
     """
     store_id = runtime.context.get('store_id', 'default')
+    host_session_id = runtime.context.get('host_session_id', 'default')
     namespace = (store_id,)
-    logger.info(f"[save_extraction_result] store_id: {store_id}, doc_type: {doc_type}")
+    logger.info(f"[save_extraction_result] store_id: {store_id}, doc_type: {doc_type}, host_session_id: {host_session_id}")
     logger.info(f"[save_extraction_result] extracted_data: {json.dumps(extracted_data, ensure_ascii=False)}")
     
     try:
         import uuid
         record_id = f"record_{doc_type}_{uuid.uuid4().hex[:8]}"
         
-        runtime.store.put(namespace, record_id, {
-            "doc_type": doc_type,
-            "extracted_data": extracted_data,
-            "timestamp": str(int(time.time()))
-        })
+        validated_data = ExtractedData(items=extracted_data)
+        normalized_data = [item.model_dump() for item in validated_data.items]
         
-        logger.info(f"[save_extraction_result] 保存成功，record_id: {record_id}")
+        existing_data = runtime.store.get(namespace, "reference")
+        reference_data = existing_data.value if existing_data and existing_data.value else {}
+        
+        if host_session_id not in reference_data:
+            reference_data[host_session_id] = {}
+        
+        if doc_type not in reference_data[host_session_id]:
+            reference_data[host_session_id][doc_type] = []
+        
+        reference_data[host_session_id][doc_type].extend(normalized_data)
+        
+        runtime.store.put(namespace, "reference", reference_data)
+        
+        logger.info(f"[save_extraction_result] 保存成功，record_id: {record_id}, session_id: {host_session_id}")
         
         return Command(
             update={
@@ -455,7 +474,8 @@ def save_extraction_result(doc_type: str, extracted_data: dict, runtime: ToolRun
                             "status": "success",
                             "record_id": record_id,
                             "doc_type": doc_type,
-                            "field_count": len(extracted_data),
+                            "session_id": host_session_id,
+                            "item_count": len(normalized_data),
                             "message": f"已成功保存{doc_type}的提取结果"
                         }, ensure_ascii=False),
                         tool_call_id=runtime.tool_call_id
