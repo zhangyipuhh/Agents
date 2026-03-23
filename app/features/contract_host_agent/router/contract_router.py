@@ -81,6 +81,7 @@ class GetStoreValueResponse(BaseModel):
 class DocChatRequest(BaseModel):
     message: str
     host_session_id: Optional[str] = None
+    image_ids: Optional[List[str]] = None
 
 
 class DocChatResponse(BaseModel):
@@ -178,6 +179,7 @@ async def doc_chat(
     request: Request,
     doc_chat_request: DocChatRequest
 ):
+    
     """
     文档处理聊天接口
     
@@ -191,6 +193,7 @@ async def doc_chat(
         DocChatResponse: 包含AI助手的回复、会话ID和发起会话ID
     """
     try:
+
         session_id = getattr(request.state, "session_id", "default")
         host_session_id = doc_chat_request.host_session_id or session_id
         
@@ -200,6 +203,7 @@ async def doc_chat(
             user_input=doc_chat_request.message,
             session_id=session_id,
             host_session_id=host_session_id,
+            image_ids=doc_chat_request.image_ids or [],
         )
         
         return DocChatResponse(
