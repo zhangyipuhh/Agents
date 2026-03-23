@@ -889,7 +889,7 @@ if __name__ == "__main__":
     ]
 
     result = word_processor.mark_contract_dynamic_values(
-        r"D:\DocumentLoader\WordLoader.docx",
+        r"C:\Users\54299\Desktop\新版国有建设用地使用权出让合同.docx",
         marking_rules,
-        r"D:\DocumentLoader\WordLoader_marked.docx"
+        r"C:\Users\54299\Desktop\新版国有建设用地使用权出让合同_marked.docx"
     )
