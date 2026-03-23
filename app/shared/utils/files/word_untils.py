@@ -586,13 +586,310 @@ class WordProcessor:
             print(f"标记文本时出错: {str(e)}")
             return doc_path
 
+    def mark_contract_dynamic_values(
+        self,
+        doc_path: str,
+        marking_rules: List[Dict[str, Any]],
+        output_path: str = None
+    ) -> str:
+        """
+        根据标记规则自动识别并标记合同中的动态值
+        
+        Args:
+            doc_path: Word文档路径
+            marking_rules: 标记规则列表，每个规则包含：
+                - clause_pattern: 条款编号模式（如"第六条"、"第五条"）
+                - prefix_pattern: 动态值前缀
+                - suffix_pattern: 动态值后缀（可选）
+                - color: RGB颜色元组
+            output_path: 输出文档路径，如果为None则覆盖原文件
+        
+        Returns:
+            输出文档的路径
+        
+        Raises:
+            IOError: 文件操作失败时抛出
+            ValueError: 参数验证失败时抛出
+        
+        Examples:
+            marking_rules = [
+                {
+                    "clause_pattern": "第六条",
+                    "prefix_pattern": "用途为",
+                    "suffix_pattern": None,
+                    "color": (255, 0, 0)
+                },
+                {
+                    "clause_pattern": "第五条",
+                    "prefix_pattern": "大写",
+                    "suffix_pattern": "（小写",
+                    "color": (255, 0, 0)
+                }
+            ]
+            processor.mark_contract_dynamic_values("contract.docx", marking_rules)
+        """
+        # 参数验证：确保文档路径存在
+        if not os.path.exists(doc_path):
+            raise IOError(f"文档路径不存在: {doc_path}")
+        
+        # 参数验证：确保标记规则不为空
+        if not marking_rules:
+            raise ValueError("标记规则不能为空")
+        
+        try:
+            # 加载文档
+            doc = Document(doc_path)
+            
+            # 处理每条标记规则
+            for rule in marking_rules:
+                clause_pattern = rule.get("clause_pattern")
+                prefix_pattern = rule.get("prefix_pattern")
+                suffix_pattern = rule.get("suffix_pattern")
+                color = rule.get("color", (255, 0, 0))
+                
+                # 验证规则必要字段
+                if not clause_pattern or not prefix_pattern:
+                    print(f"警告: 规则缺少必要字段，跳过该规则: {rule}")
+                    continue
+                
+                # 转换颜色为十六进制格式
+                color_hex = f"{color[0]:02x}{color[1]:02x}{color[2]:02x}"
+                
+                # 查找条款所在的段落索引
+                clause_paragraph_indices = self._find_clause_paragraphs(doc, clause_pattern)
+                
+                # 如果未找到条款，记录警告并跳过
+                if not clause_paragraph_indices:
+                    print(f"警告: 未找到条款 '{clause_pattern}'，跳过该规则")
+                    continue
+                
+                # 在条款段落中标记动态值
+                self._mark_dynamic_value_in_clause(
+                    doc, clause_paragraph_indices, prefix_pattern, suffix_pattern, color_hex
+                )
+            
+            # 确定保存路径
+            save_path = output_path if output_path else doc_path
+            
+            # 保存文档
+            doc.save(save_path)
+            print(f"文档已保存至: {save_path}")
+            return save_path
+            
+        except Exception as e:
+            raise IOError(f"处理文档时出错: {str(e)}")
+    
+    def _find_clause_paragraphs(self, doc: Document, clause_pattern: str) -> List[int]:
+        """
+        查找包含指定条款编号的所有段落索引
+        
+        Args:
+            doc: Document对象
+            clause_pattern: 条款编号模式（如"第六条"）
+        
+        Returns:
+            包含该条款的段落索引列表
+        
+        Note:
+            条款可能跨越多个段落，此方法返回从条款开始到下一个条款之间的所有段落索引
+        """
+        clause_indices = []
+        found_clause = False
+        
+        clause_regex = re.compile(clause_pattern)
+        next_clause_regex = re.compile(r'第[\u4e00-\u9fa5\d]+条')
+        
+        for i, paragraph in enumerate(doc.paragraphs):
+            if found_clause:
+                if next_clause_regex.search(paragraph.text) and not clause_regex.search(paragraph.text):
+                    break
+                clause_indices.append(i)
+            elif clause_regex.search(paragraph.text):
+                found_clause = True
+                clause_indices.append(i)
+        
+        return clause_indices
+    
+    def _mark_dynamic_value_in_clause(
+        self,
+        doc: Document,
+        clause_paragraph_indices: List[int],
+        prefix_pattern: str,
+        suffix_pattern: Optional[str],
+        color_hex: str
+    ) -> bool:
+        """
+        在指定条款段落中标记动态值
+        
+        Args:
+            doc: Document对象
+            clause_paragraph_indices: 条款段落索引列表
+            prefix_pattern: 动态值前缀
+            suffix_pattern: 动态值后缀（可选）
+            color_hex: 十六进制颜色值
+        
+        Returns:
+            是否成功标记
+        """
+        for para_idx in clause_paragraph_indices:
+            paragraph = doc.paragraphs[para_idx]
+            para_text = paragraph.text
+            
+            if prefix_pattern not in para_text and prefix_pattern.replace(" ", "") not in para_text.replace(" ", ""):
+                continue
+            
+            full_text = ""
+            run_positions = []
+            
+            for run in paragraph.runs:
+                start_pos = len(full_text)
+                full_text += run.text
+                end_pos = len(full_text)
+                run_positions.append((start_pos, end_pos, run))
+            
+            prefix_idx = full_text.find(prefix_pattern)
+            if prefix_idx == -1:
+                prefix_idx = full_text.replace(" ", "").find(prefix_pattern.replace(" ", ""))
+                if prefix_idx == -1:
+                    continue
+                space_count_before = full_text[:prefix_idx + 3].count(" ") - prefix_pattern[:3].count(" ")
+                prefix_idx = prefix_idx + space_count_before
+            
+            dynamic_value_start = prefix_idx + len(prefix_pattern)
+            
+            if suffix_pattern:
+                suffix_idx = full_text.find(suffix_pattern, dynamic_value_start)
+                if suffix_idx == -1:
+                    text_after_prefix = full_text[dynamic_value_start:]
+                    suffix_idx_in_sub = text_after_prefix.replace(" ", "").find(suffix_pattern.replace(" ", ""))
+                    if suffix_idx_in_sub == -1:
+                        print(f"警告: 在段落{para_idx}中未找到后缀 '{suffix_pattern}'")
+                        continue
+                    space_count = text_after_prefix[:suffix_idx_in_sub].count(" ")
+                    suffix_idx = dynamic_value_start + suffix_idx_in_sub + space_count
+                
+                dynamic_value_end = suffix_idx
+            else:
+                dynamic_value_end = len(full_text)
+            
+            dynamic_value = full_text[dynamic_value_start:dynamic_value_end].strip()
+            if not dynamic_value:
+                print(f"警告: 动态值为空，前缀 '{prefix_pattern}'")
+                continue
+            
+            print(f"识别到动态值: '{dynamic_value}'")
+            
+            # 收集需要处理的runs（与动态值范围有重叠的）
+            para_runs_to_process = []
+            for run_start, run_end, run in run_positions:
+                if not (run_end <= dynamic_value_start or run_start >= dynamic_value_end):
+                    para_runs_to_process.append((run_start, run_end, run))
+            
+            if not para_runs_to_process:
+                continue
+            
+            # 获取原始格式
+            original_font = None
+            original_size = None
+            original_bold = None
+            original_italic = None
+            original_underline = None
+            
+            if para_runs_to_process:
+                first_run = para_runs_to_process[0][2]
+                if first_run.font:
+                    original_font = first_run.font.name
+                    original_size = first_run.font.size
+                    original_bold = first_run.font.bold
+                    original_italic = first_run.font.italic
+                    original_underline = first_run.font.underline
+            
+            # 按原始顺序重建段落，保持正确的文本顺序
+            paragraph.clear()
+            
+            for run_start, run_end, run in run_positions:
+                text_in_run = run.text
+                
+                # 检查这个run是否需要处理（是否与动态值范围重叠）
+                if run_end <= dynamic_value_start or run_start >= dynamic_value_end:
+                    # 不需要处理，直接添加
+                    new_run = paragraph.add_run(text_in_run)
+                else:
+                    # 需要处理，分割文本
+                    rel_start = max(0, dynamic_value_start - run_start)
+                    rel_end = min(len(text_in_run), dynamic_value_end - run_start)
+                    
+                    # 添加动态值前的部分（不标记）
+                    if rel_start > 0:
+                        new_run = paragraph.add_run(text_in_run[:rel_start])
+                        if run.font:
+                            if run.font.name:
+                                new_run.font.name = run.font.name
+                            if run.font.size:
+                                new_run.font.size = run.font.size
+                            if run.font.bold is not None:
+                                new_run.font.bold = run.font.bold
+                            if run.font.italic is not None:
+                                new_run.font.italic = run.font.italic
+                            if run.font.underline is not None:
+                                new_run.font.underline = run.font.underline
+                    
+                    # 添加动态值部分（标记）
+                    if rel_end > rel_start:
+                        new_run = paragraph.add_run(text_in_run[rel_start:rel_end])
+                        if original_font:
+                            new_run.font.name = original_font
+                        if original_size:
+                            new_run.font.size = original_size
+                        if original_bold is not None:
+                            new_run.font.bold = original_bold
+                        if original_italic is not None:
+                            new_run.font.italic = original_italic
+                        if original_underline is not None:
+                            new_run.font.underline = original_underline
+                        new_run.font.color.rgb = RGBColor.from_string(color_hex)
+                    
+                    # 添加动态值后的部分（不标记）
+                    if rel_end < len(text_in_run):
+                        new_run = paragraph.add_run(text_in_run[rel_end:])
+                        if run.font:
+                            if run.font.name:
+                                new_run.font.name = run.font.name
+                            if run.font.size:
+                                new_run.font.size = run.font.size
+                            if run.font.bold is not None:
+                                new_run.font.bold = run.font.bold
+                            if run.font.italic is not None:
+                                new_run.font.italic = run.font.italic
+                            if run.font.underline is not None:
+                                new_run.font.underline = run.font.underline
+            
+            print(f"已标记动态值: '{dynamic_value}'")
+            return True
+        
+        print(f"警告: 在条款段落中未找到前缀 '{prefix_pattern}'")
+        return False
+
 if __name__ == "__main__":
     word_processor = WordProcessor()
-    
-    #替换文本测试
-    contract_text,paragraph_data = word_processor.read_contract_word(r"D:\DocumentLoader\WordLoader.docx",r'^\s*(第[\u4e00-\u9fa5\d]+条)',r'\1条款')
-    print(contract_text)
-    print(paragraph_data)
-    #添加标记测试
-    word_processor.highlight_text_in_specific_paragraph(r"WordLoader.docx", ["210113005010GB90004","本合同","本合同"],[45,46,47], (255, 0, 0), r"D:\DocumentLoader\WordLoader——1mark.docx")
-    #添加标记测试
+
+    marking_rules = [
+        {
+            "clause_pattern": "第六条",
+            "prefix_pattern": "用途为",
+            "suffix_pattern": "。",
+            "color": (255, 0, 0)
+        },
+        {
+            "clause_pattern": "第五条",
+            "prefix_pattern": "宗地总面积为大写",
+            "suffix_pattern": "平方米",
+            "color": (255, 0, 0)
+        }
+    ]
+
+    result = word_processor.mark_contract_dynamic_values(
+        r"D:\DocumentLoader\WordLoader.docx",
+        marking_rules,
+        r"D:\DocumentLoader\WordLoader_marked.docx"
+    )
