@@ -27,26 +27,20 @@ load_dotenv()
 # 大模型配置字典
 # 存储大语言模型连接和调用所需的配置信息
 LLM_CONFIG = {
-    # 模型名称：指定使用的大语言模型，如"gpt-4"、"claude-3"等
-    "model_name": os.getenv("model_name"),
-    # API密钥：用于认证的大模型服务提供商的密钥
-    "api_key": os.getenv("model_api_key"),
-    # 基础URL：大模型API服务的地址端点
-    "base_url": os.getenv("model_api_base"),
-    # 模型类型：标识模型的类型或版本，用于区分不同类型的模型
-    "model_type": os.getenv("model_type"),
-    # 温度：控制模型输出的随机性，值越高输出越随机，值越低输出越确定
+    "model_name": os.getenv("model_name", ""),
+    "api_key": os.getenv("model_api_key", ""),
+    "base_url": os.getenv("model_api_base", ""),
+    "model_type": os.getenv("model_type", ""),
     "temperature": float(os.getenv("model_temperature") or 0.0),
-    # 是否开启多模态：是否支持同时处理文本和图片等多模态输入
-    "is_multimodal": os.getenv("is_multimodal") == "true",
+    "is_multimodal": os.getenv("is_multimodal", "false") == "true",
 }
 # 视觉模型配置字典
 # 存储视觉模型连接和调用所需的配置信息
 LLM_VISION_CONFIG = {
-    "model_name": os.getenv("model_name_vision"),
-    "api_key": os.getenv("model_api_key_vision"),
-    "base_url": os.getenv("model_api_base_vision"),
-    "model_type": os.getenv("model_type_vision"),
+    "model_name": os.getenv("model_name_vision", ""),
+    "api_key": os.getenv("model_api_key_vision", ""),
+    "base_url": os.getenv("model_api_base_vision", ""),
+    "model_type": os.getenv("model_type_vision", ""),
     "temperature": float(os.getenv("model_temperature_vision") or 0.0)
 }
 # 提示词模板字典
