@@ -10,6 +10,7 @@ Author: 张镒谱
 """
 
 import json
+import time
 from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
@@ -441,7 +442,7 @@ def save_extraction_result(doc_type: str, extracted_data: dict, runtime: ToolRun
         runtime.store.put(namespace, record_id, {
             "doc_type": doc_type,
             "extracted_data": extracted_data,
-            "timestamp": str(uuid.uuid4())
+            "timestamp": str(int(time.time()))
         })
         
         logger.info(f"[save_extraction_result] 保存成功，record_id: {record_id}")

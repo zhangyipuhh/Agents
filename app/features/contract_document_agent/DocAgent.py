@@ -118,7 +118,7 @@ class DocAgent:
         context = DocAgentContext(
             session_id=session_id,
             host_session_id=host_session_id or session_id,
-            store_id=self.store_id or session_id,
+            store_id=self.store_id or host_session_id,
         )
 
         result = await agent.invoke(
