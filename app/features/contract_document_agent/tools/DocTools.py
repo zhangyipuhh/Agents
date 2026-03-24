@@ -69,7 +69,7 @@ class ExtractedData(BaseModel):
 
 
 
-@tool(description="按条款/语义切分文档。参数：type(供地合同/成交确认书/会议纪要)、cache_id(缓存ID)、file_id(文件ID)。返回切分后的文档块。")
+@tool(description="**禁止用于图片**。按条款/语义切分已缓存的文档文件。使用前提：必须已有有效的cache_id（文档上传时自动生成）。参数：type(供地合同/成交确认书/会议纪要)、cache_id(缓存ID，必须存在)、file_id(文件ID)。返回切分后的文档块。")
 def split_file(type: str, cache_id: str, file_id: str, runtime: ToolRuntime) -> Command:
     """
     切分文件工具
@@ -89,15 +89,31 @@ def split_file(type: str, cache_id: str, file_id: str, runtime: ToolRuntime) -> 
         >>> split_file("供地合同", "cache_123", "file_456")
         >>> # 返回: {"total_chunks": 10, "message": "文件已成功切分为 10 个块", ...}
     """
-    #session_id = runtime.context.get('session_id', 'default')
     store_id = runtime.context.get('store_id', 'default')
     namespace = (store_id,)
+    
     try:
         # 1. 从缓存中获取所有块
         result = runtime.store.get(namespace, cache_id)
         
+        # 如果缓存不存在，说明可能调用了错误的工具
         if not result or not result.value:
-            raise ValueError(f"未找到缓存: {cache_id}")
+            logger.warning(f"[split_file] 未找到缓存: {cache_id}，可能调用了错误的工具")
+            return Command(
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=json.dumps({
+                                "status": "error",
+                                "error": f"未找到缓存: {cache_id}",
+                                "suggestion": "split_file工具需要有效的cache_id（来自已上传的Word/PDF文档）。如果处理的是图片或用户直接提供的文本，请直接分析内容，无需调用此工具。",
+                                "correct_usage": "此工具仅适用于：已上传的Word/PDF文档 + 有效的cache_id"
+                            }, ensure_ascii=False),
+                            tool_call_id=runtime.tool_call_id
+                        )
+                    ]
+                }
+            )
         
         chunks = result.value
         

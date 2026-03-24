@@ -69,6 +69,7 @@ class DocAgent:
     async def _ensure_agent(self):
         """确保 agent 已初始化"""
         if self._agent is None:
+            
             config = DocAgentConfig(
                 max_tokens=self.max_tokens,
                 max_tokens_before_summary=self.max_tokens_before_summary,
@@ -87,6 +88,7 @@ class DocAgent:
         host_session_id: Optional[str] = None,
         error_limit: int = 2,
         limit: int = 10,
+        image_ids: Optional[list[str]] = None,
         **kwargs,
     ) -> str:
         """
@@ -119,6 +121,7 @@ class DocAgent:
             session_id=session_id,
             host_session_id=host_session_id or session_id,
             store_id=self.store_id or host_session_id,
+            image_ids=image_ids or [],
         )
 
         result = await agent.invoke(
