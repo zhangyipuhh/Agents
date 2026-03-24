@@ -9,13 +9,13 @@ Date: 2026-03-19
 Author: 张镒谱
 """
 
-from app.agents.subgraphs.ApprovalAgent.config.ApprovalAgentConfig import (
+from app.features.contract_approval_agent.config.ApprovalAgentConfig import (
     ApprovalAgentConfig,
     ApprovalAgentState,
     ApprovalExecuteConfig,
     ApprovalConfigurableConfig,
 )
-from app.agents.subgraphs.ApprovalAgent.config.ApprovalAgentContext import ApprovalAgentContext
+from app.features.contract_approval_agent.config.ApprovalAgentContext import ApprovalAgentContext
 from app.features.contract_approval_agent.config.prompts import DEFAULT_SYSTEM_PROMPT
 
 __all__ = [
