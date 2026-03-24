@@ -20,13 +20,15 @@
 Date: 2026-03-10
 Author: 张镒谱
 """
+from imaplib import IMAP4
 import logging
 
 from typing import Literal
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph import MessagesState
-from langchain_core.messages import AnyMessage
+from langgraph.runtime import Runtime
+from langchain_core.messages import AnyMessage, HumanMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langmem.short_term import SummarizationNode, RunningSummary
 from app.core.llmcalls.model_factory import ModelFactory
@@ -39,9 +41,34 @@ class LLMInputState(TypedDict):
     定义了传递给 LLM 节点的输入格式：
         - summarized_messages: 经过摘要处理后的消息列表
         - context: 上下文摘要信息字典
+        - image_ids: 图片ID列表
+        - state: 完整的原始状态，用于访问任意字段
     """
     summarized_messages: list[AnyMessage]
     context: dict[str, RunningSummary]
+
+
+def _get_mime_type_from_base64(base64_data: str) -> str:
+    """从 base64 数据推断图片的 MIME 类型
+    
+    通过检查 base64 数据的前缀来推断图片格式
+    
+    Args:
+        base64_data: base64 编码的图片数据
+        
+    Returns:
+        MIME 类型字符串，如 "image/jpeg", "image/png" 等
+    """
+    if base64_data.startswith("/9j/"):
+        return "image/jpeg"
+    elif base64_data.startswith("iVBORw0KGgo"):
+        return "image/png"
+    elif base64_data.startswith("R0lGOD"):
+        return "image/gif"
+    elif base64_data.startswith("UklGR"):
+        return "image/webp"
+    else:
+        return "image/jpeg"  # 默认返回 JPEG
 
 
 class Agent:
@@ -139,7 +166,11 @@ class Agent:
             return "tools"
         return "end"
 
-    async def _llm_call(self, state: LLMInputState):
+    async def _llm_call(
+        self,
+        state: LLMInputState,
+        runtime: Runtime[AgentContext],
+    ):
         """LLM 调用节点
         
         根据系统提示词和用户消息，调用模型进行推理。
@@ -147,42 +178,51 @@ class Agent:
         
         Args:
             state: 包含 summarized_messages 的输入状态
-            config: 包含 configurable 配置的字典，用于获取 thread_id 作为 namespace
+            runtime: 包含 context 的运行时对象，用于获取 thread_id 作为 namespace
             
         Returns:
             包含模型响应消息的字典
         """
+        context = runtime.context
         messages = state["summarized_messages"]
         logging.info(f"对话历史: {messages[-1].content}")
         #messages = state["messages"]
         # 系统提示词，指导模型如何根据文件类型调用相应的解析工具
         system_prompt = self.system_prompt or ""
         # 从状态中获取图片路径列表,如果传入了需要处理图片,则从状态中获取图片路径列表
-        image_paths = state.get("image_paths_id", [])   
+        image_ids = context.get("image_ids", [])   
         # 如果是多模态模型,则需要处理图片
-        if self._config.IS_MULTIMODAL and image_paths and self.store:
+        if self._config.IS_MULTIMODAL and image_ids and self.store:
             # 从存储中获取图片内容
             # 注意：图片只添加到本地 messages，不更新 state
             # 这样下次 invoke 时图片不会保留在对话历史中
-            # 使用 session_id\store_id 作为 namespace
-            session_id = state.get("session_id", "default")
-            store_id = state.get("store_id", "default")
-            namespace = (store_id, session_id)
+            # 使用store_id 作为 namespace
+            store_id = context.get("store_id", "default")
+            namespace = (store_id,)
             logging.info(f"namespace: {namespace}")
             image_contents = []
-            for image_id in image_paths:
-                #这里存放的是一个dict id 和 base64的映射关系,每次会话传入
-                #例image_path返回  {"image_id_1": "base64_1", "image_id_2": "base64_2"}
-                result = self.store.get(namespace, "image_paths")
-                content = result.value.get(image_id, "")
-                logging.info(f"image_id: {image_id}, content: {content}")
-                if content:
-                    image_contents.append(content)
-                    # 将图片内容添加到消息中，使用OpenAI风格的多模态格式
-                    messages.append({
-                    "type": "image_url",
-                    "image_url": {"url": content}
-                })
+            #例image_path返回  {"image_id_1": "base64_1", "image_id_2": "base64_2"}
+            result = self.store.get(namespace, "image_paths")
+            content_parts = []
+            for image_id in image_ids:
+                base64_data = result.value.get(image_id, "")
+                logging.info(f"image_id: {image_id}, content length: {len(base64_data)}")
+                if base64_data:
+                    image_contents.append(base64_data)
+                    mime_type = _get_mime_type_from_base64(base64_data)
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime_type};base64,{base64_data}"
+                        }
+                    })
+            if content_parts:
+                last_message = messages[-1]
+                user_text = last_message.content if isinstance(last_message.content, str) else ""
+                content_parts.insert(0, {"type": "text", "text": user_text})
+                user_message = HumanMessage(content=content_parts)
+                messages[-1] = user_message
+                context["image_ids"] = []
         # 绑定工具到模型，使模型能够调用工具
         llm = self.model.bind_tools(self.tools)
         # 调用模型，传入系统提示词和历史消息
@@ -215,7 +255,6 @@ class Agent:
             max_summary_tokens=self._max_summary_tokens,
         )
         # state传入的使会话中可能被操作的变量，就是变化的量，这里只是格式，实际运行时会有具体的值
-        # context传入的是会话中可能被操作的静态变量，就是不变的量，这里只是格式，实际运行时会有具体的值
         workflow = StateGraph(AgentState, AgentContext)
 
         # 添加节点

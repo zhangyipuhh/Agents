@@ -33,4 +33,6 @@ class AgentContext(TypedDict):
     namespace: dict = {}
     store_id: str = "default"
     """存储 ID，用于区分不同用户的存储空间，相同 store_id 的存储空间共享记忆，默认 "default"""
+    image_ids: list[str] = []
+    """图片ID列表，用于多模态模型处理图片"""
    
