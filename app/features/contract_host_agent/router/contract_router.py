@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 from app.shared.utils.files.file_upload_handler import FileUploadHandler
 from app.features.contract_host_agent.HtAgent import HtAgent
 from app.features.contract_document_agent.DocAgent import DocAgent
+from app.features.contract_approval_agent.ApprovalAgent import ApprovalAgent
 
 
 _checkpointer = MemorySaver()
@@ -46,6 +47,12 @@ ht_agent = HtAgent(
 
 # 初始化 DocAgent 实例
 doc_agent = DocAgent(
+    checkpointer=_checkpointer,
+    store=store,
+    store_id=store_id,
+)
+
+approval_agent = ApprovalAgent(
     checkpointer=_checkpointer,
     store=store,
     store_id=store_id,
@@ -71,6 +78,7 @@ class ChatResponse(BaseModel):
 class GetStoreValueRequest(BaseModel):
     id: str
     session_id: Optional[str] = None
+    host_session_id: Optional[str] = None
 
 
 class GetStoreValueResponse(BaseModel):
@@ -88,6 +96,16 @@ class DocChatResponse(BaseModel):
     response: str
     session_id: str
     host_session_id: str
+
+
+class ApprovalChatRequest(BaseModel):
+    message: str
+    host_session_id: Optional[str] = None
+
+
+class ApprovalChatResponse(BaseModel):
+    response: str
+    session_id: str
 
 
 @router.post('/uploadfile', response_model=FileUploadResponse)
@@ -219,6 +237,48 @@ async def doc_chat(
         raise HTTPException(status_code=500, detail=f"文档对话处理失败：{str(e)}")
 
 
+@router.post('/approval_chat', response_model=ApprovalChatResponse)
+async def approval_chat(
+    request: Request,
+    approval_chat_request: ApprovalChatRequest
+):
+    """
+    审批处理聊天接口
+    
+    与审批处理AI助手进行对话，支持多轮对话和审批处理流程。
+    
+    Args:
+        request: FastAPI 请求对象
+        approval_chat_request: 聊天请求，包含用户消息、会话ID和发起会话ID
+        
+    Returns:
+        ApprovalChatResponse: 包含AI助手的回复、会话ID和发起会话ID
+    """
+    try:
+        session_id = getattr(request.state, "session_id", "default")
+        host_session_id = approval_chat_request.host_session_id or session_id
+        
+        logger.debug(f"[DEBUG] approval_chat 请求: message={approval_chat_request.message}, session_id={session_id}, host_session_id={host_session_id}")
+        
+        result = await approval_agent.invoke(
+            user_input=approval_chat_request.message,
+            session_id=session_id,
+            host_session_id=host_session_id,
+        )
+        
+        return ApprovalChatResponse(
+            response=result,
+            session_id=session_id,
+            host_session_id=host_session_id
+        )
+        
+    except Exception as e:
+        import traceback
+        logger.error(f"[ERROR] approval_chat 异常: {e}")
+        logger.error(f"[ERROR] 异常堆栈: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"审批对话处理失败：{str(e)}")
+
+
 @router.post('/store/value', response_model=GetStoreValueResponse)
 async def get_store_value(
     request: Request,
@@ -257,3 +317,6 @@ async def get_store_value(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取存储值失败：{str(e)}")
+
+
+
