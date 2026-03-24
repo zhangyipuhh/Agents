@@ -91,7 +91,7 @@ def split_file(type: str, cache_id: str, file_id: str, runtime: ToolRuntime) -> 
     """
     store_id = runtime.context.get('store_id', 'default')
     namespace = (store_id,)
-    
+    host_session_id = runtime.context.get('host_session_id', 'default')
     try:
         # 1. 从缓存中获取所有块
         result = runtime.store.get(namespace, cache_id)
@@ -126,10 +126,12 @@ def split_file(type: str, cache_id: str, file_id: str, runtime: ToolRuntime) -> 
             file_paths_result = runtime.store.get(namespace, "file_id")
             file_paths = file_paths_result.value if file_paths_result else None
             path = file_paths.get(file_id, None) if file_paths else None
-            # 存储合同文件路径
             if not path:
                 raise ValueError(f"未找到文件路径: {file_id}")
-            runtime.store.put(namespace, "ht_file_path", path)
+            ht_file_path_result = runtime.store.get(namespace, "ht_file_path")
+            ht_file_paths = ht_file_path_result.value if ht_file_path_result and ht_file_path_result.value else {}
+            ht_file_paths[host_session_id] = path
+            runtime.store.put(namespace, "ht_file_path", ht_file_paths)
             # 读取合同文件内容，并将条款前的空格去除，同时将"第几条"替换为"第几条款"
             contract_text,paragraph_data =word_processor.read_contract_word(path, pattern=  r'^\s*(第[一二三四五六七八九十百千万亿]+条)', pattern_replace=r'\1条款')
             
