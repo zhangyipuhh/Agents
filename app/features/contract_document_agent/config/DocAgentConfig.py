@@ -42,6 +42,7 @@ class DocExecuteConfig(BaseExecuteConfig):
     """
 
 
+
 class DocAgentState(BaseAgentState):
     """
     状态类，需要传入一个继承自 MessagesState 的 TypedDict 类型，用于管理对话状态，在会话中是可被操作的值
