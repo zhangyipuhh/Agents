@@ -16,6 +16,8 @@ Author: 张镒谱
 """
 
 import logging
+import base64
+from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, HTTPException, Request
 from typing import List, Optional, Union
 from pydantic import BaseModel
@@ -106,6 +108,16 @@ class ApprovalChatRequest(BaseModel):
 class ApprovalChatResponse(BaseModel):
     response: str
     session_id: str
+
+
+class DownloadContractRequest(BaseModel):
+    host_session_id: str
+
+
+class DownloadContractResponse(BaseModel):
+    file_base64: str
+    file_name: str
+    host_session_id: str
 
 
 @router.post('/uploadfile', response_model=FileUploadResponse)
@@ -317,6 +329,68 @@ async def get_store_value(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取存储值失败：{str(e)}")
+
+
+@router.post('/download_contract', response_model=DownloadContractResponse)
+async def download_contract(
+    request: Request,
+    download_request: DownloadContractRequest
+):
+    """
+    下载合同文件接口
+    
+    根据 host_session_id 获取对应的合同文件，并以 base64 编码返回。
+    
+    Args:
+        request: FastAPI 请求对象
+        download_request: 包含 host_session_id 的请求对象
+        
+    Returns:
+        DownloadContractResponse: 包含 base64 编码的文件内容、文件名和 host_session_id
+    """
+    try:
+        host_session_id = download_request.host_session_id
+        
+        result = store.get(
+            namespace=(store_id,),
+            key="ht_file_path"
+        )
+        
+        if not result or not result.value:
+            raise HTTPException(status_code=404, detail="未找到合同文件路径记录")
+        
+        ht_file_path_dict = result.value
+        
+        if host_session_id not in ht_file_path_dict:
+            raise HTTPException(status_code=404, detail=f"未找到 session_id 为 {host_session_id} 的合同文件")
+        
+        file_path = ht_file_path_dict[host_session_id]
+        file_path_obj = Path(file_path)
+        
+        if not file_path_obj.exists():
+            raise HTTPException(status_code=404, detail=f"合同文件不存在: {file_path}")
+        
+        with open(file_path, "rb") as f:
+            file_bytes = f.read()
+        
+        file_base64 = base64.b64encode(file_bytes).decode("utf-8")
+        file_name = file_path_obj.name
+        
+        logger.info(f"[INFO] download_contract 成功: host_session_id={host_session_id}, file_path={file_path}")
+        
+        return DownloadContractResponse(
+            file_base64=file_base64,
+            file_name=file_name,
+            host_session_id=host_session_id
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        logger.error(f"[ERROR] download_contract 异常: {e}")
+        logger.error(f"[ERROR] 异常堆栈: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"下载合同失败：{str(e)}")
 
 
 
