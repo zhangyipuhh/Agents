@@ -63,11 +63,74 @@
 
 ### 共享字段
 
-| 字段名            | 说明                              | 数据结构                           |
-| -------------- | ------------------------------- | ------------------------------ |
-| `file_id`      | 上传文档ID与文件路径的映射                  | `{file_id: file_path, ...}`    |
-| `image_paths`  | 图片唯一标识符与base64数据的映射             | `{image_id: base64_data, ...}` |
-| `ht_file_path` | 上传合同存放在**服**务器的文件路径，审批标记后的合同的路径 | {session\_id1: path1,......}   |
+| 字段名                | 说明                              | 数据结构                           |
+| ------------------ | ------------------------------- | ------------------------------ |
+| `file_id`          | 上传文档ID与文件路径的映射                  | `{file_id: file_path, ...}`    |
+| `image_paths`      | 图片唯一标识符与base64数据的映射             | `{image_id: base64_data, ...}` |
+| `ht_file_path`     | 上传合同存放在**服**务器的文件路径，审批标记后的合同的路径 | {session\_id1: path1,......}   |
+| `approval_results` | 审批智能体存放的审批结果数组，记录每次审批的详细信息 | [{approval\_id, status, timestamp, details}, ...] |
+
+#### approval_results 字段数据结构
+
+```typescript
+interface ApprovalResult {
+  approval_id: string;       // 审批记录唯一标识符，格式: approval_{timestamp}_{index}
+  session_id: string;         // 会话ID，用于关联主智能体的会话
+  status: string;             // 审批状态: "通过" | "未通过" | "待审核"
+  timestamp: string;          // ISO格式时间戳，如: "2026-03-24T10:30:00Z"
+  details: {
+    approver?: string;        // 审批人（可选）
+    contract_name?: string;   // 合同名称（可选）
+    approval_time?: string;    // 审批时间（可选）
+    reasons?: string[];       // 审批理由/问题列表（可选）
+    attachments?: string[];   // 附件路径列表（可选）
+  };
+  metadata?: {
+    image_ids?: string[];      // 关联的图片ID列表（可选）
+    reviewed_items?: string[]; // 已审查的项目列表（可选）
+  };
+}
+```
+
+**示例数据**：
+
+```json
+{
+  "approval_results": [
+    {
+      "approval_id": "approval_1711252200_001",
+      "session_id": "session_001",
+      "status": "通过",
+      "timestamp": "2026-03-24T10:30:00Z",
+      "details": {
+        "approver": "ApprovalAgent",
+        "contract_name": "自然资源合同-2026-001",
+        "approval_time": "2026-03-24 10:30:00",
+        "reasons": ["合同内容完整", "条款符合规定", "签字齐全"],
+        "attachments": []
+      },
+      "metadata": {
+        "image_ids": ["img_001", "img_002"],
+        "reviewed_items": ["甲方信息", "乙方信息", "合同金额", "签订日期"]
+      }
+    }
+  ]
+}
+```
+
+#### approval_results 读取方式
+
+```python
+# 获取审批结果数组
+result = store.get(namespace=(store_id,), key="approval_results")
+approval_results = result.value if result else []
+
+# 获取最新的审批结果
+latest_approval = approval_results[-1] if approval_results else None
+
+# 获取特定审批状态的结果
+passed_approvals = [r for r in approval_results if r.get("status") == "通过"]
+```
 
 ### 数据读取方式
 
