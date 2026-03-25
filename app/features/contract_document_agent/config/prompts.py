@@ -16,7 +16,7 @@ EXTRACTION_CONFIG = {
             {"id": "q1", "question": "合同的编号是多少？", "answer_template": "合同编号为{value}"},
             {"id": "q2", "question": "出让方是谁？", "answer_template": "出让方为{value}"},
             {"id": "q3", "question": "受让方是谁？", "answer_template": "受让方为{value}"},
-            {"id": "q4", "question": "地块位置在哪里？", "answer_template": "地块位置为{value}"},
+            {"id": "q4", "question": "坐落在哪里？", "answer_template": "地块坐落为{value}"},
             {"id": "q5", "question": "土地面积是多少？", "answer_template": "土地面积为{value}平方米"},
             {"id": "q6", "question": "土地用途是什么？", "answer_template": "土地用途为{value}"},
             {"id": "q7", "question": "出让年限是多少？", "answer_template": "出让年限为{value}"},
@@ -28,18 +28,29 @@ EXTRACTION_CONFIG = {
             "第一条": [
                 {"id": "c1_1", "question": "合同第一条的电子监管号是多少？", "answer_template": "合同第一条的电子监管号为{value}"},
             ],
-            "第二条": [
-                {"id": "c2_1", "question": "合同第二条的宗地编号是多少？", "answer_template": "合同第二条的宗地编号为{value}"},
-                {"id": "c2_2", "question": "合同第二条的不动产单元号是多少？", "answer_template": "合同第二条的不动产单元号为{value}"},
-            ],
-            "第三条": [
-                {"id": "c3_1", "question": "合同第三条的出让面积是多少？", "answer_template": "合同第三条的出让面积为{value}平方米"},
-            ],
-            "第四条": [
-                {"id": "c4_1", "question": "合同第四条的出让年限是多少？", "answer_template": "合同第四条的出让年限为{value}"},
-            ],
             "第五条": [
-                {"id": "c5_1", "question": "合同第五条的不动产单元号是多少？", "answer_template": "合同第五条的不动产单元号为{value}"},
+                {"question": "不动产单元代码是多少？", "answer_template": "合同第五条的不动产单元代码为{value}"},
+                {"question": "总面积大写是多少？", "answer_template": "合同第五条的总面积大写为{value}"},
+                {"question": "总面积小写是多少？", "answer_template": "合同第五条的总面积小写为{value}"},
+                {"question": "出让面积大写是多少？", "answer_template": "合同第五条的出让面积大写为{value}"},
+                {"question": "出让面积小写是多少？", "answer_template": "合同第五条的出让面积小写为{value}"},
+                {"question": "地块坐落是多少？", "answer_template": "合同第五条的地块坐落为{value}"},
+                {"question": "平面界址是多少？", "answer_template": "合同第五条的平面界址为{value}"},
+                {"question": "上界限是多少？", "answer_template": "合同第五条的上界限为{value}"},
+                {"question": "下界限是多少？", "answer_template": "合同第五条的下界限为{value}"},
+                {"question": "高差是多少？", "answer_template": "合同第五条的高差为{value}"},
+            ],
+            "第七条": [
+                {"question": "建筑总面积不大于多少平方米？", "answer_template": "合同第七条的建筑总面积不大于{value}平方米"},
+                {"question": "建筑总面积不小于多少平方米？", "answer_template": "合同第七条的建筑总面积不小于{value}平方米"},
+                {"question": "容积率不高于多少？", "answer_template": "合同第七条的容积率不高于{value}"},
+                {"question": "容积率不低于多少？", "answer_template": "合同第七条的容积率不低于{value}"},
+                {"question": "建筑高度不高于多少米？", "answer_template": "合同第七条的建築高度不高于{value}米"},
+                {"question": "建筑高度不低于多少米？", "answer_template": "合同第七条的建築高度不低于{value}米"},
+                {"question": "建筑密度（建筑系数）不高于多少？", "answer_template": "合同第七条的建築密度（建築系数）不高于{value}"},
+                {"question": "建筑密度（建筑系数）不低于多少？", "answer_template": "合同第七条的建築密度（建築系数）不低于{value}"},
+                {"question": "绿地率不高于多少？", "answer_template": "合同第七条的绿地率不高于{value}"},
+                {"question": "绿地率不低于多少？", "answer_template": "合同第七条的绿地率不低于{value}"},
             ],
         },
         "output_example": [
@@ -53,7 +64,7 @@ EXTRACTION_CONFIG = {
             {
                 "index": "第五条",
                 "content": [
-                    {"question": "合同第五条的不动产单元号是多少？", "answer": "合同第五条的不动产单元号为234455666666"}
+                    {"question": "不动产单元代码是多少？", "answer": "不动产单元代码为210113005010GB90004"}
                 ]
             }
         ]
@@ -77,14 +88,35 @@ EXTRACTION_CONFIG = {
                 {"id": "c4_1", "question": "合同第四条的出让年限是多少？", "answer_template": "合同第四条的出让年限为{value}"},
             ],
             "第五条": [
-                {"id": "c5_1", "question": "合同第五条的不动产单元号是多少？", "answer_template": "合同第五条的不动产单元号为{value}"},
+                {"question": "不动产单元代码是多少？", "answer_template": "合同第五条的不动产单元代码为{value}"},
+                {"question": "总面积大写是多少？", "answer_template": "合同第五条的总面积大写为{value}"},
+                {"question": "总面积小写是多少？", "answer_template": "合同第五条的总面积小写为{value}"},
+                {"question": "出让面积大写是多少？", "answer_template": "合同第五条的出让面积大写为{value}"},
+                {"question": "出让面积小写是多少？", "answer_template": "合同第五条的出让面积小写为{value}"},
+                {"question": "地块坐落是多少？", "answer_template": "合同第五条的地块坐落为{value}"},
+                {"question": "平面界址是多少？", "answer_template": "合同第五条的平面界址为{value}"},
+                {"question": "上界限是多少？", "answer_template": "合同第五条的上界限为{value}"},
+                {"question": "下界限是多少？", "answer_template": "合同第五条的下界限为{value}"},
+                {"question": "高差是多少？", "answer_template": "合同第五条的高差为{value}"},
+            ],
+            "第七条": [
+                {"question": "建筑总面积不大于多少平方米？", "answer_template": "合同第七条的建筑总面积不大于{value}平方米"},
+                {"question": "建筑总面积不小于多少平方米？", "answer_template": "合同第七条的建筑总面积不小于{value}平方米"},
+                {"question": "容积率不高于多少？", "answer_template": "合同第七条的容积率不高于{value}"},
+                {"question": "容积率不低于多少？", "answer_template": "合同第七条的容积率不低于{value}"},
+                {"question": "建筑高度不高于多少米？", "answer_template": "合同第七条的建築高度不高于{value}米"},
+                {"question": "建筑高度不低于多少米？", "answer_template": "合同第七条的建築高度不低于{value}米"},
+                {"question": "建筑密度（建筑系数）不高于多少？", "answer_template": "合同第七条的建築密度（建築系数）不高于{value}"},
+                {"question": "建筑密度（建筑系数）不低于多少？", "answer_template": "合同第七条的建築密度（建築系数）不低于{value}"},
+                {"question": "绿地率不高于多少？", "answer_template": "合同第七条的绿地率不高于{value}"},
+                {"question": "绿地率不低于多少？", "answer_template": "合同第七条的绿地率不低于{value}"},
             ],
         },
         "output_example": [
             {
                 "index": "第五条",
                 "content": [
-                    {"question": "合同第五条的不动产单元号是多少？", "answer": "合同第五条的不动产单元号为234455666666"}
+                    {"question": "不动产单元代码是多少？", "answer": "不动产单元代码为210113005010GB90004"}
                 ]
             }
         ]
