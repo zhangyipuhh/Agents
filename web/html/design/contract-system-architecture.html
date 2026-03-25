@@ -949,7 +949,7 @@
                             </g>
 
                             <!-- HtAgent 主智能体节点 -->
-                            <g class="diagram-node" transform="translate(280, 120)">
+                            <g class="diagram-node" transform="translate(280, 80)">
                                 <rect class="node-bg" x="0" y="0" width="160" height="120" rx="20" fill="url(#hostGradient)" filter="url(#glow)"/>
                                 <text x="80" y="45" text-anchor="middle" fill="white" font-size="36">🤖</text>
                                 <text x="80" y="80" text-anchor="middle" fill="white" font-size="16" font-weight="700">HtAgent</text>
@@ -957,7 +957,7 @@
                             </g>
 
                             <!-- DocAgent 文档智能体节点 -->
-                            <g class="diagram-node" transform="translate(280, 260)">
+                            <g class="diagram-node" transform="translate(280, 280)">
                                 <rect class="node-bg" x="0" y="0" width="160" height="120" rx="20" fill="url(#docGradient)" filter="url(#glow)"/>
                                 <text x="80" y="45" text-anchor="middle" fill="white" font-size="36">📄</text>
                                 <text x="80" y="80" text-anchor="middle" fill="white" font-size="16" font-weight="700">DocAgent</text>
@@ -983,51 +983,58 @@
 
                             <!-- 连接线和箭头 -->
                             <!-- 用户 -> HtAgent -->
-                            <path d="M200 240 Q260 220 280 180" fill="none" stroke="url(#arrowGradient1)" stroke-width="3" class="arrow-path" marker-end="url(#arrowhead)"/>
-                            <text x="230" y="210" fill="rgba(255,255,255,0.7)" font-size="10" text-anchor="middle">对话请求</text>
+                            <path d="M200 250 Q240 160 280 120" fill="none" stroke="url(#arrowGradient1)" stroke-width="3" class="arrow-path" marker-end="url(#arrowhead)"/>
+                            <text x="230" y="175" fill="rgba(255,255,255,0.7)" font-size="10" text-anchor="middle">对话请求</text>
 
                             <!-- HtAgent -> 用户 (响应) -->
-                            <path d="M280 180 Q260 200 200 240" fill="none" stroke="url(#arrowGradient2)" stroke-width="2" class="arrow-path-reverse" marker-end="url(#arrowhead-reverse)"/>
-                            <text x="230" y="220" fill="rgba(255,255,255,0.7)" font-size="10" text-anchor="middle">响应结果</text>
+                            <path d="M280 120 Q220 180 200 250" fill="none" stroke="url(#arrowGradient2)" stroke-width="2" class="arrow-path-reverse" marker-end="url(#arrowhead-reverse)"/>
+                            <text x="230" y="145" fill="rgba(255,255,255,0.7)" font-size="10" text-anchor="middle">响应结果</text>
 
                             <!-- HtAgent -> DocAgent -->
-                            <path d="M360 180 L360 260" fill="none" stroke="url(#arrowGradient1)" stroke-width="3" class="arrow-path" marker-end="url(#arrowhead)"/>
-                            <text x="375" y="225" fill="rgba(255,255,255,0.7)" font-size="10">调度</text>
+                            <path d="M360 200 L360 280" fill="none" stroke="url(#arrowGradient1)" stroke-width="3" class="arrow-path" marker-end="url(#arrowhead)"/>
+                            <text x="375" y="245" fill="rgba(255,255,255,0.7)" font-size="10">调度</text>
 
                             <!-- DocAgent -> HtAgent -->
-                            <path d="M360 260 L360 180" fill="none" stroke="url(#arrowGradient2)" stroke-width="2" class="arrow-path-reverse" marker-end="url(#arrowhead-reverse)"/>
+                            <path d="M360 280 L360 200" fill="none" stroke="url(#arrowGradient2)" stroke-width="2" class="arrow-path-reverse" marker-end="url(#arrowhead-reverse)"/>
+
+                            <!-- HtAgent -> ApprovalAgent (调度) - 从左侧绕过DocAgent -->
+                            <path d="M280 140 Q240 200 240 315 Q240 430 280 490" fill="none" stroke="url(#arrowGradient1)" stroke-width="3" class="arrow-path" marker-end="url(#arrowhead)"/>
+                            <text x="225" y="320" fill="rgba(255,255,255,0.7)" font-size="10">调度</text>
+
+                            <!-- ApprovalAgent -> HtAgent - 从左侧返回 -->
+                            <path d="M280 490 Q240 430 240 315 Q240 200 280 140" fill="none" stroke="url(#arrowGradient2)" stroke-width="2" class="arrow-path-reverse" marker-end="url(#arrowhead-reverse)"/>
 
                             <!-- DocAgent -> Store (写入) -->
-                            <path d="M440 320 Q550 300 650 280" fill="none" stroke="url(#arrowGradient1)" stroke-width="3" class="arrow-path" marker-end="url(#arrowhead)"/>
-                            <text x="530" y="305" fill="rgba(255,255,255,0.7)" font-size="10">写入文件数据</text>
+                            <path d="M440 340 Q550 310 600 300" fill="none" stroke="url(#arrowGradient1)" stroke-width="3" class="arrow-path" marker-end="url(#arrowhead)"/>
+                            <text x="520" y="315" fill="rgba(255,255,255,0.7)" font-size="10">写入文件数据</text>
 
                             <!-- Store -> DocAgent (读取) -->
-                            <path d="M650 280 Q550 280 440 320" fill="none" stroke="url(#arrowGradient2)" stroke-width="2" class="arrow-path-reverse" marker-end="url(#arrowhead-reverse)"/>
+                            <path d="M600 300 Q550 310 440 340" fill="none" stroke="url(#arrowGradient2)" stroke-width="2" class="arrow-path-reverse" marker-end="url(#arrowhead-reverse)"/>
 
                             <!-- Store -> ApprovalAgent (读取) -->
-                            <path d="M700 360 L440 490" fill="none" stroke="url(#arrowGradient2)" stroke-width="3" class="arrow-path-reverse" marker-end="url(#arrowhead-reverse)"/>
-                            <text x="580" y="435" fill="rgba(255,255,255,0.7)" font-size="10">读取处理结果</text>
+                            <path d="M600 340 Q520 400 440 480" fill="none" stroke="url(#arrowGradient2)" stroke-width="3" class="arrow-path-reverse" marker-end="url(#arrowhead-reverse)"/>
+                            <text x="520" y="410" fill="rgba(255,255,255,0.7)" font-size="10">读取处理结果</text>
 
                             <!-- ApprovalAgent -> Store (写入) -->
-                            <path d="M440 490 Q550 470 700 360" fill="none" stroke="url(#arrowGradient1)" stroke-width="3" class="arrow-path" marker-end="url(#arrowhead)"/>
-                            <text x="530" y="445" fill="rgba(255,255,255,0.7)" font-size="10">写入审批结果</text>
+                            <path d="M440 490 Q520 420 600 360" fill="none" stroke="url(#arrowGradient1)" stroke-width="3" class="arrow-path" marker-end="url(#arrowhead)"/>
+                            <text x="520" y="460" fill="rgba(255,255,255,0.7)" font-size="10">写入审批结果</text>
 
                             <!-- HtAgent -> Store (标注) -->
-                            <path d="M440 180 Q550 180 650 200" fill="none" stroke="url(#arrowGradient1)" stroke-width="3" class="arrow-path" marker-end="url(#arrowhead)"/>
-                            <text x="540" y="185" fill="rgba(255,255,255,0.7)" font-size="10">标注合同路径</text>
+                            <path d="M440 140 Q520 170 600 200" fill="none" stroke="url(#arrowGradient1)" stroke-width="3" class="arrow-path" marker-end="url(#arrowhead)"/>
+                            <text x="520" y="165" fill="rgba(255,255,255,0.7)" font-size="10">标注合同路径</text>
 
                             <!-- Store -> HtAgent -->
-                            <path d="M650 200 Q550 180 440 180" fill="none" stroke="url(#arrowGradient2)" stroke-width="2" class="arrow-path-reverse" marker-end="url(#arrowhead-reverse)"/>
+                            <path d="M600 200 Q520 140 440 140" fill="none" stroke="url(#arrowGradient2)" stroke-width="2" class="arrow-path-reverse" marker-end="url(#arrowhead-reverse)"/>
 
                             <!-- 数据字段标签 -->
-                            <g transform="translate(870, 240)">
+                            <g transform="translate(820, 230)">
                                 <rect x="0" y="0" width="140" height="75" rx="12" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.1)" stroke-width="1"/>
                                 <text x="70" y="22" text-anchor="middle" fill="rgba(255,255,255,0.6)" font-size="10" font-weight="600">存储字段</text>
                                 <text x="70" y="42" text-anchor="middle" fill="rgba(255,255,255,0.8)" font-size="11">• file_id</text>
                                 <text x="70" y="58" text-anchor="middle" fill="rgba(255,255,255,0.8)" font-size="11">• image_paths</text>
                             </g>
 
-                            <g transform="translate(870, 325)">
+                            <g transform="translate(820, 315)">
                                 <rect x="0" y="0" width="140" height="75" rx="12" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.1)" stroke-width="1"/>
                                 <text x="70" y="22" text-anchor="middle" fill="rgba(255,255,255,0.6)" font-size="10" font-weight="600">存储字段</text>
                                 <text x="70" y="42" text-anchor="middle" fill="rgba(255,255,255,0.8)" font-size="11">• ht_file_path</text>
@@ -1052,37 +1059,37 @@
                     <div class="data-field">
                         <div class="data-field-header">
                             <div class="data-field-icon">📎</div>
-                            <div class="data-field-name">file_id</div>
+                            <div class="data-field-name">文档标识</div>
                         </div>
                         <div class="data-field-desc">
-                            上传文档ID与文件路径的映射关系
+                            统一管理合同文档标识，支持多格式文件追踪与检索
                         </div>
                     </div>
                     <div class="data-field">
                         <div class="data-field-header">
                             <div class="data-field-icon">🖼️</div>
-                            <div class="data-field-name">image_paths</div>
+                            <div class="data-field-name">影像资料</div>
                         </div>
                         <div class="data-field-desc">
-                            图片唯一标识符与base64数据的映射
+                            存储合同影像化数据，便于可视化审查与比对
                         </div>
                     </div>
                     <div class="data-field">
                         <div class="data-field-header">
                             <div class="data-field-icon">📁</div>
-                            <div class="data-field-name">ht_file_path</div>
+                            <div class="data-field-name">源文件管理</div>
                         </div>
                         <div class="data-field-desc">
-                            合同文件在服务器的存储路径
+                            维护合同原始文件，确保文档完整性与可追溯性
                         </div>
                     </div>
                     <div class="data-field">
                         <div class="data-field-header">
                             <div class="data-field-icon">📊</div>
-                            <div class="data-field-name">approval_results</div>
+                            <div class="data-field-name">审批记录</div>
                         </div>
                         <div class="data-field-desc">
-                            审批结果数组，记录每次审批的详细信息
+                            记录审批决策过程，支持流程审计与结果回溯
                         </div>
                     </div>
                 </div>
