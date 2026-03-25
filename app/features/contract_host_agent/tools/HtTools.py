@@ -76,43 +76,47 @@ def check_approval(ischeck: bool, runtime: ToolRuntime) -> Command:
     )
 
 
-@tool(description="验证合同审批前置条件，必须首先调用")
+@tool(description="获取已上传的审批要件清单。审批前必须首先调用此工具，返回已上传的合同、成交确认书、会议纪要等要件信息，用于判断是否具备审批条件。")
 def validate_prerequisites(runtime: ToolRuntime) -> Command:
     """
     前置条件验证工具
     
-    验证合同审批的前置条件，检查store中存储的合同参考文档内容。
-    检查store结构格式是否为 {"ht": [chunk1, chunk2, ...], "[非中文文档名]": [chunk1, chunk2, ...]}
+    获取当前session已上传的审批要件清单。遍历session_id对应的数据结构，
+    返回已上传的要件类型（如：供地合同、成交确认书、会议纪要等）及其内容摘要。
+    
+    数据结构说明：
+    {
+        "session_id": {
+            "要件类型名称": [
+                {"index": "章节索引", "content": [{"question": "问题", "answer": "答案"}]}
+            ]
+        }
+    }
+    
+    返回已上传的要件清单，空数组表示该要件未上传。
     
     Args:
-        runtime (ToolRuntime): 工具运行时上下文
+        runtime (ToolRuntime): 工具运行时上下文，包含session_id和store
         
     Returns:
-        Command: 包含ToolMessage和验证结果的命令对象
+        Command: 包含已上传要件清单的命令对象
     """
     session_id = runtime.context.get('session_id', 'default')
     
     try:
-        store_data = {}
         namespace = (f"{session_id}_ht",)
+        store_result = runtime.store.get(namespace, "ht")
         
-        ht_result = runtime.store.get(namespace, "ht")
-        if ht_result and ht_result.value:
-            store_data["ht"] = ht_result.value
-        
-        all_items = runtime.store.search(namespace)
-        for item in all_items:
-            if item.key != "ht":
-                store_data[item.key] = item.value
-        
-        if not store_data:
+        if not store_result or not store_result.value:
             return Command(
                 update={
                     "messages": [
                         ToolMessage(
                             content=json.dumps({
-                                "status": "validation_failed",
-                                "error": "store中没有找到任何合同参考文档内容"
+                                "status": "no_documents",
+                                "session_id": session_id,
+                                "uploaded_requirements": [],
+                                "message": "未找到任何已上传的要件文档，请先上传审批所需材料"
                             }, ensure_ascii=False),
                             tool_call_id=runtime.tool_call_id
                         )
@@ -120,51 +124,72 @@ def validate_prerequisites(runtime: ToolRuntime) -> Command:
                 }
             )
         
-        validation_errors = []
+        all_sessions_data = store_result.value
         
-        for doc_name, chunks in store_data.items():
-            if not isinstance(chunks, list):
-                validation_errors.append(f"文档'{doc_name}'的chunks不是列表格式")
+        if not isinstance(all_sessions_data, dict):
+            return Command(
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=json.dumps({
+                                "status": "invalid_format",
+                                "error": "数据格式错误，期望字典结构"
+                            }, ensure_ascii=False),
+                            tool_call_id=runtime.tool_call_id
+                        )
+                    ]
+                }
+            )
+        
+        uploaded_requirements = []
+        requirement_details = {}
+        
+        for sid, requirements in all_sessions_data.items():
+            if not isinstance(requirements, dict):
                 continue
             
-            for i, chunk in enumerate(chunks):
-                if not isinstance(chunk, dict):
-                    validation_errors.append(f"文档'{doc_name}'的第{i+1}块不是字典格式")
-                elif "content" not in chunk:
-                    validation_errors.append(f"文档'{doc_name}'的第{i+1}块缺少content字段")
+            for req_name, req_content in requirements.items():
+                if isinstance(req_content, list) and len(req_content) > 0:
+                    if req_name not in uploaded_requirements:
+                        uploaded_requirements.append(req_name)
+                    
+                    if req_name not in requirement_details:
+                        requirement_details[req_name] = {
+                            "sessions": [],
+                            "total_items": 0
+                        }
+                    
+                    requirement_details[req_name]["sessions"].append(sid)
+                    requirement_details[req_name]["total_items"] += len(req_content)
         
-        if validation_errors:
+        if not uploaded_requirements:
             return Command(
                 update={
                     "messages": [
                         ToolMessage(
                             content=json.dumps({
-                                "status": "validation_failed",
-                                "errors": validation_errors,
-                                "store_structure": list(store_data.keys())
+                                "status": "no_requirements",
+                                "session_id": session_id,
+                                "uploaded_requirements": [],
+                                "message": "所有要件均为空，请先上传审批所需材料（如：供地合同、成交确认书、会议纪要等）"
                             }, ensure_ascii=False),
                             tool_call_id=runtime.tool_call_id
                         )
                     ]
                 }
             )
-        
-        doc_summary = {}
-        for doc_name, chunks in store_data.items():
-            doc_summary[doc_name] = {
-                "total_chunks": len(chunks),
-                "has_content": all("content" in chunk for chunk in chunks if isinstance(chunk, dict))
-            }
         
         return Command(
             update={
                 "messages": [
                     ToolMessage(
                         content=json.dumps({
-                            "status": "validation_passed",
+                            "status": "success",
                             "session_id": session_id,
-                            "documents": doc_summary,
-                            "message": "前置条件验证通过，可以继续审批流程"
+                            "uploaded_requirements": uploaded_requirements,
+                            "requirement_details": requirement_details,
+                            "all_sessions_data": all_sessions_data,
+                            "message": f"已获取要件清单，已上传: {', '.join(uploaded_requirements)}"
                         }, ensure_ascii=False),
                         tool_call_id=runtime.tool_call_id
                     )
@@ -178,11 +203,13 @@ def validate_prerequisites(runtime: ToolRuntime) -> Command:
                 "messages": [
                     ToolMessage(
                         content=json.dumps({
-                            "status": "validation_error",
-                            "error": f"验证过程发生错误: {str(e)}"
+                            "status": "error",
+                            "error": f"获取要件清单失败: {str(e)}"
                         }, ensure_ascii=False),
                         tool_call_id=runtime.tool_call_id
                     )
                 ]
             }
         )
+
+
