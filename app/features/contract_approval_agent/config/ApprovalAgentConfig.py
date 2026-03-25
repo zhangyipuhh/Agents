@@ -71,7 +71,7 @@ class ApprovalAgentConfig(BaseAgentConfig):
         返回:
             tuple[list[str], ToolNode]: 工具名称列表和对应的 ToolNode 对象
         """
-        from app.agents.subgraphs.ApprovalAgent.tools.ApprovalAgentTools import (
+        from app.features.contract_approval_agent.tools.ApprovalAgentTools import (
             get_reference_files,
             get_contract_content,
             write_approval_result,

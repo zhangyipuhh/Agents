@@ -40,6 +40,7 @@ class ApprovalAgent:
         self,
         checkpointer: BaseCheckpointSaver,
         store: BaseStore,
+        store_id: Optional[str] = None,
         system_prompt: Optional[str] = None,
         max_tokens: int = 20000,
         max_tokens_before_summary: int = 16000,
@@ -51,6 +52,7 @@ class ApprovalAgent:
         Args:
             checkpointer: LangGraph 检查点保存器，用于持久化会话状态
             store: LangGraph 内存存储器，用于存储上下文信息
+            store_id: 存储ID，用于标识存储上下文
             system_prompt: 自定义系统提示词，默认使用审批专用提示词
             max_tokens: 最大 token 数，默认 20000
             max_tokens_before_summary: 触发摘要的 token 阈值，默认 16000
@@ -58,6 +60,7 @@ class ApprovalAgent:
         """
         self.checkpointer = checkpointer
         self.store = store
+        self.store_id = store_id
         self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
         self.max_tokens = max_tokens
         self.max_tokens_before_summary = max_tokens_before_summary
@@ -116,6 +119,7 @@ class ApprovalAgent:
         context = ApprovalAgentContext(
             session_id=session_id,
             host_session_id=host_session_id or session_id,
+            store_id=self.store_id or host_session_id,
         )
 
         result = await agent.invoke(
