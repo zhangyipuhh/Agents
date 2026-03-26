@@ -45,6 +45,11 @@ class DocAgent:
         max_tokens: int = 20000,
         max_tokens_before_summary: int = 16000,
         max_summary_tokens: int = 4000,
+        model_type: Optional[str] = None,
+        model_name: Optional[str] = None,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        temperature: float = 0,
     ):
         """
         初始化 DocAgent 实例
@@ -52,10 +57,16 @@ class DocAgent:
         Args:
             checkpointer: LangGraph 检查点保存器，用于持久化会话状态
             store: LangGraph 内存存储器，用于存储上下文信息
+            store_id: 存储ID，用于区分不同用户的数据存储
             system_prompt: 自定义系统提示词，默认使用文档处理专用提示词
             max_tokens: 最大 token 数，默认 20000
             max_tokens_before_summary: 触发摘要的 token 阈值，默认 16000
             max_summary_tokens: 摘要最大 token 数，默认 4000
+            model_type: 模型类型，如 "ollama"、"deepseek"、"openai" 等，默认使用配置文件的值
+            model_name: 模型名称，如 "llama3.2"、"deepseek-chat"、"gpt-4" 等，默认使用配置文件的值
+            api_key: API 密钥，用于访问远程模型服务，默认使用配置文件的值
+            base_url: API 基础 URL，指定模型服务的地址，默认使用配置文件的值
+            temperature: 模型温度参数，控制生成多样性，取值范围 0-1，默认 0
         """
         self.checkpointer = checkpointer
         self.store = store        
@@ -64,6 +75,11 @@ class DocAgent:
         self.max_tokens = max_tokens
         self.max_tokens_before_summary = max_tokens_before_summary
         self.max_summary_tokens = max_summary_tokens
+        self.model_type = model_type
+        self.model_name = model_name
+        self.api_key = api_key
+        self.base_url = base_url
+        self.temperature = temperature
         self._agent = None
 
     async def _ensure_agent(self):
@@ -77,6 +93,11 @@ class DocAgent:
                 system_prompt=self.system_prompt,
                 checkpointer=self.checkpointer,
                 store=self.store,
+                model_type=self.model_type,
+                model_name=self.model_name,
+                api_key=self.api_key,
+                base_url=self.base_url,
+                temperature=self.temperature,
             )
             self._agent = await get_agent(config)
         return self._agent
