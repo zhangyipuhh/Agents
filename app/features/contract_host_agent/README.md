@@ -318,7 +318,244 @@ app/features/
 - **会话管理**: LangGraph MemorySaver
 - **LLM**: 支持多种大语言模型（通过配置切换）
 
+## 技术验证
+
+### 动态提示词加载机制
+
+在合同审批场景中，不同类型的合同（如供地合同、成交确认书、会议纪要）需要应用不同的审批规则。系统通过将提取规则配置外部化，实现了提示词的动态组装能力。
+
+#### 实际实现方案
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      动态提示词加载流程                                │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  DocAgent 系统提示词 (DEFAULT_SYSTEM_PROMPT)                         │
+│         │                                                           │
+│         ▼                                                           │
+│  ┌─────────────────────┐                                            │
+│  │ 文档类型识别          │ ◄── 根据文档标题/内容判断                    │
+│  │ (供地合同/成交确认书/  │                                            │
+│  │  会议纪要)            │                                            │
+│  └──────────┬──────────┘                                            │
+│             │                                                        │
+│             ▼                                                        │
+│  ┌─────────────────────────────────────────────┐                   │
+│  │ get_extraction_rule_id(doc_type)            │                    │
+│  │ - 根据 doc_type 查询 DOC_TYPE_RULE_MAPPING  │                    │
+│  │ - 返回规则ID                                  │                   │
+│  └──────────┬──────────────────────────────────┘                   │
+│             │                                                        │
+│             ▼                                                        │
+│  ┌─────────────────────────────────────────────┐                   │
+│  │ get_extraction_rule_detail(rule_id,         │                   │
+│  │                       clause_numbers)       │                   │
+│  │ - 从 EXTRACTION_CONFIG 加载规则详情          │                   │
+│  │ - 支持按条款编号过滤（如 ["第一条","第五条"]） │                   │
+│  │ - 返回问题列表和 JSON 输出模板               │                   │
+│  └─────────────────────────────────────────────┘                   │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+#### 代码实现细节
+
+**1. 规则配置外部化**
+
+规则定义在 [prompts.py](file:///e:/laboratory/AI/Agents/app/features/contract_document_agent/config/prompts.py) 中：
+
+```python
+# EXTRACTION_CONFIG 结构
+EXTRACTION_CONFIG = {
+    "rule_contract_供地合同_clauses": {
+        "doc_type": "供地合同",
+        "questions": [],  # 基础通用问题
+        "clause_questions": {
+            "第一条": [{"question": "电子监管号是多少？", 
+                       "answer_template": "合同第一条的电子监管号为{value}"}],
+            "第五条": [{"question": "不动产单元代码是什么？", ...}],
+            # ... 共40+个条款的问题定义
+        }
+    },
+    "rule_confirmation": {
+        "doc_type": "成交确认书",
+        "questions": [{"id": "q1", "question": "确认书编号是多少？", ...}],
+        # 固定格式，无条款结构
+    },
+    "rule_meeting_minutes": {...}
+}
+
+# 文档类型到规则ID的映射
+DOC_TYPE_RULE_MAPPING = {
+    "供地合同": {"default": "rule_contract_供地合同_clauses"},
+    "成交确认书": {"default": "rule_confirmation"},
+    "会议纪要": {"default": "rule_meeting_minutes"}
+}
+```
+
+**2. 工具接口实现**
+
+系统在 [DocTools.py](file:///e:/laboratory/AI/Agents/app/features/contract_document_agent/tools/DocTools.py) 中实现了两个核心工具：
+
+```python
+@tool(description="根据文档类型获取提取规则ID。...")
+def get_extraction_rule_id(doc_type: str, runtime: ToolRuntime) -> Command:
+    """查询映射表，返回对应规则ID"""
+    mapping = DOC_TYPE_RULE_MAPPING[doc_type]
+    return {"rule_id": mapping["default"], ...}
+
+@tool(description="根据规则ID获取提取字段和输出格式。...")
+def get_extraction_rule_detail(rule_id: str, clause_numbers: list[str], 
+                                runtime: ToolRuntime) -> Command:
+    """从 EXTRACTION_CONFIG 加载规则详情"""
+    config = EXTRACTION_CONFIG[rule_id]
+    if clause_numbers:
+        # 支持按条款过滤，减少返回数据量
+        filtered = {k: v for k, v in config["clause_questions"].items() 
+                   if k in clause_numbers}
+        return {"clause_questions": filtered, ...}
+    return {"clause_questions": config["clause_questions"], ...}
+```
+
+**3. 动态提示词工作流**
+
+DocAgent 在执行时会动态加载规则：
+
+```
+1. 识别文档类型 → 调用 get_extraction_rule_id
+2. 获取规则详情 → 调用 get_extraction_rule_detail
+3. 按条款过滤   → 可选：指定 clause_numbers 参数
+4. 格式化输出   → 使用规则的 answer_template 生成回答
+```
+
+#### 技术优势
+
+| 特性 | 实现效果 |
+| --- | --- |
+| **上下文控制** | 支持按条款过滤，避免加载全部40+条款的问题定义 |
+| **规则可扩展** | 新增文档类型只需在配置文件中添加规则 |
+| **规则可维护** | 规则修改不影响 DocAgent 核心代码 |
+| **运行时加载** | 避免将大量规则硬编码到系统提示词中 |
+
+---
+
+## 数据处理经验
+
+### 文档切分策略
+
+系统在 [DocTools.py](file:///e:/laboratory/AI/Agents/app/features/contract_document_agent/tools/DocTools.py) 的 `split_file` 工具中实现了针对不同文档类型的切分策略。
+
+### 供地合同切分策略
+
+供地合同采用**条款级正则匹配 + 合并分组**策略：
+
+#### 实现原理
+
+```python
+def split_file(type: str, cache_id: str, file_id: str, runtime: ToolRuntime):
+    
+    if type == "供地合同":
+        # 1. 读取合同文件，使用 WordProcessor
+        word_processor = WordProcessor()
+        contract_text, paragraph_data = word_processor.read_contract_word(
+            path, 
+            pattern=r'^\s*(第[一二三四五六七八九十百千万亿]+条)',  # 匹配条款标题
+            pattern_replace=r'\1条款'  # 统一格式
+        )
+        
+        # 2. 提取 preamble（电子监管号到第一条之前的内容）
+        preamble_pattern = r'(电\s*子\s*监\s*管\s*号.*?)(?=第[一二三四五六七八九十百千万亿]+条|$)'
+        preamble_match = re.search(preamble_pattern, contract_text, re.DOTALL)
+        preamble_content = preamble_match.group(1).strip() if preamble_match else ""
+        
+        # 3. 使用正则匹配条款内容
+        pattern = r'(第[\u4e00-\u9fa5\d]+条\s*条款)(.*?)(?=\s*第[\u4e00-\u9fa5\d]+条\s*条款|$)'
+        clause_matches = re.findall(pattern, contract_text, re.DOTALL)
+        
+        # 4. 每3条合并为一个 chunk，减少 LLM 调用次数
+        group_size = 3
+        for i in range(0, len(clause_matches), group_size):
+            group_chunks = clause_matches[i:i + group_size]
+            combined_content = "\n\n".join([title + content for title, content in group_chunks])
+            chunk_data.append({"index": len(chunk_data)+1, "content": combined_content})
+```
+
+#### 切分效果
+
+| 部分 | 处理方式 | 输出 |
+| --- | --- | --- |
+| Preamble | 单独一个 chunk | 电子监管号、合同编号等基础信息 |
+| 条款内容 | 每3条合并 | 减少 LLM 调用，提升处理效率 |
+| 条款标题 | 保留在内容前 | 便于 LLM 理解条款归属 |
+
+### 成交确认书/会议纪要切分策略
+
+这两类文档采用**滚动窗口式切分**策略：
+
+#### 实现原理
+
+```python
+else:
+    # 滚动窗口：3个chunk为一组，步长为1
+    window_size = 3
+    for i in range(len(chunks) - window_size + 1):
+        window_chunks = chunks[i:i + window_size]
+        combined_content = "\n\n".join([
+            chunk.get("content", "") for chunk in window_chunks
+        ])
+        chunk_data.append({"index": i+1, "content": combined_content})
+```
+
+#### 切分效果
+
+```
+原始 chunks: [A, B, C, D, E, F, G]
+              ↓
+窗口大小=3, 步长=1
+              ↓
+输出: 
+  Chunk1: [A, B, C]
+  Chunk2: [B, C, D]
+  Chunk3: [C, D, E]
+  Chunk4: [D, E, F]
+  Chunk5: [E, F, G]
+```
+
+**优势**：保证相邻 chunk 之间有重叠内容，避免关键信息被截断。
+
+### 提取结果存储
+
+提取结果使用统一格式保存到 Store：
+
+```python
+# 存储结构
+reference = {
+    session_id: {
+        "供地合同": [
+            {"index": "基础信息", "content": [{"question": "...", "answer": "..."}]},
+            {"index": "第五条", "content": [{"question": "...", "answer": "..."}]},
+            ...
+        ],
+        "成交确认书": [...],
+        "会议纪要": [...]
+    }
+}
+```
+
+### 关键设计决策
+
+| 决策点 | 选择 | 理由 |
+| --- | --- | --- |
+| 供地合同按条款切分 | 正则匹配 `第X条` | 合同结构标准化，条款边界清晰 |
+| 条款合并策略 | 每3条一组 | 平衡信息完整性和 LLM 处理能力 |
+| 成交确认书/会议纪要 | 滚动窗口 | 信息密度低，需要重叠保证连续性 |
+| 结果格式统一 | `index + content` | 便于后续审批 Agent 读取和处理 |
+
+---
+
 ## 更新日志
 
-- **2026-03-24**: 初始版本， 实现三智能体协作架构
+- **2026-03-26**: 新增技术验证（动态提示词机制）和数据处理经验（文档压缩策略）
+- **2026-03-24**: 初始版本，实现三智能体协作架构
 
