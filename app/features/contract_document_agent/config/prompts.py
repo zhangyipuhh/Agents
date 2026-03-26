@@ -9,107 +9,143 @@ Author: 张镒谱
 """
 
 EXTRACTION_CONFIG = {
-    "rule_contract_供地合同_all": {
-        "rule_id": "rule_contract_供地合同_all",
-        "doc_type": "供地合同",
-        "questions": [
-            {"id": "q1", "question": "合同的编号是多少？", "answer_template": "合同编号为{value}"},
-            {"id": "q2", "question": "出让方是谁？", "answer_template": "出让方为{value}"},
-            {"id": "q3", "question": "受让方是谁？", "answer_template": "受让方为{value}"},
-            {"id": "q4", "question": "坐落在哪里？", "answer_template": "地块坐落为{value}"},
-            {"id": "q5", "question": "土地面积是多少？", "answer_template": "土地面积为{value}平方米"},
-            {"id": "q6", "question": "土地用途是什么？", "answer_template": "土地用途为{value}"},
-            {"id": "q7", "question": "出让年限是多少？", "answer_template": "出让年限为{value}"},
-            {"id": "q8", "question": "成交价格是多少？", "answer_template": "成交价格为{value}"},
-            {"id": "q9", "question": "付款方式是什么？", "answer_template": "付款方式为{value}"},
-            {"id": "q10", "question": "违约责任条款是什么？", "answer_template": "违约责任条款为{value}"},
-        ],
-        "clause_questions": {
-            "第一条": [
-                {"id": "c1_1", "question": "合同第一条的电子监管号是多少？", "answer_template": "合同第一条的电子监管号为{value}"},
-            ],
-            "第五条": [
-                {"question": "不动产单元代码是多少？", "answer_template": "合同第五条的不动产单元代码为{value}"},
-                {"question": "总面积大写是多少？", "answer_template": "合同第五条的总面积大写为{value}"},
-                {"question": "总面积小写是多少？", "answer_template": "合同第五条的总面积小写为{value}"},
-                {"question": "出让面积大写是多少？", "answer_template": "合同第五条的出让面积大写为{value}"},
-                {"question": "出让面积小写是多少？", "answer_template": "合同第五条的出让面积小写为{value}"},
-                {"question": "地块坐落是多少？", "answer_template": "合同第五条的地块坐落为{value}"},
-                {"question": "平面界址是多少？", "answer_template": "合同第五条的平面界址为{value}"},
-                {"question": "上界限是多少？", "answer_template": "合同第五条的上界限为{value}"},
-                {"question": "下界限是多少？", "answer_template": "合同第五条的下界限为{value}"},
-                {"question": "高差是多少？", "answer_template": "合同第五条的高差为{value}"},
-            ],
-            "第七条": [
-                {"question": "建筑总面积不大于多少平方米？", "answer_template": "合同第七条的建筑总面积不大于{value}平方米"},
-                {"question": "建筑总面积不小于多少平方米？", "answer_template": "合同第七条的建筑总面积不小于{value}平方米"},
-                {"question": "容积率不高于多少？", "answer_template": "合同第七条的容积率不高于{value}"},
-                {"question": "容积率不低于多少？", "answer_template": "合同第七条的容积率不低于{value}"},
-                {"question": "建筑高度不高于多少米？", "answer_template": "合同第七条的建築高度不高于{value}米"},
-                {"question": "建筑高度不低于多少米？", "answer_template": "合同第七条的建築高度不低于{value}米"},
-                {"question": "建筑密度（建筑系数）不高于多少？", "answer_template": "合同第七条的建築密度（建築系数）不高于{value}"},
-                {"question": "建筑密度（建筑系数）不低于多少？", "answer_template": "合同第七条的建築密度（建築系数）不低于{value}"},
-                {"question": "绿地率不高于多少？", "answer_template": "合同第七条的绿地率不高于{value}"},
-                {"question": "绿地率不低于多少？", "answer_template": "合同第七条的绿地率不低于{value}"},
-            ],
-        },
-        "output_example": [
-            {
-                "index": "基础信息",
-                "content": [
-                    {"question": "合同编号是多少？", "answer": "合同编号为HT2024001"},
-                    {"question": "出让方是谁？", "answer": "出让方为XX市自然资源局"}
-                ]
-            },
-            {
-                "index": "第五条",
-                "content": [
-                    {"question": "不动产单元代码是多少？", "answer": "不动产单元代码为210113005010GB90004"}
-                ]
-            }
-        ]
-    },
     "rule_contract_供地合同_clauses": {
         "rule_id": "rule_contract_供地合同_clauses",
         "doc_type": "供地合同",
         "questions": [],
         "clause_questions": {
             "第一条": [
-                {"id": "c1_1", "question": "合同第一条的电子监管号是多少？", "answer_template": "合同第一条的电子监管号为{value}"},
-            ],
-            "第二条": [
-                {"id": "c2_1", "question": "合同第二条的宗地编号是多少？", "answer_template": "合同第二条的宗地编号为{value}"},
-                {"id": "c2_2", "question": "合同第二条的不动产单元号是多少？", "answer_template": "合同第二条的不动产单元号为{value}"},
-            ],
-            "第三条": [
-                {"id": "c3_1", "question": "合同第三条的出让面积是多少？", "answer_template": "合同第三条的出让面积为{value}平方米"},
-            ],
-            "第四条": [
-                {"id": "c4_1", "question": "合同第四条的出让年限是多少？", "answer_template": "合同第四条的出让年限为{value}"},
+                {"question": "电子监管号是多少？", "answer_template": "合同第一条的电子监管号为{value}"},
             ],
             "第五条": [
-                {"question": "不动产单元代码是多少？", "answer_template": "合同第五条的不动产单元代码为{value}"},
-                {"question": "总面积大写是多少？", "answer_template": "合同第五条的总面积大写为{value}"},
-                {"question": "总面积小写是多少？", "answer_template": "合同第五条的总面积小写为{value}"},
-                {"question": "出让面积大写是多少？", "answer_template": "合同第五条的出让面积大写为{value}"},
-                {"question": "出让面积小写是多少？", "answer_template": "合同第五条的出让面积小写为{value}"},
-                {"question": "地块坐落是多少？", "answer_template": "合同第五条的地块坐落为{value}"},
-                {"question": "平面界址是多少？", "answer_template": "合同第五条的平面界址为{value}"},
-                {"question": "上界限是多少？", "answer_template": "合同第五条的上界限为{value}"},
-                {"question": "下界限是多少？", "answer_template": "合同第五条的下界限为{value}"},
-                {"question": "高差是多少？", "answer_template": "合同第五条的高差为{value}"},
+                {"question": "本合同项下出让宗地的不动产单元代码是什么？", "answer_template": "合同第五条的不动产单元代码为{value}"},
+                {"question": "宗地总面积的大写是多少？", "answer_template": "合同第五条的宗地总面积大写为{value}"},
+                {"question": "宗地总面积的小写是多少？", "answer_template": "合同第五条的宗地总面积小写为{value}"},
+                {"question": "出让宗地面积的大写是多少？", "answer_template": "合同第五条出让宗地面积大写为{value}"},
+                {"question": "出让宗地面积的小写是多少？", "answer_template": "合同第五条出让宗地面积小写为{value}"},
+                {"question": "本合同项下出让宗地坐落于哪里？", "answer_template": "合同第五条出让宗地坐落为{value}"},
+                {"question": "本合同项下出让宗地的平面界址是什么？", "answer_template": "合同第五条出让宗地平面界址为{value}"},
+                {"question": "出让宗地的平面界址图见附件几？", "answer_template": "合同第五条出让宗地平面界址图见附件{value}"},
+                {"question": "本合同项下出让宗地的竖向界限上界是什么？", "answer_template": "合同第五条出让宗地竖向界限上界为{value}"},
+                {"question": "本合同项下出让宗地的竖向界限下界是什么？", "answer_template": "合同第五条出让宗地竖向界限下界为{value}"},
+                {"question": "高差为多少米？", "answer_template": "合同第五条出让宗地高差为{value}米"},
+                {"question": "出让宗地竖向界限见附件几？", "answer_template": "合同第五条出让宗地竖向界限见附件{value}"},
+            ],
+            "第六条": [
+                {"question": "本合同项下出让宗地的用途是什么？", "answer_template": "合同第六条出让宗地用途为{value}"},
             ],
             "第七条": [
-                {"question": "建筑总面积不大于多少平方米？", "answer_template": "合同第七条的建筑总面积不大于{value}平方米"},
-                {"question": "建筑总面积不小于多少平方米？", "answer_template": "合同第七条的建筑总面积不小于{value}平方米"},
-                {"question": "容积率不高于多少？", "answer_template": "合同第七条的容积率不高于{value}"},
-                {"question": "容积率不低于多少？", "answer_template": "合同第七条的容积率不低于{value}"},
-                {"question": "建筑高度不高于多少米？", "answer_template": "合同第七条的建築高度不高于{value}米"},
-                {"question": "建筑高度不低于多少米？", "answer_template": "合同第七条的建築高度不低于{value}米"},
-                {"question": "建筑密度（建筑系数）不高于多少？", "answer_template": "合同第七条的建築密度（建築系数）不高于{value}"},
-                {"question": "建筑密度（建筑系数）不低于多少？", "answer_template": "合同第七条的建築密度（建築系数）不低于{value}"},
-                {"question": "绿地率不高于多少？", "answer_template": "合同第七条的绿地率不高于{value}"},
-                {"question": "绿地率不低于多少？", "answer_template": "合同第七条的绿地率不低于{value}"},
+                {"question": "受让人在本合同项下宗地范围内新建建筑物、构筑物及其附属设施应符合什么条件？", "answer_template": "合同第七条新建建筑物应符合的条件为{value}"},
+                {"question": "建筑总面积上限是多少平方米？", "answer_template": "合同第七条建筑总面积上限为{value}平方米"},
+                {"question": "建筑总面积下限是多少平方米？", "answer_template": "合同第七条建筑总面积下限为{value}平方米"},
+                {"question": "容积率上限是多少？", "answer_template": "合同第七条容积率上限为{value}"},
+                {"question": "容积率下限是多少？", "answer_template": "合同第七条容积率下限为{value}"},
+                {"question": "建筑高度上限是多少米？", "answer_template": "合同第七条建筑高度上限为{value}米"},
+                {"question": "建筑高度下限是多少米？", "answer_template": "合同第七条建筑高度下限为{value}米"},
+                {"question": "建筑密度（建筑系数）上限是多少？", "answer_template": "合同第七条建筑密度上限为{value}"},
+                {"question": "建筑密度（建筑系数）下限是多少？", "answer_template": "合同第七条建筑密度下限为{value}"},
+                {"question": "绿地率上限是多少？", "answer_template": "合同第七条绿地率上限为{value}"},
+                {"question": "绿地率下限是多少？", "answer_template": "合同第七条绿地率下限为{value}"},
+                {"question": "其他土地利用要求中详细规划条件详见哪个文件及编号？", "answer_template": "合同第七条详细规划条件详见{value}"},
+            ],
+            "第八条": [
+                {"question": "本合同项下的国有建设用地使用权出让期限为多少年？", "answer_template": "合同第八条出让期限为{value}年"},
+                {"question": "出让期限从何时起算？", "answer_template": "合同第八条出让期限从{value}起算"},
+            ],
+            "第九条": [
+                {"question": "国有建设用地使用权出让价款的大写是多少？", "answer_template": "合同第九条出让价款大写为{value}"},
+                {"question": "国有建设用地使用权出让价款的小写是多少？", "answer_template": "合同第九条出让价款小写为{value}"},
+                {"question": "每平方米国有建设用地使用权出让价款的大写是多少？", "answer_template": "合同第九条每平方米出让价款大写为{value}"},
+                {"question": "每平方米国有建设用地使用权出让价款的小写是多少？", "answer_template": "合同第九条每平方米出让价款小写为{value}"},
+            ],
+            "第十条": [
+                {"question": "定金金额的大写是多少？", "answer_template": "合同第十条定金金额大写为{value}"},
+                {"question": "定金金额的小写是多少？", "answer_template": "合同第十条定金金额小写为{value}"},
+                {"question": "定金如何处理？", "answer_template": "合同第十条定金处理方式为{value}"},
+            ],
+            "第十一条": [
+                {"question": "受让人同意按照本条第一款第几项的规定向出让人支付国有建设用地使用权出让价款？", "answer_template": "合同第十一条受让人同意按照第{value}项的规定支付出让价款"},
+                {"question": "若选择（一），应在何时一次性付清国有建设用地使用权出让价款？", "answer_template": "合同第十一条一次性付清的付款时间为{value}"},
+                {"question": "分期支付的第一期金额的大写是多少？", "answer_template": "合同第十一条分期支付第一期金额大写为{value}"},
+                {"question": "分期支付的第一期付款时间是什么时候？", "answer_template": "合同第十一条分期支付第一期付款时间为{value}"},
+                {"question": "分期支付的第二期金额的大写是多少？", "answer_template": "合同第十一条分期支付第二期金额大写为{value}"},
+                {"question": "分期支付的第二期付款时间是什么时候？", "answer_template": "合同第十一条分期支付第二期付款时间为{value}"},
+                {"question": "分期支付时，受让人在支付第二期及以后各期价款时，同意按照什么利率向出让人支付利息？", "answer_template": "合同第十一条受让人同意按照{value}利率支付利息"},
+            ],
+            "第十二条": [
+                {"question": "出让人同意在何时将出让宗地交付给受让人？", "answer_template": "合同第十二条出让人交付时间为{value}"},
+                {"question": "交付土地时该宗地应达到什么条件？", "answer_template": "合同第十二条交付条件为{value}"},
+                {"question": "属于待开发建设的用地，应选择本条第几项规定的土地条件？", "answer_template": "合同第十二条待开发建设用地应选择第{value}项"},
+                {"question": "属于原划拨（承租）国有建设用地使用权补办出让手续的，应选择第几项？", "answer_template": "合同第十二条原划拨补办出让应选择第{value}项"},
+                {"question": "若选择（一），场地平整达到什么标准？", "answer_template": "合同第十二条场地平整标准为{value}"},
+                {"question": "若选择（一），周围基础设施达到什么标准？", "answer_template": "合同第十二条周围基础设施标准为{value}"},
+                {"question": "若选择（二），现状土地条件如何填写？", "answer_template": "合同第十二条现状土地条件为{value}"},
+            ],
+            "第十四条": [
+                {"question": "土地出让期限届满，土地使用者申请续期因社会公共利益需要未获批准的，应当如何处理？", "answer_template": "合同第十四条申请续期未获批准的处理方式为{value}"},
+                {"question": "本合同项下宗地上的建筑物、构筑物及其附属设施，按本条第几项约定履行？", "answer_template": "合同第十四条按第{value}项约定履行"},
+                {"question": "若选择（一），如何处理地上建筑物、构筑物及其附属设施？", "answer_template": "合同第十四条选择（一）的处理方式为{value}"},
+                {"question": "若选择（二），如何处理地上建筑物、构筑物及其附属设施？", "answer_template": "合同第十四条选择（二）的处理方式为{value}"},
+            ],
+            "第十五条": [
+                {"question": "受让人同意本合同项下宗地建设项目在何时之前开工？", "answer_template": "合同第十五条开工时间为{value}"},
+                {"question": "受让人同意本合同项下宗地建设项目在何时之前竣工？", "answer_template": "合同第十五条竣工时间为{value}"},
+                {"question": "受让人不能按期开工，应提前多少日向出让人提出延建申请？", "answer_template": "合同第十五条应提前{value}日提出延建申请"},
+                {"question": "经出让人同意延建的，延建期限不得超过多少年？", "answer_template": "合同第十五条延建期限不得超过{value}年"},
+            ],
+            "第十七条": [
+                {"question": "在出让期限内，需要改变本合同约定的土地用途、规划条件的，经原批准出让方案的人民政府批准后，双方同意按照本条第几项规定办理？", "answer_template": "合同第十七条按照第{value}项规定办理"},
+                {"question": "若选择（一），如何处理国有建设用地使用权？", "answer_template": "合同第十七条选择（一）的处理方式为{value}"},
+                {"question": "若选择（二），应如何办理改变土地用途、规划条件的相关手续？", "answer_template": "合同第十七条选择（二）的办理方式为{value}"},
+            ],
+            "第二十条": [
+                {"question": "受让人按照本合同约定支付全部国有建设用地使用权出让价款，办理不动产登记后，有权对本合同项下的国有建设用地使用权进行哪些操作？", "answer_template": "合同第二十条受让人有权进行的操作为{value}"},
+                {"question": "首次转让的，应当符合以下第几项规定的条件？", "answer_template": "合同第二十条首次转让应符合第{value}项规定的条件"},
+                {"question": "若选择（一），按照本合同约定进行投资开发，应完成开发投资总额的百分之多少以上？", "answer_template": "合同第二十条选择（一）要求完成开发投资总额的{value}%以上"},
+                {"question": "若选择（二），按照本合同约定进行投资开发，应已形成什么用地条件？", "answer_template": "合同第二十条选择（二）要求形成的用地条件为{value}"},
+            ],
+            "第二十五条": [
+                {"question": "土地出让期限届满，土地使用者申请续期因社会公共利益需要未获批准的，土地使用者应当如何做？", "answer_template": "合同第二十五条申请续期未获批准时土地使用者应当{value}"},
+                {"question": "出让人和土地使用者同意本合同项下宗地上的建筑物、构筑物及其附属设施，按本条第几项约定履行？", "answer_template": "合同第二十五条按第{value}项约定履行"},
+                {"question": "若选择（一），如何处理地上建筑物、构筑物及其附属设施？", "answer_template": "合同第二十五条选择（一）的处理方式为{value}"},
+                {"question": "若选择（二），如何处理地上建筑物、构筑物及其附属设施？", "answer_template": "合同第二十五条选择（二）的处理方式为{value}"},
+            ],
+            "第二十九条": [
+                {"question": "受让人不能按时支付国有建设用地使用权出让价款的，自迟延支付之日起，每日按迟延支付款项的百分之多少向出让人缴纳违约金？", "answer_template": "合同第二十九条规定每日按迟延支付款项的{value}%缴纳违约金"},
+                {"question": "延期付款超过多少日，经出让人催缴后仍不能支付的，出让人有权解除合同，受让人无权要求返还定金，定金数额不足以弥补损失的，出让人可以采取什么措施？", "answer_template": "合同第二十九条规定出让人可以采取{value}措施"},
+            ],
+            "第三十二条": [
+                {"question": "受让人未能按照本合同约定日期或同意延建所另行约定日期开工建设但不超过一年的，每延期一日，应向出让人支付相当于国有建设用地使用权出让价款总额的多少违约金？", "answer_template": "合同第三十二条规定每延期一日应支付相当于出让价款总额的{value}违约金"},
+                {"question": "受让人未能按照本合同约定日期或同意延建所另行约定日期竣工的，每延期一日，应向出让人支付相当于未竣工计容建筑面积对应国有建设用地使用权出让价款的多少违约金？", "answer_template": "合同第三十二条规定每延期一日应支付相当于未竣工计容建筑面积对应出让价款的{value}违约金"},
+            ],
+            "第三十三条": [
+                {"question": "出让人未按时交付出让土地或者交付的土地不符合本合同约定的条件而致使受让人宗地占有延期的，每延期一日，出让人应当按受让人已经支付的国有建设用地使用权出让价款的多少向受让人给付违约金？", "answer_template": "合同第三十三条规定每延期一日应按已支付出让价款的{value}向受让人给付违约金"},
+                {"question": "土地使用权期限从何时起算？", "answer_template": "合同第三十三条规定土地使用权期限从{value}起算"},
+                {"question": "出让人延期交付土地超过多少日，经受让人催交后仍不能交付土地的，受让人有权解除合同，出让人应当如何处理？", "answer_template": "合同第三十三条规定出让人应当{value}"},
+            ],
+            "第三十六条": [
+                {"question": "因履行本合同发生争议，和解、调解不成的，按本条第几项约定的方式解决？", "answer_template": "合同第三十六条规定按第{value}项约定的方式解决"},
+                {"question": "若选择（一），应提交哪个仲裁委员会仲裁？", "answer_template": "合同第三十六条选择（一）应提交{value}仲裁委员会仲裁"},
+                {"question": "若选择（二），应如何解决争议？", "answer_template": "合同第三十六条选择（二）应{value}"},
+            ],
+            "第三十七条": [
+                {"question": "本合同项下宗地出让方案业经哪个人民政府批准？", "answer_template": "合同第三十七条规定出让方案经{value}人民政府批准"},
+                {"question": "本合同自何时起生效？", "answer_template": "合同第三十七条规定本合同自{value}起生效"},
+            ],
+            "第三十九条": [
+                {"question": "出让人确认其有效的送达地址是什么？", "answer_template": "合同第三十九条规定出让人有效的送达地址为{value}"},
+                {"question": "受让人确认其有效的送达地址是什么？", "answer_template": "合同第三十九条规定受让人有效的送达地址为{value}"},
+                {"question": "一方的信息如有变更，应于变更之日起多少日内以书面形式告知对方？", "answer_template": "合同第三十九条规定应于变更之日起{value}日内书面告知对方"},
+                {"question": "若未及时告知，由此引起的无法及时告知的责任由谁承担？", "answer_template": "合同第三十九条规定责任由{value}承担"},
+            ],
+            "第四十条": [
+                {"question": "本合同和附件共多少页？", "answer_template": "合同第四十条规定本合同和附件共{value}页"},
+                {"question": "以何种文字书写为准？", "answer_template": "合同第四十条规定以{value}文书写为准"},
+            ],
+            "第四十三条": [
+                {"question": "本合同一式多少份？", "answer_template": "合同第四十三条规定本合同一式{value}份"},
+                {"question": "出让人、受让人各执多少份？", "answer_template": "合同第四十三条规定出让人、受让人各执{value}份"},
+                {"question": "是否具有同等法律效力？", "answer_template": "合同第四十三条规定{value}具有同等法律效力"},
             ],
         },
         "output_example": [
@@ -168,8 +204,7 @@ EXTRACTION_CONFIG = {
 
 DOC_TYPE_RULE_MAPPING = {
     "供地合同": {
-        "all": "rule_contract_供地合同_all",
-        "clauses": "rule_contract_供地合同_clauses"
+        "default": "rule_contract_供地合同_clauses"
     },
     "成交确认书": {
         "default": "rule_confirmation"
