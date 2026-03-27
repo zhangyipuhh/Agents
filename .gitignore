@@ -23,6 +23,7 @@ app/**/*.pyc
 app/**/*.pyo
 app/**/*.pyd
 app/**/*.so
+app/**/docs/
 app/test/语法解释.md
 app/agents/subgraphs/audit_contract_clause/config/rules.md
 #排除mcpServer和mcpClient目录
