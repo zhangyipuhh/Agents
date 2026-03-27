@@ -490,18 +490,31 @@ def save_extraction_result(doc_type: str, extracted_data: list, runtime: ToolRun
         validated_data = ExtractedData(items=extracted_data)
         normalized_data = [item.model_dump() for item in validated_data.items]
         
-        existing_data = runtime.store.get(namespace, f"extraction/ref/{data_session_id}")
-        reference_data = existing_data.value if existing_data and existing_data.value else {}
+        existing_extraction = runtime.store.get(namespace, f"extraction/ref/{data_session_id}")
+        extraction_data = existing_extraction.value if existing_extraction and existing_extraction.value else {"host_session_id": data_session_id, "documents": {}}
         
-        if data_session_id not in reference_data:
-            reference_data[data_session_id] = {}
+        if "documents" not in extraction_data:
+            extraction_data["documents"] = {}
         
-        if doc_type not in reference_data[data_session_id]:
-            reference_data[data_session_id][doc_type] = []
+        if doc_type not in extraction_data["documents"]:
+            extraction_data["documents"][doc_type] = []
         
-        reference_data[data_session_id][doc_type].extend(normalized_data)
+        extraction_data["documents"][doc_type].extend(normalized_data)
         
-        runtime.store.put(namespace, f"extraction/ref/{data_session_id}", reference_data)
+        runtime.store.put(namespace, f"extraction/ref/{data_session_id}", extraction_data)
+        
+        existing_prereq = runtime.store.get(namespace, f"approval/prereq/{data_session_id}")
+        prereq_data = existing_prereq.value if existing_prereq and existing_prereq.value else {"host_session_id": data_session_id, "requirements": {}}
+        
+        if "requirements" not in prereq_data:
+            prereq_data["requirements"] = {}
+        
+        if doc_type not in prereq_data["requirements"]:
+            prereq_data["requirements"][doc_type] = []
+        
+        prereq_data["requirements"][doc_type].extend(normalized_data)
+        
+        runtime.store.put(namespace, f"approval/prereq/{data_session_id}", prereq_data)
         
         logger.info(f"[save_extraction_result] 保存成功，record_id: {record_id}, session_id: {data_session_id}")
         

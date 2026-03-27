@@ -10,10 +10,11 @@ Author: 张镒谱
 """
 
 import json
+from datetime import datetime
 from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
-from app.shared.utils.store_schema import get_data_session_id
+from app.shared.utils.store_schema import get_data_session_id, ApprovalResult
 
 
 @tool(description="从store中获取参考文件内容")
@@ -183,24 +184,15 @@ def write_approval_result(result_content: str, runtime: ToolRuntime) -> Command:
 
     将审批结果写入store，使用namespace为(store_id,)和approval/result/{data_session_id}键存储结果。
 
-    审批结果格式必须为JSON数组：
-    [
-        {
-            "index": "第一条",
-            "error": "",
-            "reference_file_name": "供地合同.pdf",
-            "reference_content": "第一条的具体内容..."
-        },
-        {
-            "index": "第二条",
-            "error": "未找到依据",
-            "reference_file_name": "",
-            "reference_content": "找到对应内容"
-        }
-    ]
+    审批结果格式必须为JSON对象：
+    {
+        "status": "approved/rejected",
+        "result": "审批结论描述",
+        "details": {...}
+    }
 
     Args:
-        result_content (str): 必填，审批结果JSON数组字符串
+        result_content (str): 必填，审批结果JSON对象字符串
         runtime (ToolRuntime): 工具运行时上下文
 
     Returns:
@@ -211,8 +203,21 @@ def write_approval_result(result_content: str, runtime: ToolRuntime) -> Command:
 
     try:
         namespace = (store_id,)
-
-        runtime.store.put(namespace, f"approval/result/{data_session_id}", result_content)
+        
+        result_data = json.loads(result_content) if isinstance(result_content, str) else result_content
+        status = result_data.get("status", "pending")
+        result_text = result_data.get("result", "")
+        details = result_data.get("details", None)
+        
+        approval_result = ApprovalResult(
+            host_session_id=data_session_id,
+            status=status,
+            result=result_text,
+            timestamp=datetime.now().isoformat(),
+            details=details
+        )
+        
+        runtime.store.put(namespace, f"approval/result/{data_session_id}", approval_result.model_dump())
 
         return Command(
             update={
