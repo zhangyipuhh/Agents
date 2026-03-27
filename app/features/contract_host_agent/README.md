@@ -31,9 +31,9 @@
 ┌─────────────────────┐     ┌─────────────────────┐
 │ DocAgent (文档智能体) │     │  LangGraph Store    │
 │ - 文件拆解           │ ──► │  (共享存储空间)       │
-│ - 内容提取           │     │  - file_id          │
-└─────────────────────┘     │  - image_paths      │
-                            │  - ht_file_path     │
+│ - 内容提取           │     │  - file/registry    │
+└─────────────────────┘     │  - file/images      │
+                            │  - contract/path/{hsid} │
                             └─────────┬───────────┘
                                       │
                                       │ 读取
@@ -65,9 +65,9 @@
 
 | 字段名                | 说明                              | 数据结构                           |
 | ------------------ | ------------------------------- | ------------------------------ |
-| `file_id`          | 上传文档ID与文件路径的映射                  | `{file_id: file_path, ...}`    |
-| `image_paths`      | 图片唯一标识符与base64数据的映射             | `{image_id: base64_data, ...}` |
-| `ht_file_path`     | 上传合同存放在**服**务器的文件路径，审批标记后的合同的路径 | {session\_id1: path1,......}   |
+| `file/registry`    | 上传文档ID与文件路径的映射                  | `{file_id: file_path, ...}`    |
+| `file/images`      | 图片唯一标识符与base64数据的映射             | `{image_id: base64_data, ...}` |
+| `contract/path/{hsid}` | 上传合同存放在**服**务器的文件路径，审批标记后的合同的路径 | `{hsid: path, ...}`            |
 | `approval_results` | 审批智能体存放的审批结果数组，记录每次审批的详细信息 | [{approval\_id, status, timestamp, details}, ...] |
 
 #### approval_results 字段数据结构
@@ -144,7 +144,7 @@ result = store.get(namespace=(store_id,), key="file/images")
 image_map = result.value if result else {}
 
 # 获取合同文件路径
-result = store.get(namespace=(store_id,), key="ht_file_path")
+result = store.get(namespace=(store_id,), key="contract/path/{host_session_id}")
 file_path = result.value if result else None
 ```
 
