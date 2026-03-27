@@ -476,29 +476,47 @@ class FileUploadHandler:
         # 收集所有图片ID，用于后续分组
         all_image_ids = []
         
-        # 处理文档文件
-        if doc_files:
-            try:
-                doc_ids = await self._process_document_files(store, namespace, doc_files, session_id)
-                result["doc"].extend(doc_ids)
-            except Exception as e:
-                raise Exception(f"文档文件处理失败: {str(e)}")
+        # 标记所有已成功处理的文件ID，用于失败时清理
+        processed_file_ids = []
         
-        # 处理PDF扫描件
-        if scan_files:
-            try:
-                scan_image_ids = await self._process_scan_files(store, namespace, scan_files, session_id)
-                all_image_ids.extend(scan_image_ids)
-            except Exception as e:
-                raise Exception(f"PDF扫描件处理失败: {str(e)}")
-        
-        # 处理图片文件
-        if img_files:
-            try:
-                img_image_ids = await self._process_image_files(store, namespace, img_files, session_id)
-                all_image_ids.extend(img_image_ids)
-            except Exception as e:
-                raise Exception(f"图片文件处理失败: {str(e)}")
+        try:
+            # 处理文档文件
+            if doc_files:
+                try:
+                    doc_ids = await self._process_document_files(store, namespace, doc_files, session_id)
+                    result["doc"].extend(doc_ids)
+                    processed_file_ids.extend(doc_ids)
+                except Exception as e:
+                    raise Exception(f"文档文件处理失败: {str(e)}")
+            
+            # 处理PDF扫描件
+            if scan_files:
+                try:
+                    scan_image_ids = await self._process_scan_files(store, namespace, scan_files, session_id)
+                    all_image_ids.extend(scan_image_ids)
+                    # 标记扫描件的file_id为已处理
+                    processed_file_ids.extend([f["id"] for f in scan_files])
+                except Exception as e:
+                    raise Exception(f"PDF扫描件处理失败: {str(e)}")
+            
+            # 处理图片文件
+            if img_files:
+                try:
+                    img_image_ids = await self._process_image_files(store, namespace, img_files, session_id)
+                    all_image_ids.extend(img_image_ids)
+                    # 标记图片文件的file_id为已处理
+                    processed_file_ids.extend([f["id"] for f in img_files])
+                except Exception as e:
+                    raise Exception(f"图片文件处理失败: {str(e)}")
+            
+        except Exception as e:
+            # 处理失败，清理已上传但处理失败的文件
+            for file_id in processed_file_ids:
+                try:
+                    await self.file_transfer.delete_file(file_id, session_id)
+                except Exception:
+                    pass  # 忽略删除失败
+            raise Exception(f"文件处理失败: {str(e)}")
         
         # 如果有图片ID，进行滚动分组处理
         if all_image_ids:
