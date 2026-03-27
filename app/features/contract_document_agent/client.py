@@ -149,10 +149,9 @@ class DocClient:
             self.doc_agent = DocAgent(
                 model_type="ollama",
                 model_name="qwen3-vl:30b",
-                model_api_key="11111",
-                model_api_base="http://172.26.160.50:9001",
-                model_temperature=0.2,
-                IS_MULTIMODAL=True,
+                api_key="11111",
+                base_url="http://172.26.160.50:9001",
+                temperature=0.2,
                 checkpointer=self.checkpointer,
                 store=self.store,
                 store_id=self.store_id,

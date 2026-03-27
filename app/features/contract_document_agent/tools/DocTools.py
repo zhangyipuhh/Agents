@@ -267,10 +267,10 @@ def split_file(type: str, cache_id: str, file_id: str, runtime: ToolRuntime) -> 
             }
         )
 
-@tool(description="根据文档类型获取提取规则ID。参数：doc_type(供地合同/成交确认书/会议纪要)、clause_numbers(仅合同需要，如['第一条','第三条']，其他类型传[])。返回规则ID，用于获取具体提取模板。")
-def get_extraction_rule_id(doc_type: str, clause_numbers: list[str], runtime: ToolRuntime) -> Command:
+@tool(description="根据文档类型获取提取规则ID。参数：doc_type(供地合同/成交确认书/会议纪要)。【重要】此工具仅返回预定义的提取规则ID，规则中已包含需要提取的条款列表。如果用户提到的条款不在预定义列表中，直接告知用户即可，不要重复用户输入的内容。返回规则ID，用于获取具体提取模板。")
+def get_extraction_rule_id(doc_type: str, runtime: ToolRuntime) -> Command:
     """
-    根据文档类型和条款信息获取提取规则ID
+    根据文档类型获取提取规则ID
     
     使用场景：
         - 当你识别出文档类型后，需要知道应该提取哪些关键信息时
@@ -278,32 +278,24 @@ def get_extraction_rule_id(doc_type: str, clause_numbers: list[str], runtime: To
     
     Args:
         doc_type: 文档类型（供地合同/成交确认书/会议纪要）
-        clause_numbers: 条款编号数组，仅合同类型需要，如["第一条","第三条"]；其他类型传空数组[]
         runtime: 工具运行时上下文
         
     Returns:
         Command: 包含规则ID的命令对象
         
     Example:
-        >>> get_extraction_rule_id("供地合同", ["第一条", "第三条"])
+        >>> get_extraction_rule_id("供地合同")
         >>> # 返回: {"rule_id": "rule_contract_供地合同_clauses", ...}
     """
     store_id = runtime.context.get('store_id', 'default')
-    logger.info(f"[get_extraction_rule_id] store_id: {store_id}, doc_type: {doc_type}, clause_numbers: {clause_numbers}")
+    logger.info(f"[get_extraction_rule_id] store_id: {store_id}, doc_type: {doc_type}")
     
     try:
         if doc_type not in DOC_TYPE_RULE_MAPPING:
             raise ValueError(f"不支持的文档类型: {doc_type}")
         
         mapping = DOC_TYPE_RULE_MAPPING[doc_type]
-        
-        if doc_type == "供地合同":
-            if clause_numbers:
-                rule_id = mapping["clauses"]
-            else:
-                rule_id = mapping["all"]
-        else:
-            rule_id = mapping["default"]
+        rule_id = mapping["default"]
         
         logger.info(f"[get_extraction_rule_id] 生成规则ID: {rule_id}")
         
@@ -315,7 +307,6 @@ def get_extraction_rule_id(doc_type: str, clause_numbers: list[str], runtime: To
                             "status": "success",
                             "rule_id": rule_id,
                             "doc_type": doc_type,
-                            "clause_count": len(clause_numbers) if clause_numbers else 0,
                             "message": f"已获取文档类型【{doc_type}】的提取规则ID"
                         }, ensure_ascii=False),
                         tool_call_id=runtime.tool_call_id
@@ -341,28 +332,34 @@ def get_extraction_rule_id(doc_type: str, clause_numbers: list[str], runtime: To
         )
 
 
-@tool(description="根据规则ID获取提取字段和输出格式。参数：rule_id(从get_extraction_rule_id获得)。返回字段列表、字段说明、JSON输出模板。")
-def get_extraction_rule_detail(rule_id: str, runtime: ToolRuntime) -> Command:
+@tool(description="根据规则ID获取提取字段和输出格式。参数：rule_id(从get_extraction_rule_id获得)、clause_numbers(条款编号列表，如['第一条','第五条']，为空则返回所有条款的问题)。返回字段列表、字段说明、JSON输出模板。")
+def get_extraction_rule_detail(rule_id: str, clause_numbers: list[str], runtime: ToolRuntime) -> Command:
     """
     获取提取规则的详细信息
-    
+
     使用场景：
         - 当你已经获取到提取规则ID，需要知道具体提取哪些字段时
         - 在调用 get_extraction_rule_id 之后使用
-    
+
+    注意事项【重要】：
+        - 必须从用户输入中识别所有条款编号传入clause_numbers参数
+        - 不要传入空列表让工具返回所有问题，这样会导致处理第一条后无法继续
+        - 如果某条款在规则中没有预定义问题，该条款会被自动跳过
+
     Args:
         rule_id: 提取规则ID
+        clause_numbers: 条款编号列表，如["第一条","第五条"]；为空则返回所有条款的问题
         runtime: 工具运行时上下文
-        
+
     Returns:
         Command: 包含提取规则详情的命令对象
-        
+
     Example:
-        >>> get_extraction_rule_detail("rule_contract_供地合同_all")
-        >>> # 返回: {"questions": [...], "output_format": {...}, ...}
+        >>> get_extraction_rule_detail("rule_contract_供地合同_clauses", ["第一条", "第五条"])
+        >>> # 返回: {"questions": [...], "clause_questions": {"第一条": [...], "第五条": [...]}, ...}
     """
     store_id = runtime.context.get('store_id', 'default')
-    logger.info(f"[get_extraction_rule_detail] store_id: {store_id}, rule_id: {rule_id}")
+    logger.info(f"[get_extraction_rule_detail] store_id: {store_id}, rule_id: {rule_id}, clause_numbers: {clause_numbers}")
     
     try:
         if rule_id not in EXTRACTION_CONFIG:
@@ -373,15 +370,23 @@ def get_extraction_rule_detail(rule_id: str, runtime: ToolRuntime) -> Command:
             "rule_id": rule_id,
             "doc_type": config["doc_type"],
             "questions": config["questions"],
-            "output_example": config["output_example"]
+            "output_example": config.get("output_example", [])
         }
         
-        if "clause_questions" in config:
+        if clause_numbers:
+            filtered_clause_questions = {
+                clause: questions
+                for clause, questions in config.get("clause_questions", {}).items()
+                if clause in clause_numbers
+            }
+            rule_detail["clause_questions"] = filtered_clause_questions
+            logger.info(f"[get_extraction_rule_detail] 已过滤条款，返回 {len(filtered_clause_questions)} 个条款的问题")
+        elif "clause_questions" in config:
             rule_detail["clause_questions"] = config["clause_questions"]
         
         question_count = len(config["questions"])
-        if "clause_questions" in config:
-            question_count += sum(len(v) for v in config["clause_questions"].values())
+        if "clause_questions" in rule_detail:
+            question_count += sum(len(v) for v in rule_detail["clause_questions"].values())
         
         logger.info(f"[get_extraction_rule_detail] 返回规则详情，问题数: {question_count}")
         
@@ -417,26 +422,41 @@ def get_extraction_rule_detail(rule_id: str, runtime: ToolRuntime) -> Command:
         )
 
 
-@tool(description="保存提取的结构化数据。参数：doc_type(文档类型)、extracted_data(JSON格式数据)。统一格式：[{\"index\": \"索引标识\", \"content\": [{\"question\": \"问题\", \"answer\": \"答案\"}]}]。index可以是'基础信息'、'第一条'等。返回保存状态和记录ID。")
+@tool(description="保存提取结果")
 def save_extraction_result(doc_type: str, extracted_data: list, runtime: ToolRuntime) -> Command:
     """
-    保存提取结果
-    
+    保存从合同文档中提取的结构化数据。
+
+    **重要：每次提取信息后，必须立即调用此方法保存提取结果！**
+
+    强制执行规则：
+        - 当你成功从文档中提取到任何信息并回答用户问题后，必须调用此方法保存结果
+        - 即使用户没有明确要求"保存"，提取到信息后也要主动保存
+        - 保存是持久化操作，确保提取的数据不会丢失，供后续引用
+
     使用场景：
-        - 当你完成信息提取后，需要保存结果时
+        - 回答用户关于合同内容的问题后（强制执行）
         - 当用户要求"保存提取结果"、"记录关键信息"时
-    
-    Args:
-        doc_type: 文档类型（供地合同/成交确认书/会议纪要）
-        extracted_data: 提取的结构化数据，统一格式为:
-            [{"index": "索引标识", "content": [{"question": "...", "answer": "..."}]}]
-            - index: 索引标识，如"基础信息"、"第一条"、"第五条"等
-            - content: 问题答案列表
-        runtime: 工具运行时上下文
-        
-    Returns:
+        - 完成信息提取后需要记录时
+
+    参数说明:
+        doc_type: 文档类型，支持以下值：
+            - "供地合同"
+            - "成交确认书"
+            - "会议纪要"
+        extracted_data: 提取的结构化数据列表，格式为:
+            [
+                {
+                    "index": "索引标识",  # 如"基础信息"、"第一条"、"第五条"等
+                    "content": [         # 问题答案对列表
+                        {"question": "问题内容", "answer": "答案内容"}
+                    ]
+                }
+            ]
+
+    返回:
         Command: 包含保存状态的命令对象
-        
+
     存储结构:
         reference = {
             session_id: {
@@ -445,16 +465,18 @@ def save_extraction_result(doc_type: str, extracted_data: list, runtime: ToolRun
                 "供地合同": []
             }
         }
-        
-    Example:
-        >>> # 所有类型统一格式
-        >>> save_extraction_result("供地合同", [
-        ...     {"index": "基础信息", "content": [{"question": "合同编号是多少？", "answer": "合同编号为HT2024001"}]},
-        ...     {"index": "第五条", "content": [{"question": "合同第五条的不动产单元号是多少？", "answer": "合同第五条的不动产单元号为234455666666"}]}
-        ... ])
-        >>> save_extraction_result("成交确认书", [
-        ...     {"index": "基础信息", "content": [{"question": "成交价格是多少？", "answer": "成交价格为5000万元"}]}
-        ... ])
+
+    使用示例:
+        # 回答供地合同问题后保存
+        save_extraction_result("供地合同", [
+            {"index": "基础信息", "content": [{"question": "合同编号是多少？", "answer": "合同编号为HT2024001"}]},
+            {"index": "第五条", "content": [{"question": "合同第五条的不动产单元号是多少？", "answer": "合同第五条的不动产单元号为234455666666"}]}
+        ])
+
+        # 回答成交确认书问题后保存
+        save_extraction_result("成交确认书", [
+            {"index": "基础信息", "content": [{"question": "成交价格是多少？", "answer": "成交价格为5000万元"}]}
+        ])
     """
     store_id = runtime.context.get('store_id', 'default')
     host_session_id = runtime.context.get('host_session_id', 'default')
