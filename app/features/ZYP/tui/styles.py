@@ -1,0 +1,41 @@
+from prompt_toolkit.styles import Style
+
+ZYP_STYLE = Style.from_dict({
+    "header": "bg:#1a1a2e #ffffff",
+    "sidebar": "bg:#16213e #e0e0e0",
+    "sidebar.title": "bold #ffffff",
+    "sidebar.session": "bg:#16213e",
+    "sidebar.session.selected": "bg:#0f3460 #ffffff",
+    "sidebar.session.active": "bold #4ade80",
+    "sidebar.button": "bg:#16213e #e0e0e0",
+    "sidebar.model": "bg:#16213e",
+    "main": "bg:#1a1a2e #ffffff",
+    "chat.user": "bold #60a5fa",
+    "chat.assistant": "#e0e0e0",
+    "chat.tool": "italic #a78bfa",
+    "chat.error": "bold #f87171",
+    "input": "bg:#0f0f23 #ffffff",
+    "inputarea": "bg:#16213e #ffffff",
+    "button": "bg:#4ade80 #000000",
+    "button.focused": "bg:#22c55e #000000 bold",
+    "button.arrow": "bg:#4ade80 #000000",
+    "button.text": "bg:#4ade80 #000000",
+    "status": "italic #9ca3af",
+    "divider": "#4a5568",
+})
+
+COLORS = {
+    "primary": "#4ade80",
+    "secondary": "#60a5fa",
+    "accent": "#a78bfa",
+    "error": "#f87171",
+    "warning": "#fbbf24",
+    "user": "#60a5fa",
+    "assistant": "#e0e0e0",
+    "tool": "#a78bfa",
+    "sidebar_bg": "#16213e",
+    "sidebar_fg": "#e0e0e0",
+    "main_bg": "#1a1a2e",
+    "main_fg": "#ffffff",
+    "input_bg": "#0f0f23",
+}
