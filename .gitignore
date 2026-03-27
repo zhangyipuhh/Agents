@@ -40,9 +40,7 @@ mcpClient/**/*.pyd
 mcpClient/**/*.so
 
 .env
-app/features/ZYP/dist/
-app/features/ZYP/build/
-app/features/ZYP/data/
+
 app/test/extract_pdf_pages.py
 app/test/rename_full_md.py
 app/data/

@@ -513,7 +513,7 @@ def save_extraction_result(doc_type: str, extracted_data: list, runtime: ToolRun
                             "status": "success",
                             "record_id": record_id,
                             "doc_type": doc_type,
-                            "session_id": host_session_id,
+                            "session_id": data_session_id,
                             "item_count": len(normalized_data),
                             "message": f"已成功保存{doc_type}的提取结果"
                         }, ensure_ascii=False),

@@ -267,7 +267,7 @@ def open_file_by_id(
     namespace = (store_id, )
     # 通过 id 在 store 中查找文件路径,这个file_id是公用的，通过外部方法更新,传递给当前会话，只能当前会话看到
     # 数据格式 file_paths 是一个 dict{file_id_1: file_path_1, file_id_2: file_path_2, ...}
-    file_paths_result = runtime.store.get(namespace, "file_id")
+    file_paths_result = runtime.store.get(namespace, "file/registry")
     file_paths = file_paths_result.value if file_paths_result else None
     logging.info(f"file_paths: {file_paths}")
     

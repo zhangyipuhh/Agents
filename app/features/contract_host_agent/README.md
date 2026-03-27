@@ -136,11 +136,11 @@ passed_approvals = [r for r in approval_results if r.get("status") == "通过"]
 
 ```python
 # 获取文件ID映射
-result = store.get(namespace=(store_id,), key="file_id")
+result = store.get(namespace=(store_id,), key="file/registry")
 file_id_map = result.value if result else {}
 
 # 获取图片映射
-result = store.get(namespace=(store_id,), key="image_paths")
+result = store.get(namespace=(store_id,), key="file/images")
 image_map = result.value if result else {}
 
 # 获取合同文件路径
@@ -268,7 +268,7 @@ curl -X POST "http://localhost:8000/api/contract/doc_chat" \
 curl -X POST "http://localhost:8000/api/contract/store/value" \
   -H "Content-Type: application/json" \
   -d '{
-    "id": "file_id",
+    "id": "file/registry",
     "session_id": "session_001"
   }'
 ```

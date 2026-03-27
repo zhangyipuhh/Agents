@@ -13,6 +13,7 @@ import json
 from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
+from app.shared.utils.store_schema import get_data_session_id
 
 
 @tool(description="当审批要求不满足时记录问题")
@@ -91,12 +92,14 @@ def validate_prerequisites(runtime: ToolRuntime) -> Command:
         Command: 包含ToolMessage和验证结果的命令对象
     """
     session_id = runtime.context.get('session_id', 'default')
+    store_id = runtime.context.get('store_id', 'default')
+    data_session_id = get_data_session_id(runtime)
     
     try:
         store_data = {}
-        namespace = (f"{session_id}_ht",)
+        namespace = (store_id,)
         
-        ht_result = runtime.store.get(namespace, "ht")
+        ht_result = runtime.store.get(namespace, f"approval/prereq/{data_session_id}")
         if ht_result and ht_result.value:
             store_data["ht"] = ht_result.value
         
