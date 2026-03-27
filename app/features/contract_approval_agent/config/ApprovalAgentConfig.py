@@ -75,9 +75,17 @@ class ApprovalAgentConfig(BaseAgentConfig):
             get_reference_files,
             get_contract_content,
             write_approval_result,
+            get_clause_approval_rules,
+            extract_all_reference_content,
         )
 
         base_tools, base_tool_node = super().get_tools()
-        tools = list(base_tools) + [get_reference_files, get_contract_content, write_approval_result]
+        tools = list(base_tools) + [
+            get_reference_files, 
+            get_contract_content, 
+            write_approval_result,
+            get_clause_approval_rules,
+            extract_all_reference_content,
+        ]
 
         return tools, ToolNode(tools)
