@@ -202,7 +202,7 @@ class Agent:
             logging.info(f"namespace: {namespace}")
             image_contents = []
             #例image_path返回  {"image_id_1": "base64_1", "image_id_2": "base64_2"}
-            result = self.store.get(namespace, "image_paths")
+            result = self.store.get(namespace, "file/images")
             content_parts = []
             for image_id in image_ids:
                 base64_data = result.value.get(image_id, "")

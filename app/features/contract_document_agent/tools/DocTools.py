@@ -18,6 +18,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 from app.shared.utils.files.word_untils import WordProcessor
 from app.features.contract_document_agent.config.prompts import EXTRACTION_CONFIG, DOC_TYPE_RULE_MAPPING
+from app.shared.utils.store_schema import get_data_session_id
 from logging import getLogger
 
 
@@ -91,10 +92,10 @@ def split_file(type: str, cache_id: str, file_id: str, runtime: ToolRuntime) -> 
     """
     store_id = runtime.context.get('store_id', 'default')
     namespace = (store_id,)
-    host_session_id = runtime.context.get('host_session_id', 'default')
+    data_session_id = get_data_session_id(runtime)
     try:
         # 1. 从缓存中获取所有块
-        result = runtime.store.get(namespace, cache_id)
+        result = runtime.store.get(namespace, f"file/cache/{cache_id}")
         
         # 如果缓存不存在，说明可能调用了错误的工具
         if not result or not result.value:
@@ -123,21 +124,19 @@ def split_file(type: str, cache_id: str, file_id: str, runtime: ToolRuntime) -> 
         if type == "供地合同":
             word_processor = WordProcessor()
             #获取合同文件路径,后续用于审批结果存储
-            file_paths_result = runtime.store.get(namespace, "file_id")
+            file_paths_result = runtime.store.get(namespace, "file/registry")
             file_paths = file_paths_result.value if file_paths_result else None
             path = file_paths.get(file_id, None) if file_paths else None
             if not path:
                 raise ValueError(f"未找到文件路径: {file_id}")
-            ht_file_path_result = runtime.store.get(namespace, "ht_file_path")
-            ht_file_paths = ht_file_path_result.value if ht_file_path_result and ht_file_path_result.value else {}
-            ht_file_paths[host_session_id] = path
-            runtime.store.put(namespace, "ht_file_path", ht_file_paths)
+            # 存储合同文件路径（按会话隔离）
+            runtime.store.put(namespace, f"contract/path/{data_session_id}", path)
             # 读取合同文件内容，并将条款前的空格去除，同时将"第几条"替换为"第几条款"
-            contract_text,paragraph_data =word_processor.read_contract_word(path, pattern=  r'^\s*(第[一二三四五六七八九十百千万亿]+条)', pattern_replace=r'\1条款')
+            contract_text,paragraph_data =word_processor.read_contract_word(path, pattern= r'^\s*(第[一二三四五六七八九十百千万亿]+条)', pattern_replace=r'\1条款')
             
 
-            #存储合同段落信息
-            runtime.store.put(namespace, "ht_paragraph_data", paragraph_data)
+            #存储合同段落信息（按会话隔离）
+            runtime.store.put(namespace, f"contract/paragraph/{data_session_id}", paragraph_data)
 
             
             # 合同类型：先合并内容，再使用正则匹配"第X条"条款进行切分
@@ -231,8 +230,8 @@ def split_file(type: str, cache_id: str, file_id: str, runtime: ToolRuntime) -> 
         
         
         
-        # 5. 存储到store的file_id键下（使用store_id命名空间），file_id的原内容就被覆盖了。这里要注意
-        runtime.store.put(namespace, file_id, chunk_data)
+        # 5. 存储到store的file/chunks/{file_id}键下（使用store_id命名空间）
+        runtime.store.put(namespace, f"file/chunks/{file_id}", chunk_data)
         logger.info(f"[INFO]split_file方法 ，store_id: {store_id}， 切分文件工具: {file_id} 已成功切分为 {len(chunk_data)} 个块")
         
         return Command(
@@ -479,9 +478,9 @@ def save_extraction_result(doc_type: str, extracted_data: list, runtime: ToolRun
         ])
     """
     store_id = runtime.context.get('store_id', 'default')
-    host_session_id = runtime.context.get('host_session_id', 'default')
     namespace = (store_id,)
-    logger.info(f"[save_extraction_result] store_id: {store_id}, doc_type: {doc_type}, host_session_id: {host_session_id}")
+    data_session_id = get_data_session_id(runtime)
+    logger.info(f"[save_extraction_result] store_id: {store_id}, doc_type: {doc_type}, data_session_id: {data_session_id}")
     logger.info(f"[save_extraction_result] extracted_data: {json.dumps(extracted_data, ensure_ascii=False)}")
     
     try:
@@ -491,20 +490,20 @@ def save_extraction_result(doc_type: str, extracted_data: list, runtime: ToolRun
         validated_data = ExtractedData(items=extracted_data)
         normalized_data = [item.model_dump() for item in validated_data.items]
         
-        existing_data = runtime.store.get(namespace, "reference")
+        existing_data = runtime.store.get(namespace, f"extraction/ref/{data_session_id}")
         reference_data = existing_data.value if existing_data and existing_data.value else {}
         
-        if host_session_id not in reference_data:
-            reference_data[host_session_id] = {}
+        if data_session_id not in reference_data:
+            reference_data[data_session_id] = {}
         
-        if doc_type not in reference_data[host_session_id]:
-            reference_data[host_session_id][doc_type] = []
+        if doc_type not in reference_data[data_session_id]:
+            reference_data[data_session_id][doc_type] = []
         
-        reference_data[host_session_id][doc_type].extend(normalized_data)
+        reference_data[data_session_id][doc_type].extend(normalized_data)
         
-        runtime.store.put(namespace, "reference", reference_data)
+        runtime.store.put(namespace, f"extraction/ref/{data_session_id}", reference_data)
         
-        logger.info(f"[save_extraction_result] 保存成功，record_id: {record_id}, session_id: {host_session_id}")
+        logger.info(f"[save_extraction_result] 保存成功，record_id: {record_id}, session_id: {data_session_id}")
         
         return Command(
             update={

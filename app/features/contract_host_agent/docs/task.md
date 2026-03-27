@@ -46,6 +46,19 @@
 
 ---
 
+### Phase 2.5: 修改 agent.py（图片读取）
+
+**文件**: `app/core/agent/agent.py`
+
+| 任务 | 旧代码 | 新代码 | 说明 |
+|-----|-------|-------|-----|
+| T2.3 | `self.store.get(namespace, "image_paths")` | `self.store.get(namespace, "file/images")` | 读取图片数据 |
+
+**修改位置**:
+- Line 205: `result = self.store.get(namespace, "image_paths")` → `result = self.store.get(namespace, "file/images")`
+
+---
+
 ### Phase 3: 修改 contract_document_agent
 
 #### DocTools.py
@@ -140,17 +153,25 @@
 
 ---
 
-### Phase 7: 统一 Context 定义（如需要）
+### Phase 7: 修改 AgentContext.py
 
-**检查文件**: `app/core/agent/AgentContext.py`
+**文件**: `app/core/agent/AgentContext.py`
 
-确认 `AgentContext` 包含:
+| 任务 | 旧代码 | 新代码 | 说明 |
+|-----|-------|-------|-----|
+| T7.1 | 缺少 `host_session_id` 字段 | 添加 `host_session_id: Optional[str] = None` | 支持会话隔离 |
+
+**修改位置**:
+- 在 `AgentContext` 类中添加: `host_session_id: Optional[str] = None`
+
+**修改后完整定义**:
 ```python
-class AgentContext(BaseAgentContext):
+class AgentContext(TypedDict):
     session_id: str = "default"
+    namespace: dict = {}
     store_id: str = "default"
-    image_ids: List[str] = []
-    host_session_id: Optional[str] = None  # 新增
+    image_ids: list[str] = []
+    host_session_id: Optional[str] = None  # 新增：数据隔离 ID
 ```
 
 ---
@@ -200,9 +221,10 @@ class AgentContext(BaseAgentContext):
 | 文件路径 | 修改类型 |
 |---------|---------|
 | `app/shared/utils/files/file_upload_handler.py` | Key 命名 |
+| `app/core/agent/agent.py` | Key 命名（image_paths → file/images） |
 | `app/features/contract_document_agent/tools/DocTools.py` | Key 命名 + 会话隔离 |
 | `app/features/contract_host_agent/tools/HtTools.py` | Key 命名 + 会话隔离 |
 | `app/features/contract_approval_agent/tools/ApprovalAgentTools.py` | Key 命名 + 会话隔离 |
 | `app/features/contract_host_agent/router/contract_router.py` | Key 命名 |
-| `app/core/agent/AgentContext.py` | 可能需要添加字段 |
+| `app/core/agent/AgentContext.py` | 添加 host_session_id 字段 |
 | `app/shared/utils/store_schema.py` | 新建文件 |

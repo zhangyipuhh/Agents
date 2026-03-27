@@ -13,6 +13,7 @@ import json
 from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
+from app.shared.utils.store_schema import get_data_session_id
 
 
 @tool(description="当审批要求不满足时记录问题")
@@ -101,11 +102,11 @@ def validate_prerequisites(runtime: ToolRuntime) -> Command:
     Returns:
         Command: 包含已上传要件清单的命令对象
     """
-    session_id = runtime.context.get('session_id', 'default')
-    
+    store_id = runtime.context.get('store_id', 'default')
+    data_session_id = get_data_session_id(runtime)
     try:
-        namespace = (f"{session_id}_ht",)
-        store_result = runtime.store.get(namespace, "ht")
+        namespace = (store_id,)
+        store_result = runtime.store.get(namespace, f"approval/prereq/{data_session_id}")
         
         if not store_result or not store_result.value:
             return Command(
@@ -114,7 +115,7 @@ def validate_prerequisites(runtime: ToolRuntime) -> Command:
                         ToolMessage(
                             content=json.dumps({
                                 "status": "no_documents",
-                                "session_id": session_id,
+                                "session_id": data_session_id,
                                 "uploaded_requirements": [],
                                 "message": "未找到任何已上传的要件文档，请先上传审批所需材料"
                             }, ensure_ascii=False),
@@ -169,7 +170,7 @@ def validate_prerequisites(runtime: ToolRuntime) -> Command:
                         ToolMessage(
                             content=json.dumps({
                                 "status": "no_requirements",
-                                "session_id": session_id,
+                                "session_id": data_session_id,
                                 "uploaded_requirements": [],
                                 "message": "所有要件均为空，请先上传审批所需材料（如：供地合同、成交确认书、会议纪要等）"
                             }, ensure_ascii=False),
@@ -185,7 +186,7 @@ def validate_prerequisites(runtime: ToolRuntime) -> Command:
                     ToolMessage(
                         content=json.dumps({
                             "status": "success",
-                            "session_id": session_id,
+                            "session_id": data_session_id,
                             "uploaded_requirements": uploaded_requirements,
                             "requirement_details": requirement_details,
                             "all_sessions_data": all_sessions_data,

@@ -13,27 +13,28 @@ import json
 from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
+from app.shared.utils.store_schema import get_data_session_id
 
 
 @tool(description="从store中获取参考文件内容")
-def get_reference_files(key: str, runtime: ToolRuntime) -> Command:
+def get_reference_files(runtime: ToolRuntime) -> Command:
     """
     获取参考文件工具
     
-    从store中获取参考文件内容，使用namespace为(session_id_ht,)和指定的key查找参考文件。
+    从store中获取参考文件内容，使用namespace为(store_id,)和extraction/ref/{data_session_id}键查找参考文件。
     
     Args:
-        key (str): 必填，参考文件的键名
         runtime (ToolRuntime): 工具运行时上下文
         
     Returns:
         Command: 包含ToolMessage和参考文件内容的命令对象
     """
-    session_id = runtime.context.get('session_id', 'default')
+    store_id = runtime.context.get('store_id', 'default')
+    data_session_id = get_data_session_id(runtime)
     
     try:
-        namespace = (f"{session_id}_ht",)
-        result = runtime.store.get(namespace, key)
+        namespace = (store_id,)
+        result = runtime.store.get(namespace, f"extraction/ref/{data_session_id}")
         
         if not result or not result.value:
             return Command(
@@ -42,7 +43,7 @@ def get_reference_files(key: str, runtime: ToolRuntime) -> Command:
                         ToolMessage(
                             content=json.dumps({
                                 "status": "not_found",
-                                "error": f"未找到参考文件: {key}"
+                                "error": f"未找到参考文件"
                             }, ensure_ascii=False),
                             tool_call_id=runtime.tool_call_id
                         )
@@ -55,7 +56,7 @@ def get_reference_files(key: str, runtime: ToolRuntime) -> Command:
         if isinstance(file_content, list):
             content_info = {
                 "status": "success",
-                "key": key,
+                "key": f"extraction/ref/{data_session_id}",
                 "type": "chunks",
                 "total_chunks": len(file_content),
                 "content": file_content
@@ -63,7 +64,7 @@ def get_reference_files(key: str, runtime: ToolRuntime) -> Command:
         else:
             content_info = {
                 "status": "success",
-                "key": key,
+                "key": f"extraction/ref/{data_session_id}",
                 "type": "single",
                 "content": file_content
             }
@@ -100,7 +101,7 @@ def get_contract_content(runtime: ToolRuntime) -> Command:
     """
     获取合同内容工具
     
-    从store中获取合同内容，使用namespace为(session_id_ht,)和key为"ht"查找合同内容。
+    从store中获取合同内容，使用namespace为(store_id,)和contract/path/{data_session_id}键查找合同路径。
     
     Args:
         runtime (ToolRuntime): 工具运行时上下文
@@ -108,11 +109,12 @@ def get_contract_content(runtime: ToolRuntime) -> Command:
     Returns:
         Command: 包含ToolMessage和合同内容的命令对象
     """
-    session_id = runtime.context.get('session_id', 'default')
+    store_id = runtime.context.get('store_id', 'default')
+    data_session_id = get_data_session_id(runtime)
     
     try:
-        namespace = (f"{session_id}_ht",)
-        result = runtime.store.get(namespace, "ht")
+        namespace = (store_id,)
+        result = runtime.store.get(namespace, f"contract/path/{data_session_id}")
         
         if not result or not result.value:
             return Command(
@@ -121,7 +123,7 @@ def get_contract_content(runtime: ToolRuntime) -> Command:
                         ToolMessage(
                             content=json.dumps({
                                 "status": "not_found",
-                                "error": "未找到合同内容"
+                                "error": "未找到合同路径"
                             }, ensure_ascii=False),
                             tool_call_id=runtime.tool_call_id
                         )
@@ -134,7 +136,7 @@ def get_contract_content(runtime: ToolRuntime) -> Command:
         if isinstance(contract_content, list):
             content_info = {
                 "status": "success",
-                "key": "ht",
+                "key": f"contract/path/{data_session_id}",
                 "type": "chunks",
                 "total_chunks": len(contract_content),
                 "content": contract_content
@@ -142,7 +144,7 @@ def get_contract_content(runtime: ToolRuntime) -> Command:
         else:
             content_info = {
                 "status": "success",
-                "key": "ht",
+                "key": f"contract/path/{data_session_id}",
                 "type": "single",
                 "content": contract_content
             }
@@ -179,7 +181,7 @@ def write_approval_result(result_content: str, runtime: ToolRuntime) -> Command:
     """
     写入审批结果工具
     
-    将审批结果写入store，使用namespace为(host_session_id_result,)和key为"result"存储结果。
+    将审批结果写入store，使用namespace为(store_id,)和approval/result/{data_session_id}键存储结果。
     
     Args:
         result_content (str): 必填，审批结果内容
@@ -188,12 +190,13 @@ def write_approval_result(result_content: str, runtime: ToolRuntime) -> Command:
     Returns:
         Command: 包含ToolMessage和写入状态的命令对象
     """
-    host_session_id = runtime.context.get('host_session_id', 'default')
+    store_id = runtime.context.get('store_id', 'default')
+    data_session_id = get_data_session_id(runtime)
     
     try:
-        namespace = (f"{host_session_id}_result",)
+        namespace = (store_id,)
         
-        runtime.store.put(namespace, "result", result_content)
+        runtime.store.put(namespace, f"approval/result/{data_session_id}", result_content)
         
         return Command(
             update={
@@ -202,8 +205,8 @@ def write_approval_result(result_content: str, runtime: ToolRuntime) -> Command:
                         content=json.dumps({
                             "status": "success",
                             "message": "审批结果已成功写入",
-                            "namespace": f"{host_session_id}_result",
-                            "key": "result"
+                            "namespace": f"({store_id},)",
+                            "key": f"approval/result/{data_session_id}"
                         }, ensure_ascii=False),
                         tool_call_id=runtime.tool_call_id
                     )

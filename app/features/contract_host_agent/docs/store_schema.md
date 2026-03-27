@@ -291,7 +291,246 @@ def write_approval_result(result_content: str, runtime: ToolRuntime) -> Command:
 └───────────────┘          └───────────────┘          └───────────────┘
 ```
 
-## 六、旧 Key 到新 Key 映射
+## 六、数据格式示例
+
+### 6.1 全局数据示例
+
+#### `file/registry` - 文件注册表
+
+```python
+# Key: "file/registry"
+# 类型: Dict[str, str]
+# 说明: file_id → file_path 映射，全局共享
+
+{
+    "file_001": "/app/data/upload/session_abc123/file_001.docx",
+    "file_002": "/app/data/upload/session_abc123/file_002.pdf",
+    "file_003": "/app/data/upload/session_xyz789/file_003.docx"
+}
+```
+
+#### `file/images` - 图片注册表
+
+```python
+# Key: "file/images"
+# 类型: Dict[str, str]
+# 说明: image_id → base64_data 映射，全局共享
+
+{
+    "img_001": "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgMC...（base64数据）",
+    "img_002": "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgMC...（base64数据）"
+}
+```
+
+#### `file/cache/{cache_id}` - 文档缓存块
+
+```python
+# Key: "file/cache/cache_abc123"
+# 类型: List[DocumentChunk]
+# 说明: 文档切分前的原始缓存块，全局共享
+
+[
+    {
+        "index": 1,
+        "name": "供地合同",
+        "content": "电子监管号：GT-2024-001\n合同编号：HT2024001\n甲方：XX市人民政府..."
+    },
+    {
+        "index": 2,
+        "name": "供地合同",
+        "content": "第二条 地块位置：该地块位于XX区XX路以东..."
+    }
+]
+```
+
+#### `file/chunks/{file_id}` - 合同条款块
+
+```python
+# Key: "file/chunks/file_001"
+# 类型: List[ClauseChunk]
+# 说明: 合同条款切分后的块，全局共享
+
+[
+    {
+        "index": 1,
+        "name": "供地合同",
+        "content": "电子监管号：GT-2024-001\n合同编号：HT2024001\n甲方：XX市人民政府\n乙方：XX房地产开发有限公司\n签订日期：2024年1月15日"
+    },
+    {
+        "index": 2,
+        "name": "供地合同",
+        "content": "第一条条款 地块面积：宗地面积共计150,000平方米...\n第二条条款 土地用途：商住综合用地...\n第三条条款 土地使用权出让年限：70年"
+    },
+    {
+        "index": 3,
+        "name": "供地合同",
+        "content": "第四条条款 出让价款：人民币大写叁亿元整（小写¥300,000,000）...\n第五条条款 付款方式：分期付款..."
+    }
+]
+```
+
+---
+
+### 6.2 会话隔离数据示例
+
+假设 `host_session_id = "hsid_001"` 或 `session_id = "hsid_001"`
+
+#### `contract/path/{host_session_id}` - 合同文件路径
+
+```python
+# Key: "contract/path/hsid_001"
+# 类型: str
+# 说明: 合同文件的完整路径，按会话隔离
+
+"/app/data/upload/hsid_001/file_001.docx"
+```
+
+#### `contract/paragraph/{host_session_id}` - 段落结构数据
+
+```python
+# Key: "contract/paragraph/hsid_001"
+# 类型: Dict
+# 说明: 合同段落结构信息，按会话隔离
+
+{
+    "session_id": "hsid_001",
+    "paragraphs": [
+        {"index": 1, "title": "电子监管号", "content": "GT-2024-001"},
+        {"index": 2, "title": "合同编号", "content": "HT2024001"},
+        {"index": 3, "title": "第一条条款", "content": "地块面积：..."}
+    ]
+}
+```
+
+#### `extraction/ref/{host_session_id}` - 提取结果
+
+```python
+# Key: "extraction/ref/hsid_001"
+# 类型: ExtractionReference (Dict)
+# 说明: 从合同文档中提取的结构化数据，按会话隔离
+
+{
+    "host_session_id": "hsid_001",
+    "documents": {
+        "供地合同": [
+            {
+                "index": "基础信息",
+                "content": [
+                    {"question": "合同编号", "answer": "HT2024001"},
+                    {"question": "电子监管号", "answer": "GT-2024-001"},
+                    {"question": "签订日期", "answer": "2024年1月15日"}
+                ]
+            },
+            {
+                "index": "第一条",
+                "content": [
+                    {"question": "地块面积", "answer": "150,000平方米"},
+                    {"question": "土地用途", "answer": "商住综合用地"}
+                ]
+            },
+            {
+                "index": "第四条",
+                "content": [
+                    {"question": "出让价款", "answer": "人民币叁亿元整（¥300,000,000）"},
+                    {"question": "付款方式", "answer": "分期付款"}
+                ]
+            }
+        ],
+        "成交确认书": [
+            {
+                "index": "基础信息",
+                "content": [
+                    {"question": "成交价格", "answer": "人民币贰亿捌仟万元整（¥280,000,000）"},
+                    {"question": "竞得人", "answer": "XX房地产开发有限公司"}
+                ]
+            }
+        ],
+        "会议纪要": [
+            {
+                "index": "基础信息",
+                "content": [
+                    {"question": "会议时间", "answer": "2024年1月10日"},
+                    {"question": "主持人", "answer": "张局长"}
+                ]
+            }
+        ]
+    }
+}
+```
+
+#### `approval/prereq/{host_session_id}` - 审批前置要件
+
+```python
+# Key: "approval/prereq/hsid_001"
+# 类型: ApprovalPrerequisites (Dict)
+# 说明: 审批前置要件清单，按会话隔离
+
+{
+    "host_session_id": "hsid_001",
+    "requirements": {
+        "供地合同": [
+            {
+                "index": "基础信息",
+                "content": [
+                    {"question": "合同编号", "answer": "HT2024001"},
+                    {"question": "电子监管号", "answer": "GT-2024-001"}
+                ]
+            },
+            {
+                "index": "第四条",
+                "content": [
+                    {"question": "出让价款", "answer": "人民币叁亿元整"}
+                ]
+            }
+        ],
+        "成交确认书": [
+            {
+                "index": "基础信息",
+                "content": [
+                    {"question": "成交价格", "answer": "人民币贰亿捌仟万元整"}
+                ]
+            }
+        ],
+        "会议纪要": [
+            {
+                "index": "基础信息",
+                "content": [
+                    {"question": "会议时间", "answer": "2024年1月10日"}
+                ]
+            }
+        ]
+    }
+}
+```
+
+#### `approval/result/{host_session_id}` - 审批结果
+
+```python
+# Key: "approval/result/hsid_001"
+# 类型: ApprovalResult (Dict)
+# 说明: 审批结果，按会话隔离
+
+{
+    "host_session_id": "hsid_001",
+    "status": "approved",
+    "result": "经审核，该供地合同符合审批条件，批准通过。",
+    "timestamp": "2026-03-27T15:30:00",
+    "details": {
+        "approved_items": ["供地合同", "成交确认书", "会议纪要"],
+        "total_amount": "叁亿元整",
+        "land_area": "150,000平方米",
+        "approval_conditions": [
+            "土地款已全额支付",
+            "审批材料齐全",
+            "符合城市规划要求"
+        ]
+    }
+}
+```
+
+---
+
+## 七、旧 Key 到新 Key 映射
 
 | 旧 Key | 新 Key | 隔离方式 | 修改文件 |
 |-------|-------|---------|---------|
@@ -305,7 +544,7 @@ def write_approval_result(result_content: str, runtime: ToolRuntime) -> Command:
 | `reference` | `extraction/ref/{host_session_id}` | 按会话 | DocTools.py |
 | `result` | `approval/result/{host_session_id}` | 按会话 | ApprovalAgentTools.py |
 
-## 七、智能体数据操作汇总
+## 八、智能体数据操作汇总
 
 ### 7.1 contract_host_agent (HtAgent)
 

@@ -161,7 +161,7 @@ class FileUploadHandler:
             file_path (str): 文件在服务器上的存储路径
         """
         # 尝试获取已存在的文件信息记录
-        existing = store.get(namespace, "file_id")
+        existing = store.get(namespace, "file/registry")
         
         # 判断是否存在历史数据
         if existing and existing.value:
@@ -177,7 +177,7 @@ class FileUploadHandler:
         # 追加新的文件信息到数据字典
         data[file_id] = file_path
         # 将更新后的数据存储回 Store
-        store.put(namespace, "file_id", data)
+        store.put(namespace, "file/registry", data)
     
     async def _store_image_info(
         self, 
@@ -199,7 +199,7 @@ class FileUploadHandler:
             image_data (Dict[str, str]): 图片数据字典，格式为 {"image_id": "base64_data", ...}
         """
         # 直接覆盖存储图片数据，不进行追加
-        store.put(namespace, "image_paths", image_data)
+        store.put(namespace, "file/images", image_data)
     
     async def _process_document_files(
         self,

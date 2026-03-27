@@ -11,6 +11,7 @@ Author: 张镒谱
 """
 
 from typing_extensions import TypedDict
+from typing import Optional
 
 
 class AgentContext(TypedDict):
@@ -22,6 +23,7 @@ class AgentContext(TypedDict):
 
     Attributes:
         session_id: 会话 ID，用于区分不同用户的对话，相同 session_id 的对话共享记忆
+        host_session_id: 主机会话 ID，用于多智能体协作时数据隔离
 
     Example:
         >>> context = AgentContext(session_id="user_123")
@@ -35,4 +37,6 @@ class AgentContext(TypedDict):
     """存储 ID，用于区分不同用户的存储空间，相同 store_id 的存储空间共享记忆，默认 "default"""
     image_ids: list[str] = []
     """图片ID列表，用于多模态模型处理图片"""
+    host_session_id: Optional[str] = None
+    """主机会话 ID，用于多智能体协作时数据隔离，默认 None"""
    

@@ -353,18 +353,13 @@ async def download_contract(
         
         result = store.get(
             namespace=(store_id,),
-            key="ht_file_path"
+            key=f"contract/path/{host_session_id}"
         )
         
         if not result or not result.value:
             raise HTTPException(status_code=404, detail="未找到合同文件路径记录")
         
-        ht_file_path_dict = result.value
-        
-        if host_session_id not in ht_file_path_dict:
-            raise HTTPException(status_code=404, detail=f"未找到 session_id 为 {host_session_id} 的合同文件")
-        
-        file_path = ht_file_path_dict[host_session_id]
+        file_path = result.value
         file_path_obj = Path(file_path)
         
         if not file_path_obj.exists():
