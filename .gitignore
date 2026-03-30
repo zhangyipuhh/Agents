@@ -45,3 +45,4 @@ app/test/extract_pdf_pages.py
 app/test/rename_full_md.py
 app/data/
 app/**/*.yaml
+app/**/*.csv
