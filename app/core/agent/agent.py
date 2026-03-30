@@ -205,7 +205,7 @@ class Agent:
             result = self.store.get(namespace, "file/images")
             content_parts = []
             for image_id in image_ids:
-                base64_data = result.value.get(image_id, "")
+                base64_data = result.value.get(image_id, "") if result else ""
                 logging.info(f"image_id: {image_id}, content length: {len(base64_data)}")
                 if base64_data:
                     image_contents.append(base64_data)
