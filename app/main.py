@@ -38,6 +38,6 @@ register_routers()
 
 if __name__ == '__main__':
     #开发环境
-    uvicorn.run("app.main:app", host='0.0.0.0', port=8000, reload=True, reload_dirs=["app"], reload_delay=0.5)
+    #uvicorn.run("app.main:app", host='0.0.0.0', port=8000, reload=True, reload_dirs=["app"], reload_delay=0.5)
     #生产环境
-    # uvicorn.run("app.main:app", host='0.0.0.0', port=8000, reload=False)
+    uvicorn.run("app.main:app", host='0.0.0.0', port=8000, reload=False)
