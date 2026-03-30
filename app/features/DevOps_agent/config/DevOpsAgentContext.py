@@ -26,8 +26,8 @@ class DevOpsAgentContext(BaseAgentContext):
         command_blacklist: 命令黑名单列表
     """
 
-    ssh_config: Optional[dict] = None
-    """SSH 连接配置，包含 host, username, password, private_key_path 等"""
+    ssh_config: Optional[str] = None
+    """SSH 连接配置（JSON 字符串），包含 host, username, password, private_key_path 等"""
 
     command_blacklist: list[str] = []
     """命令黑名单列表，用于拦截高危命令"""

@@ -123,10 +123,12 @@ def execute_command(
         # 4. 执行命令
         if server_type.lower() == "windows":
             # Windows PowerShell
-            wrapped_command = f'powershell.exe -Command "{command.replace(\'"\', \'\\"\')}"'
+            escaped_command = command.replace('"', '\\"')
+            wrapped_command = f'powershell.exe -Command "{escaped_command}"'
         else:
             # Linux bash
-            wrapped_command = f"/bin/bash -c '{command.replace(\"'\", \"'\\'\"\")}'"
+            escaped_command = command.replace("'", "'\\''")
+            wrapped_command = f"/bin/bash -c '{escaped_command}'"
 
         stdin, stdout, stderr = ssh_client.exec_command(wrapped_command, timeout=timeout)
 

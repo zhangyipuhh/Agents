@@ -47,9 +47,9 @@ class DevOpsAgent:
         store: BaseStore,
         store_id: Optional[str] = None,
         system_prompt: Optional[str] = None,
-        max_tokens: int = 20000,
-        max_tokens_before_summary: int = 16000,
-        max_summary_tokens: int = 4000,
+        max_tokens: int = 6000,
+        max_tokens_before_summary: int = 4000,
+        max_summary_tokens: int = 1000,
         config_dir: Optional[str] = None,
     ):
         """
@@ -60,9 +60,9 @@ class DevOpsAgent:
             store: LangGraph 内存存储器，用于存储上下文信息
             store_id: 存储 ID
             system_prompt: 自定义系统提示词，默认使用 DevOps 专用提示词
-            max_tokens: 最大 token 数，默认 20000
-            max_tokens_before_summary: 触发摘要的 token 阈值，默认 16000
-            max_summary_tokens: 摘要最大 token 数，默认 4000
+            max_tokens: 最大 token 数，默认 6000（适配 8192 token 限制模型）
+            max_tokens_before_summary: 触发摘要的 token 阈值，默认 4000
+            max_summary_tokens: 摘要最大 token 数，默认 1000
             config_dir: 配置文件目录，默认使用模块所在目录的 config 文件夹
         """
         self.checkpointer = checkpointer
