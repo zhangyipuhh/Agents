@@ -47,9 +47,9 @@ class DevOpsAgent:
         store: BaseStore,
         store_id: Optional[str] = None,
         system_prompt: Optional[str] = None,
-        max_tokens: int = 6000,
-        max_tokens_before_summary: int = 4000,
-        max_summary_tokens: int = 1000,
+        max_tokens: int = 3000,
+        max_tokens_before_summary: int = 1500,
+        max_summary_tokens: int = 500,
         config_dir: Optional[str] = None,
     ):
         """

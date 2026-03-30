@@ -20,6 +20,8 @@ from typing import Optional, List, Dict, Any
 
 from langgraph.store.memory import InMemoryStore
 from langgraph.checkpoint.memory import MemorySaver
+from rich.console import Console
+from rich.markdown import Markdown
 
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
@@ -277,6 +279,7 @@ class DevOpsCLI:
         self._agent: Optional[DevOpsAgent] = None
         self._checkpointer = MemorySaver()
         self._store = InMemoryStore()
+        self._console = Console()
 
     def _display_welcome(self) -> None:
         """显示欢迎信息"""
@@ -309,6 +312,16 @@ class DevOpsCLI:
         print("  > 查看系统日志")
         print("  > 检查网络连接")
         print("=" * 60)
+
+    def _render_markdown(self, content: str) -> None:
+        """
+        使用 Rich 库渲染 Markdown 格式输出
+
+        Args:
+            content: Markdown 格式的字符串内容
+        """
+        md = Markdown(content)
+        self._console.print(md)
 
     async def _select_server(self) -> bool:
         """
@@ -406,7 +419,7 @@ class DevOpsCLI:
                 server_name=self._current_server.get("name"),
             )
 
-            print(f"\n{result}")
+            self._render_markdown(result)
 
             # 记录到 CSV（这里简化处理，实际应该从 Agent 返回的结果中提取）
             self._history_logger.log({
