@@ -150,9 +150,23 @@ EXTRACTION_CONFIG = {
         },
         "output_example": [
             {
+                "index": "第一条",
+                "content": [
+                    {"question": "电子监管号是多少？", "answer": "合同第一条的电子监管号为2101132025B000017"}
+                ]
+            },
+            {
                 "index": "第五条",
                 "content": [
-                    {"question": "不动产单元代码是多少？", "answer": "不动产单元代码为210113005010GB90004"}
+                    {"question": "本合同项下出让宗地的不动产单元代码是什么？", "answer": "合同第五条的不动产单元代码为210113005010GB90004"},
+                    {"question": "宗地总面积的大写是多少？", "answer": "合同第五条的宗地总面积大写为壹万捌仟壹佰捌拾平方米"},
+                    {"question": "宗地总面积的小写是多少？", "answer": "合同第五条的宗地总面积小写为18180.00平方米"}
+                ]
+            },
+            {
+                "index": "答案格式规范",
+                "content": [
+                    {"question": "如何按照模板格式输出答案？", "answer": "提取规则中为每个问题提供了answer_template（答案模板），必须严格按照模板格式输出答案。模板中的{value}是占位符，需要用实际提取的值替换，保持模板的完整结构，不要省略前缀或后缀。例如模板为'合同第一条的电子监管号为{value}'，提取值为'2101132025B000017'，则答案必须是'合同第一条的电子监管号为2101132025B000017'，禁止只输出提取的值或改变模板格式。"}
                 ]
             }
         ]
@@ -161,12 +175,26 @@ EXTRACTION_CONFIG = {
         "rule_id": "rule_confirmation",
         "doc_type": "成交确认书",
         "questions": [
-            {"id": "q1", "question": "确认书编号是多少？", "answer_template": "确认书编号为{value}"},
-            {"id": "q2", "question": "成交标的是什么？", "answer_template": "成交标的为{value}"},
-            {"id": "q3", "question": "成交价格是多少？", "answer_template": "成交价格为{value}"},
-            {"id": "q4", "question": "竞得人是谁？", "answer_template": "竞得人为{value}"},
-            {"id": "q5", "question": "成交时间是什么时候？", "answer_template": "成交时间为{value}"},
-            {"id": "q6", "question": "签约时限是什么时候？", "answer_template": "签约时限为{value}"},
+            {"question": "成交确认书中宗地图不动产单元代码是什么？", "answer_template": "成交确认书中宗地图不动产单元代码为{value}"},
+            {"question": "成交确认书中宗地总面积小写是多少？", "answer_template": "成交确认书中宗地总面积小写为{value}"},
+            {"question": "成交确认书中宗地总面积大写是多少？", "answer_template": "成交确认书中宗地总面积大写为{value}"},
+            {"question": "成交确认书中出让宗地面积为大写是多少？", "answer_template": "成交确认书中出让宗地面积大写为{value}"},
+            {"question": "成交确认书中出让宗地面积为小写是多少？", "answer_template": "成交确认书中出让宗地面积小写为{value}"},
+            {"question": "成交确认书中记载的坐落是什么？", "answer_template": "成交确认书中记载的坐落为{value}"},
+            {"question": "成交确认书中建筑总面积范围是什么？", "answer_template": "成交规划条件中建筑总面积不大于{value}，不小于{value}"},
+            {"question": "成交确认书中建筑密度（建筑系数）范围是什么？", "answer_template": "成交规划条件中建筑密度（建筑系数）不大于{value}，不小于{value}"},
+            {"question": "成交确认书中容积率范围是什么？", "answer_template": "成交确认书中容积率不高于{value}，不低于{value}"},
+            {"question": "成交确认书中建筑高度范围是什么？", "answer_template": "成交确认书中建筑高度不高于{value}，不低于{value}"},
+            {"question": "成交确认书中绿地率范围是什么？", "answer_template": "成交确认书中绿地率不高于{value}，不低于{value}"},  
+            {"question": "成交确认书中土地利用要求是什么？", "answer_template": "成交确认书中土地利用要求为：{value}"},
+            {"question": "成交确认书中出让期限是多少年？", "answer_template": "成交确认书中出让期限为{value}年"},
+            {"question": "成交确认书中宗地的国有建设用地使用权出让价款为人民币大写多少元？", "answer_template": "成交确认书中国有建设用地使用权出让价款为人民币大写为{value}"},
+            {"question": "成交确认书中宗地的国有建设用地使用权出让价款为人民币小写多少元？", "answer_template": "成交确认书中宗地的国有建设用地使用权出让价款为人民币小写为{value}"},
+            {"question": "成交确认书中付款条款是什么？", "answer_template": "成交确认书中付款条款为{value}"},
+            {"question": "成交确认书中土地交付条款是什么？", "answer_template": "成交确认书中土地交付条款为{value}"},
+            {"question": "成交确认书中约定的土地交付日期是什么？", "answer_template": "成交确认书中约定的土地交付日期为{value}"},
+            {"question": "成交确认书中规划条件记载用于企业内部行政办公及生活服务设施的占地面积不超过受让宗地面积的百分比是多少，即不超过多少平方米，建筑面积不超过多少平方米，且建筑面积不超过工业项目总建筑面积的百分比是多少？", "answer_template": " 成交确认书中规划条件记载用于企业内部行政办公及生活服务设施的占地面积不超过受让宗地面积的百分比为{value}，即不超过{value}平方米，建筑面积不超过{value}平方米，且且建筑面积不超过工业项目总建筑面积的{valuevalue}％"},
+            
         ],
         "output_example": [
             {
@@ -277,15 +305,22 @@ DEFAULT_SYSTEM_PROMPT = """
 - **绝对禁止重复用户输入**：不要在回答中复述用户的条款内容
 - **直接输出结构化数据**：只输出JSON格式的提取结果，不要附带任何解释说明
 
+# 答案格式规范【重要】
+提取规则中为每个问题提供了 `answer_template`（答案模板），**必须严格按照模板格式输出答案**：
+- 模板中的 `{value}` 是占位符，需要用实际提取的值替换
+- 保持模板的完整结构，不要省略前缀或后缀
+- 例如模板为"合同第一条的电子监管号为{value}"，提取值为"2101132025B000017"，则答案必须是"合同第一条的电子监管号为2101132025B000017"
+
 正确输出示例：
 ✅
 ```json
-{"index": "第一条", "content": [{"question": "电子监管号是多少？", "answer": "123456789"}]}
-{"index": "第五条", "content": [{"question": "不动产单元代码是什么？", "answer": "..."}]}
+{"index": "第一条", "content": [{"question": "电子监管号是多少？", "answer": "合同第一条的电子监管号为2101132025B000017"}]}
+{"index": "第五条", "content": [{"question": "不动产单元代码是什么？", "answer": "合同第五条的不动产单元代码为210113005010GB90004"}]}
 ```
 
 错误输出示例：
-❌ {"index": "第一条", "content": [{"question": "电子监管号是多少？", "answer": "该条款没有需要提取的预定义信息。"}]}
+❌ {"index": "第一条", "content": [{"question": "电子监管号是多少？", "answer": "2101132025B000017"}]}
+❌ {"index": "第一条", "content": [{"question": "电子监管号是多少？", "answer": " 合同第一条的电子监管号为123456789"}]}
 ❌ {"index": "第二条", "content": []}
 ❌ "根据提取规则，该条款未定义..."
 

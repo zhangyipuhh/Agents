@@ -46,29 +46,34 @@ def warn_issue(issue_description: str, runtime: ToolRuntime) -> Command:
     )
 
 
-@tool(description="设置审批检查状态")
+@tool(description="通知下一个智能体开始审批流程")
 def check_approval(ischeck: bool, runtime: ToolRuntime) -> Command:
     """
-    审批检查工具
+    审批通知工具
 
-    设置审批检查状态，标记审批是否通过。
+    当主智能体确认所有前置条件满足后，调用该工具通知审批智能体可以开始审批流程。
+    该工具仅发送通知信号，实际审批由 ApprovalAgent 独立完成。
 
     Args:
-        ischeck (bool): 必填，审批状态（true=通过，false=未通过）
+        ischeck (bool): 必填，审批就绪状态（true=就绪，false=未就绪）
         runtime (ToolRuntime): 工具运行时上下文
 
     Returns:
         Command: 包含ToolMessage和状态更新的命令对象
     """
+    store_id = runtime.context.get('store_id', 'default')
+    data_session_id = get_data_session_id(runtime)
+    namespace = (store_id,)
+    runtime.store.put(namespace, f"approval/ready/{data_session_id}", ischeck)
     return Command(
         update={
             "is_check": ischeck,
             "messages": [
                 ToolMessage(
                     content=json.dumps({
-                        "status": "approval_checked",
+                        "status": "approval_notification_sent",
                         "is_check": ischeck,
-                        "result": "审批通过" if ischeck else "审批未通过"
+                        "result": "已通知审批智能体"
                     }, ensure_ascii=False),
                     tool_call_id=runtime.tool_call_id
                 )
@@ -243,14 +248,13 @@ def get_approval_result(runtime: ToolRuntime) -> Command:
         )
 
 
-@tool(description="获取已上传的审批要件清单。审批前必须首先调用此工具，返回已上传的合同、成交确认书，会议纪要等要件信息，用于判断是否具备审批条件。")
+@tool(description="获取已上传的审批要件清单。审批前必须首先调用此工具，返回当前 session 下已上传的要件类型及数量，供大模型判断是否具备审批条件。")
 def validate_prerequisites(runtime: ToolRuntime) -> Command:
     """
     前置条件验证工具
 
-    获取当前session已上传的审批要件清单。遍历session_id对应的数据结构，
-    返回已上传的要件类型（如：供地合同、成交确认书、会议纪要等）及其内容摘要。
-    当要件齐全时，更新 store 中的 approval/ready/{hsid} 字段。
+    获取当前 session 已上传的审批要件清单。返回已上传的要件类型（如：供地合同、成交确认书、会议纪要等）
+    及其数量摘要，不返回完整内容。当要件齐全时，更新 store 中的 approval/ready/{hsid} 字段。
 
     数据结构说明：
     {
@@ -261,13 +265,13 @@ def validate_prerequisites(runtime: ToolRuntime) -> Command:
         }
     }
 
-    返回已上传的要件清单，空数组表示该要件未上传。
+    返回已上传的要件清单及数量摘要。
 
     Args:
         runtime (ToolRuntime): 工具运行时上下文，包含session_id和store
 
     Returns:
-        Command: 包含已上传要件清单的命令对象
+        Command: 包含已上传要件清单摘要的命令对象
     """
     store_id = runtime.context.get('store_id', 'default')
     data_session_id = get_data_session_id(runtime)
@@ -310,7 +314,7 @@ def validate_prerequisites(runtime: ToolRuntime) -> Command:
             )
 
         uploaded_requirements = []
-        requirement_details = {}
+        requirement_summary = {}
 
         for sid, requirements in all_sessions_data.items():
             if not isinstance(requirements, dict):
@@ -320,15 +324,9 @@ def validate_prerequisites(runtime: ToolRuntime) -> Command:
                 if isinstance(req_content, list) and len(req_content) > 0:
                     if req_name not in uploaded_requirements:
                         uploaded_requirements.append(req_name)
+                        requirement_summary[req_name] = 0
 
-                    if req_name not in requirement_details:
-                        requirement_details[req_name] = {
-                            "sessions": [],
-                            "total_items": 0
-                        }
-
-                    requirement_details[req_name]["sessions"].append(sid)
-                    requirement_details[req_name]["total_items"] += len(req_content)
+                    requirement_summary[req_name] += len(req_content)
 
         if not uploaded_requirements:
             return Command(
@@ -347,7 +345,10 @@ def validate_prerequisites(runtime: ToolRuntime) -> Command:
                 }
             )
 
-        runtime.store.put(namespace, f"approval/ready/{data_session_id}", True)
+
+
+        message_parts = [f"{name}({count}份)" for name, count in requirement_summary.items()]
+        message = f"已获取要件清单，已上传: {', '.join(message_parts)}"
 
         return Command(
             update={
@@ -357,10 +358,9 @@ def validate_prerequisites(runtime: ToolRuntime) -> Command:
                             "status": "success",
                             "session_id": data_session_id,
                             "uploaded_requirements": uploaded_requirements,
-                            "requirement_details": requirement_details,
-                            "all_sessions_data": all_sessions_data,
+                            "requirement_summary": requirement_summary,
                             "approval_ready": True,
-                            "message": f"已获取要件清单，已上传: {', '.join(uploaded_requirements)}，要件齐全"
+                            "message": message
                         }, ensure_ascii=False),
                         tool_call_id=runtime.tool_call_id
                     )

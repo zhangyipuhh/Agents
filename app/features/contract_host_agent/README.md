@@ -172,7 +172,7 @@ file_path = result.value if result else None
 
 - `validate_prerequisites`: 验证前置条件
 - `warn_issue`: 记录审批问题
-- `check_approval`: 设置审批状态
+- `check_approval`: 通知审批智能体开始审批
 - `ht_result`: 获取比对信息
 
 ### DocAgent (文档智能体)

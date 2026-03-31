@@ -69,6 +69,33 @@ class ExtractedData(BaseModel):
         return converted
 
 
+def _merge_extracted_data(existing_data: list, new_data: list) -> list:
+    """
+    合并提取数据，按 index 分组，相同 index 的 content 合并到一起
+
+    Args:
+        existing_data: 已存在的数据列表
+        new_data: 新添加的数据列表
+
+    Returns:
+        合并后的数据列表
+    """
+    merged = {}
+
+    for item in existing_data:
+        index = item.get('index')
+        if index not in merged:
+            merged[index] = {'index': index, 'content': []}
+        merged[index]['content'].extend(item.get('content', []))
+
+    for item in new_data:
+        index = item.get('index')
+        if index not in merged:
+            merged[index] = {'index': index, 'content': []}
+        merged[index]['content'].extend(item.get('content', []))
+
+    return list(merged.values())
+
 
 @tool(description="**禁止用于图片**。按条款/语义切分已缓存的文档文件。使用前提：必须已有有效的cache_id（文档上传时自动生成）。参数：type(供地合同/成交确认书/会议纪要)、cache_id(缓存ID，必须存在)、file_id(文件ID)。返回切分后的文档块。")
 def split_file(type: str, cache_id: str, file_id: str, runtime: ToolRuntime) -> Command:
@@ -492,27 +519,27 @@ def save_extraction_result(doc_type: str, extracted_data: list, runtime: ToolRun
         
         existing_extraction = runtime.store.get(namespace, f"extraction/ref/{data_session_id}")
         extraction_data = existing_extraction.value if existing_extraction and existing_extraction.value else {"host_session_id": data_session_id, "documents": {}}
-        
+
         if "documents" not in extraction_data:
             extraction_data["documents"] = {}
-        
+
         if doc_type not in extraction_data["documents"]:
             extraction_data["documents"][doc_type] = []
-        
-        extraction_data["documents"][doc_type].extend(normalized_data)
-        
+
+        extraction_data["documents"][doc_type] = _merge_extracted_data(extraction_data["documents"][doc_type], normalized_data)
+
         runtime.store.put(namespace, f"extraction/ref/{data_session_id}", extraction_data)
-        
+
         existing_prereq = runtime.store.get(namespace, f"approval/prereq/{data_session_id}")
         prereq_data = existing_prereq.value if existing_prereq and existing_prereq.value else {"host_session_id": data_session_id, "requirements": {}}
-        
+
         if "requirements" not in prereq_data:
             prereq_data["requirements"] = {}
-        
+
         if doc_type not in prereq_data["requirements"]:
             prereq_data["requirements"][doc_type] = []
-        
-        prereq_data["requirements"][doc_type].extend(normalized_data)
+
+        prereq_data["requirements"][doc_type] = _merge_extracted_data(prereq_data["requirements"][doc_type], normalized_data)
         
         runtime.store.put(namespace, f"approval/prereq/{data_session_id}", prereq_data)
         
