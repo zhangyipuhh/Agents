@@ -84,7 +84,7 @@ class GetStoreValueRequest(BaseModel):
 
 
 class GetStoreValueResponse(BaseModel):
-    value: Optional[Union[dict, List[dict]]]
+    value: Optional[Any]
     id: str
 
 
