@@ -82,8 +82,8 @@ def _save_chunks_to_store(
         for i, chunk in enumerate(chunks)
     ]
 
-    # 保存到 store
-    store.put(namespace, file_id, chunk_data)
+    # 保存到 store (key: file/cache/{file_id})
+    store.put(namespace, f"file/cache/{file_id}", chunk_data)
     return True
 
 
@@ -414,7 +414,7 @@ def read_cached_chunk(
     namespace = (store_id,)
 
     try:
-        result = runtime.store.get(namespace, cache_id)
+        result = runtime.store.get(namespace, f"file/cache/{cache_id}")
 
         if not result or not result.value:
             raise ValueError(f"未找到缓存: {cache_id}")
