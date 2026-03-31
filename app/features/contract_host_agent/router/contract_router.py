@@ -19,7 +19,7 @@ import logging
 import base64
 from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, HTTPException, Request
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 from pydantic import BaseModel
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -86,6 +86,17 @@ class GetStoreValueRequest(BaseModel):
 class GetStoreValueResponse(BaseModel):
     value: Optional[Union[dict, List[dict]]]
     id: str
+
+
+class SetStoreValueRequest(BaseModel):
+    id: str
+    value: Any
+    session_id: Optional[str] = None
+
+
+class SetStoreValueResponse(BaseModel):
+    id: str
+    success: bool
 
 
 class DocChatRequest(BaseModel):
@@ -329,6 +340,41 @@ async def get_store_value(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取存储值失败：{str(e)}")
+
+
+@router.post('/store/value', response_model=SetStoreValueResponse)
+async def set_store_value(
+    request: Request,
+    body: SetStoreValueRequest
+):
+    """
+    向 store 中写入值
+    
+    Args:
+        request: FastAPI 请求对象
+        body: 包含 id、value 和可选 session_id 的请求对象
+        
+    Returns:
+        SetStoreValueResponse: 包含 id 和 success 状态
+    """
+    try:
+        session_id = body.session_id or getattr(request.state, "session_id", "default")
+        
+        store.put(
+            namespace=(store_id,),
+            key=body.id,
+            value=body.value
+        )
+        
+        logger.info(f"[INFO] set_store_value 方法，store_id: {store_id}， id: {body.id}， value: {body.value}")
+        
+        return SetStoreValueResponse(
+            id=body.id,
+            success=True
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"写入存储值失败：{str(e)}")
 
 
 @router.post('/download_contract', response_model=DownloadContractResponse)
