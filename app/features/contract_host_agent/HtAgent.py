@@ -191,13 +191,13 @@ DEFAULT_SYSTEM_PROMPT = """
 ```
 【审批分析报告】
 
-� 审批概况：共检查 {条款数} 条条款
+📊 审批概况：共检查 {条款数} 条条款
 
 ❌ 错误内容：
-| 序号 | 错误条款 | 错误内容 | 依据 |
-|------|----------|----------|------|
-| 1 | 第X条 | XXX | 参考文件/法规第X条 |
-| 2 | 第X条 | XXX | 参考文件/法规第X条 |
+| 序号 | 条款 | 错误描述 | 参考文件 | 参考内容 |
+|------|------|----------|----------|----------|
+| 1 | 第X条 | XXX | 成交确认书 | 对应参考文件中内容 |
+| 2 | 第X条 | 未找到依据 | - | - |
 
 审批分析已完成，请问是否确认审批结果？（回复"确认"或"同意"）
 ```
@@ -320,7 +320,8 @@ class HtAgent:
         agent = await self._ensure_agent()
 
         config = HtExecuteConfig(
-            configurable=HtConfigurableConfig(thread_id=session_id)
+            configurable=HtConfigurableConfig(thread_id=session_id),
+            recursion_limit=100  # 增加递归限制，支持更多轮次的工具调用
         )
 
         state = HtAgentState(

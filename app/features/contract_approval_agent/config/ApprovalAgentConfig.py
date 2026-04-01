@@ -73,7 +73,6 @@ class ApprovalAgentConfig(BaseAgentConfig):
         """
         from app.features.contract_approval_agent.tools.ApprovalAgentTools import (
             get_reference_files,
-            get_contract_content,
             write_approval_result,
             get_clause_approval_rules,
             extract_all_reference_content,
@@ -82,7 +81,6 @@ class ApprovalAgentConfig(BaseAgentConfig):
         base_tools, base_tool_node = super().get_tools()
         tools = list(base_tools) + [
             get_reference_files, 
-            get_contract_content, 
             write_approval_result,
             get_clause_approval_rules,
             extract_all_reference_content,

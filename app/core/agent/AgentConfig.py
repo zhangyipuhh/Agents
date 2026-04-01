@@ -40,6 +40,9 @@ class ExecuteConfig(TypedDict):
 
     configurable: ConfigurableConfig 
     """可配置参数，如 thread_id（线程ID，用于区分不同会话）等"""
+    
+    recursion_limit: int
+    """递归限制，控制图执行的最大步数，防止无限循环，默认 25"""
 
 class AgentState(MessagesState):
     """

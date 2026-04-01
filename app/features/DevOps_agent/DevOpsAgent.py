@@ -197,7 +197,8 @@ class DevOpsAgent:
         agent = await self._ensure_agent()
 
         config = DevOpsExecuteConfig(
-            configurable=DevOpsConfigurableConfig(thread_id=session_id)
+            configurable=DevOpsConfigurableConfig(thread_id=session_id),
+            recursion_limit=100  # 增加递归限制，支持更多轮次的工具调用
         )
 
         state = DevOpsAgentState(

@@ -176,10 +176,10 @@ def _cache_content(
     }, ensure_ascii=False)
 
 
-@tool(description="获取当前时间必须调用此工具")
+@tool(description="获取当前时间，仅在用户询问时间相关问题时调用")
 def get_current_time(runtime: ToolRuntime[AgentContext]) -> str:
     """
-    获取当前时间工具,问题涉及当前时间时必须调用此工具。
+    获取当前时间工具。仅在用户明确询问时间、日期或需要时间上下文时才调用。
 
     返回当前系统时间字符串，格式为 YYYY-MM-DD HH:MM:SS，并附带会话ID。
     用于Agent了解当前时间上下文，支持时间敏感的任务处理。

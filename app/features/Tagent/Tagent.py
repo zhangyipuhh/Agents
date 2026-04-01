@@ -198,7 +198,8 @@ async def _async_main():
             config = TExecuteConfig(
                 configurable=TConfigurableConfig(
                     thread_id=sid
-                )
+                ),
+                recursion_limit=100  # 增加递归限制，支持更多轮次的工具调用
             )
             
             # 构建Agent状态

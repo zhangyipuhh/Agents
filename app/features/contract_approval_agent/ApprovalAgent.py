@@ -107,7 +107,8 @@ class ApprovalAgent:
         agent = await self._ensure_agent()
 
         config = ApprovalExecuteConfig(
-            configurable=ApprovalConfigurableConfig(thread_id=session_id)
+            configurable=ApprovalConfigurableConfig(thread_id=session_id),
+            recursion_limit=100  # 增加递归限制，支持更多轮次的工具调用
         )
 
         state = ApprovalAgentState(
