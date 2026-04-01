@@ -11,10 +11,42 @@ Author: 张镒谱
 
 import json
 from datetime import datetime
+from typing import Optional, List
+from pydantic import BaseModel, Field
 from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 from app.shared.utils.store_schema import get_data_session_id, ApprovalResult
+
+
+class ClauseDetail(BaseModel):
+    """条款审批详情"""
+    
+    index: str = Field(description="条款编号，如'第一条'")
+    error: str = Field(description="错误描述，空字符串表示该条款符合要求")
+    reference_file_name: str = Field(description="参考文件名称，如'成交确认书'")
+    reference_content: str = Field(description="参考文件中的具体内容")
+
+
+class ApprovalDetails(BaseModel):
+    """审批详细信息"""
+    
+    clauses: List[ClauseDetail] = Field(description="条款审批详情列表")
+
+
+class ApprovalResultInput(BaseModel):
+    """审批结果输入参数"""
+    
+    status: str = Field(
+        description="审批状态，只能是 'approved'(通过) 或 'rejected'(拒绝)"
+    )
+    result: str = Field(
+        description="审批结论的文字描述，说明审批通过或拒绝的原因"
+    )
+    details: Optional[ApprovalDetails] = Field(
+        default=None,
+        description="详细审批信息，包含条款详情列表"
+    )
 
 
 @tool(description="从store中获取参考文件内容")
@@ -113,106 +145,33 @@ def get_reference_files(runtime: ToolRuntime) -> Command:
 
 
 @tool(description="将合同审批结果保存到存储中，支持多次调用追加历史记录")
-def write_approval_result(result_content: str, runtime: ToolRuntime) -> Command:
+def write_approval_result(approval_result: ApprovalResultInput, runtime: ToolRuntime) -> Command:
     """
     保存合同条款审批结果工具
-
+    
     保存合同条款审批结果到数据存储，每次调用会追加到历史记录中，不会覆盖之前的结果。
-
-    【参数说明】
-    - result_content (str): JSON字符串，包含审批结果，必须包含以下字段：
-        - status (必填): 审批状态，只能是 "approved"(通过) 或 "rejected"(拒绝)
-        - result (必填): 审批结论的文字描述，说明审批通过或拒绝的原因
-        - details (可选): 详细审批信息，包含 clauses 数组，每个条款包含：
-            - index: 条款编号，如"第一条"
-            - error: 错误描述，空字符串表示该条款符合要求
-            - reference_file_name: 参考文件名称，如"成交确认书"
-            - reference_content: 参考文件中的具体内容
-
-    - runtime (ToolRuntime): 工具运行时上下文，包含：
-        - store_id: 存储ID，从context中获取，默认值为'default'
-        - data_session_id: 数据会话ID，用于构建存储键
-        - store: 存储对象，用于读写数据
-        - tool_call_id: 工具调用ID，用于构建ToolMessage
-
-    【返回值】
-    Command: 包含ToolMessage的命令对象，message内容格式如下：
-    - 成功时: {"status": "success", "message": "审批结果已成功追加", "namespace": "...", "key": "...", "total_results": N}
-    - 错误时: {"status": "error", "error": "错误信息"}
-
-    【调用时机】
-    - 完成所有条款审批后调用
-    - 仅在流程最后调用一次
-
-    【result_content JSON格式示例】
-    审批通过示例：
-    {
-        "status": "approved",
-        "result": "第一条符合成交确认书要求，审批通过",
-        "details": {
-            "clauses": [
-                {
+    
+    Args:
+        approval_result: 审批结果对象，包含状态、结论和详细信息
+        runtime: 工具运行时上下文
+    
+    Returns:
+        Command: 包含操作结果的命令对象
+    
+    Example:
+        审批通过示例：
+        {
+            "status": "approved",
+            "result": "第一条符合成交确认书要求，审批通过",
+            "details": {
+                "clauses": [{
                     "index": "第一条",
                     "error": "",
                     "reference_file_name": "成交确认书",
                     "reference_content": "土地位置：xx市xx区"
-                }
-            ]
+                }]
+            }
         }
-    }
-
-    审批拒绝示例（单条错误）：
-    {
-        "status": "rejected",
-        "result": "第七条与规划条件不一致，审批拒绝",
-        "details": {
-            "clauses": [
-                {
-                    "index": "第七条",
-                    "error": "合同第七条建筑总面积上限、下限、建筑密度（建筑系数）上限未填写具体数值",
-                    "reference_file_name": "沈北新区蒲悦一路北-2地块规划条件",
-                    "reference_content": "合同第七条建筑总面积上限、下限、建筑密度（建筑系数）上限未填写具体数值，与《沈北新区蒲悦一路北-2地块规划条件》编号：沈规条沈北（G）2024-017中的规定不符，建筑总面积上限应为50000平方米，下限应为30000平方米"
-                }
-            ]
-        }
-    }
-
-    审批拒绝示例（多条错误）：
-    {
-        "status": "rejected",
-        "result": "第七条存在多处问题，审批拒绝",
-        "details": {
-            "clauses": [
-                {
-                    "index": "第七条",
-                    "error": "合同第七条建筑总面积上限、下限未填写具体数值",
-                    "reference_file_name": "沈北新区蒲悦一路北-2地块规划条件",
-                    "reference_content": "合同第七条建筑总面积上限、下限未填写具体数值，与《沈北新区蒲悦一路北-2地块规划条件》中的规定不符，建筑总面积上限应为50000平方米，下限应为30000平方米"
-                },
-                {
-                    "index": "第七条",
-                    "error": "合同第七条建筑密度（建筑系数）上限未填写具体数值",
-                    "reference_file_name": "沈北新区蒲悦一路北-2地块规划条件",
-                    "reference_content": "合同第七条建筑密度（建筑系数）上限未填写具体数值，与《沈北新区蒲悦一路北-2地块规划条件》中的规定不符，建筑密度上限应为40%"
-                },
-                {
-                    "index": "第七条",
-                    "error": "合同第七条容积率范围与参考文件不一致",
-                    "reference_file_name": "沈北新区蒲悦一路北-2地块规划条件",
-                    "reference_content": "合同第七条容积率范围为1.0-2.0，与《沈北新区蒲悦一路北-2地块规划条件》中的规定不符，容积率应为1.2-2.5"
-                }
-            ]
-        }
-    }
-
-    【注意事项】
-    1. status 字段只能是 "approved" 或 "rejected"，不要传其他值
-    2. 如果条款符合要求，error 字段必须设为空字符串 ""
-    3. 每次调用都会追加记录，可以查询历史审批结果
-    4. 每条条款可能有多个审批内容（检查点），每个检查点对应一个独立的错误对象
-    5. 如果某条条款有3个检查点，则应该生成3个错误对象，它们的"index"字段相同
-    6. **重要：error 字段必须包含合同中的具体错误内容，不能只写简单的"内容错误"**
-    7. **reference_content 字段必须包含参考文件的相关记载以及错误原因说明**
     """
 
     store_id = runtime.context.get('store_id', 'default')
@@ -222,12 +181,12 @@ def write_approval_result(result_content: str, runtime: ToolRuntime) -> Command:
         namespace = (store_id,)
         key = f"approval/result/{data_session_id}"
 
-        result_data = json.loads(result_content) if isinstance(result_content, str) else result_content
+        result_data = approval_result.model_dump()
         status = result_data.get("status", "pending")
         result_text = result_data.get("result", "")
         details = result_data.get("details", None)
 
-        approval_result = ApprovalResult(
+        approval_record = ApprovalResult(
             host_session_id=data_session_id,
             status=status,
             result=result_text,
@@ -235,21 +194,17 @@ def write_approval_result(result_content: str, runtime: ToolRuntime) -> Command:
             details=details
         )
 
-        # 获取现有审批结果列表
         existing_item = runtime.store.get(namespace, key)
         if existing_item and existing_item.value:
             if isinstance(existing_item.value, list):
                 results_list = existing_item.value
             else:
-                # 如果之前存储的是单个对象，转换为列表
                 results_list = [existing_item.value]
         else:
             results_list = []
 
-        # 追加新结果
-        results_list.append(approval_result.model_dump())
+        results_list.append(approval_record.model_dump())
 
-        # 保存更新后的列表
         runtime.store.put(namespace, key, results_list)
 
         return Command(
