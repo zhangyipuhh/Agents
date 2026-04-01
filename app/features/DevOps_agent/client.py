@@ -397,6 +397,350 @@ class DevOpsCLI:
             except ValueError:
                 print("\n请输入数字或 'q' 退出")
 
+    async def _handle_single_confirmation(self, interrupt_info: dict) -> bool:
+        """
+        处理单个命令确认
+
+        Args:
+            interrupt_info: 中断信息
+
+        Returns:
+            bool: 是否继续会话
+        """
+        command = interrupt_info.get("command", "")
+        server_type = interrupt_info.get("server_type", "linux")
+        message = interrupt_info.get("message", "确认执行此命令?")
+
+        print("\n" + "=" * 60)
+        print("⚠️  需要人工确认")
+        print("=" * 60)
+        print(f"\n{message}")
+        print(f"\n命令: {command}")
+        print("\n" + "-" * 40)
+        print("选项:")
+        print("  1 - 是，执行命令")
+        print("  2 - 否，拒绝执行")
+        print("  3 - 其他要求（输入你想修改的内容或问题）")
+        print("-" * 40)
+
+        while True:
+            choice = input("\n请选择 [1/2/3]: ").strip()
+
+            if choice == "1":
+                # 批准执行
+                resume_result = await self._agent.invoke(
+                    user_input="",
+                    session_id=self._current_session_id,
+                    server_name=self._current_server.get("name"),
+                    resume={"action": "approve"},
+                )
+
+                if isinstance(resume_result, dict):
+                    if resume_result.get("type") == "interrupt":
+                        return await self._handle_user_input("")
+                    content = resume_result.get("content", "")
+                else:
+                    content = str(resume_result)
+
+                self._render_markdown(content)
+
+                self._history_logger.log({
+                    "session_id": self._current_session_id,
+                    "server_name": self._current_server.get("name", ""),
+                    "command": command,
+                    "output": content[:500] if content else "",
+                    "blocked": False,
+                    "block_reason": "",
+                    "success": True,
+                    "confirmation_status": "approved",
+                    "user_feedback": "",
+                })
+                break
+
+            elif choice == "2":
+                # 拒绝执行
+                resume_result = await self._agent.invoke(
+                    user_input="",
+                    session_id=self._current_session_id,
+                    server_name=self._current_server.get("name"),
+                    resume={"action": "reject"},
+                )
+
+                if isinstance(resume_result, dict):
+                    if resume_result.get("type") == "interrupt":
+                        return await self._handle_user_input("")
+                    content = resume_result.get("content", "")
+                else:
+                    content = str(resume_result)
+
+                self._render_markdown(content)
+
+                self._history_logger.log({
+                    "session_id": self._current_session_id,
+                    "server_name": self._current_server.get("name", ""),
+                    "command": command,
+                    "output": content[:500] if content else "",
+                    "blocked": False,
+                    "block_reason": "",
+                    "success": False,
+                    "confirmation_status": "rejected",
+                    "user_feedback": "",
+                })
+                break
+
+            elif choice == "3":
+                # 其他要求
+                feedback = input("\n请输入你的要求: ").strip()
+                if feedback:
+                    resume_result = await self._agent.invoke(
+                        user_input="",
+                        session_id=self._current_session_id,
+                        server_name=self._current_server.get("name"),
+                        resume={"action": "modify", "feedback": feedback},
+                    )
+
+                    if isinstance(resume_result, dict):
+                        if resume_result.get("type") == "interrupt":
+                            return await self._handle_user_input("")
+                        content = resume_result.get("content", "")
+                    else:
+                        content = str(resume_result)
+
+                    self._render_markdown(content)
+
+                    self._history_logger.log({
+                        "session_id": self._current_session_id,
+                        "server_name": self._current_server.get("name", ""),
+                        "command": command,
+                        "output": content[:500] if content else "",
+                        "blocked": False,
+                        "block_reason": "",
+                        "success": False,
+                        "confirmation_status": "modified",
+                        "user_feedback": feedback,
+                    })
+                else:
+                    print("输入为空，请重新选择")
+                    continue
+                break
+
+            else:
+                print("无效选择，请输入 1、2 或 3")
+
+        return True
+
+    async def _handle_batch_confirmation(self, interrupt_info: dict) -> bool:
+        """
+        处理批量命令确认
+
+        Args:
+            interrupt_info: 中断信息
+
+        Returns:
+            bool: 是否继续会话
+        """
+        commands = interrupt_info.get("commands", [])
+        server_type = interrupt_info.get("server_type", "linux")
+        message = interrupt_info.get("message", "确认执行这些命令?")
+
+        print("\n" + "=" * 60)
+        print("⚠️  批量命令确认")
+        print("=" * 60)
+        print(f"\n{message}")
+        print(f"\n命令列表 ({len(commands)} 个):")
+        for i, cmd in enumerate(commands, 1):
+            print(f"  [{i}] {cmd}")
+        print("\n" + "-" * 40)
+        print("选项:")
+        print("  1 - 全部执行")
+        print("  2 - 全部拒绝")
+        print("  3 - 选择性执行")
+        print("  4 - 修改命令")
+        print("-" * 40)
+
+        while True:
+            choice = input("\n请选择 [1/2/3/4]: ").strip()
+
+            if choice == "1":
+                # 全部执行
+                resume_result = await self._agent.invoke(
+                    user_input="",
+                    session_id=self._current_session_id,
+                    server_name=self._current_server.get("name"),
+                    resume={"action": "approve"},
+                )
+
+                if isinstance(resume_result, dict):
+                    if resume_result.get("type") == "interrupt":
+                        return await self._handle_user_input("")
+                    content = resume_result.get("content", "")
+                else:
+                    content = str(resume_result)
+
+                self._render_markdown(content)
+
+                self._history_logger.log({
+                    "session_id": self._current_session_id,
+                    "server_name": self._current_server.get("name", ""),
+                    "command": "; ".join(commands),
+                    "output": content[:500] if content else "",
+                    "blocked": False,
+                    "block_reason": "",
+                    "success": True,
+                    "confirmation_status": "batch_approved",
+                    "user_feedback": "",
+                })
+                break
+
+            elif choice == "2":
+                # 全部拒绝
+                resume_result = await self._agent.invoke(
+                    user_input="",
+                    session_id=self._current_session_id,
+                    server_name=self._current_server.get("name"),
+                    resume={"action": "reject"},
+                )
+
+                if isinstance(resume_result, dict):
+                    if resume_result.get("type") == "interrupt":
+                        return await self._handle_user_input("")
+                    content = resume_result.get("content", "")
+                else:
+                    content = str(resume_result)
+
+                self._render_markdown(content)
+
+                self._history_logger.log({
+                    "session_id": self._current_session_id,
+                    "server_name": self._current_server.get("name", ""),
+                    "command": "; ".join(commands),
+                    "output": content[:500] if content else "",
+                    "blocked": False,
+                    "block_reason": "",
+                    "success": False,
+                    "confirmation_status": "batch_rejected",
+                    "user_feedback": "",
+                })
+                break
+
+            elif choice == "3":
+                # 选择性执行
+                print("\n请输入要执行的命令编号（用逗号分隔，如: 1,3,5）:")
+                selection = input("编号: ").strip()
+
+                try:
+                    selected_indices = [int(x.strip()) - 1 for x in selection.split(",")]
+                    selected_indices = [i for i in selected_indices if 0 <= i < len(commands)]
+
+                    if not selected_indices:
+                        print("无效选择，请重新输入")
+                        continue
+
+                    print(f"\n将执行以下命令:")
+                    for i in selected_indices:
+                        print(f"  [{i+1}] {commands[i]}")
+
+                    confirm = input("\n确认执行? (y/n): ").strip().lower()
+                    if confirm == 'y':
+                        resume_result = await self._agent.invoke(
+                            user_input="",
+                            session_id=self._current_session_id,
+                            server_name=self._current_server.get("name"),
+                            resume={"action": "selective", "selected_indices": selected_indices},
+                        )
+
+                        if isinstance(resume_result, dict):
+                            if resume_result.get("type") == "interrupt":
+                                return await self._handle_user_input("")
+                            content = resume_result.get("content", "")
+                        else:
+                            content = str(resume_result)
+
+                        self._render_markdown(content)
+
+                        self._history_logger.log({
+                            "session_id": self._current_session_id,
+                            "server_name": self._current_server.get("name", ""),
+                            "command": "; ".join([commands[i] for i in selected_indices]),
+                            "output": content[:500] if content else "",
+                            "blocked": False,
+                            "block_reason": "",
+                            "success": True,
+                            "confirmation_status": "selective_approved",
+                            "user_feedback": "",
+                        })
+                        break
+                    else:
+                        print("已取消，请重新选择")
+                        continue
+
+                except ValueError:
+                    print("输入格式错误，请用逗号分隔数字")
+                    continue
+
+            elif choice == "4":
+                # 修改命令
+                feedback = input("\n请输入你的修改要求: ").strip()
+                if feedback:
+                    resume_result = await self._agent.invoke(
+                        user_input="",
+                        session_id=self._current_session_id,
+                        server_name=self._current_server.get("name"),
+                        resume={"action": "modify", "feedback": feedback},
+                    )
+
+                    # 处理可能出现的第二次中断（LLM 生成新命令后）
+                    while isinstance(resume_result, dict) and resume_result.get("type") == "interrupt":
+                        interrupt_data = resume_result.get("interrupt")
+                        if interrupt_data and len(interrupt_data) > 0:
+                            interrupt_info = interrupt_data[0].value if hasattr(interrupt_data[0], 'value') else interrupt_data[0]
+                            interrupt_type = interrupt_info.get("type", "command_confirmation")
+
+                            print("\n" + "=" * 60)
+                            print("⚠️  新命令需要确认")
+                            print("=" * 60)
+
+                            # 根据中断类型调用相应的处理方法
+                            # 这些方法会处理用户选择并返回最终结果
+                            if interrupt_type == "batch_confirmation":
+                                result = await self._handle_batch_confirmation(interrupt_info)
+                                # _handle_batch_confirmation 已经处理了整个流程，直接返回
+                                return result
+                            elif interrupt_type == "command_confirmation":
+                                result = await self._handle_single_confirmation(interrupt_info)
+                                # _handle_single_confirmation 已经处理了整个流程，直接返回
+                                return result
+                        else:
+                            break
+
+                    if isinstance(resume_result, dict):
+                        content = resume_result.get("content", "")
+                    else:
+                        content = str(resume_result)
+
+                    self._render_markdown(content)
+
+                    self._history_logger.log({
+                        "session_id": self._current_session_id,
+                        "server_name": self._current_server.get("name", ""),
+                        "command": "; ".join(commands),
+                        "output": content[:500] if content else "",
+                        "blocked": False,
+                        "block_reason": "",
+                        "success": False,
+                        "confirmation_status": "batch_modified",
+                        "user_feedback": feedback,
+                    })
+                else:
+                    print("输入为空，请重新选择")
+                    continue
+                break
+
+            else:
+                print("无效选择，请输入 1、2、3 或 4")
+
+        return True
+
     async def _handle_user_input(self, user_input: str) -> bool:
         """
         处理用户输入
@@ -450,132 +794,18 @@ class DevOpsCLI:
                 if interrupt_data and len(interrupt_data) > 0:
                     interrupt_info = interrupt_data[0].value if hasattr(interrupt_data[0], 'value') else interrupt_data[0]
 
-                    # 提取中断信息
-                    command = interrupt_info.get("command", "")
-                    server_type = interrupt_info.get("server_type", "linux")
-                    message = interrupt_info.get("message", "确认执行此命令?")
+                    # 提取中断类型
+                    interrupt_type = interrupt_info.get("type", "command_confirmation")
 
-                    print("\n" + "=" * 60)
-                    print("⚠️  需要人工确认")
-                    print("=" * 60)
-                    print(f"\n{message}")
-                    print("\n" + "-" * 40)
-                    print("选项:")
-                    print("  1 - 是，执行命令")
-                    print("  2 - 否，拒绝执行")
-                    print("  3 - 其他要求（输入你想修改的内容或问题）")
-                    print("-" * 40)
+                    # 处理批量命令确认
+                    if interrupt_type == "batch_confirmation":
+                        return await self._handle_batch_confirmation(interrupt_info)
 
-                    while True:
-                        choice = input("\n请选择 [1/2/3]: ").strip()
+                    # 处理单个命令确认
+                    elif interrupt_type == "command_confirmation":
+                        return await self._handle_single_confirmation(interrupt_info)
 
-                        if choice == "1":
-                            # 批准执行
-                            resume_result = await self._agent.invoke(
-                                user_input="",
-                                session_id=self._current_session_id,
-                                server_name=self._current_server.get("name"),
-                                resume=True,
-                            )
-
-                            # 处理恢复结果
-                            if isinstance(resume_result, dict):
-                                if resume_result.get("type") == "interrupt":
-                                    # 再次中断，递归处理
-                                    return await self._handle_user_input("")
-                                content = resume_result.get("content", "")
-
-                            self._render_markdown(content)
-
-                            # 记录到 CSV
-                            self._history_logger.log({
-                                "session_id": self._current_session_id,
-                                "server_name": self._current_server.get("name", ""),
-                                "command": user_input,
-                                "output": content[:500] if content else "",
-                                "blocked": False,
-                                "block_reason": "",
-                                "success": True,
-                                "confirmation_status": "approved",
-                                "user_feedback": "",
-                            })
-                            break
-
-                        elif choice == "2":
-                            # 拒绝执行
-                            resume_result = await self._agent.invoke(
-                                user_input="",
-                                session_id=self._current_session_id,
-                                server_name=self._current_server.get("name"),
-                                resume={"action": "reject"},
-                            )
-
-                            # 处理恢复结果
-                            if isinstance(resume_result, dict):
-                                if resume_result.get("type") == "interrupt":
-                                    return await self._handle_user_input("")
-                                content = resume_result.get("content", "")
-                            else:
-                                content = str(resume_result)
-
-                            self._render_markdown(content)
-
-                            # 记录到 CSV
-                            self._history_logger.log({
-                                "session_id": self._current_session_id,
-                                "server_name": self._current_server.get("name", ""),
-                                "command": command,
-                                "output": content[:500] if content else "",
-                                "blocked": False,
-                                "block_reason": "",
-                                "success": False,
-                                "confirmation_status": "rejected",
-                                "user_feedback": "",
-                            })
-                            break
-
-                        elif choice == "3":
-                            # 其他要求
-                            feedback = input("\n请输入你的要求: ").strip()
-                            if feedback:
-                                resume_result = await self._agent.invoke(
-                                    user_input=feedback,
-                                    session_id=self._current_session_id,
-                                    server_name=self._current_server.get("name"),
-                                    resume={"action": "modify", "feedback": feedback},
-                                )
-
-                                # 处理恢复结果
-                                if isinstance(resume_result, dict):
-                                    if resume_result.get("type") == "interrupt":
-                                        return await self._handle_user_input("")
-                                    content = resume_result.get("content", "")
-                                else:
-                                    content = str(resume_result)
-
-                                self._render_markdown(content)
-
-                                # 记录到 CSV
-                                self._history_logger.log({
-                                    "session_id": self._current_session_id,
-                                    "server_name": self._current_server.get("name", ""),
-                                    "command": command,
-                                    "output": content[:500] if content else "",
-                                    "blocked": False,
-                                    "block_reason": "",
-                                    "success": False,
-                                    "confirmation_status": "modified",
-                                    "user_feedback": feedback,
-                                })
-                            else:
-                                print("输入为空，请重新选择")
-                                continue
-                            break
-
-                        else:
-                            print("无效选择，请输入 1、2 或 3")
-
-                return True  # 中断已处理，继续交互
+                return True
 
             # 正常结果
             if isinstance(result, dict):

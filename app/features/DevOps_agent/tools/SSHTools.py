@@ -20,7 +20,311 @@ from langgraph.types import Command, interrupt
 from app.features.DevOps_agent.tools.CommandInterceptor import CommandInterceptor, CommandBlockedError
 
 
-@tool(description="在远程服务器执行命令。Linux 使用 bash 命令，Windows 使用 PowerShell 命令。")
+@tool(description="批量执行多个远程命令。适用于需要执行多个相关命令的场景，如同时检查磁盘、内存、CPU等。")
+def execute_batch_commands(
+    commands: list[str],
+    server_type: str = "linux",
+    timeout: int = 30,
+    runtime: ToolRuntime = None
+) -> Command:
+    """
+    批量执行多个远程命令
+
+    Args:
+        commands: 要执行的命令列表
+        server_type: 服务器类型，"linux" 或 "windows"
+        timeout: 每个命令执行超时时间（秒）
+        runtime: 工具运行时上下文
+
+    Returns:
+        Command: 包含执行结果的命令对象
+    """
+    if runtime is None:
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps({
+                            "success": False,
+                            "error": "运行时上下文不能为空"
+                        }, ensure_ascii=False),
+                        tool_call_id="unknown"
+                    )
+                ]
+            }
+        )
+
+    session_id = runtime.context.get("session_id", "default")
+
+    # 1. 获取 SSH 配置
+    ssh_config_str = runtime.context.get("ssh_config")
+    if not ssh_config_str:
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps({
+                            "success": False,
+                            "error": "SSH 配置未找到，请检查配置文件"
+                        }, ensure_ascii=False),
+                        tool_call_id=runtime.tool_call_id
+                    )
+                ]
+            }
+        )
+
+    try:
+        ssh_config = json.loads(ssh_config_str) if isinstance(ssh_config_str, str) else ssh_config_str
+    except json.JSONDecodeError as e:
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps({
+                            "success": False,
+                            "error": f"SSH 配置解析失败: {str(e)}"
+                        }, ensure_ascii=False),
+                        tool_call_id=runtime.tool_call_id
+                    )
+                ]
+            }
+        )
+
+    # 2. 检查命令黑名单
+    blacklist = runtime.context.get("command_blacklist", [])
+    interceptor = CommandInterceptor(blacklist)
+
+    blocked_commands = []
+    allowed_commands = []
+    for i, cmd in enumerate(commands):
+        is_allowed, block_reason = interceptor.is_allowed(cmd)
+        if not is_allowed:
+            blocked_commands.append({
+                "index": i,
+                "command": cmd,
+                "reason": block_reason
+            })
+        else:
+            allowed_commands.append({"index": i, "command": cmd})
+
+    # 如果有命令被拦截，返回拦截信息
+    if blocked_commands:
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps({
+                            "success": False,
+                            "error": "部分命令被拦截",
+                            "blocked_commands": blocked_commands,
+                            "allowed_commands": [c["command"] for c in allowed_commands]
+                        }, ensure_ascii=False),
+                        tool_call_id=runtime.tool_call_id
+                    )
+                ]
+            }
+        )
+
+    # === 人工确认中断 ===
+    tool_confirmation = runtime.context.get("tool_confirmation", {})
+    require_confirmation = tool_confirmation.get("execute_batch_commands", True)
+
+    if require_confirmation:
+        decision = interrupt({
+            "type": "batch_confirmation",
+            "commands": commands,
+            "server_type": server_type,
+            "timeout": timeout,
+            "message": f"确认在 [{server_type}] 服务器执行以下 {len(commands)} 个命令?",
+            "options": {
+                "1": "全部执行",
+                "2": "全部拒绝",
+                "3": "选择性执行",
+                "4": "修改命令"
+            }
+        })
+
+        # 处理用户决策
+        if isinstance(decision, dict):
+            action = decision.get("action")
+
+            # 用户拒绝全部
+            if action == "reject":
+                for cmd in commands:
+                    _log_command_history(runtime, session_id, cmd, "", False, "User rejected", False)
+                return Command(
+                    update={
+                        "messages": [
+                            ToolMessage(
+                                content=json.dumps({
+                                    "success": False,
+                                    "error": "用户拒绝执行所有命令",
+                                    "original_commands": commands,
+                                    "user_decision": "rejected"
+                                }, ensure_ascii=False),
+                                tool_call_id=runtime.tool_call_id
+                            )
+                        ]
+                    }
+                )
+
+            # 用户要求修改
+            if action == "modify":
+                user_feedback = decision.get("feedback", "")
+                # 设置跳过下一次确认的标志
+                runtime.context["skip_next_confirmation"] = True
+                return Command(
+                    update={
+                        "messages": [
+                            ToolMessage(
+                                content=json.dumps({
+                                    "success": False,
+                                    "error": "用户要求修改命令",
+                                    "original_commands": commands,
+                                    "user_feedback": user_feedback,
+                                    "user_decision": "modify"
+                                }, ensure_ascii=False),
+                                tool_call_id=runtime.tool_call_id
+                            )
+                        ]
+                    }
+                )
+
+            # 用户选择性执行
+            if action == "selective":
+                selected_indices = decision.get("selected_indices", [])
+                commands_to_execute = [commands[i] for i in selected_indices if i < len(commands)]
+                if not commands_to_execute:
+                    return Command(
+                        update={
+                            "messages": [
+                                ToolMessage(
+                                    content=json.dumps({
+                                        "success": False,
+                                        "error": "用户未选择任何命令执行",
+                                        "user_decision": "selective_empty"
+                                    }, ensure_ascii=False),
+                                    tool_call_id=runtime.tool_call_id
+                                )
+                            ]
+                        }
+                    )
+                # 继续执行选中的命令
+                commands = commands_to_execute
+
+    # 3. 获取或创建 SSH 连接并执行命令
+    ssh_client = None
+    results = []
+
+    try:
+        ssh_client = _get_or_create_ssh_client(runtime, session_id, ssh_config)
+
+        for cmd in commands:
+            try:
+                # 执行命令
+                if server_type.lower() == "windows":
+                    escaped_command = cmd.replace('"', '\\"')
+                    wrapped_command = f'powershell.exe -Command "{escaped_command}"'
+                else:
+                    escaped_command = cmd.replace("'", "'\\''")
+                    wrapped_command = f"/bin/bash -c '{escaped_command}'"
+
+                stdin, stdout, stderr = ssh_client.exec_command(wrapped_command, timeout=timeout)
+
+                output = stdout.read().decode("utf-8", errors="replace").strip()
+                error = stderr.read().decode("utf-8", errors="replace").strip()
+                exit_code = stdout.channel.recv_exit_status()
+                success = exit_code == 0 and not error
+
+                _log_command_history(runtime, session_id, cmd, output, False, "", success)
+
+                result = {
+                    "command": cmd,
+                    "success": success,
+                    "output": output,
+                    "exit_code": exit_code
+                }
+                if error:
+                    result["error"] = error
+
+                results.append(result)
+
+            except Exception as e:
+                _log_command_history(runtime, session_id, cmd, "", False, str(e), False)
+                results.append({
+                    "command": cmd,
+                    "success": False,
+                    "error": str(e)
+                })
+
+        _update_session_info(runtime, session_id, f"batch:{len(commands)}")
+
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps({
+                            "success": all(r["success"] for r in results),
+                            "results": results,
+                            "total": len(results),
+                            "succeeded": sum(1 for r in results if r["success"])
+                        }, ensure_ascii=False),
+                        tool_call_id=runtime.tool_call_id
+                    )
+                ]
+            }
+        )
+
+    except paramiko.AuthenticationException as e:
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps({
+                            "success": False,
+                            "error": f"SSH 认证失败: {str(e)}"
+                        }, ensure_ascii=False),
+                        tool_call_id=runtime.tool_call_id
+                    )
+                ]
+            }
+        )
+
+    except paramiko.SSHException as e:
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps({
+                            "success": False,
+                            "error": f"SSH 连接错误: {str(e)}"
+                        }, ensure_ascii=False),
+                        tool_call_id=runtime.tool_call_id
+                    )
+                ]
+            }
+        )
+
+    except Exception as e:
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps({
+                            "success": False,
+                            "error": f"批量执行失败: {str(e)}"
+                        }, ensure_ascii=False),
+                        tool_call_id=runtime.tool_call_id
+                    )
+                ]
+            }
+        )
+
+    finally:
+        pass
+
+
+@tool(description="在远程服务器执行单个命令。适用于只需要执行一个命令的场景。")
 def execute_command(
     command: str,
     server_type: str = "linux",
@@ -117,7 +421,7 @@ def execute_command(
 
     # === 人工确认中断 ===
     tool_confirmation = runtime.context.get("tool_confirmation", {})
-    require_confirmation = tool_confirmation.get("execute_command", True)  # 默认需要确认
+    require_confirmation = tool_confirmation.get("execute_command", True)
 
     if require_confirmation:
         decision = interrupt({
@@ -125,7 +429,7 @@ def execute_command(
             "command": command,
             "server_type": server_type,
             "timeout": timeout,
-            "message": f"⚠️ 确认在 [{server_type}] 服务器执行此命令?\n\n命令: {command[:200]}{'...' if len(command) > 200 else ''}",
+            "message": f"确认在 [{server_type}] 服务器执行此命令?",
             "options": {
                 "1": "是，执行命令",
                 "2": "否，拒绝执行",
@@ -133,45 +437,55 @@ def execute_command(
             }
         })
 
-        # 用户拒绝（选项2）
-        if decision is False or (isinstance(decision, dict) and decision.get("action") == "reject"):
-            _log_command_history(runtime, session_id, command, "", False, "User rejected", False)
-            return Command(
-                update={
-                    "messages": [
-                        ToolMessage(
-                            content=json.dumps({
-                                "success": False,
-                                "error": "用户拒绝执行此命令",
-                                "user_decision": "rejected"
-                            }, ensure_ascii=False),
-                            tool_call_id=runtime.tool_call_id
-                        )
-                    ]
-                }
-            )
+        # 处理用户决策
+        if isinstance(decision, dict):
+            action = decision.get("action")
 
-        # 用户选择"其他要求"（选项3）- 返回用户的输入/修改给模型
-        if isinstance(decision, dict) and decision.get("action") == "modify":
-            user_feedback = decision.get("feedback", "")
-            _log_command_history(runtime, session_id, command, "", False, f"User requested modification: {user_feedback}", False)
-            return Command(
-                update={
-                    "messages": [
-                        ToolMessage(
-                            content=json.dumps({
-                                "success": False,
-                                "error": "用户要求修改",
-                                "user_feedback": user_feedback,
-                                "user_decision": "modify"
-                            }, ensure_ascii=False),
-                            tool_call_id=runtime.tool_call_id
-                        )
-                    ]
-                }
-            )
+            # 用户拒绝
+            if action == "reject":
+                _log_command_history(runtime, session_id, command, "", False, "User rejected", False)
+                return Command(
+                    update={
+                        "messages": [
+                            ToolMessage(
+                                content=json.dumps({
+                                    "success": False,
+                                    "error": "用户拒绝执行此命令",
+                                    "original_command": command,
+                                    "user_decision": "rejected"
+                                }, ensure_ascii=False),
+                                tool_call_id=runtime.tool_call_id
+                            )
+                        ]
+                    }
+                )
 
-        # 用户批准（选项1）或无返回值，继续执行
+            # 用户要求修改
+            if action == "modify":
+                user_feedback = decision.get("feedback", "")
+                # 设置跳过下一次确认的标志
+                runtime.context["skip_next_confirmation"] = True
+                _log_command_history(runtime, session_id, command, "", False, f"User requested modification: {user_feedback}", False)
+                return Command(
+                    update={
+                        "messages": [
+                            ToolMessage(
+                                content=json.dumps({
+                                    "success": False,
+                                    "error": "用户要求修改命令",
+                                    "original_command": command,
+                                    "user_feedback": user_feedback,
+                                    "user_decision": "modify"
+                                }, ensure_ascii=False),
+                                tool_call_id=runtime.tool_call_id
+                            )
+                        ]
+                    }
+                )
+
+            # 用户批准 - 继续执行
+            if action == "approve":
+                pass
 
     # 3. 获取或创建 SSH 连接
     ssh_client = None

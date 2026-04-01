@@ -78,9 +78,12 @@ class DevOpsAgentConfig(BaseAgentConfig):
         返回:
             tuple[list[str], ToolNode]: 工具名称列表和对应的 ToolNode 对象
         """
-        from app.features.DevOps_agent.tools.SSHTools import execute_command
+        from app.features.DevOps_agent.tools.SSHTools import (
+            execute_command,
+            execute_batch_commands,
+        )
 
         base_tools, base_tool_node = super().get_tools()
-        tools = list(base_tools) + [execute_command]
+        tools = list(base_tools) + [execute_command, execute_batch_commands]
 
         return tools, ToolNode(tools)

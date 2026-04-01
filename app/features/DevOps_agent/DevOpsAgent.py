@@ -244,11 +244,7 @@ class DevOpsAgent:
 
         # 处理 resume 参数
         if resume is not False:
-            if resume is True:
-                resume_command = Command(resume=True)
-            else:
-                resume_command = Command(resume=resume)
-
+            resume_command = Command(resume=resume)
             result = await agent.invoke(
                 resume_command,
                 config=config,
