@@ -185,7 +185,7 @@ class Agent:
         """
         context = runtime.context
         messages = state["summarized_messages"]
-        logging.info(f"对话历史: {messages[-1].content}")
+        #logging.info(f"对话历史: {messages[-1].content}")
         #messages = state["messages"]
         # 系统提示词，指导模型如何根据文件类型调用相应的解析工具
         system_prompt = self.system_prompt or ""
