@@ -90,9 +90,7 @@ class GetStoreValueResponse(BaseModel):
 
 class SetStoreValueRequest(BaseModel):
     id: str
-    value: Any
-    session_id: Optional[str] = None
-
+    value: Optional[Any]
 
 class SetStoreValueResponse(BaseModel):
     id: str
@@ -342,7 +340,7 @@ async def get_store_value(
         raise HTTPException(status_code=500, detail=f"获取存储值失败：{str(e)}")
 
 
-@router.post('/store/value', response_model=SetStoreValueResponse)
+@router.post('/store/value/set', response_model=SetStoreValueResponse)
 async def set_store_value(
     request: Request,
     body: SetStoreValueRequest

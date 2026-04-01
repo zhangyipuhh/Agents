@@ -299,7 +299,6 @@ def get_approval_result(runtime: ToolRuntime) -> Command:
     try:
         namespace = (store_id,)
         result = runtime.store.get(namespace, f"approval/result/{data_session_id}")
-
         if not result or not result.value:
             return Command(
                 update={
