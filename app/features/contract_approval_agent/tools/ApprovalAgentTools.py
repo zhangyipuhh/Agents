@@ -161,17 +161,45 @@ def write_approval_result(result_content: str, runtime: ToolRuntime) -> Command:
         }
     }
 
-    审批拒绝示例：
+    审批拒绝示例（单条错误）：
     {
         "status": "rejected",
-        "result": "第二条与成交确认书不一致，审批拒绝",
+        "result": "第七条与规划条件不一致，审批拒绝",
         "details": {
             "clauses": [
                 {
-                    "index": "第二条",
-                    "error": "土地面积不一致，合同写10000平方米，成交确认书写12000平方米",
-                    "reference_file_name": "成交确认书",
-                    "reference_content": "土地面积：12000平方米"
+                    "index": "第七条",
+                    "error": "合同第七条建筑总面积上限、下限、建筑密度（建筑系数）上限未填写具体数值",
+                    "reference_file_name": "沈北新区蒲悦一路北-2地块规划条件",
+                    "reference_content": "合同第七条建筑总面积上限、下限、建筑密度（建筑系数）上限未填写具体数值，与《沈北新区蒲悦一路北-2地块规划条件》编号：沈规条沈北（G）2024-017中的规定不符，建筑总面积上限应为50000平方米，下限应为30000平方米"
+                }
+            ]
+        }
+    }
+
+    审批拒绝示例（多条错误）：
+    {
+        "status": "rejected",
+        "result": "第七条存在多处问题，审批拒绝",
+        "details": {
+            "clauses": [
+                {
+                    "index": "第七条",
+                    "error": "合同第七条建筑总面积上限、下限未填写具体数值",
+                    "reference_file_name": "沈北新区蒲悦一路北-2地块规划条件",
+                    "reference_content": "合同第七条建筑总面积上限、下限未填写具体数值，与《沈北新区蒲悦一路北-2地块规划条件》中的规定不符，建筑总面积上限应为50000平方米，下限应为30000平方米"
+                },
+                {
+                    "index": "第七条",
+                    "error": "合同第七条建筑密度（建筑系数）上限未填写具体数值",
+                    "reference_file_name": "沈北新区蒲悦一路北-2地块规划条件",
+                    "reference_content": "合同第七条建筑密度（建筑系数）上限未填写具体数值，与《沈北新区蒲悦一路北-2地块规划条件》中的规定不符，建筑密度上限应为40%"
+                },
+                {
+                    "index": "第七条",
+                    "error": "合同第七条容积率范围与参考文件不一致",
+                    "reference_file_name": "沈北新区蒲悦一路北-2地块规划条件",
+                    "reference_content": "合同第七条容积率范围为1.0-2.0，与《沈北新区蒲悦一路北-2地块规划条件》中的规定不符，容积率应为1.2-2.5"
                 }
             ]
         }
@@ -183,6 +211,8 @@ def write_approval_result(result_content: str, runtime: ToolRuntime) -> Command:
     3. 每次调用都会追加记录，可以查询历史审批结果
     4. 每条条款可能有多个审批内容（检查点），每个检查点对应一个独立的错误对象
     5. 如果某条条款有3个检查点，则应该生成3个错误对象，它们的"index"字段相同
+    6. **重要：error 字段必须包含合同中的具体错误内容，不能只写简单的"内容错误"**
+    7. **reference_content 字段必须包含参考文件的相关记载以及错误原因说明**
     """
 
     store_id = runtime.context.get('store_id', 'default')
