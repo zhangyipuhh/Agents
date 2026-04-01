@@ -11,6 +11,15 @@ FastAPI应用入口
 Date: 2025/4/11
 Author: 张镒谱
 """
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    message="Pydantic serializer warnings",
+    category=UserWarning,
+    module="pydantic.main"
+)
+
 import uvicorn
 
 from app.core.server import create_app

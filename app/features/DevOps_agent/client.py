@@ -7,7 +7,14 @@ DevOps CLI Client
 
 Date: 2026-03-30
 """
+import warnings
 
+warnings.filterwarnings(
+    "ignore",
+    message="Pydantic serializer warnings",
+    category=UserWarning,
+    module="pydantic.main"
+)
 import os
 import sys
 import csv
