@@ -24,11 +24,26 @@ def get_reference_files(runtime: ToolRuntime) -> Command:
 
     从store中获取参考文件内容，使用namespace为(store_id,)和extraction/ref/{data_session_id}键查找参考文件。
 
-    Args:
-        runtime (ToolRuntime): 工具运行时上下文
+    【参数说明】
+    - runtime (ToolRuntime): 工具运行时上下文，包含：
+        - store_id: 存储ID，从context中获取，默认值为'default'
+        - data_session_id: 数据会话ID，用于构建存储键
+        - store: 存储对象，用于读写数据
+        - tool_call_id: 工具调用ID，用于构建ToolMessage
 
-    Returns:
-        Command: 包含ToolMessage和参考文件内容的命令对象
+    【返回值】
+    Command: 包含ToolMessage的命令对象，message内容格式如下：
+    - 成功时: {"status": "success", "key": "...", "type": "chunks/single", "content": ...}
+    - 未找到时: {"status": "not_found", "error": "未找到参考文件"}
+    - 错误时: {"status": "error", "error": "错误信息"}
+
+    【调用时机】
+    - 需要获取参考文件列表时调用
+    - 通常在审批流程开始时调用一次
+
+    【注意事项】
+    - 获取成功后，不要重复调用
+    - 返回的内容可能是分块(chunks)或单个文档(single)
     """
     store_id = runtime.context.get('store_id', 'default')
     data_session_id = get_data_session_id(runtime)
@@ -100,24 +115,36 @@ def get_reference_files(runtime: ToolRuntime) -> Command:
 @tool(description="将合同审批结果保存到存储中，支持多次调用追加历史记录")
 def write_approval_result(result_content: str, runtime: ToolRuntime) -> Command:
     """
-    【工具用途】
+    保存合同条款审批结果工具
+
     保存合同条款审批结果到数据存储，每次调用会追加到历史记录中，不会覆盖之前的结果。
 
-    【何时使用】
-    - 完成一个或多个条款的审批后，需要记录审批结论时调用
-    - 可以多次调用，每次审批完成后都应及时保存结果
-
     【参数说明】
-    result_content: JSON字符串，包含审批结果，必须包含以下字段：
-      - status (必填): 审批状态，只能是 "approved"(通过) 或 "rejected"(拒绝)
-      - result (必填): 审批结论的文字描述，说明审批通过或拒绝的原因
-      - details (可选): 详细审批信息，包含 clauses 数组，每个条款包含：
-          - index: 条款编号，如"第一条"
-          - error: 错误描述，空字符串表示该条款符合要求
-          - reference_file_name: 参考文件名称，如"成交确认书"
-          - reference_content: 参考文件中的具体内容
+    - result_content (str): JSON字符串，包含审批结果，必须包含以下字段：
+        - status (必填): 审批状态，只能是 "approved"(通过) 或 "rejected"(拒绝)
+        - result (必填): 审批结论的文字描述，说明审批通过或拒绝的原因
+        - details (可选): 详细审批信息，包含 clauses 数组，每个条款包含：
+            - index: 条款编号，如"第一条"
+            - error: 错误描述，空字符串表示该条款符合要求
+            - reference_file_name: 参考文件名称，如"成交确认书"
+            - reference_content: 参考文件中的具体内容
 
-    【使用示例】
+    - runtime (ToolRuntime): 工具运行时上下文，包含：
+        - store_id: 存储ID，从context中获取，默认值为'default'
+        - data_session_id: 数据会话ID，用于构建存储键
+        - store: 存储对象，用于读写数据
+        - tool_call_id: 工具调用ID，用于构建ToolMessage
+
+    【返回值】
+    Command: 包含ToolMessage的命令对象，message内容格式如下：
+    - 成功时: {"status": "success", "message": "审批结果已成功追加", "namespace": "...", "key": "...", "total_results": N}
+    - 错误时: {"status": "error", "error": "错误信息"}
+
+    【调用时机】
+    - 完成所有条款审批后调用
+    - 仅在流程最后调用一次
+
+    【result_content JSON格式示例】
     审批通过示例：
     {
         "status": "approved",
@@ -154,6 +181,8 @@ def write_approval_result(result_content: str, runtime: ToolRuntime) -> Command:
     1. status 字段只能是 "approved" 或 "rejected"，不要传其他值
     2. 如果条款符合要求，error 字段必须设为空字符串 ""
     3. 每次调用都会追加记录，可以查询历史审批结果
+    4. 每条条款可能有多个审批内容（检查点），每个检查点对应一个独立的错误对象
+    5. 如果某条条款有3个检查点，则应该生成3个错误对象，它们的"index"字段相同
     """
 
     store_id = runtime.context.get('store_id', 'default')
@@ -233,12 +262,24 @@ def get_clause_approval_rules(clause_numbers: list, runtime: ToolRuntime) -> Com
 
     根据条款编号数组获取对应的审批规则，从APPROVAL_CLAUSES配置中筛选。
 
-    Args:
-        clause_numbers (list): 必填，条款编号数组，如 ["第一条", "第二条"]
-        runtime (ToolRuntime): 工具运行时上下文
+    【参数说明】
+    - clause_numbers (list): 必填，条款编号数组，如 ["第一条", "第二条"]
+    - runtime (ToolRuntime): 工具运行时上下文，包含：
+        - tool_call_id: 工具调用ID，用于构建ToolMessage
 
-    Returns:
-        Command: 包含审批规则的命令对象
+    【返回值】
+    Command: 包含ToolMessage的命令对象，message内容格式如下：
+    - 成功时: {"status": "success", "rules": [...], "count": N, "message": "..."}
+    - 部分成功时: {"status": "partial", "rules": [...], "missing_clauses": [...], "message": "..."}
+    - 错误时: {"status": "error", "error": "错误信息"}
+
+    【调用时机】
+    - 接收到审批条款编号数组后调用
+    - 仅在审批流程开始时调用一次
+
+    【注意事项】
+    - 获取成功后，不要重复调用
+    - 如果部分条款未找到规则，会返回partial状态
     """
     try:
         from app.features.contract_approval_agent.config.prompts import APPROVAL_CLAUSES
@@ -305,11 +346,28 @@ def extract_all_reference_content(runtime: ToolRuntime) -> Command:
 
     从store中获取所有参考文件内容，返回提取结果供审批使用。
 
-    Args:
-        runtime (ToolRuntime): 工具运行时上下文
+    【参数说明】
+    - runtime (ToolRuntime): 工具运行时上下文，包含：
+        - store_id: 存储ID，从context中获取，默认值为'default'
+        - data_session_id: 数据会话ID，用于构建存储键
+        - store: 存储对象，用于读写数据
+        - tool_call_id: 工具调用ID，用于构建ToolMessage
 
-    Returns:
-        Command: 包含参考文件内容的命令对象
+    【返回值】
+    Command: 包含ToolMessage的命令对象，message内容格式如下：
+    - 成功时: {"status": "success", "key": "...", "content": {...}, "message": "..."}
+    - 未找到时: {"status": "not_found", "error": "未找到参考文件内容"}
+    - 错误时: {"status": "error", "error": "错误信息"}
+
+    【调用时机】
+    - 获取审批规则后调用
+    - 需要查找审批依据时调用
+    - 仅在审批流程中调用一次
+
+    【注意事项】
+    - 获取成功后，不要重复调用
+    - 返回的content中不包含"供地合同"文档
+    - 返回的documents对象包含各参考文件的提取内容
     """
     store_id = runtime.context.get('store_id', 'default')
     data_session_id = get_data_session_id(runtime)
