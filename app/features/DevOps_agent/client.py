@@ -135,7 +135,8 @@ class CSVHistoryLogger:
     """
 
     CSV_HEADER = ["session_id", "server_name", "command", "output",
-                  "blocked", "block_reason", "timestamp", "success"]
+                  "blocked", "block_reason", "timestamp", "success",
+                  "confirmation_status", "user_feedback"]
 
     def __init__(self, csv_path: str = None):
         """
@@ -168,7 +169,7 @@ class CSVHistoryLogger:
         记录命令执行结果到 CSV
 
         Args:
-            record: 记录字典，包含 session_id, server_name, command, output, blocked, block_reason, success
+            record: 记录字典，包含 session_id, server_name, command, output, blocked, block_reason, success, confirmation_status, user_feedback
         """
         try:
             row = [
@@ -180,6 +181,8 @@ class CSVHistoryLogger:
                 record.get("block_reason", ""),
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "1" if record.get("success", False) else "0",
+                record.get("confirmation_status", ""),
+                record.get("user_feedback", ""),
             ]
 
             with open(self._csv_path, "a", newline="", encoding="utf-8") as f:
@@ -218,6 +221,8 @@ class CSVHistoryLogger:
                             "block_reason": row.get("block_reason", ""),
                             "timestamp": row.get("timestamp", ""),
                             "success": row.get("success", "0") == "1",
+                            "confirmation_status": row.get("confirmation_status", ""),
+                            "user_feedback": row.get("user_feedback", ""),
                         })
         except Exception as e:
             print(f"读取 CSV 失败: {e}")
@@ -255,6 +260,19 @@ class CSVHistoryLogger:
                 print(f"    状态: 成功")
             else:
                 print(f"    状态: 失败")
+
+            # 显示确认状态
+            confirmation_status = record.get('confirmation_status', '')
+            if confirmation_status:
+                status_map = {
+                    "approved": "✅ 已批准",
+                    "rejected": "❌ 已拒绝",
+                    "modified": "🔄 已修改"
+                }
+                print(f"    确认状态: {status_map.get(confirmation_status, confirmation_status)}")
+
+                if confirmation_status == "modified" and record.get('user_feedback'):
+                    print(f"    用户反馈: {record['user_feedback']}")
 
             if record['output']:
                 output_preview = record['output'][:100] + "..." if len(record['output']) > 100 else record['output']
@@ -419,17 +437,158 @@ class DevOpsCLI:
                 server_name=self._current_server.get("name"),
             )
 
-            self._render_markdown(result)
+            # 处理中断
+            if isinstance(result, dict) and result.get("type") == "interrupt":
+                interrupt_data = result["interrupt"]
+                if interrupt_data and len(interrupt_data) > 0:
+                    interrupt_info = interrupt_data[0].value if hasattr(interrupt_data[0], 'value') else interrupt_data[0]
 
-            # 记录到 CSV（这里简化处理，实际应该从 Agent 返回的结果中提取）
+                    # 提取中断信息
+                    command = interrupt_info.get("command", "")
+                    server_type = interrupt_info.get("server_type", "linux")
+                    message = interrupt_info.get("message", "确认执行此命令?")
+
+                    print("\n" + "=" * 60)
+                    print("⚠️  需要人工确认")
+                    print("=" * 60)
+                    print(f"\n{message}")
+                    print("\n" + "-" * 40)
+                    print("选项:")
+                    print("  1 - 是，执行命令")
+                    print("  2 - 否，拒绝执行")
+                    print("  3 - 其他要求（输入你想修改的内容或问题）")
+                    print("-" * 40)
+
+                    while True:
+                        choice = input("\n请选择 [1/2/3]: ").strip()
+
+                        if choice == "1":
+                            # 批准执行
+                            resume_result = await self._agent.invoke(
+                                user_input="",
+                                session_id=self._current_session_id,
+                                server_name=self._current_server.get("name"),
+                                resume=True,
+                            )
+
+                            # 处理恢复结果
+                            if isinstance(resume_result, dict):
+                                if resume_result.get("type") == "interrupt":
+                                    # 再次中断，递归处理
+                                    return await self._handle_user_input("")
+                                content = resume_result.get("content", "")
+
+                            self._render_markdown(content)
+
+                            # 记录到 CSV
+                            self._history_logger.log({
+                                "session_id": self._current_session_id,
+                                "server_name": self._current_server.get("name", ""),
+                                "command": user_input,
+                                "output": content[:500] if content else "",
+                                "blocked": False,
+                                "block_reason": "",
+                                "success": True,
+                                "confirmation_status": "approved",
+                                "user_feedback": "",
+                            })
+                            break
+
+                        elif choice == "2":
+                            # 拒绝执行
+                            resume_result = await self._agent.invoke(
+                                user_input="",
+                                session_id=self._current_session_id,
+                                server_name=self._current_server.get("name"),
+                                resume={"action": "reject"},
+                            )
+
+                            # 处理恢复结果
+                            if isinstance(resume_result, dict):
+                                if resume_result.get("type") == "interrupt":
+                                    return await self._handle_user_input("")
+                                content = resume_result.get("content", "")
+                            else:
+                                content = str(resume_result)
+
+                            self._render_markdown(content)
+
+                            # 记录到 CSV
+                            self._history_logger.log({
+                                "session_id": self._current_session_id,
+                                "server_name": self._current_server.get("name", ""),
+                                "command": command,
+                                "output": content[:500] if content else "",
+                                "blocked": False,
+                                "block_reason": "",
+                                "success": False,
+                                "confirmation_status": "rejected",
+                                "user_feedback": "",
+                            })
+                            break
+
+                        elif choice == "3":
+                            # 其他要求
+                            feedback = input("\n请输入你的要求: ").strip()
+                            if feedback:
+                                resume_result = await self._agent.invoke(
+                                    user_input=feedback,
+                                    session_id=self._current_session_id,
+                                    server_name=self._current_server.get("name"),
+                                    resume={"action": "modify", "feedback": feedback},
+                                )
+
+                                # 处理恢复结果
+                                if isinstance(resume_result, dict):
+                                    if resume_result.get("type") == "interrupt":
+                                        return await self._handle_user_input("")
+                                    content = resume_result.get("content", "")
+                                else:
+                                    content = str(resume_result)
+
+                                self._render_markdown(content)
+
+                                # 记录到 CSV
+                                self._history_logger.log({
+                                    "session_id": self._current_session_id,
+                                    "server_name": self._current_server.get("name", ""),
+                                    "command": command,
+                                    "output": content[:500] if content else "",
+                                    "blocked": False,
+                                    "block_reason": "",
+                                    "success": False,
+                                    "confirmation_status": "modified",
+                                    "user_feedback": feedback,
+                                })
+                            else:
+                                print("输入为空，请重新选择")
+                                continue
+                            break
+
+                        else:
+                            print("无效选择，请输入 1、2 或 3")
+
+                return True  # 中断已处理，继续交互
+
+            # 正常结果
+            if isinstance(result, dict):
+                content = result.get("content", "")
+            else:
+                content = str(result)
+
+            self._render_markdown(content)
+
+            # 记录到 CSV
             self._history_logger.log({
                 "session_id": self._current_session_id,
                 "server_name": self._current_server.get("name", ""),
                 "command": user_input,
-                "output": result[:500] if result else "",
+                "output": content[:500] if content else "",
                 "blocked": False,
                 "block_reason": "",
                 "success": True,
+                "confirmation_status": "",
+                "user_feedback": "",
             })
 
         except Exception as e:
@@ -443,6 +602,8 @@ class DevOpsCLI:
                 "blocked": False,
                 "block_reason": "",
                 "success": False,
+                "confirmation_status": "",
+                "user_feedback": "",
             })
 
         return True

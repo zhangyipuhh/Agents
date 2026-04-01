@@ -178,8 +178,9 @@ class DevOpsAgent:
         server_name: Optional[str] = None,
         error_limit: int = 2,
         limit: int = 10,
+        resume: bool | dict = False,
         **kwargs,
-    ) -> str:
+    ) -> dict:
         """
         执行对话并返回结果
 
@@ -189,11 +190,20 @@ class DevOpsAgent:
             server_name: 服务器名称，如果指定则使用该服务器的 SSH 配置
             error_limit: 错误限制次数，默认 2
             limit: 最大迭代次数，默认 10
+            resume: 恢复执行参数
+                - False: 正常执行
+                - True: 批准执行（用于 interrupt 后继续）
+                - dict: 包含 action 和可选 feedback 的决策字典
             **kwargs: 其他可选参数
 
         Returns:
-            str: Agent 的处理结果
+            dict: Agent 的处理结果，包含:
+                - type: "interrupt" 表示中断等待确认
+                - content: 正常结果内容
+                - interrupt: 中断信息（如果有）
         """
+        from langgraph.types import Command
+
         agent = await self._ensure_agent()
 
         config = DevOpsExecuteConfig(
@@ -202,7 +212,7 @@ class DevOpsAgent:
         )
 
         state = DevOpsAgentState(
-            messages=[user_input],
+            messages=[user_input] if user_input else [],
             error_limit=error_limit,
             limit=limit,
         )
@@ -212,6 +222,7 @@ class DevOpsAgent:
             "session_id": session_id,
             "store_id": self.store_id or session_id,
             "command_blacklist": self._command_blacklist,
+            "tool_confirmation": {"execute_command": True},  # 默认所有命令需要确认
         }
 
         # 如果指定了服务器名称，注入对应服务器的 SSH 配置
@@ -220,24 +231,49 @@ class DevOpsAgent:
             if server_config:
                 context_data["ssh_config"] = json.dumps(server_config, ensure_ascii=False)
             else:
-                return f"错误：未找到服务器 '{server_name}' 的配置"
+                return {"type": "error", "content": f"错误：未找到服务器 '{server_name}' 的配置"}
         else:
             # 默认使用第一个服务器配置
             servers = self.list_servers()
             if servers:
                 context_data["ssh_config"] = json.dumps(servers[0], ensure_ascii=False)
             else:
-                return "错误：未配置任何 SSH 服务器"
+                return {"type": "error", "content": "错误：未配置任何 SSH 服务器"}
 
         context = DevOpsAgentContext(**context_data)
 
-        result = await agent.invoke(
-            config=config,
-            input_state=state,
-            context=context,
-        )
+        # 处理 resume 参数
+        if resume is not False:
+            if resume is True:
+                resume_command = Command(resume=True)
+            else:
+                resume_command = Command(resume=resume)
 
-        return result["messages"][-1].content
+            result = await agent.invoke(
+                resume_command,
+                config=config,
+                context=context,
+            )
+        else:
+            result = await agent.invoke(
+                config=config,
+                input_state=state,
+                context=context,
+            )
+
+        # 检查是否有中断
+        if isinstance(result, dict) and "__interrupt__" in result:
+            return {
+                "type": "interrupt",
+                "interrupt": result["__interrupt__"],
+                "session_id": session_id
+            }
+
+        # 正常结果
+        if isinstance(result, dict) and "messages" in result:
+            return {"type": "normal", "content": result["messages"][-1].content}
+
+        return {"type": "normal", "content": str(result)}
 
     async def execute_command_direct(
         self,

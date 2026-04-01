@@ -31,3 +31,8 @@ class DevOpsAgentContext(BaseAgentContext):
 
     command_blacklist: list[str] = []
     """命令黑名单列表，用于拦截高危命令"""
+
+    tool_confirmation: dict[str, bool] = {}
+    """工具确认配置字典，键为工具名，值为是否需要确认
+    例如: {"execute_command": True, "read_file": False}
+    如果为空或未配置，默认所有工具都需要确认"""

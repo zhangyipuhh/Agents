@@ -15,7 +15,7 @@ from typing import Optional
 from datetime import datetime
 from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import ToolMessage
-from langgraph.types import Command
+from langgraph.types import Command, interrupt
 
 from app.features.DevOps_agent.tools.CommandInterceptor import CommandInterceptor, CommandBlockedError
 
@@ -114,6 +114,64 @@ def execute_command(
                 ]
             }
         )
+
+    # === 人工确认中断 ===
+    tool_confirmation = runtime.context.get("tool_confirmation", {})
+    require_confirmation = tool_confirmation.get("execute_command", True)  # 默认需要确认
+
+    if require_confirmation:
+        decision = interrupt({
+            "type": "command_confirmation",
+            "command": command,
+            "server_type": server_type,
+            "timeout": timeout,
+            "message": f"⚠️ 确认在 [{server_type}] 服务器执行此命令?\n\n命令: {command[:200]}{'...' if len(command) > 200 else ''}",
+            "options": {
+                "1": "是，执行命令",
+                "2": "否，拒绝执行",
+                "3": "其他要求"
+            }
+        })
+
+        # 用户拒绝（选项2）
+        if decision is False or (isinstance(decision, dict) and decision.get("action") == "reject"):
+            _log_command_history(runtime, session_id, command, "", False, "User rejected", False)
+            return Command(
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=json.dumps({
+                                "success": False,
+                                "error": "用户拒绝执行此命令",
+                                "user_decision": "rejected"
+                            }, ensure_ascii=False),
+                            tool_call_id=runtime.tool_call_id
+                        )
+                    ]
+                }
+            )
+
+        # 用户选择"其他要求"（选项3）- 返回用户的输入/修改给模型
+        if isinstance(decision, dict) and decision.get("action") == "modify":
+            user_feedback = decision.get("feedback", "")
+            _log_command_history(runtime, session_id, command, "", False, f"User requested modification: {user_feedback}", False)
+            return Command(
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=json.dumps({
+                                "success": False,
+                                "error": "用户要求修改",
+                                "user_feedback": user_feedback,
+                                "user_decision": "modify"
+                            }, ensure_ascii=False),
+                            tool_call_id=runtime.tool_call_id
+                        )
+                    ]
+                }
+            )
+
+        # 用户批准（选项1）或无返回值，继续执行
 
     # 3. 获取或创建 SSH 连接
     ssh_client = None
