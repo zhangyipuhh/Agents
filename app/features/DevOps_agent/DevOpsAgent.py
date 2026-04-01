@@ -237,7 +237,7 @@ class DevOpsAgent:
             context=context,
         )
 
-        return result
+        return result["messages"][-1].content
 
     async def execute_command_direct(
         self,

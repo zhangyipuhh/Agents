@@ -316,9 +316,9 @@ class Agent:
         # 添加 context 信息（如果可用）
         if hasattr(self, 'summarization_node') and "context" in result:
             result["context"] = result["context"]
-        res_content=result["messages"][-1].content
-        logging.info(f"AI回复: {res_content}")
-        return res_content
+        #res_content=result["messages"][-1].content
+        #logging.info(f"AI回复: {res_content}")
+        return result
 
     async def inspect_checkpoint(self, session_id: str = None):
         """检查指定 session 的 checkpoint 内容

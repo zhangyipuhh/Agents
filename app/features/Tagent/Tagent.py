@@ -233,7 +233,7 @@ async def _async_main():
             
             # 使用Rich库渲染Markdown格式的响应
             # 将Agent返回的最后一条消息内容转换为Markdown并美化输出
-            md = Markdown(result)
+            md = Markdown(result["messages"][-1].content)
             console.print(md)
             print()
             

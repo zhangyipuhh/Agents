@@ -125,7 +125,7 @@ class HtAgent:
             context=context,
         )
 
-        return result
+        return result["messages"][-1].content
 
     async def get_agent(self):
         """
