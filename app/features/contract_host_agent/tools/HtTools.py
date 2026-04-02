@@ -23,38 +23,26 @@ from langgraph.types import Command
 from app.shared.utils.store_schema import get_data_session_id
 
 
-@tool(description="记录审批过程中发现的问题")
+@tool
 def warn_issue(issue_description: str, runtime: ToolRuntime) -> Command:
     """
-    警告问题工具 - 记录审批过程中发现的问题
-
-    【工具用途】
-    当审批过程中发现合同存在不符合要求的问题时，使用此工具记录问题详情。
-    【调用时机】
-    - 在分析合同内容后，发现不符合审批要求的问题时
+    【记录审批问题】记录审批过程中发现的问题。
+    
+    调用时机：
+    - 审批过程中发现合同存在不符合要求的问题时
     - 需要记录问题的类型、具体描述、建议解决方案时
-
-    【参数说明】
-    - issue_description (str): 问题描述内容，需包含：
-      * 问题类型（如：条款缺失、内容不符、格式错误等）
-      * 具体描述（详细说明问题所在）
-      * 建议解决方案（如何修改以符合要求）
-
-    【返回值】
-    返回 Command 对象，包含：
-    - status: "warning_recorded" - 问题已记录
-    - issue: 问题描述内容
-
-    【使用示例】
-    当发现合同条款与成交确认书不符时：
-    issue_description = "条款不符：第三条付款方式与成交确认书不一致，建议修改为..."
-
+    
     Args:
-        issue_description (str): 必填，问题描述内容
-        runtime (ToolRuntime): 工具运行时上下文
-
+        issue_description: 问题描述内容，需包含：
+            - 问题类型（如：条款缺失、内容不符、格式错误等）
+            - 具体描述（详细说明问题所在）
+            - 建议解决方案（如何修改以符合要求）
+        runtime: 工具运行时上下文
+    
     Returns:
         Command: 包含ToolMessage和状态更新的命令对象
+            - status: "warning_recorded" - 问题已记录
+            - issue: 问题描述内容
     """
     return Command(
         update={
@@ -72,40 +60,27 @@ def warn_issue(issue_description: str, runtime: ToolRuntime) -> Command:
     )
 
 
-@tool(description="通知审批智能体开始审批流程")
+@tool
 def check_approval(ischeck: bool, runtime: ToolRuntime) -> Command:
     """
-    审批通知工具 - 通知审批智能体开始审批流程
-
-    【工具用途】
-    当主智能体确认所有前置条件满足后，调用此工具通知审批智能体可以开始审批流程。
-    该工具仅发送通知信号，实际审批由 ApprovalAgent 独立完成。
-
-    【调用时机】
-    - 当用户确认所有前置条件满足，表示"可以开始审批"时
-    - 当用户发送表示"审批完成"、"确认审批结果"、"同意"等确认性话语时
-
-    【参数说明】
-    - ischeck (bool): 审批就绪状态
-      * true: 前置条件已满足，通知审批智能体开始审批
-      * false: 前置条件未满足，暂缓审批
-
-    【返回值】
-    返回 Command 对象，包含：
-    - status: "approval_notification_sent" - 通知已发送
-    - is_check: 审批就绪状态
-    - result: "已通知审批智能体"
-
-    【注意事项】
-    - 此工具仅在最终确认阶段使用
-    - 调用前需确保用户已明确表示同意审批
-
+    【启动审批流程】通知审批智能体开始审批流程。
+    
+    调用时机：
+    - 用户明确表示"开始审批"、"请审批"、"可以审批了"时
+    - 用户确认"可以"、"是的"、"开始吧"、"准备好了"等同意审批时
+    - 要件验证通过后，用户同意启动审批时
+    
     Args:
-        ischeck (bool): 必填，审批就绪状态（true=就绪，false=未就绪）
-        runtime (ToolRuntime): 工具运行时上下文
-
+        ischeck: 审批就绪状态（true=就绪，false=未就绪）
+        runtime: 工具运行时上下文
+    
     Returns:
         Command: 包含ToolMessage和状态更新的命令对象
+            - status: "approval_notification_sent" - 通知已发送
+            - is_check: 审批就绪状态
+            - result: "已通知审批智能体"
+    
+    注意：此工具仅发送通知信号，实际审批由审批智能体独立完成。
     """
     store_id = runtime.context.get('store_id', 'default')
     data_session_id = get_data_session_id(runtime)
@@ -128,42 +103,27 @@ def check_approval(ischeck: bool, runtime: ToolRuntime) -> Command:
     )
 
 
-@tool(description="根据条款编号获取合同条款内容")
+@tool
 def get_contract_clause_content(clause_numbers: list, runtime: ToolRuntime) -> Command:
     """
-    获取合同条款内容工具 - 根据条款编号获取合同条款内容
-
-    【工具用途】
-    根据条款编号数组获取合同中对应条款的内容，用于核对合同条款与参考文件的一致性。
-
-    【调用时机】
+    【获取合同条款】根据条款编号获取合同条款内容。
+    
+    调用时机：
     - 需要查看特定条款内容时
     - 进行条款比对分析时
-
-    【参数说明】
-    - clause_numbers (list): 条款编号数组，如 ["第一条", "第二条", "第三条"]
-
-    【返回值】
-    返回 Command 对象，包含：
-    - status: "success" - 查询成功
-    - session_id: 数据会话ID
-    - clause_contents: 条款内容列表，每项包含：
-      * index: 条款编号
-      * content: 条款内容（如未找到则为 null）
-      * error: 错误信息（如未找到该条款）
-
-    【可能的状态】
-    - success: 查询成功
-    - not_found: 未找到合同段落数据
-    - invalid_format: 数据格式错误
-    - error: 查询过程发生错误
-
+    
     Args:
-        clause_numbers (list): 必填，条款编号数组，如 ["第一条", "第二条"]
-        runtime (ToolRuntime): 工具运行时上下文
-
+        clause_numbers: 条款编号数组，如 ["第一条", "第二条", "第三条"]
+        runtime: 工具运行时上下文
+    
     Returns:
         Command: 包含条款内容的命令对象
+            - status: 查询状态（success/not_found/invalid_format/error）
+            - session_id: 数据会话ID
+            - clause_contents: 条款内容列表，每项包含：
+                * index: 条款编号
+                * content: 条款内容（如未找到则为 null）
+                * error: 错误信息（如未找到该条款）
     """
     store_id = runtime.context.get('store_id', 'default')
     data_session_id = get_data_session_id(runtime)
@@ -249,49 +209,30 @@ def get_contract_clause_content(clause_numbers: list, runtime: ToolRuntime) -> C
         )
 
 
-@tool(description="获取合同审批结果")
+@tool
 def get_approval_result(runtime: ToolRuntime) -> Command:
     """
-    获取审批结果工具 - 获取合同审批结果
-
-    【工具用途】
-    从系统中获取合同审批分析结果，返回给大模型处理。这是获取审批结论的核心工具。
-
-    【调用时机 - 重要】
-    当检测到用户意图想要获取审批结果时调用，包括但不限于以下表达：
-    - "可以"、"是的"、"开始吧"
-    - "准备好了"、"开始审批"、"请审批"
-    - "查看审批结果"、"获取审批结果"
-    - "分析一下"、"审批一下"
-
-    【参数说明】
-    无参数，自动从当前 session 中获取审批结果
-
-    【返回值】
-    返回 Command 对象，包含：
-    - status: "success" - 获取成功
-    - session_id: 数据会话ID
-    - approval_result: 审批结果数据，包含：
-      * 比对结果
-      * 风险点列表
-      * 修改建议
-      * 审批结论
-
-    【可能的状态】
-    - success: 获取成功
-    - not_found: 未找到审批结果
-    - error: 获取过程发生错误
-
-    【使用场景】
-    1. 用户上传合同文件后表示"开始审批"
-    2. 用户主动询问"审批结果如何"
-    3. 用户确认要件齐全后要求"进行审批"
-
+    【获取审批结果】获取合同审批分析结果报告。
+    
+    调用时机：
+    - 用户说"审批完成"、"输出审批结果"、"查看审批结果"、"获取审批报告"时
+    - 用户询问"审批结果如何"、"审批怎么样"时
+    - 用户确认"可以"、"是的"、"开始吧"等表示同意审批时
+    
     Args:
-        runtime (ToolRuntime): 工具运行时上下文
-
+        runtime: 工具运行时上下文
+    
     Returns:
         Command: 包含审批结果的命令对象
+            - status: 获取状态（success/not_found/error）
+            - session_id: 数据会话ID
+            - approval_result: 审批结果数据，包含：
+                * 比对结果
+                * 风险点列表
+                * 修改建议
+                * 审批结论
+    
+    重要：这是获取审批结论的核心工具，当用户要求查看审批结果时必须调用此工具。
     """
     store_id = runtime.context.get('store_id', 'default')
     data_session_id = get_data_session_id(runtime)
@@ -347,55 +288,33 @@ def get_approval_result(runtime: ToolRuntime) -> Command:
         )
 
 
-@tool(description="获取已上传的审批要件清单")
+@tool
 def validate_prerequisites(runtime: ToolRuntime) -> Command:
     """
-    前置条件验证工具 - 获取已上传的审批要件清单
-
-    【工具用途】
-    审批前必须首先调用此工具，返回当前 session 下已上传的要件类型及数量，供大模型判断是否具备审批条件。
-
-    【调用时机】
+    【验证审批要件】获取已上传的审批要件清单，验证是否具备审批条件。
+    
+    调用时机：
     - 每次执行审批任务时必须首先调用此工具
-    - 验证合同审批所需的关键要件是否齐全
-
-    【参数说明】
-    无参数，自动从当前 session 中获取要件清单
-
-    【返回值】
-    返回 Command 对象，包含：
-    - status: "success" - 获取成功
-      * session_id: 数据会话ID
-      * uploaded_requirements: 已上传的要件类型列表
-      * requirement_summary: 各类型要件数量统计
-      * approval_ready: 是否具备审批条件
-      * message: 友好的提示信息
-
-    - status: "no_documents" - 未找到任何文档
-    - status: "no_requirements" - 所有要件为空
-    - status: "invalid_format" - 数据格式错误
-    - status: "error" - 获取过程发生错误
-
-    【数据结构说明】
-    存储的数据结构为：
-    {
-        "session_id": {
-            "要件类型名称": [
-                {"index": "章节索引", "content": [{"question": "问题", "answer": "答案"}]}
-            ]
-        }
-    }
-
-    【验证内容】
-    - 合同信息是否已完整上传
-    - 所有必要的参考信息是否已完整上传
-    - 返回要件完整性状态、缺失项详情
-
+    - 用户上传文件后，需要验证要件是否齐全时
+    
     Args:
-        runtime (ToolRuntime): 工具运行时上下文，包含session_id和store
-
+        runtime: 工具运行时上下文
+    
     Returns:
         Command: 包含已上传要件清单摘要的命令对象
+            - status: 获取状态（success/no_documents/no_requirements/invalid_format/error）
+            - session_id: 数据会话ID
+            - uploaded_requirements: 已上传的要件类型列表
+            - requirement_summary: 各类型要件数量统计
+            - approval_ready: 是否具备审批条件（true/false）
+            - message: 友好的提示信息
+    
+    强制要求：
+    - 必须同时满足以下两个条件才能审批：
+        1. 供地合同已上传
+        2. 至少1份参考文件已上传（成交确认书、会议纪要等）
+    
+    重要：这是审批流程的第一步，必须首先调用。
     """
     store_id = runtime.context.get('store_id', 'default')
     data_session_id = get_data_session_id(runtime)

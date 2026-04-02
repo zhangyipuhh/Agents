@@ -75,9 +75,9 @@ class HtAgentConfig(BaseAgentConfig):
         返回:
             tuple[list[str], ToolNode]: 工具名称列表和对应的 ToolNode 对象
         """
-        from app.features.contract_host_agent.tools.HtTools import warn_issue, check_approval, validate_prerequisites
+        from app.features.contract_host_agent.tools.HtTools import warn_issue, check_approval, validate_prerequisites, get_approval_result
+        from app.core.tools.BaseTools import get_current_time
         
-        base_tools, base_tool_node = super().get_tools()
-        tools = list(base_tools) + [warn_issue, check_approval, validate_prerequisites]
+        tools = [get_current_time, warn_issue, check_approval, validate_prerequisites, get_approval_result]
 
         return tools, ToolNode(tools)

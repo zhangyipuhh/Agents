@@ -59,7 +59,7 @@ def _get_mime_type_from_base64(base64_data: str) -> str:
     Returns:
         MIME 类型字符串，如 "image/jpeg", "image/png" 等
     """
-    if base64_data.startswith("/9j/"):
+    if base64_data.startswith("/9j/") :
         return "image/jpeg"
     elif base64_data.startswith("iVBORw0KGgo"):
         return "image/png"
@@ -224,7 +224,8 @@ class Agent:
                 messages[-1] = user_message
                 context["image_ids"] = []
         # 绑定工具到模型，使模型能够调用工具
-        llm = self.model.bind_tools(self.tools)
+        # 禁用 parallel_tool_calls，避免 interrupt 时其他工具调用未响应
+        llm = self.model.bind_tools(self.tools, parallel_tool_calls=False)
         # 调用模型，传入系统提示词和历史消息
         response = await llm.ainvoke([("system", system_prompt)] + messages)
         return {"messages": [response]}
