@@ -24,6 +24,8 @@ class ClauseDetail(BaseModel):
     
     index: str = Field(description="条款编号，如'第一条'")
     error: str = Field(description="错误描述，空字符串表示该条款符合要求")
+    clause: str = Field(description="条款内容，如'土地位置：xx市xx区'")
+    suggestion: str = Field(description="修改建议，如'请确认土地位置是否正确'")
     reference_file_name: str = Field(description="参考文件名称，如'成交确认书'")
     reference_content: str = Field(description="参考文件中的具体内容")
 

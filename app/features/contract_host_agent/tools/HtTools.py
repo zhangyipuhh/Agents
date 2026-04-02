@@ -255,7 +255,7 @@ def get_approval_result(runtime: ToolRuntime) -> Command:
                 }
             )
 
-        approval_result = result.value
+        approval_result = result.value[-1].get("details") if isinstance(result.value, list) else result.value.get("details")
 
         return Command(
             update={
