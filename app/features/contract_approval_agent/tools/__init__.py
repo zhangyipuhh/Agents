@@ -10,14 +10,12 @@ Author: 张镒谱
 """
 
 from .ApprovalAgentTools import (
-    get_reference_files,
     write_approval_result,
     get_clause_approval_rules,
     extract_all_reference_content,
 )
 
 __all__ = [
-    "get_reference_files",
     "write_approval_result",
     "get_clause_approval_rules",
     "extract_all_reference_content",

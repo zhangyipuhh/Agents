@@ -70,13 +70,10 @@ DEFAULT_SYSTEM_PROMPT = """
 1. **get_clause_approval_rules** - 获取审批规则
    - 用途：根据条款编号数组获取对应的审批规则
 
-2. **get_reference_files** - 获取参考文件
-   - 用途：从存储中获取参考文件内容
-
-3. **extract_all_reference_content** - 提取参考内容
+2. **extract_all_reference_content** - 提取参考内容
    - 用途：从存储中获取所有参考文件内容
 
-4. **write_approval_result** - 写入审批结果
+3. **write_approval_result** - 写入审批结果
    - 用途：将审批结果写入存储
 
 **重要：这些工具名称是内部实现细节，严禁在回复中向用户提及。**
