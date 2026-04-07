@@ -18,6 +18,7 @@ from langgraph.graph import MessagesState
 from langgraph.store.base import BaseStore
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.types import RetryPolicy
 from app.core.agent.AgentContext import AgentContext
 from app.core.tools.BaseTools import get_current_time, open_file, load_web_page, read_cached_chunk,open_file_by_id
 from app.core.config.config import LLM_CONFIG
@@ -166,6 +167,24 @@ class AgentConfig:
     IS_MULTIMODAL: bool = field(default=LLM_CONFIG["is_multimodal"]==True)
     """是否多模态模型，用于判断是否需要处理图片"""
     
+    llm_retry_max_attempts: int = field(default=3)
+    """LLM 调用最大重试次数，默认 3 次"""
+    
+    llm_retry_initial_interval: float = field(default=1.0)
+    """LLM 调用初始重试间隔（秒），默认 1.0 秒"""
+    
+    tool_retry_max_attempts: int = field(default=2)
+    """工具执行最大重试次数，默认 2 次"""
+    
+    tool_retry_initial_interval: float = field(default=0.5)
+    """工具执行初始重试间隔（秒），默认 0.5 秒"""
+    
+    summarize_retry_max_attempts: int = field(default=2)
+    """摘要操作最大重试次数，默认 2 次"""
+    
+    summarize_retry_initial_interval: float = field(default=1.0)
+    """摘要操作初始重试间隔（秒），默认 1.0 秒"""
+    
     def get_tools(self) -> tuple[list[str], ToolNode]:
         """
         获取所有审计文档工具名称列表
@@ -179,3 +198,48 @@ class AgentConfig:
         tools: list[str] = [get_current_time, open_file, load_web_page, read_cached_chunk,open_file_by_id]
 
         return tools, ToolNode(tools)
+    
+    def get_llm_retry_policy(self) -> RetryPolicy:
+        """
+        获取 LLM 调用重试策略
+        
+        Returns:
+            RetryPolicy: LLM 调用的重试策略实例
+        """
+        return RetryPolicy(
+            max_attempts=self.llm_retry_max_attempts,
+            initial_interval=self.llm_retry_initial_interval,
+            backoff_factor=2.0,
+            jitter=True,
+            retry_on=(ConnectionError, TimeoutError)
+        )
+    
+    def get_tool_retry_policy(self) -> RetryPolicy:
+        """
+        获取工具执行重试策略
+        
+        Returns:
+            RetryPolicy: 工具执行的重试策略实例
+        """
+        return RetryPolicy(
+            max_attempts=self.tool_retry_max_attempts,
+            initial_interval=self.tool_retry_initial_interval,
+            backoff_factor=1.5,
+            jitter=True,
+            retry_on=(FileNotFoundError, PermissionError, ConnectionError, TimeoutError)
+        )
+    
+    def get_summarize_retry_policy(self) -> RetryPolicy:
+        """
+        获取摘要操作重试策略
+        
+        Returns:
+            RetryPolicy: 摘要操作的重试策略实例
+        """
+        return RetryPolicy(
+            max_attempts=self.summarize_retry_max_attempts,
+            initial_interval=self.summarize_retry_initial_interval,
+            backoff_factor=2.0,
+            jitter=True,
+            retry_on=(ConnectionError, TimeoutError)
+        )

@@ -28,6 +28,7 @@ from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph import MessagesState
 from langgraph.runtime import Runtime
+from langgraph.types import RetryPolicy
 from langchain_core.messages import AnyMessage, HumanMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langmem.short_term import SummarizationNode, RunningSummary
@@ -258,10 +259,22 @@ class Agent:
         # state传入的使会话中可能被操作的变量，就是变化的量，这里只是格式，实际运行时会有具体的值
         workflow = StateGraph(AgentState, AgentContext)
 
-        # 添加节点
-        workflow.add_node("summarize", summarization_node)
-        workflow.add_node("llm_call", self._llm_call)
-        workflow.add_node("tools", self.tool_node)
+        # 添加节点（带重试策略）
+        workflow.add_node(
+            "summarize", 
+            summarization_node,
+            retry_policy=self._config.get_summarize_retry_policy()
+        )
+        workflow.add_node(
+            "llm_call", 
+            self._llm_call,
+            retry_policy=self._config.get_llm_retry_policy()
+        )
+        workflow.add_node(
+            "tools", 
+            self.tool_node,
+            retry_policy=self._config.get_tool_retry_policy()
+        )
 
         # 添加边
         workflow.add_edge(START, "summarize")
