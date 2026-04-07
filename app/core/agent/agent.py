@@ -16,6 +16,10 @@
     - 使用 SummarizationNode 自动管理对话摘要，里面包含trim_messages的逻辑
     - 保留最新对话，自动摘要旧消息
 
+调用方式:
+    - invoke(): 非流式调用，等待整个图执行完成，返回最终状态
+    - stream(): 流式调用，实时获取每个节点的执行结果，包括每次 _llm_call 的输出
+
 
 Date: 2026-03-10
 Author: 张镒谱
@@ -23,7 +27,7 @@ Author: 张镒谱
 from imaplib import IMAP4
 import logging
 
-from typing import Literal
+from typing import Literal, Union, AsyncGenerator
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph import MessagesState
@@ -86,6 +90,10 @@ class Agent:
         
     工作流:
         START → summarize → llm_call → END
+    
+    调用方式:
+        - invoke(): 非流式调用，返回最终结果
+        - stream(): 流式调用，实时获取每个节点的输出
     """
 
     def __init__(
@@ -333,6 +341,76 @@ class Agent:
         #res_content=result["messages"][-1].content
         #logging.info(f"AI回复: {res_content}")
         return result
+
+    async def stream(
+        self,
+        input_state: AgentState,
+        context: AgentContext,
+        config: ExecuteConfig,
+        stream_mode: Union[str, list[str]] = "updates"
+    ) -> AsyncGenerator[dict, None]:
+        """流式调用智能体
+        
+        通过流式输出，实时获取每个节点的执行结果，包括每次 _llm_call 的输出。
+        适用于需要实时反馈的场景，如用户对话、实时监控等。
+        
+        Args:
+            input_state: 输入状态，包含 summarized_messages 和 context
+            context: 上下文实例，用于传递静态变量
+            config: 运行配置，包含 thread_id 等信息
+            stream_mode: 流式输出模式，支持以下选项：
+                - "updates": 每个节点执行后返回状态更新（推荐）
+                - "values": 每个节点执行后返回完整状态
+                - "messages": 流式输出 LLM token
+                - "custom": 流式输出自定义数据
+                - ["updates", "messages"]: 组合模式，同时获取多种输出
+        
+        Yields:
+            dict: 流式输出的数据块，格式取决于 stream_mode：
+                - stream_mode="updates": {node_name: {state_updates}}
+                - stream_mode="messages": (message_chunk, metadata)
+                - stream_mode=["updates", "messages"]: (mode, data)
+        
+        Examples:
+            基本使用（获取每次 llm_call 的输出）：
+            ```python
+            async for chunk in agent.stream(input_state, context, config):
+                if "llm_call" in chunk:
+                    print(f"LLM 输出: {chunk['llm_call']['messages'][-1].content}")
+            ```
+            
+            流式输出 LLM token：
+            ```python
+            async for chunk in agent.stream(
+                input_state, context, config,
+                stream_mode="messages"
+            ):
+                message_chunk, metadata = chunk
+                print(message_chunk.content, end="", flush=True)
+            ```
+            
+            组合模式：
+            ```python
+            async for mode, data in agent.stream(
+                input_state, context, config,
+                stream_mode=["updates", "messages"]
+            ):
+                if mode == "updates":
+                    print(f"节点更新: {data}")
+                elif mode == "messages":
+                    print(data[0].content, end="", flush=True)
+            ```
+        """
+        if not hasattr(self, 'graph') or self.graph is None:
+            await self.__ainit__()
+        
+        async for chunk in self.graph.astream(
+            input_state,
+            config,
+            context=context,
+            stream_mode=stream_mode
+        ):
+            yield chunk
 
     async def inspect_checkpoint(self, session_id: str = None):
         """检查指定 session 的 checkpoint 内容
