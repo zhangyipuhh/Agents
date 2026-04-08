@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any, List
 import json
 import asyncio
 import threading
+import atexit
 
 from langchain_core.documents import Document
 
@@ -29,6 +30,44 @@ def _get_event_loop():
     return _loop
 
 
+def _cleanup_playwright():
+    """清理 Playwright 资源，避免程序退出时的错误"""
+    global _playwright, _browser, _loop
+    
+    if _browser is not None or _playwright is not None:
+        try:
+            loop = _get_event_loop()
+            if loop and not loop.is_closed():
+                async def _do_cleanup():
+                    global _browser, _playwright
+                    try:
+                        if _browser is not None:
+                            await _browser.close()
+                            _browser = None
+                    except Exception:
+                        pass
+                    try:
+                        if _playwright is not None:
+                            await _playwright.stop()
+                            _playwright = None
+                    except Exception:
+                        pass
+                
+                loop.run_until_complete(_do_cleanup())
+        except Exception:
+            pass
+    
+    if _loop is not None and not _loop.is_closed():
+        try:
+            _loop.close()
+        except Exception:
+            pass
+        _loop = None
+
+
+atexit.register(_cleanup_playwright)
+
+
 def _get_browser():
     global _playwright, _browser
     if not PLAYWRIGHT_AVAILABLE:
@@ -38,8 +77,9 @@ def _get_browser():
             if _browser is None:
                 try:
                     async def _init():
-                        p = await async_playwright().start()
-                        return await p.chromium.launch(
+                        global _playwright
+                        _playwright = await async_playwright().start()
+                        return await _playwright.chromium.launch(
                             headless=True, 
                             args=[
                                 '--disable-blink-features=AutomationControlled', 
@@ -53,7 +93,8 @@ def _get_browser():
                         )
                     loop = _get_event_loop()
                     _browser = loop.run_until_complete(_init())
-                except Exception:
+                except Exception as e:
+                    _cleanup_playwright()
                     return None
     return _browser
 
