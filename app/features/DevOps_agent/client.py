@@ -427,22 +427,29 @@ class DevOpsCLI:
             choice = input("\n请选择 [1/2/3]: ").strip()
 
             if choice == "1":
-                # 批准执行
-                resume_result = await self._agent.invoke(
-                    user_input="",
-                    session_id=self._current_session_id,
-                    server_name=self._current_server.get("name"),
-                    resume={"action": "approve"},
+                resume_result = await self._handle_stream_output(
+                    self._agent.stream(
+                        user_input="",
+                        session_id=self._current_session_id,
+                        server_name=self._current_server.get("name"),
+                        resume={"action": "approve"},
+                        stream_mode="updates"
+                    )
                 )
 
-                if isinstance(resume_result, dict):
-                    if resume_result.get("type") == "interrupt":
-                        return await self._handle_user_input("")
-                    content = resume_result.get("content", "")
-                else:
-                    content = str(resume_result)
+                if resume_result.get("interrupt"):
+                    interrupt_data = resume_result["interrupt"].get("interrupt")
+                    if interrupt_data and len(interrupt_data) > 0:
+                        interrupt_info = interrupt_data[0].value if hasattr(interrupt_data[0], 'value') else interrupt_data[0]
+                        interrupt_type = interrupt_info.get("type", "command_confirmation")
+                        
+                        if interrupt_type == "batch_confirmation":
+                            return await self._handle_batch_confirmation(interrupt_info)
+                        elif interrupt_type == "command_confirmation":
+                            return await self._handle_single_confirmation(interrupt_info)
+                    return True
 
-                self._render_markdown(content)
+                content = resume_result.get("content", "")
 
                 self._history_logger.log({
                     "session_id": self._current_session_id,
@@ -458,22 +465,29 @@ class DevOpsCLI:
                 break
 
             elif choice == "2":
-                # 拒绝执行
-                resume_result = await self._agent.invoke(
-                    user_input="",
-                    session_id=self._current_session_id,
-                    server_name=self._current_server.get("name"),
-                    resume={"action": "reject"},
+                resume_result = await self._handle_stream_output(
+                    self._agent.stream(
+                        user_input="",
+                        session_id=self._current_session_id,
+                        server_name=self._current_server.get("name"),
+                        resume={"action": "reject"},
+                        stream_mode="updates"
+                    )
                 )
 
-                if isinstance(resume_result, dict):
-                    if resume_result.get("type") == "interrupt":
-                        return await self._handle_user_input("")
-                    content = resume_result.get("content", "")
-                else:
-                    content = str(resume_result)
+                if resume_result.get("interrupt"):
+                    interrupt_data = resume_result["interrupt"].get("interrupt")
+                    if interrupt_data and len(interrupt_data) > 0:
+                        interrupt_info = interrupt_data[0].value if hasattr(interrupt_data[0], 'value') else interrupt_data[0]
+                        interrupt_type = interrupt_info.get("type", "command_confirmation")
+                        
+                        if interrupt_type == "batch_confirmation":
+                            return await self._handle_batch_confirmation(interrupt_info)
+                        elif interrupt_type == "command_confirmation":
+                            return await self._handle_single_confirmation(interrupt_info)
+                    return True
 
-                self._render_markdown(content)
+                content = resume_result.get("content", "")
 
                 self._history_logger.log({
                     "session_id": self._current_session_id,
@@ -489,24 +503,31 @@ class DevOpsCLI:
                 break
 
             elif choice == "3":
-                # 其他要求
                 feedback = input("\n请输入你的要求: ").strip()
                 if feedback:
-                    resume_result = await self._agent.invoke(
-                        user_input="",
-                        session_id=self._current_session_id,
-                        server_name=self._current_server.get("name"),
-                        resume={"action": "modify", "feedback": feedback},
+                    resume_result = await self._handle_stream_output(
+                        self._agent.stream(
+                            user_input="",
+                            session_id=self._current_session_id,
+                            server_name=self._current_server.get("name"),
+                            resume={"action": "modify", "feedback": feedback},
+                            stream_mode="updates"
+                        )
                     )
 
-                    if isinstance(resume_result, dict):
-                        if resume_result.get("type") == "interrupt":
-                            return await self._handle_user_input("")
-                        content = resume_result.get("content", "")
-                    else:
-                        content = str(resume_result)
+                    if resume_result.get("interrupt"):
+                        interrupt_data = resume_result["interrupt"].get("interrupt")
+                        if interrupt_data and len(interrupt_data) > 0:
+                            interrupt_info = interrupt_data[0].value if hasattr(interrupt_data[0], 'value') else interrupt_data[0]
+                            interrupt_type = interrupt_info.get("type", "command_confirmation")
+                            
+                            if interrupt_type == "batch_confirmation":
+                                return await self._handle_batch_confirmation(interrupt_info)
+                            elif interrupt_type == "command_confirmation":
+                                return await self._handle_single_confirmation(interrupt_info)
+                        return True
 
-                    self._render_markdown(content)
+                    content = resume_result.get("content", "")
 
                     self._history_logger.log({
                         "session_id": self._current_session_id,
@@ -562,22 +583,29 @@ class DevOpsCLI:
             choice = input("\n请选择 [1/2/3/4]: ").strip()
 
             if choice == "1":
-                # 全部执行
-                resume_result = await self._agent.invoke(
-                    user_input="",
-                    session_id=self._current_session_id,
-                    server_name=self._current_server.get("name"),
-                    resume={"action": "approve"},
+                resume_result = await self._handle_stream_output(
+                    self._agent.stream(
+                        user_input="",
+                        session_id=self._current_session_id,
+                        server_name=self._current_server.get("name"),
+                        resume={"action": "approve"},
+                        stream_mode="updates"
+                    )
                 )
 
-                if isinstance(resume_result, dict):
-                    if resume_result.get("type") == "interrupt":
-                        return await self._handle_user_input("")
-                    content = resume_result.get("content", "")
-                else:
-                    content = str(resume_result)
+                if resume_result.get("interrupt"):
+                    interrupt_data = resume_result["interrupt"].get("interrupt")
+                    if interrupt_data and len(interrupt_data) > 0:
+                        interrupt_info = interrupt_data[0].value if hasattr(interrupt_data[0], 'value') else interrupt_data[0]
+                        interrupt_type = interrupt_info.get("type", "command_confirmation")
+                        
+                        if interrupt_type == "batch_confirmation":
+                            return await self._handle_batch_confirmation(interrupt_info)
+                        elif interrupt_type == "command_confirmation":
+                            return await self._handle_single_confirmation(interrupt_info)
+                    return True
 
-                self._render_markdown(content)
+                content = resume_result.get("content", "")
 
                 self._history_logger.log({
                     "session_id": self._current_session_id,
@@ -593,22 +621,29 @@ class DevOpsCLI:
                 break
 
             elif choice == "2":
-                # 全部拒绝
-                resume_result = await self._agent.invoke(
-                    user_input="",
-                    session_id=self._current_session_id,
-                    server_name=self._current_server.get("name"),
-                    resume={"action": "reject"},
+                resume_result = await self._handle_stream_output(
+                    self._agent.stream(
+                        user_input="",
+                        session_id=self._current_session_id,
+                        server_name=self._current_server.get("name"),
+                        resume={"action": "reject"},
+                        stream_mode="updates"
+                    )
                 )
 
-                if isinstance(resume_result, dict):
-                    if resume_result.get("type") == "interrupt":
-                        return await self._handle_user_input("")
-                    content = resume_result.get("content", "")
-                else:
-                    content = str(resume_result)
+                if resume_result.get("interrupt"):
+                    interrupt_data = resume_result["interrupt"].get("interrupt")
+                    if interrupt_data and len(interrupt_data) > 0:
+                        interrupt_info = interrupt_data[0].value if hasattr(interrupt_data[0], 'value') else interrupt_data[0]
+                        interrupt_type = interrupt_info.get("type", "command_confirmation")
+                        
+                        if interrupt_type == "batch_confirmation":
+                            return await self._handle_batch_confirmation(interrupt_info)
+                        elif interrupt_type == "command_confirmation":
+                            return await self._handle_single_confirmation(interrupt_info)
+                    return True
 
-                self._render_markdown(content)
+                content = resume_result.get("content", "")
 
                 self._history_logger.log({
                     "session_id": self._current_session_id,
@@ -642,21 +677,29 @@ class DevOpsCLI:
 
                     confirm = input("\n确认执行? (y/n): ").strip().lower()
                     if confirm == 'y':
-                        resume_result = await self._agent.invoke(
-                            user_input="",
-                            session_id=self._current_session_id,
-                            server_name=self._current_server.get("name"),
-                            resume={"action": "selective", "selected_indices": selected_indices},
+                        resume_result = await self._handle_stream_output(
+                            self._agent.stream(
+                                user_input="",
+                                session_id=self._current_session_id,
+                                server_name=self._current_server.get("name"),
+                                resume={"action": "selective", "selected_indices": selected_indices},
+                                stream_mode="updates"
+                            )
                         )
 
-                        if isinstance(resume_result, dict):
-                            if resume_result.get("type") == "interrupt":
-                                return await self._handle_user_input("")
-                            content = resume_result.get("content", "")
-                        else:
-                            content = str(resume_result)
+                        if resume_result.get("interrupt"):
+                            interrupt_data = resume_result["interrupt"].get("interrupt")
+                            if interrupt_data and len(interrupt_data) > 0:
+                                interrupt_info = interrupt_data[0].value if hasattr(interrupt_data[0], 'value') else interrupt_data[0]
+                                interrupt_type = interrupt_info.get("type", "command_confirmation")
+                                
+                                if interrupt_type == "batch_confirmation":
+                                    return await self._handle_batch_confirmation(interrupt_info)
+                                elif interrupt_type == "command_confirmation":
+                                    return await self._handle_single_confirmation(interrupt_info)
+                            return True
 
-                        self._render_markdown(content)
+                        content = resume_result.get("content", "")
 
                         self._history_logger.log({
                             "session_id": self._current_session_id,
@@ -679,19 +722,20 @@ class DevOpsCLI:
                     continue
 
             elif choice == "4":
-                # 修改命令
                 feedback = input("\n请输入你的修改要求: ").strip()
                 if feedback:
-                    resume_result = await self._agent.invoke(
-                        user_input="",
-                        session_id=self._current_session_id,
-                        server_name=self._current_server.get("name"),
-                        resume={"action": "modify", "feedback": feedback},
+                    resume_result = await self._handle_stream_output(
+                        self._agent.stream(
+                            user_input="",
+                            session_id=self._current_session_id,
+                            server_name=self._current_server.get("name"),
+                            resume={"action": "modify", "feedback": feedback},
+                            stream_mode="updates"
+                        )
                     )
 
-                    # 处理可能出现的第二次中断（LLM 生成新命令后）
-                    while isinstance(resume_result, dict) and resume_result.get("type") == "interrupt":
-                        interrupt_data = resume_result.get("interrupt")
+                    while resume_result.get("interrupt"):
+                        interrupt_data = resume_result["interrupt"].get("interrupt")
                         if interrupt_data and len(interrupt_data) > 0:
                             interrupt_info = interrupt_data[0].value if hasattr(interrupt_data[0], 'value') else interrupt_data[0]
                             interrupt_type = interrupt_info.get("type", "command_confirmation")
@@ -700,25 +744,16 @@ class DevOpsCLI:
                             print("⚠️  新命令需要确认")
                             print("=" * 60)
 
-                            # 根据中断类型调用相应的处理方法
-                            # 这些方法会处理用户选择并返回最终结果
                             if interrupt_type == "batch_confirmation":
                                 result = await self._handle_batch_confirmation(interrupt_info)
-                                # _handle_batch_confirmation 已经处理了整个流程，直接返回
                                 return result
                             elif interrupt_type == "command_confirmation":
                                 result = await self._handle_single_confirmation(interrupt_info)
-                                # _handle_single_confirmation 已经处理了整个流程，直接返回
                                 return result
                         else:
                             break
 
-                    if isinstance(resume_result, dict):
-                        content = resume_result.get("content", "")
-                    else:
-                        content = str(resume_result)
-
-                    self._render_markdown(content)
+                    content = resume_result.get("content", "")
 
                     self._history_logger.log({
                         "session_id": self._current_session_id,
@@ -740,6 +775,43 @@ class DevOpsCLI:
                 print("无效选择，请输入 1、2、3 或 4")
 
         return True
+
+    async def _handle_stream_output(self, stream_generator) -> dict:
+        """
+        处理流式输出并收集结果
+
+        Args:
+            stream_generator: 流式生成器
+
+        Returns:
+            dict: 包含最终结果和中断信息的字典
+        """
+        final_content = ""
+        interrupt_info = None
+
+        async for chunk in stream_generator:
+            if isinstance(chunk, dict) and chunk.get("type") == "interrupt":
+                interrupt_info = chunk
+                break
+
+            if isinstance(chunk, dict):
+                if "llm_call" in chunk:
+                    messages = chunk["llm_call"].get("messages", [])
+                    if messages:
+                        for idx, message in enumerate(messages, 1):
+                            content = message.content if hasattr(message, 'content') else str(message)
+                            self._console.print(f"\n[bold cyan]═══════════════════════════════════════[/bold cyan]")
+                            self._console.print(f"[bold green]💬 模型回复 #{idx}[/bold green]")
+                            self._console.print(f"[bold cyan]═══════════════════════════════════════[/bold cyan]\n")
+                            self._render_markdown(content)
+                        final_content = messages[-1].content
+                elif "tools" in chunk:
+                    print("\n[工具调用中...]")
+
+        return {
+            "content": final_content,
+            "interrupt": interrupt_info
+        }
 
     async def _handle_user_input(self, user_input: str) -> bool:
         """
@@ -781,41 +853,32 @@ class DevOpsCLI:
         print("\n正在处理...")
 
         try:
-            # 调用 Agent 处理用户输入
-            result = await self._agent.invoke(
-                user_input=user_input,
-                session_id=self._current_session_id,
-                server_name=self._current_server.get("name"),
+            result = await self._handle_stream_output(
+                self._agent.stream(
+                    user_input=user_input,
+                    session_id=self._current_session_id,
+                    server_name=self._current_server.get("name"),
+                    stream_mode="updates"
+                )
             )
 
-            # 处理中断
-            if isinstance(result, dict) and result.get("type") == "interrupt":
-                interrupt_data = result["interrupt"]
+            if result.get("interrupt"):
+                interrupt_data = result["interrupt"].get("interrupt")
                 if interrupt_data and len(interrupt_data) > 0:
                     interrupt_info = interrupt_data[0].value if hasattr(interrupt_data[0], 'value') else interrupt_data[0]
 
-                    # 提取中断类型
                     interrupt_type = interrupt_info.get("type", "command_confirmation")
 
-                    # 处理批量命令确认
                     if interrupt_type == "batch_confirmation":
                         return await self._handle_batch_confirmation(interrupt_info)
 
-                    # 处理单个命令确认
                     elif interrupt_type == "command_confirmation":
                         return await self._handle_single_confirmation(interrupt_info)
 
                 return True
 
-            # 正常结果
-            if isinstance(result, dict):
-                content = result.get("content", "")
-            else:
-                content = str(result)
+            content = result.get("content", "")
 
-            self._render_markdown(content)
-
-            # 记录到 CSV
             self._history_logger.log({
                 "session_id": self._current_session_id,
                 "server_name": self._current_server.get("name", ""),

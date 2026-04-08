@@ -10,7 +10,7 @@ Date: 2026-03-30
 
 import json
 import yaml
-from typing import Optional, Any
+from typing import Optional, Any, Union, AsyncGenerator
 from pathlib import Path
 
 from app.core.agent.agent import get_agent
@@ -270,6 +270,115 @@ class DevOpsAgent:
             return {"type": "normal", "content": result["messages"][-1].content}
 
         return {"type": "normal", "content": str(result)}
+
+    async def stream(
+        self,
+        user_input: str,
+        session_id: str,
+        server_name: Optional[str] = None,
+        error_limit: int = 2,
+        limit: int = 10,
+        resume: bool | dict = False,
+        stream_mode: Union[str, list[str]] = "updates",
+        **kwargs,
+    ) -> AsyncGenerator[dict, None]:
+        """
+        流式执行对话并返回结果
+
+        Args:
+            user_input: 用户输入内容
+            session_id: 会话ID，用于标识和恢复会话状态
+            server_name: 服务器名称，如果指定则使用该服务器的 SSH 配置
+            error_limit: 错误限制次数，默认 2
+            limit: 最大迭代次数，默认 10
+            resume: 恢复执行参数
+                - False: 正常执行
+                - True: 批准执行（用于 interrupt 后继续）
+                - dict: 包含 action 和可选 feedback 的决策字典
+            stream_mode: 流式输出模式，支持以下选项：
+                - "updates": 每个节点执行后返回状态更新（推荐）
+                - "values": 每个节点执行后返回完整状态
+                - "messages": 流式输出 LLM token
+                - "custom": 流式输出自定义数据
+                - ["updates", "messages"]: 组合模式，同时获取多种输出
+            **kwargs: 其他可选参数
+
+        Yields:
+            dict: 流式输出的数据块，格式取决于 stream_mode：
+                - stream_mode="updates": {node_name: {state_updates}}
+                - stream_mode="messages": (message_chunk, metadata)
+                - stream_mode=["updates", "messages"]: (mode, data)
+        """
+        from langgraph.types import Command
+
+        agent = await self._ensure_agent()
+
+        config = DevOpsExecuteConfig(
+            configurable=DevOpsConfigurableConfig(thread_id=session_id),
+            recursion_limit=100
+        )
+
+        state = DevOpsAgentState(
+            messages=[user_input] if user_input else [],
+            error_limit=error_limit,
+            limit=limit,
+        )
+
+        context_data = {
+            "session_id": session_id,
+            "store_id": self.store_id or session_id,
+            "command_blacklist": self._command_blacklist,
+            "tool_confirmation": {"execute_command": True},
+        }
+
+        if server_name:
+            server_config = self.get_server_config(server_name)
+            if server_config:
+                context_data["ssh_config"] = json.dumps(server_config, ensure_ascii=False)
+            else:
+                yield {"type": "error", "content": f"错误：未找到服务器 '{server_name}' 的配置"}
+                return
+        else:
+            servers = self.list_servers()
+            if servers:
+                context_data["ssh_config"] = json.dumps(servers[0], ensure_ascii=False)
+            else:
+                yield {"type": "error", "content": "错误：未配置任何 SSH 服务器"}
+                return
+
+        context = DevOpsAgentContext(**context_data)
+
+        if resume is not False:
+            resume_command = Command(resume=resume)
+            async for chunk in agent.stream(
+                resume_command,
+                config=config,
+                context=context,
+                stream_mode=stream_mode
+            ):
+                if isinstance(chunk, dict) and "__interrupt__" in chunk:
+                    yield {
+                        "type": "interrupt",
+                        "interrupt": chunk["__interrupt__"],
+                        "session_id": session_id
+                    }
+                else:
+                    yield chunk
+        else:
+            async for chunk in agent.stream(
+                config=config,
+                input_state=state,
+                context=context,
+                stream_mode=stream_mode
+            ):
+                if isinstance(chunk, dict) and "__interrupt__" in chunk:
+                    yield {
+                        "type": "interrupt",
+                        "interrupt": chunk["__interrupt__"],
+                        "session_id": session_id
+                    }
+                else:
+                    yield chunk
 
     async def execute_command_direct(
         self,
