@@ -16,6 +16,7 @@ from datetime import datetime
 from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command, interrupt
+from langgraph.config import get_stream_writer
 
 from app.features.DevOps_agent.tools.CommandInterceptor import CommandInterceptor, CommandBlockedError
 
@@ -48,7 +49,7 @@ def execute_batch_commands(
                             "success": False,
                             "error": "运行时上下文不能为空"
                         }, ensure_ascii=False),
-                        tool_call_id="unknown"
+                        tool_call_id=runtime.tool_call_id
                     )
                 ]
             }
@@ -741,3 +742,462 @@ def _update_session_info(runtime, session_id: str, command: str) -> None:
             runtime.store.put(namespace, "ssh/sessions", session_data)
     except Exception:
         pass
+
+
+# ============================================================================
+# 工具输出模板示例
+# ============================================================================
+
+@tool(description="获取服务器系统日志。返回大量日志文本但不占用主模型上下文。")
+def get_system_logs(
+    log_type: str = "syslog",
+    lines: int = 100,
+    runtime: ToolRuntime = None
+) -> Command:
+    """
+    获取服务器系统日志（模板示例）
+    
+    此函数演示如何返回大量文本数据而不占用主模型 token。
+    使用 get_stream_writer 发送数据，使用 Command 返回状态。
+    
+    统一输出格式：
+    {
+        "header": {
+            "tool_name": "工具名称",
+            "tool_call_id": "工具调用ID",
+            "timestamp": "时间戳",
+            "status": "start|progress|complete|error",
+            "version": "1.0"
+        },
+        "body": {
+            "data": "实际数据内容",
+            "metadata": {
+                "total_lines": 总行数,
+                "current_line": 当前行,
+                "percentage": 百分比
+            }
+        },
+        "footer": {
+            "success": true/false,
+            "message": "完成消息",
+            "stats": {
+                "total": 总数,
+                "processed": 已处理数,
+                "failed": 失败数
+            }
+        }
+    }
+    
+    Args:
+        log_type: 日志类型 (syslog, auth, kern, etc.)
+        lines: 要获取的日志行数
+        runtime: 工具运行时上下文
+    
+    Returns:
+        Command: 不包含 messages，只更新 tool_results
+    """
+    writer = get_stream_writer()
+    
+    if runtime is None:
+        writer({
+            "header": {
+                "tool_name": "get_system_logs",
+                "tool_call_id": "unknown",
+                "timestamp": datetime.now().isoformat(),
+                "status": "error",
+                "version": "1.0"
+            },
+            "body": {
+                "data": None,
+                "metadata": {
+                    "error": "运行时上下文不能为空"
+                }
+            },
+            "footer": {
+                "success": False,
+                "message": "运行时上下文不能为空",
+                "stats": {
+                    "total": 0,
+                    "processed": 0,
+                    "failed": 1
+                }
+            }
+        })
+        
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content="错误：运行时上下文不能为空",
+                        tool_call_id="unknown"
+                    )
+                ],
+                "tool_results": {
+                    "unknown": {
+                        "tool": "get_system_logs",
+                        "status": "error",
+                        "error": "运行时上下文不能为空"
+                    }
+                }
+            }
+        )
+    
+    tool_call_id = runtime.tool_call_id
+    
+    # === 1. 发送开始标记（头部） ===
+    writer({
+        "header": {
+            "tool_name": "get_system_logs",
+            "tool_call_id": tool_call_id,
+            "timestamp": datetime.now().isoformat(),
+            "status": "start",
+            "version": "1.0"
+        },
+        "body": {
+            "data": None,
+            "metadata": {
+                "log_type": log_type,
+                "requested_lines": lines
+            }
+        },
+        "footer": None
+    })
+    
+    # === 2. 模拟获取日志数据 ===
+    session_id = runtime.context.get("session_id", "default")
+    ssh_config_str = runtime.context.get("ssh_config")
+    
+    if not ssh_config_str:
+        writer({
+            "header": {
+                "tool_name": "get_system_logs",
+                "tool_call_id": tool_call_id,
+                "timestamp": datetime.now().isoformat(),
+                "status": "error",
+                "version": "1.0"
+            },
+            "body": {
+                "data": None,
+                "metadata": {
+                    "error": "SSH 配置未找到"
+                }
+            },
+            "footer": {
+                "success": False,
+                "message": "SSH 配置未找到",
+                "stats": {
+                    "total": 0,
+                    "processed": 0,
+                    "failed": 1
+                }
+            }
+        })
+        
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content="错误：SSH 配置未找到",
+                        tool_call_id=tool_call_id
+                    )
+                ],
+                "tool_results": {
+                    tool_call_id: {
+                        "tool": "get_system_logs",
+                        "status": "error",
+                        "error": "SSH 配置未找到"
+                    }
+                }
+            }
+        )
+    
+    try:
+        ssh_config = json.loads(ssh_config_str) if isinstance(ssh_config_str, str) else ssh_config_str
+    except json.JSONDecodeError as e:
+        writer({
+            "header": {
+                "tool_name": "get_system_logs",
+                "tool_call_id": tool_call_id,
+                "timestamp": datetime.now().isoformat(),
+                "status": "error",
+                "version": "1.0"
+            },
+            "body": {
+                "data": None,
+                "metadata": {
+                    "error": f"SSH 配置解析失败: {str(e)}"
+                }
+            },
+            "footer": {
+                "success": False,
+                "message": f"SSH 配置解析失败: {str(e)}",
+                "stats": {
+                    "total": 0,
+                    "processed": 0,
+                    "failed": 1
+                }
+            }
+        })
+        
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=f"错误：SSH 配置解析失败: {str(e)}",
+                        tool_call_id=tool_call_id
+                    )
+                ],
+                "tool_results": {
+                    tool_call_id: {
+                        "tool": "get_system_logs",
+                        "status": "error",
+                        "error": f"SSH 配置解析失败: {str(e)}"
+                    }
+                }
+            }
+        )
+    
+    # === 3. 执行命令获取日志 ===
+    ssh_client = None
+    log_lines = []
+    
+    try:
+        ssh_client = _get_or_create_ssh_client(runtime, session_id, ssh_config)
+        
+        # 根据日志类型选择命令
+        if log_type == "syslog":
+            command = f"tail -n {lines} /var/log/syslog"
+        elif log_type == "auth":
+            command = f"tail -n {lines} /var/log/auth.log"
+        elif log_type == "kern":
+            command = f"tail -n {lines} /var/log/kern.log"
+        else:
+            command = f"tail -n {lines} /var/log/{log_type}"
+        
+        stdin, stdout, stderr = ssh_client.exec_command(command, timeout=30)
+        
+        output = stdout.read().decode("utf-8", errors="replace").strip()
+        error = stderr.read().decode("utf-8", errors="replace").strip()
+        
+        if error:
+            writer({
+                "header": {
+                    "tool_name": "get_system_logs",
+                    "tool_call_id": tool_call_id,
+                    "timestamp": datetime.now().isoformat(),
+                    "status": "error",
+                    "version": "1.0"
+                },
+                "body": {
+                    "data": None,
+                    "metadata": {
+                        "error": error
+                    }
+                },
+                "footer": {
+                    "success": False,
+                    "message": f"命令执行失败: {error}",
+                    "stats": {
+                        "total": 0,
+                        "processed": 0,
+                        "failed": 1
+                    }
+                }
+            })
+            
+            return Command(
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=f"错误：命令执行失败",
+                            tool_call_id=tool_call_id
+                        )
+                    ],
+                    "tool_results": {
+                        tool_call_id: {
+                            "tool": "get_system_logs",
+                            "status": "error",
+                            "error": error
+                        }
+                    }
+                }
+            )
+        
+        # 分行处理
+        log_lines = output.split('\n')
+        total_lines = len(log_lines)
+        
+        # === 4. 流式发送日志内容（主体） ===
+        # 每次发送 10 行，避免单个消息过大
+        batch_size = 10
+        for i in range(0, total_lines, batch_size):
+            batch = log_lines[i:i + batch_size]
+            current_line = min(i + batch_size, total_lines)
+            percentage = int((current_line / total_lines) * 100) if total_lines > 0 else 0
+            
+            writer({
+                "header": {
+                    "tool_name": "get_system_logs",
+                    "tool_call_id": tool_call_id,
+                    "timestamp": datetime.now().isoformat(),
+                    "status": "progress",
+                    "version": "1.0"
+                },
+                "body": {
+                    "data": batch,
+                    "metadata": {
+                        "total_lines": total_lines,
+                        "current_line": current_line,
+                        "percentage": percentage,
+                        "batch_index": i // batch_size,
+                        "batch_size": len(batch)
+                    }
+                },
+                "footer": None
+            })
+        
+        # === 5. 发送完成标记（尾部） ===
+        writer({
+            "header": {
+                "tool_name": "get_system_logs",
+                "tool_call_id": tool_call_id,
+                "timestamp": datetime.now().isoformat(),
+                "status": "complete",
+                "version": "1.0"
+            },
+            "body": {
+                "data": None,
+                "metadata": {
+                    "log_type": log_type,
+                    "total_lines": total_lines,
+                    "lines_requested": lines
+                }
+            },
+            "footer": {
+                "success": True,
+                "message": f"成功获取 {total_lines} 行日志",
+                "stats": {
+                    "total": total_lines,
+                    "processed": total_lines,
+                    "failed": 0
+                }
+            }
+        })
+        
+        # === 6. 返回 Command（包含简短的 ToolMessage） ===
+        # 关键：使用 ToolMessage 告诉大模型工具执行了什么（简短摘要）
+        # 详细数据已通过 get_stream_writer 发送，不占用上下文
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=f"成功获取 {total_lines} 行 {log_type} 日志",
+                        tool_call_id=tool_call_id
+                    )
+                ],
+                "tool_results": {
+                    tool_call_id: {
+                        "tool": "get_system_logs",
+                        "status": "success",
+                        "log_type": log_type,
+                        "total_lines": total_lines,
+                        "summary": f"成功获取 {total_lines} 行 {log_type} 日志"
+                    }
+                }
+            }
+        )
+    
+    except paramiko.AuthenticationException as e:
+        writer({
+            "header": {
+                "tool_name": "get_system_logs",
+                "tool_call_id": tool_call_id,
+                "timestamp": datetime.now().isoformat(),
+                "status": "error",
+                "version": "1.0"
+            },
+            "body": {
+                "data": None,
+                "metadata": {
+                    "error": f"SSH 认证失败: {str(e)}"
+                }
+            },
+            "footer": {
+                "success": False,
+                "message": f"SSH 认证失败: {str(e)}",
+                "stats": {
+                    "total": 0,
+                    "processed": 0,
+                    "failed": 1
+                }
+            }
+        })
+        
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=f"错误：SSH 认证失败",
+                        tool_call_id=tool_call_id
+                    )
+                ],
+                "tool_results": {
+                    tool_call_id: {
+                        "tool": "get_system_logs",
+                        "status": "error",
+                        "error": f"SSH 认证失败: {str(e)}"
+                    }
+                }
+            }
+        )
+    
+    except Exception as e:
+        writer({
+            "header": {
+                "tool_name": "get_system_logs",
+                "tool_call_id": tool_call_id,
+                "timestamp": datetime.now().isoformat(),
+                "status": "error",
+                "version": "1.0"
+            },
+            "body": {
+                "data": None,
+                "metadata": {
+                    "error": f"获取日志失败: {str(e)}"
+                }
+            },
+            "footer": {
+                "success": False,
+                "message": f"获取日志失败: {str(e)}",
+                "stats": {
+                    "total": 0,
+                    "processed": 0,
+                    "failed": 1
+                }
+            }
+        })
+        
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=f"错误：获取日志失败",
+                        tool_call_id=tool_call_id
+                    )
+                ],
+                "tool_results": {
+                    tool_call_id: {
+                        "tool": "get_system_logs",
+                        "status": "error",
+                        "error": f"获取日志失败: {str(e)}"
+                    }
+                }
+            }
+        )
+    
+    finally:
+        if ssh_client:
+            try:
+                ssh_client.close()
+            except:
+                pass
