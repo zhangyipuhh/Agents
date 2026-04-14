@@ -9,12 +9,12 @@ MCP Client 连接池模块
 Date: 2026-04-14
 """
 
-from mcpClient.core.mcp_client.client_pool import (
+from .client_pool import (
     MCPServerTask,
     MCPClientPool,
     client_pool,
 )
-from mcpClient.core.mcp_client.sampling_handler import (
+from .sampling_handler import (
     SamplingHandler,
 )
 

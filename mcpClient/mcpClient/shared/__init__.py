@@ -4,7 +4,7 @@
 共享工具模块
 """
 
-from mcpClient.shared.config_loader import (
+from .config_loader import (
     load_mcp_config,
 )
 
