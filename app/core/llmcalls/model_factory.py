@@ -25,6 +25,8 @@ from typing import Optional
 from app.core.llmcalls.deepseek import create_model as create_deepseek_model
 from app.core.llmcalls.ollama import create_model as create_ollama_model
 from app.core.llmcalls.openai import create_model as create_openai_model
+from app.core.llmcalls.anthropic import create_model as create_anthropic_model
+
 
 
 class ModelFactory:
@@ -49,6 +51,7 @@ class ModelFactory:
         'deepseek': create_deepseek_model,
         'ollama': create_ollama_model,
         'openai': create_openai_model,
+        'anthropic': create_anthropic_model,
     }
     
     def __init__(self):
@@ -66,6 +69,8 @@ class ModelFactory:
         self._model_creators = {
             'deepseek': create_deepseek_model,
             'ollama': create_ollama_model,
+            'openai': create_openai_model,
+            'anthropic': create_anthropic_model,
         }
     
     @classmethod

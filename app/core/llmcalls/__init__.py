@@ -8,6 +8,7 @@
 - DeepSeek
 - Ollama
 - OpenAI
+- Anthropic
 
 通过工厂模式统一管理不同模型的创建过程，
 提供灵活的模型类型扩展机制。
