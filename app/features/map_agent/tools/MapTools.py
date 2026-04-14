@@ -20,10 +20,14 @@ Author: AI Assistant
 """
 
 import json
+import uuid
+from datetime import datetime
 from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
+from langgraph.config import get_stream_writer
 from typing import List, Dict, Any, Optional
+from app.core.tools.events import create_tool_event
 
 
 @tool
@@ -46,17 +50,60 @@ def set_map_center(latitude: float, longitude: float, runtime: ToolRuntime) -> C
             - status: "center_set" - 中心点已设置
             - center: {"latitude": 纬度, "longitude": 经度}
     """
+    tool_name = "set_map_center"
+    tool_call_id = runtime.tool_call_id
+    start_time = datetime.now()
+    writer = get_stream_writer()
+    
+    start_event = create_tool_event(
+        event_type="tool_start",
+        tool=tool_name,
+        tool_call_id=tool_call_id,
+        data={
+            "args": {"latitude": latitude, "longitude": longitude},
+            "description": f"开始设置地图中心点: 纬度 {latitude}, 经度 {longitude}"
+        }
+    )
+    writer(dict(start_event))
+    
+    result_data = {
+        "status": "center_set",
+        "center": {"latitude": latitude, "longitude": longitude},
+        "message": f"地图中心已移动到: 纬度 {latitude}, 经度 {longitude}"
+    }
+    
+    end_time = datetime.now()
+    duration_ms = int((end_time - start_time).total_seconds() * 1000)
+    
+    stop_event = create_tool_event(
+        event_type="tool_stop",
+        tool=tool_name,
+        tool_call_id=tool_call_id,
+        data={
+            "status": "success",
+            "result": result_data,
+            "duration_ms": duration_ms
+        }
+    )
+    writer(dict(stop_event))
+    
+    summary = {
+        "status": "success",
+        "tool": tool_name,
+        "started_at": start_time.timestamp(),
+        "ended_at": end_time.timestamp(),
+        "duration_ms": duration_ms,
+        "events": [dict(start_event), dict(stop_event)],
+        "result": result_data
+    }
+    
     return Command(
         update={
             "map_center": {"latitude": latitude, "longitude": longitude},
             "messages": [
                 ToolMessage(
-                    content=json.dumps({
-                        "status": "center_set",
-                        "center": {"latitude": latitude, "longitude": longitude},
-                        "message": f"地图中心已移动到: 纬度 {latitude}, 经度 {longitude}"
-                    }, ensure_ascii=False),
-                    tool_call_id=runtime.tool_call_id
+                    content=json.dumps(summary, ensure_ascii=False),
+                    tool_call_id=tool_call_id
                 )
             ]
         }
@@ -82,20 +129,67 @@ def set_map_zoom(zoom_level: int, runtime: ToolRuntime) -> Command:
             - status: "zoom_set" - 缩放级别已设置
             - zoom_level: 缩放级别值
     """
-    # 确保缩放级别在有效范围内
+    tool_name = "set_map_zoom"
+    tool_call_id = runtime.tool_call_id
+    start_time = datetime.now()
+    writer = get_stream_writer()
+    
+    start_event = create_tool_event(
+        event_type="tool_start",
+        tool=tool_name,
+        tool_call_id=tool_call_id,
+        data={
+            "args": {"zoom_level": zoom_level},
+            "description": f"开始设置地图缩放级别: {zoom_level}"
+        }
+    )
+    writer(dict(start_event))
+    
+    original_zoom = zoom_level
     zoom_level = max(1, min(20, zoom_level))
+    
+    result_data = {
+        "status": "zoom_set",
+        "zoom_level": zoom_level,
+        "message": f"地图缩放级别已设置为: {zoom_level}"
+    }
+    
+    if original_zoom != zoom_level:
+        result_data["adjusted"] = True
+        result_data["original_value"] = original_zoom
+    
+    end_time = datetime.now()
+    duration_ms = int((end_time - start_time).total_seconds() * 1000)
+    
+    stop_event = create_tool_event(
+        event_type="tool_stop",
+        tool=tool_name,
+        tool_call_id=tool_call_id,
+        data={
+            "status": "success",
+            "result": result_data,
+            "duration_ms": duration_ms
+        }
+    )
+    writer(dict(stop_event))
+    
+    summary = {
+        "status": "success",
+        "tool": tool_name,
+        "started_at": start_time.timestamp(),
+        "ended_at": end_time.timestamp(),
+        "duration_ms": duration_ms,
+        "events": [dict(start_event), dict(stop_event)],
+        "result": result_data
+    }
     
     return Command(
         update={
             "map_zoom": zoom_level,
             "messages": [
                 ToolMessage(
-                    content=json.dumps({
-                        "status": "zoom_set",
-                        "zoom_level": zoom_level,
-                        "message": f"地图缩放级别已设置为: {zoom_level}"
-                    }, ensure_ascii=False),
-                    tool_call_id=runtime.tool_call_id
+                    content=json.dumps(summary, ensure_ascii=False),
+                    tool_call_id=tool_call_id
                 )
             ]
         }
@@ -132,9 +226,28 @@ def add_map_marker(
             - status: "marker_added" - 标记已添加
             - marker: 标记信息对象
     """
-    import uuid
+    tool_name = "add_map_marker"
+    tool_call_id = runtime.tool_call_id
+    start_time = datetime.now()
+    writer = get_stream_writer()
     
-    # 生成标记ID
+    start_event = create_tool_event(
+        event_type="tool_start",
+        tool=tool_name,
+        tool_call_id=tool_call_id,
+        data={
+            "args": {
+                "latitude": latitude,
+                "longitude": longitude,
+                "title": title,
+                "description": description,
+                "marker_id": marker_id
+            },
+            "description": f"开始添加地图标记: {title}"
+        }
+    )
+    writer(dict(start_event))
+    
     if not marker_id:
         marker_id = str(uuid.uuid4())
     
@@ -146,22 +259,48 @@ def add_map_marker(
         "description": description
     }
     
-    # 获取当前标记列表
     current_markers = runtime.state.get("map_markers", [])
     updated_markers = current_markers + [marker]
+    
+    result_data = {
+        "status": "marker_added",
+        "marker": marker,
+        "total_markers": len(updated_markers),
+        "message": f"已添加标记: {title}"
+    }
+    
+    end_time = datetime.now()
+    duration_ms = int((end_time - start_time).total_seconds() * 1000)
+    
+    stop_event = create_tool_event(
+        event_type="tool_stop",
+        tool=tool_name,
+        tool_call_id=tool_call_id,
+        data={
+            "status": "success",
+            "result": result_data,
+            "duration_ms": duration_ms
+        }
+    )
+    writer(dict(stop_event))
+    
+    summary = {
+        "status": "success",
+        "tool": tool_name,
+        "started_at": start_time.timestamp(),
+        "ended_at": end_time.timestamp(),
+        "duration_ms": duration_ms,
+        "events": [dict(start_event), dict(stop_event)],
+        "result": result_data
+    }
     
     return Command(
         update={
             "map_markers": updated_markers,
             "messages": [
                 ToolMessage(
-                    content=json.dumps({
-                        "status": "marker_added",
-                        "marker": marker,
-                        "total_markers": len(updated_markers),
-                        "message": f"已添加标记: {title}"
-                    }, ensure_ascii=False),
-                    tool_call_id=runtime.tool_call_id
+                    content=json.dumps(summary, ensure_ascii=False),
+                    tool_call_id=tool_call_id
                 )
             ]
         }
@@ -187,23 +326,66 @@ def remove_map_marker(marker_id: str, runtime: ToolRuntime) -> Command:
             - status: "marker_removed" - 标记已移除
             - marker_id: 被移除的标记ID
     """
+    tool_name = "remove_map_marker"
+    tool_call_id = runtime.tool_call_id
+    start_time = datetime.now()
+    writer = get_stream_writer()
+    
+    start_event = create_tool_event(
+        event_type="tool_start",
+        tool=tool_name,
+        tool_call_id=tool_call_id,
+        data={
+            "args": {"marker_id": marker_id},
+            "description": f"开始移除地图标记: {marker_id}"
+        }
+    )
+    writer(dict(start_event))
+    
     current_markers = runtime.state.get("map_markers", [])
     updated_markers = [m for m in current_markers if m.get("id") != marker_id]
     
     removed = len(current_markers) - len(updated_markers) > 0
+    
+    result_data = {
+        "status": "marker_removed" if removed else "marker_not_found",
+        "marker_id": marker_id,
+        "total_markers": len(updated_markers),
+        "message": f"已移除标记: {marker_id}" if removed else f"未找到标记: {marker_id}"
+    }
+    
+    end_time = datetime.now()
+    duration_ms = int((end_time - start_time).total_seconds() * 1000)
+    
+    stop_event = create_tool_event(
+        event_type="tool_stop",
+        tool=tool_name,
+        tool_call_id=tool_call_id,
+        data={
+            "status": "success" if removed else "warning",
+            "result": result_data,
+            "duration_ms": duration_ms
+        }
+    )
+    writer(dict(stop_event))
+    
+    summary = {
+        "status": "success" if removed else "warning",
+        "tool": tool_name,
+        "started_at": start_time.timestamp(),
+        "ended_at": end_time.timestamp(),
+        "duration_ms": duration_ms,
+        "events": [dict(start_event), dict(stop_event)],
+        "result": result_data
+    }
     
     return Command(
         update={
             "map_markers": updated_markers,
             "messages": [
                 ToolMessage(
-                    content=json.dumps({
-                        "status": "marker_removed" if removed else "marker_not_found",
-                        "marker_id": marker_id,
-                        "total_markers": len(updated_markers),
-                        "message": f"已移除标记: {marker_id}" if removed else f"未找到标记: {marker_id}"
-                    }, ensure_ascii=False),
-                    tool_call_id=runtime.tool_call_id
+                    content=json.dumps(summary, ensure_ascii=False),
+                    tool_call_id=tool_call_id
                 )
             ]
         }
@@ -228,20 +410,63 @@ def clear_map_markers(runtime: ToolRuntime) -> Command:
             - status: "markers_cleared" - 所有标记已清除
             - cleared_count: 清除的标记数量
     """
+    tool_name = "clear_map_markers"
+    tool_call_id = runtime.tool_call_id
+    start_time = datetime.now()
+    writer = get_stream_writer()
+    
+    start_event = create_tool_event(
+        event_type="tool_start",
+        tool=tool_name,
+        tool_call_id=tool_call_id,
+        data={
+            "args": {},
+            "description": "开始清除所有地图标记"
+        }
+    )
+    writer(dict(start_event))
+    
     current_markers = runtime.state.get("map_markers", [])
     cleared_count = len(current_markers)
+    
+    result_data = {
+        "status": "markers_cleared",
+        "cleared_count": cleared_count,
+        "message": f"已清除所有标记，共 {cleared_count} 个"
+    }
+    
+    end_time = datetime.now()
+    duration_ms = int((end_time - start_time).total_seconds() * 1000)
+    
+    stop_event = create_tool_event(
+        event_type="tool_stop",
+        tool=tool_name,
+        tool_call_id=tool_call_id,
+        data={
+            "status": "success",
+            "result": result_data,
+            "duration_ms": duration_ms
+        }
+    )
+    writer(dict(stop_event))
+    
+    summary = {
+        "status": "success",
+        "tool": tool_name,
+        "started_at": start_time.timestamp(),
+        "ended_at": end_time.timestamp(),
+        "duration_ms": duration_ms,
+        "events": [dict(start_event), dict(stop_event)],
+        "result": result_data
+    }
     
     return Command(
         update={
             "map_markers": [],
             "messages": [
                 ToolMessage(
-                    content=json.dumps({
-                        "status": "markers_cleared",
-                        "cleared_count": cleared_count,
-                        "message": f"已清除所有标记，共 {cleared_count} 个"
-                    }, ensure_ascii=False),
-                    tool_call_id=runtime.tool_call_id
+                    content=json.dumps(summary, ensure_ascii=False),
+                    tool_call_id=tool_call_id
                 )
             ]
         }
@@ -266,6 +491,22 @@ def get_map_state(runtime: ToolRuntime) -> Command:
             - status: "state_retrieved" - 状态已获取
             - map_state: 地图状态对象，包含中心点、缩放级别、标记列表等
     """
+    tool_name = "get_map_state"
+    tool_call_id = runtime.tool_call_id
+    start_time = datetime.now()
+    writer = get_stream_writer()
+    
+    start_event = create_tool_event(
+        event_type="tool_start",
+        tool=tool_name,
+        tool_call_id=tool_call_id,
+        data={
+            "args": {},
+            "description": "开始获取地图状态"
+        }
+    )
+    writer(dict(start_event))
+    
     map_state = {
         "center": runtime.state.get("map_center", {"latitude": 0, "longitude": 0}),
         "zoom": runtime.state.get("map_zoom", 10),
@@ -274,16 +515,43 @@ def get_map_state(runtime: ToolRuntime) -> Command:
         "polygons": runtime.state.get("map_polygons", [])
     }
     
+    result_data = {
+        "status": "state_retrieved",
+        "map_state": map_state,
+        "message": "已获取当前地图状态"
+    }
+    
+    end_time = datetime.now()
+    duration_ms = int((end_time - start_time).total_seconds() * 1000)
+    
+    stop_event = create_tool_event(
+        event_type="tool_stop",
+        tool=tool_name,
+        tool_call_id=tool_call_id,
+        data={
+            "status": "success",
+            "result": result_data,
+            "duration_ms": duration_ms
+        }
+    )
+    writer(dict(stop_event))
+    
+    summary = {
+        "status": "success",
+        "tool": tool_name,
+        "started_at": start_time.timestamp(),
+        "ended_at": end_time.timestamp(),
+        "duration_ms": duration_ms,
+        "events": [dict(start_event), dict(stop_event)],
+        "result": result_data
+    }
+    
     return Command(
         update={
             "messages": [
                 ToolMessage(
-                    content=json.dumps({
-                        "status": "state_retrieved",
-                        "map_state": map_state,
-                        "message": "已获取当前地图状态"
-                    }, ensure_ascii=False),
-                    tool_call_id=runtime.tool_call_id
+                    content=json.dumps(summary, ensure_ascii=False),
+                    tool_call_id=tool_call_id
                 )
             ]
         }
@@ -316,7 +584,25 @@ def draw_map_polygon(
             - status: "polygon_drawn" - 多边形已绘制
             - polygon: 多边形信息对象
     """
-    import uuid
+    tool_name = "draw_map_polygon"
+    tool_call_id = runtime.tool_call_id
+    start_time = datetime.now()
+    writer = get_stream_writer()
+    
+    start_event = create_tool_event(
+        event_type="tool_start",
+        tool=tool_name,
+        tool_call_id=tool_call_id,
+        data={
+            "args": {
+                "coordinates": coordinates,
+                "title": title,
+                "color": color
+            },
+            "description": f"开始绘制地图多边形: {title if title else '未命名区域'}"
+        }
+    )
+    writer(dict(start_event))
     
     polygon = {
         "id": str(uuid.uuid4()),
@@ -325,22 +611,48 @@ def draw_map_polygon(
         "color": color
     }
     
-    # 获取当前多边形列表
     current_polygons = runtime.state.get("map_polygons", [])
     updated_polygons = current_polygons + [polygon]
+    
+    result_data = {
+        "status": "polygon_drawn",
+        "polygon": polygon,
+        "total_polygons": len(updated_polygons),
+        "message": f"已绘制多边形区域: {title if title else '未命名区域'}"
+    }
+    
+    end_time = datetime.now()
+    duration_ms = int((end_time - start_time).total_seconds() * 1000)
+    
+    stop_event = create_tool_event(
+        event_type="tool_stop",
+        tool=tool_name,
+        tool_call_id=tool_call_id,
+        data={
+            "status": "success",
+            "result": result_data,
+            "duration_ms": duration_ms
+        }
+    )
+    writer(dict(stop_event))
+    
+    summary = {
+        "status": "success",
+        "tool": tool_name,
+        "started_at": start_time.timestamp(),
+        "ended_at": end_time.timestamp(),
+        "duration_ms": duration_ms,
+        "events": [dict(start_event), dict(stop_event)],
+        "result": result_data
+    }
     
     return Command(
         update={
             "map_polygons": updated_polygons,
             "messages": [
                 ToolMessage(
-                    content=json.dumps({
-                        "status": "polygon_drawn",
-                        "polygon": polygon,
-                        "total_polygons": len(updated_polygons),
-                        "message": f"已绘制多边形区域: {title if title else '未命名区域'}"
-                    }, ensure_ascii=False),
-                    tool_call_id=runtime.tool_call_id
+                    content=json.dumps(summary, ensure_ascii=False),
+                    tool_call_id=tool_call_id
                 )
             ]
         }
@@ -370,22 +682,70 @@ def set_map_layer(layer_type: str, runtime: ToolRuntime) -> Command:
             - status: "layer_set" - 图层已设置
             - layer_type: 当前图层类型
     """
+    tool_name = "set_map_layer"
+    tool_call_id = runtime.tool_call_id
+    start_time = datetime.now()
+    writer = get_stream_writer()
+    
+    start_event = create_tool_event(
+        event_type="tool_start",
+        tool=tool_name,
+        tool_call_id=tool_call_id,
+        data={
+            "args": {"layer_type": layer_type},
+            "description": f"开始设置地图图层: {layer_type}"
+        }
+    )
+    writer(dict(start_event))
+    
     valid_layers = ["standard", "satellite", "terrain", "hybrid"]
+    original_layer = layer_type
     
     if layer_type not in valid_layers:
         layer_type = "standard"
+    
+    result_data = {
+        "status": "layer_set",
+        "layer_type": layer_type,
+        "message": f"地图图层已切换为: {layer_type}"
+    }
+    
+    if original_layer != layer_type:
+        result_data["adjusted"] = True
+        result_data["original_value"] = original_layer
+    
+    end_time = datetime.now()
+    duration_ms = int((end_time - start_time).total_seconds() * 1000)
+    
+    stop_event = create_tool_event(
+        event_type="tool_stop",
+        tool=tool_name,
+        tool_call_id=tool_call_id,
+        data={
+            "status": "success",
+            "result": result_data,
+            "duration_ms": duration_ms
+        }
+    )
+    writer(dict(stop_event))
+    
+    summary = {
+        "status": "success",
+        "tool": tool_name,
+        "started_at": start_time.timestamp(),
+        "ended_at": end_time.timestamp(),
+        "duration_ms": duration_ms,
+        "events": [dict(start_event), dict(stop_event)],
+        "result": result_data
+    }
     
     return Command(
         update={
             "map_layer": layer_type,
             "messages": [
                 ToolMessage(
-                    content=json.dumps({
-                        "status": "layer_set",
-                        "layer_type": layer_type,
-                        "message": f"地图图层已切换为: {layer_type}"
-                    }, ensure_ascii=False),
-                    tool_call_id=runtime.tool_call_id
+                    content=json.dumps(summary, ensure_ascii=False),
+                    tool_call_id=tool_call_id
                 )
             ]
         }

@@ -21,6 +21,8 @@ from pydantic import BaseModel
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
 
+from langchain_core.messages import ToolMessage
+
 from app.features.map_agent.MapAgent import MapAgent
 
 logger = logging.getLogger(__name__)
@@ -103,12 +105,13 @@ async def generate_stream_response(
                     yield f"data: {json.dumps({'type': 'custom', 'data': data}, ensure_ascii=False, default=str)}\n\n"
 
                 elif mode == "messages":
-                    # LLM token 流式输出
-                    # data 格式: (message_chunk, metadata)
                     if isinstance(data, tuple) and len(data) == 2:
                         message_chunk, metadata = data
-                        # 提取 message_chunk 的内容
+                        if isinstance(message_chunk, ToolMessage):
+                            continue
                         content = getattr(message_chunk, 'content', str(message_chunk))
+                        if not content:
+                            continue
                         yield f"data: {json.dumps({'type': 'message', 'content': content, 'metadata': metadata}, ensure_ascii=False, default=str)}\n\n"
                     else:
                         # 如果数据格式不符合预期，直接序列化
