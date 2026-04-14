@@ -34,6 +34,7 @@ if _env_path.exists():
 
 # 路径设置完成后再导入
 from mcpClient.routers.page_router import router as page_router
+from mcpClient.routers.mcp_router import router as mcp_router, set_client_pool
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,8 @@ async def lifespan(app):
         from mcpClient.core.mcp_client.client_pool import MCPClientPool
 
         pool = MCPClientPool()
+        # 设置全局连接池，供路由使用
+        set_client_pool(pool)
         for name, cfg in config.items():
             try:
                 await pool.connect(name, cfg)
@@ -98,6 +101,7 @@ def register_routers():
     注册所有路由
     """
     app.include_router(page_router)
+    app.include_router(mcp_router)
 
 
 register_routers()
@@ -110,7 +114,7 @@ def main():
     uvicorn.run(
         "mcpClient.main:app",
         host="0.0.0.0",
-        port=10000,
+        port=10001,
         reload=False,
     )
 

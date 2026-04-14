@@ -17,10 +17,18 @@ from .client_pool import (
 from .sampling_handler import (
     SamplingHandler,
 )
+from .mcp_client import (
+    MCPClient,
+    get_mcp_client,
+    reset_mcp_client,
+)
 
 __all__ = [
     "MCPServerTask",
     "MCPClientPool",
     "client_pool",
     "SamplingHandler",
+    "MCPClient",
+    "get_mcp_client",
+    "reset_mcp_client",
 ]
