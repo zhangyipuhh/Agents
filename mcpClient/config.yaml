@@ -1,19 +1,7 @@
 mcp_servers:
-  filesystem:
-    type: stdio
-    command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-    env: {}
-    timeout: 120
-    connect_timeout: 60
-
-  github:
-    type: http
-    url: "https://api.github.com/mcp"
-    headers:
-      Authorization: "Bearer ${GITHUB_TOKEN}"
+  高德地图mcp:
+    type: sse
+    url: "https://mcp.amap.com/sse?key=df6d69f0846583058f276495acc9d487"
     timeout: 120
     sampling:
-      enabled: true
-      max_rpm: 10
-      max_tool_rounds: 5
+      enabled: false

@@ -302,7 +302,7 @@ class SamplingHandler:
             return ErrorData(code=code, message=message)
         raise Exception(message)
 
-    def _build_tool_use_result(self, choice, response) -> CreateMessageResultWithTools:
+    def _build_tool_use_result(self, choice, response) -> "CreateMessageResultWithTools":
         """
         从 LLM tool_calls 响应构建 CreateMessageResultWithTools
 
@@ -368,7 +368,7 @@ class SamplingHandler:
             stopReason="toolUse",
         )
 
-    def _build_text_result(self, choice, response) -> CreateMessageResult:
+    def _build_text_result(self, choice, response) -> "CreateMessageResult":
         """
         从普通文本响应构建 CreateMessageResult
 
@@ -412,6 +412,27 @@ class SamplingHandler:
             ),
         }
 
+    def _check_dependencies(self) -> Optional[str]:
+        """
+        检查 sampling 依赖是否可用
+
+        Returns:
+            如果依赖不可用，返回错误消息；否则返回 None
+        """
+        try:
+            import sys
+            from pathlib import Path
+            # 确保 app 模块在路径中
+            app_root = Path(__file__).parent.parent.parent.parent.parent
+            if str(app_root) not in sys.path:
+                sys.path.insert(0, str(app_root))
+
+            from app.core.llmcalls.model_factory import ModelFactory
+            from app.core.config.settings import settings
+            return None
+        except ImportError as e:
+            return f"Sampling dependencies not available: {e}"
+
     async def __call__(self, context, params) -> Any:
         """
         Sampling 回调，被 MCP SDK 调用
@@ -423,6 +444,12 @@ class SamplingHandler:
         Returns:
             CreateMessageResult, CreateMessageResultWithTools, 或 ErrorData
         """
+        # 检查依赖是否可用
+        dep_error = self._check_dependencies()
+        if dep_error:
+            logger.warning("MCP server '%s' sampling disabled: %s", self.server_name, dep_error)
+            return self._error(dep_error)
+
         if not self._check_rate_limit():
             logger.warning(
                 "MCP server '%s' sampling rate limit exceeded (%d/min)",
@@ -465,7 +492,7 @@ class SamplingHandler:
             call_temperature = params.temperature
 
         def _sync_call():
-            from app.core.llmcalls import ModelFactory
+            from app.core.llmcalls.model_factory import ModelFactory
             from app.core.config.settings import settings
 
             llm_config = settings.get_llm_config()

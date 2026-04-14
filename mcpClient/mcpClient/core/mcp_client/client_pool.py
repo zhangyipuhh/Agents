@@ -16,7 +16,7 @@ import logging
 import math
 import os
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 _MCP_AVAILABLE = False
 _MCP_HTTP_AVAILABLE = False
+_MCP_SSE_AVAILABLE = False
 _MCP_SAMPLING_TYPES = False
 _MCP_NOTIFICATION_TYPES = False
 _MCP_MESSAGE_HANDLER_SUPPORTED = False
@@ -41,6 +42,12 @@ try:
         _MCP_HTTP_AVAILABLE = True
     except ImportError:
         _MCP_HTTP_AVAILABLE = False
+    try:
+        from mcp.client.sse import sse_client
+
+        _MCP_SSE_AVAILABLE = True
+    except ImportError:
+        _MCP_SSE_AVAILABLE = False
     try:
         from mcp.client.streamable_http import streamable_http_client
 
@@ -71,9 +78,7 @@ try:
 
         _MCP_NOTIFICATION_TYPES = True
     except ImportError:
-        logger.debug(
-            "MCP notification types not available -- dynamic tool discovery disabled"
-        )
+        logger.debug("MCP notification types not available -- dynamic tool discovery disabled")
 except ImportError:
     logger.debug("mcp package not installed -- MCP tool support disabled")
 
@@ -98,9 +103,7 @@ def _check_message_handler_support() -> bool:
 
 _MCP_MESSAGE_HANDLER_SUPPORTED = _check_message_handler_support()
 if _MCP_AVAILABLE and not _MCP_MESSAGE_HANDLER_SUPPORTED:
-    logger.debug(
-        "MCP SDK does not support message_handler -- dynamic tool discovery disabled"
-    )
+    logger.debug("MCP SDK does not support message_handler -- dynamic tool discovery disabled")
 
 # ---------------------------------------------------------------------------
 # 常量
@@ -139,9 +142,7 @@ def _format_connect_error(exc: BaseException) -> str:
         if isinstance(current, FileNotFoundError):
             if getattr(current, "filename", None):
                 return str(current.filename)
-            match = __import__("re").search(
-                r"No such file or directory: '([^']+)'", str(current)
-            )
+            match = __import__("re").search(r"No such file or directory: '([^']+)'", str(current))
             if match:
                 return match.group(1)
         for attr in ("__cause__", "__context__"):
@@ -193,9 +194,7 @@ def _format_connect_error(exc: BaseException) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _safe_numeric(
-    value: Any, default: float, coerce: type = float, minimum: float = 1
-) -> float:
+def _safe_numeric(value: Any, default: float, coerce: type = float, minimum: float = 1) -> float:
     """
     安全地转换数值的辅助函数
 
@@ -290,6 +289,19 @@ class MCPServerTask:
         """
         return "url" in self._config
 
+    def _is_sse(self) -> bool:
+        """
+        检查是否使用 SSE 传输
+
+        Returns:
+            True if using SSE transport, False otherwise
+        """
+        config_type = self._config.get("type", "").lower()
+        if config_type == "sse":
+            return True
+        url = self._config.get("url", "")
+        return bool(url and "/sse" in url)
+
     async def _make_message_handler(self):
         """
         创建消息处理器回调
@@ -301,9 +313,7 @@ class MCPServerTask:
         async def _handler(message: Any) -> None:
             try:
                 if isinstance(message, Exception):
-                    logger.debug(
-                        "MCP message handler (%s): exception: %s", self.name, message
-                    )
+                    logger.debug("MCP message handler (%s): exception: %s", self.name, message)
                     return
                 if _MCP_NOTIFICATION_TYPES and isinstance(message, ServerNotification):
                     match message.root:
@@ -388,9 +398,7 @@ class MCPServerTask:
             sampling_kwargs["message_handler"] = await self._make_message_handler()
 
         async with stdio_client(server_params) as (read_stream, write_stream):
-            async with ClientSession(
-                read_stream, write_stream, **sampling_kwargs
-            ) as session:
+            async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
                 await session.initialize()
                 self.session = session
                 await self._discover_tools()
@@ -409,8 +417,7 @@ class MCPServerTask:
         """
         if not _MCP_HTTP_AVAILABLE:
             raise ImportError(
-                f"MCP server '{self.name}' requires HTTP transport but "
-                "mcp.client.streamable_http is not available."
+                f"MCP server '{self.name}' requires HTTP transport but mcp.client.streamable_http is not available."
             )
 
         url = config["url"]
@@ -437,9 +444,7 @@ class MCPServerTask:
                     write_stream,
                     _get_session_id,
                 ):
-                    async with ClientSession(
-                        read_stream, write_stream, **sampling_kwargs
-                    ) as session:
+                    async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
                         await session.initialize()
                         self.session = session
                         await self._discover_tools()
@@ -455,14 +460,44 @@ class MCPServerTask:
                 write_stream,
                 _get_session_id,
             ):
-                async with ClientSession(
-                    read_stream, write_stream, **sampling_kwargs
-                ) as session:
+                async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
                     await session.initialize()
                     self.session = session
                     await self._discover_tools()
                     self._ready.set()
                     await self._shutdown_event.wait()
+
+    async def _run_sse(self, config: dict) -> None:
+        """
+        使用 SSE/Server-Sent Events 传输运行服务器
+
+        Args:
+            config: 服务器配置
+
+        Raises:
+            ImportError: SSE 传输不可用时
+        """
+        if not _MCP_SSE_AVAILABLE:
+            raise ImportError(f"MCP server '{self.name}' requires SSE transport but mcp.client.sse is not available.")
+
+        url = config["url"]
+        headers = dict(config.get("headers") or {})
+        timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+
+        sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
+        if _MCP_NOTIFICATION_TYPES and _MCP_MESSAGE_HANDLER_SUPPORTED:
+            sampling_kwargs["message_handler"] = await self._make_message_handler()
+
+        async with sse_client(url, headers=headers, timeout=timeout) as (
+            read_stream,
+            write_stream,
+        ):
+            async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+                await session.initialize()
+                self.session = session
+                await self._discover_tools()
+                self._ready.set()
+                await self._shutdown_event.wait()
 
     async def _discover_tools(self) -> None:
         """
@@ -508,8 +543,7 @@ class MCPServerTask:
 
         if "url" in config and "command" in config:
             logger.warning(
-                "MCP server '%s' has both 'url' and 'command' in config. "
-                "Using HTTP transport ('url').",
+                "MCP server '%s' has both 'url' and 'command' in config. Using URL-based transport.",
                 self.name,
             )
 
@@ -519,7 +553,9 @@ class MCPServerTask:
 
         while True:
             try:
-                if self._is_http():
+                if self._is_sse():
+                    await self._run_sse(config)
+                elif self._is_http():
                     await self._run_http(config)
                 else:
                     await self._run_stdio(config)
@@ -633,3 +669,159 @@ class MCPServerTask:
                 except asyncio.CancelledError:
                     pass
         self.session = None
+
+
+# ---------------------------------------------------------------------------
+# MCPClientPool
+# ---------------------------------------------------------------------------
+
+
+_MCP_LOOP: Optional[asyncio.AbstractEventLoop] = None
+_MCP_THREAD: Optional[threading.Thread] = None
+_POOL_LOCK = threading.Lock()
+
+
+def _ensure_mcp_loop() -> None:
+    """
+    确保 MCP 事件循环正在运行（启动后台线程）
+    """
+    global _MCP_LOOP, _MCP_THREAD
+
+    if _MCP_LOOP is not None and _MCP_THREAD is not None:
+        return
+
+    def _run_loop(loop: asyncio.AbstractEventLoop) -> None:
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_forever()
+        finally:
+            loop.close()
+
+    with _POOL_LOCK:
+        if _MCP_LOOP is None:
+            _MCP_LOOP = asyncio.new_event_loop()
+            _MCP_THREAD = threading.Thread(target=_run_loop, args=(_MCP_LOOP,), daemon=True)
+            _MCP_THREAD.start()
+            logger.info("MCP event loop started in background thread")
+
+
+def _run_on_mcp_loop(coro: Awaitable, timeout: Optional[float] = None) -> Any:
+    """
+    在 MCP 事件循环上调度协程并返回结果（线程安全）
+
+    Args:
+        coro: 要执行的协程
+        timeout: 超时时间（秒）
+
+    Returns:
+        协程的结果
+
+    Raises:
+        RuntimeError: 事件循环未启动时
+        TimeoutError: 操作超时时
+    """
+    if _MCP_LOOP is None:
+        raise RuntimeError("MCP event loop is not running. Call _ensure_mcp_loop() first.")
+
+    future = asyncio.run_coroutine_threadsafe(coro, _MCP_LOOP)
+
+    if timeout is not None:
+        try:
+            return future.result(timeout=timeout)
+        except TimeoutError:
+            raise TimeoutError(f"Operation timed out after {timeout}s")
+    else:
+        return future.result()
+
+
+class MCPClientPool:
+    """
+    MCP 服务器连接池管理器
+
+    管理多个 MCP 服务器连接的生命周期，提供线程安全的工具调用接口。
+
+    Attributes:
+        _servers: 服务器名称到 MCPServerTask 的映射
+    """
+
+    def __init__(self) -> None:
+        """
+        初始化连接池
+        """
+        self._servers: Dict[str, MCPServerTask] = {}
+
+    async def connect(self, name: str, config: dict) -> None:
+        """
+        连接一个 MCP 服务器
+
+        Args:
+            name: 服务器名称
+            config: 服务器配置
+        """
+        if name in self._servers:
+            logger.warning("MCP server '%s' is already connected", name)
+            return
+
+        await self._do_connect(name, config)
+
+    async def _do_connect(self, name: str, config: dict) -> None:
+        """
+        实际执行连接（协程）
+
+        Args:
+            name: 服务器名称
+            config: 服务器配置
+        """
+        server = MCPServerTask(name)
+        self._servers[name] = server
+        await server.start(config)
+        logger.info("MCP server '%s' connected", name)
+
+    async def call_tool(self, server_name: str, tool_name: str, args: dict) -> Any:
+        """
+        调用 MCP 服务器工具（线程安全）
+
+        Args:
+            server_name: 服务器名称
+            tool_name: 工具名称
+            args: 工具参数
+
+        Returns:
+            工具调用结果
+
+        Raises:
+            RuntimeError: 服务器未连接或工具调用失败时
+        """
+        with _POOL_LOCK:
+            server = self._servers.get(server_name)
+
+        if not server:
+            raise RuntimeError(f"MCP server '{server_name}' is not connected")
+
+        return await server.call_tool(tool_name, args)
+
+    async def shutdown(self) -> None:
+        """
+        关闭所有 MCP 服务器连接
+        """
+        if not self._servers:
+            return
+
+        logger.info("Shutting down %d MCP server(s)...", len(self._servers))
+
+        for name, server in list(self._servers.items()):
+            try:
+                await server.shutdown()
+                logger.info("MCP server '%s' shutdown complete", name)
+            except Exception as exc:
+                logger.error("Error shutting down MCP server '%s': %s", name, exc)
+
+        self._servers.clear()
+
+
+# ---------------------------------------------------------------------------
+# 全局单例
+# ---------------------------------------------------------------------------
+
+
+client_pool = MCPClientPool()

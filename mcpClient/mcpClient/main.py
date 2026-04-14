@@ -18,12 +18,24 @@ from pathlib import Path
 import uvicorn
 from dotenv import load_dotenv
 
-logger = logging.getLogger(__name__)
+_PACKAGE_ROOT = Path(__file__).parent.parent
+if str(_PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PACKAGE_ROOT))
+
+# 添加父目录到路径，以便导入 app 模块
+_APP_ROOT = Path(__file__).parent.parent.parent
+if str(_APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(_APP_ROOT))
 
 # 加载 .env 文件
 _env_path = Path(__file__).parent.parent.parent / ".env"
 if _env_path.exists():
     load_dotenv(_env_path)
+
+# 路径设置完成后再导入
+from mcpClient.routers.page_router import router as page_router
+
+logger = logging.getLogger(__name__)
 
 
 def setup_logging() -> None:
@@ -42,12 +54,10 @@ async def lifespan(app):
     """
     应用生命周期管理
     """
-    from mcpClient.core.mcp_client.client_pool import _ensure_mcp_loop
     from mcpClient.shared.config_loader import load_mcp_config
 
-    _ensure_mcp_loop()
-
     config = load_mcp_config()
+    pool = None
     if config:
         from mcpClient.core.mcp_client.client_pool import MCPClientPool
 
@@ -62,6 +72,8 @@ async def lifespan(app):
     yield
 
     logger.info("Shutting down...")
+    if pool:
+        await pool.shutdown()
 
 
 def create_app():
@@ -78,12 +90,25 @@ def create_app():
     return app
 
 
+app = create_app()
+
+
+def register_routers():
+    """
+    注册所有路由
+    """
+    app.include_router(page_router)
+
+
+register_routers()
+
+
 def main():
     """
     主入口
     """
     uvicorn.run(
-        "mcpClient.main:create_app",
+        "mcpClient.main:app",
         host="0.0.0.0",
         port=10000,
         reload=False,
