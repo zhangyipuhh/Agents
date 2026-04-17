@@ -114,7 +114,7 @@ def main():
     uvicorn.run(
         "mcpClient.main:app",
         host="0.0.0.0",
-        port=10001,
+        port=10002,
         reload=False,
     )
 

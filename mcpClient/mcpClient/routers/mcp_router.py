@@ -123,3 +123,98 @@ async def list_tools(server_name: str):
             "inputSchema": tool.inputSchema if hasattr(tool, 'inputSchema') else None
         })
     return {"server": server_name, "tools": tools}
+
+
+@router.get("/tools-formatted")
+async def list_tools_formatted():
+    """
+    获取所有工具的格式化列表，供 Agent 直接使用
+
+    返回格式化的工具信息，包含完整的工具描述和参数信息
+
+    Returns:
+        格式化的工具列表
+    """
+    if not _client_pool:
+        raise HTTPException(status_code=503, detail="MCP client pool not initialized")
+
+    formatted_tools = []
+    for name, server in _client_pool._servers.items():
+        for tool in server._tools:
+            tool_info = {
+                "server": name,
+                "name": tool.name,
+                "description": tool.description,
+            }
+            
+            # 添加参数信息
+            if hasattr(tool, 'inputSchema') and tool.inputSchema:
+                schema = tool.inputSchema
+                properties = schema.get('properties', {})
+                required = schema.get('required', [])
+                
+                params = []
+                for param_name, param_info in properties.items():
+                    param_desc = param_info.get('description', '')
+                    param_type = param_info.get('type', 'string')
+                    is_required = param_name in required
+                    
+                    req_mark = "(必填)" if is_required else "(可选)"
+                    params.append(f"  - {param_name} {req_mark}: {param_desc} ({param_type})")
+                
+                if params:
+                    tool_info["parameters"] = params
+            
+            formatted_tools.append(tool_info)
+    
+    return {
+        "total": len(formatted_tools),
+        "tools": formatted_tools
+    }
+
+
+@router.get("/tools-for-llm")
+async def list_tools_for_llm():
+    """
+    获取适合 LLM 使用的工具描述
+
+    返回格式化的工具描述文本，可以直接插入到 LLM 的 system prompt 中
+
+    Returns:
+        工具描述文本
+    """
+    if not _client_pool:
+        raise HTTPException(status_code=503, detail="MCP client pool not initialized")
+
+    descriptions = []
+    descriptions.append("# 可用工具列表\n")
+    
+    for name, server in _client_pool._servers.items():
+        descriptions.append(f"\n## 服务器: {name}\n")
+        
+        for tool in server._tools:
+            descriptions.append(f"\n### {tool.name}")
+            descriptions.append(f"描述: {tool.description}")
+            
+            # 添加参数信息
+            if hasattr(tool, 'inputSchema') and tool.inputSchema:
+                schema = tool.inputSchema
+                properties = schema.get('properties', {})
+                required = schema.get('required', [])
+                
+                if properties:
+                    descriptions.append("参数:")
+                    for param_name, param_info in properties.items():
+                        param_desc = param_info.get('description', '')
+                        param_type = param_info.get('type', 'string')
+                        is_required = param_name in required
+                        
+                        req_mark = "必填" if is_required else "可选"
+                        descriptions.append(f"  - {param_name} ({param_type}, {req_mark}): {param_desc}")
+            
+            descriptions.append("")  # 空行
+    
+    return {
+        "description": "\n".join(descriptions),
+        "tool_count": sum(len(server._tools) for server in _client_pool._servers.values())
+    }
