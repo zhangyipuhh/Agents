@@ -61,9 +61,9 @@ async def lifespan(app):
     pool = None
     if config:
         from mcpClient.core.mcp_client.client_pool import MCPClientPool
+        from mcpClient.core.mcp_client.registry import MCPToolsRegistry
 
         pool = MCPClientPool()
-        # 设置全局连接池，供路由使用
         set_client_pool(pool)
         for name, cfg in config.items():
             try:
@@ -71,6 +71,10 @@ async def lifespan(app):
                 logger.info(f"MCP server '{name}' connected")
             except Exception as e:
                 logger.error(f"Failed to connect MCP server '{name}': {e}")
+
+        registry = MCPToolsRegistry.get_instance()
+        await registry.initialize(pool, config)
+        logger.info("MCPToolsRegistry initialized with %d server(s)", len(config))
 
     yield
 

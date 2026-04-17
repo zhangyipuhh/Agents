@@ -9,6 +9,8 @@ from .mcp_client import (
     MCPClientPool,
     client_pool,
     SamplingHandler,
+    MCPToolsRegistry,
+    ToolEntry,
 )
 
 __all__ = [
@@ -16,4 +18,6 @@ __all__ = [
     "MCPClientPool",
     "client_pool",
     "SamplingHandler",
+    "MCPToolsRegistry",
+    "ToolEntry",
 ]

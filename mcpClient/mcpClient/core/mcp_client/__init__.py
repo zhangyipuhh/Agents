@@ -22,6 +22,10 @@ from .mcp_client import (
     get_mcp_client,
     reset_mcp_client,
 )
+from .registry import (
+    MCPToolsRegistry,
+    ToolEntry,
+)
 
 __all__ = [
     "MCPServerTask",
@@ -31,4 +35,6 @@ __all__ = [
     "MCPClient",
     "get_mcp_client",
     "reset_mcp_client",
+    "MCPToolsRegistry",
+    "ToolEntry",
 ]

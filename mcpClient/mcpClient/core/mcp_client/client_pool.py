@@ -800,6 +800,63 @@ class MCPClientPool:
 
         return await server.call_tool(tool_name, args)
 
+    def get_server_tools(self, name: str) -> Optional[Dict[str, Any]]:
+        """
+        获取指定服务器的工具列表和 tags 信息
+
+        Args:
+            name: 服务器名称
+
+        Returns:
+            包含 tools 和 tags 的字典，服务器不存在时返回 None
+
+        Raises:
+            无
+        """
+        server = self._servers.get(name)
+        if not server:
+            return None
+        tags = self._servers[name]._config.get("tags", []) if name in self._servers else []
+        return {
+            "tools": server._tools,
+            "tags": tags,
+        }
+
+    async def refresh_server_tools(self, name: str) -> None:
+        """
+        刷新指定服务器的工具列表
+
+        重新调用 list_tools 获取最新工具列表。
+
+        Args:
+            name: 服务器名称
+
+        Raises:
+            RuntimeError: 服务器未连接时
+        """
+        server = self._servers.get(name)
+        if not server:
+            raise RuntimeError(f"MCP server '{name}' is not connected")
+        if server.session is None:
+            raise RuntimeError(f"MCP server '{name}' session is not active")
+        await server._refresh_tools()
+
+    def get_all_server_info(self) -> Dict[str, Dict[str, Any]]:
+        """
+        获取所有服务器的工具和 tags 信息
+
+        Returns:
+            服务器名称到 {tools, tags} 的映射字典
+        """
+        result: Dict[str, Dict[str, Any]] = {}
+        for name, server in self._servers.items():
+            tags = server._config.get("tags", [])
+            result[name] = {
+                "tools": server._tools,
+                "tags": tags,
+            }
+        return result
+
     async def shutdown(self) -> None:
         """
         关闭所有 MCP 服务器连接
