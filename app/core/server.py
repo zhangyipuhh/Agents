@@ -11,6 +11,7 @@ FastAPI服务器配置模块
 Date: 2025/4/11
 Author: 张镒谱
 """
+
 from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
@@ -21,14 +22,18 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config.settings import settings
 from app.core.tools.mcp_registry import MCPToolsRegistry
-from app.shared.utils.auth.Safety import jwt_auth, auth_middleware, session_auth_middleware
+from app.shared.utils.auth.Safety import (
+    jwt_auth,
+    auth_middleware,
+    session_auth_middleware,
+)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
     应用生命周期管理器
-    
+
     Yields:
         None: 应用运行期间的控制权
     """
@@ -45,24 +50,27 @@ async def lifespan(app: FastAPI):
     jwt_auth.add_to_whitelist("/")
     jwt_auth.add_to_whitelist("/htagent.html")
     jwt_auth.add_to_whitelist("/static")
-    
+
     # session/create 需要 JWT 认证，所以不在白名单中
     # session/delete 需要 JWT + session 验证，所以也不在白名单中
     # 其他所有接口都需要验证 session（由 session_auth_middleware 处理）
-    
+
     # 初始化 MCPToolsRegistry
     mcp_configs = settings.mcp.get_mcp_config()
+    app.state.mcp_registry = None
     if mcp_configs:
         registry = MCPToolsRegistry.get_instance()
         try:
             await registry.initialize(mcp_configs)
             app.state.mcp_registry = registry
-            logging.info("MCPToolsRegistry initialized with %d server(s)", len(mcp_configs))
+            logging.info(
+                "MCPToolsRegistry initialized with %d server(s)", len(mcp_configs)
+            )
         except Exception as e:
-            logging.error("Failed to initialize MCPToolsRegistry: %s", e)
-    
+            logging.error("Failed to initialize MCPToolsRegistry: %s", e, exc_info=True)
+
     yield
-    
+
     # 关闭 MCPToolsRegistry
     if hasattr(app.state, "mcp_registry") and app.state.mcp_registry is not None:
         await app.state.mcp_registry.shutdown()
@@ -72,7 +80,7 @@ async def lifespan(app: FastAPI):
 def setup_middleware(app: FastAPI):
     """
     配置中间件
-    
+
     Args:
         app: FastAPI应用实例
     """
@@ -93,35 +101,37 @@ def setup_logging():
     """
     logging.basicConfig(
         level=logging.DEBUG,
-        format='%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | %(message)s',
-        datefmt='%H:%M:%S'
+        format="%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | %(message)s",
+        datefmt="%H:%M:%S",
     )
 
 
 def setup_static_files(app: FastAPI):
     """
     配置静态文件
-    
+
     Args:
         app: FastAPI应用实例
     """
     frontend_path = Path(__file__).parent.parent / "html" / "clint"
     if frontend_path.exists():
-        app.mount("/", StaticFiles(directory=str(frontend_path), html=True), name="static")
+        app.mount(
+            "/", StaticFiles(directory=str(frontend_path), html=True), name="static"
+        )
 
 
 def create_app() -> FastAPI:
     """
     创建FastAPI应用实例
-    
+
     Returns:
         FastAPI: 配置完成的FastAPI应用实例
     """
     setup_logging()
-    
+
     app = FastAPI(lifespan=lifespan)
-    
+
     setup_middleware(app)
     setup_static_files(app)
-    
+
     return app

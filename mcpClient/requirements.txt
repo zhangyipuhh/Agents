@@ -1,9 +1,13 @@
+# v2.0 依赖变更：
+# - fastmcp 已移除（不再需要独立 MCP Server）
+# - langchain-mcp-adapters 必须（MultiServerMCPClient 依赖）
+
 mcp>=1.0
 httpx>=0.25.0
 anyio>=4.0
 pyyaml>=6.0
 uvicorn>=0.24.0
-fastmcp>=0.1.0
+fastapi>=0.100.0
 langchain>=1.0
 langchain-mcp-adapters>=0.1.0
 python-dotenv>=1.0.0

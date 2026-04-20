@@ -1,40 +1,19 @@
 # mcpClient.core.mcp_client
 
 """
-MCP Client 连接池模块
+MCP Client 模块
 
-提供 MCP 服务器连接管理、工具调用、Sampling 支持等功能。
-借鉴 hermes-agent tools/mcp_tool.py 实现。
-
-Date: 2026-04-14
+兼容旧导入路径，新代码请使用 mcpClient.core.unified_mcp_client。
 """
 
-from .client_pool import (
-    MCPServerTask,
-    MCPClientPool,
-    client_pool,
-)
-from .sampling_handler import (
-    SamplingHandler,
-)
-from .mcp_client import (
-    MCPClient,
-    get_mcp_client,
-    reset_mcp_client,
-)
-from .registry import (
-    MCPToolsRegistry,
-    ToolEntry,
+from mcpClient.core.unified_mcp_client import (
+    UnifiedMCPClient,
+    SamplingCallback,
+    StreamOutputWrapper,
 )
 
 __all__ = [
-    "MCPServerTask",
-    "MCPClientPool",
-    "client_pool",
-    "SamplingHandler",
-    "MCPClient",
-    "get_mcp_client",
-    "reset_mcp_client",
-    "MCPToolsRegistry",
-    "ToolEntry",
+    "UnifiedMCPClient",
+    "SamplingCallback",
+    "StreamOutputWrapper",
 ]
