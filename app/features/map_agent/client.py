@@ -668,7 +668,7 @@ class MapAgentChatClient:
 
 
 def main():
-    base_url = os.environ.get("API_BASE_URL", "http://localhost:8002")
+    base_url = os.environ.get("API_BASE_URL", "http://localhost:8001")
 
     client = MapAgentChatClient(base_url)
     client.run()
