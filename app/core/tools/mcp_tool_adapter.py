@@ -87,10 +87,14 @@ class MCPToolToLangChainAdapter(BaseTool):
     description: str = ""
 
     mcp_tool: Any = None
+    mcp_server_name: str = ""
+    mcp_pool: Any = None
 
     def __init__(
         self,
         mcp_tool: Any,
+        mcp_server_name: str = "",
+        mcp_pool: Any = None,
         **kwargs
     ):
         """
@@ -98,11 +102,15 @@ class MCPToolToLangChainAdapter(BaseTool):
 
         Args:
             mcp_tool: MCP Tool 对象
+            mcp_server_name: MCP 服务器名称
+            mcp_pool: MCPClientPool 实例，用于调用工具
             **kwargs: 传递给 BaseTool 的其他参数
         """
         super().__init__(**kwargs)
 
         self.mcp_tool = mcp_tool
+        self.mcp_server_name = mcp_server_name
+        self.mcp_pool = mcp_pool
 
         tool_name = getattr(mcp_tool, "name", str(mcp_tool))
         tool_description = getattr(mcp_tool, "description", "")
@@ -131,6 +139,15 @@ class MCPToolToLangChainAdapter(BaseTool):
         Returns:
             Any: 工具执行结果
         """
+        logger.debug(
+            "Attempting to execute MCP tool '%s'. Attributes: _arun=%s, invoke=%s, callable=%s, type=%s",
+            self.name,
+            hasattr(self.mcp_tool, "_arun"),
+            hasattr(self.mcp_tool, "invoke"),
+            callable(self.mcp_tool),
+            type(self.mcp_tool).__name__
+        )
+        
         if hasattr(self.mcp_tool, "_arun"):
             return await self.mcp_tool._arun(*args, **kwargs)
         elif hasattr(self.mcp_tool, "invoke"):
@@ -146,6 +163,27 @@ class MCPToolToLangChainAdapter(BaseTool):
             else:
                 return await asyncio.to_thread(self.mcp_tool, **kwargs)
         else:
+            if self.mcp_pool and self.mcp_server_name:
+                try:
+                    result = await self.mcp_pool.call_tool(self.mcp_server_name, self.name, kwargs)
+                    if hasattr(result, 'content'):
+                        return result.content
+                    return result
+                except Exception as e:
+                    logger.error(
+                        "Failed to call MCP tool '%s' on server '%s': %s",
+                        self.name,
+                        self.mcp_server_name,
+                        e
+                    )
+                    raise
+
+            logger.error(
+                "MCP tool '%s' has no supported execution method. Type: %s, Dir: %s",
+                self.name,
+                type(self.mcp_tool).__name__,
+                dir(self.mcp_tool)
+            )
             raise NotImplementedError(f"MCP tool {self.name} does not support async execution")
 
     def _run(
@@ -179,16 +217,39 @@ class MCPToolToLangChainAdapter(BaseTool):
                     f"MCP tool {self.name} only supports async execution but _run was called"
                 )
             return self.mcp_tool(**kwargs)
+        elif self.mcp_pool and self.mcp_server_name:
+            try:
+                from mcpClient.core.mcp_client.client_pool import _run_on_mcp_loop
+                result = _run_on_mcp_loop(
+                    self.mcp_pool.call_tool(self.mcp_server_name, self.name, kwargs)
+                )
+                if hasattr(result, 'content'):
+                    return result.content
+                return result
+            except Exception as e:
+                logger.error(
+                    "Failed to call MCP tool '%s' on server '%s': %s",
+                    self.name,
+                    self.mcp_server_name,
+                    e
+                )
+                raise
         else:
             raise NotImplementedError(f"MCP tool {self.name} does not support sync execution")
 
 
-def adapt_mcp_tool(mcp_tool: Any) -> BaseTool:
+def adapt_mcp_tool(
+    mcp_tool: Any,
+    mcp_server_name: str = "",
+    mcp_pool: Any = None
+) -> BaseTool:
     """
     将单个 MCP Tool 对象转换为 LangChain BaseTool
 
     Args:
         mcp_tool: MCP Tool 对象
+        mcp_server_name: MCP 服务器名称
+        mcp_pool: MCPClientPool 实例，用于调用工具
 
     Returns:
         BaseTool: LangChain BaseTool 对象
@@ -197,6 +258,8 @@ def adapt_mcp_tool(mcp_tool: Any) -> BaseTool:
         tool_name = getattr(mcp_tool, "name", None) or str(mcp_tool)
         return MCPToolToLangChainAdapter(
             mcp_tool=mcp_tool,
+            mcp_server_name=mcp_server_name,
+            mcp_pool=mcp_pool,
             name=tool_name
         )
     except Exception as e:
@@ -204,12 +267,18 @@ def adapt_mcp_tool(mcp_tool: Any) -> BaseTool:
         raise
 
 
-def adapt_mcp_tools(mcp_tools: List[Any]) -> List[BaseTool]:
+def adapt_mcp_tools(
+    mcp_tools: List[Any],
+    mcp_server_name: str = "",
+    mcp_pool: Any = None
+) -> List[BaseTool]:
     """
     将 MCP Tool 对象列表转换为 LangChain BaseTool 列表
 
     Args:
         mcp_tools: MCP Tool 对象列表
+        mcp_server_name: MCP 服务器名称
+        mcp_pool: MCPClientPool 实例，用于调用工具
 
     Returns:
         List[BaseTool]: LangChain BaseTool 列表
@@ -219,7 +288,11 @@ def adapt_mcp_tools(mcp_tools: List[Any]) -> List[BaseTool]:
 
     for mcp_tool in mcp_tools:
         try:
-            adapted_tool = adapt_mcp_tool(mcp_tool)
+            adapted_tool = adapt_mcp_tool(
+                mcp_tool,
+                mcp_server_name=mcp_server_name,
+                mcp_pool=mcp_pool
+            )
             adapted_tools.append(adapted_tool)
         except Exception as e:
             failed_count += 1

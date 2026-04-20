@@ -110,6 +110,39 @@ class MCPToolsRegistry:
             return []
         return self._registry.get_tools(tags=tags, names=names, server=server)
 
+    def get_tools_with_server(
+        self,
+        tags: Optional[List[str]] = None,
+        names: Optional[List[str]] = None,
+        server: Optional[str] = None,
+    ) -> List[tuple[Any, str]]:
+        """
+        根据条件查询工具列表，返回工具及其服务器名称
+
+        Args:
+            tags: 工具标签过滤列表，可选
+            names: 工具名称过滤列表，可选
+            server: 服务器名称过滤，可选
+
+        Returns:
+            List[tuple[Any, str]]: 工具及其服务器名称的元组列表；如果注册中心未初始化则返回空列表
+        """
+        if self._registry is None:
+            logger.warning("MCPToolsRegistry 尚未初始化，无法查询工具")
+            return []
+        
+        results: List[tuple[Any, str]] = []
+        for entry in self._registry._tools.values():
+            if tags and not any(t in entry.tags for t in tags):
+                continue
+            if names and (not hasattr(entry.tool, "name") or entry.tool.name not in names):
+                continue
+            if server and entry.server_name != server:
+                continue
+            results.append((entry.tool, entry.server_name))
+        
+        return results
+
     async def refresh_tools(self, server_name: Optional[str] = None) -> None:
         """
         刷新工具列表

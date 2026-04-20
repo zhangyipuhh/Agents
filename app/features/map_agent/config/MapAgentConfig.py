@@ -114,16 +114,23 @@ class MapAgentConfig(BaseAgentConfig):
         ]
 
         try:
-            from app.core.tools.mcp_tool_adapter import adapt_mcp_tools
+            from app.core.tools.mcp_tool_adapter import adapt_mcp_tool
 
             registry = MCPToolsRegistry.get_instance()
-            mcp_tools = registry.get_tools(tags=map_agent_settings.mcp_tags)
-            if mcp_tools:
-                adapted_tools = adapt_mcp_tools(mcp_tools)
-                tools.extend(adapted_tools)
+            tools_with_server = registry.get_tools_with_server(tags=map_agent_settings.mcp_tags)
+            
+            if tools_with_server:
+                for mcp_tool, server_name in tools_with_server:
+                    adapted_tool = adapt_mcp_tool(
+                        mcp_tool,
+                        mcp_server_name=server_name,
+                        mcp_pool=registry._pool
+                    )
+                    tools.append(adapted_tool)
+                
                 logging.info(
                     "MapAgent loaded %d MCP tools with tags %s",
-                    len(adapted_tools),
+                    len(tools_with_server),
                     map_agent_settings.mcp_tags,
                 )
             else:
