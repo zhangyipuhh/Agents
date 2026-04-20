@@ -26,6 +26,12 @@ from typing import Any, List, Optional, Type
 from pydantic import BaseModel, Field, create_model
 from langchain_core.tools import BaseTool
 
+try:
+    import anyio
+    ANYIO_AVAILABLE = True
+except ImportError:
+    ANYIO_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -148,6 +154,30 @@ class MCPToolToLangChainAdapter(BaseTool):
             type(self.mcp_tool).__name__
         )
         
+        if self.mcp_pool and self.mcp_server_name:
+            server = self.mcp_pool._servers.get(self.mcp_server_name)
+            if server and server.session is None:
+                logger.info(
+                    "MCP tool '%s': session is None, attempting to reconnect to '%s'",
+                    self.name,
+                    self.mcp_server_name
+                )
+                try:
+                    config = server._config if hasattr(server, '_config') else {}
+                    await self.mcp_pool.connect(self.mcp_server_name, config)
+                    logger.info(
+                        "MCP tool '%s': reconnected to '%s'",
+                        self.name,
+                        self.mcp_server_name
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "MCP tool '%s': failed to reconnect to '%s': %s",
+                        self.name,
+                        self.mcp_server_name,
+                        e
+                    )
+        
         if hasattr(self.mcp_tool, "_arun"):
             return await self.mcp_tool._arun(*args, **kwargs)
         elif hasattr(self.mcp_tool, "invoke"):
@@ -164,19 +194,58 @@ class MCPToolToLangChainAdapter(BaseTool):
                 return await asyncio.to_thread(self.mcp_tool, **kwargs)
         else:
             if self.mcp_pool and self.mcp_server_name:
-                try:
-                    result = await self.mcp_pool.call_tool(self.mcp_server_name, self.name, kwargs)
-                    if hasattr(result, 'content'):
-                        return result.content
-                    return result
-                except Exception as e:
+                max_retries = 2
+                last_error = None
+                
+                for attempt in range(max_retries):
+                    try:
+                        result = await self.mcp_pool.call_tool(self.mcp_server_name, self.name, kwargs)
+                        if hasattr(result, 'content'):
+                            return result.content
+                        return result
+                    except Exception as e:
+                        error_str = str(e).lower()
+                        error_type = type(e).__name__
+                        
+                        should_retry = (
+                            "not connected" in error_str or 
+                            "closed" in error_str or
+                            error_type == "ClosedResourceError" or
+                            error_type == "McpError" or
+                            isinstance(e, (RuntimeError, ConnectionError, OSError))
+                        )
+                        
+                        if should_retry:
+                            logger.warning(
+                                "MCP tool '%s' connection issue (attempt %d/%d), retrying: %s - %s",
+                                self.name,
+                                attempt + 1,
+                                max_retries,
+                                error_type,
+                                e
+                            )
+                            if attempt < max_retries - 1:
+                                await asyncio.sleep(0.5)
+                                continue
+                        last_error = e
+                        break
+                    except Exception as e:
+                        logger.error(
+                            "Failed to call MCP tool '%s' on server '%s': %s",
+                            self.name,
+                            self.mcp_server_name,
+                            e
+                        )
+                        raise
+                
+                if last_error:
                     logger.error(
-                        "Failed to call MCP tool '%s' on server '%s': %s",
+                        "MCP tool '%s' failed after %d attempts: %s",
                         self.name,
-                        self.mcp_server_name,
-                        e
+                        max_retries,
+                        last_error
                     )
-                    raise
+                    raise last_error
 
             logger.error(
                 "MCP tool '%s' has no supported execution method. Type: %s, Dir: %s",
