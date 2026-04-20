@@ -1,0 +1,116 @@
+mcp_servers:
+  # ========================================
+  # SSE 类型配置 - 远程服务
+  # ========================================
+  高德地图MCP:
+    type: sse
+    url: "https://mcp.amap.com/sse?key=YOUR_AMAP_KEY"
+    timeout: 120
+    tags: ["map", "geo", "navigation"]
+    sampling:
+      enabled: false
+
+  飞书机器人MCP:
+    type: sse
+    url: "https://open.feishu.cn/mcp/sse?app_id=YOUR_APP_ID"
+    timeout: 180
+    headers:
+      Authorization: "Bearer YOUR_ACCESS_TOKEN"
+    tags: ["lark", "feishu", "bot"]
+    sampling:
+      enabled: true
+
+  GitHub_MCP:
+    type: sse
+    url: "https://api.github.com/mcp/sse"
+    timeout: 60
+    headers:
+      Authorization: "token YOUR_GITHUB_TOKEN"
+      Accept: "application/vnd.github.v3+json"
+    tags: ["github", "code", "repository"]
+    sampling:
+      enabled: false
+
+  # ========================================
+  # SSE 类型配置 - 本地服务
+  # ========================================
+  本地SSE服务器:
+    type: sse
+    url: "http://localhost:8080/sse"
+    timeout: 120
+    connect_timeout: 30
+    headers:
+      Authorization: "Bearer your-token-here"
+      X-Custom-Header: "custom-value"
+    tags: ["local", "development"]
+    sampling:
+      enabled: true
+      max_tokens: 4096
+
+  本地Python_MCP服务:
+    type: sse
+    url: "http://127.0.0.1:3000/sse"
+    timeout: 60
+    tags: ["python", "custom"]
+    sampling:
+      enabled: false
+
+  # ========================================
+  # HTTP 类型配置
+  # ========================================
+  本地HTTP服务:
+    url: "http://localhost:8080/mcp"
+    timeout: 120
+    connect_timeout: 30
+    headers:
+      X-API-Key: "your-api-key"
+    tags: ["local", "http"]
+
+  Azure_MCP:
+    url: "https://your-azure-function.azurewebsites.net/api/mcp"
+    timeout: 300
+    connect_timeout: 60
+    headers:
+      Authorization: "Bearer YOUR_AZURE_TOKEN"
+      Content-Type: "application/json"
+    tags: ["azure", "cloud"]
+
+  AWS_Lambda_MCP:
+    url: "https://your-lambda-id.execute-api.us-east-1.amazonaws.com/prod/mcp"
+    timeout: 180
+    connect_timeout: 30
+    headers:
+      X-Api-Key: "YOUR_AWS_API_KEY"
+    tags: ["aws", "lambda", "cloud"]
+
+  # ========================================
+  # Stdio 类型配置 - 本地进程
+  # ========================================
+  文件系统MCP:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/directory"]
+    timeout: 30
+    tags: ["filesystem", "storage"]
+    env:
+      NODE_ENV: "production"
+
+  Git_MCP:
+    command: "uvx"
+    args: ["mcp-server-git", "--repository", "/path/to/your/repo"]
+    timeout: 60
+    tags: ["git", "version-control"]
+
+  SQL数据库MCP:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-sqlite", "--db-path", "./data.db"]
+    timeout: 120
+    tags: ["database", "sqlite", "sql"]
+
+  Python脚本MCP:
+    command: "python"
+    args: ["-m", "mcp_server", "--port", "5000"]
+    timeout: 180
+    tags: ["python", "custom"]
+    env:
+      PYTHONPATH: "/path/to/your/modules"
+      LOG_LEVEL: "INFO"
