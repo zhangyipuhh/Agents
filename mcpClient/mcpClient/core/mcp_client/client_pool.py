@@ -482,22 +482,40 @@ class MCPServerTask:
 
         url = config["url"]
         headers = dict(config.get("headers") or {})
-        timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+        connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+        read_timeout = config.get("read_timeout", 300.0)
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
         if _MCP_NOTIFICATION_TYPES and _MCP_MESSAGE_HANDLER_SUPPORTED:
             sampling_kwargs["message_handler"] = await self._make_message_handler()
 
-        async with sse_client(url, headers=headers, timeout=timeout) as (
-            read_stream,
-            write_stream,
-        ):
-            async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
-                await session.initialize()
-                self.session = session
-                await self._discover_tools()
-                self._ready.set()
-                await self._shutdown_event.wait()
+        try:
+            import httpx
+            client_kwargs = {
+                "headers": headers,
+                "timeout": httpx.Timeout(float(connect_timeout), read=float(read_timeout)),
+            }
+            async with sse_client(url, http_client=httpx.AsyncClient(**client_kwargs)) as (
+                read_stream,
+                write_stream,
+            ):
+                async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+                    await session.initialize()
+                    self.session = session
+                    await self._discover_tools()
+                    self._ready.set()
+                    await self._shutdown_event.wait()
+        except TypeError:
+            async with sse_client(url, headers=headers, timeout=connect_timeout) as (
+                read_stream,
+                write_stream,
+            ):
+                async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+                    await session.initialize()
+                    self.session = session
+                    await self._discover_tools()
+                    self._ready.set()
+                    await self._shutdown_event.wait()
 
     async def _discover_tools(self) -> None:
         """

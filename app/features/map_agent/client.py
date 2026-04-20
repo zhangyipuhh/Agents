@@ -263,6 +263,21 @@ class MapAgentClient:
         self.token: Optional[str] = None
         self.session_id: Optional[str] = None
         self.headers: Dict[str, str] = {}
+        
+        self.session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=10,
+            pool_maxsize=20,
+            max_retries=3,
+            pool_block=False
+        )
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
+        
+        self.session.headers.update({
+            'Connection': 'keep-alive',
+            'Keep-Alive': 'timeout=600, max=100'
+        })
 
     def set_auth(self, token: str, session_id: str) -> None:
         self.token = token
@@ -274,9 +289,10 @@ class MapAgentClient:
 
     def refresh_token(self) -> Optional[str]:
         try:
-            login_result = requests.post(
+            login_result = self.session.post(
                 f"{self.base_url}/api/auth/login",
-                json={"username": "admin", "password": "123456"}
+                json={"username": "admin", "password": "123456"},
+                timeout=600
             )
             login_result.raise_for_status()
             token = login_result.json().get("access_token")
@@ -297,9 +313,10 @@ class MapAgentClient:
             return None
 
         try:
-            session_result = requests.post(
+            session_result = self.session.post(
                 f"{self.base_url}/api/session/create",
-                headers={"Authorization": f"Bearer {self.token}"}
+                headers={"Authorization": f"Bearer {self.token}"},
+                timeout=600
             )
             session_result.raise_for_status()
             session_id = session_result.json().get("session_id")
@@ -340,12 +357,12 @@ class MapAgentClient:
         url = f"{self.base_url}/api/map/chat"
 
         try:
-            with requests.post(
+            with self.session.post(
                 url,
                 json=data,
                 headers=headers,
                 stream=True,
-                timeout=300
+                timeout=600
             ) as response:
                 response.raise_for_status()
 
@@ -613,9 +630,10 @@ class MapAgentChatClient:
         try:
             print("正在连接服务器...")
 
-            login_result = requests.post(
+            login_result = self.api_client.session.post(
                 f"{self.api_client.base_url}/api/auth/login",
-                json={"username": "admin", "password": "123456"}
+                json={"username": "admin", "password": "123456"},
+                timeout=600
             )
             login_result.raise_for_status()
             token = login_result.json().get("access_token")
@@ -626,9 +644,10 @@ class MapAgentChatClient:
 
             self.printer.print_info("登录成功")
 
-            session_result = requests.post(
+            session_result = self.api_client.session.post(
                 f"{self.api_client.base_url}/api/session/create",
-                headers={"Authorization": f"Bearer {token}"}
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=600
             )
             session_result.raise_for_status()
             session_id = session_result.json().get("session_id")
