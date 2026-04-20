@@ -124,7 +124,7 @@ class MapAgentConfig(BaseAgentConfig):
                     adapted_tool = adapt_mcp_tool(
                         mcp_tool,
                         mcp_server_name=server_name,
-                        mcp_pool=registry._pool
+                        mcp_client=registry._pool
                     )
                     tools.append(adapted_tool)
                 

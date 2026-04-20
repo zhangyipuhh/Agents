@@ -6,15 +6,6 @@ MCP 工具转换器模块
 提供将 MCP Tool 对象转换为 LangChain BaseTool 的功能，
 解决 MCP Python SDK v1.27.0 的 Tool 对象与 LangChain bind_tools() 不兼容的问题。
 
-问题原因：
-- MCP Python SDK v1.27.0 的 Tool 对象不是有效的装饰器函数
-- LangChain 的 bind_tools() 要求工具必须是带 __name__ 属性的可调用对象
-- 错误信息: "The first argument must be a string or a callable with a __name__ for tool decorator"
-
-解决方案：
-- 将 MCP Tool 对象转换为 langchain_core.tools 的 BaseTool 子类
-- 保持工具的 name、description 和 inputSchema 信息
-
 Date: 2026-04-20
 Author: AI Assistant
 """
@@ -22,27 +13,20 @@ Author: AI Assistant
 import asyncio
 import inspect
 import logging
+from datetime import datetime
 from typing import Any, List, Optional, Type
-from pydantic import BaseModel, Field, create_model
+
+from langgraph.config import get_stream_writer
+from pydantic import BaseModel, create_model
+
 from langchain_core.tools import BaseTool
 
 logger = logging.getLogger(__name__)
 
 
 def json_schema_to_pydantic_model(
-    schema: dict[str, Any],
-    model_name: str = "ToolArgs"
+    schema: dict[str, Any], model_name: str = "ToolArgs"
 ) -> Type[BaseModel]:
-    """
-    将 JSON Schema 转换为 Pydantic 模型
-
-    Args:
-        schema: JSON Schema 字典
-        model_name: 模型名称
-
-    Returns:
-        Type[BaseModel]: Pydantic 模型类
-    """
     properties = schema.get("properties", {})
     required = schema.get("required", [])
 
@@ -55,7 +39,9 @@ def json_schema_to_pydantic_model(
             field_definitions[field_name] = (str, default)
         elif field_type == "number" or field_type == "integer":
             default = ... if field_name in required else None
-            field_definitions[field_name] = (float, default) if field_type == "number" else (int, default)
+            field_definitions[field_name] = (
+                (float, default) if field_type == "number" else (int, default)
+            )
         elif field_type == "boolean":
             default = ... if field_name in required else False
             field_definitions[field_name] = (bool, default)
@@ -76,41 +62,21 @@ def json_schema_to_pydantic_model(
 
 
 class MCPToolToLangChainAdapter(BaseTool):
-    """
-    MCP Tool 到 LangChain BaseTool 的适配器
-
-    包装 MCP Tool 对象，转换为 LangChain 可用的 BaseTool 格式。
-    支持同步和异步执行。
-    """
-
     name: str = ""
     description: str = ""
 
     mcp_tool: Any = None
     mcp_server_name: str = ""
-    mcp_pool: Any = None
+    mcp_client: Any = None
 
     def __init__(
-        self,
-        mcp_tool: Any,
-        mcp_server_name: str = "",
-        mcp_pool: Any = None,
-        **kwargs
+        self, mcp_tool: Any, mcp_server_name: str = "", mcp_client: Any = None, **kwargs
     ):
-        """
-        初始化适配器
-
-        Args:
-            mcp_tool: MCP Tool 对象
-            mcp_server_name: MCP 服务器名称
-            mcp_pool: MCPClientPool 实例，用于调用工具
-            **kwargs: 传递给 BaseTool 的其他参数
-        """
         super().__init__(**kwargs)
 
         self.mcp_tool = mcp_tool
         self.mcp_server_name = mcp_server_name
-        self.mcp_pool = mcp_pool
+        self.mcp_client = mcp_client
 
         tool_name = getattr(mcp_tool, "name", str(mcp_tool))
         tool_description = getattr(mcp_tool, "description", "")
@@ -120,36 +86,26 @@ class MCPToolToLangChainAdapter(BaseTool):
 
         input_schema = getattr(mcp_tool, "inputSchema", {})
         if input_schema:
-            self.args_schema = json_schema_to_pydantic_model(input_schema, f"{tool_name}Args")
+            self.args_schema = json_schema_to_pydantic_model(
+                input_schema, f"{tool_name}Args"
+            )
         else:
             self.args_schema = create_model(f"{tool_name}Args")
 
-    async def _arun(
-        self,
-        *args,
-        **kwargs
-    ) -> Any:
-        """
-        异步执行 MCP 工具
+    def _get_tool_call_id(self, config) -> str:
+        if config and "configurable" in config:
+            return config["configurable"].get("tool_call_id", "unknown")
+        return "unknown"
 
-        Args:
-            *args: 位置参数
-            **kwargs: 关键字参数（工具参数）
+    def _get_writer(self):
+        try:
+            return get_stream_writer()
+        except (ImportError, RuntimeError):
+            return None
 
-        Returns:
-            Any: 工具执行结果
-        """
-        logger.debug(
-            "Attempting to execute MCP tool '%s'. Attributes: _arun=%s, invoke=%s, callable=%s, type=%s",
-            self.name,
-            hasattr(self.mcp_tool, "_arun"),
-            hasattr(self.mcp_tool, "invoke"),
-            callable(self.mcp_tool),
-            type(self.mcp_tool).__name__
-        )
-        
+    async def _execute_tool(self, kwargs: dict) -> Any:
         if hasattr(self.mcp_tool, "_arun"):
-            return await self.mcp_tool._arun(*args, **kwargs)
+            return await self.mcp_tool._arun(**kwargs)
         elif hasattr(self.mcp_tool, "invoke"):
             invoke_method = self.mcp_tool.invoke
             if inspect.iscoroutinefunction(invoke_method):
@@ -158,15 +114,20 @@ class MCPToolToLangChainAdapter(BaseTool):
                 return await asyncio.to_thread(invoke_method, kwargs)
         elif callable(self.mcp_tool):
             call_method = getattr(self.mcp_tool, "__call__", None)
-            if call_method and (inspect.iscoroutinefunction(call_method) or inspect.iscoroutinefunction(self.mcp_tool)):
+            if call_method and (
+                inspect.iscoroutinefunction(call_method)
+                or inspect.iscoroutinefunction(self.mcp_tool)
+            ):
                 return await self.mcp_tool(**kwargs)
             else:
                 return await asyncio.to_thread(self.mcp_tool, **kwargs)
         else:
-            if self.mcp_pool and self.mcp_server_name:
+            if self.mcp_client and self.mcp_server_name:
                 try:
-                    result = await self.mcp_pool.call_tool(self.mcp_server_name, self.name, kwargs)
-                    if hasattr(result, 'content'):
+                    result = await self.mcp_client.call_tool(
+                        self.mcp_server_name, self.name, kwargs
+                    )
+                    if hasattr(result, "content"):
                         return result.content
                     return result
                 except Exception as e:
@@ -174,33 +135,101 @@ class MCPToolToLangChainAdapter(BaseTool):
                         "Failed to call MCP tool '%s' on server '%s': %s",
                         self.name,
                         self.mcp_server_name,
-                        e
+                        e,
                     )
                     raise
 
             logger.error(
-                "MCP tool '%s' has no supported execution method. Type: %s, Dir: %s",
+                "MCP tool '%s' has no supported execution method. Type: %s",
                 self.name,
                 type(self.mcp_tool).__name__,
-                dir(self.mcp_tool)
             )
-            raise NotImplementedError(f"MCP tool {self.name} does not support async execution")
+            raise NotImplementedError(
+                f"MCP tool {self.name} does not support async execution"
+            )
 
-    def _run(
-        self,
-        *args,
-        **kwargs
-    ) -> Any:
-        """
-        同步执行 MCP 工具
+    async def _arun(self, *args, config=None, **kwargs) -> Any:
+        tool_call_id = self._get_tool_call_id(config)
+        writer = self._get_writer()
+        start_time = datetime.now()
 
-        Args:
-            *args: 位置参数
-            **kwargs: 关键字参数（工具参数）
+        if writer:
+            writer(
+                {
+                    "header": {
+                        "tool_name": self.name,
+                        "tool_call_id": tool_call_id,
+                        "timestamp": start_time.isoformat(),
+                        "status": "start",
+                        "version": "1.0",
+                    },
+                    "body": {
+                        "data": None,
+                        "metadata": {"tool_type": "mcp", "args": kwargs},
+                    },
+                    "footer": None,
+                }
+            )
 
-        Returns:
-            Any: 工具执行结果
-        """
+        try:
+            result = await self._execute_tool(kwargs)
+            result_str = str(result) if result is not None else ""
+
+            if writer:
+                writer(
+                    {
+                        "header": {
+                            "tool_name": self.name,
+                            "tool_call_id": tool_call_id,
+                            "timestamp": datetime.now().isoformat(),
+                            "status": "complete",
+                            "version": "1.0",
+                        },
+                        "body": {
+                            "data": result,
+                            "metadata": {
+                                "tool_type": "mcp",
+                                "result_length": len(result_str),
+                            },
+                        },
+                        "footer": {
+                            "success": True,
+                            "message": "执行成功",
+                            "stats": {"total": 1, "processed": 1, "failed": 0},
+                        },
+                    }
+                )
+
+            return result
+
+        except Exception as e:
+            error_msg = f"工具调用失败: {self.name}, 错误: {str(e)}"
+
+            if writer:
+                writer(
+                    {
+                        "header": {
+                            "tool_name": self.name,
+                            "tool_call_id": tool_call_id,
+                            "timestamp": datetime.now().isoformat(),
+                            "status": "error",
+                            "version": "1.0",
+                        },
+                        "body": {
+                            "data": None,
+                            "metadata": {"tool_type": "mcp", "error": error_msg},
+                        },
+                        "footer": {
+                            "success": False,
+                            "message": error_msg,
+                            "stats": {"total": 1, "processed": 0, "failed": 1},
+                        },
+                    }
+                )
+
+            raise
+
+    def _run(self, *args, **kwargs) -> Any:
         if hasattr(self.mcp_tool, "_run"):
             return self.mcp_tool._run(*args, **kwargs)
         elif hasattr(self.mcp_tool, "invoke"):
@@ -212,18 +241,25 @@ class MCPToolToLangChainAdapter(BaseTool):
             return invoke_method(kwargs)
         elif callable(self.mcp_tool):
             call_method = getattr(self.mcp_tool, "__call__", None)
-            if call_method and (inspect.iscoroutinefunction(call_method) or inspect.iscoroutinefunction(self.mcp_tool)):
+            if call_method and (
+                inspect.iscoroutinefunction(call_method)
+                or inspect.iscoroutinefunction(self.mcp_tool)
+            ):
                 raise RuntimeError(
                     f"MCP tool {self.name} only supports async execution but _run was called"
                 )
             return self.mcp_tool(**kwargs)
-        elif self.mcp_pool and self.mcp_server_name:
+        elif self.mcp_client and self.mcp_server_name:
             try:
-                from mcpClient.core.mcp_client.client_pool import _run_on_mcp_loop
-                result = _run_on_mcp_loop(
-                    self.mcp_pool.call_tool(self.mcp_server_name, self.name, kwargs)
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    raise RuntimeError(
+                        f"MCP tool {self.name} requires async execution in async context"
+                    )
+                result = loop.run_until_complete(
+                    self.mcp_client.call_tool(self.mcp_server_name, self.name, kwargs)
                 )
-                if hasattr(result, 'content'):
+                if hasattr(result, "content"):
                     return result.content
                 return result
             except Exception as e:
@@ -231,67 +267,43 @@ class MCPToolToLangChainAdapter(BaseTool):
                     "Failed to call MCP tool '%s' on server '%s': %s",
                     self.name,
                     self.mcp_server_name,
-                    e
+                    e,
                 )
                 raise
         else:
-            raise NotImplementedError(f"MCP tool {self.name} does not support sync execution")
+            raise NotImplementedError(
+                f"MCP tool {self.name} does not support sync execution"
+            )
 
 
 def adapt_mcp_tool(
-    mcp_tool: Any,
-    mcp_server_name: str = "",
-    mcp_pool: Any = None
+    mcp_tool: Any, mcp_server_name: str = "", mcp_client: Any = None
 ) -> BaseTool:
-    """
-    将单个 MCP Tool 对象转换为 LangChain BaseTool
-
-    Args:
-        mcp_tool: MCP Tool 对象
-        mcp_server_name: MCP 服务器名称
-        mcp_pool: MCPClientPool 实例，用于调用工具
-
-    Returns:
-        BaseTool: LangChain BaseTool 对象
-    """
     try:
         tool_name = getattr(mcp_tool, "name", None) or str(mcp_tool)
         return MCPToolToLangChainAdapter(
             mcp_tool=mcp_tool,
             mcp_server_name=mcp_server_name,
-            mcp_pool=mcp_pool,
-            name=tool_name
+            mcp_client=mcp_client,
+            name=tool_name,
         )
     except Exception as e:
-        logger.warning(f"Failed to adapt MCP tool {getattr(mcp_tool, 'name', 'unknown')}: {e}")
+        logger.warning(
+            f"Failed to adapt MCP tool {getattr(mcp_tool, 'name', 'unknown')}: {e}"
+        )
         raise
 
 
 def adapt_mcp_tools(
-    mcp_tools: List[Any],
-    mcp_server_name: str = "",
-    mcp_pool: Any = None
+    mcp_tools: List[Any], mcp_server_name: str = "", mcp_client: Any = None
 ) -> List[BaseTool]:
-    """
-    将 MCP Tool 对象列表转换为 LangChain BaseTool 列表
-
-    Args:
-        mcp_tools: MCP Tool 对象列表
-        mcp_server_name: MCP 服务器名称
-        mcp_pool: MCPClientPool 实例，用于调用工具
-
-    Returns:
-        List[BaseTool]: LangChain BaseTool 列表
-    """
     adapted_tools = []
     failed_count = 0
 
     for mcp_tool in mcp_tools:
         try:
             adapted_tool = adapt_mcp_tool(
-                mcp_tool,
-                mcp_server_name=mcp_server_name,
-                mcp_pool=mcp_pool
+                mcp_tool, mcp_server_name=mcp_server_name, mcp_client=mcp_client
             )
             adapted_tools.append(adapted_tool)
         except Exception as e:
@@ -305,13 +317,4 @@ def adapt_mcp_tools(
 
 
 def is_mcp_tool(obj: Any) -> bool:
-    """
-    检查对象是否是 MCP Tool 对象
-
-    Args:
-        obj: 任意对象
-
-    Returns:
-        bool: 是否是 MCP Tool 对象
-    """
     return hasattr(obj, "inputSchema") and hasattr(obj, "name")
