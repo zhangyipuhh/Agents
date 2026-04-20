@@ -4,20 +4,14 @@
 核心模块
 """
 
-from .mcp_client import (
-    MCPServerTask,
-    MCPClientPool,
-    client_pool,
-    SamplingHandler,
-    MCPToolsRegistry,
-    ToolEntry,
+from .unified_mcp_client import (
+    UnifiedMCPClient,
+    SamplingCallback,
+    StreamOutputWrapper,
 )
 
 __all__ = [
-    "MCPServerTask",
-    "MCPClientPool",
-    "client_pool",
-    "SamplingHandler",
-    "MCPToolsRegistry",
-    "ToolEntry",
+    "UnifiedMCPClient",
+    "SamplingCallback",
+    "StreamOutputWrapper",
 ]
