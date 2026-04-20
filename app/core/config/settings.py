@@ -9,9 +9,12 @@
 Date: 2026-04-07
 Author: 张镒谱
 """
-from typing import Optional
+from typing import Dict, Optional
+
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from mcpClient.shared.config_loader import load_mcp_config
 
 
 class LLMSettings(BaseSettings):
@@ -118,6 +121,41 @@ class WordOutputSettings(BaseSettings):
     )
 
 
+class MCPSettings(BaseSettings):
+    """
+    MCP 服务器配置
+    
+    管理 MCP（Model Context Protocol）服务器相关配置，
+    包括配置文件路径和配置加载功能。
+    """
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+        protected_namespaces=('settings_',)
+    )
+    
+    mcp_config_path: str = Field(
+        default="app/shared/tools/mcp/config.yaml",
+        description="MCP 服务器配置文件路径"
+    )
+    
+    def get_mcp_config(self) -> Dict[str, dict]:
+        """
+        加载并返回 MCP 服务器配置
+        
+        从 YAML 配置文件加载 MCP 服务器配置，支持环境变量插值。
+        
+        Returns:
+            Dict[str, dict]: MCP 服务器配置字典，键为服务器名称，值为服务器配置
+        """
+        from pathlib import Path
+        
+        config_path = Path(self.mcp_config_path)
+        return load_mcp_config(config_path)
+
+
 class Settings(BaseSettings):
     """
     应用总配置
@@ -134,6 +172,7 @@ class Settings(BaseSettings):
     llm: LLMSettings = Field(default_factory=LLMSettings)
     vision_llm: VisionLLMSettings = Field(default_factory=VisionLLMSettings)
     word_output: WordOutputSettings = Field(default_factory=WordOutputSettings)
+    mcp: MCPSettings = Field(default_factory=MCPSettings)
     
     def get_llm_config(self) -> dict:
         """

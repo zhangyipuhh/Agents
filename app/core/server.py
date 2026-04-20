@@ -19,6 +19,8 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.config.settings import settings
+from app.core.tools.mcp_registry import MCPToolsRegistry
 from app.shared.utils.auth.Safety import jwt_auth, auth_middleware, session_auth_middleware
 
 
@@ -48,7 +50,23 @@ async def lifespan(app: FastAPI):
     # session/delete 需要 JWT + session 验证，所以也不在白名单中
     # 其他所有接口都需要验证 session（由 session_auth_middleware 处理）
     
+    # 初始化 MCPToolsRegistry
+    mcp_configs = settings.mcp.get_mcp_config()
+    if mcp_configs:
+        registry = MCPToolsRegistry.get_instance()
+        try:
+            await registry.initialize(mcp_configs)
+            app.state.mcp_registry = registry
+            logging.info("MCPToolsRegistry initialized with %d server(s)", len(mcp_configs))
+        except Exception as e:
+            logging.error("Failed to initialize MCPToolsRegistry: %s", e)
+    
     yield
+    
+    # 关闭 MCPToolsRegistry
+    if hasattr(app.state, "mcp_registry") and app.state.mcp_registry is not None:
+        await app.state.mcp_registry.shutdown()
+        logging.info("MCPToolsRegistry shutdown complete")
 
 
 def setup_middleware(app: FastAPI):

@@ -50,12 +50,25 @@ class AgentState(MessagesState):
     状态类，需要传入一个继承自 MessagesState 的 TypedDict 类型，用于管理对话状态，在会话中是可被操作的值
     具体实现的agent需要继承该类
     """
+    
+    
     error_limit: int = 5
     """最大错误次数，控制图执行的最大错误次数，这里的5是类型提示语法的一部分，不是默认值，必须在初始化时指定"""
     limit: int = 25
     """最大递归深度，控制图执行的最大步数，这里的25是类型提示语法的一部分，不是默认值，必须在初始化时指定"""
     file_chunk_read_progress: int = 1
     """文件读取进度，记录当前读取到的文件位置，用于连续读文件,默认从文件开头开始读取"""
+    # === 新增：过程变量（借鉴 hermes-agent 的 tool_state）===
+    tool_progress: dict[str, dict]  
+    """
+    工具执行进度，记录每个工具的执行状态和进度。
+    格式：{"tool_name": {"stage": "...", "progress": "..."}}
+    """
+    intermediate_results: dict[str, Any]  # 工具中间计算结果
+    """
+    工具中间计算结果，记录每个工具的中间结果。
+    格式：{"tool_name": {"result": "..."}}
+    """
 
 
 

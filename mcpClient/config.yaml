@@ -1,0 +1,8 @@
+mcp_servers:
+  高德地图mcp:
+    type: sse
+    url: "https://mcp.amap.com/sse?key=df6d69f0846583058f276495acc9d487"
+    timeout: 120
+    tags: ["map", "geo"]
+    sampling:
+      enabled: false

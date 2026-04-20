@@ -38,7 +38,7 @@ mcpClient/**/*.pyc
 mcpClient/**/*.pyo
 mcpClient/**/*.pyd
 mcpClient/**/*.so
-
+mcpClient/**/*.md
 .env
 
 app/test/extract_pdf_pages.py
