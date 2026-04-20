@@ -21,6 +21,8 @@ from pydantic import BaseModel, create_model
 
 from langchain_core.tools import BaseTool
 
+from app.core.tools.events import create_tool_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -103,9 +105,9 @@ class MCPToolToLangChainAdapter(BaseTool):
         except (ImportError, RuntimeError):
             return None
 
-    async def _execute_tool(self, kwargs: dict) -> Any:
+    async def _execute_tool(self, kwargs: dict, config: Any = None) -> Any:
         if hasattr(self.mcp_tool, "_arun"):
-            return await self.mcp_tool._arun(**kwargs)
+            return await self.mcp_tool._arun(**kwargs, config=config)
         elif hasattr(self.mcp_tool, "invoke"):
             invoke_method = self.mcp_tool.invoke
             if inspect.iscoroutinefunction(invoke_method):
@@ -154,51 +156,29 @@ class MCPToolToLangChainAdapter(BaseTool):
         start_time = datetime.now()
 
         if writer:
-            writer(
-                {
-                    "header": {
-                        "tool_name": self.name,
-                        "tool_call_id": tool_call_id,
-                        "timestamp": start_time.isoformat(),
-                        "status": "start",
-                        "version": "1.0",
-                    },
-                    "body": {
-                        "data": None,
-                        "metadata": {"tool_type": "mcp", "args": kwargs},
-                    },
-                    "footer": None,
-                }
+            start_event = create_tool_event(
+                event_type="tool_start",
+                tool=self.name,
+                tool_call_id=tool_call_id,
+                data={"args": kwargs, "description": f"开始执行工具: {self.name}"}
             )
+            writer(dict(start_event))
 
         try:
-            result = await self._execute_tool(kwargs)
-            result_str = str(result) if result is not None else ""
+            result = await self._execute_tool(kwargs, config=config)
 
             if writer:
-                writer(
-                    {
-                        "header": {
-                            "tool_name": self.name,
-                            "tool_call_id": tool_call_id,
-                            "timestamp": datetime.now().isoformat(),
-                            "status": "complete",
-                            "version": "1.0",
-                        },
-                        "body": {
-                            "data": result,
-                            "metadata": {
-                                "tool_type": "mcp",
-                                "result_length": len(result_str),
-                            },
-                        },
-                        "footer": {
-                            "success": True,
-                            "message": "执行成功",
-                            "stats": {"total": 1, "processed": 1, "failed": 0},
-                        },
+                stop_event = create_tool_event(
+                    event_type="tool_stop",
+                    tool=self.name,
+                    tool_call_id=tool_call_id,
+                    data={
+                        "status": "success",
+                        "result": result,
+                        "duration_ms": int((datetime.now() - start_time).total_seconds() * 1000)
                     }
                 )
+                writer(dict(stop_event))
 
             return result
 
@@ -206,26 +186,13 @@ class MCPToolToLangChainAdapter(BaseTool):
             error_msg = f"工具调用失败: {self.name}, 错误: {str(e)}"
 
             if writer:
-                writer(
-                    {
-                        "header": {
-                            "tool_name": self.name,
-                            "tool_call_id": tool_call_id,
-                            "timestamp": datetime.now().isoformat(),
-                            "status": "error",
-                            "version": "1.0",
-                        },
-                        "body": {
-                            "data": None,
-                            "metadata": {"tool_type": "mcp", "error": error_msg},
-                        },
-                        "footer": {
-                            "success": False,
-                            "message": error_msg,
-                            "stats": {"total": 1, "processed": 0, "failed": 1},
-                        },
-                    }
+                error_event = create_tool_event(
+                    event_type="tool_error",
+                    tool=self.name,
+                    tool_call_id=tool_call_id,
+                    data={"error_type": type(e).__name__, "error_message": str(e), "args": kwargs}
                 )
+                writer(dict(error_event))
 
             raise
 
