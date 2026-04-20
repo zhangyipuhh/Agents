@@ -348,16 +348,22 @@ class SamplingCallback:
 
 
 class StreamOutputWrapper(BaseTool):
-    name: str = ""
-    description: str = ""
+    original_tool: Optional[Any] = None
+    max_content_length: int = 500
+
+    def __new__(cls, original_tool: BaseTool, max_content_length: int = 500, **kwargs):
+        instance = super().__new__(cls)
+        object.__setattr__(instance, "name", original_tool.name)
+        object.__setattr__(instance, "description", original_tool.description)
+        object.__setattr__(instance, "args_schema", original_tool.args_schema)
+        object.__setattr__(instance, "tags", [])
+        object.__setattr__(instance, "metadata", {})
+        object.__setattr__(instance, "original_tool", original_tool)
+        object.__setattr__(instance, "max_content_length", max_content_length)
+        return instance
 
     def __init__(self, original_tool: BaseTool, max_content_length: int = 500, **kwargs):
-        super().__init__(**kwargs)
-        self.original_tool = original_tool
-        self.max_content_length = max_content_length
-        self.name = original_tool.name
-        self.description = original_tool.description
-        self.args_schema = original_tool.args_schema
+        pass
 
     def _run(self, *args, config=None, **kwargs) -> str:
         result = self.original_tool._run(*args, config=config, **kwargs)
