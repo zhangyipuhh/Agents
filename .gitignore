@@ -17,6 +17,18 @@
 !mcpClient/
 !mcpClient/**
 mcpClient/**/docs/
+
+# 忽略所有 YAML 文件
+*.yaml
+*.yml
+mcpClient/**/*.yaml
+mcpClient/**/*.yml
+app/**/*.yaml
+app/**/*.yml
+mcpServer/**/*.yaml
+mcpServer/**/*.yml
+web/**/*.yaml
+web/**/*.yml
 # 排除 app 目录下的 Python 缓存文件
 app/**/__pycache__/
 app/**/*.pyc
@@ -36,6 +48,7 @@ mcpServer/**/*.so
 mcpClient/**/__pycache__/
 mcpClient/**/*.pyc
 mcpClient/**/*.pyo
+mcpClient/**/*.egg-info
 mcpClient/**/*.pyd
 mcpClient/**/*.so
 mcpClient/**/*.md
@@ -44,5 +57,4 @@ mcpClient/**/*.md
 app/test/extract_pdf_pages.py
 app/test/rename_full_md.py
 app/data/
-app/**/*.yaml
 app/**/*.csv
