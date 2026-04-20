@@ -16,7 +16,7 @@
 !mcpServer/**
 !mcpClient/
 !mcpClient/**
-
+mcpClient/**/docs/
 # 排除 app 目录下的 Python 缓存文件
 app/**/__pycache__/
 app/**/*.pyc
