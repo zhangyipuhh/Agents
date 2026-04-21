@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Any, List, Optional, Type
 
 from langgraph.config import get_stream_writer
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel, ConfigDict, create_model
 
 from langchain_core.tools import BaseTool
 
@@ -34,11 +34,18 @@ def json_schema_to_pydantic_model(
 
     field_definitions = {}
     for field_name, field_schema in properties.items():
-        field_type = field_schema.get("type", "string")
+        field_type = field_schema.get("type")
 
         if field_type == "string":
-            default = ... if field_name in required else None
-            field_definitions[field_name] = (str, default)
+            if "enum" in field_schema:
+                from enum import Enum
+                enum_values = {v: v for v in field_schema["enum"]}
+                enum_cls = Enum(f"{model_name}_{field_name}_enum", enum_values)
+                default = ... if field_name in required else None
+                field_definitions[field_name] = (enum_cls, default)
+            else:
+                default = ... if field_name in required else None
+                field_definitions[field_name] = (str, default)
         elif field_type == "number" or field_type == "integer":
             default = ... if field_name in required else None
             field_definitions[field_name] = (
@@ -51,16 +58,49 @@ def json_schema_to_pydantic_model(
             default = ... if field_name in required else list
             field_definitions[field_name] = (list, default)
         elif field_type == "object":
-            default = ... if field_name in required else dict
-            field_definitions[field_name] = (dict, default)
+            if "properties" in field_schema:
+                nested_model = json_schema_to_pydantic_model(
+                    field_schema, f"{model_name}_{field_name}"
+                )
+                default = ... if field_name in required else None
+                field_definitions[field_name] = (nested_model, default)
+            else:
+                default = ... if field_name in required else dict
+                field_definitions[field_name] = (dict, default)
+        elif field_type is None and ("anyOf" in field_schema or "oneOf" in field_schema):
+            sub_schemas = field_schema.get("anyOf") or field_schema.get("oneOf")
+            types = []
+            for sub in sub_schemas:
+                sub_type = sub.get("type", "string")
+                if sub_type == "string":
+                    types.append(str)
+                elif sub_type == "number":
+                    types.append(float)
+                elif sub_type == "integer":
+                    types.append(int)
+                elif sub_type == "boolean":
+                    types.append(bool)
+                elif sub_type == "array":
+                    types.append(list)
+                elif sub_type == "object":
+                    types.append(dict)
+                else:
+                    types.append(str)
+            from typing import Union
+            union_type = Union[tuple(types)] if len(types) > 1 else types[0]
+            default = ... if field_name in required else None
+            field_definitions[field_name] = (union_type, default)
         else:
             default = ... if field_name in required else None
             field_definitions[field_name] = (str, default)
 
-    if not field_definitions:
-        return create_model(model_name)
+    model = create_model(
+        model_name,
+        __config__=ConfigDict(extra="allow"),
+        **field_definitions,
+    )
 
-    return create_model(model_name, **field_definitions)
+    return model
 
 
 class MCPToolToLangChainAdapter(BaseTool):
@@ -74,6 +114,10 @@ class MCPToolToLangChainAdapter(BaseTool):
     def __init__(
         self, mcp_tool: Any, mcp_server_name: str = "", mcp_client: Any = None, **kwargs
     ):
+        if isinstance(mcp_tool, BaseTool):
+            if getattr(mcp_tool, "response_format", None) and "response_format" not in kwargs:
+                kwargs["response_format"] = mcp_tool.response_format
+
         super().__init__(**kwargs)
 
         self.mcp_tool = mcp_tool
@@ -86,13 +130,16 @@ class MCPToolToLangChainAdapter(BaseTool):
         self.name = tool_name
         self.description = tool_description
 
-        input_schema = getattr(mcp_tool, "inputSchema", {})
-        if input_schema:
-            self.args_schema = json_schema_to_pydantic_model(
-                input_schema, f"{tool_name}Args"
-            )
+        if isinstance(mcp_tool, BaseTool) and getattr(mcp_tool, "args_schema", None) is not None:
+            self.args_schema = mcp_tool.args_schema
         else:
-            self.args_schema = create_model(f"{tool_name}Args")
+            input_schema = getattr(mcp_tool, "inputSchema", {})
+            if input_schema and isinstance(input_schema, dict) and input_schema.get("properties"):
+                self.args_schema = json_schema_to_pydantic_model(
+                    input_schema, f"{tool_name}Args"
+                )
+            else:
+                self.args_schema = None
 
     def _get_tool_call_id(self, config) -> str:
         if config and "configurable" in config:
@@ -105,14 +152,45 @@ class MCPToolToLangChainAdapter(BaseTool):
         except (ImportError, RuntimeError):
             return None
 
+    def _merge_args_kwargs(self, args: tuple, kwargs: dict) -> dict:
+        merged = dict(kwargs)
+        if not args:
+            return merged
+        if len(args) == 1 and isinstance(args[0], dict):
+            merged.update(args[0])
+        elif len(args) == 1 and isinstance(args[0], str):
+            if self.args_schema and hasattr(self.args_schema, "model_fields"):
+                fields = self.args_schema.model_fields
+                if fields:
+                    first_field = next(iter(fields))
+                    merged[first_field] = args[0]
+                else:
+                    merged["input"] = args[0]
+            else:
+                merged["input"] = args[0]
+        else:
+            for i, arg in enumerate(args):
+                merged[f"arg_{i}"] = arg
+        return merged
+
     async def _execute_tool(self, kwargs: dict, config: Any = None) -> Any:
         if hasattr(self.mcp_tool, "_arun"):
-            return await self.mcp_tool._arun(**kwargs, config=config)
+            arun_sig = inspect.signature(self.mcp_tool._arun)
+            arun_params = arun_sig.parameters
+            call_kwargs = dict(kwargs)
+            if "config" in arun_params:
+                call_kwargs["config"] = config
+            return await self.mcp_tool._arun(**call_kwargs)
         elif hasattr(self.mcp_tool, "invoke"):
             invoke_method = self.mcp_tool.invoke
+            invoke_sig = inspect.signature(invoke_method)
             if inspect.iscoroutinefunction(invoke_method):
+                if "config" in invoke_sig.parameters:
+                    return await invoke_method(kwargs, config=config)
                 return await invoke_method(kwargs)
             else:
+                if "config" in invoke_sig.parameters:
+                    return await asyncio.to_thread(invoke_method, kwargs, config)
                 return await asyncio.to_thread(invoke_method, kwargs)
         elif callable(self.mcp_tool):
             call_method = getattr(self.mcp_tool, "__call__", None)
@@ -155,17 +233,24 @@ class MCPToolToLangChainAdapter(BaseTool):
         writer = self._get_writer()
         start_time = datetime.now()
 
+        tool_kwargs = self._merge_args_kwargs(args, kwargs)
+
+        logger.debug(
+            "MCPToolAdapter._arun: tool=%s, args=%s, kwargs=%s, merged=%s",
+            self.name, args, kwargs, tool_kwargs,
+        )
+
         if writer:
             start_event = create_tool_event(
                 event_type="tool_start",
                 tool=self.name,
                 tool_call_id=tool_call_id,
-                data={"args": kwargs, "description": f"开始执行工具: {self.name}"}
+                data={"args": tool_kwargs, "description": f"开始执行工具: {self.name}"}
             )
             writer(dict(start_event))
 
         try:
-            result = await self._execute_tool(kwargs, config=config)
+            result = await self._execute_tool(tool_kwargs, config=config)
 
             if writer:
                 stop_event = create_tool_event(
@@ -184,28 +269,46 @@ class MCPToolToLangChainAdapter(BaseTool):
 
         except Exception as e:
             error_msg = f"工具调用失败: {self.name}, 错误: {str(e)}"
+            logger.error(error_msg)
 
             if writer:
                 error_event = create_tool_event(
                     event_type="tool_error",
                     tool=self.name,
                     tool_call_id=tool_call_id,
-                    data={"error_type": type(e).__name__, "error_message": str(e), "args": kwargs}
+                    data={
+                        "status": "error",
+                        "error_type": type(e).__name__,
+                        "error_message": str(e),
+                        "result": None,
+                        "duration_ms": int((datetime.now() - start_time).total_seconds() * 1000)
+                    }
                 )
                 writer(dict(error_event))
 
-            raise
+            if self.response_format == "content_and_artifact":
+                return (error_msg, None)
+            return error_msg
 
     def _run(self, *args, **kwargs) -> Any:
+        tool_kwargs = self._merge_args_kwargs(args, kwargs)
+
         if hasattr(self.mcp_tool, "_run"):
-            return self.mcp_tool._run(*args, **kwargs)
+            run_sig = inspect.signature(self.mcp_tool._run)
+            call_kwargs = dict(tool_kwargs)
+            if "config" in run_sig.parameters:
+                call_kwargs["config"] = kwargs.get("config")
+            return self.mcp_tool._run(**call_kwargs)
         elif hasattr(self.mcp_tool, "invoke"):
             invoke_method = self.mcp_tool.invoke
             if inspect.iscoroutinefunction(invoke_method):
                 raise RuntimeError(
                     f"MCP tool {self.name} only supports async execution but _run was called"
                 )
-            return invoke_method(kwargs)
+            invoke_sig = inspect.signature(invoke_method)
+            if "config" in invoke_sig.parameters:
+                return invoke_method(tool_kwargs, config=kwargs.get("config"))
+            return invoke_method(tool_kwargs)
         elif callable(self.mcp_tool):
             call_method = getattr(self.mcp_tool, "__call__", None)
             if call_method and (
@@ -215,7 +318,7 @@ class MCPToolToLangChainAdapter(BaseTool):
                 raise RuntimeError(
                     f"MCP tool {self.name} only supports async execution but _run was called"
                 )
-            return self.mcp_tool(**kwargs)
+            return self.mcp_tool(**tool_kwargs)
         elif self.mcp_client and self.mcp_server_name:
             try:
                 loop = asyncio.get_event_loop()
@@ -224,7 +327,7 @@ class MCPToolToLangChainAdapter(BaseTool):
                         f"MCP tool {self.name} requires async execution in async context"
                     )
                 result = loop.run_until_complete(
-                    self.mcp_client.call_tool(self.mcp_server_name, self.name, kwargs)
+                    self.mcp_client.call_tool(self.mcp_server_name, self.name, tool_kwargs)
                 )
                 if hasattr(result, "content"):
                     return result.content
