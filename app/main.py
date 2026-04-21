@@ -12,6 +12,7 @@ Date: 2025/4/11
 Author: 张镒谱
 """
 import warnings
+import argparse
 
 warnings.filterwarnings(
     "ignore",
@@ -49,8 +50,13 @@ def register_routers():
 register_routers()
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description='Feature Agent Core Server')
+    parser.add_argument('--port', type=int, default=8001, help='Server port (default: 8001)')
+    parser.add_argument('--host', type=str, default='0.0.0.0', help='Server host (default: 0.0.0.0)')
+    return parser.parse_args()
+
+
 if __name__ == '__main__':
-    #开发环境
-    #uvicorn.run("app.main:app", host='0.0.0.0', port=8000, reload=True, reload_dirs=["app"], reload_delay=0.5)
-    #生产环境
-    uvicorn.run("app.main:app", host='0.0.0.0', port=8001, reload=False)
+    args = parse_args()
+    uvicorn.run("app.main:app", host=args.host, port=args.port, reload=False)
