@@ -20,6 +20,8 @@ REVIEW_SYSTEM_PROMPT = """
 3. 重复提交检测：同一函数的多次提交
 4. 文档代码同步性评分 (1-10)
 5. 文档任务同步性评分 (1-10)
+6. 文档相关性评分 (1-10)：文档内容与项目/模块目标的相关程度
+7. 改进建议：指出文档中需要改进的具体地方
 
 请返回 JSON 格式的评审结果。
 """
@@ -59,6 +61,17 @@ REVIEW_PROMPT_TEMPLATE = """
 5. **文档任务同步性评分** (1-10)
    - 文档与任务清单的一致性
 
+6. **文档相关性评分** (1-10)
+   - 文档内容与项目目标的相关程度
+   - 文档内容与模块功能的相关程度
+   - 是否存在偏离主题的内容
+
+7. **改进建议**
+   - 文档中缺失或不足的部分
+   - 描述不清晰需要补充的地方
+   - 技术细节需要修正的地方
+   - 结构或格式需要优化的地方
+
 ## 输出格式
 
 请返回 JSON 格式的评审结果：
@@ -86,6 +99,19 @@ REVIEW_PROMPT_TEMPLATE = """
   "doc_task_sync": {{
     "score": 8,
     "analysis": "..."
+  }},
+  "doc_relevance": {{
+    "score": 9,
+    "project_alignment": "...",
+    "module_alignment": "...",
+    "analysis": "..."
+  }},
+  "improvement_suggestions": {{
+    "missing_content": ["...", "..."],
+    "unclear_sections": ["...", "..."],
+    "technical_issues": ["...", "..."],
+    "structure_optimization": ["...", "..."],
+    "priority": "high/medium/low"
   }},
   "overall_score": 7.8,
   "summary": "..."
