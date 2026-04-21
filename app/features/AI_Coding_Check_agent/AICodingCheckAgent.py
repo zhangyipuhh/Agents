@@ -170,6 +170,7 @@ class AICodingCheckAgent:
             name=name,
             content=content_str,
             code=code_str,
+            task_list=task_str,
         )
 
         # 生成唯一的会话ID，由开发者姓名和时间戳组成，确保每次评审独立
@@ -275,15 +276,98 @@ class AICodingCheckAgent:
         return {
             "name": name,
             "review_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "dimensions": {
-                "document_quality": {"score": 0, "completeness": "", "clarity": "", "technical_accuracy": ""},
-                "ai_adoption_rate": {"rate": 0.0, "analysis": ""},
-                "duplicate_commits": {"has_duplicate": False, "duplicate_functions": [], "analysis": ""},
-                "doc_code_sync": {"score": 0, "analysis": ""},
-                "doc_task_sync": {"score": 0, "analysis": ""},
+            "document_quality": {
+                "overall_score": 0,
+                "completeness": {
+                    "score": 0,
+                    "has_requirement": False,
+                    "has_design": False,
+                    "has_implementation": False,
+                    "has_problem_solution": False,
+                    "has_summary": False,
+                    "analysis": "评审失败，无法评估完整性"
+                },
+                "clarity": {
+                    "score": 0,
+                    "structure_quality": "",
+                    "readability": "",
+                    "logic_flow": "",
+                    "analysis": "评审失败，无法评估清晰度"
+                },
+                "technical_accuracy": {
+                    "score": 0,
+                    "concept_accuracy": "",
+                    "scheme_rationality": "",
+                    "analysis": "评审失败，无法评估技术正确性"
+                },
+                "ai_assistance_traces": {
+                    "estimated_ai_ratio": 0.0,
+                    "typical_traces": [],
+                    "integration_quality": "",
+                    "analysis": "评审失败，无法评估AI辅助痕迹"
+                }
+            },
+            "ai_adoption_rate": {
+                "adoption_rate": 0.0,
+                "data_combination_type": "insufficient_data",
+                "doc_code_consistency": {
+                    "consistency_score": 0.0,
+                    "has_document": False,
+                    "has_code": False,
+                    "function_match": "",
+                    "logic_match": "",
+                    "interface_match": ""
+                },
+                "ai_assistance_quality": {
+                    "doc_ai_ratio": 0.0,
+                    "code_ai_ratio": 0.0,
+                    "integration_quality": "",
+                    "effectiveness": ""
+                },
+                "workflow_compliance": {
+                    "doc_first": False,
+                    "sync_development": False,
+                    "authentic_reflection": ""
+                },
+                "analysis": "评审失败，无法评估AI编程采纳率"
+            },
+            "doc_task_consistency": {
+                "score": 0,
+                "has_task_list": False,
+                "goal_alignment": "",
+                "coverage_completeness": "",
+                "scope_control": "",
+                "analysis": "评审失败，无法评估文档任务一致性"
+            },
+            "anti_patterns": {
+                "has_issues": False,
+                "single_function_repeated_commits": {
+                    "detected": False,
+                    "function_name": "",
+                    "commit_count": 0,
+                    "has_substantial_improvement": False,
+                    "issue_type": "",
+                    "analysis": ""
+                },
+                "unrelated_to_ai_coding": {
+                    "detected": False,
+                    "indicators": [],
+                    "analysis": ""
+                },
+                "other_patterns": [],
+                "overall_assessment": "评审失败，无法评估反模式"
+            },
+            "improvement_suggestions": {
+                "document_structure": [],
+                "content_completeness": [],
+                "anti_pattern_correction": [],
+                "ai_adoption_optimization": [],
+                "ai_usage_optimization": [],
+                "priority": "high"
             },
             "overall_score": 0.0,
             "summary": "评审失败，返回默认结果",
+            "coach_notes": "评审过程出现异常，请检查输入数据或稍后重试"
         }
 
     async def get_agent(self):
