@@ -81,9 +81,7 @@ class MCPToolsRegistry:
         server: Optional[str] = None,
     ) -> List[tuple[Any, str]]:
         """
-        根据条件查询工具列表，返回工具及其服务器名称
-
-        注意：此方法返回原始工具（不带流式输出包装），用于需要知道工具所属服务器的场景。
+        获取工具列表（带服务器信息）
 
         Args:
             tags: 工具标签过滤列表，可选
@@ -98,6 +96,79 @@ class MCPToolsRegistry:
             return []
 
         import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+
+        def run_async_in_thread():
+            return asyncio.run(self._get_tools_with_server_async(tags, names, server))
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(run_async_in_thread)
+                    return future.result(timeout=30)
+            else:
+                return loop.run_until_complete(
+                    self._get_tools_with_server_async(tags, names, server)
+                )
+        except RuntimeError:
+            try:
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(run_async_in_thread)
+                    return future.result(timeout=30)
+            except Exception as e:
+                logger.warning("线程池获取工具失败: %s", e)
+                return []
+        except Exception as e:
+            logger.warning("获取工具失败: %s", e)
+            return []
+
+    def _collect_tools_sync(
+        self,
+        server_names: List[str],
+        tags: Optional[List[str]] = None,
+        names: Optional[List[str]] = None,
+        server: Optional[str] = None,
+    ) -> List[tuple[Any, str]]:
+        """
+        同步收集工具列表（带服务器信息）- 使用线程池执行异步代码
+
+        注意：此方法使用线程池执行异步代码，适用于事件循环正在运行的场景。
+        """
+        from concurrent.futures import ThreadPoolExecutor
+        import asyncio
+
+        def run_async_in_thread():
+            return asyncio.run(self._get_tools_with_server_async(tags, names, server))
+
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(run_async_in_thread)
+                return future.result(timeout=30)
+        except Exception as e:
+            logger.warning("线程池方式获取工具失败: %s", e)
+            return []
+
+    async def _get_tools_with_server_async(
+        self,
+        tags: Optional[List[str]] = None,
+        names: Optional[List[str]] = None,
+        server: Optional[str] = None,
+    ) -> List[tuple[Any, str]]:
+        """
+        异步获取工具列表（带服务器信息）
+
+        Args:
+            tags: 工具标签过滤列表，可选
+            names: 工具名称过滤列表，可选
+            server: 服务器名称过滤，可选
+
+        Returns:
+            List[tuple[Any, str]]: 工具及其服务器名称的元组列表
+        """
+        if self._client is None:
+            logger.warning("MCPToolsRegistry 尚未初始化，无法查询工具")
+            return []
 
         results: List[tuple[Any, str]] = []
         for server_name in self._client.get_server_names():
@@ -109,20 +180,7 @@ class MCPToolsRegistry:
                 continue
 
             try:
-                server_tools_info = asyncio.get_event_loop().run_until_complete(
-                    self._client.get_server_tools(server_name)
-                )
-            except RuntimeError:
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        server_tools_info = None
-                    else:
-                        server_tools_info = loop.run_until_complete(
-                            self._client.get_server_tools(server_name)
-                        )
-                except Exception:
-                    server_tools_info = None
+                server_tools_info = await self._client.get_server_tools(server_name)
             except Exception:
                 server_tools_info = None
 
@@ -136,6 +194,25 @@ class MCPToolsRegistry:
                 results.append((tool, server_name))
 
         return results
+
+    async def get_tools_with_server_async(
+        self,
+        tags: Optional[List[str]] = None,
+        names: Optional[List[str]] = None,
+        server: Optional[str] = None,
+    ) -> List[tuple[Any, str]]:
+        """
+        异步获取工具列表（带服务器信息）- 显式异步版本
+
+        Args:
+            tags: 工具标签过滤列表，可选
+            names: 工具名称过滤列表，可选
+            server: 服务器名称过滤，可选
+
+        Returns:
+            List[tuple[Any, str]]: 工具及其服务器名称的元组列表
+        """
+        return await self._get_tools_with_server_async(tags, names, server)
 
     async def refresh_tools(self, server_name: Optional[str] = None) -> None:
         """

@@ -241,20 +241,21 @@ class Agent:
 
     def _build_graph(self):
         """构建 LangGraph 工作流
-        
+
         工作流结构:
             START → summarize → llm_call → END
-            
+            (如果配置了工具): llm_call → tools → summarize
+
         摘要节点功能:
             - 使用 SummarizationNode 自动管理对话摘要
             - 保留最新对话，自动摘要旧消息
             - 与 trim_messages 配合确保 token 数合适
-            
+
         边连接逻辑:
             - 从 START 到 summarize 节点
             - 从 summarize 到 llm_call 节点
-            - 从 llm_call 根据条件分支到 tools 或 END
-            - 从 tools 回到 llm_call 继续调用
+            - 从 llm_call 根据条件分支到 tools 或 END（如果没有工具则直接到 END）
+            - 从 tools 回到 summarize 继续调用
         """
         # 创建 SummarizationNode，用于自动管理对话摘要
         summarization_node = SummarizationNode(
@@ -269,39 +270,42 @@ class Agent:
 
         # 添加节点（带重试策略）
         workflow.add_node(
-            "summarize", 
+            "summarize",
             summarization_node,
             retry_policy=self._config.get_summarize_retry_policy()
         )
         workflow.add_node(
-            "llm_call", 
+            "llm_call",
             self._llm_call,
             retry_policy=self._config.get_llm_retry_policy()
-        )
-        workflow.add_node(
-            "tools", 
-            self.tool_node,
-            retry_policy=self._config.get_tool_retry_policy()
         )
 
         # 添加边
         workflow.add_edge(START, "summarize")
         workflow.add_edge("summarize", "llm_call")
 
-        # 添加条件边，根据 _should_continue 的返回值决定分支
-        workflow.add_conditional_edges(
-            "llm_call",
-            self._should_continue,
-            {
-                "tools": "tools",
-                "end": END
-            }
-        )
+        # 如果配置了工具节点，添加工具和条件边
+        if self.tool_node is not None:
+            workflow.add_node(
+                "tools",
+                self.tool_node,
+                retry_policy=self._config.get_tool_retry_policy()
+            )
+            # 添加条件边，根据 _should_continue 的返回值决定分支
+            workflow.add_conditional_edges(
+                "llm_call",
+                self._should_continue,
+                {
+                    "tools": "tools",
+                    "end": END
+                }
+            )
+            # 工具执行完成后回到 summarize 节点处理
+            workflow.add_edge("tools", "summarize")
+        else:
+            # 没有工具时，llm_call 直接连接到 END
+            workflow.add_edge("llm_call", END)
 
-        # 工具执行完成后回到 llm_call 继续调用
-        # workflow.add_edge("tools", "llm_call")
-         # 这样 ToolMessage 会被 summarize 节点处理（trim、摘要等）
-        workflow.add_edge("tools", "summarize")
         # 编译图，添加 checkpointer 实现全局记忆功能
         self.graph = workflow.compile(checkpointer=self.checkpointer, store=self.store)
 

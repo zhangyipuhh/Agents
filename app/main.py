@@ -12,6 +12,7 @@ Date: 2025/4/11
 Author: 张镒谱
 """
 import warnings
+import argparse
 
 warnings.filterwarnings(
     "ignore",
@@ -28,6 +29,7 @@ from app.shared.routers.session_router import router as session_router
 from app.shared.routers.auth_router import router as auth_router
 from app.features.contract_host_agent.router.contract_router import router as contract_router
 from app.features.map_agent.router.map_router import router as map_router
+from app.features.AI_Coding_Check_agent.router.ai_coding_check_router import router as ai_coding_check_router
 
 
 app = create_app()
@@ -42,13 +44,19 @@ def register_routers():
     app.include_router(session_router)
     app.include_router(contract_router)
     app.include_router(map_router)
+    app.include_router(ai_coding_check_router)
 
 
 register_routers()
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description='Feature Agent Core Server')
+    parser.add_argument('--port', type=int, default=8001, help='Server port (default: 8001)')
+    parser.add_argument('--host', type=str, default='0.0.0.0', help='Server host (default: 0.0.0.0)')
+    return parser.parse_args()
+
+
 if __name__ == '__main__':
-    #开发环境
-    #uvicorn.run("app.main:app", host='0.0.0.0', port=8000, reload=True, reload_dirs=["app"], reload_delay=0.5)
-    #生产环境
-    uvicorn.run("app.main:app", host='0.0.0.0', port=8001, reload=False)
+    args = parse_args()
+    uvicorn.run("app.main:app", host=args.host, port=args.port, reload=False)
