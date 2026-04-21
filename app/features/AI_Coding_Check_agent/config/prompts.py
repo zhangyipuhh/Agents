@@ -42,12 +42,53 @@ REVIEW_PROMPT_TEMPLATE = """
 请从以下维度进行评审：
 
 1. **文档质量评分** (1-10)
+   - 完整性：是否涵盖所有关键信息
+   - 清晰度：描述是否易于理解
+   - 技术正确性：内容是否准确无误
+
 2. **AI采纳率估算** (0-100%)
+   - 根据提交内容判断有多少是AI辅助生成
+
 3. **重复提交检测**
+   - 检测同一函数的多次提交
+   - 区分是bug修复还是优化迭代
+
 4. **文档代码同步性评分** (1-10)
+   - 文档描述与实际代码的一致性
+
 5. **文档任务同步性评分** (1-10)
+   - 文档与任务清单的一致性
 
 ## 输出格式
 
-请返回 JSON 格式的评审结果。
+请返回 JSON 格式的评审结果：
+```json
+{{
+  "document_quality": {{
+    "score": 8,
+    "completeness": "...",
+    "clarity": "...",
+    "technical_accuracy": "..."
+  }},
+  "ai_adoption_rate": {{
+    "rate": 0.65,
+    "analysis": "..."
+  }},
+  "duplicate_commits": {{
+    "has_duplicate": true,
+    "duplicate_functions": ["func1", "func2"],
+    "analysis": "..."
+  }},
+  "doc_code_sync": {{
+    "score": 7,
+    "analysis": "..."
+  }},
+  "doc_task_sync": {{
+    "score": 8,
+    "analysis": "..."
+  }},
+  "overall_score": 7.8,
+  "summary": "..."
+}}
+```
 """

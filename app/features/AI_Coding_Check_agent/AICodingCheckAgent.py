@@ -32,6 +32,27 @@ from langgraph.store.base import BaseStore
 logger = logging.getLogger(__name__)
 
 
+def _to_str(value) -> str:
+    """
+    将任意类型的值转换为字符串
+
+    处理字符串、字符串列表、字典列表等多种输入格式。
+    字典会被序列化为JSON格式的字符串。
+
+    Args:
+        value: 待转换的值，可以是字符串、列表或字典
+
+    Returns:
+        str: 转换后的字符串
+    """
+    if isinstance(value, list):
+        return "\n".join(
+            json.dumps(item, ensure_ascii=False) if isinstance(item, dict) else str(item)
+            for item in value
+        )
+    return str(value) if value else ""
+
+
 class AICodingCheckAgent:
     """
     AI辅助编程效果评审Agent类
@@ -56,9 +77,9 @@ class AICodingCheckAgent:
         store: BaseStore = None,
         store_id: Optional[str] = None,
         system_prompt: Optional[str] = None,
-        max_tokens: int = 2000,
-        max_tokens_before_summary: int = 1600,
-        max_summary_tokens: int = 400,
+        max_tokens: int = 160000,
+        max_tokens_before_summary: int = 120000,
+        max_summary_tokens: int = 8000,
     ):
         """
         初始化 AICodingCheckAgent 实例
@@ -68,9 +89,9 @@ class AICodingCheckAgent:
             store: LangGraph 内存存储器，用于存储上下文信息
             store_id: 存储 ID，用于区分不同用户的存储空间
             system_prompt: 自定义系统提示词，默认使用评审专用提示词
-            max_tokens: 最大 token 数，默认 2000
-            max_tokens_before_summary: 触发摘要的 token 阈值，默认 1600
-            max_summary_tokens: 摘要最大 token 数，默认 400
+            max_tokens: 最大 token 数，默认 160000
+            max_tokens_before_summary: 触发摘要的 token 阈值，默认 120000
+            max_summary_tokens: 摘要最大 token 数，默认 8000
         """
         self.checkpointer = checkpointer
         self.store = store
@@ -137,10 +158,10 @@ class AICodingCheckAgent:
         code = developer_data.get("code", [])
         task = developer_data.get("task", [])
 
-        # 将列表类型的字段拼接为字符串，兼容字符串和列表两种输入格式
-        content_str = "\n".join(content) if isinstance(content, list) else str(content)
-        code_str = "\n".join(code) if isinstance(code, list) else str(code)
-        task_str = "\n".join(task) if isinstance(task, list) else str(task)
+        # 将列表类型的字段拼接为字符串，兼容字符串、字符串列表和字典列表三种输入格式
+        content_str = _to_str(content)
+        code_str = _to_str(code)
+        task_str = _to_str(task)
 
         # 延迟导入评审提示词模板，避免循环依赖
         from app.features.AI_Coding_Check_agent.config.prompts import REVIEW_PROMPT_TEMPLATE
