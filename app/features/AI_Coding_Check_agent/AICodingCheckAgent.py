@@ -211,10 +211,13 @@ class AICodingCheckAgent:
                 last_message = messages[-1]
                 response_text = getattr(last_message, "content", "")
                 try:
-                    # 尝试将响应文本解析为JSON格式的评审结果
-                    review_result = json.loads(response_text)
+                    # 清理响应文本，去除 markdown 代码块标记
+                    cleaned_text = self._extract_json_from_markdown(response_text)
+                    # 尝试将清理后的文本解析为JSON格式的评审结果
+                    review_result = json.loads(cleaned_text)
                     return review_result
-                except (json.JSONDecodeError, TypeError):
+                except (json.JSONDecodeError, TypeError) as e:
+                    logger.warning(f"JSON解析失败: {e}, 原始内容: {response_text[:200]}...")
                     # JSON解析失败时，尝试从状态中获取评审结果
                     review_result = result.get("review_result", {})
                     if review_result:
@@ -230,6 +233,32 @@ class AICodingCheckAgent:
             # 捕获agent执行过程中的所有异常，记录日志并返回默认结果
             logger.error(f"评审失败: {e}")
             return self._get_default_review_result(name)
+
+    def _extract_json_from_markdown(self, text: str) -> str:
+        """
+        从 markdown 代码块中提取 JSON 内容
+
+        模型返回的内容可能包含 ```json ... ``` 或 ``` ... ``` 的 markdown 标记，
+        需要先去除这些标记才能正确解析 JSON。
+
+        Args:
+            text: 包含 markdown 代码块的文本
+
+        Returns:
+            str: 清理后的 JSON 字符串
+        """
+        import re
+
+        # 匹配 ```json ... ``` 或 ``` ... ``` 格式的代码块
+        pattern = r'```(?:json)?\s*\n?(.*?)\n?```'
+        match = re.search(pattern, text, re.DOTALL)
+
+        if match:
+            # 提取代码块内的内容
+            return match.group(1).strip()
+
+        # 如果没有匹配到代码块，直接返回原文本
+        return text.strip()
 
     def _get_default_review_result(self, name: str = "") -> Dict[str, Any]:
         """
