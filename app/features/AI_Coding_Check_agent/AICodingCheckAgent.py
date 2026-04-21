@@ -235,7 +235,7 @@ class AICodingCheckAgent:
             logger.error(f"评审失败: {e}")
             return self._get_default_review_result(name)
 
-    def _extract_json_from_markdown(self, text: str) -> str:
+    def _extract_json_from_markdown(self, text) -> str:
         """
         从 markdown 代码块中提取 JSON 内容
 
@@ -243,12 +243,29 @@ class AICodingCheckAgent:
         需要先去除这些标记才能正确解析 JSON。
 
         Args:
-            text: 包含 markdown 代码块的文本
+            text: 包含 markdown 代码块的文本，可能是字符串或列表
 
         Returns:
             str: 清理后的 JSON 字符串
         """
         import re
+
+        # 处理列表类型的情况（某些消息模型的 content 可能是列表）
+        if isinstance(text, list):
+            # 将列表中的文本内容拼接起来
+            text_parts = []
+            for item in text:
+                if isinstance(item, str):
+                    text_parts.append(item)
+                elif isinstance(item, dict) and "text" in item:
+                    text_parts.append(item["text"])
+                elif hasattr(item, "text"):
+                    text_parts.append(item.text)
+            text = "".join(text_parts)
+
+        # 确保 text 是字符串类型
+        if not isinstance(text, str):
+            text = str(text) if text else ""
 
         # 匹配 ```json ... ``` 或 ``` ... ``` 格式的代码块
         pattern = r'```(?:json)?\s*\n?(.*?)\n?```'
