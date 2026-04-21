@@ -9,67 +9,120 @@ Date: 2026-04-21
 Author: 张镒谱
 """
 
-import requests
-import json
+import os
 import sys
+import json
+import argparse
+from typing import Optional
+
+import requests
+from requests.exceptions import RequestException
 
 
-def review_developer(
-    name: str,
-    content: list,
-    code: list,
-    task: list = None,
-    base_url: str = "http://localhost:8001",
-) -> dict:
-    """
-    评审开发者数据
+class AICodingCheckClient:
+    def __init__(self, base_url: str = None):
+        self.base_url = base_url or os.environ.get("API_BASE_URL", "http://localhost:9001")
+        self.token: Optional[str] = None
+        self.session_id: Optional[str] = None
 
-    通过 HTTP POST 请求调用评审 API，将开发者数据提交给智能体进行评审。
+    def refresh_token(self) -> Optional[str]:
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/auth/login",
+                json={"username": "admin", "password": "123456"},
+                timeout=60
+            )
+            response.raise_for_status()
+            self.token = response.json().get("access_token")
+            return self.token
+        except Exception as e:
+            print(f"登录失败: {e}")
+            return None
 
-    Args:
-        name: 开发者姓名
-        content: 文档内容列表
-        code: 代码提交记录列表
-        task: 任务列表，默认为 None
-        base_url: API 基础 URL，默认为 http://localhost:8001
+    def create_session(self) -> Optional[str]:
+        if not self.token:
+            self.refresh_token()
+        if not self.token:
+            return None
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/session/create",
+                headers={"Authorization": f"Bearer {self.token}"},
+                timeout=60
+            )
+            response.raise_for_status()
+            self.session_id = response.json().get("session_id")
+            return self.session_id
+        except Exception as e:
+            print(f"创建会话失败: {e}")
+            return None
 
-    Returns:
-        dict: 评审结果，成功时包含智能体返回的评审数据，失败时包含错误信息
-    """
-    # 拼接评审接口的完整 URL
-    url = f"{base_url}/api/ai-coding-check/review"
-    # 构建请求体，task 为空时使用空列表代替
-    payload = {
-        "developer_data": {
-            "name": name,
-            "content": content,
-            "code": code,
-            "task": task or [],
+    def review_developer(
+        self,
+        name: str,
+        content: list,
+        code: list,
+        task: list = None,
+    ) -> dict:
+        if not self.session_id:
+            self.create_session()
+
+        headers = {}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        if self.session_id:
+            headers["X-Session-ID"] = self.session_id
+
+        payload = {
+            "developer_data": {
+                "name": name,
+                "content": content,
+                "code": code,
+                "task": task or [],
+            }
         }
-    }
 
-    try:
-        # 发送 POST 请求，设置超时时间为 120 秒以适应评审耗时较长的场景
-        response = requests.post(url, json=payload, timeout=120)
-        # 检查 HTTP 状态码，非 2xx 时抛出异常
-        response.raise_for_status()
-        # 请求成功，返回 JSON 格式的评审结果
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        # 捕获网络请求异常（如连接超时、服务端错误等），打印错误信息
-        print(f"请求失败: {e}")
-        # 返回包含错误信息的默认响应结构
-        return {"code": 500, "message": str(e), "data": {}}
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/ai-coding-check/review",
+                json=payload,
+                headers=headers,
+                timeout=120
+            )
+            response.raise_for_status()
+            return response.json()
+        except RequestException as e:
+            return {"code": 500, "message": str(e), "data": {}}
 
 
-# 命令行入口：直接运行此文件时执行示例评审请求
-if __name__ == "__main__":
-    # 使用示例数据调用评审接口
-    result = review_developer(
-        name="张三",
-        content=["需求文档 v1.0", "API 设计文档"],
-        code=["commit: 添加用户模块", "commit: 修复登录 bug"],
-        task=["任务1: 实现用户注册", "任务2: 修复登录问题"],
+def main():
+    parser = argparse.ArgumentParser(description='AI 编程效果评审客户端')
+    parser.add_argument('--name', type=str, required=True, help='开发者姓名')
+    parser.add_argument('--content', type=str, nargs='+', required=True, help='文档内容列表')
+    parser.add_argument('--code', type=str, nargs='+', required=True, help='代码提交记录列表')
+    parser.add_argument('--task', type=str, nargs='*', help='任务列表(可选)')
+    parser.add_argument('--base-url', type=str, default=None, help='API 地址')
+    args = parser.parse_args()
+
+    client = AICodingCheckClient(args.base_url)
+
+    print("正在连接服务器...")
+    if not client.create_session():
+        print("连接服务器失败")
+        sys.exit(1)
+    print(f"会话创建成功: {client.session_id}")
+
+    print("正在提交评审...")
+    result = client.review_developer(
+        name=args.name,
+        content=args.content,
+        code=args.code,
+        task=args.task if args.task else None
     )
-    # 以格式化的 JSON 输出评审结果，ensure_ascii=False 保证中文正常显示
+
+    print("\n评审结果:")
     print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()
