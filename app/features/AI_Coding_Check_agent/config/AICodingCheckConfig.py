@@ -77,22 +77,6 @@ class AICodingCheckConfig(BaseAgentConfig):
         返回:
             tuple[list[str], ToolNode]: 工具名称列表和对应的 ToolNode 对象
         """
-        import logging
-
-        # 导入基础工具：获取当前时间
-        from app.core.tools.BaseTools import get_current_time
-        # 导入评审专用工具：开发者评审和评审结果解析
-        from app.features.AI_Coding_Check_agent.tools.AICodingCheckTools import (
-            review_developer,
-            parse_review_response,
-        )
-
-        # 组装工具列表：基础工具 + 评审专用工具
-        tools = [
-            get_current_time,
-            review_developer,
-            parse_review_response,
-        ]
-
-        # 返回工具列表和对应的 LangGraph ToolNode，ToolNode 负责工具的调度和执行
-        return tools, ToolNode(tools)
+        # 本 Agent 直接基于提示词进行评审，不需要绑定工具
+        # 工具已由 AICodingCheckAgent.review() 方法直接调用
+        return [], None
