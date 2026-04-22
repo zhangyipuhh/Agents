@@ -216,6 +216,8 @@ class AICodingCheckAgent:
                     cleaned_text = self._extract_json_from_markdown(response_text)
                     # 尝试将清理后的文本解析为JSON格式的评审结果
                     review_result = json.loads(cleaned_text)
+                    # 确保返回结果中包含 name 字段，保持数据结构一致性
+                    review_result["name"] = name
                     return review_result
                 except (json.JSONDecodeError, TypeError) as e:
                     logger.warning(f"JSON解析失败: {e}, 原始内容: {response_text[:200]}...")
