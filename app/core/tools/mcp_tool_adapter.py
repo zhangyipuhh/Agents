@@ -23,12 +23,6 @@ from langchain_core.tools import BaseTool
 
 from app.core.tools.events import create_tool_event
 
-try:
-    import anyio
-    ANYIO_AVAILABLE = True
-except ImportError:
-    ANYIO_AVAILABLE = False
-
 logger = logging.getLogger(__name__)
 
 
