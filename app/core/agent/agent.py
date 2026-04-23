@@ -24,6 +24,7 @@
 Date: 2026-03-10
 Author: 张镒谱
 """
+
 from imaplib import IMAP4
 import logging
 
@@ -37,34 +38,41 @@ from langchain_core.messages import AnyMessage, HumanMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langmem.short_term import SummarizationNode, RunningSummary
 from app.core.llmcalls.model_factory import ModelFactory
-from app.core.agent.AgentConfig import AgentConfig, AgentContext, AgentState, ExecuteConfig
+from app.core.agent.AgentConfig import (
+    AgentConfig,
+    AgentContext,
+    AgentState,
+    ExecuteConfig,
+)
 from app.core.config.config import LLM_CONFIG
+
 
 class LLMInputState(TypedDict):
     """LLM 输入状态的类型定义
-    
+
     定义了传递给 LLM 节点的输入格式：
         - summarized_messages: 经过摘要处理后的消息列表
         - context: 上下文摘要信息字典
         - image_ids: 图片ID列表
         - state: 完整的原始状态，用于访问任意字段
     """
+
     summarized_messages: list[AnyMessage]
     context: dict[str, RunningSummary]
 
 
 def _get_mime_type_from_base64(base64_data: str) -> str:
     """从 base64 数据推断图片的 MIME 类型
-    
+
     通过检查 base64 数据的前缀来推断图片格式
-    
+
     Args:
         base64_data: base64 编码的图片数据
-        
+
     Returns:
         MIME 类型字符串，如 "image/jpeg", "image/png" 等
     """
-    if base64_data.startswith("/9j/") :
+    if base64_data.startswith("/9j/"):
         return "image/jpeg"
     elif base64_data.startswith("iVBORw0KGgo"):
         return "image/png"
@@ -79,30 +87,27 @@ def _get_mime_type_from_base64(base64_data: str) -> str:
 class Agent:
     """
     通用智能体
-    
+
     使用 LangGraph MessagesState 实现多轮对话，
     工具在内部解析并保存到长期记忆，返回摘要信息。
-    
+
     摘要功能:
         - 使用 SummarizationNode 自动管理对话摘要
         - 保留最新对话，自动摘要旧消息
         - 与 trim_messages 配合使用，确保上下文长度合适
-        
+
     工作流:
         START → summarize → llm_call → END
-    
+
     调用方式:
         - invoke(): 非流式调用，返回最终结果
         - stream(): 流式调用，实时获取每个节点的输出
     """
 
-    def __init__(
-        self,
-        config: AgentConfig
-    ):
+    def __init__(self, config: AgentConfig):
         """
         初始化智能体
-        
+
         Args:
             config: 配置实例，必填。需传入 AgentConfig 或其子类的实例，
                    内部包含模型、Token 及存储等相关配置。
@@ -121,19 +126,16 @@ class Agent:
         self.store = config.store
         self.system_prompt = config.system_prompt
 
-  
-
-
     async def __ainit__(self):
         """异步初始化方法
-        
+
         创建模型实例、工具节点和检查点器，构建工作流图。
-        
+
         为什么使用异步初始化：
         - 模型加载、工具初始化等操作涉及 I/O 或异步调用
         - db_path 是运行时参数，创建时才能确定
         - 采用延迟加载模式，节省内存和启动时间
-        
+
         Args:
             db_path: 数据库路径，用于持久化对话记忆，默认使用内存数据库
         """
@@ -143,11 +145,20 @@ class Agent:
             model_name=self._model_name,
             api_key=self._api_key or "",
             temperature=self._temperature,
-            base_url=self._base_url
+            base_url=self._base_url,
         )
         # 获取审计工具列表,创建工具节点，用于执行工具调用
-        self.tools,self.tool_node = self._config.get_tools()
-        
+        self.tools, self.tool_node = self._config.get_tools()
+
+        # 构建工具绑定参数，根据配置决定是否传入 parallel_tool_calls
+        bind_kwargs = {"tools": self.tools}
+        parallel_tool_calls = LLM_CONFIG.get("parallel_tool_calls")
+        if parallel_tool_calls is not None:
+            bind_kwargs["parallel_tool_calls"] = parallel_tool_calls
+
+        # 预绑定工具到模型，避免每次调用时重复绑定
+        self.llm = self.model.bind_tools(**bind_kwargs)
+
         # 创建摘要模型，绑定最大生成 token 数
         self.summarization_model = self.model.bind(max_tokens=self._max_summary_tokens)
         # 构建工作流图
@@ -155,13 +166,13 @@ class Agent:
 
     def _should_continue(self, state: MessagesState) -> Literal["tools", "end"]:
         """判断是否需要继续执行工具调用
-        
+
         检查最后一条消息是否包含工具调用，如果有则继续执行工具节点，
         否则结束当前轮次。
-        
+
         Args:
             state: 当前消息状态
-            
+
         Returns:
             "tools": 如果最后一条消息包含工具调用，需要执行工具
             "end": 如果最后一条消息是模型回复，结束当前轮次
@@ -181,25 +192,25 @@ class Agent:
         runtime: Runtime[AgentContext],
     ):
         """LLM 调用节点
-        
+
         根据系统提示词和用户消息，调用模型进行推理。
         系统提示词指导模型根据上传的文件类型调用相应的解析工具。
-        
+
         Args:
             state: 包含 summarized_messages 的输入状态
             runtime: 包含 context 的运行时对象，用于获取 thread_id 作为 namespace
-            
+
         Returns:
             包含模型响应消息的字典
         """
         context = runtime.context
         messages = state["summarized_messages"]
-        #logging.info(f"对话历史: {messages[-1].content}")
-        #messages = state["messages"]
+        # logging.info(f"对话历史: {messages[-1].content}")
+        # messages = state["messages"]
         # 系统提示词，指导模型如何根据文件类型调用相应的解析工具
         system_prompt = self.system_prompt or ""
         # 从状态中获取图片路径列表,如果传入了需要处理图片,则从状态中获取图片路径列表
-        image_ids = context.get("image_ids", [])   
+        image_ids = context.get("image_ids", [])
         # 如果是多模态模型,则需要处理图片
         if self._config.IS_MULTIMODAL and image_ids and self.store:
             # 从存储中获取图片内容
@@ -210,33 +221,38 @@ class Agent:
             namespace = (store_id,)
             logging.info(f"namespace: {namespace}")
             image_contents = []
-            #例image_path返回  {"image_id_1": "base64_1", "image_id_2": "base64_2"}
+            # 例image_path返回  {"image_id_1": "base64_1", "image_id_2": "base64_2"}
             result = self.store.get(namespace, "file/images")
             content_parts = []
             for image_id in image_ids:
                 base64_data = result.value.get(image_id, "") if result else ""
-                logging.info(f"image_id: {image_id}, content length: {len(base64_data)}")
+                logging.info(
+                    f"image_id: {image_id}, content length: {len(base64_data)}"
+                )
                 if base64_data:
                     image_contents.append(base64_data)
                     mime_type = _get_mime_type_from_base64(base64_data)
-                    content_parts.append({
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:{mime_type};base64,{base64_data}"
+                    content_parts.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{base64_data}"
+                            },
                         }
-                    })
+                    )
             if content_parts:
                 last_message = messages[-1]
-                user_text = last_message.content if isinstance(last_message.content, str) else ""
+                user_text = (
+                    last_message.content
+                    if isinstance(last_message.content, str)
+                    else ""
+                )
                 content_parts.insert(0, {"type": "text", "text": user_text})
                 user_message = HumanMessage(content=content_parts)
                 messages[-1] = user_message
                 context["image_ids"] = []
-        # 绑定工具到模型，使模型能够调用工具
-        # 禁用 parallel_tool_calls，避免 interrupt 时其他工具调用未响应
-        llm = self.model.bind_tools(self.tools, parallel_tool_calls=False)
-        # 调用模型，传入系统提示词和历史消息
-        response = await llm.ainvoke([("system", system_prompt)] + messages)
+        # 直接使用预绑定的 self.llm
+        response = await self.llm.ainvoke([("system", system_prompt)] + messages)
         return {"messages": [response]}
 
     def _build_graph(self):
@@ -272,12 +288,10 @@ class Agent:
         workflow.add_node(
             "summarize",
             summarization_node,
-            retry_policy=self._config.get_summarize_retry_policy()
+            retry_policy=self._config.get_summarize_retry_policy(),
         )
         workflow.add_node(
-            "llm_call",
-            self._llm_call,
-            retry_policy=self._config.get_llm_retry_policy()
+            "llm_call", self._llm_call, retry_policy=self._config.get_llm_retry_policy()
         )
 
         # 添加边
@@ -289,16 +303,11 @@ class Agent:
             workflow.add_node(
                 "tools",
                 self.tool_node,
-                retry_policy=self._config.get_tool_retry_policy()
+                retry_policy=self._config.get_tool_retry_policy(),
             )
             # 添加条件边，根据 _should_continue 的返回值决定分支
             workflow.add_conditional_edges(
-                "llm_call",
-                self._should_continue,
-                {
-                    "tools": "tools",
-                    "end": END
-                }
+                "llm_call", self._should_continue, {"tools": "tools", "end": END}
             )
             # 工具执行完成后回到 summarize 节点处理
             workflow.add_edge("tools", "summarize")
@@ -316,34 +325,33 @@ class Agent:
         config: ExecuteConfig,
     ):
         """调用智能体执行任务
-        
+
         将用户输入状态、上下文和配置传入工作流，执行对话并返回结果。
-        
+
         Args:
             input_state: 输入状态，包含 summarized_messages 和 context
             context: 上下文实例，用于传递静态变量
             config: 运行配置，包含 thread_id 等信息
-            
+
         Returns:
             dict: 执行结果，包含 messages（消息列表）和 context（上下文摘要信息）
         """
         # 延迟初始化：如果 graph 尚未创建，则先初始化
-        if not hasattr(self, 'graph') or self.graph is None:
+        if not hasattr(self, "graph") or self.graph is None:
             await self.__ainit__()
-        
-  
-        ''' 
+
+        """ 
         执行图，传入上下文
         与StateGraph(State=state_class, context_schema=context_class)
         中的context_schema与context对应,state_schema与input_state对应,在每次调用时传入具体值
-        '''
+        """
         result = await self.graph.ainvoke(input_state, config, context=context)
-        
+
         # 添加 context 信息（如果可用）
-        if hasattr(self, 'summarization_node') and "context" in result:
+        if hasattr(self, "summarization_node") and "context" in result:
             result["context"] = result["context"]
-        #res_content=result["messages"][-1].content
-        #logging.info(f"AI回复: {res_content}")
+        # res_content=result["messages"][-1].content
+        # logging.info(f"AI回复: {res_content}")
         return result
 
     async def stream(
@@ -351,13 +359,13 @@ class Agent:
         input_state: AgentState,
         context: AgentContext,
         config: ExecuteConfig,
-        stream_mode: Union[str, list[str]] = "updates"
+        stream_mode: Union[str, list[str]] = "updates",
     ) -> AsyncGenerator[dict, None]:
         """流式调用智能体
-        
+
         通过流式输出，实时获取每个节点的执行结果，包括每次 _llm_call 的输出。
         适用于需要实时反馈的场景，如用户对话、实时监控等。
-        
+
         Args:
             input_state: 输入状态，包含 summarized_messages 和 context
             context: 上下文实例，用于传递静态变量
@@ -368,13 +376,13 @@ class Agent:
                 - "messages": 流式输出 LLM token
                 - "custom": 流式输出自定义数据
                 - ["updates", "messages"]: 组合模式，同时获取多种输出
-        
+
         Yields:
             dict: 流式输出的数据块，格式取决于 stream_mode：
                 - stream_mode="updates": {node_name: {state_updates}}
                 - stream_mode="messages": (message_chunk, metadata)
                 - stream_mode=["updates", "messages"]: (mode, data)
-        
+
         Examples:
             基本使用（获取每次 llm_call 的输出）：
             ```python
@@ -382,7 +390,7 @@ class Agent:
                 if "llm_call" in chunk:
                     print(f"LLM 输出: {chunk['llm_call']['messages'][-1].content}")
             ```
-            
+
             流式输出 LLM token：
             ```python
             async for chunk in agent.stream(
@@ -392,7 +400,7 @@ class Agent:
                 message_chunk, metadata = chunk
                 print(message_chunk.content, end="", flush=True)
             ```
-            
+
             组合模式：
             ```python
             async for mode, data in agent.stream(
@@ -405,79 +413,75 @@ class Agent:
                     print(data[0].content, end="", flush=True)
             ```
         """
-        if not hasattr(self, 'graph') or self.graph is None:
+        if not hasattr(self, "graph") or self.graph is None:
             await self.__ainit__()
-        
+
         async for chunk in self.graph.astream(
-            input_state,
-            config,
-            context=context,
-            stream_mode=stream_mode
+            input_state, config, context=context, stream_mode=stream_mode
         ):
             yield chunk
 
     async def inspect_checkpoint(self, session_id: str = None):
         """检查指定 session 的 checkpoint 内容
-        
+
         用于调试和监控，查看对话历史和摘要信息。
-        
+
         Args:
             session_id: 会话 ID
-            
+
         Returns:
             dict: Checkpoint 的详细内容，包括消息数量、消息内容、文件信息和摘要信息
         """
-         # 构建配置
+        # 构建配置
         config = {"configurable": {"thread_id": session_id or "default"}}
         # 获取当前状态
         state = self.graph.get_state(config)
-        
+
         # 提取 checkpoint 信息
         checkpoint_info = {
             "thread_id": session_id or "default",
-            "checkpoint_id": state.checkpoint_id if hasattr(state, 'checkpoint_id') else None,
+            "checkpoint_id": state.checkpoint_id
+            if hasattr(state, "checkpoint_id")
+            else None,
             "messages_count": len(state.values.get("messages", [])),
             "messages": [
                 {
                     "type": msg.__class__.__name__,
                     "content": str(msg.content) if hasattr(msg, "content") else "N/A",
-                    "tool_calls": [tc["name"] for tc in getattr(msg, "tool_calls", [])] if hasattr(msg, "tool_calls") else None
+                    "tool_calls": [tc["name"] for tc in getattr(msg, "tool_calls", [])]
+                    if hasattr(msg, "tool_calls")
+                    else None,
                 }
                 for msg in state.values.get("messages", [])
             ],
             "file_paths": state.values.get("file_paths", []),
-            "file_ids": state.values.get("file_ids", [])
+            "file_ids": state.values.get("file_ids", []),
         }
-        
+
         # 添加 context 信息（如果可用）
         if "context" in state.values:
             checkpoint_info["context"] = {}
             for key, value in state.values["context"].items():
-                if hasattr(value, 'summary'):
+                if hasattr(value, "summary"):
                     checkpoint_info["context"][key] = {
                         "summary": value.summary,
-                        "summary_length": len(value.summary)
+                        "summary_length": len(value.summary),
                     }
-        
+
         return checkpoint_info
 
 
-async def get_agent(
-    config: AgentConfig
-) -> Agent:
+async def get_agent(config: AgentConfig) -> Agent:
     """获取通用智能体实例的工厂函数
-    
+
     创建并初始化 Agent 实例，简化智能体的创建过程。
-    
+
     Args:
         config: AgentConfig 配置实例，包含模型、Token、检查点器、存储库、系统提示词等所有配置
-        
+
     Returns:
         Agent: 初始化完成的智能体实例
     """
     agent = Agent(config=config)
     await agent.__ainit__()
     return agent
-
-
-
