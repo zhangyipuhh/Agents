@@ -24,6 +24,7 @@ from langgraph.store.memory import InMemoryStore
 from langchain_core.messages import ToolMessage
 
 from app.features.map_agent.MapAgent import MapAgent
+from app.core.format.stream import stream_format_context
 
 logger = logging.getLogger(__name__)
 
@@ -109,8 +110,8 @@ async def generate_stream_response(
                         message_chunk, metadata = data
                         if isinstance(message_chunk, ToolMessage):
                             continue
-                        content = getattr(message_chunk, 'content', str(message_chunk))
-                        if not content:
+                        content = stream_format_context.format_message(message_chunk, metadata)
+                        if content is None:
                             continue
                         yield f"data: {json.dumps({'type': 'message', 'content': content, 'metadata': metadata}, ensure_ascii=False, default=str)}\n\n"
                     else:
