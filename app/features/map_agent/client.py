@@ -20,6 +20,7 @@ import json
 import ast
 import re
 import logging
+import argparse
 from datetime import datetime
 from typing import Optional, Dict, Any, Generator, List
 from pathlib import Path
@@ -93,12 +94,27 @@ class ColorPrinter:
             print(f"{self.BOLD}{text}{self.RESET}", end=end, flush=True)
 
     def print_model_markdown(self, text: str):
-        if self.console:
-            md = Markdown(text)
-            self.console.print(md)
+        if '\n' in text:
+            if hasattr(self, '_md_buffer') and self._md_buffer:
+                buffer = self._md_buffer + text
+                self._md_buffer = ""
+                if self.console:
+                    md = Markdown(buffer)
+                    self.console.print(md)
+                else:
+                    self._enable_windows_ansi()
+                    print(f"{self.BOLD}{buffer}{self.RESET}")
+            else:
+                if self.console:
+                    md = Markdown(text)
+                    self.console.print(md)
+                else:
+                    self._enable_windows_ansi()
+                    print(f"{self.BOLD}{text}{self.RESET}")
         else:
-            self._enable_windows_ansi()
-            print(f"{self.BOLD}{text}{self.RESET}")
+            if not hasattr(self, '_md_buffer'):
+                self._md_buffer = ""
+            self._md_buffer += text
 
     def print_node(self, text: str, end: str = '\n'):
         if self.console:
@@ -258,8 +274,10 @@ class MapAgentClient:
     封装地图智能体的所有接口调用方法，支持流式输出。
     """
 
-    def __init__(self, base_url: str = "http://localhost:8000"):
+    def __init__(self, base_url: str = "http://localhost:8000", username: str = "admin", password: str = "123456"):
         self.base_url = base_url
+        self.username = username
+        self.password = password
         self.token: Optional[str] = None
         self.session_id: Optional[str] = None
         self.headers: Dict[str, str] = {}
@@ -291,7 +309,7 @@ class MapAgentClient:
         try:
             login_result = self.session.post(
                 f"{self.base_url}/api/auth/login",
-                json={"username": "admin", "password": "123456"},
+                json={"username": self.username, "password": self.password},
                 timeout=600
             )
             login_result.raise_for_status()
@@ -427,6 +445,14 @@ class StreamOutputHandler:
 
     def _handle_update(self, data: Dict[str, Any]) -> None:
         for node_name, node_data in data.items():
+            if hasattr(self.printer, '_md_buffer') and self.printer._md_buffer:
+                if self.printer.console:
+                    md = Markdown(self.printer._md_buffer)
+                    self.printer.console.print(md)
+                else:
+                    self.printer._enable_windows_ansi()
+                    print(f"{self.BOLD}{self.printer._md_buffer}{self.RESET}")
+                self.printer._md_buffer = ""
             self.current_node = node_name
             self.printer.print_node(f"\n[节点更新] {node_name}")
 
@@ -472,6 +498,14 @@ class StreamOutputHandler:
 
             if parsed["text"]:
                 if self.accumulated_thinking:
+                    if hasattr(self.printer, '_md_buffer') and self.printer._md_buffer:
+                        if self.printer.console:
+                            md = Markdown(self.printer._md_buffer)
+                            self.printer.console.print(md)
+                        else:
+                            self.printer._enable_windows_ansi()
+                            print(f"{self.BOLD}{self.printer._md_buffer}{self.RESET}")
+                        self.printer._md_buffer = ""
                     print()
                     self.printer.print_thinking(f"[思考中...] {self.accumulated_thinking}")
                     print()
@@ -482,11 +516,27 @@ class StreamOutputHandler:
                     self.printer.print_model_markdown(text)
 
     def _handle_custom(self, data: Dict[str, Any]) -> None:
+        if hasattr(self.printer, '_md_buffer') and self.printer._md_buffer:
+            if self.printer.console:
+                md = Markdown(self.printer._md_buffer)
+                self.printer.console.print(md)
+            else:
+                self.printer._enable_windows_ansi()
+                print(f"{self.BOLD}{self.printer._md_buffer}{self.RESET}")
+            self.printer._md_buffer = ""
         self.printer.print_custom(f"\n[自定义数据]")
         data_str = json.dumps(data, ensure_ascii=False, indent=2)
         self.printer.print_custom(self._indent_text(data_str, 2))
 
     def _handle_end(self, data: Dict[str, Any]) -> None:
+        if hasattr(self.printer, '_md_buffer') and self.printer._md_buffer:
+            if self.printer.console:
+                md = Markdown(self.printer._md_buffer)
+                self.printer.console.print(md)
+            else:
+                self.printer._enable_windows_ansi()
+                print(f"{self.BOLD}{self.printer._md_buffer}{self.RESET}")
+            self.printer._md_buffer = ""
         print()
         self.printer.print_info(f"[会话结束] {data.get('message', '')}")
         self.is_first_token = True
@@ -519,12 +569,14 @@ class MapAgentChatClient:
     提供命令行交互界面，整合流式输出和颜色显示功能。
     """
 
-    def __init__(self, base_url: str = "http://localhost:8000"):
-        self.api_client = MapAgentClient(base_url)
+    def __init__(self, base_url: str = "http://localhost:8002", username: str = "admin", password: str = "123456"):
+        self.api_client = MapAgentClient(base_url, username, password)
         self.output_handler = StreamOutputHandler()
         self.printer = ColorPrinter()
         self.is_running = True
         self.chat_count = 0
+        self.username = username
+        self.password = password
 
     def display_header(self) -> None:
         print("\n" + "=" * 60)
@@ -632,7 +684,7 @@ class MapAgentChatClient:
 
             login_result = self.api_client.session.post(
                 f"{self.api_client.base_url}/api/auth/login",
-                json={"username": "admin", "password": "123456"},
+                json={"username": self.username, "password": self.password},
                 timeout=600
             )
             login_result.raise_for_status()
@@ -668,9 +720,30 @@ class MapAgentChatClient:
 
 
 def main():
-    base_url = os.environ.get("API_BASE_URL", "http://localhost:8002")
+    parser = argparse.ArgumentParser(description="地图智能体流式聊天客户端")
+    parser.add_argument(
+        "-u", "--url",
+        default=os.environ.get("API_BASE_URL", "http://localhost:8002"),
+        help="API 服务器地址 (默认: http://localhost:8002 或环境变量 API_BASE_URL)"
+    )
+    parser.add_argument(
+        "--username",
+        default="admin",
+        help="登录用户名 (默认: admin)"
+    )
+    parser.add_argument(
+        "--password",
+        default="123456",
+        help="登录密码 (默认: 123456)"
+    )
+    args = parser.parse_args()
 
-    client = MapAgentChatClient(base_url)
+    base_url = args.url
+    
+    print(f"正在连接到: {base_url}")
+    print(f"用户名: {args.username}")
+    
+    client = MapAgentChatClient(base_url, args.username, args.password)
     client.run()
 
 
