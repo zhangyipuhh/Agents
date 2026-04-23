@@ -18,7 +18,7 @@ Author: 张镒谱
 from langchain_ollama import ChatOllama
 
 
-def create_model(model_name: str, api_key: str, temperature: float = 0, base_url: str = None):
+def create_model(model_name: str, api_key: str, temperature: float = 0, base_url: str = None, reasoning: bool = True, timeout: int = 120):
     """
     创建Ollama大语言模型实例
     
@@ -35,15 +35,19 @@ def create_model(model_name: str, api_key: str, temperature: float = 0, base_url
             默认值为0
         base_url (str, optional): Ollama服务的基础URL
             默认为None，使用Ollama默认地址 "http://localhost:11434"
+        reasoning (bool, optional): 是否启用推理功能
+            默认值为True
+        timeout (int, optional): 请求超时时间（秒）
+            默认值为120
     
     Returns:
         ChatOllama: Ollama大语言模型实例，可用于后续的对话和推理任务
     """
-    # 创建并返回ChatOllama实例
-    # 将所有配置参数传递给ChatOllama构造函数
     return ChatOllama(
         model=model_name,
         api_key=api_key,
         temperature=temperature,
-        base_url=base_url
+        base_url=base_url,
+        reasoning=reasoning,
+        timeout=timeout,
     )

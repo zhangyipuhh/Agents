@@ -80,7 +80,9 @@ class ModelFactory:
         model_name: str,
         api_key: str,
         temperature: float = 0,
-        base_url: Optional[str] = None
+        base_url: Optional[str] = None,
+        reasoning: Optional[bool] = None,
+        timeout: Optional[int] = None
     ):
         """
         根据模型类型创建对应的LLM模型实例
@@ -106,6 +108,10 @@ class ModelFactory:
                 默认值为0
             base_url (Optional[str], optional): API基础URL，用于自定义API端点
                 默认为None，使用各模型的默认端点
+            reasoning (Optional[bool], optional): 是否启用推理功能，仅对Ollama模型有效
+                默认为None，使用模型的默认设置
+            timeout (Optional[int], optional): 请求超时时间（秒），仅对Ollama模型有效
+                默认为None，使用模型的默认设置
         
         Returns:
             LLM模型实例：根据模型类型返回对应的大语言模型实例
@@ -139,12 +145,22 @@ class ModelFactory:
         
         # 调用创建函数并返回模型实例
         # 将所有配置参数传递给创建函数
-        return creator(
-            model_name=model_name,
-            api_key=api_key,
-            temperature=temperature,
-            base_url=base_url
-        )
+        if model_type == 'ollama':
+            return creator(
+                model_name=model_name,
+                api_key=api_key,
+                temperature=temperature,
+                base_url=base_url,
+                reasoning=reasoning if reasoning is not None else True,
+                timeout=timeout if timeout is not None else 120
+            )
+        else:
+            return creator(
+                model_name=model_name,
+                api_key=api_key,
+                temperature=temperature,
+                base_url=base_url
+            )
     
     @classmethod
     def register_model_creator(cls, model_type: str, creator_func):

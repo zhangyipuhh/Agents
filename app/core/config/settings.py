@@ -57,6 +57,15 @@ class LLMSettings(BaseSettings):
         default=None,
         description="是否启用并行工具调用，none表示不传参，true/false显式设置",
     )
+    ollama_reasoning: Optional[bool] = Field(
+        default=True,
+        description="Ollama模型是否启用推理功能，仅对Ollama模型有效",
+    )
+    ollama_timeout: int = Field(
+        default=120,
+        ge=1,
+        description="Ollama模型请求超时时间（秒），仅对Ollama模型有效",
+    )
 
     @field_validator("parallel_tool_calls", mode="before")
     @classmethod
@@ -73,6 +82,14 @@ class LLMSettings(BaseSettings):
     @field_validator("is_multimodal", mode="before")
     @classmethod
     def parse_bool(cls, v):
+        """将字符串转换为布尔值"""
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes", "on")
+        return bool(v)
+
+    @field_validator("ollama_reasoning", mode="before")
+    @classmethod
+    def parse_ollama_reasoning(cls, v):
         """将字符串转换为布尔值"""
         if isinstance(v, str):
             return v.lower() in ("true", "1", "yes", "on")
@@ -184,6 +201,8 @@ class Settings(BaseSettings):
             "temperature": self.llm.model_temperature,
             "is_multimodal": self.llm.is_multimodal,
             "parallel_tool_calls": self.llm.parallel_tool_calls,
+            "ollama_reasoning": self.llm.ollama_reasoning,
+            "ollama_timeout": self.llm.ollama_timeout,
         }
 
     def get_vision_llm_config(self) -> dict:
