@@ -104,6 +104,7 @@ class MapAgent:
         error_limit: int = 2,
         limit: int = 10,
         stream_mode: Union[str, list[str]] = None,
+        geometry_data: dict = {},
         **kwargs,
     ) -> AsyncGenerator[dict, None]:
         """
@@ -124,6 +125,7 @@ class MapAgent:
                 - "messages": 流式输出 LLM token
                 - "custom": 流式输出自定义数据
                 - ["updates", "messages"]: 组合模式，同时获取多种输出
+            geometry_data: 地理数据类型，格式为 {"point": [...], "line": [...], "polygon": [...]}
             **kwargs: 其他可选参数
 
         Yields:
@@ -184,7 +186,8 @@ class MapAgent:
         # 构建上下文
         context = MapAgentContext(
             session_id=session_id,
-            store_id=self.store_id or session_id
+            store_id=self.store_id or session_id,
+            geometry_data=geometry_data
         )
 
         # 流式调用 agent

@@ -53,14 +53,17 @@ class ChatRequest(BaseModel):
     Attributes:
         message (str): 用户输入的消息内容
         session_id (Optional[str]): 会话ID，用于标识和恢复会话状态
+        geometry_data (Optional[dict]): 地理数据类型，包含点、线、面的几何数据
     """
     message: str
     session_id: Optional[str] = None
+    geometry_data: Optional[dict] = {}
 
 
 async def generate_stream_response(
     user_input: str,
-    session_id: str
+    session_id: str,
+    geometry_data: dict = {}
 ) -> AsyncGenerator[str, None]:
     """
     生成流式响应的异步生成器
@@ -79,6 +82,7 @@ async def generate_stream_response(
     Args:
         user_input (str): 用户输入内容
         session_id (str): 会话ID
+        geometry_data (dict): 地理数据类型，格式为 {"point": [...], "line": [...], "polygon": [...]}
 
     Yields:
         str: SSE 格式的响应数据，包含 type 字段和对应的数据
@@ -88,7 +92,8 @@ async def generate_stream_response(
         async for chunk in map_agent.stream(
             user_input=user_input,
             session_id=session_id,
-            stream_mode=["updates", "custom", "messages"]
+            stream_mode=["updates", "custom", "messages"],
+            geometry_data=geometry_data
         ):
             # 处理组合模式的输出
             # chunk 的格式为 (mode, data)
@@ -160,6 +165,9 @@ async def chat(
     try:
         # 获取 session_id，优先使用请求体中的，否则从 request.state 获取
         session_id = chat_request.session_id or getattr(request.state, "session_id", "default")
+        
+        # 获取 geometry_data
+        geometry_data = chat_request.geometry_data or {}
 
         logger.debug(f"[DEBUG] chat 请求: message={chat_request.message}, session_id={session_id}")
 
@@ -167,7 +175,8 @@ async def chat(
         return StreamingResponse(
             generate_stream_response(
                 user_input=chat_request.message,
-                session_id=session_id
+                session_id=session_id,
+                geometry_data=geometry_data
             ),
             media_type="text/event-stream",
             headers={

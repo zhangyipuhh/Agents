@@ -26,4 +26,9 @@ class MapAgentContext(BaseAgentContext):
         store_id: 存储 ID，用于区分不同用户的存储空间
         image_ids: 图片ID列表，用于多模态模型处理图片
         host_session_id: 主机会话 ID，用于多智能体协作时数据隔离
+        geometry_data: 地理数据类型，包含点、线、面的几何数据
     """
+
+    geometry_data: dict = {}
+    """地理数据类型 dict，格式为 {"point": [...], "line": [...], "polygon": [...]}"""
+    
