@@ -79,7 +79,7 @@ class MCPToolsRegistry:
         tags: Optional[List[str]] = None,
         names: Optional[List[str]] = None,
         server: Optional[str] = None,
-    ) -> List[tuple[Any, str]]:
+    ) -> List[tuple[Any, str, dict]]:
         """
         获取工具列表（带服务器信息）
 
@@ -89,7 +89,7 @@ class MCPToolsRegistry:
             server: 服务器名称过滤，可选
 
         Returns:
-            List[tuple[Any, str]]: 工具及其服务器名称的元组列表
+            List[tuple[Any, str, dict]]: 工具及其服务器名称、服务器配置的元组列表
         """
         if self._client is None:
             logger.warning("MCPToolsRegistry 尚未初始化，无法查询工具")
@@ -106,7 +106,7 @@ class MCPToolsRegistry:
             if loop.is_running():
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(run_async_in_thread)
-                    return future.result(timeout=30)
+                    return future.result(timeout=60)
             else:
                 return loop.run_until_complete(
                     self._get_tools_with_server_async(tags, names, server)
@@ -115,12 +115,12 @@ class MCPToolsRegistry:
             try:
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(run_async_in_thread)
-                    return future.result(timeout=30)
+                    return future.result(timeout=60)
             except Exception as e:
-                logger.warning("线程池获取工具失败: %s", e)
+                logger.warning("线程池获取工具失败: %r", e)
                 return []
         except Exception as e:
-            logger.warning("获取工具失败: %s", e)
+            logger.warning("获取工具失败: %r", e)
             return []
 
     def _collect_tools_sync(
@@ -129,7 +129,7 @@ class MCPToolsRegistry:
         tags: Optional[List[str]] = None,
         names: Optional[List[str]] = None,
         server: Optional[str] = None,
-    ) -> List[tuple[Any, str]]:
+    ) -> List[tuple[Any, str, dict]]:
         """
         同步收集工具列表（带服务器信息）- 使用线程池执行异步代码
 
@@ -144,9 +144,9 @@ class MCPToolsRegistry:
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(run_async_in_thread)
-                return future.result(timeout=30)
+                return future.result(timeout=60)
         except Exception as e:
-            logger.warning("线程池方式获取工具失败: %s", e)
+            logger.warning("线程池方式获取工具失败: %r", e)
             return []
 
     async def _get_tools_with_server_async(
@@ -154,7 +154,7 @@ class MCPToolsRegistry:
         tags: Optional[List[str]] = None,
         names: Optional[List[str]] = None,
         server: Optional[str] = None,
-    ) -> List[tuple[Any, str]]:
+    ) -> List[tuple[Any, str, dict]]:
         """
         异步获取工具列表（带服务器信息）
 
@@ -164,35 +164,74 @@ class MCPToolsRegistry:
             server: 服务器名称过滤，可选
 
         Returns:
-            List[tuple[Any, str]]: 工具及其服务器名称的元组列表
+            List[tuple[Any, str, dict]]: 工具及其服务器名称、服务器配置的元组列表
         """
         if self._client is None:
             logger.warning("MCPToolsRegistry 尚未初始化，无法查询工具")
             return []
 
-        results: List[tuple[Any, str]] = []
-        for server_name in self._client.get_server_names():
+        results: List[tuple[Any, str, dict]] = []
+        server_names = self._client.get_server_names()
+        
+        if not server_names:
+            logger.debug("没有配置任何 MCP 服务器")
+            return []
+
+        for server_name in server_names:
             if server and server_name != server:
                 continue
             server_config = self._server_configs.get(server_name, {})
             server_tags = server_config.get("tags", [])
             if tags and not any(t in server_tags for t in tags):
+                logger.debug(
+                    "服务器 '%s' 的标签 %s 不匹配过滤标签 %s，跳过",
+                    server_name, server_tags, tags
+                )
                 continue
 
             try:
+                logger.debug("正在从服务器 '%s' 获取工具...", server_name)
                 server_tools_info = await self._client.get_server_tools(server_name)
-            except Exception:
-                server_tools_info = None
+                
+                if not server_tools_info:
+                    logger.warning(
+                        "服务器 '%s' 返回空的工具信息，可能是连接问题或验证错误",
+                        server_name
+                    )
+                    continue
 
-            if not server_tools_info:
+                tools = server_tools_info.get("tools", [])
+                logger.info(
+                    "从服务器 '%s' 获取到 %d 个工具",
+                    server_name, len(tools)
+                )
+
+                for tool in tools:
+                    tool_name = getattr(tool, "name", str(tool))
+                    if names and tool_name not in names:
+                        continue
+                    results.append((tool, server_name, server_config))
+
+            except Exception as e:
+                error_msg = str(e)
+                if "validation" in error_msg.lower() or "notification" in error_msg.lower():
+                    logger.warning(
+                        "服务器 '%s' 存在协议验证问题: %s (工具获取失败)",
+                        server_name, error_msg
+                    )
+                else:
+                    logger.error(
+                        "从服务器 '%s' 获取工具时出错: %s",
+                        server_name, error_msg, exc_info=True
+                    )
                 continue
 
-            for tool in server_tools_info.get("tools", []):
-                tool_name = getattr(tool, "name", str(tool))
-                if names and tool_name not in names:
-                    continue
-                results.append((tool, server_name))
-
+        if not results:
+            logger.debug(
+                "未找到匹配的工具 (tags=%s, names=%s, server=%s)",
+                tags, names, server
+            )
+        
         return results
 
     async def get_tools_with_server_async(
@@ -200,7 +239,7 @@ class MCPToolsRegistry:
         tags: Optional[List[str]] = None,
         names: Optional[List[str]] = None,
         server: Optional[str] = None,
-    ) -> List[tuple[Any, str]]:
+    ) -> List[tuple[Any, str, dict]]:
         """
         异步获取工具列表（带服务器信息）- 显式异步版本
 
@@ -210,7 +249,7 @@ class MCPToolsRegistry:
             server: 服务器名称过滤，可选
 
         Returns:
-            List[tuple[Any, str]]: 工具及其服务器名称的元组列表
+            List[tuple[Any, str, dict]]: 工具及其服务器名称、服务器配置的元组列表
         """
         return await self._get_tools_with_server_async(tags, names, server)
 

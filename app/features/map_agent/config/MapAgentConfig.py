@@ -114,17 +114,23 @@ class MapAgentConfig(BaseAgentConfig):
         ]
 
         try:
-            from app.core.tools.mcp_tool_adapter import adapt_mcp_tool
+            from app.core.tools.mcp_tool_adapter import adapt_mcp_tool, MCPToolConfig
 
             registry = MCPToolsRegistry.get_instance()
             tools_with_server = registry.get_tools_with_server(tags=map_agent_settings.mcp_tags)
             
             if tools_with_server:
-                for mcp_tool, server_name in tools_with_server:
+                for mcp_tool, server_name, server_config in tools_with_server:
+                    tool_config_dict = server_config.get("tool_config", {})
+                    tool_config = MCPToolConfig(
+                        enable_injection=tool_config_dict.get("enable_injection", True),
+                        default_param_keys=tool_config_dict.get("default_param_keys", [])
+                    )
                     adapted_tool = adapt_mcp_tool(
                         mcp_tool,
                         mcp_server_name=server_name,
-                        mcp_client=registry._pool
+                        mcp_client=registry._pool,
+                        tool_config=tool_config
                     )
                     tools.append(adapted_tool)
                 

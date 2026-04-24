@@ -30,7 +30,9 @@ class MapAgentSettings(BaseSettings):
     )
 
     mcp_tags: List[str] = Field(
-        default=["map"], description="MCP 工具标签过滤列表，用于按标签筛选 MCP 工具"
+        default=["map"],
+        validation_alias="map_mcp_tags",
+        description="MCP 工具标签过滤列表，用于按标签筛选 MCP 工具"
     )
 
     @field_validator("mcp_tags", mode="before")

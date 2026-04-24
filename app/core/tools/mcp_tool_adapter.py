@@ -19,6 +19,7 @@ from typing import Any, List, Optional, Type
 from langgraph.config import get_stream_writer
 from pydantic import BaseModel, ConfigDict, create_model
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 
 from app.core.tools.events import create_tool_event
@@ -39,6 +40,7 @@ def json_schema_to_pydantic_model(
         if field_type == "string":
             if "enum" in field_schema:
                 from enum import Enum
+
                 enum_values = {v: v for v in field_schema["enum"]}
                 enum_cls = Enum(f"{model_name}_{field_name}_enum", enum_values)
                 default = ... if field_name in required else None
@@ -67,7 +69,9 @@ def json_schema_to_pydantic_model(
             else:
                 default = ... if field_name in required else dict
                 field_definitions[field_name] = (dict, default)
-        elif field_type is None and ("anyOf" in field_schema or "oneOf" in field_schema):
+        elif field_type is None and (
+            "anyOf" in field_schema or "oneOf" in field_schema
+        ):
             sub_schemas = field_schema.get("anyOf") or field_schema.get("oneOf")
             types = []
             for sub in sub_schemas:
@@ -87,6 +91,7 @@ def json_schema_to_pydantic_model(
                 else:
                     types.append(str)
             from typing import Union
+
             union_type = Union[tuple(types)] if len(types) > 1 else types[0]
             default = ... if field_name in required else None
             field_definitions[field_name] = (union_type, default)
@@ -103,6 +108,14 @@ def json_schema_to_pydantic_model(
     return model
 
 
+class MCPToolConfig:
+    def __init__(
+        self, enable_injection: bool = True, default_param_keys: list[str] | None = None
+    ):
+        self.enable_injection = enable_injection
+        self.default_param_keys = default_param_keys or []
+
+
 class MCPToolToLangChainAdapter(BaseTool):
     name: str = ""
     description: str = ""
@@ -110,12 +123,21 @@ class MCPToolToLangChainAdapter(BaseTool):
     mcp_tool: Any = None
     mcp_server_name: str = ""
     mcp_client: Any = None
+    tool_config: Any = None
 
     def __init__(
-        self, mcp_tool: Any, mcp_server_name: str = "", mcp_client: Any = None, **kwargs
+        self,
+        mcp_tool: Any,
+        mcp_server_name: str = "",
+        mcp_client: Any = None,
+        tool_config: MCPToolConfig | None = None,
+        **kwargs,
     ):
         if isinstance(mcp_tool, BaseTool):
-            if getattr(mcp_tool, "response_format", None) and "response_format" not in kwargs:
+            if (
+                getattr(mcp_tool, "response_format", None)
+                and "response_format" not in kwargs
+            ):
                 kwargs["response_format"] = mcp_tool.response_format
 
         super().__init__(**kwargs)
@@ -123,6 +145,7 @@ class MCPToolToLangChainAdapter(BaseTool):
         self.mcp_tool = mcp_tool
         self.mcp_server_name = mcp_server_name
         self.mcp_client = mcp_client
+        self.tool_config = tool_config
 
         tool_name = getattr(mcp_tool, "name", str(mcp_tool))
         tool_description = getattr(mcp_tool, "description", "")
@@ -130,11 +153,18 @@ class MCPToolToLangChainAdapter(BaseTool):
         self.name = tool_name
         self.description = tool_description
 
-        if isinstance(mcp_tool, BaseTool) and getattr(mcp_tool, "args_schema", None) is not None:
+        if (
+            isinstance(mcp_tool, BaseTool)
+            and getattr(mcp_tool, "args_schema", None) is not None
+        ):
             self.args_schema = mcp_tool.args_schema
         else:
             input_schema = getattr(mcp_tool, "inputSchema", {})
-            if input_schema and isinstance(input_schema, dict) and input_schema.get("properties"):
+            if (
+                input_schema
+                and isinstance(input_schema, dict)
+                and input_schema.get("properties")
+            ):
                 self.args_schema = json_schema_to_pydantic_model(
                     input_schema, f"{tool_name}Args"
                 )
@@ -171,6 +201,49 @@ class MCPToolToLangChainAdapter(BaseTool):
         else:
             for i, arg in enumerate(args):
                 merged[f"arg_{i}"] = arg
+        return merged
+
+    def _inject_runtime_params(self, tool_kwargs: dict, config: Any) -> dict:
+        print(f"[DEBUG] _inject_runtime_params called")
+        print(f"[DEBUG] config: {config}")
+        print(f"[DEBUG] config keys: {config.keys() if config else 'None'}")
+
+        if self.tool_config is None or not self.tool_config.enable_injection:
+            print("[DEBUG] injection disabled, returning tool_kwargs as-is")
+            return tool_kwargs
+
+        runtime_params = {}
+        configurable = config.get("configurable", {}) if config else {}
+        print(f"[DEBUG] configurable: {configurable}")
+        print(
+            f"[DEBUG] configurable keys: {configurable.keys() if configurable else 'None'}"
+        )
+
+        for key in self.tool_config.default_param_keys:
+            if key in configurable:
+                runtime_params[key] = configurable[key]
+                print(
+                    f"[DEBUG] extracted from configurable: {key} = {configurable[key]}"
+                )
+
+        runtime = configurable.get("__pregel_runtime")
+        print(f"[DEBUG] __pregel_runtime: {runtime}")
+
+        if runtime and hasattr(runtime, "context"):
+            context = runtime.context
+            print(f"[DEBUG] runtime.context: {context}")
+            for key in self.tool_config.default_param_keys:
+                if key in context and key not in runtime_params:
+                    runtime_params[key] = context[key]
+                    print(
+                        f"[DEBUG] extracted from runtime.context: {key} = {context[key]}"
+                    )
+        else:
+            print("[DEBUG] runtime is None or has no context")
+
+        print(f"[DEBUG] runtime_params: {runtime_params}")
+        merged = {**runtime_params, **tool_kwargs}
+        print(f"[DEBUG] merged tool_kwargs: {merged}")
         return merged
 
     async def _execute_tool(self, kwargs: dict, config: Any = None) -> Any:
@@ -228,16 +301,23 @@ class MCPToolToLangChainAdapter(BaseTool):
                 f"MCP tool {self.name} does not support async execution"
             )
 
-    async def _arun(self, *args, config=None, **kwargs) -> Any:
+    async def _arun(self, *args, config: RunnableConfig = None, **kwargs) -> Any:
+        print(f"[DEBUG _arun] config={config}, kwargs={kwargs}")
+        print(f"[DEBUG _arun] args={args}")
+
         tool_call_id = self._get_tool_call_id(config)
         writer = self._get_writer()
         start_time = datetime.now()
 
         tool_kwargs = self._merge_args_kwargs(args, kwargs)
+        tool_kwargs = self._inject_runtime_params(tool_kwargs, config)
 
         logger.debug(
             "MCPToolAdapter._arun: tool=%s, args=%s, kwargs=%s, merged=%s",
-            self.name, args, kwargs, tool_kwargs,
+            self.name,
+            args,
+            kwargs,
+            tool_kwargs,
         )
 
         if writer:
@@ -245,7 +325,7 @@ class MCPToolToLangChainAdapter(BaseTool):
                 event_type="tool_start",
                 tool=self.name,
                 tool_call_id=tool_call_id,
-                data={"args": tool_kwargs, "description": f"开始执行工具: {self.name}"}
+                data={"args": tool_kwargs, "description": f"开始执行工具: {self.name}"},
             )
             writer(dict(start_event))
 
@@ -260,8 +340,10 @@ class MCPToolToLangChainAdapter(BaseTool):
                     data={
                         "status": "success",
                         "result": result,
-                        "duration_ms": int((datetime.now() - start_time).total_seconds() * 1000)
-                    }
+                        "duration_ms": int(
+                            (datetime.now() - start_time).total_seconds() * 1000
+                        ),
+                    },
                 )
                 writer(dict(stop_event))
 
@@ -281,8 +363,10 @@ class MCPToolToLangChainAdapter(BaseTool):
                         "error_type": type(e).__name__,
                         "error_message": str(e),
                         "result": None,
-                        "duration_ms": int((datetime.now() - start_time).total_seconds() * 1000)
-                    }
+                        "duration_ms": int(
+                            (datetime.now() - start_time).total_seconds() * 1000
+                        ),
+                    },
                 )
                 writer(dict(error_event))
 
@@ -290,8 +374,9 @@ class MCPToolToLangChainAdapter(BaseTool):
                 return (error_msg, None)
             return error_msg
 
-    def _run(self, *args, **kwargs) -> Any:
+    def _run(self, *args, config: RunnableConfig = None, **kwargs) -> Any:
         tool_kwargs = self._merge_args_kwargs(args, kwargs)
+        tool_kwargs = self._inject_runtime_params(tool_kwargs, kwargs.get("config"))
 
         if hasattr(self.mcp_tool, "_run"):
             run_sig = inspect.signature(self.mcp_tool._run)
@@ -327,7 +412,9 @@ class MCPToolToLangChainAdapter(BaseTool):
                         f"MCP tool {self.name} requires async execution in async context"
                     )
                 result = loop.run_until_complete(
-                    self.mcp_client.call_tool(self.mcp_server_name, self.name, tool_kwargs)
+                    self.mcp_client.call_tool(
+                        self.mcp_server_name, self.name, tool_kwargs
+                    )
                 )
                 if hasattr(result, "content"):
                     return result.content
@@ -347,7 +434,10 @@ class MCPToolToLangChainAdapter(BaseTool):
 
 
 def adapt_mcp_tool(
-    mcp_tool: Any, mcp_server_name: str = "", mcp_client: Any = None
+    mcp_tool: Any,
+    mcp_server_name: str = "",
+    mcp_client: Any = None,
+    tool_config: MCPToolConfig | None = None,
 ) -> BaseTool:
     try:
         tool_name = getattr(mcp_tool, "name", None) or str(mcp_tool)
@@ -355,6 +445,7 @@ def adapt_mcp_tool(
             mcp_tool=mcp_tool,
             mcp_server_name=mcp_server_name,
             mcp_client=mcp_client,
+            tool_config=tool_config,
             name=tool_name,
         )
     except Exception as e:
@@ -365,7 +456,10 @@ def adapt_mcp_tool(
 
 
 def adapt_mcp_tools(
-    mcp_tools: List[Any], mcp_server_name: str = "", mcp_client: Any = None
+    mcp_tools: List[Any],
+    mcp_server_name: str = "",
+    mcp_client: Any = None,
+    tool_config: MCPToolConfig | None = None,
 ) -> List[BaseTool]:
     adapted_tools = []
     failed_count = 0
@@ -373,7 +467,10 @@ def adapt_mcp_tools(
     for mcp_tool in mcp_tools:
         try:
             adapted_tool = adapt_mcp_tool(
-                mcp_tool, mcp_server_name=mcp_server_name, mcp_client=mcp_client
+                mcp_tool,
+                mcp_server_name=mcp_server_name,
+                mcp_client=mcp_client,
+                tool_config=tool_config,
             )
             adapted_tools.append(adapted_tool)
         except Exception as e:
