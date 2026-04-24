@@ -355,7 +355,31 @@ class StreamOutputWrapper(BaseTool):
         instance = super().__new__(cls)
         object.__setattr__(instance, "name", original_tool.name)
         object.__setattr__(instance, "description", original_tool.description)
-        object.__setattr__(instance, "args_schema", original_tool.args_schema)
+        
+        original_schema = getattr(original_tool, "args_schema", None)
+        if original_schema is not None:
+            if isinstance(original_schema, type) and hasattr(original_schema, "model_fields"):
+                resolved_schema = original_schema
+            elif isinstance(original_schema, dict):
+                try:
+                    from app.core.tools.mcp_tool_adapter import json_schema_to_pydantic_model
+                    resolved_schema = json_schema_to_pydantic_model(
+                        original_schema, f"{original_tool.name}Args"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to convert args_schema for tool '{original_tool.name}': {e}"
+                    )
+                    resolved_schema = None
+            else:
+                logger.warning(
+                    f"Unexpected args_schema type for tool '{original_tool.name}': {type(original_schema)}"
+                )
+                resolved_schema = None
+        else:
+            resolved_schema = None
+        
+        object.__setattr__(instance, "args_schema", resolved_schema)
         object.__setattr__(instance, "tags", [])
         object.__setattr__(instance, "metadata", {})
         object.__setattr__(instance, "original_tool", original_tool)

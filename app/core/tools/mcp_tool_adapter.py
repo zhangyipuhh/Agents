@@ -13,11 +13,12 @@ Author: AI Assistant
 import asyncio
 import inspect
 import logging
+import copy
 from datetime import datetime
-from typing import Any, List, Optional, Type
+from typing import Any, ClassVar, List, Optional, Type
 
 from langgraph.config import get_stream_writer
-from pydantic import BaseModel, ConfigDict, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
@@ -27,49 +28,218 @@ from app.core.tools.events import create_tool_event
 logger = logging.getLogger(__name__)
 
 
+def _resolve_ref(ref: str, defs: dict) -> dict:
+    """
+    解析 $ref 引用
+
+    Args:
+        ref: $ref 字符串，格式如 "#/$defs/Feature"
+        defs: $defs 定义的字典（已扁平化，不包含 $defs 键）
+
+    Returns:
+        解析后的 schema 字典
+    """
+    if not ref.startswith("#/"):
+        raise ValueError(f"Only local references are supported, got: {ref}")
+
+    path_parts = ref[2:].split("/")
+    current = defs
+
+    for part in path_parts:
+        if part == "$defs":
+            continue
+        if part not in current:
+            raise KeyError(f"Reference '{ref}' not found in defs")
+        current = current[part]
+
+    return copy.deepcopy(current)
+
+
+def _collect_defs(schema: dict[str, Any], defs: dict = None) -> dict:
+    """
+    递归收集 JSON Schema 中所有的 $defs 定义
+
+    Args:
+        schema: JSON Schema 字典
+        defs: 已收集的 $defs 定义（用于递归）
+
+    Returns:
+        收集到的所有 $defs 定义
+    """
+    if defs is None:
+        defs = {}
+    
+    if not isinstance(schema, dict):
+        return defs
+    
+    if "$defs" in schema:
+        defs.update(copy.deepcopy(schema["$defs"]))
+    
+    for key, value in schema.items():
+        if key == "$defs":
+            continue
+        elif isinstance(value, dict):
+            _collect_defs(value, defs)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    _collect_defs(item, defs)
+    
+    return defs
+
+
+def _normalize_schema(schema: dict[str, Any], all_defs: dict = None) -> dict[str, Any]:
+    """
+    规范化 JSON Schema，解析所有 $ref 引用
+
+    这个函数递归处理 schema，首先收集所有的 $defs 定义，
+    然后解析所有 $ref 引用。
+
+    Args:
+        schema: 原始 JSON Schema
+        all_defs: 所有 $defs 定义（用于递归）
+
+    Returns:
+        规范化后的 JSON Schema
+    """
+    if not isinstance(schema, dict):
+        return schema
+
+    if all_defs is None:
+        all_defs = _collect_defs(schema)
+
+    result = {}
+
+    for key, value in schema.items():
+        if key == "$defs":
+            continue
+        elif key == "$ref":
+            if isinstance(value, str):
+                try:
+                    resolved = _resolve_ref(value, all_defs)
+                    resolved = _normalize_schema(resolved, all_defs)
+                    result.update(resolved)
+                except (KeyError, ValueError) as e:
+                    logger.warning(f"Failed to resolve $ref '{value}': {e}")
+                    result[key] = value
+            else:
+                result[key] = value
+        elif isinstance(value, dict):
+            result[key] = _normalize_schema(value, all_defs)
+        elif isinstance(value, list):
+            result[key] = [
+                _normalize_schema(item, all_defs) if isinstance(item, dict) else item
+                for item in value
+            ]
+        else:
+            result[key] = value
+
+    return result
+
+
+class _NormalizedSchemaModel(BaseModel):
+    """
+    自定义 Pydantic 模型基类，存储已经解析好 $ref 引用的 schema
+    
+    当 LangChain 的 bind_tools() 调用 model_json_schema() 时，
+    返回已经解析好的 schema，避免 $ref 引用解析错误。
+    """
+    _normalized_schema: ClassVar[dict] = {}
+    
+    @classmethod
+    def model_json_schema(cls, **kwargs) -> dict:
+        if cls._normalized_schema:
+            return cls._normalized_schema
+        return super().model_json_schema(**kwargs)
+
+
 def json_schema_to_pydantic_model(
     schema: dict[str, Any], model_name: str = "ToolArgs"
 ) -> Type[BaseModel]:
-    properties = schema.get("properties", {})
-    required = schema.get("required", [])
+    """
+    将 JSON Schema 转换为 Pydantic 模型
+
+    支持 $ref 和 $defs 引用解析。
+
+    Args:
+        schema: JSON Schema 字典
+        model_name: 生成的模型名称
+
+    Returns:
+        Pydantic 模型类
+    """
+    normalized_schema = _normalize_schema(schema)
+    properties = normalized_schema.get("properties", {})
+    required = normalized_schema.get("required", [])
+
+    # 与 Pydantic 类型注解可能冲突的字段名
+    CONFLICTING_FIELD_NAMES = {"type", "default", "title", "description", "examples"}
 
     field_definitions = {}
     for field_name, field_schema in properties.items():
-        field_type = field_schema.get("type")
+        json_type = field_schema.get("type")
 
-        if field_type == "string":
+        # 检查字段名称是否与类型注解冲突
+        needs_alias = field_name in CONFLICTING_FIELD_NAMES
+        # 使用安全的内部字段名
+        internal_name = f"{field_name}_" if needs_alias else field_name
+
+        def make_field(py_type, is_required, alias=None):
+            if is_required:
+                if alias:
+                    return (py_type, Field(alias=alias))
+                return (py_type, ...)
+            else:
+                if alias:
+                    return (Optional[py_type], Field(default=None, alias=alias))
+                return (Optional[py_type], None)
+
+        is_required = field_name in required
+
+        if json_type == "string":
             if "enum" in field_schema:
                 from enum import Enum
 
                 enum_values = {v: v for v in field_schema["enum"]}
                 enum_cls = Enum(f"{model_name}_{field_name}_enum", enum_values)
-                default = ... if field_name in required else None
-                field_definitions[field_name] = (enum_cls, default)
+                field_definitions[internal_name] = make_field(
+                    enum_cls, is_required, field_name if needs_alias else None
+                )
             else:
-                default = ... if field_name in required else None
-                field_definitions[field_name] = (str, default)
-        elif field_type == "number" or field_type == "integer":
-            default = ... if field_name in required else None
-            field_definitions[field_name] = (
-                (float, default) if field_type == "number" else (int, default)
+                field_definitions[internal_name] = make_field(
+                    str, is_required, field_name if needs_alias else None
+                )
+        elif json_type == "number" or json_type == "integer":
+            py_type = float if json_type == "number" else int
+            field_definitions[internal_name] = make_field(
+                py_type, is_required, field_name if needs_alias else None
             )
-        elif field_type == "boolean":
-            default = ... if field_name in required else False
-            field_definitions[field_name] = (bool, default)
-        elif field_type == "array":
-            default = ... if field_name in required else list
-            field_definitions[field_name] = (list, default)
-        elif field_type == "object":
+        elif json_type == "boolean":
+            if is_required:
+                field_definitions[internal_name] = (
+                    bool, Field(alias=field_name) if needs_alias else ...
+                )
+            else:
+                field_definitions[internal_name] = (
+                    bool, Field(default=False, alias=field_name) if needs_alias else False
+                )
+        elif json_type == "array":
+            field_definitions[internal_name] = make_field(
+                list, is_required, field_name if needs_alias else None
+            )
+        elif json_type == "object":
             if "properties" in field_schema:
                 nested_model = json_schema_to_pydantic_model(
                     field_schema, f"{model_name}_{field_name}"
                 )
-                default = ... if field_name in required else None
-                field_definitions[field_name] = (nested_model, default)
+                field_definitions[internal_name] = make_field(
+                    nested_model, is_required, field_name if needs_alias else None
+                )
             else:
-                default = ... if field_name in required else dict
-                field_definitions[field_name] = (dict, default)
-        elif field_type is None and (
+                field_definitions[internal_name] = make_field(
+                    dict, is_required, field_name if needs_alias else None
+                )
+        elif json_type is None and (
             "anyOf" in field_schema or "oneOf" in field_schema
         ):
             sub_schemas = field_schema.get("anyOf") or field_schema.get("oneOf")
@@ -93,17 +263,21 @@ def json_schema_to_pydantic_model(
             from typing import Union
 
             union_type = Union[tuple(types)] if len(types) > 1 else types[0]
-            default = ... if field_name in required else None
-            field_definitions[field_name] = (union_type, default)
+            field_definitions[internal_name] = make_field(
+                union_type, is_required, field_name if needs_alias else None
+            )
         else:
-            default = ... if field_name in required else None
-            field_definitions[field_name] = (str, default)
+            field_definitions[internal_name] = make_field(
+                str, is_required, field_name if needs_alias else None
+            )
 
     model = create_model(
         model_name,
-        __config__=ConfigDict(extra="allow"),
+        __base__=_NormalizedSchemaModel,
+        __config__=ConfigDict(extra="allow", populate_by_name=True),
         **field_definitions,
     )
+    model._normalized_schema = normalized_schema
 
     return model
 
@@ -157,7 +331,18 @@ class MCPToolToLangChainAdapter(BaseTool):
             isinstance(mcp_tool, BaseTool)
             and getattr(mcp_tool, "args_schema", None) is not None
         ):
-            self.args_schema = mcp_tool.args_schema
+            original_schema = mcp_tool.args_schema
+            if isinstance(original_schema, type) and issubclass(original_schema, BaseModel):
+                self.args_schema = original_schema
+            elif isinstance(original_schema, dict):
+                self.args_schema = json_schema_to_pydantic_model(
+                    original_schema, f"{tool_name}Args"
+                )
+            else:
+                logger.warning(
+                    f"Unexpected args_schema type for tool '{tool_name}': {type(original_schema)}"
+                )
+                self.args_schema = None
         else:
             input_schema = getattr(mcp_tool, "inputSchema", {})
             if (
@@ -242,7 +427,7 @@ class MCPToolToLangChainAdapter(BaseTool):
             print("[DEBUG] runtime is None or has no context")
 
         print(f"[DEBUG] runtime_params: {runtime_params}")
-        merged = {**runtime_params, **tool_kwargs}
+        merged = {**tool_kwargs, **runtime_params}
         print(f"[DEBUG] merged tool_kwargs: {merged}")
         return merged
 
