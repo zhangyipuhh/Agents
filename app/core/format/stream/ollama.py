@@ -59,12 +59,12 @@ class OllamaStreamFormatStrategy(StreamFormatStrategy):
             else:
                 thinking_content = reasoning_content["reasoning_content"]
                 if thinking_content:
-                    return {'thinking': thinking_content, 'type': 'thinking'}
+                    return [{'thinking': thinking_content, 'type': 'thinking', 'index': 0}]
         else:
             reasoning_content = getattr(message_chunk, 'additional_kwargs', str(message_chunk))
             if reasoning_content:
                 thinking_content = reasoning_content["reasoning_content"]
                 if thinking_content:
-                    return {'thinking': thinking_content, 'type': 'thinking'}
+                    return [{'thinking': thinking_content, 'type': 'thinking', 'index': 0}]
 
         return None
