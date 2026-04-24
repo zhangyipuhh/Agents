@@ -88,7 +88,7 @@ def _convert_server_config(name: str, config: dict) -> dict:
             logger.warning("MCP server '%s': cannot determine transport, skipping", name)
             return {}
 
-    for key in ("tags", "sampling", "timeout", "connect_timeout", "read_timeout", "env"):
+    for key in ("tags", "sampling", "timeout", "connect_timeout", "read_timeout", "env", "tool_config"):
         adapted.pop(key, None)
 
     logger.info("MCP server '%s' adapted config: %s", name, adapted)
