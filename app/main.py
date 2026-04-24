@@ -11,8 +11,18 @@ FastAPI应用入口
 Date: 2025/4/11
 Author: 张镒谱
 """
+import logging
 import warnings
 import argparse
+
+import uvicorn
+
+logging.getLogger("root").addFilter(
+    lambda record: not (
+        "Failed to validate notification" in record.getMessage() or
+        "validation errors for ServerNotification" in record.getMessage()
+    )
+)
 
 warnings.filterwarnings(
     "ignore",
@@ -20,8 +30,6 @@ warnings.filterwarnings(
     category=UserWarning,
     module="pydantic.main"
 )
-
-import uvicorn
 
 from app.core.server import create_app
 from app.shared.routers.file_router import router as file_router
