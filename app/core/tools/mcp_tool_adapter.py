@@ -18,6 +18,7 @@ Author: 张镒谱
 
 import asyncio
 import inspect
+import json
 import logging
 import copy
 from datetime import datetime
@@ -384,7 +385,10 @@ class MCPToolConfig:
     """
     
     def __init__(
-        self, enable_injection: bool = True, default_param_keys: list[str] | None = None
+        self, 
+        enable_injection: bool = True, 
+        default_param_keys: list[str] | None = None,
+        unwrap_result: bool = False
     ):
         """
         初始化工具配置
@@ -392,11 +396,11 @@ class MCPToolConfig:
         Args:
             enable_injection: 是否启用运行时参数注入
             default_param_keys: 需要自动注入的参数键列表
+            unwrap_result: 是否解析工具返回结果，当为True时解析JSON格式{"content": ..., "result": ...}
         """
-        # 是否启用运行时参数注入
         self.enable_injection = enable_injection
-        # 默认参数键列表，为空列表时提供默认值
         self.default_param_keys = default_param_keys or []
+        self.unwrap_result = unwrap_result
 
 
 class MCPToolToLangChainAdapter(BaseTool):
@@ -799,10 +803,19 @@ class MCPToolToLangChainAdapter(BaseTool):
             writer(dict(start_event))
 
         try:
-            # 执行工具
             result = await self._execute_tool(tool_kwargs, config=config)
 
-            # 发布工具结束事件
+            if self.tool_config and self.tool_config.unwrap_result:
+                if isinstance(result, str):
+                    parsed_result = json.loads(result)
+                else:
+                    parsed_result = result
+                event_result = parsed_result.get("content", parsed_result)
+                return_result = parsed_result.get("result", parsed_result)
+            else:
+                event_result = result
+                return_result = result
+
             if writer:
                 stop_event = create_tool_event(
                     event_type="tool_stop",
@@ -810,7 +823,7 @@ class MCPToolToLangChainAdapter(BaseTool):
                     tool_call_id=tool_call_id,
                     data={
                         "status": "success",
-                        "result": result,
+                        "result": event_result,
                         "duration_ms": int(
                             (datetime.now() - start_time).total_seconds() * 1000
                         ),
@@ -818,7 +831,7 @@ class MCPToolToLangChainAdapter(BaseTool):
                 )
                 writer(dict(stop_event))
 
-            return result
+            return return_result
 
         except Exception as e:
             # 捕获异常，记录错误并发布错误事件
