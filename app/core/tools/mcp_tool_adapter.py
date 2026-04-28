@@ -22,6 +22,7 @@ import json
 import logging
 import copy
 from datetime import datetime
+from tkinter import N
 from typing import Any, ClassVar, List, Optional, Type
 
 from langgraph.config import get_stream_writer
@@ -803,15 +804,25 @@ class MCPToolToLangChainAdapter(BaseTool):
             writer(dict(start_event))
 
         try:
+            event_result = None
+            return_result = None
             result = await self._execute_tool(tool_kwargs, config=config)
-
+            if isinstance(result, tuple):#如果是元组，提取第一个值作为事件结果，第二个值作为返回结果
+                event_result = result[0]  # 第一个值
+                #return_result = result[1]  # 第二个值   
             if self.tool_config and self.tool_config.unwrap_result:
-                if isinstance(result, str):
-                    parsed_result = json.loads(result)
+                if isinstance(event_result, str):
+                    parsed_result = json.loads(event_result)
                 else:
-                    parsed_result = result
-                event_result = parsed_result.get("content", parsed_result)
-                return_result = parsed_result.get("result", parsed_result)
+                    parsed_result = event_result
+                # parsed_result 的格式为 [{'type': 'text', 'text': '{"result":"叠加分析成功","data":{...}}', 'id': '...'}]
+                # 提取 text 字段
+                text = parsed_result[0]["text"] if isinstance(parsed_result, list) and parsed_result and parsed_result[0].get("text") else parsed_result
+                # 解析 text 字段为 JSON 对象
+                tmp_result = json.loads(text) if isinstance(text, str) else text
+                # 提取 result 和 data 字段
+                return_result = (tmp_result.get("result", tmp_result),None)
+                event_result = tmp_result.get("data", tmp_result)
             else:
                 event_result = result
                 return_result = result
@@ -831,6 +842,7 @@ class MCPToolToLangChainAdapter(BaseTool):
                 )
                 writer(dict(stop_event))
 
+            # 根据响应格式返回不同类型的结果
             return return_result
 
         except Exception as e:
