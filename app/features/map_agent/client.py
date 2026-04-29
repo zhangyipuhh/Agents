@@ -569,7 +569,7 @@ class MapAgentChatClient:
     提供命令行交互界面，整合流式输出和颜色显示功能。
     """
 
-    def __init__(self, base_url: str = "http://localhost:8002", username: str = "admin", password: str = "123456"):
+    def __init__(self, base_url: str = "http://localhost:8002", username: str = "admin", password: str = "123456", session_id: Optional[str] = None):
         self.api_client = MapAgentClient(base_url, username, password)
         self.output_handler = StreamOutputHandler()
         self.printer = ColorPrinter()
@@ -577,6 +577,8 @@ class MapAgentChatClient:
         self.chat_count = 0
         self.username = username
         self.password = password
+        if session_id:
+            self.api_client.session_id = session_id
 
     def display_header(self) -> None:
         print("\n" + "=" * 60)
@@ -696,6 +698,12 @@ class MapAgentChatClient:
 
             self.printer.print_info("登录成功")
 
+            # 如果已经指定了 session_id，则不再创建新会话
+            if self.api_client.session_id:
+                self.printer.print_info(f"使用已有会话: {self.api_client.session_id}")
+                self.api_client.set_auth(token, self.api_client.session_id)
+                return True
+
             session_result = self.api_client.session.post(
                 f"{self.api_client.base_url}/api/session/create",
                 headers={"Authorization": f"Bearer {token}"},
@@ -736,6 +744,11 @@ def main():
         default="123456",
         help="登录密码 (默认: 123456)"
     )
+    parser.add_argument(
+        "--session-id",
+        default=None,
+        help="指定会话 ID (可选，将使用现有会话而非创建新会话)"
+    )
     args = parser.parse_args()
 
     base_url = args.url
@@ -743,7 +756,7 @@ def main():
     print(f"正在连接到: {base_url}")
     print(f"用户名: {args.username}")
     
-    client = MapAgentChatClient(base_url, args.username, args.password)
+    client = MapAgentChatClient(base_url, args.username, args.password, args.session_id)
     client.run()
 
 
