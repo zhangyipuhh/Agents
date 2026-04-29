@@ -389,7 +389,8 @@ class MCPToolConfig:
         self, 
         enable_injection: bool = True, 
         default_param_keys: list[str] | None = None,
-        unwrap_result: bool = False
+        unwrap_result: bool = False,
+        hidden_param_keys: list[str] | None = None
     ):
         """
         初始化工具配置
@@ -398,10 +399,12 @@ class MCPToolConfig:
             enable_injection: 是否启用运行时参数注入
             default_param_keys: 需要自动注入的参数键列表
             unwrap_result: 是否解析工具返回结果，当为True时解析JSON格式{"content": ..., "result": ...}
+            hidden_param_keys: 需要从工具 schema 中隐藏的参数键列表，LLM 看不到但运行时仍可注入
         """
         self.enable_injection = enable_injection
         self.default_param_keys = default_param_keys or []
         self.unwrap_result = unwrap_result
+        self.hidden_param_keys = hidden_param_keys or []
 
 
 class MCPToolToLangChainAdapter(BaseTool):
@@ -490,6 +493,15 @@ class MCPToolToLangChainAdapter(BaseTool):
                 self.args_schema = original_schema
             elif isinstance(original_schema, dict):
                 # 字典格式的 schema，转换为 Pydantic 模型
+                if self.tool_config and self.tool_config.hidden_param_keys:
+                    original_schema = copy.deepcopy(original_schema)
+                    for key in self.tool_config.hidden_param_keys:
+                        original_schema.get("properties", {}).pop(key, None)
+                    if "required" in original_schema:
+                        original_schema["required"] = [
+                            r for r in original_schema["required"]
+                            if r not in self.tool_config.hidden_param_keys
+                        ]
                 self.args_schema = json_schema_to_pydantic_model(
                     original_schema, f"{tool_name}Args"
                 )
@@ -507,6 +519,15 @@ class MCPToolToLangChainAdapter(BaseTool):
                 and isinstance(input_schema, dict)
                 and input_schema.get("properties")
             ):
+                if self.tool_config and self.tool_config.hidden_param_keys:
+                    input_schema = copy.deepcopy(input_schema)
+                    for key in self.tool_config.hidden_param_keys:
+                        input_schema.get("properties", {}).pop(key, None)
+                    if "required" in input_schema:
+                        input_schema["required"] = [
+                            r for r in input_schema["required"]
+                            if r not in self.tool_config.hidden_param_keys
+                        ]
                 # 存在属性定义，转换为 Pydantic 模型
                 self.args_schema = json_schema_to_pydantic_model(
                     input_schema, f"{tool_name}Args"

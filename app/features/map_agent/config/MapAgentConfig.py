@@ -125,7 +125,8 @@ class MapAgentConfig(BaseAgentConfig):
                     tool_config = MCPToolConfig(
                         enable_injection=tool_config_dict.get("enable_injection", True),
                         default_param_keys=tool_config_dict.get("default_param_keys", []),
-                        unwrap_result=tool_config_dict.get("unwrap_result", False)
+                        unwrap_result=tool_config_dict.get("unwrap_result", False),
+                        hidden_param_keys=tool_config_dict.get("hidden_param_keys", [])
                     )
                     adapted_tool = adapt_mcp_tool(
                         mcp_tool,
