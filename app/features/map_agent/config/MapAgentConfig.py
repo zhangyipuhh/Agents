@@ -146,7 +146,9 @@ class MapAgentConfig(BaseAgentConfig):
                     "MapAgent no MCP tools found with tags %s",
                     map_agent_settings.mcp_tags,
                 )
-        except Exception:
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
             logging.warning("MapAgent MCP tools unavailable, using static tools only")
 
         return tools, ToolNode(tools)

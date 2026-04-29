@@ -489,8 +489,20 @@ class MCPToolToLangChainAdapter(BaseTool):
             # 策略1：BaseTool 风格的 args_schema
             original_schema = mcp_tool.args_schema
             if isinstance(original_schema, type) and issubclass(original_schema, BaseModel):
-                # 已是 Pydantic 模型，直接使用
-                self.args_schema = original_schema
+                if self.tool_config and self.tool_config.hidden_param_keys:
+                    schema_dict = copy.deepcopy(original_schema.model_json_schema())
+                    for key in self.tool_config.hidden_param_keys:
+                        schema_dict.get("properties", {}).pop(key, None)
+                    if "required" in schema_dict:
+                        schema_dict["required"] = [
+                            r for r in schema_dict["required"]
+                            if r not in self.tool_config.hidden_param_keys
+                        ]
+                    self.args_schema = json_schema_to_pydantic_model(
+                        schema_dict, f"{tool_name}Args"
+                    )
+                else:
+                    self.args_schema = original_schema
             elif isinstance(original_schema, dict):
                 # 字典格式的 schema，转换为 Pydantic 模型
                 if self.tool_config and self.tool_config.hidden_param_keys:
