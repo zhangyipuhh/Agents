@@ -36,41 +36,29 @@ from app.core.llmcalls.model_factory import ModelFactory
 from app.core.tools.events import create_tool_event
 
 
-@tool(description="""
-【只读文件系统查询】在用户上传的工作空间中搜索和读取文件内容，仅支持只读操作。
-
-调用时机：
-- 需要搜索文件内容、列出目录结构时
-- 需要比对文档与代码差异时
-- 任何不修改文件的文件系统只读查询场景
-
-参数：
-- query: 查询要求，用自然语言描述需要查找的内容。例如：
-  "列出所有 .md 文件"
-  "搜索所有包含 'AgentState' 的 Python 文件"
-  "逐一比对 docs/ 中的文档和实际代码，找出所有不一致之处"
-
-注意：该工具仅搜索 {cwd}/app/data/upload/{session_id} 工作空间内的文件，不能访问工作空间外的路径。
-""")
-def filesystem_read(
+@tool(description="文件系统查询工具，在用户上传的工作空间中搜索和列出文件路径。")
+def search_agent(
     query: str,
     runtime: ToolRuntime[AgentContext],
 ) -> Command:
     """
-    只读文件系统查询工具
-
-    在指定的工作空间中创建一个只读子智能体，使用 FilesystemFileSearchMiddleware
-    提供 glob_search 和 grep_search 能力。子智能体执行过程通过 get_stream_writer()
-    以 tool_progress 事件流式推送。
+    在用户上传的工作空间中搜索和列出文件路径。
 
     Args:
-        query: 查询要求，自然语言描述。子智能体会根据此描述自行决定使用 glob_search 还是 grep_search。
-        runtime: 工具运行时上下文，包含 session_id、tool_call_id、context 等。
+        query: 结构化查询要求，建议使用以下格式：
+            - 搜索文件: "搜索 [文件类型] 文件中包含 '[关键词]' 的内容"
+            - 列出文件: "列出 [目录] 下所有 [文件类型] 文件"
+            示例：
+            - "搜索包含 'AgentState' 的文件"
+            - "列出 src 目录下所有 .ts 文件"
 
     Returns:
-        Command: 包含 ToolMessage 的查询结果，通过 Command.update.messages 返回。
+        查询结果，包含搜索到的文件路径列表或含有查询内容的文件路径。
+
+    Note:
+        仅搜索 {cwd}/app/data/upload/{session_id} 工作空间内的文件。
     """
-    tool_name = "filesystem_read"
+    tool_name = "search_agent"
     tool_call_id = runtime.tool_call_id
     start_time = datetime.now()
     writer = get_stream_writer()
@@ -111,10 +99,10 @@ def filesystem_read(
                 ),
             ],
             system_prompt=(
-                "你是只读文件系统助手。你只能使用 glob_search 和 grep_search 工具。"
-                "不能创建、修改或删除任何文件。"
-                "根据用户的查询要求，选择合适的工具完成任务，返回清晰的结果。"
-                "如果 glob_search 或 grep_search 返回空结果，直接说明未找到匹配内容。"
+                "你是文件系统查询助手。你只能使用 glob_search 和 grep_search 工具。"
+                "返回内容:\n"
+                "1. 搜索文件: 包含搜索到的文件路径列表\n"
+                "2. 列出文件: 包含搜索到的文件路径列表\n"
             ),
         )
 
@@ -135,12 +123,23 @@ def filesystem_read(
             )
             writer(dict(progress_event))
 
-            if chunk.get("type") == "updates":
-                for update in chunk.get("data", {}).values():
-                    msgs = update.get("messages", [])
-                    for msg in msgs:
-                        if hasattr(msg, "type") and msg.type == "ai" and msg.content:
-                            final_answer = msg.content
+            # chunk is a tuple: (stream_mode, data)
+            if isinstance(chunk, tuple) and len(chunk) == 2:
+                stream_mode, data = chunk
+                if stream_mode == "updates":
+                    for update in data.values():
+                        msgs = update.get("messages", [])
+                        for msg in msgs:
+                            if hasattr(msg, "type") and msg.type == "ai" and msg.content:
+                                final_answer = msg.content
+            elif isinstance(chunk, dict):
+                # Fallback for dict format
+                if chunk.get("type") == "updates":
+                    for update in chunk.get("data", {}).values():
+                        msgs = update.get("messages", [])
+                        for msg in msgs:
+                            if hasattr(msg, "type") and msg.type == "ai" and msg.content:
+                                final_answer = msg.content
 
         if not final_answer:
             final_answer = "子智能体执行完成，但未获取到文本回复。"
