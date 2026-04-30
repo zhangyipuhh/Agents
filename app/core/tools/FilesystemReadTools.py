@@ -24,7 +24,11 @@ from datetime import datetime
 from pathlib import Path
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import FilesystemFileSearchMiddleware, TodoListMiddleware
+from langchain.agents.middleware import ContextEditingMiddleware, TodoListMiddleware
+from langchain.agents.middleware.context_editing import ClearToolUsesEdit
+
+from app.shared.tools.middleware.encoding_safe_file_search import EncodingSafeFileSearchMiddleware
+from app.shared.utils.search.query_transformer import transform_query
 from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.config import get_stream_writer
@@ -80,51 +84,35 @@ def _extract_chunk_content(chunk):
     return chunk
 
 
-@tool(description="文件系统查询工具，在用户上传的工作空间中搜索和列出文件路径。")
+@tool(description=(
+    "文件系统搜索工具。搜索文件名和文件内容。\n"
+    "直接传入用户原始问题即可，不要自己改写、扩展或自作聪明。\n"
+    "正确：'如何实现的mcp集成'、'查找含langchain的文件'\n"
+    "错误：'读取unified_mcp_client详细设计完整内容'、'列出所有mcp_adapter模块文件'\n"
+    "后端会自动拆词和模糊搜索，不需要你预处理。"
+))
 def search_agent(
     query: str,
     runtime: ToolRuntime[AgentContext],
 ) -> Command:
     """
-    在用户上传的工作空间中搜索和列出文件路径。
-
-    重要：调用此工具前，必须将用户的自然语言问题扩展为具体的结构化查询。
-    不要直接将用户的简短问题（如"变更"、"配置在哪里"）原样传入，请先扩展为具体搜索指令。
-
-    转换规则：
-        - 用户问"是否有XXX文件/记录" → 扩展为"搜索包含'XXX'及相关关键词的文件"
-        - 用户问"XXX在哪里" → 扩展为"搜索包含'XXX'的文件"
-        - 用户问"列出XXX" → 扩展为"列出包含'XXX'的文件"
-        - 模糊词汇应扩展同义词：变更(更新/changelog)、配置(config/settings)、日志(log/record)
+    在用户上传的工作空间中搜索文件（支持按文件名和文件内容搜索）。
 
     Args:
-        query: 结构化查询要求，必须是扩展后的具体指令，格式如下：
-            - 搜索文件: "搜索包含 '[关键词]' 的文件" 或 "搜索 [文件类型] 文件中包含 '[关键词]' 的内容"
-            - 列出文件: "列出 [目录] 下所有 [文件类型] 文件"
-
-            正确示例（已扩展）：
-            - 用户问："有变更记录吗？"
-              → 扩展为："搜索包含'变更'、'更新'、'changelog'关键词的文件"
-            - 用户问："配置在哪里？"
-              → 扩展为："搜索包含'config'、'配置'、'settings'关键词的文件"
-            - 用户问："列出所有测试文件"
-              → 扩展为："列出所有 .test.ts 和 .spec.ts 文件"
-
-            错误示例（不要这样做）：
-            - 直接传入："变更" ❌
-            - 直接传入："配置" ❌
+        query: 搜索指令。应为用户的完整搜索意图，包含：
+            - 搜索目标（文件名 / 文件内容 / 两者）
+            - 关键词
+            - 格式如："用户要找文件内容包含'需求'的文件"
 
     Returns:
-        查询结果，包含搜索到的文件路径列表或含有查询内容的文件路径。
-
-    Note:
-        - 仅搜索 {cwd}/app/data/upload/{session_id} 工作空间内的文件
-        - query 必须是具体的搜索指令，不能直接将用户的模糊问题原样传入
+        查询结果，包含搜索到的文件路径列表。
     """
     tool_name = "search_agent"
     tool_call_id = runtime.tool_call_id
     start_time = datetime.now()
     writer = get_stream_writer()
+
+    query = transform_query(query)
 
     session_id = runtime.context.get("session_id", "default")
 
@@ -179,20 +167,30 @@ def search_agent(
                         "任务完成后立即更新状态。"
                     ),
                 ),
-                FilesystemFileSearchMiddleware(
+                EncodingSafeFileSearchMiddleware(
                     root_path=str(root_path),
-                    use_ripgrep=False,
                     max_file_size_mb=10,
+                ),
+                ContextEditingMiddleware(
+                    edits=[
+                        ClearToolUsesEdit(
+                            trigger=1000,
+                            keep=2,
+                            exclude_tools=[],
+                            placeholder="[earlier tool results trimmed for context length]",
+                        )
+                    ]
                 ),
             ],
             system_prompt=(
                 "你是文件搜索执行器。\n"
-                "流程：接收查询 → 写搜索计划 → 执行搜索 → 返回结果。\n"
+                "流程：\n"
+                "1. 理解查询意图，提取关键词。若查询过于简短（如单个词），应扩展到同义词和英文对应词\n"
+                "2. glob_search 按文件名搜索关键词\n"
+                "3. grep_search 按文件内容搜索关键词（英文用 (?i) 忽略大小写）\n"
+                "4. 返回文件路径列表，不要返回文件内容\n"
                 "你只能使用 write_todos、glob_search、grep_search 工具。\n"
-                "glob_search 搜文件名，grep_search 搜文件内容（含全文匹配）。\n"
-                "无论用什么方式搜索，最终结果只输出文件路径列表，不要返回文件内容。\n"
-                "绝对禁止：与用户对话、反问、询问确认、问候。\n"
-                "直接返回搜索到的文件路径列表即可。"
+                "绝对禁止：与用户对话、反问、询问确认、问候。"
             ),
         )
 
@@ -244,7 +242,7 @@ def search_agent(
                 "status": "success",
                 "result": {
                     "query": query,
-                    "answer": final_answer[:500],
+                    "answer": final_answer,
                 },
                 "duration_ms": duration_ms,
             },
