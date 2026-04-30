@@ -15,6 +15,7 @@ import uuid
 import base64
 from pathlib import Path
 from app.core.agent.agent import get_agent
+from app.core.messages import extract_text
 from app.features.Tagent.config.TagentConfig import TAgentConfig, TAgentState, TAgentContext, TExecuteConfig, TConfigurableConfig
 from app.shared.utils.files.fileTransfer import FileTransfer
 from langgraph.checkpoint.memory import MemorySaver
@@ -231,9 +232,11 @@ async def _async_main():
                 context=context
             )
             
+            # 提取消息文本内容
+            content = extract_text(result["messages"][-1])
+            
             # 使用Rich库渲染Markdown格式的响应
-            # 将Agent返回的最后一条消息内容转换为Markdown并美化输出
-            md = Markdown(result["messages"][-1].content)
+            md = Markdown(content)
             console.print(md)
             print()
             
