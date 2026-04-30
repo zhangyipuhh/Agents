@@ -177,6 +177,12 @@ class AgentConfig:
     max_input_tokens: int = field(default=999999999)
     """最大输入 token 数，限制单次输入的最大长度，防止输入过长导致上下文超限，默认 999999999"""
 
+    trim_tool_messages: bool = field(default=True)
+    """是否启用工具消息 trim，启用后会删除旧的工具消息，只保留最近 keep_last_n_tools 条，默认 True"""
+
+    keep_last_n_tools: int = field(default=2)
+    """保留最近几条工具消息，用于控制发送给 LLM 的工具消息数量，默认 2"""
+
     IS_MULTIMODAL: bool = field(default=LLM_CONFIG["is_multimodal"]==True)
     """是否多模态模型，用于判断是否需要处理图片"""
     

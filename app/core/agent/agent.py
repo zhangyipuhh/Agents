@@ -45,6 +45,7 @@ from app.core.agent.AgentConfig import (
     ExecuteConfig,
 )
 from app.core.config.config import LLM_CONFIG
+from app.core.messages import trim_old_tool_messages
 
 
 class LLMInputState(TypedDict):
@@ -125,6 +126,8 @@ class Agent:
         self.checkpointer = config.checkpointer
         self.store = config.store
         self.system_prompt = config.system_prompt
+        self._trim_tool_messages = config.trim_tool_messages
+        self._keep_last_n_tools = config.keep_last_n_tools
 
     async def __ainit__(self):
         """异步初始化方法
@@ -205,6 +208,11 @@ class Agent:
         """
         context = runtime.context
         messages = state["summarized_messages"]
+        
+        # 根据配置对消息进行工具消息过滤
+        if self._trim_tool_messages:
+            messages = trim_old_tool_messages(messages, keep_last_n=self._keep_last_n_tools)
+        
         # logging.info(f"对话历史: {messages[-1].content}")
         # messages = state["messages"]
         # 系统提示词，指导模型如何根据文件类型调用相应的解析工具
