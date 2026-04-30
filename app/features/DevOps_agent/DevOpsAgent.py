@@ -12,6 +12,7 @@ import json
 import yaml
 from typing import Optional, Any, Union, AsyncGenerator
 from pathlib import Path
+from app.core.messages import extract_text
 
 from app.core.agent.agent import get_agent
 from app.features.DevOps_agent.config.DevOpsAgentConfig import (
@@ -267,7 +268,7 @@ class DevOpsAgent:
 
         # 正常结果
         if isinstance(result, dict) and "messages" in result:
-            return {"type": "normal", "content": result["messages"][-1].content}
+            return {"type": "normal", "content": extract_text(result["messages"][-1])}
 
         return {"type": "normal", "content": str(result)}
 
