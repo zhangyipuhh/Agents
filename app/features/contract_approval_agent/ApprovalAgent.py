@@ -8,7 +8,7 @@ ApprovalAgent - 审批Agent类
 Date: 2026-03-19
 Author: 张镒谱
 """
-
+from app.core.messages import extract_text
 from typing import Optional
 from app.core.agent.agent import get_agent
 from app.features.contract_approval_agent.config.ApprovalAgentConfig import (
@@ -129,7 +129,7 @@ class ApprovalAgent:
             context=context,
         )
 
-        return result["messages"][-1].content
+        return extract_text(result["messages"][-1])
 
     async def get_agent(self):
         """

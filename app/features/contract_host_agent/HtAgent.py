@@ -18,6 +18,7 @@ from app.features.contract_host_agent.config.HtAgentConfig import (
     HtExecuteConfig,
     HtConfigurableConfig,
 )
+from app.core.messages import extract_text
 from app.features.contract_host_agent.config.prompts import DEFAULT_SYSTEM_PROMPT
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.store.base import BaseStore
@@ -125,7 +126,7 @@ class HtAgent:
             context=context,
         )
 
-        return result["messages"][-1].content
+        return extract_text(result["messages"][-1])
 
     async def get_agent(self):
         """
