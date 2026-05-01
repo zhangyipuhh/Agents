@@ -11,6 +11,7 @@ langchain-deepseek>=0.1.0
 langchain-text-splitters>=0.3.0
 langgraph>=0.2.0
 langmem>=0.1.0
+deepagents>=0.1.0
 
 python-docx>=0.8.11
 PyMuPDF>=1.23.0
