@@ -13,6 +13,14 @@ FileParserClient 单元测试模块
 Date: 2026/05/02
 Author: 张镒谱
 """
+import sys
+from pathlib import Path
+
+# 获取项目根目录并添加到 sys.path
+project_root = Path(__file__).resolve().parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 import json
 import pytest
 from pathlib import Path
