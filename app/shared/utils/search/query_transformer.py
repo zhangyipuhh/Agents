@@ -74,7 +74,5 @@ def transform_query(query: str) -> str:
         f"搜索步骤：\n"
         f"1. glob_search 搜索文件名，模式：{glob_pattern}\n"
         f"2. grep_search 搜索文件内容，模式：{grep_pattern}\n"
-        f"如果未找到结果，请为每个关键词生成1-2个常用同义词，"
-        f"用新关键词重新搜索一次。\n"
-        f"直接返回文件路径列表。"
+        f"搜索完成后直接返回文件路径列表，不要扩展同义词，不要重复搜索。"
     )

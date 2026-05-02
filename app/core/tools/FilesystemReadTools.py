@@ -35,7 +35,7 @@ from deepagents.backends import FilesystemBackend
 from app.shared.tools.middleware.encoding_safe_file_search import EncodingSafeFileSearchMiddleware
 from app.shared.utils.search.query_transformer import transform_query
 from langchain.tools import tool, ToolRuntime
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.config import get_stream_writer
 from langgraph.types import Command
 from pydantic import BaseModel, Field
@@ -56,6 +56,26 @@ class GetFilePathsResult(BaseModel):
 class SearchAgentResult(BaseModel):
     """search_agent 子智能体结构化输出"""
     answer: str = Field(description="文件内容分析结果")
+
+
+def _extract_last_ai_text(messages: list) -> str:
+    """从 messages 列表中提取最后一条 AI 消息的文本内容，作为兜底回答。"""
+    for msg in reversed(messages):
+        if not isinstance(msg, AIMessage):
+            continue
+        content = msg.content
+        if not content:
+            continue
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+        if isinstance(content, list):
+            text_parts = [
+                b.get("text", "") for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            ]
+            if text_parts:
+                return "".join(text_parts).strip()
+    return ""
 
 
 @tool(description=(
@@ -168,7 +188,7 @@ def get_file_paths(
                 "4. 返回文件路径列表，格式如：- /path/to/file1.py\\n- /path/to/file2.md\n"
                 "绝对禁止：读取文件内容、分析文件、回答用户问题、与用户对话、反问、询问确认、问候。\n"
                 "你的唯一职责是返回文件路径列表，文件内容的读取和分析由 search_agent 工具完成。\n"
-                "你只能使用 write_todos、glob_search、grep_search 工具。"
+                "可使用 write_todos、glob_search、grep_search 工具搜索文件。"
             ),
             response_format=GetFilePathsResult,
         )
@@ -200,6 +220,10 @@ def get_file_paths(
                     sr = data["structured_response"]
                     if isinstance(sr, GetFilePathsResult):
                         final_answer = "\n".join(f"- {p}" for p in sr.paths)
+                    elif isinstance(sr, dict):
+                        final_answer = "\n".join(f"- {p}" for p in sr.get("paths", []))
+                if not final_answer and "messages" in data:
+                    final_answer = _extract_last_ai_text(data["messages"])
 
         if not final_answer:
             final_answer = "子智能体执行完成，但未获取到文本回复。"
@@ -345,7 +369,7 @@ def search_agent(
                 FilesystemMiddleware(
                     backend=FilesystemBackend(
                         root_dir=str(root_path),
-                        virtual_mode=False,
+                        virtual_mode=True,
                     ),
                 ),
                 ContextEditingMiddleware(
@@ -366,11 +390,13 @@ def search_agent(
                 "流程：\n"
                 "1. 使用 ls 确认目标文件存在\n"
                 "2. 使用 read_file 逐个读取文件内容\n"
-                "   - read_file 的 path 参数使用上述相对路径\n"
+                "   - read_file 的 path 参数使用上述相对路径，不要添加 / 前缀\n"
+                "   - 正确：read_file('前置文档/需求文档.md')\n"
+                "   - 错误：read_file('/前置文档/需求文档.md')\n"
                 "   - 默认 limit=200 行，如需查看全文可增大 limit 值\n"
                 "3. 根据用户问题分析文件内容并返回答案\n\n"
                 "用户问题: {query}\n\n"
-                "只能使用 ls、read_file 工具。\n"
+                "可使用 ls、read_file 工具读取和分析文件。\n"
                 "绝对禁止：与用户对话、反问、询问确认、问候。"
             ).format(
                 paths="\n".join(f"- {p}" for p in relative_paths),
@@ -381,6 +407,7 @@ def search_agent(
 
         first_message = (
             f"请读取以下文件并根据用户问题进行分析：\n\n"
+            f"重要：read_file 的 path 参数不要添加 / 前缀！\n"
             f"文件列表：\n" + "\n".join(f"- {p}" for p in relative_paths) +
             f"\n\n用户问题：{query}"
         )
@@ -412,6 +439,10 @@ def search_agent(
                     sr = data["structured_response"]
                     if isinstance(sr, SearchAgentResult):
                         final_answer = sr.answer
+                    elif isinstance(sr, dict):
+                        final_answer = sr.get("answer", "")
+                if not final_answer and "messages" in data:
+                    final_answer = _extract_last_ai_text(data["messages"])
 
         if not final_answer:
             final_answer = "子智能体执行完成，但未获取到文本回复。"
