@@ -32,11 +32,6 @@ const handleSendMessage = (message) => {
   // 这里可以添加消息到列表的逻辑
 }
 
-// 处理全能模式切换
-const handleTogglePower = (isFullPower) => {
-  console.log('全能模式:', isFullPower ? '开启' : '关闭')
-}
-
 // 处理工具栏操作
 const handleToolAction = (action) => {
   console.log('工具操作:', action)
@@ -68,7 +63,6 @@ const handleToolAction = (action) => {
         <!-- 底部输入区域 -->
         <InputBox
           @send="handleSendMessage"
-          @toggle-power="handleTogglePower"
           @tool-action="handleToolAction"
         />
       </main>

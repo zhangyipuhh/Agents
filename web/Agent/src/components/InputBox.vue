@@ -4,9 +4,6 @@ import { ref, computed, nextTick } from 'vue'
 // 输入框内容
 const inputValue = ref('')
 
-// 全能模式开关
-const isFullPower = ref(true)
-
 // 输入框引用
 const textareaRef = ref(null)
 
@@ -65,19 +62,11 @@ const handleBlur = () => {
   isFocused.value = false
 }
 
-// 切换全能模式
-const toggleFullPower = () => {
-  isFullPower.value = !isFullPower.value
-  emit('toggle-power', isFullPower.value)
-}
-
-// 工具栏按钮点击
 const handleToolAction = (action) => {
   emit('tool-action', action)
 }
 
-// 定义事件
-const emit = defineEmits(['send', 'toggle-power', 'tool-action'])
+const emit = defineEmits(['send', 'tool-action'])
 </script>
 
 <template>
@@ -85,50 +74,6 @@ const emit = defineEmits(['send', 'toggle-power', 'tool-action'])
     <div class="input-wrapper">
       <!-- 主输入区域 -->
       <div class="input-main" :class="{ focused: isFocused }">
-        <!-- 工具栏 -->
-        <div class="toolbar">
-          <button
-            class="tool-btn"
-            title="附件"
-            @click="handleToolAction('attachment')"
-          >
-            <svg viewBox="0 0 20 20" fill="currentColor" class="tool-icon">
-              <path fill-rule="evenodd" d="M8 4a3 3 0 00-3 3v4a5 5 0 0010 0V7a1 1 0 112 0v4a7 7 0 11-14 0V7a5 5 0 0110 0v4a3 3 0 11-6 0V7a1 1 0 012 0v4a1 1 0 102 0V7a3 3 0 00-3-3z" clip-rule="evenodd"/>
-            </svg>
-          </button>
-
-          <button
-            class="tool-btn"
-            title="工具"
-            @click="handleToolAction('tools')"
-          >
-            <svg viewBox="0 0 20 20" fill="currentColor" class="tool-icon">
-              <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/>
-            </svg>
-          </button>
-
-          <button
-            class="tool-btn text-btn"
-            title="技能"
-            @click="handleToolAction('skills')"
-          >
-            <svg viewBox="0 0 20 20" fill="currentColor" class="tool-icon">
-              <path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z"/>
-            </svg>
-            <span>技能</span>
-          </button>
-
-          <button
-            class="tool-btn"
-            title="设置"
-            @click="handleToolAction('settings')"
-          >
-            <svg viewBox="0 0 20 20" fill="currentColor" class="tool-icon">
-              <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/>
-            </svg>
-          </button>
-        </div>
-
         <!-- 文本输入区 -->
         <textarea
           ref="textareaRef"
@@ -143,14 +88,50 @@ const emit = defineEmits(['send', 'toggle-power', 'tool-action'])
           @blur="handleBlur"
         ></textarea>
 
-        <!-- 右侧功能区 -->
-        <div class="right-actions">
-          <!-- 全能模式切换 -->
-          <div class="power-toggle" @click="toggleFullPower">
-            <span class="power-label">全能</span>
-            <div class="toggle-switch" :class="{ active: isFullPower }">
-              <div class="toggle-knob"></div>
-            </div>
+        <!-- 底部操作栏 -->
+        <div class="bottom-row">
+          <!-- 工具栏 -->
+          <div class="toolbar">
+            <button
+              class="tool-btn"
+              title="附件"
+              @click="handleToolAction('attachment')"
+            >
+              <svg viewBox="0 0 20 20" fill="currentColor" class="tool-icon">
+                <path fill-rule="evenodd" d="M8 4a3 3 0 00-3 3v4a5 5 0 0010 0V7a1 1 0 112 0v4a7 7 0 11-14 0V7a5 5 0 0110 0v4a3 3 0 11-6 0V7a1 1 0 012 0v4a1 1 0 102 0V7a3 3 0 00-3-3z" clip-rule="evenodd"/>
+              </svg>
+            </button>
+
+            <button
+              class="tool-btn"
+              title="工具"
+              @click="handleToolAction('tools')"
+            >
+              <svg viewBox="0 0 20 20" fill="currentColor" class="tool-icon">
+                <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/>
+              </svg>
+            </button>
+
+            <button
+              class="tool-btn text-btn"
+              title="技能"
+              @click="handleToolAction('skills')"
+            >
+              <svg viewBox="0 0 20 20" fill="currentColor" class="tool-icon">
+                <path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z"/>
+              </svg>
+              <span>技能</span>
+            </button>
+
+            <button
+              class="tool-btn"
+              title="设置"
+              @click="handleToolAction('settings')"
+            >
+              <svg viewBox="0 0 20 20" fill="currentColor" class="tool-icon">
+                <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/>
+              </svg>
+            </button>
           </div>
 
           <!-- 发送按钮 -->
@@ -198,42 +179,24 @@ const emit = defineEmits(['send', 'toggle-power', 'tool-action'])
   transition: var(--transition-colors), var(--transition-shadow), border-color 0.25s ease;
   position: relative;
 
-  &::before {
-    content: '';
-    position: absolute;
-    inset: -2px;
-    border-radius: calc(var(--radius-lg) + 2px);
-    background: linear-gradient(135deg, rgba(99, 102, 241, 0), rgba(99, 102, 241, 0));
-    opacity: 0;
-    transition: opacity 0.25s ease;
-    z-index: -1;
-  }
-
-  &.focused {
-    border-color: var(--color-accent);
-    box-shadow:
-      0 0 0 4px rgba(99, 102, 241, 0.08),
-      0 4px 16px rgba(99, 102, 241, 0.08);
-    background-color: var(--color-bg-primary);
-
-    &::before {
-      opacity: 1;
-      background: linear-gradient(135deg, rgba(99, 102, 241, 0.02), rgba(99, 102, 241, 0.05));
-    }
-  }
-
   &:hover:not(.focused) {
     border-color: var(--color-border);
     box-shadow: var(--shadow-sm);
   }
 }
 
-/* 工具栏 */
+/* 底部操作栏 */
+.bottom-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 8px;
+}
+
 .toolbar {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding-bottom: 4px;
 }
 
 .tool-btn {
@@ -325,67 +288,13 @@ const emit = defineEmits(['send', 'toggle-power', 'tool-action'])
   }
 }
 
-/* 右侧功能区 */
-.right-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding-top: 4px;
-}
-
-/* 全能模式切换 */
-.power-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  user-select: none;
-}
-
-.power-label {
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  color: var(--color-text-secondary);
-  transition: var(--transition);
-}
-
-.toggle-switch {
-  position: relative;
-  width: 40px;
-  height: 22px;
-  background-color: var(--color-border);
-  border-radius: var(--radius-full);
-  transition: var(--transition);
-
-  &.active {
-    background-color: var(--color-accent);
-  }
-
-  .toggle-knob {
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 18px;
-    height: 18px;
-    background-color: white;
-    border-radius: 50%;
-    transition: transform 0.2s ease;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-  }
-
-  &.active .toggle-knob {
-    transform: translateX(18px);
-  }
-}
-
 /* 发送按钮 */
 .send-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  width: 32px;
+  height: 32px;
   background-color: var(--color-accent);
   color: white;
   border-radius: 50%;
@@ -433,8 +342,8 @@ const emit = defineEmits(['send', 'toggle-power', 'tool-action'])
 }
 
 .send-icon {
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
 }
 
 /* 底部声明 */

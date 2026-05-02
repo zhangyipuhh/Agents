@@ -3,6 +3,8 @@ import { ref } from 'vue'
 
 // 状态管理
 const isHistoryCollapsed = ref(false)
+const isLabCollapsed = ref(false)
+const isExpertCollapsed = ref(false)
 const activeMenu = ref('new-task')
 
 // 历史会话数据
@@ -20,6 +22,14 @@ const handleMenuClick = (menuId) => {
 // 切换历史记录折叠状态
 const toggleHistory = () => {
   isHistoryCollapsed.value = !isHistoryCollapsed.value
+}
+
+const toggleLab = () => {
+  isLabCollapsed.value = !isLabCollapsed.value
+}
+
+const toggleExpert = () => {
+  isExpertCollapsed.value = !isExpertCollapsed.value
 }
 </script>
 
@@ -79,68 +89,90 @@ const toggleHistory = () => {
 
     <!-- 分组：ZYP实验室 -->
     <div class="sidebar-group">
-      <div class="group-header">
+      <button class="group-header" @click="toggleLab">
+        <svg
+          class="group-collapse-icon"
+          :class="{ collapsed: isLabCollapsed }"
+          viewBox="0 0 20 20"
+          fill="currentColor"
+        >
+          <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"/>
+        </svg>
         <span class="group-title">ZYP实验室</span>
-      </div>
-      <div class="group-items">
-        <!-- 地图操作 (Beta) -->
-        <button
-          class="menu-item"
-          :class="{ active: activeMenu === 'map' }"
-          @click="handleMenuClick('map')"
-        >
-          <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
-            <path fill-rule="evenodd" d="M12 1.586l-4 4v12.828l4-4V1.586zM3.707 3.293A1 1 0 002 4v10a1 1 0 00.293.707L6 18.414V5.586L3.707 3.293zM17.707 5.293L14 1.586v12.828l2.293 2.293A1 1 0 0018 16V6a1 1 0 00-.293-.707z" clip-rule="evenodd"/>
-          </svg>
-          <span class="menu-text">地图操作</span>
-          <span class="tag tag-beta">Beta</span>
-        </button>
+      </button>
+      <transition name="slide">
+        <div v-show="!isLabCollapsed" class="group-items">
+          <!-- 地图操作 (Beta) -->
+          <button
+            class="menu-item menu-item-sm"
+            :class="{ active: activeMenu === 'map' }"
+            @click="handleMenuClick('map')"
+          >
+            <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M12 1.586l-4 4v12.828l4-4V1.586zM3.707 3.293A1 1 0 002 4v10a1 1 0 00.293.707L6 18.414V5.586L3.707 3.293zM17.707 5.293L14 1.586v12.828l2.293 2.293A1 1 0 0018 16V6a1 1 0 00-.293-.707z" clip-rule="evenodd"/>
+            </svg>
+            <span class="menu-text">地图操作</span>
+            <span class="tag tag-beta">Beta</span>
+          </button>
 
-        <!-- 数据分析 -->
-        <button
-          class="menu-item"
-          :class="{ active: activeMenu === 'analytics' }"
-          @click="handleMenuClick('analytics')"
-        >
-          <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
-            <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/>
-          </svg>
-          <span class="menu-text">数据分析</span>
-        </button>
+          <!-- 数据分析 -->
+          <button
+            class="menu-item menu-item-sm"
+            :class="{ active: activeMenu === 'analytics' }"
+            @click="handleMenuClick('analytics')"
+          >
+            <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/>
+            </svg>
+            <span class="menu-text">数据分析</span>
+          </button>
 
-        <!-- Skills技能 (New) -->
-        <button
-          class="menu-item"
-          :class="{ active: activeMenu === 'skills' }"
-          @click="handleMenuClick('skills')"
-        >
-          <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
-            <path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd"/>
-          </svg>
-          <span class="menu-text">Skills技能</span>
-          <span class="tag tag-new">New</span>
-        </button>
-      </div>
+          <!-- Skills技能 (New) -->
+          <button
+            class="menu-item menu-item-sm"
+            :class="{ active: activeMenu === 'skills' }"
+            @click="handleMenuClick('skills')"
+          >
+            <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd"/>
+            </svg>
+            <span class="menu-text">Skills技能</span>
+            <span class="tag tag-new">New</span>
+          </button>
+        </div>
+      </transition>
     </div>
 
     <!-- 分组：专家 -->
     <div class="sidebar-group">
-      <div class="group-header">
-        <span class="group-title">专家</span>
-      </div>
-      <div class="group-items">
-        <!-- 探索专家 -->
-        <button
-          class="menu-item"
-          :class="{ active: activeMenu === 'experts' }"
-          @click="handleMenuClick('experts')"
+      <button
+        class="group-header"
+        @click="toggleExpert"
+      >
+        <svg
+          class="group-collapse-icon"
+          :class="{ collapsed: isExpertCollapsed }"
+          viewBox="0 0 20 20"
+          fill="currentColor"
         >
-          <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
-            <path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z"/>
-          </svg>
-          <span class="menu-text">探索专家</span>
-        </button>
-      </div>
+          <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"/>
+        </svg>
+        <span class="group-title">专家</span>
+      </button>
+      <transition name="slide">
+        <div v-show="!isExpertCollapsed" class="group-items">
+          <button
+            class="menu-item menu-item-sm"
+            :class="{ active: activeMenu === 'experts' }"
+            @click="handleMenuClick('experts')"
+          >
+            <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z"/>
+            </svg>
+            <span class="menu-text">探索专家</span>
+          </button>
+        </div>
+      </transition>
     </div>
 
     <!-- 任务记录区（可折叠） -->
@@ -200,33 +232,14 @@ const toggleHistory = () => {
   border-right: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
   contain: var(--contain-layout);
-
-  /* Custom Scrollbar Enhancement */
-  &::-webkit-scrollbar {
-    width: 5px;
-  }
-
-  &::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
-  &::-webkit-scrollbar-thumb {
-    background-color: var(--color-border);
-    border-radius: var(--radius-full);
-    transition: background-color var(--transition-fast);
-
-    &:hover {
-      background-color: var(--color-text-muted);
-    }
-  }
 }
 
 /* Logo 区域 */
 .sidebar-logo {
-  padding: 20px 20px 16px;
+  flex-shrink: 0;
+  padding: 8px 12px 6px;
   border-bottom: 1px solid var(--color-border-light);
 }
 
@@ -251,6 +264,7 @@ const toggleHistory = () => {
 
 /* 导航区域 */
 .sidebar-nav {
+  flex-shrink: 0;
   padding: 12px 8px;
 }
 
@@ -338,6 +352,17 @@ const toggleHistory = () => {
   font-weight: var(--font-weight-medium);
 }
 
+.menu-item-sm {
+  padding: 8px 12px;
+  font-size: var(--font-size-sm);
+  gap: 10px;
+
+  .menu-icon {
+    width: 18px;
+    height: 18px;
+  }
+}
+
 .shortcut {
   display: inline-flex;
   align-items: center;
@@ -385,20 +410,45 @@ const toggleHistory = () => {
 
 /* 分组样式 */
 .sidebar-group {
+  flex-shrink: 0;
   margin-top: 8px;
   padding: 0 8px;
 }
 
 .group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
   padding: 8px 12px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  transition: var(--transition-colors);
+
+  &:hover {
+    color: var(--color-text-primary);
+    background-color: var(--color-bg-hover);
+  }
+}
+
+.group-collapse-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  transition: transform var(--transition);
+
+  &.collapsed {
+    transform: rotate(-90deg);
+  }
 }
 
 .group-title {
   font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  font-weight: var(--font-weight-bold);
+  color: inherit;
+  letter-spacing: 0.02em;
 }
 
 .group-items {
@@ -409,9 +459,12 @@ const toggleHistory = () => {
 
 /* 历史记录区域 */
 .sidebar-history {
-  margin-top: auto;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   border-top: 1px solid var(--color-border-light);
-  padding: 12px 8px;
+  padding: 12px 8px 0;
 }
 
 .history-header {
@@ -444,10 +497,31 @@ const toggleHistory = () => {
 }
 
 .history-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 2px;
   margin-top: 4px;
+  padding-bottom: 12px;
+
+  &::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background-color: var(--color-border);
+    border-radius: var(--radius-full);
+
+    &:hover {
+      background-color: var(--color-text-muted);
+    }
+  }
 }
 
 .history-item {
@@ -495,10 +569,11 @@ const toggleHistory = () => {
 
 /* 用户信息区域 */
 .sidebar-user {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 16px 20px;
+  padding: 6px 12px;
   border-top: 1px solid var(--color-border-light);
   background-color: var(--color-bg-secondary);
 }
