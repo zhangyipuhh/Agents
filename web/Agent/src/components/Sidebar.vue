@@ -1,25 +1,29 @@
 <script setup>
 import { ref } from 'vue'
 
-// 状态管理
+const emit = defineEmits(['toggle-sidebar'])
+
+const isSidebarCollapsed = ref(false)
 const isHistoryCollapsed = ref(false)
 const isLabCollapsed = ref(false)
 const isExpertCollapsed = ref(false)
 const activeMenu = ref('new-task')
 
-// 历史会话数据
 const historySessions = ref([
   { id: 1, title: '数据分析报告生成', time: '10:30', active: true },
   { id: 2, title: '地图操作自动化', time: '昨天', active: false },
   { id: 3, title: '客户信息整理', time: '3天前', active: false },
 ])
 
-// 菜单点击处理
 const handleMenuClick = (menuId) => {
   activeMenu.value = menuId
 }
 
-// 切换历史记录折叠状态
+const toggleSidebar = () => {
+  isSidebarCollapsed.value = !isSidebarCollapsed.value
+  emit('toggle-sidebar', !isSidebarCollapsed.value)
+}
+
 const toggleHistory = () => {
   isHistoryCollapsed.value = !isHistoryCollapsed.value
 }
@@ -34,7 +38,7 @@ const toggleExpert = () => {
 </script>
 
 <template>
-  <aside class="sidebar">
+  <aside class="sidebar" :class="{ collapsed: isSidebarCollapsed }">
     <!-- Logo 区域 -->
     <div class="sidebar-logo">
       <div class="logo-container">
@@ -43,8 +47,13 @@ const toggleExpert = () => {
           <path d="M16 8L22 12V20L16 24L10 20V12L16 8Z" stroke="white" stroke-width="2" stroke-linejoin="round"/>
           <circle cx="16" cy="16" r="3" fill="white"/>
         </svg>
-        <span class="logo-text">ZYP</span>
+        <span v-show="!isSidebarCollapsed" class="logo-text">ZYP</span>
       </div>
+      <button class="sidebar-toggle" @click="toggleSidebar" :title="isSidebarCollapsed ? '展开侧栏' : '收起侧栏'">
+        <svg viewBox="0 0 20 20" fill="currentColor" class="toggle-icon" :class="{ rotated: isSidebarCollapsed }">
+          <path fill-rule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clip-rule="evenodd"/>
+        </svg>
+      </button>
     </div>
 
     <!-- 主导航区域 -->
@@ -58,8 +67,8 @@ const toggleExpert = () => {
         <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
           <path d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z"/>
         </svg>
-        <span class="menu-text">新建任务</span>
-        <kbd class="shortcut">Ctrl+K</kbd>
+        <span v-show="!isSidebarCollapsed" class="menu-text">新建任务</span>
+        <kbd v-show="!isSidebarCollapsed" class="shortcut">Ctrl+K</kbd>
       </button>
 
       <!-- 搜索 -->
@@ -71,7 +80,7 @@ const toggleExpert = () => {
         <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
           <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd"/>
         </svg>
-        <span class="menu-text">搜索</span>
+        <span v-show="!isSidebarCollapsed" class="menu-text">搜索</span>
       </button>
 
       <!-- 资产 -->
@@ -83,9 +92,11 @@ const toggleExpert = () => {
         <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
           <path d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V4zM3 10a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H4a1 1 0 01-1-1v-6zM14 9a1 1 0 00-1 1v6a1 1 0 001 1h2a1 1 0 001-1v-6a1 1 0 00-1-1h-2z"/>
         </svg>
-        <span class="menu-text">资产</span>
+        <span v-show="!isSidebarCollapsed" class="menu-text">资产</span>
       </button>
     </nav>
+
+    <template v-if="!isSidebarCollapsed">
 
     <!-- 分组：ZYP实验室 -->
     <div class="sidebar-group">
@@ -205,6 +216,7 @@ const toggleExpert = () => {
         </div>
       </transition>
     </div>
+    </template>
 
     <!-- 底部用户信息 -->
     <div class="sidebar-user">
@@ -215,7 +227,7 @@ const toggleExpert = () => {
           <path d="M20 22C14.477 22 10 26.477 10 32V34H30V32C30 26.477 25.523 22 20 22Z" fill="var(--color-accent)"/>
         </svg>
       </div>
-      <div class="user-info">
+      <div v-show="!isSidebarCollapsed" class="user-info">
         <span class="user-name">用户名</span>
         <span class="user-tag tag-free">免费</span>
       </div>
@@ -234,6 +246,30 @@ const toggleExpert = () => {
   flex-direction: column;
   overflow: hidden;
   contain: var(--contain-layout);
+  transition: width 0.3s ease, min-width 0.3s ease;
+
+  &.collapsed {
+    width: 60px;
+    min-width: 60px;
+
+    .sidebar-logo {
+      justify-content: center;
+    }
+
+    .sidebar-nav {
+      padding: 12px 6px;
+    }
+
+    .menu-item {
+      justify-content: center;
+      padding: 10px;
+    }
+
+    .sidebar-user {
+      justify-content: center;
+      padding: 6px;
+    }
+  }
 }
 
 /* Logo 区域 */
@@ -241,6 +277,41 @@ const toggleExpert = () => {
   flex-shrink: 0;
   padding: 8px 12px 6px;
   border-bottom: 1px solid var(--color-border-light);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sidebar-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: var(--transition-colors), var(--transition-transform);
+  flex-shrink: 0;
+
+  &:hover {
+    color: var(--color-text-primary);
+    background-color: var(--color-bg-hover);
+  }
+
+  &:active {
+    transform: scale(0.95);
+  }
+}
+
+.toggle-icon {
+  width: 16px;
+  height: 16px;
+  transition: transform 0.3s ease;
+
+  &.rotated {
+    transform: rotate(180deg);
+  }
 }
 
 .logo-container {
@@ -418,18 +489,29 @@ const toggleExpert = () => {
 .group-header {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 6px;
   width: 100%;
   padding: 8px 12px 6px;
   border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background-color: var(--color-bg-secondary);
   cursor: pointer;
   color: var(--color-text-secondary);
   font-size: var(--font-size-xs);
-  transition: var(--transition-colors);
+  font-weight: var(--font-weight-bold);
+  text-align: left;
+  letter-spacing: 0.02em;
+  transition: var(--transition-colors), var(--transition-shadow);
 
   &:hover {
     color: var(--color-text-primary);
     background-color: var(--color-bg-hover);
+    border-color: var(--color-text-muted);
+  }
+
+  &:active {
+    transform: scale(var(--scale-active));
   }
 }
 
@@ -470,15 +552,28 @@ const toggleExpert = () => {
 .history-header {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 8px;
   width: 100%;
   padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background-color: var(--color-bg-secondary);
   color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  text-align: left;
+  letter-spacing: 0.02em;
+  transition: var(--transition-colors), var(--transition-shadow);
 
   &:hover {
     color: var(--color-text-primary);
+    background-color: var(--color-bg-hover);
+    border-color: var(--color-text-muted);
+  }
+
+  &:active {
+    transform: scale(var(--scale-active));
   }
 }
 
@@ -494,6 +589,10 @@ const toggleExpert = () => {
 
 .history-title {
   flex: 1;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  color: inherit;
+  letter-spacing: 0.02em;
 }
 
 .history-list {

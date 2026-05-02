@@ -183,6 +183,11 @@ const emit = defineEmits(['send', 'tool-action'])
     border-color: var(--color-border);
     box-shadow: var(--shadow-sm);
   }
+
+  &.focused {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+  }
 }
 
 /* 底部操作栏 */
@@ -285,6 +290,7 @@ const emit = defineEmits(['send', 'tool-action'])
 
   &:focus {
     outline: none;
+    box-shadow: none;
   }
 }
 
