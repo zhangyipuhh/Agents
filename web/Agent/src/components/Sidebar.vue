@@ -678,8 +678,8 @@ const toggleExpert = () => {
 }
 
 .user-avatar {
-  width: 36px;
-  height: 36px;
+  width: 25px;
+  height: 25px;
   border-radius: var(--radius-full);
   overflow: hidden;
   flex-shrink: 0;
@@ -693,18 +693,23 @@ const toggleExpert = () => {
 .user-info {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex: 1;
   min-width: 0;
 }
 
 .user-name {
-  font-size: var(--font-size-base);
+  font-size: calc(var(--font-size-base) * 0.7);
   font-weight: var(--font-weight-medium);
   color: var(--color-text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.sidebar-user .tag {
+  font-size: 8px;
+  padding: 1px 6px;
 }
 
 /* 过渡动画 */
