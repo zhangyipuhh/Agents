@@ -338,6 +338,8 @@ class FileParserClient:
             for filename, file_data in file_results.items():
                 if output_format == "json":
                     content = file_data.get("content_list", [])
+                    if isinstance(content, str):
+                        content = json.loads(content)
                     output_file = output_path / f"{original_filename}.json"
                     self._write_json_file(output_file, content)
                 elif output_format == "md":
