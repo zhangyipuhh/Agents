@@ -38,6 +38,7 @@ from app.shared.routers.auth_router import router as auth_router
 from app.features.contract_host_agent.router.contract_router import router as contract_router
 from app.features.map_agent.router.map_router import router as map_router
 from app.features.AI_Coding_Check_agent.router.ai_coding_check_router import router as ai_coding_check_router
+from app.core.router import file_upload_router as core_file_upload_router
 
 
 app = create_app()
@@ -53,6 +54,7 @@ def register_routers():
     app.include_router(contract_router)
     app.include_router(map_router)
     app.include_router(ai_coding_check_router)
+    app.include_router(core_file_upload_router)
 
 
 register_routers()

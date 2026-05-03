@@ -170,6 +170,52 @@ class MCPSettings(BaseSettings):
         return load_mcp_config(config_path)
 
 
+class FileParserSettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+        protected_namespaces=("settings_",),
+    )
+
+    file_parser_enabled: bool = Field(
+        default=False, description="是否启用远程文件解析服务"
+    )
+    file_parser_server_url: str = Field(
+        default="http://mineru-openai-server:30000", description="远程解析服务地址"
+    )
+    file_parser_output_format: str = Field(
+        default="json", description="输出格式，可选 json 或 md"
+    )
+    file_parser_api_url: str = Field(
+        default="/api/v1/parse", description="解析服务 API 地址"
+    )
+    file_parser_max_retries: int = Field(
+        default=60, description="最大轮询重试次数"
+    )
+    file_parser_poll_interval: float = Field(
+        default=2.0, description="轮询间隔（秒）"
+    )
+    file_parser_timeout: int = Field(
+        default=300, description="请求超时时间（秒）"
+    )
+
+    @field_validator("file_parser_enabled", mode="before")
+    @classmethod
+    def parse_bool(cls, v):
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes", "on")
+        return bool(v)
+
+    @field_validator("file_parser_output_format", mode="before")
+    @classmethod
+    def validate_output_format(cls, v):
+        if v not in ("json", "md"):
+            raise ValueError("file_parser_output_format must be 'json' or 'md'")
+        return v
+
+
 class Settings(BaseSettings):
     """
     应用总配置
@@ -185,6 +231,7 @@ class Settings(BaseSettings):
     vision_llm: VisionLLMSettings = Field(default_factory=VisionLLMSettings)
     word_output: WordOutputSettings = Field(default_factory=WordOutputSettings)
     mcp: MCPSettings = Field(default_factory=MCPSettings)
+    file_parser: FileParserSettings = Field(default_factory=FileParserSettings)
 
     def get_llm_config(self) -> dict:
         """
@@ -230,6 +277,17 @@ class Settings(BaseSettings):
         return {
             "highlight_color": self.word_output.highlight_color,
             "output_dir": self.word_output.output_dir,
+        }
+
+    def get_file_parser_config(self) -> dict:
+        return {
+            "enabled": self.file_parser.file_parser_enabled,
+            "server_url": self.file_parser.file_parser_server_url,
+            "output_format": self.file_parser.file_parser_output_format,
+            "api_url": self.file_parser.file_parser_api_url,
+            "max_retries": self.file_parser.file_parser_max_retries,
+            "poll_interval": self.file_parser.file_parser_poll_interval,
+            "timeout": self.file_parser.file_parser_timeout,
         }
 
 

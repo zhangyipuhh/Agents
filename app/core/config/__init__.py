@@ -5,8 +5,8 @@
 
 导出配置相关的类和实例
 """
-from app.core.config.settings import settings, Settings, LLMSettings, VisionLLMSettings, WordOutputSettings, MCPSettings
-from app.core.config.config import LLM_CONFIG, LLM_VISION_CONFIG, WORD_OUTPUT_CONFIG, PROMPT_TEMPLATE, SubGraphType
+from app.core.config.settings import settings, Settings, LLMSettings, VisionLLMSettings, WordOutputSettings, MCPSettings, FileParserSettings
+from app.core.config.config import LLM_CONFIG, LLM_VISION_CONFIG, WORD_OUTPUT_CONFIG, PROMPT_TEMPLATE, SubGraphType, FILE_PARSER_CONFIG
 
 __all__ = [
     "settings",
@@ -15,9 +15,11 @@ __all__ = [
     "VisionLLMSettings",
     "WordOutputSettings",
     "MCPSettings",
+    "FileParserSettings",
     "LLM_CONFIG",
     "LLM_VISION_CONFIG",
     "WORD_OUTPUT_CONFIG",
+    "FILE_PARSER_CONFIG",
     "PROMPT_TEMPLATE",
     "SubGraphType",
 ]

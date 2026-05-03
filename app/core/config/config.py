@@ -46,6 +46,8 @@ PROMPT_TEMPLATE = {
 #word 结果输出配置
 WORD_OUTPUT_CONFIG = settings.get_word_output_config()
 
+FILE_PARSER_CONFIG = settings.get_file_parser_config()
+
 
 class SubGraphType(str, Enum):
     """
