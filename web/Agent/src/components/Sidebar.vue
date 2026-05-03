@@ -254,6 +254,28 @@ const toggleExpert = () => {
 
     .sidebar-logo {
       justify-content: center;
+      position: relative;
+      cursor: pointer;
+
+      .logo-container {
+        transition: opacity 0.2s ease;
+      }
+
+      .sidebar-toggle {
+        position: absolute;
+        opacity: 0;
+        transition: opacity 0.2s ease;
+      }
+
+      &:hover {
+        .logo-container {
+          opacity: 0;
+        }
+
+        .sidebar-toggle {
+          opacity: 1;
+        }
+      }
     }
 
     .sidebar-nav {
@@ -268,6 +290,7 @@ const toggleExpert = () => {
     .sidebar-user {
       justify-content: center;
       padding: 6px;
+      margin-top: auto;
     }
   }
 }
