@@ -3,9 +3,10 @@ import logging
 import tempfile
 import asyncio
 import aiofiles
+import shutil
 from pathlib import Path
 from typing import List
-from fastapi import APIRouter, UploadFile, File, HTTPException, Request
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Request
 from pydantic import BaseModel
 from requests import RequestException
 
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix='/api/core', tags=['Core File Upload'])
 
 UPLOAD_DIR = Path("app/data/upload")
+CHUNKS_DIR = Path("app/data/upload_chunks")
 
 
 class UploadedFileInfo(BaseModel):
@@ -123,3 +125,145 @@ async def upload_files(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"上传失败: {str(e)}")
+
+
+class ChunkUploadResponse(BaseModel):
+    file_id: str
+    chunk_index: int
+    received: bool
+
+
+class MergeChunksRequest(BaseModel):
+    file_id: str
+    filename: str
+    total_chunks: int
+
+
+@router.post('/upload-chunk', response_model=ChunkUploadResponse)
+async def upload_chunk(
+    chunk: UploadFile = File(...),
+    file_id: str = Form(...),
+    chunk_index: int = Form(...),
+    total_chunks: int = Form(...),
+    filename: str = Form(...)
+):
+    try:
+        chunk_dir = CHUNKS_DIR / file_id
+        chunk_dir.mkdir(parents=True, exist_ok=True)
+
+        chunk_path = chunk_dir / f"chunk_{chunk_index}"
+        content = await chunk.read()
+        async with aiofiles.open(chunk_path, "wb") as f:
+            await f.write(content)
+
+        return ChunkUploadResponse(
+            file_id=file_id,
+            chunk_index=chunk_index,
+            received=True
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"分片上传失败: {str(e)}")
+
+
+@router.post('/merge-chunks', response_model=CoreFileUploadResponse)
+async def merge_chunks(request: Request, merge_request: MergeChunksRequest):
+    try:
+        session_id = getattr(request.state, "session_id", "default")
+        session_dir = UPLOAD_DIR / session_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+
+        chunk_dir = CHUNKS_DIR / merge_request.file_id
+        if not chunk_dir.exists():
+            raise HTTPException(status_code=404, detail=f"分片目录不存在: {merge_request.file_id}")
+
+        original_stem = Path(merge_request.filename).stem
+        original_suffix = Path(merge_request.filename).suffix
+
+        merged_file = tempfile.NamedTemporaryFile(delete=False, suffix=original_suffix)
+        merged_path = Path(merged_file.name)
+        merged_file.close()
+
+        try:
+            async with aiofiles.open(merged_path, "wb") as out_f:
+                for i in range(merge_request.total_chunks):
+                    chunk_path = chunk_dir / f"chunk_{i}"
+                    if not chunk_path.exists():
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"分片缺失: chunk_{i}"
+                        )
+                    async with aiofiles.open(chunk_path, "rb") as in_f:
+                        content = await in_f.read()
+                        await out_f.write(content)
+
+            shutil.rmtree(chunk_dir, ignore_errors=True)
+
+            parser_enabled = FILE_PARSER_CONFIG.get("enabled", False)
+            parser_mode = "remote" if parser_enabled else "local"
+
+            if parser_enabled:
+                source_path = session_dir / f"{original_stem}{original_suffix}"
+                async with aiofiles.open(source_path, "wb") as f:
+                    async with aiofiles.open(merged_path, "rb") as in_f:
+                        content = await in_f.read()
+                    await f.write(content)
+
+                client = FileParserClient(
+                    server_url=FILE_PARSER_CONFIG["server_url"],
+                    max_retries=FILE_PARSER_CONFIG["max_retries"],
+                    poll_interval=FILE_PARSER_CONFIG["poll_interval"],
+                    timeout=FILE_PARSER_CONFIG["timeout"],
+                )
+                try:
+                    result_path = await asyncio.to_thread(
+                        client.parse,
+                        file_path=str(source_path),
+                        output_dir=str(session_dir),
+                        api_url=FILE_PARSER_CONFIG["api_url"],
+                        output_format=FILE_PARSER_CONFIG["output_format"],
+                    )
+                except RequestException as e:
+                    raise HTTPException(status_code=503, detail=f"远程解析服务不可用: {str(e)}")
+                except (ValueError, RuntimeError) as e:
+                    raise HTTPException(status_code=503, detail=f"远程解析服务错误: {str(e)}")
+                except TimeoutError as e:
+                    raise HTTPException(status_code=503, detail=f"远程解析服务超时: {str(e)}")
+                finally:
+                    source_path.unlink(missing_ok=True)
+
+                uploaded_files = [UploadedFileInfo(
+                    filename=merge_request.filename,
+                    stored_path=result_path,
+                    file_type=FILE_PARSER_CONFIG["output_format"],
+                )]
+            else:
+                try:
+                    loader = DocumentLoader(path=str(merged_path))
+                    docs = await asyncio.to_thread(loader.load)
+                except ValueError as e:
+                    raise HTTPException(status_code=400, detail=f"不支持的文件类型: {str(e)}")
+
+                text_content = "\n".join([doc.page_content for doc in docs])
+                output_path = session_dir / f"{original_stem}.txt"
+
+                async with aiofiles.open(output_path, "w", encoding="utf-8") as f:
+                    await f.write(text_content)
+
+                uploaded_files = [UploadedFileInfo(
+                    filename=merge_request.filename,
+                    stored_path=str(output_path),
+                    file_type="txt",
+                )]
+
+            return CoreFileUploadResponse(
+                files=uploaded_files,
+                count=len(uploaded_files),
+                parser_mode=parser_mode,
+            )
+        finally:
+            merged_path.unlink(missing_ok=True)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"合并分片失败: {str(e)}")
