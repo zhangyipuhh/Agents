@@ -1,19 +1,20 @@
 <script setup>
 import { ref, computed, nextTick } from 'vue'
+import { uploadFileInChunks, formatFileSize, getFileExtension } from '../utils/api.js'
 
-// 输入框内容
 const inputValue = ref('')
-
-// 输入框引用
 const textareaRef = ref(null)
-
-// 是否聚焦
+const fileInputRef = ref(null)
 const isFocused = ref(false)
+const isDragging = ref(false)
+const selectedFiles = ref([])
 
-// 计算属性：是否可以发送（输入框不为空）
-const canSend = computed(() => inputValue.value.trim().length > 0)
+const canSend = computed(() => {
+  const hasText = inputValue.value.trim().length > 0
+  const hasUploadedFiles = selectedFiles.value.some(f => f.status === 'success')
+  return hasText || hasUploadedFiles
+})
 
-// 自适应文本框高度
 const autoResize = () => {
   const textarea = textareaRef.value
   if (textarea) {
@@ -22,13 +23,11 @@ const autoResize = () => {
   }
 }
 
-// 处理输入事件
 const handleInput = (event) => {
   inputValue.value = event.target.value
   autoResize()
 }
 
-// 处理键盘事件（Enter 发送，Shift+Enter 换行）
 const handleKeydown = (event) => {
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
@@ -36,34 +35,151 @@ const handleKeydown = (event) => {
   }
 }
 
-// 处理发送
 const handleSend = () => {
   if (!canSend.value) return
 
-  // 触发发送事件
-  emit('send', inputValue.value.trim())
+  const uploadedFiles = selectedFiles.value
+    .filter(f => f.status === 'success')
+    .map(f => ({
+      filename: f.uploadResult.filename,
+      stored_path: f.uploadResult.stored_path,
+      file_type: f.uploadResult.file_type,
+      original_name: f.name,
+      size: f.size
+    }))
 
-  // 清空输入框
+  emit('send', inputValue.value.trim(), uploadedFiles)
+
   inputValue.value = ''
+  selectedFiles.value = []
 
-  // 重置高度
   nextTick(() => {
     autoResize()
   })
 }
 
-// 处理聚焦
 const handleFocus = () => {
   isFocused.value = true
 }
 
-// 处理失焦
 const handleBlur = () => {
   isFocused.value = false
 }
 
+const handleAttachmentClick = () => {
+  fileInputRef.value?.click()
+}
+
+const handleFileSelect = (event) => {
+  const files = Array.from(event.target.files || [])
+  addFiles(files)
+  if (fileInputRef.value) {
+    fileInputRef.value.value = ''
+  }
+}
+
+const addFiles = (files) => {
+  for (const file of files) {
+    const fileItem = {
+      id: `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
+      file,
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      extension: getFileExtension(file.name),
+      status: 'pending',
+      progress: 0,
+      uploadResult: null,
+      errorMsg: '',
+      cancelFn: null
+    }
+    selectedFiles.value.push(fileItem)
+    startUpload(fileItem)
+  }
+}
+
+const startUpload = (fileItem) => {
+  fileItem.status = 'uploading'
+  fileItem.progress = 0
+  fileItem.errorMsg = ''
+
+  uploadFileInChunks(
+    fileItem.file,
+    (progress) => {
+      const item = selectedFiles.value.find(f => f.id === fileItem.id)
+      if (item) item.progress = progress
+    },
+    (cancelFn) => {
+      const item = selectedFiles.value.find(f => f.id === fileItem.id)
+      if (item) item.cancelFn = cancelFn
+    }
+  ).then(result => {
+    const item = selectedFiles.value.find(f => f.id === fileItem.id)
+    if (item) {
+      item.status = 'success'
+      item.progress = 100
+      item.uploadResult = result.files?.[0] || result
+    }
+  }).catch(err => {
+    const item = selectedFiles.value.find(f => f.id === fileItem.id)
+    if (item) {
+      if (err.message === '上传已取消') {
+        const idx = selectedFiles.value.findIndex(f => f.id === fileItem.id)
+        if (idx !== -1) selectedFiles.value.splice(idx, 1)
+      } else {
+        item.status = 'error'
+        item.errorMsg = err.message
+      }
+    }
+  })
+}
+
+const removeFile = (fileItem) => {
+  if (fileItem.status === 'uploading' && fileItem.cancelFn) {
+    fileItem.cancelFn()
+  }
+  const idx = selectedFiles.value.findIndex(f => f.id === fileItem.id)
+  if (idx !== -1) selectedFiles.value.splice(idx, 1)
+}
+
+const retryUpload = (fileItem) => {
+  startUpload(fileItem)
+}
+
+const handleDragOver = (event) => {
+  event.preventDefault()
+  isDragging.value = true
+}
+
+const handleDragLeave = (event) => {
+  event.preventDefault()
+  isDragging.value = false
+}
+
+const handleDrop = (event) => {
+  event.preventDefault()
+  isDragging.value = false
+  const files = Array.from(event.dataTransfer?.files || [])
+  if (files.length > 0) {
+    addFiles(files)
+  }
+}
+
 const handleToolAction = (action) => {
   emit('tool-action', action)
+}
+
+const getFileIconColor = (ext) => {
+  const colorMap = {
+    pdf: '#EF4444',
+    doc: '#3B82F6', docx: '#3B82F6',
+    xls: '#10B981', xlsx: '#10B981', csv: '#10B981',
+    jpg: '#8B5CF6', jpeg: '#8B5CF6', png: '#8B5CF6', gif: '#8B5CF6', svg: '#8B5CF6', webp: '#8B5CF6',
+    txt: '#6B7280', md: '#6B7280',
+    ppt: '#F59E0B', pptx: '#F59E0B',
+    zip: '#6B7280', rar: '#6B7280', '7z': '#6B7280',
+  }
+  return colorMap[ext] || '#9CA3AF'
 }
 
 const emit = defineEmits(['send', 'tool-action'])
@@ -72,9 +188,77 @@ const emit = defineEmits(['send', 'tool-action'])
 <template>
   <div class="input-box-container">
     <div class="input-wrapper">
-      <!-- 主输入区域 -->
-      <div class="input-main" :class="{ focused: isFocused }">
-        <!-- 文本输入区 -->
+      <div
+        class="input-main"
+        :class="{ focused: isFocused, dragging: isDragging }"
+        @dragover="handleDragOver"
+        @dragleave="handleDragLeave"
+        @drop="handleDrop"
+      >
+        <input
+          ref="fileInputRef"
+          type="file"
+          multiple
+          style="display: none"
+          @change="handleFileSelect"
+        />
+
+        <div v-if="selectedFiles.length > 0" class="file-tags-container">
+          <div
+            v-for="fileItem in selectedFiles"
+            :key="fileItem.id"
+            class="file-tag"
+            :class="[fileItem.status]"
+          >
+            <svg
+              class="file-type-icon"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              :style="{ color: getFileIconColor(fileItem.extension) }"
+            >
+              <path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"/>
+            </svg>
+
+            <div class="file-info">
+              <span class="file-name" :title="fileItem.name">{{ fileItem.name }}</span>
+              <span class="file-size">{{ formatFileSize(fileItem.size) }}</span>
+            </div>
+
+            <div v-if="fileItem.status === 'uploading'" class="progress-area">
+              <div class="progress-bar">
+                <div class="progress-fill" :style="{ width: fileItem.progress + '%' }"></div>
+              </div>
+              <span class="progress-text">{{ fileItem.progress }}%</span>
+            </div>
+
+            <svg
+              v-if="fileItem.status === 'success'"
+              class="status-icon success-icon"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+            >
+              <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+            </svg>
+
+            <svg
+              v-if="fileItem.status === 'error'"
+              class="status-icon error-icon"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              @click="retryUpload(fileItem)"
+              title="点击重试"
+            >
+              <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+            </svg>
+
+            <button class="remove-btn" @click="removeFile(fileItem)" :title="fileItem.status === 'uploading' ? '取消上传' : '移除文件'">
+              <svg viewBox="0 0 20 20" fill="currentColor" class="remove-icon">
+                <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
         <textarea
           ref="textareaRef"
           v-model="inputValue"
@@ -88,14 +272,12 @@ const emit = defineEmits(['send', 'tool-action'])
           @blur="handleBlur"
         ></textarea>
 
-        <!-- 底部操作栏 -->
         <div class="bottom-row">
-          <!-- 工具栏 -->
           <div class="toolbar">
             <button
               class="tool-btn"
               title="附件"
-              @click="handleToolAction('attachment')"
+              @click="handleAttachmentClick"
             >
               <svg viewBox="0 0 20 20" fill="currentColor" class="tool-icon">
                 <path fill-rule="evenodd" d="M8 4a3 3 0 00-3 3v4a5 5 0 0010 0V7a1 1 0 112 0v4a7 7 0 11-14 0V7a5 5 0 0110 0v4a3 3 0 11-6 0V7a1 1 0 012 0v4a1 1 0 102 0V7a3 3 0 00-3-3z" clip-rule="evenodd"/>
@@ -124,7 +306,6 @@ const emit = defineEmits(['send', 'tool-action'])
             </button>
           </div>
 
-          <!-- 发送按钮 -->
           <button
             class="send-btn"
             :class="{ disabled: !canSend }"
@@ -140,7 +321,6 @@ const emit = defineEmits(['send', 'tool-action'])
       </div>
     </div>
 
-    <!-- 底部声明 -->
     <p class="disclaimer">内容由AI生成，重要信息请务必核查</p>
   </div>
 </template>
@@ -169,7 +349,7 @@ const emit = defineEmits(['send', 'tool-action'])
   transition: var(--transition-colors), var(--transition-shadow), border-color 0.25s ease;
   position: relative;
 
-  &:hover:not(.focused) {
+  &:hover:not(.focused):not(.dragging) {
     border-color: var(--color-border);
     box-shadow: var(--shadow-sm);
   }
@@ -178,9 +358,169 @@ const emit = defineEmits(['send', 'tool-action'])
     border-color: var(--color-accent);
     box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
   }
+
+  &.dragging {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+    background-color: var(--color-accent-light);
+  }
 }
 
-/* 底部操作栏 */
+.file-tags-container {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  padding: 4px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex-shrink: 0;
+
+  &::-webkit-scrollbar {
+    height: 4px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background-color: var(--color-border);
+    border-radius: var(--radius-full);
+  }
+
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.file-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background-color: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  min-width: 0;
+  transition: var(--transition-colors), border-color 0.2s ease;
+  position: relative;
+
+  &.uploading {
+    border-color: var(--color-accent);
+  }
+
+  &.success {
+    border-color: var(--color-success);
+  }
+
+  &.error {
+    border-color: var(--color-error);
+  }
+}
+
+.file-type-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.file-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+
+.file-name {
+  font-size: 12px;
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-primary);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.3;
+}
+
+.file-size {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  line-height: 1.2;
+}
+
+.progress-area {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 60px;
+}
+
+.progress-bar {
+  width: 40px;
+  height: 3px;
+  background-color: var(--color-bg-tertiary);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background-color: var(--color-accent);
+  border-radius: 2px;
+  transition: width 0.2s ease;
+}
+
+.progress-text {
+  font-size: 11px;
+  color: var(--color-accent);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+  min-width: 28px;
+}
+
+.status-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+
+  &.success-icon {
+    color: var(--color-success);
+  }
+
+  &.error-icon {
+    color: var(--color-error);
+    cursor: pointer;
+
+    &:hover {
+      opacity: 0.8;
+    }
+  }
+}
+
+.remove-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  transition: var(--transition-colors);
+
+  &:hover {
+    color: var(--color-error);
+    background-color: var(--color-bg-hover);
+  }
+}
+
+.remove-icon {
+  width: 12px;
+  height: 12px;
+}
+
 .bottom-row {
   display: flex;
   align-items: center;
@@ -229,7 +569,6 @@ const emit = defineEmits(['send', 'tool-action'])
     transform: scale(0.95);
   }
 
-  /* Ensure content is above pseudo-element */
   > * {
     position: relative;
     z-index: 1;
@@ -247,7 +586,6 @@ const emit = defineEmits(['send', 'tool-action'])
   height: 18px;
 }
 
-/* 文本输入框 */
 .text-input {
   width: 100%;
   min-height: 60px;
@@ -264,7 +602,6 @@ const emit = defineEmits(['send', 'tool-action'])
     color: var(--color-text-muted);
   }
 
-  /* 隐藏滚动条 */
   &::-webkit-scrollbar {
     width: 4px;
   }
@@ -284,7 +621,6 @@ const emit = defineEmits(['send', 'tool-action'])
   }
 }
 
-/* 发送按钮 */
 .send-btn {
   display: inline-flex;
   align-items: center;
@@ -342,7 +678,6 @@ const emit = defineEmits(['send', 'tool-action'])
   height: 16px;
 }
 
-/* 底部声明 */
 .disclaimer {
   text-align: center;
   font-size: var(--font-size-xs);

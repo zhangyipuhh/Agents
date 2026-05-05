@@ -7,12 +7,14 @@ const messages = ref([
   {
     id: 1,
     type: 'user',
-    content: '你好，请介绍一下你的功能'
+    content: '你好，请介绍一下你的功能',
+    attachments: []
   },
   {
     id: 2,
     type: 'ai',
-    content: ''
+    content: '',
+    attachments: []
   }
 ])
 
@@ -68,6 +70,15 @@ onBeforeUnmount(() => {
 
 // 定义事件
 const emit = defineEmits(['message-action'])
+
+const addMessage = (message) => {
+  messages.value.push({
+    ...message,
+    attachments: message.attachments || []
+  })
+}
+
+defineExpose({ addMessage })
 </script>
 
 <template>
@@ -91,6 +102,7 @@ const emit = defineEmits(['message-action'])
         :key="message.id"
         :type="message.type"
         :content="message.content"
+        :attachments="message.attachments"
       />
     </div>
 

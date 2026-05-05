@@ -1,18 +1,20 @@
 <script setup>
 import { ref, computed } from 'vue'
+import { formatFileSize, getFileExtension } from '../utils/api.js'
 
-// 定义属性
 const props = defineProps({
-  // 消息类型: 'user' | 'ai'
   type: {
     type: String,
     default: 'user',
     validator: (value) => ['user', 'ai'].includes(value)
   },
-  // 消息内容（支持字符串或对象结构）
   content: {
     type: [String, Object],
     default: ''
+  },
+  attachments: {
+    type: Array,
+    default: () => []
   }
 })
 
@@ -30,8 +32,22 @@ const toggleFeature = () => {
   isFeatureExpanded.value = !isFeatureExpanded.value
 }
 
-// 是否为用户消息
 const isUserMessage = computed(() => props.type === 'user')
+
+const hasAttachments = computed(() => props.attachments && props.attachments.length > 0)
+
+const getFileIconColor = (filename) => {
+  const ext = getFileExtension(filename)
+  const colorMap = {
+    pdf: '#EF4444',
+    doc: '#3B82F6', docx: '#3B82F6',
+    xls: '#10B981', xlsx: '#10B981', csv: '#10B981',
+    jpg: '#8B5CF6', jpeg: '#8B5CF6', png: '#8B5CF6', gif: '#8B5CF6',
+    txt: '#6B7280', md: '#6B7280',
+    ppt: '#F59E0B', pptx: '#F59E0B',
+  }
+  return colorMap[ext] || '#9CA3AF'
+}
 
 // AI 消息的完整内容示例
 const aiMessageContent = {
@@ -70,7 +86,20 @@ const aiMessageContent = {
     <!-- 用户消息 -->
     <div v-if="isUserMessage" class="user-message">
       <div class="bubble-content">
-        {{ content }}
+        <div v-if="hasAttachments" class="bubble-attachments">
+          <div
+            v-for="(att, idx) in attachments"
+            :key="idx"
+            class="bubble-attachment-tag"
+          >
+            <svg class="att-icon" viewBox="0 0 20 20" fill="currentColor" :style="{ color: getFileIconColor(att.original_name || att.filename) }">
+              <path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"/>
+            </svg>
+            <span class="att-name">{{ att.original_name || att.filename }}</span>
+            <span v-if="att.size" class="att-size">{{ formatFileSize(att.size) }}</span>
+          </div>
+        </div>
+        <div v-if="content" class="bubble-text">{{ content }}</div>
       </div>
     </div>
 
@@ -192,6 +221,45 @@ const aiMessageContent = {
   &:hover {
     box-shadow: 0 4px 12px rgba(99, 102, 241, 0.25);
   }
+}
+
+.bubble-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.bubble-attachment-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background-color: rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.att-icon {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
+.att-name {
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.att-size {
+  opacity: 0.7;
+  font-size: 11px;
+}
+
+.bubble-text {
+  white-space: pre-wrap;
 }
 
 /* AI 消息样式 */

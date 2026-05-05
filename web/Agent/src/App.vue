@@ -5,12 +5,23 @@ import SkillTags from './components/SkillTags.vue'
 import ChatArea from './components/ChatArea.vue'
 import InputBox from './components/InputBox.vue'
 
+const chatAreaRef = ref(null)
+
 const handleTagSelect = (tag, index) => {
   console.log('选择技能标签:', tag.label)
 }
 
-const handleSendMessage = (message) => {
-  console.log('发送消息:', message)
+const handleSendMessage = (message, attachments = []) => {
+  const newMessage = {
+    id: Date.now(),
+    type: 'user',
+    content: message,
+    attachments
+  }
+  if (chatAreaRef.value && chatAreaRef.value.addMessage) {
+    chatAreaRef.value.addMessage(newMessage)
+  }
+  console.log('发送消息:', message, '附件:', attachments)
 }
 
 const handleToolAction = (action) => {
@@ -20,18 +31,13 @@ const handleToolAction = (action) => {
 
 <template>
   <div class="app-layout">
-    <!-- 左侧边栏 -->
     <Sidebar />
 
-    <!-- 右侧内容区 -->
     <main class="content-area">
-      <!-- 技能标签栏 -->
       <SkillTags @tag-select="handleTagSelect" />
 
-      <!-- 聊天消息区域 -->
-      <ChatArea />
+      <ChatArea ref="chatAreaRef" />
 
-      <!-- 底部输入区域 -->
       <InputBox
         @send="handleSendMessage"
         @tool-action="handleToolAction"
