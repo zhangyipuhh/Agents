@@ -61,3 +61,4 @@ app/**/*.csv
 app/**/*.pdf
 app/**/*.docx
 app/**/*.xlsx
+web/Agent/node_modules/
