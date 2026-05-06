@@ -49,6 +49,49 @@ export async function ensureAuth() {
       }
     })
     if (!sessionRes.ok) {
+      if (sessionRes.status === 401) {
+        localStorage.removeItem('auth_token')
+        token = await refreshToken()
+        const retryRes = await fetch('/api/session/create', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          }
+        })
+        if (!retryRes.ok) {
+          localStorage.removeItem('auth_token')
+          throw new Error('创建会话失败')
+        }
+        const retryData = await retryRes.json()
+        sessionId = retryData.session_id
+        localStorage.setItem('session_id', sessionId)
+        return { token, sessionId }
+      }
+      localStorage.removeItem('auth_token')
+      throw new Error('创建会话失败')
+    }
+    const sessionData = await sessionRes.json()
+    sessionId = sessionData.session_id
+    localStorage.setItem('session_id', sessionId)
+  }
+
+  return { token, sessionId }
+}
+
+export async function forceRefreshAuth() {
+  const token = await refreshToken()
+  let sessionId = localStorage.getItem('session_id')
+
+  if (!sessionId) {
+    const sessionRes = await fetch('/api/session/create', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      }
+    })
+    if (!sessionRes.ok) {
       localStorage.removeItem('auth_token')
       throw new Error('创建会话失败')
     }
@@ -87,6 +130,9 @@ function uploadChunk(fileId, chunkIndex, totalChunks, filename, chunkBlob) {
       } else if (xhr.status === 401) {
         localStorage.removeItem('auth_token')
         reject(new Error('认证失败，请重试'))
+      } else if (xhr.status === 403) {
+        localStorage.removeItem('session_id')
+        reject(new Error('403 会话无效，请重试'))
       } else {
         reject(new Error(`分片上传失败: ${xhr.status} ${xhr.statusText}`))
       }
@@ -115,6 +161,10 @@ function mergeChunks(fileId, filename, totalChunks) {
       localStorage.removeItem('auth_token')
       throw new Error('认证失败，请重试')
     }
+    if (res.status === 403) {
+      localStorage.removeItem('session_id')
+      throw new Error('403 会话无效，请重试')
+    }
     if (!res.ok) {
       return res.json().then(err => { throw new Error(err.detail || '合并失败') })
     }
@@ -123,7 +173,7 @@ function mergeChunks(fileId, filename, totalChunks) {
 }
 
 export async function uploadFileInChunks(file, onProgress, onCancel) {
-  await ensureAuth()
+  await forceRefreshAuth()
 
   const fileId = generateFileId()
   const totalChunks = Math.ceil(file.size / CHUNK_SIZE) || 1
@@ -148,7 +198,16 @@ export async function uploadFileInChunks(file, onProgress, onCancel) {
       const end = Math.min(start + CHUNK_SIZE, file.size)
       const chunkBlob = file.slice(start, end)
 
-      await uploadChunk(fileId, i, totalChunks, file.name, chunkBlob)
+      try {
+        await uploadChunk(fileId, i, totalChunks, file.name, chunkBlob)
+      } catch (err) {
+        if (err.message === '认证失败，请重试' || err.message.includes('403')) {
+          await forceRefreshAuth()
+          await uploadChunk(fileId, i, totalChunks, file.name, chunkBlob)
+        } else {
+          throw err
+        }
+      }
 
       completedChunks++
       if (onProgress) {
@@ -160,8 +219,17 @@ export async function uploadFileInChunks(file, onProgress, onCancel) {
       throw new Error('上传已取消')
     }
 
-    const result = await mergeChunks(fileId, file.name, totalChunks)
-    return result
+    try {
+      const result = await mergeChunks(fileId, file.name, totalChunks)
+      return result
+    } catch (err) {
+      if (err.message === '认证失败，请重试' || err.message.includes('403')) {
+        await forceRefreshAuth()
+        const result = await mergeChunks(fileId, file.name, totalChunks)
+        return result
+      }
+      throw err
+    }
   })()
 
   return uploadPromise

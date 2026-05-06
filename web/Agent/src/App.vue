@@ -85,14 +85,19 @@ function processContentBlocks(aiMsg, blocks) {
   for (const block of blocks) {
     if (typeof block === 'string') {
       aiMsg.text += block
+      aiMsg.timeline.push({ type: 'text', content: block })
     } else if (isThinkingBlock(block)) {
       const thinkingText = block.thinking || ''
       if (thinkingText) {
         aiMsg.thinking.push(thinkingText)
+        aiMsg.timeline.push({ type: 'thinking', content: thinkingText })
       }
     } else {
       const t = extractTextFromBlock(block)
-      if (t) aiMsg.text += t
+      if (t) {
+        aiMsg.text += t
+        aiMsg.timeline.push({ type: 'text', content: t })
+      }
     }
   }
 }
@@ -108,10 +113,15 @@ function parseMessageContent(content, aiMsg) {
   if (typeof content === 'object' && content !== null) {
     if (isThinkingBlock(content)) {
       const thinkingText = content.thinking || ''
-      if (thinkingText) aiMsg.thinking.push(thinkingText)
+      if (thinkingText) {
+        aiMsg.thinking.push(thinkingText)
+        aiMsg.timeline.push({ type: 'thinking', content: thinkingText })
+      }
     } else {
       const t = extractTextFromBlock(content)
-      aiMsg.text += t || JSON.stringify(content)
+      const textContent = t || JSON.stringify(content)
+      aiMsg.text += textContent
+      aiMsg.timeline.push({ type: 'text', content: textContent })
     }
     return
   }
@@ -123,10 +133,12 @@ function parseMessageContent(content, aiMsg) {
       return
     }
     aiMsg.text += content
+    aiMsg.timeline.push({ type: 'text', content })
     return
   }
 
   aiMsg.text += String(content)
+  aiMsg.timeline.push({ type: 'text', content: String(content) })
 }
 
 function processSSEEvent(data, aiMsg) {
@@ -151,6 +163,7 @@ function processSSEEvent(data, aiMsg) {
         break
       }
       aiMsg.thinking.push(data)
+      aiMsg.timeline.push({ type: 'thinking', content: data })
       break
     }
     case 'message': {
@@ -160,6 +173,7 @@ function processSSEEvent(data, aiMsg) {
     }
     case 'custom':
       aiMsg.tools.push(data)
+      aiMsg.timeline.push({ type: 'tool', content: data })
       break
     case 'end':
       aiMsg.ended = true
@@ -175,6 +189,7 @@ function createAiMessage() {
   return reactive({
     id: Date.now() + 1,
     type: 'ai',
+    timeline: [],
     thinking: [],
     tools: [],
     text: '',

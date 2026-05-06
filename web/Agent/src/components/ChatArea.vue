@@ -1,5 +1,5 @@
 <script setup>
-import { ref, nextTick, onMounted, watch, onBeforeUnmount } from 'vue'
+import { ref, nextTick, onMounted, watch, onBeforeUnmount, computed } from 'vue'
 import MessageBubble from './MessageBubble.vue'
 
 const props = defineProps({
@@ -17,15 +17,26 @@ const emit = defineEmits(['copy', 'regenerate', 'like', 'dislike'])
 
 const chatContainer = ref(null)
 const showScrollButton = ref(false)
+const unreadCount = ref(0)
+const lastScrollHeight = ref(0)
 
-const scrollToBottom = async () => {
-  await nextTick()
+const scrollToBottom = (behavior = 'smooth') => {
+  console.log('scrollToBottom called, chatContainer:', chatContainer.value)
   if (chatContainer.value) {
+    const scrollHeight = chatContainer.value.scrollHeight
+    console.log('Scrolling to:', scrollHeight)
     chatContainer.value.scrollTo({
-      top: chatContainer.value.scrollHeight,
-      behavior: 'smooth'
+      top: scrollHeight,
+      behavior
     })
+    unreadCount.value = 0
   }
+}
+
+// 处理按钮点击事件
+const handleScrollToBottomClick = (event) => {
+  console.log('Button clicked!', event)
+  scrollToBottom('smooth')
 }
 
 const handleScroll = () => {
@@ -39,30 +50,72 @@ const handleScroll = () => {
     return
   }
 
-  showScrollButton.value = distanceFromBottom > 200
+  // 当距离底部超过 150px 时显示按钮
+  const shouldShow = distanceFromBottom > 150
+  showScrollButton.value = shouldShow
+
+  // 如果滚动到底部附近，重置未读计数
+  if (distanceFromBottom < 50) {
+    unreadCount.value = 0
+  }
 }
 
-watch(() => props.messages.length, () => {
-  scrollToBottom()
+// 监听新消息
+watch(() => props.messages.length, (newLength, oldLength) => {
+  if (!chatContainer.value) return
+
+  const { scrollTop, scrollHeight, clientHeight } = chatContainer.value
+  const distanceFromBottom = scrollHeight - scrollTop - clientHeight
+
+  // 如果用户正在查看历史消息（不在底部），且收到新消息
+  if (distanceFromBottom > 150 && newLength > oldLength) {
+    unreadCount.value += 1
+    showScrollButton.value = true
+  } else {
+    // 否则自动滚动到底部
+    nextTick(() => scrollToBottom())
+  }
 })
 
 watch(() => props.messages, () => {
   if (props.isStreaming) {
-    scrollToBottom()
+    nextTick(() => scrollToBottom())
   }
 }, { deep: true })
 
+// 键盘快捷键处理
+const handleKeyDown = (e) => {
+  // End 键滚动到底部
+  if (e.key === 'End' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+    const activeElement = document.activeElement
+    // 如果不在输入框中，则响应快捷键
+    if (activeElement && activeElement.tagName !== 'INPUT' && activeElement.tagName !== 'TEXTAREA') {
+      scrollToBottom()
+    }
+  }
+}
+
 onMounted(() => {
-  scrollToBottom()
+  // 使用 setTimeout 确保 DOM 完全渲染后再滚动
+  setTimeout(() => {
+    scrollToBottom('auto')
+  }, 0)
   if (chatContainer.value) {
     chatContainer.value.addEventListener('scroll', handleScroll)
   }
+  document.addEventListener('keydown', handleKeyDown)
 })
 
 onBeforeUnmount(() => {
   if (chatContainer.value) {
     chatContainer.value.removeEventListener('scroll', handleScroll)
   }
+  document.removeEventListener('keydown', handleKeyDown)
+})
+
+// 暴露方法给父组件
+defineExpose({
+  scrollToBottom
 })
 </script>
 
@@ -86,6 +139,7 @@ onBeforeUnmount(() => {
         :type="message.type"
         :content="message.content"
         :attachments="message.attachments"
+        :timeline="message.timeline"
         :thinking="message.thinking"
         :tools="message.tools"
         :text="message.text"
@@ -99,19 +153,23 @@ onBeforeUnmount(() => {
       />
     </div>
 
-    <transition name="fade">
-      <button
-        v-if="showScrollButton"
-        class="scroll-to-bottom-btn"
-        @click="scrollToBottom"
-        title="滚动到底部"
-        aria-label="滚动到底部"
-      >
-        <svg viewBox="0 0 20 20" fill="currentColor" class="scroll-icon">
-          <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
-        </svg>
-      </button>
-    </transition>
+    <teleport to="body">
+      <transition name="fade">
+        <button
+          v-show="showScrollButton"
+          type="button"
+          class="scroll-to-bottom-btn"
+          @click="handleScrollToBottomClick"
+          :title="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
+          :aria-label="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
+        >
+          <svg viewBox="0 0 20 20" fill="currentColor" class="scroll-icon">
+            <path fill-rule="evenodd" d="M5.293 12.707a1 1 0 011.414 0L10 9.414l3.293 3.293a1 1 0 111.414-1.414l-4-4a1 1 0 01-1.414 0l-4 4a1 1 0 010 1.414z" clip-rule="evenodd"/>
+          </svg>
+          <span v-if="unreadCount > 0" class="unread-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+        </button>
+      </transition>
+    </teleport>
   </div>
 </template>
 
@@ -191,8 +249,8 @@ onBeforeUnmount(() => {
 }
 
 .scroll-to-bottom-btn {
-  position: absolute;
-  bottom: 32px;
+  position: fixed;
+  bottom: 100px;
   right: 48px;
   width: 40px;
   height: 40px;
@@ -206,7 +264,8 @@ onBeforeUnmount(() => {
   color: var(--color-text-secondary);
   cursor: pointer;
   transition: var(--transition-colors), var(--transition-transform), var(--transition-shadow);
-  z-index: 10;
+  z-index: 1000;
+  pointer-events: auto;
 
   &:hover {
     background-color: var(--color-accent);
@@ -219,6 +278,25 @@ onBeforeUnmount(() => {
   &:active:not(:disabled) {
     transform: scale(var(--scale-active)) translateY(0);
   }
+}
+
+.unread-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  background-color: #EF4444;
+  color: white;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 4px rgba(239, 68, 68, 0.3);
+  animation: badgePulse 2s ease-in-out infinite;
 }
 
 .scroll-icon {
@@ -245,6 +323,15 @@ onBeforeUnmount(() => {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes badgePulse {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.1);
   }
 }
 </style>

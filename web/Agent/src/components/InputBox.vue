@@ -2,6 +2,9 @@
 import { ref, computed, nextTick } from 'vue'
 import { uploadFileInChunks, formatFileSize, getFileExtension, refreshToken } from '../utils/api.js'
 
+const SUPPORTED_EXTENSIONS = ['pdf', 'doc', 'docx', 'txt', 'md', 'csv', 'json']
+const MAX_FILE_SIZE = 50 * 1024 * 1024
+
 const props = defineProps({
   sessionId: {
     type: String,
@@ -105,13 +108,48 @@ const handleFileSelect = (event) => {
 
 const addFiles = (files) => {
   for (const file of files) {
+    const ext = getFileExtension(file.name)
+    if (!SUPPORTED_EXTENSIONS.includes(ext)) {
+      const fileItem = {
+        id: `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
+        file,
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        extension: ext,
+        status: 'error',
+        progress: 0,
+        uploadResult: null,
+        errorMsg: `不支持的文件类型: .${ext}，仅支持 ${SUPPORTED_EXTENSIONS.map(e => '.' + e).join(', ')}`,
+        cancelFn: null
+      }
+      selectedFiles.value.push(fileItem)
+      continue
+    }
+    if (file.size > MAX_FILE_SIZE) {
+      const fileItem = {
+        id: `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
+        file,
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        extension: ext,
+        status: 'error',
+        progress: 0,
+        uploadResult: null,
+        errorMsg: `文件大小超过限制（最大 ${formatFileSize(MAX_FILE_SIZE)}）`,
+        cancelFn: null
+      }
+      selectedFiles.value.push(fileItem)
+      continue
+    }
     const fileItem = {
       id: `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
       file,
       name: file.name,
       size: file.size,
       type: file.type,
-      extension: getFileExtension(file.name),
+      extension: ext,
       status: 'pending',
       progress: 0,
       uploadResult: null,
@@ -168,6 +206,14 @@ const removeFile = (fileItem) => {
 }
 
 const retryUpload = (fileItem) => {
+  if (!SUPPORTED_EXTENSIONS.includes(fileItem.extension)) {
+    return
+  }
+  if (fileItem.size > MAX_FILE_SIZE) {
+    return
+  }
+  fileItem.status = 'pending'
+  fileItem.errorMsg = ''
   startUpload(fileItem)
 }
 
@@ -224,6 +270,7 @@ const emit = defineEmits(['send', 'tool-action'])
           ref="fileInputRef"
           type="file"
           multiple
+          accept=".pdf,.doc,.docx,.txt,.md,.csv,.json"
           style="display: none"
           @change="handleFileSelect"
         />
@@ -266,7 +313,7 @@ const emit = defineEmits(['send', 'tool-action'])
             </svg>
 
             <svg
-              v-if="fileItem.status === 'error'"
+              v-if="fileItem.status === 'error' && SUPPORTED_EXTENSIONS.includes(fileItem.extension) && fileItem.size <= MAX_FILE_SIZE"
               class="status-icon error-icon"
               viewBox="0 0 20 20"
               fill="currentColor"
@@ -275,6 +322,18 @@ const emit = defineEmits(['send', 'tool-action'])
             >
               <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
             </svg>
+
+            <svg
+              v-if="fileItem.status === 'error' && (!SUPPORTED_EXTENSIONS.includes(fileItem.extension) || fileItem.size > MAX_FILE_SIZE)"
+              class="status-icon error-icon"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              :title="fileItem.errorMsg"
+            >
+              <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+            </svg>
+
+            <span v-if="fileItem.status === 'error' && fileItem.errorMsg" class="error-msg" :title="fileItem.errorMsg">{{ fileItem.errorMsg }}</span>
 
             <button class="remove-btn" @click="removeFile(fileItem)" :title="fileItem.status === 'uploading' ? '取消上传' : '移除文件'">
               <svg viewBox="0 0 20 20" fill="currentColor" class="remove-icon">
@@ -517,6 +576,16 @@ const emit = defineEmits(['send', 'tool-action'])
       opacity: 0.8;
     }
   }
+}
+
+.error-msg {
+  font-size: 10px;
+  color: var(--color-error);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.2;
 }
 
 .remove-btn {

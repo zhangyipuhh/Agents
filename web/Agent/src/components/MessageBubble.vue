@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, reactive, watch, nextTick } from 'vue'
 import { marked } from 'marked'
 import { formatFileSize, getFileExtension } from '../utils/api.js'
 
@@ -14,6 +14,10 @@ const props = defineProps({
     default: ''
   },
   attachments: {
+    type: Array,
+    default: () => []
+  },
+  timeline: {
     type: Array,
     default: () => []
   },
@@ -49,7 +53,8 @@ const isThinkingExpanded = ref(false)
 const isToolsExpanded = ref(false)
 const thinkingContainer = ref(null)
 const showCopyToast = ref(false)
-const likeStatus = ref(0) // 0: none, 1: liked, -1: disliked
+const likeStatus = ref(0)
+const thinkingExpandedMap = reactive({})
 
 const isUserMessage = computed(() => props.type === 'user')
 const hasAttachments = computed(() => props.attachments && props.attachments.length > 0)
@@ -58,6 +63,22 @@ const hasTools = computed(() => props.tools && props.tools.length > 0)
 const hasText = computed(() => props.text && props.text.length > 0)
 const hasError = computed(() => props.error && props.error.length > 0)
 const isStreaming = computed(() => !props.ended && !hasError.value && hasThinking.value)
+
+const hasTimeline = computed(() => props.timeline && props.timeline.length > 0)
+
+const mergedTimeline = computed(() => {
+  if (!props.timeline || props.timeline.length === 0) return []
+  const result = []
+  for (const item of props.timeline) {
+    const last = result[result.length - 1]
+    if (last && last.type === item.type) {
+      last.items.push(item.content)
+    } else {
+      result.push({ type: item.type, items: [item.content] })
+    }
+  }
+  return result
+})
 
 const formattedThinking = computed(() => {
   if (!props.thinking || props.thinking.length === 0) return ''
@@ -92,12 +113,33 @@ function formatThinkingItem(item) {
   return JSON.stringify(item, null, 2)
 }
 
+function formatMergedThinkingItems(items) {
+  return items.map(item => formatThinkingItem(item)).join('')
+}
+
 function formatToolItem(item) {
   if (typeof item === 'string') return item
   if (!item) return ''
   if (item.data) return JSON.stringify(item.data)
   if (item.name || item.tool) return item.name || item.tool
   return JSON.stringify(item)
+}
+
+function renderMarkdown(text) {
+  if (!text) return ''
+  try {
+    return marked.parse(text)
+  } catch {
+    return text.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br/>').replace(/^/, '<p>').replace(/$/, '</p>')
+  }
+}
+
+function isThinkingGroupExpanded(index) {
+  return thinkingExpandedMap[index] ?? false
+}
+
+function toggleThinkingGroup(index) {
+  thinkingExpandedMap[index] = !isThinkingGroupExpanded(index)
 }
 
 const toggleThinking = () => {
@@ -139,13 +181,11 @@ const handleRegenerate = () => {
 }
 
 const handleLike = () => {
-  // 如果已经点赞，则取消；否则点赞并取消踩
   likeStatus.value = likeStatus.value === 1 ? 0 : 1
   emit('like', props.messageId)
 }
 
 const handleDislike = () => {
-  // 如果已经踩，则取消；否则踩并取消点赞
   likeStatus.value = likeStatus.value === -1 ? 0 : -1
   emit('dislike', props.messageId)
 }
@@ -188,56 +228,117 @@ const getFileIconColor = (filename) => {
 
     <!-- AI 消息 -->
     <div v-else class="ai-message">
-      <!-- 思考过程 -->
-      <div v-if="hasThinking" class="thinking-section">
-        <div class="thinking-header" @click="toggleThinking">
-          <span class="thinking-icon">🧠</span>
-          <span class="thinking-label">思考过程</span>
-          <svg
-            class="expand-icon"
-            :class="{ expanded: isThinkingExpanded }"
-            viewBox="0 0 20 20"
-            fill="currentColor"
-          >
-            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
-          </svg>
-        </div>
-        <div v-if="isThinkingExpanded" class="thinking-body" ref="thinkingContainer">
-          <pre class="thinking-content">{{ formattedThinking }}</pre>
-        </div>
-      </div>
+      <!-- 时间线模式：按流式输出顺序展示 -->
+      <template v-if="hasTimeline">
+        <template v-for="(group, index) in mergedTimeline" :key="'tl-' + index">
+          <!-- 思考块 -->
+          <div v-if="group.type === 'thinking'" class="timeline-thinking">
+            <div class="thinking-header" @click="toggleThinkingGroup(index)">
+              <span class="thinking-icon">🧠</span>
+              <span class="thinking-label">思考过程</span>
+              <svg
+                class="expand-icon"
+                :class="{ expanded: isThinkingGroupExpanded(index) }"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+              >
+                <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
+              </svg>
+            </div>
+            <div v-if="isThinkingGroupExpanded(index)" class="thinking-body">
+              <pre class="thinking-content">{{ formatMergedThinkingItems(group.items) }}</pre>
+            </div>
+          </div>
 
-      <!-- 工具调用 -->
-      <div v-if="hasTools" class="tools-section">
-        <div class="tools-header" @click="toggleTools">
-          <span class="tools-icon">🔧</span>
-          <span class="tools-label">工具调用 ({{ tools.length }})</span>
-          <svg
-            class="expand-icon"
-            :class="{ expanded: isToolsExpanded }"
-            viewBox="0 0 20 20"
-            fill="currentColor"
-          >
-            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
-          </svg>
-        </div>
-        <div v-if="isToolsExpanded" class="tools-body">
-          <div
-            v-for="(item, index) in tools"
-            :key="'tool-' + index"
-            class="tool-item"
-          >
-            <span class="tool-icon">🔧</span>
-            <span class="tool-text">{{ formatToolItem(item) }}</span>
+          <!-- 工具调用块 -->
+          <div v-else-if="group.type === 'tool'" class="timeline-tool">
+            <div class="tools-header" @click="toggleTools">
+              <span class="tools-icon">🔧</span>
+              <span class="tools-label">工具调用 ({{ group.items.length }})</span>
+              <svg
+                class="expand-icon"
+                :class="{ expanded: isToolsExpanded }"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+              >
+                <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
+              </svg>
+            </div>
+            <div v-if="isToolsExpanded" class="tools-body">
+              <div
+                v-for="(item, idx) in group.items"
+                :key="'tool-item-' + idx"
+                class="tool-item"
+              >
+                <span class="tool-icon">🔧</span>
+                <span class="tool-text">{{ formatToolItem(item) }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 正文块 -->
+          <div v-else-if="group.type === 'text'" class="timeline-text">
+            <div class="markdown-body" v-html="renderMarkdown(group.items.join(''))"></div>
+          </div>
+        </template>
+
+        <!-- 流式光标 -->
+        <span v-if="!ended && !error" class="streaming-cursor">▌</span>
+      </template>
+
+      <!-- 降级模式：无 timeline 时使用旧逻辑 -->
+      <template v-else>
+        <!-- 思考过程 -->
+        <div v-if="hasThinking" class="thinking-section">
+          <div class="thinking-header" @click="toggleThinking">
+            <span class="thinking-icon">🧠</span>
+            <span class="thinking-label">思考过程</span>
+            <svg
+              class="expand-icon"
+              :class="{ expanded: isThinkingExpanded }"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+            >
+              <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
+            </svg>
+          </div>
+          <div v-if="isThinkingExpanded" class="thinking-body" ref="thinkingContainer">
+            <pre class="thinking-content">{{ formattedThinking }}</pre>
           </div>
         </div>
-      </div>
 
-      <!-- 正文内容 -->
-      <div v-if="hasText" class="text-section">
-        <div class="markdown-body" v-html="renderedText"></div>
-        <span v-if="!ended && !error" class="streaming-cursor">▌</span>
-      </div>
+        <!-- 工具调用 -->
+        <div v-if="hasTools" class="tools-section">
+          <div class="tools-header" @click="toggleTools">
+            <span class="tools-icon">🔧</span>
+            <span class="tools-label">工具调用 ({{ tools.length }})</span>
+            <svg
+              class="expand-icon"
+              :class="{ expanded: isToolsExpanded }"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+            >
+              <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
+            </svg>
+          </div>
+          <div v-if="isToolsExpanded" class="tools-body">
+            <div
+              v-for="(item, index) in tools"
+              :key="'tool-' + index"
+              class="tool-item"
+            >
+              <span class="tool-icon">🔧</span>
+              <span class="tool-text">{{ formatToolItem(item) }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 正文内容 -->
+        <div v-if="hasText" class="text-section">
+          <div class="markdown-body" v-html="renderedText"></div>
+          <span v-if="!ended && !error" class="streaming-cursor">▌</span>
+        </div>
+      </template>
 
       <!-- 错误信息 -->
       <div v-if="hasError" class="error-section">
@@ -246,7 +347,7 @@ const getFileIconColor = (filename) => {
       </div>
 
       <!-- 加载状态（无任何内容时） -->
-      <div v-if="!hasThinking && !hasText && !hasError" class="loading-section">
+      <div v-if="!hasTimeline && !hasThinking && !hasText && !hasError" class="loading-section">
         <span class="loading-dot">●</span>
         <span class="loading-dot" style="animation-delay: 0.2s">●</span>
         <span class="loading-dot" style="animation-delay: 0.4s">●</span>
@@ -393,6 +494,27 @@ const getFileIconColor = (filename) => {
   flex-direction: column;
   align-items: flex-start;
   width: 100%;
+}
+
+/* 时间线思考块 */
+.timeline-thinking {
+  max-width: 85%;
+  margin-bottom: 12px;
+}
+
+/* 时间线工具块 */
+.timeline-tool {
+  max-width: 85%;
+  margin-bottom: 10px;
+}
+
+/* 时间线正文块 */
+.timeline-text {
+  max-width: 85%;
+  font-size: var(--font-size-base);
+  line-height: 1.6;
+  color: var(--color-text-primary);
+  margin-bottom: 8px;
 }
 
 /* 思考过程 */
