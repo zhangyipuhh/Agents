@@ -231,6 +231,36 @@ function handleTagSelect(tag, index) {
 function handleToolAction(action) {
   console.log('工具操作:', action)
 }
+
+function handleRegenerate(aiMessageId) {
+  const aiIndex = messages.findIndex(m => m.id === aiMessageId)
+  if (aiIndex === -1) return
+
+  let userIndex = -1
+  for (let i = aiIndex - 1; i >= 0; i--) {
+    if (messages[i].type === 'user') {
+      userIndex = i
+      break
+    }
+  }
+  if (userIndex === -1) return
+
+  const userMsg = messages[userIndex]
+  messages.splice(userIndex, aiIndex - userIndex + 1)
+  handleSendMessage(userMsg.content, userMsg.attachments || [])
+}
+
+function handleLike(id) {
+  console.log('点赞消息:', id)
+}
+
+function handleDislike(id) {
+  console.log('点踩消息:', id)
+}
+
+function handleCopy(e) {
+  console.log('复制消息:', e.messageId)
+}
 </script>
 
 <template>
@@ -243,6 +273,10 @@ function handleToolAction(action) {
       <ChatArea
         :messages="messages"
         :is-streaming="isStreaming.value"
+        @regenerate="handleRegenerate"
+        @like="handleLike"
+        @dislike="handleDislike"
+        @copy="handleCopy"
       />
 
       <InputBox

@@ -36,8 +36,14 @@ const props = defineProps({
   error: {
     type: String,
     default: ''
+  },
+  messageId: {
+    type: [String, Number],
+    default: ''
   }
 })
+
+const emit = defineEmits(['copy', 'regenerate', 'like', 'dislike'])
 
 const isThinkingExpanded = ref(false)
 const isToolsExpanded = ref(false)
@@ -93,6 +99,36 @@ const toggleThinking = () => {
 
 const toggleTools = () => {
   isToolsExpanded.value = !isToolsExpanded.value
+}
+
+const handleCopy = async () => {
+  const textToCopy = props.text || ''
+  try {
+    await navigator.clipboard.writeText(textToCopy)
+    emit('copy', { success: true, messageId: props.messageId })
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = textToCopy
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    document.body.removeChild(textarea)
+    emit('copy', { success: true, messageId: props.messageId })
+  }
+}
+
+const handleRegenerate = () => {
+  emit('regenerate', props.messageId)
+}
+
+const handleLike = () => {
+  emit('like', props.messageId)
+}
+
+const handleDislike = () => {
+  emit('dislike', props.messageId)
 }
 
 const getFileIconColor = (filename) => {
@@ -201,6 +237,32 @@ const getFileIconColor = (filename) => {
         <span class="loading-dot">●</span>
         <span class="loading-dot" style="animation-delay: 0.2s">●</span>
         <span class="loading-dot" style="animation-delay: 0.4s">●</span>
+      </div>
+
+      <!-- 操作按钮 -->
+      <div v-if="props.ended && (hasText || hasError)" class="message-actions">
+        <button class="action-btn" title="复制" @click="handleCopy">
+          <svg class="action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+          </svg>
+        </button>
+        <button class="action-btn" title="重新生成" @click="handleRegenerate">
+          <svg class="action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"/>
+            <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
+          </svg>
+        </button>
+        <button class="action-btn" title="喜欢" @click="handleLike">
+          <svg class="action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 9V5a3 3 0 00-3-3l-4 9v11h11.28a2 2 0 002-1.7l1.38-9a2 2 0 00-2-2.3zM7 22H4a2 2 0 01-2-2v-7a2 2 0 012-2h3"/>
+          </svg>
+        </button>
+        <button class="action-btn" title="不喜欢" @click="handleDislike">
+          <svg class="action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 15v4a3 3 0 003 3l4-9V2H5.72a2 2 0 00-2 1.7l-1.38 9a2 2 0 002 2.3zm7-13h3a2 2 0 012 2v7a2 2 0 01-2 2h-3"/>
+          </svg>
+        </button>
       </div>
     </div>
   </div>
@@ -612,5 +674,43 @@ const getFileIconColor = (filename) => {
     opacity: 1;
     max-height: 200px;
   }
+}
+
+/* 消息操作按钮 */
+.message-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  padding-left: 2px;
+}
+
+.action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background-color: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: var(--transition-colors), var(--transition-transform);
+
+  &:hover {
+    color: var(--color-text-secondary);
+    background-color: var(--color-bg-hover);
+  }
+
+  &:active {
+    transform: scale(0.92);
+  }
+}
+
+.action-icon {
+  width: 16px;
+  height: 16px;
 }
 </style>

@@ -13,6 +13,8 @@ const props = defineProps({
   }
 })
 
+const emit = defineEmits(['copy', 'regenerate', 'like', 'dislike'])
+
 const chatContainer = ref(null)
 const showScrollButton = ref(false)
 
@@ -89,6 +91,11 @@ onBeforeUnmount(() => {
         :text="message.text"
         :ended="message.ended"
         :error="message.error"
+        :message-id="message.id"
+        @copy="(e) => emit('copy', e)"
+        @regenerate="(id) => emit('regenerate', id)"
+        @like="(id) => emit('like', id)"
+        @dislike="(id) => emit('dislike', id)"
       />
     </div>
 
