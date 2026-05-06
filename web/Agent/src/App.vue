@@ -12,9 +12,11 @@ const isStreaming = reactive({ value: false })
 
 onMounted(async () => {
   try {
-    await ensureAuth()
-    sessionId.value = localStorage.getItem('session_id') || ''
-  } catch {}
+    const newId = await createNewSession()
+    sessionId.value = newId
+  } catch (err) {
+    console.error('初始化会话失败:', err)
+  }
 })
 
 async function newSession() {
