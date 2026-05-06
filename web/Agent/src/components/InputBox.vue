@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, nextTick } from 'vue'
-import { uploadFileInChunks, formatFileSize, getFileExtension } from '../utils/api.js'
+import { uploadFileInChunks, formatFileSize, getFileExtension, refreshToken } from '../utils/api.js'
 
 const props = defineProps({
   sessionId: {
@@ -18,10 +18,12 @@ const textareaRef = ref(null)
 const fileInputRef = ref(null)
 const isFocused = ref(false)
 const isDragging = ref(false)
+const isRefreshingToken = ref(false)
 const selectedFiles = ref([])
 
 const canSend = computed(() => {
   if (props.isStreaming) return false
+  if (isRefreshingToken.value) return false
   const hasText = inputValue.value.trim().length > 0
   const hasUploadedFiles = selectedFiles.value.some(f => f.status === 'success')
   return hasText || hasUploadedFiles
@@ -47,8 +49,18 @@ const handleKeydown = (event) => {
   }
 }
 
-const handleSend = () => {
+const handleSend = async () => {
   if (!canSend.value) return
+
+  isRefreshingToken.value = true
+  try {
+    await refreshToken()
+  } catch (err) {
+    alert('获取认证信息失败，请稍后重试')
+    isRefreshingToken.value = false
+    return
+  }
+  isRefreshingToken.value = false
 
   const uploadedFiles = selectedFiles.value
     .filter(f => f.status === 'success')

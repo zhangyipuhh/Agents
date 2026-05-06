@@ -17,22 +17,27 @@ function getAuthHeaders() {
   return headers
 }
 
+export async function refreshToken() {
+  const loginRes = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'admin', password: '123456' })
+  })
+  if (!loginRes.ok) {
+    throw new Error('登录失败')
+  }
+  const loginData = await loginRes.json()
+  const token = loginData.access_token
+  localStorage.setItem('auth_token', token)
+  return token
+}
+
 export async function ensureAuth() {
   let token = localStorage.getItem('auth_token')
   let sessionId = localStorage.getItem('session_id')
 
   if (!token) {
-    const loginRes = await fetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'admin', password: '123456' })
-    })
-    if (!loginRes.ok) {
-      throw new Error('登录失败')
-    }
-    const loginData = await loginRes.json()
-    token = loginData.access_token
-    localStorage.setItem('auth_token', token)
+    token = await refreshToken()
   }
 
   if (!sessionId) {

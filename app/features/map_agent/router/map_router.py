@@ -165,7 +165,7 @@ async def chat(
     try:
         # 获取 session_id，优先使用请求体中的，否则从 request.state 获取
         session_id = chat_request.session_id or getattr(request.state, "session_id", "default")
-        
+
         # 获取 geometry_data
         geometry_data = chat_request.geometry_data or {}
 
