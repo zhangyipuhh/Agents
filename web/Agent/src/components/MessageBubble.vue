@@ -242,7 +242,7 @@ const getFileIconColor = (filename) => {
       <!-- 错误信息 -->
       <div v-if="hasError" class="error-section">
         <span class="error-icon">❌</span>
-        <span class="error-text">{{ error }}</span>
+        <span class="error-text">不好意思，刚刚出了点小故障，可以晚点再问我一遍。</span>
       </div>
 
       <!-- 加载状态（无任何内容时） -->

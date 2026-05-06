@@ -33,7 +33,8 @@ const autoResize = () => {
   const textarea = textareaRef.value
   if (textarea) {
     textarea.style.height = 'auto'
-    textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px'
+    const newHeight = Math.max(80, Math.min(textarea.scrollHeight, 200))
+    textarea.style.height = newHeight + 'px'
   }
 }
 
@@ -288,8 +289,7 @@ const emit = defineEmits(['send', 'tool-action'])
           v-model="inputValue"
           class="text-input"
           placeholder="请输入你的需求，按「Enter」发送"
-          rows="1"
-          :style="{ minHeight: '60px' }"
+          rows="3"
           @input="handleInput"
           @keydown="handleKeydown"
           @focus="handleFocus"
@@ -371,7 +371,7 @@ const emit = defineEmits(['send', 'tool-action'])
   border-radius: var(--radius-lg);
   transition: var(--transition-colors), var(--transition-shadow), border-color 0.25s ease;
   position: relative;
-  width: 678px;
+  max-width: 900px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15), 0 2px 6px rgba(0, 0, 0, 0.1);
 
   &:hover:not(.focused):not(.dragging) {
@@ -610,9 +610,10 @@ const emit = defineEmits(['send', 'tool-action'])
 
 .text-input {
   width: 100%;
-  min-height: 60px;
+  height: 80px;
+  min-height: 80px;
   max-height: 200px;
-  padding: 0;
+  padding: 8px 0;
   font-size: var(--font-size-base);
   line-height: var(--line-height-normal);
   color: var(--color-text-primary);

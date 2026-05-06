@@ -165,7 +165,8 @@ function processSSEEvent(data, aiMsg) {
       aiMsg.ended = true
       break
     case 'error':
-      aiMsg.error = data.message || '未知错误'
+      console.error('AI 响应错误:', data.message || data)
+      aiMsg.error = '不好意思，刚刚出了点小故障，可以晚点再问我一遍。'
       break
   }
 }
@@ -220,7 +221,8 @@ async function handleSendMessage(message, attachments = []) {
       }
     }
   } catch (err) {
-    aiMsg.error = err.message || '连接失败'
+    console.error('聊天请求错误:', err)
+    aiMsg.error = '不好意思，刚刚出了点小故障，可以晚点再问我一遍。'
   } finally {
     isStreaming.value = false
   }
@@ -314,6 +316,11 @@ function handleCopy(e) {
 .content-area.empty-layout {
   justify-content: center;
   align-items: center;
+}
+
+.content-area.empty-layout > * {
+  width: 100%;
+  max-width: 900px;
 }
 
 .welcome-title {
