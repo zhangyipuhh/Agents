@@ -123,7 +123,6 @@ onBeforeUnmount(() => {
   padding: 24px 40px;
   background-color: var(--color-bg-secondary);
   position: relative;
-  contain: layout style paint;
 
   &::-webkit-scrollbar {
     width: 6px;

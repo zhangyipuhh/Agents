@@ -254,32 +254,32 @@ const getFileIconColor = (filename) => {
 
       <!-- 操作按钮 -->
       <div v-if="props.ended && (hasText || hasError)" class="message-actions">
-        <button class="action-btn" title="复制" @click="handleCopy">
+        <button class="action-btn" :data-tooltip="'复制消息'" @click="handleCopy">
           <svg class="action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
             <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
           </svg>
         </button>
-        <button class="action-btn" title="重新生成" @click="handleRegenerate">
+        <button class="action-btn" :data-tooltip="'重新生成'" @click="handleRegenerate">
           <svg class="action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="23 4 23 10 17 10"/>
             <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
           </svg>
         </button>
-        <button 
-          class="action-btn" 
+        <button
+          class="action-btn"
           :class="{ 'liked': likeStatus === 1 }"
-          title="喜欢" 
+          :data-tooltip="likeStatus === 1 ? '取消' : '喜欢'"
           @click="handleLike"
         >
           <svg class="action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M14 9V5a3 3 0 00-3-3l-4 9v11h11.28a2 2 0 002-1.7l1.38-9a2 2 0 00-2-2.3zM7 22H4a2 2 0 01-2-2v-7a2 2 0 012-2h3"/>
           </svg>
         </button>
-        <button 
-          class="action-btn" 
+        <button
+          class="action-btn"
           :class="{ 'disliked': likeStatus === -1 }"
-          title="不喜欢" 
+          :data-tooltip="likeStatus === -1 ? '取消' : '不喜欢'"
           @click="handleDislike"
         >
           <svg class="action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -307,7 +307,6 @@ const getFileIconColor = (filename) => {
   width: 100%;
   margin-bottom: 24px;
   animation: messageSlideIn 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-  contain: layout style paint;
 
   &:last-child {
     margin-bottom: 0;
@@ -724,6 +723,7 @@ const getFileIconColor = (filename) => {
   color: var(--color-text-muted);
   cursor: pointer;
   transition: var(--transition-colors), var(--transition-transform);
+  position: relative;
 
   &:hover {
     color: var(--color-text-secondary);
@@ -732,6 +732,60 @@ const getFileIconColor = (filename) => {
 
   &:active {
     transform: scale(0.92);
+  }
+
+  /* Tooltip 样式 - 向上弹出 */
+  &[data-tooltip]::before {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%) translateY(-6px);
+    padding: 6px 12px;
+    background-color: #1F2937;
+    color: #FFFFFF;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.4;
+    white-space: nowrap;
+    border-radius: 6px;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.2s ease, visibility 0.2s ease, transform 0.2s ease;
+    pointer-events: none;
+    z-index: 1000;
+    box-sizing: border-box;
+    max-width: 120px;
+    text-align: center;
+    word-wrap: break-word;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Tooltip 箭头 */
+  &[data-tooltip]::after {
+    content: '';
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%) translateY(-6px);
+    border-width: 5px;
+    border-style: solid;
+    border-color: #1F2937 transparent transparent transparent;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.2s ease, visibility 0.2s ease, transform 0.2s ease;
+    pointer-events: none;
+    z-index: 1000;
+  }
+
+  /* 悬停时显示 tooltip */
+  &[data-tooltip]:hover::before,
+  &[data-tooltip]:hover::after {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(-50%) translateY(-8px);
   }
 }
 

@@ -1,5 +1,5 @@
 <script setup>
-import { reactive, onMounted } from 'vue'
+import { reactive, onMounted, computed } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import SkillTags from './components/SkillTags.vue'
 import ChatArea from './components/ChatArea.vue'
@@ -9,6 +9,8 @@ import { chatStream, ensureAuth, createNewSession } from './utils/api.js'
 const messages = reactive([])
 const sessionId = reactive({ value: '' })
 const isStreaming = reactive({ value: false })
+
+const isEmptyState = computed(() => messages.length === 0)
 
 onMounted(async () => {
   try {
@@ -267,10 +269,11 @@ function handleCopy(e) {
   <div class="app-layout">
     <Sidebar @new-chat="newSession" />
 
-    <main class="content-area">
-      <SkillTags @tag-select="handleTagSelect" />
+    <main class="content-area" :class="{ 'empty-layout': isEmptyState }">
+      <SkillTags v-if="!isEmptyState" @tag-select="handleTagSelect" />
 
       <ChatArea
+        v-if="!isEmptyState"
         :messages="messages"
         :is-streaming="isStreaming.value"
         @regenerate="handleRegenerate"
@@ -278,6 +281,8 @@ function handleCopy(e) {
         @dislike="handleDislike"
         @copy="handleCopy"
       />
+
+      <div v-if="isEmptyState" class="welcome-title">Agent, 让你的工作更轻松</div>
 
       <InputBox
         :session-id="sessionId.value"
@@ -304,5 +309,18 @@ function handleCopy(e) {
   flex-direction: column;
   overflow: hidden;
   background-color: var(--color-bg-secondary);
+}
+
+.content-area.empty-layout {
+  justify-content: center;
+  align-items: center;
+}
+
+.welcome-title {
+  font-size: 32px;
+  font-weight: var(--font-weight-bold);
+  color: rgb(79, 70, 229);
+  margin-bottom: 32px;
+  text-align: center;
 }
 </style>

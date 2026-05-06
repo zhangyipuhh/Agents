@@ -352,8 +352,7 @@ const emit = defineEmits(['send', 'tool-action'])
 <style scoped>
 .input-box-container {
   padding: 16px 40px 24px;
-  background-color: var(--color-bg-primary);
-  border-top: 1px solid var(--color-border-light);
+  background-color: rgb(249, 250, 251);
   contain: layout style paint;
 }
 
@@ -368,24 +367,23 @@ const emit = defineEmits(['send', 'tool-action'])
   gap: 12px;
   padding: 14px 16px;
   background-color: var(--color-bg-secondary);
-  border: 2px solid transparent;
+  border: 2px solid var(--color-accent);
   border-radius: var(--radius-lg);
   transition: var(--transition-colors), var(--transition-shadow), border-color 0.25s ease;
   position: relative;
+  width: 678px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15), 0 2px 6px rgba(0, 0, 0, 0.1);
 
   &:hover:not(.focused):not(.dragging) {
-    border-color: var(--color-border);
-    box-shadow: var(--shadow-sm);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2), 0 4px 10px rgba(0, 0, 0, 0.15);
   }
 
   &.focused {
-    border-color: var(--color-accent);
-    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+    box-shadow: 0 8px 24px rgba(99, 102, 241, 0.3), 0 4px 10px rgba(99, 102, 241, 0.2), 0 0 0 4px rgba(99, 102, 241, 0.15);
   }
 
   &.dragging {
-    border-color: var(--color-accent);
-    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+    box-shadow: 0 8px 24px rgba(99, 102, 241, 0.35), 0 4px 10px rgba(99, 102, 241, 0.25), 0 0 0 4px rgba(99, 102, 241, 0.2);
     background-color: var(--color-accent-light);
   }
 }
