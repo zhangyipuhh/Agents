@@ -48,6 +48,8 @@ const emit = defineEmits(['copy', 'regenerate', 'like', 'dislike'])
 const isThinkingExpanded = ref(false)
 const isToolsExpanded = ref(false)
 const thinkingContainer = ref(null)
+const showCopyToast = ref(false)
+const likeStatus = ref(0) // 0: none, 1: liked, -1: disliked
 
 const isUserMessage = computed(() => props.type === 'user')
 const hasAttachments = computed(() => props.attachments && props.attachments.length > 0)
@@ -56,6 +58,11 @@ const hasTools = computed(() => props.tools && props.tools.length > 0)
 const hasText = computed(() => props.text && props.text.length > 0)
 const hasError = computed(() => props.error && props.error.length > 0)
 const isStreaming = computed(() => !props.ended && !hasError.value && hasThinking.value)
+
+const formattedThinking = computed(() => {
+  if (!props.thinking || props.thinking.length === 0) return ''
+  return props.thinking.map(item => formatThinkingItem(item)).join('')
+})
 
 const renderedText = computed(() => {
   if (!hasText.value) return ''
@@ -105,6 +112,10 @@ const handleCopy = async () => {
   const textToCopy = props.text || ''
   try {
     await navigator.clipboard.writeText(textToCopy)
+    showCopyToast.value = true
+    setTimeout(() => {
+      showCopyToast.value = false
+    }, 2000)
     emit('copy', { success: true, messageId: props.messageId })
   } catch {
     const textarea = document.createElement('textarea')
@@ -115,6 +126,10 @@ const handleCopy = async () => {
     textarea.select()
     document.execCommand('copy')
     document.body.removeChild(textarea)
+    showCopyToast.value = true
+    setTimeout(() => {
+      showCopyToast.value = false
+    }, 2000)
     emit('copy', { success: true, messageId: props.messageId })
   }
 }
@@ -124,10 +139,14 @@ const handleRegenerate = () => {
 }
 
 const handleLike = () => {
+  // 如果已经点赞，则取消；否则点赞并取消踩
+  likeStatus.value = likeStatus.value === 1 ? 0 : 1
   emit('like', props.messageId)
 }
 
 const handleDislike = () => {
+  // 如果已经踩，则取消；否则踩并取消点赞
+  likeStatus.value = likeStatus.value === -1 ? 0 : -1
   emit('dislike', props.messageId)
 }
 
@@ -184,13 +203,7 @@ const getFileIconColor = (filename) => {
           </svg>
         </div>
         <div v-if="isThinkingExpanded" class="thinking-body" ref="thinkingContainer">
-          <div
-            v-for="(item, index) in thinking"
-            :key="index"
-            class="thinking-item"
-          >
-            <pre class="thinking-content">{{ formatThinkingItem(item) }}</pre>
-          </div>
+          <pre class="thinking-content">{{ formattedThinking }}</pre>
         </div>
       </div>
 
@@ -253,17 +266,38 @@ const getFileIconColor = (filename) => {
             <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
           </svg>
         </button>
-        <button class="action-btn" title="喜欢" @click="handleLike">
+        <button 
+          class="action-btn" 
+          :class="{ 'liked': likeStatus === 1 }"
+          title="喜欢" 
+          @click="handleLike"
+        >
           <svg class="action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M14 9V5a3 3 0 00-3-3l-4 9v11h11.28a2 2 0 002-1.7l1.38-9a2 2 0 00-2-2.3zM7 22H4a2 2 0 01-2-2v-7a2 2 0 012-2h3"/>
           </svg>
         </button>
-        <button class="action-btn" title="不喜欢" @click="handleDislike">
+        <button 
+          class="action-btn" 
+          :class="{ 'disliked': likeStatus === -1 }"
+          title="不喜欢" 
+          @click="handleDislike"
+        >
           <svg class="action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M10 15v4a3 3 0 003 3l4-9V2H5.72a2 2 0 00-2 1.7l-1.38 9a2 2 0 002 2.3zm7-13h3a2 2 0 012 2v7a2 2 0 01-2 2h-3"/>
           </svg>
         </button>
       </div>
+
+      <!-- 复制成功提示 -->
+      <Transition name="toast">
+        <div v-if="showCopyToast" class="copy-toast">
+          <svg class="toast-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+            <polyline points="22 4 12 14.01 9 11.01"/>
+          </svg>
+          <span class="toast-text">已复制到剪贴板</span>
+        </div>
+      </Transition>
     </div>
   </div>
 </template>
@@ -431,14 +465,6 @@ const getFileIconColor = (filename) => {
 
   scrollbar-width: thin;
   scrollbar-color: var(--color-border) transparent;
-}
-
-.thinking-item {
-  margin-bottom: 8px;
-
-  &:last-child {
-    margin-bottom: 0;
-  }
 }
 
 .thinking-content {
@@ -712,5 +738,76 @@ const getFileIconColor = (filename) => {
 .action-icon {
   width: 16px;
   height: 16px;
+}
+
+/* 点赞按钮激活状态 - 使用红色 */
+.action-btn.liked {
+  color: #EF4444;
+}
+
+.action-btn.liked:hover {
+  color: #DC2626;
+}
+
+/* 踩按钮激活状态 - 使用深灰色 */
+.action-btn.disliked {
+  color: #4B5563;
+}
+
+.action-btn.disliked:hover {
+  color: #374151;
+}
+
+/* 复制成功提示 */
+.copy-toast {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background-color: #1F2937;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 9999;
+}
+
+.toast-icon {
+  width: 18px;
+  height: 18px;
+  color: #10B981;
+}
+
+.toast-text {
+  font-size: 14px;
+  color: #FFFFFF;
+}
+
+/* Toast 动画 */
+.toast-enter-active,
+.toast-leave-active {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.toast-enter-from {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-10px);
+}
+
+.toast-enter-to {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.toast-leave-from {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.toast-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-10px);
 }
 </style>
