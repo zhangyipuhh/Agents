@@ -2,29 +2,20 @@
 import { ref, nextTick, onMounted, watch, onBeforeUnmount } from 'vue'
 import MessageBubble from './MessageBubble.vue'
 
-// 消息列表
-const messages = ref([
-  {
-    id: 1,
-    type: 'user',
-    content: '你好，请介绍一下你的功能',
-    attachments: []
+const props = defineProps({
+  messages: {
+    type: Array,
+    default: () => []
   },
-  {
-    id: 2,
-    type: 'ai',
-    content: '',
-    attachments: []
+  isStreaming: {
+    type: Boolean,
+    default: false
   }
-])
+})
 
-// 聊天区域引用
 const chatContainer = ref(null)
-
-// 是否显示滚动到底部按钮
 const showScrollButton = ref(false)
 
-// 自动滚动到底部
 const scrollToBottom = async () => {
   await nextTick()
   if (chatContainer.value) {
@@ -35,56 +26,47 @@ const scrollToBottom = async () => {
   }
 }
 
-// 监听滚动事件，控制滚动按钮显示
 const handleScroll = () => {
   if (!chatContainer.value) return
 
   const { scrollTop, scrollHeight, clientHeight } = chatContainer.value
   const distanceFromBottom = scrollHeight - scrollTop - clientHeight
 
-  // 当距离底部超过 200px 时显示按钮
+  if (props.isStreaming) {
+    showScrollButton.value = false
+    return
+  }
+
   showScrollButton.value = distanceFromBottom > 200
 }
 
-// 监听消息变化，自动滚动
-watch(messages, () => {
+watch(() => props.messages.length, () => {
   scrollToBottom()
+})
+
+watch(() => props.messages, () => {
+  if (props.isStreaming) {
+    scrollToBottom()
+  }
 }, { deep: true })
 
-// 组件挂载后滚动到底部
 onMounted(() => {
   scrollToBottom()
-
-  // 添加滚动监听
   if (chatContainer.value) {
     chatContainer.value.addEventListener('scroll', handleScroll)
   }
 })
 
-// 组件卸载前移除监听
 onBeforeUnmount(() => {
   if (chatContainer.value) {
     chatContainer.value.removeEventListener('scroll', handleScroll)
   }
 })
-
-// 定义事件
-const emit = defineEmits(['message-action'])
-
-const addMessage = (message) => {
-  messages.value.push({
-    ...message,
-    attachments: message.attachments || []
-  })
-}
-
-defineExpose({ addMessage })
 </script>
 
 <template>
   <div class="chat-area" ref="chatContainer">
     <div class="messages-container">
-      <!-- 空状态 -->
       <div v-if="messages.length === 0" class="empty-state">
         <div class="empty-icon">
           <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -96,17 +78,20 @@ defineExpose({ addMessage })
         <p class="empty-description">在下方输入框中输入你的问题，AI 助手将为你提供帮助</p>
       </div>
 
-      <!-- 消息列表 -->
       <MessageBubble
         v-for="message in messages"
         :key="message.id"
         :type="message.type"
         :content="message.content"
         :attachments="message.attachments"
+        :thinking="message.thinking"
+        :tools="message.tools"
+        :text="message.text"
+        :ended="message.ended"
+        :error="message.error"
       />
     </div>
 
-    <!-- 滚动到底部按钮 -->
     <transition name="fade">
       <button
         v-if="showScrollButton"
@@ -133,7 +118,6 @@ defineExpose({ addMessage })
   position: relative;
   contain: layout style paint;
 
-  /* 自定义滚动条样式 */
   &::-webkit-scrollbar {
     width: 6px;
   }
@@ -152,7 +136,6 @@ defineExpose({ addMessage })
     }
   }
 
-  /* Firefox 滚动条 */
   scrollbar-width: thin;
   scrollbar-color: var(--color-border) transparent;
 }
@@ -165,7 +148,6 @@ defineExpose({ addMessage })
   min-height: 100%;
 }
 
-/* 空状态样式 */
 .empty-state {
   display: flex;
   flex-direction: column;
@@ -202,7 +184,6 @@ defineExpose({ addMessage })
   max-width: 360px;
 }
 
-/* 滚动到底部按钮 */
 .scroll-to-bottom-btn {
   position: absolute;
   bottom: 32px;
@@ -239,7 +220,6 @@ defineExpose({ addMessage })
   height: 20px;
 }
 
-/* 淡入淡出动画 */
 .fade-enter-active,
 .fade-leave-active {
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -251,7 +231,6 @@ defineExpose({ addMessage })
   transform: translateY(8px) scale(0.9);
 }
 
-/* 空状态入场动画 */
 @keyframes fadeInUp {
   from {
     opacity: 0;

@@ -1,7 +1,7 @@
 <script setup>
 import { ref } from 'vue'
 
-const emit = defineEmits(['toggle-sidebar'])
+const emit = defineEmits(['toggle-sidebar', 'new-chat'])
 
 const isSidebarCollapsed = ref(false)
 const isHistoryCollapsed = ref(false)
@@ -17,6 +17,9 @@ const historySessions = ref([
 
 const handleMenuClick = (menuId) => {
   activeMenu.value = menuId
+  if (menuId === 'new-task') {
+    emit('new-chat')
+  }
 }
 
 const toggleSidebar = () => {

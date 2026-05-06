@@ -174,3 +174,68 @@ export function getFileExtension(filename) {
   const parts = filename.split('.')
   return parts.length > 1 ? parts.pop().toLowerCase() : ''
 }
+
+export async function createNewSession() {
+  const token = localStorage.getItem('auth_token')
+  if (!token) {
+    await ensureAuth()
+  }
+
+  const headers = { 'Content-Type': 'application/json' }
+  const authToken = localStorage.getItem('auth_token')
+  if (authToken) {
+    headers['Authorization'] = `Bearer ${authToken}`
+  }
+
+  // 清除旧的 session_id，确保创建全新会话
+  localStorage.removeItem('session_id')
+
+  const sessionRes = await fetch('/api/session/create', {
+    method: 'POST',
+    headers
+  })
+
+  if (!sessionRes.ok) {
+    throw new Error(`创建会话失败: ${sessionRes.status}`)
+  }
+
+  const sessionData = await sessionRes.json()
+  const newSessionId = sessionData.session_id
+  localStorage.setItem('session_id', newSessionId)
+  return newSessionId
+}
+
+export async function chatStream(sessionId, message, attachments = []) {
+  await ensureAuth()
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'Accept': 'text/event-stream',
+    'Cache-Control': 'no-cache'
+  }
+
+  const token = localStorage.getItem('auth_token')
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  const sid = sessionId || localStorage.getItem('session_id') || ''
+  if (sid) {
+    headers['X-Session-ID'] = sid
+  }
+
+  const response = await fetch('/api/map/chat', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      message,
+      session_id: sid,
+      geometry_data: {}
+    })
+  })
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+  }
+
+  return response.body
+}

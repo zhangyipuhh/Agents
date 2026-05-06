@@ -8,7 +8,24 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: 'http://localhost:8002',
-        changeOrigin: true
+        changeOrigin: true,
+        configure: (proxy) => {
+          proxy.on('proxyReq', (proxyReq, req) => {
+            if (req.url?.includes('/chat')) {
+              proxyReq.setHeader('Connection', 'keep-alive')
+              proxyReq.setHeader('Cache-Control', 'no-cache')
+              proxyReq.setHeader('Accept', 'text/event-stream')
+            }
+          })
+          proxy.on('proxyRes', (proxyRes, req) => {
+            if (req.url?.includes('/chat')) {
+              delete proxyRes.headers['content-length']
+              proxyRes.headers['cache-control'] = 'no-cache'
+              proxyRes.headers['connection'] = 'keep-alive'
+              proxyRes.headers['x-accel-buffering'] = 'no'
+            }
+          })
+        }
       }
     }
   }

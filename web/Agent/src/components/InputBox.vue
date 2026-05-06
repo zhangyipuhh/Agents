@@ -2,6 +2,17 @@
 import { ref, computed, nextTick } from 'vue'
 import { uploadFileInChunks, formatFileSize, getFileExtension } from '../utils/api.js'
 
+const props = defineProps({
+  sessionId: {
+    type: String,
+    default: ''
+  },
+  isStreaming: {
+    type: Boolean,
+    default: false
+  }
+})
+
 const inputValue = ref('')
 const textareaRef = ref(null)
 const fileInputRef = ref(null)
@@ -10,6 +21,7 @@ const isDragging = ref(false)
 const selectedFiles = ref([])
 
 const canSend = computed(() => {
+  if (props.isStreaming) return false
   const hasText = inputValue.value.trim().length > 0
   const hasUploadedFiles = selectedFiles.value.some(f => f.status === 'success')
   return hasText || hasUploadedFiles

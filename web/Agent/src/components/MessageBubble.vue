@@ -1,5 +1,6 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
+import { marked } from 'marked'
 import { formatFileSize, getFileExtension } from '../utils/api.js'
 
 const props = defineProps({
@@ -15,26 +16,84 @@ const props = defineProps({
   attachments: {
     type: Array,
     default: () => []
+  },
+  thinking: {
+    type: Array,
+    default: () => []
+  },
+  tools: {
+    type: Array,
+    default: () => []
+  },
+  text: {
+    type: String,
+    default: ''
+  },
+  ended: {
+    type: Boolean,
+    default: false
+  },
+  error: {
+    type: String,
+    default: ''
   }
 })
 
-// 思考过程展开状态
 const isThinkingExpanded = ref(false)
-const isFeatureExpanded = ref(false)
+const isToolsExpanded = ref(false)
+const thinkingContainer = ref(null)
 
-// 切换思考过程显示
+const isUserMessage = computed(() => props.type === 'user')
+const hasAttachments = computed(() => props.attachments && props.attachments.length > 0)
+const hasThinking = computed(() => props.thinking && props.thinking.length > 0)
+const hasTools = computed(() => props.tools && props.tools.length > 0)
+const hasText = computed(() => props.text && props.text.length > 0)
+const hasError = computed(() => props.error && props.error.length > 0)
+const isStreaming = computed(() => !props.ended && !hasError.value && hasThinking.value)
+
+const renderedText = computed(() => {
+  if (!hasText.value) return ''
+  try {
+    return marked.parse(props.text)
+  } catch {
+    return props.text.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br/>').replace(/^/, '<p>').replace(/$/, '</p>')
+  }
+})
+
+function formatThinkingItem(item) {
+  if (typeof item === 'string') return item
+  if (!item) return ''
+  if (item.thinking) return item.thinking
+  if (item.text) return item.text
+  if (item.data) {
+    const d = item.data
+    const nodeName = Object.keys(d)[0]
+    const nodeData = d[nodeName]
+    if (!nodeData) return JSON.stringify(d, null, 2)
+    if (typeof nodeData === 'string') return nodeData
+    if (nodeData.messages && Array.isArray(nodeData.messages)) {
+      return nodeData.messages.map(m => typeof m === 'string' ? m : JSON.stringify(m)).join('\n')
+    }
+    return JSON.stringify(nodeData, null, 2)
+  }
+  return JSON.stringify(item, null, 2)
+}
+
+function formatToolItem(item) {
+  if (typeof item === 'string') return item
+  if (!item) return ''
+  if (item.data) return JSON.stringify(item.data)
+  if (item.name || item.tool) return item.name || item.tool
+  return JSON.stringify(item)
+}
+
 const toggleThinking = () => {
   isThinkingExpanded.value = !isThinkingExpanded.value
 }
 
-// 切换功能详情显示
-const toggleFeature = () => {
-  isFeatureExpanded.value = !isFeatureExpanded.value
+const toggleTools = () => {
+  isToolsExpanded.value = !isToolsExpanded.value
 }
-
-const isUserMessage = computed(() => props.type === 'user')
-
-const hasAttachments = computed(() => props.attachments && props.attachments.length > 0)
 
 const getFileIconColor = (filename) => {
   const ext = getFileExtension(filename)
@@ -47,37 +106,6 @@ const getFileIconColor = (filename) => {
     ppt: '#F59E0B', pptx: '#F59E0B',
   }
   return colorMap[ext] || '#9CA3AF'
-}
-
-// AI 消息的完整内容示例
-const aiMessageContent = {
-  status: '好的，我已收到您的请求，正在处理中。',
-  thinkingTime: '1.55s',
-  greeting: '你好！我是 MiniMax Agent，很高兴为你服务。',
-  introduction: '我是一个人工智能助手，可以帮助你完成各种复杂任务，包括：',
-  features: [
-    {
-      title: '信息检索与研究',
-      description: '网络搜索、网页内容提取、多媒体分析'
-    },
-    {
-      title: '文档处理',
-      description: 'PDF、Word、Excel 文档的创建、编辑和转换'
-    },
-    {
-      title: '数据分析',
-      description: '股票信息查询、财务数据分析'
-    },
-    {
-      title: '内容创作',
-      description: '报告撰写、PPT演示文稿生成'
-    },
-    {
-      title: '多媒体生成',
-      description: '图片生成、视频制作、音频合成',
-      hasExpand: true
-    }
-  ]
 }
 </script>
 
@@ -105,71 +133,74 @@ const aiMessageContent = {
 
     <!-- AI 消息 -->
     <div v-else class="ai-message">
-      <div class="ai-content-wrapper">
-        <!-- 状态提示 -->
-        <p class="status-text">{{ aiMessageContent.status }}</p>
-
-        <!-- 思考时间 -->
-        <div class="thinking-section" @click="toggleThinking">
-          <span class="thinking-time">已思考 {{ aiMessageContent.thinkingTime }}</span>
+      <!-- 思考过程 -->
+      <div v-if="hasThinking" class="thinking-section">
+        <div class="thinking-header" @click="toggleThinking">
+          <span class="thinking-icon">🧠</span>
+          <span class="thinking-label">思考过程</span>
           <svg
             class="expand-icon"
             :class="{ expanded: isThinkingExpanded }"
             viewBox="0 0 20 20"
             fill="currentColor"
           >
-            <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"/>
+            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
           </svg>
         </div>
-
-        <!-- 思考过程详情（可展开） -->
-        <div v-if="isThinkingExpanded" class="thinking-details">
-          <p>正在分析您的请求...</p>
-          <p>识别任务类型：综合查询</p>
-          <p>调用相关技能模块...</p>
-          <p>生成回复内容...</p>
+        <div v-if="isThinkingExpanded" class="thinking-body" ref="thinkingContainer">
+          <div
+            v-for="(item, index) in thinking"
+            :key="index"
+            class="thinking-item"
+          >
+            <pre class="thinking-content">{{ formatThinkingItem(item) }}</pre>
+          </div>
         </div>
+      </div>
 
-        <!-- 欢迎语 -->
-        <p class="greeting-text">{{ aiMessageContent.greeting }}</p>
-
-        <!-- 功能介绍 -->
-        <p class="introduction-text">{{ aiMessageContent.introduction }}</p>
-
-        <!-- 功能列表 -->
-        <ul class="feature-list">
-          <li v-for="(feature, index) in aiMessageContent.features" :key="index" class="feature-item">
-            <span class="bullet">•</span>
-            <div class="feature-content">
-              <strong>{{ feature.title }}</strong>
-              <span class="feature-desc"> - {{ feature.description }}</span>
-              <button
-                v-if="feature.hasExpand"
-                class="expand-btn"
-                @click="toggleFeature"
-              >
-                <svg
-                  class="arrow-icon"
-                  :class="{ expanded: isFeatureExpanded }"
-                  viewBox="0 0 20 20"
-                  fill="currentColor"
-                >
-                  <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
-                </svg>
-              </button>
-            </div>
-          </li>
-        </ul>
-
-        <!-- 功能详情（可展开） -->
-        <div v-if="isFeatureExpanded" class="feature-details">
-          <ul class="detail-list">
-            <li>AI 图像生成：使用 DALL-E、Midjourney 等模型创建高质量图像</li>
-            <li>视频编辑与合成：自动剪辑、特效添加、字幕生成</li>
-            <li>音频处理：语音合成、音乐生成、音频转文字</li>
-            <li>多模态融合：图文结合、音视频协同创作</li>
-          </ul>
+      <!-- 工具调用 -->
+      <div v-if="hasTools" class="tools-section">
+        <div class="tools-header" @click="toggleTools">
+          <span class="tools-icon">🔧</span>
+          <span class="tools-label">工具调用 ({{ tools.length }})</span>
+          <svg
+            class="expand-icon"
+            :class="{ expanded: isToolsExpanded }"
+            viewBox="0 0 20 20"
+            fill="currentColor"
+          >
+            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
+          </svg>
         </div>
+        <div v-if="isToolsExpanded" class="tools-body">
+          <div
+            v-for="(item, index) in tools"
+            :key="'tool-' + index"
+            class="tool-item"
+          >
+            <span class="tool-icon">🔧</span>
+            <span class="tool-text">{{ formatToolItem(item) }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 正文内容 -->
+      <div v-if="hasText" class="text-section">
+        <div class="markdown-body" v-html="renderedText"></div>
+        <span v-if="!ended && !error" class="streaming-cursor">▌</span>
+      </div>
+
+      <!-- 错误信息 -->
+      <div v-if="hasError" class="error-section">
+        <span class="error-icon">❌</span>
+        <span class="error-text">{{ error }}</span>
+      </div>
+
+      <!-- 加载状态（无任何内容时） -->
+      <div v-if="!hasThinking && !hasText && !hasError" class="loading-section">
+        <span class="loading-dot">●</span>
+        <span class="loading-dot" style="animation-delay: 0.2s">●</span>
+        <span class="loading-dot" style="animation-delay: 0.4s">●</span>
       </div>
     </div>
   </div>
@@ -187,7 +218,6 @@ const aiMessageContent = {
   }
 }
 
-/* 消息入场动画 */
 @keyframes messageSlideIn {
   from {
     opacity: 0;
@@ -199,7 +229,7 @@ const aiMessageContent = {
   }
 }
 
-/* 用户消息样式 */
+/* 用户消息 */
 .user-message {
   display: flex;
   justify-content: flex-end;
@@ -217,10 +247,10 @@ const aiMessageContent = {
   word-wrap: break-word;
   box-shadow: 0 2px 8px rgba(99, 102, 241, 0.15);
   transition: var(--transition-shadow);
+}
 
-  &:hover {
-    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.25);
-  }
+.bubble-content:hover {
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.25);
 }
 
 .bubble-attachments {
@@ -262,29 +292,21 @@ const aiMessageContent = {
   white-space: pre-wrap;
 }
 
-/* AI 消息样式 */
+/* AI 消息 */
 .ai-message {
   display: flex;
-  justify-content: flex-start;
+  flex-direction: column;
+  align-items: flex-start;
   width: 100%;
 }
 
-.ai-content-wrapper {
-  max-width: 85%;
-  font-size: var(--font-size-base);
-  line-height: 1.6;
-  color: var(--color-text-primary);
-}
-
-/* 状态提示 */
-.status-text {
-  font-size: 14px;
-  color: var(--color-text-secondary);
-  margin-bottom: 8px;
-}
-
-/* 思考时间 */
+/* 思考过程 */
 .thinking-section {
+  max-width: 85%;
+  margin-bottom: 12px;
+}
+
+.thinking-header {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -292,40 +314,22 @@ const aiMessageContent = {
   background-color: var(--color-bg-tertiary);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: var(--transition-colors), var(--transition-transform);
-  margin-bottom: 16px;
-  position: relative;
-
-  &::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    background-color: var(--color-bg-active);
-    opacity: 0;
-    transition: opacity var(--transition-fast);
-  }
-
-  &:hover {
-    &::before {
-      opacity: 1;
-    }
-  }
-
-  &:active:not(:disabled) {
-    transform: scale(var(--scale-active));
-  }
-
-  /* Ensure content is above pseudo-element */
-  > * {
-    position: relative;
-    z-index: 1;
-  }
+  font-size: 0.875em;
+  color: var(--color-text-secondary);
+  transition: background-color 0.2s ease;
+  user-select: none;
 }
 
-.thinking-time {
-  font-size: 13px;
-  color: var(--color-text-muted);
+.thinking-header:hover {
+  background-color: var(--color-bg-hover);
+}
+
+.thinking-icon {
+  font-size: 14px;
+}
+
+.thinking-label {
+  font-size: 0.875em;
 }
 
 .expand-icon {
@@ -333,166 +337,280 @@ const aiMessageContent = {
   height: 14px;
   color: var(--color-text-muted);
   transition: transform 0.2s ease;
-
-  &.expanded {
-    transform: rotate(90deg);
-  }
 }
 
-/* 思考过程详情 */
-.thinking-details {
+.expand-icon.expanded {
+  transform: rotate(180deg);
+}
+
+.thinking-body {
+  margin-top: 8px;
   padding: 12px 16px;
   background-color: var(--color-bg-tertiary);
   border-radius: var(--radius-md);
-  margin-bottom: 16px;
-  font-size: 13px;
+  max-height: 200px;
+  overflow-y: auto;
+  font-size: 0.875em;
   color: var(--color-text-secondary);
-  line-height: 1.8;
   animation: expandIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 
-  p {
-    margin-bottom: 4px;
-    transition: var(--transition-opacity);
+  &::-webkit-scrollbar {
+    width: 4px;
+  }
 
-    &:last-child {
-      margin-bottom: 0;
-    }
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background-color: var(--color-border);
+    border-radius: var(--radius-full);
+  }
+
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.thinking-item {
+  margin-bottom: 8px;
+
+  &:last-child {
+    margin-bottom: 0;
   }
 }
 
+.thinking-content {
+  font-size: 0.875em;
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  font-family: inherit;
+  line-height: 1.6;
+}
+
+/* 工具调用 */
+.tools-section {
+  max-width: 85%;
+  margin-bottom: 10px;
+}
+
+.tools-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background-color: var(--color-bg-tertiary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.875em;
+  color: var(--color-text-secondary);
+  transition: background-color 0.2s ease;
+  user-select: none;
+}
+
+.tools-header:hover {
+  background-color: var(--color-bg-hover);
+}
+
+.tools-icon {
+  font-size: 14px;
+}
+
+.tools-label {
+  font-size: 0.875em;
+}
+
+.tools-body {
+  margin-top: 8px;
+  padding: 12px 16px;
+  background-color: var(--color-bg-tertiary);
+  border-radius: var(--radius-md);
+  max-height: 200px;
+  overflow-y: auto;
+  animation: expandIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+
+  &::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background-color: var(--color-border);
+    border-radius: var(--radius-full);
+  }
+
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.tool-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 0.875em;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  margin-bottom: 4px;
+}
+
+.tool-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.tool-text {
+  word-break: break-all;
+  opacity: 0.85;
+}
+
+/* 正文 */
+.text-section {
+  max-width: 85%;
+  font-size: var(--font-size-base);
+  line-height: 1.6;
+  color: var(--color-text-primary);
+}
+
+.markdown-body {
+  display: inline;
+}
+
+.markdown-body :deep(p) {
+  margin-bottom: 10px;
+  line-height: 1.7;
+}
+
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3) {
+  margin-top: 16px;
+  margin-bottom: 8px;
+  font-weight: var(--font-weight-semibold);
+}
+
+.markdown-body :deep(h2) {
+  font-size: 1.2em;
+}
+
+.markdown-body :deep(h3) {
+  font-size: 1.1em;
+}
+
+.markdown-body :deep(ul),
+.markdown-body :deep(ol) {
+  padding-left: 20px;
+  margin-bottom: 10px;
+}
+
+.markdown-body :deep(li) {
+  margin-bottom: 4px;
+}
+
+.markdown-body :deep(code) {
+  background-color: var(--color-bg-tertiary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+.markdown-body :deep(pre) {
+  background-color: var(--color-bg-tertiary);
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+  margin-bottom: 12px;
+}
+
+.markdown-body :deep(pre code) {
+  background: none;
+  padding: 0;
+}
+
+.markdown-body :deep(strong) {
+  font-weight: var(--font-weight-semibold);
+}
+
+.markdown-body :deep(blockquote) {
+  border-left: 3px solid var(--color-accent);
+  padding-left: 12px;
+  margin: 8px 0;
+  color: var(--color-text-secondary);
+}
+
+.streaming-cursor {
+  display: inline;
+  color: var(--color-accent);
+  animation: blink 1s step-end infinite;
+  font-size: 1em;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* 错误 */
+.error-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background-color: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: var(--radius-sm);
+  font-size: 0.875em;
+  color: var(--color-error);
+  max-width: 85%;
+}
+
+.error-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.error-text {
+  word-break: break-word;
+}
+
+/* 加载动画 */
+.loading-section {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 0;
+}
+
+.loading-dot {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  animation: dotPulse 1.4s ease-in-out infinite;
+}
+
+@keyframes dotPulse {
+  0%, 80%, 100% {
+    opacity: 0.3;
+    transform: scale(0.8);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* 展开动画 */
 @keyframes expandIn {
   from {
     opacity: 0;
-    transform: translateY(-8px);
     max-height: 0;
   }
   to {
     opacity: 1;
-    transform: translateY(0);
-    max-height: 500px;
-  }
-}
-
-/* 欢迎语 */
-.greeting-text {
-  font-weight: var(--font-weight-normal);
-  margin-bottom: 12px;
-  color: var(--color-text-primary);
-}
-
-/* 功能介绍 */
-.introduction-text {
-  margin-bottom: 12px;
-  color: var(--color-text-primary);
-}
-
-/* 功能列表 */
-.feature-list {
-  list-style: none;
-  padding-left: 0;
-  margin: 0;
-}
-
-.feature-item {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 10px;
-  line-height: 1.6;
-}
-
-.bullet {
-  color: var(--color-accent);
-  font-weight: bold;
-  flex-shrink: 0;
-}
-
-.feature-content {
-  flex: 1;
-
-  strong {
-    font-weight: var(--font-weight-semibold);
-    color: var(--color-text-primary);
-  }
-
-  .feature-desc {
-    color: var(--color-text-secondary);
-  }
-}
-
-/* 展开按钮 */
-.expand-btn {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 4px;
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  color: var(--color-accent);
-  vertical-align: middle;
-  margin-left: 4px;
-
-  &:hover {
-    opacity: 0.8;
-  }
-}
-
-.arrow-icon {
-  width: 16px;
-  height: 16px;
-  transition: transform 0.2s ease;
-
-  &.expanded {
-    transform: rotate(180deg);
-  }
-}
-
-/* 功能详情 */
-.feature-details {
-  margin-top: 12px;
-  padding: 16px;
-  background-color: var(--color-bg-tertiary);
-  border-radius: var(--radius-md);
-  border-left: 3px solid var(--color-accent);
-  animation: expandIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.detail-list {
-  list-style: none;
-  padding-left: 0;
-
-  li {
-    position: relative;
-    padding-left: 20px;
-    margin-bottom: 8px;
-    font-size: 13px;
-    color: var(--color-text-secondary);
-    line-height: 1.6;
-    transition: var(--transition-colors);
-
-    &:hover {
-      color: var(--color-text-primary);
-    }
-
-    &::before {
-      content: '';
-      position: absolute;
-      left: 6px;
-      top: 9px;
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background-color: var(--color-accent-light);
-      transition: background-color var(--transition-fast), transform var(--transition-fast);
-
-      li:hover & {
-        background-color: var(--color-accent);
-        transform: scale(1.3);
-      }
-    }
-
-    &:last-child {
-      margin-bottom: 0;
-    }
+    max-height: 200px;
   }
 }
 </style>
