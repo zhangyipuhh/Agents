@@ -211,7 +211,9 @@ export async function uploadFileInChunks(file, onProgress, onCancel) {
 
       completedChunks++
       if (onProgress) {
-        onProgress(Math.round((completedChunks / totalChunks) * 100))
+        // 分片上传阶段最多占 80%，合并阶段占 20%
+        const uploadProgress = Math.round((completedChunks / totalChunks) * 80)
+        onProgress(uploadProgress)
       }
     }
 
