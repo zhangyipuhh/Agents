@@ -95,6 +95,12 @@ def _extract_last_ai_text(messages: list) -> str:
             ]
             if text_parts:
                 return "".join(text_parts).strip()
+            thinking_parts = [
+                b.get("thinking", "") for b in content
+                if isinstance(b, dict) and b.get("type") == "thinking"
+            ]
+            if thinking_parts:
+                return "".join(thinking_parts).strip()
     return ""
 
 
@@ -226,12 +232,14 @@ def explore(
             {"messages": [{"role": "user", "content": prompt}]},
             config=config,
             stream_mode=["updates", "values", "messages"],
-            version="v2",
         ):
-            if not isinstance(chunk, dict):
+            if isinstance(chunk, tuple) and len(chunk) == 2:
+                stream_mode, data = chunk
+            elif isinstance(chunk, dict):
+                stream_mode = chunk.get("type")
+                data = chunk.get("data")
+            else:
                 continue
-            stream_mode = chunk.get("type")
-            data = chunk.get("data")
 
             if stream_mode == "updates":
                 writer(dict(create_tool_event(
@@ -251,7 +259,10 @@ def explore(
                         final_answer = sr.answer
                     elif isinstance(sr, dict):
                         final_answer = sr.get("answer", "")
-                if not final_answer and "messages" in data:
+                    # 如果 structured_response 没有提供有效答案，尝试从 messages 获取
+                    if not final_answer and "messages" in data:
+                        final_answer = _extract_last_ai_text(data["messages"])
+                elif "messages" in data:
                     final_answer = _extract_last_ai_text(data["messages"])
 
         if not final_answer:
