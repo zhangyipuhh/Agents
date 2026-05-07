@@ -342,7 +342,6 @@ const getFileIconColor = (filename) => {
 
       <!-- 错误信息 -->
       <div v-if="hasError" class="error-section">
-        <span class="error-icon">❌</span>
         <span class="error-text">不好意思，刚刚出了点小故障，可以晚点再问我一遍。</span>
       </div>
 
@@ -765,21 +764,10 @@ const getFileIconColor = (filename) => {
 
 /* 错误 */
 .error-section {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
-  background-color: rgba(239, 68, 68, 0.08);
-  border: 1px solid rgba(239, 68, 68, 0.2);
-  border-radius: var(--radius-sm);
-  font-size: 0.875em;
-  color: var(--color-error);
   max-width: 85%;
-}
-
-.error-icon {
-  font-size: 16px;
-  flex-shrink: 0;
+  font-size: var(--font-size-base);
+  line-height: 1.6;
+  color: var(--color-text-primary);
 }
 
 .error-text {
