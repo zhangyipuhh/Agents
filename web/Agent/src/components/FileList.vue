@@ -215,11 +215,16 @@ const hasContent = computed(() => {
   height: 16px;
   flex-shrink: 0;
   color: var(--color-text-muted);
-  transition: transform 0.2s ease;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+  opacity: 0;
 
   &.expanded {
     transform: rotate(90deg);
   }
+}
+
+.folder-header:hover .folder-chevron {
+  opacity: 1;
 }
 
 .folder-icon {

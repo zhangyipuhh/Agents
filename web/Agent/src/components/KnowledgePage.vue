@@ -17,6 +17,11 @@ const folders = ref([])
 const filesLoading = ref(false)
 const currentSessionId = ref('')
 const isChatStreaming = ref(false)
+const isFileListCollapsed = ref(false)
+
+function toggleFileList() {
+  isFileListCollapsed.value = !isFileListCollapsed.value
+}
 
 onMounted(async () => {
   filesLoading.value = true
@@ -76,11 +81,16 @@ function handleChatStreamEnd() {
       @close="closePreview"
     />
 
-    <div class="file-list-panel">
+    <div class="file-list-panel" :class="{ collapsed: isFileListCollapsed }">
       <div class="file-list-header">
-        <h2 class="file-list-title">知识库文件</h2>
+        <h2 class="file-list-title" v-show="!isFileListCollapsed">知识库文件</h2>
+        <button class="collapse-btn" @click="toggleFileList" :title="isFileListCollapsed ? '展开' : '折叠'">
+          <svg class="collapse-icon" :class="{ collapsed: isFileListCollapsed }" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clip-rule="evenodd"/>
+          </svg>
+        </button>
       </div>
-      <div class="file-list-body">
+      <div v-show="!isFileListCollapsed" class="file-list-body">
         <FileList :files="files" :folders="folders" :loading="filesLoading" @file-click="handleFileClick" />
       </div>
     </div>
@@ -108,13 +118,24 @@ function handleChatStreamEnd() {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  min-width: 0;
+  min-width: 200px;
+  max-width: 400px;
+  transition: min-width 0.3s ease, max-width 0.3s ease;
+
+  &.collapsed {
+    min-width: 60px;
+    max-width: 60px;
+  }
 }
 
 .file-list-header {
   flex-shrink: 0;
   padding: 16px 20px;
   border-bottom: 1px solid var(--color-border-light);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .file-list-title {
@@ -122,6 +143,37 @@ function handleChatStreamEnd() {
   font-weight: var(--font-weight-bold);
   color: var(--color-text-primary);
   margin: 0;
+}
+
+.collapse-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition-colors);
+  flex-shrink: 0;
+  background-color: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+
+  &:hover {
+    background-color: var(--color-bg-hover);
+    border-color: var(--color-text-muted);
+  }
+}
+
+.collapse-icon {
+  width: 18px;
+  height: 18px;
+  color: var(--color-text-muted);
+  transition: transform 0.3s ease;
+  transform: rotate(0deg);
+
+  &.collapsed {
+    transform: rotate(180deg);
+  }
 }
 
 .file-list-body {

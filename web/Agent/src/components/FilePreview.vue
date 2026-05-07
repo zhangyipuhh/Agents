@@ -45,7 +45,7 @@ const renderedContent = computed(() => {
 </script>
 
 <template>
-  <div class="preview-panel" :class="{ open: isOpen }">
+  <div v-if="isOpen" class="preview-panel">
     <div class="preview-header">
       <span class="preview-title">{{ fileName || '文件预览' }}</span>
       <button class="preview-close-btn" @click="emit('close')">
@@ -60,27 +60,22 @@ const renderedContent = computed(() => {
         <span>加载中...</span>
       </div>
       <div v-else-if="isMarkdown" class="markdown-body" v-html="renderedContent"></div>
-      <div v-else class="preview-content">{{ content }}</div>
+      <div v-else class="preview-content">{{ content || '暂无内容' }}</div>
     </div>
   </div>
 </template>
 
 <style scoped>
 .preview-panel {
-  width: 0;
-  min-width: 0;
+  width: 30%;
+  min-width: 300px;
   height: 100%;
   overflow: hidden;
   background-color: var(--color-bg-primary);
   display: flex;
   flex-direction: column;
   border-left: 1px solid var(--color-border);
-  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   flex-shrink: 0;
-
-  &.open {
-    width: 30%;
-  }
 }
 
 .preview-header {
