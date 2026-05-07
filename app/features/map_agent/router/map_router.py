@@ -13,6 +13,8 @@ Author: AI Assistant
 
 import logging
 import json
+import os
+from datetime import datetime
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from typing import AsyncGenerator, Optional
@@ -42,6 +44,178 @@ map_agent = MapAgent(
     store=store,
     store_id=store_id,
 )
+
+
+# Knowledge 目录路径
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+KNOWLEDGE_DIR = os.path.join(_PROJECT_ROOT, "data", "Knowledge")
+METADATA_FILE = os.path.join(KNOWLEDGE_DIR, "metadata.json")
+TMP_DIR = os.path.join(KNOWLEDGE_DIR, "tmp")
+
+
+def _scan_knowledge_dir() -> dict:
+    """
+    扫描 Knowledge 目录，生成 metadata 结构
+
+    排除 tmp 子目录和 metadata.json 本身，处理文件夹层级结构，
+    对于 md 文件尝试从内容中提取关键字和简介。
+
+    Returns:
+        dict: 包含 folders 和 files 的 metadata 字典
+    """
+    folders = []
+    files = []
+
+    # 确保 tmp 目录存在
+    os.makedirs(TMP_DIR, exist_ok=True)
+
+    for root, dirs, filenames in os.walk(KNOWLEDGE_DIR):
+        # 排除 tmp 目录
+        dirs[:] = [d for d in dirs if d != "tmp"]
+
+        rel_root = os.path.relpath(root, KNOWLEDGE_DIR)
+        if rel_root == ".":
+            rel_root = ""
+
+        # 收集文件夹信息
+        if rel_root:
+            folder_info = {
+                "name": os.path.basename(rel_root),
+                "path": rel_root,
+                "children": []
+            }
+            folders.append(folder_info)
+
+        for filename in filenames:
+            # 排除 metadata.json 本身
+            if filename == "metadata.json":
+                continue
+
+            file_path = os.path.join(root, filename)
+            rel_path = os.path.join(rel_root, filename) if rel_root else filename
+            # 统一使用正斜杠
+            rel_path = rel_path.replace("\\", "/")
+
+            file_size = os.path.getsize(file_path)
+            file_ext = os.path.splitext(filename)[1].lstrip(".")
+            file_date = datetime.fromtimestamp(os.path.getmtime(file_path)).strftime("%Y-%m-%d")
+
+            keywords = []
+            summary = ""
+
+            # 对于 md 文件，尝试从内容中提取关键字和简介
+            if file_ext == "md":
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+
+                    # 提取关键字：查找 "## 关键字" 或 "## 关键词" 后面的内容
+                    import re
+                    kw_match = re.search(r"##\s*(?:关键字|关键词)\s*\n+(.+?)(?:\n#|\n##|\Z)", content, re.DOTALL)
+                    if kw_match:
+                        kw_text = kw_match.group(1).strip()
+                        keywords = [k.strip() for k in re.split(r"[、，,\n]", kw_text) if k.strip()]
+
+                    # 提取简介：查找 "## 概述" 或 "## 简介" 后面的内容
+                    sum_match = re.search(r"##\s*(?:概述|简介|摘要)\s*\n+(.+?)(?:\n#|\n##|\Z)", content, re.DOTALL)
+                    if sum_match:
+                        summary = sum_match.group(1).strip().split("\n")[0]
+                except Exception as e:
+                    logger.warning(f"读取文件 {rel_path} 内容失败: {e}")
+
+            file_info = {
+                "name": filename,
+                "path": rel_path,
+                "size": file_size,
+                "type": file_ext,
+                "keywords": keywords,
+                "date": file_date,
+                "summary": summary,
+                "folder": rel_root.replace("\\", "/") if rel_root else ""
+            }
+            files.append(file_info)
+
+    return {"folders": folders, "files": files}
+
+
+@router.get('/knowledge/files')
+async def get_knowledge_files():
+    """
+    获取知识库文件元数据
+
+    读取 metadata.json，如果不存在则自动扫描 Knowledge 目录生成。
+    扫描时排除 tmp 子目录和 metadata.json 本身。
+
+    Returns:
+        dict: 包含 folders 和 files 的元数据
+    """
+    try:
+        # 确保 tmp 目录存在
+        os.makedirs(TMP_DIR, exist_ok=True)
+
+        if os.path.exists(METADATA_FILE):
+            with open(METADATA_FILE, "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+        else:
+            metadata = _scan_knowledge_dir()
+            with open(METADATA_FILE, "w", encoding="utf-8") as f:
+                json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+        return metadata
+
+    except Exception as e:
+        import traceback
+        logger.error(f"[ERROR] get_knowledge_files 异常: {e}")
+        logger.error(f"[ERROR] 异常堆栈: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"获取知识库文件列表失败：{str(e)}")
+
+
+@router.get('/knowledge/file-preview')
+async def get_knowledge_file_preview(path: str):
+    """
+    获取知识库文件内容预览
+
+    根据文件相对路径读取 Knowledge 目录下的文件内容，
+    包含路径安全校验防止目录遍历攻击。
+
+    Args:
+        path: 文件相对路径（query parameter）
+
+    Returns:
+        dict: 包含 path、content、type 的文件信息
+    """
+    try:
+        # 安全校验：防止目录遍历攻击
+        if not path or ".." in path or os.path.isabs(path):
+            raise HTTPException(status_code=400, detail="非法文件路径")
+
+        # 构建实际文件路径并校验是否在 Knowledge 目录内
+        actual_path = os.path.normpath(os.path.join(KNOWLEDGE_DIR, path))
+        if not actual_path.startswith(os.path.normpath(KNOWLEDGE_DIR)):
+            raise HTTPException(status_code=400, detail="非法文件路径")
+
+        if not os.path.isfile(actual_path):
+            raise HTTPException(status_code=404, detail="文件不存在")
+
+        file_ext = os.path.splitext(path)[1].lstrip(".")
+
+        # 读取文件内容
+        with open(actual_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        return {
+            "path": path.replace("\\", "/"),
+            "content": content,
+            "type": file_ext
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        logger.error(f"[ERROR] get_knowledge_file_preview 异常: {e}")
+        logger.error(f"[ERROR] 异常堆栈: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"获取文件预览失败：{str(e)}")
 
 
 class ChatRequest(BaseModel):
