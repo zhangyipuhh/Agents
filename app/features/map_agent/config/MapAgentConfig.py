@@ -100,7 +100,7 @@ class MapAgentConfig(BaseAgentConfig):
         from app.core.tools.BaseTools import get_current_time
         from app.core.tools.mcp_registry import MCPToolsRegistry
         from app.features.map_agent.config.config import map_agent_settings
-        from app.core.tools.FilesystemReadTools import get_file_paths, search_agent
+        from app.core.tools.FilesystemReadTools import explore
         tools = [
             #get_current_time,
             # set_map_center,
@@ -111,8 +111,7 @@ class MapAgentConfig(BaseAgentConfig):
             # get_map_state,
             # draw_map_polygon,
             # set_map_layer,
-            get_file_paths,
-            search_agent,
+            explore,
         ]
 
         try:
