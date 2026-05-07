@@ -1,7 +1,14 @@
 <script setup>
 import { ref } from 'vue'
 
-const emit = defineEmits(['toggle-sidebar', 'new-chat'])
+const props = defineProps({
+  currentPage: {
+    type: String,
+    default: 'agent'
+  }
+})
+
+const emit = defineEmits(['toggle-sidebar', 'new-chat', 'page-change'])
 
 const isSidebarCollapsed = ref(false)
 const isHistoryCollapsed = ref(false)
@@ -19,6 +26,20 @@ const handleMenuClick = (menuId) => {
   activeMenu.value = menuId
   if (menuId === 'new-task') {
     emit('new-chat')
+    emit('page-change', 'agent')
+  }
+  if (menuId === 'knowledge') {
+    // 在浏览器新窗口中打开知识库页面
+    const width = 1200
+    const height = 800
+    const left = (window.screen.width - width) / 2
+    const top = (window.screen.height - height) / 2
+    const windowName = 'knowledgeWindow_' + Date.now()
+    window.open(
+      '/knowledge.html',
+      windowName,
+      `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes,status=yes`
+    )
   }
 }
 
@@ -127,6 +148,18 @@ const toggleExpert = () => {
             </svg>
             <span class="menu-text">地图操作</span>
             <span class="tag tag-beta">Beta</span>
+          </button>
+
+          <!-- 知识库 -->
+          <button
+            class="menu-item menu-item-sm"
+            :class="{ active: activeMenu === 'knowledge' }"
+            @click="handleMenuClick('knowledge')"
+          >
+            <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z"/>
+            </svg>
+            <span class="menu-text">知识库</span>
           </button>
 
           <!-- 数据分析 -->

@@ -314,3 +314,77 @@ export async function chatStream(sessionId, message, attachments = []) {
 
   return response.body
 }
+
+export async function fetchKnowledgeFiles() {
+  await ensureAuth()
+
+  const headers = {
+    'Content-Type': 'application/json',
+    ...getAuthHeaders()
+  }
+
+  const response = await fetch('/api/map/knowledge/files', {
+    method: 'GET',
+    headers
+  })
+
+  if (response.status === 401) {
+    localStorage.removeItem('auth_token')
+    await ensureAuth()
+    const retryHeaders = {
+      'Content-Type': 'application/json',
+      ...getAuthHeaders()
+    }
+    const retryResponse = await fetch('/api/map/knowledge/files', {
+      method: 'GET',
+      headers: retryHeaders
+    })
+    if (!retryResponse.ok) {
+      throw new Error(`HTTP ${retryResponse.status}: ${retryResponse.statusText}`)
+    }
+    return retryResponse.json()
+  }
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+  }
+
+  return response.json()
+}
+
+export async function fetchFilePreview(path) {
+  await ensureAuth()
+
+  const headers = {
+    'Content-Type': 'application/json',
+    ...getAuthHeaders()
+  }
+
+  const response = await fetch(`/api/map/knowledge/file-preview?path=${encodeURIComponent(path)}`, {
+    method: 'GET',
+    headers
+  })
+
+  if (response.status === 401) {
+    localStorage.removeItem('auth_token')
+    await ensureAuth()
+    const retryHeaders = {
+      'Content-Type': 'application/json',
+      ...getAuthHeaders()
+    }
+    const retryResponse = await fetch(`/api/map/knowledge/file-preview?path=${encodeURIComponent(path)}`, {
+      method: 'GET',
+      headers: retryHeaders
+    })
+    if (!retryResponse.ok) {
+      throw new Error(`HTTP ${retryResponse.status}: ${retryResponse.statusText}`)
+    }
+    return retryResponse.json()
+  }
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+  }
+
+  return response.json()
+}

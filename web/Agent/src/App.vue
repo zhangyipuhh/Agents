@@ -1,11 +1,14 @@
 <script setup>
-import { reactive, onMounted, computed } from 'vue'
+import { reactive, onMounted, computed, ref } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import SkillTags from './components/SkillTags.vue'
 import ChatArea from './components/ChatArea.vue'
 import InputBox from './components/InputBox.vue'
+import KnowledgePage from './components/KnowledgePage.vue'
 import { chatStream, ensureAuth, createNewSession } from './utils/api.js'
 import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage } from './utils/sseParser.js'
+
+const currentPage = ref('agent')
 
 const messages = reactive([])
 const sessionId = reactive({ value: '' })
@@ -119,13 +122,17 @@ function handleDislike(id) {
 function handleCopy(e) {
   console.log('复制消息:', e.messageId)
 }
+
+function handlePageChange(page) {
+  currentPage.value = page
+}
 </script>
 
 <template>
   <div class="app-layout">
-    <Sidebar @new-chat="newSession" />
+    <Sidebar :current-page="currentPage" @new-chat="newSession" @page-change="handlePageChange" />
 
-    <main class="content-area" :class="{ 'empty-layout': isEmptyState }">
+    <main v-if="currentPage === 'agent'" class="content-area" :class="{ 'empty-layout': isEmptyState }">
       <SkillTags v-if="!isEmptyState" @tag-select="handleTagSelect" />
 
       <ChatArea
@@ -147,6 +154,12 @@ function handleCopy(e) {
         @tool-action="handleToolAction"
       />
     </main>
+
+    <KnowledgePage
+      v-if="currentPage === 'knowledge'"
+      @new-chat="newSession"
+      @page-change="handlePageChange"
+    />
   </div>
 </template>
 
