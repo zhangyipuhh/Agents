@@ -264,6 +264,10 @@ class EncodingSafeFileSearchMiddleware(AgentMiddleware):
             else:
                 continue
 
+            # 确保 content 不为 None
+            if content is None:
+                continue
+
             for line_num, line in enumerate(content.splitlines(), 1):
                 if regex.search(line):
                     virtual_path = "/" + str(
