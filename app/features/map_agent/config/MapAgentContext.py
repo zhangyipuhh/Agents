@@ -28,7 +28,10 @@ class MapAgentContext(BaseAgentContext):
         host_session_id: 主机会话 ID，用于多智能体协作时数据隔离
         geometry_data: 地理数据类型，包含点、线、面的几何数据
     """
-
+    system_prompt: str =""
+    """系统提示词，默认为空"""
     geometry_data: dict = {}
     """地理数据类型 dict，格式为 {"point": [...], "line": [...], "polygon": [...]}"""
+    knowledge_root: str =""
+    """知识根目录，默认为空"""
     

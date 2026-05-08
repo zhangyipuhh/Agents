@@ -28,7 +28,8 @@ from langchain_core.messages import ToolMessage
 
 from app.features.map_agent.MapAgent import MapAgent
 from app.core.format.stream import stream_format_context
-
+from app.features.map_agent.config.prompts import KNOWLEDGE_SYSTEM_PROMPT
+from app.features.map_agent.config.MapAgentContext import MapAgentContext
 logger = logging.getLogger(__name__)
 
 # 初始化 MemorySaver 和 InMemoryStore
@@ -283,7 +284,7 @@ async def get_knowledge_file_preview(path: str):
         if not os.path.isfile(actual_path):
             raise HTTPException(status_code=404, detail="文件不存在")
 
-        file_ext = os.path.splitext(path)[1].lstrip(".")
+        file_ext = os.path.splitext(path)[1].lstrip(".").lower()
         file_name = os.path.basename(path)
         normalized_path = path.replace("\\", "/")
         file_url = f"/api/map/knowledge/file-download?path={quote(normalized_path)}"
@@ -335,6 +336,7 @@ class ChatRequest(BaseModel):
 async def generate_stream_response(
     user_input: str,
     session_id: str,
+    context: any = None,
     geometry_data: dict = {}
 ) -> AsyncGenerator[str, None]:
     """
@@ -365,6 +367,7 @@ async def generate_stream_response(
             user_input=user_input,
             session_id=session_id,
             stream_mode=["updates", "custom", "messages"],
+            context=context,
             geometry_data=geometry_data
         ):
             # 处理组合模式的输出
@@ -448,6 +451,64 @@ async def chat(
             generate_stream_response(
                 user_input=chat_request.message,
                 session_id=session_id,
+                geometry_data=geometry_data
+            ),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"  # 禁用 nginx 缓冲
+            }
+        )
+
+    except Exception as e:
+        import traceback
+        logger.error(f"[ERROR] chat 异常: {e}")
+        logger.error(f"[ERROR] 异常堆栈: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"对话处理失败：{str(e)}")
+@router.post('/knowledge-chat')
+async def knowledge_chat(
+    request: Request,
+    chat_request: ChatRequest
+):
+    """
+    地图智能体流式聊天接口
+
+    与地图AI助手进行对话，支持多轮对话和地图操作。
+    使用 SSE (Server-Sent Events) 协议实时返回 Agent 的思考过程和响应结果。
+
+    工作流程：
+    1. 接收 POST 请求，解析为 ChatRequest 对象
+    2. 获取 session_id，优先使用请求体中的，否则从 request.state 获取
+    3. 调用 generate_stream_response 生成流式响应
+    4. 通过 StreamingResponse 以 SSE 格式返回数据
+    5. 设置适当的响应头以确保流式传输正常工作
+
+    Args:
+        request: FastAPI 请求对象
+        chat_request: 聊天请求，包含用户消息和可选的会话ID
+
+    Returns:
+        StreamingResponse: 流式响应对象，使用 text/event-stream 媒体类型
+    """
+    try:
+        # 获取 session_id，优先使用请求体中的，否则从 request.state 获取
+        session_id = chat_request.session_id or getattr(request.state, "session_id", "default")
+
+        # 获取 geometry_data
+        geometry_data = chat_request.geometry_data or {}
+
+        logger.debug(f"[DEBUG] chat 请求: message={chat_request.message}, session_id={session_id}")
+
+        # 返回流式响应
+        return StreamingResponse(
+            generate_stream_response(
+                user_input=chat_request.message,
+                session_id=session_id,
+                context=MapAgentContext(
+                    system_prompt=KNOWLEDGE_SYSTEM_PROMPT,
+                    knowledge_root=r"app\data\Knowledge\tmp"
+                ),
                 geometry_data=geometry_data
             ),
             media_type="text/event-stream",

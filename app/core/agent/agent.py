@@ -217,7 +217,9 @@ class Agent:
         # logging.info(f"对话历史: {messages[-1].content}")
         # messages = state["messages"]
         # 系统提示词，指导模型如何根据文件类型调用相应的解析工具
-        system_prompt = BASE_SYSTEM_PROMPT + "\n\n" + (self.system_prompt or "")
+        #运行时可以通过上下文动态添加主提示词
+        system_prompt = BASE_SYSTEM_PROMPT + "\n\n" + (self.system_prompt or "")+"\n\n"+context.get("system_prompt", "")
+        #logging.info(f"system_prompt: {system_prompt}")
         # 从状态中获取图片路径列表,如果传入了需要处理图片,则从状态中获取图片路径列表
         image_ids = context.get("image_ids", [])
         # 如果是多模态模型,则需要处理图片

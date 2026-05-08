@@ -165,7 +165,8 @@ def explore(
 
     project_root = Path.cwd()
     root_path = project_root / "app" / "data" / "upload" / session_id
-
+    if runtime.context.get("knowledge_root"):
+        root_path = Path(project_root / runtime.context.get("knowledge_root"))
     try:
         if not root_path.exists():
             raise FileNotFoundError(f"工作空间文件夹不存在: {root_path}")
@@ -256,14 +257,15 @@ def explore(
                 if "structured_response" in data:
                     sr = data["structured_response"]
                     if isinstance(sr, ExploreResult):
-                        final_answer = sr.answer
+                        final_answer = sr.answer or ""
                     elif isinstance(sr, dict):
-                        final_answer = sr.get("answer", "")
+                        final_answer = sr.get("answer") or ""
 
         # 如果还没有获取到有效答案，尝试从 messages 获取
         if not final_answer and "messages" in data:
             final_answer = _extract_last_ai_text(data["messages"])
 
+        # 确保 final_answer 不为 None
         if not final_answer:
             final_answer = "子智能体执行完成，但未获取到文本回复。"
 

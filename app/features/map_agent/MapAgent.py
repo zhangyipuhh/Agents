@@ -104,6 +104,7 @@ class MapAgent:
         error_limit: int = 2,
         limit: int = 10,
         stream_mode: Union[str, list[str]] = None,
+        context: any = None,
         geometry_data: dict = {},
         **kwargs,
     ) -> AsyncGenerator[dict, None]:
@@ -174,6 +175,7 @@ class MapAgent:
         config = MapExecuteConfig(
             configurable=MapConfigurableConfig(thread_id=session_id),
             recursion_limit=100  # 增加递归限制，支持更多轮次的工具调用
+
         )
 
         # 构建输入状态
@@ -187,6 +189,8 @@ class MapAgent:
         context = MapAgentContext(
             session_id=session_id,
             store_id=self.store_id or session_id,
+            knowledge_root= context.get("knowledge_root") ,
+            system_prompt=context.get("system_prompt"),
             geometry_data=geometry_data
         )
 
