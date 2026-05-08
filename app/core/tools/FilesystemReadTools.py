@@ -259,11 +259,10 @@ def explore(
                         final_answer = sr.answer
                     elif isinstance(sr, dict):
                         final_answer = sr.get("answer", "")
-                    # 如果 structured_response 没有提供有效答案，尝试从 messages 获取
-                    if not final_answer and "messages" in data:
-                        final_answer = _extract_last_ai_text(data["messages"])
-                elif "messages" in data:
-                    final_answer = _extract_last_ai_text(data["messages"])
+
+        # 如果还没有获取到有效答案，尝试从 messages 获取
+        if not final_answer and "messages" in data:
+            final_answer = _extract_last_ai_text(data["messages"])
 
         if not final_answer:
             final_answer = "子智能体执行完成，但未获取到文本回复。"

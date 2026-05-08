@@ -9,3 +9,4 @@ Author: AI Assistant
 """
 
 DEFAULT_SYSTEM_PROMPT = ""
+KNOWLEDGE_SYSTEM_PROMPT = ""
