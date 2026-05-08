@@ -15,6 +15,10 @@ import logging
 import warnings
 import argparse
 
+from app.shared.tools.middleware.filesystem_encoding_fix import apply_fix
+
+apply_fix()
+
 import uvicorn
 
 logging.getLogger("root").addFilter(
