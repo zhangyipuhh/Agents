@@ -99,6 +99,7 @@ const paddingLeft = computed(() => `${props.depth * 12}px`)
         v-for="file in childFiles"
         :key="file.path || file.name"
         class="file-item"
+        :style="{ '--depth': depth }"
         @click="onFileClick(file)"
       >
         <svg class="file-type-icon" viewBox="0 0 20 20" fill="currentColor" :style="{ color: getFileIconColor(file.name) }">
