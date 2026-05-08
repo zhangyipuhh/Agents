@@ -29,8 +29,13 @@ onMounted(async () => {
   filesLoading.value = true
   try {
     const result = await fetchKnowledgeFiles()
-    files.value = result.files || []
-    folders.value = result.folders || []
+    if (Array.isArray(result)) {
+      files.value = result.filter(f => f.type !== 'folder')
+      folders.value = result.filter(f => f.type === 'folder')
+    } else {
+      files.value = result.files || []
+      folders.value = result.folders || []
+    }
   } catch (err) {
     console.error(err)
   } finally {

@@ -71,7 +71,10 @@ function onFileClick(file) {
 }
 
 const hasContent = computed(() => {
-  return props.files.length > 0 || props.folders.length > 0
+  if (props.folders.length > 0) {
+    return props.folders.some(f => f.children && f.children.length > 0)
+  }
+  return props.files.length > 0
 })
 </script>
 

@@ -48,8 +48,13 @@ onMounted(async () => {
   filesLoading.value = true
   try {
     const result = await fetchKnowledgeFiles()
-    files.value = result.files || []
-    folders.value = result.folders || []
+    if (Array.isArray(result)) {
+      files.value = result.filter(f => f.type !== 'folder')
+      folders.value = result.filter(f => f.type === 'folder')
+    } else {
+      files.value = result.files || []
+      folders.value = result.folders || []
+    }
   } catch (err) {
     console.error('加载文件失败:', err)
     // 使用模拟数据作为后备
