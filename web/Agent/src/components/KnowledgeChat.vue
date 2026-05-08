@@ -1,6 +1,6 @@
 <script setup>
 import { ref, reactive, nextTick, watch, onMounted, onBeforeUnmount, computed } from 'vue'
-import { chatStream, createNewSession, refreshToken, uploadFileInChunks, formatFileSize, getFileExtension } from '../utils/api.js'
+import { knowledgeChatStream, createNewSession, refreshToken, uploadFileInChunks, formatFileSize, getFileExtension } from '../utils/api.js'
 import { createAiMessage, processSSEEvent } from '../utils/sseParser.js'
 import MessageBubble from './MessageBubble.vue'
 
@@ -112,7 +112,7 @@ const handleSend = async () => {
   nextTick(() => scrollToBottom())
 
   try {
-    const stream = await chatStream(props.sessionId, message)
+    const stream = await knowledgeChatStream(props.sessionId, message)
     const reader = stream.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
@@ -373,12 +373,6 @@ const getFileIconColor = (ext) => {
   <div class="knowledge-chat">
     <div class="chat-header">
       <span class="chat-title">知识库问答</span>
-      <button class="new-chat-btn" @click="handleNewChat" title="新建任务">
-        <svg viewBox="0 0 20 20" fill="currentColor" class="btn-icon">
-          <path d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z"/>
-        </svg>
-        <span class="btn-text">新建任务</span>
-      </button>
     </div>
 
     <div class="chat-body" ref="chatContainer">
@@ -595,46 +589,17 @@ const getFileIconColor = (ext) => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
+  padding: 8px 16px;
   border-bottom: 1px solid var(--color-border-light);
   flex-shrink: 0;
+  height: 40px;
+  box-sizing: border-box;
 }
 
 .chat-title {
   font-size: var(--font-size-md);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-primary);
-}
-
-.new-chat-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 14px;
-  background-color: var(--color-accent);
-  color: white;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  transition: var(--transition-colors), var(--transition-transform);
-
-  &:hover {
-    background-color: var(--color-accent-hover);
-  }
-
-  &:active {
-    transform: scale(var(--scale-active));
-  }
-}
-
-.btn-icon {
-  width: 14px;
-  height: 14px;
-}
-
-.btn-text {
-  line-height: 1;
 }
 
 .chat-body {

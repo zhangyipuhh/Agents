@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { marked } from 'marked'
 import VueOfficePdf from '@vue-office/pdf'
 import VueOfficeDocx from '@vue-office/docx'
@@ -45,6 +45,16 @@ const officeSrc = ref(null)
 const officeLoading = ref(false)
 const officeError = ref('')
 const pdfRef = ref(null)
+const isRendering = ref(false)
+const pendingZoom = ref(null)
+const zoomDebounceTimer = ref(null)
+
+// 拖拽调整宽度相关
+const isResizing = ref(false)
+const panelWidth = ref(30) // 百分比宽度
+const MIN_WIDTH_PERCENT = 20 // 最小宽度百分比
+const MAX_WIDTH_PERCENT = 50 // 最大宽度百分比
+const CLOSE_THRESHOLD_PERCENT = 15 // 关闭阈值百分比
 
 const isPdfMode = computed(() => props.previewMode === 'pdf')
 
@@ -53,6 +63,9 @@ const isPanning = ref(false)
 const panOffset = ref({ x: 0, y: 0 })
 const isDragging = ref(false)
 const dragStart = ref({ x: 0, y: 0 })
+
+const isPdfDragging = ref(false)
+const pdfDragStart = ref({ x: 0, y: 0, scrollLeft: 0, scrollTop: 0 })
 
 const contentTransform = computed(() => {
   if (isPdfMode.value) return 'none'
@@ -69,17 +82,53 @@ const bodyStyle = computed(() => {
 })
 
 const zoomIn = () => {
-  zoomLevel.value = Math.min(5, Math.round((zoomLevel.value + 0.2) * 10) / 10)
-  if (isPdfMode.value && pdfRef.value) {
-    nextTick(() => pdfRef.value.setScale(zoomLevel.value))
+  if (zoomDebounceTimer.value) {
+    clearTimeout(zoomDebounceTimer.value)
   }
+  
+  zoomDebounceTimer.value = setTimeout(() => {
+    zoomLevel.value = Math.min(5, Math.round((zoomLevel.value + 0.2) * 10) / 10)
+    if (isPdfMode.value && pdfRef.value) {
+      try {
+        if (isRendering.value) {
+          pendingZoom.value = zoomLevel.value
+        } else {
+          nextTick(() => {
+            if (pdfRef.value && typeof pdfRef.value.setScale === 'function') {
+              pdfRef.value.setScale(zoomLevel.value)
+            }
+          })
+        }
+      } catch (error) {
+        console.warn('缩放操作失败:', error)
+      }
+    }
+  }, 100)
 }
 
 const zoomOut = () => {
-  zoomLevel.value = Math.max(0.2, Math.round((zoomLevel.value - 0.2) * 10) / 10)
-  if (isPdfMode.value && pdfRef.value) {
-    nextTick(() => pdfRef.value.setScale(zoomLevel.value))
+  if (zoomDebounceTimer.value) {
+    clearTimeout(zoomDebounceTimer.value)
   }
+  
+  zoomDebounceTimer.value = setTimeout(() => {
+    zoomLevel.value = Math.max(0.2, Math.round((zoomLevel.value - 0.2) * 10) / 10)
+    if (isPdfMode.value && pdfRef.value) {
+      try {
+        if (isRendering.value) {
+          pendingZoom.value = zoomLevel.value
+        } else {
+          nextTick(() => {
+            if (pdfRef.value && typeof pdfRef.value.setScale === 'function') {
+              pdfRef.value.setScale(zoomLevel.value)
+            }
+          })
+        }
+      } catch (error) {
+        console.warn('缩放操作失败:', error)
+      }
+    }
+  }, 100)
 }
 
 const resetZoom = () => {
@@ -115,6 +164,72 @@ const handleMouseMove = (e) => {
 const handleMouseUp = () => {
   isDragging.value = false
 }
+
+const handlePdfMouseDown = (e) => {
+  if (!isPanning.value || !isPdfMode.value) return
+  isPdfDragging.value = true
+  const container = e.currentTarget
+  pdfDragStart.value = {
+    x: e.clientX,
+    y: e.clientY,
+    scrollLeft: container.scrollLeft,
+    scrollTop: container.scrollTop
+  }
+  e.preventDefault()
+}
+
+const handlePdfMouseMove = (e) => {
+  if (!isPdfDragging.value) return
+  const container = e.currentTarget
+  const dx = e.clientX - pdfDragStart.value.x
+  const dy = e.clientY - pdfDragStart.value.y
+  container.scrollLeft = pdfDragStart.value.scrollLeft - dx
+  container.scrollTop = pdfDragStart.value.scrollTop - dy
+}
+
+const handlePdfMouseUp = () => {
+  isPdfDragging.value = false
+}
+
+// 拖拽调整宽度方法
+const startResize = (e) => {
+  isResizing.value = true
+  e.preventDefault()
+}
+
+const handleResize = (e) => {
+  if (!isResizing.value) return
+  const containerWidth = document.body.clientWidth
+  const newWidth = ((containerWidth - e.clientX) / containerWidth) * 100
+  panelWidth.value = Math.max(MIN_WIDTH_PERCENT, Math.min(MAX_WIDTH_PERCENT, newWidth))
+}
+
+const stopResize = () => {
+  if (!isResizing.value) return
+  isResizing.value = false
+  if (panelWidth.value < CLOSE_THRESHOLD_PERCENT) {
+    emit('close')
+    panelWidth.value = 30 // 重置为默认值
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('mousemove', handleMouseMove)
+  window.addEventListener('mouseup', handleMouseUp)
+  window.addEventListener('mousemove', handleResize)
+  window.addEventListener('mouseup', stopResize)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('mousemove', handleMouseMove)
+  window.removeEventListener('mouseup', handleMouseUp)
+  window.removeEventListener('mousemove', handleResize)
+  window.removeEventListener('mouseup', stopResize)
+  
+  if (zoomDebounceTimer.value) {
+    clearTimeout(zoomDebounceTimer.value)
+  }
+})
 
 const renderedContent = computed(() => {
   if (!props.content) return ''
@@ -168,6 +283,16 @@ watch(
 )
 
 watch(
+  () => officeSrc.value,
+  (newSrc) => {
+    if (newSrc) {
+      isRendering.value = true
+      pendingZoom.value = null
+    }
+  }
+)
+
+watch(
   () => props.previewMode,
   () => {
     zoomLevel.value = 1
@@ -178,17 +303,37 @@ watch(
 
 const handleOfficeRendered = () => {
   officeLoading.value = false
+  isRendering.value = false
+  
+  if (pendingZoom.value !== null) {
+    const zoom = pendingZoom.value
+    pendingZoom.value = null
+    nextTick(() => {
+      if (pdfRef.value && typeof pdfRef.value.setScale === 'function') {
+        pdfRef.value.setScale(zoom)
+      }
+    })
+  }
 }
 
 const handleOfficeError = (error) => {
+  if (error?.name === 'RenderingCancelledException' || 
+      error?.message?.includes('Rendering cancelled')) {
+    console.log('PDF渲染被取消（正常行为）')
+    isRendering.value = false
+    return
+  }
+  
   console.error('文件渲染失败:', error)
   officeError.value = '文件渲染失败，请稍后重试'
   officeLoading.value = false
+  isRendering.value = false
 }
 </script>
 
 <template>
-  <div v-if="isOpen" class="preview-panel">
+  <div v-if="isOpen" class="preview-panel" :style="{ width: panelWidth + '%' }">
+    <div class="resize-handle" :class="{ active: isResizing }" @mousedown="startResize"></div>
     <div class="preview-header">
       <span class="preview-title">{{ fileName || '文件预览' }}</span>
       <button class="preview-close-btn" @click="emit('close')">
@@ -197,7 +342,7 @@ const handleOfficeError = (error) => {
         </svg>
       </button>
     </div>
-    <div class="preview-body" :style="bodyStyle" @mousemove="handleMouseMove" @mouseup="handleMouseUp" @mouseleave="handleMouseUp">
+    <div class="preview-body" :style="bodyStyle" @mouseleave="handleMouseUp">
       <div
         class="preview-content-wrapper"
         :style="{ transform: contentTransform, cursor: isPanning ? (isDragging ? 'grabbing' : 'grab') : 'default' }"
@@ -208,7 +353,15 @@ const handleOfficeError = (error) => {
         <span>加载中...</span>
       </div>
       <template v-else>
-        <div v-if="previewMode === 'pdf'" class="preview-office preview-pdf">
+        <div 
+          v-if="previewMode === 'pdf'" 
+          class="preview-office preview-pdf"
+          :style="{ cursor: isPanning ? (isPdfDragging ? 'grabbing' : 'grab') : 'default' }"
+          @mousedown="handlePdfMouseDown"
+          @mousemove="handlePdfMouseMove"
+          @mouseup="handlePdfMouseUp"
+          @mouseleave="handlePdfMouseUp"
+        >
           <div v-if="officeLoading" class="preview-loading">
             <div class="loading-spinner"></div>
             <span>PDF 加载中...</span>
@@ -256,19 +409,19 @@ const handleOfficeError = (error) => {
     <div class="preview-toolbar">
       <button class="toolbar-btn" @click="zoomIn" title="放大">
         <svg viewBox="0 0 20 20" fill="currentColor" width="20" height="20">
-          <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8zm5 0a1 1 0 011-1h2V5a1 1 0 112 0v2h2a1 1 0 110 2h-2v2a1 1 0 11-2 0V9H8a1 1 0 01-1-1z" clip-rule="evenodd"/>
+          <path fill-rule="evenodd" d="M5 8a4 4 0 118 0 4 4 0 01-8 0zm-2 0a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 013 8zm6-3a1 1 0 011 1v2h2a1 1 0 110 2h-2v2a1 1 0 11-2 0v-2H6a1 1 0 110-2h2V6a1 1 0 011-1z" clip-rule="evenodd"/>
         </svg>
       </button>
       <span class="toolbar-zoom-label">{{ Math.round(zoomLevel * 100) }}%</span>
       <button class="toolbar-btn" @click="zoomOut" title="缩小">
         <svg viewBox="0 0 20 20" fill="currentColor" width="20" height="20">
-          <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8zm5 0a1 1 0 011-1h4a1 1 0 110 2H8a1 1 0 01-1-1z" clip-rule="evenodd"/>
+          <path fill-rule="evenodd" d="M5 8a4 4 0 118 0 4 4 0 01-8 0zm-2 0a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 013 8zm4-1a1 1 0 100 2h4a1 1 0 100-2H7z" clip-rule="evenodd"/>
         </svg>
       </button>
       <div class="toolbar-divider"></div>
       <button class="toolbar-btn" :class="{ active: isPanning }" @click="togglePan" title="移动">
         <svg viewBox="0 0 20 20" fill="currentColor" width="20" height="20">
-          <path fill-rule="evenodd" d="M10 1a1 1 0 011 1v2.586l1.293-1.293a1 1 0 111.414 1.414L11 7.414V9h1.586l2.707-2.707a1 1 0 111.414 1.414L13.414 9H16a1 1 0 110 2h-2.586l1.293 1.293a1 1 0 01-1.414 1.414L11 11.414V13h1.586l2.707 2.707a1 1 0 01-1.414 1.414L11 13.414V16a1 1 0 11-2 0v-2.586l-1.293 1.293a1 1 0 01-1.414-1.414L9 11.414V9H7.414l-2.707 2.707a1 1 0 01-1.414-1.414L5.586 9H3a1 1 0 110-2h2.586L4.293 5.707a1 1 0 011.414-1.414L9 6.586V5H7.414L4.707 2.293a1 1 0 011.414-1.414L9 4.586V2a1 1 0 011-1z" clip-rule="evenodd"/>
+          <path d="M10 2a1 1 0 011 1v3.5l.5-.5a1 1 0 111.414 1.414l-2.5 2.5a1 1 0 01-1.414 0l-2.5-2.5a1 1 0 111.414-1.414l.5.5V3a1 1 0 011-1zm-4 8a1 1 0 011 1v.5l.5-.5a1 1 0 111.414 1.414l-2.5 2.5a1 1 0 01-1.414 0l-2.5-2.5a1 1 0 111.414-1.414l.5.5V11a1 1 0 011-1zm8 0a1 1 0 011 1v.5l.5-.5a1 1 0 111.414 1.414l-2.5 2.5a1 1 0 01-1.414 0l-2.5-2.5a1 1 0 111.414-1.414l.5.5V11a1 1 0 011-1zm-4 4a1 1 0 011 1v3.5l.5-.5a1 1 0 111.414 1.414l-2.5 2.5a1 1 0 01-1.414 0l-2.5-2.5a1 1 0 111.414-1.414l.5.5V17a1 1 0 011-1z"/>
         </svg>
       </button>
       <div class="toolbar-divider"></div>
@@ -283,8 +436,6 @@ const handleOfficeError = (error) => {
 
 <style scoped>
 .preview-panel {
-  width: 30%;
-  min-width: 300px;
   height: 100%;
   overflow: hidden;
   background-color: var(--color-bg-primary);
@@ -295,13 +446,33 @@ const handleOfficeError = (error) => {
   position: relative;
 }
 
+.resize-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.2s;
+  z-index: 100;
+  transform: translateX(-50%);
+}
+
+.resize-handle:hover,
+.resize-handle.active {
+  background: var(--color-accent);
+}
+
 .preview-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
+  padding: 8px 16px;
   border-bottom: 1px solid var(--color-border-light);
   flex-shrink: 0;
+  height: 40px;
+  box-sizing: border-box;
 }
 
 .preview-title {
@@ -442,6 +613,7 @@ const handleOfficeError = (error) => {
 
 .preview-pdf {
   overflow: auto;
+  user-select: none;
 }
 
 .preview-pdf :deep(.vue-office-pdf) {

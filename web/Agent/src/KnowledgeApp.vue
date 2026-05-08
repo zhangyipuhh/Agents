@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, nextTick } from 'vue'
-import { fetchKnowledgeFiles, fetchFilePreview, createNewSession, chatStream } from './utils/api.js'
+import { fetchKnowledgeFiles, fetchFilePreview, createNewSession, knowledgeChatStream } from './utils/api.js'
 import { createAiMessage, processSSEEvent } from './utils/sseParser.js'
 import FileList from './components/FileList.vue'
 import FilePreview from './components/FilePreview.vue'
@@ -36,6 +36,15 @@ const unreadCount = ref(0)
 const showChat = ref(false)
 
 onMounted(async () => {
+  // 1. 先创建会话，确保认证信息已准备好
+  try {
+    const newId = await createNewSession()
+    currentSessionId.value = newId
+  } catch (err) {
+    console.error('创建会话失败:', err)
+  }
+
+  // 2. 然后加载文件列表
   filesLoading.value = true
   try {
     const result = await fetchKnowledgeFiles()
@@ -68,14 +77,6 @@ onMounted(async () => {
     ]
   } finally {
     filesLoading.value = false
-  }
-
-  // 创建新会话
-  try {
-    const newId = await createNewSession()
-    currentSessionId.value = newId
-  } catch (err) {
-    console.error('创建会话失败:', err)
   }
 })
 
@@ -168,7 +169,7 @@ function handleProfileSend(message, uploadedFiles) {
   isStreaming.value = true
   nextTick(() => scrollToBottom())
 
-  chatStream(currentSessionId.value, message)
+  knowledgeChatStream(currentSessionId.value, message)
     .then(stream => {
       const reader = stream.getReader()
       const decoder = new TextDecoder()
@@ -255,12 +256,6 @@ function handleProfileSend(message, uploadedFiles) {
       <template v-else>
         <div class="chat-header">
           <span class="chat-title">知识库问答</span>
-          <button class="new-chat-btn" @click="handleNewChat" title="新建任务">
-            <svg viewBox="0 0 20 20" fill="currentColor" class="btn-icon">
-              <path d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z"/>
-            </svg>
-            <span class="btn-text">新建任务</span>
-          </button>
         </div>
 
         <div class="chat-body" ref="chatContainer">
@@ -472,39 +467,18 @@ function handleProfileSend(message, uploadedFiles) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 24px;
+  padding: 8px 24px;
   background-color: var(--color-bg-primary);
   border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
+  height: 40px;
+  box-sizing: border-box;
 }
 
 .chat-title {
   font-size: 16px;
   font-weight: 600;
   color: var(--color-text-primary);
-}
-
-.new-chat-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 14px;
-  background-color: var(--color-accent);
-  color: white;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 500;
-  transition: all 0.2s ease;
-  border: none;
-}
-
-.new-chat-btn:hover {
-  background-color: var(--color-accent-hover);
-}
-
-.btn-text {
-  line-height: 1;
 }
 
 .chat-body {

@@ -251,19 +251,14 @@ export function getFileExtension(filename) {
 }
 
 export async function createNewSession() {
-  const token = localStorage.getItem('auth_token')
-  if (!token) {
-    await ensureAuth()
-  }
-
-  const headers = { 'Content-Type': 'application/json' }
-  const authToken = localStorage.getItem('auth_token')
-  if (authToken) {
-    headers['Authorization'] = `Bearer ${authToken}`
-  }
-
-  // 清除旧的 session_id，确保创建全新会话
+  // 使用 forceRefreshAuth 确保认证信息准备好
+  const { token } = await forceRefreshAuth()
+  
+  // 清除旧的 session_id，创建全新会话
   localStorage.removeItem('session_id')
+  
+  const headers = { 'Content-Type': 'application/json' }
+  headers['Authorization'] = `Bearer ${token}`
 
   const sessionRes = await fetch('/api/session/create', {
     method: 'POST',
@@ -299,6 +294,41 @@ export async function chatStream(sessionId, message, attachments = []) {
   }
 
   const response = await fetch('/api/map/chat', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      message,
+      session_id: sid,
+      geometry_data: {}
+    })
+  })
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+  }
+
+  return response.body
+}
+
+export async function knowledgeChatStream(sessionId, message, attachments = []) {
+  await ensureAuth()
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'Accept': 'text/event-stream',
+    'Cache-Control': 'no-cache'
+  }
+
+  const token = localStorage.getItem('auth_token')
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  const sid = sessionId || localStorage.getItem('session_id') || ''
+  if (sid) {
+    headers['X-Session-ID'] = sid
+  }
+
+  const response = await fetch('/api/map/knowledge-chat', {
     method: 'POST',
     headers,
     body: JSON.stringify({
