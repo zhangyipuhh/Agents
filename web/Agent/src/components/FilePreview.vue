@@ -70,6 +70,7 @@ const pdfDragStart = ref({ x: 0, y: 0, scrollLeft: 0, scrollTop: 0 })
 
 const contentTransform = computed(() => {
   if (isPdfMode.value) return 'none'
+  if (props.previewMode === 'excel') return 'none'
   const tx = panOffset.value.x / zoomLevel.value
   const ty = panOffset.value.y / zoomLevel.value
   return `scale(${zoomLevel.value}) translate(${tx}px, ${ty}px)`
@@ -78,6 +79,9 @@ const contentTransform = computed(() => {
 const bodyStyle = computed(() => {
   if (isPdfMode.value) {
     return { overflow: 'auto', padding: '0' }
+  }
+  if (props.previewMode === 'excel') {
+    return { display: 'flex', flexDirection: 'column', padding: '0' }
   }
   return {}
 })
@@ -214,6 +218,16 @@ const stopResize = () => {
   }
 }
 
+let resizeDebounceTimer = null
+
+watch(panelWidth, () => {
+  if (props.previewMode !== 'excel') return
+  if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer)
+  resizeDebounceTimer = setTimeout(() => {
+    window.dispatchEvent(new Event('resize'))
+  }, 150)
+})
+
 onMounted(() => {
   window.addEventListener('mousemove', handleMouseMove)
   window.addEventListener('mouseup', handleMouseUp)
@@ -229,6 +243,10 @@ onUnmounted(() => {
   
   if (zoomDebounceTimer.value) {
     clearTimeout(zoomDebounceTimer.value)
+  }
+  
+  if (resizeDebounceTimer) {
+    clearTimeout(resizeDebounceTimer)
   }
 })
 
@@ -346,7 +364,11 @@ const handleOfficeError = (error) => {
     <div class="preview-body" :style="bodyStyle" @mouseleave="handleMouseUp">
       <div
         class="preview-content-wrapper"
-        :style="{ transform: contentTransform, cursor: isPanning ? (isDragging ? 'grabbing' : 'grab') : 'default' }"
+        :style="{
+          transform: contentTransform,
+          cursor: isPanning ? (isDragging ? 'grabbing' : 'grab') : 'default',
+          ...(previewMode === 'excel' ? { display: 'flex', flexDirection: 'column', flex: '1', minHeight: '0' } : {})
+        }"
         @mousedown="handleMouseDown"
       >
       <div v-if="loading" class="preview-loading">
@@ -646,6 +668,18 @@ const handleOfficeError = (error) => {
 
 .preview-excel {
   overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.preview-excel :deep(.vue-office-excel) {
+  flex: 1;
+  min-height: 0;
+}
+
+.preview-excel :deep(.x-spreadsheet) {
+  min-height: 400px;
+  width: 100%;
 }
 
 .preview-pptx {
