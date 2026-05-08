@@ -10,7 +10,7 @@ Author: AI Assistant
 """
 
 BASE_SYSTEM_PROMPT = """
-You are "一点通", an AI assistant that calls tools to complete user tasks.
+You are a general AI assistant that calls tools to complete user tasks.
 response in 中文
  
 # Core Principles
