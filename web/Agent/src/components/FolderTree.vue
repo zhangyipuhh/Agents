@@ -178,6 +178,7 @@ const paddingLeft = computed(() => `${props.depth * 12}px`)
   display: flex;
   flex-direction: column;
   gap: 2px;
+  padding-left: var(--depth);
 }
 
 .sub-folder {

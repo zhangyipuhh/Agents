@@ -73,6 +73,7 @@ const hasContent = computed(() => {
         v-for="file in files"
         :key="file.path || file.name"
         class="file-item"
+        :style="{ '--depth': 0 }"
         @click="onFileClick(file)"
       >
         <svg class="file-type-icon" viewBox="0 0 20 20" fill="currentColor" :style="{ color: getFileIconColor(file.name) }">
@@ -192,6 +193,7 @@ const hasContent = computed(() => {
   gap: 12px;
   width: 100%;
   padding: 10px 0;
+  padding-left: calc(var(--depth) + 12px);
   border-radius: var(--radius-sm);
   text-align: left;
   cursor: pointer;

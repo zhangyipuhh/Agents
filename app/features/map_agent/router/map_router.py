@@ -30,7 +30,7 @@ from app.features.map_agent.MapAgent import MapAgent
 from app.core.format.stream import stream_format_context
 from app.features.map_agent.config.prompts import KNOWLEDGE_SYSTEM_PROMPT
 from app.features.map_agent.config.MapAgentContext import MapAgentContext
-from app.shared.utils.files.doc_converter import convert_doc_to_docx
+from app.shared.utils.files.doc_converter import convert_doc_to_docx, check_conversion_support, get_libreoffice_installation_guide
 logger = logging.getLogger(__name__)
 
 # 初始化 MemorySaver 和 InMemoryStore
@@ -280,10 +280,15 @@ async def get_knowledge_file_preview(path: str):
         dict: 包含 path、content、type、preview_mode、file_url、file_name 的文件信息
     """
     try:
+        logger.info(f"[FILE PREVIEW] ====== 开始处理文件预览请求 ======")
+        logger.info(f"[FILE PREVIEW] 接收到的 path 参数: '{path}'")
+        
         if not path or ".." in path or os.path.isabs(path):
             raise HTTPException(status_code=400, detail="非法文件路径")
 
         actual_path = os.path.normpath(os.path.join(KNOWLEDGE_DIR, path))
+        logger.info(f"[FILE PREVIEW] 计算的 actual_path: '{actual_path}'")
+        
         if not actual_path.startswith(os.path.normpath(KNOWLEDGE_DIR)):
             raise HTTPException(status_code=400, detail="非法文件路径")
 
@@ -292,12 +297,22 @@ async def get_knowledge_file_preview(path: str):
 
         file_ext = os.path.splitext(path)[1].lstrip(".").lower()
         file_name = os.path.basename(path)
+        logger.info(f"[FILE PREVIEW] 解析的 file_ext: '{file_ext}', file_name: '{file_name}'")
+        
         normalized_path = path.replace("\\", "/")
         preview_mode = PREVIEW_MODE_MAP.get(file_ext, "unsupported")
+        logger.info(f"[FILE PREVIEW] 根据 file_ext '{file_ext}' 确定 preview_mode: '{preview_mode}'")
+        
         file_url = f"/api/map/knowledge/file-download?path={quote(normalized_path)}"
+        logger.info(f"[FILE PREVIEW] 生成的 file_url: '{file_url}'")
         converted = False
 
         if file_ext == "doc":
+            support = check_conversion_support()
+            if not support["pywin32"] and not support["libreoffice"]:
+                logger.warning(f"[FILE PREVIEW] .doc 文件转换失败: 系统缺少 Word 或 LibreOffice")
+                logger.info(f"[FILE PREVIEW] 安装指引: {get_libreoffice_installation_guide()}")
+            
             converted_path, error = convert_doc_to_docx(actual_path)
             if converted_path and os.path.exists(converted_path):
                 normalized_converted = f"tmp/{os.path.basename(converted_path)}"
@@ -316,15 +331,22 @@ async def get_knowledge_file_preview(path: str):
             "preview_mode": preview_mode,
             "file_url": file_url,
             "file_name": file_name,
+            "conversion_error": error if not converted and file_ext == "doc" else None,
+            "installation_guide": get_libreoffice_installation_guide() if not converted and file_ext == "doc" else None
         }
 
         if file_ext in TEXT_EXTENSIONS:
             try:
                 with open(actual_path, "r", encoding="utf-8") as f:
                     result["content"] = f.read()
+                    logger.info(f"[FILE PREVIEW] 已读取文本内容，长度: {len(result['content'])} 字符")
             except (UnicodeDecodeError, UnicodeError):
                 result["preview_mode"] = TEXT_FALLBACK_MODE.get(file_ext, "unsupported")
+                logger.warning(f"[FILE PREVIEW] 文本读取失败，切换到 fallback 模式: {result['preview_mode']}")
 
+        logger.info(f"[FILE PREVIEW] 最终返回结果: preview_mode={result['preview_mode']}, file_url={result['file_url']}, content长度={len(result['content'])}")
+        logger.info(f"[FILE PREVIEW] ====== 文件预览请求处理完成 ======")
+        
         return result
 
     except HTTPException:

@@ -634,6 +634,14 @@ const handleOfficeError = (error) => {
 
 .preview-docx {
   overflow-y: auto;
+  overflow-x: hidden;
+  
+  :deep(section.docx) {
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box;
+    padding: 16px !important;
+  }
 }
 
 .preview-excel {
