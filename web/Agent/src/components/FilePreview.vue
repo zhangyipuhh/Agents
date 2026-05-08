@@ -4,6 +4,7 @@ import { marked } from 'marked'
 import VueOfficePdf from '@vue-office/pdf'
 import VueOfficeDocx from '@vue-office/docx'
 import VueOfficeExcel from '@vue-office/excel'
+import VueOfficePptx from '@vue-office/pptx'
 import '@vue-office/docx/lib/index.css'
 import '@vue-office/excel/lib/index.css'
 import { getAuthHeaders } from '../utils/api.js'
@@ -243,7 +244,7 @@ const renderedContent = computed(() => {
   return ''
 })
 
-const OFFICE_MODES = ['pdf', 'docx', 'excel']
+const OFFICE_MODES = ['pdf', 'docx', 'excel', 'pptx']
 
 const fetchOfficeFile = async (url) => {
   if (!url) {
@@ -393,6 +394,17 @@ const handleOfficeError = (error) => {
             <button class="retry-btn" @click="fetchOfficeFile(fileUrl)">重试</button>
           </div>
           <VueOfficeExcel v-else-if="officeSrc" :src="officeSrc" @rendered="handleOfficeRendered" @error="handleOfficeError" />
+        </div>
+        <div v-else-if="previewMode === 'pptx'" class="preview-office preview-pptx">
+          <div v-if="officeLoading" class="preview-loading">
+            <div class="loading-spinner"></div>
+            <span>PPT 加载中...</span>
+          </div>
+          <div v-else-if="officeError" class="preview-error">
+            <span>{{ officeError }}</span>
+            <button class="retry-btn" @click="fetchOfficeFile(fileUrl)">重试</button>
+          </div>
+          <VueOfficePptx v-else-if="officeSrc" :src="officeSrc" @rendered="handleOfficeRendered" @error="handleOfficeError" />
         </div>
         <div v-else-if="previewMode === 'markdown'" class="markdown-body" v-html="renderedContent"></div>
         <div v-else-if="previewMode === 'text'" class="preview-content">{{ content || '暂无内容' }}</div>
@@ -625,6 +637,10 @@ const handleOfficeError = (error) => {
 }
 
 .preview-excel {
+  overflow: auto;
+}
+
+.preview-pptx {
   overflow: auto;
 }
 

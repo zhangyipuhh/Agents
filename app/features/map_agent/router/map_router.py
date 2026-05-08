@@ -30,6 +30,7 @@ from app.features.map_agent.MapAgent import MapAgent
 from app.core.format.stream import stream_format_context
 from app.features.map_agent.config.prompts import KNOWLEDGE_SYSTEM_PROMPT
 from app.features.map_agent.config.MapAgentContext import MapAgentContext
+from app.shared.utils.files.doc_converter import convert_doc_to_docx
 logger = logging.getLogger(__name__)
 
 # 初始化 MemorySaver 和 InMemoryStore
@@ -58,6 +59,8 @@ MIME_TYPES = {
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".doc": "application/msword",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".ppt": "application/vnd.ms-powerpoint",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".xls": "application/vnd.ms-excel",
     ".csv": "text/csv",
@@ -90,6 +93,8 @@ PREVIEW_MODE_MAP = {
     "pdf": "pdf",
     "docx": "docx",
     "doc": "docx",
+    "pptx": "pptx",
+    "ppt": "pptx",
     "xlsx": "excel",
     "xls": "excel",
     "jpg": "image",
@@ -266,6 +271,7 @@ async def get_knowledge_file_preview(path: str):
 
     根据文件相对路径读取 Knowledge 目录下的文件内容，
     包含路径安全校验防止目录遍历攻击。
+    对于 .doc 文件，会自动转换为 .docx 格式以支持预览。
 
     Args:
         path: 文件相对路径（query parameter）
@@ -287,8 +293,21 @@ async def get_knowledge_file_preview(path: str):
         file_ext = os.path.splitext(path)[1].lstrip(".").lower()
         file_name = os.path.basename(path)
         normalized_path = path.replace("\\", "/")
-        file_url = f"/api/map/knowledge/file-download?path={quote(normalized_path)}"
         preview_mode = PREVIEW_MODE_MAP.get(file_ext, "unsupported")
+        file_url = f"/api/map/knowledge/file-download?path={quote(normalized_path)}"
+        converted = False
+
+        if file_ext == "doc":
+            converted_path, error = convert_doc_to_docx(actual_path)
+            if converted_path and os.path.exists(converted_path):
+                normalized_converted = f"tmp/{os.path.basename(converted_path)}"
+                file_url = f"/api/map/knowledge/file-download?path={quote(normalized_converted)}"
+                preview_mode = "docx"
+                converted = True
+                logger.info(f"[FILE PREVIEW] .doc 文件已转换: {actual_path} -> {converted_path}")
+            else:
+                logger.warning(f"[FILE PREVIEW] .doc 文件转换失败: {error}")
+                preview_mode = "unsupported"
 
         result = {
             "path": normalized_path,

@@ -1,17 +1,39 @@
 <script setup>
-import { computed } from 'vue'
-import FolderTree from './FolderTree.vue'
+import { ref, computed } from 'vue'
 
 const props = defineProps({
-  files: { type: Array, default: () => [] },
-  folders: { type: Array, default: () => [] },
-  loading: { type: Boolean, default: false }
+  folder: { type: Object, required: true },
+  depth: { type: Number, default: 0 }
 })
 
 const emit = defineEmits(['file-click'])
 
-function onFileClick(file) {
-  emit('file-click', file)
+const isExpanded = ref(false)
+
+function toggleExpand() {
+  isExpanded.value = !isExpanded.value
+}
+
+function getFileExtension(name) {
+  if (!name) return ''
+  const parts = name.split('.')
+  return parts.length > 1 ? parts.pop().toLowerCase() : ''
+}
+
+function getFileIconColor(name) {
+  const ext = getFileExtension(name)
+  const colorMap = {
+    md: '#6B7280',
+    pdf: '#EF4444',
+    doc: '#3B82F6',
+    docx: '#3B82F6',
+    csv: '#10B981',
+    xlsx: '#10B981',
+    xls: '#10B981',
+    txt: '#9CA3AF',
+    json: '#F59E0B'
+  }
+  return colorMap[ext] || '#6366F1'
 }
 
 function formatSize(bytes) {
@@ -23,54 +45,58 @@ function formatSize(bytes) {
   return (num / (1024 * 1024)).toFixed(1) + ' MB'
 }
 
-function getFileIconColor(name) {
-  if (!name) return '#6366F1'
-  const parts = name.split('.')
-  const ext = parts.length > 1 ? parts.pop().toLowerCase() : ''
-  const colorMap = {
-    md: '#6B7280',
-    pdf: '#EF4444',
-    doc: '#3B82F6',
-    docx: '#3B82F6',
-    csv: '#10B981',
-    xlsx: '#10B981',
-    xls: '#10B981',
-    txt: '#9CA3AF',
-    json: '#F59E0B',
-    ppt: '#FF6B00',
-    pptx: '#FF6B00'
-  }
-  return colorMap[ext] || '#6366F1'
+function onFileClick(file) {
+  emit('file-click', file)
 }
 
-const hasContent = computed(() => {
-  if (props.folders.length > 0) {
-    return props.folders.some(f => f.children && f.children.length > 0)
-  }
-  return props.files.length > 0
+const childFolders = computed(() => {
+  if (!props.folder.children) return []
+  return props.folder.children.filter(child => child.type === 'folder')
 })
+
+const childFiles = computed(() => {
+  if (!props.folder.children) return []
+  return props.folder.children.filter(child => child.type !== 'folder')
+})
+
+const totalFileCount = computed(() => {
+  function countFiles(folder) {
+    if (!folder.children) return 0
+    let count = 0
+    for (const child of folder.children) {
+      if (child.type === 'folder') {
+        count += countFiles(child)
+      } else {
+        count += 1
+      }
+    }
+    return count
+  }
+  return countFiles(props.folder)
+})
+
+const paddingLeft = computed(() => `${props.depth * 12}px`)
 </script>
 
 <template>
-  <div class="file-list">
-    <div v-if="loading" class="file-list-loading">
-      <div class="loading-spinner"></div>
-      <span>加载中...</span>
-    </div>
-    <div v-else-if="!hasContent" class="file-list-empty">
-      <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" class="empty-icon">
-        <circle cx="32" cy="32" r="30" stroke="var(--color-border)" stroke-width="2"/>
-        <path d="M32 20v24M20 32h24" stroke="var(--color-text-muted)" stroke-width="2.5" stroke-linecap="round"/>
+  <div class="folder-tree-item" :style="{ '--depth': depth }">
+    <button class="folder-header" @click="toggleExpand">
+      <svg class="folder-icon" viewBox="0 0 20 20" fill="currentColor">
+        <path v-if="isExpanded" d="M6 10l4 4 4-4" stroke="currentColor" stroke-width="2" fill="none"/>
+        <path v-else d="M10 6l4 4-4 4"/>
+        <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/>
       </svg>
-      <p class="empty-text">暂无知识库文件</p>
-    </div>
-    <div v-else class="file-list-content">
-      <div v-for="folder in folders" :key="folder.path || folder.name" class="folder-group">
-        <FolderTree :folder="folder" :depth="0" @file-click="onFileClick" />
+      <span class="folder-name">{{ folder.name }}</span>
+      <span class="folder-count">{{ totalFileCount }}</span>
+    </button>
+    
+    <div v-if="isExpanded && (childFolders.length > 0 || childFiles.length > 0)" class="folder-children">
+      <div v-for="subFolder in childFolders" :key="subFolder.path || subFolder.name" class="sub-folder">
+        <FolderTree :folder="subFolder" :depth="depth + 1" @file-click="onFileClick" />
       </div>
-
+      
       <button
-        v-for="file in files"
+        v-for="file in childFiles"
         :key="file.path || file.name"
         class="file-item"
         @click="onFileClick(file)"
@@ -97,42 +123,7 @@ const hasContent = computed(() => {
 </template>
 
 <style scoped>
-.file-list {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  overflow: hidden;
-}
-
-.file-list-loading,
-.file-list-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 60px 20px;
-  color: var(--color-text-muted);
-}
-
-.empty-icon {
-  width: 64px;
-  height: 64px;
-  margin-bottom: 16px;
-  opacity: 0.5;
-}
-
-.empty-text {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
-}
-
-.file-list-content {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.folder-group {
+.folder-tree-item {
   display: flex;
   flex-direction: column;
 }
@@ -143,13 +134,17 @@ const hasContent = computed(() => {
   gap: 8px;
   width: 100%;
   padding: 8px 0;
+  padding-left: var(--depth);
   border-radius: var(--radius-sm);
   cursor: pointer;
   transition: var(--transition-colors);
+  background: none;
+  border: none;
+  text-align: left;
+}
 
-  &:hover {
-    background-color: var(--color-bg-hover);
-  }
+.folder-header:hover {
+  background-color: var(--color-bg-hover);
 }
 
 .folder-icon {
@@ -183,7 +178,11 @@ const hasContent = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding-left: 12px;
+}
+
+.sub-folder {
+  display: flex;
+  flex-direction: column;
 }
 
 .file-item {
@@ -192,18 +191,21 @@ const hasContent = computed(() => {
   gap: 12px;
   width: 100%;
   padding: 10px 0;
+  padding-left: calc(var(--depth) + 12px);
   border-radius: var(--radius-sm);
   text-align: left;
   cursor: pointer;
   transition: var(--transition-colors);
+  background: none;
+  border: none;
+}
 
-  &:hover {
-    background-color: var(--color-bg-hover);
-  }
+.file-item:hover {
+  background-color: var(--color-bg-hover);
+}
 
-  &:active {
-    transform: scale(var(--scale-active));
-  }
+.file-item:active {
+  transform: scale(var(--scale-active));
 }
 
 .file-type-icon {
@@ -282,21 +284,5 @@ const hasContent = computed(() => {
   background-color: var(--color-accent-light);
   color: var(--color-accent);
   white-space: nowrap;
-}
-
-.loading-spinner {
-  width: 24px;
-  height: 24px;
-  border: 2px solid var(--color-border);
-  border-top-color: var(--color-accent);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-  margin-bottom: 12px;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 </style>
