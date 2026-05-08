@@ -152,6 +152,7 @@ function handlePageChange(page) {
         :is-streaming="isStreaming.value"
         @send="handleSendMessage"
         @tool-action="handleToolAction"
+        @new-chat="newSession"
       />
     </main>
 

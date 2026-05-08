@@ -12,6 +12,8 @@ const previewContent = ref('')
 const previewLoading = ref(false)
 const previewFileType = ref('')
 const previewFileName = ref('')
+const previewMode = ref('text')
+const previewFileUrl = ref('')
 const files = ref([])
 const folders = ref([])
 const filesLoading = ref(false)
@@ -42,9 +44,13 @@ async function handleFileClick(file) {
   previewContent.value = ''
   previewFileType.value = file.type || 'txt'
   previewFileName.value = file.name || ''
+  previewMode.value = 'text'
+  previewFileUrl.value = ''
   try {
     const result = await fetchFilePreview(file.path || file.name)
-    previewContent.value = result.content || result.preview || ''
+    previewContent.value = result.content || ''
+    previewMode.value = result.preview_mode || 'text'
+    previewFileUrl.value = result.file_url || ''
   } catch (err) {
     previewContent.value = '预览加载失败'
   } finally {
@@ -55,6 +61,8 @@ async function handleFileClick(file) {
 function closePreview() {
   isPreviewOpen.value = false
   previewContent.value = ''
+  previewMode.value = 'text'
+  previewFileUrl.value = ''
 }
 
 function handleNewChat() {
@@ -78,6 +86,8 @@ function handleChatStreamEnd() {
       :fileType="previewFileType"
       :fileName="previewFileName"
       :loading="previewLoading"
+      :previewMode="previewMode"
+      :fileUrl="previewFileUrl"
       @close="closePreview"
     />
 

@@ -16,9 +16,10 @@ import json
 import os
 from datetime import datetime
 from fastapi import APIRouter, Request, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from typing import AsyncGenerator, Optional
 from pydantic import BaseModel
+from urllib.parse import quote
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
@@ -51,6 +52,53 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
 KNOWLEDGE_DIR = os.path.join(_PROJECT_ROOT, "data", "Knowledge")
 METADATA_FILE = os.path.join(KNOWLEDGE_DIR, "metadata.json")
 TMP_DIR = os.path.join(KNOWLEDGE_DIR, "tmp")
+
+MIME_TYPES = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".doc": "application/msword",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xls": "application/vnd.ms-excel",
+    ".csv": "text/csv",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".bmp": "image/bmp",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+}
+
+TEXT_EXTENSIONS = {"md", "markdown", "txt", "log", "csv", "json"}
+BINARY_EXTENSIONS = {
+    "pdf", "docx", "doc", "xlsx", "xls",
+    "jpg", "jpeg", "png", "gif", "bmp", "webp", "svg",
+}
+
+TEXT_FALLBACK_MODE = {
+    "csv": "excel",
+}
+
+PREVIEW_MODE_MAP = {
+    "md": "markdown",
+    "markdown": "markdown",
+    "txt": "text",
+    "log": "text",
+    "csv": "text",
+    "json": "text",
+    "pdf": "pdf",
+    "docx": "docx",
+    "doc": "docx",
+    "xlsx": "excel",
+    "xls": "excel",
+    "jpg": "image",
+    "jpeg": "image",
+    "png": "image",
+    "gif": "image",
+    "bmp": "image",
+    "webp": "image",
+    "svg": "image",
+}
 
 
 def _scan_knowledge_dir() -> dict:
@@ -170,6 +218,46 @@ async def get_knowledge_files():
         raise HTTPException(status_code=500, detail=f"获取知识库文件列表失败：{str(e)}")
 
 
+INLINE_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg"}
+
+@router.get('/knowledge/file-download')
+async def download_knowledge_file(path: str):
+    try:
+        if not path or ".." in path or os.path.isabs(path):
+            raise HTTPException(status_code=400, detail="非法文件路径")
+
+        actual_path = os.path.normpath(os.path.join(KNOWLEDGE_DIR, path))
+        if not actual_path.startswith(os.path.normpath(KNOWLEDGE_DIR)):
+            raise HTTPException(status_code=400, detail="非法文件路径")
+
+        if not os.path.isfile(actual_path):
+            raise HTTPException(status_code=404, detail="文件不存在")
+
+        ext = os.path.splitext(path)[1].lower()
+        media_type = MIME_TYPES.get(ext, "application/octet-stream")
+
+        if ext in INLINE_EXTENSIONS:
+            return FileResponse(
+                path=actual_path,
+                media_type=media_type,
+                content_disposition_type="inline",
+            )
+
+        return FileResponse(
+            path=actual_path,
+            media_type=media_type,
+            filename=os.path.basename(actual_path),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        logger.error(f"[ERROR] download_knowledge_file 异常: {e}")
+        logger.error(f"[ERROR] 异常堆栈: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"文件下载失败：{str(e)}")
+
+
 @router.get('/knowledge/file-preview')
 async def get_knowledge_file_preview(path: str):
     """
@@ -182,14 +270,12 @@ async def get_knowledge_file_preview(path: str):
         path: 文件相对路径（query parameter）
 
     Returns:
-        dict: 包含 path、content、type 的文件信息
+        dict: 包含 path、content、type、preview_mode、file_url、file_name 的文件信息
     """
     try:
-        # 安全校验：防止目录遍历攻击
         if not path or ".." in path or os.path.isabs(path):
             raise HTTPException(status_code=400, detail="非法文件路径")
 
-        # 构建实际文件路径并校验是否在 Knowledge 目录内
         actual_path = os.path.normpath(os.path.join(KNOWLEDGE_DIR, path))
         if not actual_path.startswith(os.path.normpath(KNOWLEDGE_DIR)):
             raise HTTPException(status_code=400, detail="非法文件路径")
@@ -198,16 +284,28 @@ async def get_knowledge_file_preview(path: str):
             raise HTTPException(status_code=404, detail="文件不存在")
 
         file_ext = os.path.splitext(path)[1].lstrip(".")
+        file_name = os.path.basename(path)
+        normalized_path = path.replace("\\", "/")
+        file_url = f"/api/map/knowledge/file-download?path={quote(normalized_path)}"
+        preview_mode = PREVIEW_MODE_MAP.get(file_ext, "unsupported")
 
-        # 读取文件内容
-        with open(actual_path, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        return {
-            "path": path.replace("\\", "/"),
-            "content": content,
-            "type": file_ext
+        result = {
+            "path": normalized_path,
+            "content": "",
+            "type": file_ext,
+            "preview_mode": preview_mode,
+            "file_url": file_url,
+            "file_name": file_name,
         }
+
+        if file_ext in TEXT_EXTENSIONS:
+            try:
+                with open(actual_path, "r", encoding="utf-8") as f:
+                    result["content"] = f.read()
+            except (UnicodeDecodeError, UnicodeError):
+                result["preview_mode"] = TEXT_FALLBACK_MODE.get(file_ext, "unsupported")
+
+        return result
 
     except HTTPException:
         raise

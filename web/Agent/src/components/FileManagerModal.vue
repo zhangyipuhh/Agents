@@ -1,6 +1,8 @@
 <script setup>
 import { ref, onMounted } from 'vue'
+import { fetchKnowledgeFiles, fetchFilePreview } from '../utils/api.js'
 import FileList from './FileList.vue'
+import FilePreview from './FilePreview.vue'
 
 const props = defineProps({
   visible: {
@@ -14,6 +16,13 @@ const emit = defineEmits(['update:visible', 'close'])
 const loading = ref(false)
 const files = ref([])
 const folders = ref([])
+const isPreviewOpen = ref(false)
+const previewContent = ref('')
+const previewLoading = ref(false)
+const previewFileType = ref('')
+const previewFileName = ref('')
+const previewMode = ref('text')
+const previewFileUrl = ref('')
 
 // 模拟数据 - 实际项目中应该从API获取
 onMounted(() => {
@@ -55,9 +64,31 @@ function handleClose() {
   emit('close')
 }
 
-function handleFileClick(file) {
-  console.log('点击文件:', file)
-  // 这里可以添加文件预览或下载逻辑
+async function handleFileClick(file) {
+  isPreviewOpen.value = true
+  previewLoading.value = true
+  previewContent.value = ''
+  previewFileType.value = file.type || 'txt'
+  previewFileName.value = file.name || ''
+  previewMode.value = 'text'
+  previewFileUrl.value = ''
+  try {
+    const result = await fetchFilePreview(file.path || file.name)
+    previewContent.value = result.content || ''
+    previewMode.value = result.preview_mode || 'text'
+    previewFileUrl.value = result.file_url || ''
+  } catch (err) {
+    previewContent.value = '预览加载失败'
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+function closePreview() {
+  isPreviewOpen.value = false
+  previewContent.value = ''
+  previewMode.value = 'text'
+  previewFileUrl.value = ''
 }
 
 function handleUpload() {
@@ -112,7 +143,20 @@ function handleRefresh() {
 
           <!-- 内容区 -->
           <div class="modal-body">
+            <div v-if="isPreviewOpen" class="preview-container">
+              <FilePreview
+                :isOpen="true"
+                :content="previewContent"
+                :fileType="previewFileType"
+                :fileName="previewFileName"
+                :loading="previewLoading"
+                :previewMode="previewMode"
+                :fileUrl="previewFileUrl"
+                @close="closePreview"
+              />
+            </div>
             <FileList
+              v-else
               :files="files"
               :folders="folders"
               :loading="loading"
@@ -274,5 +318,16 @@ function handleRefresh() {
 .modal-leave-to .modal-container {
   transform: scale(0.95);
   opacity: 0;
+}
+
+.preview-container {
+  width: 100%;
+  height: 100%;
+}
+
+.preview-container :deep(.preview-panel) {
+  width: 100%;
+  min-width: unset;
+  border-left: none;
 }
 </style>

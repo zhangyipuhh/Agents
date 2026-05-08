@@ -91,9 +91,6 @@ const hasContent = computed(() => {
     <div v-else class="file-list-content">
       <div v-for="folder in folders" :key="folder.path || folder.name" class="folder-group">
         <button class="folder-header" @click="toggleFolder(folder.path || folder.name)">
-          <svg class="folder-chevron" :class="{ expanded: isFolderExpanded(folder.path || folder.name) }" viewBox="0 0 20 20" fill="currentColor">
-            <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"/>
-          </svg>
           <svg class="folder-icon" viewBox="0 0 20 20" fill="currentColor">
             <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/>
           </svg>
@@ -208,23 +205,6 @@ const hasContent = computed(() => {
   &:hover {
     background-color: var(--color-bg-hover);
   }
-}
-
-.folder-chevron {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-  color: var(--color-text-muted);
-  transition: transform 0.2s ease, opacity 0.2s ease;
-  opacity: 0;
-
-  &.expanded {
-    transform: rotate(90deg);
-  }
-}
-
-.folder-header:hover .folder-chevron {
-  opacity: 1;
 }
 
 .folder-icon {

@@ -60,7 +60,6 @@ button {
 
   &:focus-visible {
     outline: none;
-    box-shadow: var(--focus-ring);
   }
 
   &:disabled {
@@ -82,7 +81,6 @@ input, textarea {
 
   &:focus-visible {
     outline: none;
-    box-shadow: var(--focus-ring);
   }
 
   &::placeholder {
@@ -132,7 +130,6 @@ img {
 /* Focus Visible for Accessibility */
 :focus-visible {
   outline: none;
-  box-shadow: var(--focus-ring);
 }
 
 /* Smooth Scrolling */

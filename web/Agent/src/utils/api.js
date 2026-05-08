@@ -4,7 +4,7 @@ function generateFileId() {
   return `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`
 }
 
-function getAuthHeaders() {
+export function getAuthHeaders() {
   const headers = {}
   const token = localStorage.getItem('auth_token')
   if (token) {
