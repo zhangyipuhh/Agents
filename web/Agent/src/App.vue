@@ -64,7 +64,15 @@ async function handleSendMessage(message, attachments = []) {
 
     while (true) {
       const { done, value } = await reader.read()
-      if (done) break
+      if (done) {
+        // 确保消息被标记为已结束
+        if (!aiMsg.ended) {
+          console.log('[App] Stream done, setting ended = true')
+          aiMsg.ended = true
+          aiMsg.isThinkingActive = false
+        }
+        break
+      }
       buffer += decoder.decode(value, { stream: true })
       const events = buffer.split('\n\n')
       buffer = events.pop()

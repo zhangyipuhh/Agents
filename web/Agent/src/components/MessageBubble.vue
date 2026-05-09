@@ -59,6 +59,7 @@ const thinkingContainer = ref(null)
 const showCopyToast = ref(false)
 const likeStatus = ref(0)
 const thinkingExpandedMap = reactive({})
+const userToggledThinking = ref(false)
 
 const isUserMessage = computed(() => props.type === 'user')
 const hasAttachments = computed(() => props.attachments && props.attachments.length > 0)
@@ -109,8 +110,26 @@ function isThinkingGroupActive(index) {
   return false
 }
 
-watch(() => [props.isThinkingActive, props.ended, mergedTimeline.value.length], () => {
-  if (props.isThinkingActive && !props.ended) {
+watch(() => [props.isThinkingActive, props.ended, mergedTimeline.value.length], (newVal, oldVal) => {
+  const [newIsActive, newEnded, newLength] = newVal || []
+  const [oldIsActive, oldEnded, oldLength] = oldVal || []
+
+  // 当 ended 从 false 变为 true 时，强制关闭思考组（无论 userToggledThinking 状态）
+  if (!oldEnded && newEnded) {
+    for (const key in thinkingExpandedMap) {
+      thinkingExpandedMap[key] = false
+    }
+    // 重置用户操作标志，以便下一条消息可以正常工作
+    userToggledThinking.value = false
+    return
+  }
+
+  // 如果用户手动操作过，不再自动干预（但 ended 变化除外，已在上面的逻辑中处理）
+  if (userToggledThinking.value) {
+    return
+  }
+
+  if (newIsActive && !newEnded) {
     const groups = mergedTimeline.value
     for (let i = groups.length - 1; i >= 0; i--) {
       if (groups[i].type === 'thinking') {
@@ -118,20 +137,58 @@ watch(() => [props.isThinkingActive, props.ended, mergedTimeline.value.length], 
         break
       }
     }
-  } else if (props.ended) {
-    for (const key in thinkingExpandedMap) {
-      thinkingExpandedMap[key] = false
-    }
   }
 }, { immediate: true })
 
 watch(() => [props.isThinkingActive, props.ended], () => {
+  // 如果用户手动操作过，不再自动干预
+  if (userToggledThinking.value) {
+    return
+  }
+
   if (props.isThinkingActive && !props.ended) {
     isThinkingExpanded.value = true
   } else if (props.ended) {
     isThinkingExpanded.value = false
   }
 }, { immediate: true })
+
+// 当新消息开始时重置用户操作标志
+watch(() => props.messageId, (newId, oldId) => {
+  if (newId !== oldId) {
+    userToggledThinking.value = false
+  }
+})
+
+// 监听思考内容变化，自动滚动到底部（降级模式）
+watch(() => props.thinking, () => {
+  if (isThinkingExpanded.value && props.isThinkingActive && !props.ended) {
+    nextTick(() => {
+      if (thinkingContainer.value) {
+        thinkingContainer.value.scrollTop = thinkingContainer.value.scrollHeight
+      }
+    })
+  }
+}, { deep: true })
+
+// 监听时间线变化，自动滚动活跃思考组到底部
+watch(() => props.timeline, () => {
+  if (props.isThinkingActive && !props.ended) {
+    nextTick(() => {
+      const groups = mergedTimeline.value
+      for (let i = groups.length - 1; i >= 0; i--) {
+        if (groups[i].type === 'thinking' && thinkingExpandedMap[i]) {
+          // 找到对应的思考体元素并滚动
+          const thinkingBody = document.querySelector(`.timeline-thinking:nth-child(${i + 1}) .thinking-body`)
+          if (thinkingBody) {
+            thinkingBody.scrollTop = thinkingBody.scrollHeight
+          }
+          break
+        }
+      }
+    })
+  }
+}, { deep: true })
 
 function formatThinkingItem(item) {
   if (typeof item === 'string') return item
@@ -178,7 +235,11 @@ function isThinkingGroupExpanded(index) {
 }
 
 function toggleThinkingGroup(index) {
-  thinkingExpandedMap[index] = !isThinkingGroupExpanded(index)
+  const currentState = isThinkingGroupExpanded(index)
+  const newState = !currentState
+
+  userToggledThinking.value = true
+  thinkingExpandedMap[index] = newState
 }
 
 function handleThinkingClick(index) {
@@ -187,7 +248,11 @@ function handleThinkingClick(index) {
 }
 
 const toggleThinking = () => {
-  isThinkingExpanded.value = !isThinkingExpanded.value
+  const currentState = isThinkingExpanded.value
+  const newState = !currentState
+
+  userToggledThinking.value = true
+  isThinkingExpanded.value = newState
 }
 
 const toggleTools = () => {

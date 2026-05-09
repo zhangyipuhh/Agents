@@ -159,7 +159,7 @@ function getFileIconColor(name) {
         </svg>
         <div class="file-info">
           <div class="file-info-top">
-            <span class="file-name">{{ file.name }}</span>
+            <span class="file-name" :title="file.name">{{ file.name }}</span>
             <span v-if="file.size" class="file-size">{{ formatSize(file.size) }}</span>
           </div>
           <div v-if="file.summary" class="file-summary">{{ file.summary }}</div>
@@ -391,9 +391,13 @@ function getFileIconColor(name) {
   color: var(--color-text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-all;
   flex: 1;
   min-width: 0;
+  line-height: 1.4;
 }
 
 .file-size {

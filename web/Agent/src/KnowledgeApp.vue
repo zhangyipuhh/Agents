@@ -184,6 +184,12 @@ function handleProfileSend(message, uploadedFiles) {
         reader.read().then(({ done, value }) => {
           if (done) {
             isStreaming.value = false
+            // 确保消息被标记为已结束
+            if (aiMsg.value && !aiMsg.value.ended) {
+              console.log('[KnowledgeApp] Stream done, setting ended = true')
+              aiMsg.value.ended = true
+              aiMsg.value.isThinkingActive = false
+            }
             return
           }
           buffer += decoder.decode(value, { stream: true })
