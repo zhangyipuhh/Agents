@@ -17,6 +17,7 @@ const emit = defineEmits(['copy', 'regenerate', 'like', 'dislike'])
 
 const chatContainer = ref(null)
 const showScrollButton = ref(false)
+const showScrollToTopButton = ref(false)
 const unreadCount = ref(0)
 const lastScrollHeight = ref(0)
 
@@ -39,6 +40,16 @@ const handleScrollToBottomClick = (event) => {
   scrollToBottom('smooth')
 }
 
+// 滚动到顶部
+const scrollToTop = (behavior = 'smooth') => {
+  if (chatContainer.value) {
+    chatContainer.value.scrollTo({
+      top: 0,
+      behavior
+    })
+  }
+}
+
 const handleScroll = () => {
   if (!chatContainer.value) return
 
@@ -58,6 +69,9 @@ const handleScroll = () => {
   if (distanceFromBottom < 50) {
     unreadCount.value = 0
   }
+
+  // 当距离顶部超过 200px 时显示"滚动到顶部"按钮
+  showScrollToTopButton.value = scrollTop > 200
 }
 
 // 监听新消息
@@ -85,12 +99,22 @@ watch(() => props.messages, () => {
 
 // 键盘快捷键处理
 const handleKeyDown = (e) => {
+  const activeElement = document.activeElement
+  const isInputFocused = activeElement && (activeElement.tagName === 'INPUT' || activeElement.tagName === 'TEXTAREA')
+
   // End 键滚动到底部
   if (e.key === 'End' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
-    const activeElement = document.activeElement
     // 如果不在输入框中，则响应快捷键
-    if (activeElement && activeElement.tagName !== 'INPUT' && activeElement.tagName !== 'TEXTAREA') {
+    if (!isInputFocused) {
       scrollToBottom()
+    }
+  }
+
+  // Home 键滚动到顶部
+  if (e.key === 'Home' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+    // 如果不在输入框中，则响应快捷键
+    if (!isInputFocused) {
+      scrollToTop()
     }
   }
 }
@@ -154,12 +178,28 @@ defineExpose({
       />
     </div>
 
-    <teleport to="body">
+    <!-- 滚动按钮组 -->
+    <div class="scroll-buttons-wrapper">
+      <transition name="fade">
+        <button
+          v-show="showScrollToTopButton"
+          type="button"
+          class="scroll-btn scroll-to-top-btn"
+          @click="scrollToTop('smooth')"
+          title="滚动到顶部"
+          aria-label="滚动到顶部"
+        >
+          <svg viewBox="0 0 20 20" fill="currentColor" class="scroll-icon">
+            <path fill-rule="evenodd" d="M14.707 12.707a1 1 0 01-1.414 0L10 9.414l-3.293 3.293a1 1 0 01-1.414-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 010 1.414z" clip-rule="evenodd"/>
+          </svg>
+        </button>
+      </transition>
+
       <transition name="fade">
         <button
           v-show="showScrollButton"
           type="button"
-          class="scroll-to-bottom-btn"
+          class="scroll-btn scroll-to-bottom-btn"
           @click="handleScrollToBottomClick"
           :title="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
           :aria-label="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
@@ -170,7 +210,7 @@ defineExpose({
           <span v-if="unreadCount > 0" class="unread-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
         </button>
       </transition>
-    </teleport>
+    </div>
   </div>
 </template>
 
@@ -249,10 +289,17 @@ defineExpose({
   max-width: 360px;
 }
 
-.scroll-to-bottom-btn {
-  position: fixed;
-  bottom: 100px;
-  right: 48px;
+.scroll-buttons-wrapper {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 100;
+}
+
+.scroll-btn {
   width: 40px;
   height: 40px;
   display: inline-flex;
@@ -265,7 +312,6 @@ defineExpose({
   color: var(--color-text-secondary);
   cursor: pointer;
   transition: var(--transition-colors), var(--transition-transform), var(--transition-shadow);
-  z-index: 1000;
   pointer-events: auto;
 
   &:hover {

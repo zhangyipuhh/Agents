@@ -31,6 +31,7 @@ const selectedFiles = ref([])
 const chatContainer = ref(null)
 const internalStreaming = ref(false)
 const showScrollButton = ref(false)
+const showScrollToTopButton = ref(false)
 const unreadCount = ref(0)
 
 const isCurrentlyStreaming = computed(() => props.isStreaming || internalStreaming.value)
@@ -171,6 +172,15 @@ const scrollToBottom = (behavior = 'smooth') => {
   }
 }
 
+const scrollToTop = (behavior = 'smooth') => {
+  if (chatContainer.value) {
+    chatContainer.value.scrollTo({
+      top: 0,
+      behavior
+    })
+  }
+}
+
 const handleScroll = () => {
   if (!chatContainer.value) return
   const { scrollTop, scrollHeight, clientHeight } = chatContainer.value
@@ -183,6 +193,8 @@ const handleScroll = () => {
   if (distanceFromBottom < 50) {
     unreadCount.value = 0
   }
+  // 当距离顶部超过 200px 时显示"滚动到顶部"按钮
+  showScrollToTopButton.value = scrollTop > 200
 }
 
 watch(() => messages.length, (newLength, oldLength) => {
@@ -413,12 +425,28 @@ const getFileIconColor = (ext) => {
         />
       </div>
 
-      <teleport to="body">
+      <!-- 滚动按钮组 -->
+      <div class="scroll-buttons-wrapper">
+        <transition name="fade">
+          <button
+            v-show="showScrollToTopButton"
+            type="button"
+            class="scroll-btn scroll-to-top-btn"
+            @click="scrollToTop('smooth')"
+            title="滚动到顶部"
+            aria-label="滚动到顶部"
+          >
+            <svg viewBox="0 0 20 20" fill="currentColor" class="scroll-icon">
+              <path fill-rule="evenodd" d="M14.707 12.707a1 1 0 01-1.414 0L10 9.414l-3.293 3.293a1 1 0 01-1.414-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 010 1.414z" clip-rule="evenodd"/>
+            </svg>
+          </button>
+        </transition>
+
         <transition name="fade">
           <button
             v-show="showScrollButton"
             type="button"
-            class="scroll-to-bottom-btn"
+            class="scroll-btn scroll-to-bottom-btn"
             @click="scrollToBottom('smooth')"
             :title="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
           >
@@ -428,7 +456,7 @@ const getFileIconColor = (ext) => {
             <span v-if="unreadCount > 0" class="unread-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
           </button>
         </transition>
-      </teleport>
+      </div>
     </div>
 
     <div class="chat-input-area">
@@ -679,10 +707,17 @@ const getFileIconColor = (ext) => {
   margin: 0;
 }
 
-.scroll-to-bottom-btn {
-  position: fixed;
-  bottom: 160px;
-  right: 48px;
+.scroll-buttons-wrapper {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 100;
+}
+
+.scroll-btn {
   width: 36px;
   height: 36px;
   display: inline-flex;
@@ -695,7 +730,6 @@ const getFileIconColor = (ext) => {
   color: var(--color-text-secondary);
   cursor: pointer;
   transition: var(--transition-colors), var(--transition-transform), var(--transition-shadow);
-  z-index: 1000;
   pointer-events: auto;
 
   &:hover {
