@@ -50,5 +50,5 @@ def create_model(model_name: str, api_key: str, temperature: float = 0, base_url
         base_url=base_url,
         reasoning=reasoning,
         timeout=timeout,
-        num_ctx=16000
+        num_ctx=20000
     )

@@ -129,7 +129,7 @@ class Agent:
         self.system_prompt = config.system_prompt
         self._trim_tool_messages = config.trim_tool_messages
         self._keep_last_n_tools = config.keep_last_n_tools
-
+        self._ollama_reasoning =  LLM_CONFIG["ollama_reasoning"]
     async def __ainit__(self):
         """异步初始化方法
 
@@ -150,6 +150,7 @@ class Agent:
             api_key=self._api_key or "",
             temperature=self._temperature,
             base_url=self._base_url,
+            reasoning=self._ollama_reasoning,
         )
         # 获取审计工具列表,创建工具节点，用于执行工具调用
         self.tools, self.tool_node = self._config.get_tools()
