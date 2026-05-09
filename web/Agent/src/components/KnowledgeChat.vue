@@ -401,6 +401,7 @@ const getFileIconColor = (ext) => {
           :ended="message.ended"
           :error="message.error"
           :message-id="message.id"
+          :is-thinking-active="message.isThinkingActive"
         />
       </div>
 

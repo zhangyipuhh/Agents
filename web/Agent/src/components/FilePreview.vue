@@ -46,6 +46,7 @@ const officeSrc = ref(null)
 const officeLoading = ref(false)
 const officeError = ref('')
 const pdfRef = ref(null)
+const pdfContainerRef = ref(null)
 const isRendering = ref(false)
 const pendingZoom = ref(null)
 const zoomDebounceTimer = ref(null)
@@ -173,7 +174,8 @@ const handleMouseUp = () => {
 const handlePdfMouseDown = (e) => {
   if (!isPanning.value || !isPdfMode.value) return
   isPdfDragging.value = true
-  const container = e.currentTarget
+  const container = pdfContainerRef.value
+  if (!container) return
   pdfDragStart.value = {
     x: e.clientX,
     y: e.clientY,
@@ -185,7 +187,8 @@ const handlePdfMouseDown = (e) => {
 
 const handlePdfMouseMove = (e) => {
   if (!isPdfDragging.value) return
-  const container = e.currentTarget
+  const container = pdfContainerRef.value
+  if (!container) return
   const dx = e.clientX - pdfDragStart.value.x
   const dy = e.clientY - pdfDragStart.value.y
   container.scrollLeft = pdfDragStart.value.scrollLeft - dx
@@ -231,6 +234,8 @@ watch(panelWidth, () => {
 onMounted(() => {
   window.addEventListener('mousemove', handleMouseMove)
   window.addEventListener('mouseup', handleMouseUp)
+  window.addEventListener('mousemove', handlePdfMouseMove)
+  window.addEventListener('mouseup', handlePdfMouseUp)
   window.addEventListener('mousemove', handleResize)
   window.addEventListener('mouseup', stopResize)
 })
@@ -238,6 +243,8 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('mousemove', handleMouseMove)
   window.removeEventListener('mouseup', handleMouseUp)
+  window.removeEventListener('mousemove', handlePdfMouseMove)
+  window.removeEventListener('mouseup', handlePdfMouseUp)
   window.removeEventListener('mousemove', handleResize)
   window.removeEventListener('mouseup', stopResize)
   
@@ -378,12 +385,11 @@ const handleOfficeError = (error) => {
       <template v-else>
         <div 
           v-if="previewMode === 'pdf'" 
+          ref="pdfContainerRef"
           class="preview-office preview-pdf"
+          :class="{ 'panning-mode': isPanning }"
           :style="{ cursor: isPanning ? (isPdfDragging ? 'grabbing' : 'grab') : 'default' }"
           @mousedown="handlePdfMouseDown"
-          @mousemove="handlePdfMouseMove"
-          @mouseup="handlePdfMouseUp"
-          @mouseleave="handlePdfMouseUp"
         >
           <div v-if="officeLoading" class="preview-loading">
             <div class="loading-spinner"></div>
@@ -648,6 +654,10 @@ const handleOfficeError = (error) => {
 .preview-pdf {
   overflow: auto;
   user-select: none;
+}
+
+.preview-pdf.panning-mode :deep(canvas) {
+  pointer-events: none;
 }
 
 .preview-pdf :deep(.vue-office-pdf) {

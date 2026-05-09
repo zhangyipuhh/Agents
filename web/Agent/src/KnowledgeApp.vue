@@ -278,6 +278,7 @@ function handleProfileSend(message, uploadedFiles) {
               :ended="message.ended"
               :error="message.error"
               :message-id="message.id"
+              :is-thinking-active="message.isThinkingActive"
             />
           </div>
         </div>

@@ -44,6 +44,10 @@ const props = defineProps({
   messageId: {
     type: [String, Number],
     default: ''
+  },
+  isThinkingActive: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -94,6 +98,41 @@ const renderedText = computed(() => {
   }
 })
 
+function isThinkingGroupActive(index) {
+  if (!props.isThinkingActive || props.ended) return false
+  const groups = mergedTimeline.value
+  for (let i = groups.length - 1; i >= 0; i--) {
+    if (groups[i].type === 'thinking') {
+      return i === index
+    }
+  }
+  return false
+}
+
+watch(() => [props.isThinkingActive, props.ended, mergedTimeline.value.length], () => {
+  if (props.isThinkingActive && !props.ended) {
+    const groups = mergedTimeline.value
+    for (let i = groups.length - 1; i >= 0; i--) {
+      if (groups[i].type === 'thinking') {
+        thinkingExpandedMap[i] = true
+        break
+      }
+    }
+  } else if (props.ended) {
+    for (const key in thinkingExpandedMap) {
+      thinkingExpandedMap[key] = false
+    }
+  }
+}, { immediate: true })
+
+watch(() => [props.isThinkingActive, props.ended], () => {
+  if (props.isThinkingActive && !props.ended) {
+    isThinkingExpanded.value = true
+  } else if (props.ended) {
+    isThinkingExpanded.value = false
+  }
+}, { immediate: true })
+
 function formatThinkingItem(item) {
   if (typeof item === 'string') return item
   if (!item) return ''
@@ -140,6 +179,11 @@ function isThinkingGroupExpanded(index) {
 
 function toggleThinkingGroup(index) {
   thinkingExpandedMap[index] = !isThinkingGroupExpanded(index)
+}
+
+function handleThinkingClick(index) {
+  if (isThinkingGroupActive(index)) return
+  toggleThinkingGroup(index)
 }
 
 const toggleThinking = () => {
@@ -232,10 +276,12 @@ const getFileIconColor = (filename) => {
       <template v-if="hasTimeline">
         <template v-for="(group, index) in mergedTimeline" :key="'tl-' + index">
           <!-- 思考块 -->
-          <div v-if="group.type === 'thinking'" class="timeline-thinking">
-            <div class="thinking-header" @click="toggleThinkingGroup(index)">
-              <span class="thinking-icon">🧠</span>
-              <span class="thinking-label">思考过程</span>
+          <div v-if="group.type === 'thinking'" class="timeline-thinking" :class="{ 'thinking-active': isThinkingGroupActive(index) }">
+            <div class="thinking-header" :class="{ 'thinking-header-active': isThinkingGroupActive(index) }" @click="handleThinkingClick(index)">
+              <span class="thinking-icon" :class="{ 'thinking-pulse': isThinkingGroupActive(index) }">🧠</span>
+              <span class="thinking-label" :class="{ 'thinking-label-active': isThinkingGroupActive(index) }">
+                {{ isThinkingGroupActive(index) ? '思考中...' : '思考过程' }}
+              </span>
               <svg
                 class="expand-icon"
                 :class="{ expanded: isThinkingGroupExpanded(index) }"
@@ -247,6 +293,7 @@ const getFileIconColor = (filename) => {
             </div>
             <div v-if="isThinkingGroupExpanded(index)" class="thinking-body">
               <pre class="thinking-content">{{ formatMergedThinkingItems(group.items) }}</pre>
+              <span v-if="isThinkingGroupActive(index)" class="streaming-cursor">▌</span>
             </div>
           </div>
 
@@ -283,7 +330,7 @@ const getFileIconColor = (filename) => {
         </template>
 
         <!-- 流式光标 -->
-        <span v-if="!ended && !error" class="streaming-cursor">▌</span>
+        <span v-if="!ended && !error && !isThinkingActive" class="streaming-cursor">▌</span>
       </template>
 
       <!-- 降级模式：无 timeline 时使用旧逻辑 -->
@@ -501,6 +548,10 @@ const getFileIconColor = (filename) => {
   margin-bottom: 12px;
 }
 
+.timeline-thinking.thinking-active {
+  margin-bottom: 16px;
+}
+
 /* 时间线工具块 */
 .timeline-tool {
   max-width: 85%;
@@ -540,12 +591,42 @@ const getFileIconColor = (filename) => {
   background-color: var(--color-bg-hover);
 }
 
+.thinking-header-active {
+  background-color: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.thinking-header-active:hover {
+  background-color: rgba(245, 158, 11, 0.15);
+}
+
 .thinking-icon {
   font-size: 14px;
+  filter: grayscale(1);
+}
+
+.thinking-pulse {
+  animation: thinkingPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes thinkingPulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(1.1);
+  }
 }
 
 .thinking-label {
   font-size: 0.875em;
+}
+
+.thinking-label-active {
+  color: #F59E0B;
+  font-weight: 500;
 }
 
 .expand-icon {
