@@ -189,7 +189,9 @@ const handleScroll = () => {
     showScrollButton.value = false
     return
   }
-  showScrollButton.value = distanceFromBottom > 150
+  // 当内容可滚动且不在底部时显示按钮
+  const isScrollable = scrollHeight > clientHeight
+  showScrollButton.value = isScrollable && distanceFromBottom > 20
   if (distanceFromBottom < 50) {
     unreadCount.value = 0
   }
@@ -425,41 +427,25 @@ const getFileIconColor = (ext) => {
         />
       </div>
 
-      <!-- 滚动按钮组 -->
-      <div class="scroll-buttons-wrapper">
-        <transition name="fade">
-          <button
-            v-show="showScrollToTopButton"
-            type="button"
-            class="scroll-btn scroll-to-top-btn"
-            @click="scrollToTop('smooth')"
-            title="滚动到顶部"
-            aria-label="滚动到顶部"
-          >
-            <svg viewBox="0 0 20 20" fill="currentColor" class="scroll-icon">
-              <path fill-rule="evenodd" d="M14.707 12.707a1 1 0 01-1.414 0L10 9.414l-3.293 3.293a1 1 0 01-1.414-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 010 1.414z" clip-rule="evenodd"/>
-            </svg>
-          </button>
-        </transition>
-
-        <transition name="fade">
-          <button
-            v-show="showScrollButton"
-            type="button"
-            class="scroll-btn scroll-to-bottom-btn"
-            @click="scrollToBottom('smooth')"
-            :title="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
-          >
-            <svg viewBox="0 0 20 20" fill="currentColor" class="scroll-icon">
-              <path fill-rule="evenodd" d="M5.293 12.707a1 1 0 011.414 0L10 9.414l3.293 3.293a1 1 0 111.414-1.414l-4-4a1 1 0 01-1.414 0l-4 4a1 1 0 010 1.414z" clip-rule="evenodd"/>
-            </svg>
-            <span v-if="unreadCount > 0" class="unread-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
-          </button>
-        </transition>
-      </div>
     </div>
 
     <div class="chat-input-area">
+      <!-- 输入框上方滚动按钮 -->
+      <transition name="fade">
+        <button
+          v-show="true"
+          type="button"
+          class="input-scroll-btn"
+          @click="scrollToBottom('smooth')"
+          :title="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
+        >
+          <svg viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
+          </svg>
+          <span v-if="unreadCount > 0" class="input-scroll-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+        </button>
+      </transition>
+
       <div class="input-wrapper">
         <div
           class="input-main"
@@ -707,17 +693,32 @@ const getFileIconColor = (ext) => {
   margin: 0;
 }
 
-.scroll-buttons-wrapper {
-  position: absolute;
-  right: 16px;
-  bottom: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  z-index: 100;
+.fade-enter-active,
+.fade-leave-active {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.scroll-btn {
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+  transform: translateY(8px) scale(0.9);
+}
+
+/* 输入区域样式 - 采用 InputBox.vue 的 main 逻辑 */
+.chat-input-area {
+  position: relative;
+  padding: 16px 40px 24px;
+  background-color: rgb(249, 250, 251);
+  border-top: 1px solid var(--color-border-light);
+  flex-shrink: 0;
+}
+
+/* 输入框上方滚动按钮 */
+.input-scroll-btn {
+  position: absolute;
+  top: -18px;
+  left: 50%;
+  transform: translateX(-50%);
   width: 36px;
   height: 36px;
   display: inline-flex;
@@ -730,22 +731,28 @@ const getFileIconColor = (ext) => {
   color: var(--color-text-secondary);
   cursor: pointer;
   transition: var(--transition-colors), var(--transition-transform), var(--transition-shadow);
-  pointer-events: auto;
-
-  &:hover {
-    background-color: var(--color-accent);
-    border-color: var(--color-accent);
-    color: white;
-    transform: translateY(-2px);
-    box-shadow: var(--shadow-lg);
-  }
-
-  &:active {
-    transform: scale(var(--scale-active)) translateY(0);
-  }
+  z-index: 10;
 }
 
-.unread-badge {
+.input-scroll-btn:hover {
+  background-color: var(--color-accent);
+  border-color: var(--color-accent);
+  color: white;
+  transform: translateX(-50%) translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+
+.input-scroll-btn:active {
+  transform: translateX(-50%) scale(0.95);
+}
+
+.input-scroll-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* 未读消息徽章 */
+.input-scroll-badge {
   position: absolute;
   top: -4px;
   right: -4px;
@@ -761,30 +768,6 @@ const getFileIconColor = (ext) => {
   align-items: center;
   justify-content: center;
   box-shadow: 0 2px 4px rgba(239, 68, 68, 0.3);
-}
-
-.scroll-icon {
-  width: 18px;
-  height: 18px;
-}
-
-.fade-enter-active,
-.fade-leave-active {
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
-  transform: translateY(8px) scale(0.9);
-}
-
-/* 输入区域样式 - 采用 InputBox.vue 的 main 逻辑 */
-.chat-input-area {
-  padding: 16px 40px 24px;
-  background-color: rgb(249, 250, 251);
-  border-top: 1px solid var(--color-border-light);
-  flex-shrink: 0;
 }
 
 .input-wrapper {

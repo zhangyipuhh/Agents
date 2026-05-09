@@ -148,6 +148,7 @@ const resetZoom = () => {
 
 const togglePan = () => {
   isPanning.value = !isPanning.value
+  console.log('[FilePreview] 平移模式切换', { isPanning: isPanning.value, isPdfMode: isPdfMode.value })
   if (!isPanning.value) {
     panOffset.value = { x: 0, y: 0 }
   }
@@ -157,6 +158,7 @@ const handleMouseDown = (e) => {
   if (!isPanning.value) return
   isDragging.value = true
   dragStart.value = { x: e.clientX - panOffset.value.x, y: e.clientY - panOffset.value.y }
+  console.log('[FilePreview] 通用拖拽开始', { x: e.clientX, y: e.clientY })
 }
 
 const handleMouseMove = (e) => {
@@ -168,6 +170,9 @@ const handleMouseMove = (e) => {
 }
 
 const handleMouseUp = () => {
+  if (isDragging.value) {
+    console.log('[FilePreview] 通用拖拽结束')
+  }
   isDragging.value = false
 }
 
@@ -183,6 +188,8 @@ const handlePdfMouseDown = (e) => {
     scrollTop: container.scrollTop
   }
   e.preventDefault()
+  e.stopPropagation()
+  console.log('[FilePreview] PDF拖拽开始', { x: e.clientX, y: e.clientY, scrollLeft: container.scrollLeft, scrollTop: container.scrollTop })
 }
 
 const handlePdfMouseMove = (e) => {
@@ -193,9 +200,21 @@ const handlePdfMouseMove = (e) => {
   const dy = e.clientY - pdfDragStart.value.y
   container.scrollLeft = pdfDragStart.value.scrollLeft - dx
   container.scrollTop = pdfDragStart.value.scrollTop - dy
+  console.log('[FilePreview] PDF拖拽移动', { dx, dy, scrollLeft: container.scrollLeft, scrollTop: container.scrollTop })
 }
 
 const handlePdfMouseUp = () => {
+  if (isPdfDragging.value) {
+    console.log('[FilePreview] PDF拖拽结束')
+  }
+  isPdfDragging.value = false
+}
+
+const handleAllMouseUp = () => {
+  if (isDragging.value || isPdfDragging.value) {
+    console.log('[FilePreview] 所有拖拽结束', { isDragging: isDragging.value, isPdfDragging: isPdfDragging.value })
+  }
+  isDragging.value = false
   isPdfDragging.value = false
 }
 
@@ -233,19 +252,17 @@ watch(panelWidth, () => {
 
 onMounted(() => {
   window.addEventListener('mousemove', handleMouseMove)
-  window.addEventListener('mouseup', handleMouseUp)
   window.addEventListener('mousemove', handlePdfMouseMove)
-  window.addEventListener('mouseup', handlePdfMouseUp)
   window.addEventListener('mousemove', handleResize)
+  window.addEventListener('mouseup', handleAllMouseUp)
   window.addEventListener('mouseup', stopResize)
 })
 
 onUnmounted(() => {
   window.removeEventListener('mousemove', handleMouseMove)
-  window.removeEventListener('mouseup', handleMouseUp)
   window.removeEventListener('mousemove', handlePdfMouseMove)
-  window.removeEventListener('mouseup', handlePdfMouseUp)
   window.removeEventListener('mousemove', handleResize)
+  window.removeEventListener('mouseup', handleAllMouseUp)
   window.removeEventListener('mouseup', stopResize)
   
   if (zoomDebounceTimer.value) {
@@ -368,7 +385,7 @@ const handleOfficeError = (error) => {
         </svg>
       </button>
     </div>
-    <div class="preview-body" :style="bodyStyle" @mouseleave="handleMouseUp">
+    <div class="preview-body" :style="bodyStyle" @mouseleave="handleAllMouseUp">
       <div
         class="preview-content-wrapper"
         :style="{
@@ -656,7 +673,7 @@ const handleOfficeError = (error) => {
   user-select: none;
 }
 
-.preview-pdf.panning-mode :deep(canvas) {
+.preview-pdf.panning-mode :deep(*) {
   pointer-events: none;
 }
 
