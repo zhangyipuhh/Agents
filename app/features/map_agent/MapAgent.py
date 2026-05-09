@@ -189,8 +189,8 @@ class MapAgent:
         context = MapAgentContext(
             session_id=session_id,
             store_id=self.store_id or session_id,
-            knowledge_root= context.get("knowledge_root") ,
-            system_prompt=context.get("system_prompt"),
+            knowledge_root=context.get("knowledge_root") if context else None,
+            system_prompt=context.get("system_prompt") if context else None,
             geometry_data=geometry_data
         )
 
