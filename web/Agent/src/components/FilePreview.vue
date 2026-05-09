@@ -148,7 +148,6 @@ const resetZoom = () => {
 
 const togglePan = () => {
   isPanning.value = !isPanning.value
-  console.log('[FilePreview] 平移模式切换', { isPanning: isPanning.value, isPdfMode: isPdfMode.value })
   if (!isPanning.value) {
     panOffset.value = { x: 0, y: 0 }
   }
@@ -156,66 +155,59 @@ const togglePan = () => {
 
 const handleMouseDown = (e) => {
   if (!isPanning.value) return
+  if (isResizing.value) return
   isDragging.value = true
   dragStart.value = { x: e.clientX - panOffset.value.x, y: e.clientY - panOffset.value.y }
-  console.log('[FilePreview] 通用拖拽开始', { x: e.clientX, y: e.clientY })
 }
 
 const handleMouseMove = (e) => {
   if (!isDragging.value) return
+  if (isResizing.value) return
   panOffset.value = {
     x: e.clientX - dragStart.value.x,
     y: e.clientY - dragStart.value.y
   }
 }
 
-const handleMouseUp = () => {
-  if (isDragging.value) {
-    console.log('[FilePreview] 通用拖拽结束')
-  }
-  isDragging.value = false
+const getScrollContainer = () => {
+  return pdfContainerRef.value?.closest('.preview-body')
 }
 
 const handlePdfMouseDown = (e) => {
   if (!isPanning.value || !isPdfMode.value) return
+  if (isResizing.value) return
   isPdfDragging.value = true
-  const container = pdfContainerRef.value
-  if (!container) return
+  const scrollContainer = getScrollContainer()
+  const pdfEl = pdfRef.value?.$el
+  if (!scrollContainer) return
   pdfDragStart.value = {
     x: e.clientX,
     y: e.clientY,
-    scrollLeft: container.scrollLeft,
-    scrollTop: container.scrollTop
+    scrollLeft: pdfEl ? pdfEl.scrollLeft : 0,
+    scrollTop: scrollContainer.scrollTop
   }
   e.preventDefault()
   e.stopPropagation()
-  console.log('[FilePreview] PDF拖拽开始', { x: e.clientX, y: e.clientY, scrollLeft: container.scrollLeft, scrollTop: container.scrollTop })
 }
 
 const handlePdfMouseMove = (e) => {
   if (!isPdfDragging.value) return
-  const container = pdfContainerRef.value
-  if (!container) return
+  if (isResizing.value) return
+  const scrollContainer = getScrollContainer()
+  const pdfEl = pdfRef.value?.$el
+  if (!scrollContainer) return
   const dx = e.clientX - pdfDragStart.value.x
   const dy = e.clientY - pdfDragStart.value.y
-  container.scrollLeft = pdfDragStart.value.scrollLeft - dx
-  container.scrollTop = pdfDragStart.value.scrollTop - dy
-  console.log('[FilePreview] PDF拖拽移动', { dx, dy, scrollLeft: container.scrollLeft, scrollTop: container.scrollTop })
-}
-
-const handlePdfMouseUp = () => {
-  if (isPdfDragging.value) {
-    console.log('[FilePreview] PDF拖拽结束')
+  if (pdfEl) {
+    pdfEl.scrollLeft = pdfDragStart.value.scrollLeft - dx
   }
-  isPdfDragging.value = false
+  scrollContainer.scrollTop = pdfDragStart.value.scrollTop - dy
 }
 
 const handleAllMouseUp = () => {
-  if (isDragging.value || isPdfDragging.value) {
-    console.log('[FilePreview] 所有拖拽结束', { isDragging: isDragging.value, isPdfDragging: isPdfDragging.value })
-  }
   isDragging.value = false
   isPdfDragging.value = false
+  isResizing.value = false
 }
 
 // 拖拽调整宽度方法
@@ -226,6 +218,7 @@ const startResize = (e) => {
 
 const handleResize = (e) => {
   if (!isResizing.value) return
+  e.preventDefault()
   const containerWidth = document.body.clientWidth
   const newWidth = ((containerWidth - e.clientX) / containerWidth) * 100
   panelWidth.value = Math.max(MIN_WIDTH_PERCENT, Math.min(MAX_WIDTH_PERCENT, newWidth))
@@ -508,12 +501,12 @@ const handleOfficeError = (error) => {
   left: 0;
   top: 0;
   bottom: 0;
-  width: 6px;
+  width: 10px;
   cursor: col-resize;
   background: transparent;
   transition: background 0.2s;
-  z-index: 100;
-  transform: translateX(-50%);
+  z-index: 1000;
+  pointer-events: auto;
 }
 
 .resize-handle:hover,
@@ -669,11 +662,10 @@ const handleOfficeError = (error) => {
 }
 
 .preview-pdf {
-  overflow: auto;
   user-select: none;
 }
 
-.preview-pdf.panning-mode :deep(*) {
+.preview-pdf.panning-mode :deep(.vue-office-pdf) {
   pointer-events: none;
 }
 

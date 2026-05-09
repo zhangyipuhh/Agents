@@ -269,7 +269,7 @@ function handleProfileSend(message, uploadedFiles) {
           <span class="chat-title">知识库问答</span>
         </div>
 
-        <div class="chat-body" ref="chatContainer">
+        <div class="chat-body" ref="chatContainer" @scroll="handleScroll">
           <div class="messages-container">
             <MessageBubble
               v-for="message in messages"
@@ -289,13 +289,29 @@ function handleProfileSend(message, uploadedFiles) {
           </div>
         </div>
 
-        <ProfileInputBox
-          :session-id="currentSessionId"
-          :is-streaming="isStreaming"
-          @send="handleProfileSend"
-          @tool-action="handleToolAction"
-          @new-chat="handleNewChat"
-        />
+        <div class="chat-input-area">
+          <transition name="fade">
+            <button
+              v-show="showScrollButton"
+              type="button"
+              class="input-scroll-btn"
+              @click="scrollToBottom('smooth')"
+              :title="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
+            >
+              <svg viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
+              </svg>
+              <span v-if="unreadCount > 0" class="input-scroll-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+            </button>
+          </transition>
+          <ProfileInputBox
+            :session-id="currentSessionId"
+            :is-streaming="isStreaming"
+            @send="handleProfileSend"
+            @tool-action="handleToolAction"
+            @new-chat="handleNewChat"
+          />
+        </div>
       </template>
     </main>
 
@@ -525,5 +541,79 @@ function handleProfileSend(message, uploadedFiles) {
 
 .chat-body::-webkit-scrollbar-thumb:hover {
   background-color: var(--color-text-muted);
+}
+
+.chat-input-area {
+  position: relative;
+  padding: 16px 40px 24px;
+  background-color: rgb(249, 250, 251);
+  border-top: 1px solid var(--color-border-light);
+  flex-shrink: 0;
+}
+
+.input-scroll-btn {
+  position: absolute;
+  top: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: 50%;
+  box-shadow: var(--shadow-md);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: var(--transition-colors), var(--transition-transform), var(--transition-shadow);
+  z-index: 10;
+}
+
+.input-scroll-btn:hover {
+  background-color: var(--color-accent);
+  border-color: var(--color-accent);
+  color: white;
+  transform: translateX(-50%) translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+
+.input-scroll-btn:active {
+  transform: translateX(-50%) scale(0.95);
+}
+
+.input-scroll-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.input-scroll-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  background-color: #EF4444;
+  color: white;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 4px rgba(239, 68, 68, 0.3);
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(8px) scale(0.9);
 }
 </style>
