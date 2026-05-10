@@ -57,9 +57,8 @@ export function processContentBlocks(aiMsg, blocks, isMainThread = true) {
     } else if (isThinkingBlock(block)) {
       const thinkingText = block.thinking || ''
       if (thinkingText) {
-        const prefix = 'thinking: '
-        aiMsg.thinking.push(prefix + thinkingText)
-        aiMsg.timeline.push({ type: 'thinking', content: prefix + thinkingText })
+        aiMsg.thinking.push(thinkingText)
+        aiMsg.timeline.push({ type: 'thinking', content: thinkingText })
       }
       aiMsg.isThinkingActive = true
     } else {
@@ -89,9 +88,8 @@ export function parseMessageContent(content, aiMsg, isMainThread = true) {
     if (isThinkingBlock(content)) {
       const thinkingText = content.thinking || ''
       if (thinkingText) {
-        const prefix = 'thinking: '
-        aiMsg.thinking.push(prefix + thinkingText)
-        aiMsg.timeline.push({ type: 'thinking', content: prefix + thinkingText })
+        aiMsg.thinking.push(thinkingText)
+        aiMsg.timeline.push({ type: 'thinking', content: thinkingText })
       }
       aiMsg.isThinkingActive = true
     } else {
