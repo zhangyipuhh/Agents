@@ -9,6 +9,8 @@ mcp_servers:
     tags: ["map", "geo", "navigation"]
     sampling:
       enabled: false
+    progress_reporting: 
+      enabled: false
     tool_config:
       enable_injection: true
       default_param_keys:
