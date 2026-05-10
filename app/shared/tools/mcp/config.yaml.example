@@ -14,6 +14,7 @@ mcp_servers:
       default_param_keys:
         - session_id
         - user_id
+      unwrap_result: true
 
   飞书机器人MCP:
     type: sse
@@ -29,6 +30,7 @@ mcp_servers:
       default_param_keys:
         - session_id
         - user_id
+      unwrap_result: true
 
   GitHub_MCP:
     type: sse
@@ -43,6 +45,7 @@ mcp_servers:
     tool_config:
       enable_injection: false
       default_param_keys: []
+      unwrap_result: false
 
   # ========================================
   # SSE 类型配置 - 本地服务
@@ -63,6 +66,7 @@ mcp_servers:
       enable_injection: true
       default_param_keys:
         - session_id
+      unwrap_result: true
 
   本地Python_MCP服务:
     type: sse
@@ -74,6 +78,7 @@ mcp_servers:
     tool_config:
       enable_injection: false
       default_param_keys: []
+      unwrap_result: false
 
   # ========================================
   # HTTP 类型配置
@@ -90,6 +95,7 @@ mcp_servers:
       default_param_keys:
         - session_id
         - user_id
+      unwrap_result: true
 
   Azure_MCP:
     url: "https://your-azure-function.azurewebsites.net/api/mcp"
@@ -102,6 +108,7 @@ mcp_servers:
     tool_config:
       enable_injection: false
       default_param_keys: []
+      unwrap_result: false
 
   AWS_Lambda_MCP:
     url: "https://your-lambda-id.execute-api.us-east-1.amazonaws.com/prod/mcp"
@@ -113,6 +120,7 @@ mcp_servers:
     tool_config:
       enable_injection: false
       default_param_keys: []
+      unwrap_result: false
 
   # ========================================
   # Stdio 类型配置 - 本地进程
@@ -128,6 +136,7 @@ mcp_servers:
       enable_injection: true
       default_param_keys:
         - session_id
+      unwrap_result: true
 
   Git_MCP:
     command: "uvx"
@@ -137,6 +146,7 @@ mcp_servers:
     tool_config:
       enable_injection: false
       default_param_keys: []
+      unwrap_result: false
 
   SQL数据库MCP:
     command: "npx"
@@ -146,6 +156,7 @@ mcp_servers:
     tool_config:
       enable_injection: false
       default_param_keys: []
+      unwrap_result: false
 
   Python脚本MCP:
     command: "python"
@@ -160,3 +171,4 @@ mcp_servers:
       default_param_keys:
         - session_id
         - user_id
+      unwrap_result: true
