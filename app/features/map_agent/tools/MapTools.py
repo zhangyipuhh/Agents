@@ -837,7 +837,7 @@ def generate_report(runtime: ToolRuntime) -> Command:
     result_data = {
         "status": "report_generated",
         "download_url": download_path,
-        "file_name": "1.doc",
+        "file_name": "检查报告",
         "message": "地图报告已生成"
     }
 
