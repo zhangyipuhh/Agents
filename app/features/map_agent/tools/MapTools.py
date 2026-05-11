@@ -14,6 +14,7 @@ MapTools - 地图控制Agent工具模块
 6. get_map_state - 获取当前地图状态
 7. draw_map_polygon - 绘制地图多边形
 8. set_map_layer - 设置地图图层
+9. generate_report - 生成报告
 
 Date: 2026-04-14
 Author: AI Assistant
@@ -742,6 +743,132 @@ def set_map_layer(layer_type: str, runtime: ToolRuntime) -> Command:
     return Command(
         update={
             "map_layer": layer_type,
+            "messages": [
+                ToolMessage(
+                    content=json.dumps(summary, ensure_ascii=False),
+                    tool_call_id=tool_call_id
+                )
+            ]
+        }
+    )
+
+
+@tool
+def generate_report(runtime: ToolRuntime) -> Command:
+    """
+    【生成报告】根据返回下载地址。
+
+    调用时机：
+    - 用户说"生成报告"、"导出报告"、"下载报告"时
+    - 用户说"生成报告"时
+
+
+    Args:
+        runtime: 工具运行时上下文，用于获取工具调用ID和当前状态
+
+    Returns:
+        Command: 包含ToolMessage和状态更新的命令对象
+            - status: "report_generated" - 报告已生成
+            - download_url: 下载地址路径（不含IP，由前端拼接）
+            - file_name: 下载文件名
+
+    Raises:
+        无显式异常抛出，所有错误通过tool_error事件和result状态反馈
+    """
+    tool_name = "generate_report"
+    tool_call_id = runtime.tool_call_id
+    start_time = datetime.now()
+    writer = get_stream_writer()
+
+    start_event = create_tool_event(
+        event_type="tool_start",
+        tool=tool_name,
+        tool_call_id=tool_call_id,
+        data={
+            "args": {},
+            "description": "开始生成报告"
+        }
+    )
+    writer(dict(start_event))
+
+    progress_event_1 = create_tool_event(
+        event_type="tool_progress",
+        tool=tool_name,
+        tool_call_id=tool_call_id,
+        data={
+            "current": 1,
+            "total": 3,
+            "percentage": 33,
+            "message": "正在收集数据"
+        }
+    )
+    writer(dict(progress_event_1))
+
+
+
+    progress_event_2 = create_tool_event(
+        event_type="tool_progress",
+        tool=tool_name,
+        tool_call_id=tool_call_id,
+        data={
+            "current": 2,
+            "total": 3,
+            "percentage": 66,
+            "message": "正在生成报告文件"
+        }
+    )
+    writer(dict(progress_event_2))
+
+    download_path = "/api/core/download/file?path=1.doc"
+
+    progress_event_3 = create_tool_event(
+        event_type="tool_progress",
+        tool=tool_name,
+        tool_call_id=tool_call_id,
+        data={
+            "current": 3,
+            "total": 3,
+            "percentage": 100,
+            "message": "报告生成完成"
+        }
+    )
+    writer(dict(progress_event_3))
+
+    result_data = {
+        "status": "report_generated",
+        "download_url": download_path,
+        "file_name": "1.doc",
+        "message": "地图报告已生成"
+    }
+
+    end_time = datetime.now()
+    duration_ms = int((end_time - start_time).total_seconds() * 1000)
+
+    stop_event = create_tool_event(
+        event_type="tool_stop",
+        tool=tool_name,
+        tool_call_id=tool_call_id,
+        data={
+            "status": "success",
+            "type": "download",
+            "result": result_data,
+            "duration_ms": duration_ms
+        }
+    )
+    writer(dict(stop_event))
+
+    summary = {
+        "status": "success",
+        "tool": tool_name,
+        "started_at": start_time.timestamp(),
+        "ended_at": end_time.timestamp(),
+        "duration_ms": duration_ms,
+        "result": "报告文件生成完成，根据下载地址下载"
+    }
+
+    return Command(
+        update={
+            "map_report": result_data,
             "messages": [
                 ToolMessage(
                     content=json.dumps(summary, ensure_ascii=False),

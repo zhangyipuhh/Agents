@@ -96,6 +96,7 @@ class MapAgentConfig(BaseAgentConfig):
             get_map_state,
             draw_map_polygon,
             set_map_layer,
+            generate_report,
         )
         from app.core.tools.BaseTools import get_current_time
         from app.core.tools.mcp_registry import MCPToolsRegistry
@@ -114,6 +115,7 @@ class MapAgentConfig(BaseAgentConfig):
             # set_map_layer,
             explore,
             get_current_time,
+            generate_report,
         ]
 
         try:
