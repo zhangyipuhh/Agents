@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, reactive, watch, nextTick } from 'vue'
 import { marked } from 'marked'
-import { formatFileSize, getFileExtension } from '../utils/api.js'
+import { formatFileSize, getFileExtension, getAuthHeaders } from '../utils/api.js'
 
 const props = defineProps({
   type: {
@@ -48,6 +48,10 @@ const props = defineProps({
   isThinkingActive: {
     type: Boolean,
     default: false
+  },
+  downloadInfo: {
+    type: Object,
+    default: null
   }
 })
 
@@ -68,6 +72,11 @@ const hasTools = computed(() => props.tools && props.tools.length > 0)
 const hasText = computed(() => props.text && props.text.length > 0)
 const hasError = computed(() => props.error && props.error.length > 0)
 const isStreaming = computed(() => !props.ended && !hasError.value && hasThinking.value)
+const hasDownloadInfo = computed(() => {
+  const hasInfo = props.downloadInfo && props.downloadInfo.downloadUrl
+  console.log('[MessageBubble] hasDownloadInfo:', hasInfo, 'downloadInfo:', JSON.stringify(props.downloadInfo))
+  return hasInfo
+})
 
 const hasTimeline = computed(() => props.timeline && props.timeline.length > 0)
 
@@ -299,6 +308,36 @@ const handleDislike = () => {
   emit('dislike', props.messageId)
 }
 
+const handleDownload = async () => {
+  if (!props.downloadInfo) return
+
+  const { downloadUrl, fileName } = props.downloadInfo
+  const baseUrl = window.location.origin
+  const fullUrl = `${baseUrl}${downloadUrl}`
+
+  try {
+    const headers = getAuthHeaders()
+    const response = await fetch(fullUrl, { headers })
+
+    if (!response.ok) {
+      throw new Error(`下载失败: ${response.status}`)
+    }
+
+    const blob = await response.blob()
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = fileName || 'download'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+  } catch (err) {
+    console.error('下载失败:', err)
+    alert('文件下载失败，请重试')
+  }
+}
+
 const getFileIconColor = (filename) => {
   const ext = getFileExtension(filename)
   const colorMap = {
@@ -451,6 +490,19 @@ const getFileIconColor = (filename) => {
           <span v-if="!ended && !error" class="streaming-cursor">▌</span>
         </div>
       </template>
+
+      <!-- 下载链接 -->
+      <div v-if="hasDownloadInfo && ended" class="download-section">
+        <div class="download-card" @click="handleDownload">
+          <svg class="download-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          <span class="download-filename">{{ downloadInfo.fileName }}</span>
+          <span class="download-hint">点击下载</span>
+        </div>
+      </div>
 
       <!-- 错误信息 -->
       <div v-if="hasError" class="error-section">
@@ -955,6 +1007,47 @@ const getFileIconColor = (filename) => {
     opacity: 1;
     max-height: 200px;
   }
+}
+
+/* 下载链接 */
+.download-section {
+  max-width: 85%;
+  margin-bottom: 12px;
+}
+
+.download-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  background-color: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.download-card:hover {
+  background-color: var(--color-bg-hover);
+  border-color: var(--color-accent);
+}
+
+.download-icon {
+  width: 20px;
+  height: 20px;
+  color: var(--color-accent);
+}
+
+.download-filename {
+  font-size: var(--font-size-base);
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+
+.download-hint {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  margin-left: 8px;
 }
 
 /* 消息操作按钮 */

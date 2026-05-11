@@ -171,6 +171,7 @@ defineExpose({
         :error="message.error"
         :message-id="message.id"
         :is-thinking-active="message.isThinkingActive"
+        :download-info="message.downloadInfo"
         @copy="(e) => emit('copy', e)"
         @regenerate="(id) => emit('regenerate', id)"
         @like="(id) => emit('like', id)"

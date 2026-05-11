@@ -81,6 +81,7 @@ async function handleSendMessage(message, attachments = []) {
         try {
           const data = JSON.parse(event.slice(6))
           processSSEEvent(data, aiMsg)
+          console.log('[App] After processSSEEvent, downloadInfo:', JSON.stringify(aiMsg.downloadInfo))
         } catch {}
       }
     }

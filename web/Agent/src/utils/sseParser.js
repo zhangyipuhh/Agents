@@ -177,6 +177,32 @@ export function processSSEEvent(data, aiMsg) {
     case 'custom':
       aiMsg.tools.push(data)
       aiMsg.timeline.push({ type: 'tool', content: data })
+      // 检查是否是 tool_stop 类型的自定义事件
+      console.log('[sseParser] custom event:', JSON.stringify(data))
+      // 注意：custom 事件的 data 字段包含实际的工具事件数据
+      const customToolData = data.data || {}
+      if (customToolData.tool && customToolData.type === 'tool_stop') {
+        console.log('[sseParser] Detected tool_stop in custom event')
+        const toolResultData = customToolData.data || {}
+        if (toolResultData.status === 'success' && toolResultData.type === 'download') {
+          console.log('[sseParser] Detected download type in custom tool_stop')
+          const result = toolResultData.result || {}
+          let downloadUrl = null
+          let fileName = null
+          if (typeof result === 'object') {
+            downloadUrl = result.download_url || result.downloadUrl
+            fileName = result.file_name || result.fileName || result.filename
+          }
+          console.log('[sseParser] Custom event - downloadUrl:', downloadUrl, 'fileName:', fileName)
+          if (downloadUrl) {
+            aiMsg.downloadInfo = {
+              downloadUrl: downloadUrl,
+              fileName: fileName || '报告文件'
+            }
+            console.log('[sseParser] Set downloadInfo from custom:', JSON.stringify(aiMsg.downloadInfo))
+          }
+        }
+      }
       break
     case 'end':
       aiMsg.ended = true
@@ -185,6 +211,47 @@ export function processSSEEvent(data, aiMsg) {
     case 'error':
       aiMsg.error = '不好意思，刚刚出了点小故障，可以晚点再问我一遍。'
       break
+    case 'tool_stop': {
+      // tool_stop 事件的 data 字段在根级别
+      // 格式: { type: 'tool_stop', tool: '...', data: { status: 'success', type: 'download', result: {...} } }
+      const toolData = data.data || {}
+      console.log('[sseParser] tool_stop event, data:', JSON.stringify(data))
+      console.log('[sseParser] tool_stop toolData:', JSON.stringify(toolData))
+      // 检查是否是下载类型工具成功执行
+      if (toolData.status === 'success' && toolData.type === 'download') {
+        console.log('[sseParser] Detected download type tool success')
+        // 尝试从 result 中解析下载信息
+        const result = toolData.result || {}
+        console.log('[sseParser] result:', JSON.stringify(result))
+        // result 可能是对象或字符串
+        let downloadUrl = null
+        let fileName = null
+        if (typeof result === 'string') {
+          // 尝试从字符串中提取下载地址
+          const urlMatch = result.match(/下载地址[:：]\s*(\S+)/)
+          if (urlMatch) {
+            downloadUrl = urlMatch[1]
+          }
+          // 尝试提取文件名
+          const fileMatch = result.match(/文件[:：]\s*(\S+)/)
+          if (fileMatch) {
+            fileName = fileMatch[1]
+          }
+        } else if (typeof result === 'object') {
+          downloadUrl = result.download_url || result.downloadUrl
+          fileName = result.file_name || result.fileName || result.filename
+        }
+        console.log('[sseParser] Extracted downloadUrl:', downloadUrl, 'fileName:', fileName)
+        if (downloadUrl) {
+          aiMsg.downloadInfo = {
+            downloadUrl: downloadUrl,
+            fileName: fileName || '报告文件'
+          }
+          console.log('[sseParser] Set downloadInfo:', JSON.stringify(aiMsg.downloadInfo))
+        }
+      }
+      break
+    }
   }
 }
 
@@ -199,6 +266,7 @@ export function createAiMessage() {
     tools: [],
     text: '',
     ended: false,
-    error: ''
+    error: '',
+    downloadInfo: null
   }
 }
