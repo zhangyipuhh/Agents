@@ -16,6 +16,8 @@ mcp_servers:
       default_param_keys:
         - session_id
         - user_id
+      hidden_param_keys:  # 新增参数，需要从工具 schema 中隐藏的参数键列表，LLM 看不到但运行时仍可注入
+        - geometry_data
       unwrap_result: true
 
   飞书机器人MCP:

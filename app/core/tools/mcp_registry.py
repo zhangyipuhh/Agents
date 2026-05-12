@@ -59,8 +59,34 @@ class MCPToolsRegistry:
         logger.info("开始初始化 MCPToolsRegistry，配置了 %d 个服务器", len(configs))
         self._server_configs = configs
         self._client = UnifiedMCPClient(configs)
+        self._client.set_progress_callback(self._on_mcp_progress)
         self._initialized = True
         logger.info("MCPToolsRegistry 初始化完成，共配置 %d 个服务器", len(configs))
+
+    async def _on_mcp_progress(self, progress, total, message, server_name):
+        """MCP 进度通知 → LangGraph stream_writer → 前端"""
+        try:
+            from langgraph.config import get_stream_writer
+            writer = get_stream_writer()
+        except (ImportError, RuntimeError):
+            return
+
+        from app.core.tools.events import create_tool_event
+        event = create_tool_event(
+            event_type="tool_progress",
+            tool=server_name,
+            tool_call_id="mcp_progress",
+            data={
+                "progress": progress,
+                "total": total,
+                "message": message,
+                "server_name": server_name,
+            },
+        )
+        try:
+            writer(dict(event))
+        except Exception:
+            pass
 
     async def get_tools(self) -> List[Any]:
         """

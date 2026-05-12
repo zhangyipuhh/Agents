@@ -216,7 +216,7 @@ class AgentConfig:
         """
         tools: list[str] = [get_current_time, open_file, load_web_page, read_cached_chunk,open_file_by_id]
 
-        return tools, ToolNode(tools)
+        return tools, ToolNode(tools, handle_tool_errors=True)
     
     def get_llm_retry_policy(self) -> RetryPolicy:
         """

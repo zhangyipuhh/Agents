@@ -22,6 +22,13 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 
 logger = logging.getLogger(__name__)
 
+_MCP_CALLBACKS_AVAILABLE = False
+try:
+    from langchain_mcp_adapters.callbacks import Callbacks, CallbackContext
+    _MCP_CALLBACKS_AVAILABLE = True
+except ImportError:
+    logger.debug("MCP callbacks not available -- progress reporting disabled")
+
 _MCP_SAMPLING_TYPES = False
 try:
     from mcp.types import (
@@ -88,7 +95,7 @@ def _convert_server_config(name: str, config: dict) -> dict:
             logger.warning("MCP server '%s': cannot determine transport, skipping", name)
             return {}
 
-    for key in ("tags", "sampling", "timeout", "connect_timeout", "read_timeout", "env", "tool_config"):
+    for key in ("tags", "sampling", "timeout", "connect_timeout", "read_timeout", "env", "tool_config", "progress_reporting"):
         adapted.pop(key, None)
 
     logger.info("MCP server '%s' adapted config: %s", name, adapted)
@@ -541,13 +548,38 @@ class UnifiedMCPClient:
         self._adapted_configs = self._adapt_all_configs(server_configs)
         self._sampling_callbacks = self._create_sampling_callbacks(sampling_llm_config)
 
+        has_progress = any(
+            server_configs[name].get("progress_reporting", {}).get("enabled", False)
+            for name in server_configs
+        )
+        self._progress_callback = None
+
+        mcp_callbacks = None
+        if has_progress and _MCP_CALLBACKS_AVAILABLE:
+            mcp_callbacks = Callbacks(on_progress=self._on_mcp_progress)
+
         if self._adapted_configs:
             logger.info("Creating MultiServerMCPClient with %d server configs", len(self._adapted_configs))
-            self._client = MultiServerMCPClient(self._adapted_configs)
+            self._client = MultiServerMCPClient(self._adapted_configs, callbacks=mcp_callbacks)
             logger.info("MultiServerMCPClient created successfully")
         else:
             self._client = None
             logger.warning("No valid MCP server configurations provided")
+
+    def set_progress_callback(self, callback) -> None:
+        self._progress_callback = callback
+
+    async def _on_mcp_progress(self, progress, total, message, context) -> None:
+        if self._progress_callback is not None:
+            try:
+                await self._progress_callback(
+                    progress=progress,
+                    total=total,
+                    message=message,
+                    server_name=context.server_name,
+                )
+            except Exception:
+                logger.debug("Progress callback failed for server '%s'", context.server_name, exc_info=True)
 
     def _adapt_all_configs(self, server_configs: dict) -> dict:
         adapted = {}

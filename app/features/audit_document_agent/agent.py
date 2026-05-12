@@ -128,7 +128,7 @@ class AuditDocumentAgent:
         # 获取审计工具列表
         self.tools = get_audit_tools()
         # 创建工具节点，用于执行工具调用
-        self.tool_node = ToolNode(self.tools)
+        self.tool_node = ToolNode(self.tools, handle_tool_errors=True)
         # 使用全局单例检查点器，实现跨会话的记忆共享
         self.checkpointer = get_global_checkpointer(db_path)
         # 创建摘要模型，绑定最大生成 token 数
