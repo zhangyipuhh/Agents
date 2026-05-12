@@ -20,6 +20,48 @@ from typing import Any, Dict, List, Optional
 from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
+# ===== MCP progress token monkey-patch =====
+# 修复 MCP SDK 中 send_request 用 int 存 key，但 _receive_loop 用 str 查的 bug
+import mcp.client.session as _mcp_client_session
+
+
+class _ProgressCallbackDict(dict):
+    def __contains__(self, key):
+        if super().__contains__(key):
+            return True
+        if isinstance(key, int) and super().__contains__(str(key)):
+            return True
+        if isinstance(key, str) and key.lstrip("-").isdigit():
+            try:
+                return super().__contains__(int(key))
+            except ValueError:
+                pass
+        return False
+
+    def __getitem__(self, key):
+        if super().__contains__(key):
+            return super().__getitem__(key)
+        if isinstance(key, int) and super().__contains__(str(key)):
+            return super().__getitem__(str(key))
+        if isinstance(key, str) and key.lstrip("-").isdigit():
+            try:
+                return super().__getitem__(int(key))
+            except (ValueError, KeyError):
+                pass
+        raise KeyError(key)
+
+
+_original_client_session_init = _mcp_client_session.ClientSession.__init__
+
+
+def _patched_client_session_init(self, *args, **kwargs):
+    _original_client_session_init(self, *args, **kwargs)
+    self._progress_callbacks = _ProgressCallbackDict()
+
+
+_mcp_client_session.ClientSession.__init__ = _patched_client_session_init
+# ===== End monkey-patch =====
+
 logger = logging.getLogger(__name__)
 
 _MCP_CALLBACKS_AVAILABLE = False
