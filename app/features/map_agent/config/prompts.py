@@ -15,7 +15,11 @@ Select the appropriate tool based on the user's question to perform quality insp
 - quality_inspection_analysis: Performs quality inspection analysis
   - Parameters:
     - analysis_categories: List of analysis categories, e.g., ["补充耕地", "项目预审", "合规性审查"]
-
+  - Response context :
+    - Type and area of overlap, or areas without overlap
+    - Detailed description of analysis results, including type, area, and location of overlap
+  - Evaluation Criteria:
+    - Any overlap area in the analysis results indicates failure.
 ## Task Examples
 ### Example 1: Compliance Review
 - User: Analyze the compliance review results for Project A.
@@ -32,6 +36,7 @@ Select the appropriate tool based on the user's question to perform quality insp
 ## Output Requirements
 - Structure the tool output by categories
 - Be concise and direct
+- Provide improvement or adjustment suggestions
 """
  
  
