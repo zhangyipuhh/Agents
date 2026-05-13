@@ -5,7 +5,8 @@ mcp_servers:
   高德地图MCP:
     type: sse
     url: "https://mcp.amap.com/sse?key=YOUR_AMAP_KEY"
-    timeout: 120
+    timeout: 5          # HTTP 连接超时(默认5s)
+    read_timeout: 300   # SSE 读取超时（默认300s）
     tags: ["map", "geo", "navigation"]
     sampling:
       enabled: false
