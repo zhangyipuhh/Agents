@@ -269,16 +269,21 @@ class TocEntry:
     """
     目录条目类
 
-    表示目录中的一个条目，包含文本内容和缩进级别。
+    表示目录中的一个条目，包含文本内容、缩进级别和字体样式。
     缩进级别用于控制目录的层级显示，0为一级标题，1为二级标题，2为三级标题。
+    字体和加粗属性支持条目级别独立设置，未设置时回退到TocConfig的全局默认值。
 
     Attributes:
         text: 条目文本内容，如"一、项目选址与要素保障"
         level: 缩进级别，0=一级，1=二级，2=三级，默认0
+        font_name: 字体名称，空字符串时回退到TocConfig.entry_font_name，默认""
+        font_size: 字号，单位pt，None时回退到TocConfig.entry_font_size，默认None
+        bold: 是否加粗，None时回退到TocConfig.entry_bold，默认None
 
     Example:
         >>> entry = TocEntry(text="一、项目选址与要素保障", level=0)
         >>> entry_sub = TocEntry(text="（一）项目选址选线", level=1)
+        >>> entry_bold = TocEntry(text="一、项目选址与要素保障", level=0, font_name="黑体", font_size=16, bold=True)
     """
 
     text: str
@@ -286,6 +291,15 @@ class TocEntry:
 
     level: int = 0
     """缩进级别，0=一级，1=二级，2=三级，默认0"""
+
+    font_name: str = ""
+    """字体名称，空字符串时回退到TocConfig.entry_font_name，默认"" """
+
+    font_size: int | None = None
+    """字号，单位pt，None时回退到TocConfig.entry_font_size，默认None """
+
+    bold: bool | None = None
+    """是否加粗，None时回退到TocConfig.entry_bold，默认None """
 
 
 @dataclass
@@ -304,6 +318,7 @@ class TocConfig:
         entries: 目录条目列表，默认为空列表
         entry_font_name: 条目字体名称，默认"宋体"
         entry_font_size: 条目字号，单位pt，默认12
+        entry_bold: 条目是否加粗，默认False，可被TocEntry中的bold字段覆盖
         indent_per_level: 每级缩进量，单位cm，默认0.74（约2个中文字符宽度）
         show_page_number: 是否显示页码，默认True
         page_number_font_name: 页码字体名称，默认"宋体"
@@ -342,6 +357,9 @@ class TocConfig:
 
     entry_font_size: int = 12
     """条目字号，单位pt，默认12，对应小四号字"""
+
+    entry_bold: bool = False
+    """条目是否加粗，默认False，可被TocEntry中的bold字段覆盖"""
 
     indent_per_level: float = 0.74
     """每级缩进量，单位cm，默认0.74cm，约等于2个中文字符宽度"""

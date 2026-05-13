@@ -316,6 +316,8 @@ class WordReportGenerator:
         Notes:
             - 目录标题：居中显示，使用目录专用字体和字号
             - 目录条目：根据level级别设置左缩进，实现层级效果
+            - 条目字体：优先使用TocEntry.font_name，为空时回退到TocConfig.entry_font_name
+            - 条目加粗：优先使用TocEntry.bold，为None时回退到TocConfig.entry_bold
             - 缩进量 = indent_per_level * level（单位cm）
             - 页码：通过Word域字段自动生成，使用制表位右对齐
             - 引导符：标题与页码之间使用leader指定的字符连接
@@ -359,8 +361,11 @@ class WordReportGenerator:
             tab_stops.add_tab_stop(Cm(tab_position), WD_TAB_ALIGNMENT.RIGHT, WD_TAB_LEADER.DOTS if leader == 1 else WD_TAB_LEADER.NONE)
 
             # 添加标题文本
+            entry_font_name = entry.font_name if entry.font_name else toc.entry_font_name
+            entry_font_size = entry.font_size if entry.font_size is not None else toc.entry_font_size
+            entry_bold = entry.bold if entry.bold is not None else toc.entry_bold
             run = p.add_run(self._resolve_text(entry.text))
-            set_chinese_font(run, toc.entry_font_name, toc.entry_font_size)
+            set_chinese_font(run, entry_font_name, entry_font_size, entry_bold)
 
             # 添加制表符
             p.add_run("\t")
