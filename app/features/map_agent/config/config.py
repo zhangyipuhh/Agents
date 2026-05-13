@@ -10,8 +10,8 @@ Date: 2026-04-20
 
 from dotenv import load_dotenv
 
+from app.features.map_agent.config.settings import MapAgentSettings 
+
+
 load_dotenv()
-
-from app.features.map_agent.config.settings import MapAgentSettings
-
 map_agent_settings = MapAgentSettings()
