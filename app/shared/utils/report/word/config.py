@@ -376,7 +376,7 @@ class FooterConfig:
         start_page: 起始页码，默认1，应用于start_from指定的节
         start_from: 页码计数起始节，可选"cover"(封面)、"toc"(目录)、"content"(正文)，默认"toc"
         skip_cover: 封面是否不显示页码，默认True
-        skip_toc: 目录是否不显示页码，默认True
+        skip_toc: 目录是否不显示页码，默认False
 
     支持的format格式：
         - "{page}" : 仅显示页码，如 "1"
@@ -397,7 +397,7 @@ class FooterConfig:
         ...     format="第{page}页 共{total}页",
         ...     start_from="toc",
         ...     skip_cover=True,
-        ...     skip_toc=True,
+        ...     skip_toc=False,
         ... )
     """
 
@@ -425,8 +425,8 @@ class FooterConfig:
     skip_cover: bool = True
     """封面是否不显示页码，默认True"""
 
-    skip_toc: bool = True
-    """目录是否不显示页码，默认True"""
+    skip_toc: bool = False
+    """目录是否不显示页码，默认False，即目录页显示页码"""
 
 
 @dataclass

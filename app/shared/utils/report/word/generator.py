@@ -47,6 +47,7 @@ class WordReportGenerator:
         self.config = config
         self.doc = None
         self._heading_bookmarks = []
+        self._heading_index = 0
 
     def _add_field_code(self, paragraph, field_code: str, font_name: str = "宋体", font_size: int = 10):
         """
@@ -160,6 +161,24 @@ class WordReportGenerator:
         paragraph._p.append(bookmark_end)
 
         return bookmark_name
+
+    def _pre_collect_bookmarks(self):
+        """
+        预收集标题书签名称
+
+        在渲染目录之前，扫描config.sections中所有heading类型的section，
+        按顺序生成书签名称并填充_heading_bookmarks列表，
+        使目录渲染时能正确引用标题书签生成PAGEREF域字段。
+
+        Notes:
+            - 书签命名规则：_TocHeading_{index}，与_render_heading中的命名一致
+            - 必须在_render_toc()之前调用
+            - 预收集确保目录中的PAGEREF域字段能正确引用尚未渲染的标题书签
+        """
+        for section in self.config.sections:
+            if section.section_type == "heading":
+                bookmark_name = f"_TocHeading_{len(self._heading_bookmarks)}"
+                self._heading_bookmarks.append(bookmark_name)
 
     def _setup_page(self):
         """
@@ -405,8 +424,9 @@ class WordReportGenerator:
             paragraph.alignment = section.alignment
 
         # 添加书签，用于目录页码引用
-        bookmark_name = f"_TocHeading_{len(self._heading_bookmarks)}"
+        bookmark_name = self._heading_bookmarks[self._heading_index]
         self._add_bookmark(paragraph, bookmark_name)
+        self._heading_index += 1
 
     def _render_paragraph(self, section: SectionConfig):
         """
@@ -541,6 +561,10 @@ class WordReportGenerator:
             for paragraph in footer.paragraphs:
                 paragraph.clear()
 
+            if not start_page_set and role == start_from:
+                self._set_start_page(section, footer_config.start_page)
+                start_page_set = True
+
             skip_page_number = False
             if role == "cover" and footer_config.skip_cover:
                 skip_page_number = True
@@ -549,10 +573,6 @@ class WordReportGenerator:
 
             if skip_page_number:
                 continue
-
-            if not start_page_set and role == start_from:
-                self._set_start_page(section, footer_config.start_page)
-                start_page_set = True
 
             if not footer.paragraphs:
                 footer.add_paragraph()
@@ -617,8 +637,10 @@ class WordReportGenerator:
         """
         self.doc = Document()
         self._heading_bookmarks = []
+        self._heading_index = 0
         self._setup_default_style()
         self._render_cover()
+        self._pre_collect_bookmarks()
         self._render_toc()
 
         for section in self.config.sections:
