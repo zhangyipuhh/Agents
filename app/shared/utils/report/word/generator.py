@@ -1,6 +1,7 @@
 from docx import Document
 from docx.shared import Pt, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.section import WD_SECTION_START
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 import re
@@ -47,34 +48,77 @@ class WordReportGenerator:
         self.doc = None
         self._heading_bookmarks = []
 
-    def _add_field_code(self, run, field_code: str):
+    def _add_field_code(self, paragraph, field_code: str, font_name: str = "宋体", font_size: int = 10):
         """
-        在run中添加Word域字段代码
+        在段落中添加Word域字段代码
 
         Args:
-            run: python-docx的Run对象
+            paragraph: python-docx的Paragraph对象，域字段将作为段落的直接子元素添加
             field_code: 域字段代码，如"PAGE"、"NUMPAGES"、"PAGEREF bookmark_name"
+            font_name: 字体名称，默认"宋体"
+            font_size: 字号，单位pt，默认10
 
         Notes:
-            使用w:fldChar元素创建Word域字段，实现页码等自动计算功能
+            使用w:fldChar元素创建Word域字段，实现页码等自动计算功能。
+            标准域字段结构：每个部分（begin/instrText/separate/display/end）
+            作为独立的w:r元素直接添加到段落w:p中，避免w:r嵌套导致Word解析异常。
+
+            正确的XML结构：
+            <w:p>
+              <w:r><w:rPr>...</w:rPr><w:fldChar type="begin"/></w:r>
+              <w:r><w:rPr>...</w:rPr><w:instrText> PAGE </w:instrText></w:r>
+              <w:r><w:rPr>...</w:rPr><w:fldChar type="separate"/></w:r>
+              <w:r><w:rPr>...</w:rPr><w:t>1</w:t></w:r>
+              <w:r><w:rPr>...</w:rPr><w:fldChar type="end"/></w:r>
+            </w:p>
         """
-        # 创建fldChar元素 - 开始
+        def _make_run():
+            run = OxmlElement('w:r')
+            rPr = OxmlElement('w:rPr')
+            rFonts = OxmlElement('w:rFonts')
+            rFonts.set(qn('w:ascii'), font_name)
+            rFonts.set(qn('w:hAnsi'), font_name)
+            rFonts.set(qn('w:eastAsia'), font_name)
+            rPr.append(rFonts)
+            sz = OxmlElement('w:sz')
+            sz.set(qn('w:val'), str(font_size * 2))
+            rPr.append(sz)
+            szCs = OxmlElement('w:szCs')
+            szCs.set(qn('w:val'), str(font_size * 2))
+            rPr.append(szCs)
+            run.append(rPr)
+            return run
+
+        run_begin = _make_run()
         fldChar_begin = OxmlElement('w:fldChar')
         fldChar_begin.set(qn('w:fldCharType'), 'begin')
+        run_begin.append(fldChar_begin)
+        paragraph._p.append(run_begin)
 
-        # 创建instrText元素 - 指令
+        run_instr = _make_run()
         instrText = OxmlElement('w:instrText')
         instrText.set(qn('xml:space'), 'preserve')
         instrText.text = f' {field_code} '
+        run_instr.append(instrText)
+        paragraph._p.append(run_instr)
 
-        # 创建fldChar元素 - 结束
+        run_separate = _make_run()
+        fldChar_separate = OxmlElement('w:fldChar')
+        fldChar_separate.set(qn('w:fldCharType'), 'separate')
+        run_separate.append(fldChar_separate)
+        paragraph._p.append(run_separate)
+
+        run_display = _make_run()
+        display_t = OxmlElement('w:t')
+        display_t.text = '1'
+        run_display.append(display_t)
+        paragraph._p.append(run_display)
+
+        run_end = _make_run()
         fldChar_end = OxmlElement('w:fldChar')
         fldChar_end.set(qn('w:fldCharType'), 'end')
-
-        # 添加到run
-        run._r.append(fldChar_begin)
-        run._r.append(instrText)
-        run._r.append(fldChar_end)
+        run_end.append(fldChar_end)
+        paragraph._p.append(run_end)
 
     def _add_bookmark(self, paragraph, bookmark_name: str):
         """
@@ -121,20 +165,20 @@ class WordReportGenerator:
         """
         设置页面尺寸和边距
 
-        根据ReportConfig中page_setup的配置，设置文档的页面宽度、高度和四边边距。
+        根据ReportConfig中page_setup的配置，设置文档所有节的页面宽度、高度和四边边距。
 
         Notes:
             - 所有尺寸单位为厘米(cm)，通过Cm()转换为docx内部单位
-            - 修改文档第一个section的页面参数
+            - 遍历文档所有section，确保每个节的页面参数一致
         """
         ps = self.config.page_setup
-        section = self.doc.sections[0]
-        section.page_width = Cm(ps.page_width)
-        section.page_height = Cm(ps.page_height)
-        section.top_margin = Cm(ps.top_margin)
-        section.bottom_margin = Cm(ps.bottom_margin)
-        section.left_margin = Cm(ps.left_margin)
-        section.right_margin = Cm(ps.right_margin)
+        for section in self.doc.sections:
+            section.page_width = Cm(ps.page_width)
+            section.page_height = Cm(ps.page_height)
+            section.top_margin = Cm(ps.top_margin)
+            section.bottom_margin = Cm(ps.bottom_margin)
+            section.left_margin = Cm(ps.left_margin)
+            section.right_margin = Cm(ps.right_margin)
 
     def _setup_default_style(self):
         """
@@ -219,7 +263,7 @@ class WordReportGenerator:
         渲染封面页
 
         根据CoverConfig配置生成封面，包含附件编号、标题、副标题、日期等元素。
-        封面结束后自动添加分页符。
+        封面结束后自动添加新节（分节符），使封面成为独立的Section。
 
         Notes:
             - 附件编号：默认右对齐显示
@@ -228,6 +272,7 @@ class WordReportGenerator:
             - 日期：默认居中显示
             - 各元素通过space_before和space_after控制段前段后行数
             - 如果cover配置为None，则跳过封面渲染
+            - 封面结束后使用add_section创建新节，便于独立控制页脚页码
         """
         cover = self.config.cover
         if not cover:
@@ -239,15 +284,15 @@ class WordReportGenerator:
         self._render_cover_element(cover.subtitle)
         self._render_cover_element(cover.date)
 
-        # 封面结束分页
-        self.doc.add_page_break()
+        # 封面结束，添加新节（新页）
+        self.doc.add_section(WD_SECTION_START.NEW_PAGE)
 
     def _render_toc(self):
         """
         渲染目录页
 
         根据TocConfig配置生成目录，支持多级缩进和自动页码。
-        目录结束后自动添加分页符。
+        目录结束后自动添加新节（分节符），使目录成为独立的Section。
 
         Notes:
             - 目录标题：居中显示，使用目录专用字体和字号
@@ -256,6 +301,7 @@ class WordReportGenerator:
             - 页码：通过Word域字段自动生成，使用制表位右对齐
             - 引导符：标题与页码之间使用leader指定的字符连接
             - 如果toc配置为None，则跳过目录渲染
+            - 目录结束后使用add_section创建新节，便于独立控制页脚页码
         """
         toc = self.config.toc
         if not toc:
@@ -303,15 +349,16 @@ class WordReportGenerator:
             # 添加页码（使用域字段）
             if toc.show_page_number and idx < len(self._heading_bookmarks):
                 bookmark_name = self._heading_bookmarks[idx]
-                run = p.add_run()
-                set_chinese_font(run, toc.page_number_font_name, toc.page_number_font_size)
-                self._add_field_code(run, f"PAGEREF {bookmark_name}")
+                self._add_field_code(
+                    p, f"PAGEREF {bookmark_name}",
+                    toc.page_number_font_name, toc.page_number_font_size
+                )
 
             # 设置左缩进
             p.paragraph_format.left_indent = Cm(toc.indent_per_level * entry.level)
 
-        # 目录结束分页
-        self.doc.add_page_break()
+        # 目录结束，添加新节（新页）
+        self.doc.add_section(WD_SECTION_START.NEW_PAGE)
 
     def _render_heading(self, section: SectionConfig):
         """
@@ -423,27 +470,48 @@ class WordReportGenerator:
         """
         self.doc.add_page_break()
 
+    def _set_start_page(self, section, start_page: int):
+        """
+        设置Section的起始页码
+
+        Args:
+            section: python-docx的Section对象
+            start_page: 起始页码数值
+
+        Notes:
+            通过设置w:pgNumType元素的w:start属性来指定节的起始页码。
+            如果w:pgNumType元素不存在则自动创建。
+        """
+        sectPr = section._sectPr
+        pgNumType = sectPr.find(qn('w:pgNumType'))
+        if pgNumType is None:
+            pgNumType = OxmlElement('w:pgNumType')
+            sectPr.append(pgNumType)
+        pgNumType.set(qn('w:start'), str(start_page))
+
     def _render_footer(self):
         """
         渲染页脚页码
 
-        根据FooterConfig配置，在文档页脚中添加自动页码。
-        支持多种页码格式和位置设置。
+        根据FooterConfig配置，在文档各节的页脚中添加自动页码。
+        根据Section角色（封面/目录/正文）和start_from配置分别处理页码显示逻辑。
 
         Notes:
             - 使用Word域字段PAGE和NUMPAGES实现自动页码
             - 支持{page}和{total}占位符
-            - 可配置封面和目录是否显示页码
-            - 通过节的different_first_page_header_footer控制首页
+            - 封面Section：根据skip_cover决定是否显示页码
+            - 目录Section：根据skip_toc决定是否显示页码
+            - 正文Section：始终显示页码
+            - start_from配置决定页码从哪个节开始计数（cover/toc/content）
+            - 在start_from指定的节上设置起始页码，后续节延续计数
+            - 通过_add_field_code方法添加Word域字段
         """
         footer_config = self.config.footer
         if not footer_config or not footer_config.enabled:
             return
 
-        # 获取所有节
         sections = self.doc.sections
 
-        # 对齐方式映射
         alignment_map = {
             "left": WD_ALIGN_PARAGRAPH.LEFT,
             "center": WD_ALIGN_PARAGRAPH.CENTER,
@@ -451,74 +519,64 @@ class WordReportGenerator:
         }
         alignment = alignment_map.get(footer_config.alignment, WD_ALIGN_PARAGRAPH.CENTER)
 
-        # 判断是否有封面和目录
         has_cover = self.config.cover is not None
         has_toc = self.config.toc is not None
 
+        section_roles = []
+        if has_cover:
+            section_roles.append("cover")
+        if has_toc:
+            section_roles.append("toc")
+        while len(section_roles) < len(sections):
+            section_roles.append("content")
+
+        start_from = footer_config.start_from
+        start_page_set = False
+
         for idx, section in enumerate(sections):
-            # 获取或创建页脚
+            role = section_roles[idx] if idx < len(section_roles) else "content"
             footer = section.footer
             footer.is_linked_to_previous = False
 
-            # 清空现有页脚内容
             for paragraph in footer.paragraphs:
                 paragraph.clear()
 
-            # 创建页脚段落
+            skip_page_number = False
+            if role == "cover" and footer_config.skip_cover:
+                skip_page_number = True
+            elif role == "toc" and footer_config.skip_toc:
+                skip_page_number = True
+
+            if skip_page_number:
+                continue
+
+            if not start_page_set and role == start_from:
+                self._set_start_page(section, footer_config.start_page)
+                start_page_set = True
+
             if not footer.paragraphs:
                 footer.add_paragraph()
 
             paragraph = footer.paragraphs[0]
             paragraph.alignment = alignment
 
-            # 判断当前节是否需要显示页码
-            # 第一个节：如果有封面，则不显示页码；如果有目录，则显示目录页码
-            # 后续节：显示页码
-            is_first_section = (idx == 0)
+            format_str = footer_config.format
+            parts = re.split(r'(\{page\}|\{total\})', format_str)
 
-            # 检查是否需要跳过页码
-            skip_page_number = False
-            if is_first_section:
-                if has_cover and footer_config.skip_cover:
-                    # 封面页不显示页码
-                    skip_page_number = True
-                elif has_cover and has_toc and footer_config.skip_toc:
-                    # 目录页（封面后的第一页）
-                    skip_page_number = False  # 目录页显示页码，但后续正文可能从1开始
-
-            # 添加页码内容
-            if not skip_page_number or not is_first_section:
-                # 解析format字符串
-                format_str = footer_config.format
-
-                # 分割format字符串，提取静态文本和占位符
-                import re
-                parts = re.split(r'(\{page\}|\{total\})', format_str)
-
-                for part in parts:
-                    if part == "{page}":
-                        # 添加当前页码域字段
-                        run = paragraph.add_run()
-                        set_chinese_font(run, footer_config.font_name, footer_config.font_size)
-                        self._add_field_code(run, "PAGE")
-                    elif part == "{total}":
-                        # 添加总页数域字段
-                        run = paragraph.add_run()
-                        set_chinese_font(run, footer_config.font_name, footer_config.font_size)
-                        self._add_field_code(run, "NUMPAGES")
-                    else:
-                        # 添加静态文本
-                        run = paragraph.add_run(part)
-                        set_chinese_font(run, footer_config.font_name, footer_config.font_size)
-
-            # 设置首页不同（封面不显示页码）
-            if has_cover and footer_config.skip_cover and is_first_section:
-                section.different_first_page_header_footer = True
-                # 首页页脚（封面）不添加页码
-                first_page_footer = section.first_page_footer
-                if first_page_footer:
-                    for paragraph in first_page_footer.paragraphs:
-                        paragraph.clear()
+            for part in parts:
+                if part == "{page}":
+                    self._add_field_code(
+                        paragraph, "PAGE",
+                        footer_config.font_name, footer_config.font_size
+                    )
+                elif part == "{total}":
+                    self._add_field_code(
+                        paragraph, "NUMPAGES",
+                        footer_config.font_name, footer_config.font_size
+                    )
+                else:
+                    run = paragraph.add_run(part)
+                    set_chinese_font(run, footer_config.font_name, footer_config.font_size)
 
     def _render_section(self, section: SectionConfig):
         """
@@ -544,7 +602,7 @@ class WordReportGenerator:
         """
         生成Word报告的主入口方法
 
-        按顺序执行：创建文档 -> 页面设置 -> 默认样式 -> 封面 -> 目录 -> 正文段落 -> 页脚页码
+        按顺序执行：创建文档 -> 默认样式 -> 封面 -> 目录 -> 正文段落 -> 页面设置 -> 页脚页码
 
         Returns:
             Document: python-docx的Document对象，调用方可通过 doc.save() 保存为.docx文件
@@ -555,10 +613,10 @@ class WordReportGenerator:
             - sections列表中的每个SectionConfig按顺序依次渲染
             - 标题自动添加书签，用于目录页码引用
             - 页脚页码通过Word域字段自动生成
+            - 页面设置在所有节创建完成后执行，确保每个节的页面参数一致
         """
         self.doc = Document()
-        self._heading_bookmarks = []  # 重置书签列表
-        self._setup_page()
+        self._heading_bookmarks = []
         self._setup_default_style()
         self._render_cover()
         self._render_toc()
@@ -566,7 +624,7 @@ class WordReportGenerator:
         for section in self.config.sections:
             self._render_section(section)
 
-        # 渲染页脚页码
+        self._setup_page()
         self._render_footer()
 
         return self.doc

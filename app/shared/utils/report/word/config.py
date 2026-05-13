@@ -365,7 +365,7 @@ class FooterConfig:
     页脚页码配置类
 
     定义Word文档页脚中页码的显示格式、样式和位置。
-    支持多种页码格式，可配置封面和目录是否显示页码。
+    支持多种页码格式，可配置封面和目录是否显示页码，以及页码计数的起始节。
 
     Attributes:
         enabled: 是否启用页脚页码，默认True
@@ -373,7 +373,8 @@ class FooterConfig:
         font_name: 字体名称，默认"宋体"
         font_size: 字号，单位pt，默认10
         format: 页码格式字符串，支持{page}和{total}占位符，默认"{page}"
-        start_page: 起始页码，默认1
+        start_page: 起始页码，默认1，应用于start_from指定的节
+        start_from: 页码计数起始节，可选"cover"(封面)、"toc"(目录)、"content"(正文)，默认"toc"
         skip_cover: 封面是否不显示页码，默认True
         skip_toc: 目录是否不显示页码，默认True
 
@@ -382,12 +383,19 @@ class FooterConfig:
         - "第{page}页" : 中文格式，如 "第1页"
         - "{page}/{total}" : 当前页/总页数，如 "1/5"
         - "第{page}页 共{total}页" : 完整格式，如 "第1页 共5页"
+        - "-{page}-" : 短横线包裹页码，如 "-1-"
+
+    start_from说明：
+        - "cover": 页码从封面节开始计数，封面页为第1页
+        - "toc": 页码从目录节开始计数，目录页为第1页（默认）
+        - "content": 页码从正文节开始计数，正文首页为第1页
 
     Example:
         >>> footer = FooterConfig(
         ...     enabled=True,
         ...     alignment="center",
         ...     format="第{page}页 共{total}页",
+        ...     start_from="toc",
         ...     skip_cover=True,
         ...     skip_toc=True,
         ... )
@@ -409,7 +417,10 @@ class FooterConfig:
     """页码格式字符串，支持{page}（当前页码）和{total}（总页数）占位符，默认"{page}" """
 
     start_page: int = 1
-    """起始页码，默认1"""
+    """起始页码，默认1，应用于start_from指定的节"""
+
+    start_from: str = "toc"
+    """页码计数起始节，可选"cover"(封面)、"toc"(目录)、"content"(正文)，默认"toc"，即从目录页开始计数"""
 
     skip_cover: bool = True
     """封面是否不显示页码，默认True"""
