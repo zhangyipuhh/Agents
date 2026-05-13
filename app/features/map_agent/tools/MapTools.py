@@ -22,6 +22,7 @@ Author: AI Assistant
 
 import json
 import uuid
+import os
 from datetime import datetime
 from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import ToolMessage
@@ -29,6 +30,8 @@ from langgraph.types import Command
 from langgraph.config import get_stream_writer
 from typing import List, Dict, Any, Optional
 from app.core.tools.events import create_tool_event
+from app.shared.utils.report.word.generator import WordReportGenerator
+from app.features.map_agent.config.config import get_report_config
 
 
 @tool
@@ -756,24 +759,34 @@ def set_map_layer(layer_type: str, runtime: ToolRuntime) -> Command:
 @tool
 def generate_report(runtime: ToolRuntime) -> Command:
     """
-    【生成报告】根据返回下载地址。
+    【生成报告】根据当前地图状态和项目信息生成Word报告并返回下载地址。
 
     调用时机：
     - 用户说"生成报告"、"导出报告"、"下载报告"时
-    - 用户说"生成报告"时
+    - 用户说"生成选址报告"、"导出分析报告"时
 
+    该函数使用WordReportGenerator生成真实的Word文档，保存到下载目录，
+    并返回可供前端下载的URL路径。
 
     Args:
-        runtime: 工具运行时上下文，用于获取工具调用ID和当前状态
+        runtime: 工具运行时上下文，用于获取工具调用ID、当前状态和session_id
+            - runtime.context: 包含session_id用于构建下载路径
+            - runtime.state: 包含地图状态信息（可选，用于报告数据）
 
     Returns:
         Command: 包含ToolMessage和状态更新的命令对象
             - status: "report_generated" - 报告已生成
-            - download_url: 下载地址路径（不含IP，由前端拼接）
-            - file_name: 下载文件名
+            - download_url: 下载地址路径，格式为"/api/core/download/file?path={文件名}.docx"
+            - file_name: 实际生成的文件名，格式如"20260512_120000.docx"
+            - message: 操作结果描述
 
     Raises:
         无显式异常抛出，所有错误通过tool_error事件和result状态反馈
+
+    Notes:
+        - 报告文件保存路径：app/data/download/{session_id}/{文件名}.docx
+        - 如果下载目录不存在，会自动创建
+        - 文件名使用当前日期时间生成，确保唯一性
     """
     tool_name = "generate_report"
     tool_call_id = runtime.tool_call_id
@@ -804,7 +817,20 @@ def generate_report(runtime: ToolRuntime) -> Command:
     )
     writer(dict(progress_event_1))
 
+    # 从runtime.context获取session_id
+    session_id = runtime.context.get("session_id", "default_session")
 
+    # 准备报告数据
+    current_time = datetime.now()
+    report_data = {
+        "项目名称": runtime.state.get("project_name", "XX项目"),
+        "生成日期": current_time.strftime("%Y年%m月%d日"),
+        "项目位置": runtime.state.get("project_location", "xx县xx镇"),
+        "用地总面积": runtime.state.get("total_area", "100"),
+        "农用地面积": runtime.state.get("farmland_area", "80"),
+        "林地面积": runtime.state.get("forest_area", "10"),
+        "用海面积": runtime.state.get("sea_area", "0"),
+    }
 
     progress_event_2 = create_tool_event(
         event_type="tool_progress",
@@ -819,61 +845,125 @@ def generate_report(runtime: ToolRuntime) -> Command:
     )
     writer(dict(progress_event_2))
 
-    download_path = "/api/core/download/file?path=1.doc"
+    try:
+        # 构建报告配置
+        config = get_report_config(report_data)
 
-    progress_event_3 = create_tool_event(
-        event_type="tool_progress",
-        tool=tool_name,
-        tool_call_id=tool_call_id,
-        data={
-            "current": 3,
-            "total": 3,
-            "percentage": 100,
-            "message": "报告生成完成"
+        # 生成Word文档
+        generator = WordReportGenerator(config)
+        generator.generate()
+
+        # 构建文件名和保存路径
+        file_name = current_time.strftime("%Y%m%d_%H%M%S") + ".docx"
+        download_dir = os.path.join("app", "data", "download", session_id)
+        file_path = os.path.join(download_dir, file_name)
+
+        # 自动创建目录（如果不存在）
+        os.makedirs(download_dir, exist_ok=True)
+
+        # 保存文件
+        generator.save(file_path)
+
+        # 构建下载URL
+        download_url = f"/api/core/download/file?path={file_name}"
+
+        progress_event_3 = create_tool_event(
+            event_type="tool_progress",
+            tool=tool_name,
+            tool_call_id=tool_call_id,
+            data={
+                "current": 3,
+                "total": 3,
+                "percentage": 100,
+                "message": "报告生成完成"
+            }
+        )
+        writer(dict(progress_event_3))
+
+        result_data = {
+            "status": "report_generated",
+            "download_url": download_url,
+            "file_name": file_name,
+            "message": "地图报告已生成"
         }
-    )
-    writer(dict(progress_event_3))
 
-    result_data = {
-        "status": "report_generated",
-        "download_url": download_path,
-        "file_name": "检查报告",
-        "message": "地图报告已生成"
-    }
+        end_time = datetime.now()
+        duration_ms = int((end_time - start_time).total_seconds() * 1000)
 
-    end_time = datetime.now()
-    duration_ms = int((end_time - start_time).total_seconds() * 1000)
+        stop_event = create_tool_event(
+            event_type="tool_stop",
+            tool=tool_name,
+            tool_call_id=tool_call_id,
+            data={
+                "status": "success",
+                "type": "download",
+                "result": result_data,
+                "duration_ms": duration_ms
+            }
+        )
+        writer(dict(stop_event))
 
-    stop_event = create_tool_event(
-        event_type="tool_stop",
-        tool=tool_name,
-        tool_call_id=tool_call_id,
-        data={
+        summary = {
             "status": "success",
-            "type": "download",
-            "result": result_data,
-            "duration_ms": duration_ms
+            "tool": tool_name,
+            "started_at": start_time.timestamp(),
+            "ended_at": end_time.timestamp(),
+            "duration_ms": duration_ms,
+            "result": "报告文件生成完成，根据下载地址下载"
         }
-    )
-    writer(dict(stop_event))
 
-    summary = {
-        "status": "success",
-        "tool": tool_name,
-        "started_at": start_time.timestamp(),
-        "ended_at": end_time.timestamp(),
-        "duration_ms": duration_ms,
-        "result": "报告文件生成完成，根据下载地址下载"
-    }
+        return Command(
+            update={
+                "map_report": result_data,
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps(summary, ensure_ascii=False),
+                        tool_call_id=tool_call_id
+                    )
+                ]
+            }
+        )
 
-    return Command(
-        update={
-            "map_report": result_data,
-            "messages": [
-                ToolMessage(
-                    content=json.dumps(summary, ensure_ascii=False),
-                    tool_call_id=tool_call_id
-                )
-            ]
+    except Exception as e:
+        # 处理生成过程中的异常
+        end_time = datetime.now()
+        duration_ms = int((end_time - start_time).total_seconds() * 1000)
+
+        error_event = create_tool_event(
+            event_type="tool_error",
+            tool=tool_name,
+            tool_call_id=tool_call_id,
+            data={
+                "error": str(e),
+                "message": f"报告生成失败: {str(e)}"
+            }
+        )
+        writer(dict(error_event))
+
+        result_data = {
+            "status": "report_generation_failed",
+            "download_url": "",
+            "file_name": "",
+            "message": f"报告生成失败: {str(e)}"
         }
-    )
+
+        summary = {
+            "status": "error",
+            "tool": tool_name,
+            "started_at": start_time.timestamp(),
+            "ended_at": end_time.timestamp(),
+            "duration_ms": duration_ms,
+            "error": str(e)
+        }
+
+        return Command(
+            update={
+                "map_report": result_data,
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps(summary, ensure_ascii=False),
+                        tool_call_id=tool_call_id
+                    )
+                ]
+            }
+        )

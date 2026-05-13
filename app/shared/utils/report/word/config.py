@@ -56,79 +56,212 @@ class PageSetup:
 
 
 @dataclass
+class CoverElementConfig:
+    """
+    封面元素配置类
+
+    定义封面中单个元素（标题、副标题、日期、附件编号）的文本内容、
+    字体样式和排版间距参数。
+
+    Attributes:
+        text: 文本内容，支持{{变量}}占位符
+        font_name: 字体名称，默认"宋体"
+        font_size: 字号，单位pt，默认12
+        bold: 是否加粗，默认False
+        alignment: 对齐方式，可选"left"(左对齐)、"center"(居中)、"right"(右对齐)，默认"center"
+        space_before: 段前行数，默认0
+        space_after: 段后行数，默认0
+
+    Example:
+        >>> title = CoverElementConfig(
+        ...     text="{{项目名称}}前期选址协同服务报告",
+        ...     font_name="黑体",
+        ...     font_size=22,
+        ...     bold=True,
+        ...     space_before=3,
+        ...     space_after=1,
+        ... )
+    """
+
+    text: str = ""
+    """文本内容，支持{{变量}}占位符"""
+
+    font_name: str = "宋体"
+    """字体名称，默认"宋体"""
+
+    font_size: int = 12
+    """字号，单位pt，默认12，对应小四号字"""
+
+    bold: bool = False
+    """是否加粗，默认False"""
+
+    alignment: str = "center"
+    """对齐方式，可选"left"(左对齐)、"center"(居中)、"right"(右对齐)，默认"居中"""
+
+    space_before: int = 0
+    """段前行数，默认0行"""
+
+    space_after: int = 0
+    """段后行数，默认0行"""
+
+
+@dataclass
 class CoverConfig:
     """
     封面配置类
 
-    定义报告封面的文本内容、字体样式和排版间距参数。
-    封面布局从上到下依次为：附件编号 -> 空行 -> 主标题 -> 空行 -> 副标题 -> 空行 -> 日期文本。
+    定义报告封面的结构化配置，包含标题、副标题、日期、附件编号四个元素。
+    每个元素使用 CoverElementConfig 进行配置，支持独立的字体、加粗、对齐和间距设置。
+
+    封面布局从上到下依次为：附件编号 -> 主标题 -> 副标题 -> 日期文本。
+    各元素的 space_before 和 space_after 控制段前行数和段后行数。
 
     Attributes:
-        title: 主标题文本，支持{{变量}}占位符，如"{{项目名称}}前期选址协同服务报告"
-        subtitle: 副标题文本，如"（大纲）"
-        date_text: 日期文本，支持{{变量}}占位符，如"生成日期：{{生成日期}}"
-        attachment_no: 附件编号，右对齐显示，如"附件2"
-        title_font_name: 主标题字体名称，默认"黑体"
-        title_font_size: 主标题字号，单位pt，默认22
-        title_bold: 主标题是否加粗，默认True
-        subtitle_font_name: 副标题字体名称，默认"宋体"
-        subtitle_font_size: 副标题字号，单位pt，默认12
-        date_font_name: 日期字体名称，默认"宋体"
-        date_font_size: 日期字号，单位pt，默认12
-        blank_lines_before_title: 主标题前空行数，默认3
-        blank_lines_after_title: 主标题后空行数，默认1
-        blank_lines_before_date: 日期前空行数，默认2
+        title: 主标题配置，使用 CoverElementConfig
+        subtitle: 副标题配置，使用 CoverElementConfig
+        date: 日期配置，使用 CoverElementConfig
+        attachment: 附件编号配置，使用 CoverElementConfig
 
     Example:
         >>> cover = CoverConfig(
-        ...     title="{{项目名称}}前期选址协同服务报告",
-        ...     subtitle="（大纲）",
-        ...     date_text="生成日期：{{生成日期}}",
-        ...     attachment_no="附件2"
+        ...     title=CoverElementConfig(
+        ...         text="{{项目名称}}前期选址协同服务报告",
+        ...         font_name="黑体",
+        ...         font_size=22,
+        ...         bold=True,
+        ...         space_before=3,
+        ...         space_after=1,
+        ...     ),
+        ...     subtitle=CoverElementConfig(
+        ...         text="（大纲）",
+        ...         font_name="宋体",
+        ...         font_size=12,
+        ...         space_before=1,
+        ...         space_after=1,
+        ...     ),
+        ...     date=CoverElementConfig(
+        ...         text="生成日期：{{生成日期}}",
+        ...         font_name="宋体",
+        ...         font_size=12,
+        ...         space_before=2,
+        ...     ),
+        ...     attachment=CoverElementConfig(
+        ...         text="附件2",
+        ...         font_name="宋体",
+        ...         font_size=12,
+        ...         alignment="right",
+        ...     ),
         ... )
     """
 
-    title: str = ""
-    """主标题文本，支持{{变量}}占位符，如"{{项目名称}}前期选址协同服务报告" """
+    title: CoverElementConfig = field(default_factory=lambda: CoverElementConfig(
+        font_name="黑体",
+        font_size=22,
+        bold=True,
+    ))
+    """主标题配置，默认字体黑体、字号22pt、加粗"""
 
-    subtitle: str = ""
-    """副标题文本，如"（大纲）" """
+    subtitle: CoverElementConfig = field(default_factory=lambda: CoverElementConfig(
+        font_name="宋体",
+        font_size=12,
+    ))
+    """副标题配置，默认字体宋体、字号12pt"""
 
-    date_text: str = ""
-    """日期文本，支持{{变量}}占位符，如"生成日期：{{生成日期}}" """
+    date: CoverElementConfig = field(default_factory=lambda: CoverElementConfig(
+        font_name="宋体",
+        font_size=12,
+    ))
+    """日期配置，默认字体宋体、字号12pt"""
 
-    attachment_no: str = ""
-    """附件编号，右对齐显示，如"附件2" """
+    attachment: CoverElementConfig = field(default_factory=lambda: CoverElementConfig(
+        font_name="宋体",
+        font_size=12,
+        alignment="right",
+    ))
+    """附件编号配置，默认字体宋体、字号12pt、右对齐"""
 
-    title_font_name: str = "黑体"
-    """主标题字体名称，默认"黑体"，适用于公文标题"""
+    @classmethod
+    def from_legacy(
+        cls,
+        title: str = "",
+        subtitle: str = "",
+        date_text: str = "",
+        attachment_no: str = "",
+        title_font_name: str = "黑体",
+        title_font_size: int = 22,
+        title_bold: bool = True,
+        subtitle_font_name: str = "宋体",
+        subtitle_font_size: int = 12,
+        date_font_name: str = "宋体",
+        date_font_size: int = 12,
+        blank_lines_before_title: int = 3,
+        blank_lines_after_title: int = 1,
+        blank_lines_before_date: int = 2,
+    ) -> "CoverConfig":
+        """
+        从旧版参数创建 CoverConfig（向后兼容）
 
-    title_font_size: int = 22
-    """主标题字号，单位pt，默认22，对应二号字"""
+        支持使用原有的扁平参数创建 CoverConfig，内部自动转换为新的结构化配置。
 
-    title_bold: bool = True
-    """主标题是否加粗，默认True"""
+        Args:
+            title: 主标题文本
+            subtitle: 副标题文本
+            date_text: 日期文本
+            attachment_no: 附件编号
+            title_font_name: 主标题字体名称
+            title_font_size: 主标题字号
+            title_bold: 主标题是否加粗
+            subtitle_font_name: 副标题字体名称
+            subtitle_font_size: 副标题字号
+            date_font_name: 日期字体名称
+            date_font_size: 日期字号
+            blank_lines_before_title: 主标题前空行数
+            blank_lines_after_title: 主标题后空行数
+            blank_lines_before_date: 日期前空行数
 
-    subtitle_font_name: str = "宋体"
-    """副标题字体名称，默认"宋体" """
+        Returns:
+            CoverConfig: 使用新结构化配置创建的封面配置对象
 
-    subtitle_font_size: int = 12
-    """副标题字号，单位pt，默认12，对应小四号字"""
-
-    date_font_name: str = "宋体"
-    """日期字体名称，默认"宋体" """
-
-    date_font_size: int = 12
-    """日期字号，单位pt，默认12，对应小四号字"""
-
-    blank_lines_before_title: int = 3
-    """主标题前空行数，默认3行，用于在附件编号和标题之间留出间距"""
-
-    blank_lines_after_title: int = 1
-    """主标题后空行数，默认1行，用于标题和副标题之间的间距"""
-
-    blank_lines_before_date: int = 2
-    """日期前空行数，默认2行，用于副标题和日期之间的间距"""
+        Example:
+            >>> cover = CoverConfig.from_legacy(
+            ...     title="{{项目名称}}前期选址协同服务报告",
+            ...     subtitle="（大纲）",
+            ...     date_text="生成日期：{{生成日期}}",
+            ...     attachment_no="附件2",
+            ...     title_font_name="黑体",
+            ...     title_font_size=22,
+            ...     title_bold=True,
+            ...     blank_lines_before_title=3,
+            ...     blank_lines_after_title=1,
+            ... )
+        """
+        return cls(
+            title=CoverElementConfig(
+                text=title,
+                font_name=title_font_name,
+                font_size=title_font_size,
+                bold=title_bold,
+                space_before=blank_lines_before_title,
+                space_after=blank_lines_after_title,
+            ),
+            subtitle=CoverElementConfig(
+                text=subtitle,
+                font_name=subtitle_font_name,
+                font_size=subtitle_font_size,
+            ),
+            date=CoverElementConfig(
+                text=date_text,
+                font_name=date_font_name,
+                font_size=date_font_size,
+                space_before=blank_lines_before_date,
+            ),
+            attachment=CoverElementConfig(
+                text=attachment_no,
+                font_name=date_font_name,
+                font_size=date_font_size,
+                alignment="right",
+            ),
+        )
 
 
 @dataclass
@@ -161,7 +294,7 @@ class TocConfig:
     目录配置类
 
     定义报告目录的标题样式、条目列表和缩进参数。
-    目录标题居中显示，条目按层级缩进排列。
+    目录标题居中显示，条目按层级缩进排列，支持自动生成页码。
 
     Attributes:
         title: 目录标题文本，默认"目 录"
@@ -172,6 +305,10 @@ class TocConfig:
         entry_font_name: 条目字体名称，默认"宋体"
         entry_font_size: 条目字号，单位pt，默认12
         indent_per_level: 每级缩进量，单位cm，默认0.74（约2个中文字符宽度）
+        show_page_number: 是否显示页码，默认True
+        page_number_font_name: 页码字体名称，默认"宋体"
+        page_number_font_size: 页码字号，单位pt，默认12
+        leader: 标题与页码之间的引导符，默认"..."（点号）
 
     Example:
         >>> toc = TocConfig(
@@ -179,7 +316,9 @@ class TocConfig:
         ...         TocEntry(text="一、项目选址与要素保障", level=0),
         ...         TocEntry(text="（一）项目选址选线", level=1),
         ...         TocEntry(text="1. 项目场址或线路的土地权属", level=2),
-        ...     ]
+        ...     ],
+        ...     show_page_number=True,
+        ...     leader="...",
         ... )
     """
 
@@ -206,6 +345,77 @@ class TocConfig:
 
     indent_per_level: float = 0.74
     """每级缩进量，单位cm，默认0.74cm，约等于2个中文字符宽度"""
+
+    show_page_number: bool = True
+    """是否显示页码，默认True，使用Word域字段自动生成页码"""
+
+    page_number_font_name: str = "宋体"
+    """页码字体名称，默认"宋体" """
+
+    page_number_font_size: int = 12
+    """页码字号，单位pt，默认12"""
+
+    leader: str = "..."
+    """标题与页码之间的引导符，默认"..."（点号），可设置为"  "（空格）或其他字符"""
+
+
+@dataclass
+class FooterConfig:
+    """
+    页脚页码配置类
+
+    定义Word文档页脚中页码的显示格式、样式和位置。
+    支持多种页码格式，可配置封面和目录是否显示页码。
+
+    Attributes:
+        enabled: 是否启用页脚页码，默认True
+        alignment: 对齐方式，可选"left"(左对齐)、"center"(居中)、"right"(右对齐)，默认"center"
+        font_name: 字体名称，默认"宋体"
+        font_size: 字号，单位pt，默认10
+        format: 页码格式字符串，支持{page}和{total}占位符，默认"{page}"
+        start_page: 起始页码，默认1
+        skip_cover: 封面是否不显示页码，默认True
+        skip_toc: 目录是否不显示页码，默认True
+
+    支持的format格式：
+        - "{page}" : 仅显示页码，如 "1"
+        - "第{page}页" : 中文格式，如 "第1页"
+        - "{page}/{total}" : 当前页/总页数，如 "1/5"
+        - "第{page}页 共{total}页" : 完整格式，如 "第1页 共5页"
+
+    Example:
+        >>> footer = FooterConfig(
+        ...     enabled=True,
+        ...     alignment="center",
+        ...     format="第{page}页 共{total}页",
+        ...     skip_cover=True,
+        ...     skip_toc=True,
+        ... )
+    """
+
+    enabled: bool = True
+    """是否启用页脚页码，默认True"""
+
+    alignment: str = "center"
+    """对齐方式，可选"left"(左对齐)、"center"(居中)、"right"(右对齐)，默认"居中" """
+
+    font_name: str = "宋体"
+    """字体名称，默认"宋体" """
+
+    font_size: int = 10
+    """字号，单位pt，默认10"""
+
+    format: str = "{page}"
+    """页码格式字符串，支持{page}（当前页码）和{total}（总页数）占位符，默认"{page}" """
+
+    start_page: int = 1
+    """起始页码，默认1"""
+
+    skip_cover: bool = True
+    """封面是否不显示页码，默认True"""
+
+    skip_toc: bool = True
+    """目录是否不显示页码，默认True"""
 
 
 @dataclass
@@ -322,7 +532,7 @@ class ReportConfig:
     """
     报告总配置类
 
-    报告生成的顶层配置，整合页面设置、封面、目录和正文段落的所有配置参数。
+    报告生成的顶层配置，整合页面设置、封面、目录、正文段落和页脚的所有配置参数。
     通过data字典提供变量替换数据，用于填充内容中的{{变量}}占位符。
 
     Attributes:
@@ -333,6 +543,7 @@ class ReportConfig:
         data: 变量替换数据字典，用于填充content中的{{变量}}占位符
         default_font_name: 默认正文字体名称，默认"宋体"
         default_font_size: 默认正文字号，单位pt，默认12
+        footer: 页脚页码配置，None则使用默认配置
 
     Example:
         >>> config = ReportConfig(
@@ -352,7 +563,8 @@ class ReportConfig:
         ...         SectionConfig(section_type="paragraph", content="项目用地涉及..."),
         ...         SectionConfig(section_type="page_break"),
         ...     ],
-        ...     data={"项目名称": "XX高速公路", "生成日期": "2026年5月11日"}
+        ...     data={"项目名称": "XX高速公路", "生成日期": "2026年5月11日"},
+        ...     footer=FooterConfig(format="第{page}页 共{total}页"),
         ... )
     """
 
@@ -380,3 +592,6 @@ class ReportConfig:
 
     default_font_size: int = 12
     """默认正文字号，单位pt，默认12（小四号字），用于未指定字号时的回退值"""
+
+    footer: FooterConfig = field(default_factory=FooterConfig)
+    """页脚页码配置，默认启用页码，使用FooterConfig默认参数"""
