@@ -53,9 +53,7 @@ mcpClient/**/*.pyd
 mcpClient/**/*.so
 mcpClient/**/*.yaml
 .env
-
-app/test/extract_pdf_pages.py
-app/test/rename_full_md.py
+app/test/
 app/data/
 app/**/*.csv
 app/**/*.pdf
