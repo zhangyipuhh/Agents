@@ -7,8 +7,7 @@ from docx.oxml import OxmlElement
 import logging
 import os
 import re
-from typing import Callable
-
+from app.shared.utils.report.word.config import ReportConfig, SectionConfig, CoverElementConfig, HeadingStyleConfig, ParagraphStyleConfig
 logger = logging.getLogger(__name__)
 
 # 兜底：确保所有日志同时输出到控制台，绕过logging handler配置问题
@@ -26,7 +25,7 @@ def _debug(msg, *args, **kwargs):
 logger.info = _info
 logger.debug = _debug
 
-from app.shared.utils.report.word.config import ReportConfig, SectionConfig, CoverElementConfig, FooterConfig, HeadingStyleConfig, ParagraphStyleConfig
+
 
 
 def set_chinese_font(run, font_name="宋体", font_size=12, bold=False):
