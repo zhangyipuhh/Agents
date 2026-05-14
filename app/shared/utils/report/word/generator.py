@@ -4,8 +4,27 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.section import WD_SECTION_START
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
+import logging
+import os
 import re
 from typing import Callable
+
+logger = logging.getLogger(__name__)
+
+# 兜底：确保所有日志同时输出到控制台，绕过logging handler配置问题
+_orig_info = logger.info
+_orig_debug = logger.debug
+
+def _info(msg, *args, **kwargs):
+    print(f"[WordReport] {msg}")
+    _orig_info(msg, *args, **kwargs)
+
+def _debug(msg, *args, **kwargs):
+    print(f"[WordReport.DEBUG] {msg}")
+    _orig_debug(msg, *args, **kwargs)
+
+logger.info = _info
+logger.debug = _debug
 
 from app.shared.utils.report.word.config import ReportConfig, SectionConfig, CoverElementConfig, FooterConfig, HeadingStyleConfig, ParagraphStyleConfig
 
@@ -147,8 +166,9 @@ class WordReportGenerator:
               <w:r><w:rPr>...</w:rPr><w:fldChar type="separate"/></w:r>
               <w:r><w:rPr>...</w:rPr><w:t>1</w:t></w:r>
               <w:r><w:rPr>...</w:rPr><w:fldChar type="end"/></w:r>
-            </w:p>
+             </w:p>
         """
+        logger.debug(f"添加域字段: {field_code}")
         def _make_run():
             run = OxmlElement('w:r')
             rPr = OxmlElement('w:rPr')
@@ -176,7 +196,7 @@ class WordReportGenerator:
         run_instr = _make_run()
         instrText = OxmlElement('w:instrText')
         instrText.set(qn('xml:space'), 'preserve')
-        instrText.text = f' {field_code} '
+        instrText.text = f' {field_code} \\* MERGEFORMAT \\h '
         run_instr.append(instrText)
         paragraph._p.append(run_instr)
 
@@ -215,6 +235,7 @@ class WordReportGenerator:
         # 生成唯一书签ID
         bookmark_id = str(self._bookmark_id_counter)
         self._bookmark_id_counter += 1
+        logger.debug(f"添加书签: {bookmark_name} id={bookmark_id}")
 
         # 创建bookmarkStart元素
         bookmark_start = OxmlElement('w:bookmarkStart')
@@ -256,6 +277,7 @@ class WordReportGenerator:
             if section.section_type == "heading":
                 bookmark_name = f"_TocHeading_{len(self._heading_bookmarks)}"
                 self._heading_bookmarks.append(bookmark_name)
+        logger.info(f"预收集完成，共{len(self._heading_bookmarks)}个标题书签")
 
     def _setup_page(self):
         """
@@ -415,6 +437,7 @@ class WordReportGenerator:
         self.doc.add_paragraph()
 
         # 目录条目
+        logger.info(f"开始渲染目录，共{len(toc.entries)}个条目")
         for idx, entry in enumerate(toc.entries):
             p = self.doc.add_paragraph()
 
@@ -448,8 +471,12 @@ class WordReportGenerator:
             p.add_run("\t")
 
             # 添加页码（使用域字段）
-            if toc.show_page_number and idx < len(self._heading_bookmarks):
-                bookmark_name = self._heading_bookmarks[idx]
+            if toc.show_page_number and self._heading_bookmarks:
+                # 条目数可能多于标题数，超出部分使用最后一个书签
+                if idx < len(self._heading_bookmarks):
+                    bookmark_name = self._heading_bookmarks[idx]
+                else:
+                    bookmark_name = self._heading_bookmarks[-1]
                 self._add_field_code(
                     p, f"PAGEREF {bookmark_name}",
                     toc.page_number_font_name, toc.page_number_font_size
@@ -460,6 +487,7 @@ class WordReportGenerator:
 
         # 目录结束，添加新节（新页）
         self.doc.add_section(WD_SECTION_START.NEW_PAGE)
+        logger.info("目录渲染完成")
 
     def _render_heading(self, section: SectionConfig):
         """
@@ -502,6 +530,7 @@ class WordReportGenerator:
             paragraph.alignment = section.alignment
 
         bookmark_name = self._heading_bookmarks[self._heading_index]
+        logger.debug(f"渲染标题 Lv.{level}: {text} → 书签: {bookmark_name}")
         self._add_bookmark(paragraph, bookmark_name)
         self._heading_index += 1
 
@@ -588,7 +617,15 @@ class WordReportGenerator:
         if update_fields is None:
             update_fields = OxmlElement('w:updateFields')
             update_fields.set(qn('w:val'), 'true')
-            settings.append(update_fields)
+            # 按OOXML Schema顺序，updateFields须在decimalSymbol之前
+            # 直接append到末尾会导致WPS/部分Word版本忽略该元素
+            decimal_symbol = settings.find(qn('w:decimalSymbol'))
+            if decimal_symbol is not None:
+                settings.insert(list(settings).index(decimal_symbol), update_fields)
+                logger.debug("updateFields 已插入到 decimalSymbol 之前")
+            else:
+                settings.append(update_fields)
+                logger.debug("updateFields 已追加到 settings 末尾")
 
     def _set_start_page(self, section, start_page: int):
         """
@@ -697,6 +734,7 @@ class WordReportGenerator:
                 else:
                     run = paragraph.add_run(part)
                     set_chinese_font(run, footer_config.font_name, footer_config.font_size)
+        logger.info(f"页脚页码已渲染，共{len(sections)}个节，起始节: {start_from}")
 
     def _render_section(self, section: SectionConfig):
         """
@@ -736,21 +774,26 @@ class WordReportGenerator:
             - 页面设置在所有节创建完成后执行，确保每个节的页面参数一致
             - 设置w:updateFields使Word打开文档时自动更新目录页码等域字段
         """
+        logger.info("开始生成Word报告")
         self.doc = Document()
         self._heading_bookmarks = []
         self._heading_index = 0
         self._bookmark_id_counter = 0
         self._setup_default_style()
         self._render_cover()
+        logger.info("封面渲染完成")
         self._pre_collect_bookmarks()
         self._render_toc()
 
         for section in self.config.sections:
             self._render_section(section)
+        logger.info(f"正文内容渲染完成，共{len(self.config.sections)}个章节")
 
         self._setup_page()
+        logger.info("页面设置完成")
         self._render_footer()
         self._set_update_fields()
+        logger.info("Word报告生成完成")
 
         return self.doc
 
@@ -772,3 +815,37 @@ class WordReportGenerator:
         if self.doc is None:
             raise ValueError("请先调用 generate() 方法生成文档")
         self.doc.save(file_path)
+        logger.info(f"文档已保存到: {file_path}")
+        self._update_fields_via_com(file_path)
+
+    def _update_fields_via_com(self, file_path: str):
+        """
+        使用Word COM自动化更新文档中所有域字段
+
+        保存后的docx中PAGEREF等域字段显示为默认值，通过Word COM打开文档、
+        更新所有域字段后保存，使目录页码显示为实际值。
+
+        Args:
+            file_path: 已保存的.docx文件绝对路径
+
+        Notes:
+            - 仅在Windows上可用，需要安装Microsoft Word或WPS Office
+            - 若未安装win32com或COM初始化失败，则跳过更新并记录warning日志
+            - Word COM会短暂启动Word进程（不可见），更新完成后自动关闭
+        """
+        try:
+            import win32com.client
+            word = win32com.client.Dispatch("Word.Application")
+            word.Visible = False
+            abs_path = os.path.abspath(file_path)
+            logger.info(f"Word COM: 正在更新域字段...")
+            doc = word.Documents.Open(abs_path)
+            doc.Fields.Update()
+            doc.Save()
+            doc.Close()
+            word.Quit()
+            logger.info("Word COM: 域字段更新完成")
+        except ImportError:
+            logger.warning("未安装 win32com 模块，跳过域字段自动更新")
+        except Exception as e:
+            logger.warning(f"Word COM 更新域字段失败: {e}")
