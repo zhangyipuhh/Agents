@@ -90,14 +90,14 @@ def _get_heading_styles() -> dict[int, HeadingStyleConfig]:
     获取MapAgent报告各级标题的统一样式配置
 
     修改此处的样式参数，全文所有同级别标题将同步更新。
-
+    三号字16号，小三15 ， 四号字14号  小四 12号
     Returns:
         dict[int, HeadingStyleConfig]: 键为标题级别(1/2/3)，值为样式配置
     """
     return {
         1: HeadingStyleConfig(
             font_name="黑体",
-            font_size=14,
+            font_size=18,
             bold=True,
             space_before=12,
             space_after=6,
