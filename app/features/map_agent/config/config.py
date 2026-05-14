@@ -97,26 +97,26 @@ def _get_heading_styles() -> dict[int, HeadingStyleConfig]:
     return {
         1: HeadingStyleConfig(
             font_name="黑体",
-            font_size=18,
-            bold=True,
-            space_before=12,
-            space_after=6,
+            font_size=16,
+            bold=False,
+            space_before=0,
+            space_after=0,
             left_indent=0,
         ),
         2: HeadingStyleConfig(
-            font_name="黑体",
-            font_size=13,
-            bold=True,
-            space_before=9,
-            space_after=5,
+            font_name="楷体",
+            font_size=16,
+            bold=False,
+            space_before=0,
+            space_after=0,
             left_indent=0.74,
         ),
         3: HeadingStyleConfig(
-            font_name="黑体",
-            font_size=12,
+            font_name="方正仿宋_GB2312",
+            font_size=16,
             bold=True,
-            space_before=6,
-            space_after=3,
+            space_before=0,
+            space_after=0,
             left_indent=1.48,
         ),
     }
@@ -132,8 +132,8 @@ def _get_paragraph_style() -> ParagraphStyleConfig:
         ParagraphStyleConfig: 正文段落样式配置
     """
     return ParagraphStyleConfig(
-        font_name="宋体",
-        font_size=12,
+        font_name="仿宋",
+        font_size=16,
         bold=False,
         first_line_indent_chars=2,
         line_spacing_rule="auto",
