@@ -29,6 +29,81 @@ def set_chinese_font(run, font_name="宋体", font_size=12, bold=False):
     run.font.bold = bold
 
 
+def set_first_line_indent_chars(paragraph, char_count: int):
+    """
+    设置首行缩进（字符单位）
+
+    通过直接操作XML设置w:ind元素的w:firstLineChars属性，
+    实现以字符为单位的首行缩进，缩进量随字体大小自动调整。
+
+    Args:
+        paragraph: python-docx的Paragraph对象，将被修改首行缩进属性
+        char_count: 缩进字符数，如2表示缩进2个中文字符
+
+    Returns:
+        无返回值，直接修改段落的XML属性
+
+    Notes:
+        - w:firstLineChars的值 = 字符数 × 100，即200=2字符
+        - Word会根据当前字体自动计算对应的w:firstLine值（twips单位）
+        - 相比厘米单位(w:firstLine)，字符单位能随字体大小自动调整缩进量
+    """
+    pPr = paragraph._element.get_or_add_pPr()
+    ind = pPr.find(qn('w:ind'))
+    if ind is None:
+        ind = OxmlElement('w:ind')
+        pPr.append(ind)
+    ind.set(qn('w:firstLineChars'), str(char_count * 100))
+
+
+def set_line_spacing(paragraph, line_value: float, line_rule: str = "auto"):
+    """
+    设置段落行间距
+
+    通过直接操作XML设置w:spacing元素的w:line和w:lineRule属性，
+    支持固定行距、最小行距和多倍行距三种模式。
+
+    Args:
+        paragraph: python-docx的Paragraph对象，将被修改行间距属性
+        line_value: 行距值，根据line_rule不同含义不同：
+            - "auto"模式：float类型，表示行距倍数（如1.5=1.5倍行距）
+            - "exact"模式：float类型，表示固定行距的磅值（如28=28磅）
+            - "atLeast"模式：float类型，表示最小行距的磅值（如20=20磅）
+        line_rule: 行距规则，可选值：
+            - "auto": 多倍行距（w:lineRule="auto"）
+            - "exact": 固定行距（w:lineRule="exact"）
+            - "atLeast": 最小行距（w:lineRule="atLeast"）
+
+    Returns:
+        无返回值，直接修改段落的XML属性
+
+    Raises:
+        ValueError: 当line_rule不是"auto"/"exact"/"atLeast"之一时
+
+    Notes:
+        - "auto"模式下，w:line的值 = 倍数 × 240（240 twips = 12pt = 单倍行距基准）
+        - "exact"和"atLeast"模式下，w:line的值 = 磅值 × 20（1pt = 20 twips）
+        - w:line的单位始终是缇(twips)
+    """
+    valid_rules = ("auto", "exact", "atLeast")
+    if line_rule not in valid_rules:
+        raise ValueError(f"line_rule 必须是 {valid_rules} 之一，得到: {line_rule}")
+
+    pPr = paragraph._element.get_or_add_pPr()
+    spacing = pPr.find(qn('w:spacing'))
+    if spacing is None:
+        spacing = OxmlElement('w:spacing')
+        pPr.append(spacing)
+
+    if line_rule == "auto":
+        twips_value = int(line_value * 240)
+    else:
+        twips_value = int(line_value * 20)
+
+    spacing.set(qn('w:line'), str(twips_value))
+    spacing.set(qn('w:lineRule'), line_rule)
+
+
 class WordReportGenerator:
     """
     Word报告通用生成器
@@ -438,8 +513,11 @@ class WordReportGenerator:
         Notes:
             样式优先级：SectionConfig显式设置 > ReportConfig.paragraph_style统一样式 > 内置默认值
             - 从paragraph_style获取正文段落的统一样式配置
-            - SectionConfig中的font_name/font_size/bold/first_line_indent/space_before/space_after/left_indent
+            - SectionConfig中的font_name/font_size/bold/first_line_indent/line_spacing_rule/
+              line_spacing_value/space_before/space_after/left_indent
               非空/非零时可覆盖统一样式配置
+            - 首行缩进使用字符单位(w:firstLineChars)，缩进量随字体大小自动调整
+            - 行间距支持三种模式：auto(多倍行距)/exact(固定行距)/atLeast(最小行距)
         """
         text = self._resolve_text(section.content)
 
@@ -458,11 +536,13 @@ class WordReportGenerator:
         else:
             paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
-        first_indent = section.first_line_indent if section.first_line_indent is not None else para_style.first_line_indent
+        first_indent = section.first_line_indent if section.first_line_indent is not None else para_style.first_line_indent_chars
         if first_indent:
-            paragraph.paragraph_format.first_line_indent = Cm(para_style.first_line_indent_cm)
+            set_first_line_indent_chars(paragraph, first_indent)
 
-        paragraph.paragraph_format.line_spacing = section.line_spacing or para_style.line_spacing
+        line_rule = section.line_spacing_rule or para_style.line_spacing_rule
+        line_value = section.line_spacing_value if section.line_spacing_value is not None else para_style.line_spacing_value
+        set_line_spacing(paragraph, line_value, line_rule)
 
         space_before = section.space_before if section.space_before is not None else para_style.space_before
         if space_before:
@@ -487,6 +567,26 @@ class WordReportGenerator:
             - 常用于封面后、目录后等需要强制换页的场景
         """
         self.doc.add_page_break()
+
+    def _set_update_fields(self):
+        """
+        设置文档打开时自动更新域字段
+
+        通过在settings.xml中添加w:updateFields元素，
+        使Word打开文档时自动更新所有域字段（包括目录中的PAGEREF页码），
+        确保目录页码在打开文档后立即正确显示。
+
+        Notes:
+            - 添加w:updateFields val="true"到文档设置中
+            - 用户首次打开文档时Word会提示是否更新域，确认后目录页码自动刷新
+            - 此设置对PAGEREF、PAGE、NUMPAGES等所有域字段生效
+        """
+        settings = self.doc.settings.element
+        update_fields = settings.find(qn('w:updateFields'))
+        if update_fields is None:
+            update_fields = OxmlElement('w:updateFields')
+            update_fields.set(qn('w:val'), 'true')
+            settings.append(update_fields)
 
     def _set_start_page(self, section, start_page: int):
         """
@@ -620,7 +720,7 @@ class WordReportGenerator:
         """
         生成Word报告的主入口方法
 
-        按顺序执行：创建文档 -> 默认样式 -> 封面 -> 目录 -> 正文段落 -> 页面设置 -> 页脚页码
+        按顺序执行：创建文档 -> 默认样式 -> 封面 -> 目录 -> 正文段落 -> 页面设置 -> 页脚页码 -> 更新域设置
 
         Returns:
             Document: python-docx的Document对象，调用方可通过 doc.save() 保存为.docx文件
@@ -632,6 +732,7 @@ class WordReportGenerator:
             - 标题自动添加书签，用于目录页码引用
             - 页脚页码通过Word域字段自动生成
             - 页面设置在所有节创建完成后执行，确保每个节的页面参数一致
+            - 设置w:updateFields使Word打开文档时自动更新目录页码等域字段
         """
         self.doc = Document()
         self._heading_bookmarks = []
@@ -646,6 +747,7 @@ class WordReportGenerator:
 
         self._setup_page()
         self._render_footer()
+        self._set_update_fields()
 
         return self.doc
 

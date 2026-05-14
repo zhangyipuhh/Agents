@@ -499,15 +499,16 @@ class ParagraphStyleConfig:
         font_name: 字体名称，默认"宋体"
         font_size: 字号，单位pt，默认12
         bold: 是否加粗，默认False
-        first_line_indent: 是否首行缩进，默认True
-        first_line_indent_cm: 首行缩进量，单位cm，默认0.74（约2个中文字符）
-        line_spacing: 行距倍数，默认1.5
+        first_line_indent_chars: 首行缩进字符数，默认2（2个中文字符）
+        line_spacing_rule: 行距规则，可选"auto"/"exact"/"atLeast"，默认"auto"
+        line_spacing_value: 行距值，auto模式为倍数，exact/atLeast模式为磅值，默认1.5
         space_before: 段前间距，单位pt，默认0
         space_after: 段后间距，单位pt，默认0
         left_indent: 左缩进，单位cm，默认0
 
     Example:
-        >>> style = ParagraphStyleConfig(font_size=12, first_line_indent=True)
+        >>> style = ParagraphStyleConfig(font_size=12, first_line_indent_chars=2)
+        >>> style_fixed = ParagraphStyleConfig(line_spacing_rule="exact", line_spacing_value=28)
     """
 
     font_name: str = "宋体"
@@ -519,14 +520,14 @@ class ParagraphStyleConfig:
     bold: bool = False
     """是否加粗，默认False"""
 
-    first_line_indent: bool = True
-    """是否首行缩进，默认True"""
+    first_line_indent_chars: int = 2
+    """首行缩进字符数，默认2个字符，使用字符单位（w:firstLineChars）设置"""
 
-    first_line_indent_cm: float = 0.74
-    """首行缩进量，单位cm，默认0.74cm，约等于2个中文字符宽度"""
+    line_spacing_rule: str = "auto"
+    """行距规则，可选"auto"(多倍行距)/"exact"(固定行距)/"atLeast"(最小行距)，默认"auto" """
 
-    line_spacing: float = 1.5
-    """行距倍数，默认1.5倍行距"""
+    line_spacing_value: float = 1.5
+    """行距值，auto模式为倍数(如1.5)，exact/atLeast模式为磅值(如28)，默认1.5倍行距"""
 
     space_before: float = 0
     """段前间距，单位pt，默认0pt"""
@@ -548,8 +549,9 @@ class SectionConfig:
 
     样式优先级：SectionConfig中显式设置的值 > ReportConfig中heading_styles/paragraph_style统一样式 > 默认值
 
-    对于font_name、font_size、bold、alignment、first_line_indent、space_before、
-    space_after、left_indent等属性，当值为None或空/0时，将按以下优先级回退：
+    对于font_name、font_size、bold、alignment、first_line_indent、line_spacing_rule、
+    line_spacing_value、space_before、space_after、left_indent等属性，当值为None或空/零时，
+    将按以下优先级回退：
     1. ReportConfig.heading_styles[level]（heading类型）或 ReportConfig.paragraph_style（paragraph类型）
     2. 内置默认值
 
@@ -562,8 +564,9 @@ class SectionConfig:
         font_size: 字号，单位pt，为0时使用统一样式配置或默认值
         bold: 是否加粗，None时使用统一样式配置或默认值
         alignment: 对齐方式，WD_ALIGN_PARAGRAPH枚举值，None时使用默认左对齐
-        first_line_indent: 是否首行缩进，None时paragraph默认True，heading默认False
-        line_spacing: 行距倍数，默认1.5
+        first_line_indent: 首行缩进字符数，None时paragraph默认2字符，heading默认0
+        line_spacing_rule: 行距规则，None时使用统一样式配置，可选"auto"/"exact"/"atLeast"
+        line_spacing_value: 行距值，None时使用统一样式配置，auto模式为倍数，exact/atLeast模式为磅值
         space_before: 段前间距，单位pt，None时使用统一样式配置或默认值
         space_after: 段后间距，单位pt，None时使用统一样式配置或默认值
         left_indent: 左缩进，单位cm，None时使用统一样式配置或默认值
@@ -619,11 +622,14 @@ class SectionConfig:
     alignment: int | None = None
     """对齐方式，WD_ALIGN_PARAGRAPH枚举值，None时使用默认左对齐 """
 
-    first_line_indent: bool | None = None
-    """是否首行缩进，None时paragraph默认True（缩进0.74cm约2字符），heading默认False """
+    first_line_indent: int | None = None
+    """首行缩进字符数，None时使用默认值：paragraph缩进2字符，heading不缩进"""
 
-    line_spacing: float = 1.5
-    """行距倍数，默认1.5倍行距，符合中文文档格式要求"""
+    line_spacing_rule: str | None = None
+    """行距规则，None时使用paragraph_style统一样式，可选"auto"/"exact"/"atLeast" """
+
+    line_spacing_value: float | None = None
+    """行距值，None时使用paragraph_style统一样式，auto模式为倍数，exact/atLeast模式为磅值"""
 
     space_before: float | None = None
     """
