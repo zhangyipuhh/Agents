@@ -123,6 +123,7 @@ class WordReportGenerator:
         self.doc = None
         self._heading_bookmarks = []
         self._heading_index = 0
+        self._bookmark_id_counter = 0
 
     def _add_field_code(self, paragraph, field_code: str, font_name: str = "宋体", font_size: int = 10):
         """
@@ -168,6 +169,7 @@ class WordReportGenerator:
         run_begin = _make_run()
         fldChar_begin = OxmlElement('w:fldChar')
         fldChar_begin.set(qn('w:fldCharType'), 'begin')
+        fldChar_begin.set(qn('w:dirty'), 'true')
         run_begin.append(fldChar_begin)
         paragraph._p.append(run_begin)
 
@@ -211,8 +213,8 @@ class WordReportGenerator:
             使用w:bookmarkStart和w:bookmarkEnd元素创建Word书签
         """
         # 生成唯一书签ID
-        bookmark_id = str(len(self._heading_bookmarks))
-        self._heading_bookmarks.append(bookmark_name)
+        bookmark_id = str(self._bookmark_id_counter)
+        self._bookmark_id_counter += 1
 
         # 创建bookmarkStart元素
         bookmark_start = OxmlElement('w:bookmarkStart')
@@ -737,6 +739,7 @@ class WordReportGenerator:
         self.doc = Document()
         self._heading_bookmarks = []
         self._heading_index = 0
+        self._bookmark_id_counter = 0
         self._setup_default_style()
         self._render_cover()
         self._pre_collect_bookmarks()
