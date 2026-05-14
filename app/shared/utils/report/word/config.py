@@ -448,6 +448,97 @@ class FooterConfig:
 
 
 @dataclass
+class HeadingStyleConfig:
+    """
+    标题样式统一配置类
+
+    定义某一级别标题的完整样式参数，用于全文同级别标题的统一样式管理。
+    修改一处即可影响全文所有同级别标题的渲染效果。
+
+    Attributes:
+        font_name: 字体名称，默认"黑体"
+        font_size: 字号，单位pt，默认14
+        bold: 是否加粗，默认True
+        space_before: 段前间距，单位pt，默认12
+        space_after: 段后间距，单位pt，默认6
+        left_indent: 左缩进，单位cm，默认0
+
+    Example:
+        >>> style = HeadingStyleConfig(font_size=16, space_before=12, space_after=6)
+        >>> heading_styles = {1: style}
+    """
+
+    font_name: str = "黑体"
+    """字体名称，默认"黑体" """
+
+    font_size: int = 14
+    """字号，单位pt，默认14，对应四号字"""
+
+    bold: bool = True
+    """是否加粗，默认True"""
+
+    space_before: float = 12
+    """段前间距，单位pt，默认12pt"""
+
+    space_after: float = 6
+    """段后间距，单位pt，默认6pt"""
+
+    left_indent: float = 0
+    """左缩进，单位cm，默认0cm"""
+
+
+@dataclass
+class ParagraphStyleConfig:
+    """
+    正文段落样式统一配置类
+
+    定义正文段落的完整样式参数，用于全文所有正文段落的统一样式管理。
+    修改一处即可影响全文所有正文段落的渲染效果。
+
+    Attributes:
+        font_name: 字体名称，默认"宋体"
+        font_size: 字号，单位pt，默认12
+        bold: 是否加粗，默认False
+        first_line_indent: 是否首行缩进，默认True
+        first_line_indent_cm: 首行缩进量，单位cm，默认0.74（约2个中文字符）
+        line_spacing: 行距倍数，默认1.5
+        space_before: 段前间距，单位pt，默认0
+        space_after: 段后间距，单位pt，默认0
+        left_indent: 左缩进，单位cm，默认0
+
+    Example:
+        >>> style = ParagraphStyleConfig(font_size=12, first_line_indent=True)
+    """
+
+    font_name: str = "宋体"
+    """字体名称，默认"宋体" """
+
+    font_size: int = 12
+    """字号，单位pt，默认12，对应小四号字"""
+
+    bold: bool = False
+    """是否加粗，默认False"""
+
+    first_line_indent: bool = True
+    """是否首行缩进，默认True"""
+
+    first_line_indent_cm: float = 0.74
+    """首行缩进量，单位cm，默认0.74cm，约等于2个中文字符宽度"""
+
+    line_spacing: float = 1.5
+    """行距倍数，默认1.5倍行距"""
+
+    space_before: float = 0
+    """段前间距，单位pt，默认0pt"""
+
+    space_after: float = 0
+    """段后间距，单位pt，默认0pt"""
+
+    left_indent: float = 0
+    """左缩进，单位cm，默认0cm"""
+
+
+@dataclass
 class SectionConfig:
     """
     段落配置类（核心类）
@@ -455,27 +546,27 @@ class SectionConfig:
     定义报告正文中每个段落/标题的类型、内容、字体样式和排版参数。
     支持三种段落类型：标题(heading)、正文(paragraph)、分页符(page_break)。
 
+    样式优先级：SectionConfig中显式设置的值 > ReportConfig中heading_styles/paragraph_style统一样式 > 默认值
+
     对于font_name、font_size、bold、alignment、first_line_indent、space_before、
-    space_after、left_indent等属性，当值为None或空/0时，将使用默认值：
-    - heading类型：字体"黑体"，字号按级别14/13/12，加粗True，无首行缩进，
-      段前间距12/9/6pt，段后间距6/5/3pt，左缩进0/0.74/1.48cm
-    - paragraph类型：字体"宋体"，字号12，不加粗，首行缩进，
-      段前段后间距0，无左缩进
+    space_after、left_indent等属性，当值为None或空/0时，将按以下优先级回退：
+    1. ReportConfig.heading_styles[level]（heading类型）或 ReportConfig.paragraph_style（paragraph类型）
+    2. 内置默认值
 
     Attributes:
         section_type: 段落类型，"heading"=标题 / "paragraph"=正文 / "page_break"=分页符
         content: 文本内容，支持{{变量}}占位符，也支持可调用对象（如lambda或函数），
                  可调用对象在渲染时被调用以获取实际文本
         level: 标题级别1-3，仅heading类型有效，默认1
-        font_name: 字体名称，为空字符串时使用默认值（heading用"黑体"，paragraph用"宋体"）
-        font_size: 字号，单位pt，为0时使用默认值（heading按级别14/13/12，paragraph为12）
-        bold: 是否加粗，None时使用默认值（heading为True，paragraph为False）
+        font_name: 字体名称，为空字符串时使用统一样式配置或默认值
+        font_size: 字号，单位pt，为0时使用统一样式配置或默认值
+        bold: 是否加粗，None时使用统一样式配置或默认值
         alignment: 对齐方式，WD_ALIGN_PARAGRAPH枚举值，None时使用默认左对齐
         first_line_indent: 是否首行缩进，None时paragraph默认True，heading默认False
         line_spacing: 行距倍数，默认1.5
-        space_before: 段前间距，单位pt，None时heading按级别12/9/6，paragraph为0
-        space_after: 段后间距，单位pt，None时heading按级别6/5/3，paragraph为0
-        left_indent: 左缩进，单位cm，None时heading按级别0/0.74/1.48，paragraph为0
+        space_before: 段前间距，单位pt，None时使用统一样式配置或默认值
+        space_after: 段后间距，单位pt，None时使用统一样式配置或默认值
+        left_indent: 左缩进，单位cm，None时使用统一样式配置或默认值
 
     Example:
         >>> # 一级标题
@@ -572,6 +663,8 @@ class ReportConfig:
         data: 变量替换数据字典，用于填充content中的{{变量}}占位符
         default_font_name: 默认正文字体名称，默认"宋体"
         default_font_size: 默认正文字号，单位pt，默认12
+        heading_styles: 各级别标题的统一样式配置，键为级别(1/2/3)，值为HeadingStyleConfig
+        paragraph_style: 正文段落的统一样式配置
         footer: 页脚页码配置，None则使用默认配置
 
     Example:
@@ -621,6 +714,21 @@ class ReportConfig:
 
     default_font_size: int = 12
     """默认正文字号，单位pt，默认12（小四号字），用于未指定字号时的回退值"""
+
+    heading_styles: dict[int, HeadingStyleConfig] = field(default_factory=lambda: {
+        1: HeadingStyleConfig(font_size=14, space_before=12, space_after=6, left_indent=0),
+        2: HeadingStyleConfig(font_size=13, space_before=9, space_after=5, left_indent=0.74),
+        3: HeadingStyleConfig(font_size=12, space_before=6, space_after=3, left_indent=1.48),
+    })
+    """
+    各级别标题的统一样式配置，键为标题级别(1/2/3)，值为HeadingStyleConfig。
+    修改某一级别的样式配置，全文所有同级别标题将同步更新。
+    """
+
+    paragraph_style: ParagraphStyleConfig = field(default_factory=ParagraphStyleConfig)
+    """
+    正文段落的统一样式配置，修改后全文所有正文段落将同步更新。
+    """
 
     footer: FooterConfig = field(default_factory=FooterConfig)
     """页脚页码配置，默认启用页码，使用FooterConfig默认参数"""

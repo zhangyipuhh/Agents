@@ -1,0 +1,27 @@
+{
+  "sections": [
+    {"type": "page_break"},
+    {"type": "heading", "level": 1, "content": "一、项目选址与要素保障"},
+    {"type": "heading", "level": 2, "content": "（一）项目选址选线"},
+    {"type": "heading", "level": 3, "content": "1. 项目场址或线路的土地权属"},
+    {"type": "paragraph", "content": "项目用地涉及{{项目位置}}，土地权属情况如下..."},
+    {"type": "heading", "level": 3, "content": "2. 土地利用规划"},
+    {"type": "paragraph", "content": "根据土地利用总体规划，项目用地符合规划要求..."},
+    {"type": "heading", "level": 3, "content": "3. 地质灾害危险性评估"},
+    {"type": "paragraph", "content": "经评估，项目区域地质灾害危险性等级为..."},
+    {"type": "heading", "level": 2, "content": "（二）要素保障"},
+    {"type": "heading", "level": 3, "content": "1. 用地保障"},
+    {"type": "paragraph", "content": "项目用地总面积{{用地总面积}}公顷，其中农用地{{农用地面积}}公顷..."},
+    {"type": "heading", "level": 3, "content": "2. 用林保障"},
+    {"type": "paragraph", "content": "项目涉及使用林地{{林地面积}}公顷..."},
+    {"type": "heading", "level": 3, "content": "3. 用海保障"},
+    {"type": "paragraph", "content": "项目涉及用海面积{{用海面积}}公顷..."},
+    {"type": "heading", "level": 1, "content": "二、规划符合性分析"},
+    {"type": "heading", "level": 2, "content": "（一）国土空间规划"},
+    {"type": "paragraph", "content": "项目符合国土空间规划相关要求..."},
+    {"type": "heading", "level": 2, "content": "（二）生态保护红线"},
+    {"type": "paragraph", "content": "项目不涉及生态保护红线范围..."},
+    {"type": "heading", "level": 2, "content": "（三）资源环境承载力"},
+    {"type": "paragraph", "content": "项目所在区域资源环境承载力评价结果为..."}
+  ]
+}

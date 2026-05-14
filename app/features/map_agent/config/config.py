@@ -5,9 +5,13 @@ MapAgent 配置加载模块
 
 从 .env 文件加载环境变量，初始化 MapAgentSettings 单例。
 提供报告配置工厂函数，用于构建MapAgent专用的报告配置。
+正文内容从JSON文件加载，样式通过HeadingStyleConfig和ParagraphStyleConfig统一管理。
 
 Date: 2026-04-20
 """
+
+import json
+import os
 
 from dotenv import load_dotenv
 
@@ -21,11 +25,123 @@ from app.shared.utils.report.word.config import (
     SectionConfig,
     PageSetup,
     FooterConfig,
+    HeadingStyleConfig,
+    ParagraphStyleConfig,
 )
 
 
 load_dotenv()
 map_agent_settings = MapAgentSettings()
+
+_JSON_CONTENT_PATH = os.path.join(os.path.dirname(__file__), "report_content.json")
+
+
+def _load_report_content() -> list[dict]:
+    """
+    从JSON文件加载报告正文内容
+
+    Returns:
+        list[dict]: 段落内容列表，每个元素包含type、level、content等字段
+
+    Raises:
+        FileNotFoundError: 当report_content.json文件不存在时抛出
+        json.JSONDecodeError: 当JSON文件格式错误时抛出
+    """
+    with open(_JSON_CONTENT_PATH, "r", encoding="utf-8") as f:
+        content = json.load(f)
+    return content.get("sections", [])
+
+
+def _build_sections(content_list: list[dict]) -> list[SectionConfig]:
+    """
+    从JSON内容列表构建SectionConfig列表
+
+    遍历JSON中的段落内容，根据type字段创建对应的SectionConfig对象。
+    样式由ReportConfig中的heading_styles和paragraph_style统一管理，
+    此处仅设置段落类型、内容和级别，不再重复设置样式参数。
+
+    Args:
+        content_list: JSON内容列表，每个元素为包含type/level/content字段的字典
+
+    Returns:
+        list[SectionConfig]: 可直接用于ReportConfig的段落配置列表
+    """
+    sections = []
+    for item in content_list:
+        section_type = item.get("type", "paragraph")
+        if section_type == "page_break":
+            sections.append(SectionConfig(section_type="page_break"))
+        elif section_type == "heading":
+            sections.append(SectionConfig(
+                section_type="heading",
+                content=item.get("content", ""),
+                level=item.get("level", 1),
+            ))
+        elif section_type == "paragraph":
+            sections.append(SectionConfig(
+                section_type="paragraph",
+                content=item.get("content", ""),
+            ))
+    return sections
+
+
+def _get_heading_styles() -> dict[int, HeadingStyleConfig]:
+    """
+    获取MapAgent报告各级标题的统一样式配置
+
+    修改此处的样式参数，全文所有同级别标题将同步更新。
+
+    Returns:
+        dict[int, HeadingStyleConfig]: 键为标题级别(1/2/3)，值为样式配置
+    """
+    return {
+        1: HeadingStyleConfig(
+            font_name="黑体",
+            font_size=14,
+            bold=True,
+            space_before=12,
+            space_after=6,
+            left_indent=0,
+        ),
+        2: HeadingStyleConfig(
+            font_name="黑体",
+            font_size=13,
+            bold=True,
+            space_before=9,
+            space_after=5,
+            left_indent=0.74,
+        ),
+        3: HeadingStyleConfig(
+            font_name="黑体",
+            font_size=12,
+            bold=True,
+            space_before=6,
+            space_after=3,
+            left_indent=1.48,
+        ),
+    }
+
+
+def _get_paragraph_style() -> ParagraphStyleConfig:
+    """
+    获取MapAgent报告正文段落的统一样式配置
+
+    修改此处的样式参数，全文所有正文段落将同步更新。
+
+    Returns:
+        ParagraphStyleConfig: 正文段落样式配置
+    """
+    return ParagraphStyleConfig(
+        font_name="宋体",
+        font_size=12,
+        bold=False,
+        first_line_indent=True,
+        first_line_indent_cm=0.74,
+        line_spacing=1.5,
+        space_before=0,
+        space_after=0,
+        left_indent=0,
+    )
 
 
 def get_report_config(data: dict) -> ReportConfig:
@@ -33,6 +149,7 @@ def get_report_config(data: dict) -> ReportConfig:
     构建MapAgent专用的报告配置
 
     根据传入的数据字典，构建包含封面、目录、正文段落的完整报告配置对象。
+    正文内容从report_content.json文件加载，样式通过统一样式配置管理。
     封面标题使用"{{项目名称}}前期选址协同服务报告"格式，日期使用"{{生成日期}}"占位符。
 
     Args:
@@ -53,7 +170,6 @@ def get_report_config(data: dict) -> ReportConfig:
         >>> generator = WordReportGenerator(config)
         >>> doc = generator.generate()
     """
-    # 封面配置
     cover = CoverConfig(
         title=CoverElementConfig(
             text="{{项目名称}}前期选址协同服务报告",
@@ -90,18 +206,14 @@ def get_report_config(data: dict) -> ReportConfig:
         ),
     )
 
-    # 目录配置
     toc = TocConfig(
         title="目 录",
         title_font_name="黑体",
         title_font_size=16,
         title_bold=True,
         entries=[
-            # 一级标题
             TocEntry(text="一、项目选址与要素保障", level=0, bold=True, font_name="黑体", font_size=16),
-            # 二级标题
             TocEntry(text="（一）项目选址选线", level=1, font_name="楷体", font_size=14),
-            # 三级标题
             TocEntry(text="1. 项目场址或线路的土地权属", level=2, font_name="方正仿宋_GB2312"),
             TocEntry(text="2. 供地方式", level=2, font_name="方正仿宋_GB2312"),
             TocEntry(text="3. 土地利用状况", level=2, font_name="方正仿宋_GB2312"),
@@ -118,10 +230,10 @@ def get_report_config(data: dict) -> ReportConfig:
             TocEntry(text="6. 耕地占补平衡可行性", level=2, font_name="方正仿宋_GB2312"),
             TocEntry(text="7. 永久基本农田占用补划可行性", level=2, font_name="方正仿宋_GB2312"),
             TocEntry(text="二、 与主体功能区的协同性（可研编制大纲外事项）", level=0, bold=True, font_name="黑体", font_size=16),
-            TocEntry(text="三、 其他空间管控分析（可研编制大纲外事项）",  level=0, bold=True, font_name="黑体", font_size=16),
+            TocEntry(text="三、 其他空间管控分析（可研编制大纲外事项）", level=0, bold=True, font_name="黑体", font_size=16),
             TocEntry(text="（一） 涉及自然保护地情况", level=1, font_name="楷体", font_size=14),
             TocEntry(text="（二） 历史文化保护情况", level=1, font_name="楷体", font_size=14),
-            TocEntry(text="四、 其他国土空间用途管制要求（可研编制大纲外事项）",  level=0, bold=True, font_name="黑体", font_size=16),
+            TocEntry(text="四、 其他国土空间用途管制要求（可研编制大纲外事项）", level=0, bold=True, font_name="黑体", font_size=16),
             TocEntry(text="（一） 违法用地情况", level=1, font_name="楷体", font_size=14),
             TocEntry(text="（二） 林草地占用情况", level=1, font_name="楷体", font_size=14),
         ],
@@ -130,139 +242,8 @@ def get_report_config(data: dict) -> ReportConfig:
         indent_per_level=0.74,
     )
 
-    # 正文段落配置
-    sections = [
-        # 分页符 - 正文开始
-        SectionConfig(section_type="page_break"),
-        
-        # 一级标题
-        SectionConfig(
-            section_type="heading",
-            content="一、项目选址与要素保障",
-            level=1,
-        ),
-        
-        # 二级标题
-        SectionConfig(
-            section_type="heading",
-            content="（一）项目选址选线",
-            level=2,
-        ),
-        
-        # 三级标题
-        SectionConfig(
-            section_type="heading",
-            content="1. 项目场址或线路的土地权属",
-            level=3,
-        ),
-        # 正文段落
-        SectionConfig(
-            section_type="paragraph",
-            content="项目用地涉及{{项目位置}}，土地权属情况如下...",
-        ),
-        
-        # 三级标题
-        SectionConfig(
-            section_type="heading",
-            content="2. 土地利用规划",
-            level=3,
-        ),
-        SectionConfig(
-            section_type="paragraph",
-            content="根据土地利用总体规划，项目用地符合规划要求...",
-        ),
-        
-        # 三级标题
-        SectionConfig(
-            section_type="heading",
-            content="3. 地质灾害危险性评估",
-            level=3,
-        ),
-        SectionConfig(
-            section_type="paragraph",
-            content="经评估，项目区域地质灾害危险性等级为...",
-        ),
-        
-        # 二级标题
-        SectionConfig(
-            section_type="heading",
-            content="（二）要素保障",
-            level=2,
-        ),
-        
-        # 三级标题
-        SectionConfig(
-            section_type="heading",
-            content="1. 用地保障",
-            level=3,
-        ),
-        SectionConfig(
-            section_type="paragraph",
-            content="项目用地总面积{{用地总面积}}公顷，其中农用地{{农用地面积}}公顷...",
-        ),
-        
-        # 三级标题
-        SectionConfig(
-            section_type="heading",
-            content="2. 用林保障",
-            level=3,
-        ),
-        SectionConfig(
-            section_type="paragraph",
-            content="项目涉及使用林地{{林地面积}}公顷...",
-        ),
-        
-        # 三级标题
-        SectionConfig(
-            section_type="heading",
-            content="3. 用海保障",
-            level=3,
-        ),
-        SectionConfig(
-            section_type="paragraph",
-            content="项目涉及用海面积{{用海面积}}公顷...",
-        ),
-        
-        # 一级标题
-        SectionConfig(
-            section_type="heading",
-            content="二、规划符合性分析",
-            level=1,
-        ),
-        
-        # 二级标题
-        SectionConfig(
-            section_type="heading",
-            content="（一）国土空间规划",
-            level=2,
-        ),
-        SectionConfig(
-            section_type="paragraph",
-            content="项目符合国土空间规划相关要求...",
-        ),
-        
-        # 二级标题
-        SectionConfig(
-            section_type="heading",
-            content="（二）生态保护红线",
-            level=2,
-        ),
-        SectionConfig(
-            section_type="paragraph",
-            content="项目不涉及生态保护红线范围...",
-        ),
-        
-        # 二级标题
-        SectionConfig(
-            section_type="heading",
-            content="（三）资源环境承载力",
-            level=2,
-        ),
-        SectionConfig(
-            section_type="paragraph",
-            content="项目所在区域资源环境承载力评价结果为...",
-        ),
-    ]
+    content_list = _load_report_content()
+    sections = _build_sections(content_list)
 
     return ReportConfig(
         page_setup=PageSetup(),
@@ -272,6 +253,8 @@ def get_report_config(data: dict) -> ReportConfig:
         data=data,
         default_font_name="宋体",
         default_font_size=12,
+        heading_styles=_get_heading_styles(),
+        paragraph_style=_get_paragraph_style(),
         footer=FooterConfig(
             format="-{page}-",
         ),

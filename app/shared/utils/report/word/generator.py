@@ -7,7 +7,7 @@ from docx.oxml import OxmlElement
 import re
 from typing import Callable
 
-from app.shared.utils.report.word.config import ReportConfig, SectionConfig, CoverElementConfig, FooterConfig
+from app.shared.utils.report.word.config import ReportConfig, SectionConfig, CoverElementConfig, FooterConfig, HeadingStyleConfig, ParagraphStyleConfig
 
 
 def set_chinese_font(run, font_name="宋体", font_size=12, bold=False):
@@ -392,43 +392,38 @@ class WordReportGenerator:
             section: SectionConfig配置对象，包含标题的级别、文本和样式信息
 
         Notes:
-            - 一级标题(level=1)：上边距12pt，下边距6pt
-            - 二级标题(level=2)：左缩进0.74cm，上边距9pt，下边距5pt
-            - 三级标题(level=3)：左缩进1.48cm，上边距6pt，下边距3pt
-            - 默认字体为黑体，默认加粗
-            - 默认字号：一级14pt，二级13pt，三级12pt
+            样式优先级：SectionConfig显式设置 > ReportConfig.heading_styles[level]统一样式 > 内置默认值
+            - 从heading_styles获取对应级别的统一样式配置
+            - SectionConfig中的font_name/font_size/bold/space_before/space_after/left_indent
+              非空/非零时可覆盖统一样式配置
             - 自动添加书签，用于目录页码引用
-            - 可通过SectionConfig中的字段覆盖默认值
         """
         level = section.level
         text = self._resolve_text(section.content)
 
-        font_name = section.font_name or "黑体"
-        font_size = section.font_size or {1: 14, 2: 13, 3: 12}.get(level, 14)
-        bold = section.bold if section.bold is not None else True
+        heading_style: HeadingStyleConfig = self.config.heading_styles.get(level, HeadingStyleConfig())
+
+        font_name = section.font_name or heading_style.font_name
+        font_size = section.font_size or heading_style.font_size
+        bold = section.bold if section.bold is not None else heading_style.bold
 
         paragraph = self.doc.add_paragraph()
         run = paragraph.add_run(text)
         set_chinese_font(run, font_name, font_size, bold)
 
-        # 段前间距
-        space_before = section.space_before if section.space_before is not None else {1: 12, 2: 9, 3: 6}.get(level, 12)
+        space_before = section.space_before if section.space_before is not None else heading_style.space_before
         paragraph.paragraph_format.space_before = Pt(space_before)
 
-        # 段后间距
-        space_after = section.space_after if section.space_after is not None else {1: 6, 2: 5, 3: 3}.get(level, 6)
+        space_after = section.space_after if section.space_after is not None else heading_style.space_after
         paragraph.paragraph_format.space_after = Pt(space_after)
 
-        # 左缩进
-        left_indent = section.left_indent if section.left_indent is not None else {1: 0, 2: 0.74, 3: 1.48}.get(level, 0)
+        left_indent = section.left_indent if section.left_indent is not None else heading_style.left_indent
         if left_indent:
             paragraph.paragraph_format.left_indent = Cm(left_indent)
 
-        # 对齐方式
         if section.alignment is not None:
             paragraph.alignment = section.alignment
 
-        # 添加书签，用于目录页码引用
         bookmark_name = self._heading_bookmarks[self._heading_index]
         self._add_bookmark(paragraph, bookmark_name)
         self._heading_index += 1
@@ -441,47 +436,45 @@ class WordReportGenerator:
             section: SectionConfig配置对象，包含段落的文本和样式信息
 
         Notes:
-            - 默认首行缩进0.74cm（约2个中文字符）
-            - 默认行距1.5倍
-            - 默认左对齐
-            - 默认不加粗
-            - 可通过SectionConfig中的字段覆盖默认值
+            样式优先级：SectionConfig显式设置 > ReportConfig.paragraph_style统一样式 > 内置默认值
+            - 从paragraph_style获取正文段落的统一样式配置
+            - SectionConfig中的font_name/font_size/bold/first_line_indent/space_before/space_after/left_indent
+              非空/非零时可覆盖统一样式配置
         """
         text = self._resolve_text(section.content)
 
-        font_name = section.font_name or self.config.default_font_name
-        font_size = section.font_size or self.config.default_font_size
-        bold = section.bold if section.bold is not None else False
+        para_style: ParagraphStyleConfig = self.config.paragraph_style
+
+        font_name = section.font_name or para_style.font_name
+        font_size = section.font_size or para_style.font_size
+        bold = section.bold if section.bold is not None else para_style.bold
 
         paragraph = self.doc.add_paragraph()
         run = paragraph.add_run(text)
         set_chinese_font(run, font_name, font_size, bold)
 
-        # 对齐方式
         if section.alignment is not None:
             paragraph.alignment = section.alignment
         else:
             paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
-        # 首行缩进
-        first_indent = section.first_line_indent if section.first_line_indent is not None else True
+        first_indent = section.first_line_indent if section.first_line_indent is not None else para_style.first_line_indent
         if first_indent:
-            paragraph.paragraph_format.first_line_indent = Cm(0.74)
+            paragraph.paragraph_format.first_line_indent = Cm(para_style.first_line_indent_cm)
 
-        # 行距
-        paragraph.paragraph_format.line_spacing = section.line_spacing
+        paragraph.paragraph_format.line_spacing = section.line_spacing or para_style.line_spacing
 
-        # 段前间距
-        if section.space_before is not None:
-            paragraph.paragraph_format.space_before = Pt(section.space_before)
+        space_before = section.space_before if section.space_before is not None else para_style.space_before
+        if space_before:
+            paragraph.paragraph_format.space_before = Pt(space_before)
 
-        # 段后间距
-        if section.space_after is not None:
-            paragraph.paragraph_format.space_after = Pt(section.space_after)
+        space_after = section.space_after if section.space_after is not None else para_style.space_after
+        if space_after:
+            paragraph.paragraph_format.space_after = Pt(space_after)
 
-        # 左缩进
-        if section.left_indent is not None:
-            paragraph.paragraph_format.left_indent = Cm(section.left_indent)
+        left_indent = section.left_indent if section.left_indent is not None else para_style.left_indent
+        if left_indent:
+            paragraph.paragraph_format.left_indent = Cm(left_indent)
 
     def _render_page_break(self):
         """
