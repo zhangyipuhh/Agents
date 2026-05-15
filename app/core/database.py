@@ -113,7 +113,12 @@ class DatabasePool:
 
         Returns:
             查询结果
+
+        Raises:
+            RuntimeError: 连接池未初始化
         """
+        if not cls._pool:
+            raise RuntimeError("Database pool not initialized. Call initialize() first or set AUTH_STORAGE_MODE=memory")
         async with cls._pool.acquire() as conn:
             return await conn.execute(query, *args)
 
@@ -128,7 +133,12 @@ class DatabasePool:
 
         Returns:
             List[asyncpg.Record]: 查询结果列表
+
+        Raises:
+            RuntimeError: 连接池未初始化
         """
+        if not cls._pool:
+            raise RuntimeError("Database pool not initialized. Call initialize() first or set AUTH_STORAGE_MODE=memory")
         async with cls._pool.acquire() as conn:
             return await conn.fetch(query, *args)
 
@@ -143,7 +153,12 @@ class DatabasePool:
 
         Returns:
             asyncpg.Record: 查询结果
+
+        Raises:
+            RuntimeError: 连接池未初始化
         """
+        if not cls._pool:
+            raise RuntimeError("Database pool not initialized. Call initialize() first or set AUTH_STORAGE_MODE=memory")
         async with cls._pool.acquire() as conn:
             return await conn.fetchrow(query, *args)
 
