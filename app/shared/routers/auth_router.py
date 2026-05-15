@@ -5,6 +5,7 @@
 
 本模块定义了认证相关的API路由。
 主要功能包括：
+- 用户注册
 - 用户登录获取JWT令牌
 
 Date: 2026/2/6
@@ -13,6 +14,7 @@ Author: 张镒谱
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from app.shared.utils.auth.Safety import jwt_auth
+from app.core.database import DatabasePool
 
 
 class LoginRequest(BaseModel):
@@ -51,13 +53,36 @@ class LoginResponse(BaseModel):
 router = APIRouter(prefix='/api/auth', tags=['Authentication'])
 
 
+@router.post('/register')
+async def register(request: LoginRequest):
+    """
+    用户注册API端点
+
+    Args:
+        request: 包含用户名和密码的请求对象
+
+    Returns:
+        dict: 注册结果
+
+    Raises:
+        HTTPException: 用户名已存在时抛出400错误
+    """
+    from app.shared.utils.auth.user_db import UserDB
+
+    try:
+        await UserDB.create_user(request.username, request.password)
+        return {"message": "注册成功"}
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
 @router.post('/login', response_model=LoginResponse)
 async def login(request: LoginRequest):
     """
     用户登录API端点
     
     验证用户凭据并返回JWT令牌。
-    使用HTTPS传输确保安全性。
+    当 AUTH_STORAGE_MODE=postgres 时使用数据库验证。
     
     工作流程：
     1. 接收用户名和密码
@@ -74,7 +99,11 @@ async def login(request: LoginRequest):
     Raises:
         HTTPException: 当用户名或密码错误时抛出401错误
     """
-    is_valid = await jwt_auth.verify_credentials(request.username, request.password)
+    if DatabasePool.is_enabled():
+        from app.shared.utils.auth.user_db import UserDB
+        is_valid = await UserDB.verify_credentials(request.username, request.password)
+    else:
+        is_valid = await jwt_auth.verify_credentials(request.username, request.password)
     
     if not is_valid:
         raise HTTPException(
