@@ -108,7 +108,7 @@ class SessionDB:
             )
 
     @classmethod
-    def get_session(cls, session_id: str) -> Optional[dict]:
+    async def get_session(cls, session_id: str) -> Optional[dict]:
         """
         获取 Session（先内存，后数据库）
 
@@ -126,7 +126,7 @@ class SessionDB:
 
         # 内存未命中，查数据库
         if cls.is_enabled():
-            row = DatabasePool.fetchrow(
+            row = await DatabasePool.fetchrow(
                 "SELECT session_id, user_id, username, created_at FROM sessions WHERE session_id = $1",
                 session_id
             )
@@ -144,7 +144,7 @@ class SessionDB:
         return None
 
     @classmethod
-    def verify_session(cls, session_id: str, username: str) -> bool:
+    async def verify_session(cls, session_id: str, username: str) -> bool:
         """
         验证 Session 是否属于指定用户
 
@@ -155,7 +155,7 @@ class SessionDB:
         Returns:
             bool: Session 属于该用户返回 True
         """
-        session = cls.get_session(session_id)
+        session = await cls.get_session(session_id)
         if not session:
             return False
         return session['username'] == username

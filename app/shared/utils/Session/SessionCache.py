@@ -64,7 +64,9 @@ class SessionCache:
             Optional[dict]: 会话信息，如果不存在返回None
         """
         if SessionDB.is_enabled():
-            return self._db.get_session(session_id)
+            import asyncio
+            loop = asyncio.get_event_loop()
+            return loop.run_until_complete(self._db.get_session(session_id))
         else:
             return session_cache_original.get_session(session_id)
 
@@ -80,7 +82,9 @@ class SessionCache:
             bool: 如果会话属于该用户返回True，否则返回False
         """
         if SessionDB.is_enabled():
-            return self._db.verify_session(session_id, username)
+            import asyncio
+            loop = asyncio.get_event_loop()
+            return loop.run_until_complete(self._db.verify_session(session_id, username))
         else:
             return session_cache_original.verify_session(session_id, username)
 
