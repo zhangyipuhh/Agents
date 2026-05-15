@@ -59,40 +59,28 @@ router = APIRouter(prefix='/api/session', tags=['Session Management'])
 async def create_session(request: Request):
     """
     创建新会话API端点
-    
+
     生成一个新的会话ID，用于隔离不同用户的文件。
     需要提供有效的 JWT token。
-    
-    工作流程：
-    1. 从请求头获取 JWT token
-    2. 验证 token 并获取用户名
-    3. 生成唯一的会话ID（使用UUID）
-    4. 创建对应的会话目录
-    5. 将 session_id 与用户名映射存入缓存
-    6. 返回会话ID
-    
-    Args:
-        request (Request): FastAPI 请求对象
-        
-    Returns:
-        SessionCreateResponse: 包含生成的会话ID和成功消息
-        
-    Raises:
-        HTTPException: 当创建会话失败时抛出500错误
     """
     try:
-        # 从 request.state 获取用户名（由 JWT 中间件设置）
         username = request.state.username
-        
         if not username:
             raise HTTPException(status_code=401, detail="未认证")
-        
+
+        from app.shared.utils.auth.user_db import UserDB
+        from app.shared.utils.Session.SessionCache import session_cache
+
+        user = await UserDB.get_user_by_username(username)
+        if not user:
+            raise HTTPException(status_code=401, detail="用户不存在")
+
         session_id = str(uuid.uuid4())
         session_dir = file_transfer._get_session_dir(session_id)
-        
-        # 将 session_id 与用户名映射存入缓存
-        session_cache.add_session(session_id, username)
-        
+
+        # 添加 session（传入 user_id）
+        await session_cache.add_session(session_id, username, user['id'])
+
         return SessionCreateResponse(
             session_id=session_id,
             message="会话创建成功"
