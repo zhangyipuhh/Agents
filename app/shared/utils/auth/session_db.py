@@ -19,8 +19,20 @@ async def init_session_schema():
     """
     会话表结构初始化
 
-    创建会话表，包含会话ID、用户ID（外键）、用户名和创建时间
+    创建用户表（如果不存在）和会话表，包含会话ID、用户ID（外键）、用户名和创建时间
     """
+    # 先创建 users 表（如果尚未创建）
+    await DatabasePool.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            username VARCHAR(100) UNIQUE NOT NULL,
+            password_hash VARCHAR(255) NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+
+    # 再创建 sessions 表
     await DatabasePool.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
             session_id VARCHAR(100) PRIMARY KEY,

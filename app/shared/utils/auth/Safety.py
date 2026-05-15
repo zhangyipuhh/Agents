@@ -19,7 +19,6 @@ from datetime import datetime, timedelta
 from typing import Optional, List
 from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.shared.utils.Session.SessionCache import session_cache
 
 
