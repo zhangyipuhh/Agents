@@ -235,12 +235,16 @@ onUnmounted(() => {
       </button>
     </nav>
 
-    <template v-if="!isSidebarCollapsed">
-
     <!-- 分组：ZYP实验室 -->
-    <div class="sidebar-group">
-      <button class="group-header" @click="toggleLab">
+    <div class="sidebar-group" :class="{ 'collapsed-group': isSidebarCollapsed }">
+      <button
+        class="group-header"
+        :class="{ 'collapsed-header': isSidebarCollapsed }"
+        data-tooltip="ZYP实验室"
+        @click="toggleLab"
+      >
         <svg
+          v-show="!isSidebarCollapsed"
           class="group-collapse-icon"
           :class="{ collapsed: isLabCollapsed }"
           viewBox="0 0 20 20"
@@ -248,10 +252,18 @@ onUnmounted(() => {
         >
           <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"/>
         </svg>
-        <span class="group-title">ZYP实验室</span>
+        <svg
+          v-show="isSidebarCollapsed"
+          class="group-icon"
+          viewBox="0 0 20 20"
+          fill="currentColor"
+        >
+          <path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clip-rule="evenodd"/>
+        </svg>
+        <span v-show="!isSidebarCollapsed" class="group-title">ZYP实验室</span>
       </button>
       <transition name="slide">
-        <div v-show="!isLabCollapsed" class="group-items">
+        <div v-show="!isLabCollapsed && !isSidebarCollapsed" class="group-items">
           <!-- 地图操作 (Beta) -->
           <button
             class="menu-item menu-item-sm"
@@ -306,12 +318,15 @@ onUnmounted(() => {
     </div>
 
     <!-- 分组：专家 -->
-    <div class="sidebar-group">
+    <div class="sidebar-group" :class="{ 'collapsed-group': isSidebarCollapsed }">
       <button
         class="group-header"
+        :class="{ 'collapsed-header': isSidebarCollapsed }"
+        data-tooltip="专家"
         @click="toggleExpert"
       >
         <svg
+          v-show="!isSidebarCollapsed"
           class="group-collapse-icon"
           :class="{ collapsed: isExpertCollapsed }"
           viewBox="0 0 20 20"
@@ -319,10 +334,18 @@ onUnmounted(() => {
         >
           <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"/>
         </svg>
-        <span class="group-title">专家</span>
+        <svg
+          v-show="isSidebarCollapsed"
+          class="group-icon"
+          viewBox="0 0 20 20"
+          fill="currentColor"
+        >
+          <path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z"/>
+        </svg>
+        <span v-show="!isSidebarCollapsed" class="group-title">专家</span>
       </button>
       <transition name="slide">
-        <div v-show="!isExpertCollapsed" class="group-items">
+        <div v-show="!isExpertCollapsed && !isSidebarCollapsed" class="group-items">
           <button
             class="menu-item menu-item-sm"
             :class="{ active: activeMenu === 'experts' }"
@@ -338,9 +361,15 @@ onUnmounted(() => {
     </div>
 
     <!-- 任务记录区（可折叠） -->
-    <div class="sidebar-history">
-      <button class="history-header" @click="toggleHistory">
+    <div class="sidebar-history" :class="{ 'collapsed-history': isSidebarCollapsed }">
+      <button
+        class="history-header"
+        :class="{ 'collapsed-header': isSidebarCollapsed }"
+        data-tooltip="任务记录"
+        @click="toggleHistory"
+      >
         <svg
+          v-show="!isSidebarCollapsed"
           class="collapse-icon"
           :class="{ collapsed: isHistoryCollapsed }"
           viewBox="0 0 20 20"
@@ -348,11 +377,19 @@ onUnmounted(() => {
         >
           <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"/>
         </svg>
-        <span class="history-title">任务记录</span>
+        <svg
+          v-show="isSidebarCollapsed"
+          class="history-icon"
+          viewBox="0 0 20 20"
+          fill="currentColor"
+        >
+          <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd"/>
+        </svg>
+        <span v-show="!isSidebarCollapsed" class="history-title">任务记录</span>
       </button>
 
       <transition name="slide">
-        <div v-show="!isHistoryCollapsed" class="history-list">
+        <div v-show="!isHistoryCollapsed && !isSidebarCollapsed" class="history-list">
           <button
             v-for="session in historySessions"
             :key="session.id"
@@ -367,7 +404,6 @@ onUnmounted(() => {
         </div>
       </transition>
     </div>
-    </template>
 
     <!-- 底部用户信息 -->
     <div ref="userMenuRef" class="sidebar-user" :class="{ 'user-menu-active': isUserMenuVisible }" @click="toggleUserMenu($event)">
@@ -418,25 +454,34 @@ onUnmounted(() => {
   transition: width 0.3s ease, min-width 0.3s ease;
 
   &.collapsed {
-      width: 60px;
-      min-width: 60px;
+    width: 60px;
+    min-width: 60px;
 
-      .sidebar-logo {
-        justify-content: center;
-        position: relative;
-        cursor: pointer;
+    .sidebar-logo {
+      justify-content: center;
+      position: relative;
+      cursor: pointer;
 
+      .logo-container {
+        transition: opacity 0.2s ease;
+      }
+
+      .sidebar-toggle {
+        position: absolute;
+        opacity: 0;
+        transition: opacity 0.2s ease;
+      }
+
+      &:hover {
         .logo-container {
-          transition: opacity 0.2s ease;
           opacity: 0;
         }
 
         .sidebar-toggle {
-          position: absolute;
           opacity: 1;
-          transition: opacity 0.2s ease;
         }
       }
+    }
 
     .sidebar-nav {
       padding: 12px 6px;
@@ -1036,6 +1081,95 @@ onUnmounted(() => {
 }
 
 :global(.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip]:hover)::after {
+  transform: translateY(-50%) scale(1);
+}
+
+/* 折叠状态下分组标题和历史标题的样式 */
+.sidebar.collapsed .sidebar-group,
+.sidebar.collapsed .sidebar-history {
+  padding: 6px;
+  margin-top: 4px;
+}
+
+.sidebar.collapsed .group-header,
+.sidebar.collapsed .history-header {
+  justify-content: center;
+  padding: 10px;
+  border: none;
+  background-color: transparent;
+}
+
+.sidebar.collapsed .group-header:hover,
+.sidebar.collapsed .history-header:hover {
+  background-color: var(--color-bg-hover);
+}
+
+.sidebar.collapsed .group-icon,
+.sidebar.collapsed .history-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+}
+
+/* 折叠状态下分组标题和历史标题的 Tooltip 样式 */
+.sidebar.collapsed .group-header[data-tooltip],
+.sidebar.collapsed .history-header[data-tooltip] {
+  position: relative;
+}
+
+/* Tooltip 内容 */
+.sidebar.collapsed .group-header[data-tooltip]::after,
+.sidebar.collapsed .history-header[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: calc(100% + 12px);
+  top: 50%;
+  transform: translateY(-50%) scale(0.95);
+  padding: 8px 12px;
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+/* Tooltip 箭头 */
+.sidebar.collapsed .group-header[data-tooltip]::before,
+.sidebar.collapsed .history-header[data-tooltip]::before {
+  content: '';
+  position: absolute;
+  left: calc(100% + 6px);
+  top: 50%;
+  transform: translateY(-50%);
+  border: 6px solid transparent;
+  border-right-color: var(--color-bg-primary);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, visibility 0.2s;
+  z-index: 1001;
+  pointer-events: none;
+}
+
+/* 悬停时显示 Tooltip */
+.sidebar.collapsed .group-header[data-tooltip]:hover::after,
+.sidebar.collapsed .group-header[data-tooltip]:hover::before,
+.sidebar.collapsed .history-header[data-tooltip]:hover::after,
+.sidebar.collapsed .history-header[data-tooltip]:hover::before {
+  opacity: 1;
+  visibility: visible;
+}
+
+.sidebar.collapsed .group-header[data-tooltip]:hover::after,
+.sidebar.collapsed .history-header[data-tooltip]:hover::after {
   transform: translateY(-50%) scale(1);
 }
 </style>
