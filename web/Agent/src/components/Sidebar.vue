@@ -193,7 +193,7 @@ onUnmounted(() => {
     </div>
 
     <!-- 主导航区域 -->
-    <nav class="sidebar-nav">
+    <div class="sidebar-nav">
       <!-- 新建任务 -->
       <button
         class="menu-item menu-item-primary"
@@ -233,7 +233,7 @@ onUnmounted(() => {
         </svg>
         <span v-show="!isSidebarCollapsed" class="menu-text">资产</span>
       </button>
-    </nav>
+    </div>
 
     <!-- 分组：ZYP实验室 -->
     <div class="sidebar-group" :class="{ 'collapsed-group': isSidebarCollapsed }">
@@ -443,61 +443,53 @@ onUnmounted(() => {
 <style scoped>
 .sidebar {
   width: var(--sidebar-width);
-  min-width: var(--sidebar-width);
   height: 100%;
   background-color: var(--color-bg-primary);
   border-right: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;
+  flex-shrink: 0;
   overflow: hidden;
-  contain: var(--contain-layout);
-  transition: width 0.3s ease, min-width 0.3s ease;
+  transition: width 0.3s ease;
+}
 
-  &.collapsed {
-    width: 60px;
-    min-width: 60px;
+/* 折叠状态：强制窄宽度 — 使用 !important 覆盖所有竞争规则 */
+.sidebar.collapsed {
+  width: 60px !important;
+  min-width: 60px !important;
+  max-width: 60px !important;
+}
 
-    .sidebar-logo {
-      justify-content: center;
-      position: relative;
-      cursor: pointer;
+/* 折叠状态下的 Logo 区域 */
+.sidebar.collapsed .sidebar-logo {
+  justify-content: center;
+  position: relative;
+  cursor: pointer;
+}
 
-      .logo-container {
-        transition: opacity 0.2s ease;
-      }
+.sidebar.collapsed .sidebar-logo .logo-container {
+  transition: opacity 0.2s ease;
+}
 
-      .sidebar-toggle {
-        position: absolute;
-        opacity: 0;
-        transition: opacity 0.2s ease;
-      }
+.sidebar.collapsed .sidebar-logo .sidebar-toggle {
+  position: absolute;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
 
-      &:hover {
-        .logo-container {
-          opacity: 0;
-        }
+.sidebar.collapsed .sidebar-logo:hover .logo-container {
+  opacity: 0;
+}
 
-        .sidebar-toggle {
-          opacity: 1;
-        }
-      }
-    }
+.sidebar.collapsed .sidebar-logo:hover .sidebar-toggle {
+  opacity: 1;
+}
 
-    .sidebar-nav {
-      padding: 12px 6px;
-    }
-
-    .menu-item {
-      justify-content: center;
-      padding: 10px;
-    }
-
-    .sidebar-user {
-      justify-content: center;
-      padding: 6px;
-      margin-top: auto;
-    }
-  }
+/* 折叠状态下的用户信息 */
+.sidebar.collapsed .sidebar-user {
+  justify-content: center;
+  padding: 6px;
+  margin-top: auto;
 }
 
 /* Logo 区域 */
@@ -628,14 +620,29 @@ onUnmounted(() => {
   background-color: var(--color-accent);
   color: white;
 
+  .menu-icon {
+    color: white;
+    opacity: 1;
+  }
+
   &:hover {
     background-color: var(--color-accent-hover);
     color: white;
+
+    .menu-icon {
+      color: white;
+      opacity: 1;
+    }
   }
 
   &.active {
     background-color: var(--color-accent-hover);
     color: white;
+
+    .menu-icon {
+      color: white;
+      opacity: 1;
+    }
   }
 }
 
@@ -1029,13 +1036,59 @@ onUnmounted(() => {
   transform: translateY(0);
 }
 
-/* 折叠状态下导航按钮 Tooltip 样式 - 全部使用 :global 确保样式穿透 */
-:global(.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip]) {
+/* 折叠状态下的主导航区域 */
+.sidebar.collapsed .sidebar-nav {
+  display: flex !important;
+  flex-direction: column !important;
+  width: 100% !important;
+  gap: 4px;
+  padding: 12px 6px;
+  min-height: 60px;
+}
+
+.sidebar.collapsed .sidebar-nav .menu-item {
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+  padding: 10px !important;
+  min-width: 40px !important;
+  min-height: 40px !important;
+  width: 100% !important;
+  gap: 0 !important;
+}
+
+.sidebar.collapsed .sidebar-nav .menu-icon {
+  width: 20px !important;
+  height: 20px !important;
+  color: var(--color-text-secondary) !important;
+  opacity: 1 !important;
+  flex-shrink: 0;
+}
+
+.sidebar.collapsed .sidebar-nav .menu-item:hover .menu-icon {
+  color: var(--color-text-primary) !important;
+}
+
+.sidebar.collapsed .sidebar-nav .menu-item.active .menu-icon {
+  color: var(--color-accent) !important;
+}
+
+.sidebar.collapsed .sidebar-nav .menu-item.menu-item-primary {
+  background-color: var(--color-accent) !important;
+}
+
+.sidebar.collapsed .sidebar-nav .menu-item.menu-item-primary .menu-icon {
+  color: white !important;
+  opacity: 1 !important;
+}
+
+/* 折叠状态下导航按钮 Tooltip 样式 */
+.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip] {
   position: relative;
 }
 
 /* Tooltip 内容 */
-:global(.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip])::after {
+.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip]::after {
   content: attr(data-tooltip);
   position: absolute;
   left: calc(100% + 12px);
@@ -1058,7 +1111,7 @@ onUnmounted(() => {
 }
 
 /* Tooltip 箭头 */
-:global(.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip])::before {
+.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip]::before {
   content: '';
   position: absolute;
   left: calc(100% + 6px);
@@ -1074,13 +1127,13 @@ onUnmounted(() => {
 }
 
 /* 悬停时显示 Tooltip */
-:global(.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip]:hover)::after,
-:global(.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip]:hover)::before {
+.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip]:hover::after,
+.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip]:hover::before {
   opacity: 1;
   visibility: visible;
 }
 
-:global(.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip]:hover)::after {
+.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip]:hover::after {
   transform: translateY(-50%) scale(1);
 }
 
