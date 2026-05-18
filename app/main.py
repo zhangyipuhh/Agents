@@ -39,6 +39,7 @@ from app.core.server import create_app
 from app.shared.routers.file_router import router as file_router
 from app.shared.routers.session_router import router as session_router
 from app.shared.routers.auth_router import router as auth_router
+from app.shared.routers.user_router import router as user_router
 from app.features.contract_host_agent.router.contract_router import router as contract_router
 from app.features.map_agent.router.map_router import router as map_router
 from app.features.AI_Coding_Check_agent.router.ai_coding_check_router import router as ai_coding_check_router
@@ -54,6 +55,7 @@ def register_routers():
     注册所有路由
     """
     app.include_router(auth_router)
+    app.include_router(user_router)
     app.include_router(file_router)
     app.include_router(session_router)
     app.include_router(contract_router)

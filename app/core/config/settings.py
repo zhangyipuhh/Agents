@@ -216,6 +216,30 @@ class FileParserSettings(BaseSettings):
         return v
 
 
+class DatabaseSettings(BaseSettings):
+    """
+    数据库配置
+
+    从环境变量加载数据库相关配置。
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    database_url: str = Field(
+        default="postgresql://postgres:postgres@localhost:5432/feature_agent",
+        description="PostgreSQL 连接字符串"
+    )
+    auth_storage_mode: str = Field(
+        default="memory",
+        description="认证存储模式：memory 或 postgres"
+    )
+
+
 class Settings(BaseSettings):
     """
     应用总配置
@@ -232,6 +256,7 @@ class Settings(BaseSettings):
     word_output: WordOutputSettings = Field(default_factory=WordOutputSettings)
     mcp: MCPSettings = Field(default_factory=MCPSettings)
     file_parser: FileParserSettings = Field(default_factory=FileParserSettings)
+    database: DatabaseSettings = Field(default_factory=DatabaseSettings)
 
     def get_llm_config(self) -> dict:
         """

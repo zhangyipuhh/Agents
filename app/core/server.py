@@ -37,12 +37,24 @@ async def lifespan(app: FastAPI):
     Yields:
         None: 应用运行期间的控制权
     """
-    print("🔍 DEBUG: lifespan 函数开始执行")
+    print("[DEBUG] lifespan 函数开始执行")
+
+    # 初始化数据库连接池
+    from app.core.database import DatabasePool
+    await DatabasePool.initialize()
+    if DatabasePool.is_enabled():
+        # 注册并初始化所有 Schema
+        await DatabasePool.register_schemas()
+
+    # 启动时加载 Session 到内存缓存
+    from app.shared.utils.auth.session_db import SessionDB
+    await SessionDB.initialize()
+
     # 添加 Swagger 文档路径到白名单
     jwt_auth.add_to_whitelist("/api/auth/login")
-    print("🔍 DEBUG: 已添加 /api/auth/login 到白名单")
+    print("[DEBUG] 已添加 /api/auth/login 到白名单")
     jwt_auth.add_to_whitelist("/docs")
-    print("🔍 DEBUG: 已添加 /docs 到白名单")
+    print("[DEBUG] 已添加 /docs 到白名单")
     jwt_auth.add_to_whitelist("/openapi.json")
     jwt_auth.add_to_whitelist("/redoc")
     # Swagger UI 静态资源路径到白名单
@@ -60,7 +72,7 @@ async def lifespan(app: FastAPI):
 
     # 初始化 MCPToolsRegistry
     mcp_configs = settings.mcp.get_mcp_config()
-    print(f"🔍 DEBUG: 获取到 mcp_configs: {mcp_configs}")
+    print(f"[DEBUG] 获取到 mcp_configs: {mcp_configs}")
     app.state.mcp_registry = None
     if mcp_configs:
         registry = MCPToolsRegistry.get_instance()
@@ -73,14 +85,18 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logging.error("Failed to initialize MCPToolsRegistry: %s", e, exc_info=True)
 
-    print("🔍 DEBUG: lifespan yield 即将执行")
+    print("[DEBUG] lifespan yield 即将执行")
     yield
-    print("🔍 DEBUG: lifespan yield 后，清理资源")
+    print("[DEBUG] lifespan yield 后，清理资源")
 
     # 关闭 MCPToolsRegistry
     if hasattr(app.state, "mcp_registry") and app.state.mcp_registry is not None:
         await app.state.mcp_registry.shutdown()
         logging.info("MCPToolsRegistry shutdown complete")
+
+    # 关闭数据库连接池
+    if DatabasePool.is_enabled():
+        await DatabasePool.close()
 
 
 def setup_middleware(app: FastAPI):

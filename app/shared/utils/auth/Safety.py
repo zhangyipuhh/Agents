@@ -19,7 +19,6 @@ from datetime import datetime, timedelta
 from typing import Optional, List
 from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.shared.utils.Session.SessionCache import session_cache
 
 
@@ -74,15 +73,21 @@ class JWTAuth:
     async def verify_credentials(self, username: str, password: str) -> bool:
         """
         验证用户凭据
-        
+
         Args:
             username (str): 用户名
             password (str): 密码
-            
+
         Returns:
             bool: 验证成功返回True，否则返回False
         """
-        return username == self.username and password == self.password
+        from app.core.database import DatabasePool
+
+        if DatabasePool.is_enabled():
+            from app.shared.utils.auth.user_db import UserDB
+            return await UserDB.verify_credentials(username, password)
+        else:
+            return username == self.username and password == self.password
     
     async def generate_token(self, username: str) -> str:
         """
