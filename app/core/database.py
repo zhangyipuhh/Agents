@@ -67,7 +67,10 @@ class DatabasePool:
         Returns:
             bool: AUTH_STORAGE_MODE=postgres 时返回 True
         """
-        return os.getenv("AUTH_STORAGE_MODE", "memory") == "postgres"
+        mode = os.getenv("AUTH_STORAGE_MODE", "memory")
+        result = mode == "postgres"
+        #print(f"[诊断-DatabasePool] is_enabled(): AUTH_STORAGE_MODE='{mode}', result={result}")
+        return result
 
     @classmethod
     async def initialize(cls, min_size: int = 5, max_size: int = 20):
@@ -78,13 +81,16 @@ class DatabasePool:
             min_size: 最小连接数
             max_size: 最大连接数
         """
+        #print(f"[诊断-DatabasePool] initialize() 被调用, _initialized={cls._initialized}, _pool={'已存在' if cls._pool else 'None'}")
         if cls._initialized:
             return
 
         if not cls.is_enabled():
+            #print(f"[诊断-DatabasePool] initialize() 跳过数据库连接（记忆模式）")
             cls._initialized = True
             return
 
+        #print(f"[诊断-DatabasePool] initialize() 正在创建连接池...")
         cls._pool = await asyncpg.create_pool(
             dsn=cls.get_dsn(),
             min_size=min_size,
@@ -118,7 +124,12 @@ class DatabasePool:
             RuntimeError: 连接池未初始化
         """
         if not cls._pool:
-            raise RuntimeError("Database pool not initialized. Call initialize() first or set AUTH_STORAGE_MODE=memory")
+            current_mode = os.getenv("AUTH_STORAGE_MODE", "memory")
+            raise RuntimeError(
+                f"Database pool not initialized. "
+                f"Current AUTH_STORAGE_MODE='{current_mode}'. "
+                f"Call initialize() first or set AUTH_STORAGE_MODE=memory"
+            )
         async with cls._pool.acquire() as conn:
             return await conn.execute(query, *args)
 
@@ -138,7 +149,12 @@ class DatabasePool:
             RuntimeError: 连接池未初始化
         """
         if not cls._pool:
-            raise RuntimeError("Database pool not initialized. Call initialize() first or set AUTH_STORAGE_MODE=memory")
+            current_mode = os.getenv("AUTH_STORAGE_MODE", "memory")
+            raise RuntimeError(
+                f"Database pool not initialized. "
+                f"Current AUTH_STORAGE_MODE='{current_mode}'. "
+                f"Call initialize() first or set AUTH_STORAGE_MODE=memory"
+            )
         async with cls._pool.acquire() as conn:
             return await conn.fetch(query, *args)
 
@@ -158,7 +174,12 @@ class DatabasePool:
             RuntimeError: 连接池未初始化
         """
         if not cls._pool:
-            raise RuntimeError("Database pool not initialized. Call initialize() first or set AUTH_STORAGE_MODE=memory")
+            current_mode = os.getenv("AUTH_STORAGE_MODE", "memory")
+            raise RuntimeError(
+                f"Database pool not initialized. "
+                f"Current AUTH_STORAGE_MODE='{current_mode}'. "
+                f"Call initialize() first or set AUTH_STORAGE_MODE=memory"
+            )
         async with cls._pool.acquire() as conn:
             return await conn.fetchrow(query, *args)
 

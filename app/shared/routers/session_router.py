@@ -65,13 +65,17 @@ async def create_session(request: Request):
     """
     try:
         username = request.state.username
+        #print(f"[诊断-session_router] create_session: username={username}")
         if not username:
             raise HTTPException(status_code=401, detail="未认证")
 
         from app.shared.utils.auth.user_db import UserDB
         from app.shared.utils.Session.SessionCache import session_cache
+        from app.core.database import DatabasePool
 
+        #print(f"[诊断-session_router] create_session: DatabasePool.is_enabled()={DatabasePool.is_enabled()}")
         user = await UserDB.get_user_by_username(username)
+        #print(f"[诊断-session_router] create_session: UserDB.get_user_by_username('{username}') -> {user}")
         if not user:
             raise HTTPException(status_code=401, detail="用户不存在")
 
@@ -79,7 +83,7 @@ async def create_session(request: Request):
         session_dir = file_transfer._get_session_dir(session_id)
 
         # 添加 session（传入 user_id）
-        await session_cache.add_session(session_id, username, user['id'])
+        session_cache.add_session(session_id, username, user['id'])
 
         return SessionCreateResponse(
             session_id=session_id,
@@ -88,6 +92,9 @@ async def create_session(request: Request):
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
+        #print(f"[诊断-session_router] create_session 异常: {e}")
+        #print(f"[诊断-session_router] 堆栈: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"创建会话失败: {str(e)}")
 
 

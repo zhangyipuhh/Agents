@@ -184,18 +184,23 @@ class UserDB:
             Optional[dict]: 用户信息，不存在返回 None
         """
         if not cls.is_enabled():
+            #print(f"[诊断-UserDB] get_user_by_username('{username}'): 记忆模式, _memory_users keys={list(cls._memory_users.keys())}")
             # Memory 模式：从内存存储查询
             with cls._lock:
                 user = cls._memory_users.get(username)
                 if not user:
+                    #print(f"[诊断-UserDB] get_user_by_username: 用户 '{username}' 不在内存中, 返回 None")
                     return None
-                return {
+                result = {
                     'id': user['id'],
                     'username': user['username'],
                     'created_at': user['created_at'],
                     'updated_at': user['updated_at']
                 }
+                #print(f"[诊断-UserDB] get_user_by_username: 返回 {result}")
+                return result
 
+        #print(f"[诊断-UserDB] get_user_by_username('{username}'): 数据库模式")
         # Postgres 模式：从数据库查询
         return await DatabasePool.fetchrow(
             "SELECT id, username, created_at, updated_at FROM users WHERE username = $1",

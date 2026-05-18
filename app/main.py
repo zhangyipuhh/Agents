@@ -15,6 +15,18 @@ import logging
 import warnings
 import argparse
 
+import os
+from dotenv import load_dotenv, find_dotenv
+
+_dotenv_path = find_dotenv()
+#print(f"[诊断-main] find_dotenv 找到的 .env 文件: {_dotenv_path}")
+if _dotenv_path:
+    _loaded = load_dotenv(dotenv_path=_dotenv_path, verbose=True)
+    #print(f"[诊断-main] load_dotenv 返回: {_loaded}")
+else:
+    print("[诊断-main] 未找到 .env 文件！")
+#print(f"[诊断-main] os.environ['AUTH_STORAGE_MODE'] = {os.environ.get('AUTH_STORAGE_MODE', '<<未设置>>')}")
+
 from app.shared.tools.middleware.filesystem_encoding_fix import apply_fix
 
 apply_fix()
