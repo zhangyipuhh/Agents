@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 
 const props = defineProps({
   currentPage: {
@@ -17,6 +17,7 @@ const isExpertCollapsed = ref(false)
 const activeMenu = ref('new-task')
 const isUserMenuVisible = ref(false)
 const userMenuRef = ref(null)
+const menuPositionStyle = ref({})
 
 const historySessions = ref([
   { id: 1, title: '数据分析报告生成', time: '10:30', active: true },
@@ -64,8 +65,10 @@ const toggleExpert = () => {
 
 /**
  * 切换用户菜单显示状态
+ * @param {MouseEvent} event - 鼠标事件对象
  */
-const toggleUserMenu = () => {
+const toggleUserMenu = (event) => {
+  event.stopPropagation()
   isUserMenuVisible.value = !isUserMenuVisible.value
 }
 
@@ -95,21 +98,78 @@ const handleLogout = () => {
 }
 
 /**
+ * 更新用户菜单位置
+ * 根据侧边栏折叠状态和头像位置计算菜单应该显示的位置
+ */
+const updateMenuPosition = () => {
+  if (!userMenuRef.value) return
+
+  const rect = userMenuRef.value.getBoundingClientRect()
+
+  if (isSidebarCollapsed.value) {
+    // 折叠状态：菜单显示在头像上方
+    menuPositionStyle.value = {
+      position: 'fixed',
+      left: `${rect.left}px`,
+      bottom: `${window.innerHeight - rect.top + 8}px`,
+      width: '160px'
+    }
+  } else {
+    // 展开状态：菜单显示在用户信息上方
+    menuPositionStyle.value = {
+      position: 'fixed',
+      left: `${rect.left + 12}px`,
+      bottom: `${window.innerHeight - rect.top + 8}px`,
+      right: `${window.innerWidth - rect.right + 12}px`
+    }
+  }
+}
+
+/**
+ * 处理窗口大小变化
+ */
+const handleResize = () => {
+  if (isUserMenuVisible.value) {
+    updateMenuPosition()
+  }
+}
+
+/**
  * 处理点击外部关闭菜单
  * @param {MouseEvent} event - 鼠标事件对象
  */
 const handleClickOutside = (event) => {
-  if (userMenuRef.value && !userMenuRef.value.contains(event.target)) {
+  // 检查点击是否在头像区域或菜单区域内
+  const isClickOnAvatar = userMenuRef.value?.contains(event.target)
+  const isClickOnMenu = event.target.closest('.user-menu')
+
+  if (!isClickOnAvatar && !isClickOnMenu) {
     closeUserMenu()
   }
 }
 
+// 监听菜单显示状态变化，更新位置
+watch(isUserMenuVisible, (visible) => {
+  if (visible) {
+    nextTick(updateMenuPosition)
+  }
+})
+
+// 监听侧边栏折叠状态变化，更新菜单位置
+watch(isSidebarCollapsed, () => {
+  if (isUserMenuVisible.value) {
+    nextTick(updateMenuPosition)
+  }
+})
+
 onMounted(() => {
   document.addEventListener('click', handleClickOutside)
+  window.addEventListener('resize', handleResize)
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', handleClickOutside)
+  window.removeEventListener('resize', handleResize)
 })
 </script>
 
@@ -138,6 +198,7 @@ onUnmounted(() => {
       <button
         class="menu-item menu-item-primary"
         :class="{ active: activeMenu === 'new-task' }"
+        data-tooltip="新建任务"
         @click="handleMenuClick('new-task')"
       >
         <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
@@ -151,6 +212,7 @@ onUnmounted(() => {
       <button
         class="menu-item"
         :class="{ active: activeMenu === 'search' }"
+        data-tooltip="搜索"
         @click="handleMenuClick('search')"
       >
         <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
@@ -163,6 +225,7 @@ onUnmounted(() => {
       <button
         class="menu-item"
         :class="{ active: activeMenu === 'assets' }"
+        data-tooltip="资产"
         @click="handleMenuClick('assets')"
       >
         <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
@@ -307,7 +370,7 @@ onUnmounted(() => {
     </template>
 
     <!-- 底部用户信息 -->
-    <div ref="userMenuRef" class="sidebar-user" :class="{ 'user-menu-active': isUserMenuVisible }" @click="toggleUserMenu">
+    <div ref="userMenuRef" class="sidebar-user" :class="{ 'user-menu-active': isUserMenuVisible }" @click="toggleUserMenu($event)">
       <div class="user-avatar">
         <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
           <rect width="40" height="40" rx="20" fill="var(--color-accent-light)"/>
@@ -319,9 +382,11 @@ onUnmounted(() => {
         <span class="user-name">用户名</span>
         <span class="user-tag tag-free">免费</span>
       </div>
+    </div>
 
-      <!-- 用户菜单 -->
-      <div v-show="isUserMenuVisible" class="user-menu">
+    <!-- 用户菜单 - 使用 Teleport 移动到 body 层级，避免被父容器 overflow 裁剪 -->
+    <Teleport to="body">
+      <div v-show="isUserMenuVisible" class="user-menu" :class="{ 'is-collapsed': isSidebarCollapsed }" :style="menuPositionStyle">
         <div class="user-menu-item" @click.stop="handleSetting">
           <svg class="menu-item-icon" viewBox="0 0 20 20" fill="currentColor">
             <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/>
@@ -335,7 +400,7 @@ onUnmounted(() => {
           <span>退出登录</span>
         </div>
       </div>
-    </div>
+    </Teleport>
   </aside>
 </template>
 
@@ -353,34 +418,25 @@ onUnmounted(() => {
   transition: width 0.3s ease, min-width 0.3s ease;
 
   &.collapsed {
-    width: 60px;
-    min-width: 60px;
+      width: 60px;
+      min-width: 60px;
 
-    .sidebar-logo {
-      justify-content: center;
-      position: relative;
-      cursor: pointer;
+      .sidebar-logo {
+        justify-content: center;
+        position: relative;
+        cursor: pointer;
 
-      .logo-container {
-        transition: opacity 0.2s ease;
-      }
-
-      .sidebar-toggle {
-        position: absolute;
-        opacity: 0;
-        transition: opacity 0.2s ease;
-      }
-
-      &:hover {
         .logo-container {
+          transition: opacity 0.2s ease;
           opacity: 0;
         }
 
         .sidebar-toggle {
+          position: absolute;
           opacity: 1;
+          transition: opacity 0.2s ease;
         }
       }
-    }
 
     .sidebar-nav {
       padding: 12px 6px;
@@ -848,18 +904,14 @@ onUnmounted(() => {
   padding: 1px 6px;
 }
 
-/* 用户菜单样式 */
+/* 用户菜单样式 - 使用 fixed 定位，通过 Teleport 挂载到 body 层级 */
 .user-menu {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 12px;
-  right: 12px;
   background-color: var(--color-bg-primary);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   padding: 6px;
-  z-index: 100;
+  z-index: 1000;
   animation: menuFadeIn 0.2s ease;
 }
 
@@ -902,12 +954,9 @@ onUnmounted(() => {
   opacity: 0.8;
 }
 
-/* 侧边栏折叠状态下的菜单适配 */
-.sidebar.collapsed .user-menu {
-  left: 60px;
-  bottom: 8px;
-  right: auto;
-  width: 160px;
+/* 侧边栏折叠状态下的菜单适配 - 现在通过动态计算位置实现 */
+.user-menu.is-collapsed {
+  /* 折叠状态下的样式通过 menuPositionStyle 动态设置 */
 }
 
 /* 过渡动画 */
@@ -933,5 +982,60 @@ onUnmounted(() => {
   max-height: 400px;
   opacity: 1;
   transform: translateY(0);
+}
+
+/* 折叠状态下导航按钮 Tooltip 样式 - 全部使用 :global 确保样式穿透 */
+:global(.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip]) {
+  position: relative;
+}
+
+/* Tooltip 内容 */
+:global(.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip])::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: calc(100% + 12px);
+  top: 50%;
+  transform: translateY(-50%) scale(0.95);
+  padding: 8px 12px;
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+/* Tooltip 箭头 */
+:global(.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip])::before {
+  content: '';
+  position: absolute;
+  left: calc(100% + 6px);
+  top: 50%;
+  transform: translateY(-50%);
+  border: 6px solid transparent;
+  border-right-color: var(--color-bg-primary);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, visibility 0.2s;
+  z-index: 1001;
+  pointer-events: none;
+}
+
+/* 悬停时显示 Tooltip */
+:global(.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip]:hover)::after,
+:global(.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip]:hover)::before {
+  opacity: 1;
+  visibility: visible;
+}
+
+:global(.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip]:hover)::after {
+  transform: translateY(-50%) scale(1);
 }
 </style>
