@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 
 const props = defineProps({
   currentPage: {
@@ -15,6 +15,8 @@ const isHistoryCollapsed = ref(false)
 const isLabCollapsed = ref(false)
 const isExpertCollapsed = ref(false)
 const activeMenu = ref('new-task')
+const isUserMenuVisible = ref(false)
+const userMenuRef = ref(null)
 
 const historySessions = ref([
   { id: 1, title: '数据分析报告生成', time: '10:30', active: true },
@@ -59,6 +61,56 @@ const toggleLab = () => {
 const toggleExpert = () => {
   isExpertCollapsed.value = !isExpertCollapsed.value
 }
+
+/**
+ * 切换用户菜单显示状态
+ */
+const toggleUserMenu = () => {
+  isUserMenuVisible.value = !isUserMenuVisible.value
+}
+
+/**
+ * 关闭用户菜单
+ */
+const closeUserMenu = () => {
+  isUserMenuVisible.value = false
+}
+
+/**
+ * 处理设置点击
+ */
+const handleSetting = () => {
+  closeUserMenu()
+  // TODO: 打开设置页面或弹窗
+  console.log('打开设置')
+}
+
+/**
+ * 处理退出登录点击
+ */
+const handleLogout = () => {
+  closeUserMenu()
+  // TODO: 执行退出登录逻辑
+  console.log('退出登录')
+}
+
+/**
+ * 处理点击外部关闭菜单
+ * @param {MouseEvent} event - 鼠标事件对象
+ */
+const handleClickOutside = (event) => {
+  if (userMenuRef.value && !userMenuRef.value.contains(event.target)) {
+    closeUserMenu()
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('click', handleClickOutside)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleClickOutside)
+})
 </script>
 
 <template>
@@ -255,7 +307,7 @@ const toggleExpert = () => {
     </template>
 
     <!-- 底部用户信息 -->
-    <div class="sidebar-user">
+    <div ref="userMenuRef" class="sidebar-user" :class="{ 'user-menu-active': isUserMenuVisible }" @click="toggleUserMenu">
       <div class="user-avatar">
         <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
           <rect width="40" height="40" rx="20" fill="var(--color-accent-light)"/>
@@ -266,6 +318,22 @@ const toggleExpert = () => {
       <div v-show="!isSidebarCollapsed" class="user-info">
         <span class="user-name">用户名</span>
         <span class="user-tag tag-free">免费</span>
+      </div>
+
+      <!-- 用户菜单 -->
+      <div v-show="isUserMenuVisible" class="user-menu">
+        <div class="user-menu-item" @click.stop="handleSetting">
+          <svg class="menu-item-icon" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/>
+          </svg>
+          <span>设置</span>
+        </div>
+        <div class="user-menu-item" @click.stop="handleLogout">
+          <svg class="menu-item-icon" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M3 3a1 1 0 00-1 1v12a1 1 0 102 0V4a1 1 0 00-1-1zm10.293 9.293a1 1 0 001.414 1.414l3-3a1 1 0 000-1.414l-3-3a1 1 0 10-1.414 1.414L14.586 9H7a1 1 0 100 2h7.586l-1.293 1.293z" clip-rule="evenodd"/>
+          </svg>
+          <span>退出登录</span>
+        </div>
       </div>
     </div>
   </aside>
@@ -734,6 +802,15 @@ const toggleExpert = () => {
   padding: 6px 12px;
   border-top: 1px solid var(--color-border-light);
   background-color: var(--color-bg-secondary);
+  position: relative;
+  cursor: pointer;
+  transition: box-shadow 0.2s ease, background-color 0.2s ease;
+
+  /* 用户菜单展开时的激活状态样式 */
+  &.user-menu-active {
+    box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.1);
+    background-color: var(--color-bg-hover);
+  }
 }
 
 .user-avatar {
@@ -758,7 +835,7 @@ const toggleExpert = () => {
 }
 
 .user-name {
-  font-size: calc(var(--font-size-base) * 0.7);
+  font-size: calc(var(--font-size-base) * 0.9);
   font-weight: var(--font-weight-medium);
   color: var(--color-text-primary);
   overflow: hidden;
@@ -769,6 +846,68 @@ const toggleExpert = () => {
 .sidebar-user .tag {
   font-size: 8px;
   padding: 1px 6px;
+}
+
+/* 用户菜单样式 */
+.user-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 12px;
+  right: 12px;
+  background-color: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  padding: 6px;
+  z-index: 100;
+  animation: menuFadeIn 0.2s ease;
+}
+
+@keyframes menuFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.user-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: var(--transition-colors);
+}
+
+.user-menu-item:hover {
+  background-color: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.user-menu-item:active {
+  transform: scale(var(--scale-active));
+}
+
+.menu-item-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+
+/* 侧边栏折叠状态下的菜单适配 */
+.sidebar.collapsed .user-menu {
+  left: 60px;
+  bottom: 8px;
+  right: auto;
+  width: 160px;
 }
 
 /* 过渡动画 */
