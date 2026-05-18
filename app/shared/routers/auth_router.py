@@ -111,6 +111,11 @@ async def login(request: LoginRequest):
             detail="用户名或密码错误"
         )
     
+    if not DatabasePool.is_enabled():
+        from app.shared.utils.auth.user_db import UserDB
+        if not await UserDB.get_user_by_username(request.username):
+            await UserDB.create_user(request.username, request.password)
+    
     token = await jwt_auth.generate_token(request.username)
     
     return LoginResponse(

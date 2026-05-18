@@ -207,6 +207,17 @@ class SessionDB:
         Returns:
             int: 删除的 session 数量
         """
+        if not cls.is_enabled():
+            # Memory 模式：只删除内存中的 session
+            session_ids = []
+            with cls._lock:
+                for session_id, session in list(cls._memory_cache.items()):
+                    if session.get('user_id') == user_id:
+                        session_ids.append(session_id)
+                        del cls._memory_cache[session_id]
+            return len(session_ids)
+
+        # Postgres 模式：从数据库查询并删除
         rows = await DatabasePool.fetch(
             "SELECT session_id FROM sessions WHERE user_id = $1",
             user_id
@@ -220,11 +231,8 @@ class SessionDB:
                     del cls._memory_cache[session_id]
 
         # 删除数据库
-        if cls.is_enabled():
-            await DatabasePool.execute(
-                "DELETE FROM sessions WHERE user_id = $1",
-                user_id
-            )
-            return len(session_ids)
-
-        return 0
+        await DatabasePool.execute(
+            "DELETE FROM sessions WHERE user_id = $1",
+            user_id
+        )
+        return len(session_ids)

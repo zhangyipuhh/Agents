@@ -41,7 +41,9 @@ async def lifespan(app: FastAPI):
 
     # 初始化数据库连接池
     from app.core.database import DatabasePool
+    #print(f"[诊断-server] 调用 DatabasePool.initialize() 前: is_enabled={DatabasePool.is_enabled()}")
     await DatabasePool.initialize()
+    #print(f"[诊断-server] 调用 DatabasePool.initialize() 后: is_enabled={DatabasePool.is_enabled()}")
     if DatabasePool.is_enabled():
         # 注册并初始化所有 Schema
         await DatabasePool.register_schemas()

@@ -189,18 +189,6 @@ class JWTAuth:
 
 
 async def auth_middleware(request: Request, call_next):
-    """
-    JWT认证中间件
-    
-    拦截所有请求，验证JWT令牌（白名单路径除外）。
-    
-    Args:
-        request (Request): FastAPI请求对象
-        call_next: 下一个中间件或路由处理器
-        
-    Returns:
-        Response: 处理后的响应
-    """
     path = request.url.path
     
     # 检查路径是否在白名单中
@@ -212,6 +200,9 @@ async def auth_middleware(request: Request, call_next):
         await jwt_auth.authenticate(request)
         return await call_next(request)
     except Exception as e:
+        import traceback
+        #print(f"[诊断-auth_middleware] path={path}, 异常: {e}")
+        #print(f"[诊断-auth_middleware] 堆栈: {traceback.format_exc()}")
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={"detail": str(e)}
@@ -234,6 +225,7 @@ async def session_auth_middleware(request: Request, call_next):
         Response: 处理后的响应
     """
     path = request.url.path
+    #print(f"[诊断-session_middleware] 进入, path={path}")
     
     # 检查路径是否在白名单中（白名单路径不需要 session 验证）
     if jwt_auth.is_whitelisted(path):
@@ -241,6 +233,7 @@ async def session_auth_middleware(request: Request, call_next):
     
     # /api/session/create 路径跳过 session 验证（创建 session 时还没有 session_id）
     if path.startswith("/api/session/create"):
+        #print(f"[诊断-session_middleware] /api/session/create 跳过验证")
         return await call_next(request)
     
     try:
@@ -263,7 +256,10 @@ async def session_auth_middleware(request: Request, call_next):
             )
         
         # 验证 session_id 是否属于该用户
+        from app.shared.utils.auth.session_db import SessionDB
+        #print(f"[诊断-session_middleware] SessionDB.is_enabled()={SessionDB.is_enabled()}, username={username}, session_id={session_id}")
         is_valid = session_cache.verify_session(session_id, username)
+        #print(f"[诊断-session_middleware] verify_session result={is_valid}")
         
         if not is_valid:
             return JSONResponse(
@@ -276,6 +272,9 @@ async def session_auth_middleware(request: Request, call_next):
         
         return await call_next(request)
     except Exception as e:
+        import traceback
+        #print(f"[诊断-session_middleware] 异常: {e}")
+        #print(f"[诊断-session_middleware] 堆栈: {traceback.format_exc()}")
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"detail": f"Session 认证失败: {str(e)}"}

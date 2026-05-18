@@ -36,21 +36,16 @@ class SessionCache:
         self._db = SessionDB()
 
     def add_session(self, session_id: str, username: str, user_id: int = 0):
-        """
-        添加会话到缓存
-
-        Args:
-            session_id (str): 会话ID
-            username (str): 用户名
-            user_id (int): 用户ID（postgres模式必需）
-        """
+        #print(f"[诊断-SessionCache] add_session: SessionDB.is_enabled()={SessionDB.is_enabled()}, session_id={session_id}, username={username}")
         if SessionDB.is_enabled():
+            #print(f"[诊断-SessionCache] add_session: 使用数据库路径")
             import asyncio
             loop = asyncio.get_event_loop()
             loop.run_until_complete(
                 self._db.add_session(session_id, user_id, username)
             )
         else:
+            #print(f"[诊断-SessionCache] add_session: 使用内存路径")
             session_cache_original.add_session(session_id, username)
 
     def get_session(self, session_id: str) -> Optional[dict]:
@@ -71,21 +66,14 @@ class SessionCache:
             return session_cache_original.get_session(session_id)
 
     def verify_session(self, session_id: str, username: str) -> bool:
-        """
-        验证会话是否属于指定用户
-
-        Args:
-            session_id (str): 会话ID
-            username (str): 用户名
-
-        Returns:
-            bool: 如果会话属于该用户返回True，否则返回False
-        """
+        #print(f"[诊断-SessionCache] verify_session: SessionDB.is_enabled()={SessionDB.is_enabled()}, session_id={session_id}, username={username}")
         if SessionDB.is_enabled():
+            #print(f"[诊断-SessionCache] verify_session: 使用数据库路径")
             import asyncio
             loop = asyncio.get_event_loop()
             return loop.run_until_complete(self._db.verify_session(session_id, username))
         else:
+            #print(f"[诊断-SessionCache] verify_session: 使用内存路径")
             return session_cache_original.verify_session(session_id, username)
 
     def delete_session(self, session_id: str) -> bool:
