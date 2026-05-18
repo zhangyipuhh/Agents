@@ -6,10 +6,16 @@
 
 通过 @register_schema 装饰器自动注册用户表结构。
 
+支持两种模式：
+- postgres 模式：使用 PostgreSQL 数据库
+- memory 模式：使用内存字典存储
+
 Date: 2026/5/15
 """
+import threading
 import bcrypt
-from typing import Optional, List
+from typing import Optional, List, Dict
+from datetime import datetime
 from app.core.database import DatabasePool, register_schema
 
 
@@ -36,7 +42,25 @@ class UserDB:
     用户数据库操作类
 
     提供用户的创建、验证、查询等方法。
+    支持两种模式：
+    - postgres 模式：使用 PostgreSQL 数据库
+    - memory 模式：使用内存字典存储
     """
+
+    # 内存存储（当 AUTH_STORAGE_MODE=memory 时使用）
+    _memory_users: Dict[str, dict] = {}
+    _memory_id_counter: int = 0
+    _lock = threading.Lock()
+
+    @classmethod
+    def is_enabled(cls) -> bool:
+        """
+        检查是否启用数据库模式
+
+        Returns:
+            bool: AUTH_STORAGE_MODE=postgres 时返回 True
+        """
+        return DatabasePool.is_enabled()
 
     @staticmethod
     def hash_password(password: str) -> str:
@@ -84,8 +108,27 @@ class UserDB:
         Raises:
             ValueError: 用户名已存在
         """
-        import asyncpg
         password_hash = cls.hash_password(password)
+
+        if not cls.is_enabled():
+            # Memory 模式：使用内存存储
+            with cls._lock:
+                if username in cls._memory_users:
+                    raise ValueError("用户名已存在")
+                cls._memory_id_counter += 1
+                user_id = cls._memory_id_counter
+                now = datetime.utcnow()
+                cls._memory_users[username] = {
+                    'id': user_id,
+                    'username': username,
+                    'password_hash': password_hash,
+                    'created_at': now,
+                    'updated_at': now
+                }
+                return user_id
+
+        # Postgres 模式：使用数据库
+        import asyncpg
         try:
             row = await DatabasePool.fetchrow(
                 """
@@ -112,6 +155,15 @@ class UserDB:
         Returns:
             bool: 验证通过返回 True
         """
+        if not cls.is_enabled():
+            # Memory 模式：从内存存储验证
+            with cls._lock:
+                user = cls._memory_users.get(username)
+                if not user:
+                    return False
+                return cls.verify_password(password, user['password_hash'])
+
+        # Postgres 模式：从数据库验证
         row = await DatabasePool.fetchrow(
             "SELECT password_hash FROM users WHERE username = $1",
             username
@@ -131,6 +183,20 @@ class UserDB:
         Returns:
             Optional[dict]: 用户信息，不存在返回 None
         """
+        if not cls.is_enabled():
+            # Memory 模式：从内存存储查询
+            with cls._lock:
+                user = cls._memory_users.get(username)
+                if not user:
+                    return None
+                return {
+                    'id': user['id'],
+                    'username': user['username'],
+                    'created_at': user['created_at'],
+                    'updated_at': user['updated_at']
+                }
+
+        # Postgres 模式：从数据库查询
         return await DatabasePool.fetchrow(
             "SELECT id, username, created_at, updated_at FROM users WHERE username = $1",
             username
@@ -147,6 +213,20 @@ class UserDB:
         Returns:
             Optional[dict]: 用户信息，不存在返回 None
         """
+        if not cls.is_enabled():
+            # Memory 模式：从内存存储查询
+            with cls._lock:
+                for user in cls._memory_users.values():
+                    if user['id'] == user_id:
+                        return {
+                            'id': user['id'],
+                            'username': user['username'],
+                            'created_at': user['created_at'],
+                            'updated_at': user['updated_at']
+                        }
+                return None
+
+        # Postgres 模式：从数据库查询
         return await DatabasePool.fetchrow(
             "SELECT id, username, created_at, updated_at FROM users WHERE id = $1",
             user_id
@@ -164,6 +244,23 @@ class UserDB:
         Returns:
             List[dict]: 用户列表
         """
+        if not cls.is_enabled():
+            # Memory 模式：从内存存储查询
+            with cls._lock:
+                users = list(cls._memory_users.values())
+                sorted_users = sorted(users, key=lambda u: u['id'])
+                paginated_users = sorted_users[offset:offset + limit]
+                return [
+                    {
+                        'id': user['id'],
+                        'username': user['username'],
+                        'created_at': user['created_at'],
+                        'updated_at': user['updated_at']
+                    }
+                    for user in paginated_users
+                ]
+
+        # Postgres 模式：从数据库查询
         return await DatabasePool.fetch(
             "SELECT id, username, created_at, updated_at FROM users ORDER BY id LIMIT $1 OFFSET $2",
             limit,
@@ -181,6 +278,16 @@ class UserDB:
         Returns:
             bool: 删除成功返回 True
         """
+        if not cls.is_enabled():
+            # Memory 模式：从内存存储删除
+            with cls._lock:
+                for username, user in list(cls._memory_users.items()):
+                    if user['id'] == user_id:
+                        del cls._memory_users[username]
+                        return True
+                return False
+
+        # Postgres 模式：从数据库删除
         result = await DatabasePool.execute(
             "DELETE FROM users WHERE id = $1",
             user_id
@@ -200,6 +307,18 @@ class UserDB:
             bool: 更新成功返回 True
         """
         password_hash = cls.hash_password(new_password)
+
+        if not cls.is_enabled():
+            # Memory 模式：更新内存存储中的密码
+            with cls._lock:
+                for user in cls._memory_users.values():
+                    if user['id'] == user_id:
+                        user['password_hash'] = password_hash
+                        user['updated_at'] = datetime.utcnow()
+                        return True
+                return False
+
+        # Postgres 模式：更新数据库中的密码
         result = await DatabasePool.execute(
             "UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2",
             password_hash,
