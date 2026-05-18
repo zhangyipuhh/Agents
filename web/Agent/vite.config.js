@@ -1,11 +1,14 @@
 import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { resolve } from 'path'
+import { resolve, dirname } from 'path'
+import { fileURLToPath } from 'url'
 
 // https://vitejs.dev/config/
+const __dirname = dirname(fileURLToPath(import.meta.url))
+
 export default defineConfig(({ mode }) => {
-  // 加载环境变量，第三个参数 '' 表示加载所有变量（不限于 VITE_ 前缀）
-  const env = loadEnv(mode, process.cwd(), '')
+  // 加载环境变量，从项目根目录加载（向上两级到 feature-agent-core 目录）
+  const env = loadEnv(mode, resolve(__dirname, '../../'), '')
 
   return {
     plugins: [vue()],
@@ -28,7 +31,7 @@ export default defineConfig(({ mode }) => {
     server: {
       proxy: {
         '/api': {
-          target: env.VITE_API_TARGET || 'http://localhost:8002',
+          target: env.VITE_API_TARGET || 'http://localhost:8001',
           changeOrigin: true,
           configure: (proxy) => {
             proxy.on('proxyReq', (proxyReq, req) => {
