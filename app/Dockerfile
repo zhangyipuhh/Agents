@@ -19,8 +19,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# 升级 pip
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+# 升级 pip 并配置国内镜像源
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 复制并安装 mcpClient
 COPY mcpClient/ /app/mcpClient/
