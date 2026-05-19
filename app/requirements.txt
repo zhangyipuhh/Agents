@@ -40,3 +40,4 @@ sqlalchemy>=2.0.0
 psycopg2-binary>=2.9.0
 langgraph>=0.0.1
 langchain-mcp-adapters>=0.1.0
+packaging>=23.0
