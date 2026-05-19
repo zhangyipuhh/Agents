@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 
 const props = defineProps({
   currentPage: {
@@ -15,6 +15,9 @@ const isHistoryCollapsed = ref(false)
 const isLabCollapsed = ref(false)
 const isExpertCollapsed = ref(false)
 const activeMenu = ref('new-task')
+const isUserMenuVisible = ref(false)
+const userMenuRef = ref(null)
+const menuPositionStyle = ref({})
 
 const historySessions = ref([
   { id: 1, title: '数据分析报告生成', time: '10:30', active: true },
@@ -59,6 +62,115 @@ const toggleLab = () => {
 const toggleExpert = () => {
   isExpertCollapsed.value = !isExpertCollapsed.value
 }
+
+/**
+ * 切换用户菜单显示状态
+ * @param {MouseEvent} event - 鼠标事件对象
+ */
+const toggleUserMenu = (event) => {
+  event.stopPropagation()
+  isUserMenuVisible.value = !isUserMenuVisible.value
+}
+
+/**
+ * 关闭用户菜单
+ */
+const closeUserMenu = () => {
+  isUserMenuVisible.value = false
+}
+
+/**
+ * 处理设置点击
+ */
+const handleSetting = () => {
+  closeUserMenu()
+  // TODO: 打开设置页面或弹窗
+  console.log('打开设置')
+}
+
+/**
+ * 处理退出登录点击
+ */
+const handleLogout = () => {
+  closeUserMenu()
+  // TODO: 执行退出登录逻辑
+  console.log('退出登录')
+}
+
+/**
+ * 更新用户菜单位置
+ * 根据侧边栏折叠状态和头像位置计算菜单应该显示的位置
+ */
+const updateMenuPosition = () => {
+  if (!userMenuRef.value) return
+
+  const rect = userMenuRef.value.getBoundingClientRect()
+
+  if (isSidebarCollapsed.value) {
+    // 折叠状态：菜单显示在头像上方
+    menuPositionStyle.value = {
+      position: 'fixed',
+      left: `${rect.left}px`,
+      bottom: `${window.innerHeight - rect.top + 8}px`,
+      width: '160px'
+    }
+  } else {
+    // 展开状态：菜单显示在用户信息上方
+    menuPositionStyle.value = {
+      position: 'fixed',
+      left: `${rect.left + 12}px`,
+      bottom: `${window.innerHeight - rect.top + 8}px`,
+      right: `${window.innerWidth - rect.right + 12}px`
+    }
+  }
+}
+
+/**
+ * 处理窗口大小变化
+ */
+const handleResize = () => {
+  if (isUserMenuVisible.value) {
+    updateMenuPosition()
+  }
+}
+
+/**
+ * 处理点击外部关闭菜单
+ * @param {MouseEvent} event - 鼠标事件对象
+ */
+const handleClickOutside = (event) => {
+  // 检查点击是否在头像区域或菜单区域内
+  const isClickOnAvatar = userMenuRef.value?.contains(event.target)
+  const isClickOnMenu = event.target.closest('.user-menu')
+
+  if (!isClickOnAvatar && !isClickOnMenu) {
+    closeUserMenu()
+  }
+}
+
+// 监听菜单显示状态变化，更新位置
+watch(isUserMenuVisible, (visible) => {
+  if (visible) {
+    nextTick(updateMenuPosition)
+  }
+})
+
+// 监听侧边栏折叠状态变化，更新菜单位置
+watch(isSidebarCollapsed, () => {
+  if (isUserMenuVisible.value) {
+    nextTick(updateMenuPosition)
+  }
+})
+
+onMounted(() => {
+  document.addEventListener('click', handleClickOutside)
+  window.addEventListener('resize', handleResize)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleClickOutside)
+  window.removeEventListener('resize', handleResize)
+})
 </script>
 
 <template>
@@ -81,11 +193,12 @@ const toggleExpert = () => {
     </div>
 
     <!-- 主导航区域 -->
-    <nav class="sidebar-nav">
+    <div class="sidebar-nav">
       <!-- 新建任务 -->
       <button
         class="menu-item menu-item-primary"
         :class="{ active: activeMenu === 'new-task' }"
+        data-tooltip="新建任务"
         @click="handleMenuClick('new-task')"
       >
         <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
@@ -99,6 +212,7 @@ const toggleExpert = () => {
       <button
         class="menu-item"
         :class="{ active: activeMenu === 'search' }"
+        data-tooltip="搜索"
         @click="handleMenuClick('search')"
       >
         <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
@@ -111,6 +225,7 @@ const toggleExpert = () => {
       <button
         class="menu-item"
         :class="{ active: activeMenu === 'assets' }"
+        data-tooltip="资产"
         @click="handleMenuClick('assets')"
       >
         <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
@@ -118,14 +233,18 @@ const toggleExpert = () => {
         </svg>
         <span v-show="!isSidebarCollapsed" class="menu-text">资产</span>
       </button>
-    </nav>
-
-    <template v-if="!isSidebarCollapsed">
+    </div>
 
     <!-- 分组：ZYP实验室 -->
-    <div class="sidebar-group">
-      <button class="group-header" @click="toggleLab">
+    <div class="sidebar-group" :class="{ 'collapsed-group': isSidebarCollapsed }">
+      <button
+        class="group-header"
+        :class="{ 'collapsed-header': isSidebarCollapsed }"
+        data-tooltip="ZYP实验室"
+        @click="toggleLab"
+      >
         <svg
+          v-show="!isSidebarCollapsed"
           class="group-collapse-icon"
           :class="{ collapsed: isLabCollapsed }"
           viewBox="0 0 20 20"
@@ -133,10 +252,18 @@ const toggleExpert = () => {
         >
           <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"/>
         </svg>
-        <span class="group-title">ZYP实验室</span>
+        <svg
+          v-show="isSidebarCollapsed"
+          class="group-icon"
+          viewBox="0 0 20 20"
+          fill="currentColor"
+        >
+          <path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clip-rule="evenodd"/>
+        </svg>
+        <span v-show="!isSidebarCollapsed" class="group-title">ZYP实验室</span>
       </button>
       <transition name="slide">
-        <div v-show="!isLabCollapsed" class="group-items">
+        <div v-show="!isLabCollapsed && !isSidebarCollapsed" class="group-items">
           <!-- 地图操作 (Beta) -->
           <button
             class="menu-item menu-item-sm"
@@ -191,12 +318,15 @@ const toggleExpert = () => {
     </div>
 
     <!-- 分组：专家 -->
-    <div class="sidebar-group">
+    <div class="sidebar-group" :class="{ 'collapsed-group': isSidebarCollapsed }">
       <button
         class="group-header"
+        :class="{ 'collapsed-header': isSidebarCollapsed }"
+        data-tooltip="专家"
         @click="toggleExpert"
       >
         <svg
+          v-show="!isSidebarCollapsed"
           class="group-collapse-icon"
           :class="{ collapsed: isExpertCollapsed }"
           viewBox="0 0 20 20"
@@ -204,10 +334,18 @@ const toggleExpert = () => {
         >
           <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"/>
         </svg>
-        <span class="group-title">专家</span>
+        <svg
+          v-show="isSidebarCollapsed"
+          class="group-icon"
+          viewBox="0 0 20 20"
+          fill="currentColor"
+        >
+          <path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z"/>
+        </svg>
+        <span v-show="!isSidebarCollapsed" class="group-title">专家</span>
       </button>
       <transition name="slide">
-        <div v-show="!isExpertCollapsed" class="group-items">
+        <div v-show="!isExpertCollapsed && !isSidebarCollapsed" class="group-items">
           <button
             class="menu-item menu-item-sm"
             :class="{ active: activeMenu === 'experts' }"
@@ -223,9 +361,15 @@ const toggleExpert = () => {
     </div>
 
     <!-- 任务记录区（可折叠） -->
-    <div class="sidebar-history">
-      <button class="history-header" @click="toggleHistory">
+    <div class="sidebar-history" :class="{ 'collapsed-history': isSidebarCollapsed }">
+      <button
+        class="history-header"
+        :class="{ 'collapsed-header': isSidebarCollapsed }"
+        data-tooltip="任务记录"
+        @click="toggleHistory"
+      >
         <svg
+          v-show="!isSidebarCollapsed"
           class="collapse-icon"
           :class="{ collapsed: isHistoryCollapsed }"
           viewBox="0 0 20 20"
@@ -233,11 +377,19 @@ const toggleExpert = () => {
         >
           <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"/>
         </svg>
-        <span class="history-title">任务记录</span>
+        <svg
+          v-show="isSidebarCollapsed"
+          class="history-icon"
+          viewBox="0 0 20 20"
+          fill="currentColor"
+        >
+          <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd"/>
+        </svg>
+        <span v-show="!isSidebarCollapsed" class="history-title">任务记录</span>
       </button>
 
       <transition name="slide">
-        <div v-show="!isHistoryCollapsed" class="history-list">
+        <div v-show="!isHistoryCollapsed && !isSidebarCollapsed" class="history-list">
           <button
             v-for="session in historySessions"
             :key="session.id"
@@ -252,10 +404,9 @@ const toggleExpert = () => {
         </div>
       </transition>
     </div>
-    </template>
 
     <!-- 底部用户信息 -->
-    <div class="sidebar-user">
+    <div ref="userMenuRef" class="sidebar-user" :class="{ 'user-menu-active': isUserMenuVisible }" @click="toggleUserMenu($event)">
       <div class="user-avatar">
         <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
           <rect width="40" height="40" rx="20" fill="var(--color-accent-light)"/>
@@ -268,67 +419,77 @@ const toggleExpert = () => {
         <span class="user-tag tag-free">免费</span>
       </div>
     </div>
+
+    <!-- 用户菜单 - 使用 Teleport 移动到 body 层级，避免被父容器 overflow 裁剪 -->
+    <Teleport to="body">
+      <div v-show="isUserMenuVisible" class="user-menu" :class="{ 'is-collapsed': isSidebarCollapsed }" :style="menuPositionStyle">
+        <div class="user-menu-item" @click.stop="handleSetting">
+          <svg class="menu-item-icon" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/>
+          </svg>
+          <span>设置</span>
+        </div>
+        <div class="user-menu-item" @click.stop="handleLogout">
+          <svg class="menu-item-icon" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M3 3a1 1 0 00-1 1v12a1 1 0 102 0V4a1 1 0 00-1-1zm10.293 9.293a1 1 0 001.414 1.414l3-3a1 1 0 000-1.414l-3-3a1 1 0 10-1.414 1.414L14.586 9H7a1 1 0 100 2h7.586l-1.293 1.293z" clip-rule="evenodd"/>
+          </svg>
+          <span>退出登录</span>
+        </div>
+      </div>
+    </Teleport>
   </aside>
 </template>
 
 <style scoped>
 .sidebar {
   width: var(--sidebar-width);
-  min-width: var(--sidebar-width);
   height: 100%;
   background-color: var(--color-bg-primary);
   border-right: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;
+  flex-shrink: 0;
   overflow: hidden;
-  contain: var(--contain-layout);
-  transition: width 0.3s ease, min-width 0.3s ease;
+  transition: width 0.3s ease;
+}
 
-  &.collapsed {
-    width: 60px;
-    min-width: 60px;
+/* 折叠状态：强制窄宽度 — 使用 !important 覆盖所有竞争规则 */
+.sidebar.collapsed {
+  width: 60px !important;
+  min-width: 60px !important;
+  max-width: 60px !important;
+}
 
-    .sidebar-logo {
-      justify-content: center;
-      position: relative;
-      cursor: pointer;
+/* 折叠状态下的 Logo 区域 */
+.sidebar.collapsed .sidebar-logo {
+  justify-content: center;
+  position: relative;
+  cursor: pointer;
+}
 
-      .logo-container {
-        transition: opacity 0.2s ease;
-      }
+.sidebar.collapsed .sidebar-logo .logo-container {
+  transition: opacity 0.2s ease;
+}
 
-      .sidebar-toggle {
-        position: absolute;
-        opacity: 0;
-        transition: opacity 0.2s ease;
-      }
+.sidebar.collapsed .sidebar-logo .sidebar-toggle {
+  position: absolute;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
 
-      &:hover {
-        .logo-container {
-          opacity: 0;
-        }
+.sidebar.collapsed .sidebar-logo:hover .logo-container {
+  opacity: 0;
+}
 
-        .sidebar-toggle {
-          opacity: 1;
-        }
-      }
-    }
+.sidebar.collapsed .sidebar-logo:hover .sidebar-toggle {
+  opacity: 1;
+}
 
-    .sidebar-nav {
-      padding: 12px 6px;
-    }
-
-    .menu-item {
-      justify-content: center;
-      padding: 10px;
-    }
-
-    .sidebar-user {
-      justify-content: center;
-      padding: 6px;
-      margin-top: auto;
-    }
-  }
+/* 折叠状态下的用户信息 */
+.sidebar.collapsed .sidebar-user {
+  justify-content: center;
+  padding: 6px;
+  margin-top: auto;
 }
 
 /* Logo 区域 */
@@ -459,14 +620,29 @@ const toggleExpert = () => {
   background-color: var(--color-accent);
   color: white;
 
+  .menu-icon {
+    color: white;
+    opacity: 1;
+  }
+
   &:hover {
     background-color: var(--color-accent-hover);
     color: white;
+
+    .menu-icon {
+      color: white;
+      opacity: 1;
+    }
   }
 
   &.active {
     background-color: var(--color-accent-hover);
     color: white;
+
+    .menu-icon {
+      color: white;
+      opacity: 1;
+    }
   }
 }
 
@@ -734,6 +910,15 @@ const toggleExpert = () => {
   padding: 6px 12px;
   border-top: 1px solid var(--color-border-light);
   background-color: var(--color-bg-secondary);
+  position: relative;
+  cursor: pointer;
+  transition: box-shadow 0.2s ease, background-color 0.2s ease;
+
+  /* 用户菜单展开时的激活状态样式 */
+  &.user-menu-active {
+    box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.1);
+    background-color: var(--color-bg-hover);
+  }
 }
 
 .user-avatar {
@@ -758,7 +943,7 @@ const toggleExpert = () => {
 }
 
 .user-name {
-  font-size: calc(var(--font-size-base) * 0.7);
+  font-size: calc(var(--font-size-base) * 0.9);
   font-weight: var(--font-weight-medium);
   color: var(--color-text-primary);
   overflow: hidden;
@@ -769,6 +954,61 @@ const toggleExpert = () => {
 .sidebar-user .tag {
   font-size: 8px;
   padding: 1px 6px;
+}
+
+/* 用户菜单样式 - 使用 fixed 定位，通过 Teleport 挂载到 body 层级 */
+.user-menu {
+  background-color: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  padding: 6px;
+  z-index: 1000;
+  animation: menuFadeIn 0.2s ease;
+}
+
+@keyframes menuFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.user-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: var(--transition-colors);
+}
+
+.user-menu-item:hover {
+  background-color: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.user-menu-item:active {
+  transform: scale(var(--scale-active));
+}
+
+.menu-item-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+
+/* 侧边栏折叠状态下的菜单适配 - 现在通过动态计算位置实现 */
+.user-menu.is-collapsed {
+  /* 折叠状态下的样式通过 menuPositionStyle 动态设置 */
 }
 
 /* 过渡动画 */
@@ -794,5 +1034,195 @@ const toggleExpert = () => {
   max-height: 400px;
   opacity: 1;
   transform: translateY(0);
+}
+
+/* 折叠状态下的主导航区域 */
+.sidebar.collapsed .sidebar-nav {
+  display: flex !important;
+  flex-direction: column !important;
+  width: 100% !important;
+  gap: 4px;
+  padding: 12px 6px;
+  min-height: 60px;
+}
+
+.sidebar.collapsed .sidebar-nav .menu-item {
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+  padding: 10px !important;
+  min-width: 40px !important;
+  min-height: 40px !important;
+  width: 100% !important;
+  gap: 0 !important;
+}
+
+.sidebar.collapsed .sidebar-nav .menu-icon {
+  width: 20px !important;
+  height: 20px !important;
+  color: var(--color-text-secondary) !important;
+  opacity: 1 !important;
+  flex-shrink: 0;
+}
+
+.sidebar.collapsed .sidebar-nav .menu-item:hover .menu-icon {
+  color: var(--color-text-primary) !important;
+}
+
+.sidebar.collapsed .sidebar-nav .menu-item.active .menu-icon {
+  color: var(--color-accent) !important;
+}
+
+.sidebar.collapsed .sidebar-nav .menu-item.menu-item-primary {
+  background-color: var(--color-accent) !important;
+}
+
+.sidebar.collapsed .sidebar-nav .menu-item.menu-item-primary .menu-icon {
+  color: white !important;
+  opacity: 1 !important;
+}
+
+/* 折叠状态下导航按钮 Tooltip 样式 */
+.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip] {
+  position: relative;
+}
+
+/* Tooltip 内容 */
+.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: calc(100% + 12px);
+  top: 50%;
+  transform: translateY(-50%) scale(0.95);
+  padding: 8px 12px;
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+/* Tooltip 箭头 */
+.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip]::before {
+  content: '';
+  position: absolute;
+  left: calc(100% + 6px);
+  top: 50%;
+  transform: translateY(-50%);
+  border: 6px solid transparent;
+  border-right-color: var(--color-bg-primary);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, visibility 0.2s;
+  z-index: 1001;
+  pointer-events: none;
+}
+
+/* 悬停时显示 Tooltip */
+.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip]:hover::after,
+.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip]:hover::before {
+  opacity: 1;
+  visibility: visible;
+}
+
+.sidebar.collapsed .sidebar-nav .menu-item[data-tooltip]:hover::after {
+  transform: translateY(-50%) scale(1);
+}
+
+/* 折叠状态下分组标题和历史标题的样式 */
+.sidebar.collapsed .sidebar-group,
+.sidebar.collapsed .sidebar-history {
+  padding: 6px;
+  margin-top: 4px;
+}
+
+.sidebar.collapsed .group-header,
+.sidebar.collapsed .history-header {
+  justify-content: center;
+  padding: 10px;
+  border: none;
+  background-color: transparent;
+}
+
+.sidebar.collapsed .group-header:hover,
+.sidebar.collapsed .history-header:hover {
+  background-color: var(--color-bg-hover);
+}
+
+.sidebar.collapsed .group-icon,
+.sidebar.collapsed .history-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+}
+
+/* 折叠状态下分组标题和历史标题的 Tooltip 样式 */
+.sidebar.collapsed .group-header[data-tooltip],
+.sidebar.collapsed .history-header[data-tooltip] {
+  position: relative;
+}
+
+/* Tooltip 内容 */
+.sidebar.collapsed .group-header[data-tooltip]::after,
+.sidebar.collapsed .history-header[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: calc(100% + 12px);
+  top: 50%;
+  transform: translateY(-50%) scale(0.95);
+  padding: 8px 12px;
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+/* Tooltip 箭头 */
+.sidebar.collapsed .group-header[data-tooltip]::before,
+.sidebar.collapsed .history-header[data-tooltip]::before {
+  content: '';
+  position: absolute;
+  left: calc(100% + 6px);
+  top: 50%;
+  transform: translateY(-50%);
+  border: 6px solid transparent;
+  border-right-color: var(--color-bg-primary);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, visibility 0.2s;
+  z-index: 1001;
+  pointer-events: none;
+}
+
+/* 悬停时显示 Tooltip */
+.sidebar.collapsed .group-header[data-tooltip]:hover::after,
+.sidebar.collapsed .group-header[data-tooltip]:hover::before,
+.sidebar.collapsed .history-header[data-tooltip]:hover::after,
+.sidebar.collapsed .history-header[data-tooltip]:hover::before {
+  opacity: 1;
+  visibility: visible;
+}
+
+.sidebar.collapsed .group-header[data-tooltip]:hover::after,
+.sidebar.collapsed .history-header[data-tooltip]:hover::after {
+  transform: translateY(-50%) scale(1);
 }
 </style>

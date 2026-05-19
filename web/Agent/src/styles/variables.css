@@ -117,6 +117,6 @@
   /* Performance */
   --will-change-transform: will-change transform;
   --will-change-opacity: will-change opacity;
-  --contain-layout: contain layout;
+  --contain-layout: layout;
   --contain-paint: contain paint;
 }
