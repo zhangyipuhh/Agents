@@ -26,6 +26,10 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 COPY mcpClient/ /app/mcpClient/
 RUN pip install --no-cache-dir --prefix=/install /app/mcpClient
 
+# 复制并安装项目依赖
+COPY app/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir --prefix=/install -r /app/requirements.txt
+
 # 第二阶段：运行阶段
 FROM python:3.11-slim
 
@@ -35,6 +39,7 @@ WORKDIR /app
 # 安装运行时依赖（仅安装必要的库）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
+    ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
 # 从构建阶段复制安装的包
