@@ -3,8 +3,6 @@
 """
 PDF帮助类 - 负责处理PDF文件，包括文本提取和OCR识别
 """
-from asyncio.windows_events import NULL
-
 import pypdf
 import numpy as np
 
