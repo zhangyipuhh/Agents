@@ -240,6 +240,34 @@ class DatabaseSettings(BaseSettings):
     )
 
 
+class DemonstrationSettings(BaseSettings):
+    """
+    演示测试配置
+
+    管理演示报告生成相关配置。
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+        protected_namespaces=("settings_",),
+    )
+
+    demonstration_report_enabled: bool = Field(
+        default=True, description="是否开启演示报告生成，为true时开启"
+    )
+
+    @field_validator("demonstration_report_enabled", mode="before")
+    @classmethod
+    def parse_bool(cls, v):
+        """将字符串转换为布尔值"""
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes", "on")
+        return bool(v)
+
+
 class Settings(BaseSettings):
     """
     应用总配置
@@ -257,6 +285,7 @@ class Settings(BaseSettings):
     mcp: MCPSettings = Field(default_factory=MCPSettings)
     file_parser: FileParserSettings = Field(default_factory=FileParserSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
+    demonstration: DemonstrationSettings = Field(default_factory=DemonstrationSettings)
 
     def get_llm_config(self) -> dict:
         """
@@ -313,6 +342,17 @@ class Settings(BaseSettings):
             "max_retries": self.file_parser.file_parser_max_retries,
             "poll_interval": self.file_parser.file_parser_poll_interval,
             "timeout": self.file_parser.file_parser_timeout,
+        }
+
+    def get_demonstration_config(self) -> dict:
+        """
+        获取演示测试配置字典
+
+        Returns:
+            dict: 演示测试配置字典，兼容旧代码
+        """
+        return {
+            "demonstration_report_enabled": self.demonstration.demonstration_report_enabled,
         }
 
 
