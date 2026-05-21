@@ -856,10 +856,7 @@ def generate_report(runtime: ToolRuntime) -> Command:
         # 构建文件名和保存路径
         file_name = current_time.strftime("%Y%m%d_%H%M%S") + ".docx"
         download_dir = os.path.join("app", "data", "download", session_id)
-        # 演示测试模式下，不保存真实报告
-        if DEMONSTRATION_CONFIG["demonstration_report_enabled"]:
-            file_name = "沈阳市能源应急输送通道项目天然气高压环线二期（北部城区）自然资源和规划“一点通”服务技术参考.docx"
-            download_dir = os.path.join("app", "data", "demonstration", "download")
+        
         
         file_path = os.path.join(download_dir, file_name)
 
@@ -868,7 +865,10 @@ def generate_report(runtime: ToolRuntime) -> Command:
 
         # 保存文件
         generator.save(file_path)
-
+        # 演示测试模式下，不保存真实报告
+        if DEMONSTRATION_CONFIG["demonstration_report_enabled"]:
+            file_name = "沈阳市能源应急输送通道项目天然气高压环线二期（北部城区）自然资源和规划“一点通”服务技术参考.docx"
+            download_dir = os.path.join("app", "data", "demonstration", "download")
         # 构建下载URL
         download_url = f"/api/core/download/file?path={file_name}"
 

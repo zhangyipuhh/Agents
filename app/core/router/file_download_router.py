@@ -6,12 +6,13 @@ import time
 import zipfile
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import quote, unquote
 
 import aiofiles
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
-
+from app.core.config.config import DEMONSTRATION_CONFIG
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix='/api/core/download', tags=['Core File Download'])
@@ -69,6 +70,16 @@ def _detect_content_type(file_path: Path) -> str:
     return content_type or "application/octet-stream"
 
 
+def _make_content_disposition(filename: str) -> str:
+    """生成 RFC 5987 格式的 Content-Disposition 头，支持中文文件名"""
+    try:
+        filename.encode('ascii')
+        return f'attachment; filename="{filename}"'
+    except UnicodeEncodeError:
+        encoded = quote(filename, safe='')
+        return f"attachment; filename*=UTF-8''{encoded}"
+
+
 async def _file_iterator(file_path: Path, start: int = 0, end: Optional[int] = None):
     async with aiofiles.open(file_path, "rb") as f:
         await f.seek(start)
@@ -116,47 +127,64 @@ async def download_file(
     path: str = Query(..., description="相对于 session 下载目录的文件路径"),
     filename: Optional[str] = Query(None, description="自定义下载文件名"),
 ):
-    session_dir = _get_session_dir(request)
-    file_path = _safe_path(session_dir, path)
+    try:
+        logger.info(f"[DEBUG] 原始 path 参数: {path!r}")
+        path = unquote(path)
+        logger.info(f"[DEBUG] 解码后 path: {path!r}")
+        session_dir = _get_session_dir(request)
+        logger.info(f"[DEBUG] session_dir: {session_dir}")
+        file_path = _safe_path(session_dir, path)
+        logger.info(f"[DEBUG] 初始 file_path: {file_path}")
 
-    if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(status_code=404, detail=f"文件不存在: {path}")
+        if DEMONSTRATION_CONFIG["demonstration_report_enabled"]:
+            file_path = Path("app/data/demonstration/download", path)
+            logger.info(f"[DEBUG] 演示模式 file_path: {file_path}")
+        logger.info(f"[DEBUG] 最终 file_path: {file_path}, exists={file_path.exists()}, is_file={file_path.is_file() if file_path.exists() else 'N/A'}")
+        if not file_path.exists() or not file_path.is_file():
+            raise HTTPException(status_code=404, detail=f"文件不存在: {path}")
 
-    file_size = file_path.stat().st_size
-    content_type = _detect_content_type(file_path)
-    download_name = filename or file_path.name
+        file_size = file_path.stat().st_size
+        content_type = _detect_content_type(file_path)
+        download_name = filename or file_path.name
 
-    range_header = request.headers.get("range")
+        range_header = request.headers.get("range")
 
-    if range_header:
-        start, end = _parse_range_header(range_header, file_size)
-        content_length = end - start + 1
+        if range_header:
+            start, end = _parse_range_header(range_header, file_size)
+            content_length = end - start + 1
+
+            headers = {
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(content_length),
+                "Content-Disposition": _make_content_disposition(download_name),
+            }
+
+            return StreamingResponse(
+                _file_iterator(file_path, start, end),
+                status_code=206,
+                media_type=content_type,
+                headers=headers,
+            )
 
         headers = {
-            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Content-Length": str(file_size),
             "Accept-Ranges": "bytes",
-            "Content-Length": str(content_length),
-            "Content-Disposition": f'attachment; filename="{download_name}"',
+            "Content-Disposition": _make_content_disposition(download_name),
         }
 
         return StreamingResponse(
-            _file_iterator(file_path, start, end),
-            status_code=206,
+            _file_iterator(file_path),
             media_type=content_type,
             headers=headers,
         )
-
-    headers = {
-        "Content-Length": str(file_size),
-        "Accept-Ranges": "bytes",
-        "Content-Disposition": f'attachment; filename="{download_name}"',
-    }
-
-    return StreamingResponse(
-        _file_iterator(file_path),
-        media_type=content_type,
-        headers=headers,
-    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        logger.error(f"[ERROR] 下载文件时发生异常: {type(e).__name__}: {e}")
+        logger.error(f"[ERROR] 异常堆栈:\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"服务器内部错误: {type(e).__name__}: {e}")
 
 
 @router.get('/by-name')
@@ -207,7 +235,7 @@ async def download_by_name(
     headers = {
         "Content-Length": str(file_size),
         "Accept-Ranges": "bytes",
-        "Content-Disposition": f'attachment; filename="{file_path.name}"',
+        "Content-Disposition": _make_content_disposition(file_path.name),
     }
 
     return StreamingResponse(
@@ -263,7 +291,7 @@ async def batch_download(
 
     headers = {
         "Content-Length": str(zip_size),
-        "Content-Disposition": f'attachment; filename="{zip_filename}"',
+        "Content-Disposition": _make_content_disposition(zip_filename),
     }
 
     buffer.seek(0)
