@@ -32,7 +32,7 @@ from typing import List, Dict, Any, Optional
 from app.core.tools.events import create_tool_event
 from app.shared.utils.report.word.generator import WordReportGenerator
 from app.features.map_agent.config.config import get_report_config
-
+from app.core.config.config import DEMONSTRATION_CONFIG
 
 @tool
 def set_map_center(latitude: float, longitude: float, runtime: ToolRuntime) -> Command:
@@ -788,7 +788,7 @@ def generate_report(runtime: ToolRuntime) -> Command:
         - 如果下载目录不存在，会自动创建
         - 文件名使用当前日期时间生成，确保唯一性
     """
-    tool_name = "generate_report"
+    tool_name = "生成报告"
     tool_call_id = runtime.tool_call_id
     start_time = datetime.now()
     writer = get_stream_writer()
@@ -856,6 +856,11 @@ def generate_report(runtime: ToolRuntime) -> Command:
         # 构建文件名和保存路径
         file_name = current_time.strftime("%Y%m%d_%H%M%S") + ".docx"
         download_dir = os.path.join("app", "data", "download", session_id)
+        # 演示测试模式下，不保存真实报告
+        if DEMONSTRATION_CONFIG["demonstration_report_enabled"]:
+            file_name = "沈阳市能源应急输送通道项目天然气高压环线二期（北部城区）自然资源和规划“一点通”服务技术参考.docx"
+            download_dir = os.path.join("app", "data", "demonstration", "download")
+        
         file_path = os.path.join(download_dir, file_name)
 
         # 自动创建目录（如果不存在）

@@ -48,6 +48,9 @@ WORD_OUTPUT_CONFIG = settings.get_word_output_config()
 
 FILE_PARSER_CONFIG = settings.get_file_parser_config()
 
+# 演示测试配置
+DEMONSTRATION_CONFIG = settings.get_demonstration_config()
+
 
 class SubGraphType(str, Enum):
     """
