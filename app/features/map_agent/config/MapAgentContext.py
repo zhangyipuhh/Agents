@@ -11,7 +11,8 @@ Author: AI Assistant
 """
 
 from app.core.agent.AgentContext import AgentContext as BaseAgentContext
-
+from typing import Union
+from app.features.map_agent.config.config import ProjectSiteSelectionData
 
 class MapAgentContext(BaseAgentContext):
     """
@@ -34,4 +35,7 @@ class MapAgentContext(BaseAgentContext):
     """地理数据类型 dict，格式为 {"point": [...], "line": [...], "polygon": [...]}"""
     knowledge_root: str =""
     """知识根目录，默认为空"""
+    report_content: Union[dict, ProjectSiteSelectionData] = {}
+    """报告内容，可以是 dict 或 ProjectSiteSelectionData"""
+    
     

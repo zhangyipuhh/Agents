@@ -31,7 +31,7 @@ from langgraph.config import get_stream_writer
 from typing import List, Dict, Any, Optional
 from app.core.tools.events import create_tool_event
 from app.shared.utils.report.word.generator import WordReportGenerator
-from app.features.map_agent.config.config import get_report_config
+from app.features.map_agent.config.config import get_report_config, ProjectSiteSelectionCollection
 from app.core.config.config import DEMONSTRATION_CONFIG
 
 @tool
@@ -846,8 +846,17 @@ def generate_report(runtime: ToolRuntime) -> Command:
     writer(dict(progress_event_2))
 
     try:
+        # 构建项目选址数据集合
+        collection =  runtime.context.get("report_content", None)
+        if collection is None:
+            collection = ProjectSiteSelectionCollection(
+                collection_id="default",
+                collection_name="默认集合",
+                projects=[],
+            )
+
         # 构建报告配置
-        config = get_report_config(report_data)
+        config = get_report_config(report_data, collection=collection)
 
         # 生成Word文档
         generator = WordReportGenerator(config)

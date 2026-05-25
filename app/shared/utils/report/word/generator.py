@@ -379,14 +379,16 @@ class WordReportGenerator:
         """
         渲染封面页
 
-        根据CoverConfig配置生成封面，包含附件编号、标题、副标题、日期等元素。
+        根据CoverConfig配置生成封面，包含附件编号、标题、副标题、自定义元素、日期和底部注释等元素。
         封面结束后自动添加新节（分节符），使封面成为独立的Section。
 
         Notes:
             - 附件编号：默认右对齐显示
             - 标题：默认居中显示，使用封面专用字体和字号
             - 副标题：默认居中显示
+            - 自定义元素：按列表顺序在副标题之后渲染
             - 日期：默认居中显示
+            - 底部注释：显示在封面页底部（通过space_before控制位置）
             - 各元素通过space_before和space_after控制段前段后行数
             - 如果cover配置为None，则跳过封面渲染
             - 封面结束后使用add_section创建新节，便于独立控制页脚页码
@@ -395,11 +397,20 @@ class WordReportGenerator:
         if not cover:
             return
 
-        # 按顺序渲染各元素：附件编号 -> 主标题 -> 副标题 -> 日期
+        # 按顺序渲染各元素：附件编号 -> 主标题 -> 副标题 -> 自定义元素 -> 日期 -> 底部注释
         self._render_cover_element(cover.attachment)
         self._render_cover_element(cover.title)
         self._render_cover_element(cover.subtitle)
+
+        # 渲染自定义元素列表
+        for element in cover.custom_elements:
+            self._render_cover_element(element)
+
         self._render_cover_element(cover.date)
+
+        # 渲染底部注释（如果有）
+        if cover.footer_note:
+            self._render_cover_element(cover.footer_note)
 
         # 封面结束，添加新节（新页）
         self.doc.add_section(WD_SECTION_START.NEW_PAGE)
