@@ -831,18 +831,13 @@ def _build_section_tips(collection: ProjectSiteSelectionCollection) -> list[dict
         list[dict]: 章节段落列表
     """
     sections = [
+        {"type": "page_break"},
         {"type": "heading", "level": 1, "content": "※《技术参考》使用提示："},
-        {"type": "heading", "level": 2, "content": "（一）违法用地情况"},
+        {"type": "paragraph","bold": True, "content": "1.本《技术参考》有关结论依据项目单位提供的项目范围，基于自然资源管理和国土空间规划\"一张图\"平台数据核实形成，无人工实质性审查环节，仅为项目前期咨询参考材料，如对核实结果有疑问，建议咨询相关数据主管部门。"},
+        {"type": "paragraph","bold": True, "content": "2.本服务属于行政指导行为，不产生强制约束力，不属于行政复议、行政诉讼受案范围。"},
+        {"type": "paragraph", "bold": True,"content": "3.本《技术参考》所有内容仅反映数据比对的阶段性状态，后续因规划调整、政策更新、数据修正产生的内容变动，本单位不承担主动告知义务。"},
+        {"type": "paragraph", "bold": True,"content": "4.项目单位可依托本《技术参考》开展前期工作，作为项目单位编制项目选址综合论证报告和项目可行性研究报告等参考，但不作为自然资源主管部门规划与用地审批意见，不具备行政审批效力，最终以正式审批为准。"},
     ]
-    for project in collection.projects:
-        sections.append({"type": "paragraph", "content": _build_illegal_land_paragraph(project)})
-
-    sections.append({"type": "heading", "level": 2, "content": "（二）林草地占用情况"})
-    for project in collection.projects:
-        sections.append({"type": "paragraph", "content": _build_forest_grassland_paragraph(project)})
-
-    sections.append({"type": "paragraph", "content": "附件：项目用地范围坐标及示意图"})
-    sections.append({"type": "paragraph", "content": "注：该报告有关数据依据项目单位提供的项目范围、基于自然资源管理和国土空间规划\"一张图\"平台数据核实形成，可作为项目单位编制项目选址综合论证报告和项目可行性研究报告等参考，不作为自然资源主管部门规划用地相关审批意见。"})
 
     return sections
 
