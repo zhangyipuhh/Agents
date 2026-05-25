@@ -710,6 +710,7 @@ def _build_section_site_selection(collection: ProjectSiteSelectionCollection) ->
         list[dict]: 章节段落列表
     """
     sections = [
+        {"type": "page_break"},
         {"type": "heading", "level": 1, "content": "一、项目选址与要素保障"},
         {"type": "heading", "level": 2, "content": "（一）项目选址选线"},
         {"type": "heading", "level": 3, "content": "1.土地利用状况"},
@@ -896,6 +897,7 @@ def _build_sections(content_list: list[dict]) -> list[SectionConfig]:
                 section_type="paragraph",
                 content=item.get("content", ""),
                 alignment=item.get("alignment"),
+                bold=item.get("bold"),
             ))
     return sections
 
