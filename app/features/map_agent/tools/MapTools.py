@@ -822,6 +822,7 @@ def generate_report(runtime: ToolRuntime) -> Command:
 
     # 准备报告数据
     current_time = datetime.now()
+    #这个地方sheng'cha'enshengchaen
     report_data = {
         "项目名称": runtime.state.get("project_name", "XX项目"),
         "生成日期": current_time.strftime("%Y年%m月%d日"),
@@ -847,7 +848,9 @@ def generate_report(runtime: ToolRuntime) -> Command:
 
     try:
         # 构建项目选址数据集合
-        collection =  runtime.context.get("report_content", None)
+        process_data = runtime.context.get("process_data", {})
+        runtime_data = process_data.get("runtime_data", {})
+        collection = runtime_data.get("report_data", None)
         if collection is None:
             collection = ProjectSiteSelectionCollection(
                 collection_id="default",
