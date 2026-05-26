@@ -855,6 +855,9 @@ class MCPToolToLangChainAdapter(BaseTool):
                 # 提取 result 和 data 字段
                 return_result = (tmp_result.get("result", tmp_result),None)
                 event_result = tmp_result.get("data", tmp_result)
+                runtime_data = tmp_result.get("runtime_data", {})
+                # 更新 process_data 字典,接收返回的运行过程数据，业务中会根据约定获取获取 其中某个值作为上下文信息
+                config.get("process_data", {}).update(runtime_data)
             else:
                 event_result = result
                 return_result = result
