@@ -39,4 +39,5 @@ class AgentContext(TypedDict):
     """图片ID列表，用于多模态模型处理图片"""
     host_session_id: Optional[str] = None
     """主机会话 ID，用于多智能体协作时数据隔离，默认 None"""
-   
+    process_data: dict = {}
+    """过程数据字典，用于存储业务逻辑中的临时过程值，默认空字典"""
