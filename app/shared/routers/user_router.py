@@ -8,11 +8,12 @@
 - 查询用户列表
 - 删除用户
 - 修改密码
+- 修改用户名
 
 Date: 2026/5/15
 Author: 张镒谱
 """
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
 from typing import List
 
@@ -26,11 +27,13 @@ class UserResponse(BaseModel):
     Attributes:
         id (int): 用户ID
         username (str): 用户名
+        role (str): 用户角色（admin / user）
         created_at (str): 创建时间
         updated_at (str): 更新时间
     """
     id: int
     username: str
+    role: str
     created_at: str
     updated_at: str
 
@@ -47,13 +50,23 @@ class PasswordUpdateRequest(BaseModel):
     new_password: str
 
 
+class UsernameUpdateRequest(BaseModel):
+    """
+    用户名修改请求模型
+
+    Attributes:
+        new_username (str): 新用户名
+    """
+    new_username: str
+
+
 @router.get('', response_model=List[UserResponse])
 async def list_users():
     """
     查询用户列表
 
     Returns:
-        List[UserResponse]: 用户列表
+        List[UserResponse]: 用户列表（含角色信息）
     """
     from app.shared.utils.auth.user_db import UserDB
     users = await UserDB.list_users()
@@ -61,6 +74,7 @@ async def list_users():
         UserResponse(
             id=u['id'],
             username=u['username'],
+            role=u.get('role', 'user'),
             created_at=str(u['created_at']),
             updated_at=str(u['updated_at'])
         )
@@ -110,8 +124,55 @@ async def update_password(user_id: int, request: PasswordUpdateRequest):
     if not UserDB.verify_password(request.old_password, user['password_hash']):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="旧密码错误")
 
+    if len(request.new_password) < 6:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="新密码长度不能少于6位")
+
     success = await UserDB.update_password(user_id, request.new_password)
     if not success:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="修改失败")
 
     return {"message": "密码修改成功"}
+
+
+@router.put('/{user_id}/username')
+async def update_username(user_id: int, request: UsernameUpdateRequest, req: Request):
+    """
+    修改用户名
+
+    仅允许用户修改自己的用户名。
+
+    Args:
+        user_id (int): 用户ID
+        request (UsernameUpdateRequest): 包含新用户名的请求
+        req (Request): FastAPI 请求对象
+
+    Returns:
+        dict: 修改结果
+
+    Raises:
+        HTTPException: 用户名已存在或无权修改时抛出
+    """
+    from app.shared.utils.auth.user_db import UserDB
+
+    # 校验用户名长度
+    if len(request.new_username) < 3:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="用户名长度不能少于3位"
+        )
+
+    # 检查当前用户是否有权修改该用户名
+    current_user_id = getattr(req.state, 'user_id', None)
+    if current_user_id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只能修改自己的用户名"
+        )
+
+    try:
+        success = await UserDB.update_username(user_id, request.new_username)
+        if not success:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+        return {"message": "用户名修改成功", "new_username": request.new_username}
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))

@@ -24,13 +24,15 @@ async def init_user_schema():
     """
     用户表结构初始化
 
-    创建用户表，包含用户名（唯一）、密码哈希、创建时间和更新时间
+    创建用户表，包含用户名（唯一）、密码哈希、角色、创建时间和更新时间。
+    角色字段默认值为 'user'，管理员角色为 'admin'。
     """
     await DatabasePool.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
             username VARCHAR(100) UNIQUE NOT NULL,
             password_hash VARCHAR(255) NOT NULL,
+            role VARCHAR(20) DEFAULT 'user',
             created_at TIMESTAMP DEFAULT NOW(),
             updated_at TIMESTAMP DEFAULT NOW()
         )
@@ -94,13 +96,14 @@ class UserDB:
         )
 
     @classmethod
-    async def create_user(cls, username: str, password: str) -> int:
+    async def create_user(cls, username: str, password: str, role: str = 'user') -> int:
         """
         创建新用户
 
         Args:
             username: 用户名
             password: 明文密码
+            role: 用户角色，默认为 'user'，可选 'admin'
 
         Returns:
             int: 新用户 ID
@@ -122,6 +125,7 @@ class UserDB:
                     'id': user_id,
                     'username': username,
                     'password_hash': password_hash,
+                    'role': role,
                     'created_at': now,
                     'updated_at': now
                 }
@@ -132,12 +136,13 @@ class UserDB:
         try:
             row = await DatabasePool.fetchrow(
                 """
-                INSERT INTO users (username, password_hash)
-                VALUES ($1, $2)
+                INSERT INTO users (username, password_hash, role)
+                VALUES ($1, $2, $3)
                 RETURNING id
                 """,
                 username,
-                password_hash
+                password_hash,
+                role
             )
             return row['id']
         except asyncpg.UniqueViolationError:
@@ -181,29 +186,24 @@ class UserDB:
             username: 用户名
 
         Returns:
-            Optional[dict]: 用户信息，不存在返回 None
+            Optional[dict]: 用户信息（含 role），不存在返回 None
         """
         if not cls.is_enabled():
-            #print(f"[诊断-UserDB] get_user_by_username('{username}'): 记忆模式, _memory_users keys={list(cls._memory_users.keys())}")
-            # Memory 模式：从内存存储查询
             with cls._lock:
                 user = cls._memory_users.get(username)
                 if not user:
-                    #print(f"[诊断-UserDB] get_user_by_username: 用户 '{username}' 不在内存中, 返回 None")
                     return None
-                result = {
+                return {
                     'id': user['id'],
                     'username': user['username'],
+                    'password_hash': user['password_hash'],
+                    'role': user.get('role', 'user'),
                     'created_at': user['created_at'],
                     'updated_at': user['updated_at']
                 }
-                #print(f"[诊断-UserDB] get_user_by_username: 返回 {result}")
-                return result
 
-        #print(f"[诊断-UserDB] get_user_by_username('{username}'): 数据库模式")
-        # Postgres 模式：从数据库查询
         return await DatabasePool.fetchrow(
-            "SELECT id, username, created_at, updated_at FROM users WHERE username = $1",
+            "SELECT id, username, password_hash, role, created_at, updated_at FROM users WHERE username = $1",
             username
         )
 
@@ -216,24 +216,24 @@ class UserDB:
             user_id: 用户 ID
 
         Returns:
-            Optional[dict]: 用户信息，不存在返回 None
+            Optional[dict]: 用户信息（含 role 和 password_hash），不存在返回 None
         """
         if not cls.is_enabled():
-            # Memory 模式：从内存存储查询
             with cls._lock:
                 for user in cls._memory_users.values():
                     if user['id'] == user_id:
                         return {
                             'id': user['id'],
                             'username': user['username'],
+                            'password_hash': user['password_hash'],
+                            'role': user.get('role', 'user'),
                             'created_at': user['created_at'],
                             'updated_at': user['updated_at']
                         }
                 return None
 
-        # Postgres 模式：从数据库查询
         return await DatabasePool.fetchrow(
-            "SELECT id, username, created_at, updated_at FROM users WHERE id = $1",
+            "SELECT id, username, password_hash, role, created_at, updated_at FROM users WHERE id = $1",
             user_id
         )
 
@@ -247,10 +247,9 @@ class UserDB:
             offset: 偏移量
 
         Returns:
-            List[dict]: 用户列表
+            List[dict]: 用户列表（含 role）
         """
         if not cls.is_enabled():
-            # Memory 模式：从内存存储查询
             with cls._lock:
                 users = list(cls._memory_users.values())
                 sorted_users = sorted(users, key=lambda u: u['id'])
@@ -259,15 +258,15 @@ class UserDB:
                     {
                         'id': user['id'],
                         'username': user['username'],
+                        'role': user.get('role', 'user'),
                         'created_at': user['created_at'],
                         'updated_at': user['updated_at']
                     }
                     for user in paginated_users
                 ]
 
-        # Postgres 模式：从数据库查询
         return await DatabasePool.fetch(
-            "SELECT id, username, created_at, updated_at FROM users ORDER BY id LIMIT $1 OFFSET $2",
+            "SELECT id, username, role, created_at, updated_at FROM users ORDER BY id LIMIT $1 OFFSET $2",
             limit,
             offset
         )
@@ -330,3 +329,71 @@ class UserDB:
             user_id
         )
         return "UPDATE 1" in result
+
+    @classmethod
+    async def update_username(cls, user_id: int, new_username: str) -> bool:
+        """
+        修改用户名
+
+        Args:
+            user_id: 用户 ID
+            new_username: 新用户名
+
+        Returns:
+            bool: 修改成功返回 True
+
+        Raises:
+            ValueError: 新用户名已被占用
+        """
+        if not cls.is_enabled():
+            with cls._lock:
+                # 检查新用户名是否已存在
+                if new_username in cls._memory_users:
+                    raise ValueError("用户名已存在")
+                for user in cls._memory_users.values():
+                    if user['id'] == user_id:
+                        old_username = user['username']
+                        user['username'] = new_username
+                        user['updated_at'] = datetime.utcnow()
+                        # 更新字典键
+                        cls._memory_users[new_username] = cls._memory_users.pop(old_username)
+                        return True
+                return False
+
+        import asyncpg
+        try:
+            result = await DatabasePool.execute(
+                "UPDATE users SET username = $1, updated_at = NOW() WHERE id = $2",
+                new_username,
+                user_id
+            )
+            return "UPDATE 1" in result
+        except asyncpg.UniqueViolationError:
+            raise ValueError("用户名已存在")
+
+    @classmethod
+    async def ensure_admin_exists(cls):
+        """
+        确保系统中存在管理员账户
+
+        如果不存在 admin 角色的用户，则自动创建默认管理员账户。
+        默认用户名: admin，默认密码: admin123，角色: admin。
+        """
+        # 检查是否已存在 admin 角色用户
+        if not cls.is_enabled():
+            with cls._lock:
+                for user in cls._memory_users.values():
+                    if user.get('role') == 'admin':
+                        return
+            # 不存在则创建
+            await cls.create_user('admin', 'admin123', role='admin')
+            print("[初始化] 已创建默认管理员账户 (admin/admin123)")
+            return
+
+        # 数据库模式
+        row = await DatabasePool.fetchrow(
+            "SELECT id FROM users WHERE role = 'admin' LIMIT 1"
+        )
+        if not row:
+            await cls.create_user('admin', 'admin123', role='admin')
+            print("[初始化] 已创建默认管理员账户 (admin/admin123)")

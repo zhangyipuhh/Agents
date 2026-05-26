@@ -152,39 +152,50 @@ class JWTAuth:
     async def authenticate(self, request: Request) -> Optional[dict]:
         """
         认证请求
-        
-        从请求中提取并验证JWT令牌。
-        
+
+        从请求中提取并验证JWT令牌，同时查询用户角色信息。
+
         Args:
             request (Request): FastAPI请求对象
-            
+
         Returns:
             Optional[dict]: 认证成功返回payload，失败返回None
-            
+
         Raises:
             HTTPException: 当认证失败时抛出
         """
         auth_header = request.headers.get("Authorization")
-        
+
         if not auth_header:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="缺少认证信息"
             )
-        
+
         if not auth_header.startswith("Bearer "):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="无效的认证格式"
             )
-        
+
         token = auth_header.split(" ")[1]
         payload = await self.verify_token(token)
-        
+
         # 将用户信息存储到 request.state，方便后续使用
-        request.state.username = payload.get("username")
+        username = payload.get("username")
+        request.state.username = username
         request.state.payload = payload
-        
+
+        # 查询用户角色并存储到 request.state
+        from app.shared.utils.auth.user_db import UserDB
+        user = await UserDB.get_user_by_username(username)
+        if user:
+            request.state.role = user.get('role', 'user')
+            request.state.user_id = user.get('id')
+        else:
+            request.state.role = 'user'
+            request.state.user_id = None
+
         return payload
 
 

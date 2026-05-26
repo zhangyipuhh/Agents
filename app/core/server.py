@@ -52,9 +52,17 @@ async def lifespan(app: FastAPI):
     from app.shared.utils.auth.session_db import SessionDB
     await SessionDB.initialize()
 
+    # 确保管理员账户存在
+    from app.shared.utils.auth.user_db import UserDB
+    await UserDB.ensure_admin_exists()
+
     # 添加 Swagger 文档路径到白名单
     jwt_auth.add_to_whitelist("/api/auth/login")
     print("[DEBUG] 已添加 /api/auth/login 到白名单")
+    jwt_auth.add_to_whitelist("/api/auth/captcha")
+    print("[DEBUG] 已添加 /api/auth/captcha 到白名单")
+    jwt_auth.add_to_whitelist("/api/auth/register")
+    print("[DEBUG] 已添加 /api/auth/register 到白名单")
     jwt_auth.add_to_whitelist("/docs")
     print("[DEBUG] 已添加 /docs 到白名单")
     jwt_auth.add_to_whitelist("/openapi.json")
