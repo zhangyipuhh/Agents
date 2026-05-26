@@ -5,10 +5,15 @@ import SkillTags from './components/SkillTags.vue'
 import ChatArea from './components/ChatArea.vue'
 import InputBox from './components/InputBox.vue'
 import KnowledgePage from './components/KnowledgePage.vue'
-import { chatStream, ensureAuth, createNewSession } from './utils/api.js'
+import LoginView from './views/LoginView.vue'
+import RegisterView from './views/RegisterView.vue'
+import { chatStream, ensureAuth, createNewSession, logout as apiLogout } from './utils/api.js'
 import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage } from './utils/sseParser.js'
 
 const currentPage = ref('agent')
+const authView = ref('login') // 'login' | 'register'
+const isLoggedIn = ref(false)
+const currentUser = ref({ username: '', role: '', userId: null })
 
 const messages = reactive([])
 const sessionId = reactive({ value: '' })
@@ -16,12 +21,80 @@ const isStreaming = reactive({ value: false })
 
 const isEmptyState = computed(() => messages.length === 0)
 
+/**
+ * 检查本地存储的登录状态
+ * 从 localStorage 读取 token 和用户信息，判断是否已登录
+ */
+function checkAuth() {
+  const token = localStorage.getItem('auth_token')
+  const username = localStorage.getItem('username')
+  const role = localStorage.getItem('user_role')
+
+  if (token && username) {
+    isLoggedIn.value = true
+    currentUser.value = {
+      username,
+      role: role || 'user',
+      userId: null // userId 不存储在 localStorage 中，需要时从后端获取
+    }
+  } else {
+    isLoggedIn.value = false
+  }
+}
+
+/**
+ * 处理登录成功事件
+ * @param {Object} data - 登录结果数据，包含 token、role、username
+ */
+function handleLoginSuccess(data) {
+  localStorage.setItem('auth_token', data.token)
+  localStorage.setItem('user_role', data.role)
+  localStorage.setItem('username', data.username)
+  isLoggedIn.value = true
+  currentUser.value = {
+    username: data.username,
+    role: data.role,
+    userId: null
+  }
+}
+
+/**
+ * 处理登出事件
+ * 清除本地缓存并返回登录页
+ */
+async function handleLogout() {
+  await apiLogout()
+  isLoggedIn.value = false
+  currentUser.value = { username: '', role: '', userId: null }
+  messages.splice(0, messages.length)
+  sessionId.value = ''
+  authView.value = 'login'
+}
+
+/**
+ * 处理用户名更新事件
+ * @param {Object} data - 包含新用户名的数据
+ */
+function handleUsernameUpdated(data) {
+  currentUser.value.username = data.username
+  localStorage.setItem('username', data.username)
+}
+
 onMounted(async () => {
-  try {
-    const newId = await createNewSession()
-    sessionId.value = newId
-  } catch (err) {
-    console.error('初始化会话失败:', err)
+  // 检查登录状态
+  checkAuth()
+
+  if (isLoggedIn.value) {
+    try {
+      const newId = await createNewSession()
+      sessionId.value = newId
+    } catch (err) {
+      console.error('初始化会话失败:', err)
+      // 如果是认证错误，跳转到登录页
+      if (err.message.includes('未登录') || err.message.includes('过期')) {
+        isLoggedIn.value = false
+      }
+    }
   }
 })
 
@@ -36,6 +109,9 @@ async function newSession() {
     sessionId.value = newId
   } catch (err) {
     console.error('新建会话失败:', err)
+    if (err.message.includes('未登录') || err.message.includes('过期')) {
+      isLoggedIn.value = false
+    }
   }
 }
 
@@ -87,6 +163,10 @@ async function handleSendMessage(message, attachments = []) {
     }
   } catch (err) {
     console.error('聊天请求错误:', err)
+    if (err.message.includes('未登录') || err.message.includes('过期')) {
+      isLoggedIn.value = false
+      return
+    }
     aiMsg.error = '不好意思，刚刚出了点小故障，可以晚点再问我一遍。'
     aiMsg.ended = true
   } finally {
@@ -138,8 +218,28 @@ function handlePageChange(page) {
 </script>
 
 <template>
-  <div class="app-layout">
-    <Sidebar :current-page="currentPage" @new-chat="newSession" @page-change="handlePageChange" />
+  <!-- 未登录：显示登录/注册页面 -->
+  <LoginView
+    v-if="!isLoggedIn && authView === 'login'"
+    @login-success="handleLoginSuccess"
+    @switch-to-register="authView = 'register'"
+  />
+  <RegisterView
+    v-else-if="!isLoggedIn && authView === 'register'"
+    @switch-to-login="authView = 'login'"
+  />
+
+  <!-- 已登录：显示主应用 -->
+  <div v-else class="app-layout">
+    <Sidebar
+      :current-page="currentPage"
+      :username="currentUser.username"
+      :user-role="currentUser.role"
+      @new-chat="newSession"
+      @page-change="handlePageChange"
+      @logout="handleLogout"
+      @username-updated="handleUsernameUpdated"
+    />
 
     <main v-if="currentPage === 'agent'" class="content-area" :class="{ 'empty-layout': isEmptyState }">
       <SkillTags v-if="!isEmptyState" @tag-select="handleTagSelect" />

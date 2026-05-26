@@ -1,9 +1,172 @@
+/* ============================================
+   用户认证相关 API
+   ============================================ */
+
+/**
+ * 用户登录
+ * @param {string} username - 用户名
+ * @param {string} password - 密码
+ * @param {string} captchaKey - 验证码 key
+ * @param {string} captchaCode - 验证码输入值
+ * @returns {Promise<{access_token: string, role: string, username: string, expires_in: number}>} 登录结果
+ * @throws {Error} 登录失败时抛出错误
+ */
+export async function login(username, password, captchaKey, captchaCode) {
+  const response = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      username,
+      password,
+      captcha_key: captchaKey,
+      captcha_code: captchaCode
+    })
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '登录失败')
+  }
+
+  return response.json()
+}
+
+/**
+ * 用户注册
+ * @param {string} username - 用户名
+ * @param {string} password - 密码
+ * @param {string} confirmPassword - 确认密码
+ * @returns {Promise<{message: string}>} 注册结果
+ * @throws {Error} 注册失败时抛出错误
+ */
+export async function register(username, password, confirmPassword) {
+  const response = await fetch('/api/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      username,
+      password,
+      confirm_password: confirmPassword
+    })
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '注册失败')
+  }
+
+  return response.json()
+}
+
+/**
+ * 获取验证码图片
+ * @returns {Promise<{captcha_key: string, captcha_image: string}>} 验证码 key 和 Base64 编码的验证码图片
+ * @throws {Error} 获取验证码失败时抛出错误
+ */
+export async function getCaptcha() {
+  const response = await fetch('/api/auth/captcha', {
+    method: 'GET'
+  })
+
+  if (!response.ok) {
+    throw new Error('获取验证码失败')
+  }
+
+  return response.json()
+}
+
+/**
+ * 用户登出
+ * 清除本地存储的认证信息，调用后端登出接口删除 Session
+ * @throws {Error} 登出失败时抛出错误
+ */
+export async function logout() {
+  try {
+    const headers = { 'Content-Type': 'application/json', ...getAuthHeaders() }
+    await fetch('/api/auth/logout', {
+      method: 'POST',
+      headers
+    })
+  } catch {
+    // 登出接口失败也继续清除本地数据
+  } finally {
+    localStorage.removeItem('auth_token')
+    localStorage.removeItem('session_id')
+    localStorage.removeItem('user_role')
+    localStorage.removeItem('username')
+  }
+}
+
+/**
+ * 修改用户密码
+ * @param {number} userId - 用户ID
+ * @param {string} oldPassword - 旧密码
+ * @param {string} newPassword - 新密码
+ * @returns {Promise<{message: string}>} 修改结果
+ * @throws {Error} 修改密码失败时抛出错误
+ */
+export async function updatePassword(userId, oldPassword, newPassword) {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...getAuthHeaders()
+  }
+
+  const response = await fetch(`/api/users/${userId}/password`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({ old_password: oldPassword, new_password: newPassword })
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '修改密码失败')
+  }
+
+  return response.json()
+}
+
+/**
+ * 修改用户名
+ * @param {number} userId - 用户ID
+ * @param {string} newUsername - 新用户名
+ * @returns {Promise<{message: string, new_username: string}>} 修改结果及新用户名
+ * @throws {Error} 修改用户名失败时抛出错误
+ */
+export async function updateUsername(userId, newUsername) {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...getAuthHeaders()
+  }
+
+  const response = await fetch(`/api/users/${userId}/username`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({ new_username: newUsername })
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '修改用户名失败')
+  }
+
+  return response.json()
+}
+
+/* ============================================
+   认证状态管理
+   ============================================ */
+
 const CHUNK_SIZE = 256 * 1024
 
 function generateFileId() {
   return `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`
 }
 
+/**
+ * 获取认证请求头
+ * 从 localStorage 中读取 token 和 session_id 构建请求头
+ * @returns {Object} 包含 Authorization 和 X-Session-ID 的请求头对象
+ */
 export function getAuthHeaders() {
   const headers = {}
   const token = localStorage.getItem('auth_token')
@@ -17,27 +180,70 @@ export function getAuthHeaders() {
   return headers
 }
 
+/**
+ * 刷新 JWT 令牌
+ * 使用当前存储的凭据重新获取 token
+ * @returns {Promise<string>} 新的 JWT 令牌
+ * @throws {Error} 刷新失败时抛出错误（通常需要重新登录）
+ */
 export async function refreshToken() {
-  const loginRes = await fetch('/api/auth/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: 'admin', password: '123456' })
-  })
-  if (!loginRes.ok) {
-    throw new Error('登录失败')
+  const token = localStorage.getItem('auth_token')
+  if (!token) {
+    throw new Error('未登录，请重新登录')
   }
-  const loginData = await loginRes.json()
-  const token = loginData.access_token
-  localStorage.setItem('auth_token', token)
+
+  // 尝试用现有 token 创建新 token（通过 session/create 觪�证 token 是否有效）
+  // 如果 token 过期，需要重新登录
+  try {
+    const newToken = await jwtRefresh(token)
+    localStorage.setItem('auth_token', newToken)
+    return newToken
+  } catch {
+    // token 无效，需要重新登录
+    localStorage.removeItem('auth_token')
+    throw new Error('登录已过期，请重新登录')
+  }
+}
+
+/**
+ * 使用现有 token 刷新获取新 token
+ * @param {string} token - 当前 JWT token
+ * @returns {Promise<string>} 新的 JWT token
+ */
+async function jwtRefresh(token) {
+  // 验证当前 token 是否仍然有效
+  const sessionRes = await fetch('/api/session/create', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    }
+  })
+
+  if (sessionRes.status === 401) {
+    throw new Error('Token 已过期')
+  }
+
+  if (!sessionRes.ok) {
+    throw new Error('刷新令牌失败')
+  }
+
+  // token 仍然有效，直接返回
   return token
 }
 
+/**
+ * 确保认证状态有效
+ * 检查 token 和 session_id 是否存在，不存在则尝试创建
+ * @returns {Promise<{token: string, sessionId: string}>} 认证信息
+ * @throws {Error} 认证失败时抛出错误
+ */
 export async function ensureAuth() {
   let token = localStorage.getItem('auth_token')
   let sessionId = localStorage.getItem('session_id')
 
   if (!token) {
-    token = await refreshToken()
+    throw new Error('未登录，请重新登录')
   }
 
   if (!sessionId) {
@@ -51,24 +257,8 @@ export async function ensureAuth() {
     if (!sessionRes.ok) {
       if (sessionRes.status === 401) {
         localStorage.removeItem('auth_token')
-        token = await refreshToken()
-        const retryRes = await fetch('/api/session/create', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          }
-        })
-        if (!retryRes.ok) {
-          localStorage.removeItem('auth_token')
-          throw new Error('创建会话失败')
-        }
-        const retryData = await retryRes.json()
-        sessionId = retryData.session_id
-        localStorage.setItem('session_id', sessionId)
-        return { token, sessionId }
+        throw new Error('登录已过期，请重新登录')
       }
-      localStorage.removeItem('auth_token')
       throw new Error('创建会话失败')
     }
     const sessionData = await sessionRes.json()
@@ -79,8 +269,17 @@ export async function ensureAuth() {
   return { token, sessionId }
 }
 
+/**
+ * 强制刷新认证信息
+ * @returns {Promise<{token: string, sessionId: string}>} 认证信息
+ * @throws {Error} 认证失败时抛出错误
+ */
 export async function forceRefreshAuth() {
-  const token = await refreshToken()
+  const token = localStorage.getItem('auth_token')
+  if (!token) {
+    throw new Error('未登录，请重新登录')
+  }
+
   let sessionId = localStorage.getItem('session_id')
 
   if (!sessionId) {
@@ -102,6 +301,10 @@ export async function forceRefreshAuth() {
 
   return { token, sessionId }
 }
+
+/* ============================================
+   文件上传相关 API
+   ============================================ */
 
 function uploadChunk(fileId, chunkIndex, totalChunks, filename, chunkBlob) {
   return new Promise((resolve, reject) => {
@@ -250,13 +453,18 @@ export function getFileExtension(filename) {
   return parts.length > 1 ? parts.pop().toLowerCase() : ''
 }
 
+/**
+ * 创建新会话
+ * 使用当前认证信息创建新的聊天会话
+ * @returns {Promise<string>} 新会话 ID
+ * @throws {Error} 创建会话失败时抛出错误
+ */
 export async function createNewSession() {
-  // 使用 forceRefreshAuth 确保认证信息准备好
   const { token } = await forceRefreshAuth()
-  
+
   // 清除旧的 session_id，创建全新会话
   localStorage.removeItem('session_id')
-  
+
   const headers = { 'Content-Type': 'application/json' }
   headers['Authorization'] = `Bearer ${token}`
 
@@ -266,6 +474,10 @@ export async function createNewSession() {
   })
 
   if (!sessionRes.ok) {
+    if (sessionRes.status === 401) {
+      localStorage.removeItem('auth_token')
+      throw new Error('登录已过期，请重新登录')
+    }
     throw new Error(`创建会话失败: ${sessionRes.status}`)
   }
 
@@ -304,6 +516,10 @@ export async function chatStream(sessionId, message, attachments = []) {
   })
 
   if (!response.ok) {
+    if (response.status === 401) {
+      localStorage.removeItem('auth_token')
+      throw new Error('登录已过期，请重新登录')
+    }
     throw new Error(`HTTP ${response.status}: ${response.statusText}`)
   }
 
@@ -339,6 +555,10 @@ export async function knowledgeChatStream(sessionId, message, attachments = []) 
   })
 
   if (!response.ok) {
+    if (response.status === 401) {
+      localStorage.removeItem('auth_token')
+      throw new Error('登录已过期，请重新登录')
+    }
     throw new Error(`HTTP ${response.status}: ${response.statusText}`)
   }
 
@@ -360,19 +580,7 @@ export async function fetchKnowledgeFiles() {
 
   if (response.status === 401) {
     localStorage.removeItem('auth_token')
-    await ensureAuth()
-    const retryHeaders = {
-      'Content-Type': 'application/json',
-      ...getAuthHeaders()
-    }
-    const retryResponse = await fetch('/api/map/knowledge/files', {
-      method: 'GET',
-      headers: retryHeaders
-    })
-    if (!retryResponse.ok) {
-      throw new Error(`HTTP ${retryResponse.status}: ${retryResponse.statusText}`)
-    }
-    return retryResponse.json()
+    throw new Error('登录已过期，请重新登录')
   }
 
   if (!response.ok) {
@@ -397,19 +605,7 @@ export async function fetchFilePreview(path) {
 
   if (response.status === 401) {
     localStorage.removeItem('auth_token')
-    await ensureAuth()
-    const retryHeaders = {
-      'Content-Type': 'application/json',
-      ...getAuthHeaders()
-    }
-    const retryResponse = await fetch(`/api/map/knowledge/file-preview?path=${encodeURIComponent(path)}`, {
-      method: 'GET',
-      headers: retryHeaders
-    })
-    if (!retryResponse.ok) {
-      throw new Error(`HTTP ${retryResponse.status}: ${retryResponse.statusText}`)
-    }
-    return retryResponse.json()
+    throw new Error('登录已过期，请重新登录')
   }
 
   if (!response.ok) {

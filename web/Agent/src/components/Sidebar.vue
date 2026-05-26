@@ -1,14 +1,23 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import UserSettingsDialog from './UserSettingsDialog.vue'
 
 const props = defineProps({
   currentPage: {
     type: String,
     default: 'agent'
+  },
+  username: {
+    type: String,
+    default: '用户名'
+  },
+  userRole: {
+    type: String,
+    default: 'user'
   }
 })
 
-const emit = defineEmits(['toggle-sidebar', 'new-chat', 'page-change'])
+const emit = defineEmits(['toggle-sidebar', 'new-chat', 'page-change', 'logout', 'username-updated'])
 
 const isSidebarCollapsed = ref(false)
 const isHistoryCollapsed = ref(false)
@@ -18,6 +27,7 @@ const activeMenu = ref('new-task')
 const isUserMenuVisible = ref(false)
 const userMenuRef = ref(null)
 const menuPositionStyle = ref({})
+const isSettingsDialogVisible = ref(false)
 
 const historySessions = ref([
   { id: 1, title: '数据分析报告生成', time: '10:30', active: true },
@@ -81,20 +91,28 @@ const closeUserMenu = () => {
 
 /**
  * 处理设置点击
+ * 打开用户设置对话框
  */
 const handleSetting = () => {
   closeUserMenu()
-  // TODO: 打开设置页面或弹窗
-  console.log('打开设置')
+  isSettingsDialogVisible.value = true
 }
 
 /**
  * 处理退出登录点击
+ * 触发登出事件
  */
 const handleLogout = () => {
   closeUserMenu()
-  // TODO: 执行退出登录逻辑
-  console.log('退出登录')
+  emit('logout')
+}
+
+/**
+ * 处理用户名更新事件
+ * @param {Object} data - 包含新用户名的数据
+ */
+const handleUsernameUpdated = (data) => {
+  emit('username-updated', data)
 }
 
 /**
@@ -415,7 +433,7 @@ onUnmounted(() => {
         </svg>
       </div>
       <div v-show="!isSidebarCollapsed" class="user-info">
-        <span class="user-name">用户名</span>
+        <span class="user-name">{{ username }}</span>
         <span class="user-tag tag-free">免费</span>
       </div>
     </div>
@@ -437,6 +455,15 @@ onUnmounted(() => {
         </div>
       </div>
     </Teleport>
+
+    <!-- 用户设置对话框 -->
+    <UserSettingsDialog
+      v-model:visible="isSettingsDialogVisible"
+      :role="userRole"
+      :user-id="null"
+      :username="username"
+      @username-updated="handleUsernameUpdated"
+    />
   </aside>
 </template>
 
