@@ -848,15 +848,22 @@ def generate_report(runtime: ToolRuntime) -> Command:
 
     try:
         # 构建项目选址数据集合
-        process_data = runtime.context.get("process_data", {})
-        runtime_data = process_data.get("runtime_data", {})
-        collection = runtime_data.get("report_data", None)
+        # 从 store 获取 process_data
+        store_id = runtime.context.get("store_id", "default")
+        namespace = (store_id,)
+        existing_result = runtime.store.get(namespace, "process_data")
+        process_data = existing_result.value if existing_result else {}
+        collection = process_data.get("report_data", None)
         if collection is None:
             collection = ProjectSiteSelectionCollection(
                 collection_id="default",
                 collection_name="默认集合",
                 projects=[],
             )
+        elif isinstance(collection, dict):
+            # 如果 collection 是字典（从 store 中反序列化），转换为 ProjectSiteSelectionCollection 对象
+            # 使用 model_validate 自动忽略未定义的字段（如 context）
+            collection = ProjectSiteSelectionCollection.model_validate(collection)
 
         # 构建报告配置
         config = get_report_config(report_data, collection=collection)
