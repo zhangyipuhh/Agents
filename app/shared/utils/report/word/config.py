@@ -12,7 +12,7 @@ Date: 2026-05-11
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Literal
+from typing import Callable, Literal, List
 
 
 @dataclass
@@ -110,10 +110,11 @@ class CoverConfig:
     """
     封面配置类
 
-    定义报告封面的结构化配置，包含标题、副标题、日期、附件编号四个元素。
-    每个元素使用 CoverElementConfig 进行配置，支持独立的字体、加粗、对齐和间距设置。
+    定义报告封面的结构化配置，包含标题、副标题、日期、附件编号四个元素，
+    以及自定义元素列表和底部注释。每个元素使用 CoverElementConfig 进行配置，
+    支持独立的字体、加粗、对齐和间距设置。
 
-    封面布局从上到下依次为：附件编号 -> 主标题 -> 副标题 -> 日期文本。
+    封面布局从上到下依次为：附件编号 -> 主标题 -> 副标题 -> 自定义元素列表 -> 日期文本 -> 底部注释。
     各元素的 space_before 和 space_after 控制段前行数和段后行数。
 
     Attributes:
@@ -121,6 +122,8 @@ class CoverConfig:
         subtitle: 副标题配置，使用 CoverElementConfig
         date: 日期配置，使用 CoverElementConfig
         attachment: 附件编号配置，使用 CoverElementConfig
+        custom_elements: 自定义元素列表，在副标题之后、日期之前渲染
+        footer_note: 底部注释配置，显示在封面页底部
 
     Example:
         >>> cover = CoverConfig(
@@ -151,6 +154,21 @@ class CoverConfig:
         ...         font_size=12,
         ...         alignment="right",
         ...     ),
+        ...     custom_elements=[
+        ...         CoverElementConfig(
+        ...             text="项目类型：{{项目类型}}",
+        ...             font_name="宋体",
+        ...             font_size=16,
+        ...             bold=True,
+        ...             space_before=11,
+        ...         ),
+        ...     ],
+        ...     footer_note=CoverElementConfig(
+        ...         text="（根据查询时间的"一张图"数据分析结果，仅供参考）",
+        ...         font_name="宋体",
+        ...         font_size=10,
+        ...         space_before=20,
+        ...     ),
         ... )
     """
 
@@ -179,6 +197,12 @@ class CoverConfig:
         alignment="right",
     ))
     """附件编号配置，默认字体宋体、字号12pt、右对齐"""
+
+    custom_elements: List[CoverElementConfig] = field(default_factory=list)
+    """自定义元素列表，在副标题之后、日期之前渲染，默认为空列表"""
+
+    footer_note: CoverElementConfig | None = None
+    """底部注释配置，显示在封面页底部，默认为None"""
 
     @classmethod
     def from_legacy(

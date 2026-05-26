@@ -31,7 +31,7 @@ from langgraph.config import get_stream_writer
 from typing import List, Dict, Any, Optional
 from app.core.tools.events import create_tool_event
 from app.shared.utils.report.word.generator import WordReportGenerator
-from app.features.map_agent.config.config import get_report_config
+from app.features.map_agent.config.config import get_report_config, ProjectSiteSelectionCollection
 from app.core.config.config import DEMONSTRATION_CONFIG
 
 @tool
@@ -822,6 +822,7 @@ def generate_report(runtime: ToolRuntime) -> Command:
 
     # 准备报告数据
     current_time = datetime.now()
+    #这个地方sheng'cha'enshengchaen
     report_data = {
         "项目名称": runtime.state.get("project_name", "XX项目"),
         "生成日期": current_time.strftime("%Y年%m月%d日"),
@@ -846,8 +847,19 @@ def generate_report(runtime: ToolRuntime) -> Command:
     writer(dict(progress_event_2))
 
     try:
+        # 构建项目选址数据集合
+        process_data = runtime.context.get("process_data", {})
+        runtime_data = process_data.get("runtime_data", {})
+        collection = runtime_data.get("report_data", None)
+        if collection is None:
+            collection = ProjectSiteSelectionCollection(
+                collection_id="default",
+                collection_name="默认集合",
+                projects=[],
+            )
+
         # 构建报告配置
-        config = get_report_config(report_data)
+        config = get_report_config(report_data, collection=collection)
 
         # 生成Word文档
         generator = WordReportGenerator(config)
