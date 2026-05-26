@@ -83,7 +83,7 @@ async def create_session(request: Request):
         session_dir = file_transfer._get_session_dir(session_id)
 
         # 添加 session（传入 user_id）
-        session_cache.add_session(session_id, username, user['id'])
+        await session_cache.add_session(session_id, username, user['id'])
 
         return SessionCreateResponse(
             session_id=session_id,
@@ -132,7 +132,7 @@ async def delete_session(session_id: str, request: Request):
             raise HTTPException(status_code=401, detail="未认证")
         
         # 验证 session_id 是否属于该用户
-        is_valid = session_cache.verify_session(session_id, username)
+        is_valid = await session_cache.verify_session(session_id, username)
         
         if not is_valid:
             raise HTTPException(status_code=403, detail="无权删除该会话")
@@ -141,7 +141,7 @@ async def delete_session(session_id: str, request: Request):
         success = await file_transfer.delete_session(session_id)
         
         # 从缓存中删除 session_id
-        session_cache.delete_session(session_id)
+        await session_cache.delete_session(session_id)
         
         return SessionDeleteResponse(
             success=success,

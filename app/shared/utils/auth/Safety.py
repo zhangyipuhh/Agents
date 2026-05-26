@@ -269,7 +269,7 @@ async def session_auth_middleware(request: Request, call_next):
         # 验证 session_id 是否属于该用户
         from app.shared.utils.auth.session_db import SessionDB
         #print(f"[诊断-session_middleware] SessionDB.is_enabled()={SessionDB.is_enabled()}, username={username}, session_id={session_id}")
-        is_valid = session_cache.verify_session(session_id, username)
+        is_valid = await session_cache.verify_session(session_id, username)
         #print(f"[诊断-session_middleware] verify_session result={is_valid}")
         
         if not is_valid:

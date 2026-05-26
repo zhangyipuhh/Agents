@@ -257,7 +257,7 @@ async def logout(req: Request):
 
     # 删除 Session
     if session_id:
-        session_cache.delete_session(session_id)
+        await session_cache.delete_session(session_id)
 
     # 记录登出日志
     if username:
