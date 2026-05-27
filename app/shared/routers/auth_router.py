@@ -282,6 +282,48 @@ async def refresh_token(request: Request):
     }
 
 
+@router.get('/validate')
+async def validate_token(request: Request):
+    """
+    验证 Access Token 有效性接口
+
+    读取 Authorization 头中的 Access Token，验证签名和有效期。
+    用于前端页面加载时检查当前 Token 是否有效。
+
+    Returns:
+        dict: 包含 username 和 role
+
+    Raises:
+        HTTPException: Token 无效或过期时返回 401
+    """
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="缺少有效的认证信息"
+        )
+
+    token = auth_header.split(" ")[1]
+    payload = await jwt_auth.verify_token(token)
+
+    # 拒绝 Refresh Token
+    if payload.get("type") == "refresh":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效的令牌类型"
+        )
+
+    # 查询角色
+    from app.shared.utils.auth.user_db import UserDB
+    user = await UserDB.get_user_by_username(payload["username"])
+    role = user.get('role', 'user') if user else 'user'
+
+    return {
+        "username": payload["username"],
+        "role": role
+    }
+
+
 @router.post('/logout')
 async def logout(req: Request):
     """
