@@ -99,17 +99,9 @@ onMounted(async () => {
       return
     }
 
-    // 只有在没有有效会话时才创建新会话
-    try {
-      const newId = await createNewSession()
-      sessionId.value = newId
-    } catch (err) {
-      console.error('初始化会话失败:', err)
-      // 如果是认证错误，跳转到登录页
-      if (err.message.includes('未登录') || err.message.includes('过期')) {
-        isLoggedIn.value = false
-      }
-    }
+    // 没有有效会话时，不自动创建新会话
+    // 等待用户点击"新建任务"按钮时再创建，避免产生空会话
+    console.log('[App] 没有有效会话，等待用户手动创建')
   }
 })
 

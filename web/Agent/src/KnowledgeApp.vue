@@ -36,15 +36,14 @@ const unreadCount = ref(0)
 const showChat = ref(false)
 
 onMounted(async () => {
-  // 1. 先创建会话，确保认证信息已准备好
-  try {
-    const newId = await createNewSession()
-    currentSessionId.value = newId
-  } catch (err) {
-    console.error('创建会话失败:', err)
+  // 优先复用本地已有的 session_id，避免每次挂载都新建会话
+  const existingSessionId = localStorage.getItem('session_id')
+  if (existingSessionId && existingSessionId !== 'undefined') {
+    currentSessionId.value = existingSessionId
   }
+  // 没有有效会话时，不自动创建，等待用户交互时再创建
 
-  // 2. 然后加载文件列表
+  // 加载文件列表
   filesLoading.value = true
   try {
     const result = await fetchKnowledgeFiles()

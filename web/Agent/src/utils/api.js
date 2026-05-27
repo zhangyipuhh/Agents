@@ -474,33 +474,63 @@ export function getFileExtension(filename) {
  * @returns {Promise<string>} 新会话 ID
  * @throws {Error} 创建会话失败时抛出错误
  */
+
+/**
+ * 会话创建锁，防止重复创建
+ */
+let isCreatingSession = false
+let pendingSessionPromise = null
+
+/**
+ * 创建新会话
+ * 使用当前认证信息创建新的聊天会话，带有防重复创建机制
+ * @returns {Promise<string>} 新会话 ID
+ * @throws {Error} 创建会话失败时抛出错误
+ */
 export async function createNewSession() {
-  const { token } = await forceRefreshAuth()
-
-  // 清除旧的 session_id，创建全新会话
-  localStorage.removeItem('session_id')
-
-  const headers = { 'Content-Type': 'application/json' }
-  headers['Authorization'] = `Bearer ${token}`
-
-  const sessionRes = await fetch('/api/session/create', {
-    method: 'POST',
-    headers
-  })
-
-  if (!sessionRes.ok) {
-    if (sessionRes.status === 401 || sessionRes.status === 403) {
-      localStorage.removeItem('auth_token')
-      localStorage.removeItem('session_id')
-      throw new Error('登录已过期，请重新登录')
-    }
-    throw new Error(`创建会话失败: ${sessionRes.status}`)
+  // 如果正在创建中，返回 pending 的 Promise，防止重复创建
+  if (isCreatingSession && pendingSessionPromise) {
+    console.log('[createNewSession] 检测到正在创建中，返回 pending Promise')
+    return pendingSessionPromise
   }
 
-  const sessionData = await sessionRes.json()
-  const newSessionId = sessionData.session_id
-  localStorage.setItem('session_id', newSessionId)
-  return newSessionId
+  isCreatingSession = true
+  pendingSessionPromise = (async () => {
+    try {
+      const { token } = await forceRefreshAuth()
+
+      // 清除旧的 session_id，创建全新会话
+      localStorage.removeItem('session_id')
+
+      const headers = { 'Content-Type': 'application/json' }
+      headers['Authorization'] = `Bearer ${token}`
+
+      const sessionRes = await fetch('/api/session/create', {
+        method: 'POST',
+        headers
+      })
+
+      if (!sessionRes.ok) {
+        if (sessionRes.status === 401 || sessionRes.status === 403) {
+          localStorage.removeItem('auth_token')
+          localStorage.removeItem('session_id')
+          throw new Error('登录已过期，请重新登录')
+        }
+        throw new Error(`创建会话失败: ${sessionRes.status}`)
+      }
+
+      const sessionData = await sessionRes.json()
+      const newSessionId = sessionData.session_id
+      localStorage.setItem('session_id', newSessionId)
+      console.log('[createNewSession] 会话创建成功:', newSessionId)
+      return newSessionId
+    } finally {
+      isCreatingSession = false
+      pendingSessionPromise = null
+    }
+  })()
+
+  return pendingSessionPromise
 }
 
 export async function chatStream(sessionId, message, attachments = []) {
