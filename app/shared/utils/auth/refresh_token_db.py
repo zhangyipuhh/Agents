@@ -68,14 +68,18 @@ class RefreshTokenDB:
                 }
             return True
 
-        await DatabasePool.execute(
-            """
-            INSERT INTO refresh_tokens (token_hash, user_id, expires_at)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (token_hash) DO NOTHING
-            """,
-            token_hash, user_id, expires_at
-        )
+        try:
+            await DatabasePool.execute(
+                """
+                INSERT INTO refresh_tokens (token_hash, user_id, expires_at)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (token_hash) DO NOTHING
+                """,
+                token_hash, user_id, expires_at
+            )
+        except Exception as e:
+            print(f"[RefreshTokenDB] 存储 Token 失败: {e}")
+            return False
         return True
 
     @classmethod
@@ -135,7 +139,9 @@ class RefreshTokenDB:
             "DELETE FROM refresh_tokens WHERE token_hash = $1",
             token_hash
         )
-        return "DELETE 1" in result
+        parts = result.split()
+        deleted = int(parts[1]) if len(parts) > 1 else 0
+        return deleted > 0
 
     @classmethod
     async def delete_user_tokens(cls, user_id: int) -> int:
@@ -151,13 +157,13 @@ class RefreshTokenDB:
             int: 删除的 Token 数量
         """
         if not cls.is_enabled():
-            deleted = []
+            deleted = 0
             with cls._lock:
                 for token_hash, record in list(cls._memory_tokens.items()):
                     if record['user_id'] == user_id:
-                        deleted.append(token_hash)
                         del cls._memory_tokens[token_hash]
-            return len(deleted)
+                        deleted += 1
+            return deleted
 
         result = await DatabasePool.execute(
             "DELETE FROM refresh_tokens WHERE user_id = $1",
@@ -175,14 +181,14 @@ class RefreshTokenDB:
             int: 清理的 Token 数量
         """
         if not cls.is_enabled():
-            deleted = []
+            deleted = 0
             now = datetime.utcnow()
             with cls._lock:
                 for token_hash, record in list(cls._memory_tokens.items()):
                     if record['expires_at'] < now:
-                        deleted.append(token_hash)
                         del cls._memory_tokens[token_hash]
-            return len(deleted)
+                        deleted += 1
+            return deleted
 
         result = await DatabasePool.execute(
             "DELETE FROM refresh_tokens WHERE expires_at < NOW()"
