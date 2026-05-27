@@ -90,31 +90,55 @@ class JWTAuth:
             return username == self.username and password == self.password
     
     async def generate_token(self, username: str) -> str:
-        """
-        生成JWT令牌
-        
-        Args:
-            username (str): 用户名
-            
-        Returns:
-            str: JWT令牌
-            
-        Raises:
-            HTTPException: 当生成令牌失败时抛出
-        """
         try:
             payload = {
                 "username": username,
-                "exp": datetime.utcnow() + timedelta(minutes=self.expiration_minutes),
+                "type": "access",
+                "exp": datetime.utcnow() + timedelta(minutes=30),
                 "iat": datetime.utcnow()
             }
-            
             token = jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
             return token
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"生成令牌失败: {str(e)}"
+            )
+
+    async def generate_refresh_token(self, username: str) -> str:
+        try:
+            payload = {
+                "username": username,
+                "type": "refresh",
+                "exp": datetime.utcnow() + timedelta(hours=24),
+                "iat": datetime.utcnow()
+            }
+            token = jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
+            return token
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"生成刷新令牌失败: {str(e)}"
+            )
+
+    async def verify_refresh_token(self, token: str) -> dict:
+        try:
+            payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
+            if payload.get("type") != "refresh":
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="无效的令牌类型"
+                )
+            return payload
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Refresh Token 已过期，请重新登录"
+            )
+        except jwt.InvalidTokenError as e:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="无效的令牌"
             )
     
     async def verify_token(self, token: str) -> dict:
@@ -185,6 +209,13 @@ class JWTAuth:
 
         token = auth_header.split(" ")[1]
         payload = await self.verify_token(token)
+
+        # 拒绝 Refresh Token 用于普通 API
+        if payload.get("type") == "refresh":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="无效的令牌类型"
+            )
 
         # 将用户信息存储到 request.state，方便后续使用
         username = payload.get("username")
