@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, nextTick } from 'vue'
-import { fetchKnowledgeFiles, fetchFilePreview, createNewSession, knowledgeChatStream } from './utils/api.js'
+import { fetchKnowledgeFiles, fetchFilePreview, createNewSession, knowledgeChatStream, validateToken, refreshToken } from './utils/api.js'
 import { createAiMessage, processSSEEvent } from './utils/sseParser.js'
 import FileList from './components/FileList.vue'
 import FilePreview from './components/FilePreview.vue'
@@ -41,6 +41,19 @@ const unreadCount = ref(0)
 const showChat = ref(false)
 
 onMounted(async () => {
+  // 验证 token 有效性，失效则尝试静默刷新
+  try {
+    await validateToken()
+  } catch {
+    try {
+      const newToken = await refreshToken()
+      localStorage.setItem('auth_token', newToken)
+    } catch {
+      window.location.href = '/Agent/'
+      return
+    }
+  }
+
   // 优先复用本地已有的 session_id，避免每次挂载都新建会话
   const existingSessionId = localStorage.getItem('session_id')
   if (existingSessionId && existingSessionId !== 'undefined') {

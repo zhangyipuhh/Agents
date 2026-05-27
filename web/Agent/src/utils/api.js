@@ -82,18 +82,17 @@ export async function getCaptcha() {
  */
 export async function logout() {
   try {
-    const headers = { 'Content-Type': 'application/json', ...getAuthHeaders() }
+    const headers = { 'Content-Type': 'application/json' }
+    const token = localStorage.getItem('auth_token')
+    if (token) headers['Authorization'] = `Bearer ${token}`
     await fetch('/api/auth/logout', {
       method: 'POST',
-      headers
+      headers,
+      credentials: 'include'
     })
   } catch {
-    // 登出接口失败也继续清除本地数据
   } finally {
-    localStorage.removeItem('auth_token')
-    localStorage.removeItem('session_id')
-    localStorage.removeItem('user_role')
-    localStorage.removeItem('username')
+    clearAuth()
   }
 }
 
@@ -184,86 +183,102 @@ export function getAuthHeaders() {
 }
 
 /**
+ * 清除本地存储的认证信息
+ */
+export function clearAuth() {
+  localStorage.removeItem('auth_token')
+  localStorage.removeItem('session_id')
+  localStorage.removeItem('user_role')
+  localStorage.removeItem('username')
+}
+
+/**
+ * 调用 /api/auth/refresh 刷新 Access Token
+ * 浏览器自动携带 HttpOnly Cookie 中的 Refresh Token
+ * @returns {Promise<{access_token: string, token_type: string, expires_in: number}>}
+ * @throws {Error} 刷新失败时抛出错误
+ */
+async function refreshAccessToken() {
+  const response = await fetch('/api/auth/refresh', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || 'Refresh Token 已失效，请重新登录')
+  }
+  return response.json()
+}
+
+/**
+ * 验证 Access Token 有效性
+ * 调用 /api/auth/validate 检查当前 Access Token 是否有效
+ * @returns {Promise<{username: string, role: string}>}
+ * @throws {Error} Token 无效或过期时抛出错误
+ */
+export async function validateToken() {
+  const token = localStorage.getItem('auth_token')
+  if (!token) throw new Error('未登录')
+  const response = await fetch('/api/auth/validate', {
+    headers: { 'Authorization': `Bearer ${token}` }
+  })
+  if (!response.ok) throw new Error('Token 已过期或无效')
+  return response.json()
+}
+
+/**
+ * 统一 API 请求包装器
+ * 自动注入 Authorization 和 X-Session-ID 头
+ * 401 时静默调用 /api/auth/refresh 重试一次
+ * @param {string} url - 请求地址
+ * @param {Object} options - fetch 选项
+ * @param {boolean} _retried - 内部使用，标记是否已重试
+ * @returns {Promise<Response>} fetch Response
+ * @throws {Error} 认证失败或请求失败时抛出错误
+ */
+export async function fetchWithAuth(url, options = {}, _retried = false) {
+  const headers = { ...(options.headers || {}) }
+  const token = localStorage.getItem('auth_token')
+  const sessionId = localStorage.getItem('session_id')
+  if (token && token !== 'undefined') {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  if (sessionId && sessionId !== 'undefined') {
+    headers['X-Session-ID'] = sessionId
+  }
+  const response = await fetch(url, { ...options, headers })
+  if (response.status === 401 && !_retried) {
+    try {
+      const data = await refreshAccessToken()
+      localStorage.setItem('auth_token', data.access_token)
+      headers['Authorization'] = `Bearer ${data.access_token}`
+      return fetch(url, { ...options, headers })
+    } catch {
+      clearAuth()
+      throw new Error('登录已过期，请重新登录')
+    }
+  }
+  if (response.status === 403) {
+    throw new Error('403 会话无效，请重试')
+  }
+  return response
+}
+
+/**
  * 刷新 JWT 令牌
  * 使用当前存储的凭据重新获取 token
  * @returns {Promise<string>} 新的 JWT 令牌
  * @throws {Error} 刷新失败时抛出错误（通常需要重新登录）
  */
 export async function refreshToken() {
-  const token = localStorage.getItem('auth_token')
-  if (!token) {
-    throw new Error('未登录，请重新登录')
-  }
-
-  // 尝试用现有 token 创建新 token（通过 session/create 觪�证 token 是否有效）
-  // 如果 token 过期，需要重新登录
-  try {
-    const newToken = await jwtRefresh(token)
-    localStorage.setItem('auth_token', newToken)
-    return newToken
-  } catch {
-    // token 无效，需要重新登录
-    localStorage.removeItem('auth_token')
-    throw new Error('登录已过期，请重新登录')
-  }
-}
-
-/**
- * 使用现有 token 刷新获取新 token
- * @param {string} token - 当前 JWT token
- * @returns {Promise<string>} 新的 JWT token
- */
-async function jwtRefresh(token) {
-  // 验证当前 token 是否仍然有效（使用 session/list 端点，避免创建新会话）
-  const verifyRes = await fetch('/api/session/list', {
-    method: 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`
-    }
-  })
-
-  if (verifyRes.status === 401) {
-    throw new Error('Token 已过期')
-  }
-
-  if (!verifyRes.ok) {
-    throw new Error('刷新令牌失败')
-  }
-
-  // token 仍然有效，直接返回
-  return token
-}
-
-/**
- * 确保认证状态有效
- * 检查 token 是否存在，不再自动创建会话
- * @returns {Promise<{token: string, sessionId: string|null}>} 认证信息
- * @throws {Error} 认证失败时抛出错误
- */
-export async function ensureAuth() {
-  let token = localStorage.getItem('auth_token')
-  let sessionId = localStorage.getItem('session_id')
-
-  console.log('[调试] ensureAuth - token:', token)
-  console.log('[调试] ensureAuth - token 长度:', token ? token.length : 0)
-
-  if (!token || token === 'undefined') {
-    console.error('[调试] token 无效，清除 localStorage')
-    localStorage.removeItem('auth_token')
-    localStorage.removeItem('session_id')
-    throw new Error('未登录，请重新登录')
-  }
-
-  // 不再自动创建会话，只返回现有的 sessionId（可能为 null）
-  // 会话创建应由 createNewSession 统一处理
-  return { token, sessionId }
+  const data = await refreshAccessToken()
+  localStorage.setItem('auth_token', data.access_token)
+  return data.access_token
 }
 
 /**
  * 强制刷新认证信息
- * 注意：此函数不再自动创建会话，只返回 token
- * 会话创建应由 createNewSession 统一处理
  * @returns {Promise<{token: string}>} 认证信息
  * @throws {Error} 认证失败时抛出错误
  */
@@ -272,9 +287,6 @@ export async function forceRefreshAuth() {
   if (!token) {
     throw new Error('未登录，请重新登录')
   }
-
-  // 不再自动创建会话，只返回 token
-  // 会话创建应由 createNewSession 统一处理
   return { token }
 }
 
@@ -323,27 +335,11 @@ function uploadChunk(fileId, chunkIndex, totalChunks, filename, chunkBlob) {
 }
 
 function mergeChunks(fileId, filename, totalChunks) {
-  const headers = {
-    'Content-Type': 'application/json',
-    ...getAuthHeaders()
-  }
-  return fetch('/api/core/merge-chunks', {
+  return fetchWithAuth('/api/core/merge-chunks', {
     method: 'POST',
-    headers,
-    body: JSON.stringify({
-      file_id: fileId,
-      filename,
-      total_chunks: totalChunks
-    })
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file_id: fileId, filename, total_chunks: totalChunks })
   }).then(res => {
-    if (res.status === 401) {
-      localStorage.removeItem('auth_token')
-      throw new Error('认证失败，请重试')
-    }
-    if (res.status === 403) {
-      localStorage.removeItem('session_id')
-      throw new Error('403 会话无效，请重试')
-    }
     if (!res.ok) {
       return res.json().then(err => { throw new Error(err.detail || '合并失败') })
     }
@@ -449,72 +445,40 @@ let pendingSessionPromise = null
  * @throws {Error} 创建会话失败时抛出错误
  */
 export async function createNewSession() {
-  // 如果正在创建中，返回 pending 的 Promise，防止重复创建
   if (isCreatingSession && pendingSessionPromise) {
-    console.log('[createNewSession] 检测到正在创建中，返回 pending Promise')
     return pendingSessionPromise
   }
-
   isCreatingSession = true
   pendingSessionPromise = (async () => {
     try {
-      const { token } = await forceRefreshAuth()
-
-      // 清除旧的 session_id，创建全新会话
       localStorage.removeItem('session_id')
-
-      const headers = { 'Content-Type': 'application/json' }
-      headers['Authorization'] = `Bearer ${token}`
-
-      const sessionRes = await fetch('/api/session/create', {
+      const response = await fetchWithAuth('/api/session/create', {
         method: 'POST',
-        headers
+        headers: { 'Content-Type': 'application/json' }
       })
-
-      if (!sessionRes.ok) {
-        if (sessionRes.status === 401 || sessionRes.status === 403) {
-          localStorage.removeItem('auth_token')
-          localStorage.removeItem('session_id')
-          throw new Error('登录已过期，请重新登录')
-        }
-        throw new Error(`创建会话失败: ${sessionRes.status}`)
-      }
-
-      const sessionData = await sessionRes.json()
+      if (!response.ok) throw new Error(`创建会话失败: ${response.status}`)
+      const sessionData = await response.json()
       const newSessionId = sessionData.session_id
       localStorage.setItem('session_id', newSessionId)
-      console.log('[createNewSession] 会话创建成功:', newSessionId)
       return newSessionId
     } finally {
       isCreatingSession = false
       pendingSessionPromise = null
     }
   })()
-
   return pendingSessionPromise
 }
 
 export async function chatStream(sessionId, message, attachments = []) {
-  await ensureAuth()
-
-  const headers = {
-    'Content-Type': 'application/json',
-    'Accept': 'text/event-stream',
-    'Cache-Control': 'no-cache'
-  }
-
-  const token = localStorage.getItem('auth_token')
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
-  }
   const sid = sessionId || localStorage.getItem('session_id') || ''
-  if (sid) {
-    headers['X-Session-ID'] = sid
-  }
-
-  const response = await fetch('/api/map/chat', {
+  const response = await fetchWithAuth('/api/map/chat', {
     method: 'POST',
-    headers,
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'X-Session-ID': sid
+    },
     body: JSON.stringify({
       message,
       session_id: sid,
@@ -522,40 +486,20 @@ export async function chatStream(sessionId, message, attachments = []) {
       attachments
     })
   })
-
-  if (!response.ok) {
-    if (response.status === 401 || response.status === 403) {
-      localStorage.removeItem('auth_token')
-      localStorage.removeItem('session_id')
-      throw new Error('登录已过期，请重新登录')
-    }
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-  }
-
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`)
   return response.body
 }
 
 export async function knowledgeChatStream(sessionId, message, attachments = []) {
-  await ensureAuth()
-
-  const headers = {
-    'Content-Type': 'application/json',
-    'Accept': 'text/event-stream',
-    'Cache-Control': 'no-cache'
-  }
-
-  const token = localStorage.getItem('auth_token')
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
-  }
   const sid = sessionId || localStorage.getItem('session_id') || ''
-  if (sid) {
-    headers['X-Session-ID'] = sid
-  }
-
-  const response = await fetch('/api/map/knowledge-chat', {
+  const response = await fetchWithAuth('/api/map/knowledge-chat', {
     method: 'POST',
-    headers,
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'X-Session-ID': sid
+    },
     body: JSON.stringify({
       message,
       session_id: sid,
@@ -563,42 +507,16 @@ export async function knowledgeChatStream(sessionId, message, attachments = []) 
       attachments
     })
   })
-
-  if (!response.ok) {
-    if (response.status === 401 || response.status === 403) {
-      localStorage.removeItem('auth_token')
-      localStorage.removeItem('session_id')
-      throw new Error('登录已过期，请重新登录')
-    }
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-  }
-
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`)
   return response.body
 }
 
 export async function fetchKnowledgeFiles() {
-  await ensureAuth()
-
-  const headers = {
-    'Content-Type': 'application/json',
-    ...getAuthHeaders()
-  }
-
-  const response = await fetch('/api/map/knowledge/files', {
+  const response = await fetchWithAuth('/api/map/knowledge/files', {
     method: 'GET',
-    headers
+    headers: { 'Content-Type': 'application/json' }
   })
-
-  if (response.status === 401 || response.status === 403) {
-    localStorage.removeItem('auth_token')
-    localStorage.removeItem('session_id')
-    throw new Error('登录已过期，请重新登录')
-  }
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-  }
-
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`)
   return response.json()
 }
 
@@ -612,32 +530,11 @@ export async function fetchKnowledgeFiles() {
  * @throws {Error} 获取失败时抛出错误
  */
 export async function fetchSessionList() {
-  // 只验证 token，不自动创建 session（获取列表不需要当前有活跃会话）
-  const token = localStorage.getItem('auth_token')
-  if (!token || token === 'undefined') {
-    throw new Error('未登录，请重新登录')
-  }
-
-  const headers = {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${token}`
-  }
-
-  const response = await fetch('/api/session/list', {
+  const response = await fetchWithAuth('/api/session/list', {
     method: 'GET',
-    headers
+    headers: { 'Content-Type': 'application/json' }
   })
-
-  if (response.status === 401 || response.status === 403) {
-    localStorage.removeItem('auth_token')
-    localStorage.removeItem('session_id')
-    throw new Error('登录已过期，请重新登录')
-  }
-
-  if (!response.ok) {
-    throw new Error(`获取会话列表失败: ${response.status}`)
-  }
-
+  if (!response.ok) throw new Error(`获取会话列表失败: ${response.status}`)
   return response.json()
 }
 
@@ -648,28 +545,11 @@ export async function fetchSessionList() {
  * @throws {Error} 获取失败时抛出错误
  */
 export async function fetchSessionDetail(sessionId) {
-  await ensureAuth()
-
-  const headers = {
-    'Content-Type': 'application/json',
-    ...getAuthHeaders()
-  }
-
-  const response = await fetch(`/api/session/${sessionId}/detail`, {
+  const response = await fetchWithAuth(`/api/session/${sessionId}/detail`, {
     method: 'GET',
-    headers
+    headers: { 'Content-Type': 'application/json' }
   })
-
-  if (response.status === 401 || response.status === 403) {
-    localStorage.removeItem('auth_token')
-    localStorage.removeItem('session_id')
-    throw new Error('登录已过期，请重新登录')
-  }
-
-  if (!response.ok) {
-    throw new Error(`获取会话详情失败: ${response.status}`)
-  }
-
+  if (!response.ok) throw new Error(`获取会话详情失败: ${response.status}`)
   return response.json()
 }
 
@@ -681,29 +561,12 @@ export async function fetchSessionDetail(sessionId) {
  * @throws {Error} 更新失败时抛出错误
  */
 export async function updateSessionTitle(sessionId, title) {
-  await ensureAuth()
-
-  const headers = {
-    'Content-Type': 'application/json',
-    ...getAuthHeaders()
-  }
-
-  const response = await fetch(`/api/session/${sessionId}/title`, {
+  const response = await fetchWithAuth(`/api/session/${sessionId}/title`, {
     method: 'PUT',
-    headers,
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ title })
   })
-
-  if (response.status === 401 || response.status === 403) {
-    localStorage.removeItem('auth_token')
-    localStorage.removeItem('session_id')
-    throw new Error('登录已过期，请重新登录')
-  }
-
-  if (!response.ok) {
-    throw new Error(`更新标题失败: ${response.status}`)
-  }
-
+  if (!response.ok) throw new Error(`更新标题失败: ${response.status}`)
   return response.json()
 }
 
@@ -714,28 +577,11 @@ export async function updateSessionTitle(sessionId, title) {
  * @throws {Error} 获取失败时抛出错误
  */
 export async function fetchSessionAttachments(sessionId) {
-  await ensureAuth()
-
-  const headers = {
-    'Content-Type': 'application/json',
-    ...getAuthHeaders()
-  }
-
-  const response = await fetch(`/api/session/${sessionId}/attachments`, {
+  const response = await fetchWithAuth(`/api/session/${sessionId}/attachments`, {
     method: 'GET',
-    headers
+    headers: { 'Content-Type': 'application/json' }
   })
-
-  if (response.status === 401 || response.status === 403) {
-    localStorage.removeItem('auth_token')
-    localStorage.removeItem('session_id')
-    throw new Error('登录已过期，请重新登录')
-  }
-
-  if (!response.ok) {
-    throw new Error(`获取附件列表失败: ${response.status}`)
-  }
-
+  if (!response.ok) throw new Error(`获取附件列表失败: ${response.status}`)
   return response.json()
 }
 
@@ -748,29 +594,12 @@ export async function fetchSessionAttachments(sessionId) {
  * @throws {Error} 获取失败时抛出错误
  */
 export async function fetchSessionMessages(sessionId, limit = 50) {
-  await ensureAuth()
-
-  const headers = {
-    'Content-Type': 'application/json',
-    ...getAuthHeaders()
-  }
-
   const queryParams = limit > 0 ? `?limit=${limit}` : ''
-  const response = await fetch(`/api/session/${sessionId}/messages${queryParams}`, {
+  const response = await fetchWithAuth(`/api/session/${sessionId}/messages${queryParams}`, {
     method: 'GET',
-    headers
+    headers: { 'Content-Type': 'application/json' }
   })
-
-  if (response.status === 401 || response.status === 403) {
-    localStorage.removeItem('auth_token')
-    localStorage.removeItem('session_id')
-    throw new Error('登录已过期，请重新登录')
-  }
-
-  if (!response.ok) {
-    throw new Error(`获取历史消息失败: ${response.status}`)
-  }
-
+  if (!response.ok) throw new Error(`获取历史消息失败: ${response.status}`)
   return response.json()
 }
 
@@ -781,59 +610,23 @@ export async function fetchSessionMessages(sessionId, limit = 50) {
  * @throws {Error} 删除失败时抛出错误
  */
 export async function deleteSession(sessionId) {
-  await ensureAuth()
-
-  const headers = {
-    'Content-Type': 'application/json',
-    ...getAuthHeaders()
-  }
-
-  const response = await fetch(`/api/session/delete/${sessionId}`, {
+  const response = await fetchWithAuth(`/api/session/delete/${sessionId}`, {
     method: 'DELETE',
-    headers
+    headers: { 'Content-Type': 'application/json' }
   })
-
-  if (response.status === 401 || response.status === 403) {
-    localStorage.removeItem('auth_token')
-    localStorage.removeItem('session_id')
-    throw new Error('登录已过期，请重新登录')
-  }
-
-  if (!response.ok) {
-    throw new Error(`删除会话失败: ${response.status}`)
-  }
-
-  // 如果删除的是当前 session，清除 localStorage 中的 session_id
+  if (!response.ok) throw new Error(`删除会话失败: ${response.status}`)
   const currentSessionId = localStorage.getItem('session_id')
   if (currentSessionId === sessionId) {
     localStorage.removeItem('session_id')
   }
-
   return response.json()
 }
 
 export async function fetchFilePreview(path) {
-  await ensureAuth()
-
-  const headers = {
-    'Content-Type': 'application/json',
-    ...getAuthHeaders()
-  }
-
-  const response = await fetch(`/api/map/knowledge/file-preview?path=${encodeURIComponent(path)}`, {
-    method: 'GET',
-    headers
-  })
-
-  if (response.status === 401 || response.status === 403) {
-    localStorage.removeItem('auth_token')
-    localStorage.removeItem('session_id')
-    throw new Error('登录已过期，请重新登录')
-  }
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-  }
-
+  const response = await fetchWithAuth(
+    `/api/map/knowledge/file-preview?path=${encodeURIComponent(path)}`,
+    { method: 'GET', headers: { 'Content-Type': 'application/json' } }
+  )
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`)
   return response.json()
 }

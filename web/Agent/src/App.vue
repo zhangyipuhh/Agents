@@ -7,7 +7,7 @@ import InputBox from './components/InputBox.vue'
 import KnowledgePage from './components/KnowledgePage.vue'
 import LoginView from './views/LoginView.vue'
 import RegisterView from './views/RegisterView.vue'
-import { chatStream, ensureAuth, createNewSession, logout as apiLogout, fetchSessionDetail, fetchSessionAttachments, fetchSessionMessages } from './utils/api.js'
+import { chatStream, createNewSession, logout as apiLogout, fetchSessionDetail, fetchSessionAttachments, fetchSessionMessages, validateToken, refreshToken, clearAuth } from './utils/api.js'
 import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage } from './utils/sseParser.js'
 
 const currentPage = ref('agent')
@@ -29,23 +29,43 @@ let isCreatingNewSession = false
 const isEmptyState = computed(() => messages.length === 0)
 
 /**
- * 检查本地存储的登录状态
- * 从 localStorage 读取 token 和用户信息，判断是否已登录
+ * 应用用户数据到当前状态
+ * @param {Object} data - 包含 username 和 role
  */
-function checkAuth() {
-  const token = localStorage.getItem('auth_token')
-  const username = localStorage.getItem('username')
-  const role = localStorage.getItem('user_role')
+function applyUserData(data) {
+  localStorage.setItem('user_role', data.role)
+  localStorage.setItem('username', data.username)
+  currentUser.value = {
+    username: data.username,
+    role: data.role,
+    userId: null
+  }
+  isLoggedIn.value = true
+}
 
-  if (token && username) {
-    isLoggedIn.value = true
-    currentUser.value = {
-      username,
-      role: role || 'user',
-      userId: null // userId 不存储在 localStorage 中，需要时从后端获取
-    }
-  } else {
+/**
+ * 检查本地存储的登录状态
+ * 三段式验证：先 validateToken，失败则 refreshToken 后再次 validateToken
+ */
+async function checkAuth() {
+  const token = localStorage.getItem('auth_token')
+  if (!token) {
     isLoggedIn.value = false
+    return
+  }
+  try {
+    const data = await validateToken()
+    applyUserData(data)
+  } catch {
+    try {
+      const newToken = await refreshToken()
+      const data = await validateToken()
+      localStorage.setItem('auth_token', newToken)
+      applyUserData(data)
+    } catch {
+      clearAuth()
+      isLoggedIn.value = false
+    }
   }
 }
 
@@ -93,8 +113,7 @@ function handleUsernameUpdated(data) {
 }
 
 onMounted(async () => {
-  // 检查登录状态
-  checkAuth()
+  await checkAuth()
 
   if (isLoggedIn.value) {
     // 优先复用本地已有的 session_id，避免每次挂载都新建会话
