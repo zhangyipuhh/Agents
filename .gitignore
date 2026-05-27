@@ -61,3 +61,5 @@ app/**/*.docx
 app/**/*.xlsx
 web/Agent/node_modules/
 web/Agent/dist/
+project_memory.md
+project_memory.md

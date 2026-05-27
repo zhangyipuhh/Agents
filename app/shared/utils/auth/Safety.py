@@ -244,6 +244,11 @@ async def auth_middleware(request: Request, call_next):
         print(f"[诊断-auth_middleware] 路径在白名单中, 跳过验证")
         return await call_next(request)
     
+    # 非 API 路径（Vite HMR、静态资源等）跳过 JWT 验证
+    if not path.startswith("/api/"):
+        print(f"[诊断-auth_middleware] path={path} 非 API 路径, 跳过验证")
+        return await call_next(request)
+    
     try:
         # 验证JWT令牌
         print(f"[诊断-auth_middleware] 开始验证JWT令牌")
@@ -290,17 +295,18 @@ async def session_auth_middleware(request: Request, call_next):
         if len(path_segments) >= 5 and path_segments[4]:
             needs_session = True
 
-    # 获取当前用户名
+    if not needs_session:
+        # 不需要 Session 验证的路径直接放行
+        # username 由 auth_middleware（外层中间件）设置，此处无需重复检查
+        return await call_next(request)
+
+    # 需要 Session 验证时才检查用户认证信息
     username = getattr(request.state, "username", None)
     if not username:
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={"detail": "缺少用户认证信息"}
         )
-
-    if not needs_session:
-        # 不需要 Session 验证的路径直接放行
-        return await call_next(request)
 
     # 需要 Session 验证：检查 X-Session-ID
     session_id = request.headers.get("X-Session-ID")
