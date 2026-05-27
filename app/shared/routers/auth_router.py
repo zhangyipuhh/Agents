@@ -235,6 +235,53 @@ async def login(request: LoginRequest, req: Request):
     )
 
 
+@router.post('/refresh')
+async def refresh_token(request: Request):
+    """
+    刷新 Access Token 接口
+
+    从 HttpOnly Cookie 中读取 Refresh Token，验证后返回新的 Access Token。
+    Refresh Token 不自动续期（保留原有效期）。
+
+    Returns:
+        dict: 包含新的 access_token 和 expires_in
+
+    Raises:
+        HTTPException: Refresh Token 无效或过期时返回 401
+    """
+    from app.shared.utils.auth.refresh_token_db import RefreshTokenDB
+
+    # 从 Cookie 中读取 refresh_token
+    refresh_token = request.cookies.get("refresh_token")
+    if not refresh_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="缺少 Refresh Token"
+        )
+
+    # 验证 JWT 签名 + type=refresh
+    payload = await jwt_auth.verify_refresh_token(refresh_token)
+
+    # 计算哈希，查询数据库存在性
+    token_hash = RefreshTokenDB.hash_token(refresh_token)
+    record = await RefreshTokenDB.verify_token(token_hash)
+    if not record:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh Token 已失效，请重新登录"
+        )
+
+    # 生成新的 Access Token
+    username = payload.get("username")
+    access_token = await jwt_auth.generate_token(username)
+
+    return {
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "expires_in": 30
+    }
+
+
 @router.post('/logout')
 async def logout(req: Request):
     """
