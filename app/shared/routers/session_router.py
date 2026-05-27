@@ -18,11 +18,14 @@ Author: 张镒谱
 import uuid
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+from typing import Optional
 from app.shared.utils.files.fileTransfer import FileTransfer
 from app.shared.utils.Session.SessionCache import session_cache
 from app.shared.utils.auth.session_db import SessionDB
 from app.shared.utils.files.attachment_db import AttachmentDB
 from app.shared.utils.memory.conversation_db import ConversationDB
+from app.shared.utils.memory.checkpoint_history import CheckpointHistoryService
+from app.shared.utils.memory.checkpoint import get_async_checkpointer
 
 
 class SessionCreateResponse(BaseModel):
@@ -274,3 +277,57 @@ async def get_session_attachments(session_id: str, request: Request):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取附件列表失败: {str(e)}")
+
+
+@router.get('/{session_id}/messages')
+async def get_session_messages(
+    session_id: str,
+    limit: Optional[int] = 50,
+    request: Request = None
+):
+    """
+    获取会话的历史消息（从 LangGraph Checkpoint）
+
+    从 LangGraph 的 Checkpoint 中恢复指定会话的对话历史，
+    用于前端切换会话时还原聊天界面。
+
+    Args:
+        session_id: 会话 ID
+        limit: 返回消息数量限制，默认 50 条，设为 0 表示返回所有
+
+    Returns:
+        dict: 包含 messages 列表和元数据
+        {
+            "session_id": str,
+            "messages": [{"id": ..., "type": "user"/"ai", "role": ..., "content": ...}],
+            "total": int
+        }
+    """
+    try:
+        username = request.state.username
+        if not username:
+            raise HTTPException(status_code=401, detail="未认证")
+
+        # 验证 session 归属
+        is_valid = await session_cache.verify_session(session_id, username)
+        if not is_valid:
+            raise HTTPException(status_code=403, detail="无权访问该会话")
+
+        # 从 Checkpoint 获取历史
+        checkpointer = await get_async_checkpointer()
+        messages = await CheckpointHistoryService.get_conversation_history(
+            checkpointer=checkpointer,
+            session_id=session_id,
+            limit=limit if limit and limit > 0 else None
+        )
+
+        return {
+            "session_id": session_id,
+            "messages": messages,
+            "total": len(messages)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取历史消息失败: {str(e)}")

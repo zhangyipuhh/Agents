@@ -7,7 +7,7 @@ import InputBox from './components/InputBox.vue'
 import KnowledgePage from './components/KnowledgePage.vue'
 import LoginView from './views/LoginView.vue'
 import RegisterView from './views/RegisterView.vue'
-import { chatStream, ensureAuth, createNewSession, logout as apiLogout, fetchSessionDetail, fetchSessionAttachments } from './utils/api.js'
+import { chatStream, ensureAuth, createNewSession, logout as apiLogout, fetchSessionDetail, fetchSessionAttachments, fetchSessionMessages } from './utils/api.js'
 import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage } from './utils/sseParser.js'
 
 const currentPage = ref('agent')
@@ -230,7 +230,7 @@ function handlePageChange(page) {
 
 /**
  * 切换到历史会话
- * 从后端获取会话详情，还原对话内容和附件
+ * 从后端获取会话详情和历史消息，还原对话内容和附件
  * @param {string} targetSessionId - 目标会话 ID
  */
 async function handleSessionSwitch(targetSessionId) {
@@ -260,10 +260,22 @@ async function handleSessionSwitch(targetSessionId) {
       }))
     }
 
-    // 从 LangGraph checkpoint 还原对话记录
-    // 通过调用 chat 接口时传入 session_id，LangGraph 会自动从 checkpoint 恢复
-    // 这里显示一条提示消息，告知用户已切换到历史会话
-    if (detail.title && detail.title !== '新对话') {
+    // 从 LangGraph Checkpoint 获取历史消息
+    const history = await fetchSessionMessages(targetSessionId, 100)
+
+    // 还原对话记录到 messages 数组
+    if (history.messages && history.messages.length > 0) {
+      for (const msg of history.messages) {
+        messages.push({
+          id: msg.id || Date.now() + Math.random(),
+          type: msg.type, // 'user' 或 'ai'
+          content: msg.content,
+          attachments: [],
+          ended: true
+        })
+      }
+    } else if (detail.title && detail.title !== '新对话') {
+      // 如果没有历史消息，显示切换提示
       messages.push({
         id: Date.now(),
         type: 'system',

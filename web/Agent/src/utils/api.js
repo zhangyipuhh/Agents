@@ -743,6 +743,41 @@ export async function fetchSessionAttachments(sessionId) {
 }
 
 /**
+ * 获取会话历史消息
+ * 从 LangGraph Checkpoint 中恢复指定会话的对话历史
+ * @param {string} sessionId - 会话 ID
+ * @param {number} limit - 返回消息数量限制，默认 50 条，设为 0 表示返回所有
+ * @returns {Promise<{session_id: string, messages: Array, total: number}>} 历史消息
+ * @throws {Error} 获取失败时抛出错误
+ */
+export async function fetchSessionMessages(sessionId, limit = 50) {
+  await ensureAuth()
+
+  const headers = {
+    'Content-Type': 'application/json',
+    ...getAuthHeaders()
+  }
+
+  const queryParams = limit > 0 ? `?limit=${limit}` : ''
+  const response = await fetch(`/api/session/${sessionId}/messages${queryParams}`, {
+    method: 'GET',
+    headers
+  })
+
+  if (response.status === 401 || response.status === 403) {
+    localStorage.removeItem('auth_token')
+    localStorage.removeItem('session_id')
+    throw new Error('登录已过期，请重新登录')
+  }
+
+  if (!response.ok) {
+    throw new Error(`获取历史消息失败: ${response.status}`)
+  }
+
+  return response.json()
+}
+
+/**
  * 删除会话
  * @param {string} sessionId - 会话 ID
  * @returns {Promise<{success: boolean, message: string}>} 删除结果

@@ -256,6 +256,11 @@ async def session_auth_middleware(request: Request, call_next):
         #print(f"[诊断-session_middleware] /api/session/create 跳过验证")
         return await call_next(request)
     
+    # /api/session/list 路径跳过 session 验证（获取会话列表时还没有选择特定会话）
+    if path.startswith("/api/session/list"):
+        #print(f"[诊断-session_middleware] /api/session/list 跳过验证")
+        return await call_next(request)
+    
     try:
         # 获取当前用户名
         username = getattr(request.state, "username", None)
