@@ -21,6 +21,11 @@ const isStreaming = reactive({ value: false })
 const sidebarRef = ref(null)
 const currentAttachments = ref([])
 
+/**
+ * 新建任务锁，防止重复创建
+ */
+let isCreatingNewSession = false
+
 const isEmptyState = computed(() => messages.length === 0)
 
 /**
@@ -106,15 +111,26 @@ onMounted(async () => {
 })
 
 async function newSession() {
-  // 先清除旧的 session_id，确保新建任务时一定会重新生成
-  localStorage.removeItem('session_id')
-  sessionId.value = ''
-  messages.splice(0, messages.length)
-  currentAttachments.value = []
+  // 防止重复创建
+  if (isCreatingNewSession) {
+    console.log('[newSession] 正在创建中，跳过重复请求')
+    return
+  }
+
+  isCreatingNewSession = true
+  console.log('[newSession] 开始创建新会话')
 
   try {
+    // 先清除旧的 session_id，确保新建任务时一定会重新生成
+    localStorage.removeItem('session_id')
+    sessionId.value = ''
+    messages.splice(0, messages.length)
+    currentAttachments.value = []
+
     const newId = await createNewSession()
     sessionId.value = newId
+    console.log('[newSession] 新会话创建成功:', newId)
+
     // 刷新侧边栏会话列表
     if (sidebarRef.value) {
       sidebarRef.value.loadSessionList()
@@ -124,6 +140,8 @@ async function newSession() {
     if (err.message.includes('未登录') || err.message.includes('过期')) {
       isLoggedIn.value = false
     }
+  } finally {
+    isCreatingNewSession = false
   }
 }
 

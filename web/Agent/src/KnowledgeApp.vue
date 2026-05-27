@@ -22,6 +22,11 @@ const isStreaming = ref(false)
 const isSidebarCollapsed = ref(false)
 const isCollapseBtnHovered = ref(false)
 
+/**
+ * 新建任务锁，防止重复创建
+ */
+let isCreatingNewSession = false
+
 function toggleSidebar() {
   isSidebarCollapsed.value = !isSidebarCollapsed.value
 }
@@ -111,15 +116,27 @@ function closePreview() {
   previewFileUrl.value = ''
 }
 
-function handleNewChat() {
+async function handleNewChat() {
+  // 防止重复创建
+  if (isCreatingNewSession) {
+    console.log('[handleNewChat] 正在创建中，跳过重复请求')
+    return
+  }
+
+  isCreatingNewSession = true
+  console.log('[handleNewChat] 开始创建新会话')
+
   messages.value = []
   showChat.value = false
+
   try {
-    createNewSession().then(newId => {
-      currentSessionId.value = newId
-    })
+    const newId = await createNewSession()
+    currentSessionId.value = newId
+    console.log('[handleNewChat] 新会话创建成功:', newId)
   } catch (err) {
     console.error('新建会话失败:', err)
+  } finally {
+    isCreatingNewSession = false
   }
 }
 

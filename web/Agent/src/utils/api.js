@@ -214,20 +214,20 @@ export async function refreshToken() {
  * @returns {Promise<string>} 新的 JWT token
  */
 async function jwtRefresh(token) {
-  // 验证当前 token 是否仍然有效
-  const sessionRes = await fetch('/api/session/create', {
-    method: 'POST',
+  // 验证当前 token 是否仍然有效（使用 session/list 端点，避免创建新会话）
+  const verifyRes = await fetch('/api/session/list', {
+    method: 'GET',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${token}`
     }
   })
 
-  if (sessionRes.status === 401) {
+  if (verifyRes.status === 401) {
     throw new Error('Token 已过期')
   }
 
-  if (!sessionRes.ok) {
+  if (!verifyRes.ok) {
     throw new Error('刷新令牌失败')
   }
 
@@ -237,8 +237,8 @@ async function jwtRefresh(token) {
 
 /**
  * 确保认证状态有效
- * 检查 token 和 session_id 是否存在，不存在则尝试创建
- * @returns {Promise<{token: string, sessionId: string}>} 认证信息
+ * 检查 token 是否存在，不再自动创建会话
+ * @returns {Promise<{token: string, sessionId: string|null}>} 认证信息
  * @throws {Error} 认证失败时抛出错误
  */
 export async function ensureAuth() {
@@ -255,37 +255,16 @@ export async function ensureAuth() {
     throw new Error('未登录，请重新登录')
   }
 
-  if (!sessionId) {
-    console.log('[调试] 正在创建 session，token:', token)
-    const sessionRes = await fetch('/api/session/create', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      }
-    })
-    console.log('[调试] session/create 响应状态:', sessionRes.status)
-    if (!sessionRes.ok) {
-      const errorData = await sessionRes.json().catch(() => ({}))
-      console.error('[调试] session/create 错误:', errorData)
-      if (sessionRes.status === 401 || sessionRes.status === 403) {
-        localStorage.removeItem('auth_token')
-        localStorage.removeItem('session_id')
-        throw new Error('登录已过期，请重新登录')
-      }
-      throw new Error('创建会话失败')
-    }
-    const sessionData = await sessionRes.json()
-    sessionId = sessionData.session_id
-    localStorage.setItem('session_id', sessionId)
-  }
-
+  // 不再自动创建会话，只返回现有的 sessionId（可能为 null）
+  // 会话创建应由 createNewSession 统一处理
   return { token, sessionId }
 }
 
 /**
  * 强制刷新认证信息
- * @returns {Promise<{token: string, sessionId: string}>} 认证信息
+ * 注意：此函数不再自动创建会话，只返回 token
+ * 会话创建应由 createNewSession 统一处理
+ * @returns {Promise<{token: string}>} 认证信息
  * @throws {Error} 认证失败时抛出错误
  */
 export async function forceRefreshAuth() {
@@ -294,27 +273,9 @@ export async function forceRefreshAuth() {
     throw new Error('未登录，请重新登录')
   }
 
-  let sessionId = localStorage.getItem('session_id')
-
-  if (!sessionId) {
-    const sessionRes = await fetch('/api/session/create', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      }
-    })
-    if (!sessionRes.ok) {
-      localStorage.removeItem('auth_token')
-      localStorage.removeItem('session_id')
-      throw new Error('创建会话失败')
-    }
-    const sessionData = await sessionRes.json()
-    sessionId = sessionData.session_id
-    localStorage.setItem('session_id', sessionId)
-  }
-
-  return { token, sessionId }
+  // 不再自动创建会话，只返回 token
+  // 会话创建应由 createNewSession 统一处理
+  return { token }
 }
 
 /* ============================================
