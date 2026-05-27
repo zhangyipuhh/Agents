@@ -22,7 +22,6 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Request
 from typing import Any, List, Optional, Union
 from pydantic import BaseModel
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
 
 logger = logging.getLogger(__name__)
@@ -31,34 +30,82 @@ from app.shared.utils.files.file_upload_handler import FileUploadHandler
 from app.features.contract_host_agent.HtAgent import HtAgent
 from app.features.contract_document_agent.DocAgent import DocAgent
 from app.features.contract_approval_agent.ApprovalAgent import ApprovalAgent
+from app.shared.utils.memory import get_async_checkpointer
 
 
-_checkpointer = MemorySaver()
 store = InMemoryStore()
 store_id = "contract_audit_store"
 
 file_upload_handler = FileUploadHandler()
 router = APIRouter(prefix='/api/contract', tags=['Contract Audit'])
 
-# 初始化 HtAgent 实例
-ht_agent = HtAgent(
-    checkpointer=_checkpointer,
-    store=store,
-    store_id=store_id,
-)
+# 延迟初始化 Agent 实例（在第一次请求时初始化）
+_ht_agent: Optional[HtAgent] = None
+_doc_agent: Optional[DocAgent] = None
+_approval_agent: Optional[ApprovalAgent] = None
 
-# 初始化 DocAgent 实例
-doc_agent = DocAgent(
-    checkpointer=_checkpointer,
-    store=store,
-    store_id=store_id,
-)
 
-approval_agent = ApprovalAgent(
-    checkpointer=_checkpointer,
-    store=store,
-    store_id=store_id,
-)
+async def get_ht_agent() -> HtAgent:
+    """
+    获取 HtAgent 实例（延迟初始化）
+
+    使用延迟初始化模式，确保在第一次请求时才创建 HtAgent 实例，
+    这样可以正确获取异步初始化的 checkpointer。
+
+    Returns:
+        HtAgent: 初始化完成的 HtAgent 实例
+    """
+    global _ht_agent
+    if _ht_agent is None:
+        checkpointer = await get_async_checkpointer()
+        _ht_agent = HtAgent(
+            checkpointer=checkpointer,
+            store=store,
+            store_id=store_id,
+        )
+    return _ht_agent
+
+
+async def get_doc_agent() -> DocAgent:
+    """
+    获取 DocAgent 实例（延迟初始化）
+
+    使用延迟初始化模式，确保在第一次请求时才创建 DocAgent 实例，
+    这样可以正确获取异步初始化的 checkpointer。
+
+    Returns:
+        DocAgent: 初始化完成的 DocAgent 实例
+    """
+    global _doc_agent
+    if _doc_agent is None:
+        checkpointer = await get_async_checkpointer()
+        _doc_agent = DocAgent(
+            checkpointer=checkpointer,
+            store=store,
+            store_id=store_id,
+        )
+    return _doc_agent
+
+
+async def get_approval_agent() -> ApprovalAgent:
+    """
+    获取 ApprovalAgent 实例（延迟初始化）
+
+    使用延迟初始化模式，确保在第一次请求时才创建 ApprovalAgent 实例，
+    这样可以正确获取异步初始化的 checkpointer。
+
+    Returns:
+        ApprovalAgent: 初始化完成的 ApprovalAgent 实例
+    """
+    global _approval_agent
+    if _approval_agent is None:
+        checkpointer = await get_async_checkpointer()
+        _approval_agent = ApprovalAgent(
+            checkpointer=checkpointer,
+            store=store,
+            store_id=store_id,
+        )
+    return _approval_agent
 
 
 class FileUploadResponse(BaseModel):
@@ -194,8 +241,9 @@ async def chat(
         session_id = chat_request.session_id or getattr(request.state, "session_id", "default")
         
         logger.debug(f"[DEBUG] chat 请求: message={chat_request.message}, session_id={session_id}")
-        
-        # 调用 HtAgent 进行对话
+
+        # 获取 HtAgent 实例并调用进行对话
+        ht_agent = await get_ht_agent()
         result = await ht_agent.invoke(
             user_input=chat_request.message,
             session_id=session_id,
@@ -237,7 +285,9 @@ async def doc_chat(
         host_session_id = doc_chat_request.host_session_id or session_id
         
         logger.debug(f"[DEBUG] doc_chat 请求: message={doc_chat_request.message}, session_id={session_id}, host_session_id={host_session_id}")
-        
+
+        # 获取 DocAgent 实例并调用
+        doc_agent = await get_doc_agent()
         result = await doc_agent.invoke(
             user_input=doc_chat_request.message,
             session_id=session_id,
@@ -280,7 +330,9 @@ async def approval_chat(
         host_session_id = approval_chat_request.host_session_id or session_id
         
         logger.debug(f"[DEBUG] approval_chat 请求: message={approval_chat_request.message}, session_id={session_id}, host_session_id={host_session_id}")
-        
+
+        # 获取 ApprovalAgent 实例并调用
+        approval_agent = await get_approval_agent()
         result = await approval_agent.invoke(
             user_input=approval_chat_request.message,
             session_id=session_id,

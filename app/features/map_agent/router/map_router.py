@@ -21,7 +21,6 @@ from typing import AsyncGenerator, Optional
 from pydantic import BaseModel
 from urllib.parse import quote
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
 
 from langchain_core.messages import ToolMessage
@@ -31,22 +30,40 @@ from app.core.format.stream import stream_format_context
 from app.features.map_agent.config.prompts import KNOWLEDGE_SYSTEM_PROMPT
 from app.features.map_agent.config.MapAgentContext import MapAgentContext
 from app.shared.utils.files.doc_converter import convert_doc_to_docx, check_conversion_support, get_libreoffice_installation_guide
+from app.shared.utils.memory import get_async_checkpointer
+
 logger = logging.getLogger(__name__)
 
-# 初始化 MemorySaver 和 InMemoryStore
-_checkpointer = MemorySaver()
+# 初始化 InMemoryStore
 store = InMemoryStore()
 store_id = "map_agent_store"
 
 # 创建 API 路由实例
 router = APIRouter(prefix='/api/map', tags=['Map Agent'])
 
-# 初始化 MapAgent 实例
-map_agent = MapAgent(
-    checkpointer=_checkpointer,
-    store=store,
-    store_id=store_id,
-)
+# 延迟初始化 MapAgent 实例（在第一次请求时初始化）
+_map_agent: Optional[MapAgent] = None
+
+
+async def get_map_agent() -> MapAgent:
+    """
+    获取 MapAgent 实例（延迟初始化）
+
+    使用延迟初始化模式，确保在第一次请求时才创建 MapAgent 实例，
+    这样可以正确获取异步初始化的 checkpointer。
+
+    Returns:
+        MapAgent: 初始化完成的 MapAgent 实例
+    """
+    global _map_agent
+    if _map_agent is None:
+        checkpointer = await get_async_checkpointer()
+        _map_agent = MapAgent(
+            checkpointer=checkpointer,
+            store=store,
+            store_id=store_id,
+        )
+    return _map_agent
 
 
 # Knowledge 目录路径
@@ -403,6 +420,8 @@ async def generate_stream_response(
         str: SSE 格式的响应数据，包含 type 字段和对应的数据
     """
     try:
+        # 获取 MapAgent 实例（延迟初始化）
+        map_agent = await get_map_agent()
         # 调用 MapAgent 的 stream 方法，使用组合模式
         async for chunk in map_agent.stream(
             user_input=user_input,

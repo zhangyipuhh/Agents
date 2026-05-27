@@ -26,10 +26,10 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.syntax import Syntax
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
 
 from app.features.contract_document_agent.DocAgent import DocAgent
+from app.shared.utils.memory import get_async_checkpointer
 
 
 logging.basicConfig(
@@ -129,7 +129,7 @@ class DocClient:
         """
         初始化 DocClient
         """
-        self.checkpointer = MemorySaver()
+        self.checkpointer = None
         self.store = InMemoryStore()
         self.store_id = str(uuid.uuid4())
         self.session_id = str(uuid.uuid4())
@@ -140,12 +140,15 @@ class DocClient:
     async def _ensure_agent(self) -> DocAgent:
         """
         确保 DocAgent 已初始化
-        
+
         Returns:
             DocAgent 实例
         """
         if self.doc_agent is None:
             logger.info("正在初始化 DocAgent...")
+            # 延迟初始化 checkpointer
+            if self.checkpointer is None:
+                self.checkpointer = await get_async_checkpointer()
             self.doc_agent = DocAgent(
                 model_type="ollama",
                 model_name="qwen3-vl:30b",
@@ -344,8 +347,8 @@ class DocTestPage:
         运行测试页面主循环
         """
         console.print("[cyan]🔄 正在初始化...[/cyan]")
-        
-        if not self._initialize():
+
+        if not asyncio.run(self._initialize_async()):
             console.print("[bold red]❌ 初始化失败[/bold red]")
             return
         
@@ -369,25 +372,25 @@ class DocTestPage:
             elif choice == "3":
                 self.handle_clear_history()
     
-    def _initialize(self) -> bool:
+    async def _initialize_async(self) -> bool:
         """
-        初始化连接
-        
+        异步初始化连接
+
         Returns:
             初始化是否成功
         """
         try:
             console.print("[cyan]🔧 正在初始化 DocAgent...[/cyan]")
-            
-            checkpointer = MemorySaver()
+
+            checkpointer = await get_async_checkpointer()
             store = InMemoryStore()
-            
+
             self.doc_client.checkpointer = checkpointer
             self.doc_client.store = store
             self.doc_client.store_id = str(uuid.uuid4())
             self.doc_client.session_id = str(uuid.uuid4())
             self.doc_client.host_session_id = str(uuid.uuid4())
-            
+
             console.print("[bold green]✅ 初始化完成[/bold green]")
             
             table = Table(show_header=False, box=None, padding=(0, 2))

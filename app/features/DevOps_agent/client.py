@@ -26,7 +26,6 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from langgraph.store.memory import InMemoryStore
-from langgraph.checkpoint.memory import MemorySaver
 from rich.console import Console
 from rich.markdown import Markdown
 
@@ -34,6 +33,7 @@ from rich.markdown import Markdown
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from app.features.DevOps_agent.DevOpsAgent import DevOpsAgent
+from app.shared.utils.memory import get_async_checkpointer
 
 
 class ServerSelector:
@@ -302,7 +302,7 @@ class DevOpsCLI:
         self._current_session_id: Optional[str] = None
         self._current_server: Optional[Dict[str, Any]] = None
         self._agent: Optional[DevOpsAgent] = None
-        self._checkpointer = MemorySaver()
+        self._checkpointer = None
         self._store = InMemoryStore()
         self._console = Console()
 
@@ -381,7 +381,9 @@ class DevOpsCLI:
                     self._current_server = server
                     self._current_session_id = f"devops_{uuid.uuid4().hex[:8]}"
 
-                    # 初始化 Agent
+                    # 延迟初始化 checkpointer 和 Agent
+                    if self._checkpointer is None:
+                        self._checkpointer = await get_async_checkpointer()
                     self._agent = DevOpsAgent(
                         checkpointer=self._checkpointer,
                         store=self._store,

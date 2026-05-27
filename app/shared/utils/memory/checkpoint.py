@@ -19,6 +19,9 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 # 全局单例 checkpointer
 _global_checkpointer: Optional[BaseCheckpointSaver] = None
 
+# 全局 PostgreSQL 连接池（psycopg AsyncConnectionPool，用于 AsyncPostgresSaver）
+_global_pg_connection: Optional[object] = None
+
 
 def get_global_checkpointer(db_path: str = ":memory:") -> BaseCheckpointSaver:
     """获取全局单例 checkpointer（同步版本，仅支持内存模式）
@@ -62,7 +65,7 @@ async def get_async_checkpointer() -> BaseCheckpointSaver:
         graph = builder.compile(checkpointer=checkpointer)
         ```
     """
-    global _global_checkpointer
+    global _global_checkpointer, _global_pg_connection
 
     if _global_checkpointer is not None:
         return _global_checkpointer
@@ -73,13 +76,36 @@ async def get_async_checkpointer() -> BaseCheckpointSaver:
         # PostgreSQL 持久化模式
         try:
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+            from psycopg_pool import AsyncConnectionPool
+            from psycopg.rows import dict_row
+
             dsn = DatabasePool.get_dsn()
-            checkpointer = AsyncPostgresSaver.from_conn_string(dsn)
+            # 使用 psycopg AsyncConnectionPool（AsyncPostgresSaver 依赖 psycopg，而非 asyncpg）
+            # 注意：不使用 async with，保持连接池长期有效
+            _global_pg_connection = AsyncConnectionPool(
+                conninfo=dsn,
+                max_size=20,
+                kwargs={
+                    "autocommit": True,          # 必需：确保 setup() 能提交 DDL
+                    "prepare_threshold": 0,
+                    "row_factory": dict_row,     # 必需：checkpointer 内部按列名访问行数据
+                },
+            )
+            # 预热连接池
+            await _global_pg_connection.open()
+            # 创建 AsyncPostgresSaver 实例，传入 psycopg 连接池
+            checkpointer = AsyncPostgresSaver(_global_pg_connection)
+            # 初始化数据库表结构
             await checkpointer.setup()
             _global_checkpointer = checkpointer
             print(f"[Checkpoint] 使用 PostgreSQL 持久化模式（AsyncPostgresSaver）")
         except ImportError:
             print("[Checkpoint] 警告：langgraph-checkpoint-postgres 未安装，回退到内存模式")
+            from langgraph.checkpoint.memory import MemorySaver
+            _global_checkpointer = MemorySaver()
+            print("[Checkpoint] 使用内存模式（MemorySaver）")
+        except Exception as e:
+            print(f"[Checkpoint] 警告：PostgreSQL 初始化失败 ({type(e).__name__}: {e})，回退到内存模式")
             from langgraph.checkpoint.memory import MemorySaver
             _global_checkpointer = MemorySaver()
             print("[Checkpoint] 使用内存模式（MemorySaver）")
@@ -92,10 +118,30 @@ async def get_async_checkpointer() -> BaseCheckpointSaver:
     return _global_checkpointer
 
 
+async def close_global_checkpointer():
+    """关闭全局 checkpointer 和数据库连接
+
+    用于应用关闭时清理资源，确保数据库连接正确关闭。
+    """
+    global _global_checkpointer, _global_pg_connection
+
+    if _global_pg_connection is not None:
+        try:
+            await _global_pg_connection.close()
+            print("[Checkpoint] PostgreSQL 连接池已关闭")
+        except Exception as e:
+            print(f"[Checkpoint] 关闭 PostgreSQL 连接池时出错: {e}")
+        _global_pg_connection = None
+
+    _global_checkpointer = None
+    print("[Checkpoint] 全局 checkpointer 已重置")
+
+
 def reset_global_checkpointer():
     """重置全局单例 checkpointer
 
     用于测试或需要重新初始化 checkpointer 的场景。
+    注意：此函数不会关闭数据库连接，仅重置单例引用。
     """
     global _global_checkpointer
     _global_checkpointer = None
