@@ -255,8 +255,9 @@ export async function ensureAuth() {
       }
     })
     if (!sessionRes.ok) {
-      if (sessionRes.status === 401) {
+      if (sessionRes.status === 401 || sessionRes.status === 403) {
         localStorage.removeItem('auth_token')
+        localStorage.removeItem('session_id')
         throw new Error('登录已过期，请重新登录')
       }
       throw new Error('创建会话失败')
@@ -292,6 +293,7 @@ export async function forceRefreshAuth() {
     })
     if (!sessionRes.ok) {
       localStorage.removeItem('auth_token')
+      localStorage.removeItem('session_id')
       throw new Error('创建会话失败')
     }
     const sessionData = await sessionRes.json()
@@ -474,8 +476,9 @@ export async function createNewSession() {
   })
 
   if (!sessionRes.ok) {
-    if (sessionRes.status === 401) {
+    if (sessionRes.status === 401 || sessionRes.status === 403) {
       localStorage.removeItem('auth_token')
+      localStorage.removeItem('session_id')
       throw new Error('登录已过期，请重新登录')
     }
     throw new Error(`创建会话失败: ${sessionRes.status}`)
@@ -516,8 +519,9 @@ export async function chatStream(sessionId, message, attachments = []) {
   })
 
   if (!response.ok) {
-    if (response.status === 401) {
+    if (response.status === 401 || response.status === 403) {
       localStorage.removeItem('auth_token')
+      localStorage.removeItem('session_id')
       throw new Error('登录已过期，请重新登录')
     }
     throw new Error(`HTTP ${response.status}: ${response.statusText}`)
@@ -555,8 +559,9 @@ export async function knowledgeChatStream(sessionId, message, attachments = []) 
   })
 
   if (!response.ok) {
-    if (response.status === 401) {
+    if (response.status === 401 || response.status === 403) {
       localStorage.removeItem('auth_token')
+      localStorage.removeItem('session_id')
       throw new Error('登录已过期，请重新登录')
     }
     throw new Error(`HTTP ${response.status}: ${response.statusText}`)
@@ -578,13 +583,179 @@ export async function fetchKnowledgeFiles() {
     headers
   })
 
-  if (response.status === 401) {
+  if (response.status === 401 || response.status === 403) {
     localStorage.removeItem('auth_token')
+    localStorage.removeItem('session_id')
     throw new Error('登录已过期，请重新登录')
   }
 
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+  }
+
+  return response.json()
+}
+
+/* ============================================
+   会话历史管理 API
+   ============================================ */
+
+/**
+ * 获取当前用户的会话列表
+ * @returns {Promise<{sessions: Array}>} 会话列表
+ * @throws {Error} 获取失败时抛出错误
+ */
+export async function fetchSessionList() {
+  await ensureAuth()
+
+  const headers = {
+    'Content-Type': 'application/json',
+    ...getAuthHeaders()
+  }
+
+  const response = await fetch('/api/session/list', {
+    method: 'GET',
+    headers
+  })
+
+  if (response.status === 401 || response.status === 403) {
+    localStorage.removeItem('auth_token')
+    localStorage.removeItem('session_id')
+    throw new Error('登录已过期，请重新登录')
+  }
+
+  if (!response.ok) {
+    throw new Error(`获取会话列表失败: ${response.status}`)
+  }
+
+  return response.json()
+}
+
+/**
+ * 获取会话详情（含附件列表）
+ * @param {string} sessionId - 会话 ID
+ * @returns {Promise<Object>} 会话详情
+ * @throws {Error} 获取失败时抛出错误
+ */
+export async function fetchSessionDetail(sessionId) {
+  await ensureAuth()
+
+  const headers = {
+    'Content-Type': 'application/json',
+    ...getAuthHeaders()
+  }
+
+  const response = await fetch(`/api/session/${sessionId}/detail`, {
+    method: 'GET',
+    headers
+  })
+
+  if (response.status === 401 || response.status === 403) {
+    localStorage.removeItem('auth_token')
+    localStorage.removeItem('session_id')
+    throw new Error('登录已过期，请重新登录')
+  }
+
+  if (!response.ok) {
+    throw new Error(`获取会话详情失败: ${response.status}`)
+  }
+
+  return response.json()
+}
+
+/**
+ * 更新会话标题
+ * @param {string} sessionId - 会话 ID
+ * @param {string} title - 新标题
+ * @returns {Promise<{success: boolean, message: string}>} 更新结果
+ * @throws {Error} 更新失败时抛出错误
+ */
+export async function updateSessionTitle(sessionId, title) {
+  await ensureAuth()
+
+  const headers = {
+    'Content-Type': 'application/json',
+    ...getAuthHeaders()
+  }
+
+  const response = await fetch(`/api/session/${sessionId}/title`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({ title })
+  })
+
+  if (response.status === 401 || response.status === 403) {
+    localStorage.removeItem('auth_token')
+    localStorage.removeItem('session_id')
+    throw new Error('登录已过期，请重新登录')
+  }
+
+  if (!response.ok) {
+    throw new Error(`更新标题失败: ${response.status}`)
+  }
+
+  return response.json()
+}
+
+/**
+ * 获取会话附件列表
+ * @param {string} sessionId - 会话 ID
+ * @returns {Promise<{attachments: Array}>} 附件列表
+ * @throws {Error} 获取失败时抛出错误
+ */
+export async function fetchSessionAttachments(sessionId) {
+  await ensureAuth()
+
+  const headers = {
+    'Content-Type': 'application/json',
+    ...getAuthHeaders()
+  }
+
+  const response = await fetch(`/api/session/${sessionId}/attachments`, {
+    method: 'GET',
+    headers
+  })
+
+  if (response.status === 401 || response.status === 403) {
+    localStorage.removeItem('auth_token')
+    localStorage.removeItem('session_id')
+    throw new Error('登录已过期，请重新登录')
+  }
+
+  if (!response.ok) {
+    throw new Error(`获取附件列表失败: ${response.status}`)
+  }
+
+  return response.json()
+}
+
+/**
+ * 删除会话
+ * @param {string} sessionId - 会话 ID
+ * @returns {Promise<{success: boolean, message: string}>} 删除结果
+ * @throws {Error} 删除失败时抛出错误
+ */
+export async function deleteSession(sessionId) {
+  await ensureAuth()
+
+  const headers = {
+    'Content-Type': 'application/json',
+    ...getAuthHeaders()
+  }
+
+  const response = await fetch(`/api/session/delete/${sessionId}`, {
+    method: 'DELETE',
+    headers
+  })
+
+  if (response.status === 401 || response.status === 403) {
+    localStorage.removeItem('auth_token')
+    localStorage.removeItem('session_id')
+    throw new Error('登录已过期，请重新登录')
+  }
+
+  if (!response.ok) {
+    throw new Error(`删除会话失败: ${response.status}`)
   }
 
   return response.json()
@@ -603,8 +774,9 @@ export async function fetchFilePreview(path) {
     headers
   })
 
-  if (response.status === 401) {
+  if (response.status === 401 || response.status === 403) {
     localStorage.removeItem('auth_token')
+    localStorage.removeItem('session_id')
     throw new Error('登录已过期，请重新登录')
   }
 

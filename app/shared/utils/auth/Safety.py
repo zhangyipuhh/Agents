@@ -40,7 +40,7 @@ class JWTAuth:
         """
         self.secret_key = secret_key
         self.algorithm = algorithm
-        self.expiration_minutes = 5
+        self.expiration_minutes = 240  # 4小时
         self.whitelist: List[str] = []
         
         self.username = "admin"
@@ -274,7 +274,7 @@ async def session_auth_middleware(request: Request, call_next):
         
         if not is_valid:
             return JSONResponse(
-                status_code=status.HTTP_403_FORBIDDEN,
+                status_code=status.HTTP_401_UNAUTHORIZED,
                 content={"detail": "无权访问该会话"}
             )
         

@@ -19,7 +19,8 @@ async def init_session_schema():
     """
     会话表结构初始化
 
-    创建用户表（如果不存在，含 role 字段）和会话表，包含会话ID、用户ID（外键）、用户名和创建时间
+    创建用户表（如果不存在，含 role 字段）和会话表，包含会话ID、用户ID（外键）、用户名和创建时间。
+    同时创建对话记录表和附件表，并添加必要的索引。
     """
     # 先创建 users 表（如果尚未创建）
     await DatabasePool.execute("""
@@ -41,6 +42,78 @@ async def init_session_schema():
             username VARCHAR(100) NOT NULL,
             created_at TIMESTAMP DEFAULT NOW()
         )
+    """)
+
+    # sessions 表新增字段（向后兼容）
+    await DatabasePool.execute("""
+        ALTER TABLE sessions ADD COLUMN IF NOT EXISTS title VARCHAR(200) DEFAULT '新对话'
+    """)
+    await DatabasePool.execute("""
+        ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMP DEFAULT NOW()
+    """)
+    await DatabasePool.execute("""
+        ALTER TABLE sessions ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'
+    """)
+    await DatabasePool.execute("""
+        ALTER TABLE sessions ADD COLUMN IF NOT EXISTS agent_type VARCHAR(50) DEFAULT 'default'
+    """)
+
+    # sessions 表索引
+    await DatabasePool.execute("""
+        CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)
+    """)
+    await DatabasePool.execute("""
+        CREATE INDEX IF NOT EXISTS idx_sessions_last_active_at ON sessions(last_active_at)
+    """)
+    await DatabasePool.execute("""
+        CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)
+    """)
+    await DatabasePool.execute("""
+        CREATE INDEX IF NOT EXISTS idx_sessions_user_id_last_active ON sessions(user_id, last_active_at DESC)
+    """)
+
+    # 创建对话记录表
+    await DatabasePool.execute("""
+        CREATE TABLE IF NOT EXISTS conversation_records (
+            id SERIAL PRIMARY KEY,
+            session_id VARCHAR(100) NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+            role VARCHAR(20) NOT NULL,
+            content TEXT,
+            tool_calls JSONB,
+            tool_call_id VARCHAR(100),
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+
+    # conversation_records 表索引
+    await DatabasePool.execute("""
+        CREATE INDEX IF NOT EXISTS idx_conversation_records_session_id ON conversation_records(session_id)
+    """)
+    await DatabasePool.execute("""
+        CREATE INDEX IF NOT EXISTS idx_conversation_records_session_created ON conversation_records(session_id, created_at)
+    """)
+
+    # 创建附件表
+    await DatabasePool.execute("""
+        CREATE TABLE IF NOT EXISTS attachments (
+            id SERIAL PRIMARY KEY,
+            session_id VARCHAR(100) NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+            file_name VARCHAR(500) NOT NULL,
+            stored_path VARCHAR(1000) NOT NULL,
+            file_type VARCHAR(20) NOT NULL,
+            file_size BIGINT DEFAULT 0,
+            mime_type VARCHAR(100),
+            file_id VARCHAR(100),
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+
+    # attachments 表索引
+    await DatabasePool.execute("""
+        CREATE INDEX IF NOT EXISTS idx_attachments_session_id ON attachments(session_id)
+    """)
+    await DatabasePool.execute("""
+        CREATE INDEX IF NOT EXISTS idx_attachments_session_created ON attachments(session_id, created_at)
     """)
 
 
@@ -76,13 +149,19 @@ class SessionDB:
         if not cls.is_enabled() or cls._initialized:
             return
 
-        rows = await DatabasePool.fetch("SELECT session_id, user_id, username, created_at FROM sessions")
+        rows = await DatabasePool.fetch(
+            "SELECT session_id, user_id, username, created_at, title, last_active_at, status, agent_type FROM sessions"
+        )
         with cls._lock:
             for row in rows:
                 cls._memory_cache[row['session_id']] = {
                     'user_id': row['user_id'],
                     'username': row['username'],
-                    'created_at': row['created_at']
+                    'created_at': row['created_at'],
+                    'title': row.get('title', '新对话'),
+                    'last_active_at': row.get('last_active_at', row['created_at']),
+                    'status': row.get('status', 'active'),
+                    'agent_type': row.get('agent_type', 'default'),
                 }
         cls._initialized = True
 
@@ -103,21 +182,29 @@ class SessionDB:
             cls._memory_cache[session_id] = {
                 'user_id': user_id,
                 'username': username,
-                'created_at': now
+                'created_at': now,
+                'title': '新对话',
+                'last_active_at': now,
+                'status': 'active',
+                'agent_type': 'default',
             }
 
         # 写入数据库
         if cls.is_enabled():
             await DatabasePool.execute(
                 """
-                INSERT INTO sessions (session_id, user_id, username, created_at)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO sessions (session_id, user_id, username, created_at, title, last_active_at, status, agent_type)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 ON CONFLICT (session_id) DO NOTHING
                 """,
                 session_id,
                 user_id,
                 username,
-                now
+                now,
+                '新对话',
+                now,
+                'active',
+                'default'
             )
 
     @classmethod
@@ -129,7 +216,7 @@ class SessionDB:
             session_id: 会话 ID
 
         Returns:
-            Optional[dict]: Session 信息
+            Optional[dict]: Session 信息，包含 title、last_active_at、status、agent_type
         """
         # 先查内存
         with cls._lock:
@@ -140,14 +227,18 @@ class SessionDB:
         # 内存未命中，查数据库
         if cls.is_enabled():
             row = await DatabasePool.fetchrow(
-                "SELECT session_id, user_id, username, created_at FROM sessions WHERE session_id = $1",
+                "SELECT session_id, user_id, username, created_at, title, last_active_at, status, agent_type FROM sessions WHERE session_id = $1",
                 session_id
             )
             if row:
                 session_data = {
                     'user_id': row['user_id'],
                     'username': row['username'],
-                    'created_at': row['created_at']
+                    'created_at': row['created_at'],
+                    'title': row.get('title', '新对话'),
+                    'last_active_at': row.get('last_active_at', row['created_at']),
+                    'status': row.get('status', 'active'),
+                    'agent_type': row.get('agent_type', 'default'),
                 }
                 # 回填内存
                 with cls._lock:
@@ -237,3 +328,131 @@ class SessionDB:
             user_id
         )
         return len(session_ids)
+
+    @classmethod
+    async def update_session_title(cls, session_id: str, title: str) -> bool:
+        """
+        更新会话标题
+
+        Args:
+            session_id: 会话 ID
+            title: 新标题
+
+        Returns:
+            bool: 更新成功返回 True
+        """
+        # 更新内存
+        with cls._lock:
+            if session_id in cls._memory_cache:
+                cls._memory_cache[session_id]['title'] = title
+
+        # 更新数据库
+        if cls.is_enabled():
+            await DatabasePool.execute(
+                "UPDATE sessions SET title = $1 WHERE session_id = $2",
+                title,
+                session_id
+            )
+        return True
+
+    @classmethod
+    async def update_last_active(cls, session_id: str) -> bool:
+        """
+        更新会话最后活跃时间
+
+        Args:
+            session_id: 会话 ID
+
+        Returns:
+            bool: 更新成功返回 True
+        """
+        now = datetime.utcnow()
+
+        # 更新内存
+        with cls._lock:
+            if session_id in cls._memory_cache:
+                cls._memory_cache[session_id]['last_active_at'] = now
+
+        # 更新数据库
+        if cls.is_enabled():
+            await DatabasePool.execute(
+                "UPDATE sessions SET last_active_at = $1 WHERE session_id = $2",
+                now,
+                session_id
+            )
+        return True
+
+    @classmethod
+    async def get_user_sessions(cls, user_id: int) -> list:
+        """
+        获取用户的所有会话列表（按最后活跃时间倒序）
+
+        Args:
+            user_id: 用户 ID
+
+        Returns:
+            list: 会话列表，每项包含 session_id、title、last_active_at、status、agent_type、created_at
+        """
+        if cls.is_enabled():
+            rows = await DatabasePool.fetch(
+                """
+                SELECT session_id, title, last_active_at, status, agent_type, created_at
+                FROM sessions
+                WHERE user_id = $1
+                ORDER BY last_active_at DESC
+                """,
+                user_id
+            )
+            return [dict(row) for row in rows]
+
+        # Memory 模式：从内存缓存中筛选
+        with cls._lock:
+            sessions = []
+            for sid, s in cls._memory_cache.items():
+                if s.get('user_id') == user_id:
+                    sessions.append({
+                        'session_id': sid,
+                        'title': s.get('title', '新对话'),
+                        'last_active_at': s.get('last_active_at', s.get('created_at')),
+                        'status': s.get('status', 'active'),
+                        'agent_type': s.get('agent_type', 'default'),
+                        'created_at': s.get('created_at'),
+                    })
+            sessions.sort(key=lambda x: x.get('last_active_at') or datetime.min, reverse=True)
+            return sessions
+
+    @classmethod
+    async def get_session_detail(cls, session_id: str) -> Optional[dict]:
+        """
+        获取会话详情（含附件列表）
+
+        Args:
+            session_id: 会话 ID
+
+        Returns:
+            Optional[dict]: 会话详情，包含基本信息和附件列表
+        """
+        session = await cls.get_session(session_id)
+        if not session:
+            return None
+
+        detail = {
+            **session,
+            'session_id': session_id,
+            'attachments': [],
+        }
+
+        # 查询附件列表
+        if cls.is_enabled():
+            rows = await DatabasePool.fetch(
+                """
+                SELECT id, file_name, stored_path, file_type, file_size, mime_type, file_id, created_at
+                FROM attachments
+                WHERE session_id = $1
+                ORDER BY created_at
+                """,
+                session_id
+            )
+            detail['attachments'] = [dict(row) for row in rows]
+
+        return detail

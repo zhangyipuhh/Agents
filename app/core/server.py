@@ -123,8 +123,8 @@ def setup_middleware(app: FastAPI):
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    app.middleware("http")(session_auth_middleware)
     app.middleware("http")(auth_middleware)
+    app.middleware("http")(session_auth_middleware)
 
 
 def setup_logging():

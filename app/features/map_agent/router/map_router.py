@@ -467,9 +467,9 @@ async def chat(
     工作流程：
     1. 接收 POST 请求，解析为 ChatRequest 对象
     2. 获取 session_id，优先使用请求体中的，否则从 request.state 获取
-    3. 调用 generate_stream_response 生成流式响应
-    4. 通过 StreamingResponse 以 SSE 格式返回数据
-    5. 设置适当的响应头以确保流式传输正常工作
+    3. 自动生成会话标题（首条消息前20字符）
+    4. 调用 generate_stream_response 生成流式响应
+    5. 通过 StreamingResponse 以 SSE 格式返回数据
 
     Args:
         request: FastAPI 请求对象
@@ -486,6 +486,23 @@ async def chat(
         geometry_data = chat_request.geometry_data or {}
 
         logger.debug(f"[DEBUG] chat 请求: message={chat_request.message}, session_id={session_id}")
+
+        # 自动生成会话标题：如果标题仍为默认值，用首条消息前20字符作为标题
+        try:
+            from app.shared.utils.auth.session_db import SessionDB
+            session = await SessionDB.get_session(session_id)
+            if session and session.get('title') == '新对话' and chat_request.message:
+                title = chat_request.message.strip()[:20] + ('...' if len(chat_request.message.strip()) > 20 else '')
+                await SessionDB.update_session_title(session_id, title)
+        except Exception:
+            pass  # 标题生成失败不影响对话
+
+        # 更新会话最后活跃时间
+        try:
+            from app.shared.utils.auth.session_db import SessionDB
+            await SessionDB.update_last_active(session_id)
+        except Exception:
+            pass
 
         # 返回流式响应
         return StreamingResponse(

@@ -7,7 +7,7 @@ import InputBox from './components/InputBox.vue'
 import KnowledgePage from './components/KnowledgePage.vue'
 import LoginView from './views/LoginView.vue'
 import RegisterView from './views/RegisterView.vue'
-import { chatStream, ensureAuth, createNewSession, logout as apiLogout } from './utils/api.js'
+import { chatStream, ensureAuth, createNewSession, logout as apiLogout, fetchSessionDetail, fetchSessionAttachments } from './utils/api.js'
 import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage } from './utils/sseParser.js'
 
 const currentPage = ref('agent')
@@ -18,6 +18,8 @@ const currentUser = ref({ username: '', role: '', userId: null })
 const messages = reactive([])
 const sessionId = reactive({ value: '' })
 const isStreaming = reactive({ value: false })
+const sidebarRef = ref(null)
+const currentAttachments = ref([])
 
 const isEmptyState = computed(() => messages.length === 0)
 
@@ -103,10 +105,15 @@ async function newSession() {
   localStorage.removeItem('session_id')
   sessionId.value = ''
   messages.splice(0, messages.length)
+  currentAttachments.value = []
 
   try {
     const newId = await createNewSession()
     sessionId.value = newId
+    // 刷新侧边栏会话列表
+    if (sidebarRef.value) {
+      sidebarRef.value.loadSessionList()
+    }
   } catch (err) {
     console.error('新建会话失败:', err)
     if (err.message.includes('未登录') || err.message.includes('过期')) {
@@ -215,6 +222,56 @@ function handleCopy(e) {
 function handlePageChange(page) {
   currentPage.value = page
 }
+
+/**
+ * 切换到历史会话
+ * 从后端获取会话详情，还原对话内容和附件
+ * @param {string} targetSessionId - 目标会话 ID
+ */
+async function handleSessionSwitch(targetSessionId) {
+  if (targetSessionId === sessionId.value) return
+  if (isStreaming.value) return
+
+  // 清空当前消息
+  messages.splice(0, messages.length)
+  currentAttachments.value = []
+
+  // 切换到新会话
+  sessionId.value = targetSessionId
+  localStorage.setItem('session_id', targetSessionId)
+
+  try {
+    // 获取会话详情（含附件列表）
+    const detail = await fetchSessionDetail(targetSessionId)
+
+    // 还原附件列表
+    if (detail.attachments && detail.attachments.length > 0) {
+      currentAttachments.value = detail.attachments.map(a => ({
+        filename: a.file_name,
+        stored_path: a.stored_path,
+        file_type: a.file_type,
+        size: a.file_size,
+        original_name: a.file_name
+      }))
+    }
+
+    // 从 LangGraph checkpoint 还原对话记录
+    // 通过调用 chat 接口时传入 session_id，LangGraph 会自动从 checkpoint 恢复
+    // 这里显示一条提示消息，告知用户已切换到历史会话
+    if (detail.title && detail.title !== '新对话') {
+      messages.push({
+        id: Date.now(),
+        type: 'system',
+        content: `已切换到会话：${detail.title}`
+      })
+    }
+  } catch (err) {
+    console.error('切换会话失败:', err)
+    if (err.message.includes('未登录') || err.message.includes('过期')) {
+      isLoggedIn.value = false
+    }
+  }
+}
 </script>
 
 <template>
@@ -232,13 +289,16 @@ function handlePageChange(page) {
   <!-- 已登录：显示主应用 -->
   <div v-else class="app-layout">
     <Sidebar
+      ref="sidebarRef"
       :current-page="currentPage"
       :username="currentUser.username"
       :user-role="currentUser.role"
+      :current-session-id="sessionId.value"
       @new-chat="newSession"
       @page-change="handlePageChange"
       @logout="handleLogout"
       @username-updated="handleUsernameUpdated"
+      @session-switch="handleSessionSwitch"
     />
 
     <main v-if="currentPage === 'agent'" class="content-area" :class="{ 'empty-layout': isEmptyState }">

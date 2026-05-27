@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import UserSettingsDialog from './UserSettingsDialog.vue'
+import { fetchSessionList, deleteSession } from '../utils/api.js'
 
 const props = defineProps({
   currentPage: {
@@ -14,10 +15,14 @@ const props = defineProps({
   userRole: {
     type: String,
     default: 'user'
+  },
+  currentSessionId: {
+    type: String,
+    default: ''
   }
 })
 
-const emit = defineEmits(['toggle-sidebar', 'new-chat', 'page-change', 'logout', 'username-updated'])
+const emit = defineEmits(['toggle-sidebar', 'new-chat', 'page-change', 'logout', 'username-updated', 'session-switch'])
 
 const isSidebarCollapsed = ref(false)
 const isHistoryCollapsed = ref(false)
@@ -29,11 +34,75 @@ const userMenuRef = ref(null)
 const menuPositionStyle = ref({})
 const isSettingsDialogVisible = ref(false)
 
-const historySessions = ref([
-  { id: 1, title: '数据分析报告生成', time: '10:30', active: true },
-  { id: 2, title: '地图操作自动化', time: '昨天', active: false },
-  { id: 3, title: '客户信息整理', time: '3天前', active: false },
-])
+const historySessions = ref([])
+const isLoadingSessions = ref(false)
+
+/**
+ * 从后端加载会话列表
+ */
+const loadSessionList = async () => {
+  if (!props.username || props.username === '用户名') return
+  isLoadingSessions.value = true
+  try {
+    const data = await fetchSessionList()
+    historySessions.value = (data.sessions || []).map(s => ({
+      id: s.session_id,
+      title: s.title || '新对话',
+      time: formatTime(s.last_active_at || s.created_at),
+      active: s.session_id === props.currentSessionId,
+      sessionId: s.session_id
+    }))
+  } catch (err) {
+    console.error('加载会话列表失败:', err)
+  } finally {
+    isLoadingSessions.value = false
+  }
+}
+
+/**
+ * 格式化时间显示
+ * @param {string} dateStr - ISO 日期字符串
+ * @returns {string} 格式化后的时间文本
+ */
+const formatTime = (dateStr) => {
+  if (!dateStr) return ''
+  const date = new Date(dateStr)
+  const now = new Date()
+  const diffMs = now - date
+  const diffMins = Math.floor(diffMs / 60000)
+  const diffHours = Math.floor(diffMs / 3600000)
+  const diffDays = Math.floor(diffMs / 86400000)
+
+  if (diffMins < 1) return '刚刚'
+  if (diffMins < 60) return `${diffMins}分钟前`
+  if (diffHours < 24) return `${diffHours}小时前`
+  if (diffDays < 7) return `${diffDays}天前`
+  return `${date.getMonth() + 1}/${date.getDate()}`
+}
+
+/**
+ * 切换到历史会话
+ * @param {Object} session - 会话对象
+ */
+const handleSessionClick = (session) => {
+  emit('session-switch', session.sessionId)
+}
+
+/**
+ * 删除历史会话
+ * @param {string} sessionId - 会话 ID
+ * @param {MouseEvent} event - 鼠标事件
+ */
+const handleDeleteSession = async (sessionId, event) => {
+  event.stopPropagation()
+  if (!confirm('确定删除该会话？删除后无法恢复。')) return
+  try {
+    await deleteSession(sessionId)
+    await loadSessionList()
+  } catch (err) {
+    console.error('删除会话失败:', err)
+  }
+}
 
 const handleMenuClick = (menuId) => {
   activeMenu.value = menuId
@@ -180,9 +249,20 @@ watch(isSidebarCollapsed, () => {
   }
 })
 
+// 监听当前会话ID变化，更新历史记录高亮
+watch(() => props.currentSessionId, (newId) => {
+  historySessions.value.forEach(s => {
+    s.active = s.sessionId === newId
+  })
+})
+
+// 暴露 loadSessionList 方法给父组件调用
+defineExpose({ loadSessionList })
+
 onMounted(() => {
   document.addEventListener('click', handleClickOutside)
   window.addEventListener('resize', handleResize)
+  loadSessionList()
 })
 
 onUnmounted(() => {
@@ -408,17 +488,27 @@ onUnmounted(() => {
 
       <transition name="slide">
         <div v-show="!isHistoryCollapsed && !isSidebarCollapsed" class="history-list">
-          <button
+          <div v-if="isLoadingSessions" class="history-loading">加载中...</div>
+          <div v-else-if="historySessions.length === 0" class="history-empty">暂无会话记录</div>
+          <div
             v-for="session in historySessions"
             :key="session.id"
             class="history-item"
             :class="{ active: session.active }"
+            @click="handleSessionClick(session)"
           >
             <div class="history-content">
               <span class="history-title-text">{{ session.title }}</span>
-              <span class="history-time">{{ session.time }}</span>
+              <div class="history-meta">
+                <span class="history-time">{{ session.time }}</span>
+                <button class="history-delete-btn" @click="handleDeleteSession(session.sessionId, $event)" title="删除会话">
+                  <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
+                    <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"/>
+                  </svg>
+                </button>
+              </div>
             </div>
-          </button>
+          </div>
         </div>
       </transition>
     </div>
@@ -924,6 +1014,43 @@ onUnmounted(() => {
 }
 
 .history-time {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.history-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.history-delete-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease, background-color 0.15s ease;
+  flex-shrink: 0;
+
+  &:hover {
+    color: var(--color-accent);
+    background-color: var(--color-bg-hover);
+  }
+}
+
+.history-item:hover .history-delete-btn {
+  opacity: 1;
+}
+
+.history-loading,
+.history-empty {
+  padding: 16px 12px;
+  text-align: center;
   font-size: var(--font-size-xs);
   color: var(--color-text-muted);
 }
