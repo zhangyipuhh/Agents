@@ -13,9 +13,10 @@
 Date: 2026/2/6
 Author: 张镒谱
 """
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel
 from typing import Optional
+from datetime import datetime, timedelta
 from app.shared.utils.auth.Safety import jwt_auth
 from app.core.database import DatabasePool
 
@@ -146,16 +147,18 @@ async def register(request: RegisterRequest):
 
 
 @router.post('/login', response_model=LoginResponse)
-async def login(request: LoginRequest, req: Request):
+async def login(request: LoginRequest, req: Request, response: Response):
     """
     用户登录API端点
 
-    验证验证码、用户凭据，返回JWT令牌和角色信息。
+    验证验证码、用户凭据，返回 Access Token（JSON body）
+    并通过 Set-Cookie 设置 Refresh Token（HttpOnly）。
     登录成功/失败均记录审计日志。
 
     Args:
         request (LoginRequest): 包含用户名、密码、验证码 key 和验证码的请求对象
         req (Request): FastAPI 请求对象，用于获取客户端 IP
+        response (Response): FastAPI 响应对象，用于设置 Cookie
 
     Returns:
         LoginResponse: 包含访问令牌、令牌类型、过期时间、角色和用户名的响应对象
@@ -171,7 +174,6 @@ async def login(request: LoginRequest, req: Request):
 
     # 校验验证码
     if not captcha_manager.verify(request.captcha_key, request.captcha_code):
-        # 记录登录失败日志（验证码错误）
         await AuditLog.write_log(
             action='login_failure',
             username=request.username,
@@ -191,7 +193,6 @@ async def login(request: LoginRequest, req: Request):
         is_valid = await jwt_auth.verify_credentials(request.username, request.password)
 
     if not is_valid:
-        # 记录登录失败日志
         await AuditLog.write_log(
             action='login_failure',
             username=request.username,
@@ -215,8 +216,25 @@ async def login(request: LoginRequest, req: Request):
     role = user.get('role', 'user') if user else 'user'
     user_id = user.get('id') if user else None
 
-    # 生成 JWT 令牌
-    token = await jwt_auth.generate_token(request.username)
+    # 生成 Access Token（JSON body 返回）
+    access_token = await jwt_auth.generate_token(request.username)
+
+    # 生成 Refresh Token（HttpOnly Cookie 传递）
+    from app.shared.utils.auth.refresh_token_db import RefreshTokenDB
+    refresh_token = await jwt_auth.generate_refresh_token(request.username)
+    token_hash = RefreshTokenDB.hash_token(refresh_token)
+    expires_at = datetime.utcnow() + timedelta(hours=24)
+    await RefreshTokenDB.store_token(token_hash, user_id, expires_at)
+
+    # 通过 Set-Cookie 设置 Refresh Token
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        samesite="strict",
+        path="/api/auth",
+        max_age=86400
+    )
 
     # 记录登录成功日志
     await AuditLog.write_log(
@@ -227,9 +245,9 @@ async def login(request: LoginRequest, req: Request):
     )
 
     return LoginResponse(
-        access_token=token,
+        access_token=access_token,
         token_type="Bearer",
-        expires_in=jwt_auth.expiration_minutes,
+        expires_in=30,
         role=role,
         username=request.username
     )
@@ -325,24 +343,41 @@ async def validate_token(request: Request):
 
 
 @router.post('/logout')
-async def logout(req: Request):
+async def logout(req: Request, response: Response):
     """
     用户登出API端点
 
-    删除服务端 Session，记录审计日志。
+    删除服务端 Refresh Token 数据库记录 + 清除 Cookie + 删除 Session。
+    记录审计日志。
 
     Args:
         req (Request): FastAPI 请求对象
+        response (Response): FastAPI 响应对象，用于清除 Cookie
 
     Returns:
         dict: 登出结果
     """
     from app.shared.utils.auth.audit_log import AuditLog
     from app.shared.utils.Session.SessionCache import session_cache
+    from app.shared.utils.auth.refresh_token_db import RefreshTokenDB
 
     username = getattr(req.state, 'username', None)
     session_id = req.headers.get('X-Session-ID')
     client_ip = req.client.host if req.client else "unknown"
+
+    # 删除服务端 Refresh Token
+    refresh_token = req.cookies.get("refresh_token")
+    if refresh_token:
+        token_hash = RefreshTokenDB.hash_token(refresh_token)
+        await RefreshTokenDB.delete_token(token_hash)
+
+    # 清除 Refresh Token Cookie
+    response.delete_cookie(
+        key="refresh_token",
+        path="/api/auth",
+        httponly=True,
+        samesite="strict"
+    )
 
     # 删除 Session
     if session_id:
