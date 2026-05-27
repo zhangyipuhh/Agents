@@ -147,6 +147,17 @@ async def delete_session(session_id: str, request: Request):
         # 删除会话目录
         success = await file_transfer.delete_session(session_id)
 
+        # 删除 LangGraph Checkpoint 中的对话状态
+        try:
+            checkpointer = await get_async_checkpointer()
+            await checkpointer.adelete_thread(session_id)
+        except Exception as e:
+            # 记录日志但不阻断删除流程，因为 checkpoint 可能不存在
+            import logging
+            logging.getLogger(__name__).warning(
+                f"删除 checkpoint 失败: session_id={session_id}, error={e}"
+            )
+
         # 从缓存中删除 session_id
         await session_cache.delete_session(session_id)
 
