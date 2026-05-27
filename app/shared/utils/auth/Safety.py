@@ -261,99 +261,82 @@ async def auth_middleware(request: Request, call_next):
 
 
 async def session_auth_middleware(request: Request, call_next):
-    """
-    Session 认证中间件
-    
-    验证 session_id 是否与当前登录用户名对应。
-    白名单路径跳过验证。
-    /api/session/create 路径跳过验证（因为创建 session 时还没有 session_id）。
-    
-    Args:
-        request (Request): FastAPI请求对象
-        call_next: 下一个中间件或路由处理器
-        
-    Returns:
-        Response: 处理后的响应
-    """
     path = request.url.path
-    #print(f"[诊断-session_middleware] 进入, path={path}")
-    
-    # 检查路径是否在白名单中（白名单路径不需要 session 验证）
+
+    # 白名单路径（无需 Access Token）也无需 Session 验证
     if jwt_auth.is_whitelisted(path):
         return await call_next(request)
-    
-    # /api/session/create 路径跳过 session 验证（创建 session 时还没有 session_id）
-    if path.startswith("/api/session/create"):
-        #print(f"[诊断-session_middleware] /api/session/create 跳过验证")
-        return await call_next(request)
-    
-    # /api/session/list 路径跳过 session 验证（获取会话列表时还没有选择特定会话）
-    if path.startswith("/api/session/list"):
-        #print(f"[诊断-session_middleware] /api/session/list 跳过验证")
-        return await call_next(request)
-    
-    try:
-        # 获取当前用户名
-        username = getattr(request.state, "username", None)
-        print(f"[诊断-session_middleware] path={path}, username={username}")
-        
-        # 如果 request.state 中没有 username，尝试从 JWT token 中获取
-        if not username:
-            auth_header = request.headers.get("Authorization")
-            if auth_header and auth_header.startswith("Bearer "):
-                token = auth_header.split(" ")[1]
-                try:
-                    payload = jwt.decode(token, jwt_auth.secret_key, algorithms=[jwt_auth.algorithm])
-                    username = payload.get("username")
-                    request.state.username = username
-                    request.state.payload = payload
-                    print(f"[诊断-session_middleware] 从JWT获取username: {username}")
-                except Exception as e:
-                    print(f"[诊断-session_middleware] JWT解码失败: {e}")
-        
-        if not username:
-            print(f"[诊断-session_middleware] 缺少用户认证信息")
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                content={"detail": "缺少用户认证信息"}
-            )
-        
-        # 从请求头中获取 session_id
-        session_id = request.headers.get("X-Session-ID")
-        print(f"[诊断-session_middleware] session_id={session_id}")
-        
-        if not session_id:
-            print(f"[诊断-session_middleware] 缺少 X-Session-ID 请求头")
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={"detail": "缺少 X-Session-ID 请求头"}
-            )
-        
-        # 验证 session_id 是否属于该用户
-        from app.shared.utils.auth.session_db import SessionDB
-        print(f"[诊断-session_middleware] 验证 session, username={username}, session_id={session_id}")
-        is_valid = await session_cache.verify_session(session_id, username)
-        print(f"[诊断-session_middleware] verify_session result={is_valid}")
-        
-        if not is_valid:
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                content={"detail": "无权访问该会话"}
-            )
-        
-        # 将 session_id 存储到 request.state，方便后续使用
-        request.state.session_id = session_id
-        
-        return await call_next(request)
-    except Exception as e:
-        import traceback
-        #print(f"[诊断-session_middleware] 异常: {e}")
-        #print(f"[诊断-session_middleware] 堆栈: {traceback.format_exc()}")
+
+    # 检查是否在 Session 白名单路径中（这些路径不需要 Session 验证）
+    for prefix in SESSION_WHITELIST_PREFIXES:
+        if path.startswith(prefix):
+            return await call_next(request)
+
+    # 检查是否需要 Session 验证
+    needs_session = False
+
+    # 按前缀匹配
+    for prefix in SESSION_REQUIRED_PREFIXES:
+        if path.startswith(prefix):
+            needs_session = True
+            break
+
+    # 匹配 /api/session/{session_id}/ 模式（需要 session 验证的路径）
+    if not needs_session and path.startswith("/api/session/"):
+        # 排除白名单中的 /api/session/create, /api/session/list, /api/session/delete
+        # 格式: /api/session/{session_id}/detail, /api/session/{session_id}/messages 等
+        path_segments = path.split("/")
+        # path_segments = ['', 'api', 'session', '{session_id}', 'action', ...]
+        if len(path_segments) >= 5 and path_segments[4]:
+            needs_session = True
+
+    # 获取当前用户名
+    username = getattr(request.state, "username", None)
+    if not username:
         return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": f"Session 认证失败: {str(e)}"}
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": "缺少用户认证信息"}
         )
 
+    if not needs_session:
+        # 不需要 Session 验证的路径直接放行
+        return await call_next(request)
+
+    # 需要 Session 验证：检查 X-Session-ID
+    session_id = request.headers.get("X-Session-ID")
+    if not session_id:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": "缺少 X-Session-ID 请求头"}
+        )
+
+    # 验证 session_id 是否属于该用户
+    is_valid = await session_cache.verify_session(session_id, username)
+
+    if not is_valid:
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": "无权访问该会话"}
+        )
+
+    request.state.session_id = session_id
+    return await call_next(request)
+
+
+# 不需要 Session 验证的路径前缀（仅需 Access Token）
+SESSION_WHITELIST_PREFIXES = [
+    "/api/auth",
+    "/api/users",
+    "/api/session/create",
+    "/api/session/list",
+    "/api/session/delete",
+]
+
+# 需要 Session 验证的路径前缀
+SESSION_REQUIRED_PREFIXES = [
+    "/api/files/",
+    "/api/agent/",
+]
 
 # 创建全局JWT认证实例
 jwt_auth = JWTAuth()
