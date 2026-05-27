@@ -116,6 +116,7 @@ async def update_password(user_id: int, request: PasswordUpdateRequest):
         dict: 修改结果
     """
     from app.shared.utils.auth.user_db import UserDB
+    from app.shared.utils.auth.refresh_token_db import RefreshTokenDB
 
     user = await UserDB.get_user_by_id(user_id)
     if not user:
@@ -130,6 +131,10 @@ async def update_password(user_id: int, request: PasswordUpdateRequest):
     success = await UserDB.update_password(user_id, request.new_password)
     if not success:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="修改失败")
+
+    # 密码修改后清除该用户所有 Refresh Token（强制重新登录）
+    deleted_count = await RefreshTokenDB.delete_user_tokens(user_id)
+    print(f"[密码修改] 已清除用户 {user_id} 的 {deleted_count} 个 Refresh Token")
 
     return {"message": "密码修改成功"}
 
