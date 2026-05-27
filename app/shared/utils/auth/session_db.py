@@ -116,6 +116,23 @@ async def init_session_schema():
         CREATE INDEX IF NOT EXISTS idx_attachments_session_created ON attachments(session_id, created_at)
     """)
 
+    # Refresh Tokens 表
+    await DatabasePool.execute("""
+        CREATE TABLE IF NOT EXISTS refresh_tokens (
+            id SERIAL PRIMARY KEY,
+            token_hash VARCHAR(255) UNIQUE NOT NULL,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            expires_at TIMESTAMP NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    await DatabasePool.execute("""
+        CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id ON refresh_tokens(user_id)
+    """)
+    await DatabasePool.execute("""
+        CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires_at ON refresh_tokens(expires_at)
+    """)
+
 
 class SessionDB:
     """
