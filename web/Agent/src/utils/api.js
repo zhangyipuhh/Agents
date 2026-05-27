@@ -170,13 +170,16 @@ function generateFileId() {
 export function getAuthHeaders() {
   const headers = {}
   const token = localStorage.getItem('auth_token')
-  if (token) {
+  const sessionId = localStorage.getItem('session_id')
+  console.log('[调试] getAuthHeaders - token:', token ? token.substring(0, 20) + '...' : null)
+  console.log('[调试] getAuthHeaders - sessionId:', sessionId)
+  if (token && token !== 'undefined') {
     headers['Authorization'] = `Bearer ${token}`
   }
-  const sessionId = localStorage.getItem('session_id')
-  if (sessionId) {
+  if (sessionId && sessionId !== 'undefined') {
     headers['X-Session-ID'] = sessionId
   }
+  console.log('[调试] getAuthHeaders - 返回的headers:', Object.keys(headers))
   return headers
 }
 
@@ -242,11 +245,18 @@ export async function ensureAuth() {
   let token = localStorage.getItem('auth_token')
   let sessionId = localStorage.getItem('session_id')
 
-  if (!token) {
+  console.log('[调试] ensureAuth - token:', token)
+  console.log('[调试] ensureAuth - token 长度:', token ? token.length : 0)
+
+  if (!token || token === 'undefined') {
+    console.error('[调试] token 无效，清除 localStorage')
+    localStorage.removeItem('auth_token')
+    localStorage.removeItem('session_id')
     throw new Error('未登录，请重新登录')
   }
 
   if (!sessionId) {
+    console.log('[调试] 正在创建 session，token:', token)
     const sessionRes = await fetch('/api/session/create', {
       method: 'POST',
       headers: {
@@ -254,7 +264,10 @@ export async function ensureAuth() {
         'Authorization': `Bearer ${token}`
       }
     })
+    console.log('[调试] session/create 响应状态:', sessionRes.status)
     if (!sessionRes.ok) {
+      const errorData = await sessionRes.json().catch(() => ({}))
+      console.error('[调试] session/create 错误:', errorData)
       if (sessionRes.status === 401 || sessionRes.status === 403) {
         localStorage.removeItem('auth_token')
         localStorage.removeItem('session_id')
@@ -756,6 +769,12 @@ export async function deleteSession(sessionId) {
 
   if (!response.ok) {
     throw new Error(`删除会话失败: ${response.status}`)
+  }
+
+  // 如果删除的是当前 session，清除 localStorage 中的 session_id
+  const currentSessionId = localStorage.getItem('session_id')
+  if (currentSessionId === sessionId) {
+    localStorage.removeItem('session_id')
   }
 
   return response.json()

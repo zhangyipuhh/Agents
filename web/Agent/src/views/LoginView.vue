@@ -89,7 +89,7 @@ async function handleLogin() {
 
     // 通知父组件登录成功
     emit('login-success', {
-      token: data.access_token,
+      access_token: data.access_token,
       role: data.role,
       username: data.username
     })

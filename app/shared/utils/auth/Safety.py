@@ -131,14 +131,19 @@ class JWTAuth:
             HTTPException: 当令牌无效或过期时抛出
         """
         try:
+            print(f"[诊断-verify_token] token前20字符: {token[:20]}...")
+            print(f"[诊断-verify_token] secret_key前20字符: {self.secret_key[:20]}...")
             payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
+            print(f"[诊断-verify_token] 解码成功, payload: {payload}")
             return payload
         except jwt.ExpiredSignatureError:
+            print(f"[诊断-verify_token] 令牌已过期")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="令牌已过期"
             )
-        except jwt.InvalidTokenError:
+        except jwt.InvalidTokenError as e:
+            print(f"[诊断-verify_token] 无效的令牌: {e}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="无效的令牌"
@@ -201,19 +206,23 @@ class JWTAuth:
 
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
+    print(f"[诊断-auth_middleware] 进入, path={path}")
     
     # 检查路径是否在白名单中
     if jwt_auth.is_whitelisted(path):
+        print(f"[诊断-auth_middleware] 路径在白名单中, 跳过验证")
         return await call_next(request)
     
     try:
         # 验证JWT令牌
+        print(f"[诊断-auth_middleware] 开始验证JWT令牌")
         await jwt_auth.authenticate(request)
+        print(f"[诊断-auth_middleware] JWT验证成功, username={getattr(request.state, 'username', None)}")
         return await call_next(request)
     except Exception as e:
         import traceback
-        #print(f"[诊断-auth_middleware] path={path}, 异常: {e}")
-        #print(f"[诊断-auth_middleware] 堆栈: {traceback.format_exc()}")
+        print(f"[诊断-auth_middleware] path={path}, 异常: {e}")
+        print(f"[诊断-auth_middleware] 堆栈: {traceback.format_exc()}")
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={"detail": str(e)}
@@ -250,8 +259,24 @@ async def session_auth_middleware(request: Request, call_next):
     try:
         # 获取当前用户名
         username = getattr(request.state, "username", None)
+        print(f"[诊断-session_middleware] path={path}, username={username}")
+        
+        # 如果 request.state 中没有 username，尝试从 JWT token 中获取
+        if not username:
+            auth_header = request.headers.get("Authorization")
+            if auth_header and auth_header.startswith("Bearer "):
+                token = auth_header.split(" ")[1]
+                try:
+                    payload = jwt.decode(token, jwt_auth.secret_key, algorithms=[jwt_auth.algorithm])
+                    username = payload.get("username")
+                    request.state.username = username
+                    request.state.payload = payload
+                    print(f"[诊断-session_middleware] 从JWT获取username: {username}")
+                except Exception as e:
+                    print(f"[诊断-session_middleware] JWT解码失败: {e}")
         
         if not username:
+            print(f"[诊断-session_middleware] 缺少用户认证信息")
             return JSONResponse(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 content={"detail": "缺少用户认证信息"}
@@ -259,8 +284,10 @@ async def session_auth_middleware(request: Request, call_next):
         
         # 从请求头中获取 session_id
         session_id = request.headers.get("X-Session-ID")
+        print(f"[诊断-session_middleware] session_id={session_id}")
         
         if not session_id:
+            print(f"[诊断-session_middleware] 缺少 X-Session-ID 请求头")
             return JSONResponse(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 content={"detail": "缺少 X-Session-ID 请求头"}
@@ -268,9 +295,9 @@ async def session_auth_middleware(request: Request, call_next):
         
         # 验证 session_id 是否属于该用户
         from app.shared.utils.auth.session_db import SessionDB
-        #print(f"[诊断-session_middleware] SessionDB.is_enabled()={SessionDB.is_enabled()}, username={username}, session_id={session_id}")
+        print(f"[诊断-session_middleware] 验证 session, username={username}, session_id={session_id}")
         is_valid = await session_cache.verify_session(session_id, username)
-        #print(f"[诊断-session_middleware] verify_session result={is_valid}")
+        print(f"[诊断-session_middleware] verify_session result={is_valid}")
         
         if not is_valid:
             return JSONResponse(

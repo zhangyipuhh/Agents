@@ -176,6 +176,7 @@ class SessionDB:
             username: 用户名
         """
         now = datetime.utcnow()
+        print(f"[诊断-SessionDB] add_session: session_id={session_id}, user_id={user_id}, username={username}")
 
         # 写入内存
         with cls._lock:
@@ -188,6 +189,7 @@ class SessionDB:
                 'status': 'active',
                 'agent_type': 'default',
             }
+            print(f"[诊断-SessionDB] 已写入内存, _memory_cache keys={list(cls._memory_cache.keys())}")
 
         # 写入数据库
         if cls.is_enabled():
@@ -218,9 +220,12 @@ class SessionDB:
         Returns:
             Optional[dict]: Session 信息，包含 title、last_active_at、status、agent_type
         """
+        print(f"[诊断-SessionDB] get_session: session_id={session_id}")
         # 先查内存
         with cls._lock:
+            print(f"[诊断-SessionDB] 内存缓存 keys={list(cls._memory_cache.keys())}")
             session = cls._memory_cache.get(session_id)
+            print(f"[诊断-SessionDB] 内存查询结果: {session}")
             if session:
                 return session.copy()
 
@@ -259,10 +264,15 @@ class SessionDB:
         Returns:
             bool: Session 属于该用户返回 True
         """
+        print(f"[诊断-SessionDB] verify_session: session_id={session_id}, username={username}")
         session = await cls.get_session(session_id)
+        print(f"[诊断-SessionDB] get_session result: {session}")
         if not session:
+            print(f"[诊断-SessionDB] session not found")
             return False
-        return session['username'] == username
+        result = session['username'] == username
+        print(f"[诊断-SessionDB] verify result: {result}, session_username={session.get('username')}")
+        return result
 
     @classmethod
     async def delete_session(cls, session_id: str) -> bool:

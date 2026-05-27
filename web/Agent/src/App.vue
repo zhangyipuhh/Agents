@@ -46,10 +46,15 @@ function checkAuth() {
 
 /**
  * 处理登录成功事件
- * @param {Object} data - 登录结果数据，包含 token、role、username
+ * @param {Object} data - 登录结果数据，包含 access_token、role、username
  */
 function handleLoginSuccess(data) {
-  localStorage.setItem('auth_token', data.token)
+  console.log('[调试] handleLoginSuccess - data:', data)
+  console.log('[调试] handleLoginSuccess - access_token:', data.access_token)
+  if (!data.access_token) {
+    console.error('[调试] access_token 为空！')
+  }
+  localStorage.setItem('auth_token', data.access_token)
   localStorage.setItem('user_role', data.role)
   localStorage.setItem('username', data.username)
   isLoggedIn.value = true

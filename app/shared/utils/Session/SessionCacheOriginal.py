@@ -58,9 +58,14 @@ class SessionCacheOriginal:
         """
         with self._lock:
             session_info = self._cache.get(session_id)
+            print(f"[诊断-SessionCacheOriginal] session_id={session_id}, username={username}")
+            print(f"[诊断-SessionCacheOriginal] session_info={session_info}")
+            print(f"[诊断-SessionCacheOriginal] _cache keys={list(self._cache.keys())}")
             if not session_info:
                 return False
-            return session_info["username"] == username
+            result = session_info["username"] == username
+            print(f"[诊断-SessionCacheOriginal] 验证结果: {result}")
+            return result
 
     def delete_session(self, session_id: str) -> bool:
         """
