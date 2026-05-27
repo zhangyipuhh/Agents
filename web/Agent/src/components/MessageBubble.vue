@@ -363,11 +363,11 @@ const getFileIconColor = (filename) => {
             :key="idx"
             class="bubble-attachment-tag"
           >
-            <svg class="att-icon" viewBox="0 0 20 20" fill="currentColor" :style="{ color: getFileIconColor(att.original_name || att.filename) }">
+            <svg class="att-icon" viewBox="0 0 20 20" fill="currentColor" :style="{ color: getFileIconColor(att.original_name || att.file_name || att.filename) }">
               <path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"/>
             </svg>
-            <span class="att-name">{{ att.original_name || att.filename }}</span>
-            <span v-if="att.size" class="att-size">{{ formatFileSize(att.size) }}</span>
+            <span class="att-name">{{ att.original_name || att.file_name || att.filename }}</span>
+            <span v-if="att.file_size || att.size" class="att-size">{{ formatFileSize(att.file_size || att.size) }}</span>
           </div>
         </div>
         <div v-if="content" class="bubble-text">{{ content }}</div>

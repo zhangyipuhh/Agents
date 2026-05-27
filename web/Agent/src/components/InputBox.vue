@@ -69,11 +69,11 @@ const handleSend = async () => {
   const uploadedFiles = selectedFiles.value
     .filter(f => f.status === 'success')
     .map(f => ({
-      filename: f.uploadResult.filename,
+      file_name: f.uploadResult.filename,
       stored_path: f.uploadResult.stored_path,
       file_type: f.uploadResult.file_type,
       original_name: f.name,
-      size: f.size
+      file_size: f.size
     }))
 
   emit('send', inputValue.value.trim(), uploadedFiles)

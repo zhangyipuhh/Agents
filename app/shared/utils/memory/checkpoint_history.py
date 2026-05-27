@@ -39,7 +39,8 @@ class CheckpointHistoryService:
                 "id": getattr(msg, "id", hash(msg.content)),
                 "type": "user",
                 "role": "user",
-                "content": msg.content if isinstance(msg.content, str) else str(msg.content)
+                "content": msg.content if isinstance(msg.content, str) else str(msg.content),
+                "attachments": getattr(msg, "additional_kwargs", {}).get("attachments", [])
             }
         elif isinstance(msg, AIMessage):
             return {

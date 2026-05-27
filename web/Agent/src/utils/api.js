@@ -527,7 +527,8 @@ export async function chatStream(sessionId, message, attachments = []) {
     body: JSON.stringify({
       message,
       session_id: sid,
-      geometry_data: {}
+      geometry_data: {},
+      attachments
     })
   })
 
@@ -567,7 +568,8 @@ export async function knowledgeChatStream(sessionId, message, attachments = []) 
     body: JSON.stringify({
       message,
       session_id: sid,
-      geometry_data: {}
+      geometry_data: {},
+      attachments
     })
   })
 
@@ -619,11 +621,15 @@ export async function fetchKnowledgeFiles() {
  * @throws {Error} 获取失败时抛出错误
  */
 export async function fetchSessionList() {
-  await ensureAuth()
+  // 只验证 token，不自动创建 session（获取列表不需要当前有活跃会话）
+  const token = localStorage.getItem('auth_token')
+  if (!token || token === 'undefined') {
+    throw new Error('未登录，请重新登录')
+  }
 
   const headers = {
     'Content-Type': 'application/json',
-    ...getAuthHeaders()
+    'Authorization': `Bearer ${token}`
   }
 
   const response = await fetch('/api/session/list', {

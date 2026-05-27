@@ -106,6 +106,7 @@ class MapAgent:
         stream_mode: Union[str, list[str]] = None,
         context: any = None,
         geometry_data: dict = {},
+        attachments: list = [],
         **kwargs,
     ) -> AsyncGenerator[dict, None]:
         """
@@ -178,9 +179,17 @@ class MapAgent:
 
         )
 
-        # 构建输入状态
+        # 构建输入状态，将附件信息存入 HumanMessage 的 additional_kwargs
+        from langchain_core.messages import HumanMessage
+        if attachments:
+            human_message = HumanMessage(
+                content=user_input,
+                additional_kwargs={"attachments": attachments}
+            )
+        else:
+            human_message = HumanMessage(content=user_input)
         state = MapAgentState(
-            messages=[user_input],
+            messages=[human_message],
             error_limit=error_limit,
             limit=limit,
         )

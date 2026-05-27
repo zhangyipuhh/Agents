@@ -385,17 +385,20 @@ class ChatRequest(BaseModel):
         message (str): 用户输入的消息内容
         session_id (Optional[str]): 会话ID，用于标识和恢复会话状态
         geometry_data (Optional[dict]): 地理数据类型，包含点、线、面的几何数据
+        attachments (Optional[list]): 附件列表，包含附件的元数据信息
     """
     message: str
     session_id: Optional[str] = None
     geometry_data: Optional[dict] = {}
+    attachments: Optional[list] = []
 
 
 async def generate_stream_response(
     user_input: str,
     session_id: str,
     context: any = None,
-    geometry_data: dict = {}
+    geometry_data: dict = {},
+    attachments: list = []
 ) -> AsyncGenerator[str, None]:
     """
     生成流式响应的异步生成器
@@ -428,7 +431,8 @@ async def generate_stream_response(
             session_id=session_id,
             stream_mode=["updates", "custom", "messages"],
             context=context,
-            geometry_data=geometry_data
+            geometry_data=geometry_data,
+            attachments=attachments
         ):
             # 处理组合模式的输出
             # chunk 的格式为 (mode, data)
@@ -528,7 +532,8 @@ async def chat(
             generate_stream_response(
                 user_input=chat_request.message,
                 session_id=session_id,
-                geometry_data=geometry_data
+                geometry_data=geometry_data,
+                attachments=chat_request.attachments or []
             ),
             media_type="text/event-stream",
             headers={
@@ -586,7 +591,8 @@ async def knowledge_chat(
                     system_prompt=KNOWLEDGE_SYSTEM_PROMPT,
                     knowledge_root=r"app\data\Knowledge\tmp"
                 ),
-                geometry_data=geometry_data
+                geometry_data=geometry_data,
+                attachments=chat_request.attachments or []
             ),
             media_type="text/event-stream",
             headers={

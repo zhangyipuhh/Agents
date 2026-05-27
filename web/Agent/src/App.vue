@@ -92,6 +92,14 @@ onMounted(async () => {
   checkAuth()
 
   if (isLoggedIn.value) {
+    // 优先复用本地已有的 session_id，避免每次挂载都新建会话
+    const existingSessionId = localStorage.getItem('session_id')
+    if (existingSessionId && existingSessionId !== 'undefined') {
+      sessionId.value = existingSessionId
+      return
+    }
+
+    // 只有在没有有效会话时才创建新会话
     try {
       const newId = await createNewSession()
       sessionId.value = newId
@@ -266,11 +274,19 @@ async function handleSessionSwitch(targetSessionId) {
     // 还原对话记录到 messages 数组
     if (history.messages && history.messages.length > 0) {
       for (const msg of history.messages) {
+        // 从历史消息的 additional_kwargs 中提取附件信息
+        const msgAttachments = msg.attachments || []
         messages.push({
           id: msg.id || Date.now() + Math.random(),
           type: msg.type, // 'user' 或 'ai'
           content: msg.content,
-          attachments: [],
+          attachments: msgAttachments.map(a => ({
+            file_name: a.file_name || a.filename || '未知文件',
+            stored_path: a.stored_path || '',
+            file_type: a.file_type || '',
+            file_size: a.file_size || a.size || 0,
+            original_name: a.original_name || a.file_name || a.filename || '未知文件'
+          })),
           ended: true
         })
       }
