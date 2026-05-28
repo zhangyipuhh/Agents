@@ -508,7 +508,7 @@ async def chat(
         # 获取 geometry_data
         geometry_data = chat_request.geometry_data or {}
 
-        logger.debug(f"[DEBUG] chat 请求: message={chat_request.message}, session_id={session_id}")
+        logger.warning(f"[Chat] session_id={session_id}, message={chat_request.message[:50] if chat_request.message else ''}")
 
         # 自动生成会话标题：如果标题仍为默认值，用首条消息前20字符作为标题
         try:

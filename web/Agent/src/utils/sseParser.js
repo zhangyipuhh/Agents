@@ -12,30 +12,73 @@ export function tryParsePythonLiteral(content) {
     return JSON.parse(trimmed)
   } catch {}
 
+  // 智能替换：逐个字符遍历，正确识别字符串边界（单/双引号），
+  // 只替换边界引号为双引号，避免破坏字符串内部的引号
+  let result = ''
+  let i = 0
+  while (i < trimmed.length) {
+    const char = trimmed[i]
+
+    if (char === "'" || char === '"') {
+      // 字符串开始
+      const quote = char
+      let j = i + 1
+      let escaped = false
+      while (j < trimmed.length) {
+        if (escaped) {
+          escaped = false
+          j++
+        } else if (trimmed[j] === '\\') {
+          escaped = true
+          j++
+        } else if (trimmed[j] === quote) {
+          break
+        } else {
+          j++
+        }
+      }
+      // 提取字符串内容（不含引号），将内部双引号转义以适配 JSON
+      const inner = trimmed.slice(i + 1, j).replace(/"/g, '\\"')
+      result += '"' + inner + '"'
+      i = j + 1
+    } else if (trimmed.slice(i, i + 4) === 'True' && !/[a-zA-Z0-9_]/.test(trimmed[i - 1] || '')) {
+      result += 'true'
+      i += 4
+    } else if (trimmed.slice(i, i + 5) === 'False' && !/[a-zA-Z0-9_]/.test(trimmed[i - 1] || '')) {
+      result += 'false'
+      i += 5
+    } else if (trimmed.slice(i, i + 4) === 'None' && !/[a-zA-Z0-9_]/.test(trimmed[i - 1] || '')) {
+      result += 'null'
+      i += 4
+    } else {
+      result += char
+      i++
+    }
+  }
+
   try {
-    const jsonStr = trimmed
-      .replace(/'/g, '"')
-      .replace(/True/g, 'true')
-      .replace(/False/g, 'false')
-      .replace(/None/g, 'null')
-    return JSON.parse(jsonStr)
+    return JSON.parse(result)
   } catch {}
 
-  const result = []
-  const thinkRegex = /'thinking':\s*'((?:[^'\\]|\\.)*)'[^}]*'type':\s*'thinking'/g
-  const textRegex = /'text':\s*'((?:[^'\\]|\\.)*)'[^}]*'type':\s*'text'/g
+  // 回退到 regex：支持单双引号混合的键值对
+  const fallbackResult = []
 
+  // 匹配 thinking 块：key 和 value 均可使用单引号或双引号
+  const thinkRegex = /['"]thinking['"]:\s*(['"])((?:\\\1|.)*?)\1[^}]*['"]type['"]:\s*['"]thinking['"]/g
   let match
   while ((match = thinkRegex.exec(trimmed)) !== null) {
-    const thinking = match[1].replace(/\\'/g, "'").replace(/\\n/g, '\n')
-    result.push({ type: 'thinking', thinking })
-  }
-  while ((match = textRegex.exec(trimmed)) !== null) {
-    const text = match[1].replace(/\\'/g, "'").replace(/\\n/g, '\n')
-    result.push({ type: 'text', text })
+    const thinking = match[2].replace(/\\'/g, "'").replace(/\\"/g, '"').replace(/\\n/g, '\n')
+    fallbackResult.push({ type: 'thinking', thinking })
   }
 
-  return result.length > 0 ? result : null
+  // 匹配 text 块：key 和 value 均可使用单引号或双引号
+  const textRegex = /['"]text['"]:\s*(['"])((?:\\\1|.)*?)\1[^}]*['"]type['"]:\s*['"]text['"]/g
+  while ((match = textRegex.exec(trimmed)) !== null) {
+    const text = match[2].replace(/\\'/g, "'").replace(/\\"/g, '"').replace(/\\n/g, '\n')
+    fallbackResult.push({ type: 'text', text })
+  }
+
+  return fallbackResult.length > 0 ? fallbackResult : null
 }
 
 export function extractTextFromBlock(block) {

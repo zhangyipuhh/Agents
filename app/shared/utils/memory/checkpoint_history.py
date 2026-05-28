@@ -13,6 +13,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
+from app.core.messages.converter import MessageContentConverter
 
 
 class CheckpointHistoryService:
@@ -36,19 +37,48 @@ class CheckpointHistoryService:
         """
         if isinstance(msg, HumanMessage):
             return {
-                "id": getattr(msg, "id", hash(msg.content)),
+                "id": getattr(msg, "id", None) or id(msg),
                 "type": "user",
                 "role": "user",
                 "content": msg.content if isinstance(msg.content, str) else str(msg.content),
                 "attachments": getattr(msg, "additional_kwargs", {}).get("attachments", [])
             }
         elif isinstance(msg, AIMessage):
-            return {
-                "id": getattr(msg, "id", hash(msg.content)),
+            content = msg.content
+            is_list = isinstance(content, list)
+
+            # 基础 content（可读文本）
+            readable_content = MessageContentConverter.to_string(content, include_thinking=True) if is_list else (content or '')
+
+            result = {
+                "id": getattr(msg, "id", None) or id(msg),
                 "type": "ai",
                 "role": "assistant",
-                "content": msg.content if isinstance(msg.content, str) else str(msg.content)
+                "content": readable_content,
             }
+
+            # 若为列表格式，额外解析结构化字段
+            if is_list:
+                text_parts = []
+                thinking_parts = []
+                timeline = []
+                for item in content:
+                    if isinstance(item, dict):
+                        item_type = item.get("type", "")
+                        if item_type == "text":
+                            t = item.get("text", "")
+                            text_parts.append(t)
+                            timeline.append({"type": "text", "content": t})
+                        elif item_type == "thinking":
+                            th = item.get("thinking", "")
+                            thinking_parts.append(th)
+                            timeline.append({"type": "thinking", "content": th})
+                result["text"] = "\n".join(text_parts)
+                result["thinking"] = thinking_parts
+                result["timeline"] = timeline
+                result["ended"] = True
+
+            return result
         elif isinstance(msg, ToolMessage):
             # 工具消息通常不显示在前端，但保留用于完整历史
             return {
@@ -105,12 +135,24 @@ class CheckpointHistoryService:
             # 获取最新状态
             state = await checkpointer.aget(config)
 
+            # 诊断日志
+            import logging
+            logger = logging.getLogger(__name__)
             if not state:
+                logger.warning(f"[History] session_id={session_id}, checkpointer.aget() returned None")
                 return []
 
-            # 从 state 中提取 messages
-            # 注意：state 是 Checkpoint 对象，messages 在 state.values 中
-            messages_data = state.get("messages", [])
+            # 从 Checkpoint 的 channel_values 中提取 messages
+            # state 是 Checkpoint 对象（dict 子类），消息存储在 channel_values["messages"] 中
+            channel_values = state.get("channel_values", {})
+            messages_data = channel_values.get("messages", [])
+
+            logger.warning(
+                f"[History] session_id={session_id}, "
+                f"state_keys={list(state.keys())}, "
+                f"cv_keys={list(channel_values.keys())}, "
+                f"messages_count={len(messages_data)}"
+            )
 
             if not messages_data:
                 return []

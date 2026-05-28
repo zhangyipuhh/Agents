@@ -321,19 +321,60 @@ async function handleSessionSwitch(targetSessionId) {
       for (const msg of history.messages) {
         // 从历史消息的 additional_kwargs 中提取附件信息
         const msgAttachments = msg.attachments || []
-        messages.push({
-          id: msg.id || Date.now() + Math.random(),
-          type: msg.type, // 'user' 或 'ai'
-          content: msg.content,
-          attachments: msgAttachments.map(a => ({
-            file_name: a.file_name || a.filename || '未知文件',
-            stored_path: a.stored_path || '',
-            file_type: a.file_type || '',
-            file_size: a.file_size || a.size || 0,
-            original_name: a.original_name || a.file_name || a.filename || '未知文件'
-          })),
-          ended: true
-        })
+
+        if (msg.type === 'ai') {
+          let text = ''
+          let thinking = []
+          let timeline = []
+          let tools = []
+
+          // 若后端已返回结构化字段，直接使用；否则用 sseParser 解析原始 content
+          if (msg.timeline && Array.isArray(msg.timeline)) {
+            timeline = msg.timeline
+            thinking = msg.thinking || []
+            text = msg.text || ''
+            tools = msg.tools || []
+          } else {
+            const aiMsg = createAiMessage()
+            parseMessageContent(msg.content, aiMsg, true)
+            text = aiMsg.text
+            thinking = aiMsg.thinking
+            timeline = aiMsg.timeline
+            tools = aiMsg.tools
+          }
+
+          messages.push({
+            id: msg.id || Date.now() + Math.random(),
+            type: 'ai',
+            content: msg.content,
+            text,
+            thinking,
+            timeline,
+            tools,
+            attachments: msgAttachments.map(a => ({
+              file_name: a.file_name || a.filename || '未知文件',
+              stored_path: a.stored_path || '',
+              file_type: a.file_type || '',
+              file_size: a.file_size || a.size || 0,
+              original_name: a.original_name || a.file_name || a.filename || '未知文件'
+            })),
+            ended: true
+          })
+        } else {
+          messages.push({
+            id: msg.id || Date.now() + Math.random(),
+            type: msg.type,
+            content: msg.content,
+            attachments: msgAttachments.map(a => ({
+              file_name: a.file_name || a.filename || '未知文件',
+              stored_path: a.stored_path || '',
+              file_type: a.file_type || '',
+              file_size: a.file_size || a.size || 0,
+              original_name: a.original_name || a.file_name || a.filename || '未知文件'
+            })),
+            ended: true
+          })
+        }
       }
     } else if (detail.title && detail.title !== '新对话') {
       // 如果没有历史消息，显示切换提示

@@ -324,7 +324,40 @@ async def get_session_messages(
         if not is_valid:
             raise HTTPException(status_code=403, detail="无权访问该会话")
 
-        # 从 Checkpoint 获取历史
+        import logging
+        logging.getLogger(__name__).warning(f"[History] get_session_messages session_id={session_id}")
+
+        # 优先尝试通过 graph.aget_state() 获取（更可靠）
+        try:
+            from app.features.map_agent.router.map_router import get_map_agent
+            map_agent = await get_map_agent()
+            agent = await map_agent.get_agent()
+            graph_config = {"configurable": {"thread_id": session_id}}
+            state = await agent.graph.aget_state(graph_config)
+            messages_data = state.values.get("messages", [])
+
+            messages = []
+            for msg in messages_data:
+                msg_dict = CheckpointHistoryService._convert_message_to_dict(msg)
+                if msg_dict and msg_dict.get("type") != "tool":
+                    messages.append(msg_dict)
+
+            if limit and limit > 0:
+                messages = messages[-limit:]
+
+            logging.getLogger(__name__).warning(
+                f"[History] graph.get_state() succeeded, messages_count={len(messages)}"
+            )
+
+            return {
+                "session_id": session_id,
+                "messages": messages,
+                "total": len(messages)
+            }
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"[History] graph.get_state() 失败，回退到 checkpointer: {e}")
+
+        # 回退到原有逻辑
         checkpointer = await get_async_checkpointer()
         messages = await CheckpointHistoryService.get_conversation_history(
             checkpointer=checkpointer,
