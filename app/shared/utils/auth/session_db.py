@@ -192,7 +192,7 @@ class SessionDB:
             user_id: 用户 ID
             username: 用户名
         """
-        now = datetime.utcnow()
+        now = datetime.now()
         print(f"[诊断-SessionDB] add_session: session_id={session_id}, user_id={user_id}, username={username}")
 
         # 写入内存
@@ -393,7 +393,7 @@ class SessionDB:
         Returns:
             bool: 更新成功返回 True
         """
-        now = datetime.utcnow()
+        now = datetime.now()
 
         # 更新内存
         with cls._lock:
