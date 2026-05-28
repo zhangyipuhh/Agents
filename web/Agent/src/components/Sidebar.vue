@@ -26,8 +26,7 @@ const emit = defineEmits(['toggle-sidebar', 'new-chat', 'page-change', 'logout',
 
 const isSidebarCollapsed = ref(false)
 const isHistoryCollapsed = ref(false)
-const isLabCollapsed = ref(false)
-const isExpertCollapsed = ref(false)
+const isLabCollapsed = ref(true)
 const activeMenu = ref('new-task')
 const isUserMenuVisible = ref(false)
 const userMenuRef = ref(null)
@@ -136,10 +135,6 @@ const toggleHistory = () => {
 
 const toggleLab = () => {
   isLabCollapsed.value = !isLabCollapsed.value
-}
-
-const toggleExpert = () => {
-  isExpertCollapsed.value = !isExpertCollapsed.value
 }
 
 /**
@@ -305,32 +300,6 @@ onUnmounted(() => {
         <span v-show="!isSidebarCollapsed" class="menu-text">新建任务</span>
         <kbd v-show="!isSidebarCollapsed" class="shortcut">Ctrl+K</kbd>
       </button>
-
-      <!-- 搜索 -->
-      <button
-        class="menu-item"
-        :class="{ active: activeMenu === 'search' }"
-        data-tooltip="搜索"
-        @click="handleMenuClick('search')"
-      >
-        <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
-          <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd"/>
-        </svg>
-        <span v-show="!isSidebarCollapsed" class="menu-text">搜索</span>
-      </button>
-
-      <!-- 资产 -->
-      <button
-        class="menu-item"
-        :class="{ active: activeMenu === 'assets' }"
-        data-tooltip="资产"
-        @click="handleMenuClick('assets')"
-      >
-        <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
-          <path d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V4zM3 10a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H4a1 1 0 01-1-1v-6zM14 9a1 1 0 00-1 1v6a1 1 0 001 1h2a1 1 0 001-1v-6a1 1 0 00-1-1h-2z"/>
-        </svg>
-        <span v-show="!isSidebarCollapsed" class="menu-text">资产</span>
-      </button>
     </div>
 
     <!-- 分组：ZYP实验室 -->
@@ -410,49 +379,6 @@ onUnmounted(() => {
             </svg>
             <span class="menu-text">Skills技能</span>
             <span class="tag tag-new">New</span>
-          </button>
-        </div>
-      </transition>
-    </div>
-
-    <!-- 分组：专家 -->
-    <div class="sidebar-group" :class="{ 'collapsed-group': isSidebarCollapsed }">
-      <button
-        class="group-header"
-        :class="{ 'collapsed-header': isSidebarCollapsed }"
-        data-tooltip="专家"
-        @click="toggleExpert"
-      >
-        <svg
-          v-show="!isSidebarCollapsed"
-          class="group-collapse-icon"
-          :class="{ collapsed: isExpertCollapsed }"
-          viewBox="0 0 20 20"
-          fill="currentColor"
-        >
-          <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"/>
-        </svg>
-        <svg
-          v-show="isSidebarCollapsed"
-          class="group-icon"
-          viewBox="0 0 20 20"
-          fill="currentColor"
-        >
-          <path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z"/>
-        </svg>
-        <span v-show="!isSidebarCollapsed" class="group-title">专家</span>
-      </button>
-      <transition name="slide">
-        <div v-show="!isExpertCollapsed && !isSidebarCollapsed" class="group-items">
-          <button
-            class="menu-item menu-item-sm"
-            :class="{ active: activeMenu === 'experts' }"
-            @click="handleMenuClick('experts')"
-          >
-            <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
-              <path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z"/>
-            </svg>
-            <span class="menu-text">探索专家</span>
           </button>
         </div>
       </transition>
