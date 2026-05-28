@@ -85,6 +85,7 @@ async def get_async_checkpointer() -> BaseCheckpointSaver:
             _global_pg_connection = AsyncConnectionPool(
                 conninfo=dsn,
                 max_size=20,
+                open=False,  # 阻止构造函数自动打开连接池，避免废弃警告
                 kwargs={
                     "autocommit": True,          # 必需：确保 setup() 能提交 DDL
                     "prepare_threshold": 0,
