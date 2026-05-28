@@ -1,5 +1,5 @@
 <script setup>
-import { reactive, onMounted, computed, ref } from 'vue'
+import { reactive, onMounted, computed, ref, nextTick } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import SkillTags from './components/SkillTags.vue'
 import ChatArea from './components/ChatArea.vue'
@@ -88,6 +88,9 @@ function handleLoginSuccess(data) {
     role: data.role,
     userId: null
   }
+  nextTick(() => {
+    ensureSession()
+  })
 }
 
 /**
@@ -112,20 +115,33 @@ function handleUsernameUpdated(data) {
   localStorage.setItem('username', data.username)
 }
 
+/**
+ * 确保当前用户有一个有效的会话
+ * 如果本地没有 session_id，则自动创建新会话并刷新侧边栏列表
+ */
+async function ensureSession() {
+  const existingSessionId = localStorage.getItem('session_id')
+  if (existingSessionId && existingSessionId !== 'undefined') {
+    sessionId.value = existingSessionId
+    return
+  }
+
+  try {
+    const newId = await createNewSession()
+    sessionId.value = newId
+    if (sidebarRef.value) {
+      sidebarRef.value.loadSessionList()
+    }
+  } catch (err) {
+    console.error('自动创建会话失败:', err)
+  }
+}
+
 onMounted(async () => {
   await checkAuth()
 
   if (isLoggedIn.value) {
-    // 优先复用本地已有的 session_id，避免每次挂载都新建会话
-    const existingSessionId = localStorage.getItem('session_id')
-    if (existingSessionId && existingSessionId !== 'undefined') {
-      sessionId.value = existingSessionId
-      return
-    }
-
-    // 没有有效会话时，不自动创建新会话
-    // 等待用户点击"新建任务"按钮时再创建，避免产生空会话
-    console.log('[App] 没有有效会话，等待用户手动创建')
+    await ensureSession()
   }
 })
 
