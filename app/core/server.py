@@ -68,6 +68,8 @@ async def lifespan(app: FastAPI):
     # 添加 Swagger 文档路径到白名单
     jwt_auth.add_to_whitelist("/api/auth/login")
     print("[DEBUG] 已添加 /api/auth/login 到白名单")
+    jwt_auth.add_to_whitelist("/api/auth/login-api")
+    print("[DEBUG] 已添加 /api/auth/login-api 到白名单")
     jwt_auth.add_to_whitelist("/api/auth/captcha")
     print("[DEBUG] 已添加 /api/auth/captcha 到白名单")
     jwt_auth.add_to_whitelist("/api/auth/register")

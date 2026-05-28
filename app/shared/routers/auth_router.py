@@ -37,6 +37,18 @@ class LoginRequest(BaseModel):
     captcha_code: str
 
 
+class ApiLoginRequest(BaseModel):
+    """
+    API 程序化登录请求模型（免验证码）
+
+    Attributes:
+        username (str): 用户名
+        password (str): 密码
+    """
+    username: str
+    password: str
+
+
 class RegisterRequest(BaseModel):
     """
     注册请求模型
@@ -184,6 +196,98 @@ async def login(request: LoginRequest, req: Request, response: Response):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="验证码错误或已过期"
         )
+
+    # 验证用户凭据
+    if DatabasePool.is_enabled():
+        from app.shared.utils.auth.user_db import UserDB
+        is_valid = await UserDB.verify_credentials(request.username, request.password)
+    else:
+        is_valid = await jwt_auth.verify_credentials(request.username, request.password)
+
+    if not is_valid:
+        await AuditLog.write_log(
+            action='login_failure',
+            username=request.username,
+            detail='用户名或密码错误',
+            ip_address=client_ip
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="用户名或密码错误"
+        )
+
+    # Memory 模式下自动创建用户记录
+    if not DatabasePool.is_enabled():
+        from app.shared.utils.auth.user_db import UserDB
+        if not await UserDB.get_user_by_username(request.username):
+            await UserDB.create_user(request.username, request.password)
+
+    # 获取用户角色
+    from app.shared.utils.auth.user_db import UserDB
+    user = await UserDB.get_user_by_username(request.username)
+    role = user.get('role', 'user') if user else 'user'
+    user_id = user.get('id') if user else None
+
+    # 生成 Access Token（JSON body 返回）
+    access_token = await jwt_auth.generate_token(request.username)
+
+    # 生成 Refresh Token（HttpOnly Cookie 传递）
+    from app.shared.utils.auth.refresh_token_db import RefreshTokenDB
+    refresh_token = await jwt_auth.generate_refresh_token(request.username)
+    token_hash = RefreshTokenDB.hash_token(refresh_token)
+    expires_at = datetime.utcnow() + timedelta(hours=24)
+    await RefreshTokenDB.store_token(token_hash, user_id, expires_at)
+
+    # 通过 Set-Cookie 设置 Refresh Token
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        samesite="strict",
+        path="/api/auth",
+        max_age=86400
+    )
+
+    # 记录登录成功日志
+    await AuditLog.write_log(
+        action='login_success',
+        username=request.username,
+        user_id=user_id,
+        ip_address=client_ip
+    )
+
+    return LoginResponse(
+        access_token=access_token,
+        token_type="Bearer",
+        expires_in=30,
+        role=role,
+        username=request.username
+    )
+
+
+@router.post('/login-api', response_model=LoginResponse)
+async def login_api(request: ApiLoginRequest, req: Request, response: Response):
+    """
+    API 程序化登录接口（免验证码）
+
+    用于非浏览器场景的服务间调用，直接验证用户名密码后返回 Token。
+    与现有 login 接口行为保持一致，但跳过验证码校验。
+
+    Args:
+        request (ApiLoginRequest): 包含用户名和密码的请求对象
+        req (Request): FastAPI 请求对象，用于获取客户端 IP
+        response (Response): FastAPI 响应对象，用于设置 Cookie
+
+    Returns:
+        LoginResponse: 包含访问令牌、令牌类型、过期时间、角色和用户名的响应对象
+
+    Raises:
+        HTTPException: 用户名或密码错误时抛出 401
+    """
+    from app.shared.utils.auth.audit_log import AuditLog
+
+    # 获取客户端 IP
+    client_ip = req.client.host if req.client else "unknown"
 
     # 验证用户凭据
     if DatabasePool.is_enabled():
