@@ -395,6 +395,41 @@ class ChatRequest(BaseModel):
     resume: Optional[dict] = None
 
 
+def _extract_interrupt_requests(interrupt_data):
+    """
+    从 interrupt 数据中提取结构化的请求列表
+
+    LangGraph 的 interrupt() 返回的 Interrupt 对象包含 value 属性，
+    本函数将 Interrupt 对象解析为前端可直接使用的结构化字典。
+
+    Args:
+        interrupt_data (list): interrupt 数据列表，元素可能是 Interrupt 对象或字典
+
+    Returns:
+        list: 结构化的请求列表
+    """
+    requests = []
+    for item in interrupt_data:
+        if hasattr(item, 'value'):
+            # LangGraph Interrupt 对象
+            value = item.value
+            if isinstance(value, list):
+                for req in value:
+                    if isinstance(req, dict):
+                        requests.append(req)
+                    else:
+                        requests.append({"data": str(req)})
+            elif isinstance(value, dict):
+                requests.append(value)
+            else:
+                requests.append({"data": str(value)})
+        elif isinstance(item, dict):
+            requests.append(item)
+        else:
+            requests.append({"data": str(item)})
+    return requests
+
+
 async def generate_stream_response(
     user_input: str,
     session_id: str,
@@ -460,6 +495,7 @@ async def generate_stream_response(
             # - stream_mode="updates" 时：直接输出 {"__interrupt__": [...]}
             # - 组合模式时：可能直接输出 {"__interrupt__": [...]}，
             #   也可能以 ("updates", {"node_name": {"__interrupt__": [...]}}) 形式出现
+            #   还可能以 ("updates", {"__interrupt__": [...]}) 形式出现（data 直接包含）
             interrupt_data = None
 
             # 情况1：直接字典包含 __interrupt__（所有 stream_mode 都可能出现）
@@ -470,14 +506,20 @@ async def generate_stream_response(
             elif isinstance(chunk, tuple) and len(chunk) == 2:
                 mode, data = chunk
                 if mode == "updates" and isinstance(data, dict):
-                    for node_name, node_data in data.items():
-                        if isinstance(node_data, dict) and "__interrupt__" in node_data:
-                            interrupt_data = node_data["__interrupt__"]
-                            break
+                    # 检测 data 直接包含 __interrupt__ 的情况
+                    if "__interrupt__" in data:
+                        interrupt_data = data["__interrupt__"]
+                    else:
+                        for node_name, node_data in data.items():
+                            if isinstance(node_data, dict) and "__interrupt__" in node_data:
+                                interrupt_data = node_data["__interrupt__"]
+                                break
 
             if interrupt_data is not None:
-                # 向前端发送中断事件，结束当前 SSE 流
-                yield f"data: {json.dumps({'type': 'interrupt', 'data': interrupt_data}, ensure_ascii=False, default=str)}\n\n"
+                # 解析 Interrupt 对象为结构化数据，避免 default=str 导致前端收到 Python repr 字符串
+                structured_requests = _extract_interrupt_requests(interrupt_data)
+                # 向前端发送标准化中断事件，结束当前 SSE 流
+                yield f"data: {json.dumps({'type': 'interrupt', 'data': {'requests': structured_requests}}, ensure_ascii=False)}\n\n"
                 return  # 中断后结束流，等待前端 resume
 
             # ===== 原有处理逻辑 =====

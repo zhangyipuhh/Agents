@@ -236,7 +236,7 @@ class Agent:
 
         # 调用 interrupt 暂停执行
         from langgraph.types import interrupt
-        response = interrupt([request])[0]
+        response = interrupt(request)
 
         # 恢复后：更新 ToolMessage，清除 pending_approval
         tool_call_id = pending["tool_call_id"]
