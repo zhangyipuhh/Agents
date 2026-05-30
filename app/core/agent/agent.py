@@ -10,7 +10,7 @@
 使用 AgentConfig 来配置模型、Token 及存储等相关参数。
 
 工作流:
-    START → summarize → llm_call → END (自动循环调用工具直到完成)
+    START → summarize → hitl_check → llm_call → END (自动循环调用工具直到完成)
 
 摘要功能:
     - 使用 SummarizationNode 自动管理对话摘要，里面包含trim_messages的逻辑
@@ -33,8 +33,8 @@ from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph import MessagesState
 from langgraph.runtime import Runtime
-from langgraph.types import RetryPolicy
-from langchain_core.messages import AnyMessage, HumanMessage
+from langgraph.types import RetryPolicy, Command as LGCommand
+from langchain_core.messages import AnyMessage, HumanMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langmem.short_term import SummarizationNode, RunningSummary
 from app.core.llmcalls.model_factory import ModelFactory
@@ -47,7 +47,7 @@ from app.core.agent.AgentConfig import (
 from app.core.config.config import LLM_CONFIG
 from app.core.messages import trim_old_tool_messages
 from app.core.prompts import BASE_SYSTEM_PROMPT
-
+import json
 
 class LLMInputState(TypedDict):
     """LLM 输入状态的类型定义
@@ -191,6 +191,80 @@ class Agent:
             return "tools"
         return "end"
 
+    async def hitl_check_node(
+        self,
+        state: AgentState,
+        runtime: Runtime[AgentContext],
+    ):
+        """HITL 检查节点：在 llm_call 之前检查是否需要人工确认
+
+        检查当前状态中是否存在待确认的请求（pending_approval）。
+        如果存在且状态为 pending，则调用 interrupt() 暂停图执行，
+        向前端发送中断事件，等待用户决策后恢复。
+        恢复后更新对应的 ToolMessage 并清除 pending_approval。
+
+        Args:
+            state: 当前对话状态，包含 messages 和 pending_approval
+            runtime: 包含 context 的运行时对象
+
+        Returns:
+            dict: 更新后的状态，包含修改后的 messages 和清除后的 pending_approval
+        """
+        pending = state.get("pending_approval")
+
+        if not pending or pending.get("status") != "pending":
+            return state
+
+        # 构建 interrupt 请求
+        request = {
+            "action_request": {
+                "action": "request_human_approval",
+                "args": {
+                    "title": pending["title"],
+                    "content": pending["content"],
+                    "context": pending.get("context", {})
+                }
+            },
+            "config": {
+                "allow_ignore": False,
+                "allow_respond": True,
+                "allow_edit": False,
+                "allow_accept": True
+            },
+            "description": pending["content"]
+        }
+
+        # 调用 interrupt 暂停执行
+        from langgraph.types import interrupt
+        response = interrupt([request])[0]
+
+        # 恢复后：更新 ToolMessage，清除 pending_approval
+        tool_call_id = pending["tool_call_id"]
+        decision = response.get("args", {}).get("decision", "unknown")
+        feedback = response.get("args", {}).get("feedback", "")
+
+        # 更新对应 ToolMessage
+        updated_content = json.dumps({
+            "status": "success",
+            "tool": "request_human_approval",
+            "result": {
+                "status": "feedback_received",
+                "decision": decision,
+                "feedback": feedback
+            }
+        }, ensure_ascii=False)
+
+        for i, msg in enumerate(state.get("messages", [])):
+            if isinstance(msg, ToolMessage) and msg.tool_call_id == tool_call_id:
+                state["messages"][i] = ToolMessage(
+                    content=updated_content,
+                    tool_call_id=tool_call_id
+                )
+                break
+
+        state["pending_approval"] = None
+        return state
+
     async def _llm_call(
         self,
         state: LLMInputState,
@@ -272,7 +346,7 @@ class Agent:
         """构建 LangGraph 工作流
 
         工作流结构:
-            START → summarize → llm_call → END
+            START → summarize → hitl_check → llm_call → END
             (如果配置了工具): llm_call → tools → summarize
 
         摘要节点功能:
@@ -280,9 +354,16 @@ class Agent:
             - 保留最新对话，自动摘要旧消息
             - 与 trim_messages 配合确保 token 数合适
 
+        HITL 检查节点功能:
+            - 在 llm_call 之前检查是否有 pending_approval
+            - 如果有，调用 interrupt() 暂停执行等待用户确认
+            - 恢复后更新 ToolMessage 并清除 pending_approval
+            - 无 pending_approval 时直接透传，不影响原有流程
+
         边连接逻辑:
             - 从 START 到 summarize 节点
-            - 从 summarize 到 llm_call 节点
+            - 从 summarize 到 hitl_check 节点
+            - 从 hitl_check 到 llm_call 节点
             - 从 llm_call 根据条件分支到 tools 或 END（如果没有工具则直接到 END）
             - 从 tools 回到 summarize 继续调用
         """
@@ -304,12 +385,16 @@ class Agent:
             retry_policy=self._config.get_summarize_retry_policy(),
         )
         workflow.add_node(
+            "hitl_check", self.hitl_check_node, retry_policy=self._config.get_llm_retry_policy()
+        )
+        workflow.add_node(
             "llm_call", self._llm_call, retry_policy=self._config.get_llm_retry_policy()
         )
 
         # 添加边
         workflow.add_edge(START, "summarize")
-        workflow.add_edge("summarize", "llm_call")
+        workflow.add_edge("summarize", "hitl_check")
+        workflow.add_edge("hitl_check", "llm_call")
 
         # 如果配置了工具节点，添加工具和条件边
         if self.tool_node is not None:
@@ -369,7 +454,7 @@ class Agent:
 
     async def stream(
         self,
-        input_state: AgentState,
+        input_state: Union[AgentState, LGCommand],
         context: AgentContext,
         config: ExecuteConfig,
         stream_mode: Union[str, list[str]] = "updates",
@@ -378,9 +463,11 @@ class Agent:
 
         通过流式输出，实时获取每个节点的执行结果，包括每次 _llm_call 的输出。
         适用于需要实时反馈的场景，如用户对话、实时监控等。
+        支持通过 Command(resume=...) 恢复被中断的执行。
 
         Args:
-            input_state: 输入状态，包含 summarized_messages 和 context
+            input_state: 输入状态或恢复命令。正常调用时传入 AgentState；
+                从中断恢复时传入 Command(resume=...) 对象。
             context: 上下文实例，用于传递静态变量
             config: 运行配置，包含 thread_id 等信息
             stream_mode: 流式输出模式，支持以下选项：
@@ -404,26 +491,12 @@ class Agent:
                     print(f"LLM 输出: {chunk['llm_call']['messages'][-1].content}")
             ```
 
-            流式输出 LLM token：
+            从中断恢复：
             ```python
             async for chunk in agent.stream(
-                input_state, context, config,
-                stream_mode="messages"
+                Command(resume={"decision": "approve"}), context, config
             ):
-                message_chunk, metadata = chunk
-                print(message_chunk.content, end="", flush=True)
-            ```
-
-            组合模式：
-            ```python
-            async for mode, data in agent.stream(
-                input_state, context, config,
-                stream_mode=["updates", "messages"]
-            ):
-                if mode == "updates":
-                    print(f"节点更新: {data}")
-                elif mode == "messages":
-                    print(data[0].content, end="", flush=True)
+                print(chunk)
             ```
         """
         if not hasattr(self, "graph") or self.graph is None:

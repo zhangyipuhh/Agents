@@ -386,11 +386,13 @@ class ChatRequest(BaseModel):
         session_id (Optional[str]): 会话ID，用于标识和恢复会话状态
         geometry_data (Optional[dict]): 地理数据类型，包含点、线、面的几何数据
         attachments (Optional[list]): 附件列表，包含附件的元数据信息
+        resume (Optional[dict]): 恢复参数，用于从 HITL 中断处恢复执行
     """
     message: str
     session_id: Optional[str] = None
     geometry_data: Optional[dict] = {}
     attachments: Optional[list] = []
+    resume: Optional[dict] = None
 
 
 async def generate_stream_response(
@@ -398,7 +400,8 @@ async def generate_stream_response(
     session_id: str,
     context: any = None,
     geometry_data: dict = {},
-    attachments: list = []
+    attachments: list = [],
+    resume: dict = None,
 ) -> AsyncGenerator[str, None]:
     """
     生成流式响应的异步生成器
@@ -407,17 +410,20 @@ async def generate_stream_response(
     使用 stream_mode=["updates", "custom", "messages"] 组合模式，
     实时获取节点状态更新、自定义数据和 LLM token，
     并通过 SSE 格式发送给前端。
+    支持 HITL 中断检测与恢复。
 
     处理流程：
     1. 调用 MapAgent 的 stream 方法，使用组合模式
-    2. 根据不同的流式数据类型（updates、custom、messages）进行处理
-    3. 将每个数据块转换为 SSE 格式发送给前端
-    4. 发送结束信号或错误信息
+    2. 检测是否存在 __interrupt__ 中断事件
+    3. 根据不同的流式数据类型（updates、custom、messages）进行处理
+    4. 将每个数据块转换为 SSE 格式发送给前端
+    5. 发送结束信号或错误信息
 
     Args:
         user_input (str): 用户输入内容
         session_id (str): 会话ID
         geometry_data (dict): 地理数据类型，格式为 {"point": [...], "line": [...], "polygon": [...]}
+        resume (dict): 恢复参数，用于从 HITL 中断处恢复执行
 
     Yields:
         str: SSE 格式的响应数据，包含 type 字段和对应的数据
@@ -425,15 +431,56 @@ async def generate_stream_response(
     try:
         # 获取 MapAgent 实例（延迟初始化）
         map_agent = await get_map_agent()
+
+        # 判断是正常请求还是恢复请求
+        if resume:
+            stream = map_agent.stream(
+                user_input="",
+                session_id=session_id,
+                stream_mode=["updates", "custom", "messages"],
+                context=context,
+                geometry_data=geometry_data,
+                attachments=attachments,
+                resume=resume,
+            )
+        else:
+            stream = map_agent.stream(
+                user_input=user_input,
+                session_id=session_id,
+                stream_mode=["updates", "custom", "messages"],
+                context=context,
+                geometry_data=geometry_data,
+                attachments=attachments,
+            )
+
         # 调用 MapAgent 的 stream 方法，使用组合模式
-        async for chunk in map_agent.stream(
-            user_input=user_input,
-            session_id=session_id,
-            stream_mode=["updates", "custom", "messages"],
-            context=context,
-            geometry_data=geometry_data,
-            attachments=attachments
-        ):
+        async for chunk in stream:
+            # ===== 中断检测（多模式兼容） =====
+            # interrupt() 在不同 stream_mode 下输出格式不同：
+            # - stream_mode="updates" 时：直接输出 {"__interrupt__": [...]}
+            # - 组合模式时：可能直接输出 {"__interrupt__": [...]}，
+            #   也可能以 ("updates", {"node_name": {"__interrupt__": [...]}}) 形式出现
+            interrupt_data = None
+
+            # 情况1：直接字典包含 __interrupt__（所有 stream_mode 都可能出现）
+            if isinstance(chunk, dict) and "__interrupt__" in chunk:
+                interrupt_data = chunk["__interrupt__"]
+
+            # 情况2：组合模式 (mode, data) 元组，检查 updates 模式下是否嵌套中断
+            elif isinstance(chunk, tuple) and len(chunk) == 2:
+                mode, data = chunk
+                if mode == "updates" and isinstance(data, dict):
+                    for node_name, node_data in data.items():
+                        if isinstance(node_data, dict) and "__interrupt__" in node_data:
+                            interrupt_data = node_data["__interrupt__"]
+                            break
+
+            if interrupt_data is not None:
+                # 向前端发送中断事件，结束当前 SSE 流
+                yield f"data: {json.dumps({'type': 'interrupt', 'data': interrupt_data}, ensure_ascii=False, default=str)}\n\n"
+                return  # 中断后结束流，等待前端 resume
+
+            # ===== 原有处理逻辑 =====
             # 处理组合模式的输出
             # chunk 的格式为 (mode, data)
             if isinstance(chunk, tuple) and len(chunk) == 2:
@@ -507,6 +554,25 @@ async def chat(
 
         # 获取 geometry_data
         geometry_data = chat_request.geometry_data or {}
+
+        # 处理 resume 场景（无新消息，只有 resume 决策）
+        if chat_request.resume and not chat_request.message:
+            logger.warning(f"[Chat] session_id={session_id}, resume={chat_request.resume}")
+            return StreamingResponse(
+                generate_stream_response(
+                    user_input="",
+                    session_id=session_id,
+                    geometry_data=geometry_data,
+                    attachments=chat_request.attachments or [],
+                    resume=chat_request.resume,
+                ),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"  # 禁用 nginx 缓冲
+                }
+            )
 
         logger.warning(f"[Chat] session_id={session_id}, message={chat_request.message[:50] if chat_request.message else ''}")
 
