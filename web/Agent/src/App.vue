@@ -22,7 +22,7 @@ const isStreaming = reactive({ value: false })
 const sidebarRef = ref(null)
 const currentAttachments = ref([])
 const approvalMode = ref(false)
-const approvalData = ref({ title: '', content: '', config: { allow_accept: true } })
+const approvalData = ref({ title: '', content: '', config: { allow_accept: true }, interaction_type: 'input', options: [] })
 
 /**
  * 新建任务锁，防止重复创建
@@ -185,14 +185,17 @@ async function newSession() {
 
 function extractApprovalData(interruptArray) {
   if (!Array.isArray(interruptArray) || interruptArray.length === 0) {
-    return { title: '需要您的确认', content: '', config: { allow_accept: true } }
+    return { title: '需要您的确认', content: '', config: { allow_accept: true }, interaction_type: 'input', options: [] }
   }
   const req = interruptArray[0]
   const args = req.action_request?.args || {}
+  const context = args.context || {}
   return {
     title: args.title || '需要您的确认',
     content: args.content || req.description || '',
-    config: req.config || { allow_accept: true }
+    config: req.config || { allow_accept: true },
+    interaction_type: context.interaction_type || 'input',
+    options: context.options || []
   }
 }
 

@@ -18,6 +18,14 @@ const props = defineProps({
       allow_edit: false,
       allow_accept: true
     })
+  },
+  interaction_type: {
+    type: String,
+    default: 'input'
+  },
+  options: {
+    type: Array,
+    default: () => []
   }
 })
 
@@ -25,26 +33,46 @@ const emit = defineEmits(['submit'])
 
 const feedback = ref('')
 const loading = ref(false)
+const selectedOption = ref(null)
+
+const isOptionsMode = computed(() => {
+  return props.interaction_type === 'options' && props.options.length > 0
+})
 
 const showInput = computed(() => {
+  if (isOptionsMode.value) return false
   return props.config.allow_respond || props.config.allow_edit
 })
 
 const canSubmit = computed(() => {
   if (loading.value) return false
+  if (isOptionsMode.value) {
+    return selectedOption.value !== null
+  }
   if (showInput.value) {
     return feedback.value.trim().length > 0
   }
   return true
 })
 
+const handleOptionSelect = (option) => {
+  selectedOption.value = option
+}
+
 const handleSubmit = (decision) => {
   if (!canSubmit.value && decision === 'approve') return
   loading.value = true
-  emit('submit', {
-    decision,
-    feedback: feedback.value.trim()
-  })
+  if (isOptionsMode.value && selectedOption.value) {
+    emit('submit', {
+      decision: selectedOption.value.value,
+      feedback: selectedOption.value.label
+    })
+  } else {
+    emit('submit', {
+      decision,
+      feedback: feedback.value.trim()
+    })
+  }
 }
 </script>
 
@@ -60,6 +88,19 @@ const handleSubmit = (decision) => {
         </div>
 
         <div class="approval-content">{{ content }}</div>
+
+        <div v-if="isOptionsMode" class="options-list">
+          <button
+            v-for="option in options"
+            :key="option.value"
+            class="option-btn"
+            :class="{ selected: selectedOption && selectedOption.value === option.value }"
+            :disabled="loading"
+            @click="handleOptionSelect(option)"
+          >
+            {{ option.label }}
+          </button>
+        </div>
 
         <textarea
           v-if="showInput"
@@ -238,5 +279,49 @@ const handleSubmit = (decision) => {
   to {
     transform: rotate(360deg);
   }
+}
+
+.options-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.option-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 20px;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-primary);
+  background-color: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: var(--transition-colors), var(--transition-transform), var(--transition-shadow);
+}
+
+.option-btn:hover:not(:disabled) {
+  background-color: var(--color-bg-hover);
+  border-color: var(--color-accent);
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.15);
+}
+
+.option-btn.selected {
+  background-color: var(--color-accent);
+  color: white;
+  border-color: var(--color-accent);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+}
+
+.option-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.option-btn:disabled {
+  opacity: var(--opacity-disabled);
+  cursor: not-allowed;
 }
 </style>

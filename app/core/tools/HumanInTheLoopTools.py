@@ -11,17 +11,47 @@ Author: AI Assistant
 """
 
 import json
+from typing import Literal, List, Optional
+from pydantic import BaseModel, Field
 from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 from app.core.agent.AgentContext import AgentContext
 
 
-@tool
+class ApprovalOption(BaseModel):
+    """确认选项"""
+    value: str = Field(description="选项的值，用于标识用户选择了哪个选项，如 'yes'/'no'")
+    label: str = Field(description="选项的显示文本，展示给用户看的文字，如 '正确'/'不正确'")
+
+
+class ApprovalContext(BaseModel):
+    """人工确认的上下文配置，控制前端交互方式"""
+    interaction_type: Literal["options", "input"] = Field(
+        default="input",
+        description="交互类型：'options' 表示选项型（显示按钮供用户选择，适合'是否正确'类确认），'input' 表示输入型（显示文本框供用户输入，适合需要填写内容的场景）"
+    )
+    options: Optional[List[ApprovalOption]] = Field(
+        default=None,
+        description="选项列表，当 interaction_type='options' 时必须提供，每个选项包含 value 和 label"
+    )
+
+
+class RequestHumanApprovalInput(BaseModel):
+    """请求人工确认的输入参数"""
+    title: str = Field(description="确认请求标题，简短描述需要确认的事项，如'确认用户信息'")
+    content: str = Field(description="确认请求详细内容，说明需要用户决策的具体原因和影响")
+    context: Optional[ApprovalContext] = Field(
+        default=None,
+        description="上下文配置，控制前端展示为选项按钮还是输入框。对于'是否'类确认，传 {interaction_type: 'options', options: [{value:'yes',label:'正确'},{value:'no',label:'不正确'}]}；对于需要用户输入的场景，传 {interaction_type: 'input'} 或不传"
+    )
+
+
+@tool(args_schema=RequestHumanApprovalInput)
 def request_human_approval(
     title: str,
     content: str,
-    context: dict = None,
+    context: ApprovalContext = None,
     runtime: ToolRuntime[AgentContext] = None,
 ) -> Command:
     """
@@ -33,12 +63,15 @@ def request_human_approval(
     - 需要用户提供额外信息或修改建议时
     - 业务规则要求人工审批的关键步骤
 
+    交互类型规范：
+    - 对于"是否"类确认问题（如"请确认以上信息是否正确"），必须使用 context={"interaction_type": "options", "options": [{"value": "yes", "label": "正确"}, {"value": "no", "label": "不正确"}]}
+    - 对于需要用户输入内容的场景（如"请输入修改后的内容"），使用 context={"interaction_type": "input"} 或不传
+
     Args:
         title: 确认请求标题，简短描述需要确认的事项
         content: 确认请求详细内容，说明需要用户决策的具体原因和影响
-        context: 附加上下文信息（可选），可包含选项列表、决策类型等
-            示例: {"options": [{"id": 0, "text": "选项A"}], "allow_multiple": False}
-        runtime: 工具运行时上下文，包含会话信息和工具调用ID
+        context: 上下文配置，控制前端交互方式
+        runtime: 工具运行时上下文，包含会话信息和工具调用ID（LangChain内部注入，无需在args_schema中定义）
 
     Returns:
         Command: 包含 pending_approval 状态和 ToolMessage 的命令对象
@@ -49,11 +82,13 @@ def request_human_approval(
     tool_call_id = runtime.tool_call_id
 
     try:
+        # 将 Pydantic 模型转换为 dict 以便序列化
+        context_dict = context.model_dump() if context else {}
         pending_approval = {
             "status": "pending",
             "title": title,
             "content": content,
-            "context": context or {},
+            "context": context_dict,
             "tool_call_id": tool_call_id,
         }
 
