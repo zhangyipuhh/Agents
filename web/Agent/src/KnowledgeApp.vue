@@ -6,6 +6,7 @@ import FileList from './components/FileList.vue'
 import FilePreview from './components/FilePreview.vue'
 import MessageBubble from './components/MessageBubble.vue'
 import ProfileInputBox from './components/ProfileInputBox.vue'
+import HumanApprovalBox from './components/HumanApprovalBox.vue'
 
 const isPreviewOpen = ref(false)
 const previewContent = ref('')
@@ -19,6 +20,8 @@ const folders = ref([])
 const filesLoading = ref(false)
 const currentSessionId = ref('')
 const isStreaming = ref(false)
+const approvalMode = ref(false)
+const approvalData = ref({ title: '', content: '', config: { allow_accept: true } })
 const isSidebarCollapsed = ref(false)
 const isCollapseBtnHovered = ref(false)
 
@@ -181,39 +184,33 @@ function handleToolAction(action) {
   console.log('Tool action:', action)
 }
 
-function handleProfileSend(message, uploadedFiles) {
-  if (!message || isStreaming.value) return
-
-  // 切换到聊天视图
-  showChat.value = true
-
-  // 添加用户消息
-  const userMsg = {
-    id: Date.now(),
-    type: 'user',
-    content: message,
-    attachments: uploadedFiles
+function extractApprovalData(interruptArray) {
+  if (!Array.isArray(interruptArray) || interruptArray.length === 0) {
+    return { title: '需要您的确认', content: '', config: { allow_accept: true } }
   }
-  messages.value.push(userMsg)
+  const req = interruptArray[0]
+  const args = req.action_request?.args || {}
+  return {
+    title: args.title || '需要您的确认',
+    content: args.content || req.description || '',
+    config: req.config || { allow_accept: true }
+  }
+}
 
-  // 添加AI消息
-  const aiMsg = ref(createAiMessage())
-  messages.value.push(aiMsg.value)
-
-  isStreaming.value = true
-  nextTick(() => scrollToBottom())
-
-  knowledgeChatStream(currentSessionId.value, message)
+function startChatStream(message, uploadedFiles, aiMsg, resumeData = null) {
+  knowledgeChatStream(currentSessionId.value, message, uploadedFiles, resumeData)
     .then(stream => {
       const reader = stream.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
+      let interrupted = false
 
       function read() {
         reader.read().then(({ done, value }) => {
           if (done) {
-            isStreaming.value = false
-            // 确保消息被标记为已结束
+            if (!interrupted) {
+              isStreaming.value = false
+            }
             if (aiMsg.value && !aiMsg.value.ended) {
               console.log('[KnowledgeApp] Stream done, setting ended = true')
               aiMsg.value.ended = true
@@ -229,8 +226,20 @@ function handleProfileSend(message, uploadedFiles) {
             try {
               const data = JSON.parse(event.slice(6))
               processSSEEvent(data, aiMsg.value)
+
+              if (aiMsg.value.interrupt) {
+                interrupted = true
+                approvalMode.value = true
+                approvalData.value = extractApprovalData(aiMsg.value.interrupt)
+                break
+              }
             } catch {}
           }
+
+          if (interrupted) {
+            return
+          }
+
           nextTick(() => scrollToBottom())
           read()
         }).catch(err => {
@@ -246,6 +255,48 @@ function handleProfileSend(message, uploadedFiles) {
       aiMsg.value.ended = true
       isStreaming.value = false
     })
+}
+
+function handleProfileSend(message, uploadedFiles) {
+  if (!message || isStreaming.value) return
+
+  showChat.value = true
+
+  const userMsg = {
+    id: Date.now(),
+    type: 'user',
+    content: message,
+    attachments: uploadedFiles
+  }
+  messages.value.push(userMsg)
+
+  const aiMsg = ref(createAiMessage())
+  messages.value.push(aiMsg.value)
+
+  isStreaming.value = true
+  nextTick(() => scrollToBottom())
+
+  startChatStream(message, uploadedFiles, aiMsg)
+}
+
+function handleApprovalSubmit({ decision, feedback }) {
+  approvalMode.value = false
+
+  const aiMsg = messages.value[messages.value.length - 1]
+  if (!aiMsg || aiMsg.type !== 'ai') {
+    isStreaming.value = false
+    return
+  }
+
+  const resumeData = {
+    args: {
+      decision,
+      feedback
+    }
+  }
+
+  const aiMsgRef = ref(aiMsg)
+  startChatStream('', [], aiMsgRef, resumeData)
 }
 </script>
 
@@ -282,7 +333,15 @@ function handleProfileSend(message, uploadedFiles) {
       <div v-if="!showChat" class="welcome-section">
         <h2 class="welcome-title">Agent, 让你的工作更轻松</h2>
         <div class="input-box-container">
+          <HumanApprovalBox
+            v-if="approvalMode"
+            :title="approvalData.title"
+            :content="approvalData.content"
+            :config="approvalData.config"
+            @submit="handleApprovalSubmit"
+          />
           <ProfileInputBox
+            v-else
             :session-id="currentSessionId"
             :is-streaming="isStreaming"
             @send="handleProfileSend"
@@ -333,7 +392,15 @@ function handleProfileSend(message, uploadedFiles) {
               <span v-if="unreadCount > 0" class="input-scroll-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
             </button>
           </transition>
+          <HumanApprovalBox
+            v-if="approvalMode"
+            :title="approvalData.title"
+            :content="approvalData.content"
+            :config="approvalData.config"
+            @submit="handleApprovalSubmit"
+          />
           <ProfileInputBox
+            v-else
             :session-id="currentSessionId"
             :is-streaming="isStreaming"
             @send="handleProfileSend"

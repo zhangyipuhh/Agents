@@ -4,6 +4,7 @@ import Sidebar from './components/Sidebar.vue'
 import SkillTags from './components/SkillTags.vue'
 import ChatArea from './components/ChatArea.vue'
 import InputBox from './components/InputBox.vue'
+import HumanApprovalBox from './components/HumanApprovalBox.vue'
 import KnowledgePage from './components/KnowledgePage.vue'
 import LoginView from './views/LoginView.vue'
 import RegisterView from './views/RegisterView.vue'
@@ -20,6 +21,8 @@ const sessionId = reactive({ value: '' })
 const isStreaming = reactive({ value: false })
 const sidebarRef = ref(null)
 const currentAttachments = ref([])
+const approvalMode = ref(false)
+const approvalData = ref({ title: '', content: '', config: { allow_accept: true } })
 
 /**
  * 新建任务锁，防止重复创建
@@ -180,6 +183,19 @@ async function newSession() {
   }
 }
 
+function extractApprovalData(interruptArray) {
+  if (!Array.isArray(interruptArray) || interruptArray.length === 0) {
+    return { title: '需要您的确认', content: '', config: { allow_accept: true } }
+  }
+  const req = interruptArray[0]
+  const args = req.action_request?.args || {}
+  return {
+    title: args.title || '需要您的确认',
+    content: args.content || req.description || '',
+    config: req.config || { allow_accept: true }
+  }
+}
+
 async function handleSendMessage(message, attachments = []) {
   if (!message.trim() && attachments.length === 0) return
   if (isStreaming.value) return
@@ -196,6 +212,7 @@ async function handleSendMessage(message, attachments = []) {
   messages.push(aiMsg)
 
   isStreaming.value = true
+  let interrupted = false
 
   try {
     const stream = await chatStream(sessionId.value, message, attachments)
@@ -223,8 +240,16 @@ async function handleSendMessage(message, attachments = []) {
           const data = JSON.parse(event.slice(6))
           processSSEEvent(data, aiMsg)
           console.log('[App] After processSSEEvent, downloadInfo:', JSON.stringify(aiMsg.downloadInfo))
+
+          if (aiMsg.interrupt) {
+            interrupted = true
+            approvalMode.value = true
+            approvalData.value = extractApprovalData(aiMsg.interrupt)
+            break
+          }
         } catch {}
       }
+      if (interrupted) break
     }
   } catch (err) {
     console.error('聊天请求错误:', err)
@@ -233,6 +258,59 @@ async function handleSendMessage(message, attachments = []) {
       return
     }
     aiMsg.error = '不好意思，刚刚出了点小故障，可以晚点再问我一遍。'
+    aiMsg.ended = true
+  } finally {
+    if (!interrupted) {
+      isStreaming.value = false
+    }
+  }
+}
+
+async function handleApprovalSubmit({ decision, feedback }) {
+  approvalMode.value = false
+
+  const aiMsg = messages[messages.length - 1]
+  if (!aiMsg || aiMsg.type !== 'ai') {
+    isStreaming.value = false
+    return
+  }
+
+  const resumeData = {
+    args: {
+      decision,
+      feedback
+    }
+  }
+
+  try {
+    const stream = await chatStream(sessionId.value, '', [], resumeData)
+    const reader = stream.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) {
+        if (!aiMsg.ended) {
+          aiMsg.ended = true
+          aiMsg.isThinkingActive = false
+        }
+        break
+      }
+      buffer += decoder.decode(value, { stream: true })
+      const events = buffer.split('\n\n')
+      buffer = events.pop()
+      for (const event of events) {
+        if (!event.startsWith('data: ')) continue
+        try {
+          const data = JSON.parse(event.slice(6))
+          processSSEEvent(data, aiMsg)
+        } catch {}
+      }
+    }
+  } catch (err) {
+    console.error('Resume 请求错误:', err)
+    aiMsg.error = '恢复执行失败，请稍后重试。'
     aiMsg.ended = true
   } finally {
     isStreaming.value = false
@@ -435,7 +513,15 @@ async function handleSessionSwitch(targetSessionId) {
 
       <div v-if="isEmptyState" class="welcome-title">Agent, 让你的工作更轻松</div>
 
+      <HumanApprovalBox
+        v-if="approvalMode"
+        :title="approvalData.title"
+        :content="approvalData.content"
+        :config="approvalData.config"
+        @submit="handleApprovalSubmit"
+      />
       <InputBox
+        v-else
         :session-id="sessionId.value"
         :is-streaming="isStreaming.value"
         @send="handleSendMessage"

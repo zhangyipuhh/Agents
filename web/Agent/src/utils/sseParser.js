@@ -176,6 +176,53 @@ export function parseMessageContent(content, aiMsg, isMainThread = true) {
   }
 }
 
+export function extractInterruptInfo(data) {
+  if (!data) return null
+
+  // 标准化格式：后端修复后发送的 { requests: [...] }
+  if (data.requests && Array.isArray(data.requests)) {
+    return data.requests
+  }
+
+  // 兼容旧格式：{ __interrupt__: [...] }
+  if (data.__interrupt__ && Array.isArray(data.__interrupt__)) {
+    return parseInterruptArray(data.__interrupt__)
+  }
+
+  return null
+}
+
+function parseInterruptArray(interruptArray) {
+  const results = []
+  for (const item of interruptArray) {
+    if (typeof item === 'string' && item.startsWith('Interrupt(')) {
+      const parsed = parseInterruptRepr(item)
+      if (parsed) results.push(parsed)
+    } else if (typeof item === 'object' && item !== null) {
+      results.push(item)
+    }
+  }
+  return results
+}
+
+function parseInterruptRepr(reprStr) {
+  try {
+    // 提取 value=... 部分，匹配到 ], id= 为止
+    const valueMatch = reprStr.match(/value=(\[.*?\]),?\s*id=/s)
+    if (!valueMatch) return null
+    let valueStr = valueMatch[1]
+    // 使用已有的 tryParsePythonLiteral 解析 Python 字面量
+    const parsed = tryParsePythonLiteral(valueStr)
+    if (parsed && Array.isArray(parsed) && parsed.length > 0) {
+      return parsed[0]
+    }
+    return null
+  } catch (e) {
+    console.warn('解析 Interrupt repr 失败:', e)
+    return null
+  }
+}
+
 export function processSSEEvent(data, aiMsg) {
   const metadata = data.metadata || {}
   const eventThreadId = metadata.thread_id || ''
@@ -187,8 +234,31 @@ export function processSSEEvent(data, aiMsg) {
   const isMainThread = !eventThreadId || eventThreadId === aiMsg.threadId
 
   switch (data.type) {
+    case 'interrupt': {
+      const interruptInfo = extractInterruptInfo(data.data)
+      if (interruptInfo) {
+        aiMsg.interrupt = interruptInfo
+        aiMsg.isStreaming = false
+        aiMsg.isLoading = false
+        aiMsg.isThinkingActive = false
+      }
+      break
+    }
     case 'update': {
       const updateData = data.data || data
+
+      // 兼容模式：检测 data 中是否直接包含 __interrupt__
+      if (updateData && updateData.__interrupt__) {
+        const interruptInfo = extractInterruptInfo(updateData)
+        if (interruptInfo) {
+          aiMsg.interrupt = interruptInfo
+          aiMsg.isStreaming = false
+          aiMsg.isLoading = false
+          aiMsg.isThinkingActive = false
+          break
+        }
+      }
+
       if (updateData.summarize) break
       if (updateData.llm_call) {
         const msgs = updateData.llm_call.messages
@@ -310,6 +380,7 @@ export function createAiMessage() {
     text: '',
     ended: false,
     error: '',
-    downloadInfo: null
+    downloadInfo: null,
+    interrupt: null
   }
 }

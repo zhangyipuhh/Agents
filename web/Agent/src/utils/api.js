@@ -469,7 +469,7 @@ export async function createNewSession() {
   return pendingSessionPromise
 }
 
-export async function chatStream(sessionId, message, attachments = []) {
+export async function chatStream(sessionId, message, attachments = [], resume = null) {
   const sid = sessionId || localStorage.getItem('session_id') || ''
   const response = await fetchWithAuth('/api/map/chat', {
     method: 'POST',
@@ -480,17 +480,18 @@ export async function chatStream(sessionId, message, attachments = []) {
       'X-Session-ID': sid
     },
     body: JSON.stringify({
-      message,
+      message: resume ? '' : message,
       session_id: sid,
       geometry_data: {},
-      attachments
+      attachments,
+      ...(resume ? { resume } : {})
     })
   })
   if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`)
   return response.body
 }
 
-export async function knowledgeChatStream(sessionId, message, attachments = []) {
+export async function knowledgeChatStream(sessionId, message, attachments = [], resume = null) {
   const sid = sessionId || localStorage.getItem('session_id') || ''
   const response = await fetchWithAuth('/api/map/knowledge-chat', {
     method: 'POST',
@@ -501,10 +502,11 @@ export async function knowledgeChatStream(sessionId, message, attachments = []) 
       'X-Session-ID': sid
     },
     body: JSON.stringify({
-      message,
+      message: resume ? '' : message,
       session_id: sid,
       geometry_data: {},
-      attachments
+      attachments,
+      ...(resume ? { resume } : {})
     })
   })
   if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`)
