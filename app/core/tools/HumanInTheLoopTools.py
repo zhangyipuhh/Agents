@@ -35,6 +35,10 @@ class ApprovalContext(BaseModel):
         default=None,
         description="选项列表，当 interaction_type='options' 时必须提供，每个选项包含 value 和 label"
     )
+    other_input: bool = Field(
+        default=True,
+        description="是否显示'其他'输入框。默认为 True，options 类型时会额外显示一个文本输入框供用户填写自定义内容，input 类型时标识当前输入为'其他'输入"
+    )
 
 
 class RequestHumanApprovalInput(BaseModel):
@@ -43,7 +47,7 @@ class RequestHumanApprovalInput(BaseModel):
     content: str = Field(description="确认请求详细内容，说明需要用户决策的具体原因和影响")
     context: Optional[ApprovalContext] = Field(
         default=None,
-        description="上下文配置，控制前端展示为选项按钮还是输入框。对于'是否'类确认，传 {interaction_type: 'options', options: [{value:'yes',label:'正确'},{value:'no',label:'不正确'}]}；对于需要用户输入的场景，传 {interaction_type: 'input'} 或不传"
+        description="上下文配置，控制前端展示为选项按钮还是输入框。对于'是否'类确认，传 {interaction_type: 'options', options: [{value:'yes',label:'正确'},{value:'no',label:'不正确'}]}；对于需要用户输入的场景，传 {interaction_type: 'input'} 或不传。默认自动携带 other_input: true，即 options 类型会额外显示'其他'输入框，input 类型会标识为'其他'输入"
     )
 
 
@@ -66,6 +70,7 @@ def request_human_approval(
     交互类型规范：
     - 对于"是否"类确认问题（如"请确认以上信息是否正确"），必须使用 context={"interaction_type": "options", "options": [{"value": "yes", "label": "正确"}, {"value": "no", "label": "不正确"}]}
     - 对于需要用户输入内容的场景（如"请输入修改后的内容"），使用 context={"interaction_type": "input"} 或不传
+    - 默认自动携带 other_input: true，options 类型会额外显示"其他"输入框，input 类型会标识为"其他"输入
 
     Args:
         title: 确认请求标题，简短描述需要确认的事项
@@ -83,7 +88,7 @@ def request_human_approval(
 
     try:
         # 将 Pydantic 模型转换为 dict 以便序列化
-        context_dict = context.model_dump() if context else {}
+        context_dict = context.model_dump() if context else {"other_input": True}
         pending_approval = {
             "status": "pending",
             "title": title,

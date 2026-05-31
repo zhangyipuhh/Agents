@@ -271,12 +271,16 @@ async function handleSendMessage(message, attachments = []) {
 
 async function handleApprovalSubmit({ decision, feedback }) {
   approvalMode.value = false
+  let interrupted = false
 
   const aiMsg = messages[messages.length - 1]
   if (!aiMsg || aiMsg.type !== 'ai') {
     isStreaming.value = false
     return
   }
+
+  // 清除上一次的中断状态，避免旧状态导致误触发
+  aiMsg.interrupt = null
 
   const resumeData = {
     args: {
@@ -308,15 +312,25 @@ async function handleApprovalSubmit({ decision, feedback }) {
         try {
           const data = JSON.parse(event.slice(6))
           processSSEEvent(data, aiMsg)
+
+          if (aiMsg.interrupt) {
+            interrupted = true
+            approvalMode.value = true
+            approvalData.value = extractApprovalData(aiMsg.interrupt)
+            break
+          }
         } catch {}
       }
+      if (interrupted) break
     }
   } catch (err) {
     console.error('Resume 请求错误:', err)
     aiMsg.error = '恢复执行失败，请稍后重试。'
     aiMsg.ended = true
   } finally {
-    isStreaming.value = false
+    if (!interrupted) {
+      isStreaming.value = false
+    }
   }
 }
 
