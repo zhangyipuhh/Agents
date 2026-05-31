@@ -10,7 +10,7 @@
 使用 AgentConfig 来配置模型、Token 及存储等相关参数。
 
 工作流:
-    START → summarize → hitl_check → llm_call → END (自动循环调用工具直到完成)
+    START → hitl_check → summarize → llm_call → END (自动循环调用工具直到完成)
 
 摘要功能:
     - 使用 SummarizationNode 自动管理对话摘要，里面包含trim_messages的逻辑
@@ -34,7 +34,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph import MessagesState
 from langgraph.runtime import Runtime
 from langgraph.types import RetryPolicy, Command as LGCommand
-from langchain_core.messages import AnyMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AnyMessage, HumanMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langmem.short_term import SummarizationNode, RunningSummary
 from app.core.llmcalls.model_factory import ModelFactory
@@ -47,7 +47,7 @@ from app.core.agent.AgentConfig import (
 from app.core.config.config import LLM_CONFIG
 from app.core.messages import trim_old_tool_messages
 from app.core.prompts import BASE_SYSTEM_PROMPT
-import json
+
 
 class LLMInputState(TypedDict):
     """LLM 输入状态的类型定义
@@ -99,7 +99,7 @@ class Agent:
         - 与 trim_messages 配合使用，确保上下文长度合适
 
     工作流:
-        START → summarize → llm_call → END
+        START → hitl_check → summarize → llm_call → END
 
     调用方式:
         - invoke(): 非流式调用，返回最终结果
@@ -201,7 +201,7 @@ class Agent:
         检查当前状态中是否存在待确认的请求（pending_approval）。
         如果存在且状态为 pending，则调用 interrupt() 暂停图执行，
         向前端发送中断事件，等待用户决策后恢复。
-        恢复后更新对应的 ToolMessage 并清除 pending_approval。
+        恢复后添加 HumanMessage 反馈并清除 pending_approval。
 
         Args:
             state: 当前对话状态，包含 messages 和 pending_approval
@@ -238,32 +238,23 @@ class Agent:
         from langgraph.types import interrupt
         response = interrupt(request)
 
-        # 恢复后：更新 ToolMessage，清除 pending_approval
-        tool_call_id = pending["tool_call_id"]
+        # 恢复后：添加 HumanMessage 反馈，清除 pending_approval
         decision = response.get("args", {}).get("decision", "unknown")
         feedback = response.get("args", {}).get("feedback", "")
 
-        # 更新对应 ToolMessage
-        updated_content = json.dumps({
-            "status": "success",
-            "tool": "request_human_approval",
-            "result": {
-                "status": "feedback_received",
-                "decision": decision,
-                "feedback": feedback
-            }
-        }, ensure_ascii=False)
+        updated_messages = []
 
-        for i, msg in enumerate(state.get("messages", [])):
-            if isinstance(msg, ToolMessage) and msg.tool_call_id == tool_call_id:
-                state["messages"][i] = ToolMessage(
-                    content=updated_content,
-                    tool_call_id=tool_call_id
-                )
-                break
+        # 将用户反馈作为 HumanMessage 添加到消息历史中，使 LLM 能感知到用户反馈
+        if feedback:
+            feedback_text = f"【用户反馈】{feedback}"
+        else:
+            feedback_text = f"【用户反馈】用户选择了: {decision}"
+        updated_messages.append(HumanMessage(content=feedback_text))
 
-        state["pending_approval"] = None
-        return state
+        return {
+            "messages": updated_messages,
+            "pending_approval": None
+        }
 
     async def _llm_call(
         self,
@@ -346,8 +337,8 @@ class Agent:
         """构建 LangGraph 工作流
 
         工作流结构:
-            START → summarize → hitl_check → llm_call → END
-            (如果配置了工具): llm_call → tools → summarize
+            START → hitl_check → summarize → llm_call → END
+            (如果配置了工具): llm_call → tools → hitl_check → summarize
 
         摘要节点功能:
             - 使用 SummarizationNode 自动管理对话摘要
@@ -355,17 +346,22 @@ class Agent:
             - 与 trim_messages 配合确保 token 数合适
 
         HITL 检查节点功能:
-            - 在 llm_call 之前检查是否有 pending_approval
+            - 在 summarize 之前检查是否有 pending_approval
             - 如果有，调用 interrupt() 暂停执行等待用户确认
-            - 恢复后更新 ToolMessage 并清除 pending_approval
+            - 恢复后添加 HumanMessage 反馈，然后由 summarize 重新生成 summarized_messages
             - 无 pending_approval 时直接透传，不影响原有流程
 
+        为什么 hitl_check 在 summarize 之前:
+            - hitl_check 更新 messages 后，summarize 会基于最新 messages 重新生成 summarized_messages
+            - 确保 _llm_call 读取的 summarized_messages 始终包含用户反馈
+            - 避免手动维护 messages 和 summarized_messages 两份列表的一致性
+
         边连接逻辑:
-            - 从 START 到 summarize 节点
-            - 从 summarize 到 hitl_check 节点
-            - 从 hitl_check 到 llm_call 节点
+            - 从 START 到 hitl_check 节点
+            - 从 hitl_check 到 summarize 节点
+            - 从 summarize 到 llm_call 节点
             - 从 llm_call 根据条件分支到 tools 或 END（如果没有工具则直接到 END）
-            - 从 tools 回到 summarize 继续调用
+            - 从 tools 回到 hitl_check 节点继续处理
         """
         # 创建 SummarizationNode，用于自动管理对话摘要
         summarization_node = SummarizationNode(
@@ -392,9 +388,9 @@ class Agent:
         )
 
         # 添加边
-        workflow.add_edge(START, "summarize")
-        workflow.add_edge("summarize", "hitl_check")
-        workflow.add_edge("hitl_check", "llm_call")
+        workflow.add_edge(START, "hitl_check")
+        workflow.add_edge("hitl_check", "summarize")
+        workflow.add_edge("summarize", "llm_call")
 
         # 如果配置了工具节点，添加工具和条件边
         if self.tool_node is not None:
@@ -407,8 +403,8 @@ class Agent:
             workflow.add_conditional_edges(
                 "llm_call", self._should_continue, {"tools": "tools", "end": END}
             )
-            # 工具执行完成后回到 summarize 节点处理
-            workflow.add_edge("tools", "summarize")
+            # 工具执行完成后回到 hitl_check 节点处理
+            workflow.add_edge("tools", "hitl_check")
         else:
             # 没有工具时，llm_call 直接连接到 END
             workflow.add_edge("llm_call", END)

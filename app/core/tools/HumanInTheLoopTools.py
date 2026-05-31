@@ -105,7 +105,8 @@ def request_human_approval(
                 "messages": [
                     ToolMessage(
                         content=json.dumps(summary, ensure_ascii=False),
-                        tool_call_id=tool_call_id
+                        tool_call_id=tool_call_id,
+                        id=tool_call_id
                     )
                 ]
             }
@@ -125,7 +126,8 @@ def request_human_approval(
                 "messages": [
                     ToolMessage(
                         content=json.dumps(error_summary, ensure_ascii=False),
-                        tool_call_id=tool_call_id
+                        tool_call_id=tool_call_id,
+                        id=tool_call_id
                     )
                 ]
             }

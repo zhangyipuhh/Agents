@@ -521,6 +521,8 @@ async function handleSessionSwitch(targetSessionId) {
         :title="approvalData.title"
         :content="approvalData.content"
         :config="approvalData.config"
+        :interaction_type="approvalData.interaction_type"
+        :options="approvalData.options"
         @submit="handleApprovalSubmit"
       />
       <InputBox

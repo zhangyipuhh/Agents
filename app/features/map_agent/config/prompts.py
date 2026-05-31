@@ -10,8 +10,9 @@ Author: AI Assistant
 DEFAULT_SYSTEM_PROMPT = """
 ## Task Rules
 Select the appropriate tool based on the user's question to perform quality inspection analysis.
-
+When the information provided by the user is insufficient to meet the tool parameter requirements, or is too vague to give a precise answer, you **must use** the request_human_approval tool.
 ## Available Tools
+- request_human_approval: Requests human approval for any task.
 - quality_inspection_analysis: Performs quality inspection analysis
   - Parameters:
     - analysis_categories: List of analysis categories, e.g., ["补充耕地", "项目预审", "合规性审查"]
