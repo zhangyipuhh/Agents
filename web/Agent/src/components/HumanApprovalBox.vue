@@ -1,165 +1,252 @@
 <script setup>
-import { ref, computed } from 'vue'
-import { marked } from 'marked'
+import { ref, computed, watch, nextTick } from 'vue'
 
 /**
- * 将 Markdown 文本转换为 HTML
- * @param {string} text - Markdown 格式的文本
- * @returns {string} 转换后的 HTML 字符串
+ * HumanApprovalBox
+ * 多问题结构化问答组件（替代旧的 request_human_approval 单题审批 UI）。
+ *
+ * Props:
+ *   questions: Array<{
+ *     question: string,
+ *     header: string,    // Tab 标题（≤12 字符）
+ *     options: Array<{ label: string, description: string }>,
+ *     multiple: boolean  // 是否允许多选
+ *   }>
+ *
+ * Emits:
+ *   submit({ answers: string[][] })  // answers[i] = 第 i 个问题选中的 label 列表
  */
-function renderMarkdown(text) {
-  if (!text) return ''
-  try {
-    return marked.parse(text)
-  } catch {
-    return text.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br/>').replace(/^/, '<p>').replace(/$/, '</p>')
-  }
-}
-
 const props = defineProps({
-  title: {
-    type: String,
-    default: '需要您的确认'
-  },
-  content: {
-    type: String,
-    default: ''
-  },
-  config: {
-    type: Object,
-    default: () => ({
-      allow_ignore: false,
-      allow_respond: true,
-      allow_edit: false,
-      allow_accept: true
-    })
-  },
-  interaction_type: {
-    type: String,
-    default: 'input'
-  },
-  options: {
+  questions: {
     type: Array,
-    default: () => []
-  },
-  other_input: {
-    type: Boolean,
-    default: true
+    default: () => [],
+    validator: (val) => Array.isArray(val)
   }
 })
 
 const emit = defineEmits(['submit'])
 
-const feedback = ref('')
+const activeTab = ref(0)
+const answers = ref([])
+const customInputs = ref([])
+const editing = ref([])
 const loading = ref(false)
-const selectedOption = ref(null)
+const textareaRefs = ref([])
+
+watch(
+  () => props.questions,
+  (newQuestions) => {
+    activeTab.value = 0
+    answers.value = newQuestions.map((q) => (q.multiple ? [] : null))
+    customInputs.value = newQuestions.map(() => '')
+    editing.value = newQuestions.map(() => false)
+  },
+  { immediate: true, deep: true }
+)
 
 /**
- * 渲染后的 Markdown 内容
- * 使用 computed 缓存转换结果，避免重复解析
+ * 判断某个问题是否已回答（用于 Tab 状态指示器）
  */
-const renderedContent = computed(() => renderMarkdown(props.content))
-
-const isOptionsMode = computed(() => {
-  return props.interaction_type === 'options' && props.options.length > 0
-})
-
-const showInput = computed(() => {
-  if (isOptionsMode.value) return props.other_input
-  return props.config.allow_respond || props.config.allow_edit
-})
-
-const canSubmit = computed(() => {
-  if (loading.value) return false
-  if (isOptionsMode.value) {
-    if (selectedOption.value !== null) return true
-    if (props.other_input && feedback.value.trim().length > 0) return true
-    return false
-  }
-  if (showInput.value) {
-    return feedback.value.trim().length > 0
-  }
-  return true
-})
-
-const handleOptionSelect = (option) => {
-  selectedOption.value = option
+const isAnswered = (idx) => {
+  if (idx < 0 || idx >= answers.value.length) return false
+  const ans = answers.value[idx]
+  if (Array.isArray(ans)) return ans.length > 0
+  return ans !== null && ans !== undefined
 }
 
-const handleSubmit = (decision) => {
-  if (!canSubmit.value && decision === 'approve') return
-  loading.value = true
-  if (isOptionsMode.value && selectedOption.value) {
-    emit('submit', {
-      decision: selectedOption.value.value,
-      feedback: selectedOption.value.label
-    })
-  } else if (isOptionsMode.value && props.other_input && feedback.value.trim()) {
-    emit('submit', {
-      decision: 'other',
-      feedback: feedback.value.trim()
+const isOtherItem = (option) => option.label === 'Other'
+
+/**
+ * 切换选项（单选覆盖 / 多选累加）
+ * 点击 Other 时切到编辑模式，弹出 textarea
+ */
+const toggleOption = (qIdx, option) => {
+  const q = props.questions[qIdx]
+  if (q.multiple) {
+    const cur = answers.value[qIdx] || []
+    const i = cur.indexOf(option.label)
+    if (i >= 0) cur.splice(i, 1)
+    else cur.push(option.label)
+    answers.value[qIdx] = [...cur]
+  } else {
+    if (answers.value[qIdx] === option.label) {
+      answers.value[qIdx] = null
+    } else {
+      answers.value[qIdx] = option.label
+    }
+  }
+
+  if (isOtherItem(option)) {
+    editing.value[qIdx] = true
+    nextTick(() => {
+      const el = textareaRefs.value[qIdx]
+      if (el && el.focus) el.focus()
     })
   } else {
-    emit('submit', {
-      decision,
-      feedback: feedback.value.trim()
-    })
+    editing.value[qIdx] = false
   }
 }
+
+/**
+ * 提交 Other 项的输入文本：
+ * - 选中的 label 为"Other"
+ * - 文本非空时同步写入 answers（仅在 multiple=false 下覆盖）
+ * - 文本为空时清空 answers
+ */
+const commitOther = (qIdx) => {
+  const text = (customInputs.value[qIdx] || '').trim()
+  if (text) {
+    if (!props.questions[qIdx].multiple) {
+      answers.value[qIdx] = text
+    } else {
+      const cur = answers.value[qIdx] || []
+      if (!cur.includes('Other')) cur.push('Other')
+      answers.value[qIdx] = [...cur]
+    }
+    editing.value[qIdx] = false
+  } else {
+    if (props.questions[qIdx].multiple) {
+      answers.value[qIdx] = (answers.value[qIdx] || []).filter((l) => l !== 'Other')
+    } else {
+      answers.value[qIdx] = null
+    }
+    editing.value[qIdx] = false
+  }
+}
+
+/**
+ * 取消 Other 编辑：清空文本并收起 textarea
+ */
+const cancelOther = (qIdx) => {
+  customInputs.value[qIdx] = ''
+  editing.value[qIdx] = false
+  if (!props.questions[qIdx].multiple) {
+    answers.value[qIdx] = null
+  } else {
+    answers.value[qIdx] = (answers.value[qIdx] || []).filter((l) => l !== 'Other')
+  }
+}
+
+/**
+ * 切换到指定 Tab（提交当前 Tab 的 Other 输入）
+ */
+const switchTab = (idx) => {
+  if (editing.value[activeTab.value]) {
+    commitOther(activeTab.value)
+  }
+  activeTab.value = idx
+}
+
+/**
+ * 全局提交：构造 answers 二维数组
+ */
+const handleSubmit = () => {
+  if (loading.value) return
+  if (!canSubmit.value) return
+  loading.value = true
+  if (editing.value[activeTab.value]) {
+    commitOther(activeTab.value)
+  }
+  const finalAnswers = props.questions.map((q, i) => {
+    const ans = answers.value[i]
+    if (q.multiple) {
+      return Array.isArray(ans) && ans.length > 0 ? [...ans] : []
+    } else {
+      return ans ? [ans] : []
+    }
+  })
+  emit('submit', { answers: finalAnswers })
+}
+
+const isCurrentAnswered = computed(() => isAnswered(activeTab.value))
+
+/**
+ * 全局可提交条件：所有问题都答了
+ */
+const canSubmit = computed(() => {
+  if (loading.value) return false
+  if (props.questions.length === 0) return false
+  return props.questions.every((_, i) => isAnswered(i))
+})
+
+const currentQuestion = computed(() => props.questions[activeTab.value] || null)
 </script>
 
 <template>
-  <div class="approval-box-container">
+  <div v-if="currentQuestion" class="approval-box-container">
     <div class="input-wrapper">
       <div class="approval-main">
         <div class="approval-header">
           <svg class="approval-icon" viewBox="0 0 20 20" fill="currentColor">
             <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
           </svg>
-          <span class="approval-title">{{ title }}</span>
+          <span class="approval-title">{{ currentQuestion.question }}</span>
         </div>
 
-        <div class="approval-content markdown-body" v-html="renderedContent"></div>
-
-        <div v-if="isOptionsMode" class="options-list">
+        <div v-if="questions.length > 1" class="tab-bar">
           <button
-            v-for="option in options"
-            :key="option.value"
-            class="option-btn"
-            :class="{ selected: selectedOption && selectedOption.value === option.value }"
-            :disabled="loading"
-            @click="handleOptionSelect(option)"
+            v-for="(q, i) in questions"
+            :key="i"
+            class="tab-btn"
+            :class="{ active: activeTab === i, answered: isAnswered(i) && activeTab !== i }"
+            @click="switchTab(i)"
           >
-            {{ option.label }}
+            {{ q.header || `问题 ${i + 1}` }}
+            <span v-if="isAnswered(i)" class="tab-check">✓</span>
           </button>
         </div>
 
-        <textarea
-          v-if="showInput"
-          v-model="feedback"
-          class="approval-input"
-          :placeholder="isOptionsMode ? '请输入其他内容...' : (config.allow_edit ? '请输入修改后的内容...' : '请输入您的反馈...')"
-          rows="3"
-        ></textarea>
+        <div class="options-list">
+          <button
+            v-for="option in currentQuestion.options"
+            :key="option.label"
+            class="option-btn"
+            :class="{
+              selected: currentQuestion.multiple
+                ? (answers[activeTab] || []).includes(option.label)
+                : answers[activeTab] === option.label
+            }"
+            :disabled="loading"
+            @click="toggleOption(activeTab, option)"
+          >
+            <span class="option-marker" v-if="currentQuestion.multiple">
+              <span v-if="(answers[activeTab] || []).includes(option.label)">☑</span>
+              <span v-else>☐</span>
+            </span>
+            <span class="option-marker" v-else>
+              <span v-if="answers[activeTab] === option.label">●</span>
+              <span v-else>○</span>
+            </span>
+            <div class="option-content">
+              <div class="option-label">{{ option.label }}</div>
+              <div v-if="option.description" class="option-desc">{{ option.description }}</div>
+            </div>
+          </button>
+        </div>
+
+        <div v-if="editing[activeTab]" class="other-editor">
+          <textarea
+            :ref="(el) => { if (el) textareaRefs[activeTab] = el }"
+            v-model="customInputs[activeTab]"
+            class="other-input"
+            placeholder="请输入您的具体内容..."
+            rows="2"
+            @keydown.enter.exact.prevent="commitOther(activeTab)"
+            @keydown.escape.prevent="cancelOther(activeTab)"
+            @blur="commitOther(activeTab)"
+          ></textarea>
+          <div class="other-hint">回车提交 · Esc 取消</div>
+        </div>
 
         <div class="approval-actions">
           <button
-            v-if="config.allow_ignore"
-            class="action-btn ignore-btn"
-            :disabled="loading"
-            @click="handleSubmit('ignore')"
-          >
-            忽略
-          </button>
-          <button
-            v-if="config.allow_accept !== false"
             class="action-btn confirm-btn"
             :class="{ disabled: !canSubmit }"
             :disabled="!canSubmit"
-            @click="handleSubmit('approve')"
+            @click="handleSubmit"
           >
             <span v-if="loading" class="loading-spinner"></span>
-            <span v-else>确认</span>
+            <span v-else>{{ questions.length > 1 ? '提交所有回答' : '提交' }}</span>
           </button>
         </div>
       </div>
@@ -192,7 +279,7 @@ const handleSubmit = (decision) => {
 
 .approval-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
 }
 
@@ -201,6 +288,7 @@ const handleSubmit = (decision) => {
   height: 20px;
   color: var(--color-accent);
   flex-shrink: 0;
+  margin-top: 2px;
 }
 
 .approval-title {
@@ -210,124 +298,153 @@ const handleSubmit = (decision) => {
   line-height: var(--line-height-normal);
 }
 
-.approval-content {
+.tab-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
   font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
   color: var(--color-text-secondary);
-  line-height: var(--line-height-normal);
-  word-break: break-word;
-}
-
-/* Markdown 渲染样式 */
-.markdown-body :deep(p) {
-  margin-bottom: 10px;
-  line-height: 1.7;
-}
-
-.markdown-body :deep(p):last-child {
-  margin-bottom: 0;
-}
-
-.markdown-body :deep(h1),
-.markdown-body :deep(h2),
-.markdown-body :deep(h3),
-.markdown-body :deep(h4) {
-  margin-top: 12px;
-  margin-bottom: 8px;
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text-primary);
-}
-
-.markdown-body :deep(h1) {
-  font-size: 1.3em;
-}
-
-.markdown-body :deep(h2) {
-  font-size: 1.2em;
-}
-
-.markdown-body :deep(h3) {
-  font-size: 1.1em;
-}
-
-.markdown-body :deep(h4) {
-  font-size: 1em;
-}
-
-.markdown-body :deep(ul),
-.markdown-body :deep(ol) {
-  padding-left: 20px;
-  margin-bottom: 10px;
-}
-
-.markdown-body :deep(li) {
-  margin-bottom: 4px;
-}
-
-.markdown-body :deep(code) {
-  background-color: var(--color-bg-tertiary);
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 0.9em;
-}
-
-.markdown-body :deep(pre) {
-  background-color: var(--color-bg-tertiary);
-  padding: 12px 16px;
+  background-color: transparent;
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  overflow-x: auto;
-  margin-bottom: 10px;
+  cursor: pointer;
+  transition: var(--transition-colors), var(--transition-transform);
+  max-width: 160px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.markdown-body :deep(pre code) {
-  background: none;
-  padding: 0;
-}
-
-.markdown-body :deep(strong) {
-  font-weight: var(--font-weight-semibold);
+.tab-btn:hover:not(.active) {
+  background-color: var(--color-bg-hover);
   color: var(--color-text-primary);
 }
 
-.markdown-body :deep(blockquote) {
-  border-left: 3px solid var(--color-accent);
-  padding-left: 12px;
-  margin: 8px 0;
-  color: var(--color-text-secondary);
+.tab-btn.active {
+  background-color: var(--color-accent);
+  color: white;
+  border-color: var(--color-accent);
 }
 
-.markdown-body :deep(a) {
+.tab-btn.answered {
+  border-color: var(--color-accent);
   color: var(--color-accent);
-  text-decoration: none;
 }
 
-.markdown-body :deep(a:hover) {
-  text-decoration: underline;
+.tab-check {
+  font-size: 11px;
+  line-height: 1;
 }
 
-.approval-input {
-  width: 100%;
-  min-height: 80px;
-  max-height: 160px;
-  padding: 10px 12px;
-  font-size: var(--font-size-base);
-  line-height: var(--line-height-normal);
+.options-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.option-btn {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  font-size: var(--font-size-sm);
   color: var(--color-text-primary);
   background-color: var(--color-bg-primary);
   border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  text-align: left;
+  transition: var(--transition-colors), var(--transition-transform), var(--transition-shadow);
+}
+
+.option-btn:hover:not(:disabled) {
+  background-color: var(--color-bg-hover);
+  border-color: var(--color-accent);
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.15);
+}
+
+.option-btn.selected {
+  background-color: rgba(99, 102, 241, 0.08);
+  border-color: var(--color-accent);
+  color: var(--color-text-primary);
+}
+
+.option-btn:active:not(:disabled) {
+  transform: scale(0.99);
+}
+
+.option-btn:disabled {
+  opacity: var(--opacity-disabled);
+  cursor: not-allowed;
+}
+
+.option-marker {
+  font-size: 16px;
+  line-height: 1.3;
+  color: var(--color-accent);
+  flex-shrink: 0;
+  min-width: 16px;
+}
+
+.option-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.option-label {
+  font-weight: var(--font-weight-medium);
+  margin-bottom: 2px;
+}
+
+.option-desc {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  line-height: var(--line-height-normal);
+}
+
+.other-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 4px;
+}
+
+.other-input {
+  width: 100%;
+  min-height: 60px;
+  max-height: 120px;
+  padding: 8px 12px;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-primary);
+  background-color: var(--color-bg-primary);
+  border: 1px solid var(--color-accent);
   border-radius: var(--radius-md);
   resize: vertical;
   overflow-y: auto;
   transition: var(--transition-colors), border-color 0.2s ease;
 }
 
-.approval-input::placeholder {
-  color: var(--color-text-muted);
+.other-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
 }
 
-.approval-input:focus {
-  outline: none;
-  border-color: var(--color-accent);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+.other-hint {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  text-align: right;
 }
 
 .approval-actions {
@@ -354,17 +471,6 @@ const handleSubmit = (decision) => {
 
 .action-btn:active:not(:disabled) {
   transform: scale(0.96);
-}
-
-.ignore-btn {
-  background-color: transparent;
-  color: var(--color-text-secondary);
-  border: 1px solid var(--color-border);
-}
-
-.ignore-btn:hover:not(:disabled) {
-  background-color: var(--color-bg-hover);
-  color: var(--color-text-primary);
 }
 
 .confirm-btn {
@@ -397,49 +503,5 @@ const handleSubmit = (decision) => {
   to {
     transform: rotate(360deg);
   }
-}
-
-.options-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  padding: 4px 0;
-}
-
-.option-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 8px 20px;
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  color: var(--color-text-primary);
-  background-color: var(--color-bg-primary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  transition: var(--transition-colors), var(--transition-transform), var(--transition-shadow);
-}
-
-.option-btn:hover:not(:disabled) {
-  background-color: var(--color-bg-hover);
-  border-color: var(--color-accent);
-  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.15);
-}
-
-.option-btn.selected {
-  background-color: var(--color-accent);
-  color: white;
-  border-color: var(--color-accent);
-  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
-}
-
-.option-btn:active:not(:disabled) {
-  transform: scale(0.96);
-}
-
-.option-btn:disabled {
-  opacity: var(--opacity-disabled);
-  cursor: not-allowed;
 }
 </style>
