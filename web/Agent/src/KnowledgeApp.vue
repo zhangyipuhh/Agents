@@ -21,7 +21,7 @@ const filesLoading = ref(false)
 const currentSessionId = ref('')
 const isStreaming = ref(false)
 const approvalMode = ref(false)
-const approvalData = ref({ title: '', content: '', config: { allow_accept: true } })
+const approvalData = ref({ title: '', content: '', config: { allow_accept: true }, interaction_type: 'input', options: [], other_input: true })
 const isSidebarCollapsed = ref(false)
 const isCollapseBtnHovered = ref(false)
 
@@ -186,14 +186,18 @@ function handleToolAction(action) {
 
 function extractApprovalData(interruptArray) {
   if (!Array.isArray(interruptArray) || interruptArray.length === 0) {
-    return { title: '需要您的确认', content: '', config: { allow_accept: true } }
+    return { title: '需要您的确认', content: '', config: { allow_accept: true }, interaction_type: 'input', options: [], other_input: true }
   }
   const req = interruptArray[0]
   const args = req.action_request?.args || {}
+  const context = args.context || {}
   return {
     title: args.title || '需要您的确认',
     content: args.content || req.description || '',
-    config: req.config || { allow_accept: true }
+    config: req.config || { allow_accept: true },
+    interaction_type: context.interaction_type || 'input',
+    options: context.options || [],
+    other_input: context.other_input !== false
   }
 }
 
@@ -338,6 +342,9 @@ function handleApprovalSubmit({ decision, feedback }) {
             :title="approvalData.title"
             :content="approvalData.content"
             :config="approvalData.config"
+            :interaction_type="approvalData.interaction_type"
+            :options="approvalData.options"
+            :other_input="approvalData.other_input"
             @submit="handleApprovalSubmit"
           />
           <ProfileInputBox
@@ -397,6 +404,9 @@ function handleApprovalSubmit({ decision, feedback }) {
             :title="approvalData.title"
             :content="approvalData.content"
             :config="approvalData.config"
+            :interaction_type="approvalData.interaction_type"
+            :options="approvalData.options"
+            :other_input="approvalData.other_input"
             @submit="handleApprovalSubmit"
           />
           <ProfileInputBox

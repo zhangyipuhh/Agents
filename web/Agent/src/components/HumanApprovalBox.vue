@@ -1,5 +1,20 @@
 <script setup>
 import { ref, computed } from 'vue'
+import { marked } from 'marked'
+
+/**
+ * 将 Markdown 文本转换为 HTML
+ * @param {string} text - Markdown 格式的文本
+ * @returns {string} 转换后的 HTML 字符串
+ */
+function renderMarkdown(text) {
+  if (!text) return ''
+  try {
+    return marked.parse(text)
+  } catch {
+    return text.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br/>').replace(/^/, '<p>').replace(/$/, '</p>')
+  }
+}
 
 const props = defineProps({
   title: {
@@ -26,6 +41,10 @@ const props = defineProps({
   options: {
     type: Array,
     default: () => []
+  },
+  other_input: {
+    type: Boolean,
+    default: true
   }
 })
 
@@ -35,19 +54,27 @@ const feedback = ref('')
 const loading = ref(false)
 const selectedOption = ref(null)
 
+/**
+ * 渲染后的 Markdown 内容
+ * 使用 computed 缓存转换结果，避免重复解析
+ */
+const renderedContent = computed(() => renderMarkdown(props.content))
+
 const isOptionsMode = computed(() => {
   return props.interaction_type === 'options' && props.options.length > 0
 })
 
 const showInput = computed(() => {
-  if (isOptionsMode.value) return false
+  if (isOptionsMode.value) return props.other_input
   return props.config.allow_respond || props.config.allow_edit
 })
 
 const canSubmit = computed(() => {
   if (loading.value) return false
   if (isOptionsMode.value) {
-    return selectedOption.value !== null
+    if (selectedOption.value !== null) return true
+    if (props.other_input && feedback.value.trim().length > 0) return true
+    return false
   }
   if (showInput.value) {
     return feedback.value.trim().length > 0
@@ -66,6 +93,11 @@ const handleSubmit = (decision) => {
     emit('submit', {
       decision: selectedOption.value.value,
       feedback: selectedOption.value.label
+    })
+  } else if (isOptionsMode.value && props.other_input && feedback.value.trim()) {
+    emit('submit', {
+      decision: 'other',
+      feedback: feedback.value.trim()
     })
   } else {
     emit('submit', {
@@ -87,7 +119,7 @@ const handleSubmit = (decision) => {
           <span class="approval-title">{{ title }}</span>
         </div>
 
-        <div class="approval-content">{{ content }}</div>
+        <div class="approval-content markdown-body" v-html="renderedContent"></div>
 
         <div v-if="isOptionsMode" class="options-list">
           <button
@@ -106,7 +138,7 @@ const handleSubmit = (decision) => {
           v-if="showInput"
           v-model="feedback"
           class="approval-input"
-          :placeholder="config.allow_edit ? '请输入修改后的内容...' : '请输入您的反馈...'"
+          :placeholder="isOptionsMode ? '请输入其他内容...' : (config.allow_edit ? '请输入修改后的内容...' : '请输入您的反馈...')"
           rows="3"
         ></textarea>
 
@@ -182,8 +214,94 @@ const handleSubmit = (decision) => {
   font-size: var(--font-size-sm);
   color: var(--color-text-secondary);
   line-height: var(--line-height-normal);
-  white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* Markdown 渲染样式 */
+.markdown-body :deep(p) {
+  margin-bottom: 10px;
+  line-height: 1.7;
+}
+
+.markdown-body :deep(p):last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3),
+.markdown-body :deep(h4) {
+  margin-top: 12px;
+  margin-bottom: 8px;
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.markdown-body :deep(h1) {
+  font-size: 1.3em;
+}
+
+.markdown-body :deep(h2) {
+  font-size: 1.2em;
+}
+
+.markdown-body :deep(h3) {
+  font-size: 1.1em;
+}
+
+.markdown-body :deep(h4) {
+  font-size: 1em;
+}
+
+.markdown-body :deep(ul),
+.markdown-body :deep(ol) {
+  padding-left: 20px;
+  margin-bottom: 10px;
+}
+
+.markdown-body :deep(li) {
+  margin-bottom: 4px;
+}
+
+.markdown-body :deep(code) {
+  background-color: var(--color-bg-tertiary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+.markdown-body :deep(pre) {
+  background-color: var(--color-bg-tertiary);
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+  margin-bottom: 10px;
+}
+
+.markdown-body :deep(pre code) {
+  background: none;
+  padding: 0;
+}
+
+.markdown-body :deep(strong) {
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.markdown-body :deep(blockquote) {
+  border-left: 3px solid var(--color-accent);
+  padding-left: 12px;
+  margin: 8px 0;
+  color: var(--color-text-secondary);
+}
+
+.markdown-body :deep(a) {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+.markdown-body :deep(a:hover) {
+  text-decoration: underline;
 }
 
 .approval-input {

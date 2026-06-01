@@ -22,7 +22,7 @@ const isStreaming = reactive({ value: false })
 const sidebarRef = ref(null)
 const currentAttachments = ref([])
 const approvalMode = ref(false)
-const approvalData = ref({ title: '', content: '', config: { allow_accept: true }, interaction_type: 'input', options: [] })
+const approvalData = ref({ title: '', content: '', config: { allow_accept: true }, interaction_type: 'input', options: [], other_input: true })
 
 /**
  * 新建任务锁，防止重复创建
@@ -185,7 +185,7 @@ async function newSession() {
 
 function extractApprovalData(interruptArray) {
   if (!Array.isArray(interruptArray) || interruptArray.length === 0) {
-    return { title: '需要您的确认', content: '', config: { allow_accept: true }, interaction_type: 'input', options: [] }
+    return { title: '需要您的确认', content: '', config: { allow_accept: true }, interaction_type: 'input', options: [], other_input: true }
   }
   const req = interruptArray[0]
   const args = req.action_request?.args || {}
@@ -195,7 +195,8 @@ function extractApprovalData(interruptArray) {
     content: args.content || req.description || '',
     config: req.config || { allow_accept: true },
     interaction_type: context.interaction_type || 'input',
-    options: context.options || []
+    options: context.options || [],
+    other_input: context.other_input !== false
   }
 }
 
@@ -537,6 +538,7 @@ async function handleSessionSwitch(targetSessionId) {
         :config="approvalData.config"
         :interaction_type="approvalData.interaction_type"
         :options="approvalData.options"
+        :other_input="approvalData.other_input"
         @submit="handleApprovalSubmit"
       />
       <InputBox

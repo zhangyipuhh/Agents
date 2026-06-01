@@ -59,18 +59,24 @@ def request_human_approval(
     runtime: ToolRuntime[AgentContext] = None,
 ) -> Command:
     """
-    【请求人工确认】在需要人工决策的关键节点暂停执行，等待用户反馈。
+    【请求人工确认/澄清】在需要人工决策、需求澄清或信息补充的关键节点暂停执行，等待用户反馈。
 
     调用时机：
     - 执行高风险操作前需要用户确认时
     - 需要用户从多个选项中做出选择时
     - 需要用户提供额外信息或修改建议时
+    - 用户意图不明确、请求过于模糊，需要澄清具体需求时（如"我要学习一部法律"）
+    - 用户请求与所有可用工具的能力范围都不匹配，需要用户进一步明确需求时
     - 业务规则要求人工审批的关键步骤
 
     交互类型规范：
     - 对于"是否"类确认问题（如"请确认以上信息是否正确"），必须使用 context={"interaction_type": "options", "options": [{"value": "yes", "label": "正确"}, {"value": "no", "label": "不正确"}]}
-    - 对于需要用户输入内容的场景（如"请输入修改后的内容"），使用 context={"interaction_type": "input"} 或不传
+    - 对于需要用户输入内容的场景（如"请输入修改后的内容"、"我要学习一部法律"），使用 context={"interaction_type": "input"} 或不传
     - 默认自动携带 other_input: true，options 类型会额外显示"其他"输入框，input 类型会标识为"其他"输入
+
+    示例：
+    - 用户说"我要学习一部法律"（意图模糊，没有可用工具匹配）→ 调用 request_human_approval(title="请明确法律名称", content="您想学习哪部法律？请提供具体的法律名称。", context={"interaction_type": "input"})
+    - 用户说"请确认以上信息是否正确"（需要确认）→ 调用 request_human_approval(title="信息确认", content="请确认以上信息是否正确", context={"interaction_type": "options", "options": [{"value": "yes", "label": "正确"}, {"value": "no", "label": "不正确"}]})
 
     Args:
         title: 确认请求标题，简短描述需要确认的事项
