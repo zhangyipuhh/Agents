@@ -61,16 +61,39 @@ class TestQuestion:
             )
 
     def test_max_options_enforced(self):
-        # options 最多 4 个，5 个应被拒绝
+        # options 超过 4 个应被拒绝
         with pytest.raises(ValidationError):
             Question(
                 question="Q?",
                 header="H",
                 options=[
-                    QuestionOption(label=f"opt{i}", description=f"d{i}")
-                    for i in range(5)
+                    {"label": f"L{i}", "description": f"d{i}"} for i in range(5)
                 ],
             )
+
+    def test_empty_options_valid(self):
+        """options=[] 是合法的（纯文本问题）"""
+        q = Question(question="项目名称？", header="项目", options=[])
+        assert q.options == []
+        assert q.text_only is False  # 默认 False
+
+    def test_options_with_single_item_rejected(self):
+        """options 非空但只有 1 个应被拒绝（强制至少 2 个）"""
+        with pytest.raises(ValidationError):
+            Question(
+                question="Q?",
+                header="H",
+                options=[{"label": "Only", "description": "only one"}],
+            )
+
+    def test_text_only_field_default_false(self):
+        """text_only 默认 False"""
+        q = Question(
+            question="Q?",
+            header="H",
+            options=[{"label": "A", "description": "a"}, {"label": "B", "description": "b"}],
+        )
+        assert q.text_only is False
 
     def test_header_too_long_rejected(self):
         # header 超过 30 字符应被拒绝
@@ -125,6 +148,90 @@ class TestAskUserQuestionInput:
                     for i in range(5)
                 ]
             )
+
+
+class TestAutoInjectOther:
+    """AskUserQuestionInput._inject_other_option 自动注入 Other 测试"""
+
+    def test_other_auto_injected_for_ai_omitted(self):
+        """AI 没传 Other 时自动追加到末尾"""
+        from app.core.tools.HumanInTheLoopTools import AskUserQuestionInput
+        inp = AskUserQuestionInput(questions=[
+            {
+                "question": "用啥框架？",
+                "header": "框架",
+                "options": [
+                    {"label": "React", "description": "JS库"},
+                    {"label": "Vue", "description": "渐进式"},
+                ],
+            }
+        ])
+        labels = [o.label for o in inp.questions[0].options]
+        assert labels == ["React", "Vue", "Other"]
+
+    def test_other_not_duplicated_if_ai_provided(self):
+        """AI 已传 Other 时不重复追加"""
+        from app.core.tools.HumanInTheLoopTools import AskUserQuestionInput
+        inp = AskUserQuestionInput(questions=[
+            {
+                "question": "用啥框架？",
+                "header": "框架",
+                "options": [
+                    {"label": "React", "description": "JS库"},
+                    {"label": "Other", "description": "自己填"},
+                ],
+            }
+        ])
+        labels = [o.label for o in inp.questions[0].options]
+        assert labels == ["React", "Other"]
+        assert len(labels) == 2
+
+    def test_text_only_skips_other_injection(self):
+        """text_only=True 的问题不注入 Other"""
+        from app.core.tools.HumanInTheLoopTools import AskUserQuestionInput
+        inp = AskUserQuestionInput(questions=[
+            {
+                "question": "项目名称？",
+                "header": "项目",
+                "options": [],
+                "text_only": True,
+            }
+        ])
+        assert inp.questions[0].options == []
+
+    def test_empty_options_skips_other_injection_without_text_only(self):
+        """options=[] 不传 text_only 也合法（不注入 Other）"""
+        from app.core.tools.HumanInTheLoopTools import AskUserQuestionInput
+        inp = AskUserQuestionInput(questions=[
+            {
+                "question": "你的建议？",
+                "header": "建议",
+                "options": [],
+            }
+        ])
+        assert inp.questions[0].options == []
+
+    def test_mixed_questions_inject_selectively(self):
+        """混合问题：text_only 不注入，有 options 的注入"""
+        from app.core.tools.HumanInTheLoopTools import AskUserQuestionInput
+        inp = AskUserQuestionInput(questions=[
+            {
+                "question": "项目名称？",
+                "header": "项目",
+                "options": [],
+                "text_only": True,
+            },
+            {
+                "question": "用啥框架？",
+                "header": "框架",
+                "options": [
+                    {"label": "React", "description": "JS库"},
+                    {"label": "Vue", "description": "渐进式"},
+                ],
+            },
+        ])
+        assert inp.questions[0].options == []  # text_only
+        assert [o.label for o in inp.questions[1].options] == ["React", "Vue", "Other"]  # 注入
 
 
 class TestAskUserQuestionTool:
