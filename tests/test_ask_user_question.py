@@ -180,3 +180,176 @@ class TestAskUserQuestionTool:
         assert messages[0].tool_call_id == "call_456"
         assert "questions_count" in json.loads(messages[0].content)
 
+
+class TestHitlCheckNode:
+    """hitl_check_node 节点行为测试"""
+
+    def _make_agent(self):
+        """构造 Agent 子类用于测试（不调 __init__）"""
+        from app.core.agent.agent import Agent
+        agent = Agent.__new__(Agent)
+        return agent
+
+    def test_no_pending_returns_state_unchanged(self):
+        """无 pending_question 时直接透传"""
+        agent = self._make_agent()
+        state = {"messages": [], "pending_question": None}
+        runtime = MagicMock()
+
+        result = asyncio.run(agent.hitl_check_node(state, runtime))
+
+        assert result == state
+
+    def test_pending_triggers_interrupt_with_correct_payload(self):
+        """有 pending 时调 interrupt 并解析 answers"""
+        agent = self._make_agent()
+
+        pending = {
+            "status": "pending",
+            "questions": [
+                {
+                    "question": "Q1?",
+                    "header": "H1",
+                    "options": [
+                        {"label": "A", "description": "a"},
+                        {"label": "B", "description": "b"},
+                    ],
+                    "multiple": False,
+                }
+            ],
+            "tool_call_id": "call_123",
+        }
+        state = {"messages": [], "pending_question": pending}
+        runtime = MagicMock()
+
+        from langchain_core.messages import HumanMessage
+        import app.core.agent.agent as agent_module
+
+        captured = {}
+
+        def fake_interrupt(value):
+            captured["payload"] = value
+            return {"answers": [["A"]]}
+
+        original_interrupt = agent_module.interrupt
+        agent_module.interrupt = fake_interrupt
+        try:
+            result = asyncio.run(agent.hitl_check_node(state, runtime))
+        finally:
+            agent_module.interrupt = original_interrupt
+
+        # 验证 interrupt payload 结构（LangGraph 新版格式）
+        assert captured["payload"]["action"] == "ask_user_question"
+        assert len(captured["payload"]["questions"]) == 1
+
+        # 验证返回结构
+        assert result["pending_question"] is None
+        messages = result["messages"]
+        assert len(messages) == 1
+        assert isinstance(messages[0], HumanMessage)
+        assert "A" in messages[0].content
+        assert "Q1?" in messages[0].content
+
+    def test_appends_to_question_answers_history(self):
+        """question_answers 应追加新记录（用 Overwrite）"""
+        agent = self._make_agent()
+
+        pending = {
+            "status": "pending",
+            "questions": [
+                {"question": "Q1?", "header": "H1", "options": [], "multiple": False}
+            ],
+            "tool_call_id": "call_x",
+        }
+        state = {
+            "messages": [],
+            "pending_question": pending,
+            "question_answers": [{"old": "record"}],
+        }
+        runtime = MagicMock()
+
+        from langgraph.types import Overwrite
+        import app.core.agent.agent as agent_module
+
+        def fake_interrupt(value):
+            return {"answers": [["B"]]}
+
+        original_interrupt = agent_module.interrupt
+        agent_module.interrupt = fake_interrupt
+        try:
+            result = asyncio.run(agent.hitl_check_node(state, runtime))
+        finally:
+            agent_module.interrupt = original_interrupt
+
+        # 验证 Overwrite 追加
+        assert isinstance(result["question_answers"], Overwrite)
+        new_list = result["question_answers"].value
+        assert len(new_list) == 2
+        assert new_list[0] == {"old": "record"}
+        assert new_list[1]["answers"] == [["B"]]
+        assert "timestamp" in new_list[1]
+
+    def test_multiple_questions_all_recorded(self):
+        """多问题场景：所有 question 都被回灌"""
+        agent = self._make_agent()
+
+        pending = {
+            "status": "pending",
+            "questions": [
+                {"question": "框架？", "header": "框架", "options": [], "multiple": False},
+                {"question": "TypeScript？", "header": "TS", "options": [], "multiple": False},
+            ],
+            "tool_call_id": "call_multi",
+        }
+        state = {"messages": [], "pending_question": pending}
+        runtime = MagicMock()
+
+        import app.core.agent.agent as agent_module
+
+        def fake_interrupt(value):
+            return {"answers": [["React"], ["Yes"]]}
+
+        original_interrupt = agent_module.interrupt
+        agent_module.interrupt = fake_interrupt
+        try:
+            result = asyncio.run(agent.hitl_check_node(state, runtime))
+        finally:
+            agent_module.interrupt = original_interrupt
+
+        content = result["messages"][0].content
+        assert "React" in content
+        assert "Yes" in content
+        assert "框架" in content
+        assert "TypeScript" in content
+
+    def test_unanswered_questions_marked(self):
+        """用户没回答的问题标记为'未回答'"""
+        agent = self._make_agent()
+
+        pending = {
+            "status": "pending",
+            "questions": [
+                {"question": "Q1?", "header": "H1", "options": [], "multiple": False},
+                {"question": "Q2?", "header": "H2", "options": [], "multiple": False},
+            ],
+            "tool_call_id": "call_partial",
+        }
+        state = {"messages": [], "pending_question": pending}
+        runtime = MagicMock()
+
+        import app.core.agent.agent as agent_module
+
+        def fake_interrupt(value):
+            return {"answers": [["A"]]}  # 第二个未答
+
+        original_interrupt = agent_module.interrupt
+        agent_module.interrupt = fake_interrupt
+        try:
+            result = asyncio.run(agent.hitl_check_node(state, runtime))
+        finally:
+            agent_module.interrupt = original_interrupt
+
+        content = result["messages"][0].content
+        assert "A" in content
+        assert "未回答" in content
+
