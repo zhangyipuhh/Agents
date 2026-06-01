@@ -342,6 +342,9 @@ SESSION_WHITELIST_PREFIXES = [
 SESSION_REQUIRED_PREFIXES = [
     "/api/files/",
     "/api/agent/",
+    "/api/core",
+    "/api/map",
+    "/api/contract",
 ]
 
 # 创建全局JWT认证实例
