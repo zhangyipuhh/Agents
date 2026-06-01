@@ -351,10 +351,10 @@ class Agent:
             - 与 trim_messages 配合确保 token 数合适
 
         HITL 检查节点功能:
-            - 在 summarize 之前检查是否有 pending_approval
-            - 如果有，调用 interrupt() 暂停执行等待用户确认
-            - 恢复后添加 HumanMessage 反馈，然后由 summarize 重新生成 summarized_messages
-            - 无 pending_approval 时直接透传，不影响原有流程
+            - 在 summarize 之前检查是否有 pending_question
+            - 如果有，调用 interrupt() 暂停执行等待用户回答
+            - 恢复后添加 HumanMessage 反馈（包含所有问题+答案），然后由 summarize 重新生成 summarized_messages
+            - 无 pending_question 时直接透传，不影响原有流程
 
         为什么 hitl_check 在 summarize 之前:
             - hitl_check 更新 messages 后，summarize 会基于最新 messages 重新生成 summarized_messages

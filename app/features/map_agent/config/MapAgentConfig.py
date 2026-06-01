@@ -103,7 +103,7 @@ class MapAgentConfig(BaseAgentConfig):
         from app.features.map_agent.config.config import map_agent_settings
         from app.core.tools.FilesystemReadTools import explore
         from app.core.tools.BaseTools import get_current_time
-        from app.core.tools.HumanInTheLoopTools import request_human_approval
+        from app.core.tools.HumanInTheLoopTools import ask_user_question
         tools = [
             #get_current_time,
             # set_map_center,
@@ -117,7 +117,7 @@ class MapAgentConfig(BaseAgentConfig):
             explore,
             get_current_time,
             generate_report,
-            request_human_approval,
+            ask_user_question,
         ]
 
         try:
