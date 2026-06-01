@@ -24,7 +24,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['submit'])
+const emit = defineEmits(['submit', 'cancel'])
 
 const activeTab = ref(0)
 const answers = ref([])
@@ -178,6 +178,13 @@ const handleSubmit = () => {
   emit('submit', { answers: finalAnswers })
 }
 
+/**
+ * 取消问答：emit cancel 事件通知父组件退出 approval 模式
+ */
+const handleCancel = () => {
+  emit('cancel')
+}
+
 const isCurrentAnswered = computed(() => isAnswered(activeTab.value))
 
 /**
@@ -269,6 +276,9 @@ const currentQuestion = computed(() => props.questions[activeTab.value] || null)
         </div>
 
         <div class="approval-actions">
+          <button class="action-btn cancel-btn" @click="handleCancel">
+            取消
+          </button>
           <button
             class="action-btn confirm-btn"
             :class="{ disabled: !canSubmit }"
@@ -540,6 +550,15 @@ const currentQuestion = computed(() => props.questions[activeTab.value] || null)
 .confirm-btn:hover:not(.disabled) {
   background-color: var(--color-accent-hover);
   box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+}
+
+.cancel-btn {
+  background-color: #9CA3AF;
+  color: white;
+}
+
+.cancel-btn:hover {
+  background-color: #6B7280;
 }
 
 .confirm-btn.disabled {

@@ -240,7 +240,7 @@ class SessionDB:
         print(f"[诊断-SessionDB] get_session: session_id={session_id}")
         # 先查内存
         with cls._lock:
-            print(f"[诊断-SessionDB] 内存缓存 keys={list(cls._memory_cache.keys())}")
+            #print(f"[诊断-SessionDB] 内存缓存 keys={list(cls._memory_cache.keys())}")
             session = cls._memory_cache.get(session_id)
             print(f"[诊断-SessionDB] 内存查询结果: {session}")
             if session:

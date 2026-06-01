@@ -290,6 +290,19 @@ function handleApprovalSubmit({ answers }) {
   const aiMsgRef = ref(aiMsg)
   startChatStream('', [], aiMsgRef, resumeData)
 }
+
+/**
+ * 取消问答：退出 approval 模式并重置流状态
+ */
+function handleApprovalCancel() {
+  approvalMode.value = false
+  isStreaming.value = false
+  const aiMsg = messages.value[messages.value.length - 1]
+  if (aiMsg && aiMsg.type === 'ai') {
+    aiMsg.ended = true
+    aiMsg.isThinkingActive = false
+  }
+}
 </script>
 
 <template>
@@ -329,6 +342,7 @@ function handleApprovalSubmit({ answers }) {
             v-if="approvalMode"
             :questions="approvalData.questions"
             @submit="handleApprovalSubmit"
+            @cancel="handleApprovalCancel"
           />
           <ProfileInputBox
             v-else
@@ -386,6 +400,7 @@ function handleApprovalSubmit({ answers }) {
             v-if="approvalMode"
             :questions="approvalData.questions"
             @submit="handleApprovalSubmit"
+            @cancel="handleApprovalCancel"
           />
           <ProfileInputBox
             v-else

@@ -323,6 +323,19 @@ async function handleApprovalSubmit({ answers }) {
   }
 }
 
+/**
+ * 取消问答：退出 approval 模式并重置流状态
+ */
+function handleApprovalCancel() {
+  approvalMode.value = false
+  isStreaming.value = false
+  const aiMsg = messages[messages.length - 1]
+  if (aiMsg && aiMsg.type === 'ai') {
+    aiMsg.ended = true
+    aiMsg.isThinkingActive = false
+  }
+}
+
 function handleTagSelect(tag, index) {
   console.log('选择技能标签:', tag.label)
 }
@@ -523,6 +536,7 @@ async function handleSessionSwitch(targetSessionId) {
         v-if="approvalMode"
         :questions="approvalData.questions"
         @submit="handleApprovalSubmit"
+        @cancel="handleApprovalCancel"
       />
       <InputBox
         v-else
