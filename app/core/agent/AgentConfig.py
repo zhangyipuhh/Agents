@@ -69,11 +69,22 @@ class AgentState(MessagesState):
     工具中间计算结果，记录每个工具的中间结果。
     格式：{"tool_name": {"result": "..."}}
     """
-    pending_approval: dict = None
+    pending_question: dict = None
     """
-    待人工确认的请求信息，用于 HITL（Human-in-the-Loop）流程。
-    当工具调用 request_human_approval 时，会将确认信息写入此字段。
-    格式：{"status": "pending", "title": "...", "content": "...", "context": {...}, "tool_call_id": "..."}
+    待用户回答的问题（替代旧的 pending_approval）。
+    当工具调用 ask_user_question 时，会将问题信息写入此字段。
+    格式：{
+        "status": "pending",
+        "questions": [Question, ...],
+        "tool_call_id": "..."
+    }
+    """
+
+    question_answers: list = []
+    """
+    历史问答记录（用于审计/调试）。
+    hitl_check_node 用 Overwrite 显式追加。
+    格式：[{"questions": [...], "answers": [[...]], "timestamp": "..."}, ...]
     """
 
 
