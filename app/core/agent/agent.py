@@ -253,7 +253,8 @@ class Agent:
             "answers": answers,
             "timestamp": datetime.now().isoformat()
         }
-        existing = state.get("question_answers", [])
+        existing_raw = state.get("question_answers", [])
+        existing = existing_raw.value if isinstance(existing_raw, Overwrite) else existing_raw
 
         return {
             "messages": [HumanMessage(content=feedback_text)],
