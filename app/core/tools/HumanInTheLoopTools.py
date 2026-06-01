@@ -60,8 +60,8 @@ class Question(BaseModel):
         description="极短标签（用于 Tab 显示），如'框架'"
     )
     options: List[QuestionOption] = Field(
-        min_length=0, max_length=4,
-        description="可选选项列表（0-4 个）。为空时为纯文本问题；非空时 2-4 个"
+        min_length=0, max_length=5,
+        description="可选选项列表（0-5 个：AI 可传 0-4 个业务选项，后端会自动追加 1 个虚拟 Other，所以渲染时最多 5 个）"
     )
     multiple: Optional[bool] = Field(
         default=False,
@@ -135,8 +135,9 @@ def ask_user_question(
 
     重要约束：
     - questions 数组必填，1-4 个
-    - 每个 question 的 options 0-4 个：
-        * 非空：2-4 个选项，**后端会自动追加虚拟"Other"项**（不必手写）
+    - 每个 question 的 options 0-5 个：
+        * AI 业务选项：2-4 个
+        * 后端自动追加 1 个虚拟"Other"项，所以最终渲染时最多 5 个
         * 空：纯文本问题，前端显示 textarea 让用户自由输入
     - text_only=true：显式标记纯文本问题，跳过 Other 注入
     - 推荐项放 options[0]，label 末尾加 "(Recommended)" 后缀

@@ -61,13 +61,13 @@ class TestQuestion:
             )
 
     def test_max_options_enforced(self):
-        # options 超过 4 个应被拒绝
+        # options 超过 5 个应被拒绝
         with pytest.raises(ValidationError):
             Question(
                 question="Q?",
                 header="H",
                 options=[
-                    {"label": f"L{i}", "description": f"d{i}"} for i in range(5)
+                    {"label": f"L{i}", "description": f"d{i}"} for i in range(6)
                 ],
             )
 
@@ -232,6 +232,29 @@ class TestAutoInjectOther:
         ])
         assert inp.questions[0].options == []  # text_only
         assert [o.label for o in inp.questions[1].options] == ["React", "Vue", "Other"]  # 注入
+
+    def test_llm_provided_4_business_plus_other_accepted(self):
+        """真实场景：LLM 传 4 业务选项 + 1 Other（=5 个）应被接受且不重复"""
+        from app.core.tools.HumanInTheLoopTools import AskUserQuestionInput
+        inp = AskUserQuestionInput(questions=[
+            {
+                "question": "请选择项目类型（可多选）",
+                "header": "项目类型",
+                "options": [
+                    {"label": "工业用地", "description": "工业生产、制造加工类项目"},
+                    {"label": "住宅用地 (Recommended)", "description": "住宅小区、公寓等居住类项目"},
+                    {"label": "商业用地", "description": "商场、写字楼等商业经营类项目"},
+                    {"label": "公共服务用地", "description": "学校、医院等公共服务类项目"},
+                    {"label": "Other", "description": "输入自定义回答"},
+                ],
+                "multiple": True,
+            }
+        ])
+        labels = [o.label for o in inp.questions[0].options]
+        assert labels == [
+            "工业用地", "住宅用地 (Recommended)", "商业用地",
+            "公共服务用地", "Other",
+        ]  # 不重复追加
 
 
 class TestAskUserQuestionTool:
