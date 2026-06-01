@@ -6,7 +6,9 @@ HumanInTheLoopTools - 人机交互工具模块
 提供通用的人工确认和审批工具，支持在 Agent 执行过程中暂停并等待人类输入。
 基于 LangGraph 的 interrupt() 机制实现。
 
-Date: 2026-05-28
+本模块定义 ask_user_question 工具，支持多问题、结构化选项、虚拟 Other 项。
+
+Date: 2026-06-01
 Author: AI Assistant
 """
 
@@ -19,14 +21,75 @@ from langgraph.types import Command
 from app.core.agent.AgentContext import AgentContext
 
 
+# =============================================================================
+# Pydantic Schema（v2 强制约束）
+# =============================================================================
+
+
+class QuestionOption(BaseModel):
+    """问题选项 - 必填 label + description
+
+    label 用于按钮显示文本，description 解释该选项的具体含义。
+    约束：label 1-50 字符，description 1-200 字符。
+    """
+    label: str = Field(
+        min_length=1, max_length=50,
+        description="选项显示文本（1-5 词，简短），如'React'"
+    )
+    description: str = Field(
+        min_length=1, max_length=200,
+        description="选项说明，解释该选项的具体含义"
+    )
+
+
+class Question(BaseModel):
+    """单个问题（每个 Question 必须是 1 个明确决策点）
+
+    约束：question 1-500 字符，header 1-30 字符，options 2-4 个。
+    multiple 字段控制单选/多选，默认单选。
+    """
+    question: str = Field(
+        min_length=1, max_length=500,
+        description="完整问题文本，如'你想用哪个前端框架？'"
+    )
+    header: str = Field(
+        min_length=1, max_length=30,
+        description="极短标签（用于 Tab 显示），如'框架'"
+    )
+    options: List[QuestionOption] = Field(
+        min_length=2, max_length=4,
+        description="可选选项列表（2-4 个），推荐项放第一个"
+    )
+    multiple: Optional[bool] = Field(
+        default=False,
+        description="是否允许多选，默认 false（单选）"
+    )
+
+
+class AskUserQuestionInput(BaseModel):
+    """请求用户回答问题的工具入参
+
+    约束：questions 1-4 个，防止前端渲染过载和 LLM 滥用。
+    """
+    questions: List[Question] = Field(
+        min_length=1, max_length=4,
+        description="问题列表（1-4 个相关问题）"
+    )
+
+
+# =============================================================================
+# 旧 schema（保留至 Task 2 删除，临时兼容）
+# =============================================================================
+
+
 class ApprovalOption(BaseModel):
-    """确认选项"""
+    """确认选项（旧版，Task 2 将删除）"""
     value: str = Field(description="选项的值，用于标识用户选择了哪个选项，如 'yes'/'no'")
     label: str = Field(description="选项的显示文本，展示给用户看的文字，如 '正确'/'不正确'")
 
 
 class ApprovalContext(BaseModel):
-    """人工确认的上下文配置，控制前端交互方式"""
+    """人工确认的上下文配置，控制前端交互方式（旧版，Task 2 将删除）"""
     interaction_type: Literal["options", "input"] = Field(
         default="input",
         description="交互类型：'options' 表示选项型（显示按钮供用户选择，适合'是否正确'类确认），'input' 表示输入型（显示文本框供用户输入，适合需要填写内容的场景）"
@@ -42,7 +105,7 @@ class ApprovalContext(BaseModel):
 
 
 class RequestHumanApprovalInput(BaseModel):
-    """请求人工确认的输入参数"""
+    """请求人工确认的输入参数（旧版，Task 2 将删除）"""
     title: str = Field(description="确认请求标题，简短描述需要确认的事项，如'确认用户信息'")
     content: str = Field(description="确认请求详细内容，说明需要用户决策的具体原因和影响")
     context: Optional[ApprovalContext] = Field(
