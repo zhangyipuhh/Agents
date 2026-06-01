@@ -27,6 +27,7 @@ Author: 张镒谱
 
 from imaplib import IMAP4
 import logging
+from datetime import datetime
 
 from typing import Literal, Union, AsyncGenerator
 from typing_extensions import TypedDict
@@ -34,6 +35,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph import MessagesState
 from langgraph.runtime import Runtime
 from langgraph.types import RetryPolicy, Command as LGCommand
+from langgraph.types import interrupt, Overwrite
 from langchain_core.messages import AnyMessage, HumanMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langmem.short_term import SummarizationNode, RunningSummary
@@ -196,64 +198,67 @@ class Agent:
         state: AgentState,
         runtime: Runtime[AgentContext],
     ):
-        """HITL 检查节点：在 llm_call 之前检查是否需要人工确认
+        """HITL 检查节点：检查 pending_question 并暂停图执行
 
-        检查当前状态中是否存在待确认的请求（pending_approval）。
+        检查当前状态中是否存在待回答的问题。
         如果存在且状态为 pending，则调用 interrupt() 暂停图执行，
-        向前端发送中断事件，等待用户决策后恢复。
-        恢复后添加 HumanMessage 反馈并清除 pending_approval。
+        向前端发送中断事件，等待用户回答后恢复。
+        恢复后添加 HumanMessage 反馈（保持 HumanMessage 模式避免 tool_call_id 风险）
+        并清除 pending_question、记录 question_answers。
 
         Args:
-            state: 当前对话状态，包含 messages 和 pending_approval
+            state: 当前对话状态，包含 messages 和 pending_question
             runtime: 包含 context 的运行时对象
 
         Returns:
-            dict: 更新后的状态，包含修改后的 messages 和清除后的 pending_approval
+            dict: 更新后的状态，包含修改后的 messages 和清除后的 pending_question
         """
-        pending = state.get("pending_approval")
+        pending = state.get("pending_question")
 
         if not pending or pending.get("status") != "pending":
             return state
 
-        # 构建 interrupt 请求
+        # 构造 interrupt 请求（LangGraph 新版格式：直接传 dict）
         request = {
-            "action_request": {
-                "action": "request_human_approval",
-                "args": {
-                    "title": pending["title"],
-                    "content": pending["content"],
-                    "context": pending.get("context", {})
-                }
-            },
-            "config": {
-                "allow_ignore": False,
-                "allow_respond": True,
-                "allow_edit": False,
-                "allow_accept": True
-            },
-            "description": pending["content"]
+            "action": "ask_user_question",
+            "questions": pending["questions"]
         }
 
         # 调用 interrupt 暂停执行
-        from langgraph.types import interrupt
         response = interrupt(request)
 
-        # 恢复后：添加 HumanMessage 反馈，清除 pending_approval
-        decision = response.get("args", {}).get("decision", "unknown")
-        feedback = response.get("args", {}).get("feedback", "")
+        # ===== 恢复后处理 =====
+        # response 直接是 Command(resume=...) 传入的值
+        answers = response.get("answers", []) if isinstance(response, dict) else []
+        questions = pending["questions"]
 
-        updated_messages = []
+        # 构造结构化的 HumanMessage（保持 HumanMessage 模式，详见设计文档 §6.1）
+        formatted_parts = []
+        for i, q in enumerate(questions):
+            labels = answers[i] if i < len(answers) else []
+            if not labels:
+                formatted_parts.append(f'问题「{q["question"]}」：未回答')
+            else:
+                formatted_parts.append(f'问题「{q["question"]}」：用户选择了 {", ".join(labels)}')
 
-        # 将用户反馈作为 HumanMessage 添加到消息历史中，使 LLM 能感知到用户反馈
-        if feedback:
-            feedback_text = f"【用户反馈】{feedback}"
-        else:
-            feedback_text = f"【用户反馈】用户选择了: {decision}"
-        updated_messages.append(HumanMessage(content=feedback_text))
+        feedback_text = (
+            f"【用户对 {len(questions)} 个问题的回答】\n"
+            + "\n".join(formatted_parts)
+            + "\n\n请基于以上回答继续。"
+        )
+
+        # 记录历史问答（用 Overwrite 处理 list 字段）
+        new_record = {
+            "questions": questions,
+            "answers": answers,
+            "timestamp": datetime.now().isoformat()
+        }
+        existing = state.get("question_answers", [])
 
         return {
-            "messages": updated_messages,
-            "pending_approval": None
+            "messages": [HumanMessage(content=feedback_text)],
+            "pending_question": None,
+            "question_answers": Overwrite(value=existing + [new_record])
         }
 
     async def _llm_call(
