@@ -22,7 +22,7 @@ const isStreaming = reactive({ value: false })
 const sidebarRef = ref(null)
 const currentAttachments = ref([])
 const approvalMode = ref(false)
-const approvalData = ref({ title: '', content: '', config: { allow_accept: true }, interaction_type: 'input', options: [], other_input: true })
+const approvalData = ref({ questions: [] })
 
 /**
  * 新建任务锁，防止重复创建
@@ -185,19 +185,12 @@ async function newSession() {
 
 function extractApprovalData(interruptArray) {
   if (!Array.isArray(interruptArray) || interruptArray.length === 0) {
-    return { title: '需要您的确认', content: '', config: { allow_accept: true }, interaction_type: 'input', options: [], other_input: true }
+    return { questions: [] }
   }
   const req = interruptArray[0]
-  const args = req.action_request?.args || {}
-  const context = args.context || {}
-  return {
-    title: args.title || '需要您的确认',
-    content: args.content || req.description || '',
-    config: req.config || { allow_accept: true },
-    interaction_type: context.interaction_type || 'input',
-    options: context.options || [],
-    other_input: context.other_input !== false
-  }
+  const payload = req.value ?? req
+  const questions = payload.questions ?? []
+  return { questions }
 }
 
 async function handleSendMessage(message, attachments = []) {
@@ -270,7 +263,7 @@ async function handleSendMessage(message, attachments = []) {
   }
 }
 
-async function handleApprovalSubmit({ decision, feedback }) {
+async function handleApprovalSubmit({ answers }) {
   approvalMode.value = false
   let interrupted = false
 
@@ -283,12 +276,7 @@ async function handleApprovalSubmit({ decision, feedback }) {
   // 清除上一次的中断状态，避免旧状态导致误触发
   aiMsg.interrupt = null
 
-  const resumeData = {
-    args: {
-      decision,
-      feedback
-    }
-  }
+  const resumeData = { answers }
 
   try {
     const stream = await chatStream(sessionId.value, '', [], resumeData)
@@ -533,12 +521,7 @@ async function handleSessionSwitch(targetSessionId) {
 
       <HumanApprovalBox
         v-if="approvalMode"
-        :title="approvalData.title"
-        :content="approvalData.content"
-        :config="approvalData.config"
-        :interaction_type="approvalData.interaction_type"
-        :options="approvalData.options"
-        :other_input="approvalData.other_input"
+        :questions="approvalData.questions"
         @submit="handleApprovalSubmit"
       />
       <InputBox

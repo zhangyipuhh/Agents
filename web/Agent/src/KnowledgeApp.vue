@@ -21,7 +21,7 @@ const filesLoading = ref(false)
 const currentSessionId = ref('')
 const isStreaming = ref(false)
 const approvalMode = ref(false)
-const approvalData = ref({ title: '', content: '', config: { allow_accept: true }, interaction_type: 'input', options: [], other_input: true })
+const approvalData = ref({ questions: [] })
 const isSidebarCollapsed = ref(false)
 const isCollapseBtnHovered = ref(false)
 
@@ -186,19 +186,12 @@ function handleToolAction(action) {
 
 function extractApprovalData(interruptArray) {
   if (!Array.isArray(interruptArray) || interruptArray.length === 0) {
-    return { title: '需要您的确认', content: '', config: { allow_accept: true }, interaction_type: 'input', options: [], other_input: true }
+    return { questions: [] }
   }
   const req = interruptArray[0]
-  const args = req.action_request?.args || {}
-  const context = args.context || {}
-  return {
-    title: args.title || '需要您的确认',
-    content: args.content || req.description || '',
-    config: req.config || { allow_accept: true },
-    interaction_type: context.interaction_type || 'input',
-    options: context.options || [],
-    other_input: context.other_input !== false
-  }
+  const payload = req.value ?? req
+  const questions = payload.questions ?? []
+  return { questions }
 }
 
 function startChatStream(message, uploadedFiles, aiMsg, resumeData = null) {
@@ -283,7 +276,7 @@ function handleProfileSend(message, uploadedFiles) {
   startChatStream(message, uploadedFiles, aiMsg)
 }
 
-function handleApprovalSubmit({ decision, feedback }) {
+function handleApprovalSubmit({ answers }) {
   approvalMode.value = false
 
   const aiMsg = messages.value[messages.value.length - 1]
@@ -292,12 +285,7 @@ function handleApprovalSubmit({ decision, feedback }) {
     return
   }
 
-  const resumeData = {
-    args: {
-      decision,
-      feedback
-    }
-  }
+  const resumeData = { answers }
 
   const aiMsgRef = ref(aiMsg)
   startChatStream('', [], aiMsgRef, resumeData)
@@ -339,12 +327,7 @@ function handleApprovalSubmit({ decision, feedback }) {
         <div class="input-box-container">
           <HumanApprovalBox
             v-if="approvalMode"
-            :title="approvalData.title"
-            :content="approvalData.content"
-            :config="approvalData.config"
-            :interaction_type="approvalData.interaction_type"
-            :options="approvalData.options"
-            :other_input="approvalData.other_input"
+            :questions="approvalData.questions"
             @submit="handleApprovalSubmit"
           />
           <ProfileInputBox
@@ -401,12 +384,7 @@ function handleApprovalSubmit({ decision, feedback }) {
           </transition>
           <HumanApprovalBox
             v-if="approvalMode"
-            :title="approvalData.title"
-            :content="approvalData.content"
-            :config="approvalData.config"
-            :interaction_type="approvalData.interaction_type"
-            :options="approvalData.options"
-            :other_input="approvalData.other_input"
+            :questions="approvalData.questions"
             @submit="handleApprovalSubmit"
           />
           <ProfileInputBox
