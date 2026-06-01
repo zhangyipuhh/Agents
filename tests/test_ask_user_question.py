@@ -1,7 +1,8 @@
 """ask_user_question 工具的单元测试
 
-测试 Pydantic Schema 的必填约束，确保 LLM 调用工具时必须传入结构化数据。
+测试 Pydantic Schema 的必填约束、工具函数行为、hitl_check_node 节点行为。
 """
+import asyncio
 import json
 from unittest.mock import MagicMock
 
@@ -178,3 +179,4 @@ class TestAskUserQuestionTool:
         assert len(messages) == 1
         assert messages[0].tool_call_id == "call_456"
         assert "questions_count" in json.loads(messages[0].content)
+
