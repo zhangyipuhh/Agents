@@ -47,7 +47,7 @@ class RequestHumanApprovalInput(BaseModel):
     content: str = Field(description="确认请求详细内容，说明需要用户决策的具体原因和影响")
     context: Optional[ApprovalContext] = Field(
         default=None,
-        description="上下文配置，控制前端展示为选项按钮还是输入框。对于'是否'类确认，传 {interaction_type: 'options', options: [{value:'yes',label:'正确'},{value:'no',label:'不正确'}]}；对于需要用户输入的场景，传 {interaction_type: 'input'} 或不传。默认自动携带 other_input: true，即 options 类型会额外显示'其他'输入框，input 类型会标识为'其他'输入"
+        description="交互配置，决定前端展示为选项按钮还是输入框，详见 ApprovalContext 定义"
     )
 
 
@@ -61,27 +61,32 @@ def request_human_approval(
     """
     【请求人工确认/澄清】在需要人工决策、需求澄清或信息补充的关键节点暂停执行，等待用户反馈。
 
-    调用时机：
-    - 执行高风险操作前需要用户确认时
-    - 需要用户从多个选项中做出选择时
-    - 需要用户提供额外信息或修改建议时
-    - 用户意图不明确、请求过于模糊，需要澄清具体需求时（如"我要学习一部法律"）
-    - 用户请求与所有可用工具的能力范围都不匹配，需要用户进一步明确需求时
-    - 业务规则要求人工审批的关键步骤
+    使用步骤：
+    1. 生成 title：用一句话概括需要用户确认的事项，如"请明确审批信息"。
+    2. 生成 content：详细说明需要用户决策的原因，如"您的审批请求不够明确，请告诉我需要进行哪些分析？"
+    3. 根据用户意图生成 ApprovalContext 格式的数据：
+       - 若用户需要从多个预设选项中选择（如"合规性审查"、"项目预审"、"补充耕地"），必须生成：
+         context={
+           "interaction_type": "options",
+           "options": [
+             {"value": "合规性审查", "label": "合规性审查"},
+             {"value": "项目预审", "label": "项目预审"},
+             {"value": "补充耕地", "label": "补充耕地"}
+           ]
+         }
+       - 若用户需要自由输入内容（如"请输入项目名称"），生成：
+         context={"interaction_type": "input"}
+       - 若未传 context，默认按 input 处理
 
-    交互类型规范：
-    - 对于"是否"类确认问题（如"请确认以上信息是否正确"），必须使用 context={"interaction_type": "options", "options": [{"value": "yes", "label": "正确"}, {"value": "no", "label": "不正确"}]}
-    - 对于需要用户输入内容的场景（如"请输入修改后的内容"、"我要学习一部法律"），使用 context={"interaction_type": "input"} 或不传
-    - 默认自动携带 other_input: true，options 类型会额外显示"其他"输入框，input 类型会标识为"其他"输入
-
-    示例：
-    - 用户说"我要学习一部法律"（意图模糊，没有可用工具匹配）→ 调用 request_human_approval(title="请明确法律名称", content="您想学习哪部法律？请提供具体的法律名称。", context={"interaction_type": "input"})
-    - 用户说"请确认以上信息是否正确"（需要确认）→ 调用 request_human_approval(title="信息确认", content="请确认以上信息是否正确", context={"interaction_type": "options", "options": [{"value": "yes", "label": "正确"}, {"value": "no", "label": "不正确"}]})
+    重要约束：
+    - 当需要用户从多个预设选项中选择时，必须把选项封装到 context.options 中，不能只写在 content 文本里
+    - options 中的每个选项必须同时包含 value（提交值）和 label（显示文本）
+    - 默认 other_input: true，options 模式下会额外显示"其他"输入框
 
     Args:
         title: 确认请求标题，简短描述需要确认的事项
         content: 确认请求详细内容，说明需要用户决策的具体原因和影响
-        context: 上下文配置，控制前端交互方式
+        context: 交互配置，决定前端展示为选项按钮还是输入框，格式遵循 ApprovalContext
         runtime: 工具运行时上下文，包含会话信息和工具调用ID（LangChain内部注入，无需在args_schema中定义）
 
     Returns:
