@@ -252,4 +252,85 @@ describe('HumanApprovalBox', () => {
       expect(btn.attributes('disabled')).toBeDefined()
     })
   })
+
+  describe('real-world mixed scenario (3 questions: multi-select + 2 freeform)', () => {
+    // 用户提供的真实数据：1 个多选题（5 options）+ 2 个 text_only 题
+    const realQuestions = [
+      {
+        question: '请选择项目类型（可多选）',
+        header: '项目类型',
+        options: [
+          { label: '工业用地', description: '工业生产、制造加工类项目' },
+          { label: '住宅用地 (Recommended)', description: '住宅小区、公寓等居住类项目' },
+          { label: '商业用地', description: '商场、写字楼等商业经营类项目' },
+          { label: '公共服务用地', description: '学校、医院等公共服务类项目' },
+          { label: 'Other', description: '输入自定义回答' }
+        ],
+        multiple: true,
+        text_only: false
+      },
+      {
+        question: '请输入项目名称',
+        header: '项目名称',
+        options: [],
+        multiple: false,
+        text_only: true
+      },
+      {
+        question: '如有其他需求请简要说明',
+        header: '补充说明',
+        options: [],
+        multiple: false,
+        text_only: true
+      }
+    ]
+
+    it('renders 3 tabs and switches between modes', async () => {
+      const wrapper = mountBox({ questions: realQuestions })
+      const tabs = wrapper.findAll('.tab-btn')
+      expect(tabs.length).toBe(3)
+      // Q1 是 options 模式
+      expect(wrapper.find('.options-list').exists()).toBe(true)
+      expect(wrapper.find('.freeform-editor').exists()).toBe(false)
+    })
+
+    it('freeform tab shows textarea instead of options', async () => {
+      const wrapper = mountBox({ questions: realQuestions })
+      await wrapper.findAll('.tab-btn')[1].trigger('click') // 切到 Q2
+      expect(wrapper.find('.options-list').exists()).toBe(false)
+      expect(wrapper.find('.freeform-editor').exists()).toBe(true)
+      expect(wrapper.text()).toContain('请输入项目名称')
+    })
+
+    it('completes the 3-question flow: select options + 2 text inputs', async () => {
+      const wrapper = mountBox({ questions: realQuestions })
+      // Q1: 多选 2 个（住宅 + 商业）
+      await wrapper.findAll('.option-btn')[1].trigger('click')  // 住宅用地
+      await wrapper.findAll('.option-btn')[2].trigger('click')  // 商业用地
+      // Q2: 纯文本输入项目名
+      await wrapper.findAll('.tab-btn')[1].trigger('click')
+      await wrapper.find('.freeform-input').setValue('阳光花园小区')
+      // Q3: 纯文本输入补充说明
+      await wrapper.findAll('.tab-btn')[2].trigger('click')
+      await wrapper.find('.freeform-input').setValue('需要配套学校')
+      // 提交
+      await wrapper.find('.confirm-btn').trigger('click')
+      const events = wrapper.emitted('submit')
+      expect(events).toBeTruthy()
+      expect(events[0][0].answers).toEqual([
+        ['住宅用地 (Recommended)', '商业用地'],
+        ['阳光花园小区'],
+        ['需要配套学校']
+      ])
+    })
+
+    it('submit disabled until all 3 questions answered', async () => {
+      const wrapper = mountBox({ questions: realQuestions })
+      // 只答 Q1
+      await wrapper.findAll('.option-btn')[0].trigger('click')
+      // 切到 Q2 看到 disabled
+      await wrapper.findAll('.tab-btn')[1].trigger('click')
+      expect(wrapper.find('.confirm-btn').attributes('disabled')).toBeDefined()
+    })
+  })
 })
