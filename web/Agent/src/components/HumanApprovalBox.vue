@@ -29,6 +29,7 @@ const emit = defineEmits(['submit'])
 const activeTab = ref(0)
 const answers = ref([])
 const customInputs = ref([])
+const freeformInputs = ref([])
 const editing = ref([])
 const loading = ref(false)
 const textareaRefs = ref([])
@@ -39,6 +40,7 @@ watch(
     activeTab.value = 0
     answers.value = newQuestions.map((q) => (q.multiple ? [] : null))
     customInputs.value = newQuestions.map(() => '')
+    freeformInputs.value = newQuestions.map(() => '')
     editing.value = newQuestions.map(() => false)
   },
   { immediate: true, deep: true }
@@ -49,10 +51,23 @@ watch(
  */
 const isAnswered = (idx) => {
   if (idx < 0 || idx >= answers.value.length) return false
+  const q = props.questions[idx]
+  // 纯文本问题：检查 freeform 输入
+  if (!q.options || q.options.length === 0) {
+    return (freeformInputs.value[idx] || '').trim().length > 0
+  }
   const ans = answers.value[idx]
   if (Array.isArray(ans)) return ans.length > 0
   return ans !== null && ans !== undefined
 }
+
+/**
+ * 判断当前问题是否为纯文本（无 options）模式
+ */
+const isCurrentFreeform = computed(() => {
+  const q = currentQuestion.value
+  return q && (!q.options || q.options.length === 0)
+})
 
 const isOtherItem = (option) => option.label === 'Other'
 
@@ -148,6 +163,11 @@ const handleSubmit = () => {
     commitOther(activeTab.value)
   }
   const finalAnswers = props.questions.map((q, i) => {
+    // 纯文本问题：从 freeformInputs 取值
+    if (!q.options || q.options.length === 0) {
+      const text = (freeformInputs.value[i] || '').trim()
+      return text ? [text] : []
+    }
     const ans = answers.value[i]
     if (q.multiple) {
       return Array.isArray(ans) && ans.length > 0 ? [...ans] : []
@@ -196,7 +216,17 @@ const currentQuestion = computed(() => props.questions[activeTab.value] || null)
           </button>
         </div>
 
-        <div class="options-list">
+        <div v-if="isCurrentFreeform" class="freeform-editor">
+          <textarea
+            v-model="freeformInputs[activeTab]"
+            class="freeform-input"
+            placeholder="请输入您的回答..."
+            rows="3"
+            :disabled="loading"
+          ></textarea>
+        </div>
+
+        <div v-else class="options-list">
           <button
             v-for="option in currentQuestion.options"
             :key="option.label"
@@ -445,6 +475,35 @@ const currentQuestion = computed(() => props.questions[activeTab.value] || null)
   font-size: 11px;
   color: var(--color-text-muted);
   text-align: right;
+}
+
+.freeform-editor {
+  padding: 0 4px;
+}
+
+.freeform-input {
+  width: 100%;
+  min-height: 80px;
+  max-height: 160px;
+  padding: 10px 12px;
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-primary);
+  background-color: var(--color-bg-primary);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  resize: vertical;
+  overflow-y: auto;
+  transition: var(--transition-colors), border-color 0.2s ease;
+}
+
+.freeform-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.freeform-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
 }
 
 .approval-actions {

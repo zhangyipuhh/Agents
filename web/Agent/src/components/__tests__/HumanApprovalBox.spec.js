@@ -193,4 +193,63 @@ describe('HumanApprovalBox', () => {
       expect(events[0][0].answers[1]).toEqual(['Vue'])
     })
   })
+
+  describe('freeform mode (text-only questions)', () => {
+    const freeformQuestion = {
+      question: '请输入项目名称',
+      header: '项目',
+      options: [],
+      multiple: false,
+      text_only: true
+    }
+
+    it('renders textarea instead of options-list when no options', () => {
+      const wrapper = mountBox({ questions: [freeformQuestion] })
+      expect(wrapper.find('.freeform-editor').exists()).toBe(true)
+      expect(wrapper.find('.freeform-input').exists()).toBe(true)
+      expect(wrapper.find('.options-list').exists()).toBe(false)
+    })
+
+    it('submit is enabled only after typing text', async () => {
+      const wrapper = mountBox({ questions: [freeformQuestion] })
+      const btn = wrapper.find('.confirm-btn')
+      expect(btn.attributes('disabled')).toBeDefined()
+
+      const ta = wrapper.find('.freeform-input')
+      await ta.setValue('Project Alpha')
+      expect(wrapper.find('.confirm-btn').attributes('disabled')).toBeUndefined()
+    })
+
+    it('emits trimmed text as single-element answer array', async () => {
+      const wrapper = mountBox({ questions: [freeformQuestion] })
+      await wrapper.find('.freeform-input').setValue('  Project Alpha  ')
+      await wrapper.find('.confirm-btn').trigger('click')
+      const events = wrapper.emitted('submit')
+      expect(events[0][0].answers).toEqual([['Project Alpha']])
+    })
+
+    it('mixed freeform and options questions work together', async () => {
+      const wrapper = mountBox({
+        questions: [
+          freeformQuestion,                                          // 第 1 题：纯文本
+          { ...baseQuestion, header: 'Framework' }                    // 第 2 题：选项
+        ]
+      })
+      // 答第 1 题
+      await wrapper.find('.freeform-input').setValue('My Project')
+      // 切到第 2 题
+      await wrapper.findAll('.tab-btn')[1].trigger('click')
+      await wrapper.findAll('.option-btn')[0].trigger('click')
+      await wrapper.find('.confirm-btn').trigger('click')
+      const events = wrapper.emitted('submit')
+      expect(events[0][0].answers).toEqual([['My Project'], ['React']])
+    })
+
+    it('empty freeform input keeps submit disabled', async () => {
+      const wrapper = mountBox({ questions: [freeformQuestion] })
+      await wrapper.find('.freeform-input').setValue('   ')  // 只有空格
+      const btn = wrapper.find('.confirm-btn')
+      expect(btn.attributes('disabled')).toBeDefined()
+    })
+  })
 })
