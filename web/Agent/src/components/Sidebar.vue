@@ -16,6 +16,10 @@ const props = defineProps({
     type: String,
     default: 'user'
   },
+  userId: {
+    type: Number,
+    default: null
+  },
   currentSessionId: {
     type: String,
     default: ''
@@ -476,7 +480,7 @@ onUnmounted(() => {
     <UserSettingsDialog
       v-model:visible="isSettingsDialogVisible"
       :role="userRole"
-      :user-id="null"
+      :user-id="userId"
       :username="username"
       @username-updated="handleUsernameUpdated"
     />

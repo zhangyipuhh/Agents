@@ -38,10 +38,13 @@ const isEmptyState = computed(() => messages.length === 0)
 function applyUserData(data) {
   localStorage.setItem('user_role', data.role)
   localStorage.setItem('username', data.username)
+  if (data.user_id !== undefined && data.user_id !== null) {
+    localStorage.setItem('user_id', String(data.user_id))
+  }
   currentUser.value = {
     username: data.username,
     role: data.role,
-    userId: null
+    userId: data.user_id || null
   }
   isLoggedIn.value = true
 }
@@ -58,12 +61,20 @@ async function checkAuth() {
   }
   try {
     const data = await validateToken()
+    const savedUserId = localStorage.getItem('user_id')
+    if (savedUserId && savedUserId !== 'null' && savedUserId !== 'undefined') {
+      data.user_id = parseInt(savedUserId, 10)
+    }
     applyUserData(data)
   } catch {
     try {
       const newToken = await refreshToken()
       const data = await validateToken()
       localStorage.setItem('auth_token', newToken)
+      const savedUserId = localStorage.getItem('user_id')
+      if (savedUserId && savedUserId !== 'null' && savedUserId !== 'undefined') {
+        data.user_id = parseInt(savedUserId, 10)
+      }
       applyUserData(data)
     } catch {
       clearAuth()
@@ -85,11 +96,14 @@ function handleLoginSuccess(data) {
   localStorage.setItem('auth_token', data.access_token)
   localStorage.setItem('user_role', data.role)
   localStorage.setItem('username', data.username)
+  if (data.user_id !== undefined && data.user_id !== null) {
+    localStorage.setItem('user_id', String(data.user_id))
+  }
   isLoggedIn.value = true
   currentUser.value = {
     username: data.username,
     role: data.role,
-    userId: null
+    userId: data.user_id || null
   }
   nextTick(() => {
     ensureSession()
@@ -104,6 +118,7 @@ async function handleLogout() {
   await apiLogout()
   isLoggedIn.value = false
   currentUser.value = { username: '', role: '', userId: null }
+  localStorage.removeItem('user_id')
   messages.splice(0, messages.length)
   sessionId.value = ''
   authView.value = 'login'
@@ -509,6 +524,7 @@ async function handleSessionSwitch(targetSessionId) {
       :current-page="currentPage"
       :username="currentUser.username"
       :user-role="currentUser.role"
+      :user-id="currentUser.userId"
       :current-session-id="sessionId.value"
       @new-chat="newSession"
       @page-change="handlePageChange"

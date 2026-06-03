@@ -54,9 +54,6 @@ const newPassword = ref('')
 /** @type {import('vue').Ref<string>} 确认新密码 */
 const confirmNewPassword = ref('')
 
-/** @type {import('vue').Ref<boolean>} 是否正在提交修改密码请求 */
-const passwordLoading = ref(false)
-
 /** @type {import('vue').Ref<string>} 修改密码错误信息 */
 const passwordError = ref('')
 
@@ -68,14 +65,14 @@ const passwordSuccess = ref('')
 /** @type {import('vue').Ref<string>} 新用户名 */
 const newUsername = ref('')
 
-/** @type {import('vue').Ref<boolean>} 是否正在提交修改用户名请求 */
-const usernameLoading = ref(false)
-
 /** @type {import('vue').Ref<string>} 修改用户名错误信息 */
 const usernameError = ref('')
 
 /** @type {import('vue').Ref<string>} 修改用户名成功信息 */
 const usernameSuccess = ref('')
+
+/** @type {import('vue').Ref<boolean>} 是否正在保存设置 */
+const isSaving = ref(false)
 
 /**
  * 是否为普通用户角色
@@ -108,88 +105,148 @@ function resetForms() {
 }
 
 /**
- * 处理修改密码表单提交
- * 验证输入后调用 updatePassword API
- * @returns {Promise<void>}
+ * 判断是否有密码修改意图
+ * 任一密码相关字段非空即视为有修改意图
+ * @returns {boolean}
  */
-async function handleUpdatePassword() {
-  passwordError.value = ''
-  passwordSuccess.value = ''
-
-  // 表单验证
-  if (!oldPassword.value) {
-    passwordError.value = '请输入旧密码'
-    return
-  }
-  if (!newPassword.value) {
-    passwordError.value = '请输入新密码'
-    return
-  }
-  if (newPassword.value.length < 6) {
-    passwordError.value = '新密码至少6个字符'
-    return
-  }
-  if (newPassword.value !== confirmNewPassword.value) {
-    passwordError.value = '两次输入的新密码不一致'
-    return
-  }
-  if (oldPassword.value === newPassword.value) {
-    passwordError.value = '新密码不能与旧密码相同'
-    return
-  }
-
-  passwordLoading.value = true
-
-  try {
-    await updatePassword(props.userId, oldPassword.value, newPassword.value)
-    passwordSuccess.value = '密码修改成功'
-    oldPassword.value = ''
-    newPassword.value = ''
-    confirmNewPassword.value = ''
-  } catch (err) {
-    passwordError.value = err.message || '修改密码失败'
-  } finally {
-    passwordLoading.value = false
-  }
+function hasPasswordIntent() {
+  return !!(oldPassword.value || newPassword.value || confirmNewPassword.value)
 }
 
 /**
- * 处理修改用户名表单提交
- * 验证输入后调用 updateUsername API
- * @returns {Promise<void>}
+ * 判断是否有用户名修改意图
+ * @returns {boolean}
  */
-async function handleUpdateUsername() {
-  usernameError.value = ''
-  usernameSuccess.value = ''
+function hasUsernameIntent() {
+  return !!(newUsername.value.trim())
+}
 
-  // 表单验证
+/**
+ * 验证密码表单
+ * 如有错误则设置 passwordError 并返回 false
+ * @returns {boolean}
+ */
+function validatePasswordForm() {
+  if (!oldPassword.value) {
+    passwordError.value = '请输入旧密码'
+    return false
+  }
+  if (!newPassword.value) {
+    passwordError.value = '请输入新密码'
+    return false
+  }
+  if (newPassword.value.length < 6) {
+    passwordError.value = '新密码至少6个字符'
+    return false
+  }
+  if (newPassword.value !== confirmNewPassword.value) {
+    passwordError.value = '两次输入的新密码不一致'
+    return false
+  }
+  if (oldPassword.value === newPassword.value) {
+    passwordError.value = '新密码不能与旧密码相同'
+    return false
+  }
+  return true
+}
+
+/**
+ * 验证用户名表单
+ * 如有错误则设置 usernameError 并返回 false
+ * @returns {boolean}
+ */
+function validateUsernameForm() {
   if (!newUsername.value.trim()) {
     usernameError.value = '请输入新用户名'
-    return
+    return false
   }
   if (newUsername.value.trim().length < 3) {
     usernameError.value = '用户名至少3个字符'
-    return
+    return false
   }
   if (newUsername.value.trim() === props.username) {
     usernameError.value = '新用户名不能与当前用户名相同'
+    return false
+  }
+  return true
+}
+
+/**
+ * 统一保存处理函数
+ * 根据用户填写的表单内容，仅提交已修改的部分
+ * @returns {Promise<void>}
+ */
+async function handleSave() {
+  // 清空所有提示信息
+  passwordError.value = ''
+  passwordSuccess.value = ''
+  usernameError.value = ''
+  usernameSuccess.value = ''
+
+  const passwordIntent = hasPasswordIntent()
+  const usernameIntent = hasUsernameIntent()
+
+  // 如果两者都没有填写，提示用户
+  if (!passwordIntent && !usernameIntent) {
+    passwordError.value = '请至少填写一项修改内容'
     return
   }
 
-  usernameLoading.value = true
+  // 分别验证有修改意图的表单
+  if (passwordIntent && !validatePasswordForm()) {
+    return
+  }
+  if (usernameIntent && !validateUsernameForm()) {
+    return
+  }
+
+  if (!props.userId) {
+    passwordError.value = '用户ID无效，请重新登录'
+    return
+  }
+
+  isSaving.value = true
 
   try {
-    const data = await updateUsername(props.userId, newUsername.value.trim())
-    usernameSuccess.value = '用户名修改成功'
-    // 通知父组件用户名已更新
-    emit('username-updated', { username: data.new_username || newUsername.value.trim() })
-    // 更新 localStorage 中的用户名
-    localStorage.setItem('username', data.new_username || newUsername.value.trim())
-    newUsername.value = ''
-  } catch (err) {
-    usernameError.value = err.message || '修改用户名失败'
+    const promises = []
+
+    if (passwordIntent) {
+      promises.push(
+        (async () => {
+          try {
+            await updatePassword(props.userId, oldPassword.value, newPassword.value)
+            passwordSuccess.value = '密码修改成功'
+            oldPassword.value = ''
+            newPassword.value = ''
+            confirmNewPassword.value = ''
+          } catch (err) {
+            passwordError.value = err.message || '修改密码失败'
+          }
+        })()
+      )
+    }
+
+    if (usernameIntent) {
+      promises.push(
+        (async () => {
+          try {
+            const data = await updateUsername(props.userId, newUsername.value.trim())
+            usernameSuccess.value = '用户名修改成功'
+            // 通知父组件用户名已更新
+            emit('username-updated', { username: data.new_username || newUsername.value.trim() })
+            // 更新 localStorage 中的用户名
+            localStorage.setItem('username', data.new_username || newUsername.value.trim())
+            newUsername.value = ''
+          } catch (err) {
+            usernameError.value = err.message || '修改用户名失败'
+          }
+        })()
+      )
+    }
+
+    await Promise.all(promises)
   } finally {
-    usernameLoading.value = false
+    isSaving.value = false
   }
 }
 
@@ -232,10 +289,10 @@ watch(() => props.visible, (newVal) => {
           <div class="dialog-body">
             <!-- 普通用户设置 -->
             <template v-if="isUser">
-              <!-- 修改密码区域 -->
-              <div class="settings-section">
-                <h3 class="section-title">修改密码</h3>
-                <form @submit.prevent="handleUpdatePassword">
+              <form @submit.prevent="handleSave">
+                <!-- 修改密码区域 -->
+                <div class="settings-section">
+                  <h3 class="section-title">修改密码</h3>
                   <div class="form-group">
                     <label class="form-label" for="settings-old-password">旧密码</label>
                     <input
@@ -245,7 +302,7 @@ watch(() => props.visible, (newVal) => {
                       class="form-input"
                       placeholder="请输入旧密码"
                       autocomplete="current-password"
-                      :disabled="passwordLoading"
+                      :disabled="isSaving"
                     />
                   </div>
 
@@ -258,7 +315,7 @@ watch(() => props.visible, (newVal) => {
                       class="form-input"
                       placeholder="请输入新密码（至少6个字符）"
                       autocomplete="new-password"
-                      :disabled="passwordLoading"
+                      :disabled="isSaving"
                     />
                   </div>
 
@@ -271,36 +328,22 @@ watch(() => props.visible, (newVal) => {
                       class="form-input"
                       placeholder="请再次输入新密码"
                       autocomplete="new-password"
-                      :disabled="passwordLoading"
+                      :disabled="isSaving"
                     />
                   </div>
 
                   <!-- 修改密码提示信息 -->
                   <div v-if="passwordError" class="error-message">{{ passwordError }}</div>
                   <div v-if="passwordSuccess" class="success-message">{{ passwordSuccess }}</div>
+                </div>
 
-                  <button
-                    type="submit"
-                    class="action-button"
-                    :disabled="passwordLoading"
-                  >
-                    <span v-if="passwordLoading" class="button-loading">
-                      <span class="loading-spinner"></span>
-                      提交中...
-                    </span>
-                    <span v-else>修改密码</span>
-                  </button>
-                </form>
-              </div>
+                <!-- 分隔线 -->
+                <div class="section-divider"></div>
 
-              <!-- 分隔线 -->
-              <div class="section-divider"></div>
-
-              <!-- 修改用户名区域 -->
-              <div class="settings-section">
-                <h3 class="section-title">修改用户名</h3>
-                <p class="section-desc">当前用户名：<strong>{{ username }}</strong></p>
-                <form @submit.prevent="handleUpdateUsername">
+                <!-- 修改用户名区域 -->
+                <div class="settings-section">
+                  <h3 class="section-title">修改用户名</h3>
+                  <p class="section-desc">当前用户名：<strong>{{ username }}</strong></p>
                   <div class="form-group">
                     <label class="form-label" for="settings-new-username">新用户名</label>
                     <input
@@ -310,27 +353,28 @@ watch(() => props.visible, (newVal) => {
                       class="form-input"
                       placeholder="请输入新用户名（至少3个字符）"
                       autocomplete="off"
-                      :disabled="usernameLoading"
+                      :disabled="isSaving"
                     />
                   </div>
 
                   <!-- 修改用户名提示信息 -->
                   <div v-if="usernameError" class="error-message">{{ usernameError }}</div>
                   <div v-if="usernameSuccess" class="success-message">{{ usernameSuccess }}</div>
+                </div>
 
-                  <button
-                    type="submit"
-                    class="action-button"
-                    :disabled="usernameLoading"
-                  >
-                    <span v-if="usernameLoading" class="button-loading">
-                      <span class="loading-spinner"></span>
-                      提交中...
-                    </span>
-                    <span v-else>修改用户名</span>
-                  </button>
-                </form>
-              </div>
+                <!-- 统一保存按钮 -->
+                <button
+                  type="submit"
+                  class="action-button"
+                  :disabled="isSaving"
+                >
+                  <span v-if="isSaving" class="button-loading">
+                    <span class="loading-spinner"></span>
+                    保存中...
+                  </span>
+                  <span v-else>保存设置</span>
+                </button>
+              </form>
             </template>
 
             <!-- 管理员设置占位 -->

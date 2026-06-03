@@ -86,12 +86,16 @@ async function handleLogin() {
     localStorage.setItem('auth_token', data.access_token)
     localStorage.setItem('user_role', data.role)
     localStorage.setItem('username', data.username)
+    if (data.user_id !== undefined && data.user_id !== null) {
+      localStorage.setItem('user_id', String(data.user_id))
+    }
 
     // 通知父组件登录成功
     emit('login-success', {
       access_token: data.access_token,
       role: data.role,
-      username: data.username
+      username: data.username,
+      user_id: data.user_id
     })
   } catch (err) {
     errorMessage.value = err.message || '登录失败，请重试'

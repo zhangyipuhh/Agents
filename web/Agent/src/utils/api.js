@@ -105,6 +105,10 @@ export async function logout() {
  * @throws {Error} 修改密码失败时抛出错误
  */
 export async function updatePassword(userId, oldPassword, newPassword) {
+  if (!userId) {
+    throw new Error('用户ID无效，请重新登录')
+  }
+
   const headers = {
     'Content-Type': 'application/json',
     ...getAuthHeaders()
@@ -132,6 +136,10 @@ export async function updatePassword(userId, oldPassword, newPassword) {
  * @throws {Error} 修改用户名失败时抛出错误
  */
 export async function updateUsername(userId, newUsername) {
+  if (!userId) {
+    throw new Error('用户ID无效，请重新登录')
+  }
+
   const headers = {
     'Content-Type': 'application/json',
     ...getAuthHeaders()
