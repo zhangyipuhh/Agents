@@ -16,7 +16,7 @@ Date: 2026/2/6
 Author: 张镒谱
 """
 import uuid
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Depends, Query
 from pydantic import BaseModel
 from typing import Optional
 from app.shared.utils.files.fileTransfer import FileTransfer
@@ -26,6 +26,7 @@ from app.shared.utils.files.attachment_db import AttachmentDB
 from app.shared.utils.memory.conversation_db import ConversationDB
 from app.shared.utils.memory.checkpoint_history import CheckpointHistoryService
 from app.shared.utils.memory.checkpoint import get_async_checkpointer
+from app.shared.utils.auth.Safety import require_admin
 
 
 class SessionCreateResponse(BaseModel):
@@ -375,3 +376,79 @@ async def get_session_messages(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取历史消息失败: {str(e)}")
+
+
+@router.delete('/admin/{session_id}', dependencies=[Depends(require_admin)])
+async def admin_delete_session(session_id: str, request: Request):
+    """
+    Admin 强制删除任意会话（踢特定会话）
+
+    不需要验证 session 归属，admin 特权操作。
+    执行与普通删除相同的清理逻辑：对话记录、附件、文件目录、checkpoint、缓存。
+
+    Args:
+        session_id (str): 要删除的会话ID
+        request (Request): FastAPI 请求对象
+
+    Returns:
+        SessionDeleteResponse: 删除结果
+    """
+    from app.shared.utils.auth.audit_log import AuditLog
+
+    try:
+        # 删除关联的对话记录
+        await ConversationDB.delete_session_records(session_id)
+
+        # 删除关联的附件记录
+        await AttachmentDB.delete_session_attachments(session_id)
+
+        # 删除会话目录
+        file_transfer = FileTransfer()
+        success = await file_transfer.delete_session(session_id)
+
+        # 删除 LangGraph Checkpoint 中的对话状态
+        try:
+            checkpointer = await get_async_checkpointer()
+            await checkpointer.adelete_thread(session_id)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"删除 checkpoint 失败: session_id={session_id}, error={e}"
+            )
+
+        # 从缓存中删除 session_id
+        await session_cache.delete_session(session_id)
+
+        # 记录审计日志
+        admin_username = getattr(request.state, 'username', 'unknown')
+        client_ip = request.client.host if request.client else "unknown"
+        await AuditLog.write_log(
+            action='admin_delete_session',
+            username=admin_username,
+            detail=f'Admin 删除会话 {session_id}',
+            ip_address=client_ip
+        )
+
+        return {
+            "success": success,
+            "message": "会话删除成功" if success else "会话不存在"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"删除会话失败: {str(e)}")
+
+
+@router.get('/admin/search', dependencies=[Depends(require_admin)])
+async def admin_search_sessions(username: str = Query(..., description="用户名关键字")):
+    """
+    Admin 按用户名搜索会话
+
+    支持模糊匹配用户名，返回匹配的会话列表。
+
+    Args:
+        username (str): 用户名关键字
+
+    Returns:
+        dict: 会话列表
+    """
+    sessions = await SessionDB.search_sessions_by_username(username)
+    return {"sessions": sessions}

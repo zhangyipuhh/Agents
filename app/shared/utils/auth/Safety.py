@@ -235,6 +235,31 @@ class JWTAuth:
         return payload
 
 
+async def require_admin(request: Request):
+    """
+    校验当前请求用户是否为 admin 角色
+
+    该函数作为 FastAPI 依赖使用，检查 request.state.role 是否为 'admin'。
+    必须在 auth_middleware 之后使用，因为 auth_middleware 负责将 role 写入 request.state。
+
+    Args:
+        request: FastAPI 请求对象
+
+    Returns:
+        bool: 校验通过返回 True
+
+    Raises:
+        HTTPException: 非 admin 用户时返回 403 Forbidden
+    """
+    role = getattr(request.state, 'role', 'user')
+    if role != 'admin':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="需要管理员权限"
+        )
+    return True
+
+
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
     print(f"[诊断-auth_middleware] 进入, path={path}")
@@ -336,6 +361,7 @@ SESSION_WHITELIST_PREFIXES = [
     "/api/session/create",
     "/api/session/list",
     "/api/session/delete",
+    "/api/session/admin",
 ]
 
 # 需要 Session 验证的路径前缀

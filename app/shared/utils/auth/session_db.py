@@ -206,7 +206,7 @@ class SessionDB:
                 'status': 'active',
                 'agent_type': 'default',
             }
-            print(f"[诊断-SessionDB] 已写入内存, _memory_cache keys={list(cls._memory_cache.keys())}")
+            #print(f"[诊断-SessionDB] 已写入内存, _memory_cache keys={list(cls._memory_cache.keys())}")
 
         # 写入数据库
         if cls.is_enabled():
@@ -439,6 +439,102 @@ class SessionDB:
                 if s.get('user_id') == user_id:
                     sessions.append({
                         'session_id': sid,
+                        'title': s.get('title', '新对话'),
+                        'last_active_at': s.get('last_active_at', s.get('created_at')),
+                        'status': s.get('status', 'active'),
+                        'agent_type': s.get('agent_type', 'default'),
+                        'created_at': s.get('created_at'),
+                    })
+            sessions.sort(key=lambda x: x.get('last_active_at') or datetime.min, reverse=True)
+            return sessions
+
+    @classmethod
+    async def get_all_active_sessions(cls, minutes: int = 30) -> list:
+        """
+        获取所有活跃会话（用于 admin 在线监控）
+
+        基于最后活跃时间判断在线状态，按用户聚合返回在线用户列表。
+
+        Args:
+            minutes: 活跃时间阈值（分钟），默认 30 分钟
+
+        Returns:
+            list: 在线用户列表，每项包含 user_id、username、session_count、last_active_at
+        """
+        from datetime import timedelta
+        threshold = datetime.now() - timedelta(minutes=minutes)
+
+        if cls.is_enabled():
+            rows = await DatabasePool.fetch(
+                """
+                SELECT s.user_id, s.username, COUNT(*) as session_count, MAX(s.last_active_at) as last_active_at
+                FROM sessions s
+                WHERE s.last_active_at >= $1
+                GROUP BY s.user_id, s.username
+                ORDER BY last_active_at DESC
+                """,
+                threshold
+            )
+            return [dict(row) for row in rows]
+
+        # Memory 模式：从内存缓存中筛选
+        with cls._lock:
+            user_map = {}
+            for sid, s in cls._memory_cache.items():
+                last_active = s.get('last_active_at', s.get('created_at'))
+                if last_active and last_active >= threshold:
+                    user_id = s.get('user_id')
+                    username = s.get('username')
+                    if user_id not in user_map:
+                        user_map[user_id] = {
+                            'user_id': user_id,
+                            'username': username,
+                            'session_count': 0,
+                            'last_active_at': last_active
+                        }
+                    user_map[user_id]['session_count'] += 1
+                    if last_active > user_map[user_id]['last_active_at']:
+                        user_map[user_id]['last_active_at'] = last_active
+            return sorted(user_map.values(), key=lambda x: x['last_active_at'], reverse=True)
+
+    @classmethod
+    async def search_sessions_by_username(cls, username: str) -> list:
+        """
+        按用户名搜索会话（admin 专用）
+
+        支持模糊匹配用户名，返回匹配的会话列表。
+
+        Args:
+            username: 用户名关键字
+
+        Returns:
+            list: 会话列表，每项包含 session_id、username、title、last_active_at、status、agent_type、created_at
+        """
+        if cls.is_enabled():
+            rows = await DatabasePool.fetch(
+                """
+                SELECT s.session_id, s.username, s.title, s.last_active_at, s.status, s.agent_type, s.created_at
+                FROM sessions s
+                JOIN users u ON s.user_id = u.id
+                WHERE u.username ILIKE $1
+                ORDER BY s.last_active_at DESC
+                """,
+                f"%{username}%"
+            )
+            return [dict(row) for row in rows]
+
+        # Memory 模式：需要从 UserDB 获取用户列表进行匹配
+        from app.shared.utils.auth.user_db import UserDB
+        users = await UserDB.list_users(limit=1000)
+        matched_usernames = {u['username'] for u in users if username.lower() in u['username'].lower()}
+
+        with cls._lock:
+            sessions = []
+            for sid, s in cls._memory_cache.items():
+                if s.get('username') in matched_usernames:
+                    sessions.append({
+                        'session_id': sid,
+                        'username': s.get('username'),
                         'title': s.get('title', '新对话'),
                         'last_active_at': s.get('last_active_at', s.get('created_at')),
                         'status': s.get('status', 'active'),

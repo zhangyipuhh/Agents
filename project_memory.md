@@ -106,6 +106,7 @@ app/
   - `/api/session/create` — 创建会话
   - `/api/session/list` — 会话列表
   - `/api/session/delete/*` — 删除会话
+  - `/api/session/admin/*` — Admin 会话管理
 
 ### 中间件执行顺序
 
@@ -119,6 +120,12 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 2. `session_auth_middleware`（先注册，内） — 验证 Session（需要 session 的路径）
 3. 路由处理器
 
+### 权限控制
+
+- **角色区分**：用户表 `role` 字段支持 `admin` / `user`，登录时返回
+- **Admin 权限校验**：`require_admin` FastAPI 依赖，检查 `request.state.role == 'admin'`，非 admin 返回 403
+- **Admin 专属接口**：用户管理、在线监控、强制下线、会话查询等接口均受 `require_admin` 保护
+
 ### 安全措施
 
 - Access Token payload 包含 `type: "access"`，Refresh Token 包含 `type: "refresh"`
@@ -127,6 +134,7 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 - Refresh Token 通过 HttpOnly Cookie 传递，前端 JS 无法读取
 - Cookie 属性：`HttpOnly; SameSite=Strict; Secure; Path=/api/auth; Max-Age=86400`
 - Refresh Token 在服务端数据库存储哈希值，支持主动撤销
+- Admin 强制下线操作仅清除目标用户的 Refresh Token，保留 Session 记录以便审计查询
 - 登出时：删除数据库记录 + 清除 Cookie
 - 密码修改时：删除该用户所有 Refresh Token 记录（强制所有设备重新登录）
 
@@ -196,7 +204,14 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 |   ├ POST /refresh | | 刷新：从 Cookie 读取 refresh_token 换取新 access_token |
 |   ├ GET /validate | | 验证：检查 Authorization Bearer token 的有效性 |
 | /api/users | user_router | 用户管理（列表、删除、改密码、改用户名） |
+|   ├ GET / | | 用户列表（admin 专用） |
+|   ├ DELETE /{id} | | 删除用户（admin 专用） |
+|   ├ POST /{id}/kick | | 强制用户下线（admin 专用，仅清除 Refresh Token） |
+|   ├ GET /online | | 在线用户列表（admin 专用） |
+|   ├ GET /{id}/sessions | | 指定用户会话列表（admin 专用） |
 | /api/session | session_router | 会话管理（创建、删除、列表、详情、标题、附件、消息） |
+|   ├ DELETE /admin/{session_id} | | Admin 强制删除任意会话 |
+|   ├ GET /admin/search | | Admin 按用户名搜索会话 |
 | /api/files | file_router | 文件管理（上传、下载、删除、列表、PDF转图片） |
 | /api/contract | contract_router | 合同主办 Agent |
 | /api/map | map_router | 地图 Agent |

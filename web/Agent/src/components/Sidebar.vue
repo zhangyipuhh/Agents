@@ -36,6 +36,7 @@ const isUserMenuVisible = ref(false)
 const userMenuRef = ref(null)
 const menuPositionStyle = ref({})
 const isSettingsDialogVisible = ref(false)
+const settingsInitialTab = ref('profile')
 
 const historySessions = ref([])
 const isLoadingSessions = ref(false)
@@ -159,10 +160,21 @@ const closeUserMenu = () => {
 
 /**
  * 处理设置点击
- * 打开用户设置对话框
+ * 打开用户设置对话框并显示个人设置页
  */
 const handleSetting = () => {
   closeUserMenu()
+  settingsInitialTab.value = 'profile'
+  isSettingsDialogVisible.value = true
+}
+
+/**
+ * 处理管理后台点击
+ * 打开用户设置对话框并显示管理功能页
+ */
+const handleAdminPanel = () => {
+  closeUserMenu()
+  settingsInitialTab.value = 'user-management'
   isSettingsDialogVisible.value = true
 }
 
@@ -461,6 +473,12 @@ onUnmounted(() => {
     <!-- 用户菜单 - 使用 Teleport 移动到 body 层级，避免被父容器 overflow 裁剪 -->
     <Teleport to="body">
       <div v-show="isUserMenuVisible" class="user-menu" :class="{ 'is-collapsed': isSidebarCollapsed }" :style="menuPositionStyle">
+        <div v-if="userRole === 'admin'" class="user-menu-item" @click.stop="handleAdminPanel">
+          <svg class="menu-item-icon" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-6-3a2 2 0 11-4 0 2 2 0 014 0zm-2 4a5 5 0 00-4.546 2.916A5.986 5.986 0 0010 16a5.986 5.986 0 004.546-2.084A5 5 0 0010 11z" clip-rule="evenodd"/>
+          </svg>
+          <span>管理后台</span>
+        </div>
         <div class="user-menu-item" @click.stop="handleSetting">
           <svg class="menu-item-icon" viewBox="0 0 20 20" fill="currentColor">
             <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/>
@@ -482,6 +500,7 @@ onUnmounted(() => {
       :role="userRole"
       :user-id="userId"
       :username="username"
+      :initial-tab="settingsInitialTab"
       @username-updated="handleUsernameUpdated"
     />
   </aside>

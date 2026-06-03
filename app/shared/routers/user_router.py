@@ -13,9 +13,10 @@
 Date: 2026/5/15
 Author: 张镒谱
 """
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, status, Depends
 from pydantic import BaseModel
 from typing import List
+from app.shared.utils.auth.Safety import require_admin
 
 router = APIRouter(prefix='/api/users', tags=['User Management'])
 
@@ -60,10 +61,10 @@ class UsernameUpdateRequest(BaseModel):
     new_username: str
 
 
-@router.get('', response_model=List[UserResponse])
+@router.get('', response_model=List[UserResponse], dependencies=[Depends(require_admin)])
 async def list_users():
     """
-    查询用户列表
+    查询用户列表（admin 专用）
 
     Returns:
         List[UserResponse]: 用户列表（含角色信息）
@@ -82,10 +83,10 @@ async def list_users():
     ]
 
 
-@router.delete('/{user_id}')
+@router.delete('/{user_id}', dependencies=[Depends(require_admin)])
 async def delete_user(user_id: int):
     """
-    删除用户
+    删除用户（admin 专用）
 
     Args:
         user_id (int): 用户ID
@@ -101,6 +102,86 @@ async def delete_user(user_id: int):
     if not success:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
     return {"message": "删除成功"}
+
+
+@router.post('/{user_id}/kick', dependencies=[Depends(require_admin)])
+async def kick_user(user_id: int, req: Request):
+    """
+    强制用户下线（踢人，admin 专用）
+
+    清除该用户的所有 Refresh Token，使其无法刷新 Access Token，被迫重新登录。
+    保留该用户的所有 Session 记录，确保 admin 在会话查询中仍可查看历史数据。
+
+    Args:
+        user_id (int): 要强制下线的用户ID
+        req (Request): FastAPI 请求对象
+
+    Returns:
+        dict: 操作结果
+    """
+    from app.shared.utils.auth.user_db import UserDB
+    from app.shared.utils.auth.refresh_token_db import RefreshTokenDB
+    from app.shared.utils.auth.audit_log import AuditLog
+
+    user = await UserDB.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+
+    # 清除该用户所有 Refresh Token（强制重新登录）
+    deleted_count = await RefreshTokenDB.delete_user_tokens(user_id)
+
+    # 记录审计日志
+    client_ip = req.client.host if req.client else "unknown"
+    admin_username = getattr(req.state, 'username', 'unknown')
+    await AuditLog.write_log(
+        action='admin_kick_user',
+        username=admin_username,
+        detail=f'强制用户 {user["username"]}(ID:{user_id}) 下线，清除 {deleted_count} 个 Refresh Token',
+        ip_address=client_ip
+    )
+
+    return {
+        "message": f"用户 {user['username']} 已被强制下线",
+        "deleted_tokens": deleted_count
+    }
+
+
+@router.get('/online', dependencies=[Depends(require_admin)])
+async def get_online_users():
+    """
+    查询在线用户列表（admin 专用）
+
+    基于会话最后活跃时间判断在线状态，返回在线用户及其会话统计。
+
+    Returns:
+        dict: 在线用户列表
+    """
+    from app.shared.utils.auth.session_db import SessionDB
+
+    online_users = await SessionDB.get_all_active_sessions(minutes=30)
+    return {"online_users": online_users}
+
+
+@router.get('/{user_id}/sessions', dependencies=[Depends(require_admin)])
+async def get_user_sessions_admin(user_id: int):
+    """
+    查询指定用户的所有会话（admin 专用）
+
+    Args:
+        user_id (int): 用户ID
+
+    Returns:
+        dict: 该用户的会话列表
+    """
+    from app.shared.utils.auth.user_db import UserDB
+    from app.shared.utils.auth.session_db import SessionDB
+
+    user = await UserDB.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+
+    sessions = await SessionDB.get_user_sessions(user_id)
+    return {"sessions": sessions}
 
 
 @router.put('/{user_id}/password')

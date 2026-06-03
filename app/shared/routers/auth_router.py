@@ -73,12 +73,14 @@ class LoginResponse(BaseModel):
         expires_in (int): 令牌过期时间（分钟）
         role (str): 用户角色
         username (str): 用户名
+        user_id (Optional[int]): 用户ID
     """
     access_token: str
     token_type: str
     expires_in: int
     role: str
     username: str
+    user_id: Optional[int] = None
 
 
 class CaptchaResponse(BaseModel):
@@ -261,7 +263,8 @@ async def login(request: LoginRequest, req: Request, response: Response):
         token_type="Bearer",
         expires_in=30,
         role=role,
-        username=request.username
+        username=request.username,
+        user_id=user_id
     )
 
 
@@ -353,7 +356,8 @@ async def login_api(request: ApiLoginRequest, req: Request, response: Response):
         token_type="Bearer",
         expires_in=30,
         role=role,
-        username=request.username
+        username=request.username,
+        user_id=user_id
     )
 
 
@@ -435,14 +439,16 @@ async def validate_token(request: Request):
             detail="无效的令牌类型"
         )
 
-    # 查询角色
+    # 查询角色和用户ID
     from app.shared.utils.auth.user_db import UserDB
     user = await UserDB.get_user_by_username(payload["username"])
     role = user.get('role', 'user') if user else 'user'
+    user_id = user.get('id') if user else None
 
     return {
         "username": payload["username"],
-        "role": role
+        "role": role,
+        "user_id": user.get('id') if user else None
     }
 
 

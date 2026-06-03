@@ -38,7 +38,7 @@ const isEmptyState = computed(() => messages.length === 0)
 function applyUserData(data) {
   localStorage.setItem('user_role', data.role)
   localStorage.setItem('username', data.username)
-  if (data.user_id !== undefined && data.user_id !== null) {
+  if (data.user_id) {
     localStorage.setItem('user_id', String(data.user_id))
   }
   currentUser.value = {
@@ -96,7 +96,7 @@ function handleLoginSuccess(data) {
   localStorage.setItem('auth_token', data.access_token)
   localStorage.setItem('user_role', data.role)
   localStorage.setItem('username', data.username)
-  if (data.user_id !== undefined && data.user_id !== null) {
+  if (data.user_id) {
     localStorage.setItem('user_id', String(data.user_id))
   }
   isLoggedIn.value = true

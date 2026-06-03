@@ -640,3 +640,110 @@ export async function fetchFilePreview(path) {
   if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`)
   return response.json()
 }
+
+/* ============================================
+   Admin 管理相关 API
+   ============================================ */
+
+/**
+ * 获取用户列表（admin 专用）
+ * @returns {Promise<{users: Array}>} 用户列表
+ * @throws {Error} 获取失败时抛出错误
+ */
+export async function fetchUserList() {
+  const response = await fetchWithAuth('/api/users', {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`获取用户列表失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 删除用户（admin 专用）
+ * @param {number} userId - 用户ID
+ * @returns {Promise<{message: string}>} 删除结果
+ * @throws {Error} 删除失败时抛出错误
+ */
+export async function deleteUser(userId) {
+  const response = await fetchWithAuth(`/api/users/${userId}`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`删除用户失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 强制用户下线（admin 专用）
+ * @param {number} userId - 用户ID
+ * @returns {Promise<{message: string, deleted_tokens: number}>} 操作结果
+ * @throws {Error} 操作失败时抛出错误
+ */
+export async function kickUser(userId) {
+  const response = await fetchWithAuth(`/api/users/${userId}/kick`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`强制下线失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 获取在线用户列表（admin 专用）
+ * @returns {Promise<{online_users: Array}>} 在线用户列表
+ * @throws {Error} 获取失败时抛出错误
+ */
+export async function fetchOnlineUsers() {
+  const response = await fetchWithAuth('/api/users/online', {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`获取在线用户失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 获取指定用户的所有会话（admin 专用）
+ * @param {number} userId - 用户ID
+ * @returns {Promise<{sessions: Array}>} 会话列表
+ * @throws {Error} 获取失败时抛出错误
+ */
+export async function fetchUserSessions(userId) {
+  const response = await fetchWithAuth(`/api/users/${userId}/sessions`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`获取用户会话失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * Admin 强制删除任意会话
+ * @param {string} sessionId - 会话 ID
+ * @returns {Promise<{success: boolean, message: string}>} 删除结果
+ * @throws {Error} 删除失败时抛出错误
+ */
+export async function adminDeleteSession(sessionId) {
+  const response = await fetchWithAuth(`/api/session/admin/${sessionId}`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`删除会话失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * Admin 按用户名搜索会话
+ * @param {string} username - 用户名关键字
+ * @returns {Promise<{sessions: Array}>} 会话列表
+ * @throws {Error} 搜索失败时抛出错误
+ */
+export async function searchSessionsByUsername(username) {
+  const response = await fetchWithAuth(`/api/session/admin/search?username=${encodeURIComponent(username)}`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`搜索会话失败: ${response.status}`)
+  return response.json()
+}
