@@ -211,6 +211,43 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 - API 文档: http://localhost:8000/docs
 - ReDoc 文档: http://localhost:8000/redoc
 
+### Docker 部署
+
+推荐使用 Docker Compose 进行容器化部署：
+
+```bash
+# 1. 复制环境变量配置模板
+cp .env.example .env
+
+# 2. 编辑 .env 文件，配置必要的环境变量
+#    - model_api_key: 大模型 API 密钥
+#    - DATABASE_URL: 数据库连接字符串（可选）
+
+# 3. 拉取并启动所有服务
+docker-compose up -d
+
+# 4. 查看服务状态
+docker-compose ps
+
+# 5. 查看服务日志
+docker-compose logs -f agents
+```
+
+服务启动后：
+- 主应用 API：http://localhost:9001
+- 前端页面：http://localhost:10000
+
+### 停止服务
+
+```bash
+docker-compose down
+```
+
+### 开发模式说明
+
+- `agents` 服务中的 `./app` 目录已挂载到容器，修改宿主机代码后立即生效
+- 如需重新构建镜像： `docker-compose up -d --build`
+
 ## 核心模块
 
 ### 架构设计
