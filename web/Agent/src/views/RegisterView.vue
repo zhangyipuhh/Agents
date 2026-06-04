@@ -5,7 +5,7 @@
  * 注册成功后自动跳转回登录页
  */
 
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { register, getCaptcha } from '../utils/api.js'
 
 /** @type {import('vue').Ref<string>} 用户名输入值 */
@@ -93,6 +93,28 @@ function validatePasswordComplexity(pwd) {
   const hasSpecial = /[!@#$%^&*()_+\-=\[\]{}|;:,.<>?]/.test(pwd)
   return hasUpper && hasLower && hasDigit && hasSpecial
 }
+
+/**
+ * 密码复杂度实时验证状态
+ * 根据当前密码输入值计算各项要求的满足情况
+ * @returns {{ minLength: boolean, hasUpper: boolean, hasLower: boolean, hasDigit: boolean, hasSpecial: boolean, isValid: boolean }}
+ */
+const passwordValidation = computed(() => {
+  const pwd = password.value || ''
+  const minLength = pwd.length >= 6
+  const hasUpper = /[A-Z]/.test(pwd)
+  const hasLower = /[a-z]/.test(pwd)
+  const hasDigit = /\d/.test(pwd)
+  const hasSpecial = /[!@#$%^&*()_+\-=[\]{}|;:,.<>?]/.test(pwd)
+  return {
+    minLength,
+    hasUpper,
+    hasLower,
+    hasDigit,
+    hasSpecial,
+    isValid: minLength && hasUpper && hasLower && hasDigit && hasSpecial
+  }
+})
 
 /**
  * 处理注册表单提交
@@ -213,6 +235,20 @@ onMounted(() => {
           />
         </div>
 
+        <!-- 真实姓名输入框 -->
+        <div class="form-group">
+          <label class="form-label required" for="register-real-name">真实姓名</label>
+          <input
+            id="register-real-name"
+            v-model="realName"
+            type="text"
+            class="form-input"
+            placeholder="请输入真实姓名（2-20个字符）"
+            autocomplete="name"
+            :disabled="loading"
+          />
+        </div>
+
         <!-- 密码输入框 -->
         <div class="form-group">
           <label class="form-label required" for="register-password">密码</label>
@@ -225,6 +261,45 @@ onMounted(() => {
             autocomplete="new-password"
             :disabled="loading"
           />
+          <div class="password-hints">
+            <div class="password-hint-list">
+              <span
+                class="password-hint-item"
+                :class="passwordValidation.minLength ? 'valid' : 'invalid'"
+              >
+                <span class="hint-icon">{{ passwordValidation.minLength ? '✓' : '○' }}</span>
+                至少6位
+              </span>
+              <span
+                class="password-hint-item"
+                :class="passwordValidation.hasUpper ? 'valid' : 'invalid'"
+              >
+                <span class="hint-icon">{{ passwordValidation.hasUpper ? '✓' : '○' }}</span>
+                包含大写字母
+              </span>
+              <span
+                class="password-hint-item"
+                :class="passwordValidation.hasLower ? 'valid' : 'invalid'"
+              >
+                <span class="hint-icon">{{ passwordValidation.hasLower ? '✓' : '○' }}</span>
+                包含小写字母
+              </span>
+              <span
+                class="password-hint-item"
+                :class="passwordValidation.hasDigit ? 'valid' : 'invalid'"
+              >
+                <span class="hint-icon">{{ passwordValidation.hasDigit ? '✓' : '○' }}</span>
+                包含数字
+              </span>
+              <span
+                class="password-hint-item"
+                :class="passwordValidation.hasSpecial ? 'valid' : 'invalid'"
+              >
+                <span class="hint-icon">{{ passwordValidation.hasSpecial ? '✓' : '○' }}</span>
+                包含特殊字符
+              </span>
+            </div>
+          </div>
         </div>
 
         <!-- 确认密码输入框 -->
@@ -237,20 +312,6 @@ onMounted(() => {
             class="form-input"
             placeholder="请再次输入密码"
             autocomplete="new-password"
-            :disabled="loading"
-          />
-        </div>
-
-        <!-- 真实姓名输入框 -->
-        <div class="form-group">
-          <label class="form-label required" for="register-real-name">真实姓名</label>
-          <input
-            id="register-real-name"
-            v-model="realName"
-            type="text"
-            class="form-input"
-            placeholder="请输入真实姓名（2-20个字符）"
-            autocomplete="name"
             :disabled="loading"
           />
         </div>
@@ -312,7 +373,7 @@ onMounted(() => {
         </div>
 
         <!-- 验证码输入框和图片 -->
-        <div class="form-group">
+        <div class="form-group full-width">
           <label class="form-label required" for="register-captcha">验证码</label>
           <div class="captcha-row">
             <input
@@ -343,19 +404,19 @@ onMounted(() => {
         </div>
 
         <!-- 错误提示 -->
-        <div v-if="errorMessage" class="error-message">
+        <div v-if="errorMessage" class="error-message full-width">
           {{ errorMessage }}
         </div>
 
         <!-- 成功提示 -->
-        <div v-if="successMessage" class="success-message">
+        <div v-if="successMessage" class="success-message full-width">
           {{ successMessage }}
         </div>
 
         <!-- 注册按钮 -->
         <button
           type="submit"
-          class="register-button"
+          class="register-button full-width"
           :disabled="loading"
         >
           <span v-if="loading" class="button-loading">
@@ -390,7 +451,7 @@ onMounted(() => {
 /* 注册卡片 */
 .register-card {
   width: 100%;
-  max-width: 420px;
+  max-width: 640px;
   background-color: var(--color-bg-primary);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-lg);
@@ -415,9 +476,21 @@ onMounted(() => {
   color: var(--color-text-secondary);
 }
 
+/* 注册表单 - 双列网格布局 */
+.register-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-base) var(--space-lg);
+}
+
+/* 跨列元素 */
+.full-width {
+  grid-column: 1 / -1;
+}
+
 /* 表单组 */
 .form-group {
-  margin-bottom: var(--space-base);
+  margin-bottom: 0;
 }
 
 .form-label {
@@ -604,12 +677,67 @@ onMounted(() => {
   }
 }
 
+/* 密码复杂度提示 */
+.password-hints {
+  margin-top: var(--space-xs);
+}
+
+.password-hint-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs) var(--space-sm);
+}
+
+.password-hint-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  transition: var(--transition-colors);
+}
+
+.password-hint-item.valid {
+  color: var(--color-success);
+}
+
+.password-hint-item.invalid {
+  color: var(--color-text-muted);
+}
+
+.hint-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  font-size: 10px;
+  font-weight: var(--font-weight-bold);
+}
+
 @keyframes spin {
   from {
     transform: rotate(0deg);
   }
   to {
     transform: rotate(360deg);
+  }
+}
+
+/* 响应式：窄屏下恢复单列布局 */
+@media (max-width: 640px) {
+  .register-card {
+    max-width: 420px;
+    padding: var(--space-xl) var(--space-lg);
+  }
+
+  .register-form {
+    grid-template-columns: 1fr;
+    gap: var(--space-base) 0;
+  }
+
+  .full-width {
+    grid-column: auto;
   }
 }
 </style>
