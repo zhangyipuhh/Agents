@@ -122,6 +122,7 @@ async def kick_user(user_id: int, req: Request):
     from app.shared.utils.auth.user_db import UserDB
     from app.shared.utils.auth.refresh_token_db import RefreshTokenDB
     from app.shared.utils.auth.audit_log import AuditLog
+    from app.shared.utils.Session.SessionCache import session_cache
 
     user = await UserDB.get_user_by_id(user_id)
     if not user:
@@ -130,19 +131,23 @@ async def kick_user(user_id: int, req: Request):
     # 清除该用户所有 Refresh Token（强制重新登录）
     deleted_count = await RefreshTokenDB.delete_user_tokens(user_id)
 
+    # 将该用户所有 Session 标记为 kicked（使其从在线列表中消失，但保留会话记录）
+    kicked_sessions = await session_cache.kick_user_sessions(user_id)
+
     # 记录审计日志
     client_ip = req.client.host if req.client else "unknown"
     admin_username = getattr(req.state, 'username', 'unknown')
     await AuditLog.write_log(
         action='admin_kick_user',
         username=admin_username,
-        detail=f'强制用户 {user["username"]}(ID:{user_id}) 下线，清除 {deleted_count} 个 Refresh Token',
+        detail=f'强制用户 {user["username"]}(ID:{user_id}) 下线，清除 {deleted_count} 个 Refresh Token，标记 {kicked_sessions} 个 Session 为 kicked',
         ip_address=client_ip
     )
 
     return {
         "message": f"用户 {user['username']} 已被强制下线",
-        "deleted_tokens": deleted_count
+        "deleted_tokens": deleted_count,
+        "kicked_sessions": kicked_sessions
     }
 
 
