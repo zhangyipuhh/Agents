@@ -1,42 +1,211 @@
 <script setup>
-import { reactive, onMounted, computed, ref } from 'vue'
+import { reactive, onMounted, computed, ref, nextTick } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import SkillTags from './components/SkillTags.vue'
 import ChatArea from './components/ChatArea.vue'
 import InputBox from './components/InputBox.vue'
+import HumanApprovalBox from './components/HumanApprovalBox.vue'
 import KnowledgePage from './components/KnowledgePage.vue'
-import { chatStream, ensureAuth, createNewSession } from './utils/api.js'
+import LoginView from './views/LoginView.vue'
+import RegisterView from './views/RegisterView.vue'
+import { chatStream, createNewSession, logout as apiLogout, fetchSessionDetail, fetchSessionAttachments, fetchSessionMessages, validateToken, refreshToken, clearAuth } from './utils/api.js'
 import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage } from './utils/sseParser.js'
 
 const currentPage = ref('agent')
+const authView = ref('login') // 'login' | 'register'
+const isLoggedIn = ref(false)
+const currentUser = ref({ username: '', role: '', userId: null })
 
 const messages = reactive([])
 const sessionId = reactive({ value: '' })
 const isStreaming = reactive({ value: false })
+const sidebarRef = ref(null)
+const currentAttachments = ref([])
+const approvalMode = ref(false)
+const approvalData = ref({ questions: [] })
+
+/**
+ * 新建任务锁，防止重复创建
+ */
+let isCreatingNewSession = false
 
 const isEmptyState = computed(() => messages.length === 0)
 
-onMounted(async () => {
+/**
+ * 应用用户数据到当前状态
+ * @param {Object} data - 包含 username 和 role
+ */
+function applyUserData(data) {
+  localStorage.setItem('user_role', data.role)
+  localStorage.setItem('username', data.username)
+  if (data.user_id) {
+    localStorage.setItem('user_id', String(data.user_id))
+  }
+  currentUser.value = {
+    username: data.username,
+    role: data.role,
+    userId: data.user_id || null
+  }
+  isLoggedIn.value = true
+}
+
+/**
+ * 检查本地存储的登录状态
+ * 三段式验证：先 validateToken，失败则 refreshToken 后再次 validateToken
+ */
+async function checkAuth() {
+  const token = localStorage.getItem('auth_token')
+  if (!token) {
+    isLoggedIn.value = false
+    return
+  }
+  try {
+    const data = await validateToken()
+    const savedUserId = localStorage.getItem('user_id')
+    if (savedUserId && savedUserId !== 'null' && savedUserId !== 'undefined') {
+      data.user_id = parseInt(savedUserId, 10)
+    }
+    applyUserData(data)
+  } catch {
+    try {
+      const newToken = await refreshToken()
+      const data = await validateToken()
+      localStorage.setItem('auth_token', newToken)
+      const savedUserId = localStorage.getItem('user_id')
+      if (savedUserId && savedUserId !== 'null' && savedUserId !== 'undefined') {
+        data.user_id = parseInt(savedUserId, 10)
+      }
+      applyUserData(data)
+    } catch {
+      clearAuth()
+      isLoggedIn.value = false
+    }
+  }
+}
+
+/**
+ * 处理登录成功事件
+ * @param {Object} data - 登录结果数据，包含 access_token、role、username
+ */
+function handleLoginSuccess(data) {
+  console.log('[调试] handleLoginSuccess - data:', data)
+  console.log('[调试] handleLoginSuccess - access_token:', data.access_token)
+  if (!data.access_token) {
+    console.error('[调试] access_token 为空！')
+  }
+  localStorage.setItem('auth_token', data.access_token)
+  localStorage.setItem('user_role', data.role)
+  localStorage.setItem('username', data.username)
+  if (data.user_id) {
+    localStorage.setItem('user_id', String(data.user_id))
+  }
+  isLoggedIn.value = true
+  currentUser.value = {
+    username: data.username,
+    role: data.role,
+    userId: data.user_id || null
+  }
+  nextTick(() => {
+    ensureSession()
+  })
+}
+
+/**
+ * 处理登出事件
+ * 清除本地缓存并返回登录页
+ */
+async function handleLogout() {
+  await apiLogout()
+  isLoggedIn.value = false
+  currentUser.value = { username: '', role: '', userId: null }
+  localStorage.removeItem('user_id')
+  messages.splice(0, messages.length)
+  sessionId.value = ''
+  authView.value = 'login'
+}
+
+/**
+ * 处理用户名更新事件
+ * @param {Object} data - 包含新用户名的数据
+ */
+function handleUsernameUpdated(data) {
+  currentUser.value.username = data.username
+  localStorage.setItem('username', data.username)
+}
+
+/**
+ * 确保当前用户有一个有效的会话
+ * 如果本地没有 session_id，则自动创建新会话并刷新侧边栏列表
+ */
+async function ensureSession() {
+  const existingSessionId = localStorage.getItem('session_id')
+  if (existingSessionId && existingSessionId !== 'undefined') {
+    sessionId.value = existingSessionId
+    return
+  }
+
   try {
     const newId = await createNewSession()
     sessionId.value = newId
+    if (sidebarRef.value) {
+      sidebarRef.value.loadSessionList()
+    }
   } catch (err) {
-    console.error('初始化会话失败:', err)
+    console.error('自动创建会话失败:', err)
+  }
+}
+
+onMounted(async () => {
+  await checkAuth()
+
+  if (isLoggedIn.value) {
+    await ensureSession()
   }
 })
 
 async function newSession() {
-  // 先清除旧的 session_id，确保新建任务时一定会重新生成
-  localStorage.removeItem('session_id')
-  sessionId.value = ''
-  messages.splice(0, messages.length)
+  // 防止重复创建
+  if (isCreatingNewSession) {
+    console.log('[newSession] 正在创建中，跳过重复请求')
+    return
+  }
+
+  isCreatingNewSession = true
+  console.log('[newSession] 开始创建新会话')
 
   try {
+    // 先清除旧的 session_id，确保新建任务时一定会重新生成
+    localStorage.removeItem('session_id')
+    sessionId.value = ''
+    messages.splice(0, messages.length)
+    currentAttachments.value = []
+
     const newId = await createNewSession()
     sessionId.value = newId
+    console.log('[newSession] 新会话创建成功:', newId)
+
+    // 刷新侧边栏会话列表
+    if (sidebarRef.value) {
+      sidebarRef.value.loadSessionList()
+    }
   } catch (err) {
     console.error('新建会话失败:', err)
+    if (err.message.includes('未登录') || err.message.includes('过期')) {
+      isLoggedIn.value = false
+    }
+  } finally {
+    isCreatingNewSession = false
   }
+}
+
+function extractApprovalData(interruptArray) {
+  if (!Array.isArray(interruptArray) || interruptArray.length === 0) {
+    return { questions: [] }
+  }
+  const req = interruptArray[0]
+  const payload = req.value ?? req
+  const questions = payload.questions ?? []
+  return { questions }
 }
 
 async function handleSendMessage(message, attachments = []) {
@@ -55,6 +224,7 @@ async function handleSendMessage(message, attachments = []) {
   messages.push(aiMsg)
 
   isStreaming.value = true
+  let interrupted = false
 
   try {
     const stream = await chatStream(sessionId.value, message, attachments)
@@ -82,15 +252,102 @@ async function handleSendMessage(message, attachments = []) {
           const data = JSON.parse(event.slice(6))
           processSSEEvent(data, aiMsg)
           console.log('[App] After processSSEEvent, downloadInfo:', JSON.stringify(aiMsg.downloadInfo))
+
+          if (aiMsg.interrupt) {
+            interrupted = true
+            approvalMode.value = true
+            approvalData.value = extractApprovalData(aiMsg.interrupt)
+            break
+          }
         } catch {}
       }
+      if (interrupted) break
     }
   } catch (err) {
     console.error('聊天请求错误:', err)
+    if (err.message.includes('未登录') || err.message.includes('过期')) {
+      isLoggedIn.value = false
+      return
+    }
     aiMsg.error = '不好意思，刚刚出了点小故障，可以晚点再问我一遍。'
     aiMsg.ended = true
   } finally {
+    if (!interrupted) {
+      isStreaming.value = false
+    }
+  }
+}
+
+async function handleApprovalSubmit({ answers }) {
+  approvalMode.value = false
+  let interrupted = false
+
+  const aiMsg = messages[messages.length - 1]
+  if (!aiMsg || aiMsg.type !== 'ai') {
     isStreaming.value = false
+    return
+  }
+
+  // 清除上一次的中断状态，避免旧状态导致误触发
+  aiMsg.interrupt = null
+
+  const resumeData = { answers }
+
+  try {
+    const stream = await chatStream(sessionId.value, '', [], resumeData)
+    const reader = stream.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) {
+        if (!aiMsg.ended) {
+          aiMsg.ended = true
+          aiMsg.isThinkingActive = false
+        }
+        break
+      }
+      buffer += decoder.decode(value, { stream: true })
+      const events = buffer.split('\n\n')
+      buffer = events.pop()
+      for (const event of events) {
+        if (!event.startsWith('data: ')) continue
+        try {
+          const data = JSON.parse(event.slice(6))
+          processSSEEvent(data, aiMsg)
+
+          if (aiMsg.interrupt) {
+            interrupted = true
+            approvalMode.value = true
+            approvalData.value = extractApprovalData(aiMsg.interrupt)
+            break
+          }
+        } catch {}
+      }
+      if (interrupted) break
+    }
+  } catch (err) {
+    console.error('Resume 请求错误:', err)
+    aiMsg.error = '恢复执行失败，请稍后重试。'
+    aiMsg.ended = true
+  } finally {
+    if (!interrupted) {
+      isStreaming.value = false
+    }
+  }
+}
+
+/**
+ * 取消问答：退出 approval 模式并重置流状态
+ */
+function handleApprovalCancel() {
+  approvalMode.value = false
+  isStreaming.value = false
+  const aiMsg = messages[messages.length - 1]
+  if (aiMsg && aiMsg.type === 'ai') {
+    aiMsg.ended = true
+    aiMsg.isThinkingActive = false
   }
 }
 
@@ -135,11 +392,146 @@ function handleCopy(e) {
 function handlePageChange(page) {
   currentPage.value = page
 }
+
+/**
+ * 切换到历史会话
+ * 从后端获取会话详情和历史消息，还原对话内容和附件
+ * @param {string} targetSessionId - 目标会话 ID
+ */
+async function handleSessionSwitch(targetSessionId) {
+  if (targetSessionId === sessionId.value) return
+  if (isStreaming.value) return
+
+  // 清空当前消息
+  messages.splice(0, messages.length)
+  currentAttachments.value = []
+
+  // 切换到新会话
+  sessionId.value = targetSessionId
+  localStorage.setItem('session_id', targetSessionId)
+
+  try {
+    // 获取会话详情（含附件列表）
+    const detail = await fetchSessionDetail(targetSessionId)
+
+    // 还原附件列表
+    if (detail.attachments && detail.attachments.length > 0) {
+      currentAttachments.value = detail.attachments.map(a => ({
+        filename: a.file_name,
+        stored_path: a.stored_path,
+        file_type: a.file_type,
+        size: a.file_size,
+        original_name: a.file_name
+      }))
+    }
+
+    // 从 LangGraph Checkpoint 获取历史消息
+    const history = await fetchSessionMessages(targetSessionId, 100)
+
+    // 还原对话记录到 messages 数组
+    if (history.messages && history.messages.length > 0) {
+      for (const msg of history.messages) {
+        // 从历史消息的 additional_kwargs 中提取附件信息
+        const msgAttachments = msg.attachments || []
+
+        if (msg.type === 'ai') {
+          let text = ''
+          let thinking = []
+          let timeline = []
+          let tools = []
+
+          // 若后端已返回结构化字段，直接使用；否则用 sseParser 解析原始 content
+          if (msg.timeline && Array.isArray(msg.timeline)) {
+            timeline = msg.timeline
+            thinking = msg.thinking || []
+            text = msg.text || ''
+            tools = msg.tools || []
+          } else {
+            const aiMsg = createAiMessage()
+            parseMessageContent(msg.content, aiMsg, true)
+            text = aiMsg.text
+            thinking = aiMsg.thinking
+            timeline = aiMsg.timeline
+            tools = aiMsg.tools
+          }
+
+          messages.push({
+            id: msg.id || Date.now() + Math.random(),
+            type: 'ai',
+            content: msg.content,
+            text,
+            thinking,
+            timeline,
+            tools,
+            attachments: msgAttachments.map(a => ({
+              file_name: a.file_name || a.filename || '未知文件',
+              stored_path: a.stored_path || '',
+              file_type: a.file_type || '',
+              file_size: a.file_size || a.size || 0,
+              original_name: a.original_name || a.file_name || a.filename || '未知文件'
+            })),
+            ended: true
+          })
+        } else {
+          messages.push({
+            id: msg.id || Date.now() + Math.random(),
+            type: msg.type,
+            content: msg.content,
+            attachments: msgAttachments.map(a => ({
+              file_name: a.file_name || a.filename || '未知文件',
+              stored_path: a.stored_path || '',
+              file_type: a.file_type || '',
+              file_size: a.file_size || a.size || 0,
+              original_name: a.original_name || a.file_name || a.filename || '未知文件'
+            })),
+            ended: true
+          })
+        }
+      }
+    } else if (detail.title && detail.title !== '新对话') {
+      // 如果没有历史消息，显示切换提示
+      messages.push({
+        id: Date.now(),
+        type: 'system',
+        content: `已切换到会话：${detail.title}`
+      })
+    }
+  } catch (err) {
+    console.error('切换会话失败:', err)
+    if (err.message.includes('未登录') || err.message.includes('过期')) {
+      isLoggedIn.value = false
+    }
+  }
+}
 </script>
 
 <template>
-  <div class="app-layout">
-    <Sidebar :current-page="currentPage" @new-chat="newSession" @page-change="handlePageChange" />
+  <!-- 未登录：显示登录/注册页面 -->
+  <LoginView
+    v-if="!isLoggedIn && authView === 'login'"
+    @login-success="handleLoginSuccess"
+    @switch-to-register="authView = 'register'"
+  />
+  <RegisterView
+    v-else-if="!isLoggedIn && authView === 'register'"
+    @switch-to-login="authView = 'login'"
+  />
+
+  <!-- 已登录：显示主应用 -->
+  <div v-else class="app-layout">
+    <Sidebar
+      ref="sidebarRef"
+      :current-page="currentPage"
+      :username="currentUser.username"
+      :user-role="currentUser.role"
+      :user-id="currentUser.userId"
+      :current-session-id="sessionId.value"
+      @new-chat="newSession"
+      @page-change="handlePageChange"
+      @logout="handleLogout"
+      @username-updated="handleUsernameUpdated"
+      @session-switch="handleSessionSwitch"
+    />
 
     <main v-if="currentPage === 'agent'" class="content-area" :class="{ 'empty-layout': isEmptyState }">
       <SkillTags v-if="!isEmptyState" @tag-select="handleTagSelect" />
@@ -156,7 +548,14 @@ function handlePageChange(page) {
 
       <div v-if="isEmptyState" class="welcome-title">Agent, 让你的工作更轻松</div>
 
+      <HumanApprovalBox
+        v-if="approvalMode"
+        :questions="approvalData.questions"
+        @submit="handleApprovalSubmit"
+        @cancel="handleApprovalCancel"
+      />
       <InputBox
+        v-else
         :session-id="sessionId.value"
         :is-streaming="isStreaming.value"
         @send="handleSendMessage"

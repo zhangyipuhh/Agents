@@ -855,6 +855,21 @@ class MCPToolToLangChainAdapter(BaseTool):
                 # 提取 result 和 data 字段
                 return_result = (tmp_result.get("result", tmp_result),None)
                 event_result = tmp_result.get("data", tmp_result)
+                runtime_data = tmp_result.get("runtime_data", {})
+                # 更新 process_data 字典,接收返回的运行过程数据，业务中会根据约定获取获取 其中某个值作为上下文信息
+                # 从 configurable 中获取 runtime，使用 runtime.store 存储 process_data
+                configurable = config.get("configurable", {}) if config else {}
+                runtime = configurable.get("__pregel_runtime")
+                if runtime and hasattr(runtime, "context") and hasattr(runtime, "store"):
+                    store_id = runtime.context.get("store_id", "default")
+                    namespace = (store_id,)
+                    # 获取现有的 process_data
+                    existing_result = runtime.store.get(namespace, "process_data")
+                    process_data = existing_result.value if existing_result else {}
+                    # 更新数据
+                    process_data.update(runtime_data)
+                    # 保存回 store
+                    runtime.store.put(namespace, "process_data", process_data)
             else:
                 event_result = result
                 return_result = result

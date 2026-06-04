@@ -1,11 +1,12 @@
 <script setup>
 import { ref, onMounted, nextTick } from 'vue'
-import { fetchKnowledgeFiles, fetchFilePreview, createNewSession, knowledgeChatStream } from './utils/api.js'
+import { fetchKnowledgeFiles, fetchFilePreview, createNewSession, knowledgeChatStream, validateToken, refreshToken } from './utils/api.js'
 import { createAiMessage, processSSEEvent } from './utils/sseParser.js'
 import FileList from './components/FileList.vue'
 import FilePreview from './components/FilePreview.vue'
 import MessageBubble from './components/MessageBubble.vue'
 import ProfileInputBox from './components/ProfileInputBox.vue'
+import HumanApprovalBox from './components/HumanApprovalBox.vue'
 
 const isPreviewOpen = ref(false)
 const previewContent = ref('')
@@ -19,8 +20,15 @@ const folders = ref([])
 const filesLoading = ref(false)
 const currentSessionId = ref('')
 const isStreaming = ref(false)
+const approvalMode = ref(false)
+const approvalData = ref({ questions: [] })
 const isSidebarCollapsed = ref(false)
 const isCollapseBtnHovered = ref(false)
+
+/**
+ * 新建任务锁，防止重复创建
+ */
+let isCreatingNewSession = false
 
 function toggleSidebar() {
   isSidebarCollapsed.value = !isSidebarCollapsed.value
@@ -36,15 +44,27 @@ const unreadCount = ref(0)
 const showChat = ref(false)
 
 onMounted(async () => {
-  // 1. 先创建会话，确保认证信息已准备好
+  // 验证 token 有效性，失效则尝试静默刷新
   try {
-    const newId = await createNewSession()
-    currentSessionId.value = newId
-  } catch (err) {
-    console.error('创建会话失败:', err)
+    await validateToken()
+  } catch {
+    try {
+      const newToken = await refreshToken()
+      localStorage.setItem('auth_token', newToken)
+    } catch {
+      window.location.href = '/Agent/'
+      return
+    }
   }
 
-  // 2. 然后加载文件列表
+  // 优先复用本地已有的 session_id，避免每次挂载都新建会话
+  const existingSessionId = localStorage.getItem('session_id')
+  if (existingSessionId && existingSessionId !== 'undefined') {
+    currentSessionId.value = existingSessionId
+  }
+  // 没有有效会话时，不自动创建，等待用户交互时再创建
+
+  // 加载文件列表
   filesLoading.value = true
   try {
     const result = await fetchKnowledgeFiles()
@@ -112,15 +132,27 @@ function closePreview() {
   previewFileUrl.value = ''
 }
 
-function handleNewChat() {
+async function handleNewChat() {
+  // 防止重复创建
+  if (isCreatingNewSession) {
+    console.log('[handleNewChat] 正在创建中，跳过重复请求')
+    return
+  }
+
+  isCreatingNewSession = true
+  console.log('[handleNewChat] 开始创建新会话')
+
   messages.value = []
   showChat.value = false
+
   try {
-    createNewSession().then(newId => {
-      currentSessionId.value = newId
-    })
+    const newId = await createNewSession()
+    currentSessionId.value = newId
+    console.log('[handleNewChat] 新会话创建成功:', newId)
   } catch (err) {
     console.error('新建会话失败:', err)
+  } finally {
+    isCreatingNewSession = false
   }
 }
 
@@ -152,39 +184,30 @@ function handleToolAction(action) {
   console.log('Tool action:', action)
 }
 
-function handleProfileSend(message, uploadedFiles) {
-  if (!message || isStreaming.value) return
-
-  // 切换到聊天视图
-  showChat.value = true
-
-  // 添加用户消息
-  const userMsg = {
-    id: Date.now(),
-    type: 'user',
-    content: message,
-    attachments: uploadedFiles
+function extractApprovalData(interruptArray) {
+  if (!Array.isArray(interruptArray) || interruptArray.length === 0) {
+    return { questions: [] }
   }
-  messages.value.push(userMsg)
+  const req = interruptArray[0]
+  const payload = req.value ?? req
+  const questions = payload.questions ?? []
+  return { questions }
+}
 
-  // 添加AI消息
-  const aiMsg = ref(createAiMessage())
-  messages.value.push(aiMsg.value)
-
-  isStreaming.value = true
-  nextTick(() => scrollToBottom())
-
-  knowledgeChatStream(currentSessionId.value, message)
+function startChatStream(message, uploadedFiles, aiMsg, resumeData = null) {
+  knowledgeChatStream(currentSessionId.value, message, uploadedFiles, resumeData)
     .then(stream => {
       const reader = stream.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
+      let interrupted = false
 
       function read() {
         reader.read().then(({ done, value }) => {
           if (done) {
-            isStreaming.value = false
-            // 确保消息被标记为已结束
+            if (!interrupted) {
+              isStreaming.value = false
+            }
             if (aiMsg.value && !aiMsg.value.ended) {
               console.log('[KnowledgeApp] Stream done, setting ended = true')
               aiMsg.value.ended = true
@@ -200,8 +223,20 @@ function handleProfileSend(message, uploadedFiles) {
             try {
               const data = JSON.parse(event.slice(6))
               processSSEEvent(data, aiMsg.value)
+
+              if (aiMsg.value.interrupt) {
+                interrupted = true
+                approvalMode.value = true
+                approvalData.value = extractApprovalData(aiMsg.value.interrupt)
+                break
+              }
             } catch {}
           }
+
+          if (interrupted) {
+            return
+          }
+
           nextTick(() => scrollToBottom())
           read()
         }).catch(err => {
@@ -217,6 +252,56 @@ function handleProfileSend(message, uploadedFiles) {
       aiMsg.value.ended = true
       isStreaming.value = false
     })
+}
+
+function handleProfileSend(message, uploadedFiles) {
+  if (!message || isStreaming.value) return
+
+  showChat.value = true
+
+  const userMsg = {
+    id: Date.now(),
+    type: 'user',
+    content: message,
+    attachments: uploadedFiles
+  }
+  messages.value.push(userMsg)
+
+  const aiMsg = ref(createAiMessage())
+  messages.value.push(aiMsg.value)
+
+  isStreaming.value = true
+  nextTick(() => scrollToBottom())
+
+  startChatStream(message, uploadedFiles, aiMsg)
+}
+
+function handleApprovalSubmit({ answers }) {
+  approvalMode.value = false
+
+  const aiMsg = messages.value[messages.value.length - 1]
+  if (!aiMsg || aiMsg.type !== 'ai') {
+    isStreaming.value = false
+    return
+  }
+
+  const resumeData = { answers }
+
+  const aiMsgRef = ref(aiMsg)
+  startChatStream('', [], aiMsgRef, resumeData)
+}
+
+/**
+ * 取消问答：退出 approval 模式并重置流状态
+ */
+function handleApprovalCancel() {
+  approvalMode.value = false
+  isStreaming.value = false
+  const aiMsg = messages.value[messages.value.length - 1]
+  if (aiMsg && aiMsg.type === 'ai') {
+    aiMsg.ended = true
+    aiMsg.isThinkingActive = false
+  }
 }
 </script>
 
@@ -253,7 +338,14 @@ function handleProfileSend(message, uploadedFiles) {
       <div v-if="!showChat" class="welcome-section">
         <h2 class="welcome-title">Agent, 让你的工作更轻松</h2>
         <div class="input-box-container">
+          <HumanApprovalBox
+            v-if="approvalMode"
+            :questions="approvalData.questions"
+            @submit="handleApprovalSubmit"
+            @cancel="handleApprovalCancel"
+          />
           <ProfileInputBox
+            v-else
             :session-id="currentSessionId"
             :is-streaming="isStreaming"
             @send="handleProfileSend"
@@ -304,7 +396,14 @@ function handleProfileSend(message, uploadedFiles) {
               <span v-if="unreadCount > 0" class="input-scroll-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
             </button>
           </transition>
+          <HumanApprovalBox
+            v-if="approvalMode"
+            :questions="approvalData.questions"
+            @submit="handleApprovalSubmit"
+            @cancel="handleApprovalCancel"
+          />
           <ProfileInputBox
+            v-else
             :session-id="currentSessionId"
             :is-streaming="isStreaming"
             @send="handleProfileSend"

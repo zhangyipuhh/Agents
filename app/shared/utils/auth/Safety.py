@@ -40,7 +40,7 @@ class JWTAuth:
         """
         self.secret_key = secret_key
         self.algorithm = algorithm
-        self.expiration_minutes = 5
+        self.expiration_minutes = 240  # 4小时
         self.whitelist: List[str] = []
         
         self.username = "admin"
@@ -90,31 +90,55 @@ class JWTAuth:
             return username == self.username and password == self.password
     
     async def generate_token(self, username: str) -> str:
-        """
-        生成JWT令牌
-        
-        Args:
-            username (str): 用户名
-            
-        Returns:
-            str: JWT令牌
-            
-        Raises:
-            HTTPException: 当生成令牌失败时抛出
-        """
         try:
             payload = {
                 "username": username,
-                "exp": datetime.utcnow() + timedelta(minutes=self.expiration_minutes),
+                "type": "access",
+                "exp": datetime.utcnow() + timedelta(minutes=30),
                 "iat": datetime.utcnow()
             }
-            
             token = jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
             return token
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"生成令牌失败: {str(e)}"
+            )
+
+    async def generate_refresh_token(self, username: str) -> str:
+        try:
+            payload = {
+                "username": username,
+                "type": "refresh",
+                "exp": datetime.utcnow() + timedelta(hours=24),
+                "iat": datetime.utcnow()
+            }
+            token = jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
+            return token
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"生成刷新令牌失败: {str(e)}"
+            )
+
+    async def verify_refresh_token(self, token: str) -> dict:
+        try:
+            payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
+            if payload.get("type") != "refresh":
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="无效的令牌类型"
+                )
+            return payload
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Refresh Token 已过期，请重新登录"
+            )
+        except jwt.InvalidTokenError as e:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="无效的令牌"
             )
     
     async def verify_token(self, token: str) -> dict:
@@ -131,14 +155,19 @@ class JWTAuth:
             HTTPException: 当令牌无效或过期时抛出
         """
         try:
+            print(f"[诊断-verify_token] token前20字符: {token[:20]}...")
+            print(f"[诊断-verify_token] secret_key前20字符: {self.secret_key[:20]}...")
             payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
+            print(f"[诊断-verify_token] 解码成功, payload: {payload}")
             return payload
         except jwt.ExpiredSignatureError:
+            print(f"[诊断-verify_token] 令牌已过期")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="令牌已过期"
             )
-        except jwt.InvalidTokenError:
+        except jwt.InvalidTokenError as e:
+            print(f"[诊断-verify_token] 无效的令牌: {e}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="无效的令牌"
@@ -152,57 +181,109 @@ class JWTAuth:
     async def authenticate(self, request: Request) -> Optional[dict]:
         """
         认证请求
-        
-        从请求中提取并验证JWT令牌。
-        
+
+        从请求中提取并验证JWT令牌，同时查询用户角色信息。
+
         Args:
             request (Request): FastAPI请求对象
-            
+
         Returns:
             Optional[dict]: 认证成功返回payload，失败返回None
-            
+
         Raises:
             HTTPException: 当认证失败时抛出
         """
         auth_header = request.headers.get("Authorization")
-        
+
         if not auth_header:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="缺少认证信息"
             )
-        
+
         if not auth_header.startswith("Bearer "):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="无效的认证格式"
             )
-        
+
         token = auth_header.split(" ")[1]
         payload = await self.verify_token(token)
-        
+
+        # 拒绝 Refresh Token 用于普通 API
+        if payload.get("type") == "refresh":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="无效的令牌类型"
+            )
+
         # 将用户信息存储到 request.state，方便后续使用
-        request.state.username = payload.get("username")
+        username = payload.get("username")
+        request.state.username = username
         request.state.payload = payload
-        
+
+        # 查询用户角色并存储到 request.state
+        from app.shared.utils.auth.user_db import UserDB
+        user = await UserDB.get_user_by_username(username)
+        if user:
+            request.state.role = user.get('role', 'user')
+            request.state.user_id = user.get('id')
+        else:
+            request.state.role = 'user'
+            request.state.user_id = None
+
         return payload
+
+
+async def require_admin(request: Request):
+    """
+    校验当前请求用户是否为 admin 角色
+
+    该函数作为 FastAPI 依赖使用，检查 request.state.role 是否为 'admin'。
+    必须在 auth_middleware 之后使用，因为 auth_middleware 负责将 role 写入 request.state。
+
+    Args:
+        request: FastAPI 请求对象
+
+    Returns:
+        bool: 校验通过返回 True
+
+    Raises:
+        HTTPException: 非 admin 用户时返回 403 Forbidden
+    """
+    role = getattr(request.state, 'role', 'user')
+    if role != 'admin':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="需要管理员权限"
+        )
+    return True
 
 
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
+    print(f"[诊断-auth_middleware] 进入, path={path}")
     
     # 检查路径是否在白名单中
     if jwt_auth.is_whitelisted(path):
+        print(f"[诊断-auth_middleware] 路径在白名单中, 跳过验证")
+        return await call_next(request)
+    
+    # 非 API 路径（Vite HMR、静态资源等）跳过 JWT 验证
+    if not path.startswith("/api/"):
+        print(f"[诊断-auth_middleware] path={path} 非 API 路径, 跳过验证")
         return await call_next(request)
     
     try:
         # 验证JWT令牌
+        print(f"[诊断-auth_middleware] 开始验证JWT令牌")
         await jwt_auth.authenticate(request)
+        print(f"[诊断-auth_middleware] JWT验证成功, username={getattr(request.state, 'username', None)}")
         return await call_next(request)
     except Exception as e:
         import traceback
-        #print(f"[诊断-auth_middleware] path={path}, 异常: {e}")
-        #print(f"[诊断-auth_middleware] 堆栈: {traceback.format_exc()}")
+        print(f"[诊断-auth_middleware] path={path}, 异常: {e}")
+        print(f"[诊断-auth_middleware] 堆栈: {traceback.format_exc()}")
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={"detail": str(e)}
@@ -210,76 +291,87 @@ async def auth_middleware(request: Request, call_next):
 
 
 async def session_auth_middleware(request: Request, call_next):
-    """
-    Session 认证中间件
-    
-    验证 session_id 是否与当前登录用户名对应。
-    白名单路径跳过验证。
-    /api/session/create 路径跳过验证（因为创建 session 时还没有 session_id）。
-    
-    Args:
-        request (Request): FastAPI请求对象
-        call_next: 下一个中间件或路由处理器
-        
-    Returns:
-        Response: 处理后的响应
-    """
     path = request.url.path
-    #print(f"[诊断-session_middleware] 进入, path={path}")
-    
-    # 检查路径是否在白名单中（白名单路径不需要 session 验证）
+
+    # 白名单路径（无需 Access Token）也无需 Session 验证
     if jwt_auth.is_whitelisted(path):
         return await call_next(request)
-    
-    # /api/session/create 路径跳过 session 验证（创建 session 时还没有 session_id）
-    if path.startswith("/api/session/create"):
-        #print(f"[诊断-session_middleware] /api/session/create 跳过验证")
+
+    # 检查是否在 Session 白名单路径中（这些路径不需要 Session 验证）
+    for prefix in SESSION_WHITELIST_PREFIXES:
+        if path.startswith(prefix):
+            return await call_next(request)
+
+    # 检查是否需要 Session 验证
+    needs_session = False
+
+    # 按前缀匹配
+    for prefix in SESSION_REQUIRED_PREFIXES:
+        if path.startswith(prefix):
+            needs_session = True
+            break
+
+    # 匹配 /api/session/{session_id}/ 模式（需要 session 验证的路径）
+    if not needs_session and path.startswith("/api/session/"):
+        # 排除白名单中的 /api/session/create, /api/session/list, /api/session/delete
+        # 格式: /api/session/{session_id}/detail, /api/session/{session_id}/messages 等
+        path_segments = path.split("/")
+        # path_segments = ['', 'api', 'session', '{session_id}', 'action', ...]
+        if len(path_segments) >= 5 and path_segments[4]:
+            needs_session = True
+
+    if not needs_session:
+        # 不需要 Session 验证的路径直接放行
+        # username 由 auth_middleware（外层中间件）设置，此处无需重复检查
         return await call_next(request)
-    
-    try:
-        # 获取当前用户名
-        username = getattr(request.state, "username", None)
-        
-        if not username:
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                content={"detail": "缺少用户认证信息"}
-            )
-        
-        # 从请求头中获取 session_id
-        session_id = request.headers.get("X-Session-ID")
-        
-        if not session_id:
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={"detail": "缺少 X-Session-ID 请求头"}
-            )
-        
-        # 验证 session_id 是否属于该用户
-        from app.shared.utils.auth.session_db import SessionDB
-        #print(f"[诊断-session_middleware] SessionDB.is_enabled()={SessionDB.is_enabled()}, username={username}, session_id={session_id}")
-        is_valid = session_cache.verify_session(session_id, username)
-        #print(f"[诊断-session_middleware] verify_session result={is_valid}")
-        
-        if not is_valid:
-            return JSONResponse(
-                status_code=status.HTTP_403_FORBIDDEN,
-                content={"detail": "无权访问该会话"}
-            )
-        
-        # 将 session_id 存储到 request.state，方便后续使用
-        request.state.session_id = session_id
-        
-        return await call_next(request)
-    except Exception as e:
-        import traceback
-        #print(f"[诊断-session_middleware] 异常: {e}")
-        #print(f"[诊断-session_middleware] 堆栈: {traceback.format_exc()}")
+
+    # 需要 Session 验证时才检查用户认证信息
+    username = getattr(request.state, "username", None)
+    if not username:
         return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": f"Session 认证失败: {str(e)}"}
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": "缺少用户认证信息"}
         )
 
+    # 需要 Session 验证：检查 X-Session-ID
+    session_id = request.headers.get("X-Session-ID")
+    if not session_id:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": "缺少 X-Session-ID 请求头"}
+        )
+
+    # 验证 session_id 是否属于该用户
+    is_valid = await session_cache.verify_session(session_id, username)
+
+    if not is_valid:
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": "无权访问该会话"}
+        )
+
+    request.state.session_id = session_id
+    return await call_next(request)
+
+
+# 不需要 Session 验证的路径前缀（仅需 Access Token）
+SESSION_WHITELIST_PREFIXES = [
+    "/api/auth",
+    "/api/users",
+    "/api/session/create",
+    "/api/session/list",
+    "/api/session/delete",
+    "/api/session/admin",
+]
+
+# 需要 Session 验证的路径前缀
+SESSION_REQUIRED_PREFIXES = [
+    "/api/files/",
+    "/api/agent/",
+    "/api/core",
+    "/api/map",
+    "/api/contract",
+]
 
 # 创建全局JWT认证实例
 jwt_auth = JWTAuth()

@@ -59,6 +59,18 @@ def _safe_path(base_dir: Path, relative_path: str) -> Path:
 
 
 def _get_session_dir(request: Request) -> Path:
+    """
+    获取当前请求对应的 session 下载目录
+
+    从 request.state 中获取 session_id，若不存在则使用默认值 "default"，
+    并确保对应的 session 下载目录已创建。
+
+    参数:
+        request (Request): FastAPI 请求对象，需包含 state.session_id
+
+    返回:
+        Path: 当前 session 对应的下载目录路径
+    """
     session_id = getattr(request.state, "session_id", "default")
     session_dir = DOWNLOAD_DIR / session_id
     session_dir.mkdir(parents=True, exist_ok=True)

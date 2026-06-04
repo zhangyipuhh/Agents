@@ -97,12 +97,14 @@ class MapAgentConfig(BaseAgentConfig):
             draw_map_polygon,
             set_map_layer,
             generate_report,
+            save_business_info,
         )
         from app.core.tools.BaseTools import get_current_time
         from app.core.tools.mcp_registry import MCPToolsRegistry
         from app.features.map_agent.config.config import map_agent_settings
         from app.core.tools.FilesystemReadTools import explore
         from app.core.tools.BaseTools import get_current_time
+        from app.core.tools.HumanInTheLoopTools import ask_user_question
         tools = [
             #get_current_time,
             # set_map_center,
@@ -116,6 +118,8 @@ class MapAgentConfig(BaseAgentConfig):
             explore,
             get_current_time,
             generate_report,
+            save_business_info,
+            ask_user_question,
         ]
 
         try:

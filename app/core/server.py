@@ -52,9 +52,32 @@ async def lifespan(app: FastAPI):
     from app.shared.utils.auth.session_db import SessionDB
     await SessionDB.initialize()
 
+    # 确保管理员账户存在
+    from app.shared.utils.auth.user_db import UserDB
+    await UserDB.ensure_admin_exists()
+
+    # 初始化 LangGraph Checkpointer（创建 checkpoints 表）
+    if DatabasePool.is_enabled():
+        from app.shared.utils.memory.checkpoint import get_async_checkpointer
+        try:
+            checkpointer = await get_async_checkpointer()
+            print("[DEBUG] LangGraph Checkpointer 初始化成功")
+        except Exception as e:
+            print(f"[DEBUG] LangGraph Checkpointer 初始化失败: {e}")
+
     # 添加 Swagger 文档路径到白名单
     jwt_auth.add_to_whitelist("/api/auth/login")
     print("[DEBUG] 已添加 /api/auth/login 到白名单")
+    jwt_auth.add_to_whitelist("/api/auth/login-api")
+    print("[DEBUG] 已添加 /api/auth/login-api 到白名单")
+    jwt_auth.add_to_whitelist("/api/auth/captcha")
+    print("[DEBUG] 已添加 /api/auth/captcha 到白名单")
+    jwt_auth.add_to_whitelist("/api/auth/register")
+    print("[DEBUG] 已添加 /api/auth/register 到白名单")
+    jwt_auth.add_to_whitelist("/api/auth/refresh")
+    print("[DEBUG] 已添加 /api/auth/refresh 到白名单")
+    jwt_auth.add_to_whitelist("/api/auth/validate")
+    print("[DEBUG] 已添加 /api/auth/validate 到白名单")
     jwt_auth.add_to_whitelist("/docs")
     print("[DEBUG] 已添加 /docs 到白名单")
     jwt_auth.add_to_whitelist("/openapi.json")

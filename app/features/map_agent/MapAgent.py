@@ -10,7 +10,7 @@ Date: 2026-04-14
 Author: AI Assistant
 """
 
-from typing import Optional, AsyncGenerator, Union
+from typing import Optional, AsyncGenerator, Union, Any
 from app.core.agent.agent import get_agent
 from app.features.map_agent.config.MapAgentConfig import (
     MapAgentConfig,
@@ -22,6 +22,7 @@ from app.features.map_agent.config.MapAgentConfig import (
 from app.features.map_agent.config.prompts import DEFAULT_SYSTEM_PROMPT
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.store.base import BaseStore
+from langgraph.types import Command
 
 
 class MapAgent:
@@ -99,13 +100,15 @@ class MapAgent:
 
     async def stream(
         self,
-        user_input: str,
-        session_id: str,
+        user_input: str = "",
+        session_id: str = "",
         error_limit: int = 2,
         limit: int = 10,
         stream_mode: Union[str, list[str]] = None,
-        context: any = None,
+        context: Any = None,
         geometry_data: dict = {},
+        attachments: list = [],
+        resume: Union[bool, dict] = False,
         **kwargs,
     ) -> AsyncGenerator[dict, None]:
         """
@@ -113,6 +116,7 @@ class MapAgent:
 
         通过流式输出，实时获取每个节点的执行结果，包括每次 LLM 调用的输出。
         适用于需要实时反馈的场景，如用户对话、实时监控等。
+        支持通过 resume 参数恢复被 HITL 中断的执行。
 
         Args:
             user_input: 用户输入内容
@@ -127,6 +131,9 @@ class MapAgent:
                 - "custom": 流式输出自定义数据
                 - ["updates", "messages"]: 组合模式，同时获取多种输出
             geometry_data: 地理数据类型，格式为 {"point": [...], "line": [...], "polygon": [...]}
+            resume: 恢复参数，用于从 HITL 中断处恢复执行。
+                - False: 正常新请求（默认）
+                - dict: 用户的决策数据，如 {"type": "response", "args": {"decision": "approve"}}
             **kwargs: 其他可选参数
 
         Yields:
@@ -134,36 +141,6 @@ class MapAgent:
                 - stream_mode="updates": {node_name: {state_updates}}
                 - stream_mode="messages": (message_chunk, metadata)
                 - stream_mode=["updates", "messages"]: (mode, data)
-
-        Examples:
-            基本使用（获取每次 llm_call 的输出）：
-            ```python
-            async for chunk in map_agent.stream("定位到北京", "session_123"):
-                if "llm_call" in chunk:
-                    print(f"LLM 输出: {chunk['llm_call']['messages'][-1].content}")
-            ```
-
-            流式输出 LLM token：
-            ```python
-            async for chunk in map_agent.stream(
-                "定位到北京", "session_123",
-                stream_mode="messages"
-            ):
-                message_chunk, metadata = chunk
-                print(message_chunk.content, end="", flush=True)
-            ```
-
-            组合模式：
-            ```python
-            async for mode, data in map_agent.stream(
-                "定位到北京", "session_123",
-                stream_mode=["updates", "messages"]
-            ):
-                if mode == "updates":
-                    print(f"节点更新: {data}")
-                elif mode == "messages":
-                    print(data[0].content, end="", flush=True)
-            ```
         """
         agent = await self._ensure_agent()
 
@@ -178,15 +155,42 @@ class MapAgent:
 
         )
 
-        # 构建输入状态
+        # 判断是正常请求还是恢复请求
+        if resume is not False:
+            # 从中断恢复：使用 Command(resume=...) 作为输入
+            resume_command = Command(resume=resume)
+            async for chunk in agent.stream(
+                input_state=resume_command,
+                context=MapAgentContext(
+                    session_id=session_id,
+                    store_id=self.store_id or session_id,
+                    knowledge_root=context.get("knowledge_root") if context else None,
+                    system_prompt=context.get("system_prompt") if context else None,
+                    geometry_data=geometry_data
+                ),
+                config=config,
+                stream_mode=stream_mode
+            ):
+                yield chunk
+            return
+
+        # 构建输入状态，将附件信息存入 HumanMessage 的 additional_kwargs
+        from langchain_core.messages import HumanMessage
+        if attachments:
+            human_message = HumanMessage(
+                content=user_input,
+                additional_kwargs={"attachments": attachments}
+            )
+        else:
+            human_message = HumanMessage(content=user_input)
         state = MapAgentState(
-            messages=[user_input],
+            messages=[human_message],
             error_limit=error_limit,
             limit=limit,
         )
 
         # 构建上下文
-        context = MapAgentContext(
+        ctx = MapAgentContext(
             session_id=session_id,
             store_id=self.store_id or session_id,
             knowledge_root=context.get("knowledge_root") if context else None,
@@ -197,7 +201,7 @@ class MapAgent:
         # 流式调用 agent
         async for chunk in agent.stream(
             input_state=state,
-            context=context,
+            context=ctx,
             config=config,
             stream_mode=stream_mode
         ):

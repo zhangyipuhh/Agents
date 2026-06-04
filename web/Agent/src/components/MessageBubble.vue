@@ -294,6 +294,32 @@ const handleCopy = async () => {
   }
 }
 
+const handleCopyUserContent = async () => {
+  const textToCopy = typeof props.content === 'string' ? props.content : JSON.stringify(props.content)
+  try {
+    await navigator.clipboard.writeText(textToCopy)
+    showCopyToast.value = true
+    setTimeout(() => {
+      showCopyToast.value = false
+    }, 2000)
+    emit('copy', { success: true, messageId: props.messageId })
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = textToCopy
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    document.body.removeChild(textarea)
+    showCopyToast.value = true
+    setTimeout(() => {
+      showCopyToast.value = false
+    }, 2000)
+    emit('copy', { success: true, messageId: props.messageId })
+  }
+}
+
 const handleRegenerate = () => {
   emit('regenerate', props.messageId)
 }
@@ -356,6 +382,12 @@ const getFileIconColor = (filename) => {
   <div class="message-bubble" :class="[type]">
     <!-- 用户消息 -->
     <div v-if="isUserMessage" class="user-message">
+      <button class="action-btn user-copy-btn" :data-tooltip="'复制消息'" @click="handleCopyUserContent">
+        <svg class="action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+          <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+        </svg>
+      </button>
       <div class="bubble-content">
         <div v-if="hasAttachments" class="bubble-attachments">
           <div
@@ -363,11 +395,11 @@ const getFileIconColor = (filename) => {
             :key="idx"
             class="bubble-attachment-tag"
           >
-            <svg class="att-icon" viewBox="0 0 20 20" fill="currentColor" :style="{ color: getFileIconColor(att.original_name || att.filename) }">
+            <svg class="att-icon" viewBox="0 0 20 20" fill="currentColor" :style="{ color: getFileIconColor(att.original_name || att.file_name || att.filename) }">
               <path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"/>
             </svg>
-            <span class="att-name">{{ att.original_name || att.filename }}</span>
-            <span v-if="att.size" class="att-size">{{ formatFileSize(att.size) }}</span>
+            <span class="att-name">{{ att.original_name || att.file_name || att.filename }}</span>
+            <span v-if="att.file_size || att.size" class="att-size">{{ formatFileSize(att.file_size || att.size) }}</span>
           </div>
         </div>
         <div v-if="content" class="bubble-text">{{ content }}</div>
@@ -592,6 +624,8 @@ const getFileIconColor = (filename) => {
 .user-message {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
   width: 100%;
 }
 

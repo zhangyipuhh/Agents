@@ -16,28 +16,44 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
 
 from app.features.AI_Coding_Check_agent.AICodingCheckAgent import AICodingCheckAgent
+from app.shared.utils.memory import get_async_checkpointer
 
 # 获取当前模块的日志记录器
 logger = logging.getLogger(__name__)
 
-# 初始化 MemorySaver 和 InMemoryStore，用于保存会话检查点和内存数据
-_checkpointer = MemorySaver()
+# 初始化 InMemoryStore，用于保存内存数据
 store = InMemoryStore()
 store_id = "ai_coding_check_store"
 
 # 创建 API 路由实例，设置路由前缀和标签
 router = APIRouter(prefix='/api/ai-coding-check', tags=['AI Coding Check'])
 
-# 初始化 AICodingCheckAgent 实例，传入检查点存储器和内存存储
-agent = AICodingCheckAgent(
-    checkpointer=_checkpointer,
-    store=store,
-    store_id=store_id,
-)
+# 延迟初始化 AICodingCheckAgent 实例（在第一次请求时初始化）
+_agent: Optional[AICodingCheckAgent] = None
+
+
+async def get_ai_coding_check_agent() -> AICodingCheckAgent:
+    """
+    获取 AICodingCheckAgent 实例（延迟初始化）
+
+    使用延迟初始化模式，确保在第一次请求时才创建 AICodingCheckAgent 实例，
+    这样可以正确获取异步初始化的 checkpointer。
+
+    Returns:
+        AICodingCheckAgent: 初始化完成的 AICodingCheckAgent 实例
+    """
+    global _agent
+    if _agent is None:
+        checkpointer = await get_async_checkpointer()
+        _agent = AICodingCheckAgent(
+            checkpointer=checkpointer,
+            store=store,
+            store_id=store_id,
+        )
+    return _agent
 
 
 class ReviewRequest(BaseModel):
@@ -90,7 +106,8 @@ async def review(request: ReviewRequest) -> ReviewResponse:
         HTTPException: 评审失败时抛出
     """
     try:
-        # 调用智能体评审方法，传入开发者数据进行评审
+        # 获取 AICodingCheckAgent 实例并调用评审方法
+        agent = await get_ai_coding_check_agent()
         result = await agent.review(request.developer_data)
         # 评审成功，返回 200 状态码和评审结果
         return ReviewResponse(code=200, message="success", data=result)

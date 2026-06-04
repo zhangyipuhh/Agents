@@ -10,7 +10,7 @@
 使用 AgentConfig 来配置模型、Token 及存储等相关参数。
 
 工作流:
-    START → summarize → llm_call → END (自动循环调用工具直到完成)
+    START → hitl_check → summarize → llm_call → END (自动循环调用工具直到完成)
 
 摘要功能:
     - 使用 SummarizationNode 自动管理对话摘要，里面包含trim_messages的逻辑
@@ -27,13 +27,15 @@ Author: 张镒谱
 
 from imaplib import IMAP4
 import logging
+from datetime import datetime
 
 from typing import Literal, Union, AsyncGenerator
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph import MessagesState
 from langgraph.runtime import Runtime
-from langgraph.types import RetryPolicy
+from langgraph.types import RetryPolicy, Command as LGCommand
+from langgraph.types import interrupt, Overwrite
 from langchain_core.messages import AnyMessage, HumanMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langmem.short_term import SummarizationNode, RunningSummary
@@ -99,7 +101,7 @@ class Agent:
         - 与 trim_messages 配合使用，确保上下文长度合适
 
     工作流:
-        START → summarize → llm_call → END
+        START → hitl_check → summarize → llm_call → END
 
     调用方式:
         - invoke(): 非流式调用，返回最终结果
@@ -191,6 +193,75 @@ class Agent:
             return "tools"
         return "end"
 
+    async def hitl_check_node(
+        self,
+        state: AgentState,
+        runtime: Runtime[AgentContext],
+    ):
+        """HITL 检查节点：检查 pending_question 并暂停图执行
+
+        检查当前状态中是否存在待回答的问题。
+        如果存在且状态为 pending，则调用 interrupt() 暂停图执行，
+        向前端发送中断事件，等待用户回答后恢复。
+        恢复后添加 HumanMessage 反馈（保持 HumanMessage 模式避免 tool_call_id 风险）
+        并清除 pending_question、记录 question_answers。
+
+        Args:
+            state: 当前对话状态，包含 messages 和 pending_question
+            runtime: 包含 context 的运行时对象
+
+        Returns:
+            dict: 更新后的状态，包含修改后的 messages 和清除后的 pending_question
+        """
+        pending = state.get("pending_question")
+
+        if not pending or pending.get("status") != "pending":
+            return state
+
+        # 构造 interrupt 请求（LangGraph 新版格式：直接传 dict）
+        request = {
+            "action": "ask_user_question",
+            "questions": pending["questions"]
+        }
+
+        # 调用 interrupt 暂停执行
+        response = interrupt(request)
+
+        # ===== 恢复后处理 =====
+        # response 直接是 Command(resume=...) 传入的值
+        answers = response.get("answers", []) if isinstance(response, dict) else []
+        questions = pending["questions"]
+
+        # 构造结构化的 HumanMessage（保持 HumanMessage 模式，详见设计文档 §6.1）
+        formatted_parts = []
+        for i, q in enumerate(questions):
+            labels = answers[i] if i < len(answers) else []
+            if not labels:
+                formatted_parts.append(f'问题「{q["question"]}」：未回答')
+            else:
+                formatted_parts.append(f'问题「{q["question"]}」：用户选择了 {", ".join(labels)}')
+
+        feedback_text = (
+            f"【用户对 {len(questions)} 个问题的回答】\n"
+            + "\n".join(formatted_parts)
+            + "\n\n请基于以上回答继续。"
+        )
+
+        # 记录历史问答（用 Overwrite 处理 list 字段）
+        new_record = {
+            "questions": questions,
+            "answers": answers,
+            "timestamp": datetime.now().isoformat()
+        }
+        existing_raw = state.get("question_answers", [])
+        existing = existing_raw.value if isinstance(existing_raw, Overwrite) else existing_raw
+
+        return {
+            "messages": [HumanMessage(content=feedback_text)],
+            "pending_question": None,
+            "question_answers": Overwrite(value=existing + [new_record])
+        }
+
     async def _llm_call(
         self,
         state: LLMInputState,
@@ -272,19 +343,31 @@ class Agent:
         """构建 LangGraph 工作流
 
         工作流结构:
-            START → summarize → llm_call → END
-            (如果配置了工具): llm_call → tools → summarize
+            START → hitl_check → summarize → llm_call → END
+            (如果配置了工具): llm_call → tools → hitl_check → summarize
 
         摘要节点功能:
             - 使用 SummarizationNode 自动管理对话摘要
             - 保留最新对话，自动摘要旧消息
             - 与 trim_messages 配合确保 token 数合适
 
+        HITL 检查节点功能:
+            - 在 summarize 之前检查是否有 pending_question
+            - 如果有，调用 interrupt() 暂停执行等待用户回答
+            - 恢复后添加 HumanMessage 反馈（包含所有问题+答案），然后由 summarize 重新生成 summarized_messages
+            - 无 pending_question 时直接透传，不影响原有流程
+
+        为什么 hitl_check 在 summarize 之前:
+            - hitl_check 更新 messages 后，summarize 会基于最新 messages 重新生成 summarized_messages
+            - 确保 _llm_call 读取的 summarized_messages 始终包含用户反馈
+            - 避免手动维护 messages 和 summarized_messages 两份列表的一致性
+
         边连接逻辑:
-            - 从 START 到 summarize 节点
+            - 从 START 到 hitl_check 节点
+            - 从 hitl_check 到 summarize 节点
             - 从 summarize 到 llm_call 节点
             - 从 llm_call 根据条件分支到 tools 或 END（如果没有工具则直接到 END）
-            - 从 tools 回到 summarize 继续调用
+            - 从 tools 回到 hitl_check 节点继续处理
         """
         # 创建 SummarizationNode，用于自动管理对话摘要
         summarization_node = SummarizationNode(
@@ -304,11 +387,15 @@ class Agent:
             retry_policy=self._config.get_summarize_retry_policy(),
         )
         workflow.add_node(
+            "hitl_check", self.hitl_check_node, retry_policy=self._config.get_llm_retry_policy()
+        )
+        workflow.add_node(
             "llm_call", self._llm_call, retry_policy=self._config.get_llm_retry_policy()
         )
 
         # 添加边
-        workflow.add_edge(START, "summarize")
+        workflow.add_edge(START, "hitl_check")
+        workflow.add_edge("hitl_check", "summarize")
         workflow.add_edge("summarize", "llm_call")
 
         # 如果配置了工具节点，添加工具和条件边
@@ -322,8 +409,8 @@ class Agent:
             workflow.add_conditional_edges(
                 "llm_call", self._should_continue, {"tools": "tools", "end": END}
             )
-            # 工具执行完成后回到 summarize 节点处理
-            workflow.add_edge("tools", "summarize")
+            # 工具执行完成后回到 hitl_check 节点处理
+            workflow.add_edge("tools", "hitl_check")
         else:
             # 没有工具时，llm_call 直接连接到 END
             workflow.add_edge("llm_call", END)
@@ -369,7 +456,7 @@ class Agent:
 
     async def stream(
         self,
-        input_state: AgentState,
+        input_state: Union[AgentState, LGCommand],
         context: AgentContext,
         config: ExecuteConfig,
         stream_mode: Union[str, list[str]] = "updates",
@@ -378,9 +465,11 @@ class Agent:
 
         通过流式输出，实时获取每个节点的执行结果，包括每次 _llm_call 的输出。
         适用于需要实时反馈的场景，如用户对话、实时监控等。
+        支持通过 Command(resume=...) 恢复被中断的执行。
 
         Args:
-            input_state: 输入状态，包含 summarized_messages 和 context
+            input_state: 输入状态或恢复命令。正常调用时传入 AgentState；
+                从中断恢复时传入 Command(resume=...) 对象。
             context: 上下文实例，用于传递静态变量
             config: 运行配置，包含 thread_id 等信息
             stream_mode: 流式输出模式，支持以下选项：
@@ -404,26 +493,12 @@ class Agent:
                     print(f"LLM 输出: {chunk['llm_call']['messages'][-1].content}")
             ```
 
-            流式输出 LLM token：
+            从中断恢复：
             ```python
             async for chunk in agent.stream(
-                input_state, context, config,
-                stream_mode="messages"
+                Command(resume={"decision": "approve"}), context, config
             ):
-                message_chunk, metadata = chunk
-                print(message_chunk.content, end="", flush=True)
-            ```
-
-            组合模式：
-            ```python
-            async for mode, data in agent.stream(
-                input_state, context, config,
-                stream_mode=["updates", "messages"]
-            ):
-                if mode == "updates":
-                    print(f"节点更新: {data}")
-                elif mode == "messages":
-                    print(data[0].content, end="", flush=True)
+                print(chunk)
             ```
         """
         if not hasattr(self, "graph") or self.graph is None:

@@ -13,6 +13,7 @@ from requests import RequestException
 from app.core.config.config import FILE_PARSER_CONFIG
 from app.shared.utils.files.DocumentLoader import DocumentLoader
 from app.shared.utils.files.file_parser_client import FileParserClient
+from app.shared.utils.files.attachment_db import AttachmentDB
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +256,10 @@ async def merge_chunks(request: Request, merge_request: MergeChunksRequest):
                     file_type="txt",
                 )]
 
+            # 记录附件信息到数据库
+            for f in uploaded_files:
+                await _record_attachment(session_id, f, merge_request.file_id)
+
             return CoreFileUploadResponse(
                 files=uploaded_files,
                 count=len(uploaded_files),
@@ -267,3 +272,33 @@ async def merge_chunks(request: Request, merge_request: MergeChunksRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"合并分片失败: {str(e)}")
+
+
+async def _record_attachment(session_id: str, file_info: UploadedFileInfo, file_id: str = None):
+    """记录附件信息到数据库
+
+    在文件上传成功后调用，将附件元数据写入 attachments 表。
+
+    Args:
+        session_id: 会话 ID
+        file_info: 上传文件信息
+        file_id: 上传时的 file_id
+    """
+    try:
+        import mimetypes
+        mime_type = mimetypes.guess_type(file_info.filename)[0]
+        # 从存储路径获取文件大小
+        stored_path = Path(file_info.stored_path)
+        file_size = stored_path.stat().st_size if stored_path.exists() else 0
+
+        await AttachmentDB.add_attachment(
+            session_id=session_id,
+            file_name=file_info.filename,
+            stored_path=file_info.stored_path,
+            file_type=file_info.file_type,
+            file_size=file_size,
+            mime_type=mime_type,
+            file_id=file_id,
+        )
+    except Exception as e:
+        logger.warning(f"记录附件信息失败: {e}")

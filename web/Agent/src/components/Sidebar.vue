@@ -1,29 +1,112 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import UserSettingsDialog from './UserSettingsDialog.vue'
+import { fetchSessionList, deleteSession } from '../utils/api.js'
 
 const props = defineProps({
   currentPage: {
     type: String,
     default: 'agent'
+  },
+  username: {
+    type: String,
+    default: '用户名'
+  },
+  userRole: {
+    type: String,
+    default: 'user'
+  },
+  userId: {
+    type: Number,
+    default: null
+  },
+  currentSessionId: {
+    type: String,
+    default: ''
   }
 })
 
-const emit = defineEmits(['toggle-sidebar', 'new-chat', 'page-change'])
+const emit = defineEmits(['toggle-sidebar', 'new-chat', 'page-change', 'logout', 'username-updated', 'session-switch'])
 
 const isSidebarCollapsed = ref(false)
 const isHistoryCollapsed = ref(false)
-const isLabCollapsed = ref(false)
-const isExpertCollapsed = ref(false)
+const isLabCollapsed = ref(true)
 const activeMenu = ref('new-task')
 const isUserMenuVisible = ref(false)
 const userMenuRef = ref(null)
 const menuPositionStyle = ref({})
+const isSettingsDialogVisible = ref(false)
+const settingsInitialTab = ref('profile')
 
-const historySessions = ref([
-  { id: 1, title: '数据分析报告生成', time: '10:30', active: true },
-  { id: 2, title: '地图操作自动化', time: '昨天', active: false },
-  { id: 3, title: '客户信息整理', time: '3天前', active: false },
-])
+const historySessions = ref([])
+const isLoadingSessions = ref(false)
+
+/**
+ * 从后端加载会话列表
+ */
+const loadSessionList = async () => {
+  if (!props.username || props.username === '用户名') return
+  isLoadingSessions.value = true
+  try {
+    const data = await fetchSessionList()
+    historySessions.value = (data.sessions || []).map(s => ({
+      id: s.session_id,
+      title: s.title || '新对话',
+      time: formatTime(s.last_active_at || s.created_at),
+      active: s.session_id === props.currentSessionId,
+      sessionId: s.session_id
+    }))
+  } catch (err) {
+    console.error('加载会话列表失败:', err)
+  } finally {
+    isLoadingSessions.value = false
+  }
+}
+
+/**
+ * 格式化时间显示
+ * @param {string} dateStr - ISO 日期字符串
+ * @returns {string} 格式化后的时间文本
+ */
+const formatTime = (dateStr) => {
+  if (!dateStr) return ''
+  const date = new Date(dateStr)
+  const now = new Date()
+  const diffMs = now - date
+  const diffMins = Math.floor(diffMs / 60000)
+  const diffHours = Math.floor(diffMs / 3600000)
+  const diffDays = Math.floor(diffMs / 86400000)
+
+  if (diffMins < 1) return '刚刚'
+  if (diffMins < 60) return `${diffMins}分钟前`
+  if (diffHours < 24) return `${diffHours}小时前`
+  if (diffDays < 7) return `${diffDays}天前`
+  return `${date.getMonth() + 1}/${date.getDate()}`
+}
+
+/**
+ * 切换到历史会话
+ * @param {Object} session - 会话对象
+ */
+const handleSessionClick = (session) => {
+  emit('session-switch', session.sessionId)
+}
+
+/**
+ * 删除历史会话
+ * @param {string} sessionId - 会话 ID
+ * @param {MouseEvent} event - 鼠标事件
+ */
+const handleDeleteSession = async (sessionId, event) => {
+  event.stopPropagation()
+  if (!confirm('确定删除该会话？删除后无法恢复。')) return
+  try {
+    await deleteSession(sessionId)
+    await loadSessionList()
+  } catch (err) {
+    console.error('删除会话失败:', err)
+  }
+}
 
 const handleMenuClick = (menuId) => {
   activeMenu.value = menuId
@@ -59,10 +142,6 @@ const toggleLab = () => {
   isLabCollapsed.value = !isLabCollapsed.value
 }
 
-const toggleExpert = () => {
-  isExpertCollapsed.value = !isExpertCollapsed.value
-}
-
 /**
  * 切换用户菜单显示状态
  * @param {MouseEvent} event - 鼠标事件对象
@@ -81,20 +160,39 @@ const closeUserMenu = () => {
 
 /**
  * 处理设置点击
+ * 打开用户设置对话框并显示个人设置页
  */
 const handleSetting = () => {
   closeUserMenu()
-  // TODO: 打开设置页面或弹窗
-  console.log('打开设置')
+  settingsInitialTab.value = 'profile'
+  isSettingsDialogVisible.value = true
+}
+
+/**
+ * 处理管理后台点击
+ * 打开用户设置对话框并显示管理功能页
+ */
+const handleAdminPanel = () => {
+  closeUserMenu()
+  settingsInitialTab.value = 'user-management'
+  isSettingsDialogVisible.value = true
 }
 
 /**
  * 处理退出登录点击
+ * 触发登出事件
  */
 const handleLogout = () => {
   closeUserMenu()
-  // TODO: 执行退出登录逻辑
-  console.log('退出登录')
+  emit('logout')
+}
+
+/**
+ * 处理用户名更新事件
+ * @param {Object} data - 包含新用户名的数据
+ */
+const handleUsernameUpdated = (data) => {
+  emit('username-updated', data)
 }
 
 /**
@@ -162,9 +260,20 @@ watch(isSidebarCollapsed, () => {
   }
 })
 
+// 监听当前会话ID变化，更新历史记录高亮
+watch(() => props.currentSessionId, (newId) => {
+  historySessions.value.forEach(s => {
+    s.active = s.sessionId === newId
+  })
+})
+
+// 暴露 loadSessionList 方法给父组件调用
+defineExpose({ loadSessionList })
+
 onMounted(() => {
   document.addEventListener('click', handleClickOutside)
   window.addEventListener('resize', handleResize)
+  loadSessionList()
 })
 
 onUnmounted(() => {
@@ -183,7 +292,6 @@ onUnmounted(() => {
           <path d="M16 8L22 12V20L16 24L10 20V12L16 8Z" stroke="white" stroke-width="2" stroke-linejoin="round"/>
           <circle cx="16" cy="16" r="3" fill="white"/>
         </svg>
-        <span v-show="!isSidebarCollapsed" class="logo-text">ZYP</span>
       </div>
       <button class="sidebar-toggle" @click="toggleSidebar" :title="isSidebarCollapsed ? '展开侧栏' : '收起侧栏'">
         <svg viewBox="0 0 20 20" fill="currentColor" class="toggle-icon" :class="{ rotated: isSidebarCollapsed }">
@@ -206,32 +314,6 @@ onUnmounted(() => {
         </svg>
         <span v-show="!isSidebarCollapsed" class="menu-text">新建任务</span>
         <kbd v-show="!isSidebarCollapsed" class="shortcut">Ctrl+K</kbd>
-      </button>
-
-      <!-- 搜索 -->
-      <button
-        class="menu-item"
-        :class="{ active: activeMenu === 'search' }"
-        data-tooltip="搜索"
-        @click="handleMenuClick('search')"
-      >
-        <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
-          <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd"/>
-        </svg>
-        <span v-show="!isSidebarCollapsed" class="menu-text">搜索</span>
-      </button>
-
-      <!-- 资产 -->
-      <button
-        class="menu-item"
-        :class="{ active: activeMenu === 'assets' }"
-        data-tooltip="资产"
-        @click="handleMenuClick('assets')"
-      >
-        <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
-          <path d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V4zM3 10a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H4a1 1 0 01-1-1v-6zM14 9a1 1 0 00-1 1v6a1 1 0 001 1h2a1 1 0 001-1v-6a1 1 0 00-1-1h-2z"/>
-        </svg>
-        <span v-show="!isSidebarCollapsed" class="menu-text">资产</span>
       </button>
     </div>
 
@@ -317,49 +399,6 @@ onUnmounted(() => {
       </transition>
     </div>
 
-    <!-- 分组：专家 -->
-    <div class="sidebar-group" :class="{ 'collapsed-group': isSidebarCollapsed }">
-      <button
-        class="group-header"
-        :class="{ 'collapsed-header': isSidebarCollapsed }"
-        data-tooltip="专家"
-        @click="toggleExpert"
-      >
-        <svg
-          v-show="!isSidebarCollapsed"
-          class="group-collapse-icon"
-          :class="{ collapsed: isExpertCollapsed }"
-          viewBox="0 0 20 20"
-          fill="currentColor"
-        >
-          <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"/>
-        </svg>
-        <svg
-          v-show="isSidebarCollapsed"
-          class="group-icon"
-          viewBox="0 0 20 20"
-          fill="currentColor"
-        >
-          <path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z"/>
-        </svg>
-        <span v-show="!isSidebarCollapsed" class="group-title">专家</span>
-      </button>
-      <transition name="slide">
-        <div v-show="!isExpertCollapsed && !isSidebarCollapsed" class="group-items">
-          <button
-            class="menu-item menu-item-sm"
-            :class="{ active: activeMenu === 'experts' }"
-            @click="handleMenuClick('experts')"
-          >
-            <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
-              <path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z"/>
-            </svg>
-            <span class="menu-text">探索专家</span>
-          </button>
-        </div>
-      </transition>
-    </div>
-
     <!-- 任务记录区（可折叠） -->
     <div class="sidebar-history" :class="{ 'collapsed-history': isSidebarCollapsed }">
       <button
@@ -390,17 +429,27 @@ onUnmounted(() => {
 
       <transition name="slide">
         <div v-show="!isHistoryCollapsed && !isSidebarCollapsed" class="history-list">
-          <button
+          <div v-if="isLoadingSessions" class="history-loading">加载中...</div>
+          <div v-else-if="historySessions.length === 0" class="history-empty">暂无会话记录</div>
+          <div
             v-for="session in historySessions"
             :key="session.id"
             class="history-item"
             :class="{ active: session.active }"
+            @click="handleSessionClick(session)"
           >
             <div class="history-content">
               <span class="history-title-text">{{ session.title }}</span>
-              <span class="history-time">{{ session.time }}</span>
+              <div class="history-meta">
+                <span class="history-time">{{ session.time }}</span>
+                <button class="history-delete-btn" @click="handleDeleteSession(session.sessionId, $event)" title="删除会话">
+                  <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
+                    <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"/>
+                  </svg>
+                </button>
+              </div>
             </div>
-          </button>
+          </div>
         </div>
       </transition>
     </div>
@@ -415,15 +464,20 @@ onUnmounted(() => {
         </svg>
       </div>
       <div v-show="!isSidebarCollapsed" class="user-info">
-        <span class="user-name">用户名</span>
-        <span class="user-tag tag-free">免费</span>
+        <span class="user-name">{{ username }}</span>
       </div>
     </div>
 
     <!-- 用户菜单 - 使用 Teleport 移动到 body 层级，避免被父容器 overflow 裁剪 -->
     <Teleport to="body">
       <div v-show="isUserMenuVisible" class="user-menu" :class="{ 'is-collapsed': isSidebarCollapsed }" :style="menuPositionStyle">
-        <div class="user-menu-item" @click.stop="handleSetting">
+        <div v-if="userRole === 'admin'" class="user-menu-item" @click.stop="handleAdminPanel">
+          <svg class="menu-item-icon" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-6-3a2 2 0 11-4 0 2 2 0 014 0zm-2 4a5 5 0 00-4.546 2.916A5.986 5.986 0 0010 16a5.986 5.986 0 004.546-2.084A5 5 0 0010 11z" clip-rule="evenodd"/>
+          </svg>
+          <span>管理后台</span>
+        </div>
+        <div v-if="userRole !== 'admin'" class="user-menu-item" @click.stop="handleSetting">
           <svg class="menu-item-icon" viewBox="0 0 20 20" fill="currentColor">
             <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/>
           </svg>
@@ -437,6 +491,17 @@ onUnmounted(() => {
         </div>
       </div>
     </Teleport>
+
+    <!-- 用户设置对话框 -->
+    <UserSettingsDialog
+      v-model:visible="isSettingsDialogVisible"
+      :role="userRole"
+      :user-id="userId"
+      :username="username"
+      :initial-tab="settingsInitialTab"
+      :sidebar-collapsed="isSidebarCollapsed"
+      @username-updated="handleUsernameUpdated"
+    />
   </aside>
 </template>
 
@@ -897,6 +962,43 @@ onUnmounted(() => {
 }
 
 .history-time {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.history-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.history-delete-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease, background-color 0.15s ease;
+  flex-shrink: 0;
+
+  &:hover {
+    color: var(--color-accent);
+    background-color: var(--color-bg-hover);
+  }
+}
+
+.history-item:hover .history-delete-btn {
+  opacity: 1;
+}
+
+.history-loading,
+.history-empty {
+  padding: 16px 12px;
+  text-align: center;
   font-size: var(--font-size-xs);
   color: var(--color-text-muted);
 }

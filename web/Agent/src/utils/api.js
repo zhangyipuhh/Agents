@@ -1,107 +1,384 @@
+/* ============================================
+   用户认证相关 API
+   ============================================ */
+
+/**
+ * 用户登录
+ * @param {string} username - 用户名
+ * @param {string} password - 密码
+ * @param {string} captchaKey - 验证码 key
+ * @param {string} captchaCode - 验证码输入值
+ * @returns {Promise<{access_token: string, role: string, username: string, expires_in: number}>} 登录结果
+ * @throws {Error} 登录失败时抛出错误
+ */
+export async function login(username, password, captchaKey, captchaCode) {
+  const response = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      username,
+      password,
+      captcha_key: captchaKey,
+      captcha_code: captchaCode
+    })
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '登录失败')
+  }
+
+  return response.json()
+}
+
+/**
+ * 用户注册
+ * @param {string} username - 用户名
+ * @param {string} password - 密码
+ * @param {string} confirmPassword - 确认密码
+ * @param {string} realName - 真实姓名
+ * @param {string} phone - 手机号
+ * @param {string} email - 邮箱
+ * @param {string} department - 部门（选填）
+ * @param {string} position - 职位（选填）
+ * @param {string} captchaKey - 验证码 key
+ * @param {string} captchaCode - 验证码输入值
+ * @returns {Promise<{message: string}>} 注册结果
+ * @throws {Error} 注册失败时抛出错误
+ */
+export async function register(username, password, confirmPassword, realName, phone, email, department, position, captchaKey, captchaCode) {
+  const response = await fetch('/api/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      username,
+      password,
+      confirm_password: confirmPassword,
+      real_name: realName,
+      phone,
+      email,
+      department,
+      position,
+      captcha_key: captchaKey,
+      captcha_code: captchaCode
+    })
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '注册失败')
+  }
+
+  return response.json()
+}
+
+/**
+ * 获取验证码图片
+ * @returns {Promise<{captcha_key: string, captcha_image: string}>} 验证码 key 和 Base64 编码的验证码图片
+ * @throws {Error} 获取验证码失败时抛出错误
+ */
+export async function getCaptcha() {
+  const response = await fetch('/api/auth/captcha', {
+    method: 'GET'
+  })
+
+  if (!response.ok) {
+    throw new Error('获取验证码失败')
+  }
+
+  return response.json()
+}
+
+/**
+ * 用户登出
+ * 清除本地存储的认证信息，调用后端登出接口删除 Session
+ * @throws {Error} 登出失败时抛出错误
+ */
+export async function logout() {
+  try {
+    const headers = { 'Content-Type': 'application/json' }
+    const token = localStorage.getItem('auth_token')
+    if (token) headers['Authorization'] = `Bearer ${token}`
+    await fetch('/api/auth/logout', {
+      method: 'POST',
+      headers,
+      credentials: 'include'
+    })
+  } catch {
+  } finally {
+    clearAuth()
+  }
+}
+
+/**
+ * 修改用户密码
+ * @param {number} userId - 用户ID
+ * @param {string} oldPassword - 旧密码
+ * @param {string} newPassword - 新密码
+ * @returns {Promise<{message: string}>} 修改结果
+ * @throws {Error} 修改密码失败时抛出错误
+ */
+export async function updatePassword(userId, oldPassword, newPassword) {
+  if (!userId) {
+    throw new Error('用户ID无效，请重新登录')
+  }
+
+  const headers = {
+    'Content-Type': 'application/json',
+    ...getAuthHeaders()
+  }
+
+  const response = await fetch(`/api/users/${userId}/password`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({ old_password: oldPassword, new_password: newPassword })
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '修改密码失败')
+  }
+
+  return response.json()
+}
+
+/**
+ * 修改用户名
+ * @param {number} userId - 用户ID
+ * @param {string} newUsername - 新用户名
+ * @returns {Promise<{message: string, new_username: string}>} 修改结果及新用户名
+ * @throws {Error} 修改用户名失败时抛出错误
+ */
+export async function updateUsername(userId, newUsername) {
+  if (!userId) {
+    throw new Error('用户ID无效，请重新登录')
+  }
+
+  const headers = {
+    'Content-Type': 'application/json',
+    ...getAuthHeaders()
+  }
+
+  const response = await fetch(`/api/users/${userId}/username`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({ new_username: newUsername })
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '修改用户名失败')
+  }
+
+  return response.json()
+}
+
+/**
+ * 获取用户个人资料
+ * @param {number} userId - 用户ID
+ * @returns {Promise<{id: number, username: string, role: string, real_name: string, phone: string, email: string, department: string, position: string, created_at: string, updated_at: string}>} 用户资料
+ * @throws {Error} 获取失败时抛出错误
+ */
+export async function fetchUserProfile(userId) {
+  if (!userId) {
+    throw new Error('用户ID无效，请重新登录')
+  }
+
+  const response = await fetchWithAuth(`/api/users/${userId}/profile`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '获取用户资料失败')
+  }
+
+  return response.json()
+}
+
+/**
+ * 更新用户个人资料
+ * @param {number} userId - 用户ID
+ * @param {Object} profileData - 资料数据
+ * @param {string} profileData.phone - 手机号
+ * @param {string} profileData.email - 邮箱
+ * @param {string} profileData.department - 部门
+ * @param {string} profileData.position - 职位
+ * @returns {Promise<{message: string}>} 更新结果
+ * @throws {Error} 更新失败时抛出错误
+ */
+export async function updateUserProfile(userId, profileData) {
+  if (!userId) {
+    throw new Error('用户ID无效，请重新登录')
+  }
+
+  const url = `/api/users/${userId}/profile`
+  console.log('[updateUserProfile] userId:', userId, 'URL:', url, 'body:', profileData)
+
+  const response = await fetchWithAuth(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      phone: profileData.phone || '',
+      email: profileData.email || '',
+      department: profileData.department || '',
+      position: profileData.position || ''
+    })
+  })
+
+  if (!response.ok) {
+    const responseText = await response.clone().text()
+    console.error('[updateUserProfile] 响应状态:', response.status, '响应体:', responseText)
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '更新资料失败')
+  }
+
+  return response.json()
+}
+
+/* ============================================
+   认证状态管理
+   ============================================ */
+
 const CHUNK_SIZE = 256 * 1024
 
 function generateFileId() {
   return `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`
 }
 
+/**
+ * 获取认证请求头
+ * 从 localStorage 中读取 token 和 session_id 构建请求头
+ * @returns {Object} 包含 Authorization 和 X-Session-ID 的请求头对象
+ */
 export function getAuthHeaders() {
   const headers = {}
   const token = localStorage.getItem('auth_token')
-  if (token) {
+  const sessionId = localStorage.getItem('session_id')
+  console.log('[调试] getAuthHeaders - token:', token ? token.substring(0, 20) + '...' : null)
+  console.log('[调试] getAuthHeaders - sessionId:', sessionId)
+  if (token && token !== 'undefined') {
     headers['Authorization'] = `Bearer ${token}`
   }
-  const sessionId = localStorage.getItem('session_id')
-  if (sessionId) {
+  if (sessionId && sessionId !== 'undefined') {
     headers['X-Session-ID'] = sessionId
   }
+  console.log('[调试] getAuthHeaders - 返回的headers:', Object.keys(headers))
   return headers
 }
 
-export async function refreshToken() {
-  const loginRes = await fetch('/api/auth/login', {
+/**
+ * 清除本地存储的认证信息
+ */
+export function clearAuth() {
+  localStorage.removeItem('auth_token')
+  localStorage.removeItem('session_id')
+  localStorage.removeItem('user_role')
+  localStorage.removeItem('username')
+}
+
+/**
+ * 调用 /api/auth/refresh 刷新 Access Token
+ * 浏览器自动携带 HttpOnly Cookie 中的 Refresh Token
+ * @returns {Promise<{access_token: string, token_type: string, expires_in: number}>}
+ * @throws {Error} 刷新失败时抛出错误
+ */
+async function refreshAccessToken() {
+  const response = await fetch('/api/auth/refresh', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: 'admin', password: '123456' })
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' }
   })
-  if (!loginRes.ok) {
-    throw new Error('登录失败')
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || 'Refresh Token 已失效，请重新登录')
   }
-  const loginData = await loginRes.json()
-  const token = loginData.access_token
-  localStorage.setItem('auth_token', token)
-  return token
+  return response.json()
 }
 
-export async function ensureAuth() {
-  let token = localStorage.getItem('auth_token')
-  let sessionId = localStorage.getItem('session_id')
+/**
+ * 验证 Access Token 有效性
+ * 调用 /api/auth/validate 检查当前 Access Token 是否有效
+ * @returns {Promise<{username: string, role: string}>}
+ * @throws {Error} Token 无效或过期时抛出错误
+ */
+export async function validateToken() {
+  const token = localStorage.getItem('auth_token')
+  if (!token) throw new Error('未登录')
+  const response = await fetch('/api/auth/validate', {
+    headers: { 'Authorization': `Bearer ${token}` }
+  })
+  if (!response.ok) throw new Error('Token 已过期或无效')
+  return response.json()
+}
 
-  if (!token) {
-    token = await refreshToken()
+/**
+ * 统一 API 请求包装器
+ * 自动注入 Authorization 和 X-Session-ID 头
+ * 401 时静默调用 /api/auth/refresh 重试一次
+ * @param {string} url - 请求地址
+ * @param {Object} options - fetch 选项
+ * @param {boolean} _retried - 内部使用，标记是否已重试
+ * @returns {Promise<Response>} fetch Response
+ * @throws {Error} 认证失败或请求失败时抛出错误
+ */
+export async function fetchWithAuth(url, options = {}, _retried = false) {
+  const headers = { ...(options.headers || {}) }
+  const token = localStorage.getItem('auth_token')
+  const sessionId = localStorage.getItem('session_id')
+  if (token && token !== 'undefined') {
+    headers['Authorization'] = `Bearer ${token}`
   }
-
-  if (!sessionId) {
-    const sessionRes = await fetch('/api/session/create', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      }
-    })
-    if (!sessionRes.ok) {
-      if (sessionRes.status === 401) {
-        localStorage.removeItem('auth_token')
-        token = await refreshToken()
-        const retryRes = await fetch('/api/session/create', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          }
-        })
-        if (!retryRes.ok) {
-          localStorage.removeItem('auth_token')
-          throw new Error('创建会话失败')
-        }
-        const retryData = await retryRes.json()
-        sessionId = retryData.session_id
-        localStorage.setItem('session_id', sessionId)
-        return { token, sessionId }
-      }
-      localStorage.removeItem('auth_token')
-      throw new Error('创建会话失败')
+  if (sessionId && sessionId !== 'undefined') {
+    headers['X-Session-ID'] = sessionId
+  }
+  const response = await fetch(url, { ...options, headers })
+  if (response.status === 401 && !_retried) {
+    try {
+      const data = await refreshAccessToken()
+      localStorage.setItem('auth_token', data.access_token)
+      headers['Authorization'] = `Bearer ${data.access_token}`
+      return fetch(url, { ...options, headers })
+    } catch {
+      clearAuth()
+      throw new Error('登录已过期，请重新登录')
     }
-    const sessionData = await sessionRes.json()
-    sessionId = sessionData.session_id
-    localStorage.setItem('session_id', sessionId)
   }
-
-  return { token, sessionId }
+  if (response.status === 403) {
+    throw new Error('403 会话无效，请重试')
+  }
+  return response
 }
 
+/**
+ * 刷新 JWT 令牌
+ * 使用当前存储的凭据重新获取 token
+ * @returns {Promise<string>} 新的 JWT 令牌
+ * @throws {Error} 刷新失败时抛出错误（通常需要重新登录）
+ */
+export async function refreshToken() {
+  const data = await refreshAccessToken()
+  localStorage.setItem('auth_token', data.access_token)
+  return data.access_token
+}
+
+/**
+ * 强制刷新认证信息
+ * @returns {Promise<{token: string}>} 认证信息
+ * @throws {Error} 认证失败时抛出错误
+ */
 export async function forceRefreshAuth() {
-  const token = await refreshToken()
-  let sessionId = localStorage.getItem('session_id')
-
-  if (!sessionId) {
-    const sessionRes = await fetch('/api/session/create', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      }
-    })
-    if (!sessionRes.ok) {
-      localStorage.removeItem('auth_token')
-      throw new Error('创建会话失败')
-    }
-    const sessionData = await sessionRes.json()
-    sessionId = sessionData.session_id
-    localStorage.setItem('session_id', sessionId)
+  const token = localStorage.getItem('auth_token')
+  if (!token) {
+    throw new Error('未登录，请重新登录')
   }
-
-  return { token, sessionId }
+  return { token }
 }
+
+/* ============================================
+   文件上传相关 API
+   ============================================ */
 
 function uploadChunk(fileId, chunkIndex, totalChunks, filename, chunkBlob) {
   return new Promise((resolve, reject) => {
@@ -144,27 +421,11 @@ function uploadChunk(fileId, chunkIndex, totalChunks, filename, chunkBlob) {
 }
 
 function mergeChunks(fileId, filename, totalChunks) {
-  const headers = {
-    'Content-Type': 'application/json',
-    ...getAuthHeaders()
-  }
-  return fetch('/api/core/merge-chunks', {
+  return fetchWithAuth('/api/core/merge-chunks', {
     method: 'POST',
-    headers,
-    body: JSON.stringify({
-      file_id: fileId,
-      filename,
-      total_chunks: totalChunks
-    })
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file_id: fileId, filename, total_chunks: totalChunks })
   }).then(res => {
-    if (res.status === 401) {
-      localStorage.removeItem('auth_token')
-      throw new Error('认证失败，请重试')
-    }
-    if (res.status === 403) {
-      localStorage.removeItem('session_id')
-      throw new Error('403 会话无效，请重试')
-    }
     if (!res.ok) {
       return res.json().then(err => { throw new Error(err.detail || '合并失败') })
     }
@@ -250,171 +511,370 @@ export function getFileExtension(filename) {
   return parts.length > 1 ? parts.pop().toLowerCase() : ''
 }
 
+/**
+ * 创建新会话
+ * 使用当前认证信息创建新的聊天会话
+ * @returns {Promise<string>} 新会话 ID
+ * @throws {Error} 创建会话失败时抛出错误
+ */
+
+/**
+ * 会话创建锁，防止重复创建
+ */
+let isCreatingSession = false
+let pendingSessionPromise = null
+
+/**
+ * 创建新会话
+ * 使用当前认证信息创建新的聊天会话，带有防重复创建机制
+ * @returns {Promise<string>} 新会话 ID
+ * @throws {Error} 创建会话失败时抛出错误
+ */
 export async function createNewSession() {
-  // 使用 forceRefreshAuth 确保认证信息准备好
-  const { token } = await forceRefreshAuth()
-  
-  // 清除旧的 session_id，创建全新会话
-  localStorage.removeItem('session_id')
-  
-  const headers = { 'Content-Type': 'application/json' }
-  headers['Authorization'] = `Bearer ${token}`
-
-  const sessionRes = await fetch('/api/session/create', {
-    method: 'POST',
-    headers
-  })
-
-  if (!sessionRes.ok) {
-    throw new Error(`创建会话失败: ${sessionRes.status}`)
+  if (isCreatingSession && pendingSessionPromise) {
+    return pendingSessionPromise
   }
-
-  const sessionData = await sessionRes.json()
-  const newSessionId = sessionData.session_id
-  localStorage.setItem('session_id', newSessionId)
-  return newSessionId
+  isCreatingSession = true
+  pendingSessionPromise = (async () => {
+    try {
+      localStorage.removeItem('session_id')
+      const response = await fetchWithAuth('/api/session/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      })
+      if (!response.ok) throw new Error(`创建会话失败: ${response.status}`)
+      const sessionData = await response.json()
+      const newSessionId = sessionData.session_id
+      localStorage.setItem('session_id', newSessionId)
+      return newSessionId
+    } finally {
+      isCreatingSession = false
+      pendingSessionPromise = null
+    }
+  })()
+  return pendingSessionPromise
 }
 
-export async function chatStream(sessionId, message, attachments = []) {
-  await ensureAuth()
-
-  const headers = {
-    'Content-Type': 'application/json',
-    'Accept': 'text/event-stream',
-    'Cache-Control': 'no-cache'
-  }
-
-  const token = localStorage.getItem('auth_token')
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
-  }
+export async function chatStream(sessionId, message, attachments = [], resume = null) {
   const sid = sessionId || localStorage.getItem('session_id') || ''
-  if (sid) {
-    headers['X-Session-ID'] = sid
-  }
-
-  const response = await fetch('/api/map/chat', {
+  const response = await fetchWithAuth('/api/map/chat', {
     method: 'POST',
-    headers,
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'X-Session-ID': sid
+    },
     body: JSON.stringify({
-      message,
+      message: resume ? '' : message,
       session_id: sid,
-      geometry_data: {}
+      geometry_data: {},
+      attachments,
+      ...(resume ? { resume } : {})
     })
   })
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-  }
-
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`)
   return response.body
 }
 
-export async function knowledgeChatStream(sessionId, message, attachments = []) {
-  await ensureAuth()
-
-  const headers = {
-    'Content-Type': 'application/json',
-    'Accept': 'text/event-stream',
-    'Cache-Control': 'no-cache'
-  }
-
-  const token = localStorage.getItem('auth_token')
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
-  }
+export async function knowledgeChatStream(sessionId, message, attachments = [], resume = null) {
   const sid = sessionId || localStorage.getItem('session_id') || ''
-  if (sid) {
-    headers['X-Session-ID'] = sid
-  }
-
-  const response = await fetch('/api/map/knowledge-chat', {
+  const response = await fetchWithAuth('/api/map/knowledge-chat', {
     method: 'POST',
-    headers,
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'X-Session-ID': sid
+    },
     body: JSON.stringify({
-      message,
+      message: resume ? '' : message,
       session_id: sid,
-      geometry_data: {}
+      geometry_data: {},
+      attachments,
+      ...(resume ? { resume } : {})
     })
   })
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-  }
-
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`)
   return response.body
 }
 
 export async function fetchKnowledgeFiles() {
-  await ensureAuth()
-
-  const headers = {
-    'Content-Type': 'application/json',
-    ...getAuthHeaders()
-  }
-
-  const response = await fetch('/api/map/knowledge/files', {
+  const response = await fetchWithAuth('/api/map/knowledge/files', {
     method: 'GET',
-    headers
+    headers: { 'Content-Type': 'application/json' }
   })
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+  return response.json()
+}
 
-  if (response.status === 401) {
-    localStorage.removeItem('auth_token')
-    await ensureAuth()
-    const retryHeaders = {
-      'Content-Type': 'application/json',
-      ...getAuthHeaders()
-    }
-    const retryResponse = await fetch('/api/map/knowledge/files', {
-      method: 'GET',
-      headers: retryHeaders
-    })
-    if (!retryResponse.ok) {
-      throw new Error(`HTTP ${retryResponse.status}: ${retryResponse.statusText}`)
-    }
-    return retryResponse.json()
+/* ============================================
+   会话历史管理 API
+   ============================================ */
+
+/**
+ * 获取当前用户的会话列表
+ * @returns {Promise<{sessions: Array}>} 会话列表
+ * @throws {Error} 获取失败时抛出错误
+ */
+export async function fetchSessionList() {
+  const response = await fetchWithAuth('/api/session/list', {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`获取会话列表失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 获取会话详情（含附件列表）
+ * @param {string} sessionId - 会话 ID
+ * @returns {Promise<Object>} 会话详情
+ * @throws {Error} 获取失败时抛出错误
+ */
+export async function fetchSessionDetail(sessionId) {
+  const response = await fetchWithAuth(`/api/session/${sessionId}/detail`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`获取会话详情失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 更新会话标题
+ * @param {string} sessionId - 会话 ID
+ * @param {string} title - 新标题
+ * @returns {Promise<{success: boolean, message: string}>} 更新结果
+ * @throws {Error} 更新失败时抛出错误
+ */
+export async function updateSessionTitle(sessionId, title) {
+  const response = await fetchWithAuth(`/api/session/${sessionId}/title`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title })
+  })
+  if (!response.ok) throw new Error(`更新标题失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 获取会话附件列表
+ * @param {string} sessionId - 会话 ID
+ * @returns {Promise<{attachments: Array}>} 附件列表
+ * @throws {Error} 获取失败时抛出错误
+ */
+export async function fetchSessionAttachments(sessionId) {
+  const response = await fetchWithAuth(`/api/session/${sessionId}/attachments`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`获取附件列表失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 获取会话历史消息
+ * 从 LangGraph Checkpoint 中恢复指定会话的对话历史
+ * @param {string} sessionId - 会话 ID
+ * @param {number} limit - 返回消息数量限制，默认 50 条，设为 0 表示返回所有
+ * @returns {Promise<{session_id: string, messages: Array, total: number}>} 历史消息
+ * @throws {Error} 获取失败时抛出错误
+ */
+export async function fetchSessionMessages(sessionId, limit = 50) {
+  const queryParams = limit > 0 ? `?limit=${limit}` : ''
+  const response = await fetchWithAuth(`/api/session/${sessionId}/messages${queryParams}`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`获取历史消息失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 删除会话
+ * @param {string} sessionId - 会话 ID
+ * @returns {Promise<{success: boolean, message: string}>} 删除结果
+ * @throws {Error} 删除失败时抛出错误
+ */
+export async function deleteSession(sessionId) {
+  const response = await fetchWithAuth(`/api/session/delete/${sessionId}`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`删除会话失败: ${response.status}`)
+  const currentSessionId = localStorage.getItem('session_id')
+  if (currentSessionId === sessionId) {
+    localStorage.removeItem('session_id')
   }
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-  }
-
   return response.json()
 }
 
 export async function fetchFilePreview(path) {
-  await ensureAuth()
+  const response = await fetchWithAuth(
+    `/api/map/knowledge/file-preview?path=${encodeURIComponent(path)}`,
+    { method: 'GET', headers: { 'Content-Type': 'application/json' } }
+  )
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+  return response.json()
+}
 
-  const headers = {
-    'Content-Type': 'application/json',
-    ...getAuthHeaders()
-  }
+/* ============================================
+   Admin 管理相关 API
+   ============================================ */
 
-  const response = await fetch(`/api/map/knowledge/file-preview?path=${encodeURIComponent(path)}`, {
+/**
+ * 获取用户列表（admin 专用）
+ * @returns {Promise<{users: Array}>} 用户列表
+ * @throws {Error} 获取失败时抛出错误
+ */
+export async function fetchUserList() {
+  const response = await fetchWithAuth('/api/users', {
     method: 'GET',
-    headers
+    headers: { 'Content-Type': 'application/json' }
   })
+  if (!response.ok) throw new Error(`获取用户列表失败: ${response.status}`)
+  return response.json()
+}
 
-  if (response.status === 401) {
-    localStorage.removeItem('auth_token')
-    await ensureAuth()
-    const retryHeaders = {
-      'Content-Type': 'application/json',
-      ...getAuthHeaders()
-    }
-    const retryResponse = await fetch(`/api/map/knowledge/file-preview?path=${encodeURIComponent(path)}`, {
-      method: 'GET',
-      headers: retryHeaders
-    })
-    if (!retryResponse.ok) {
-      throw new Error(`HTTP ${retryResponse.status}: ${retryResponse.statusText}`)
-    }
-    return retryResponse.json()
-  }
-
+/**
+ * 创建用户（admin 专用）
+ * @param {Object} userData - 用户数据
+ * @param {string} userData.username - 用户名
+ * @param {string} userData.password - 密码
+ * @param {string} userData.role - 角色
+ * @param {string} userData.real_name - 真实姓名
+ * @param {string} userData.phone - 手机号
+ * @param {string} userData.email - 邮箱
+ * @param {string} userData.department - 部门
+ * @param {string} userData.position - 职位
+ * @returns {Promise<{message: string, user_id: number}>} 创建结果
+ * @throws {Error} 创建失败时抛出错误
+ */
+export async function createUser(userData) {
+  const response = await fetchWithAuth('/api/users', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(userData)
+  })
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `创建用户失败: ${response.status}`)
   }
+  return response.json()
+}
 
+/**
+ * 更新用户（admin 专用）
+ * @param {number} userId - 用户ID
+ * @param {Object} userData - 用户数据
+ * @param {string} userData.real_name - 真实姓名
+ * @param {string} userData.phone - 手机号
+ * @param {string} userData.email - 邮箱
+ * @param {string} userData.department - 部门
+ * @param {string} userData.position - 职位
+ * @param {string} userData.role - 角色
+ * @returns {Promise<{message: string}>} 更新结果
+ * @throws {Error} 更新失败时抛出错误
+ */
+export async function updateUser(userId, userData) {
+  const response = await fetchWithAuth(`/api/users/${userId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(userData)
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `更新用户失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 删除用户（admin 专用）
+ * @param {number} userId - 用户ID
+ * @returns {Promise<{message: string}>} 删除结果
+ * @throws {Error} 删除失败时抛出错误
+ */
+export async function deleteUser(userId) {
+  const response = await fetchWithAuth(`/api/users/${userId}`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`删除用户失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 强制用户下线（admin 专用）
+ * @param {number} userId - 用户ID
+ * @returns {Promise<{message: string, deleted_tokens: number}>} 操作结果
+ * @throws {Error} 操作失败时抛出错误
+ */
+export async function kickUser(userId) {
+  const response = await fetchWithAuth(`/api/users/${userId}/kick`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`强制下线失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 获取在线用户列表（admin 专用）
+ * @returns {Promise<{online_users: Array}>} 在线用户列表
+ * @throws {Error} 获取失败时抛出错误
+ */
+export async function fetchOnlineUsers() {
+  const response = await fetchWithAuth('/api/users/online', {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`获取在线用户失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 获取指定用户的所有会话（admin 专用）
+ * @param {number} userId - 用户ID
+ * @returns {Promise<{sessions: Array}>} 会话列表
+ * @throws {Error} 获取失败时抛出错误
+ */
+export async function fetchUserSessions(userId) {
+  const response = await fetchWithAuth(`/api/users/${userId}/sessions`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`获取用户会话失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * Admin 强制删除任意会话
+ * @param {string} sessionId - 会话 ID
+ * @returns {Promise<{success: boolean, message: string}>} 删除结果
+ * @throws {Error} 删除失败时抛出错误
+ */
+export async function adminDeleteSession(sessionId) {
+  const response = await fetchWithAuth(`/api/session/admin/${sessionId}`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`删除会话失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * Admin 按用户名搜索会话
+ * @param {string} username - 用户名关键字
+ * @returns {Promise<{sessions: Array}>} 会话列表
+ * @throws {Error} 搜索失败时抛出错误
+ */
+export async function searchSessionsByUsername(username) {
+  const response = await fetchWithAuth(`/api/session/admin/search?username=${encodeURIComponent(username)}`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`搜索会话失败: ${response.status}`)
   return response.json()
 }

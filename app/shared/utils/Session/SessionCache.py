@@ -35,20 +35,21 @@ class SessionCache:
         """
         self._db = SessionDB()
 
-    def add_session(self, session_id: str, username: str, user_id: int = 0):
-        #print(f"[诊断-SessionCache] add_session: SessionDB.is_enabled()={SessionDB.is_enabled()}, session_id={session_id}, username={username}")
+    async def add_session(self, session_id: str, username: str, user_id: int = 0):
+        """
+        添加会话
+
+        Args:
+            session_id (str): 会话ID
+            username (str): 用户名
+            user_id (int): 用户ID，默认为0
+        """
         if SessionDB.is_enabled():
-            #print(f"[诊断-SessionCache] add_session: 使用数据库路径")
-            import asyncio
-            loop = asyncio.get_event_loop()
-            loop.run_until_complete(
-                self._db.add_session(session_id, user_id, username)
-            )
+            await self._db.add_session(session_id, user_id, username)
         else:
-            #print(f"[诊断-SessionCache] add_session: 使用内存路径")
             session_cache_original.add_session(session_id, username)
 
-    def get_session(self, session_id: str) -> Optional[dict]:
+    async def get_session(self, session_id: str) -> Optional[dict]:
         """
         获取会话信息
 
@@ -59,24 +60,27 @@ class SessionCache:
             Optional[dict]: 会话信息，如果不存在返回None
         """
         if SessionDB.is_enabled():
-            import asyncio
-            loop = asyncio.get_event_loop()
-            return loop.run_until_complete(self._db.get_session(session_id))
+            return await self._db.get_session(session_id)
         else:
             return session_cache_original.get_session(session_id)
 
-    def verify_session(self, session_id: str, username: str) -> bool:
-        #print(f"[诊断-SessionCache] verify_session: SessionDB.is_enabled()={SessionDB.is_enabled()}, session_id={session_id}, username={username}")
+    async def verify_session(self, session_id: str, username: str) -> bool:
+        """
+        验证会话
+
+        Args:
+            session_id (str): 会话ID
+            username (str): 用户名
+
+        Returns:
+            bool: 验证成功返回True，否则返回False
+        """
         if SessionDB.is_enabled():
-            #print(f"[诊断-SessionCache] verify_session: 使用数据库路径")
-            import asyncio
-            loop = asyncio.get_event_loop()
-            return loop.run_until_complete(self._db.verify_session(session_id, username))
+            return await self._db.verify_session(session_id, username)
         else:
-            #print(f"[诊断-SessionCache] verify_session: 使用内存路径")
             return session_cache_original.verify_session(session_id, username)
 
-    def delete_session(self, session_id: str) -> bool:
+    async def delete_session(self, session_id: str) -> bool:
         """
         删除会话
 
@@ -87,13 +91,11 @@ class SessionCache:
             bool: 删除成功返回True，不存在返回False
         """
         if SessionDB.is_enabled():
-            import asyncio
-            loop = asyncio.get_event_loop()
-            return loop.run_until_complete(self._db.delete_session(session_id))
+            return await self._db.delete_session(session_id)
         else:
             return session_cache_original.delete_session(session_id)
 
-    def delete_user_sessions(self, user_id: int) -> int:
+    async def delete_user_sessions(self, user_id: int) -> int:
         """
         删除用户的所有 Session
 
@@ -104,10 +106,23 @@ class SessionCache:
             int: 删除的 session 数量
         """
         if SessionDB.is_enabled():
-            import asyncio
-            loop = asyncio.get_event_loop()
-            return loop.run_until_complete(self._db.delete_user_sessions(user_id))
+            return await self._db.delete_user_sessions(user_id)
         return 0
+
+    async def kick_user_sessions(self, user_id: int) -> int:
+        """
+        强制下线用户的所有 Session
+
+        Args:
+            user_id (int): 用户ID
+
+        Returns:
+            int: 被标记为 kicked 的 session 数量
+        """
+        if SessionDB.is_enabled():
+            return await self._db.kick_user_sessions(user_id)
+        # memory 模式下 SessionCacheOriginal 不支持 status，直接删除会话
+        return await self.delete_user_sessions(user_id)
 
     def clear_expired_sessions(self, hours: int = 24):
         """

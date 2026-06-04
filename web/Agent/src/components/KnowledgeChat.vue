@@ -1,6 +1,6 @@
 <script setup>
 import { ref, reactive, nextTick, watch, onMounted, onBeforeUnmount, computed } from 'vue'
-import { knowledgeChatStream, createNewSession, refreshToken, uploadFileInChunks, formatFileSize, getFileExtension } from '../utils/api.js'
+import { knowledgeChatStream, refreshToken, uploadFileInChunks, formatFileSize, getFileExtension } from '../utils/api.js'
 import { createAiMessage, processSSEEvent } from '../utils/sseParser.js'
 import MessageBubble from './MessageBubble.vue'
 
@@ -150,11 +150,8 @@ const handleSend = async () => {
 }
 
 const handleNewChat = async () => {
-  try {
-    await createNewSession()
-  } catch (err) {
-    console.error(err)
-  }
+  // 不在这里创建会话，只发射事件让父组件处理
+  // 避免父子组件重复创建会话
   messages.splice(0, messages.length)
   selectedFiles.value = []
   inputValue.value = ''

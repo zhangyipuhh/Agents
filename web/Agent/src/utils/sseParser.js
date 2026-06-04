@@ -12,30 +12,73 @@ export function tryParsePythonLiteral(content) {
     return JSON.parse(trimmed)
   } catch {}
 
+  // 智能替换：逐个字符遍历，正确识别字符串边界（单/双引号），
+  // 只替换边界引号为双引号，避免破坏字符串内部的引号
+  let result = ''
+  let i = 0
+  while (i < trimmed.length) {
+    const char = trimmed[i]
+
+    if (char === "'" || char === '"') {
+      // 字符串开始
+      const quote = char
+      let j = i + 1
+      let escaped = false
+      while (j < trimmed.length) {
+        if (escaped) {
+          escaped = false
+          j++
+        } else if (trimmed[j] === '\\') {
+          escaped = true
+          j++
+        } else if (trimmed[j] === quote) {
+          break
+        } else {
+          j++
+        }
+      }
+      // 提取字符串内容（不含引号），将内部双引号转义以适配 JSON
+      const inner = trimmed.slice(i + 1, j).replace(/"/g, '\\"')
+      result += '"' + inner + '"'
+      i = j + 1
+    } else if (trimmed.slice(i, i + 4) === 'True' && !/[a-zA-Z0-9_]/.test(trimmed[i - 1] || '')) {
+      result += 'true'
+      i += 4
+    } else if (trimmed.slice(i, i + 5) === 'False' && !/[a-zA-Z0-9_]/.test(trimmed[i - 1] || '')) {
+      result += 'false'
+      i += 5
+    } else if (trimmed.slice(i, i + 4) === 'None' && !/[a-zA-Z0-9_]/.test(trimmed[i - 1] || '')) {
+      result += 'null'
+      i += 4
+    } else {
+      result += char
+      i++
+    }
+  }
+
   try {
-    const jsonStr = trimmed
-      .replace(/'/g, '"')
-      .replace(/True/g, 'true')
-      .replace(/False/g, 'false')
-      .replace(/None/g, 'null')
-    return JSON.parse(jsonStr)
+    return JSON.parse(result)
   } catch {}
 
-  const result = []
-  const thinkRegex = /'thinking':\s*'((?:[^'\\]|\\.)*)'[^}]*'type':\s*'thinking'/g
-  const textRegex = /'text':\s*'((?:[^'\\]|\\.)*)'[^}]*'type':\s*'text'/g
+  // 回退到 regex：支持单双引号混合的键值对
+  const fallbackResult = []
 
+  // 匹配 thinking 块：key 和 value 均可使用单引号或双引号
+  const thinkRegex = /['"]thinking['"]:\s*(['"])((?:\\\1|.)*?)\1[^}]*['"]type['"]:\s*['"]thinking['"]/g
   let match
   while ((match = thinkRegex.exec(trimmed)) !== null) {
-    const thinking = match[1].replace(/\\'/g, "'").replace(/\\n/g, '\n')
-    result.push({ type: 'thinking', thinking })
-  }
-  while ((match = textRegex.exec(trimmed)) !== null) {
-    const text = match[1].replace(/\\'/g, "'").replace(/\\n/g, '\n')
-    result.push({ type: 'text', text })
+    const thinking = match[2].replace(/\\'/g, "'").replace(/\\"/g, '"').replace(/\\n/g, '\n')
+    fallbackResult.push({ type: 'thinking', thinking })
   }
 
-  return result.length > 0 ? result : null
+  // 匹配 text 块：key 和 value 均可使用单引号或双引号
+  const textRegex = /['"]text['"]:\s*(['"])((?:\\\1|.)*?)\1[^}]*['"]type['"]:\s*['"]text['"]/g
+  while ((match = textRegex.exec(trimmed)) !== null) {
+    const text = match[2].replace(/\\'/g, "'").replace(/\\"/g, '"').replace(/\\n/g, '\n')
+    fallbackResult.push({ type: 'text', text })
+  }
+
+  return fallbackResult.length > 0 ? fallbackResult : null
 }
 
 export function extractTextFromBlock(block) {
@@ -133,6 +176,53 @@ export function parseMessageContent(content, aiMsg, isMainThread = true) {
   }
 }
 
+export function extractInterruptInfo(data) {
+  if (!data) return null
+
+  // 标准化格式：后端修复后发送的 { requests: [...] }
+  if (data.requests && Array.isArray(data.requests)) {
+    return data.requests
+  }
+
+  // 兼容旧格式：{ __interrupt__: [...] }
+  if (data.__interrupt__ && Array.isArray(data.__interrupt__)) {
+    return parseInterruptArray(data.__interrupt__)
+  }
+
+  return null
+}
+
+function parseInterruptArray(interruptArray) {
+  const results = []
+  for (const item of interruptArray) {
+    if (typeof item === 'string' && item.startsWith('Interrupt(')) {
+      const parsed = parseInterruptRepr(item)
+      if (parsed) results.push(parsed)
+    } else if (typeof item === 'object' && item !== null) {
+      results.push(item)
+    }
+  }
+  return results
+}
+
+function parseInterruptRepr(reprStr) {
+  try {
+    // 提取 value=... 部分，匹配到 ], id= 为止
+    const valueMatch = reprStr.match(/value=(\[.*?\]),?\s*id=/s)
+    if (!valueMatch) return null
+    let valueStr = valueMatch[1]
+    // 使用已有的 tryParsePythonLiteral 解析 Python 字面量
+    const parsed = tryParsePythonLiteral(valueStr)
+    if (parsed && Array.isArray(parsed) && parsed.length > 0) {
+      return parsed[0]
+    }
+    return null
+  } catch (e) {
+    console.warn('解析 Interrupt repr 失败:', e)
+    return null
+  }
+}
+
 export function processSSEEvent(data, aiMsg) {
   const metadata = data.metadata || {}
   const eventThreadId = metadata.thread_id || ''
@@ -144,8 +234,31 @@ export function processSSEEvent(data, aiMsg) {
   const isMainThread = !eventThreadId || eventThreadId === aiMsg.threadId
 
   switch (data.type) {
+    case 'interrupt': {
+      const interruptInfo = extractInterruptInfo(data.data)
+      if (interruptInfo) {
+        aiMsg.interrupt = interruptInfo
+        aiMsg.isStreaming = false
+        aiMsg.isLoading = false
+        aiMsg.isThinkingActive = false
+      }
+      break
+    }
     case 'update': {
       const updateData = data.data || data
+
+      // 兼容模式：检测 data 中是否直接包含 __interrupt__
+      if (updateData && updateData.__interrupt__) {
+        const interruptInfo = extractInterruptInfo(updateData)
+        if (interruptInfo) {
+          aiMsg.interrupt = interruptInfo
+          aiMsg.isStreaming = false
+          aiMsg.isLoading = false
+          aiMsg.isThinkingActive = false
+          break
+        }
+      }
+
       if (updateData.summarize) break
       if (updateData.llm_call) {
         const msgs = updateData.llm_call.messages
@@ -267,6 +380,7 @@ export function createAiMessage() {
     text: '',
     ended: false,
     error: '',
-    downloadInfo: null
+    downloadInfo: null,
+    interrupt: null
   }
 }
