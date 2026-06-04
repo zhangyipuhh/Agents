@@ -455,7 +455,9 @@ class UserDB:
             """,
             phone, email, department, position, user_id
         )
-        return "UPDATE 1" in result
+        # 兼容不同数据库驱动返回格式：字符串、CommandComplete、None 等
+        result_str = str(result) if result else ''
+        return 'UPDATE' in result_str
 
     @classmethod
     async def update_user_info(cls, user_id: int, real_name: str, phone: str,

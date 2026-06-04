@@ -249,6 +249,22 @@ async def create_user_admin(request: UserCreateRequest, req: Request):
     return {"message": "创建成功", "user_id": user_id}
 
 
+@router.get('/online', dependencies=[Depends(require_admin)])
+async def get_online_users():
+    """
+    查询在线用户列表（admin 专用）
+
+    基于会话最后活跃时间判断在线状态，返回在线用户及其会话统计。
+
+    Returns:
+        dict: 在线用户列表
+    """
+    from app.shared.utils.auth.session_db import SessionDB
+
+    online_users = await SessionDB.get_all_active_sessions(minutes=30)
+    return {"online_users": online_users}
+
+
 @router.put('/{user_id}', dependencies=[Depends(require_admin)])
 async def update_user_admin(user_id: int, request: UserUpdateRequest, req: Request):
     """
@@ -382,22 +398,6 @@ async def kick_user(user_id: int, req: Request):
         "deleted_tokens": deleted_count,
         "kicked_sessions": kicked_sessions
     }
-
-
-@router.get('/online', dependencies=[Depends(require_admin)])
-async def get_online_users():
-    """
-    查询在线用户列表（admin 专用）
-
-    基于会话最后活跃时间判断在线状态，返回在线用户及其会话统计。
-
-    Returns:
-        dict: 在线用户列表
-    """
-    from app.shared.utils.auth.session_db import SessionDB
-
-    online_users = await SessionDB.get_all_active_sessions(minutes=30)
-    return {"online_users": online_users}
 
 
 @router.get('/{user_id}/sessions', dependencies=[Depends(require_admin)])

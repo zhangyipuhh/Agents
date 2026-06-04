@@ -213,7 +213,10 @@ export async function updateUserProfile(userId, profileData) {
     throw new Error('用户ID无效，请重新登录')
   }
 
-  const response = await fetchWithAuth(`/api/users/${userId}/profile`, {
+  const url = `/api/users/${userId}/profile`
+  console.log('[updateUserProfile] userId:', userId, 'URL:', url, 'body:', profileData)
+
+  const response = await fetchWithAuth(url, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -225,6 +228,8 @@ export async function updateUserProfile(userId, profileData) {
   })
 
   if (!response.ok) {
+    const responseText = await response.clone().text()
+    console.error('[updateUserProfile] 响应状态:', response.status, '响应体:', responseText)
     const errorData = await response.json().catch(() => ({}))
     throw new Error(errorData.detail || '更新资料失败')
   }

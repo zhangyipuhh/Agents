@@ -495,7 +495,7 @@ async function handleSave() {
   if (profileIntent && !validateProfileForm()) return
 
   const currentUserId = props.userId || parseInt(localStorage.getItem('user_id'), 10)
-  if (!currentUserId) {
+  if (!currentUserId || Number.isNaN(currentUserId)) {
     passwordError.value = '用户ID无效，请重新登录'
     return
   }
