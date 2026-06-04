@@ -22,6 +22,7 @@ Author: AI Assistant
 """
 
 import json
+import re
 import uuid
 import os
 from datetime import datetime
@@ -1002,53 +1003,107 @@ class SaveBusinessInfoInput(BaseModel):
     """
     保存业务信息输入参数
 
-    定义保存业务信息时需要的所有字段及其校验规则。
+    定义保存业务信息时需要的所有字段及其描述信息。
+    所有字段均为必填，具体校验在 save_business_info 函数内部执行。
 
     Attributes:
-        project_name: 项目名称，1-200字符
-        unit_name: 建设单位名称，1-200字符
-        contact_person: 联系人姓名，1-100字符
-        contact_phone: 联系电话，必须为11位中国大陆手机号格式
-        unit_address: 单位详细地址，1-500字符
+        project_name: 项目名称，必填，1-200字符
+        unit_name: 建设单位名称，必填，1-200字符
+        contact_person: 联系人姓名，必填，1-100字符
+        contact_phone: 联系电话，必填，11位中国大陆手机号格式
+        unit_address: 单位详细地址，必填，1-500字符
     """
-    project_name: str = Field(
-        ...,
-        description="项目名称",
-        min_length=1,
-        max_length=200
+    project_name: Optional[str] = Field(
+        default=None,
+        description="项目名称，必填，1-200字符"
     )
-    unit_name: str = Field(
-        ...,
-        description="建设单位名称",
-        min_length=1,
-        max_length=200
+    unit_name: Optional[str] = Field(
+        default=None,
+        description="建设单位名称，必填，1-200字符"
     )
-    contact_person: str = Field(
-        ...,
-        description="联系人姓名",
-        min_length=1,
-        max_length=100
+    contact_person: Optional[str] = Field(
+        default=None,
+        description="联系人姓名，必填，1-100字符"
     )
-    contact_phone: str = Field(
-        ...,
-        description="联系电话",
-        pattern=r'^1[3-9]\d{9}$'
+    contact_phone: Optional[str] = Field(
+        default=None,
+        description="联系电话，必填，11位中国大陆手机号格式（如13800138000）"
     )
-    unit_address: str = Field(
-        ...,
-        description="单位详细地址",
-        min_length=1,
-        max_length=500
+    unit_address: Optional[str] = Field(
+        default=None,
+        description="单位详细地址，必填，1-500字符"
     )
 
-    @field_validator('project_name', 'unit_name', 'contact_person', 'unit_address')
-    @classmethod
-    def strip_whitespace(cls, v: str) -> str:
-        """去除字符串首尾空白字符"""
-        return v.strip()
+
+def _validate_business_info(input_data: SaveBusinessInfoInput) -> list[str]:
+    """
+    验证业务信息输入参数
+
+    对 save_business_info 的输入数据进行逐项校验，返回错误信息列表。
+    如果返回空列表，表示验证通过。
+
+    Args:
+        input_data: 业务信息输入参数
+
+    Returns:
+        list[str]: 错误信息列表，每项描述一个字段的验证失败原因
+    """
+    errors = []
+
+    # project_name 验证
+    if input_data.project_name is None or not str(input_data.project_name).strip():
+        errors.append("project_name（项目名称）为空或仅包含空白字符，请提供有效的项目名称（1-200字符）。")
+    else:
+        project_name = str(input_data.project_name).strip()
+        if len(project_name) > 200:
+            errors.append(f"project_name（项目名称）长度为{len(project_name)}，超过200字符限制，请缩短项目名称。")
+
+    # unit_name 验证
+    if input_data.unit_name is None or not str(input_data.unit_name).strip():
+        errors.append("unit_name（建设单位名称）为空或仅包含空白字符，请提供有效的单位名称（1-200字符）。")
+    else:
+        unit_name = str(input_data.unit_name).strip()
+        if len(unit_name) > 200:
+            errors.append(f"unit_name（建设单位名称）长度为{len(unit_name)}，超过200字符限制，请缩短单位名称。")
+
+    # contact_person 验证
+    if input_data.contact_person is None or not str(input_data.contact_person).strip():
+        errors.append("contact_person（联系人姓名）为空或仅包含空白字符，请提供有效的联系人姓名（1-100字符）。")
+    else:
+        contact_person = str(input_data.contact_person).strip()
+        if len(contact_person) > 100:
+            errors.append(f"contact_person（联系人姓名）长度为{len(contact_person)}，超过100字符限制，请缩短联系人姓名。")
+
+    # contact_phone 验证
+    if input_data.contact_phone is None or not str(input_data.contact_phone).strip():
+        errors.append("contact_phone（联系电话）为空，请提供11位中国大陆手机号（如13800138000）。")
+    else:
+        contact_phone = str(input_data.contact_phone).strip()
+        if not re.match(r'^1[3-9]\d{9}$', contact_phone):
+            errors.append(f"contact_phone（联系电话）'{contact_phone}'格式不正确，请提供11位中国大陆手机号（如13800138000）。")
+
+    # unit_address 验证
+    if input_data.unit_address is None or not str(input_data.unit_address).strip():
+        errors.append("unit_address（单位详细地址）为空或仅包含空白字符，请提供有效的详细地址（1-500字符）。")
+    else:
+        unit_address = str(input_data.unit_address).strip()
+        if len(unit_address) > 500:
+            errors.append(f"unit_address（单位详细地址）长度为{len(unit_address)}，超过500字符限制，请缩短地址。")
+
+    return errors
 
 
-@tool(description="保存业务信息到数据库，自动生成业务编号")
+@tool(description="""保存业务信息到数据库，自动生成业务编号。
+
+所有字段均为必填：
+- project_name: 项目名称，1-200字符
+- unit_name: 建设单位名称，1-200字符
+- contact_person: 联系人姓名，1-100字符
+- contact_phone: 联系电话，11位中国大陆手机号格式（如13800138000）
+- unit_address: 单位详细地址，1-500字符
+
+如果参数有误，工具会返回具体的错误提示信息，请根据提示修正后重新调用本工具。
+""")
 async def save_business_info(input_data: SaveBusinessInfoInput, runtime: ToolRuntime) -> Command:
     """
     【保存业务信息】将项目及建设单位信息保存到数据库，自动生成业务编号。
@@ -1063,21 +1118,24 @@ async def save_business_info(input_data: SaveBusinessInfoInput, runtime: ToolRun
             - project_name: 项目名称（必填，1-200字符）
             - unit_name: 建设单位名称（必填，1-200字符）
             - contact_person: 联系人姓名（必填，1-100字符）
-            - contact_phone: 联系电话（必填，11位手机号格式）
+            - contact_phone: 联系电话（必填，11位手机号格式，如13800138000）
             - unit_address: 单位详细地址（必填，1-500字符）
         runtime: 工具运行时上下文
 
     Returns:
         Command: 包含操作结果和状态更新的命令对象
-            - status: "saved" 表示保存成功，"error" 表示保存失败
+            - status: "saved" 表示保存成功
+            - status: "validation_error" 表示参数验证失败，需根据提示修正后重新调用
+            - status: "error" 表示保存过程中发生异常
             - business_no: 生成的业务编号（如 YDT202606040001）
             - project_name: 保存的项目名称
             - message: 操作结果描述
 
     Raises:
-        无显式异常抛出，所有错误通过tool_error事件和result状态反馈
+        无显式异常抛出，所有错误通过返回结果状态反馈
 
     Notes:
+        - 所有5个字段均为必填，缺失或格式错误时会返回 validation_error 及具体修正提示
         - 业务编号格式：YDT + YYYYMMDD + 4位每日递增序号（如 YDT202606040001）
         - 序号按每日重置，每天从0001开始
         - 使用数据库原子操作保证并发安全，支持同时叫号
@@ -1101,7 +1159,7 @@ async def save_business_info(input_data: SaveBusinessInfoInput, runtime: ToolRun
     writer(dict(start_event))
 
     try:
-        # 进度1：验证参数（Pydantic已自动验证，此处发送进度事件）
+        # 进度1：手动验证参数
         progress_event_1 = create_tool_event(
             event_type="tool_progress",
             tool=tool_name,
@@ -1114,6 +1172,56 @@ async def save_business_info(input_data: SaveBusinessInfoInput, runtime: ToolRun
             }
         )
         writer(dict(progress_event_1))
+
+        # 执行参数验证
+        validation_errors = _validate_business_info(input_data)
+        if validation_errors:
+            error_lines = "\n".join(f"{i + 1}. {err}" for i, err in enumerate(validation_errors))
+            error_message = (
+                f"参数验证失败，请修正以下问题后重新调用 save_business_info 工具：\n{error_lines}\n\n"
+                "各字段要求如下：\n"
+                "- project_name: 项目名称，必填，1-200字符\n"
+                "- unit_name: 建设单位名称，必填，1-200字符\n"
+                "- contact_person: 联系人姓名，必填，1-100字符\n"
+                "- contact_phone: 联系电话，必填，11位中国大陆手机号格式（如13800138000）\n"
+                "- unit_address: 单位详细地址，必填，1-500字符"
+            )
+
+            result_data = {
+                "status": "validation_error",
+                "business_no": "",
+                "project_name": input_data.project_name if input_data and input_data.project_name else "",
+                "message": error_message
+            }
+
+            summary = {
+                "status": "validation_error",
+                "tool": tool_name,
+                "started_at": start_time.timestamp(),
+                "ended_at": datetime.now().timestamp(),
+                "duration_ms": int((datetime.now() - start_time).total_seconds() * 1000),
+                "errors": validation_errors,
+                "field_requirements": {
+                    "project_name": "项目名称，必填，1-200字符",
+                    "unit_name": "建设单位名称，必填，1-200字符",
+                    "contact_person": "联系人姓名，必填，1-100字符",
+                    "contact_phone": "联系电话，必填，11位中国大陆手机号格式（如13800138000）",
+                    "unit_address": "单位详细地址，必填，1-500字符"
+                },
+                "result": result_data
+            }
+
+            return Command(
+                update={
+                    "business_info": result_data,
+                    "messages": [
+                        ToolMessage(
+                            content=json.dumps(summary, ensure_ascii=False),
+                            tool_call_id=tool_call_id
+                        )
+                    ]
+                }
+            )
 
         # 获取session_id
         session_id = runtime.context.get("session_id", "default_session")
