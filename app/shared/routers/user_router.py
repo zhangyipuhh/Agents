@@ -28,12 +28,14 @@ class UserResponse(BaseModel):
     Attributes:
         id (int): 用户ID
         username (str): 用户名
+        real_name (str): 真实姓名
         role (str): 用户角色（admin / user）
         created_at (str): 创建时间
         updated_at (str): 更新时间
     """
     id: int
     username: str
+    real_name: str
     role: str
     created_at: str
     updated_at: str
@@ -163,6 +165,7 @@ async def list_users():
         UserResponse(
             id=u['id'],
             username=u['username'],
+            real_name=u.get('real_name', ''),
             role=u.get('role', 'user'),
             created_at=str(u['created_at']),
             updated_at=str(u['updated_at'])

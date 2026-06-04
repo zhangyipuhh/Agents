@@ -964,6 +964,7 @@ watch(() => props.visible, (newVal) => {
                       <tr>
                         <th>ID</th>
                         <th>用户名</th>
+                        <th>真名</th>
                         <th>角色</th>
                         <th>创建时间</th>
                         <th>操作</th>
@@ -973,6 +974,7 @@ watch(() => props.visible, (newVal) => {
                       <tr v-for="user in userList" :key="user.id">
                         <td>{{ user.id }}</td>
                         <td>{{ user.username }}</td>
+                        <td>{{ user.real_name || '-' }}</td>
                         <td>
                           <span class="role-tag" :class="user.role">{{ user.role }}</span>
                         </td>
