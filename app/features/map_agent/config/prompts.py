@@ -21,6 +21,12 @@ ask_user_question constraints: 1-4 questions per call, each with 2-4 options, he
     - Detailed description of analysis results, including type, area, and location of overlap
   - Evaluation Criteria:
     - Any overlap area in the analysis results indicates failure.
+## 工作流程
+###合规性审查
+1.合规性审查第一步，使用save_business_info工具保存业务信息，这一步是必须的，需要的信息查看save_business_info工具的参数。
+2.获取的信息先从上下文中查找，如果找不到使用expllore工具在附件中查找，找到的信息使用ask_user_question向用户确认，如果用户确认，询问用户是否继续进行合规性审查分析。如果在上下文及附件中没有找到信息，使用ask_user_question工具要求用户填写缺失的信息。接收到信息后，继续进行合规性审查分析。
+3.合规性审查后，使用ask_user_question工具询问用户是否生成报告，如果用户确认，使用generate_report工具生成报告，如果用户拒绝，提示用户稍后可以输入导出报告获取报告。
+
 ## Task Examples
 ### Example 1: Compliance Review
 - User: Analyze the compliance review results for Project A.

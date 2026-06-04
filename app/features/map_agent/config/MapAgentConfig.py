@@ -97,6 +97,7 @@ class MapAgentConfig(BaseAgentConfig):
             draw_map_polygon,
             set_map_layer,
             generate_report,
+            save_business_info,
         )
         from app.core.tools.BaseTools import get_current_time
         from app.core.tools.mcp_registry import MCPToolsRegistry
@@ -117,6 +118,7 @@ class MapAgentConfig(BaseAgentConfig):
             explore,
             get_current_time,
             generate_report,
+            save_business_info,
             ask_user_question,
         ]
 
