@@ -35,6 +35,12 @@ class MapAgentSettings(BaseSettings):
         description="MCP 工具标签过滤列表，用于按标签筛选 MCP 工具"
     )
 
+    knowledge_root: str = Field(
+        default="app/data/Knowledge/tmp",
+        validation_alias="map_knowledge_root",
+        description="知识库根目录相对路径，基于项目工作目录，使用正斜杠分隔以确保跨平台兼容"
+    )
+
     @field_validator("mcp_tags", mode="before")
     @classmethod
     def parse_mcp_tags(cls, v):
