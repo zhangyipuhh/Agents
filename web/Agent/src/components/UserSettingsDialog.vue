@@ -48,6 +48,10 @@ const props = defineProps({
   initialTab: {
     type: String,
     default: 'profile'
+  },
+  sidebarCollapsed: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -383,7 +387,7 @@ watch(() => props.visible, (newVal) => {
   <Teleport to="body">
     <Transition name="dialog-fade">
       <div v-if="visible" class="dialog-overlay" @click="handleOverlayClick">
-        <div class="dialog-card" :class="{ 'dialog-wide': isAdmin }" @click.stop>
+        <div class="dialog-card" :class="{ 'sidebar-collapsed': sidebarCollapsed }" @click.stop>
           <!-- 对话框头部 -->
           <div class="dialog-header">
             <h2 class="dialog-title">{{ isAdmin ? '用户设置与管理' : '用户设置' }}</h2>
@@ -619,28 +623,30 @@ watch(() => props.visible, (newVal) => {
   position: fixed;
   inset: 0;
   z-index: var(--z-modal);
-  display: flex;
-  align-items: center;
-  justify-content: center;
   background-color: rgba(0, 0, 0, 0.4);
   backdrop-filter: blur(4px);
 }
 
 /* 对话框卡片 */
 .dialog-card {
-  width: 100%;
-  max-width: 480px;
-  max-height: 85vh;
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: var(--sidebar-width);
+  width: auto;
+  height: auto;
   background-color: var(--color-bg-primary);
-  border-radius: var(--radius-xl);
+  border-radius: 0;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
-.dialog-card.dialog-wide {
-  max-width: 800px;
+/* 侧边栏折叠时调整面板位置 */
+.dialog-card.sidebar-collapsed {
+  left: 60px;
 }
 
 /* 对话框头部 */

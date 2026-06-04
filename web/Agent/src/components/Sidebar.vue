@@ -501,6 +501,7 @@ onUnmounted(() => {
       :user-id="userId"
       :username="username"
       :initial-tab="settingsInitialTab"
+      :sidebar-collapsed="isSidebarCollapsed"
       @username-updated="handleUsernameUpdated"
     />
   </aside>
