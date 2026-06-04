@@ -279,13 +279,16 @@ class SessionDB:
             username: 用户名
 
         Returns:
-            bool: Session 属于该用户返回 True
+            bool: Session 属于该用户且状态为 active 返回 True
         """
         print(f"[诊断-SessionDB] verify_session: session_id={session_id}, username={username}")
         session = await cls.get_session(session_id)
         print(f"[诊断-SessionDB] get_session result: {session}")
         if not session:
             print(f"[诊断-SessionDB] session not found")
+            return False
+        if session.get('status', 'active') != 'active':
+            print(f"[诊断-SessionDB] session status={session.get('status')}, 拒绝访问")
             return False
         result = session['username'] == username
         print(f"[诊断-SessionDB] verify result: {result}, session_username={session.get('username')}")
@@ -355,6 +358,37 @@ class SessionDB:
             user_id
         )
         return len(session_ids)
+
+    @classmethod
+    async def kick_user_sessions(cls, user_id: int) -> int:
+        """
+        强制下线用户的所有 Session
+
+        将用户所有 Session 的 status 更新为 'kicked'，使其不再计入在线列表，
+        同时保留会话记录供 admin 会话查询查看历史数据。
+
+        Args:
+            user_id: 用户 ID
+
+        Returns:
+            int: 被标记为 kicked 的 session 数量
+        """
+        # 更新内存缓存
+        kicked_count = 0
+        with cls._lock:
+            for sid, s in list(cls._memory_cache.items()):
+                if s.get('user_id') == user_id:
+                    cls._memory_cache[sid]['status'] = 'kicked'
+                    kicked_count += 1
+
+        # 更新数据库
+        if cls.is_enabled():
+            await DatabasePool.execute(
+                "UPDATE sessions SET status = 'kicked' WHERE user_id = $1 AND status = 'active'",
+                user_id
+            )
+
+        return kicked_count
 
     @classmethod
     async def update_session_title(cls, session_id: str, title: str) -> bool:
@@ -469,7 +503,7 @@ class SessionDB:
                 """
                 SELECT s.user_id, s.username, COUNT(*) as session_count, MAX(s.last_active_at) as last_active_at
                 FROM sessions s
-                WHERE s.last_active_at >= $1
+                WHERE s.last_active_at >= $1 AND s.status = 'active'
                 GROUP BY s.user_id, s.username
                 ORDER BY last_active_at DESC
                 """,
@@ -481,6 +515,8 @@ class SessionDB:
         with cls._lock:
             user_map = {}
             for sid, s in cls._memory_cache.items():
+                if s.get('status', 'active') != 'active':
+                    continue
                 last_active = s.get('last_active_at', s.get('created_at'))
                 if last_active and last_active >= threshold:
                     user_id = s.get('user_id')

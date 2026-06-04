@@ -36,17 +36,31 @@ export async function login(username, password, captchaKey, captchaCode) {
  * @param {string} username - 用户名
  * @param {string} password - 密码
  * @param {string} confirmPassword - 确认密码
+ * @param {string} realName - 真实姓名
+ * @param {string} phone - 手机号
+ * @param {string} email - 邮箱
+ * @param {string} department - 部门（选填）
+ * @param {string} position - 职位（选填）
+ * @param {string} captchaKey - 验证码 key
+ * @param {string} captchaCode - 验证码输入值
  * @returns {Promise<{message: string}>} 注册结果
  * @throws {Error} 注册失败时抛出错误
  */
-export async function register(username, password, confirmPassword) {
+export async function register(username, password, confirmPassword, realName, phone, email, department, position, captchaKey, captchaCode) {
   const response = await fetch('/api/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       username,
       password,
-      confirm_password: confirmPassword
+      confirm_password: confirmPassword,
+      real_name: realName,
+      phone,
+      email,
+      department,
+      position,
+      captcha_key: captchaKey,
+      captcha_code: captchaCode
     })
   })
 
@@ -154,6 +168,70 @@ export async function updateUsername(userId, newUsername) {
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}))
     throw new Error(errorData.detail || '修改用户名失败')
+  }
+
+  return response.json()
+}
+
+/**
+ * 获取用户个人资料
+ * @param {number} userId - 用户ID
+ * @returns {Promise<{id: number, username: string, role: string, real_name: string, phone: string, email: string, department: string, position: string, created_at: string, updated_at: string}>} 用户资料
+ * @throws {Error} 获取失败时抛出错误
+ */
+export async function fetchUserProfile(userId) {
+  if (!userId) {
+    throw new Error('用户ID无效，请重新登录')
+  }
+
+  const response = await fetchWithAuth(`/api/users/${userId}/profile`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '获取用户资料失败')
+  }
+
+  return response.json()
+}
+
+/**
+ * 更新用户个人资料
+ * @param {number} userId - 用户ID
+ * @param {Object} profileData - 资料数据
+ * @param {string} profileData.phone - 手机号
+ * @param {string} profileData.email - 邮箱
+ * @param {string} profileData.department - 部门
+ * @param {string} profileData.position - 职位
+ * @returns {Promise<{message: string}>} 更新结果
+ * @throws {Error} 更新失败时抛出错误
+ */
+export async function updateUserProfile(userId, profileData) {
+  if (!userId) {
+    throw new Error('用户ID无效，请重新登录')
+  }
+
+  const url = `/api/users/${userId}/profile`
+  console.log('[updateUserProfile] userId:', userId, 'URL:', url, 'body:', profileData)
+
+  const response = await fetchWithAuth(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      phone: profileData.phone || '',
+      email: profileData.email || '',
+      department: profileData.department || '',
+      position: profileData.position || ''
+    })
+  })
+
+  if (!response.ok) {
+    const responseText = await response.clone().text()
+    console.error('[updateUserProfile] 响应状态:', response.status, '响应体:', responseText)
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '更新资料失败')
   }
 
   return response.json()
@@ -656,6 +734,59 @@ export async function fetchUserList() {
     headers: { 'Content-Type': 'application/json' }
   })
   if (!response.ok) throw new Error(`获取用户列表失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 创建用户（admin 专用）
+ * @param {Object} userData - 用户数据
+ * @param {string} userData.username - 用户名
+ * @param {string} userData.password - 密码
+ * @param {string} userData.role - 角色
+ * @param {string} userData.real_name - 真实姓名
+ * @param {string} userData.phone - 手机号
+ * @param {string} userData.email - 邮箱
+ * @param {string} userData.department - 部门
+ * @param {string} userData.position - 职位
+ * @returns {Promise<{message: string, user_id: number}>} 创建结果
+ * @throws {Error} 创建失败时抛出错误
+ */
+export async function createUser(userData) {
+  const response = await fetchWithAuth('/api/users', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(userData)
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `创建用户失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 更新用户（admin 专用）
+ * @param {number} userId - 用户ID
+ * @param {Object} userData - 用户数据
+ * @param {string} userData.real_name - 真实姓名
+ * @param {string} userData.phone - 手机号
+ * @param {string} userData.email - 邮箱
+ * @param {string} userData.department - 部门
+ * @param {string} userData.position - 职位
+ * @param {string} userData.role - 角色
+ * @returns {Promise<{message: string}>} 更新结果
+ * @throws {Error} 更新失败时抛出错误
+ */
+export async function updateUser(userId, userData) {
+  const response = await fetchWithAuth(`/api/users/${userId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(userData)
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `更新用户失败: ${response.status}`)
+  }
   return response.json()
 }
 

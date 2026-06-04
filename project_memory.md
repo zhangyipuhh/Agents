@@ -147,6 +147,11 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 | username | VARCHAR(100) UNIQUE | 用户名 |
 | password_hash | VARCHAR(255) | bcrypt 密码哈希 |
 | role | VARCHAR(20) DEFAULT 'user' | 角色（admin/user） |
+| real_name | VARCHAR(20) DEFAULT '' | 真实姓名 |
+| phone | VARCHAR(20) DEFAULT '' | 手机号 |
+| email | VARCHAR(100) DEFAULT '' | 邮箱 |
+| department | VARCHAR(100) DEFAULT '' | 部门 |
+| position | VARCHAR(100) DEFAULT '' | 职位 |
 | created_at | TIMESTAMP | 创建时间 |
 | updated_at | TIMESTAMP | 更新时间 |
 
@@ -199,23 +204,73 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 
 | 前缀 | 模块 | 说明 |
 |------|------|------|
-| /api/auth | auth_router | 认证（登录、注册、验证码、refresh、validate、logout） |
-|   ├ POST /login | | 登录：返回 access_token(JSON) + refresh_token(HttpOnly Cookie) |
-|   ├ POST /refresh | | 刷新：从 Cookie 读取 refresh_token 换取新 access_token |
-|   ├ GET /validate | | 验证：检查 Authorization Bearer token 的有效性 |
-| /api/users | user_router | 用户管理（列表、删除、改密码、改用户名） |
+| /api/auth | auth_router | 认证（验证码、注册、登录、刷新、验证、登出） |
+|   ├ GET /captcha | | 获取图形验证码（返回 key + base64 图片） |
+|   ├ POST /register | | 用户注册（含验证码校验、密码复杂度校验） |
+|   ├ POST /login | | 用户登录（验证码校验，返回 access_token + Set-Cookie refresh_token） |
+|   ├ POST /login-api | | API 程序化登录（免验证码，返回 access_token + Set-Cookie refresh_token） |
+|   ├ POST /refresh | | 刷新 Access Token（从 HttpOnly Cookie 读取 refresh_token） |
+|   ├ GET /validate | | 验证 Access Token 有效性（返回 username、role、user_id） |
+|   ├ POST /logout | | 用户登出（清除服务端 Refresh Token + Cookie + Session） |
+| /api/users | user_router | 用户管理（列表、创建、更新、删除、踢人、改密码、改用户名、资料） |
 |   ├ GET / | | 用户列表（admin 专用） |
-|   ├ DELETE /{id} | | 删除用户（admin 专用） |
-|   ├ POST /{id}/kick | | 强制用户下线（admin 专用，仅清除 Refresh Token） |
+|   ├ POST / | | Admin 创建用户 |
 |   ├ GET /online | | 在线用户列表（admin 专用） |
-|   ├ GET /{id}/sessions | | 指定用户会话列表（admin 专用） |
+|   ├ PUT /{user_id} | | Admin 更新用户资料 |
+|   ├ DELETE /{user_id} | | 删除用户（admin 专用，同时清除该用户所有 Session） |
+|   ├ POST /{user_id}/kick | | 强制用户下线（admin 专用，清除 Refresh Token 并标记 Session 为 kicked） |
+|   ├ GET /{user_id}/sessions | | 指定用户会话列表（admin 专用） |
+|   ├ PUT /{user_id}/password | | 修改密码（修改后强制清除所有 Refresh Token） |
+|   ├ PUT /{user_id}/username | | 修改用户名（仅限修改自己的用户名） |
+|   ├ GET /{user_id}/profile | | 获取用户个人资料（仅限查看自己的资料） |
+|   ├ PUT /{user_id}/profile | | 更新用户个人资料（仅限修改自己的资料） |
 | /api/session | session_router | 会话管理（创建、删除、列表、详情、标题、附件、消息） |
+|   ├ POST /create | | 创建新会话 |
+|   ├ DELETE /delete/{session_id} | | 删除会话（同时清理对话记录、附件、文件目录、checkpoint、缓存） |
+|   ├ GET /list | | 获取当前用户的会话列表 |
+|   ├ GET /{session_id}/detail | | 获取会话详情（含附件列表） |
+|   ├ PUT /{session_id}/title | | 更新会话标题 |
+|   ├ GET /{session_id}/attachments | | 获取会话附件列表 |
+|   ├ GET /{session_id}/messages | | 获取会话历史消息（从 LangGraph Checkpoint 恢复，默认 50 条） |
 |   ├ DELETE /admin/{session_id} | | Admin 强制删除任意会话 |
 |   ├ GET /admin/search | | Admin 按用户名搜索会话 |
-| /api/files | file_router | 文件管理（上传、下载、删除、列表、PDF转图片） |
+| /api/files | file_router | 文件管理（上传、下载、删除、列表、PDF 转图片） |
+|   ├ POST /upload | | 批量上传文件 |
+|   ├ POST /upload-base64 | | 批量上传 base64 编码文件 |
+|   ├ GET /download/{file_uuid} | | 下载文件 |
+|   ├ GET /info/{file_uuid} | | 获取文件信息 |
+|   ├ DELETE /delete | | 批量删除文件 |
+|   ├ GET /list | | 列出所有文件 |
+|   ├ POST /convert | | 批量转换 PDF 为图片 |
+| /api/core | file_upload_router | 核心文件上传（支持远程解析服务/本地 DocumentLoader 解析） |
+|   ├ POST /uploadfile | | 批量上传文件（含文本提取/远程解析） |
+|   ├ POST /upload-chunk | | 分片上传 |
+|   ├ POST /merge-chunks | | 合并分片 |
+| /api/core/download | file_download_router | 核心文件下载（支持 Range 断点续传、批量打包 ZIP） |
+|   ├ GET /file | | 下载文件（支持 Range 请求、自定义下载文件名） |
+|   ├ GET /by-name | | 按文件名模糊/精确匹配下载 |
+|   ├ POST /batch | | 批量下载（打包为 ZIP） |
+|   ├ GET /list | | 列出可下载文件（支持子目录、递归） |
 | /api/contract | contract_router | 合同主办 Agent |
+|   ├ POST /uploadfile | | 上传并处理合同文件（存储 file_id 到 LangGraph Store） |
+|   ├ POST /chat | | 合同审批聊天（HtAgent 非流式） |
+|   ├ POST /doc_chat | | 文档处理聊天（DocAgent 非流式） |
+|   ├ POST /approval_chat | | 审批处理聊天（ApprovalAgent 非流式） |
+|   ├ POST /store/value | | 根据 id 获取 LangGraph Store 中的值 |
+|   ├ POST /store/value/set | | 向 LangGraph Store 中写入值 |
+|   ├ POST /download_contract | | 下载合同文件（返回 base64） |
 | /api/map | map_router | 地图 Agent |
+|   ├ GET /knowledge/files | | 获取知识库文件元数据（自动扫描 Knowledge 目录） |
+|   ├ GET /knowledge/file-download | | 下载知识库文件 |
+|   ├ GET /knowledge/file-preview | | 知识库文件预览（支持 .doc 自动转 .docx） |
+|   ├ POST /chat | | 地图智能体流式聊天（SSE，支持 HITL 中断与恢复） |
+|   ├ POST /knowledge-chat | | 地图智能体知识库聊天（SSE，使用知识库系统提示词） |
 | /api/ai-coding-check | ai_coding_check_router | AI 代码检查 Agent |
+|   ├ POST /review | | 评审开发者数据（非流式 JSON API） |
+| /mcp | mcp_router | MCP 服务器工具调用 |
+|   ├ GET /servers | | 列出所有已连接的 MCP 服务器及其工具 |
+|   ├ POST /call | | 调用指定 MCP 服务器的工具 |
+|   ├ GET /tools/{server_name} | | 列出指定 MCP 服务器的工具详情 |
 
 ## 环境变量
 

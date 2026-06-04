@@ -109,6 +109,21 @@ class SessionCache:
             return await self._db.delete_user_sessions(user_id)
         return 0
 
+    async def kick_user_sessions(self, user_id: int) -> int:
+        """
+        强制下线用户的所有 Session
+
+        Args:
+            user_id (int): 用户ID
+
+        Returns:
+            int: 被标记为 kicked 的 session 数量
+        """
+        if SessionDB.is_enabled():
+            return await self._db.kick_user_sessions(user_id)
+        # memory 模式下 SessionCacheOriginal 不支持 status，直接删除会话
+        return await self.delete_user_sessions(user_id)
+
     def clear_expired_sessions(self, hours: int = 24):
         """
         清除过期的会话

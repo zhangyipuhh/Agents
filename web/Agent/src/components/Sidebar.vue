@@ -292,7 +292,6 @@ onUnmounted(() => {
           <path d="M16 8L22 12V20L16 24L10 20V12L16 8Z" stroke="white" stroke-width="2" stroke-linejoin="round"/>
           <circle cx="16" cy="16" r="3" fill="white"/>
         </svg>
-        <span v-show="!isSidebarCollapsed" class="logo-text">ZYP</span>
       </div>
       <button class="sidebar-toggle" @click="toggleSidebar" :title="isSidebarCollapsed ? '展开侧栏' : '收起侧栏'">
         <svg viewBox="0 0 20 20" fill="currentColor" class="toggle-icon" :class="{ rotated: isSidebarCollapsed }">
@@ -466,7 +465,6 @@ onUnmounted(() => {
       </div>
       <div v-show="!isSidebarCollapsed" class="user-info">
         <span class="user-name">{{ username }}</span>
-        <span class="user-tag tag-free">免费</span>
       </div>
     </div>
 
