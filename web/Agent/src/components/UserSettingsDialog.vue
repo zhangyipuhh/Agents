@@ -477,7 +477,7 @@ watch(() => props.visible, (newVal) => {
   <Teleport to="body">
     <Transition name="dialog-fade">
       <div v-if="visible" class="dialog-overlay" @click="handleOverlayClick">
-        <div class="dialog-card" :class="{ 'sidebar-collapsed': sidebarCollapsed }" @click.stop>
+        <div class="dialog-card" @click.stop>
           <!-- 对话框头部 -->
           <div class="dialog-header">
             <h2 class="dialog-title">{{ isAdmin ? '用户设置与管理' : '用户设置' }}</h2>
@@ -633,6 +633,7 @@ watch(() => props.visible, (newVal) => {
                   <table v-else class="admin-table">
                     <thead>
                       <tr>
+                        <th>状态</th>
                         <th>用户ID</th>
                         <th>用户名</th>
                         <th>会话数</th>
@@ -642,6 +643,12 @@ watch(() => props.visible, (newVal) => {
                     </thead>
                     <tbody>
                       <tr v-for="user in onlineUsers" :key="user.user_id">
+                        <td>
+                          <span class="status-indicator">
+                            <span class="status-dot"></span>
+                            在线
+                          </span>
+                        </td>
                         <td>{{ user.user_id }}</td>
                         <td>{{ user.username }}</td>
                         <td>{{ user.session_count }}</td>
@@ -763,7 +770,7 @@ watch(() => props.visible, (newVal) => {
   top: 0;
   right: 0;
   bottom: 0;
-  left: var(--sidebar-width);
+  left: 0;
   width: auto;
   height: auto;
   background-color: var(--color-bg-primary);
@@ -772,11 +779,6 @@ watch(() => props.visible, (newVal) => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-
-/* 侧边栏折叠时调整面板位置 */
-.dialog-card.sidebar-collapsed {
-  left: 60px;
 }
 
 /* 对话框头部 */
@@ -1236,5 +1238,22 @@ watch(() => props.visible, (newVal) => {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* 在线状态指示器 */
+.status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #22c55e;
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.2);
 }
 </style>
