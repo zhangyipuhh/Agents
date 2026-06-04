@@ -105,6 +105,28 @@ const onlineUsers = ref([])
 const searchUsername = ref('')
 const sessionSearchResults = ref([])
 
+/* ---- 会话查询两级视图状态 ---- */
+
+/** @type {import('vue').Ref<'personnel-list' | 'session-list'>} 会话查询当前视图 */
+const sessionQueryView = ref('personnel-list')
+/** @type {import('vue').Ref<Object | null>} 当前选中的人员 */
+const selectedUser = ref(null)
+/** @type {import('vue').Ref<string>} 人员列表搜索关键词 */
+const personnelSearchKeyword = ref('')
+/** @type {import('vue').Ref<Array>} 选中用户的会话列表 */
+const userSessions = ref([])
+/** @type {import('vue').Ref<boolean>} 会话列表加载状态 */
+const sessionsLoading = ref(false)
+
+/** 过滤后的人员列表（前端实时过滤） */
+const filteredPersonnelList = computed(() => {
+  const keyword = personnelSearchKeyword.value.trim().toLowerCase()
+  if (!keyword) return userList.value
+  return userList.value.filter(user =>
+    user.username && user.username.toLowerCase().includes(keyword)
+  )
+})
+
 /* ---- 通用状态 ---- */
 
 const isSaving = ref(false)
@@ -119,6 +141,11 @@ function switchTab(tabId) {
     loadUserList()
   } else if (tabId === 'online-monitor') {
     loadOnlineUsers()
+  } else if (tabId === 'session-query') {
+    sessionQueryView.value = 'personnel-list'
+    selectedUser.value = null
+    userSessions.value = []
+    loadUserList()
   }
 }
 
@@ -147,6 +174,11 @@ function resetForms() {
   usernameSuccess.value = ''
   searchUsername.value = ''
   sessionSearchResults.value = []
+  sessionQueryView.value = 'personnel-list'
+  selectedUser.value = null
+  personnelSearchKeyword.value = ''
+  userSessions.value = []
+  sessionsLoading.value = false
 }
 
 /* ---- 个人设置逻辑 ---- */
@@ -351,6 +383,62 @@ async function handleAdminDeleteSession(sessionId) {
   }
 }
 
+/* ---- Admin 会话查询两级视图逻辑 ---- */
+
+/**
+ * 选择人员，进入该用户的会话列表视图
+ * @param {Object} user - 用户对象
+ */
+function selectPersonnel(user) {
+  selectedUser.value = user
+  sessionQueryView.value = 'session-list'
+  loadUserSessions(user.id)
+}
+
+/**
+ * 返回人员列表视图
+ */
+function backToPersonnelList() {
+  selectedUser.value = null
+  userSessions.value = []
+  sessionQueryView.value = 'personnel-list'
+}
+
+/**
+ * 加载指定用户的会话列表
+ * @param {number} userId - 用户ID
+ */
+async function loadUserSessions(userId) {
+  sessionsLoading.value = true
+  try {
+    const data = await fetchUserSessions(userId)
+    userSessions.value = data.sessions || []
+  } catch (err) {
+    console.error('加载用户会话失败:', err)
+    alert(err.message || '加载用户会话失败')
+    userSessions.value = []
+  } finally {
+    sessionsLoading.value = false
+  }
+}
+
+/**
+ * 删除指定用户的某个会话并刷新列表
+ * @param {string} sessionId - 会话ID
+ */
+async function handleDeleteUserSession(sessionId) {
+  if (!confirm(`确定删除会话 "${sessionId}"？此操作不可恢复。`)) return
+  try {
+    await adminDeleteSession(sessionId)
+    alert('会话删除成功')
+    if (selectedUser.value) {
+      loadUserSessions(selectedUser.value.id)
+    }
+  } catch (err) {
+    alert(err.message || '删除会话失败')
+  }
+}
+
 function formatTime(dateStr) {
   if (!dateStr) return '-'
   const date = new Date(dateStr)
@@ -378,6 +466,8 @@ watch(() => props.visible, (newVal) => {
       loadUserList()
     } else if (activeTab.value === 'online-monitor') {
       loadOnlineUsers()
+    } else if (activeTab.value === 'session-query') {
+      loadUserList()
     }
   }
 })
@@ -568,45 +658,82 @@ watch(() => props.visible, (newVal) => {
               <!-- 会话查询（admin） -->
               <div v-show="activeTab === 'session-query'">
                 <div class="admin-section">
-                  <div class="admin-header">
-                    <h3 class="section-title">会话查询</h3>
-                  </div>
-                  <div class="search-bar">
-                    <input
-                      v-model="searchUsername"
-                      type="text"
-                      class="form-input search-input"
-                      placeholder="输入用户名搜索会话"
-                      @keyup.enter="handleSearchSessions"
-                    />
-                    <button class="action-button search-btn" @click="handleSearchSessions" :disabled="loading">
-                      搜索
-                    </button>
-                  </div>
-                  <div v-if="loading" class="admin-loading">加载中...</div>
-                  <div v-else-if="sessionSearchResults.length === 0 && searchUsername" class="admin-empty">未找到匹配会话</div>
-                  <table v-else-if="sessionSearchResults.length > 0" class="admin-table">
-                    <thead>
-                      <tr>
-                        <th>会话ID</th>
-                        <th>用户名</th>
-                        <th>标题</th>
-                        <th>最后活跃</th>
-                        <th>操作</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr v-for="session in sessionSearchResults" :key="session.session_id">
-                        <td class="session-id" :title="session.session_id">{{ session.session_id.slice(0, 8) }}...</td>
-                        <td>{{ session.username }}</td>
-                        <td>{{ session.title || '新对话' }}</td>
-                        <td>{{ formatTime(session.last_active_at) }}</td>
-                        <td>
-                          <button class="table-btn btn-danger" @click="handleAdminDeleteSession(session.session_id)">删除</button>
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
+                  <!-- 人员列表视图 -->
+                  <template v-if="sessionQueryView === 'personnel-list'">
+                    <div class="admin-header">
+                      <h3 class="section-title">会话查询 — 人员列表</h3>
+                      <span class="admin-count">共 {{ filteredPersonnelList.length }} 位用户</span>
+                    </div>
+                    <div class="search-bar">
+                      <input
+                        v-model="personnelSearchKeyword"
+                        type="text"
+                        class="form-input search-input"
+                        placeholder="输入用户名过滤人员"
+                      />
+                    </div>
+                    <div v-if="loading" class="admin-loading">加载中...</div>
+                    <div v-else-if="filteredPersonnelList.length === 0" class="admin-empty">
+                      {{ personnelSearchKeyword ? '未找到匹配人员' : '暂无用户数据' }}
+                    </div>
+                    <table v-else class="admin-table">
+                      <thead>
+                        <tr>
+                          <th>ID</th>
+                          <th>用户名</th>
+                          <th>角色</th>
+                          <th>创建时间</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr
+                          v-for="user in filteredPersonnelList"
+                          :key="user.id"
+                          class="clickable-row"
+                          @click="selectPersonnel(user)"
+                        >
+                          <td>{{ user.id }}</td>
+                          <td>{{ user.username }}</td>
+                          <td>
+                            <span class="role-tag" :class="user.role">{{ user.role }}</span>
+                          </td>
+                          <td>{{ formatTime(user.created_at) }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </template>
+
+                  <!-- 会话列表视图 -->
+                  <template v-else>
+                    <div class="admin-header session-list-header">
+                      <button class="table-btn btn-back" @click="backToPersonnelList">
+                        ← 返回人员列表
+                      </button>
+                      <h3 class="section-title">用户：{{ selectedUser?.username }} 的会话</h3>
+                    </div>
+                    <div v-if="sessionsLoading" class="admin-loading">加载中...</div>
+                    <div v-else-if="userSessions.length === 0" class="admin-empty">该用户暂无会话</div>
+                    <table v-else class="admin-table">
+                      <thead>
+                        <tr>
+                          <th>会话ID</th>
+                          <th>标题</th>
+                          <th>最后活跃</th>
+                          <th>操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="session in userSessions" :key="session.session_id">
+                          <td class="session-id" :title="session.session_id">{{ session.session_id.slice(0, 8) }}...</td>
+                          <td>{{ session.title || '新对话' }}</td>
+                          <td>{{ formatTime(session.last_active_at) }}</td>
+                          <td>
+                            <button class="table-btn btn-danger" @click="handleDeleteUserSession(session.session_id)">删除</button>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </template>
                 </div>
               </div>
             </div>
@@ -621,15 +748,18 @@ watch(() => props.visible, (newVal) => {
 /* 遮罩层 */
 .dialog-overlay {
   position: fixed;
-  inset: 0;
-  z-index: var(--z-modal);
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 2000;
   background-color: rgba(0, 0, 0, 0.4);
   backdrop-filter: blur(4px);
 }
 
 /* 对话框卡片 */
 .dialog-card {
-  position: fixed;
+  position: absolute;
   top: 0;
   right: 0;
   bottom: 0;
@@ -906,6 +1036,14 @@ watch(() => props.visible, (newVal) => {
   justify-content: space-between;
 }
 
+.session-list-header {
+  gap: var(--space-base);
+}
+
+.session-list-header .section-title {
+  margin-bottom: 0;
+}
+
 .admin-count {
   font-size: var(--font-size-sm);
   color: var(--color-text-muted);
@@ -944,6 +1082,15 @@ watch(() => props.visible, (newVal) => {
 
 .admin-table tr:hover td {
   background-color: var(--color-bg-hover);
+}
+
+.admin-table .clickable-row {
+  cursor: pointer;
+}
+
+.admin-table .clickable-row:hover td {
+  background-color: var(--color-accent-light);
+  color: var(--color-accent);
 }
 
 .role-tag {
@@ -1006,6 +1153,15 @@ watch(() => props.visible, (newVal) => {
 }
 
 .btn-refresh:hover {
+  background-color: #C7D2FE;
+}
+
+.btn-back {
+  background-color: var(--color-accent-light);
+  color: var(--color-accent);
+}
+
+.btn-back:hover {
   background-color: #C7D2FE;
 }
 
