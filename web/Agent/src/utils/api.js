@@ -733,6 +733,59 @@ export async function fetchUserList() {
 }
 
 /**
+ * 创建用户（admin 专用）
+ * @param {Object} userData - 用户数据
+ * @param {string} userData.username - 用户名
+ * @param {string} userData.password - 密码
+ * @param {string} userData.role - 角色
+ * @param {string} userData.real_name - 真实姓名
+ * @param {string} userData.phone - 手机号
+ * @param {string} userData.email - 邮箱
+ * @param {string} userData.department - 部门
+ * @param {string} userData.position - 职位
+ * @returns {Promise<{message: string, user_id: number}>} 创建结果
+ * @throws {Error} 创建失败时抛出错误
+ */
+export async function createUser(userData) {
+  const response = await fetchWithAuth('/api/users', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(userData)
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `创建用户失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 更新用户（admin 专用）
+ * @param {number} userId - 用户ID
+ * @param {Object} userData - 用户数据
+ * @param {string} userData.real_name - 真实姓名
+ * @param {string} userData.phone - 手机号
+ * @param {string} userData.email - 邮箱
+ * @param {string} userData.department - 部门
+ * @param {string} userData.position - 职位
+ * @param {string} userData.role - 角色
+ * @returns {Promise<{message: string}>} 更新结果
+ * @throws {Error} 更新失败时抛出错误
+ */
+export async function updateUser(userId, userData) {
+  const response = await fetchWithAuth(`/api/users/${userId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(userData)
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `更新用户失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
  * 删除用户（admin 专用）
  * @param {number} userId - 用户ID
  * @returns {Promise<{message: string}>} 删除结果
