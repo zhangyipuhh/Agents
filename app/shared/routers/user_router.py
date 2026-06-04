@@ -77,6 +77,50 @@ class ProfileUpdateRequest(BaseModel):
     position: str
 
 
+class UserCreateRequest(BaseModel):
+    """
+    Admin 创建用户请求模型
+
+    Attributes:
+        username (str): 用户名
+        password (str): 密码
+        role (str): 角色，默认为 'user'
+        real_name (str): 真实姓名
+        phone (str): 手机号
+        email (str): 邮箱
+        department (str): 部门
+        position (str): 职位
+    """
+    username: str
+    password: str
+    role: str = 'user'
+    real_name: str = ''
+    phone: str = ''
+    email: str = ''
+    department: str = ''
+    position: str = ''
+
+
+class UserUpdateRequest(BaseModel):
+    """
+    Admin 更新用户请求模型
+
+    Attributes:
+        real_name (str): 真实姓名
+        phone (str): 手机号
+        email (str): 邮箱
+        department (str): 部门
+        position (str): 职位
+        role (str): 角色
+    """
+    real_name: str = ''
+    phone: str = ''
+    email: str = ''
+    department: str = ''
+    position: str = ''
+    role: str = 'user'
+
+
 class UserProfileResponse(BaseModel):
     """
     用户个人资料响应模型
@@ -125,6 +169,151 @@ async def list_users():
         )
         for u in users
     ]
+
+
+@router.post('', dependencies=[Depends(require_admin)])
+async def create_user_admin(request: UserCreateRequest, req: Request):
+    """
+    Admin 创建用户（复用注册核心逻辑）
+
+    Args:
+        request (UserCreateRequest): 包含用户名、密码、角色等信息的请求对象
+        req (Request): FastAPI 请求对象
+
+    Returns:
+        dict: 创建结果
+    """
+    import re
+    from app.shared.utils.auth.user_db import UserDB
+    from app.shared.utils.auth.audit_log import AuditLog
+
+    # 校验用户名长度
+    if len(request.username) < 3:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="用户名长度不能少于3位"
+        )
+
+    # 校验密码长度
+    if len(request.password) < 6:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="密码长度不能少于6位"
+        )
+
+    # 校验手机号格式
+    if request.phone and not re.match(r'^1[3-9]\d{9}$', request.phone):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="请输入有效的中国大陆手机号"
+        )
+
+    # 校验邮箱格式
+    if request.email and not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', request.email):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="请输入有效的邮箱地址"
+        )
+
+    # 校验角色
+    if request.role not in ('admin', 'user'):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="角色必须是 admin 或 user"
+        )
+
+    try:
+        user_id = await UserDB.create_user(
+            request.username,
+            request.password,
+            role=request.role,
+            real_name=request.real_name,
+            phone=request.phone,
+            email=request.email,
+            department=request.department,
+            position=request.position
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    # 写入审计日志
+    client_ip = req.client.host if req.client else "unknown"
+    admin_username = getattr(req.state, 'username', 'unknown')
+    await AuditLog.write_log(
+        action='admin_create_user',
+        username=admin_username,
+        detail=f'Admin 创建用户 {request.username}，角色 {request.role}',
+        ip_address=client_ip
+    )
+
+    return {"message": "创建成功", "user_id": user_id}
+
+
+@router.put('/{user_id}', dependencies=[Depends(require_admin)])
+async def update_user_admin(user_id: int, request: UserUpdateRequest, req: Request):
+    """
+    Admin 更新用户资料
+
+    Args:
+        user_id (int): 用户ID
+        request (UserUpdateRequest): 包含用户资料更新信息的请求对象
+        req (Request): FastAPI 请求对象
+
+    Returns:
+        dict: 更新结果
+    """
+    import re
+    from app.shared.utils.auth.user_db import UserDB
+    from app.shared.utils.auth.audit_log import AuditLog
+
+    user = await UserDB.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+
+    # 校验手机号格式
+    if request.phone and not re.match(r'^1[3-9]\d{9}$', request.phone):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="请输入有效的中国大陆手机号"
+        )
+
+    # 校验邮箱格式
+    if request.email and not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', request.email):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="请输入有效的邮箱地址"
+        )
+
+    # 校验角色
+    if request.role not in ('admin', 'user'):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="角色必须是 admin 或 user"
+        )
+
+    success = await UserDB.update_user_info(
+        user_id,
+        real_name=request.real_name,
+        phone=request.phone,
+        email=request.email,
+        department=request.department,
+        position=request.position,
+        role=request.role
+    )
+    if not success:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="更新失败")
+
+    # 写入审计日志
+    client_ip = req.client.host if req.client else "unknown"
+    admin_username = getattr(req.state, 'username', 'unknown')
+    await AuditLog.write_log(
+        action='admin_update_user',
+        username=admin_username,
+        detail=f'Admin 更新用户 {user["username"]}(ID:{user_id}) 资料',
+        ip_address=client_ip
+    )
+
+    return {"message": "更新成功"}
 
 
 @router.delete('/{user_id}', dependencies=[Depends(require_admin)])

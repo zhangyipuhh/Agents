@@ -1,4 +1,4 @@
-<script setup>
+![1780555291563](image/UserSettingsDialog/1780555291563.png)![1780555293156](image/UserSettingsDialog/1780555293156.png)![1780555297908](image/UserSettingsDialog/1780555297908.png)![1780555298784](image/UserSettingsDialog/1780555298784.png)![1780555299910](image/UserSettingsDialog/1780555299910.png)<script setup>
 /**
  * UserSettingsDialog - 用户设置对话框组件
  * 支持分层面板导航：
@@ -15,6 +15,8 @@ import {
   fetchUserList,
   deleteUser,
   kickUser,
+  createUser,
+  updateUser,
   fetchOnlineUsers,
   fetchUserSessions,
   adminDeleteSession,
@@ -139,6 +141,26 @@ const userSessions = ref([])
 /** @type {import('vue').Ref<boolean>} 会话列表加载状态 */
 const sessionsLoading = ref(false)
 
+/* ---- Admin 用户新增/编辑弹窗状态 ---- */
+
+/** @type {import('vue').Ref<boolean>} 是否显示用户表单弹窗 */
+const showUserForm = ref(false)
+/** @type {import('vue').Ref<Object | null>} 当前编辑的用户，null 表示新增模式 */
+const editingUser = ref(null)
+
+/** 用户表单字段 */
+const formUsername = ref('')
+const formPassword = ref('')
+const formRole = ref('user')
+const formRealName = ref('')
+const formPhone = ref('')
+const formEmail = ref('')
+const formDepartment = ref('')
+const formPosition = ref('')
+const formError = ref('')
+const formSuccess = ref('')
+const isSubmitting = ref(false)
+
 /** 过滤后的人员列表（前端实时过滤） */
 const filteredPersonnelList = computed(() => {
   const keyword = personnelSearchKeyword.value.trim().toLowerCase()
@@ -206,6 +228,150 @@ function resetForms() {
   personnelSearchKeyword.value = ''
   userSessions.value = []
   sessionsLoading.value = false
+}
+
+/* ---- Admin 用户新增/编辑弹窗逻辑 ---- */
+
+/**
+ * 打开新增用户弹窗
+ */
+function openAddUser() {
+  editingUser.value = null
+  formUsername.value = ''
+  formPassword.value = ''
+  formRole.value = 'user'
+  formRealName.value = ''
+  formPhone.value = ''
+  formEmail.value = ''
+  formDepartment.value = ''
+  formPosition.value = ''
+  formError.value = ''
+  formSuccess.value = ''
+  showUserForm.value = true
+}
+
+/**
+ * 打开编辑用户弹窗
+ * @param {Object} user - 用户对象
+ */
+function openEditUser(user) {
+  editingUser.value = user
+  formUsername.value = user.username
+  formPassword.value = ''
+  formRole.value = user.role || 'user'
+  formRealName.value = user.real_name || ''
+  formPhone.value = user.phone || ''
+  formEmail.value = user.email || ''
+  formDepartment.value = user.department || ''
+  formPosition.value = user.position || ''
+  formError.value = ''
+  formSuccess.value = ''
+  showUserForm.value = true
+}
+
+/**
+ * 关闭用户表单弹窗
+ */
+function closeUserForm() {
+  showUserForm.value = false
+  editingUser.value = null
+  formUsername.value = ''
+  formPassword.value = ''
+  formRole.value = 'user'
+  formRealName.value = ''
+  formPhone.value = ''
+  formEmail.value = ''
+  formDepartment.value = ''
+  formPosition.value = ''
+  formError.value = ''
+  formSuccess.value = ''
+}
+
+/**
+ * 校验用户表单
+ * @returns {boolean} 校验是否通过
+ */
+function validateUserForm() {
+  if (!formUsername.value.trim()) {
+    formError.value = '请输入用户名'
+    return false
+  }
+  if (formUsername.value.trim().length < 3) {
+    formError.value = '用户名至少3个字符'
+    return false
+  }
+  if (!editingUser.value && !formPassword.value) {
+    formError.value = '请输入密码'
+    return false
+  }
+  if (formPassword.value && formPassword.value.length < 6) {
+    formError.value = '密码至少6个字符'
+    return false
+  }
+  const phone = formPhone.value.trim()
+  if (phone && !/^1[3-9]\d{9}$/.test(phone)) {
+    formError.value = '请输入有效的中国大陆手机号'
+    return false
+  }
+  const email = formEmail.value.trim()
+  if (email && !/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(email)) {
+    formError.value = '请输入有效的邮箱地址'
+    return false
+  }
+  return true
+}
+
+/**
+ * 提交用户表单（新增或编辑）
+ */
+async function handleSubmitUser() {
+  formError.value = ''
+  formSuccess.value = ''
+
+  if (!validateUserForm()) return
+
+  isSubmitting.value = true
+  try {
+    if (editingUser.value) {
+      // 编辑模式
+      const payload = {
+        real_name: formRealName.value.trim(),
+        phone: formPhone.value.trim(),
+        email: formEmail.value.trim(),
+        department: formDepartment.value.trim(),
+        position: formPosition.value.trim(),
+        role: formRole.value
+      }
+      await updateUser(editingUser.value.id, payload)
+      formSuccess.value = '用户更新成功'
+      setTimeout(() => {
+        closeUserForm()
+        loadUserList()
+      }, 800)
+    } else {
+      // 新增模式
+      const payload = {
+        username: formUsername.value.trim(),
+        password: formPassword.value,
+        role: formRole.value,
+        real_name: formRealName.value.trim(),
+        phone: formPhone.value.trim(),
+        email: formEmail.value.trim(),
+        department: formDepartment.value.trim(),
+        position: formPosition.value.trim()
+      }
+      await createUser(payload)
+      formSuccess.value = '用户创建成功'
+      setTimeout(() => {
+        closeUserForm()
+        loadUserList()
+      }, 800)
+    }
+  } catch (err) {
+    formError.value = err.message || (editingUser.value ? '更新用户失败' : '创建用户失败')
+  } finally {
+    isSubmitting.value = false
+  }
 }
 
 /* ---- 个人设置逻辑 ---- */
@@ -619,18 +785,20 @@ watch(() => props.visible, (newVal) => {
                   <!-- 基本信息（只读） -->
                   <div class="settings-section">
                     <h3 class="section-title">基本信息</h3>
-                    <div class="form-group">
-                      <label class="form-label">真实姓名</label>
-                      <div class="info-display">{{ userProfile.real_name || '-' }}</div>
-                    </div>
-                    <div class="form-group">
-                      <label class="form-label">用户名</label>
-                      <div class="info-display">{{ username }}</div>
-                    </div>
-                    <div class="form-group">
-                      <label class="form-label">角色</label>
-                      <div class="info-display">
-                        <span class="role-tag" :class="userProfile.role">{{ userProfile.role || 'user' }}</span>
+                    <div class="profile-info-row">
+                      <div class="form-group">
+                        <label class="form-label">真实姓名</label>
+                        <div class="info-display">{{ userProfile.real_name || '-' }}</div>
+                      </div>
+                      <div class="form-group">
+                        <label class="form-label">用户名</label>
+                        <div class="info-display">{{ username }}</div>
+                      </div>
+                      <div class="form-group">
+                        <label class="form-label">角色</label>
+                        <div class="info-display">
+                          <span class="role-tag" :class="userProfile.role">{{ userProfile.role || 'user' }}</span>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -640,29 +808,31 @@ watch(() => props.visible, (newVal) => {
                   <!-- 联系信息（可编辑） -->
                   <div class="settings-section">
                     <h3 class="section-title">联系信息</h3>
-                    <div class="form-group">
-                      <label class="form-label" for="settings-phone">手机号</label>
-                      <input
-                        id="settings-phone"
-                        v-model="editPhone"
-                        type="tel"
-                        class="form-input"
-                        placeholder="请输入手机号"
-                        autocomplete="tel"
-                        :disabled="isSaving"
-                      />
-                    </div>
-                    <div class="form-group">
-                      <label class="form-label" for="settings-email">邮箱</label>
-                      <input
-                        id="settings-email"
-                        v-model="editEmail"
-                        type="email"
-                        class="form-input"
-                        placeholder="请输入邮箱地址"
-                        autocomplete="email"
-                        :disabled="isSaving"
-                      />
+                    <div class="form-row">
+                      <div class="form-group">
+                        <label class="form-label" for="settings-phone">手机号</label>
+                        <input
+                          id="settings-phone"
+                          v-model="editPhone"
+                          type="tel"
+                          class="form-input"
+                          placeholder="请输入手机号"
+                          autocomplete="tel"
+                          :disabled="isSaving"
+                        />
+                      </div>
+                      <div class="form-group">
+                        <label class="form-label" for="settings-email">邮箱</label>
+                        <input
+                          id="settings-email"
+                          v-model="editEmail"
+                          type="email"
+                          class="form-input"
+                          placeholder="请输入邮箱地址"
+                          autocomplete="email"
+                          :disabled="isSaving"
+                        />
+                      </div>
                     </div>
                   </div>
 
@@ -671,29 +841,31 @@ watch(() => props.visible, (newVal) => {
                   <!-- 工作信息（可编辑） -->
                   <div class="settings-section">
                     <h3 class="section-title">工作信息</h3>
-                    <div class="form-group">
-                      <label class="form-label" for="settings-department">部门</label>
-                      <input
-                        id="settings-department"
-                        v-model="editDepartment"
-                        type="text"
-                        class="form-input"
-                        placeholder="请输入部门"
-                        autocomplete="organization"
-                        :disabled="isSaving"
-                      />
-                    </div>
-                    <div class="form-group">
-                      <label class="form-label" for="settings-position">职位</label>
-                      <input
-                        id="settings-position"
-                        v-model="editPosition"
-                        type="text"
-                        class="form-input"
-                        placeholder="请输入职位"
-                        autocomplete="organization-title"
-                        :disabled="isSaving"
-                      />
+                    <div class="form-row">
+                      <div class="form-group">
+                        <label class="form-label" for="settings-department">部门</label>
+                        <input
+                          id="settings-department"
+                          v-model="editDepartment"
+                          type="text"
+                          class="form-input"
+                          placeholder="请输入部门"
+                          autocomplete="organization"
+                          :disabled="isSaving"
+                        />
+                      </div>
+                      <div class="form-group">
+                        <label class="form-label" for="settings-position">职位</label>
+                        <input
+                          id="settings-position"
+                          v-model="editPosition"
+                          type="text"
+                          class="form-input"
+                          placeholder="请输入职位"
+                          autocomplete="organization-title"
+                          :disabled="isSaving"
+                        />
+                      </div>
                     </div>
                     <div v-if="profileError" class="error-message">{{ profileError }}</div>
                     <div v-if="profileSuccess" class="success-message">{{ profileSuccess }}</div>
@@ -780,7 +952,10 @@ watch(() => props.visible, (newVal) => {
                 <div class="admin-section">
                   <div class="admin-header">
                     <h3 class="section-title">用户管理</h3>
-                    <span class="admin-count">共 {{ userList.length }} 位用户</span>
+                    <div class="admin-header-actions">
+                      <span class="admin-count">共 {{ userList.length }} 位用户</span>
+                      <button class="table-btn btn-add" @click="openAddUser">新增用户</button>
+                    </div>
                   </div>
                   <div v-if="loading" class="admin-loading">加载中...</div>
                   <div v-else-if="userList.length === 0" class="admin-empty">暂无用户数据</div>
@@ -803,6 +978,7 @@ watch(() => props.visible, (newVal) => {
                         </td>
                         <td>{{ formatTime(user.created_at) }}</td>
                         <td>
+                          <button class="table-btn btn-edit" @click="openEditUser(user)">编辑</button>
                           <button class="table-btn btn-kick" @click="handleKickUser(user.id, user.username)">强制下线</button>
                           <button class="table-btn btn-danger" @click="handleDeleteUser(user.id)">删除</button>
                         </td>
@@ -936,6 +1112,126 @@ watch(() => props.visible, (newVal) => {
               </div>
             </div>
           </div>
+
+          <!-- 用户新增/编辑弹窗 -->
+          <Transition name="dialog-fade">
+            <div v-if="showUserForm" class="user-form-overlay" @click="closeUserForm">
+              <div class="user-form-card" @click.stop>
+                <div class="user-form-header">
+                  <h3 class="user-form-title">{{ editingUser ? '编辑用户' : '新增用户' }}</h3>
+                  <button class="dialog-close" @click="closeUserForm" aria-label="关闭">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <path d="M15 5L5 15M5 5l10 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                  </button>
+                </div>
+                <div class="user-form-body">
+                  <div class="form-group">
+                    <label class="form-label" for="form-username">用户名</label>
+                    <input
+                      id="form-username"
+                      v-model="formUsername"
+                      type="text"
+                      class="form-input"
+                      placeholder="请输入用户名"
+                      :disabled="!!editingUser || isSubmitting"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="form-password">
+                      {{ editingUser ? '密码（留空表示不修改）' : '密码' }}
+                    </label>
+                    <input
+                      id="form-password"
+                      v-model="formPassword"
+                      type="password"
+                      class="form-input"
+                      :placeholder="editingUser ? '留空表示不修改' : '请输入密码（至少6个字符）'"
+                      :disabled="isSubmitting"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="form-role">角色</label>
+                    <select id="form-role" v-model="formRole" class="form-input form-select" :disabled="isSubmitting">
+                      <option value="user">user</option>
+                      <option value="admin">admin</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label" for="form-real-name">真实姓名</label>
+                    <input
+                      id="form-real-name"
+                      v-model="formRealName"
+                      type="text"
+                      class="form-input"
+                      placeholder="请输入真实姓名"
+                      :disabled="isSubmitting"
+                    />
+                  </div>
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label class="form-label" for="form-phone">手机号</label>
+                      <input
+                        id="form-phone"
+                        v-model="formPhone"
+                        type="tel"
+                        class="form-input"
+                        placeholder="请输入手机号"
+                        :disabled="isSubmitting"
+                      />
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label" for="form-email">邮箱</label>
+                      <input
+                        id="form-email"
+                        v-model="formEmail"
+                        type="email"
+                        class="form-input"
+                        placeholder="请输入邮箱地址"
+                        :disabled="isSubmitting"
+                      />
+                    </div>
+                  </div>
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label class="form-label" for="form-department">部门</label>
+                      <input
+                        id="form-department"
+                        v-model="formDepartment"
+                        type="text"
+                        class="form-input"
+                        placeholder="请输入部门"
+                        :disabled="isSubmitting"
+                      />
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label" for="form-position">职位</label>
+                      <input
+                        id="form-position"
+                        v-model="formPosition"
+                        type="text"
+                        class="form-input"
+                        placeholder="请输入职位"
+                        :disabled="isSubmitting"
+                      />
+                    </div>
+                  </div>
+                  <div v-if="formError" class="error-message">{{ formError }}</div>
+                  <div v-if="formSuccess" class="success-message">{{ formSuccess }}</div>
+                  <div class="form-actions">
+                    <button class="table-btn btn-back" @click="closeUserForm" :disabled="isSubmitting">取消</button>
+                    <button class="action-button form-submit-btn" :disabled="isSubmitting" @click="handleSubmitUser">
+                      <span v-if="isSubmitting" class="button-loading">
+                        <span class="loading-spinner"></span>
+                        保存中...
+                      </span>
+                      <span v-else>保存</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Transition>
         </div>
       </div>
     </Transition>
@@ -1076,7 +1372,7 @@ watch(() => props.visible, (newVal) => {
 
 /* 设置分区 */
 .settings-section {
-  margin-bottom: var(--space-lg);
+  margin-bottom: var(--space-xl);
 }
 
 .settings-section:last-child {
@@ -1104,11 +1400,45 @@ watch(() => props.visible, (newVal) => {
 .section-divider {
   height: 1px;
   background-color: var(--color-border);
-  margin: var(--space-lg) 0;
+  margin: var(--space-xl) 0;
 }
 
 .form-group {
   margin-bottom: var(--space-base);
+}
+
+/* 表单行：双列 Grid 布局，减少纵向滚动 */
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-base);
+}
+
+@media (max-width: 480px) {
+  .form-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.form-row .form-group {
+  margin-bottom: 0;
+}
+
+/* 基本信息行内布局：三列并排显示 */
+.profile-info-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: var(--space-base);
+}
+
+.profile-info-row .form-group {
+  margin-bottom: 0;
+}
+
+@media (max-width: 480px) {
+  .profile-info-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 .form-label {
@@ -1121,7 +1451,7 @@ watch(() => props.visible, (newVal) => {
 
 .form-input {
   width: 100%;
-  height: 40px;
+  height: 44px;
   padding: 0 var(--space-base);
   font-size: var(--font-size-base);
   color: var(--color-text-primary);
@@ -1175,7 +1505,8 @@ watch(() => props.visible, (newVal) => {
 
 .action-button {
   width: 100%;
-  height: 40px;
+  height: 44px;
+  margin-top: var(--space-xl);
   font-size: var(--font-size-base);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-inverse);
@@ -1378,6 +1709,105 @@ watch(() => props.visible, (newVal) => {
   font-size: 11px;
 }
 
+/* Admin 用户管理新增/编辑弹窗样式 */
+.admin-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-base);
+}
+
+.btn-add {
+  background-color: var(--color-accent);
+  color: var(--color-text-inverse);
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: var(--font-weight-medium);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition-colors);
+  border: none;
+}
+
+.btn-add:hover {
+  background-color: var(--color-accent-hover);
+}
+
+.btn-edit {
+  background-color: #DBEAFE;
+  color: #2563EB;
+}
+
+.btn-edit:hover {
+  background-color: #BFDBFE;
+}
+
+.user-form-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 2100;
+  background-color: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-xl);
+}
+
+.user-form-card {
+  width: 100%;
+  max-width: 480px;
+  max-height: 90vh;
+  background-color: var(--color-bg-primary);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.user-form-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-lg) var(--space-xl);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.user-form-title {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.user-form-body {
+  padding: var(--space-xl);
+  overflow-y: auto;
+  flex: 1;
+}
+
+.form-select {
+  appearance: auto;
+  padding-right: var(--space-base);
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-base);
+  margin-top: var(--space-lg);
+}
+
+.form-submit-btn {
+  width: auto;
+  min-width: 100px;
+  margin-top: 0;
+  padding: 0 var(--space-lg);
+}
+
 /* 对话框过渡动画 */
 .dialog-fade-enter-active {
   transition: opacity 0.25s ease;
@@ -1452,7 +1882,7 @@ watch(() => props.visible, (newVal) => {
 .info-display {
   display: flex;
   align-items: center;
-  min-height: 40px;
+  min-height: 44px;
   padding: 0 var(--space-base);
   font-size: var(--font-size-base);
   color: var(--color-text-primary);
