@@ -10,6 +10,8 @@ import { ref, watch, computed, nextTick } from 'vue'
 import {
   updatePassword,
   updateUsername,
+  fetchUserProfile,
+  updateUserProfile,
   fetchUserList,
   deleteUser,
   kickUser,
@@ -97,6 +99,25 @@ const newUsername = ref('')
 const usernameError = ref('')
 const usernameSuccess = ref('')
 
+/* ---- 个人资料相关状态 ---- */
+
+/** @type {import('vue').Ref<Object>} 用户完整资料 */
+const userProfile = ref({
+  real_name: '',
+  phone: '',
+  email: '',
+  department: '',
+  position: '',
+  role: ''
+})
+const editPhone = ref('')
+const editEmail = ref('')
+const editDepartment = ref('')
+const editPosition = ref('')
+const profileError = ref('')
+const profileSuccess = ref('')
+const isLoadingProfile = ref(false)
+
 /* ---- Admin 管理相关状态 ---- */
 
 const loading = ref(false)
@@ -172,6 +193,12 @@ function resetForms() {
   passwordSuccess.value = ''
   usernameError.value = ''
   usernameSuccess.value = ''
+  profileError.value = ''
+  profileSuccess.value = ''
+  editPhone.value = ''
+  editEmail.value = ''
+  editDepartment.value = ''
+  editPosition.value = ''
   searchUsername.value = ''
   sessionSearchResults.value = []
   sessionQueryView.value = 'personnel-list'
@@ -231,22 +258,75 @@ function validateUsernameForm() {
   return true
 }
 
+function hasProfileIntent() {
+  const originalPhone = userProfile.value.phone || ''
+  const originalEmail = userProfile.value.email || ''
+  const originalDepartment = userProfile.value.department || ''
+  const originalPosition = userProfile.value.position || ''
+  return !!(editPhone.value.trim() !== originalPhone ||
+    editEmail.value.trim() !== originalEmail ||
+    editDepartment.value.trim() !== originalDepartment ||
+    editPosition.value.trim() !== originalPosition)
+}
+
+function validateProfileForm() {
+  const phone = editPhone.value.trim()
+  const email = editEmail.value.trim()
+
+  if (phone && !/^1[3-9]\d{9}$/.test(phone)) {
+    profileError.value = '请输入有效的中国大陆手机号'
+    return false
+  }
+  if (email && !/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(email)) {
+    profileError.value = '请输入有效的邮箱地址'
+    return false
+  }
+  return true
+}
+
+/**
+ * 加载用户个人资料
+ */
+async function loadUserProfile() {
+  const currentUserId = props.userId || parseInt(localStorage.getItem('user_id'), 10)
+  if (!currentUserId) return
+
+  isLoadingProfile.value = true
+  try {
+    const data = await fetchUserProfile(currentUserId)
+    userProfile.value = data
+    editPhone.value = data.phone || ''
+    editEmail.value = data.email || ''
+    editDepartment.value = data.department || ''
+    editPosition.value = data.position || ''
+  } catch (err) {
+    console.error('加载用户资料失败:', err)
+    profileError.value = err.message || '加载用户资料失败'
+  } finally {
+    isLoadingProfile.value = false
+  }
+}
+
 async function handleSave() {
   passwordError.value = ''
   passwordSuccess.value = ''
   usernameError.value = ''
   usernameSuccess.value = ''
+  profileError.value = ''
+  profileSuccess.value = ''
 
   const passwordIntent = hasPasswordIntent()
   const usernameIntent = hasUsernameIntent()
+  const profileIntent = hasProfileIntent()
 
-  if (!passwordIntent && !usernameIntent) {
+  if (!passwordIntent && !usernameIntent && !profileIntent) {
     passwordError.value = '请至少填写一项修改内容'
     return
   }
 
   if (passwordIntent && !validatePasswordForm()) return
   if (usernameIntent && !validateUsernameForm()) return
+  if (profileIntent && !validateProfileForm()) return
 
   const currentUserId = props.userId || parseInt(localStorage.getItem('user_id'), 10)
   if (!currentUserId) {
@@ -257,6 +337,28 @@ async function handleSave() {
   isSaving.value = true
   try {
     const promises = []
+
+    if (profileIntent) {
+      promises.push(
+        (async () => {
+          try {
+            await updateUserProfile(currentUserId, {
+              phone: editPhone.value.trim(),
+              email: editEmail.value.trim(),
+              department: editDepartment.value.trim(),
+              position: editPosition.value.trim()
+            })
+            profileSuccess.value = '资料更新成功'
+            userProfile.value.phone = editPhone.value.trim()
+            userProfile.value.email = editEmail.value.trim()
+            userProfile.value.department = editDepartment.value.trim()
+            userProfile.value.position = editPosition.value.trim()
+          } catch (err) {
+            profileError.value = err.message || '更新资料失败'
+          }
+        })()
+      )
+    }
 
     if (passwordIntent) {
       promises.push(
@@ -462,7 +564,9 @@ watch(() => props.visible, (newVal) => {
   if (newVal) {
     resetForms()
     activeTab.value = props.initialTab || 'profile'
-    if (activeTab.value === 'user-management') {
+    if (activeTab.value === 'profile') {
+      loadUserProfile()
+    } else if (activeTab.value === 'user-management') {
       loadUserList()
     } else if (activeTab.value === 'online-monitor') {
       loadOnlineUsers()
@@ -510,7 +614,94 @@ watch(() => props.visible, (newVal) => {
             <div class="dialog-content">
               <!-- 个人设置 -->
               <div v-show="activeTab === 'profile'">
-                <form @submit.prevent="handleSave">
+                <div v-if="isLoadingProfile" class="admin-loading">加载用户资料中...</div>
+                <form v-else @submit.prevent="handleSave">
+                  <!-- 基本信息（只读） -->
+                  <div class="settings-section">
+                    <h3 class="section-title">基本信息</h3>
+                    <div class="form-group">
+                      <label class="form-label">真实姓名</label>
+                      <div class="info-display">{{ userProfile.real_name || '-' }}</div>
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">用户名</label>
+                      <div class="info-display">{{ username }}</div>
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label">角色</label>
+                      <div class="info-display">
+                        <span class="role-tag" :class="userProfile.role">{{ userProfile.role || 'user' }}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="section-divider"></div>
+
+                  <!-- 联系信息（可编辑） -->
+                  <div class="settings-section">
+                    <h3 class="section-title">联系信息</h3>
+                    <div class="form-group">
+                      <label class="form-label" for="settings-phone">手机号</label>
+                      <input
+                        id="settings-phone"
+                        v-model="editPhone"
+                        type="tel"
+                        class="form-input"
+                        placeholder="请输入手机号"
+                        autocomplete="tel"
+                        :disabled="isSaving"
+                      />
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label" for="settings-email">邮箱</label>
+                      <input
+                        id="settings-email"
+                        v-model="editEmail"
+                        type="email"
+                        class="form-input"
+                        placeholder="请输入邮箱地址"
+                        autocomplete="email"
+                        :disabled="isSaving"
+                      />
+                    </div>
+                  </div>
+
+                  <div class="section-divider"></div>
+
+                  <!-- 工作信息（可编辑） -->
+                  <div class="settings-section">
+                    <h3 class="section-title">工作信息</h3>
+                    <div class="form-group">
+                      <label class="form-label" for="settings-department">部门</label>
+                      <input
+                        id="settings-department"
+                        v-model="editDepartment"
+                        type="text"
+                        class="form-input"
+                        placeholder="请输入部门"
+                        autocomplete="organization"
+                        :disabled="isSaving"
+                      />
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label" for="settings-position">职位</label>
+                      <input
+                        id="settings-position"
+                        v-model="editPosition"
+                        type="text"
+                        class="form-input"
+                        placeholder="请输入职位"
+                        autocomplete="organization-title"
+                        :disabled="isSaving"
+                      />
+                    </div>
+                    <div v-if="profileError" class="error-message">{{ profileError }}</div>
+                    <div v-if="profileSuccess" class="success-message">{{ profileSuccess }}</div>
+                  </div>
+
+                  <div class="section-divider"></div>
+
+                  <!-- 账户安全 -->
                   <div class="settings-section">
                     <h3 class="section-title">修改密码</h3>
                     <div class="form-group">
@@ -1255,5 +1446,19 @@ watch(() => props.visible, (newVal) => {
   border-radius: 50%;
   background-color: #22c55e;
   box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.2);
+}
+
+/* 只读信息展示 */
+.info-display {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 var(--space-base);
+  font-size: var(--font-size-base);
+  color: var(--color-text-primary);
+  background-color: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  opacity: var(--opacity-disabled);
 }
 </style>

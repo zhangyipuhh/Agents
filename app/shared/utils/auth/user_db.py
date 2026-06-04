@@ -420,6 +420,44 @@ class UserDB:
             raise ValueError("用户名已存在")
 
     @classmethod
+    async def update_profile(cls, user_id: int, phone: str, email: str,
+                             department: str, position: str) -> bool:
+        """
+        更新用户个人资料
+
+        Args:
+            user_id: 用户 ID
+            phone: 手机号
+            email: 邮箱
+            department: 部门
+            position: 职位
+
+        Returns:
+            bool: 更新成功返回 True
+        """
+        if not cls.is_enabled():
+            with cls._lock:
+                for user in cls._memory_users.values():
+                    if user['id'] == user_id:
+                        user['phone'] = phone
+                        user['email'] = email
+                        user['department'] = department
+                        user['position'] = position
+                        user['updated_at'] = datetime.utcnow()
+                        return True
+                return False
+
+        result = await DatabasePool.execute(
+            """
+            UPDATE users
+            SET phone = $1, email = $2, department = $3, position = $4, updated_at = NOW()
+            WHERE id = $5
+            """,
+            phone, email, department, position, user_id
+        )
+        return "UPDATE 1" in result
+
+    @classmethod
     async def ensure_admin_exists(cls):
         """
         确保系统中存在管理员账户

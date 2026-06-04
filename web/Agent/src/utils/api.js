@@ -173,6 +173,65 @@ export async function updateUsername(userId, newUsername) {
   return response.json()
 }
 
+/**
+ * 获取用户个人资料
+ * @param {number} userId - 用户ID
+ * @returns {Promise<{id: number, username: string, role: string, real_name: string, phone: string, email: string, department: string, position: string, created_at: string, updated_at: string}>} 用户资料
+ * @throws {Error} 获取失败时抛出错误
+ */
+export async function fetchUserProfile(userId) {
+  if (!userId) {
+    throw new Error('用户ID无效，请重新登录')
+  }
+
+  const response = await fetchWithAuth(`/api/users/${userId}/profile`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '获取用户资料失败')
+  }
+
+  return response.json()
+}
+
+/**
+ * 更新用户个人资料
+ * @param {number} userId - 用户ID
+ * @param {Object} profileData - 资料数据
+ * @param {string} profileData.phone - 手机号
+ * @param {string} profileData.email - 邮箱
+ * @param {string} profileData.department - 部门
+ * @param {string} profileData.position - 职位
+ * @returns {Promise<{message: string}>} 更新结果
+ * @throws {Error} 更新失败时抛出错误
+ */
+export async function updateUserProfile(userId, profileData) {
+  if (!userId) {
+    throw new Error('用户ID无效，请重新登录')
+  }
+
+  const response = await fetchWithAuth(`/api/users/${userId}/profile`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      phone: profileData.phone || '',
+      email: profileData.email || '',
+      department: profileData.department || '',
+      position: profileData.position || ''
+    })
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '更新资料失败')
+  }
+
+  return response.json()
+}
+
 /* ============================================
    认证状态管理
    ============================================ */

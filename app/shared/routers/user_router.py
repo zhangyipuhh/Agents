@@ -61,6 +61,50 @@ class UsernameUpdateRequest(BaseModel):
     new_username: str
 
 
+class ProfileUpdateRequest(BaseModel):
+    """
+    用户资料更新请求模型
+
+    Attributes:
+        phone (str): 手机号
+        email (str): 邮箱
+        department (str): 部门
+        position (str): 职位
+    """
+    phone: str
+    email: str
+    department: str
+    position: str
+
+
+class UserProfileResponse(BaseModel):
+    """
+    用户个人资料响应模型
+
+    Attributes:
+        id (int): 用户ID
+        username (str): 用户名
+        role (str): 用户角色
+        real_name (str): 真实姓名
+        phone (str): 手机号
+        email (str): 邮箱
+        department (str): 部门
+        position (str): 职位
+        created_at (str): 创建时间
+        updated_at (str): 更新时间
+    """
+    id: int
+    username: str
+    role: str
+    real_name: str
+    phone: str
+    email: str
+    department: str
+    position: str
+    created_at: str
+    updated_at: str
+
+
 @router.get('', response_model=List[UserResponse], dependencies=[Depends(require_admin)])
 async def list_users():
     """
@@ -267,3 +311,104 @@ async def update_username(user_id: int, request: UsernameUpdateRequest, req: Req
         return {"message": "用户名修改成功", "new_username": request.new_username}
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get('/{user_id}/profile', response_model=UserProfileResponse)
+async def get_user_profile(user_id: int, req: Request):
+    """
+    获取用户个人资料
+
+    仅允许用户查看自己的资料。
+
+    Args:
+        user_id (int): 用户ID
+        req (Request): FastAPI 请求对象
+
+    Returns:
+        UserProfileResponse: 用户个人资料
+
+    Raises:
+        HTTPException: 用户不存在或无权查看时抛出
+    """
+    from app.shared.utils.auth.user_db import UserDB
+
+    current_user_id = getattr(req.state, 'user_id', None)
+    if current_user_id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只能查看自己的资料"
+        )
+
+    user = await UserDB.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+
+    return UserProfileResponse(
+        id=user['id'],
+        username=user['username'],
+        role=user.get('role', 'user'),
+        real_name=user.get('real_name', ''),
+        phone=user.get('phone', ''),
+        email=user.get('email', ''),
+        department=user.get('department', ''),
+        position=user.get('position', ''),
+        created_at=str(user['created_at']),
+        updated_at=str(user['updated_at'])
+    )
+
+
+@router.put('/{user_id}/profile')
+async def update_user_profile(user_id: int, request: ProfileUpdateRequest, req: Request):
+    """
+    更新用户个人资料
+
+    仅允许用户修改自己的资料。
+    会对手机号和邮箱格式进行校验。
+
+    Args:
+        user_id (int): 用户ID
+        request (ProfileUpdateRequest): 包含手机、邮箱、部门、职位的请求
+        req (Request): FastAPI 请求对象
+
+    Returns:
+        dict: 更新结果
+
+    Raises:
+        HTTPException: 参数校验失败或无权修改时抛出
+    """
+    import re
+    from app.shared.utils.auth.user_db import UserDB
+
+    current_user_id = getattr(req.state, 'user_id', None)
+    if current_user_id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只能修改自己的资料"
+        )
+
+    user = await UserDB.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+
+    phone = request.phone.strip()
+    email = request.email.strip()
+    department = request.department.strip()
+    position = request.position.strip()
+
+    if phone and not re.match(r'^1[3-9]\d{9}$', phone):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="请输入有效的中国大陆手机号"
+        )
+
+    if email and not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="请输入有效的邮箱地址"
+        )
+
+    success = await UserDB.update_profile(user_id, phone, email, department, position)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="更新失败")
+
+    return {"message": "资料更新成功"}
