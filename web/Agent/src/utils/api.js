@@ -36,17 +36,31 @@ export async function login(username, password, captchaKey, captchaCode) {
  * @param {string} username - 用户名
  * @param {string} password - 密码
  * @param {string} confirmPassword - 确认密码
+ * @param {string} realName - 真实姓名
+ * @param {string} phone - 手机号
+ * @param {string} email - 邮箱
+ * @param {string} department - 部门（选填）
+ * @param {string} position - 职位（选填）
+ * @param {string} captchaKey - 验证码 key
+ * @param {string} captchaCode - 验证码输入值
  * @returns {Promise<{message: string}>} 注册结果
  * @throws {Error} 注册失败时抛出错误
  */
-export async function register(username, password, confirmPassword) {
+export async function register(username, password, confirmPassword, realName, phone, email, department, position, captchaKey, captchaCode) {
   const response = await fetch('/api/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       username,
       password,
-      confirm_password: confirmPassword
+      confirm_password: confirmPassword,
+      real_name: realName,
+      phone,
+      email,
+      department,
+      position,
+      captcha_key: captchaKey,
+      captcha_code: captchaCode
     })
   })
 

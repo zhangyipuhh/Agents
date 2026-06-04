@@ -24,7 +24,7 @@ async def init_user_schema():
     """
     用户表结构初始化
 
-    创建用户表，包含用户名（唯一）、密码哈希、角色、创建时间和更新时间。
+    创建用户表，包含用户名（唯一）、密码哈希、角色、真实姓名、手机号、邮箱、部门、职位、创建时间和更新时间。
     角色字段默认值为 'user'，管理员角色为 'admin'。
     """
     await DatabasePool.execute("""
@@ -33,10 +33,26 @@ async def init_user_schema():
             username VARCHAR(100) UNIQUE NOT NULL,
             password_hash VARCHAR(255) NOT NULL,
             role VARCHAR(20) DEFAULT 'user',
+            real_name VARCHAR(20) DEFAULT '',
+            phone VARCHAR(20) DEFAULT '',
+            email VARCHAR(100) DEFAULT '',
+            department VARCHAR(100) DEFAULT '',
+            position VARCHAR(100) DEFAULT '',
             created_at TIMESTAMP DEFAULT NOW(),
             updated_at TIMESTAMP DEFAULT NOW()
         )
     """)
+    # 为已存在的表添加新字段（兼容已有数据库）
+    for column, col_type in [
+        ('real_name', 'VARCHAR(20) DEFAULT \'\''),
+        ('phone', 'VARCHAR(20) DEFAULT \'\''),
+        ('email', 'VARCHAR(100) DEFAULT \'\''),
+        ('department', 'VARCHAR(100) DEFAULT \'\''),
+        ('position', 'VARCHAR(100) DEFAULT \'\''),
+    ]:
+        await DatabasePool.execute(
+            f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {column} {col_type}"
+        )
 
 
 class UserDB:
@@ -96,7 +112,9 @@ class UserDB:
         )
 
     @classmethod
-    async def create_user(cls, username: str, password: str, role: str = 'user') -> int:
+    async def create_user(cls, username: str, password: str, role: str = 'user',
+                          real_name: str = '', phone: str = '', email: str = '',
+                          department: str = '', position: str = '') -> int:
         """
         创建新用户
 
@@ -104,6 +122,11 @@ class UserDB:
             username: 用户名
             password: 明文密码
             role: 用户角色，默认为 'user'，可选 'admin'
+            real_name: 真实姓名
+            phone: 手机号
+            email: 邮箱
+            department: 部门
+            position: 职位
 
         Returns:
             int: 新用户 ID
@@ -126,6 +149,11 @@ class UserDB:
                     'username': username,
                     'password_hash': password_hash,
                     'role': role,
+                    'real_name': real_name,
+                    'phone': phone,
+                    'email': email,
+                    'department': department,
+                    'position': position,
                     'created_at': now,
                     'updated_at': now
                 }
@@ -136,13 +164,18 @@ class UserDB:
         try:
             row = await DatabasePool.fetchrow(
                 """
-                INSERT INTO users (username, password_hash, role)
-                VALUES ($1, $2, $3)
+                INSERT INTO users (username, password_hash, role, real_name, phone, email, department, position)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 RETURNING id
                 """,
                 username,
                 password_hash,
-                role
+                role,
+                real_name,
+                phone,
+                email,
+                department,
+                position
             )
             return row['id']
         except asyncpg.UniqueViolationError:
@@ -198,12 +231,17 @@ class UserDB:
                     'username': user['username'],
                     'password_hash': user['password_hash'],
                     'role': user.get('role', 'user'),
+                    'real_name': user.get('real_name', ''),
+                    'phone': user.get('phone', ''),
+                    'email': user.get('email', ''),
+                    'department': user.get('department', ''),
+                    'position': user.get('position', ''),
                     'created_at': user['created_at'],
                     'updated_at': user['updated_at']
                 }
 
         return await DatabasePool.fetchrow(
-            "SELECT id, username, password_hash, role, created_at, updated_at FROM users WHERE username = $1",
+            "SELECT id, username, password_hash, role, real_name, phone, email, department, position, created_at, updated_at FROM users WHERE username = $1",
             username
         )
 
@@ -227,13 +265,18 @@ class UserDB:
                             'username': user['username'],
                             'password_hash': user['password_hash'],
                             'role': user.get('role', 'user'),
+                            'real_name': user.get('real_name', ''),
+                            'phone': user.get('phone', ''),
+                            'email': user.get('email', ''),
+                            'department': user.get('department', ''),
+                            'position': user.get('position', ''),
                             'created_at': user['created_at'],
                             'updated_at': user['updated_at']
                         }
                 return None
 
         return await DatabasePool.fetchrow(
-            "SELECT id, username, password_hash, role, created_at, updated_at FROM users WHERE id = $1",
+            "SELECT id, username, password_hash, role, real_name, phone, email, department, position, created_at, updated_at FROM users WHERE id = $1",
             user_id
         )
 
@@ -259,6 +302,11 @@ class UserDB:
                         'id': user['id'],
                         'username': user['username'],
                         'role': user.get('role', 'user'),
+                        'real_name': user.get('real_name', ''),
+                        'phone': user.get('phone', ''),
+                        'email': user.get('email', ''),
+                        'department': user.get('department', ''),
+                        'position': user.get('position', ''),
                         'created_at': user['created_at'],
                         'updated_at': user['updated_at']
                     }
@@ -266,7 +314,7 @@ class UserDB:
                 ]
 
         return await DatabasePool.fetch(
-            "SELECT id, username, role, created_at, updated_at FROM users ORDER BY id LIMIT $1 OFFSET $2",
+            "SELECT id, username, role, real_name, phone, email, department, position, created_at, updated_at FROM users ORDER BY id LIMIT $1 OFFSET $2",
             limit,
             offset
         )

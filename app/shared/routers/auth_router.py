@@ -57,10 +57,24 @@ class RegisterRequest(BaseModel):
         username (str): 用户名
         password (str): 密码
         confirm_password (str): 确认密码
+        real_name (str): 真实姓名
+        phone (str): 手机号
+        email (str): 邮箱
+        department (str): 部门（选填）
+        position (str): 职位（选填）
+        captcha_key (str): 验证码 key
+        captcha_code (str): 验证码输入值
     """
     username: str
     password: str
     confirm_password: str
+    real_name: str
+    phone: str
+    email: str
+    department: str = ""
+    position: str = ""
+    captcha_key: str
+    captcha_code: str
 
 
 class LoginResponse(BaseModel):
@@ -122,7 +136,7 @@ async def register(request: RegisterRequest):
     注册新用户，默认角色为 'user'。
 
     Args:
-        request: 包含用户名、密码和确认密码的请求对象
+        request: 包含用户名、密码、确认密码、真实姓名、手机号、邮箱、部门、职位和验证码的请求对象
 
     Returns:
         dict: 注册结果
@@ -130,7 +144,16 @@ async def register(request: RegisterRequest):
     Raises:
         HTTPException: 参数校验失败或用户名已存在时抛出400错误
     """
+    import re
     from app.shared.utils.auth.user_db import UserDB
+    from app.shared.utils.auth.captcha import captcha_manager
+
+    # 校验验证码
+    if not captcha_manager.verify(request.captcha_key, request.captcha_code):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="验证码错误或已过期"
+        )
 
     # 校验确认密码
     if request.password != request.confirm_password:
@@ -139,11 +162,31 @@ async def register(request: RegisterRequest):
             detail="两次输入的密码不一致"
         )
 
-    # 校验密码长度
+    # 校验密码复杂度：至少6位，包含大写、小写、数字、特殊字符
     if len(request.password) < 6:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="密码长度不能少于6位"
+        )
+    if not re.search(r'[A-Z]', request.password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="密码必须包含大写字母"
+        )
+    if not re.search(r'[a-z]', request.password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="密码必须包含小写字母"
+        )
+    if not re.search(r'\d', request.password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="密码必须包含数字"
+        )
+    if not re.search(r'[!@#$%^&*()_+\-=\[\]{}|;:,.<>?]', request.password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="密码必须包含特殊字符"
         )
 
     # 校验用户名长度
@@ -153,8 +196,38 @@ async def register(request: RegisterRequest):
             detail="用户名长度不能少于3位"
         )
 
+    # 校验真实姓名长度
+    if len(request.real_name) < 2 or len(request.real_name) > 20:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="真实姓名长度应为2-20个字符"
+        )
+
+    # 校验手机号格式
+    if not re.match(r'^1[3-9]\d{9}$', request.phone):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="请输入有效的中国大陆手机号"
+        )
+
+    # 校验邮箱格式
+    if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', request.email):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="请输入有效的邮箱地址"
+        )
+
     try:
-        await UserDB.create_user(request.username, request.password, role='user')
+        await UserDB.create_user(
+            request.username,
+            request.password,
+            role='user',
+            real_name=request.real_name,
+            phone=request.phone,
+            email=request.email,
+            department=request.department,
+            position=request.position
+        )
         return {"message": "注册成功"}
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
