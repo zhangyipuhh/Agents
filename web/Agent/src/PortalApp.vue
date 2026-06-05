@@ -1,6 +1,8 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import { validateToken, refreshToken, logout, clearAuth } from './utils/api.js'
+import LoginView from './views/LoginView.vue'
+import RegisterView from './views/RegisterView.vue'
 
 /**
  * 导航栏高度（像素）
@@ -11,6 +13,12 @@ const NAV_HEIGHT = 52
  * 登录状态标识
  */
 const isLoggedIn = ref(false)
+
+/**
+ * 未登录态下的视图类型：'login' | 'register'
+ * 用于在门户页内切换登录与注册视图，登录成功后会切换为已登录态
+ */
+const authView = ref('login')
 
 /**
  * 当前登录用户信息
@@ -147,11 +155,30 @@ async function handleLogout() {
 }
 
 /**
- * 处理登录按钮点击
- * 跳转到登录页并携带 redirect 参数，登录成功后可返回本页面
+ * 处理 LoginView 的登录成功事件
+ * 将认证信息写入 localStorage 并切换为已登录态
+ * 注意：URL 中的 redirect 回跳由 LoginView 内部统一处理
+ * @param {Object} data - 登录结果数据，包含 access_token、role、username、user_id
  */
-function handleLogin() {
-  window.location.href = '/Agent/?redirect=/portal.html'
+function handleLoginSuccess(data) {
+  if (data.access_token) {
+    localStorage.setItem('auth_token', data.access_token)
+  }
+  if (data.role) {
+    localStorage.setItem('user_role', data.role)
+  }
+  if (data.username) {
+    localStorage.setItem('username', data.username)
+  }
+  if (data.user_id !== undefined && data.user_id !== null) {
+    localStorage.setItem('user_id', String(data.user_id))
+  }
+  currentUser.value = {
+    username: data.username || '',
+    role: data.role || ''
+  }
+  isLoggedIn.value = true
+  authView.value = 'login'
 }
 
 /**
@@ -175,7 +202,19 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="portal-wrapper">
+  <!-- 未登录：直接渲染登录页，顶部 nav 不显示 -->
+  <LoginView
+    v-if="!isLoggedIn && authView === 'login'"
+    @login-success="handleLoginSuccess"
+    @switch-to-register="authView = 'register'"
+  />
+  <RegisterView
+    v-else-if="!isLoggedIn && authView === 'register'"
+    @switch-to-login="authView = 'login'"
+  />
+
+  <!-- 已登录：显示导航栏 + 主内容区 -->
+  <div v-else class="portal-wrapper">
     <!-- 顶部蓝色导航栏 -->
     <nav class="top-nav" :style="{ height: `${NAV_HEIGHT}px` }">
       <!-- 左侧：系统标题 -->
@@ -198,30 +237,24 @@ onUnmounted(() => {
 
       <!-- 右侧：用户状态区 -->
       <div class="nav-right">
-        <template v-if="isLoggedIn">
-          <div ref="userMenuTriggerRef" class="user-info-trigger" @click="toggleUserMenu">
-            <svg class="user-icon" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
-            </svg>
-            <span class="user-name-text">{{ currentUser.username }} {{ mapRoleName(currentUser.role) }}</span>
-          </div>
+        <div ref="userMenuTriggerRef" class="user-info-trigger" @click="toggleUserMenu">
+          <svg class="user-icon" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
+          </svg>
+          <span class="user-name-text">{{ currentUser.username }} {{ mapRoleName(currentUser.role) }}</span>
+        </div>
 
-          <!-- 用户下拉菜单 -->
-          <Transition name="menu">
-            <div v-show="isUserMenuVisible" class="user-dropdown-menu">
-              <div class="dropdown-item" @click.stop="closeUserMenu">
-                设置
-              </div>
-              <div class="dropdown-item logout-item" @click.stop="handleLogout">
-                退出登录
-              </div>
+        <!-- 用户下拉菜单 -->
+        <Transition name="menu">
+          <div v-show="isUserMenuVisible" class="user-dropdown-menu">
+            <div class="dropdown-item" @click.stop="closeUserMenu">
+              设置
             </div>
-          </Transition>
-        </template>
-
-        <button v-else class="login-btn" @click="handleLogin">
-          登录
-        </button>
+            <div class="dropdown-item logout-item" @click.stop="handleLogout">
+              退出登录
+            </div>
+          </div>
+        </Transition>
       </div>
     </nav>
 
@@ -329,6 +362,11 @@ onUnmounted(() => {
   cursor: pointer;
   transition: background-color 0.2s ease;
   white-space: nowrap;
+  /* 固定按钮宽度使"智能选址 / 智能预检 / 规则库"三个按钮视觉等宽；
+     88px = 水平 padding 32px + 4 个中文字符约 56px，与 4 字按钮自然宽度一致 */
+  width: 88px;
+  text-align: center;        /* 宽度统一后文字居中对齐 */
+  box-sizing: border-box;    /* 让 width 包含 padding，避免 content-box 下实际宽度溢出 */
 }
 
 .nav-item:hover {
@@ -345,22 +383,6 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   position: relative;
-}
-
-/* 未登录时的登录按钮 */
-.login-btn {
-  padding: 6px 18px;
-  font-size: 14px;
-  color: #ffffff;
-  background-color: rgba(255, 255, 255, 0.15);
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: background-color 0.2s ease;
-}
-
-.login-btn:hover {
-  background-color: rgba(255, 255, 255, 0.25);
 }
 
 /* 已登录时的用户信息触发器 */

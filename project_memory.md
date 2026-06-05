@@ -50,7 +50,24 @@ app/
 │       ├── Session/       # Session 缓存
 │       ├── files/         # 文件操作
 │       └── memory/        # 记忆存储（Checkpoint）
-├── html/clint/            # 前端静态文件
+├── web/Agent/             # 前端 SPA（Vue 3 + Vite，多入口）
+│   ├── index.html         # 主入口（Agent 聊天 + 知识库 Tab）
+│   ├── knowledge.html     # 知识库独立页入口
+│   ├── portal.html        # 门户导航入口（沈阳市自然资源和规划"一点通"）
+│   ├── main.js / knowledge-main.js / portal-main.js  # 三个入口 JS
+│   ├── src/
+│   │   ├── App.vue        # 主应用根组件（未登录：Login/Register；已登录：Sidebar + ChatArea + InputBox）
+│   │   ├── KnowledgeApp.vue # 知识库独立页根组件
+│   │   ├── PortalApp.vue  # 门户根组件（顶部蓝色导航 + iframe 内嵌 knowledge.html）
+│   │   ├── components/    # 业务组件（Sidebar/ChatArea/InputBox/HumanApprovalBox/FileList/FilePreview/...）
+│   │   ├── views/         # LoginView、RegisterView
+│   │   ├── utils/         # api.js（SSE/auth/session/file）、sseParser.js（thinking/text/timeline/tools）
+│   │   ├── styles/        # variables.css（设计 token）、main.css
+│   │   └── __tests__/     # Vitest（HumanApprovalBox / api / sseParser）
+│   ├── vite.config.js     # 多入口（main/knowledge/portal）+ /api 代理 VITE_API_TARGET
+│   ├── vitest.config.js   # 测试配置
+│   ├── nginx.conf         # Docker 部署用 Nginx 模板（SSE 反代 + SPA fallback）
+│   └── Dockerfile         # 多阶段构建：node:20-alpine 构建 → nginx:alpine 运行
 └── main.py               # 应用入口
 ```
 
@@ -403,3 +420,111 @@ system_prompt = (
 - 后端：`tests/test_ask_user_question.py` 17 个测试（Schema 10 + Tool 2 + HitlCheckNode 5）
 - 前端：`web/Agent/src/components/__tests__/HumanApprovalBox.spec.js` 14 个测试
 - 全量：后端 17/17 + 前端 73/73 全部通过
+
+## 前端架构（web/Agent）
+
+`web/Agent/` 是基于 Vite + Vue 3 的多入口 SPA，对外提供三套独立页面（主 Agent、知识库、门户），共享同一套组件、工具函数与设计 token。
+
+### 技术栈
+
+- **核心框架**：Vue 3.4 + Vite 5（JavaScript，无 TypeScript）
+- **UI 渲染**：marked（Markdown）+ highlight.js（代码高亮）+ @vue-office/{docx,excel,pdf,pptx}（Office 文档预览）
+- **测试**：Vitest 4 + @vue/test-utils + happy-dom
+- **包管理**：npm；脚本 `dev` / `build` / `preview` / `test` / `test:watch` / `test:coverage`
+- **关键依赖**：vue-demi（@vue-office 的 Vue 2/3 兼容垫片）
+
+### 多入口与挂载
+
+`vite.config.js` 的 `build.rollupOptions.input` 显式声明三个 HTML 入口，分别对应不同的业务场景：
+
+| 入口文件 | 挂载组件 | 部署路径 | 用途 |
+|----------|----------|----------|------|
+| `index.html` | `App.vue`（`src/main.js`） | `/` | 主聊天界面 + 知识库 Tab（Sidebar 切换 currentPage） |
+| `knowledge.html` | `KnowledgeApp.vue`（`src/knowledge-main.js`） | `/knowledge` | 知识库独立页（文件侧栏 + 聊天） |
+| `portal.html` | `PortalApp.vue`（`src/portal-main.js`） | `/portal` | 门户导航（顶部蓝色导航栏 + iframe 嵌入 `/knowledge`） |
+
+三个入口共享 `src/components`、`src/utils`、`src/styles`，构建后产出三个独立的 JS Chunk。
+
+### 组件清单（src/components）
+
+- **根组件**：`App.vue`（主）、`KnowledgeApp.vue`（知识库）、`PortalApp.vue`（门户）、`KnowledgePage.vue`（旧版，被 `KnowledgeApp.vue` 替代，仍保留以兼容旧引用）
+- **聊天**：`ChatArea.vue`、`InputBox.vue`、`MessageBubble.vue`、`SkillTags.vue`、`HumanApprovalBox.vue`、`TopBar.vue`
+- **文件**：`FileList.vue`、`FilePreview.vue`、`FolderTree.vue`、`FileManagerModal.vue`
+- **知识库**：`KnowledgeChat.vue`、`ProfileInputBox.vue`
+- **公共**：`Sidebar.vue`、`HelloWorld.vue`、`UserSettingsDialog.vue`
+- **视图**（`src/views/`）：`LoginView.vue`、`RegisterView.vue`
+
+### 工具函数（src/utils）
+
+- **`api.js`**：登录/注册/验证码/登出/refresh/validate；会话创建/列表/删除/详情/标题/附件/消息；文件上传（普通 + 分片 + base64）/下载/列表/删除；SSE `chatStream` / `knowledgeChatStream`；`X-Session-ID` 头注入；附件元数据组装
+- **`sseParser.js`**：`isThinkingBlock` / `tryParsePythonLiteral` / `extractTextFromBlock` / `processContentBlocks` / `parseMessageContent` / `processSSEEvent` / `createAiMessage`；支持 Python 风格单引号字面量、JSON.parse、regex 回退三级解析
+- **`index.js`**：聚合导出
+
+### 认证流（前端）
+
+- **三段式认证**（`App.vue:checkAuth` / `PortalApp.vue:checkAuth` / `KnowledgeApp.vue:onMounted`）：
+  1. 优先调用 `validateToken` 验证当前 access token
+  2. 失败则调用 `refreshToken` 换新 token，再 `validateToken`
+  3. 仍失败则 `clearAuth` + 跳登录页
+- **localStorage 键**：
+  - `auth_token`：access token（每次请求 `Authorization: Bearer`）
+  - `username` / `user_role` / `user_id`：用户基本信息
+  - `session_id`：主 Agent 当前会话
+  - `knowledge_session_id`：知识库独立会话（与主会话隔离，独立创建）
+- **refresh_token 不存 localStorage**，由后端通过 HttpOnly Cookie 下发（`SameSite=Strict; Path=/api/auth`）
+- **401 自动重试**：API 返回 401 → 自动 `refreshToken` → 用新 token 重试原请求，最多 1 次，失败跳登录
+
+### SSE 流式与 HITL
+
+- **后端 SSE 端点**：`/api/agent/*`（主聊天）、`/api/map/knowledge-chat`（知识库聊天）
+- **事件格式**：`data: {json}\n\n`，由 `sseParser.js` 解析为以下块：
+  - `text`：AI 回复正文
+  - `thinking`：思考过程（折叠展示）
+  - `timeline`：工具调用时间线
+  - `tools`：工具调用记录
+  - `interrupt`：HITL 中断（payload = `{action: "ask_user_question", questions: [...]}`）
+- **HITL 恢复**：`HumanApprovalBox` 提交 `{answers: string[][]}` → `chatStream(..., resumeData)` → 后端 `Command(resume=...)` 继续执行
+- **渲染**：`MessageBubble` 统一展示，marked 转 HTML、highlight.js 代码高亮
+
+### Vite 开发代理（vite.config.js）
+
+- 代理 `/api` → `VITE_API_TARGET`（默认 `http://localhost:8001`）
+- 对 `/api/*/chat` 路径做 SSE 友好头处理：
+  - 请求头：`Connection: keep-alive`、`Cache-Control: no-cache`、`Accept: text/event-stream`
+  - 响应头：删除 `content-length`、设置 `cache-control: no-cache`、`connection: keep-alive`、`x-accel-buffering: no`
+- **目的**：保证 LLM 流式输出不被 nginx/反代 buffer 截断
+
+### 部署（Nginx + Docker）
+
+- **`Dockerfile`**：多阶段构建 — `node:20-alpine` 构建 → `nginx:alpine` 运行
+- **启动注入**：通过 `envsubst ${VITE_API_TARGET}` 把环境变量写入 `nginx.conf` 模板
+- **`nginx.conf` 关键点**：
+  - **SPA fallback**：`try_files $uri $uri/ /index.html`
+  - **静态资源**：1 年缓存 + `Cache-Control: public, immutable`
+  - **/api 反代**：`proxy_buffering off`、`proxy_cache off`、`chunked_transfer_encoding on`、支持 WebSocket Upgrade
+  - **超时**：connect 60s、send/read 300s（支持长时 LLM 生成）
+  - **健康检查**：`/health` 返回 `200 healthy\n`
+
+### 设计系统（src/styles/variables.css）
+
+- **颜色 token**：`--color-bg-{primary,secondary,tertiary,hover,active}`、`--color-border`、`--color-border-light`、`--color-text-{primary,secondary,muted,inverse}`、`--color-accent` / `-hover` / `-light`、`--color-{success,warning,error,info}`
+- **Tag 配色**：`--color-tag-{beta,new,free}` + 对应文字色
+- **圆角**：`--radius-{sm:8, md:10, lg:12, xl:16, full:9999}`
+- **阴影**：`--shadow-{sm, md, lg}`
+- **间距**：`--space-{xs:4, sm:8, md:12, base:16, lg:24, xl:32, 2xl:48}`
+- **字体**：`--font-family`（系统字体栈 + PingFang SC + Microsoft YaHei）、`--font-size-{xs..2xl}`、`--font-weight-{normal,medium,semibold,bold}`
+- **过渡**：`--transition-fast` / `--transition` / `--transition-slow` / `--transition-colors` / `--transition-transform` / `--transition-opacity` / `--transition-shadow`
+- **可访问性**：`--focus-ring` / `--focus-ring-inset`
+- **布局**：`--sidebar-width: 260px`、`--topbar-height: 56px`、`--min-layout-width: 1024px`
+- **z-index 分层**：dropdown 100 / sticky 200 / modal 300 / tooltip 400
+
+### 测试（Vitest）
+
+- **配置文件**：`vitest.config.js`（happy-dom 环境）
+- **运行脚本**：`npm test`（单次）、`npm run test:watch`（监听）、`npm run test:coverage`（覆盖率）
+- **测试分布**（`src/**/__tests__` 与 `src/components/__tests__`）：
+  - `HumanApprovalBox.spec.js`：HITL 组件（多 Tab、虚拟 Other 项、多选、`canSubmit` 门控，14 用例）
+  - `api.test.js`：`utils/api.js` 工具方法
+  - `sseParser.test.js`：SSE 解析（含 Python 字面量兼容）
+- **项目历史**：后端 17/17 + 前端 73/73 全部通过（参见 "HITL 流程" 章节）
+
