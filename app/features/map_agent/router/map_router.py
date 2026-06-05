@@ -27,7 +27,7 @@ from langchain_core.messages import ToolMessage
 
 from app.features.map_agent.MapAgent import MapAgent
 from app.core.format.stream import stream_format_context
-from app.features.map_agent.config.prompts import KNOWLEDGE_SYSTEM_PROMPT
+from app.features.map_agent.config.prompts import KNOWLEDGE_SYSTEM_PROMPT, MAP_AGENT_SYSTEM_PROMPT
 from app.features.map_agent.config.MapAgentContext import MapAgentContext
 
 from app.shared.utils.files.doc_converter import convert_doc_to_docx, check_conversion_support, get_libreoffice_installation_guide
@@ -605,6 +605,9 @@ async def chat(
                 generate_stream_response(
                     user_input="",
                     session_id=session_id,
+                    context=MapAgentContext(
+                        system_prompt=MAP_AGENT_SYSTEM_PROMPT,
+                    ),
                     geometry_data=geometry_data,
                     attachments=chat_request.attachments or [],
                     resume=chat_request.resume,
@@ -641,6 +644,9 @@ async def chat(
             generate_stream_response(
                 user_input=chat_request.message,
                 session_id=session_id,
+                context=MapAgentContext(
+                    system_prompt=MAP_AGENT_SYSTEM_PROMPT,
+                ),
                 geometry_data=geometry_data,
                 attachments=chat_request.attachments or []
             ),
