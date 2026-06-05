@@ -214,8 +214,15 @@ onMounted(() => {
 
 <template>
   <div class="register-container">
+    <div class="register-brand">
+      <div class="brand-title">沈阳市自然资源和规划"一点通"</div>
+      <div class="brand-divider"></div>
+      <p class="brand-desc">智慧政务服务平台</p>
+    </div>
     <div class="register-card">
       <div class="register-header">
+        <div class="system-title">沈阳市自然资源和规划"一点通"</div>
+        <div class="title-divider"></div>
         <h1 class="register-title">创建账号</h1>
         <p class="register-subtitle">请填写以下信息完成注册</p>
       </div>
@@ -444,8 +451,26 @@ onMounted(() => {
   justify-content: center;
   min-height: 100vh;
   width: 100%;
-  background-color: var(--color-bg-secondary);
+  background: linear-gradient(135deg, #EBF4FF 0%, #F0F7FF 40%, #FFFFFF 100%);
+  background-attachment: fixed;
+  position: relative;
   padding: var(--space-lg);
+}
+
+/* 极淡的几何纹理背景叠加 */
+.register-container::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle, #1E5AA8 0.5px, transparent 0.5px);
+  background-size: 24px 24px;
+  opacity: 0.06;
+  pointer-events: none;
+}
+
+/* 左侧品牌区域 - 默认窄屏下隐藏 */
+.register-brand {
+  display: none;
 }
 
 /* 注册卡片 */
@@ -455,13 +480,32 @@ onMounted(() => {
   background-color: var(--color-bg-primary);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-lg);
+  border-top: 4px solid #1E5AA8;
   padding: var(--space-2xl) var(--space-xl);
+  position: relative;
+  z-index: 1;
 }
 
 /* 卡片头部 */
 .register-header {
   text-align: center;
   margin-bottom: var(--space-xl);
+}
+
+.system-title {
+  font-size: 22px;
+  font-weight: var(--font-weight-bold);
+  color: #1E5AA8;
+  margin-bottom: var(--space-sm);
+  line-height: var(--line-height-tight);
+}
+
+.title-divider {
+  width: 48px;
+  height: 3px;
+  background: linear-gradient(90deg, #1E5AA8, #4A90D9);
+  border-radius: 2px;
+  margin: 0 auto var(--space-base);
 }
 
 .register-title {
@@ -474,6 +518,53 @@ onMounted(() => {
 .register-subtitle {
   font-size: var(--font-size-sm);
   color: var(--color-text-secondary);
+}
+
+/* 宽屏左右分栏布局 */
+@media (min-width: 960px) {
+  .register-container {
+    justify-content: center;
+    gap: 60px;
+    padding: var(--space-lg) var(--space-xl);
+  }
+
+  .register-brand {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: flex-start;
+    max-width: 460px;
+    z-index: 1;
+  }
+
+  .brand-title {
+    font-size: 28px;
+    font-weight: var(--font-weight-bold);
+    color: #1E5AA8;
+    line-height: 1.3;
+    margin-bottom: var(--space-base);
+    white-space: nowrap;
+  }
+
+  .brand-divider {
+    width: 56px;
+    height: 4px;
+    background: linear-gradient(90deg, #1E5AA8, #4A90D9);
+    border-radius: 2px;
+    margin-bottom: var(--space-base);
+  }
+
+  .brand-desc {
+    font-size: var(--font-size-lg);
+    color: var(--color-text-secondary);
+    line-height: var(--line-height-normal);
+  }
+
+  /* 宽屏下卡片内标题隐藏，由左侧品牌区域展示 */
+  .register-header .system-title,
+  .register-header .title-divider {
+    display: none;
+  }
 }
 
 /* 注册表单 - 双列网格布局 */
@@ -522,8 +613,8 @@ onMounted(() => {
   }
 
   &:focus {
-    border-color: var(--color-accent);
-    box-shadow: 0 0 0 3px var(--color-accent-light);
+    border-color: #1E5AA8;
+    box-shadow: 0 0 0 3px rgba(30, 90, 168, 0.15);
     background-color: var(--color-bg-primary);
   }
 
@@ -559,8 +650,8 @@ onMounted(() => {
   transition: var(--transition-shadow);
 
   &:hover {
-    box-shadow: 0 0 0 2px var(--color-accent-light);
-    border-color: var(--color-accent);
+    box-shadow: 0 0 0 2px rgba(30, 90, 168, 0.15);
+    border-color: #1E5AA8;
   }
 
   &:active {
@@ -617,13 +708,13 @@ onMounted(() => {
   font-size: var(--font-size-lg);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-inverse);
-  background-color: var(--color-accent);
+  background-color: #1E5AA8;
   border-radius: var(--radius-md);
   cursor: pointer;
   transition: var(--transition-colors), var(--transition-transform);
 
   &:hover:not(:disabled) {
-    background-color: var(--color-accent-hover);
+    background-color: #155A9E;
     transform: scale(var(--scale-hover-button));
   }
 
@@ -666,13 +757,13 @@ onMounted(() => {
 }
 
 .footer-link {
-  color: var(--color-accent);
+  color: #1E5AA8;
   cursor: pointer;
   font-weight: var(--font-weight-medium);
   transition: var(--transition-colors);
 
   &:hover {
-    color: var(--color-accent-hover);
+    color: #155A9E;
     text-decoration: underline;
   }
 }

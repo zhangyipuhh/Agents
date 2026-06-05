@@ -25,6 +25,7 @@ export default defineConfig(({ mode }) => {
         input: {
           main: resolve(__dirname, 'index.html'),
           knowledge: resolve(__dirname, 'knowledge.html'),
+          portal: resolve(__dirname, 'portal.html'),
         },
       },
     },

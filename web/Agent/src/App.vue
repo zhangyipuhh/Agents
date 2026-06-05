@@ -113,6 +113,14 @@ function handleLoginSuccess(data) {
     role: data.role,
     userId: data.user_id || null
   }
+
+  // 如果 URL 中存在 redirect 参数，登录成功后跳转回目标页面
+  const redirect = new URLSearchParams(window.location.search).get('redirect')
+  if (redirect) {
+    window.location.href = redirect
+    return
+  }
+
   nextTick(() => {
     ensureSession()
   })
