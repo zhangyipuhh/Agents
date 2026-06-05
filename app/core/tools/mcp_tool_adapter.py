@@ -862,7 +862,8 @@ class MCPToolToLangChainAdapter(BaseTool):
                 runtime = configurable.get("__pregel_runtime")
                 if runtime and hasattr(runtime, "context") and hasattr(runtime, "store"):
                     store_id = runtime.context.get("store_id", "default")
-                    namespace = (store_id,)
+                    session_id = runtime.context.get("session_id", "default")
+                    namespace = (store_id, session_id)
                     # 获取现有的 process_data
                     existing_result = runtime.store.get(namespace, "process_data")
                     process_data = existing_result.value if existing_result else {}

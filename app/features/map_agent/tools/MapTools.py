@@ -971,7 +971,7 @@ def generate_report(data: GenerateReportInput, runtime: ToolRuntime) -> Command:
         # 构建项目选址数据集合
         # 从 store 获取 process_data
         store_id = runtime.context.get("store_id", "default")
-        namespace = (store_id,)
+        namespace = (store_id,session_id)
         existing_result = runtime.store.get(namespace, "process_data")
         process_data = existing_result.value if existing_result else {}
         collection = process_data.get("report_data", None)
