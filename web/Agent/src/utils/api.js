@@ -335,15 +335,21 @@ export async function fetchWithAuth(url, options = {}, _retried = false) {
   }
   const response = await fetch(url, { ...options, headers })
   if (response.status === 401 && !_retried) {
+    let data
     try {
-      const data = await refreshAccessToken()
-      localStorage.setItem('auth_token', data.access_token)
-      headers['Authorization'] = `Bearer ${data.access_token}`
-      return fetch(url, { ...options, headers })
+      data = await refreshAccessToken()
     } catch {
       clearAuth()
       throw new Error('登录已过期，请重新登录')
     }
+    localStorage.setItem('auth_token', data.access_token)
+    headers['Authorization'] = `Bearer ${data.access_token}`
+    const retryResponse = await fetch(url, { ...options, headers })
+    if (retryResponse.status === 401) {
+      localStorage.removeItem('session_id')
+      throw new Error('会话无效，请重新登录')
+    }
+    return retryResponse
   }
   if (response.status === 403) {
     throw new Error('403 会话无效，请重试')
