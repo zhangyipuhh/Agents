@@ -240,6 +240,30 @@ class DatabaseSettings(BaseSettings):
     )
 
 
+class PortalAuthSettings(BaseSettings):
+    """
+    门户子 Refresh Token 配置
+
+    管理门户导航场景下颁发给第三方 iframe 的"子 refresh_token"相关参数。
+    父页（门户导航页）通过 /api/auth/issue-portal-refresh-token 接口申请
+    子 token，经 postMessage 推送给第三方；第三方用它反复换 access_token。
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    portal_refresh_token_ttl_seconds: int = Field(
+        default=86400,
+        ge=60,
+        description="门户子 refresh_token 有效期（秒），默认 86400 = 24 小时。"
+                    "与主 refresh_token TTL 保持一致；可由环境变量 PORTAL_REFRESH_TOKEN_TTL_SECONDS 覆盖。",
+    )
+
+
 class DemonstrationSettings(BaseSettings):
     """
     演示测试配置
@@ -286,6 +310,7 @@ class Settings(BaseSettings):
     file_parser: FileParserSettings = Field(default_factory=FileParserSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     demonstration: DemonstrationSettings = Field(default_factory=DemonstrationSettings)
+    portal_auth: PortalAuthSettings = Field(default_factory=PortalAuthSettings)
 
     def get_llm_config(self) -> dict:
         """
@@ -353,6 +378,17 @@ class Settings(BaseSettings):
         """
         return {
             "demonstration_report_enabled": self.demonstration.demonstration_report_enabled,
+        }
+
+    def get_portal_auth_config(self) -> dict:
+        """
+        获取门户子 Refresh Token 配置字典
+
+        Returns:
+            dict: 门户子 refresh_token 配置字典，兼容旧代码
+        """
+        return {
+            "portal_refresh_token_ttl_seconds": self.portal_auth.portal_refresh_token_ttl_seconds,
         }
 
 

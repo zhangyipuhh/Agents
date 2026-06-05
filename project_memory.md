@@ -155,6 +155,24 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 - 登出时：删除数据库记录 + 清除 Cookie
 - 密码修改时：删除该用户所有 Refresh Token 记录（强制所有设备重新登录）
 
+### Portal Refresh Token（子 refresh_token 委派机制）
+
+**背景**：门户导航页（portal.html）的 iframe 中可嵌入第三方应用；第三方应用需调用本应用 API，但本应用主 refresh_token 在 HttpOnly Cookie 中不可被 JS 读取。
+
+**方案**：颁发"子 refresh_token"给父页，父页通过 postMessage 推送给第三方；第三方可像普通 SPA 一样用它反复换 access_token。
+
+- **颁发**：`POST /api/auth/issue-portal-refresh-token`（需 Bearer access_token，auth_middleware 校验），生成 32 字节随机 token，SHA256 后存入 `portal_refresh_tokens` 表
+- **使用**：第三方 iframe 调 `POST /api/auth/refresh`，body `{"refresh_token":"<子>"}` 或 header `X-Refresh-Token`，换 access_token
+- **TTL**：`PORTAL_REFRESH_TOKEN_TTL_SECONDS`（默认 86400 = 24h）
+- **过期处理**：第三方 API 401 → 重试 refresh 失败 → `window.top.location.href = '/login'`；用户重新登录后父页重新颁发
+- **撤销**：登出时 `revoke_user_tokens(user_id)` 一并清；admin 踢人同理（后续可加）
+- **与主 refresh_token 的边界**：主 refresh_token 仍只通过 HttpOnly Cookie 走（原有逻辑完全不变）；子 token 是"借"给第三方的副本，**不进入主 refresh_tokens 表**
+- **postMessage 协议**：
+  - 父 → 第三方：`{type:'PORTAL_AUTH', refreshToken, username, userId, userRole, apiBaseUrl, issuedAt, expiresIn}`
+  - 第三方 → 父：`{type:'PORTAL_AUTH_REQUEST'}`（在首次加载未及时收到时、或 refresh 失败时主动请求）
+  - 父校验 `event.source === iframe.contentWindow` 防冒用
+  - 父用 `targetOrigin`（从 navItem 配置或 url 推断）避免 `postMessage(msg, '*')` 泄 token
+
 ## 数据库设计
 
 ### users 表
@@ -217,18 +235,32 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 | expires_at | TIMESTAMP | 过期时间 |
 | created_at | TIMESTAMP DEFAULT NOW() | 创建时间 |
 
+### portal_refresh_tokens 表
+门户导航场景下颁发给第三方 iframe 的"子 refresh_token"存储表。子 token 与正常 refresh_token 等效，但独立存储便于独立撤销与审计。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | SERIAL PK | 记录ID |
+| token_hash | VARCHAR(255) UNIQUE | Portal Refresh Token 的 SHA256 哈希值 |
+| user_id | INTEGER FK → users | 用户ID |
+| username | VARCHAR(100) | 用户名（冗余用于审计） |
+| expires_at | TIMESTAMP | 过期时间（默认 24 小时） |
+| revoked | BOOLEAN DEFAULT FALSE | 软删除标志 |
+| created_at | TIMESTAMP DEFAULT NOW() | 创建时间 |
+
 ## API 路由汇总
 
 | 前缀 | 模块 | 说明 |
 |------|------|------|
-| /api/auth | auth_router | 认证（验证码、注册、登录、刷新、验证、登出） |
+| /api/auth | auth_router | 认证（验证码、注册、登录、刷新、验证、登出、门户子 refresh_token） |
 |   ├ GET /captcha | | 获取图形验证码（返回 key + base64 图片） |
 |   ├ POST /register | | 用户注册（含验证码校验、密码复杂度校验） |
 |   ├ POST /login | | 用户登录（验证码校验，返回 access_token + Set-Cookie refresh_token） |
 |   ├ POST /login-api | | API 程序化登录（免验证码，返回 access_token + Set-Cookie refresh_token） |
-|   ├ POST /refresh | | 刷新 Access Token（从 HttpOnly Cookie 读取 refresh_token） |
+|   ├ POST /refresh | | 刷新 Access Token（读取顺序：X-Refresh-Token 头 > body {refresh_token} > HttpOnly Cookie；同时查 refresh_tokens 与 portal_refresh_tokens） |
 |   ├ GET /validate | | 验证 Access Token 有效性（返回 username、role、user_id） |
-|   ├ POST /logout | | 用户登出（清除服务端 Refresh Token + Cookie + Session） |
+|   ├ POST /logout | | 用户登出（清除 Refresh Token + Cookie + Session + 撤销该用户所有 portal_refresh_tokens） |
+|   ├ POST /issue-portal-refresh-token | | 颁发门户子 refresh_token（需 Bearer access_token；用于门户导航页推送第三方 iframe） |
 | /api/users | user_router | 用户管理（列表、创建、更新、删除、踢人、改密码、改用户名、资料） |
 |   ├ GET / | | 用户列表（admin 专用） |
 |   ├ POST / | | Admin 创建用户 |
@@ -293,6 +325,9 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 
 - `AUTH_STORAGE_MODE` — 存储模式（postgres/memory）
 - `DATABASE_URL` — PostgreSQL 连接字符串
+- `PORTAL_REFRESH_TOKEN_TTL_SECONDS` — 门户子 refresh_token 有效期（秒），默认 86400 = 24 小时
+- `VITE_API_TARGET` — 前端 Vite 代理目标地址（开发用），默认 `http://localhost:8001`
+- `VITE_PORTAL_NAV_CONFIG` — 门户导航配置（JSON 字符串），构建时由 Vite 静态注入
 - 其他 LLM API Key 等
 
 ## 提示词三层架构
@@ -504,6 +539,29 @@ system_prompt = (
   - **/api 反代**：`proxy_buffering off`、`proxy_cache off`、`chunked_transfer_encoding on`、支持 WebSocket Upgrade
   - **超时**：connect 60s、send/read 300s（支持长时 LLM 生成）
   - **健康检查**：`/health` 返回 `200 healthy\n`
+
+### Portal 导航配置
+
+- **配置来源**：`VITE_PORTAL_NAV_CONFIG`（Vite 环境变量，构建时静态注入）
+- **解析模块**：`web/Agent/src/config/portal.js:getNavItems()`
+- **NavItem 字段**：
+  - `key`：唯一键
+  - `label`：显示文字
+  - `type`：`'placeholder'`（占位提示） | `'iframe'`（嵌入 iframe）
+  - `url`：type=iframe 时必填，相对路径或绝对 URL
+  - `targetOrigin`：postMessage 的 targetOrigin；缺省时按 url 推断
+- **默认配置**（环境变量缺失或解析失败时回退）：
+  ```js
+  [
+    { key: 'site-select', label: '智能选址', type: 'placeholder' },
+    { key: 'pre-check', label: '智能预检', type: 'placeholder' },
+    { key: 'rule-lib', label: '规则库', type: 'iframe', url: '/knowledge.html' }
+  ]
+  ```
+- **使用示例**（写入 `web/Agent/.env`）：
+  ```
+  VITE_PORTAL_NAV_CONFIG='[{"key":"third-party","label":"第三方应用","type":"iframe","url":"https://example.com/app","targetOrigin":"https://example.com"}]'
+  ```
 
 ### 设计系统（src/styles/variables.css）
 

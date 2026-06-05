@@ -9,15 +9,19 @@
 - 用户登录（含验证码校验）
 - 验证码获取
 - 用户登出
+- 颁发门户子 refresh_token（issue-portal-refresh-token）
+- 扩展 refresh 接口支持 body/header 读取（兼容第三方 iframe 调用）
 
 Date: 2026/2/6
 Author: 张镒谱
 """
+import secrets
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime, timedelta
 from app.shared.utils.auth.Safety import jwt_auth
+from app.core.config.settings import settings
 from app.core.database import DatabasePool
 
 
@@ -107,6 +111,30 @@ class CaptchaResponse(BaseModel):
     """
     captcha_key: str
     captcha_image: str
+
+
+class IssuePortalRefreshTokenRequest(BaseModel):
+    """
+    申请门户子 refresh_token 请求模型
+
+    Attributes:
+        _: 占位字段，请求体可为空；实际鉴权依赖 Authorization 头中的 access_token
+    """
+    # 空请求体；保留 Pydantic 类仅为保持 OpenAPI 文档一致性
+
+
+class IssuePortalRefreshTokenResponse(BaseModel):
+    """
+    申请门户子 refresh_token 响应模型
+
+    Attributes:
+        portal_refresh_token (str): 子 refresh_token 明文（仅此一次返回，需在父页 JS 中保存并 postMessage 给第三方 iframe）
+        expires_in (int): 有效期（秒）
+        expires_at (str): ISO8601 格式的过期时间字符串
+    """
+    portal_refresh_token: str
+    expires_in: int
+    expires_at: str
 
 
 # 创建API路由实例，设置前缀和标签
@@ -439,19 +467,42 @@ async def refresh_token(request: Request):
     """
     刷新 Access Token 接口
 
-    从 HttpOnly Cookie 中读取 Refresh Token，验证后返回新的 Access Token。
-    Refresh Token 不自动续期（保留原有效期）。
+    读取顺序（优先级从高到低）：
+    1. 请求头 `X-Refresh-Token: <token>` —— 第三方 iframe 调用时使用
+    2. 请求体 `{"refresh_token": "<token>"}` —— 第三方 iframe 调用时使用
+    3. HttpOnly Cookie `refresh_token` —— 父页主应用调用时使用（保持原行为）
+
+    验证流程：
+    - 校验 JWT 签名与 `type=refresh` 类型
+    - 计算 SHA256 哈希后，依次查询 `refresh_tokens` 与 `portal_refresh_tokens` 两张表
+      （任一表中未撤销且未过期即视为有效）
+    - 返回新的 Access Token（Refresh Token 不自动续期，保留原有效期）
 
     Returns:
-        dict: 包含新的 access_token 和 expires_in
+        dict: 包含新的 access_token、token_type 与 expires_in
 
     Raises:
-        HTTPException: Refresh Token 无效或过期时返回 401
+        HTTPException: 缺少 Refresh Token 或其无效 / 过期时返回 401
     """
     from app.shared.utils.auth.refresh_token_db import RefreshTokenDB
+    from app.shared.utils.auth.portal_refresh_token_db import PortalRefreshTokenDB
 
-    # 从 Cookie 中读取 refresh_token
-    refresh_token = request.cookies.get("refresh_token")
+    # 1) 优先从 X-Refresh-Token 头读取
+    refresh_token = request.headers.get("X-Refresh-Token")
+
+    # 2) 次选从请求体读取（POST JSON body）
+    if not refresh_token:
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        if isinstance(body, dict):
+            refresh_token = body.get("refresh_token")
+
+    # 3) 最后回落到 HttpOnly Cookie（父页主应用场景，原行为不变）
+    if not refresh_token:
+        refresh_token = request.cookies.get("refresh_token")
+
     if not refresh_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -461,17 +512,20 @@ async def refresh_token(request: Request):
     # 验证 JWT 签名 + type=refresh
     payload = await jwt_auth.verify_refresh_token(refresh_token)
 
-    # 计算哈希，查询数据库存在性
+    # 计算哈希后，依次查主表与门户子表
     token_hash = RefreshTokenDB.hash_token(refresh_token)
     record = await RefreshTokenDB.verify_token(token_hash)
+    if not record:
+        # 主表未命中，查门户子表
+        record = await PortalRefreshTokenDB.verify_token(token_hash)
     if not record:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Refresh Token 已失效，请重新登录"
         )
 
-    # 生成新的 Access Token
-    username = payload.get("username")
+    # 生成新的 Access Token（从记录中取 username，优先于 JWT payload，确保与存储一致）
+    username = record.get("username") or payload.get("username")
     access_token = await jwt_auth.generate_token(username)
 
     return {
@@ -479,6 +533,58 @@ async def refresh_token(request: Request):
         "token_type": "Bearer",
         "expires_in": 30
     }
+
+
+@router.post('/issue-portal-refresh-token', response_model=IssuePortalRefreshTokenResponse)
+async def issue_portal_refresh_token(req: Request):
+    """
+    颁发门户子 Refresh Token 接口
+
+    由父页（门户导航页）在 iframe 加载完成时调用。生成一张与正常
+    refresh_token 等效但独立存储（portal_refresh_tokens 表）的子 token，
+    供父页通过 postMessage 推送给第三方 iframe。第三方可像普通 SPA
+    一样反复用它换 access_token。
+
+    鉴权：
+    - 通过现有 auth_middleware 校验 Authorization 头中的 access_token
+
+    Returns:
+        IssuePortalRefreshTokenResponse: 包含 portal_refresh_token（明文，仅此一次返回）、
+                                         expires_in、expires_at
+
+    Raises:
+        HTTPException: 鉴权失败返回 401；存储失败返回 500
+    """
+    from app.shared.utils.auth.portal_refresh_token_db import PortalRefreshTokenDB
+
+    # 从 request.state 取鉴权信息（auth_middleware 已写入）
+    username = getattr(req.state, 'username', None)
+    user_id = getattr(req.state, 'user_id', None)
+    if not username or not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无法识别当前用户"
+        )
+
+    # 生成 32 字节随机 token
+    portal_refresh_token = secrets.token_urlsafe(32)
+
+    # 哈希后入库
+    token_hash = PortalRefreshTokenDB.hash_token(portal_refresh_token)
+    ttl_seconds = settings.portal_auth.portal_refresh_token_ttl_seconds
+    expires_at = datetime.utcnow() + timedelta(seconds=ttl_seconds)
+    stored = await PortalRefreshTokenDB.store_token(token_hash, user_id, username, expires_at)
+    if not stored:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="门户子 Refresh Token 存储失败"
+        )
+
+    return IssuePortalRefreshTokenResponse(
+        portal_refresh_token=portal_refresh_token,
+        expires_in=ttl_seconds,
+        expires_at=expires_at.isoformat() + "Z"
+    )
 
 
 @router.get('/validate')
@@ -543,8 +649,10 @@ async def logout(req: Request, response: Response):
     from app.shared.utils.auth.audit_log import AuditLog
     from app.shared.utils.Session.SessionCache import session_cache
     from app.shared.utils.auth.refresh_token_db import RefreshTokenDB
+    from app.shared.utils.auth.portal_refresh_token_db import PortalRefreshTokenDB
 
     username = getattr(req.state, 'username', None)
+    user_id = getattr(req.state, 'user_id', None)
     session_id = req.headers.get('X-Session-ID')
     client_ip = req.client.host if req.client else "unknown"
 
@@ -553,6 +661,10 @@ async def logout(req: Request, response: Response):
     if refresh_token:
         token_hash = RefreshTokenDB.hash_token(refresh_token)
         await RefreshTokenDB.delete_token(token_hash)
+
+    # 撤销该用户所有门户子 refresh_token（防止子 token 残留被第三方利用）
+    if user_id:
+        await PortalRefreshTokenDB.revoke_user_tokens(user_id)
 
     # 清除 Refresh Token Cookie
     response.delete_cookie(

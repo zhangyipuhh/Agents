@@ -1,7 +1,8 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
-import { validateToken, refreshToken, logout, clearAuth } from './utils/api.js'
+import { validateToken, refreshToken, logout, clearAuth, issuePortalRefreshToken } from './utils/api.js'
 import { redirectToLogin } from './utils/auth.js'
+import { getNavItems } from './config/portal.js'
 import LoginView from './views/LoginView.vue'
 import RegisterView from './views/RegisterView.vue'
 
@@ -28,9 +29,19 @@ const authView = ref('login')
 const currentUser = ref({ username: '', role: '' })
 
 /**
- * 当前选中的导航项
+ * 导航项列表（从 VITE_PORTAL_NAV_CONFIG 解析，缺省回退默认三项）
  */
-const activeNav = ref('规则库')
+const navItems = getNavItems()
+
+/**
+ * 当前选中的导航项 key（默认第一项；iframe 类型优先于 placeholder）
+ */
+const activeNav = ref(navItems[0]?.key ?? '')
+
+/**
+ * iframe DOM 引用
+ */
+const iframeRef = ref(null)
 
 /**
  * 用户下拉菜单是否可见
@@ -41,11 +52,6 @@ const isUserMenuVisible = ref(false)
  * 用户菜单触发器 DOM 引用
  */
 const userMenuTriggerRef = ref(null)
-
-/**
- * 导航项列表
- */
-const navItems = ['智能选址', '智能预检', '规则库']
 
 /**
  * 角色代码映射到中文角色名称
@@ -102,6 +108,101 @@ async function checkAuth() {
       // refresh 也失败：跳登录页（带 redirect = 当前 portal URL）
       redirectToLogin({ reason: 'portal_refresh_failed' })
     }
+  }
+}
+
+/**
+ * 获取当前激活的导航项对象
+ * @returns {Object|null} 当前 navItem；找不到时返回 null
+ */
+function getActiveItem() {
+  return navItems.find((n) => n.key === activeNav.value) || null
+}
+
+/**
+ * 计算 postMessage 的 targetOrigin
+ *
+ * 优先使用 navItem 中显式配置的 targetOrigin；否则根据 url 推断：
+ * - 相对路径（如 /knowledge.html）→ 当前页面 origin
+ * - 绝对 URL → URL 的 origin
+ *
+ * @param {Object} item - navItem 对象
+ * @returns {string} targetOrigin
+ */
+function resolveTargetOrigin(item) {
+  if (item.targetOrigin) return item.targetOrigin
+  try {
+    return new URL(item.url, window.location.origin).origin
+  } catch {
+    // 解析失败时回退到当前 origin（保守策略，避免把 token 泄给未知源）
+    return window.location.origin
+  }
+}
+
+/**
+ * 向当前激活的 iframe 推送门户子 refresh_token
+ *
+ * 流程：
+ * 1. 查找当前激活的 navItem，type 必须为 'iframe'
+ * 2. 调 /api/auth/issue-portal-refresh-token 拿子 token
+ * 3. 通过 postMessage 推送 PORTAL_AUTH 消息给 iframe.contentWindow
+ *
+ * 失败时不抛错，仅 console.error；保证不影响门户 UI。
+ *
+ * @returns {Promise<void>}
+ */
+async function sendAuthToIframe() {
+  const item = getActiveItem()
+  if (!item || item.type !== 'iframe') return
+  const iframe = iframeRef.value
+  if (!iframe || !iframe.contentWindow) return
+
+  let tokenInfo
+  try {
+    tokenInfo = await issuePortalRefreshToken()
+  } catch (e) {
+    console.error('[PortalApp] 颁发门户子 refresh_token 失败:', e)
+    return
+  }
+
+  const targetOrigin = resolveTargetOrigin(item)
+  const payload = {
+    type: 'PORTAL_AUTH',
+    refreshToken: tokenInfo.portal_refresh_token,
+    username: localStorage.getItem('username') || '',
+    userId: localStorage.getItem('user_id') || '',
+    userRole: localStorage.getItem('user_role') || '',
+    apiBaseUrl: '/',
+    issuedAt: Date.now(),
+    expiresIn: tokenInfo.expires_in
+  }
+  iframe.contentWindow.postMessage(payload, targetOrigin)
+}
+
+/**
+ * iframe 加载完成事件处理：推送 PORTAL_AUTH
+ * @returns {void}
+ */
+function onIframeLoad() {
+  sendAuthToIframe()
+}
+
+/**
+ * 监听第三方 iframe 的 postMessage 消息
+ *
+ * 安全策略：
+ * - 仅响应 event.source === 当前 iframe.contentWindow 的消息（防冒用）
+ * - 仅处理 type === 'PORTAL_AUTH_REQUEST' 的请求
+ *
+ * @param {MessageEvent} event - postMessage 事件
+ * @returns {void}
+ */
+function handlePortalMessage(event) {
+  const iframe = iframeRef.value
+  if (!iframe || !iframe.contentWindow) return
+  if (event.source !== iframe.contentWindow) return
+  if (event.data && event.data.type === 'PORTAL_AUTH_REQUEST') {
+    sendAuthToIframe()
   }
 }
 
@@ -187,21 +288,23 @@ function handleLoginSuccess(data) {
 
 /**
  * 处理导航项切换
- * @param {string} item - 被点击的导航项名称
+ * @param {string} key - 被点击的导航项 key
  */
-function handleNavClick(item) {
-  activeNav.value = item
+function handleNavClick(key) {
+  activeNav.value = key
 }
 
 onMounted(() => {
   checkAuth()
   document.addEventListener('click', handleClickOutside)
   document.addEventListener('keydown', handleKeydown)
+  window.addEventListener('message', handlePortalMessage)
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', handleClickOutside)
   document.removeEventListener('keydown', handleKeydown)
+  window.removeEventListener('message', handlePortalMessage)
 })
 </script>
 
@@ -230,12 +333,12 @@ onUnmounted(() => {
       <div class="nav-center">
         <button
           v-for="item in navItems"
-          :key="item"
+          :key="item.key"
           class="nav-item"
-          :class="{ active: activeNav === item }"
-          @click="handleNavClick(item)"
+          :class="{ active: activeNav === item.key }"
+          @click="handleNavClick(item.key)"
         >
-          {{ item }}
+          {{ item.label }}
         </button>
       </div>
 
@@ -267,18 +370,20 @@ onUnmounted(() => {
       class="main-content"
       :style="{ marginTop: `${NAV_HEIGHT}px`, height: `calc(100vh - ${NAV_HEIGHT}px)` }"
     >
-      <!-- 规则库：通过 iframe 加载知识库页面 -->
-      <template v-if="activeNav === '规则库'">
+      <!-- 当前激活项为 iframe：在主内容区嵌入 iframe，并在加载完成时推送 PORTAL_AUTH -->
+      <template v-if="getActiveItem() && getActiveItem().type === 'iframe'">
         <iframe
-          src="/knowledge.html"
+          :ref="iframeRef"
+          :src="getActiveItem().url"
           width="100%"
           height="100%"
           frameborder="0"
-          title="规则库"
+          :title="getActiveItem().label"
+          @load="onIframeLoad"
         ></iframe>
       </template>
 
-      <!-- 智能选址 / 智能预检：占位提示 -->
+      <!-- 当前激活项为 placeholder：显示占位提示 -->
       <template v-else>
         <div class="placeholder-wrap">
           <svg class="cloud-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">

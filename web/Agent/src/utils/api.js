@@ -325,6 +325,34 @@ export async function validateToken() {
 }
 
 /**
+ * 申请门户子 refresh_token
+ *
+ * 由门户导航页（PortalApp）在 iframe 加载完成时调用，从后端获取一张
+ * 与正常 refresh_token 等效但独立存储的子 token；再经 postMessage
+ * 推送给第三方 iframe。第三方可像普通 SPA 一样用此 token 反复换 access_token。
+ *
+ * 鉴权：依赖现有 fetchWithAuth 的 Authorization: Bearer <access_token> 注入，
+ *      401 时自动尝试一次 refresh 并重试。
+ *
+ * @returns {Promise<{portal_refresh_token: string, expires_in: number, expires_at: string}>}
+ *          门户子 refresh_token 颁发结果（明文仅此一次返回）
+ * @throws {Error} 鉴权失败或存储失败时抛出错误
+ */
+export async function issuePortalRefreshToken() {
+  const response = await fetchWithAuth('/api/auth/issue-portal-refresh-token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' }
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '颁发门户子 refresh_token 失败')
+  }
+
+  return response.json()
+}
+
+/**
  * 统一 API 请求包装器
  * 自动注入 Authorization 和 X-Session-ID 头
  * 知识库页面自动使用 knowledge_session_id，与主应用隔离
