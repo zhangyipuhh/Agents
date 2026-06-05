@@ -36,6 +36,10 @@ const isEmptyState = computed(() => messages.length === 0)
  * @param {Object} data - 包含 username 和 role
  */
 function applyUserData(data) {
+  const oldUsername = localStorage.getItem('username')
+  if (oldUsername && oldUsername !== data.username) {
+    localStorage.removeItem('session_id')
+  }
   localStorage.setItem('user_role', data.role)
   localStorage.setItem('username', data.username)
   if (data.user_id) {
@@ -88,6 +92,10 @@ async function checkAuth() {
  * @param {Object} data - 登录结果数据，包含 access_token、role、username
  */
 function handleLoginSuccess(data) {
+  const oldUsername = localStorage.getItem('username')
+  if (oldUsername && oldUsername !== data.username) {
+    localStorage.removeItem('session_id')
+  }
   console.log('[调试] handleLoginSuccess - data:', data)
   console.log('[调试] handleLoginSuccess - access_token:', data.access_token)
   if (!data.access_token) {
