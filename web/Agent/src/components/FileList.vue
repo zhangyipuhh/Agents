@@ -83,7 +83,8 @@ function formatSize(bytes) {
 }
 
 function getFileIconColor(name) {
-  if (!name) return '#6366F1'
+  // 文件图标默认回退色：与登录页主色 #1E5AA8 保持一致
+  if (!name) return '#1E5AA8'
   const parts = name.split('.')
   const ext = parts.length > 1 ? parts.pop().toLowerCase() : ''
   const colorMap = {
@@ -99,7 +100,7 @@ function getFileIconColor(name) {
     ppt: '#FF6B00',
     pptx: '#FF6B00'
   }
-  return colorMap[ext] || '#6366F1'
+  return colorMap[ext] || '#1E5AA8'
 }
 </script>
 

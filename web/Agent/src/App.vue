@@ -618,7 +618,8 @@ async function handleSessionSwitch(targetSessionId) {
 .welcome-title {
   font-size: 32px;
   font-weight: var(--font-weight-bold);
-  color: rgb(79, 70, 229);
+  /* 与登录页主色 #1E5AA8 保持一致 */
+  color: #1E5AA8;
   margin-bottom: 32px;
   text-align: center;
 }

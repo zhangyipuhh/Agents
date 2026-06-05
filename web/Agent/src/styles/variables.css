@@ -21,9 +21,10 @@
   --color-text-inverse: #FFFFFF;
 
   /* Accent & Brand Colors */
-  --color-accent: #6366F1;
-  --color-accent-hover: #4F46E5;
-  --color-accent-light: #EEF2FF;
+  /* 主色与登录页 LoginView.vue 一致：政务蓝 #1E5AA8 */
+  --color-accent: #1E5AA8;
+  --color-accent-hover: #155A9E;
+  --color-accent-light: #EBF4FF;
   --color-success: #10B981;
   --color-warning: #F59E0B;
   --color-error: #EF4444;
