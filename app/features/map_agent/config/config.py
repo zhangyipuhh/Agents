@@ -362,6 +362,35 @@ def _convert_region_area_detail(area_detail: RegionAreaDetail) -> None:
             area_value.value = convert_square_meters_to_hectares(area_value.value)
 
 
+def _convert_area_summary(summary: AreaSummary) -> None:
+    """
+    将 AreaSummary 中所有面积字段的 value 从平方米转换为公顷
+
+    Args:
+        summary: 面积汇总对象
+
+    Returns:
+        无返回值，直接修改传入对象的字段值
+    """
+    area_fields = [
+        "total_land_area",
+        "agricultural_land",
+        "cultivated_land",
+        "paddy_field",
+        "black_soil",
+        "permanent_basic_farmland",
+        "forest_land",
+        "grassland",
+        "ecological_red_line",
+        "nature_reserve",
+        "illegal_land",
+    ]
+    for field_name in area_fields:
+        value = getattr(summary, field_name)
+        if value:
+            setattr(summary, field_name, convert_square_meters_to_hectares(value))
+
+
 def _count_towns_and_villages(counties: List[County]) -> tuple:
     """
     统计乡镇数和村数
@@ -635,6 +664,34 @@ def _build_forest_grassland_paragraph(project: ProjectSiteSelectionData) -> str:
     )
 
 
+def _build_land_use_efficiency_paragraphs(project: ProjectSiteSelectionData) -> list[str]:
+    """
+    根据项目数据生成节约集约用地段落文本
+
+    从 project 中安全获取 project_type 和 land_use_control_indicator，
+    若属性不存在则使用 'xx' 占位符。保留符合/不符合两条文本。
+
+    Args:
+        project: 项目选址数据
+
+    Returns:
+        list[str]: 段落文本列表
+    """
+    project_type = getattr(project, "project_type", "xx")
+    indicator = getattr(project, "land_use_control_indicator", "xx")
+    total_area = _format_area(project.summary.total_land_area)
+
+    paragraphs = [
+        f"{project.project_name}项目用地总面积{total_area}公顷，"
+        f"{project_type}类建设项目建设用地控制指标为{indicator}公顷，"
+        f"初步判定用地规模符合土地使用标准。",
+        f"【或者】：{project.project_name}项目用地总面积{total_area}公顷，"
+        f"{project_type}类建设项目建设用地控制指标为{indicator}公顷，"
+        f"初步判定用地规模不符合土地使用标准。",
+    ]
+    return paragraphs
+
+
 def _build_section_disclaimer(collection: ProjectSiteSelectionCollection) -> list[dict]:
     """
     构建"一点通"服务免责声明章节
@@ -815,8 +872,9 @@ def _build_section_site_selection(collection: ProjectSiteSelectionCollection) ->
     sections.append({"type": "heading", "level": 3, "content": "2.土地利用年度计划"})
     sections.append({"type": "paragraph", "content": "该项目可按规定配置用地计划指标。"})
     sections.append({"type": "heading", "level": 3, "content": "3.节约集约用地"})
-    sections.append({"type": "paragraph", "content": "项目用地总面积xx公顷，xx类建设项目建设用地控制指标为xx公顷，初步判定用地规模符合土地使用标准。"})
-    sections.append({"type": "paragraph", "content": "【或者】：项目用地总面积xx公顷，xx类建设项目建设用地控制指标为xx公顷，初步判定用地规模不符合土地使用标准。"})
+    for project in collection.projects:
+        for para in _build_land_use_efficiency_paragraphs(project):
+            sections.append({"type": "paragraph", "content": para})
     sections.append({"type": "heading", "level": 3, "content": "4.农用地转用和土地征收手续办理安排"})
     sections.append({"type": "paragraph", "content": "在项目审批（核准）阶段同步开展农用地转用和土地征收前期工作。"})
     sections.append({"type": "heading", "level": 3, "content": "5.耕地占补平衡可行性"})
@@ -1087,6 +1145,7 @@ def get_report_config(data: dict, collection: ProjectSiteSelectionCollection = N
 
     # 将 collection 中所有 area_detail 的面积字段从平方米转换为公顷
     for project in collection.projects:
+        _convert_area_summary(project.summary)
         for county in project.counties:
             _convert_region_area_detail(county.area_detail)
             for town in county.towns:
