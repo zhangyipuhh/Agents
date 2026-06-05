@@ -27,8 +27,9 @@ from langchain_core.messages import ToolMessage
 
 from app.features.map_agent.MapAgent import MapAgent
 from app.core.format.stream import stream_format_context
-from app.features.map_agent.config.prompts import KNOWLEDGE_SYSTEM_PROMPT
+from app.features.map_agent.config.prompts import KNOWLEDGE_SYSTEM_PROMPT, MAP_AGENT_SYSTEM_PROMPT
 from app.features.map_agent.config.MapAgentContext import MapAgentContext
+
 from app.shared.utils.files.doc_converter import convert_doc_to_docx, check_conversion_support, get_libreoffice_installation_guide
 from app.shared.utils.memory import get_async_checkpointer
 
@@ -604,6 +605,9 @@ async def chat(
                 generate_stream_response(
                     user_input="",
                     session_id=session_id,
+                    context=MapAgentContext(
+                        system_prompt=MAP_AGENT_SYSTEM_PROMPT,
+                    ),
                     geometry_data=geometry_data,
                     attachments=chat_request.attachments or [],
                     resume=chat_request.resume,
@@ -640,6 +644,9 @@ async def chat(
             generate_stream_response(
                 user_input=chat_request.message,
                 session_id=session_id,
+                context=MapAgentContext(
+                    system_prompt=MAP_AGENT_SYSTEM_PROMPT,
+                ),
                 geometry_data=geometry_data,
                 attachments=chat_request.attachments or []
             ),
@@ -688,7 +695,30 @@ async def knowledge_chat(
         # 获取 geometry_data
         geometry_data = chat_request.geometry_data or {}
 
-        logger.debug(f"[DEBUG] chat 请求: message={chat_request.message}, session_id={session_id}")
+        # 处理 resume 场景（无新消息，只有 resume 决策）
+        if chat_request.resume and not chat_request.message:
+            logger.warning(f"[KnowledgeChat] session_id={session_id}, resume={chat_request.resume}")
+            return StreamingResponse(
+                generate_stream_response(
+                    user_input="",
+                    session_id=session_id,
+                    context=MapAgentContext(
+                        system_prompt=KNOWLEDGE_SYSTEM_PROMPT,
+                        knowledge_root=TMP_DIR
+                    ),
+                    geometry_data=geometry_data,
+                    attachments=chat_request.attachments or [],
+                    resume=chat_request.resume,
+                ),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"  # 禁用 nginx 缓冲
+                }
+            )
+
+        logger.warning(f"[KnowledgeChat] session_id={session_id}, message={chat_request.message[:50] if chat_request.message else ''}")
 
         # 返回流式响应
         return StreamingResponse(
@@ -697,7 +727,7 @@ async def knowledge_chat(
                 session_id=session_id,
                 context=MapAgentContext(
                     system_prompt=KNOWLEDGE_SYSTEM_PROMPT,
-                    knowledge_root=r"app\data\Knowledge\tmp"
+                    knowledge_root=TMP_DIR
                 ),
                 geometry_data=geometry_data,
                 attachments=chat_request.attachments or []

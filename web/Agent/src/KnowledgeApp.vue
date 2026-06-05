@@ -57,12 +57,20 @@ onMounted(async () => {
     }
   }
 
-  // 优先复用本地已有的 session_id，避免每次挂载都新建会话
-  const existingSessionId = localStorage.getItem('session_id')
+  // 优先复用本地已有的 knowledge_session_id，避免每次挂载都新建会话
+  const existingSessionId = localStorage.getItem('knowledge_session_id')
   if (existingSessionId && existingSessionId !== 'undefined') {
     currentSessionId.value = existingSessionId
+  } else {
+    // 首次进入知识库，自动创建新会话，确保后续请求携带 X-Session-ID
+    try {
+      const newId = await createNewSession('knowledge_session_id')
+      currentSessionId.value = newId
+      console.log('[KnowledgeApp] 初始化知识库会话:', newId)
+    } catch (err) {
+      console.error('知识库初始化会话失败:', err)
+    }
   }
-  // 没有有效会话时，不自动创建，等待用户交互时再创建
 
   // 加载文件列表
   filesLoading.value = true
@@ -146,7 +154,7 @@ async function handleNewChat() {
   showChat.value = false
 
   try {
-    const newId = await createNewSession()
+    const newId = await createNewSession('knowledge_session_id')
     currentSessionId.value = newId
     console.log('[handleNewChat] 新会话创建成功:', newId)
   } catch (err) {
