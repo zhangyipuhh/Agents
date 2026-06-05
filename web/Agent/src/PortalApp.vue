@@ -354,9 +354,6 @@ onUnmounted(() => {
         <!-- 用户下拉菜单 -->
         <Transition name="menu">
           <div v-show="isUserMenuVisible" class="user-dropdown-menu">
-            <div class="dropdown-item" @click.stop="closeUserMenu">
-              设置
-            </div>
             <div class="dropdown-item logout-item" @click.stop="handleLogout">
               退出登录
             </div>
