@@ -273,7 +273,7 @@ class WordReportGenerator:
             - 预收集确保目录中的PAGEREF域字段能正确引用尚未渲染的标题书签
         """
         for section in self.config.sections:
-            if section.section_type == "heading":
+            if section.section_type == "heading" and section.in_toc:
                 bookmark_name = f"_TocHeading_{len(self._heading_bookmarks)}"
                 self._heading_bookmarks.append(bookmark_name)
         logger.info(f"预收集完成，共{len(self._heading_bookmarks)}个标题书签")
@@ -539,10 +539,13 @@ class WordReportGenerator:
         if section.alignment is not None:
             paragraph.alignment = section.alignment
 
-        bookmark_name = self._heading_bookmarks[self._heading_index]
-        logger.debug(f"渲染标题 Lv.{level}: {text} → 书签: {bookmark_name}")
-        self._add_bookmark(paragraph, bookmark_name)
-        self._heading_index += 1
+        if section.in_toc:
+            bookmark_name = self._heading_bookmarks[self._heading_index]
+            logger.debug(f"渲染标题 Lv.{level}: {text} → 书签: {bookmark_name}")
+            self._add_bookmark(paragraph, bookmark_name)
+            self._heading_index += 1
+        else:
+            logger.debug(f"渲染标题 Lv.{level}: {text} → 不加入目录")
 
     def _render_paragraph(self, section: SectionConfig):
         """

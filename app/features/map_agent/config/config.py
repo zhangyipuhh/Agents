@@ -664,7 +664,7 @@ def _build_section_disclaimer(collection: ProjectSiteSelectionCollection) -> lis
             "content": f"欢迎使用沈阳市自然资源和规划\"一点通\"服务（以下简称\"本服务\"）。本服务由沈阳市自然资源局研发，用于生成《{project_name}选址自然资源和规划\"一点通\"服务技术参考》（以下简称《技术参考》），作为项目选址咨询的过程性参考材料。为保障您的合法权益，请在使用本服务前仔细阅读并充分理解本声明全部内容。若您继续使用本服务，即视为已完全知晓、理解并同意本声明的全部条款及内容。本服务将免费向您提供《技术参考》。"
         },
         # 一、查询结果用途限制
-        {"type": "heading", "level": 1, "alignment": 0, "content": "一、查询结果用途限制"},
+        {"type": "heading", "level": 1, "alignment": 0, "content": "一、查询结果用途限制", "in_toc": False},
         {
             "type": "paragraph",
             "alignment": 0,
@@ -680,7 +680,7 @@ def _build_section_disclaimer(collection: ProjectSiteSelectionCollection) -> lis
             "content": "（二）严禁歪曲、篡改、恶意解读或公开发布查询结果。严禁利用查询结果制造、散布不良社会舆论，或从事任何可能损害政府公信力、扰乱社会秩序的活动。"
         },
         # 二、数据时效性与准确性
-        {"type": "heading", "level": 1, "alignment": 0, "content": "二、数据时效性与准确性"},
+        {"type": "heading", "level": 1, "alignment": 0, "content": "二、数据时效性与准确性", "in_toc": False},
         {
             "type": "paragraph",
             "alignment": 0,
@@ -692,7 +692,7 @@ def _build_section_disclaimer(collection: ProjectSiteSelectionCollection) -> lis
             "content": "（二）项目选址合规性、用地可行性最终以行业主管部门正式审查、审批结论为准。"
         },
         # 三、保密与数据安全责任
-        {"type": "heading", "level": 1, "alignment": 0, "content": "三、保密与数据安全责任"},
+        {"type": "heading", "level": 1, "alignment": 0, "content": "三、保密与数据安全责任", "in_toc": False},
         {
             "type": "paragraph",
             "alignment": 0,
@@ -704,7 +704,7 @@ def _build_section_disclaimer(collection: ProjectSiteSelectionCollection) -> lis
             "content": "严禁以任何方式或技术手段窃取、篡改、非法利用本服务系统数据。因用户行为导致数据泄露或损害公共利益的，本单位有权追究法律责任。"
         },
         # 四、责任豁免
-        {"type": "heading", "level": 1, "alignment": 0, "content": "四、责任豁免"},
+        {"type": "heading", "level": 1, "alignment": 0, "content": "四、责任豁免", "in_toc": False},
         {
             "type": "paragraph",
             "alignment": 0,
@@ -717,7 +717,7 @@ def _build_section_disclaimer(collection: ProjectSiteSelectionCollection) -> lis
         },
         {"type": "paragraph", "alignment": 0, "content": "（二）因数据误差导致的决策损失。"},
         # 五、特别声明
-        {"type": "heading", "level": 1, "alignment": 0, "content": "五、特别声明"},
+        {"type": "heading", "level": 1, "alignment": 0, "content": "五、特别声明", "in_toc": False},
         {
             "type": "paragraph",
             "alignment": 0,
@@ -739,7 +739,7 @@ def _build_section_disclaimer(collection: ProjectSiteSelectionCollection) -> lis
             "content": "（四）本《技术参考》属于行政咨询指导行为、过程性信息，依据《最高人民法院关于适用〈中华人民共和国行政诉讼法〉的解释》第一条第二款第三项、第六项、第十项，本服务不可复议、不可诉。"
         },
         # 六、声明约束力及解释权
-        {"type": "heading", "level": 1, "alignment": 0, "content": "六、声明约束力及解释权"},
+        {"type": "heading", "level": 1, "alignment": 0, "content": "六、声明约束力及解释权", "in_toc": False},
         {
             "type": "paragraph",
             "alignment": 0,
@@ -822,6 +822,9 @@ def _build_section_site_selection(collection: ProjectSiteSelectionCollection) ->
     sections.append({"type": "heading", "level": 3, "content": "5.耕地占补平衡可行性"})
     sections.append({"type": "paragraph", "content": "项目不涉及占用耕地。"})
     sections.append({"type": "paragraph", "content": "【或者】：项目占用耕地xx公顷，占用耕地质量等别为xx，坡度级别为xx，产能约xx公斤，应在农用地转用和土地征收阶段按规定落实补充耕地。经核实，当前xx县（市、区）补充耕地储备库中指标可满足该项目补充耕地需求。"})
+    sections.append({"type": "heading", "level": 3, "content": "6.永久基本农田占用补划可行性"})
+    sections.append({"type": "paragraph", "content": "项目不涉及占用永久基本农田。"})
+    sections.append({"type": "paragraph", "content": "【或者】：项目占用永久基本农田xx公顷，应按规定办理永久基本农田占用补划手续。"})
 
     return sections
 
@@ -831,7 +834,7 @@ def _build_section_space_control(collection: ProjectSiteSelectionCollection) -> 
     构建二、其他空间管控分析章节
 
     根据 ProjectSiteSelectionCollection 中的项目数据，
-    为每个项目生成主体功能区占位段落。
+    为每个项目生成主体功能区占位段落，以及自然保护地和历史文化保护内容。
 
     Args:
         collection: 多项目选址数据集合
@@ -847,6 +850,15 @@ def _build_section_space_control(collection: ProjectSiteSelectionCollection) -> 
             "type": "paragraph",
             "content": f"{project.project_name}项目用地所在区域主体功能区为城市化地区/农产品主产区/重点生态功能区及特殊功能区。",
         })
+
+    sections.append({"type": "heading", "level": 2, "content": "（一）涉及自然保护地情况"})
+    for project in collection.projects:
+        sections.append({"type": "paragraph", "content": _build_nature_reserve_paragraph(project)})
+
+    sections.append({"type": "heading", "level": 2, "content": "（二）历史文化保护情况"})
+    sections.append({"type": "paragraph", "content": "项目涉及历史文化名城名镇名村。"})
+    sections.append({"type": "paragraph", "content": "【或者】：项目不涉及历史文化名城名镇名村。"})
+
     return sections
 
 
@@ -855,7 +867,7 @@ def _build_section_land_use(collection: ProjectSiteSelectionCollection) -> list[
     构建三、其他国土空间用途管制要求章节
 
     根据 ProjectSiteSelectionCollection 中的项目数据，
-    动态生成涉及自然保护地情况段落，历史文化保护保留占位文本。
+    动态生成违法用地、信访和林草地占用情况段落。
 
     Args:
         collection: 多项目选址数据集合
@@ -865,14 +877,18 @@ def _build_section_land_use(collection: ProjectSiteSelectionCollection) -> list[
     """
     sections = [
         {"type": "heading", "level": 1, "content": "三、其他国土空间用途管制要求"},
-        {"type": "heading", "level": 2, "content": "（一）涉及自然保护地情况"},
+        {"type": "heading", "level": 2, "content": "（一）违法用地情况"},
     ]
     for project in collection.projects:
-        sections.append({"type": "paragraph", "content": _build_nature_reserve_paragraph(project)})
+        sections.append({"type": "paragraph", "content": _build_illegal_land_paragraph(project)})
 
-    sections.append({"type": "heading", "level": 2, "content": "（二）历史文化保护情况"})
-    sections.append({"type": "paragraph", "content": "项目涉及历史文化名城名镇名村。"})
-    sections.append({"type": "paragraph", "content": "【或者】：项目不涉及历史文化名城名镇名村。"})
+    sections.append({"type": "heading", "level": 2, "content": "（二）涉及信访情况"})
+    sections.append({"type": "paragraph", "content": "项目用地范围内不涉及信访问题。"})
+    sections.append({"type": "paragraph", "content": "【或者】：项目用地范围内涉及信访问题，应按规定处理。"})
+
+    sections.append({"type": "heading", "level": 2, "content": "（三）林草地占用情况"})
+    for project in collection.projects:
+        sections.append({"type": "paragraph", "content": _build_forest_grassland_paragraph(project)})
 
     return sections
 
@@ -950,6 +966,7 @@ def _build_sections(content_list: list[dict]) -> list[SectionConfig]:
                 content=item.get("content", ""),
                 level=item.get("level", 1),
                 alignment=item.get("alignment"),
+                in_toc=item.get("in_toc", True),
             ))
         elif section_type == "paragraph":
             sections.append(SectionConfig(

@@ -676,6 +676,9 @@ class SectionConfig:
     - paragraph: 0cm
     """
 
+    in_toc: bool = True
+    """是否将标题加入目录并生成书签，默认True。设为False时该标题不会生成目录页码引用书签"""
+
 
 @dataclass
 class ReportConfig:
