@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import { validateToken, refreshToken, logout, clearAuth } from './utils/api.js'
+import { redirectToLogin } from './utils/auth.js'
 import LoginView from './views/LoginView.vue'
 import RegisterView from './views/RegisterView.vue'
 
@@ -77,26 +78,29 @@ function applyUserData(data) {
  * 三段式认证检查
  * 1. 先调用 validateToken 验证当前 Token 是否有效
  * 2. 若失败则调用 refreshToken 刷新令牌，然后再次 validateToken
- * 3. 若再次失败则调用 clearAuth 清除本地认证状态，并置为未登录
+ * 3. 若再次失败则调用 redirectToLogin 跳转到登录页（带 redirect 参数回到当前 portal URL）
+ *    注意：不再主动 clearAuth()，保留本地 token 以便可能的下次重试。
  */
 async function checkAuth() {
   const token = localStorage.getItem('auth_token')
   if (!token) {
-    isLoggedIn.value = false
+    // 本地无 token：跳登录页（带 redirect = 当前 portal URL）
+    redirectToLogin({ reason: 'portal_no_token' })
     return
   }
   try {
     const data = await validateToken()
     applyUserData(data)
   } catch {
+    // validateToken 失败：尝试 refresh_token
     try {
       const newToken = await refreshToken()
       const data = await validateToken()
       localStorage.setItem('auth_token', newToken)
       applyUserData(data)
     } catch {
-      clearAuth()
-      isLoggedIn.value = false
+      // refresh 也失败：跳登录页（带 redirect = 当前 portal URL）
+      redirectToLogin({ reason: 'portal_refresh_failed' })
     }
   }
 }

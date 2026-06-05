@@ -2,6 +2,7 @@
 import { ref, onMounted, nextTick } from 'vue'
 import { fetchKnowledgeFiles, fetchFilePreview, createNewSession, knowledgeChatStream, validateToken, refreshToken } from './utils/api.js'
 import { createAiMessage, processSSEEvent } from './utils/sseParser.js'
+import { redirectToLogin } from './utils/auth.js'
 import FileList from './components/FileList.vue'
 import FilePreview from './components/FilePreview.vue'
 import MessageBubble from './components/MessageBubble.vue'
@@ -45,6 +46,8 @@ const showChat = ref(false)
 
 onMounted(async () => {
   // 验证 token 有效性，失效则尝试静默刷新
+  // 全部失败：调用 redirectToLogin() 携带当前 /Agent/knowledge.html 作为 redirect，
+  // 登录成功后回到原页面（避免被强制跳到 /Agent/）。
   try {
     await validateToken()
   } catch {
@@ -52,7 +55,7 @@ onMounted(async () => {
       const newToken = await refreshToken()
       localStorage.setItem('auth_token', newToken)
     } catch {
-      window.location.href = '/Agent/'
+      redirectToLogin({ reason: 'knowledge_validate_failed' })
       return
     }
   }

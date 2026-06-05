@@ -7,6 +7,7 @@
 
 import { ref, onMounted } from 'vue'
 import { login, getCaptcha } from '../utils/api.js'
+import { safeRedirectUrl } from '../utils/auth.js'
 
 /** @type {import('vue').Ref<string>} 用户名输入值 */
 const username = ref('')
@@ -99,7 +100,10 @@ async function handleLogin() {
     })
 
     // 如果 URL 中存在 redirect 参数，登录成功后跳转回目标页面
-    const redirect = new URLSearchParams(window.location.search).get('redirect')
+    // 注意：必须经过 safeRedirectUrl 校验，阻止 javascript:、data: 等危险协议
+    // LoginView 职责：登录成功后根据 URL 参数决定回到哪个页面
+    const rawRedirect = new URLSearchParams(window.location.search).get('redirect')
+    const redirect = safeRedirectUrl(rawRedirect)
     if (redirect) {
       window.location.href = redirect
       return
