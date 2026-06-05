@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
-import { validateToken, refreshToken, logout, clearAuth } from '../utils/api.js'
+import { validateToken, refreshToken, logout, clearAuth } from './utils/api.js'
 
 /**
  * 导航栏高度（像素）

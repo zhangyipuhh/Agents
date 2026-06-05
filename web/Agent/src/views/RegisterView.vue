@@ -214,11 +214,6 @@ onMounted(() => {
 
 <template>
   <div class="register-container">
-    <div class="register-brand">
-      <div class="brand-title">沈阳市自然资源和规划"一点通"</div>
-      <div class="brand-divider"></div>
-      <p class="brand-desc">智慧政务服务平台</p>
-    </div>
     <div class="register-card">
       <div class="register-header">
         <div class="system-title">沈阳市自然资源和规划"一点通"</div>
@@ -447,14 +442,15 @@ onMounted(() => {
 /* 注册页面容器 - 全屏居中布局 */
 .register-container {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   min-height: 100vh;
   width: 100%;
   background: linear-gradient(135deg, #EBF4FF 0%, #F0F7FF 40%, #FFFFFF 100%);
   background-attachment: fixed;
   position: relative;
-  padding: var(--space-lg);
+  padding: var(--space-xl) var(--space-lg);
+  overflow-y: auto;
 }
 
 /* 极淡的几何纹理背景叠加 */
@@ -468,11 +464,6 @@ onMounted(() => {
   pointer-events: none;
 }
 
-/* 左侧品牌区域 - 默认窄屏下隐藏 */
-.register-brand {
-  display: none;
-}
-
 /* 注册卡片 */
 .register-card {
   width: 100%;
@@ -481,7 +472,7 @@ onMounted(() => {
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-lg);
   border-top: 4px solid #1E5AA8;
-  padding: var(--space-2xl) var(--space-xl);
+  padding: var(--space-xl) var(--space-lg);
   position: relative;
   z-index: 1;
 }
@@ -489,7 +480,7 @@ onMounted(() => {
 /* 卡片头部 */
 .register-header {
   text-align: center;
-  margin-bottom: var(--space-xl);
+  margin-bottom: var(--space-lg);
 }
 
 .system-title {
@@ -528,50 +519,13 @@ onMounted(() => {
     padding: var(--space-lg) var(--space-xl);
   }
 
-  .register-brand {
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: flex-start;
-    max-width: 460px;
-    z-index: 1;
-  }
-
-  .brand-title {
-    font-size: 28px;
-    font-weight: var(--font-weight-bold);
-    color: #1E5AA8;
-    line-height: 1.3;
-    margin-bottom: var(--space-base);
-    white-space: nowrap;
-  }
-
-  .brand-divider {
-    width: 56px;
-    height: 4px;
-    background: linear-gradient(90deg, #1E5AA8, #4A90D9);
-    border-radius: 2px;
-    margin-bottom: var(--space-base);
-  }
-
-  .brand-desc {
-    font-size: var(--font-size-lg);
-    color: var(--color-text-secondary);
-    line-height: var(--line-height-normal);
-  }
-
-  /* 宽屏下卡片内标题隐藏，由左侧品牌区域展示 */
-  .register-header .system-title,
-  .register-header .title-divider {
-    display: none;
-  }
 }
 
 /* 注册表单 - 双列网格布局 */
 .register-form {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: var(--space-base) var(--space-lg);
+  gap: var(--space-sm) var(--space-lg);
 }
 
 /* 跨列元素 */
