@@ -761,7 +761,7 @@ def set_map_layer(layer_type: str, runtime: ToolRuntime) -> Command:
 
 
 @tool
-def generate_report(runtime: ToolRuntime) -> Command:
+def generate_report(data: GenerateReportInput, runtime: ToolRuntime) -> Command:
     """
     【生成报告】根据当前地图状态和项目信息生成Word报告并返回下载地址。
 
@@ -773,6 +773,9 @@ def generate_report(runtime: ToolRuntime) -> Command:
     并返回可供前端下载的URL路径。
 
     Args:
+        data: 报告生成输入参数（Pydantic模型），包含：
+            - project_name: 项目名称（必填）
+            - project_type: 项目类型（必填）
         runtime: 工具运行时上下文，用于获取工具调用ID、当前状态和session_id
             - runtime.context: 包含session_id用于构建下载路径
             - runtime.state: 包含地图状态信息（可选，用于报告数据）
@@ -828,13 +831,9 @@ def generate_report(runtime: ToolRuntime) -> Command:
     current_time = datetime.now()
     #这个地方sheng'cha'enshengchaen
     report_data = {
-        "项目名称": runtime.state.get("project_name", "XX项目"),
+        "项目名称": data.project_name,
         "生成日期": current_time.strftime("%Y年%m月%d日"),
-        "项目位置": runtime.state.get("project_location", "xx县xx镇"),
-        "用地总面积": runtime.state.get("total_area", "100"),
-        "农用地面积": runtime.state.get("farmland_area", "80"),
-        "林地面积": runtime.state.get("forest_area", "10"),
-        "用海面积": runtime.state.get("sea_area", "0"),
+        "项目类型": data.project_type,
     }
 
     progress_event_2 = create_tool_event(
@@ -995,6 +994,28 @@ def generate_report(runtime: ToolRuntime) -> Command:
                 ]
             }
         )
+
+
+# ==================== 报告生成工具输入模型 ====================
+
+class GenerateReportInput(BaseModel):
+    """
+    生成报告输入参数
+
+    定义生成报告时需要的项目名称和项目类型，两个字段均为必填。
+
+    Attributes:
+        project_name: 项目名称
+        project_type: 项目类型
+    """
+    project_name: str = Field(
+        ...,
+        description="项目名称，必填"
+    )
+    project_type: str = Field(
+        ...,
+        description="项目类型，必填"
+    )
 
 
 # ==================== 业务信息保存工具 ====================

@@ -303,6 +303,65 @@ def _format_area(value: Decimal) -> str:
     return str(value.normalize()) if value == value.normalize() else f"{value:f}".rstrip('0').rstrip('.')
 
 
+def convert_square_meters_to_hectares(square_meters: str | int | float | Decimal) -> Decimal:
+    """
+    将平方米转换为公顷
+
+    转换公式：1公顷 = 10000平方米，因此 1平方米 = 0.0001公顷。
+    该函数用于处理从外部传入的原始面积数据，确保报告生成前单位统一为公顷。
+
+    Args:
+        square_meters: 平方米值，可以是字符串、数字或Decimal类型
+
+    Returns:
+        Decimal: 转换后的公顷值，保留6位小数精度
+
+    Raises:
+        无显式抛出异常，转换失败时返回 Decimal("0")
+
+    Example:
+        >>> convert_square_meters_to_hectares("10000")
+        Decimal('1.0')
+        >>> convert_square_meters_to_hectares(5000)
+        Decimal('0.5')
+        >>> convert_square_meters_to_hectares(Decimal("25000.5"))
+        Decimal('2.500005')
+    """
+    try:
+        sq_m = Decimal(str(square_meters))
+        return (sq_m * Decimal("0.0001")).quantize(Decimal("0.000001"))
+    except Exception:
+        return Decimal("0")
+
+
+def _convert_region_area_detail(area_detail: RegionAreaDetail) -> None:
+    """
+    将 RegionAreaDetail 中所有 AreaValue 的 value 从平方米转换为公顷
+
+    Args:
+        area_detail: 区域面积详情对象
+
+    Returns:
+        无返回值，直接修改传入对象的字段值
+    """
+    area_fields = [
+        "cultivated_land",
+        "paddy_field",
+        "black_soil",
+        "permanent_basic_farmland",
+        "forest_land",
+        "grassland",
+        "mineral_press_area",
+        "ecological_red_line",
+        "nature_reserve",
+        "illegal_land",
+    ]
+    for field_name in area_fields:
+        area_value = getattr(area_detail, field_name)
+        if area_value.value:
+            area_value.value = convert_square_meters_to_hectares(area_value.value)
+
+
 def _count_towns_and_villages(counties: List[County]) -> tuple:
     """
     统计乡镇数和村数
@@ -1000,6 +1059,24 @@ def get_report_config(data: dict, collection: ProjectSiteSelectionCollection = N
             collection_name="默认集合",
             projects=[],
         )
+
+    # 将 data 中的面积字段从平方米转换为公顷
+    # 避免修改原始字典，创建副本进行处理
+    processed_data = data.copy()
+    area_keys = ["用地总面积", "农用地面积", "林地面积", "用海面积"]
+    for key in area_keys:
+        if key in processed_data:
+            processed_data[key] = str(convert_square_meters_to_hectares(processed_data[key]))
+
+    # 将 collection 中所有 area_detail 的面积字段从平方米转换为公顷
+    for project in collection.projects:
+        for county in project.counties:
+            _convert_region_area_detail(county.area_detail)
+            for town in county.towns:
+                _convert_region_area_detail(town.area_detail)
+                for village in town.villages:
+                    _convert_region_area_detail(village.area_detail)
+
     cover = CoverConfig(
         title=CoverElementConfig(
             text="{{项目名称}}项目选址自然资源和规划“一点通”服务技术参考",
@@ -1088,7 +1165,7 @@ def get_report_config(data: dict, collection: ProjectSiteSelectionCollection = N
         cover=cover,
         toc=toc,
         sections=sections,
-        data=data,
+        data=processed_data,
         default_font_name="宋体",
         default_font_size=12,
         heading_styles=_get_heading_styles(),
