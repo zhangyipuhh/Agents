@@ -29,7 +29,7 @@ from app.features.map_agent.MapAgent import MapAgent
 from app.core.format.stream import stream_format_context
 from app.features.map_agent.config.prompts import KNOWLEDGE_SYSTEM_PROMPT
 from app.features.map_agent.config.MapAgentContext import MapAgentContext
-from app.features.map_agent.config.config import map_agent_settings
+
 from app.shared.utils.files.doc_converter import convert_doc_to_docx, check_conversion_support, get_libreoffice_installation_guide
 from app.shared.utils.memory import get_async_checkpointer
 
@@ -698,7 +698,7 @@ async def knowledge_chat(
                     session_id=session_id,
                     context=MapAgentContext(
                         system_prompt=KNOWLEDGE_SYSTEM_PROMPT,
-                        knowledge_root=map_agent_settings.knowledge_root
+                        knowledge_root=TMP_DIR
                     ),
                     geometry_data=geometry_data,
                     attachments=chat_request.attachments or [],
@@ -721,7 +721,7 @@ async def knowledge_chat(
                 session_id=session_id,
                 context=MapAgentContext(
                     system_prompt=KNOWLEDGE_SYSTEM_PROMPT,
-                    knowledge_root=map_agent_settings.knowledge_root
+                    knowledge_root=TMP_DIR
                 ),
                 geometry_data=geometry_data,
                 attachments=chat_request.attachments or []
