@@ -347,8 +347,28 @@ async def get_session_messages(
                 messages = messages[-limit:]
 
             logging.getLogger(__name__).warning(
-                f"[History] graph.get_state() succeeded, messages_count={len(messages)}"
+                f"[History] graph.get_state() succeeded, messages_count={len(messages)}, "
+                f"state_type={type(state)}, values_keys={list(state.values.keys()) if hasattr(state, 'values') else 'N/A'}, "
+                f"checkpoint_id={getattr(state, 'checkpoint_id', 'N/A')}, "
+                f"parent_checkpoint_id={getattr(state, 'parent_checkpoint_id', 'N/A')}"
             )
+
+            # 诊断：无论是否为空，都用 checkpointer.aget() 对比
+            checkpointer = await get_async_checkpointer()
+            logging.getLogger(__name__).warning(
+                f"[History] checkpointer_type={type(checkpointer).__name__}"
+            )
+            config = {"configurable": {"thread_id": session_id}}
+            raw_state = await checkpointer.aget(config)
+            logging.getLogger(__name__).warning(
+                f"[History] checkpointer.aget() raw_state={raw_state is not None}, "
+                f"raw_state_type={type(raw_state) if raw_state else 'None'}"
+            )
+            if raw_state:
+                logging.getLogger(__name__).warning(
+                    f"[History] checkpointer.aget() keys={list(raw_state.keys()) if hasattr(raw_state, 'keys') else 'N/A'}, "
+                    f"channel_values_keys={list(raw_state.get('channel_values', {}).keys()) if raw_state else 'N/A'}"
+                )
 
             return {
                 "session_id": session_id,

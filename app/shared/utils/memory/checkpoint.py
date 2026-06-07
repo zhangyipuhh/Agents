@@ -68,11 +68,15 @@ async def get_async_checkpointer() -> BaseCheckpointSaver:
     global _global_checkpointer, _global_pg_connection
 
     if _global_checkpointer is not None:
+        print(f"[Checkpoint] get_async_checkpointer() 返回已存在的单例: {type(_global_checkpointer).__name__}")
         return _global_checkpointer
 
     from app.core.database import DatabasePool
+    is_enabled = DatabasePool.is_enabled()
+    dsn = DatabasePool.get_dsn()
+    print(f"[Checkpoint] DatabasePool.is_enabled()={is_enabled}, dsn={dsn}")
 
-    if DatabasePool.is_enabled():
+    if is_enabled:
         # PostgreSQL 持久化模式
         try:
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver

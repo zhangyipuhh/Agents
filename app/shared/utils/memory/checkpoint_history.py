@@ -138,6 +138,10 @@ class CheckpointHistoryService:
             # 诊断日志
             import logging
             logger = logging.getLogger(__name__)
+            logger.warning(
+                f"[History] session_id={session_id}, checkpointer_type={type(checkpointer).__name__}, "
+                f"checkpointer.aget() returned {state is not None}"
+            )
             if not state:
                 logger.warning(f"[History] session_id={session_id}, checkpointer.aget() returned None")
                 return []

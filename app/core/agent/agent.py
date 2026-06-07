@@ -416,6 +416,7 @@ class Agent:
             workflow.add_edge("llm_call", END)
 
         # 编译图，添加 checkpointer 实现全局记忆功能
+        print(f"[Agent] _build_graph() 编译 graph, checkpointer_type={type(self.checkpointer).__name__}")
         self.graph = workflow.compile(checkpointer=self.checkpointer, store=self.store)
 
     async def invoke(

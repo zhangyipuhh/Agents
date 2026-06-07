@@ -59,6 +59,7 @@ async def get_map_agent() -> MapAgent:
     global _map_agent
     if _map_agent is None:
         checkpointer = await get_async_checkpointer()
+        print(f"[MapAgent] get_map_agent() 初始化 MapAgent, checkpointer_type={type(checkpointer).__name__}")
         _map_agent = MapAgent(
             checkpointer=checkpointer,
             store=store,
