@@ -1,0 +1,9 @@
+{
+  "brandTitle": "沈阳市自然资源和规划\"一一点通\"",
+  "brandDesc": "智慧政务服务平台",
+  "navItems": [
+    { "key": "site-select", "label": "智能选址", "type": "placeholder" },
+    { "key": "pre-check", "label": "智能预检", "type": "placeholder" },
+    { "key": "rule-lib", "label": "规则库", "type": "iframe", "url": "/knowledge.html" }
+  ]
+}

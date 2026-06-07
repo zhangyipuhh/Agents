@@ -327,7 +327,7 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 - `DATABASE_URL` — PostgreSQL 连接字符串
 - `PORTAL_REFRESH_TOKEN_TTL_SECONDS` — 门户子 refresh_token 有效期（秒），默认 86400 = 24 小时
 - `VITE_API_TARGET` — 前端 Vite 代理目标地址（开发用），默认 `http://localhost:8001`
-- `VITE_PORTAL_NAV_CONFIG` — 门户导航配置（JSON 字符串），构建时由 Vite 静态注入
+- ~~`VITE_PORTAL_NAV_CONFIG`~~ — 已废弃，门户导航配置迁移到 `public/app-config.json` 运行时配置
 - 其他 LLM API Key 等
 
 ## 提示词三层架构
@@ -540,27 +540,46 @@ system_prompt = (
   - **超时**：connect 60s、send/read 300s（支持长时 LLM 生成）
   - **健康检查**：`/health` 返回 `200 healthy\n`
 
-### Portal 导航配置
+### Portal 运行时配置
 
-- **配置来源**：`VITE_PORTAL_NAV_CONFIG`（Vite 环境变量，构建时静态注入）
-- **解析模块**：`web/Agent/src/config/portal.js:getNavItems()`
+- **配置来源**：`public/app-config.json`（运行时 JSON，Vite 构建时自动复制到输出根目录）
+- **配置模块**：`web/Agent/src/config/portal.js`（统一配置中心）
+  - `loadAppConfig()`：应用启动时 `fetch('/app-config.json')`，将配置合并到响应式 `appConfig`
+  - `getNavItems()`：获取导航项列表（从 `appConfig.navItems` 读取，校验失败回退默认）
+  - `appConfig`：Vue `reactive` 对象，含 `brandTitle`、`brandDesc`、`navItems`
+- **配置字段**：
+  - `brandTitle`：品牌主标题（显示在导航栏、登录页、注册页、浏览器标签页）
+  - `brandDesc`：品牌副标题/描述（显示在登录页品牌区）
+  - `navItems`：导航项数组，字段同 NavItem
 - **NavItem 字段**：
   - `key`：唯一键
   - `label`：显示文字
   - `type`：`'placeholder'`（占位提示） | `'iframe'`（嵌入 iframe）
   - `url`：type=iframe 时必填，相对路径或绝对 URL
   - `targetOrigin`：postMessage 的 targetOrigin；缺省时按 url 推断
-- **默认配置**（环境变量缺失或解析失败时回退）：
+- **默认配置**（`app-config.json` 缺失或解析失败时回退）：
   ```js
-  [
-    { key: 'site-select', label: '智能选址', type: 'placeholder' },
-    { key: 'pre-check', label: '智能预检', type: 'placeholder' },
-    { key: 'rule-lib', label: '规则库', type: 'iframe', url: '/knowledge.html' }
-  ]
+  {
+    brandTitle: '沈阳市自然资源和规划"一点通"',
+    brandDesc: '智慧政务服务平台',
+    navItems: [
+      { key: 'site-select', label: '智能选址', type: 'placeholder' },
+      { key: 'pre-check', label: '智能预检', type: 'placeholder' },
+      { key: 'rule-lib', label: '规则库', type: 'iframe', url: '/knowledge.html' }
+    ]
+  }
   ```
-- **使用示例**（写入 `web/Agent/.env`）：
-  ```
-  VITE_PORTAL_NAV_CONFIG='[{"key":"third-party","label":"第三方应用","type":"iframe","url":"https://example.com/app","targetOrigin":"https://example.com"}]'
+- **使用示例**（修改 `web/Agent/public/app-config.json`，无需重新打包）：
+  ```json
+  {
+    "brandTitle": "自定义标题",
+    "brandDesc": "自定义描述",
+    "navItems": [
+      { "key": "site-select", "label": "智能选址", "type": "placeholder" },
+      { "key": "pre-check", "label": "智能预检", "type": "placeholder" },
+      { "key": "rule-lib", "label": "规则库", "type": "iframe", "url": "/knowledge.html" }
+    ]
+  }
   ```
 
 ### 设计系统（src/styles/variables.css）

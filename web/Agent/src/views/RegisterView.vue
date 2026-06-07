@@ -7,6 +7,7 @@
 
 import { ref, computed, onMounted } from 'vue'
 import { register, getCaptcha } from '../utils/api.js'
+import { appConfig } from '../config/portal.js'
 
 /** @type {import('vue').Ref<string>} 用户名输入值 */
 const username = ref('')
@@ -216,7 +217,7 @@ onMounted(() => {
   <div class="register-container">
     <div class="register-card">
       <div class="register-header">
-        <div class="system-title">沈阳市自然资源和规划"一点通"</div>
+        <div class="system-title">{{ appConfig.brandTitle }}</div>
         <div class="title-divider"></div>
         <h1 class="register-title">创建账号</h1>
         <p class="register-subtitle">请填写以下信息完成注册</p>

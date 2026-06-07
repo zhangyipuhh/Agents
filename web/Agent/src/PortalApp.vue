@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { validateToken, refreshToken, logout, clearAuth, issuePortalRefreshToken } from './utils/api.js'
 import { redirectToLogin } from './utils/auth.js'
-import { getNavItems } from './config/portal.js'
+import { getNavItems, appConfig } from './config/portal.js'
 import LoginView from './views/LoginView.vue'
 import RegisterView from './views/RegisterView.vue'
 
@@ -326,7 +326,7 @@ onUnmounted(() => {
     <nav class="top-nav" :style="{ height: `${NAV_HEIGHT}px` }">
       <!-- 左侧：系统标题 -->
       <div class="nav-left">
-        <span class="system-title">沈阳市自然资源和规划'一点通'</span>
+        <span class="system-title">{{ appConfig.brandTitle }}</span>
       </div>
 
       <!-- 中间：导航项 -->

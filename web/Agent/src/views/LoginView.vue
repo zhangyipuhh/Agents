@@ -8,6 +8,7 @@
 import { ref, onMounted } from 'vue'
 import { login, getCaptcha } from '../utils/api.js'
 import { safeRedirectUrl } from '../utils/auth.js'
+import { appConfig } from '../config/portal.js'
 
 /** @type {import('vue').Ref<string>} 用户名输入值 */
 const username = ref('')
@@ -135,13 +136,13 @@ onMounted(() => {
 <template>
   <div class="login-container">
     <div class="login-brand">
-      <div class="brand-title">沈阳市自然资源和规划"一点通"</div>
+      <div class="brand-title">{{ appConfig.brandTitle }}</div>
       <div class="brand-divider"></div>
-      <p class="brand-desc">智慧政务服务平台</p>
+      <p class="brand-desc">{{ appConfig.brandDesc }}</p>
     </div>
     <div class="login-card">
       <div class="login-header">
-        <div class="system-title">沈阳市自然资源和规划"一点通"</div>
+        <div class="system-title">{{ appConfig.brandTitle }}</div>
         <div class="title-divider"></div>
         <h1 class="login-title">欢迎登录</h1>
         <p class="login-subtitle">请输入您的账号信息</p>
