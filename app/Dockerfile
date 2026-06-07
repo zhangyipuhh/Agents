@@ -36,7 +36,9 @@ WORKDIR /app
 RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true && \
     apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
-    ripgrep && \
+    ripgrep \
+    libreoffice-writer \
+    libreoffice-core && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /install /usr/local
