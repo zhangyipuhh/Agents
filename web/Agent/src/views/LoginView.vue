@@ -92,23 +92,13 @@ async function handleLogin() {
       localStorage.setItem('user_id', String(data.user_id))
     }
 
-    // 通知父组件登录成功
+    // 通知父组件登录成功；跳转逻辑由父组件统一控制
     emit('login-success', {
       access_token: data.access_token,
       role: data.role,
       username: data.username,
       user_id: data.user_id
     })
-
-    // 如果 URL 中存在 redirect 参数，登录成功后跳转回目标页面
-    // 注意：必须经过 safeRedirectUrl 校验，阻止 javascript:、data: 等危险协议
-    // LoginView 职责：登录成功后根据 URL 参数决定回到哪个页面
-    const rawRedirect = new URLSearchParams(window.location.search).get('redirect')
-    const redirect = safeRedirectUrl(rawRedirect)
-    if (redirect) {
-      window.location.href = redirect
-      return
-    }
   } catch (err) {
     errorMessage.value = err.message || '登录失败，请重试'
     // 登录失败后刷新验证码

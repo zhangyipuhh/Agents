@@ -17,9 +17,9 @@ import { refreshToken } from './api.js'
  */
 function isAlreadyOnLoginPage() {
   if (typeof window === 'undefined') return false
-  const path = window.location.pathname
-  // 主应用的登录页就是 /Agent/ 或 /Agent/index.html
-  return path === '/Agent/' || path === '/Agent' || path === '/Agent/index.html'
+  const path = window.location.pathname.toLowerCase()
+  // 主应用的登录页就是 /Agent/ 或 /Agent/index.html（大小写不敏感）
+  return path === '/agent/' || path === '/agent' || path === '/agent/index.html'
 }
 
 /**

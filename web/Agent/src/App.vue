@@ -113,21 +113,21 @@ function handleLoginSuccess(data) {
   if (data.user_id) {
     localStorage.setItem('user_id', String(data.user_id))
   }
-  isLoggedIn.value = true
-  currentUser.value = {
-    username: data.username,
-    role: data.role,
-    userId: data.user_id || null
-  }
 
-  // 如果 URL 中存在 redirect 参数，登录成功后跳转回目标页面
-  // 注意：必须经过 safeRedirectUrl 校验，阻止 javascript:、data: 等危险协议
-  // 同一校验也由 LoginView 负责；此处是冗余保护，确保 redirect 不被绕过
+  // 先检查是否需要跳转；有 redirect 时直接跳转，不要先渲染 Agent 主界面
   const rawRedirect = new URLSearchParams(window.location.search).get('redirect')
   const redirect = safeRedirectUrl(rawRedirect)
   if (redirect) {
     window.location.href = redirect
     return
+  }
+
+  // 没有 redirect 时，才更新状态并渲染主界面
+  isLoggedIn.value = true
+  currentUser.value = {
+    username: data.username,
+    role: data.role,
+    userId: data.user_id || null
   }
 
   nextTick(() => {
