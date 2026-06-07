@@ -210,6 +210,7 @@ async function handleRegister() {
 // 组件挂载时自动加载验证码
 onMounted(() => {
   loadCaptcha()
+  console.log('[RegisterView] appConfig.brandTitle =', appConfig.brandTitle)
 })
 </script>
 

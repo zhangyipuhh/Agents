@@ -130,6 +130,7 @@ function refreshCaptcha() {
 // 组件挂载时自动加载验证码
 onMounted(() => {
   loadCaptcha()
+  console.log('[LoginView] appConfig.brandTitle =', appConfig.brandTitle)
 })
 </script>
 

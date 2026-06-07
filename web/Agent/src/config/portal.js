@@ -81,7 +81,7 @@ function normalizeNavItem(raw, index) {
  */
 export async function loadAppConfig() {
   try {
-    const response = await fetch('/app-config.json')
+    const response = await fetch(`/app-config.json?t=${Date.now()}`)
     if (!response.ok) {
       console.warn('[portal-config] /app-config.json 加载失败，使用默认配置')
       return
