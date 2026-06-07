@@ -10,6 +10,7 @@ import LoginView from './views/LoginView.vue'
 import RegisterView from './views/RegisterView.vue'
 import { chatStream, createNewSession, logout as apiLogout, fetchSessionDetail, fetchSessionAttachments, fetchSessionMessages, validateToken, refreshToken, clearAuth } from './utils/api.js'
 import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage } from './utils/sseParser.js'
+import { redirectToLogin, tryRefreshOrRedirect, safeRedirectUrl } from './utils/auth.js'
 
 const currentPage = ref('agent')
 const authView = ref('login') // 'login' | 'register'
@@ -36,6 +37,10 @@ const isEmptyState = computed(() => messages.length === 0)
  * @param {Object} data - 包含 username 和 role
  */
 function applyUserData(data) {
+  const oldUsername = localStorage.getItem('username')
+  if (oldUsername && oldUsername !== data.username) {
+    localStorage.removeItem('session_id')
+  }
   localStorage.setItem('user_role', data.role)
   localStorage.setItem('username', data.username)
   if (data.user_id) {
@@ -52,11 +57,15 @@ function applyUserData(data) {
 /**
  * 检查本地存储的登录状态
  * 三段式验证：先 validateToken，失败则 refreshToken 后再次 validateToken
+ * 全部失败：调用 redirectToLogin() 携带当前 URL 作为 redirect 参数，
+ *          登录成功后回到原页面（避免被强制跳到 /Agent/）。
+ * 注意：不再主动 clearAuth()，保留本地 token 以便可能的下次重试。
  */
 async function checkAuth() {
   const token = localStorage.getItem('auth_token')
   if (!token) {
-    isLoggedIn.value = false
+    // 本地无 token：直接跳登录页（带 redirect），由登录页负责后续引导
+    redirectToLogin({ reason: 'checkAuth_no_token' })
     return
   }
   try {
@@ -67,6 +76,7 @@ async function checkAuth() {
     }
     applyUserData(data)
   } catch {
+    // validateToken 失败：尝试 refresh_token
     try {
       const newToken = await refreshToken()
       const data = await validateToken()
@@ -77,8 +87,8 @@ async function checkAuth() {
       }
       applyUserData(data)
     } catch {
-      clearAuth()
-      isLoggedIn.value = false
+      // refresh 也失败：跳登录页（带 redirect），由 LoginView 接管
+      redirectToLogin({ reason: 'checkAuth_refresh_failed' })
     }
   }
 }
@@ -88,6 +98,10 @@ async function checkAuth() {
  * @param {Object} data - 登录结果数据，包含 access_token、role、username
  */
 function handleLoginSuccess(data) {
+  const oldUsername = localStorage.getItem('username')
+  if (oldUsername && oldUsername !== data.username) {
+    localStorage.removeItem('session_id')
+  }
   console.log('[调试] handleLoginSuccess - data:', data)
   console.log('[调试] handleLoginSuccess - access_token:', data.access_token)
   if (!data.access_token) {
@@ -105,6 +119,17 @@ function handleLoginSuccess(data) {
     role: data.role,
     userId: data.user_id || null
   }
+
+  // 如果 URL 中存在 redirect 参数，登录成功后跳转回目标页面
+  // 注意：必须经过 safeRedirectUrl 校验，阻止 javascript:、data: 等危险协议
+  // 同一校验也由 LoginView 负责；此处是冗余保护，确保 redirect 不被绕过
+  const rawRedirect = new URLSearchParams(window.location.search).get('redirect')
+  const redirect = safeRedirectUrl(rawRedirect)
+  if (redirect) {
+    window.location.href = redirect
+    return
+  }
+
   nextTick(() => {
     ensureSession()
   })
@@ -190,9 +215,9 @@ async function newSession() {
     }
   } catch (err) {
     console.error('新建会话失败:', err)
-    if (err.message.includes('未登录') || err.message.includes('过期')) {
-      isLoggedIn.value = false
-    }
+    // API 报错时先尝试 refresh_token；失败再跳登录页（带 redirect）
+    // 注意：不再"看到'未登录'/'过期'字样就清登录态"，避免误踢
+    await tryRefreshOrRedirect()
   } finally {
     isCreatingNewSession = false
   }
@@ -265,8 +290,10 @@ async function handleSendMessage(message, attachments = []) {
     }
   } catch (err) {
     console.error('聊天请求错误:', err)
-    if (err.message.includes('未登录') || err.message.includes('过期')) {
-      isLoggedIn.value = false
+    // 401/过期场景：先尝试 refresh_token；失败再跳登录页
+    // 不再"看到'未登录'/'过期'字样就清登录态"，避免误踢
+    const refreshed = await tryRefreshOrRedirect()
+    if (!refreshed) {
       return
     }
     aiMsg.error = '不好意思，刚刚出了点小故障，可以晚点再问我一遍。'
@@ -498,9 +525,9 @@ async function handleSessionSwitch(targetSessionId) {
     }
   } catch (err) {
     console.error('切换会话失败:', err)
-    if (err.message.includes('未登录') || err.message.includes('过期')) {
-      isLoggedIn.value = false
-    }
+    // 401/过期场景：先尝试 refresh_token；失败再跳登录页
+    // 不再"看到'未登录'/'过期'字样就清登录态"，避免误踢
+    await tryRefreshOrRedirect()
   }
 }
 </script>
@@ -602,7 +629,8 @@ async function handleSessionSwitch(targetSessionId) {
 .welcome-title {
   font-size: 32px;
   font-weight: var(--font-weight-bold);
-  color: rgb(79, 70, 229);
+  /* 与登录页主色 #1E5AA8 保持一致 */
+  color: #1E5AA8;
   margin-bottom: 32px;
   text-align: center;
 }

@@ -1,0 +1,10 @@
+{
+  "_comment": "门户前端运行时配置文件，部署时可将此文件复制为 app-config.json 并修改",
+  "brandTitle": "沈阳市自然资源和规划\"一点通\"",
+  "brandDesc": "智慧政务服务平台",
+  "navItems": [
+    { "key": "site-select", "label": "智能选址", "type": "placeholder" },
+    { "key": "pre-check", "label": "智能预检", "type": "placeholder" },
+    { "key": "rule-lib", "label": "规则库", "type": "iframe", "url": "/knowledge.html" }
+  ]
+}

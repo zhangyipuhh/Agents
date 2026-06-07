@@ -50,7 +50,24 @@ app/
 │       ├── Session/       # Session 缓存
 │       ├── files/         # 文件操作
 │       └── memory/        # 记忆存储（Checkpoint）
-├── html/clint/            # 前端静态文件
+├── web/Agent/             # 前端 SPA（Vue 3 + Vite，多入口）
+│   ├── index.html         # 主入口（Agent 聊天 + 知识库 Tab）
+│   ├── knowledge.html     # 知识库独立页入口
+│   ├── portal.html        # 门户导航入口（沈阳市自然资源和规划"一点通"）
+│   ├── main.js / knowledge-main.js / portal-main.js  # 三个入口 JS
+│   ├── src/
+│   │   ├── App.vue        # 主应用根组件（未登录：Login/Register；已登录：Sidebar + ChatArea + InputBox）
+│   │   ├── KnowledgeApp.vue # 知识库独立页根组件
+│   │   ├── PortalApp.vue  # 门户根组件（顶部蓝色导航 + iframe 内嵌 knowledge.html）
+│   │   ├── components/    # 业务组件（Sidebar/ChatArea/InputBox/HumanApprovalBox/FileList/FilePreview/...）
+│   │   ├── views/         # LoginView、RegisterView
+│   │   ├── utils/         # api.js（SSE/auth/session/file）、sseParser.js（thinking/text/timeline/tools）
+│   │   ├── styles/        # variables.css（设计 token）、main.css
+│   │   └── __tests__/     # Vitest（HumanApprovalBox / api / sseParser）
+│   ├── vite.config.js     # 多入口（main/knowledge/portal）+ /api 代理 VITE_API_TARGET
+│   ├── vitest.config.js   # 测试配置
+│   ├── nginx.conf         # Docker 部署用 Nginx 模板（SSE 反代 + SPA fallback）
+│   └── Dockerfile         # 多阶段构建：node:20-alpine 构建 → nginx:alpine 运行
 └── main.py               # 应用入口
 ```
 
@@ -138,6 +155,24 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 - 登出时：删除数据库记录 + 清除 Cookie
 - 密码修改时：删除该用户所有 Refresh Token 记录（强制所有设备重新登录）
 
+### Portal Refresh Token（子 refresh_token 委派机制）
+
+**背景**：门户导航页（portal.html）的 iframe 中可嵌入第三方应用；第三方应用需调用本应用 API，但本应用主 refresh_token 在 HttpOnly Cookie 中不可被 JS 读取。
+
+**方案**：颁发"子 refresh_token"给父页，父页通过 postMessage 推送给第三方；第三方可像普通 SPA 一样用它反复换 access_token。
+
+- **颁发**：`POST /api/auth/issue-portal-refresh-token`（需 Bearer access_token，auth_middleware 校验），生成 32 字节随机 token，SHA256 后存入 `portal_refresh_tokens` 表
+- **使用**：第三方 iframe 调 `POST /api/auth/refresh`，body `{"refresh_token":"<子>"}` 或 header `X-Refresh-Token`，换 access_token
+- **TTL**：`PORTAL_REFRESH_TOKEN_TTL_SECONDS`（默认 86400 = 24h）
+- **过期处理**：第三方 API 401 → 重试 refresh 失败 → `window.top.location.href = '/login'`；用户重新登录后父页重新颁发
+- **撤销**：登出时 `revoke_user_tokens(user_id)` 一并清；admin 踢人同理（后续可加）
+- **与主 refresh_token 的边界**：主 refresh_token 仍只通过 HttpOnly Cookie 走（原有逻辑完全不变）；子 token 是"借"给第三方的副本，**不进入主 refresh_tokens 表**
+- **postMessage 协议**：
+  - 父 → 第三方：`{type:'PORTAL_AUTH', refreshToken, username, userId, userRole, apiBaseUrl, issuedAt, expiresIn}`
+  - 第三方 → 父：`{type:'PORTAL_AUTH_REQUEST'}`（在首次加载未及时收到时、或 refresh 失败时主动请求）
+  - 父校验 `event.source === iframe.contentWindow` 防冒用
+  - 父用 `targetOrigin`（从 navItem 配置或 url 推断）避免 `postMessage(msg, '*')` 泄 token
+
 ## 数据库设计
 
 ### users 表
@@ -200,18 +235,32 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 | expires_at | TIMESTAMP | 过期时间 |
 | created_at | TIMESTAMP DEFAULT NOW() | 创建时间 |
 
+### portal_refresh_tokens 表
+门户导航场景下颁发给第三方 iframe 的"子 refresh_token"存储表。子 token 与正常 refresh_token 等效，但独立存储便于独立撤销与审计。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | SERIAL PK | 记录ID |
+| token_hash | VARCHAR(255) UNIQUE | Portal Refresh Token 的 SHA256 哈希值 |
+| user_id | INTEGER FK → users | 用户ID |
+| username | VARCHAR(100) | 用户名（冗余用于审计） |
+| expires_at | TIMESTAMP | 过期时间（默认 24 小时） |
+| revoked | BOOLEAN DEFAULT FALSE | 软删除标志 |
+| created_at | TIMESTAMP DEFAULT NOW() | 创建时间 |
+
 ## API 路由汇总
 
 | 前缀 | 模块 | 说明 |
 |------|------|------|
-| /api/auth | auth_router | 认证（验证码、注册、登录、刷新、验证、登出） |
+| /api/auth | auth_router | 认证（验证码、注册、登录、刷新、验证、登出、门户子 refresh_token） |
 |   ├ GET /captcha | | 获取图形验证码（返回 key + base64 图片） |
 |   ├ POST /register | | 用户注册（含验证码校验、密码复杂度校验） |
 |   ├ POST /login | | 用户登录（验证码校验，返回 access_token + Set-Cookie refresh_token） |
 |   ├ POST /login-api | | API 程序化登录（免验证码，返回 access_token + Set-Cookie refresh_token） |
-|   ├ POST /refresh | | 刷新 Access Token（从 HttpOnly Cookie 读取 refresh_token） |
+|   ├ POST /refresh | | 刷新 Access Token（读取顺序：X-Refresh-Token 头 > body {refresh_token} > HttpOnly Cookie；同时查 refresh_tokens 与 portal_refresh_tokens） |
 |   ├ GET /validate | | 验证 Access Token 有效性（返回 username、role、user_id） |
-|   ├ POST /logout | | 用户登出（清除服务端 Refresh Token + Cookie + Session） |
+|   ├ POST /logout | | 用户登出（清除 Refresh Token + Cookie + Session + 撤销该用户所有 portal_refresh_tokens） |
+|   ├ POST /issue-portal-refresh-token | | 颁发门户子 refresh_token（需 Bearer access_token；用于门户导航页推送第三方 iframe） |
 | /api/users | user_router | 用户管理（列表、创建、更新、删除、踢人、改密码、改用户名、资料） |
 |   ├ GET / | | 用户列表（admin 专用） |
 |   ├ POST / | | Admin 创建用户 |
@@ -276,6 +325,9 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 
 - `AUTH_STORAGE_MODE` — 存储模式（postgres/memory）
 - `DATABASE_URL` — PostgreSQL 连接字符串
+- `PORTAL_REFRESH_TOKEN_TTL_SECONDS` — 门户子 refresh_token 有效期（秒），默认 86400 = 24 小时
+- `VITE_API_TARGET` — 前端 Vite 代理目标地址（开发用），默认 `http://localhost:8001`
+- ~~`VITE_PORTAL_NAV_CONFIG`~~ — 已废弃，门户导航配置迁移到 `public/app-config.json` 运行时配置
 - 其他 LLM API Key 等
 
 ## 提示词三层架构
@@ -403,3 +455,153 @@ system_prompt = (
 - 后端：`tests/test_ask_user_question.py` 17 个测试（Schema 10 + Tool 2 + HitlCheckNode 5）
 - 前端：`web/Agent/src/components/__tests__/HumanApprovalBox.spec.js` 14 个测试
 - 全量：后端 17/17 + 前端 73/73 全部通过
+
+## 前端架构（web/Agent）
+
+`web/Agent/` 是基于 Vite + Vue 3 的多入口 SPA，对外提供三套独立页面（主 Agent、知识库、门户），共享同一套组件、工具函数与设计 token。
+
+### 技术栈
+
+- **核心框架**：Vue 3.4 + Vite 5（JavaScript，无 TypeScript）
+- **UI 渲染**：marked（Markdown）+ highlight.js（代码高亮）+ @vue-office/{docx,excel,pdf,pptx}（Office 文档预览）
+- **测试**：Vitest 4 + @vue/test-utils + happy-dom
+- **包管理**：npm；脚本 `dev` / `build` / `preview` / `test` / `test:watch` / `test:coverage`
+- **关键依赖**：vue-demi（@vue-office 的 Vue 2/3 兼容垫片）
+
+### 多入口与挂载
+
+`vite.config.js` 的 `build.rollupOptions.input` 显式声明三个 HTML 入口，分别对应不同的业务场景：
+
+| 入口文件 | 挂载组件 | 部署路径 | 用途 |
+|----------|----------|----------|------|
+| `index.html` | `App.vue`（`src/main.js`） | `/` | 主聊天界面 + 知识库 Tab（Sidebar 切换 currentPage） |
+| `knowledge.html` | `KnowledgeApp.vue`（`src/knowledge-main.js`） | `/knowledge` | 知识库独立页（文件侧栏 + 聊天） |
+| `portal.html` | `PortalApp.vue`（`src/portal-main.js`） | `/portal` | 门户导航（顶部蓝色导航栏 + iframe 嵌入 `/knowledge`） |
+
+三个入口共享 `src/components`、`src/utils`、`src/styles`，构建后产出三个独立的 JS Chunk。
+
+### 组件清单（src/components）
+
+- **根组件**：`App.vue`（主）、`KnowledgeApp.vue`（知识库）、`PortalApp.vue`（门户）、`KnowledgePage.vue`（旧版，被 `KnowledgeApp.vue` 替代，仍保留以兼容旧引用）
+- **聊天**：`ChatArea.vue`、`InputBox.vue`、`MessageBubble.vue`、`SkillTags.vue`、`HumanApprovalBox.vue`、`TopBar.vue`
+- **文件**：`FileList.vue`、`FilePreview.vue`、`FolderTree.vue`、`FileManagerModal.vue`
+- **知识库**：`KnowledgeChat.vue`、`ProfileInputBox.vue`
+- **公共**：`Sidebar.vue`、`HelloWorld.vue`、`UserSettingsDialog.vue`
+- **视图**（`src/views/`）：`LoginView.vue`、`RegisterView.vue`
+
+### 工具函数（src/utils）
+
+- **`api.js`**：登录/注册/验证码/登出/refresh/validate；会话创建/列表/删除/详情/标题/附件/消息；文件上传（普通 + 分片 + base64）/下载/列表/删除；SSE `chatStream` / `knowledgeChatStream`；`X-Session-ID` 头注入；附件元数据组装
+- **`sseParser.js`**：`isThinkingBlock` / `tryParsePythonLiteral` / `extractTextFromBlock` / `processContentBlocks` / `parseMessageContent` / `processSSEEvent` / `createAiMessage`；支持 Python 风格单引号字面量、JSON.parse、regex 回退三级解析
+- **`index.js`**：聚合导出
+
+### 认证流（前端）
+
+- **三段式认证**（`App.vue:checkAuth` / `PortalApp.vue:checkAuth` / `KnowledgeApp.vue:onMounted`）：
+  1. 优先调用 `validateToken` 验证当前 access token
+  2. 失败则调用 `refreshToken` 换新 token，再 `validateToken`
+  3. 仍失败则 `clearAuth` + 跳登录页
+- **localStorage 键**：
+  - `auth_token`：access token（每次请求 `Authorization: Bearer`）
+  - `username` / `user_role` / `user_id`：用户基本信息
+  - `session_id`：主 Agent 当前会话
+  - `knowledge_session_id`：知识库独立会话（与主会话隔离，独立创建）
+- **refresh_token 不存 localStorage**，由后端通过 HttpOnly Cookie 下发（`SameSite=Strict; Path=/api/auth`）
+- **401 自动重试**：API 返回 401 → 自动 `refreshToken` → 用新 token 重试原请求，最多 1 次，失败跳登录
+
+### SSE 流式与 HITL
+
+- **后端 SSE 端点**：`/api/agent/*`（主聊天）、`/api/map/knowledge-chat`（知识库聊天）
+- **事件格式**：`data: {json}\n\n`，由 `sseParser.js` 解析为以下块：
+  - `text`：AI 回复正文
+  - `thinking`：思考过程（折叠展示）
+  - `timeline`：工具调用时间线
+  - `tools`：工具调用记录
+  - `interrupt`：HITL 中断（payload = `{action: "ask_user_question", questions: [...]}`）
+- **HITL 恢复**：`HumanApprovalBox` 提交 `{answers: string[][]}` → `chatStream(..., resumeData)` → 后端 `Command(resume=...)` 继续执行
+- **渲染**：`MessageBubble` 统一展示，marked 转 HTML、highlight.js 代码高亮
+
+### Vite 开发代理（vite.config.js）
+
+- 代理 `/api` → `VITE_API_TARGET`（默认 `http://localhost:8001`）
+- 对 `/api/*/chat` 路径做 SSE 友好头处理：
+  - 请求头：`Connection: keep-alive`、`Cache-Control: no-cache`、`Accept: text/event-stream`
+  - 响应头：删除 `content-length`、设置 `cache-control: no-cache`、`connection: keep-alive`、`x-accel-buffering: no`
+- **目的**：保证 LLM 流式输出不被 nginx/反代 buffer 截断
+
+### 部署（Nginx + Docker）
+
+- **`Dockerfile`**：多阶段构建 — `node:20-alpine` 构建 → `nginx:alpine` 运行
+- **启动注入**：通过 `envsubst ${VITE_API_TARGET}` 把环境变量写入 `nginx.conf` 模板
+- **`nginx.conf` 关键点**：
+  - **SPA fallback**：`try_files $uri $uri/ /index.html`
+  - **静态资源**：1 年缓存 + `Cache-Control: public, immutable`
+  - **/api 反代**：`proxy_buffering off`、`proxy_cache off`、`chunked_transfer_encoding on`、支持 WebSocket Upgrade
+  - **超时**：connect 60s、send/read 300s（支持长时 LLM 生成）
+  - **健康检查**：`/health` 返回 `200 healthy\n`
+
+### Portal 运行时配置
+
+- **配置来源**：`public/app-config.json`（运行时 JSON，Vite 构建时自动复制到输出根目录）
+- **配置模块**：`web/Agent/src/config/portal.js`（统一配置中心）
+  - `loadAppConfig()`：应用启动时 `fetch('/app-config.json')`，将配置合并到响应式 `appConfig`
+  - `getNavItems()`：获取导航项列表（从 `appConfig.navItems` 读取，校验失败回退默认）
+  - `appConfig`：Vue `reactive` 对象，含 `brandTitle`、`brandDesc`、`navItems`
+- **配置字段**：
+  - `brandTitle`：品牌主标题（显示在导航栏、登录页、注册页、浏览器标签页）
+  - `brandDesc`：品牌副标题/描述（显示在登录页品牌区）
+  - `navItems`：导航项数组，字段同 NavItem
+- **NavItem 字段**：
+  - `key`：唯一键
+  - `label`：显示文字
+  - `type`：`'placeholder'`（占位提示） | `'iframe'`（嵌入 iframe）
+  - `url`：type=iframe 时必填，相对路径或绝对 URL
+  - `targetOrigin`：postMessage 的 targetOrigin；缺省时按 url 推断
+- **默认配置**（`app-config.json` 缺失或解析失败时回退）：
+  ```js
+  {
+    brandTitle: '沈阳市自然资源和规划"一点通"',
+    brandDesc: '智慧政务服务平台',
+    navItems: [
+      { key: 'site-select', label: '智能选址', type: 'placeholder' },
+      { key: 'pre-check', label: '智能预检', type: 'placeholder' },
+      { key: 'rule-lib', label: '规则库', type: 'iframe', url: '/knowledge.html' }
+    ]
+  }
+  ```
+- **使用示例**（修改 `web/Agent/public/app-config.json`，无需重新打包）：
+  ```json
+  {
+    "brandTitle": "自定义标题",
+    "brandDesc": "自定义描述",
+    "navItems": [
+      { "key": "site-select", "label": "智能选址", "type": "placeholder" },
+      { "key": "pre-check", "label": "智能预检", "type": "placeholder" },
+      { "key": "rule-lib", "label": "规则库", "type": "iframe", "url": "/knowledge.html" }
+    ]
+  }
+  ```
+
+### 设计系统（src/styles/variables.css）
+
+- **颜色 token**：`--color-bg-{primary,secondary,tertiary,hover,active}`、`--color-border`、`--color-border-light`、`--color-text-{primary,secondary,muted,inverse}`、`--color-accent` / `-hover` / `-light`、`--color-{success,warning,error,info}`
+- **Tag 配色**：`--color-tag-{beta,new,free}` + 对应文字色
+- **圆角**：`--radius-{sm:8, md:10, lg:12, xl:16, full:9999}`
+- **阴影**：`--shadow-{sm, md, lg}`
+- **间距**：`--space-{xs:4, sm:8, md:12, base:16, lg:24, xl:32, 2xl:48}`
+- **字体**：`--font-family`（系统字体栈 + PingFang SC + Microsoft YaHei）、`--font-size-{xs..2xl}`、`--font-weight-{normal,medium,semibold,bold}`
+- **过渡**：`--transition-fast` / `--transition` / `--transition-slow` / `--transition-colors` / `--transition-transform` / `--transition-opacity` / `--transition-shadow`
+- **可访问性**：`--focus-ring` / `--focus-ring-inset`
+- **布局**：`--sidebar-width: 260px`、`--topbar-height: 56px`、`--min-layout-width: 1024px`
+- **z-index 分层**：dropdown 100 / sticky 200 / modal 300 / tooltip 400
+
+### 测试（Vitest）
+
+- **配置文件**：`vitest.config.js`（happy-dom 环境）
+- **运行脚本**：`npm test`（单次）、`npm run test:watch`（监听）、`npm run test:coverage`（覆盖率）
+- **测试分布**（`src/**/__tests__` 与 `src/components/__tests__`）：
+  - `HumanApprovalBox.spec.js`：HITL 组件（多 Tab、虚拟 Other 项、多选、`canSubmit` 门控，14 用例）
+  - `api.test.js`：`utils/api.js` 工具方法
+  - `sseParser.test.js`：SSE 解析（含 Python 字面量兼容）
+- **项目历史**：后端 17/17 + 前端 73/73 全部通过（参见 "HITL 流程" 章节）
+

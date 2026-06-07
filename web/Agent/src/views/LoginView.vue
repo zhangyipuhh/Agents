@@ -7,6 +7,8 @@
 
 import { ref, onMounted } from 'vue'
 import { login, getCaptcha } from '../utils/api.js'
+import { safeRedirectUrl } from '../utils/auth.js'
+import { appConfig } from '../config/portal.js'
 
 /** @type {import('vue').Ref<string>} 用户名输入值 */
 const username = ref('')
@@ -97,6 +99,16 @@ async function handleLogin() {
       username: data.username,
       user_id: data.user_id
     })
+
+    // 如果 URL 中存在 redirect 参数，登录成功后跳转回目标页面
+    // 注意：必须经过 safeRedirectUrl 校验，阻止 javascript:、data: 等危险协议
+    // LoginView 职责：登录成功后根据 URL 参数决定回到哪个页面
+    const rawRedirect = new URLSearchParams(window.location.search).get('redirect')
+    const redirect = safeRedirectUrl(rawRedirect)
+    if (redirect) {
+      window.location.href = redirect
+      return
+    }
   } catch (err) {
     errorMessage.value = err.message || '登录失败，请重试'
     // 登录失败后刷新验证码
@@ -118,13 +130,21 @@ function refreshCaptcha() {
 // 组件挂载时自动加载验证码
 onMounted(() => {
   loadCaptcha()
+  console.log('[LoginView] appConfig.brandTitle =', appConfig.brandTitle)
 })
 </script>
 
 <template>
   <div class="login-container">
+    <div class="login-brand">
+      <div class="brand-title">{{ appConfig.brandTitle }}</div>
+      <div class="brand-divider"></div>
+      <p class="brand-desc">{{ appConfig.brandDesc }}</p>
+    </div>
     <div class="login-card">
       <div class="login-header">
+        <div class="system-title">{{ appConfig.brandTitle }}</div>
+        <div class="title-divider"></div>
         <h1 class="login-title">欢迎登录</h1>
         <p class="login-subtitle">请输入您的账号信息</p>
       </div>
@@ -225,8 +245,26 @@ onMounted(() => {
   justify-content: center;
   min-height: 100vh;
   width: 100%;
-  background-color: var(--color-bg-secondary);
+  background: linear-gradient(135deg, #EBF4FF 0%, #F0F7FF 40%, #FFFFFF 100%);
+  background-attachment: fixed;
+  position: relative;
   padding: var(--space-lg);
+}
+
+/* 极淡的几何纹理背景叠加 */
+.login-container::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle, #1E5AA8 0.5px, transparent 0.5px);
+  background-size: 24px 24px;
+  opacity: 0.06;
+  pointer-events: none;
+}
+
+/* 左侧品牌区域 - 默认窄屏下隐藏 */
+.login-brand {
+  display: none;
 }
 
 /* 登录卡片 */
@@ -236,13 +274,32 @@ onMounted(() => {
   background-color: var(--color-bg-primary);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-lg);
+  border-top: 4px solid #1E5AA8;
   padding: var(--space-2xl) var(--space-xl);
+  position: relative;
+  z-index: 1;
 }
 
 /* 卡片头部 */
 .login-header {
   text-align: center;
   margin-bottom: var(--space-xl);
+}
+
+.system-title {
+  font-size: 22px;
+  font-weight: var(--font-weight-bold);
+  color: #1E5AA8;
+  margin-bottom: var(--space-sm);
+  line-height: var(--line-height-tight);
+}
+
+.title-divider {
+  width: 48px;
+  height: 3px;
+  background: linear-gradient(90deg, #1E5AA8, #4A90D9);
+  border-radius: 2px;
+  margin: 0 auto var(--space-base);
 }
 
 .login-title {
@@ -255,6 +312,53 @@ onMounted(() => {
 .login-subtitle {
   font-size: var(--font-size-sm);
   color: var(--color-text-secondary);
+}
+
+/* 宽屏左右分栏布局 */
+@media (min-width: 960px) {
+  .login-container {
+    justify-content: center;
+    gap: 80px;
+    padding: var(--space-lg) var(--space-xl);
+  }
+
+  .login-brand {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: flex-start;
+    max-width: 460px;
+    z-index: 1;
+  }
+
+  .brand-title {
+    font-size: 28px;
+    font-weight: var(--font-weight-bold);
+    color: #1E5AA8;
+    line-height: 1.3;
+    margin-bottom: var(--space-base);
+    white-space: nowrap;
+  }
+
+  .brand-divider {
+    width: 56px;
+    height: 4px;
+    background: linear-gradient(90deg, #1E5AA8, #4A90D9);
+    border-radius: 2px;
+    margin-bottom: var(--space-base);
+  }
+
+  .brand-desc {
+    font-size: var(--font-size-lg);
+    color: var(--color-text-secondary);
+    line-height: var(--line-height-normal);
+  }
+
+  /* 宽屏下卡片内标题隐藏，由左侧品牌区域展示 */
+  .login-header .system-title,
+  .login-header .title-divider {
+    display: none;
+  }
 }
 
 /* 表单组 */
@@ -286,8 +390,8 @@ onMounted(() => {
   }
 
   &:focus {
-    border-color: var(--color-accent);
-    box-shadow: 0 0 0 3px var(--color-accent-light);
+    border-color: #1E5AA8;
+    box-shadow: 0 0 0 3px rgba(30, 90, 168, 0.15);
     background-color: var(--color-bg-primary);
   }
 
@@ -323,8 +427,8 @@ onMounted(() => {
   transition: var(--transition-shadow);
 
   &:hover {
-    box-shadow: 0 0 0 2px var(--color-accent-light);
-    border-color: var(--color-accent);
+    box-shadow: 0 0 0 2px rgba(30, 90, 168, 0.15);
+    border-color: #1E5AA8;
   }
 
   &:active {
@@ -369,13 +473,13 @@ onMounted(() => {
   font-size: var(--font-size-lg);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-inverse);
-  background-color: var(--color-accent);
+  background-color: #1E5AA8;
   border-radius: var(--radius-md);
   cursor: pointer;
   transition: var(--transition-colors), var(--transition-transform);
 
   &:hover:not(:disabled) {
-    background-color: var(--color-accent-hover);
+    background-color: #155A9E;
     transform: scale(var(--scale-hover-button));
   }
 
@@ -418,13 +522,13 @@ onMounted(() => {
 }
 
 .footer-link {
-  color: var(--color-accent);
+  color: #1E5AA8;
   cursor: pointer;
   font-weight: var(--font-weight-medium);
   transition: var(--transition-colors);
 
   &:hover {
-    color: var(--color-accent-hover);
+    color: #155A9E;
     text-decoration: underline;
   }
 }

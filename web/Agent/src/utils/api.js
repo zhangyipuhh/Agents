@@ -248,14 +248,24 @@ function generateFileId() {
 }
 
 /**
+ * 判断当前是否在知识库页面
+ * @returns {boolean} 是否在知识库页面
+ */
+function isKnowledgePage() {
+  return typeof window !== 'undefined' && window.location.pathname.includes('knowledge.html')
+}
+
+/**
  * 获取认证请求头
  * 从 localStorage 中读取 token 和 session_id 构建请求头
+ * 知识库页面自动使用 knowledge_session_id，与主应用隔离
  * @returns {Object} 包含 Authorization 和 X-Session-ID 的请求头对象
  */
 export function getAuthHeaders() {
   const headers = {}
   const token = localStorage.getItem('auth_token')
-  const sessionId = localStorage.getItem('session_id')
+  const sessionKey = isKnowledgePage() ? 'knowledge_session_id' : 'session_id'
+  const sessionId = localStorage.getItem(sessionKey)
   console.log('[调试] getAuthHeaders - token:', token ? token.substring(0, 20) + '...' : null)
   console.log('[调试] getAuthHeaders - sessionId:', sessionId)
   if (token && token !== 'undefined') {
@@ -274,6 +284,7 @@ export function getAuthHeaders() {
 export function clearAuth() {
   localStorage.removeItem('auth_token')
   localStorage.removeItem('session_id')
+  localStorage.removeItem('knowledge_session_id')
   localStorage.removeItem('user_role')
   localStorage.removeItem('username')
 }
@@ -314,8 +325,38 @@ export async function validateToken() {
 }
 
 /**
+ * 申请门户子 refresh_token
+ *
+ * 由门户导航页（PortalApp）在 iframe 加载完成时调用，从后端获取一张
+ * 与正常 refresh_token 等效但独立存储的子 token；再经 postMessage
+ * 推送给第三方 iframe。第三方可像普通 SPA 一样用此 token 反复换 access_token。
+ *
+ * 鉴权：依赖现有 fetchWithAuth 的 Authorization: Bearer <access_token> 注入，
+ *      401 时自动尝试一次 refresh 并重试。
+ *
+ * @returns {Promise<{portal_refresh_token: string, expires_in: number, expires_at: string}>}
+ *          门户子 refresh_token 颁发结果（明文仅此一次返回）
+ * @throws {Error} 鉴权失败或存储失败时抛出错误
+ */
+export async function issuePortalRefreshToken() {
+  const response = await fetchWithAuth('/api/auth/issue-portal-refresh-token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' }
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '颁发门户子 refresh_token 失败')
+  }
+
+  return response.json()
+}
+
+/**
  * 统一 API 请求包装器
  * 自动注入 Authorization 和 X-Session-ID 头
+ * 知识库页面自动使用 knowledge_session_id，与主应用隔离
+ * 外部已传入的 X-Session-ID 不会被覆盖
  * 401 时静默调用 /api/auth/refresh 重试一次
  * @param {string} url - 请求地址
  * @param {Object} options - fetch 选项
@@ -326,24 +367,33 @@ export async function validateToken() {
 export async function fetchWithAuth(url, options = {}, _retried = false) {
   const headers = { ...(options.headers || {}) }
   const token = localStorage.getItem('auth_token')
-  const sessionId = localStorage.getItem('session_id')
+  const sessionKey = isKnowledgePage() ? 'knowledge_session_id' : 'session_id'
+  const sessionId = localStorage.getItem(sessionKey)
   if (token && token !== 'undefined') {
     headers['Authorization'] = `Bearer ${token}`
   }
-  if (sessionId && sessionId !== 'undefined') {
+  // 只有外部未显式传入 X-Session-ID 时，才从 localStorage 补充
+  if (!headers['X-Session-ID'] && sessionId && sessionId !== 'undefined') {
     headers['X-Session-ID'] = sessionId
   }
   const response = await fetch(url, { ...options, headers })
   if (response.status === 401 && !_retried) {
+    let data
     try {
-      const data = await refreshAccessToken()
-      localStorage.setItem('auth_token', data.access_token)
-      headers['Authorization'] = `Bearer ${data.access_token}`
-      return fetch(url, { ...options, headers })
+      data = await refreshAccessToken()
     } catch {
       clearAuth()
       throw new Error('登录已过期，请重新登录')
     }
+    localStorage.setItem('auth_token', data.access_token)
+    headers['Authorization'] = `Bearer ${data.access_token}`
+    const retryResponse = await fetch(url, { ...options, headers })
+    if (retryResponse.status === 401) {
+      localStorage.removeItem('session_id')
+      localStorage.removeItem('knowledge_session_id')
+      throw new Error('会话无效，请重新登录')
+    }
+    return retryResponse
   }
   if (response.status === 403) {
     throw new Error('403 会话无效，请重试')
@@ -527,17 +577,18 @@ let pendingSessionPromise = null
 /**
  * 创建新会话
  * 使用当前认证信息创建新的聊天会话，带有防重复创建机制
+ * @param {string} storageKey - 存储 session_id 的 localStorage key，默认为 'session_id'
  * @returns {Promise<string>} 新会话 ID
  * @throws {Error} 创建会话失败时抛出错误
  */
-export async function createNewSession() {
+export async function createNewSession(storageKey = 'session_id') {
   if (isCreatingSession && pendingSessionPromise) {
     return pendingSessionPromise
   }
   isCreatingSession = true
   pendingSessionPromise = (async () => {
     try {
-      localStorage.removeItem('session_id')
+      localStorage.removeItem(storageKey)
       const response = await fetchWithAuth('/api/session/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
@@ -545,7 +596,7 @@ export async function createNewSession() {
       if (!response.ok) throw new Error(`创建会话失败: ${response.status}`)
       const sessionData = await response.json()
       const newSessionId = sessionData.session_id
-      localStorage.setItem('session_id', newSessionId)
+      localStorage.setItem(storageKey, newSessionId)
       return newSessionId
     } finally {
       isCreatingSession = false
@@ -578,7 +629,7 @@ export async function chatStream(sessionId, message, attachments = [], resume = 
 }
 
 export async function knowledgeChatStream(sessionId, message, attachments = [], resume = null) {
-  const sid = sessionId || localStorage.getItem('session_id') || ''
+  const sid = sessionId || localStorage.getItem('knowledge_session_id') || ''
   const response = await fetchWithAuth('/api/map/knowledge-chat', {
     method: 'POST',
     headers: {
@@ -706,6 +757,10 @@ export async function deleteSession(sessionId) {
   const currentSessionId = localStorage.getItem('session_id')
   if (currentSessionId === sessionId) {
     localStorage.removeItem('session_id')
+  }
+  const knowledgeSessionId = localStorage.getItem('knowledge_session_id')
+  if (knowledgeSessionId === sessionId) {
+    localStorage.removeItem('knowledge_session_id')
   }
   return response.json()
 }

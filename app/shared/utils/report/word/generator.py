@@ -7,6 +7,7 @@ from docx.oxml import OxmlElement
 import logging
 import os
 import re
+import sys
 from app.shared.utils.report.word.config import ReportConfig, SectionConfig, CoverElementConfig, HeadingStyleConfig, ParagraphStyleConfig
 logger = logging.getLogger(__name__)
 
@@ -273,7 +274,7 @@ class WordReportGenerator:
             - 预收集确保目录中的PAGEREF域字段能正确引用尚未渲染的标题书签
         """
         for section in self.config.sections:
-            if section.section_type == "heading":
+            if section.section_type == "heading" and section.in_toc:
                 bookmark_name = f"_TocHeading_{len(self._heading_bookmarks)}"
                 self._heading_bookmarks.append(bookmark_name)
         logger.info(f"预收集完成，共{len(self._heading_bookmarks)}个标题书签")
@@ -539,10 +540,13 @@ class WordReportGenerator:
         if section.alignment is not None:
             paragraph.alignment = section.alignment
 
-        bookmark_name = self._heading_bookmarks[self._heading_index]
-        logger.debug(f"渲染标题 Lv.{level}: {text} → 书签: {bookmark_name}")
-        self._add_bookmark(paragraph, bookmark_name)
-        self._heading_index += 1
+        if section.in_toc:
+            bookmark_name = self._heading_bookmarks[self._heading_index]
+            logger.debug(f"渲染标题 Lv.{level}: {text} → 书签: {bookmark_name}")
+            self._add_bookmark(paragraph, bookmark_name)
+            self._heading_index += 1
+        else:
+            logger.debug(f"渲染标题 Lv.{level}: {text} → 不加入目录")
 
     def _render_paragraph(self, section: SectionConfig):
         """
@@ -826,7 +830,157 @@ class WordReportGenerator:
             raise ValueError("请先调用 generate() 方法生成文档")
         self.doc.save(file_path)
         logger.info(f"文档已保存到: {file_path}")
-        self._update_fields_via_com(file_path)
+        if os.environ.get("WORD_REPORT_DISABLE_LO_UPDATE") == "1":
+            logger.info("WORD_REPORT_DISABLE_LO_UPDATE=1，跳过域字段更新")
+        else:
+            success = self._update_fields_via_libreoffice(file_path)
+            if not success and sys.platform.startswith("win"):
+                self._update_fields_via_com(file_path)
+
+    def _update_fields_via_libreoffice(self, file_path: str) -> bool:
+        """
+        使用 LibreOffice headless 更新 docx 中所有域字段
+
+        通过 subprocess 启动 soffice --headless --convert-to docx，
+        强制 LibreOffice 重新打开、计算并保存所有域字段值（PAGEREF/PAGE/NUMPAGES），
+        使目录页码等在保存时即为真实计算结果，无需用户手动 F9 更新。
+
+        跨平台兼容：
+        - soffice 路径通过 _find_libreoffice_path() 自动探测
+        - user profile 用 pathlib.Path.as_uri() 构造 file:// URI
+        - 子进程用列表式 subprocess.run，无 shell 转义问题
+
+        失败兜底：
+        - 未找到 soffice → return False（由调用方决定是否回退 COM）
+        - subprocess 非零退出 / 超时 / 输出文件不存在 → return False
+        - 任何步骤都通过 try/finally 清理临时目录与 user profile
+
+        Args:
+            file_path: 已保存的 .docx 文件绝对路径
+
+        Returns:
+            bool: 更新成功返回 True，失败返回 False
+        """
+        import shutil
+        import subprocess
+        import tempfile
+        from pathlib import Path
+
+        if os.environ.get("WORD_REPORT_DISABLE_LO_UPDATE") == "1":
+            return False
+
+        soffice_path = self._find_libreoffice_path()
+        if not soffice_path:
+            return False
+
+        abs_path = os.path.abspath(file_path)
+        temp_outdir = tempfile.mkdtemp(prefix="lo_out_")
+        temp_profile = tempfile.mkdtemp(prefix="lo_profile_")
+        profile_uri = Path(temp_profile).as_uri()
+
+        try:
+            cmd = [
+                soffice_path,
+                "--headless",
+                "--norestore",
+                "--nologo",
+                "--nodefault",
+                "--nofirststartwizard",
+                f"-env:UserInstallation={profile_uri}",
+                "--convert-to", "docx",
+                "--outdir", temp_outdir,
+                abs_path,
+            ]
+            logger.info(f"LibreOffice: 域字段更新开始 (soffice={soffice_path})")
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=180,
+                check=False,
+            )
+            if result.returncode != 0:
+                logger.warning(
+                    f"LibreOffice 返回非零: rc={result.returncode}, "
+                    f"stderr={result.stderr.strip()[:200]}"
+                )
+                return False
+
+            output_file = os.path.join(temp_outdir, os.path.basename(abs_path))
+            if not os.path.exists(output_file):
+                logger.warning(f"LibreOffice 转换后未找到输出文件: {output_file}")
+                return False
+
+            shutil.copy(output_file, abs_path)
+            logger.info("LibreOffice: 域字段更新完成")
+            return True
+        except subprocess.TimeoutExpired:
+            logger.warning("LibreOffice 转换超时 (180s)，跳过域字段更新")
+            return False
+        except Exception as e:
+            logger.warning(f"LibreOffice 域更新异常: {e}")
+            return False
+        finally:
+            shutil.rmtree(temp_outdir, ignore_errors=True)
+            shutil.rmtree(temp_profile, ignore_errors=True)
+
+    def _find_libreoffice_path(self) -> "Optional[str]":
+        """
+        跨平台探测 LibreOffice 可执行文件路径
+
+        探测顺序：
+        1. PATH 中查找（shutil.which，跨平台通用）
+        2. 平台默认安装路径
+           - Windows: C:\\Program Files\\LibreOffice\\program\\soffice.exe
+                      C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe
+                      Windows 注册表 HKLM\\SOFTWARE\\LibreOffice\\UNO\\InstallPath
+           - Linux/macOS: /usr/bin/soffice, /usr/lib/libreoffice/program/soffice,
+                          /opt/libreoffice/program/soffice, /snap/bin/libreoffice,
+                          /Applications/LibreOffice.app/Contents/MacOS/soffice
+        3. 默认路径同时要求文件存在且可执行（os.access X_OK）
+
+        Returns:
+            Optional[str]: soffice 绝对路径；未找到返回 None
+        """
+        import shutil
+
+        # 1. PATH 探测（跨平台通用，优先命中 Linux/macOS 包管理器安装）
+        for name in ("soffice", "soffice.exe", "libreoffice"):
+            path = shutil.which(name)
+            if path:
+                return path
+
+        # 2. 平台默认路径
+        candidates: list = []
+        if sys.platform.startswith("win"):
+            candidates.extend([
+                r"C:\Program Files\LibreOffice\program\soffice.exe",
+                r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+            ])
+            # Windows 注册表探测
+            try:
+                import winreg
+                with winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE,
+                    r"SOFTWARE\LibreOffice\UNO\InstallPath",
+                ) as key:
+                    install_path, _ = winreg.QueryValueEx(key, None)
+                    candidates.append(os.path.join(install_path, "soffice.exe"))
+            except (ImportError, OSError):
+                pass
+        else:
+            candidates.extend([
+                "/usr/bin/soffice",
+                "/usr/lib/libreoffice/program/soffice",
+                "/opt/libreoffice/program/soffice",
+                "/snap/bin/libreoffice",
+                "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+            ])
+
+        for path in candidates:
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                return path
+        return None
 
     def _update_fields_via_com(self, file_path: str):
         """

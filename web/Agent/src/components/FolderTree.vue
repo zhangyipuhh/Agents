@@ -33,7 +33,8 @@ function getFileIconColor(name) {
     txt: '#9CA3AF',
     json: '#F59E0B'
   }
-  return colorMap[ext] || '#6366F1'
+  // 文件图标默认回退色：与登录页主色 #1E5AA8 保持一致
+  return colorMap[ext] || '#1E5AA8'
 }
 
 function formatSize(bytes) {

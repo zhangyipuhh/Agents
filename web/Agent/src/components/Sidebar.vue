@@ -92,20 +92,50 @@ const handleSessionClick = (session) => {
   emit('session-switch', session.sessionId)
 }
 
+/* ---- 删除会话：应用内确认弹窗状态 ---- */
+/** @type {import('vue').Ref<string|null>} 待删除的会话 ID；为 null 时表示弹窗关闭 */
+const pendingDeleteId = ref(null)
+/** @type {import('vue').Ref<string>} 待删除的会话标题，用于弹窗正文展示 */
+const pendingDeleteSessionTitle = ref('')
+
 /**
- * 删除历史会话
+ * 删除历史会话（点击垃圾桶按钮触发，仅打开应用内确认弹窗，不再用浏览器原生 confirm）
  * @param {string} sessionId - 会话 ID
+ * @param {string} sessionTitle - 会话标题（用于弹窗正文）
  * @param {MouseEvent} event - 鼠标事件
+ * @returns {void}
  */
-const handleDeleteSession = async (sessionId, event) => {
+const handleDeleteSession = (sessionId, sessionTitle, event) => {
   event.stopPropagation()
-  if (!confirm('确定删除该会话？删除后无法恢复。')) return
+  pendingDeleteSessionTitle.value = sessionTitle || ''
+  pendingDeleteId.value = sessionId
+}
+
+/**
+ * 用户在应用内确认弹窗中点击「确认删除」：执行真正的删除逻辑
+ * @returns {Promise<void>} 完成后无返回值；删除失败时通过 console.error 记录错误
+ */
+const confirmDeleteSession = async () => {
+  const id = pendingDeleteId.value
+  if (!id) return
+  // 先关闭弹窗再执行删除，避免删除慢时 UI 显得卡顿
+  pendingDeleteId.value = null
+  pendingDeleteSessionTitle.value = ''
   try {
-    await deleteSession(sessionId)
+    await deleteSession(id)
     await loadSessionList()
   } catch (err) {
     console.error('删除会话失败:', err)
   }
+}
+
+/**
+ * 用户在应用内确认弹窗中点击「取消」或点击遮罩：仅关闭弹窗
+ * @returns {void}
+ */
+const cancelDeleteSession = () => {
+  pendingDeleteId.value = null
+  pendingDeleteSessionTitle.value = ''
 }
 
 const handleMenuClick = (menuId) => {
@@ -442,7 +472,7 @@ onUnmounted(() => {
               <span class="history-title-text">{{ session.title }}</span>
               <div class="history-meta">
                 <span class="history-time">{{ session.time }}</span>
-                <button class="history-delete-btn" @click="handleDeleteSession(session.sessionId, $event)" title="删除会话">
+                <button class="history-delete-btn" @click="handleDeleteSession(session.sessionId, session.title, $event)" title="删除会话">
                   <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
                     <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"/>
                   </svg>
@@ -502,6 +532,36 @@ onUnmounted(() => {
       :sidebar-collapsed="isSidebarCollapsed"
       @username-updated="handleUsernameUpdated"
     />
+
+    <!--
+      删除会话确认弹窗 - 使用 Teleport 挂载到 body 层级
+      原因：sidebar 容器设置 overflow: hidden，若不 Teleport 弹窗会被裁剪
+    -->
+    <Teleport to="body">
+      <Transition name="delete-confirm">
+        <div
+          v-if="pendingDeleteId"
+          class="delete-confirm-overlay"
+          @click.self="cancelDeleteSession"
+        >
+          <div class="delete-confirm-container" role="alertdialog" aria-modal="true">
+            <div class="delete-confirm-header">
+              <svg class="delete-confirm-icon" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"/>
+              </svg>
+              <h3 class="delete-confirm-title">确认删除会话</h3>
+            </div>
+            <div class="delete-confirm-body">
+              即将移除「<strong>{{ pendingDeleteSessionTitle || '该会话' }}</strong>」，此操作无法撤销。
+            </div>
+            <div class="delete-confirm-footer">
+              <button class="btn-cancel" @click="cancelDeleteSession">取消</button>
+              <button class="btn-confirm" @click="confirmDeleteSession">确认删除</button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </aside>
 </template>
 
@@ -1326,5 +1386,128 @@ onUnmounted(() => {
 .sidebar.collapsed .group-header[data-tooltip]:hover::after,
 .sidebar.collapsed .history-header[data-tooltip]:hover::after {
   transform: translateY(-50%) scale(1);
+}
+
+/* =============================================
+   删除会话确认弹窗（应用内，替代浏览器原生 confirm）
+   - 通过 Teleport 挂载到 body 层级，scoped style 仍能作用（Vue 3 保留 scope id）
+   - 不再出现 "localhost:5173 显示" 这种系统前缀
+   ============================================= */
+.delete-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: var(--z-modal, 300);
+}
+
+.delete-confirm-container {
+  background-color: var(--color-bg-primary);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  padding: 20px 24px;
+  font-family: var(--font-family);
+}
+
+.delete-confirm-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.delete-confirm-icon {
+  width: 20px;
+  height: 20px;
+  color: var(--color-error);
+  flex-shrink: 0;
+}
+
+.delete-confirm-title {
+  margin: 0;
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+  line-height: var(--line-height-tight);
+}
+
+.delete-confirm-body {
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-relaxed);
+  color: var(--color-text-secondary);
+  margin-bottom: 20px;
+
+  & strong {
+    color: var(--color-text-primary);
+    font-weight: var(--font-weight-medium);
+  }
+}
+
+.delete-confirm-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.btn-cancel,
+.btn-confirm {
+  font-family: inherit;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: var(--transition-colors);
+
+  &:active {
+    transform: scale(var(--scale-active));
+  }
+}
+
+.btn-cancel {
+  background-color: var(--color-bg-primary);
+  border-color: var(--color-border);
+  color: var(--color-text-secondary);
+
+  &:hover {
+    background-color: var(--color-bg-hover);
+    color: var(--color-text-primary);
+  }
+}
+
+.btn-confirm {
+  background-color: var(--color-error);
+  color: var(--color-text-inverse);
+
+  &:hover {
+    background-color: #DC2626;
+  }
+}
+
+/* 过渡动画：与 FileManagerModal 的 modal-* 同款 */
+.delete-confirm-enter-active,
+.delete-confirm-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.delete-confirm-enter-active .delete-confirm-container,
+.delete-confirm-leave-active .delete-confirm-container {
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+.delete-confirm-enter-from,
+.delete-confirm-leave-to {
+  opacity: 0;
+}
+
+.delete-confirm-enter-from .delete-confirm-container,
+.delete-confirm-leave-to .delete-confirm-container {
+  transform: scale(0.96);
+  opacity: 0;
 }
 </style>

@@ -25,10 +25,12 @@ export default defineConfig(({ mode }) => {
         input: {
           main: resolve(__dirname, 'index.html'),
           knowledge: resolve(__dirname, 'knowledge.html'),
+          portal: resolve(__dirname, 'portal.html'),
         },
       },
     },
     server: {
+      host: true,
       proxy: {
         '/api': {
           target: env.VITE_API_TARGET || 'http://localhost:8001',

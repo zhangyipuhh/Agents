@@ -7,6 +7,7 @@
 
 import { ref, computed, onMounted } from 'vue'
 import { register, getCaptcha } from '../utils/api.js'
+import { appConfig } from '../config/portal.js'
 
 /** @type {import('vue').Ref<string>} 用户名输入值 */
 const username = ref('')
@@ -209,6 +210,7 @@ async function handleRegister() {
 // 组件挂载时自动加载验证码
 onMounted(() => {
   loadCaptcha()
+  console.log('[RegisterView] appConfig.brandTitle =', appConfig.brandTitle)
 })
 </script>
 
@@ -216,6 +218,8 @@ onMounted(() => {
   <div class="register-container">
     <div class="register-card">
       <div class="register-header">
+        <div class="system-title">{{ appConfig.brandTitle }}</div>
+        <div class="title-divider"></div>
         <h1 class="register-title">创建账号</h1>
         <p class="register-subtitle">请填写以下信息完成注册</p>
       </div>
@@ -440,12 +444,26 @@ onMounted(() => {
 /* 注册页面容器 - 全屏居中布局 */
 .register-container {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   min-height: 100vh;
   width: 100%;
-  background-color: var(--color-bg-secondary);
-  padding: var(--space-lg);
+  background: linear-gradient(135deg, #EBF4FF 0%, #F0F7FF 40%, #FFFFFF 100%);
+  background-attachment: fixed;
+  position: relative;
+  padding: var(--space-xl) var(--space-lg);
+  overflow-y: auto;
+}
+
+/* 极淡的几何纹理背景叠加 */
+.register-container::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle, #1E5AA8 0.5px, transparent 0.5px);
+  background-size: 24px 24px;
+  opacity: 0.06;
+  pointer-events: none;
 }
 
 /* 注册卡片 */
@@ -455,13 +473,32 @@ onMounted(() => {
   background-color: var(--color-bg-primary);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-lg);
-  padding: var(--space-2xl) var(--space-xl);
+  border-top: 4px solid #1E5AA8;
+  padding: var(--space-xl) var(--space-lg);
+  position: relative;
+  z-index: 1;
 }
 
 /* 卡片头部 */
 .register-header {
   text-align: center;
-  margin-bottom: var(--space-xl);
+  margin-bottom: var(--space-lg);
+}
+
+.system-title {
+  font-size: 22px;
+  font-weight: var(--font-weight-bold);
+  color: #1E5AA8;
+  margin-bottom: var(--space-sm);
+  line-height: var(--line-height-tight);
+}
+
+.title-divider {
+  width: 48px;
+  height: 3px;
+  background: linear-gradient(90deg, #1E5AA8, #4A90D9);
+  border-radius: 2px;
+  margin: 0 auto var(--space-base);
 }
 
 .register-title {
@@ -476,11 +513,21 @@ onMounted(() => {
   color: var(--color-text-secondary);
 }
 
+/* 宽屏左右分栏布局 */
+@media (min-width: 960px) {
+  .register-container {
+    justify-content: center;
+    gap: 60px;
+    padding: var(--space-lg) var(--space-xl);
+  }
+
+}
+
 /* 注册表单 - 双列网格布局 */
 .register-form {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: var(--space-base) var(--space-lg);
+  gap: var(--space-sm) var(--space-lg);
 }
 
 /* 跨列元素 */
@@ -522,8 +569,8 @@ onMounted(() => {
   }
 
   &:focus {
-    border-color: var(--color-accent);
-    box-shadow: 0 0 0 3px var(--color-accent-light);
+    border-color: #1E5AA8;
+    box-shadow: 0 0 0 3px rgba(30, 90, 168, 0.15);
     background-color: var(--color-bg-primary);
   }
 
@@ -559,8 +606,8 @@ onMounted(() => {
   transition: var(--transition-shadow);
 
   &:hover {
-    box-shadow: 0 0 0 2px var(--color-accent-light);
-    border-color: var(--color-accent);
+    box-shadow: 0 0 0 2px rgba(30, 90, 168, 0.15);
+    border-color: #1E5AA8;
   }
 
   &:active {
@@ -617,13 +664,13 @@ onMounted(() => {
   font-size: var(--font-size-lg);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-inverse);
-  background-color: var(--color-accent);
+  background-color: #1E5AA8;
   border-radius: var(--radius-md);
   cursor: pointer;
   transition: var(--transition-colors), var(--transition-transform);
 
   &:hover:not(:disabled) {
-    background-color: var(--color-accent-hover);
+    background-color: #155A9E;
     transform: scale(var(--scale-hover-button));
   }
 
@@ -666,13 +713,13 @@ onMounted(() => {
 }
 
 .footer-link {
-  color: var(--color-accent);
+  color: #1E5AA8;
   cursor: pointer;
   font-weight: var(--font-weight-medium);
   transition: var(--transition-colors);
 
   &:hover {
-    color: var(--color-accent-hover);
+    color: #155A9E;
     text-decoration: underline;
   }
 }

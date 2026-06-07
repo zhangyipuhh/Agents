@@ -303,6 +303,94 @@ def _format_area(value: Decimal) -> str:
     return str(value.normalize()) if value == value.normalize() else f"{value:f}".rstrip('0').rstrip('.')
 
 
+def convert_square_meters_to_hectares(square_meters: str | int | float | Decimal) -> Decimal:
+    """
+    将平方米转换为公顷
+
+    转换公式：1公顷 = 10000平方米，因此 1平方米 = 0.0001公顷。
+    该函数用于处理从外部传入的原始面积数据，确保报告生成前单位统一为公顷。
+
+    Args:
+        square_meters: 平方米值，可以是字符串、数字或Decimal类型
+
+    Returns:
+        Decimal: 转换后的公顷值，保留6位小数精度
+
+    Raises:
+        无显式抛出异常，转换失败时返回 Decimal("0")
+
+    Example:
+        >>> convert_square_meters_to_hectares("10000")
+        Decimal('1.0')
+        >>> convert_square_meters_to_hectares(5000)
+        Decimal('0.5')
+        >>> convert_square_meters_to_hectares(Decimal("25000.5"))
+        Decimal('2.500005')
+    """
+    try:
+        sq_m = Decimal(str(square_meters))
+        return (sq_m * Decimal("0.0001")).quantize(Decimal("0.000001"))
+    except Exception:
+        return Decimal("0")
+
+
+def _convert_region_area_detail(area_detail: RegionAreaDetail) -> None:
+    """
+    将 RegionAreaDetail 中所有 AreaValue 的 value 从平方米转换为公顷
+
+    Args:
+        area_detail: 区域面积详情对象
+
+    Returns:
+        无返回值，直接修改传入对象的字段值
+    """
+    area_fields = [
+        "cultivated_land",
+        "paddy_field",
+        "black_soil",
+        "permanent_basic_farmland",
+        "forest_land",
+        "grassland",
+        "mineral_press_area",
+        "ecological_red_line",
+        "nature_reserve",
+        "illegal_land",
+    ]
+    for field_name in area_fields:
+        area_value = getattr(area_detail, field_name)
+        if area_value.value:
+            area_value.value = convert_square_meters_to_hectares(area_value.value)
+
+
+def _convert_area_summary(summary: AreaSummary) -> None:
+    """
+    将 AreaSummary 中所有面积字段的 value 从平方米转换为公顷
+
+    Args:
+        summary: 面积汇总对象
+
+    Returns:
+        无返回值，直接修改传入对象的字段值
+    """
+    area_fields = [
+        "total_land_area",
+        "agricultural_land",
+        "cultivated_land",
+        "paddy_field",
+        "black_soil",
+        "permanent_basic_farmland",
+        "forest_land",
+        "grassland",
+        "ecological_red_line",
+        "nature_reserve",
+        "illegal_land",
+    ]
+    for field_name in area_fields:
+        value = getattr(summary, field_name)
+        if value:
+            setattr(summary, field_name, convert_square_meters_to_hectares(value))
+
+
 def _count_towns_and_villages(counties: List[County]) -> tuple:
     """
     统计乡镇数和村数
@@ -576,6 +664,34 @@ def _build_forest_grassland_paragraph(project: ProjectSiteSelectionData) -> str:
     )
 
 
+def _build_land_use_efficiency_paragraphs(project: ProjectSiteSelectionData) -> list[str]:
+    """
+    根据项目数据生成节约集约用地段落文本
+
+    从 project 中安全获取 project_type 和 land_use_control_indicator，
+    若属性不存在则使用 'xx' 占位符。保留符合/不符合两条文本。
+
+    Args:
+        project: 项目选址数据
+
+    Returns:
+        list[str]: 段落文本列表
+    """
+    project_type = getattr(project, "project_type", "xx")
+    indicator = getattr(project, "land_use_control_indicator", "xx")
+    total_area = _format_area(project.summary.total_land_area)
+
+    paragraphs = [
+        f"{project.project_name}项目用地总面积{total_area}公顷，"
+        f"{project_type}类建设项目建设用地控制指标为{indicator}公顷，"
+        f"初步判定用地规模符合土地使用标准。",
+        f"【或者】：{project.project_name}项目用地总面积{total_area}公顷，"
+        f"{project_type}类建设项目建设用地控制指标为{indicator}公顷，"
+        f"初步判定用地规模不符合土地使用标准。",
+    ]
+    return paragraphs
+
+
 def _build_section_disclaimer(collection: ProjectSiteSelectionCollection) -> list[dict]:
     """
     构建"一点通"服务免责声明章节
@@ -605,7 +721,7 @@ def _build_section_disclaimer(collection: ProjectSiteSelectionCollection) -> lis
             "content": f"欢迎使用沈阳市自然资源和规划\"一点通\"服务（以下简称\"本服务\"）。本服务由沈阳市自然资源局研发，用于生成《{project_name}选址自然资源和规划\"一点通\"服务技术参考》（以下简称《技术参考》），作为项目选址咨询的过程性参考材料。为保障您的合法权益，请在使用本服务前仔细阅读并充分理解本声明全部内容。若您继续使用本服务，即视为已完全知晓、理解并同意本声明的全部条款及内容。本服务将免费向您提供《技术参考》。"
         },
         # 一、查询结果用途限制
-        {"type": "heading", "level": 1, "alignment": 0, "content": "一、查询结果用途限制"},
+        {"type": "heading", "level": 1, "alignment": 0, "content": "一、查询结果用途限制", "in_toc": False},
         {
             "type": "paragraph",
             "alignment": 0,
@@ -621,7 +737,7 @@ def _build_section_disclaimer(collection: ProjectSiteSelectionCollection) -> lis
             "content": "（二）严禁歪曲、篡改、恶意解读或公开发布查询结果。严禁利用查询结果制造、散布不良社会舆论，或从事任何可能损害政府公信力、扰乱社会秩序的活动。"
         },
         # 二、数据时效性与准确性
-        {"type": "heading", "level": 1, "alignment": 0, "content": "二、数据时效性与准确性"},
+        {"type": "heading", "level": 1, "alignment": 0, "content": "二、数据时效性与准确性", "in_toc": False},
         {
             "type": "paragraph",
             "alignment": 0,
@@ -633,7 +749,7 @@ def _build_section_disclaimer(collection: ProjectSiteSelectionCollection) -> lis
             "content": "（二）项目选址合规性、用地可行性最终以行业主管部门正式审查、审批结论为准。"
         },
         # 三、保密与数据安全责任
-        {"type": "heading", "level": 1, "alignment": 0, "content": "三、保密与数据安全责任"},
+        {"type": "heading", "level": 1, "alignment": 0, "content": "三、保密与数据安全责任", "in_toc": False},
         {
             "type": "paragraph",
             "alignment": 0,
@@ -645,7 +761,7 @@ def _build_section_disclaimer(collection: ProjectSiteSelectionCollection) -> lis
             "content": "严禁以任何方式或技术手段窃取、篡改、非法利用本服务系统数据。因用户行为导致数据泄露或损害公共利益的，本单位有权追究法律责任。"
         },
         # 四、责任豁免
-        {"type": "heading", "level": 1, "alignment": 0, "content": "四、责任豁免"},
+        {"type": "heading", "level": 1, "alignment": 0, "content": "四、责任豁免", "in_toc": False},
         {
             "type": "paragraph",
             "alignment": 0,
@@ -658,7 +774,7 @@ def _build_section_disclaimer(collection: ProjectSiteSelectionCollection) -> lis
         },
         {"type": "paragraph", "alignment": 0, "content": "（二）因数据误差导致的决策损失。"},
         # 五、特别声明
-        {"type": "heading", "level": 1, "alignment": 0, "content": "五、特别声明"},
+        {"type": "heading", "level": 1, "alignment": 0, "content": "五、特别声明", "in_toc": False},
         {
             "type": "paragraph",
             "alignment": 0,
@@ -680,7 +796,7 @@ def _build_section_disclaimer(collection: ProjectSiteSelectionCollection) -> lis
             "content": "（四）本《技术参考》属于行政咨询指导行为、过程性信息，依据《最高人民法院关于适用〈中华人民共和国行政诉讼法〉的解释》第一条第二款第三项、第六项、第十项，本服务不可复议、不可诉。"
         },
         # 六、声明约束力及解释权
-        {"type": "heading", "level": 1, "alignment": 0, "content": "六、声明约束力及解释权"},
+        {"type": "heading", "level": 1, "alignment": 0, "content": "六、声明约束力及解释权", "in_toc": False},
         {
             "type": "paragraph",
             "alignment": 0,
@@ -756,13 +872,17 @@ def _build_section_site_selection(collection: ProjectSiteSelectionCollection) ->
     sections.append({"type": "heading", "level": 3, "content": "2.土地利用年度计划"})
     sections.append({"type": "paragraph", "content": "该项目可按规定配置用地计划指标。"})
     sections.append({"type": "heading", "level": 3, "content": "3.节约集约用地"})
-    sections.append({"type": "paragraph", "content": "项目用地总面积xx公顷，xx类建设项目建设用地控制指标为xx公顷，初步判定用地规模符合土地使用标准。"})
-    sections.append({"type": "paragraph", "content": "【或者】：项目用地总面积xx公顷，xx类建设项目建设用地控制指标为xx公顷，初步判定用地规模不符合土地使用标准。"})
+    for project in collection.projects:
+        for para in _build_land_use_efficiency_paragraphs(project):
+            sections.append({"type": "paragraph", "content": para})
     sections.append({"type": "heading", "level": 3, "content": "4.农用地转用和土地征收手续办理安排"})
     sections.append({"type": "paragraph", "content": "在项目审批（核准）阶段同步开展农用地转用和土地征收前期工作。"})
     sections.append({"type": "heading", "level": 3, "content": "5.耕地占补平衡可行性"})
     sections.append({"type": "paragraph", "content": "项目不涉及占用耕地。"})
     sections.append({"type": "paragraph", "content": "【或者】：项目占用耕地xx公顷，占用耕地质量等别为xx，坡度级别为xx，产能约xx公斤，应在农用地转用和土地征收阶段按规定落实补充耕地。经核实，当前xx县（市、区）补充耕地储备库中指标可满足该项目补充耕地需求。"})
+    sections.append({"type": "heading", "level": 3, "content": "6.永久基本农田占用补划可行性"})
+    sections.append({"type": "paragraph", "content": "项目不涉及占用永久基本农田。"})
+    sections.append({"type": "paragraph", "content": "【或者】：项目占用永久基本农田xx公顷，应按规定办理永久基本农田占用补划手续。"})
 
     return sections
 
@@ -772,7 +892,7 @@ def _build_section_space_control(collection: ProjectSiteSelectionCollection) -> 
     构建二、其他空间管控分析章节
 
     根据 ProjectSiteSelectionCollection 中的项目数据，
-    为每个项目生成主体功能区占位段落。
+    为每个项目生成主体功能区占位段落，以及自然保护地和历史文化保护内容。
 
     Args:
         collection: 多项目选址数据集合
@@ -788,6 +908,15 @@ def _build_section_space_control(collection: ProjectSiteSelectionCollection) -> 
             "type": "paragraph",
             "content": f"{project.project_name}项目用地所在区域主体功能区为城市化地区/农产品主产区/重点生态功能区及特殊功能区。",
         })
+
+    sections.append({"type": "heading", "level": 2, "content": "（一）涉及自然保护地情况"})
+    for project in collection.projects:
+        sections.append({"type": "paragraph", "content": _build_nature_reserve_paragraph(project)})
+
+    sections.append({"type": "heading", "level": 2, "content": "（二）历史文化保护情况"})
+    sections.append({"type": "paragraph", "content": "项目涉及历史文化名城名镇名村。"})
+    sections.append({"type": "paragraph", "content": "【或者】：项目不涉及历史文化名城名镇名村。"})
+
     return sections
 
 
@@ -796,7 +925,7 @@ def _build_section_land_use(collection: ProjectSiteSelectionCollection) -> list[
     构建三、其他国土空间用途管制要求章节
 
     根据 ProjectSiteSelectionCollection 中的项目数据，
-    动态生成涉及自然保护地情况段落，历史文化保护保留占位文本。
+    动态生成违法用地、信访和林草地占用情况段落。
 
     Args:
         collection: 多项目选址数据集合
@@ -806,14 +935,18 @@ def _build_section_land_use(collection: ProjectSiteSelectionCollection) -> list[
     """
     sections = [
         {"type": "heading", "level": 1, "content": "三、其他国土空间用途管制要求"},
-        {"type": "heading", "level": 2, "content": "（一）涉及自然保护地情况"},
+        {"type": "heading", "level": 2, "content": "（一）违法用地情况"},
     ]
     for project in collection.projects:
-        sections.append({"type": "paragraph", "content": _build_nature_reserve_paragraph(project)})
+        sections.append({"type": "paragraph", "content": _build_illegal_land_paragraph(project)})
 
-    sections.append({"type": "heading", "level": 2, "content": "（二）历史文化保护情况"})
-    sections.append({"type": "paragraph", "content": "项目涉及历史文化名城名镇名村。"})
-    sections.append({"type": "paragraph", "content": "【或者】：项目不涉及历史文化名城名镇名村。"})
+    sections.append({"type": "heading", "level": 2, "content": "（二）涉及信访情况"})
+    sections.append({"type": "paragraph", "content": "项目用地范围内不涉及信访问题。"})
+    sections.append({"type": "paragraph", "content": "【或者】：项目用地范围内涉及信访问题，应按规定处理。"})
+
+    sections.append({"type": "heading", "level": 2, "content": "（三）林草地占用情况"})
+    for project in collection.projects:
+        sections.append({"type": "paragraph", "content": _build_forest_grassland_paragraph(project)})
 
     return sections
 
@@ -891,6 +1024,7 @@ def _build_sections(content_list: list[dict]) -> list[SectionConfig]:
                 content=item.get("content", ""),
                 level=item.get("level", 1),
                 alignment=item.get("alignment"),
+                in_toc=item.get("in_toc", True),
             ))
         elif section_type == "paragraph":
             sections.append(SectionConfig(
@@ -1000,6 +1134,25 @@ def get_report_config(data: dict, collection: ProjectSiteSelectionCollection = N
             collection_name="默认集合",
             projects=[],
         )
+
+    # 将 data 中的面积字段从平方米转换为公顷
+    # 避免修改原始字典，创建副本进行处理
+    processed_data = data.copy()
+    area_keys = ["用地总面积", "农用地面积", "林地面积", "用海面积"]
+    for key in area_keys:
+        if key in processed_data:
+            processed_data[key] = str(convert_square_meters_to_hectares(processed_data[key]))
+
+    # 将 collection 中所有 area_detail 的面积字段从平方米转换为公顷
+    for project in collection.projects:
+        _convert_area_summary(project.summary)
+        for county in project.counties:
+            _convert_region_area_detail(county.area_detail)
+            for town in county.towns:
+                _convert_region_area_detail(town.area_detail)
+                for village in town.villages:
+                    _convert_region_area_detail(village.area_detail)
+
     cover = CoverConfig(
         title=CoverElementConfig(
             text="{{项目名称}}项目选址自然资源和规划“一点通”服务技术参考",
@@ -1088,7 +1241,7 @@ def get_report_config(data: dict, collection: ProjectSiteSelectionCollection = N
         cover=cover,
         toc=toc,
         sections=sections,
-        data=data,
+        data=processed_data,
         default_font_name="宋体",
         default_font_size=12,
         heading_styles=_get_heading_styles(),

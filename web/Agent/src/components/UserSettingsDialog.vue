@@ -1635,7 +1635,8 @@ watch(() => props.visible, (newVal) => {
 
 .role-tag.user {
   background-color: #E0E7FF;
-  color: #4F46E5;
+  /* 与登录页主色 #1E5AA8 保持一致 */
+  color: #1E5AA8;
 }
 
 .table-btn {
@@ -1679,7 +1680,8 @@ watch(() => props.visible, (newVal) => {
 }
 
 .btn-refresh:hover {
-  background-color: #C7D2FE;
+  /* 淡蓝 hover 取自 --color-accent-light(#EBF4FF) 稍深一档 */
+  background-color: #D6E4F5;
 }
 
 .btn-back {
@@ -1688,7 +1690,8 @@ watch(() => props.visible, (newVal) => {
 }
 
 .btn-back:hover {
-  background-color: #C7D2FE;
+  /* 淡蓝 hover 取自 --color-accent-light(#EBF4FF) 稍深一档 */
+  background-color: #D6E4F5;
 }
 
 .search-bar {

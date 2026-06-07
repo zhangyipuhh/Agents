@@ -760,8 +760,126 @@ def set_map_layer(layer_type: str, runtime: ToolRuntime) -> Command:
     )
 
 
+# ==================== 报告生成工具输入模型 ====================
+
+class GenerateReportInput(BaseModel):
+    """
+    生成报告输入参数
+
+    定义生成报告时需要的项目名称和项目类型，两个字段均为必填。
+
+    Attributes:
+        project_name: 项目名称
+        project_type: 项目类型
+    """
+    project_name: str = Field(
+        ...,
+        description="项目名称，必填"
+    )
+    project_type: str = Field(
+        ...,
+        description="项目类型，必填"
+    )
+
+
+# ==================== 业务信息保存工具 ====================
+
+class SaveBusinessInfoInput(BaseModel):
+    """
+    保存业务信息输入参数
+
+    定义保存业务信息时需要的所有字段及其描述信息。
+    所有字段均为必填，具体校验在 save_business_info 函数内部执行。
+
+    Attributes:
+        project_name: 项目名称，必填，1-200字符
+        unit_name: 建设单位名称，必填，1-200字符
+        contact_person: 联系人姓名，必填，1-100字符
+        contact_phone: 联系电话，必填，11位中国大陆手机号格式
+        unit_address: 单位详细地址，必填，1-500字符
+    """
+    project_name: Optional[str] = Field(
+        default=None,
+        description="项目名称，必填，1-200字符"
+    )
+    unit_name: Optional[str] = Field(
+        default=None,
+        description="建设单位名称，必填，1-200字符"
+    )
+    contact_person: Optional[str] = Field(
+        default=None,
+        description="联系人姓名，必填，1-100字符"
+    )
+    contact_phone: Optional[str] = Field(
+        default=None,
+        description="联系电话，必填，11位中国大陆手机号格式（如13800138000）"
+    )
+    unit_address: Optional[str] = Field(
+        default=None,
+        description="单位详细地址，必填，1-500字符"
+    )
+
+
+def _validate_business_info(input_data: SaveBusinessInfoInput) -> list[str]:
+    """
+    验证业务信息输入参数
+
+    对 save_business_info 的输入数据进行逐项校验，返回错误信息列表。
+    如果返回空列表，表示验证通过。
+
+    Args:
+        input_data: 业务信息输入参数
+
+    Returns:
+        list[str]: 错误信息列表，每项描述一个字段的验证失败原因
+    """
+    errors = []
+
+    # project_name 验证
+    if input_data.project_name is None or not str(input_data.project_name).strip():
+        errors.append("project_name（项目名称）为空或仅包含空白字符，请提供有效的项目名称（1-200字符）。")
+    else:
+        project_name = str(input_data.project_name).strip()
+        if len(project_name) > 200:
+            errors.append(f"project_name（项目名称）长度为{len(project_name)}，超过200字符限制，请缩短项目名称。")
+
+    # unit_name 验证
+    if input_data.unit_name is None or not str(input_data.unit_name).strip():
+        errors.append("unit_name（建设单位名称）为空或仅包含空白字符，请提供有效的单位名称（1-200字符）。")
+    else:
+        unit_name = str(input_data.unit_name).strip()
+        if len(unit_name) > 200:
+            errors.append(f"unit_name（建设单位名称）长度为{len(unit_name)}，超过200字符限制，请缩短单位名称。")
+
+    # contact_person 验证
+    if input_data.contact_person is None or not str(input_data.contact_person).strip():
+        errors.append("contact_person（联系人姓名）为空或仅包含空白字符，请提供有效的联系人姓名（1-100字符）。")
+    else:
+        contact_person = str(input_data.contact_person).strip()
+        if len(contact_person) > 100:
+            errors.append(f"contact_person（联系人姓名）长度为{len(contact_person)}，超过100字符限制，请缩短联系人姓名。")
+
+    # contact_phone 验证
+    if input_data.contact_phone is None or not str(input_data.contact_phone).strip():
+        errors.append("contact_phone（联系电话）为空，请提供11位中国大陆手机号（如13800138000）。")
+    else:
+        contact_phone = str(input_data.contact_phone).strip()
+        if not re.match(r'^1[3-9]\d{9}$', contact_phone):
+            errors.append(f"contact_phone（联系电话）'{contact_phone}'格式不正确，请提供11位中国大陆手机号（如13800138000）。")
+
+    # unit_address 验证
+    if input_data.unit_address is None or not str(input_data.unit_address).strip():
+        errors.append("unit_address（单位详细地址）为空或仅包含空白字符，请提供有效的详细地址（1-500字符）。")
+    else:
+        unit_address = str(input_data.unit_address).strip()
+        if len(unit_address) > 500:
+            errors.append(f"unit_address（单位详细地址）长度为{len(unit_address)}，超过500字符限制，请缩短地址。")
+
+    return errors
+
+
 @tool
-def generate_report(runtime: ToolRuntime) -> Command:
+def generate_report(data: GenerateReportInput, runtime: ToolRuntime) -> Command:
     """
     【生成报告】根据当前地图状态和项目信息生成Word报告并返回下载地址。
 
@@ -773,6 +891,9 @@ def generate_report(runtime: ToolRuntime) -> Command:
     并返回可供前端下载的URL路径。
 
     Args:
+        data: 报告生成输入参数（Pydantic模型），包含：
+            - project_name: 项目名称（必填）
+            - project_type: 项目类型（必填）
         runtime: 工具运行时上下文，用于获取工具调用ID、当前状态和session_id
             - runtime.context: 包含session_id用于构建下载路径
             - runtime.state: 包含地图状态信息（可选，用于报告数据）
@@ -828,13 +949,9 @@ def generate_report(runtime: ToolRuntime) -> Command:
     current_time = datetime.now()
     #这个地方sheng'cha'enshengchaen
     report_data = {
-        "项目名称": runtime.state.get("project_name", "XX项目"),
+        "项目名称": data.project_name,
         "生成日期": current_time.strftime("%Y年%m月%d日"),
-        "项目位置": runtime.state.get("project_location", "xx县xx镇"),
-        "用地总面积": runtime.state.get("total_area", "100"),
-        "农用地面积": runtime.state.get("farmland_area", "80"),
-        "林地面积": runtime.state.get("forest_area", "10"),
-        "用海面积": runtime.state.get("sea_area", "0"),
+        "项目类型": data.project_type,
     }
 
     progress_event_2 = create_tool_event(
@@ -854,7 +971,7 @@ def generate_report(runtime: ToolRuntime) -> Command:
         # 构建项目选址数据集合
         # 从 store 获取 process_data
         store_id = runtime.context.get("store_id", "default")
-        namespace = (store_id,)
+        namespace = (store_id,session_id)
         existing_result = runtime.store.get(namespace, "process_data")
         process_data = existing_result.value if existing_result else {}
         collection = process_data.get("report_data", None)
@@ -995,102 +1112,6 @@ def generate_report(runtime: ToolRuntime) -> Command:
                 ]
             }
         )
-
-
-# ==================== 业务信息保存工具 ====================
-
-class SaveBusinessInfoInput(BaseModel):
-    """
-    保存业务信息输入参数
-
-    定义保存业务信息时需要的所有字段及其描述信息。
-    所有字段均为必填，具体校验在 save_business_info 函数内部执行。
-
-    Attributes:
-        project_name: 项目名称，必填，1-200字符
-        unit_name: 建设单位名称，必填，1-200字符
-        contact_person: 联系人姓名，必填，1-100字符
-        contact_phone: 联系电话，必填，11位中国大陆手机号格式
-        unit_address: 单位详细地址，必填，1-500字符
-    """
-    project_name: Optional[str] = Field(
-        default=None,
-        description="项目名称，必填，1-200字符"
-    )
-    unit_name: Optional[str] = Field(
-        default=None,
-        description="建设单位名称，必填，1-200字符"
-    )
-    contact_person: Optional[str] = Field(
-        default=None,
-        description="联系人姓名，必填，1-100字符"
-    )
-    contact_phone: Optional[str] = Field(
-        default=None,
-        description="联系电话，必填，11位中国大陆手机号格式（如13800138000）"
-    )
-    unit_address: Optional[str] = Field(
-        default=None,
-        description="单位详细地址，必填，1-500字符"
-    )
-
-
-def _validate_business_info(input_data: SaveBusinessInfoInput) -> list[str]:
-    """
-    验证业务信息输入参数
-
-    对 save_business_info 的输入数据进行逐项校验，返回错误信息列表。
-    如果返回空列表，表示验证通过。
-
-    Args:
-        input_data: 业务信息输入参数
-
-    Returns:
-        list[str]: 错误信息列表，每项描述一个字段的验证失败原因
-    """
-    errors = []
-
-    # project_name 验证
-    if input_data.project_name is None or not str(input_data.project_name).strip():
-        errors.append("project_name（项目名称）为空或仅包含空白字符，请提供有效的项目名称（1-200字符）。")
-    else:
-        project_name = str(input_data.project_name).strip()
-        if len(project_name) > 200:
-            errors.append(f"project_name（项目名称）长度为{len(project_name)}，超过200字符限制，请缩短项目名称。")
-
-    # unit_name 验证
-    if input_data.unit_name is None or not str(input_data.unit_name).strip():
-        errors.append("unit_name（建设单位名称）为空或仅包含空白字符，请提供有效的单位名称（1-200字符）。")
-    else:
-        unit_name = str(input_data.unit_name).strip()
-        if len(unit_name) > 200:
-            errors.append(f"unit_name（建设单位名称）长度为{len(unit_name)}，超过200字符限制，请缩短单位名称。")
-
-    # contact_person 验证
-    if input_data.contact_person is None or not str(input_data.contact_person).strip():
-        errors.append("contact_person（联系人姓名）为空或仅包含空白字符，请提供有效的联系人姓名（1-100字符）。")
-    else:
-        contact_person = str(input_data.contact_person).strip()
-        if len(contact_person) > 100:
-            errors.append(f"contact_person（联系人姓名）长度为{len(contact_person)}，超过100字符限制，请缩短联系人姓名。")
-
-    # contact_phone 验证
-    if input_data.contact_phone is None or not str(input_data.contact_phone).strip():
-        errors.append("contact_phone（联系电话）为空，请提供11位中国大陆手机号（如13800138000）。")
-    else:
-        contact_phone = str(input_data.contact_phone).strip()
-        if not re.match(r'^1[3-9]\d{9}$', contact_phone):
-            errors.append(f"contact_phone（联系电话）'{contact_phone}'格式不正确，请提供11位中国大陆手机号（如13800138000）。")
-
-    # unit_address 验证
-    if input_data.unit_address is None or not str(input_data.unit_address).strip():
-        errors.append("unit_address（单位详细地址）为空或仅包含空白字符，请提供有效的详细地址（1-500字符）。")
-    else:
-        unit_address = str(input_data.unit_address).strip()
-        if len(unit_address) > 500:
-            errors.append(f"unit_address（单位详细地址）长度为{len(unit_address)}，超过500字符限制，请缩短地址。")
-
-    return errors
 
 
 @tool(description="""保存业务信息到数据库，自动生成业务编号。
