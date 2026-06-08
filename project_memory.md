@@ -563,8 +563,8 @@ system_prompt = (
     brandTitle: '沈阳市自然资源和规划"一点通"',
     brandDesc: '智慧政务服务平台',
     navItems: [
-      { key: 'site-select', label: '智能选址', type: 'placeholder' },
-      { key: 'pre-check', label: '智能预检', type: 'placeholder' },
+      { key: 'site-select', label: '智能选址', type: 'iframe', url: 'http://59.197.227.228/webgis/kjzr' },
+      { key: 'pre-check', label: '智能预检', type: 'iframe', url: 'http://59.197.227.228/webgis/kjzr' },
       { key: 'rule-lib', label: '规则库', type: 'iframe', url: '/knowledge.html' }
     ]
   }
@@ -575,8 +575,8 @@ system_prompt = (
     "brandTitle": "自定义标题",
     "brandDesc": "自定义描述",
     "navItems": [
-      { "key": "site-select", "label": "智能选址", "type": "placeholder" },
-      { "key": "pre-check", "label": "智能预检", "type": "placeholder" },
+      { "key": "site-select", "label": "智能选址", "type": "iframe", "url": "http://59.197.227.228/webgis/kjzr" },
+      { "key": "pre-check", "label": "智能预检", "type": "iframe", "url": "http://59.197.227.228/webgis/kjzr" },
       { "key": "rule-lib", "label": "规则库", "type": "iframe", "url": "/knowledge.html" }
     ]
   }
