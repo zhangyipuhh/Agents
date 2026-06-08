@@ -1,0 +1,75 @@
+name: PR Check
+
+on:
+  pull_request:
+    branches: [main, master, develop, preview]
+  push:
+    branches: [main, master, develop, preview]
+
+jobs:
+  backend-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        working-directory: ./app
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run pytest
+        working-directory: ./app
+        run: pytest --tb=short -q
+
+  frontend-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: ./web/Agent/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./web/Agent
+        run: npm ci
+
+      - name: Run vitest
+        working-directory: ./web/Agent
+        run: npm run test
+
+  docker-build-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./app/Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./web/Agent
+          file: ./web/Agent/Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
