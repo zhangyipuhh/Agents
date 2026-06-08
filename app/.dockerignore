@@ -34,3 +34,8 @@ Thumbs.db
 node_modules/
 *.md
 !README.md
+# 排除测试文件（不打包到生产镜像）
+test_*.py
+*_test.py
+tests/
+__tests__/
