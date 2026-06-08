@@ -556,6 +556,7 @@ async def issue_portal_refresh_token(req: Request):
         HTTPException: 鉴权失败返回 401；存储失败返回 500
     """
     from app.shared.utils.auth.portal_refresh_token_db import PortalRefreshTokenDB
+    from app.shared.utils.auth.refresh_token_db import RefreshTokenDB
 
     # 从 request.state 取鉴权信息（auth_middleware 已写入）
     username = getattr(req.state, 'username', None)
@@ -564,6 +565,14 @@ async def issue_portal_refresh_token(req: Request):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="无法识别当前用户"
+        )
+
+    # 检查该用户是否仍持有有效的 refresh_token（被踢后会被删除）
+    has_refresh = await RefreshTokenDB.has_valid_token(user_id)
+    if not has_refresh:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="用户会话已失效，请重新登录"
         )
 
     # 先删除该用户所有旧的 portal refresh_token，确保一个用户只有一条记录
