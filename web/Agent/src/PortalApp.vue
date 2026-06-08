@@ -81,10 +81,10 @@ function applyUserData(data) {
 }
 
 /**
- * 三段式认证检查
- * 1. 先调用 validateToken 验证当前 Token 是否有效
- * 2. 若失败则调用 refreshToken 刷新令牌，然后再次 validateToken
- * 3. 若再次失败则调用 redirectToLogin 跳转到登录页（带 redirect 参数回到当前 portal URL）
+ * 两段式认证检查
+ * 1. 先调用 refreshToken 刷新令牌（会查服务端数据库，能实时感知 token 被删除/踢人）
+ * 2. 刷新成功后再 validateToken 验证并应用用户数据
+ * 3. 若 refresh 或 validate 失败则调用 redirectToLogin 跳转到登录页（带 redirect 参数回到当前 portal URL）
  *    注意：不再主动 clearAuth()，保留本地 token 以便可能的下次重试。
  */
 async function checkAuth() {
@@ -95,19 +95,14 @@ async function checkAuth() {
     return
   }
   try {
+    // 先尝试 refresh：refresh 会查服务端数据库，能实时感知 token 被删除/踢人
+    const newToken = await refreshToken()
+    localStorage.setItem('auth_token', newToken)
     const data = await validateToken()
     applyUserData(data)
   } catch {
-    // validateToken 失败：尝试 refresh_token
-    try {
-      const newToken = await refreshToken()
-      const data = await validateToken()
-      localStorage.setItem('auth_token', newToken)
-      applyUserData(data)
-    } catch {
-      // refresh 也失败：跳登录页（带 redirect = 当前 portal URL）
-      redirectToLogin({ reason: 'portal_refresh_failed' })
-    }
+    // refresh 或 validate 失败：跳登录页（带 redirect = 当前 portal URL）
+    redirectToLogin({ reason: 'portal_auth_failed' })
   }
 }
 
@@ -140,6 +135,11 @@ function resolveTargetOrigin(item) {
 }
 
 /**
+ * 防止 sendAuthToIframe 并发执行的标志锁
+ */
+let isIssuingPortalToken = false
+
+/**
  * 向当前激活的 iframe 推送门户子 refresh_token
  *
  * 流程：
@@ -152,20 +152,29 @@ function resolveTargetOrigin(item) {
  * @returns {Promise<void>}
  */
 async function sendAuthToIframe() {
+  if (isIssuingPortalToken) {
+    console.log('[PortalApp] sendAuthToIframe 正在执行中，跳过重复调用')
+    return
+  }
+  isIssuingPortalToken = true
+
   console.log('[PortalApp] sendAuthToIframe 开始')
   const item = getActiveItem()
   console.log('[PortalApp] 当前激活项:', { key: item?.key, type: item?.type, url: item?.url })
   if (!item || item.type !== 'iframe') {
     console.warn('[PortalApp] 当前激活项不是 iframe 类型，跳过发送')
+    isIssuingPortalToken = false
     return
   }
   const iframe = iframeRef.value
   if (!iframe) {
     console.warn('[PortalApp] iframeRef.value 为 null，无法获取 iframe DOM')
+    isIssuingPortalToken = false
     return
   }
   if (!iframe.contentWindow) {
     console.warn('[PortalApp] iframe.contentWindow 不可用')
+    isIssuingPortalToken = false
     return
   }
   console.log('[PortalApp] iframe DOM 存在，contentWindow 可用')
@@ -179,6 +188,7 @@ async function sendAuthToIframe() {
     tokenInfo = await issuePortalRefreshToken()
   } catch (e) {
     console.error('[PortalApp] 颁发门户子 refresh_token 失败:', e)
+    isIssuingPortalToken = false
     return
   }
 
@@ -206,6 +216,7 @@ async function sendAuthToIframe() {
   })
   iframe.contentWindow.postMessage(payload, targetOrigin)
   console.log('[PortalApp] postMessage 发送完成')
+  isIssuingPortalToken = false
 }
 
 /**

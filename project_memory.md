@@ -150,10 +150,10 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 - Access Token 不可用于 refresh 接口（refresh 接口拒绝 type=access）
 - Refresh Token 通过 HttpOnly Cookie 传递，前端 JS 无法读取
 - Cookie 属性：`HttpOnly; SameSite=Strict; Secure; Path=/api/auth; Max-Age=86400`
-- Refresh Token 在服务端数据库存储哈希值，支持主动撤销
-- Admin 强制下线操作仅清除目标用户的 Refresh Token，保留 Session 记录以便审计查询
-- 登出时：删除数据库记录 + 清除 Cookie
-- 密码修改时：删除该用户所有 Refresh Token 记录（强制所有设备重新登录）
+- Refresh Token 在服务端数据库存储哈希值，支持主动删除
+- Admin 强制下线操作清除目标用户的所有 Refresh Token 与 Portal Refresh Token，保留 Session 记录以便审计查询
+- 登出时：删除数据库记录 + 清除 Cookie + 删除该用户所有 portal_refresh_tokens
+- 密码修改时：删除该用户所有 Refresh Token 记录并删除所有 Portal Refresh Token（强制所有设备重新登录）
 
 ### Portal Refresh Token（子 refresh_token 委派机制）
 
@@ -161,12 +161,14 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 
 **方案**：颁发"子 refresh_token"给父页，父页通过 postMessage 推送给第三方；第三方可像普通 SPA 一样用它反复换 access_token。
 
-- **颁发**：`POST /api/auth/issue-portal-refresh-token`（需 Bearer access_token，auth_middleware 校验），调用 `jwt_auth.generate_refresh_token` 生成标准 JWT 格式 token（与主 refresh_token 统一），SHA256 后存入 `portal_refresh_tokens` 表
+- **颁发**：`POST /api/auth/issue-portal-refresh-token`（需 Bearer access_token，auth_middleware 校验），调用 `jwt_auth.generate_refresh_token` 生成标准 JWT 格式 token（与主 refresh_token 统一），SHA256 后存入 `portal_refresh_tokens` 表；**生成新 token 前先物理删除该用户所有旧记录**，确保同一用户只有一条 portal token
 - **使用**：第三方 iframe 调 `POST /api/auth/refresh`，body `{"refresh_token":"<子>"}` 或 header `X-Refresh-Token`，换 access_token
 - **TTL**：`PORTAL_REFRESH_TOKEN_TTL_SECONDS`（默认 86400 = 24h）
 - **过期处理**：第三方 API 401 → 重试 refresh 失败 → `window.top.location.href = '/login'`；用户重新登录后父页重新颁发
-- **撤销**：登出时 `revoke_user_tokens(user_id)` 一并清；admin 踢人同理（后续可加）
+- **删除**：登出、密码修改、admin 强制下线时均调用 `delete_user_tokens(user_id)` 一并物理删除该用户所有 portal_refresh_tokens
 - **与主 refresh_token 的边界**：主 refresh_token 仍只通过 HttpOnly Cookie 走（原有逻辑完全不变）；子 token 是"借"给第三方的副本，**不进入主 refresh_tokens 表**
+- **前端并发锁**：`PortalApp.vue` 的 `sendAuthToIframe` 使用 `isIssuingPortalToken` 标志锁，防止 iframe `load` 事件重复触发或 `PORTAL_AUTH_REQUEST` 并发导致重复申请
+- **数据库约束**：`store_token` 内部先 DELETE 再 INSERT，从逻辑层面强制一个用户只有一条记录
 - **postMessage 协议**：
   - 父 → 第三方：`{type:'PORTAL_AUTH', refreshToken, username, userId, userRole, apiBaseUrl, issuedAt, expiresIn}`
   - 第三方 → 父：`{type:'PORTAL_AUTH_REQUEST'}`（在首次加载未及时收到时、或 refresh 失败时主动请求）
@@ -246,7 +248,7 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 | user_id | INTEGER FK → users | 用户ID |
 | username | VARCHAR(100) | 用户名（冗余用于审计） |
 | expires_at | TIMESTAMP | 过期时间（默认 24 小时） |
-| revoked | BOOLEAN DEFAULT FALSE | 软删除标志 |
+| revoked | BOOLEAN DEFAULT FALSE | ~~软删除标志（已废弃，逻辑上改为物理删除，不再使用）~~ |
 | created_at | TIMESTAMP DEFAULT NOW() | 创建时间 |
 
 ## API 路由汇总
@@ -455,6 +457,10 @@ system_prompt = (
 **测试**：
 - 后端：`tests/test_ask_user_question.py` 17 个测试（Schema 10 + Tool 2 + HitlCheckNode 5）
 - 前端：`web/Agent/src/components/__tests__/HumanApprovalBox.spec.js` 14 个测试
+- 核心工具：`app/tests/core/tools/` 新增 3 个测试模块：
+  - `test_human_in_the_loop_tools.py`：Schema 7 + Tool 2，覆盖 QuestionOption/Question/AskUserQuestionInput 约束与 Other 注入逻辑
+  - `test_base_tools.py`：导入 + get_current_time Mock 调用 + _split_content 分块 3 个用例
+  - `test_mcp_tool_adapter.py`：导入 + 7 个主要函数/类存在性验证
 - 全量：后端 17/17 + 前端 73/73 全部通过
 
 ## 前端架构（web/Agent）

@@ -430,9 +430,9 @@ async def kick_user(user_id: int, req: Request):
     # 将该用户所有 Session 标记为 kicked（使其从在线列表中消失，但保留会话记录）
     kicked_sessions = await session_cache.kick_user_sessions(user_id)
 
-    # 撤销该用户所有 Portal Refresh Token（防止第三方 iframe 继续换 token）
+    # 删除该用户所有 Portal Refresh Token（防止第三方 iframe 继续换 token）
     from app.shared.utils.auth.portal_refresh_token_db import PortalRefreshTokenDB
-    revoked_portal_tokens = await PortalRefreshTokenDB.revoke_user_tokens(user_id)
+    deleted_portal_tokens = await PortalRefreshTokenDB.delete_user_tokens(user_id)
 
     # 记录审计日志
     client_ip = req.client.host if req.client else "unknown"
@@ -440,14 +440,14 @@ async def kick_user(user_id: int, req: Request):
     await AuditLog.write_log(
         action='admin_kick_user',
         username=admin_username,
-        detail=f'强制用户 {user["username"]}(ID:{user_id}) 下线，清除 {deleted_count} 个 Refresh Token，撤销 {revoked_portal_tokens} 个 Portal Token，标记 {kicked_sessions} 个 Session 为 kicked',
+        detail=f'强制用户 {user["username"]}(ID:{user_id}) 下线，清除 {deleted_count} 个 Refresh Token，删除 {deleted_portal_tokens} 个 Portal Token，标记 {kicked_sessions} 个 Session 为 kicked',
         ip_address=client_ip
     )
 
     return {
         "message": f"用户 {user['username']} 已被强制下线",
         "deleted_tokens": deleted_count,
-        "revoked_portal_tokens": revoked_portal_tokens,
+        "deleted_portal_tokens": deleted_portal_tokens,
         "kicked_sessions": kicked_sessions
     }
 
@@ -506,10 +506,10 @@ async def update_password(user_id: int, request: PasswordUpdateRequest):
     # 密码修改后清除该用户所有 Refresh Token（强制重新登录）
     deleted_count = await RefreshTokenDB.delete_user_tokens(user_id)
 
-    # 密码修改后同时撤销该用户所有 Portal Refresh Token
+    # 密码修改后同时删除该用户所有 Portal Refresh Token
     from app.shared.utils.auth.portal_refresh_token_db import PortalRefreshTokenDB
-    revoked_portal = await PortalRefreshTokenDB.revoke_user_tokens(user_id)
-    print(f"[密码修改] 已清除用户 {user_id} 的 {deleted_count} 个 Refresh Token，撤销 {revoked_portal} 个 Portal Token")
+    deleted_portal = await PortalRefreshTokenDB.delete_user_tokens(user_id)
+    print(f"[密码修改] 已清除用户 {user_id} 的 {deleted_count} 个 Refresh Token，删除 {deleted_portal} 个 Portal Token")
 
     return {"message": "密码修改成功"}
 

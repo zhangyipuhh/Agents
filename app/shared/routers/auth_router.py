@@ -566,6 +566,9 @@ async def issue_portal_refresh_token(req: Request):
             detail="无法识别当前用户"
         )
 
+    # 先删除该用户所有旧的 portal refresh_token，确保一个用户只有一条记录
+    await PortalRefreshTokenDB.delete_user_tokens(user_id)
+
     # 生成门户子 refresh_token（与主 token 统一为 JWT 格式）
     ttl_seconds = settings.portal_auth.portal_refresh_token_ttl_seconds
     portal_refresh_token = await jwt_auth.generate_refresh_token(
@@ -665,9 +668,9 @@ async def logout(req: Request, response: Response):
         token_hash = RefreshTokenDB.hash_token(refresh_token)
         await RefreshTokenDB.delete_token(token_hash)
 
-    # 撤销该用户所有门户子 refresh_token（防止子 token 残留被第三方利用）
+    # 删除该用户所有门户子 refresh_token（防止子 token 残留被第三方利用）
     if user_id:
-        await PortalRefreshTokenDB.revoke_user_tokens(user_id)
+        await PortalRefreshTokenDB.delete_user_tokens(user_id)
 
     # 清除 Refresh Token Cookie
     response.delete_cookie(
