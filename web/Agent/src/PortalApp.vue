@@ -82,10 +82,10 @@ function applyUserData(data) {
  * 两段式认证检查
  * 1. 先调用 refreshToken 刷新令牌（会查服务端数据库，能实时感知 token 被删除/踢人）
  * 2. 刷新成功后再 validateToken 验证并应用用户数据
- * 3. 若 refresh 或 validate 失败则调用 redirectToLogin 跳转到登录页（带 redirect 参数回到当前 portal URL）
+ * 3. 若 refresh 或 validate 失败则调用 redirectToLogin 跳转到 /login 入口（带 redirect 参数回到当前 portal URL）
  *
- * 注意：未登录时**不**渲染 LoginView，而是直接通过 redirectToLogin 跳转到 /Agent/，
- * 由 /Agent/ 上的 App.vue 统一渲染登录页。这样可以避免：
+ * 注意：未登录时**不**渲染 LoginView，而是直接通过 redirectToLogin 跳转到 /login 入口。
+ * /login 是承载 LoginView 的唯一入口。这样可以避免：
  *   - 在 /portal 短暂渲染 LoginView 后又被浏览器卸载（造成"登录页闪烁两次"）
  *   - LoginView.onMounted 触发的 /api/auth/captcha 请求被取消（造成"captcha 调两次，第一次失败"）
  */
@@ -324,33 +324,7 @@ async function handleLogout() {
   isLoggedIn.value = false
   currentUser.value = { username: '', role: '' }
   localStorage.removeItem('user_id')
-  window.location.reload()
-}
-
-/**
- * 处理 LoginView 的登录成功事件
- * 将认证信息写入 localStorage 并切换为已登录态
- * 注意：URL 中的 redirect 回跳由 LoginView 内部统一处理
- * @param {Object} data - 登录结果数据，包含 access_token、role、username、user_id
- */
-function handleLoginSuccess(data) {
-  if (data.access_token) {
-    localStorage.setItem('auth_token', data.access_token)
-  }
-  if (data.role) {
-    localStorage.setItem('user_role', data.role)
-  }
-  if (data.username) {
-    localStorage.setItem('username', data.username)
-  }
-  if (data.user_id !== undefined && data.user_id !== null) {
-    localStorage.setItem('user_id', String(data.user_id))
-  }
-  currentUser.value = {
-    username: data.username || '',
-    role: data.role || ''
-  }
-  isLoggedIn.value = true
+  redirectToLogin({ reason: 'user_logout' })
 }
 
 /**
@@ -379,7 +353,7 @@ onUnmounted(() => {
   <!-- 认证状态检查中 / 未登录跳转前：仅显示占位符，不渲染 LoginView
        原因：避免在 /portal 短暂渲染 LoginView 后又被浏览器卸载（造成"登录页闪烁两次"），
             以及避免 LoginView.onMounted 触发的 /api/auth/captcha 请求被取消（造成"captcha 调两次，第一次失败"）。
-       跳转目标：redirectToLogin() 会跳到 /Agent/?redirect=/portal，由 /Agent/ 上的 App.vue 统一渲染登录页 -->
+       跳转目标：redirectToLogin() 会跳到 /login?redirect=/portal，由 /login 入口统一渲染登录页 -->
   <div v-if="!isLoggedIn" class="auth-loading-screen">
     <div class="auth-loading-spinner"></div>
     <div class="auth-loading-text">正在验证登录状态...</div>

@@ -7,6 +7,10 @@
  * 2. localStorage 中存在 auth_token 时，优先尝试 refresh_token 静默刷新；
  *    仅当 token 完全失效（refresh 也失败）时才跳登录页，避免无谓的"踢回登录页"。
  * 3. 提供 safeRedirectUrl 防御开放重定向漏洞（拒绝 javascript:、data: 等危险协议）。
+ *
+ * 注意：登录页入口为独立的 /login（由 login.html + login-main.js 承载 LoginView），
+ * App.vue（/Agent/）与 PortalApp.vue（/portal）不再渲染 LoginView / RegisterView；
+ * 所有未登录场景统一通过 redirectToLogin() 跳到 /login?redirect=<原页面>。
  */
 
 import { refreshToken } from './api.js'
@@ -18,8 +22,8 @@ import { refreshToken } from './api.js'
 function isAlreadyOnLoginPage() {
   if (typeof window === 'undefined') return false
   const path = window.location.pathname.toLowerCase()
-  // 主应用的登录页就是 /Agent/ 或 /Agent/index.html（大小写不敏感）
-  return path === '/agent/' || path === '/agent' || path === '/agent/index.html'
+  // 登录页：独立 /login 入口（承载 LoginView 唯一入口；由 login.html + login-main.js 构建）
+  return path === '/login' || path === '/login.html'
 }
 
 /**
@@ -80,13 +84,13 @@ export function safeRedirectUrl(target) {
  * @returns {string} 登录页完整 URL
  */
 export function buildLoginUrl(redirectPath) {
-  if (typeof window === 'undefined') return '/Agent/'
+  if (typeof window === 'undefined') return '/login'
   const base = window.location.origin
   const safe = safeRedirectUrl(redirectPath)
   if (!safe) {
-    return `${base}/Agent/`
+    return `${base}/login`
   }
-  return `${base}/Agent/?redirect=${encodeURIComponent(safe)}`
+  return `${base}/login?redirect=${encodeURIComponent(safe)}`
 }
 
 /**
