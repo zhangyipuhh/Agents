@@ -80,7 +80,8 @@ async function checkAuth() {
     }
     applyUserData(data)
   } catch {
-    // refresh 或 validate 失败：跳登录页（带 redirect），由 LoginView 接管
+    // refresh 或 validate 失败：清除本地 token，跳登录页（带 redirect），由 LoginView 接管
+    clearAuth()
     redirectToLogin({ reason: 'checkAuth_refresh_failed' })
   }
 }
