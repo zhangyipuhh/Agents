@@ -6,6 +6,11 @@
 !readme.md
 !.env.example
 !.gitignore
+# 包含 GitHub Actions 工作流
+!.github/
+!.github/workflows/
+!.github/workflows/*.yml
+!.github/workflows/*.yaml
 # 包含 app 目录
 !app/
 # 包含 app 目录下的所有文件
