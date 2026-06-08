@@ -3,8 +3,6 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { validateToken, refreshToken, logout, clearAuth, issuePortalRefreshToken } from './utils/api.js'
 import { redirectToLogin } from './utils/auth.js'
 import { getNavItems, appConfig } from './config/portal.js'
-import LoginView from './views/LoginView.vue'
-import RegisterView from './views/RegisterView.vue'
 
 /**
  * 导航栏高度（像素）
@@ -17,10 +15,10 @@ const NAV_HEIGHT = 52
 const isLoggedIn = ref(false)
 
 /**
- * 未登录态下的视图类型：'login' | 'register'
- * 用于在门户页内切换登录与注册视图，登录成功后会切换为已登录态
+ * 认证状态检查是否就绪；用于在 checkAuth 完成前显示 loading 占位，
+ * 避免因异步资源加载造成"页面内容闪烁两次"的视觉问题
  */
-const authView = ref('login')
+const authReady = ref(false)
 
 /**
  * 当前登录用户信息
@@ -85,12 +83,17 @@ function applyUserData(data) {
  * 1. 先调用 refreshToken 刷新令牌（会查服务端数据库，能实时感知 token 被删除/踢人）
  * 2. 刷新成功后再 validateToken 验证并应用用户数据
  * 3. 若 refresh 或 validate 失败则调用 redirectToLogin 跳转到登录页（带 redirect 参数回到当前 portal URL）
- *    注意：不再主动 clearAuth()，保留本地 token 以便可能的下次重试。
+ *
+ * 注意：未登录时**不**渲染 LoginView，而是直接通过 redirectToLogin 跳转到 /Agent/，
+ * 由 /Agent/ 上的 App.vue 统一渲染登录页。这样可以避免：
+ *   - 在 /portal 短暂渲染 LoginView 后又被浏览器卸载（造成"登录页闪烁两次"）
+ *   - LoginView.onMounted 触发的 /api/auth/captcha 请求被取消（造成"captcha 调两次，第一次失败"）
  */
 async function checkAuth() {
   const token = localStorage.getItem('auth_token')
   if (!token) {
-    // 本地无 token：跳登录页（带 redirect = 当前 portal URL）
+    // 本地无 token：直接跳到 /Agent/?redirect=/portal，由登录页统一接管
+    // 不设置 authReady.value = true，避免渲染 LoginView 触发额外的 captcha 请求
     redirectToLogin({ reason: 'portal_no_token' })
     return
   }
@@ -100,12 +103,25 @@ async function checkAuth() {
     localStorage.setItem('auth_token', newToken)
     const data = await validateToken()
     applyUserData(data)
+    // 已登录：标记为就绪，Vue 将渲染门户导航栏与主内容区
+    authReady.value = true
   } catch {
-    // refresh 或 validate 失败：清除本地 token，跳登录页（带 redirect = 当前 portal URL）
+    // refresh 或 validate 失败（典型场景：被 admin 强制下线后 refresh_token 已被服务端删除）
+    // 清除本地 token，跳登录页（带 redirect = 当前 portal URL）
+    // 注意：失败路径**不**置 authReady.value = true，避免在跳转前渲染 LoginView
     clearAuth()
     redirectToLogin({ reason: 'portal_auth_failed' })
   }
 }
+
+// 兜底：若 checkAuth 在 5 秒内未完成且仍处于"未登录"状态（例如 redirectToLogin 未触发跳转），
+// 强制将 authReady 置为 true，避免页面卡死在占位符
+// 注：失败路径下不修改 authReady，但保留此兜底防止异常死锁
+setTimeout(() => {
+  if (!authReady.value) {
+    authReady.value = true
+  }
+}, 5000)
 
 /**
  * 获取当前激活的导航项对象
@@ -335,7 +351,6 @@ function handleLoginSuccess(data) {
     role: data.role || ''
   }
   isLoggedIn.value = true
-  authView.value = 'login'
 }
 
 /**
@@ -361,16 +376,14 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <!-- 未登录：直接渲染登录页，顶部 nav 不显示 -->
-  <LoginView
-    v-if="!isLoggedIn && authView === 'login'"
-    @login-success="handleLoginSuccess"
-    @switch-to-register="authView = 'register'"
-  />
-  <RegisterView
-    v-else-if="!isLoggedIn && authView === 'register'"
-    @switch-to-login="authView = 'login'"
-  />
+  <!-- 认证状态检查中 / 未登录跳转前：仅显示占位符，不渲染 LoginView
+       原因：避免在 /portal 短暂渲染 LoginView 后又被浏览器卸载（造成"登录页闪烁两次"），
+            以及避免 LoginView.onMounted 触发的 /api/auth/captcha 请求被取消（造成"captcha 调两次，第一次失败"）。
+       跳转目标：redirectToLogin() 会跳到 /Agent/?redirect=/portal，由 /Agent/ 上的 App.vue 统一渲染登录页 -->
+  <div v-if="!isLoggedIn" class="auth-loading-screen">
+    <div class="auth-loading-spinner"></div>
+    <div class="auth-loading-text">正在验证登录状态...</div>
+  </div>
 
   <!-- 已登录：显示导航栏 + 主内容区 -->
   <div v-else class="portal-wrapper">
@@ -450,6 +463,41 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* 认证状态检查中的全屏 loading 占位
+   用途：在 checkAuth 还未完成时显示，避免先渲染 LoginView 再被替换造成的视觉闪烁
+   设计：与主应用色调保持一致，居中显示旋转动画和提示文字 */
+.auth-loading-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-base);
+  background: linear-gradient(135deg, #EBF4FF 0%, #F0F7FF 40%, #FFFFFF 100%);
+  z-index: 9999;
+}
+
+.auth-loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(30, 90, 168, 0.15);
+  border-top-color: #1E5AA8;
+  border-radius: 50%;
+  animation: auth-loading-spin 0.8s linear infinite;
+}
+
+.auth-loading-text {
+  font-size: var(--font-size-base);
+  color: var(--color-text-secondary);
+  letter-spacing: 0.5px;
+}
+
+@keyframes auth-loading-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 /* 全局重置：消除 body 与 #app 的默认边距和滚动条 */
 :global(body) {
   margin: 0;

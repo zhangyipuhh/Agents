@@ -15,6 +15,9 @@ import { redirectToLogin, tryRefreshOrRedirect, safeRedirectUrl } from './utils/
 const currentPage = ref('agent')
 const authView = ref('login') // 'login' | 'register'
 const isLoggedIn = ref(false)
+// 认证状态检查是否就绪；用于在 checkAuth 完成前显示 loading 占位，
+// 避免因异步资源加载造成"页面内容闪烁两次"的视觉问题
+const authReady = ref(false)
 const currentUser = ref({ username: '', role: '', userId: null })
 
 const messages = reactive([])
@@ -67,6 +70,11 @@ async function checkAuth() {
   if (!token) {
     // 本地无 token：直接跳登录页（带 redirect），由登录页负责后续引导
     redirectToLogin({ reason: 'checkAuth_no_token' })
+    // redirectToLogin 内部发现当前已在登录页时不会跳转，
+    // 但 localStorage 中可能残留 user_role / username 等信息，主动清理确保状态完全干净
+    clearAuth()
+    // 显式置 authReady = true，让 Vue 渲染登录页（finally 在 if-return 路径下不会执行）
+    authReady.value = true
     return
   }
   try {
@@ -83,8 +91,19 @@ async function checkAuth() {
     // refresh 或 validate 失败：清除本地 token，跳登录页（带 redirect），由 LoginView 接管
     clearAuth()
     redirectToLogin({ reason: 'checkAuth_refresh_failed' })
+  } finally {
+    // 无论认证结果如何，都标记为就绪，让 Vue 决定渲染登录页或主应用
+    authReady.value = true
   }
 }
+
+// 兜底：若 checkAuth 在 5 秒内未完成，强制将 authReady 置为 true，
+// 避免网络异常等极端情况下页面卡死在 loading 占位
+setTimeout(() => {
+  if (!authReady.value) {
+    authReady.value = true
+  }
+}, 5000)
 
 /**
  * 处理登录成功事件
@@ -526,9 +545,15 @@ async function handleSessionSwitch(targetSessionId) {
 </script>
 
 <template>
+  <!-- 认证状态检查中：显示 loading 占位，避免先渲染登录页再被 checkAuth 覆盖造成的视觉闪烁 -->
+  <div v-if="!authReady" class="auth-loading-screen">
+    <div class="auth-loading-spinner"></div>
+    <div class="auth-loading-text">正在验证登录状态...</div>
+  </div>
+
   <!-- 未登录：显示登录/注册页面 -->
   <LoginView
-    v-if="!isLoggedIn && authView === 'login'"
+    v-else-if="!isLoggedIn && authView === 'login'"
     @login-success="handleLoginSuccess"
     @switch-to-register="authView = 'register'"
   />
@@ -593,6 +618,41 @@ async function handleSessionSwitch(targetSessionId) {
 </template>
 
 <style scoped>
+/* 认证状态检查中的全屏 loading 占位
+   用途：在 checkAuth 还未完成时显示，避免先渲染 LoginView 再被替换造成的视觉闪烁
+   设计：与主应用色调保持一致，居中显示旋转动画和提示文字 */
+.auth-loading-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-base);
+  background: linear-gradient(135deg, #EBF4FF 0%, #F0F7FF 40%, #FFFFFF 100%);
+  z-index: 9999;
+}
+
+.auth-loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(30, 90, 168, 0.15);
+  border-top-color: #1E5AA8;
+  border-radius: 50%;
+  animation: auth-loading-spin 0.8s linear infinite;
+}
+
+.auth-loading-text {
+  font-size: var(--font-size-base);
+  color: var(--color-text-secondary);
+  letter-spacing: 0.5px;
+}
+
+@keyframes auth-loading-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 .app-layout {
   display: flex;
   width: 100%;

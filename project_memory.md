@@ -508,6 +508,9 @@ system_prompt = (
   1. 优先调用 `validateToken` 验证当前 access token
   2. 失败则调用 `refreshToken` 换新 token，再 `validateToken`
   3. 仍失败则 `clearAuth` + 跳登录页
+- **PortalApp 登录页归属**：`PortalApp.vue`（`/portal` 入口）**不**渲染 `LoginView`；未登录时只通过 `redirectToLogin()` 跳转到 `/Agent/?redirect=/portal`，由 `/Agent/` 上的 `App.vue` 统一渲染登录页。
+  - 原因：避免在 `/portal` 短暂渲染 `LoginView` 触发 `/api/auth/captcha` 后被浏览器取消（造成"captcha 调两次，第一次失败"），以及避免"登录页闪烁两次"。
+  - `PortalApp.checkAuth` 失败路径**不**置 `authReady.value = true`；只有成功路径（已登录）才置 `authReady=true`，让 Vue 渲染门户导航栏。
 - **localStorage 键**：
   - `auth_token`：access token（每次请求 `Authorization: Bearer`）
   - `username` / `user_role` / `user_id`：用户基本信息
