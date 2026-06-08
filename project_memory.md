@@ -612,3 +612,50 @@ system_prompt = (
   - `sseParser.test.js`：SSE 解析（含 Python 字面量兼容）
 - **项目历史**：后端 17/17 + 前端 73/73 全部通过（参见 "HITL 流程" 章节）
 
+## CI 测试（pytest + GitHub Actions）
+
+### 后端测试目录（`app/tests/`）
+
+- **配置**：`app/pytest.ini`（`testpaths = tests`、`addopts = -v --tb=short`）
+- **基础设施**：`app/tests/conftest.py` 与 `app/tests/shared/conftest.py`
+  - 在收集阶段 autouse mock 外部依赖：`asyncpg`、`langchain.*`、`langgraph.*`、`docx.*`、`aiofiles`、`pypdf`、`pymupdf`、`deepagents.*`、`mcpClient.*`、`sse_starlette`、`markitdown`、`unstructured` 等
+  - 对 `docx.enum`、`docx.shared`、`docx.oxml` 等子包使用 `types.ModuleType` + `__path__` 注入，保证 `from docx.enum.section import WD_SECTION_START` 等子模块导入可用
+  - 对 `langgraph.types.Command`、`langgraph.prebuilt.ToolNode`、`langgraph.graph.MessagesState/StateGraph/START/END` 等提供 `Mock` 或自定义 `_Command` 类
+  - 在 `app` fixture 中 patch `typing._type_check`，遇到带 `_mock_name` 属性的对象直接跳过原始类型检查，避免 `Optional[Mock]`、`Union[AgentState, LGCommand]` 等注解触发 SyntaxError
+  - 提供 fixtures：`app`（session 级 FastAPI 实例）、`client`（function 级 TestClient）、`jwt_auth`、`admin_token`/`user_token`/`admin_headers`/`user_headers`
+
+### 测试覆盖
+
+- **`tests/core/`**：核心模块（config、database、server、prompts、agent_context、dependencies）
+- **`tests/core/tools/`**：HITL 工具、BaseTools、MCP 适配器
+- **`tests/shared/`**：auth_router、file_router、session_router、user_router、user_db、session_db、refresh_token_db、portal_refresh_token_db、captcha、safety、DocumentLoader
+- **`tests/features/*/`**：8 个 Agent 冒烟测试（config 可导入、提示词非空、tools 可导入、router 已注册到 `/api/*` 路径）
+- **`tests/integration/`**：端到端认证流程（注册→登录→validate→logout）
+
+### Mock 策略
+
+- **不引入真实 PostgreSQL / 真实 LLM / 真实文件系统**，全部内存 + Mock
+- 数据库：`AUTH_STORAGE_MODE=memory` + `UserDB._memory_users`、`SessionDB` 内存字典
+- LLM：所有 `langchain_*.Chat*`、`init_chat_model` 均为 `Mock`
+- 文件系统：`pypdf`、`PyMuPDF`、`docx`、`PIL`、`numpy` 均为 `Mock` 或 `ModuleType`
+- `app/main.py::register_routers(target_app=None)`：支持在测试中注入 test app 实例，避免依赖全局 `app`
+
+### CI 工作流（`.github/workflows/pr-check.yml`）
+
+- **触发**：`pull_request` 与 `push` 到 `main` / `preview` 分支
+- **Jobs**：
+  - `backend-test`：`ubuntu-latest` + `actions/setup-python@v5`（Python 3.11，`cache: pip`）→ `pip install -r app/requirements.txt` → `pytest --tb=short -q`
+  - `frontend-test`：`ubuntu-latest` + `actions/setup-node@v4`（Node 20，`cache: npm`）→ `npm ci` → `npm run test`（vitest）
+  - `docker-build-check`：`ubuntu-latest` + `docker/setup-buildx-action@v3` + `docker/build-push-action@v5` 构建 `app/Dockerfile` 与 `web/Agent/Dockerfile`，不 push
+- **缓存**：pip 与 npm 均启用 GHA 缓存加速
+
+### 验证结果
+
+- **本地全量**：`cd app && python -m pytest tests/ -v --tb=short` → **130 passed**（2026-06-08）
+- **CI 期望**：与本地一致，所有用例通过
+
+### 已知工程实践
+
+- **TestClient.delete() 不支持 `data` / `json` 关键字**：Starlette `TestClient.delete` 显式仅暴露 `params`、`headers`、`cookies` 等；如需发送 JSON body，应改用 `client.request("DELETE", url, headers=..., json=...)`（参见 `app/tests/shared/test_file_router.py::test_delete_files`）
+- **PortalRefreshTokenDB 仅暴露物理删除**：使用 `delete_token(token_hash)`，不存在 `revoke_token`（参见 `app/tests/shared/test_portal_refresh_token_db.py`）
+
