@@ -101,7 +101,8 @@ async function checkAuth() {
     const data = await validateToken()
     applyUserData(data)
   } catch {
-    // refresh 或 validate 失败：跳登录页（带 redirect = 当前 portal URL）
+    // refresh 或 validate 失败：清除本地 token，跳登录页（带 redirect = 当前 portal URL）
+    clearAuth()
     redirectToLogin({ reason: 'portal_auth_failed' })
   }
 }

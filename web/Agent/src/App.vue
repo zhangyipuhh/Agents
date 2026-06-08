@@ -56,7 +56,8 @@ function applyUserData(data) {
 
 /**
  * 检查本地存储的登录状态
- * 三段式验证：先 validateToken，失败则 refreshToken 后再次 validateToken
+ * 两段式验证：先 refreshToken（查服务端数据库，能实时感知 token 被删除/踢人），
+ *            成功后再 validateToken 验证并应用用户数据。
  * 全部失败：调用 redirectToLogin() 携带当前 URL 作为 redirect 参数，
  *          登录成功后回到原页面（避免被强制跳到 /Agent/）。
  * 注意：不再主动 clearAuth()，保留本地 token 以便可能的下次重试。
@@ -69,6 +70,9 @@ async function checkAuth() {
     return
   }
   try {
+    // 先尝试 refresh：refresh 会查服务端数据库，能实时感知 token 被删除/踢人
+    const newToken = await refreshToken()
+    localStorage.setItem('auth_token', newToken)
     const data = await validateToken()
     const savedUserId = localStorage.getItem('user_id')
     if (savedUserId && savedUserId !== 'null' && savedUserId !== 'undefined') {
@@ -76,20 +80,8 @@ async function checkAuth() {
     }
     applyUserData(data)
   } catch {
-    // validateToken 失败：尝试 refresh_token
-    try {
-      const newToken = await refreshToken()
-      const data = await validateToken()
-      localStorage.setItem('auth_token', newToken)
-      const savedUserId = localStorage.getItem('user_id')
-      if (savedUserId && savedUserId !== 'null' && savedUserId !== 'undefined') {
-        data.user_id = parseInt(savedUserId, 10)
-      }
-      applyUserData(data)
-    } catch {
-      // refresh 也失败：跳登录页（带 redirect），由 LoginView 接管
-      redirectToLogin({ reason: 'checkAuth_refresh_failed' })
-    }
+    // refresh 或 validate 失败：跳登录页（带 redirect），由 LoginView 接管
+    redirectToLogin({ reason: 'checkAuth_refresh_failed' })
   }
 }
 
