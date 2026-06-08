@@ -24,7 +24,7 @@ Date: 2026-06-05
 """
 import hashlib
 import threading
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from datetime import datetime
 from app.core.database import DatabasePool
 
@@ -217,3 +217,31 @@ class PortalRefreshTokenDB:
         )
         parts = result.split()
         return int(parts[1]) if len(parts) > 1 else 0
+
+    @classmethod
+    async def get_users_with_valid_tokens(cls) -> List[dict]:
+        """
+        获取所有持有有效 Portal Refresh Token 的用户列表
+
+        用于在线用户监控，判断用户是否因持有未撤销且未过期 portal_refresh_token 而在线。
+
+        Returns:
+            List[dict]: 用户列表，每项包含 user_id、username
+        """
+        if not cls.is_enabled():
+            now = datetime.utcnow()
+            user_map = {}
+            with cls._lock:
+                for record in cls._memory_tokens.values():
+                    if not record.get('revoked') and record['expires_at'] >= now:
+                        user_map[record['user_id']] = record.get('username', '')
+            return [{'user_id': uid, 'username': name} for uid, name in user_map.items()]
+
+        rows = await DatabasePool.fetch(
+            """
+            SELECT DISTINCT user_id, username
+            FROM portal_refresh_tokens
+            WHERE expires_at >= NOW() AND revoked = FALSE
+            """
+        )
+        return [{'user_id': row['user_id'], 'username': row['username']} for row in rows]

@@ -195,3 +195,27 @@ class RefreshTokenDB:
         )
         parts = result.split()
         return int(parts[1]) if len(parts) > 1 else 0
+
+    @classmethod
+    async def get_users_with_valid_tokens(cls) -> List[dict]:
+        """
+        获取所有持有有效 Refresh Token 的用户列表
+
+        用于在线用户监控，判断用户是否因持有未过期主 refresh_token 而在线。
+
+        Returns:
+            List[dict]: 用户列表，每项包含 user_id
+        """
+        if not cls.is_enabled():
+            now = datetime.utcnow()
+            user_ids = set()
+            with cls._lock:
+                for record in cls._memory_tokens.values():
+                    if record['expires_at'] >= now:
+                        user_ids.add(record['user_id'])
+            return [{'user_id': uid} for uid in user_ids]
+
+        rows = await DatabasePool.fetch(
+            "SELECT DISTINCT user_id FROM refresh_tokens WHERE expires_at >= NOW()"
+        )
+        return [{'user_id': row['user_id']} for row in rows]

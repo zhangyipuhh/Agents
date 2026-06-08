@@ -257,15 +257,59 @@ async def get_online_users():
     """
     查询在线用户列表（admin 专用）
 
-    基于会话最后活跃时间判断在线状态，返回在线用户及其会话统计。
+    在线判定逻辑：用户持有任一有效 Token（主 refresh_token 或 portal_refresh_token）
+    或最近 30 分钟内有活跃 Session，即视为在线。
+    返回结构保持前端兼容。
 
     Returns:
         dict: 在线用户列表
     """
     from app.shared.utils.auth.session_db import SessionDB
+    from app.shared.utils.auth.refresh_token_db import RefreshTokenDB
+    from app.shared.utils.auth.portal_refresh_token_db import PortalRefreshTokenDB
+    from app.shared.utils.auth.user_db import UserDB
 
-    online_users = await SessionDB.get_all_active_sessions(minutes=30)
-    return {"online_users": online_users}
+    online_map = {}
+
+    # 1. 有活跃 Session 的用户（原有逻辑，作为活跃基础）
+    session_users = await SessionDB.get_all_active_sessions(minutes=30)
+    for u in session_users:
+        uid = u['user_id']
+        online_map[uid] = {
+            'user_id': uid,
+            'username': u['username'],
+            'session_count': u.get('session_count', 0),
+            'last_active_at': str(u.get('last_active_at')) if u.get('last_active_at') else None,
+        }
+
+    # 2. 有有效 portal_refresh_token 的用户（补充去重）
+    portal_users = await PortalRefreshTokenDB.get_users_with_valid_tokens()
+    for u in portal_users:
+        uid = u['user_id']
+        if uid in online_map:
+            continue
+        online_map[uid] = {
+            'user_id': uid,
+            'username': u.get('username', ''),
+            'session_count': 0,
+            'last_active_at': None,
+        }
+
+    # 3. 有有效主 refresh_token 的用户（补充去重）
+    refresh_users = await RefreshTokenDB.get_users_with_valid_tokens()
+    for u in refresh_users:
+        uid = u['user_id']
+        if uid in online_map:
+            continue
+        user = await UserDB.get_user_by_id(uid)
+        online_map[uid] = {
+            'user_id': uid,
+            'username': user['username'] if user else str(uid),
+            'session_count': 0,
+            'last_active_at': None,
+        }
+
+    return {"online_users": list(online_map.values())}
 
 
 @router.put('/{user_id}', dependencies=[Depends(require_admin)])
@@ -386,19 +430,24 @@ async def kick_user(user_id: int, req: Request):
     # 将该用户所有 Session 标记为 kicked（使其从在线列表中消失，但保留会话记录）
     kicked_sessions = await session_cache.kick_user_sessions(user_id)
 
+    # 撤销该用户所有 Portal Refresh Token（防止第三方 iframe 继续换 token）
+    from app.shared.utils.auth.portal_refresh_token_db import PortalRefreshTokenDB
+    revoked_portal_tokens = await PortalRefreshTokenDB.revoke_user_tokens(user_id)
+
     # 记录审计日志
     client_ip = req.client.host if req.client else "unknown"
     admin_username = getattr(req.state, 'username', 'unknown')
     await AuditLog.write_log(
         action='admin_kick_user',
         username=admin_username,
-        detail=f'强制用户 {user["username"]}(ID:{user_id}) 下线，清除 {deleted_count} 个 Refresh Token，标记 {kicked_sessions} 个 Session 为 kicked',
+        detail=f'强制用户 {user["username"]}(ID:{user_id}) 下线，清除 {deleted_count} 个 Refresh Token，撤销 {revoked_portal_tokens} 个 Portal Token，标记 {kicked_sessions} 个 Session 为 kicked',
         ip_address=client_ip
     )
 
     return {
         "message": f"用户 {user['username']} 已被强制下线",
         "deleted_tokens": deleted_count,
+        "revoked_portal_tokens": revoked_portal_tokens,
         "kicked_sessions": kicked_sessions
     }
 
@@ -456,7 +505,11 @@ async def update_password(user_id: int, request: PasswordUpdateRequest):
 
     # 密码修改后清除该用户所有 Refresh Token（强制重新登录）
     deleted_count = await RefreshTokenDB.delete_user_tokens(user_id)
-    print(f"[密码修改] 已清除用户 {user_id} 的 {deleted_count} 个 Refresh Token")
+
+    # 密码修改后同时撤销该用户所有 Portal Refresh Token
+    from app.shared.utils.auth.portal_refresh_token_db import PortalRefreshTokenDB
+    revoked_portal = await PortalRefreshTokenDB.revoke_user_tokens(user_id)
+    print(f"[密码修改] 已清除用户 {user_id} 的 {deleted_count} 个 Refresh Token，撤销 {revoked_portal} 个 Portal Token")
 
     return {"message": "密码修改成功"}
 
