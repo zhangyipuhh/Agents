@@ -2,9 +2,9 @@ name: PR Check
 
 on:
   pull_request:
-    branches: [main, master, develop, preview]
+    branches: [main, preview]
   push:
-    branches: [main, master, develop, preview]
+    branches: [main, preview]
 
 jobs:
   backend-test:
