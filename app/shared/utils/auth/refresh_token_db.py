@@ -197,6 +197,31 @@ class RefreshTokenDB:
         return int(parts[1]) if len(parts) > 1 else 0
 
     @classmethod
+    async def has_valid_token(cls, user_id: int) -> bool:
+        """
+        检查指定用户是否持有有效的 Refresh Token
+
+        Args:
+            user_id: 用户 ID
+
+        Returns:
+            bool: 该用户存在未过期的 Refresh Token 返回 True
+        """
+        if not cls.is_enabled():
+            now = datetime.utcnow()
+            with cls._lock:
+                for record in cls._memory_tokens.values():
+                    if record['user_id'] == user_id and record['expires_at'] >= now:
+                        return True
+            return False
+
+        row = await DatabasePool.fetchrow(
+            "SELECT 1 FROM refresh_tokens WHERE user_id = $1 AND expires_at >= NOW() LIMIT 1",
+            user_id
+        )
+        return row is not None
+
+    @classmethod
     async def get_users_with_valid_tokens(cls) -> List[dict]:
         """
         获取所有持有有效 Refresh Token 的用户列表
