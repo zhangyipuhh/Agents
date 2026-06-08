@@ -1,0 +1,20 @@
+version: "3.8"
+
+services:
+  backend:
+    image: ${ALIYUN_REGISTRY}/${ALIYUN_NAMESPACE}/backend:latest
+    container_name: preview-backend
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
+
+  frontend:
+    image: ${ALIYUN_REGISTRY}/${ALIYUN_NAMESPACE}/frontend:latest
+    container_name: preview-frontend
+    ports:
+      - "8080:80"
+    environment:
+      - VITE_API_TARGET=http://backend:8001
+    depends_on:
+      - backend
+    restart: unless-stopped
