@@ -152,11 +152,28 @@ function resolveTargetOrigin(item) {
  * @returns {Promise<void>}
  */
 async function sendAuthToIframe() {
+  console.log('[PortalApp] sendAuthToIframe 开始')
   const item = getActiveItem()
-  if (!item || item.type !== 'iframe') return
+  console.log('[PortalApp] 当前激活项:', { key: item?.key, type: item?.type, url: item?.url })
+  if (!item || item.type !== 'iframe') {
+    console.warn('[PortalApp] 当前激活项不是 iframe 类型，跳过发送')
+    return
+  }
   const iframe = iframeRef.value
-  if (!iframe || !iframe.contentWindow) return
+  if (!iframe) {
+    console.warn('[PortalApp] iframeRef.value 为 null，无法获取 iframe DOM')
+    return
+  }
+  if (!iframe.contentWindow) {
+    console.warn('[PortalApp] iframe.contentWindow 不可用')
+    return
+  }
+  console.log('[PortalApp] iframe DOM 存在，contentWindow 可用')
 
+  const targetOrigin = resolveTargetOrigin(item)
+  console.log('[PortalApp] targetOrigin 解析结果:', targetOrigin)
+
+  console.log('[PortalApp] 开始调用 issuePortalRefreshToken')
   let tokenInfo
   try {
     tokenInfo = await issuePortalRefreshToken()
@@ -165,7 +182,9 @@ async function sendAuthToIframe() {
     return
   }
 
-  const targetOrigin = resolveTargetOrigin(item)
+  const tokenPreview = tokenInfo.portal_refresh_token ? tokenInfo.portal_refresh_token.substring(0, 8) + '...' : '空'
+  console.log('[PortalApp] 获取到 portal_refresh_token:', tokenPreview, 'expires_in:', tokenInfo.expires_in)
+
   const payload = {
     type: 'PORTAL_AUTH',
     refreshToken: tokenInfo.portal_refresh_token,
@@ -176,7 +195,17 @@ async function sendAuthToIframe() {
     issuedAt: Date.now(),
     expiresIn: tokenInfo.expires_in
   }
+  console.log('[PortalApp] 即将通过 postMessage 发送 PORTAL_AUTH 到 origin:', targetOrigin, 'payload:', {
+    type: payload.type,
+    username: payload.username,
+    userId: payload.userId,
+    userRole: payload.userRole,
+    refreshToken: tokenPreview,
+    issuedAt: payload.issuedAt,
+    expiresIn: payload.expiresIn
+  })
   iframe.contentWindow.postMessage(payload, targetOrigin)
+  console.log('[PortalApp] postMessage 发送完成')
 }
 
 /**
@@ -184,6 +213,7 @@ async function sendAuthToIframe() {
  * @returns {void}
  */
 function onIframeLoad() {
+  console.log('[PortalApp] iframe load 事件触发，准备发送 PORTAL_AUTH')
   sendAuthToIframe()
 }
 
@@ -198,11 +228,21 @@ function onIframeLoad() {
  * @returns {void}
  */
 function handlePortalMessage(event) {
+  console.log('[PortalApp] 收到 message 事件，origin:', event.origin, 'type:', event.data?.type)
   const iframe = iframeRef.value
-  if (!iframe || !iframe.contentWindow) return
-  if (event.source !== iframe.contentWindow) return
+  if (!iframe || !iframe.contentWindow) {
+    console.warn('[PortalApp] iframe 不可用，忽略 message 事件')
+    return
+  }
+  if (event.source !== iframe.contentWindow) {
+    console.warn('[PortalApp] event.source 与当前 iframe.contentWindow 不一致，忽略 message 事件')
+    return
+  }
   if (event.data && event.data.type === 'PORTAL_AUTH_REQUEST') {
+    console.log('[PortalApp] 收到 PORTAL_AUTH_REQUEST，重新发送 PORTAL_AUTH')
     sendAuthToIframe()
+  } else {
+    console.log('[PortalApp] 收到非 PORTAL_AUTH_REQUEST 消息，已忽略')
   }
 }
 
@@ -370,7 +410,7 @@ onUnmounted(() => {
       <!-- 当前激活项为 iframe：在主内容区嵌入 iframe，并在加载完成时推送 PORTAL_AUTH -->
       <template v-if="getActiveItem() && getActiveItem().type === 'iframe'">
         <iframe
-          :ref="iframeRef"
+          ref="iframeRef"
           :src="getActiveItem().url"
           width="100%"
           height="100%"

@@ -566,12 +566,15 @@ async def issue_portal_refresh_token(req: Request):
             detail="无法识别当前用户"
         )
 
-    # 生成 32 字节随机 token
-    portal_refresh_token = secrets.token_urlsafe(32)
-
-    # 哈希后入库
-    token_hash = PortalRefreshTokenDB.hash_token(portal_refresh_token)
+    # 生成门户子 refresh_token（与主 token 统一为 JWT 格式）
     ttl_seconds = settings.portal_auth.portal_refresh_token_ttl_seconds
+    portal_refresh_token = await jwt_auth.generate_refresh_token(
+        username,
+        expires_delta=timedelta(seconds=ttl_seconds)
+    )
+
+    # 哈希后入库（仍存入 portal_refresh_tokens 表，便于独立撤销与审计）
+    token_hash = PortalRefreshTokenDB.hash_token(portal_refresh_token)
     expires_at = datetime.utcnow() + timedelta(seconds=ttl_seconds)
     stored = await PortalRefreshTokenDB.store_token(token_hash, user_id, username, expires_at)
     if not stored:
