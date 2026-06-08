@@ -172,6 +172,7 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
   - 第三方 → 父：`{type:'PORTAL_AUTH_REQUEST'}`（在首次加载未及时收到时、或 refresh 失败时主动请求）
   - 父校验 `event.source === iframe.contentWindow` 防冒用
   - 父用 `targetOrigin`（从 navItem 配置或 url 推断）避免 `postMessage(msg, '*')` 泄 token
+- **详细文档**：[docs/portal-iframe-token-guide.md](file:///e:/laboratory/AI/Agents/agent-user-mangerment/docs/portal-iframe-token-guide.md) — Portal 导航页 iframe Token 获取完整端到端流程指南（含接口说明、postMessage 协议、第三方接入示例、兼容逻辑）
 
 ## 数据库设计
 
