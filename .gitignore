@@ -63,3 +63,9 @@ web/Agent/node_modules/
 web/Agent/dist/
 web/Agent/public/app-config.json
 # project_memory.md
+
+# 包含 GitHub Actions 工作流（必须放在 *.yml 规则之后）
+!.github/
+!.github/workflows/
+!.github/workflows/*.yml
+!.github/workflows/*.yaml
