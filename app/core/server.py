@@ -178,6 +178,10 @@ def create_app() -> FastAPI:
 
     app = FastAPI(lifespan=lifespan)
 
+    @app.get("/health", tags=["health"])
+    async def health_check():
+        return {"status": "ok"}
+
     setup_middleware(app)
     setup_static_files(app)
 
