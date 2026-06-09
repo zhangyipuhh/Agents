@@ -69,3 +69,4 @@ web/Agent/public/app-config.json
 !.github/workflows/
 !.github/workflows/*.yml
 !.github/workflows/*.yaml
+!AGENTS.md
