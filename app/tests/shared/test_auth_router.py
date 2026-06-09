@@ -192,3 +192,111 @@ def test_logout(client, admin_headers):
     response = client.post("/api/auth/logout", headers=admin_headers)
     assert response.status_code == 200
     assert response.json()["message"] == "登出成功"
+
+
+class TestIssuePortalRefreshToken:
+    """测试 issue-portal-refresh-token 接口"""
+
+    def test_issue_portal_refresh_token_exists(self):
+        """
+        验证 issue_portal_refresh_token 函数存在且可导入
+        """
+        from app.shared.routers.auth_router import issue_portal_refresh_token
+
+        assert callable(issue_portal_refresh_token)
+
+    def test_issue_portal_refresh_token_rejects_kicked_user(self, monkeypatch):
+        """
+        测试场景：用户被踢后（refresh_token 被删除）调用 issue-portal-refresh-token
+
+        参数:
+            monkeypatch: pytest monkeypatch fixture
+
+        预期结果:
+            抛出 HTTPException，状态码 401
+        """
+        import asyncio
+        from unittest.mock import AsyncMock
+        from fastapi import Request, HTTPException
+        from app.shared.routers.auth_router import issue_portal_refresh_token
+
+        # 构造 mock request，模拟 auth_middleware 已写入用户信息
+        mock_request = AsyncMock(spec=Request)
+        mock_request.state.username = 'testuser'
+        mock_request.state.user_id = 1
+
+        # Mock RefreshTokenDB.has_valid_token 返回 False（模拟被踢）
+        from app.shared.utils.auth import refresh_token_db
+
+        monkeypatch.setattr(
+            refresh_token_db.RefreshTokenDB,
+            'has_valid_token',
+            AsyncMock(return_value=False)
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(issue_portal_refresh_token(mock_request))
+
+        assert exc_info.value.status_code == 401
+        assert '用户会话已失效' in exc_info.value.detail
+
+    def test_issue_portal_refresh_token_accepts_valid_user(self, monkeypatch):
+        """
+        测试场景：正常用户调用 issue-portal-refresh-token
+
+        参数:
+            monkeypatch: pytest monkeypatch fixture
+
+        预期结果:
+            成功返回 portal_refresh_token
+        """
+        import asyncio
+        from unittest.mock import AsyncMock
+        from fastapi import Request
+        from app.shared.routers.auth_router import issue_portal_refresh_token
+
+        # 构造 mock request
+        mock_request = AsyncMock(spec=Request)
+        mock_request.state.username = 'testuser'
+        mock_request.state.user_id = 1
+
+        # Mock RefreshTokenDB.has_valid_token 返回 True
+        from app.shared.utils.auth import refresh_token_db
+
+        monkeypatch.setattr(
+            refresh_token_db.RefreshTokenDB,
+            'has_valid_token',
+            AsyncMock(return_value=True)
+        )
+
+        # Mock PortalRefreshTokenDB 相关操作
+        from app.shared.utils.auth import portal_refresh_token_db
+
+        monkeypatch.setattr(
+            portal_refresh_token_db.PortalRefreshTokenDB,
+            'delete_user_tokens',
+            AsyncMock(return_value=0)
+        )
+        monkeypatch.setattr(
+            portal_refresh_token_db.PortalRefreshTokenDB,
+            'hash_token',
+            staticmethod(lambda x: 'hash123')
+        )
+        monkeypatch.setattr(
+            portal_refresh_token_db.PortalRefreshTokenDB,
+            'store_token',
+            AsyncMock(return_value=True)
+        )
+
+        # Mock jwt_auth.generate_refresh_token
+        from app.shared.utils.auth import Safety
+
+        monkeypatch.setattr(
+            Safety.jwt_auth,
+            'generate_refresh_token',
+            AsyncMock(return_value='portal_token_123')
+        )
+
+        result = asyncio.run(issue_portal_refresh_token(mock_request))
+
+        assert result.portal_refresh_token == 'portal_token_123'
