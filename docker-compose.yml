@@ -1,20 +1,57 @@
-version: "3.8"
+
+
 
 services:
-  backend:
-    image: ${ALIYUN_REGISTRY}/${ALIYUN_NAMESPACE}/backend:latest
-    container_name: preview-backend
+  agents:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    image: agents/v1.0
+    container_name: preview-app
+    restart: always
     ports:
       - "8001:8001"
-    restart: unless-stopped
-
-  frontend:
-    image: ${ALIYUN_REGISTRY}/${ALIYUN_NAMESPACE}/frontend:latest
-    container_name: preview-frontend
-    ports:
-      - "8080:80"
     environment:
-      - VITE_API_TARGET=http://backend:8001
+      PYTHONUNBUFFERED: 1
+      PYTHONPATH: /app
+    env_file:
+      - .env
+    volumes:
+      - ./app/shared/tools/mcp/config.yaml:/app/app/shared/tools/mcp/config.yaml:ro
+      - ./app/data/Knowledge:/app/data/Knowledge:rw
+      # 代码目录挂载（开发模式）：宿主机修改代码后立即生效，无需重建镜像
+      - ./app:/app/app:rw
+      # 挂载 .env 文件，让容器内 find_dotenv() 与 pydantic-settings 的 env_file 能正确读取
+      - ./.env:/app/.env:ro
+    mem_limit: 8g
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 65535
+        hard: 65535
+    networks:
+      - agent_preview-network
+  web-agent:
+    build:
+      context: ./web/Agent
+      dockerfile: Dockerfile
+    image: web-agent/v1.0
+    container_name: preview-web
+    restart: always
+    ports:
+      - "9001:80"
+    environment:
+      - VITE_API_TARGET=${VITE_API_TARGET:-http://preview-app:8001}
     depends_on:
-      - backend
-    restart: unless-stopped
+      - agents
+    networks:
+      - agent_preview-network
+
+# 文件顶部（与 services 平级）
+networks:
+  agent_preview-network:
+    driver: bridge
+  preview-network:
+  shared-network:
+    external: true
+ 
