@@ -105,12 +105,12 @@ class JWTAuth:
                 detail=f"生成令牌失败: {str(e)}"
             )
 
-    async def generate_refresh_token(self, username: str) -> str:
+    async def generate_refresh_token(self, username: str, expires_delta: Optional[timedelta] = None) -> str:
         try:
             payload = {
                 "username": username,
                 "type": "refresh",
-                "exp": datetime.utcnow() + timedelta(hours=24),
+                "exp": datetime.utcnow() + (expires_delta or timedelta(hours=24)),
                 "iat": datetime.utcnow()
             }
             token = jwt.encode(payload, self.secret_key, algorithm=self.algorithm)

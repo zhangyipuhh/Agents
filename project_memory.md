@@ -150,10 +150,10 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 - Access Token 不可用于 refresh 接口（refresh 接口拒绝 type=access）
 - Refresh Token 通过 HttpOnly Cookie 传递，前端 JS 无法读取
 - Cookie 属性：`HttpOnly; SameSite=Strict; Secure; Path=/api/auth; Max-Age=86400`
-- Refresh Token 在服务端数据库存储哈希值，支持主动撤销
-- Admin 强制下线操作仅清除目标用户的 Refresh Token，保留 Session 记录以便审计查询
-- 登出时：删除数据库记录 + 清除 Cookie
-- 密码修改时：删除该用户所有 Refresh Token 记录（强制所有设备重新登录）
+- Refresh Token 在服务端数据库存储哈希值，支持主动删除
+- Admin 强制下线操作清除目标用户的所有 Refresh Token 与 Portal Refresh Token，保留 Session 记录以便审计查询
+- 登出时：删除数据库记录 + 清除 Cookie + 删除该用户所有 portal_refresh_tokens
+- 密码修改时：删除该用户所有 Refresh Token 记录并删除所有 Portal Refresh Token（强制所有设备重新登录）
 
 ### Portal Refresh Token（子 refresh_token 委派机制）
 
@@ -161,17 +161,20 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 
 **方案**：颁发"子 refresh_token"给父页，父页通过 postMessage 推送给第三方；第三方可像普通 SPA 一样用它反复换 access_token。
 
-- **颁发**：`POST /api/auth/issue-portal-refresh-token`（需 Bearer access_token，auth_middleware 校验），生成 32 字节随机 token，SHA256 后存入 `portal_refresh_tokens` 表
+- **颁发**：`POST /api/auth/issue-portal-refresh-token`（需 Bearer access_token，auth_middleware 校验），额外检查该用户是否仍持有有效的 refresh_token（被踢后会被删除，无有效 refresh_token 时返回 401）；调用 `jwt_auth.generate_refresh_token` 生成标准 JWT 格式 token（与主 refresh_token 统一），SHA256 后存入 `portal_refresh_tokens` 表；**生成新 token 前先物理删除该用户所有旧记录**，确保同一用户只有一条 portal token
 - **使用**：第三方 iframe 调 `POST /api/auth/refresh`，body `{"refresh_token":"<子>"}` 或 header `X-Refresh-Token`，换 access_token
 - **TTL**：`PORTAL_REFRESH_TOKEN_TTL_SECONDS`（默认 86400 = 24h）
 - **过期处理**：第三方 API 401 → 重试 refresh 失败 → `window.top.location.href = '/login'`；用户重新登录后父页重新颁发
-- **撤销**：登出时 `revoke_user_tokens(user_id)` 一并清；admin 踢人同理（后续可加）
+- **删除**：登出、密码修改、admin 强制下线时均调用 `delete_user_tokens(user_id)` 一并物理删除该用户所有 portal_refresh_tokens
 - **与主 refresh_token 的边界**：主 refresh_token 仍只通过 HttpOnly Cookie 走（原有逻辑完全不变）；子 token 是"借"给第三方的副本，**不进入主 refresh_tokens 表**
+- **前端并发锁**：`PortalApp.vue` 的 `sendAuthToIframe` 使用 `isIssuingPortalToken` 标志锁，防止 iframe `load` 事件重复触发或 `PORTAL_AUTH_REQUEST` 并发导致重复申请
+- **数据库约束**：`store_token` 内部先 DELETE 再 INSERT，从逻辑层面强制一个用户只有一条记录
 - **postMessage 协议**：
   - 父 → 第三方：`{type:'PORTAL_AUTH', refreshToken, username, userId, userRole, apiBaseUrl, issuedAt, expiresIn}`
   - 第三方 → 父：`{type:'PORTAL_AUTH_REQUEST'}`（在首次加载未及时收到时、或 refresh 失败时主动请求）
   - 父校验 `event.source === iframe.contentWindow` 防冒用
   - 父用 `targetOrigin`（从 navItem 配置或 url 推断）避免 `postMessage(msg, '*')` 泄 token
+- **详细文档**：[docs/portal-iframe-token-guide.md](file:///e:/laboratory/AI/Agents/agent-user-mangerment/docs/portal-iframe-token-guide.md) — Portal 导航页 iframe Token 获取完整端到端流程指南（含接口说明、postMessage 协议、第三方接入示例、兼容逻辑）
 
 ## 数据库设计
 
@@ -245,7 +248,7 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 | user_id | INTEGER FK → users | 用户ID |
 | username | VARCHAR(100) | 用户名（冗余用于审计） |
 | expires_at | TIMESTAMP | 过期时间（默认 24 小时） |
-| revoked | BOOLEAN DEFAULT FALSE | 软删除标志 |
+| revoked | BOOLEAN DEFAULT FALSE | ~~软删除标志（已废弃，逻辑上改为物理删除，不再使用）~~ |
 | created_at | TIMESTAMP DEFAULT NOW() | 创建时间 |
 
 ## API 路由汇总
@@ -454,6 +457,10 @@ system_prompt = (
 **测试**：
 - 后端：`tests/test_ask_user_question.py` 17 个测试（Schema 10 + Tool 2 + HitlCheckNode 5）
 - 前端：`web/Agent/src/components/__tests__/HumanApprovalBox.spec.js` 14 个测试
+- 核心工具：`app/tests/core/tools/` 新增 3 个测试模块：
+  - `test_human_in_the_loop_tools.py`：Schema 7 + Tool 2，覆盖 QuestionOption/Question/AskUserQuestionInput 约束与 Other 注入逻辑
+  - `test_base_tools.py`：导入 + get_current_time Mock 调用 + _split_content 分块 3 个用例
+  - `test_mcp_tool_adapter.py`：导入 + 7 个主要函数/类存在性验证
 - 全量：后端 17/17 + 前端 73/73 全部通过
 
 ## 前端架构（web/Agent）
@@ -477,12 +484,14 @@ system_prompt = (
 | `index.html` | `App.vue`（`src/main.js`） | `/` | 主聊天界面 + 知识库 Tab（Sidebar 切换 currentPage） |
 | `knowledge.html` | `KnowledgeApp.vue`（`src/knowledge-main.js`） | `/knowledge` | 知识库独立页（文件侧栏 + 聊天） |
 | `portal.html` | `PortalApp.vue`（`src/portal-main.js`） | `/portal` | 门户导航（顶部蓝色导航栏 + iframe 嵌入 `/knowledge`） |
+| `login.html` | `LoginView`（`src/login-main.js`） | `/login` | 登录页统一入口（`App.vue` / `PortalApp.vue` 不再内联渲染 `LoginView`；由 `/login` 唯一承载） |
 
 三个入口共享 `src/components`、`src/utils`、`src/styles`，构建后产出三个独立的 JS Chunk。
 
 ### 组件清单（src/components）
 
 - **根组件**：`App.vue`（主）、`KnowledgeApp.vue`（知识库）、`PortalApp.vue`（门户）、`KnowledgePage.vue`（旧版，被 `KnowledgeApp.vue` 替代，仍保留以兼容旧引用）
+- **登录入口**：`login.html` + `src/login-main.js`（独立 Vite 入口；承载 `LoginView`；由 `redirectToLogin()` 跳到 `/login?redirect=...` 统一访问）
 - **聊天**：`ChatArea.vue`、`InputBox.vue`、`MessageBubble.vue`、`SkillTags.vue`、`HumanApprovalBox.vue`、`TopBar.vue`
 - **文件**：`FileList.vue`、`FilePreview.vue`、`FolderTree.vue`、`FileManagerModal.vue`
 - **知识库**：`KnowledgeChat.vue`、`ProfileInputBox.vue`
@@ -501,6 +510,14 @@ system_prompt = (
   1. 优先调用 `validateToken` 验证当前 access token
   2. 失败则调用 `refreshToken` 换新 token，再 `validateToken`
   3. 仍失败则 `clearAuth` + 跳登录页
+- **登录页统一入口**：`/login`（独立 HTML 入口，由 `vite.config.js` 多入口构建；`nginx.conf` 通过 `location /login { try_files ... /login.html; }` 路由）。
+  - 由 `web/Agent/src/login-main.js` 启动，挂载 `LoginView`，监听 `login-success` 事件并按 `?redirect=` 回跳。
+  - `App.vue`（`/Agent/`）与 `PortalApp.vue`（`/portal`）**不**再渲染 `LoginView` / `RegisterView`；未登录时统一通过 `redirectToLogin()` 跳到 `/login?redirect=<原页面>`。
+  - `auth.js#isAlreadyOnLoginPage()` 把 `/login` 视为登录页（`buildLoginUrl` 默认目标）。
+- **PortalApp 登录页归属**：`PortalApp.vue`（`/portal` 入口）**不**渲染 `LoginView`；未登录时只通过 `redirectToLogin()` 跳转到 `/login?redirect=/portal`，由 `/login` 入口统一渲染登录页。
+  - 原因：避免在 `/portal` 短暂渲染 `LoginView` 触发 `/api/auth/captcha` 后被浏览器取消（造成"captcha 调两次，第一次失败"），以及避免"登录页闪烁两次"。
+  - `PortalApp.checkAuth` 失败路径**不**置 `authReady.value = true`；只有成功路径（已登录）才置 `authReady=true`，让 Vue 渲染门户导航栏。
+- **App.vue 不再渲染 LoginView**：`App.vue`（`/Agent/` 入口）同样**不**渲染 `LoginView` / `RegisterView`；未登录时通过 `redirectToLogin()` 跳到 `/login?redirect=/Agent/`。这样消除了"`auth-loading-screen` 占位 → `LoginView`"的一次视觉切换。
 - **localStorage 键**：
   - `auth_token`：access token（每次请求 `Authorization: Bearer`）
   - `username` / `user_role` / `user_id`：用户基本信息
@@ -563,8 +580,8 @@ system_prompt = (
     brandTitle: '沈阳市自然资源和规划"一点通"',
     brandDesc: '智慧政务服务平台',
     navItems: [
-      { key: 'site-select', label: '智能选址', type: 'placeholder' },
-      { key: 'pre-check', label: '智能预检', type: 'placeholder' },
+      { key: 'site-select', label: '智能选址', type: 'iframe', url: 'http://59.197.227.228/webgis/kjzr' },
+      { key: 'pre-check', label: '智能预检', type: 'iframe', url: 'http://59.197.227.228/webgis/kjzr' },
       { key: 'rule-lib', label: '规则库', type: 'iframe', url: '/knowledge.html' }
     ]
   }
@@ -575,8 +592,8 @@ system_prompt = (
     "brandTitle": "自定义标题",
     "brandDesc": "自定义描述",
     "navItems": [
-      { "key": "site-select", "label": "智能选址", "type": "placeholder" },
-      { "key": "pre-check", "label": "智能预检", "type": "placeholder" },
+      { "key": "site-select", "label": "智能选址", "type": "iframe", "url": "http://59.197.227.228/webgis/kjzr" },
+      { "key": "pre-check", "label": "智能预检", "type": "iframe", "url": "http://59.197.227.228/webgis/kjzr" },
       { "key": "rule-lib", "label": "规则库", "type": "iframe", "url": "/knowledge.html" }
     ]
   }
@@ -604,4 +621,51 @@ system_prompt = (
   - `api.test.js`：`utils/api.js` 工具方法
   - `sseParser.test.js`：SSE 解析（含 Python 字面量兼容）
 - **项目历史**：后端 17/17 + 前端 73/73 全部通过（参见 "HITL 流程" 章节）
+
+## CI 测试（pytest + GitHub Actions）
+
+### 后端测试目录（`app/tests/`）
+
+- **配置**：`app/pytest.ini`（`testpaths = tests`、`addopts = -v --tb=short`）
+- **基础设施**：`app/tests/conftest.py` 与 `app/tests/shared/conftest.py`
+  - 在收集阶段 autouse mock 外部依赖：`asyncpg`、`langchain.*`、`langgraph.*`、`docx.*`、`aiofiles`、`pypdf`、`pymupdf`、`deepagents.*`、`mcpClient.*`、`sse_starlette`、`markitdown`、`unstructured` 等
+  - 对 `docx.enum`、`docx.shared`、`docx.oxml` 等子包使用 `types.ModuleType` + `__path__` 注入，保证 `from docx.enum.section import WD_SECTION_START` 等子模块导入可用
+  - 对 `langgraph.types.Command`、`langgraph.prebuilt.ToolNode`、`langgraph.graph.MessagesState/StateGraph/START/END` 等提供 `Mock` 或自定义 `_Command` 类
+  - 在 `app` fixture 中 patch `typing._type_check`，遇到带 `_mock_name` 属性的对象直接跳过原始类型检查，避免 `Optional[Mock]`、`Union[AgentState, LGCommand]` 等注解触发 SyntaxError
+  - 提供 fixtures：`app`（session 级 FastAPI 实例）、`client`（function 级 TestClient）、`jwt_auth`、`admin_token`/`user_token`/`admin_headers`/`user_headers`
+
+### 测试覆盖
+
+- **`tests/core/`**：核心模块（config、database、server、prompts、agent_context、dependencies）
+- **`tests/core/tools/`**：HITL 工具、BaseTools、MCP 适配器
+- **`tests/shared/`**：auth_router、file_router、session_router、user_router、user_db、session_db、refresh_token_db、portal_refresh_token_db、captcha、safety、DocumentLoader
+- **`tests/features/*/`**：8 个 Agent 冒烟测试（config 可导入、提示词非空、tools 可导入、router 已注册到 `/api/*` 路径）
+- **`tests/integration/`**：端到端认证流程（注册→登录→validate→logout）
+
+### Mock 策略
+
+- **不引入真实 PostgreSQL / 真实 LLM / 真实文件系统**，全部内存 + Mock
+- 数据库：`AUTH_STORAGE_MODE=memory` + `UserDB._memory_users`、`SessionDB` 内存字典
+- LLM：所有 `langchain_*.Chat*`、`init_chat_model` 均为 `Mock`
+- 文件系统：`pypdf`、`PyMuPDF`、`docx`、`PIL`、`numpy` 均为 `Mock` 或 `ModuleType`
+- `app/main.py::register_routers(target_app=None)`：支持在测试中注入 test app 实例，避免依赖全局 `app`
+
+### CI 工作流（`.github/workflows/pr-check.yml`）
+
+- **触发**：`pull_request` 与 `push` 到 `main` / `preview` 分支
+- **Jobs**：
+  - `backend-test`：`ubuntu-latest` + `actions/setup-python@v5`（Python 3.11，`cache: pip`）→ `pip install -r app/requirements.txt` → `pytest --tb=short -q`
+  - `frontend-test`：`ubuntu-latest` + `actions/setup-node@v4`（Node 20，`cache: npm`）→ `npm ci` → `npm run test`（vitest）
+  - `docker-build-check`：`ubuntu-latest` + `docker/setup-buildx-action@v3` + `docker/build-push-action@v5` 构建 `app/Dockerfile` 与 `web/Agent/Dockerfile`，不 push
+- **缓存**：pip 与 npm 均启用 GHA 缓存加速
+
+### 验证结果
+
+- **本地全量**：`cd app && python -m pytest tests/ -v --tb=short` → **130 passed**（2026-06-08）
+- **CI 期望**：与本地一致，所有用例通过
+
+### 已知工程实践
+
+- **TestClient.delete() 不支持 `data` / `json` 关键字**：Starlette `TestClient.delete` 显式仅暴露 `params`、`headers`、`cookies` 等；如需发送 JSON body，应改用 `client.request("DELETE", url, headers=..., json=...)`（参见 `app/tests/shared/test_file_router.py::test_delete_files`）
+- **PortalRefreshTokenDB 仅暴露物理删除**：使用 `delete_token(token_hash)`，不存在 `revoke_token`（参见 `app/tests/shared/test_portal_refresh_token_db.py`）
 

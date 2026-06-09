@@ -556,6 +556,7 @@ async def issue_portal_refresh_token(req: Request):
         HTTPException: 鉴权失败返回 401；存储失败返回 500
     """
     from app.shared.utils.auth.portal_refresh_token_db import PortalRefreshTokenDB
+    from app.shared.utils.auth.refresh_token_db import RefreshTokenDB
 
     # 从 request.state 取鉴权信息（auth_middleware 已写入）
     username = getattr(req.state, 'username', None)
@@ -566,12 +567,26 @@ async def issue_portal_refresh_token(req: Request):
             detail="无法识别当前用户"
         )
 
-    # 生成 32 字节随机 token
-    portal_refresh_token = secrets.token_urlsafe(32)
+    # 检查该用户是否仍持有有效的 refresh_token（被踢后会被删除）
+    has_refresh = await RefreshTokenDB.has_valid_token(user_id)
+    if not has_refresh:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="用户会话已失效，请重新登录"
+        )
 
-    # 哈希后入库
-    token_hash = PortalRefreshTokenDB.hash_token(portal_refresh_token)
+    # 先删除该用户所有旧的 portal refresh_token，确保一个用户只有一条记录
+    await PortalRefreshTokenDB.delete_user_tokens(user_id)
+
+    # 生成门户子 refresh_token（与主 token 统一为 JWT 格式）
     ttl_seconds = settings.portal_auth.portal_refresh_token_ttl_seconds
+    portal_refresh_token = await jwt_auth.generate_refresh_token(
+        username,
+        expires_delta=timedelta(seconds=ttl_seconds)
+    )
+
+    # 哈希后入库（仍存入 portal_refresh_tokens 表，便于独立撤销与审计）
+    token_hash = PortalRefreshTokenDB.hash_token(portal_refresh_token)
     expires_at = datetime.utcnow() + timedelta(seconds=ttl_seconds)
     stored = await PortalRefreshTokenDB.store_token(token_hash, user_id, username, expires_at)
     if not stored:
@@ -662,9 +677,9 @@ async def logout(req: Request, response: Response):
         token_hash = RefreshTokenDB.hash_token(refresh_token)
         await RefreshTokenDB.delete_token(token_hash)
 
-    # 撤销该用户所有门户子 refresh_token（防止子 token 残留被第三方利用）
+    # 删除该用户所有门户子 refresh_token（防止子 token 残留被第三方利用）
     if user_id:
-        await PortalRefreshTokenDB.revoke_user_tokens(user_id)
+        await PortalRefreshTokenDB.delete_user_tokens(user_id)
 
     # 清除 Refresh Token Cookie
     response.delete_cookie(

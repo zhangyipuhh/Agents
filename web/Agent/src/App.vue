@@ -1,20 +1,20 @@
 <script setup>
-import { reactive, onMounted, computed, ref, nextTick } from 'vue'
+import { reactive, onMounted, computed, ref } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import SkillTags from './components/SkillTags.vue'
 import ChatArea from './components/ChatArea.vue'
 import InputBox from './components/InputBox.vue'
 import HumanApprovalBox from './components/HumanApprovalBox.vue'
 import KnowledgePage from './components/KnowledgePage.vue'
-import LoginView from './views/LoginView.vue'
-import RegisterView from './views/RegisterView.vue'
 import { chatStream, createNewSession, logout as apiLogout, fetchSessionDetail, fetchSessionAttachments, fetchSessionMessages, validateToken, refreshToken, clearAuth } from './utils/api.js'
 import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage } from './utils/sseParser.js'
-import { redirectToLogin, tryRefreshOrRedirect, safeRedirectUrl } from './utils/auth.js'
+import { redirectToLogin, tryRefreshOrRedirect } from './utils/auth.js'
 
 const currentPage = ref('agent')
-const authView = ref('login') // 'login' | 'register'
 const isLoggedIn = ref(false)
+// 认证状态检查是否就绪；用于在 checkAuth 完成前显示 loading 占位，
+// 避免因异步资源加载造成"页面内容闪烁两次"的视觉问题
+const authReady = ref(false)
 const currentUser = ref({ username: '', role: '', userId: null })
 
 const messages = reactive([])
@@ -56,84 +56,52 @@ function applyUserData(data) {
 
 /**
  * 检查本地存储的登录状态
- * 三段式验证：先 validateToken，失败则 refreshToken 后再次 validateToken
- * 全部失败：调用 redirectToLogin() 携带当前 URL 作为 redirect 参数，
- *          登录成功后回到原页面（避免被强制跳到 /Agent/）。
- * 注意：不再主动 clearAuth()，保留本地 token 以便可能的下次重试。
+ * 两段式验证：先 refreshToken（查服务端数据库，能实时感知 token 被删除/踢人），
+ *            成功后再 validateToken 验证并应用用户数据。
+ * 全部失败：调用 redirectToLogin() 携带当前 URL 作为 redirect 参数跳到 /login 入口，
+ *          由 /login 上的 LoginView 接管（避免在本入口直接渲染 LoginView 造成"闪烁一次"）。
+ *
+ * 注意：失败路径**不**置 authReady.value = true；只有成功路径才置，
+ *       让 redirectToLogin 触发的整页跳转（到 /login）期间不渲染任何额外内容。
  */
 async function checkAuth() {
   const token = localStorage.getItem('auth_token')
   if (!token) {
-    // 本地无 token：直接跳登录页（带 redirect），由登录页负责后续引导
+    // 本地无 token：直接跳到 /login?redirect=/Agent/，由 /login 入口渲染 LoginView
+    // 不设置 authReady.value = true，避免在跳转前渲染 LoginView 造成"占位→LoginView"切换
     redirectToLogin({ reason: 'checkAuth_no_token' })
+    // 清掉残留 user_role/username 等本地信息，确保状态完全干净
+    clearAuth()
     return
   }
   try {
+    // 先尝试 refresh：refresh 会查服务端数据库，能实时感知 token 被删除/踢人
+    const newToken = await refreshToken()
+    localStorage.setItem('auth_token', newToken)
     const data = await validateToken()
     const savedUserId = localStorage.getItem('user_id')
     if (savedUserId && savedUserId !== 'null' && savedUserId !== 'undefined') {
       data.user_id = parseInt(savedUserId, 10)
     }
     applyUserData(data)
+    // 已登录：标记为就绪，Vue 将渲染主应用
+    authReady.value = true
   } catch {
-    // validateToken 失败：尝试 refresh_token
-    try {
-      const newToken = await refreshToken()
-      const data = await validateToken()
-      localStorage.setItem('auth_token', newToken)
-      const savedUserId = localStorage.getItem('user_id')
-      if (savedUserId && savedUserId !== 'null' && savedUserId !== 'undefined') {
-        data.user_id = parseInt(savedUserId, 10)
-      }
-      applyUserData(data)
-    } catch {
-      // refresh 也失败：跳登录页（带 redirect），由 LoginView 接管
-      redirectToLogin({ reason: 'checkAuth_refresh_failed' })
-    }
+    // refresh 或 validate 失败（典型场景：被 admin 强制下线后 refresh_token 已被服务端删除）
+    // 清除本地 token，跳到 /login?redirect=/Agent/，由 /login 入口渲染 LoginView
+    // 注意：失败路径**不**置 authReady.value = true，避免在跳转前渲染 LoginView
+    clearAuth()
+    redirectToLogin({ reason: 'checkAuth_refresh_failed' })
   }
 }
 
-/**
- * 处理登录成功事件
- * @param {Object} data - 登录结果数据，包含 access_token、role、username
- */
-function handleLoginSuccess(data) {
-  const oldUsername = localStorage.getItem('username')
-  if (oldUsername && oldUsername !== data.username) {
-    localStorage.removeItem('session_id')
+// 兜底：若 checkAuth 在 5 秒内未完成，强制将 authReady 置为 true，
+// 避免网络异常等极端情况下页面卡死在 loading 占位
+setTimeout(() => {
+  if (!authReady.value) {
+    authReady.value = true
   }
-  console.log('[调试] handleLoginSuccess - data:', data)
-  console.log('[调试] handleLoginSuccess - access_token:', data.access_token)
-  if (!data.access_token) {
-    console.error('[调试] access_token 为空！')
-  }
-  localStorage.setItem('auth_token', data.access_token)
-  localStorage.setItem('user_role', data.role)
-  localStorage.setItem('username', data.username)
-  if (data.user_id) {
-    localStorage.setItem('user_id', String(data.user_id))
-  }
-
-  // 先检查是否需要跳转；有 redirect 时直接跳转，不要先渲染 Agent 主界面
-  const rawRedirect = new URLSearchParams(window.location.search).get('redirect')
-  const redirect = safeRedirectUrl(rawRedirect)
-  if (redirect) {
-    window.location.href = redirect
-    return
-  }
-
-  // 没有 redirect 时，才更新状态并渲染主界面
-  isLoggedIn.value = true
-  currentUser.value = {
-    username: data.username,
-    role: data.role,
-    userId: data.user_id || null
-  }
-
-  nextTick(() => {
-    ensureSession()
-  })
-}
+}, 5000)
 
 /**
  * 处理登出事件
@@ -146,7 +114,7 @@ async function handleLogout() {
   localStorage.removeItem('user_id')
   messages.splice(0, messages.length)
   sessionId.value = ''
-  authView.value = 'login'
+  redirectToLogin({ reason: 'user_logout' })
 }
 
 /**
@@ -533,18 +501,15 @@ async function handleSessionSwitch(targetSessionId) {
 </script>
 
 <template>
-  <!-- 未登录：显示登录/注册页面 -->
-  <LoginView
-    v-if="!isLoggedIn && authView === 'login'"
-    @login-success="handleLoginSuccess"
-    @switch-to-register="authView = 'register'"
-  />
-  <RegisterView
-    v-else-if="!isLoggedIn && authView === 'register'"
-    @switch-to-login="authView = 'login'"
-  />
+  <!-- 认证状态检查中：显示 loading 占位，避免先渲染主应用再被 checkAuth 状态切换造成视觉闪烁 -->
+  <div v-if="!authReady" class="auth-loading-screen">
+    <div class="auth-loading-spinner"></div>
+    <div class="auth-loading-text">正在验证登录状态...</div>
+  </div>
 
-  <!-- 已登录：显示主应用 -->
+  <!-- 已登录：显示主应用。
+       未登录分支已移除：App.vue 不再渲染 LoginView / RegisterView；
+       未登录时 checkAuth 会通过 redirectToLogin() 跳到 /login 入口，由 /login 渲染 LoginView。 -->
   <div v-else class="app-layout">
     <Sidebar
       ref="sidebarRef"
@@ -600,6 +565,41 @@ async function handleSessionSwitch(targetSessionId) {
 </template>
 
 <style scoped>
+/* 认证状态检查中的全屏 loading 占位
+   用途：在 checkAuth 还未完成时显示，避免渲染分支切换造成视觉闪烁
+   设计：与主应用色调保持一致，居中显示旋转动画和提示文字 */
+.auth-loading-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-base);
+  background: linear-gradient(135deg, #EBF4FF 0%, #F0F7FF 40%, #FFFFFF 100%);
+  z-index: 9999;
+}
+
+.auth-loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(30, 90, 168, 0.15);
+  border-top-color: #1E5AA8;
+  border-radius: 50%;
+  animation: auth-loading-spin 0.8s linear infinite;
+}
+
+.auth-loading-text {
+  font-size: var(--font-size-base);
+  color: var(--color-text-secondary);
+  letter-spacing: 0.5px;
+}
+
+@keyframes auth-loading-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 .app-layout {
   display: flex;
   width: 100%;

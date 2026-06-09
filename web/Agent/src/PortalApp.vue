@@ -3,8 +3,6 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { validateToken, refreshToken, logout, clearAuth, issuePortalRefreshToken } from './utils/api.js'
 import { redirectToLogin } from './utils/auth.js'
 import { getNavItems, appConfig } from './config/portal.js'
-import LoginView from './views/LoginView.vue'
-import RegisterView from './views/RegisterView.vue'
 
 /**
  * 导航栏高度（像素）
@@ -17,10 +15,10 @@ const NAV_HEIGHT = 52
 const isLoggedIn = ref(false)
 
 /**
- * 未登录态下的视图类型：'login' | 'register'
- * 用于在门户页内切换登录与注册视图，登录成功后会切换为已登录态
+ * 认证状态检查是否就绪；用于在 checkAuth 完成前显示 loading 占位，
+ * 避免因异步资源加载造成"页面内容闪烁两次"的视觉问题
  */
-const authView = ref('login')
+const authReady = ref(false)
 
 /**
  * 当前登录用户信息
@@ -81,35 +79,49 @@ function applyUserData(data) {
 }
 
 /**
- * 三段式认证检查
- * 1. 先调用 validateToken 验证当前 Token 是否有效
- * 2. 若失败则调用 refreshToken 刷新令牌，然后再次 validateToken
- * 3. 若再次失败则调用 redirectToLogin 跳转到登录页（带 redirect 参数回到当前 portal URL）
- *    注意：不再主动 clearAuth()，保留本地 token 以便可能的下次重试。
+ * 两段式认证检查
+ * 1. 先调用 refreshToken 刷新令牌（会查服务端数据库，能实时感知 token 被删除/踢人）
+ * 2. 刷新成功后再 validateToken 验证并应用用户数据
+ * 3. 若 refresh 或 validate 失败则调用 redirectToLogin 跳转到 /login 入口（带 redirect 参数回到当前 portal URL）
+ *
+ * 注意：未登录时**不**渲染 LoginView，而是直接通过 redirectToLogin 跳转到 /login 入口。
+ * /login 是承载 LoginView 的唯一入口。这样可以避免：
+ *   - 在 /portal 短暂渲染 LoginView 后又被浏览器卸载（造成"登录页闪烁两次"）
+ *   - LoginView.onMounted 触发的 /api/auth/captcha 请求被取消（造成"captcha 调两次，第一次失败"）
  */
 async function checkAuth() {
   const token = localStorage.getItem('auth_token')
   if (!token) {
-    // 本地无 token：跳登录页（带 redirect = 当前 portal URL）
+    // 本地无 token：直接跳到 /Agent/?redirect=/portal，由登录页统一接管
+    // 不设置 authReady.value = true，避免渲染 LoginView 触发额外的 captcha 请求
     redirectToLogin({ reason: 'portal_no_token' })
     return
   }
   try {
+    // 先尝试 refresh：refresh 会查服务端数据库，能实时感知 token 被删除/踢人
+    const newToken = await refreshToken()
+    localStorage.setItem('auth_token', newToken)
     const data = await validateToken()
     applyUserData(data)
+    // 已登录：标记为就绪，Vue 将渲染门户导航栏与主内容区
+    authReady.value = true
   } catch {
-    // validateToken 失败：尝试 refresh_token
-    try {
-      const newToken = await refreshToken()
-      const data = await validateToken()
-      localStorage.setItem('auth_token', newToken)
-      applyUserData(data)
-    } catch {
-      // refresh 也失败：跳登录页（带 redirect = 当前 portal URL）
-      redirectToLogin({ reason: 'portal_refresh_failed' })
-    }
+    // refresh 或 validate 失败（典型场景：被 admin 强制下线后 refresh_token 已被服务端删除）
+    // 清除本地 token，跳登录页（带 redirect = 当前 portal URL）
+    // 注意：失败路径**不**置 authReady.value = true，避免在跳转前渲染 LoginView
+    clearAuth()
+    redirectToLogin({ reason: 'portal_auth_failed' })
   }
 }
+
+// 兜底：若 checkAuth 在 5 秒内未完成且仍处于"未登录"状态（例如 redirectToLogin 未触发跳转），
+// 强制将 authReady 置为 true，避免页面卡死在占位符
+// 注：失败路径下不修改 authReady，但保留此兜底防止异常死锁
+setTimeout(() => {
+  if (!authReady.value) {
+    authReady.value = true
+  }
+}, 5000)
 
 /**
  * 获取当前激活的导航项对象
@@ -140,6 +152,11 @@ function resolveTargetOrigin(item) {
 }
 
 /**
+ * 防止 sendAuthToIframe 并发执行的标志锁
+ */
+let isIssuingPortalToken = false
+
+/**
  * 向当前激活的 iframe 推送门户子 refresh_token
  *
  * 流程：
@@ -152,20 +169,49 @@ function resolveTargetOrigin(item) {
  * @returns {Promise<void>}
  */
 async function sendAuthToIframe() {
-  const item = getActiveItem()
-  if (!item || item.type !== 'iframe') return
-  const iframe = iframeRef.value
-  if (!iframe || !iframe.contentWindow) return
+  if (isIssuingPortalToken) {
+    console.log('[PortalApp] sendAuthToIframe 正在执行中，跳过重复调用')
+    return
+  }
+  isIssuingPortalToken = true
 
+  console.log('[PortalApp] sendAuthToIframe 开始')
+  const item = getActiveItem()
+  console.log('[PortalApp] 当前激活项:', { key: item?.key, type: item?.type, url: item?.url })
+  if (!item || item.type !== 'iframe') {
+    console.warn('[PortalApp] 当前激活项不是 iframe 类型，跳过发送')
+    isIssuingPortalToken = false
+    return
+  }
+  const iframe = iframeRef.value
+  if (!iframe) {
+    console.warn('[PortalApp] iframeRef.value 为 null，无法获取 iframe DOM')
+    isIssuingPortalToken = false
+    return
+  }
+  if (!iframe.contentWindow) {
+    console.warn('[PortalApp] iframe.contentWindow 不可用')
+    isIssuingPortalToken = false
+    return
+  }
+  console.log('[PortalApp] iframe DOM 存在，contentWindow 可用')
+
+  const targetOrigin = resolveTargetOrigin(item)
+  console.log('[PortalApp] targetOrigin 解析结果:', targetOrigin)
+
+  console.log('[PortalApp] 开始调用 issuePortalRefreshToken')
   let tokenInfo
   try {
     tokenInfo = await issuePortalRefreshToken()
   } catch (e) {
     console.error('[PortalApp] 颁发门户子 refresh_token 失败:', e)
+    isIssuingPortalToken = false
     return
   }
 
-  const targetOrigin = resolveTargetOrigin(item)
+  const tokenPreview = tokenInfo.portal_refresh_token ? tokenInfo.portal_refresh_token.substring(0, 8) + '...' : '空'
+  console.log('[PortalApp] 获取到 portal_refresh_token:', tokenPreview, 'expires_in:', tokenInfo.expires_in)
+
   const payload = {
     type: 'PORTAL_AUTH',
     refreshToken: tokenInfo.portal_refresh_token,
@@ -176,7 +222,18 @@ async function sendAuthToIframe() {
     issuedAt: Date.now(),
     expiresIn: tokenInfo.expires_in
   }
+  console.log('[PortalApp] 即将通过 postMessage 发送 PORTAL_AUTH 到 origin:', targetOrigin, 'payload:', {
+    type: payload.type,
+    username: payload.username,
+    userId: payload.userId,
+    userRole: payload.userRole,
+    refreshToken: tokenPreview,
+    issuedAt: payload.issuedAt,
+    expiresIn: payload.expiresIn
+  })
   iframe.contentWindow.postMessage(payload, targetOrigin)
+  console.log('[PortalApp] postMessage 发送完成')
+  isIssuingPortalToken = false
 }
 
 /**
@@ -184,6 +241,7 @@ async function sendAuthToIframe() {
  * @returns {void}
  */
 function onIframeLoad() {
+  console.log('[PortalApp] iframe load 事件触发，准备发送 PORTAL_AUTH')
   sendAuthToIframe()
 }
 
@@ -198,11 +256,21 @@ function onIframeLoad() {
  * @returns {void}
  */
 function handlePortalMessage(event) {
+  console.log('[PortalApp] 收到 message 事件，origin:', event.origin, 'type:', event.data?.type)
   const iframe = iframeRef.value
-  if (!iframe || !iframe.contentWindow) return
-  if (event.source !== iframe.contentWindow) return
+  if (!iframe || !iframe.contentWindow) {
+    console.warn('[PortalApp] iframe 不可用，忽略 message 事件')
+    return
+  }
+  if (event.source !== iframe.contentWindow) {
+    console.warn('[PortalApp] event.source 与当前 iframe.contentWindow 不一致，忽略 message 事件')
+    return
+  }
   if (event.data && event.data.type === 'PORTAL_AUTH_REQUEST') {
+    console.log('[PortalApp] 收到 PORTAL_AUTH_REQUEST，重新发送 PORTAL_AUTH')
     sendAuthToIframe()
+  } else {
+    console.log('[PortalApp] 收到非 PORTAL_AUTH_REQUEST 消息，已忽略')
   }
 }
 
@@ -256,34 +324,7 @@ async function handleLogout() {
   isLoggedIn.value = false
   currentUser.value = { username: '', role: '' }
   localStorage.removeItem('user_id')
-  window.location.reload()
-}
-
-/**
- * 处理 LoginView 的登录成功事件
- * 将认证信息写入 localStorage 并切换为已登录态
- * 注意：URL 中的 redirect 回跳由 LoginView 内部统一处理
- * @param {Object} data - 登录结果数据，包含 access_token、role、username、user_id
- */
-function handleLoginSuccess(data) {
-  if (data.access_token) {
-    localStorage.setItem('auth_token', data.access_token)
-  }
-  if (data.role) {
-    localStorage.setItem('user_role', data.role)
-  }
-  if (data.username) {
-    localStorage.setItem('username', data.username)
-  }
-  if (data.user_id !== undefined && data.user_id !== null) {
-    localStorage.setItem('user_id', String(data.user_id))
-  }
-  currentUser.value = {
-    username: data.username || '',
-    role: data.role || ''
-  }
-  isLoggedIn.value = true
-  authView.value = 'login'
+  redirectToLogin({ reason: 'user_logout' })
 }
 
 /**
@@ -309,16 +350,14 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <!-- 未登录：直接渲染登录页，顶部 nav 不显示 -->
-  <LoginView
-    v-if="!isLoggedIn && authView === 'login'"
-    @login-success="handleLoginSuccess"
-    @switch-to-register="authView = 'register'"
-  />
-  <RegisterView
-    v-else-if="!isLoggedIn && authView === 'register'"
-    @switch-to-login="authView = 'login'"
-  />
+  <!-- 认证状态检查中 / 未登录跳转前：仅显示占位符，不渲染 LoginView
+       原因：避免在 /portal 短暂渲染 LoginView 后又被浏览器卸载（造成"登录页闪烁两次"），
+            以及避免 LoginView.onMounted 触发的 /api/auth/captcha 请求被取消（造成"captcha 调两次，第一次失败"）。
+       跳转目标：redirectToLogin() 会跳到 /login?redirect=/portal，由 /login 入口统一渲染登录页 -->
+  <div v-if="!isLoggedIn" class="auth-loading-screen">
+    <div class="auth-loading-spinner"></div>
+    <div class="auth-loading-text">正在验证登录状态...</div>
+  </div>
 
   <!-- 已登录：显示导航栏 + 主内容区 -->
   <div v-else class="portal-wrapper">
@@ -370,7 +409,7 @@ onUnmounted(() => {
       <!-- 当前激活项为 iframe：在主内容区嵌入 iframe，并在加载完成时推送 PORTAL_AUTH -->
       <template v-if="getActiveItem() && getActiveItem().type === 'iframe'">
         <iframe
-          :ref="iframeRef"
+          ref="iframeRef"
           :src="getActiveItem().url"
           width="100%"
           height="100%"
@@ -398,6 +437,41 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* 认证状态检查中的全屏 loading 占位
+   用途：在 checkAuth 还未完成时显示，避免先渲染 LoginView 再被替换造成的视觉闪烁
+   设计：与主应用色调保持一致，居中显示旋转动画和提示文字 */
+.auth-loading-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-base);
+  background: linear-gradient(135deg, #EBF4FF 0%, #F0F7FF 40%, #FFFFFF 100%);
+  z-index: 9999;
+}
+
+.auth-loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(30, 90, 168, 0.15);
+  border-top-color: #1E5AA8;
+  border-radius: 50%;
+  animation: auth-loading-spin 0.8s linear infinite;
+}
+
+.auth-loading-text {
+  font-size: var(--font-size-base);
+  color: var(--color-text-secondary);
+  letter-spacing: 0.5px;
+}
+
+@keyframes auth-loading-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 /* 全局重置：消除 body 与 #app 的默认边距和滚动条 */
 :global(body) {
   margin: 0;

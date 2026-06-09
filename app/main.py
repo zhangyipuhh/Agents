@@ -62,19 +62,23 @@ from app.core.router import file_download_router as core_file_download_router
 app = create_app()
 
 
-def register_routers():
+def register_routers(target_app=None):
     """
     注册所有路由
+
+    Args:
+        target_app: 目标 FastAPI 应用实例；未传入时使用模块级全局 app
     """
-    app.include_router(auth_router)
-    app.include_router(user_router)
-    app.include_router(file_router)
-    app.include_router(session_router)
-    app.include_router(contract_router)
-    app.include_router(map_router)
-    app.include_router(ai_coding_check_router)
-    app.include_router(core_file_upload_router)
-    app.include_router(core_file_download_router)
+    _app = target_app or app
+    _app.include_router(auth_router)
+    _app.include_router(user_router)
+    _app.include_router(file_router)
+    _app.include_router(session_router)
+    _app.include_router(contract_router)
+    _app.include_router(map_router)
+    _app.include_router(ai_coding_check_router)
+    _app.include_router(core_file_upload_router)
+    _app.include_router(core_file_download_router)
 
 
 register_routers()

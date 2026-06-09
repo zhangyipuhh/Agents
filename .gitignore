@@ -69,7 +69,4 @@ web/Agent/public/app-config.json
 !.github/workflows/
 !.github/workflows/*.yml
 !.github/workflows/*.yaml
-
-# 包含根目录的 docker-compose
-!docker-compose.yml
-!docker-compose.yaml
+!AGENTS.md
