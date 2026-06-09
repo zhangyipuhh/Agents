@@ -153,6 +153,10 @@ ALTER TABLE portal_refresh_tokens ADD COLUMN IF NOT EXISTS created_at TIMESTAMP 
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_portal_refresh_tokens_user_id     ON portal_refresh_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_portal_refresh_tokens_expires_at  ON portal_refresh_tokens(expires_at);
+-- 部分唯一索引：一个用户最多只能有一条未撤销的 portal refresh_token
+CREATE UNIQUE INDEX IF NOT EXISTS idx_portal_refresh_tokens_user_id_active
+    ON portal_refresh_tokens(user_id)
+    WHERE revoked = FALSE;
 
 -- ========== 8. map_business_info（地图业务信息）==========
 CREATE TABLE IF NOT EXISTS map_business_info (
