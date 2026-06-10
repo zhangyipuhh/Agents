@@ -11,6 +11,7 @@ import string
 import io
 import time
 import threading
+import warnings
 from typing import Optional, Dict, Tuple
 from PIL import Image, ImageDraw, ImageFont
 
@@ -71,10 +72,31 @@ class CaptchaManager:
         image = Image.new('RGB', (width, height), (255, 255, 255))
         draw = ImageDraw.Draw(image)
 
-        # 使用默认字体
-        try:
-            font = ImageFont.truetype("arial.ttf", 28)
-        except (IOError, OSError):
+        # 字体候选列表：跨平台兼容（Windows / Linux / macOS）
+        font_candidates = [
+            "arial.ttf",
+            "DejaVuSans.ttf",
+            "LiberationSans-Regular.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
+        ]
+
+        font = None
+        for font_name in font_candidates:
+            try:
+                font = ImageFont.truetype(font_name, 28)
+                break
+            except (IOError, OSError):
+                continue
+
+        if font is None:
+            warnings.warn(
+                "未找到可用的 TrueType 字体，验证码将使用默认位图字体渲染，"
+                "可能导致字符过小。建议在系统中安装 fonts-dejavu-core 或类似字体包。",
+                RuntimeWarning,
+                stacklevel=2,
+            )
             font = ImageFont.load_default()
 
         # 绘制验证码文字

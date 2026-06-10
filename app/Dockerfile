@@ -39,7 +39,8 @@ RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.li
     ripgrep \
     libreoffice-writer \
     libreoffice-core \
-    iputils-ping && \
+    iputils-ping \
+    fonts-dejavu-core && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /install /usr/local

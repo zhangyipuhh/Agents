@@ -34,8 +34,9 @@ const errorMessage = ref('')
 /**
  * 组件事件定义
  * @event login-success - 登录成功时触发，参数: { token: string, role: string, username: string }
+ * @event switch-to-register - 点击"去注册"时触发
  */
-const emit = defineEmits(['login-success'])
+const emit = defineEmits(['login-success', 'switch-to-register'])
 
 /**
  * 加载验证码图片

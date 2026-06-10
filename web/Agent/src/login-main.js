@@ -11,9 +11,10 @@
  * App.vue（/Agent/）与 PortalApp.vue（/portal）不再渲染 LoginView / RegisterView，
  * 未登录时统一通过 redirectToLogin() 跳到 /login?redirect=<原页面>。
  */
-import { createApp, h } from 'vue'
+import { createApp, h, ref } from 'vue'
 import './styles/main.css'
 import LoginView from './views/LoginView.vue'
+import RegisterView from './views/RegisterView.vue'
 import { loadAppConfig, appConfig } from './config/portal.js'
 import { safeRedirectUrl } from './utils/auth.js'
 
@@ -39,7 +40,8 @@ function handleLoginSuccess(data) {
 /**
  * 启动登录入口
  * 先异步加载运行时配置，再挂载 Vue 应用
- * 确保 LoginView 能读取到 app-config.json 的最新品牌配置
+ * 确保 LoginView / RegisterView 能读取到 app-config.json 的最新品牌配置
+ * 通过 isRegister 状态在登录与注册视图间切换
  * @returns {Promise<void>}
  */
 async function bootstrap() {
@@ -47,11 +49,22 @@ async function bootstrap() {
   if (appConfig.brandTitle) {
     document.title = appConfig.brandTitle
   }
-  // 用一个简单 Wrapper 组件桥接 LoginView 的 emit 到顶层 handleLoginSuccess
-  // （h(LoginView, { onLoginSuccess: ... }) 是 Vue 编译器把 @login-success 转为 onLoginSuccess prop 的标准用法）
   const App = {
     setup() {
-      return () => h(LoginView, { onLoginSuccess: handleLoginSuccess })
+      const isRegister = ref(false)
+      return () =>
+        isRegister.value
+          ? h(RegisterView, {
+              onSwitchToLogin: () => {
+                isRegister.value = false
+              }
+            })
+          : h(LoginView, {
+              onLoginSuccess: handleLoginSuccess,
+              onSwitchToRegister: () => {
+                isRegister.value = true
+              }
+            })
     }
   }
   createApp(App).mount('#app')
