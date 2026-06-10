@@ -159,7 +159,7 @@ async function handleRegister() {
     errorMessage.value = '请输入手机号'
     return
   }
-  if (!/^1[3-9]\d{9}$/.test(phone.value.trim())) {
+  if (!/^(\+86)?1[3-9]\d{9}$/.test(phone.value.trim())) {
     errorMessage.value = '请输入有效的中国大陆手机号'
     return
   }
@@ -328,7 +328,7 @@ onMounted(() => {
             v-model="phone"
             type="tel"
             class="form-input"
-            placeholder="请输入手机号"
+            placeholder="请输入手机号（支持 +86 前缀）"
             autocomplete="tel"
             :disabled="loading"
           />
