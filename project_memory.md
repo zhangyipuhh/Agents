@@ -31,8 +31,9 @@ app/
 │   ├── map_agent/              # 地图 Agent
 │   ├── DevOps_agent/           # DevOps Agent
 │   ├── AI_Coding_Check_agent/  # AI 代码检查 Agent
-│   ├── audit_document_agent/   # 审计文档 Agent
-│   └── Tagent/                 # T Agent
+    ├── audit_document_agent/   # 审计文档 Agent
+    ├── sandbox_agent/          # 沙箱 Agent（已重构为 subagent 工具模式，见核心工具）
+    └── Tagent/                 # T Agent
 ├── shared/                 # 共享模块
 │   ├── routers/           # 路由
 │   │   ├── auth_router.py    # 认证路由（登录、注册、验证码、refresh、validate）
@@ -174,7 +175,10 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
   - 第三方 → 父：`{type:'PORTAL_AUTH_REQUEST'}`（在首次加载未及时收到时、或 refresh 失败时主动请求）
   - 父校验 `event.source === iframe.contentWindow` 防冒用
   - 父用 `targetOrigin`（从 navItem 配置或 url 推断）避免 `postMessage(msg, '*')` 泄 token
-- **详细文档**：[docs/portal-iframe-token-guide.md](file:///e:/laboratory/AI/Agents/agent-user-mangerment/docs/portal-iframe-token-guide.md) — Portal 导航页 iframe Token 获取完整端到端流程指南（含接口说明、postMessage 协议、第三方接入示例、兼容逻辑）
+- **详细文档**：
+  - [docs/portal-iframe-token-guide.md](file:///e:/laboratory/AI/Agents/agent-user-mangerment/docs/portal-iframe-token-guide.md) — Portal 导航页 iframe Token 获取完整端到端流程指南（含接口说明、postMessage 协议、第三方接入示例、兼容逻辑）
+  - [docs/third-party-api-integration-guide.md](file:///e:/laboratory/AI/Agents/agent-user-mangerment/docs/third-party-api-integration-guide.md) — 第三方后端 API 接入完整指南（**非 iframe 场景**，v2.0 2026-06-11 重构：仅需 login-api → 业务 API → refresh → 重新登录 → logout 5 步，无需 portal 子 token / postMessage）
+  - [docs/refresh-token-misunderstanding.md](file:///e:/laboratory/AI/Agents/agent-user-mangerment/docs/refresh-token-misunderstanding.md) — Refresh Token 调研澄清报告（2026-06-11 7 个 pytest 用例实测：refresh_token 调任意业务接口均返回 401，不会驱动业务）
 
 ## 数据库设计
 
@@ -324,6 +328,27 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 |   ├ POST /call | | 调用指定 MCP 服务器的工具 |
 |   ├ GET /tools/{server_name} | | 列出指定 MCP 服务器的工具详情 |
 
+## 核心工具 (Core Tools)
+
+### Sandbox 工具
+
+**文件位置**: `app/core/tools/SandboxTools.py`
+
+**功能**: 提供 `sandbox` 工具函数，启动沙箱子智能体在隔离的 Docker 容器中执行代码和文件操作。
+
+**使用方式**: 作为 `@tool` 注册到 core agent 工具链，LLM 自动决策调用时机。
+
+**实现细节**:
+- 使用 `create_deep_agent` (deepagents) 创建子智能体
+- 使用 `DockerSandboxMiddleware` 提供隔离执行环境
+- 工作目录: `app/data/upload/{session_id}/sandbox`
+- 默认镜像: `python:3.12-alpine`
+- 资源限制: 内存 512MB，CPU 100%，无网络
+- 支持流式事件: `tool_start` / `tool_progress` / `tool_stop`
+
+**依赖**:
+- `DockerSandboxMiddleware` / `DockerSandboxBackend`: `app/shared/tools/middleware/docker_sandbox_backend.py`
+
 ## 环境变量
 
 - `AUTH_STORAGE_MODE` — 存储模式（postgres/memory）
@@ -462,6 +487,59 @@ system_prompt = (
   - `test_base_tools.py`：导入 + get_current_time Mock 调用 + _split_content 分块 3 个用例
   - `test_mcp_tool_adapter.py`：导入 + 7 个主要函数/类存在性验证
 - 全量：后端 17/17 + 前端 73/73 全部通过
+
+## 沙箱 Agent 架构（Sandbox Agent）
+
+基于 LangChain `deepagents` 库实现，提供安全的代码执行与文件操作环境，通过 Docker 容器隔离保证安全性。
+
+### 核心组件
+
+| 组件 | 文件位置 | 职责 |
+|------|---------|------|
+| `DockerSandboxBackend` | `app/shared/tools/middleware/docker_sandbox_backend.py` | Docker 容器生命周期管理、命令执行、文件上传下载 |
+| `DockerSandboxMiddleware` | `app/shared/tools/middleware/docker_sandbox_backend.py` | 继承 `FilesystemMiddleware`，自动管理 `DockerSandboxBackend`，提供沙箱工具集 |
+| `sandbox` 工具 | `app/core/tools/SandboxTools.py` | `@tool` 装饰的 `sandbox` 函数，通过 `create_deep_agent` 启动沙箱子智能体 |
+
+### 架构变更历史
+
+**2026-06-12 重构**: 从独立 FastAPI 路由 (`/api/sandbox/chat`) 迁移为 core agent 的 subagent 工具模式。
+- 删除: `app/features/sandbox_agent/` 目录及所有文件
+- 新增: `app/core/tools/SandboxTools.py` 工具函数
+- 变更: 从独立 SSE 端点变为通过 core agent 工具链调用
+
+### Docker 容器隔离
+
+- **镜像**：默认 `python:3.12-alpine`，可配置
+- **资源限制**：`max_memory_mb`（默认 512MB）、`max_cpu_percent`（默认 100%）
+- **网络控制**：`network_enabled=False` 默认关闭网络，防止数据外泄
+- **工作目录**：每个 Session 独立 workspace，通过 Docker volume 映射
+
+### 长生命周期容器优化
+
+为解决容器创建耗时问题（秒级 → 50-200ms），采用**预热容器 + `docker exec`** 方案：
+
+1. **预热启动**：`DockerSandboxBackend.__init__` 时启动容器，执行 `tail -f /dev/null` 保持运行
+2. **命令执行**：`execute()` 通过 `docker exec` 在运行中容器内执行命令，无需重复创建容器
+3. **会话复用**：同一 `session_id` 复用同一容器，多次命令执行零启动开销
+4. **清理释放**：`cleanup()` 显式销毁容器，释放资源
+
+### Subagent 工具模式
+
+沙箱功能通过 `app/core/tools/SandboxTools.py` 中的 `sandbox` 工具函数提供，父 Agent 调用该工具时：
+
+1. 使用 `create_deep_agent` 创建沙箱子智能体
+2. 通过 `DockerSandboxMiddleware` 提供隔离的 Docker 容器环境
+3. 子智能体自主决策并执行代码/文件操作
+4. 执行完成后自动清理 Docker 容器资源
+
+- **调用方式**：`sandbox` 作为 `@tool` 注册到 core agent 工具链，LLM 自动决策调用时机
+- **安全边界**：子智能体运行在独立 Docker 容器中，与父 Agent 完全隔离
+- **工具集**：`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `execute`（由 `DockerSandboxMiddleware` 继承自 `FilesystemMiddleware` 提供）
+
+### 依赖
+
+- `deepagents==0.5.5` — LangChain deepagents 库
+- `docker==7.1.0` — Docker SDK for Python
 
 ## 前端架构（web/Agent）
 
@@ -639,7 +717,9 @@ system_prompt = (
 - **`tests/core/`**：核心模块（config、database、server、prompts、agent_context、dependencies）
 - **`tests/core/tools/`**：HITL 工具、BaseTools、MCP 适配器
 - **`tests/shared/`**：auth_router、file_router、session_router、user_router、user_db、session_db、refresh_token_db、portal_refresh_token_db、captcha、safety、DocumentLoader
-- **`tests/features/*/`**：8 个 Agent 冒烟测试（config 可导入、提示词非空、tools 可导入、router 已注册到 `/api/*` 路径）
+- **`tests/features/*/`**：9 个 Agent 冒烟测试（config 可导入、提示词非空、tools 可导入、router 已注册到 `/api/*` 路径）
+- **`tests/features/sandbox_agent/`**：沙箱 Agent 专项测试
+  - `test_docker_backend.py`：DockerSandboxBackend 容器生命周期、命令执行、文件操作、异常处理
 - **`tests/integration/`**：端到端认证流程（注册→登录→validate→logout）
 
 ### Mock 策略

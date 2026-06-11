@@ -157,8 +157,47 @@ sys.modules["numpy"] = Mock()
 # deepagents 需要作为包支持子模块
 sys.modules["deepagents"] = types.ModuleType("deepagents")
 sys.modules["deepagents.backends"] = types.ModuleType("deepagents.backends")
+sys.modules["deepagents.backends.sandbox"] = types.ModuleType("deepagents.backends.sandbox")
+sys.modules["deepagents.backends.protocol"] = types.ModuleType("deepagents.backends.protocol")
 sys.modules["deepagents.backends.filesystem"] = types.ModuleType("deepagents.backends.filesystem")
+sys.modules["deepagents.middleware"] = types.ModuleType("deepagents.middleware")
+sys.modules["deepagents.middleware.filesystem"] = types.ModuleType("deepagents.middleware.filesystem")
 
+# mock deepagents 核心类
+class _ExecuteResponse:
+    def __init__(self, output="", exit_code=0, truncated=False):
+        self.output = output
+        self.exit_code = exit_code
+        self.truncated = truncated
+
+class _BaseSandbox:
+    pass
+
+sys.modules["deepagents.backends.sandbox"].BaseSandbox = _BaseSandbox
+sys.modules["deepagents.backends.protocol"].ExecuteResponse = _ExecuteResponse
+
+class _FileUploadResponse:
+    def __init__(self, path="", error=None):
+        self.path = path
+        self.error = error
+
+class _FileDownloadResponse:
+    def __init__(self, path="", content=None, error=None):
+        self.path = path
+        self.content = content
+        self.error = error
+
+sys.modules["deepagents.backends.protocol"].FileUploadResponse = _FileUploadResponse
+sys.modules["deepagents.backends.protocol"].FileDownloadResponse = _FileDownloadResponse
+
+class _FilesystemMiddleware:
+    def __init__(self, backend=None, **kwargs):
+        self.backend = backend
+
+sys.modules["deepagents.middleware.filesystem"].FilesystemMiddleware = _FilesystemMiddleware
+
+# mock create_deep_agent
+sys.modules["deepagents"].create_deep_agent = Mock(return_value=Mock())
 
 class _FilesystemBackend:
     """模拟 deepagents FilesystemBackend"""
@@ -168,6 +207,26 @@ class _FilesystemBackend:
 
 
 sys.modules["deepagents.backends.filesystem"].FilesystemBackend = _FilesystemBackend
+
+# mock docker 模块（测试无需真实 Docker）
+_mock_docker = types.ModuleType("docker")
+_mock_docker.__path__ = []
+_mock_docker.from_env = Mock()
+
+class _DockerErrors:
+    class DockerException(Exception):
+        pass
+    class NotFound(Exception):
+        pass
+    class APIError(Exception):
+        pass
+
+_mock_docker.errors = _DockerErrors()
+sys.modules["docker"] = _mock_docker
+sys.modules["docker.errors"] = types.ModuleType("docker.errors")
+sys.modules["docker.errors"].DockerException = _DockerErrors.DockerException
+sys.modules["docker.errors"].NotFound = _DockerErrors.NotFound
+sys.modules["docker.errors"].APIError = _DockerErrors.APIError
 
 # mock langgraph 及其子模块（使用 ModuleType 以支持 from xxx import yyy）
 for _lg_mod in [
