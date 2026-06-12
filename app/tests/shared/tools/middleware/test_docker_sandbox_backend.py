@@ -155,3 +155,33 @@ class TestDockerSandboxMiddleware:
                 assert call_kwargs["backend"] is mock_backend
                 assert call_kwargs["system_prompt"] == "custom prompt"
                 assert call_kwargs["max_execute_timeout"] == 120
+
+
+class TestDockerSandboxBackend:
+    """DockerSandboxBackend 属性测试类"""
+
+    def test_backend_has_container_workspace_attribute(self, tmp_path):
+        """测试 DockerSandboxBackend 初始化后具有 container_workspace 属性且值为 /workspace"""
+        with patch("docker.from_env") as mock_from_env:
+            mock_client = Mock()
+            mock_client.ping.return_value = True
+            mock_client.images.get.return_value = Mock()
+            from docker.errors import NotFound
+            mock_client.containers.get.side_effect = NotFound("not found")
+            mock_container = Mock()
+            mock_container.id = "test123"
+            mock_client.containers.run.return_value = mock_container
+            mock_from_env.return_value = mock_client
+
+            from app.shared.tools.middleware.docker_sandbox_backend import (
+                DockerSandboxBackend,
+            )
+
+            backend = DockerSandboxBackend(
+                session_id="test-attr",
+                workspace=str(tmp_path / "sandbox"),
+            )
+
+            assert hasattr(backend, "container_workspace")
+            assert backend.container_workspace == "/workspace"
+            backend.cleanup()

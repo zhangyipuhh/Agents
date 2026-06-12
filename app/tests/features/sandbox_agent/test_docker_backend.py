@@ -65,6 +65,11 @@ class TestDockerSandboxBackend:
             assert backend.id == "test-session"
             mock_docker_client.containers.run.assert_called_once()
 
+            # 验证 volumes 和 working_dir 参数使用容器内路径 /workspace
+            call_kwargs = mock_docker_client.containers.run.call_args.kwargs
+            assert call_kwargs["volumes"][workspace]["bind"] == "/workspace"
+            assert call_kwargs["working_dir"] == "/workspace"
+
             # 执行命令
             result = backend.execute("echo hello")
             assert result.output == "hello world"
@@ -92,6 +97,10 @@ class TestDockerSandboxBackend:
             assert "hello world" in result.output
             assert result.exit_code == 0
             assert result.truncated is False
+
+            # 验证 exec_run 使用容器内工作目录 /workspace
+            exec_call_kwargs = mock_docker_client.containers.run.return_value.exec_run.call_args.kwargs
+            assert exec_call_kwargs["workdir"] == "/workspace"
 
             backend.cleanup()
 

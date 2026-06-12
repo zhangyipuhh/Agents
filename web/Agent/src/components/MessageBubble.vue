@@ -2,6 +2,7 @@
 import { ref, computed, reactive, watch, nextTick } from 'vue'
 import { marked } from 'marked'
 import { formatFileSize, getFileExtension, getAuthHeaders } from '../utils/api.js'
+import SandboxProgress from './SandboxProgress.vue'
 
 const props = defineProps({
   type: {
@@ -52,10 +53,14 @@ const props = defineProps({
   downloadInfo: {
     type: Object,
     default: null
+  },
+  sandboxExecution: {
+    type: Object,
+    default: null
   }
 })
 
-const emit = defineEmits(['copy', 'regenerate', 'like', 'dislike'])
+const emit = defineEmits(['copy', 'regenerate', 'like', 'dislike', 'open-sandbox-drawer'])
 
 const isThinkingExpanded = ref(false)
 const isToolsExpanded = ref(false)
@@ -334,6 +339,12 @@ const handleDislike = () => {
   emit('dislike', props.messageId)
 }
 
+const handleSandboxClick = () => {
+  if (props.sandboxExecution) {
+    emit('open-sandbox-drawer', props.sandboxExecution)
+  }
+}
+
 const handleDownload = async () => {
   if (!props.downloadInfo) return
 
@@ -435,28 +446,39 @@ const getFileIconColor = (filename) => {
 
           <!-- 工具调用块 -->
           <div v-else-if="group.type === 'tool'" class="timeline-tool">
-            <div class="tools-header" @click="toggleTools">
-              <span class="tools-icon">🔧</span>
-              <span class="tools-label">工具调用 ({{ group.items.length }})</span>
-              <svg
-                class="expand-icon"
-                :class="{ expanded: isToolsExpanded }"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-              >
-                <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
-              </svg>
+            <!-- 沙盒执行进度（特殊处理） -->
+            <div v-if="sandboxExecution" class="timeline-sandbox">
+              <SandboxProgress
+                :summary="sandboxExecution.summary"
+                :status="sandboxExecution.status"
+                @click="handleSandboxClick"
+              />
             </div>
-            <div v-if="isToolsExpanded" class="tools-body">
-              <div
-                v-for="(item, idx) in group.items"
-                :key="'tool-item-' + idx"
-                class="tool-item"
-              >
-                <span class="tool-icon">🔧</span>
-                <span class="tool-text">{{ formatToolItem(item) }}</span>
+            <!-- 普通工具展示 -->
+            <template v-else>
+              <div class="tools-header" @click="toggleTools">
+                <span class="tools-icon">🔧</span>
+                <span class="tools-label">工具调用 ({{ group.items.length }})</span>
+                <svg
+                  class="expand-icon"
+                  :class="{ expanded: isToolsExpanded }"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                >
+                  <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
+                </svg>
               </div>
-            </div>
+              <div v-if="isToolsExpanded" class="tools-body">
+                <div
+                  v-for="(item, idx) in group.items"
+                  :key="'tool-item-' + idx"
+                  class="tool-item"
+                >
+                  <span class="tool-icon">🔧</span>
+                  <span class="tool-text">{{ formatToolItem(item) }}</span>
+                </div>
+              </div>
+            </template>
           </div>
 
           <!-- 正文块 -->

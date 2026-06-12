@@ -1,11 +1,12 @@
 <script setup>
-import { reactive, onMounted, computed, ref } from 'vue'
+import { reactive, onMounted, computed, ref, watch } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import SkillTags from './components/SkillTags.vue'
 import ChatArea from './components/ChatArea.vue'
 import InputBox from './components/InputBox.vue'
 import HumanApprovalBox from './components/HumanApprovalBox.vue'
 import KnowledgePage from './components/KnowledgePage.vue'
+import SandboxDrawer from './components/SandboxDrawer.vue'
 import { chatStream, createNewSession, logout as apiLogout, fetchSessionDetail, fetchSessionAttachments, fetchSessionMessages, validateToken, refreshToken, clearAuth } from './utils/api.js'
 import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage } from './utils/sseParser.js'
 import { redirectToLogin, tryRefreshOrRedirect } from './utils/auth.js'
@@ -24,6 +25,12 @@ const sidebarRef = ref(null)
 const currentAttachments = ref([])
 const approvalMode = ref(false)
 const approvalData = ref({ questions: [] })
+
+// 沙盒详情面板状态
+const sandboxDrawerVisible = ref(false)
+const currentSandboxEvents = ref([])
+const currentSandboxSummary = ref(null)
+const currentSandboxStatus = ref('running')
 
 /**
  * 新建任务锁，防止重复创建
@@ -346,6 +353,32 @@ function handleApprovalCancel() {
   }
 }
 
+function openSandboxDrawer(sandboxData) {
+  currentSandboxEvents.value = sandboxData.events || []
+  currentSandboxSummary.value = sandboxData.summary || null
+  currentSandboxStatus.value = sandboxData.status || 'running'
+  sandboxDrawerVisible.value = true
+}
+
+function closeSandboxDrawer() {
+  sandboxDrawerVisible.value = false
+}
+
+// 监听当前消息的沙盒状态，执行完成后自动关闭
+watch(() => {
+  const lastMsg = messages[messages.length - 1]
+  return lastMsg && lastMsg.type === 'ai' ? lastMsg.sandboxExecution : null
+}, (newVal) => {
+  if (newVal && newVal.status !== 'running' && sandboxDrawerVisible.value) {
+    // 延迟 2 秒后自动关闭，让用户看到完成状态
+    setTimeout(() => {
+      if (newVal.status !== 'running') {
+        sandboxDrawerVisible.value = false
+      }
+    }, 2000)
+  }
+})
+
 function handleTagSelect(tag, index) {
   console.log('选择技能标签:', tag.label)
 }
@@ -536,6 +569,7 @@ async function handleSessionSwitch(targetSessionId) {
         @like="handleLike"
         @dislike="handleDislike"
         @copy="handleCopy"
+        @open-sandbox-drawer="openSandboxDrawer"
       />
 
       <div v-if="isEmptyState" class="welcome-title">Agent, 让你的工作更轻松</div>
@@ -560,6 +594,15 @@ async function handleSessionSwitch(targetSessionId) {
       v-if="currentPage === 'knowledge'"
       @new-chat="newSession"
       @page-change="handlePageChange"
+    />
+
+    <!-- 沙盒详情面板 -->
+    <SandboxDrawer
+      :visible="sandboxDrawerVisible"
+      :events="currentSandboxEvents"
+      :summary="currentSandboxSummary"
+      :status="currentSandboxStatus"
+      @close="closeSandboxDrawer"
     />
   </div>
 </template>

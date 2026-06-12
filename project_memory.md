@@ -496,7 +496,7 @@ system_prompt = (
 
 | 组件 | 文件位置 | 职责 |
 |------|---------|------|
-| `DockerSandboxBackend` | `app/shared/tools/middleware/docker_sandbox_backend.py` | Docker 容器生命周期管理、命令执行、文件上传下载 |
+| `DockerSandboxBackend` | `app/shared/tools/middleware/docker_sandbox_backend.py` | Docker 容器生命周期管理、命令执行、文件上传下载；区分 host_workspace 与 container_workspace（/workspace） |
 | `DockerSandboxMiddleware` | `app/shared/tools/middleware/docker_sandbox_backend.py` | 继承 `FilesystemMiddleware`，自动管理 `DockerSandboxBackend`，提供沙箱工具集 |
 | `sandbox` 工具 | `app/core/tools/SandboxTools.py` | `@tool` 装饰的 `sandbox` 函数，通过 `create_deep_agent` 启动沙箱子智能体 |
 
@@ -512,7 +512,7 @@ system_prompt = (
 - **镜像**：默认 `python:3.12-alpine`，可配置
 - **资源限制**：`max_memory_mb`（默认 512MB）、`max_cpu_percent`（默认 100%）
 - **网络控制**：`network_enabled=False` 默认关闭网络，防止数据外泄
-- **工作目录**：每个 Session 独立 workspace，通过 Docker volume 映射
+- **工作目录**：每个 Session 独立 host workspace（如 `/tmp/sandbox/{session_id}`），通过 Docker volume 映射到容器内固定的 `/workspace`，避免 Windows 路径盘符冒号与 Docker mount 格式冲突
 
 ### 长生命周期容器优化
 
@@ -540,6 +540,34 @@ system_prompt = (
 
 - `deepagents==0.5.5` — LangChain deepagents 库
 - `docker==7.1.0` — Docker SDK for Python
+
+### 沙盒执行前端展示（2026-06-12 新增）
+
+参考 Kimi "Kimi's Computer" 设计，实现沙盒执行过程的实时前端展示：
+
+**交互流程**：
+1. 沙盒开始执行后，AI 聊天气泡中显示 `SandboxProgress` 进度卡片（当前步骤、进度条、状态、耗时）
+2. 用户点击进度卡片，右侧滑出 `SandboxDrawer` 详情面板，展示完整事件时间线
+3. 执行完成后，进度卡片更新为完成状态；若详情面板已打开，2 秒后自动关闭
+
+**后端变更**：
+- `app/core/tools/SandboxTools.py` 增加 `_extract_sandbox_summary_and_events()` 函数，从子智能体消息流中实时提取摘要和事件
+- `tool_progress` 事件增加 `sandbox_summary`（当前步骤、总步骤、进度百分比、状态消息）和 `sandbox_events`（详细事件列表）
+- `tool_stop` 事件增加 `final_summary`（完成摘要和结果预览）
+- 预定义 5 个执行步骤：生成代码 → 写入文件 → 执行代码 → 获取输出 → 分析结果
+
+**前端组件**：
+| 组件 | 文件 | 职责 |
+|------|------|------|
+| `SandboxProgress` | `web/Agent/src/components/SandboxProgress.vue` | 聊天气泡中的进度摘要卡片 |
+| `SandboxDrawer` | `web/Agent/src/components/SandboxDrawer.vue` | 右侧滑出详情面板，含事件时间线 |
+| `SandboxEventItem` | `web/Agent/src/components/SandboxEventItem.vue` | 单个事件展示（代码块、命令行、文件路径等） |
+
+**前端变更**：
+- `web/Agent/src/utils/sseParser.js`: `createAiMessage()` 增加 `sandboxExecution` 字段；`processSSEEvent()` 的 `custom` case 中检测 `tool === 'sandbox'` 并更新沙盒状态
+- `web/Agent/src/components/MessageBubble.vue`: 在工具调用时间线中检测 `sandboxExecution`，渲染 `SandboxProgress` 并透传 `open-sandbox-drawer` 事件
+- `web/Agent/src/components/ChatArea.vue`: 透传 `sandboxExecution` 和 `open-sandbox-drawer` 事件
+- `web/Agent/src/App.vue`: 添加 `SandboxDrawer` 全局面板、状态管理和自动关闭逻辑
 
 ## 前端架构（web/Agent）
 

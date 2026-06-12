@@ -26,6 +26,7 @@ Date: 2026-06-12
 
 import json
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -44,6 +45,246 @@ from app.core.tools.events import create_tool_event
 from app.shared.tools.middleware.docker_sandbox_backend import DockerSandboxMiddleware
 
 logger = logging.getLogger(__name__)
+
+# 预定义沙盒执行的步骤模板
+SANDBOX_STEPS = [
+    {"step": 1, "name": "code_generation", "label": "生成代码", "icon": "📝"},
+    {"step": 2, "name": "file_write", "label": "写入文件", "icon": "💾"},
+    {"step": 3, "name": "command_execute", "label": "执行代码", "icon": "▶️"},
+    {"step": 4, "name": "command_output", "label": "获取输出", "icon": "📤"},
+    {"step": 5, "name": "result_analysis", "label": "分析结果", "icon": "✅"},
+]
+
+
+def _detect_language(code: str) -> str:
+    """
+    根据代码内容检测编程语言
+
+    Args:
+        code: 代码字符串
+
+    Returns:
+        str: 检测到的语言标识
+    """
+    if not code:
+        return "text"
+    first_line = code.strip().split("\n", 1)[0]
+    if first_line.startswith("#!/bin/bash") or first_line.startswith("#!/bin/sh"):
+        return "bash"
+    if first_line.startswith("#!/usr/bin/env python") or first_line.startswith("#!/usr/bin/python"):
+        return "python"
+    # 简单启发式检测
+    indicators = {
+        "python": ["def ", "import ", "print(", "class ", "if __name__"],
+        "javascript": ["function ", "const ", "let ", "var ", "=>", "console.log"],
+        "typescript": ["interface ", "type ", ": string", ": number", ": boolean"],
+        "java": ["public class", "public static", "System.out.println"],
+        "go": ["package main", "func main", "fmt.Println"],
+        "rust": ["fn main", "let mut", "println!"],
+        "bash": ["echo ", "if [", "then", "fi", "for ", "do", "done"],
+    }
+    scores = {lang: 0 for lang in indicators}
+    for lang, keywords in indicators.items():
+        for kw in keywords:
+            if kw in code:
+                scores[lang] += 1
+    if scores:
+        best = max(scores, key=scores.get)
+        if scores[best] > 0:
+            return best
+    return "text"
+
+
+def _extract_code_blocks(content: str) -> list:
+    """
+    从消息文本中提取代码块
+
+    Args:
+        content: 消息文本内容
+
+    Returns:
+        list: 提取到的代码块列表
+    """
+    if not content:
+        return []
+    blocks = []
+    # 匹配 ```language\ncode\n``` 格式
+    import re
+    pattern = r"```(?:\w+)?\n(.*?)\n```"
+    matches = re.findall(pattern, content, re.DOTALL)
+    for match in matches:
+        stripped = match.strip()
+        if stripped:
+            blocks.append(stripped)
+    return blocks
+
+
+def _extract_tool_call(msg) -> dict:
+    """
+    从 ToolMessage 中提取工具调用信息
+
+    Args:
+        msg: ToolMessage 对象
+
+    Returns:
+        dict: 工具调用信息字典，若无法提取则返回 None
+    """
+    if not hasattr(msg, "content"):
+        return None
+    content = msg.content
+    if isinstance(content, str):
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return None
+
+
+def _convert_tool_call_to_event(tool_call: dict, current_step: int) -> dict:
+    """
+    将工具调用转换为沙盒事件
+
+    Args:
+        tool_call: 工具调用信息字典
+        current_step: 当前步骤序号
+
+    Returns:
+        dict: 沙盒事件字典
+    """
+    # 根据工具调用内容推断事件类型
+    tool_name = tool_call.get("tool") or tool_call.get("name") or ""
+    content = tool_call.get("content") or tool_call.get("result") or ""
+    command = tool_call.get("command") or ""
+    file_path = tool_call.get("file_path") or tool_call.get("path") or ""
+
+    if command:
+        event_type = "command_execute"
+        title = "执行命令"
+    elif file_path and content:
+        event_type = "file_write"
+        title = "写入文件"
+    elif file_path:
+        event_type = "file_read"
+        title = "读取文件"
+    elif "write" in str(tool_name).lower():
+        event_type = "file_write"
+        title = "写入文件"
+    elif "read" in str(tool_name).lower():
+        event_type = "file_read"
+        title = "读取文件"
+    elif "execute" in str(tool_name).lower() or "run" in str(tool_name).lower():
+        event_type = "command_execute"
+        title = "执行命令"
+    else:
+        event_type = "command_execute"
+        title = "执行操作"
+
+    event = {
+        "timestamp": int(time.time() * 1000),
+        "step": current_step,
+        "type": event_type,
+        "title": title,
+        "status": "completed",
+    }
+    if command:
+        event["command"] = command
+    if file_path:
+        event["file_path"] = file_path
+    if content and isinstance(content, str) and len(content) < 5000:
+        event["content"] = content
+    return event
+
+
+def _get_status_icon(current_step: int, total_messages: int) -> str:
+    """
+    根据当前步骤获取状态图标
+
+    Args:
+        current_step: 当前步骤序号
+        total_messages: 消息总数
+
+    Returns:
+        str: 状态图标字符串
+    """
+    if current_step <= len(SANDBOX_STEPS):
+        return SANDBOX_STEPS[current_step - 1]["icon"]
+    return "⏳"
+
+
+def _extract_sandbox_summary_and_events(messages: list, start_time: datetime) -> tuple:
+    """
+    从子智能体消息中提取摘要信息和事件列表
+
+    Args:
+        messages: 子智能体消息列表
+        start_time: 沙盒执行开始时间
+
+    Returns:
+        tuple: (summary_dict, events_list)
+    """
+    events = []
+    current_step = 1
+
+    for msg in messages:
+        msg_type_name = type(msg).__name__
+        content = getattr(msg, "content", None)
+        tool_call = _extract_tool_call(msg)
+
+        # 识别工具调用（优先按类型名匹配，否则按内容启发式匹配）
+        is_tool_message = msg_type_name in ("ToolMessage", "MockToolMessage", "_MockToolMessage")
+        if not is_tool_message and tool_call:
+            # 若能解析出工具调用结构，视为 Tool 消息
+            is_tool_message = True
+
+        if is_tool_message:
+            event = _convert_tool_call_to_event(tool_call, current_step)
+            events.append(event)
+            current_step = min(current_step + 1, 5)
+            continue
+
+        # 识别 AI 生成的代码（优先按类型名匹配，否则按内容启发式匹配）
+        is_ai_message = msg_type_name in ("AIMessage", "MockAIMessage", "_MockAIMessage")
+        if not is_ai_message and hasattr(msg, "content") and not hasattr(msg, "tool_call_id"):
+            # 对未知类型对象，若包含字符串 content 且无 tool_call_id，视为 AI 消息
+            is_ai_message = True
+
+        if is_ai_message:
+            if isinstance(content, str) and content.strip():
+                code_blocks = _extract_code_blocks(content)
+                if code_blocks:
+                    events.append({
+                        "timestamp": int(time.time() * 1000),
+                        "step": 1,
+                        "type": "code_generation",
+                        "title": "生成执行代码",
+                        "content": code_blocks[0],
+                        "language": _detect_language(code_blocks[0]),
+                        "status": "completed",
+                    })
+                    current_step = max(current_step, 2)
+
+    # 生成摘要
+    total_steps = len(SANDBOX_STEPS)
+    progress_pct = min(int(current_step / total_steps * 100), 100)
+    status_message = (
+        SANDBOX_STEPS[current_step - 1]["label"]
+        if current_step <= total_steps
+        else "执行完成"
+    )
+    elapsed_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+
+    summary = {
+        "current_step": current_step,
+        "total_steps": total_steps,
+        "progress_pct": progress_pct,
+        "status_message": status_message,
+        "status_icon": _get_status_icon(current_step, len(messages)),
+        "elapsed_ms": elapsed_ms,
+    }
+
+    return summary, events
 
 
 SANDBOX_SYSTEM_PROMPT = """\
@@ -232,6 +473,7 @@ def sandbox(
         config = {"configurable": {"thread_id": tool_call_id}}
 
         final_answer = ""
+        all_messages = []
 
         # 流式执行子智能体
         for chunk in child_agent.stream(
@@ -248,6 +490,20 @@ def sandbox(
                 continue
 
             if stream_mode == "updates":
+                # 从 updates 数据中提取消息列表，用于生成摘要和事件
+                extracted_messages = []
+                if isinstance(data, dict):
+                    for node_name, node_data in data.items():
+                        if isinstance(node_data, dict) and "messages" in node_data:
+                            extracted_messages.extend(node_data["messages"])
+                if extracted_messages:
+                    all_messages.extend(extracted_messages)
+
+                # 生成沙盒摘要和事件
+                sandbox_summary, sandbox_events = _extract_sandbox_summary_and_events(
+                    all_messages, start_time
+                )
+
                 writer(dict(create_tool_event(
                     event_type="tool_progress",
                     tool=tool_name,
@@ -255,6 +511,8 @@ def sandbox(
                     data={
                         "child_stream": data,
                         "message": "沙箱子智能体执行中",
+                        "sandbox_summary": sandbox_summary,
+                        "sandbox_events": sandbox_events,
                     },
                 )))
 
@@ -285,6 +543,12 @@ def sandbox(
             f"</task_result>"
         )
 
+        # 生成最终摘要
+        final_summary, _ = _extract_sandbox_summary_and_events(all_messages, start_time)
+        final_summary["completed_steps"] = final_summary["current_step"]
+        final_summary["final_status"] = "执行完成"
+        final_summary["result_preview"] = final_answer[:200] + "..." if len(final_answer) > 200 else final_answer
+
         # 发送工具停止事件
         stop_event = create_tool_event(
             event_type="tool_stop",
@@ -297,6 +561,7 @@ def sandbox(
                     "answer": final_answer,
                 },
                 "duration_ms": duration_ms,
+                "final_summary": final_summary,
             },
         )
         writer(dict(stop_event))

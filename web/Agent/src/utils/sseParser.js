@@ -293,15 +293,59 @@ export function processSSEEvent(data, aiMsg) {
       // 检查是否是 tool_stop 类型的自定义事件
       console.log('[sseParser] custom event:', JSON.stringify(data))
       // 注意：custom 事件的 data 字段包含实际的工具事件数据
-      const customToolData = data.data || {}
+      var customToolData = data.data || {}
+
+      // 检测沙盒工具事件
+      if (customToolData.tool === 'sandbox') {
+        if (!aiMsg.sandboxExecution) {
+          aiMsg.sandboxExecution = {
+            status: 'running',
+            summary: null,
+            events: [],
+            startTime: Date.now()
+          }
+        }
+
+        // 更新摘要信息
+        if (customToolData.data && customToolData.data.sandbox_summary) {
+          aiMsg.sandboxExecution.summary = customToolData.data.sandbox_summary
+        }
+
+        // 追加事件
+        if (customToolData.data && customToolData.data.sandbox_events && Array.isArray(customToolData.data.sandbox_events)) {
+          // 去重追加：只添加时间戳不存在的事件
+          var existingTimestamps = new Set(aiMsg.sandboxExecution.events.map(function(e) { return e.timestamp }))
+          for (var idx = 0; idx < customToolData.data.sandbox_events.length; idx++) {
+            var evt = customToolData.data.sandbox_events[idx]
+            if (!existingTimestamps.has(evt.timestamp)) {
+              aiMsg.sandboxExecution.events.push(evt)
+              existingTimestamps.add(evt.timestamp)
+            }
+          }
+        }
+
+        // 处理完成
+        if (customToolData.type === 'tool_stop') {
+          aiMsg.sandboxExecution.status =
+            customToolData.data && customToolData.data.status === 'success' ? 'success' : 'error'
+          if (customToolData.data && customToolData.data.final_summary) {
+            aiMsg.sandboxExecution.summary = Object.assign(
+              {},
+              aiMsg.sandboxExecution.summary || {},
+              customToolData.data.final_summary
+            )
+          }
+        }
+      }
+
       if (customToolData.tool && customToolData.type === 'tool_stop') {
         console.log('[sseParser] Detected tool_stop in custom event')
-        const toolResultData = customToolData.data || {}
+        var toolResultData = customToolData.data || {}
         if (toolResultData.status === 'success' && toolResultData.type === 'download') {
           console.log('[sseParser] Detected download type in custom tool_stop')
-          const result = toolResultData.result || {}
-          let downloadUrl = null
-          let fileName = null
+          var result = toolResultData.result || {}
+          var downloadUrl = null
+          var fileName = null
           if (typeof result === 'object') {
             downloadUrl = result.download_url || result.downloadUrl
             fileName = result.file_name || result.fileName || result.filename
@@ -381,6 +425,7 @@ export function createAiMessage() {
     ended: false,
     error: '',
     downloadInfo: null,
-    interrupt: null
+    interrupt: null,
+    sandboxExecution: null  // 新增：沙盒执行状态
   }
 }

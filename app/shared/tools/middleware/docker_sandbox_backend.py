@@ -39,6 +39,7 @@ class DockerSandboxBackend(BaseSandbox):
         session_id: 会话ID，用于唯一标识容器和隔离工作目录
         image: Docker 镜像名，默认 python:3.12-alpine
         workspace: 主机工作目录路径，通过 volume mount 映射到容器
+        container_workspace: 容器内工作目录路径，固定为 /workspace
         max_memory_mb: 容器内存限制（MB）
         max_cpu_percent: 容器 CPU 限制（百分比）
         network_enabled: 是否启用容器网络，默认 False（--network none）
@@ -74,6 +75,7 @@ class DockerSandboxBackend(BaseSandbox):
         self.session_id = session_id
         self.image = image
         self.workspace = workspace or os.path.join("/tmp/sandbox", session_id)
+        self.container_workspace = "/workspace"
         self.max_memory_mb = max_memory_mb
         self.max_cpu_percent = max_cpu_percent
         self.network_enabled = network_enabled
@@ -144,8 +146,8 @@ class DockerSandboxBackend(BaseSandbox):
                 mem_limit=mem_limit,
                 nano_cpus=nano_cpus,
                 network=network_mode,
-                volumes={self.workspace: {"bind": self.workspace, "mode": "rw"}},
-                working_dir=self.workspace,
+                volumes={self.workspace: {"bind": self.container_workspace, "mode": "rw"}},
+                working_dir=self.container_workspace,
                 stdin_open=True,
                 tty=False,
             )
@@ -198,7 +200,7 @@ class DockerSandboxBackend(BaseSandbox):
             logger.debug("执行命令: %s", command)
             result = self._container.exec_run(
                 cmd=["sh", "-c", command],
-                workdir=self.workspace,
+                workdir=self.container_workspace,
                 stdout=True,
                 stderr=True,
                 stdin=False,
