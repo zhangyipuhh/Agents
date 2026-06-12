@@ -11,7 +11,7 @@ SandboxTools - 沙箱子智能体工具模块
     - 支持流式事件输出 (tool_start / tool_progress / tool_stop)
 
 工作空间:
-    通过 Path.cwd() 反向定位项目根目录，拼接 app/data/upload/{session_id}/sandbox 作为 workspace。
+    通过 Path.cwd() 反向定位项目根目录，拼接 data/upload/{session_id}/sandbox 作为 workspace。
     每个 session 拥有独立的沙箱工作目录。
 
 子智能体可用工具:
@@ -471,7 +471,7 @@ def sandbox(
 
     # 构建工作目录路径
     project_root = Path.cwd()
-    workspace = project_root / "app" / "data" / "upload" / session_id / "sandbox"
+    workspace = project_root / "data" / "upload" / session_id / "sandbox"
 
     try:
         # 确保工作目录存在

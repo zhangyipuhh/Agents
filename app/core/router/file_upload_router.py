@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix='/api/core', tags=['Core File Upload'])
 
-UPLOAD_DIR = Path("app/data/upload")
-CHUNKS_DIR = Path("app/data/upload_chunks")
+UPLOAD_DIR = Path("data/upload")
+CHUNKS_DIR = Path("data/upload_chunks")
 
 
 class UploadedFileInfo(BaseModel):

@@ -69,7 +69,7 @@ async def get_map_agent() -> MapAgent:
 
 
 # Knowledge 目录路径
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 KNOWLEDGE_DIR = os.path.join(_PROJECT_ROOT, "data", "Knowledge")
 METADATA_FILE = os.path.join(KNOWLEDGE_DIR, "metadata.json")
 TMP_DIR = os.path.join(KNOWLEDGE_DIR, "tmp")

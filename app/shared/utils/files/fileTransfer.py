@@ -34,12 +34,12 @@ class FileTransfer:
     支持会话隔离，每个会话的文件存储在独立的目录中。
     """
 
-    def __init__(self, upload_dir: str = "app/data/upload"):
+    def __init__(self, upload_dir: str = "data/upload"):
         """
         初始化文件传输工具
 
         Args:
-            upload_dir (str): 文件上传目录的路径，默认为"app/data/upload"
+            upload_dir (str): 文件上传目录的路径，默认为"data/upload"
                                    支持相对路径（基于项目根目录）或绝对路径
         """
         upload_path = Path(upload_dir)
@@ -207,7 +207,7 @@ class FileTransfer:
 
         将多个 base64 编码的文件上传到指定会话目录，每个文件使用 UUID 命名。
         文件存储位置: {upload_dir}/{session_id}/{uuid}.{ext}
-        例如: app/data/upload/session_123/550e8400-e29b-41d4-a716-446655440000.pdf
+        例如: data/upload/session_123/550e8400-e29b-41d4-a716-446655440000.pdf
 
         Args:
             files (List[dict]): 要上传的文件列表，每个元素包含 filename 和 base64_data
@@ -282,13 +282,13 @@ class FileTransfer:
             HTTPException: 当文件不存在时抛出404错误
 
         Examples:
-            >>> # 方式1：传入不带扩展名的UUID
+            >>> # 方式2：传入带扩展名的UUID
             >>> file_path = file_transfer.get_file_path(
-            ...     "550e8400-e29b-41d4-a716-446655440000",
+            ...     "550e8400-e29b-41d4-a716-446655440000.pdf",
             ...     "session_123"
             ... )
             >>> print(file_path)
-            PosixPath('app/data/upload/session_123/550e8400-e29b-41d4-a716-446655440000.pdf')
+            PosixPath('data/upload/session_123/550e8400-e29b-41d4-a716-446655440000.pdf')
 
             >>> # 方式2：传入带扩展名的UUID
             >>> file_path = file_transfer.get_file_path(
@@ -296,7 +296,7 @@ class FileTransfer:
             ...     "session_123"
             ... )
             >>> print(file_path)
-            PosixPath('app/data/upload/session_123/550e8400-e29b-41d4-a716-446655440000.pdf')
+            PosixPath('data/upload/session_123/550e8400-e29b-41d4-a716-446655440000.pdf')
 
             >>> # 文件不存在的情况
             >>> file_path = file_transfer.get_file_path("not-exist-uuid", "session_123")
@@ -347,7 +347,7 @@ class FileTransfer:
         通过UUID和会话ID获取文件，并返回base64编码的内容
 
         文件存储位置: {upload_dir}/{session_id}/{uuid}.{ext}
-        例如: app/data/upload/session_123/550e8400-e29b-41d4-a716-446655440000.pdf
+        例如: data/upload/session_123/550e8400-e29b-41d4-a716-446655440000.pdf
 
         Args:
             file_uuid (str): 文件的UUID（可带或不带扩展名）

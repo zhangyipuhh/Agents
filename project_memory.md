@@ -12,6 +12,36 @@ Agent User Management 是一个基于 FastAPI 的 AI Agent 管理平台，提供
 - **AI**: LangGraph + LangChain，支持多种 LLM 模型
 - **工具**: MCP（Model Context Protocol）工具集成
 
+## 数据目录约定（2026-06-12 重构）
+
+运行时数据目录位于**项目根**（非 `app/` 内），便于与代码解耦并避免被打入 Docker 镜像。
+
+```
+data/                          # 项目根运行时数据目录（原 app/data）
+├── Knowledge/                 # 知识库数据（地图 Agent）
+│   ├── metadata.json
+│   ├── sync_metadata.py
+│   └── tmp/                   # 临时缓存（doc 转换、large_tool_results）
+├── upload/                    # 用户上传文件（按 session_id 分目录）
+├── download/                  # 用户下载文件（按 session_id 分目录）
+├── upload_chunks/             # 分片上传临时目录（按 file_id 分目录）
+└── demonstration/download/    # 演示模式专用下载目录
+```
+
+### 关键变更
+
+- **路径常量**（统一改为相对项目根）：
+  - `app/core/router/file_upload_router.py`：`UPLOAD_DIR = Path("data/upload")`、`CHUNKS_DIR = Path("data/upload_chunks")`
+  - `app/core/router/file_download_router.py`：`DOWNLOAD_DIR = Path("data/download")`
+  - `app/shared/utils/files/fileTransfer.py` / `file_upload_handler.py` / `pdfToImage.py`：默认参数 `upload_dir="data/upload"`
+- **基于 `Path.cwd()` 的子智能体工作目录**：
+  - `app/core/tools/SandboxTools.py`：`workspace = project_root / "data" / "upload" / session_id / "sandbox"`
+  - `app/core/tools/FilesystemReadTools.py`：`root_path = project_root / "data" / "upload" / session_id`
+- **Knowledge 目录**：`app/features/map_agent/router/map_router.py` 中 `_PROJECT_ROOT` 由 4 次 `os.path.dirname` 改为 5 次，确保升到项目根而非 `app/`
+- **审计/地图工具**：`app/features/audit_document_agent/tools/tools.py`、`app/features/map_agent/tools/MapTools.py`、`app/features/Tagent/Tagent.py` 等同步更新
+- **.gitignore**：`app/data/` → `data/`（已同步）
+- **Dockerfile 无需修改**：`COPY app/ /app/app/` 不会包含项目根的 `data/`，数据仅运行时生成
+
 ## 项目架构
 
 ```
@@ -341,7 +371,7 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 **实现细节**:
 - 使用 `create_deep_agent` (deepagents) 创建子智能体
 - 使用 `DockerSandboxMiddleware` 提供隔离执行环境
-- 工作目录: `app/data/upload/{session_id}/sandbox`
+- 工作目录: `data/upload/{session_id}/sandbox`（2026-06-12 路径重构，原 `app/data/upload/...` 已迁移到项目根 `data/`）
 - 默认镜像: `python:3.12-alpine`
 - 资源限制: 内存 512MB，CPU 100%，无网络
 - 支持流式事件: `tool_start` / `tool_progress` / `tool_stop`

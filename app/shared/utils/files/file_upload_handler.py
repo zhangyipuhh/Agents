@@ -44,12 +44,12 @@ class FileUploadHandler:
         upload_dir (Path): 文件上传目录路径
     """
     
-    def __init__(self, upload_dir: str = "app/data/upload"):
+    def __init__(self, upload_dir: str = "data/upload"):
         """
         初始化文件上传处理器
-        
+
         Args:
-            upload_dir (str): 文件上传目录路径，默认为 "app/data/upload"
+            upload_dir (str): 文件上传目录路径，默认为 "data/upload"
         """
         # 初始化文件传输工具，用于处理文件的上传和路径管理
         self.file_transfer = FileTransfer(upload_dir)

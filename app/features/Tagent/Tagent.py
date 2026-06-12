@@ -62,7 +62,7 @@ async def _async_main():
     _checkpointer = MemorySaver()
     
     # 初始化文件传输工具
-    file_transfer = FileTransfer(upload_dir="app/data/upload")
+    file_transfer = FileTransfer(upload_dir="data/upload")
     
     prompt = """
         # 角色定义

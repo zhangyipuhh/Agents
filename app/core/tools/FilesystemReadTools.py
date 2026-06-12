@@ -11,7 +11,7 @@ FilesystemReadTools - 文件系统探索工具模块
     - opencode Task(prompt=, subagent_type="explore") →  explore(prompt=)
 
 工作空间:
-    通过 Path.cwd() 反向定位项目根目录，拼接 app/data/upload/{session_id} 作为 root_path。
+    通过 Path.cwd() 反向定位项目根目录，拼接 data/upload/{session_id} 作为 root_path。
     root_path 限定子智能体的操作范围，确保只读安全。
 
 子智能体可用工具:
@@ -164,7 +164,7 @@ def explore(
     session_id = runtime.context.get("session_id", "default")
 
     project_root = Path.cwd()
-    root_path = project_root / "app" / "data" / "upload" / session_id
+    root_path = project_root / "data" / "upload" / session_id
     if runtime.context.get("knowledge_root"):
         root_path = Path(project_root / runtime.context.get("knowledge_root"))
     try:
