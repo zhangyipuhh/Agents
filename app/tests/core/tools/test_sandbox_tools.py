@@ -153,6 +153,55 @@ def test_extract_sandbox_summary_and_events_with_tool_message():
     assert summary["current_step"] == 2
 
 
+def test_extract_sandbox_summary_and_events_with_standard_tool_message():
+    """验证标准 LangChain ToolMessage（content 为纯文本）不抛 AttributeError，且能生成正确事件"""
+    from app.core.tools.SandboxTools import _extract_sandbox_summary_and_events
+
+    class ToolMessage:
+        content = "Hello World"
+        name = "execute"
+
+    start = datetime.now()
+    summary, events = _extract_sandbox_summary_and_events([ToolMessage()], start)
+    assert len(events) == 1
+    assert events[0]["type"] == "command_execute"
+    assert events[0]["title"] == "执行命令"
+    assert events[0]["content"] == "Hello World"
+    assert summary["current_step"] == 2
+
+
+def test_extract_sandbox_summary_and_events_with_tool_message_write_file():
+    """验证标准 ToolMessage name 包含 write 时生成 file_write 事件"""
+    from app.core.tools.SandboxTools import _extract_sandbox_summary_and_events
+
+    class ToolMessage:
+        content = "file written"
+        name = "write_file"
+
+    start = datetime.now()
+    summary, events = _extract_sandbox_summary_and_events([ToolMessage()], start)
+    assert len(events) == 1
+    assert events[0]["type"] == "file_write"
+    assert events[0]["title"] == "写入文件"
+    assert events[0]["content"] == "file written"
+
+
+def test_extract_sandbox_summary_and_events_with_tool_message_no_name():
+    """验证标准 ToolMessage 无 name 时不抛异常，降级为默认执行操作事件"""
+    from app.core.tools.SandboxTools import _extract_sandbox_summary_and_events
+
+    class ToolMessage:
+        content = "some output"
+        # 没有 name 属性
+
+    start = datetime.now()
+    summary, events = _extract_sandbox_summary_and_events([ToolMessage()], start)
+    assert len(events) == 1
+    assert events[0]["type"] == "command_execute"
+    assert events[0]["title"] == "执行操作"
+    assert events[0]["content"] == "some output"
+
+
 def test_sandbox_runtime_context_none():
     """验证 runtime.context 为 None 时不会在入口处触发 AttributeError"""
     from unittest.mock import patch

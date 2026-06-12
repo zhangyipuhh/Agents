@@ -15,6 +15,8 @@ Date: 2026-06-11
 
 import os
 import logging
+from concurrent.futures import ThreadPoolExecutor
+
 import docker
 from docker.errors import DockerException, NotFound, APIError
 
@@ -198,15 +200,17 @@ class DockerSandboxBackend(BaseSandbox):
                 self._container.start()
 
             logger.debug("执行命令: %s", command)
-            result = self._container.exec_run(
-                cmd=["sh", "-c", command],
-                workdir=self.container_workspace,
-                stdout=True,
-                stderr=True,
-                stdin=False,
-                tty=False,
-                timeout=effective_timeout,
-            )
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    self._container.exec_run,
+                    cmd=["sh", "-c", command],
+                    workdir=self.container_workspace,
+                    stdout=True,
+                    stderr=True,
+                    stdin=False,
+                    tty=False,
+                )
+                result = future.result(timeout=effective_timeout)
 
             output = result.output.decode("utf-8", errors="replace") if result.output else ""
             exit_code = result.exit_code
@@ -220,6 +224,13 @@ class DockerSandboxBackend(BaseSandbox):
                 output=output,
                 exit_code=exit_code,
                 truncated=truncated,
+            )
+        except TimeoutError:
+            logger.warning("命令执行超时（%s秒）: %s", effective_timeout, command)
+            return ExecuteResponse(
+                output=f"命令执行超时（{effective_timeout}秒）",
+                exit_code=-1,
+                truncated=False,
             )
         except Exception as e:
             logger.error("命令执行失败: %s", e)

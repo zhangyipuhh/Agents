@@ -120,10 +120,9 @@ export default {
 <style scoped>
 .sandbox-progress {
   width: 100%;
-  max-width: 480px;
   border: 1px solid #e0e0e0;
   border-radius: 12px;
-  padding: 12px 16px;
+  padding: 8px 12px;
   background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);
   cursor: pointer;
   transition: all 0.2s ease;
@@ -136,13 +135,13 @@ export default {
 }
 
 .sandbox-progress.running {
-  border-color: #10b981;
-  background: linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%);
+  border-color: var(--color-accent);
+  background: linear-gradient(135deg, var(--color-accent-light) 0%, #ffffff 100%);
 }
 
 .sandbox-progress.success {
-  border-color: #10b981;
-  background: linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%);
+  border-color: var(--color-accent);
+  background: linear-gradient(135deg, var(--color-accent-light) 0%, #ffffff 100%);
 }
 
 .sandbox-progress.error {
@@ -154,7 +153,7 @@ export default {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .progress-icon {
@@ -163,7 +162,7 @@ export default {
 
 .progress-title {
   flex: 1;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--color-text-primary);
 }
@@ -178,13 +177,13 @@ export default {
 }
 
 .progress-status.running {
-  background-color: rgba(16, 185, 129, 0.1);
-  color: #10b981;
+  background-color: rgba(30, 90, 168, 0.1);
+  color: var(--color-accent);
 }
 
 .progress-status.success {
-  background-color: rgba(16, 185, 129, 0.1);
-  color: #10b981;
+  background-color: rgba(30, 90, 168, 0.1);
+  color: var(--color-accent);
 }
 
 .progress-status.error {
@@ -193,17 +192,17 @@ export default {
 }
 
 .progress-bar-container {
-  height: 6px;
+  height: 4px;
   background: #e0e0e0;
-  border-radius: 3px;
-  margin: 8px 0;
+  border-radius: 2px;
+  margin: 6px 0;
   overflow: hidden;
 }
 
 .progress-bar {
   height: 100%;
-  background: linear-gradient(90deg, #10b981, #34d399);
-  border-radius: 3px;
+  background: linear-gradient(90deg, var(--color-accent), #4A90E2);
+  border-radius: 2px;
   transition: width 0.3s ease;
 }
 
@@ -220,23 +219,23 @@ export default {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-top: 8px;
+  margin-top: 6px;
   flex-wrap: wrap;
 }
 
 .progress-step {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--color-text-secondary);
   font-weight: 500;
 }
 
 .progress-message {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--color-text-primary);
 }
 
 .progress-time {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--color-text-muted);
   margin-left: auto;
 }
@@ -246,8 +245,8 @@ export default {
   align-items: center;
   justify-content: flex-end;
   gap: 4px;
-  margin-top: 8px;
-  font-size: 11px;
+  margin-top: 6px;
+  font-size: 10px;
   color: var(--color-text-muted);
 }
 

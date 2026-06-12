@@ -240,7 +240,38 @@ def _extract_sandbox_summary_and_events(messages: list, start_time: datetime) ->
             is_tool_message = True
 
         if is_tool_message:
-            event = _convert_tool_call_to_event(tool_call, current_step)
+            if tool_call:
+                # JSON 格式的 ToolMessage（兼容现有测试与部分手动构造的消息）
+                event = _convert_tool_call_to_event(tool_call, current_step)
+            else:
+                # 标准 LangChain ToolMessage：content 为执行结果，name 为工具名
+                tool_name = getattr(msg, "name", "") or ""
+                raw_content = getattr(msg, "content", "")
+                content_str = raw_content if isinstance(raw_content, str) else str(raw_content)
+
+                if "write" in tool_name.lower():
+                    event_type = "file_write"
+                    title = "写入文件"
+                elif "read" in tool_name.lower():
+                    event_type = "file_read"
+                    title = "读取文件"
+                elif "execute" in tool_name.lower() or "run" in tool_name.lower():
+                    event_type = "command_execute"
+                    title = "执行命令"
+                else:
+                    event_type = "command_execute"
+                    title = "执行操作"
+
+                event = {
+                    "timestamp": int(time.time() * 1000),
+                    "step": current_step,
+                    "type": event_type,
+                    "title": title,
+                    "status": "completed",
+                }
+                if content_str and len(content_str) < 5000:
+                    event["content"] = content_str
+
             events.append(event)
             current_step = min(current_step + 1, 5)
             continue

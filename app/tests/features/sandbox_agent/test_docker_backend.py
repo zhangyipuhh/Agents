@@ -101,30 +101,43 @@ class TestDockerSandboxBackend:
             # 验证 exec_run 使用容器内工作目录 /workspace
             exec_call_kwargs = mock_docker_client.containers.run.return_value.exec_run.call_args.kwargs
             assert exec_call_kwargs["workdir"] == "/workspace"
+            # 验证未传入 docker-py 不支持的 timeout 参数
+            assert "timeout" not in exec_call_kwargs
 
             backend.cleanup()
 
     def test_backend_execute_timeout(self, mock_docker_client, tmp_path):
         """测试超时命令被终止"""
-        mock_docker_client.containers.run.return_value.exec_run.side_effect = Exception(
-            "timeout"
-        )
+        from concurrent.futures import TimeoutError as FutureTimeoutError
+
+        # 模拟 ThreadPoolExecutor 的 future.result() 抛出 TimeoutError
+        mock_future = Mock()
+        mock_future.result.side_effect = FutureTimeoutError()
+
+        mock_executor = Mock()
+        mock_executor.submit.return_value = mock_future
+        mock_executor.__enter__ = Mock(return_value=mock_executor)
+        mock_executor.__exit__ = Mock(return_value=False)
 
         with patch("docker.from_env", return_value=mock_docker_client):
-            from app.shared.tools.middleware.docker_sandbox_backend import (
-                DockerSandboxBackend,
-            )
+            with patch(
+                "app.shared.tools.middleware.docker_sandbox_backend.ThreadPoolExecutor",
+                return_value=mock_executor,
+            ):
+                from app.shared.tools.middleware.docker_sandbox_backend import (
+                    DockerSandboxBackend,
+                )
 
-            backend = DockerSandboxBackend(
-                session_id="test-timeout",
-                workspace=str(tmp_path / "sandbox"),
-            )
+                backend = DockerSandboxBackend(
+                    session_id="test-timeout",
+                    workspace=str(tmp_path / "sandbox"),
+                )
 
-            result = backend.execute("sleep 100", timeout=1)
-            assert result.exit_code == -1
-            assert "失败" in result.output or "timeout" in result.output.lower()
+                result = backend.execute("sleep 100", timeout=1)
+                assert result.exit_code == -1
+                assert "超时" in result.output
 
-            backend.cleanup()
+                backend.cleanup()
 
     def test_backend_file_consistency(self, mock_docker_client, tmp_path):
         """测试主机写文件，容器内可读（通过 volume mount）"""

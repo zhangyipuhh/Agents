@@ -727,6 +727,7 @@ const getFileIconColor = (filename) => {
 
 /* 时间线工具块 */
 .timeline-tool {
+  width: 100%;
   max-width: 85%;
   margin-bottom: 10px;
 }
