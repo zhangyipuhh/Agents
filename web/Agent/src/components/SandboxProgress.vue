@@ -48,21 +48,6 @@ const statusTextMap = {
 
 const statusText = computed(() => statusTextMap[props.status] || '执行中')
 
-const progressPercent = computed(() => {
-  if (!props.summary) return 0
-  return props.summary.progress_pct || 0
-})
-
-const currentStep = computed(() => {
-  if (!props.summary) return 0
-  return props.summary.current_step || 0
-})
-
-const totalSteps = computed(() => {
-  if (!props.summary) return 5
-  return props.summary.total_steps || 5
-})
-
 const statusMessage = computed(() => {
   if (!props.summary) return '准备执行...'
   return props.summary.status_message || '准备执行...'
@@ -92,27 +77,16 @@ export default {
     :class="{ clickable: true, running: status === 'running', success: status === 'success', error: status === 'error' }"
     @click="handleClick"
   >
-    <div class="progress-header">
-      <span class="progress-icon">📦</span>
-      <span class="progress-title">沙盒执行</span>
+    <div class="progress-row">
       <span class="progress-status" :class="status">{{ statusText }}</span>
-    </div>
-
-    <div class="progress-bar-container">
-      <div class="progress-bar" :style="{ width: progressPercent + '%' }" :class="{ running: status === 'running' }"></div>
-    </div>
-
-    <div class="progress-info">
-      <span class="progress-step">当前进度 {{ currentStep }}/{{ totalSteps }}</span>
       <span class="progress-message">{{ statusIcon }} {{ statusMessage }}</span>
       <span v-if="elapsedTime" class="progress-time">{{ elapsedTime }}</span>
-    </div>
-
-    <div class="progress-hint">
-      <span>点击查看详情</span>
-      <svg class="arrow-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <polyline points="9 18 15 12 9 6" />
-      </svg>
+      <span class="progress-hint">
+        <span>点击查看详情</span>
+        <svg class="arrow-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+      </span>
     </div>
   </div>
 </template>
@@ -121,8 +95,8 @@ export default {
 .sandbox-progress {
   width: 100%;
   border: 1px solid #e0e0e0;
-  border-radius: 12px;
-  padding: 8px 12px;
+  border-radius: 8px;
+  padding: 4px 10px;
   background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);
   cursor: pointer;
   transition: all 0.2s ease;
@@ -149,31 +123,21 @@ export default {
   background: linear-gradient(135deg, #fef2f2 0%, #ffffff 100%);
 }
 
-.progress-header {
+.progress-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 6px;
-}
-
-.progress-icon {
-  font-size: 16px;
-}
-
-.progress-title {
-  flex: 1;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--color-text-primary);
+  overflow: hidden;
 }
 
 .progress-status {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
-  padding: 2px 8px;
+  padding: 1px 6px;
   border-radius: 9999px;
   background-color: var(--color-bg-tertiary);
   color: var(--color-text-secondary);
+  flex-shrink: 0;
 }
 
 .progress-status.running {
@@ -191,67 +155,33 @@ export default {
   color: #ef4444;
 }
 
-.progress-bar-container {
-  height: 4px;
-  background: #e0e0e0;
-  border-radius: 2px;
-  margin: 6px 0;
-  overflow: hidden;
-}
-
-.progress-bar {
-  height: 100%;
-  background: linear-gradient(90deg, var(--color-accent), #4A90E2);
-  border-radius: 2px;
-  transition: width 0.3s ease;
-}
-
-.progress-bar.running {
-  animation: progressPulse 1.5s ease-in-out infinite;
-}
-
-@keyframes progressPulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
-}
-
-.progress-info {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 6px;
-  flex-wrap: wrap;
-}
-
-.progress-step {
-  font-size: 11px;
-  color: var(--color-text-secondary);
-  font-weight: 500;
-}
-
 .progress-message {
   font-size: 11px;
   color: var(--color-text-primary);
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .progress-time {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--color-text-muted);
-  margin-left: auto;
+  flex-shrink: 0;
 }
 
 .progress-hint {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 4px;
-  margin-top: 6px;
+  gap: 2px;
   font-size: 10px;
   color: var(--color-text-muted);
+  flex-shrink: 0;
 }
 
 .arrow-icon {
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
 }
 </style>

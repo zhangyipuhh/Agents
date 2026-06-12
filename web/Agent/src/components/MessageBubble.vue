@@ -729,7 +729,11 @@ const getFileIconColor = (filename) => {
 .timeline-tool {
   width: 100%;
   max-width: 85%;
-  margin-bottom: 10px;
+  margin-bottom: 6px;
+}
+
+.timeline-sandbox {
+  width: 100%;
 }
 
 /* 时间线正文块 */
