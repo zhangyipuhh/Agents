@@ -27,6 +27,7 @@ Date: 2026-06-12
 import json
 import logging
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 
@@ -417,7 +418,25 @@ def sandbox(
     start_time = datetime.now()
     writer = get_stream_writer()
 
-    session_id = runtime.context.get("session_id", "default")
+    # 增加 runtime.context 全链路日志与空值保护
+    logger.info(
+        "[sandbox] tool_call_id=%s, runtime_type=%s, has_context=%s, context_type=%s, context=%s",
+        tool_call_id,
+        type(runtime).__name__,
+        hasattr(runtime, "context"),
+        type(getattr(runtime, "context", None)).__name__,
+        getattr(runtime, "context", None),
+    )
+    context = getattr(runtime, "context", None)
+    if not isinstance(context, dict):
+        logger.warning(
+            "[sandbox] runtime.context is missing or not a dict! "
+            "runtime=%s, context=%s. Falling back to 'default'.",
+            runtime,
+            context,
+        )
+        context = {}
+    session_id = context.get("session_id", "default")
 
     # 构建工作目录路径
     project_root = Path.cwd()
@@ -587,7 +606,7 @@ def sandbox(
         end_time = datetime.now()
         duration_ms = int((end_time - start_time).total_seconds() * 1000)
 
-        logger.error("sandbox 工具执行失败: %s", e, exc_info=True)
+        logger.error("sandbox 工具执行失败: %s\n%s", e, traceback.format_exc())
 
         # 发送工具错误事件
         error_event = create_tool_event(

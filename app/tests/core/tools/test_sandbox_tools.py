@@ -151,3 +151,51 @@ def test_extract_sandbox_summary_and_events_with_tool_message():
     assert len(events) == 1
     assert events[0]["type"] == "command_execute"
     assert summary["current_step"] == 2
+
+
+def test_sandbox_runtime_context_none():
+    """验证 runtime.context 为 None 时不会在入口处触发 AttributeError"""
+    from unittest.mock import patch
+    from app.core.tools.SandboxTools import sandbox
+
+    class FakeRuntime:
+        tool_call_id = "call_test_001"
+        context = None
+
+    with patch("app.core.tools.SandboxTools.get_stream_writer"), \
+         patch("app.core.tools.SandboxTools.ModelFactory.create_model"), \
+         patch("app.core.tools.SandboxTools.DockerSandboxMiddleware"), \
+         patch("app.core.tools.SandboxTools.create_deep_agent") as mock_create_agent:
+
+        mock_create_agent.side_effect = RuntimeError("expected_error")
+
+        try:
+            sandbox("test prompt", FakeRuntime())
+        except AttributeError as e:
+            pytest.fail(f"不应触发 AttributeError: {e}")
+        except RuntimeError as e:
+            assert str(e) == "expected_error"
+
+
+def test_sandbox_runtime_context_missing_attr():
+    """验证 runtime 无 context 属性时不会在入口处触发 AttributeError"""
+    from unittest.mock import patch
+    from app.core.tools.SandboxTools import sandbox
+
+    class FakeRuntime:
+        tool_call_id = "call_test_002"
+        # 没有 context 属性
+
+    with patch("app.core.tools.SandboxTools.get_stream_writer"), \
+         patch("app.core.tools.SandboxTools.ModelFactory.create_model"), \
+         patch("app.core.tools.SandboxTools.DockerSandboxMiddleware"), \
+         patch("app.core.tools.SandboxTools.create_deep_agent") as mock_create_agent:
+
+        mock_create_agent.side_effect = RuntimeError("expected_error")
+
+        try:
+            sandbox("test prompt", FakeRuntime())
+        except AttributeError as e:
+            pytest.fail(f"不应触发 AttributeError: {e}")
+        except RuntimeError as e:
+            assert str(e) == "expected_error"
