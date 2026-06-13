@@ -56,6 +56,7 @@ class TestDockerSandboxMiddleware:
                 max_memory_mb=256,
             )
 
+            # 2026-06-12 容器化重构：新增 4 个容器化部署字段
             mock_backend_cls.assert_called_once_with(
                 session_id="test-session",
                 workspace=workspace,
@@ -64,6 +65,10 @@ class TestDockerSandboxMiddleware:
                 max_cpu_percent=100,
                 network_enabled=False,
                 default_timeout=60,
+                docker_mode="local",
+                docker_host="",
+                host_workspace_prefix="",
+                container_workspace="/workspace",
             )
             assert middleware.backend is mock_backend
 

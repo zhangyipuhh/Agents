@@ -41,6 +41,7 @@ from deepagents import create_deep_agent
 
 from app.core.agent.AgentContext import AgentContext
 from app.core.config.config import LLM_CONFIG
+from app.core.config.settings import settings
 from app.core.llmcalls.model_factory import ModelFactory
 from app.core.tools.events import create_tool_event
 from app.shared.tools.middleware.docker_sandbox_backend import DockerSandboxMiddleware
@@ -789,15 +790,22 @@ def sandbox(
             base_url=LLM_CONFIG["base_url"],
         )
 
+        # 读取沙箱容器化部署配置（2026-06-12 重构：从 Pydantic Settings 注入）
+        sandbox_cfg = settings.get_sandbox_config()
+
         # 创建 Docker 沙箱中间件
         middleware = DockerSandboxMiddleware(
             session_id=session_id,
             workspace=str(workspace),
-            image="python:3.12-alpine",
-            max_memory_mb=512,
-            max_cpu_percent=100,
-            network_enabled=False,
-            default_timeout=60,
+            image=sandbox_cfg["image"],
+            max_memory_mb=sandbox_cfg["max_memory_mb"],
+            max_cpu_percent=sandbox_cfg["max_cpu_percent"],
+            network_enabled=sandbox_cfg["network_enabled"],
+            default_timeout=sandbox_cfg["default_timeout"],
+            docker_mode=sandbox_cfg["docker_mode"],
+            docker_host=sandbox_cfg["docker_host"],
+            host_workspace_prefix=sandbox_cfg["host_workspace_prefix"],
+            container_workspace=sandbox_cfg["container_workspace"],
         )
 
         # 创建 deep agent 子智能体

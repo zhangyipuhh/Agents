@@ -212,6 +212,7 @@ sys.modules["deepagents.backends.filesystem"].FilesystemBackend = _FilesystemBac
 _mock_docker = types.ModuleType("docker")
 _mock_docker.__path__ = []
 _mock_docker.from_env = Mock()
+_mock_docker.DockerClient = Mock()  # 2026-06-12 新增：socket 模式用 DockerClient(base_url=...)
 
 class _DockerErrors:
     class DockerException(Exception):

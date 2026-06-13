@@ -386,6 +386,17 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 - `PORTAL_REFRESH_TOKEN_TTL_SECONDS` — 门户子 refresh_token 有效期（秒），默认 86400 = 24 小时
 - `VITE_API_TARGET` — 前端 Vite 代理目标地址（开发用），默认 `http://localhost:8001`
 - ~~`VITE_PORTAL_NAV_CONFIG`~~ — 已废弃，门户导航配置迁移到 `public/app-config.json` 运行时配置
+- **沙箱容器化配置（2026-06-12 新增，由 `SandboxSettings` 管理）**：
+  - `SANDBOX_DOCKER_MODE` — 部署模式 `local` / `socket` / `dind` / `k8s`，默认 `local`
+  - `SANDBOX_DOCKER_HOST` — Docker daemon URL，socket 模式必填
+  - `SANDBOX_IMAGE` — 沙箱镜像，默认 `python:3.12-alpine`
+  - `SANDBOX_MAX_MEMORY_MB` — 容器内存限制（MB），默认 512，下限 64
+  - `SANDBOX_MAX_CPU_PERCENT` — 容器 CPU 限制（百分比），默认 100，范围 10-100
+  - `SANDBOX_NETWORK_ENABLED` — 是否启用容器网络，默认 `false`
+  - `SANDBOX_DEFAULT_TIMEOUT` — 命令默认超时（秒），默认 60
+  - `SANDBOX_CONTAINER_WORKSPACE` — 容器内工作目录，默认 `/workspace`
+  - `SANDBOX_HOST_WORKSPACE_PREFIX` — 宿主机视角工作目录前缀，socket 模式必填
+  - `SANDBOX_K8S_NAMESPACE` — K8s 模式命名空间（占位）
 - 其他 LLM API Key 等
 
 ## 提示词三层架构
@@ -526,9 +537,10 @@ system_prompt = (
 
 | 组件 | 文件位置 | 职责 |
 |------|---------|------|
-| `DockerSandboxBackend` | `app/shared/tools/middleware/docker_sandbox_backend.py` | Docker 容器生命周期管理、命令执行、文件上传下载；区分 host_workspace 与 container_workspace（/workspace） |
+| `DockerSandboxBackend` | `app/shared/tools/middleware/docker_sandbox_backend.py` | Docker 容器生命周期管理、命令执行、文件上传下载；区分 host_workspace（宿主机视角，用于 bind mount）与 container_workspace（容器内视角，/workspace）；支持 4 种 docker_mode 路径投影 |
 | `DockerSandboxMiddleware` | `app/shared/tools/middleware/docker_sandbox_backend.py` | 继承 `FilesystemMiddleware`，自动管理 `DockerSandboxBackend`，提供沙箱工具集 |
-| `sandbox` 工具 | `app/core/tools/SandboxTools.py` | `@tool` 装饰的 `sandbox` 函数，通过 `create_deep_agent` 启动沙箱子智能体 |
+| `sandbox` 工具 | `app/core/tools/SandboxTools.py` | `@tool` 装饰的 `sandbox` 函数，通过 `create_deep_agent` 启动沙箱子智能体；2026-06-12 重构：容器化部署配置从 `Settings.get_sandbox_config()` 注入 |
+| `SandboxSettings` | `app/core/config/settings.py` | Pydantic BaseSettings，管理 10 个 `SANDBOX_*` 环境变量，控制 docker_mode / 镜像 / 资源限制 / 路径前缀 |
 
 ### 架构变更历史
 
@@ -543,6 +555,41 @@ system_prompt = (
 - **资源限制**：`max_memory_mb`（默认 512MB）、`max_cpu_percent`（默认 100%）
 - **网络控制**：`network_enabled=False` 默认关闭网络，防止数据外泄
 - **工作目录**：每个 Session 独立 host workspace（如 `/tmp/sandbox/{session_id}`），通过 Docker volume 映射到容器内固定的 `/workspace`，避免 Windows 路径盘符冒号与 Docker mount 格式冲突
+
+### 容器化部署模式（2026-06-12 新增）
+
+**问题背景**：把应用打包成容器运行时，`DockerSandboxBackend` 启动的子容器需要 bind mount 应用容器的工作目录到子容器。但 `self.workspace`（应用进程视角）对宿主机 Docker daemon 不可见，导致 bind mount 失败。
+
+**解决方案**：拆分 `workspace`（应用视角）与 `host_workspace`（宿主机视角），通过 `SandboxSettings.docker_mode` 配置 4 种部署模式：
+
+| 模式 | 适用场景 | docker_mode | host_workspace 投影 | Docker 客户端 |
+|------|---------|-------------|---------------------|---------------|
+| **local** | 本地直接跑（无容器） | `local` | == workspace | `docker.from_env()` |
+| **socket** | 应用容器挂载宿主机 `/var/run/docker.sock` | `socket` | `host_workspace_prefix + workspace` | `docker.DockerClient(base_url=docker_host)` |
+| **dind** | Docker-in-Docker（需 `--privileged`） | `dind` | == workspace | `docker.from_env()`（连内嵌 daemon） |
+| **k8s** | K8s API 创建 Pod（占位，未实现） | `k8s` | _NotImplementedError_ | — |
+
+**关键字段**：
+
+- `SANDBOX_DOCKER_MODE`：枚举 `local / socket / dind / k8s`
+- `SANDBOX_DOCKER_HOST`：Docker daemon URL，socket 模式必填（如 `unix:///var/run/docker.sock`）
+- `SANDBOX_HOST_WORKSPACE_PREFIX`：宿主机视角前缀，socket 模式必填（如 `/host/app/data`）
+- `SANDBOX_CONTAINER_WORKSPACE`：容器内工作目录（bind mount target），默认 `/workspace`
+
+**典型部署**（socket 模式）：
+
+```yaml
+# docker-compose.sandbox.example.yml
+volumes:
+  - /var/run/docker.sock:/var/run/docker.sock
+  - ./data:/app/data
+environment:
+  - SANDBOX_DOCKER_MODE=socket
+  - SANDBOX_DOCKER_HOST=unix:///var/run/docker.sock
+  - SANDBOX_HOST_WORKSPACE_PREFIX=/app/data   # 容器内 /app/data 对应宿主机 /app/data
+```
+
+**K8s 模式占位**：`docker_mode=k8s` 时抛 `NotImplementedError`，提示需先实现 `K8sBackend` 类并在 `DockerSandboxBackend._resolve_host_workspace` 分发。
 
 ### 长生命周期容器优化
 

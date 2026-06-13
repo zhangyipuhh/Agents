@@ -66,8 +66,9 @@ class TestDockerSandboxBackend:
             mock_docker_client.containers.run.assert_called_once()
 
             # 验证 volumes 和 working_dir 参数使用容器内路径 /workspace
+            # 2026-06-12 容器化重构：volumes key 改为 host_workspace（local 模式 == workspace）
             call_kwargs = mock_docker_client.containers.run.call_args.kwargs
-            assert call_kwargs["volumes"][workspace]["bind"] == "/workspace"
+            assert call_kwargs["volumes"][backend.host_workspace]["bind"] == "/workspace"
             assert call_kwargs["working_dir"] == "/workspace"
 
             # 执行命令

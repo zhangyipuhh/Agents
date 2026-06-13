@@ -62,4 +62,25 @@ ENV PYTHONPATH=/app \
     VECLIB_MAXIMUM_THREADS=1 \
     NUMEXPR_NUM_THREADS=1
 
+# ==================================================================
+# 沙箱功能部署说明（2026-06-12 新增）
+#
+# 默认构建的镜像不包含 Docker daemon，sandbox 工具默认走 local 模式。
+# 若要在容器内使用 sandbox 工具的 Docker 沙箱，请选择以下方式之一：
+#
+# 1. socket 模式（推荐，安全性可控）：
+#    启动时挂载宿主机 /var/run/docker.sock 和数据卷：
+#      docker run -v /var/run/docker.sock:/var/run/docker.sock \
+#                 -v ./data:/app/data \
+#                 -e SANDBOX_DOCKER_MODE=socket \
+#                 -e SANDBOX_DOCKER_HOST=unix:///var/run/docker.sock \
+#                 -e SANDBOX_HOST_WORKSPACE_PREFIX=/app/data \
+#                 <image>
+#    或参考项目根 docker-compose.sandbox.example.yml
+#
+# 2. dind 模式：需 --privileged 启动，不推荐生产环境使用
+#
+# 3. local 模式：仅当应用直接跑在宿主机（无容器）时使用
+# ==================================================================
+
 CMD ["python", "-m", "app.main", "--host", "0.0.0.0", "--port", "8001"]
