@@ -39,13 +39,8 @@ const emit = defineEmits(['close'])
 const timelineRef = ref(null)
 
 function handleClose() {
+  // 关闭抽屉：通知父组件（App.vue）更新 sandboxDrawerVisible=false
   emit('close')
-}
-
-function handleOverlayClick(event) {
-  if (event.target === event.currentTarget) {
-    handleClose()
-  }
 }
 
 function formatTime(ms) {
@@ -106,88 +101,99 @@ watch(() => props.events.length, async () => {
 </script>
 
 <template>
-  <Transition name="drawer">
-    <div v-if="visible" class="sandbox-drawer-overlay" @click="handleOverlayClick">
-      <div class="sandbox-drawer" @click.stop>
-        <!-- 头部 -->
-        <div class="drawer-header">
-          <div class="drawer-title">
-            <span class="title-icon">📦</span>
-            <span>沙盒执行详情</span>
-          </div>
-          <button class="close-btn" @click="handleClose">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
+  <!--
+    Push Drawer 模式：
+    - 节点常驻 DOM（v-show 切换 display），由外层 .app-layout (display: flex) 推挤布局
+    - 关闭时 flex-basis=0 + overflow:hidden，内部内容被裁剪
+    - 开启时 flex-basis=480px，从右向左平滑展开
+    - 无遮罩：抽屉与主内容（main.content-area）共享同一视口，不遮挡
+  -->
+  <aside
+    v-show="visible"
+    class="sandbox-drawer"
+    :class="{ visible }"
+  >
+    <!-- 头部 -->
+    <div class="drawer-header">
+      <div class="drawer-title">
+        <span class="title-icon">📦</span>
+        <span>沙盒执行详情</span>
+      </div>
+      <button class="close-btn" @click="handleClose">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+      </button>
+    </div>
+
+    <!-- 进度摘要 -->
+    <div class="drawer-summary">
+      <div class="summary-status" :class="status">
+        <span class="status-indicator" :class="status"></span>
+        <span class="status-text">{{ statusText }}</span>
+      </div>
+      <div class="summary-progress">
+        <div class="progress-track">
+          <div class="progress-fill" :style="{ width: progressPercent + '%' }" :class="{ running: status === 'running' }"></div>
         </div>
-
-        <!-- 进度摘要 -->
-        <div class="drawer-summary">
-          <div class="summary-status" :class="status">
-            <span class="status-indicator" :class="status"></span>
-            <span class="status-text">{{ statusText }}</span>
-          </div>
-          <div class="summary-progress">
-            <div class="progress-track">
-              <div class="progress-fill" :style="{ width: progressPercent + '%' }" :class="{ running: status === 'running' }"></div>
-            </div>
-            <span class="progress-text">{{ currentStep }}/{{ totalSteps }}</span>
-          </div>
-          <div v-if="elapsedTime" class="summary-time">
-            耗时: {{ elapsedTime }}
-          </div>
-        </div>
-
-        <!-- 事件时间线 -->
-        <div class="drawer-timeline" ref="timelineRef">
-          <div v-if="events.length === 0" class="timeline-empty">
-            <span class="empty-icon">⏳</span>
-            <span class="empty-text">等待执行事件...</span>
-          </div>
-
-          <template v-else>
-            <SandboxEventItem
-              v-for="(event, index) in events"
-              :key="event.timestamp + '-' + index"
-              :event="event"
-              :is-active="isCurrentStep(event.step)"
-            />
-          </template>
-
-          <!-- 实时输出区域 -->
-          <div v-if="status === 'running'" class="live-output">
-            <span class="live-indicator">●</span>
-            <span>执行中...</span>
-          </div>
-        </div>
+        <span class="progress-text">{{ currentStep }}/{{ totalSteps }}</span>
+      </div>
+      <div v-if="elapsedTime" class="summary-time">
+        耗时: {{ elapsedTime }}
       </div>
     </div>
-  </Transition>
+
+    <!-- 事件时间线 -->
+    <div class="drawer-timeline" ref="timelineRef">
+      <div v-if="events.length === 0" class="timeline-empty">
+        <span class="empty-icon">⏳</span>
+        <span class="empty-text">等待执行事件...</span>
+      </div>
+
+      <template v-else>
+        <SandboxEventItem
+          v-for="(event, index) in events"
+          :key="event.timestamp + '-' + index"
+          :event="event"
+          :is-active="isCurrentStep(event.step)"
+        />
+      </template>
+
+      <!-- 实时输出区域 -->
+      <div v-if="status === 'running'" class="live-output">
+        <span class="live-indicator">●</span>
+        <span>执行中...</span>
+      </div>
+    </div>
+  </aside>
 </template>
 
 <style scoped>
-.sandbox-drawer-overlay {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  background: rgba(0, 0, 0, 0.3);
-  z-index: 1000;
-  display: flex;
-  justify-content: flex-end;
-}
-
+/* Push Drawer 根容器
+   关键设计：
+   - 作为 .app-layout (display:flex) 的子项参与 flex 推挤
+   - 默认 flex: 0 0 0 + overflow:hidden，关闭时不占空间、内部被裁剪
+   - 添加 .visible 后 flex-basis 变为 480px，主内容（main.content-area）自动压缩
+   - transition: flex-basis 实现平滑展开/收起
+   - 关闭时 border-left 也保持透明，避免 flex-basis:0 时 1px 缝隙残留 */
 .sandbox-drawer {
-  width: 480px;
-  max-width: 90vw;
-  height: 100%;
-  background: #ffffff;
-  box-shadow: -4px 0 20px rgba(0, 0, 0, 0.15);
+  flex: 0 0 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
+  height: 100%;
+  width: 480px;
+  max-width: 90vw;
+  background: #ffffff;
+  border-left: 1px solid transparent;
+  transition: flex-basis 0.3s ease, border-color 0.3s ease;
+  flex-shrink: 0;
+}
+
+.sandbox-drawer.visible {
+  flex-basis: 480px;
+  border-left-color: var(--color-border);
 }
 
 .drawer-header {
@@ -381,29 +387,5 @@ watch(() => props.events.length, async () => {
   50% { opacity: 0.3; }
 }
 
-/* 滑入动画 */
-.drawer-enter-active,
-.drawer-leave-active {
-  transition: all 0.3s ease;
-}
-
-.drawer-enter-active .sandbox-drawer,
-.drawer-leave-active .sandbox-drawer {
-  transition: transform 0.3s ease;
-}
-
-.drawer-enter-from .sandbox-drawer,
-.drawer-leave-to .sandbox-drawer {
-  transform: translateX(100%);
-}
-
-.drawer-enter-from,
-.drawer-leave-to {
-  opacity: 0;
-}
-
-.drawer-enter-to,
-.drawer-leave-from {
-  opacity: 1;
-}
+/* 滑入动画已迁移到 .sandbox-drawer 的 flex-basis 过渡，无需 transform/opacity 规则 */
 </style>

@@ -590,14 +590,43 @@ system_prompt = (
 | 组件 | 文件 | 职责 |
 |------|------|------|
 | `SandboxProgress` | `web/Agent/src/components/SandboxProgress.vue` | 聊天气泡中的进度摘要卡片 |
-| `SandboxDrawer` | `web/Agent/src/components/SandboxDrawer.vue` | 右侧滑出详情面板，含事件时间线 |
+| `SandboxDrawer` | `web/Agent/src/components/SandboxDrawer.vue` | 右侧 push drawer 详情面板（含事件时间线）；参与 `.app-layout` (display:flex) 推挤布局，无遮罩 |
 | `SandboxEventItem` | `web/Agent/src/components/SandboxEventItem.vue` | 单个事件展示（代码块、命令行、文件路径等） |
+
+**SandboxDrawer 模式（2026-06-12 重构）**：
+- **类型**：Push Drawer（非模态），与 `Sidebar`、`main.content-area` 同为 `.app-layout` 的 flex 子项
+- **根元素**：`<aside class="sandbox-drawer" :class="{ visible }">`，使用 `v-show="visible"` 常驻 DOM
+- **宽度推挤**：默认 `flex: 0 0 0` + `overflow: hidden`（关闭时 0 宽、内部裁剪）；`.visible` 时 `flex-basis: 480px`，主内容 `main.content-area` (`flex: 1`) 自动收缩 480px
+- **过渡动画**：`transition: flex-basis 0.3s ease, border-color 0.3s ease`
+- **分隔线**：`border-left: 1px solid var(--color-border)`（关闭时透明避免 1px 缝隙，开启时显色）
+- **关闭交互**：仅 X 按钮（`@close` 事件），无遮罩点击外部关闭（push drawer 无遮罩）
+- **响应式**：`max-width: 90vw` 保留，小屏下 drawer 自动缩小不溢出
+- **与原遮罩版差异**：移除 `.sandbox-drawer-overlay`（`position: fixed; z-index: 1000`）、`box-shadow` 阴影、`handleOverlayClick` 事件，移除 `<Transition>` 包裹
 
 **前端变更**：
 - `web/Agent/src/utils/sseParser.js`: `createAiMessage()` 增加 `sandboxExecution` 字段；`processSSEEvent()` 的 `custom` case 中检测 `tool === 'sandbox'` 并更新沙盒状态
 - `web/Agent/src/components/MessageBubble.vue`: 在工具调用时间线中检测 `sandboxExecution`，渲染 `SandboxProgress` 并透传 `open-sandbox-drawer` 事件
 - `web/Agent/src/components/ChatArea.vue`: 透传 `sandboxExecution` 和 `open-sandbox-drawer` 事件
 - `web/Agent/src/App.vue`: 添加 `SandboxDrawer` 全局面板、状态管理和自动关闭逻辑
+
+### AIMessage 解析兼容性（2026-06-12 修复）
+
+`_extract_sandbox_summary_and_events` 的 AI 消息分支扩展为兼容以下 content 类型，避免 Anthropic Claude / 部分 OpenAI 兼容模型返回的 list[ContentBlock] 时 `code_generation` 事件整体被跳过：
+
+- **`str`** — 原样提取 markdown ``` 代码块
+- **`list[ContentBlock]`** — 拼接所有 `type == "text"` 块后再提取（兼容 Anthropic / 部分 OpenAI 兼容模型）
+- **`None` / `dict`** — 防御性归一化
+
+实现要点（`app/core/tools/SandboxTools.py`）：
+- 新增 `_get_message_text(msg)`：优先用 langchain 内置 `.text` 属性（langchain-core 1.x 自动归一化 str / list[ContentBlock]），缺失时回退 `_extract_text_from_message_content`
+- 新增 `_extract_code_blocks_heuristic(text)`：当 AIMessage 文本中**没有 markdown ``` 包裹**时（如 Anthropic Claude 倾向输出原始代码），扫描 Python/Shell 关键字（def/import/print/class/return、echo/if[/fi 等）自动识别代码块
+- 新增 `_extract_ai_tool_calls(msg)` + `_ai_tool_call_to_event(tc, step)`：从 AIMessage 中提取 LLM 决策的工具调用（前置事件），覆盖两种来源
+  - OpenAI 风格：`msg.tool_calls` 字段
+  - Anthropic 风格：`msg.content_blocks` 中 `type == "non_standard"` 嵌套的 `tool_use` 块
+  - 工具名优先于 args 字段（`write_file` 即使 input 中无 `content` 也归为 file_write）
+- `current_step` 推进：code_generation 完成后推进到 step=2；每多一个 tool_call 再 +1（上限 5）
+
+效果：SandboxDrawer 时间线中**新增** `code_generation` 事件（显示 LLM 生成的代码），与原 ToolMessage 事件并存展示"LLM 决策 → 工具执行"完整链路。
 
 ## 前端架构（web/Agent）
 

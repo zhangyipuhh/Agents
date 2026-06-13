@@ -120,6 +120,269 @@ def _extract_code_blocks(content: str) -> list:
     return blocks
 
 
+# Python / Shell 关键字集合，用于在缺少 markdown ``` 包裹时启发式识别代码块
+_PY_KEYWORDS = (
+    "def ", "import ", "from ", "class ", "print(", "if __name__",
+    "return ", "pass", "raise ", "yield ", "with ", "as ", "global ",
+    "elif ", "else:", "except ", "finally:", "try:", "lambda ",
+)
+_PY_LINE_STARTERS = (
+    "def ", "class ", "import ", "from ", "return ", "if ", "for ",
+    "while ", "try:", "except ", "with ", "lambda ", "pass", "break",
+    "continue", "raise ", "yield ", "global ", "nonlocal ", "del ",
+)
+_SH_KEYWORDS = ("echo ", "if [", "then", "fi", "for ", "do", "done", "case ", "esac")
+
+
+def _is_probable_code_line(line: str) -> tuple[bool, str]:
+    """
+    启发式判断单行文本是否像代码
+
+    Args:
+        line: 单行文本（已 strip）
+
+    Returns:
+        tuple[bool, str]: (是否像代码, 语言标识 python/bash/text)
+    """
+    stripped = line.strip()
+    if not stripped:
+        return False, "text"
+    # Shell 优先（防止 `if [` 被 Python 的 if 误判）
+    if any(stripped.startswith(kw) or kw in stripped for kw in _SH_KEYWORDS):
+        return True, "bash"
+    if stripped.startswith(("#!/bin/", "#!/usr/bin/")):
+        return True, "bash"
+    # 缩进开头的多行结构（Python 缩进语法特征）
+    if line.startswith(("    ", "\t", "        ")):
+        if (
+            any(kw in stripped for kw in _PY_KEYWORDS)
+            or "=" in stripped
+            or stripped.endswith(":")
+            or "(" in stripped
+        ):
+            return True, "python"
+    if any(stripped.startswith(kw) for kw in _PY_LINE_STARTERS):
+        return True, "python"
+    if any(kw in stripped for kw in _PY_KEYWORDS):
+        return True, "python"
+    return False, "text"
+
+
+def _extract_code_blocks_heuristic(content: str, min_lines: int = 2) -> list:
+    """
+    在缺少 markdown ``` 包裹时，启发式提取连续的多行代码块
+
+    策略：从文本中找到所有"像代码"的连续行（至少 min_lines 行），
+    将其作为一个代码块返回。主要用于 LLM 在 AIMessage 中**不**用 markdown
+    包裹代码的场景（Anthropic Claude 倾向）。
+
+    Args:
+        content: 消息文本内容
+        min_lines: 最少连续多少行算一个代码块，默认 2
+
+    Returns:
+        list: 提取到的代码块列表（每个元素是连续的多行代码）
+    """
+    if not content:
+        return []
+    lines = content.splitlines()
+    blocks = []
+    buf: list[str] = []
+    buf_lang = "text"
+
+    def flush() -> None:
+        nonlocal buf, buf_lang
+        if len(buf) >= min_lines:
+            code = "\n".join(buf).strip("\n")
+            if code:
+                blocks.append((code, buf_lang))
+        buf = []
+        buf_lang = "text"
+
+    for line in lines:
+        ok, lang = _is_probable_code_line(line)
+        if ok:
+            # 同一代码块内的语言推断取最频繁出现的
+            if buf and lang != "text" and buf_lang == "text":
+                buf_lang = lang
+            elif lang != "text":
+                buf_lang = lang
+            buf.append(line)
+        else:
+            flush()
+    flush()
+    return blocks
+
+
+def _extract_text_from_message_content(content) -> str:
+    """
+    从 langchain Message 的 content 字段提取纯文本（防御性 fallback）
+
+    langchain-core 1.x 中 AIMessage 已经提供 `.text` 属性自动处理 str / list[ContentBlock]
+    两种格式；本函数用于以下场景：
+    - 非 langchain Message 对象（如测试中的 Mock、str/int/None 等）
+    - 自定义消息类型未实现 `.text` 属性时的兜底
+
+    Args:
+        content: 任意类型的 content 字段
+
+    Returns:
+        str: 提取出的纯文本（strip 后）；空内容返回 ""
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") in ("text", None) and isinstance(block.get("text"), str):
+                    parts.append(block["text"])
+                # Anthropic 风格的 tool_use 等其它 block 不参与文本拼接
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(parts).strip()
+    if isinstance(content, dict):
+        if isinstance(content.get("text"), str):
+            return content["text"].strip()
+        if isinstance(content.get("content"), str):
+            return content["content"].strip()
+        return str(content).strip()
+    return str(content).strip()
+
+
+def _get_message_text(msg) -> str:
+    """
+    统一从 langchain BaseMessage 派生对象获取纯文本
+
+    优先使用 langchain 内置的 `.text` 属性（langchain-core 1.x 自动处理 str /
+    list[ContentBlock] 两种格式），仅在缺失时回退到 `_extract_text_from_message_content`。
+
+    Args:
+        msg: langchain BaseMessage 派生的消息对象
+
+    Returns:
+        str: 提取出的纯文本（strip 后）
+    """
+    if msg is None:
+        return ""
+    text_attr = getattr(msg, "text", None)
+    if isinstance(text_attr, str):
+        return text_attr.strip()
+    return _extract_text_from_message_content(getattr(msg, "content", None))
+
+
+def _extract_ai_tool_calls(msg) -> list[dict]:
+    """
+    从 AIMessage 中提取 LLM 决策的工具调用
+
+    兼容两种来源：
+    1. **OpenAI 风格**：`msg.tool_calls` 字段（非空 list）
+    2. **Anthropic 风格**：`msg.content` 是 list，包含 `type == 'tool_use'` 的块
+       （langchain-core 1.x 会在 `msg.content_blocks` 中归一化为 `type == 'non_standard'`）
+
+    返回的字典统一使用 `name` / `args` 字段，便于下游统一处理。
+
+    Args:
+        msg: langchain AIMessage 或类似对象
+
+    Returns:
+        list[dict]: 工具调用列表，每项为 `{"name": str, "args": dict, "id": str|None}`
+    """
+    results: list[dict] = []
+    if msg is None:
+        return results
+
+    # 1) OpenAI 风格：独立 tool_calls 字段
+    tool_calls = getattr(msg, "tool_calls", None) or []
+    for tc in tool_calls:
+        if isinstance(tc, dict):
+            name = tc.get("name") or ""
+            args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
+            results.append({"name": name, "args": args, "id": tc.get("id")})
+
+    # 2) Anthropic 风格 / 通用风格：从 content_blocks 中提取
+    content_blocks = getattr(msg, "content_blocks", None)
+    if isinstance(content_blocks, list):
+        for block in content_blocks:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "tool_call":
+                name = block.get("name") or ""
+                args = block.get("args") if isinstance(block.get("args"), dict) else {}
+                results.append({"name": name, "args": args, "id": block.get("id")})
+            elif btype == "non_standard":
+                value = block.get("value")
+                if isinstance(value, dict) and value.get("type") == "tool_use":
+                    name = value.get("name") or ""
+                    # Anthropic 用 "input" 字段，OpenAI 用 "args"，归一化为 "args"
+                    args = value.get("input")
+                    if not isinstance(args, dict):
+                        args = {}
+                    results.append({"name": name, "args": args, "id": value.get("id")})
+
+    return results
+
+
+def _ai_tool_call_to_event(tool_call: dict, current_step: int) -> dict:
+    """
+    将 AIMessage 中的单个 tool_call 转换为沙盒事件
+
+    判断优先级：
+    1. 工具名（最权威，write_file 永远视为写文件，即使 input 中无 content 字段）
+    2. args.command → command_execute
+    3. args.file_path + 工具名含 write/edit → file_write
+    4. args.file_path → file_read（兜底：仅有路径但工具名不明确）
+
+    Args:
+        tool_call: 来自 `_extract_ai_tool_calls` 的统一格式 dict
+        current_step: 当前步骤序号
+
+    Returns:
+        dict: 沙盒事件字典
+    """
+    name = (tool_call.get("name") or "").lower()
+    args = tool_call.get("args") or {}
+    command = args.get("command") if isinstance(args, dict) else None
+    file_path = args.get("file_path") or args.get("path") if isinstance(args, dict) else None
+
+    # 工具名优先判断（最权威的语义信号）
+    if "write" in name or "edit" in name:
+        event_type = "file_write"
+        title = "决策：写入文件"
+    elif "read" in name or "ls" in name or "glob" in name or "grep" in name:
+        event_type = "file_read"
+        title = "决策：读取文件"
+    elif "execute" in name or "run" in name:
+        event_type = "command_execute"
+        title = "决策：执行命令"
+    elif command:
+        event_type = "command_execute"
+        title = "决策：执行命令"
+    elif file_path:
+        # 工具名不明确但有 file_path，兜底为读取（更安全，避免误判写入）
+        event_type = "file_read"
+        title = "决策：读取文件"
+    else:
+        event_type = "command_execute"
+        title = "决策：执行操作"
+
+    event: dict = {
+        "timestamp": int(time.time() * 1000),
+        "step": current_step,
+        "type": event_type,
+        "title": title,
+        "status": "completed",
+    }
+    if command:
+        event["command"] = command
+    if file_path:
+        event["file_path"] = file_path
+    return event
+
+
 def _extract_tool_call(msg) -> dict:
     """
     从 ToolMessage 中提取工具调用信息
@@ -283,19 +546,46 @@ def _extract_sandbox_summary_and_events(messages: list, start_time: datetime) ->
             is_ai_message = True
 
         if is_ai_message:
-            if isinstance(content, str) and content.strip():
-                code_blocks = _extract_code_blocks(content)
+            # 兼容 AIMessage.content 为 str / list[ContentBlock] / None 的情况
+            # 优先用 langchain 内置 .text 属性（langchain-core 1.x 自动归一化）
+            text = _get_message_text(msg)
+            if text:
+                code_blocks = _extract_code_blocks(text)
+                if not code_blocks:
+                    # markdown ``` 包裹缺失时降级用启发式提取（Anthropic 场景）
+                    heuristic_blocks = _extract_code_blocks_heuristic(text)
+                    if heuristic_blocks:
+                        code_blocks = [
+                            code for code, _lang in heuristic_blocks
+                        ]
+                        heuristic_langs = [lang for _code, lang in heuristic_blocks]
+                    else:
+                        heuristic_langs = []
+                else:
+                    heuristic_langs = []
                 if code_blocks:
+                    # 取首块的语言标识（启发式时使用启发式结果，否则用 _detect_language）
+                    lang = (
+                        heuristic_langs[0]
+                        if heuristic_langs
+                        else _detect_language(code_blocks[0])
+                    )
                     events.append({
                         "timestamp": int(time.time() * 1000),
                         "step": 1,
                         "type": "code_generation",
                         "title": "生成执行代码",
                         "content": code_blocks[0],
-                        "language": _detect_language(code_blocks[0]),
+                        "language": lang,
                         "status": "completed",
                     })
                     current_step = max(current_step, 2)
+
+            # 提取 LLM 决策的工具调用（前置事件），覆盖 OpenAI/Anthropic 两种风格
+            ai_tool_calls = _extract_ai_tool_calls(msg)
+            for tc in ai_tool_calls:
+                events.append(_ai_tool_call_to_event(tc, current_step))
+                current_step = min(current_step + 1, 5)
 
     # 生成摘要
     total_steps = len(SANDBOX_STEPS)
