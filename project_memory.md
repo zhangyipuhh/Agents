@@ -9,8 +9,44 @@ Agent User Management 是一个基于 FastAPI 的 AI Agent 管理平台，提供
 - **后端**: FastAPI + Uvicorn
 - **数据库**: PostgreSQL（通过 asyncpg），支持 Memory 模式降级
 - **认证**: JWT（双 Token 体系：Access Token + Refresh Token）
-- **AI**: LangGraph + LangChain，支持多种 LLM 模型
+- **AI**: LangGraph + LangChain，支持多种 LLM 模型（版本详见下方 "AI 依赖版本与文档约定"）
 - **工具**: MCP（Model Context Protocol）工具集成
+
+### AI 依赖版本与文档约定（2026-06-14 记录）
+
+#### LangChain / LangGraph 全家桶版本（锁定自 `app/requirements.txt`）
+
+| 包 | 版本 | 用途 |
+|----|------|------|
+| `langchain` | 1.2.16 | LangChain 1.x 主包（统一入口） |
+| `langchain-core` | 1.3.2 | 核心抽象（Message、Runnable、@tool 等） |
+| `langchain-classic` | 1.0.2 | LangChain 1.x 兼容层（旧链式 API、AgentExecutor 等） |
+| `langchain-community` | 0.4.1 | 社区工具/向量库集成 |
+| `langchain-text-splitters` | 1.1.1 | 文本切分器 |
+| `langchain-openai` | 1.1.6 | OpenAI / 兼容 OpenAI 协议模型 |
+| `langchain-anthropic` | 1.4.2 | Anthropic Claude |
+| `langchain-google-genai` | 4.2.2 | Google Gemini |
+| `langchain-deepseek` | 1.0.1 | DeepSeek |
+| `langchain-ollama` | 1.0.1 | Ollama 本地模型 |
+| `langchain-mcp-adapters` | 0.2.1 | MCP 工具适配为 LangChain 工具 |
+| `langchain-protocol` | 0.0.14 | 协议层（实验） |
+| `langgraph` | 1.1.10 | LangGraph 主包（图编排、Checkpoint、Store） |
+| `langgraph-checkpoint` | 4.1.1 | Checkpoint 抽象基类与内存实现 |
+| `langgraph-checkpoint-postgres` | 3.1.1 | PostgreSQL Checkpoint 后端 |
+| `langgraph-prebuilt` | 1.0.13 | 预构建节点（ToolNode、create_react_agent 等） |
+| `langgraph-sdk` | 0.3.1 | LangGraph 远程部署 SDK |
+| `langmem` | 0.0.30 | 长期记忆扩展 |
+| `langsmith` | 0.7.38 | LangSmith 追踪/评估 SDK |
+| `deepagents` | 0.5.5 | LangChain 官方 subagent 库（沙箱 Agent 依赖） |
+
+#### 文档查询约定
+
+- **凡涉及 LangChain / LangChain-Core / LangGraph / LangSmith / LangMem / deepagents 的 API 使用**，必须通过 **context7 MCP** 查找对应官方文档后再调用，禁止凭记忆使用旧版本 API。
+- 优先查询顺序：
+  1. `usecontext7_mcp` → `get-library-docs` 拉取目标库的最新 docs（如 `/langchain-ai/langchain`、`/langchain-ai/langgraph`）
+  2. 命中失败再降级 WebSearch + 官方文档站（`https://python.langchain.com/`、`https://langchain-ai.github.io/langgraph/`）
+- 版本兼容注意：项目使用 **LangChain 1.x + LangGraph 1.x**（旧版 0.x 的 `create_react_agent`、`AgentExecutor`、`LLMChain` 等签名已变更，迁移文档参考 context7 `/langchain-ai/langchain` 的 v1 migration guide）
+- 更新 `app/requirements.txt` 时，必须同步更新本表版本号，避免文档查错版本
 
 ## 数据目录约定（2026-06-12 重构）
 
@@ -618,14 +654,14 @@ environment:
 - `deepagents==0.5.5` — LangChain deepagents 库
 - `docker==7.1.0` — Docker SDK for Python
 
-### 沙盒执行前端展示（2026-06-12 新增）
+### 沙盒执行前端展示（2026-06-12 新增，2026-06-14 改造）
 
 参考 Kimi "Kimi's Computer" 设计，实现沙盒执行过程的实时前端展示：
 
-**交互流程**：
-1. 沙盒开始执行后，AI 聊天气泡中显示 `SandboxProgress` 进度卡片（当前步骤、进度条、状态、耗时）
-2. 用户点击进度卡片，右侧滑出 `SandboxDrawer` 详情面板，展示完整事件时间线
-3. 执行完成后，进度卡片更新为完成状态；若详情面板已打开，2 秒后自动关闭
+**交互流程**（2026-06-14 改造后）：
+1. 沙盒开始执行后，AI 聊天气泡的 **timeline.tool 块内**显示 `SubAgentCard` 子智能体折叠卡片（图标、工具名、父 prompt 预览、状态徽章、消息数、耗时）
+2. 用户点击子智能体卡片，右侧滑出 `SubAgentDrawer` 详情面板，展示父提问 + 子智能体消息流 + 沙箱摘要 + 沙箱事件时间线
+3. 执行完成后，子智能体卡片更新为完成状态
 
 **后端变更**：
 - `app/core/tools/SandboxTools.py` 增加 `_extract_sandbox_summary_and_events()` 函数，从子智能体消息流中实时提取摘要和事件
@@ -633,28 +669,36 @@ environment:
 - `tool_stop` 事件增加 `final_summary`（完成摘要和结果预览）
 - 预定义 5 个执行步骤：生成代码 → 写入文件 → 执行代码 → 获取输出 → 分析结果
 
-**前端组件**：
-| 组件 | 文件 | 职责 |
-|------|------|------|
-| `SandboxProgress` | `web/Agent/src/components/SandboxProgress.vue` | 聊天气泡中的进度摘要卡片 |
-| `SandboxDrawer` | `web/Agent/src/components/SandboxDrawer.vue` | 右侧 push drawer 详情面板（含事件时间线）；参与 `.app-layout` (display:flex) 推挤布局，无遮罩 |
-| `SandboxEventItem` | `web/Agent/src/components/SandboxEventItem.vue` | 单个事件展示（代码块、命令行、文件路径等） |
+**前端组件**（2026-06-14 改造后）：
+| 组件 | 文件 | 职责 | 状态 |
+|------|------|------|------|
+| `SubAgentCard` | `web/Agent/src/components/SubAgentCard.vue` | 通用子智能体折叠卡片（含沙箱）；按 toolCallId 嵌入 `timeline.tool` 块内 | 保留（功能扩展） |
+| `SubAgentDrawer` | `web/Agent/src/components/SubAgentDrawer.vue` | 通用子智能体详情 Push Drawer；tool='sandbox' 时自动展示沙箱摘要 + 沙箱事件时间线 | 保留（功能合并原 SandboxDrawer） |
+| `SandboxProgress` | `web/Agent/src/components/SandboxProgress.vue` | ~~聊天气泡中的进度摘要卡片~~ | **2026-06-14 已删除**（被 SubAgentCard 替代） |
+| `SandboxDrawer` | `web/Agent/src/components/SandboxDrawer.vue` | ~~右侧 push drawer 沙盒详情面板~~ | **2026-06-14 已删除**（被 SubAgentDrawer 合并） |
+| `SandboxEventItem` | `web/Agent/src/components/SandboxEventItem.vue` | ~~单个沙箱事件展示~~ | **2026-06-14 已删除**（被 SubAgentDrawer 内部实现替代） |
 
-**SandboxDrawer 模式（2026-06-12 重构）**：
-- **类型**：Push Drawer（非模态），与 `Sidebar`、`main.content-area` 同为 `.app-layout` 的 flex 子项
-- **根元素**：`<aside class="sandbox-drawer" :class="{ visible }">`，使用 `v-show="visible"` 常驻 DOM
-- **宽度推挤**：默认 `flex: 0 0 0` + `overflow: hidden`（关闭时 0 宽、内部裁剪）；`.visible` 时 `flex-basis: 480px`，主内容 `main.content-area` (`flex: 1`) 自动收缩 480px
-- **过渡动画**：`transition: flex-basis 0.3s ease, border-color 0.3s ease`
-- **分隔线**：`border-left: 1px solid var(--color-border)`（关闭时透明避免 1px 缝隙，开启时显色）
-- **关闭交互**：仅 X 按钮（`@close` 事件），无遮罩点击外部关闭（push drawer 无遮罩）
-- **响应式**：`max-width: 90vw` 保留，小屏下 drawer 自动缩小不溢出
-- **与原遮罩版差异**：移除 `.sandbox-drawer-overlay`（`position: fixed; z-index: 1000`）、`box-shadow` 阴影、`handleOverlayClick` 事件，移除 `<Transition>` 包裹
+**合并原因**：原 `SandboxProgress` 与 `SubAgentCard` 功能重复（均展示沙箱状态/耗时/查看详情入口），且 `SandboxDrawer` 与 `SubAgentDrawer` 数据重叠（`subAgent.events` 已透传 `sandbox_events`，`subAgent.summary` 已合并 `final_summary`），无独立存在价值。
 
-**前端变更**：
-- `web/Agent/src/utils/sseParser.js`: `createAiMessage()` 增加 `sandboxExecution` 字段；`processSSEEvent()` 的 `custom` case 中检测 `tool === 'sandbox'` 并更新沙盒状态
-- `web/Agent/src/components/MessageBubble.vue`: 在工具调用时间线中检测 `sandboxExecution`，渲染 `SandboxProgress` 并透传 `open-sandbox-drawer` 事件
-- `web/Agent/src/components/ChatArea.vue`: 透传 `sandboxExecution` 和 `open-sandbox-drawer` 事件
-- `web/Agent/src/App.vue`: 添加 `SandboxDrawer` 全局面板、状态管理和自动关闭逻辑
+**SubAgentDrawer 模式**：见 "SubAgent 事件协议（2026-06-13 新增，2026-06-14 改造）" 章节。
+
+**前端变更**（2026-06-14 改造）：
+- `web/Agent/src/utils/sseParser.js`：
+  - `createAiMessage()` 移除 `sandboxExecution` 字段；沙箱数据统一由 `subAgents` 列表维护
+  - `processSSEEvent()` 的 `custom` case 删除 `if (customToolData.tool === 'sandbox')` 块
+  - `updateSubAgentFromCustomEvent()` 增强：tool_start/tool_progress 时合并 `sandbox_summary` 到 `subAgent.summary`；tool_stop 时合并 `final_summary`
+- `web/Agent/src/components/MessageBubble.vue`：
+  - 移除 `sandboxExecution` prop
+  - `timeline.tool` 块移除 `sandboxExecution` 条件分支
+  - 新增 `getSubAgentsForGroup(group)`：按 `toolCallId` 在 `group.items` 中查找匹配 subAgent 列表，渲染 `SubAgentCard` 于 `timeline.tool` 内
+  - 移除 timeline 之外的 `subagent-cards` 容器（卡片不再堆在会话末尾）
+- `web/Agent/src/components/ChatArea.vue`：移除 `sandbox-execution` prop 透传和 `open-sandbox-drawer` 事件
+- `web/Agent/src/App.vue`：
+  - 移除 `SandboxDrawer` import + 模板
+  - 移除 `sandboxDrawerVisible` / `currentSandboxEvents` / `currentSandboxSummary` / `currentSandboxStatus` 状态
+  - 移除 `openSandboxDrawer` / `closeSandboxDrawer` 函数
+  - 移除 `sandboxExecution` 自动关闭 watch
+  - 保留 `SubAgentDrawer` 与 `openSubAgentDrawer` / `closeSubAgentDrawer`
 
 ### AIMessage 解析兼容性（2026-06-12 修复）
 
@@ -675,18 +719,25 @@ environment:
 
 效果：SandboxDrawer 时间线中**新增** `code_generation` 事件（显示 LLM 生成的代码），与原 ToolMessage 事件并存展示"LLM 决策 → 工具执行"完整链路。
 
-## SubAgent 事件协议（2026-06-13 新增）
+## SubAgent 事件协议（2026-06-13 新增，2026-06-14 改造）
 
-> **目标**：子智能体（sandbox / explore 等）的执行过程在父 AI 聊天气泡中折叠为 `SubAgentCard` 卡片；点击卡片从右侧 push 出 `SubAgentDrawer` 详情面板，展示父提问 + 子智能体内部消息流。**与 `SandboxDrawer` 互斥同开，组件/样式/状态完全独立**。
+> **目标**：子智能体（sandbox / explore 等）的执行过程在父 AI 聊天气泡中折叠为 `SubAgentCard` 卡片；点击卡片从右侧 push 出 `SubAgentDrawer` 详情面板，展示父提问 + 子智能体内部消息流 + 沙箱摘要 + 沙箱事件时间线（tool='sandbox' 时）。
+>
+> **2026-06-14 改造**：`SandboxProgress` / `SandboxDrawer` / `SandboxEventItem` 已删除并合并；子智能体卡片从"会话末尾堆放"改为"嵌入 `timeline.tool` 块内按时序渲染"。
 
 ### 架构总览
 
 ```
 父 AI 聊天气泡
-  └─ SubAgentCard（折叠卡片）  ──点击──>  SubAgentDrawer（右侧 push drawer）
-                                          ├─ 父 agent 提问（可折叠）
-                                          ├─ 子智能体消息流（HumanMessage / AIMessage / ToolMessage）
-                                          └─ 底部摘要（耗时 / 消息数 / 工具调用次数）
+  └─ timeline (thinking / tool / text)
+       └─ tool 块内
+            └─ SubAgentCard（折叠卡片，按 toolCallId 匹配）  ──点击──>  SubAgentDrawer（右侧 push drawer）
+                                                                       ├─ 头部（工具图标 + 状态徽章）
+                                                                       ├─ 沙箱摘要（仅 sandbox：进度条 + 步骤 + 耗时）
+                                                                       ├─ 父 agent 提问（可折叠）
+                                                                       ├─ 子智能体消息流（HumanMessage / AIMessage / ToolMessage）
+                                                                       ├─ 沙箱事件时间线（仅 sandbox，sandbox_events 透传）
+                                                                       └─ 底部摘要（耗时 / 消息数 / 工具调用次数）
 ```
 
 ### 后端事件新增字段（向后兼容）
@@ -726,6 +777,8 @@ environment:
 
 ### 前端改动文件
 
+**2026-06-13 新增**：
+
 | 文件 | 改动 |
 |------|------|
 | `web/Agent/src/utils/sseParser.js` | 新增 `getSubAgentMeta` / `getSubAgentById` / `formatSubAgentDuration` / `updateSubAgentFromCustomEvent`；`processSSEEvent` 的 `custom` case 维护 `aiMsg.subAgents` 列表；`createAiMessage` 新增 `subAgents: []` 字段 |
@@ -737,6 +790,23 @@ environment:
 | `web/Agent/src/components/__tests__/SubAgentCard.spec.js`（**新增**） | 9 个 vitest 用例 |
 | `web/Agent/src/components/__tests__/SubAgentDrawer.spec.js`（**新增**） | 10 个 vitest 用例 |
 | `web/Agent/src/utils/__tests__/subAgentParser.test.js`（**新增**） | 10 个 vitest 用例 |
+
+**2026-06-14 改造**：删除 `SandboxProgress` / `SandboxDrawer` / `SandboxEventItem` 三个组件并合并功能到 SubAgent 体系。
+
+| 文件 | 改动 |
+|------|------|
+| `web/Agent/src/utils/sseParser.js` | `createAiMessage()` 移除 `sandboxExecution: null` 字段；`processSSEEvent` 的 `custom` case 删除 `if (customToolData.tool === 'sandbox')` 块；`updateSubAgentFromCustomEvent` 增强：tool_start/tool_progress 合并 `sandbox_summary` 到 `subAgent.summary`，tool_stop 合并 `final_summary` |
+| `web/Agent/src/components/SubAgentDrawer.vue` | 集成沙箱摘要 + 沙箱事件时间线：`isSandbox` / `sandboxEvents` / `sandboxSummary` 等 computed；新增 `drawer-summary`（进度条 + 步骤 + 耗时）与 `sandbox-events-section`（sandbox_events 列表 + 可折叠）；`renderMessageContent` 扩展 LangChain 0.3+ `tool_use` / `tool_result` ContentBlock 支持 |
+| `web/Agent/src/components/MessageBubble.vue` | 移除 `sandboxExecution` prop；`timeline.tool` 块移除 `sandboxExecution` 条件分支；新增 `extractToolCallId()` / `toolSubAgentMap` / `getSubAgentsForGroup()`：按 `toolCallId` 在 `group.items` 中查找匹配 subAgent 渲染 `SubAgentCard`；移除 timeline 之外的 `subagent-cards` 容器 |
+| `web/Agent/src/components/ChatArea.vue` | 移除 `sandbox-execution` prop 透传；移除 `open-sandbox-drawer` 事件 |
+| `web/Agent/src/App.vue` | 移除 `SandboxDrawer` import + 模板；移除 `sandboxDrawerVisible` / `currentSandboxEvents` / `currentSandboxSummary` / `currentSandboxStatus` 状态；移除 `openSandboxDrawer` / `closeSandboxDrawer` 函数；移除 `sandboxExecution` 自动关闭 watch |
+| `web/Agent/src/components/SandboxProgress.vue` | **删除**（被 SubAgentCard 替代） |
+| `web/Agent/src/components/SandboxDrawer.vue` | **删除**（被 SubAgentDrawer 合并） |
+| `web/Agent/src/components/SandboxEventItem.vue` | **删除**（被 SubAgentDrawer 内部实现替代） |
+| `web/Agent/src/components/__tests__/SubAgentCard.spec.js` | 新增 2 个用例：sandbox 类子智能体的 summary 字段不破坏卡片渲染；parentPrompt 缺失时仅展示核心字段 |
+| `web/Agent/src/components/__tests__/SubAgentDrawer.spec.js` | 新增 6 个用例：tool=sandbox + summary 展示沙箱摘要、tool=sandbox + events 展示沙箱事件区、tool=非 sandbox 不展示沙箱区、沙箱事件可折叠、AIMessage.content 为 LangChain 0.3+ list[ContentBlock] 渲染、AIMessage.content 包含 thinking 块渲染 |
+| `web/Agent/src/components/__tests__/MessageBubble.spec.js`（**新增**） | 5 个用例：timeline.tool 内按 toolCallId 渲染 SubAgentCard、timeline 外不再有 subagent-cards 容器、点击 SubAgentCard 触发 open-subagent-drawer、无匹配 subAgent 时不渲染、多 subAgent 数据驱动 |
+| `web/Agent/src/utils/__tests__/subAgentParser.test.js` | 新增 2 个用例：tool_progress 携带 sandbox_summary 时合并到 subAgent.summary；tool_stop 携带 final_summary 时合并到 subAgent.summary（最终态） |
 
 ### 第三方调用兼容保证
 
@@ -784,9 +854,9 @@ environment:
 - **文件**：`FileList.vue`、`FilePreview.vue`、`FolderTree.vue`、`FileManagerModal.vue`
 - **知识库**：`KnowledgeChat.vue`、`ProfileInputBox.vue`
 - **公共**：`Sidebar.vue`、`HelloWorld.vue`、`UserSettingsDialog.vue`
-- **Subagent 折叠与抽屉（2026-06-13 新增）**：
-  - `SubAgentCard.vue`：通用子智能体折叠卡片，挂在父 AI 气泡底部，工具图标 + 父 prompt 预览 + 状态徽章 + 耗时 + 消息数 + "查看详情" 入口；点击 emit('click', subAgent)
-  - `SubAgentDrawer.vue`：通用子智能体详情 Push Drawer（与 `SandboxDrawer` 互斥同开但样式/状态完全独立），分层展示父 prompt / HumanMessage / AIMessage（含 tool_calls 决策区） / ToolMessage 三类消息 + 底部耗时/消息数/工具调用次数摘要
+- **Subagent 折叠与抽屉（2026-06-13 新增，2026-06-14 改造）**：
+  - `SubAgentCard.vue`：通用子智能体折叠卡片（含沙箱），**2026-06-14 改造后挂在父 AI 气泡的 `timeline.tool` 块内**（按 toolCallId 匹配，遵循事件流时序，不再堆在会话末尾）；工具图标 + 父 prompt 预览 + 状态徽章 + 耗时 + 消息数 + "查看详情" 入口；点击 emit('click', subAgent)
+  - `SubAgentDrawer.vue`：通用子智能体详情 Push Drawer；**2026-06-14 改造后合并原 `SandboxDrawer` 职责**（`SandboxProgress` / `SandboxDrawer` / `SandboxEventItem` 三个组件已删除），tool='sandbox' 时自动展示沙箱摘要（进度条 + 步骤 + 耗时）与沙箱事件时间线；分层展示父 prompt / HumanMessage / AIMessage（含 tool_calls 决策区） / ToolMessage 三类消息 + 底部耗时/消息数/工具调用次数摘要；`renderMessageContent` 扩展支持 LangChain 0.3+ 多模态 ContentBlock（text / thinking / tool_use / tool_result）
 - **视图**（`src/views/`）：`LoginView.vue`、`RegisterView.vue`
 
 ### 工具函数（src/utils）
@@ -911,11 +981,13 @@ environment:
   - `HumanApprovalBox.spec.js`：HITL 组件（多 Tab、虚拟 Other 项、多选、`canSubmit` 门控，14 用例）
   - `api.test.js`：`utils/api.js` 工具方法
   - `sseParser.test.js`：SSE 解析（含 Python 字面量兼容）
-  - `subAgentParser.test.js`（2026-06-13 新增）：subagent 解析（custom 事件维护 subAgents 列表 + 工具函数，10 用例）
-  - `SubAgentCard.spec.js`（2026-06-13 新增）：折叠卡片（9 用例）
-  - `SubAgentDrawer.spec.js`（2026-06-13 新增）：独立 Push Drawer（10 用例）
+  - `subAgentParser.test.js`（2026-06-13 新增，2026-06-14 扩展）：subagent 解析（custom 事件维护 subAgents 列表 + sandbox_summary 合并 + 工具函数，**14** 用例）
+  - `SubAgentCard.spec.js`（2026-06-13 新增，2026-06-14 扩展）：折叠卡片（**11** 用例）
+  - `SubAgentDrawer.spec.js`（2026-06-13 新增，2026-06-14 扩展）：独立 Push Drawer（**16** 用例）
+  - `MessageBubble.spec.js`（**2026-06-14 新增**）：timeline.tool 内按 toolCallId 渲染 SubAgentCard 等（5 用例）
 - **项目历史**：后端 17/17 + 前端 73/73 全部通过（参见 "HITL 流程" 章节）
 - **2026-06-13 更新**：后端新增 `test_subagent_message_extractor.py` 22 用例通过；前端 SubAgentCard/SubAgentDrawer/subAgentParser 共 29 用例通过；累计前端 111/111 全量通过
+- **2026-06-14 更新**：合并沙箱执行与子智能体展示，删除 `SandboxProgress` / `SandboxDrawer` / `SandboxEventItem` 三个组件；新增 `MessageBubble.spec.js`（5 用例）+ 扩展 `SubAgentCard`（+2）、`SubAgentDrawer`（+6）、`subAgentParser`（+2）；累计 **126/126** 全量通过（Vite build 成功）
 
 ## CI 测试（pytest + GitHub Actions）
 

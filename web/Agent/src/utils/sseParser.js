@@ -96,6 +96,11 @@ function updateSubAgentFromCustomEvent(aiMsg, event, topLevelThreadId) {
     sa.events = inner.sandbox_events
   }
 
+  // sandbox_summary：tool_start/tool_progress 阶段保留当前快照
+  if (inner.sandbox_summary && typeof inner.sandbox_summary === 'object') {
+    sa.summary = Object.assign({}, sa.summary || {}, inner.sandbox_summary)
+  }
+
   // 状态推进
   if (eventType === 'tool_start') {
     sa.status = 'running'
@@ -110,6 +115,10 @@ function updateSubAgentFromCustomEvent(aiMsg, event, topLevelThreadId) {
     // final_messages 优先覆盖 messages（最终态）
     if (Array.isArray(inner.final_messages)) {
       sa.messages = inner.final_messages
+    }
+    // final_summary 合并到 subAgent.summary（最终态摘要）
+    if (inner.final_summary && typeof inner.final_summary === 'object') {
+      sa.summary = Object.assign({}, sa.summary || {}, inner.final_summary)
     }
   } else if (eventType === 'tool_error') {
     sa.status = 'error'
@@ -418,50 +427,8 @@ export function processSSEEvent(data, aiMsg) {
 
       // 2026-06-13 新增：维护 aiMsg.subAgents 列表（折叠卡片 / 抽屉用）
       // 注意：data.data 是 ToolEvent TypedDict；顶层 data.thread_id 由 map_router 注入
+      // 2026-06-14 改造：沙箱执行数据通过 subAgent（tool='sandbox'）统一承接，避免双重维护 sandboxExecution
       updateSubAgentFromCustomEvent(aiMsg, customToolData, topLevelThreadId)
-
-      // 检测沙盒工具事件
-      if (customToolData.tool === 'sandbox') {
-        if (!aiMsg.sandboxExecution) {
-          aiMsg.sandboxExecution = {
-            status: 'running',
-            summary: null,
-            events: [],
-            startTime: Date.now()
-          }
-        }
-
-        // 更新摘要信息
-        if (customToolData.data && customToolData.data.sandbox_summary) {
-          aiMsg.sandboxExecution.summary = customToolData.data.sandbox_summary
-        }
-
-        // 追加事件
-        if (customToolData.data && customToolData.data.sandbox_events && Array.isArray(customToolData.data.sandbox_events)) {
-          // 去重追加：只添加时间戳不存在的事件
-          var existingTimestamps = new Set(aiMsg.sandboxExecution.events.map(function(e) { return e.timestamp }))
-          for (var idx = 0; idx < customToolData.data.sandbox_events.length; idx++) {
-            var evt = customToolData.data.sandbox_events[idx]
-            if (!existingTimestamps.has(evt.timestamp)) {
-              aiMsg.sandboxExecution.events.push(evt)
-              existingTimestamps.add(evt.timestamp)
-            }
-          }
-        }
-
-        // 处理完成
-        if (customToolData.type === 'tool_stop') {
-          aiMsg.sandboxExecution.status =
-            customToolData.data && customToolData.data.status === 'success' ? 'success' : 'error'
-          if (customToolData.data && customToolData.data.final_summary) {
-            aiMsg.sandboxExecution.summary = Object.assign(
-              {},
-              aiMsg.sandboxExecution.summary || {},
-              customToolData.data.final_summary
-            )
-          }
-        }
-      }
 
       if (customToolData.tool && customToolData.type === 'tool_stop') {
         console.log('[sseParser] Detected tool_stop in custom event')
@@ -551,7 +518,6 @@ export function createAiMessage() {
     error: '',
     downloadInfo: null,
     interrupt: null,
-    sandboxExecution: null,  // 新增：沙盒执行状态
-    subAgents: []             // 2026-06-13 新增：子智能体执行列表（折叠卡片 / 抽屉用）
+    subAgents: []             // 2026-06-13 新增：子智能体执行列表（折叠卡片 / 抽屉用，统一承接沙箱/文件探索等子智能体）
   }
 }

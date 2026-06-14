@@ -1,12 +1,11 @@
 <script setup>
-import { reactive, onMounted, computed, ref, watch } from 'vue'
+import { reactive, onMounted, computed, ref } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import SkillTags from './components/SkillTags.vue'
 import ChatArea from './components/ChatArea.vue'
 import InputBox from './components/InputBox.vue'
 import HumanApprovalBox from './components/HumanApprovalBox.vue'
 import KnowledgePage from './components/KnowledgePage.vue'
-import SandboxDrawer from './components/SandboxDrawer.vue'
 import SubAgentDrawer from './components/SubAgentDrawer.vue'
 import { chatStream, createNewSession, logout as apiLogout, fetchSessionDetail, fetchSessionAttachments, fetchSessionMessages, validateToken, refreshToken, clearAuth } from './utils/api.js'
 import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage } from './utils/sseParser.js'
@@ -27,13 +26,8 @@ const currentAttachments = ref([])
 const approvalMode = ref(false)
 const approvalData = ref({ questions: [] })
 
-// 沙盒详情面板状态
-const sandboxDrawerVisible = ref(false)
-const currentSandboxEvents = ref([])
-const currentSandboxSummary = ref(null)
-const currentSandboxStatus = ref('running')
-
-// 2026-06-13 新增：子智能体详情抽屉状态（与 sandbox 抽屉互斥同开）
+// 2026-06-14 改造：原 SandboxDrawer 已删除，沙箱数据统一由 SubAgentDrawer 展示
+// 2026-06-13 新增：子智能体详情抽屉状态
 const subAgentDrawerVisible = ref(false)
 const currentSubAgent = ref(null)
 
@@ -358,23 +352,9 @@ function handleApprovalCancel() {
   }
 }
 
-function openSandboxDrawer(sandboxData) {
-  // 互斥：打开沙箱抽屉时关闭子智能体抽屉
-  subAgentDrawerVisible.value = false
-  currentSandboxEvents.value = sandboxData.events || []
-  currentSandboxSummary.value = sandboxData.summary || null
-  currentSandboxStatus.value = sandboxData.status || 'running'
-  sandboxDrawerVisible.value = true
-}
-
-function closeSandboxDrawer() {
-  sandboxDrawerVisible.value = false
-}
-
 // 2026-06-13 新增：子智能体抽屉 open/close
 function openSubAgentDrawer(subAgent) {
-  // 互斥：打开子智能体抽屉时关闭沙箱抽屉
-  sandboxDrawerVisible.value = false
+  // 2026-06-14 改造：原 sandboxDrawerVisible 互斥逻辑已移除（SandboxDrawer 已删除）
   currentSubAgent.value = subAgent
   subAgentDrawerVisible.value = true
 }
@@ -382,21 +362,6 @@ function openSubAgentDrawer(subAgent) {
 function closeSubAgentDrawer() {
   subAgentDrawerVisible.value = false
 }
-
-// 监听当前消息的沙盒状态，执行完成后自动关闭
-watch(() => {
-  const lastMsg = messages[messages.length - 1]
-  return lastMsg && lastMsg.type === 'ai' ? lastMsg.sandboxExecution : null
-}, (newVal) => {
-  if (newVal && newVal.status !== 'running' && sandboxDrawerVisible.value) {
-    // 延迟 2 秒后自动关闭，让用户看到完成状态
-    setTimeout(() => {
-      if (newVal.status !== 'running') {
-        sandboxDrawerVisible.value = false
-      }
-    }, 2000)
-  }
-})
 
 function handleTagSelect(tag, index) {
   console.log('选择技能标签:', tag.label)
@@ -588,7 +553,6 @@ async function handleSessionSwitch(targetSessionId) {
         @like="handleLike"
         @dislike="handleDislike"
         @copy="handleCopy"
-        @open-sandbox-drawer="openSandboxDrawer"
         @open-subagent-drawer="openSubAgentDrawer"
       />
 
@@ -616,16 +580,10 @@ async function handleSessionSwitch(targetSessionId) {
       @page-change="handlePageChange"
     />
 
-    <!-- 沙盒详情面板 -->
-    <SandboxDrawer
-      :visible="sandboxDrawerVisible"
-      :events="currentSandboxEvents"
-      :summary="currentSandboxSummary"
-      :status="currentSandboxStatus"
-      @close="closeSandboxDrawer"
-    />
-
-    <!-- 2026-06-13 新增：子智能体详情抽屉（与 SandboxDrawer 互斥同开，组件/样式完全独立） -->
+    <!--
+      2026-06-14 改造：原 SandboxDrawer 已删除，沙箱执行详情统一由 SubAgentDrawer 展示。
+      SubAgentDrawer 内部在 tool='sandbox' 时自动展示沙箱摘要 + 沙箱事件时间线。
+    -->
     <SubAgentDrawer
       :visible="subAgentDrawerVisible"
       :sub-agent="currentSubAgent"

@@ -1,11 +1,13 @@
 /**
- * sseParser subagent 解析单测（2026-06-13 新增）
+ * sseParser subagent 解析单测（2026-06-13 新增，2026-06-14 改造）
  *
  * 覆盖：
- *   - createAiMessage 初始化 subAgents: []
+ *   - createAiMessage 初始化 subAgents: []（2026-06-14 移除 sandboxExecution 字段）
  *   - processSSEEvent 处理 custom 事件时维护 subAgents 列表
  *   - updateSubAgentFromCustomEvent 内部工具的状态推进
  *   - getSubAgentById / formatSubAgentDuration / getSubAgentMeta 工具函数
+ *   - 2026-06-14 改造：sandbox_summary 持久化到 subAgent.summary
+ *   - 2026-06-14 改造：final_summary 在 tool_stop 时合并到 subAgent.summary
  */
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
@@ -23,9 +25,11 @@ describe('sseParser subagent 解析', () => {
     aiMsg = createAiMessage()
   })
 
-  it('createAiMessage 初始化 subAgents 为空数组', () => {
+  it('createAiMessage 初始化 subAgents 为空数组且不包含 sandboxExecution', () => {
     expect(Array.isArray(aiMsg.subAgents)).toBe(true)
     expect(aiMsg.subAgents).toEqual([])
+    // 2026-06-14 改造：sandboxExecution 字段已移除
+    expect(aiMsg.sandboxExecution).toBeUndefined()
   })
 
   it('tool_start 自定义事件应创建 subagent 条目', () => {
@@ -185,6 +189,84 @@ describe('sseParser subagent 解析', () => {
 
     expect(aiMsg.subAgents).toHaveLength(2)
     expect(aiMsg.subAgents.map(s => s.tool).sort()).toEqual(['explore', 'sandbox'])
+  })
+
+  // ========== 2026-06-14 改造：summary 字段持久化 ==========
+
+  it('tool_progress 携带 sandbox_summary 时合并到 subAgent.summary', () => {
+    processSSEEvent({
+      type: 'custom', thread_id: 's1', data: {
+        type: 'tool_start', tool: 'sandbox', tool_call_id: 's1',
+        data: { parent_prompt: 'p' }
+      }
+    }, aiMsg)
+
+    processSSEEvent({
+      type: 'custom', thread_id: 's1', data: {
+        type: 'tool_progress', tool: 'sandbox', tool_call_id: 's1',
+        data: {
+          sandbox_summary: {
+            progress_pct: 40,
+            current_step: 2,
+            total_steps: 5,
+            elapsed_ms: 3000
+          }
+        }
+      }
+    }, aiMsg)
+
+    const sa = aiMsg.subAgents[0]
+    expect(sa.summary).toBeTruthy()
+    expect(sa.summary.progress_pct).toBe(40)
+    expect(sa.summary.current_step).toBe(2)
+    expect(sa.summary.total_steps).toBe(5)
+  })
+
+  it('tool_stop 携带 final_summary 时合并到 subAgent.summary（最终态）', () => {
+    processSSEEvent({
+      type: 'custom', thread_id: 's2', data: {
+        type: 'tool_start', tool: 'sandbox', tool_call_id: 's2',
+        data: { parent_prompt: 'p' }
+      }
+    }, aiMsg)
+
+    // 进度阶段先来一次
+    processSSEEvent({
+      type: 'custom', thread_id: 's2', data: {
+        type: 'tool_progress', tool: 'sandbox', tool_call_id: 's2',
+        data: {
+          sandbox_summary: {
+            progress_pct: 60,
+            current_step: 3,
+            total_steps: 5,
+            elapsed_ms: 5000
+          }
+        }
+      }
+    }, aiMsg)
+
+    // 结束时带 final_summary
+    processSSEEvent({
+      type: 'custom', thread_id: 's2', data: {
+        type: 'tool_stop', tool: 'sandbox', tool_call_id: 's2',
+        data: {
+          status: 'success',
+          final_summary: {
+            progress_pct: 100,
+            current_step: 5,
+            elapsed_ms: 10000,
+            status_message: '执行完成'
+          }
+        }
+      }
+    }, aiMsg)
+
+    const sa = aiMsg.subAgents[0]
+    expect(sa.status).toBe('success')
+    expect(sa.summary.progress_pct).toBe(100)
+    expect(sa.summary.current_step).toBe(5)
+    expect(sa.summary.total_steps).toBe(5)  // 保留 progress 阶段的字段
+    expect(sa.summary.status_message).toBe('执行完成')
   })
 })
 

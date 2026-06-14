@@ -1,11 +1,12 @@
 /**
- * SubAgentCard 组件测试（2026-06-13 新增）
+ * SubAgentCard 组件测试（2026-06-13 新增，2026-06-14 改造）
  *
  * 覆盖：
  *   - 各状态徽章正确显示
  *   - 点击触发 click 事件并传 subAgent
  *   - parentPrompt 截断到 30 字符
  *   - 消息数与耗时格式化
+ *   - 2026-06-14 改造：summary 字段（来自 sandbox 类子智能体）不影响卡片渲染
  */
 import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
@@ -105,5 +106,41 @@ describe('SubAgentCard', () => {
     await wrapper.find('.subagent-card').trigger('click')
     expect(wrapper.emitted('click')).toBeTruthy()
     expect(wrapper.emitted('click')[0][0]).toEqual(baseSubAgent)
+  })
+
+  // ========== 2026-06-14 改造：summary 字段不影响卡片渲染 ==========
+
+  it('sandbox 类子智能体的 summary 字段不破坏卡片渲染', () => {
+    const sandboxSa = {
+      ...baseSubAgent,
+      tool: 'sandbox',
+      status: 'success',
+      endTime: Date.now(),
+      summary: {
+        progress_pct: 100,
+        current_step: 5,
+        total_steps: 5,
+        elapsed_ms: 10000,
+        status_message: '执行完成'
+      }
+    }
+    const wrapper = mount(SubAgentCard, {
+      props: { subAgent: sandboxSa }
+    })
+    // 卡片基本元素正常显示
+    expect(wrapper.text()).toContain('沙箱执行')
+    expect(wrapper.text()).toContain('已完成')
+  })
+
+  it('parentPrompt 缺失时仅展示核心字段（不显示 prompt 预览）', () => {
+    const noPromptSa = {
+      ...baseSubAgent,
+      parentPrompt: ''
+    }
+    const wrapper = mount(SubAgentCard, {
+      props: { subAgent: noPromptSa }
+    })
+    // 卡片应正常渲染
+    expect(wrapper.text()).toContain('沙箱执行')
   })
 })

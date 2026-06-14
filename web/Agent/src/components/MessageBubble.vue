@@ -2,7 +2,6 @@
 import { ref, computed, reactive, watch, nextTick } from 'vue'
 import { marked } from 'marked'
 import { formatFileSize, getFileExtension, getAuthHeaders } from '../utils/api.js'
-import SandboxProgress from './SandboxProgress.vue'
 import SubAgentCard from './SubAgentCard.vue'
 
 const props = defineProps({
@@ -52,10 +51,6 @@ const props = defineProps({
     default: false
   },
   downloadInfo: {
-    type: Object,
-    default: null
-  },
-  sandboxExecution: {
     type: Object,
     default: null
   },
@@ -111,6 +106,54 @@ const mergedTimeline = computed(() => {
   }
   return result
 })
+
+/**
+ * 根据 timeline.tool group 的 items 提取对应的子智能体列表
+ * 2026-06-14 改造：原 SandboxProgress 替换为 SubAgentCard，
+ * 子智能体卡片按 toolCallId 匹配，渲染在 timeline.tool 内以符合事件时序。
+ *
+ * 入参：group.items（来自 mergedTimeline 中的 tool 组的 raw event 数组）
+ * 返回：去重后的子智能体列表
+ *
+ * SSE 事件结构（sseParser.js case 'custom' 写入）：
+ *   item = { type: 'custom', thread_id: 'top_thread', data: <ToolEvent TypedDict> }
+ *   item.data = { type, tool, tool_call_id, thread_id, data: { ... } }
+ *   toolCallId 取值优先级：item.data.tool_call_id > item.data.thread_id > item.thread_id
+ */
+function extractToolCallId(item) {
+  if (!item || typeof item !== 'object') return ''
+  // item 是 sseParser push 进去的整个 SSE 事件 data 对象；
+  // item.data 才是 ToolEvent TypedDict（参见 sseParser.js case 'custom'）。
+  const inner = (item.data && typeof item.data === 'object') ? item.data : {}
+  return inner.tool_call_id || inner.thread_id || item.thread_id || ''
+}
+
+const toolSubAgentMap = computed(() => {
+  // 构建一个 toolCallId -> subAgent 的索引，供模板 O(1) 查找
+  const map = new Map()
+  if (!Array.isArray(props.subAgents)) return map
+  for (const sa of props.subAgents) {
+    if (sa && sa.toolCallId) {
+      map.set(sa.toolCallId, sa)
+    }
+  }
+  return map
+})
+
+function getSubAgentsForGroup(group) {
+  if (!group || group.type !== 'tool' || !Array.isArray(group.items)) return []
+  const map = toolSubAgentMap.value
+  const seen = new Set()
+  const result = []
+  for (const item of group.items) {
+    const id = extractToolCallId(item)
+    if (id && map.has(id) && !seen.has(id)) {
+      seen.add(id)
+      result.push(map.get(id))
+    }
+  }
+  return result
+}
 
 const formattedThinking = computed(() => {
   if (!props.thinking || props.thinking.length === 0) return ''
@@ -352,12 +395,6 @@ const handleDislike = () => {
   emit('dislike', props.messageId)
 }
 
-const handleSandboxClick = () => {
-  if (props.sandboxExecution) {
-    emit('open-sandbox-drawer', props.sandboxExecution)
-  }
-}
-
 const handleDownload = async () => {
   if (!props.downloadInfo) return
 
@@ -457,41 +494,48 @@ const getFileIconColor = (filename) => {
             </div>
           </div>
 
-          <!-- 工具调用块 -->
+          <!--
+            工具调用块
+            2026-06-14 改造：原 sandboxExecution 条件分支移除，
+            改为统一渲染工具调用列表 + 在底部按 toolCallId 嵌入 SubAgentCard
+            （子智能体卡片按事件时序出现，不再堆在末尾）
+          -->
           <div v-else-if="group.type === 'tool'" class="timeline-tool">
-            <!-- 沙盒执行进度（特殊处理） -->
-            <div v-if="sandboxExecution" class="timeline-sandbox">
-              <SandboxProgress
-                :summary="sandboxExecution.summary"
-                :status="sandboxExecution.status"
-                @click="handleSandboxClick"
+            <div class="tools-header" @click="toggleTools">
+              <span class="tools-icon">🔧</span>
+              <span class="tools-label">工具调用 ({{ group.items.length }})</span>
+              <svg
+                class="expand-icon"
+                :class="{ expanded: isToolsExpanded }"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+              >
+                <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
+              </svg>
+            </div>
+            <div v-if="isToolsExpanded" class="tools-body">
+              <div
+                v-for="(item, idx) in group.items"
+                :key="'tool-item-' + idx"
+                class="tool-item"
+              >
+                <span class="tool-icon">🔧</span>
+                <span class="tool-text">{{ formatToolItem(item) }}</span>
+              </div>
+            </div>
+            <!--
+              子智能体卡片嵌入（2026-06-14 改造）
+              按 toolCallId 在 group.items 中查找匹配的 subAgent 列表，
+              渲染在工具调用块内，遵循事件流时序。
+            -->
+            <div v-if="getSubAgentsForGroup(group).length > 0" class="timeline-subagent-list">
+              <SubAgentCard
+                v-for="sa in getSubAgentsForGroup(group)"
+                :key="sa.toolCallId"
+                :sub-agent="sa"
+                @click="handleSubAgentClick(sa)"
               />
             </div>
-            <!-- 普通工具展示 -->
-            <template v-else>
-              <div class="tools-header" @click="toggleTools">
-                <span class="tools-icon">🔧</span>
-                <span class="tools-label">工具调用 ({{ group.items.length }})</span>
-                <svg
-                  class="expand-icon"
-                  :class="{ expanded: isToolsExpanded }"
-                  viewBox="0 0 20 20"
-                  fill="currentColor"
-                >
-                  <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
-                </svg>
-              </div>
-              <div v-if="isToolsExpanded" class="tools-body">
-                <div
-                  v-for="(item, idx) in group.items"
-                  :key="'tool-item-' + idx"
-                  class="tool-item"
-                >
-                  <span class="tool-icon">🔧</span>
-                  <span class="tool-text">{{ formatToolItem(item) }}</span>
-                </div>
-              </div>
-            </template>
           </div>
 
           <!-- 正文块 -->
@@ -557,17 +601,6 @@ const getFileIconColor = (filename) => {
           <span v-if="!ended && !error" class="streaming-cursor">▌</span>
         </div>
       </template>
-
-      <!-- 下载链接 -->
-      <!-- 2026-06-13 新增：子智能体折叠卡片列表（在下载链接之前展示） -->
-      <div v-if="hasSubAgents" class="subagent-cards">
-        <SubAgentCard
-          v-for="sa in subAgents"
-          :key="sa.toolCallId"
-          :sub-agent="sa"
-          @click="handleSubAgentClick(sa)"
-        />
-      </div>
 
       <!-- 下载链接 -->
       <div v-if="hasDownloadInfo && ended" class="download-section">
@@ -758,6 +791,17 @@ const getFileIconColor = (filename) => {
 
 .timeline-sandbox {
   width: 100%;
+}
+
+/*
+ * timeline.tool 内的子智能体卡片列表（2026-06-14 新增）
+ * 子智能体卡片按 toolCallId 匹配后渲染在工具调用块内，遵循事件流时序。
+ */
+.timeline-subagent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
 }
 
 /* 时间线正文块 */
@@ -1100,14 +1144,7 @@ const getFileIconColor = (filename) => {
   margin-bottom: 12px;
 }
 
-/* 2026-06-13 新增：子智能体卡片列表容器 */
-.subagent-cards {
-  max-width: 85%;
-  margin-bottom: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
+/* 2026-06-14 改造：原 .subagent-cards 容器已移除（子智能体卡片嵌入 timeline.tool 内） */
 
 .download-card {
   display: inline-flex;
