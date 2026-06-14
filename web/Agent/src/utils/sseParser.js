@@ -33,6 +33,28 @@ export function isSubAgentTool(tool) {
 }
 
 /**
+ * 判断 SSE message 事件的 metadata.thread_id 是否属于已注册的子智能体（2026-06-14 新增）
+ *
+ * 用途：在 processSSEEvent('message') 中跳过子智能体内部的流式输出，
+ * 避免在父气泡的 thinking/text/timeline 中重复展示。这些内容已通过
+ * custom 事件的 child_messages 累积到 SubAgentDrawer.messages 中。
+ *
+ * 设计依据：当前后端实现（SandboxTools.py / FilesystemReadTools.py）保证
+ * tool_start custom 事件先于子智能体首个 message 事件到达，因此 subAgent
+ * 条目在子智能体 message 到达前一定已注册到 aiMsg.subAgents 中。
+ *
+ * 入参：
+ *   aiMsg - 父 AI 消息对象（来自 createAiMessage）
+ *   eventThreadId - SSE 事件 metadata.thread_id（string | undefined | null）
+ * 返回：boolean - true 表示该消息应被视为子智能体内容，应跳过
+ */
+export function isSubAgentMessage(aiMsg, eventThreadId) {
+  if (!aiMsg || !Array.isArray(aiMsg.subAgents) || !eventThreadId) return false
+  if (typeof eventThreadId !== 'string') return false
+  return aiMsg.subAgents.some(sa => sa && sa.threadId === eventThreadId)
+}
+
+/**
  * 根据 tool 名返回 {icon, label}，未知工具使用通用图标
  */
 export function getSubAgentMeta(tool) {
@@ -373,7 +395,10 @@ export function processSSEEvent(data, aiMsg) {
   const metadata = data.metadata || {}
   const eventThreadId = metadata.thread_id || ''
 
-  if (data.type === 'message' && !aiMsg.threadId && eventThreadId) {
+  if (data.type === 'message' && !aiMsg.threadId && eventThreadId
+      && !isSubAgentMessage(aiMsg, eventThreadId)) {
+    // 2026-06-14 改造：thread_id 属于子智能体时不写入父气泡 threadId
+    // 避免首个 message 事件恰好来自子智能体时把父气泡 threadId 设错
     aiMsg.threadId = eventThreadId
   }
 
@@ -430,6 +455,12 @@ export function processSSEEvent(data, aiMsg) {
       break
     }
     case 'message': {
+      // 2026-06-14 改造：识别子智能体内部消息并跳过，避免在父气泡中重复展示
+      // 子智能体的结构化 child_messages 已通过 custom 事件累积到 subAgents[i].messages
+      // 这里命中时直接 break，不写入父气泡的 thinking / text / timeline
+      if (isSubAgentMessage(aiMsg, eventThreadId)) {
+        break
+      }
       const c = data.content || data.data
       parseMessageContent(c, aiMsg, isMainThread)
       if (!isMainThread) {

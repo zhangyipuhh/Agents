@@ -363,3 +363,102 @@ describe('MessageBubble SubAgentCard 跨 group 去重（2026-06-14 新增）', (
   })
 })
 
+// ========== 2026-06-14 第四次：子智能体 message 不进入主气泡的 thinking 区域 ==========
+// 场景：经过 sseParser 过滤后，timeline 中应不出现子智能体内部的
+//      thinking / text 片段（已通过 custom 事件累积到 subAgents[i].messages）。
+//      此处使用 sseParser 处理一组 SSE 事件，验证输出的 timeline 干净无子智能体内容。
+
+import { processSSEEvent, createAiMessage } from '../../utils/sseParser.js'
+
+describe('MessageBubble 子智能体 message 过滤（2026-06-14 端到端）', () => {
+  it('sseParser 过滤后，timeline 不含子智能体的 thinking 文本', () => {
+    const aiMsg = createAiMessage()
+    // 1) 注册 sandbox 子智能体
+    processSSEEvent({
+      type: 'custom',
+      thread_id: 'tc_workspace',
+      data: {
+        type: 'tool_start',
+        tool: 'sandbox',
+        tool_call_id: 'tc_workspace',
+        data: { parent_prompt: '生成 C# Hello World' }
+      }
+    }, aiMsg)
+    // 2) 父线程 message
+    processSSEEvent({
+      type: 'message',
+      content: [{ type: 'text', text: '我来帮你生成 C# Hello World' }],
+      metadata: { thread_id: 'main_thread' }
+    }, aiMsg)
+    // 3) 子智能体 LLM 增量输出（模拟实际场景中的流式 thinking）
+    processSSEEvent({
+      type: 'message',
+      content: [{ type: 'thinking', thinking: '工作目录是 /workspace，让我在这里创建' }],
+      metadata: { thread_id: 'tc_workspace', lc_agent_name: 'sandbox' }
+    }, aiMsg)
+    processSSEEvent({
+      type: 'message',
+      content: [{ type: 'thinking', thinking: 'Let me try with the current working directory or check what path to use' }],
+      metadata: { thread_id: 'tc_workspace', lc_agent_name: 'sandbox' }
+    }, aiMsg)
+
+    // 父气泡的 thinking / text 区域应只含父线程内容
+    expect(aiMsg.text).toBe('我来帮你生成 C# Hello World')
+    expect(aiMsg.thinking).toEqual([])
+    // timeline 中不应出现子智能体的 thinking 文本
+    const subAgentLeak = aiMsg.timeline.some(t => {
+      if (typeof t.content === 'string') {
+        return t.content.includes('工作目录是 /workspace') || t.content.includes('Let me try with the current working directory')
+      }
+      return false
+    })
+    expect(subAgentLeak).toBe(false)
+
+    // 渲染 MessageBubble
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'ai',
+        ended: true,
+        timeline: aiMsg.timeline,
+        text: aiMsg.text,
+        thinking: aiMsg.thinking,
+        subAgents: aiMsg.subAgents
+      }
+    })
+    // 主体文本应展示父线程的"我来帮你生成..."
+    expect(wrapper.html()).toContain('我来帮你生成 C# Hello World')
+    // 不应出现子智能体 thinking 字符串
+    expect(wrapper.html()).not.toContain('工作目录是 /workspace')
+    expect(wrapper.html()).not.toContain('Let me try with the current working directory')
+  })
+
+  it('子智能体 child_messages 仍完整保留在 subAgents[i].messages 中', () => {
+    const aiMsg = createAiMessage()
+    processSSEEvent({
+      type: 'custom', thread_id: 'tc_keep', data: {
+        type: 'tool_start', tool: 'sandbox', tool_call_id: 'tc_keep',
+        data: { parent_prompt: 'p' }
+      }
+    }, aiMsg)
+    // 通过 custom 事件累积 child_messages
+    processSSEEvent({
+      type: 'custom', thread_id: 'tc_keep', data: {
+        type: 'tool_progress', tool: 'sandbox', tool_call_id: 'tc_keep',
+        data: {
+          child_messages: [
+            { type: 'AIMessage', role: 'ai', content: [{ thinking: '工作目录是 /workspace', type: 'thinking' }] },
+            { type: 'AIMessage', role: 'ai', content: [{ thinking: 'Let me try with the current working directory', type: 'thinking' }] }
+          ]
+        }
+      }
+    }, aiMsg)
+
+    // 子智能体 messages 应保留两条 child_messages
+    const sa = aiMsg.subAgents[0]
+    expect(sa.messages).toHaveLength(2)
+    // 这些内容在子智能体抽屉内仍可展示
+    expect(JSON.stringify(sa.messages)).toContain('工作目录是 /workspace')
+    expect(JSON.stringify(sa.messages)).toContain('Let me try with the current working directory')
+  })
+})
+
