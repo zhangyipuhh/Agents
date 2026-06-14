@@ -7,6 +7,7 @@ import InputBox from './components/InputBox.vue'
 import HumanApprovalBox from './components/HumanApprovalBox.vue'
 import KnowledgePage from './components/KnowledgePage.vue'
 import SandboxDrawer from './components/SandboxDrawer.vue'
+import SubAgentDrawer from './components/SubAgentDrawer.vue'
 import { chatStream, createNewSession, logout as apiLogout, fetchSessionDetail, fetchSessionAttachments, fetchSessionMessages, validateToken, refreshToken, clearAuth } from './utils/api.js'
 import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage } from './utils/sseParser.js'
 import { redirectToLogin, tryRefreshOrRedirect } from './utils/auth.js'
@@ -31,6 +32,10 @@ const sandboxDrawerVisible = ref(false)
 const currentSandboxEvents = ref([])
 const currentSandboxSummary = ref(null)
 const currentSandboxStatus = ref('running')
+
+// 2026-06-13 新增：子智能体详情抽屉状态（与 sandbox 抽屉互斥同开）
+const subAgentDrawerVisible = ref(false)
+const currentSubAgent = ref(null)
 
 /**
  * 新建任务锁，防止重复创建
@@ -354,6 +359,8 @@ function handleApprovalCancel() {
 }
 
 function openSandboxDrawer(sandboxData) {
+  // 互斥：打开沙箱抽屉时关闭子智能体抽屉
+  subAgentDrawerVisible.value = false
   currentSandboxEvents.value = sandboxData.events || []
   currentSandboxSummary.value = sandboxData.summary || null
   currentSandboxStatus.value = sandboxData.status || 'running'
@@ -362,6 +369,18 @@ function openSandboxDrawer(sandboxData) {
 
 function closeSandboxDrawer() {
   sandboxDrawerVisible.value = false
+}
+
+// 2026-06-13 新增：子智能体抽屉 open/close
+function openSubAgentDrawer(subAgent) {
+  // 互斥：打开子智能体抽屉时关闭沙箱抽屉
+  sandboxDrawerVisible.value = false
+  currentSubAgent.value = subAgent
+  subAgentDrawerVisible.value = true
+}
+
+function closeSubAgentDrawer() {
+  subAgentDrawerVisible.value = false
 }
 
 // 监听当前消息的沙盒状态，执行完成后自动关闭
@@ -570,6 +589,7 @@ async function handleSessionSwitch(targetSessionId) {
         @dislike="handleDislike"
         @copy="handleCopy"
         @open-sandbox-drawer="openSandboxDrawer"
+        @open-subagent-drawer="openSubAgentDrawer"
       />
 
       <div v-if="isEmptyState" class="welcome-title">Agent, 让你的工作更轻松</div>
@@ -603,6 +623,13 @@ async function handleSessionSwitch(targetSessionId) {
       :summary="currentSandboxSummary"
       :status="currentSandboxStatus"
       @close="closeSandboxDrawer"
+    />
+
+    <!-- 2026-06-13 新增：子智能体详情抽屉（与 SandboxDrawer 互斥同开，组件/样式完全独立） -->
+    <SubAgentDrawer
+      :visible="subAgentDrawerVisible"
+      :sub-agent="currentSubAgent"
+      @close="closeSubAgentDrawer"
     />
   </div>
 </template>

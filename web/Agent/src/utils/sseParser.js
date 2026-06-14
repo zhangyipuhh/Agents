@@ -3,6 +3,123 @@ export function isThinkingBlock(block) {
   return block.type === 'thinking' || !!block.thinking
 }
 
+/**
+ * Subagent 工具名 → 显示信息映射
+ * 2026-06-13 新增 subagent 折叠卡片用
+ */
+const SUBAGENT_META = {
+  sandbox: { icon: '📦', label: '沙箱执行' },
+  explore: { icon: '🔍', label: '文件探索' }
+}
+
+/**
+ * 根据 tool 名返回 {icon, label}，未知工具使用通用图标
+ */
+export function getSubAgentMeta(tool) {
+  return SUBAGENT_META[tool] || { icon: '🤖', label: tool || '子智能体' }
+}
+
+/**
+ * 从 aiMsg.subAgents 列表中按 toolCallId 查找 subagent
+ */
+export function getSubAgentById(aiMsg, toolCallId) {
+  if (!aiMsg || !Array.isArray(aiMsg.subAgents)) return null
+  return aiMsg.subAgents.find(sa => sa.toolCallId === toolCallId) || null
+}
+
+/**
+ * 把毫秒数格式化为友好字符串（用于 subagent 卡片耗时显示）
+ */
+export function formatSubAgentDuration(ms) {
+  if (!ms || ms < 0) return ''
+  if (ms < 1000) return ms + 'ms'
+  if (ms < 60000) return (ms / 1000).toFixed(1) + 's'
+  const minutes = Math.floor(ms / 60000)
+  const seconds = Math.floor((ms % 60000) / 1000)
+  return minutes + '分' + seconds + '秒'
+}
+
+/**
+ * 维护 aiMsg.subAgents 列表的内部工具
+ *  - toolStart: 初始化或更新条目
+ *  - toolProgress: 累计 messages / events，标记 running
+ *  - toolStop: 标记 success，记录 endTime
+ *  - toolError: 标记 error，记录 error
+ *
+ * @param {Object} aiMsg - 父 AI 消息对象
+ * @param {Object} event - custom SSE 事件 data（ToolEvent TypedDict）
+ * @param {string} topLevelThreadId - SSE 事件顶层 thread_id 字段（map_router 注入）
+ */
+function updateSubAgentFromCustomEvent(aiMsg, event, topLevelThreadId) {
+  if (!aiMsg) return null
+  if (!Array.isArray(aiMsg.subAgents)) {
+    aiMsg.subAgents = []
+  }
+
+  const eventType = event && event.type
+  const tool = (event && event.tool) || 'unknown'
+  const toolCallId = (event && event.tool_call_id) || topLevelThreadId || ''
+  if (!toolCallId) return null
+
+  // 查找或创建
+  let sa = aiMsg.subAgents.find(s => s.toolCallId === toolCallId)
+  if (!sa) {
+    sa = {
+      toolCallId,
+      threadId: topLevelThreadId || toolCallId,
+      tool,
+      parentPrompt: '',
+      messages: [],
+      events: [],
+      status: 'running',
+      startTime: Date.now(),
+      endTime: null,
+      error: null
+    }
+    aiMsg.subAgents.push(sa)
+  }
+
+  const inner = (event && event.data) || {}
+
+  // parent_prompt（tool_start 时填充，后续兜底保留）
+  if (typeof inner.parent_prompt === 'string' && inner.parent_prompt) {
+    sa.parentPrompt = inner.parent_prompt
+  }
+
+  // child_messages（tool_progress 累积）
+  if (Array.isArray(inner.child_messages)) {
+    sa.messages = inner.child_messages
+  }
+
+  // events（sandbox_summary / sandbox_events 透传，便于抽屉内时间线复用）
+  if (Array.isArray(inner.sandbox_events)) {
+    sa.events = inner.sandbox_events
+  }
+
+  // 状态推进
+  if (eventType === 'tool_start') {
+    sa.status = 'running'
+    if (!sa.startTime && inner.sandbox_summary && inner.sandbox_summary.elapsed_ms) {
+      sa.startTime = Date.now() - inner.sandbox_summary.elapsed_ms
+    }
+  } else if (eventType === 'tool_progress') {
+    sa.status = 'running'
+  } else if (eventType === 'tool_stop') {
+    sa.status = 'success'
+    sa.endTime = Date.now()
+    // final_messages 优先覆盖 messages（最终态）
+    if (Array.isArray(inner.final_messages)) {
+      sa.messages = inner.final_messages
+    }
+  } else if (eventType === 'tool_error') {
+    sa.status = 'error'
+    sa.endTime = Date.now()
+    sa.error = (inner.error_type || 'error') + ': ' + (inner.error_message || '')
+  }
+
+  return sa
+}
+
 export function tryParsePythonLiteral(content) {
   if (typeof content !== 'string') return null
   const trimmed = content.trim()
@@ -233,6 +350,10 @@ export function processSSEEvent(data, aiMsg) {
 
   const isMainThread = !eventThreadId || eventThreadId === aiMsg.threadId
 
+  // 顶层 thread_id 由后端 map_router 在 custom 模式注入（2026-06-13 新增）
+  // subagent 事件 data.data.tool_call_id == thread_id
+  const topLevelThreadId = (data && data.thread_id) || ''
+
   switch (data.type) {
     case 'interrupt': {
       const interruptInfo = extractInterruptInfo(data.data)
@@ -294,6 +415,10 @@ export function processSSEEvent(data, aiMsg) {
       console.log('[sseParser] custom event:', JSON.stringify(data))
       // 注意：custom 事件的 data 字段包含实际的工具事件数据
       var customToolData = data.data || {}
+
+      // 2026-06-13 新增：维护 aiMsg.subAgents 列表（折叠卡片 / 抽屉用）
+      // 注意：data.data 是 ToolEvent TypedDict；顶层 data.thread_id 由 map_router 注入
+      updateSubAgentFromCustomEvent(aiMsg, customToolData, topLevelThreadId)
 
       // 检测沙盒工具事件
       if (customToolData.tool === 'sandbox') {
@@ -426,6 +551,7 @@ export function createAiMessage() {
     error: '',
     downloadInfo: null,
     interrupt: null,
-    sandboxExecution: null  // 新增：沙盒执行状态
+    sandboxExecution: null,  // 新增：沙盒执行状态
+    subAgents: []             // 2026-06-13 新增：子智能体执行列表（折叠卡片 / 抽屉用）
   }
 }

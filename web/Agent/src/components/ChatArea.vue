@@ -13,7 +13,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['copy', 'regenerate', 'like', 'dislike', 'open-sandbox-drawer'])
+const emit = defineEmits(['copy', 'regenerate', 'like', 'dislike', 'open-sandbox-drawer', 'open-subagent-drawer'])
 
 const chatContainer = ref(null)
 const showScrollButton = ref(false)
@@ -173,11 +173,13 @@ defineExpose({
         :is-thinking-active="message.isThinkingActive"
         :download-info="message.downloadInfo"
         :sandbox-execution="message.sandboxExecution"
+        :sub-agents="message.subAgents"
         @copy="(e) => emit('copy', e)"
         @regenerate="(id) => emit('regenerate', id)"
         @like="(id) => emit('like', id)"
         @dislike="(id) => emit('dislike', id)"
         @open-sandbox-drawer="(data) => emit('open-sandbox-drawer', data)"
+        @open-subagent-drawer="(sa) => emit('open-subagent-drawer', sa)"
       />
     </div>
 

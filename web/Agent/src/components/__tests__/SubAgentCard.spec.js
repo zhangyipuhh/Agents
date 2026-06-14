@@ -1,0 +1,109 @@
+/**
+ * SubAgentCard 组件测试（2026-06-13 新增）
+ *
+ * 覆盖：
+ *   - 各状态徽章正确显示
+ *   - 点击触发 click 事件并传 subAgent
+ *   - parentPrompt 截断到 30 字符
+ *   - 消息数与耗时格式化
+ */
+import { describe, it, expect } from 'vitest'
+import { mount } from '@vue/test-utils'
+import SubAgentCard from '../SubAgentCard.vue'
+
+const baseSubAgent = {
+  toolCallId: 'c1',
+  threadId: 'c1',
+  tool: 'sandbox',
+  parentPrompt: '执行沙箱测试',
+  messages: [],
+  events: [],
+  status: 'running',
+  startTime: Date.now() - 1500,
+  endTime: null,
+  error: null
+}
+
+describe('SubAgentCard', () => {
+  it('渲染父 agent 提问预览（前 30 字符截断）', () => {
+    const longPrompt = 'a'.repeat(50)
+    const wrapper = mount(SubAgentCard, {
+      props: { subAgent: { ...baseSubAgent, parentPrompt: longPrompt } }
+    })
+    expect(wrapper.text()).toContain('a'.repeat(30) + '…')
+  })
+
+  it('短 parentPrompt 不截断', () => {
+    const wrapper = mount(SubAgentCard, {
+      props: { subAgent: { ...baseSubAgent, parentPrompt: 'short' } }
+    })
+    expect(wrapper.text()).toContain('short')
+    expect(wrapper.text()).not.toContain('…')
+  })
+
+  it('running 状态显示"执行中"', () => {
+    const wrapper = mount(SubAgentCard, {
+      props: { subAgent: { ...baseSubAgent, status: 'running' } }
+    })
+    expect(wrapper.text()).toContain('执行中')
+  })
+
+  it('success 状态显示"已完成"', () => {
+    const wrapper = mount(SubAgentCard, {
+      props: { subAgent: { ...baseSubAgent, status: 'success' } }
+    })
+    expect(wrapper.text()).toContain('已完成')
+  })
+
+  it('error 状态显示"执行失败" + 错误详情', () => {
+    const wrapper = mount(SubAgentCard, {
+      props: {
+        subAgent: {
+          ...baseSubAgent,
+          status: 'error',
+          error: 'RuntimeError: docker not running'
+        }
+      }
+    })
+    expect(wrapper.text()).toContain('执行失败')
+    expect(wrapper.text()).toContain('RuntimeError')
+  })
+
+  it('sandbox 工具名显示"沙箱执行"标签', () => {
+    const wrapper = mount(SubAgentCard, {
+      props: { subAgent: { ...baseSubAgent, tool: 'sandbox' } }
+    })
+    expect(wrapper.text()).toContain('沙箱执行')
+  })
+
+  it('explore 工具名显示"文件探索"标签', () => {
+    const wrapper = mount(SubAgentCard, {
+      props: { subAgent: { ...baseSubAgent, tool: 'explore' } }
+    })
+    expect(wrapper.text()).toContain('文件探索')
+  })
+
+  it('消息数 > 0 时显示"X 条消息"', () => {
+    const wrapper = mount(SubAgentCard, {
+      props: {
+        subAgent: {
+          ...baseSubAgent,
+          messages: [
+            { type: 'HumanMessage', role: 'user', content: 'q' },
+            { type: 'AIMessage', role: 'ai', content: 'a' }
+          ]
+        }
+      }
+    })
+    expect(wrapper.text()).toContain('2 条消息')
+  })
+
+  it('点击卡片触发 click 事件并传递 subAgent', async () => {
+    const wrapper = mount(SubAgentCard, {
+      props: { subAgent: baseSubAgent }
+    })
+    await wrapper.find('.subagent-card').trigger('click')
+    expect(wrapper.emitted('click')).toBeTruthy()
+    expect(wrapper.emitted('click')[0][0]).toEqual(baseSubAgent)
+  })
+})

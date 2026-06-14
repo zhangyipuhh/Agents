@@ -537,8 +537,22 @@ async def generate_stream_response(
 
                 elif mode == "custom":
                     # 自定义数据
-                    # data 格式: 自定义的数据结构
-                    yield f"data: {json.dumps({'type': 'custom', 'data': data}, ensure_ascii=False, default=str)}\n\n"
+                    # data 格式: 自定义的数据结构（一般是 ToolEvent，含 data.data.thread_id）
+                    # 2026-06-13 新增：把 subagent 的 thread_id 透传到 SSE 顶层
+                    # 老客户端只读 data，忽略顶层 thread_id，行为不变
+                    custom_data = data if isinstance(data, dict) else {}
+                    inner_data = custom_data.get("data") or {}
+                    custom_thread_id = (
+                        (inner_data.get("thread_id") if isinstance(inner_data, dict) else None)
+                        or custom_data.get("tool_call_id")
+                        or ""
+                    )
+                    custom_payload = {
+                        "type": "custom",
+                        "data": data,
+                        "thread_id": custom_thread_id,
+                    }
+                    yield "data: " + json.dumps(custom_payload, ensure_ascii=False, default=str) + "\n\n"
 
                 elif mode == "messages":
                     if isinstance(data, tuple) and len(data) == 2:

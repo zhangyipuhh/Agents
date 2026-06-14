@@ -539,7 +539,7 @@ system_prompt = (
 |------|---------|------|
 | `DockerSandboxBackend` | `app/shared/tools/middleware/docker_sandbox_backend.py` | Docker 容器生命周期管理、命令执行、文件上传下载；区分 host_workspace（宿主机视角，用于 bind mount）与 container_workspace（容器内视角，/workspace）；支持 4 种 docker_mode 路径投影 |
 | `DockerSandboxMiddleware` | `app/shared/tools/middleware/docker_sandbox_backend.py` | 继承 `FilesystemMiddleware`，自动管理 `DockerSandboxBackend`，提供沙箱工具集 |
-| `sandbox` 工具 | `app/core/tools/SandboxTools.py` | `@tool` 装饰的 `sandbox` 函数，通过 `create_deep_agent` 启动沙箱子智能体；2026-06-12 重构：容器化部署配置从 `Settings.get_sandbox_config()` 注入 |
+| `sandbox` 工具 | `app/core/tools/SandboxTools.py` | `@tool` 装饰的 `sandbox` 函数，通过 `create_deep_agent` 启动沙箱子智能体；2026-06-12 重构：容器化部署配置从 `Settings.get_sandbox_config()` 注入；2026-06-13 扩展：填充 subagent 结构化字段（详见下文 "SubAgent 事件协议"） |
 | `SandboxSettings` | `app/core/config/settings.py` | Pydantic BaseSettings，管理 10 个 `SANDBOX_*` 环境变量，控制 docker_mode / 镜像 / 资源限制 / 路径前缀 |
 
 ### 架构变更历史
@@ -675,6 +675,82 @@ environment:
 
 效果：SandboxDrawer 时间线中**新增** `code_generation` 事件（显示 LLM 生成的代码），与原 ToolMessage 事件并存展示"LLM 决策 → 工具执行"完整链路。
 
+## SubAgent 事件协议（2026-06-13 新增）
+
+> **目标**：子智能体（sandbox / explore 等）的执行过程在父 AI 聊天气泡中折叠为 `SubAgentCard` 卡片；点击卡片从右侧 push 出 `SubAgentDrawer` 详情面板，展示父提问 + 子智能体内部消息流。**与 `SandboxDrawer` 互斥同开，组件/样式/状态完全独立**。
+
+### 架构总览
+
+```
+父 AI 聊天气泡
+  └─ SubAgentCard（折叠卡片）  ──点击──>  SubAgentDrawer（右侧 push drawer）
+                                          ├─ 父 agent 提问（可折叠）
+                                          ├─ 子智能体消息流（HumanMessage / AIMessage / ToolMessage）
+                                          └─ 底部摘要（耗时 / 消息数 / 工具调用次数）
+```
+
+### 后端事件新增字段（向后兼容）
+
+`app/core/tools/events.py` 的 `ToolEvent.data` 字典内追加 3 个新字段（既有字段全部保留）：
+
+| 字段 | 类型 | 出现时机 | 说明 |
+|------|------|---------|------|
+| `thread_id` | `str` | 全部 | 子 agent 标识（== `tool_call_id`），便于前端按 id 维护 subagent 列表 |
+| `parent_prompt` | `str` | `tool_start` | 父 agent 传给子 agent 的 prompt（用于抽屉顶部"父提问"区） |
+| `child_messages` | `list[dict]` | `tool_progress` | 子 agent 当前累积的全部 messages，结构化（langchain 对象 → dict） |
+| `final_messages` | `list[dict]` | `tool_stop` | tool_stop 时的最终消息快照（结构同 `child_messages`），覆盖到 `messages` 字段 |
+
+`child_messages` / `final_messages` 每项格式：
+
+```json
+{
+    "type": "HumanMessage" | "AIMessage" | "ToolMessage" | "Unknown",
+    "role": "user" | "ai" | "tool" | "system" | "unknown",
+    "content": "str 或 list[ContentBlock]",
+    "tool_calls": [{"name", "args", "id"}],   // 仅 AIMessage
+    "tool_call_id": "str",                     // 仅 ToolMessage
+    "name": "str"                              // 仅 ToolMessage: 工具名
+}
+```
+
+### 后端改动文件
+
+| 文件 | 改动 |
+|------|------|
+| `app/core/tools/subagent_message_extractor.py`（**新增**） | `extract_structured_messages(messages)` 把 LangChain BaseMessage 列表转为结构化 dict；兼容 HumanMessage / AIMessage / ToolMessage 及 Mock 后缀；支持 OpenAI `tool_calls` / Anthropic `content[].tool_use` / langchain-core 1.x `content_blocks` 三种 AIMessage tool_call 来源 |
+| `app/core/tools/SandboxTools.py` | `tool_start` / `tool_progress` / `tool_stop` / `tool_error` 事件 data 追加 `thread_id` + `parent_prompt` + `child_messages` / `final_messages` |
+| `app/core/tools/FilesystemReadTools.py` | 同上；并新增 `all_messages` 累积逻辑（从 `updates` 模式 `node_name.messages` 提取） |
+| `app/features/map_agent/router/map_router.py` | `custom` 模式 SSE yield 时在顶层追加 `thread_id` 字段（从 `data.data.thread_id` / `data.tool_call_id` 推导），**老客户端忽略未知字段不破坏** |
+| `app/core/tools/events.py` | 注释追加新字段文档（实现不动） |
+| `app/tests/core/tools/test_subagent_message_extractor.py`（**新增**） | 22 个 pytest 用例：role 分类 / content 归一化 / 三种 tool_call 来源 / 边界条件 |
+
+### 前端改动文件
+
+| 文件 | 改动 |
+|------|------|
+| `web/Agent/src/utils/sseParser.js` | 新增 `getSubAgentMeta` / `getSubAgentById` / `formatSubAgentDuration` / `updateSubAgentFromCustomEvent`；`processSSEEvent` 的 `custom` case 维护 `aiMsg.subAgents` 列表；`createAiMessage` 新增 `subAgents: []` 字段 |
+| `web/Agent/src/components/SubAgentCard.vue`（**新增**） | 通用子智能体折叠卡片，参考 `SandboxProgress` 视觉风格但更通用（不限于 sandbox） |
+| `web/Agent/src/components/SubAgentDrawer.vue`（**新增**） | 独立 Push Drawer（与 `SandboxDrawer` 同布局机制但样式/状态完全独立），互斥同开 |
+| `web/Agent/src/components/MessageBubble.vue` | 新增 `subAgents` prop + emit `open-subagent-drawer`；模板中渲染 `SubAgentCard` 列表（位于下载链接之前） |
+| `web/Agent/src/components/ChatArea.vue` | 透传 `subAgents` prop 与 `open-subagent-drawer` 事件 |
+| `web/Agent/src/App.vue` | 新增 `subAgentDrawerVisible` / `currentSubAgent` 状态 + `openSubAgentDrawer` / `closeSubAgentDrawer` 方法；与 `sandboxDrawerVisible` 互斥（任一打开时关闭另一个） |
+| `web/Agent/src/components/__tests__/SubAgentCard.spec.js`（**新增**） | 9 个 vitest 用例 |
+| `web/Agent/src/components/__tests__/SubAgentDrawer.spec.js`（**新增**） | 10 个 vitest 用例 |
+| `web/Agent/src/utils/__tests__/subAgentParser.test.js`（**新增**） | 10 个 vitest 用例 |
+
+### 第三方调用兼容保证
+
+`/api/map/chat` SSE 接口有第三方 iframe/portal 调用，本改造**仅新增字段**，不修改/删除既有字段：
+
+- SSE 事件类型 `update` / `custom` / `message` / `end` / `error` / `interrupt` / `tool_stop` **不变**
+- `custom` 事件 `data` 字典内仅**追加** `thread_id` / `parent_prompt` / `child_messages` / `final_messages` 字段
+- SSE 顶层 `{type, data}` **追加** `thread_id` 字段
+- 老客户端标准 JSON 解析**忽略未知字段**，行为不变
+
+### 历史消息 subAgents 字段
+
+当前后端 `fetchSessionMessages` 不持久化 subagent 元数据。**还原历史时 `subAgents = []`**（Out of Scope，后续 PR 处理 Checkpoint 持久化）。
+
 ## 前端架构（web/Agent）
 
 `web/Agent/` 是基于 Vite + Vue 3 的多入口 SPA，对外提供三套独立页面（主 Agent、知识库、门户），共享同一套组件、工具函数与设计 token。
@@ -708,6 +784,9 @@ environment:
 - **文件**：`FileList.vue`、`FilePreview.vue`、`FolderTree.vue`、`FileManagerModal.vue`
 - **知识库**：`KnowledgeChat.vue`、`ProfileInputBox.vue`
 - **公共**：`Sidebar.vue`、`HelloWorld.vue`、`UserSettingsDialog.vue`
+- **Subagent 折叠与抽屉（2026-06-13 新增）**：
+  - `SubAgentCard.vue`：通用子智能体折叠卡片，挂在父 AI 气泡底部，工具图标 + 父 prompt 预览 + 状态徽章 + 耗时 + 消息数 + "查看详情" 入口；点击 emit('click', subAgent)
+  - `SubAgentDrawer.vue`：通用子智能体详情 Push Drawer（与 `SandboxDrawer` 互斥同开但样式/状态完全独立），分层展示父 prompt / HumanMessage / AIMessage（含 tool_calls 决策区） / ToolMessage 三类消息 + 底部耗时/消息数/工具调用次数摘要
 - **视图**（`src/views/`）：`LoginView.vue`、`RegisterView.vue`
 
 ### 工具函数（src/utils）
@@ -832,7 +911,11 @@ environment:
   - `HumanApprovalBox.spec.js`：HITL 组件（多 Tab、虚拟 Other 项、多选、`canSubmit` 门控，14 用例）
   - `api.test.js`：`utils/api.js` 工具方法
   - `sseParser.test.js`：SSE 解析（含 Python 字面量兼容）
+  - `subAgentParser.test.js`（2026-06-13 新增）：subagent 解析（custom 事件维护 subAgents 列表 + 工具函数，10 用例）
+  - `SubAgentCard.spec.js`（2026-06-13 新增）：折叠卡片（9 用例）
+  - `SubAgentDrawer.spec.js`（2026-06-13 新增）：独立 Push Drawer（10 用例）
 - **项目历史**：后端 17/17 + 前端 73/73 全部通过（参见 "HITL 流程" 章节）
+- **2026-06-13 更新**：后端新增 `test_subagent_message_extractor.py` 22 用例通过；前端 SubAgentCard/SubAgentDrawer/subAgentParser 共 29 用例通过；累计前端 111/111 全量通过
 
 ## CI 测试（pytest + GitHub Actions）
 

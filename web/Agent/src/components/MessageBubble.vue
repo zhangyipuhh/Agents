@@ -3,6 +3,7 @@ import { ref, computed, reactive, watch, nextTick } from 'vue'
 import { marked } from 'marked'
 import { formatFileSize, getFileExtension, getAuthHeaders } from '../utils/api.js'
 import SandboxProgress from './SandboxProgress.vue'
+import SubAgentCard from './SubAgentCard.vue'
 
 const props = defineProps({
   type: {
@@ -57,10 +58,15 @@ const props = defineProps({
   sandboxExecution: {
     type: Object,
     default: null
+  },
+  // 2026-06-13 新增：子智能体执行列表（折叠卡片 / 抽屉用）
+  subAgents: {
+    type: Array,
+    default: () => []
   }
 })
 
-const emit = defineEmits(['copy', 'regenerate', 'like', 'dislike', 'open-sandbox-drawer'])
+const emit = defineEmits(['copy', 'regenerate', 'like', 'dislike', 'open-sandbox-drawer', 'open-subagent-drawer'])
 
 const isThinkingExpanded = ref(false)
 const isToolsExpanded = ref(false)
@@ -84,6 +90,13 @@ const hasDownloadInfo = computed(() => {
 })
 
 const hasTimeline = computed(() => props.timeline && props.timeline.length > 0)
+
+// 2026-06-13 新增：子智能体卡片列表
+const hasSubAgents = computed(() => Array.isArray(props.subAgents) && props.subAgents.length > 0)
+
+function handleSubAgentClick(subAgent) {
+  emit('open-subagent-drawer', subAgent)
+}
 
 const mergedTimeline = computed(() => {
   if (!props.timeline || props.timeline.length === 0) return []
@@ -544,6 +557,17 @@ const getFileIconColor = (filename) => {
           <span v-if="!ended && !error" class="streaming-cursor">▌</span>
         </div>
       </template>
+
+      <!-- 下载链接 -->
+      <!-- 2026-06-13 新增：子智能体折叠卡片列表（在下载链接之前展示） -->
+      <div v-if="hasSubAgents" class="subagent-cards">
+        <SubAgentCard
+          v-for="sa in subAgents"
+          :key="sa.toolCallId"
+          :sub-agent="sa"
+          @click="handleSubAgentClick(sa)"
+        />
+      </div>
 
       <!-- 下载链接 -->
       <div v-if="hasDownloadInfo && ended" class="download-section">
@@ -1074,6 +1098,15 @@ const getFileIconColor = (filename) => {
 .download-section {
   max-width: 85%;
   margin-bottom: 12px;
+}
+
+/* 2026-06-13 新增：子智能体卡片列表容器 */
+.subagent-cards {
+  max-width: 85%;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .download-card {

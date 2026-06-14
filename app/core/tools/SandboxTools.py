@@ -44,6 +44,7 @@ from app.core.config.config import LLM_CONFIG
 from app.core.config.settings import settings
 from app.core.llmcalls.model_factory import ModelFactory
 from app.core.tools.events import create_tool_event
+from app.core.tools.subagent_message_extractor import extract_structured_messages
 from app.shared.tools.middleware.docker_sandbox_backend import DockerSandboxMiddleware
 
 logger = logging.getLogger(__name__)
@@ -777,6 +778,9 @@ def sandbox(
                 "args": {"prompt": prompt},
                 "workspace": str(workspace),
                 "description": f"启动沙箱子智能体: {prompt[:100]}",
+                # ===== 2026-06-13 新增 subagent 字段（向前兼容，老客户端忽略） =====
+                "thread_id": tool_call_id,
+                "parent_prompt": prompt,
             },
         )
         writer(dict(start_event))
@@ -861,6 +865,9 @@ def sandbox(
                         "message": "沙箱子智能体执行中",
                         "sandbox_summary": sandbox_summary,
                         "sandbox_events": sandbox_events,
+                        # ===== 2026-06-13 新增 subagent 字段 =====
+                        "thread_id": tool_call_id,
+                        "child_messages": extract_structured_messages(all_messages),
                     },
                 )))
 
@@ -910,6 +917,10 @@ def sandbox(
                 },
                 "duration_ms": duration_ms,
                 "final_summary": final_summary,
+                # ===== 2026-06-13 新增 subagent 字段 =====
+                "thread_id": tool_call_id,
+                "parent_prompt": prompt,
+                "final_messages": extract_structured_messages(all_messages),
             },
         )
         writer(dict(stop_event))
@@ -947,6 +958,9 @@ def sandbox(
                 "error_message": str(e),
                 "args": {"prompt": prompt},
                 "duration_ms": duration_ms,
+                # ===== 2026-06-13 新增 subagent 字段 =====
+                "thread_id": tool_call_id,
+                "parent_prompt": prompt,
             },
         )
         writer(dict(error_event))

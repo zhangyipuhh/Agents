@@ -49,6 +49,7 @@ from app.core.agent.AgentContext import AgentContext
 from app.core.config.config import LLM_CONFIG
 from app.core.llmcalls.model_factory import ModelFactory
 from app.core.tools.events import create_tool_event
+from app.core.tools.subagent_message_extractor import extract_structured_messages
 
 
 _EXPLORE_SYSTEM_PROMPT = """\
@@ -183,6 +184,9 @@ def explore(
                 "args": {"prompt": prompt},
                 "root_path": str(root_path),
                 "description": f"开始文件探索: {prompt[:100]}",
+                # ===== 2026-06-13 新增 subagent 字段（向前兼容，老客户端忽略） =====
+                "thread_id": tool_call_id,
+                "parent_prompt": prompt,
             },
         )
         writer(dict(start_event))
@@ -229,6 +233,7 @@ def explore(
         config = {"configurable": {"thread_id": actual_task_id}}
 
         final_answer = ""
+        all_messages = []
         for chunk in child_agent.stream(
             {"messages": [{"role": "user", "content": prompt}]},
             config=config,
@@ -243,6 +248,12 @@ def explore(
                 continue
 
             if stream_mode == "updates":
+                # 累计子 agent 的 messages（用于结构化 child_messages）
+                if isinstance(data, dict):
+                    for node_name, node_data in data.items():
+                        if isinstance(node_data, dict) and "messages" in node_data:
+                            all_messages.extend(node_data["messages"])
+
                 writer(dict(create_tool_event(
                     event_type="tool_progress",
                     tool=tool_name,
@@ -250,6 +261,9 @@ def explore(
                     data={
                         "child_stream": data,
                         "message": "子智能体执行中",
+                        # ===== 2026-06-13 新增 subagent 字段 =====
+                        "thread_id": tool_call_id,
+                        "child_messages": extract_structured_messages(all_messages),
                     },
                 )))
 
@@ -293,6 +307,10 @@ def explore(
                     "answer": final_answer,
                 },
                 "duration_ms": duration_ms,
+                # ===== 2026-06-13 新增 subagent 字段 =====
+                "thread_id": tool_call_id,
+                "parent_prompt": prompt,
+                "final_messages": extract_structured_messages(all_messages),
             },
         )
         writer(dict(stop_event))
@@ -324,6 +342,9 @@ def explore(
                 "error_message": str(e),
                 "args": {"prompt": prompt, "task_id": actual_task_id},
                 "duration_ms": duration_ms,
+                # ===== 2026-06-13 新增 subagent 字段 =====
+                "thread_id": tool_call_id,
+                "parent_prompt": prompt,
             },
         )
         writer(dict(error_event))
