@@ -430,6 +430,18 @@ function roleLabel(role) {
               <span class="role-tag" :class="msg.role">{{ roleLabel(msg.role) }}</span>
               <span class="message-type">{{ msg.type || 'Unknown' }}</span>
             </div>
+            <!--
+              消息内容区：始终渲染（只要 content 不为空）。
+              2026-06-15 修复：原本用 v-if/v-else，AIMessage 含 tool_calls 时内容区被跳过，
+              导致子智能体的思考/正式文本无法展示。现改为独立 v-if，与下方 tool-calls 并存。
+            -->
+            <div v-if="renderMessageContent(msg.content)" class="message-content" :class="{ 'message-content-truncated': msg.role === 'tool' }">
+              <pre class="content-text">{{ truncate(renderMessageContent(msg.content), msg.role === 'tool' ? 500 : 10000) }}</pre>
+            </div>
+            <!--
+              工具调用决策区：仅 AIMessage 含 tool_calls 时渲染。
+              位置放在内容区下方，保持"先内容、后决策"的阅读顺序。
+            -->
             <div v-if="msg.role === 'ai' && Array.isArray(msg.tool_calls) && msg.tool_calls.length"
                  class="tool-calls">
               <div class="tool-calls-title">决策（工具调用 {{ msg.tool_calls.length }}）</div>
@@ -438,9 +450,6 @@ function roleLabel(role) {
                 <span v-if="tc.id" class="tool-call-id">#{{ tc.id }}</span>
                 <pre v-if="tc.args" class="tool-call-args">{{ JSON.stringify(tc.args, null, 2) }}</pre>
               </div>
-            </div>
-            <div v-else class="message-content" :class="{ 'message-content-truncated': msg.role === 'tool' }">
-              <pre class="content-text">{{ truncate(renderMessageContent(msg.content), msg.role === 'tool' ? 500 : 10000) }}</pre>
             </div>
             <div v-if="msg.role === 'tool' && msg.name" class="message-meta">
               工具：<code>{{ msg.name }}</code>

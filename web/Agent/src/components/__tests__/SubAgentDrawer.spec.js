@@ -164,6 +164,32 @@ describe('SubAgentDrawer', () => {
     expect(aside.attributes('style')).toContain('--drawer-width: 560px')
   })
 
+  it('AIMessage 含 tool_calls 时仍然渲染 content 内容', () => {
+    const saWithContent = {
+      ...baseSubAgent,
+      messages: [
+        {
+          type: 'AIMessage',
+          role: 'ai',
+          content: [
+            { type: 'thinking', thinking: '我在思考如何执行' },
+            { type: 'text', text: '我将使用 ls 工具查看目录' }
+          ],
+          tool_calls: [{ name: 'ls', args: { p: '/tmp' }, id: 'c1' }]
+        }
+      ]
+    }
+    const wrapper = mount(SubAgentDrawer, {
+      props: { visible: true, subAgent: saWithContent }
+    })
+    // 决策区仍应存在
+    expect(wrapper.text()).toContain('决策')
+    expect(wrapper.text()).toContain('ls')
+    // content 中的 thinking/text 不应被 v-else 吞掉
+    expect(wrapper.text()).toContain('我在思考如何执行')
+    expect(wrapper.text()).toContain('我将使用 ls 工具查看目录')
+  })
+
   it('AIMessage 含 tool_calls 时渲染"决策"区', () => {
     const wrapper = mount(SubAgentDrawer, {
       props: { visible: true, subAgent: baseSubAgent }
