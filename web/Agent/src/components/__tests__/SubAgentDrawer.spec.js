@@ -10,8 +10,9 @@
  *   - 2026-06-14 改造：tool='sandbox' 时展示沙箱摘要 + 沙箱事件时间线
  *   - 2026-06-14 改造：AIMessage.content 为 LangChain 0.3+ list[ContentBlock] 格式时正确渲染
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { nextTick } from 'vue'
 import SubAgentDrawer from '../SubAgentDrawer.vue'
 
 const baseSubAgent = {
@@ -32,6 +33,14 @@ const baseSubAgent = {
 }
 
 describe('SubAgentDrawer', () => {
+  beforeEach(() => {
+    // 每个测试前清空相关 localStorage，避免用例间互相污染
+    localStorage.removeItem('subagent-drawer-width')
+  })
+
+  afterEach(() => {
+    localStorage.removeItem('subagent-drawer-width')
+  })
   it('visible=false 时抽屉不应可见', () => {
     const wrapper = mount(SubAgentDrawer, {
       props: { visible: false, subAgent: baseSubAgent }
@@ -84,6 +93,75 @@ describe('SubAgentDrawer', () => {
     expect(items[0].classes()).toContain('role-user')
     expect(items[1].classes()).toContain('role-ai')
     expect(items[2].classes()).toContain('role-tool')
+  })
+
+  // ========== 2026-06-15 新增：抽屉宽度拖拽调整 ==========
+
+  it('可见时渲染左侧拖拽条', () => {
+    const wrapper = mount(SubAgentDrawer, {
+      props: { visible: true, subAgent: baseSubAgent }
+    })
+    expect(wrapper.find('.resize-handle').exists()).toBe(true)
+  })
+
+  it('挂载时从 localStorage 读取保存的宽度并应用', async () => {
+    localStorage.setItem('subagent-drawer-width', '600')
+    const wrapper = mount(SubAgentDrawer, {
+      props: { visible: true, subAgent: baseSubAgent }
+    })
+    await nextTick()
+    const aside = wrapper.find('aside.subagent-drawer')
+    expect(aside.attributes('style')).toContain('--drawer-width: 600px')
+  })
+
+  it('挂载时 localStorage 宽度小于最小值会被限制', async () => {
+    localStorage.setItem('subagent-drawer-width', '100')
+    const wrapper = mount(SubAgentDrawer, {
+      props: { visible: true, subAgent: baseSubAgent }
+    })
+    await nextTick()
+    const aside = wrapper.find('aside.subagent-drawer')
+    expect(aside.attributes('style')).toContain('--drawer-width: 320px')
+  })
+
+  it('拖拽条 mousedown 时进入 resizing 状态', async () => {
+    const wrapper = mount(SubAgentDrawer, {
+      props: { visible: true, subAgent: baseSubAgent }
+    })
+    const handle = wrapper.find('.resize-handle')
+    await handle.trigger('mousedown')
+    expect(wrapper.find('.resize-handle').classes()).toContain('active')
+    expect(wrapper.find('aside.subagent-drawer').classes()).toContain('resizing')
+    // 清理：触发 mouseup 释放
+    window.dispatchEvent(new MouseEvent('mouseup'))
+  })
+
+  it('拖拽到小于关闭阈值时触发 close 事件', async () => {
+    const wrapper = mount(SubAgentDrawer, {
+      props: { visible: true, subAgent: baseSubAgent }
+    })
+    const handle = wrapper.find('.resize-handle')
+    await handle.trigger('mousedown')
+    // 模拟鼠标大幅向左移动，使计算宽度小于 180px
+    // getBoundingClientRect 在 happy-dom 默认返回 0，
+    // 这里通过直接操作组件内部 drawerWidth 来触发阈值逻辑
+    wrapper.vm.drawerWidth = 150
+    window.dispatchEvent(new MouseEvent('mouseup'))
+    expect(wrapper.emitted('close')).toBeTruthy()
+  })
+
+  it('拖拽到有效宽度时保存到 localStorage', async () => {
+    const wrapper = mount(SubAgentDrawer, {
+      props: { visible: true, subAgent: baseSubAgent }
+    })
+    // 通过组件内部 drawerWidth 设置有效宽度，再触发 stopResize
+    wrapper.vm.drawerWidth = 560
+    wrapper.vm.isResizing = true
+    window.dispatchEvent(new MouseEvent('mouseup'))
+    await nextTick()
+    expect(localStorage.getItem('subagent-drawer-width')).toBe('560')
+    const aside = wrapper.find('aside.subagent-drawer')
+    expect(aside.attributes('style')).toContain('--drawer-width: 560px')
   })
 
   it('AIMessage 含 tool_calls 时渲染"决策"区', () => {

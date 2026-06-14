@@ -33,7 +33,7 @@ export function isSubAgentTool(tool) {
 }
 
 /**
- * 判断 SSE message 事件的 metadata.thread_id 是否属于已注册的子智能体（2026-06-14 新增）
+ * 判断 SSE message 事件是否属于子智能体内部输出（2026-06-14 新增，2026-06-14-2 增强）
  *
  * 用途：在 processSSEEvent('message') 中跳过子智能体内部的流式输出，
  * 避免在父气泡的 thinking/text/timeline 中重复展示。这些内容已通过
@@ -43,15 +43,27 @@ export function isSubAgentTool(tool) {
  * tool_start custom 事件先于子智能体首个 message 事件到达，因此 subAgent
  * 条目在子智能体 message 到达前一定已注册到 aiMsg.subAgents 中。
  *
+ * 2026-06-14-2 增强：除 thread_id 匹配外，额外检查 metadata.lc_agent_name /
+ * metadata.langgraph_node。当 subAgent 注册尚未完成时（tool_start 与 message
+ * 到达顺序抖动的 race condition），仍可通过后端标记识别为子智能体消息。
+ *
  * 入参：
  *   aiMsg - 父 AI 消息对象（来自 createAiMessage）
  *   eventThreadId - SSE 事件 metadata.thread_id（string | undefined | null）
+ *   metadata - SSE 事件的 metadata 对象（可选，用于 lc_agent_name/langgraph_node 判定）
  * 返回：boolean - true 表示该消息应被视为子智能体内容，应跳过
  */
-export function isSubAgentMessage(aiMsg, eventThreadId) {
-  if (!aiMsg || !Array.isArray(aiMsg.subAgents) || !eventThreadId) return false
-  if (typeof eventThreadId !== 'string') return false
-  return aiMsg.subAgents.some(sa => sa && sa.threadId === eventThreadId)
+export function isSubAgentMessage(aiMsg, eventThreadId, metadata = {}) {
+  if (!aiMsg || !Array.isArray(aiMsg.subAgents)) return false
+  if (typeof eventThreadId === 'string' && eventThreadId) {
+    if (aiMsg.subAgents.some(sa => sa && sa.threadId === eventThreadId)) return true
+  }
+  // 防御性增强：通过后端 agent / 节点名识别已知子智能体
+  const agentName = metadata && metadata.lc_agent_name
+  const nodeName = metadata && metadata.langgraph_node
+  if (typeof agentName === 'string' && SUBAGENT_TOOLS.has(agentName)) return true
+  if (typeof nodeName === 'string' && SUBAGENT_TOOLS.has(nodeName)) return true
+  return false
 }
 
 /**
@@ -396,7 +408,7 @@ export function processSSEEvent(data, aiMsg) {
   const eventThreadId = metadata.thread_id || ''
 
   if (data.type === 'message' && !aiMsg.threadId && eventThreadId
-      && !isSubAgentMessage(aiMsg, eventThreadId)) {
+      && !isSubAgentMessage(aiMsg, eventThreadId, metadata)) {
     // 2026-06-14 改造：thread_id 属于子智能体时不写入父气泡 threadId
     // 避免首个 message 事件恰好来自子智能体时把父气泡 threadId 设错
     aiMsg.threadId = eventThreadId
@@ -405,6 +417,7 @@ export function processSSEEvent(data, aiMsg) {
   const isMainThread = !eventThreadId || eventThreadId === aiMsg.threadId
 
   // 顶层 thread_id 由后端 map_router 在 custom 模式注入（2026-06-13 新增）
+  // 2026-06-14-2 新增：update 模式也可能注入 thread_id（统一格式，可能为空）
   // subagent 事件 data.data.tool_call_id == thread_id
   const topLevelThreadId = (data && data.thread_id) || ''
 
@@ -435,6 +448,9 @@ export function processSSEEvent(data, aiMsg) {
       }
 
       if (updateData.summarize) break
+      // 2026-06-14-2 修复：hitl_check 节点的 update 是状态同步/历史 dump，
+      // 其中包含 ToolMessage(sandbox) 等子智能体历史回复，不能落入父气泡 thinking。
+      if (updateData.hitl_check) break
       if (updateData.llm_call) {
         const msgs = updateData.llm_call.messages
         if (msgs && Array.isArray(msgs)) {
@@ -458,7 +474,8 @@ export function processSSEEvent(data, aiMsg) {
       // 2026-06-14 改造：识别子智能体内部消息并跳过，避免在父气泡中重复展示
       // 子智能体的结构化 child_messages 已通过 custom 事件累积到 subAgents[i].messages
       // 这里命中时直接 break，不写入父气泡的 thinking / text / timeline
-      if (isSubAgentMessage(aiMsg, eventThreadId)) {
+      // 2026-06-14-2 改造：将 metadata 透传给 isSubAgentMessage，支持 lc_agent_name 防御判定
+      if (isSubAgentMessage(aiMsg, eventThreadId, metadata)) {
         break
       }
       const c = data.content || data.data

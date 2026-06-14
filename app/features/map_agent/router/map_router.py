@@ -533,7 +533,16 @@ async def generate_stream_response(
                 if mode == "updates":
                     # 节点状态更新
                     # data 格式: {node_name: {state_updates}}
-                    yield f"data: {json.dumps({'type': 'update', 'data': data}, ensure_ascii=False, default=str)}\n\n"
+                    # 2026-06-14-2 新增：与 custom / message 事件格式统一，附加 thread_id / langgraph_node
+                    # thread_id 在 updates 模式下无法精确获取子线程 ID，统一置空；langgraph_node 取节点名。
+                    # 老客户端忽略顶层字段，向后兼容。
+                    update_payload = {
+                        "type": "update",
+                        "data": data,
+                        "thread_id": "",
+                        "langgraph_node": next(iter(data.keys()), "") if isinstance(data, dict) else "",
+                    }
+                    yield f"data: {json.dumps(update_payload, ensure_ascii=False, default=str)}\n\n"
 
                 elif mode == "custom":
                     # 自定义数据

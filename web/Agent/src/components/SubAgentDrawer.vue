@@ -21,8 +21,15 @@
  * Emits:
  *   close
  */
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { getSubAgentMeta, formatSubAgentDuration } from '../utils/sseParser.js'
+
+// 抽屉宽度相关常量（单位：px）
+const DEFAULT_DRAWER_WIDTH = 480
+const MIN_DRAWER_WIDTH = 320
+const MAX_DRAWER_WIDTH = 800
+const CLOSE_THRESHOLD_WIDTH = 180
+const STORAGE_KEY = 'subagent-drawer-width'
 
 const props = defineProps({
   visible: {
@@ -40,10 +47,106 @@ const emit = defineEmits(['close'])
 const promptCollapsed = ref(false)
 const sandboxCollapsed = ref(false)
 const messagesScrollRef = ref(null)
+const drawerRef = ref(null)
+const drawerWidth = ref(DEFAULT_DRAWER_WIDTH)
+const isResizing = ref(false)
 
 function handleClose() {
   emit('close')
 }
+
+/**
+ * 将抽屉宽度限制在合法区间内
+ * 入参：number 原始宽度；返回：number 限制后的宽度
+ */
+function clampDrawerWidth(width) {
+  const maxAllowed = Math.min(MAX_DRAWER_WIDTH, window.innerWidth - 200)
+  return Math.max(MIN_DRAWER_WIDTH, Math.min(width, maxAllowed))
+}
+
+/**
+ * 从 localStorage 读取保存的抽屉宽度
+ * 首次使用或无有效记录时返回默认值
+ */
+function loadDrawerWidth() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY)
+    if (saved) {
+      const parsed = parseInt(saved, 10)
+      if (!isNaN(parsed)) {
+        return clampDrawerWidth(parsed)
+      }
+    }
+  } catch {
+    // localStorage 不可用时使用默认值
+  }
+  return DEFAULT_DRAWER_WIDTH
+}
+
+/**
+ * 将当前抽屉宽度持久化到 localStorage
+ */
+function saveDrawerWidth() {
+  try {
+    localStorage.setItem(STORAGE_KEY, String(drawerWidth.value))
+  } catch {
+    // 忽略写入失败
+  }
+}
+
+/**
+ * 开始拖拽调整宽度
+ * 入参：MouseEvent 鼠标按下事件
+ */
+function startResize(e) {
+  e.preventDefault()
+  isResizing.value = true
+  // 拖拽期间禁用页面文本选择，避免拖动时误选内容
+  document.body.style.userSelect = 'none'
+}
+
+/**
+ * 拖拽过程中实时计算抽屉宽度
+ * 抽屉位于最右侧，宽度 = 抽屉右边界 x - 当前鼠标 x
+ */
+function handleResizeMove(e) {
+  if (!isResizing.value) return
+  const rect = drawerRef.value?.getBoundingClientRect()
+  if (!rect) return
+  const newWidth = rect.right - e.clientX
+  drawerWidth.value = clampDrawerWidth(newWidth)
+}
+
+/**
+ * 拖拽结束：若宽度小于关闭阈值则自动收起抽屉；否则保存宽度
+ */
+function stopResize() {
+  if (!isResizing.value) return
+  isResizing.value = false
+  document.body.style.userSelect = ''
+  if (drawerWidth.value < CLOSE_THRESHOLD_WIDTH) {
+    emit('close')
+    // 关闭后恢复默认宽度，保证下次打开体验一致
+    drawerWidth.value = loadDrawerWidth()
+  } else {
+    saveDrawerWidth()
+  }
+}
+
+onMounted(() => {
+  drawerWidth.value = loadDrawerWidth()
+  window.addEventListener('mousemove', handleResizeMove)
+  window.addEventListener('mouseup', stopResize)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('mousemove', handleResizeMove)
+  window.removeEventListener('mouseup', stopResize)
+})
+
+const drawerStyle = computed(() => ({
+  '--drawer-width': drawerWidth.value + 'px'
+}))
 
 const meta = computed(() => {
   if (!props.subAgent) return { icon: '🤖', label: '子智能体' }
@@ -231,12 +334,23 @@ function roleLabel(role) {
     - 无遮罩（push drawer 无遮罩）
   -->
   <aside
+    ref="drawerRef"
     v-show="visible"
     class="subagent-drawer"
-    :class="{ visible }"
+    :class="{ visible, resizing: isResizing }"
+    :style="drawerStyle"
     role="complementary"
     aria-label="子智能体详情"
   >
+    <!-- 左侧拖拽条：用于调整抽屉宽度 -->
+    <div
+      class="resize-handle"
+      :class="{ active: isResizing }"
+      @mousedown="startResize"
+      aria-label="调整抽屉宽度"
+      role="separator"
+    ></div>
+
     <!-- 头部 -->
     <div class="drawer-header">
       <div class="drawer-title">
@@ -393,13 +507,14 @@ function roleLabel(role) {
 <style scoped>
 /* Push Drawer 根容器 - 与 SandboxDrawer 同布局机制，但样式完全独立 */
 .subagent-drawer {
+  position: relative;
   flex: 0 0 0;
   overflow: hidden;
   display: flex;
   flex-direction: column;
   height: 100%;
-  width: 480px;
-  max-width: 90vw;
+  width: var(--drawer-width, 480px);
+  max-width: min(800px, calc(100vw - 200px));
   background: #ffffff;
   border-left: 1px solid transparent;
   transition: flex-basis 0.3s ease, border-color 0.3s ease;
@@ -407,8 +522,31 @@ function roleLabel(role) {
 }
 
 .subagent-drawer.visible {
-  flex-basis: 480px;
+  flex-basis: var(--drawer-width, 480px);
   border-left-color: var(--color-border);
+}
+
+.subagent-drawer.resizing {
+  /* 拖拽时关闭动画，避免 width/flex-basis 变化出现延迟 */
+  transition: none;
+}
+
+/* 左侧拖拽条 */
+.resize-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 10;
+  background: transparent;
+  transition: background-color 0.2s ease;
+}
+
+.resize-handle:hover,
+.resize-handle.active {
+  background: var(--color-accent, #1E5AA8);
 }
 
 /* 头部 */

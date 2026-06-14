@@ -12,6 +12,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   processSSEEvent,
+  isSubAgentMessage,
   createAiMessage,
   getSubAgentById,
   formatSubAgentDuration,
@@ -171,6 +172,93 @@ describe('sseParser subagent 解析', () => {
 
     expect(aiMsg.subAgents).toHaveLength(1)
     expect(aiMsg.subAgents[0].toolCallId).toBe('top_thread_x')
+  })
+
+  // ========== 2026-06-14-2 新增：update / message 子智能体识别 ==========
+
+  it('hitl_check update 事件不应进入 thinking 或 timeline', () => {
+    const thinkingBefore = aiMsg.thinking.length
+    const timelineBefore = aiMsg.timeline.length
+
+    processSSEEvent({
+      type: 'update',
+      data: {
+        hitl_check: {
+          messages: [
+            { type: 'HumanMessage', content: 'hello' },
+            { type: 'ToolMessage', name: 'sandbox', content: '{"subagent": "沙箱子智能体执行完成"}' }
+          ]
+        }
+      }
+    }, aiMsg)
+
+    expect(aiMsg.thinking.length).toBe(thinkingBefore)
+    expect(aiMsg.timeline.length).toBe(timelineBefore)
+    expect(aiMsg.isThinkingActive).toBe(false)
+  })
+
+  it('summarize update 事件仍应被忽略且不影响 thinking', () => {
+    const thinkingBefore = aiMsg.thinking.length
+    const timelineBefore = aiMsg.timeline.length
+
+    processSSEEvent({
+      type: 'update',
+      data: { summarize: { summarized_messages: [] } }
+    }, aiMsg)
+
+    expect(aiMsg.thinking.length).toBe(thinkingBefore)
+    expect(aiMsg.timeline.length).toBe(timelineBefore)
+  })
+
+  it('isSubAgentMessage 通过 lc_agent_name 识别子智能体（无 subAgents 注册时）', () => {
+    const aiMsg2 = createAiMessage()
+    // 未注册任何 subAgent，但 metadata 标记为 sandbox
+    expect(isSubAgentMessage(aiMsg2, '', { lc_agent_name: 'sandbox' })).toBe(true)
+    expect(isSubAgentMessage(aiMsg2, '', { lc_agent_name: 'explore' })).toBe(true)
+    expect(isSubAgentMessage(aiMsg2, '', { lc_agent_name: 'unknown' })).toBe(false)
+  })
+
+  it('isSubAgentMessage 通过 langgraph_node 识别子智能体（无 subAgents 注册时）', () => {
+    const aiMsg2 = createAiMessage()
+    expect(isSubAgentMessage(aiMsg2, '', { langgraph_node: 'sandbox' })).toBe(true)
+    expect(isSubAgentMessage(aiMsg2, '', { langgraph_node: 'explore' })).toBe(true)
+    expect(isSubAgentMessage(aiMsg2, '', { langgraph_node: 'llm_call' })).toBe(false)
+  })
+
+  it('message 事件在 lc_agent_name=sandbox 时不应写入父气泡', () => {
+    processSSEEvent({
+      type: 'message',
+      content: { type: 'AIMessageChunk', content: '子智能体 thinking' },
+      metadata: { lc_agent_name: 'sandbox', thread_id: 'call_race' }
+    }, aiMsg)
+
+    expect(aiMsg.text).toBe('')
+    expect(aiMsg.timeline).toHaveLength(0)
+    expect(aiMsg.thinking).toHaveLength(0)
+  })
+
+  it('message 事件通过 thread_id 注册仍优先识别为子智能体', () => {
+    // 预注册 subAgent
+    processSSEEvent({
+      type: 'custom',
+      thread_id: 'call_reg',
+      data: {
+        type: 'tool_start',
+        tool: 'sandbox',
+        tool_call_id: 'call_reg',
+        data: { parent_prompt: 'p' }
+      }
+    }, aiMsg)
+
+    processSSEEvent({
+      type: 'message',
+      content: { type: 'AIMessageChunk', content: '子智能体输出' },
+      metadata: { thread_id: 'call_reg' }
+    }, aiMsg)
+
+    expect(aiMsg.text).toBe('')
+    // timeline 中保留 custom tool_start 产生的 tool 条目，但 message 不新增 thinking/text
+    expect(aiMsg.timeline.filter(item => item.type === 'thinking' || item.type === 'text')).toHaveLength(0)
   })
 
   it('多次 subagent 调用应并存为多条目', () => {
