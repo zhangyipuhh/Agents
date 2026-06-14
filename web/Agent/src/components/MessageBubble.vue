@@ -2,6 +2,7 @@
 import { ref, computed, reactive, watch, nextTick } from 'vue'
 import { marked } from 'marked'
 import { formatFileSize, getFileExtension, getAuthHeaders } from '../utils/api.js'
+import { isSubAgentTool } from '../utils/sseParser.js'
 import SubAgentCard from './SubAgentCard.vue'
 
 const props = defineProps({
@@ -140,6 +141,17 @@ const toolSubAgentMap = computed(() => {
   return map
 })
 
+// 2026-06-14 新增：跨 timeline group 去重
+// 同一次子智能体执行（同一 toolCallId）的 custom 事件可能被
+// thinking / text 事件拆成多个 tool group，导致每个 group 都渲染
+// 一张重复的 SubAgentCard。用组件实例级 Set 记录已经渲染过
+// 卡片的 toolCallId，后续 group 命中同一 id 时直接跳过（不渲染
+// 任何占位元素）；subAgent.messages 仍由 sseParser 持续累积，
+// 不影响 SubAgentDrawer 详情展示。
+// 注意：必须用普通 Set 而非 ref(new Set())，否则 Set.add 会触发
+// Vue 响应式更新，导致 getSubAgentsForGroup 二次调用时返回空集。
+const renderedSubAgentIds = new Set()
+
 function getSubAgentsForGroup(group) {
   if (!group || group.type !== 'tool' || !Array.isArray(group.items)) return []
   const map = toolSubAgentMap.value
@@ -147,12 +159,43 @@ function getSubAgentsForGroup(group) {
   const result = []
   for (const item of group.items) {
     const id = extractToolCallId(item)
-    if (id && map.has(id) && !seen.has(id)) {
-      seen.add(id)
-      result.push(map.get(id))
-    }
+    if (!id || !map.has(id) || seen.has(id)) continue
+    // 2026-06-14 新增：跳过本组件已渲染过的 toolCallId，避免重复 SubAgentCard
+    if (renderedSubAgentIds.has(id)) continue
+    seen.add(id)
+    renderedSubAgentIds.add(id)
+    result.push(map.get(id))
   }
   return result
+}
+
+/**
+ * 判断 timeline 内的 tool 项目是否属于子智能体调用（2026-06-14 新增）
+ *
+ * 入参：item（sseParser push 进去的 SSE 事件 data 对象）
+ * 返回：true 当且仅当 item.data.tool 是已知的子智能体工具名
+ *
+ * 背景：subagent 类的工具调用（sandbox / explore 等）由 SubAgentCard 折叠卡统一
+ * 展示父 prompt + 子消息流 + 沙箱摘要，不应在「工具调用」块内的 tools-body 再
+ * 重复渲染一次原始事件 JSON。
+ */
+function isSubAgentItem(item) {
+  if (!item || typeof item !== 'object') return false
+  // item 形如 { type:'custom', thread_id, data: <ToolEvent TypedDict> }
+  // data.data 才是 ToolEvent（参见 sseParser.js case 'custom'）。
+  const inner = (item.data && typeof item.data === 'object') ? item.data : {}
+  return isSubAgentTool(inner.tool)
+}
+
+/**
+ * 过滤掉子智能体调用项目，返回纯普通工具调用列表（2026-06-14 新增）
+ *
+ * 入参：items（来自 mergedTimeline 中 tool 组的 raw event 数组）
+ * 返回：保留非子智能体工具调用的新数组（不会修改原数组）
+ */
+function getNonSubAgentItems(items) {
+  if (!Array.isArray(items)) return []
+  return items.filter(item => !isSubAgentItem(item))
 }
 
 const formattedThinking = computed(() => {
@@ -499,34 +542,45 @@ const getFileIconColor = (filename) => {
             2026-06-14 改造：原 sandboxExecution 条件分支移除，
             改为统一渲染工具调用列表 + 在底部按 toolCallId 嵌入 SubAgentCard
             （子智能体卡片按事件时序出现，不再堆在末尾）
+            2026-06-14 再改造：subagent 类工具不再在 tools-body 重复展示，
+            tools-header / tools-body 只显示普通工具调用；SubAgentCard `div` 仍是
+            subagent 的唯一展示位。
           -->
           <div v-else-if="group.type === 'tool'" class="timeline-tool">
-            <div class="tools-header" @click="toggleTools">
-              <span class="tools-icon">🔧</span>
-              <span class="tools-label">工具调用 ({{ group.items.length }})</span>
-              <svg
-                class="expand-icon"
-                :class="{ expanded: isToolsExpanded }"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-              >
-                <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
-              </svg>
-            </div>
-            <div v-if="isToolsExpanded" class="tools-body">
-              <div
-                v-for="(item, idx) in group.items"
-                :key="'tool-item-' + idx"
-                class="tool-item"
-              >
-                <span class="tool-icon">🔧</span>
-                <span class="tool-text">{{ formatToolItem(item) }}</span>
+            <!--
+              tools-header / tools-body 仅在「存在非子智能体项目」时渲染
+              - 避免当 group.items 全是 subagent 时仍显示误导性计数
+              - 子智能体的展示完全交给下方 timeline-subagent-list
+            -->
+            <template v-if="getNonSubAgentItems(group.items).length > 0">
+              <div class="tools-header" @click="toggleTools">
+                <span class="tools-icon">🔧</span>
+                <span class="tools-label">工具调用 ({{ getNonSubAgentItems(group.items).length }})</span>
+                <svg
+                  class="expand-icon"
+                  :class="{ expanded: isToolsExpanded }"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                >
+                  <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
+                </svg>
               </div>
-            </div>
+              <div v-if="isToolsExpanded" class="tools-body">
+                <div
+                  v-for="(item, idx) in getNonSubAgentItems(group.items)"
+                  :key="'tool-item-' + idx"
+                  class="tool-item"
+                >
+                  <span class="tool-icon">🔧</span>
+                  <span class="tool-text">{{ formatToolItem(item) }}</span>
+                </div>
+              </div>
+            </template>
             <!--
               子智能体卡片嵌入（2026-06-14 改造）
               按 toolCallId 在 group.items 中查找匹配的 subAgent 列表，
               渲染在工具调用块内，遵循事件流时序。
+              当 group.items 全是子智能体时，本块就是该组工具调用的唯一展示位。
             -->
             <div v-if="getSubAgentsForGroup(group).length > 0" class="timeline-subagent-list">
               <SubAgentCard

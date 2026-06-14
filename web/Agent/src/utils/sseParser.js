@@ -13,6 +13,26 @@ const SUBAGENT_META = {
 }
 
 /**
+ * 已知子智能体工具名集合（2026-06-14 改造导出）
+ *
+ * 用途：MessageBubble 等上游组件用此判断是否要把当前 tool 调用渲染为
+ * SubAgentCard 折叠卡（而不是普通的 tools-body JSON 列表项），
+ * 避免 subagent 的消息在「工具调用」块与 SubAgentCard `div` 中重复展示。
+ */
+export const SUBAGENT_TOOLS = new Set(Object.keys(SUBAGENT_META))
+
+/**
+ * 判断给定工具名是否属于子智能体工具（2026-06-14 新增导出）
+ *
+ * 入参：tool（string | undefined | null）
+ * 返回：boolean
+ */
+export function isSubAgentTool(tool) {
+  if (!tool || typeof tool !== 'string') return false
+  return SUBAGENT_TOOLS.has(tool)
+}
+
+/**
  * 根据 tool 名返回 {icon, label}，未知工具使用通用图标
  */
 export function getSubAgentMeta(tool) {

@@ -91,21 +91,6 @@ const sandboxSummary = computed(() => {
   return props.subAgent.summary || null
 })
 
-const sandboxProgressPercent = computed(() => {
-  if (!sandboxSummary.value) return 0
-  return sandboxSummary.value.progress_pct || 0
-})
-
-const sandboxCurrentStep = computed(() => {
-  if (!sandboxSummary.value) return 0
-  return sandboxSummary.value.current_step || 0
-})
-
-const sandboxTotalSteps = computed(() => {
-  if (!sandboxSummary.value) return 5
-  return sandboxSummary.value.total_steps || 5
-})
-
 const sandboxElapsedMs = computed(() => {
   if (!sandboxSummary.value) return 0
   return sandboxSummary.value.elapsed_ms || 0
@@ -279,12 +264,7 @@ function roleLabel(role) {
         <span class="status-indicator" :class="status"></span>
         <span class="status-text">{{ statusText }}</span>
       </div>
-      <div class="summary-progress">
-        <div class="progress-track">
-          <div class="progress-fill" :style="{ width: sandboxProgressPercent + '%' }" :class="{ running: status === 'running' }"></div>
-        </div>
-        <span class="progress-text">{{ sandboxCurrentStep }}/{{ sandboxTotalSteps }}</span>
-      </div>
+      <!-- 进度条已移除（2026-06-14）：仅保留状态指示与耗时展示 -->
       <div v-if="sandboxElapsedMs" class="summary-time">
         耗时: {{ formatSubAgentDuration(sandboxElapsedMs) }}
       </div>
@@ -799,45 +779,6 @@ function roleLabel(role) {
 @keyframes statusBlink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
-}
-
-.summary-progress {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-.progress-track {
-  flex: 1;
-  height: 6px;
-  background-color: #e0e0e0;
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.progress-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #10b981, #34d399);
-  border-radius: 3px;
-  transition: width 0.3s ease;
-}
-
-.progress-fill.running {
-  animation: progressPulse 1.5s ease-in-out infinite;
-}
-
-@keyframes progressPulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
-}
-
-.progress-text {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--color-text-secondary);
-  min-width: 36px;
-  text-align: right;
 }
 
 .summary-time {

@@ -134,9 +134,12 @@ describe('SubAgentDrawer', () => {
     const wrapper = mount(SubAgentDrawer, {
       props: { visible: true, subAgent: sandboxSa }
     })
+    // 摘要区仍存在（状态 + 耗时）
     expect(wrapper.find('.drawer-summary').exists()).toBe(true)
-    // 进度文本
-    expect(wrapper.text()).toContain('3/6')
+    // 进度条已移除（2026-06-14）
+    expect(wrapper.find('.summary-progress').exists()).toBe(false)
+    // 耗时展示保留
+    expect(wrapper.text()).toContain('耗时:')
   })
 
   it('tool=sandbox 且有 events 时展示沙箱事件区', () => {
