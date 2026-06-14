@@ -179,6 +179,10 @@ async function newSession() {
     messages.splice(0, messages.length)
     currentAttachments.value = []
 
+    // 关闭子智能体详情抽屉：避免上一个会话的 subagent 数据残留在 UI 上
+    // 复用已有的 closeSubAgentDrawer()（会同步将 subAgentDrawerVisible 置 false，无需另清 currentSubAgent）
+    closeSubAgentDrawer()
+
     const newId = await createNewSession()
     sessionId.value = newId
     console.log('[newSession] 新会话创建成功:', newId)
@@ -417,6 +421,10 @@ async function handleSessionSwitch(targetSessionId) {
   // 清空当前消息
   messages.splice(0, messages.length)
   currentAttachments.value = []
+
+  // 关闭子智能体详情抽屉：上一个会话的 subagent 详情不应在切换后仍残留
+  // 与 newSession() 保持一致行为
+  closeSubAgentDrawer()
 
   // 切换到新会话
   sessionId.value = targetSessionId

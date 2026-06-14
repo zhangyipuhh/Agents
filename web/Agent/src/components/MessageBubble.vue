@@ -141,32 +141,56 @@ const toolSubAgentMap = computed(() => {
   return map
 })
 
-// 2026-06-14 新增：跨 timeline group 去重
+// 2026-06-14 新增：跨 timeline group 去重（computed 版）
 // 同一次子智能体执行（同一 toolCallId）的 custom 事件可能被
 // thinking / text 事件拆成多个 tool group，导致每个 group 都渲染
-// 一张重复的 SubAgentCard。用组件实例级 Set 记录已经渲染过
-// 卡片的 toolCallId，后续 group 命中同一 id 时直接跳过（不渲染
-// 任何占位元素）；subAgent.messages 仍由 sseParser 持续累积，
+// 一张重复的 SubAgentCard。本 computed 对 mergedTimeline 做一次完整
+// 扫描，在 group 维度上"每个 toolCallId 仅首次出现"返回 subAgent 列表。
+//
+// 用 computed 而非普通函数 + 组件级 Set 的原因：
+//   - Vue 3 mount 阶段会多次调用 render function，普通函数内部用 Set
+//     记录"已渲染"会在 mount 内的连续 render 间互相污染（同一组数据
+//     在第二次 render 时被错误地判定为"已渲染过"而跳过）；
+//   - computed 由 Vue 缓存，仅在依赖（props.timeline / props.subAgents
+//     / mergedTimeline）变化时重算，多次 render 期间返回同一结果；
+//   - 计算内部用本地 Set（每次重算时新建），天然避免跨 render 污染。
+//
+// 返回：与 mergedTimeline 等长的数组，元素为该 group 内"首次出现"的
+// subAgent 列表（去重后）。subAgent.messages 仍由 sseParser 持续累积，
 // 不影响 SubAgentDrawer 详情展示。
-// 注意：必须用普通 Set 而非 ref(new Set())，否则 Set.add 会触发
-// Vue 响应式更新，导致 getSubAgentsForGroup 二次调用时返回空集。
-const renderedSubAgentIds = new Set()
-
-function getSubAgentsForGroup(group) {
-  if (!group || group.type !== 'tool' || !Array.isArray(group.items)) return []
-  const map = toolSubAgentMap.value
-  const seen = new Set()
+const subAgentsByGroup = computed(() => {
+  const groups = mergedTimeline.value
   const result = []
-  for (const item of group.items) {
-    const id = extractToolCallId(item)
-    if (!id || !map.has(id) || seen.has(id)) continue
-    // 2026-06-14 新增：跳过本组件已渲染过的 toolCallId，避免重复 SubAgentCard
-    if (renderedSubAgentIds.has(id)) continue
-    seen.add(id)
-    renderedSubAgentIds.add(id)
-    result.push(map.get(id))
+  const seen = new Set() // 跨 group 去重：每个 toolCallId 仅首次出现
+  const map = toolSubAgentMap.value
+  for (const group of groups) {
+    if (!group || group.type !== 'tool' || !Array.isArray(group.items)) {
+      result.push([])
+      continue
+    }
+    const groupResult = []
+    for (const item of group.items) {
+      const id = extractToolCallId(item)
+      if (!id || !map.has(id) || seen.has(id)) continue
+      seen.add(id)
+      groupResult.push(map.get(id))
+    }
+    result.push(groupResult)
   }
   return result
+})
+
+// 2026-06-14 兼容层：保留旧函数名 getSubAgentsForGroup
+// 新实现：直接读 subAgentsByGroup 计算结果。
+// 入参：group（mergedTimeline 中的一个元素）
+// 返回：该 group 内"首次出现"的 subAgent 列表（自动跨 group 去重）
+// 注意：本函数作为模板调用入口，最终值由 subAgentsByGroup 决定。
+function getSubAgentsForGroup(group) {
+  if (!group) return []
+  const groups = mergedTimeline.value
+  const idx = groups.indexOf(group)
+  if (idx < 0) return []
+  return subAgentsByGroup.value[idx] || []
 }
 
 /**

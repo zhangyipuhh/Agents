@@ -699,6 +699,7 @@ environment:
   - 移除 `openSandboxDrawer` / `closeSandboxDrawer` 函数
   - 移除 `sandboxExecution` 自动关闭 watch
   - 保留 `SubAgentDrawer` 与 `openSubAgentDrawer` / `closeSubAgentDrawer`
+  - **2026-06-14 修复**：在 `newSession()`（新建任务入口）与 `handleSessionSwitch()`（切换历史会话入口）中显式调用 `closeSubAgentDrawer()`，确保切换/新建会话后上一会话的 `SubAgentDrawer` 详情自动收起，避免抽屉状态残留导致 UI 显示与当前会话不一致（`currentSubAgent.value` 在抽屉 `v-show=false` 后不再被消费，无需额外清空）
 
 ### AIMessage 解析兼容性（2026-06-12 修复）
 
@@ -795,9 +796,9 @@ environment:
 
 | 文件 | 改动 |
 |------|------|
-| `web/Agent/src/utils/sseParser.js` | `createAiMessage()` 移除 `sandboxExecution: null` 字段；`processSSEEvent` 的 `custom` case 删除 `if (customToolData.tool === 'sandbox')` 块；`updateSubAgentFromCustomEvent` 增强：tool_start/tool_progress 合并 `sandbox_summary` 到 `subAgent.summary`，tool_stop 合并 `final_summary` |
-| `web/Agent/src/components/SubAgentDrawer.vue` | 集成沙箱摘要 + 沙箱事件时间线：`isSandbox` / `sandboxEvents` / `sandboxSummary` 等 computed；新增 `drawer-summary`（进度条 + 步骤 + 耗时）与 `sandbox-events-section`（sandbox_events 列表 + 可折叠）；`renderMessageContent` 扩展 LangChain 0.3+ `tool_use` / `tool_result` ContentBlock 支持 |
-| `web/Agent/src/components/MessageBubble.vue` | 移除 `sandboxExecution` prop；`timeline.tool` 块移除 `sandboxExecution` 条件分支；新增 `extractToolCallId()` / `toolSubAgentMap` / `getSubAgentsForGroup()`：按 `toolCallId` 在 `group.items` 中查找匹配 subAgent 渲染 `SubAgentCard`；移除 timeline 之外的 `subagent-cards` 容器 |
+| `web/Agent/src/utils/sseParser.js` | `createAiMessage()` 移除 `sandboxExecution: null` 字段；`processSSEEvent` 的 `custom` case 删除 `if (customToolData.tool === 'sandbox')` 块；`updateSubAgentFromCustomEvent` 增强：tool_start/tool_progress 合并 `sandbox_summary` 到 `subAgent.summary`，tool_stop 合并 `final_summary`；**新增导出** `SUBAGENT_TOOLS` 集合与 `isSubAgentTool(tool)` 工具函数，供 MessageBubble 判断子智能体类型 |
+| `web/Agent/src/components/SubAgentDrawer.vue` | 集成沙箱摘要 + 沙箱事件时间线：`isSandbox` / `sandboxEvents` / `sandboxSummary` / `sandboxElapsedMs` 等 computed；新增 `drawer-summary`（状态指示 + 耗时，**进度条已在 2026-06-14 二次精简中移除**）与 `sandbox-events-section`（sandbox_events 列表 + 可折叠）；`renderMessageContent` 扩展 LangChain 0.3+ `tool_use` / `tool_result` ContentBlock 支持 |
+| `web/Agent/src/components/MessageBubble.vue` | 移除 `sandboxExecution` prop；`timeline.tool` 块移除 `sandboxExecution` 条件分支；新增 `extractToolCallId()` / `toolSubAgentMap` / `getSubAgentsForGroup()`：按 `toolCallId` 在 `group.items` 中查找匹配 subAgent 渲染 `SubAgentCard`；移除 timeline 之外的 `subagent-cards` 容器；**2026-06-14 再改造**：新增 `isSubAgentItem()` / `getNonSubAgentItems()` 函数；`timeline.tool` 块的 `tools-header` / `tools-body` 仅在「存在非子智能体项目」时渲染，count 与 body 只展示普通工具调用；subagent 仅通过 SubAgentCard 折叠卡展示，避免消息在「工具调用」与「div」双重渲染 |
 | `web/Agent/src/components/ChatArea.vue` | 移除 `sandbox-execution` prop 透传；移除 `open-sandbox-drawer` 事件 |
 | `web/Agent/src/App.vue` | 移除 `SandboxDrawer` import + 模板；移除 `sandboxDrawerVisible` / `currentSandboxEvents` / `currentSandboxSummary` / `currentSandboxStatus` 状态；移除 `openSandboxDrawer` / `closeSandboxDrawer` 函数；移除 `sandboxExecution` 自动关闭 watch |
 | `web/Agent/src/components/SandboxProgress.vue` | **删除**（被 SubAgentCard 替代） |
@@ -807,6 +808,15 @@ environment:
 | `web/Agent/src/components/__tests__/SubAgentDrawer.spec.js` | 新增 6 个用例：tool=sandbox + summary 展示沙箱摘要、tool=sandbox + events 展示沙箱事件区、tool=非 sandbox 不展示沙箱区、沙箱事件可折叠、AIMessage.content 为 LangChain 0.3+ list[ContentBlock] 渲染、AIMessage.content 包含 thinking 块渲染 |
 | `web/Agent/src/components/__tests__/MessageBubble.spec.js`（**新增**） | 5 个用例：timeline.tool 内按 toolCallId 渲染 SubAgentCard、timeline 外不再有 subagent-cards 容器、点击 SubAgentCard 触发 open-subagent-drawer、无匹配 subAgent 时不渲染、多 subAgent 数据驱动 |
 | `web/Agent/src/utils/__tests__/subAgentParser.test.js` | 新增 2 个用例：tool_progress 携带 sandbox_summary 时合并到 subAgent.summary；tool_stop 携带 final_summary 时合并到 subAgent.summary（最终态） |
+
+**2026-06-14 第三次去重（跨 timeline group 唯一渲染）**：同一次子智能体执行（同一 `toolCallId`）的 `custom` 事件（tool_start / tool_progress×N / tool_stop）被 `thinking` / `text` 事件隔开后，`mergedTimeline` 会拆为多个独立 `tool` group，每个 group 都会渲染一张重复的 `SubAgentCard`。
+
+- `web/Agent/src/components/MessageBubble.vue`：
+  - **新增** `subAgentsByGroup` computed：对 `mergedTimeline` 做一次完整扫描，在 group 维度上"每个 toolCallId 仅首次出现"返回 subAgent 列表（返回与 mergedTimeline 等长的二维数组）
+  - **重构** `getSubAgentsForGroup(group)`：从普通函数 + 组件级 Set 改为基于 `subAgentsByGroup` 索引查找的兼容层（同名同语义，模板无需改动）
+  - **设计权衡**：用 computed 而非普通函数 + 组件级 Set 的原因是 Vue 3 mount 阶段会多次调用 render function，普通函数内部用 Set 记录"已渲染"会在 mount 内的连续 render 间互相污染（同一组数据在第二次 render 时被错误地判定为"已渲染过"而跳过）；computed 由 Vue 缓存，仅在依赖（`mergedTimeline` / `props.subAgents`）变化时重算，多次 render 期间返回同一结果；计算内部用本地 Set（每次重算时新建），天然避免跨 render 污染
+- `web/Agent/src/components/__tests__/MessageBubble.spec.js`：新增 3 个用例（同 id 跨多个 tool group 只渲染 1 张 / 不同 id 各自独立 / 全部去重后空 group 不渲染）
+- `SubAgentDrawer` 不受影响（数据源 `subAgent.messages` 由 sseParser 持续累积，与 timeline 渲染解耦）
 
 ### 第三方调用兼容保证
 
@@ -988,6 +998,9 @@ environment:
 - **项目历史**：后端 17/17 + 前端 73/73 全部通过（参见 "HITL 流程" 章节）
 - **2026-06-13 更新**：后端新增 `test_subagent_message_extractor.py` 22 用例通过；前端 SubAgentCard/SubAgentDrawer/subAgentParser 共 29 用例通过；累计前端 111/111 全量通过
 - **2026-06-14 更新**：合并沙箱执行与子智能体展示，删除 `SandboxProgress` / `SandboxDrawer` / `SandboxEventItem` 三个组件；新增 `MessageBubble.spec.js`（5 用例）+ 扩展 `SubAgentCard`（+2）、`SubAgentDrawer`（+6）、`subAgentParser`（+2）；累计 **126/126** 全量通过（Vite build 成功）
+- **2026-06-14 二次精简**：`SubAgentDrawer.vue` 沙箱摘要区（`.drawer-summary`）移除 `.summary-progress` 进度条 div（含 `progress-track` / `progress-fill` / 步骤计数 `X/Y`），保留状态指示（`.summary-status`）与耗时展示（`.summary-time`）；同步清理 3 个 unused computed（`sandboxProgressPercent` / `sandboxCurrentStep` / `sandboxTotalSteps`）与对应 CSS（`.summary-progress` / `.progress-track` / `.progress-fill` / `.progress-text` / `@keyframes progressPulse`）；`SubAgentDrawer.spec.js` 摘要区测试用例由「`3/6` 进度文本」改为「进度条不存在 + 耗时文本存在」；累计 **129/129** 全量通过（Vite build 成功）
+- **2026-06-14 再更新**：subagent 工具调用不在「工具调用」块内重复展示；`MessageBubble.vue` 导出 `isSubAgentTool` 工具，新增 `isSubAgentItem` / `getNonSubAgentItems` 过滤逻辑；`MessageBubble.spec.js` 扩展 +3 用例（全 subagent / 混合 / 全普通）；累计 **129/129** 全量通过（Vite build 成功）
+- **2026-06-14 第三次去重**：`MessageBubble.vue` 新增 `subAgentsByGroup` computed + 重构 `getSubAgentsForGroup`（基于 `mergedTimeline` 索引查找），保证同一 `toolCallId` 在跨多个 `tool` group 时仅首次渲染 `SubAgentCard`，后续 group 中同 id 直接跳过；`MessageBubble.spec.js` 新增 3 个用例（同 id 跨 group 只 1 张 / 不同 id 独立 / 全部去重后空 group 不渲染）；累计 **132/132** 全量通过（Vite build 成功）
 
 ## CI 测试（pytest + GitHub Actions）
 
