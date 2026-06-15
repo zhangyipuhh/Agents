@@ -1,15 +1,16 @@
-# -*- coding:utf-8 -*-
 /**
  * KnowledgePage 组件测试（2026-06-15 新增）
  *
  * 覆盖：KnowledgePage 把 KnowledgeChat 的 open-subagent-drawer 事件向上冒泡，
  *      最终触发 App.vue 顶层 <SubAgentDrawer> 打开。
  *
- * 测试策略：mount + stub KnowledgeChat 子组件，直接模拟其 emit。
+ * 测试策略：mount + 直接 import KnowledgeChat 组件对象用于 findComponent，
+ *          通过断言 wrapper.emitted() 验证事件冒泡链路。
  */
 import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
 import KnowledgePage from '../KnowledgePage.vue'
+import KnowledgeChat from '../KnowledgeChat.vue'
 
 describe('KnowledgePage 子智能体事件透传（2026-06-15 新增）', () => {
   it('test_knowledge_page_importable 组件可被 import', () => {
@@ -37,7 +38,8 @@ describe('KnowledgePage 子智能体事件透传（2026-06-15 新增）', () => 
         }
       }
     })
-    const chat = wrapper.findComponent({ name: 'KnowledgeChat' })
+    // 直接传组件对象查找，绕过 name 匹配问题
+    const chat = wrapper.findComponent(KnowledgeChat)
     expect(chat.exists()).toBe(true)
     // 模拟 KnowledgeChat 触发 open-subagent-drawer
     await chat.vm.$emit('open-subagent-drawer', fakeSubAgent)
