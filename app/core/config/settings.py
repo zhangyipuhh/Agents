@@ -394,7 +394,7 @@ class Settings(BaseSettings):
     portal_auth: PortalAuthSettings = Field(default_factory=PortalAuthSettings)
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     agent_chat_max_concurrency: int = Field(
-        default=3,
+        default=1,
         ge=1,
         description="Agent 聊天接口最大并发数，超出时进入内存队列等待；环境变量 AGENT_CHAT_MAX_CONCURRENCY",
     )
