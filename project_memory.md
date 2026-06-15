@@ -86,9 +86,6 @@ app/
 │   ├── server.py           # FastAPI 应用配置（生命周期、中间件、CORS）
 │   ├── config/settings.py  # 配置管理
 │   ├── database.py         # 数据库连接池
-│   ├── concurrency/        # Agent 聊天并发队列控制（2026-06-15 新增）
-│   │   ├── agent_concurrency_queue.py  # 单例并发队列
-│   │   └── chat_concurrency_dependency.py  # FastAPI 依赖封装
 │   ├── agent/              # Agent 基类
 │   ├── llmcalls/           # LLM 调用封装
 │   ├── tools/              # 工具基类和 MCP 适配器
@@ -397,42 +394,6 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 |   ├ POST /call | | 调用指定 MCP 服务器的工具 |
 |   ├ GET /tools/{server_name} | | 列出指定 MCP 服务器的工具详情 |
 
-## Agent 聊天并发队列控制（2026-06-15 新增）
-
-为所有 Agent 聊天接口提供基于服务端内存的并发队列控制，防止瞬时高并发拖垮 LLM 调用与后端资源。
-
-### 核心组件
-
-| 组件 | 文件位置 | 职责 |
-|------|---------|------|
-| `AgentConcurrencyQueue` | `app/core/concurrency/agent_concurrency_queue.py` | 基于 `asyncio.Semaphore` 的单例并发队列，限制同时处理的 Agent 聊天请求数量，超出上限时进入 FIFO 等待 |
-| `chat_concurrency_dependency` | `app/core/concurrency/chat_concurrency_dependency.py` | FastAPI `Depends` 封装，进入路由前获取队列许可，路由完成后释放；对 SSE 流式响应，生成器完全消费后才释放 |
-
-### 配置项
-
-- **`AGENT_CHAT_MAX_CONCURRENCY`**：最大并发数，默认 `3`，最小 `1`，对应 `Settings.agent_chat_max_concurrency`。
-
-### 使用方式
-
-在 Agent 聊天路由中加入依赖：
-
-```python
-from fastapi import Depends
-from app.core.concurrency import chat_concurrency_dependency
-
-@router.post("/chat")
-async def chat(
-    request: Request,
-    _: None = Depends(chat_concurrency_dependency),
-):
-    ...
-```
-
-### 测试
-
-- `app/tests/core/concurrency/test_agent_concurrency_queue.py`：验证队列获取/释放、超限排队行为
-- `app/tests/core/concurrency/test_chat_concurrency_dependency.py`：验证 FastAPI 依赖在并发满时阻塞后续请求
-
 ## 核心工具 (Core Tools)
 
 ### Sandbox 工具
@@ -460,7 +421,6 @@ async def chat(
 - `DATABASE_URL` — PostgreSQL 连接字符串
 - `PORTAL_REFRESH_TOKEN_TTL_SECONDS` — 门户子 refresh_token 有效期（秒），默认 86400 = 24 小时
 - `VITE_API_TARGET` — 前端 Vite 代理目标地址（开发用），默认 `http://localhost:8001`
-- `AGENT_CHAT_MAX_CONCURRENCY` — Agent 聊天接口最大并发数（2026-06-15 新增），默认 3，最小 1，超出后进入 FIFO 队列等待
 - ~~`VITE_PORTAL_NAV_CONFIG`~~ — 已废弃，门户导航配置迁移到 `public/app-config.json` 运行时配置
 - **沙箱容器化配置（2026-06-12 新增，由 `SandboxSettings` 管理）**：
   - `SANDBOX_DOCKER_MODE` — 部署模式 `local` / `socket` / `dind` / `k8s`，默认 `local`
