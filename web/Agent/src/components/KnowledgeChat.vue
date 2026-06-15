@@ -3,6 +3,7 @@ import { ref, reactive, nextTick, watch, onMounted, onBeforeUnmount, computed } 
 import { knowledgeChatStream, refreshToken, uploadFileInChunks, formatFileSize, getFileExtension } from '../utils/api.js'
 import { createAiMessage, processSSEEvent } from '../utils/sseParser.js'
 import MessageBubble from './MessageBubble.vue'
+import QueueStatusBanner from './QueueStatusBanner.vue'
 
 const SUPPORTED_EXTENSIONS = ['pdf', 'doc', 'docx', 'txt', 'md', 'csv', 'json']
 const MAX_FILE_SIZE = 50 * 1024 * 1024

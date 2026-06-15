@@ -7,6 +7,7 @@ import InputBox from './components/InputBox.vue'
 import HumanApprovalBox from './components/HumanApprovalBox.vue'
 import KnowledgePage from './components/KnowledgePage.vue'
 import SubAgentDrawer from './components/SubAgentDrawer.vue'
+import QueueStatusBanner from './components/QueueStatusBanner.vue'
 import { chatStream, createNewSession, logout as apiLogout, fetchSessionDetail, fetchSessionAttachments, fetchSessionMessages, validateToken, refreshToken, clearAuth } from './utils/api.js'
 import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage } from './utils/sseParser.js'
 import { redirectToLogin, tryRefreshOrRedirect } from './utils/auth.js'
@@ -30,6 +31,56 @@ const approvalData = ref({ questions: [] })
 // 2026-06-13 新增：子智能体详情抽屉状态
 const subAgentDrawerVisible = ref(false)
 const currentSubAgent = ref(null)
+
+// 2026-06-15 新增：排队状态机（SSE queue 事件 / HTTP 429 共同驱动）
+// event: 'idle' | 'waiting' | 'ready'
+const queueStatus = ref({
+  event: 'idle',
+  waitingCount: 0,
+  activeCount: 0,
+  maxConcurrency: 0,
+  position: 0,
+  timestamp: 0
+})
+const isQueueBannerVisible = computed(() => queueStatus.value.event === 'waiting')
+
+/**
+ * 处理 SSE queue 事件：更新 queueStatus 响应式状态
+ * @param {Object} data - { type: 'queue', event: 'waiting'|'ready', waiting_count, active_count, max_concurrency, position, timestamp }
+ */
+function handleQueueEvent(data) {
+  if (!data || data.type !== 'queue') return
+  queueStatus.value = {
+    event: data.event || 'idle',
+    waitingCount: Number(data.waiting_count) || 0,
+    activeCount: Number(data.active_count) || 0,
+    maxConcurrency: Number(data.max_concurrency) || 0,
+    position: Number(data.position) || 0,
+    timestamp: Number(data.timestamp) || 0
+  }
+}
+
+/**
+ * 处理 HTTP 429：从中提取排队信息并显示 banner（短时显示 3s 后自动淡出）
+ * @param {Error} err - 包含 status/detail 的错误对象
+ */
+function handleQueueError(err) {
+  if (!err || err.status !== 429 || !err.detail) return
+  queueStatus.value = {
+    event: 'waiting',
+    waitingCount: Number(err.detail.waiting_count) || 1,
+    activeCount: Number(err.detail.active_count) || 0,
+    maxConcurrency: Number(err.detail.max_concurrency) || 0,
+    position: 1,
+    timestamp: Date.now() / 1000
+  }
+  // HTTP 模式拒绝时不等待，3s 后自动淡出 banner
+  setTimeout(() => {
+    if (queueStatus.value.timestamp === queueStatus.value.timestamp) {
+      queueStatus.value = { ...queueStatus.value, event: 'idle' }
+    }
+  }, 3000)
+}
 
 /**
  * 新建任务锁，防止重复创建
@@ -228,10 +279,12 @@ async function handleSendMessage(message, attachments = []) {
 
   isStreaming.value = true
   let interrupted = false
+  // 2026-06-15 新增：保留 reader 引用，供 HITL interrupt 时主动 cancel
+  let reader = null
 
   try {
     const stream = await chatStream(sessionId.value, message, attachments)
-    const reader = stream.getReader()
+    reader = stream.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
 
@@ -253,13 +306,22 @@ async function handleSendMessage(message, attachments = []) {
         if (!event.startsWith('data: ')) continue
         try {
           const data = JSON.parse(event.slice(6))
-          processSSEEvent(data, aiMsg)
+          // 2026-06-15 透传 onQueueEvent 回调（处理排队/衔接事件）
+          processSSEEvent(data, aiMsg, { onQueueEvent: handleQueueEvent })
           console.log('[App] After processSSEEvent, downloadInfo:', JSON.stringify(aiMsg.downloadInfo))
 
           if (aiMsg.interrupt) {
             interrupted = true
             approvalMode.value = true
             approvalData.value = extractApprovalData(aiMsg.interrupt)
+            // 2026-06-15 修复 HITL 卡死：主动 cancel reader 让 SSE 连接断开，
+            // 配合后端 _stream_with_queue 在 yield interrupt 前调用 release_handle()，
+            // 确保许可立即释放，避免 resume 请求卡在 FIFO 队列。
+            try {
+              await reader.cancel()
+            } catch (cancelErr) {
+              console.warn('[App] reader.cancel 异常（可忽略）:', cancelErr)
+            }
             break
           }
         } catch {}
@@ -268,6 +330,12 @@ async function handleSendMessage(message, attachments = []) {
     }
   } catch (err) {
     console.error('聊天请求错误:', err)
+    // 2026-06-15 新增：HTTP 429 排队拒绝 → 显示 banner
+    if (err && err.status === 429) {
+      handleQueueError(err)
+      aiMsg.ended = true
+      return
+    }
     // 401/过期场景：先尝试 refresh_token；失败再跳登录页
     // 不再"看到'未登录'/'过期'字样就清登录态"，避免误踢
     const refreshed = await tryRefreshOrRedirect()
@@ -297,10 +365,12 @@ async function handleApprovalSubmit({ answers }) {
   aiMsg.interrupt = null
 
   const resumeData = { answers }
+  // 2026-06-15 新增：保留 reader 引用，供 HITL interrupt 时主动 cancel
+  let reader = null
 
   try {
     const stream = await chatStream(sessionId.value, '', [], resumeData)
-    const reader = stream.getReader()
+    reader = stream.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
 
@@ -320,12 +390,19 @@ async function handleApprovalSubmit({ answers }) {
         if (!event.startsWith('data: ')) continue
         try {
           const data = JSON.parse(event.slice(6))
-          processSSEEvent(data, aiMsg)
+          // 2026-06-15 透传 onQueueEvent 回调（处理排队/衔接事件）
+          processSSEEvent(data, aiMsg, { onQueueEvent: handleQueueEvent })
 
           if (aiMsg.interrupt) {
             interrupted = true
             approvalMode.value = true
             approvalData.value = extractApprovalData(aiMsg.interrupt)
+            // 2026-06-15 修复 HITL 卡死：主动 cancel reader（详见 handleSendMessage 注释）
+            try {
+              await reader.cancel()
+            } catch (cancelErr) {
+              console.warn('[App] resume reader.cancel 异常（可忽略）:', cancelErr)
+            }
             break
           }
         } catch {}
@@ -334,6 +411,12 @@ async function handleApprovalSubmit({ answers }) {
     }
   } catch (err) {
     console.error('Resume 请求错误:', err)
+    // 2026-06-15 新增：HTTP 429 排队拒绝 → 显示 banner
+    if (err && err.status === 429) {
+      handleQueueError(err)
+      aiMsg.ended = true
+      return
+    }
     aiMsg.error = '恢复执行失败，请稍后重试。'
     aiMsg.ended = true
   } finally {
@@ -565,6 +648,12 @@ async function handleSessionSwitch(targetSessionId) {
       />
 
       <div v-if="isEmptyState" class="welcome-title">Agent, 让你的工作更轻松</div>
+
+      <!-- 2026-06-15 新增：动态排队提示横幅，挂在 ChatArea 与 HumanApprovalBox/InputBox 之间 -->
+      <QueueStatusBanner
+        :queue-status="queueStatus"
+        :is-visible="isQueueBannerVisible"
+      />
 
       <HumanApprovalBox
         v-if="approvalMode"

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, onMounted, nextTick, computed } from 'vue'
 import { fetchKnowledgeFiles, fetchFilePreview, createNewSession, knowledgeChatStream, validateToken, refreshToken } from './utils/api.js'
 import { createAiMessage, processSSEEvent } from './utils/sseParser.js'
 import { redirectToLogin } from './utils/auth.js'
@@ -8,6 +8,7 @@ import FilePreview from './components/FilePreview.vue'
 import MessageBubble from './components/MessageBubble.vue'
 import ProfileInputBox from './components/ProfileInputBox.vue'
 import HumanApprovalBox from './components/HumanApprovalBox.vue'
+import QueueStatusBanner from './components/QueueStatusBanner.vue'
 // 2026-06-15 新增：复用主聊天页的 SubAgentDrawer，独立 SPA 路径需自持渲染
 import SubAgentDrawer from './components/SubAgentDrawer.vue'
 
@@ -27,6 +28,47 @@ const approvalMode = ref(false)
 const approvalData = ref({ questions: [] })
 const isSidebarCollapsed = ref(false)
 const isCollapseBtnHovered = ref(false)
+
+// 2026-06-15 新增：排队状态机（与 App.vue 同结构）
+const queueStatus = ref({
+  event: 'idle',
+  waitingCount: 0,
+  activeCount: 0,
+  maxConcurrency: 0,
+  position: 0,
+  timestamp: 0
+})
+const isQueueBannerVisible = computed(() => queueStatus.value.event === 'waiting')
+
+function handleQueueEvent(data) {
+  if (!data || data.type !== 'queue') return
+  queueStatus.value = {
+    event: data.event || 'idle',
+    waitingCount: Number(data.waiting_count) || 0,
+    activeCount: Number(data.active_count) || 0,
+    maxConcurrency: Number(data.max_concurrency) || 0,
+    position: Number(data.position) || 0,
+    timestamp: Number(data.timestamp) || 0
+  }
+}
+
+function handleQueueError(err) {
+  if (!err || err.status !== 429 || !err.detail) return
+  const ts = Date.now() / 1000
+  queueStatus.value = {
+    event: 'waiting',
+    waitingCount: Number(err.detail.waiting_count) || 1,
+    activeCount: Number(err.detail.active_count) || 0,
+    maxConcurrency: Number(err.detail.max_concurrency) || 0,
+    position: 1,
+    timestamp: ts
+  }
+  setTimeout(() => {
+    if (queueStatus.value.timestamp === ts) {
+      queueStatus.value = { ...queueStatus.value, event: 'idle' }
+    }
+  }, 3000)
+}
 
 /**
  * 新建任务锁，防止重复创建
@@ -239,12 +281,19 @@ function startChatStream(message, uploadedFiles, aiMsg, resumeData = null) {
             if (!event.startsWith('data: ')) continue
             try {
               const data = JSON.parse(event.slice(6))
-              processSSEEvent(data, aiMsg.value)
+              // 2026-06-15 透传 onQueueEvent 回调
+              processSSEEvent(data, aiMsg.value, { onQueueEvent: handleQueueEvent })
 
               if (aiMsg.value.interrupt) {
                 interrupted = true
                 approvalMode.value = true
                 approvalData.value = extractApprovalData(aiMsg.value.interrupt)
+                // 2026-06-15 修复 HITL 卡死：主动 cancel reader（详见 App.vue）
+                try {
+                  reader.cancel()
+                } catch (cancelErr) {
+                  console.warn('[KnowledgeApp] reader.cancel 异常（可忽略）:', cancelErr)
+                }
                 break
               }
             } catch {}
@@ -257,6 +306,13 @@ function startChatStream(message, uploadedFiles, aiMsg, resumeData = null) {
           nextTick(() => scrollToBottom())
           read()
         }).catch(err => {
+          // 2026-06-15 新增：HTTP 429 排队拒绝 → 显示 banner
+          if (err && err.status === 429) {
+            handleQueueError(err)
+            aiMsg.value.ended = true
+            isStreaming.value = false
+            return
+          }
           aiMsg.value.error = '不好意思，刚刚出了点小故障，可以晚点再问我一遍。'
           aiMsg.value.ended = true
           isStreaming.value = false
@@ -265,6 +321,13 @@ function startChatStream(message, uploadedFiles, aiMsg, resumeData = null) {
       read()
     })
     .catch(err => {
+      // 2026-06-15 新增：HTTP 429 排队拒绝 → 显示 banner
+      if (err && err.status === 429) {
+        handleQueueError(err)
+        aiMsg.value.ended = true
+        isStreaming.value = false
+        return
+      }
       aiMsg.value.error = '不好意思，刚刚出了点小故障，可以晚点再问我一遍。'
       aiMsg.value.ended = true
       isStreaming.value = false
@@ -365,6 +428,11 @@ function closeSubAgentDrawer() {
       <div v-if="!showChat" class="welcome-section">
         <h2 class="welcome-title">Agent, 让你的工作更轻松</h2>
         <div class="input-box-container">
+          <!-- 2026-06-15 新增：排队提示 banner（聊天面板下方、输入框上方） -->
+          <QueueStatusBanner
+            :queue-status="queueStatus"
+            :is-visible="isQueueBannerVisible"
+          />
           <HumanApprovalBox
             v-if="approvalMode"
             :questions="approvalData.questions"
@@ -412,6 +480,11 @@ function closeSubAgentDrawer() {
         </div>
 
         <div class="chat-input-area">
+          <!-- 2026-06-15 新增：排队提示 banner（聊天面板下方、输入框上方） -->
+          <QueueStatusBanner
+            :queue-status="queueStatus"
+            :is-visible="isQueueBannerVisible"
+          />
           <transition name="fade">
             <button
               v-show="showScrollButton"

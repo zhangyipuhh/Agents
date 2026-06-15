@@ -22,6 +22,26 @@ const SUBAGENT_META = {
 export const SUBAGENT_TOOLS = new Set(Object.keys(SUBAGENT_META))
 
 /**
+ * 2026-06-15 新增：SSE queue 事件集合
+ *
+ * queue 事件由后端 chat_concurrency_dependency 在 SSE 排队/衔接阶段发送，
+ * 携带 waiting_count / active_count / position 等信息用于前端动态排队提示。
+ * 该事件是「应用级全局状态」，不应写入 aiMsg.timeline / aiMsg.text，
+ * 通过 callbacks.onQueueEvent 回调由调用方维护响应式 queueStatus。
+ */
+export const QUEUE_EVENT_TYPES = new Set(['queue'])
+
+/**
+ * 2026-06-15 新增：判断 SSE 事件是否为 queue 类型
+ *
+ * 入参：data（SSE 事件 dict）
+ * 返回：boolean
+ */
+export function isQueueEvent(data) {
+  return !!(data && typeof data === 'object' && QUEUE_EVENT_TYPES.has(data.type))
+}
+
+/**
  * 判断给定工具名是否属于子智能体工具（2026-06-14 新增导出）
  *
  * 入参：tool（string | undefined | null）
@@ -403,9 +423,24 @@ function parseInterruptRepr(reprStr) {
   }
 }
 
-export function processSSEEvent(data, aiMsg) {
+export function processSSEEvent(data, aiMsg, callbacks) {
   const metadata = data.metadata || {}
   const eventThreadId = metadata.thread_id || ''
+
+  // 2026-06-15 新增：SSE queue 事件由后端 chat_concurrency_dependency 在排队/衔接阶段发送。
+  // 该事件是应用级全局状态（dynamic queue banner），不写入 aiMsg。
+  // 通过 callbacks.onQueueEvent 回调由调用方维护响应式 queueStatus；
+  // 若未提供回调则静默忽略（保持向后兼容）。
+  if (isQueueEvent(data)) {
+    if (callbacks && typeof callbacks.onQueueEvent === 'function') {
+      try {
+        callbacks.onQueueEvent(data)
+      } catch (err) {
+        console.warn('[sseParser] onQueueEvent 回调异常:', err)
+      }
+    }
+    return
+  }
 
   if (data.type === 'message' && !aiMsg.threadId && eventThreadId
       && !isSubAgentMessage(aiMsg, eventThreadId, metadata)) {

@@ -40,6 +40,20 @@ store_id = "contract_audit_store"
 file_upload_handler = FileUploadHandler()
 router = APIRouter(prefix='/api/contract', tags=['Contract Audit'])
 
+
+def _chat_concurrency_http_dep():
+    """
+    HTTP 模式并发依赖工厂：传入 mode="http"，满员时立即抛 429。
+
+    Returns:
+        Depends: FastAPI Depends 实例
+    """
+    async def _dep(request: Request):
+        gen = chat_concurrency_dependency(request, mode="http")
+        async for _ in gen:
+            pass
+    return Depends(_dep)
+
 # 延迟初始化 Agent 实例（在第一次请求时初始化）
 _ht_agent: Optional[HtAgent] = None
 _doc_agent: Optional[DocAgent] = None
@@ -220,7 +234,7 @@ async def upload_contract_files(
         raise HTTPException(status_code=500, detail=f"上传失败：{str(e)}")
 
 
-@router.post('/chat', response_model=ChatResponse, dependencies=[Depends(chat_concurrency_dependency)])
+@router.post('/chat', response_model=ChatResponse, dependencies=[_chat_concurrency_http_dep()])
 async def chat(
     request: Request,
     chat_request: ChatRequest
@@ -262,7 +276,7 @@ async def chat(
         raise HTTPException(status_code=500, detail=f"对话处理失败：{str(e)}")
 
 
-@router.post('/doc_chat', response_model=DocChatResponse, dependencies=[Depends(chat_concurrency_dependency)])
+@router.post('/doc_chat', response_model=DocChatResponse, dependencies=[_chat_concurrency_http_dep()])
 async def doc_chat(
     request: Request,
     doc_chat_request: DocChatRequest
@@ -309,7 +323,7 @@ async def doc_chat(
         raise HTTPException(status_code=500, detail=f"文档对话处理失败：{str(e)}")
 
 
-@router.post('/approval_chat', response_model=ApprovalChatResponse, dependencies=[Depends(chat_concurrency_dependency)])
+@router.post('/approval_chat', response_model=ApprovalChatResponse, dependencies=[_chat_concurrency_http_dep()])
 async def approval_chat(
     request: Request,
     approval_chat_request: ApprovalChatRequest
