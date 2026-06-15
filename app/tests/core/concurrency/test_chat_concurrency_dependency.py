@@ -16,20 +16,21 @@ from app.core.concurrency.chat_concurrency_dependency import chat_concurrency_de
 @pytest.fixture
 def reset_singleton():
     """重置单例"""
-    AgentConcurrencyQueue._instance = None
-    AgentConcurrencyQueue._lock = asyncio.Lock()
+    AgentConcurrencyQueue.reset_instance()
     yield
-    AgentConcurrencyQueue._instance = None
-    AgentConcurrencyQueue._lock = asyncio.Lock()
+    AgentConcurrencyQueue.reset_instance()
 
 
 @pytest.fixture
 def app_fixture(reset_singleton):
     """创建测试用 FastAPI 应用"""
     app = FastAPI()
+    app.state.second_started = asyncio.Event()
 
     @app.get("/chat")
     async def chat(dep=Depends(chat_concurrency_dependency)):
+        # 依赖已获取队列许可，设置事件表示本请求已开始执行
+        app.state.second_started.set()
         await asyncio.sleep(0.05)
         return {"ok": True}
 
@@ -40,6 +41,7 @@ def app_fixture(reset_singleton):
 async def test_dependency_blocks_when_full(app_fixture):
     """测试并发满时后续请求排队"""
     queue = AgentConcurrencyQueue(max_concurrency=1)
+    second_started = app_fixture.state.second_started
 
     async def slow_holder():
         async with queue:
@@ -55,10 +57,14 @@ async def test_dependency_blocks_when_full(app_fixture):
     ) as client:
         try:
             # 此时 /chat 应该等待
-            start = asyncio.get_event_loop().time()
-            response = await client.get("/chat")
-            elapsed = asyncio.get_event_loop().time() - start
+            response_task = asyncio.create_task(client.get("/chat"))
+            # 在 holder 未释放前，第二个请求不应开始执行
+            await asyncio.sleep(0.05)
+            assert not second_started.is_set()
+
+            response = await response_task
             assert response.status_code == 200
-            assert elapsed >= 0.15
+            # holder 释放后，/chat 应获取许可并执行
+            assert second_started.is_set()
         finally:
             await task

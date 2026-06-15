@@ -11,7 +11,6 @@ from typing import AsyncGenerator
 from fastapi import Request
 
 from app.core.concurrency.agent_concurrency_queue import AgentConcurrencyQueue
-from app.core.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +28,7 @@ async def chat_concurrency_dependency(request: Request) -> AsyncGenerator[None, 
     Yields:
         None
     """
-    queue = AgentConcurrencyQueue(max_concurrency=settings.agent_chat_max_concurrency)
+    queue = AgentConcurrencyQueue()
     await queue.acquire()
     logger.debug(
         "[chat_concurrency_dependency] 请求 %s 获取许可，活跃=%d，等待=%d",
@@ -42,7 +41,8 @@ async def chat_concurrency_dependency(request: Request) -> AsyncGenerator[None, 
     finally:
         await queue.release()
         logger.debug(
-            "[chat_concurrency_dependency] 请求 %s 释放许可，活跃=%d",
+            "[chat_concurrency_dependency] 请求 %s 释放许可，活跃=%d，等待=%d",
             request.url.path,
             queue.active_count,
+            queue.waiting_count,
         )
