@@ -505,7 +505,8 @@ function closeSubAgentDrawer() {
   padding: 8px 12px;
   border-bottom: 1px solid var(--color-border-light);
   flex-shrink: 0;
-  height: 40px;
+  /* 2026-06-15 调整：移除 height: 40px，由 padding(8+8) + 内部 28px 子元素自然撑高，
+     视觉对齐 Sidebar.vue .sidebar-logo（padding: 8px 12px 6px，无 height）的视觉重量 */
   box-sizing: border-box;
 }
 
@@ -634,11 +635,12 @@ function closeSubAgentDrawer() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 24px;
+  /* 2026-06-15 调整：移除 height: 40px，padding 由 8/8 调整为 11/11 ，
+     配合内部 22px 文本行高，自然高度 ≈ 44px，与 Sidebar.vue .sidebar-logo（≈42px）视觉对齐 */
+  padding: 11px 24px;
   background-color: var(--color-bg-primary);
   border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
-  height: 40px;
   box-sizing: border-box;
 }
 

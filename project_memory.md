@@ -1065,6 +1065,29 @@ environment:
   - **步骤行间横线分隔**：每个 `.tool-step` 增加 `border-bottom: 1px dashed rgba(0, 0, 0, 0.08)`；最后一步通过 `.tool-step:last-child { border-bottom: none; }` 取消分隔（避免视觉割裂）；padding 微调 3px→4px 让分隔线更透气
   - **文案调整**：`typeLabel` 中 `tool_progress` 从「进度」改为「**进行中**」（与状态徽章「执行中」语义区分：徽章是状态，行徽章是事件类型）
   - **新增** 1 个测试 → **194/194** 全量通过：步骤行间用横线分隔（验证 DOM 兄弟节点关系 + 最后一步不显示分隔）；原"成功用蓝色"测试改为"成功用绿色"；步骤渲染测试断言"进行中"文案
+- **2026-06-15 第七次：知识库页面接入子智能体卡片**（用户反馈"调用 explore 但是没有出现子智能体卡片"）：
+  - **复用策略**：本次**全部复用主聊天页已有组件**（`SubAgentCard` / `SubAgentDrawer` / `MessageBubble` 的 `sub-agents`/`download-info` props 与 `open-subagent-drawer` emit），仅做"接线"工作，零重写
+  - **`KnowledgeChat.vue`（Tab 版聊天组件）**：
+    - `defineEmits` 数组追加 `'open-subagent-drawer'`
+    - `<MessageBubble>` 模板尾部追加 `:download-info="message.downloadInfo"` + `:sub-agents="message.subAgents"` + `@open-subagent-drawer="(sa) => emit('open-subagent-drawer', sa)"`
+  - **`KnowledgePage.vue`（Tab 版中间层）**：
+    - `defineEmits` 数组追加 `'open-subagent-drawer'`
+    - `<KnowledgeChat>` 模板追加 `@open-subagent-drawer="(sa) => emit('open-subagent-drawer', sa)"` 向上冒泡
+  - **`App.vue`（主应用根）**：`<KnowledgePage>` 模板追加 `@open-subagent-drawer="openSubAgentDrawer"`，直接复用第 360-364 行已有的 `openSubAgentDrawer` 函数 + 顶层 `<SubAgentDrawer>`（第 595-599 行）；**Tab 版知识库页不需自持抽屉状态**
+  - **`KnowledgeApp.vue`（独立 SPA）**：因不在 App.vue 渲染树内，必须自持：
+    - 顶部追加 `import SubAgentDrawer from './components/SubAgentDrawer.vue'`（复用主聊天页组件）
+    - 新增 `subAgentDrawerVisible` / `currentSubAgent` 响应式状态（与 App.vue 同模式）
+    - 新增 `openSubAgentDrawer(subAgent)` / `closeSubAgentDrawer()` 函数
+    - `<MessageBubble>` 模板追加 `:download-info` + `:sub-agents` + `@open-subagent-drawer="openSubAgentDrawer"`
+    - 模板底部（`</main>` 之后）渲染 `<SubAgentDrawer>`（与 App.vue 同款 props/emits）
+  - **测试同步**（按 HARD RULE 新增 3 个测试文件，**+12 用例 → 206/206 全量通过**）：
+    - `web/Agent/src/components/__tests__/KnowledgeChat.spec.js`（4 用例）：组件 importable / subAgents prop 透传 / downloadInfo prop 透传 / open-subagent-drawer 事件冒泡
+    - `web/Agent/src/components/__tests__/KnowledgePage.spec.js`（2 用例）：组件 importable / KnowledgeChat emit 向上冒泡
+    - `web/Agent/src/KnowledgeApp.spec.js`（5 用例）：组件 importable / SubAgentDrawer stub 在 DOM / openSubAgentDrawer 切换 DOM / closeSubAgentDrawer 重置 / 监听 drawer @close 事件
+  - **关键技术点**：
+    - KnowledgeChat 的 `messages` 是**内部 `reactive([])`** 而非 prop（与 ChatArea 不同），测试需通过 `wrapper.vm.messages.push(...)` 注入
+    - KnowledgeApp 的 `onMounted` 会调用 `fetchKnowledgeFiles` / `createNewSession` / `validateToken` / `refreshToken`，测试需 `vi.mock('./utils/api.js')` 与 `vi.mock('./utils/auth.js')` 隔离副作用
+    - MessageBubble 子组件在测试中以 stub 形式呈现（template 暴露所有 props 为 DOM），便于通过 DOM 查询断言透传
 
 ## CI 测试（pytest + GitHub Actions）
 

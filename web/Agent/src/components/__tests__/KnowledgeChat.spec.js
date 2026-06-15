@@ -4,6 +4,9 @@
  * 覆盖：KnowledgeChat 把 subAgents / downloadInfo 透传给 MessageBubble，
  *      并把 MessageBubble 的 open-subagent-drawer 事件向上 emit。
  *
+ * 关键点：KnowledgeChat 的 messages 是内部 reactive([]) 状态，不是 prop。
+ *         测试通过 wrapper.vm.messages.push(...) 注入消息。
+ *
  * 测试策略：mount + stub MessageBubble 子组件（template 内暴露所有 props 为可见 DOM），
  *          通过 DOM 查询验证 prop 透传 + emit 冒泡。
  */
@@ -27,81 +30,62 @@ const MessageBubbleStub = {
   `
 }
 
+const makeSubAgent = () => ({
+  toolCallId: 'tc_test_1',
+  threadId: 'tc_test_1',
+  tool: 'explore',
+  parentPrompt: '查询土地管理法相关内容',
+  messages: [],
+  events: [],
+  status: 'running',
+  startTime: 1,
+  endTime: null,
+  error: null
+})
+
 describe('KnowledgeChat 子智能体能力透传（2026-06-15 新增）', () => {
   it('test_knowledge_chat_importable 组件可被 import', () => {
     expect(KnowledgeChat).toBeDefined()
   })
 
-  it('test_knowledge_chat_passes_sub_agents_to_message_bubble 透传 subAgents prop', () => {
-    const subAgents = [{
-      toolCallId: 'tc_test_1',
-      threadId: 'tc_test_1',
-      tool: 'explore',
-      parentPrompt: '查询土地管理法相关内容',
-      messages: [],
-      events: [],
-      status: 'running',
-      startTime: 1,
-      endTime: null,
-      error: null
-    }]
-    const aiMessage = {
-      id: 1,
-      type: 'ai',
-      content: '',
-      attachments: [],
-      timeline: [],
-      thinking: [],
-      tools: [],
-      text: '',
-      ended: false,
-      error: '',
-      messageId: 1,
-      isThinkingActive: true,
-      subAgents,
-      downloadInfo: null
-    }
+  it('test_knowledge_chat_passes_sub_agents_to_message_bubble 透传 subAgents prop', async () => {
     const wrapper = mount(KnowledgeChat, {
-      props: { messages: [aiMessage], sessionId: 'sid_1', isStreaming: true },
+      props: { sessionId: 'sid_1', isStreaming: true },
       global: {
         stubs: { MessageBubble: MessageBubbleStub }
       }
     })
-    // MessageBubble stub 应在 DOM 中
+    // messages 是内部 reactive([])，直接 push 进去
+    const subAgents = [makeSubAgent()]
+    wrapper.vm.messages.push({
+      id: 1, type: 'ai', content: '', attachments: [], timeline: [], thinking: [],
+      tools: [], text: '', ended: false, error: '', messageId: 1, isThinkingActive: true,
+      subAgents, downloadInfo: null
+    })
+    await wrapper.vm.$nextTick()
     const stub = wrapper.find('.message-bubble-stub')
     expect(stub.exists()).toBe(true)
-    // 断言 subAgents 已透传到 MessageBubble
     const subText = stub.find('.prop-sub-agents').text()
     expect(JSON.parse(subText)).toEqual(subAgents)
   })
 
-  it('test_knowledge_chat_passes_download_info_to_message_bubble 透传 downloadInfo prop', () => {
-    const downloadInfo = {
-      downloadUrl: '/api/core/download/file?file_uuid=abc',
-      fileName: '报告.pdf'
-    }
-    const aiMessage = {
-      id: 2,
-      type: 'ai',
-      content: '',
-      attachments: [],
-      timeline: [],
-      thinking: [],
-      tools: [],
-      text: '',
-      ended: true,
-      error: '',
-      messageId: 2,
-      isThinkingActive: false,
-      subAgents: [],
-      downloadInfo
-    }
+  it('test_knowledge_chat_passes_download_info_to_message_bubble 透传 downloadInfo prop', async () => {
     const wrapper = mount(KnowledgeChat, {
-      props: { messages: [aiMessage], sessionId: 'sid_1', isStreaming: false },
+      props: { sessionId: 'sid_1', isStreaming: false },
       global: {
         stubs: { MessageBubble: MessageBubbleStub }
       }
     })
+    const downloadInfo = {
+      downloadUrl: '/api/core/download/file?file_uuid=abc',
+      fileName: '报告.pdf'
+    }
+    wrapper.vm.messages.push({
+      id: 2, type: 'ai', content: '', attachments: [], timeline: [], thinking: [],
+      tools: [], text: '', ended: true, error: '', messageId: 2, isThinkingActive: false,
+      subAgents: [], downloadInfo
+    })
+    await wrapper.vm.$nextTick()
     const stub = wrapper.find('.message-bubble-stub')
     expect(stub.exists()).toBe(true)
     const dlText = stub.find('.prop-download-info').text()
@@ -109,40 +93,19 @@ describe('KnowledgeChat 子智能体能力透传（2026-06-15 新增）', () => 
   })
 
   it('test_knowledge_chat_emits_open_subagent_drawer_on_subagent_click 转发 open-subagent-drawer 事件', async () => {
-    const subAgents = [{
-      toolCallId: 'tc_test_1',
-      threadId: 'tc_test_1',
-      tool: 'explore',
-      parentPrompt: 'p',
-      messages: [],
-      events: [],
-      status: 'running',
-      startTime: 1,
-      endTime: null,
-      error: null
-    }]
-    const aiMessage = {
-      id: 3,
-      type: 'ai',
-      content: '',
-      attachments: [],
-      timeline: [],
-      thinking: [],
-      tools: [],
-      text: '',
-      ended: false,
-      error: '',
-      messageId: 3,
-      isThinkingActive: true,
-      subAgents,
-      downloadInfo: null
-    }
     const wrapper = mount(KnowledgeChat, {
-      props: { messages: [aiMessage], sessionId: 'sid_1', isStreaming: true },
+      props: { sessionId: 'sid_1', isStreaming: true },
       global: {
         stubs: { MessageBubble: MessageBubbleStub }
       }
     })
+    const subAgents = [makeSubAgent()]
+    wrapper.vm.messages.push({
+      id: 3, type: 'ai', content: '', attachments: [], timeline: [], thinking: [],
+      tools: [], text: '', ended: false, error: '', messageId: 3, isThinkingActive: true,
+      subAgents, downloadInfo: null
+    })
+    await wrapper.vm.$nextTick()
     expect(wrapper.find('.message-bubble-stub').exists()).toBe(true)
     // 点击 stub 内的 emit 按钮 → MessageBubble 触发 open-subagent-drawer
     await wrapper.find('.message-bubble-stub .emit-open').trigger('click')
