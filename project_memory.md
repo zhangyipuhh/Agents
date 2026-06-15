@@ -375,9 +375,9 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 |   ├ GET /list | | 列出可下载文件（支持子目录、递归） |
 | /api/contract | contract_router | 合同主办 Agent |
 |   ├ POST /uploadfile | | 上传并处理合同文件（存储 file_id 到 LangGraph Store） |
-|   ├ POST /chat | | 合同审批聊天（HtAgent 非流式） |
-|   ├ POST /doc_chat | | 文档处理聊天（DocAgent 非流式） |
-|   ├ POST /approval_chat | | 审批处理聊天（ApprovalAgent 非流式） |
+|   ├ POST /chat | | 合同审批聊天（HtAgent 非流式，受 `chat_concurrency_dependency` 并发控制） |
+|   ├ POST /doc_chat | | 文档处理聊天（DocAgent 非流式，受 `chat_concurrency_dependency` 并发控制） |
+|   ├ POST /approval_chat | | 审批处理聊天（ApprovalAgent 非流式，受 `chat_concurrency_dependency` 并发控制） |
 |   ├ POST /store/value | | 根据 id 获取 LangGraph Store 中的值 |
 |   ├ POST /store/value/set | | 向 LangGraph Store 中写入值 |
 |   ├ POST /download_contract | | 下载合同文件（返回 base64） |
@@ -385,8 +385,8 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 |   ├ GET /knowledge/files | | 获取知识库文件元数据（自动扫描 Knowledge 目录） |
 |   ├ GET /knowledge/file-download | | 下载知识库文件 |
 |   ├ GET /knowledge/file-preview | | 知识库文件预览（支持 .doc 自动转 .docx） |
-|   ├ POST /chat | | 地图智能体流式聊天（SSE，支持 HITL 中断与恢复） |
-|   ├ POST /knowledge-chat | | 地图智能体知识库聊天（SSE，使用知识库系统提示词） |
+|   ├ POST /chat | | 地图智能体流式聊天（SSE，支持 HITL 中断与恢复，受 `chat_concurrency_dependency` 并发控制） |
+|   ├ POST /knowledge-chat | | 地图智能体知识库聊天（SSE，使用知识库系统提示词，受 `chat_concurrency_dependency` 并发控制） |
 | /api/ai-coding-check | ai_coding_check_router | AI 代码检查 Agent |
 |   ├ POST /review | | 评审开发者数据（非流式 JSON API） |
 | /mcp | mcp_router | MCP 服务器工具调用 |
@@ -414,6 +414,26 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 
 **依赖**:
 - `DockerSandboxMiddleware` / `DockerSandboxBackend`: `app/shared/tools/middleware/docker_sandbox_backend.py`
+
+## Agent 聊天并发控制
+
+**文件位置**: `app/core/concurrency/chat_concurrency_dependency.py`
+
+**功能**: 限制同时处理的 Agent 聊天请求数，超出最大并发数时进入 FIFO 内存队列等待。
+
+**配置项**:
+- `AGENT_CHAT_MAX_CONCURRENCY` — Agent 聊天接口最大并发数，超出时进入内存队列等待，默认 3。
+
+**已接入路由**:
+- `app/features/map_agent/router/map_router.py`:
+  - `POST /api/map/chat`
+  - `POST /api/map/knowledge-chat`
+- `app/features/contract_host_agent/router/contract_router.py`:
+  - `POST /api/contract/chat`
+  - `POST /api/contract/doc_chat`
+  - `POST /api/contract/approval_chat`
+
+**使用方式**: 通过 FastAPI 路由装饰器的 `dependencies=[Depends(chat_concurrency_dependency)]` 参数接入，无需修改端点函数内部逻辑。
 
 ## 环境变量
 

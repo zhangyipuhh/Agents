@@ -18,7 +18,7 @@ Author: 张镒谱
 import logging
 import base64
 from pathlib import Path
-from fastapi import APIRouter, UploadFile, File, HTTPException, Request
+from fastapi import APIRouter, UploadFile, File, HTTPException, Request, Depends
 from typing import Any, List, Optional, Union
 from pydantic import BaseModel
 
@@ -30,6 +30,7 @@ from app.shared.utils.files.file_upload_handler import FileUploadHandler
 from app.features.contract_host_agent.HtAgent import HtAgent
 from app.features.contract_document_agent.DocAgent import DocAgent
 from app.features.contract_approval_agent.ApprovalAgent import ApprovalAgent
+from app.core.concurrency import chat_concurrency_dependency
 from app.shared.utils.memory import get_async_checkpointer
 
 
@@ -219,7 +220,7 @@ async def upload_contract_files(
         raise HTTPException(status_code=500, detail=f"上传失败：{str(e)}")
 
 
-@router.post('/chat', response_model=ChatResponse)
+@router.post('/chat', response_model=ChatResponse, dependencies=[Depends(chat_concurrency_dependency)])
 async def chat(
     request: Request,
     chat_request: ChatRequest
@@ -261,7 +262,7 @@ async def chat(
         raise HTTPException(status_code=500, detail=f"对话处理失败：{str(e)}")
 
 
-@router.post('/doc_chat', response_model=DocChatResponse)
+@router.post('/doc_chat', response_model=DocChatResponse, dependencies=[Depends(chat_concurrency_dependency)])
 async def doc_chat(
     request: Request,
     doc_chat_request: DocChatRequest
@@ -308,7 +309,7 @@ async def doc_chat(
         raise HTTPException(status_code=500, detail=f"文档对话处理失败：{str(e)}")
 
 
-@router.post('/approval_chat', response_model=ApprovalChatResponse)
+@router.post('/approval_chat', response_model=ApprovalChatResponse, dependencies=[Depends(chat_concurrency_dependency)])
 async def approval_chat(
     request: Request,
     approval_chat_request: ApprovalChatRequest

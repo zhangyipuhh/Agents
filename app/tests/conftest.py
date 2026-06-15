@@ -313,6 +313,29 @@ def _setup_env() -> None:
     os.environ["DATABASE_URL"] = "postgresql://postgres:postgres@localhost:5432/feature_agent"
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _patch_typing_for_mocks() -> Generator[None, None, None]:
+    """
+    Patch typing._type_check，允许 Mock 对象通过类型注解检查。
+
+    测试中对 langchain/langgraph 等外部依赖使用 Mock/ModuleType 替换，
+    当 Agent 模块的注解包含 Union[AgentState, LGCommand] 等依赖 Mock 的类型时，
+    Python 的 typing 机制会将其识别为非法前向引用而抛出 SyntaxError。
+    本 fixture 在会话开始前统一打补丁，使 Mock 对象跳过原始类型检查。
+    """
+    import typing
+    _orig_type_check = typing._type_check
+
+    def _patched_type_check(arg, msg, is_argument=True, module=None, *, allow_special_forms=False):
+        if hasattr(arg, "_mock_name"):
+            return arg
+        return _orig_type_check(arg, msg, is_argument, module, allow_special_forms=allow_special_forms)
+
+    typing._type_check = _patched_type_check
+    yield
+    typing._type_check = _orig_type_check
+
+
 # =============================================================================
 # 外部依赖 Mock（autouse=True，所有测试自动生效）
 # =============================================================================
@@ -430,15 +453,6 @@ def app() -> Generator:
     # 强制重新设置 langgraph.types，确保不会被覆盖
     sys.modules["langgraph.types"] = _lg_types
     import importlib
-    # 在 import agent 之前 patch typing._type_check，使 Mock 对象跳过原始类型检查
-    # 避免 Optional[Mock] / Union[AgentState, LGCommand] 等注解在 Python 3.12 下触发 SyntaxError
-    import typing
-    _orig_type_check = typing._type_check
-    def _patched_type_check(arg, msg, is_argument=True, module=None, *, allow_special_forms=False):
-        if hasattr(arg, "_mock_name"):
-            return arg
-        return _orig_type_check(arg, msg, is_argument, module, allow_special_forms=allow_special_forms)
-    typing._type_check = _patched_type_check
     _agent_mod = importlib.import_module("app.core.agent.agent")
     from app.core.server import create_app
     from app.main import register_routers
