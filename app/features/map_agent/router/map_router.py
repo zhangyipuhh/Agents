@@ -440,6 +440,7 @@ async def generate_stream_response(
     geometry_data: dict = {},
     attachments: list = [],
     resume: dict = None,
+    request: Request = None,  # 2026-06-15 新增：用于检测客户端断开（停止按钮触发）
 ) -> AsyncGenerator[str, None]:
     """
     生成流式响应的异步生成器
@@ -493,6 +494,16 @@ async def generate_stream_response(
 
         # 调用 MapAgent 的 stream 方法，使用组合模式
         async for chunk in stream:
+            # 2026-06-15 新增：客户端断开检测（停止按钮触发）
+            # 通过 reader.cancel() 主动断开 SSE 连接后，FastAPI 会检测到连接关闭，
+            # 此处跳出循环让 LangGraph 停止运行，避免继续消耗 LLM token。
+            if request is not None:
+                try:
+                    if await request.is_disconnected():
+                        logger.info(f"[Chat] session_id={session_id} 客户端已断开，跳出 stream 循环")
+                        return
+                except Exception as e:
+                    logger.warning(f"[Chat] is_disconnected 检测异常: {e}")
             # ===== 中断检测（多模式兼容） =====
             # interrupt() 在不同 stream_mode 下输出格式不同：
             # - stream_mode="updates" 时：直接输出 {"__interrupt__": [...]}
@@ -645,6 +656,7 @@ async def chat(
                         geometry_data=geometry_data,
                         attachments=chat_request.attachments or [],
                         resume=chat_request.resume,
+                        request=request,  # 2026-06-15 新增：用于客户端断开检测
                     ),
                 ),
                 media_type="text/event-stream",
@@ -686,7 +698,8 @@ async def chat(
                         system_prompt=MAP_AGENT_SYSTEM_PROMPT,
                     ),
                     geometry_data=geometry_data,
-                    attachments=chat_request.attachments or []
+                    attachments=chat_request.attachments or [],
+                    request=request,  # 2026-06-15 新增：用于客户端断开检测
                 ),
             ),
             media_type="text/event-stream",
@@ -754,6 +767,7 @@ async def knowledge_chat(
                         geometry_data=geometry_data,
                         attachments=chat_request.attachments or [],
                         resume=chat_request.resume,
+                        request=request,  # 2026-06-15 新增：用于客户端断开检测
                     ),
                 ),
                 media_type="text/event-stream",
@@ -779,7 +793,8 @@ async def knowledge_chat(
                         knowledge_root=TMP_DIR
                     ),
                     geometry_data=geometry_data,
-                    attachments=chat_request.attachments or []
+                    attachments=chat_request.attachments or [],
+                    request=request,  # 2026-06-15 新增：用于客户端断开检测
                 ),
             ),
             media_type="text/event-stream",

@@ -84,12 +84,16 @@ function handleQueueError(err) {
 const isCurrentlyStreaming = computed(() => props.isStreaming || internalStreaming.value)
 
 const canSend = computed(() => {
-  if (isCurrentlyStreaming.value) return false
+  // 2026-06-15 修改：isCurrentlyStreaming=true 时不禁用按钮（停止按钮必须可点）
+  // 按钮可点性统一在模板的 :disabled 中通过 !canSend && !isCurrentlyStreaming 管控
   if (isRefreshingToken.value) return false
   const hasText = inputValue.value.trim().length > 0
   const hasUploadedFiles = selectedFiles.value.some(f => f.status === 'success')
   return hasText || hasUploadedFiles
 })
+
+// 2026-06-15 新增：持有当前 SSE reader，供停止按钮调用 cancel()
+let currentReader = null
 
 const autoResize = () => {
   const textarea = textareaRef.value
@@ -159,17 +163,17 @@ const handleSend = async () => {
 
   nextTick(() => scrollToBottom())
 
-  let reader = null
+  currentReader = null
 
   try {
     const stream = await knowledgeChatStream(props.sessionId, message)
-    reader = stream.getReader()
+    currentReader = stream.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
     let interrupted = false
 
     while (true) {
-      const { done, value } = await reader.read()
+      const { done, value } = await currentReader.read()
       if (done) {
         // 确保消息被标记为已结束
         if (!aiMsg.ended) {
@@ -194,7 +198,7 @@ const handleSend = async () => {
             approvalMode.value = true
             approvalData.value = extractApprovalData(aiMsg.interrupt)
             try {
-              await reader.cancel()
+              await currentReader.cancel()
             } catch (cancelErr) {
               console.warn('[KnowledgeChat] reader.cancel 异常（可忽略）:', cancelErr)
             }
@@ -216,6 +220,7 @@ const handleSend = async () => {
     aiMsg.ended = true
   } finally {
     internalStreaming.value = false
+    currentReader = null
   }
 }
 
@@ -255,18 +260,18 @@ function handleApprovalSubmit({ answers }) {
 
   internalStreaming.value = true
 
-  let reader = null
+  currentReader = null
 
   const readStream = async () => {
     try {
       const stream = await knowledgeChatStream(props.sessionId, '', [], resumeData)
-      reader = stream.getReader()
+      currentReader = stream.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
       let interrupted = false
 
       while (true) {
-        const { done, value } = await reader.read()
+        const { done, value } = await currentReader.read()
         if (done) {
           if (!aiMsg.ended) {
             aiMsg.ended = true
@@ -288,7 +293,7 @@ function handleApprovalSubmit({ answers }) {
               approvalMode.value = true
               approvalData.value = extractApprovalData(aiMsg.interrupt)
               try {
-                await reader.cancel()
+                await currentReader.cancel()
               } catch (cancelErr) {
                 console.warn('[KnowledgeChat] resume reader.cancel 异常（可忽略）:', cancelErr)
               }
@@ -311,6 +316,7 @@ function handleApprovalSubmit({ answers }) {
       if (!approvalMode.value) {
         internalStreaming.value = false
       }
+      currentReader = null
     }
   }
 
@@ -328,6 +334,39 @@ function handleApprovalCancel() {
     aiMsg.ended = true
     aiMsg.isThinkingActive = false
   }
+}
+
+/**
+ * 停止生成（2026-06-15 新增）：用户点击停止按钮触发
+ * 与 App.vue / KnowledgeApp.vue 的 handleStopMessage 行为一致：
+ * 1. 调用 currentReader.cancel() 断开 SSE 连接
+ * 2. 标记最后一条 AI 消息 ended = true + 追加"已停止"提示
+ * 3. 重置 internalStreaming
+ */
+async function handleStop() {
+  if (!isCurrentlyStreaming.value) return
+
+  // 取消 SSE reader
+  if (currentReader) {
+    try {
+      await currentReader.cancel()
+    } catch (err) {
+      console.warn('[KnowledgeChat] stop reader.cancel 异常（可忽略）:', err)
+    }
+    currentReader = null
+  }
+
+  // 标记最后一条 AI 消息为已停止
+  const aiMsg = messages[messages.length - 1]
+  if (aiMsg && aiMsg.type === 'ai') {
+    aiMsg.ended = true
+    aiMsg.isThinkingActive = false
+    if (typeof aiMsg.text === 'string' && !aiMsg.text.includes('[生成已被用户中止]')) {
+      aiMsg.text = (aiMsg.text || '') + '\n\n[生成已被用户中止]'
+    }
+  }
+
+  internalStreaming.value = false
 }
 
 const scrollToBottom = (behavior = 'smooth') => {
@@ -756,13 +795,22 @@ const getFileIconColor = (ext) => {
 
             <button
               class="send-btn"
-              :class="{ disabled: !canSend }"
-              :disabled="!canSend"
-              @click="handleSend"
-              title="发送消息"
+              :class="{
+                'send-mode': !isCurrentlyStreaming,
+                'stop-mode': isCurrentlyStreaming,
+                'disabled': !canSend && !isCurrentlyStreaming
+              }"
+              :disabled="!canSend && !isCurrentlyStreaming"
+              :title="isCurrentlyStreaming ? '停止生成' : '发送消息'"
+              @click="isCurrentlyStreaming ? handleStop() : handleSend()"
             >
-              <svg viewBox="0 0 20 20" fill="currentColor" class="send-icon">
+              <!-- 发送模式：纸飞机图标 -->
+              <svg v-if="!isCurrentlyStreaming" viewBox="0 0 20 20" fill="currentColor" class="send-icon">
                 <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z"/>
+              </svg>
+              <!-- 停止模式：实心方块图标 -->
+              <svg v-else viewBox="0 0 20 20" fill="currentColor" class="stop-icon">
+                <rect x="5" y="5" width="10" height="10" rx="1.5" />
               </svg>
             </button>
           </div>
@@ -1302,6 +1350,47 @@ const getFileIconColor = (ext) => {
 .send-icon {
   width: 16px;
   height: 16px;
+}
+
+/* 2026-06-15 新增：停止模式样式（与发送按钮同色系，通过缩放+阴影脉冲传达「生成中」状态） */
+.send-btn.stop-mode {
+  background-color: var(--color-accent);  /* 与发送模式同色 */
+  cursor: pointer;
+  animation: stopPulse 1.2s ease-in-out infinite;
+}
+
+.send-btn.stop-mode:hover {
+  background-color: var(--color-accent-hover);  /* 与发送模式 hover 同色 */
+  transform: scale(1.08);
+  box-shadow:
+    0 4px 12px rgba(99, 102, 241, 0.3),  /* 与发送模式 hover 同色阴影 */
+    0 2px 4px rgba(99, 102, 241, 0.2);
+}
+
+.send-btn.stop-mode::before {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, transparent 100%);
+}
+
+.stop-icon {
+  width: 14px;
+  height: 14px;
+  color: white;
+}
+
+/* 缩放+阴影脉冲动画：背景色不变，仅缩放与阴影扩散传达「生成中」语义 */
+@keyframes stopPulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3),
+                0 2px 4px rgba(99, 102, 241, 0.2),
+                0 0 0 0 rgba(99, 102, 241, 0.4);
+  }
+  50% {
+    transform: scale(1.06);
+    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3),
+                0 2px 4px rgba(99, 102, 241, 0.2),
+                0 0 0 8px rgba(99, 102, 241, 0);
+  }
 }
 
 .disclaimer {

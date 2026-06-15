@@ -1216,6 +1216,56 @@ environment:
   - **KnowledgeChat.vue**：`.chat-body` padding 从 `16px`（仅 16px 水平间距）改为 `24px 40px`（与主界面 ChatArea 对齐）；`.messages-container` 追加 `max-width: 900px; margin: 0 auto;`（原缺失导致无宽度约束）
   - **测试**：219/222 通过（3 个 pre-existing failure 为 `App.interrupt.spec.js` happy-dom AbortError 环境问题）；Vite build 成功
 
+- **2026-06-15 第九次：聊天停止按钮（中断 LLM 生成）**（用户需求：大模型生成过程中可点击按钮中断）：
+  - **核心设计**：发送按钮在 `isStreaming=true` 时切换为「停止按钮」，点击触发 `reader.cancel()` 断开 SSE 连接；后端 `map_router.py` 在 `async for chunk` 主循环检测 `request.is_disconnected()`，客户端断开时立即 `return` 跳出 LangGraph `astream`，避免无效算力消耗。停止按钮使用与发送按钮**相同的 `--color-accent` 紫色调**（仅图标和缩放阴影脉冲动画区分），保持「同一按钮的两种状态」视觉一致性。
+  - **后端改动**（`app/features/map_agent/router/map_router.py`）：
+    - `generate_stream_response` 签名追加 `request: Request = None` 形参（默认值 None 保持向后兼容）
+    - `async for chunk in stream` 循环开头加 `request.is_disconnected()` 检测：客户端断开时 `logger.info` 记录 + `return` 跳出循环
+    - `/api/map/chat` 与 `/api/map/knowledge-chat` 两个端点（4 个 call site：正常 + resume × 2 端点）都传 `request=request`
+  - **前端改动**（3 条聊天路径全覆盖）：
+    - **`web/Agent/src/components/InputBox.vue`**（主聊天 App.vue 路径）：
+      - `canSend` 计算属性移除 `if (props.isStreaming) return false` 分支（停止按钮必须可点）
+      - `defineEmits` 追加 `'stop'` 事件
+      - 按钮模板改为三态 class：`send-mode` / `stop-mode` / `disabled`，按 `isStreaming` 切换图标（`send-icon` 纸飞机 vs `stop-icon` 实心方块 rect 5,5-15,15）
+      - `:disabled` 改为 `!canSend && !isStreaming`（流式时按钮可点）
+      - 监听 `isStreaming` prop：流式时 click → `emit('stop')`，非流式时 click → `handleSend()`
+    - **`web/Agent/src/components/ProfileInputBox.vue`**（KnowledgeApp.vue 独立 SPA 路径）：同款改造
+    - **`web/Agent/src/components/KnowledgeChat.vue`**（App.vue → KnowledgePage → KnowledgeChat Tab 路径）：
+      - 内部自持 `currentReader`（替代原 `let reader = null`），`handleSend` + `handleApprovalSubmit` 都改用 `currentReader`
+      - 新增 `handleStop()` 函数：cancel reader + 标记 AI 消息 ended + 追加 `[生成已被用户中止]` + `internalStreaming = false`
+      - 按钮模板同款三态切换
+    - **`web/Agent/src/App.vue`**：
+      - 提取模块级 `let currentStreamReader = null`（替代原 `let reader = null`，让 handleStopMessage 跨函数访问）
+      - `handleSendMessage` + `handleApprovalSubmit` 改用 `currentStreamReader`，finally 块追加 `currentStreamReader = null`
+      - 新增 `handleStopMessage()` 函数（与 KnowledgeApp.vue 同款实现）
+      - `<InputBox>` 模板追加 `@stop="handleStopMessage"` 监听
+    - **`web/Agent/src/KnowledgeApp.vue`**：
+      - 模块级 `let currentStreamReader = null` + `startChatStream` 改用 `currentStreamReader`，加 `.finally(() => { currentStreamReader = null })` 兜底
+      - 新增 `handleStopMessage()` 函数
+      - `<ProfileInputBox>` 两处绑定（welcome section + chat section）都追加 `@stop="handleStopMessage"`
+  - **CSS 样式**（3 个 InputBox/ProfileInputBox/KnowledgeChat 同款 `.stop-mode`）：
+    - 背景色 `var(--color-accent)`（与发送模式同色，非红色）
+    - hover `var(--color-accent-hover)` + 缩放 1.08 + 紫色阴影
+    - `stopPulse` keyframes：背景色不变，仅 `transform: scale(1) ↔ scale(1.06)` + `box-shadow` 0px ↔ 8px 扩散
+    - 图标 14×14 白色实心方块（rect 5,5 10×10 rx=1.5）
+  - **停止后 UI 反馈**：AI 消息 `ended = true` + `isThinkingActive = false` + `text` 字段末尾追加 `\n\n[生成已被用户中止]`（用 `text.includes()` 防重复）
+  - **测试新增**（按 HARD RULE 同步）：
+    - **后端**：`app/tests/features/map_agent/test_map_router_disconnect.py`（**5 用例**）
+      - P0 `test_generate_stream_response_importable` / `test_generate_stream_response_signature_accepts_request`
+      - P1 `test_generate_stream_response_stops_on_client_disconnect`（mock `is_disconnected` 第二次返回 True，验证只 yield 1 个 chunk 后跳出）
+      - P1 `test_generate_stream_response_runs_to_end_when_not_disconnected`（mock 始终 False，验证 yield 全部 chunks + end 事件）
+      - P1 `test_generate_stream_response_works_without_request`（request=None 向后兼容）
+    - **前端**（4 个新 spec 文件，共 **28 用例**）：
+      - `web/Agent/src/components/__tests__/InputBox.stop.spec.js`（**7 用例**）：importable / 发送模式图标 / 停止模式图标 / 流式点击 emit('stop') / 非流式点击不 emit('stop') / 无输入 disabled / 流式 enabled
+      - `web/Agent/src/components/__tests__/ProfileInputBox.stop.spec.js`（**7 用例**）：与 InputBox 同款
+      - `web/Agent/src/components/__tests__/KnowledgeChat.stop.spec.js`（**6 用例**）：importable / 发送模式 / 内部流式时 stop-mode / `handleStop` 取消 reader + 标记消息 + 不重复追加标记 + 非流式 noop
+      - `web/Agent/src/components/__tests__/App.stop.spec.js`（**8 用例**）：覆盖 App.vue + KnowledgeApp.vue 的 `handleStopMessage` 行为（cancel 调用 / 错误吞掉 / 无 reader / 空 messages / 不重复标记等）
+  - **兼容性说明**：
+    - 第三方 iframe / portal 调用方不感知 stop 按钮（不会主动 stop 时按原行为运行到底）
+    - HITL 场景：HITL interrupt 走 `await currentStreamReader.cancel()` 路径与 stop 按钮共用，最终都会触发后端 `is_disconnected()` + LangGraph 跳出
+    - 排队场景：客户端断开后 `dep.aclose()` 触发 `chat_concurrency_dependency` finally 释放许可，无需额外处理
+  - **测试结果**：后端 5/5 通过；前端 28/28 新增用例通过（其他 pre-existing failures 维持不变）；Vite build 成功
+
 ## CI 测试（pytest + GitHub Actions）
 
 ### 后端测试目录（`app/tests/`）

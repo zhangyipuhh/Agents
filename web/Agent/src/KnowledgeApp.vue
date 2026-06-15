@@ -75,6 +75,9 @@ function handleQueueError(err) {
  */
 let isCreatingNewSession = false
 
+// 2026-06-15 新增：持有当前 SSE reader，供 ProfileInputBox 的 stop 事件调用 cancel() 立即中断 LLM
+let currentStreamReader = null
+
 function toggleSidebar() {
   isSidebarCollapsed.value = !isSidebarCollapsed.value
 }
@@ -256,13 +259,14 @@ function extractApprovalData(interruptArray) {
 function startChatStream(message, uploadedFiles, aiMsg, resumeData = null) {
   knowledgeChatStream(currentSessionId.value, message, uploadedFiles, resumeData)
     .then(stream => {
-      const reader = stream.getReader()
+      // 2026-06-15 改造：reader 提到模块级 currentStreamReader，供 stop 按钮跨函数访问
+      currentStreamReader = stream.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
       let interrupted = false
 
       function read() {
-        reader.read().then(({ done, value }) => {
+        currentStreamReader.read().then(({ done, value }) => {
           if (done) {
             if (!interrupted) {
               isStreaming.value = false
@@ -290,7 +294,7 @@ function startChatStream(message, uploadedFiles, aiMsg, resumeData = null) {
                 approvalData.value = extractApprovalData(aiMsg.value.interrupt)
                 // 2026-06-15 修复 HITL 卡死：主动 cancel reader（详见 App.vue）
                 try {
-                  reader.cancel()
+                  currentStreamReader.cancel()
                 } catch (cancelErr) {
                   console.warn('[KnowledgeApp] reader.cancel 异常（可忽略）:', cancelErr)
                 }
@@ -331,6 +335,10 @@ function startChatStream(message, uploadedFiles, aiMsg, resumeData = null) {
       aiMsg.value.error = '不好意思，刚刚出了点小故障，可以晚点再问我一遍。'
       aiMsg.value.ended = true
       isStreaming.value = false
+    })
+    .finally(() => {
+      // 2026-06-15 新增：清空 reader 引用（stop 按钮会主动 cancel，正常完成也走这里）
+      currentStreamReader = null
     })
 }
 
@@ -385,6 +393,40 @@ function handleApprovalCancel() {
     aiMsg.ended = true
     aiMsg.isThinkingActive = false
   }
+}
+
+/**
+ * 停止 LLM 生成（2026-06-15 新增）：用户点击停止按钮触发
+ * 与 App.vue 的 handleStopMessage 行为一致：
+ * 1. 调用 currentStreamReader.cancel() 断开 SSE 连接
+ * 2. 标记最后一条 AI 消息 ended = true + 追加"已停止"提示
+ * 3. 重置 isStreaming
+ */
+async function handleStopMessage() {
+  if (!isStreaming.value) return
+
+  // 1. 取消 SSE reader
+  if (currentStreamReader) {
+    try {
+      await currentStreamReader.cancel()
+    } catch (err) {
+      console.warn('[KnowledgeApp] stop reader.cancel 异常（可忽略）:', err)
+    }
+    currentStreamReader = null
+  }
+
+  // 2. 标记 AI 消息已停止
+  const aiMsg = messages.value[messages.value.length - 1]
+  if (aiMsg && aiMsg.type === 'ai') {
+    aiMsg.ended = true
+    aiMsg.isThinkingActive = false
+    if (typeof aiMsg.text === 'string' && !aiMsg.text.includes('[生成已被用户中止]')) {
+      aiMsg.text = (aiMsg.text || '') + '\n\n[生成已被用户中止]'
+    }
+  }
+
+  // 3. 重置流式状态
+  isStreaming.value = false
 }
 
 // 2026-06-15 新增：子智能体详情抽屉 open / close（独立 SPA 自持；与 App.vue 同款签名）
@@ -449,6 +491,7 @@ function closeSubAgentDrawer() {
             @send="handleProfileSend"
             @tool-action="handleToolAction"
             @new-chat="handleNewChat"
+            @stop="handleStopMessage"
           />
         </div>
       </div>
@@ -515,6 +558,7 @@ function closeSubAgentDrawer() {
             @send="handleProfileSend"
             @tool-action="handleToolAction"
             @new-chat="handleNewChat"
+            @stop="handleStopMessage"
           />
         </div>
       </template>

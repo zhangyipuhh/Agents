@@ -27,6 +27,9 @@ const currentAttachments = ref([])
 const approvalMode = ref(false)
 const approvalData = ref({ questions: [] })
 
+// 2026-06-15 新增：持有当前 SSE reader，供 InputBox 的 stop 事件调用 cancel() 立即中断 LLM
+let currentStreamReader = null
+
 // 2026-06-14 改造：原 SandboxDrawer 已删除，沙箱数据统一由 SubAgentDrawer 展示
 // 2026-06-13 新增：子智能体详情抽屉状态
 const subAgentDrawerVisible = ref(false)
@@ -283,17 +286,17 @@ async function handleSendMessage(message, attachments = []) {
 
   isStreaming.value = true
   let interrupted = false
-  // 2026-06-15 新增：保留 reader 引用，供 HITL interrupt 时主动 cancel
-  let reader = null
+  // 2026-06-15 改造：reader 提到模块级 currentStreamReader，供 stop 按钮跨函数访问
+  currentStreamReader = null
 
   try {
     const stream = await chatStream(sessionId.value, message, attachments)
-    reader = stream.getReader()
+    currentStreamReader = stream.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
 
     while (true) {
-      const { done, value } = await reader.read()
+      const { done, value } = await currentStreamReader.read()
       if (done) {
         // 确保消息被标记为已结束
         if (!aiMsg.ended) {
@@ -322,7 +325,7 @@ async function handleSendMessage(message, attachments = []) {
             // 配合后端 _stream_with_queue 在 yield interrupt 前调用 release_handle()，
             // 确保许可立即释放，避免 resume 请求卡在 FIFO 队列。
             try {
-              await reader.cancel()
+              await currentStreamReader.cancel()
             } catch (cancelErr) {
               console.warn('[App] reader.cancel 异常（可忽略）:', cancelErr)
             }
@@ -352,6 +355,7 @@ async function handleSendMessage(message, attachments = []) {
     if (!interrupted) {
       isStreaming.value = false
     }
+    currentStreamReader = null
   }
 }
 
@@ -369,17 +373,17 @@ async function handleApprovalSubmit({ answers }) {
   aiMsg.interrupt = null
 
   const resumeData = { answers }
-  // 2026-06-15 新增：保留 reader 引用，供 HITL interrupt 时主动 cancel
-  let reader = null
+  // 2026-06-15 改造：reader 提到模块级 currentStreamReader，供 stop 按钮跨函数访问
+  currentStreamReader = null
 
   try {
     const stream = await chatStream(sessionId.value, '', [], resumeData)
-    reader = stream.getReader()
+    currentStreamReader = stream.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
 
     while (true) {
-      const { done, value } = await reader.read()
+      const { done, value } = await currentStreamReader.read()
       if (done) {
         if (!aiMsg.ended) {
           aiMsg.ended = true
@@ -403,7 +407,7 @@ async function handleApprovalSubmit({ answers }) {
             approvalData.value = extractApprovalData(aiMsg.interrupt)
             // 2026-06-15 修复 HITL 卡死：主动 cancel reader（详见 handleSendMessage 注释）
             try {
-              await reader.cancel()
+              await currentStreamReader.cancel()
             } catch (cancelErr) {
               console.warn('[App] resume reader.cancel 异常（可忽略）:', cancelErr)
             }
@@ -427,6 +431,7 @@ async function handleApprovalSubmit({ answers }) {
     if (!interrupted) {
       isStreaming.value = false
     }
+    currentStreamReader = null
   }
 }
 
@@ -441,6 +446,41 @@ function handleApprovalCancel() {
     aiMsg.ended = true
     aiMsg.isThinkingActive = false
   }
+}
+
+/**
+ * 停止 LLM 生成（2026-06-15 新增）：用户点击停止按钮触发
+ * 流程：
+ * 1. 调用 currentStreamReader.cancel() 断开 SSE 连接
+ *    - 后端 map_router.py 的 is_disconnected() 检测会立即生效，LangGraph 跳出循环
+ * 2. 标记最后一条 AI 消息 ended = true + 追加"已停止"提示
+ * 3. 重置 isStreaming
+ */
+async function handleStopMessage() {
+  if (!isStreaming.value) return
+
+  // 1. 取消 SSE reader
+  if (currentStreamReader) {
+    try {
+      await currentStreamReader.cancel()
+    } catch (err) {
+      console.warn('[App] stop reader.cancel 异常（可忽略）:', err)
+    }
+    currentStreamReader = null
+  }
+
+  // 2. 标记 AI 消息已停止
+  const aiMsg = messages[messages.length - 1]
+  if (aiMsg && aiMsg.type === 'ai') {
+    aiMsg.ended = true
+    aiMsg.isThinkingActive = false
+    if (typeof aiMsg.text === 'string' && !aiMsg.text.includes('[生成已被用户中止]')) {
+      aiMsg.text = (aiMsg.text || '') + '\n\n[生成已被用户中止]'
+    }
+  }
+
+  // 3. 重置流式状态
+  isStreaming.value = false
 }
 
 // 2026-06-13 新增：子智能体抽屉 open/close
@@ -674,6 +714,7 @@ async function handleSessionSwitch(targetSessionId) {
         @send="handleSendMessage"
         @tool-action="handleToolAction"
         @new-chat="newSession"
+        @stop="handleStopMessage"
       />
     </main>
 
