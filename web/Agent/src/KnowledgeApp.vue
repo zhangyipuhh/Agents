@@ -575,11 +575,13 @@ function closeSubAgentDrawer() {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* 2026-06-15 调整：保持 padding: 8px 12px，配合 32px 折叠按钮（box-sizing: border-box 含 1px border）
+     自然高度 = 8 + 32 + 8 = 48px，与 .chat-header / .drawer-header 一致 */
   padding: 8px 12px;
   border-bottom: 1px solid var(--color-border-light);
   flex-shrink: 0;
-  /* 2026-06-15 调整：移除 height: 40px，由 padding(8+8) + 内部 28px 子元素自然撑高，
-     视觉对齐 Sidebar.vue .sidebar-logo（padding: 8px 12px 6px，无 height）的视觉重量 */
+  /* 2026-06-15 新增：兜底 min-height，保证折叠态（padding 8px）也不矮于 48px */
+  min-height: 48px;
   box-sizing: border-box;
 }
 
@@ -612,8 +614,11 @@ function closeSubAgentDrawer() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  /* 2026-06-15 调整：28→32px + box-sizing: border-box，与 SubAgentDrawer .close-btn 尺寸对齐，
+     保证 1px border 包含在 32px 内，避免 sidebar-header 实际高度超出 min-height: 48px */
+  width: 32px;
+  height: 32px;
+  box-sizing: border-box;
   background-color: var(--color-bg-secondary);
   color: var(--color-text-secondary);
   border-radius: var(--radius-sm);
@@ -708,12 +713,14 @@ function closeSubAgentDrawer() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  /* 2026-06-15 调整：移除 height: 40px，padding 设为 10/24，
-     配合内部 22px 文本行高，自然高度 ≈ 42px，与 Sidebar.vue .sidebar-logo（≈42px）精确对齐 */
+  /* 2026-06-15 调整：padding 设为 10/24，配合内部 22px 文本行高 */
   padding: 10px 24px;
   background-color: var(--color-bg-primary);
   border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
+  /* 2026-06-15 新增：与 .sidebar-header / .drawer-header 三处统一 48px，
+     避免聊天模式切换时头部高度跳动 */
+  min-height: 48px;
   box-sizing: border-box;
 }
 
