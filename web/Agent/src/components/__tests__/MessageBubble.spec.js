@@ -462,3 +462,82 @@ describe('MessageBubble 子智能体 message 过滤（2026-06-14 端到端）', 
   })
 })
 
+// ========== 2026-06-15：thinking-header 宽度对齐 subagent-card ==========
+// 场景：MessageBubble 中存在两处 .thinking-header（timeline 模式 + 降级模式），
+//      都需要从「内容自适应」改为「与 .subagent-card 等宽、右对齐」。
+//
+// 测试策略：直接读取 MessageBubble.vue 源文件，用 regex 验证 CSS 规则。
+// 原因：happy-dom 不解析 Vue SFC <style scoped> 的 stylesheet.cssRules，
+//       无法在运行时获取 scoped CSS 规则。源文件读取是最可靠的离线验证方式。
+
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+const messageBubbleSource = readFileSync(
+  join(__dirname, '../MessageBubble.vue'),
+  'utf-8'
+)
+
+/**
+ * 从 SFC 源文件中提取指定 class 选择器的 CSS 规则体
+ * 入参：className（不带前导点）
+ * 返回：CSS 规则体字符串（如 `display: flex; width: 100%; ...`），未找到返回 null
+ */
+const extractCssRule = (source, className) => {
+  // 匹配 ".className {" 开头，到对应的 "}" 结束（简单匹配，非嵌套）
+  const re = new RegExp(`\\.${className}\\s*\\{([^}]*)\\}`, 'm')
+  const match = re.exec(source)
+  return match ? match[1] : null
+}
+
+describe('MessageBubble 思考头部宽度（2026-06-15 新增）', () => {
+  it('.thinking-header 使用 display:flex + width:100%（两处共用）', () => {
+    const body = extractCssRule(messageBubbleSource, 'thinking-header')
+    expect(body).not.toBeNull()
+    // display 应为 flex（匹配以分号结尾的属性值，避免误匹配注释中的 inline-flex 字样）
+    expect(body).toMatch(/display\s*:\s*flex\s*;/)
+    expect(body).not.toMatch(/display\s*:\s*inline-flex/)
+    // width 应为 100%
+    expect(body).toMatch(/width\s*:\s*100%/)
+    // box-sizing 应为 border-box
+    expect(body).toMatch(/box-sizing\s*:\s*border-box/)
+  })
+
+  it('.timeline-thinking 容器：width:100% + align-self:flex-end（与 subagent-list 右对齐）', () => {
+    const body = extractCssRule(messageBubbleSource, 'timeline-thinking')
+    expect(body).not.toBeNull()
+    // width 应为 100%（与 subagent-card 容器同宽）
+    expect(body).toMatch(/width\s*:\s*100%/)
+    // 右对齐
+    expect(body).toMatch(/align-self\s*:\s*flex-end/)
+    // 2026-06-15 二改：移除 max-width: 85% 兜底，让左右两边都与 subagent-card 对齐
+    expect(body).not.toMatch(/max-width\s*:\s*85%/)
+  })
+
+  it('.thinking-section 容器（降级模式）：width:100% + align-self:flex-end', () => {
+    const body = extractCssRule(messageBubbleSource, 'thinking-section')
+    expect(body).not.toBeNull()
+    // width 应为 100%（与 subagent-card 容器同宽）
+    expect(body).toMatch(/width\s*:\s*100%/)
+    // 右对齐（与 timeline 模式保持一致）
+    expect(body).toMatch(/align-self\s*:\s*flex-end/)
+    // 2026-06-15 二改：移除 max-width: 85% 兜底
+    expect(body).not.toMatch(/max-width\s*:\s*85%/)
+  })
+
+  it('.thinking-header（width:100%）与 .subagent-card（width:100%）宽度规则一致', () => {
+    const headerBody = extractCssRule(messageBubbleSource, 'thinking-header')
+    const cardSourcePath = join(__dirname, '../SubAgentCard.vue')
+    const cardSource = readFileSync(cardSourcePath, 'utf-8')
+    const cardBody = extractCssRule(cardSource, 'subagent-card')
+    expect(headerBody).not.toBeNull()
+    expect(cardBody).not.toBeNull()
+    // 两个元素都应设置 width: 100%（与父容器同宽）
+    expect(headerBody).toMatch(/width\s*:\s*100%/)
+    expect(cardBody).toMatch(/width\s*:\s*100%/)
+  })
+})
+

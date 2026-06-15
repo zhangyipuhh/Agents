@@ -764,7 +764,7 @@ const getFileIconColor = (filename) => {
 <style scoped>
 .message-bubble {
   width: 100%;
-  margin-bottom: 24px;
+  margin-bottom: 12px;  /* 2026-06-15 调整：与 .timeline-thinking margin-bottom 对齐，统一为窄间距 */
   animation: messageSlideIn 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 
   &:last-child {
@@ -858,8 +858,10 @@ const getFileIconColor = (filename) => {
 
 /* 时间线思考块 */
 .timeline-thinking {
-  max-width: 85%;
+  width: 100%;             /* 2026-06-15 新增：占满父级 ai-message 容器宽度（与 .subagent-card 等宽） */
   margin-bottom: 12px;
+  align-self: flex-end;    /* 2026-06-15 新增：在 .ai-message 中右对齐，与 .timeline-subagent-list 一致 */
+  /* 2026-06-15 二改：移除窄屏兜底约束，让 .timeline-thinking 与 .subagent-card 容器同宽（均 100%），左右两边都对齐 */
 }
 
 .timeline-thinking.thinking-active {
@@ -900,15 +902,19 @@ const getFileIconColor = (filename) => {
 
 /* 思考过程 */
 .thinking-section {
-  max-width: 85%;
+  width: 100%;             /* 2026-06-15 新增：占满父级 ai-message 容器宽度（与 .subagent-card 等宽） */
   margin-bottom: 12px;
+  align-self: flex-end;    /* 2026-06-15 新增：在 .ai-message 中右对齐，与 timeline 模式保持一致 */
+  /* 2026-06-15 二改：移除窄屏兜底约束，与 .timeline-thinking 保持一致，让降级模式也与 subagent-card 左右对齐 */
 }
 
 .thinking-header {
-  display: inline-flex;
+  display: flex;             /* 2026-06-15 改造：由 inline-flex 改为 flex，让 width:100% 生效（与 .subagent-card 等宽） */
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
+  width: 100%;               /* 2026-06-15 新增：与父容器同宽，与 .subagent-card 宽度对齐 */
+  box-sizing: border-box;    /* 2026-06-15 新增：padding 计入宽度，避免溢出 */
   background-color: var(--color-bg-tertiary);
   border-radius: var(--radius-sm);
   cursor: pointer;
