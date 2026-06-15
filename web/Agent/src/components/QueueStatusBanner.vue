@@ -94,6 +94,8 @@ const showBanner = computed(() => {
   padding: 10px 16px;
   margin: 0 auto;
   max-width: 900px;
+  box-sizing: border-box;
+  width: 100%;
   background-color: #FEF3C7;
   border: 1px solid #FCD34D;
   border-radius: var(--radius-md);

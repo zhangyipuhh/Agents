@@ -703,3 +703,107 @@ describe('MessageBubble 思考头部宽度（2026-06-15 新增）', () => {
   })
 })
 
+// ========== 2026-06-15 新增：工具执行时思考过程停止活跃状态 ==========
+
+describe('MessageBubble 工具执行时思考过程抑制（2026-06-15 新增）', () => {
+  it('普通工具执行时，思考过程脉冲动画和光标被抑制', () => {
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'ai',
+        isThinkingActive: true,
+        ended: false,
+        timeline: [
+          { type: 'thinking', content: '正在分析...' },
+          { type: 'tool', content: { type: 'custom', data: { type: 'tool_start', tool: 'read_file', tool_call_id: 'tc_1', data: {} } } }
+        ],
+        tools: [
+          { type: 'custom', data: { type: 'tool_start', tool: 'read_file', tool_call_id: 'tc_1', data: {} } }
+        ]
+      }
+    })
+    // 思考图标不应有 thinking-pulse 类
+    const icon = wrapper.find('.thinking-icon')
+    expect(icon.classes()).not.toContain('thinking-pulse')
+    // 思考体内不应有 streaming-cursor
+    expect(wrapper.find('.thinking-body .streaming-cursor').exists()).toBe(false)
+  })
+
+  it('普通工具执行时，思考标签显示为“思考过程”而非“思考中...”', () => {
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'ai',
+        isThinkingActive: true,
+        ended: false,
+        timeline: [
+          { type: 'thinking', content: '正在分析...' },
+          { type: 'tool', content: { type: 'custom', data: { type: 'tool_start', tool: 'read_file', tool_call_id: 'tc_1', data: {} } } }
+        ],
+        tools: [
+          { type: 'custom', data: { type: 'tool_start', tool: 'read_file', tool_call_id: 'tc_1', data: {} } }
+        ]
+      }
+    })
+    const label = wrapper.find('.thinking-label')
+    expect(label.text()).toBe('思考过程')
+    // 标签不应有 thinking-label-active 类
+    expect(label.classes()).not.toContain('thinking-label-active')
+  })
+
+  it('子智能体执行时，思考过程同样被抑制', () => {
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'ai',
+        isThinkingActive: true,
+        ended: false,
+        timeline: [
+          { type: 'thinking', content: '正在分析...' }
+        ],
+        subAgents: [
+          {
+            toolCallId: 'tc_1',
+            threadId: 'tc_1',
+            tool: 'sandbox',
+            parentPrompt: 'p',
+            messages: [],
+            events: [],
+            status: 'running',
+            startTime: Date.now() - 1000,
+            endTime: null,
+            error: null
+          }
+        ]
+      }
+    })
+    // 思考图标不应有 thinking-pulse 类
+    const icon = wrapper.find('.thinking-icon')
+    expect(icon.classes()).not.toContain('thinking-pulse')
+    // 思考标签应为“思考过程”
+    const label = wrapper.find('.thinking-label')
+    expect(label.text()).toBe('思考过程')
+    // 思考体内不应有 streaming-cursor
+    expect(wrapper.find('.thinking-body .streaming-cursor').exists()).toBe(false)
+  })
+
+  it('无工具执行且 isThinkingActive 时，思考过程保持活跃状态', () => {
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'ai',
+        isThinkingActive: true,
+        ended: false,
+        timeline: [
+          { type: 'thinking', content: '正在分析...' }
+        ],
+        tools: []
+      }
+    })
+    // 思考图标应有 thinking-pulse 类
+    const icon = wrapper.find('.thinking-icon')
+    expect(icon.classes()).toContain('thinking-pulse')
+    // 思考标签应为“思考中...”
+    const label = wrapper.find('.thinking-label')
+    expect(label.text()).toBe('思考中...')
+    // 标签应有 thinking-label-active 类
+    expect(label.classes()).toContain('thinking-label-active')
+  })
+})
+

@@ -98,6 +98,48 @@ const hasRunningSubAgent = computed(() => {
   return props.subAgents.some(sa => sa && sa.status === 'running')
 })
 
+/**
+ * 判断 props.tools 中是否有正在运行的普通工具（2026-06-15 新增）
+ *
+ * 用途：当普通工具（非子智能体）在执行时，与 hasRunningSubAgent 一并
+ * 抑制主智能体思考过程的脉冲动画和流式光标。
+ *
+ * 逻辑：按 toolCallId 分组，若某组存在 tool_start/tool_progress 但无
+ * tool_stop/tool_error，则判定为运行中。
+ *
+ * 入参：无（读 props.tools）
+ * 返回：boolean
+ */
+const hasRunningTool = computed(() => {
+  if (!Array.isArray(props.tools) || props.tools.length === 0) return false
+  const groups = new Map()
+  for (const item of props.tools) {
+    const inner = (item && item.data) || {}
+    const callId = inner.tool_call_id || inner.thread_id || ''
+    const key = callId || '__ungrouped'
+    if (!groups.has(key)) {
+      groups.set(key, { hasStart: false, hasStop: false, hasError: false })
+    }
+    const g = groups.get(key)
+    if (inner.type === 'tool_start' || inner.type === 'tool_progress') {
+      g.hasStart = true
+    }
+    if (inner.type === 'tool_stop') {
+      g.hasStop = true
+    }
+    if (inner.type === 'tool_error') {
+      g.hasError = true
+    }
+  }
+  for (const g of groups.values()) {
+    if (g.hasStart && !g.hasStop && !g.hasError) return true
+  }
+  return false
+})
+
+// 统一标志：任何执行体（子智能体或普通工具）是否在运行中
+const hasRunningExecution = computed(() => hasRunningSubAgent.value || hasRunningTool.value)
+
 function handleSubAgentClick(subAgent) {
   emit('open-subagent-drawer', subAgent)
 }
@@ -585,9 +627,9 @@ const getFileIconColor = (filename) => {
           <!-- 思考块 -->
           <div v-if="group.type === 'thinking'" class="timeline-thinking" :class="{ 'thinking-active': isThinkingGroupActive(index) }">
             <div class="thinking-header" :class="{ 'thinking-header-active': isThinkingGroupActive(index) }" @click="handleThinkingClick(index)">
-              <span class="thinking-icon" :class="{ 'thinking-pulse': isThinkingGroupActive(index) && !hasRunningSubAgent }">🧠</span>
-              <span class="thinking-label" :class="{ 'thinking-label-active': isThinkingGroupActive(index) }">
-                {{ isThinkingGroupActive(index) ? '思考中...' : '思考过程' }}
+              <span class="thinking-icon" :class="{ 'thinking-pulse': isThinkingGroupActive(index) && !hasRunningExecution }">🧠</span>
+              <span class="thinking-label" :class="{ 'thinking-label-active': isThinkingGroupActive(index) && !hasRunningExecution }">
+                {{ isThinkingGroupActive(index) && !hasRunningExecution ? '思考中...' : '思考过程' }}
               </span>
               <svg
                 class="expand-icon"
@@ -600,7 +642,7 @@ const getFileIconColor = (filename) => {
             </div>
             <div v-if="isThinkingGroupExpanded(index)" class="thinking-body">
               <pre class="thinking-content">{{ formatMergedThinkingItems(group.items) }}</pre>
-              <span v-if="isThinkingGroupActive(index) && !hasRunningSubAgent" class="streaming-cursor">▌</span>
+              <span v-if="isThinkingGroupActive(index) && !hasRunningExecution" class="streaming-cursor">▌</span>
             </div>
           </div>
 
@@ -653,7 +695,7 @@ const getFileIconColor = (filename) => {
         </template>
 
         <!-- 流式光标 -->
-        <span v-if="!ended && !error && !isThinkingActive" class="streaming-cursor">▌</span>
+        <span v-if="!ended && !error && !isThinkingActive && !hasRunningExecution" class="streaming-cursor">▌</span>
       </template>
 
       <!-- 降级模式：无 timeline 时使用旧逻辑 -->
@@ -695,7 +737,7 @@ const getFileIconColor = (filename) => {
         <!-- 正文内容 -->
         <div v-if="hasText" class="text-section">
           <div class="markdown-body" v-html="renderedText"></div>
-          <span v-if="!ended && !error" class="streaming-cursor">▌</span>
+          <span v-if="!ended && !error && !hasRunningExecution" class="streaming-cursor">▌</span>
         </div>
       </template>
 

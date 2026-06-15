@@ -654,10 +654,12 @@ async function handleSessionSwitch(targetSessionId) {
       <div v-if="isEmptyState" class="welcome-title">Agent, 让你的工作更轻松</div>
 
       <!-- 2026-06-15 新增：动态排队提示横幅，挂在 ChatArea 与 HumanApprovalBox/InputBox 之间 -->
-      <QueueStatusBanner
-        :queue-status="queueStatus"
-        :is-visible="isQueueBannerVisible"
-      />
+      <div class="queue-banner-wrapper">
+        <QueueStatusBanner
+          :queue-status="queueStatus"
+          :is-visible="isQueueBannerVisible"
+        />
+      </div>
 
       <HumanApprovalBox
         v-if="approvalMode"
@@ -763,5 +765,16 @@ async function handleSessionSwitch(targetSessionId) {
   color: #1E5AA8;
   margin-bottom: 32px;
   text-align: center;
+}
+
+/* 排队提示横幅 wrapper，与 InputBox 的 .input-box-container 横向边距对齐 */
+.queue-banner-wrapper {
+  padding: 0 40px;
+}
+
+/* empty-layout 下 content-area.empty-layout > * 已限制 max-width: 900px，
+   若保留 padding 会导致横幅被二次收缩，故在此场景下移除 padding */
+.content-area.empty-layout .queue-banner-wrapper {
+  padding: 0;
 }
 </style>

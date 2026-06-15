@@ -36,6 +36,10 @@ const showScrollButton = ref(false)
 const showScrollToTopButton = ref(false)
 const unreadCount = ref(0)
 
+// 人工回路状态
+const approvalMode = ref(false)
+const approvalData = ref({ questions: [] })
+
 // 2026-06-15 新增：排队状态机（独立使用 KnowledgeChat 时也具备提示能力）
 const queueStatus = ref({
   event: 'idle',
@@ -187,6 +191,8 @@ const handleSend = async () => {
           // 2026-06-15 HITL interrupt 主动 cancel reader（与 App.vue 同逻辑）
           if (aiMsg.interrupt) {
             interrupted = true
+            approvalMode.value = true
+            approvalData.value = extractApprovalData(aiMsg.interrupt)
             try {
               await reader.cancel()
             } catch (cancelErr) {
@@ -221,6 +227,107 @@ const handleNewChat = async () => {
   inputValue.value = ''
   nextTick(() => autoResize())
   emit('new-chat')
+}
+
+function extractApprovalData(interruptArray) {
+  if (!Array.isArray(interruptArray) || interruptArray.length === 0) {
+    return { questions: [] }
+  }
+  const req = interruptArray[0]
+  const payload = req.value ?? req
+  const questions = payload.questions ?? []
+  return { questions }
+}
+
+function handleApprovalSubmit({ answers }) {
+  approvalMode.value = false
+
+  const aiMsg = messages[messages.length - 1]
+  if (!aiMsg || aiMsg.type !== 'ai') {
+    internalStreaming.value = false
+    return
+  }
+
+  // 清除上一次的中断状态，避免旧状态导致误触发
+  aiMsg.interrupt = null
+
+  const resumeData = { answers }
+
+  internalStreaming.value = true
+
+  let reader = null
+
+  const readStream = async () => {
+    try {
+      const stream = await knowledgeChatStream(props.sessionId, '', [], resumeData)
+      reader = stream.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let interrupted = false
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) {
+          if (!aiMsg.ended) {
+            aiMsg.ended = true
+            aiMsg.isThinkingActive = false
+          }
+          break
+        }
+        buffer += decoder.decode(value, { stream: true })
+        const events = buffer.split('\n\n')
+        buffer = events.pop()
+        for (const event of events) {
+          if (!event.startsWith('data: ')) continue
+          try {
+            const data = JSON.parse(event.slice(6))
+            processSSEEvent(data, aiMsg, { onQueueEvent: handleQueueEvent })
+
+            if (aiMsg.interrupt) {
+              interrupted = true
+              approvalMode.value = true
+              approvalData.value = extractApprovalData(aiMsg.interrupt)
+              try {
+                await reader.cancel()
+              } catch (cancelErr) {
+                console.warn('[KnowledgeChat] resume reader.cancel 异常（可忽略）:', cancelErr)
+              }
+              break
+            }
+          } catch {}
+        }
+        if (interrupted) break
+        nextTick(() => scrollToBottom())
+      }
+    } catch (err) {
+      if (err && err.status === 429) {
+        handleQueueError(err)
+        aiMsg.ended = true
+        return
+      }
+      aiMsg.error = '恢复执行失败，请稍后重试。'
+      aiMsg.ended = true
+    } finally {
+      if (!approvalMode.value) {
+        internalStreaming.value = false
+      }
+    }
+  }
+
+  readStream()
+}
+
+/**
+ * 取消问答：退出 approval 模式并重置流状态
+ */
+function handleApprovalCancel() {
+  approvalMode.value = false
+  internalStreaming.value = false
+  const aiMsg = messages[messages.length - 1]
+  if (aiMsg && aiMsg.type === 'ai') {
+    aiMsg.ended = true
+    aiMsg.isThinkingActive = false
+  }
 }
 
 const scrollToBottom = (behavior = 'smooth') => {

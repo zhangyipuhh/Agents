@@ -367,6 +367,9 @@ function handleApprovalSubmit({ answers }) {
 
   const resumeData = { answers }
 
+  // 清除上一次的中断状态，避免旧状态导致误触发（与 App.vue 保持一致）
+  aiMsg.interrupt = null
+
   const aiMsgRef = ref(aiMsg)
   startChatStream('', [], aiMsgRef, resumeData)
 }
