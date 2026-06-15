@@ -15,7 +15,7 @@ import logging
 import json
 import os
 from datetime import datetime
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import FileResponse, StreamingResponse
 from typing import AsyncGenerator, Optional
 from pydantic import BaseModel
@@ -27,6 +27,7 @@ from langchain_core.messages import ToolMessage
 
 from app.features.map_agent.MapAgent import MapAgent
 from app.core.format.stream import stream_format_context
+from app.core.concurrency import chat_concurrency_dependency
 from app.features.map_agent.config.prompts import KNOWLEDGE_SYSTEM_PROMPT, MAP_AGENT_SYSTEM_PROMPT
 from app.features.map_agent.config.MapAgentContext import MapAgentContext
 
@@ -590,7 +591,7 @@ async def generate_stream_response(
         yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
 
 
-@router.post('/chat')
+@router.post('/chat', dependencies=[Depends(chat_concurrency_dependency)])
 async def chat(
     request: Request,
     chat_request: ChatRequest
@@ -687,7 +688,7 @@ async def chat(
         logger.error(f"[ERROR] chat 异常: {e}")
         logger.error(f"[ERROR] 异常堆栈: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"对话处理失败：{str(e)}")
-@router.post('/knowledge-chat')
+@router.post('/knowledge-chat', dependencies=[Depends(chat_concurrency_dependency)])
 async def knowledge_chat(
     request: Request,
     chat_request: ChatRequest
