@@ -86,6 +86,10 @@ app/
 │   ├── server.py           # FastAPI 应用配置（生命周期、中间件、CORS）
 │   ├── config/settings.py  # 配置管理
 │   ├── database.py         # 数据库连接池
+│   ├── concurrency/        # 并发控制模块
+│   │   ├── agent_concurrency_queue.py  # 基于内存的 Agent 聊天并发队列
+│   │   ├── chat_concurrency_dependency.py  # FastAPI 依赖封装
+│   │   └── __init__.py     # 包初始化
 │   ├── agent/              # Agent 基类
 │   ├── llmcalls/           # LLM 调用封装
 │   ├── tools/              # 工具基类和 MCP 适配器
