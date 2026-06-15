@@ -8,6 +8,8 @@ import FilePreview from './components/FilePreview.vue'
 import MessageBubble from './components/MessageBubble.vue'
 import ProfileInputBox from './components/ProfileInputBox.vue'
 import HumanApprovalBox from './components/HumanApprovalBox.vue'
+// 2026-06-15 新增：复用主聊天页的 SubAgentDrawer，独立 SPA 路径需自持渲染
+import SubAgentDrawer from './components/SubAgentDrawer.vue'
 
 const isPreviewOpen = ref(false)
 const previewContent = ref('')
@@ -43,6 +45,10 @@ const unreadCount = ref(0)
 
 // 页面状态
 const showChat = ref(false)
+
+// 2026-06-15 新增：子智能体详情抽屉状态（独立 SPA，需自持；与 App.vue 同模式）
+const subAgentDrawerVisible = ref(false)
+const currentSubAgent = ref(null)
 
 onMounted(async () => {
   // 验证 token 有效性，失效则尝试静默刷新
@@ -314,6 +320,16 @@ function handleApprovalCancel() {
     aiMsg.isThinkingActive = false
   }
 }
+
+// 2026-06-15 新增：子智能体详情抽屉 open / close（独立 SPA 自持；与 App.vue 同款签名）
+function openSubAgentDrawer(subAgent) {
+  currentSubAgent.value = subAgent
+  subAgentDrawerVisible.value = true
+}
+
+function closeSubAgentDrawer() {
+  subAgentDrawerVisible.value = false
+}
 </script>
 
 <template>
@@ -388,6 +404,9 @@ function handleApprovalCancel() {
               :error="message.error"
               :message-id="message.id"
               :is-thinking-active="message.isThinkingActive"
+              :download-info="message.downloadInfo"
+              :sub-agents="message.subAgents"
+              @open-subagent-drawer="openSubAgentDrawer"
             />
           </div>
         </div>
@@ -435,6 +454,16 @@ function handleApprovalCancel() {
       :previewMode="previewMode"
       :fileUrl="previewFileUrl"
       @close="closePreview"
+    />
+
+    <!--
+      2026-06-15 新增：子智能体详情抽屉（独立 SPA，自持渲染；与 App.vue 顶层抽屉同款组件）
+      KnowledgeApp 不在 App.vue 渲染树内，无法复用 App.vue 的抽屉，需自行持有状态 + 渲染
+    -->
+    <SubAgentDrawer
+      :visible="subAgentDrawerVisible"
+      :sub-agent="currentSubAgent"
+      @close="closeSubAgentDrawer"
     />
   </div>
 </template>
