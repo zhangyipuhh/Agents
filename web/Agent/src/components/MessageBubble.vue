@@ -863,7 +863,7 @@ const getFileIconColor = (filename) => {
 /* 时间线工具块 */
 .timeline-tool {
   width: 100%;
-  max-width: 85%;
+  max-width: 100%;
   margin-bottom: 6px;
 }
 
@@ -880,6 +880,7 @@ const getFileIconColor = (filename) => {
   flex-direction: column;
   gap: 4px;
   margin-top: 6px;
+  align-items: flex-end;
 }
 
 /* 时间线正文块 */
@@ -1040,6 +1041,7 @@ const getFileIconColor = (filename) => {
   background-color: var(--color-bg-tertiary);
   border-radius: var(--radius-md);
   max-height: 200px;
+  max-width: 85%;
   overflow-y: auto;
   animation: expandIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 

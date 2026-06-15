@@ -649,6 +649,8 @@ environment:
 - **安全边界**：子智能体运行在独立 Docker 容器中，与父 Agent 完全隔离
 - **工具集**：`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `execute`（由 `DockerSandboxMiddleware` 继承自 `FilesystemMiddleware` 提供）
 
+**最终文本取值修复（2026-06-15）**：循环结束后取子智能体最终 AI 文本时，数据源从 `data["messages"]`（循环最后一个流块的数据，当最后一块是 `updates` 模式时该键不存在）改为 `all_messages`（循环内累计的消息列表），并对兜底分支增加 `logger.warning` 记录便于排查。修复前父 LLM 会一直收到「沙箱子智能体执行完成，但未获取到文本回复。」兜底字符串，修复后能拿到子智能体真实产出。
+
 ### 依赖
 
 - `deepagents==0.5.5` — LangChain deepagents 库
@@ -1040,6 +1042,10 @@ environment:
 ### 验证结果
 
 - **本地全量**：`cd app && python -m pytest tests/ -v --tb=short` → **130 passed**（2026-06-08）
+- **2026-06-15 新增**：`app/tests/core/tools/test_sandbox_no_text_reply_fix.py`（2 个 P0 用例）
+  - `test_sandbox_returns_last_ai_text_when_last_chunk_is_updates_mode`：核心修复回归测试，覆盖用户报告的「最后一块是 updates 模式导致兜底」场景
+  - `test_sandbox_returns_fallback_when_no_ai_message_in_all_messages`：边界测试，覆盖「子智能体无 AI 文本产出」时兜底 + logger.warning 触发
+- **本地 core/tools 子集**：`pytest app/tests/core/tools/ -v` → **105 passed**（2026-06-15，含新增 2 用例）
 - **CI 期望**：与本地一致，所有用例通过
 
 ### 已知工程实践

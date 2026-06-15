@@ -104,7 +104,7 @@ const duration = computed(() => {
 <style scoped>
 .subagent-card {
   width: 100%;
-  max-width: 85%;
+  max-width: 100%;
   border: 1px solid #e0e0e0;
   border-radius: 8px;
   padding: 5px 10px;

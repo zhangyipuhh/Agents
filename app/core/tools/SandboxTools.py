@@ -880,12 +880,21 @@ def sandbox(
                     elif isinstance(sr, str):
                         final_answer = sr
 
-        # 如果还没有获取到有效答案，尝试从 messages 获取
-        if not final_answer and "messages" in data:
-            final_answer = _extract_last_ai_text(data["messages"])
+        # 如果还没有获取到有效答案，从循环内累计的 all_messages 中提取最后一条 AI 文本。
+        # 不能用 data["messages"]：data 是最后一个流块的数据，当最后一块是 updates 模式时
+        # data = {node_name: {state_delta}}，没有顶层 messages 键（修复前 bug 现场）。
+        if not final_answer and all_messages:
+            final_answer = _extract_last_ai_text(all_messages)
 
-        # 确保 final_answer 不为 None
+        # 兜底：仅在确实没有任何 AI 文本产出时才使用；同时记录 warning 便于排查
         if not final_answer:
+            logger.warning(
+                "[sandbox] 兜底触发：未从 all_messages 中取到 AI 文本。"
+                "tool_call_id=%s, all_messages_count=%d, last_stream_mode=%s",
+                tool_call_id,
+                len(all_messages),
+                stream_mode,
+            )
             final_answer = "沙箱子智能体执行完成，但未获取到文本回复。"
 
         end_time = datetime.now()

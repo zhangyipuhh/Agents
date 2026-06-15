@@ -1,18 +1,20 @@
 <script setup>
 /**
- * SubAgentDrawer - 通用子智能体详情抽屉（2026-06-13 新增，2026-06-14 改造）
+ * SubAgentDrawer - 通用子智能体详情抽屉（2026-06-13 新增，2026-06-14 改造，2026-06-15 精简）
  *
  * 2026-06-14 改造：合并原 SandboxDrawer 职责；
- * 沙箱类型的子智能体（tool='sandbox'）会在消息流区下方展示沙箱事件时间线 + 摘要，
+ * 沙箱类型的子智能体（tool='sandbox'）会在头部下方展示沙箱执行摘要，
  * 因为沙箱执行本质上就是子智能体的一种（统一由 subAgents 维护）。
+ *
+ * 2026-06-15 精简：移除独立的"沙箱事件"时间线区块；
+ * ToolMessage 的步骤信息已通过子智能体消息流区完整呈现，无需重复展示。
  *
  * 内容分区（自上而下）：
  *   1. 头部：工具图标 + 工具名 + 状态徽章 + 关闭 X 按钮
- *   2. 沙箱执行摘要（仅 tool='sandbox' 时显示，进度条 + 当前步骤/总步骤 + 耗时）
+ *   2. 沙箱执行摘要（仅 tool='sandbox' 时显示，状态指示 + 耗时）
  *   3. 父 Agent 提问区（可折叠）
  *   4. 消息流区：HumanMessage / AIMessage / ToolMessage 顺序展示
- *   5. 沙箱事件区（仅 tool='sandbox' 时显示，sandbox_events 透传时间线）
- *   6. 底部：状态摘要（耗时、消息数、工具调用次数）
+ *   5. 底部：状态摘要（耗时、消息数、工具调用次数）
  *
  * Props:
  *   visible: boolean
@@ -45,7 +47,6 @@ const props = defineProps({
 const emit = defineEmits(['close'])
 
 const promptCollapsed = ref(false)
-const sandboxCollapsed = ref(false)
 const messagesScrollRef = ref(null)
 const drawerRef = ref(null)
 const drawerWidth = ref(DEFAULT_DRAWER_WIDTH)
@@ -182,12 +183,6 @@ const duration = computed(() => {
 // 是否为沙箱类型子智能体（2026-06-14 新增：合并原 SandboxDrawer 职责）
 const isSandbox = computed(() => props.subAgent && props.subAgent.tool === 'sandbox')
 
-// 沙箱事件列表（来自 subAgent.events，由 sseParser 透传 sandbox_events）
-const sandboxEvents = computed(() => {
-  if (!isSandbox.value || !props.subAgent || !Array.isArray(props.subAgent.events)) return []
-  return props.subAgent.events
-})
-
 // 沙箱摘要（来自 subAgent.summary，tool_stop 时合并 final_summary）
 const sandboxSummary = computed(() => {
   if (!isSandbox.value || !props.subAgent) return null
@@ -198,41 +193,6 @@ const sandboxElapsedMs = computed(() => {
   if (!sandboxSummary.value) return 0
   return sandboxSummary.value.elapsed_ms || 0
 })
-
-/**
- * 格式化沙箱事件时间戳
- * 入参：毫秒或 ISO 字符串；返回 HH:MM:SS 格式字符串
- */
-function formatSandboxTimestamp(ts) {
-  if (!ts) return ''
-  let d
-  try {
-    d = typeof ts === 'number' ? new Date(ts) : new Date(ts)
-    if (isNaN(d.getTime())) return ''
-  } catch {
-    return ''
-  }
-  const pad = (n) => (n < 10 ? '0' + n : '' + n)
-  return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds())
-}
-
-/**
- * 沙箱事件图标（基于 status / type 字段推断）
- */
-function sandboxEventIcon(evt) {
-  if (!evt) return '•'
-  const s = (evt.status || evt.type || '').toLowerCase()
-  if (s.includes('error') || s.includes('fail')) return '✗'
-  if (s.includes('success') || s.includes('complete') || s.includes('done')) return '✓'
-  if (s.includes('start') || s.includes('begin')) return '▶'
-  if (s.includes('progress') || s.includes('running')) return '●'
-  return '•'
-}
-
-function isCurrentSandboxStep(eventStep) {
-  if (!sandboxSummary.value || !eventStep) return false
-  return eventStep === sandboxSummary.value.current_step && status.value === 'running'
-}
 
 // 当 messages 变化时自动滚动到底部
 watch(() => messages.value.length, async () => {
@@ -370,7 +330,7 @@ function roleLabel(role) {
     <!--
       沙箱执行摘要（2026-06-14 新增）
       2026-06-14 改造：原 SandboxDrawer 的职责合并到 SubAgentDrawer；
-      沙箱类子智能体（tool='sandbox'）在此展示进度条 + 当前步骤/总步骤 + 耗时。
+      沙箱类子智能体（tool='sandbox'）在此展示状态指示 + 耗时（进度条已在 2026-06-14 移除）。
       数据来源：subAgent.summary（由 sseParser 在 tool_stop 时合并 final_summary）。
     -->
     <div v-if="isSandbox" class="drawer-summary">
@@ -457,47 +417,6 @@ function roleLabel(role) {
             </div>
           </div>
         </template>
-      </div>
-    </div>
-
-    <!--
-      沙箱事件区（2026-06-14 新增）
-      2026-06-14 改造：原 SandboxDrawer 的事件时间线合并到 SubAgentDrawer。
-      数据来源：subAgent.events（由 sseParser 透传 sandbox_events）。
-      沙箱事件以列表形式展示，包含步骤号、状态图标、消息、时间戳。
-    -->
-    <div v-if="isSandbox && sandboxEvents.length > 0" class="sandbox-events-section">
-      <div class="section-header" @click="sandboxCollapsed = !sandboxCollapsed">
-        <span class="section-title">沙箱事件</span>
-        <span class="section-count">{{ sandboxEvents.length }} 条</span>
-        <svg class="expand-icon" :class="{ expanded: !sandboxCollapsed }"
-             viewBox="0 0 20 20" fill="currentColor">
-          <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
-        </svg>
-      </div>
-      <div v-if="!sandboxCollapsed" class="sandbox-events-scroll">
-        <div
-          v-for="(evt, idx) in sandboxEvents"
-          :key="(evt.timestamp || 'evt') + '-' + idx"
-          class="sandbox-event-item"
-          :class="{ 'is-current': isCurrentSandboxStep(evt.step) }"
-        >
-          <div class="sandbox-event-header">
-            <span class="sandbox-event-icon">{{ sandboxEventIcon(evt) }}</span>
-            <span v-if="evt.step !== undefined" class="sandbox-event-step">步骤 {{ evt.step }}</span>
-            <span v-if="evt.timestamp" class="sandbox-event-time">{{ formatSandboxTimestamp(evt.timestamp) }}</span>
-          </div>
-          <div v-if="evt.status || evt.type" class="sandbox-event-status">
-            <span class="sandbox-event-status-tag">{{ evt.status || evt.type }}</span>
-          </div>
-          <div v-if="evt.message || evt.content" class="sandbox-event-message">
-            <pre class="sandbox-event-text">{{ evt.message || evt.content }}</pre>
-          </div>
-        </div>
-        <div v-if="status === 'running'" class="live-output">
-          <span class="live-indicator">●</span>
-          <span>执行中...</span>
-        </div>
       </div>
     </div>
 
@@ -931,149 +850,5 @@ function roleLabel(role) {
 .summary-time {
   font-size: 12px;
   color: var(--color-text-muted);
-}
-
-/*
- * 沙箱事件区（2026-06-14 新增，迁移自原 SandboxDrawer）
- * 位置：消息流区下方、底部摘要上方
- */
-.sandbox-events-section {
-  border-top: 1px solid #e8e8e8;
-  background: #fafbfc;
-  flex-shrink: 0;
-  max-height: 35vh;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.sandbox-events-scroll {
-  overflow-y: auto;
-  padding: 0 20px 12px;
-  position: relative;
-  flex: 1;
-}
-
-.sandbox-events-scroll::before {
-  content: '';
-  position: absolute;
-  left: 30px;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  background: #e8e8e8;
-  z-index: 0;
-}
-
-.sandbox-event-item {
-  position: relative;
-  margin: 8px 0;
-  padding: 8px 10px 8px 38px;
-  background-color: #ffffff;
-  border: 1px solid #e8e8e8;
-  border-radius: 6px;
-  z-index: 1;
-}
-
-.sandbox-event-item.is-current {
-  border-color: var(--color-accent);
-  background: linear-gradient(135deg, rgba(30, 90, 168, 0.05) 0%, #ffffff 100%);
-  box-shadow: 0 1px 4px rgba(30, 90, 168, 0.15);
-}
-
-.sandbox-event-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 4px;
-  font-size: 11px;
-}
-
-.sandbox-event-icon {
-  position: absolute;
-  left: 8px;
-  top: 8px;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: #ffffff;
-  border: 1px solid #e0e0e0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 11px;
-  font-weight: 600;
-  z-index: 2;
-}
-
-.is-current .sandbox-event-icon {
-  background: var(--color-accent);
-  color: #ffffff;
-  border-color: var(--color-accent);
-}
-
-.sandbox-event-step {
-  font-weight: 600;
-  color: var(--color-text-primary);
-  flex-shrink: 0;
-}
-
-.sandbox-event-time {
-  margin-left: auto;
-  color: var(--color-text-muted);
-  font-family: 'Courier New', monospace;
-  font-size: 10px;
-  flex-shrink: 0;
-}
-
-.sandbox-event-status {
-  margin-bottom: 4px;
-}
-
-.sandbox-event-status-tag {
-  display: inline-block;
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 9999px;
-  background-color: var(--color-bg-tertiary);
-  color: var(--color-text-secondary);
-}
-
-.sandbox-event-message {
-  margin-top: 4px;
-}
-
-.sandbox-event-text {
-  margin: 0;
-  padding: 6px 8px;
-  background-color: rgba(0, 0, 0, 0.03);
-  border-radius: 4px;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--color-text-primary);
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: inherit;
-  max-height: 160px;
-  overflow-y: auto;
-}
-
-.live-output {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 12px 0 0 32px;
-  font-size: 13px;
-  color: var(--color-text-secondary);
-}
-
-.live-indicator {
-  color: #10b981;
-  animation: liveBlink 1.5s ease-in-out infinite;
-}
-
-@keyframes liveBlink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
 }
 </style>

@@ -246,53 +246,16 @@ describe('SubAgentDrawer', () => {
     expect(wrapper.text()).toContain('耗时:')
   })
 
-  it('tool=sandbox 且有 events 时展示沙箱事件区', () => {
-    const sandboxSa = {
-      ...baseSubAgent,
-      events: [
-        { step: 1, status: 'start', message: '开始执行', timestamp: Date.now() },
-        { step: 2, status: 'progress', message: '执行中...', timestamp: Date.now() }
-      ]
-    }
-    const wrapper = mount(SubAgentDrawer, {
-      props: { visible: true, subAgent: sandboxSa }
-    })
-    expect(wrapper.find('.sandbox-events-section').exists()).toBe(true)
-    const items = wrapper.findAll('.sandbox-event-item')
-    expect(items).toHaveLength(2)
-    // 步骤标签
-    expect(wrapper.text()).toContain('步骤 1')
-    expect(wrapper.text()).toContain('步骤 2')
-  })
-
-  it('tool=非 sandbox 时不展示沙箱事件区', () => {
+  it('tool=非 sandbox 时不展示沙箱摘要区', () => {
+    // 2026-06-15 精简：原"不展示沙箱事件区"用例合并调整为仅校验摘要区（沙箱事件区已删除）
     const exploreSa = {
       ...baseSubAgent,
-      tool: 'explore',
-      events: [{ step: 1, message: '探索中', timestamp: Date.now() }]
+      tool: 'explore'
     }
     const wrapper = mount(SubAgentDrawer, {
       props: { visible: true, subAgent: exploreSa }
     })
-    expect(wrapper.find('.sandbox-events-section').exists()).toBe(false)
     expect(wrapper.find('.drawer-summary').exists()).toBe(false)
-  })
-
-  it('沙箱事件可点击折叠', async () => {
-    const sandboxSa = {
-      ...baseSubAgent,
-      events: [{ step: 1, status: 'start', message: '开始', timestamp: Date.now() }]
-    }
-    const wrapper = mount(SubAgentDrawer, {
-      props: { visible: true, subAgent: sandboxSa }
-    })
-    // 默认展开
-    expect(wrapper.find('.sandbox-events-scroll').exists()).toBe(true)
-    // 点击 section-header 折叠
-    const header = wrapper.find('.sandbox-events-section .section-header')
-    await header.trigger('click')
-    // 折叠后 scroll 容器消失
-    expect(wrapper.find('.sandbox-events-scroll').exists()).toBe(false)
   })
 
   // ========== 2026-06-14 改造：LangChain 0.3+ 多模态消息格式 ==========
