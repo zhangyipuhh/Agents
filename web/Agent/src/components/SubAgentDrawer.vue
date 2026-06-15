@@ -9,12 +9,14 @@
  * 2026-06-15 精简：移除独立的"沙箱事件"时间线区块；
  * ToolMessage 的步骤信息已通过子智能体消息流区完整呈现，无需重复展示。
  *
+ * 2026-06-15 再次精简：移除"沙箱执行摘要"区块（状态指示 + 耗时）；
+ * 该信息与底部摘要、消息流中的 ToolMessage 重复，进一步简化抽屉 UI。
+ *
  * 内容分区（自上而下）：
  *   1. 头部：工具图标 + 工具名 + 状态徽章 + 关闭 X 按钮
- *   2. 沙箱执行摘要（仅 tool='sandbox' 时显示，状态指示 + 耗时）
- *   3. 父 Agent 提问区（可折叠）
- *   4. 消息流区：HumanMessage / AIMessage / ToolMessage 顺序展示
- *   5. 底部：状态摘要（耗时、消息数、工具调用次数）
+ *   2. 父 Agent 提问区（可折叠）
+ *   3. 消息流区：HumanMessage / AIMessage / ToolMessage 顺序展示
+ *   4. 底部：状态摘要（耗时、消息数、工具调用次数）
  *
  * Props:
  *   visible: boolean
@@ -180,19 +182,7 @@ const duration = computed(() => {
   return formatSubAgentDuration(end - props.subAgent.startTime)
 })
 
-// 是否为沙箱类型子智能体（2026-06-14 新增：合并原 SandboxDrawer 职责）
-const isSandbox = computed(() => props.subAgent && props.subAgent.tool === 'sandbox')
-
-// 沙箱摘要（来自 subAgent.summary，tool_stop 时合并 final_summary）
-const sandboxSummary = computed(() => {
-  if (!isSandbox.value || !props.subAgent) return null
-  return props.subAgent.summary || null
-})
-
-const sandboxElapsedMs = computed(() => {
-  if (!sandboxSummary.value) return 0
-  return sandboxSummary.value.elapsed_ms || 0
-})
+// 是否为沙箱类型子智能体（2026-06-14 新增：合并原 SandboxDrawer 职责；2026-06-15 再次精简后整段展示已移除，computed 同步清理）
 
 // 当 messages 变化时自动滚动到底部
 watch(() => messages.value.length, async () => {
@@ -328,21 +318,9 @@ function roleLabel(role) {
     </div>
 
     <!--
-      沙箱执行摘要（2026-06-14 新增）
-      2026-06-14 改造：原 SandboxDrawer 的职责合并到 SubAgentDrawer；
-      沙箱类子智能体（tool='sandbox'）在此展示状态指示 + 耗时（进度条已在 2026-06-14 移除）。
-      数据来源：subAgent.summary（由 sseParser 在 tool_stop 时合并 final_summary）。
+      沙箱执行摘要（2026-06-14 新增，2026-06-15 再次精简时整段移除）
+      原逻辑：tool='sandbox' 时展示状态指示 + 耗时；现该信息已在底部摘要 + 消息流 ToolMessage 中完整呈现，无需重复展示。
     -->
-    <div v-if="isSandbox" class="drawer-summary">
-      <div class="summary-status" :class="status">
-        <span class="status-indicator" :class="status"></span>
-        <span class="status-text">{{ statusText }}</span>
-      </div>
-      <!-- 进度条已移除（2026-06-14）：仅保留状态指示与耗时展示 -->
-      <div v-if="sandboxElapsedMs" class="summary-time">
-        耗时: {{ formatSubAgentDuration(sandboxElapsedMs) }}
-      </div>
-    </div>
 
     <!-- 父 Agent 提问区（可折叠） -->
     <div class="parent-prompt-section">
@@ -806,49 +784,5 @@ function roleLabel(role) {
   color: var(--color-text-muted);
   font-family: 'Courier New', monospace;
   font-size: 10px;
-}
-
-/*
- * 沙箱执行摘要（2026-06-14 新增，迁移自原 SandboxDrawer）
- * 位置：头部下方、消息流区上方
- */
-.drawer-summary {
-  padding: 16px 20px;
-  border-bottom: 1px solid #e8e8e8;
-  background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);
-  flex-shrink: 0;
-}
-
-.summary-status {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.status-indicator {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background-color: #10b981;
-}
-
-.status-indicator.running {
-  background-color: #f59e0b;
-  animation: statusBlink 1.5s ease-in-out infinite;
-}
-
-.status-indicator.error {
-  background-color: #ef4444;
-}
-
-@keyframes statusBlink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
-}
-
-.summary-time {
-  font-size: 12px;
-  color: var(--color-text-muted);
 }
 </style>

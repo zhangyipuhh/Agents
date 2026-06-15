@@ -79,7 +79,7 @@ const duration = computed(() => {
     @click="handleClick"
   >
     <div class="subagent-row">
-      <span class="subagent-icon">{{ meta.icon }}</span>
+      <span class="subagent-icon" :class="{ 'subagent-icon-running': status === 'running' }">{{ meta.icon }}</span>
       <span class="subagent-name">{{ meta.label }}</span>
       <span v-if="promptPreview" class="subagent-prompt" :title="subAgent.parentPrompt">
         {{ promptPreview }}
@@ -148,6 +148,26 @@ const duration = computed(() => {
   flex-shrink: 0;
 }
 
+.subagent-icon-running {
+  animation: subagentIconBounce 1.2s ease-in-out infinite;
+  display: inline-block;
+}
+
+@keyframes subagentIconBounce {
+  0%, 100% {
+    transform: translateY(0) scale(1);
+  }
+  25% {
+    transform: translateY(-3px) scale(1.15);
+  }
+  50% {
+    transform: translateY(0) scale(1);
+  }
+  75% {
+    transform: translateY(-2px) scale(1.1);
+  }
+}
+
 .subagent-name {
   font-weight: 500;
   color: var(--color-text-primary);
@@ -176,6 +196,16 @@ const duration = computed(() => {
 .subagent-status.running {
   background-color: rgba(30, 90, 168, 0.1);
   color: var(--color-accent);
+  animation: statusPulse 2s ease-in-out infinite;
+}
+
+@keyframes statusPulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
 }
 
 .subagent-status.success {

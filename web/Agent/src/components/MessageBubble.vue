@@ -90,6 +90,12 @@ const hasTimeline = computed(() => props.timeline && props.timeline.length > 0)
 // 2026-06-13 新增：子智能体卡片列表
 const hasSubAgents = computed(() => Array.isArray(props.subAgents) && props.subAgents.length > 0)
 
+// 新增：判断是否有正在运行的子智能体（用于抑制主智能体思考动画）
+const hasRunningSubAgent = computed(() => {
+  if (!Array.isArray(props.subAgents)) return false
+  return props.subAgents.some(sa => sa && sa.status === 'running')
+})
+
 function handleSubAgentClick(subAgent) {
   emit('open-subagent-drawer', subAgent)
 }
@@ -542,7 +548,7 @@ const getFileIconColor = (filename) => {
           <!-- 思考块 -->
           <div v-if="group.type === 'thinking'" class="timeline-thinking" :class="{ 'thinking-active': isThinkingGroupActive(index) }">
             <div class="thinking-header" :class="{ 'thinking-header-active': isThinkingGroupActive(index) }" @click="handleThinkingClick(index)">
-              <span class="thinking-icon" :class="{ 'thinking-pulse': isThinkingGroupActive(index) }">🧠</span>
+              <span class="thinking-icon" :class="{ 'thinking-pulse': isThinkingGroupActive(index) && !hasRunningSubAgent }">🧠</span>
               <span class="thinking-label" :class="{ 'thinking-label-active': isThinkingGroupActive(index) }">
                 {{ isThinkingGroupActive(index) ? '思考中...' : '思考过程' }}
               </span>
@@ -557,7 +563,7 @@ const getFileIconColor = (filename) => {
             </div>
             <div v-if="isThinkingGroupExpanded(index)" class="thinking-body">
               <pre class="thinking-content">{{ formatMergedThinkingItems(group.items) }}</pre>
-              <span v-if="isThinkingGroupActive(index)" class="streaming-cursor">▌</span>
+              <span v-if="isThinkingGroupActive(index) && !hasRunningSubAgent" class="streaming-cursor">▌</span>
             </div>
           </div>
 

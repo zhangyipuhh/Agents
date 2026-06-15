@@ -1,5 +1,5 @@
 /**
- * SubAgentDrawer 组件测试（2026-06-13 新增，2026-06-14 改造）
+ * SubAgentDrawer 组件测试（2026-06-13 新增，2026-06-14 改造，2026-06-15 精简）
  *
  * 覆盖：
  *   - visible=false 时抽屉不显示（aside v-show 行为）
@@ -7,7 +7,7 @@
  *   - 父 prompt 折叠/展开交互
  *   - 各 message type 渲染
  *   - 状态徽章 + 消息数 + 工具调用次数
- *   - 2026-06-14 改造：tool='sandbox' 时展示沙箱摘要 + 沙箱事件时间线
+ *   - 2026-06-15 再次精简：移除沙箱执行摘要区块，tool='sandbox' 不再有专属 UI
  *   - 2026-06-14 改造：AIMessage.content 为 LangChain 0.3+ list[ContentBlock] 格式时正确渲染
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -221,41 +221,6 @@ describe('SubAgentDrawer', () => {
       props: { visible: true, subAgent: null }
     })
     expect(wrapper.exists()).toBe(true)
-  })
-
-  // ========== 2026-06-14 改造：沙箱摘要 + 沙箱事件展示 ==========
-
-  it('tool=sandbox 且有 summary 时展示沙箱摘要区', () => {
-    const sandboxSa = {
-      ...baseSubAgent,
-      summary: {
-        progress_pct: 50,
-        current_step: 3,
-        total_steps: 6,
-        elapsed_ms: 12345
-      }
-    }
-    const wrapper = mount(SubAgentDrawer, {
-      props: { visible: true, subAgent: sandboxSa }
-    })
-    // 摘要区仍存在（状态 + 耗时）
-    expect(wrapper.find('.drawer-summary').exists()).toBe(true)
-    // 进度条已移除（2026-06-14）
-    expect(wrapper.find('.summary-progress').exists()).toBe(false)
-    // 耗时展示保留
-    expect(wrapper.text()).toContain('耗时:')
-  })
-
-  it('tool=非 sandbox 时不展示沙箱摘要区', () => {
-    // 2026-06-15 精简：原"不展示沙箱事件区"用例合并调整为仅校验摘要区（沙箱事件区已删除）
-    const exploreSa = {
-      ...baseSubAgent,
-      tool: 'explore'
-    }
-    const wrapper = mount(SubAgentDrawer, {
-      props: { visible: true, subAgent: exploreSa }
-    })
-    expect(wrapper.find('.drawer-summary').exists()).toBe(false)
   })
 
   // ========== 2026-06-14 改造：LangChain 0.3+ 多模态消息格式 ==========
