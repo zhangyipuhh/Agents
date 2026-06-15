@@ -393,6 +393,11 @@ class Settings(BaseSettings):
     demonstration: DemonstrationSettings = Field(default_factory=DemonstrationSettings)
     portal_auth: PortalAuthSettings = Field(default_factory=PortalAuthSettings)
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
+    agent_chat_max_concurrency: int = Field(
+        default=3,
+        ge=1,
+        description="Agent 聊天接口最大并发数，超过该数量的请求将进入队列等待",
+    )
 
     def get_llm_config(self) -> dict:
         """

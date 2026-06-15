@@ -124,3 +124,41 @@ def test_settings_get_llm_config_returns_dict_with_key_fields():
     assert "parallel_tool_calls" in config
     assert "ollama_reasoning" in config
     assert "ollama_timeout" in config
+
+
+def test_settings_agent_chat_max_concurrency_default():
+    """
+    测试 Settings.agent_chat_max_concurrency 默认值与校验。
+
+    参数:
+        monkeypatch: pytest 内置 fixture，用于清除环境变量
+
+    Returns:
+        None
+
+    异常:
+        AssertionError: 默认值或校验结果不符合预期时抛出
+    """
+    from app.core.config.settings import Settings
+    settings = Settings()
+    assert settings.agent_chat_max_concurrency == 3
+
+
+def test_settings_agent_chat_max_concurrency_env_override(monkeypatch):
+    """
+    测试 AGENT_CHAT_MAX_CONCURRENCY 环境变量可覆盖默认值。
+
+    参数:
+        monkeypatch: pytest 内置 fixture
+
+    Returns:
+        None
+
+    异常:
+        AssertionError: 环境变量覆盖结果不符合预期时抛出
+    """
+    monkeypatch.setenv("AGENT_CHAT_MAX_CONCURRENCY", "5")
+    from app.core.config.settings import Settings
+    settings = Settings()
+    assert settings.agent_chat_max_concurrency == 5
+
