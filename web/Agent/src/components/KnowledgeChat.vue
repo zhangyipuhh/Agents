@@ -36,6 +36,47 @@ const showScrollButton = ref(false)
 const showScrollToTopButton = ref(false)
 const unreadCount = ref(0)
 
+// 2026-06-15 新增：排队状态机（独立使用 KnowledgeChat 时也具备提示能力）
+const queueStatus = ref({
+  event: 'idle',
+  waitingCount: 0,
+  activeCount: 0,
+  maxConcurrency: 0,
+  position: 0,
+  timestamp: 0
+})
+const isQueueBannerVisible = computed(() => queueStatus.value.event === 'waiting')
+
+function handleQueueEvent(data) {
+  if (!data || data.type !== 'queue') return
+  queueStatus.value = {
+    event: data.event || 'idle',
+    waitingCount: Number(data.waiting_count) || 0,
+    activeCount: Number(data.active_count) || 0,
+    maxConcurrency: Number(data.max_concurrency) || 0,
+    position: Number(data.position) || 0,
+    timestamp: Number(data.timestamp) || 0
+  }
+}
+
+function handleQueueError(err) {
+  if (!err || err.status !== 429 || !err.detail) return
+  const ts = Date.now() / 1000
+  queueStatus.value = {
+    event: 'waiting',
+    waitingCount: Number(err.detail.waiting_count) || 1,
+    activeCount: Number(err.detail.active_count) || 0,
+    maxConcurrency: Number(err.detail.max_concurrency) || 0,
+    position: 1,
+    timestamp: ts
+  }
+  setTimeout(() => {
+    if (queueStatus.value.timestamp === ts) {
+      queueStatus.value = { ...queueStatus.value, event: 'idle' }
+    }
+  }, 3000)
+}
+
 const isCurrentlyStreaming = computed(() => props.isStreaming || internalStreaming.value)
 
 const canSend = computed(() => {
@@ -114,11 +155,14 @@ const handleSend = async () => {
 
   nextTick(() => scrollToBottom())
 
+  let reader = null
+
   try {
     const stream = await knowledgeChatStream(props.sessionId, message)
-    const reader = stream.getReader()
+    reader = stream.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    let interrupted = false
 
     while (true) {
       const { done, value } = await reader.read()
@@ -138,12 +182,30 @@ const handleSend = async () => {
         if (!event.startsWith('data: ')) continue
         try {
           const data = JSON.parse(event.slice(6))
-          processSSEEvent(data, aiMsg)
+          // 2026-06-15 透传 onQueueEvent 回调
+          processSSEEvent(data, aiMsg, { onQueueEvent: handleQueueEvent })
+          // 2026-06-15 HITL interrupt 主动 cancel reader（与 App.vue 同逻辑）
+          if (aiMsg.interrupt) {
+            interrupted = true
+            try {
+              await reader.cancel()
+            } catch (cancelErr) {
+              console.warn('[KnowledgeChat] reader.cancel 异常（可忽略）:', cancelErr)
+            }
+            break
+          }
         } catch {}
       }
+      if (interrupted) break
       nextTick(() => scrollToBottom())
     }
   } catch (err) {
+    // 2026-06-15 新增：HTTP 429 排队拒绝 → 显示 banner
+    if (err && err.status === 429) {
+      handleQueueError(err)
+      aiMsg.ended = true
+      return
+    }
     aiMsg.error = '不好意思，刚刚出了点小故障，可以晚点再问我一遍。'
     aiMsg.ended = true
   } finally {
@@ -432,15 +494,21 @@ const getFileIconColor = (ext) => {
     </div>
 
     <div class="chat-input-area">
-      <!-- 输入框上方滚动按钮 -->
-      <transition name="fade">
-        <button
-          v-show="true"
-          type="button"
-          class="input-scroll-btn"
-          @click="scrollToBottom('smooth')"
-          :title="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
-        >
+          <!-- 2026-06-15 新增：排队提示 banner（聊天面板下方、输入框上方） -->
+          <QueueStatusBanner
+            :queue-status="queueStatus"
+            :is-visible="isQueueBannerVisible"
+          />
+
+          <!-- 输入框上方滚动按钮 -->
+          <transition name="fade">
+            <button
+              v-show="true"
+              type="button"
+              class="input-scroll-btn"
+              @click="scrollToBottom('smooth')"
+              :title="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
+            >
           <svg viewBox="0 0 20 20" fill="currentColor">
             <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
           </svg>

@@ -524,3 +524,60 @@ describe('isSubAgentMessage 工具函数（2026-06-14 新增）', () => {
     expect(isSubAgentMessage(aiMsg, 'thread_b')).toBe(false)
   })
 })
+
+// =============================================================
+// 2026-06-15 新增：SSE queue 事件（动态排队提示）
+// =============================================================
+describe('SSE queue event handlers (2026-06-15)', () => {
+  it('test_queue_event_invokes_callback_not_writing_to_aiMsg', () => {
+    const aiMsg = createTestAiMsg()
+    const callbackCalls = []
+    const callbacks = {
+      onQueueEvent: (data) => callbackCalls.push(data)
+    }
+    const queueEvent = {
+      type: 'queue',
+      event: 'waiting',
+      waiting_count: 3,
+      active_count: 1,
+      max_concurrency: 1,
+      position: 2,
+      timestamp: 1700000000
+    }
+    processSSEEvent(queueEvent, aiMsg, callbacks)
+    expect(callbackCalls).toHaveLength(1)
+    expect(callbackCalls[0]).toEqual(queueEvent)
+    // queue 事件不应写入 aiMsg.timeline / aiMsg.text / aiMsg.tools
+    expect(aiMsg.timeline).toEqual([])
+    expect(aiMsg.text).toBe('')
+    expect(aiMsg.tools).toEqual([])
+  })
+
+  it('test_queue_event_with_missing_callback_does_not_throw', () => {
+    const aiMsg = createTestAiMsg()
+    const queueEvent = {
+      type: 'queue',
+      event: 'ready',
+      waiting_count: 0,
+      active_count: 1,
+      max_concurrency: 1
+    }
+    // 不传 callbacks 应静默忽略，不抛异常
+    expect(() => processSSEEvent(queueEvent, aiMsg)).not.toThrow()
+    expect(() => processSSEEvent(queueEvent, aiMsg, {})).not.toThrow()
+    // 不应写入 aiMsg
+    expect(aiMsg.timeline).toEqual([])
+  })
+
+  it('test_queue_event_callback_error_is_swallowed', () => {
+    const aiMsg = createTestAiMsg()
+    const callbacks = {
+      onQueueEvent: () => {
+        throw new Error('callback error')
+      }
+    }
+    const queueEvent = { type: 'queue', event: 'waiting' }
+    // 回调异常应被捕获，不影响其他事件处理
+    expect(() => processSSEEvent(queueEvent, aiMsg, callbacks)).not.toThrow()
+  })
+})

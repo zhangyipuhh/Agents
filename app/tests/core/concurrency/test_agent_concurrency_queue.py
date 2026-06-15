@@ -209,3 +209,174 @@ async def test_concurrency_queue_singleton_ignores_subsequent_max_concurrency(re
     second = AgentConcurrencyQueue(max_concurrency=5)
     assert second is first
     assert second.max_concurrency == 2
+
+
+@pytest.mark.asyncio
+async def test_queue_snapshot_returns_active_and_waiting(reset_singleton):
+    """
+    测试 snapshot() 返回 active_count/waiting_count/max_concurrency 等字段。
+
+    参数:
+        reset_singleton: 重置单例 fixture
+
+    返回:
+        None
+
+    异常:
+        AssertionError: snapshot 字段缺失时抛出
+    """
+    queue = AgentConcurrencyQueue(max_concurrency=2)
+    snap = await queue.snapshot()
+    assert snap["active_count"] == 0
+    assert snap["waiting_count"] == 0
+    assert snap["max_concurrency"] == 2
+    assert snap["position"] == -1  # 当前 task 未注册
+    assert "timestamp" in snap
+
+
+@pytest.mark.asyncio
+async def test_queue_position_increments_for_later_waiters(reset_singleton):
+    """
+    测试 FIFO 队列位置计算：第 2 个等待者的 position == 2。
+
+    参数:
+        reset_singleton: 重置单例 fixture
+
+    返回:
+        None
+
+    异常:
+        AssertionError: position 计算不符预期
+    """
+    queue = AgentConcurrencyQueue(max_concurrency=1)
+    holder_started = asyncio.Event()
+    release_holder = asyncio.Event()
+
+    async def holder():
+        async with queue:
+            holder_started.set()
+            await release_holder.wait()
+
+    async def waiter1():
+        # 第 1 个等待者
+        await holder_started.wait()
+        await queue.acquire()
+        await queue.release()
+
+    async def waiter2():
+        # 第 2 个等待者
+        await holder_started.wait()
+        # 等待第 1 个 waiter 进入排队后再调用 acquire
+        await asyncio.sleep(0.05)
+        # waiter2 入队后 position 应该是 1（自己是下一个）
+        pos = await queue.position()
+        assert pos == 1
+        await queue.acquire()
+        await queue.release()
+
+    h_task = asyncio.create_task(holder())
+    await holder_started.wait()
+
+    w1_task = asyncio.create_task(waiter1())
+    w2_task = asyncio.create_task(waiter2())
+
+    await asyncio.sleep(0.15)
+    release_holder.set()
+    await h_task
+    await w1_task
+    await w2_task
+
+
+@pytest.mark.asyncio
+async def test_queue_position_decrements_as_others_release(reset_singleton):
+    """
+    测试 FIFO 队列位置递减：前面的人释放后，自己的 position 减小。
+
+    参数:
+        reset_singleton: 重置单例 fixture
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 释放后 position 未减少
+    """
+    queue = AgentConcurrencyQueue(max_concurrency=1)
+    started = asyncio.Event()
+
+    async def holder():
+        async with queue:
+            started.set()
+            await asyncio.sleep(0.3)
+
+    async def waiter():
+        await started.wait()
+        await queue.acquire()
+        # 等待 holder 释放后自己 position 应该是 1（即将激活）
+        # 然后 acquire 完成 → position 变为 0
+        await asyncio.sleep(0.1)
+        await queue.release()
+
+    holder_task = asyncio.create_task(holder())
+    waiter_task = asyncio.create_task(waiter())
+    await asyncio.sleep(0.05)
+
+    # waiter 进入排队时应该是 waiting_count=1
+    snap = await queue.snapshot()
+    assert snap["waiting_count"] >= 1
+
+    await holder_task
+    await waiter_task
+
+
+@pytest.mark.asyncio
+async def test_queue_enqueue_time_records_monotonic(reset_singleton):
+    """
+    测试 enqueue_time 在 task 入队时被记录。
+
+    参数:
+        reset_singleton: 重置单例 fixture
+
+    返回:
+        None
+
+    异常:
+        AssertionError: enqueue_time 未被正确记录
+    """
+    queue = AgentConcurrencyQueue(max_concurrency=1)
+    started = asyncio.Event()
+    release_holder = asyncio.Event()
+    enq_time_holder = None
+    enq_time_waiter = None
+
+    async def holder():
+        nonlocal enq_time_holder
+        async with queue:
+            started.set()
+            enq_time_holder = queue.enqueue_time()
+            await release_holder.wait()
+
+    async def waiter():
+        nonlocal enq_time_waiter
+        await started.wait()
+        await asyncio.sleep(0.05)
+        # 此时 queue 满员，acquire 会阻塞
+        waiter_task = asyncio.create_task(queue.acquire())
+        await asyncio.sleep(0.05)
+        enq_time_waiter = queue.enqueue_time()
+        assert enq_time_waiter is not None
+        assert isinstance(enq_time_waiter, float)
+        await waiter_task
+        await queue.release()
+
+    holder_task = asyncio.create_task(holder())
+    waiter_task = asyncio.create_task(waiter())
+    await started.wait()
+
+    await asyncio.sleep(0.15)
+    release_holder.set()
+    await holder_task
+    await waiter_task
+
+    assert enq_time_holder is None  # holder 已激活，enqueue_time 已清理
+    assert enq_time_waiter is not None

@@ -625,7 +625,15 @@ export async function chatStream(sessionId, message, attachments = [], resume = 
       ...(resume ? { resume } : {})
     })
   })
-  if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+  if (!response.ok) {
+    // 2026-06-15 新增：保留 status + detail 让上层识别 429 排队场景
+    let body = null
+    try { body = await response.json() } catch {}
+    const err = new Error(body?.detail?.message || `HTTP ${response.status}: ${response.statusText}`)
+    err.status = response.status
+    err.detail = body?.detail || null
+    throw err
+  }
   return response.body
 }
 
@@ -647,7 +655,15 @@ export async function knowledgeChatStream(sessionId, message, attachments = [], 
       ...(resume ? { resume } : {})
     })
   })
-  if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+  if (!response.ok) {
+    // 2026-06-15 新增：保留 status + detail 让上层识别 429 排队场景
+    let body = null
+    try { body = await response.json() } catch {}
+    const err = new Error(body?.detail?.message || `HTTP ${response.status}: ${response.statusText}`)
+    err.status = response.status
+    err.detail = body?.detail || null
+    throw err
+  }
   return response.body
 }
 

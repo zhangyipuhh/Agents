@@ -419,25 +419,89 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 **依赖**:
 - `DockerSandboxMiddleware` / `DockerSandboxBackend`: `app/shared/tools/middleware/docker_sandbox_backend.py`
 
-## Agent 聊天并发控制
+## Agent 聊天并发控制（2026-06-15 扩展：动态排队提示 + HITL 早期释放）
 
-**文件位置**: `app/core/concurrency/chat_concurrency_dependency.py`
+**文件位置**: `app/core/concurrency/chat_concurrency_dependency.py` + `app/core/concurrency/agent_concurrency_queue.py`
 
-**功能**: 限制同时处理的 Agent 聊天请求数，超出最大并发数时进入 FIFO 内存队列等待。
+**功能**: 限制同时处理的 Agent 聊天请求数，超出最大并发数时进入 FIFO 内存队列等待，并向**前端实时推送排队人数提示**。
 
 **配置项**:
-- `AGENT_CHAT_MAX_CONCURRENCY` — Agent 聊天接口最大并发数，超出时进入内存队列等待，默认 3。
+- `AGENT_CHAT_MAX_CONCURRENCY` — Agent 聊天接口最大并发数，超出时进入内存队列等待，默认 1（`settings.agent_chat_max_concurrency`）。
+- 排队事件推送间隔 `QUEUE_POLL_INTERVAL_SECONDS = 1.0`（依赖内常量，硬编码）。
 
-**已接入路由**:
-- `app/features/map_agent/router/map_router.py`:
-  - `POST /api/map/chat`
-  - `POST /api/map/knowledge-chat`
-- `app/features/contract_host_agent/router/contract_router.py`:
-  - `POST /api/contract/chat`
-  - `POST /api/contract/doc_chat`
-  - `POST /api/contract/approval_chat`
+### 双模式依赖（2026-06-15 重构）
 
-**使用方式**: 通过 FastAPI 路由装饰器的 `dependencies=[Depends(chat_concurrency_dependency)]` 参数接入，无需修改端点函数内部逻辑。
+`chat_concurrency_dependency(request, mode="sse" | "http")` 异步生成器：
+
+| 模式 | 触发条件 | 行为 |
+|------|---------|------|
+| **SSE 模式**（默认） | `/api/map/chat`、`/api/map/knowledge-chat` | 排队期间持续 yield `{"type":"queue","event":"waiting",...}` 事件；获取许可后 yield `ready` 事件 + `None` 让路由继续；通过 `await release_done.wait()` 阻塞直到路由主动释放（HITL 场景）或 finally 兜底 |
+| **HTTP 模式** | `/api/contract/chat` 等非流式接口 | 满员时立即抛 `HTTPException(429, detail={error,waiting_count,active_count,max_concurrency,message})`；无需等待时直接 yield None |
+
+### AgentConcurrencyQueue 扩展（2026-06-15）
+
+新增能力：
+- `enqueue_time(task)`：返回指定 task 的入队时间戳（`time.monotonic()`）
+- `position(task)`：返回 FIFO 队列位置（1-based，0=已激活，-1=未注册）
+- `snapshot(task)`：返回 `{active_count, waiting_count, max_concurrency, position, enqueue_time, timestamp}`
+- 内部维护 `_waiter_tasks: List[asyncio.Task]` 与 `_enqueue_times: Dict[asyncio.Task, float]`，支持 position 准确计算
+
+### HITL interrupt 早期释放（核心修复）
+
+> **踩坑记录**：HITL interrupt 后如果仅靠依赖 finally 释放许可，前端不主动断开 SSE 连接会导致许可长时间被占，用户 resume 请求会卡在 FIFO 队列。本改造通过**前后端协作**修复。
+
+**后端机制**：
+- 依赖在 acquire 成功后把 `concurrency_release_handle`（可调用对象）挂到 `request.state`
+- 路由（`_stream_with_queue`）在 yield `type='interrupt'` 业务事件**之前**调用 `handle()` 强制释放许可
+- finally 兜底：`release_done.wait()` 超时或客户端异常断开时执行 release
+- 句柄幂等：多次调用不会重复释放（`release_done.is_set()` 守卫）
+
+**前端机制**：
+- 收到 interrupt 事件后**主动 `await reader.cancel()`** 断开 fetch，让后端 StreamingResponse 立即结束
+- 配合后端 release_handle，**许可释放 + SSE 连接断开两者都及时发生**
+- 缺一不可：仅后端 release 但前端不 cancel → 连接挂着 → finally 兜底延迟；仅前端 cancel 但后端不 release → resume 时排队
+
+### SSE queue 事件协议（2026-06-15 新增）
+
+事件格式（仅追加，不修改既有字段）：
+
+```json
+{
+  "type": "queue",
+  "event": "waiting" | "ready",
+  "waiting_count": int,
+  "active_count": int,
+  "max_concurrency": int,
+  "position": int,         // 1-based，ready 时通常为 0
+  "timestamp": float       // 快照生成时刻
+}
+```
+
+老客户端忽略未知 `type=queue` 字段，行为不变（向后兼容）。
+
+### HTTP 429 响应格式
+
+```json
+{
+  "detail": {
+    "error": "queue_full",
+    "waiting_count": 1,
+    "active_count": 1,
+    "max_concurrency": 1,
+    "message": "当前并发请求已达上限，请稍后重试"
+  }
+}
+```
+
+### 已接入路由
+
+| 路由 | 类型 | 接入方式 |
+|------|------|---------|
+| `/api/map/chat` | SSE | 函数签名内 `dep=Depends(chat_concurrency_dependency)` + `_stream_with_queue` 包装 |
+| `/api/map/knowledge-chat` | SSE | 同上 |
+| `/api/contract/chat` | HTTP | `dependencies=[_chat_concurrency_http_dep()]`（工厂函数，传 `mode="http"`） |
+| `/api/contract/doc_chat` | HTTP | 同上 |
+| `/api/contract/approval_chat` | HTTP | 同上 |
 
 ## 环境变量
 
@@ -582,8 +646,15 @@ system_prompt = (
 - `web/Agent/src/App.vue:extractApprovalData`：直接读 `req.value?.questions`（替代旧的 3 层 `action_request/args` 解包）
 
 **测试**：
+- **测试**：
 - 后端：`tests/test_ask_user_question.py` 17 个测试（Schema 10 + Tool 2 + HitlCheckNode 5）
 - 前端：`web/Agent/src/components/__tests__/HumanApprovalBox.spec.js` 14 个测试
+- **2026-06-15 新增 HITL interrupt 卡死修复 + 前后端协作测试**：
+  - 后端 `app/tests/core/concurrency/test_chat_concurrency_dependency.py` 新增 9 个用例：`test_sse_dependency_no_queue_event_when_available` / `test_sse_dependency_emits_waiting_event_when_full` / `test_sse_dependency_auto_resumes_after_ready_event` / `test_sse_dependency_release_handle_releases_immediately_on_call` / `test_sse_dependency_release_handle_is_idempotent` / `test_sse_dependency_releases_on_hitl_interrupt_path` / `test_sse_dependency_finally_release_when_handle_never_called` / `test_http_dependency_raises_429_when_full` / `test_http_dependency_yields_none_when_available`
+  - 后端 `app/tests/core/concurrency/test_agent_concurrency_queue.py` 新增 4 个用例：`test_queue_snapshot_returns_active_and_waiting` / `test_queue_position_increments_for_later_waiters` / `test_queue_position_decrements_as_others_release` / `test_queue_enqueue_time_records_monotonic`
+  - 前端 `web/Agent/src/components/__tests__/QueueStatusBanner.spec.js` 新增 10 个用例
+  - 前端 `web/Agent/src/components/__tests__/App.interrupt.spec.js` 新增 4 个用例（**HITL 核心**：`test_handleSendMessage_calls_reader_cancel_on_interrupt` / `test_handleApprovalSubmit_calls_reader_cancel_on_interrupt` / `test_handleSendMessage_no_cancel_on_normal_end` / `test_reader_cancel_swallows_cancel_error`）
+  - 前端 `web/Agent/src/utils/__tests__/sseParser.test.js` 新增 3 个 queue 事件用例
 - 核心工具：`app/tests/core/tools/` 新增 3 个测试模块：
   - `test_human_in_the_loop_tools.py`：Schema 7 + Tool 2，覆盖 QuestionOption/Question/AskUserQuestionInput 约束与 Other 注入逻辑
   - `test_base_tools.py`：导入 + get_current_time Mock 调用 + _split_content 分块 3 个用例
@@ -902,6 +973,8 @@ environment:
   - `SubAgentDrawer.vue`：通用子智能体详情 Push Drawer；**2026-06-14 改造合并原 `SandboxDrawer` 职责**（`SandboxProgress` / `SandboxDrawer` / `SandboxEventItem` 三个组件已删除），沙箱专属摘要与事件时间线 **2026-06-15 再次精简后整段移除**；分层展示父 prompt / HumanMessage / AIMessage（含 tool_calls 决策区） / ToolMessage 三类消息 + 底部耗时/消息数/工具调用次数摘要；`renderMessageContent` 扩展支持 LangChain 0.3+ 多模态 ContentBlock（text / thinking / tool_use / tool_result）
 - **普通工具卡片（2026-06-15 新增）**：
   - `ToolCallCard.vue`：普通（非 subagent）工具调用专属卡片，与 `SubAgentCard` 视觉风格对齐；**关键差异：不触发抽屉**（普通工具没有子智能体消息流），body 以"步骤"形式逐步展示每条 SSE 事件（tool_start / tool_progress / tool_stop / tool_error）；头部扳手图标在 `status='running'` 时使用 SubAgentCard 同款 `subagentIconBounce` 闪动动画；默认 `running` 展开、`success/error` 折叠
+- **动态排队提示横幅（2026-06-15 新增）**：
+  - `QueueStatusBanner.vue`：**挂在 ChatArea 与 InputBox 之间**（用户要求位置），实时显示 Agent 聊天接口的并发排队状态；黄色系背景 + 橙色感叹号图标 + 位置 badge（带 2s pulse 动画）；Props：`queueStatus: {event, waitingCount, activeCount, maxConcurrency, position, timestamp}` + `isVisible: Boolean`；进场 `slide-down 200ms` / 退场 `fade-out 200ms`；数据由后端 SSE `queue` 事件（`onQueueEvent` 回调）或 HTTP 429 响应驱动
 - **视图**（`src/views/`）：`LoginView.vue`、`RegisterView.vue`
 
 ### 工具函数（src/utils）
@@ -1088,6 +1161,19 @@ environment:
     - KnowledgeChat 的 `messages` 是**内部 `reactive([])`** 而非 prop（与 ChatArea 不同），测试需通过 `wrapper.vm.messages.push(...)` 注入
     - KnowledgeApp 的 `onMounted` 会调用 `fetchKnowledgeFiles` / `createNewSession` / `validateToken` / `refreshToken`，测试需 `vi.mock('./utils/api.js')` 与 `vi.mock('./utils/auth.js')` 隔离副作用
     - MessageBubble 子组件在测试中以 stub 形式呈现（template 暴露所有 props 为 DOM），便于通过 DOM 查询断言透传
+
+- **2026-06-15 聊天并发排队提示 + HITL interrupt 卡死修复**：
+  - **后端变更**（`app/core/concurrency/`）：
+    - `agent_concurrency_queue.py` 新增 `enqueue_time()` / `position()` / `snapshot()` 方法与 `_waiter_tasks` / `_enqueue_times` 内部状态
+    - `chat_concurrency_dependency.py` 改造为双模式（`mode="sse" | "http"`）+ HITL 早期释放句柄 `request.state.concurrency_release_handle`
+    - `map_router.py` 新增 `_stream_with_queue` 生成器，在 yield interrupt 业务事件前调用 release_handle
+    - `contract_router.py` 新增 `_chat_concurrency_http_dep()` 工厂函数，传 `mode="http"`
+  - **前端变更**（`web/Agent/src/`）：
+    - 新增 `components/QueueStatusBanner.vue`（动态排队提示横幅）
+    - `App.vue` / `KnowledgeApp.vue` / `components/KnowledgeChat.vue` 集成 queueStatus 状态机 + onQueueEvent 回调 + HITL reader.cancel + 429 处理
+    - `utils/sseParser.js` 新增 `QUEUE_EVENT_TYPES` / `isQueueEvent` + `processSSEEvent` 第三参 `callbacks.onQueueEvent`
+    - `utils/api.js` `chatStream` / `knowledgeChatStream` 错误处理扩展：保留 `err.status` / `err.detail`
+  - **测试新增**：后端 `test_agent_concurrency_queue.py` +4 用例 / `test_chat_concurrency_dependency.py` +9 用例（HITL 核心：`test_sse_dependency_releases_on_hitl_interrupt_path`）；前端 `QueueStatusBanner.spec.js` +10 用例 / `App.interrupt.spec.js` +4 用例（HITL 核心：`test_handleSendMessage_calls_reader_cancel_on_interrupt`） / `sseParser.test.js` +3 用例。累计前端约 +17 → **223/223 全量通过**（Vite build 成功，后端约 +13 → **143 passed**）
 
 ## CI 测试（pytest + GitHub Actions）
 
