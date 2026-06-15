@@ -586,6 +586,7 @@ async function handleSessionSwitch(targetSessionId) {
       v-if="currentPage === 'knowledge'"
       @new-chat="newSession"
       @page-change="handlePageChange"
+      @open-subagent-drawer="openSubAgentDrawer"
     />
 
     <!--
