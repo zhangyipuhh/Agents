@@ -66,17 +66,21 @@ function handleQueueEvent(data) {
  */
 function handleQueueError(err) {
   if (!err || err.status !== 429 || !err.detail) return
+  const errorTimestamp = Date.now() / 1000
   queueStatus.value = {
     event: 'waiting',
     waitingCount: Number(err.detail.waiting_count) || 1,
     activeCount: Number(err.detail.active_count) || 0,
     maxConcurrency: Number(err.detail.max_concurrency) || 0,
     position: 1,
-    timestamp: Date.now() / 1000
+    timestamp: errorTimestamp
   }
-  // HTTP 模式拒绝时不等待，3s 后自动淡出 banner
+  // HTTP 模式拒绝时不等待，3s 后自动淡出 banner；
+  // 仅当 banner 仍是本次 429 触发的（即 timestamp 未被新事件覆盖）时才淡出。
+  // 2026-06-15 修复：原代码 `queueStatus.value.timestamp === queueStatus.value.timestamp`
+  // 是恒真表达式（自我比较），无意义；改为捕获 errorTimestamp 闭包变量。
   setTimeout(() => {
-    if (queueStatus.value.timestamp === queueStatus.value.timestamp) {
+    if (queueStatus.value.timestamp === errorTimestamp) {
       queueStatus.value = { ...queueStatus.value, event: 'idle' }
     }
   }, 3000)

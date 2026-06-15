@@ -759,7 +759,7 @@ function closeSubAgentDrawer() {
 
 .chat-input-area {
   position: relative;
-  padding: 16px 40px 24px;
+  padding: 0;
   background-color: rgb(249, 250, 251);
   border-top: 1px solid var(--color-border-light);
   flex-shrink: 0;

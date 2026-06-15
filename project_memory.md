@@ -497,11 +497,46 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 
 | 路由 | 类型 | 接入方式 |
 |------|------|---------|
-| `/api/map/chat` | SSE | 函数签名内 `dep=Depends(chat_concurrency_dependency)` + `_stream_with_queue` 包装 |
+| `/api/map/chat` | SSE | 路由体内手动 `dep = chat_concurrency_dependency(request, mode="sse")` + `stream_with_concurrency(request, dep, business_gen)` 包装 |
 | `/api/map/knowledge-chat` | SSE | 同上 |
 | `/api/contract/chat` | HTTP | `dependencies=[_chat_concurrency_http_dep()]`（工厂函数，传 `mode="http"`） |
 | `/api/contract/doc_chat` | HTTP | 同上 |
 | `/api/contract/approval_chat` | HTTP | 同上 |
+
+### 通用 SSE 流式包装器 `stream_with_concurrency`（2026-06-15 新增）
+
+**文件位置**：`app/core/concurrency/chat_concurrency_dependency.py`（同模块）
+
+**背景踩坑**：早期版本 `map_router.py` 用 `dep=Depends(chat_concurrency_dependency)` 注入并发控制依赖，**实测发现 FastAPI 对 yield-based dependency 的处理会注入 generator 第一个 yield 的值（dict），不是 generator object**——`_stream_with_queue` 中的 `async for item in dep` 因此抛 `TypeError: 'async for' requires an object with __aiter__ method, got dict`（参见 [fastapi/dependencies/utils.py:543-551](file:///e:/laboratory/AI/Agents/Lib/site-packages/fastapi/dependencies/utils.py#L543-L551) 的 `asynccontextmanager(dependant.call)(**sub_values)` 包装）。
+
+**修复方案**：
+- `chat_concurrency_dependency` **不能**作为 `Depends` 使用。SSE 路由必须在路由体内手动调用 `chat_concurrency_dependency(request, mode="sse")` 获取 async generator object
+- 通用 `stream_with_concurrency(request, dep, business_gen)` 工具函数负责：
+  1. 消费 `dep` yield 链（queue waiting/ready 事件）→ 序列化为 SSE 透传前端
+  2. 消费 `business_gen` yield 链（业务 chunk）→ 透传
+  3. HITL 关键：检测到 `type='interrupt'` 业务事件时，yield 之前主动调用 `request.state.concurrency_release_handle()` 释放许可
+  4. finally 兜底：业务流 / 客户端异常时显式 `await dep.aclose()`，触发 `chat_concurrency_dependency` 的 finally 块做 release 兜底
+- 原 `map_router.py` 内私有函数 `_stream_with_queue` / `_is_interrupt_chunk` 已删除并迁移到 concurrency 模块，供所有 SSE 聊天路由复用
+
+**使用方式**（SSE 路由标准模板）：
+
+```python
+from app.core.concurrency import chat_concurrency_dependency, stream_with_concurrency
+
+@router.post('/xxx-chat')
+async def xxx_chat(request: Request, chat_request: ChatRequest):
+    dep = chat_concurrency_dependency(request, mode="sse")  # 手动获取 generator
+    return StreamingResponse(
+        stream_with_concurrency(request, dep, generate_stream_response(...)),
+        media_type="text/event-stream",
+    )
+```
+
+**`__init__.py` 导出**：`from app.core.concurrency import stream_with_concurrency`
+
+**测试覆盖**：`app/tests/core/concurrency/test_stream_with_concurrency.py`（7 用例：SSE 输出顺序 / aclose 时机 / 异常 finally / interrupt release / 非 interrupt 不 release / 无 aclose 防御 / `_is_interrupt_chunk` 单元测试）
+
+**HTTP 模式路由不受影响**：`/api/contract/*` 用 `_chat_concurrency_http_dep()` 工厂函数（内部 `async for _ in gen: pass` 手动驱动 generator），本来就没用 `Depends` 包装。
 
 ## 环境变量
 
@@ -1174,6 +1209,12 @@ environment:
     - `utils/sseParser.js` 新增 `QUEUE_EVENT_TYPES` / `isQueueEvent` + `processSSEEvent` 第三参 `callbacks.onQueueEvent`
     - `utils/api.js` `chatStream` / `knowledgeChatStream` 错误处理扩展：保留 `err.status` / `err.detail`
   - **测试新增**：后端 `test_agent_concurrency_queue.py` +4 用例 / `test_chat_concurrency_dependency.py` +9 用例（HITL 核心：`test_sse_dependency_releases_on_hitl_interrupt_path`）；前端 `QueueStatusBanner.spec.js` +10 用例 / `App.interrupt.spec.js` +4 用例（HITL 核心：`test_handleSendMessage_calls_reader_cancel_on_interrupt`） / `sseParser.test.js` +3 用例。累计前端约 +17 → **223/223 全量通过**（Vite build 成功，后端约 +13 → **143 passed**）
+
+- **2026-06-15 第八次：知识库气泡与输入框宽度对齐修复**（用户反馈缩小时气泡比输入框宽）：
+  - **根因**：`KnowledgeApp.vue` 的 `.chat-input-area`（`padding: 16px 40px 24px`）内部包了带相同 padding 的 `ProfileInputBox`（`.profile-input-box-container` `padding: 16px 40px 24px`），合计 80px 水平内边距，而 `.chat-body` 仅 40px，缩小时输入框比气泡窄 40px
+  - **修复**：`.chat-input-area` 的 `padding` 从 `16px 40px 24px` 改为 `0`，由内部的 `ProfileInputBox`/`HumanApprovalBox` 自持完整 padding
+  - **KnowledgeChat.vue**：`.chat-body` padding 从 `16px`（仅 16px 水平间距）改为 `24px 40px`（与主界面 ChatArea 对齐）；`.messages-container` 追加 `max-width: 900px; margin: 0 auto;`（原缺失导致无宽度约束）
+  - **测试**：219/222 通过（3 个 pre-existing failure 为 `App.interrupt.spec.js` happy-dom AbortError 环境问题）；Vite build 成功
 
 ## CI 测试（pytest + GitHub Actions）
 

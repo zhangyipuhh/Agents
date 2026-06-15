@@ -39,14 +39,19 @@ const props = defineProps({
 
 /**
  * 计算展示文案
- * - waiting: 显示 "X/Y 个并发槽位已满，您前面还有 N 位..."
- * - ready: 不显示文案（banner 立即消失）
+ * - waiting + 槽位已满（active >= max）：显示 "X/Y 个并发槽位已满，您前面还有 N 位..."
+ * - waiting + 槽位已空闲（active < max）：显示 "队列即将处理您的请求..."
+ * - ready / idle: 不显示文案（banner 立即消失）
  */
 const displayText = computed(() => {
   const s = props.queueStatus
   if (s.event !== 'waiting') return ''
   const total = s.maxConcurrency || 0
   const active = s.activeCount || 0
+  // 2026-06-15 修复：避免"槽位已空闲但文案仍说已满"的语义矛盾
+  if (active < total) {
+    return `队列即将处理您的请求（${active}/${total}）`
+  }
   // 排在自己前面的人数 = position - 1（position 是 1-based）
   const ahead = Math.max(0, (s.position || 1) - 1)
   return `当前并发槽位已满（${active}/${total}），您前面还有 ${ahead} 位用户正在排队…`

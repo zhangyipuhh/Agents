@@ -15,7 +15,7 @@ import logging
 import json
 import os
 from datetime import datetime
-from fastapi import APIRouter, Request, HTTPException, Depends
+from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from typing import AsyncGenerator, Optional
 from pydantic import BaseModel
@@ -27,7 +27,7 @@ from langchain_core.messages import ToolMessage
 
 from app.features.map_agent.MapAgent import MapAgent
 from app.core.format.stream import stream_format_context
-from app.core.concurrency import chat_concurrency_dependency
+from app.core.concurrency import chat_concurrency_dependency, stream_with_concurrency
 from app.features.map_agent.config.prompts import KNOWLEDGE_SYSTEM_PROMPT, MAP_AGENT_SYSTEM_PROMPT
 from app.features.map_agent.config.MapAgentContext import MapAgentContext
 
@@ -591,73 +591,10 @@ async def generate_stream_response(
         yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
 
 
-def _is_interrupt_chunk(chunk: str) -> bool:
-    """
-    识别 SSE chunk 是否为 HITL interrupt 事件。
-
-    Args:
-        chunk: generate_stream_response 产出的 SSE 字符串（data: {...}\n\n 形式）
-
-    Returns:
-        bool: 是否为 interrupt 类型事件
-    """
-    if not isinstance(chunk, str) or not chunk.startswith("data: "):
-        return False
-    try:
-        payload = json.loads(chunk[6:].strip())
-        return payload.get("type") == "interrupt"
-    except Exception:
-        return False
-
-
-async def _stream_with_queue(
-    request: Request,
-    dep,
-    business_gen,
-) -> AsyncGenerator[str, None]:
-    """
-    包装 SSE 业务生成器：
-
-    1. 先消费 chat_concurrency_dependency 的 yield 链（queue waiting/ready 事件）
-    2. 然后消费 business_gen 的 yield 链（业务 chunk）
-    3. 关键 HITL 处理：检测到 type='interrupt' 业务事件时，yield 之前主动调用
-       request.state.concurrency_release_handle() 释放许可，确保 resume 请求无排队
-
-    Args:
-        request: FastAPI 请求对象
-        dep: chat_concurrency_dependency 生成器
-        business_gen: generate_stream_response 业务生成器
-
-    Yields:
-        SSE 字符串（含 queue 事件 + 业务 chunk）
-    """
-    # 第一段：消费依赖 yield 链（SSE 模式下依赖会 yield queue 事件或 None）
-    async for item in dep:
-        if item is not None:
-            # queue 事件（waiting/ready） → 直接 yield 给前端
-            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
-            continue
-        # item is None → 已获取许可，进入业务流
-        break
-
-    # 第二段：消费业务流
-    async for chunk in business_gen:
-        # HITL 关键：在 yield interrupt 之前主动释放许可
-        if _is_interrupt_chunk(chunk):
-            handle = getattr(request.state, "concurrency_release_handle", None)
-            if handle is not None:
-                try:
-                    await handle()
-                except Exception as e:
-                    logger.warning(f"[map_router] interrupt 主动释放许可异常: {e}")
-        yield chunk
-
-
 @router.post('/chat')
 async def chat(
     request: Request,
     chat_request: ChatRequest,
-    dep=Depends(chat_concurrency_dependency),
 ):
     """
     地图智能体流式聊天接口
@@ -686,11 +623,17 @@ async def chat(
         # 获取 geometry_data
         geometry_data = chat_request.geometry_data or {}
 
+        # 手动获取 SSE 模式并发控制 generator
+        # 注意：不能用 Depends(chat_concurrency_dependency)，FastAPI 会把 yield 依赖
+        # 包装为 context manager 并注入 generator 第一个 yield 的值（dict），导致下游
+        # ``async for item in dep`` 抛 TypeError。详见 stream_with_concurrency 文档。
+        dep = chat_concurrency_dependency(request, mode="sse")
+
         # 处理 resume 场景（无新消息，只有 resume 决策）
         if chat_request.resume and not chat_request.message:
             logger.warning(f"[Chat] session_id={session_id}, resume={chat_request.resume}")
             return StreamingResponse(
-                _stream_with_queue(
+                stream_with_concurrency(
                     request,
                     dep,
                     generate_stream_response(
@@ -733,7 +676,7 @@ async def chat(
 
         # 返回流式响应
         return StreamingResponse(
-            _stream_with_queue(
+            stream_with_concurrency(
                 request,
                 dep,
                 generate_stream_response(
@@ -763,7 +706,6 @@ async def chat(
 async def knowledge_chat(
     request: Request,
     chat_request: ChatRequest,
-    dep=Depends(chat_concurrency_dependency),
 ):
     """
     地图智能体流式聊天接口
@@ -792,11 +734,14 @@ async def knowledge_chat(
         # 获取 geometry_data
         geometry_data = chat_request.geometry_data or {}
 
+        # 手动获取 SSE 模式并发控制 generator（不能用 Depends，详见 stream_with_concurrency 文档）
+        dep = chat_concurrency_dependency(request, mode="sse")
+
         # 处理 resume 场景（无新消息，只有 resume 决策）
         if chat_request.resume and not chat_request.message:
             logger.warning(f"[KnowledgeChat] session_id={session_id}, resume={chat_request.resume}")
             return StreamingResponse(
-                _stream_with_queue(
+                stream_with_concurrency(
                     request,
                     dep,
                     generate_stream_response(
@@ -823,7 +768,7 @@ async def knowledge_chat(
 
         # 返回流式响应
         return StreamingResponse(
-            _stream_with_queue(
+            stream_with_concurrency(
                 request,
                 dep,
                 generate_stream_response(

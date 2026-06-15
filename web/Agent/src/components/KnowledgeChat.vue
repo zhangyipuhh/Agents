@@ -699,7 +699,7 @@ const getFileIconColor = (ext) => {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 16px;
+  padding: 24px 40px;
   position: relative;
 
   &::-webkit-scrollbar {
@@ -720,6 +720,8 @@ const getFileIconColor = (ext) => {
 }
 
 .messages-container {
+  max-width: 900px;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   min-height: 100%;

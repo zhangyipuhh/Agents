@@ -13,7 +13,7 @@ from typing import AsyncGenerator, List
 
 import httpx
 import pytest
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI
 from httpx import ASGITransport
 
 from app.core.concurrency.agent_concurrency_queue import AgentConcurrencyQueue
@@ -35,18 +35,48 @@ def reset_singleton():
 
 @pytest.fixture
 def app_fixture(reset_singleton):
-    """创建测试用 FastAPI 应用（SSE 模式路由）"""
+    """
+    创建测试用 FastAPI 应用（SSE 模式路由）
+
+    注意（2026-06-15 修复）：
+        原实现 ``async def chat(dep=Depends(chat_concurrency_dependency))`` 看似能
+        触发生成器 acquire 行为，但 FastAPI 对 yield-based dependency 的包装会注入
+        generator 第一个 yield 的值（dict）到 dep——这与生产路由中的
+        ``stream_with_concurrency`` 直接 ``async for item in dep`` 不兼容
+        （TypeError: got dict）。本测试**不消费 dep**，所以未暴露该 bug，但
+        用法本身是反例。本 fixture 改为路由体内手动调用 dependency，保持测试
+        目的不变（验证 SSE 模式等待行为）。
+    """
     app = FastAPI()
     app.state.second_started = asyncio.Event()
 
     @app.get("/chat")
-    async def chat(dep=Depends(chat_concurrency_dependency)):
-        # 依赖已获取队列许可，设置事件表示本请求已开始执行
-        app.state.second_started.set()
-        await asyncio.sleep(0.05)
-        return {"ok": True}
+    async def chat():
+        # 手动获取 generator 并消费至 None（许可获取）
+        dep = chat_concurrency_dependency(_FixtureRequest(), mode="sse")
+        async for item in dep:
+            if item is None:
+                break
+        # 立即释放（测试中路由不消费 dep，靠 finally 兜底会调用 aclose）
+        try:
+            # 依赖已获取队列许可，设置事件表示本请求已开始执行
+            app.state.second_started.set()
+            await asyncio.sleep(0.05)
+            return {"ok": True}
+        finally:
+            await dep.aclose()
 
     return app
+
+
+class _FixtureRequest:
+    """app_fixture 内专用 Request 替身（避免与各测试函数内的 _FakeRequest 局部类同名）"""
+
+    class _State:
+        pass
+
+    def __init__(self):
+        self.state = self._State()
 
 
 @pytest.mark.asyncio
@@ -429,4 +459,91 @@ async def test_http_dependency_yields_none_when_available(reset_singleton):
     async for item in chat_concurrency_dependency(_FakeRequest(), mode="http"):
         items.append(item)
     assert items == [None]
+    assert AgentConcurrencyQueue().active_count == 0
+
+
+# =====================================================================
+# 2026-06-15 新增：槽位空闲时轮询循环应立即跳出（回归测试）
+# 场景：先占用许可（active=1/1），第二个请求进入 SSE 模式轮询；
+#       holder 通过 finally 正常释放（不是 HITL 早期释放），
+#       第二个请求应在远小于 1 秒的延迟内感知到 active=0，跳出轮询进入 acquire()，
+#       并在 ready 事件后 yield None。
+# 之前 bug：轮询循环只检查 release_done.is_set()，正常 finally 释放感知不到，
+#          导致每 1 秒重复 yield waiting，acquire() 永远不被调用。
+# =====================================================================
+
+
+@pytest.mark.asyncio
+async def test_sse_dependency_breaks_polling_when_slot_freed(reset_singleton):
+    """
+    回归测试：占满 → holder finally 正常释放 → 排队请求应在 1 秒内自动跳入 acquire()。
+
+    通过先 yield 一次 waiting 后检测「driver 是否在远小于 QUEUE_POLL_INTERVAL_SECONDS 的
+    时间内收到 ready 事件」来验证修复有效。
+    """
+    AgentConcurrencyQueue(max_concurrency=1)
+    queue = AgentConcurrencyQueue()
+
+    holder_started = asyncio.Event()
+    # 在 ~0.05s 时释放 holder（模拟"槽位被释放"）
+    release_after_seconds = 0.05
+
+    async def holder():
+        async with queue:
+            holder_started.set()
+            await asyncio.sleep(release_after_seconds)
+
+    holder_task = asyncio.create_task(holder())
+    await holder_started.wait()
+    # 此时 active=1，第二个请求应进入轮询循环
+
+    class _FakeRequest:
+        class _State:
+            pass
+
+        def __init__(self):
+            self.state = self._State()
+
+    collected: List[dict] = []
+    none_count = 0
+    polling_start_monotonic = None
+    ready_seen_monotonic = None
+
+    async def drive_dep():
+        nonlocal none_count, polling_start_monotonic, ready_seen_monotonic
+        async for item in chat_concurrency_dependency(_FakeRequest(), mode="sse"):
+            if item is None:
+                none_count += 1
+                break
+            # 记录第一个 waiting 事件的时间，作为轮询起点
+            if polling_start_monotonic is None and item.get("event") == "waiting":
+                polling_start_monotonic = asyncio.get_event_loop().time()
+            if item.get("event") == "ready":
+                ready_seen_monotonic = asyncio.get_event_loop().time()
+            collected.append(item)
+
+    driver = asyncio.create_task(drive_dep())
+    # 等 holder 释放完毕 + driver 处理完所有事件
+    await holder_task
+    # 给 driver 充分时间响应（远小于 1s；之前 bug 需等满 1s 超时才会发现）
+    await asyncio.wait_for(driver, timeout=0.5)
+
+    # 应当至少 yield 过一次 waiting（holder 占满期间）
+    waiting_events = [c for c in collected if c.get("event") == "waiting"]
+    assert len(waiting_events) >= 1, "排队期间应至少 yield 一次 waiting 事件"
+
+    # 关键断言：ready 事件必须在 QUEUE_POLL_INTERVAL_SECONDS（1.0s）内出现
+    # 因为修复后槽位一空闲就立即跳出轮询（不再死等 1s 超时）
+    assert ready_seen_monotonic is not None, "driver 应收到 ready 事件"
+    elapsed = ready_seen_monotonic - polling_start_monotonic
+    assert elapsed < 0.9, (
+        f"ready 事件应在 < 0.9s 内出现（修复后轮询应立即响应槽位空闲），"
+        f"实测 {elapsed:.3f}s —— 可能是轮询退出条件未生效的回归"
+    )
+
+    # 同时最终应 yield None 进入业务流
+    assert none_count == 1, "最终应 yield 一次 None 进入业务流"
+
+    # 业务结束后 finally 兜底应正确 release（active_count 归 0）
+    await asyncio.sleep(0.05)
     assert AgentConcurrencyQueue().active_count == 0
