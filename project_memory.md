@@ -900,6 +900,8 @@ environment:
 - **Subagent 折叠与抽屉（2026-06-13 新增，2026-06-14 改造）**：
   - `SubAgentCard.vue`：通用子智能体折叠卡片（含沙箱），**2026-06-14 改造后挂在父 AI 气泡的 `timeline.tool` 块内**（按 toolCallId 匹配，遵循事件流时序，不再堆在会话末尾）；工具图标 + 父 prompt 预览 + 状态徽章 + 耗时 + 消息数 + "查看详情" 入口；点击 emit('click', subAgent)
   - `SubAgentDrawer.vue`：通用子智能体详情 Push Drawer；**2026-06-14 改造合并原 `SandboxDrawer` 职责**（`SandboxProgress` / `SandboxDrawer` / `SandboxEventItem` 三个组件已删除），沙箱专属摘要与事件时间线 **2026-06-15 再次精简后整段移除**；分层展示父 prompt / HumanMessage / AIMessage（含 tool_calls 决策区） / ToolMessage 三类消息 + 底部耗时/消息数/工具调用次数摘要；`renderMessageContent` 扩展支持 LangChain 0.3+ 多模态 ContentBlock（text / thinking / tool_use / tool_result）
+- **普通工具卡片（2026-06-15 新增）**：
+  - `ToolCallCard.vue`：普通（非 subagent）工具调用专属卡片，与 `SubAgentCard` 视觉风格对齐；**关键差异：不触发抽屉**（普通工具没有子智能体消息流），body 以"步骤"形式逐步展示每条 SSE 事件（tool_start / tool_progress / tool_stop / tool_error）；头部扳手图标在 `status='running'` 时使用 SubAgentCard 同款 `subagentIconBounce` 闪动动画；默认 `running` 展开、`success/error` 折叠
 - **视图**（`src/views/`）：`LoginView.vue`、`RegisterView.vue`
 
 ### 工具函数（src/utils）
@@ -1035,6 +1037,34 @@ environment:
 - **2026-06-14 再更新**：subagent 工具调用不在「工具调用」块内重复展示；`MessageBubble.vue` 导出 `isSubAgentTool` 工具，新增 `isSubAgentItem` / `getNonSubAgentItems` 过滤逻辑；`MessageBubble.spec.js` 扩展 +3 用例（全 subagent / 混合 / 全普通）；累计 **129/129** 全量通过（Vite build 成功）
 - **2026-06-14 第三次去重**：`MessageBubble.vue` 新增 `subAgentsByGroup` computed + 重构 `getSubAgentsForGroup`（基于 `mergedTimeline` 索引查找），保证同一 `toolCallId` 在跨多个 `tool` group 时仅首次渲染 `SubAgentCard`，后续 group 中同 id 直接跳过；`MessageBubble.spec.js` 新增 3 个用例（同 id 跨 group 只 1 张 / 不同 id 独立 / 全部去重后空 group 不渲染）；累计 **132/132** 全量通过（Vite build 成功）
 - **2026-06-15 第三次精简**：`SubAgentDrawer.vue` 整段移除"沙箱执行摘要"区块（`.drawer-summary` + `.summary-status` + `.status-indicator` + `.summary-time` + `@keyframes statusBlink`），含 5 行模板注释；同步删除 `isSandbox` / `sandboxSummary` / `sandboxElapsedMs` 三个仅被该 div 使用的 computed；`SubAgentDrawer.spec.js` 删除 2 个针对该 div 的用例（sandbox summary 存在/非 sandbox 不展示）；`sseParser.js` 透传 `sandbox_summary` / `sandbox_events` 数据保持不变（移除的是展示，数据仍由前端接收便于后续扩展）；累计 **154/154** 全量通过（Vite build 成功；含 SubAgentDrawer.spec.js 19 用例）
+- **2026-06-15 第四次：普通工具卡片 (ToolCallCard) 改造**：
+  - **新增** `web/Agent/src/components/ToolCallCard.vue`：普通工具调用专属卡片，与 `SubAgentCard` 视觉风格对齐（共用 `.subagent-card` / `.subagent-row` / `.subagent-icon-running` 动画与状态色），关键差异是 **不触发抽屉**（普通工具没有子智能体消息流），body 以"步骤"形式逐步展示每条 SSE 事件（tool_start / tool_progress / tool_stop / tool_error），头部扳手图标在 `running` 状态使用 SubAgentCard 同款 `subagentIconBounce` 闪动动画；默认 `running` 展开、`success/error` 折叠；时间戳 `* 1000` 转换（sseParser 透传的 timestamp 为秒单位）；提供 `dataToEntries` / `progressSummary` / `startSummary` / `stopSummary` / `errorSummary` 五个摘要工具函数把每条事件 data 转为可读字符串
+  - **修改** `web/Agent/src/components/MessageBubble.vue`：
+    - `import ToolCallCard from './ToolCallCard.vue'`
+    - 新增 `getToolCardGroups(items)` helper：按 `toolCallId` 把非 subagent 事件分组，缺失 toolCallId 时按出现顺序合成 `__auto_N` 唯一 id
+    - `timeline.tool` 分支改造：用 `<ToolCallCard v-for=...>` 替换原 `tools-header` (N) + `tools-body` JSON 列表；SubAgentCard 路径（`timeline-subagent-list`）保持不变
+    - 降级模式（历史消息回放，无 timeline）同步改造：原 `tools-section` 改用 `getToolCardGroups(tools)` + `timeline-toolcard-list`
+    - CSS 新增 `.timeline-toolcard-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; align-items: flex-end; }`（与 `.timeline-subagent-list` 风格一致）
+    - 旧 `isToolsExpanded` / `toggleTools` / `formatToolItem` / `getNonSubAgentItems` 函数保留（不再被模板使用，但删除为破坏性改动，留作 dead-code 备用）
+  - **新增** `web/Agent/src/components/__tests__/ToolCallCard.spec.js`：**23** 用例，覆盖 importable / 工具名+步骤数 / 状态徽章 (running / success / error / tool_stop非success退error) / 扳手动画 class / 默认展开折叠 / 点击切换 / 步骤渲染（时间戳+类型徽章+摘要+乱序追加）/ error 摘要 / 缺失 timestamp 占位 / 抽屉事件守卫 / 空 events / startTime+endTime 耗时 / 多事件合并到一张卡
+  - **更新** `web/Agent/src/components/__tests__/MessageBubble.spec.js`：3 个老用例迁移（`tools-header` 断言改为 `tool-call-card` 数量断言；SubAgentCard 选择器用 `.subagent-card.clickable` 区分避免 ToolCallCard 复用 `.subagent-card` class 造成选择器冲突）；新增 3 个 ToolCallCard 集成测试
+  - 累计 **183/183** 全量通过（Vite build 成功）
+- **2026-06-15 第五次：ToolCallCard bug 修复 + 样式解耦**（用户反馈普通工具弹出智能体卡片）：
+  - **Bug 修复（核心）**：`MessageBubble.vue` 的 `subAgentsByGroup` computed **未过滤非 subagent 工具事件**，导致 `sseParser.updateSubAgentFromCustomEvent` 对所有 tool 名都创建 subAgents 条目（含普通工具），普通工具（如「生成报告」）会被 `getSubAgentsForGroup` 按 toolCallId 匹配并渲染为 `SubAgentCard`，点击触发 `SubAgentDrawer`。修复：在 `subAgentsByGroup` 循环中增加 `if (!isSubAgentItem(item)) continue` 过滤（判断 `item.data.tool` 是否属于 SUBAGENT_TOOLS），仅 subagent 工具（sandbox / explore）才走 SubAgentCard 路径
+  - **样式解耦**：ToolCallCard 重写为完全独立 class `.tool-call-card`（不再复用 `.subagent-card`，避免选择器冲突）：
+    - 头部 SVG 扳手图标（独立设计，与 SubAgentCard 的 emoji 区分）
+    - 显式「**普通工具**」蓝色徽章（`.tool-call-badge`）+ tooltip「普通工具（非子智能体）」，与 SubAgentCard（无此徽章）一眼可辨
+    - 状态色：running=accent 蓝、success=**accent 蓝**（不是 SubAgentCard 的 success 绿色）、error=红
+    - 步骤行单行紧凑：时间戳 + 类型徽章 + 摘要 + 详情切换按钮；**key-value 详情默认折叠**，点击单条步骤可展开（`.tool-step-detail` 内含完整 key-value 表格）
+  - **新增** 测试用例（**+10 用例 → 193/193 全量通过**）：
+    - `MessageBubble.spec.js` 新增 `MessageBubble 普通工具不被误渲染为 SubAgentCard（2026-06-15 修复）` 描述块 3 个回归测试：普通工具事件不应渲染 SubAgentCard / subagent 工具正常渲染 / 混合场景分别渲染
+    - `ToolCallCard.spec.js` 新增 5 个测试：「普通工具」徽章存在性 + title 属性 / 头部 SVG 扳手图标（独立图标）/ 独立 class `.tool-call-card`（不复用 `.subagent-card`）/ success 状态用蓝色（与 SubAgentCard 绿色区分）/ 步骤默认不显示 key-value 详情 / 点击步骤行可展开折叠 key-value 详情 / 展开后展示 key-value 字段
+  - 累计 **193/193** 全量通过（Vite build 成功）
+- **2026-06-15 第六次：ToolCallCard 样式微调**（用户反馈完成态颜色 + 步骤分隔 + 文案）：
+  - **完成态颜色统一**：将 `.tool-call-card.success` / `.tool-call-status.success` 的边框与文字色从蓝色（accent）改为**绿色 #10b981**（`.tool-call-card.success` 背景也加上 `rgba(16, 185, 129, 0.04)` 浅绿渐变），与 `SubAgentCard` 完成态保持视觉一致；running 仍为蓝色，error 仍为红色
+  - **步骤行间横线分隔**：每个 `.tool-step` 增加 `border-bottom: 1px dashed rgba(0, 0, 0, 0.08)`；最后一步通过 `.tool-step:last-child { border-bottom: none; }` 取消分隔（避免视觉割裂）；padding 微调 3px→4px 让分隔线更透气
+  - **文案调整**：`typeLabel` 中 `tool_progress` 从「进度」改为「**进行中**」（与状态徽章「执行中」语义区分：徽章是状态，行徽章是事件类型）
+  - **新增** 1 个测试 → **194/194** 全量通过：步骤行间用横线分隔（验证 DOM 兄弟节点关系 + 最后一步不显示分隔）；原"成功用蓝色"测试改为"成功用绿色"；步骤渲染测试断言"进行中"文案
 
 ## CI 测试（pytest + GitHub Actions）
 

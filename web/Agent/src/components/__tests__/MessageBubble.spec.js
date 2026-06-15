@@ -176,9 +176,10 @@ describe('MessageBubble 子智能体卡片渲染（2026-06-14 改造）', () => 
 })
 
 // ========== 2026-06-14 再改造：subagent 不在工具调用块内重复展示 ==========
+// 2026-06-15 第三次改造：普通工具由 ToolCallCard 渲染（替代原 tools-header / tools-body）
 
-describe('MessageBubble 工具调用块过滤子智能体（2026-06-14 改造）', () => {
-  it('group.items 全是 subagent 时不渲染 tools-header / tools-body', () => {
+describe('MessageBubble 工具调用块过滤子智能体（2026-06-14 改造 + 2026-06-15 ToolCallCard）', () => {
+  it('group.items 全是 subagent 时不渲染 tools-header / tools-body / timeline-toolcard-list', () => {
     const subAgents = [
       { toolCallId: 'tc_1', threadId: 'tc_1', tool: 'sandbox', parentPrompt: 'p1', messages: [], events: [], status: 'success', startTime: 0, endTime: 100, error: null },
       { toolCallId: 'tc_2', threadId: 'tc_2', tool: 'sandbox', parentPrompt: 'p2', messages: [], events: [], status: 'success', startTime: 0, endTime: 100, error: null }
@@ -193,14 +194,16 @@ describe('MessageBubble 工具调用块过滤子智能体（2026-06-14 改造）
         subAgents
       }
     })
-    // tools-header / tools-body 不应出现（全是 subagent）
+    // tools-header / tools-body 不应出现（已被 ToolCallCard 替代）
     expect(wrapper.find('.tools-header').exists()).toBe(false)
     expect(wrapper.find('.tools-body').exists()).toBe(false)
-    // 但 SubAgentCard 应渲染
-    expect(wrapper.findAll('.subagent-card').length).toBe(2)
+    // 全是 subagent，普通工具卡片列表不应渲染
+    expect(wrapper.find('.timeline-toolcard-list').exists()).toBe(false)
+    // 2 张 SubAgentCard（用 .clickable 区分 SubAgentCard；ToolCallCard 无 .clickable）
+    expect(wrapper.findAll('.subagent-card.clickable').length).toBe(2)
   })
 
-  it('group.items 混合 subagent + 普通工具时，count 与 body 仅展示普通工具', async () => {
+  it('group.items 混合 subagent + 普通工具时，渲染 SubAgentCard + 2 张 ToolCallCard', async () => {
     const subAgents = [
       { toolCallId: 'tc_sa', threadId: 'tc_sa', tool: 'sandbox', parentPrompt: 'p_sa', messages: [], events: [], status: 'success', startTime: 0, endTime: 100, error: null }
     ]
@@ -215,20 +218,13 @@ describe('MessageBubble 工具调用块过滤子智能体（2026-06-14 改造）
         subAgents
       }
     })
-    // tools-header 应渲染，计数为 2（不含 subagent）
-    const label = wrapper.find('.tools-label')
-    expect(label.exists()).toBe(true)
-    expect(label.text()).toContain('(2)')
-    // 点击 tools-header 展开后再断言 body
-    await wrapper.find('.tools-header').trigger('click')
-    // tools-body 内仅 2 个 tool-item（不含 subagent）
-    const items = wrapper.findAll('.tools-body .tool-item')
-    expect(items.length).toBe(2)
-    // 1 个 subAgentCard
-    expect(wrapper.findAll('.subagent-card').length).toBe(1)
+    // 1 个 SubAgentCard（用 .clickable 区分）
+    expect(wrapper.findAll('.subagent-card.clickable').length).toBe(1)
+    // 2 个 ToolCallCard（普通工具按 toolCallId 分组：tc_fs1 / tc_fs2 各 1 张）
+    expect(wrapper.findAll('.tool-call-card').length).toBe(2)
   })
 
-  it('group.items 全是普通工具时维持旧行为（count == items.length）', async () => {
+  it('group.items 全是普通工具时，渲染 2 张 ToolCallCard（不渲染旧 tools-header）', () => {
     const wrapper = mount(MessageBubble, {
       props: {
         type: 'ai',
@@ -239,13 +235,179 @@ describe('MessageBubble 工具调用块过滤子智能体（2026-06-14 改造）
         subAgents: []
       }
     })
-    const label = wrapper.find('.tools-label')
-    expect(label.exists()).toBe(true)
-    expect(label.text()).toContain('(2)')
-    // 展开后再断言 body
-    await wrapper.find('.tools-header').trigger('click')
-    const items = wrapper.findAll('.tools-body .tool-item')
-    expect(items.length).toBe(2)
+    // 旧 tools-header / tools-body 不应出现
+    expect(wrapper.find('.tools-header').exists()).toBe(false)
+    expect(wrapper.find('.tools-body').exists()).toBe(false)
+    // 2 张 ToolCallCard
+    expect(wrapper.findAll('.tool-call-card').length).toBe(2)
+  })
+})
+
+// ========== 2026-06-15 新增：ToolCallCard 集成测试 ==========
+
+describe('MessageBubble ToolCallCard 集成（2026-06-15 新增）', () => {
+  it('timeline.tool 内的普通工具事件按 toolCallId 分组渲染 ToolCallCard', () => {
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'ai',
+        timeline: [
+          { type: 'tool', content: makeNonSubAgentEvent('tc_1', 'read_file') }
+        ],
+        subAgents: []
+      }
+    })
+    // 1 张 ToolCallCard
+    expect(wrapper.findAll('.tool-call-card').length).toBe(1)
+    // 卡片内显示工具名（read_file）
+    expect(wrapper.find('.tool-call-name').text()).toBe('read_file')
+  })
+
+  it('同 toolCallId 多事件合并到同一张 ToolCallCard（不重复渲染）', () => {
+    // 3 条事件都归属同一 tc_1 toolCallId，预期合并为 1 张卡片（3 步）
+    const ev1 = { type: 'custom', data: { type: 'tool_start', tool: 'read_file', tool_call_id: 'tc_1', data: {} } }
+    const ev2 = { type: 'custom', data: { type: 'tool_progress', tool: 'read_file', tool_call_id: 'tc_1', data: { percentage: 50 } } }
+    const ev3 = { type: 'custom', data: { type: 'tool_stop', tool: 'read_file', tool_call_id: 'tc_1', data: { status: 'success' } } }
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'ai',
+        timeline: [
+          { type: 'tool', content: ev1 },
+          { type: 'tool', content: ev2 },
+          { type: 'tool', content: ev3 }
+        ],
+        subAgents: []
+      }
+    })
+    // 1 张 ToolCallCard，步骤数 = 3
+    expect(wrapper.findAll('.tool-call-card').length).toBe(1)
+    expect(wrapper.find('.tool-call-step-count').text()).toBe('3 步')
+  })
+
+  it('ToolCallCard 不触发 open-subagent-drawer 事件（普通工具不弹抽屉）', async () => {
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'ai',
+        timeline: [
+          { type: 'tool', content: makeNonSubAgentEvent('tc_1', 'read_file') }
+        ],
+        subAgents: []
+      }
+    })
+    // 点击 ToolCallCard 头部
+    await wrapper.find('.tool-call-card .tool-call-header').trigger('click')
+    // 不应触发 open-subagent-drawer 事件
+    expect(wrapper.emitted('open-subagent-drawer')).toBeFalsy()
+    expect(wrapper.emitted('open-sandbox-drawer')).toBeFalsy()
+  })
+})
+
+// ========== 2026-06-15 第二次修复：普通工具不应被渲染为 SubAgentCard ==========
+// 背景：sseParser.updateSubAgentFromCustomEvent 对所有 tool 名都创建 subAgents 条目
+//      （不仅限于 subagent 工具）；getSubAgentsByGroup 按 toolCallId 匹配时未做 tool 名过滤
+//      导致普通工具（如「生成报告」）会被错误渲染为 SubAgentCard，点击后触发 SubAgentDrawer
+// 修复：subAgentsByGroup 增加 isSubAgentItem(item) 过滤
+
+describe('MessageBubble 普通工具不被误渲染为 SubAgentCard（2026-06-15 修复）', () => {
+  // 工具名生成器：构造普通工具事件（tool 名不在 SUBAGENT_TOOLS 中）
+  const makeRegularToolEvent = (toolCallId, tool = '生成报告') => ({
+    type: 'custom',
+    data: {
+      type: 'tool_start',
+      tool,
+      tool_call_id: toolCallId,
+      data: { parent_prompt: '请生成报告' }
+    }
+  })
+
+  it('普通工具事件不应渲染 SubAgentCard（即使 sseParser 已注册到 subAgents 列表）', () => {
+    // 关键：subAgents 列表里含 "生成报告" 条目（模拟 sseParser 对所有 tool 创建条目的行为）
+    const subAgents = [
+      {
+        toolCallId: 'tc_report',
+        threadId: 'tc_report',
+        tool: '生成报告', // 注意：不是 subagent 工具
+        parentPrompt: '请生成报告',
+        messages: [], // 空的（普通工具没有子消息流）
+        events: [],
+        status: 'success',
+        startTime: 0,
+        endTime: 6000,
+        error: null
+      }
+    ]
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'ai',
+        timeline: [
+          { type: 'tool', content: makeRegularToolEvent('tc_report', '生成报告') }
+        ],
+        subAgents
+      }
+    })
+    // 关键断言：不应有 SubAgentCard（即使 subAgents 列表里有"生成报告"条目）
+    expect(wrapper.findAll('.subagent-card.clickable').length).toBe(0)
+    // 应有 ToolCallCard
+    expect(wrapper.findAll('.tool-call-card').length).toBe(1)
+  })
+
+  it('subagent 工具（sandbox/explore）正常渲染为 SubAgentCard', () => {
+    // 验证：修复没有破坏 subagent 路径
+    const subAgents = [
+      {
+        toolCallId: 'tc_sandbox',
+        threadId: 'tc_sandbox',
+        tool: 'sandbox', // subagent 工具
+        parentPrompt: '执行沙箱',
+        messages: [],
+        events: [],
+        status: 'running',
+        startTime: Date.now() - 1000,
+        endTime: null,
+        error: null
+      }
+    ]
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'ai',
+        timeline: [
+          { type: 'tool', content: makeToolEvent('tc_sandbox', 'sandbox') }
+        ],
+        subAgents
+      }
+    })
+    // 1 个 SubAgentCard
+    expect(wrapper.findAll('.subagent-card.clickable').length).toBe(1)
+    // 0 个 ToolCallCard（sandbox 不走 ToolCallCard 路径）
+    expect(wrapper.findAll('.tool-call-card').length).toBe(0)
+  })
+
+  it('同 group 混合 sandbox + 普通工具：1 SubAgentCard + 1 ToolCallCard', () => {
+    const subAgents = [
+      {
+        toolCallId: 'tc_sa',
+        threadId: 'tc_sa',
+        tool: 'sandbox',
+        parentPrompt: 'p_sa',
+        messages: [],
+        events: [],
+        status: 'success',
+        startTime: 0,
+        endTime: 100,
+        error: null
+      }
+    ]
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'ai',
+        timeline: [
+          { type: 'tool', content: makeToolEvent('tc_sa', 'sandbox') },
+          { type: 'tool', content: makeNonSubAgentEvent('tc_fs', 'read_file') }
+        ],
+        subAgents
+      }
+    })
+    expect(wrapper.findAll('.subagent-card.clickable').length).toBe(1)
+    expect(wrapper.findAll('.tool-call-card').length).toBe(1)
   })
 })
 

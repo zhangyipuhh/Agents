@@ -4,6 +4,8 @@ import { marked } from 'marked'
 import { formatFileSize, getFileExtension, getAuthHeaders } from '../utils/api.js'
 import { isSubAgentTool } from '../utils/sseParser.js'
 import SubAgentCard from './SubAgentCard.vue'
+// 2026-06-15 新增：普通工具调用卡片（与 SubAgentCard 视觉对齐、不触发抽屉）
+import ToolCallCard from './ToolCallCard.vue'
 
 const props = defineProps({
   type: {
@@ -176,6 +178,10 @@ const subAgentsByGroup = computed(() => {
     }
     const groupResult = []
     for (const item of group.items) {
+      // 2026-06-15 修复：必须先用 isSubAgentItem 过滤（判断 item.data.tool 是否属于 subagent 工具集）
+      // 否则 sseParser.updateSubAgentFromCustomEvent 对所有 tool 都创建 subAgents 条目（含普通工具），
+      // 会导致「普通工具」被错误地匹配并渲染为 SubAgentCard，点击触发 SubAgentDrawer
+      if (!isSubAgentItem(item)) continue
       const id = extractToolCallId(item)
       if (!id || !map.has(id) || seen.has(id)) continue
       seen.add(id)
@@ -226,6 +232,37 @@ function isSubAgentItem(item) {
 function getNonSubAgentItems(items) {
   if (!Array.isArray(items)) return []
   return items.filter(item => !isSubAgentItem(item))
+}
+
+/**
+ * 将普通工具事件按 toolCallId 分组，供 ToolCallCard 渲染（2026-06-15 新增）
+ *
+ * 入参：items（来自 mergedTimeline 中 tool 组的 raw event 数组）
+ * 返回：[ { toolCallId, tool, events: [item.data, ...] }, ... ]
+ *   - 已过滤掉子智能体调用（isSubAgentItem === true）
+ *   - 缺失 toolCallId 时按出现顺序合成唯一 id（__auto_N），确保同位置相邻事件能聚到一组
+ *   - 同组内 events 按 events 数组原顺序排列（与 SSE 到达顺序一致）
+ */
+function getToolCardGroups(items) {
+  if (!Array.isArray(items)) return []
+  const groups = []
+  const idxByKey = new Map()
+  for (const item of items) {
+    if (isSubAgentItem(item)) continue
+    const inner = (item && item.data) || {}
+    const callId = inner.tool_call_id || inner.thread_id || ''
+    const key = callId || ('__auto_' + idxByKey.size)
+    if (!idxByKey.has(key)) {
+      idxByKey.set(key, groups.length)
+      groups.push({
+        toolCallId: callId || key,
+        tool: inner.tool || '工具调用',
+        events: []
+      })
+    }
+    groups[idxByKey.get(key)].events.push(inner)
+  }
+  return groups
 }
 
 const formattedThinking = computed(() => {
@@ -578,34 +615,21 @@ const getFileIconColor = (filename) => {
           -->
           <div v-else-if="group.type === 'tool'" class="timeline-tool">
             <!--
-              tools-header / tools-body 仅在「存在非子智能体项目」时渲染
-              - 避免当 group.items 全是 subagent 时仍显示误导性计数
-              - 子智能体的展示完全交给下方 timeline-subagent-list
+              2026-06-15 新增：普通工具卡片（ToolCallCard）
+              - 按 toolCallId 分组，每组渲染一张 ToolCallCard
+              - 卡片自带展开/折叠 + 步骤列表（逐步追加）
+              - 子智能体仍然走下方 timeline-subagent-list 路径，互不冲突
+              - 不再使用 tools-header / tools-body（与 ToolCallCard 视觉风格重复）
             -->
-            <template v-if="getNonSubAgentItems(group.items).length > 0">
-              <div class="tools-header" @click="toggleTools">
-                <span class="tools-icon">🔧</span>
-                <span class="tools-label">工具调用 ({{ getNonSubAgentItems(group.items).length }})</span>
-                <svg
-                  class="expand-icon"
-                  :class="{ expanded: isToolsExpanded }"
-                  viewBox="0 0 20 20"
-                  fill="currentColor"
-                >
-                  <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
-                </svg>
-              </div>
-              <div v-if="isToolsExpanded" class="tools-body">
-                <div
-                  v-for="(item, idx) in getNonSubAgentItems(group.items)"
-                  :key="'tool-item-' + idx"
-                  class="tool-item"
-                >
-                  <span class="tool-icon">🔧</span>
-                  <span class="tool-text">{{ formatToolItem(item) }}</span>
-                </div>
-              </div>
-            </template>
+            <div v-if="getToolCardGroups(group.items).length > 0" class="timeline-toolcard-list">
+              <ToolCallCard
+                v-for="groupItem in getToolCardGroups(group.items)"
+                :key="groupItem.toolCallId"
+                :tool-call-id="groupItem.toolCallId"
+                :tool="groupItem.tool"
+                :events="groupItem.events"
+              />
+            </div>
             <!--
               子智能体卡片嵌入（2026-06-14 改造）
               按 toolCallId 在 group.items 中查找匹配的 subAgent 列表，
@@ -653,30 +677,19 @@ const getFileIconColor = (filename) => {
           </div>
         </div>
 
-        <!-- 工具调用 -->
-        <div v-if="hasTools" class="tools-section">
-          <div class="tools-header" @click="toggleTools">
-            <span class="tools-icon">🔧</span>
-            <span class="tools-label">工具调用 ({{ tools.length }})</span>
-            <svg
-              class="expand-icon"
-              :class="{ expanded: isToolsExpanded }"
-              viewBox="0 0 20 20"
-              fill="currentColor"
-            >
-              <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
-            </svg>
-          </div>
-          <div v-if="isToolsExpanded" class="tools-body">
-            <div
-              v-for="(item, index) in tools"
-              :key="'tool-' + index"
-              class="tool-item"
-            >
-              <span class="tool-icon">🔧</span>
-              <span class="tool-text">{{ formatToolItem(item) }}</span>
-            </div>
-          </div>
+        <!--
+          工具调用（降级模式，2026-06-15 改造）
+          历史消息回放时若 aiMsg.timeline 为空，props.tools 仍保留 flat 列表。
+          与 timeline 模式一致：按 toolCallId 分组渲染 ToolCallCard。
+        -->
+        <div v-if="getToolCardGroups(tools).length > 0" class="timeline-toolcard-list">
+          <ToolCallCard
+            v-for="groupItem in getToolCardGroups(tools)"
+            :key="groupItem.toolCallId"
+            :tool-call-id="groupItem.toolCallId"
+            :tool="groupItem.tool"
+            :events="groupItem.events"
+          />
         </div>
 
         <!-- 正文内容 -->
@@ -884,6 +897,19 @@ const getFileIconColor = (filename) => {
  * 子智能体卡片按 toolCallId 匹配后渲染在工具调用块内，遵循事件流时序。
  */
 .timeline-subagent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  align-items: flex-end;
+}
+
+/*
+ * timeline.tool 内的普通工具卡片列表（2026-06-15 新增）
+ * - 每 toolCallId 一张 ToolCallCard，结构与子智能体卡片列表对齐
+ * - 卡片内自带扳手动画 + 步骤展开/折叠
+ */
+.timeline-toolcard-list {
   display: flex;
   flex-direction: column;
   gap: 4px;

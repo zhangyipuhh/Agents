@@ -18,7 +18,8 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['new-chat', 'send'])
+// 2026-06-15 新增：open-subagent-drawer emit 透传，触发父组件（KnowledgePage / App.vue）打开子智能体详情抽屉
+const emit = defineEmits(['new-chat', 'send', 'open-subagent-drawer'])
 
 const messages = reactive([])
 const inputValue = ref('')
@@ -421,6 +422,9 @@ const getFileIconColor = (ext) => {
           :error="message.error"
           :message-id="message.id"
           :is-thinking-active="message.isThinkingActive"
+          :download-info="message.downloadInfo"
+          :sub-agents="message.subAgents"
+          @open-subagent-drawer="(sa) => emit('open-subagent-drawer', sa)"
         />
       </div>
 

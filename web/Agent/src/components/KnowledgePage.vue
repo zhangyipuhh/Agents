@@ -5,7 +5,8 @@ import FileList from './FileList.vue'
 import FilePreview from './FilePreview.vue'
 import KnowledgeChat from './KnowledgeChat.vue'
 
-const emit = defineEmits(['new-chat', 'page-change'])
+// 2026-06-15 新增：open-subagent-drawer 透传事件，触发 App.vue 顶层 <SubAgentDrawer> 打开
+const emit = defineEmits(['new-chat', 'page-change', 'open-subagent-drawer'])
 
 const isPreviewOpen = ref(false)
 const previewContent = ref('')
@@ -115,6 +116,7 @@ function handleChatStreamEnd() {
       :is-streaming="isChatStreaming"
       @new-chat="handleNewChat"
       @send="handleChatSend"
+      @open-subagent-drawer="(sa) => emit('open-subagent-drawer', sa)"
     />
   </div>
 </template>
