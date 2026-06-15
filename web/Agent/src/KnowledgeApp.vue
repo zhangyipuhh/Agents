@@ -635,9 +635,9 @@ function closeSubAgentDrawer() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  /* 2026-06-15 调整：移除 height: 40px，padding 由 8/8 调整为 11/11 ，
-     配合内部 22px 文本行高，自然高度 ≈ 44px，与 Sidebar.vue .sidebar-logo（≈42px）视觉对齐 */
-  padding: 11px 24px;
+  /* 2026-06-15 调整：移除 height: 40px，padding 设为 10/24，
+     配合内部 22px 文本行高，自然高度 ≈ 42px，与 Sidebar.vue .sidebar-logo（≈42px）精确对齐 */
+  padding: 10px 24px;
   background-color: var(--color-bg-primary);
   border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
