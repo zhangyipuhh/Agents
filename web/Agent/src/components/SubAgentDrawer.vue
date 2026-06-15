@@ -457,7 +457,9 @@ function roleLabel(role) {
 
 /* 头部 */
 .drawer-header {
-  padding: 16px 20px;
+  /* 2026-06-15 调整：垂直 padding 由 16/16 改为 8/6，对齐 .sidebar-logo (Sidebar.vue) 的视觉高度
+     水平 padding 保留 20px（抽屉宽度 480-800px 比侧栏 260px 宽，留白更合适） */
+  padding: 8px 20px 6px;
   border-bottom: 1px solid #e0e0e0;
   display: flex;
   justify-content: space-between;
