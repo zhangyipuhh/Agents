@@ -33,7 +33,6 @@ from pathlib import Path
 
 from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import AIMessage, ToolMessage
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.config import get_stream_writer
 from langgraph.types import Command
 
@@ -47,6 +46,7 @@ from app.core.tools._stop_signal import get_current_request
 from app.core.tools.events import create_tool_event
 from app.core.tools.subagent_message_extractor import extract_structured_messages
 from app.shared.tools.middleware.docker_sandbox_backend import DockerSandboxMiddleware
+from app.shared.utils.memory.checkpoint import get_async_checkpointer
 
 # 2026-06-15 新增：停止信号检测间隔（每 N 个 chunk 检测一次 is_disconnected）
 # 5 个 chunk 检测一次足够在 200-500ms 内响应停止（LLM token 生成约 40-100ms/个），
@@ -834,16 +834,23 @@ async def sandbox(  # 2026-06-15: 改 async，支持子智能体停止信号感�
             container_workspace=sandbox_cfg["container_workspace"],
         )
 
+        # 2026-06-16 改造：使用全局共享 checkpointer（PostgreSQL/Memory）持久化子智能体消息
+        # 原 MemorySaver() 是进程内临时实例，子智能体返回后 messages 全部丢失，
+        # 导致 GET /api/session/{id}/messages 无法恢复 sandbox 轨迹。
+        # 改为全局 checkpointer 后，子智能体 messages 按 thread_id=tool_call_id 落库，
+        # 切会话重新加载时可通过 CheckpointHistoryService.get_subagent_history 反查。
+        child_checkpointer = await get_async_checkpointer()
+
         # 创建 deep agent 子智能体
         child_agent = create_deep_agent(
             model=model,
             system_prompt=SANDBOX_SYSTEM_PROMPT,
             middleware=[middleware],
-            checkpointer=MemorySaver(),
+            checkpointer=child_checkpointer,
             name="sandbox",
         )
 
-        # 使用 tool_call_id 作为 thread_id 支持会话恢复
+        # 使用 tool_call_id 作为 thread_id 支持会话恢复（与全局 checkpointer 共享同一张表）
         config = {"configurable": {"thread_id": tool_call_id}}
 
         final_answer = ""

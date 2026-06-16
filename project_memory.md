@@ -357,7 +357,7 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 |   ├ GET /{session_id}/detail | | 获取会话详情（含附件列表） |
 |   ├ PUT /{session_id}/title | | 更新会话标题 |
 |   ├ GET /{session_id}/attachments | | 获取会话附件列表 |
-|   ├ GET /{session_id}/messages | | 获取会话历史消息（从 LangGraph Checkpoint 恢复，默认 50 条） |
+|   ├ GET /{session_id}/messages | | 获取会话历史消息（从 LangGraph Checkpoint 恢复，默认 50 条；**2026-06-16 改造：返回 messages 中按时序插入 `type:"subagent"` 元素，承载 sandbox/explore 子智能体的完整轨迹**） |
 |   ├ DELETE /admin/{session_id} | | Admin 强制删除任意会话 |
 |   ├ GET /admin/search | | Admin 按用户名搜索会话 |
 | /api/files | file_router | 文件管理（上传、下载、删除、列表、PDF 转图片） |
@@ -706,7 +706,7 @@ system_prompt = (
 |------|---------|------|
 | `DockerSandboxBackend` | `app/shared/tools/middleware/docker_sandbox_backend.py` | Docker 容器生命周期管理、命令执行、文件上传下载；区分 host_workspace（宿主机视角，用于 bind mount）与 container_workspace（容器内视角，/workspace）；支持 4 种 docker_mode 路径投影 |
 | `DockerSandboxMiddleware` | `app/shared/tools/middleware/docker_sandbox_backend.py` | 继承 `FilesystemMiddleware`，自动管理 `DockerSandboxBackend`，提供沙箱工具集 |
-| `sandbox` 工具 | `app/core/tools/SandboxTools.py` | `@tool` 装饰的 `sandbox` 函数，通过 `create_deep_agent` 启动沙箱子智能体；2026-06-12 重构：容器化部署配置从 `Settings.get_sandbox_config()` 注入；2026-06-13 扩展：填充 subagent 结构化字段（详见下文 "SubAgent 事件协议"） |
+| `sandbox` 工具 | `app/core/tools/SandboxTools.py` | `@tool` 装饰的 `sandbox` 函数，通过 `create_deep_agent` 启动沙箱子智能体；2026-06-12 重构：容器化部署配置从 `Settings.get_sandbox_config()` 注入；2026-06-13 扩展：填充 subagent 结构化字段（详见下文 "SubAgent 事件协议"）；**2026-06-16 改造：checkpointer 由进程内 `MemorySaver()` 切换为全局共享 `get_async_checkpointer()`，子智能体 messages 按 `thread_id=tool_call_id` 持久化（PostgreSQL 模式落库，memory 模式进程内共享）** |
 | `SandboxSettings` | `app/core/config/settings.py` | Pydantic BaseSettings，管理 10 个 `SANDBOX_*` 环境变量，控制 docker_mode / 镜像 / 资源限制 / 路径前缀 |
 
 ### 架构变更历史
@@ -920,6 +920,8 @@ environment:
 | `app/features/map_agent/router/map_router.py` | `custom` 模式 SSE yield 时在顶层追加 `thread_id` 字段（从 `data.data.thread_id` / `data.tool_call_id` 推导），**老客户端忽略未知字段不破坏**；`updates` 模式同步追加 `thread_id`（空字符串）与 `langgraph_node`（节点名）字段，统一 SSE 格式 |
 | `app/core/tools/events.py` | 注释追加新字段文档（实现不动） |
 | `app/tests/core/tools/test_subagent_message_extractor.py`（**新增**） | 22 个 pytest 用例：role 分类 / content 归一化 / 三种 tool_call 来源 / 边界条件 |
+| `app/tests/shared/utils/memory/test_checkpoint_history_subagent.py`（**2026-06-16 新增**） | 17 个 pytest 用例：`_is_ai_message` 类型名匹配 / `_extract_ai_tool_call_ids` 三种来源 / `get_subagent_history` 含 include_tool / 空 thread_id / thread 不存在 / `collect_subagent_thread_ids_for_cleanup` 去重 / 无 tool_calls / `merge_main_and_subagent_messages` 含/无 subagent / 无 raw |
+| `app/tests/shared/test_session_messages_subagent.py`（**2026-06-16 新增**） | 6 个整合测试：合并子智能体 / 无 tool_call 不插入 / 401 / 403 / limit 作用于合并后总数 / delete 清理子 thread |
 
 ### 前端改动文件
 
@@ -966,9 +968,59 @@ environment:
 - `update` 事件顶层追加 `langgraph_node` 字段（节点名），`thread_id` 统一为空字符串（updates 模式下无法精确获取子线程 ID，仅用于格式统一）
 - 老客户端标准 JSON 解析**忽略未知字段**，行为不变
 
-### 历史消息 subAgents 字段
+### 历史消息 subAgents 字段（2026-06-16 实现）
 
-当前后端 `fetchSessionMessages` 不持久化 subagent 元数据。**还原历史时 `subAgents = []`**（Out of Scope，后续 PR 处理 Checkpoint 持久化）。
+**2026-06-16 改造**：子智能体历史通过 LangGraph Checkpoint 持久化，完整还原。
+
+**核心问题**（已解决）：
+- 原 SandboxTools / FilesystemReadTools 在子智能体 `create_deep_agent()` 时使用进程内 `MemorySaver()` 实例，工具返回后内存释放
+- 前端切会话调 `fetchSessionMessages` 时，sandbox / explore 等子智能体的 messages 全部丢失
+- 仅主智能体的 HumanMessage/AIMessage 可恢复，`subAgents` 数组为空，`SubAgentCard` 无法渲染历史轨迹
+
+**改造方案**（核心：复用 LangGraph 原生 checkpointer）：
+- 子智能体的 thread_id == 父 LLM 调该工具时的 `tool_call_id`（沿用 2026-06-15 已有的设计）
+- `create_deep_agent(checkpointer=await get_async_checkpointer())` 切换为全局共享 checkpointer
+- 全局 checkpointer 同时被主智能体使用（共享同一张 `checkpoints` 表），LangGraph 自动按 thread_id 隔离
+- PostgreSQL 模式：子智能体 messages 落库，跨进程跨重启可恢复
+- 内存模式：单进程内可恢复，重启清空（与原行为一致）
+
+**实现路径**：
+| 文件 | 改动 |
+|------|------|
+| `app/core/tools/SandboxTools.py:842` | `MemorySaver()` → `await get_async_checkpointer()` |
+| `app/core/tools/FilesystemReadTools.py:249` | `MemorySaver()` → `await get_async_checkpointer()` |
+| `app/shared/utils/memory/checkpoint_history.py` | 新增 4 个静态/类方法：`get_subagent_history` / `merge_main_and_subagent_messages` / `collect_subagent_thread_ids_for_cleanup` / `_is_ai_message` / `_extract_ai_tool_call_ids`；改造 `_convert_message_to_dict` 兼容 `type(msg).__name__` 匹配（防御测试 Mock） |
+| `app/shared/routers/session_router.py` | `get_session_messages` 重写：从 `graph.aget_state()` 拿原始 LangChain 消息 → 转换为主消息列表 → 调用 `merge_main_and_subagent_messages` 按时序插入子智能体消息；`delete_session` / `admin_delete_session` 在删主 thread 前调用 `collect_subagent_thread_ids_for_cleanup` 遍历 AIMessage.tool_calls，逐个 `adelete_thread(sub_tid)` |
+| `app/tests/shared/test_session_messages_subagent.py`（新增） | 6 个整合测试：合并子智能体 / 无 tool_call 不插入 / limit 作用于合并后总数 / 401 / 403 / delete 清理子 thread |
+| `app/tests/shared/utils/memory/test_checkpoint_history_subagent.py`（新增） | 17 个单元测试：`_is_ai_message` / `_extract_ai_tool_call_ids`（OpenAI/Anthropic/content_blocks 三种来源）/ `get_subagent_history` / `merge_main_and_subagent_messages` / `collect_subagent_thread_ids_for_cleanup` |
+
+**返回结构（前端兼容，老字段保留）**：
+```json
+{
+  "session_id": "...",
+  "messages": [
+    {"id": "...", "type": "user", "role": "user", "content": "..."},
+    {"id": "...", "type": "ai", "role": "assistant", "content": "...",
+     "tool_calls": [{"name": "sandbox", "id": "call_xxx", "args": {}}]},
+    // === 2026-06-16 新增：按时序紧跟的子智能体消息流 ===
+    {"type": "subagent", "role": "subagent",
+     "thread_id": "call_xxx", "tool": "sandbox",
+     "parent_message_id": "ai-msg-1",
+     "messages": [...], "total": 5},
+    {"id": "...", "type": "user", "role": "user", "content": "..."}
+  ],
+  "total": 4
+}
+```
+
+**前端处理（向前兼容）**：
+- `web/Agent/src/utils/sseParser.js` 新增 2 个导出：`isSubAgentHistoryItem(msg)` / `convertSubAgentHistoryToAiSubAgent(msg)`
+- `web/Agent/src/App.vue` 还原 history 循环中新增 `else if (isSubAgentHistoryItem(msg))` 分支：把后端 subagent 元素转换为 `subAgent` 对象，**追加到上一个 AI 消息的 `subAgents` 列表中**（而非独立 push 到 messages），由 MessageBubble 的 SubAgentCard 渲染
+- 老前端（不识别 `type:"subagent"`）落到 `else` 分支当成普通消息渲染，字段不破坏
+
+**测试结果**：
+- 后端：`pytest app/tests/shared/...` 26 个相关测试全部通过；不影响 58 个 sandbox / 38 个 subagent 相关既有测试
+- 前端：`vitest` 281/284 通过；3 个 `App.interrupt.spec.js` 失败为预存在问题（端口 3000 未启动，与本改造无关）
 
 ## 前端架构（web/Agent）
 
@@ -1140,6 +1192,7 @@ environment:
   - `MessageBubble.spec.js`（**2026-06-14 新增**）：timeline.tool 内按 toolCallId 渲染 SubAgentCard 等（5 用例）
 - **项目历史**：后端 17/17 + 前端 73/73 全部通过（参见 "HITL 流程" 章节）
 - **2026-06-13 更新**：后端新增 `test_subagent_message_extractor.py` 22 用例通过；前端 SubAgentCard/SubAgentDrawer/subAgentParser 共 29 用例通过；累计前端 111/111 全量通过
+- **2026-06-16 更新**：子智能体历史持久化实现完成。后端新增 2 个测试文件（`test_checkpoint_history_subagent.py` 17 用例 + `test_session_messages_subagent.py` 6 用例）全部通过；前端新增 `sseParser.subagentHistory.test.js` 15 用例全部通过；累计前端 281/284 通过（3 个 `App.interrupt.spec.js` 失败为预存在问题，与本改造无关）
 - **2026-06-14 更新**：合并沙箱执行与子智能体展示，删除 `SandboxProgress` / `SandboxDrawer` / `SandboxEventItem` 三个组件；新增 `MessageBubble.spec.js`（5 用例）+ 扩展 `SubAgentCard`（+2）、`SubAgentDrawer`（+6）、`subAgentParser`（+2）；累计 **126/126** 全量通过（Vite build 成功）
 - **2026-06-14 二次精简**：`SubAgentDrawer.vue` 沙箱摘要区（`.drawer-summary`）移除 `.summary-progress` 进度条 div（含 `progress-track` / `progress-fill` / 步骤计数 `X/Y`），保留状态指示（`.summary-status`）与耗时展示（`.summary-time`）；同步清理 3 个 unused computed（`sandboxProgressPercent` / `sandboxCurrentStep` / `sandboxTotalSteps`）与对应 CSS（`.summary-progress` / `.progress-track` / `.progress-fill` / `.progress-text` / `@keyframes progressPulse`）；`SubAgentDrawer.spec.js` 摘要区测试用例由「`3/6` 进度文本」改为「进度条不存在 + 耗时文本存在」；累计 **129/129** 全量通过（Vite build 成功）
 - **2026-06-14 再更新**：subagent 工具调用不在「工具调用」块内重复展示；`MessageBubble.vue` 导出 `isSubAgentTool` 工具，新增 `isSubAgentItem` / `getNonSubAgentItems` 过滤逻辑；`MessageBubble.spec.js` 扩展 +3 用例（全 subagent / 混合 / 全普通）；累计 **129/129** 全量通过（Vite build 成功）

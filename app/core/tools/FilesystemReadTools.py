@@ -36,9 +36,9 @@ from langchain.agents.middleware import ContextEditingMiddleware, TodoListMiddle
 from langchain.agents.middleware.context_editing import ClearToolUsesEdit
 from deepagents import FilesystemMiddleware
 from deepagents.backends import FilesystemBackend
-from langgraph.checkpoint.memory import MemorySaver
 
 from app.shared.tools.middleware.encoding_safe_file_search import EncodingSafeFileSearchMiddleware
+from app.shared.utils.memory.checkpoint import get_async_checkpointer
 from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.config import get_stream_writer
@@ -246,7 +246,9 @@ async def explore(  # 2026-06-15: 改 async，支持子智能体停止信号感�
             ],
             system_prompt=_EXPLORE_SYSTEM_PROMPT,
             response_format=ExploreResult,
-            checkpointer=MemorySaver(),
+            # 2026-06-16 改造：使用全局共享 checkpointer 持久化 explore 子智能体 messages
+            # 原 MemorySaver() 是进程内临时实例，会话恢复时无法获取子智能体轨迹
+            checkpointer=await get_async_checkpointer(),
         )
 
         # LangGraph checkpointer 自动管理会话历史

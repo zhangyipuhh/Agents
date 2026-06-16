@@ -635,3 +635,58 @@ export function createAiMessage() {
     subAgents: []             // 2026-06-13 新增：子智能体执行列表（折叠卡片 / 抽屉用，统一承接沙箱/文件探索等子智能体）
   }
 }
+
+/**
+ * 2026-06-16 新增：判断是否为后端历史消息接口返回的 subagent 包装元素
+ *
+ * 背景：GET /api/session/{id}/messages 现在会在主消息流中插入
+ *   { type: "subagent", thread_id, tool, parent_message_id, messages: [...] }
+ * 的中间元素，用于按 tool_call_id 反查恢复 sandbox / explore 等子智能体历史。
+ *
+ * 老客户端 / 老实现对该 type 不识别，会落到 else 分支当成普通消息。
+ * 新前端通过本函数识别后，将其转换为 aiMsg.subAgents 条目，
+ * 在 MessageBubble 中按 timeline.tool 块内嵌的 SubAgentCard 渲染。
+ *
+ * @param {Object} msg - 后端返回的单条 history 消息对象
+ * @returns {boolean}
+ */
+export function isSubAgentHistoryItem(msg) {
+  return !!(msg && msg.type === 'subagent' && msg.thread_id)
+}
+
+/**
+ * 2026-06-16 新增：把后端 subagent 历史元素转成前端 aiMsg.subAgents[i] 格式
+ *
+ * 字段映射（保持与 sseParser 实时流式 subAgent 字段一致，向后兼容老结构）：
+ *   thread_id      -> subAgent.threadId  (== subAgent.toolCallId)
+ *   tool           -> subAgent.tool
+ *   parent_message_id -> subAgent.parentMessageId（用于在 history 中关联父 AI）
+ *   messages       -> subAgent.messages  (langchain 风格 dict 列表，前端按现有逻辑展示)
+ *   status         -> subAgent.status    （历史接口未返回时默认 'success'，保持向后兼容）
+ *
+ * 向前兼容：保留所有原字段不丢失；老字段（如果存在）透传。
+ *
+ * @param {Object} msg - 后端返回的 { type:'subagent', thread_id, tool, ... }
+ * @returns {Object} 适配 aiMsg.subAgents[i] 的对象
+ */
+export function convertSubAgentHistoryToAiSubAgent(msg) {
+  if (!msg || msg.type !== 'subagent') return null
+  const toolCallId = msg.thread_id || msg.tool_call_id || ''
+  if (!toolCallId) return null
+
+  return {
+    toolCallId,
+    threadId: toolCallId,
+    tool: msg.tool || 'unknown',
+    parentPrompt: msg.parent_prompt || '',
+    parentMessageId: msg.parent_message_id || null,
+    messages: Array.isArray(msg.messages) ? msg.messages : [],
+    events: Array.isArray(msg.events) ? msg.events : [],
+    summary: msg.summary || null,
+    status: msg.status || 'success',  // 历史接口未携带 status 时默认 success
+    startTime: msg.start_time || null,
+    endTime: msg.end_time || null,
+    error: msg.error || null,
+    isHistory: true  // 2026-06-16 新增标记：来自历史恢复而非 SSE 流式事件
+  }
+}

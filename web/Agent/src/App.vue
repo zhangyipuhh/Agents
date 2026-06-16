@@ -9,7 +9,7 @@ import KnowledgePage from './components/KnowledgePage.vue'
 import SubAgentDrawer from './components/SubAgentDrawer.vue'
 import QueueStatusBanner from './components/QueueStatusBanner.vue'
 import { chatStream, createNewSession, logout as apiLogout, fetchSessionDetail, fetchSessionAttachments, fetchSessionMessages, validateToken, refreshToken, clearAuth } from './utils/api.js'
-import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage } from './utils/sseParser.js'
+import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage, isSubAgentHistoryItem, convertSubAgentHistoryToAiSubAgent } from './utils/sseParser.js'
 import { redirectToLogin, tryRefreshOrRedirect } from './utils/auth.js'
 
 const currentPage = ref('agent')
@@ -577,6 +577,12 @@ async function handleSessionSwitch(targetSessionId) {
 
     // 还原对话记录到 messages 数组
     if (history.messages && history.messages.length > 0) {
+      // 2026-06-16 新增：后端现在会按时序插入 { type: "subagent", thread_id, tool, ... } 元素，
+      // 用于反查恢复 sandbox / explore 等子智能体历史。
+      // 策略：识别 subagent 元素后，将对应的 subAgent 挂到上一个 ai 消息的 subAgents 列表中，
+      // 并在 MessageBubble 中按 SubAgentCard 渲染。老客户端 / 老代码不识别该 type，
+      // 会落到 else 分支当成普通消息，但字段不破坏。
+      let lastAiMsgRef = null
       for (const msg of history.messages) {
         // 从历史消息的 additional_kwargs 中提取附件信息
         const msgAttachments = msg.attachments || []
@@ -602,7 +608,7 @@ async function handleSessionSwitch(targetSessionId) {
             tools = aiMsg.tools
           }
 
-          messages.push({
+          const aiMsgObj = {
             id: msg.id || Date.now() + Math.random(),
             type: 'ai',
             content: msg.content,
@@ -610,6 +616,7 @@ async function handleSessionSwitch(targetSessionId) {
             thinking,
             timeline,
             tools,
+            subAgents: [],  // 2026-06-16 新增：历史恢复阶段 subagent 元素会追加到这
             attachments: msgAttachments.map(a => ({
               file_name: a.file_name || a.filename || '未知文件',
               stored_path: a.stored_path || '',
@@ -618,7 +625,23 @@ async function handleSessionSwitch(targetSessionId) {
               original_name: a.original_name || a.file_name || a.filename || '未知文件'
             })),
             ended: true
-          })
+          }
+          messages.push(aiMsgObj)
+          lastAiMsgRef = aiMsgObj
+        } else if (isSubAgentHistoryItem(msg)) {
+          // 2026-06-16 新增：subagent 历史元素 → 转 subAgent 挂到上一个 AI 消息
+          const sa = convertSubAgentHistoryToAiSubAgent(msg)
+          if (sa && lastAiMsgRef) {
+            if (!Array.isArray(lastAiMsgRef.subAgents)) {
+              lastAiMsgRef.subAgents = []
+            }
+            // 防重：同一 toolCallId 不重复挂载
+            if (!lastAiMsgRef.subAgents.some(s => s.toolCallId === sa.toolCallId)) {
+              lastAiMsgRef.subAgents.push(sa)
+            }
+          }
+          // 2026-06-16：subagent 元素不作为独立 message 推入 messages 数组
+          // （它的渲染由 SubAgentCard 在 timeline.tool 块内完成，避免重复）
         } else {
           messages.push({
             id: msg.id || Date.now() + Math.random(),
