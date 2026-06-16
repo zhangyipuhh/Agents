@@ -299,7 +299,10 @@ function handleApprovalSubmit({ answers }) {
               }
               break
             }
-          } catch {}
+          } catch (parseErr) {
+            // 2026-06-16 新增：单个事件解析失败不影响后续事件，记录日志便于排查
+            console.warn('[KnowledgeChat] resume SSE 事件解析异常（可忽略）:', parseErr)
+          }
         }
         if (interrupted) break
         nextTick(() => scrollToBottom())

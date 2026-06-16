@@ -1266,6 +1266,37 @@ environment:
     - 排队场景：客户端断开后 `dep.aclose()` 触发 `chat_concurrency_dependency` finally 释放许可，无需额外处理
   - **测试结果**：后端 5/5 通过；前端 28/28 新增用例通过（其他 pre-existing failures 维持不变）；Vite build 成功
 
+### 2026-06-16 KnowledgeApp 回归修复：`startChatStream` 外层 `.finally()` 与 read() 递归产生竞态
+
+**背景**：上述停止按钮提交（e940ee1）在 `KnowledgeApp.vue:startChatStream` 链式末尾追加了 `.finally(() => { currentStreamReader = null })`，**导致 KnowledgeApp 独立 SPA 模式下用户输入任何问题都立即显示「不好意思，刚刚出了点小故障，可以晚点再问我一遍。」**。
+
+**根因（Promise 链微任务竞态）**：
+1. `startChatStream` 原实现：`.then(stream => { currentStreamReader = ...; read() }).catch(...).finally(() => { currentStreamReader = null })`
+2. `read()` 内部**同步**调用 `currentStreamReader.read().then(...)` 启动异步流读取后立即 return
+3. 外层 `.then(stream => { ...; read() })` 同步部分 resolve → 微任务阶段 `.finally` 立即执行 → `currentStreamReader = null`
+4. 网络数据到达 → `read()` 内部 `.then` 回调执行 → `read()` 递归调用 `currentStreamReader.read()` → **`currentStreamReader` 已是 `null`** → 抛 `TypeError`
+5. 外层 `.catch` 捕获 → `aiMsg.error = '不好意思，刚刚出了点小故障...'` → MessageBubble 显示固定错误文案
+
+**为什么 App.vue / KnowledgeChat 正常**：它们使用 `async/await + while(true) { await currentStreamReader.read() } + try/catch/finally` 模式，`finally` 在 `try` 完整走完才执行，**不会与 read() 递归产生竞态**。
+
+**修复**（`web/Agent/src/KnowledgeApp.vue`）：
+- `startChatStream` 重构为 `async/await + while(true) + try/catch/finally` 模式，与 App.vue / KnowledgeChat 保持一致
+- 删除外层 `.then().catch().finally()` 链式 + 嵌套 `read()` 递归
+- `finally` 中清理 `currentStreamReader` 与重置 `isStreaming`
+- `handleProfileSend` / `handleApprovalSubmit` 改为 `await startChatStream(...)`
+- `try` 内单事件 `JSON.parse` 失败时 `console.warn` 记录日志，便于排查（不影响后续事件处理）
+
+**附带清理**（`web/Agent/src/components/KnowledgeChat.vue` `handleApprovalSubmit` 内 readStream）：
+- readStream 本来就使用 `async/await + try/catch/finally` 模式，**不存在 finally 竞态**
+- 仅追加 `JSON.parse` 失败时的 `console.warn` 日志，与 KnowledgeApp 重构保持防御一致性
+
+**测试新增**：`web/Agent/src/components/__tests__/KnowledgeApp.stream.spec.js`（**11 用例**）：
+- P0：`test_start_chat_stream_normal_completion_does_not_set_error` / `test_start_chat_stream_finally_runs_after_all_reads_finally`（核心：验证 finally 在所有 read 后才执行）/ `test_start_chat_stream_reader_error_sets_error_msg`
+- P1：`test_start_chat_stream_multiple_chunks_accumulates_text` / `test_start_chat_stream_handles_interrupt_without_error` / `test_start_chat_stream_thinking_blocks_written` / `test_start_chat_stream_handles_end_event` / `test_start_chat_stream_handles_parse_error_gracefully` / `test_start_chat_stream_clears_reader_in_finally` / `test_start_chat_stream_empty_stream_completes`
+- P2：`test_start_chat_stream_simulates_real_message_example_txt`（模拟 message例子.txt 多 chunk 场景：16 个 thinking 增量 + signature + 9 个 text 增量，验证完整文本"你好！请问有什么可以帮你的？" 与 thinking 累加"用户再次说"你好"，这只是一个问候。"）+ `test_start_chat_stream_chunks_split_across_boundary`
+
+**测试结果**：新增 11/11 通过；全量 269 测试中 266 通过（3 个 pre-existing failures 来自 `App.interrupt.spec.js` 的 happy-dom `ReadableStream.cancel()` 兼容性，与本修复无关）
+
 ## 子智能体停止机制（2026-06-15 扩展）
 
 **背景**：上一节"停止按钮（中断 LLM 生成）"仅停止主智能体的 LangGraph astream，但子智能体（sandbox / explore）工具函数内的 `for chunk in child_agent.stream(...)` 是同步 for 循环，没有任何停止信号感知。子智能体会一直运行直到自然结束，消耗 LLM token、占用 Docker 容器，停止按钮无法真正中断。
