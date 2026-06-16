@@ -1036,6 +1036,7 @@ const getFileIconColor = (filename) => {
  * 样式与 .timeline-subagent-list 一致，仅额外加 8px 顶部间距以与上方分隔。
  */
 .timeline-subagent-list-history {
+  width: 100%;    /* 2026-06-16-3 修复：撑满 .ai-message 容器宽度，与流式场景 .timeline-tool 内的 subagent-card 等宽，避免历史恢复卡片被 align-items: flex-start 压缩为内容宽度 */
   margin-top: 8px;
 }
 
