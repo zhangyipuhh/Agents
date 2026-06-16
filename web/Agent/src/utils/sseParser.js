@@ -655,6 +655,43 @@ export function isSubAgentHistoryItem(msg) {
 }
 
 /**
+ * 2026-06-16-2 新增：从子智能体 messages 列表中提取首条 user 消息的可读文本
+ *
+ * 背景：后端 subagent 元素（get_session_messages 返回）目前未返回 parent_prompt 字段，
+ * 导致 SubAgentCard 顶部"父提问预览"为空。本函数从 msg.messages 列表中
+ * 兜底提取首条 user 消息的 content（兼容字符串 / 内容块列表两种形式），
+ * 供 convertSubAgentHistoryToAiSubAgent 在 parent_prompt 缺失时使用。
+ *
+ * 兼容的消息元素形态：
+ *   - { type: 'user' | role: 'user', content: '...' }           （直接字符串）
+ *   - { type: 'user' | role: 'user', content: [{type:'text',text:'...'}] }  （内容块列表）
+ *
+ * 入参：messages（来自后端 subagent 元素的 messages 字段）
+ * 返回：string 首条 user 消息的可读文本；无匹配时返回 ''
+ */
+function extractFirstUserPrompt(messages) {
+  if (!Array.isArray(messages)) return ''
+  for (const m of messages) {
+    if (!m || typeof m !== 'object') continue
+    // 同时支持 type / role 两种字段名（后端 _convert_message_to_dict 输出 type='user'，
+    // 但用户手工 mock 数据 / 未来改造可能用 role='user'）
+    const t = m.type || m.role
+    if (t !== 'user') continue
+    const c = m.content
+    if (typeof c === 'string' && c.trim()) return c
+    if (Array.isArray(c)) {
+      // 寻找第一个 text 块；content_blocks / 旧 langchain 1.x 都用 { type:'text', text:'...' }
+      const textBlock = c.find(b => b && b.type === 'text' && typeof b.text === 'string')
+      if (textBlock) return textBlock.text
+      // 兜底：字符串块
+      const strBlock = c.find(b => typeof b === 'string' && b.trim())
+      if (strBlock) return strBlock
+    }
+  }
+  return ''
+}
+
+/**
  * 2026-06-16 新增：把后端 subagent 历史元素转成前端 aiMsg.subAgents[i] 格式
  *
  * 字段映射（保持与 sseParser 实时流式 subAgent 字段一致，向后兼容老结构）：
@@ -663,6 +700,9 @@ export function isSubAgentHistoryItem(msg) {
  *   parent_message_id -> subAgent.parentMessageId（用于在 history 中关联父 AI）
  *   messages       -> subAgent.messages  (langchain 风格 dict 列表，前端按现有逻辑展示)
  *   status         -> subAgent.status    （历史接口未返回时默认 'success'，保持向后兼容）
+ *
+ * 2026-06-16-2 增强：parent_prompt 缺失时自动从 messages 首条 user 消息 content 兜底提取，
+ * 保证 SubAgentCard 顶部"父提问预览"非空（参见 extractFirstUserPrompt）。
  *
  * 向前兼容：保留所有原字段不丢失；老字段（如果存在）透传。
  *
@@ -674,11 +714,20 @@ export function convertSubAgentHistoryToAiSubAgent(msg) {
   const toolCallId = msg.thread_id || msg.tool_call_id || ''
   if (!toolCallId) return null
 
+  // 2026-06-16-2 新增：parentPrompt 兜底
+  // 后端 subagent 元素当前未返回 parent_prompt 字段，但子 thread 第一条 HumanMessage.content
+  // 本质就是父 LLM 传给子智能体的 prompt。这里在父字段缺失时自动提取，确保 SubAgentCard
+  // 顶部预览有内容可显示。
+  let parentPrompt = msg.parent_prompt || ''
+  if (!parentPrompt) {
+    parentPrompt = extractFirstUserPrompt(msg.messages)
+  }
+
   return {
     toolCallId,
     threadId: toolCallId,
     tool: msg.tool || 'unknown',
-    parentPrompt: msg.parent_prompt || '',
+    parentPrompt,
     parentMessageId: msg.parent_message_id || null,
     messages: Array.isArray(msg.messages) ? msg.messages : [],
     events: Array.isArray(msg.events) ? msg.events : [],

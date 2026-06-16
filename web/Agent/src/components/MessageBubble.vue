@@ -247,6 +247,51 @@ function getSubAgentsForGroup(group) {
   return subAgentsByGroup.value[idx] || []
 }
 
+// 2026-06-16-2 新增：判断 timeline 模式中是否已有 subAgent 渲染
+// 用途：作为「独立 subagent 渲染块」的守卫，避免与 subAgentsByGroup 重复渲染同一张卡片
+// 计算逻辑：subAgentsByGroup 任一元素为非空数组即为 true
+const hasTimelineToolGroupContainingSubAgents = computed(() => {
+  const groups = subAgentsByGroup.value
+  if (!Array.isArray(groups)) return false
+  for (const g of groups) {
+    if (Array.isArray(g) && g.length > 0) return true
+  }
+  return false
+})
+
+// 2026-06-16-2 新增：独立 subagent 渲染列表（不依赖 mergedTimeline）
+// 用途：历史恢复（aiMsg.timeline 来自 _convert_message_to_dict，**不含 tool 块**）时，
+//       subAgentsByGroup 找不到匹配 → SubAgentCard 不渲染。本 computed 仅过滤
+//       isHistory === true 的子智能体作为「独立渲染位」的数据源，确保历史 subagent
+//       卡片正常显示。
+//
+// 流式响应（isHistory 缺省 / 显式为 false）时不会进入本列表，
+// 仍走 subAgentsByGroup 路径（已挂在 timeline.tool group 内），互不干扰。
+//
+// 排序：isHistory 优先（历史恢复数据先到）；running 状态排最后（视觉稳定）
+// 去重：按 toolCallId
+const orderedSubAgentsForRender = computed(() => {
+  const list = props.subAgents
+  if (!Array.isArray(list) || list.length === 0) return []
+  const map = new Map()
+  for (const sa of list) {
+    // 2026-06-16-2 关键：仅历史恢复（isHistory === true）的 subAgent 走独立入口。
+    // 流式场景的 subAgent 已经在 timeline.tool group 内被 subAgentsByGroup 渲染，
+    // 不应被本入口重复渲染。
+    if (sa && sa.toolCallId && sa.isHistory === true && !map.has(sa.toolCallId)) {
+      map.set(sa.toolCallId, sa)
+    }
+  }
+  const arr = Array.from(map.values())
+  arr.sort((a, b) => {
+    // running 排后；其他按出现顺序稳定排序
+    const ar = a.status === 'running' ? 1 : 0
+    const br = b.status === 'running' ? 1 : 0
+    return ar - br
+  })
+  return arr
+})
+
 /**
  * 判断 timeline 内的 tool 项目是否属于子智能体调用（2026-06-14 新增）
  *
@@ -694,6 +739,27 @@ const getFileIconColor = (filename) => {
           </div>
         </template>
 
+        <!--
+          2026-06-16-2 新增：独立 subagent 渲染入口（仅历史恢复场景）
+          背景：subAgentsByGroup 通过 mergedTimeline 的 tool 块查找 subAgent，
+                但后端 _convert_message_to_dict **不会**把 AIMessage.tool_calls 写入 timeline.tool，
+                导致历史恢复时 subAgentsByGroup 始终返回空、SubAgentCard 不渲染。
+          方案：直接读 props.subAgents（App.vue 已在 history 循环中填充）作为兜底渲染位。
+                当 subAgentsByGroup 已有渲染（即流式场景，timeline.tool 块含 subagent）时跳过，
+                避免双卡片。
+        -->
+        <div
+          v-if="orderedSubAgentsForRender.length > 0 && !hasTimelineToolGroupContainingSubAgents"
+          class="timeline-subagent-list timeline-subagent-list-history"
+        >
+          <SubAgentCard
+            v-for="sa in orderedSubAgentsForRender"
+            :key="sa.toolCallId"
+            :sub-agent="sa"
+            @click="handleSubAgentClick(sa)"
+          />
+        </div>
+
         <!-- 流式光标 -->
         <span v-if="!ended && !error && !isThinkingActive && !hasRunningExecution" class="streaming-cursor">▌</span>
       </template>
@@ -731,6 +797,23 @@ const getFileIconColor = (filename) => {
             :tool-call-id="groupItem.toolCallId"
             :tool="groupItem.tool"
             :events="groupItem.events"
+          />
+        </div>
+
+        <!--
+          2026-06-16-2 新增：降级模式下的 subagent 渲染入口
+          背景：与 timeline 模式独立渲染块同因（subAgentsByGroup 依赖 mergedTimeline.tool group，
+                降级模式无 timeline.group，自然找不到）。本块直接读 props.subAgents 兜底渲染。
+        -->
+        <div
+          v-if="orderedSubAgentsForRender.length > 0"
+          class="timeline-subagent-list timeline-subagent-list-history"
+        >
+          <SubAgentCard
+            v-for="sa in orderedSubAgentsForRender"
+            :key="sa.toolCallId"
+            :sub-agent="sa"
+            @click="handleSubAgentClick(sa)"
           />
         </div>
 
@@ -944,6 +1027,16 @@ const getFileIconColor = (filename) => {
   gap: 4px;
   margin-top: 6px;
   align-items: flex-end;
+}
+
+/*
+ * 独立 subagent 渲染位（2026-06-16-2 新增）
+ * 背景：历史恢复时 timeline 不含 tool 块，subAgentsByGroup 找不到 subAgent。
+ *       本类用于独立 subagent 块，挂在 timeline 模式流式光标之前 / 降级模式工具列表之后。
+ * 样式与 .timeline-subagent-list 一致，仅额外加 8px 顶部间距以与上方分隔。
+ */
+.timeline-subagent-list-history {
+  margin-top: 8px;
 }
 
 /*

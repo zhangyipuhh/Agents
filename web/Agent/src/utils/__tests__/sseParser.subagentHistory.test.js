@@ -166,3 +166,117 @@ describe('与现有 isSubAgentTool 集成（2026-06-16 新增）', () => {
     expect(isSubAgentTool(result.tool)).toBe(true)
   })
 })
+
+/**
+ * parentPrompt 兜底提取（2026-06-16-2 新增）
+ *
+ * 背景：后端 subagent 元素当前不返回 parent_prompt 字段，SubAgentCard 顶部
+ * 「父提问预览」为空会让用户体验下降。本测试覆盖 extractFirstUserPrompt 的多种
+ * 输入形态（字符串 content / 内容块列表 / role vs type / 缺 user / 无 messages）。
+ */
+describe('parentPrompt 兜底（2026-06-16-2 新增）', () => {
+  it('parent_prompt 显式传入时优先使用', () => {
+    const result = convertSubAgentHistoryToAiSubAgent({
+      type: 'subagent',
+      thread_id: 'tc_1',
+      tool: 'sandbox',
+      parent_prompt: '显式父提问',
+      messages: [
+        { type: 'user', content: '应该被忽略' }
+      ]
+    })
+    expect(result.parentPrompt).toBe('显式父提问')
+  })
+
+  it('parent_prompt 缺失时自动取首条 type=user 消息的字符串 content', () => {
+    const result = convertSubAgentHistoryToAiSubAgent({
+      type: 'subagent',
+      thread_id: 'tc_2',
+      tool: 'sandbox',
+      messages: [
+        { type: 'user', content: '创建一个C#控制台应用程序，实现Hello World并输出结果' },
+        { type: 'ai', content: '好的，我会执行' }
+      ]
+    })
+    expect(result.parentPrompt).toBe('创建一个C#控制台应用程序，实现Hello World并输出结果')
+  })
+
+  it('parent_prompt 缺失时自动取首条 role=user 消息（兼容 role 字段）', () => {
+    const result = convertSubAgentHistoryToAiSubAgent({
+      type: 'subagent',
+      thread_id: 'tc_3',
+      tool: 'sandbox',
+      messages: [
+        { role: 'user', content: 'role 字段风格的 user 消息' }
+      ]
+    })
+    expect(result.parentPrompt).toBe('role 字段风格的 user 消息')
+  })
+
+  it('parent_prompt 缺失且 user.content 是内容块列表时取 text 块', () => {
+    const result = convertSubAgentHistoryToAiSubAgent({
+      type: 'subagent',
+      thread_id: 'tc_4',
+      tool: 'sandbox',
+      messages: [
+        {
+          type: 'user',
+          content: [
+            { type: 'text', text: '内容块风格的父提问' },
+            { type: 'tool_use', id: 'tu_1', name: 'exec' }
+          ]
+        }
+      ]
+    })
+    expect(result.parentPrompt).toBe('内容块风格的父提问')
+  })
+
+  it('messages 缺失时不抛错，parentPrompt 为空字符串', () => {
+    const result = convertSubAgentHistoryToAiSubAgent({
+      type: 'subagent',
+      thread_id: 'tc_5',
+      tool: 'sandbox'
+    })
+    expect(result.parentPrompt).toBe('')
+  })
+
+  it('messages 中无 user 消息时 parentPrompt 为空字符串', () => {
+    const result = convertSubAgentHistoryToAiSubAgent({
+      type: 'subagent',
+      thread_id: 'tc_6',
+      tool: 'sandbox',
+      messages: [
+        { type: 'ai', content: '只有 AI 消息' }
+      ]
+    })
+    expect(result.parentPrompt).toBe('')
+  })
+
+  it('user.content 为空字符串时跳过该消息，继续找下一条', () => {
+    const result = convertSubAgentHistoryToAiSubAgent({
+      type: 'subagent',
+      thread_id: 'tc_7',
+      tool: 'sandbox',
+      messages: [
+        { type: 'user', content: '' },
+        { type: 'user', content: '第二条 user 消息' }
+      ]
+    })
+    expect(result.parentPrompt).toBe('第二条 user 消息')
+  })
+
+  it('user.content 是内容块但无 text 块时不抛错', () => {
+    const result = convertSubAgentHistoryToAiSubAgent({
+      type: 'subagent',
+      thread_id: 'tc_8',
+      tool: 'sandbox',
+      messages: [
+        {
+          type: 'user',
+          content: [{ type: 'image', source: { type: 'base64', data: '...' } }]
+        }
+      ]
+    })
+    expect(result.parentPrompt).toBe('')
+  })
+})

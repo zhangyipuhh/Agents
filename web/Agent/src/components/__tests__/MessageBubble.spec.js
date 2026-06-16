@@ -807,3 +807,168 @@ describe('MessageBubble 工具执行时思考过程抑制（2026-06-15 新增）
   })
 })
 
+/**
+ * 2026-06-16-2 新增：历史恢复时 subAgent 独立渲染位
+ *
+ * 背景：后端 _convert_message_to_dict 不把 AIMessage.tool_calls 写入 timeline.tool，
+ *       导致历史恢复场景下 subAgentsByGroup 找不到 subAgent、SubAgentCard 不渲染。
+ * 修复：MessageBubble 新增独立 subagent 渲染位（不依赖 mergedTimeline.tool group），
+ *       通过 timeline-subagent-list-history 类挂载；与 subAgentsByGroup 互不干扰。
+ */
+describe('MessageBubble 独立 subagent 渲染位（2026-06-16-2 修复历史 subagent 不渲染）', () => {
+  it('timeline 模式：timeline 无 tool 块时也能渲染历史 subagent', () => {
+    // 关键：timeline 里只有 text/thinking（模拟 _convert_message_to_dict 的输出），
+    //       不含 tool 块。
+    const subAgents = [
+      {
+        toolCallId: 'tc_history_1',
+        threadId: 'tc_history_1',
+        tool: 'sandbox',
+        parentPrompt: '创建一个C#控制台应用程序',
+        messages: [
+          { type: 'user', content: 'p' },
+          { type: 'ai', content: 'r' }
+        ],
+        events: [],
+        status: 'success',
+        startTime: 0,
+        endTime: 100,
+        error: null,
+        isHistory: true
+      }
+    ]
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'ai',
+        ended: true,
+        // 关键：timeline 不含任何 tool group（历史恢复的典型形态）
+        timeline: [
+          { type: 'text', content: '我需要执行沙箱' }
+        ],
+        subAgents
+      }
+    })
+    // 应渲染 SubAgentCard（独立入口）
+    const cards = wrapper.findAllComponents({ name: 'SubAgentCard' })
+    expect(cards.length).toBe(1)
+    expect(cards[0].props('subAgent').toolCallId).toBe('tc_history_1')
+    // 容器类名应为 timeline-subagent-list-history
+    expect(wrapper.find('.timeline-subagent-list-history').exists()).toBe(true)
+  })
+
+  it('timeline 模式：subAgentsByGroup 已有渲染时独立块不重复渲染', () => {
+    // 场景：流式响应中，timeline 含 tool group + subAgent 已被 subAgentsByGroup 渲染。
+    //       此时独立入口应跳过（避免双卡片）。
+    const subAgents = [
+      {
+        toolCallId: 'tc_stream_1',
+        threadId: 'tc_stream_1',
+        tool: 'sandbox',
+        parentPrompt: 'p',
+        messages: [],
+        events: [],
+        status: 'running',
+        startTime: Date.now() - 1000,
+        endTime: null,
+        error: null
+        // isHistory 缺省 → 流式场景
+      }
+    ]
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'ai',
+        ended: false,
+        timeline: [
+          { type: 'tool', content: makeToolEvent('tc_stream_1') }
+        ],
+        subAgents
+      }
+    })
+    // timeline.tool group 内已渲染 SubAgentCard（subAgentsByGroup 路径）
+    const cards = wrapper.findAllComponents({ name: 'SubAgentCard' })
+    expect(cards.length).toBe(1)
+    // 独立入口（timeline-subagent-list-history）不应出现
+    expect(wrapper.find('.timeline-subagent-list-history').exists()).toBe(false)
+  })
+
+  it('降级模式（无 timeline）：subagent 也能通过独立入口渲染', () => {
+    // 关键：timeline=[] 时进入降级模式（v-else），独立块也应正常渲染。
+    const subAgents = [
+      {
+        toolCallId: 'tc_fallback_1',
+        threadId: 'tc_fallback_1',
+        tool: 'explore',
+        parentPrompt: '查找文件',
+        messages: [
+          { type: 'user', content: 'p' }
+        ],
+        events: [],
+        status: 'success',
+        startTime: 0,
+        endTime: 100,
+        error: null,
+        isHistory: true
+      }
+    ]
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'ai',
+        ended: true,
+        timeline: [],
+        subAgents
+      }
+    })
+    // 降级模式下，独立块应渲染
+    const cards = wrapper.findAllComponents({ name: 'SubAgentCard' })
+    expect(cards.length).toBe(1)
+    expect(cards[0].props('subAgent').tool).toBe('explore')
+    expect(wrapper.find('.timeline-subagent-list-history').exists()).toBe(true)
+  })
+
+  it('独立块点击 SubAgentCard 仍触发 open-subagent-drawer 事件', async () => {
+    const sa = {
+      toolCallId: 'tc_history_click',
+      threadId: 'tc_history_click',
+      tool: 'sandbox',
+      parentPrompt: 'p',
+      messages: [],
+      events: [],
+      status: 'success',
+      startTime: 0,
+      endTime: 100,
+      error: null,
+      isHistory: true
+    }
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'ai',
+        ended: true,
+        timeline: [
+          { type: 'text', content: 'final text' }
+        ],
+        subAgents: [sa]
+      }
+    })
+    // 点击独立块中的 SubAgentCard
+    const card = wrapper.find('.timeline-subagent-list-history .subagent-card')
+    expect(card.exists()).toBe(true)
+    await card.trigger('click')
+    expect(wrapper.emitted('open-subagent-drawer')).toBeTruthy()
+    expect(wrapper.emitted('open-subagent-drawer')[0][0]).toEqual(sa)
+  })
+
+  it('subAgents 为空时独立块不渲染（无历史 subagent）', () => {
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'ai',
+        ended: true,
+        timeline: [
+          { type: 'text', content: 'hello' }
+        ],
+        subAgents: []
+      }
+    })
+    expect(wrapper.find('.timeline-subagent-list-history').exists()).toBe(false)
+  })
+})
+

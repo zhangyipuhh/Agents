@@ -1018,9 +1018,29 @@ environment:
 - `web/Agent/src/App.vue` 还原 history 循环中新增 `else if (isSubAgentHistoryItem(msg))` 分支：把后端 subagent 元素转换为 `subAgent` 对象，**追加到上一个 AI 消息的 `subAgents` 列表中**（而非独立 push 到 messages），由 MessageBubble 的 SubAgentCard 渲染
 - 老前端（不识别 `type:"subagent"`）落到 `else` 分支当成普通消息渲染，字段不破坏
 
-**测试结果**：
+**2026-06-16-2 修复：历史 subagent 卡片渲染不显示**：
+- **核心问题**：`MessageBubble` 中 `subAgentsByGroup` 通过 `mergedTimeline.tool` group 查找 subAgent；后端 `_convert_message_to_dict` **不会**把 `AIMessage.tool_calls` 写入 `timeline.tool`，因此历史恢复时 timeline 完全没有 tool group → `subAgentsByGroup` 返回空 → `<SubAgentCard>` 不渲染
+- **修复方案（前端兼容优先，零后端变更）**：
+  1. `web/Agent/src/components/MessageBubble.vue` 新增 2 个 computed + 2 个独立渲染位：
+     - `hasTimelineToolGroupContainingSubAgents`：守卫变量，避免双卡片
+     - `orderedSubAgentsForRender`：**仅**过滤 `isHistory === true` 的 subAgent（流式响应不会被抢渲染）
+     - timeline 模式（v-if=hasTimeline 块内）模板最后新增 `<div class="timeline-subagent-list-history">` 渲染位
+     - 降级模式（v-else 块内）同样新增渲染位
+     - 新增 CSS：`.timeline-subagent-list-history { margin-top: 8px; }`
+  2. `web/Agent/src/utils/sseParser.js` `convertSubAgentHistoryToAiSubAgent` 增强：
+     - 新增 `extractFirstUserPrompt(messages)` 内部工具：从 `messages` 列表首条 `type/role === 'user'` 消息的 `content`（支持字符串 / 内容块列表）兜底提取 `parentPrompt`
+     - 后端暂未返回 `parent_prompt` 字段时，SubAgentCard 顶部"父提问预览"不再为空
+- **设计原则**：
+  - 流式响应（`isHistory` 缺省）仍走 `subAgentsByGroup` 路径，不受新代码影响
+  - 历史恢复（`isHistory === true`）走新增独立入口，与 `subAgentsByGroup` 互斥（`hasTimelineToolGroupContainingSubAgents` 守卫）
+  - 完全前端修复，不影响后端 API 契约，向后兼容
+
+**测试结果（2026-06-16-2 累计）**：
 - 后端：`pytest app/tests/shared/...` 26 个相关测试全部通过；不影响 58 个 sandbox / 38 个 subagent 相关既有测试
-- 前端：`vitest` 281/284 通过；3 个 `App.interrupt.spec.js` 失败为预存在问题（端口 3000 未启动，与本改造无关）
+- 前端：`vitest` 302/305 通过；
+  - `sseParser.subagentHistory.test.js` 23 个（新增 8 个 parentPrompt 兜底用例）
+  - `MessageBubble.spec.js` 32 个（新增 5 个独立渲染位用例）
+  - 3 个 `App.interrupt.spec.js` 失败为预存在问题（端口 3000 未启动，与本改造无关）
 
 ## 前端架构（web/Agent）
 
