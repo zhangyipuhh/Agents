@@ -291,3 +291,56 @@ def test_delete_session_cleans_subagent_threads(client, admin_headers):
 
     assert "sub_a" in called_ids, f"sub_a not in {called_ids}"
     assert session_id in called_ids, f"{session_id} not in {called_ids}"
+
+
+# ===== 2026-06-16 修复：非子智能体工具 tool_call 不产生 subagent 元素 =====
+
+def test_messages_filters_non_subagent_tool_call(client, admin_headers):
+    """
+    端到端测试：主消息含 generate_report tool_call（普通工具）时，
+    GET /api/session/{id}/messages 返回的 messages 列表中
+    **不应** 包含 type:"subagent" 元素。
+
+    防回归：用户报告 generate_report 被误包装为 type:"subagent"，
+    前端误渲染为 SubAgentCard（点击触发 SubAgentDrawer）。
+    """
+    create_resp = client.post("/api/session/create", headers=admin_headers)
+    assert create_resp.status_code == 200
+    session_id = create_resp.json()["session_id"]
+    headers = {**admin_headers, "X-Session-ID": session_id}
+
+    # 主消息：用户提问 + AI 回答（带 generate_report tool_call，无子 thread）
+    h = _msg(TestHumanMessage, content="生成一份报告")
+    ai = _msg(
+        TestAIMessage, content="好的，我已生成报告",
+        tool_calls=[{"id": "call_gr_e2e", "name": "generate_report", "args": {}}],
+        id="m-ai-gr",
+    )
+    main_messages = [h, ai]
+
+    # 不需要任何子 thread state（普通工具不应被反查）
+    cp = _build_mock_checkpointer({})
+    map_agent = _build_mock_agent_graph(main_messages)
+
+    with patch(
+        "app.shared.routers.session_router.get_async_checkpointer",
+        AsyncMock(return_value=cp),
+    ), patch(
+        "app.features.map_agent.router.map_router.get_map_agent",
+        AsyncMock(return_value=map_agent),
+    ):
+        resp = client.get(
+            f"/api/session/{session_id}/messages?limit=100",
+            headers=headers,
+        )
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    # 关键断言：total == 2（仅 2 条主消息，无任何 subagent 元素插入）
+    assert data["total"] == 2, f"期望 2 条，实际 {data['total']}：{data['messages']}"
+    # 关键断言：messages 列表中不应有 type:"subagent"
+    subagent_msgs = [m for m in data["messages"] if m.get("type") == "subagent"]
+    assert subagent_msgs == [], f"普通工具不应产生 subagent 元素：{subagent_msgs}"
+    # 类型校验
+    assert data["messages"][0]["type"] == "user"
+    assert data["messages"][1]["type"] == "ai"

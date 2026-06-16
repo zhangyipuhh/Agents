@@ -19,6 +19,7 @@ from datetime import datetime
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
 from app.core.messages.converter import MessageContentConverter
+from app.core.tools.subagent_registry import is_subagent_tool
 
 
 class CheckpointHistoryService:
@@ -347,11 +348,17 @@ class CheckpointHistoryService:
                 tool_calls = cls._extract_ai_tool_call_ids(raw_msg)
                 for tc in tool_calls:
                     tid = tc.get("id")
+                    tool_name = tc.get("name") or ""
                     if not tid:
+                        continue
+                    # 2026-06-16 修复：仅子智能体工具（注册表内）的 tool_call 才反查子 thread 历史。
+                    # 普通工具（如 generate_report）的 tool_call_id 在 checkpointer 中无对应子 thread，
+                    # 反查会返回空 messages，但仍会被错误包装成 type:"subagent"，前端误渲染为 SubAgentCard。
+                    if not is_subagent_tool(tool_name):
                         continue
                     ordered_subagents.append({
                         "thread_id": tid,
-                        "tool": tc.get("name") or "",
+                        "tool": tool_name,
                         "parent_message_index": idx,
                         "parent_message_id": main_msg.get("id"),
                     })
@@ -444,7 +451,11 @@ class CheckpointHistoryService:
                 continue
             for tc in cls._extract_ai_tool_call_ids(msg):
                 tid = tc.get("id")
-                if tid and tid not in seen:
+                # 2026-06-16 修复：仅收集子智能体工具的 thread_id，
+                # 避免删除会话时尝试清理普通工具的 tool_call_id（虽不致命但浪费 DB 调用 + 噪音日志）
+                if not tid or not is_subagent_tool(tc.get("name") or ""):
+                    continue
+                if tid not in seen:
                     seen.add(tid)
                     ids.append(tid)
 

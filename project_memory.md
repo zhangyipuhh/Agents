@@ -1042,6 +1042,36 @@ environment:
   - `MessageBubble.spec.js` 32 个（新增 5 个独立渲染位用例）
   - 3 个 `App.interrupt.spec.js` 失败为预存在问题（端口 3000 未启动，与本改造无关）
 
+**2026-06-16-3 修复：普通工具误渲染为 SubAgentCard**
+
+**根因**：`merge_main_and_subagent_messages` 对所有 `tool_call` 无差别生成 `type:"subagent"` 元素，未判断 `tool` 是否属于子智能体工具集。普通工具（如 `generate_report`）的 tool_call 也会被错误包装，前端 `isSubAgentHistoryItem` 仅校验 `type` 和 `thread_id`，无 tool 过滤，最终渲染为 `SubAgentCard`（点击触发 `SubAgentDrawer`），而非期望的 `ToolCallCard`（"普通工具 N 步 已完成" 样式）。
+
+**修复**：仅改后端，前端代码与测试均不动（按用户决策）。
+- 新建 [app/core/tools/subagent_registry.py](file:///e:/laboratory/AI/Agents/feature-agent-core/app/core/tools/subagent_registry.py) 作为子智能体工具**集中注册表**（single source of truth）：
+  - 常量 `SUBAGENT_TOOL_NAMES = frozenset({"sandbox", "explore"})`（不可变，防止运行期误改）
+  - 函数 `is_subagent_tool(name) -> bool`（大小写不敏感、输入防御）
+  - 文件顶部 docstring 详细描述"新增子智能体工具的标准流程（5 步）"和"与前端 `web/Agent/src/utils/sseParser.js` 的 `SUBAGENT_TOOLS` 同步约束"
+- 修改 [app/shared/utils/memory/checkpoint_history.py](file:///e:/laboratory/AI/Agents/feature-agent-core/app/shared/utils/memory/checkpoint_history.py)：
+  - `merge_main_and_subagent_messages` 仅对注册表内工具的 `tool_call` 反查子 thread 历史
+  - `collect_subagent_thread_ids_for_cleanup` 同步过滤（避免删除会话时尝试清理普通工具 thread_id + 噪音日志）
+- 测试同步（仅后端，新增 12 个用例）：
+  - 新建 [app/tests/core/tools/test_subagent_registry.py](file:///e:/laboratory/AI/Agents/feature-agent-core/app/tests/core/tools/test_subagent_registry.py)（**8 用例**：注册表内容 + is_subagent_tool 正/反例 + 大小写 + 输入防御 + frozenset 不可变）
+  - [app/tests/shared/utils/memory/test_checkpoint_history_subagent.py](file:///e:/laboratory/AI/Agents/feature-agent-core/app/tests/shared/utils/memory/test_checkpoint_history_subagent.py) 新增 **3 用例**（merge 过滤 + collect 过滤 + 纯普通工具场景）
+  - [app/tests/shared/test_session_messages_subagent.py](file:///e:/laboratory/AI/Agents/feature-agent-core/app/tests/shared/test_session_messages_subagent.py) 新增 **1 端到端用例**
+
+**兼容性**：
+- API 契约不变（仅修改返回的 `messages` 列表内容，少一些 `type:"subagent"` 元素）
+- 前端代码与测试均不动（按用户决策），历史脏数据继续渲染为 SubAgentCard 但**新数据正确**
+- 旧历史脏数据随会话自然淘汰（用户重新聊天后新数据正确）
+
+**与前端 `SUBAGENT_TOOLS` 的同步机制**：
+注册表文件顶部 docstring 明确列出"新增子智能体工具的标准流程"5 步骤，其中第 3 步强制要求同步修改 `web/Agent/src/utils/sseParser.js` 的 `SUBAGENT_META` 与 `SUBAGENT_TOOLS`。当前注册的 `sandbox` / `explore` 已与前端常量对齐。
+
+**测试结果（2026-06-16-3 累计）**：
+- 后端 `pytest`：8 + 20 + 7 = 35 个相关测试全部通过
+- 全量 `pytest app/tests/`：359 passed / 2 failed，2 个失败为 pre-existing 问题（`test_config.py` 中 `test_llm_settings_default_values` 受 `.env` 中 `model_type="anthropic"` 干扰、`test_settings_agent_chat_max_concurrency_default` 默认值与 settings.py 不一致），均与本次修复无关
+- 前端：未新增任何测试（按用户决策）
+
 ## 前端架构（web/Agent）
 
 `web/Agent/` 是基于 Vite + Vue 3 的多入口 SPA，对外提供三套独立页面（主 Agent、知识库、门户），共享同一套组件、工具函数与设计 token。

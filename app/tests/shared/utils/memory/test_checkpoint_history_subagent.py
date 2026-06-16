@@ -291,3 +291,121 @@ def test_merge_main_dict_only_no_raw():
     ))
     assert merged == main_dicts
     cp.aget.assert_not_called()
+
+
+# ===== 2026-06-16 修复：非子智能体工具 tool_call 过滤 =====
+
+def test_merge_filters_non_subagent_tool_calls():
+    """
+    主消息同时含 sandbox + generate_report 两个 tool_call，
+    仅 sandbox 产生 subagent 元素，generate_report 被过滤。
+    防回归：用户报告 generate_report 被误包装为 type:"subagent"。
+    """
+    h = _make_msg(HumanMessage, content="hi")
+    # 同一 AIMessage 含两个 tool_call（混用子智能体与普通工具）
+    ai_main = _make_msg(
+        AIMessage, content="",
+        tool_calls=[
+            {"id": "call_sb", "name": "sandbox", "args": {}},
+            {"id": "call_gr", "name": "generate_report", "args": {}},
+        ],
+        id="m-ai-1",
+    )
+    h2 = _make_msg(HumanMessage, content="thanks")
+    raw = [h, ai_main, h2]
+    main_dicts = [
+        {"id": "m-h-1", "type": "user", "role": "user", "content": "hi"},
+        {"id": "m-ai-1", "type": "ai", "role": "assistant", "content": ""},
+        {"id": "m-h-2", "type": "user", "role": "user", "content": "thanks"},
+    ]
+
+    # 子 thread 状态（仅 sandbox 对应的子 thread 有数据；generate_report 无子 thread）
+    sub_state = {
+        "channel_values": {
+            "messages": [
+                _make_msg(HumanMessage, content="sub prompt"),
+                _make_msg(AIMessage, content="sub answer"),
+            ]
+        }
+    }
+    cp = MagicMock()
+    cp.aget = AsyncMock(return_value=sub_state)
+
+    merged = asyncio.run(CheckpointHistoryService.merge_main_and_subagent_messages(
+        checkpointer=cp, main_messages=main_dicts, raw_main_messages=raw
+    ))
+
+    # 期望顺序：m-h-1, m-ai-1, subagent(call_sb), m-h-2
+    # generate_report 被过滤，不产生 subagent 元素
+    assert len(merged) == 4, f"期望 4 条，实际 {len(merged)}：{merged}"
+    assert merged[0]["id"] == "m-h-1"
+    assert merged[1]["id"] == "m-ai-1"
+    assert merged[2]["type"] == "subagent"
+    assert merged[2]["thread_id"] == "call_sb"
+    assert merged[2]["tool"] == "sandbox"
+    # 关键断言：merged 中不应存在 generate_report 对应的 subagent 元素
+    subagent_thread_ids = [m.get("thread_id") for m in merged if m.get("type") == "subagent"]
+    assert "call_gr" not in subagent_thread_ids, "generate_report 不应产生 subagent 元素"
+    assert merged[3]["id"] == "m-h-2"
+
+
+def test_merge_only_generate_report_no_subagent():
+    """
+    主消息仅含 generate_report tool_call 时，不应产生任何 subagent 元素。
+    防回归：原实现会把所有 tool_call 包成 type:"subagent"。
+    """
+    h = _make_msg(HumanMessage, content="hi")
+    ai = _make_msg(
+        AIMessage, content="ok",
+        tool_calls=[{"id": "call_gr_only", "name": "generate_report", "args": {}}],
+        id="m-1",
+    )
+    raw = [h, ai]
+    main_dicts = [
+        {"id": "m-h", "type": "user", "role": "user", "content": "hi"},
+        {"id": "m-1", "type": "ai", "role": "assistant", "content": "ok"},
+    ]
+    cp = MagicMock()
+    cp.aget = AsyncMock()
+
+    merged = asyncio.run(CheckpointHistoryService.merge_main_and_subagent_messages(
+        checkpointer=cp, main_messages=main_dicts, raw_main_messages=raw
+    ))
+
+    # 关键断言：不应有任何 subagent 元素
+    assert len(merged) == 2
+    assert all(m.get("type") != "subagent" for m in merged), "普通工具不应产生 subagent 元素"
+    # 也不应调用 checkpointer.aget（没必要反查）
+    cp.aget.assert_not_called()
+
+
+def test_collect_subagent_thread_ids_filters_non_subagent():
+    """
+    collect_subagent_thread_ids_for_cleanup 同样按 is_subagent_tool 过滤，
+    仅收集 sandbox / explore 等子智能体工具的 thread_id。
+    防回归：删除会话时不应尝试清理普通工具的 tool_call_id。
+    """
+    h = _make_msg(HumanMessage, content="h")
+    # 主消息同时含 sandbox + generate_report + explore
+    ai = _make_msg(
+        AIMessage, content="",
+        tool_calls=[
+            {"id": "call_sb", "name": "sandbox"},
+            {"id": "call_gr", "name": "generate_report"},
+            {"id": "call_ex", "name": "explore"},
+        ],
+    )
+    cp = MagicMock()
+    cp.aget = AsyncMock(
+        return_value=_make_state_with_messages([h, ai])
+    )
+
+    ids = asyncio.run(CheckpointHistoryService.collect_subagent_thread_ids_for_cleanup(
+        checkpointer=cp, session_id="main-x"
+    ))
+
+    # 关键断言：generate_report 不在清理列表中
+    assert "call_sb" in ids
+    assert "call_ex" in ids
+    assert "call_gr" not in ids, f"generate_report 不应被收集清理：{ids}"
+    assert len(ids) == 2
