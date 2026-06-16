@@ -35,11 +35,12 @@ function handleClick() {
 const meta = computed(() => getSubAgentMeta(props.subAgent.tool))
 const status = computed(() => props.subAgent.status || 'running')
 
-// 状态徽章文本与样式
+// 状态徽章文本与样式（2026-06-15 新增 stopped_by_user 状态）
 const statusTextMap = {
   running: '执行中',
   success: '已完成',
-  error: '执行失败'
+  error: '执行失败',
+  stopped_by_user: '已中止'  // 用户点击停止按钮触发的子智能体中止
 }
 const statusText = computed(() => statusTextMap[status.value] || '执行中')
 
@@ -216,6 +217,13 @@ const duration = computed(() => {
 .subagent-status.error {
   background-color: rgba(239, 68, 68, 0.1);
   color: #ef4444;
+}
+
+/* 2026-06-15 新增：用户中止状态（停止按钮触发） */
+.subagent-status.stopped_by_user {
+  background-color: rgba(245, 158, 11, 0.1);
+  color: #f59e0b;
+  /* 静态显示（无 pulse 动画） */
 }
 
 .subagent-meta,

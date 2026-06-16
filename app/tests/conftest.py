@@ -41,6 +41,31 @@ for _lc_mod in [
 # tool 装饰器需要保留被装饰的原始函数，否则测试无法调用 .func
 sys.modules["langchain.tools"].tool = lambda *args, **kwargs: lambda func: func
 
+# 2026-06-15 新增：mock langchain.agents 子模块（FilesystemReadTools.explore 依赖）
+# FilesystemReadTools.py 顶层 import：
+#   from langchain.agents import create_agent
+#   from langchain.agents.middleware import ContextEditingMiddleware, TodoListMiddleware
+#   from langchain.agents.middleware.context_editing import ClearToolUsesEdit
+_agents_mod = types.ModuleType("langchain.agents")
+_agents_mod.create_agent = Mock()
+sys.modules["langchain.agents"] = _agents_mod
+
+_agents_mw_mod = types.ModuleType("langchain.agents.middleware")
+_agents_mw_mod.__path__ = []  # 让它表现为 package 以支持子模块
+_agents_mw_mod.ContextEditingMiddleware = Mock()
+_agents_mw_mod.TodoListMiddleware = Mock()
+sys.modules["langchain.agents.middleware"] = _agents_mw_mod
+
+_agents_mw_ce_mod = types.ModuleType("langchain.agents.middleware.context_editing")
+_agents_mw_ce_mod.ClearToolUsesEdit = Mock()
+sys.modules["langchain.agents.middleware.context_editing"] = _agents_mw_ce_mod
+
+# 2026-06-15 新增：encoding_safe_file_search 依赖
+#   from langchain.agents.middleware.types import AgentMiddleware
+_agents_mw_types = types.ModuleType("langchain.agents.middleware.types")
+_agents_mw_types.AgentMiddleware = Mock()
+sys.modules["langchain.agents.middleware.types"] = _agents_mw_types
+
 
 class _ToolRuntime(Mock):
     """支持泛型下标的 ToolRuntime Mock"""
@@ -78,6 +103,8 @@ class _BaseTool:
 
 sys.modules["langchain_core.tools"].BaseTool = _BaseTool
 sys.modules["langchain_core.tools"].StructuredTool = _BaseTool
+# 2026-06-15 新增：encoding_safe_file_search 依赖
+sys.modules["langchain_core.tools"].tool = lambda *args, **kwargs: lambda func: func
 
 class _RecursiveCharacterTextSplitter:
     """模拟 RecursiveCharacterTextSplitter，提供基础 split_text 功能"""
@@ -201,12 +228,19 @@ sys.modules["deepagents"].create_deep_agent = Mock(return_value=Mock())
 
 class _FilesystemBackend:
     """模拟 deepagents FilesystemBackend"""
+    def __init__(self, *args, **kwargs):  # 2026-06-15 接受任意构造参数（explore 工具传 root_dir/virtual_mode）
+        pass
     @staticmethod
     def _ripgrep_search(*args, **kwargs):
         return []
 
 
 sys.modules["deepagents.backends.filesystem"].FilesystemBackend = _FilesystemBackend
+
+# 2026-06-15 新增：把 FilesystemMiddleware / FilesystemBackend 也注册到 deepagents 顶层
+# （FilesystemReadTools.explore 依赖这两个 from ... import 形式）
+sys.modules["deepagents"].FilesystemMiddleware = _FilesystemMiddleware
+sys.modules["deepagents.backends"].FilesystemBackend = _FilesystemBackend
 
 # mock docker 模块（测试无需真实 Docker）
 _mock_docker = types.ModuleType("docker")

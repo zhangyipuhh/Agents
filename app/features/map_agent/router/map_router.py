@@ -28,6 +28,8 @@ from langchain_core.messages import ToolMessage
 from app.features.map_agent.MapAgent import MapAgent
 from app.core.format.stream import stream_format_context
 from app.core.concurrency import chat_concurrency_dependency, stream_with_concurrency
+# 2026-06-15 新增：子智能体停止信号传递（FastAPI Request → ContextVar → sandbox/explore 工具）
+from app.core.tools._stop_signal import reset_current_request, set_current_request
 from app.features.map_agent.config.prompts import KNOWLEDGE_SYSTEM_PROMPT, MAP_AGENT_SYSTEM_PROMPT
 from app.features.map_agent.config.MapAgentContext import MapAgentContext
 
@@ -467,6 +469,11 @@ async def generate_stream_response(
     Yields:
         str: SSE 格式的响应数据，包含 type 字段和对应的数据
     """
+    # 2026-06-15 新增：把 FastAPI Request 挂到 ContextVar，
+    # 让子智能体工具（sandbox / explore）能通过 get_current_request() 取出，
+    # 在 astream 循环中检测 is_disconnected() 来响应客户端断开（停止按钮触发）。
+    # 异步 generator 的 ContextVar 在 with 块退出时自动清理。
+    cv_token = set_current_request(request)
     try:
         # 获取 MapAgent 实例（延迟初始化）
         map_agent = await get_map_agent()
@@ -600,6 +607,13 @@ async def generate_stream_response(
         logger.error(f"[ERROR] generate_stream_response 异常: {e}")
         logger.error(f"[ERROR] 异常堆栈: {traceback.format_exc()}")
         yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+    finally:
+        # 2026-06-15 新增：清理 ContextVar，避免后续请求继承到错误的 request 引用。
+        # 即使 generate_stream_response 因 is_disconnected() return 提前退出，也保证清理。
+        try:
+            reset_current_request(cv_token)
+        except Exception as reset_error:
+            logger.warning(f"[Chat] reset_current_request 异常: {reset_error}")
 
 
 @router.post('/chat')

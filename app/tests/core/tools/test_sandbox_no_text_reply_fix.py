@@ -1,6 +1,6 @@
 # -*- coding:utf-8 -*-
 """
-sandbox 子智能体"父 LLM 收不到文本回复"修复回归测试
+sandbox 子智能体"父 LLM 收不到文本回复"修复回归测试（2026-06-15 新增，2026-06-15 同步更新为 async 适配）
 
 覆盖场景：
 1. 子智能体 stream 最后一块是 updates 模式（无顶层 messages 键），
@@ -9,9 +9,20 @@ sandbox 子智能体"父 LLM 收不到文本回复"修复回归测试
 2. 子智能体完全没产出 AIMessage（仅有 HumanMessage / ToolMessage），
    验证兜底字符串 + logger.warning 被触发。
 
+## 2026-06-15 同步更新（async 适配）
+
+sandbox 工具从同步 ``def sandbox`` 升级为 ``async def sandbox``（支持子智能体停止信号），
+内部 ``child_agent.stream()`` 改为 ``child_agent.astream()``。
+
+测试同步调整：
+- ``fake_stream`` 同步生成器 → ``fake_astream`` async 生成器
+- ``mock_agent.stream.side_effect = fake_stream`` → ``mock_agent.astream = fake_astream``
+- ``SandboxTools.sandbox(...)`` 同步调用 → ``asyncio.run(SandboxTools.sandbox.coroutine(...))``
+
 Date: 2026-06-15
 """
 
+import asyncio
 import json
 from unittest.mock import MagicMock, patch
 
@@ -79,7 +90,7 @@ def test_sandbox_returns_last_ai_text_when_last_chunk_is_updates_mode():
     """
     P0 核心修复回归测试
 
-    模拟用户报告的 bug 场景：child_agent.stream(...) 最后一块是 updates 模式
+    模拟用户报告的 bug 场景：child_agent.astream(...) 最后一块是 updates 模式
     （data = {"model": {...}}，无顶层 messages 键）。
     验证：修复后父工具能从 all_messages 中拿到真实 AI 文本，
     而非旧的兜底字符串"沙箱子智能体执行完成，但未获取到文本回复。"。
@@ -95,7 +106,8 @@ def test_sandbox_returns_last_ai_text_when_last_chunk_is_updates_mode():
     """
     from app.core.tools import SandboxTools
 
-    def fake_stream(*args, **kwargs):
+    # 2026-06-15 更新：同步生成器 → async 生成器（适配 child_agent.astream）
+    async def fake_astream(*args, **kwargs):
         # 模拟真实场景：子智能体多步推进，updates 流块携带 AIMessage
         yield ("updates", {
             "model": {
@@ -109,7 +121,8 @@ def test_sandbox_returns_last_ai_text_when_last_chunk_is_updates_mode():
         # —— 这正是用户报告的 bug 场景
 
     mock_agent = MagicMock()
-    mock_agent.stream.side_effect = fake_stream
+    # 2026-06-15 更新：mock astream（不是 stream）
+    mock_agent.astream = fake_astream
 
     patches = _build_stream_patches()
     patches.append(
@@ -121,7 +134,9 @@ def test_sandbox_returns_last_ai_text_when_last_chunk_is_updates_mode():
     )
 
     with patches[0], patches[1], patches[2], patches[3], patches[4]:
-        result = SandboxTools.sandbox("test prompt", _FakeRuntime())
+        # 2026-06-15 更新：sandbox 是 async 函数，需 asyncio.run 驱动
+        # 2026-06-15 备注：conftest 把 @tool mock 为 identity，所以 sandbox 就是原 async 函数
+        result = asyncio.run(SandboxTools.sandbox("test prompt", _FakeRuntime()))
 
     # 验证 sandbox 工具返回了 Command
     assert result is not None
@@ -162,7 +177,8 @@ def test_sandbox_returns_fallback_when_no_ai_message_in_all_messages():
     """
     from app.core.tools import SandboxTools
 
-    def fake_stream(*args, **kwargs):
+    # 2026-06-15 更新：同步生成器 → async 生成器
+    async def fake_astream(*args, **kwargs):
         # 仅产出 HumanMessage + ToolMessage，没有 AIMessage
         # 注意：所有消息的 content 都设为空，触发 _extract_last_ai_text 返回空字符串，
         # 进而走兜底分支 + logger.warning。
@@ -176,7 +192,8 @@ def test_sandbox_returns_fallback_when_no_ai_message_in_all_messages():
         })
 
     mock_agent = MagicMock()
-    mock_agent.stream.side_effect = fake_stream
+    # 2026-06-15 更新：mock astream
+    mock_agent.astream = fake_astream
 
     patches = _build_stream_patches()
     patches.append(
@@ -188,8 +205,11 @@ def test_sandbox_returns_fallback_when_no_ai_message_in_all_messages():
 
     with patches[0], patches[1], patches[2], patches[3], patches[4]:
         with patch.object(SandboxTools.logger, "warning") as mock_warning:
-            result = SandboxTools.sandbox(
-                "test prompt", _FakeRuntime(tool_call_id="call_no_ai")
+            # 2026-06-15 更新：sandbox 是 async 函数
+            result = asyncio.run(
+                SandboxTools.sandbox(
+                    "test prompt", _FakeRuntime(tool_call_id="call_no_ai")
+                )
             )
 
     # 验证 sandbox 工具返回了 Command

@@ -47,6 +47,16 @@ const makeStopEvent = (overrides = {}) => ({
   timestamp: 1781497974.8
 })
 
+// 2026-06-15 新增：用户停止按钮触发的工具中止事件
+const makeStoppedByUserEvent = (overrides = {}) => ({
+  type: 'tool_stop',
+  tool: '生成报告',
+  tool_call_id: 'call_abc',
+  thread_id: 'top_thread',
+  data: { status: 'stopped_by_user', ...overrides.data },
+  timestamp: 1781497974.8
+})
+
 const makeErrorEvent = (overrides = {}) => ({
   type: 'tool_error',
   tool: '生成报告',
@@ -224,17 +234,42 @@ describe('ToolCallCard', () => {
 
   // ========== 展开/折叠 ==========
 
-  it('默认 running 状态展开步骤列表', async () => {
+  it('默认 error 状态折叠步骤列表', async () => {
     const wrapper = mount(ToolCallCard, {
       props: {
         toolCallId: 'c1',
         tool: 'test',
-        events: [makeStartEvent(), makeProgressEvent()]
+        events: [makeStartEvent(), makeErrorEvent()]
       }
     })
     await nextTick()
-    expect(wrapper.find('.tool-call-steps').exists()).toBe(true)
-    expect(wrapper.find('.tool-call-hint-text').text()).toBe('收起')
+    expect(wrapper.find('.tool-call-steps').exists()).toBe(false)
+    expect(wrapper.find('.tool-call-hint-text').text()).toBe('展开')
+  })
+
+  // ========== 2026-06-15 新增：用户停止按钮触发的工具中止状态 ==========
+
+  it('stopped_by_user 状态显示"已中止"', () => {
+    const wrapper = mount(ToolCallCard, {
+      props: {
+        toolCallId: 'c1',
+        tool: '生成报告',
+        events: [makeStartEvent(), makeStoppedByUserEvent()]
+      }
+    })
+    expect(wrapper.text()).toContain('已中止')
+  })
+
+  it('stopped_by_user 状态徽章 class 为 stopped_by_user', () => {
+    const wrapper = mount(ToolCallCard, {
+      props: {
+        toolCallId: 'c1',
+        tool: '生成报告',
+        events: [makeStartEvent(), makeStoppedByUserEvent()]
+      }
+    })
+    const statusEl = wrapper.find('.tool-call-status')
+    expect(statusEl.classes()).toContain('stopped_by_user')
   })
 
   it('默认 success 状态折叠步骤列表', async () => {

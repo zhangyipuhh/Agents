@@ -143,4 +143,37 @@ describe('SubAgentCard', () => {
     // 卡片应正常渲染
     expect(wrapper.text()).toContain('沙箱执行')
   })
+
+  // ========== 2026-06-15 新增：用户停止按钮触发的子智能体中止状态 ==========
+
+  it('stopped_by_user 状态显示"已中止"（用户停止按钮触发）', () => {
+    const wrapper = mount(SubAgentCard, {
+      props: {
+        subAgent: {
+          ...baseSubAgent,
+          status: 'stopped_by_user',
+          endTime: Date.now()
+        }
+      }
+    })
+    expect(wrapper.text()).toContain('已中止')
+    // 状态徽章 class 应包含 stopped_by_user（用于 CSS 颜色区分）
+    const statusBadge = wrapper.find('.subagent-status')
+    expect(statusBadge.classes()).toContain('stopped_by_user')
+  })
+
+  it('stopped_by_user 状态无 pulse 动画（与 running 区分）', () => {
+    const runningWrapper = mount(SubAgentCard, {
+      props: { subAgent: { ...baseSubAgent, status: 'running' } }
+    })
+    const stoppedWrapper = mount(SubAgentCard, {
+      props: { subAgent: { ...baseSubAgent, status: 'stopped_by_user' } }
+    })
+    // running 状态有 subagent-icon-running class（动画）
+    const runningIcon = runningWrapper.find('.subagent-icon')
+    expect(runningIcon.classes()).toContain('subagent-icon-running')
+    // stopped_by_user 状态无此 class（静态）
+    const stoppedIcon = stoppedWrapper.find('.subagent-icon')
+    expect(stoppedIcon.classes()).not.toContain('subagent-icon-running')
+  })
 })

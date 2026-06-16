@@ -43,9 +43,15 @@ from app.core.agent.AgentContext import AgentContext
 from app.core.config.config import LLM_CONFIG
 from app.core.config.settings import settings
 from app.core.llmcalls.model_factory import ModelFactory
+from app.core.tools._stop_signal import get_current_request
 from app.core.tools.events import create_tool_event
 from app.core.tools.subagent_message_extractor import extract_structured_messages
 from app.shared.tools.middleware.docker_sandbox_backend import DockerSandboxMiddleware
+
+# 2026-06-15 新增：停止信号检测间隔（每 N 个 chunk 检测一次 is_disconnected）
+# 5 个 chunk 检测一次足够在 200-500ms 内响应停止（LLM token 生成约 40-100ms/个），
+# 避免每 chunk await 引入额外延迟。
+_STOP_CHECK_INTERVAL = 5
 
 logger = logging.getLogger(__name__)
 
@@ -713,7 +719,7 @@ def _extract_last_ai_text(messages: list) -> str:
     "- CPU limit (default 100%)\n"
     "- Timeout protection (default 60s)\n"
 ))
-def sandbox(
+async def sandbox(  # 2026-06-15: 改 async，支持子智能体停止信号感知
     prompt: str,
     runtime: ToolRuntime[AgentContext],
 ) -> Command:
@@ -724,6 +730,17 @@ def sandbox(
     提供完整的沙箱工具集：ls, read_file, write_file, edit_file, glob, grep, execute。
 
     使用 LangGraph MemorySaver checkpointer 管理子智能体会话。
+
+    ## 2026-06-15 新增：用户停止信号感知
+
+    通过 ``app.core.tools._stop_signal`` 取出当前请求的 FastAPI Request，
+    在 ``child_agent.astream()`` 循环中每 ``_STOP_CHECK_INTERVAL`` 个 chunk 检测一次
+    ``request.is_disconnected()``，发现客户端断开（停止按钮触发）时立即：
+
+    1. 跳出 astream 循环
+    2. 推送 ``tool_stop`` 事件，``data.status = "stopped_by_user"``（前端可识别）
+    3. 清理 Docker 容器资源（``middleware.cleanup()``）
+    4. 返回 ``Command`` 包含「子智能体已被用户中止」文本，让父 LLM 知道该子任务被中断
 
     Args:
         prompt: 详细任务描述。父 LLM 应将用户问题改写为高度详细的任务描述，
@@ -740,6 +757,11 @@ def sandbox(
     tool_call_id = runtime.tool_call_id
     start_time = datetime.now()
     writer = get_stream_writer()
+
+    # 2026-06-15 新增：从 ContextVar 取出当前 FastAPI Request（可能为 None）
+    # None 场景：非 HTTP 上下文（如直接调用工具函数做测试）
+    # 此时跳过 is_disconnected 检测，正常跑完子智能体
+    request = get_current_request()
 
     # 增加 runtime.context 全链路日志与空值保护
     logger.info(
@@ -826,13 +848,29 @@ def sandbox(
 
         final_answer = ""
         all_messages = []
+        # 2026-06-15 新增：用户主动停止标志（与正常完成 / 异常分支并列）
+        stopped_by_user = False
 
-        # 流式执行子智能体
-        for chunk in child_agent.stream(
+        # 2026-06-15 改造：sync stream → async astream
+        # 原因：需要在每次 __anext__ 之间 await request.is_disconnected() 检测停止信号
+        async for chunk in child_agent.astream(
             {"messages": [{"role": "user", "content": prompt}]},
             config=config,
             stream_mode=["updates", "values", "messages"],
         ):
+            # 2026-06-15 新增：客户端断开检测（每 N 个 chunk 检测一次）
+            if request is not None and len(all_messages) % _STOP_CHECK_INTERVAL == 0:
+                try:
+                    if await request.is_disconnected():
+                        logger.info(
+                            "[sandbox] 客户端已断开，停止子智能体。tool_call_id=%s",
+                            tool_call_id,
+                        )
+                        stopped_by_user = True
+                        break
+                except Exception as e:
+                    logger.warning(f"[sandbox] is_disconnected 检测异常: {e}")
+
             if isinstance(chunk, tuple) and len(chunk) == 2:
                 stream_mode, data = chunk
             elif isinstance(chunk, dict):
@@ -880,6 +918,66 @@ def sandbox(
                     elif isinstance(sr, str):
                         final_answer = sr
 
+        # ===== 2026-06-15 新增：用户停止分支（与正常完成并列）=====
+        if stopped_by_user:
+            end_time = datetime.now()
+            duration_ms = int((end_time - start_time).total_seconds() * 1000)
+            final_answer = "子智能体已被用户中止"
+
+            # 推送 tool_stop 事件，status='stopped_by_user' 供前端识别
+            stopped_summary = {
+                "current_step": 0,
+                "total_steps": len(SANDBOX_STEPS),
+                "progress_pct": 0,
+                "status_message": "已被用户中止",
+                "status_icon": "⏹️",
+                "elapsed_ms": duration_ms,
+                "completed_steps": 0,
+                "final_status": "已被用户中止",
+                "result_preview": final_answer,
+            }
+            stop_event = create_tool_event(
+                event_type="tool_stop",
+                tool=tool_name,
+                tool_call_id=tool_call_id,
+                data={
+                    "status": "stopped_by_user",  # 区别于 'success' / 'failure'
+                    "result": {
+                        "prompt": prompt,
+                        "answer": final_answer,
+                    },
+                    "duration_ms": duration_ms,
+                    "final_summary": stopped_summary,
+                    # ===== 2026-06-13 新增 subagent 字段 =====
+                    "thread_id": tool_call_id,
+                    "parent_prompt": prompt,
+                    "final_messages": extract_structured_messages(all_messages),
+                },
+            )
+            writer(dict(stop_event))
+
+            # 关键：清理 Docker 容器资源（断开时必须执行，避免容器残留）
+            try:
+                middleware.cleanup()
+                logger.info("[sandbox] 子智能体停止后 Docker 容器已清理")
+            except Exception as e:
+                logger.warning(f"[sandbox] 清理 Docker 容器异常: {e}")
+
+            return Command(
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=json.dumps(
+                                {"subagent": final_answer},
+                                ensure_ascii=False,
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ]
+                }
+            )
+
+        # ===== 原有正常结束逻辑 =====
         # 如果还没有获取到有效答案，从循环内累计的 all_messages 中提取最后一条 AI 文本。
         # 不能用 data["messages"]：data 是最后一个流块的数据，当最后一块是 updates 模式时
         # data = {node_name: {state_delta}}，没有顶层 messages 键（修复前 bug 现场）。

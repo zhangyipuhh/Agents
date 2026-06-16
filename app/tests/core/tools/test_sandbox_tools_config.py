@@ -1,6 +1,6 @@
 # -*- coding:utf-8 -*-
 """
-SandboxTools 配置注入测试（2026-06-12 新增）
+SandboxTools 配置注入测试（2026-06-12 新增，2026-06-15 更新为 async 适配）
 
 验证 sandbox 工具从 Settings.get_sandbox_config() 读取容器化部署配置，
 并把配置正确透传给 DockerSandboxMiddleware。
@@ -9,9 +9,40 @@ SandboxTools 配置注入测试（2026-06-12 新增）
     - 默认配置下，工具把 SandboxSettings 默认值透传给中间件
     - 自定义配置下（socket 模式 + prefix），工具正确透传所有字段
     - 配置变更（mock settings）后，工具透传变更后的值
+
+## 2026-06-15 同步更新（async 适配）
+
+sandbox 工具从同步 ``def sandbox`` 升级为 ``async def sandbox``（支持子智能体停止信号），
+内部 ``child_agent.stream()`` 改为 ``child_agent.astream()``。
+
+测试同步调整：
+- ``mock_agent.return_value.stream`` → ``mock_agent.return_value.astream``（同步 MagicMock，
+  ``side_effect`` 在调用时立即抛错，跳过 async for 迭代）
+- ``SandboxTools.sandbox("test prompt", FakeRuntime())`` → ``asyncio.run(
+  SandboxTools.sandbox.coroutine("test prompt", FakeRuntime()))``（同步驱动 async 函数）
 """
 
+import asyncio
 from unittest.mock import MagicMock, patch
+
+
+def _invoke_async_sandbox(prompt, runtime):
+    """
+    同步驱动 async sandbox 工具函数（用于同步 pytest 用例）。
+
+    ## 2026-06-15 备注：conftest 模拟环境下 @tool 是 identity
+
+    ``app/tests/conftest.py`` 把 ``langchain.tools.tool`` mock 为
+    ``lambda *args, **kwargs: lambda func: func``，即装饰器不改变函数。
+    因此在测试环境下 ``SandboxTools.sandbox`` 就是原 async 函数本身，
+    没有 ``.coroutine`` 属性（那是真实 langchain 1.x StructuredTool 才有的）。
+
+    生产环境（conftest 不生效时）``@tool`` 会把 async 函数包装为
+    ``StructuredTool`` 并保留 ``.coroutine`` 指向原函数。两种环境下
+    ``asyncio.run(SandboxTools.sandbox(prompt, runtime))`` 都能工作
+    （生产环境调用 ``__call__`` → 走 StructuredTool 包装 → 内部 await coroutine）。
+    """
+    return asyncio.run(SandboxTools.sandbox(prompt, runtime))
 
 
 class TestSandboxConfigInjection:
@@ -19,6 +50,7 @@ class TestSandboxConfigInjection:
 
     def test_sandbox_passes_default_config_to_middleware(self):
         """P1: 默认 SandboxSettings 配置下，工具把所有字段透传给中间件。"""
+        global SandboxTools  # noqa: PLW0603 - 用于 _invoke_async_sandbox 闭包
         from app.core.tools import SandboxTools
 
         captured_kwargs = {}
@@ -37,15 +69,17 @@ class TestSandboxConfigInjection:
              ), \
              patch("app.core.tools.SandboxTools.create_deep_agent") as mock_agent:
 
-            # 让 create_deep_agent 抛错，跳过 stream 循环
-            mock_agent.return_value.stream.side_effect = RuntimeError("stop_after_middleware")
+            # 2026-06-15 更新：mock astream（不是 stream），调用时立即抛错
+            mock_agent.return_value.astream = MagicMock(
+                side_effect=RuntimeError("stop_after_middleware")
+            )
 
             class FakeRuntime:
                 tool_call_id = "call_cfg_default"
                 context = {"session_id": "test-default"}
 
             try:
-                SandboxTools.sandbox("test prompt", FakeRuntime())
+                _invoke_async_sandbox("test prompt", FakeRuntime())
             except RuntimeError as e:
                 assert str(e) == "stop_after_middleware"
 
@@ -100,14 +134,17 @@ class TestSandboxConfigInjection:
              patch("app.core.tools.SandboxTools.create_deep_agent") as mock_agent:
 
             mock_settings.get_sandbox_config.return_value = custom_config
-            mock_agent.return_value.stream.side_effect = RuntimeError("stop_after_middleware")
+            # 2026-06-15 更新：mock astream
+            mock_agent.return_value.astream = MagicMock(
+                side_effect=RuntimeError("stop_after_middleware")
+            )
 
             class FakeRuntime:
                 tool_call_id = "call_cfg_socket"
                 context = {"session_id": "test-socket"}
 
             try:
-                SandboxTools.sandbox("test prompt", FakeRuntime())
+                _invoke_async_sandbox("test prompt", FakeRuntime())
             except RuntimeError as e:
                 assert str(e) == "stop_after_middleware"
 
@@ -150,14 +187,17 @@ class TestSandboxConfigInjection:
                 "host_workspace_prefix": "",
                 "k8s_namespace": "default",
             }
-            mock_agent.return_value.stream.side_effect = RuntimeError("stop_after_middleware")
+            # 2026-06-15 更新：mock astream
+            mock_agent.return_value.astream = MagicMock(
+                side_effect=RuntimeError("stop_after_middleware")
+            )
 
             class FakeRuntime:
                 tool_call_id = "call_cfg_once"
                 context = {"session_id": "test-once"}
 
             try:
-                SandboxTools.sandbox("test prompt", FakeRuntime())
+                _invoke_async_sandbox("test prompt", FakeRuntime())
             except RuntimeError as e:
                 assert str(e) == "stop_after_middleware"
 

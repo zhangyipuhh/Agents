@@ -1266,6 +1266,117 @@ environment:
     - 排队场景：客户端断开后 `dep.aclose()` 触发 `chat_concurrency_dependency` finally 释放许可，无需额外处理
   - **测试结果**：后端 5/5 通过；前端 28/28 新增用例通过（其他 pre-existing failures 维持不变）；Vite build 成功
 
+## 子智能体停止机制（2026-06-15 扩展）
+
+**背景**：上一节"停止按钮（中断 LLM 生成）"仅停止主智能体的 LangGraph astream，但子智能体（sandbox / explore）工具函数内的 `for chunk in child_agent.stream(...)` 是同步 for 循环，没有任何停止信号感知。子智能体会一直运行直到自然结束，消耗 LLM token、占用 Docker 容器，停止按钮无法真正中断。
+
+**目标**：让前端停止按钮的 `reader.cancel()` 信号穿透到子智能体层，使前端停止按钮真正中断所有 LLM 生成。
+
+### 核心机制：contextvars 传递 Request
+
+**新增文件**：`app/core/tools/_stop_signal.py`
+
+通过 ``contextvars.ContextVar`` 在主路由入口挂 FastAPI Request，工具函数（sandbox / explore）内通过 ``get_current_request()`` 取出，调用 ``await request.is_disconnected()`` 检测客户端断开。
+
+- asyncio 任务在同一 context 内自动继承 ContextVar，多请求并发时各请求独立隔离，无竞态
+- 同步工具函数也能兼容（先 `get_current_request()` 取出 Request，在需要时 `await is_disconnected()`）
+- finally 块必须 reset，避免后续请求继承到错误的 request 引用导致内存泄漏 + 跨请求误判
+
+**API**：
+
+```python
+from app.core.tools._stop_signal import (
+    set_current_request,   # 主路由入口：挂 request
+    reset_current_request, # finally 块：清理（传 token）
+    get_current_request,   # 工具函数：取出（可能为 None）
+)
+```
+
+### sandbox / explore 工具 async 化
+
+**`app/core/tools/SandboxTools.py`** + **`app/core/tools/FilesystemReadTools.py`** 改造：
+
+- ``def sandbox`` → ``async def sandbox``（同步 for → async for + astream）
+- ``def explore`` → ``async def explore``（同上）
+- astream 循环内每 ``_STOP_CHECK_INTERVAL = 5`` 个 chunk 检查一次 ``request.is_disconnected()``
+- 客户端断开时立即 break + 推送 ``tool_stop`` 事件，``data.status = "stopped_by_user"``（区别于 "success" / "failure"）
+- sandbox 停止时**必须 cleanup middleware**（Docker 容器清理），避免容器残留
+
+**停止事件数据格式**（`tool_stop` 事件）：
+
+```json
+{
+  "status": "stopped_by_user",
+  "result": { "answer": "子智能体已被用户中止", ... },
+  "duration_ms": ...,
+  "final_summary": { "current_step": 0, "status_message": "已被用户中止", ... },
+  "thread_id": "...",
+  "final_messages": [...],   // 保留 subagent 字段，前端仍能看到中间消息
+  "parent_prompt": "..."
+}
+```
+
+### map_router 挂载 ContextVar
+
+**`app/features/map_agent/router/map_router.py`** 改造：
+
+- `generate_stream_response` 函数入口 `set_current_request(request)`，把 FastAPI Request 挂到 ContextVar
+- finally 块 `reset_current_request(cv_token)`，避免后续请求继承错误引用
+- 即使 `is_disconnected()` 触发 return 提前退出，也保证清理
+
+### 客户端状态显示
+
+**`web/Agent/src/components/SubAgentCard.vue`** + **`web/Agent/src/components/ToolCallCard.vue`** 改造：
+
+- 新增 ``status === 'stopped_by_user'`` 状态映射：显示"已中止"文本
+- 新增 CSS class ``.stopped_by_user``：橙色徽章（区别于 success 绿色、error 红色、running 紫色）
+- stopped_by_user 状态**静态显示**（无 pulse 动画），与 running 区分
+
+**`web/Agent/src/utils/sseParser.js`** 改造：
+
+- `updateSubAgentFromCustomEvent` 中 tool_stop 事件状态判定逻辑扩展：
+  - 优先级（向后兼容）：`stopped_by_user` > `error` / `failure` > 其他（含无 status / `success`）→ success
+  - 旧事件无 status 字段默认 success（向后兼容普通工具 tool_stop）
+
+### 测试覆盖
+
+**新增测试文件**：
+
+| 文件 | 用例数 | 覆盖 |
+|------|--------|------|
+| `app/tests/core/tools/test_stop_signal.py` | 10 | contextvar 基础读写、set/reset 语义、并发隔离、异常 finally 兜底 |
+| `app/tests/core/tools/test_subagent_stop.py` | 7 | sandbox 5 用例 + explore 2 用例：客户端断开、客户端未断开、无 request 场景、subagent 字段保留、Command ToolMessage 内容 |
+| `app/tests/features/map_agent/test_map_router_subagent_stop.py` | 5 | generate_stream_response 挂载/清理 ContextVar、disconnect 跳出循环、无 request 兼容、并发请求隔离 |
+
+**更新测试文件**：
+
+| 文件 | 改动 |
+|------|------|
+| `app/tests/core/tools/test_sandbox_tools_config.py` | `stream` → `astream`，`SandboxTools.sandbox` → `asyncio.run(SandboxTools.sandbox(...))`（async 适配） |
+| `app/tests/core/tools/test_sandbox_no_text_reply_fix.py` | 同上 + 同步生成器 → async 生成器 |
+| `web/Agent/src/components/__tests__/SubAgentCard.spec.js` | 新增 2 用例：stopped_by_user 状态显示"已中止" + 徽章 class + 无 pulse 动画 |
+| `web/Agent/src/components/__tests__/ToolCallCard.spec.js` | 新增 2 用例：stopped_by_user 状态显示"已中止" + 徽章 class |
+
+**conftest.py 扩展**（支撑 explore 测试）：
+
+- 新增 mock `langchain.agents` / `langchain.agents.middleware` / `langchain.agents.middleware.types` 模块
+- 把 `FilesystemMiddleware` / `FilesystemBackend` 也注册到 `deepagents` 顶层（`from deepagents import FilesystemMiddleware` / `from deepagents.backends import FilesystemBackend`）
+- `_FilesystemBackend.__init__` 接受任意参数（explore 工具传 `root_dir` / `virtual_mode`）
+- `langchain_core.tools.tool = lambda *args, **kwargs: lambda func: func`（encoding_safe_file_search 依赖）
+
+### 兼容性
+
+- **旧工具 tool_stop 事件**（无 status 字段）：默认 success 状态（向后兼容）
+- **HuggingFace 客户端**：不感知停止按钮，行为不变
+- **HITL 场景**：与现有 interrupt 路径共存（前端 `reader.cancel()` 触发后端 `is_disconnected()`，主 astream 跳出后子智能体也跳出）
+- **第三方 iframe / portal 调用方**：不感知停止按钮，按原行为运行到底
+
+### 已知工程实践
+
+- **conftest 下 @tool 是 identity**：`@tool` 装饰器在 conftest 中被 mock 为 `lambda *args, **kwargs: lambda func: func`，所以 `sandbox` / `explore` 在测试环境就是原 async 函数。生产环境（conftest 不生效时）`@tool` 会把 async 函数包装为 `StructuredTool` 并保留 `.coroutine` 指向原函数。两种环境下 `asyncio.run(SandboxTools.sandbox(prompt, runtime))` 都能工作
+- **MagicMock 属性赋值**：`mock_agent.astream = fake_astream` 后，`mock_agent.astream` 返回 fake_astream，调用 `mock_agent.astream(args, kwargs)` 拿 async generator object。`call_args_list` 记录的是直接调用，需要用 `mock_writer.return_value.call_args_list` 才能拿到 sandbox/explore 函数内部 `writer(...)` 的调用
+- **contextvar reset LIFO 语义**：`set(A) → token1, set(B) → token2, reset(token2) → get() == A, reset(token1) → get() == default`
+
 ## CI 测试（pytest + GitHub Actions）
 
 ### 后端测试目录（`app/tests/`）

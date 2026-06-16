@@ -60,7 +60,7 @@ const expandedStepIndexes = ref(new Set())
 /**
  * 状态推断：遍历 events 找到 tool_stop / tool_error
  * 入参：无（读 props.events）
- * 返回：'running' | 'success' | 'error'
+ * 返回：'running' | 'success' | 'error' | 'stopped_by_user'（2026-06-15 新增）
  */
 const status = computed(() => {
   if (!Array.isArray(props.events) || props.events.length === 0) return 'running'
@@ -70,9 +70,15 @@ const status = computed(() => {
     if (!ev || typeof ev !== 'object') continue
     if (ev.type === 'tool_error') return 'error'
     if (ev.type === 'tool_stop') {
-      // data.status=success → success；其他情况（含无 status / status=failure）按 error 处理
+      // 2026-06-15 新增：data.status='stopped_by_user' → 单独状态（用户停止按钮触发）
+      // 优先级（向后兼容）：
+      //   1. inner.status === 'stopped_by_user' → stopped_by_user
+      //   2. inner.status === 'error' / 'failure' → error
+      //   3. 其他（含无 status / 'success'）→ success（默认成功）
       const inner = ev.data || {}
-      return inner.status === 'success' ? 'success' : 'error'
+      if (inner.status === 'stopped_by_user') return 'stopped_by_user'
+      if (inner.status === 'error' || inner.status === 'failure') return 'error'
+      return 'success'
     }
   }
   return 'running'
@@ -81,7 +87,8 @@ const status = computed(() => {
 const statusTextMap = {
   running: '执行中',
   success: '已完成',
-  error: '执行失败'
+  error: '执行失败',
+  stopped_by_user: '已中止'  // 2026-06-15 新增：用户点击停止按钮触发的工具中止
 }
 const statusText = computed(() => statusTextMap[status.value] || '执行中')
 
@@ -572,6 +579,13 @@ const orderedSteps = computed(() => {
 .tool-call-status.error {
   background-color: rgba(239, 68, 68, 0.1);
   color: #ef4444;
+}
+
+/* 2026-06-15 新增：用户中止状态（停止按钮触发） */
+.tool-call-status.stopped_by_user {
+  background-color: rgba(245, 158, 11, 0.1);
+  color: #f59e0b;
+  /* 静态显示（无 pulse 动画） */
 }
 
 .tool-call-duration {

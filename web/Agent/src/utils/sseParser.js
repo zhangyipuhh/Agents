@@ -184,7 +184,18 @@ function updateSubAgentFromCustomEvent(aiMsg, event, topLevelThreadId) {
   } else if (eventType === 'tool_progress') {
     sa.status = 'running'
   } else if (eventType === 'tool_stop') {
-    sa.status = 'success'
+    // 2026-06-15 新增：data.status='stopped_by_user' → 单独状态（用户停止按钮触发）
+    // 优先级（向后兼容）：
+    //   1. inner.status === 'stopped_by_user' → stopped_by_user（用户主动停止）
+    //   2. inner.status === 'error' / 'failure' → error（明确失败）
+    //   3. 其他情况（含无 status / 'success'）→ success（默认成功，向后兼容旧事件）
+    if (inner.status === 'stopped_by_user') {
+      sa.status = 'stopped_by_user'
+    } else if (inner.status === 'error' || inner.status === 'failure') {
+      sa.status = 'error'
+    } else {
+      sa.status = 'success'
+    }
     sa.endTime = Date.now()
     // final_messages 优先覆盖 messages（最终态）
     if (Array.isArray(inner.final_messages)) {
