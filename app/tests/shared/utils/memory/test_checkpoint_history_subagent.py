@@ -409,3 +409,176 @@ def test_collect_subagent_thread_ids_filters_non_subagent():
     assert "call_ex" in ids
     assert "call_gr" not in ids, f"generate_report 不应被收集清理：{ids}"
     assert len(ids) == 2
+
+
+# ===== 2026-06-17 修复：多子智能体 + 主消息流含 ToolMessage 的索引对齐 =====
+
+def test_merge_with_interleaved_tool_messages_multiple_subagents():
+    """
+    防回归：主消息流 raw = [H, A(sandbox), T, A(text), H, A(explore), T, A(text2)]
+    过滤 ToolMessage 后 main = [U, A, A, U, A, A]（6 条）
+
+    旧实现：enumerate(raw) 用 raw idx 直接访问 main_messages[idx]，
+    导致 idx=4 的 A(explore) 落到 main_messages[4]=U，type != "ai" 触发 continue，
+    explore 子智能体被丢失。
+
+    新实现：分别收集 raw / main 中 AI 位置列表并按出现顺序配对，
+    sandbox parent_idx=1（main[1] 是 A(sandbox)），explore parent_idx=4（main[4] 是 A(explore)），
+    合并后两条 subagent 元素各自正确插入。
+    """
+    # raw 流（8 条，含 2 个 ToolMessage）
+    h1 = _make_msg(HumanMessage, content="hi")
+    ai_sb = _make_msg(
+        AIMessage, content="",
+        tool_calls=[{"id": "call_sb", "name": "sandbox", "args": {}}],
+        id="ai-sb",
+    )
+    t_sb = _make_msg(ToolMessage, content="sandbox result", tool_call_id="call_sb")
+    ai_t1 = _make_msg(AIMessage, content="sandbox done", id="ai-t1")
+    h2 = _make_msg(HumanMessage, content="next")
+    ai_ex = _make_msg(
+        AIMessage, content="",
+        tool_calls=[{"id": "call_ex", "name": "explore", "args": {}}],
+        id="ai-ex",
+    )
+    t_ex = _make_msg(ToolMessage, content="explore result", tool_call_id="call_ex")
+    ai_t2 = _make_msg(AIMessage, content="explore done", id="ai-t2")
+    raw = [h1, ai_sb, t_sb, ai_t1, h2, ai_ex, t_ex, ai_t2]
+
+    # main 流（6 条，2 个 ToolMessage 被过滤）
+    main_dicts = [
+        {"id": "m-h-1", "type": "user", "role": "user", "content": "hi"},
+        {"id": "ai-sb", "type": "ai", "role": "assistant", "content": ""},
+        {"id": "ai-t1", "type": "ai", "role": "assistant", "content": "sandbox done"},
+        {"id": "m-h-2", "type": "user", "role": "user", "content": "next"},
+        {"id": "ai-ex", "type": "ai", "role": "assistant", "content": ""},
+        {"id": "ai-t2", "type": "ai", "role": "assistant", "content": "explore done"},
+    ]
+
+    # 子 thread 状态：sandbox 与 explore 各自有 2 条消息
+    sub_sb_state = {
+        "channel_values": {
+            "messages": [
+                _make_msg(HumanMessage, content="sb prompt"),
+                _make_msg(AIMessage, content="sb answer"),
+            ]
+        }
+    }
+    sub_ex_state = {
+        "channel_values": {
+            "messages": [
+                _make_msg(HumanMessage, content="ex prompt"),
+                _make_msg(AIMessage, content="ex answer"),
+            ]
+        }
+    }
+
+    cp = MagicMock()
+
+    async def fake_aget(config):
+        tid = config["configurable"]["thread_id"]
+        if tid == "call_sb":
+            return sub_sb_state
+        if tid == "call_ex":
+            return sub_ex_state
+        return None
+
+    cp.aget = AsyncMock(side_effect=fake_aget)
+
+    merged = asyncio.run(CheckpointHistoryService.merge_main_and_subagent_messages(
+        checkpointer=cp, main_messages=main_dicts, raw_main_messages=raw
+    ))
+
+    # 期望 8 条：m-h-1, ai-sb, subagent(call_sb), ai-t1, m-h-2, ai-ex, subagent(call_ex), ai-t2
+    assert len(merged) == 8, f"期望 8 条，实际 {len(merged)}：{merged}"
+
+    # 顺序校验
+    assert merged[0]["id"] == "m-h-1"
+    assert merged[1]["id"] == "ai-sb"
+    assert merged[2]["type"] == "subagent"
+    assert merged[2]["thread_id"] == "call_sb"
+    assert merged[2]["tool"] == "sandbox"
+    assert merged[2]["parent_message_id"] == "ai-sb", (
+        f"关键断言：sandbox parent_message_id 应指向 ai-sb，实际 {merged[2]['parent_message_id']}"
+    )
+    assert len(merged[2]["messages"]) == 2
+
+    assert merged[3]["id"] == "ai-t1"
+    assert merged[4]["id"] == "m-h-2"
+    assert merged[5]["id"] == "ai-ex"
+    assert merged[6]["type"] == "subagent"
+    assert merged[6]["thread_id"] == "call_ex"
+    assert merged[6]["tool"] == "explore"
+    assert merged[6]["parent_message_id"] == "ai-ex", (
+        f"关键断言：explore parent_message_id 应指向 ai-ex，实际 {merged[6]['parent_message_id']}"
+    )
+    assert len(merged[6]["messages"]) == 2
+    assert merged[7]["id"] == "ai-t2"
+
+
+def test_merge_with_interleaved_tool_messages_last_subagent_preserved():
+    """
+    防回归：raw 长度超过 main 长度时，旧实现因 `if idx >= len(main_messages): break`
+    提前终止，导致末尾子智能体丢失。
+
+    场景：raw = [H, A(sandbox), T, H, A(explore), T]（6 条，含 2 个 T）
+    main = [U, A, U, A]（4 条，过滤 2 个 T）
+    期望：sandbox 与 explore 都被正确归位。
+    """
+    h1 = _make_msg(HumanMessage, content="hi")
+    ai_sb = _make_msg(
+        AIMessage, content="",
+        tool_calls=[{"id": "call_sb2", "name": "sandbox", "args": {}}],
+        id="ai-sb2",
+    )
+    t_sb = _make_msg(ToolMessage, content="sb result", tool_call_id="call_sb2")
+    h2 = _make_msg(HumanMessage, content="next")
+    ai_ex = _make_msg(
+        AIMessage, content="",
+        tool_calls=[{"id": "call_ex2", "name": "explore", "args": {}}],
+        id="ai-ex2",
+    )
+    t_ex = _make_msg(ToolMessage, content="ex result", tool_call_id="call_ex2")
+    raw = [h1, ai_sb, t_sb, h2, ai_ex, t_ex]
+
+    main_dicts = [
+        {"id": "m-h-1", "type": "user", "role": "user", "content": "hi"},
+        {"id": "ai-sb2", "type": "ai", "role": "assistant", "content": ""},
+        {"id": "m-h-2", "type": "user", "role": "user", "content": "next"},
+        {"id": "ai-ex2", "type": "ai", "role": "assistant", "content": ""},
+    ]
+
+    sub_state = {
+        "channel_values": {
+            "messages": [
+                _make_msg(HumanMessage, content="sub prompt"),
+                _make_msg(AIMessage, content="sub answer"),
+            ]
+        }
+    }
+    cp = MagicMock()
+    cp.aget = AsyncMock(return_value=sub_state)
+
+    merged = asyncio.run(CheckpointHistoryService.merge_main_and_subagent_messages(
+        checkpointer=cp, main_messages=main_dicts, raw_main_messages=raw
+    ))
+
+    # 期望 6 条：m-h-1, ai-sb2, subagent(call_sb2), m-h-2, ai-ex2, subagent(call_ex2)
+    assert len(merged) == 6, f"期望 6 条，实际 {len(merged)}：{merged}"
+
+    # 关键断言：末尾 explore 子智能体不被丢失
+    subagent_thread_ids = [m.get("thread_id") for m in merged if m.get("type") == "subagent"]
+    assert "call_sb2" in subagent_thread_ids, "sandbox 子智能体缺失"
+    assert "call_ex2" in subagent_thread_ids, (
+        f"关键断言：explore 子智能体在 raw 末尾时应保留，实际 subagent 列表={subagent_thread_ids}"
+    )
+
+    # 顺序与 parent_message_id 校验
+    assert merged[0]["id"] == "m-h-1"
+    assert merged[1]["id"] == "ai-sb2"
+    assert merged[2]["type"] == "subagent"
+    assert merged[2]["parent_message_id"] == "ai-sb2"
+    assert merged[3]["id"] == "m-h-2"
+    assert merged[4]["id"] == "ai-ex2"
+    assert merged[5]["type"] == "subagent"
+    assert merged[5]["parent_message_id"] == "ai-ex2"

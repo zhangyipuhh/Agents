@@ -75,3 +75,6 @@ web/Agent/public/app-config.json
 !docker-compose.yaml
 
 !AGENTS.md
+!img/
+!img/**
+!img/**/**

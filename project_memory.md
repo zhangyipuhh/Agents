@@ -1072,6 +1072,36 @@ environment:
 - 全量 `pytest app/tests/`：359 passed / 2 failed，2 个失败为 pre-existing 问题（`test_config.py` 中 `test_llm_settings_default_values` 受 `.env` 中 `model_type="anthropic"` 干扰、`test_settings_agent_chat_max_concurrency_default` 默认值与 settings.py 不一致），均与本次修复无关
 - 前端：未新增任何测试（按用户决策）
 
+**2026-06-17 修复：多子智能体历史只返回最后一个（索引错位）**
+
+**根因**：`merge_main_and_subagent_messages` 用 `enumerate(raw_main_messages)` 的 `idx` 直接访问 `main_messages[idx]`，但 `main_messages` 已过滤 ToolMessage（[session_router.py:397-401](file:///e:/laboratory/AI/Agents/feature-agent-core/app/shared/routers/session_router.py#L397-L401)），raw 与 main 长度不一致，导致：
+1. 中间位置的 AI 消息的 `tool_calls` 落到 `main_messages[idx]`（User 类型）→ `type != "ai"` 触发 `continue`，**该 AI 触发的子智能体被丢失**
+2. 末尾 AI 消息因 `idx >= len(main_messages)` 触发 `break`，**末尾子智能体直接被丢弃**
+3. 多个子智能体场景下，最终 `merged_messages` 中只剩"恰好对齐"到正确位置的那一个，表现为"只返回最后一个"
+
+**修复方案**（[app/shared/utils/memory/checkpoint_history.py:332-375](file:///e:/laboratory/AI/Agents/feature-agent-core/app/shared/utils/memory/checkpoint_history.py#L332-L375)）：
+- 不再用 `raw idx` 索引 `main_messages`
+- 改为：分别收集 `raw` 与 `main` 中所有 AI 消息的位置列表，按出现顺序一一配对
+- `parent_message_index` 记录 **main 索引**，确保合并阶段 `grouped[main_idx]` 正确插入
+- `paired_count = min(len(raw_ai), len(main_ai))` 兜底，避免极端边界越界
+
+**兼容性**：
+- API 契约完全不变（响应结构、`type:"subagent"` 元素形态、`parent_message_id` / `thread_id` / `tool` 字段名一致）
+- 前端零改动
+- 旧历史脏数据自然淘汰
+
+**测试新增（仅后端）**：
+- `app/tests/shared/utils/memory/test_checkpoint_history_subagent.py` 新增 **2 个单元测试**：
+  - `test_merge_with_interleaved_tool_messages_multiple_subagents`：raw 流含 2 个 ToolMessage + 2 个子智能体（sandbox/explore），验证 8 条合并结果顺序与 `parent_message_id` 归属
+  - `test_merge_with_interleaved_tool_messages_last_subagent_preserved`：raw 长度 > main 长度，验证不再 break，末尾 explore 子智能体保留
+- `app/tests/shared/test_session_messages_subagent.py` 新增 **1 个端到端测试**：
+  - `test_messages_multiple_subagents_with_tool_messages`：通过 mock checkpointer + mock map_agent graph，验证 `GET /api/session/{id}/messages?limit=100` 在多子智能体 + ToolMessage 场景下 `total == 8`，每条 subagent 元素 `parent_message_id` 正确指向对应 AI
+
+**测试结果（2026-06-17 累计）**：
+- 后端 `pytest`：22 (test_checkpoint_history_subagent) + 8 (test_session_messages_subagent) = **30 个相关测试全部通过**
+- 全量 `pytest app/tests/`：**363 passed / 1 failed**（与 2026-06-16-3 记录相同，pre-existing 失败 `test_settings_agent_chat_max_concurrency_default` 默认值 1 vs 期望 3 受 `.env` 干扰，与本次修复无关）
+- 前端：零改动
+
 ## 前端架构（web/Agent）
 
 `web/Agent/` 是基于 Vite + Vue 3 的多入口 SPA，对外提供三套独立页面（主 Agent、知识库、门户），共享同一套组件、工具函数与设计 token。

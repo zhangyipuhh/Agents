@@ -330,21 +330,30 @@ class CheckpointHistoryService:
             return main_messages
 
         # 1) 收集子智能体 tool_call 信息（按出现顺序）
-        #    raw_main_messages 索引与 main_messages 一一对应
+        #    2026-06-17 修复：原实现直接用 raw idx 访问 main_messages，但 main_messages 已过滤 ToolMessage，
+        #    索引错位导致中间位置的子智能体丢失、末尾 AI 因 idx 越界被 break。
+        #    修复方案：分别收集 raw 与 main 中所有 AI 消息的位置，按出现顺序一一配对。
         ordered_subagents: List[Dict[str, Any]] = []
         if raw_main_messages:
             raw_list = list(raw_main_messages)
-            # 用 zip 安全对齐（main_messages 长度可能因过滤而短于 raw_list）
-            for idx, raw_msg in enumerate(raw_list):
-                if not cls._is_ai_message(raw_msg):
-                    continue
-                # 对应的 main_messages 元素位置
-                if idx >= len(main_messages):
-                    break
-                main_msg = main_messages[idx]
-                # 只在主消息 dict 是 ai 类型时尝试匹配
-                if main_msg.get("type") != "ai":
-                    continue
+
+            # 构建"raw 中 AI 位置列表"与"main 中 AI 位置列表"
+            raw_ai_positions: List[int] = [
+                i for i, m in enumerate(raw_list) if cls._is_ai_message(m)
+            ]
+            main_ai_positions: List[int] = [
+                i for i, m in enumerate(main_messages) if m.get("type") == "ai"
+            ]
+
+            # 防御：若两边 AI 数量不一致（极端边界），取较小长度避免越界
+            paired_count = min(len(raw_ai_positions), len(main_ai_positions))
+
+            for k in range(paired_count):
+                raw_idx = raw_ai_positions[k]
+                main_idx = main_ai_positions[k]
+                raw_msg = raw_list[raw_idx]
+                main_msg = main_messages[main_idx]
+
                 tool_calls = cls._extract_ai_tool_call_ids(raw_msg)
                 for tc in tool_calls:
                     tid = tc.get("id")
@@ -359,7 +368,9 @@ class CheckpointHistoryService:
                     ordered_subagents.append({
                         "thread_id": tid,
                         "tool": tool_name,
-                        "parent_message_index": idx,
+                        # 用 main 索引（不是 raw 索引），确保合并阶段 grouped[main_idx]
+                        # 能把 subagent 元素正确插入到 main_messages[main_idx] 之后
+                        "parent_message_index": main_idx,
                         "parent_message_id": main_msg.get("id"),
                     })
 
