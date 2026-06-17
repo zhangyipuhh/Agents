@@ -24,6 +24,8 @@ from app.shared.utils.auth.user_db import UserDB
 # 测试用动态消息类（类名必须为 AIMessage/HumanMessage 以通过 _is_ai_message / _convert_message_to_dict）
 TestAIMessage = type("AIMessage", (object,), {})
 TestHumanMessage = type("HumanMessage", (object,), {})
+# 2026-06-17 新增：用于多子智能体 + ToolMessage 索引对齐测试
+TestToolMessage = type("ToolMessage", (object,), {})
 
 
 def _msg(type_cls, content=None, **kwargs):
@@ -344,3 +346,95 @@ def test_messages_filters_non_subagent_tool_call(client, admin_headers):
     # 类型校验
     assert data["messages"][0]["type"] == "user"
     assert data["messages"][1]["type"] == "ai"
+
+
+# ===== 2026-06-17 修复：多子智能体 + ToolMessage 索引对齐（端到端） =====
+
+def test_messages_multiple_subagents_with_tool_messages(client, admin_headers):
+    """
+    端到端：主消息流 raw = [H, A(sandbox), T, A(text), H, A(explore), T, A(text2)]
+    过滤后 main = [U, A, A, U, A, A]（6 条），子 thread call_sb 与 call_ex 各有 2 条。
+    期望 total=8，sandbox 与 explore 元素各归位到对应 AI 之后。
+
+    防回归：旧实现仅返回 4 条（h-1, ai-sb, subagent(call_sb), ai-t1），explore 丢失。
+    """
+    create_resp = client.post("/api/session/create", headers=admin_headers)
+    assert create_resp.status_code == 200
+    session_id = create_resp.json()["session_id"]
+    headers = {**admin_headers, "X-Session-ID": session_id}
+
+    # 主消息 raw 流
+    h1 = _msg(TestHumanMessage, content="hi")
+    ai_sb = _msg(
+        TestAIMessage, content="",
+        tool_calls=[{"id": "call_sb_e2e", "name": "sandbox", "args": {}}],
+        id="ai-sb-e2e",
+    )
+    t_sb = _msg(TestToolMessage, content="sb result", tool_call_id="call_sb_e2e")
+    ai_t1 = _msg(TestAIMessage, content="sandbox done", id="ai-t1-e2e")
+    h2 = _msg(TestHumanMessage, content="next")
+    ai_ex = _msg(
+        TestAIMessage, content="",
+        tool_calls=[{"id": "call_ex_e2e", "name": "explore", "args": {}}],
+        id="ai-ex-e2e",
+    )
+    t_ex = _msg(TestToolMessage, content="ex result", tool_call_id="call_ex_e2e")
+    ai_t2 = _msg(TestAIMessage, content="explore done", id="ai-t2-e2e")
+    main_messages = [h1, ai_sb, t_sb, ai_t1, h2, ai_ex, t_ex, ai_t2]
+
+    sub_sb_state = {
+        "channel_values": {
+            "messages": [
+                _msg(TestHumanMessage, content="sb prompt"),
+                _msg(TestAIMessage, content="sb answer"),
+            ]
+        }
+    }
+    sub_ex_state = {
+        "channel_values": {
+            "messages": [
+                _msg(TestHumanMessage, content="ex prompt"),
+                _msg(TestAIMessage, content="ex answer"),
+            ]
+        }
+    }
+    cp = _build_mock_checkpointer({
+        "call_sb_e2e": sub_sb_state,
+        "call_ex_e2e": sub_ex_state,
+    })
+    map_agent = _build_mock_agent_graph(main_messages)
+
+    with patch(
+        "app.shared.routers.session_router.get_async_checkpointer",
+        AsyncMock(return_value=cp),
+    ), patch(
+        "app.features.map_agent.router.map_router.get_map_agent",
+        AsyncMock(return_value=map_agent),
+    ):
+        resp = client.get(
+            f"/api/session/{session_id}/messages?limit=100",
+            headers=headers,
+        )
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    # 关键断言：total == 8（旧实现仅 4 条，explore 丢失）
+    assert data["total"] == 8, f"期望 8 条，实际 {data['total']}：{data['messages']}"
+
+    # 顺序与归属校验
+    msgs = data["messages"]
+    assert msgs[0]["type"] == "user"
+    assert msgs[1]["type"] == "ai" and msgs[1]["id"] == "ai-sb-e2e"
+    assert msgs[2]["type"] == "subagent"
+    assert msgs[2]["thread_id"] == "call_sb_e2e"
+    assert msgs[2]["parent_message_id"] == "ai-sb-e2e"
+    assert len(msgs[2]["messages"]) == 2
+
+    assert msgs[3]["type"] == "ai" and msgs[3]["id"] == "ai-t1-e2e"
+    assert msgs[4]["type"] == "user"
+    assert msgs[5]["type"] == "ai" and msgs[5]["id"] == "ai-ex-e2e"
+    assert msgs[6]["type"] == "subagent"
+    assert msgs[6]["thread_id"] == "call_ex_e2e"
+    assert msgs[6]["parent_message_id"] == "ai-ex-e2e"
+    assert len(msgs[6]["messages"]) == 2
+    assert msgs[7]["type"] == "ai" and msgs[7]["id"] == "ai-t2-e2e"

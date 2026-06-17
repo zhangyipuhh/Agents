@@ -52,7 +52,7 @@
 <details>
 <summary>📚 一句话能力摘要</summary>
 
-通用智能体运行框架 · 多 LLM Provider 适配 · 三层提示词协议 · 消息裁剪与多模态提取 · SSE 流式策略 · 异步并发队列 · 文件分片上传与断点续传 · 异步连接池 · FastAPI 应用工厂 · MCP / 子智能体 / HITL 工具生态
+通用智能体运行框架 · 多 LLM Provider 适配 · 三层提示词协议 · 消息裁剪与多模态提取 · SSE 流式策略 · 异步并发队列 · 文件分片上传 · 异步连接池 · FastAPI 应用工厂 · MCP / 子智能体 / HITL 工具生态 · 双 Token 认证 · 图形验证码 · 用户 / 角色管理 · 强制下线 · 审计日志
 
 **🔌 接入方式**
 - AI 编程工具：MCP 协议 — 任意 LangChain / LlamaIndex / 自研 Agent 框架
