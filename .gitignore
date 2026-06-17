@@ -54,7 +54,7 @@ mcpClient/**/*.so
 mcpClient/**/*.yaml
 .env
 app/test/
-app/data/
+data/
 app/**/*.csv
 app/**/*.pdf
 app/**/*.docx

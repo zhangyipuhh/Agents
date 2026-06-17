@@ -3,6 +3,7 @@ import { ref, reactive, nextTick, watch, onMounted, onBeforeUnmount, computed } 
 import { knowledgeChatStream, refreshToken, uploadFileInChunks, formatFileSize, getFileExtension } from '../utils/api.js'
 import { createAiMessage, processSSEEvent } from '../utils/sseParser.js'
 import MessageBubble from './MessageBubble.vue'
+import QueueStatusBanner from './QueueStatusBanner.vue'
 
 const SUPPORTED_EXTENSIONS = ['pdf', 'doc', 'docx', 'txt', 'md', 'csv', 'json']
 const MAX_FILE_SIZE = 50 * 1024 * 1024
@@ -18,7 +19,8 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['new-chat', 'send'])
+// 2026-06-15 新增：open-subagent-drawer emit 透传，触发父组件（KnowledgePage / App.vue）打开子智能体详情抽屉
+const emit = defineEmits(['new-chat', 'send', 'open-subagent-drawer'])
 
 const messages = reactive([])
 const inputValue = ref('')
@@ -34,15 +36,64 @@ const showScrollButton = ref(false)
 const showScrollToTopButton = ref(false)
 const unreadCount = ref(0)
 
+// 人工回路状态
+const approvalMode = ref(false)
+const approvalData = ref({ questions: [] })
+
+// 2026-06-15 新增：排队状态机（独立使用 KnowledgeChat 时也具备提示能力）
+const queueStatus = ref({
+  event: 'idle',
+  waitingCount: 0,
+  activeCount: 0,
+  maxConcurrency: 0,
+  position: 0,
+  timestamp: 0
+})
+const isQueueBannerVisible = computed(() => queueStatus.value.event === 'waiting')
+
+function handleQueueEvent(data) {
+  if (!data || data.type !== 'queue') return
+  queueStatus.value = {
+    event: data.event || 'idle',
+    waitingCount: Number(data.waiting_count) || 0,
+    activeCount: Number(data.active_count) || 0,
+    maxConcurrency: Number(data.max_concurrency) || 0,
+    position: Number(data.position) || 0,
+    timestamp: Number(data.timestamp) || 0
+  }
+}
+
+function handleQueueError(err) {
+  if (!err || err.status !== 429 || !err.detail) return
+  const ts = Date.now() / 1000
+  queueStatus.value = {
+    event: 'waiting',
+    waitingCount: Number(err.detail.waiting_count) || 1,
+    activeCount: Number(err.detail.active_count) || 0,
+    maxConcurrency: Number(err.detail.max_concurrency) || 0,
+    position: 1,
+    timestamp: ts
+  }
+  setTimeout(() => {
+    if (queueStatus.value.timestamp === ts) {
+      queueStatus.value = { ...queueStatus.value, event: 'idle' }
+    }
+  }, 3000)
+}
+
 const isCurrentlyStreaming = computed(() => props.isStreaming || internalStreaming.value)
 
 const canSend = computed(() => {
-  if (isCurrentlyStreaming.value) return false
+  // 2026-06-15 修改：isCurrentlyStreaming=true 时不禁用按钮（停止按钮必须可点）
+  // 按钮可点性统一在模板的 :disabled 中通过 !canSend && !isCurrentlyStreaming 管控
   if (isRefreshingToken.value) return false
   const hasText = inputValue.value.trim().length > 0
   const hasUploadedFiles = selectedFiles.value.some(f => f.status === 'success')
   return hasText || hasUploadedFiles
 })
+
+// 2026-06-15 新增：持有当前 SSE reader，供停止按钮调用 cancel()
+let currentReader = null
 
 const autoResize = () => {
   const textarea = textareaRef.value
@@ -112,14 +163,17 @@ const handleSend = async () => {
 
   nextTick(() => scrollToBottom())
 
+  currentReader = null
+
   try {
     const stream = await knowledgeChatStream(props.sessionId, message)
-    const reader = stream.getReader()
+    currentReader = stream.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    let interrupted = false
 
     while (true) {
-      const { done, value } = await reader.read()
+      const { done, value } = await currentReader.read()
       if (done) {
         // 确保消息被标记为已结束
         if (!aiMsg.ended) {
@@ -136,16 +190,37 @@ const handleSend = async () => {
         if (!event.startsWith('data: ')) continue
         try {
           const data = JSON.parse(event.slice(6))
-          processSSEEvent(data, aiMsg)
+          // 2026-06-15 透传 onQueueEvent 回调
+          processSSEEvent(data, aiMsg, { onQueueEvent: handleQueueEvent })
+          // 2026-06-15 HITL interrupt 主动 cancel reader（与 App.vue 同逻辑）
+          if (aiMsg.interrupt) {
+            interrupted = true
+            approvalMode.value = true
+            approvalData.value = extractApprovalData(aiMsg.interrupt)
+            try {
+              await currentReader.cancel()
+            } catch (cancelErr) {
+              console.warn('[KnowledgeChat] reader.cancel 异常（可忽略）:', cancelErr)
+            }
+            break
+          }
         } catch {}
       }
+      if (interrupted) break
       nextTick(() => scrollToBottom())
     }
   } catch (err) {
+    // 2026-06-15 新增：HTTP 429 排队拒绝 → 显示 banner
+    if (err && err.status === 429) {
+      handleQueueError(err)
+      aiMsg.ended = true
+      return
+    }
     aiMsg.error = '不好意思，刚刚出了点小故障，可以晚点再问我一遍。'
     aiMsg.ended = true
   } finally {
     internalStreaming.value = false
+    currentReader = null
   }
 }
 
@@ -157,6 +232,144 @@ const handleNewChat = async () => {
   inputValue.value = ''
   nextTick(() => autoResize())
   emit('new-chat')
+}
+
+function extractApprovalData(interruptArray) {
+  if (!Array.isArray(interruptArray) || interruptArray.length === 0) {
+    return { questions: [] }
+  }
+  const req = interruptArray[0]
+  const payload = req.value ?? req
+  const questions = payload.questions ?? []
+  return { questions }
+}
+
+function handleApprovalSubmit({ answers }) {
+  approvalMode.value = false
+
+  const aiMsg = messages[messages.length - 1]
+  if (!aiMsg || aiMsg.type !== 'ai') {
+    internalStreaming.value = false
+    return
+  }
+
+  // 清除上一次的中断状态，避免旧状态导致误触发
+  aiMsg.interrupt = null
+
+  const resumeData = { answers }
+
+  internalStreaming.value = true
+
+  currentReader = null
+
+  const readStream = async () => {
+    try {
+      const stream = await knowledgeChatStream(props.sessionId, '', [], resumeData)
+      currentReader = stream.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let interrupted = false
+
+      while (true) {
+        const { done, value } = await currentReader.read()
+        if (done) {
+          if (!aiMsg.ended) {
+            aiMsg.ended = true
+            aiMsg.isThinkingActive = false
+          }
+          break
+        }
+        buffer += decoder.decode(value, { stream: true })
+        const events = buffer.split('\n\n')
+        buffer = events.pop()
+        for (const event of events) {
+          if (!event.startsWith('data: ')) continue
+          try {
+            const data = JSON.parse(event.slice(6))
+            processSSEEvent(data, aiMsg, { onQueueEvent: handleQueueEvent })
+
+            if (aiMsg.interrupt) {
+              interrupted = true
+              approvalMode.value = true
+              approvalData.value = extractApprovalData(aiMsg.interrupt)
+              try {
+                await currentReader.cancel()
+              } catch (cancelErr) {
+                console.warn('[KnowledgeChat] resume reader.cancel 异常（可忽略）:', cancelErr)
+              }
+              break
+            }
+          } catch (parseErr) {
+            // 2026-06-16 新增：单个事件解析失败不影响后续事件，记录日志便于排查
+            console.warn('[KnowledgeChat] resume SSE 事件解析异常（可忽略）:', parseErr)
+          }
+        }
+        if (interrupted) break
+        nextTick(() => scrollToBottom())
+      }
+    } catch (err) {
+      if (err && err.status === 429) {
+        handleQueueError(err)
+        aiMsg.ended = true
+        return
+      }
+      aiMsg.error = '恢复执行失败，请稍后重试。'
+      aiMsg.ended = true
+    } finally {
+      if (!approvalMode.value) {
+        internalStreaming.value = false
+      }
+      currentReader = null
+    }
+  }
+
+  readStream()
+}
+
+/**
+ * 取消问答：退出 approval 模式并重置流状态
+ */
+function handleApprovalCancel() {
+  approvalMode.value = false
+  internalStreaming.value = false
+  const aiMsg = messages[messages.length - 1]
+  if (aiMsg && aiMsg.type === 'ai') {
+    aiMsg.ended = true
+    aiMsg.isThinkingActive = false
+  }
+}
+
+/**
+ * 停止生成（2026-06-15 新增）：用户点击停止按钮触发
+ * 与 App.vue / KnowledgeApp.vue 的 handleStopMessage 行为一致：
+ * 1. 调用 currentReader.cancel() 断开 SSE 连接
+ * 2. 标记最后一条 AI 消息 ended = true + 追加"已停止"提示
+ * 3. 重置 internalStreaming
+ */
+async function handleStop() {
+  if (!isCurrentlyStreaming.value) return
+
+  // 取消 SSE reader
+  if (currentReader) {
+    try {
+      await currentReader.cancel()
+    } catch (err) {
+      console.warn('[KnowledgeChat] stop reader.cancel 异常（可忽略）:', err)
+    }
+    currentReader = null
+  }
+
+  // 标记最后一条 AI 消息为已停止
+  const aiMsg = messages[messages.length - 1]
+  if (aiMsg && aiMsg.type === 'ai') {
+    aiMsg.ended = true
+    aiMsg.isThinkingActive = false
+    if (typeof aiMsg.text === 'string' && !aiMsg.text.includes('[生成已被用户中止]')) {
+      aiMsg.text = (aiMsg.text || '') + '\n\n[生成已被用户中止]'
+    }
+  }
+
+  internalStreaming.value = false
 }
 
 const scrollToBottom = (behavior = 'smooth') => {
@@ -421,21 +634,30 @@ const getFileIconColor = (ext) => {
           :error="message.error"
           :message-id="message.id"
           :is-thinking-active="message.isThinkingActive"
+          :download-info="message.downloadInfo"
+          :sub-agents="message.subAgents"
+          @open-subagent-drawer="(sa) => emit('open-subagent-drawer', sa)"
         />
       </div>
 
     </div>
 
     <div class="chat-input-area">
-      <!-- 输入框上方滚动按钮 -->
-      <transition name="fade">
-        <button
-          v-show="true"
-          type="button"
-          class="input-scroll-btn"
-          @click="scrollToBottom('smooth')"
-          :title="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
-        >
+          <!-- 2026-06-15 新增：排队提示 banner（聊天面板下方、输入框上方） -->
+          <QueueStatusBanner
+            :queue-status="queueStatus"
+            :is-visible="isQueueBannerVisible"
+          />
+
+          <!-- 输入框上方滚动按钮 -->
+          <transition name="fade">
+            <button
+              v-show="true"
+              type="button"
+              class="input-scroll-btn"
+              @click="scrollToBottom('smooth')"
+              :title="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
+            >
           <svg viewBox="0 0 20 20" fill="currentColor">
             <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
           </svg>
@@ -551,38 +773,26 @@ const getFileIconColor = (ext) => {
                   <path fill-rule="evenodd" d="M8 4a3 3 0 00-3 3v4a5 5 0 0010 0V7a1 1 0 112 0v4a7 7 0 11-14 0V7a5 5 0 0110 0v4a3 3 0 11-6 0V7a1 1 0 012 0v4a1 1 0 102 0V7a3 3 0 00-3-3z" clip-rule="evenodd"/>
                 </svg>
               </button>
-
-              <button
-                class="tool-btn text-btn"
-                title="技能"
-                @click="handleToolAction('skills')"
-              >
-                <svg viewBox="0 0 20 20" fill="currentColor" class="tool-icon">
-                  <path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z"/>
-                </svg>
-                <span>技能</span>
-              </button>
-
-              <button
-                class="tool-btn"
-                title="设置"
-                @click="handleToolAction('settings')"
-              >
-                <svg viewBox="0 0 20 20" fill="currentColor" class="tool-icon">
-                  <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/>
-                </svg>
-              </button>
             </div>
 
             <button
               class="send-btn"
-              :class="{ disabled: !canSend }"
-              :disabled="!canSend"
-              @click="handleSend"
-              title="发送消息"
+              :class="{
+                'send-mode': !isCurrentlyStreaming,
+                'stop-mode': isCurrentlyStreaming,
+                'disabled': !canSend && !isCurrentlyStreaming
+              }"
+              :disabled="!canSend && !isCurrentlyStreaming"
+              :title="isCurrentlyStreaming ? '停止生成' : '发送消息'"
+              @click="isCurrentlyStreaming ? handleStop() : handleSend()"
             >
-              <svg viewBox="0 0 20 20" fill="currentColor" class="send-icon">
+              <!-- 发送模式：纸飞机图标 -->
+              <svg v-if="!isCurrentlyStreaming" viewBox="0 0 20 20" fill="currentColor" class="send-icon">
                 <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z"/>
+              </svg>
+              <!-- 停止模式：实心方块图标 -->
+              <svg v-else viewBox="0 0 20 20" fill="currentColor" class="stop-icon">
+                <rect x="5" y="5" width="10" height="10" rx="1.5" />
               </svg>
             </button>
           </div>
@@ -626,7 +836,7 @@ const getFileIconColor = (ext) => {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 16px;
+  padding: 24px 40px;
   position: relative;
 
   &::-webkit-scrollbar {
@@ -647,6 +857,8 @@ const getFileIconColor = (ext) => {
 }
 
 .messages-container {
+  max-width: 900px;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   min-height: 100%;
@@ -1120,6 +1332,47 @@ const getFileIconColor = (ext) => {
 .send-icon {
   width: 16px;
   height: 16px;
+}
+
+/* 2026-06-15 新增：停止模式样式（与发送按钮同色系，通过缩放+阴影脉冲传达「生成中」状态） */
+.send-btn.stop-mode {
+  background-color: var(--color-accent);  /* 与发送模式同色 */
+  cursor: pointer;
+  animation: stopPulse 1.2s ease-in-out infinite;
+}
+
+.send-btn.stop-mode:hover {
+  background-color: var(--color-accent-hover);  /* 与发送模式 hover 同色 */
+  transform: scale(1.08);
+  box-shadow:
+    0 4px 12px rgba(99, 102, 241, 0.3),  /* 与发送模式 hover 同色阴影 */
+    0 2px 4px rgba(99, 102, 241, 0.2);
+}
+
+.send-btn.stop-mode::before {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, transparent 100%);
+}
+
+.stop-icon {
+  width: 14px;
+  height: 14px;
+  color: white;
+}
+
+/* 缩放+阴影脉冲动画：背景色不变，仅缩放与阴影扩散传达「生成中」语义 */
+@keyframes stopPulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3),
+                0 2px 4px rgba(99, 102, 241, 0.2),
+                0 0 0 0 rgba(99, 102, 241, 0.4);
+  }
+  50% {
+    transform: scale(1.06);
+    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3),
+                0 2px 4px rgba(99, 102, 241, 0.2),
+                0 0 0 8px rgba(99, 102, 241, 0);
+  }
 }
 
 .disclaimer {

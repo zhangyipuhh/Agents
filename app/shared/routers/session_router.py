@@ -149,8 +149,21 @@ async def delete_session(session_id: str, request: Request):
         success = await file_transfer.delete_session(session_id)
 
         # 删除 LangGraph Checkpoint 中的对话状态
+        # 2026-06-16 改造：先收集主 thread 下所有子智能体 thread_id，逐个清理后再删主 thread
         try:
             checkpointer = await get_async_checkpointer()
+            sub_thread_ids = await CheckpointHistoryService.collect_subagent_thread_ids_for_cleanup(
+                checkpointer=checkpointer,
+                session_id=session_id,
+            )
+            for sub_tid in sub_thread_ids:
+                try:
+                    await checkpointer.adelete_thread(sub_tid)
+                except Exception as e_sub:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        f"删除子智能体 checkpoint 失败: sub_thread_id={sub_tid}, error={e_sub}"
+                    )
             await checkpointer.adelete_thread(session_id)
         except Exception as e:
             # 记录日志但不阻断删除流程，因为 checkpoint 可能不存在
@@ -303,16 +316,29 @@ async def get_session_messages(
     从 LangGraph 的 Checkpoint 中恢复指定会话的对话历史，
     用于前端切换会话时还原聊天界面。
 
+    2026-06-16 改造：
+        - 在返回的 messages 列表中，**按时序**合并子智能体（sandbox / explore 等）消息流
+        - 子智能体消息以 `type: "subagent"` 元素出现，紧跟在其触发的 AIMessage 之后
+        - 子智能体消息流来自全局 checkpointer，thread_id == 父 LLM tool_call_id
+        - 老客户端忽略未知 type/字段，前端渐进升级支持渲染
+        - 返回的 messages 顺序严格：M1(user) → M2(ai 含 tool_call=sandbox) →
+          [subagent: call_xxx 完整轨迹] → M3(user) → M4(ai) → ...
+
     Args:
         session_id: 会话 ID
-        limit: 返回消息数量限制，默认 50 条，设为 0 表示返回所有
+        limit: 返回消息数量限制，默认 50 条，设为 0 表示返回所有（按合并后总数限制）
 
     Returns:
         dict: 包含 messages 列表和元数据
         {
             "session_id": str,
-            "messages": [{"id": ..., "type": "user"/"ai", "role": ..., "content": ...}],
-            "total": int
+            "messages": [
+                {"id": ..., "type": "user"/"ai"/"tool", "role": ..., "content": ...},
+                {"type": "subagent", "thread_id": ..., "tool": ...,
+                 "parent_message_id": ..., "messages": [...]},
+                ...
+            ],
+            "total": int  # 合并后的总消息数
         }
     """
     try:
@@ -326,70 +352,78 @@ async def get_session_messages(
             raise HTTPException(status_code=403, detail="无权访问该会话")
 
         import logging
-        logging.getLogger(__name__).warning(f"[History] get_session_messages session_id={session_id}")
+        logger = logging.getLogger(__name__)
+        logger.warning(f"[History] get_session_messages session_id={session_id}")
 
-        # 优先尝试通过 graph.aget_state() 获取（更可靠）
+        # 统一从 checkpointer 获取主消息流（确保子智能体反查基于同一 checkpointer 实例）
+        checkpointer = await get_async_checkpointer()
+
+        # 优先尝试通过 graph.aget_state() 获取（更可靠，且能拿到原始 LangChain 消息对象）
+        raw_messages_data: list = []
+        use_graph_state = False
         try:
             from app.features.map_agent.router.map_router import get_map_agent
             map_agent = await get_map_agent()
             agent = await map_agent.get_agent()
             graph_config = {"configurable": {"thread_id": session_id}}
             state = await agent.graph.aget_state(graph_config)
-            messages_data = state.values.get("messages", [])
+            values = getattr(state, "values", None) or {}
+            raw_messages_data = values.get("messages", []) if isinstance(values, dict) else []
+            use_graph_state = True
 
-            messages = []
-            for msg in messages_data:
-                msg_dict = CheckpointHistoryService._convert_message_to_dict(msg)
-                if msg_dict and msg_dict.get("type") != "tool":
-                    messages.append(msg_dict)
-
-            if limit and limit > 0:
-                messages = messages[-limit:]
-
-            logging.getLogger(__name__).warning(
-                f"[History] graph.get_state() succeeded, messages_count={len(messages)}, "
-                f"state_type={type(state)}, values_keys={list(state.values.keys()) if hasattr(state, 'values') else 'N/A'}, "
-                f"checkpoint_id={getattr(state, 'checkpoint_id', 'N/A')}, "
-                f"parent_checkpoint_id={getattr(state, 'parent_checkpoint_id', 'N/A')}"
+            logger.warning(
+                f"[History] graph.get_state() succeeded, raw_messages_count={len(raw_messages_data)}"
             )
+        except Exception as e:
+            logger.warning(f"[History] graph.get_state() 失败，回退到 checkpointer.aget: {e}")
+            try:
+                config = {"configurable": {"thread_id": session_id}}
+                raw_state = await checkpointer.aget(config)
+                if raw_state:
+                    channel_values = raw_state.get("channel_values", {}) if hasattr(raw_state, "get") else {}
+                    raw_messages_data = channel_values.get("messages", []) if isinstance(channel_values, dict) else []
+            except Exception as e2:
+                logger.warning(f"[History] checkpointer.aget() 失败: {e2}")
+                raw_messages_data = []
 
-            # 诊断：无论是否为空，都用 checkpointer.aget() 对比
-            checkpointer = await get_async_checkpointer()
-            logging.getLogger(__name__).warning(
-                f"[History] checkpointer_type={type(checkpointer).__name__}"
-            )
-            config = {"configurable": {"thread_id": session_id}}
-            raw_state = await checkpointer.aget(config)
-            logging.getLogger(__name__).warning(
-                f"[History] checkpointer.aget() raw_state={raw_state is not None}, "
-                f"raw_state_type={type(raw_state) if raw_state else 'None'}"
-            )
-            if raw_state:
-                logging.getLogger(__name__).warning(
-                    f"[History] checkpointer.aget() keys={list(raw_state.keys()) if hasattr(raw_state, 'keys') else 'N/A'}, "
-                    f"channel_values_keys={list(raw_state.get('channel_values', {}).keys()) if raw_state else 'N/A'}"
-                )
-
+        if not raw_messages_data:
             return {
                 "session_id": session_id,
-                "messages": messages,
-                "total": len(messages)
+                "messages": [],
+                "total": 0,
             }
-        except Exception as e:
-            logging.getLogger(__name__).warning(f"[History] graph.get_state() 失败，回退到 checkpointer: {e}")
 
-        # 回退到原有逻辑
-        checkpointer = await get_async_checkpointer()
-        messages = await CheckpointHistoryService.get_conversation_history(
+        # 1) 主消息转换（过滤 tool）
+        main_messages: list = []
+        for msg in raw_messages_data:
+            msg_dict = CheckpointHistoryService._convert_message_to_dict(msg)
+            if msg_dict and msg_dict.get("type") != "tool":
+                main_messages.append(msg_dict)
+
+        # 2) 合并子智能体消息（按时序）
+        #    仅在 use_graph_state 路径下 raw_messages_data 含 LangChain 对象，
+        #    回退路径下 raw_messages_data 也来自 checkpointer 转换，对象可能是 dict，
+        #    merge_main_and_subagent_messages 内部用 isinstance(AIMessage) 防御，dict 会被忽略。
+        merged_messages = await CheckpointHistoryService.merge_main_and_subagent_messages(
             checkpointer=checkpointer,
-            session_id=session_id,
-            limit=limit if limit and limit > 0 else None
+            main_messages=main_messages,
+            raw_main_messages=raw_messages_data if use_graph_state else None,
+            subagent_limit=None,
+        )
+
+        # 3) 应用 limit（基于合并后总数）
+        if limit and limit > 0:
+            merged_messages = merged_messages[-limit:]
+
+        logger.warning(
+            f"[History] 返回 messages 总数={len(merged_messages)} "
+            f"(main={len(main_messages)}, use_graph_state={use_graph_state})"
         )
 
         return {
             "session_id": session_id,
-            "messages": messages,
-            "total": len(messages)
+            "messages": merged_messages,
+            "total": len(merged_messages),
         }
 
     except HTTPException:
@@ -427,8 +461,21 @@ async def admin_delete_session(session_id: str, request: Request):
         success = await file_transfer.delete_session(session_id)
 
         # 删除 LangGraph Checkpoint 中的对话状态
+        # 2026-06-16 改造：先收集主 thread 下所有子智能体 thread_id，逐个清理后再删主 thread
         try:
             checkpointer = await get_async_checkpointer()
+            sub_thread_ids = await CheckpointHistoryService.collect_subagent_thread_ids_for_cleanup(
+                checkpointer=checkpointer,
+                session_id=session_id,
+            )
+            for sub_tid in sub_thread_ids:
+                try:
+                    await checkpointer.adelete_thread(sub_tid)
+                except Exception as e_sub:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        f"删除子智能体 checkpoint 失败: sub_thread_id={sub_tid}, error={e_sub}"
+                    )
             await checkpointer.adelete_thread(session_id)
         except Exception as e:
             import logging

@@ -7,6 +7,7 @@ import {
   parseMessageContent,
   processSSEEvent,
   createAiMessage,
+  isSubAgentMessage,
 } from '../sseParser.js'
 
 function createTestAiMsg() {
@@ -341,5 +342,242 @@ describe('SSE regression: event type contract', () => {
     )
     expect(msg.thinking).toEqual(['analyzing'])
     expect(msg.text).toBe('result')
+  })
+
+  // ========== 2026-06-14 改造：子智能体 message 跳过与 threadId 防污染 ==========
+
+  it('2026-06-14: message event from registered subagent thread is skipped', () => {
+    const msg = createAiMessage()
+    // 先注册 sandbox 子智能体
+    processSSEEvent({
+      type: 'custom',
+      thread_id: 'call_sandbox_1',
+      data: {
+        type: 'tool_start',
+        tool: 'sandbox',
+        tool_call_id: 'call_sandbox_1',
+        data: { parent_prompt: '执行沙箱任务' }
+      }
+    }, msg)
+    expect(msg.subAgents).toHaveLength(1)
+    const saThreadId = msg.subAgents[0].threadId
+    // 记录 tool_start 累积的 timeline 长度（按设计它会推一条 tool 项到 timeline）
+    const timelineLenBefore = msg.timeline.length
+
+    // 模拟子智能体 LLM 流式输出（metadata.thread_id === subagent.threadId）
+    processSSEEvent({
+      type: 'message',
+      content: [{ type: 'thinking', thinking: '工作目录是 /workspace，让我在这里创建' }],
+      metadata: { thread_id: saThreadId, lc_agent_name: 'sandbox' }
+    }, msg)
+
+    // 不应写入父气泡的 thinking / text
+    expect(msg.thinking).toEqual([])
+    expect(msg.text).toBe('')
+    // timeline 长度不变（message 事件被跳过，不会新增 timeline 项）
+    expect(msg.timeline.length).toBe(timelineLenBefore)
+    // timeline 内不应出现子智能体 thinking 文本
+    const subAgentLeak = msg.timeline.some(t => {
+      if (typeof t.content === 'string') {
+        return t.content.includes('工作目录是 /workspace')
+      }
+      return false
+    })
+    expect(subAgentLeak).toBe(false)
+    expect(msg.isThinkingActive).toBe(false)
+  })
+
+  it('2026-06-14: message event from main thread still gets processed', () => {
+    const msg = createAiMessage()
+    // 父线程 message
+    processSSEEvent({
+      type: 'message',
+      content: [{ type: 'text', text: '父线程输出' }],
+      metadata: { thread_id: 'main_thread_xyz' }
+    }, msg)
+
+    expect(msg.threadId).toBe('main_thread_xyz')
+    expect(msg.text).toBe('父线程输出')
+    expect(msg.timeline.some(t => t.type === 'text')).toBe(true)
+  })
+
+  it('2026-06-14: aiMsg.threadId not polluted by subagent message arriving first', () => {
+    const msg = createAiMessage()
+    // 先注册 sandbox 子智能体
+    processSSEEvent({
+      type: 'custom',
+      thread_id: 'call_sandbox_2',
+      data: {
+        type: 'tool_start',
+        tool: 'sandbox',
+        tool_call_id: 'call_sandbox_2',
+        data: { parent_prompt: 'p' }
+      }
+    }, msg)
+
+    // 子智能体先发 message（threadId 仍为空）
+    processSSEEvent({
+      type: 'message',
+      content: [{ type: 'thinking', thinking: '子智能体 thinking' }],
+      metadata: { thread_id: 'call_sandbox_2' }
+    }, msg)
+
+    // 父气泡 threadId 不应被子智能体的 threadId 污染
+    expect(msg.threadId).toBe('')
+
+    // 真正的父线程 message 到达时正确设置
+    processSSEEvent({
+      type: 'message',
+      content: [{ type: 'text', text: '父线程' }],
+      metadata: { thread_id: 'real_main' }
+    }, msg)
+    expect(msg.threadId).toBe('real_main')
+    expect(msg.text).toBe('父线程')
+  })
+
+  it('2026-06-14: subagent message does not affect other subagents messages', () => {
+    const msg = createAiMessage()
+    // 注册两个子智能体
+    processSSEEvent({
+      type: 'custom', thread_id: 'sa_A', data: {
+        type: 'tool_start', tool: 'sandbox', tool_call_id: 'sa_A',
+        data: { parent_prompt: 'A 任务' }
+      }
+    }, msg)
+    processSSEEvent({
+      type: 'custom', thread_id: 'sa_B', data: {
+        type: 'tool_start', tool: 'explore', tool_call_id: 'sa_B',
+        data: { parent_prompt: 'B 任务' }
+      }
+    }, msg)
+    // 给 A 累积一些子消息
+    processSSEEvent({
+      type: 'custom', thread_id: 'sa_A', data: {
+        type: 'tool_progress', tool: 'sandbox', tool_call_id: 'sa_A',
+        data: { child_messages: [
+          { type: 'AIMessage', role: 'ai', content: [{ thinking: 'A 内部思考', type: 'thinking' }] }
+        ] }
+      }
+    }, msg)
+
+    const messagesBefore = msg.subAgents.find(s => s.toolCallId === 'sa_B').messages.length
+
+    // A 子智能体发 message 事件
+    processSSEEvent({
+      type: 'message',
+      content: [{ type: 'thinking', thinking: 'A 的 LLM 增量输出' }],
+      metadata: { thread_id: 'sa_A' }
+    }, msg)
+
+    // 父气泡不应写入
+    expect(msg.thinking).toEqual([])
+    expect(msg.text).toBe('')
+    // B 子智能体的 messages 不应被 A 的 message 影响
+    const messagesAfter = msg.subAgents.find(s => s.toolCallId === 'sa_B').messages.length
+    expect(messagesAfter).toBe(messagesBefore)
+  })
+})
+
+describe('isSubAgentMessage 工具函数（2026-06-14 新增）', () => {
+  it('returns true when eventThreadId matches any subAgent.threadId', () => {
+    const aiMsg = {
+      subAgents: [
+        { toolCallId: 'a', threadId: 'thread_a' },
+        { toolCallId: 'b', threadId: 'thread_b' }
+      ]
+    }
+    expect(isSubAgentMessage(aiMsg, 'thread_a')).toBe(true)
+    expect(isSubAgentMessage(aiMsg, 'thread_b')).toBe(true)
+  })
+
+  it('returns false when eventThreadId does not match', () => {
+    const aiMsg = { subAgents: [{ toolCallId: 'a', threadId: 'thread_a' }] }
+    expect(isSubAgentMessage(aiMsg, 'thread_other')).toBe(false)
+  })
+
+  it('returns false for null/undefined aiMsg', () => {
+    expect(isSubAgentMessage(null, 'thread_a')).toBe(false)
+    expect(isSubAgentMessage(undefined, 'thread_a')).toBe(false)
+  })
+
+  it('returns false when aiMsg.subAgents is not an array', () => {
+    expect(isSubAgentMessage({}, 'thread_a')).toBe(false)
+    expect(isSubAgentMessage({ subAgents: null }, 'thread_a')).toBe(false)
+  })
+
+  it('returns false for empty eventThreadId', () => {
+    const aiMsg = { subAgents: [{ toolCallId: 'a', threadId: 'thread_a' }] }
+    expect(isSubAgentMessage(aiMsg, '')).toBe(false)
+    expect(isSubAgentMessage(aiMsg, null)).toBe(false)
+    expect(isSubAgentMessage(aiMsg, undefined)).toBe(false)
+  })
+
+  it('returns false for empty subAgents', () => {
+    expect(isSubAgentMessage({ subAgents: [] }, 'any')).toBe(false)
+  })
+
+  it('handles malformed subAgents entries gracefully', () => {
+    const aiMsg = {
+      subAgents: [null, undefined, { toolCallId: 'a', threadId: 'thread_a' }]
+    }
+    expect(isSubAgentMessage(aiMsg, 'thread_a')).toBe(true)
+    expect(isSubAgentMessage(aiMsg, 'thread_b')).toBe(false)
+  })
+})
+
+// =============================================================
+// 2026-06-15 新增：SSE queue 事件（动态排队提示）
+// =============================================================
+describe('SSE queue event handlers (2026-06-15)', () => {
+  it('test_queue_event_invokes_callback_not_writing_to_aiMsg', () => {
+    const aiMsg = createTestAiMsg()
+    const callbackCalls = []
+    const callbacks = {
+      onQueueEvent: (data) => callbackCalls.push(data)
+    }
+    const queueEvent = {
+      type: 'queue',
+      event: 'waiting',
+      waiting_count: 3,
+      active_count: 1,
+      max_concurrency: 1,
+      position: 2,
+      timestamp: 1700000000
+    }
+    processSSEEvent(queueEvent, aiMsg, callbacks)
+    expect(callbackCalls).toHaveLength(1)
+    expect(callbackCalls[0]).toEqual(queueEvent)
+    // queue 事件不应写入 aiMsg.timeline / aiMsg.text / aiMsg.tools
+    expect(aiMsg.timeline).toEqual([])
+    expect(aiMsg.text).toBe('')
+    expect(aiMsg.tools).toEqual([])
+  })
+
+  it('test_queue_event_with_missing_callback_does_not_throw', () => {
+    const aiMsg = createTestAiMsg()
+    const queueEvent = {
+      type: 'queue',
+      event: 'ready',
+      waiting_count: 0,
+      active_count: 1,
+      max_concurrency: 1
+    }
+    // 不传 callbacks 应静默忽略，不抛异常
+    expect(() => processSSEEvent(queueEvent, aiMsg)).not.toThrow()
+    expect(() => processSSEEvent(queueEvent, aiMsg, {})).not.toThrow()
+    // 不应写入 aiMsg
+    expect(aiMsg.timeline).toEqual([])
+  })
+
+  it('test_queue_event_callback_error_is_swallowed', () => {
+    const aiMsg = createTestAiMsg()
+    const callbacks = {
+      onQueueEvent: () => {
+        throw new Error('callback error')
+      }
+    }
+    const queueEvent = { type: 'queue', event: 'waiting' }
+    // 回调异常应被捕获，不影响其他事件处理
+    expect(() => processSSEEvent(queueEvent, aiMsg, callbacks)).not.toThrow()
   })
 })

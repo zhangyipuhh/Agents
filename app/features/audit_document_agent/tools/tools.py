@@ -179,7 +179,7 @@ class AuditDocumentTools:
             output_format='jpg'
         )
 
-        image_dir = Path("app/data/upload") / session_id / step_id / file_id
+        image_dir = Path("data/upload") / session_id / step_id / file_id
         image_paths = sorted(image_dir.glob("*.jpg"))
 
         if not image_paths:

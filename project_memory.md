@@ -9,8 +9,74 @@ Agent User Management 是一个基于 FastAPI 的 AI Agent 管理平台，提供
 - **后端**: FastAPI + Uvicorn
 - **数据库**: PostgreSQL（通过 asyncpg），支持 Memory 模式降级
 - **认证**: JWT（双 Token 体系：Access Token + Refresh Token）
-- **AI**: LangGraph + LangChain，支持多种 LLM 模型
+- **AI**: LangGraph + LangChain，支持多种 LLM 模型（版本详见下方 "AI 依赖版本与文档约定"）
 - **工具**: MCP（Model Context Protocol）工具集成
+
+### AI 依赖版本与文档约定（2026-06-14 记录）
+
+#### LangChain / LangGraph 全家桶版本（锁定自 `app/requirements.txt`）
+
+| 包 | 版本 | 用途 |
+|----|------|------|
+| `langchain` | 1.2.16 | LangChain 1.x 主包（统一入口） |
+| `langchain-core` | 1.3.2 | 核心抽象（Message、Runnable、@tool 等） |
+| `langchain-classic` | 1.0.2 | LangChain 1.x 兼容层（旧链式 API、AgentExecutor 等） |
+| `langchain-community` | 0.4.1 | 社区工具/向量库集成 |
+| `langchain-text-splitters` | 1.1.1 | 文本切分器 |
+| `langchain-openai` | 1.1.6 | OpenAI / 兼容 OpenAI 协议模型 |
+| `langchain-anthropic` | 1.4.2 | Anthropic Claude |
+| `langchain-google-genai` | 4.2.2 | Google Gemini |
+| `langchain-deepseek` | 1.0.1 | DeepSeek |
+| `langchain-ollama` | 1.0.1 | Ollama 本地模型 |
+| `langchain-mcp-adapters` | 0.2.1 | MCP 工具适配为 LangChain 工具 |
+| `langchain-protocol` | 0.0.14 | 协议层（实验） |
+| `langgraph` | 1.1.10 | LangGraph 主包（图编排、Checkpoint、Store） |
+| `langgraph-checkpoint` | 4.1.1 | Checkpoint 抽象基类与内存实现 |
+| `langgraph-checkpoint-postgres` | 3.1.1 | PostgreSQL Checkpoint 后端 |
+| `langgraph-prebuilt` | 1.0.13 | 预构建节点（ToolNode、create_react_agent 等） |
+| `langgraph-sdk` | 0.3.1 | LangGraph 远程部署 SDK |
+| `langmem` | 0.0.30 | 长期记忆扩展 |
+| `langsmith` | 0.7.38 | LangSmith 追踪/评估 SDK |
+| `deepagents` | 0.5.5 | LangChain 官方 subagent 库（沙箱 Agent 依赖） |
+
+#### 文档查询约定
+
+- **凡涉及 LangChain / LangChain-Core / LangGraph / LangSmith / LangMem / deepagents 的 API 使用**，必须通过 **context7 MCP** 查找对应官方文档后再调用，禁止凭记忆使用旧版本 API。
+- 优先查询顺序：
+  1. `usecontext7_mcp` → `get-library-docs` 拉取目标库的最新 docs（如 `/langchain-ai/langchain`、`/langchain-ai/langgraph`）
+  2. 命中失败再降级 WebSearch + 官方文档站（`https://python.langchain.com/`、`https://langchain-ai.github.io/langgraph/`）
+- 版本兼容注意：项目使用 **LangChain 1.x + LangGraph 1.x**（旧版 0.x 的 `create_react_agent`、`AgentExecutor`、`LLMChain` 等签名已变更，迁移文档参考 context7 `/langchain-ai/langchain` 的 v1 migration guide）
+- 更新 `app/requirements.txt` 时，必须同步更新本表版本号，避免文档查错版本
+
+## 数据目录约定（2026-06-12 重构）
+
+运行时数据目录位于**项目根**（非 `app/` 内），便于与代码解耦并避免被打入 Docker 镜像。
+
+```
+data/                          # 项目根运行时数据目录（原 app/data）
+├── Knowledge/                 # 知识库数据（地图 Agent）
+│   ├── metadata.json
+│   ├── sync_metadata.py
+│   └── tmp/                   # 临时缓存（doc 转换、large_tool_results）
+├── upload/                    # 用户上传文件（按 session_id 分目录）
+├── download/                  # 用户下载文件（按 session_id 分目录）
+├── upload_chunks/             # 分片上传临时目录（按 file_id 分目录）
+└── demonstration/download/    # 演示模式专用下载目录
+```
+
+### 关键变更
+
+- **路径常量**（统一改为相对项目根）：
+  - `app/core/router/file_upload_router.py`：`UPLOAD_DIR = Path("data/upload")`、`CHUNKS_DIR = Path("data/upload_chunks")`
+  - `app/core/router/file_download_router.py`：`DOWNLOAD_DIR = Path("data/download")`
+  - `app/shared/utils/files/fileTransfer.py` / `file_upload_handler.py` / `pdfToImage.py`：默认参数 `upload_dir="data/upload"`
+- **基于 `Path.cwd()` 的子智能体工作目录**：
+  - `app/core/tools/SandboxTools.py`：`workspace = project_root / "data" / "upload" / session_id / "sandbox"`
+  - `app/core/tools/FilesystemReadTools.py`：`root_path = project_root / "data" / "upload" / session_id`
+- **Knowledge 目录**：`app/features/map_agent/router/map_router.py` 中 `_PROJECT_ROOT` 由 4 次 `os.path.dirname` 改为 5 次，确保升到项目根而非 `app/`
+- **审计/地图工具**：`app/features/audit_document_agent/tools/tools.py`、`app/features/map_agent/tools/MapTools.py`、`app/features/Tagent/Tagent.py` 等同步更新
+- **.gitignore**：`app/data/` → `data/`（已同步）
+- **Dockerfile 无需修改**：`COPY app/ /app/app/` 不会包含项目根的 `data/`，数据仅运行时生成
 
 ## 项目架构
 
@@ -20,6 +86,10 @@ app/
 │   ├── server.py           # FastAPI 应用配置（生命周期、中间件、CORS）
 │   ├── config/settings.py  # 配置管理
 │   ├── database.py         # 数据库连接池
+│   ├── concurrency/        # 并发控制模块
+│   │   ├── agent_concurrency_queue.py  # 基于内存的 Agent 聊天并发队列
+│   │   ├── chat_concurrency_dependency.py  # FastAPI 依赖封装
+│   │   └── __init__.py     # 包初始化
 │   ├── agent/              # Agent 基类
 │   ├── llmcalls/           # LLM 调用封装
 │   ├── tools/              # 工具基类和 MCP 适配器
@@ -31,8 +101,9 @@ app/
 │   ├── map_agent/              # 地图 Agent
 │   ├── DevOps_agent/           # DevOps Agent
 │   ├── AI_Coding_Check_agent/  # AI 代码检查 Agent
-│   ├── audit_document_agent/   # 审计文档 Agent
-│   └── Tagent/                 # T Agent
+    ├── audit_document_agent/   # 审计文档 Agent
+    ├── sandbox_agent/          # 沙箱 Agent（已重构为 subagent 工具模式，见核心工具）
+    └── Tagent/                 # T Agent
 ├── shared/                 # 共享模块
 │   ├── routers/           # 路由
 │   │   ├── auth_router.py    # 认证路由（登录、注册、验证码、refresh、validate）
@@ -174,7 +245,10 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
   - 第三方 → 父：`{type:'PORTAL_AUTH_REQUEST'}`（在首次加载未及时收到时、或 refresh 失败时主动请求）
   - 父校验 `event.source === iframe.contentWindow` 防冒用
   - 父用 `targetOrigin`（从 navItem 配置或 url 推断）避免 `postMessage(msg, '*')` 泄 token
-- **详细文档**：[docs/portal-iframe-token-guide.md](file:///e:/laboratory/AI/Agents/agent-user-mangerment/docs/portal-iframe-token-guide.md) — Portal 导航页 iframe Token 获取完整端到端流程指南（含接口说明、postMessage 协议、第三方接入示例、兼容逻辑）
+- **详细文档**：
+  - [docs/portal-iframe-token-guide.md](file:///e:/laboratory/AI/Agents/agent-user-mangerment/docs/portal-iframe-token-guide.md) — Portal 导航页 iframe Token 获取完整端到端流程指南（含接口说明、postMessage 协议、第三方接入示例、兼容逻辑）
+  - [docs/third-party-api-integration-guide.md](file:///e:/laboratory/AI/Agents/agent-user-mangerment/docs/third-party-api-integration-guide.md) — 第三方后端 API 接入完整指南（**非 iframe 场景**，v2.0 2026-06-11 重构：仅需 login-api → 业务 API → refresh → 重新登录 → logout 5 步，无需 portal 子 token / postMessage）
+  - [docs/refresh-token-misunderstanding.md](file:///e:/laboratory/AI/Agents/agent-user-mangerment/docs/refresh-token-misunderstanding.md) — Refresh Token 调研澄清报告（2026-06-11 7 个 pytest 用例实测：refresh_token 调任意业务接口均返回 401，不会驱动业务）
 
 ## 数据库设计
 
@@ -283,7 +357,7 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 |   ├ GET /{session_id}/detail | | 获取会话详情（含附件列表） |
 |   ├ PUT /{session_id}/title | | 更新会话标题 |
 |   ├ GET /{session_id}/attachments | | 获取会话附件列表 |
-|   ├ GET /{session_id}/messages | | 获取会话历史消息（从 LangGraph Checkpoint 恢复，默认 50 条） |
+|   ├ GET /{session_id}/messages | | 获取会话历史消息（从 LangGraph Checkpoint 恢复，默认 50 条；**2026-06-16 改造：返回 messages 中按时序插入 `type:"subagent"` 元素，承载 sandbox/explore 子智能体的完整轨迹**） |
 |   ├ DELETE /admin/{session_id} | | Admin 强制删除任意会话 |
 |   ├ GET /admin/search | | Admin 按用户名搜索会话 |
 | /api/files | file_router | 文件管理（上传、下载、删除、列表、PDF 转图片） |
@@ -305,9 +379,9 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 |   ├ GET /list | | 列出可下载文件（支持子目录、递归） |
 | /api/contract | contract_router | 合同主办 Agent |
 |   ├ POST /uploadfile | | 上传并处理合同文件（存储 file_id 到 LangGraph Store） |
-|   ├ POST /chat | | 合同审批聊天（HtAgent 非流式） |
-|   ├ POST /doc_chat | | 文档处理聊天（DocAgent 非流式） |
-|   ├ POST /approval_chat | | 审批处理聊天（ApprovalAgent 非流式） |
+|   ├ POST /chat | | 合同审批聊天（HtAgent 非流式，受 `chat_concurrency_dependency` 并发控制） |
+|   ├ POST /doc_chat | | 文档处理聊天（DocAgent 非流式，受 `chat_concurrency_dependency` 并发控制） |
+|   ├ POST /approval_chat | | 审批处理聊天（ApprovalAgent 非流式，受 `chat_concurrency_dependency` 并发控制） |
 |   ├ POST /store/value | | 根据 id 获取 LangGraph Store 中的值 |
 |   ├ POST /store/value/set | | 向 LangGraph Store 中写入值 |
 |   ├ POST /download_contract | | 下载合同文件（返回 base64） |
@@ -315,14 +389,154 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 |   ├ GET /knowledge/files | | 获取知识库文件元数据（自动扫描 Knowledge 目录） |
 |   ├ GET /knowledge/file-download | | 下载知识库文件 |
 |   ├ GET /knowledge/file-preview | | 知识库文件预览（支持 .doc 自动转 .docx） |
-|   ├ POST /chat | | 地图智能体流式聊天（SSE，支持 HITL 中断与恢复） |
-|   ├ POST /knowledge-chat | | 地图智能体知识库聊天（SSE，使用知识库系统提示词） |
+|   ├ POST /chat | | 地图智能体流式聊天（SSE，支持 HITL 中断与恢复，受 `chat_concurrency_dependency` 并发控制） |
+|   ├ POST /knowledge-chat | | 地图智能体知识库聊天（SSE，使用知识库系统提示词，受 `chat_concurrency_dependency` 并发控制） |
 | /api/ai-coding-check | ai_coding_check_router | AI 代码检查 Agent |
 |   ├ POST /review | | 评审开发者数据（非流式 JSON API） |
 | /mcp | mcp_router | MCP 服务器工具调用 |
 |   ├ GET /servers | | 列出所有已连接的 MCP 服务器及其工具 |
 |   ├ POST /call | | 调用指定 MCP 服务器的工具 |
 |   ├ GET /tools/{server_name} | | 列出指定 MCP 服务器的工具详情 |
+
+## 核心工具 (Core Tools)
+
+### Sandbox 工具
+
+**文件位置**: `app/core/tools/SandboxTools.py`
+
+**功能**: 提供 `sandbox` 工具函数，启动沙箱子智能体在隔离的 Docker 容器中执行代码和文件操作。
+
+**使用方式**: 作为 `@tool` 注册到 core agent 工具链，LLM 自动决策调用时机。
+
+**实现细节**:
+- 使用 `create_deep_agent` (deepagents) 创建子智能体
+- 使用 `DockerSandboxMiddleware` 提供隔离执行环境
+- 工作目录: `data/upload/{session_id}/sandbox`（2026-06-12 路径重构，原 `app/data/upload/...` 已迁移到项目根 `data/`）
+- 默认镜像: `python:3.12-alpine`
+- 资源限制: 内存 512MB，CPU 100%，无网络
+- 支持流式事件: `tool_start` / `tool_progress` / `tool_stop`
+
+**依赖**:
+- `DockerSandboxMiddleware` / `DockerSandboxBackend`: `app/shared/tools/middleware/docker_sandbox_backend.py`
+
+## Agent 聊天并发控制（2026-06-15 扩展：动态排队提示 + HITL 早期释放）
+
+**文件位置**: `app/core/concurrency/chat_concurrency_dependency.py` + `app/core/concurrency/agent_concurrency_queue.py`
+
+**功能**: 限制同时处理的 Agent 聊天请求数，超出最大并发数时进入 FIFO 内存队列等待，并向**前端实时推送排队人数提示**。
+
+**配置项**:
+- `AGENT_CHAT_MAX_CONCURRENCY` — Agent 聊天接口最大并发数，超出时进入内存队列等待，默认 1（`settings.agent_chat_max_concurrency`）。
+- 排队事件推送间隔 `QUEUE_POLL_INTERVAL_SECONDS = 1.0`（依赖内常量，硬编码）。
+
+### 双模式依赖（2026-06-15 重构）
+
+`chat_concurrency_dependency(request, mode="sse" | "http")` 异步生成器：
+
+| 模式 | 触发条件 | 行为 |
+|------|---------|------|
+| **SSE 模式**（默认） | `/api/map/chat`、`/api/map/knowledge-chat` | 排队期间持续 yield `{"type":"queue","event":"waiting",...}` 事件；获取许可后 yield `ready` 事件 + `None` 让路由继续；通过 `await release_done.wait()` 阻塞直到路由主动释放（HITL 场景）或 finally 兜底 |
+| **HTTP 模式** | `/api/contract/chat` 等非流式接口 | 满员时立即抛 `HTTPException(429, detail={error,waiting_count,active_count,max_concurrency,message})`；无需等待时直接 yield None |
+
+### AgentConcurrencyQueue 扩展（2026-06-15）
+
+新增能力：
+- `enqueue_time(task)`：返回指定 task 的入队时间戳（`time.monotonic()`）
+- `position(task)`：返回 FIFO 队列位置（1-based，0=已激活，-1=未注册）
+- `snapshot(task)`：返回 `{active_count, waiting_count, max_concurrency, position, enqueue_time, timestamp}`
+- 内部维护 `_waiter_tasks: List[asyncio.Task]` 与 `_enqueue_times: Dict[asyncio.Task, float]`，支持 position 准确计算
+
+### HITL interrupt 早期释放（核心修复）
+
+> **踩坑记录**：HITL interrupt 后如果仅靠依赖 finally 释放许可，前端不主动断开 SSE 连接会导致许可长时间被占，用户 resume 请求会卡在 FIFO 队列。本改造通过**前后端协作**修复。
+
+**后端机制**：
+- 依赖在 acquire 成功后把 `concurrency_release_handle`（可调用对象）挂到 `request.state`
+- 路由（`_stream_with_queue`）在 yield `type='interrupt'` 业务事件**之前**调用 `handle()` 强制释放许可
+- finally 兜底：`release_done.wait()` 超时或客户端异常断开时执行 release
+- 句柄幂等：多次调用不会重复释放（`release_done.is_set()` 守卫）
+
+**前端机制**：
+- 收到 interrupt 事件后**主动 `await reader.cancel()`** 断开 fetch，让后端 StreamingResponse 立即结束
+- 配合后端 release_handle，**许可释放 + SSE 连接断开两者都及时发生**
+- 缺一不可：仅后端 release 但前端不 cancel → 连接挂着 → finally 兜底延迟；仅前端 cancel 但后端不 release → resume 时排队
+
+### SSE queue 事件协议（2026-06-15 新增）
+
+事件格式（仅追加，不修改既有字段）：
+
+```json
+{
+  "type": "queue",
+  "event": "waiting" | "ready",
+  "waiting_count": int,
+  "active_count": int,
+  "max_concurrency": int,
+  "position": int,         // 1-based，ready 时通常为 0
+  "timestamp": float       // 快照生成时刻
+}
+```
+
+老客户端忽略未知 `type=queue` 字段，行为不变（向后兼容）。
+
+### HTTP 429 响应格式
+
+```json
+{
+  "detail": {
+    "error": "queue_full",
+    "waiting_count": 1,
+    "active_count": 1,
+    "max_concurrency": 1,
+    "message": "当前并发请求已达上限，请稍后重试"
+  }
+}
+```
+
+### 已接入路由
+
+| 路由 | 类型 | 接入方式 |
+|------|------|---------|
+| `/api/map/chat` | SSE | 路由体内手动 `dep = chat_concurrency_dependency(request, mode="sse")` + `stream_with_concurrency(request, dep, business_gen)` 包装 |
+| `/api/map/knowledge-chat` | SSE | 同上 |
+| `/api/contract/chat` | HTTP | `dependencies=[_chat_concurrency_http_dep()]`（工厂函数，传 `mode="http"`） |
+| `/api/contract/doc_chat` | HTTP | 同上 |
+| `/api/contract/approval_chat` | HTTP | 同上 |
+
+### 通用 SSE 流式包装器 `stream_with_concurrency`（2026-06-15 新增）
+
+**文件位置**：`app/core/concurrency/chat_concurrency_dependency.py`（同模块）
+
+**背景踩坑**：早期版本 `map_router.py` 用 `dep=Depends(chat_concurrency_dependency)` 注入并发控制依赖，**实测发现 FastAPI 对 yield-based dependency 的处理会注入 generator 第一个 yield 的值（dict），不是 generator object**——`_stream_with_queue` 中的 `async for item in dep` 因此抛 `TypeError: 'async for' requires an object with __aiter__ method, got dict`（参见 [fastapi/dependencies/utils.py:543-551](file:///e:/laboratory/AI/Agents/Lib/site-packages/fastapi/dependencies/utils.py#L543-L551) 的 `asynccontextmanager(dependant.call)(**sub_values)` 包装）。
+
+**修复方案**：
+- `chat_concurrency_dependency` **不能**作为 `Depends` 使用。SSE 路由必须在路由体内手动调用 `chat_concurrency_dependency(request, mode="sse")` 获取 async generator object
+- 通用 `stream_with_concurrency(request, dep, business_gen)` 工具函数负责：
+  1. 消费 `dep` yield 链（queue waiting/ready 事件）→ 序列化为 SSE 透传前端
+  2. 消费 `business_gen` yield 链（业务 chunk）→ 透传
+  3. HITL 关键：检测到 `type='interrupt'` 业务事件时，yield 之前主动调用 `request.state.concurrency_release_handle()` 释放许可
+  4. finally 兜底：业务流 / 客户端异常时显式 `await dep.aclose()`，触发 `chat_concurrency_dependency` 的 finally 块做 release 兜底
+- 原 `map_router.py` 内私有函数 `_stream_with_queue` / `_is_interrupt_chunk` 已删除并迁移到 concurrency 模块，供所有 SSE 聊天路由复用
+
+**使用方式**（SSE 路由标准模板）：
+
+```python
+from app.core.concurrency import chat_concurrency_dependency, stream_with_concurrency
+
+@router.post('/xxx-chat')
+async def xxx_chat(request: Request, chat_request: ChatRequest):
+    dep = chat_concurrency_dependency(request, mode="sse")  # 手动获取 generator
+    return StreamingResponse(
+        stream_with_concurrency(request, dep, generate_stream_response(...)),
+        media_type="text/event-stream",
+    )
+```
+
+**`__init__.py` 导出**：`from app.core.concurrency import stream_with_concurrency`
+
+**测试覆盖**：`app/tests/core/concurrency/test_stream_with_concurrency.py`（7 用例：SSE 输出顺序 / aclose 时机 / 异常 finally / interrupt release / 非 interrupt 不 release / 无 aclose 防御 / `_is_interrupt_chunk` 单元测试）
+
+**HTTP 模式路由不受影响**：`/api/contract/*` 用 `_chat_concurrency_http_dep()` 工厂函数（内部 `async for _ in gen: pass` 手动驱动 generator），本来就没用 `Depends` 包装。
 
 ## 环境变量
 
@@ -331,6 +545,18 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 - `PORTAL_REFRESH_TOKEN_TTL_SECONDS` — 门户子 refresh_token 有效期（秒），默认 86400 = 24 小时
 - `VITE_API_TARGET` — 前端 Vite 代理目标地址（开发用），默认 `http://localhost:8001`
 - ~~`VITE_PORTAL_NAV_CONFIG`~~ — 已废弃，门户导航配置迁移到 `public/app-config.json` 运行时配置
+- `AGENT_CHAT_MAX_CONCURRENCY` — Agent 聊天接口最大并发数，超出时进入内存队列等待，默认 3
+- **沙箱容器化配置（2026-06-12 新增，由 `SandboxSettings` 管理）**：
+  - `SANDBOX_DOCKER_MODE` — 部署模式 `local` / `socket` / `dind` / `k8s`，默认 `local`
+  - `SANDBOX_DOCKER_HOST` — Docker daemon URL，socket 模式必填
+  - `SANDBOX_IMAGE` — 沙箱镜像，默认 `python:3.12-alpine`
+  - `SANDBOX_MAX_MEMORY_MB` — 容器内存限制（MB），默认 512，下限 64
+  - `SANDBOX_MAX_CPU_PERCENT` — 容器 CPU 限制（百分比），默认 100，范围 10-100
+  - `SANDBOX_NETWORK_ENABLED` — 是否启用容器网络，默认 `false`
+  - `SANDBOX_DEFAULT_TIMEOUT` — 命令默认超时（秒），默认 60
+  - `SANDBOX_CONTAINER_WORKSPACE` — 容器内工作目录，默认 `/workspace`
+  - `SANDBOX_HOST_WORKSPACE_PREFIX` — 宿主机视角工作目录前缀，socket 模式必填
+  - `SANDBOX_K8S_NAMESPACE` — K8s 模式命名空间（占位）
 - 其他 LLM API Key 等
 
 ## 提示词三层架构
@@ -455,13 +681,396 @@ system_prompt = (
 - `web/Agent/src/App.vue:extractApprovalData`：直接读 `req.value?.questions`（替代旧的 3 层 `action_request/args` 解包）
 
 **测试**：
+- **测试**：
 - 后端：`tests/test_ask_user_question.py` 17 个测试（Schema 10 + Tool 2 + HitlCheckNode 5）
 - 前端：`web/Agent/src/components/__tests__/HumanApprovalBox.spec.js` 14 个测试
+- **2026-06-15 新增 HITL interrupt 卡死修复 + 前后端协作测试**：
+  - 后端 `app/tests/core/concurrency/test_chat_concurrency_dependency.py` 新增 9 个用例：`test_sse_dependency_no_queue_event_when_available` / `test_sse_dependency_emits_waiting_event_when_full` / `test_sse_dependency_auto_resumes_after_ready_event` / `test_sse_dependency_release_handle_releases_immediately_on_call` / `test_sse_dependency_release_handle_is_idempotent` / `test_sse_dependency_releases_on_hitl_interrupt_path` / `test_sse_dependency_finally_release_when_handle_never_called` / `test_http_dependency_raises_429_when_full` / `test_http_dependency_yields_none_when_available`
+  - 后端 `app/tests/core/concurrency/test_agent_concurrency_queue.py` 新增 4 个用例：`test_queue_snapshot_returns_active_and_waiting` / `test_queue_position_increments_for_later_waiters` / `test_queue_position_decrements_as_others_release` / `test_queue_enqueue_time_records_monotonic`
+  - 前端 `web/Agent/src/components/__tests__/QueueStatusBanner.spec.js` 新增 10 个用例
+  - 前端 `web/Agent/src/components/__tests__/App.interrupt.spec.js` 新增 4 个用例（**HITL 核心**：`test_handleSendMessage_calls_reader_cancel_on_interrupt` / `test_handleApprovalSubmit_calls_reader_cancel_on_interrupt` / `test_handleSendMessage_no_cancel_on_normal_end` / `test_reader_cancel_swallows_cancel_error`）
+  - 前端 `web/Agent/src/utils/__tests__/sseParser.test.js` 新增 3 个 queue 事件用例
 - 核心工具：`app/tests/core/tools/` 新增 3 个测试模块：
   - `test_human_in_the_loop_tools.py`：Schema 7 + Tool 2，覆盖 QuestionOption/Question/AskUserQuestionInput 约束与 Other 注入逻辑
   - `test_base_tools.py`：导入 + get_current_time Mock 调用 + _split_content 分块 3 个用例
   - `test_mcp_tool_adapter.py`：导入 + 7 个主要函数/类存在性验证
 - 全量：后端 17/17 + 前端 73/73 全部通过
+
+## 沙箱 Agent 架构（Sandbox Agent）
+
+基于 LangChain `deepagents` 库实现，提供安全的代码执行与文件操作环境，通过 Docker 容器隔离保证安全性。
+
+### 核心组件
+
+| 组件 | 文件位置 | 职责 |
+|------|---------|------|
+| `DockerSandboxBackend` | `app/shared/tools/middleware/docker_sandbox_backend.py` | Docker 容器生命周期管理、命令执行、文件上传下载；区分 host_workspace（宿主机视角，用于 bind mount）与 container_workspace（容器内视角，/workspace）；支持 4 种 docker_mode 路径投影 |
+| `DockerSandboxMiddleware` | `app/shared/tools/middleware/docker_sandbox_backend.py` | 继承 `FilesystemMiddleware`，自动管理 `DockerSandboxBackend`，提供沙箱工具集 |
+| `sandbox` 工具 | `app/core/tools/SandboxTools.py` | `@tool` 装饰的 `sandbox` 函数，通过 `create_deep_agent` 启动沙箱子智能体；2026-06-12 重构：容器化部署配置从 `Settings.get_sandbox_config()` 注入；2026-06-13 扩展：填充 subagent 结构化字段（详见下文 "SubAgent 事件协议"）；**2026-06-16 改造：checkpointer 由进程内 `MemorySaver()` 切换为全局共享 `get_async_checkpointer()`，子智能体 messages 按 `thread_id=tool_call_id` 持久化（PostgreSQL 模式落库，memory 模式进程内共享）** |
+| `SandboxSettings` | `app/core/config/settings.py` | Pydantic BaseSettings，管理 10 个 `SANDBOX_*` 环境变量，控制 docker_mode / 镜像 / 资源限制 / 路径前缀 |
+
+### 架构变更历史
+
+**2026-06-12 重构**: 从独立 FastAPI 路由 (`/api/sandbox/chat`) 迁移为 core agent 的 subagent 工具模式。
+- 删除: `app/features/sandbox_agent/` 目录及所有文件
+- 新增: `app/core/tools/SandboxTools.py` 工具函数
+- 变更: 从独立 SSE 端点变为通过 core agent 工具链调用
+
+### Docker 容器隔离
+
+- **镜像**：默认 `python:3.12-alpine`，可配置
+- **资源限制**：`max_memory_mb`（默认 512MB）、`max_cpu_percent`（默认 100%）
+- **网络控制**：`network_enabled=False` 默认关闭网络，防止数据外泄
+- **工作目录**：每个 Session 独立 host workspace（如 `/tmp/sandbox/{session_id}`），通过 Docker volume 映射到容器内固定的 `/workspace`，避免 Windows 路径盘符冒号与 Docker mount 格式冲突
+
+### 容器化部署模式（2026-06-12 新增）
+
+**问题背景**：把应用打包成容器运行时，`DockerSandboxBackend` 启动的子容器需要 bind mount 应用容器的工作目录到子容器。但 `self.workspace`（应用进程视角）对宿主机 Docker daemon 不可见，导致 bind mount 失败。
+
+**解决方案**：拆分 `workspace`（应用视角）与 `host_workspace`（宿主机视角），通过 `SandboxSettings.docker_mode` 配置 4 种部署模式：
+
+| 模式 | 适用场景 | docker_mode | host_workspace 投影 | Docker 客户端 |
+|------|---------|-------------|---------------------|---------------|
+| **local** | 本地直接跑（无容器） | `local` | == workspace | `docker.from_env()` |
+| **socket** | 应用容器挂载宿主机 `/var/run/docker.sock` | `socket` | `host_workspace_prefix + workspace` | `docker.DockerClient(base_url=docker_host)` |
+| **dind** | Docker-in-Docker（需 `--privileged`） | `dind` | == workspace | `docker.from_env()`（连内嵌 daemon） |
+| **k8s** | K8s API 创建 Pod（占位，未实现） | `k8s` | _NotImplementedError_ | — |
+
+**关键字段**：
+
+- `SANDBOX_DOCKER_MODE`：枚举 `local / socket / dind / k8s`
+- `SANDBOX_DOCKER_HOST`：Docker daemon URL，socket 模式必填（如 `unix:///var/run/docker.sock`）
+- `SANDBOX_HOST_WORKSPACE_PREFIX`：宿主机视角前缀，socket 模式必填（如 `/host/app/data`）
+- `SANDBOX_CONTAINER_WORKSPACE`：容器内工作目录（bind mount target），默认 `/workspace`
+
+**典型部署**（socket 模式）：
+
+```yaml
+# docker-compose.sandbox.example.yml
+volumes:
+  - /var/run/docker.sock:/var/run/docker.sock
+  - ./data:/app/data
+environment:
+  - SANDBOX_DOCKER_MODE=socket
+  - SANDBOX_DOCKER_HOST=unix:///var/run/docker.sock
+  - SANDBOX_HOST_WORKSPACE_PREFIX=/app/data   # 容器内 /app/data 对应宿主机 /app/data
+```
+
+**K8s 模式占位**：`docker_mode=k8s` 时抛 `NotImplementedError`，提示需先实现 `K8sBackend` 类并在 `DockerSandboxBackend._resolve_host_workspace` 分发。
+
+### 长生命周期容器优化
+
+为解决容器创建耗时问题（秒级 → 50-200ms），采用**预热容器 + `docker exec`** 方案：
+
+1. **预热启动**：`DockerSandboxBackend.__init__` 时启动容器，执行 `tail -f /dev/null` 保持运行
+2. **命令执行**：`execute()` 通过 `docker exec` 在运行中容器内执行命令，无需重复创建容器
+3. **会话复用**：同一 `session_id` 复用同一容器，多次命令执行零启动开销
+4. **清理释放**：`cleanup()` 显式销毁容器，释放资源
+
+### Subagent 工具模式
+
+沙箱功能通过 `app/core/tools/SandboxTools.py` 中的 `sandbox` 工具函数提供，父 Agent 调用该工具时：
+
+1. 使用 `create_deep_agent` 创建沙箱子智能体
+2. 通过 `DockerSandboxMiddleware` 提供隔离的 Docker 容器环境
+3. 子智能体自主决策并执行代码/文件操作
+4. 执行完成后自动清理 Docker 容器资源
+
+- **调用方式**：`sandbox` 作为 `@tool` 注册到 core agent 工具链，LLM 自动决策调用时机
+- **安全边界**：子智能体运行在独立 Docker 容器中，与父 Agent 完全隔离
+- **工具集**：`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `execute`（由 `DockerSandboxMiddleware` 继承自 `FilesystemMiddleware` 提供）
+
+**最终文本取值修复（2026-06-15）**：循环结束后取子智能体最终 AI 文本时，数据源从 `data["messages"]`（循环最后一个流块的数据，当最后一块是 `updates` 模式时该键不存在）改为 `all_messages`（循环内累计的消息列表），并对兜底分支增加 `logger.warning` 记录便于排查。修复前父 LLM 会一直收到「沙箱子智能体执行完成，但未获取到文本回复。」兜底字符串，修复后能拿到子智能体真实产出。
+
+### 依赖
+
+- `deepagents==0.5.5` — LangChain deepagents 库
+- `docker==7.1.0` — Docker SDK for Python
+
+### 沙盒执行前端展示（2026-06-12 新增，2026-06-14 改造）
+
+参考 Kimi "Kimi's Computer" 设计，实现沙盒执行过程的实时前端展示：
+
+**交互流程**（2026-06-14 改造后）：
+1. 沙盒开始执行后，AI 聊天气泡的 **timeline.tool 块内**显示 `SubAgentCard` 子智能体折叠卡片（图标、工具名、父 prompt 预览、状态徽章、消息数、耗时）
+2. 用户点击子智能体卡片，右侧滑出 `SubAgentDrawer` 详情面板，展示父提问 + 子智能体消息流 + 沙箱摘要 + 沙箱事件时间线
+3. 执行完成后，子智能体卡片更新为完成状态
+
+**后端变更**：
+- `app/core/tools/SandboxTools.py` 增加 `_extract_sandbox_summary_and_events()` 函数，从子智能体消息流中实时提取摘要和事件
+- `tool_progress` 事件增加 `sandbox_summary`（当前步骤、总步骤、进度百分比、状态消息）和 `sandbox_events`（详细事件列表）
+- `tool_stop` 事件增加 `final_summary`（完成摘要和结果预览）
+- 预定义 5 个执行步骤：生成代码 → 写入文件 → 执行代码 → 获取输出 → 分析结果
+
+**前端组件**（2026-06-14 改造后）：
+| 组件 | 文件 | 职责 | 状态 |
+|------|------|------|------|
+| `SubAgentCard` | `web/Agent/src/components/SubAgentCard.vue` | 通用子智能体折叠卡片（含沙箱）；按 toolCallId 嵌入 `timeline.tool` 块内 | 保留（功能扩展） |
+| `SubAgentDrawer` | `web/Agent/src/components/SubAgentDrawer.vue` | 通用子智能体详情 Push Drawer（2026-06-15 精简后不再有沙箱专属 UI 区块）；**支持左侧拖拽调整宽度，宽度记忆在 localStorage** | 保留（功能合并原 SandboxDrawer） |
+| `SandboxProgress` | `web/Agent/src/components/SandboxProgress.vue` | ~~聊天气泡中的进度摘要卡片~~ | **2026-06-14 已删除**（被 SubAgentCard 替代） |
+| `SandboxDrawer` | `web/Agent/src/components/SandboxDrawer.vue` | ~~右侧 push drawer 沙盒详情面板~~ | **2026-06-14 已删除**（被 SubAgentDrawer 合并） |
+| `SandboxEventItem` | `web/Agent/src/components/SandboxEventItem.vue` | ~~单个沙箱事件展示~~ | **2026-06-14 已删除**（被 SubAgentDrawer 内部实现替代） |
+
+**合并原因**：原 `SandboxProgress` 与 `SubAgentCard` 功能重复（均展示沙箱状态/耗时/查看详情入口），且 `SandboxDrawer` 与 `SubAgentDrawer` 数据重叠（`subAgent.events` 已透传 `sandbox_events`，`subAgent.summary` 已合并 `final_summary`），无独立存在价值。
+
+**SubAgentDrawer 模式**：见 "SubAgent 事件协议（2026-06-13 新增，2026-06-14 改造）" 章节。
+
+**前端变更**（2026-06-14 改造）：
+- `web/Agent/src/utils/sseParser.js`：
+  - `createAiMessage()` 移除 `sandboxExecution` 字段；沙箱数据统一由 `subAgents` 列表维护
+  - `processSSEEvent()` 的 `custom` case 删除 `if (customToolData.tool === 'sandbox')` 块
+  - `updateSubAgentFromCustomEvent()` 增强：tool_start/tool_progress 时合并 `sandbox_summary` 到 `subAgent.summary`；tool_stop 时合并 `final_summary`
+- `web/Agent/src/components/MessageBubble.vue`：
+  - 移除 `sandboxExecution` prop
+  - `timeline.tool` 块移除 `sandboxExecution` 条件分支
+  - 新增 `getSubAgentsForGroup(group)`：按 `toolCallId` 在 `group.items` 中查找匹配 subAgent 列表，渲染 `SubAgentCard` 于 `timeline.tool` 内
+  - 移除 timeline 之外的 `subagent-cards` 容器（卡片不再堆在会话末尾）
+- `web/Agent/src/components/ChatArea.vue`：移除 `sandbox-execution` prop 透传和 `open-sandbox-drawer` 事件
+- `web/Agent/src/App.vue`：
+  - 移除 `SandboxDrawer` import + 模板
+  - 移除 `sandboxDrawerVisible` / `currentSandboxEvents` / `currentSandboxSummary` / `currentSandboxStatus` 状态
+  - 移除 `openSandboxDrawer` / `closeSandboxDrawer` 函数
+  - 移除 `sandboxExecution` 自动关闭 watch
+  - 保留 `SubAgentDrawer` 与 `openSubAgentDrawer` / `closeSubAgentDrawer`
+
+**2026-06-15 动画交互优化**：
+- `web/Agent/src/components/MessageBubble.vue`：
+  - 新增 `hasRunningSubAgent` computed：当 `props.subAgents` 中存在 `status === 'running'` 时返回 true
+  - 当 `hasRunningSubAgent` 为 true 时，抑制主智能体思考块的 `thinking-pulse`（🧠 图标缩放脉冲）和 `streaming-cursor`（▌ 光标闪动），保留「思考中...」文字与黄色高亮边框
+  - 目的：避免用户通过主智能体思考动画来判断子智能体运行状态
+- `web/Agent/src/components/SubAgentCard.vue`：
+  - `running` 状态的 `.subagent-icon` 增加 `subagentIconBounce` 上下跳动动画（1.2s infinite），直观提示子智能体正在执行
+  - `.subagent-status.running` 增加 `statusPulse` 透明度呼吸动画（2s infinite），进一步强化「执行中」状态感知
+  - 目的：将视觉焦点从主智能体思考区转移到子智能体工具条上
+  - **2026-06-14 修复**：在 `newSession()`（新建任务入口）与 `handleSessionSwitch()`（切换历史会话入口）中显式调用 `closeSubAgentDrawer()`，确保切换/新建会话后上一会话的 `SubAgentDrawer` 详情自动收起，避免抽屉状态残留导致 UI 显示与当前会话不一致（`currentSubAgent.value` 在抽屉 `v-show=false` 后不再被消费，无需额外清空）
+  - **2026-06-15 增强**：`SubAgentDrawer` 新增左侧拖拽条，支持用户拖动调整抽屉宽度；宽度记忆在 `localStorage('subagent-drawer-width')`，最小 320px、最大 800px（同时受视口宽度 - 200px 限制），拖拽至 180px 以下自动收起抽屉
+
+### AIMessage 解析兼容性（2026-06-12 修复）
+
+`_extract_sandbox_summary_and_events` 的 AI 消息分支扩展为兼容以下 content 类型，避免 Anthropic Claude / 部分 OpenAI 兼容模型返回的 list[ContentBlock] 时 `code_generation` 事件整体被跳过：
+
+- **`str`** — 原样提取 markdown ``` 代码块
+- **`list[ContentBlock]`** — 拼接所有 `type == "text"` 块后再提取（兼容 Anthropic / 部分 OpenAI 兼容模型）
+- **`None` / `dict`** — 防御性归一化
+
+实现要点（`app/core/tools/SandboxTools.py`）：
+- 新增 `_get_message_text(msg)`：优先用 langchain 内置 `.text` 属性（langchain-core 1.x 自动归一化 str / list[ContentBlock]），缺失时回退 `_extract_text_from_message_content`
+- 新增 `_extract_code_blocks_heuristic(text)`：当 AIMessage 文本中**没有 markdown ``` 包裹**时（如 Anthropic Claude 倾向输出原始代码），扫描 Python/Shell 关键字（def/import/print/class/return、echo/if[/fi 等）自动识别代码块
+- 新增 `_extract_ai_tool_calls(msg)` + `_ai_tool_call_to_event(tc, step)`：从 AIMessage 中提取 LLM 决策的工具调用（前置事件），覆盖两种来源
+  - OpenAI 风格：`msg.tool_calls` 字段
+  - Anthropic 风格：`msg.content_blocks` 中 `type == "non_standard"` 嵌套的 `tool_use` 块
+  - 工具名优先于 args 字段（`write_file` 即使 input 中无 `content` 也归为 file_write）
+- `current_step` 推进：code_generation 完成后推进到 step=2；每多一个 tool_call 再 +1（上限 5）
+
+效果：SandboxDrawer 时间线中**新增** `code_generation` 事件（显示 LLM 生成的代码），与原 ToolMessage 事件并存展示"LLM 决策 → 工具执行"完整链路。
+
+## SubAgent 事件协议（2026-06-13 新增，2026-06-14 改造）
+
+> **目标**：子智能体（sandbox / explore 等）的执行过程在父 AI 聊天气泡中折叠为 `SubAgentCard` 卡片；点击卡片从右侧 push 出 `SubAgentDrawer` 详情面板，展示父提问 + 子智能体内部消息流 + 沙箱摘要 + 沙箱事件时间线（tool='sandbox' 时）。
+>
+> **2026-06-14 改造**：`SandboxProgress` / `SandboxDrawer` / `SandboxEventItem` 已删除并合并；子智能体卡片从"会话末尾堆放"改为"嵌入 `timeline.tool` 块内按时序渲染"。
+> **2026-06-14-2 修复**：`update` 事件（`hitl_check` / `summarize` / `llm_call` 等节点状态）不再落入父气泡"思考过程"区；`update` SSE payload 统一附加 `thread_id`（空字符串）与 `langgraph_node`（节点名）字段，与 `custom` / `message` 事件格式保持一致。
+
+### 架构总览
+
+```
+父 AI 聊天气泡
+  └─ timeline (thinking / tool / text)
+       └─ tool 块内
+            └─ SubAgentCard（折叠卡片，按 toolCallId 匹配）  ──点击──>  SubAgentDrawer（右侧 push drawer）
+                                                                       ├─ 头部（工具图标 + 状态徽章）
+                                                                       ├─ 沙箱摘要（仅 sandbox：进度条 + 步骤 + 耗时）
+                                                                       ├─ 父 agent 提问（可折叠）
+                                                                       ├─ 子智能体消息流（HumanMessage / AIMessage / ToolMessage）
+                                                                       ├─ 沙箱事件时间线（仅 sandbox，sandbox_events 透传）
+                                                                       └─ 底部摘要（耗时 / 消息数 / 工具调用次数）
+```
+
+### 后端事件新增字段（向后兼容）
+
+`app/core/tools/events.py` 的 `ToolEvent.data` 字典内追加 3 个新字段（既有字段全部保留）：
+
+| 字段 | 类型 | 出现时机 | 说明 |
+|------|------|---------|------|
+| `thread_id` | `str` | 全部 | 子 agent 标识（== `tool_call_id`），便于前端按 id 维护 subagent 列表 |
+| `parent_prompt` | `str` | `tool_start` | 父 agent 传给子 agent 的 prompt（用于抽屉顶部"父提问"区） |
+| `child_messages` | `list[dict]` | `tool_progress` | 子 agent 当前累积的全部 messages，结构化（langchain 对象 → dict） |
+| `final_messages` | `list[dict]` | `tool_stop` | tool_stop 时的最终消息快照（结构同 `child_messages`），覆盖到 `messages` 字段 |
+
+`child_messages` / `final_messages` 每项格式：
+
+```json
+{
+    "type": "HumanMessage" | "AIMessage" | "ToolMessage" | "Unknown",
+    "role": "user" | "ai" | "tool" | "system" | "unknown",
+    "content": "str 或 list[ContentBlock]",
+    "tool_calls": [{"name", "args", "id"}],   // 仅 AIMessage
+    "tool_call_id": "str",                     // 仅 ToolMessage
+    "name": "str"                              // 仅 ToolMessage: 工具名
+}
+```
+
+### 后端改动文件
+
+| 文件 | 改动 |
+|------|------|
+| `app/core/tools/subagent_message_extractor.py`（**新增**） | `extract_structured_messages(messages)` 把 LangChain BaseMessage 列表转为结构化 dict；兼容 HumanMessage / AIMessage / ToolMessage 及 Mock 后缀；支持 OpenAI `tool_calls` / Anthropic `content[].tool_use` / langchain-core 1.x `content_blocks` 三种 AIMessage tool_call 来源 |
+| `app/core/tools/SandboxTools.py` | `tool_start` / `tool_progress` / `tool_stop` / `tool_error` 事件 data 追加 `thread_id` + `parent_prompt` + `child_messages` / `final_messages` |
+| `app/core/tools/FilesystemReadTools.py` | 同上；并新增 `all_messages` 累积逻辑（从 `updates` 模式 `node_name.messages` 提取） |
+| `app/features/map_agent/router/map_router.py` | `custom` 模式 SSE yield 时在顶层追加 `thread_id` 字段（从 `data.data.thread_id` / `data.tool_call_id` 推导），**老客户端忽略未知字段不破坏**；`updates` 模式同步追加 `thread_id`（空字符串）与 `langgraph_node`（节点名）字段，统一 SSE 格式 |
+| `app/core/tools/events.py` | 注释追加新字段文档（实现不动） |
+| `app/tests/core/tools/test_subagent_message_extractor.py`（**新增**） | 22 个 pytest 用例：role 分类 / content 归一化 / 三种 tool_call 来源 / 边界条件 |
+| `app/tests/shared/utils/memory/test_checkpoint_history_subagent.py`（**2026-06-16 新增**） | 17 个 pytest 用例：`_is_ai_message` 类型名匹配 / `_extract_ai_tool_call_ids` 三种来源 / `get_subagent_history` 含 include_tool / 空 thread_id / thread 不存在 / `collect_subagent_thread_ids_for_cleanup` 去重 / 无 tool_calls / `merge_main_and_subagent_messages` 含/无 subagent / 无 raw |
+| `app/tests/shared/test_session_messages_subagent.py`（**2026-06-16 新增**） | 6 个整合测试：合并子智能体 / 无 tool_call 不插入 / 401 / 403 / limit 作用于合并后总数 / delete 清理子 thread |
+
+### 前端改动文件
+
+**2026-06-14-2 修复**：
+
+| 文件 | 改动 |
+|------|------|
+| `web/Agent/src/utils/sseParser.js` | `processSSEEvent` 的 `update` case 显式跳过 `hitl_check` 节点；`isSubAgentMessage` 增加 `metadata.lc_agent_name` / `metadata.langgraph_node` 多维度判定，防御 tool_start 与 message 到达顺序抖动的 race condition；调用点同步透传 metadata |
+| `web/Agent/src/utils/__tests__/subAgentParser.test.js` | 新增 6 个用例：`hitl_check` update 不进入 thinking / timeline；`isSubAgentMessage` 通过 `lc_agent_name` / `langgraph_node` 识别子智能体；`message` 事件在 `lc_agent_name=sandbox` 时不写入父气泡 |
+
+**2026-06-14 改造**：删除 `SandboxProgress` / `SandboxDrawer` / `SandboxEventItem` 三个组件并合并功能到 SubAgent 体系。
+
+| 文件 | 改动 |
+|------|------|
+| `web/Agent/src/utils/sseParser.js` | `createAiMessage()` 移除 `sandboxExecution: null` 字段；`processSSEEvent` 的 `custom` case 删除 `if (customToolData.tool === 'sandbox')` 块；`updateSubAgentFromCustomEvent` 增强：tool_start/tool_progress 合并 `sandbox_summary` 到 `subAgent.summary`，tool_stop 合并 `final_summary`；**新增导出** `SUBAGENT_TOOLS` 集合与 `isSubAgentTool(tool)` 工具函数，供 MessageBubble 判断子智能体类型 |
+| `web/Agent/src/components/SubAgentDrawer.vue` | 2026-06-14 集成沙箱摘要 + 沙箱事件时间线（**2026-06-15 再次精简后整段已删除**）；`renderMessageContent` 扩展 LangChain 0.3+ `tool_use` / `tool_result` ContentBlock 支持 |
+| `web/Agent/src/components/MessageBubble.vue` | 移除 `sandboxExecution` prop；`timeline.tool` 块移除 `sandboxExecution` 条件分支；新增 `extractToolCallId()` / `toolSubAgentMap` / `getSubAgentsForGroup()`：按 `toolCallId` 在 `group.items` 中查找匹配 subAgent 渲染 `SubAgentCard`；移除 timeline 之外的 `subagent-cards` 容器；**2026-06-14 再改造**：新增 `isSubAgentItem()` / `getNonSubAgentItems()` 函数；`timeline.tool` 块的 `tools-header` / `tools-body` 仅在「存在非子智能体项目」时渲染，count 与 body 只展示普通工具调用；subagent 仅通过 SubAgentCard 折叠卡展示，避免消息在「工具调用」与「div」双重渲染 |
+| `web/Agent/src/components/ChatArea.vue` | 移除 `sandbox-execution` prop 透传；移除 `open-sandbox-drawer` 事件 |
+| `web/Agent/src/App.vue` | 移除 `SandboxDrawer` import + 模板；移除 `sandboxDrawerVisible` / `currentSandboxEvents` / `currentSandboxSummary` / `currentSandboxStatus` 状态；移除 `openSandboxDrawer` / `closeSandboxDrawer` 函数；移除 `sandboxExecution` 自动关闭 watch |
+| `web/Agent/src/components/SandboxProgress.vue` | **删除**（被 SubAgentCard 替代） |
+| `web/Agent/src/components/SandboxDrawer.vue` | **删除**（被 SubAgentDrawer 合并） |
+| `web/Agent/src/components/SandboxEventItem.vue` | **删除**（被 SubAgentDrawer 内部实现替代） |
+| `web/Agent/src/components/__tests__/SubAgentCard.spec.js` | 新增 2 个用例：sandbox 类子智能体的 summary 字段不破坏卡片渲染；parentPrompt 缺失时仅展示核心字段 |
+| `web/Agent/src/components/__tests__/SubAgentDrawer.spec.js` | 新增 6 个用例：tool=sandbox + summary 展示沙箱摘要、tool=sandbox + events 展示沙箱事件区、tool=非 sandbox 不展示沙箱区、沙箱事件可折叠、AIMessage.content 为 LangChain 0.3+ list[ContentBlock] 渲染、AIMessage.content 包含 thinking 块渲染 |
+| `web/Agent/src/components/__tests__/MessageBubble.spec.js`（**新增**） | 5 个用例：timeline.tool 内按 toolCallId 渲染 SubAgentCard、timeline 外不再有 subagent-cards 容器、点击 SubAgentCard 触发 open-subagent-drawer、无匹配 subAgent 时不渲染、多 subAgent 数据驱动 |
+| `web/Agent/src/utils/__tests__/subAgentParser.test.js` | 新增 2 个用例：tool_progress 携带 sandbox_summary 时合并到 subAgent.summary；tool_stop 携带 final_summary 时合并到 subAgent.summary（最终态） |
+
+**2026-06-14 第三次去重（跨 timeline group 唯一渲染）**：同一次子智能体执行（同一 `toolCallId`）的 `custom` 事件（tool_start / tool_progress×N / tool_stop）被 `thinking` / `text` 事件隔开后，`mergedTimeline` 会拆为多个独立 `tool` group，每个 group 都会渲染一张重复的 `SubAgentCard`。
+
+- `web/Agent/src/components/MessageBubble.vue`：
+  - **新增** `subAgentsByGroup` computed：对 `mergedTimeline` 做一次完整扫描，在 group 维度上"每个 toolCallId 仅首次出现"返回 subAgent 列表（返回与 mergedTimeline 等长的二维数组）
+  - **重构** `getSubAgentsForGroup(group)`：从普通函数 + 组件级 Set 改为基于 `subAgentsByGroup` 索引查找的兼容层（同名同语义，模板无需改动）
+  - **设计权衡**：用 computed 而非普通函数 + 组件级 Set 的原因是 Vue 3 mount 阶段会多次调用 render function，普通函数内部用 Set 记录"已渲染"会在 mount 内的连续 render 间互相污染（同一组数据在第二次 render 时被错误地判定为"已渲染过"而跳过）；computed 由 Vue 缓存，仅在依赖（`mergedTimeline` / `props.subAgents`）变化时重算，多次 render 期间返回同一结果；计算内部用本地 Set（每次重算时新建），天然避免跨 render 污染
+- `web/Agent/src/components/__tests__/MessageBubble.spec.js`：新增 3 个用例（同 id 跨多个 tool group 只渲染 1 张 / 不同 id 各自独立 / 全部去重后空 group 不渲染）
+- `SubAgentDrawer` 不受影响（数据源 `subAgent.messages` 由 sseParser 持续累积，与 timeline 渲染解耦）
+
+### 第三方调用兼容保证
+
+`/api/map/chat` SSE 接口有第三方 iframe/portal 调用，本改造**仅新增字段**，不修改/删除既有字段：
+
+- SSE 事件类型 `update` / `custom` / `message` / `end` / `error` / `interrupt` / `tool_stop` **不变**
+- `custom` 事件 `data` 字典内仅**追加** `thread_id` / `parent_prompt` / `child_messages` / `final_messages` 字段
+- SSE 顶层 `{type, data}` **追加** `thread_id` 字段
+- `update` 事件顶层追加 `langgraph_node` 字段（节点名），`thread_id` 统一为空字符串（updates 模式下无法精确获取子线程 ID，仅用于格式统一）
+- 老客户端标准 JSON 解析**忽略未知字段**，行为不变
+
+### 历史消息 subAgents 字段（2026-06-16 实现）
+
+**2026-06-16 改造**：子智能体历史通过 LangGraph Checkpoint 持久化，完整还原。
+
+**核心问题**（已解决）：
+- 原 SandboxTools / FilesystemReadTools 在子智能体 `create_deep_agent()` 时使用进程内 `MemorySaver()` 实例，工具返回后内存释放
+- 前端切会话调 `fetchSessionMessages` 时，sandbox / explore 等子智能体的 messages 全部丢失
+- 仅主智能体的 HumanMessage/AIMessage 可恢复，`subAgents` 数组为空，`SubAgentCard` 无法渲染历史轨迹
+
+**改造方案**（核心：复用 LangGraph 原生 checkpointer）：
+- 子智能体的 thread_id == 父 LLM 调该工具时的 `tool_call_id`（沿用 2026-06-15 已有的设计）
+- `create_deep_agent(checkpointer=await get_async_checkpointer())` 切换为全局共享 checkpointer
+- 全局 checkpointer 同时被主智能体使用（共享同一张 `checkpoints` 表），LangGraph 自动按 thread_id 隔离
+- PostgreSQL 模式：子智能体 messages 落库，跨进程跨重启可恢复
+- 内存模式：单进程内可恢复，重启清空（与原行为一致）
+
+**实现路径**：
+| 文件 | 改动 |
+|------|------|
+| `app/core/tools/SandboxTools.py:842` | `MemorySaver()` → `await get_async_checkpointer()` |
+| `app/core/tools/FilesystemReadTools.py:249` | `MemorySaver()` → `await get_async_checkpointer()` |
+| `app/shared/utils/memory/checkpoint_history.py` | 新增 4 个静态/类方法：`get_subagent_history` / `merge_main_and_subagent_messages` / `collect_subagent_thread_ids_for_cleanup` / `_is_ai_message` / `_extract_ai_tool_call_ids`；改造 `_convert_message_to_dict` 兼容 `type(msg).__name__` 匹配（防御测试 Mock） |
+| `app/shared/routers/session_router.py` | `get_session_messages` 重写：从 `graph.aget_state()` 拿原始 LangChain 消息 → 转换为主消息列表 → 调用 `merge_main_and_subagent_messages` 按时序插入子智能体消息；`delete_session` / `admin_delete_session` 在删主 thread 前调用 `collect_subagent_thread_ids_for_cleanup` 遍历 AIMessage.tool_calls，逐个 `adelete_thread(sub_tid)` |
+| `app/tests/shared/test_session_messages_subagent.py`（新增） | 6 个整合测试：合并子智能体 / 无 tool_call 不插入 / limit 作用于合并后总数 / 401 / 403 / delete 清理子 thread |
+| `app/tests/shared/utils/memory/test_checkpoint_history_subagent.py`（新增） | 17 个单元测试：`_is_ai_message` / `_extract_ai_tool_call_ids`（OpenAI/Anthropic/content_blocks 三种来源）/ `get_subagent_history` / `merge_main_and_subagent_messages` / `collect_subagent_thread_ids_for_cleanup` |
+
+**返回结构（前端兼容，老字段保留）**：
+```json
+{
+  "session_id": "...",
+  "messages": [
+    {"id": "...", "type": "user", "role": "user", "content": "..."},
+    {"id": "...", "type": "ai", "role": "assistant", "content": "...",
+     "tool_calls": [{"name": "sandbox", "id": "call_xxx", "args": {}}]},
+    // === 2026-06-16 新增：按时序紧跟的子智能体消息流 ===
+    {"type": "subagent", "role": "subagent",
+     "thread_id": "call_xxx", "tool": "sandbox",
+     "parent_message_id": "ai-msg-1",
+     "messages": [...], "total": 5},
+    {"id": "...", "type": "user", "role": "user", "content": "..."}
+  ],
+  "total": 4
+}
+```
+
+**前端处理（向前兼容）**：
+- `web/Agent/src/utils/sseParser.js` 新增 2 个导出：`isSubAgentHistoryItem(msg)` / `convertSubAgentHistoryToAiSubAgent(msg)`
+- `web/Agent/src/App.vue` 还原 history 循环中新增 `else if (isSubAgentHistoryItem(msg))` 分支：把后端 subagent 元素转换为 `subAgent` 对象，**追加到上一个 AI 消息的 `subAgents` 列表中**（而非独立 push 到 messages），由 MessageBubble 的 SubAgentCard 渲染
+- 老前端（不识别 `type:"subagent"`）落到 `else` 分支当成普通消息渲染，字段不破坏
+
+**2026-06-16-2 修复：历史 subagent 卡片渲染不显示**：
+- **核心问题**：`MessageBubble` 中 `subAgentsByGroup` 通过 `mergedTimeline.tool` group 查找 subAgent；后端 `_convert_message_to_dict` **不会**把 `AIMessage.tool_calls` 写入 `timeline.tool`，因此历史恢复时 timeline 完全没有 tool group → `subAgentsByGroup` 返回空 → `<SubAgentCard>` 不渲染
+- **修复方案（前端兼容优先，零后端变更）**：
+  1. `web/Agent/src/components/MessageBubble.vue` 新增 2 个 computed + 2 个独立渲染位：
+     - `hasTimelineToolGroupContainingSubAgents`：守卫变量，避免双卡片
+     - `orderedSubAgentsForRender`：**仅**过滤 `isHistory === true` 的 subAgent（流式响应不会被抢渲染）
+     - timeline 模式（v-if=hasTimeline 块内）模板最后新增 `<div class="timeline-subagent-list-history">` 渲染位
+     - 降级模式（v-else 块内）同样新增渲染位
+     - 新增 CSS：`.timeline-subagent-list-history { margin-top: 8px; }`
+  2. `web/Agent/src/utils/sseParser.js` `convertSubAgentHistoryToAiSubAgent` 增强：
+     - 新增 `extractFirstUserPrompt(messages)` 内部工具：从 `messages` 列表首条 `type/role === 'user'` 消息的 `content`（支持字符串 / 内容块列表）兜底提取 `parentPrompt`
+     - 后端暂未返回 `parent_prompt` 字段时，SubAgentCard 顶部"父提问预览"不再为空
+- **设计原则**：
+  - 流式响应（`isHistory` 缺省）仍走 `subAgentsByGroup` 路径，不受新代码影响
+  - 历史恢复（`isHistory === true`）走新增独立入口，与 `subAgentsByGroup` 互斥（`hasTimelineToolGroupContainingSubAgents` 守卫）
+  - 完全前端修复，不影响后端 API 契约，向后兼容
+
+**测试结果（2026-06-16-2 累计）**：
+- 后端：`pytest app/tests/shared/...` 26 个相关测试全部通过；不影响 58 个 sandbox / 38 个 subagent 相关既有测试
+- 前端：`vitest` 302/305 通过；
+  - `sseParser.subagentHistory.test.js` 23 个（新增 8 个 parentPrompt 兜底用例）
+  - `MessageBubble.spec.js` 32 个（新增 5 个独立渲染位用例）
+  - 3 个 `App.interrupt.spec.js` 失败为预存在问题（端口 3000 未启动，与本改造无关）
+
+**2026-06-16-3 修复：普通工具误渲染为 SubAgentCard**
+
+**根因**：`merge_main_and_subagent_messages` 对所有 `tool_call` 无差别生成 `type:"subagent"` 元素，未判断 `tool` 是否属于子智能体工具集。普通工具（如 `generate_report`）的 tool_call 也会被错误包装，前端 `isSubAgentHistoryItem` 仅校验 `type` 和 `thread_id`，无 tool 过滤，最终渲染为 `SubAgentCard`（点击触发 `SubAgentDrawer`），而非期望的 `ToolCallCard`（"普通工具 N 步 已完成" 样式）。
+
+**修复**：仅改后端，前端代码与测试均不动（按用户决策）。
+- 新建 [app/core/tools/subagent_registry.py](file:///e:/laboratory/AI/Agents/feature-agent-core/app/core/tools/subagent_registry.py) 作为子智能体工具**集中注册表**（single source of truth）：
+  - 常量 `SUBAGENT_TOOL_NAMES = frozenset({"sandbox", "explore"})`（不可变，防止运行期误改）
+  - 函数 `is_subagent_tool(name) -> bool`（大小写不敏感、输入防御）
+  - 文件顶部 docstring 详细描述"新增子智能体工具的标准流程（5 步）"和"与前端 `web/Agent/src/utils/sseParser.js` 的 `SUBAGENT_TOOLS` 同步约束"
+- 修改 [app/shared/utils/memory/checkpoint_history.py](file:///e:/laboratory/AI/Agents/feature-agent-core/app/shared/utils/memory/checkpoint_history.py)：
+  - `merge_main_and_subagent_messages` 仅对注册表内工具的 `tool_call` 反查子 thread 历史
+  - `collect_subagent_thread_ids_for_cleanup` 同步过滤（避免删除会话时尝试清理普通工具 thread_id + 噪音日志）
+- 测试同步（仅后端，新增 12 个用例）：
+  - 新建 [app/tests/core/tools/test_subagent_registry.py](file:///e:/laboratory/AI/Agents/feature-agent-core/app/tests/core/tools/test_subagent_registry.py)（**8 用例**：注册表内容 + is_subagent_tool 正/反例 + 大小写 + 输入防御 + frozenset 不可变）
+  - [app/tests/shared/utils/memory/test_checkpoint_history_subagent.py](file:///e:/laboratory/AI/Agents/feature-agent-core/app/tests/shared/utils/memory/test_checkpoint_history_subagent.py) 新增 **3 用例**（merge 过滤 + collect 过滤 + 纯普通工具场景）
+  - [app/tests/shared/test_session_messages_subagent.py](file:///e:/laboratory/AI/Agents/feature-agent-core/app/tests/shared/test_session_messages_subagent.py) 新增 **1 端到端用例**
+
+**兼容性**：
+- API 契约不变（仅修改返回的 `messages` 列表内容，少一些 `type:"subagent"` 元素）
+- 前端代码与测试均不动（按用户决策），历史脏数据继续渲染为 SubAgentCard 但**新数据正确**
+- 旧历史脏数据随会话自然淘汰（用户重新聊天后新数据正确）
+
+**与前端 `SUBAGENT_TOOLS` 的同步机制**：
+注册表文件顶部 docstring 明确列出"新增子智能体工具的标准流程"5 步骤，其中第 3 步强制要求同步修改 `web/Agent/src/utils/sseParser.js` 的 `SUBAGENT_META` 与 `SUBAGENT_TOOLS`。当前注册的 `sandbox` / `explore` 已与前端常量对齐。
+
+**测试结果（2026-06-16-3 累计）**：
+- 后端 `pytest`：8 + 20 + 7 = 35 个相关测试全部通过
+- 全量 `pytest app/tests/`：359 passed / 2 failed，2 个失败为 pre-existing 问题（`test_config.py` 中 `test_llm_settings_default_values` 受 `.env` 中 `model_type="anthropic"` 干扰、`test_settings_agent_chat_max_concurrency_default` 默认值与 settings.py 不一致），均与本次修复无关
+- 前端：未新增任何测试（按用户决策）
 
 ## 前端架构（web/Agent）
 
@@ -496,6 +1105,13 @@ system_prompt = (
 - **文件**：`FileList.vue`、`FilePreview.vue`、`FolderTree.vue`、`FileManagerModal.vue`
 - **知识库**：`KnowledgeChat.vue`、`ProfileInputBox.vue`
 - **公共**：`Sidebar.vue`、`HelloWorld.vue`、`UserSettingsDialog.vue`
+- **Subagent 折叠与抽屉（2026-06-13 新增，2026-06-14 改造）**：
+  - `SubAgentCard.vue`：通用子智能体折叠卡片（含沙箱），**2026-06-14 改造后挂在父 AI 气泡的 `timeline.tool` 块内**（按 toolCallId 匹配，遵循事件流时序，不再堆在会话末尾）；工具图标 + 父 prompt 预览 + 状态徽章 + 耗时 + 消息数 + "查看详情" 入口；点击 emit('click', subAgent)
+  - `SubAgentDrawer.vue`：通用子智能体详情 Push Drawer；**2026-06-14 改造合并原 `SandboxDrawer` 职责**（`SandboxProgress` / `SandboxDrawer` / `SandboxEventItem` 三个组件已删除），沙箱专属摘要与事件时间线 **2026-06-15 再次精简后整段移除**；分层展示父 prompt / HumanMessage / AIMessage（含 tool_calls 决策区） / ToolMessage 三类消息 + 底部耗时/消息数/工具调用次数摘要；`renderMessageContent` 扩展支持 LangChain 0.3+ 多模态 ContentBlock（text / thinking / tool_use / tool_result）
+- **普通工具卡片（2026-06-15 新增）**：
+  - `ToolCallCard.vue`：普通（非 subagent）工具调用专属卡片，与 `SubAgentCard` 视觉风格对齐；**关键差异：不触发抽屉**（普通工具没有子智能体消息流），body 以"步骤"形式逐步展示每条 SSE 事件（tool_start / tool_progress / tool_stop / tool_error）；头部扳手图标在 `status='running'` 时使用 SubAgentCard 同款 `subagentIconBounce` 闪动动画；默认 `running` 展开、`success/error` 折叠
+- **动态排队提示横幅（2026-06-15 新增）**：
+  - `QueueStatusBanner.vue`：**挂在 ChatArea 与 InputBox 之间**（用户要求位置），实时显示 Agent 聊天接口的并发排队状态；黄色系背景 + 橙色感叹号图标 + 位置 badge（带 2s pulse 动画）；Props：`queueStatus: {event, waitingCount, activeCount, maxConcurrency, position, timestamp}` + `isVisible: Boolean`；进场 `slide-down 200ms` / 退场 `fade-out 200ms`；数据由后端 SSE `queue` 事件（`onQueueEvent` 回调）或 HTTP 429 响应驱动
 - **视图**（`src/views/`）：`LoginView.vue`、`RegisterView.vue`
 
 ### 工具函数（src/utils）
@@ -620,7 +1236,280 @@ system_prompt = (
   - `HumanApprovalBox.spec.js`：HITL 组件（多 Tab、虚拟 Other 项、多选、`canSubmit` 门控，14 用例）
   - `api.test.js`：`utils/api.js` 工具方法
   - `sseParser.test.js`：SSE 解析（含 Python 字面量兼容）
+  - `subAgentParser.test.js`（2026-06-13 新增，2026-06-14 扩展）：subagent 解析（custom 事件维护 subAgents 列表 + sandbox_summary 合并 + 工具函数，**14** 用例）
+  - `SubAgentCard.spec.js`（2026-06-13 新增，2026-06-14 扩展）：折叠卡片（**11** 用例）
+  - `SubAgentDrawer.spec.js`（2026-06-13 新增，2026-06-14 扩展，2026-06-15 精简）：独立 Push Drawer（**19** 用例）
+  - `MessageBubble.spec.js`（**2026-06-14 新增**）：timeline.tool 内按 toolCallId 渲染 SubAgentCard 等（5 用例）
 - **项目历史**：后端 17/17 + 前端 73/73 全部通过（参见 "HITL 流程" 章节）
+- **2026-06-13 更新**：后端新增 `test_subagent_message_extractor.py` 22 用例通过；前端 SubAgentCard/SubAgentDrawer/subAgentParser 共 29 用例通过；累计前端 111/111 全量通过
+- **2026-06-16 更新**：子智能体历史持久化实现完成。后端新增 2 个测试文件（`test_checkpoint_history_subagent.py` 17 用例 + `test_session_messages_subagent.py` 6 用例）全部通过；前端新增 `sseParser.subagentHistory.test.js` 15 用例全部通过；累计前端 281/284 通过（3 个 `App.interrupt.spec.js` 失败为预存在问题，与本改造无关）
+- **2026-06-14 更新**：合并沙箱执行与子智能体展示，删除 `SandboxProgress` / `SandboxDrawer` / `SandboxEventItem` 三个组件；新增 `MessageBubble.spec.js`（5 用例）+ 扩展 `SubAgentCard`（+2）、`SubAgentDrawer`（+6）、`subAgentParser`（+2）；累计 **126/126** 全量通过（Vite build 成功）
+- **2026-06-14 二次精简**：`SubAgentDrawer.vue` 沙箱摘要区（`.drawer-summary`）移除 `.summary-progress` 进度条 div（含 `progress-track` / `progress-fill` / 步骤计数 `X/Y`），保留状态指示（`.summary-status`）与耗时展示（`.summary-time`）；同步清理 3 个 unused computed（`sandboxProgressPercent` / `sandboxCurrentStep` / `sandboxTotalSteps`）与对应 CSS（`.summary-progress` / `.progress-track` / `.progress-fill` / `.progress-text` / `@keyframes progressPulse`）；`SubAgentDrawer.spec.js` 摘要区测试用例由「`3/6` 进度文本」改为「进度条不存在 + 耗时文本存在」；累计 **129/129** 全量通过（Vite build 成功）
+- **2026-06-14 再更新**：subagent 工具调用不在「工具调用」块内重复展示；`MessageBubble.vue` 导出 `isSubAgentTool` 工具，新增 `isSubAgentItem` / `getNonSubAgentItems` 过滤逻辑；`MessageBubble.spec.js` 扩展 +3 用例（全 subagent / 混合 / 全普通）；累计 **129/129** 全量通过（Vite build 成功）
+- **2026-06-14 第三次去重**：`MessageBubble.vue` 新增 `subAgentsByGroup` computed + 重构 `getSubAgentsForGroup`（基于 `mergedTimeline` 索引查找），保证同一 `toolCallId` 在跨多个 `tool` group 时仅首次渲染 `SubAgentCard`，后续 group 中同 id 直接跳过；`MessageBubble.spec.js` 新增 3 个用例（同 id 跨 group 只 1 张 / 不同 id 独立 / 全部去重后空 group 不渲染）；累计 **132/132** 全量通过（Vite build 成功）
+- **2026-06-15 第三次精简**：`SubAgentDrawer.vue` 整段移除"沙箱执行摘要"区块（`.drawer-summary` + `.summary-status` + `.status-indicator` + `.summary-time` + `@keyframes statusBlink`），含 5 行模板注释；同步删除 `isSandbox` / `sandboxSummary` / `sandboxElapsedMs` 三个仅被该 div 使用的 computed；`SubAgentDrawer.spec.js` 删除 2 个针对该 div 的用例（sandbox summary 存在/非 sandbox 不展示）；`sseParser.js` 透传 `sandbox_summary` / `sandbox_events` 数据保持不变（移除的是展示，数据仍由前端接收便于后续扩展）；累计 **154/154** 全量通过（Vite build 成功；含 SubAgentDrawer.spec.js 19 用例）
+- **2026-06-15 第四次：普通工具卡片 (ToolCallCard) 改造**：
+  - **新增** `web/Agent/src/components/ToolCallCard.vue`：普通工具调用专属卡片，与 `SubAgentCard` 视觉风格对齐（共用 `.subagent-card` / `.subagent-row` / `.subagent-icon-running` 动画与状态色），关键差异是 **不触发抽屉**（普通工具没有子智能体消息流），body 以"步骤"形式逐步展示每条 SSE 事件（tool_start / tool_progress / tool_stop / tool_error），头部扳手图标在 `running` 状态使用 SubAgentCard 同款 `subagentIconBounce` 闪动动画；默认 `running` 展开、`success/error` 折叠；时间戳 `* 1000` 转换（sseParser 透传的 timestamp 为秒单位）；提供 `dataToEntries` / `progressSummary` / `startSummary` / `stopSummary` / `errorSummary` 五个摘要工具函数把每条事件 data 转为可读字符串
+  - **修改** `web/Agent/src/components/MessageBubble.vue`：
+    - `import ToolCallCard from './ToolCallCard.vue'`
+    - 新增 `getToolCardGroups(items)` helper：按 `toolCallId` 把非 subagent 事件分组，缺失 toolCallId 时按出现顺序合成 `__auto_N` 唯一 id
+    - `timeline.tool` 分支改造：用 `<ToolCallCard v-for=...>` 替换原 `tools-header` (N) + `tools-body` JSON 列表；SubAgentCard 路径（`timeline-subagent-list`）保持不变
+    - 降级模式（历史消息回放，无 timeline）同步改造：原 `tools-section` 改用 `getToolCardGroups(tools)` + `timeline-toolcard-list`
+    - CSS 新增 `.timeline-toolcard-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; align-items: flex-end; }`（与 `.timeline-subagent-list` 风格一致）
+    - 旧 `isToolsExpanded` / `toggleTools` / `formatToolItem` / `getNonSubAgentItems` 函数保留（不再被模板使用，但删除为破坏性改动，留作 dead-code 备用）
+  - **新增** `web/Agent/src/components/__tests__/ToolCallCard.spec.js`：**23** 用例，覆盖 importable / 工具名+步骤数 / 状态徽章 (running / success / error / tool_stop非success退error) / 扳手动画 class / 默认展开折叠 / 点击切换 / 步骤渲染（时间戳+类型徽章+摘要+乱序追加）/ error 摘要 / 缺失 timestamp 占位 / 抽屉事件守卫 / 空 events / startTime+endTime 耗时 / 多事件合并到一张卡
+  - **更新** `web/Agent/src/components/__tests__/MessageBubble.spec.js`：3 个老用例迁移（`tools-header` 断言改为 `tool-call-card` 数量断言；SubAgentCard 选择器用 `.subagent-card.clickable` 区分避免 ToolCallCard 复用 `.subagent-card` class 造成选择器冲突）；新增 3 个 ToolCallCard 集成测试
+  - 累计 **183/183** 全量通过（Vite build 成功）
+- **2026-06-15 第五次：ToolCallCard bug 修复 + 样式解耦**（用户反馈普通工具弹出智能体卡片）：
+  - **Bug 修复（核心）**：`MessageBubble.vue` 的 `subAgentsByGroup` computed **未过滤非 subagent 工具事件**，导致 `sseParser.updateSubAgentFromCustomEvent` 对所有 tool 名都创建 subAgents 条目（含普通工具），普通工具（如「生成报告」）会被 `getSubAgentsForGroup` 按 toolCallId 匹配并渲染为 `SubAgentCard`，点击触发 `SubAgentDrawer`。修复：在 `subAgentsByGroup` 循环中增加 `if (!isSubAgentItem(item)) continue` 过滤（判断 `item.data.tool` 是否属于 SUBAGENT_TOOLS），仅 subagent 工具（sandbox / explore）才走 SubAgentCard 路径
+  - **样式解耦**：ToolCallCard 重写为完全独立 class `.tool-call-card`（不再复用 `.subagent-card`，避免选择器冲突）：
+    - 头部 SVG 扳手图标（独立设计，与 SubAgentCard 的 emoji 区分）
+    - 显式「**普通工具**」蓝色徽章（`.tool-call-badge`）+ tooltip「普通工具（非子智能体）」，与 SubAgentCard（无此徽章）一眼可辨
+    - 状态色：running=accent 蓝、success=**accent 蓝**（不是 SubAgentCard 的 success 绿色）、error=红
+    - 步骤行单行紧凑：时间戳 + 类型徽章 + 摘要 + 详情切换按钮；**key-value 详情默认折叠**，点击单条步骤可展开（`.tool-step-detail` 内含完整 key-value 表格）
+  - **新增** 测试用例（**+10 用例 → 193/193 全量通过**）：
+    - `MessageBubble.spec.js` 新增 `MessageBubble 普通工具不被误渲染为 SubAgentCard（2026-06-15 修复）` 描述块 3 个回归测试：普通工具事件不应渲染 SubAgentCard / subagent 工具正常渲染 / 混合场景分别渲染
+    - `ToolCallCard.spec.js` 新增 5 个测试：「普通工具」徽章存在性 + title 属性 / 头部 SVG 扳手图标（独立图标）/ 独立 class `.tool-call-card`（不复用 `.subagent-card`）/ success 状态用蓝色（与 SubAgentCard 绿色区分）/ 步骤默认不显示 key-value 详情 / 点击步骤行可展开折叠 key-value 详情 / 展开后展示 key-value 字段
+  - 累计 **193/193** 全量通过（Vite build 成功）
+- **2026-06-15 第六次：ToolCallCard 样式微调**（用户反馈完成态颜色 + 步骤分隔 + 文案）：
+  - **完成态颜色统一**：将 `.tool-call-card.success` / `.tool-call-status.success` 的边框与文字色从蓝色（accent）改为**绿色 #10b981**（`.tool-call-card.success` 背景也加上 `rgba(16, 185, 129, 0.04)` 浅绿渐变），与 `SubAgentCard` 完成态保持视觉一致；running 仍为蓝色，error 仍为红色
+  - **步骤行间横线分隔**：每个 `.tool-step` 增加 `border-bottom: 1px dashed rgba(0, 0, 0, 0.08)`；最后一步通过 `.tool-step:last-child { border-bottom: none; }` 取消分隔（避免视觉割裂）；padding 微调 3px→4px 让分隔线更透气
+  - **文案调整**：`typeLabel` 中 `tool_progress` 从「进度」改为「**进行中**」（与状态徽章「执行中」语义区分：徽章是状态，行徽章是事件类型）
+  - **新增** 1 个测试 → **194/194** 全量通过：步骤行间用横线分隔（验证 DOM 兄弟节点关系 + 最后一步不显示分隔）；原"成功用蓝色"测试改为"成功用绿色"；步骤渲染测试断言"进行中"文案
+- **2026-06-15 第七次：知识库页面接入子智能体卡片**（用户反馈"调用 explore 但是没有出现子智能体卡片"）：
+  - **复用策略**：本次**全部复用主聊天页已有组件**（`SubAgentCard` / `SubAgentDrawer` / `MessageBubble` 的 `sub-agents`/`download-info` props 与 `open-subagent-drawer` emit），仅做"接线"工作，零重写
+  - **`KnowledgeChat.vue`（Tab 版聊天组件）**：
+    - `defineEmits` 数组追加 `'open-subagent-drawer'`
+    - `<MessageBubble>` 模板尾部追加 `:download-info="message.downloadInfo"` + `:sub-agents="message.subAgents"` + `@open-subagent-drawer="(sa) => emit('open-subagent-drawer', sa)"`
+  - **`KnowledgePage.vue`（Tab 版中间层）**：
+    - `defineEmits` 数组追加 `'open-subagent-drawer'`
+    - `<KnowledgeChat>` 模板追加 `@open-subagent-drawer="(sa) => emit('open-subagent-drawer', sa)"` 向上冒泡
+  - **`App.vue`（主应用根）**：`<KnowledgePage>` 模板追加 `@open-subagent-drawer="openSubAgentDrawer"`，直接复用第 360-364 行已有的 `openSubAgentDrawer` 函数 + 顶层 `<SubAgentDrawer>`（第 595-599 行）；**Tab 版知识库页不需自持抽屉状态**
+  - **`KnowledgeApp.vue`（独立 SPA）**：因不在 App.vue 渲染树内，必须自持：
+    - 顶部追加 `import SubAgentDrawer from './components/SubAgentDrawer.vue'`（复用主聊天页组件）
+    - 新增 `subAgentDrawerVisible` / `currentSubAgent` 响应式状态（与 App.vue 同模式）
+    - 新增 `openSubAgentDrawer(subAgent)` / `closeSubAgentDrawer()` 函数
+    - `<MessageBubble>` 模板追加 `:download-info` + `:sub-agents` + `@open-subagent-drawer="openSubAgentDrawer"`
+    - 模板底部（`</main>` 之后）渲染 `<SubAgentDrawer>`（与 App.vue 同款 props/emits）
+  - **测试同步**（按 HARD RULE 新增 3 个测试文件，**+12 用例 → 206/206 全量通过**）：
+    - `web/Agent/src/components/__tests__/KnowledgeChat.spec.js`（4 用例）：组件 importable / subAgents prop 透传 / downloadInfo prop 透传 / open-subagent-drawer 事件冒泡
+    - `web/Agent/src/components/__tests__/KnowledgePage.spec.js`（2 用例）：组件 importable / KnowledgeChat emit 向上冒泡
+    - `web/Agent/src/KnowledgeApp.spec.js`（5 用例）：组件 importable / SubAgentDrawer stub 在 DOM / openSubAgentDrawer 切换 DOM / closeSubAgentDrawer 重置 / 监听 drawer @close 事件
+  - **关键技术点**：
+    - KnowledgeChat 的 `messages` 是**内部 `reactive([])`** 而非 prop（与 ChatArea 不同），测试需通过 `wrapper.vm.messages.push(...)` 注入
+    - KnowledgeApp 的 `onMounted` 会调用 `fetchKnowledgeFiles` / `createNewSession` / `validateToken` / `refreshToken`，测试需 `vi.mock('./utils/api.js')` 与 `vi.mock('./utils/auth.js')` 隔离副作用
+    - MessageBubble 子组件在测试中以 stub 形式呈现（template 暴露所有 props 为 DOM），便于通过 DOM 查询断言透传
+
+- **2026-06-15 聊天并发排队提示 + HITL interrupt 卡死修复**：
+  - **后端变更**（`app/core/concurrency/`）：
+    - `agent_concurrency_queue.py` 新增 `enqueue_time()` / `position()` / `snapshot()` 方法与 `_waiter_tasks` / `_enqueue_times` 内部状态
+    - `chat_concurrency_dependency.py` 改造为双模式（`mode="sse" | "http"`）+ HITL 早期释放句柄 `request.state.concurrency_release_handle`
+    - `map_router.py` 新增 `_stream_with_queue` 生成器，在 yield interrupt 业务事件前调用 release_handle
+    - `contract_router.py` 新增 `_chat_concurrency_http_dep()` 工厂函数，传 `mode="http"`
+  - **前端变更**（`web/Agent/src/`）：
+    - 新增 `components/QueueStatusBanner.vue`（动态排队提示横幅）
+    - `App.vue` / `KnowledgeApp.vue` / `components/KnowledgeChat.vue` 集成 queueStatus 状态机 + onQueueEvent 回调 + HITL reader.cancel + 429 处理
+    - `utils/sseParser.js` 新增 `QUEUE_EVENT_TYPES` / `isQueueEvent` + `processSSEEvent` 第三参 `callbacks.onQueueEvent`
+    - `utils/api.js` `chatStream` / `knowledgeChatStream` 错误处理扩展：保留 `err.status` / `err.detail`
+  - **测试新增**：后端 `test_agent_concurrency_queue.py` +4 用例 / `test_chat_concurrency_dependency.py` +9 用例（HITL 核心：`test_sse_dependency_releases_on_hitl_interrupt_path`）；前端 `QueueStatusBanner.spec.js` +10 用例 / `App.interrupt.spec.js` +4 用例（HITL 核心：`test_handleSendMessage_calls_reader_cancel_on_interrupt`） / `sseParser.test.js` +3 用例。累计前端约 +17 → **223/223 全量通过**（Vite build 成功，后端约 +13 → **143 passed**）
+
+- **2026-06-15 第八次：知识库气泡与输入框宽度对齐修复**（用户反馈缩小时气泡比输入框宽）：
+  - **根因**：`KnowledgeApp.vue` 的 `.chat-input-area`（`padding: 16px 40px 24px`）内部包了带相同 padding 的 `ProfileInputBox`（`.profile-input-box-container` `padding: 16px 40px 24px`），合计 80px 水平内边距，而 `.chat-body` 仅 40px，缩小时输入框比气泡窄 40px
+  - **修复**：`.chat-input-area` 的 `padding` 从 `16px 40px 24px` 改为 `0`，由内部的 `ProfileInputBox`/`HumanApprovalBox` 自持完整 padding
+  - **KnowledgeChat.vue**：`.chat-body` padding 从 `16px`（仅 16px 水平间距）改为 `24px 40px`（与主界面 ChatArea 对齐）；`.messages-container` 追加 `max-width: 900px; margin: 0 auto;`（原缺失导致无宽度约束）
+  - **测试**：219/222 通过（3 个 pre-existing failure 为 `App.interrupt.spec.js` happy-dom AbortError 环境问题）；Vite build 成功
+
+- **2026-06-15 第九次：聊天停止按钮（中断 LLM 生成）**（用户需求：大模型生成过程中可点击按钮中断）：
+  - **核心设计**：发送按钮在 `isStreaming=true` 时切换为「停止按钮」，点击触发 `reader.cancel()` 断开 SSE 连接；后端 `map_router.py` 在 `async for chunk` 主循环检测 `request.is_disconnected()`，客户端断开时立即 `return` 跳出 LangGraph `astream`，避免无效算力消耗。停止按钮使用与发送按钮**相同的 `--color-accent` 紫色调**（仅图标和缩放阴影脉冲动画区分），保持「同一按钮的两种状态」视觉一致性。
+  - **后端改动**（`app/features/map_agent/router/map_router.py`）：
+    - `generate_stream_response` 签名追加 `request: Request = None` 形参（默认值 None 保持向后兼容）
+    - `async for chunk in stream` 循环开头加 `request.is_disconnected()` 检测：客户端断开时 `logger.info` 记录 + `return` 跳出循环
+    - `/api/map/chat` 与 `/api/map/knowledge-chat` 两个端点（4 个 call site：正常 + resume × 2 端点）都传 `request=request`
+  - **前端改动**（3 条聊天路径全覆盖）：
+    - **`web/Agent/src/components/InputBox.vue`**（主聊天 App.vue 路径）：
+      - `canSend` 计算属性移除 `if (props.isStreaming) return false` 分支（停止按钮必须可点）
+      - `defineEmits` 追加 `'stop'` 事件
+      - 按钮模板改为三态 class：`send-mode` / `stop-mode` / `disabled`，按 `isStreaming` 切换图标（`send-icon` 纸飞机 vs `stop-icon` 实心方块 rect 5,5-15,15）
+      - `:disabled` 改为 `!canSend && !isStreaming`（流式时按钮可点）
+      - 监听 `isStreaming` prop：流式时 click → `emit('stop')`，非流式时 click → `handleSend()`
+    - **`web/Agent/src/components/ProfileInputBox.vue`**（KnowledgeApp.vue 独立 SPA 路径）：同款改造
+    - **`web/Agent/src/components/KnowledgeChat.vue`**（App.vue → KnowledgePage → KnowledgeChat Tab 路径）：
+      - 内部自持 `currentReader`（替代原 `let reader = null`），`handleSend` + `handleApprovalSubmit` 都改用 `currentReader`
+      - 新增 `handleStop()` 函数：cancel reader + 标记 AI 消息 ended + 追加 `[生成已被用户中止]` + `internalStreaming = false`
+      - 按钮模板同款三态切换
+    - **`web/Agent/src/App.vue`**：
+      - 提取模块级 `let currentStreamReader = null`（替代原 `let reader = null`，让 handleStopMessage 跨函数访问）
+      - `handleSendMessage` + `handleApprovalSubmit` 改用 `currentStreamReader`，finally 块追加 `currentStreamReader = null`
+      - 新增 `handleStopMessage()` 函数（与 KnowledgeApp.vue 同款实现）
+      - `<InputBox>` 模板追加 `@stop="handleStopMessage"` 监听
+    - **`web/Agent/src/KnowledgeApp.vue`**：
+      - 模块级 `let currentStreamReader = null` + `startChatStream` 改用 `currentStreamReader`，加 `.finally(() => { currentStreamReader = null })` 兜底
+      - 新增 `handleStopMessage()` 函数
+      - `<ProfileInputBox>` 两处绑定（welcome section + chat section）都追加 `@stop="handleStopMessage"`
+  - **CSS 样式**（3 个 InputBox/ProfileInputBox/KnowledgeChat 同款 `.stop-mode`）：
+    - 背景色 `var(--color-accent)`（与发送模式同色，非红色）
+    - hover `var(--color-accent-hover)` + 缩放 1.08 + 紫色阴影
+    - `stopPulse` keyframes：背景色不变，仅 `transform: scale(1) ↔ scale(1.06)` + `box-shadow` 0px ↔ 8px 扩散
+    - 图标 14×14 白色实心方块（rect 5,5 10×10 rx=1.5）
+  - **停止后 UI 反馈**：AI 消息 `ended = true` + `isThinkingActive = false` + `text` 字段末尾追加 `\n\n[生成已被用户中止]`（用 `text.includes()` 防重复）
+  - **测试新增**（按 HARD RULE 同步）：
+    - **后端**：`app/tests/features/map_agent/test_map_router_disconnect.py`（**5 用例**）
+      - P0 `test_generate_stream_response_importable` / `test_generate_stream_response_signature_accepts_request`
+      - P1 `test_generate_stream_response_stops_on_client_disconnect`（mock `is_disconnected` 第二次返回 True，验证只 yield 1 个 chunk 后跳出）
+      - P1 `test_generate_stream_response_runs_to_end_when_not_disconnected`（mock 始终 False，验证 yield 全部 chunks + end 事件）
+      - P1 `test_generate_stream_response_works_without_request`（request=None 向后兼容）
+    - **前端**（4 个新 spec 文件，共 **28 用例**）：
+      - `web/Agent/src/components/__tests__/InputBox.stop.spec.js`（**7 用例**）：importable / 发送模式图标 / 停止模式图标 / 流式点击 emit('stop') / 非流式点击不 emit('stop') / 无输入 disabled / 流式 enabled
+      - `web/Agent/src/components/__tests__/ProfileInputBox.stop.spec.js`（**7 用例**）：与 InputBox 同款
+      - `web/Agent/src/components/__tests__/KnowledgeChat.stop.spec.js`（**6 用例**）：importable / 发送模式 / 内部流式时 stop-mode / `handleStop` 取消 reader + 标记消息 + 不重复追加标记 + 非流式 noop
+      - `web/Agent/src/components/__tests__/App.stop.spec.js`（**8 用例**）：覆盖 App.vue + KnowledgeApp.vue 的 `handleStopMessage` 行为（cancel 调用 / 错误吞掉 / 无 reader / 空 messages / 不重复标记等）
+  - **兼容性说明**：
+    - 第三方 iframe / portal 调用方不感知 stop 按钮（不会主动 stop 时按原行为运行到底）
+    - HITL 场景：HITL interrupt 走 `await currentStreamReader.cancel()` 路径与 stop 按钮共用，最终都会触发后端 `is_disconnected()` + LangGraph 跳出
+    - 排队场景：客户端断开后 `dep.aclose()` 触发 `chat_concurrency_dependency` finally 释放许可，无需额外处理
+  - **测试结果**：后端 5/5 通过；前端 28/28 新增用例通过（其他 pre-existing failures 维持不变）；Vite build 成功
+
+### 2026-06-16 KnowledgeApp 回归修复：`startChatStream` 外层 `.finally()` 与 read() 递归产生竞态
+
+**背景**：上述停止按钮提交（e940ee1）在 `KnowledgeApp.vue:startChatStream` 链式末尾追加了 `.finally(() => { currentStreamReader = null })`，**导致 KnowledgeApp 独立 SPA 模式下用户输入任何问题都立即显示「不好意思，刚刚出了点小故障，可以晚点再问我一遍。」**。
+
+**根因（Promise 链微任务竞态）**：
+1. `startChatStream` 原实现：`.then(stream => { currentStreamReader = ...; read() }).catch(...).finally(() => { currentStreamReader = null })`
+2. `read()` 内部**同步**调用 `currentStreamReader.read().then(...)` 启动异步流读取后立即 return
+3. 外层 `.then(stream => { ...; read() })` 同步部分 resolve → 微任务阶段 `.finally` 立即执行 → `currentStreamReader = null`
+4. 网络数据到达 → `read()` 内部 `.then` 回调执行 → `read()` 递归调用 `currentStreamReader.read()` → **`currentStreamReader` 已是 `null`** → 抛 `TypeError`
+5. 外层 `.catch` 捕获 → `aiMsg.error = '不好意思，刚刚出了点小故障...'` → MessageBubble 显示固定错误文案
+
+**为什么 App.vue / KnowledgeChat 正常**：它们使用 `async/await + while(true) { await currentStreamReader.read() } + try/catch/finally` 模式，`finally` 在 `try` 完整走完才执行，**不会与 read() 递归产生竞态**。
+
+**修复**（`web/Agent/src/KnowledgeApp.vue`）：
+- `startChatStream` 重构为 `async/await + while(true) + try/catch/finally` 模式，与 App.vue / KnowledgeChat 保持一致
+- 删除外层 `.then().catch().finally()` 链式 + 嵌套 `read()` 递归
+- `finally` 中清理 `currentStreamReader` 与重置 `isStreaming`
+- `handleProfileSend` / `handleApprovalSubmit` 改为 `await startChatStream(...)`
+- `try` 内单事件 `JSON.parse` 失败时 `console.warn` 记录日志，便于排查（不影响后续事件处理）
+
+**附带清理**（`web/Agent/src/components/KnowledgeChat.vue` `handleApprovalSubmit` 内 readStream）：
+- readStream 本来就使用 `async/await + try/catch/finally` 模式，**不存在 finally 竞态**
+- 仅追加 `JSON.parse` 失败时的 `console.warn` 日志，与 KnowledgeApp 重构保持防御一致性
+
+**测试新增**：`web/Agent/src/components/__tests__/KnowledgeApp.stream.spec.js`（**11 用例**）：
+- P0：`test_start_chat_stream_normal_completion_does_not_set_error` / `test_start_chat_stream_finally_runs_after_all_reads_finally`（核心：验证 finally 在所有 read 后才执行）/ `test_start_chat_stream_reader_error_sets_error_msg`
+- P1：`test_start_chat_stream_multiple_chunks_accumulates_text` / `test_start_chat_stream_handles_interrupt_without_error` / `test_start_chat_stream_thinking_blocks_written` / `test_start_chat_stream_handles_end_event` / `test_start_chat_stream_handles_parse_error_gracefully` / `test_start_chat_stream_clears_reader_in_finally` / `test_start_chat_stream_empty_stream_completes`
+- P2：`test_start_chat_stream_simulates_real_message_example_txt`（模拟 message例子.txt 多 chunk 场景：16 个 thinking 增量 + signature + 9 个 text 增量，验证完整文本"你好！请问有什么可以帮你的？" 与 thinking 累加"用户再次说"你好"，这只是一个问候。"）+ `test_start_chat_stream_chunks_split_across_boundary`
+
+**测试结果**：新增 11/11 通过；全量 269 测试中 266 通过（3 个 pre-existing failures 来自 `App.interrupt.spec.js` 的 happy-dom `ReadableStream.cancel()` 兼容性，与本修复无关）
+
+## 子智能体停止机制（2026-06-15 扩展）
+
+**背景**：上一节"停止按钮（中断 LLM 生成）"仅停止主智能体的 LangGraph astream，但子智能体（sandbox / explore）工具函数内的 `for chunk in child_agent.stream(...)` 是同步 for 循环，没有任何停止信号感知。子智能体会一直运行直到自然结束，消耗 LLM token、占用 Docker 容器，停止按钮无法真正中断。
+
+**目标**：让前端停止按钮的 `reader.cancel()` 信号穿透到子智能体层，使前端停止按钮真正中断所有 LLM 生成。
+
+### 核心机制：contextvars 传递 Request
+
+**新增文件**：`app/core/tools/_stop_signal.py`
+
+通过 ``contextvars.ContextVar`` 在主路由入口挂 FastAPI Request，工具函数（sandbox / explore）内通过 ``get_current_request()`` 取出，调用 ``await request.is_disconnected()`` 检测客户端断开。
+
+- asyncio 任务在同一 context 内自动继承 ContextVar，多请求并发时各请求独立隔离，无竞态
+- 同步工具函数也能兼容（先 `get_current_request()` 取出 Request，在需要时 `await is_disconnected()`）
+- finally 块必须 reset，避免后续请求继承到错误的 request 引用导致内存泄漏 + 跨请求误判
+
+**API**：
+
+```python
+from app.core.tools._stop_signal import (
+    set_current_request,   # 主路由入口：挂 request
+    reset_current_request, # finally 块：清理（传 token）
+    get_current_request,   # 工具函数：取出（可能为 None）
+)
+```
+
+### sandbox / explore 工具 async 化
+
+**`app/core/tools/SandboxTools.py`** + **`app/core/tools/FilesystemReadTools.py`** 改造：
+
+- ``def sandbox`` → ``async def sandbox``（同步 for → async for + astream）
+- ``def explore`` → ``async def explore``（同上）
+- astream 循环内每 ``_STOP_CHECK_INTERVAL = 5`` 个 chunk 检查一次 ``request.is_disconnected()``
+- 客户端断开时立即 break + 推送 ``tool_stop`` 事件，``data.status = "stopped_by_user"``（区别于 "success" / "failure"）
+- sandbox 停止时**必须 cleanup middleware**（Docker 容器清理），避免容器残留
+
+**停止事件数据格式**（`tool_stop` 事件）：
+
+```json
+{
+  "status": "stopped_by_user",
+  "result": { "answer": "子智能体已被用户中止", ... },
+  "duration_ms": ...,
+  "final_summary": { "current_step": 0, "status_message": "已被用户中止", ... },
+  "thread_id": "...",
+  "final_messages": [...],   // 保留 subagent 字段，前端仍能看到中间消息
+  "parent_prompt": "..."
+}
+```
+
+### map_router 挂载 ContextVar
+
+**`app/features/map_agent/router/map_router.py`** 改造：
+
+- `generate_stream_response` 函数入口 `set_current_request(request)`，把 FastAPI Request 挂到 ContextVar
+- finally 块 `reset_current_request(cv_token)`，避免后续请求继承错误引用
+- 即使 `is_disconnected()` 触发 return 提前退出，也保证清理
+
+### 客户端状态显示
+
+**`web/Agent/src/components/SubAgentCard.vue`** + **`web/Agent/src/components/ToolCallCard.vue`** 改造：
+
+- 新增 ``status === 'stopped_by_user'`` 状态映射：显示"已中止"文本
+- 新增 CSS class ``.stopped_by_user``：橙色徽章（区别于 success 绿色、error 红色、running 紫色）
+- stopped_by_user 状态**静态显示**（无 pulse 动画），与 running 区分
+
+**`web/Agent/src/utils/sseParser.js`** 改造：
+
+- `updateSubAgentFromCustomEvent` 中 tool_stop 事件状态判定逻辑扩展：
+  - 优先级（向后兼容）：`stopped_by_user` > `error` / `failure` > 其他（含无 status / `success`）→ success
+  - 旧事件无 status 字段默认 success（向后兼容普通工具 tool_stop）
+
+### 测试覆盖
+
+**新增测试文件**：
+
+| 文件 | 用例数 | 覆盖 |
+|------|--------|------|
+| `app/tests/core/tools/test_stop_signal.py` | 10 | contextvar 基础读写、set/reset 语义、并发隔离、异常 finally 兜底 |
+| `app/tests/core/tools/test_subagent_stop.py` | 7 | sandbox 5 用例 + explore 2 用例：客户端断开、客户端未断开、无 request 场景、subagent 字段保留、Command ToolMessage 内容 |
+| `app/tests/features/map_agent/test_map_router_subagent_stop.py` | 5 | generate_stream_response 挂载/清理 ContextVar、disconnect 跳出循环、无 request 兼容、并发请求隔离 |
+
+**更新测试文件**：
+
+| 文件 | 改动 |
+|------|------|
+| `app/tests/core/tools/test_sandbox_tools_config.py` | `stream` → `astream`，`SandboxTools.sandbox` → `asyncio.run(SandboxTools.sandbox(...))`（async 适配） |
+| `app/tests/core/tools/test_sandbox_no_text_reply_fix.py` | 同上 + 同步生成器 → async 生成器 |
+| `web/Agent/src/components/__tests__/SubAgentCard.spec.js` | 新增 2 用例：stopped_by_user 状态显示"已中止" + 徽章 class + 无 pulse 动画 |
+| `web/Agent/src/components/__tests__/ToolCallCard.spec.js` | 新增 2 用例：stopped_by_user 状态显示"已中止" + 徽章 class |
+
+**conftest.py 扩展**（支撑 explore 测试）：
+
+- 新增 mock `langchain.agents` / `langchain.agents.middleware` / `langchain.agents.middleware.types` 模块
+- 把 `FilesystemMiddleware` / `FilesystemBackend` 也注册到 `deepagents` 顶层（`from deepagents import FilesystemMiddleware` / `from deepagents.backends import FilesystemBackend`）
+- `_FilesystemBackend.__init__` 接受任意参数（explore 工具传 `root_dir` / `virtual_mode`）
+- `langchain_core.tools.tool = lambda *args, **kwargs: lambda func: func`（encoding_safe_file_search 依赖）
+
+### 兼容性
+
+- **旧工具 tool_stop 事件**（无 status 字段）：默认 success 状态（向后兼容）
+- **HuggingFace 客户端**：不感知停止按钮，行为不变
+- **HITL 场景**：与现有 interrupt 路径共存（前端 `reader.cancel()` 触发后端 `is_disconnected()`，主 astream 跳出后子智能体也跳出）
+- **第三方 iframe / portal 调用方**：不感知停止按钮，按原行为运行到底
+
+### 已知工程实践
+
+- **conftest 下 @tool 是 identity**：`@tool` 装饰器在 conftest 中被 mock 为 `lambda *args, **kwargs: lambda func: func`，所以 `sandbox` / `explore` 在测试环境就是原 async 函数。生产环境（conftest 不生效时）`@tool` 会把 async 函数包装为 `StructuredTool` 并保留 `.coroutine` 指向原函数。两种环境下 `asyncio.run(SandboxTools.sandbox(prompt, runtime))` 都能工作
+- **MagicMock 属性赋值**：`mock_agent.astream = fake_astream` 后，`mock_agent.astream` 返回 fake_astream，调用 `mock_agent.astream(args, kwargs)` 拿 async generator object。`call_args_list` 记录的是直接调用，需要用 `mock_writer.return_value.call_args_list` 才能拿到 sandbox/explore 函数内部 `writer(...)` 的调用
+- **contextvar reset LIFO 语义**：`set(A) → token1, set(B) → token2, reset(token2) → get() == A, reset(token1) → get() == default`
 
 ## CI 测试（pytest + GitHub Actions）
 
@@ -639,7 +1528,9 @@ system_prompt = (
 - **`tests/core/`**：核心模块（config、database、server、prompts、agent_context、dependencies）
 - **`tests/core/tools/`**：HITL 工具、BaseTools、MCP 适配器
 - **`tests/shared/`**：auth_router、file_router、session_router、user_router、user_db、session_db、refresh_token_db、portal_refresh_token_db、captcha、safety、DocumentLoader
-- **`tests/features/*/`**：8 个 Agent 冒烟测试（config 可导入、提示词非空、tools 可导入、router 已注册到 `/api/*` 路径）
+- **`tests/features/*/`**：9 个 Agent 冒烟测试（config 可导入、提示词非空、tools 可导入、router 已注册到 `/api/*` 路径）
+- **`tests/features/sandbox_agent/`**：沙箱 Agent 专项测试
+  - `test_docker_backend.py`：DockerSandboxBackend 容器生命周期、命令执行、文件操作、异常处理
 - **`tests/integration/`**：端到端认证流程（注册→登录→validate→logout）
 
 ### Mock 策略
@@ -662,6 +1553,10 @@ system_prompt = (
 ### 验证结果
 
 - **本地全量**：`cd app && python -m pytest tests/ -v --tb=short` → **130 passed**（2026-06-08）
+- **2026-06-15 新增**：`app/tests/core/tools/test_sandbox_no_text_reply_fix.py`（2 个 P0 用例）
+  - `test_sandbox_returns_last_ai_text_when_last_chunk_is_updates_mode`：核心修复回归测试，覆盖用户报告的「最后一块是 updates 模式导致兜底」场景
+  - `test_sandbox_returns_fallback_when_no_ai_message_in_all_messages`：边界测试，覆盖「子智能体无 AI 文本产出」时兜底 + logger.warning 触发
+- **本地 core/tools 子集**：`pytest app/tests/core/tools/ -v` → **105 passed**（2026-06-15，含新增 2 用例）
 - **CI 期望**：与本地一致，所有用例通过
 
 ### 已知工程实践

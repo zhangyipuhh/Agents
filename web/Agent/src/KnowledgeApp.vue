@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, onMounted, nextTick, computed } from 'vue'
 import { fetchKnowledgeFiles, fetchFilePreview, createNewSession, knowledgeChatStream, validateToken, refreshToken } from './utils/api.js'
 import { createAiMessage, processSSEEvent } from './utils/sseParser.js'
 import { redirectToLogin } from './utils/auth.js'
@@ -8,6 +8,9 @@ import FilePreview from './components/FilePreview.vue'
 import MessageBubble from './components/MessageBubble.vue'
 import ProfileInputBox from './components/ProfileInputBox.vue'
 import HumanApprovalBox from './components/HumanApprovalBox.vue'
+import QueueStatusBanner from './components/QueueStatusBanner.vue'
+// 2026-06-15 新增：复用主聊天页的 SubAgentDrawer，独立 SPA 路径需自持渲染
+import SubAgentDrawer from './components/SubAgentDrawer.vue'
 
 const isPreviewOpen = ref(false)
 const previewContent = ref('')
@@ -26,10 +29,54 @@ const approvalData = ref({ questions: [] })
 const isSidebarCollapsed = ref(false)
 const isCollapseBtnHovered = ref(false)
 
+// 2026-06-15 新增：排队状态机（与 App.vue 同结构）
+const queueStatus = ref({
+  event: 'idle',
+  waitingCount: 0,
+  activeCount: 0,
+  maxConcurrency: 0,
+  position: 0,
+  timestamp: 0
+})
+const isQueueBannerVisible = computed(() => queueStatus.value.event === 'waiting')
+
+function handleQueueEvent(data) {
+  if (!data || data.type !== 'queue') return
+  queueStatus.value = {
+    event: data.event || 'idle',
+    waitingCount: Number(data.waiting_count) || 0,
+    activeCount: Number(data.active_count) || 0,
+    maxConcurrency: Number(data.max_concurrency) || 0,
+    position: Number(data.position) || 0,
+    timestamp: Number(data.timestamp) || 0
+  }
+}
+
+function handleQueueError(err) {
+  if (!err || err.status !== 429 || !err.detail) return
+  const ts = Date.now() / 1000
+  queueStatus.value = {
+    event: 'waiting',
+    waitingCount: Number(err.detail.waiting_count) || 1,
+    activeCount: Number(err.detail.active_count) || 0,
+    maxConcurrency: Number(err.detail.max_concurrency) || 0,
+    position: 1,
+    timestamp: ts
+  }
+  setTimeout(() => {
+    if (queueStatus.value.timestamp === ts) {
+      queueStatus.value = { ...queueStatus.value, event: 'idle' }
+    }
+  }, 3000)
+}
+
 /**
  * 新建任务锁，防止重复创建
  */
 let isCreatingNewSession = false
+
+// 2026-06-15 新增：持有当前 SSE reader，供 ProfileInputBox 的 stop 事件调用 cancel() 立即中断 LLM
+let currentStreamReader = null
 
 function toggleSidebar() {
   isSidebarCollapsed.value = !isSidebarCollapsed.value
@@ -43,6 +90,10 @@ const unreadCount = ref(0)
 
 // 页面状态
 const showChat = ref(false)
+
+// 2026-06-15 新增：子智能体详情抽屉状态（独立 SPA，需自持；与 App.vue 同模式）
+const subAgentDrawerVisible = ref(false)
+const currentSubAgent = ref(null)
 
 onMounted(async () => {
   // 验证 token 有效性，失效则尝试静默刷新
@@ -205,67 +256,95 @@ function extractApprovalData(interruptArray) {
   return { questions }
 }
 
-function startChatStream(message, uploadedFiles, aiMsg, resumeData = null) {
-  knowledgeChatStream(currentSessionId.value, message, uploadedFiles, resumeData)
-    .then(stream => {
-      const reader = stream.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-      let interrupted = false
+/**
+ * 启动知识库 SSE 流式聊天。
+ *
+ * 2026-06-16 重构：原实现使用 `.then().then().catch().finally()` 链式 + 嵌套 `read()` 递归，
+ * 外层 `.finally(() => { currentStreamReader = null })` 会在 `read()` 同步启动后立即执行
+ * （微任务阶段），导致下次 `read()` 递归访问 `currentStreamReader.read()` 时已为 null，
+ * 抛 TypeError 被 catch 块捕获，最终输出「不好意思，刚刚出了点小故障」固定文案。
+ *
+ * 现改为 `async/await + while(true) + try/catch/finally` 模式：
+ *   - `try` 块完整走完（while break / 自然结束 / catch 后）才执行 finally
+ *   - `finally` 中清理 `currentStreamReader` 与重置 `isStreaming`
+ *   - 与 App.vue / KnowledgeChat.handleSend 保持一致，避免类似竞态复发
+ *
+ * @param {string} message - 用户消息文本
+ * @param {Array} uploadedFiles - 已上传文件列表
+ * @param {import('vue').Ref<Object>} aiMsg - AI 消息 ref（ref.value 为消息对象）
+ * @param {Object|null} resumeData - HITL 中断恢复数据，{ answers: string[][] }
+ * @returns {Promise<void>}
+ */
+async function startChatStream(message, uploadedFiles, aiMsg, resumeData = null) {
+  let interrupted = false
+  currentStreamReader = null
+  try {
+    const stream = await knowledgeChatStream(currentSessionId.value, message, uploadedFiles, resumeData)
+    currentStreamReader = stream.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
 
-      function read() {
-        reader.read().then(({ done, value }) => {
-          if (done) {
-            if (!interrupted) {
-              isStreaming.value = false
-            }
-            if (aiMsg.value && !aiMsg.value.ended) {
-              console.log('[KnowledgeApp] Stream done, setting ended = true')
-              aiMsg.value.ended = true
-              aiMsg.value.isThinkingActive = false
-            }
-            return
-          }
-          buffer += decoder.decode(value, { stream: true })
-          const events = buffer.split('\n\n')
-          buffer = events.pop()
-          for (const event of events) {
-            if (!event.startsWith('data: ')) continue
-            try {
-              const data = JSON.parse(event.slice(6))
-              processSSEEvent(data, aiMsg.value)
-
-              if (aiMsg.value.interrupt) {
-                interrupted = true
-                approvalMode.value = true
-                approvalData.value = extractApprovalData(aiMsg.value.interrupt)
-                break
-              }
-            } catch {}
-          }
-
-          if (interrupted) {
-            return
-          }
-
-          nextTick(() => scrollToBottom())
-          read()
-        }).catch(err => {
-          aiMsg.value.error = '不好意思，刚刚出了点小故障，可以晚点再问我一遍。'
+    while (true) {
+      const { done, value } = await currentStreamReader.read()
+      if (done) {
+        if (aiMsg.value && !aiMsg.value.ended) {
           aiMsg.value.ended = true
-          isStreaming.value = false
-        })
+          aiMsg.value.isThinkingActive = false
+        }
+        break
       }
-      read()
-    })
-    .catch(err => {
-      aiMsg.value.error = '不好意思，刚刚出了点小故障，可以晚点再问我一遍。'
+      buffer += decoder.decode(value, { stream: true })
+      const events = buffer.split('\n\n')
+      buffer = events.pop()
+      for (const event of events) {
+        if (!event.startsWith('data: ')) continue
+        try {
+          const data = JSON.parse(event.slice(6))
+          processSSEEvent(data, aiMsg.value, { onQueueEvent: handleQueueEvent })
+
+          if (aiMsg.value.interrupt) {
+            interrupted = true
+            approvalMode.value = true
+            approvalData.value = extractApprovalData(aiMsg.value.interrupt)
+            try {
+              await currentStreamReader.cancel()
+            } catch (cancelErr) {
+              console.warn('[KnowledgeApp] reader.cancel 异常（可忽略）:', cancelErr)
+            }
+            break
+          }
+        } catch (parseErr) {
+          // 单个事件解析失败不影响后续事件，继续处理
+          console.warn('[KnowledgeApp] SSE 事件解析异常（可忽略）:', parseErr)
+        }
+      }
+
+      if (interrupted) {
+        break
+      }
+
+      nextTick(() => scrollToBottom())
+    }
+  } catch (err) {
+    if (err && err.status === 429) {
+      handleQueueError(err)
       aiMsg.value.ended = true
+      return
+    }
+    if (interrupted) {
+      return
+    }
+    aiMsg.value.error = '不好意思，刚刚出了点小故障，可以晚点再问我一遍。'
+    aiMsg.value.ended = true
+  } finally {
+    if (!interrupted) {
       isStreaming.value = false
-    })
+    }
+    currentStreamReader = null
+  }
 }
 
-function handleProfileSend(message, uploadedFiles) {
+async function handleProfileSend(message, uploadedFiles) {
   if (!message || isStreaming.value) return
 
   showChat.value = true
@@ -284,10 +363,10 @@ function handleProfileSend(message, uploadedFiles) {
   isStreaming.value = true
   nextTick(() => scrollToBottom())
 
-  startChatStream(message, uploadedFiles, aiMsg)
+  await startChatStream(message, uploadedFiles, aiMsg)
 }
 
-function handleApprovalSubmit({ answers }) {
+async function handleApprovalSubmit({ answers }) {
   approvalMode.value = false
 
   const aiMsg = messages.value[messages.value.length - 1]
@@ -298,8 +377,11 @@ function handleApprovalSubmit({ answers }) {
 
   const resumeData = { answers }
 
+  // 清除上一次的中断状态，避免旧状态导致误触发（与 App.vue 保持一致）
+  aiMsg.interrupt = null
+
   const aiMsgRef = ref(aiMsg)
-  startChatStream('', [], aiMsgRef, resumeData)
+  await startChatStream('', [], aiMsgRef, resumeData)
 }
 
 /**
@@ -313,6 +395,50 @@ function handleApprovalCancel() {
     aiMsg.ended = true
     aiMsg.isThinkingActive = false
   }
+}
+
+/**
+ * 停止 LLM 生成（2026-06-15 新增）：用户点击停止按钮触发
+ * 与 App.vue 的 handleStopMessage 行为一致：
+ * 1. 调用 currentStreamReader.cancel() 断开 SSE 连接
+ * 2. 标记最后一条 AI 消息 ended = true + 追加"已停止"提示
+ * 3. 重置 isStreaming
+ */
+async function handleStopMessage() {
+  if (!isStreaming.value) return
+
+  // 1. 取消 SSE reader
+  if (currentStreamReader) {
+    try {
+      await currentStreamReader.cancel()
+    } catch (err) {
+      console.warn('[KnowledgeApp] stop reader.cancel 异常（可忽略）:', err)
+    }
+    currentStreamReader = null
+  }
+
+  // 2. 标记 AI 消息已停止
+  const aiMsg = messages.value[messages.value.length - 1]
+  if (aiMsg && aiMsg.type === 'ai') {
+    aiMsg.ended = true
+    aiMsg.isThinkingActive = false
+    if (typeof aiMsg.text === 'string' && !aiMsg.text.includes('[生成已被用户中止]')) {
+      aiMsg.text = (aiMsg.text || '') + '\n\n[生成已被用户中止]'
+    }
+  }
+
+  // 3. 重置流式状态
+  isStreaming.value = false
+}
+
+// 2026-06-15 新增：子智能体详情抽屉 open / close（独立 SPA 自持；与 App.vue 同款签名）
+function openSubAgentDrawer(subAgent) {
+  currentSubAgent.value = subAgent
+  subAgentDrawerVisible.value = true
+}
+
+function closeSubAgentDrawer() {
+  subAgentDrawerVisible.value = false
 }
 </script>
 
@@ -349,6 +475,11 @@ function handleApprovalCancel() {
       <div v-if="!showChat" class="welcome-section">
         <h2 class="welcome-title">Agent, 让你的工作更轻松</h2>
         <div class="input-box-container">
+          <!-- 2026-06-15 新增：排队提示 banner（聊天面板下方、输入框上方） -->
+          <QueueStatusBanner
+            :queue-status="queueStatus"
+            :is-visible="isQueueBannerVisible"
+          />
           <HumanApprovalBox
             v-if="approvalMode"
             :questions="approvalData.questions"
@@ -362,6 +493,7 @@ function handleApprovalCancel() {
             @send="handleProfileSend"
             @tool-action="handleToolAction"
             @new-chat="handleNewChat"
+            @stop="handleStopMessage"
           />
         </div>
       </div>
@@ -388,11 +520,19 @@ function handleApprovalCancel() {
               :error="message.error"
               :message-id="message.id"
               :is-thinking-active="message.isThinkingActive"
+              :download-info="message.downloadInfo"
+              :sub-agents="message.subAgents"
+              @open-subagent-drawer="openSubAgentDrawer"
             />
           </div>
         </div>
 
         <div class="chat-input-area">
+          <!-- 2026-06-15 新增：排队提示 banner（聊天面板下方、输入框上方） -->
+          <QueueStatusBanner
+            :queue-status="queueStatus"
+            :is-visible="isQueueBannerVisible"
+          />
           <transition name="fade">
             <button
               v-show="showScrollButton"
@@ -420,6 +560,7 @@ function handleApprovalCancel() {
             @send="handleProfileSend"
             @tool-action="handleToolAction"
             @new-chat="handleNewChat"
+            @stop="handleStopMessage"
           />
         </div>
       </template>
@@ -435,6 +576,16 @@ function handleApprovalCancel() {
       :previewMode="previewMode"
       :fileUrl="previewFileUrl"
       @close="closePreview"
+    />
+
+    <!--
+      2026-06-15 新增：子智能体详情抽屉（独立 SPA，自持渲染；与 App.vue 顶层抽屉同款组件）
+      KnowledgeApp 不在 App.vue 渲染树内，无法复用 App.vue 的抽屉，需自行持有状态 + 渲染
+    -->
+    <SubAgentDrawer
+      :visible="subAgentDrawerVisible"
+      :sub-agent="currentSubAgent"
+      @close="closeSubAgentDrawer"
     />
   </div>
 </template>
@@ -473,10 +624,13 @@ function handleApprovalCancel() {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* 2026-06-15 调整：保持 padding: 8px 12px，配合 32px 折叠按钮（box-sizing: border-box 含 1px border）
+     自然高度 = 8 + 32 + 8 = 48px，与 .chat-header / .drawer-header 一致 */
   padding: 8px 12px;
   border-bottom: 1px solid var(--color-border-light);
   flex-shrink: 0;
-  height: 40px;
+  /* 2026-06-15 新增：兜底 min-height，保证折叠态（padding 8px）也不矮于 48px */
+  min-height: 48px;
   box-sizing: border-box;
 }
 
@@ -509,8 +663,11 @@ function handleApprovalCancel() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  /* 2026-06-15 调整：28→32px + box-sizing: border-box，与 SubAgentDrawer .close-btn 尺寸对齐，
+     保证 1px border 包含在 32px 内，避免 sidebar-header 实际高度超出 min-height: 48px */
+  width: 32px;
+  height: 32px;
+  box-sizing: border-box;
   background-color: var(--color-bg-secondary);
   color: var(--color-text-secondary);
   border-radius: var(--radius-sm);
@@ -605,11 +762,14 @@ function handleApprovalCancel() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 24px;
+  /* 2026-06-15 调整：padding 设为 10/24，配合内部 22px 文本行高 */
+  padding: 10px 24px;
   background-color: var(--color-bg-primary);
   border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
-  height: 40px;
+  /* 2026-06-15 新增：与 .sidebar-header / .drawer-header 三处统一 48px，
+     避免聊天模式切换时头部高度跳动 */
+  min-height: 48px;
   box-sizing: border-box;
 }
 
@@ -655,7 +815,7 @@ function handleApprovalCancel() {
 
 .chat-input-area {
   position: relative;
-  padding: 16px 40px 24px;
+  padding: 0;
   background-color: rgb(249, 250, 251);
   border-top: 1px solid var(--color-border-light);
   flex-shrink: 0;

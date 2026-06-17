@@ -27,6 +27,9 @@ from langchain_core.messages import ToolMessage
 
 from app.features.map_agent.MapAgent import MapAgent
 from app.core.format.stream import stream_format_context
+from app.core.concurrency import chat_concurrency_dependency, stream_with_concurrency
+# 2026-06-15 新增：子智能体停止信号传递（FastAPI Request → ContextVar → sandbox/explore 工具）
+from app.core.tools._stop_signal import reset_current_request, set_current_request
 from app.features.map_agent.config.prompts import KNOWLEDGE_SYSTEM_PROMPT, MAP_AGENT_SYSTEM_PROMPT
 from app.features.map_agent.config.MapAgentContext import MapAgentContext
 
@@ -69,7 +72,7 @@ async def get_map_agent() -> MapAgent:
 
 
 # Knowledge 目录路径
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 KNOWLEDGE_DIR = os.path.join(_PROJECT_ROOT, "data", "Knowledge")
 METADATA_FILE = os.path.join(KNOWLEDGE_DIR, "metadata.json")
 TMP_DIR = os.path.join(KNOWLEDGE_DIR, "tmp")
@@ -439,6 +442,7 @@ async def generate_stream_response(
     geometry_data: dict = {},
     attachments: list = [],
     resume: dict = None,
+    request: Request = None,  # 2026-06-15 新增：用于检测客户端断开（停止按钮触发）
 ) -> AsyncGenerator[str, None]:
     """
     生成流式响应的异步生成器
@@ -465,6 +469,11 @@ async def generate_stream_response(
     Yields:
         str: SSE 格式的响应数据，包含 type 字段和对应的数据
     """
+    # 2026-06-15 新增：把 FastAPI Request 挂到 ContextVar，
+    # 让子智能体工具（sandbox / explore）能通过 get_current_request() 取出，
+    # 在 astream 循环中检测 is_disconnected() 来响应客户端断开（停止按钮触发）。
+    # 异步 generator 的 ContextVar 在 with 块退出时自动清理。
+    cv_token = set_current_request(request)
     try:
         # 获取 MapAgent 实例（延迟初始化）
         map_agent = await get_map_agent()
@@ -492,6 +501,16 @@ async def generate_stream_response(
 
         # 调用 MapAgent 的 stream 方法，使用组合模式
         async for chunk in stream:
+            # 2026-06-15 新增：客户端断开检测（停止按钮触发）
+            # 通过 reader.cancel() 主动断开 SSE 连接后，FastAPI 会检测到连接关闭，
+            # 此处跳出循环让 LangGraph 停止运行，避免继续消耗 LLM token。
+            if request is not None:
+                try:
+                    if await request.is_disconnected():
+                        logger.info(f"[Chat] session_id={session_id} 客户端已断开，跳出 stream 循环")
+                        return
+                except Exception as e:
+                    logger.warning(f"[Chat] is_disconnected 检测异常: {e}")
             # ===== 中断检测（多模式兼容） =====
             # interrupt() 在不同 stream_mode 下输出格式不同：
             # - stream_mode="updates" 时：直接输出 {"__interrupt__": [...]}
@@ -533,12 +552,35 @@ async def generate_stream_response(
                 if mode == "updates":
                     # 节点状态更新
                     # data 格式: {node_name: {state_updates}}
-                    yield f"data: {json.dumps({'type': 'update', 'data': data}, ensure_ascii=False, default=str)}\n\n"
+                    # 2026-06-14-2 新增：与 custom / message 事件格式统一，附加 thread_id / langgraph_node
+                    # thread_id 在 updates 模式下无法精确获取子线程 ID，统一置空；langgraph_node 取节点名。
+                    # 老客户端忽略顶层字段，向后兼容。
+                    update_payload = {
+                        "type": "update",
+                        "data": data,
+                        "thread_id": "",
+                        "langgraph_node": next(iter(data.keys()), "") if isinstance(data, dict) else "",
+                    }
+                    yield f"data: {json.dumps(update_payload, ensure_ascii=False, default=str)}\n\n"
 
                 elif mode == "custom":
                     # 自定义数据
-                    # data 格式: 自定义的数据结构
-                    yield f"data: {json.dumps({'type': 'custom', 'data': data}, ensure_ascii=False, default=str)}\n\n"
+                    # data 格式: 自定义的数据结构（一般是 ToolEvent，含 data.data.thread_id）
+                    # 2026-06-13 新增：把 subagent 的 thread_id 透传到 SSE 顶层
+                    # 老客户端只读 data，忽略顶层 thread_id，行为不变
+                    custom_data = data if isinstance(data, dict) else {}
+                    inner_data = custom_data.get("data") or {}
+                    custom_thread_id = (
+                        (inner_data.get("thread_id") if isinstance(inner_data, dict) else None)
+                        or custom_data.get("tool_call_id")
+                        or ""
+                    )
+                    custom_payload = {
+                        "type": "custom",
+                        "data": data,
+                        "thread_id": custom_thread_id,
+                    }
+                    yield "data: " + json.dumps(custom_payload, ensure_ascii=False, default=str) + "\n\n"
 
                 elif mode == "messages":
                     if isinstance(data, tuple) and len(data) == 2:
@@ -565,12 +607,19 @@ async def generate_stream_response(
         logger.error(f"[ERROR] generate_stream_response 异常: {e}")
         logger.error(f"[ERROR] 异常堆栈: {traceback.format_exc()}")
         yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+    finally:
+        # 2026-06-15 新增：清理 ContextVar，避免后续请求继承到错误的 request 引用。
+        # 即使 generate_stream_response 因 is_disconnected() return 提前退出，也保证清理。
+        try:
+            reset_current_request(cv_token)
+        except Exception as reset_error:
+            logger.warning(f"[Chat] reset_current_request 异常: {reset_error}")
 
 
 @router.post('/chat')
 async def chat(
     request: Request,
-    chat_request: ChatRequest
+    chat_request: ChatRequest,
 ):
     """
     地图智能体流式聊天接口
@@ -599,19 +648,30 @@ async def chat(
         # 获取 geometry_data
         geometry_data = chat_request.geometry_data or {}
 
+        # 手动获取 SSE 模式并发控制 generator
+        # 注意：不能用 Depends(chat_concurrency_dependency)，FastAPI 会把 yield 依赖
+        # 包装为 context manager 并注入 generator 第一个 yield 的值（dict），导致下游
+        # ``async for item in dep`` 抛 TypeError。详见 stream_with_concurrency 文档。
+        dep = chat_concurrency_dependency(request, mode="sse")
+
         # 处理 resume 场景（无新消息，只有 resume 决策）
         if chat_request.resume and not chat_request.message:
             logger.warning(f"[Chat] session_id={session_id}, resume={chat_request.resume}")
             return StreamingResponse(
-                generate_stream_response(
-                    user_input="",
-                    session_id=session_id,
-                    context=MapAgentContext(
-                        system_prompt=MAP_AGENT_SYSTEM_PROMPT,
+                stream_with_concurrency(
+                    request,
+                    dep,
+                    generate_stream_response(
+                        user_input="",
+                        session_id=session_id,
+                        context=MapAgentContext(
+                            system_prompt=MAP_AGENT_SYSTEM_PROMPT,
+                        ),
+                        geometry_data=geometry_data,
+                        attachments=chat_request.attachments or [],
+                        resume=chat_request.resume,
+                        request=request,  # 2026-06-15 新增：用于客户端断开检测
                     ),
-                    geometry_data=geometry_data,
-                    attachments=chat_request.attachments or [],
-                    resume=chat_request.resume,
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -642,14 +702,19 @@ async def chat(
 
         # 返回流式响应
         return StreamingResponse(
-            generate_stream_response(
-                user_input=chat_request.message,
-                session_id=session_id,
-                context=MapAgentContext(
-                    system_prompt=MAP_AGENT_SYSTEM_PROMPT,
+            stream_with_concurrency(
+                request,
+                dep,
+                generate_stream_response(
+                    user_input=chat_request.message,
+                    session_id=session_id,
+                    context=MapAgentContext(
+                        system_prompt=MAP_AGENT_SYSTEM_PROMPT,
+                    ),
+                    geometry_data=geometry_data,
+                    attachments=chat_request.attachments or [],
+                    request=request,  # 2026-06-15 新增：用于客户端断开检测
                 ),
-                geometry_data=geometry_data,
-                attachments=chat_request.attachments or []
             ),
             media_type="text/event-stream",
             headers={
@@ -667,7 +732,7 @@ async def chat(
 @router.post('/knowledge-chat')
 async def knowledge_chat(
     request: Request,
-    chat_request: ChatRequest
+    chat_request: ChatRequest,
 ):
     """
     地图智能体流式聊天接口
@@ -696,20 +761,28 @@ async def knowledge_chat(
         # 获取 geometry_data
         geometry_data = chat_request.geometry_data or {}
 
+        # 手动获取 SSE 模式并发控制 generator（不能用 Depends，详见 stream_with_concurrency 文档）
+        dep = chat_concurrency_dependency(request, mode="sse")
+
         # 处理 resume 场景（无新消息，只有 resume 决策）
         if chat_request.resume and not chat_request.message:
             logger.warning(f"[KnowledgeChat] session_id={session_id}, resume={chat_request.resume}")
             return StreamingResponse(
-                generate_stream_response(
-                    user_input="",
-                    session_id=session_id,
-                    context=MapAgentContext(
-                        system_prompt=KNOWLEDGE_SYSTEM_PROMPT,
-                        knowledge_root=TMP_DIR
+                stream_with_concurrency(
+                    request,
+                    dep,
+                    generate_stream_response(
+                        user_input="",
+                        session_id=session_id,
+                        context=MapAgentContext(
+                            system_prompt=KNOWLEDGE_SYSTEM_PROMPT,
+                            knowledge_root=TMP_DIR
+                        ),
+                        geometry_data=geometry_data,
+                        attachments=chat_request.attachments or [],
+                        resume=chat_request.resume,
+                        request=request,  # 2026-06-15 新增：用于客户端断开检测
                     ),
-                    geometry_data=geometry_data,
-                    attachments=chat_request.attachments or [],
-                    resume=chat_request.resume,
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -723,15 +796,20 @@ async def knowledge_chat(
 
         # 返回流式响应
         return StreamingResponse(
-            generate_stream_response(
-                user_input=chat_request.message,
-                session_id=session_id,
-                context=MapAgentContext(
-                    system_prompt=KNOWLEDGE_SYSTEM_PROMPT,
-                    knowledge_root=TMP_DIR
+            stream_with_concurrency(
+                request,
+                dep,
+                generate_stream_response(
+                    user_input=chat_request.message,
+                    session_id=session_id,
+                    context=MapAgentContext(
+                        system_prompt=KNOWLEDGE_SYSTEM_PROMPT,
+                        knowledge_root=TMP_DIR
+                    ),
+                    geometry_data=geometry_data,
+                    attachments=chat_request.attachments or [],
+                    request=request,  # 2026-06-15 新增：用于客户端断开检测
                 ),
-                geometry_data=geometry_data,
-                attachments=chat_request.attachments or []
             ),
             media_type="text/event-stream",
             headers={

@@ -10,7 +10,7 @@ Date: 2026-04-07
 Author: 张镒谱
 """
 
-from typing import Dict, Optional
+from typing import Dict, Literal, Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -292,6 +292,87 @@ class DemonstrationSettings(BaseSettings):
         return bool(v)
 
 
+class SandboxSettings(BaseSettings):
+    """
+    沙箱容器化部署配置（2026-06-12 新增）
+
+    管理 Docker 沙箱在容器化场景下的运行参数，支持 4 种部署模式：
+        - local:  本地直接跑（应用进程 = 宿主机），路径无需投影
+        - socket: 应用容器挂载宿主机 /var/run/docker.sock，路径需通过
+                  sandbox_host_workspace_prefix 投影到宿主机视角
+        - dind:   Docker-in-Docker（应用容器内嵌 daemon），路径与 local 相同
+        - k8s:    通过 K8s API 创建 Pod（占位，未实现）
+
+    路径双视角：
+        - workspace（应用进程视角）：用于 os.makedirs / upload_files / download_files
+        - host_workspace（宿主机视角）：用于 Docker volume bind mount
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+        protected_namespaces=("settings_",),
+    )
+
+    sandbox_docker_mode: Literal["local", "socket", "dind", "k8s"] = Field(
+        default="local",
+        description="沙箱部署模式：local(本地) / socket(挂docker.sock) / dind / k8s",
+    )
+    sandbox_docker_host: str = Field(
+        default="",
+        description="Docker daemon URL，socket 模式用 unix:///var/run/docker.sock",
+    )
+    sandbox_image: str = Field(
+        default="python:3.12-alpine",
+        description="沙箱镜像名",
+    )
+    sandbox_max_memory_mb: int = Field(
+        default=512,
+        ge=64,
+        description="容器内存限制（MB），下限 64",
+    )
+    sandbox_max_cpu_percent: int = Field(
+        default=100,
+        ge=10,
+        le=100,
+        description="容器 CPU 限制（百分比），10-100",
+    )
+    sandbox_network_enabled: bool = Field(
+        default=False,
+        description="是否启用容器网络",
+    )
+    sandbox_default_timeout: int = Field(
+        default=60,
+        ge=1,
+        description="命令默认超时（秒）",
+    )
+    sandbox_container_workspace: str = Field(
+        default="/workspace",
+        description="容器内工作目录（bind mount target）",
+    )
+    sandbox_host_workspace_prefix: str = Field(
+        default="",
+        description=(
+            "宿主机视角工作目录前缀，socket 模式专用。"
+            "例：容器内 /app/data 对应宿主机 /host/app/data，则填 /host/app/data"
+        ),
+    )
+    sandbox_k8s_namespace: str = Field(
+        default="default",
+        description="K8s 模式命名空间（占位，未实现）",
+    )
+
+    @field_validator("sandbox_network_enabled", mode="before")
+    @classmethod
+    def parse_bool(cls, v):
+        """将字符串转换为布尔值"""
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes", "on")
+        return bool(v)
+
+
 class Settings(BaseSettings):
     """
     应用总配置
@@ -311,6 +392,12 @@ class Settings(BaseSettings):
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     demonstration: DemonstrationSettings = Field(default_factory=DemonstrationSettings)
     portal_auth: PortalAuthSettings = Field(default_factory=PortalAuthSettings)
+    sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
+    agent_chat_max_concurrency: int = Field(
+        default=1,
+        ge=1,
+        description="Agent 聊天接口最大并发数，超出时进入内存队列等待；环境变量 AGENT_CHAT_MAX_CONCURRENCY",
+    )
 
     def get_llm_config(self) -> dict:
         """
@@ -389,6 +476,26 @@ class Settings(BaseSettings):
         """
         return {
             "portal_refresh_token_ttl_seconds": self.portal_auth.portal_refresh_token_ttl_seconds,
+        }
+
+    def get_sandbox_config(self) -> dict:
+        """
+        获取沙箱容器化部署配置字典
+
+        Returns:
+            dict: 沙箱配置扁平字典，供 DockerSandboxMiddleware 透传
+        """
+        return {
+            "docker_mode": self.sandbox.sandbox_docker_mode,
+            "docker_host": self.sandbox.sandbox_docker_host,
+            "image": self.sandbox.sandbox_image,
+            "max_memory_mb": self.sandbox.sandbox_max_memory_mb,
+            "max_cpu_percent": self.sandbox.sandbox_max_cpu_percent,
+            "network_enabled": self.sandbox.sandbox_network_enabled,
+            "default_timeout": self.sandbox.sandbox_default_timeout,
+            "container_workspace": self.sandbox.sandbox_container_workspace,
+            "host_workspace_prefix": self.sandbox.sandbox_host_workspace_prefix,
+            "k8s_namespace": self.sandbox.sandbox_k8s_namespace,
         }
 
 

@@ -41,6 +41,31 @@ for _lc_mod in [
 # tool 装饰器需要保留被装饰的原始函数，否则测试无法调用 .func
 sys.modules["langchain.tools"].tool = lambda *args, **kwargs: lambda func: func
 
+# 2026-06-15 新增：mock langchain.agents 子模块（FilesystemReadTools.explore 依赖）
+# FilesystemReadTools.py 顶层 import：
+#   from langchain.agents import create_agent
+#   from langchain.agents.middleware import ContextEditingMiddleware, TodoListMiddleware
+#   from langchain.agents.middleware.context_editing import ClearToolUsesEdit
+_agents_mod = types.ModuleType("langchain.agents")
+_agents_mod.create_agent = Mock()
+sys.modules["langchain.agents"] = _agents_mod
+
+_agents_mw_mod = types.ModuleType("langchain.agents.middleware")
+_agents_mw_mod.__path__ = []  # 让它表现为 package 以支持子模块
+_agents_mw_mod.ContextEditingMiddleware = Mock()
+_agents_mw_mod.TodoListMiddleware = Mock()
+sys.modules["langchain.agents.middleware"] = _agents_mw_mod
+
+_agents_mw_ce_mod = types.ModuleType("langchain.agents.middleware.context_editing")
+_agents_mw_ce_mod.ClearToolUsesEdit = Mock()
+sys.modules["langchain.agents.middleware.context_editing"] = _agents_mw_ce_mod
+
+# 2026-06-15 新增：encoding_safe_file_search 依赖
+#   from langchain.agents.middleware.types import AgentMiddleware
+_agents_mw_types = types.ModuleType("langchain.agents.middleware.types")
+_agents_mw_types.AgentMiddleware = Mock()
+sys.modules["langchain.agents.middleware.types"] = _agents_mw_types
+
 
 class _ToolRuntime(Mock):
     """支持泛型下标的 ToolRuntime Mock"""
@@ -78,6 +103,8 @@ class _BaseTool:
 
 sys.modules["langchain_core.tools"].BaseTool = _BaseTool
 sys.modules["langchain_core.tools"].StructuredTool = _BaseTool
+# 2026-06-15 新增：encoding_safe_file_search 依赖
+sys.modules["langchain_core.tools"].tool = lambda *args, **kwargs: lambda func: func
 
 class _RecursiveCharacterTextSplitter:
     """模拟 RecursiveCharacterTextSplitter，提供基础 split_text 功能"""
@@ -157,17 +184,84 @@ sys.modules["numpy"] = Mock()
 # deepagents 需要作为包支持子模块
 sys.modules["deepagents"] = types.ModuleType("deepagents")
 sys.modules["deepagents.backends"] = types.ModuleType("deepagents.backends")
+sys.modules["deepagents.backends.sandbox"] = types.ModuleType("deepagents.backends.sandbox")
+sys.modules["deepagents.backends.protocol"] = types.ModuleType("deepagents.backends.protocol")
 sys.modules["deepagents.backends.filesystem"] = types.ModuleType("deepagents.backends.filesystem")
+sys.modules["deepagents.middleware"] = types.ModuleType("deepagents.middleware")
+sys.modules["deepagents.middleware.filesystem"] = types.ModuleType("deepagents.middleware.filesystem")
 
+# mock deepagents 核心类
+class _ExecuteResponse:
+    def __init__(self, output="", exit_code=0, truncated=False):
+        self.output = output
+        self.exit_code = exit_code
+        self.truncated = truncated
+
+class _BaseSandbox:
+    pass
+
+sys.modules["deepagents.backends.sandbox"].BaseSandbox = _BaseSandbox
+sys.modules["deepagents.backends.protocol"].ExecuteResponse = _ExecuteResponse
+
+class _FileUploadResponse:
+    def __init__(self, path="", error=None):
+        self.path = path
+        self.error = error
+
+class _FileDownloadResponse:
+    def __init__(self, path="", content=None, error=None):
+        self.path = path
+        self.content = content
+        self.error = error
+
+sys.modules["deepagents.backends.protocol"].FileUploadResponse = _FileUploadResponse
+sys.modules["deepagents.backends.protocol"].FileDownloadResponse = _FileDownloadResponse
+
+class _FilesystemMiddleware:
+    def __init__(self, backend=None, **kwargs):
+        self.backend = backend
+
+sys.modules["deepagents.middleware.filesystem"].FilesystemMiddleware = _FilesystemMiddleware
+
+# mock create_deep_agent
+sys.modules["deepagents"].create_deep_agent = Mock(return_value=Mock())
 
 class _FilesystemBackend:
     """模拟 deepagents FilesystemBackend"""
+    def __init__(self, *args, **kwargs):  # 2026-06-15 接受任意构造参数（explore 工具传 root_dir/virtual_mode）
+        pass
     @staticmethod
     def _ripgrep_search(*args, **kwargs):
         return []
 
 
 sys.modules["deepagents.backends.filesystem"].FilesystemBackend = _FilesystemBackend
+
+# 2026-06-15 新增：把 FilesystemMiddleware / FilesystemBackend 也注册到 deepagents 顶层
+# （FilesystemReadTools.explore 依赖这两个 from ... import 形式）
+sys.modules["deepagents"].FilesystemMiddleware = _FilesystemMiddleware
+sys.modules["deepagents.backends"].FilesystemBackend = _FilesystemBackend
+
+# mock docker 模块（测试无需真实 Docker）
+_mock_docker = types.ModuleType("docker")
+_mock_docker.__path__ = []
+_mock_docker.from_env = Mock()
+_mock_docker.DockerClient = Mock()  # 2026-06-12 新增：socket 模式用 DockerClient(base_url=...)
+
+class _DockerErrors:
+    class DockerException(Exception):
+        pass
+    class NotFound(Exception):
+        pass
+    class APIError(Exception):
+        pass
+
+_mock_docker.errors = _DockerErrors()
+sys.modules["docker"] = _mock_docker
+sys.modules["docker.errors"] = types.ModuleType("docker.errors")
+sys.modules["docker.errors"].DockerException = _DockerErrors.DockerException
+sys.modules["docker.errors"].NotFound = _DockerErrors.NotFound
+sys.modules["docker.errors"].APIError = _DockerErrors.APIError
 
 # mock langgraph 及其子模块（使用 ModuleType 以支持 from xxx import yyy）
 for _lg_mod in [
@@ -251,6 +345,29 @@ def _setup_env() -> None:
     """
     os.environ["AUTH_STORAGE_MODE"] = "memory"
     os.environ["DATABASE_URL"] = "postgresql://postgres:postgres@localhost:5432/feature_agent"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _patch_typing_for_mocks() -> Generator[None, None, None]:
+    """
+    Patch typing._type_check，允许 Mock 对象通过类型注解检查。
+
+    测试中对 langchain/langgraph 等外部依赖使用 Mock/ModuleType 替换，
+    当 Agent 模块的注解包含 Union[AgentState, LGCommand] 等依赖 Mock 的类型时，
+    Python 的 typing 机制会将其识别为非法前向引用而抛出 SyntaxError。
+    本 fixture 在会话开始前统一打补丁，使 Mock 对象跳过原始类型检查。
+    """
+    import typing
+    _orig_type_check = typing._type_check
+
+    def _patched_type_check(arg, msg, is_argument=True, module=None, *, allow_special_forms=False):
+        if hasattr(arg, "_mock_name"):
+            return arg
+        return _orig_type_check(arg, msg, is_argument, module, allow_special_forms=allow_special_forms)
+
+    typing._type_check = _patched_type_check
+    yield
+    typing._type_check = _orig_type_check
 
 
 # =============================================================================
@@ -370,15 +487,6 @@ def app() -> Generator:
     # 强制重新设置 langgraph.types，确保不会被覆盖
     sys.modules["langgraph.types"] = _lg_types
     import importlib
-    # 在 import agent 之前 patch typing._type_check，使 Mock 对象跳过原始类型检查
-    # 避免 Optional[Mock] / Union[AgentState, LGCommand] 等注解在 Python 3.12 下触发 SyntaxError
-    import typing
-    _orig_type_check = typing._type_check
-    def _patched_type_check(arg, msg, is_argument=True, module=None, *, allow_special_forms=False):
-        if hasattr(arg, "_mock_name"):
-            return arg
-        return _orig_type_check(arg, msg, is_argument, module, allow_special_forms=allow_special_forms)
-    typing._type_check = _patched_type_check
     _agent_mod = importlib.import_module("app.core.agent.agent")
     from app.core.server import create_app
     from app.main import register_routers

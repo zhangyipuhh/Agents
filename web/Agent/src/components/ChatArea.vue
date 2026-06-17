@@ -13,7 +13,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['copy', 'regenerate', 'like', 'dislike'])
+const emit = defineEmits(['copy', 'regenerate', 'like', 'dislike', 'open-subagent-drawer'])
 
 const chatContainer = ref(null)
 const showScrollButton = ref(false)
@@ -172,10 +172,12 @@ defineExpose({
         :message-id="message.id"
         :is-thinking-active="message.isThinkingActive"
         :download-info="message.downloadInfo"
+        :sub-agents="message.subAgents"
         @copy="(e) => emit('copy', e)"
         @regenerate="(id) => emit('regenerate', id)"
         @like="(id) => emit('like', id)"
         @dislike="(id) => emit('dislike', id)"
+        @open-subagent-drawer="(sa) => emit('open-subagent-drawer', sa)"
       />
     </div>
 

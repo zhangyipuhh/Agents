@@ -11,7 +11,7 @@ FilesystemReadTools - 文件系统探索工具模块
     - opencode Task(prompt=, subagent_type="explore") →  explore(prompt=)
 
 工作空间:
-    通过 Path.cwd() 反向定位项目根目录，拼接 app/data/upload/{session_id} 作为 root_path。
+    通过 Path.cwd() 反向定位项目根目录，拼接 data/upload/{session_id} 作为 root_path。
     root_path 限定子智能体的操作范围，确保只读安全。
 
 子智能体可用工具:
@@ -36,9 +36,9 @@ from langchain.agents.middleware import ContextEditingMiddleware, TodoListMiddle
 from langchain.agents.middleware.context_editing import ClearToolUsesEdit
 from deepagents import FilesystemMiddleware
 from deepagents.backends import FilesystemBackend
-from langgraph.checkpoint.memory import MemorySaver
 
 from app.shared.tools.middleware.encoding_safe_file_search import EncodingSafeFileSearchMiddleware
+from app.shared.utils.memory.checkpoint import get_async_checkpointer
 from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.config import get_stream_writer
@@ -48,7 +48,16 @@ from pydantic import BaseModel, Field
 from app.core.agent.AgentContext import AgentContext
 from app.core.config.config import LLM_CONFIG
 from app.core.llmcalls.model_factory import ModelFactory
+from app.core.tools._stop_signal import get_current_request
 from app.core.tools.events import create_tool_event
+from app.core.tools.subagent_message_extractor import extract_structured_messages
+
+# 2026-06-15 新增：停止信号检测间隔（与 SandboxTools 保持一致）
+_STOP_CHECK_INTERVAL = 5
+
+# 2026-06-15 新增：logger（用户停止信号日志）
+import logging
+logger = logging.getLogger(__name__)
 
 
 _EXPLORE_SYSTEM_PROMPT = """\
@@ -132,7 +141,7 @@ def _extract_last_ai_text(messages: list) -> str:
     "Launch multiple explore agents concurrently whenever possible, "
     "to maximize performance; use a single message with multiple tool calls."
 ))
-def explore(
+async def explore(  # 2026-06-15: 改 async，支持子智能体停止信号感知
     prompt: str,
     runtime: ToolRuntime[AgentContext],
 ) -> Command:
@@ -145,6 +154,16 @@ def explore(
 
     使用 LangGraph MemorySaver checkpointer 管理子智能体会话。传入 task_id
     可恢复之前的会话，子智能体将继续拥有完整历史上下文。
+
+    ## 2026-06-15 新增：用户停止信号感知
+
+    通过 ``app.core.tools._stop_signal`` 取出当前请求的 FastAPI Request，
+    在 ``child_agent.astream()`` 循环中每 ``_STOP_CHECK_INTERVAL`` 个 chunk 检测一次
+    ``request.is_disconnected()``，发现客户端断开（停止按钮触发）时立即：
+
+    1. 跳出 astream 循环
+    2. 推送 ``tool_stop`` 事件，``data.status = "stopped_by_user"``
+    3. 返回 ``Command`` 包含「子智能体已被用户中止」文本
 
     Args:
         prompt: 详细任务描述。父 LLM 应将用户问题改写为高度详细的任务描述，
@@ -159,12 +178,15 @@ def explore(
     start_time = datetime.now()
     writer = get_stream_writer()
 
+    # 2026-06-15 新增：从 ContextVar 取出当前 FastAPI Request（可能为 None）
+    request = get_current_request()
+
     actual_task_id =  tool_call_id
 
     session_id = runtime.context.get("session_id", "default")
 
     project_root = Path.cwd()
-    root_path = project_root / "app" / "data" / "upload" / session_id
+    root_path = project_root / "data" / "upload" / session_id
     if runtime.context.get("knowledge_root"):
         root_path = Path(project_root / runtime.context.get("knowledge_root"))
     try:
@@ -183,6 +205,9 @@ def explore(
                 "args": {"prompt": prompt},
                 "root_path": str(root_path),
                 "description": f"开始文件探索: {prompt[:100]}",
+                # ===== 2026-06-13 新增 subagent 字段（向前兼容，老客户端忽略） =====
+                "thread_id": tool_call_id,
+                "parent_prompt": prompt,
             },
         )
         writer(dict(start_event))
@@ -221,7 +246,9 @@ def explore(
             ],
             system_prompt=_EXPLORE_SYSTEM_PROMPT,
             response_format=ExploreResult,
-            checkpointer=MemorySaver(),
+            # 2026-06-16 改造：使用全局共享 checkpointer 持久化 explore 子智能体 messages
+            # 原 MemorySaver() 是进程内临时实例，会话恢复时无法获取子智能体轨迹
+            checkpointer=await get_async_checkpointer(),
         )
 
         # LangGraph checkpointer 自动管理会话历史
@@ -229,11 +256,29 @@ def explore(
         config = {"configurable": {"thread_id": actual_task_id}}
 
         final_answer = ""
-        for chunk in child_agent.stream(
+        all_messages = []
+        # 2026-06-15 新增：用户主动停止标志
+        stopped_by_user = False
+
+        # 2026-06-15 改造：sync stream → async astream
+        async for chunk in child_agent.astream(
             {"messages": [{"role": "user", "content": prompt}]},
             config=config,
             stream_mode=["updates", "values", "messages"],
         ):
+            # 2026-06-15 新增：客户端断开检测
+            if request is not None and len(all_messages) % _STOP_CHECK_INTERVAL == 0:
+                try:
+                    if await request.is_disconnected():
+                        logger.info(
+                            "[explore] 客户端已断开，停止子智能体。tool_call_id=%s",
+                            tool_call_id,
+                        )
+                        stopped_by_user = True
+                        break
+                except Exception as e:
+                    logger.warning(f"[explore] is_disconnected 检测异常: {e}")
+
             if isinstance(chunk, tuple) and len(chunk) == 2:
                 stream_mode, data = chunk
             elif isinstance(chunk, dict):
@@ -243,6 +288,12 @@ def explore(
                 continue
 
             if stream_mode == "updates":
+                # 累计子 agent 的 messages（用于结构化 child_messages）
+                if isinstance(data, dict):
+                    for node_name, node_data in data.items():
+                        if isinstance(node_data, dict) and "messages" in node_data:
+                            all_messages.extend(node_data["messages"])
+
                 writer(dict(create_tool_event(
                     event_type="tool_progress",
                     tool=tool_name,
@@ -250,6 +301,9 @@ def explore(
                     data={
                         "child_stream": data,
                         "message": "子智能体执行中",
+                        # ===== 2026-06-13 新增 subagent 字段 =====
+                        "thread_id": tool_call_id,
+                        "child_messages": extract_structured_messages(all_messages),
                     },
                 )))
 
@@ -261,6 +315,47 @@ def explore(
                     elif isinstance(sr, dict):
                         final_answer = sr.get("answer") or ""
 
+        # ===== 2026-06-15 新增：用户停止分支（与正常完成并列）=====
+        if stopped_by_user:
+            end_time = datetime.now()
+            duration_ms = int((end_time - start_time).total_seconds() * 1000)
+            final_answer = "子智能体已被用户中止"
+
+            stop_event = create_tool_event(
+                event_type="tool_stop",
+                tool=tool_name,
+                tool_call_id=tool_call_id,
+                data={
+                    "status": "stopped_by_user",
+                    "result": {
+                        "prompt": prompt,
+                        "task_id": actual_task_id,
+                        "answer": final_answer,
+                    },
+                    "duration_ms": duration_ms,
+                    # ===== 2026-06-13 新增 subagent 字段 =====
+                    "thread_id": tool_call_id,
+                    "parent_prompt": prompt,
+                    "final_messages": extract_structured_messages(all_messages),
+                },
+            )
+            writer(dict(stop_event))
+
+            return Command(
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=json.dumps(
+                                {"subagent": final_answer},
+                                ensure_ascii=False,
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ]
+                }
+            )
+
+        # ===== 原有正常结束逻辑 =====
         # 如果还没有获取到有效答案，尝试从 messages 获取
         if not final_answer and "messages" in data:
             final_answer = _extract_last_ai_text(data["messages"])
@@ -293,6 +388,10 @@ def explore(
                     "answer": final_answer,
                 },
                 "duration_ms": duration_ms,
+                # ===== 2026-06-13 新增 subagent 字段 =====
+                "thread_id": tool_call_id,
+                "parent_prompt": prompt,
+                "final_messages": extract_structured_messages(all_messages),
             },
         )
         writer(dict(stop_event))
@@ -324,6 +423,9 @@ def explore(
                 "error_message": str(e),
                 "args": {"prompt": prompt, "task_id": actual_task_id},
                 "duration_ms": duration_ms,
+                # ===== 2026-06-13 新增 subagent 字段 =====
+                "thread_id": tool_call_id,
+                "parent_prompt": prompt,
             },
         )
         writer(dict(error_event))

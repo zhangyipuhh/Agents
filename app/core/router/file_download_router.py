@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix='/api/core/download', tags=['Core File Download'])
 
-DOWNLOAD_DIR = Path("app/data/download")
+DOWNLOAD_DIR = Path("data/download")
 
 CHUNK_SIZE = 64 * 1024
 
@@ -149,7 +149,7 @@ async def download_file(
         logger.info(f"[DEBUG] 初始 file_path: {file_path}")
 
         if DEMONSTRATION_CONFIG["demonstration_report_enabled"]:
-            file_path = Path("app/data/demonstration/download", path)
+            file_path = Path("data/demonstration/download", path)
             logger.info(f"[DEBUG] 演示模式 file_path: {file_path}")
         logger.info(f"[DEBUG] 最终 file_path: {file_path}, exists={file_path.exists()}, is_file={file_path.is_file() if file_path.exists() else 'N/A'}")
         if not file_path.exists() or not file_path.is_file():

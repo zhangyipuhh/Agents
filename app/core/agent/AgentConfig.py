@@ -21,6 +21,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import RetryPolicy
 from app.core.agent.AgentContext import AgentContext
 from app.core.tools.BaseTools import get_current_time, open_file, load_web_page, read_cached_chunk,open_file_by_id
+from app.core.tools.SandboxTools import sandbox
 from app.core.config.config import LLM_CONFIG
 
 class ConfigurableConfig(TypedDict):
@@ -231,7 +232,7 @@ class AgentConfig:
         注意:
             此方法需要子类重写，在子类中添加工具到 tools 列表
         """
-        tools: list[str] = [get_current_time, open_file, load_web_page, read_cached_chunk,open_file_by_id]
+        tools: list[str] = [get_current_time, open_file, load_web_page, read_cached_chunk,open_file_by_id, sandbox]
 
         return tools, ToolNode(tools, handle_tool_errors=True)
     

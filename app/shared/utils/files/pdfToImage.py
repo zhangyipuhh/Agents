@@ -91,7 +91,7 @@ def convert_pdfs_to_images(
     dpi: int = 300,
     max_workers: int = 4,
     output_format: str = 'jpg',
-    upload_dir: str = "app/data/upload",
+    upload_dir: str = "data/upload",
     output_dir: Optional[str] = None
 ) -> str:
     """批量转换PDF文件为图片
@@ -105,7 +105,7 @@ def convert_pdfs_to_images(
         dpi: 输出图片的DPI（清晰度），默认为300
         max_workers: 最大并行工作线程数，默认为4
         output_format: 输出格式，支持 'png', 'jpg', 'jpeg', 'tiff', 'bmp'，默认为'jpg'
-        upload_dir: 上传目录路径（支持相对路径和绝对路径），默认为"app/data/upload"
+        upload_dir: 上传目录路径（支持相对路径和绝对路径），默认为"data/upload"
         output_dir: 输出目录路径（支持相对路径和绝对路径），默认与upload_dir相同
 
     Returns:

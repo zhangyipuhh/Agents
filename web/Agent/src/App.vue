@@ -6,8 +6,10 @@ import ChatArea from './components/ChatArea.vue'
 import InputBox from './components/InputBox.vue'
 import HumanApprovalBox from './components/HumanApprovalBox.vue'
 import KnowledgePage from './components/KnowledgePage.vue'
+import SubAgentDrawer from './components/SubAgentDrawer.vue'
+import QueueStatusBanner from './components/QueueStatusBanner.vue'
 import { chatStream, createNewSession, logout as apiLogout, fetchSessionDetail, fetchSessionAttachments, fetchSessionMessages, validateToken, refreshToken, clearAuth } from './utils/api.js'
-import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage } from './utils/sseParser.js'
+import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage, isSubAgentHistoryItem, convertSubAgentHistoryToAiSubAgent } from './utils/sseParser.js'
 import { redirectToLogin, tryRefreshOrRedirect } from './utils/auth.js'
 
 const currentPage = ref('agent')
@@ -24,6 +26,68 @@ const sidebarRef = ref(null)
 const currentAttachments = ref([])
 const approvalMode = ref(false)
 const approvalData = ref({ questions: [] })
+
+// 2026-06-15 新增：持有当前 SSE reader，供 InputBox 的 stop 事件调用 cancel() 立即中断 LLM
+let currentStreamReader = null
+
+// 2026-06-14 改造：原 SandboxDrawer 已删除，沙箱数据统一由 SubAgentDrawer 展示
+// 2026-06-13 新增：子智能体详情抽屉状态
+const subAgentDrawerVisible = ref(false)
+const currentSubAgent = ref(null)
+
+// 2026-06-15 新增：排队状态机（SSE queue 事件 / HTTP 429 共同驱动）
+// event: 'idle' | 'waiting' | 'ready'
+const queueStatus = ref({
+  event: 'idle',
+  waitingCount: 0,
+  activeCount: 0,
+  maxConcurrency: 0,
+  position: 0,
+  timestamp: 0
+})
+const isQueueBannerVisible = computed(() => queueStatus.value.event === 'waiting')
+
+/**
+ * 处理 SSE queue 事件：更新 queueStatus 响应式状态
+ * @param {Object} data - { type: 'queue', event: 'waiting'|'ready', waiting_count, active_count, max_concurrency, position, timestamp }
+ */
+function handleQueueEvent(data) {
+  if (!data || data.type !== 'queue') return
+  queueStatus.value = {
+    event: data.event || 'idle',
+    waitingCount: Number(data.waiting_count) || 0,
+    activeCount: Number(data.active_count) || 0,
+    maxConcurrency: Number(data.max_concurrency) || 0,
+    position: Number(data.position) || 0,
+    timestamp: Number(data.timestamp) || 0
+  }
+}
+
+/**
+ * 处理 HTTP 429：从中提取排队信息并显示 banner（短时显示 3s 后自动淡出）
+ * @param {Error} err - 包含 status/detail 的错误对象
+ */
+function handleQueueError(err) {
+  if (!err || err.status !== 429 || !err.detail) return
+  const errorTimestamp = Date.now() / 1000
+  queueStatus.value = {
+    event: 'waiting',
+    waitingCount: Number(err.detail.waiting_count) || 1,
+    activeCount: Number(err.detail.active_count) || 0,
+    maxConcurrency: Number(err.detail.max_concurrency) || 0,
+    position: 1,
+    timestamp: errorTimestamp
+  }
+  // HTTP 模式拒绝时不等待，3s 后自动淡出 banner；
+  // 仅当 banner 仍是本次 429 触发的（即 timestamp 未被新事件覆盖）时才淡出。
+  // 2026-06-15 修复：原代码 `queueStatus.value.timestamp === queueStatus.value.timestamp`
+  // 是恒真表达式（自我比较），无意义；改为捕获 errorTimestamp 闭包变量。
+  setTimeout(() => {
+    if (queueStatus.value.timestamp === errorTimestamp) {
+      queueStatus.value = { ...queueStatus.value, event: 'idle' }
+    }
+  }, 3000)
+}
 
 /**
  * 新建任务锁，防止重复创建
@@ -173,6 +237,10 @@ async function newSession() {
     messages.splice(0, messages.length)
     currentAttachments.value = []
 
+    // 关闭子智能体详情抽屉：避免上一个会话的 subagent 数据残留在 UI 上
+    // 复用已有的 closeSubAgentDrawer()（会同步将 subAgentDrawerVisible 置 false，无需另清 currentSubAgent）
+    closeSubAgentDrawer()
+
     const newId = await createNewSession()
     sessionId.value = newId
     console.log('[newSession] 新会话创建成功:', newId)
@@ -218,15 +286,17 @@ async function handleSendMessage(message, attachments = []) {
 
   isStreaming.value = true
   let interrupted = false
+  // 2026-06-15 改造：reader 提到模块级 currentStreamReader，供 stop 按钮跨函数访问
+  currentStreamReader = null
 
   try {
     const stream = await chatStream(sessionId.value, message, attachments)
-    const reader = stream.getReader()
+    currentStreamReader = stream.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
 
     while (true) {
-      const { done, value } = await reader.read()
+      const { done, value } = await currentStreamReader.read()
       if (done) {
         // 确保消息被标记为已结束
         if (!aiMsg.ended) {
@@ -243,13 +313,22 @@ async function handleSendMessage(message, attachments = []) {
         if (!event.startsWith('data: ')) continue
         try {
           const data = JSON.parse(event.slice(6))
-          processSSEEvent(data, aiMsg)
+          // 2026-06-15 透传 onQueueEvent 回调（处理排队/衔接事件）
+          processSSEEvent(data, aiMsg, { onQueueEvent: handleQueueEvent })
           console.log('[App] After processSSEEvent, downloadInfo:', JSON.stringify(aiMsg.downloadInfo))
 
           if (aiMsg.interrupt) {
             interrupted = true
             approvalMode.value = true
             approvalData.value = extractApprovalData(aiMsg.interrupt)
+            // 2026-06-15 修复 HITL 卡死：主动 cancel reader 让 SSE 连接断开，
+            // 配合后端 _stream_with_queue 在 yield interrupt 前调用 release_handle()，
+            // 确保许可立即释放，避免 resume 请求卡在 FIFO 队列。
+            try {
+              await currentStreamReader.cancel()
+            } catch (cancelErr) {
+              console.warn('[App] reader.cancel 异常（可忽略）:', cancelErr)
+            }
             break
           }
         } catch {}
@@ -258,6 +337,12 @@ async function handleSendMessage(message, attachments = []) {
     }
   } catch (err) {
     console.error('聊天请求错误:', err)
+    // 2026-06-15 新增：HTTP 429 排队拒绝 → 显示 banner
+    if (err && err.status === 429) {
+      handleQueueError(err)
+      aiMsg.ended = true
+      return
+    }
     // 401/过期场景：先尝试 refresh_token；失败再跳登录页
     // 不再"看到'未登录'/'过期'字样就清登录态"，避免误踢
     const refreshed = await tryRefreshOrRedirect()
@@ -270,6 +355,7 @@ async function handleSendMessage(message, attachments = []) {
     if (!interrupted) {
       isStreaming.value = false
     }
+    currentStreamReader = null
   }
 }
 
@@ -287,15 +373,17 @@ async function handleApprovalSubmit({ answers }) {
   aiMsg.interrupt = null
 
   const resumeData = { answers }
+  // 2026-06-15 改造：reader 提到模块级 currentStreamReader，供 stop 按钮跨函数访问
+  currentStreamReader = null
 
   try {
     const stream = await chatStream(sessionId.value, '', [], resumeData)
-    const reader = stream.getReader()
+    currentStreamReader = stream.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
 
     while (true) {
-      const { done, value } = await reader.read()
+      const { done, value } = await currentStreamReader.read()
       if (done) {
         if (!aiMsg.ended) {
           aiMsg.ended = true
@@ -310,12 +398,19 @@ async function handleApprovalSubmit({ answers }) {
         if (!event.startsWith('data: ')) continue
         try {
           const data = JSON.parse(event.slice(6))
-          processSSEEvent(data, aiMsg)
+          // 2026-06-15 透传 onQueueEvent 回调（处理排队/衔接事件）
+          processSSEEvent(data, aiMsg, { onQueueEvent: handleQueueEvent })
 
           if (aiMsg.interrupt) {
             interrupted = true
             approvalMode.value = true
             approvalData.value = extractApprovalData(aiMsg.interrupt)
+            // 2026-06-15 修复 HITL 卡死：主动 cancel reader（详见 handleSendMessage 注释）
+            try {
+              await currentStreamReader.cancel()
+            } catch (cancelErr) {
+              console.warn('[App] resume reader.cancel 异常（可忽略）:', cancelErr)
+            }
             break
           }
         } catch {}
@@ -324,12 +419,19 @@ async function handleApprovalSubmit({ answers }) {
     }
   } catch (err) {
     console.error('Resume 请求错误:', err)
+    // 2026-06-15 新增：HTTP 429 排队拒绝 → 显示 banner
+    if (err && err.status === 429) {
+      handleQueueError(err)
+      aiMsg.ended = true
+      return
+    }
     aiMsg.error = '恢复执行失败，请稍后重试。'
     aiMsg.ended = true
   } finally {
     if (!interrupted) {
       isStreaming.value = false
     }
+    currentStreamReader = null
   }
 }
 
@@ -344,6 +446,52 @@ function handleApprovalCancel() {
     aiMsg.ended = true
     aiMsg.isThinkingActive = false
   }
+}
+
+/**
+ * 停止 LLM 生成（2026-06-15 新增）：用户点击停止按钮触发
+ * 流程：
+ * 1. 调用 currentStreamReader.cancel() 断开 SSE 连接
+ *    - 后端 map_router.py 的 is_disconnected() 检测会立即生效，LangGraph 跳出循环
+ * 2. 标记最后一条 AI 消息 ended = true + 追加"已停止"提示
+ * 3. 重置 isStreaming
+ */
+async function handleStopMessage() {
+  if (!isStreaming.value) return
+
+  // 1. 取消 SSE reader
+  if (currentStreamReader) {
+    try {
+      await currentStreamReader.cancel()
+    } catch (err) {
+      console.warn('[App] stop reader.cancel 异常（可忽略）:', err)
+    }
+    currentStreamReader = null
+  }
+
+  // 2. 标记 AI 消息已停止
+  const aiMsg = messages[messages.length - 1]
+  if (aiMsg && aiMsg.type === 'ai') {
+    aiMsg.ended = true
+    aiMsg.isThinkingActive = false
+    if (typeof aiMsg.text === 'string' && !aiMsg.text.includes('[生成已被用户中止]')) {
+      aiMsg.text = (aiMsg.text || '') + '\n\n[生成已被用户中止]'
+    }
+  }
+
+  // 3. 重置流式状态
+  isStreaming.value = false
+}
+
+// 2026-06-13 新增：子智能体抽屉 open/close
+function openSubAgentDrawer(subAgent) {
+  // 2026-06-14 改造：原 sandboxDrawerVisible 互斥逻辑已移除（SandboxDrawer 已删除）
+  currentSubAgent.value = subAgent
+  subAgentDrawerVisible.value = true
+}
+
+function closeSubAgentDrawer() {
+  subAgentDrawerVisible.value = false
 }
 
 function handleTagSelect(tag, index) {
@@ -401,6 +549,10 @@ async function handleSessionSwitch(targetSessionId) {
   messages.splice(0, messages.length)
   currentAttachments.value = []
 
+  // 关闭子智能体详情抽屉：上一个会话的 subagent 详情不应在切换后仍残留
+  // 与 newSession() 保持一致行为
+  closeSubAgentDrawer()
+
   // 切换到新会话
   sessionId.value = targetSessionId
   localStorage.setItem('session_id', targetSessionId)
@@ -425,6 +577,12 @@ async function handleSessionSwitch(targetSessionId) {
 
     // 还原对话记录到 messages 数组
     if (history.messages && history.messages.length > 0) {
+      // 2026-06-16 新增：后端现在会按时序插入 { type: "subagent", thread_id, tool, ... } 元素，
+      // 用于反查恢复 sandbox / explore 等子智能体历史。
+      // 策略：识别 subagent 元素后，将对应的 subAgent 挂到上一个 ai 消息的 subAgents 列表中，
+      // 并在 MessageBubble 中按 SubAgentCard 渲染。老客户端 / 老代码不识别该 type，
+      // 会落到 else 分支当成普通消息，但字段不破坏。
+      let lastAiMsgRef = null
       for (const msg of history.messages) {
         // 从历史消息的 additional_kwargs 中提取附件信息
         const msgAttachments = msg.attachments || []
@@ -450,7 +608,7 @@ async function handleSessionSwitch(targetSessionId) {
             tools = aiMsg.tools
           }
 
-          messages.push({
+          const aiMsgObj = {
             id: msg.id || Date.now() + Math.random(),
             type: 'ai',
             content: msg.content,
@@ -458,6 +616,7 @@ async function handleSessionSwitch(targetSessionId) {
             thinking,
             timeline,
             tools,
+            subAgents: [],  // 2026-06-16 新增：历史恢复阶段 subagent 元素会追加到这
             attachments: msgAttachments.map(a => ({
               file_name: a.file_name || a.filename || '未知文件',
               stored_path: a.stored_path || '',
@@ -466,7 +625,23 @@ async function handleSessionSwitch(targetSessionId) {
               original_name: a.original_name || a.file_name || a.filename || '未知文件'
             })),
             ended: true
-          })
+          }
+          messages.push(aiMsgObj)
+          lastAiMsgRef = aiMsgObj
+        } else if (isSubAgentHistoryItem(msg)) {
+          // 2026-06-16 新增：subagent 历史元素 → 转 subAgent 挂到上一个 AI 消息
+          const sa = convertSubAgentHistoryToAiSubAgent(msg)
+          if (sa && lastAiMsgRef) {
+            if (!Array.isArray(lastAiMsgRef.subAgents)) {
+              lastAiMsgRef.subAgents = []
+            }
+            // 防重：同一 toolCallId 不重复挂载
+            if (!lastAiMsgRef.subAgents.some(s => s.toolCallId === sa.toolCallId)) {
+              lastAiMsgRef.subAgents.push(sa)
+            }
+          }
+          // 2026-06-16：subagent 元素不作为独立 message 推入 messages 数组
+          // （它的渲染由 SubAgentCard 在 timeline.tool 块内完成，避免重复）
         } else {
           messages.push({
             id: msg.id || Date.now() + Math.random(),
@@ -536,9 +711,18 @@ async function handleSessionSwitch(targetSessionId) {
         @like="handleLike"
         @dislike="handleDislike"
         @copy="handleCopy"
+        @open-subagent-drawer="openSubAgentDrawer"
       />
 
       <div v-if="isEmptyState" class="welcome-title">Agent, 让你的工作更轻松</div>
+
+      <!-- 2026-06-15 新增：动态排队提示横幅，挂在 ChatArea 与 HumanApprovalBox/InputBox 之间 -->
+      <div class="queue-banner-wrapper">
+        <QueueStatusBanner
+          :queue-status="queueStatus"
+          :is-visible="isQueueBannerVisible"
+        />
+      </div>
 
       <HumanApprovalBox
         v-if="approvalMode"
@@ -553,6 +737,7 @@ async function handleSessionSwitch(targetSessionId) {
         @send="handleSendMessage"
         @tool-action="handleToolAction"
         @new-chat="newSession"
+        @stop="handleStopMessage"
       />
     </main>
 
@@ -560,6 +745,17 @@ async function handleSessionSwitch(targetSessionId) {
       v-if="currentPage === 'knowledge'"
       @new-chat="newSession"
       @page-change="handlePageChange"
+      @open-subagent-drawer="openSubAgentDrawer"
+    />
+
+    <!--
+      2026-06-14 改造：原 SandboxDrawer 已删除，沙箱执行详情统一由 SubAgentDrawer 展示。
+      SubAgentDrawer 内部在 tool='sandbox' 时自动展示沙箱摘要 + 沙箱事件时间线。
+    -->
+    <SubAgentDrawer
+      :visible="subAgentDrawerVisible"
+      :sub-agent="currentSubAgent"
+      @close="closeSubAgentDrawer"
     />
   </div>
 </template>
@@ -633,5 +829,16 @@ async function handleSessionSwitch(targetSessionId) {
   color: #1E5AA8;
   margin-bottom: 32px;
   text-align: center;
+}
+
+/* 排队提示横幅 wrapper，与 InputBox 的 .input-box-container 横向边距对齐 */
+.queue-banner-wrapper {
+  padding: 0 40px;
+}
+
+/* empty-layout 下 content-area.empty-layout > * 已限制 max-width: 900px，
+   若保留 padding 会导致横幅被二次收缩，故在此场景下移除 padding */
+.content-area.empty-layout .queue-banner-wrapper {
+  padding: 0;
 }
 </style>

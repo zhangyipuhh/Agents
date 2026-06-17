@@ -909,7 +909,7 @@ def generate_report(data: GenerateReportInput, runtime: ToolRuntime) -> Command:
         无显式异常抛出，所有错误通过tool_error事件和result状态反馈
 
     Notes:
-        - 报告文件保存路径：app/data/download/{session_id}/{文件名}.docx
+        - 报告文件保存路径：data/download/{session_id}/{文件名}.docx
         - 如果下载目录不存在，会自动创建
         - 文件名使用当前日期时间生成，确保唯一性
     """
@@ -995,7 +995,7 @@ def generate_report(data: GenerateReportInput, runtime: ToolRuntime) -> Command:
 
         # 构建文件名和保存路径
         file_name = current_time.strftime("%Y%m%d_%H%M%S") + ".docx"
-        download_dir = os.path.join("app", "data", "download", session_id)
+        download_dir = os.path.join("data", "download", session_id)
         
         
         file_path = os.path.join(download_dir, file_name)

@@ -146,10 +146,10 @@ def recognize_images(image_paths: list[str], runtime: ToolRuntime) -> Command:
 if __name__ == "__main__":
     import base64
     test_images = [
-        r"app\data\upload\418353f9-0902-4641-b4b7-12f516bc3faf\35d43c19-5e2c-4d53-b962-3bb90aba70d3\c2f44085-5ae9-4a18-9b8c-795aa43a279c\page_006.jpg",
-        r"app\data\upload\418353f9-0902-4641-b4b7-12f516bc3faf\35d43c19-5e2c-4d53-b962-3bb90aba70d3\c2f44085-5ae9-4a18-9b8c-795aa43a279c\page_013.jpg",
-        r"app\data\upload\418353f9-0902-4641-b4b7-12f516bc3faf\35d43c19-5e2c-4d53-b962-3bb90aba70d3\c2f44085-5ae9-4a18-9b8c-795aa43a279c\page_017.jpg"
-    ]
+        r"data\upload\418353f9-0902-4641-b4b7-12f516bc3faf\35d43c19-5e2c-4d53-b962-3bb90aba70d3\c2f44085-5ae9-4a18-9b8c-795aa43a279c\page_006.jpg",
+        r"data\upload\418353f9-0902-4641-b4b7-12f516bc3faf\35d43c19-5e2c-4d53-b962-3bb90aba70d3\c2f44085-5ae9-4a18-9b8c-795aa43a279c\page_013.jpg",
+        r"data\upload\418353f9-0902-4641-b4b7-12f516bc3faf\35d43c19-5e2c-4d53-b962-3bb90aba70d3\c2f44085-5ae9-4a18-9b8c-795aa43a279c\page_017.jpg"
+    ]  # Claude模型支持图片输入
     
     model_name = LLM_VISION_CONFIG["model_name"]
     model = ModelFactory.create_model( 

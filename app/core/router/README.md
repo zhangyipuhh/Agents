@@ -429,7 +429,7 @@ FILE_PARSER_CONFIG = {
 ### 上传文件存储路径
 
 ```
-app/data/upload/
+data/upload/
 └── {session_id}/           # 按 session 隔离
     ├── file1.txt
     ├── file2.md
@@ -439,7 +439,7 @@ app/data/upload/
 ### 下载文件存储路径
 
 ```
-app/data/download/
+data/download/
 └── {session_id}/           # 按 session 隔离
     ├── document.txt
     ├── report.pdf
@@ -449,7 +449,7 @@ app/data/download/
 ### 分片上传临时存储路径
 
 ```
-app/data/upload_chunks/
+data/upload_chunks/
 └── {file_id}/              # 按文件 ID 隔离
     ├── chunk_0
     ├── chunk_1

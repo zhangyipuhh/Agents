@@ -2,6 +2,10 @@
 import { ref, computed, reactive, watch, nextTick } from 'vue'
 import { marked } from 'marked'
 import { formatFileSize, getFileExtension, getAuthHeaders } from '../utils/api.js'
+import { isSubAgentTool } from '../utils/sseParser.js'
+import SubAgentCard from './SubAgentCard.vue'
+// 2026-06-15 新增：普通工具调用卡片（与 SubAgentCard 视觉对齐、不触发抽屉）
+import ToolCallCard from './ToolCallCard.vue'
 
 const props = defineProps({
   type: {
@@ -52,10 +56,15 @@ const props = defineProps({
   downloadInfo: {
     type: Object,
     default: null
+  },
+  // 2026-06-13 新增：子智能体执行列表（折叠卡片 / 抽屉用）
+  subAgents: {
+    type: Array,
+    default: () => []
   }
 })
 
-const emit = defineEmits(['copy', 'regenerate', 'like', 'dislike'])
+const emit = defineEmits(['copy', 'regenerate', 'like', 'dislike', 'open-sandbox-drawer', 'open-subagent-drawer'])
 
 const isThinkingExpanded = ref(false)
 const isToolsExpanded = ref(false)
@@ -80,6 +89,61 @@ const hasDownloadInfo = computed(() => {
 
 const hasTimeline = computed(() => props.timeline && props.timeline.length > 0)
 
+// 2026-06-13 新增：子智能体卡片列表
+const hasSubAgents = computed(() => Array.isArray(props.subAgents) && props.subAgents.length > 0)
+
+// 新增：判断是否有正在运行的子智能体（用于抑制主智能体思考动画）
+const hasRunningSubAgent = computed(() => {
+  if (!Array.isArray(props.subAgents)) return false
+  return props.subAgents.some(sa => sa && sa.status === 'running')
+})
+
+/**
+ * 判断 props.tools 中是否有正在运行的普通工具（2026-06-15 新增）
+ *
+ * 用途：当普通工具（非子智能体）在执行时，与 hasRunningSubAgent 一并
+ * 抑制主智能体思考过程的脉冲动画和流式光标。
+ *
+ * 逻辑：按 toolCallId 分组，若某组存在 tool_start/tool_progress 但无
+ * tool_stop/tool_error，则判定为运行中。
+ *
+ * 入参：无（读 props.tools）
+ * 返回：boolean
+ */
+const hasRunningTool = computed(() => {
+  if (!Array.isArray(props.tools) || props.tools.length === 0) return false
+  const groups = new Map()
+  for (const item of props.tools) {
+    const inner = (item && item.data) || {}
+    const callId = inner.tool_call_id || inner.thread_id || ''
+    const key = callId || '__ungrouped'
+    if (!groups.has(key)) {
+      groups.set(key, { hasStart: false, hasStop: false, hasError: false })
+    }
+    const g = groups.get(key)
+    if (inner.type === 'tool_start' || inner.type === 'tool_progress') {
+      g.hasStart = true
+    }
+    if (inner.type === 'tool_stop') {
+      g.hasStop = true
+    }
+    if (inner.type === 'tool_error') {
+      g.hasError = true
+    }
+  }
+  for (const g of groups.values()) {
+    if (g.hasStart && !g.hasStop && !g.hasError) return true
+  }
+  return false
+})
+
+// 统一标志：任何执行体（子智能体或普通工具）是否在运行中
+const hasRunningExecution = computed(() => hasRunningSubAgent.value || hasRunningTool.value)
+
+function handleSubAgentClick(subAgent) {
+  emit('open-subagent-drawer', subAgent)
+}
+
 const mergedTimeline = computed(() => {
   if (!props.timeline || props.timeline.length === 0) return []
   const result = []
@@ -93,6 +157,200 @@ const mergedTimeline = computed(() => {
   }
   return result
 })
+
+/**
+ * 根据 timeline.tool group 的 items 提取对应的子智能体列表
+ * 2026-06-14 改造：原 SandboxProgress 替换为 SubAgentCard，
+ * 子智能体卡片按 toolCallId 匹配，渲染在 timeline.tool 内以符合事件时序。
+ *
+ * 入参：group.items（来自 mergedTimeline 中的 tool 组的 raw event 数组）
+ * 返回：去重后的子智能体列表
+ *
+ * SSE 事件结构（sseParser.js case 'custom' 写入）：
+ *   item = { type: 'custom', thread_id: 'top_thread', data: <ToolEvent TypedDict> }
+ *   item.data = { type, tool, tool_call_id, thread_id, data: { ... } }
+ *   toolCallId 取值优先级：item.data.tool_call_id > item.data.thread_id > item.thread_id
+ */
+function extractToolCallId(item) {
+  if (!item || typeof item !== 'object') return ''
+  // item 是 sseParser push 进去的整个 SSE 事件 data 对象；
+  // item.data 才是 ToolEvent TypedDict（参见 sseParser.js case 'custom'）。
+  const inner = (item.data && typeof item.data === 'object') ? item.data : {}
+  return inner.tool_call_id || inner.thread_id || item.thread_id || ''
+}
+
+const toolSubAgentMap = computed(() => {
+  // 构建一个 toolCallId -> subAgent 的索引，供模板 O(1) 查找
+  const map = new Map()
+  if (!Array.isArray(props.subAgents)) return map
+  for (const sa of props.subAgents) {
+    if (sa && sa.toolCallId) {
+      map.set(sa.toolCallId, sa)
+    }
+  }
+  return map
+})
+
+// 2026-06-14 新增：跨 timeline group 去重（computed 版）
+// 同一次子智能体执行（同一 toolCallId）的 custom 事件可能被
+// thinking / text 事件拆成多个 tool group，导致每个 group 都渲染
+// 一张重复的 SubAgentCard。本 computed 对 mergedTimeline 做一次完整
+// 扫描，在 group 维度上"每个 toolCallId 仅首次出现"返回 subAgent 列表。
+//
+// 用 computed 而非普通函数 + 组件级 Set 的原因：
+//   - Vue 3 mount 阶段会多次调用 render function，普通函数内部用 Set
+//     记录"已渲染"会在 mount 内的连续 render 间互相污染（同一组数据
+//     在第二次 render 时被错误地判定为"已渲染过"而跳过）；
+//   - computed 由 Vue 缓存，仅在依赖（props.timeline / props.subAgents
+//     / mergedTimeline）变化时重算，多次 render 期间返回同一结果；
+//   - 计算内部用本地 Set（每次重算时新建），天然避免跨 render 污染。
+//
+// 返回：与 mergedTimeline 等长的数组，元素为该 group 内"首次出现"的
+// subAgent 列表（去重后）。subAgent.messages 仍由 sseParser 持续累积，
+// 不影响 SubAgentDrawer 详情展示。
+const subAgentsByGroup = computed(() => {
+  const groups = mergedTimeline.value
+  const result = []
+  const seen = new Set() // 跨 group 去重：每个 toolCallId 仅首次出现
+  const map = toolSubAgentMap.value
+  for (const group of groups) {
+    if (!group || group.type !== 'tool' || !Array.isArray(group.items)) {
+      result.push([])
+      continue
+    }
+    const groupResult = []
+    for (const item of group.items) {
+      // 2026-06-15 修复：必须先用 isSubAgentItem 过滤（判断 item.data.tool 是否属于 subagent 工具集）
+      // 否则 sseParser.updateSubAgentFromCustomEvent 对所有 tool 都创建 subAgents 条目（含普通工具），
+      // 会导致「普通工具」被错误地匹配并渲染为 SubAgentCard，点击触发 SubAgentDrawer
+      if (!isSubAgentItem(item)) continue
+      const id = extractToolCallId(item)
+      if (!id || !map.has(id) || seen.has(id)) continue
+      seen.add(id)
+      groupResult.push(map.get(id))
+    }
+    result.push(groupResult)
+  }
+  return result
+})
+
+// 2026-06-14 兼容层：保留旧函数名 getSubAgentsForGroup
+// 新实现：直接读 subAgentsByGroup 计算结果。
+// 入参：group（mergedTimeline 中的一个元素）
+// 返回：该 group 内"首次出现"的 subAgent 列表（自动跨 group 去重）
+// 注意：本函数作为模板调用入口，最终值由 subAgentsByGroup 决定。
+function getSubAgentsForGroup(group) {
+  if (!group) return []
+  const groups = mergedTimeline.value
+  const idx = groups.indexOf(group)
+  if (idx < 0) return []
+  return subAgentsByGroup.value[idx] || []
+}
+
+// 2026-06-16-2 新增：判断 timeline 模式中是否已有 subAgent 渲染
+// 用途：作为「独立 subagent 渲染块」的守卫，避免与 subAgentsByGroup 重复渲染同一张卡片
+// 计算逻辑：subAgentsByGroup 任一元素为非空数组即为 true
+const hasTimelineToolGroupContainingSubAgents = computed(() => {
+  const groups = subAgentsByGroup.value
+  if (!Array.isArray(groups)) return false
+  for (const g of groups) {
+    if (Array.isArray(g) && g.length > 0) return true
+  }
+  return false
+})
+
+// 2026-06-16-2 新增：独立 subagent 渲染列表（不依赖 mergedTimeline）
+// 用途：历史恢复（aiMsg.timeline 来自 _convert_message_to_dict，**不含 tool 块**）时，
+//       subAgentsByGroup 找不到匹配 → SubAgentCard 不渲染。本 computed 仅过滤
+//       isHistory === true 的子智能体作为「独立渲染位」的数据源，确保历史 subagent
+//       卡片正常显示。
+//
+// 流式响应（isHistory 缺省 / 显式为 false）时不会进入本列表，
+// 仍走 subAgentsByGroup 路径（已挂在 timeline.tool group 内），互不干扰。
+//
+// 排序：isHistory 优先（历史恢复数据先到）；running 状态排最后（视觉稳定）
+// 去重：按 toolCallId
+const orderedSubAgentsForRender = computed(() => {
+  const list = props.subAgents
+  if (!Array.isArray(list) || list.length === 0) return []
+  const map = new Map()
+  for (const sa of list) {
+    // 2026-06-16-2 关键：仅历史恢复（isHistory === true）的 subAgent 走独立入口。
+    // 流式场景的 subAgent 已经在 timeline.tool group 内被 subAgentsByGroup 渲染，
+    // 不应被本入口重复渲染。
+    if (sa && sa.toolCallId && sa.isHistory === true && !map.has(sa.toolCallId)) {
+      map.set(sa.toolCallId, sa)
+    }
+  }
+  const arr = Array.from(map.values())
+  arr.sort((a, b) => {
+    // running 排后；其他按出现顺序稳定排序
+    const ar = a.status === 'running' ? 1 : 0
+    const br = b.status === 'running' ? 1 : 0
+    return ar - br
+  })
+  return arr
+})
+
+/**
+ * 判断 timeline 内的 tool 项目是否属于子智能体调用（2026-06-14 新增）
+ *
+ * 入参：item（sseParser push 进去的 SSE 事件 data 对象）
+ * 返回：true 当且仅当 item.data.tool 是已知的子智能体工具名
+ *
+ * 背景：subagent 类的工具调用（sandbox / explore 等）由 SubAgentCard 折叠卡统一
+ * 展示父 prompt + 子消息流 + 沙箱摘要，不应在「工具调用」块内的 tools-body 再
+ * 重复渲染一次原始事件 JSON。
+ */
+function isSubAgentItem(item) {
+  if (!item || typeof item !== 'object') return false
+  // item 形如 { type:'custom', thread_id, data: <ToolEvent TypedDict> }
+  // data.data 才是 ToolEvent（参见 sseParser.js case 'custom'）。
+  const inner = (item.data && typeof item.data === 'object') ? item.data : {}
+  return isSubAgentTool(inner.tool)
+}
+
+/**
+ * 过滤掉子智能体调用项目，返回纯普通工具调用列表（2026-06-14 新增）
+ *
+ * 入参：items（来自 mergedTimeline 中 tool 组的 raw event 数组）
+ * 返回：保留非子智能体工具调用的新数组（不会修改原数组）
+ */
+function getNonSubAgentItems(items) {
+  if (!Array.isArray(items)) return []
+  return items.filter(item => !isSubAgentItem(item))
+}
+
+/**
+ * 将普通工具事件按 toolCallId 分组，供 ToolCallCard 渲染（2026-06-15 新增）
+ *
+ * 入参：items（来自 mergedTimeline 中 tool 组的 raw event 数组）
+ * 返回：[ { toolCallId, tool, events: [item.data, ...] }, ... ]
+ *   - 已过滤掉子智能体调用（isSubAgentItem === true）
+ *   - 缺失 toolCallId 时按出现顺序合成唯一 id（__auto_N），确保同位置相邻事件能聚到一组
+ *   - 同组内 events 按 events 数组原顺序排列（与 SSE 到达顺序一致）
+ */
+function getToolCardGroups(items) {
+  if (!Array.isArray(items)) return []
+  const groups = []
+  const idxByKey = new Map()
+  for (const item of items) {
+    if (isSubAgentItem(item)) continue
+    const inner = (item && item.data) || {}
+    const callId = inner.tool_call_id || inner.thread_id || ''
+    const key = callId || ('__auto_' + idxByKey.size)
+    if (!idxByKey.has(key)) {
+      idxByKey.set(key, groups.length)
+      groups.push({
+        toolCallId: callId || key,
+        tool: inner.tool || '工具调用',
+        events: []
+      })
+    }
+    groups[idxByKey.get(key)].events.push(inner)
+  }
+  return groups
+}
 
 const formattedThinking = computed(() => {
   if (!props.thinking || props.thinking.length === 0) return ''
@@ -414,9 +672,9 @@ const getFileIconColor = (filename) => {
           <!-- 思考块 -->
           <div v-if="group.type === 'thinking'" class="timeline-thinking" :class="{ 'thinking-active': isThinkingGroupActive(index) }">
             <div class="thinking-header" :class="{ 'thinking-header-active': isThinkingGroupActive(index) }" @click="handleThinkingClick(index)">
-              <span class="thinking-icon" :class="{ 'thinking-pulse': isThinkingGroupActive(index) }">🧠</span>
-              <span class="thinking-label" :class="{ 'thinking-label-active': isThinkingGroupActive(index) }">
-                {{ isThinkingGroupActive(index) ? '思考中...' : '思考过程' }}
+              <span class="thinking-icon" :class="{ 'thinking-pulse': isThinkingGroupActive(index) && !hasRunningExecution }">🧠</span>
+              <span class="thinking-label" :class="{ 'thinking-label-active': isThinkingGroupActive(index) && !hasRunningExecution }">
+                {{ isThinkingGroupActive(index) && !hasRunningExecution ? '思考中...' : '思考过程' }}
               </span>
               <svg
                 class="expand-icon"
@@ -429,33 +687,49 @@ const getFileIconColor = (filename) => {
             </div>
             <div v-if="isThinkingGroupExpanded(index)" class="thinking-body">
               <pre class="thinking-content">{{ formatMergedThinkingItems(group.items) }}</pre>
-              <span v-if="isThinkingGroupActive(index)" class="streaming-cursor">▌</span>
+              <span v-if="isThinkingGroupActive(index) && !hasRunningExecution" class="streaming-cursor">▌</span>
             </div>
           </div>
 
-          <!-- 工具调用块 -->
+          <!--
+            工具调用块
+            2026-06-14 改造：原 sandboxExecution 条件分支移除，
+            改为统一渲染工具调用列表 + 在底部按 toolCallId 嵌入 SubAgentCard
+            （子智能体卡片按事件时序出现，不再堆在末尾）
+            2026-06-14 再改造：subagent 类工具不再在 tools-body 重复展示，
+            tools-header / tools-body 只显示普通工具调用；SubAgentCard `div` 仍是
+            subagent 的唯一展示位。
+          -->
           <div v-else-if="group.type === 'tool'" class="timeline-tool">
-            <div class="tools-header" @click="toggleTools">
-              <span class="tools-icon">🔧</span>
-              <span class="tools-label">工具调用 ({{ group.items.length }})</span>
-              <svg
-                class="expand-icon"
-                :class="{ expanded: isToolsExpanded }"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-              >
-                <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
-              </svg>
+            <!--
+              2026-06-15 新增：普通工具卡片（ToolCallCard）
+              - 按 toolCallId 分组，每组渲染一张 ToolCallCard
+              - 卡片自带展开/折叠 + 步骤列表（逐步追加）
+              - 子智能体仍然走下方 timeline-subagent-list 路径，互不冲突
+              - 不再使用 tools-header / tools-body（与 ToolCallCard 视觉风格重复）
+            -->
+            <div v-if="getToolCardGroups(group.items).length > 0" class="timeline-toolcard-list">
+              <ToolCallCard
+                v-for="groupItem in getToolCardGroups(group.items)"
+                :key="groupItem.toolCallId"
+                :tool-call-id="groupItem.toolCallId"
+                :tool="groupItem.tool"
+                :events="groupItem.events"
+              />
             </div>
-            <div v-if="isToolsExpanded" class="tools-body">
-              <div
-                v-for="(item, idx) in group.items"
-                :key="'tool-item-' + idx"
-                class="tool-item"
-              >
-                <span class="tool-icon">🔧</span>
-                <span class="tool-text">{{ formatToolItem(item) }}</span>
-              </div>
+            <!--
+              子智能体卡片嵌入（2026-06-14 改造）
+              按 toolCallId 在 group.items 中查找匹配的 subAgent 列表，
+              渲染在工具调用块内，遵循事件流时序。
+              当 group.items 全是子智能体时，本块就是该组工具调用的唯一展示位。
+            -->
+            <div v-if="getSubAgentsForGroup(group).length > 0" class="timeline-subagent-list">
+              <SubAgentCard
+                v-for="sa in getSubAgentsForGroup(group)"
+                :key="sa.toolCallId"
+                :sub-agent="sa"
+                @click="handleSubAgentClick(sa)"
+              />
             </div>
           </div>
 
@@ -465,8 +739,29 @@ const getFileIconColor = (filename) => {
           </div>
         </template>
 
+        <!--
+          2026-06-16-2 新增：独立 subagent 渲染入口（仅历史恢复场景）
+          背景：subAgentsByGroup 通过 mergedTimeline 的 tool 块查找 subAgent，
+                但后端 _convert_message_to_dict **不会**把 AIMessage.tool_calls 写入 timeline.tool，
+                导致历史恢复时 subAgentsByGroup 始终返回空、SubAgentCard 不渲染。
+          方案：直接读 props.subAgents（App.vue 已在 history 循环中填充）作为兜底渲染位。
+                当 subAgentsByGroup 已有渲染（即流式场景，timeline.tool 块含 subagent）时跳过，
+                避免双卡片。
+        -->
+        <div
+          v-if="orderedSubAgentsForRender.length > 0 && !hasTimelineToolGroupContainingSubAgents"
+          class="timeline-subagent-list timeline-subagent-list-history"
+        >
+          <SubAgentCard
+            v-for="sa in orderedSubAgentsForRender"
+            :key="sa.toolCallId"
+            :sub-agent="sa"
+            @click="handleSubAgentClick(sa)"
+          />
+        </div>
+
         <!-- 流式光标 -->
-        <span v-if="!ended && !error && !isThinkingActive" class="streaming-cursor">▌</span>
+        <span v-if="!ended && !error && !isThinkingActive && !hasRunningExecution" class="streaming-cursor">▌</span>
       </template>
 
       <!-- 降级模式：无 timeline 时使用旧逻辑 -->
@@ -490,36 +785,42 @@ const getFileIconColor = (filename) => {
           </div>
         </div>
 
-        <!-- 工具调用 -->
-        <div v-if="hasTools" class="tools-section">
-          <div class="tools-header" @click="toggleTools">
-            <span class="tools-icon">🔧</span>
-            <span class="tools-label">工具调用 ({{ tools.length }})</span>
-            <svg
-              class="expand-icon"
-              :class="{ expanded: isToolsExpanded }"
-              viewBox="0 0 20 20"
-              fill="currentColor"
-            >
-              <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
-            </svg>
-          </div>
-          <div v-if="isToolsExpanded" class="tools-body">
-            <div
-              v-for="(item, index) in tools"
-              :key="'tool-' + index"
-              class="tool-item"
-            >
-              <span class="tool-icon">🔧</span>
-              <span class="tool-text">{{ formatToolItem(item) }}</span>
-            </div>
-          </div>
+        <!--
+          工具调用（降级模式，2026-06-15 改造）
+          历史消息回放时若 aiMsg.timeline 为空，props.tools 仍保留 flat 列表。
+          与 timeline 模式一致：按 toolCallId 分组渲染 ToolCallCard。
+        -->
+        <div v-if="getToolCardGroups(tools).length > 0" class="timeline-toolcard-list">
+          <ToolCallCard
+            v-for="groupItem in getToolCardGroups(tools)"
+            :key="groupItem.toolCallId"
+            :tool-call-id="groupItem.toolCallId"
+            :tool="groupItem.tool"
+            :events="groupItem.events"
+          />
+        </div>
+
+        <!--
+          2026-06-16-2 新增：降级模式下的 subagent 渲染入口
+          背景：与 timeline 模式独立渲染块同因（subAgentsByGroup 依赖 mergedTimeline.tool group，
+                降级模式无 timeline.group，自然找不到）。本块直接读 props.subAgents 兜底渲染。
+        -->
+        <div
+          v-if="orderedSubAgentsForRender.length > 0"
+          class="timeline-subagent-list timeline-subagent-list-history"
+        >
+          <SubAgentCard
+            v-for="sa in orderedSubAgentsForRender"
+            :key="sa.toolCallId"
+            :sub-agent="sa"
+            @click="handleSubAgentClick(sa)"
+          />
         </div>
 
         <!-- 正文内容 -->
         <div v-if="hasText" class="text-section">
           <div class="markdown-body" v-html="renderedText"></div>
-          <span v-if="!ended && !error" class="streaming-cursor">▌</span>
+          <span v-if="!ended && !error && !hasRunningExecution" class="streaming-cursor">▌</span>
         </div>
       </template>
 
@@ -601,7 +902,7 @@ const getFileIconColor = (filename) => {
 <style scoped>
 .message-bubble {
   width: 100%;
-  margin-bottom: 24px;
+  margin-bottom: 12px;  /* 2026-06-15 调整：与 .timeline-thinking margin-bottom 对齐，统一为窄间距 */
   animation: messageSlideIn 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 
   &:last-child {
@@ -695,8 +996,10 @@ const getFileIconColor = (filename) => {
 
 /* 时间线思考块 */
 .timeline-thinking {
-  max-width: 85%;
+  width: 100%;             /* 2026-06-15 新增：占满父级 ai-message 容器宽度（与 .subagent-card 等宽） */
   margin-bottom: 12px;
+  align-self: flex-end;    /* 2026-06-15 新增：在 .ai-message 中右对齐，与 .timeline-subagent-list 一致 */
+  /* 2026-06-15 二改：移除窄屏兜底约束，让 .timeline-thinking 与 .subagent-card 容器同宽（均 100%），左右两边都对齐 */
 }
 
 .timeline-thinking.thinking-active {
@@ -705,8 +1008,49 @@ const getFileIconColor = (filename) => {
 
 /* 时间线工具块 */
 .timeline-tool {
-  max-width: 85%;
-  margin-bottom: 10px;
+  width: 100%;
+  max-width: 100%;
+  margin-bottom: 6px;
+}
+
+.timeline-sandbox {
+  width: 100%;
+}
+
+/*
+ * timeline.tool 内的子智能体卡片列表（2026-06-14 新增）
+ * 子智能体卡片按 toolCallId 匹配后渲染在工具调用块内，遵循事件流时序。
+ */
+.timeline-subagent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  align-items: flex-end;
+}
+
+/*
+ * 独立 subagent 渲染位（2026-06-16-2 新增）
+ * 背景：历史恢复时 timeline 不含 tool 块，subAgentsByGroup 找不到 subAgent。
+ *       本类用于独立 subagent 块，挂在 timeline 模式流式光标之前 / 降级模式工具列表之后。
+ * 样式与 .timeline-subagent-list 一致，仅额外加 8px 顶部间距以与上方分隔。
+ */
+.timeline-subagent-list-history {
+  width: 100%;    /* 2026-06-16-3 修复：撑满 .ai-message 容器宽度，与流式场景 .timeline-tool 内的 subagent-card 等宽，避免历史恢复卡片被 align-items: flex-start 压缩为内容宽度 */
+  margin-top: 8px;
+}
+
+/*
+ * timeline.tool 内的普通工具卡片列表（2026-06-15 新增）
+ * - 每 toolCallId 一张 ToolCallCard，结构与子智能体卡片列表对齐
+ * - 卡片内自带扳手动画 + 步骤展开/折叠
+ */
+.timeline-toolcard-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  align-items: flex-end;
 }
 
 /* 时间线正文块 */
@@ -720,15 +1064,19 @@ const getFileIconColor = (filename) => {
 
 /* 思考过程 */
 .thinking-section {
-  max-width: 85%;
+  width: 100%;             /* 2026-06-15 新增：占满父级 ai-message 容器宽度（与 .subagent-card 等宽） */
   margin-bottom: 12px;
+  align-self: flex-end;    /* 2026-06-15 新增：在 .ai-message 中右对齐，与 timeline 模式保持一致 */
+  /* 2026-06-15 二改：移除窄屏兜底约束，与 .timeline-thinking 保持一致，让降级模式也与 subagent-card 左右对齐 */
 }
 
 .thinking-header {
-  display: inline-flex;
+  display: flex;             /* 2026-06-15 改造：由 inline-flex 改为 flex，让 width:100% 生效（与 .subagent-card 等宽） */
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
+  width: 100%;               /* 2026-06-15 新增：与父容器同宽，与 .subagent-card 宽度对齐 */
+  box-sizing: border-box;    /* 2026-06-15 新增：padding 计入宽度，避免溢出 */
   background-color: var(--color-bg-tertiary);
   border-radius: var(--radius-sm);
   cursor: pointer;
@@ -867,6 +1215,7 @@ const getFileIconColor = (filename) => {
   background-color: var(--color-bg-tertiary);
   border-radius: var(--radius-md);
   max-height: 200px;
+  max-width: 85%;
   overflow-y: auto;
   animation: expandIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 
@@ -1048,6 +1397,8 @@ const getFileIconColor = (filename) => {
   max-width: 85%;
   margin-bottom: 12px;
 }
+
+/* 2026-06-14 改造：原 .subagent-cards 容器已移除（子智能体卡片嵌入 timeline.tool 内） */
 
 .download-card {
   display: inline-flex;
