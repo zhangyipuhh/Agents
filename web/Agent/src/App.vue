@@ -484,7 +484,19 @@ async function handleStopMessage() {
 }
 
 // 2026-06-13 新增：子智能体抽屉 open/close
+// 2026-06-17 新增：再次点击同一 subagent 卡片时关闭抽屉（toggle 行为）；
+// 点击不同 subagent 时仍切换抽屉内容。
+// subagent 唯一标识使用 toolCallId（同一执行周期内稳定）
 function openSubAgentDrawer(subAgent) {
+  if (
+    subAgentDrawerVisible.value &&
+    currentSubAgent.value &&
+    subAgent && subAgent.toolCallId &&
+    currentSubAgent.value.toolCallId === subAgent.toolCallId
+  ) {
+    closeSubAgentDrawer()
+    return
+  }
   // 2026-06-14 改造：原 sandboxDrawerVisible 互斥逻辑已移除（SandboxDrawer 已删除）
   currentSubAgent.value = subAgent
   subAgentDrawerVisible.value = true

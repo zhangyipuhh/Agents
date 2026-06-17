@@ -432,7 +432,17 @@ async function handleStopMessage() {
 }
 
 // 2026-06-15 新增：子智能体详情抽屉 open / close（独立 SPA 自持；与 App.vue 同款签名）
+// 2026-06-17 新增 toggle 行为：再次点击同一 subagent 卡片时关闭抽屉，点击不同卡片时切换抽屉内容
 function openSubAgentDrawer(subAgent) {
+  if (
+    subAgentDrawerVisible.value &&
+    currentSubAgent.value &&
+    subAgent && subAgent.toolCallId &&
+    currentSubAgent.value.toolCallId === subAgent.toolCallId
+  ) {
+    closeSubAgentDrawer()
+    return
+  }
   currentSubAgent.value = subAgent
   subAgentDrawerVisible.value = true
 }

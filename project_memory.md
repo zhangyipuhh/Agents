@@ -844,6 +844,7 @@ environment:
   - 目的：将视觉焦点从主智能体思考区转移到子智能体工具条上
   - **2026-06-14 修复**：在 `newSession()`（新建任务入口）与 `handleSessionSwitch()`（切换历史会话入口）中显式调用 `closeSubAgentDrawer()`，确保切换/新建会话后上一会话的 `SubAgentDrawer` 详情自动收起，避免抽屉状态残留导致 UI 显示与当前会话不一致（`currentSubAgent.value` 在抽屉 `v-show=false` 后不再被消费，无需额外清空）
   - **2026-06-15 增强**：`SubAgentDrawer` 新增左侧拖拽条，支持用户拖动调整抽屉宽度；宽度记忆在 `localStorage('subagent-drawer-width')`，最小 320px、最大 800px（同时受视口宽度 - 200px 限制），拖拽至 180px 以下自动收起抽屉
+- **2026-06-17 新增 toggle 行为**：`App.vue` / `KnowledgeApp.vue` 的 `openSubAgentDrawer()` 增加 toggle 逻辑——当抽屉已打开且点击的 subagent 与 `currentSubAgent.toolCallId` 相同时调用 `closeSubAgentDrawer()` 关闭抽屉；点击不同 subagent 时仍切换抽屉内容。subagent 唯一标识沿用 `toolCallId`（同一执行周期内稳定）。这样用户连续点击同一张 subagent 卡片即可在「打开 / 关闭」之间快速切换，无需专门定位抽屉的 X 按钮。事件链本身（`SubAgentCard click → MessageBubble emit('open-subagent-drawer')`）未变化，仅 `App.vue` / `KnowledgeApp.vue` 的事件处理器增加了 toggle 分支。`SubAgentDrawer.vue` / `SubAgentCard.vue` / `MessageBubble.vue` 不需要任何改动
 
 ### AIMessage 解析兼容性（2026-06-12 修复）
 
