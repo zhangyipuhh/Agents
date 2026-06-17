@@ -2,7 +2,7 @@
 
  
 
-#Agent Core
+# Agent Core
 
 **面向 LLM · RAG · Agent 场景的企业级智能体运行框架**
 
@@ -84,7 +84,7 @@
 
 <!-- 项目介绍 + 作品截图占位 ② -->
 <p align="center">
-  <img src="img/cover.png" width="960px" alt="系统演示截图" />
+  <img src="img/cover.png" width="100%" alt="系统演示截图" />
 </p>
 
 
@@ -139,10 +139,30 @@ ModelFactory.register_model_creator("custom", create_custom_model)
 基于 **LangGraph v1.0** 的 `MessagesState` 实现的 `Agent` 基类，是整个体系的运行核心。
 
 **工作流**：
-```
-START → hitl_check → summarize → llm_call → END
-            ↑__________________________|    (有工具时循环 tools)
-```
+
+<!-- 📌 插图占位：通用智能体运行框架工作流示意图 -->
+<!-- 建议尺寸：landscape_16_9（横版宽屏，适合横向流程图） -->
+<!-- 主题：基于 LangGraph MessagesState 的 Agent 循环执行流程 -->
+<!-- 应包含节点：START → hitl_check → summarize → llm_call（条件分支）→ tools / END -->
+<!-- 循环回路：tools → hitl_check → summarize → llm_call -->
+<p align="center">
+  <img
+    src="img\langgraph_workflow.png"
+    alt="通用智能体运行框架工作流示意图"
+    width="100%"
+  />
+</p>
+
+> **插图说明占位**：
+> - 上方插图用于直观展示 `Agent` 基类的工作流，对应下方节点跳转说明
+> - 待插图生成后，请删除以上 `<!-- 📌 插图占位 -->` 注释行
+> - 如需更换插图源，可替换 `<img>` 的 `src` 即可
+
+> 节点跳转说明：
+> - `llm_call` 是**条件分支节点**：通过 `_should_continue` 判断最后一条消息是否含 `tool_calls`
+> - 有 `tool_calls` → `ToolNode` 执行工具 → 结果写回 `messages` → **回到 `hitl_check` 重新进入主流程**（hitl → summarize → llm_call 再次判断）
+> - 无 `tool_calls` → 直接流向 `END`，本轮对话结束
+> - 也就是说 `llm_call` 的下游在每轮迭代中可能是 `tools`（循环）/ `hitl_check`（经 tools 回到主流程）/ `END`（终止）
 
 | 节点 | 职责 |
 |------|------|
@@ -269,6 +289,20 @@ class MCPToolWrapper(BaseTool):
 
 ## 🚀 子智能体工具（可触发 Sub-Agent）
 
+<!-- 📌 插图占位：子智能体时序图（父 LLM ↔ Sub-Agent 交互流程） -->
+<!-- 建议尺寸：landscape_16_9（横版宽屏，适合横向时序图） -->
+<!-- 主题：父 LLM 调用 explore / sandbox 子智能体的时序交互 -->
+<!-- 应包含泳道：父 LLM、Sub-Agent、中间件、工具层、回流（Command + ToolMessage） -->
+<!-- 关键节点：tool_call → 中间件初始化 → 内部工具执行 → 结果回流 → 父图继续 -->
+<p align="center">
+  <img
+    src="img\subagent_diagram.png"
+    alt="子智能体时序图（父 LLM ↔ Sub-Agent 交互流程）"
+    width="100%"
+  />
+</p>
+<sub align="center">子智能体时序图：父 LLM → Sub-Agent → 中间件 → 内部工具 → Command + ToolMessage 回流</sub>
+
 > 子模块：`app/core/tools/FilesystemReadTools.py`、`app/core/tools/SandboxTools.py`
 
 `explore` 与 `sandbox` 是 `app/core/tools/` 中**两个可触发子智能体**的特殊工具。父 LLM 调用后，**当前工作流会等待子智能体自主完成任务**，子智能体可使用专属中间件、复用 LangGraph Checkpoint，最后将结构化结果以 `Command` + `ToolMessage` 回流至父图。
@@ -286,7 +320,7 @@ class MCPToolWrapper(BaseTool):
 | 父 LLM 触发条件 | 任务匹配 `explore` 描述（文件搜索 / 内容提取 / 多文档分析）时**优先**调用，避免父 LLM 直接堆 `read_file` |
 
 <p align="center">
-  <img src="img/explore.png" width="960px" alt="explore 子智能体执行流程" />
+  <img src="img/explore.png" width="100%" alt="explore 子智能体执行流程" />
 </p>
 <sub align="center">explore工作流时序图（待补充）</sub>
 
@@ -316,7 +350,7 @@ async def explore(
 | 安全规则 | 容器默认无网络 · 禁止 `rm -rf /` / `mkfs` / `dd` 等破坏性命令 · 资源受限 · 60s 超时 |
 
 <p align="center">
-  <img src="img/sandbox.png" width="960px" alt="sandbox 子智能体沙箱执行流程" />
+  <img src="img/sandbox.png" width="100%" alt="sandbox 子智能体沙箱执行流程" />
 </p>
 <sub align="center">sandbox工作流时序图（待补充）</sub>
 
@@ -431,11 +465,7 @@ explore / sandbox 工具
 
 ---
 
-<!-- 核心能力总览截图占位 ③ -->
-<p align="center">
-  <img src="docs/screenshot-architecture.png" width="720px" alt="核心模块依赖图" />
-</p>
-<sub align="center">作品截图占位 ③ — 核心模块依赖图 / 类图 / 时序图（待补充）</sub>
+
 
 # 🚀 快速开始
 
@@ -496,9 +526,406 @@ docker-compose logs -f agents
 
 ---
 
+# 🛠️ 部署启动
+
+> 本节只讲**怎么把服务跑起来**，不涉及业务接口调用。如需了解接口怎么调，参见 [📘 如何使用](#-如何使用) 上半节的代码示例。
+
+## 1️⃣ 部署方式总览
+
+`feature-agent-core` 提供三种部署形态，按场景选择：
+
+| 形态 | 适用场景 | 启动速度 | 隔离性 | 推荐度 |
+|------|---------|---------|--------|--------|
+| **本地源码启动** | 开发 / 调试 / 改代码热跑 | 快 | 无 | ⭐⭐⭐ 日常开发 |
+| **Docker Compose 启动** | 测试 / Demo / 内部署 | 中 | 容器级 | ⭐⭐⭐ 验证环境 |
+| **镜像构建 + 容器化部署** | 生产 / 多节点 / 集群 | 中 | 容器级 | ⭐⭐⭐⭐⭐ 生产环境 |
+
+下面逐个展开。
+
+## 2️⃣ 本地源码启动
+
+### 2.1 环境要求
+
+| 项 | 最低 | 推荐 |
+|----|------|------|
+| Python | 3.10 | 3.11（与 Dockerfile 一致） |
+| 内存 | 4 GB | 8 GB（含 Sandbox 子容器） |
+| 磁盘 | 5 GB | 20 GB（含模型缓存） |
+| Docker | 可选 | 启用 `sandbox` 工具时必装 |
+| PostgreSQL | 可选 | 启用 DB 持久化时必装（16.x） |
+
+> 💡 纯开发联调可只装 Python；不启用 DB 时框架自动降级到内存模式（`AUTH_STORAGE_MODE=memory`）。
+
+### 2.2 克隆 & 安装
+
+```bash
+git clone <repository-url>
+cd feature-agent-core
+
+python -m venv venv
+# Linux / macOS
+source venv/bin/activate
+# Windows (PowerShell)
+.\venv\Scripts\Activate.ps1
+
+pip install -r app/requirements.txt
+```
+
+> mcpClient 是独立子项目（如需使用统一 MCP 客户端）：
+> ```bash
+> pip install -e mcpClient/
+> ```
+
+### 2.3 配置环境变量
+
+```bash
+cp .env.example .env
+```
+
+按需修改关键项（详见 [§ 5️⃣ 环境变量](#5️⃣-环境变量)）：
+
+```env
+# === 大模型（必填）===
+MODEL_TYPE=openai
+MODEL_NAME=gpt-4
+MODEL_API_KEY=sk-xxx
+MODEL_API_BASE=https://api.openai.com/v1
+MODEL_TEMPERATURE=0.2
+
+# === 存储模式（可选）===
+AUTH_STORAGE_MODE=memory        # memory = 内存模式（无 DB 即可跑）
+# AUTH_STORAGE_MODE=postgres    # postgres = 需要 DATABASE_URL
+# DATABASE_URL=postgresql://postgres:postgres@localhost:5432/feature_agent
+```
+
+### 2.4 启动服务
+
+```bash
+# 方式 A：默认参数（0.0.0.0:8001）
+python -m app.main
+
+# 方式 B：自定义参数
+python -m app.main --host 127.0.0.1 --port 8003
+
+# 方式 C：直接用 uvicorn（支持热重载，开发用）
+uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+```
+
+启动成功后会看到：
+
+```text
+INFO:     Started server process [12345]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8001
+```
+
+### 2.5 验证启动
+
+```bash
+# 健康检查
+curl http://localhost:8001/health
+# 预期返回：{"status":"ok"}
+
+# 交互式 API 文档
+open http://localhost:8001/docs   # Swagger UI
+open http://localhost:8001/redoc  # ReDoc
+```
+
+## 3️⃣ Docker Compose 一键启动
+
+> 适合不想装 Python / DB 的快速验证场景。
+
+### 3.1 准备镜像
+
+后端镜像 `Dockerfile` 位于 `app/Dockerfile`（多阶段构建）。可推到任一镜像仓库或使用本地构建。
+
+修改 `docker-compose.yml` 顶部的镜像地址，或改用本地构建：
+
+```yaml
+# 方式 A：拉远端镜像（默认）
+services:
+  backend:
+    image: ${ALIYUN_REGISTRY}/${ALIYUN_NAMESPACE}/backend:latest
+    # ...
+
+# 方式 B：本地构建（取消 image 行，启用 build）
+services:
+  backend:
+    build: ./app
+    container_name: preview-backend
+    ports:
+      - "8001:8001"
+```
+
+### 3.2 准备环境变量
+
+```bash
+# .env（与 compose 同目录，docker-compose 自动加载）
+ALIYUN_REGISTRY=registry.cn-hangzhou.aliyuncs.com
+ALIYUN_NAMESPACE=your-namespace
+```
+
+如要注入到后端容器，追加 `environment` 块（参考 .env.example）：
+
+```yaml
+services:
+  backend:
+    environment:
+      - MODEL_TYPE=openai
+      - MODEL_NAME=gpt-4
+      - MODEL_API_KEY=sk-xxx
+      - MODEL_API_BASE=https://api.openai.com/v1
+      - AUTH_STORAGE_MODE=memory
+```
+
+### 3.3 拉起服务
+
+```bash
+# 后台启动
+docker-compose up -d
+
+# 实时查看日志
+docker-compose logs -f backend
+
+# 停止
+docker-compose down
+```
+
+### 3.4 带数据库的完整栈
+
+如需启用 PostgreSQL，可扩 `docker-compose.yml`：
+
+```yaml
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: feature-agent-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: feature_agent
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  backend:
+    # ... 原有配置
+    environment:
+      - AUTH_STORAGE_MODE=postgres
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/feature_agent
+    depends_on:
+      - db
+
+volumes:
+  pgdata:
+```
+
+## 4️⃣ 镜像构建与发布（生产环境）
+
+### 4.1 后端镜像
+
+```bash
+# 构建
+docker build -f app/Dockerfile -t feature-agent-core-backend:1.0.0 .
+
+# 推送到镜像仓库
+docker tag feature-agent-core-backend:1.0.0 registry.example.com/feature-agent-core:1.0.0
+docker push registry.example.com/feature-agent-core:1.0.0
+```
+
+### 4.2 前端镜像（如使用自带 web/）
+
+`web/Agent/Dockerfile` 是多阶段构建（node:20-alpine → nginx:alpine）：
+
+```bash
+cd web/Agent
+docker build -t feature-agent-core-frontend:1.0.0 .
+docker push registry.example.com/feature-agent-core-frontend:1.0.0
+```
+
+### 4.3 沙箱模式选择（生产重点）
+
+> 沙箱子智能体需要 Docker daemon。容器化部署时**默认 `local` 模式不可用**，必须显式配置。
+
+| 部署模式 | 适用场景 | 配置项 |
+|---------|---------|--------|
+| `local` | 应用直接跑在宿主机（无容器） | 默认值 |
+| `socket` | 应用容器挂载宿主机 `/var/run/docker.sock` | `SANDBOX_DOCKER_MODE=socket` + `SANDBOX_DOCKER_HOST=unix:///var/run/docker.sock` + `SANDBOX_HOST_WORKSPACE_PREFIX=/app/data` |
+| `dind` | Docker-in-Docker（需 `--privileged`） | `SANDBOX_DOCKER_MODE=dind` |
+| `k8s` | K8s API 创建 Pod（占位，未实现） | — |
+
+**socket 模式启动示例**（生产推荐）：
+
+```bash
+docker run -d \
+  -p 8001:8001 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /data/feature-agent:/app/data \
+  -e SANDBOX_DOCKER_MODE=socket \
+  -e SANDBOX_DOCKER_HOST=unix:///var/run/docker.sock \
+  -e SANDBOX_HOST_WORKSPACE_PREFIX=/app/data \
+  -e AUTH_STORAGE_MODE=postgres \
+  -e DATABASE_URL=postgresql://postgres:pwd@db:5432/feature_agent \
+  --name feature-agent-core \
+  feature-agent-core-backend:1.0.0
+```
+
+## 5️⃣ 环境变量
+
+### 5.1 必填项
+
+| 变量 | 说明 |
+|------|------|
+| `MODEL_TYPE` | 模型类型：`openai` / `deepseek` / `ollama` / `anthropic` |
+| `MODEL_NAME` | 模型名称（如 `gpt-4`、`deepseek-chat`） |
+| `MODEL_API_KEY` | 模型 API 密钥 |
+| `MODEL_API_BASE` | 模型 API 地址 |
+
+### 5.2 存储与数据库
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `AUTH_STORAGE_MODE` | `memory` | `memory` = 内存模式；`postgres` = 启用 DB |
+| `DATABASE_URL` | — | PostgreSQL 连接串（启用 postgres 模式时必填） |
+
+### 5.3 Agent 并发与流式
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `AGENT_CHAT_MAX_CONCURRENCY` | `3` | Agent 聊天接口最大并发数 |
+
+### 5.4 沙箱（SANDBOX_*）
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `SANDBOX_DOCKER_MODE` | `local` | 沙箱部署模式 |
+| `SANDBOX_DOCKER_HOST` | — | Docker daemon URL（socket 模式必填） |
+| `SANDBOX_IMAGE` | `python:3.12-alpine` | 沙箱镜像 |
+| `SANDBOX_MAX_MEMORY_MB` | `512` | 容器内存限制 |
+| `SANDBOX_MAX_CPU_PERCENT` | `100` | 容器 CPU 限制 |
+| `SANDBOX_NETWORK_ENABLED` | `false` | 是否启用容器网络 |
+| `SANDBOX_DEFAULT_TIMEOUT` | `60` | 命令默认超时（秒） |
+| `SANDBOX_CONTAINER_WORKSPACE` | `/workspace` | 容器内工作目录 |
+| `SANDBOX_HOST_WORKSPACE_PREFIX` | — | 宿主机视角工作目录前缀（socket 模式必填） |
+
+完整配置见项目根目录 [`.env.example`](file:///e:/laboratory/AI/Agents/feature-agent-core/.env.example)。
+
+## 6️⃣ 数据目录
+
+运行时数据落在**项目根**（非 `app/` 内），便于与代码解耦、避免被打入 Docker 镜像：
+
+```
+data/                          # 项目根运行时数据目录
+├── Knowledge/                 # 知识库数据
+├── upload/                    # 用户上传文件（按 session_id 分目录）
+├── download/                  # 用户下载文件
+├── upload_chunks/             # 分片上传临时目录
+└── demonstration/download/    # 演示模式下载目录
+```
+
+> **容器化部署**：把宿主机目录挂载到容器 `/app/data`：
+> ```bash
+> -v /data/feature-agent:/app/data
+> ```
+
+## 7️⃣ 启动参数
+
+`app/main.py` 启动入口支持 CLI 参数：
+
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `--host` | `0.0.0.0` | 监听地址 |
+| `--port` | `8001` | 监听端口 |
+
+完整启动选项也可直接用 `uvicorn`：
+
+```bash
+uvicorn app.main:app \
+  --host 0.0.0.0 \
+  --port 8001 \
+  --workers 4 \
+  --log-level info
+```
+
+## 8️⃣ 健康检查
+
+服务启动后可访问：
+
+| 端点 | 用途 |
+|------|------|
+| `GET /health` | 存活探针（Liveness） |
+| `GET /docs` | Swagger UI |
+| `GET /redoc` | ReDoc 文档 |
+
+在 Kubernetes / Docker Compose 中推荐配置：
+
+```yaml
+healthcheck:
+  test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 40s
+```
+
+## 9️⃣ 常见部署问题
+
+| 症状 | 原因 | 解决 |
+|------|------|------|
+| 启动报 `ModuleNotFoundError: app` | 未在项目根目录执行 | `cd feature-agent-core && python -m app.main` |
+| 启动报 `RuntimeError: event loop is closed` | 多进程下 asyncpg 句柄泄漏 | 改用 `--workers 1` 或前置 nginx 负载均衡 |
+| 报 `connection refused` PostgreSQL | `AUTH_STORAGE_MODE=postgres` 但 DB 未启动 | 切换为 `memory` 或启动 DB |
+| `sandbox` 工具调用失败 | 容器内无 Docker daemon | 见 [§ 4.3 沙箱模式选择](#43-沙箱模式选择生产重点) |
+| 前端 `502 Bad Gateway` | `VITE_API_TARGET` 配置错位 | 容器化时改为 `http://backend:8001` |
+| 端口 `8001` 已被占用 | 旧进程未清理 | `lsof -i:8001` → `kill -9 <pid>`（Windows 用 `netstat -ano \| findstr :8001`） |
+| 启动时 OOM Killed | 子智能体 + Sandbox 同时跑 | 内存升到 8 GB+，或调小 `AGENT_CHAT_MAX_CONCURRENCY=1` |
+
+## 🔟 反向代理（Nginx 模板）
+
+如要前置 Nginx 处理 HTTPS / SSE 长连接：
+
+```nginx
+upstream backend {
+    server 127.0.0.1:8001;
+}
+
+server {
+    listen 443 ssl;
+    server_name agent.example.com;
+
+    ssl_certificate     /etc/nginx/ssl/fullchain.pem;
+    ssl_certificate_key /etc/nginx/ssl/privkey.pem;
+
+    # SSE 长连接必须关掉缓冲
+    proxy_buffering off;
+    proxy_read_timeout  3600s;
+    proxy_send_timeout  3600s;
+
+    location /api/ {
+        proxy_pass         http://backend;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+
+    # SSE 路由额外保护
+    location /api/map/chat {
+        proxy_pass http://backend;
+        proxy_buffering     off;
+        proxy_cache         off;
+        proxy_set_header    Connection '';
+        proxy_http_version  1.1;
+    }
+}
+```
+
+---
+
 <!-- 架构总览 — 文本图 -->
 # 🏗️ 架构总览
-
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │                       feature-agent-core · 整体架构                              │
@@ -638,34 +1065,21 @@ docker-compose logs -f agents
 
 # 👤 关于作者
 
-> 本节用于简历投递时的个人信息展示。
+> 
 
 | 项目 | 内容 |
 |------|------|
 | 姓名 | 张镒谱 |
-| GitHub | `<your-github-handle>` |
-| Email | `<your-email@example.com>` |
-| 个人网站 | `<your-personal-site>` |
+| Email | [zhangyipu@foxmail.com.cn](mailto:zhangyipu@foxmail.com.cn) |
 | 方向 | 大语言模型工程化 · Agent 框架 · 智能体基础设施 |
 | 技术栈 | Python · FastAPI · LangGraph · LangChain · PostgreSQL · asyncpg · Docker |
 
-```python
-about_me = {
-    "name": "张镒谱",
-    "role": "AI Agent / LLM Infra Engineer",
-    "stack": ["Python", "FastAPI", "LangGraph", "LangChain", "PostgreSQL", "Docker"],
-    "interests": ["Agent Frameworks", "RAG", "Tool Protocols (MCP)", "Async Infra"],
-    "open_to": "AI 平台 / Agent 框架 / LLM 基础设施 相关岗位",
-}
-```
+
 
 ---
 
-# 📄 License
-
-MIT License — 详见 [LICENSE](LICENSE) 文件。
-
----
+ 
+ 
 
 # 🙏 致谢
 
@@ -677,4 +1091,5 @@ MIT License — 详见 [LICENSE](LICENSE) 文件。
 - [asyncpg](https://github.com/MagicStack/asyncpg) — 异步 PostgreSQL 驱动
 - [langmem](https://github.com/langchain-ai/langmem) — 短期 / 长期记忆管理
 - [Model Context Protocol](https://modelcontextprotocol.io) — MCP 工具协议
+- [MinerU](https://github.com/opendatalab/MinerU) — 高精度 PDF / 文档智能解析（布局、公式、表格提取）
 
