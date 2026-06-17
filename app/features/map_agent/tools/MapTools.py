@@ -995,7 +995,7 @@ def generate_report(data: GenerateReportInput, runtime: ToolRuntime) -> Command:
 
         # 构建文件名和保存路径
         file_name = current_time.strftime("%Y%m%d_%H%M%S") + ".docx"
-        download_dir = os.path.join("app", "data", "download", session_id)
+        download_dir = os.path.join("data", "download", session_id)
         
         
         file_path = os.path.join(download_dir, file_name)
