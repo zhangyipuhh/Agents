@@ -65,20 +65,34 @@
 
 ## 📋 更新记录
 
-- **2026.06 — 核心运行框架重构**
+- **2026.06 — 子智能体体系与运行时增强**
 
-  本次版本聚焦于 **`app/core/` 通用方法层** 的体系化抽象。主要更新内容包括：
+  本次版本聚焦于 **`app/core/tools/` 与 SSE 流式协议** 的体系化升级，更新如下：
 
-  - **Agent 基类统一化**
-    - 基于 `LangGraph v1.0` 的 `MessagesState` 重构通用 Agent 类，统一 `hitl_check → summarize → llm_call → tools` 工作流。
-    - `invoke` / `stream` 双调用入口，原生支持 `Command(resume=...)` 中断恢复。
-  - **多 Provider LLM 工厂**
-    - 新增 `Anthropic` 适配，与 `OpenAI` / `DeepSeek` / `Ollama` 并列纳入注册表。
-    - 支持运行时动态注册新模型，无需修改工厂代码。
-  - **三层提示词协议**
-    - 全局基类提示词 + Agent 专有提示词 + 运行时上下文动态提示词，自动拼接。
-  - **SSE 流式策略模式**
-    - 抽象 `StreamFormatStrategy` 接口，新增 `Ollama` Provider 策略实现。
+  - **沙箱 Docker 容器化与子智能体化重构**（`6ae4a28` → `814deb7` → `e92a3fa`）
+    - 沙箱从独立 FastAPI 路由迁移为 `sandbox` 工具函数，通过 `create_deep_agent` 启动子智能体
+    - `DockerSandboxBackend` 支持 `local / socket / dind / k8s` 四种部署模式，预热容器 + `docker exec` 长生命周期复用
+  - **子智能体 UI 体系**（`28682f0` → `1e64e25` → `86402c8` → `6281f2f` → `80ac336`）
+    - `SubAgentCard` 折叠卡片嵌入 AI 气泡 `timeline.tool` 块内，按 `toolCallId` 匹配
+    - `SubAgentDrawer` 详情抽屉展示父 prompt + 子消息流 + 沙箱事件时间线（拖拽调宽 + localStorage 记忆）
+    - `ToolCallCard` 区分普通工具与子智能体工具，避免普通工具被误渲染为 `SubAgentCard`（`fb21040`）
+  - **SSE 流式协议扩展**
+    - `custom` / `update` 事件新增 `thread_id` / `parent_prompt` / `child_messages` / `langgraph_node` 字段，老客户端忽略未知字段不破坏
+    - 新增 `queue` 事件类型，向前端实时推送并发排队状态
+  - **聊天并发控制**（`a1f0d0e` → `dbeea0c` → `4ef1fcb` → `5e9d3af` → `3f7cfc3` → `4e125f7`）
+    - `AgentConcurrencyQueue` 单例 + FIFO 内存队列，支持 `enqueue_time` / `position` / `snapshot` 查询
+    - 双模式 `chat_concurrency_dependency`（SSE 流式 + HTTP 即时 429）
+    - HITL interrupt 早期释放许可，前后端协作修复 resume 卡死
+  - **停止按钮与子智能体中止**（`e940ee1` → `161693e`）
+    - 前端 `reader.cancel()` 触发主智能体立即停止，后端 `is_disconnected()` 检测跳出 LangGraph `astream`
+    - `contextvars` 传递 Request，工具内每 5 个 chunk 检测一次，子智能体也响应停止按钮
+  - **子智能体历史持久化**（`adbb66b` → `a01d821` → `7ff6211`）
+    - 子智能体 `checkpointer` 复用全局共享 `get_async_checkpointer()`，按 `thread_id=tool_call_id` 落库
+    - 历史消息接口按时序插入 `type:"subagent"` 元素，前端还原完整执行轨迹
+  - **多 Provider LLM 工厂 / 三层提示词协议 / SSE 流式策略模式**（基础运行框架）
+    - 基于 `LangGraph v1.0` 的 `MessagesState` 重构通用 Agent 类，统一 `hitl_check → summarize → llm_call → tools` 工作流
+    - `Anthropic` 纳入注册表，支持运行时动态注册新模型
+    - 抽象 `StreamFormatStrategy` 接口，新增 `Ollama` Provider 策略实现
 
 ---
 
