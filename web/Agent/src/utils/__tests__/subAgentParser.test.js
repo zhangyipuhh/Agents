@@ -380,10 +380,71 @@ describe('sseParser subagent 工具函数', () => {
     expect(formatSubAgentDuration(-1)).toBe('')
   })
 
-  it('getSubAgentMeta 返回已知/未知工具的元信息', () => {
+  // ========== 2026-06-18 改造：getSubAgentMeta 改为从后端 meta 缓存获取 ==========
+
+  it('getSubAgentMeta 在未收到后端 meta 时返回兜底信息', () => {
+    // 缓存为空时，已知/未知工具均返回兜底（不再前端硬编码）
+    expect(getSubAgentMeta('sandbox')).toEqual({ icon: '🤖', label: 'sandbox' })
+    expect(getSubAgentMeta('explore')).toEqual({ icon: '🤖', label: 'explore' })
+    expect(getSubAgentMeta('unknown_tool')).toEqual({ icon: '🤖', label: 'unknown_tool' })
+    expect(getSubAgentMeta(null)).toEqual({ icon: '🤖', label: '子智能体' })
+    expect(getSubAgentMeta('')).toEqual({ icon: '🤖', label: '子智能体' })
+  })
+
+  it('tool_start 携带 meta 后 getSubAgentMeta 返回缓存的 icon/label', () => {
+    const aiMsg = createAiMessage()
+    processSSEEvent({
+      type: 'custom',
+      thread_id: 'call_meta',
+      data: {
+        type: 'tool_start',
+        tool: 'sandbox',
+        tool_call_id: 'call_meta',
+        data: {
+          parent_prompt: 'p',
+          meta: { icon: '📦', label: '沙箱执行' }
+        }
+      }
+    }, aiMsg)
+
     expect(getSubAgentMeta('sandbox')).toEqual({ icon: '📦', label: '沙箱执行' })
+  })
+
+  it('tool_progress / tool_stop 携带 meta 时也能更新缓存', () => {
+    const aiMsg = createAiMessage()
+    processSSEEvent({
+      type: 'custom',
+      thread_id: 'call_progress_meta',
+      data: {
+        type: 'tool_progress',
+        tool: 'explore',
+        tool_call_id: 'call_progress_meta',
+        data: {
+          meta: { icon: '🔍', label: '文件探索' }
+        }
+      }
+    }, aiMsg)
+
     expect(getSubAgentMeta('explore')).toEqual({ icon: '🔍', label: '文件探索' })
-    expect(getSubAgentMeta('unknown_tool').label).toBe('unknown_tool')
-    expect(getSubAgentMeta(null).icon).toBe('🤖')
+  })
+
+  it('meta 缓存不合法的输入时保持兜底', () => {
+    const aiMsg = createAiMessage()
+    // 使用未缓存过的工具名，避免其它测试的合法缓存影响本断言
+    processSSEEvent({
+      type: 'custom',
+      thread_id: 'call_bad_meta',
+      data: {
+        type: 'tool_start',
+        tool: 'bad_meta_tool',
+        tool_call_id: 'call_bad_meta',
+        data: {
+          parent_prompt: 'p',
+          meta: { icon: 123, label: null }
+        }
+      }
+    }, aiMsg)
+
+    expect(getSubAgentMeta('bad_meta_tool')).toEqual({ icon: '🤖', label: 'bad_meta_tool' })
   })
 })

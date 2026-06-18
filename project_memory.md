@@ -927,6 +927,7 @@ environment:
 >
 > **2026-06-14 改造**：`SandboxProgress` / `SandboxDrawer` / `SandboxEventItem` 已删除并合并；子智能体卡片从"会话末尾堆放"改为"嵌入 `timeline.tool` 块内按时序渲染"。
 > **2026-06-14-2 修复**：`update` 事件（`hitl_check` / `summarize` / `llm_call` 等节点状态）不再落入父气泡"思考过程"区；`update` SSE payload 统一附加 `thread_id`（空字符串）与 `langgraph_node`（节点名）字段，与 `custom` / `message` 事件格式保持一致。
+> **2026-06-18 改造**：子智能体展示元信息（icon/label）由后端统一维护并下发，前端 `sseParser.js` 不再硬编码 `SUBAGENT_META`。
 
 ### 架构总览
 
@@ -953,6 +954,7 @@ environment:
 | `parent_prompt` | `str` | `tool_start` | 父 agent 传给子 agent 的 prompt（用于抽屉顶部"父提问"区） |
 | `child_messages` | `list[dict]` | `tool_progress` | 子 agent 当前累积的全部 messages，结构化（langchain 对象 → dict） |
 | `final_messages` | `list[dict]` | `tool_stop` | tool_stop 时的最终消息快照（结构同 `child_messages`），覆盖到 `messages` 字段 |
+| `meta` | `dict` | `tool_start` / history | 子智能体展示元信息 `{icon, label}`，由后端 `app/core/tools/subagent_registry.py` 统一维护并下发；前端首次收到后缓存复用 |
 
 `child_messages` / `final_messages` 每项格式：
 
@@ -972,8 +974,11 @@ environment:
 | 文件 | 改动 |
 |------|------|
 | `app/core/tools/subagent_message_extractor.py`（**新增**） | `extract_structured_messages(messages)` 把 LangChain BaseMessage 列表转为结构化 dict；兼容 HumanMessage / AIMessage / ToolMessage 及 Mock 后缀；支持 OpenAI `tool_calls` / Anthropic `content[].tool_use` / langchain-core 1.x `content_blocks` 三种 AIMessage tool_call 来源 |
-| `app/core/tools/SandboxTools.py` | `tool_start` / `tool_progress` / `tool_stop` / `tool_error` 事件 data 追加 `thread_id` + `parent_prompt` + `child_messages` / `final_messages` |
-| `app/core/tools/FilesystemReadTools.py` | 同上；并新增 `all_messages` 累积逻辑（从 `updates` 模式 `node_name.messages` 提取） |
+| `app/core/tools/SandboxTools.py` | `tool_start` / `tool_progress` / `tool_stop` / `tool_error` 事件 data 追加 `thread_id` + `parent_prompt` + `child_messages` / `final_messages`；**2026-06-18 新增**：`tool_start` 携带 `meta`（icon/label） |
+| `app/core/tools/base/BaseFilesystemTool.py` | **2026-06-18 新增**：`tool_start` 携带 `meta`（icon/label），支持 explore / query_knowledge 等文件系统子智能体 |
+| `app/core/tools/FilesystemReadTools.py` | `tool_start` / `tool_progress` / `tool_stop` / `tool_error` 事件 data 追加 `thread_id` + `parent_prompt` + `child_messages` / `final_messages`；并新增 `all_messages` 累积逻辑（从 `updates` 模式 `node_name.messages` 提取） |
+| `app/core/tools/subagent_registry.py` | **2026-06-18 新增**：`SUBAGENT_META` 与 `get_subagent_meta()`，作为前后端统一的子智能体展示元信息事实来源 |
+| `app/shared/utils/memory/checkpoint_history.py` | **2026-06-18 新增**：历史消息 `type:"subagent"` 元素携带 `meta`（icon/label） |
 | `app/features/map_agent/router/map_router.py` | `custom` 模式 SSE yield 时在顶层追加 `thread_id` 字段（从 `data.data.thread_id` / `data.tool_call_id` 推导），**老客户端忽略未知字段不破坏**；`updates` 模式同步追加 `thread_id`（空字符串）与 `langgraph_node`（节点名）字段，统一 SSE 格式 |
 | `app/core/tools/events.py` | 注释追加新字段文档（实现不动） |
 | `app/tests/core/tools/test_subagent_message_extractor.py`（**新增**） | 22 个 pytest 用例：role 分类 / content 归一化 / 三种 tool_call 来源 / 边界条件 |
@@ -986,8 +991,10 @@ environment:
 
 | 文件 | 改动 |
 |------|------|
-| `web/Agent/src/utils/sseParser.js` | `processSSEEvent` 的 `update` case 显式跳过 `hitl_check` 节点；`isSubAgentMessage` 增加 `metadata.lc_agent_name` / `metadata.langgraph_node` 多维度判定，防御 tool_start 与 message 到达顺序抖动的 race condition；调用点同步透传 metadata |
-| `web/Agent/src/utils/__tests__/subAgentParser.test.js` | 新增 6 个用例：`hitl_check` update 不进入 thinking / timeline；`isSubAgentMessage` 通过 `lc_agent_name` / `langgraph_node` 识别子智能体；`message` 事件在 `lc_agent_name=sandbox` 时不写入父气泡 |
+| `web/Agent/src/utils/sseParser.js` | `processSSEEvent` 的 `update` case 显式跳过 `hitl_check` 节点；`isSubAgentMessage` 增加 `metadata.lc_agent_name` / `metadata.langgraph_node` 多维度判定，防御 tool_start 与 message 到达顺序抖动的 race condition；调用点同步透传 metadata；**2026-06-18 改造**：删除硬编码 `SUBAGENT_META`，新增 `subagentMetaCache`，`getSubAgentMeta` 从后端下发的 `meta` 字段读取并缓存，未知工具回退兜底 |
+| `web/Agent/src/utils/__tests__/subAgentParser.test.js` | 新增 6 个用例：`hitl_check` update 不进入 thinking / timeline；`isSubAgentMessage` 通过 `lc_agent_name` / `langgraph_node` 识别子智能体；`message` 事件在 `lc_agent_name=sandbox` 时不写入父气泡；**2026-06-18 新增**：meta 缓存 / 兜底 / 非法输入防护测试 |
+| `web/Agent/src/utils/__tests__/sseParser.subagentHistory.test.js` | **2026-06-18 新增**：历史 subagent 元素 `meta` 缓存测试 |
+| `app/tests/core/tools/test_subagent_registry.py` | **2026-06-18 新增**：`SUBAGENT_META` / `get_subagent_meta` 覆盖与兜底测试 |
 
 **2026-06-14 改造**：删除 `SandboxProgress` / `SandboxDrawer` / `SandboxEventItem` 三个组件并合并功能到 SubAgent 体系。
 
@@ -1020,7 +1027,7 @@ environment:
 `/api/map/chat` SSE 接口有第三方 iframe/portal 调用，本改造**仅新增字段**，不修改/删除既有字段：
 
 - SSE 事件类型 `update` / `custom` / `message` / `end` / `error` / `interrupt` / `tool_stop` **不变**
-- `custom` 事件 `data` 字典内仅**追加** `thread_id` / `parent_prompt` / `child_messages` / `final_messages` 字段
+- `custom` 事件 `data` 字典内仅**追加** `thread_id` / `parent_prompt` / `child_messages` / `final_messages` / `meta` 字段
 - SSE 顶层 `{type, data}` **追加** `thread_id` 字段
 - `update` 事件顶层追加 `langgraph_node` 字段（节点名），`thread_id` 统一为空字符串（updates 模式下无法精确获取子线程 ID，仅用于格式统一）
 - 老客户端标准 JSON 解析**忽略未知字段**，行为不变
@@ -1063,7 +1070,9 @@ environment:
     {"type": "subagent", "role": "subagent",
      "thread_id": "call_xxx", "tool": "sandbox",
      "parent_message_id": "ai-msg-1",
-     "messages": [...], "total": 5},
+     "messages": [...], "total": 5,
+     // 2026-06-18 新增：展示元信息由后端统一提供
+     "meta": {"icon": "📦", "label": "沙箱执行"}},
     {"id": "...", "type": "user", "role": "user", "content": "..."}
   ],
   "total": 4

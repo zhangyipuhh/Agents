@@ -19,7 +19,7 @@ from datetime import datetime
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
 from app.core.messages.converter import MessageContentConverter
-from app.core.tools.subagent_registry import is_subagent_tool
+from app.core.tools.subagent_registry import is_subagent_tool, get_subagent_meta
 
 
 class CheckpointHistoryService:
@@ -413,6 +413,8 @@ class CheckpointHistoryService:
                     "parent_message_id": sa["parent_message_id"],
                     "messages": sub_messages,
                     "total": history.get("total", 0),
+                    # 2026-06-18 新增：展示元信息由后端统一提供，降低前端耦合
+                    "meta": get_subagent_meta(sa["tool"]),
                 })
 
         return merged

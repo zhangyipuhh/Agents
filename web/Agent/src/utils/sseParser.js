@@ -4,22 +4,24 @@ export function isThinkingBlock(block) {
 }
 
 /**
- * Subagent 工具名 → 显示信息映射
- * 2026-06-13 新增 subagent 折叠卡片用
+ * 子智能体展示元信息运行时缓存（2026-06-18 新增）
+ *
+ * 背景：icon/label 改由后端 SSE tool_start 事件或历史消息中的 `meta` 字段下发，
+ * 前端不再硬编码。首次收到某工具的 meta 后缓存，后续同一工具直接复用。
  */
-const SUBAGENT_META = {
-  sandbox: { icon: '📦', label: '沙箱执行' },
-  explore: { icon: '🔍', label: '文件探索' }
-}
+const subagentMetaCache = new Map()
 
 /**
- * 已知子智能体工具名集合（2026-06-14 改造导出）
+ * 已知子智能体工具名集合（2026-06-14 改造导出；2026-06-18 更新：不再从 SUBAGENT_META 派生）
  *
  * 用途：MessageBubble 等上游组件用此判断是否要把当前 tool 调用渲染为
  * SubAgentCard 折叠卡（而不是普通的 tools-body JSON 列表项），
  * 避免 subagent 的消息在「工具调用」块与 SubAgentCard `div` 中重复展示。
+ *
+ * 注意：此集合仅用于“是否是子智能体工具”的判定；具体的 icon/label 由后端
+ * 通过 `meta` 字段提供，见 subagentMetaCache / getSubAgentMeta。
  */
-export const SUBAGENT_TOOLS = new Set(Object.keys(SUBAGENT_META))
+export const SUBAGENT_TOOLS = new Set(['sandbox', 'explore', 'query_knowledge'])
 
 /**
  * 2026-06-15 新增：SSE queue 事件集合
@@ -88,9 +90,33 @@ export function isSubAgentMessage(aiMsg, eventThreadId, metadata = {}) {
 
 /**
  * 根据 tool 名返回 {icon, label}，未知工具使用通用图标
+ *
+ * 2026-06-18 改造：优先使用后端下发的 meta 缓存；未缓存时返回兜底。
+ *
+ * 入参：tool（string | undefined | null）
+ * 返回：{ icon: string, label: string }
  */
 export function getSubAgentMeta(tool) {
-  return SUBAGENT_META[tool] || { icon: '🤖', label: tool || '子智能体' }
+  if (!tool || typeof tool !== 'string') {
+    return { icon: '🤖', label: '子智能体' }
+  }
+  const cached = subagentMetaCache.get(tool)
+  if (cached && typeof cached === 'object' && cached.icon && cached.label) {
+    return { icon: cached.icon, label: cached.label }
+  }
+  return { icon: '🤖', label: tool }
+}
+
+/**
+ * 缓存后端下发的子智能体展示元信息（2026-06-18 新增）
+ *
+ * 入参：tool（string）、meta（{icon, label}）
+ */
+function cacheSubAgentMeta(tool, meta) {
+  if (!tool || typeof tool !== 'string' || !meta || typeof meta !== 'object') return
+  if (typeof meta.icon === 'string' && typeof meta.label === 'string') {
+    subagentMetaCache.set(tool, { icon: meta.icon, label: meta.label })
+  }
 }
 
 /**
@@ -154,6 +180,11 @@ function updateSubAgentFromCustomEvent(aiMsg, event, topLevelThreadId) {
   }
 
   const inner = (event && event.data) || {}
+
+  // 2026-06-18 新增：缓存后端下发的展示元信息（tool_start / tool_progress / tool_stop 均可携带）
+  if (inner.meta && typeof inner.meta === 'object') {
+    cacheSubAgentMeta(tool, inner.meta)
+  }
 
   // parent_prompt（tool_start 时填充，后续兜底保留）
   if (typeof inner.parent_prompt === 'string' && inner.parent_prompt) {
@@ -721,6 +752,11 @@ export function convertSubAgentHistoryToAiSubAgent(msg) {
   let parentPrompt = msg.parent_prompt || ''
   if (!parentPrompt) {
     parentPrompt = extractFirstUserPrompt(msg.messages)
+  }
+
+  // 2026-06-18 新增：缓存后端历史项中携带的展示元信息
+  if (msg.meta && typeof msg.meta === 'object') {
+    cacheSubAgentMeta(msg.tool, msg.meta)
   }
 
   return {

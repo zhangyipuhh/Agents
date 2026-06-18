@@ -42,6 +42,7 @@ from app.core.llmcalls.model_factory import ModelFactory
 from app.core.tools._stop_signal import get_current_request
 from app.core.tools.events import create_tool_event
 from app.core.tools.subagent_message_extractor import extract_structured_messages
+from app.core.tools.subagent_registry import get_subagent_meta
 from app.shared.tools.middleware.encoding_safe_file_search import EncodingSafeFileSearchMiddleware
 from app.shared.utils.memory.checkpoint import get_async_checkpointer
 
@@ -251,6 +252,8 @@ class BaseFilesystemTool:
                 # 子智能体事件协议字段
                 "thread_id": tool_call_id,
                 "parent_prompt": prompt,
+                # 2026-06-18 新增：展示元信息由后端统一提供，降低前端耦合
+                "meta": get_subagent_meta(self.tool_name),
             },
         )
         writer(dict(start_event))
