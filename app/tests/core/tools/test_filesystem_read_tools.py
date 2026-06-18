@@ -30,9 +30,11 @@ def test_explore_importable():
     P0: explore 工具可导入且为 async 函数。
     """
     from app.core.tools import FilesystemReadTools
+    from langgraph.types import Command
 
     assert hasattr(FilesystemReadTools, "explore")
     assert inspect.iscoroutinefunction(FilesystemReadTools.explore)
+    assert inspect.signature(FilesystemReadTools.explore).return_annotation is Command
 
 
 # ============================================================

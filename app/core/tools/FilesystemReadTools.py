@@ -31,6 +31,7 @@ Author: AI Assistant
 from pathlib import Path
 
 from langchain.tools import tool, ToolRuntime
+from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from app.core.agent.AgentContext import AgentContext
@@ -95,7 +96,7 @@ class ExploreResult(BaseModel):
 async def explore(
     prompt: str,
     runtime: ToolRuntime[AgentContext],
-) -> object:
+) -> Command:
     """
     启动探索子智能体，读取当前 session 上传目录中的文件并分析。
 
