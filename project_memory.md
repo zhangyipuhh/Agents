@@ -415,6 +415,7 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 - 默认镜像: `python:3.12-alpine`
 - 资源限制: 内存 512MB，CPU 100%，无网络
 - 支持流式事件: `tool_start` / `tool_progress` / `tool_stop`
+- Docker 不可用降级: 通过 `SANDBOX_FALLBACK_TO_LOCAL` 控制是否降级到 `LocalShellBackend` 本地执行（默认 `false`，保持安全边界）
 
 **依赖**:
 - `DockerSandboxMiddleware` / `DockerSandboxBackend`: `app/shared/tools/middleware/docker_sandbox_backend.py`
@@ -613,6 +614,7 @@ async def xxx_chat(request: Request, chat_request: ChatRequest):
   - `SANDBOX_CONTAINER_WORKSPACE` — 容器内工作目录，默认 `/workspace`
   - `SANDBOX_HOST_WORKSPACE_PREFIX` — 宿主机视角工作目录前缀，socket 模式必填
   - `SANDBOX_K8S_NAMESPACE` — K8s 模式命名空间（占位）
+  - `SANDBOX_FALLBACK_TO_LOCAL` — Docker 不可用时是否降级到本地文件系统执行，默认 `false`（2026-06-18 新增）
 - 其他 LLM API Key 等
 
 ## 提示词三层架构
@@ -761,9 +763,9 @@ system_prompt = (
 | 组件 | 文件位置 | 职责 |
 |------|---------|------|
 | `DockerSandboxBackend` | `app/shared/tools/middleware/docker_sandbox_backend.py` | Docker 容器生命周期管理、命令执行、文件上传下载；区分 host_workspace（宿主机视角，用于 bind mount）与 container_workspace（容器内视角，/workspace）；支持 4 种 docker_mode 路径投影 |
-| `DockerSandboxMiddleware` | `app/shared/tools/middleware/docker_sandbox_backend.py` | 继承 `FilesystemMiddleware`，自动管理 `DockerSandboxBackend`，提供沙箱工具集 |
+| `DockerSandboxMiddleware` | `app/shared/tools/middleware/docker_sandbox_backend.py` | 继承 `FilesystemMiddleware`，自动管理 `DockerSandboxBackend`，提供沙箱工具集；**2026-06-18 新增**：Docker 不可用时可按 `SANDBOX_FALLBACK_TO_LOCAL` 配置降级到 `LocalShellBackend` 本地执行 |
 | `sandbox` 工具 | `app/core/tools/SandboxTools.py` | `@tool` 装饰的 `sandbox` 函数，通过 `create_deep_agent` 启动沙箱子智能体；2026-06-12 重构：容器化部署配置从 `Settings.get_sandbox_config()` 注入；2026-06-13 扩展：填充 subagent 结构化字段（详见下文 "SubAgent 事件协议"）；**2026-06-16 改造：checkpointer 由进程内 `MemorySaver()` 切换为全局共享 `get_async_checkpointer()`，子智能体 messages 按 `thread_id=tool_call_id` 持久化（PostgreSQL 模式落库，memory 模式进程内共享）** |
-| `SandboxSettings` | `app/core/config/settings.py` | Pydantic BaseSettings，管理 10 个 `SANDBOX_*` 环境变量，控制 docker_mode / 镜像 / 资源限制 / 路径前缀 |
+| `SandboxSettings` | `app/core/config/settings.py` | Pydantic BaseSettings，管理 11 个 `SANDBOX_*` 环境变量，控制 docker_mode / 镜像 / 资源限制 / 路径前缀 / fallback_to_local |
 
 ### 架构变更历史
 
@@ -813,6 +815,13 @@ environment:
 ```
 
 **K8s 模式占位**：`docker_mode=k8s` 时抛 `NotImplementedError`，提示需先实现 `K8sBackend` 类并在 `DockerSandboxBackend._resolve_host_workspace` 分发。
+
+**Docker 不可用降级（2026-06-18 新增）**：
+
+- 配置项 `SANDBOX_FALLBACK_TO_LOCAL`（默认 `false`）控制 Docker daemon 不可用时是否降级到本地执行
+- `false`（默认）：`DockerSandboxMiddleware` 继续抛出 RuntimeError，`sandbox()` 工具返回清晰的 `tool_error` 事件，提示用户 Docker 未运行
+- `true`：`DockerSandboxMiddleware` 在 Docker 连接失败时自动切换到底层 `LocalShellBackend`，子智能体在当前进程的本地 `workspace` 继续执行文件/命令操作
+- **安全提示**：`true` 模式会失去 Docker 容器隔离，子智能体代码直接在宿主机/应用进程环境运行，仅限开发、测试或完全可信的内网环境使用
 
 ### 长生命周期容器优化
 

@@ -1,6 +1,6 @@
 # -*- coding:utf-8 -*-
 """
-SandboxTools 配置注入测试（2026-06-12 新增，2026-06-15 更新为 async 适配）
+SandboxTools 配置注入测试（2026-06-12 新增，2026-06-15 更新为 async 适配，2026-06-18 增加 fallback 字段）
 
 验证 sandbox 工具从 Settings.get_sandbox_config() 读取容器化部署配置，
 并把配置正确透传给 DockerSandboxMiddleware。
@@ -89,6 +89,7 @@ class TestSandboxConfigInjection:
         assert "docker_host" in captured_kwargs
         assert "host_workspace_prefix" in captured_kwargs
         assert "container_workspace" in captured_kwargs
+        assert "fallback_to_local" in captured_kwargs
         # 默认值
         assert captured_kwargs["image"] == "python:3.12-alpine"
         assert captured_kwargs["docker_mode"] == "local"
@@ -97,6 +98,7 @@ class TestSandboxConfigInjection:
         assert captured_kwargs["max_cpu_percent"] == 100
         assert captured_kwargs["network_enabled"] is False
         assert captured_kwargs["default_timeout"] == 60
+        assert captured_kwargs["fallback_to_local"] is False
 
     def test_sandbox_passes_socket_mode_config(self):
         """P1: socket 模式 + prefix 时，工具正确透传所有容器化字段。"""
@@ -122,6 +124,7 @@ class TestSandboxConfigInjection:
             "container_workspace": "/sandbox",
             "host_workspace_prefix": "/host/app/data",
             "k8s_namespace": "default",
+            "fallback_to_local": True,
         }
 
         with patch("app.core.tools.SandboxTools.get_stream_writer"), \
@@ -158,6 +161,7 @@ class TestSandboxConfigInjection:
         assert captured_kwargs["max_cpu_percent"] == 50
         assert captured_kwargs["network_enabled"] is True
         assert captured_kwargs["default_timeout"] == 120
+        assert captured_kwargs["fallback_to_local"] is True
 
     def test_sandbox_calls_get_sandbox_config_exactly_once(self):
         """P2: sandbox 工具每次调用恰好读取一次配置（避免重复开销）。"""
@@ -186,6 +190,7 @@ class TestSandboxConfigInjection:
                 "container_workspace": "/workspace",
                 "host_workspace_prefix": "",
                 "k8s_namespace": "default",
+                "fallback_to_local": False,
             }
             # 2026-06-15 更新：mock astream
             mock_agent.return_value.astream = MagicMock(
@@ -216,7 +221,7 @@ class TestSandboxConfigKeys:
         required_keys = {
             "docker_mode", "docker_host", "image", "max_memory_mb",
             "max_cpu_percent", "network_enabled", "default_timeout",
-            "container_workspace", "host_workspace_prefix",
+            "container_workspace", "host_workspace_prefix", "fallback_to_local",
         }
         missing = required_keys - set(cfg.keys())
         assert not missing, f"配置缺失必要字段: {missing}"

@@ -237,6 +237,17 @@ class _FilesystemBackend:
 
 sys.modules["deepagents.backends.filesystem"].FilesystemBackend = _FilesystemBackend
 
+# 2026-06-18 新增：模拟 LocalShellBackend，供 DockerSandboxMiddleware fallback 测试使用
+class _LocalShellBackend:
+    """模拟 deepagents LocalShellBackend"""
+    def __init__(self, *args, **kwargs):
+        pass
+
+_mock_deepagents_backends_local_shell = types.ModuleType("deepagents.backends.local_shell")
+_mock_deepagents_backends_local_shell.LocalShellBackend = _LocalShellBackend
+sys.modules["deepagents.backends.local_shell"] = _mock_deepagents_backends_local_shell
+sys.modules["deepagents"].LocalShellBackend = _LocalShellBackend
+
 # 2026-06-15 新增：把 FilesystemMiddleware / FilesystemBackend 也注册到 deepagents 顶层
 # （FilesystemReadTools.explore 依赖这两个 from ... import 形式）
 sys.modules["deepagents"].FilesystemMiddleware = _FilesystemMiddleware

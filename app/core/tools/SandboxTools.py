@@ -47,6 +47,7 @@ from app.core.tools.events import create_tool_event
 from app.core.tools.subagent_message_extractor import extract_structured_messages
 from app.core.tools.subagent_registry import get_subagent_meta
 from app.shared.tools.middleware.docker_sandbox_backend import DockerSandboxMiddleware
+from docker.errors import DockerException
 from app.shared.utils.memory.checkpoint import get_async_checkpointer
 
 # 2026-06-15 新增：停止信号检测间隔（每 N 个 chunk 检测一次 is_disconnected）
@@ -786,7 +787,7 @@ async def sandbox(  # 2026-06-15: 改 async，支持子智能体停止信号感�
 
     # 构建工作目录路径
     project_root = Path.cwd()
-    workspace = project_root / "data" / "upload" / session_id / "sandbox"
+    workspace = project_root / "data" / "upload" / session_id 
 
     try:
         # 确保工作目录存在
@@ -835,6 +836,7 @@ async def sandbox(  # 2026-06-15: 改 async，支持子智能体停止信号感�
             docker_host=sandbox_cfg["docker_host"],
             host_workspace_prefix=sandbox_cfg["host_workspace_prefix"],
             container_workspace=sandbox_cfg["container_workspace"],
+            fallback_to_local=sandbox_cfg["fallback_to_local"],
         )
 
         # 2026-06-16 改造：使用全局共享 checkpointer（PostgreSQL/Memory）持久化子智能体消息
@@ -1051,6 +1053,52 @@ async def sandbox(  # 2026-06-15: 改 async，支持子智能体停止信号感�
                     ToolMessage(
                         content=json.dumps(
                             {"subagent": output_text},
+                            ensure_ascii=False,
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ]
+            }
+        )
+
+    except (RuntimeError, DockerException) as e:
+        # Docker 初始化失败且未开启 fallback_to_local 时的干净降级路径
+        end_time = datetime.now()
+        duration_ms = int((end_time - start_time).total_seconds() * 1000)
+
+        error_message = str(e)
+        logger.warning(
+            "[sandbox] Docker 不可用且未开启 fallback_to_local，工具拒绝执行。"
+            "tool_call_id=%s, error=%s",
+            tool_call_id,
+            error_message,
+        )
+
+        user_message = (
+            "沙箱执行失败：Docker daemon 未运行或未安装。"
+            "如需在本地环境继续运行，可设置 SANDBOX_FALLBACK_TO_LOCAL=true（注意：会失去 Docker 隔离）。"
+        )
+        error_event = create_tool_event(
+            event_type="tool_error",
+            tool=tool_name,
+            tool_call_id=tool_call_id,
+            data={
+                "error_type": type(e).__name__,
+                "error_message": error_message,
+                "args": {"prompt": prompt},
+                "duration_ms": duration_ms,
+                "thread_id": tool_call_id,
+                "parent_prompt": prompt,
+            },
+        )
+        writer(dict(error_event))
+
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps(
+                            {"subagent": user_message},
                             ensure_ascii=False,
                         ),
                         tool_call_id=tool_call_id,

@@ -363,10 +363,26 @@ class SandboxSettings(BaseSettings):
         default="default",
         description="K8s 模式命名空间（占位，未实现）",
     )
+    sandbox_fallback_to_local: bool = Field(
+        default=True,
+        description=(
+            "Docker 不可用时是否降级到本地文件系统执行。"
+            "true: 使用 LocalShellBackend 在本地 workspace 继续运行（失去 Docker 隔离，仅限开发/可信环境）；"
+            "false: 仅返回清晰错误，保持安全边界。"
+        ),
+    )
 
     @field_validator("sandbox_network_enabled", mode="before")
     @classmethod
     def parse_bool(cls, v):
+        """将字符串转换为布尔值"""
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes", "on")
+        return bool(v)
+
+    @field_validator("sandbox_fallback_to_local", mode="before")
+    @classmethod
+    def parse_fallback_bool(cls, v):
         """将字符串转换为布尔值"""
         if isinstance(v, str):
             return v.lower() in ("true", "1", "yes", "on")
@@ -496,6 +512,7 @@ class Settings(BaseSettings):
             "container_workspace": self.sandbox.sandbox_container_workspace,
             "host_workspace_prefix": self.sandbox.sandbox_host_workspace_prefix,
             "k8s_namespace": self.sandbox.sandbox_k8s_namespace,
+            "fallback_to_local": self.sandbox.sandbox_fallback_to_local,
         }
 
 

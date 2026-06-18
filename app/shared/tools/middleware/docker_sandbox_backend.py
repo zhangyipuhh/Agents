@@ -26,6 +26,7 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     FileDownloadResponse,
 )
+from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
 logger = logging.getLogger(__name__)
@@ -511,6 +512,9 @@ class DockerSandboxMiddleware(FilesystemMiddleware):
             - host_workspace_prefix: 宿主机视角前缀，socket 模式专用
             - container_workspace: 容器内工作目录，默认 /workspace
 
+        2026-06-18 新增：Docker 不可用时，若 fallback_to_local=true，
+        自动降级到 LocalShellBackend，在本地 workspace 继续执行。
+
         Args:
             session_id: 会话ID，用于容器命名和工作目录隔离
             image: Docker 镜像名，默认使用 python:3.12-alpine
@@ -520,38 +524,63 @@ class DockerSandboxMiddleware(FilesystemMiddleware):
             network_enabled: 是否启用网络，默认 False（完全隔离）
             default_timeout: 命令默认超时（秒），默认 60
             **kwargs: 额外参数，容器化字段 + FilesystemMiddleware 父类参数
+                - fallback_to_local: bool, Docker 不可用时是否降级到本地执行
 
         Raises:
-            RuntimeError: Docker daemon 不可用时、或 socket 模式缺配置时抛出
+            RuntimeError: Docker daemon 不可用时、且未开启 fallback_to_local 时抛出
         """
         # 从 kwargs 中提取容器化部署字段，其余透传给父类
         docker_mode = kwargs.pop("docker_mode", "local")
         docker_host = kwargs.pop("docker_host", "")
         host_workspace_prefix = kwargs.pop("host_workspace_prefix", "")
         container_workspace = kwargs.pop("container_workspace", "/workspace")
+        fallback_to_local = kwargs.pop("fallback_to_local", False)
 
-        self.backend = DockerSandboxBackend(
-            session_id=session_id,
-            image=image,
-            workspace=workspace,
-            max_memory_mb=max_memory_mb,
-            max_cpu_percent=max_cpu_percent,
-            network_enabled=network_enabled,
-            default_timeout=default_timeout,
-            docker_mode=docker_mode,
-            docker_host=docker_host,
-            host_workspace_prefix=host_workspace_prefix,
-            container_workspace=container_workspace,
-        )
+        try:
+            self.backend = DockerSandboxBackend(
+                session_id=session_id,
+                image=image,
+                workspace=workspace,
+                max_memory_mb=max_memory_mb,
+                max_cpu_percent=max_cpu_percent,
+                network_enabled=network_enabled,
+                default_timeout=default_timeout,
+                docker_mode=docker_mode,
+                docker_host=docker_host,
+                host_workspace_prefix=host_workspace_prefix,
+                container_workspace=container_workspace,
+            )
+            self._docker_backend = True
+        except (RuntimeError, DockerException) as e:
+            if fallback_to_local:
+                logger.warning(
+                    "Docker daemon 不可用，已降级到本地文件系统执行。"
+                    "session_id=%s, error=%s",
+                    session_id,
+                    e,
+                )
+                # 确保工作目录存在（LocalShellBackend 不会自动创建）
+                effective_workspace = workspace or os.path.join("/tmp/sandbox", session_id)
+                os.makedirs(effective_workspace, exist_ok=True)
+                self.backend = LocalShellBackend(
+                    root_dir=effective_workspace,
+                    virtual_mode=True,
+                    timeout=default_timeout,
+                )
+                self._docker_backend = False
+            else:
+                raise
+
         super().__init__(backend=self.backend, **kwargs)
 
     def cleanup(self) -> None:
         """清理沙箱资源
 
         停止并删除 Docker 容器，释放资源。
+        本地回退模式下无需清理容器。
         建议在 Session 结束或 Agent 销毁时调用。
         """
-        if hasattr(self, "backend") and self.backend is not None:
+        if hasattr(self, "backend") and self.backend is not None and getattr(self, "_docker_backend", True):
             self.backend.cleanup()
 
     def __del__(self):

@@ -8,6 +8,8 @@ SandboxTools 模块测试
 - 代码块提取、语言检测、摘要生成等工具函数
 """
 
+import json
+
 import pytest
 from datetime import datetime
 
@@ -586,3 +588,56 @@ def test_sandbox_runtime_context_missing_attr():
             pytest.fail(f"不应触发 AttributeError: {e}")
         except RuntimeError as e:
             assert str(e) == "expected_error"
+
+
+# ---------------------------------------------------------------------------
+# Docker 不可用降级处理（2026-06-18 新增）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sandbox_docker_unavailable_returns_clean_error():
+    """P1: Docker 不可用且 fallback_to_local=false 时，返回清晰错误 Command。"""
+    from unittest.mock import patch, MagicMock
+    from app.core.tools.SandboxTools import sandbox
+
+    class FakeRuntime:
+        tool_call_id = "call_docker_err_001"
+        context = {"session_id": "session-docker-err"}
+
+    mock_writer = MagicMock()
+
+    from langchain_core.messages import ToolMessage
+
+    mock_settings = MagicMock()
+    mock_settings.get_sandbox_config.return_value = {
+        "image": "python:3.12-alpine",
+        "max_memory_mb": 512,
+        "max_cpu_percent": 100,
+        "network_enabled": False,
+        "default_timeout": 60,
+        "docker_mode": "local",
+        "docker_host": "",
+        "host_workspace_prefix": "",
+        "container_workspace": "/workspace",
+        "fallback_to_local": False,
+    }
+
+    with patch("app.core.tools.SandboxTools.get_stream_writer", return_value=mock_writer), \
+         patch("app.core.tools.SandboxTools.ModelFactory.create_model"), \
+         patch("app.core.tools.SandboxTools.settings", mock_settings), \
+         patch("app.core.tools.SandboxTools.DockerSandboxMiddleware") as mock_middleware:
+
+        mock_middleware.side_effect = RuntimeError("Docker daemon 未运行或未安装")
+
+        result = await sandbox("test prompt", FakeRuntime())
+
+        assert isinstance(result.update, dict)
+        messages = result.update.get("messages", [])
+        assert len(messages) == 1
+        # ToolMessage 在测试环境中被 Mock，验证调用参数即可
+        call_kwargs = ToolMessage.call_args.kwargs
+        content = json.loads(call_kwargs["content"])
+        assert "Docker daemon 未运行或未安装" in content["subagent"]
+        assert "SANDBOX_FALLBACK_TO_LOCAL" in content["subagent"]
+        assert call_kwargs["tool_call_id"] == "call_docker_err_001"
