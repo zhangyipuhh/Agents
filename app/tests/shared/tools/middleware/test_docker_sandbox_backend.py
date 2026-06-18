@@ -114,7 +114,7 @@ class TestDockerSandboxMiddleware:
 
             mock_backend.cleanup.assert_called_once()
 
-    def test_middleware_cleanup_safe_when_backend_none(self):
+    def test_middleware_cleanup_safe_when_backend_none(self, tmp_path):
         """测试 backend 为 None 时 cleanup() 不会抛出异常"""
         with patch(
             "app.shared.tools.middleware.docker_sandbox_backend.DockerSandboxBackend"
@@ -128,10 +128,20 @@ class TestDockerSandboxMiddleware:
 
             middleware = DockerSandboxMiddleware(
                 session_id="test-safe",
-                workspace="/tmp/sandbox/test-safe",
+                workspace=str(tmp_path / "sandbox"),
             )
             middleware.backend = None
             middleware.cleanup()  # 不应抛出异常
+
+    def test_middleware_requires_workspace(self):
+        """P1: 未传入 workspace 时抛出 ValueError。"""
+        from app.shared.tools.middleware.docker_sandbox_backend import (
+            DockerSandboxMiddleware,
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            DockerSandboxMiddleware(session_id="no-workspace")
+        assert "必须显式传入 workspace" in str(exc_info.value)
 
     def test_middleware_passes_kwargs_to_filesystem_middleware(self, tmp_path):
         """测试额外 kwargs 会透传给 FilesystemMiddleware 父类"""
@@ -190,3 +200,14 @@ class TestDockerSandboxBackend:
             assert hasattr(backend, "container_workspace")
             assert backend.container_workspace == "/workspace"
             backend.cleanup()
+
+
+    def test_backend_requires_workspace(self):
+        """P1: 未传入 workspace 时抛出 ValueError。"""
+        from app.shared.tools.middleware.docker_sandbox_backend import (
+            DockerSandboxBackend,
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            DockerSandboxBackend(session_id="no-workspace")
+        assert "必须显式传入 workspace" in str(exc_info.value)

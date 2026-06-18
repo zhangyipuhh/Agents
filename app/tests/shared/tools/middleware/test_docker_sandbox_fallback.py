@@ -6,6 +6,8 @@ DockerSandboxMiddleware Docker 不可用降级测试
 - fallback_to_local=false 时，Docker 不可用仍抛 RuntimeError
 - fallback_to_local=true 时，Docker 不可用自动降级到 LocalShellBackend
 - cleanup() 在本地回退模式下不会调用 LocalShellBackend 不存在的 cleanup()
+
+注意：workspace 由调用方统一创建后传入，本测试用 tmp_path 预先创建目录。
 """
 
 from unittest.mock import patch, MagicMock
@@ -18,13 +20,19 @@ from docker.errors import DockerException
 class TestDockerSandboxMiddlewareFallback:
     """DockerSandboxMiddleware fallback 行为测试"""
 
+    def _make_workspace(self, tmp_path, name="sandbox"):
+        """辅助方法：创建并返回测试用 workspace 目录路径。"""
+        workspace = tmp_path / name
+        workspace.mkdir(parents=True, exist_ok=True)
+        return str(workspace)
+
     def test_docker_unavailable_without_fallback_raises(self, tmp_path):
         """P1: fallback_to_local=false 时，Docker 不可用继续抛 RuntimeError。"""
         from app.shared.tools.middleware.docker_sandbox_backend import (
             DockerSandboxMiddleware,
         )
 
-        workspace = str(tmp_path / "sandbox")
+        workspace = self._make_workspace(tmp_path)
         with patch(
             "app.shared.tools.middleware.docker_sandbox_backend.DockerSandboxBackend",
         ) as mock_backend_cls:
@@ -46,7 +54,7 @@ class TestDockerSandboxMiddlewareFallback:
         )
         from deepagents.backends.local_shell import LocalShellBackend
 
-        workspace = str(tmp_path / "sandbox")
+        workspace = self._make_workspace(tmp_path)
         with patch(
             "app.shared.tools.middleware.docker_sandbox_backend.DockerSandboxBackend",
         ) as mock_backend_cls:
@@ -68,7 +76,7 @@ class TestDockerSandboxMiddlewareFallback:
             DockerSandboxBackend,
         )
 
-        workspace = str(tmp_path / "sandbox")
+        workspace = self._make_workspace(tmp_path)
         mock_docker_backend = MagicMock()
         mock_docker_backend.__class__ = DockerSandboxBackend
 
@@ -93,7 +101,7 @@ class TestDockerSandboxMiddlewareFallback:
         )
         from deepagents.backends.local_shell import LocalShellBackend
 
-        workspace = str(tmp_path / "sandbox")
+        workspace = self._make_workspace(tmp_path)
         with patch(
             "app.shared.tools.middleware.docker_sandbox_backend.DockerSandboxBackend",
         ) as mock_backend_cls:
@@ -116,7 +124,7 @@ class TestDockerSandboxMiddlewareFallback:
             DockerSandboxBackend,
         )
 
-        workspace = str(tmp_path / "sandbox")
+        workspace = self._make_workspace(tmp_path)
         mock_docker_backend = MagicMock()
         mock_docker_backend.__class__ = DockerSandboxBackend
 

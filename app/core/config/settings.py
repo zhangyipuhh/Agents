@@ -364,7 +364,7 @@ class SandboxSettings(BaseSettings):
         description="K8s 模式命名空间（占位，未实现）",
     )
     sandbox_fallback_to_local: bool = Field(
-        default=True,
+        default=False,
         description=(
             "Docker 不可用时是否降级到本地文件系统执行。"
             "true: 使用 LocalShellBackend 在本地 workspace 继续运行（失去 Docker 隔离，仅限开发/可信环境）；"

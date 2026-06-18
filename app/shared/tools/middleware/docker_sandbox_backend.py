@@ -77,7 +77,7 @@ class DockerSandboxBackend(BaseSandbox):
         Args:
             session_id: 会话ID，用于容器命名和工作目录隔离
             image: Docker 镜像名，默认使用 python:3.12-alpine
-            workspace: 主机工作目录，默认使用 /tmp/sandbox/{session_id}
+            workspace: 主机工作目录，必须由调用方提前创建并传入
             max_memory_mb: 容器内存限制（MB），默认 512
             max_cpu_percent: 容器 CPU 限制（百分比），默认 100
             network_enabled: 是否启用网络，默认 False（完全隔离）
@@ -88,11 +88,18 @@ class DockerSandboxBackend(BaseSandbox):
             container_workspace: 容器内工作目录（bind mount target），默认 /workspace
 
         Raises:
+            ValueError: workspace 未传入时抛出
             RuntimeError: Docker daemon 不可用时、或 socket 模式缺 host_workspace_prefix 时抛出
         """
+        if not workspace:
+            raise ValueError(
+                "DockerSandboxBackend 必须显式传入 workspace。"
+                "workspace 应由调用方（如 app.core.tools.SandboxTools）统一创建。"
+            )
+
         self.session_id = session_id
         self.image = image
-        self.workspace = workspace or os.path.join("/tmp/sandbox", session_id)
+        self.workspace = workspace
         self.container_workspace = container_workspace
         self.max_memory_mb = max_memory_mb
         self.max_cpu_percent = max_cpu_percent
@@ -103,9 +110,6 @@ class DockerSandboxBackend(BaseSandbox):
         self.host_workspace_prefix = host_workspace_prefix
         self._client: docker.DockerClient | None = None
         self._container = None
-
-        # 创建工作目录（应用进程视角）
-        os.makedirs(self.workspace, exist_ok=True)
 
         # 解析宿主机视角路径（用于 bind mount）
         self.host_workspace = self._resolve_host_workspace()
@@ -518,7 +522,7 @@ class DockerSandboxMiddleware(FilesystemMiddleware):
         Args:
             session_id: 会话ID，用于容器命名和工作目录隔离
             image: Docker 镜像名，默认使用 python:3.12-alpine
-            workspace: 主机工作目录，默认使用 /tmp/sandbox/{session_id}
+            workspace: 主机工作目录，必须由调用方提前创建并传入
             max_memory_mb: 容器内存限制（MB），默认 512
             max_cpu_percent: 容器 CPU 限制（百分比），默认 100
             network_enabled: 是否启用网络，默认 False（完全隔离）
@@ -527,8 +531,15 @@ class DockerSandboxMiddleware(FilesystemMiddleware):
                 - fallback_to_local: bool, Docker 不可用时是否降级到本地执行
 
         Raises:
+            ValueError: workspace 未传入时抛出
             RuntimeError: Docker daemon 不可用时、且未开启 fallback_to_local 时抛出
         """
+        if not workspace:
+            raise ValueError(
+                "DockerSandboxMiddleware 必须显式传入 workspace。"
+                "workspace 应由调用方（如 app.core.tools.SandboxTools）统一创建。"
+            )
+
         # 从 kwargs 中提取容器化部署字段，其余透传给父类
         docker_mode = kwargs.pop("docker_mode", "local")
         docker_host = kwargs.pop("docker_host", "")
@@ -559,11 +570,9 @@ class DockerSandboxMiddleware(FilesystemMiddleware):
                     session_id,
                     e,
                 )
-                # 确保工作目录存在（LocalShellBackend 不会自动创建）
-                effective_workspace = workspace or os.path.join("/tmp/sandbox", session_id)
-                os.makedirs(effective_workspace, exist_ok=True)
+                # workspace 由调用方统一创建，此处直接使用
                 self.backend = LocalShellBackend(
-                    root_dir=effective_workspace,
+                    root_dir=workspace,
                     virtual_mode=True,
                     timeout=default_timeout,
                 )
