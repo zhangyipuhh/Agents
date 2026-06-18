@@ -62,7 +62,7 @@ from typing import FrozenSet
 
 # 当前已注册的子智能体工具名（frozen 防止运行期误改）
 # 重要：修改此集合时务必阅读本文件顶部"新增子智能体工具的标准流程"
-SUBAGENT_TOOL_NAMES: FrozenSet[str] = frozenset({"sandbox", "explore"})
+SUBAGENT_TOOL_NAMES: FrozenSet[str] = frozenset({"sandbox", "explore", "query_knowledge"})
 
 
 def is_subagent_tool(tool_name: str) -> bool:

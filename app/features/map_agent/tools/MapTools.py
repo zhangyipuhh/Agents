@@ -26,12 +26,15 @@ import re
 import uuid
 import os
 from datetime import datetime
+from pathlib import Path
+
 from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 from langgraph.config import get_stream_writer
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field, field_validator
+from app.core.tools.base import BaseFilesystemTool
 from app.core.tools.events import create_tool_event
 from app.shared.utils.report.word.generator import WordReportGenerator
 from app.features.map_agent.config.config import get_report_config, ProjectSiteSelectionCollection
@@ -1399,6 +1402,103 @@ async def save_business_info(input_data: SaveBusinessInfoInput, runtime: ToolRun
                 ]
             }
         )
+
+
+# ==================== 知识库检索工具 ====================
+
+_KNOWLEDGE_SYSTEM_PROMPT = """\
+You are a knowledge base retrieval specialist. You excel at searching and reading documents in a knowledge base.
+
+Your strengths:
+- Finding documents by name patterns (use glob_search tool)
+- Searching document contents with regex (use grep_search tool)
+- Reading specific documents (use read_file / ls tools)
+
+Guidelines:
+- Use glob_search for broad file pattern matching
+- Use grep_search for searching file contents with regex (use (?i) for case-insensitive)
+- Use read_file when you know the specific document path
+- Use ls for listing directory contents
+- Adapt your search approach based on the thoroughness level specified by the caller
+- Return file paths as absolute paths in your final response
+- For clear communication, avoid using emojis
+- Do not create any files, or run any commands that modify the user's system state in any way
+
+Search the knowledge base thoroughly and report your findings clearly.
+"""
+
+
+class KnowledgeResult(BaseModel):
+    """query_knowledge 子智能体结构化输出"""
+    answer: str = Field(description="知识库检索与分析结果")
+
+
+@tool(description=(
+    "Launch a subagent to search and read documents in the knowledge base.\n"
+    "Use this tool when the user asks questions that should be answered from the "
+    "configured knowledge base, such as regulations, guidelines, or reference documents.\n\n"
+    "## When to use\n"
+    "- When the user's question is about knowledge base documents\n"
+    "- When you need to find documents by name or content in the knowledge base\n"
+    "- When the answer should be based on the configured knowledge source\n\n"
+    "## When NOT to use\n"
+    "- For searching files uploaded by the user in the current session (use explore instead)\n"
+    "- For tasks unrelated to the knowledge base\n\n"
+    "## Prompt writing rules (CRITICAL)\n"
+    "The prompt parameter must be a highly detailed task description for the subagent "
+    "to perform autonomously. You must specify exactly what information the subagent "
+    "should return back to you.\n"
+    "Do NOT pass the user's raw message as prompt — formulate a detailed task instead.\n\n"
+    "## Session resumption\n"
+    "Each query_knowledge invocation returns a task_id. You can pass this task_id in "
+    "a subsequent call to resume the same subagent session. When resuming, the subagent "
+    "continues with its full previous context (all messages and tool results) "
+    "via LangGraph checkpointing.\n"
+    "This should only be set if you mean to resume a previous task.\n\n"
+    "## Concurrency\n"
+    "Launch multiple query_knowledge agents concurrently whenever possible, "
+    "to maximize performance; use a single message with multiple tool calls."
+))
+async def query_knowledge(
+    prompt: str,
+    runtime: ToolRuntime,
+) -> Command:
+    """
+    启动知识库检索子智能体，在配置的知识库目录中搜索并读取文档。
+
+    目标知识库路径通过 `runtime.context["knowledge_root"]` 传入，便于不同场景
+    配置不同的知识库地址。
+
+    Args:
+        prompt: 详细任务描述。父 LLM 应将用户问题改写为高度详细的任务描述，
+                包含检索目标、预期返回信息、操作约束等。
+        runtime: 工具运行时上下文，必须包含 knowledge_root 与 tool_call_id。
+
+    Returns:
+        Command: 子智能体的知识库检索结果。
+    """
+    knowledge_root = runtime.context.get("knowledge_root")
+    if not knowledge_root:
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps(
+                            {"error": "未配置知识库路径"},
+                            ensure_ascii=False,
+                        ),
+                        tool_call_id=runtime.tool_call_id,
+                    )
+                ]
+            }
+        )
+
+    tool = BaseFilesystemTool(
+        tool_name="query_knowledge",
+        system_prompt=_KNOWLEDGE_SYSTEM_PROMPT,
+        response_format=KnowledgeResult,
+    )
+    return await tool.arun(prompt, runtime, Path(knowledge_root))
 
 
 # ==================== 数据库表结构初始化 ====================

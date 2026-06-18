@@ -419,6 +419,62 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 **依赖**:
 - `DockerSandboxMiddleware` / `DockerSandboxBackend`: `app/shared/tools/middleware/docker_sandbox_backend.py`
 
+### BaseFilesystemTool（2026-06-18 新增）
+
+**文件位置**: `app/core/tools/base/BaseFilesystemTool.py`
+
+**功能**: 封装文件系统子智能体的通用执行逻辑：创建子智能体、流式执行、事件推送、用户停止信号感知、结果提取与异常处理。
+
+**使用方式**: 上层工具（如 `explore`、`query_knowledge`）实例化 `BaseFilesystemTool`，传入 `tool_name`、`system_prompt`、`response_format` 等参数，然后调用 `await tool.arun(prompt, runtime, root_path)`。
+
+**设计目的**:
+- 将 `FilesystemReadTools.explore` 中耦合的 `create_agent`、middleware 组装、astream 循环等逻辑下沉到可复用的基础类。
+- 通过 `root_path` 参数灵活支持不同目标目录（session 上传目录、知识库目录等），避免一个工具承担多种职责。
+
+**关键属性**:
+- `tool_name`: SSE 事件与日志使用的工具名。
+- `system_prompt`: 子智能体系统提示词。
+- `response_format`: 结构化输出模型（可选）。
+- `max_file_size_mb`: 文件搜索中间件允许的最大单文件大小，默认 10 MB。
+
+**方法**:
+- `create_child_agent(root_path, model) -> Agent`: 创建挂载 `EncodingSafeFileSearchMiddleware`、`FilesystemMiddleware`、`TodoListMiddleware`、`ContextEditingMiddleware` 的子智能体。
+- `arun(prompt, runtime, root_path) -> Command`: 校验目录、发送事件、执行子智能体、处理停止信号、返回 `Command`。
+
+**依赖**:
+- `EncodingSafeFileSearchMiddleware`: `app/shared/tools/middleware/encoding_safe_file_search.py`
+- `FilesystemMiddleware` / `FilesystemBackend`: `deepagents`
+- `get_async_checkpointer`: `app/shared/utils/memory/checkpoint.py`
+- `get_current_request`: `app/core/tools/_stop_signal.py`
+
+### explore 工具（2026-06-18 重构）
+
+**文件位置**: `app/core/tools/FilesystemReadTools.py`
+
+**功能**: 启动文件系统探索子智能体，读取当前 session 上传目录 `data/upload/{session_id}` 中的文件并分析。
+
+**变更**:
+- 移除原 `knowledge_root` 分支，`explore` 仅保留最基础的 session 文件读取能力。
+- 通用执行逻辑迁移到 `BaseFilesystemTool`，`explore` 仅负责解析 `session_id`、构造 `root_path`、实例化 `BaseFilesystemTool` 并调用 `arun`。
+- 知识库检索能力由 `app/features/map_agent/tools/MapTools.py` 中的 `query_knowledge` 工具承担。
+
+### query_knowledge 工具（2026-06-18 新增）
+
+**文件位置**: `app/features/map_agent/tools/MapTools.py`
+
+**功能**: 启动知识库检索子智能体，在配置的知识库目录中搜索并读取文档。
+
+**使用方式**: 作为 `@tool` 注册到 `MapAgentConfig` 工具列表，仅在地图 Agent 场景可用。
+
+**实现细节**:
+- 通过 `runtime.context["knowledge_root"]` 获取目标知识库路径，由调用方（如 `/api/map/knowledge-chat`）在 `MapAgentContext` 中注入。
+- 调用 `BaseFilesystemTool(...).arun(prompt, runtime, root_path)` 复用通用子智能体执行逻辑。
+- 未配置 `knowledge_root` 时直接返回错误 `Command`，避免子智能体在无效路径上运行。
+- 已注册为子智能体工具（`subagent_registry.SUBAGENT_TOOL_NAMES` 包含 `query_knowledge`），前端 `sseParser.js` 的 `SUBAGENT_META` 同步了图标与标签。
+
+**扩展方式**:
+- 未来需要查询其他知识库时，可新增一个工具函数，仅修改 `root_path` 来源（如从 `runtime.context["other_knowledge_root"]` 读取），并复用同一个 `BaseFilesystemTool`。
+
 ## Agent 聊天并发控制（2026-06-15 扩展：动态排队提示 + HITL 早期释放）
 
 **文件位置**: `app/core/concurrency/chat_concurrency_dependency.py` + `app/core/concurrency/agent_concurrency_queue.py`
@@ -867,7 +923,7 @@ environment:
 
 ## SubAgent 事件协议（2026-06-13 新增，2026-06-14 改造）
 
-> **目标**：子智能体（sandbox / explore 等）的执行过程在父 AI 聊天气泡中折叠为 `SubAgentCard` 卡片；点击卡片从右侧 push 出 `SubAgentDrawer` 详情面板，展示父提问 + 子智能体内部消息流 + 沙箱摘要 + 沙箱事件时间线（tool='sandbox' 时）。
+> **目标**：子智能体（sandbox / explore / query_knowledge 等）的执行过程在父 AI 聊天气泡中折叠为 `SubAgentCard` 卡片；点击卡片从右侧 push 出 `SubAgentDrawer` 详情面板，展示父提问 + 子智能体内部消息流 + 沙箱摘要 + 沙箱事件时间线（tool='sandbox' 时）。
 >
 > **2026-06-14 改造**：`SandboxProgress` / `SandboxDrawer` / `SandboxEventItem` 已删除并合并；子智能体卡片从"会话末尾堆放"改为"嵌入 `timeline.tool` 块内按时序渲染"。
 > **2026-06-14-2 修复**：`update` 事件（`hitl_check` / `summarize` / `llm_call` 等节点状态）不再落入父气泡"思考过程"区；`update` SSE payload 统一附加 `thread_id`（空字符串）与 `langgraph_node`（节点名）字段，与 `custom` / `message` 事件格式保持一致。
@@ -1049,7 +1105,7 @@ environment:
 
 **修复**：仅改后端，前端代码与测试均不动（按用户决策）。
 - 新建 [app/core/tools/subagent_registry.py](file:///e:/laboratory/AI/Agents/feature-agent-core/app/core/tools/subagent_registry.py) 作为子智能体工具**集中注册表**（single source of truth）：
-  - 常量 `SUBAGENT_TOOL_NAMES = frozenset({"sandbox", "explore"})`（不可变，防止运行期误改）
+  - 常量 `SUBAGENT_TOOL_NAMES = frozenset({"sandbox", "explore", "query_knowledge"})`（不可变，防止运行期误改）
   - 函数 `is_subagent_tool(name) -> bool`（大小写不敏感、输入防御）
   - 文件顶部 docstring 详细描述"新增子智能体工具的标准流程（5 步）"和"与前端 `web/Agent/src/utils/sseParser.js` 的 `SUBAGENT_TOOLS` 同步约束"
 - 修改 [app/shared/utils/memory/checkpoint_history.py](file:///e:/laboratory/AI/Agents/feature-agent-core/app/shared/utils/memory/checkpoint_history.py)：
@@ -1066,7 +1122,7 @@ environment:
 - 旧历史脏数据随会话自然淘汰（用户重新聊天后新数据正确）
 
 **与前端 `SUBAGENT_TOOLS` 的同步机制**：
-注册表文件顶部 docstring 明确列出"新增子智能体工具的标准流程"5 步骤，其中第 3 步强制要求同步修改 `web/Agent/src/utils/sseParser.js` 的 `SUBAGENT_META` 与 `SUBAGENT_TOOLS`。当前注册的 `sandbox` / `explore` 已与前端常量对齐。
+注册表文件顶部 docstring 明确列出"新增子智能体工具的标准流程"5 步骤，其中第 3 步强制要求同步修改 `web/Agent/src/utils/sseParser.js` 的 `SUBAGENT_META` 与 `SUBAGENT_TOOLS`。当前注册的 `sandbox` / `explore` / `query_knowledge` 已与前端常量对齐；`query_knowledge` 采用与 `explore` 相同的书本/文档图标与"知识库"标签。
 
 **测试结果（2026-06-16-3 累计）**：
 - 后端 `pytest`：8 + 20 + 7 = 35 个相关测试全部通过
@@ -1292,7 +1348,7 @@ environment:
   - **更新** `web/Agent/src/components/__tests__/MessageBubble.spec.js`：3 个老用例迁移（`tools-header` 断言改为 `tool-call-card` 数量断言；SubAgentCard 选择器用 `.subagent-card.clickable` 区分避免 ToolCallCard 复用 `.subagent-card` class 造成选择器冲突）；新增 3 个 ToolCallCard 集成测试
   - 累计 **183/183** 全量通过（Vite build 成功）
 - **2026-06-15 第五次：ToolCallCard bug 修复 + 样式解耦**（用户反馈普通工具弹出智能体卡片）：
-  - **Bug 修复（核心）**：`MessageBubble.vue` 的 `subAgentsByGroup` computed **未过滤非 subagent 工具事件**，导致 `sseParser.updateSubAgentFromCustomEvent` 对所有 tool 名都创建 subAgents 条目（含普通工具），普通工具（如「生成报告」）会被 `getSubAgentsForGroup` 按 toolCallId 匹配并渲染为 `SubAgentCard`，点击触发 `SubAgentDrawer`。修复：在 `subAgentsByGroup` 循环中增加 `if (!isSubAgentItem(item)) continue` 过滤（判断 `item.data.tool` 是否属于 SUBAGENT_TOOLS），仅 subagent 工具（sandbox / explore）才走 SubAgentCard 路径
+  - **Bug 修复（核心）**：`MessageBubble.vue` 的 `subAgentsByGroup` computed **未过滤非 subagent 工具事件**，导致 `sseParser.updateSubAgentFromCustomEvent` 对所有 tool 名都创建 subAgents 条目（含普通工具），普通工具（如「生成报告」）会被 `getSubAgentsForGroup` 按 toolCallId 匹配并渲染为 `SubAgentCard`，点击触发 `SubAgentDrawer`。修复：在 `subAgentsByGroup` 循环中增加 `if (!isSubAgentItem(item)) continue` 过滤（判断 `item.data.tool` 是否属于 SUBAGENT_TOOLS），仅 subagent 工具（sandbox / explore / query_knowledge）才走 SubAgentCard 路径
   - **样式解耦**：ToolCallCard 重写为完全独立 class `.tool-call-card`（不再复用 `.subagent-card`，避免选择器冲突）：
     - 头部 SVG 扳手图标（独立设计，与 SubAgentCard 的 emoji 区分）
     - 显式「**普通工具**」蓝色徽章（`.tool-call-badge`）+ tooltip「普通工具（非子智能体）」，与 SubAgentCard（无此徽章）一眼可辨
@@ -1459,7 +1515,7 @@ from app.core.tools._stop_signal import (
 
 ### sandbox / explore 工具 async 化
 
-**`app/core/tools/SandboxTools.py`** + **`app/core/tools/FilesystemReadTools.py`** 改造：
+**`app/core/tools/SandboxTools.py`** + **`app/core/tools/FilesystemReadTools.py`** + **`app/features/map_agent/tools/MapTools.py`** 改造：
 
 - ``def sandbox`` → ``async def sandbox``（同步 for → async for + astream）
 - ``def explore`` → ``async def explore``（同上）

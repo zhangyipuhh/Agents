@@ -26,12 +26,18 @@ def test_subagent_tool_names_contains_explore():
     assert "explore" in SUBAGENT_TOOL_NAMES
 
 
+def test_subagent_tool_names_contains_query_knowledge():
+    """SUBAGENT_TOOL_NAMES 应包含 'query_knowledge'（来自 MapTools.py）"""
+    assert "query_knowledge" in SUBAGENT_TOOL_NAMES
+
+
 # ===== is_subagent_tool 正例 =====
 
 def test_is_subagent_tool_positive():
     """对注册表内工具名应返回 True"""
     assert is_subagent_tool("sandbox") is True
     assert is_subagent_tool("explore") is True
+    assert is_subagent_tool("query_knowledge") is True
 
 
 # ===== is_subagent_tool 反例（防回归） =====

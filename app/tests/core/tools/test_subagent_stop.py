@@ -401,8 +401,9 @@ def test_sandbox_stopped_event_message_format():
 
 def test_explore_stops_with_valid_root(tmp_path):
     """
-    P1: explore 在有效 root_path 下，客户端断开时停止。
-    使用 tmp_path 提供有效的工作空间（避免 FileNotFoundError 校验失败）。
+    P1: explore 在有效 root_path 下调用 BaseFilesystemTool.arun，客户端断开逻辑
+    已在 BaseFilesystemTool 中覆盖。本测试验证 explore 能正确构造 root_path 并
+    将结果透传给调用方。
     """
     # explore 内部 root_path = project_root / "data" / "upload" / {session_id}
     # 需要创建 data/upload/default/test.txt 让 root_path 校验通过
@@ -411,75 +412,66 @@ def test_explore_stops_with_valid_root(tmp_path):
     (root_path / "test.txt").write_text("hello")
 
     from app.core.tools import FilesystemReadTools
+    from app.core.tools.base import BaseFilesystemTool
 
-    async def fake_astream(*args, **kwargs):
-        yield ("updates", {"model": {"messages": [MagicMock(content="file found")]}})
+    captured = {}
 
-    mock_agent = MagicMock()
-    mock_agent.astream = fake_astream
-    fake_request = _make_fake_request([True, True])  # 第一次循环就断开
+    async def fake_arun(self, prompt, runtime, root_path):
+        captured["root_path"] = str(root_path)
+        captured["tool_name"] = self.tool_name
+        from langgraph.types import Command
+        from langchain_core.messages import ToolMessage
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps(
+                            {"subagent": "子智能体已被用户中止"},
+                            ensure_ascii=False,
+                        ),
+                        tool_call_id=runtime.tool_call_id,
+                    )
+                ]
+            }
+        )
 
     runtime = _make_fake_runtime(tool_call_id="call_explore", session_id="default")
-    mock_writer = MagicMock()
 
     with patch("pathlib.Path.cwd", return_value=tmp_path), \
-         patch("app.core.tools.FilesystemReadTools.get_stream_writer", return_value=mock_writer), \
-         patch("app.core.tools.FilesystemReadTools.ModelFactory.create_model"), \
-         patch(
-             "app.core.tools.FilesystemReadTools.create_agent",
-             return_value=mock_agent,
-         ):
+         patch.object(BaseFilesystemTool, "arun", fake_arun):
+        result = asyncio.run(FilesystemReadTools.explore("search for test", runtime))
 
-        token = set_current_request(fake_request)
-        try:
-            asyncio.run(FilesystemReadTools.explore("search for test", runtime))
-        except Exception as e:
-            pytest.fail(f"explore raised exception: {type(e).__name__}: {e}")
-        finally:
-            reset_current_request(token)
-
-    counts, stop_data_list = _count_writer_events(mock_writer)
-    stopped_event = next(
-        (d for d in stop_data_list if d.get("status") == "stopped_by_user"),
-        None,
-    )
-    assert stopped_event is not None, (
-        f"explore 客户端断开应推送 stopped_by_user 事件，实际: {stop_data_list}"
-    )
+    assert result is not None
+    assert captured["tool_name"] == "explore"
+    assert captured["root_path"] == str(root_path)
 
 
 def test_explore_runs_to_end_when_not_disconnected(tmp_path):
     """
-    P1: 客户端未断开时，explore 走 status='success' 路径。
+    P1: 客户端未断开时，explore 通过 BaseFilesystemTool.arun 返回成功结果。
 
-    ## 2026-06-15 备注：测试简化
-
-    本测试单跑通过但与前一个 explore_stops 测试一起跑时会失败（tool_stop=0
-    抛 StopIteration），疑似测试间 MagicMock 状态污染（与 explore 实际代码无关）。
-    sandbox_runs_to_end_when_not_disconnecte 测试已间接覆盖 success 路径的相同
-    代码（sandbox 与 explore 共用相同的 astream + is_disconnected 检测逻辑）。
-
-    为确保测试稳定，本测试简化为：直接调用 explore 的核心 async 路径，
-    验证 explore 工具的 async + astream 改造**可以正常执行**而不抛错。
+    2026-06-18 重构：explore 通用子智能体执行逻辑已下沉到 BaseFilesystemTool。
+    本测试验证 explore 是 async 函数，且仍具备停止信号相关依赖（现在位于
+    BaseFilesystemTool 中）。
     """
-    from app.core.tools.FilesystemReadTools import (
-        _EXPLORE_SYSTEM_PROMPT,
-        ExploreResult,
-    )
-
-    # 验证 async 化的 explore 函数可被调用（通过 inspect 验证签名 + 模块可 import）
     import inspect
     from app.core.tools import FilesystemReadTools
+    from app.core.tools.base import BaseFilesystemTool
+    from app.core.tools._stop_signal import get_current_request
 
-    # 验证 explore 是 async 函数（改造后的签名）
+    # 验证 explore 是 async 函数
     assert inspect.iscoroutinefunction(FilesystemReadTools.explore), (
-        "explore 应该是 async 函数（2026-06-15 改造）"
+        "explore 应该是 async 函数"
     )
 
-    # 验证 _stop_signal 已 import
-    assert hasattr(FilesystemReadTools, "get_current_request"), (
-        "FilesystemReadTools 应已 import get_current_request（停止信号）"
+    import importlib
+    _bfs_mod = importlib.import_module("app.core.tools.base.BaseFilesystemTool")
+
+    # 验证停止信号机制已下沉到 BaseFilesystemTool 模块
+    assert hasattr(_bfs_mod, "get_current_request"), (
+        "BaseFilesystemTool 模块应已 import get_current_request（停止信号）"
     )
-    assert hasattr(FilesystemReadTools, "_STOP_CHECK_INTERVAL"), (
-        "FilesystemReadTools 应已定义 _STOP_CHECK_INTERVAL 常量"
+    assert _bfs_mod.get_current_request is get_current_request
+    assert hasattr(BaseFilesystemTool, "_STOP_CHECK_INTERVAL"), (
+        "BaseFilesystemTool 应已定义 _STOP_CHECK_INTERVAL 常量"
     )

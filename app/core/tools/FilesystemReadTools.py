@@ -3,12 +3,13 @@
 """
 FilesystemReadTools - 文件系统探索工具模块
 
-该模块定义 explore 工具，启动探索子智能体，在单个子智能体中完成路径搜索 + 文件读取 + 内容分析。
+该模块定义 `explore` 工具，启动探索子智能体，在单个子智能体中完成路径搜索 +
+文件读取 + 内容分析。
 
 设计对照 opencode:
     - opencode task.txt (父 LLM 工具描述)  →  @tool(description=...)
-    - opencode explore.txt (子智能体 prompt) →  _EXPLORE_SYSTEM_PROMPT
-    - opencode Task(prompt=, subagent_type="explore") →  explore(prompt=)
+    - opencode explore.txt (子智能体 prompt) → _EXPLORE_SYSTEM_PROMPT
+    - opencode Task(prompt=, subagent_type="explore") → explore(prompt=)
 
 工作空间:
     通过 Path.cwd() 反向定位项目根目录，拼接 data/upload/{session_id} 作为 root_path。
@@ -20,44 +21,20 @@ FilesystemReadTools - 文件系统探索工具模块
     - FilesystemMiddleware:  ls + read_file
 
 流式事件:
-    使用 get_stream_writer() + create_tool_event() 向前端推送 tool_start / tool_progress / tool_stop 事件。
+    使用 get_stream_writer() + create_tool_event() 向前端推送 tool_start / tool_progress /
+    tool_stop 事件。通用执行逻辑已下沉到 `app.core.tools.base.BaseFilesystemTool`。
 
 Date: 2026-05-07
 Author: AI Assistant
 """
 
-import json
-from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
-from langchain.agents import create_agent
-from langchain.agents.middleware import ContextEditingMiddleware, TodoListMiddleware
-from langchain.agents.middleware.context_editing import ClearToolUsesEdit
-from deepagents import FilesystemMiddleware
-from deepagents.backends import FilesystemBackend
-
-from app.shared.tools.middleware.encoding_safe_file_search import EncodingSafeFileSearchMiddleware
-from app.shared.utils.memory.checkpoint import get_async_checkpointer
 from langchain.tools import tool, ToolRuntime
-from langchain_core.messages import AIMessage, ToolMessage
-from langgraph.config import get_stream_writer
-from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from app.core.agent.AgentContext import AgentContext
-from app.core.config.config import LLM_CONFIG
-from app.core.llmcalls.model_factory import ModelFactory
-from app.core.tools._stop_signal import get_current_request
-from app.core.tools.events import create_tool_event
-from app.core.tools.subagent_message_extractor import extract_structured_messages
-
-# 2026-06-15 新增：停止信号检测间隔（与 SandboxTools 保持一致）
-_STOP_CHECK_INTERVAL = 5
-
-# 2026-06-15 新增：logger（用户停止信号日志）
-import logging
-logger = logging.getLogger(__name__)
+from app.core.tools.base import BaseFilesystemTool
 
 
 _EXPLORE_SYSTEM_PROMPT = """\
@@ -85,32 +62,6 @@ Complete the user's search request efficiently and report your findings clearly.
 class ExploreResult(BaseModel):
     """explore 子智能体结构化输出"""
     answer: str = Field(description="文件搜索与分析结果")
-
-
-def _extract_last_ai_text(messages: list) -> str:
-    """从 messages 列表中提取最后一条 AI 消息的文本内容，作为兜底回答。"""
-    for msg in reversed(messages):
-        if not isinstance(msg, AIMessage):
-            continue
-        content = msg.content
-        if not content:
-            continue
-        if isinstance(content, str) and content.strip():
-            return content.strip()
-        if isinstance(content, list):
-            text_parts = [
-                b.get("text", "") for b in content
-                if isinstance(b, dict) and b.get("type") == "text"
-            ]
-            if text_parts:
-                return "".join(text_parts).strip()
-            thinking_parts = [
-                b.get("thinking", "") for b in content
-                if isinstance(b, dict) and b.get("type") == "thinking"
-            ]
-            if thinking_parts:
-                return "".join(thinking_parts).strip()
-    return ""
 
 
 @tool(description=(
@@ -141,305 +92,30 @@ def _extract_last_ai_text(messages: list) -> str:
     "Launch multiple explore agents concurrently whenever possible, "
     "to maximize performance; use a single message with multiple tool calls."
 ))
-async def explore(  # 2026-06-15: 改 async，支持子智能体停止信号感知
+async def explore(
     prompt: str,
     runtime: ToolRuntime[AgentContext],
-) -> Command:
+) -> object:
     """
-    启动探索子智能体，在工作空间中搜索文件、读取内容并分析。
+    启动探索子智能体，读取当前 session 上传目录中的文件并分析。
 
-    子智能体同时挂载 EncodingSafeFileSearchMiddleware（glob_search + grep_search）
-    和 FilesystemMiddleware（ls + read_file），支持在单个 LLM 往返中完成
-    搜索 → 读取 → 分析全流程。
-
-    使用 LangGraph MemorySaver checkpointer 管理子智能体会话。传入 task_id
-    可恢复之前的会话，子智能体将继续拥有完整历史上下文。
-
-    ## 2026-06-15 新增：用户停止信号感知
-
-    通过 ``app.core.tools._stop_signal`` 取出当前请求的 FastAPI Request，
-    在 ``child_agent.astream()`` 循环中每 ``_STOP_CHECK_INTERVAL`` 个 chunk 检测一次
-    ``request.is_disconnected()``，发现客户端断开（停止按钮触发）时立即：
-
-    1. 跳出 astream 循环
-    2. 推送 ``tool_stop`` 事件，``data.status = "stopped_by_user"``
-    3. 返回 ``Command`` 包含「子智能体已被用户中止」文本
+    该工具仅面向当前会话上传目录 `data/upload/{session_id}`，知识库检索请使用
+    `query_knowledge` 工具。
 
     Args:
         prompt: 详细任务描述。父 LLM 应将用户问题改写为高度详细的任务描述，
                 包含搜索目标、预期返回信息、操作约束等。
-        task_id: 可选。传入之前的 task_id 可恢复子智能体会话。
+        runtime: 工具运行时上下文，包含 session_id 与 tool_call_id。
 
     Returns:
-        子智能体的文件搜索与分析结果，包含 task_id 用于后续恢复。
+        Command: 子智能体的文件搜索与分析结果。
     """
-    tool_name = "explore"
-    tool_call_id = runtime.tool_call_id
-    start_time = datetime.now()
-    writer = get_stream_writer()
-
-    # 2026-06-15 新增：从 ContextVar 取出当前 FastAPI Request（可能为 None）
-    request = get_current_request()
-
-    actual_task_id =  tool_call_id
-
     session_id = runtime.context.get("session_id", "default")
+    root_path = Path.cwd() / "data" / "upload" / session_id
 
-    project_root = Path.cwd()
-    root_path = project_root / "data" / "upload" / session_id
-    if runtime.context.get("knowledge_root"):
-        root_path = Path(project_root / runtime.context.get("knowledge_root"))
-    try:
-        if not root_path.exists():
-            raise FileNotFoundError(f"工作空间文件夹不存在: {root_path}")
-        if not root_path.is_dir():
-            raise NotADirectoryError(f"路径不是文件夹: {root_path}")
-        if not any(root_path.iterdir()):
-            raise ValueError(f"工作空间文件夹为空: {root_path}")
-
-        start_event = create_tool_event(
-            event_type="tool_start",
-            tool=tool_name,
-            tool_call_id=tool_call_id,
-            data={
-                "args": {"prompt": prompt},
-                "root_path": str(root_path),
-                "description": f"开始文件探索: {prompt[:100]}",
-                # ===== 2026-06-13 新增 subagent 字段（向前兼容，老客户端忽略） =====
-                "thread_id": tool_call_id,
-                "parent_prompt": prompt,
-            },
-        )
-        writer(dict(start_event))
-
-        model = ModelFactory.create_model(
-            model_type=LLM_CONFIG["model_type"],
-            model_name=LLM_CONFIG["model_name"],
-            api_key=LLM_CONFIG["api_key"],
-            temperature=LLM_CONFIG["temperature"],
-            base_url=LLM_CONFIG["base_url"],
-        )
-
-        child_agent = create_agent(
-            model=model,
-            middleware=[ 
-                EncodingSafeFileSearchMiddleware(
-                    root_path=str(root_path),
-                    max_file_size_mb=10,
-                ),
-                FilesystemMiddleware(
-                    backend=FilesystemBackend(
-                        root_dir=str(root_path),
-                        virtual_mode=True,
-                    ),
-                ),
-                ContextEditingMiddleware(
-                    edits=[
-                        ClearToolUsesEdit(
-                            trigger=100000,
-                            keep=20,
-                            exclude_tools=[],
-                            placeholder="[earlier tool results trimmed for context length]",
-                        )
-                    ]
-                ),
-            ],
-            system_prompt=_EXPLORE_SYSTEM_PROMPT,
-            response_format=ExploreResult,
-            # 2026-06-16 改造：使用全局共享 checkpointer 持久化 explore 子智能体 messages
-            # 原 MemorySaver() 是进程内临时实例，会话恢复时无法获取子智能体轨迹
-            checkpointer=await get_async_checkpointer(),
-        )
-
-        # LangGraph checkpointer 自动管理会话历史
-        # 相同的 thread_id 恢复完整上下文，对应 opencode task.ts 中 session 查找逻辑
-        config = {"configurable": {"thread_id": actual_task_id}}
-
-        final_answer = ""
-        all_messages = []
-        # 2026-06-15 新增：用户主动停止标志
-        stopped_by_user = False
-
-        # 2026-06-15 改造：sync stream → async astream
-        async for chunk in child_agent.astream(
-            {"messages": [{"role": "user", "content": prompt}]},
-            config=config,
-            stream_mode=["updates", "values", "messages"],
-        ):
-            # 2026-06-15 新增：客户端断开检测
-            if request is not None and len(all_messages) % _STOP_CHECK_INTERVAL == 0:
-                try:
-                    if await request.is_disconnected():
-                        logger.info(
-                            "[explore] 客户端已断开，停止子智能体。tool_call_id=%s",
-                            tool_call_id,
-                        )
-                        stopped_by_user = True
-                        break
-                except Exception as e:
-                    logger.warning(f"[explore] is_disconnected 检测异常: {e}")
-
-            if isinstance(chunk, tuple) and len(chunk) == 2:
-                stream_mode, data = chunk
-            elif isinstance(chunk, dict):
-                stream_mode = chunk.get("type")
-                data = chunk.get("data")
-            else:
-                continue
-
-            if stream_mode == "updates":
-                # 累计子 agent 的 messages（用于结构化 child_messages）
-                if isinstance(data, dict):
-                    for node_name, node_data in data.items():
-                        if isinstance(node_data, dict) and "messages" in node_data:
-                            all_messages.extend(node_data["messages"])
-
-                writer(dict(create_tool_event(
-                    event_type="tool_progress",
-                    tool=tool_name,
-                    tool_call_id=tool_call_id,
-                    data={
-                        "child_stream": data,
-                        "message": "子智能体执行中",
-                        # ===== 2026-06-13 新增 subagent 字段 =====
-                        "thread_id": tool_call_id,
-                        "child_messages": extract_structured_messages(all_messages),
-                    },
-                )))
-
-            if stream_mode == "values" and isinstance(data, dict):
-                if "structured_response" in data:
-                    sr = data["structured_response"]
-                    if isinstance(sr, ExploreResult):
-                        final_answer = sr.answer or ""
-                    elif isinstance(sr, dict):
-                        final_answer = sr.get("answer") or ""
-
-        # ===== 2026-06-15 新增：用户停止分支（与正常完成并列）=====
-        if stopped_by_user:
-            end_time = datetime.now()
-            duration_ms = int((end_time - start_time).total_seconds() * 1000)
-            final_answer = "子智能体已被用户中止"
-
-            stop_event = create_tool_event(
-                event_type="tool_stop",
-                tool=tool_name,
-                tool_call_id=tool_call_id,
-                data={
-                    "status": "stopped_by_user",
-                    "result": {
-                        "prompt": prompt,
-                        "task_id": actual_task_id,
-                        "answer": final_answer,
-                    },
-                    "duration_ms": duration_ms,
-                    # ===== 2026-06-13 新增 subagent 字段 =====
-                    "thread_id": tool_call_id,
-                    "parent_prompt": prompt,
-                    "final_messages": extract_structured_messages(all_messages),
-                },
-            )
-            writer(dict(stop_event))
-
-            return Command(
-                update={
-                    "messages": [
-                        ToolMessage(
-                            content=json.dumps(
-                                {"subagent": final_answer},
-                                ensure_ascii=False,
-                            ),
-                            tool_call_id=tool_call_id,
-                        )
-                    ]
-                }
-            )
-
-        # ===== 原有正常结束逻辑 =====
-        # 如果还没有获取到有效答案，尝试从 messages 获取
-        if not final_answer and "messages" in data:
-            final_answer = _extract_last_ai_text(data["messages"])
-
-        # 确保 final_answer 不为 None
-        if not final_answer:
-            final_answer = "子智能体执行完成，但未获取到文本回复。"
-
-        end_time = datetime.now()
-        duration_ms = int((end_time - start_time).total_seconds() * 1000)
-
-        # 输出包装为 <task_result> 格式（对应 opencode task.ts:160-166）
-        output_text = (
-            f"task_id: {actual_task_id} (for resuming to continue this task if needed)\n"
-            f"\n"
-            f"<task_result>\n"
-            f"{final_answer}\n"
-            f"</task_result>"
-        )
-
-        stop_event = create_tool_event(
-            event_type="tool_stop",
-            tool=tool_name,
-            tool_call_id=tool_call_id,
-            data={
-                "status": "success",
-                "result": {
-                    "prompt": prompt,
-                    "task_id": actual_task_id,
-                    "answer": final_answer,
-                },
-                "duration_ms": duration_ms,
-                # ===== 2026-06-13 新增 subagent 字段 =====
-                "thread_id": tool_call_id,
-                "parent_prompt": prompt,
-                "final_messages": extract_structured_messages(all_messages),
-            },
-        )
-        writer(dict(stop_event))
-
-        return Command(
-            update={
-                "messages": [
-                    ToolMessage(
-                        content=json.dumps(
-                            {"subagent": output_text},
-                            ensure_ascii=False,
-                        ),
-                        tool_call_id=tool_call_id,
-                    )
-                ]
-            }
-        )
-
-    except Exception as e:
-        end_time = datetime.now()
-        duration_ms = int((end_time - start_time).total_seconds() * 1000)
-
-        error_event = create_tool_event(
-            event_type="tool_error",
-            tool=tool_name,
-            tool_call_id=tool_call_id,
-            data={
-                "error_type": type(e).__name__,
-                "error_message": str(e),
-                "args": {"prompt": prompt, "task_id": actual_task_id},
-                "duration_ms": duration_ms,
-                # ===== 2026-06-13 新增 subagent 字段 =====
-                "thread_id": tool_call_id,
-                "parent_prompt": prompt,
-            },
-        )
-        writer(dict(error_event))
-
-        return Command(
-            update={
-                "messages": [
-                    ToolMessage(
-                        content=json.dumps(
-                            {"subagent": str(e)},
-                            ensure_ascii=False,
-                        ),
-                        tool_call_id=tool_call_id,
-                    )
-                ]
-            }
-        )
+    tool = BaseFilesystemTool(
+        tool_name="explore",
+        system_prompt=_EXPLORE_SYSTEM_PROMPT,
+        response_format=ExploreResult,
+    )
+    return await tool.arun(prompt, runtime, root_path)
