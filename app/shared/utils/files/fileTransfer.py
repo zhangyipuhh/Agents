@@ -17,12 +17,18 @@ Author: 张镒谱
 import os
 import uuid
 import base64
+import shutil
 from pathlib import Path
 from typing import List, Optional
 from fastapi import UploadFile, HTTPException
 import aiofiles
 
 from app.shared.utils.files.pdf_untils import PDFProcessor
+from app.shared.utils.files.session_path_manager import (
+    get_session_upload_dir,
+    get_session_tmp_upload_dir,
+    remove_session_upload_date,
+)
 
 
 class FileTransfer:
@@ -54,25 +60,25 @@ class FileTransfer:
     
     def _ensure_upload_dir(self):
         """
-        确保上传目录存在
-        
+        确保上传根目录存在
+
         如果上传目录不存在，则创建该目录。
         """
         self.upload_dir.mkdir(parents=True, exist_ok=True)
-    
+
     def _get_session_dir(self, session_id: str) -> Path:
         """
         获取会话目录路径
-        
+
+        目录按日期组织：data/upload/{yyyy}/{mm}/{dd}/{session_id}
+
         Args:
             session_id (str): 会话ID
-            
+
         Returns:
             Path: 会话目录的完整路径
         """
-        session_dir = self.upload_dir / session_id
-        session_dir.mkdir(parents=True, exist_ok=True)
-        return session_dir
+        return get_session_upload_dir(session_id, create=True)
     
     def _get_file_path(self, file_uuid: str, session_id: str) -> Path:
         """
@@ -206,8 +212,8 @@ class FileTransfer:
         批量上传 base64 编码的文件
 
         将多个 base64 编码的文件上传到指定会话目录，每个文件使用 UUID 命名。
-        文件存储位置: {upload_dir}/{session_id}/{uuid}.{ext}
-        例如: data/upload/session_123/550e8400-e29b-41d4-a716-446655440000.pdf
+        文件存储位置: {upload_dir}/{yyyy}/{mm}/{dd}/{session_id}/{uuid}.{ext}
+        例如: data/upload/2026/06/19/session_123/550e8400-e29b-41d4-a716-446655440000.pdf
 
         Args:
             files (List[dict]): 要上传的文件列表，每个元素包含 filename 和 base64_data
@@ -346,8 +352,8 @@ class FileTransfer:
         """
         通过UUID和会话ID获取文件，并返回base64编码的内容
 
-        文件存储位置: {upload_dir}/{session_id}/{uuid}.{ext}
-        例如: data/upload/session_123/550e8400-e29b-41d4-a716-446655440000.pdf
+        文件存储位置: {upload_dir}/{yyyy}/{mm}/{dd}/{session_id}/{uuid}.{ext}
+        例如: data/upload/2026/06/19/session_123/550e8400-e29b-41d4-a716-446655440000.pdf
 
         Args:
             file_uuid (str): 文件的UUID（可带或不带扩展名）
@@ -467,31 +473,32 @@ class FileTransfer:
     async def delete_session(self, session_id: str) -> bool:
         """
         删除整个会话目录及其所有文件
-        
+
+        同时删除原文件目录 data/upload/{yyyy}/{mm}/{dd}/{session_id} 与解析缓存目录
+        data/tmp/upload/{yyyy}/{mm}/{dd}/{session_id}，并从索引中移除记录。
+
         Args:
             session_id (str): 要删除的会话ID
-            
+
         Returns:
             bool: 删除成功返回True，会话不存在返回False
-            
+
         Raises:
             HTTPException: 当删除过程中发生错误时抛出
         """
-        session_dir = self._get_session_dir(session_id)
-        
-        if not session_dir.exists():
+        session_dir = get_session_upload_dir(session_id)
+        tmp_session_dir = get_session_tmp_upload_dir(session_id)
+
+        existed = session_dir.exists() or tmp_session_dir.exists()
+        if not existed:
             return False
-        
+
         try:
-            for item in session_dir.iterdir():
-                if item.is_file():
-                    item.unlink()
-                elif item.is_dir():
-                    for sub_item in item.iterdir():
-                        if sub_item.is_file():
-                            sub_item.unlink()
-                    item.rmdir()
-            session_dir.rmdir()
+            if session_dir.exists():
+                shutil.rmtree(session_dir)
+            if tmp_session_dir.exists():
+                shutil.rmtree(tmp_session_dir)
+            remove_session_upload_date(session_id)
             return True
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"删除会话失败: {str(e)}")

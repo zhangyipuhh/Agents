@@ -7,10 +7,10 @@ BaseFilesystemTool - 文件系统子智能体基础工具
 的通用逻辑。上层工具（如 explore、query_knowledge）只需指定：
     - tool_name: 工具名（用于 SSE 事件与日志）
     - system_prompt: 子智能体系统提示词
-    - response_format: 结构化输出模型（可选）
     - max_file_size_mb: 文件搜索大小限制
 
-然后调用 `await tool.arun(prompt, runtime, root_path)` 即可获得 `Command`。
+    然后调用 `await tool.arun(prompt, runtime, root_path)` 即可获得 `Command`。
+
 
 通过 context 传入不同的 `root_path`，即可灵活扩展不同目标地址的文件/知识库
 检索工具，无需重复实现子智能体生命周期管理。
@@ -23,7 +23,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Union
+from typing import Union
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import ContextEditingMiddleware, TodoListMiddleware
@@ -34,7 +34,6 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.config import get_stream_writer
 from langgraph.types import Command
-from pydantic import BaseModel
 
 from app.core.agent.AgentContext import AgentContext
 from app.core.config.config import LLM_CONFIG
@@ -61,7 +60,6 @@ class BaseFilesystemTool:
     Attributes:
         tool_name: 工具名，用于 SSE 事件与日志。
         system_prompt: 子智能体系统提示词。
-        response_format: 结构化输出 Pydantic 模型，可选。
         max_file_size_mb: 文件搜索中间件最大文件大小（MB）。
     """
 
@@ -71,7 +69,6 @@ class BaseFilesystemTool:
         self,
         tool_name: str,
         system_prompt: str,
-        response_format: Optional[type[BaseModel]] = None,
         max_file_size_mb: int = 10,
     ):
         """
@@ -80,12 +77,10 @@ class BaseFilesystemTool:
         Args:
             tool_name: 工具名（SSE 事件、日志使用）。
             system_prompt: 子智能体系统提示词。
-            response_format: 结构化输出模型，可选；传入后子智能体将按该模型输出。
             max_file_size_mb: 文件搜索中间件允许的最大单文件大小，默认 10 MB。
         """
         self.tool_name = tool_name
         self.system_prompt = system_prompt
-        self.response_format = response_format
         self.max_file_size_mb = max_file_size_mb
         self.logger = logging.getLogger(self.__class__.__name__)
 
@@ -146,8 +141,6 @@ class BaseFilesystemTool:
             # 2026-06-16 改造：使用全局共享 checkpointer 持久化子智能体 messages
             "checkpointer": await get_async_checkpointer(),
         }
-        if self.response_format is not None:
-            agent_kwargs["response_format"] = self.response_format
 
         return create_agent(**agent_kwargs)
 
@@ -180,6 +173,8 @@ class BaseFilesystemTool:
         """
         从消息列表中提取最后一条 AI 消息的文本内容。
 
+        兼容测试环境 Mock：通过消息类型名字符串判断，不依赖真实的 AIMessage 类型。
+
         Args:
             messages: LangChain 消息对象列表。
 
@@ -187,7 +182,7 @@ class BaseFilesystemTool:
             str: 最后一条 AI 文本内容；不存在时返回空字符串。
         """
         for msg in reversed(messages):
-            if not isinstance(msg, AIMessage):
+            if type(msg).__name__ != "AIMessage":
                 continue
             content = msg.content
             if not content:
@@ -313,14 +308,6 @@ class BaseFilesystemTool:
                         },
                     )))
 
-                if stream_mode == "values" and isinstance(data, dict):
-                    structured_response = data.get("structured_response")
-                    if structured_response is not None:
-                        if isinstance(structured_response, BaseModel):
-                            final_answer = getattr(structured_response, "answer", "") or ""
-                        elif isinstance(structured_response, dict):
-                            final_answer = structured_response.get("answer") or ""
-
             end_time = datetime.now()
             duration_ms = int((end_time - start_time).total_seconds() * 1000)
 
@@ -358,11 +345,20 @@ class BaseFilesystemTool:
                     }
                 )
 
-            # 兜底：从 messages 中提取最后一条 AI 文本
-            if not final_answer and isinstance(data, dict) and "messages" in data:
-                final_answer = self._extract_last_ai_text(data["messages"])
+            # 子智能体最终答案：统一从循环内累计的 all_messages 中提取最后一条 AI 文本。
+            # 不能用 data["messages"]：当最后一块流是 updates 模式时，data = {node_name: state_delta}，
+            # 没有顶层 messages 键，会导致取不到真实回复。
+            if not final_answer and all_messages:
+                final_answer = self._extract_last_ai_text(all_messages)
 
+            # 兜底：仅在确实没有任何 AI 文本产出时才使用；同时记录 warning 便于排查
             if not final_answer:
+                self.logger.warning(
+                    "[%s] 未获取到 AI 文本回复。tool_call_id=%s, all_messages_count=%d",
+                    self.tool_name,
+                    tool_call_id,
+                    len(all_messages),
+                )
                 final_answer = "子智能体执行完成，但未获取到文本回复。"
 
             output_text = (

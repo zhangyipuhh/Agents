@@ -4,7 +4,7 @@
 附件数据库操作模块
 
 提供附件记录的增删查功能，附件与会话（session）关联。
-附件的文件实体存储在文件系统 upload_dir/{session_id}/ 目录，
+附件的文件实体存储在文件系统 upload_dir/{yyyy}/{mm}/{dd}/{session_id}/ 目录，
 本模块仅管理附件的元数据记录。
 
 表结构通过 @register_schema 装饰器自动注册，启动时统一初始化。

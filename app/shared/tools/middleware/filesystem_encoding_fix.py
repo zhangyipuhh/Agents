@@ -24,10 +24,14 @@ import logging
 from pathlib import Path
 
 from deepagents.backends import filesystem as fs_module
+from deepagents.backends.protocol import FileData, ReadResult
+
+from app.shared.utils.files import session_path_manager as spm
 
 logger = logging.getLogger(__name__)
 
 _orig_ripgrep_search = fs_module.FilesystemBackend._ripgrep_search
+_orig_read = fs_module.FilesystemBackend.read
 
 
 def _patched_ripgrep_search(
@@ -99,10 +103,87 @@ def _patched_ripgrep_search(
     return results
 
 
-def apply_fix() -> None:
-    """应用编码修复。
+def _patched_read(
+    self,
+    file_path: str,
+    offset: int = 0,
+    limit: int = 2000,
+) -> ReadResult:
+    """将读取请求重定向到对应的 .md 缓存文件。
 
-    将 FilesystemBackend._ripgrep_search 方法替换为支持 UTF-8 编码的版本。
+    deepagents FilesystemMiddleware 传入的 file_path 是以 "/" 开头的虚拟绝对路径
+    （如 "/file.docx"、"/reports/annual.pdf"）。FilesystemBackend._resolve_path 在
+    virtual_mode=True 下会将其解析为 self.cwd / vpath.lstrip("/") 。
+
+    规则：
+    1. 读取时临时将 self.cwd 从 data/upload/... 映射到 data/tmp/upload/... 。
+    2. 用映射后的 self.cwd 调用 _resolve_path 解析 file_path，得到真实路径。
+    3. 将真实路径扩展名统一替换为 ".md"。
+    4. 直接读取目标 .md 文件；不存在时不回退原路径，返回 not found 错误（错误信息使用原始路径）。
+    5. 读取完成后恢复原始 self.cwd，确保 ls/glob/grep 仍在源目录工作。
+
+    Args:
+        self: FilesystemBackend 实例。
+        file_path: 原始传入的虚拟绝对路径。
+        offset: 起始行偏移（0-indexed）。
+        limit: 最大读取行数。
+
+    Returns:
+        ReadResult: 包含文件内容或错误信息。
+    """
+    original_cwd = self.cwd
+    try:
+        # 1. 临时把 self.cwd 从 data/... 映射到 data/tmp/...
+        # 使用 relative_to 避免字符串替换误命中路径中其它 "data/" 子串
+        project_root = spm._get_project_root().resolve()
+        data_root = (project_root / "data").resolve()
+        tmp_data_root = (project_root / "data" / "tmp").resolve()
+        try:
+            rel = original_cwd.resolve().relative_to(data_root)
+            self.cwd = tmp_data_root / rel
+        except ValueError:
+            # self.cwd 不在 data/upload/ 下（例如已是 data/tmp/ 或其它路径），保持原 cwd
+            pass
+
+        # 2. 让后端按 virtual_mode 规则解析虚拟路径
+        try:
+            abs_target = self._resolve_path(file_path)
+        except (ValueError, OSError, RuntimeError) as e:
+            return ReadResult(error=f"Error reading file '{file_path}': {e}")
+
+        # 3. 统一改扩展名为 .md
+        abs_target = abs_target.with_suffix(".md")
+
+        if not abs_target.exists() or not abs_target.is_file():
+            return ReadResult(error=f"File '{file_path}' not found")
+
+        # 4. 读取 .md 文件
+        with open(abs_target, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        lines = content.splitlines(keepends=True)
+        start_idx = offset
+        end_idx = min(start_idx + limit, len(lines))
+
+        if start_idx >= len(lines):
+            return ReadResult(
+                error=f"Line offset {offset} exceeds file length ({len(lines)} lines)"
+            )
+
+        file_data = FileData(content="".join(lines[start_idx:end_idx]), encoding="utf-8")
+        return ReadResult(file_data=file_data)
+    except (OSError, UnicodeDecodeError) as e:
+        return ReadResult(error=f"Error reading file '{file_path}': {e}")
+    finally:
+        # 5. 恢复原始工作空间
+        self.cwd = original_cwd
+
+
+def apply_fix() -> None:
+    """应用编码修复与 read 重定向补丁。
+
+    将 FilesystemBackend._ripgrep_search 方法替换为支持 UTF-8 编码的版本，
+    同时将 FilesystemBackend.read 方法替换为重定向到 .md 缓存文件的版本。
 
     注意：此函数应该尽快调用（在 deepagents 被导入之前），以确保修复生效。
     """
@@ -111,6 +192,12 @@ def apply_fix() -> None:
         logger.info("FilesystemBackend._ripgrep_search 已应用 UTF-8 编码修复")
     else:
         logger.debug("FilesystemBackend._ripgrep_search 修复已应用，跳过")
+
+    if fs_module.FilesystemBackend.read is not _patched_read:
+        fs_module.FilesystemBackend.read = _patched_read
+        logger.info("FilesystemBackend.read 已应用 .md 重定向补丁")
+    else:
+        logger.debug("FilesystemBackend.read 修复已应用，跳过")
 
 
 if __name__ == "__main__":

@@ -74,8 +74,10 @@ async def get_map_agent() -> MapAgent:
 # Knowledge 目录路径
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 KNOWLEDGE_DIR = os.path.join(_PROJECT_ROOT, "data", "Knowledge")
-METADATA_FILE = os.path.join(KNOWLEDGE_DIR, "metadata.json")
-TMP_DIR = os.path.join(KNOWLEDGE_DIR, "tmp")
+# 元数据缓存文件位于 data/tmp/Knowledge/（与 large_tool_results/ 同级），避免污染真实知识库目录
+METADATA_FILE = os.path.join(_PROJECT_ROOT, "data", "tmp", "Knowledge", "metadata.json")
+# query_knowledge 子智能体扫描的真实知识库根目录（与 KNOWLEDGE_DIR 保持一致）
+TMP_DIR = KNOWLEDGE_DIR
 
 MIME_TYPES = {
     ".pdf": "application/pdf",

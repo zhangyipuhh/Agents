@@ -20,6 +20,7 @@ from fastapi import APIRouter, HTTPException, Request, Depends, Query
 from pydantic import BaseModel
 from typing import Optional
 from app.shared.utils.files.fileTransfer import FileTransfer
+from app.shared.utils.files.session_path_manager import register_session_upload_date
 from app.shared.utils.Session.SessionCache import session_cache
 from app.shared.utils.auth.session_db import SessionDB
 from app.shared.utils.files.attachment_db import AttachmentDB
@@ -94,7 +95,9 @@ async def create_session(request: Request):
             raise HTTPException(status_code=401, detail="用户不存在")
 
         session_id = str(uuid.uuid4())
-        session_dir = file_transfer._get_session_dir(session_id)
+
+        # 注册 session 上传日期索引，确保后续文件上传、沙箱、explore 等工具能定位日期化目录
+        register_session_upload_date(session_id)
 
         # 添加 session（传入 user_id）
         await session_cache.add_session(session_id, username, user['id'])

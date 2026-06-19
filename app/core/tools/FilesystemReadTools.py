@@ -12,8 +12,8 @@ FilesystemReadTools - 文件系统探索工具模块
     - opencode Task(prompt=, subagent_type="explore") → explore(prompt=)
 
 工作空间:
-    通过 Path.cwd() 反向定位项目根目录，拼接 data/upload/{session_id} 作为 root_path。
-    root_path 限定子智能体的操作范围，确保只读安全。
+    通过 session_path_manager 获取日期化上传目录 data/upload/{yyyy}/{mm}/{dd}/{session_id} 作为 root_path。
+    root_path 限定子智能体的操作范围，确保只读安全；FilesystemBackend.read 猴补丁会在读取时把路径映射到对应的 .md 缓存文件。
 
 子智能体可用工具:
     - TodoListMiddleware:  write_todos 规划步骤
@@ -32,10 +32,10 @@ from pathlib import Path
 
 from langchain.tools import tool, ToolRuntime
 from langgraph.types import Command
-from pydantic import BaseModel, Field
 
 from app.core.agent.AgentContext import AgentContext
 from app.core.tools.base import BaseFilesystemTool
+from app.shared.utils.files.session_path_manager import get_session_upload_dir
 
 
 _EXPLORE_SYSTEM_PROMPT = """\
@@ -58,11 +58,6 @@ Guidelines:
 
 Complete the user's search request efficiently and report your findings clearly.
 """
-
-
-class ExploreResult(BaseModel):
-    """explore 子智能体结构化输出"""
-    answer: str = Field(description="文件搜索与分析结果")
 
 
 @tool(description=(
@@ -100,8 +95,11 @@ async def explore(
     """
     启动探索子智能体，读取当前 session 上传目录中的文件并分析。
 
-    该工具仅面向当前会话上传目录 `data/upload/{session_id}`，知识库检索请使用
+    该工具仅面向当前会话上传目录 `data/upload/{yyyy}/{mm}/{dd}/{session_id}`，知识库检索请使用
     `query_knowledge` 工具。
+
+    注意：子智能体在该目录下搜索/列出的均为原文件；实际读取内容时，
+    FilesystemBackend.read 猴补丁会自动映射到 `data/tmp/upload/...` 下对应的 `.md` 文件。
 
     Args:
         prompt: 详细任务描述。父 LLM 应将用户问题改写为高度详细的任务描述，
@@ -112,11 +110,10 @@ async def explore(
         Command: 子智能体的文件搜索与分析结果。
     """
     session_id = runtime.context.get("session_id", "default")
-    root_path = Path.cwd() / "data" / "upload" / session_id
+    root_path = get_session_upload_dir(session_id, create=True)
 
     tool = BaseFilesystemTool(
         tool_name="explore",
         system_prompt=_EXPLORE_SYSTEM_PROMPT,
-        response_format=ExploreResult,
     )
     return await tool.arun(prompt, runtime, root_path)

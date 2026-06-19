@@ -129,7 +129,40 @@ class _RecursiveCharacterTextSplitter:
 sys.modules["langchain_text_splitters"].RecursiveCharacterTextSplitter = _RecursiveCharacterTextSplitter
 
 # mock 其他常用缺失模块
-sys.modules["aiofiles"] = Mock()
+# aiofiles 需要保留真实文件能力，因此提供一个支持异步上下文管理器的轻量 mock
+class _AiofilesOpenContext:
+    """模拟 aiofiles.open 返回的异步文件上下文。
+
+    将真实文件对象包装为 async read/write，以满足业务代码中 await f.write() 的调用。
+    """
+    def __init__(self, path, *args, **kwargs):
+        self._path = path
+        self._args = args
+        self._kwargs = kwargs
+        self._f = None
+
+    async def __aenter__(self):
+        self._f = open(self._path, *self._args, **self._kwargs)
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self._f:
+            self._f.close()
+
+    async def read(self):
+        return self._f.read()
+
+    async def write(self, data):
+        return self._f.write(data)
+
+
+class _AiofilesMock:
+    """模拟 aiofiles 模块，open 返回真实文件操作的异步上下文。"""
+    def open(self, path, *args, **kwargs):
+        return _AiofilesOpenContext(path, *args, **kwargs)
+
+
+sys.modules["aiofiles"] = _AiofilesMock()
 sys.modules["aiofiles.os"] = Mock()
 sys.modules["sse_starlette"] = Mock()
 sys.modules["sse_starlette.sse"] = Mock()
@@ -214,8 +247,22 @@ class _FileDownloadResponse:
         self.content = content
         self.error = error
 
+class _FileData(dict):
+    """模拟 deepagents FileData。"""
+    pass
+
+
+class _ReadResult:
+    """模拟 deepagents ReadResult。"""
+    def __init__(self, file_data=None, error=None):
+        self.file_data = file_data
+        self.error = error
+
+
 sys.modules["deepagents.backends.protocol"].FileUploadResponse = _FileUploadResponse
 sys.modules["deepagents.backends.protocol"].FileDownloadResponse = _FileDownloadResponse
+sys.modules["deepagents.backends.protocol"].FileData = _FileData
+sys.modules["deepagents.backends.protocol"].ReadResult = _ReadResult
 
 class _FilesystemMiddleware:
     def __init__(self, backend=None, **kwargs):

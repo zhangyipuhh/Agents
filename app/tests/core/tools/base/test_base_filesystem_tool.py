@@ -31,7 +31,7 @@ from app.core.tools.base import BaseFilesystemTool
 
 
 class _FakeResult:
-    """模拟结构化输出模型"""
+    """模拟结构化输出模型（已废弃，保留用于兼容旧测试导入）"""
     def __init__(self, answer=""):
         self.answer = answer
 
@@ -44,6 +44,32 @@ class _RecordingToolMessage:
         self.content = content
         self.tool_call_id = tool_call_id
         _RecordingToolMessage.last_call = {"content": content, "tool_call_id": tool_call_id}
+
+
+def _make_ai_message(content: str):
+    """构造 AIMessage 模拟对象"""
+    msg = MagicMock()
+    msg.__class__.__name__ = "AIMessage"
+    msg.content = content
+    return msg
+
+
+def _make_human_message(content: str):
+    """构造 HumanMessage 模拟对象"""
+    msg = MagicMock()
+    msg.__class__.__name__ = "HumanMessage"
+    msg.content = content
+    return msg
+
+
+def _make_tool_message(content: str, tool_call_id: str = "t1"):
+    """构造 ToolMessage 模拟对象"""
+    msg = MagicMock()
+    msg.__class__.__name__ = "ToolMessage"
+    msg.content = content
+    msg.tool_call_id = tool_call_id
+    msg.name = "execute"
+    return msg
 
 
 def _make_fake_runtime(tool_call_id="call_test"):
@@ -104,13 +130,16 @@ def _default_patches(fake_astream, fake_request=None):
     async def mock_create_child_agent(self, root_path, model):
         return mock_agent
 
+    # 默认 patch 中让 extract_structured_messages 原样调用，确保 all_messages 被真实累积
+    from app.core.tools import subagent_message_extractor
+
     patches = [
         patch("app.core.tools.base.BaseFilesystemTool.get_stream_writer", return_value=mock_writer),
         patch("app.core.tools.base.BaseFilesystemTool.ModelFactory.create_model"),
         patch.object(BaseFilesystemTool, "create_child_agent", mock_create_child_agent),
         patch("app.core.tools.base.BaseFilesystemTool.get_async_checkpointer", return_value=mock_checkpointer),
         patch("app.core.tools.base.BaseFilesystemTool.get_current_request", return_value=fake_request),
-        patch("app.core.tools.base.BaseFilesystemTool.extract_structured_messages", return_value=[]),
+        patch("app.core.tools.base.BaseFilesystemTool.extract_structured_messages", side_effect=subagent_message_extractor.extract_structured_messages),
     ]
     return patches, mock_writer
 
@@ -134,12 +163,10 @@ def test_base_filesystem_tool_init():
     tool = BaseFilesystemTool(
         tool_name="test_tool",
         system_prompt="You are a test assistant.",
-        response_format=_FakeResult,
         max_file_size_mb=5,
     )
     assert tool.tool_name == "test_tool"
     assert tool.system_prompt == "You are a test assistant."
-    assert tool.response_format is _FakeResult
     assert tool.max_file_size_mb == 5
 
 
@@ -157,8 +184,7 @@ def test_arun_returns_command_on_success(tmp_path):
     (root_path / "test.txt").write_text("hello")
 
     async def fake_astream(*args, **kwargs):
-        yield ("updates", {"model": {"messages": [MagicMock(content="file found")]}})
-        yield ("values", {"structured_response": {"answer": "final answer"}})
+        yield ("updates", {"model": {"messages": [_make_ai_message("final answer")]}})
 
     fake_request = _make_fake_request([False])
     patches, mock_writer = _default_patches(fake_astream, fake_request)
@@ -172,7 +198,6 @@ def test_arun_returns_command_on_success(tmp_path):
         tool = BaseFilesystemTool(
             tool_name="test_tool",
             system_prompt="test prompt",
-            response_format=_FakeResult,
         )
         result = asyncio.run(tool.arun("search files", _make_fake_runtime(), root_path))
 
@@ -231,6 +256,105 @@ def test_arun_raises_empty_directory(tmp_path):
     tool = BaseFilesystemTool(tool_name="test_tool", system_prompt="test")
     with pytest.raises(ValueError):
         asyncio.run(tool.arun("search", _make_fake_runtime(), empty_dir))
+
+
+def test_arun_returns_last_ai_text_when_last_chunk_is_updates_mode(tmp_path):
+    """
+    P1 回归测试：最后一块流是 updates 模式、无 structured_response，
+    但 all_messages 中已累积 AIMessage，验证父 LLM 能拿到真实 AI 文本。
+    """
+    root_path = tmp_path / "workspace"
+    root_path.mkdir()
+    (root_path / "test.txt").write_text("hello")
+
+    async def fake_astream(*args, **kwargs):
+        yield ("updates", {
+            "model": {
+                "messages": [
+                    _make_human_message("执行搜索"),
+                    _make_ai_message("执行结果：找到 1 个文件"),
+                ]
+            }
+        })
+
+    fake_request = _make_fake_request([False])
+    patches, mock_writer = _default_patches(fake_astream, fake_request)
+
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        stack.enter_context(
+            patch("app.core.tools.base.BaseFilesystemTool.ToolMessage", _RecordingToolMessage)
+        )
+        tool = BaseFilesystemTool(
+            tool_name="test_tool",
+            system_prompt="test prompt",
+        )
+        result = asyncio.run(tool.arun("search files", _make_fake_runtime(), root_path))
+
+    assert result is not None
+    messages = result.update.get("messages", [])
+    assert len(messages) == 1
+    msg = messages[0]
+    assert isinstance(msg, _RecordingToolMessage)
+    parsed = json.loads(msg.content)
+    assert "subagent" in parsed
+    subagent_text = parsed["subagent"]
+    assert "执行结果：找到 1 个文件" in subagent_text, (
+        f"修复未生效，父 LLM 收到: {subagent_text}"
+    )
+    assert "未获取到文本回复" not in subagent_text, (
+        f"仍走兜底分支，父 LLM 收到: {subagent_text}"
+    )
+    assert "<task_result>" in subagent_text
+    assert "</task_result>" in subagent_text
+
+
+def test_arun_returns_fallback_when_no_ai_message(tmp_path):
+    """
+    P1 边界测试：all_messages 中无 AIMessage 时走兜底字符串并记录 warning。
+    """
+    root_path = tmp_path / "workspace"
+    root_path.mkdir()
+    (root_path / "test.txt").write_text("hello")
+
+    async def fake_astream(*args, **kwargs):
+        yield ("updates", {
+            "model": {
+                "messages": [
+                    _make_human_message(""),
+                    _make_tool_message("", tool_call_id="t1"),
+                ]
+            }
+        })
+
+    fake_request = _make_fake_request([False])
+    patches, mock_writer = _default_patches(fake_astream, fake_request)
+
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        stack.enter_context(
+            patch("app.core.tools.base.BaseFilesystemTool.ToolMessage", _RecordingToolMessage)
+        )
+        tool = BaseFilesystemTool(
+            tool_name="test_tool",
+            system_prompt="test prompt",
+        )
+        with patch.object(tool.logger, "warning") as mock_warning:
+            result = asyncio.run(tool.arun("search files", _make_fake_runtime(), root_path))
+
+    assert result is not None
+    messages = result.update.get("messages", [])
+    assert len(messages) == 1
+    msg = messages[0]
+    assert isinstance(msg, _RecordingToolMessage)
+    parsed = json.loads(msg.content)
+    assert "subagent" in parsed
+    assert "未获取到文本回复" in parsed["subagent"], (
+        f"兜底字符串缺失，父 LLM 收到: {parsed['subagent']}"
+    )
+    assert mock_warning.called, "兜底分支应触发 logger.warning"
 
 
 # ============================================================

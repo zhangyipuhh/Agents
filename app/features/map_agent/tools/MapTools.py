@@ -1428,11 +1428,6 @@ Search the knowledge base thoroughly and report your findings clearly.
 """
 
 
-class KnowledgeResult(BaseModel):
-    """query_knowledge 子智能体结构化输出"""
-    answer: str = Field(description="知识库检索与分析结果")
-
-
 @tool(description=(
     "Launch a subagent to search and read documents in the knowledge base.\n"
     "Use this tool when the user asks questions that should be answered from the "
@@ -1496,7 +1491,6 @@ async def query_knowledge(
     tool = BaseFilesystemTool(
         tool_name="query_knowledge",
         system_prompt=_KNOWLEDGE_SYSTEM_PROMPT,
-        response_format=KnowledgeResult,
     )
     return await tool.arun(prompt, runtime, Path(knowledge_root))
 

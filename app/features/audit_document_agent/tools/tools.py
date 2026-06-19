@@ -24,6 +24,7 @@ from langchain_core.tools import BaseTool
 from app.shared.utils.files.word_untils import WordProcessor
 from app.shared.utils.files.pdf_untils import PDFProcessor
 from app.shared.utils.files.pdfToImage import convert_pdfs_to_images
+from app.shared.utils.files.session_path_manager import get_session_upload_dir
 from app.shared.utils.memory.document_memory_store import document_memory_store
 
 
@@ -179,7 +180,7 @@ class AuditDocumentTools:
             output_format='jpg'
         )
 
-        image_dir = Path("data/upload") / session_id / step_id / file_id
+        image_dir = get_session_upload_dir(session_id) / step_id / file_id
         image_paths = sorted(image_dir.glob("*.jpg"))
 
         if not image_paths:

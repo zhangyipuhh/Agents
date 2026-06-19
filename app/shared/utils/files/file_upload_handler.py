@@ -24,6 +24,7 @@ from fastapi import UploadFile
 
 from app.shared.utils.files.fileTransfer import FileTransfer
 from app.shared.utils.files.pdfToImage import pdf_to_images_parallel
+from app.shared.utils.files.session_path_manager import get_session_upload_dir
 
 
 class FileUploadHandler:
@@ -301,7 +302,7 @@ class FileUploadHandler:
                 
                 # 为当前PDF创建独立的图片输出目录
                 # 使用UUID确保目录名唯一，避免多文件处理时的冲突
-                scan_output_dir = self.upload_dir / session_id / f"scan_{uuid.uuid4()}"
+                scan_output_dir = get_session_upload_dir(session_id, create=True) / f"scan_{uuid.uuid4()}"
                 scan_output_dir.mkdir(parents=True, exist_ok=True)
                 
                 # 将PDF转换为图片，使用并行处理提高效率

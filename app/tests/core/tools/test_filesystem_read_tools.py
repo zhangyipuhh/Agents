@@ -4,9 +4,9 @@ FilesystemReadTools 重构回归测试
 
 覆盖：
 - explore 工具可导入
-- explore 仅读取当前 session 上传目录，不再使用 knowledge_root
+- explore 使用 session 上传目录作为 root_path
 - explore 通过 BaseFilesystemTool 执行
-- explore 异常转发
+- explore 目录自动创建
 
 Date: 2026-06-18
 Author: AI Assistant
@@ -14,10 +14,13 @@ Author: AI Assistant
 
 import asyncio
 import inspect
+from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from app.shared.utils.files import session_path_manager as spm
 
 
 # ============================================================
@@ -52,28 +55,23 @@ def _make_fake_runtime(tool_call_id="call_explore", session_id="default"):
     return rt
 
 
-def test_explore_uses_session_upload_root(tmp_path):
+def test_explore_uses_session_upload_root(tmp_path, monkeypatch):
     """
-    P1: explore 使用 data/upload/{session_id} 作为 root_path。
+    P1: explore 使用日期化 session 上传目录作为 root_path。
+    实际读取时由 FilesystemBackend.read 猴补丁映射到 data/tmp/upload/... 下的 .md 文件。
     """
     from app.core.tools import FilesystemReadTools
 
+    monkeypatch.setattr(spm, "_get_project_root", lambda: tmp_path)
+
     session_id = "test_session"
-    root_path = tmp_path / "data" / "upload" / session_id
+    spm.register_session_upload_date(session_id)
+    today = date.today()
+    root_path = tmp_path / f"data/upload/{today.year}/{today.month:02d}/{today.day:02d}/{session_id}"
     root_path.mkdir(parents=True, exist_ok=True)
     (root_path / "test.txt").write_text("hello")
 
-    async def fake_astream(*args, **kwargs):
-        yield ("updates", {"model": {"messages": [MagicMock(content="file found")]}})
-        yield ("values", {"structured_response": {"answer": "done"}})
-
-    mock_agent = MagicMock()
-    mock_agent.astream = fake_astream
-    mock_writer = MagicMock()
-    mock_checkpointer = MagicMock()
     arun_called = {}
-
-    original_arun = FilesystemReadTools.BaseFilesystemTool.arun
 
     async def fake_arun(self, prompt, runtime, root_path):
         arun_called["root_path"] = str(root_path)
@@ -92,23 +90,25 @@ def test_explore_uses_session_upload_root(tmp_path):
             }
         )
 
-    with patch("pathlib.Path.cwd", return_value=tmp_path), \
-         patch("app.core.tools.FilesystemReadTools.BaseFilesystemTool.arun", fake_arun):
-
+    with patch("app.core.tools.FilesystemReadTools.BaseFilesystemTool.arun", fake_arun):
         asyncio.run(FilesystemReadTools.explore("search", _make_fake_runtime(session_id=session_id)))
 
     assert arun_called["tool_name"] == "explore"
     assert arun_called["root_path"] == str(root_path)
 
 
-def test_explore_ignores_knowledge_root(tmp_path):
+def test_explore_ignores_knowledge_root(tmp_path, monkeypatch):
     """
-    P1: explore 即使 context 中存在 knowledge_root，也仍然使用 session 上传目录。
+    P1: explore 即使 context 中存在 knowledge_root，也仍然使用日期化 session 上传目录。
     """
     from app.core.tools import FilesystemReadTools
 
+    monkeypatch.setattr(spm, "_get_project_root", lambda: tmp_path)
+
     session_id = "test_session"
-    upload_path = tmp_path / "data" / "upload" / session_id
+    spm.register_session_upload_date(session_id)
+    today = date.today()
+    upload_path = tmp_path / f"data/upload/{today.year}/{today.month:02d}/{today.day:02d}/{session_id}"
     upload_path.mkdir(parents=True, exist_ok=True)
     (upload_path / "upload.txt").write_text("upload file")
 
@@ -129,9 +129,7 @@ def test_explore_ignores_knowledge_root(tmp_path):
             }
         )
 
-    with patch("pathlib.Path.cwd", return_value=tmp_path), \
-         patch("app.core.tools.FilesystemReadTools.BaseFilesystemTool.arun", fake_arun):
-
+    with patch("app.core.tools.FilesystemReadTools.BaseFilesystemTool.arun", fake_arun):
         rt = _make_fake_runtime(session_id=session_id)
         rt.context["knowledge_root"] = str(tmp_path / "data" / "Knowledge")
         asyncio.run(FilesystemReadTools.explore("search", rt))
@@ -140,18 +138,37 @@ def test_explore_ignores_knowledge_root(tmp_path):
 
 
 # ============================================================
-# P2: 异常转发
+# P2: 目录自动创建
 # ============================================================
 
 
-def test_explore_raises_when_session_root_missing(tmp_path):
+def test_explore_creates_session_upload_root_when_missing(tmp_path, monkeypatch):
     """
-    P2: 当 session 上传目录不存在时，explore 抛出 FileNotFoundError。
+    P2: 当 session 上传目录不存在时，explore 会自动创建它。
     """
     from app.core.tools import FilesystemReadTools
 
-    with patch("pathlib.Path.cwd", return_value=tmp_path):
-        with pytest.raises(FileNotFoundError):
-            asyncio.run(
-                FilesystemReadTools.explore("search", _make_fake_runtime(session_id="missing"))
-            )
+    monkeypatch.setattr(spm, "_get_project_root", lambda: tmp_path)
+
+    session_id = "missing_upload_session"
+    today = date.today()
+    expected_root = tmp_path / f"data/upload/{today.year}/{today.month:02d}/{today.day:02d}/{session_id}"
+
+    async def fake_arun(self, prompt, runtime, root_path):
+        from langgraph.types import Command
+        from langchain_core.messages import ToolMessage
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content='{"subagent": "done"}',
+                        tool_call_id=runtime.tool_call_id,
+                    )
+                ]
+            }
+        )
+
+    with patch("app.core.tools.FilesystemReadTools.BaseFilesystemTool.arun", fake_arun):
+        asyncio.run(FilesystemReadTools.explore("search", _make_fake_runtime(session_id=session_id)))
+
+    assert expected_root.exists()

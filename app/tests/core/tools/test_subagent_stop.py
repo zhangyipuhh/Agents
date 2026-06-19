@@ -23,10 +23,12 @@
 
 import asyncio
 import json
+from datetime import date
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.shared.utils.files import session_path_manager as spm
 from app.core.tools._stop_signal import (
     get_current_request,
     reset_current_request,
@@ -399,15 +401,19 @@ def test_sandbox_stopped_event_message_format():
 # ============================================================
 
 
-def test_explore_stops_with_valid_root(tmp_path):
+def test_explore_stops_with_valid_root(tmp_path, monkeypatch):
     """
     P1: explore 在有效 root_path 下调用 BaseFilesystemTool.arun，客户端断开逻辑
-    已在 BaseFilesystemTool 中覆盖。本测试验证 explore 能正确构造 root_path 并
+    已在 BaseFilesystemTool 中覆盖。本测试验证 explore 能正确构造日期化 root_path 并
     将结果透传给调用方。
     """
-    # explore 内部 root_path = project_root / "data" / "upload" / {session_id}
-    # 需要创建 data/upload/default/test.txt 让 root_path 校验通过
-    root_path = tmp_path / "data" / "upload" / "default"
+    # explore 内部 root_path = get_session_upload_dir(session_id, create=True)
+    # 需要创建 data/upload/{yyyy}/{mm}/{dd}/default/test.txt 让 root_path 校验通过
+    monkeypatch.setattr(spm, "_get_project_root", lambda: tmp_path)
+    session_id = "default"
+    spm.register_session_upload_date(session_id)
+    today = date.today()
+    root_path = tmp_path / f"data/upload/{today.year}/{today.month:02d}/{today.day:02d}/{session_id}"
     root_path.mkdir(parents=True, exist_ok=True)
     (root_path / "test.txt").write_text("hello")
 
@@ -437,8 +443,7 @@ def test_explore_stops_with_valid_root(tmp_path):
 
     runtime = _make_fake_runtime(tool_call_id="call_explore", session_id="default")
 
-    with patch("pathlib.Path.cwd", return_value=tmp_path), \
-         patch.object(BaseFilesystemTool, "arun", fake_arun):
+    with patch.object(BaseFilesystemTool, "arun", fake_arun):
         result = asyncio.run(FilesystemReadTools.explore("search for test", runtime))
 
     assert result is not None
