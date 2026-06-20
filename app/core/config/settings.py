@@ -17,6 +17,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from mcpClient.shared.config_loader import load_mcp_config
 
+from app.core.skills.schemas import SkillsConfig  # noqa: F401  # 用于 SkillsSettings.to_skills_config() 的运行时引用
+
 
 class LLMSettings(BaseSettings):
     """
@@ -389,6 +391,72 @@ class SandboxSettings(BaseSettings):
         return bool(v)
 
 
+class SkillsSettings(BaseSettings):
+    """
+    Skill 系统配置（2026-06-21 新增）
+
+    管理 Skill 系统的运行时配置：用户扩展扫描路径、自定义全局 bootstrap
+    文件路径与系统总开关。
+
+    Attributes:
+        skills_paths: 用户扩展 skill 扫描路径，逗号分隔；空则只用默认根
+        skills_bootstrap_path: 用户自定义全局 bootstrap 文件路径（优先级高于系统默认）
+        skills_enabled: Skill 系统总开关；False 时不扫描、不注入、不注册工具
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    skills_paths: str = Field(
+        default="",
+        description="用户扩展 skill 扫描路径，逗号分隔；支持绝对路径、~/ 缩写、相对项目根",
+    )
+    skills_bootstrap_path: Optional[str] = Field(
+        default=None,
+        description="用户自定义全局 bootstrap 文件路径；支持绝对路径、~/ 缩写、相对项目根",
+    )
+    skills_enabled: bool = Field(
+        default=True,
+        description="Skill 系统总开关；False 时不扫描、不注入、不注册工具",
+    )
+
+    @field_validator("skills_enabled", mode="before")
+    @classmethod
+    def parse_bool(cls, v):
+        """
+        将字符串转换为布尔值。
+
+        Args:
+            v: 输入值（字符串或布尔）。
+
+        Returns:
+            bool: 转换后的布尔值。
+        """
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes", "on")
+        return bool(v)
+
+    def to_skills_config(self) -> SkillsConfig:
+        """
+        将当前 Settings 转换为运行时 SkillsConfig 实例。
+
+        逗号分隔的 skills_paths 字符串会按项拆分并过滤空白。
+
+        Returns:
+            SkillsConfig: 运行时配置实例。
+        """
+        paths = [p.strip() for p in self.skills_paths.split(",") if p.strip()]
+        return SkillsConfig(
+            paths=paths,
+            bootstrap_path=self.skills_bootstrap_path,
+            enabled=self.skills_enabled,
+        )
+
+
 class Settings(BaseSettings):
     """
     应用总配置
@@ -409,6 +477,7 @@ class Settings(BaseSettings):
     demonstration: DemonstrationSettings = Field(default_factory=DemonstrationSettings)
     portal_auth: PortalAuthSettings = Field(default_factory=PortalAuthSettings)
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
+    skills: SkillsSettings = Field(default_factory=SkillsSettings)
     agent_chat_max_concurrency: int = Field(
         default=1,
         ge=1,

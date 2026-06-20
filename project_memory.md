@@ -113,6 +113,15 @@ app/
 │   │   └── __init__.py     # 包初始化
 │   ├── agent/              # Agent 基类
 │   ├── llmcalls/           # LLM 调用封装
+│   ├── skills/             # Skill 系统（schema / 加载 / 提示词渲染 / bootstrap / prompt 构造 / load_skill 工具）
+│   │   ├── schemas.py      # SkillInfo / SkillsConfig Pydantic 模型
+│   │   ├── loader.py       # SkillDiscovery：扫描并解析 SKILL.md
+│   │   ├── prompt.py       # render_available_skills_block：渲染 <available_skills> XML 块
+│   │   ├── service.py      # SkillsService：skill 注册中心（全局单例 + agent 维度多实例）
+│   │   ├── bootstrap.py    # BootstrapProvider：按优先级读取 bootstrap.md 并包裹 <EXTREMELY_IMPORTANT>
+│   │   ├── message_transformer.py  # SkillsAwarePrompt：构造含 bootstrap + available_skills 的系统提示词
+│   │   ├── tool.py         # load_skill：LangChain @tool 装饰的 skill 加载工具
+│   │   └── __init__.py     # 包初始化
 │   ├── tools/              # 工具基类和 MCP 适配器
 │   └── router.py           # 核心路由（文件上传/下载）
 ├── features/               # 功能模块（各 Agent）
@@ -1708,4 +1717,141 @@ from app.core.tools._stop_signal import (
 
 - **TestClient.delete() 不支持 `data` / `json` 关键字**：Starlette `TestClient.delete` 显式仅暴露 `params`、`headers`、`cookies` 等；如需发送 JSON body，应改用 `client.request("DELETE", url, headers=..., json=...)`（参见 `app/tests/shared/test_file_router.py::test_delete_files`）
 - **PortalRefreshTokenDB 仅暴露物理删除**：使用 `delete_token(token_hash)`，不存在 `revoke_token`（参见 `app/tests/shared/test_portal_refresh_token_db.py`）
+
+## Skill 系统（2026-06-20 设计中，2026-06-21 落地，v2 bootstrap 配置化 + 子智能体覆盖）
+
+从 opencode skill 系统迁移而来的 LangChain/LangGraph 等价实现，提供可按需加载的工作流指引（如 brainstorming、TDD、debugging 等），通过 `<EXTREMELY_IMPORTANT>` 包裹的 bootstrap 引导模型调用 `load_skill` 工具。**v2 关键变化**：bootstrap 改为配置化 markdown 文件读取；新增子智能体 `skills/` 与 `config/bootstrap.md` 覆盖机制；删除 using-superpowers 特殊处理。
+
+### 模块位置
+
+```
+app/core/skills/
+├── __init__.py                 # 导出 SkillsService / BootstrapProvider / load_skill / SkillsAwarePrompt / render_available_skills_block；当前对未落地的子模块使用 try/except 条件导入
+├── schemas.py                  # SkillInfo / SkillsConfig（新增 bootstrap_path 字段）
+├── loader.py                   # SkillDiscovery（扫描 + frontmatter 解析，用 PyYAML 自实现，**不引入 python-frontmatter**）
+├── bootstrap.py                # BootstrapProvider：按 4 级优先级读取 bootstrap.md 并用 <EXTREMELY_IMPORTANT> 包裹
+└── bootstrap.md                # 系统默认 bootstrap 内容（Tool Mapping）
+```
+
+### 默认扫描根（全局维度，后扫描覆盖先扫描）
+
+| 根 | 说明 |
+|---|---|
+| `<project>/app/skills/**/SKILL.md` | 项目内置 skill，由代码仓库管理 |
+| `<project>/.agents/skills/**/SKILL.md` | 兼容 opencode 外部规范 |
+| `settings.skills_paths`（逗号分隔） | 用户运行时扩展，支持 `~/` 展开、绝对路径、相对项目根 |
+
+### 子智能体覆盖机制（v2 新增）
+
+| 路径 | 作用 | 与全局的关系 |
+|---|---|---|
+| `app/features/<agent>/skills/<name>/SKILL.md` | 子智能体专属 skill | **完全覆盖**全局默认根扫描（仅扫描该目录，不追加 `app/skills` 与 `.agents/skills`） |
+| `app/features/<agent>/config/bootstrap.md` | 子智能体 bootstrap 重写 | 优先级**高于**全局默认 `app/core/skills/bootstrap.md` |
+| `app/features/<agent>/config/prompts.py` | Agent 专属提示词（现有） | 不变 |
+
+**两者互相独立**：可单独存在 skills/ 覆盖 skill 扫描，或单独存在 bootstrap.md 覆盖 bootstrap；也可同时存在。
+
+### Skill frontmatter 格式
+
+```yaml
+---
+name: brainstorming          # 必填，全局唯一
+description: |               # 可选；建议填，便于 <available_skills> 展示
+  Help turn ideas into fully formed designs...
+---
+[SKILL 正文 markdown]
+```
+
+### 系统提示词拼接（v2：`SkillsAwarePrompt.build()`）
+
+```
+┌─────────────────────────────────────────────┐
+│  BASE_SYSTEM_PROMPT                         │  ← 通用规则（与现有架构一致）
+├─────────────────────────────────────────────┤
+│  self.system_prompt + context.system_prompt │  ← Agent 专属 + 动态层（与现有架构一致）
+├─────────────────────────────────────────────┤
+│  <EXTREMELY_IMPORTANT>...bootstrap.md...</> │  ← 本次新增：工具映射（bootstrap 在前）
+├─────────────────────────────────────────────┤
+│  <available_skills>...</available_skills>   │  ← 本次新增：列已注册 skill 的 name/description/location
+└─────────────────────────────────────────────┘
+```
+
+### Bootstrap 优先级链（4 级）
+
+1. **子智能体** `app/features/<agent>/config/bootstrap.md`（最高）
+2. **用户自定义全局** `settings.skills_bootstrap_path`（如 `~/my_bootstrap.md`）
+3. **系统默认** `app/core/skills/bootstrap.md`（项目仓库内置）
+4. **代码内置 fallback** `_FALLBACK_TOOL_MAPPING`（5 条英文 Tool Mapping 字符串）
+
+### 与 opencode 的差异
+
+| 项 | opencode | 本项目 |
+|---|---|---|
+| 权限系统 | `ctx.ask({permission:"skill"})` | **无**；保留 `available(name_filter)` 扩展点 |
+| bootstrap 注入点 | unshift 到首条 user message | 拼接到 system_prompt 末尾（语义更清晰，符合 LangChain 角色约定） |
+| bootstrap 内容来源 | `using-superpowers` SKILL.md 正文 + 硬编码 Tool Mapping | **配置化 markdown 文件**：4 级优先级链（子智能体 > 用户全局 > 系统默认 > 代码 fallback） |
+| 子智能体覆盖 | 无 | **支持**：`app/features/<agent>/skills/` + `config/bootstrap.md` |
+| 远程 skill 拉取 | `cfg.skills.urls` + discovery.ts::pull | **不做**（MVP）；后续按 opencode 协议扩展 |
+| `.claude/skills` 兼容 | 是 | **否**；项目使用自有 `.agents/skills` 约定 |
+| 前置依赖 | TypeScript Runtime | 仅 PyYAML（项目已装），无需新增第三方包 |
+
+### 标签使用约定
+
+| 标签 | 是否用于 skill 系统 | 备注 |
+|---|---|---|
+| `<EXTREMELY_IMPORTANT>` | ✅ 用于 bootstrap 包裹层 | opencode 仅生成不解析；superpowers 插件约定格式 |
+| `<available_skills>` | ✅ 用于能力清单 | opencode 仅生成不解析 |
+| `<system-reminder>` | ❌ **不使用** | 项目 `BASE_SYSTEM_PROMPT:54` 已声明该标签是 LangChain 运行时系统提醒专用，不能用作业务包装层 |
+
+### 关键 API
+
+| 函数 | 行为 |
+|---|---|
+| `SkillsService.get_instance(config, agent_name=None)` | 懒加载；`agent_name=None` 返回全局单例；`agent_name="map_agent"` 返回 agent 维度实例（agent skills/ 覆盖默认根） |
+| `SkillsService.get(name)` / `require(name)` / `all()` / `available(filter)` | 注册表访问；`require` 不存在抛 `SkillNotFoundError`（message 含 available 列表） |
+| `load_skill(name)`（LangChain `@tool`） | 返回 `<skill_content name="...">...</skill_content>` XML；错误时返回 `Error: ...` 字符串（不抛异常） |
+| `render_available_skills_block(skills)` | 渲染 `<available_skills>` XML；空列表返回 "No skills are currently available." |
+| `BootstrapProvider.render(agent_bootstrap_path, user_global_path)` | 按 4 级优先级读取 bootstrap 内容并用 `<EXTREMELY_IMPORTANT>` 包裹 |
+| `SkillsAwarePrompt(base, agent_specific, agent_name=None).build()` | 拼最终 system_prompt 字符串（顺序：base + agent + bootstrap + skills） |
+
+### 测试覆盖
+
+`app/tests/core/skills/`：
+- `test_loader.py` — 扫描多根、frontmatter 容错、同名覆盖、路径不存在警告、~/ 展开（10 用例已落地）
+- `test_service.py` — 单例、get/require/all/available、SkillNotFoundError 含 available、**agent_name 覆盖逻辑**
+- `test_prompt.py` — 空列表/非空列表 XML 格式、特殊字符转义、按 name 排序
+- `test_tool.py` — 成功路径、错误路径、base_dir URL、文件清单 limit=10
+- `test_bootstrap.py` — 已落地 8 用例：`<EXTREMELY_IMPORTANT>` 包裹、默认文件读取、缺失文件 fallback、agent 覆盖默认、user_global 覆盖默认、agent 高于 user_global、缺失 agent 回退默认、fallback 含 Tool Mapping 关键字
+- `test_message_transformer.py` — **base + agent + bootstrap + skills 拼接顺序**、agent_name 传递
+
+### 环境变量
+
+- `SKILLS_PATHS` — 用户扩展 skill 扫描路径，逗号分隔；空则只用默认根（`app/skills` + `.agents/skills`）
+- `SKILLS_BOOTSTRAP_PATH` — 用户自定义全局 bootstrap 文件路径；优先级高于系统默认 `app/core/skills/bootstrap.md`，低于子智能体 `config/bootstrap.md`
+- `SKILLS_ENABLED` — 总开关，默认 `true`；`false` 时不扫描、不注入、不注册 `load_skill` 工具
+
+### 演示用子智能体覆盖（2026-06-21 落地）
+
+- `app/features/map_agent/skills/_demo/SKILL.md` — frontmatter `name: map_demo_skill`，仅在地图 Agent 可见
+- `app/features/map_agent/config/bootstrap.md` — 子智能体专属 bootstrap（工具映射 + map 专属提示），优先级高于全局默认
+- 验收：`_llm_call(agent_name="map_agent")` 时 `<available_skills>` 仅含 `map_demo_skill`（全局 skill 被完全覆盖），bootstrap 内容为子智能体文件而非默认
+
+### 集成点（2026-06-21 落地）
+
+- `app/core/agent/agent.py::_llm_call`：替换原 `BASE_SYSTEM_PROMPT + agent + context` 拼接为 `SkillsAwarePrompt(base, agent_specific, agent_name=getattr(self, "agent_name", None)).build()`
+- `app/core/server.py::lifespan`：启动时调用 `SkillsService.get_instance(settings.skills.to_skills_config())`，清理阶段 `SkillsService.reset()`
+- `app/core/config/settings.py`：新增 `SkillsSettings`（含 `skills_paths` / `skills_bootstrap_path` / `skills_enabled` 三个字段 + `to_skills_config()` 方法），并在顶层 `Settings` 中通过 `skills: SkillsSettings` 字段挂载
+
+### 与现有架构的边界
+
+- **不修改** 各 Agent `features/*/config/prompts.py` —— skill 系统独立于 agent 专属提示词
+- **修改点**：`app/core/agent/agent.py::_llm_call`（第 293 行 system_prompt 拼接）
+- **修改点**：`app/core/config/settings.py`（新增 `SkillsSettings`，约 100 行后）
+- **修改点**：`app/core/server.py`（lifespan 中调用 `SkillsService.get_instance()`）
+- **新增前置**：各 Agent 子类需在 `__init__` 中显式设置 `self.agent_name = "<dir_name>"`（如 MapAgent → `"map_agent"`），未设置时 SkillsService 回退到全局实例
+
+### 设计/计划文档
+
+- 设计：[docs/superpowers/specs/2026-06-20-skill-system-design.md](../docs/superpowers/specs/2026-06-20-skill-system-design.md)（v2 修订版待同步）
+- 计划：[docs/superpowers/plans/2026-06-20-skill-system.md](../docs/superpowers/plans/2026-06-20-skill-system.md)（v2 已同步）
 

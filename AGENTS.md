@@ -133,3 +133,16 @@ app/{module}/bar/baz.py      →  app/tests/{module}/bar/test_baz.py
 - 生成测试后必须执行 `pytest app/tests/对应路径 -v` 验证通过
 - 若测试失败，需修复源码或测试直至通过
 - 最终回复必须包含 checklist：`[✓ 测试已同步生成并通过]` 或 `[✗ 本次修改无测试同步需要：<理由>]`
+
+## Skill 系统使用规范（2026-06-21 落地，v2）
+
+> **详情**：路径约定、frontmatter 格式、模块位置、与 opencode 差异、API 列表等完整信息见 [`project_memory.md` "Skill 系统" 章节](file:///e:/laboratory/AI/Agents/feature-agent-core/project_memory.md)。本节只列**操作硬约束**。
+
+- **硬约束**：**禁止** 使用 `<system-reminder>` 标签包装 skill 内容（项目 `BASE_SYSTEM_PROMPT:54` 已声明其为 LangChain 运行时系统提醒专用，不能用作业务包装层）。
+- **硬约束**：bootstrap 优先级链（从高到低）**禁止** 任意颠倒：
+  1. `app/features/<agent>/config/bootstrap.md`（子智能体）
+  2. `settings.skills_bootstrap_path`（用户自定义全局）
+  3. `app/core/skills/bootstrap.md`（系统默认）
+  4. 代码内置 `_FALLBACK_TOOL_MAPPING`（最后兜底）
+- **硬约束**：子智能体维度一旦存在 `app/features/<agent>/skills/` 目录，会**完全覆盖**全局默认根扫描（仅扫描该目录，不追加 `app/skills` 与 `.agents/skills`）。添加新全局 skill 时**必须**确认目标子智能体 skills/ 是否已存在，避免被静默覆盖。
+- **测试命令**：`pytest app/tests/core/skills/ -v`

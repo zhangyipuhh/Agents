@@ -110,6 +110,17 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logging.error("Failed to initialize MCPToolsRegistry: %s", e, exc_info=True)
 
+    # 初始化全局 Skill 系统（懒加载单例；agent 维度实例在 _llm_call 中按需创建）
+    from app.core.skills.service import SkillsService
+
+    skills_config = settings.skills.to_skills_config()
+    SkillsService.get_instance(skills_config)
+    if skills_config.enabled:
+        logging.info(
+            "SkillsService initialized with %d global skill(s)",
+            len(SkillsService.get_instance().all()),
+        )
+
     print("[DEBUG] lifespan yield 即将执行")
     yield
     print("[DEBUG] lifespan yield 后，清理资源")
@@ -118,6 +129,10 @@ async def lifespan(app: FastAPI):
     if hasattr(app.state, "mcp_registry") and app.state.mcp_registry is not None:
         await app.state.mcp_registry.shutdown()
         logging.info("MCPToolsRegistry shutdown complete")
+
+    # 关闭 Skill 系统单例
+    SkillsService.reset()
+    logging.info("SkillsService singleton cleared")
 
     # 关闭数据库连接池
     if DatabasePool.is_enabled():

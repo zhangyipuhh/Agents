@@ -39,7 +39,20 @@ for _lc_mod in [
 
 # 为 langchain 子模块添加常用属性
 # tool 装饰器需要保留被装饰的原始函数，否则测试无法调用 .func
-sys.modules["langchain.tools"].tool = lambda *args, **kwargs: lambda func: func
+# 注意：必须兼容 @tool 与 @tool(...) 两种写法
+
+def _tool_identity(*args, **kwargs):
+    """identity 装饰器：@tool 与 @tool(...) 均返回原函数。"""
+    if len(args) == 1 and callable(args[0]) and not kwargs:
+        return args[0]
+
+    def _decorator(func):
+        return func
+
+    return _decorator
+
+
+sys.modules["langchain.tools"].tool = _tool_identity
 
 # 2026-06-15 新增：mock langchain.agents 子模块（FilesystemReadTools.explore 依赖）
 # FilesystemReadTools.py 顶层 import：
@@ -93,6 +106,24 @@ sys.modules["langchain_core.messages.utils"] = types.ModuleType("langchain_core.
 sys.modules["langchain_core.messages.utils"].trim_messages = Mock()
 sys.modules["langchain_core.messages.utils"].count_tokens_approximately = Mock()
 sys.modules["langchain_core.runnables"].RunnableConfig = Mock()
+
+
+class _Runnable:
+    """模拟 langchain Runnable 基类，供 isinstance 检查使用。"""
+
+
+class _RunnableLambda(_Runnable):
+    """模拟 langchain RunnableLambda，保存可调用对象并支持 invoke。"""
+
+    def __init__(self, func):
+        self.func = func
+
+    def invoke(self, _input, config=None):
+        return self.func(_input)
+
+
+sys.modules["langchain_core.runnables"].Runnable = _Runnable
+sys.modules["langchain_core.runnables"].RunnableLambda = _RunnableLambda
 sys.modules["langchain_core.tools"] = types.ModuleType("langchain_core.tools")
 
 
@@ -104,7 +135,7 @@ class _BaseTool:
 sys.modules["langchain_core.tools"].BaseTool = _BaseTool
 sys.modules["langchain_core.tools"].StructuredTool = _BaseTool
 # 2026-06-15 新增：encoding_safe_file_search 依赖
-sys.modules["langchain_core.tools"].tool = lambda *args, **kwargs: lambda func: func
+sys.modules["langchain_core.tools"].tool = _tool_identity
 
 class _RecursiveCharacterTextSplitter:
     """模拟 RecursiveCharacterTextSplitter，提供基础 split_text 功能"""
