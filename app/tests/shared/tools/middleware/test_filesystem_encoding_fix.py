@@ -179,14 +179,131 @@ class TestPatchedRead:
         assert result.file_data["content"] == plain_text
 
 
+class _FakeMiddleware:
+    """模拟 EncodingSafeFileSearchMiddleware 实例，提供 _validate_and_resolve_path。"""
+    def __init__(self, root_path: Path, max_file_size_mb: int = 10):
+        self.root_path = root_path.resolve()
+        self.max_file_size_bytes = max_file_size_mb * 1024 * 1024
+
+    def _validate_and_resolve_path(self, path: str) -> Path:
+        """复刻 EncodingSafeFileSearchMiddleware._validate_and_resolve_path。"""
+        if not path.startswith("/"):
+            path = "/" + path
+        if ".." in path or "~" in path:
+            raise ValueError("Path traversal not allowed")
+        relative = path.lstrip("/")
+        full_path = (self.root_path / relative).resolve()
+        try:
+            full_path.relative_to(self.root_path)
+        except ValueError:
+            raise ValueError(f"Path outside root directory: {path}") from None
+        return full_path
+
+
+@pytest.fixture
+def patched_python_search(tmp_path, monkeypatch):
+    """返回可直接调用的 _patched_python_search，并隔离项目根目录。"""
+    monkeypatch.setattr(spm, "_get_project_root", lambda: tmp_path)
+    # 设置原始回退函数，用于测试回退场景
+    fix._orig_python_search = lambda self, pattern, base_path, include: {"/fallback": [(1, "fallback")]}
+    return fix._patched_python_search
+
+
+class TestPatchedPythonSearch:
+    """_patched_python_search 单元测试。"""
+
+    def test_grep_maps_to_tmp_md(self, tmp_path, patched_python_search):
+        """原始目录下有 file.pdf，tmp 目录下有 file.md（含匹配文本），验证能搜到匹配且返回 /file.pdf。"""
+        upload_dir = tmp_path / "data/upload/2026/06/19/session-abc"
+        tmp_dir = tmp_path / "data/tmp/upload/2026/06/19/session-abc"
+        upload_dir.mkdir(parents=True)
+        tmp_dir.mkdir(parents=True)
+        (upload_dir / "file.pdf").write_text("", encoding="utf-8")
+        (tmp_dir / "file.md").write_text("hello world\nmatch line\n", encoding="utf-8")
+
+        middleware = _FakeMiddleware(upload_dir)
+        results = patched_python_search(middleware, "match", "/", None)
+
+        assert "/file.pdf" in results
+        assert len(results["/file.pdf"]) == 1
+        assert results["/file.pdf"][0] == (2, "match line")
+
+    def test_grep_include_filter_on_original_name(self, tmp_path, patched_python_search):
+        """include 过滤在原始文件名上生效，只返回匹配的原始文件。"""
+        upload_dir = tmp_path / "data/upload/2026/06/19/session-abc"
+        tmp_dir = tmp_path / "data/tmp/upload/2026/06/19/session-abc"
+        upload_dir.mkdir(parents=True)
+        tmp_dir.mkdir(parents=True)
+        (upload_dir / "a.pdf").write_text("", encoding="utf-8")
+        (upload_dir / "b.txt").write_text("", encoding="utf-8")
+        (tmp_dir / "a.md").write_text("match a", encoding="utf-8")
+        (tmp_dir / "b.md").write_text("match b", encoding="utf-8")
+
+        middleware = _FakeMiddleware(upload_dir)
+        results = patched_python_search(middleware, "match", "/", "*.pdf")
+
+        assert "/a.pdf" in results
+        assert "/b.pdf" not in results
+
+    def test_grep_fallback_when_no_tmp_mapping(self, tmp_path, patched_python_search):
+        """root_path 不在 data/ 下时，回退到原始 _python_search。"""
+        knowledge_dir = tmp_path / "knowledge"
+        knowledge_dir.mkdir(parents=True)
+
+        middleware = _FakeMiddleware(knowledge_dir)
+        results = patched_python_search(middleware, "match", "/", None)
+
+        assert "/fallback" in results
+
+    def test_grep_no_md_file_skips(self, tmp_path, patched_python_search):
+        """原始文件存在但对应 .md 不存在时，静默跳过该文件。"""
+        upload_dir = tmp_path / "data/upload/2026/06/19/session-abc"
+        tmp_dir = tmp_path / "data/tmp/upload/2026/06/19/session-abc"
+        upload_dir.mkdir(parents=True)
+        tmp_dir.mkdir(parents=True)
+        (upload_dir / "file.pdf").write_text("", encoding="utf-8")
+        # 不创建 file.md
+
+        middleware = _FakeMiddleware(upload_dir)
+        results = patched_python_search(middleware, "match", "/", None)
+
+        assert "/file.pdf" not in results
+        assert results == {}
+
+    def test_grep_returns_original_virtual_path(self, tmp_path, patched_python_search):
+        """搜到多个 .md 文件时，返回的虚拟路径均保留原始后缀。"""
+        upload_dir = tmp_path / "data/upload/2026/06/19/session-abc"
+        tmp_dir = tmp_path / "data/tmp/upload/2026/06/19/session-abc"
+        upload_dir.mkdir(parents=True)
+        tmp_dir.mkdir(parents=True)
+        (upload_dir / "a.pdf").write_text("", encoding="utf-8")
+        (upload_dir / "b.txt").write_text("", encoding="utf-8")
+        (tmp_dir / "a.md").write_text("match a", encoding="utf-8")
+        (tmp_dir / "b.md").write_text("match b", encoding="utf-8")
+
+        middleware = _FakeMiddleware(upload_dir)
+        results = patched_python_search(middleware, "match", "/", None)
+
+        assert "/a.pdf" in results
+        assert "/b.txt" in results
+        assert "/a.md" not in results
+        assert "/b.md" not in results
+
+
 class TestApplyFix:
     """apply_fix 注册行为测试。"""
 
     def test_apply_fix_registers_read_patch(self, monkeypatch):
         """apply_fix 应将 FilesystemBackend.read 替换为 _patched_read。"""
+        import sys
+
         fake_fs_module = MagicMock()
         fake_fs_module.FilesystemBackend.read = lambda self, x: x
         monkeypatch.setattr(fix, "fs_module", fake_fs_module)
+
+        fake_module = MagicMock()
+        fake_module.EncodingSafeFileSearchMiddleware._python_search = lambda self, pattern, base_path, include: {}
+        monkeypatch.setitem(sys.modules, "app.shared.tools.middleware.encoding_safe_file_search", fake_module)
 
         fix.apply_fix()
 

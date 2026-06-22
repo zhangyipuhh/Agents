@@ -47,6 +47,18 @@ const queueStatus = ref({
 })
 const isQueueBannerVisible = computed(() => queueStatus.value.event === 'waiting')
 
+// 2026-06-22 新增：重置 queueStatus 到初始 idle 状态，避免上一次请求的 ready/idle 残留影响下一次请求
+function resetQueueStatus() {
+  queueStatus.value = {
+    event: 'idle',
+    waitingCount: 0,
+    activeCount: 0,
+    maxConcurrency: 0,
+    position: 0,
+    timestamp: 0
+  }
+}
+
 /**
  * 处理 SSE queue 事件：更新 queueStatus 响应式状态
  * @param {Object} data - { type: 'queue', event: 'waiting'|'ready', waiting_count, active_count, max_concurrency, position, timestamp }
@@ -237,6 +249,8 @@ async function newSession() {
     currentStreamReader = null
   }
   isStreaming.value = false
+  resetQueueStatus()
+  approvalMode.value = false
 
   isCreatingNewSession = true
   console.log('[newSession] 开始创建新会话')
@@ -295,7 +309,8 @@ async function handleSendMessage(message, attachments = []) {
   const aiMsg = reactive(createAiMessage())
   messages.push(aiMsg)
 
-  isStreaming.value = true
+  // 2026-06-22 修复：发送前重置 queueStatus，避免上一次请求的 ready/idle 残留
+  resetQueueStatus()
   let interrupted = false
   // 2026-06-15 改造：reader 提到模块级 currentStreamReader，供 stop 按钮跨函数访问
   currentStreamReader = null
@@ -303,6 +318,8 @@ async function handleSendMessage(message, attachments = []) {
   try {
     const stream = await chatStream(sessionId.value, message, attachments)
     currentStreamReader = stream.getReader()
+    // 拿到 SSE reader 后再置位 isStreaming，避免排队/握手阶段状态长期悬空无法复位
+    isStreaming.value = true
     const decoder = new TextDecoder()
     let buffer = ''
 
@@ -352,12 +369,17 @@ async function handleSendMessage(message, attachments = []) {
     if (err && err.status === 429) {
       handleQueueError(err)
       aiMsg.ended = true
+      // 2026-06-22 修复：429 错误路径必须复位 isStreaming，避免按钮永久卡死
+      isStreaming.value = false
+      currentStreamReader = null
       return
     }
     // 401/过期场景：先尝试 refresh_token；失败再跳登录页
     // 不再"看到'未登录'/'过期'字样就清登录态"，避免误踢
     const refreshed = await tryRefreshOrRedirect()
     if (!refreshed) {
+      isStreaming.value = false
+      currentStreamReader = null
       return
     }
     aiMsg.error = '不好意思，刚刚出了点小故障，可以晚点再问我一遍。'
@@ -377,6 +399,7 @@ async function handleApprovalSubmit({ answers }) {
   const aiMsg = messages[messages.length - 1]
   if (!aiMsg || aiMsg.type !== 'ai') {
     isStreaming.value = false
+    currentStreamReader = null
     return
   }
 
@@ -384,12 +407,15 @@ async function handleApprovalSubmit({ answers }) {
   aiMsg.interrupt = null
 
   const resumeData = { answers }
+  // 2026-06-22 修复：resume 前重置 queueStatus
+  resetQueueStatus()
   // 2026-06-15 改造：reader 提到模块级 currentStreamReader，供 stop 按钮跨函数访问
   currentStreamReader = null
 
   try {
     const stream = await chatStream(sessionId.value, '', [], resumeData)
     currentStreamReader = stream.getReader()
+    isStreaming.value = true
     const decoder = new TextDecoder()
     let buffer = ''
 
@@ -434,6 +460,9 @@ async function handleApprovalSubmit({ answers }) {
     if (err && err.status === 429) {
       handleQueueError(err)
       aiMsg.ended = true
+      // 2026-06-22 修复：429 错误路径必须复位 isStreaming，避免按钮永久卡死
+      isStreaming.value = false
+      currentStreamReader = null
       return
     }
     aiMsg.error = '恢复执行失败，请稍后重试。'
@@ -577,6 +606,8 @@ async function handleSessionSwitch(targetSessionId) {
       currentStreamReader = null
     }
     isStreaming.value = false
+    resetQueueStatus()
+    approvalMode.value = false
   }
 
   // 清空当前消息

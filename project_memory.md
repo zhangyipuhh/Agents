@@ -518,7 +518,7 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 **扩展方式**:
 - 未来需要查询其他知识库时，可新增一个工具函数，仅修改 `root_path` 来源（如从 `runtime.context["other_knowledge_root"]` 读取），并复用同一个 `BaseFilesystemTool`。
 
-## Agent 聊天并发控制（2026-06-15 扩展：动态排队提示 + HITL 早期释放）
+## Agent 聊天并发控制（2026-06-15 扩展：动态排队提示 + HITL 早期释放；2026-06-22 严格 FIFO 重构）
 
 **文件位置**: `app/core/concurrency/chat_concurrency_dependency.py` + `app/core/concurrency/agent_concurrency_queue.py`
 
@@ -528,45 +528,65 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 - `AGENT_CHAT_MAX_CONCURRENCY` — Agent 聊天接口最大并发数，超出时进入内存队列等待，默认 1（`settings.agent_chat_max_concurrency`）。
 - 排队事件推送间隔 `QUEUE_POLL_INTERVAL_SECONDS = 1.0`（依赖内常量，硬编码）。
 
-### 双模式依赖（2026-06-15 重构）
+### 2026-06-22 严格 FIFO 修复（核心 bug 修复）
+
+> **踩坑记录**：早期实现使用 `asyncio.Semaphore` + `slot_freed` Event 唤醒多个 waiter，存在以下乱序现象：
+> 1. **后入队先获得**：多个 waiter 被 `slot_freed.set()` 同时唤醒后，`asyncio.Semaphore` FIFO 内部队列与 enqueue 顺序可能不一致，导致排在后面的请求先进入会话
+> 2. **同时进入**：被唤醒的多个 waiter 几乎同时竞争 semaphore，前端看到「前面还有 1 位」但多个请求同时通过
+> 3. **HITL resume 插队**：U3 触发 HITL 后释放槽位，U3 的 resume 请求与已排队的 U2 同时竞争槽位，resume 抢走槽位导致 U2 卡死
+>
+> 修复方案：放弃 `asyncio.Semaphore`，改用 `_Waiter.future` + FIFO deque，每个 waiter 独立 Future，release() 严格按 FIFO 顺序唤醒第一个有效 waiter。
+
+**修复要点**：
+- `AgentConcurrencyQueue` 内部用 `_waiters: Deque[_Waiter]` 维护严格 FIFO 队列
+- 每个 `_Waiter` 持有 `asyncio.Future`，release() 只唤醒队首 waiter 并 `set_result(None)`，不惊群
+- acquire() 时若自己是队首且槽位空闲则立即获得；否则 await future（精确唤醒，无竞争）
+- release() 转移许可给下一个 waiter 时 `active_count` 不变（先减后加改为直接转移），消除瞬时空窗
+- 失败的/已取消的 waiter 自动顺延下一个，不会卡死队列
+- HTTP 模式也强制 enqueue 后再判定 position，杜绝非流式请求绕过 SSE FIFO 队列插队
+
+### 双模式依赖（2026-06-15 重构，2026-06-22 强化）
 
 `chat_concurrency_dependency(request, mode="sse" | "http")` 异步生成器：
 
 | 模式 | 触发条件 | 行为 |
 |------|---------|------|
-| **SSE 模式**（默认） | `/api/map/chat`、`/api/map/knowledge-chat` | 排队期间持续 yield `{"type":"queue","event":"waiting",...}` 事件；获取许可后 yield `ready` 事件 + `None` 让路由继续；通过 `await release_done.wait()` 阻塞直到路由主动释放（HITL 场景）或 finally 兜底 |
-| **HTTP 模式** | `/api/contract/chat` 等非流式接口 | 满员时立即抛 `HTTPException(429, detail={error,waiting_count,active_count,max_concurrency,message})`；无需等待时直接 yield None |
+| **SSE 模式**（默认） | `/api/map/chat`、`/api/map/knowledge-chat` | 所有请求统一先 enqueue；只有 `position == 1` 且槽位空闲时才尝试 acquire；获取许可后 yield `ready` 事件 + `None` 让路由继续；通过 `await release_done.wait()` 阻塞直到路由主动释放（HITL 场景）或 finally 兜底 |
+| **HTTP 模式** | `/api/contract/chat` 等非流式接口 | 强制先 enqueue；只有 `position == 1` 且槽位空闲时获取许可；否则抛 `HTTPException(429, detail={error,waiting_count,active_count,max_concurrency,message})`；无需等待时直接 yield None |
 
-### AgentConcurrencyQueue 扩展（2026-06-15 + 2026-06-22）
+### AgentConcurrencyQueue 接口（2026-06-22 改造）
 
-新增能力：
-- `enqueue(task)`：在真正阻塞前预注册当前 task 到 FIFO 等待队列（不阻塞），使 `snapshot()` / `position()` 在排队期间即可正确计算位置；幂等，同一 task 多次调用仅计数一次
+- `enqueue(task)`：预注册 task 到 FIFO 等待队列（不阻塞），幂等
 - `enqueue_time(task)`：返回指定 task 的入队时间戳（`time.monotonic()`）
 - `position(task)`：返回 FIFO 队列位置（1-based，0=已激活，-1=未注册）
 - `snapshot(task)`：返回 `{active_count, waiting_count, max_concurrency, position, enqueue_time, timestamp}`
-- `slot_freed`：槽位释放事件，`release()` 成功减少活跃计数后 set，供 SSE 轮询即时唤醒
-- 内部维护 `_waiter_tasks: List[asyncio.Task]` 与 `_enqueue_times: Dict[asyncio.Task, float]`，支持 position 准确计算
-- `acquire()` 识别已 `enqueue()` 的 task，避免重复计数；取消时正确回滚 waiting_count
+- `acquire(task)`：获取许可；只有队首 waiter 且槽位空闲时立即获得，否则 await Future 阻塞
+- `release(task)`：FIFO 顺序唤醒下一个有效 waiter（active_count 不出现先减后加瞬时窗口）
+- `slot_freed`：槽位释放事件，保留供 SSE 轮询兼容
+- 内部维护 `_waiters: Deque[_Waiter]` 与 `_waiter_index: Dict[asyncio.Task, _Waiter]`；取消时通过 `_remove_waiter` 回滚计数
 
 ### SSE 轮询即时唤醒（2026-06-22）
 
-`chat_concurrency_dependency` SSE 模式在等待队列满时：
-1. 先调用 `queue.enqueue()` 预注册当前请求
-2. 每 `QUEUE_POLL_INTERVAL_SECONDS`（1.0s）推送一次 `waiting` 事件
-3. 同时监听 `queue.slot_freed` 事件与 `release_done` 事件，任一触发即立即醒来重新 snapshot
-4. 当检测到 `active_count < max_concurrency` 时立即跳出轮询、调用 `acquire()`、`yield ready` 事件
+`chat_concurrency_dependency` SSE 模式在排队期间：
+1. 先调用 `queue.enqueue()` 预注册当前请求（**确保与 acquire 的 task 是同一个**）
+2. 在独立 `acquire_task = asyncio.create_task(queue.acquire(current_task))` 中阻塞
+3. 主循环每 `QUEUE_POLL_INTERVAL_SECONDS`（1.0s）推送一次 `waiting` 事件（仅当 `position != 1` 或槽位仍占用时）
+4. `asyncio.wait_for(shield(acquire_task), timeout=QUEUE_POLL_INTERVAL_SECONDS)` 在 acquire 完成或 1 秒后唤醒
+5. acquire 完成（被 Future 唤醒）后立即跳出循环 yield `ready` + `None`
 
-效果：其他请求释放槽位后，排队请求可在毫秒级内被唤醒，而非等待满 1s。
+效果：其他请求 release 后，队首 waiter 在 Future 被 set_result 时**毫秒级**内被唤醒，而不是等待 1s 超时。
 
 ### HITL interrupt 早期释放（核心修复）
 
 > **踩坑记录**：HITL interrupt 后如果仅靠依赖 finally 释放许可，前端不主动断开 SSE 连接会导致许可长时间被占，用户 resume 请求会卡在 FIFO 队列。本改造通过**前后端协作**修复。
 >
 > **2026-06-22 补充**：排队位置 `position` 原在 `acquire()` 阻塞后才写入 `_waiter_tasks`，导致 SSE `waiting` 事件把 `position=0` 传给前端，显示"前面还有 0 位"。现通过 `enqueue()` 预注册， waiting 事件携带的位置与前面实际排队人数一致。
+>
+> **2026-06-22 强化**：HITL 释放后已通过 FIFO Future 唤醒机制保证 resume 请求不会插队已排队的其他用户，但前端必须严格走 `await reader.cancel()` 配合后端 `release_handle` 释放许可。
 
 **后端机制**：
 - 依赖在 acquire 成功后把 `concurrency_release_handle`（可调用对象）挂到 `request.state`
-- 路由（`_stream_with_queue`）在 yield `type='interrupt'` 业务事件**之前**调用 `handle()` 强制释放许可
+- 路由（`stream_with_concurrency`）在 yield `type='interrupt'` 业务事件**之前**调用 `handle()` 强制释放许可
 - finally 兜底：`release_done.wait()` 超时或客户端异常断开时执行 release
 - 句柄幂等：多次调用不会重复释放（`release_done.is_set()` 守卫）
 
@@ -617,6 +637,29 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 | `/api/contract/doc_chat` | HTTP | 同上 |
 | `/api/contract/approval_chat` | HTTP | 同上 |
 
+### 测试覆盖（2026-06-22 新增）
+
+**后端** `app/tests/core/concurrency/`:
+- 既有 `test_agent_concurrency_queue.py`（16 用例）+ `test_chat_concurrency_dependency.py`（12 用例）+ `test_stream_with_concurrency.py`（11 用例）全部通过
+- **新增** `test_fifo_strict_order.py`（8 用例）：
+  - `test_strict_fifo_release_grants_to_first_waiter_only`：4 个 waiter 严格按入队顺序获得许可
+  - `test_new_request_does_not_preempt_queued_waiters`：新请求不能绕过已排队 waiter
+  - `test_resume_request_does_not_preempt_queued_waiters`：HITL resume 不能插队其他用户
+  - `test_simultaneous_waiters_get_serialized`：多个 waiter 同时等待时串行获取
+  - `test_cancelled_waiter_does_not_block_queue`：中间的 waiter 取消不会卡死队列
+  - `test_release_transfers_to_next_waiter_keeps_active_count`：release 时 active_count 保持
+  - `test_release_transfers_to_next_waiter_without_decrement`：释放转移不出现瞬时空窗
+  - `test_hitl_release_does_not_preempt_queued_users`：HITL 释放后已排队用户严格 FIFO
+- **总测试数**：47 passed / 0 failed
+
+**前端** `web/Agent/src/components/__tests__/`:
+- **新增** `KnowledgeChat.streamGuard.spec.js`（5 用例）：
+  - `test_knowledge_chat_handleSend_triggers_stop_when_streaming`：流式中 handleSend 触发 handleStop
+  - `test_knowledge_chat_handleKeydown_enter_triggers_stop_when_streaming`：流式中 Enter 触发 handleStop
+  - `test_knowledge_chat_handleKeydown_calls_handleSend_when_not_streaming`：非流式 Enter 走正常发送分支
+  - `test_knowledge_chat_reset_queue_status_resets_to_idle`：resetQueueStatus 正确重置
+  - `test_knowledge_chat_send_btn_click_routes_to_stop_when_streaming`：send-btn 流式下点击触发 handleStop
+
 ### 通用 SSE 流式包装器 `stream_with_concurrency`（2026-06-15 新增）
 
 **文件位置**：`app/core/concurrency/chat_concurrency_dependency.py`（同模块）
@@ -666,6 +709,20 @@ async def xxx_chat(request: Request, chat_request: ChatRequest):
 4. `App.vue` 的 `newSession()` 与 `handleSessionSwitch()` 在清理前主动 `currentStreamReader.cancel()` 并复位 `isStreaming.value`，避免主应用同样出现状态卡住。
 
 **注意**：后端并发队列本身已有 finally 兜底释放，本次 bug 根因为前端状态机未正确同步，而非队列泄漏。
+
+### 前端流式状态拦截（2026-06-22 强化）
+
+**问题**：在多用户排队场景下，已排队的用户可能因后端槽位释放后未能立即拿到而出现「卡死」状态（`isStreaming=true` 但业务流未真正开始）。此时用户在输入框按 Enter 或点击发送，会创建**第二条 SSE 流**，导致状态进一步混乱。新流的 finally 复位可能清掉旧流未完成的状态，最终表现为「再次输入后恢复正常排队」。
+
+**修复**（涉及 `web/Agent/src/components/KnowledgeChat.vue`、`App.vue`、`KnowledgeApp.vue`）：
+1. **KnowledgeChat.vue** `handleSend` 入口增加流式拦截：`if (isCurrentlyStreaming.value) { await handleStop(); return }`，流式状态下不再创建新请求
+2. **KnowledgeChat.vue** `handleKeydown` 在流式状态下按 Enter 优先调用 `handleStop()` 而非 `handleSend()`
+3. **App.vue / KnowledgeApp.vue** 所有错误路径（含 HTTP 429）必须复位 `isStreaming.value` 与 `currentStreamReader`，避免按钮永久卡死
+4. **所有三个组件** 新增 `resetQueueStatus()` 函数，在以下时机重置 `queueStatus` 到 idle：
+   - `handleSendMessage` / `handleProfileSend` / `handleSend` 开头（避免上一次 ready 残留）
+   - `handleApprovalSubmit` 开头（resume 请求前）
+   - `newSession` / `handleSessionSwitch` 中（切换/新建会话时）
+5. **App.vue / KnowledgeApp.vue** `isStreaming` 置位时机从 `chatStream()` 调用前延后到**拿到 SSE reader 之后**，避免排队/握手阶段状态长期悬空
 
 ## 环境变量
 

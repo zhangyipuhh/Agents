@@ -22,6 +22,7 @@ Date: 2026-05-08
 import base64
 import json
 import logging
+import re
 from pathlib import Path
 
 from deepagents.backends import filesystem as fs_module
@@ -41,6 +42,7 @@ _NON_TEXT_EXTENSIONS = {
 
 _orig_ripgrep_search = fs_module.FilesystemBackend._ripgrep_search
 _orig_read = fs_module.FilesystemBackend.read
+_orig_python_search = None
 
 
 def _patched_ripgrep_search(
@@ -200,14 +202,114 @@ def _patched_read(
         self.cwd = original_cwd
 
 
+def _patched_python_search(
+    self,
+    pattern: str,
+    base_path: str,
+    include: str | None,
+) -> dict[str, list[tuple[int, str]]]:
+    """将 grep 搜索重定向到对应的 .md 缓存文件。
+
+    遍历原始目录下的文件，按原始文件名进行 include 过滤，
+    但实际读取的是 data/tmp/... 下对应的 .md 缓存文件内容进行正则匹配。
+    返回的虚拟路径保持原始文件名（如 /file.pdf）。
+
+    Args:
+        self: EncodingSafeFileSearchMiddleware 实例。
+        pattern: 正则表达式模式。
+        base_path: 搜索的基础虚拟路径。
+        include: 可选的文件名过滤模式。
+
+    Returns:
+        Dict mapping virtual paths to list of (line_number, line_text) tuples.
+    """
+    from app.shared.tools.middleware.encoding_safe_file_search import (
+        ENCODING_FALLBACK,
+        _match_include_pattern,
+    )
+
+    # 1. 尝试将 root_path 从 data/... 映射到 data/tmp/...
+    project_root = spm._get_project_root().resolve()
+    data_root = (project_root / "data").resolve()
+    tmp_data_root = (project_root / "data" / "tmp").resolve()
+
+    try:
+        rel = self.root_path.resolve().relative_to(data_root)
+        tmp_root = tmp_data_root / rel
+    except ValueError:
+        # root_path 不在 data/ 下（如知识库），回退到原始行为
+        return _orig_python_search(self, pattern, base_path, include)
+
+    if not tmp_root.exists():
+        return _orig_python_search(self, pattern, base_path, include)
+
+    # 2. 解析 base_path
+    try:
+        base_full = self._validate_and_resolve_path(base_path)
+    except ValueError:
+        return {}
+
+    if not base_full.exists():
+        return {}
+
+    regex = re.compile(pattern, re.IGNORECASE)
+    results: dict[str, list[tuple[int, str]]] = {}
+
+    # 3. 遍历原始目录，但读取对应的 .md 文件
+    for file_path in base_full.rglob("*"):
+        if not file_path.is_file():
+            continue
+
+        # include 过滤在原始文件名上生效
+        if include and not _match_include_pattern(file_path.name, include):
+            continue
+
+        # 计算对应的 .md 路径
+        rel_path = file_path.relative_to(self.root_path)
+        md_path = (tmp_root / rel_path).with_suffix(".md")
+
+        if not md_path.exists() or not md_path.is_file():
+            continue
+
+        if md_path.stat().st_size > self.max_file_size_bytes:
+            continue
+
+        # 读取 .md 文件内容
+        for encoding in ENCODING_FALLBACK:
+            try:
+                content = md_path.read_text(encoding=encoding)
+                break
+            except (UnicodeDecodeError, PermissionError):
+                continue
+        else:
+            continue
+
+        # 确保 content 不为 None
+        if content is None:
+            continue
+
+        for line_num, line in enumerate(content.splitlines(), 1):
+            if regex.search(line):
+                virtual_path = "/" + str(rel_path)
+                if virtual_path not in results:
+                    results[virtual_path] = []
+                results[virtual_path].append((line_num, line))
+
+    return results
+
+
 def apply_fix() -> None:
-    """应用编码修复与 read 重定向补丁。
+    """应用编码修复、read 重定向与 grep_search .md 重定向补丁。
 
     将 FilesystemBackend._ripgrep_search 方法替换为支持 UTF-8 编码的版本，
-    同时将 FilesystemBackend.read 方法替换为重定向到 .md 缓存文件的版本。
+    将 FilesystemBackend.read 方法替换为重定向到 .md 缓存文件的版本，
+    同时将 EncodingSafeFileSearchMiddleware._python_search 方法替换为
+    重定向到 .md 缓存文件进行内容搜索的版本。
 
     注意：此函数应该尽快调用（在 deepagents 被导入之前），以确保修复生效。
     """
+    from app.shared.tools.middleware.encoding_safe_file_search import EncodingSafeFileSearchMiddleware
+
     if fs_module.FilesystemBackend._ripgrep_search is not _patched_ripgrep_search:
         fs_module.FilesystemBackend._ripgrep_search = _patched_ripgrep_search
         logger.info("FilesystemBackend._ripgrep_search 已应用 UTF-8 编码修复")
@@ -219,6 +321,16 @@ def apply_fix() -> None:
         logger.info("FilesystemBackend.read 已应用 .md 重定向补丁")
     else:
         logger.debug("FilesystemBackend.read 修复已应用，跳过")
+
+    global _orig_python_search
+    if _orig_python_search is None:
+        _orig_python_search = EncodingSafeFileSearchMiddleware._python_search
+
+    if EncodingSafeFileSearchMiddleware._python_search is not _patched_python_search:
+        EncodingSafeFileSearchMiddleware._python_search = _patched_python_search
+        logger.info("EncodingSafeFileSearchMiddleware._python_search 已应用 .md 重定向补丁")
+    else:
+        logger.debug("EncodingSafeFileSearchMiddleware._python_search 修复已应用，跳过")
 
 
 if __name__ == "__main__":

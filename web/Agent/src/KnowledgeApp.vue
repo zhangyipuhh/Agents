@@ -40,6 +40,18 @@ const queueStatus = ref({
 })
 const isQueueBannerVisible = computed(() => queueStatus.value.event === 'waiting')
 
+// 2026-06-22 新增：重置 queueStatus 到初始 idle 状态，避免上一次请求的 ready/idle 残留影响下一次请求
+function resetQueueStatus() {
+  queueStatus.value = {
+    event: 'idle',
+    waitingCount: 0,
+    activeCount: 0,
+    maxConcurrency: 0,
+    position: 0,
+    timestamp: 0
+  }
+}
+
 function handleQueueEvent(data) {
   if (!data || data.type !== 'queue') return
   queueStatus.value = {
@@ -281,6 +293,8 @@ async function startChatStream(message, uploadedFiles, aiMsg, resumeData = null)
   try {
     const stream = await knowledgeChatStream(currentSessionId.value, message, uploadedFiles, resumeData)
     currentStreamReader = stream.getReader()
+    // 2026-06-22 修复：拿到 reader 后再置位 isStreaming，避免排队/握手阶段状态长期悬空无法复位
+    isStreaming.value = true
     const decoder = new TextDecoder()
     let buffer = ''
 
@@ -329,6 +343,9 @@ async function startChatStream(message, uploadedFiles, aiMsg, resumeData = null)
     if (err && err.status === 429) {
       handleQueueError(err)
       aiMsg.value.ended = true
+      // 2026-06-22 修复：429 错误路径必须复位 isStreaming，避免按钮永久卡死
+      isStreaming.value = false
+      currentStreamReader = null
       return
     }
     if (interrupted) {
@@ -360,7 +377,9 @@ async function handleProfileSend(message, uploadedFiles) {
   const aiMsg = ref(createAiMessage())
   messages.value.push(aiMsg.value)
 
-  isStreaming.value = true
+  // 2026-06-22 修复：发送前重置 queueStatus
+  resetQueueStatus()
+  // isStreaming 由 startChatStream 在拿到 reader 后置位
   nextTick(() => scrollToBottom())
 
   await startChatStream(message, uploadedFiles, aiMsg)
@@ -372,6 +391,7 @@ async function handleApprovalSubmit({ answers }) {
   const aiMsg = messages.value[messages.value.length - 1]
   if (!aiMsg || aiMsg.type !== 'ai') {
     isStreaming.value = false
+    currentStreamReader = null
     return
   }
 

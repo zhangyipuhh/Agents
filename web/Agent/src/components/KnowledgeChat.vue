@@ -52,6 +52,18 @@ const queueStatus = ref({
 })
 const isQueueBannerVisible = computed(() => queueStatus.value.event === 'waiting')
 
+// 2026-06-22 新增：重置 queueStatus 到初始 idle 状态，避免上一次请求的 ready/idle 残留影响下一次请求
+function resetQueueStatus() {
+  queueStatus.value = {
+    event: 'idle',
+    waitingCount: 0,
+    activeCount: 0,
+    maxConcurrency: 0,
+    position: 0,
+    timestamp: 0
+  }
+}
+
 function handleQueueEvent(data) {
   if (!data || data.type !== 'queue') return
   queueStatus.value = {
@@ -113,12 +125,22 @@ const handleInput = (event) => {
 const handleKeydown = (event) => {
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
-    handleSend()
+    // 2026-06-22 修复：流式中按 Enter 应优先触发停止，避免「卡死」状态下再次发送新请求
+    if (isCurrentlyStreaming.value) {
+      handleStop()
+    } else {
+      handleSend()
+    }
   }
 }
 
 const handleSend = async () => {
   if (!canSend.value) return
+  // 2026-06-22 修复：流式状态中不再创建新请求，避免状态悬空或重复触发 SSE
+  if (isCurrentlyStreaming.value) {
+    await handleStop()
+    return
+  }
 
   const message = inputValue.value.trim()
   const uploadedFiles = selectedFiles.value
@@ -132,6 +154,9 @@ const handleSend = async () => {
     }))
 
   if (!message && uploadedFiles.length === 0) return
+
+  // 2026-06-22 修复：发送前重置 queueStatus
+  resetQueueStatus()
 
   isRefreshingToken.value = true
   try {

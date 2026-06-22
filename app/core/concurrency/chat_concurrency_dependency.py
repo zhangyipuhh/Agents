@@ -112,7 +112,9 @@ async def chat_concurrency_dependency(
     # ====== SSE 模式：排队推送 + 许可后释放句柄 + interrupt 早期释放 ======
     # 2026-06-22 修复：所有 SSE 请求统一先 enqueue，严格按 FIFO 顺序获取许可，
     # 杜绝 HITL 释放后 resume 请求或新请求插队已排队请求的问题。
-    await queue.enqueue()
+    current_task = asyncio.current_task()
+    if current_task is not None:
+        await queue.enqueue(current_task)
 
     # 释放句柄：HITL 早期释放 + finally 兜底
     release_done = asyncio.Event()
@@ -134,10 +136,12 @@ async def chat_concurrency_dependency(
     request.state.concurrency_release_done = release_done
 
     try:
-        # 2026-06-22 修复：在独立 task 中执行 acquire()，主循环定期 yield waiting 事件。
-        # 这样 release() 通过 Future 精确唤醒 FIFO 下一个 waiter，避免 slot_freed Event
-        # 与轮询之间的信号丢失或 race；同时保留 1 秒一次的 waiting 心跳推送。
-        acquire_task = asyncio.create_task(queue.acquire())
+        # 2026-06-22 修复：在独立 task 中执行 acquire(dep_task)，确保与 enqueue 注册的是
+        # 同一个 task；release() 通过 Future 精确唤醒 FIFO 下一个 waiter，避免 slot_freed
+        # Event 与轮询之间的信号丢失或 race；同时保留 1 秒一次的 waiting 心跳推送。
+        acquire_task = asyncio.create_task(
+            queue.acquire(current_task) if current_task is not None else queue.acquire()
+        )
         try:
             while not acquire_task.done():
                 if release_done.is_set():
@@ -149,9 +153,12 @@ async def chat_concurrency_dependency(
                     break
 
                 snap = await queue.snapshot()
-                yield _build_queue_event(snap, "waiting")
+                # 优化：如果当前请求已经排到第一位且槽位空闲，不需要 yield waiting，
+                # 直接等待 acquire_task 完成即可；否则向前端推送 waiting 心跳。
+                if snap["position"] != 1 or snap["active_count"] >= snap["max_concurrency"]:
+                    yield _build_queue_event(snap, "waiting")
 
-                # 等待 acquire_task 完成或 1 秒超时， whichever 先来
+                # 等待 acquire_task 完成或 1 秒超时，whichever 先来
                 try:
                     await asyncio.wait_for(
                         asyncio.shield(acquire_task),
