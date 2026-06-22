@@ -64,7 +64,9 @@ class TestPatchedRead:
         assert result.file_data["content"] == "# Markdown content"
 
     def test_read_virtual_subdir_maps_to_tmp_md(self, tmp_path, patched_read):
-        """/reports/annual.pdf 应解析到 data/tmp/upload/.../reports/annual.md。"""
+        """/reports/annual.pdf 应解析到 data/tmp/upload/.../reports/annual.md，并返回 base64 编码内容。"""
+        import base64
+
         upload_dir = tmp_path / "data/upload/2026/06/19/session-abc"
         tmp_dir = tmp_path / "data/tmp/upload/2026/06/19/session-abc/reports"
         tmp_dir.mkdir(parents=True)
@@ -74,7 +76,9 @@ class TestPatchedRead:
         result = patched_read(backend, "/reports/annual.pdf")
 
         assert result.error is None
-        assert result.file_data["content"] == "Annual report"
+        assert result.file_data["encoding"] == "base64"
+        decoded = base64.b64decode(result.file_data["content"]).decode("utf-8")
+        assert decoded == "Annual report"
 
     def test_read_returns_not_found_with_original_path(self, tmp_path, patched_read):
         """md 文件不存在时，应返回 not found 且错误信息使用原始虚拟路径。"""
@@ -137,6 +141,42 @@ class TestPatchedRead:
         assert result.error is None
         assert result.file_data["content"] == "From tmp"
         assert backend.cwd == tmp_dir
+
+    def test_read_non_text_extension_returns_base64(self, tmp_path, patched_read):
+        """原始路径为 .pdf 等非文本扩展名时，返回的 content 应为 base64 编码，encoding 为 base64。"""
+        import base64
+
+        upload_dir = tmp_path / "data/upload/2026/06/19/session-abc"
+        tmp_dir = tmp_path / "data/tmp/upload/2026/06/19/session-abc"
+        tmp_dir.mkdir(parents=True)
+        markdown_text = "# PDF converted to markdown\nSome content."
+        (tmp_dir / "report.md").write_text(markdown_text, encoding="utf-8")
+
+        backend = _FakeBackend(upload_dir)
+        result = patched_read(backend, "/report.pdf")
+
+        assert result.error is None
+        assert result.file_data is not None
+        assert result.file_data["encoding"] == "base64"
+        # 验证 content 是合法的 base64 编码字符串
+        decoded = base64.b64decode(result.file_data["content"]).decode("utf-8")
+        assert decoded == markdown_text
+
+    def test_read_text_extension_returns_plain_text(self, tmp_path, patched_read):
+        """原始路径为 .txt 等文本扩展名时，返回的 content 仍为纯文本，encoding 为 utf-8。"""
+        upload_dir = tmp_path / "data/upload/2026/06/19/session-abc"
+        tmp_dir = tmp_path / "data/tmp/upload/2026/06/19/session-abc"
+        tmp_dir.mkdir(parents=True)
+        plain_text = "Plain text content."
+        (tmp_dir / "notes.md").write_text(plain_text, encoding="utf-8")
+
+        backend = _FakeBackend(upload_dir)
+        result = patched_read(backend, "/notes.txt")
+
+        assert result.error is None
+        assert result.file_data is not None
+        assert result.file_data["encoding"] == "utf-8"
+        assert result.file_data["content"] == plain_text
 
 
 class TestApplyFix:

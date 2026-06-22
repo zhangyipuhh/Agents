@@ -19,6 +19,7 @@ encoding='utf-8' 和 errors='ignore' 参数。
 
 Date: 2026-05-08
 """
+import base64
 import json
 import logging
 from pathlib import Path
@@ -29,6 +30,14 @@ from deepagents.backends.protocol import FileData, ReadResult
 from app.shared.utils.files import session_path_manager as spm
 
 logger = logging.getLogger(__name__)
+
+# deepagents.backends.utils._EXTENSION_TO_FILE_TYPE 中映射值非 "text" 的扩展名集合。
+# 当原始文件路径为这些扩展名时，FilesystemMiddleware 会把 read_result 的 content
+# 直接当作 base64 数据包装成多模态 content block，因此 _patched_read 必须返回
+# 经过 base64 编码后的内容，以符合 LLM API 的参数校验。
+_NON_TEXT_EXTENSIONS = {
+        ".pdf", ".ppt", ".pptx",
+}
 
 _orig_ripgrep_search = fs_module.FilesystemBackend._ripgrep_search
 _orig_read = fs_module.FilesystemBackend.read
@@ -140,9 +149,11 @@ def _patched_read(
         tmp_data_root = (project_root / "data" / "tmp").resolve()
         try:
             rel = original_cwd.resolve().relative_to(data_root)
-            self.cwd = tmp_data_root / rel
+            # 避免重复映射：如果 cwd 已经在 data/tmp/ 下，保持原样
+            if not original_cwd.resolve().is_relative_to(tmp_data_root):
+                self.cwd = tmp_data_root / rel
         except ValueError:
-            # self.cwd 不在 data/upload/ 下（例如已是 data/tmp/ 或其它路径），保持原 cwd
+            # self.cwd 不在 data/ 下（例如已是 data/tmp/ 或其它路径），保持原 cwd
             pass
 
         # 2. 让后端按 virtual_mode 规则解析虚拟路径
@@ -161,6 +172,16 @@ def _patched_read(
         with open(abs_target, "r", encoding="utf-8") as f:
             content = f.read()
 
+        # 5. 若原始文件扩展名是非文本类型（如 .pdf/.png/.mp4 等），
+        #    deepagents FilesystemMiddleware 会把 content 直接作为 base64 字段传给 API。
+        #    由于实际读取的是 .md 文本，必须将其 base64 编码以符合 API 参数校验。
+        original_ext = Path(file_path).suffix.lower()
+        if original_ext in _NON_TEXT_EXTENSIONS:
+            content = base64.b64encode(content.encode("utf-8")).decode("ascii")
+            file_encoding = "base64"
+        else:
+            file_encoding = "utf-8"
+
         lines = content.splitlines(keepends=True)
         start_idx = offset
         end_idx = min(start_idx + limit, len(lines))
@@ -170,7 +191,7 @@ def _patched_read(
                 error=f"Line offset {offset} exceeds file length ({len(lines)} lines)"
             )
 
-        file_data = FileData(content="".join(lines[start_idx:end_idx]), encoding="utf-8")
+        file_data = FileData(content="".join(lines[start_idx:end_idx]), encoding=file_encoding)
         return ReadResult(file_data=file_data)
     except (OSError, UnicodeDecodeError) as e:
         return ReadResult(error=f"Error reading file '{file_path}': {e}")

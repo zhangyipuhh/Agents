@@ -83,18 +83,20 @@ async def chat_concurrency_dependency(
     """
     queue = AgentConcurrencyQueue(max_concurrency=settings.agent_chat_max_concurrency)
 
-    # ====== HTTP 模式：直接尝试 acquire，满员则抛 429 ======
+    # ====== HTTP 模式：先 enqueue，只有排到第一位且槽位空闲才允许通过 ======
     if mode == "http":
+        # 2026-06-22 修复：HTTP 请求也必须先 enqueue，避免非流式请求绕过 SSE 排队队列插队。
+        await queue.enqueue()
         snap = await queue.snapshot()
-        if snap["active_count"] < snap["max_concurrency"]:
-            # 无需排队：直接获取许可 → yield None
+        if snap["position"] == 1 and snap["active_count"] < snap["max_concurrency"]:
+            # 轮到本请求且槽位空闲：获取许可 → yield None
             await queue.acquire()
             try:
                 yield None
             finally:
                 await queue.release()
         else:
-            # 满员：抛 429 + 排队信息
+            # 前面已有其他 waiter 或槽位已满：抛 429 + 排队信息
             raise HTTPException(
                 status_code=429,
                 detail={
@@ -108,8 +110,9 @@ async def chat_concurrency_dependency(
         return
 
     # ====== SSE 模式：排队推送 + 许可后释放句柄 + interrupt 早期释放 ======
-    pre_snap = await queue.snapshot()
-    need_wait = pre_snap["active_count"] >= pre_snap["max_concurrency"]
+    # 2026-06-22 修复：所有 SSE 请求统一先 enqueue，严格按 FIFO 顺序获取许可，
+    # 杜绝 HITL 释放后 resume 请求或新请求插队已排队请求的问题。
+    await queue.enqueue()
 
     # 释放句柄：HITL 早期释放 + finally 兜底
     release_done = asyncio.Event()
@@ -131,67 +134,55 @@ async def chat_concurrency_dependency(
     request.state.concurrency_release_done = release_done
 
     try:
-        if need_wait:
-            # 2026-06-22 修复：真正阻塞前先预注册到等待队列，
-            # 使后续 snapshot()/position() 能正确计算"前面还有几人"。
-            await queue.enqueue()
-            # 排队期间持续推送 queue waiting 事件给前端
-            while True:
+        # 2026-06-22 修复：在独立 task 中执行 acquire()，主循环定期 yield waiting 事件。
+        # 这样 release() 通过 Future 精确唤醒 FIFO 下一个 waiter，避免 slot_freed Event
+        # 与轮询之间的信号丢失或 race；同时保留 1 秒一次的 waiting 心跳推送。
+        acquire_task = asyncio.create_task(queue.acquire())
+        try:
+            while not acquire_task.done():
                 if release_done.is_set():
+                    acquire_task.cancel()
+                    try:
+                        await acquire_task
+                    except asyncio.CancelledError:
+                        pass
                     break
+
                 snap = await queue.snapshot()
-                # 关键修复（2026-06-15）：
-                # 当并发槽位已经空闲（active_count < max_concurrency）时，
-                # 跳出轮询循环进入 acquire()，避免「槽位空闲但轮询不退出」
-                # 的死锁场景。之前唯一退出条件是 release_done.is_set()，
-                # 但 release_done 只在 HITL _release_once() 中被 set，
-                # 其他请求通过 finally 兜底正常释放时 release_done 不会动，
-                # 导致每 1 秒重复 yield waiting 事件、永远不调用 acquire()，
-                # 用户消息卡死、黄色排队横幅永久不消失。
-                if snap["active_count"] < snap["max_concurrency"]:
-                    logger.debug(
-                        "[chat_concurrency_dependency] 槽位已空闲（active=%d, max=%d），跳出轮询进入 acquire()",
-                        snap["active_count"],
-                        snap["max_concurrency"],
-                    )
-                    break
                 yield _build_queue_event(snap, "waiting")
-                # 每 1 秒推送一次；若其他请求释放槽位（slot_freed）或 HITL 提前释放（release_done），
-                # 立即醒来重新 snapshot，实现槽位空闲时毫秒级响应。
-                slot_wait = asyncio.create_task(queue.slot_freed.wait())
-                release_wait = asyncio.create_task(release_done.wait())
+
+                # 等待 acquire_task 完成或 1 秒超时， whichever 先来
                 try:
-                    done, pending = await asyncio.wait(
-                        [slot_wait, release_wait],
+                    await asyncio.wait_for(
+                        asyncio.shield(acquire_task),
                         timeout=QUEUE_POLL_INTERVAL_SECONDS,
-                        return_when=asyncio.FIRST_COMPLETED,
                     )
-                finally:
-                    for task in (slot_wait, release_wait):
-                        if not task.done():
-                            task.cancel()
-                            try:
-                                await task
-                            except asyncio.CancelledError:
-                                pass
-                if release_wait in done:
-                    # release_done 被 set（HITL 提前释放）→ 跳出循环
                     break
-                # slot_freed 被 set 或超时 → 回到循环开头重新 snapshot
-                continue
+                except asyncio.TimeoutError:
+                    continue
 
-        # acquire（可能立即成功 / 已释放的快速路径）
-        await queue.acquire()
+            if acquire_task.done() and not acquire_task.cancelled():
+                # acquire 成功，检查是否有异常
+                acquire_task.result()
+        except asyncio.CancelledError:
+            if not acquire_task.done():
+                acquire_task.cancel()
+                try:
+                    await acquire_task
+                except asyncio.CancelledError:
+                    pass
+            raise
 
-        # 获取许可瞬间：yield ready 事件
-        ready_snap = await queue.snapshot()
-        yield _build_queue_event(ready_snap, "ready")
+        if not release_done.is_set():
+            # 获取许可瞬间：yield ready 事件
+            ready_snap = await queue.snapshot()
+            yield _build_queue_event(ready_snap, "ready")
 
-        # yield None 进入路由
-        yield None
+            # yield None 进入路由
+            yield None
 
-        # 等待路由主动 release（HITL 场景）或 finally 兜底
-        await release_done.wait()
+            # 等待路由主动 release（HITL 场景）或 finally 兜底
+            await release_done.wait()
 
     finally:
         # 兜底 release（如果 release_done 未被 set，如客户端异常断开 / 路由异常退出）
