@@ -28,9 +28,11 @@ Date: 2026-05-07
 Author: AI Assistant
 """
 
+import json
 from pathlib import Path
 
 from langchain.tools import tool, ToolRuntime
+from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
 from app.core.agent.AgentContext import AgentContext
@@ -107,10 +109,26 @@ async def explore(
         runtime: 工具运行时上下文，包含 session_id 与 tool_call_id。
 
     Returns:
-        Command: 子智能体的文件搜索与分析结果。
+        Command: 子智能体的文件搜索与分析结果；若目录为空则返回提示未找到文件的 Command。
     """
     session_id = runtime.context.get("session_id", "default")
     root_path = get_session_upload_dir(session_id, create=True)
+
+    # 静默处理空目录：未上传文件时直接返回"未找到文件"，不启动子智能体，不抛异常
+    if not any(Path(root_path).iterdir()):
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps(
+                            {"subagent": "未找到文件"},
+                            ensure_ascii=False,
+                        ),
+                        tool_call_id=runtime.tool_call_id,
+                    )
+                ]
+            }
+        )
 
     tool = BaseFilesystemTool(
         tool_name="explore",

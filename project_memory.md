@@ -497,6 +497,7 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 **变更**:
 - 移除原 `knowledge_root` 分支，`explore` 仅保留最基础的 session 文件读取能力。
 - 通用执行逻辑迁移到 `BaseFilesystemTool`，`explore` 仅负责解析 `session_id`、构造 `root_path`、实例化 `BaseFilesystemTool` 并调用 `arun`。
+- **当 session 上传目录为空（用户未上传任何文件）时，`explore` 不再启动子智能体，而是直接返回包含 `"未找到文件"` 的 ToolMessage Command，避免 `ValueError` 异常上抛影响主流程。**
 - 知识库检索能力由 `app/features/map_agent/tools/MapTools.py` 中的 `query_knowledge` 工具承担。
 
 ### query_knowledge 工具（2026-06-18 新增）

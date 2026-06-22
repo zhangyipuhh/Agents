@@ -14,6 +14,7 @@ Author: AI Assistant
 
 import asyncio
 import inspect
+import json
 from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -172,3 +173,46 @@ def test_explore_creates_session_upload_root_when_missing(tmp_path, monkeypatch)
         asyncio.run(FilesystemReadTools.explore("search", _make_fake_runtime(session_id=session_id)))
 
     assert expected_root.exists()
+
+
+# ============================================================
+# P1: 空目录静默处理
+# ============================================================
+
+
+def test_explore_empty_workspace_returns_not_found(tmp_path, monkeypatch):
+    """
+    P1: 当 session 上传目录为空时，explore 不启动子智能体，直接返回"未找到文件"。
+    """
+    from app.core.tools import FilesystemReadTools
+    from langgraph.types import Command
+
+    monkeypatch.setattr(spm, "_get_project_root", lambda: tmp_path)
+
+    session_id = "empty_session"
+    spm.register_session_upload_date(session_id)
+    today = date.today()
+    root_path = tmp_path / f"data/upload/{today.year}/{today.month:02d}/{today.day:02d}/{session_id}"
+    root_path.mkdir(parents=True, exist_ok=True)
+
+    arun_called = False
+
+    async def fake_arun(self, prompt, runtime, root_path):
+        nonlocal arun_called
+        arun_called = True
+        return Command(update={"messages": [{"type": "tool", "content": '{"subagent": "done"}', "tool_call_id": runtime.tool_call_id}]})
+
+    class _RealToolMessage:
+        def __init__(self, content, tool_call_id):
+            self.content = content
+            self.tool_call_id = tool_call_id
+
+    with patch("app.core.tools.FilesystemReadTools.BaseFilesystemTool.arun", fake_arun), \
+         patch("app.core.tools.FilesystemReadTools.ToolMessage", _RealToolMessage):
+        result = asyncio.run(FilesystemReadTools.explore("search", _make_fake_runtime(session_id=session_id)))
+
+    assert not arun_called
+    assert isinstance(result, Command)
+    messages = result.update["messages"]
+    assert len(messages) == 1
+    assert "未找到文件" in messages[0].content

@@ -8,13 +8,14 @@ Skill 加载工具。
 
 from pathlib import Path
 
-from langchain.tools import tool
-
+from langchain.tools import tool, ToolRuntime
+from langgraph.types import Command
+from app.core.agent.AgentContext import AgentContext
 from .service import SkillNotFoundError, SkillsService
 
 
 @tool
-def load_skill(name: str) -> str:
+def load_skill(name: str,runtime: ToolRuntime[AgentContext],) -> Command:
     """Load a specialized skill when the task at hand matches one of the skills
     listed in `<available_skills>` of your system prompt.
 
