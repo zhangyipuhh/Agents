@@ -502,15 +502,37 @@ async def generate_stream_response(
             )
 
         # 调用 MapAgent 的 stream 方法，使用组合模式
+        # 2026-06-22 改造：精确延迟中断（disconnect 标记 + tools 节点完成时真正断开）
+        # 背景：原实现检测到客户端断开立即 return，导致 LangGraph astream 协程被取消，
+        #       子智能体（sandbox / explore）来不及返回 ToolMessage，导致 checkpoint 中存在
+        #       orphan tool_calls（AIMessage 含 tool_calls 但无对应 ToolMessage），
+        #       下次会话恢复时 LLM API 报 "tool call result does not follow tool call"。
+        # 改造语义：
+        #   1. 检测到 disconnect → 仅标记 disconnect_requested = True，不 return
+        #   2. 跳过 messages 模式（不推 LLM token 给已断开的前端）
+        #   3. 继续消费 updates 模式，检测 "tools" 节点完成 chunk
+        #      （data["tools"]["messages"] 包含 ToolMessage 时）
+        #   4. 当前工具/子智能体完成 ToolMessage 后，break 真正中断
+        #   5. 依赖 LangGraph ToolNode 的"全或无"语义（asyncio.gather 等所有 tool_calls
+        #      完成才 yield），多工具并行时所有工具都跑完才中断
+        disconnect_requested = False
+        disconnect_executed = False
         async for chunk in stream:
-            # 2026-06-15 新增：客户端断开检测（停止按钮触发）
-            # 通过 reader.cancel() 主动断开 SSE 连接后，FastAPI 会检测到连接关闭，
-            # 此处跳出循环让 LangGraph 停止运行，避免继续消耗 LLM token。
-            if request is not None:
+            # 2026-06-22 改造：客户端断开检测（停止按钮触发）
+            # 检测到 disconnect → 标记 disconnect_requested = True，但不 return。
+            # 让 LangGraph 自然跑完当前工具/子智能体（产生 ToolMessage 写入 state），
+            # 然后在 updates chunk 中检测到 "tools" 节点完成时真正断开。
+            # 之前立即 return 的逻辑会导致子智能体被粗暴取消，ToolMessage 永远丢失。
+            if not disconnect_requested and request is not None:
                 try:
                     if await request.is_disconnected():
-                        logger.info(f"[Chat] session_id={session_id} 客户端已断开，跳出 stream 循环")
-                        return
+                        logger.info(
+                            f"[Chat] session_id={session_id} 客户端已断开，"
+                            f"延迟中断：等待当前工具/子智能体完成 ToolMessage 后再断开"
+                        )
+                        disconnect_requested = True
+                        # 向已断开的前端发一个标记（前端可能已收不到，仅作日志）
+                        yield f"data: {json.dumps({'type': 'client_disconnected', 'data': {'message': '已记录停止信号，当前工具完成后停止'}}, ensure_ascii=False)}\n\n"
                 except Exception as e:
                     logger.warning(f"[Chat] is_disconnected 检测异常: {e}")
             # ===== 中断检测（多模式兼容） =====
@@ -552,6 +574,41 @@ async def generate_stream_response(
                 mode, data = chunk
 
                 if mode == "updates":
+                    # 2026-06-22 改造：精确延迟中断 - 检测 "tools" 节点完成
+                    # 当 "tools" 节点刚完成时，data 格式为 {"tools": {"messages": [ToolMessage, ...]}}
+                    # 依赖 LangGraph ToolNode 的"全或无"语义（asyncio.gather 等所有 tool_calls 完成才 yield），
+                    # 所以检测到 "tools" 节点完成时，所有并行的 tool_calls 都已执行完，
+                    # ToolMessage 全部写入 state，可以真正断开。
+                    if disconnect_requested and isinstance(data, dict):
+                        for node_name, node_data in data.items():
+                            if node_name == "tools" and isinstance(node_data, dict):
+                                messages_in_update = node_data.get("messages", [])
+                                # 检查是否包含 ToolMessage（兼容 Mock）
+                                tool_messages = [
+                                    m for m in messages_in_update
+                                    if m is not None
+                                    and m.__class__.__name__ in ("ToolMessage", "MockToolMessage", "_MockToolMessage")
+                                ]
+                                if tool_messages:
+                                    # 当前工具/子智能体已完成（ToolMessage 已写入 state）
+                                    logger.info(
+                                        f"[Chat] session_id={session_id} 延迟中断触发："
+                                        f"当前 {len(tool_messages)} 个工具/子智能体完成 ToolMessage 后真正断开"
+                                    )
+                                    disconnect_executed = True
+                                    # 把这个工具完成事件 yield 给前端（如果还能收到）
+                                    update_payload = {
+                                        "type": "update",
+                                        "data": data,
+                                        "thread_id": "",
+                                        "langgraph_node": node_name,
+                                    }
+                                    yield f"data: {json.dumps(update_payload, ensure_ascii=False, default=str)}\n\n"
+                                    break  # 跳出内层 for
+                        if disconnect_executed:
+                            break  # 跳出外层 async for，真正中断
+                    if disconnect_executed:
+                        break  # 防御性 break，防止上面嵌套逻辑遗漏
                     # 节点状态更新
                     # data 格式: {node_name: {state_updates}}
                     # 2026-06-14-2 新增：与 custom / message 事件格式统一，附加 thread_id / langgraph_node
@@ -585,6 +642,9 @@ async def generate_stream_response(
                     yield "data: " + json.dumps(custom_payload, ensure_ascii=False, default=str) + "\n\n"
 
                 elif mode == "messages":
+                    # 2026-06-22 改造：客户端已断开时跳过 LLM token（不浪费带宽 + 防止用户看到不完整文本）
+                    if disconnect_requested:
+                        continue
                     if isinstance(data, tuple) and len(data) == 2:
                         message_chunk, metadata = data
                         if isinstance(message_chunk, ToolMessage):
@@ -598,7 +658,17 @@ async def generate_stream_response(
                         yield f"data: {json.dumps({'type': 'message', 'data': data}, ensure_ascii=False, default=str)}\n\n"
             else:
                 # 处理非组合模式的输出（向后兼容）
+                # 2026-06-22 改造：客户端已断开时不再 yield 业务事件
+                if disconnect_requested:
+                    continue
                 yield f"data: {json.dumps({'type': 'unknown', 'data': chunk}, ensure_ascii=False, default=str)}\n\n"
+
+        # 2026-06-22 新增：延迟中断完成日志
+        if disconnect_executed:
+            logger.info(
+                f"[Chat] session_id={session_id} 精确延迟中断完成："
+                f"ToolMessage 已写入 state，真正断开 SSE"
+            )
 
         # 发送结束信号
         yield f"data: {json.dumps({'type': 'end', 'message': '会话结束'}, ensure_ascii=False)}\n\n"

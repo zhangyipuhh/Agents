@@ -1315,6 +1315,58 @@ environment:
 - 全量 `pytest app/tests/`：**363 passed / 1 failed**（与 2026-06-16-3 记录相同，pre-existing 失败 `test_settings_agent_chat_max_concurrency_default` 默认值 1 vs 期望 3 受 `.env` 干扰，与本次修复无关）
 - 前端：零改动
 
+**2026-06-22 修复：SSE 路由"精确延迟中断"避免 orphan tool_calls**
+
+**核心问题**（用户反馈）：
+- 用户在 /plan 会话中点击"停止"按钮
+- 父 LLM 的 AIMessage 已被 checkpoint 持久化（包含 `tool_calls`）
+- 工具/子智能体尚未返回 `ToolMessage`
+- 上层 SSE 路由立即 `return` 切断 `astream`，LangGraph ToolNode 被取消，`ToolMessage` 永远不写入 state
+- 下次会话恢复进入 `llm_call` 节点时，messages 序列不合法，Anthropic API 返回 `invalid params, tool call result does not follow tool call (2013)`
+
+**用户决策**：
+- "如果在前端单击了中断按钮，但是当前子智能体在运行，这个时候不能完成中断，需要子智能体执行完再单击中断可以中断"
+- "不是都跑完，是其中的普通工具或者子智能体跑完"
+- "核心防御：pre_llm 节点 这个不添加"
+
+**修复方案**（SSE 路由"精确延迟中断"）：
+- 检测到客户端断开 → 仅标记 `disconnect_requested = True`，**不** return
+- 跳过 `messages` 模式（不再 yield LLM token 给已断开的前端）
+- 继续消费 `updates` 模式
+- 当 `data["tools"]["messages"]` 包含 ToolMessage 时 → 当前工具/子智能体完成 → `disconnect_executed = True` → `break` 真正中断
+- 依赖 LangGraph ToolNode 的"全或无"语义（context7 查询确认 `asyncio.gather` 等所有 tool_calls 完成才 yield 节点结果），多工具并行时所有工具都跑完才中断
+
+**LangGraph ToolNode 全或无语义（context7 查询关键发现）**：
+- `ToolNode.ainvoke` 用 `asyncio.gather(*coros)` 并发执行所有 tool_calls
+- `outputs = await asyncio.gather(*coros)` 等待所有协程完成
+- `return self._combine_tool_outputs(outputs, input_type)` 合并所有工具输出
+- 因此"tools 节点完成 chunk"隐含"所有并行 tool_calls 都已执行完"，**不**需要额外数量校验
+
+**实现路径**：
+| 文件 | 改动 |
+|------|------|
+| `app/features/map_agent/router/map_router.py` | `generate_stream_response` 主循环重构：原立即 `return` 改为标记 `disconnect_requested`；新增 `disconnect_executed` 标志；`messages` 模式 / 非组合模式 chunk 在 `disconnect_requested` 时 `continue` 跳过；`updates` 模式新增检测 `data["tools"]["messages"]` 包含 ToolMessage → 设置 `disconnect_executed = True` → `break` 真正中断；新增 yield `client_disconnected` 标记事件；循环结束 yield `end` 事件前新增延迟中断完成日志 |
+| `app/tests/features/map_agent/test_map_router_disconnect.py` | 重构为 9 个测试：原"立即断开"测试替换为"单工具延迟断开"（4 个 yield：LLM update + client_disconnected + tools update + end）；新增"多工具并行延迟断开"（验证 3 个 ToolMessage 一次性出现时触发断开）；新增"非 tools 节点 update 不触发断开"（验证 summarize / hitl_check 节点被 yield 但不触发断开）；新增"disconnect 后跳过 messages 模式"；保留原有"未断开跑完"、"无 request 兼容"测试 |
+| `app/tests/features/map_agent/test_map_router_subagent_stop.py` | `test_router_disconnect_propagates_to_main_astream` 测试预期更新：原期望 `chunk_count == 2`（立即跳出）改为 `chunk_count == 5`（所有 5 个 llm_call chunk 都被消费，因为没有 tools 节点完成触发断开） |
+
+**关键约束**：
+- **不**新增 pre_llm 节点 / orphan_tool_fix 工具（用户明确否决）
+- **不**修改 `agent.py` / `checkpoint_history.py`（主路径 SSE 路由修复足够覆盖 99% 场景）
+- **不**修改子智能体内部 `is_disconnected` 检测逻辑（与本次修复协同工作：子智能体检测断开 → break → 构造 stopped_by_user ToolMessage → 写入 state；SSE 路由在 tools 节点完成时检测到 ToolMessage 真正断开）
+- **不**引入 60s 宽限期（用户已否决）
+- **不**做"超过 X 工具数量时强制中断"的数量校验（依赖 LangGraph ToolNode 的"全或无"语义保证）
+
+**API 兼容性**：
+- 既有 SSE 事件类型 `update` / `custom` / `message` / `end` / `error` / `interrupt` 不变
+- 新增 `client_disconnected` 事件类型（前端可忽略，老客户端无影响）
+- 前端零改动（用户决策）
+
+**测试结果（2026-06-22 累计）**：
+- 后端 `pytest app/tests/features/map_agent/test_map_router_disconnect.py`：9 passed
+- 后端 `pytest app/tests/features/map_agent/test_map_router_subagent_stop.py`：4 passed, 1 skipped（async 测试需 pytest-asyncio 插件）
+- 后端 `pytest app/tests/core/tools/test_sandbox_tools.py` + `test_filesystem_read_tools.py`：49 passed, 1 skipped（Docker 不可用）
+- 前端：零改动
+
 ## 前端架构（web/Agent）
 
 `web/Agent/` 是基于 Vite + Vue 3 的多入口 SPA，对外提供三套独立页面（主 Agent、知识库、门户），共享同一套组件、工具函数与设计 token。

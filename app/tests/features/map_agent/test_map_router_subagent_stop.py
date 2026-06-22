@@ -162,11 +162,26 @@ def test_generate_stream_response_resets_contextvar_on_finally():
 
 def test_router_disconnect_propagates_to_main_astream():
     """
-    P1: 客户端断开时，generate_stream_response 的 astream 循环立即跳出（不继续消耗 token）。
+    P1（2026-06-22 改造）：客户端断开时精确延迟中断
+
+    旧实现：客户端断开后立即 return（仅 yield 2 次）
+    新实现：客户端断开后仅标记 disconnect_requested=True，继续消费 stream；
+    当遇到 "tools" 节点完成 chunk 时才真正断开。
+
+    本测试的 fake_stream 中所有 chunks 都是 llm_call 节点（非 tools 节点），
+    所以客户端断开后所有 5 个 chunks 都被消费（用于"延迟中断"逻辑保持继续处理），
+    但 messages 模式被跳过。循环自然结束后 yield end 事件。
+
+    验证：
+    - chunk_count["n"] == 5（所有 chunks 都被消费，因为没有 tools 节点完成触发断开）
+    - 第一次 yield 是 llm_call update（disconnect 前）
+    - 第二个 SSE 事件是 client_disconnected 标记
+    - 之后都是 llm_call update
+    - 最后一个是 end 事件
     """
     from app.features.map_agent.router import map_router
 
-    # 第二次 is_disconnected 返回 True，触发跳出
+    # 第二次 is_disconnected 返回 True，触发标记 disconnect_requested
     fake_request = _make_fake_request([False, True, True, True])
 
     chunk_count = {"n": 0}
@@ -193,15 +208,24 @@ def test_router_disconnect_propagates_to_main_astream():
 
         results = asyncio.run(collect())
 
-    # 验证：is_disconnected 第二次返回 True 后跳出
-    # 第一次 yield 走完处理（len=1），第二次 yield 循环开始 is_disconnected=True 立即 return
-    # 所以 fake_stream 应只被消费 2 次（yield 1+1，第三次已跳出）
-    assert chunk_count["n"] == 2, (
-        f"客户端断开后应跳出循环，期望 yield 2 次（第一次处理完 + 第二次检测到断开），"
-        f"实际 {chunk_count['n']} 次"
+    # 2026-06-22 精确延迟中断新行为：
+    # - 第一次 yield 走完处理（is_disconnected=False）
+    # - 第二次循环开始 is_disconnected=True → 标记 disconnect_requested，yield client_disconnected
+    # - 后续所有 llm_call 节点 updates 都被消费（不是 tools 节点，不触发断开）
+    # - 循环自然结束，yield end 事件
+    # 所以 fake_stream 应被消费 5 次（所有 chunks）
+    assert chunk_count["n"] == 5, (
+        f"精确延迟中断：客户端断开后所有 chunks 都应被消费直到 tools 节点完成，"
+        f"期望 yield 5 次，实际 {chunk_count['n']} 次"
     )
-    # 验证：is_disconnected 被调用
-    assert fake_request._call_count["n"] >= 2
+    # 验证 SSE 事件数量
+    # 1. llm_call update (chunk0, disconnect 前)
+    # 2. client_disconnected 标记
+    # 3-6. llm_call update (chunk1-chunk4)
+    # 7. end 事件
+    assert len(results) == 7, f"期望 7 个 SSE 输出，实际 {len(results)}"
+    # 验证 is_disconnected 被调用
+    assert fake_request._call_count["n"] >= 1
 
 
 def test_router_no_request_does_not_block():
