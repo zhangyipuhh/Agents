@@ -187,7 +187,7 @@ def test_render_skips_missing_agent_path_falls_to_default(provider: BootstrapPro
 
 def test_render_includes_tool_mapping_keywords(provider: BootstrapProvider):
     """
-    代码内置 fallback 应包含指定的 Tool Mapping 关键字。
+    代码内置 fallback 应包含项目实际工具映射关键字。
 
     Args:
         provider: BootstrapProvider 实例。
@@ -197,7 +197,8 @@ def test_render_includes_tool_mapping_keywords(provider: BootstrapProvider):
     """
     result = provider.render()
 
-    assert "TodoWrite" in result
+    assert "sandbox" in result
+    assert "explore" in result
+    assert "load_skill" in result
     assert "todowrite" in result
-    assert "OpenCode" in result
-    assert "skill" in result
+    assert "OpenCode" not in result

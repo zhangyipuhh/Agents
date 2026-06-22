@@ -98,7 +98,8 @@ class TestSandboxConfigInjection:
         assert captured_kwargs["max_cpu_percent"] == 100
         assert captured_kwargs["network_enabled"] is False
         assert captured_kwargs["default_timeout"] == 60
-        assert captured_kwargs["fallback_to_local"] is False
+        # Settings 中 sandbox_fallback_to_local 默认为 True
+        assert captured_kwargs["fallback_to_local"] is True
 
     def test_sandbox_passes_socket_mode_config(self):
         """P1: socket 模式 + prefix 时，工具正确透传所有容器化字段。"""

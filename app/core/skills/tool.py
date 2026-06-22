@@ -64,6 +64,7 @@ def load_skill(name: str,runtime: ToolRuntime[AgentContext],) -> Command:
 if not hasattr(load_skill, "invoke"):
     def _invoke(input, config=None):
         if isinstance(input, dict):
+            input.setdefault("runtime", None)
             return load_skill(**input)
-        return load_skill(input)
+        return load_skill(input, runtime=None)
     load_skill.invoke = _invoke
