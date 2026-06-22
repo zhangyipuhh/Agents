@@ -83,6 +83,8 @@ class AgentConcurrencyQueue:
         # _enqueue_times 与之平行记录各 task 入队时间戳（秒，time.monotonic()）。
         self._waiter_tasks: List[asyncio.Task] = []
         self._enqueue_times: Dict[asyncio.Task, float] = {}
+        # 2026-06-22 新增：槽位释放事件，供 SSE 轮询在槽位空闲时即时唤醒。
+        self._slot_freed = asyncio.Event()
 
     @property
     def max_concurrency(self) -> int:
@@ -179,19 +181,59 @@ class AgentConcurrencyQueue:
             "timestamp": time.time(),
         }
 
+    @property
+    def slot_freed(self) -> asyncio.Event:
+        """获取槽位释放事件（用于 SSE 轮询即时唤醒）。"""
+        return self._slot_freed
+
+    async def enqueue(self, task: Optional[asyncio.Task] = None) -> None:
+        """
+        预注册当前 task 到 FIFO 等待队列（不阻塞）。
+
+        用于 SSE 模式：在真正调用 acquire() 阻塞之前，先把请求登记进 _waiter_tasks，
+        使 snapshot()/position() 能在排队期间正确计算「前面还有几人」。
+        同一 task 多次调用仅计数一次（幂等）。
+
+        Args:
+            task: asyncio.Task 对象；默认 None 时取当前 task
+
+        Returns:
+            None
+        """
+        if task is None:
+            task = asyncio.current_task()
+        if task is None:
+            return
+        async with self._active_lock:
+            if task in self._waiter_tasks:
+                return
+            self._waiting_count += 1
+            self._waiter_tasks.append(task)
+            self._enqueue_times[task] = time.monotonic()
+        logger.debug(
+            "[AgentConcurrencyQueue] task 预注册成功，当前活跃=%d，等待=%d",
+            self._active_count,
+            self._waiting_count,
+        )
+
     async def acquire(self) -> None:
         """
         获取一个并发许可
 
         当活跃请求数达到上限时，调用方会进入 FIFO 等待。
+        若本 task 已通过 enqueue() 预注册，则不会重复增加 waiting_count。
         """
         current_task: Optional[asyncio.Task] = asyncio.current_task()
         logger.debug("[AgentConcurrencyQueue] 请求获取许可，当前活跃=%d，等待=%d", self._active_count, self._waiting_count)
         async with self._active_lock:
-            self._waiting_count += 1
-            if current_task is not None:
-                self._waiter_tasks.append(current_task)
-                self._enqueue_times[current_task] = time.monotonic()
+            if current_task is not None and current_task in self._waiter_tasks:
+                # 已预注册，无需重复计数；semaphore 尚未 acquire
+                pass
+            else:
+                self._waiting_count += 1
+                if current_task is not None:
+                    self._waiter_tasks.append(current_task)
+                    self._enqueue_times[current_task] = time.monotonic()
         acquired = False
         try:
             await self._semaphore.acquire()
@@ -199,6 +241,8 @@ class AgentConcurrencyQueue:
             async with self._active_lock:
                 self._active_count += 1
                 self._waiting_count -= 1
+                # 成功占用槽位后清除释放信号，便于下次 release 重新触发
+                self._slot_freed.clear()
                 if current_task is not None:
                     # 从等待列表移除（保留 enqueue_times 直到 release 后清理）
                     try:
@@ -209,13 +253,17 @@ class AgentConcurrencyQueue:
         finally:
             if not acquired:
                 async with self._active_lock:
-                    self._waiting_count -= 1
-                    if current_task is not None:
+                    # 只有真正阻塞过 waiting_count 才需要回滚；
+                    # 若通过 enqueue 预注册后 acquire 被取消，enqueue 时加的 waiting_count 也需扣回。
+                    if current_task is not None and current_task in self._waiter_tasks:
+                        self._waiting_count -= 1
                         try:
                             self._waiter_tasks.remove(current_task)
                         except ValueError:
                             pass
                         self._enqueue_times.pop(current_task, None)
+                    elif self._waiting_count > 0:
+                        self._waiting_count -= 1
                 logger.debug("[AgentConcurrencyQueue] 获取许可被取消，当前活跃=%d，等待=%d", self._active_count, self._waiting_count)
 
     async def release(self) -> None:
@@ -230,6 +278,8 @@ class AgentConcurrencyQueue:
             if self._active_count > 0:
                 self._active_count -= 1
                 self._semaphore.release()
+                # 通知正在轮询的 SSE 请求：槽位已空闲，可立即尝试 acquire
+                self._slot_freed.set()
                 if current_task is not None:
                     self._enqueue_times.pop(current_task, None)
                 logger.debug("[AgentConcurrencyQueue] 释放许可成功，当前活跃=%d", self._active_count)

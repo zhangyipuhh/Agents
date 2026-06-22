@@ -72,6 +72,8 @@ function closePreview() {
 }
 
 function handleNewChat() {
+  // 2026-06-22 修复：新建会话时若知识库聊天仍在生成中，先取消并复位状态
+  isChatStreaming.value = false
   emit('new-chat')
 }
 
@@ -116,6 +118,7 @@ function handleChatStreamEnd() {
       :is-streaming="isChatStreaming"
       @new-chat="handleNewChat"
       @send="handleChatSend"
+      @stream-end="handleChatStreamEnd"
       @open-subagent-drawer="(sa) => emit('open-subagent-drawer', sa)"
     />
   </div>

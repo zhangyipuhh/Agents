@@ -227,6 +227,17 @@ async function newSession() {
     return
   }
 
+  // 2026-06-22 修复：新建会话前先取消当前 SSE 并复位 isStreaming，避免旧连接卡住状态
+  if (currentStreamReader) {
+    try {
+      await currentStreamReader.cancel()
+    } catch (err) {
+      console.warn('[App] 新建会话 reader.cancel 异常（可忽略）:', err)
+    }
+    currentStreamReader = null
+  }
+  isStreaming.value = false
+
   isCreatingNewSession = true
   console.log('[newSession] 开始创建新会话')
 
@@ -555,7 +566,18 @@ function handlePageChange(page) {
  */
 async function handleSessionSwitch(targetSessionId) {
   if (targetSessionId === sessionId.value) return
-  if (isStreaming.value) return
+  if (isStreaming.value) {
+    // 2026-06-22 修复：切换会话时若还在生成中，先取消当前 SSE 并复位状态
+    if (currentStreamReader) {
+      try {
+        await currentStreamReader.cancel()
+      } catch (err) {
+        console.warn('[App] 切换会话 reader.cancel 异常（可忽略）:', err)
+      }
+      currentStreamReader = null
+    }
+    isStreaming.value = false
+  }
 
   // 清空当前消息
   messages.splice(0, messages.length)

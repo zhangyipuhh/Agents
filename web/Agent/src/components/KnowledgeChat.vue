@@ -20,7 +20,8 @@ const props = defineProps({
 })
 
 // 2026-06-15 新增：open-subagent-drawer emit 透传，触发父组件（KnowledgePage / App.vue）打开子智能体详情抽屉
-const emit = defineEmits(['new-chat', 'send', 'open-subagent-drawer'])
+// 2026-06-22 修复并发排队后按钮卡死：新增 stream-end 事件，让父组件同步复位 isStreaming
+const emit = defineEmits(['new-chat', 'send', 'stream-end', 'open-subagent-drawer'])
 
 const messages = reactive([])
 const inputValue = ref('')
@@ -159,8 +160,6 @@ const handleSend = async () => {
   const aiMsg = reactive(createAiMessage())
   messages.push(aiMsg)
 
-  internalStreaming.value = true
-
   nextTick(() => scrollToBottom())
 
   currentReader = null
@@ -168,6 +167,8 @@ const handleSend = async () => {
   try {
     const stream = await knowledgeChatStream(props.sessionId, message)
     currentReader = stream.getReader()
+    // 拿到 SSE reader 后再置位，避免排队/握手阶段状态长期悬空无法复位
+    internalStreaming.value = true
     const decoder = new TextDecoder()
     let buffer = ''
     let interrupted = false
@@ -221,12 +222,28 @@ const handleSend = async () => {
   } finally {
     internalStreaming.value = false
     currentReader = null
+    // 2026-06-22 修复：流结束/异常/取消时通知父组件复位 isStreaming，避免按钮永久卡死
+    emit('stream-end')
   }
 }
 
 const handleNewChat = async () => {
   // 不在这里创建会话，只发射事件让父组件处理
   // 避免父子组件重复创建会话
+  // 2026-06-22 修复：新建会话时若还有未结束的 SSE，先 cancel 并复位状态
+  if (currentReader) {
+    try {
+      await currentReader.cancel()
+    } catch (err) {
+      console.warn('[KnowledgeChat] 新建会话 reader.cancel 异常（可忽略）:', err)
+    }
+    currentReader = null
+  }
+  internalStreaming.value = false
+  approvalMode.value = false
+  approvalData.value = { questions: [] }
+  emit('stream-end')
+
   messages.splice(0, messages.length)
   selectedFiles.value = []
   inputValue.value = ''
@@ -250,6 +267,8 @@ function handleApprovalSubmit({ answers }) {
   const aiMsg = messages[messages.length - 1]
   if (!aiMsg || aiMsg.type !== 'ai') {
     internalStreaming.value = false
+    // 2026-06-22 修复：HITL 异常路径通知父组件复位
+    emit('stream-end')
     return
   }
 
@@ -258,14 +277,14 @@ function handleApprovalSubmit({ answers }) {
 
   const resumeData = { answers }
 
-  internalStreaming.value = true
-
   currentReader = null
 
   const readStream = async () => {
     try {
       const stream = await knowledgeChatStream(props.sessionId, '', [], resumeData)
       currentReader = stream.getReader()
+      // 拿到 reader 后再置位
+      internalStreaming.value = true
       const decoder = new TextDecoder()
       let buffer = ''
       let interrupted = false
@@ -320,6 +339,8 @@ function handleApprovalSubmit({ answers }) {
         internalStreaming.value = false
       }
       currentReader = null
+      // 2026-06-22 修复：resume 流结束/异常/再次 interrupt 时通知父组件复位
+      emit('stream-end')
     }
   }
 
@@ -332,6 +353,8 @@ function handleApprovalSubmit({ answers }) {
 function handleApprovalCancel() {
   approvalMode.value = false
   internalStreaming.value = false
+  // 2026-06-22 修复：取消 HITL 时通知父组件复位
+  emit('stream-end')
   const aiMsg = messages[messages.length - 1]
   if (aiMsg && aiMsg.type === 'ai') {
     aiMsg.ended = true
@@ -370,6 +393,8 @@ async function handleStop() {
   }
 
   internalStreaming.value = false
+  // 2026-06-22 修复：用户主动停止时通知父组件复位
+  emit('stream-end')
 }
 
 const scrollToBottom = (behavior = 'smooth') => {

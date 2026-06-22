@@ -132,6 +132,9 @@ async def chat_concurrency_dependency(
 
     try:
         if need_wait:
+            # 2026-06-22 修复：真正阻塞前先预注册到等待队列，
+            # 使后续 snapshot()/position() 能正确计算"前面还有几人"。
+            await queue.enqueue()
             # 排队期间持续推送 queue waiting 事件给前端
             while True:
                 if release_done.is_set():
@@ -153,17 +156,29 @@ async def chat_concurrency_dependency(
                     )
                     break
                 yield _build_queue_event(snap, "waiting")
-                # 每 1 秒推送一次（HITL 触发时 release_done 会被 set，循环立即退出）
+                # 每 1 秒推送一次；若其他请求释放槽位（slot_freed）或 HITL 提前释放（release_done），
+                # 立即醒来重新 snapshot，实现槽位空闲时毫秒级响应。
+                slot_wait = asyncio.create_task(queue.slot_freed.wait())
+                release_wait = asyncio.create_task(release_done.wait())
                 try:
-                    await asyncio.wait_for(
-                        release_done.wait(),
+                    done, pending = await asyncio.wait(
+                        [slot_wait, release_wait],
                         timeout=QUEUE_POLL_INTERVAL_SECONDS,
+                        return_when=asyncio.FIRST_COMPLETED,
                     )
+                finally:
+                    for task in (slot_wait, release_wait):
+                        if not task.done():
+                            task.cancel()
+                            try:
+                                await task
+                            except asyncio.CancelledError:
+                                pass
+                if release_wait in done:
                     # release_done 被 set（HITL 提前释放）→ 跳出循环
                     break
-                except asyncio.TimeoutError:
-                    # 正常超时 → 继续推送下一次
-                    continue
+                # slot_freed 被 set 或超时 → 回到循环开头重新 snapshot
+                continue
 
         # acquire（可能立即成功 / 已释放的快速路径）
         await queue.acquire()
