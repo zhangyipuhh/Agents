@@ -7,12 +7,28 @@ load_skill 工具单元测试。
 """
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
+from langgraph.types import Command
 
 from app.core.skills.schemas import SkillInfo
 from app.core.skills.service import SkillNotFoundError
+
+
+class _RealToolMessage:
+    """
+    真实可断言的 ToolMessage 替身。
+
+    conftest 将 langchain_core.messages.ToolMessage 整体 mock 为 Mock()，
+    构造出的对象属性访问仍返回 Mock，无法对 content / tool_call_id 做字符串断言。
+    本类提供 content / tool_call_id 两个真实属性，patch 后 tool.py 内的
+    ToolMessage(content=..., tool_call_id=...) 调用会生成可断言的实例。
+    """
+
+    def __init__(self, content, tool_call_id):
+        self.content = content
+        self.tool_call_id = tool_call_id
 
 
 def _make_service_mock(info: SkillInfo | None = None, available: list[str] | None = None) -> MagicMock:
@@ -52,9 +68,41 @@ def _reset_singleton():
     SkillsService.reset()
 
 
+@pytest.fixture(autouse=True)
+def _patch_tool_message():
+    """
+    将 tool.py 模块内的 ToolMessage 替换为 _RealToolMessage，使 Command 中的
+    ToolMessage 实例具有可断言的真实 content / tool_call_id 属性。
+
+    Yields:
+        None
+    """
+    with patch("app.core.skills.tool.ToolMessage", _RealToolMessage):
+        yield
+
+
+def _unwrap(result):
+    """
+    从 load_skill 返回的 Command 中解包出 ToolMessage.content 字符串。
+
+    Args:
+        result: load_skill.invoke() 的返回值，应为 Command 实例。
+
+    Returns:
+        Command.update["messages"][0].content 字符串。
+
+    Raises:
+        AssertionError: 当 result 不是 Command 或 messages 数量不为 1 时。
+    """
+    assert isinstance(result, Command)
+    messages = result.update["messages"]
+    assert len(messages) == 1
+    return messages[0].content
+
+
 def test_load_skill_returns_skill_content_block(monkeypatch, tmp_path: Path):
     """
-    成功加载时返回包含 <skill_content>、正文与 <skill_files> 的 XML 块。
+    成功加载时返回 Command，content 含 <skill_content>、正文与 <skill_files> 的 XML 块。
 
     Args:
         monkeypatch: pytest monkeypatch fixture。
@@ -81,10 +129,14 @@ def test_load_skill_returns_skill_content_block(monkeypatch, tmp_path: Path):
 
     result = load_skill.invoke({"name": "alpha"})
 
-    assert "<skill_content name=\"alpha\">" in result
-    assert "This is the alpha skill body." in result
-    assert "<skill_files>" in result
-    assert "</skill_files>" in result
+    assert isinstance(result, Command)
+    content = _unwrap(result)
+    assert "<skill_content name=\"alpha\">" in content
+    assert "This is the alpha skill body." in content
+    assert "<skill_files>" in content
+    assert "</skill_files>" in content
+    # 验证 tool_call_id 透传
+    assert result.update["messages"][0].tool_call_id == "test-tool-call-id"
 
 
 def test_load_skill_includes_base_dir_uri(monkeypatch, tmp_path: Path):
@@ -116,7 +168,9 @@ def test_load_skill_includes_base_dir_uri(monkeypatch, tmp_path: Path):
 
     result = load_skill.invoke({"name": "alpha"})
 
-    assert "Base directory for this skill: file:///" in result
+    assert isinstance(result, Command)
+    content = _unwrap(result)
+    assert "Base directory for this skill: file:///" in content
 
 
 def test_load_skill_includes_file_list(monkeypatch, tmp_path: Path):
@@ -151,15 +205,17 @@ def test_load_skill_includes_file_list(monkeypatch, tmp_path: Path):
 
     result = load_skill.invoke({"name": "alpha"})
 
-    assert result.count("<file>") == 2
-    assert "script.py" in result
-    assert "reference.md" in result
-    assert "SKILL.md" not in result.split("<skill_files>")[1].split("</skill_files>")[0]
+    assert isinstance(result, Command)
+    content = _unwrap(result)
+    assert content.count("<file>") == 2
+    assert "script.py" in content
+    assert "reference.md" in content
+    assert "SKILL.md" not in content.split("<skill_files>")[1].split("</skill_files>")[0]
 
 
 def test_load_skill_returns_error_for_missing_skill(monkeypatch):
     """
-    require 抛出 SkillNotFoundError 时，工具返回 Error: ... 字符串且不传播异常。
+    require 抛出 SkillNotFoundError 时，工具返回 Command，content 以 Error: 开头且不传播异常。
 
     Args:
         monkeypatch: pytest monkeypatch fixture。
@@ -176,8 +232,10 @@ def test_load_skill_returns_error_for_missing_skill(monkeypatch):
 
     result = load_skill.invoke({"name": "nope"})
 
-    assert result.startswith("Error:")
-    assert "nope" in result
+    assert isinstance(result, Command)
+    content = _unwrap(result)
+    assert content.startswith("Error:")
+    assert "nope" in content
 
 
 def test_load_skill_limits_files_to_10(monkeypatch, tmp_path: Path):
@@ -212,7 +270,9 @@ def test_load_skill_limits_files_to_10(monkeypatch, tmp_path: Path):
 
     result = load_skill.invoke({"name": "alpha"})
 
-    assert result.count("<file>") == 10
+    assert isinstance(result, Command)
+    content = _unwrap(result)
+    assert content.count("<file>") == 10
 
 
 def test_load_skill_tool_is_registered_as_langchain_tool():
