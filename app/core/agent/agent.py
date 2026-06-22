@@ -129,6 +129,7 @@ class Agent:
         self.checkpointer = config.checkpointer
         self.store = config.store
         self.system_prompt = config.system_prompt
+        self.agent_name = config.name
         self._trim_tool_messages = config.trim_tool_messages
         self._keep_last_n_tools = config.keep_last_n_tools
         self._ollama_reasoning =  LLM_CONFIG["ollama_reasoning"]

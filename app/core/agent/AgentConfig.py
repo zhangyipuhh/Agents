@@ -191,7 +191,17 @@ class AgentConfig:
     
     system_prompt: Optional[str] = field(default=None)
     """系统提示词，用于设置 AI 的行为角色、性格和约束条件，默认 None"""
-    
+
+    name: Optional[str] = field(default=None)
+    """Agent 注册名（2026-06-21 新增，与 app/features/<dir>/ 目录名一致）。
+
+    用于 skill 系统按子智能体维度隔离（agent_name 维度 SkillsService 实例 +
+    子智能体专属 config/bootstrap.md 覆盖）。None 表示该 Agent 不绑定特定子智能体，
+    SkillAwarePrompt 会回退到全局 skill 注册表。
+
+    子智能体应在自身的 *AgentConfig 子类中通过 ``field(default="<dir_name>")`` 覆盖。
+    """
+
     max_input_tokens: int = field(default=999999999)
     """最大输入 token 数，限制单次输入的最大长度，防止输入过长导致上下文超限，默认 999999999"""
 

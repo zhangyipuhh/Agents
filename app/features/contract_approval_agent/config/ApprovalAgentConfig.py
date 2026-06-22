@@ -54,6 +54,10 @@ class ApprovalAgentConfig(BaseAgentConfig):
     支持继承，子类可重写默认值或添加新字段。
     """
 
+    name: str = field(default="contract_approval_agent")
+    """ApprovalAgent 在 skill 系统中的注册名（与 app/features/contract_approval_agent/ 目录名一致），
+    用于子智能体维度 skill 与 bootstrap 覆盖。"""
+
     state_class: type[ApprovalAgentState] = field(default=None)
     """
     状态类，需要传入一个继承自 AgentState 的 TypedDict 类型，用于管理对话状态，在会话中是可被操作的值
