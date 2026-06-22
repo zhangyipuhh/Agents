@@ -111,7 +111,7 @@ class MapAgentConfig(BaseAgentConfig):
         from app.core.tools.BaseTools import get_current_time
         from app.core.tools.HumanInTheLoopTools import ask_user_question
         from app.core.tools.SandboxTools import sandbox
-        from app.core.skills.tool import load_skill
+        from app.core.skills.tool import load_skill, read_skill_file
         tools = [
             #get_current_time,
             # set_map_center,
@@ -130,6 +130,7 @@ class MapAgentConfig(BaseAgentConfig):
             ask_user_question,
             sandbox, 
             load_skill,
+            read_skill_file,
         ]
 
         try:

@@ -15,6 +15,7 @@ __all__ = [
     "SkillsAwarePrompt",
     "SkillsService",
     "load_skill",
+    "read_skill_file",
     "render_available_skills_block",
 ]
 
@@ -39,6 +40,7 @@ except (ImportError, ModuleNotFoundError):
     SkillsService = None  # type: ignore[misc, assignment]
 
 try:
-    from .tool import load_skill
+    from .tool import load_skill, read_skill_file
 except (ImportError, ModuleNotFoundError):
     load_skill = None  # type: ignore[misc, assignment]
+    read_skill_file = None  # type: ignore[misc, assignment]

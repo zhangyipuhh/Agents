@@ -187,6 +187,11 @@ class MapAgent:
             messages=[human_message],
             error_limit=error_limit,
             limit=limit,
+            # 注入 agent_name，工具（如 load_skill / read_skill_file）通过
+            # runtime.state.get("agent_name") 读取后调用 agent 维度的
+            # SkillsService；缺失时降级到全局默认根。值与 MapAgentConfig.name
+            # 默认值保持一致。
+            agent_name="map_agent",
         )
 
         # 构建上下文
