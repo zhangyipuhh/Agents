@@ -2320,3 +2320,36 @@ app/routers/
 - 本地 conftest：`app/tests/routers/conftest.py`（mock `filesystem_encoding_fix.apply_fix` 为 no-op + 注入 `mcp_config_service` 实例）
 - 覆盖：模块可导入 / 7 个路由注册检查 / list_servers 返回 200 / create_server 返回 201 / delete_server 返回 204 / toggle_server 返回 200
 
+## MCPToolsRegistry 运行时管理增强（2026-06-23 新增）
+
+为 `MCPToolsRegistry`（`app/core/tools/mcp_registry.py`）新增 5 个异步方法，支持运行时动态管理 MCP server 配置，无需重启应用。供 `mcp_admin_router`（Task 6）及 `McpConfigService.refresh_methods_from_server` 调用。
+
+### 模块位置
+
+```
+app/core/tools/mcp_registry.py
+```
+
+### 核心 API
+
+| 方法 | 作用 |
+|---|---|
+| `add_server(name, config)` | 运行时新增 server 配置；存入 `_server_configs`，客户端已初始化时尝试连接，失败仅 warning |
+| `update_server(name, config)` | 更新 server 配置；覆盖旧配置，客户端已初始化时先 remove 再 add 重建连接 |
+| `remove_server(name)` | 移除 server；从 `_server_configs` 删除配置并断开连接，配置不存在静默忽略 |
+| `toggle_server(name, enabled)` | 启用/禁用 server；更新 `_server_configs[name]["enabled"]` 字段 |
+| `toggle_method(server_name, method_name, enabled)` | 启用/禁用单个 method；更新 `_server_configs[server_name]["methods"][method_name]["enabled"]` 字段 |
+
+### 设计要点
+
+- **容错策略**：所有方法在客户端未初始化（`_client is None` 或 `_initialized is False`）时仅更新 `_server_configs`，不抛异常
+- **异常隔离**：客户端连接/断开失败时仅记录 warning 日志，不向上抛出，保证配置至少被持久化
+- **静默忽略**：`toggle_server` / `toggle_method` 在 server 或 method 不存在时静默忽略，不抛 KeyError
+- **方法位置**：5 个方法插入在 `refresh_tools` 之后、`shutdown` 之前
+
+### 测试
+
+- 路径：`app/tests/core/tools/test_mcp_registry_runtime.py`（9 用例）
+- 覆盖：5 个方法存在性检查 / add_server 存储配置 / remove_server 删除配置 / toggle_server 更新 enabled / toggle_method 更新 method enabled
+- 测试特点：直接构造 `MCPToolsRegistry()` 实例（构造器无重初始化），通过 `asyncio.run()` 调用异步方法
+

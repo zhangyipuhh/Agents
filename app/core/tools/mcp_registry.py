@@ -293,6 +293,129 @@ class MCPToolsRegistry:
             "工具列表刷新完成（UnifiedMCPClient 自动管理），server_name=%s", server_name
         )
 
+    async def add_server(self, name: str, config: dict) -> None:
+        """
+        运行时新增 MCP server 配置
+
+        将配置存入 _server_configs，并在客户端已初始化时尝试连接新服务器。
+        连接失败仅记录 warning，不抛出异常，保证配置至少被持久化。
+
+        Args:
+            name: server 名称，作为 _server_configs 的键
+            config: server 配置字典，格式为 {type, url, tags, ...}
+
+        Returns:
+            None
+
+        Raises:
+            不主动抛出异常；客户端连接失败时仅记录日志
+        """
+        self._server_configs[name] = config
+        if self._client and self._initialized:
+            try:
+                await self._client.add_server(name, config)
+            except Exception as e:
+                logger.warning(
+                    "运行时新增 MCP server '%s' 连接失败: %s", name, e
+                )
+
+    async def update_server(self, name: str, config: dict) -> None:
+        """
+        更新 MCP server 配置
+
+        覆盖 _server_configs 中的旧配置，并在客户端已初始化时
+        先移除旧服务器再添加新配置以重建连接。
+
+        Args:
+            name: server 名称
+            config: 新的 server 配置字典
+
+        Returns:
+            None
+
+        Raises:
+            不主动抛出异常；客户端重建连接失败时仅记录日志
+        """
+        self._server_configs[name] = config
+        if self._client and self._initialized:
+            try:
+                await self._client.remove_server(name)
+                await self._client.add_server(name, config)
+            except Exception as e:
+                logger.warning(
+                    "运行时更新 MCP server '%s' 连接失败: %s", name, e
+                )
+
+    async def remove_server(self, name: str) -> None:
+        """
+        移除 MCP server
+
+        从 _server_configs 中删除指定配置，并在客户端已初始化时
+        断开对应连接。配置不存在时静默忽略。
+
+        Args:
+            name: 要移除的 server 名称
+
+        Returns:
+            None
+
+        Raises:
+            不主动抛出异常；客户端断开失败时仅记录日志
+        """
+        self._server_configs.pop(name, None)
+        if self._client and self._initialized:
+            try:
+                await self._client.remove_server(name)
+            except Exception as e:
+                logger.warning(
+                    "运行时移除 MCP server '%s' 连接失败: %s", name, e
+                )
+
+    async def toggle_server(self, name: str, enabled: bool) -> None:
+        """
+        启用/禁用 MCP server
+
+        更新 _server_configs 中指定 server 的 enabled 字段。
+        server 不存在时静默忽略。
+
+        Args:
+            name: server 名称
+            enabled: 目标启用状态，True 为启用，False 为禁用
+
+        Returns:
+            None
+
+        Raises:
+            不抛出异常
+        """
+        if name in self._server_configs:
+            self._server_configs[name]["enabled"] = enabled
+
+    async def toggle_method(
+        self, server_name: str, method_name: str, enabled: bool
+    ) -> None:
+        """
+        启用/禁用单个 method
+
+        更新 _server_configs 中指定 server 下指定 method 的 enabled 字段。
+        server 或 method 不存在时静默忽略。
+
+        Args:
+            server_name: server 名称
+            method_name: method 名称
+            enabled: 目标启用状态，True 为启用，False 为禁用
+
+        Returns:
+            None
+
+        Raises:
+            不抛出异常
+        """
+        if server_name in self._server_configs:
+            methods = self._server_configs[server_name].setdefault("methods", {})
+            if method_name in methods:
+                methods[method_name]["enabled"] = enabled
+
     async def shutdown(self) -> None:
         """
         关闭注册中心，释放所有连接资源
