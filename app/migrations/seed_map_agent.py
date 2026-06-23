@@ -9,16 +9,11 @@ map_agent 数据库种子脚本
 执行方式：
     python -m app.migrations.seed_map_agent
 
-参数：
-    无（脚本内部从 DATABASE_URL 环境变量读取数据库连接配置）
-
-返回值：
-    无（异步函数，直接打印日志）
-
 异常：
     Exception: 数据库连接或 SQL 执行失败时抛出
 """
 import asyncio
+import json
 import logging
 import os
 from typing import Any
@@ -97,9 +92,9 @@ async def seed_map_agent(db: Any) -> None:
             "地图智能体",
             "基于地图的智能体，支持地图操作、知识查询、报告生成",
             "agents/map_agent/AGENTS.md",
-            MAP_AGENT_STATE_SCHEMA,
-            MAP_AGENT_CONTEXT_SCHEMA,
-            ["map"],
+            json.dumps(MAP_AGENT_STATE_SCHEMA, ensure_ascii=False),
+            json.dumps(MAP_AGENT_CONTEXT_SCHEMA, ensure_ascii=False),
+            json.dumps(["map"], ensure_ascii=False),
         )
         logger.info("map_agent 记录已更新")
     else:
@@ -114,9 +109,9 @@ async def seed_map_agent(db: Any) -> None:
             "地图智能体",
             "基于地图的智能体，支持地图操作、知识查询、报告生成",
             "agents/map_agent/AGENTS.md",
-            MAP_AGENT_STATE_SCHEMA,
-            MAP_AGENT_CONTEXT_SCHEMA,
-            ["map"],
+            json.dumps(MAP_AGENT_STATE_SCHEMA, ensure_ascii=False),
+            json.dumps(MAP_AGENT_CONTEXT_SCHEMA, ensure_ascii=False),
+            json.dumps(["map"], ensure_ascii=False),
         )
         logger.info("map_agent 记录已插入")
 
@@ -162,6 +157,7 @@ async def main() -> None:
     异常：
         Exception: 数据库连接或 SQL 执行失败时抛出
     """
+    # 在函数内部导入 asyncpg，避免测试环境（conftest.py 已 mock asyncpg）导入失败
     import asyncpg
 
     dsn = os.getenv(

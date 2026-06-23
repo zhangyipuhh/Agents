@@ -6,20 +6,21 @@ map_agent 数据库种子脚本测试模块
 表写入 map_agent 的初始配置，且重复执行幂等。
 """
 import asyncio
-import pytest
 
 
 def test_seed_map_agent_importable():
-    """测试 seed_map_agent 模块可导入。"""
+    """测试 seed_map_agent 模块可导入且关键常量存在。"""
     from app.migrations import seed_map_agent
     assert hasattr(seed_map_agent, "seed_map_agent")
+    assert hasattr(seed_map_agent, "MAP_AGENT_STATE_SCHEMA")
+    assert hasattr(seed_map_agent, "MAP_AGENT_TOOLS")
+    assert hasattr(seed_map_agent, "MAP_AGENT_SKILLS")
+    assert len(seed_map_agent.MAP_AGENT_TOOLS) == 9
+    assert len(seed_map_agent.MAP_AGENT_SKILLS) == 1
 
 
-def test_seed_map_agent_inserts_rows(monkeypatch):
+def test_seed_map_agent_inserts_rows():
     """测试 seed_map_agent 能向 agents 表插入 map_agent 记录。
-
-    参数：
-        monkeypatch: pytest fixture，用于替换运行时依赖
 
     返回值：
         None
@@ -31,6 +32,8 @@ def test_seed_map_agent_inserts_rows(monkeypatch):
 
     inserted = []
     updated = []
+    tool_bindings_inserted = []
+    skill_bindings_inserted = []
 
     class FakeDB:
         """模拟 asyncpg.Connection，记录 INSERT/UPDATE 调用。"""
@@ -42,9 +45,17 @@ def test_seed_map_agent_inserts_rows(monkeypatch):
             return None
 
         async def execute(self, sql, *args):
-            """模拟 execute：根据 SQL 类型记录到 inserted/updated 列表。"""
+            """模拟 execute：根据 SQL 类型记录到对应列表。"""
             if "INSERT" in sql and "agents" in sql:
+                # 验证 JSONB 字段已序列化为字符串
+                assert isinstance(args[4], str), "state_schema 应为 JSON 字符串"
+                assert isinstance(args[5], str), "context_schema 应为 JSON 字符串"
+                assert isinstance(args[6], str), "mcp_tags 应为 JSON 字符串"
                 inserted.append(args)
+            elif "INSERT" in sql and "agent_tool_bindings" in sql:
+                tool_bindings_inserted.append(args)
+            elif "INSERT" in sql and "agent_skill_bindings" in sql:
+                skill_bindings_inserted.append(args)
             elif "UPDATE" in sql:
                 updated.append(args)
             return "OK"
@@ -59,13 +70,12 @@ def test_seed_map_agent_inserts_rows(monkeypatch):
     asyncio.run(run())
     assert len(inserted) == 1
     assert inserted[0][0] == "map_agent"  # name 参数
+    assert len(tool_bindings_inserted) == 9  # MAP_AGENT_TOOLS 有 9 个工具
+    assert len(skill_bindings_inserted) == 1  # MAP_AGENT_SKILLS 有 1 个 skill
 
 
-def test_seed_map_agent_idempotent(monkeypatch):
+def test_seed_map_agent_idempotent():
     """测试 seed_map_agent 重复执行不报错（已存在则 UPDATE）。
-
-    参数：
-        monkeypatch: pytest fixture，用于替换运行时依赖
 
     返回值：
         None
