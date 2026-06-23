@@ -57,6 +57,7 @@ from app.features.map_agent.router.map_router import router as map_router
 from app.features.AI_Coding_Check_agent.router.ai_coding_check_router import router as ai_coding_check_router
 from app.core.router import file_upload_router as core_file_upload_router
 from app.core.router import file_download_router as core_file_download_router
+from app.routers.mcp_admin_router import router as mcp_admin_router
 
 
 app = create_app()
@@ -79,6 +80,7 @@ def register_routers(target_app=None):
     _app.include_router(ai_coding_check_router)
     _app.include_router(core_file_upload_router)
     _app.include_router(core_file_download_router)
+    _app.include_router(mcp_admin_router)
 
 
 register_routers()

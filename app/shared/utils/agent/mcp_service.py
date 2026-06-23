@@ -180,6 +180,42 @@ class McpConfigService:
             server_name,
         )
 
+    async def refresh_methods_from_server(self, server_name: str) -> List[Dict[str, Any]]:
+        """从 MCP server 拉取最新 method 列表并更新数据库。
+
+        参数:
+            server_name: MCP server 名称
+
+        返回:
+            List[Dict]: method 列表
+
+        异常:
+            ValueError: server 不存在时抛出
+            Exception: MCP server 连接失败时抛出
+        """
+        server = await self.get_server(server_name)
+        if not server:
+            raise ValueError(f"MCP server '{server_name}' not found")
+
+        # 从 MCPToolsRegistry 获取已注册的 tools（methods）
+        try:
+            from app.core.tools.mcp_registry import MCPToolsRegistry
+            registry = MCPToolsRegistry.get_instance()
+            tools_with_server = registry.get_tools_with_server(server=server_name)
+
+            methods = []
+            for tool, srv_name, srv_config in tools_with_server:
+                methods.append({
+                    "method_name": getattr(tool, "name", str(tool)),
+                    "description": getattr(tool, "description", ""),
+                })
+
+            await self.upsert_methods(server_name, methods)
+            return methods
+        except Exception as e:
+            logger.warning("Failed to refresh methods from server '%s': %s", server_name, e)
+            raise
+
     async def seed_from_yaml_if_empty(self) -> None:
         """数据库为空时从 YAML 种子文件导入。"""
         rows = await self._db.fetch("SELECT name FROM mcp_server_configs")

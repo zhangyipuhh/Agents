@@ -311,6 +311,11 @@ class _FilesystemBackend:
     @staticmethod
     def _ripgrep_search(*args, **kwargs):
         return []
+    # 2026-06-23 新增：filesystem_encoding_fix 模块加载时访问 FilesystemBackend.read，
+    # 必须提供该属性否则 app.main 导入失败（AttributeError）
+    @staticmethod
+    def read(*args, **kwargs):
+        return None
 
 
 sys.modules["deepagents.backends.filesystem"].FilesystemBackend = _FilesystemBackend

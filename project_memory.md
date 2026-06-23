@@ -135,6 +135,9 @@ app/
     ├── audit_document_agent/   # 审计文档 Agent
     ├── sandbox_agent/          # 沙箱 Agent（已重构为 subagent 工具模式，见核心工具）
     └── Tagent/                 # T Agent
+├── routers/                # 全局管理路由（2026-06-23 新增）
+│   ├── __init__.py           # 包初始化
+│   └── mcp_admin_router.py   # MCP Admin 路由（CRUD + toggle + refresh methods）
 ├── shared/                 # 共享模块
 │   ├── routers/           # 路由
 │   │   ├── auth_router.py    # 认证路由（登录、注册、验证码、refresh、validate）
@@ -2259,6 +2262,7 @@ app/shared/utils/agent/mcp_service.py
 | `list_methods(server_name)` | 列出 server 下所有 method（按 method_name 排序） |
 | `toggle_method(server_name, method_name, enabled)` | 启用/禁用单个 method |
 | `upsert_methods(server_name, methods)` | 批量 upsert method 列表并更新 methods_synced_at |
+| `refresh_methods_from_server(server_name)` | 从 MCPToolsRegistry 拉取最新 method 列表并调用 upsert_methods 保存；server 不存在抛 `ValueError` |
 | `seed_from_yaml_if_empty()` | 表为空时从 YAML 种子文件导入；非空跳过 |
 | `_load_yaml_seed()` | 从 `app.core.config.config.settings.mcp.mcp_config_path` 加载 YAML；导入失败返回空 dict |
 
@@ -2278,4 +2282,41 @@ app/shared/utils/agent/mcp_service.py
 
 - 路径：`app/tests/shared/utils/agent/test_mcp_service.py`（9 用例）
 - 覆盖：模块可导入 / list_servers 返回行 / get_server 返回单条 / create_server 写入（mock fetchrow 两次：存在性检查返回 None + INSERT RETURNING 返回行）/ delete_server 删除主子表 / toggle_server 更新 enabled / list_methods 返回行 / toggle_method 更新 enabled / seed_from_yaml_if_empty 空表导入（mock _load_yaml_seed）
+
+## MCP Admin Router（2026-06-23 新增）
+
+提供 MCP server 配置的 HTTP API，前缀 `/api/admin/mcp`，在 `app/main.py::register_routers` 中注册。调用 `McpConfigService`（Task 5）执行数据库操作，通过 `request.app.state.mcp_config_service` 获取服务实例（lifespan 集成在 Task 14 完成）。
+
+### 模块位置
+
+```
+app/routers/
+├── __init__.py              # 空包初始化
+└── mcp_admin_router.py      # MCP Admin 路由
+```
+
+### 路由清单
+
+| 方法 | 路径 | 状态码 | 说明 |
+|---|---|---|---|
+| GET | `/api/admin/mcp/servers` | 200 | 列出所有 MCP server 配置 |
+| POST | `/api/admin/mcp/servers` | 201 | 新增 server；name 已存在返回 409 |
+| PUT | `/api/admin/mcp/servers/{name}` | 200 | 更新 server 配置；不存在返回 404 |
+| DELETE | `/api/admin/mcp/servers/{name}` | 204 | 删除 server 及关联 methods |
+| POST | `/api/admin/mcp/servers/{name}/toggle` | 200 | 启用/禁用 server（query 参数 `enabled`） |
+| GET | `/api/admin/mcp/servers/{name}/methods` | 200 | 列出 server 下所有 method |
+| POST | `/api/admin/mcp/servers/{name}/refresh-methods` | 200 | 从 MCP server 拉取最新 method 列表；失败返回 502 |
+| POST | `/api/admin/mcp/servers/{name}/methods/{method}/toggle` | 200 | 启用/禁用单个 method（query 参数 `enabled`） |
+
+### 设计要点
+
+- **服务获取**：`_get_service(request)` 从 `app.state.mcp_config_service` 获取 `McpConfigService` 实例；未初始化时抛 500
+- **错误映射**：`ValueError` → 409（create，name 冲突）/ 404（update，不存在）；`refresh_methods` 失败 → 502
+- **refresh_methods_from_server**：`McpConfigService` 新增方法，通过 `MCPToolsRegistry.get_tools_with_server(server=name)` 获取已注册工具列表，转换为 method 记录后调用 `upsert_methods` 保存
+
+### 测试
+
+- 路径：`app/tests/routers/test_mcp_admin_router.py`（11 用例）
+- 本地 conftest：`app/tests/routers/conftest.py`（mock `filesystem_encoding_fix.apply_fix` 为 no-op + 注入 `mcp_config_service` 实例）
+- 覆盖：模块可导入 / 7 个路由注册检查 / list_servers 返回 200 / create_server 返回 201 / delete_server 返回 204 / toggle_server 返回 200
 
