@@ -42,10 +42,14 @@ def agent_chat_env(client, monkeypatch):
         TestClient: 已配置好环境的 TestClient 实例
     """
     # 注入 AgentConfigService（lifespan 集成尚未完成，手动注入）
+    # 使用 monkeypatch.setattr 确保测试结束后自动还原，避免污染 session-scoped app.state
     from app.shared.utils.agent.agent_config_service import AgentConfigService
     from app.shared.utils.agent.agents_md_loader import AgentsMdLoader
-    client.app.state.agent_config_service = AgentConfigService(
-        db=None, agents_md_loader=AgentsMdLoader(),
+    monkeypatch.setattr(
+        client.app.state,
+        "agent_config_service",
+        AgentConfigService(db=None, agents_md_loader=AgentsMdLoader()),
+        raising=False,
     )
 
     # Mock session_cache.verify_session 绕过 /api/agent/ 路径的 Session 校验
