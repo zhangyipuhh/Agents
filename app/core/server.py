@@ -110,6 +110,31 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logging.error("Failed to initialize MCPToolsRegistry: %s", e, exc_info=True)
 
+    # === 2026-06-23 新增：初始化 AgentConfigService 和 McpConfigService ===
+    # 为 agent_router / mcp_admin_router 提供 app.state 上的真实服务实例。
+    # 数据库未启用或初始化失败时降级为告警，不阻断 lifespan。
+    try:
+        from app.shared.utils.agent.agent_config_service import AgentConfigService
+        from app.shared.utils.agent.agents_md_loader import AgentsMdLoader
+        from app.shared.utils.agent.mcp_service import McpConfigService
+
+        db_pool = DatabasePool._pool
+        if db_pool:
+            agents_md_loader = AgentsMdLoader()
+            app.state.agent_config_service = AgentConfigService(db_pool, agents_md_loader)
+            app.state.mcp_config_service = McpConfigService(db_pool)
+
+            await app.state.mcp_config_service.seed_from_yaml_if_empty()
+            logging.info("AgentConfigService and McpConfigService initialized")
+        else:
+            logging.warning(
+                "Database pool not available, AgentConfigService/McpConfigService not initialized"
+            )
+    except Exception as e:
+        logging.warning(
+            "Failed to initialize AgentConfigService/McpConfigService: %s", e, exc_info=True
+        )
+
     # 初始化全局 Skill 系统（懒加载单例；agent 维度实例在 _llm_call 中按需创建）
     from app.core.skills.service import SkillsService
 
