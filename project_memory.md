@@ -137,7 +137,9 @@ app/
     └── Tagent/                 # T Agent
 ├── routers/                # 全局管理路由（2026-06-23 新增）
 │   ├── __init__.py           # 包初始化
-│   └── mcp_admin_router.py   # MCP Admin 路由（CRUD + toggle + refresh methods）
+│   ├── mcp_admin_router.py   # MCP Admin 路由（CRUD + toggle + refresh methods）
+│   ├── agent_router.py       # 统一 Agent 路由（Task 13，/api/agent/chat|list|agents-md）
+│   └── _stream_helper.py     # SSE 流式响应辅助（Task 13，agent_router 复用）
 ├── shared/                 # 共享模块
 │   ├── routers/           # 路由
 │   │   ├── auth_router.py    # 认证路由（登录、注册、验证码、refresh、validate）
@@ -2392,6 +2394,45 @@ app/routers/
 - 路径：`app/tests/routers/test_mcp_admin_router.py`（11 用例）
 - 本地 conftest：`app/tests/routers/conftest.py`（mock `filesystem_encoding_fix.apply_fix` 为 no-op + 注入 `mcp_config_service` 实例）
 - 覆盖：模块可导入 / 7 个路由注册检查 / list_servers 返回 200 / create_server 返回 201 / delete_server 返回 204 / toggle_server 返回 200
+
+## 统一 Agent Router（2026-06-23 新增，Task 13）
+
+提供统一 Agent HTTP API，前缀 `/api/agent`，在 `app/main.py::register_routers` 中注册。调用 `AgentConfigService`（Task 12）加载配置，通过 `Agent`（`app/core/agent/agent.py`）执行流式对话。SSE 流式逻辑提取到 `_stream_helper.py` 供复用。
+
+### 模块位置
+
+```
+app/routers/
+├── __init__.py              # 空包初始化
+├── mcp_admin_router.py      # MCP Admin 路由
+├── agent_router.py          # 统一 Agent 路由（Task 13）
+└── _stream_helper.py        # SSE 流式响应辅助（Task 13）
+```
+
+### 路由清单
+
+| 方法 | 路径 | 状态码 | 说明 |
+|---|---|---|---|
+| POST | `/api/agent/chat` | 200 | 统一聊天接口（SSE 流式响应）；agent 不存在返回 404 |
+| GET | `/api/agent/list` | 200 | 列出所有启用的智能体 |
+| GET | `/api/agent/{agent_name}/agents-md` | 200 | 获取指定 agent 的 AGENTS.md 内容（system_prompt）；不存在返回 404 |
+
+### 设计要点
+
+- **服务获取**：`_get_service(request)` 从 `app.state.agent_config_service` 获取 `AgentConfigService` 实例；未初始化时抛 500（与 mcp_admin_router 模式一致）
+- **SSE 复用**：`_stream_helper.generate_stream_response` 从 map_router 提取通用 SSE 逻辑，支持 `updates` / `custom` / `messages` 三种 stream_mode 组合，检测客户端断开并映射事件类型（interrupt / update / custom / message）
+- **ChatRequest 模型**：Pydantic BaseModel，字段含 message / session_id / agent_name（默认 map_agent）/ attachments / resume（HITL 恢复）/ context_overrides
+- **Agent 构造**：chat 端点从 `UnifiedAgentConfig` 提取 name / system_prompt / state_class / context_class 构造 `AgentConfig`，实例化 `Agent` 并调用 `await agent.__ainit__()` 完成异步初始化
+- **输入状态**：resume 存在时构造 `Command(resume=...)`，否则构造 `state_class(messages=[HumanMessage(...)])`
+- **Session 中间件**：`/api/agent/` 前缀在 `SESSION_REQUIRED_PREFIXES` 中，所有端点需 `X-Session-ID` 头并通过 `session_cache.verify_session` 校验
+- **错误映射**：`AgentNotFoundError` → 404
+
+### 测试
+
+- 路径：`app/tests/routers/test_agent_router.py`（6 用例）
+- 本地 conftest：`app/tests/routers/conftest.py` 追加 `_init_agent_config_service`（注入 `AgentConfigService(db=None, agents_md_loader=AgentsMdLoader())`）+ `_mock_session_cache_for_agent`（mock `session_cache.verify_session` 返回 True）两个 autouse fixture
+- 覆盖：模块可导入 / 3 个路由注册检查 / list_agents 返回 200 / get_agents_md 返回 content
+- 测试通过 monkeypatch 替换 `AgentConfigService.list_agents` / `get_agent_config`，HTTP 请求带 `X-Session-ID` 头绕过 Session 校验
 
 ## MCPToolsRegistry 运行时管理增强（2026-06-23 新增）
 

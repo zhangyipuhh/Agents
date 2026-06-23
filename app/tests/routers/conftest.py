@@ -33,3 +33,30 @@ def _init_mcp_config_service(app):
     from app.shared.utils.agent.mcp_service import McpConfigService
     app.state.mcp_config_service = McpConfigService(db=None)
 
+
+@pytest.fixture(autouse=True)
+def _init_agent_config_service(app):
+    """初始化 app.state.agent_config_service 供 agent_router 使用。
+
+    lifespan 集成（Task 14）尚未完成，此处在测试中手动注入 AgentConfigService 实例。
+    测试通过 monkeypatch 替换类方法，因此 db=None 和 loader=None 即可。
+    """
+    from app.shared.utils.agent.agent_config_service import AgentConfigService
+    from app.shared.utils.agent.agents_md_loader import AgentsMdLoader
+    app.state.agent_config_service = AgentConfigService(db=None, agents_md_loader=AgentsMdLoader())
+
+
+@pytest.fixture(autouse=True)
+def _mock_session_cache_for_agent(monkeypatch):
+    """Mock session_cache.verify_session 以绕过 /api/agent/ 路径的 Session 校验。
+
+    /api/agent/ 前缀在 SESSION_REQUIRED_PREFIXES 中，需 X-Session-ID 头并通过
+    session_cache.verify_session 校验。agent_router 的 list / agents-md 属于
+    管理端点，测试中直接放行。
+    """
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(
+        "app.shared.utils.Session.SessionCache.session_cache.verify_session",
+        AsyncMock(return_value=True),
+    )
+
