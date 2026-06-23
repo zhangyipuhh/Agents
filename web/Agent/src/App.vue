@@ -12,6 +12,9 @@ import { chatStream, createNewSession, logout as apiLogout, fetchSessionDetail, 
 import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage, isSubAgentHistoryItem, convertSubAgentHistoryToAiSubAgent } from './utils/sseParser.js'
 import { redirectToLogin, tryRefreshOrRedirect } from './utils/auth.js'
 
+// 2026-06-23 新增：当前激活的智能体名称（与后端 agents 表 name 字段一致）。
+// 默认 'map_agent'，由 InputBox 的 /agent <name> 命令通过 agent-switched 事件切换。
+const agentName = ref('map_agent')
 const currentPage = ref('agent')
 const isLoggedIn = ref(false)
 // 认证状态检查是否就绪；用于在 checkAuth 完成前显示 loading 占位，
@@ -316,7 +319,7 @@ async function handleSendMessage(message, attachments = []) {
   currentStreamReader = null
 
   try {
-    const stream = await chatStream(sessionId.value, message, attachments)
+    const stream = await chatStream(sessionId.value, message, attachments, null, agentName.value)
     currentStreamReader = stream.getReader()
     // 拿到 SSE reader 后再置位 isStreaming，避免排队/握手阶段状态长期悬空无法复位
     isStreaming.value = true
@@ -413,7 +416,7 @@ async function handleApprovalSubmit({ answers }) {
   currentStreamReader = null
 
   try {
-    const stream = await chatStream(sessionId.value, '', [], resumeData)
+    const stream = await chatStream(sessionId.value, '', [], resumeData, agentName.value)
     currentStreamReader = stream.getReader()
     isStreaming.value = true
     const decoder = new TextDecoder()
@@ -552,6 +555,17 @@ function handleTagSelect(tag, index) {
 
 function handleToolAction(action) {
   console.log('工具操作:', action)
+}
+
+/**
+ * 处理 InputBox 触发的智能体切换事件
+ * @param {string} name - 新激活的智能体名称（如 'map_agent' / 'contract_agent'）
+ */
+function handleAgentSwitched(name) {
+  if (!name || typeof name !== 'string') return
+  if (agentName.value === name) return
+  agentName.value = name
+  console.log('[App] 智能体已切换为:', name)
 }
 
 function handleRegenerate(aiMessageId) {
@@ -803,6 +817,7 @@ async function handleSessionSwitch(targetSessionId) {
         @tool-action="handleToolAction"
         @new-chat="newSession"
         @stop="handleStopMessage"
+        @agent-switched="handleAgentSwitched"
       />
     </main>
 
