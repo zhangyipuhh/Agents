@@ -348,7 +348,7 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 | created_at | TIMESTAMP DEFAULT NOW() | 创建时间 |
 
 ### portal_refresh_tokens 表
-门户导航场景下颁发给第三方 iframe 的"子 refresh_token"存储表。子 token 与正常 refresh_token 等效，但独立存储便于独立撤销与审计。
+门户导航场景下颁发给第三方 iframe 的"子 refresh-token"存储表。子 token 与正常 refresh_token 等效，但独立存储便于独立撤销与审计。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -359,6 +359,85 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 | expires_at | TIMESTAMP | 过期时间（默认 24 小时） |
 | revoked | BOOLEAN DEFAULT FALSE | ~~软删除标志（已废弃，逻辑上改为物理删除，不再使用）~~ |
 | created_at | TIMESTAMP DEFAULT NOW() | 创建时间 |
+
+### agents 表（2026-06-23 新增）
+统一智能体架构的运行时配置表，存储智能体元信息、状态 schema、上下文 schema 及 MCP 标签等。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | SERIAL PK | 智能体ID |
+| name | VARCHAR(100) UNIQUE | 智能体唯一标识名 |
+| display_name | VARCHAR(200) | 显示名称 |
+| description | TEXT | 描述 |
+| agents_md_path | VARCHAR(500) | AGENTS.md 配置文件路径 |
+| state_schema | JSONB DEFAULT '{}' | 状态 schema 定义 |
+| context_schema | JSONB DEFAULT '{}' | 上下文 schema 定义 |
+| mcp_tags | JSONB DEFAULT '[]' | MCP 标签列表 |
+| enabled | BOOLEAN DEFAULT TRUE | 是否启用 |
+| sort_order | INT DEFAULT 0 | 排序权重 |
+| created_at | TIMESTAMP | 创建时间 |
+| updated_at | TIMESTAMP | 更新时间 |
+
+### agent_tool_bindings 表（2026-06-23 新增）
+智能体与工具的绑定关系表，多对多映射。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | SERIAL PK | 绑定ID |
+| agent_name | VARCHAR(100) | 智能体名称 |
+| tool_name | VARCHAR(100) | 工具名称 |
+| is_enabled | BOOLEAN DEFAULT TRUE | 是否启用该绑定 |
+| sort_order | INT DEFAULT 0 | 排序权重 |
+| created_at | TIMESTAMP | 创建时间 |
+| | UNIQUE(agent_name, tool_name) | 唯一约束：同一智能体同一工具仅一条绑定 |
+
+### agent_skill_bindings 表（2026-06-23 新增）
+智能体与 skill 的绑定关系表，多对多映射。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | SERIAL PK | 绑定ID |
+| agent_name | VARCHAR(100) | 智能体名称 |
+| skill_name | VARCHAR(100) | skill 名称 |
+| is_enabled | BOOLEAN DEFAULT TRUE | 是否启用该绑定 |
+| sort_order | INT DEFAULT 0 | 排序权重 |
+| created_at | TIMESTAMP | 创建时间 |
+| | UNIQUE(agent_name, skill_name) | 唯一约束：同一智能体同一 skill 仅一条绑定 |
+
+### mcp_server_configs 表（2026-06-23 新增）
+MCP 服务器配置表，从 YAML 迁移至数据库管理。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | SERIAL PK | 配置ID |
+| name | VARCHAR(100) UNIQUE | 服务器唯一名称 |
+| display_name | VARCHAR(200) | 显示名称 |
+| type | VARCHAR(20) | 服务器类型（sse/stdio 等） |
+| url | VARCHAR(500) | SSE 模式的 URL |
+| command | JSONB | stdio 模式的启动命令 |
+| timeout | INT DEFAULT 5 | 连接超时（秒） |
+| read_timeout | INT DEFAULT 300 | 读取超时（秒） |
+| tags | JSONB DEFAULT '[]' | 标签列表 |
+| enabled | BOOLEAN DEFAULT TRUE | 是否启用 |
+| progress_reporting | JSONB DEFAULT '{"enabled": false}' | 进度上报配置 |
+| tool_config | JSONB | 工具注入配置（enable_injection、default_param_keys、hidden_param_keys、unwrap_result） |
+| sampling | JSONB DEFAULT '{"enabled": false}' | 采样配置 |
+| methods_synced_at | TIMESTAMP | 方法列表最后同步时间 |
+| created_at | TIMESTAMP | 创建时间 |
+| updated_at | TIMESTAMP | 更新时间 |
+
+### mcp_server_methods 表（2026-06-23 新增）
+MCP 服务器方法列表表，用于运行时方法管理。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | SERIAL PK | 方法ID |
+| server_name | VARCHAR(100) | 所属服务器名称 |
+| method_name | VARCHAR(200) | 方法名称 |
+| enabled | BOOLEAN DEFAULT TRUE | 是否启用 |
+| description | TEXT | 方法描述 |
+| created_at | TIMESTAMP | 创建时间 |
+| | UNIQUE(server_name, method_name) | 唯一约束：同一服务器同一方法仅一条记录 |
 
 ## API 路由汇总
 

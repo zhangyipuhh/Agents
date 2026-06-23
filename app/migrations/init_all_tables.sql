@@ -192,6 +192,80 @@ CREATE TABLE IF NOT EXISTS map_business_no_counter (
 ALTER TABLE map_business_no_counter ADD COLUMN IF NOT EXISTS date_str    VARCHAR(8);
 ALTER TABLE map_business_no_counter ADD COLUMN IF NOT EXISTS current_seq INTEGER DEFAULT 0;
 
+-- ============================================================
+-- 2026-06-23 统一智能体架构 + MCP 注册界面
+-- 新增 5 张表，不修改现有表，幂等可重复执行
+-- ============================================================
+
+-- 10. agents 表：智能体运行时配置
+CREATE TABLE IF NOT EXISTS agents (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) UNIQUE NOT NULL,
+    display_name VARCHAR(200) NOT NULL,
+    description TEXT,
+    agents_md_path VARCHAR(500) NOT NULL,
+    state_schema JSONB DEFAULT '{}',
+    context_schema JSONB DEFAULT '{}',
+    mcp_tags JSONB DEFAULT '[]',
+    enabled BOOLEAN DEFAULT TRUE,
+    sort_order INT DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 11. agent_tool_bindings 表：智能体-工具绑定
+CREATE TABLE IF NOT EXISTS agent_tool_bindings (
+    id SERIAL PRIMARY KEY,
+    agent_name VARCHAR(100) NOT NULL,
+    tool_name VARCHAR(100) NOT NULL,
+    is_enabled BOOLEAN DEFAULT TRUE,
+    sort_order INT DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(agent_name, tool_name)
+);
+
+-- 12. agent_skill_bindings 表：智能体-skill 绑定
+CREATE TABLE IF NOT EXISTS agent_skill_bindings (
+    id SERIAL PRIMARY KEY,
+    agent_name VARCHAR(100) NOT NULL,
+    skill_name VARCHAR(100) NOT NULL,
+    is_enabled BOOLEAN DEFAULT TRUE,
+    sort_order INT DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(agent_name, skill_name)
+);
+
+-- 13. mcp_server_configs 表：MCP 服务器配置
+CREATE TABLE IF NOT EXISTS mcp_server_configs (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) UNIQUE NOT NULL,
+    display_name VARCHAR(200),
+    type VARCHAR(20) NOT NULL,
+    url VARCHAR(500),
+    command JSONB,
+    timeout INT DEFAULT 5,
+    read_timeout INT DEFAULT 300,
+    tags JSONB DEFAULT '[]',
+    enabled BOOLEAN DEFAULT TRUE,
+    progress_reporting JSONB DEFAULT '{"enabled": false}',
+    tool_config JSONB DEFAULT '{"enable_injection": true, "default_param_keys": [], "hidden_param_keys": [], "unwrap_result": false}',
+    sampling JSONB DEFAULT '{"enabled": false}',
+    methods_synced_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 14. mcp_server_methods 表：MCP 服务器方法列表
+CREATE TABLE IF NOT EXISTS mcp_server_methods (
+    id SERIAL PRIMARY KEY,
+    server_name VARCHAR(100) NOT NULL,
+    method_name VARCHAR(200) NOT NULL,
+    enabled BOOLEAN DEFAULT TRUE,
+    description TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(server_name, method_name)
+);
+
 COMMIT;
 
 -- =============================================
@@ -203,6 +277,8 @@ WHERE table_schema = 'public'
   AND table_name IN (
     'users', 'sessions', 'conversation_records', 'attachments',
     'refresh_tokens', 'audit_logs', 'portal_refresh_tokens',
-    'map_business_info', 'map_business_no_counter'
+    'map_business_info', 'map_business_no_counter',
+    'agents', 'agent_tool_bindings', 'agent_skill_bindings',
+    'mcp_server_configs', 'mcp_server_methods'
   )
 ORDER BY table_name;
