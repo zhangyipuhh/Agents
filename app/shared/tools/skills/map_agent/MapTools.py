@@ -6,6 +6,9 @@ MapTools - 地图控制Agent工具模块（迁移版）
 该模块定义了地图控制Agent可用的工具函数，包括地图定位、标记管理、路径规划等功能。
 所有工具均通过 @register_tool 装饰器注册到 ToolRegistry，供 AgentConfig.get_tools() 按 agent 加载。
 
+迁移来源：app/features/map_agent/tools/MapTools.py
+迁移目的：通过 @register_tool 注册到 ToolRegistry，供 AgentConfigService 按 agent_name + enabled_tool_names 加载。
+
 工具清单：
 1. set_map_center - 设置地图中心点
 2. set_map_zoom - 设置地图缩放级别
@@ -28,7 +31,7 @@ from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 from langgraph.config import get_stream_writer
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Optional
 from app.core.tools.events import create_tool_event
 from app.shared.tools.registry import register_tool
 
