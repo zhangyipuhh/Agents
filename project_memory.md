@@ -141,6 +141,11 @@ app/
 │   │   ├── session_router.py # 会话管理路由
 │   │   ├── user_router.py    # 用户管理路由
 │   │   └── file_router.py    # 文件管理路由
+│   ├── tools/             # 共享工具（注册表 + 中间件 + MCP 配置）
+│   │   ├── __init__.py       # 包初始化
+│   │   ├── registry.py       # ToolRegistry + @register_tool 装饰器（按 agent 维度注册工具，供 AgentConfig.get_tools() 查询）
+│   │   ├── mcp/              # MCP 服务器配置（config.yaml.example）
+│   │   └── middleware/       # 工具中间件（DockerSandboxBackend / EncodingSafeFileSearch 等）
 │   └── utils/             # 工具类
 │       ├── auth/          # 认证相关
 │       │   ├── Safety.py          # JWT 认证（双 Token：Access + Refresh）
