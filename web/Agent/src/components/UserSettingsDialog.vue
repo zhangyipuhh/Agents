@@ -192,6 +192,8 @@ function switchTab(tabId) {
     userSessions.value = []
     loadUserList()
   }
+  // MCP 管理 Tab（mcp-management）由 McpServerManager 组件自管理数据加载（onMounted 触发 listMcpServers），
+  // 无需在此处显式触发；组件通过 v-show 始终挂载，切换 Tab 时仅 display 切换。
 }
 
 /**
@@ -741,6 +743,7 @@ watch(() => props.visible, (newVal) => {
     } else if (activeTab.value === 'session-query') {
       loadUserList()
     }
+    // MCP 管理 Tab 由 McpServerManager 组件自管理加载（onMounted），无需在此处处理
   }
 })
 </script>
@@ -1116,7 +1119,7 @@ watch(() => props.visible, (newVal) => {
               </div>
 
               <!-- MCP 管理（admin） -->
-              <div v-show="activeTab === 'mcp-management'" class="tab-content mcp-tab-content">
+              <div v-show="activeTab === 'mcp-management'">
                 <McpServerManager />
               </div>
             </div>
