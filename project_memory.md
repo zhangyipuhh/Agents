@@ -2238,6 +2238,29 @@ app/shared/utils/agent/
 - 路径：`app/tests/shared/utils/agent/test_agents_md_loader.py`（5 用例）
 - 覆盖：模块可导入 / 读取 markdown 内容 / 缓存命中（同路径第二次加载走缓存）/ 文件不存在抛 FileNotFoundError / clear_cache 后重新加载读取最新内容
 
+### map_agent AGENTS.md 文件（Task 11，2026-06-23 新增）
+
+首个落地于 `agents/<agent_name>/AGENTS.md` 约定的纯 markdown 提示词文件，供 `AgentsMdLoader` 读取后作为 `system_prompt` 注入 LLM。
+
+**文件位置**: `agents/map_agent/AGENTS.md`
+
+**内容章节**:
+
+| 章节 | 作用 |
+|------|------|
+| 身份与职责 | 地图控制智能体的角色定位与主要职责 |
+| 可用工具 | 13 个工具表格（explore、query_knowledge、generate_report、save_business_info、ask_user_question、sandbox、load_skill、read_skill_file、get_current_time、open_file、open_file_by_id、load_web_page、read_cached_chunk） |
+| 可用 Skill | data-skill（数据查询与分析工作流） |
+| Skill 使用指南 | data-skill 的何时使用 / 如何使用 / 注意事项 |
+| 行为规范 | 中文响应、坐标校验、报告数据来源、HITL 问题选项、错误处理 |
+
+**纯 markdown 原则**: 不包含 `state_schema` / `context_schema` / `TypedDict` 等运行时配置（这些在数据库 `agents` 表中），仅包含 LLM 可见的提示词内容。
+
+**内容测试**:
+
+- 路径：`app/tests/shared/utils/agent/test_agents_md_content.py`（5 用例）
+- 覆盖：文件存在 / 包含身份与职责章节 / 包含可用工具章节 / 包含行为规范章节 / 不包含 state 字段定义（纯 markdown 原则）
+
 ## MCP 配置 CRUD 服务（2026-06-23 新增）
 
 提供 MCP server 配置的数据库 CRUD 操作，供 `mcp_admin_router`（Task 6）调用；启动时若 `mcp_server_configs` 表为空，从 YAML 种子文件导入（由 `server.py` lifespan Task 14 触发）。
