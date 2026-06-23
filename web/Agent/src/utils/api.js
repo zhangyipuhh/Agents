@@ -607,9 +607,9 @@ export async function createNewSession(storageKey = 'session_id') {
   return pendingSessionPromise
 }
 
-export async function chatStream(sessionId, message, attachments = [], resume = null) {
+export async function chatStream(sessionId, message, attachments = [], resume = null, agentName = 'map_agent') {
   const sid = sessionId || localStorage.getItem('session_id') || ''
-  const response = await fetchWithAuth('/api/map/chat', {
+  const response = await fetchWithAuth('/api/agent/chat', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -620,6 +620,7 @@ export async function chatStream(sessionId, message, attachments = [], resume = 
     body: JSON.stringify({
       message: resume ? '' : message,
       session_id: sid,
+      agent_name: agentName,
       geometry_data: {},
       attachments,
       ...(resume ? { resume } : {})
