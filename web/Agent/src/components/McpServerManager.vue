@@ -24,7 +24,7 @@
                 type="checkbox"
                 class="server-toggle"
                 :checked="server.enabled"
-                @change="onToggleServer(server, $event.target.checked)"
+                @change="onToggleServer(server, $event.target.checked, $event)"
               />
               <span class="toggle-slider"></span>
             </label>
@@ -120,7 +120,7 @@
                 <input
                   type="checkbox"
                   :checked="m.enabled"
-                  @change="onToggleMethod(m, $event.target.checked)"
+                  @change="onToggleMethod(m, $event.target.checked, $event)"
                 />
                 <span>{{ m.method_name }}</span>
               </label>
@@ -169,6 +169,11 @@ const formData = ref({
 
 onMounted(loadServers)
 
+/**
+ * 加载 MCP 服务器列表
+ * @returns {Promise<void>} 无返回值；成功时更新 servers.value，失败时仅 console.error
+ * @throws {Error} 内部捕获，不向上抛出
+ */
 async function loadServers() {
   try {
     servers.value = await listMcpServers()
@@ -177,6 +182,11 @@ async function loadServers() {
   }
 }
 
+/**
+ * 选中指定服务器并加载其方法列表
+ * @param {Object} server - 服务器对象（含 name 字段）
+ * @returns {Promise<void>} 无返回值
+ */
 async function selectServer(server) {
   selectedServer.value = server
   formVisible.value = false
@@ -188,6 +198,9 @@ async function selectServer(server) {
   }
 }
 
+/**
+ * 显示新增服务器表单，重置表单数据
+ */
 function showNewForm() {
   editingServer.value = null
   formData.value = {
@@ -203,6 +216,10 @@ function showNewForm() {
   formVisible.value = true
 }
 
+/**
+ * 显示编辑服务器表单，回填现有数据
+ * @param {Object} server - 待编辑的服务器对象
+ */
 function editServer(server) {
   editingServer.value = server
   formData.value = {
@@ -218,24 +235,32 @@ function editServer(server) {
   formVisible.value = true
 }
 
+/**
+ * 隐藏表单并清空编辑状态
+ */
 function hideForm() {
   formVisible.value = false
   editingServer.value = null
 }
 
+/**
+ * 保存服务器（新增或编辑）
+ * @returns {Promise<void>} 无返回值；失败时 alert 提示
+ * @throws {Error} 内部捕获，不向上抛出
+ */
 async function saveServer() {
-  const tags = tagsText.value
-    .split(',')
-    .map((t) => t.trim())
-    .filter(Boolean)
-  const payload = {
-    ...formData.value,
-    tags,
-    command: formData.value.type === 'stdio' && commandText.value
-      ? JSON.parse(commandText.value)
-      : null,
-  }
   try {
+    const tags = tagsText.value
+      .split(',')
+      .map((t) => t.trim())
+      .filter(Boolean)
+    const payload = {
+      ...formData.value,
+      tags,
+      command: formData.value.type === 'stdio' && commandText.value
+        ? JSON.parse(commandText.value)
+        : null,
+    }
     if (editingServer.value) {
       await updateMcpServer(editingServer.value.name, payload)
     } else {
@@ -243,11 +268,27 @@ async function saveServer() {
     }
     hideForm()
     await loadServers()
+    // C2 修复：保存后若 selectedServer 仍存在，从新列表中刷新引用
+    if (selectedServer.value) {
+      const refreshed = servers.value.find(s => s.name === selectedServer.value.name)
+      if (refreshed) {
+        selectedServer.value = refreshed
+        methods.value = await listMcpMethods(refreshed.name).catch(() => [])
+      } else {
+        selectedServer.value = null
+        methods.value = []
+      }
+    }
   } catch (err) {
     alert('保存失败: ' + err.message)
   }
 }
 
+/**
+ * 删除指定服务器（含 confirm 确认）
+ * @param {Object} server - 待删除的服务器对象
+ * @returns {Promise<void>} 无返回值；失败时 alert 提示
+ */
 async function onDeleteServer(server) {
   if (!confirm(`确认删除服务器 "${server.name}"？`)) return
   try {
@@ -260,15 +301,30 @@ async function onDeleteServer(server) {
   }
 }
 
-async function onToggleServer(server, enabled) {
+/**
+ * 切换服务器启用状态
+ * @param {Object} server - 服务器对象
+ * @param {boolean} enabled - 目标启用状态
+ * @param {Event} event - change 事件对象，用于失败时回滚 DOM
+ * @returns {Promise<void>} 无返回值；失败时回滚 DOM 并 alert
+ */
+async function onToggleServer(server, enabled, event) {
   try {
     await toggleMcpServer(server.name, enabled)
     server.enabled = enabled
   } catch (err) {
+    // I1 修复：API 失败时回滚 DOM checkbox 到原状态
+    if (event && event.target) {
+      event.target.checked = server.enabled
+    }
     alert('切换失败: ' + err.message)
   }
 }
 
+/**
+ * 刷新当前选中服务器的方法列表
+ * @returns {Promise<void>} 无返回值；失败时 alert 提示
+ */
 async function onRefreshMethods() {
   if (!selectedServer.value) return
   try {
@@ -279,11 +335,22 @@ async function onRefreshMethods() {
   }
 }
 
-async function onToggleMethod(method, enabled) {
+/**
+ * 切换单个方法的启用状态
+ * @param {Object} method - 方法对象（含 method_name 字段）
+ * @param {boolean} enabled - 目标启用状态
+ * @param {Event} event - change 事件对象，用于失败时回滚 DOM
+ * @returns {Promise<void>} 无返回值；失败时回滚 DOM 并 alert
+ */
+async function onToggleMethod(method, enabled, event) {
   try {
     await toggleMcpMethod(selectedServer.value.name, method.method_name, enabled)
     method.enabled = enabled
   } catch (err) {
+    // I1 修复：API 失败时回滚 DOM checkbox 到原状态
+    if (event && event.target) {
+      event.target.checked = method.enabled
+    }
     alert('切换失败: ' + err.message)
   }
 }
