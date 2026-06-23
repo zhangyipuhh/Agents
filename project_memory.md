@@ -536,7 +536,6 @@ MCP 服务器方法列表表，用于运行时方法管理。
 |   ├ GET /knowledge/files | | 获取知识库文件元数据（自动扫描 Knowledge 目录） |
 |   ├ GET /knowledge/file-download | | 下载知识库文件 |
 |   ├ GET /knowledge/file-preview | | 知识库文件预览（支持 .doc 自动转 .docx） |
-|   ├ POST /chat | | 地图智能体流式聊天（SSE，支持 HITL 中断与恢复，受 `chat_concurrency_dependency` 并发控制） |
 |   ├ POST /knowledge-chat | | 地图智能体知识库聊天（SSE，使用知识库系统提示词，受 `chat_concurrency_dependency` 并发控制） |
 | /api/ai-coding-check | ai_coding_check_router | AI 代码检查 Agent |
 |   ├ POST /review | | 评审开发者数据（非流式 JSON API） |
@@ -663,7 +662,7 @@ MCP 服务器方法列表表，用于运行时方法管理。
 
 | 模式 | 触发条件 | 行为 |
 |------|---------|------|
-| **SSE 模式**（默认） | `/api/map/chat`、`/api/map/knowledge-chat` | 所有请求统一先 enqueue；只有 `position == 1` 且槽位空闲时才尝试 acquire；获取许可后 yield `ready` 事件 + `None` 让路由继续；通过 `await release_done.wait()` 阻塞直到路由主动释放（HITL 场景）或 finally 兜底 |
+| **SSE 模式**（默认） | `/api/agent/chat`、`/api/map/knowledge-chat` | 所有请求统一先 enqueue；只有 `position == 1` 且槽位空闲时才尝试 acquire；获取许可后 yield `ready` 事件 + `None` 让路由继续；通过 `await release_done.wait()` 阻塞直到路由主动释放（HITL 场景）或 finally 兜底 |
 | **HTTP 模式** | `/api/contract/chat` 等非流式接口 | 强制先 enqueue；只有 `position == 1` 且槽位空闲时获取许可；否则抛 `HTTPException(429, detail={error,waiting_count,active_count,max_concurrency,message})`；无需等待时直接 yield None |
 
 ### AgentConcurrencyQueue 接口（2026-06-22 改造）
@@ -743,7 +742,7 @@ MCP 服务器方法列表表，用于运行时方法管理。
 
 | 路由 | 类型 | 接入方式 |
 |------|------|---------|
-| `/api/map/chat` | SSE | 路由体内手动 `dep = chat_concurrency_dependency(request, mode="sse")` + `stream_with_concurrency(request, dep, business_gen)` 包装 |
+| `/api/agent/chat` | SSE | 路由体内手动 `dep = chat_concurrency_dependency(request, mode="sse")` + `stream_with_concurrency(request, dep, business_gen)` 包装 |
 | `/api/map/knowledge-chat` | SSE | 同上 |
 | `/api/contract/chat` | HTTP | `dependencies=[_chat_concurrency_http_dep()]`（工厂函数，传 `mode="http"`） |
 | `/api/contract/doc_chat` | HTTP | 同上 |
