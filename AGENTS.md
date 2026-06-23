@@ -1,14 +1,3 @@
-Current is conda environment
-
-```bash
-conda activate E:\laboratory\AI\Agents
-```
-
-Current project path is
-
-```bash
-cd E:\laboratory\AI\Agents\agent-user-mangerment\
-```
 
 Use as many skills and agents as possible to implement features
 
