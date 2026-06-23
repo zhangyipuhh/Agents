@@ -21,7 +21,8 @@ Date: 2026-06-23
 Author: AI Assistant
 """
 
-from typing import Any
+import copy
+from typing import Any, Callable
 
 from app.core.agent.AgentConfig import AgentState
 from app.core.agent.AgentContext import AgentContext
@@ -82,15 +83,22 @@ class _TypedDictWithDefaults:
 
         返回:
             dict: 创建的 TypedDict 实例，缺失字段已用默认值补全
+
+        说明:
+            对 dict / list 等可变类型默认值使用 copy.deepcopy，
+            避免多个实例共享同一对象引用导致跨实例污染。
         """
         instance = self._cls(*args, **kwargs)
         for key, value in self._defaults.items():
             if key not in instance:
-                instance[key] = value
+                if isinstance(value, (dict, list)):
+                    instance[key] = copy.deepcopy(value)
+                else:
+                    instance[key] = value
         return instance
 
 
-def build_agent_state(agent_name: str, state_schema: dict) -> type:
+def build_agent_state(agent_name: str, state_schema: dict) -> Callable:
     """根据数据库 state_schema 动态生成 AgentState 子类。
 
     参数:
@@ -99,7 +107,9 @@ def build_agent_state(agent_name: str, state_schema: dict) -> type:
             {"field_name": {"type": "str|int|...", "default": <value>}}
 
     返回:
-        type: 动态生成的 AgentState 子类包装器，实例化时自动应用默认值
+        Callable: 动态生成的 AgentState 子类包装器（_TypedDictWithDefaults），
+        实例化时自动应用默认值。注意返回的是可调用包装器而非原生 type，
+        调用方应将其视为可调用对象。
 
     说明:
         - 保留字段（RESERVED_STATE_FIELDS）的类型注解沿用基类，仅允许重写默认值
@@ -127,7 +137,7 @@ def build_agent_state(agent_name: str, state_schema: dict) -> type:
     return _TypedDictWithDefaults(typed_dict_cls, defaults)
 
 
-def build_agent_context(agent_name: str, context_schema: dict) -> type:
+def build_agent_context(agent_name: str, context_schema: dict) -> Callable:
     """根据数据库 context_schema 动态生成 AgentContext 子类。
 
     参数:
@@ -136,7 +146,9 @@ def build_agent_context(agent_name: str, context_schema: dict) -> type:
             {"field_name": {"type": "str|int|...", "default": <value>}}
 
     返回:
-        type: 动态生成的 AgentContext 子类包装器，实例化时自动应用默认值
+        Callable: 动态生成的 AgentContext 子类包装器（_TypedDictWithDefaults），
+        实例化时自动应用默认值。注意返回的是可调用包装器而非原生 type，
+        调用方应将其视为可调用对象。
 
     说明:
         - 保留字段（RESERVED_CONTEXT_FIELDS）的类型注解沿用基类，仅允许重写默认值
@@ -178,12 +190,20 @@ def build_context(agent_name: str, context_schema: dict, request: Any) -> AgentC
     说明:
         - context_overrides 中的键值会覆盖 schema 默认值
         - 缺失的 session_id / store_id 回退为 "default"
+        - context_overrides 中的保留字段（RESERVED_CONTEXT_FIELDS，如 session_id /
+          store_id）会被过滤，避免与显式传入的 session_id / store_id 发生
+          "got multiple values for keyword argument" 冲突
     """
     cls = build_agent_context(agent_name, context_schema)
     overrides = getattr(request, "context_overrides", {}) or {}
+    # 过滤保留字段，避免与显式传入的 session_id / store_id 等关键字参数冲突
+    safe_overrides = {
+        k: v for k, v in overrides.items()
+        if k not in RESERVED_CONTEXT_FIELDS
+    }
     instance = cls(
         session_id=getattr(request, "session_id", "default"),
         store_id=getattr(request, "store_id", "default"),
-        **overrides,
+        **safe_overrides,
     )
     return instance

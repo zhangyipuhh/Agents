@@ -110,3 +110,64 @@ def test_reserved_context_fields_contains_session_id():
     """测试 context 保留字段包含 session_id。"""
     assert "session_id" in RESERVED_CONTEXT_FIELDS
     assert "store_id" in RESERVED_CONTEXT_FIELDS
+
+
+def test_build_agent_state_mutable_defaults_not_shared():
+    """测试可变默认值（dict/list）在不同实例间不共享。
+
+    验证 _TypedDictWithDefaults.__call__ 对 dict / list 类型默认值
+    使用 copy.deepcopy，避免多个实例共享同一对象引用导致跨实例污染。
+
+    参数:
+        无
+
+    返回:
+        无（断言失败时抛出 AssertionError）
+    """
+    schema = {
+        "map_center": {"type": "dict", "default": {"latitude": 0, "longitude": 0}},
+        "map_markers": {"type": "list", "default": []},
+    }
+    cls = build_agent_state("test_mutable", schema)
+    instance_a = cls(messages=[])
+    instance_b = cls(messages=[])
+
+    # 修改 instance_a 的可变默认值
+    instance_a["map_center"]["latitude"] = 999
+    instance_a["map_markers"].append("marker1")
+
+    # instance_b 不应受影响
+    assert instance_b["map_center"]["latitude"] == 0
+    assert len(instance_b["map_markers"]) == 0
+
+
+def test_build_context_filters_reserved_keywords_in_overrides():
+    """测试 context_overrides 中的保留字段被过滤，避免关键字冲突。
+
+    验证当 request.context_overrides 包含 session_id / store_id 等
+    保留字段时，build_context 不会抛出 "got multiple values for keyword
+    argument" 错误，且显式传入的 session_id / store_id 优先。
+
+    参数:
+        无
+
+    返回:
+        无（断言失败时抛出 AssertionError）
+    """
+    class FakeRequest:
+        session_id = "sess-explicit"
+        store_id = "store-explicit"
+        # 故意包含保留字段，模拟冲突场景
+        context_overrides = {
+            "session_id": "sess-override",
+            "store_id": "store-override",
+            "knowledge_root": "custom/path",
+        }
+
+    schema = {"knowledge_root": {"type": "str", "default": "data/Knowledge"}}
+    ctx = build_context("map_agent", schema, FakeRequest())
+    # 显式传入的 session_id / store_id 应优先
+    assert ctx["session_id"] == "sess-explicit"
+    assert ctx["store_id"] == "store-explicit"
+    # 非保留字段的覆盖值应正常生效
+    assert ctx["knowledge_root"] == "custom/path"
