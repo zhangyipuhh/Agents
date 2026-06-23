@@ -2458,6 +2458,14 @@ app/routers/
 - **`knowledgeChatStream` 不变**：仍使用 `/api/map/knowledge-chat`（知识库聊天暂未纳入统一 Agent 架构）
 - **测试**：`web/Agent/src/utils/__tests__/api.agent-chat.test.js` 3 个用例（URL 切换 / agent_name 传参 / 默认值）
 
+### 后端旧端点清理（Task 21，2026-06-23 落地）
+
+- **`app/features/map_agent/router/map_router.py`**：移除 `@router.post('/chat')` 端点及 `chat` 函数（约 110 行），旧 `/api/map/chat` 已被 `/api/agent/chat` 替代；保留 `knowledge/files`、`knowledge/file-download`、`knowledge/file-preview`、`knowledge-chat` 端点及 `generate_stream_response` 函数（供 knowledge-chat 复用）
+- **`app/features/map_agent/config/prompts.py`**：移除死代码 `MAP_AGENT_SYSTEM_PROMPT`（随 /chat 端点移除已无引用）
+- **`app/features/map_agent/client.py`**：`MapAgentClient.chat_stream` URL 从 `/api/map/chat` 更新为 `/api/agent/chat`，新增 `agent_name` 参数（默认 `map_agent`）
+- **`app/tests/conftest.py`**：新增全局 mock `filesystem_encoding_fix.apply_fix` 为 no-op，支持根级测试导入 `app.main`
+- **测试**：`app/tests/test_main_routes_registered.py` 3 用例（mcp_admin_router 注册 / agent_router 注册 / 旧 /api/map/chat 已移除）
+
 ### 测试
 
 - 路径：`app/tests/routers/test_agent_router.py`（6 用例）
