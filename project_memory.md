@@ -2211,7 +2211,8 @@ app/shared/utils/agent/
 ├── __init__.py              # 空包初始化
 ├── dynamic_schema.py        # 动态 schema 构建器（Task 3）
 ├── agents_md_loader.py      # AGENTS.md 加载器（Task 4）
-└── mcp_service.py           # MCP 配置 CRUD 服务（Task 5）
+├── mcp_service.py           # MCP 配置 CRUD 服务（Task 5）
+└── agent_config_service.py  # Agent 配置加载服务（Task 12）
 ```
 
 ### 核心 API
@@ -2260,6 +2261,54 @@ app/shared/utils/agent/
 
 - 路径：`app/tests/shared/utils/agent/test_agents_md_content.py`（5 用例）
 - 覆盖：文件存在 / 包含身份与职责章节 / 包含可用工具章节 / 包含行为规范章节 / 不包含 state 字段定义（纯 markdown 原则）
+
+## AgentConfigService 配置加载服务（Task 12，2026-06-23 新增）
+
+从数据库 `agents` 表 + AGENTS.md 文件加载完整 Agent 配置，封装为 `UnifiedAgentConfig` 实例供 `agent_router` 使用。是连接数据库配置和运行时 Agent 的核心服务，整合 `dynamic_schema` + `agents_md_loader` 两个模块的输出。
+
+### 模块位置
+
+```
+app/shared/utils/agent/agent_config_service.py
+```
+
+### 核心 API
+
+| 类 / 方法 | 作用 |
+|---|---|
+| `UnifiedAgentConfig` | 统一智能体配置 dataclass（name / display_name / description / system_prompt / state_class / context_class / mcp_tags / enabled_tool_names / enabled_skill_names / agents_md_path） |
+| `AgentNotFoundError` | 智能体未找到或已禁用时抛出的异常 |
+| `AgentConfigService(db, agents_md_loader)` | 构造器，参数 `db` 需支持异步 `fetch` / `fetchrow` / `execute`，`agents_md_loader` 为 `AgentsMdLoader` 实例 |
+| `AgentConfigService.get_agent_config(agent_name)` | 异步加载完整配置：查询 agents 表 → 加载 AGENTS.md → 构建 state/context 类 → 加载 tool/skill 绑定，返回 `UnifiedAgentConfig` |
+| `AgentConfigService.list_agents()` | 异步列出所有启用智能体（仅返回 name / display_name / description 摘要） |
+| `AgentConfigService.create_agent(config)` | Admin 创建智能体（INSERT INTO agents RETURNING *） |
+| `AgentConfigService.bind_tool(agent_name, tool_name, enabled)` | 绑定/解绑工具（upsert agent_tool_bindings） |
+| `AgentConfigService.bind_skill(agent_name, skill_name, enabled)` | 绑定/解绑 skill（upsert agent_skill_bindings） |
+
+### 设计要点
+
+- **enabled 校验在 Python 层**：SQL 查询不携带 `AND enabled = TRUE`，而是在 Python 中通过 `row.get("enabled", False)` 判断，便于在 mock 测试中精确控制返回值
+- **字段安全访问**：`display_name` / `description` / `state_schema` / `context_schema` / `mcp_tags` 均通过 `row.get(...)` 或 `or {}` / `or []` 兜底，避免 KeyError
+- **create_agent 输入校验**：`create_agent` 方法在执行 INSERT 前校验必需键（name / display_name / agents_md_path），缺失时抛出 `KeyError`；docstring 明确文档化该异常
+- **日志记录**：`get_agent_config`（成功/未找到）、`create_agent`、`bind_tool`、`bind_skill` 均通过 `logger.info` / `logger.warning` 记录关键路径
+- **绑定列表过滤**：`enabled_tool_names` / `enabled_skill_names` 通过 `r.get("is_enabled")` 过滤，且在访问 `r["skill_name"]` 前校验 `"skill_name" in r`，避免 mock 返回同一列表时键缺失引发 KeyError
+- **state_class / context_class 类型**：`UnifiedAgentConfig.state_class` / `context_class` 类型注解为 `Callable`（而非 `type`），因 `build_agent_state` / `build_agent_context` 返回的是 `_TypedDictWithDefaults` 包装器实例
+- **依赖模块**：`dynamic_schema.build_agent_state` / `build_agent_context`（Task 2）+ `agents_md_loader.AgentsMdLoader.load`（Task 4）
+
+### 数据库关联
+
+| 表 | 用途 |
+|---|---|
+| `agents` | 主表，存储 name / display_name / description / agents_md_path / state_schema / context_schema / mcp_tags / enabled / sort_order |
+| `agent_tool_bindings` | 工具绑定表，存储 agent_name / tool_name / is_enabled / sort_order |
+| `agent_skill_bindings` | skill 绑定表，存储 agent_name / skill_name / is_enabled / sort_order |
+
+### 测试
+
+- 路径：`app/tests/shared/utils/agent/test_agent_config_service.py`（9 用例）
+- 覆盖：模块可导入 / 从数据库和 AGENTS.md 加载完整配置 / agent 不存在抛 AgentNotFoundError / agent 禁用抛 AgentNotFoundError / list_agents 只返回启用智能体 / 加载 skill 绑定 / create_agent 插入并返回新行 / bind_tool 执行 upsert / bind_skill 执行 upsert
+- 异步测试使用 `asyncio.run()` 包装（非 pytest-asyncio）
+- Mock 使用 `unittest.mock.AsyncMock` 和 `MagicMock`
 
 ## MCP 配置 CRUD 服务（2026-06-23 新增）
 

@@ -122,3 +122,92 @@ def test_get_agent_config_loads_skill_bindings():
     config = asyncio.run(service.get_agent_config("map_agent"))
 
     assert "data-skill" in config.enabled_skill_names
+
+
+def test_create_agent_inserts_and_returns_row():
+    """测试 create_agent 插入并返回新行。
+
+    参数:
+        None
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 断言失败时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value={
+        "name": "new_agent",
+        "display_name": "新智能体",
+        "description": "测试",
+        "agents_md_path": "agents/new_agent/AGENTS.md",
+        "state_schema": {},
+        "context_schema": {},
+        "mcp_tags": [],
+        "enabled": True,
+        "sort_order": 0,
+    })
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+    config = {
+        "name": "new_agent",
+        "display_name": "新智能体",
+        "description": "测试",
+        "agents_md_path": "agents/new_agent/AGENTS.md",
+    }
+    result = asyncio.run(service.create_agent(config))
+    assert result["name"] == "new_agent"
+    assert result["display_name"] == "新智能体"
+    # 验证 fetchrow 被调用（INSERT ... RETURNING *）
+    db.fetchrow.assert_called_once()
+
+
+def test_bind_tool_upserts_binding():
+    """测试 bind_tool 执行 upsert 操作。
+
+    参数:
+        None
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 断言失败时抛出
+    """
+    db = MagicMock()
+    db.execute = AsyncMock()
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+    asyncio.run(service.bind_tool("map_agent", "explore", True))
+    db.execute.assert_called_once()
+    # 验证 SQL 含 ON CONFLICT
+    call_args = db.execute.call_args
+    sql = call_args.args[0] if call_args.args else call_args[0][0]
+    assert "ON CONFLICT" in sql
+    assert "agent_tool_bindings" in sql
+
+
+def test_bind_skill_upserts_binding():
+    """测试 bind_skill 执行 upsert 操作。
+
+    参数:
+        None
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 断言失败时抛出
+    """
+    db = MagicMock()
+    db.execute = AsyncMock()
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+    asyncio.run(service.bind_skill("map_agent", "data-skill", True))
+    db.execute.assert_called_once()
+    # 验证 SQL 含 ON CONFLICT
+    call_args = db.execute.call_args
+    sql = call_args.args[0] if call_args.args else call_args[0][0]
+    assert "ON CONFLICT" in sql
+    assert "agent_skill_bindings" in sql

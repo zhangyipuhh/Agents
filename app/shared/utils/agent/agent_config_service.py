@@ -12,7 +12,7 @@ Author: AI Assistant
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List
 
 from app.shared.utils.agent.dynamic_schema import build_agent_state, build_agent_context
 from app.shared.utils.agent.agents_md_loader import AgentsMdLoader
@@ -89,12 +89,14 @@ class AgentConfigService:
 
         异常:
             AgentNotFoundError: agent 不存在或已禁用时抛出
+            FileNotFoundError: agents_md_path 指向的 AGENTS.md 文件不存在时抛出
         """
         row = await self._db.fetchrow(
             "SELECT * FROM agents WHERE name = $1",
             agent_name,
         )
         if not row or not row.get("enabled", False):
+            logger.warning("Agent not found or disabled: %s", agent_name)
             raise AgentNotFoundError(f"Agent {agent_name} not found or disabled")
 
         system_prompt = self._loader.load(row["agents_md_path"])
@@ -112,6 +114,7 @@ class AgentConfigService:
             agent_name,
         )
 
+        logger.info("Loaded config for agent: %s", agent_name)
         return UnifiedAgentConfig(
             name=agent_name,
             display_name=row.get("display_name", ""),
@@ -148,13 +151,23 @@ class AgentConfigService:
         """Admin 创建智能体。
 
         参数:
-            config: 智能体配置字典，需包含 name / display_name / agents_md_path
-                等字段，可选 description / state_schema / context_schema /
-                mcp_tags / enabled / sort_order
+            config: 智能体配置字典，必须包含以下键：
+                - name (str): 智能体名称（唯一）
+                - display_name (str): 显示名
+                - agents_md_path (str): AGENTS.md 文件路径
+              可选键：description, state_schema, context_schema, mcp_tags, enabled, sort_order
 
         返回:
-            Dict[str, Any]: 新插入行的完整数据
+            Dict[str, Any]: 新创建的智能体记录
+
+        异常:
+            KeyError: 缺少必需键时抛出
         """
+        required_keys = ["name", "display_name", "agents_md_path"]
+        for key in required_keys:
+            if key not in config:
+                raise KeyError(f"create_agent 缺少必需键: {key}")
+
         row = await self._db.fetchrow(
             """
             INSERT INTO agents (name, display_name, description, agents_md_path,
@@ -167,6 +180,7 @@ class AgentConfigService:
             config.get("context_schema", {}), config.get("mcp_tags", []),
             config.get("enabled", True), config.get("sort_order", 0),
         )
+        logger.info("Created agent: %s", config["name"])
         return dict(row)
 
     async def bind_tool(self, agent_name: str, tool_name: str, enabled: bool = True) -> None:
@@ -188,6 +202,7 @@ class AgentConfigService:
             """,
             agent_name, tool_name, enabled,
         )
+        logger.info("Bound tool %s to agent %s (enabled=%s)", tool_name, agent_name, enabled)
 
     async def bind_skill(self, agent_name: str, skill_name: str, enabled: bool = True) -> None:
         """绑定/解绑 skill。
@@ -208,3 +223,4 @@ class AgentConfigService:
             """,
             agent_name, skill_name, enabled,
         )
+        logger.info("Bound skill %s to agent %s (enabled=%s)", skill_name, agent_name, enabled)
