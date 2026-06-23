@@ -13,11 +13,10 @@
 | 1 | 新增 `agent_tool_bindings` / `agent_skill_bindings` 表统一管理绑定 |
 | 2 | MCP method 列表在 server 首次注册时拉取一次，注册界面提供"刷新方法列表"按钮 |
 | 3 | 数据库迁移追加到现有迁移脚本 |
-| 4 | 前端 chatStream 默认从 `localStorage.current_agent` 读取，缺失回退 `map_agent` |
-| 5 | `/api/map/chat` 直接替换为 `/api/agent/chat`，不留兼容 |
+| 4 | `/api/map/chat` 直接替换为 `/api/agent/chat`，不留兼容 |
 
 附加设计原则：
-- **AGENTS.md 是纯 markdown**，只给 LLM 看，不写技术实现细节。
+- **AGENTS.md 是纯 markdown**，写"智能体应该干什么"（角色、职责、可用工具清单、可用 skill、行为规范），不写"软件当前怎么实现"（state 字段、context 字段、tool 绑定等技术细节）。
 - **Context / State 字段不放在 AGENTS.md**，统一存数据库 `agents` 表 JSON 字段。
 - **保留基类 Python 代码**（`AgentState` / `AgentContext` / `AgentConfig`），子类字段由数据库 JSON 动态构建，子类可重写父类字段。
 - **`/command` 只做 `/agent <name>` 智能体切换**，不扩展其他命令。
@@ -439,9 +438,20 @@ def set_map_center(latitude: float, longitude: float, runtime: ToolRuntime) -> C
 
 ---
 
-## 7. AGENTS.md（纯 markdown，给 LLM 看）
+## 7. AGENTS.md（纯 markdown，写"智能体应该干什么"）
 
 **位置**：`agents/<agent_name>/AGENTS.md`
+
+**内容范围**：
+- 智能体的身份、职责、目标用户。
+- 可用工具清单（仅写工具名称与用途，不写参数签名）。
+- 可用 skill 清单 + 使用指南。
+- 行为规范（响应风格、回答格式、特殊约束）。
+
+**不写的内容**：
+- state 字段、context 字段等数据结构（由数据库 `agents` 表 JSON 决定）。
+- 工具绑定、skill 绑定（由 `agent_tool_bindings` / `agent_skill_bindings` 表决定）。
+- 系统提示词分层、架构信息（由基类 + `AgentConfigService` 处理）。
 
 **示例 `agents/map_agent/AGENTS.md`**：
 
@@ -481,8 +491,6 @@ def set_map_center(latitude: float, longitude: float, runtime: ToolRuntime) -> C
 - 地图操作需先确认坐标有效性。
 - 报告生成需包含数据来源。
 ```
-
-**注意**：AGENTS.md 不写任何技术元信息（state 字段、context 字段、tool 绑定），这些都在数据库。
 
 ---
 
@@ -574,7 +582,6 @@ export async function handleCommand(command, args) {
         text: `智能体 '${targetAgent}' 不存在。\n\n可用：${agents.map(a => `${a.name}（${a.display_name}）`).join('\n')}`,
       }
     }
-    localStorage.setItem('current_agent', targetAgent)
     return {
       text: `已切换到智能体：${found.display_name}`,
       switchAgent: targetAgent,
@@ -584,7 +591,7 @@ export async function handleCommand(command, args) {
 }
 ```
 
-`InputBox.vue` 检测到 `/` 开头时调用 `handleCommand`，切换后 emit `agent-switched` 事件。
+`InputBox.vue` 检测到 `/` 开头时调用 `handleCommand`，切换后 emit `agent-switched` 事件，由 `App.vue` 维护当前激活的 `agent_name`（存入 Vue 响应式状态即可，无需 localStorage）。后续 `chatStream` 通过 props / store 读取当前 agent_name。
 
 ---
 
@@ -708,18 +715,16 @@ async def toggle_method(name: str, method: str, enabled: bool): ...
 ```javascript
 // 改 chatStream 调用 /api/agent/chat
 export async function chatStream(sessionId, message, attachments = [], resume = null) {
-  const agentName = localStorage.getItem('current_agent') || 'map_agent'
   const response = await fetchWithAuth('/api/agent/chat', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'X-Session-ID': sessionId,
-      ...(agentName ? { 'X-Agent-Name': agentName } : {}),
     },
     body: JSON.stringify({
       message: resume ? '' : message,
       session_id: sessionId,
-      agent_name: agentName,
+      agent_name: 'map_agent',
       attachments,
       resume,
     }),
