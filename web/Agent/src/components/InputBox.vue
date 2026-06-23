@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, nextTick } from 'vue'
 import { uploadFileInChunks, formatFileSize, getFileExtension, refreshToken } from '../utils/api.js'
+import { handleCommand, COMMAND_REGISTRY } from '../utils/commandRegistry.js'
 
 const SUPPORTED_EXTENSIONS = ['pdf', 'doc', 'docx', 'txt', 'md', 'csv', 'json']
 const MAX_FILE_SIZE = 50 * 1024 * 1024
@@ -32,6 +33,25 @@ const canSend = computed(() => {
   return hasText || hasUploadedFiles
 })
 
+/**
+ * 是否为命令输入（以 / 开头）
+ * @returns {boolean} 当前输入是否为斜杠命令
+ */
+const isCommand = computed(() => inputValue.value.trim().startsWith('/'))
+
+/**
+ * 命令提示文本
+ * 根据输入内容匹配 COMMAND_REGISTRY 中的命令定义，返回描述与用法提示。
+ * @returns {string} 命令提示文本；非命令输入返回空字符串
+ */
+const commandHint = computed(() => {
+  if (!isCommand.value) return ''
+  const parts = inputValue.value.trim().slice(1).split(/\s+/)
+  const cmd = parts[0]
+  const reg = COMMAND_REGISTRY.find((r) => r.name === cmd)
+  return reg ? `命令：${reg.description}（用法：${reg.usage}）` : `未知命令：/${cmd}`
+})
+
 const autoResize = () => {
   const textarea = textareaRef.value
   if (textarea) {
@@ -55,6 +75,31 @@ const handleKeydown = (event) => {
 
 const handleSend = async () => {
   if (!canSend.value) return
+
+  const text = inputValue.value.trim()
+  if (!text) return
+
+  // 命令检测：以 / 开头视为命令，不走普通发送流程
+  if (text.startsWith('/')) {
+    const parts = text.slice(1).split(/\s+/)
+    const cmd = parts[0]
+    const args = parts.slice(1)
+    try {
+      const result = await handleCommand(cmd, args)
+      if (result.switchAgent) {
+        emit('agent-switched', result.switchAgent)
+      }
+      // 命令结果作为系统消息显示（通过 send 事件传递）
+      emit('send', result.text, [])
+    } catch (err) {
+      emit('send', `命令执行失败：${err.message}`, [])
+    }
+    inputValue.value = ''
+    nextTick(() => {
+      autoResize()
+    })
+    return
+  }
 
   isRefreshingToken.value = true
   try {
@@ -253,7 +298,7 @@ const getFileIconColor = (ext) => {
   return colorMap[ext] || '#9CA3AF'
 }
 
-const emit = defineEmits(['send', 'tool-action', 'stop'])
+const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched'])
 </script>
 
 <template>
@@ -354,6 +399,10 @@ const emit = defineEmits(['send', 'tool-action', 'stop'])
           @focus="handleFocus"
           @blur="handleBlur"
         ></textarea>
+
+        <div v-if="isCommand" class="command-hint">
+          {{ commandHint }}
+        </div>
 
         <div class="bottom-row">
           <div class="toolbar">
@@ -699,6 +748,16 @@ const emit = defineEmits(['send', 'tool-action', 'stop'])
     outline: none;
     box-shadow: none;
   }
+}
+
+/* 命令提示样式：以 / 开头输入时显示命令说明 */
+.command-hint {
+  padding: 6px 8px;
+  font-size: var(--font-size-sm);
+  color: var(--color-accent);
+  background-color: var(--color-accent-light);
+  border-radius: var(--radius-sm);
+  margin-top: 4px;
 }
 
 .send-btn {

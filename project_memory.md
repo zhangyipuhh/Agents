@@ -2565,3 +2565,63 @@ web/Agent/src/components/
 - 测试策略：mock `global.fetch` 与 `global.localStorage`；因 `UserSettingsDialog` 使用 `<Teleport to="body">`，nav-item 与 tab 内容渲染到 `document.body`，需通过 `document.body.querySelectorAll` / `document.body.querySelector` 查询元素（`wrapper.findAll` / `wrapper.find` 无法穿透 Teleport）
 - 覆盖：admin 角色显示 MCP 管理 Tab / 普通用户不显示 MCP 管理 Tab / 点击 MCP Tab 后渲染 `.mcp-server-manager` 组件
 
+## 前端斜杠命令注册表（2026-06-23 新增，Task 16）
+
+新建 `web/Agent/src/utils/commandRegistry.js` 作为前端斜杠命令的统一注册表与分发器。`InputBox.vue` 检测到 `/` 开头输入时调用 `handleCommand`。
+
+### 模块位置
+
+```
+web/Agent/src/utils/
+├── commandRegistry.js                 # 命令注册表 + handleCommand 分发器
+└── __tests__/
+    └── commandRegistry.test.js        # 测试（9 用例）
+```
+
+### 命令清单
+
+| 命令 | 用法 | 说明 | requiresBackend |
+|---|---|---|---|
+| `/agent <name>` | `/agent map_agent` | 切换当前会话使用的智能体；找不到时返回可用列表 | true |
+| `/agents` | `/agents` | 列出所有可用智能体（调用 `fetchAgentList`） | true |
+
+### 导出 API
+
+| 导出 | 作用 |
+|---|---|
+| `COMMAND_REGISTRY` | 命令元数据数组，供 InputBox 自动补全/提示 |
+| `handleCommand(command, args)` | 命令分发器，返回 `{text, switchAgent?}`；未知命令返回 `未知命令：/<command>` |
+| `listAgentsCommand()` | `/agents` 命令实现，返回格式化文本；空列表返回"暂无可用智能体" |
+
+### 设计要点
+
+- **复用 fetchAgentList**：`/agent` 与 `/agents` 均调用 `api.js::fetchAgentList`（GET `/api/agent/list`），返回 `Array<{name, display_name}>`（**无 description 字段**，渲染时只用 name + display_name）
+- **错误传播**：`fetchAgentList` 失败时抛出 `Error`（含后端 `detail`），`handleCommand` 与 `listAgentsCommand` 均不吞错，由调用方（InputBox）捕获并展示友好提示
+- **requiresBackend 预留字段**：当前未消费，预留给未来离线模式跳过后端调用
+- **switchAgent 信号**：`/agent <name>` 成功时返回 `switchAgent` 字段，InputBox 据此切换实际请求的 agent_name
+
+### 测试
+
+- 路径：`web/Agent/src/utils/__tests__/commandRegistry.test.js`（9 用例）
+- 测试策略：mock `global.fetch` 与 `global.localStorage`，通过动态 `import('../commandRegistry.js')` 使 mock 生效
+- 覆盖：COMMAND_REGISTRY 含 agent+agents / handleCommand 切换智能体 / 未知命令 / 缺参数 / 智能体不存在 / listAgentsCommand 列表非空 / listAgentsCommand 空列表 / listAgentsCommand 网络错误 / handleCommand 后端失败错误传播
+
+### InputBox 集成（2026-06-23 新增，Task 17）
+
+`InputBox.vue` 已接入命令注册表，检测到 `/` 开头输入时走命令分支，不再触发 refreshToken 与文件上传流程。
+
+**改动点**：
+
+1. **import**：新增 `import { handleCommand, COMMAND_REGISTRY } from '../utils/commandRegistry.js'`
+2. **计算属性**：新增 `isCommand`（判断 `/` 开头）与 `commandHint`（匹配 COMMAND_REGISTRY 返回描述+用法提示，未知命令返回 `未知命令：/<cmd>`）
+3. **emits 声明**：新增 `agent-switched` 事件（`/agent <name>` 成功时携带目标 agent name）
+4. **handleSend 命令分支**：在函数开头检测 `text.startsWith('/')`，解析 `cmd` + `args` 后调用 `handleCommand`；若 `result.switchAgent` 存在则 `emit('agent-switched', switchAgent)`，命令结果文本通过 `emit('send', result.text, [])` 作为系统消息显示；异常时 `emit('send', '命令执行失败：...', [])`；命令分支提前 return，不进入 refreshToken 流程
+5. **template**：textarea 后新增 `<div v-if="isCommand" class="command-hint">{{ commandHint }}</div>`
+6. **CSS**：新增 `.command-hint` 样式（accent 色 + accent-light 背景 + radius-sm 圆角）
+
+**测试**：
+
+- 路径：`web/Agent/src/components/__tests__/InputBox.command.spec.js`（3 用例）
+- 测试策略：mount InputBox + mock `global.fetch`（按 URL 分发 `/api/auth/refresh` 与 `/api/agent/list`）+ mock `global.localStorage`
+- 覆盖：普通文本触发 send 且不触发 agent-switched / `/` 开头显示命令提示 / `/agent map_agent` 命令触发 agent-switched 事件
+
