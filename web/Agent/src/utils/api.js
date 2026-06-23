@@ -963,7 +963,10 @@ export async function searchSessionsByUsername(username) {
  */
 export async function listMcpServers() {
   const response = await fetchWithAuth('/api/admin/mcp/servers', { method: 'GET' })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `HTTP ${response.status}`)
+  }
   return response.json()
 }
 
@@ -1002,7 +1005,10 @@ export async function updateMcpServer(name, config) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config),
   })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `HTTP ${response.status}`)
+  }
   return response.json()
 }
 
@@ -1016,7 +1022,10 @@ export async function deleteMcpServer(name) {
   const response = await fetchWithAuth(`/api/admin/mcp/servers/${encodeURIComponent(name)}`, {
     method: 'DELETE',
   })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `HTTP ${response.status}`)
+  }
 }
 
 /**
@@ -1031,7 +1040,10 @@ export async function toggleMcpServer(name, enabled) {
     `/api/admin/mcp/servers/${encodeURIComponent(name)}/toggle?enabled=${enabled}`,
     { method: 'POST' }
   )
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `HTTP ${response.status}`)
+  }
   return response.json()
 }
 
@@ -1046,7 +1058,10 @@ export async function listMcpMethods(name) {
     `/api/admin/mcp/servers/${encodeURIComponent(name)}/methods`,
     { method: 'GET' }
   )
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `HTTP ${response.status}`)
+  }
   return response.json()
 }
 
@@ -1061,7 +1076,10 @@ export async function refreshMcpMethods(name) {
     `/api/admin/mcp/servers/${encodeURIComponent(name)}/refresh-methods`,
     { method: 'POST' }
   )
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `HTTP ${response.status}`)
+  }
   return response.json()
 }
 
@@ -1078,7 +1096,10 @@ export async function toggleMcpMethod(serverName, method, enabled) {
     `/api/admin/mcp/servers/${encodeURIComponent(serverName)}/methods/${encodeURIComponent(method)}/toggle?enabled=${enabled}`,
     { method: 'POST' }
   )
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `HTTP ${response.status}`)
+  }
   return response.json()
 }
 
@@ -1093,6 +1114,9 @@ export async function toggleMcpMethod(serverName, method, enabled) {
  */
 export async function fetchAgentList() {
   const response = await fetchWithAuth('/api/agent/list', { method: 'GET' })
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `HTTP ${response.status}`)
+  }
   return response.json()
 }

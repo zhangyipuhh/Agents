@@ -132,4 +132,117 @@ describe('MCP 管理 API', () => {
     )
     expect(result).toEqual([{ name: 'map_agent', display_name: '地图' }])
   })
+
+  // ============================================================
+  // updateMcpServer happy-path（补 Issue 3：原文件头注释声明覆盖但实际缺失）
+  // ============================================================
+  it('test_update_mcp_server_puts_correct_body', async () => {
+    const { updateMcpServer } = await import('../api.js')
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ name: 'amap' }),
+    })
+    const config = { url: 'http://new' }
+    await updateMcpServer('amap', config)
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/admin/mcp/servers/amap',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify(config),
+      })
+    )
+  })
+
+  // ============================================================
+  // 失败路径测试（补 Issue 2：验证 response.ok=false 时抛错且错误消息含 detail）
+  // ============================================================
+  it('test_list_mcp_servers_throws_with_detail_on_error', async () => {
+    const { listMcpServers } = await import('../api.js')
+    global.fetch.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: async () => ({ detail: '服务器内部错误' }),
+    })
+    await expect(listMcpServers()).rejects.toThrow(/服务器内部错误/)
+  })
+
+  it('test_create_mcp_server_throws_with_detail_on_error', async () => {
+    const { createMcpServer } = await import('../api.js')
+    global.fetch.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      json: async () => ({ detail: '名称已存在' }),
+    })
+    await expect(createMcpServer({ name: 'amap' })).rejects.toThrow(/名称已存在/)
+  })
+
+  it('test_update_mcp_server_throws_with_detail_on_error', async () => {
+    const { updateMcpServer } = await import('../api.js')
+    global.fetch.mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      json: async () => ({ detail: 'not found' }),
+    })
+    await expect(updateMcpServer('nope', {})).rejects.toThrow(/not found/)
+  })
+
+  it('test_delete_mcp_server_throws_with_detail_on_error', async () => {
+    const { deleteMcpServer } = await import('../api.js')
+    global.fetch.mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      json: async () => ({ detail: 'not found' }),
+    })
+    await expect(deleteMcpServer('nope')).rejects.toThrow(/not found/)
+  })
+
+  it('test_toggle_mcp_server_throws_with_detail_on_error', async () => {
+    const { toggleMcpServer } = await import('../api.js')
+    global.fetch.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      json: async () => ({ detail: '无效参数' }),
+    })
+    await expect(toggleMcpServer('amap', false)).rejects.toThrow(/无效参数/)
+  })
+
+  it('test_list_mcp_methods_throws_with_detail_on_error', async () => {
+    const { listMcpMethods } = await import('../api.js')
+    global.fetch.mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      json: async () => ({ detail: 'server not found' }),
+    })
+    await expect(listMcpMethods('nope')).rejects.toThrow(/server not found/)
+  })
+
+  it('test_refresh_mcp_methods_throws_with_detail_on_error', async () => {
+    const { refreshMcpMethods } = await import('../api.js')
+    global.fetch.mockResolvedValueOnce({
+      ok: false,
+      status: 502,
+      json: async () => ({ detail: 'Failed to refresh methods: timeout' }),
+    })
+    await expect(refreshMcpMethods('amap')).rejects.toThrow(/Failed to refresh methods/)
+  })
+
+  it('test_toggle_mcp_method_throws_with_detail_on_error', async () => {
+    const { toggleMcpMethod } = await import('../api.js')
+    global.fetch.mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      json: async () => ({ detail: 'method not found' }),
+    })
+    await expect(toggleMcpMethod('amap', 'search', false)).rejects.toThrow(/method not found/)
+  })
+
+  it('test_fetch_agent_list_throws_with_detail_on_error', async () => {
+    const { fetchAgentList } = await import('../api.js')
+    global.fetch.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: async () => ({ detail: '数据库错误' }),
+    })
+    await expect(fetchAgentList()).rejects.toThrow(/数据库错误/)
+  })
 })
