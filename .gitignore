@@ -10,6 +10,9 @@
 !app/
 # 包含 app 目录下的所有文件
 !app/**
+# 包含 agents 目录（AGENTS.md 纯 markdown 配置）
+!agents/
+!agents/**
 !web/
 !web/**
 !mcpServer/
