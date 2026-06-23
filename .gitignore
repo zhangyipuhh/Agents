@@ -129,3 +129,6 @@ app/features/map_agent/skills/data-skill/tables/YG_XKXX.md
 app/features/map_agent/skills/data-skill/tables/ZZ_JBXX.md
 app/features/map_agent/skills/data-skill/tables/ZZ_PFXX.md
 app/features/map_agent/skills/data-skill/tables/ZZHX.md
+docs/
+docs/**
+
