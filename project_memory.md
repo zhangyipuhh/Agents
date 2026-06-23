@@ -1617,7 +1617,7 @@ environment:
 - **测试分布**（`src/**/__tests__` 与 `src/components/__tests__`）：
   - `HumanApprovalBox.spec.js`：HITL 组件（多 Tab、虚拟 Other 项、多选、`canSubmit` 门控，14 用例）
   - `api.test.js`：`utils/api.js` 工具方法
-  - `api.mcp.test.js`（2026-06-23 新增）：MCP 管理 API 封装（8 用例，覆盖 URL/方法/请求体验证）
+  - `api.mcp.test.js`（2026-06-23 新增，同日扩展）：MCP 管理 API 封装（**18** 用例 = 8 happy-path URL/方法/请求体验证 + 1 `updateMcpServer` PUT body + 9 失败路径验证 `detail` 错误消息）
   - `sseParser.test.js`：SSE 解析（含 Python 字面量兼容）
   - `subAgentParser.test.js`（2026-06-13 新增，2026-06-14 扩展）：subagent 解析（custom 事件维护 subAgents 列表 + sandbox_summary 合并 + 工具函数，**14** 用例）
   - `SubAgentCard.spec.js`（2026-06-13 新增，2026-06-14 扩展）：折叠卡片（**11** 用例）
@@ -2393,4 +2393,53 @@ web/Agent/src/utils/
 - 路径：`web/Agent/src/utils/__tests__/api.mcp.test.js`（8 用例）
 - 测试策略：mock `global.fetch` 与 `global.localStorage`，通过动态 `import('../api.js')` 使 mock 生效
 - 覆盖：listMcpServers URL + 返回值 / createMcpServer body / deleteMcpServer DELETE 方法 / toggleMcpServer enabled 参数 / listMcpMethods URL / refreshMcpMethods POST / toggleMcpMethod enabled 参数 / fetchAgentList URL + 返回值
+
+## 前端 MCP 服务器管理组件（2026-06-23 新增，Task 9）
+
+创建 `McpServerManager.vue` 组件，基于 Task 8 的 8 个 MCP API 函数实现 MCP 服务器的可视化管理界面。
+
+### 模块位置
+
+```
+web/Agent/src/components/
+├── McpServerManager.vue                          # MCP 服务器管理组件
+└── __tests__/
+    └── McpServerManager.spec.js                  # 组件测试（6 用例）
+```
+
+### 功能要点
+
+- **左侧服务器列表**：展示所有 MCP server，每项含 toggle 开关（启用/禁用）、类型标签、tags
+- **右侧详情面板**：三种状态切换
+  - 新增/编辑表单（`.server-form`）：支持 sse/stdio/http 三种类型，stdio 类型显示 Command JSON 输入框
+  - 服务器详情（`.server-detail`）：展示名称/类型/URL/tags/状态，含编辑/删除按钮
+  - 方法列表（`.methods-section`）：含"刷新方法列表"按钮，每个方法可独立 toggle
+- **空状态**：无服务器时显示"暂无 MCP 服务器"提示
+
+### 依赖关系
+
+- 复用 Task 8 的 `api.js` 中 8 个 MCP 函数（listMcpServers/createMcpServer/updateMcpServer/deleteMcpServer/toggleMcpServer/listMcpMethods/refreshMcpMethods/toggleMcpMethod）
+- 使用 Vue 3 `<script setup>` 语法，`onMounted` 时自动加载服务器列表
+
+### 测试
+
+- 路径：`web/Agent/src/components/__tests__/McpServerManager.spec.js`（6 用例）
+- 测试策略：mock `global.fetch` 与 `global.localStorage`，使用 `mount` + `flushPromises` 模式
+- 覆盖：组件可导入 / 渲染服务器列表 / 点击服务器项选中 / 点击新增按钮显示表单 / 选中后显示刷新方法按钮 / 空状态提示
+
+## 前端 UserSettingsDialog MCP 管理 Tab 集成（2026-06-23 新增，Task 10）
+
+将 Task 9 的 `McpServerManager.vue` 组件集成到 `UserSettingsDialog.vue` 的 admin Tab 中，让管理员可以在用户设置对话框中管理 MCP 服务器。
+
+### 修改要点
+
+- **import**：在 `UserSettingsDialog.vue` 顶部新增 `import McpServerManager from './McpServerManager.vue'`
+- **navItems**：在 admin 分支的 `session-query` 之后追加 `{ id: 'mcp-management', label: 'MCP 管理', icon: '...' }`
+- **template**：在 session-query 的 `v-show` div 之后平级追加 `<div v-show="activeTab === 'mcp-management'" class="tab-content mcp-tab-content"><McpServerManager /></div>`，遵循现有 `v-show` 模式（非 `v-else-if`）
+
+### 测试
+
+- 路径：`web/Agent/src/components/__tests__/UserSettingsDialog.mcp.spec.js`（3 用例）
+- 测试策略：mock `global.fetch` 与 `global.localStorage`；因 `UserSettingsDialog` 使用 `<Teleport to="body">`，nav-item 与 tab 内容渲染到 `document.body`，需通过 `document.body.querySelectorAll` / `document.body.querySelector` 查询元素（`wrapper.findAll` / `wrapper.find` 无法穿透 Teleport）
+- 覆盖：admin 角色显示 MCP 管理 Tab / 普通用户不显示 MCP 管理 Tab / 点击 MCP Tab 后渲染 `.mcp-server-manager` 组件
 
