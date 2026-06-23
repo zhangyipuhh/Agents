@@ -30,7 +30,7 @@ from app.core.format.stream import stream_format_context
 from app.core.concurrency import chat_concurrency_dependency, stream_with_concurrency
 # 2026-06-15 新增：子智能体停止信号传递（FastAPI Request → ContextVar → sandbox/explore 工具）
 from app.core.tools._stop_signal import reset_current_request, set_current_request
-from app.features.map_agent.config.prompts import KNOWLEDGE_SYSTEM_PROMPT, MAP_AGENT_SYSTEM_PROMPT
+from app.features.map_agent.config.prompts import KNOWLEDGE_SYSTEM_PROMPT
 from app.features.map_agent.config.MapAgentContext import MapAgentContext
 
 from app.shared.utils.files.doc_converter import convert_doc_to_docx, check_conversion_support, get_libreoffice_installation_guide
@@ -688,119 +688,6 @@ async def generate_stream_response(
             logger.warning(f"[Chat] reset_current_request 异常: {reset_error}")
 
 
-@router.post('/chat')
-async def chat(
-    request: Request,
-    chat_request: ChatRequest,
-):
-    """
-    地图智能体流式聊天接口
-
-    与地图AI助手进行对话，支持多轮对话和地图操作。
-    使用 SSE (Server-Sent Events) 协议实时返回 Agent 的思考过程和响应结果。
-
-    工作流程：
-    1. 接收 POST 请求，解析为 ChatRequest 对象
-    2. 获取 session_id，优先使用请求体中的，否则从 request.state 获取
-    3. 自动生成会话标题（首条消息前20字符）
-    4. 调用 generate_stream_response 生成流式响应
-    5. 通过 StreamingResponse 以 SSE 格式返回数据
-
-    Args:
-        request: FastAPI 请求对象
-        chat_request: 聊天请求，包含用户消息和可选的会话ID
-
-    Returns:
-        StreamingResponse: 流式响应对象，使用 text/event-stream 媒体类型
-    """
-    try:
-        # 获取 session_id，优先使用请求体中的，否则从 request.state 获取
-        session_id = chat_request.session_id or getattr(request.state, "session_id", "default")
-
-        # 获取 geometry_data
-        geometry_data = chat_request.geometry_data or {}
-
-        # 手动获取 SSE 模式并发控制 generator
-        # 注意：不能用 Depends(chat_concurrency_dependency)，FastAPI 会把 yield 依赖
-        # 包装为 context manager 并注入 generator 第一个 yield 的值（dict），导致下游
-        # ``async for item in dep`` 抛 TypeError。详见 stream_with_concurrency 文档。
-        dep = chat_concurrency_dependency(request, mode="sse")
-
-        # 处理 resume 场景（无新消息，只有 resume 决策）
-        if chat_request.resume and not chat_request.message:
-            logger.warning(f"[Chat] session_id={session_id}, resume={chat_request.resume}")
-            return StreamingResponse(
-                stream_with_concurrency(
-                    request,
-                    dep,
-                    generate_stream_response(
-                        user_input="",
-                        session_id=session_id,
-                        context=MapAgentContext(
-                            system_prompt=MAP_AGENT_SYSTEM_PROMPT,
-                        ),
-                        geometry_data=geometry_data,
-                        attachments=chat_request.attachments or [],
-                        resume=chat_request.resume,
-                        request=request,  # 2026-06-15 新增：用于客户端断开检测
-                    ),
-                ),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no"  # 禁用 nginx 缓冲
-                }
-            )
-
-        logger.warning(f"[Chat] session_id={session_id}, message={chat_request.message[:50] if chat_request.message else ''}")
-
-        # 自动生成会话标题：如果标题仍为默认值，用首条消息前20字符作为标题
-        try:
-            from app.shared.utils.auth.session_db import SessionDB
-            session = await SessionDB.get_session(session_id)
-            if session and session.get('title') == '新对话' and chat_request.message:
-                title = chat_request.message.strip()[:20] + ('...' if len(chat_request.message.strip()) > 20 else '')
-                await SessionDB.update_session_title(session_id, title)
-        except Exception:
-            pass  # 标题生成失败不影响对话
-
-        # 更新会话最后活跃时间
-        try:
-            from app.shared.utils.auth.session_db import SessionDB
-            await SessionDB.update_last_active(session_id)
-        except Exception:
-            pass
-
-        # 返回流式响应
-        return StreamingResponse(
-            stream_with_concurrency(
-                request,
-                dep,
-                generate_stream_response(
-                    user_input=chat_request.message,
-                    session_id=session_id,
-                    context=MapAgentContext(
-                        system_prompt=MAP_AGENT_SYSTEM_PROMPT,
-                    ),
-                    geometry_data=geometry_data,
-                    attachments=chat_request.attachments or [],
-                    request=request,  # 2026-06-15 新增：用于客户端断开检测
-                ),
-            ),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"  # 禁用 nginx 缓冲
-            }
-        )
-
-    except Exception as e:
-        import traceback
-        logger.error(f"[ERROR] chat 异常: {e}")
-        logger.error(f"[ERROR] 异常堆栈: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"对话处理失败：{str(e)}")
 @router.post('/knowledge-chat')
 async def knowledge_chat(
     request: Request,

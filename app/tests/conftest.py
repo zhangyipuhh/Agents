@@ -28,6 +28,14 @@ sys.modules["mcpClient.shared.config_loader"] = Mock()
 sys.modules["mcpClient.core"] = Mock()
 sys.modules["mcpClient.core.unified_mcp_client"] = Mock()
 
+# 2026-06-23 新增：mock filesystem_encoding_fix 模块，使 apply_fix 成为 no-op。
+# app.main 模块加载时会调用 apply_fix()，其内部访问 EncodingSafeFileSearchMiddleware._python_search
+# 等属性在纯 Mock 环境下不存在，导致 AttributeError。将 apply_fix 替换为 no-op 可让
+# app/tests/ 根目录下的测试也能通过 app fixture 导入 app.main。
+_fs_fix = types.ModuleType("app.shared.tools.middleware.filesystem_encoding_fix")
+_fs_fix.apply_fix = lambda: None
+sys.modules["app.shared.tools.middleware.filesystem_encoding_fix"] = _fs_fix
+
 # mock langchain 及其子模块（使用 ModuleType 以支持 from xxx import yyy）
 for _lc_mod in [
     "langchain", "langchain.tools", "langchain.messages", "langchain.chat_models", "langchain_core", "langchain_core.messages",
