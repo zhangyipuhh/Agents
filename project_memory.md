@@ -150,7 +150,9 @@ app/
 │   │   ├── __init__.py       # 包初始化
 │   │   ├── registry.py       # ToolRegistry + @register_tool 装饰器（按 agent 维度注册工具，供 AgentConfig.get_tools() 查询）
 │   │   ├── mcp/              # MCP 服务器配置（config.yaml.example）
-│   │   └── middleware/       # 工具中间件（DockerSandboxBackend / EncodingSafeFileSearch 等）
+│   │   ├── middleware/       # 工具中间件（DockerSandboxBackend / EncodingSafeFileSearch 等）
+│   │   └── skills/           # 按 agent 维度组织的工具模块（@register_tool 装饰）
+│   │       └── map_agent/    # map_agent 工具（MapTools.py，8 个地图工具）
 │   └── utils/             # 工具类
 │       ├── auth/          # 认证相关
 │       │   ├── Safety.py          # JWT 认证（双 Token：Access + Refresh）
@@ -413,6 +415,27 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 | sort_order | INT DEFAULT 0 | 排序权重 |
 | created_at | TIMESTAMP | 创建时间 |
 | | UNIQUE(agent_name, skill_name) | 唯一约束：同一智能体同一 skill 仅一条绑定 |
+
+### map_agent 种子脚本（2026-06-23 新增）
+
+**文件位置**: `app/migrations/seed_map_agent.py`（含 `app/migrations/__init__.py` 包初始化）
+
+向 `agents` / `agent_tool_bindings` / `agent_skill_bindings` 表写入 map_agent 初始配置，幂等可重复执行。
+
+| 函数 | 说明 |
+|------|------|
+| `seed_map_agent(db)` | 核心种子函数。先 `SELECT` 判断 agents 表是否已有 map_agent，已存在则 UPDATE，不存在则 INSERT；工具/skill 绑定使用 `ON CONFLICT DO UPDATE` 幂等写入 |
+| `main()` | 脚本入口，从 `DATABASE_URL` 环境变量（默认 `postgresql://postgres:postgres@localhost:5432/feature_agent`）读取连接并执行种子 |
+
+**map_agent 配置常量**:
+- `MAP_AGENT_STATE_SCHEMA`: map_center / map_zoom / map_markers / map_layer / map_polygons
+- `MAP_AGENT_CONTEXT_SCHEMA`: knowledge_root
+- `MAP_AGENT_TOOLS`: explore / query_knowledge / get_current_time / generate_report / save_business_info / ask_user_question / sandbox / load_skill / read_skill_file（9 个）
+- `MAP_AGENT_SKILLS`: data-skill（1 个）
+
+**执行方式**: `python -m app.migrations.seed_map_agent`
+
+**测试**: `app/tests/shared/test_seed_map_agent.py`（3 用例：可导入 / INSERT 路径 / UPDATE 幂等路径）
 
 ### mcp_server_configs 表（2026-06-23 新增）
 MCP 服务器配置表，从 YAML 迁移至数据库管理。
