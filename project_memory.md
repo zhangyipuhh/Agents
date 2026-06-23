@@ -1617,6 +1617,7 @@ environment:
 - **测试分布**（`src/**/__tests__` 与 `src/components/__tests__`）：
   - `HumanApprovalBox.spec.js`：HITL 组件（多 Tab、虚拟 Other 项、多选、`canSubmit` 门控，14 用例）
   - `api.test.js`：`utils/api.js` 工具方法
+  - `api.mcp.test.js`（2026-06-23 新增）：MCP 管理 API 封装（8 用例，覆盖 URL/方法/请求体验证）
   - `sseParser.test.js`：SSE 解析（含 Python 字面量兼容）
   - `subAgentParser.test.js`（2026-06-13 新增，2026-06-14 扩展）：subagent 解析（custom 事件维护 subAgents 列表 + sandbox_summary 合并 + 工具函数，**14** 用例）
   - `SubAgentCard.spec.js`（2026-06-13 新增，2026-06-14 扩展）：折叠卡片（**11** 用例）
@@ -2352,4 +2353,44 @@ app/core/tools/mcp_registry.py
 - 路径：`app/tests/core/tools/test_mcp_registry_runtime.py`（9 用例）
 - 覆盖：5 个方法存在性检查 / add_server 存储配置 / remove_server 删除配置 / toggle_server 更新 enabled / toggle_method 更新 method enabled
 - 测试特点：直接构造 `MCPToolsRegistry()` 实例（构造器无重初始化），通过 `asyncio.run()` 调用异步方法
+
+## 前端 MCP 管理 API 封装（2026-06-23 新增，Task 8）
+
+在 `web/Agent/src/utils/api.js` 末尾追加 9 个导出函数，对应后端 `mcp_admin_router`（Task 6）的 8 个端点 + Agent 列表端点。所有函数复用已有的 `fetchWithAuth` 包装器（自动注入 `Authorization: Bearer` 与 `X-Session-ID`，401 自动重试）。
+
+### 模块位置
+
+```
+web/Agent/src/utils/
+├── api.js                              # 追加 9 个 MCP/Agent API 函数
+└── __tests__/
+    └── api.mcp.test.js                 # MCP API 测试（8 用例）
+```
+
+### 函数清单
+
+| 函数 | HTTP 方法 | 路径 | 说明 |
+|---|---|---|---|
+| `listMcpServers()` | GET | `/api/admin/mcp/servers` | 列出所有 MCP server 配置 |
+| `createMcpServer(config)` | POST | `/api/admin/mcp/servers` | 新增 server；body 为 JSON 配置 |
+| `updateMcpServer(name, config)` | PUT | `/api/admin/mcp/servers/{name}` | 更新 server 配置 |
+| `deleteMcpServer(name)` | DELETE | `/api/admin/mcp/servers/{name}` | 删除 server；无返回值 |
+| `toggleMcpServer(name, enabled)` | POST | `/api/admin/mcp/servers/{name}/toggle?enabled={bool}` | 启用/禁用 server |
+| `listMcpMethods(name)` | GET | `/api/admin/mcp/servers/{name}/methods` | 列出 server 下所有 method |
+| `refreshMcpMethods(name)` | POST | `/api/admin/mcp/servers/{name}/refresh-methods` | 刷新 method 列表 |
+| `toggleMcpMethod(serverName, method, enabled)` | POST | `/api/admin/mcp/servers/{name}/methods/{method}/toggle?enabled={bool}` | 启用/禁用单个 method |
+| `fetchAgentList()` | GET | `/api/agent/list` | 获取可用 Agent 列表（供 MCP 配置页绑定） |
+
+### 设计要点
+
+- **复用 fetchWithAuth**：所有函数通过 `fetchWithAuth` 发起请求，自动处理鉴权与 401 重试，无需重复实现
+- **URL 编码**：`name` / `method` 路径参数使用 `encodeURIComponent` 编码，防止特殊字符破坏 URL
+- **错误处理**：`createMcpServer` 解析后端 `detail` 字段抛出具体错误信息；其余函数抛 `HTTP {status}` 通用错误
+- **deleteMcpServer**：唯一无返回值的函数（204 No Content），不调用 `response.json()`
+
+### 测试
+
+- 路径：`web/Agent/src/utils/__tests__/api.mcp.test.js`（8 用例）
+- 测试策略：mock `global.fetch` 与 `global.localStorage`，通过动态 `import('../api.js')` 使 mock 生效
+- 覆盖：listMcpServers URL + 返回值 / createMcpServer body / deleteMcpServer DELETE 方法 / toggleMcpServer enabled 参数 / listMcpMethods URL / refreshMcpMethods POST / toggleMcpMethod enabled 参数 / fetchAgentList URL + 返回值
 

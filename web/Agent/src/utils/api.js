@@ -950,3 +950,149 @@ export async function searchSessionsByUsername(username) {
   if (!response.ok) throw new Error(`搜索会话失败: ${response.status}`)
   return response.json()
 }
+
+// ============================================================
+// MCP 管理 API（2026-06-23 新增）
+// 对应后端 mcp_admin_router 的 /api/admin/mcp/* 端点
+// ============================================================
+
+/**
+ * 获取 MCP 服务器列表
+ * @returns {Promise<Array<{name: string, enabled: boolean}>>} 服务器配置列表
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function listMcpServers() {
+  const response = await fetchWithAuth('/api/admin/mcp/servers', { method: 'GET' })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 创建 MCP 服务器配置
+ * @param {Object} config - 服务器配置对象
+ * @param {string} config.name - 服务器名称
+ * @param {string} config.type - 传输类型（sse|stdio|streamable_http）
+ * @param {string} [config.url] - SSE/HTTP 模式的 URL
+ * @returns {Promise<Object>} 创建结果
+ * @throws {Error} 创建失败时抛出错误（含后端 detail 信息）
+ */
+export async function createMcpServer(config) {
+  const response = await fetchWithAuth('/api/admin/mcp/servers', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `HTTP ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 更新 MCP 服务器配置
+ * @param {string} name - 服务器名称
+ * @param {Object} config - 待更新的配置对象
+ * @returns {Promise<Object>} 更新结果
+ * @throws {Error} 更新失败时抛出错误
+ */
+export async function updateMcpServer(name, config) {
+  const response = await fetchWithAuth(`/api/admin/mcp/servers/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 删除 MCP 服务器配置
+ * @param {string} name - 服务器名称
+ * @returns {Promise<void>} 无返回值
+ * @throws {Error} 删除失败时抛出错误
+ */
+export async function deleteMcpServer(name) {
+  const response = await fetchWithAuth(`/api/admin/mcp/servers/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+}
+
+/**
+ * 启用/禁用 MCP 服务器
+ * @param {string} name - 服务器名称
+ * @param {boolean} enabled - 是否启用
+ * @returns {Promise<Object>} 切换结果
+ * @throws {Error} 切换失败时抛出错误
+ */
+export async function toggleMcpServer(name, enabled) {
+  const response = await fetchWithAuth(
+    `/api/admin/mcp/servers/${encodeURIComponent(name)}/toggle?enabled=${enabled}`,
+    { method: 'POST' }
+  )
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 获取指定 MCP 服务器的工具方法列表
+ * @param {string} name - 服务器名称
+ * @returns {Promise<Array<{method_name: string, enabled: boolean}>>} 方法列表
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function listMcpMethods(name) {
+  const response = await fetchWithAuth(
+    `/api/admin/mcp/servers/${encodeURIComponent(name)}/methods`,
+    { method: 'GET' }
+  )
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 刷新指定 MCP 服务器的工具方法列表（重新拉取远端方法清单）
+ * @param {string} name - 服务器名称
+ * @returns {Promise<{methods_count: number}>} 刷新结果，含方法数量
+ * @throws {Error} 刷新失败时抛出错误
+ */
+export async function refreshMcpMethods(name) {
+  const response = await fetchWithAuth(
+    `/api/admin/mcp/servers/${encodeURIComponent(name)}/refresh-methods`,
+    { method: 'POST' }
+  )
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 启用/禁用指定 MCP 服务器的某个工具方法
+ * @param {string} serverName - 服务器名称
+ * @param {string} method - 方法名称
+ * @param {boolean} enabled - 是否启用
+ * @returns {Promise<Object>} 切换结果
+ * @throws {Error} 切换失败时抛出错误
+ */
+export async function toggleMcpMethod(serverName, method, enabled) {
+  const response = await fetchWithAuth(
+    `/api/admin/mcp/servers/${encodeURIComponent(serverName)}/methods/${encodeURIComponent(method)}/toggle?enabled=${enabled}`,
+    { method: 'POST' }
+  )
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json()
+}
+
+// ============================================================
+// Agent 列表 API（2026-06-23 新增）
+// ============================================================
+
+/**
+ * 获取可用 Agent 列表（供 MCP 配置页选择绑定 Agent 使用）
+ * @returns {Promise<Array<{name: string, display_name: string}>>} Agent 列表
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function fetchAgentList() {
+  const response = await fetchWithAuth('/api/agent/list', { method: 'GET' })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json()
+}
