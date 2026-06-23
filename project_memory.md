@@ -2420,12 +2420,14 @@ app/routers/
 ### 设计要点
 
 - **服务获取**：`_get_service(request)` 从 `app.state.agent_config_service` 获取 `AgentConfigService` 实例；未初始化时抛 500（与 mcp_admin_router 模式一致）
-- **SSE 复用**：`_stream_helper.generate_stream_response` 从 map_router 提取通用 SSE 逻辑，支持 `updates` / `custom` / `messages` 三种 stream_mode 组合，检测客户端断开并映射事件类型（interrupt / update / custom / message）
-- **ChatRequest 模型**：Pydantic BaseModel，字段含 message / session_id / agent_name（默认 map_agent）/ attachments / resume（HITL 恢复）/ context_overrides
-- **Agent 构造**：chat 端点从 `UnifiedAgentConfig` 提取 name / system_prompt / state_class / context_class 构造 `AgentConfig`，实例化 `Agent` 并调用 `await agent.__ainit__()` 完成异步初始化
+- **SSE 复用**：`_stream_helper.generate_stream_response` 从 map_router 提取通用 SSE 逻辑，支持 `updates` / `custom` / `messages` 三种 stream_mode 组合，检测客户端断开并映射事件类型（interrupt / update / custom / message）；`_map_mode_to_event_type` 对 `data` 做 `isinstance(data, dict)` 校验后再检查 `__interrupt__` 键，避免非 dict 数据触发 TypeError
+- **SSE 响应头**：`StreamingResponse` 显式设置 `Cache-Control: no-cache` / `Connection: keep-alive` / `X-Accel-Buffering: no`，防止 Nginx 等反向代理缓冲 SSE 流
+- **ChatRequest 模型**：Pydantic BaseModel，字段含 message / session_id / agent_name（默认 map_agent）/ attachments（暂未实现，预留字段）/ resume（HITL 恢复）/ context_overrides
+- **context_overrides 过滤**：构造 context 实例前过滤 `RESERVED_CONTEXT_FIELDS`（session_id / store_id / namespace 等），避免与显式传入的 session_id 关键字参数冲突（TypeError: got multiple values for keyword argument）
+- **Agent 构造**：chat 端点从 `UnifiedAgentConfig` 提取 name / system_prompt / state_class / context_class 构造 `AgentConfig`，并通过 `get_async_checkpointer()` 注入全局 checkpointer（支持 resume 与多轮对话状态持久化），实例化 `Agent` 并调用 `await agent.__ainit__()` 完成异步初始化；初始化过程包裹 try/except，失败时抛 500
 - **输入状态**：resume 存在时构造 `Command(resume=...)`，否则构造 `state_class(messages=[HumanMessage(...)])`
 - **Session 中间件**：`/api/agent/` 前缀在 `SESSION_REQUIRED_PREFIXES` 中，所有端点需 `X-Session-ID` 头并通过 `session_cache.verify_session` 校验
-- **错误映射**：`AgentNotFoundError` → 404
+- **错误映射**：`AgentNotFoundError` → 404；Agent 初始化异常 → 500
 
 ### 测试
 

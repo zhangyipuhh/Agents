@@ -23,6 +23,8 @@ from app.shared.utils.agent.agent_config_service import (
     AgentConfigService,
     AgentNotFoundError,
 )
+from app.shared.utils.agent.dynamic_schema import RESERVED_CONTEXT_FIELDS
+from app.shared.utils.memory import get_async_checkpointer
 from app.routers._stream_helper import generate_stream_response
 
 
@@ -34,13 +36,16 @@ router = APIRouter(prefix="/api/agent", tags=["Agent"])
 class ChatRequest(BaseModel):
     """统一聊天请求体。
 
+    注意：attachments 字段暂未实现，预留供后续版本使用。
+
     Attributes:
         message: 用户输入文本
         session_id: 会话 ID（缺省时使用 "default"）
         agent_name: 目标智能体名称（默认 map_agent）
-        attachments: 附件列表
+        attachments: 附件列表（暂未实现，预留字段）
         resume: HITL 恢复参数（从中断处恢复执行时传入）
-        context_overrides: 上下文字段覆盖（注入到 context_class 构造参数）
+        context_overrides: 上下文字段覆盖（注入到 context_class 构造参数，
+            其中的保留字段如 session_id / store_id 会被自动过滤）
     """
     message: str
     session_id: Optional[str] = None
@@ -83,7 +88,7 @@ async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse
         StreamingResponse: SSE 流式响应
 
     异常:
-        HTTPException: agent 不存在时抛出 404
+        HTTPException: agent 不存在时抛出 404；Agent 初始化失败时抛出 500
     """
     service = _get_service(request)
 
@@ -92,9 +97,15 @@ async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse
     except AgentNotFoundError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
+    # 过滤 context_overrides 中的保留字段，避免与显式传入的 session_id 等
+    # 关键字参数冲突（TypeError: got multiple values for keyword argument）
+    safe_overrides = {
+        k: v for k, v in chat_request.context_overrides.items()
+        if k not in RESERVED_CONTEXT_FIELDS
+    }
     context_instance = config.context_class(
         session_id=chat_request.session_id or "default",
-        **chat_request.context_overrides,
+        **safe_overrides,
     )
 
     if chat_request.resume:
@@ -103,23 +114,40 @@ async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse
         state_class = config.state_class
         input_state = state_class(messages=[HumanMessage(content=chat_request.message)])
 
-    from app.core.agent.agent import Agent
-    from app.core.agent.AgentConfig import AgentConfig
+    try:
+        from app.core.agent.agent import Agent
+        from app.core.agent.AgentConfig import AgentConfig
 
-    agent_config = AgentConfig(
-        name=config.name,
-        system_prompt=config.system_prompt,
-        state_class=config.state_class,
-        context_class=config.context_class,
-    )
-    agent = Agent(agent_config)
-    await agent.__ainit__()
+        # 获取全局异步 checkpointer，支持 resume 与多轮对话状态持久化
+        checkpointer = await get_async_checkpointer()
+        agent_config = AgentConfig(
+            name=config.name,
+            system_prompt=config.system_prompt,
+            state_class=config.state_class,
+            context_class=config.context_class,
+            checkpointer=checkpointer,
+        )
+        agent = Agent(agent_config)
+        await agent.__ainit__()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Agent initialization failed for %s: %s", chat_request.agent_name, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Agent initialization failed: {str(e)}",
+        )
 
     session_id = chat_request.session_id or "default"
 
     return StreamingResponse(
         generate_stream_response(agent, input_state, context_instance, session_id, request),
         media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

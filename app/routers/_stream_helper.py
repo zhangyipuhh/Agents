@@ -80,7 +80,7 @@ def _map_mode_to_event_type(mode: str, data: Any) -> str:
         str: SSE 事件类型（interrupt / update / custom / message）
     """
     if mode == "updates":
-        if "__interrupt__" in data:
+        if isinstance(data, dict) and "__interrupt__" in data:
             return "interrupt"
         return "update"
     elif mode == "custom":
