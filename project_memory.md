@@ -1500,7 +1500,7 @@ environment:
 
 ### 工具函数（src/utils）
 
-- **`api.js`**：登录/注册/验证码/登出/refresh/validate；会话创建/列表/删除/详情/标题/附件/消息；文件上传（普通 + 分片 + base64）/下载/列表/删除；SSE `chatStream` / `knowledgeChatStream`；`X-Session-ID` 头注入；附件元数据组装
+- **`api.js`**：登录/注册/验证码/登出/refresh/validate；会话创建/列表/删除/详情/标题/附件/消息；文件上传（普通 + 分片 + base64）/下载/列表/删除；SSE `chatStream`（Task 15 起改用 `/api/agent/chat`，新增 `agentName` 参数默认 `map_agent`）/ `knowledgeChatStream`（仍用 `/api/map/knowledge-chat`）；`X-Session-ID` 头注入；附件元数据组装
 - **`sseParser.js`**：`isThinkingBlock` / `tryParsePythonLiteral` / `extractTextFromBlock` / `processContentBlocks` / `parseMessageContent` / `processSSEEvent` / `createAiMessage`；支持 Python 风格单引号字面量、JSON.parse、regex 回退三级解析
 - **`index.js`**：聚合导出
 
@@ -2428,6 +2428,13 @@ app/routers/
 - **输入状态**：resume 存在时构造 `Command(resume=...)`，否则构造 `state_class(messages=[HumanMessage(...)])`
 - **Session 中间件**：`/api/agent/` 前缀在 `SESSION_REQUIRED_PREFIXES` 中，所有端点需 `X-Session-ID` 头并通过 `session_cache.verify_session` 校验
 - **错误映射**：`AgentNotFoundError` → 404；Agent 初始化异常 → 500
+
+### 前端切换（Task 15，2026-06-23 落地）
+
+- **`web/Agent/src/utils/api.js::chatStream`** 从 `/api/map/chat` 切换到 `/api/agent/chat`，函数签名追加第 5 个参数 `agentName = 'map_agent'`，请求体新增 `agent_name` 字段
+- **向后兼容**：`App.vue` 两处 call site（正常发送 + HITL resume）均使用 3-4 个参数，依赖默认值 `map_agent`，无需改动
+- **`knowledgeChatStream` 不变**：仍使用 `/api/map/knowledge-chat`（知识库聊天暂未纳入统一 Agent 架构）
+- **测试**：`web/Agent/src/utils/__tests__/api.agent-chat.test.js` 3 个用例（URL 切换 / agent_name 传参 / 默认值）
 
 ### 测试
 
