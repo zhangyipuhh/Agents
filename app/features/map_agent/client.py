@@ -362,9 +362,21 @@ class MapAgentClient:
     def chat_stream(
         self,
         message: str,
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        agent_name: str = "map_agent"
     ) -> Generator[Dict[str, Any], None, None]:
-        data = {"message": message}
+        """
+        流式聊天请求
+
+        Args:
+            message: 用户消息文本
+            session_id: 会话 ID（可选，缺省由服务端生成）
+            agent_name: 目标智能体名称（默认 map_agent，对应统一接口 /api/agent/chat）
+
+        Yields:
+            Dict[str, Any]: SSE 事件数据
+        """
+        data = {"message": message, "agent_name": agent_name}
         if session_id:
             data["session_id"] = session_id
 
@@ -372,7 +384,7 @@ class MapAgentClient:
         headers["Accept"] = "text/event-stream"
         headers["Cache-Control"] = "no-cache"
 
-        url = f"{self.base_url}/api/map/chat"
+        url = f"{self.base_url}/api/agent/chat"
 
         try:
             with self.session.post(

@@ -5,7 +5,6 @@
 验证 mcp_admin_router 和 agent_router 已在 main.py 中注册，
 且旧 /api/map/chat 路由已移除（被 /api/agent/chat 替换）。
 """
-import pytest
 
 
 def test_mcp_admin_router_registered(client):
