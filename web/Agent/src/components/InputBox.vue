@@ -23,11 +23,14 @@ const fileInputRef = ref(null)
 const isFocused = ref(false)
 const isDragging = ref(false)
 const isRefreshingToken = ref(false)
+// 命令执行中标记：防止命令执行期间用户重复点击发送按钮导致重复触发
+const isExecutingCommand = ref(false)
 const selectedFiles = ref([])
 
 const canSend = computed(() => {
   if (props.isStreaming) return false
   if (isRefreshingToken.value) return false
+  if (isExecutingCommand.value) return false
   const hasText = inputValue.value.trim().length > 0
   const hasUploadedFiles = selectedFiles.value.some(f => f.status === 'success')
   return hasText || hasUploadedFiles
@@ -40,16 +43,26 @@ const canSend = computed(() => {
 const isCommand = computed(() => inputValue.value.trim().startsWith('/'))
 
 /**
+ * 解析当前命令输入
+ * 复用单一解析逻辑，避免 commandHint 与 handleSend 中重复解析命令字符串。
+ * @returns {{cmd: string, args: string[]} | null} 命令对象（含命令名与参数数组）；非命令输入返回 null
+ */
+const parsedCommand = computed(() => {
+  if (!isCommand.value) return null
+  const parts = inputValue.value.trim().slice(1).split(/\s+/)
+  return { cmd: parts[0], args: parts.slice(1) }
+})
+
+/**
  * 命令提示文本
  * 根据输入内容匹配 COMMAND_REGISTRY 中的命令定义，返回描述与用法提示。
  * @returns {string} 命令提示文本；非命令输入返回空字符串
  */
 const commandHint = computed(() => {
-  if (!isCommand.value) return ''
-  const parts = inputValue.value.trim().slice(1).split(/\s+/)
-  const cmd = parts[0]
-  const reg = COMMAND_REGISTRY.find((r) => r.name === cmd)
-  return reg ? `命令：${reg.description}（用法：${reg.usage}）` : `未知命令：/${cmd}`
+  const parsed = parsedCommand.value
+  if (!parsed) return ''
+  const reg = COMMAND_REGISTRY.find((r) => r.name === parsed.cmd)
+  return reg ? `命令：${reg.description}（用法：${reg.usage}）` : `未知命令：/${parsed.cmd}`
 })
 
 const autoResize = () => {
@@ -73,6 +86,37 @@ const handleKeydown = (event) => {
   }
 }
 
+/**
+ * 执行斜杠命令
+ * 在命令执行期间设置 isExecutingCommand 锁，防止用户重复点击发送；
+ * 命令结果通过 send 事件作为系统消息显示，switchAgent 信号通过 agent-switched 事件传递。
+ * @param {string} text - 已 trim 的输入文本（以 / 开头）
+ * @returns {Promise<void>}
+ * @throws {Error} 命令执行失败时通过 emit('send', '命令执行失败：...') 兜底处理，不向上抛出
+ */
+const executeCommand = async (text) => {
+  const parsed = parsedCommand.value
+  if (!parsed) return
+  const { cmd, args } = parsed
+  isExecutingCommand.value = true
+  try {
+    const result = await handleCommand(cmd, args)
+    if (result.switchAgent) {
+      emit('agent-switched', result.switchAgent)
+    }
+    // 命令结果作为系统消息显示（通过 send 事件传递）
+    emit('send', result.text, [])
+  } catch (err) {
+    emit('send', `命令执行失败：${err.message}`, [])
+  } finally {
+    isExecutingCommand.value = false
+    inputValue.value = ''
+    nextTick(() => {
+      autoResize()
+    })
+  }
+}
+
 const handleSend = async () => {
   if (!canSend.value) return
 
@@ -81,23 +125,7 @@ const handleSend = async () => {
 
   // 命令检测：以 / 开头视为命令，不走普通发送流程
   if (text.startsWith('/')) {
-    const parts = text.slice(1).split(/\s+/)
-    const cmd = parts[0]
-    const args = parts.slice(1)
-    try {
-      const result = await handleCommand(cmd, args)
-      if (result.switchAgent) {
-        emit('agent-switched', result.switchAgent)
-      }
-      // 命令结果作为系统消息显示（通过 send 事件传递）
-      emit('send', result.text, [])
-    } catch (err) {
-      emit('send', `命令执行失败：${err.message}`, [])
-    }
-    inputValue.value = ''
-    nextTick(() => {
-      autoResize()
-    })
+    await executeCommand(text)
     return
   }
 

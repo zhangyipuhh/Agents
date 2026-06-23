@@ -93,4 +93,72 @@ describe('InputBox 命令检测', () => {
     expect(wrapper.emitted('agent-switched')).toBeTruthy()
     expect(wrapper.emitted('agent-switched')[0]).toEqual(['map_agent'])
   })
+
+  it('test_unknown_command_shows_hint 未知命令显示未知命令提示', async () => {
+    const wrapper = mount(InputBox, {
+      props: { sessionId: 'sid_1', isStreaming: false },
+    })
+    const textarea = wrapper.find('textarea')
+    await textarea.setValue('/foo bar')
+    // 未知命令应在 commandHint 中显示「未知命令：/foo」
+    expect(wrapper.text()).toContain('未知命令：/foo')
+  })
+
+  it('test_agent_command_not_found /agent 不存在时不触发切换', async () => {
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [{ name: 'map_agent', display_name: '地图' }],
+    })
+    const wrapper = mount(InputBox, {
+      props: { sessionId: 'sid_1', isStreaming: false },
+    })
+    const textarea = wrapper.find('textarea')
+    await textarea.setValue('/agent non_exist')
+    const sendBtn = wrapper.find('.send-btn')
+    await sendBtn.trigger('click')
+    await flushPromises()
+    // 目标 agent 不存在时不应触发 agent-switched
+    expect(wrapper.emitted('agent-switched')).toBeFalsy()
+    // 应通过 send 事件返回包含「不存在」的提示文本
+    expect(wrapper.emitted('send')).toBeTruthy()
+    expect(wrapper.emitted('send')[0][0]).toContain('不存在')
+  })
+
+  it('test_command_network_error_emits_failure 命令网络错误时 emit 失败提示', async () => {
+    global.fetch = vi.fn((url) => {
+      if (url === '/api/agent/list') {
+        return Promise.resolve({ ok: false, status: 500, json: async () => ({ detail: '服务器错误' }) })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ access_token: 'token' }) })
+    })
+    const wrapper = mount(InputBox, {
+      props: { sessionId: 'sid_1', isStreaming: false },
+    })
+    const textarea = wrapper.find('textarea')
+    await textarea.setValue('/agent map_agent')
+    const sendBtn = wrapper.find('.send-btn')
+    await sendBtn.trigger('click')
+    await flushPromises()
+    // /api/agent/list 返回非 ok 时应通过 send 事件返回「命令执行失败」提示
+    expect(wrapper.emitted('send')).toBeTruthy()
+    expect(wrapper.emitted('send')[0][0]).toContain('命令执行失败')
+  })
+
+  it('test_agents_command_emits_send /agents 命令触发 send 事件', async () => {
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [{ name: 'map_agent', display_name: '地图' }],
+    })
+    const wrapper = mount(InputBox, {
+      props: { sessionId: 'sid_1', isStreaming: false },
+    })
+    const textarea = wrapper.find('textarea')
+    await textarea.setValue('/agents')
+    const sendBtn = wrapper.find('.send-btn')
+    await sendBtn.trigger('click')
+    await flushPromises()
+    // /agents 命令应通过 send 事件返回智能体列表文本
+    expect(wrapper.emitted('send')).toBeTruthy()
+    expect(wrapper.emitted('send')[0][0]).toContain('map_agent')
+  })
 })
