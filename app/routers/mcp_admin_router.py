@@ -10,6 +10,7 @@ Date: 2026-06-23
 Author: AI Assistant
 """
 
+import dataclasses
 import logging
 from typing import Any, Dict, List
 
@@ -44,6 +45,34 @@ def _get_service(request: Request) -> McpConfigService:
     return service
 
 
+def _get_registry(request: Request):
+    """从 app.state 获取 MCPToolsRegistry 实例。
+
+    找不到时返回 None（不抛 500），让调用方决定是否降级处理。
+    生产对等初始化点：app/core/server.py lifespan 中
+    `app.state.mcp_registry = registry`。
+
+    参数:
+        request: FastAPI Request 对象
+
+    返回:
+        MCPToolsRegistry 或 None
+    """
+    return getattr(request.app.state, "mcp_registry", None)
+
+
+def _build_config_dict(server: McpServerConfig) -> dict:
+    """将 McpServerConfig 转为 dict 供 registry 使用。
+
+    参数:
+        server: McpServerConfig dataclass 实例
+
+    返回:
+        dict: 含所有字段的配置字典（含 args/env/headers/connect_timeout 等）
+    """
+    return dataclasses.asdict(server)
+
+
 @router.get("/servers")
 async def list_servers(request: Request) -> List[Dict[str, Any]]:
     """列出所有 MCP server 配置。"""
@@ -55,46 +84,101 @@ async def list_servers(request: Request) -> List[Dict[str, Any]]:
 async def create_server(request: Request, config: McpServerConfig) -> Dict[str, Any]:
     """新增 MCP server。
 
+    DB 写入后同步到 mcp_registry（热更新），registry 调用失败仅 warning。
+
     异常:
         HTTPException: name 已存在时抛出 409
     """
     service = _get_service(request)
     try:
-        return await service.create_server(config)
+        result = await service.create_server(config)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+
+    # 同步到 registry（热更新）
+    registry = _get_registry(request)
+    if registry is not None:
+        try:
+            await registry.add_server(config.name, _build_config_dict(config))
+        except Exception as e:
+            logger.warning(
+                "Failed to sync registry after create_server '%s': %s",
+                config.name, e,
+            )
+    return result
 
 
 @router.put("/servers/{name}")
 async def update_server(request: Request, name: str, config: McpServerConfig) -> Dict[str, Any]:
     """更新 MCP server 配置。
 
+    DB 写入后同步到 mcp_registry（热更新），registry 调用失败仅 warning。
+
     异常:
         HTTPException: server 不存在时抛出 404
     """
     service = _get_service(request)
     try:
-        return await service.update_server(name, config)
+        result = await service.update_server(name, config)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+    # 同步到 registry（热更新）
+    registry = _get_registry(request)
+    if registry is not None:
+        try:
+            await registry.update_server(name, _build_config_dict(config))
+        except Exception as e:
+            logger.warning(
+                "Failed to sync registry after update_server '%s': %s",
+                name, e,
+            )
+    return result
 
 
 @router.delete("/servers/{name}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_server(request: Request, name: str) -> None:
-    """删除 MCP server 及其关联 methods。"""
+    """删除 MCP server 及其关联 methods。
+
+    DB 删除后同步到 mcp_registry（热更新），registry 调用失败仅 warning。
+    """
     service = _get_service(request)
     await service.delete_server(name)
+
+    # 同步到 registry（热更新）
+    registry = _get_registry(request)
+    if registry is not None:
+        try:
+            await registry.remove_server(name)
+        except Exception as e:
+            logger.warning(
+                "Failed to sync registry after delete_server '%s': %s",
+                name, e,
+            )
 
 
 @router.post("/servers/{name}/toggle")
 async def toggle_server(request: Request, name: str, enabled: bool) -> Dict[str, Any]:
     """启用/禁用 MCP server。
 
+    DB 更新后同步到 mcp_registry（热更新），registry 调用失败仅 warning。
+
     参数:
         enabled: 是否启用（query 参数）
     """
     service = _get_service(request)
     await service.toggle_server(name, enabled)
+
+    # 同步到 registry（热更新）
+    registry = _get_registry(request)
+    if registry is not None:
+        try:
+            await registry.toggle_server(name, enabled)
+        except Exception as e:
+            logger.warning(
+                "Failed to sync registry after toggle_server '%s': %s",
+                name, e,
+            )
     return {"name": name, "enabled": enabled}
 
 

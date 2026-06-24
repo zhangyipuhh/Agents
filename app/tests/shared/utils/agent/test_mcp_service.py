@@ -270,3 +270,87 @@ def test_list_servers_decodes_str_jsonb():
     assert result[0]["tags"] == ["map"]
     assert result[0]["progress_reporting"] == {"enabled": False}
     assert result[0]["tool_config"] == {"enable_injection": False}
+
+
+# ============== 2026-06-24 新增：args/env/headers/connect_timeout 字段测试 ==============
+
+
+def test_mcp_server_config_has_new_fields():
+    """测试 McpServerConfig dataclass 含 4 个新字段且默认值正确。"""
+    config = McpServerConfig(name="test")
+    assert config.args == []
+    assert config.env == {}
+    assert config.headers == {}
+    assert config.connect_timeout == 10
+
+
+def test_decode_row_decodes_new_jsonb_fields():
+    """测试 _decode_row：args/env/headers 三个新 JSONB 字段被正确反序列化。"""
+    row = {
+        "name": "stdio_server",
+        "args": '["-y", "server"]',
+        "env": '{"KEY": "VAL"}',
+        "headers": '{"Authorization": "Bearer token"}',
+        "connect_timeout": 30,
+        "tags": '[]',
+        "progress_reporting": '{"enabled": false}',
+        "tool_config": '{"enable_injection": true}',
+        "sampling": '{"enabled": false}',
+        "command": None,
+    }
+    result = McpConfigService._decode_row(row)
+    assert result["args"] == ["-y", "server"]
+    assert result["env"] == {"KEY": "VAL"}
+    assert result["headers"] == {"Authorization": "Bearer token"}
+    assert result["connect_timeout"] == 30
+
+
+def test_decode_row_new_fields_none_uses_defaults():
+    """测试 _decode_row：args/env/headers 为 None 时使用合理默认值。"""
+    row = {
+        "name": "amap",
+        "args": None,
+        "env": None,
+        "headers": None,
+        "connect_timeout": None,
+        "tags": None,
+        "progress_reporting": None,
+        "tool_config": None,
+        "sampling": None,
+        "command": None,
+    }
+    result = McpConfigService._decode_row(row)
+    assert result["args"] == []
+    assert result["env"] == {}
+    assert result["headers"] == {}
+    assert result["connect_timeout"] == 10
+
+
+def test_create_server_includes_new_fields():
+    """测试 create_server SQL 包含 4 个新字段占位符。"""
+    import inspect
+    source = inspect.getsource(McpConfigService.create_server)
+    assert "args" in source
+    assert "env" in source
+    assert "headers" in source
+    assert "connect_timeout" in source
+
+
+def test_update_server_includes_new_fields():
+    """测试 update_server SQL 包含 4 个新字段占位符。"""
+    import inspect
+    source = inspect.getsource(McpConfigService.update_server)
+    assert "args" in source
+    assert "env" in source
+    assert "headers" in source
+    assert "connect_timeout" in source
+
+
+def test_seed_from_yaml_reads_new_fields():
+    """测试 seed_from_yaml_if_empty 从 yaml 读 4 个新字段。"""
+    import inspect
+    source = inspect.getsource(McpConfigService.seed_from_yaml_if_empty)
+    assert 'cfg.get("args"' in source
+    assert 'cfg.get("env"' in source
+    assert 'cfg.get("headers"' in source
+    assert 'cfg.get("connect_timeout"' in source

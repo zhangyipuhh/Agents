@@ -95,10 +95,66 @@ async def lifespan(app: FastAPI):
     # session/delete 需要 JWT + session 验证，所以也不在白名单中
     # 其他所有接口都需要验证 session（由 session_auth_middleware 处理）
 
-    # 初始化 MCPToolsRegistry
-    mcp_configs = settings.mcp.get_mcp_config()
-    print(f"[DEBUG] 获取到 mcp_configs: {mcp_configs}")
-    app.state.mcp_registry = None
+    # === 初始化 AgentConfigService / McpConfigService / MCPToolsRegistry ===
+    # DB 为 source of truth：lifespan 从 DB 读 MCP 配置，yaml 仅作种子。
+    # 降级路径：DB 不可用 / mcp_config_service 未初始化 / list_servers 返回空 → 用 yaml。
+    # 注意：不在此处预设 app.state.mcp_config_service = None，避免覆盖测试 fixture
+    # 的注入（测试 conftest 在 lifespan 之后执行，但 client fixture 的
+    # TestClient context manager 会触发 lifespan，若预设 None 会覆盖 fixture）。
+
+    db_pool = DatabasePool._pool
+    mcp_configs = None  # 优先从 DB 读，降级为 yaml
+
+    if db_pool:
+        try:
+            from app.shared.utils.agent.agent_config_service import AgentConfigService
+            from app.shared.utils.agent.agents_md_loader import AgentsMdLoader
+            from app.shared.utils.agent.mcp_service import McpConfigService
+
+            agents_md_loader = AgentsMdLoader()
+            app.state.agent_config_service = AgentConfigService(db_pool, agents_md_loader)
+            app.state.mcp_config_service = McpConfigService(db_pool)
+
+            # DB 为空时从 yaml 导入种子
+            await app.state.mcp_config_service.seed_from_yaml_if_empty()
+            logging.info("AgentConfigService and McpConfigService initialized")
+
+            # 2026-06-24 新增：将 AgentConfigService 设置到 knowledge_router 全局变量，
+            # 供 get_map_agent 等模块级函数使用（无法直接访问 request.app.state）
+            from app.routers.knowledge_router import set_agent_config_service
+            set_agent_config_service(app.state.agent_config_service)
+
+            # 从 DB 读 enabled=true 的 server 配置（DB 为 source of truth）
+            all_servers = await app.state.mcp_config_service.list_servers()
+            mcp_configs = {s["name"]: s for s in all_servers if s.get("enabled")}
+            if not mcp_configs:
+                logging.warning(
+                    "DB list_servers returned empty or all disabled, fallback to yaml"
+                )
+        except Exception as e:
+            logging.warning(
+                "Failed to initialize AgentConfigService/McpConfigService: %s", e, exc_info=True
+            )
+    else:
+        logging.warning(
+            "Database pool not available, AgentConfigService/McpConfigService not initialized"
+        )
+
+    # 降级路径：DB 不可用 / 初始化失败 / 返回空 → 从 yaml 读
+    if not mcp_configs:
+        try:
+            yaml_configs = settings.mcp.get_mcp_config()
+            # 防御性：确保是 dict 类型（测试 mock 或配置异常可能返回其他类型）
+            if isinstance(yaml_configs, dict) and yaml_configs:
+                mcp_configs = yaml_configs
+        except Exception as e:
+            logging.warning("Failed to load MCP configs from yaml: %s", e)
+        logging.info(
+            "MCP configs loaded from yaml (fallback), %d server(s)",
+            len(mcp_configs) if mcp_configs else 0,
+        )
+
+    # 初始化 MCPToolsRegistry（无论配置来源是 DB 还是 yaml）
     if mcp_configs:
         registry = MCPToolsRegistry.get_instance()
         try:
@@ -109,36 +165,6 @@ async def lifespan(app: FastAPI):
             )
         except Exception as e:
             logging.error("Failed to initialize MCPToolsRegistry: %s", e, exc_info=True)
-
-    # === 2026-06-23 新增：初始化 AgentConfigService 和 McpConfigService ===
-    # 为 agent_router / mcp_admin_router 提供 app.state 上的真实服务实例。
-    # 数据库未启用或初始化失败时降级为告警，不阻断 lifespan。
-    try:
-        from app.shared.utils.agent.agent_config_service import AgentConfigService
-        from app.shared.utils.agent.agents_md_loader import AgentsMdLoader
-        from app.shared.utils.agent.mcp_service import McpConfigService
-
-        db_pool = DatabasePool._pool
-        if db_pool:
-            agents_md_loader = AgentsMdLoader()
-            app.state.agent_config_service = AgentConfigService(db_pool, agents_md_loader)
-            app.state.mcp_config_service = McpConfigService(db_pool)
-
-            await app.state.mcp_config_service.seed_from_yaml_if_empty()
-            logging.info("AgentConfigService and McpConfigService initialized")
-
-            # 2026-06-24 新增：将 AgentConfigService 设置到 knowledge_router 全局变量，
-            # 供 get_map_agent 等模块级函数使用（无法直接访问 request.app.state）
-            from app.routers.knowledge_router import set_agent_config_service
-            set_agent_config_service(app.state.agent_config_service)
-        else:
-            logging.warning(
-                "Database pool not available, AgentConfigService/McpConfigService not initialized"
-            )
-    except Exception as e:
-        logging.warning(
-            "Failed to initialize AgentConfigService/McpConfigService: %s", e, exc_info=True
-        )
 
     # 初始化全局 Skill 系统（懒加载单例；agent 维度实例在 _llm_call 中按需创建）
     from app.core.skills.service import SkillsService

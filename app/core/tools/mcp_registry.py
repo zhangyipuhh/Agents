@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Optional
 
 from mcpClient.core.unified_mcp_client import UnifiedMCPClient
 
+from app.core.tools.mcp_tool_adapter import MCPToolConfig, MCPToolToLangChainAdapter
+
 logger = logging.getLogger(__name__)
 
 
@@ -236,7 +238,21 @@ class MCPToolsRegistry:
                     tool_name = getattr(tool, "name", str(tool))
                     if names and tool_name not in names:
                         continue
-                    results.append((tool, server_name, server_config))
+                    # 应用 MCPToolToLangChainAdapter 包装（幂等：已包装则跳过）
+                    # 让 server_config["tool_config"] 的 4 个字段真正生效
+                    if not isinstance(tool, MCPToolToLangChainAdapter):
+                        tool_config = MCPToolConfig.from_dict(
+                            server_config.get("tool_config")
+                        )
+                        adapted_tool = MCPToolToLangChainAdapter(
+                            mcp_tool=tool,
+                            mcp_server_name=server_name,
+                            mcp_client=self._client,
+                            tool_config=tool_config,
+                        )
+                    else:
+                        adapted_tool = tool
+                    results.append((adapted_tool, server_name, server_config))
 
             except Exception as e:
                 error_msg = str(e)

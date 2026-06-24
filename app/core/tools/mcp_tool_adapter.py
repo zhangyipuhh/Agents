@@ -405,6 +405,30 @@ class MCPToolConfig:
         self.unwrap_result = unwrap_result
         self.hidden_param_keys = hidden_param_keys or []
 
+    @classmethod
+    def from_dict(cls, config: Optional[dict]) -> "MCPToolConfig":
+        """从 dict 构造 MCPToolConfig（用于从 DB / yaml 的 tool_config 字段加载）。
+
+        参数:
+            config: 工具配置字典，可能为 None / {} / 含部分键。
+                    预期键：enable_injection / default_param_keys /
+                    hidden_param_keys / unwrap_result
+
+        返回:
+            MCPToolConfig: 配置对象；config 为 None 或空时返回默认实例
+
+        异常:
+            不主动抛出异常；缺键时使用默认值
+        """
+        if not config:
+            return cls()
+        return cls(
+            enable_injection=bool(config.get("enable_injection", True)),
+            default_param_keys=list(config.get("default_param_keys") or []),
+            hidden_param_keys=list(config.get("hidden_param_keys") or []),
+            unwrap_result=bool(config.get("unwrap_result", False)),
+        )
+
 
 class MCPToolToLangChainAdapter(BaseTool):
     """

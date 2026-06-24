@@ -182,3 +182,115 @@ def test_toggle_method_sets_enabled():
     }
     asyncio.run(registry.toggle_method("method_test", "search", False))
     assert registry._server_configs["method_test"]["methods"]["search"]["enabled"] is False
+
+
+# =============================================================================
+# 工具适配器包装测试（2026-06-24 新增）
+# 验证 _get_tools_with_server_async 用 MCPToolToLangChainAdapter 包装原生工具
+# =============================================================================
+
+
+def test_get_tools_with_server_wraps_with_adapter():
+    """
+    测试 _get_tools_with_server_async：原生工具被 MCPToolToLangChainAdapter 包装。
+
+    验证：
+    - server_config["tool_config"] 被传入适配器
+    - 返回元组第 1 项是 MCPToolToLangChainAdapter 实例
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 工具未被正确包装时抛出
+    """
+    from app.core.tools.mcp_tool_adapter import MCPToolToLangChainAdapter, MCPToolConfig
+    from unittest.mock import AsyncMock, MagicMock
+
+    registry = MCPToolsRegistry()
+    registry._initialized = True
+
+    # mock client：返回 1 个原生工具
+    fake_tool = MagicMock()
+    fake_tool.name = "search"
+    fake_tool.description = "搜索工具"
+
+    mock_client = MagicMock()
+    mock_client.get_server_names = MagicMock(return_value=["amap"])
+    mock_client.get_server_tools = AsyncMock(return_value={"tools": [fake_tool]})
+    registry._client = mock_client
+
+    # server_config 含 tool_config
+    registry._server_configs["amap"] = {
+        "type": "sse",
+        "url": "http://x",
+        "tags": ["map"],
+        "tool_config": {
+            "enable_injection": True,
+            "default_param_keys": ["session_id"],
+            "hidden_param_keys": [],
+            "unwrap_result": True,
+        },
+    }
+
+    results = asyncio.run(registry._get_tools_with_server_async())
+
+    assert len(results) == 1
+    tool, server_name, server_config = results[0]
+    assert isinstance(tool, MCPToolToLangChainAdapter)
+    assert server_name == "amap"
+    assert tool.tool_config.enable_injection is True
+    assert tool.tool_config.default_param_keys == ["session_id"]
+    assert tool.tool_config.unwrap_result is True
+
+
+def test_get_tools_with_server_skips_already_wrapped():
+    """
+    测试 _get_tools_with_server_async：已是 MCPToolToLangChainAdapter 的工具不重复包装（幂等）。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 工具被重复包装时抛出
+    """
+    from app.core.tools.mcp_tool_adapter import MCPToolToLangChainAdapter, MCPToolConfig
+    from unittest.mock import AsyncMock, MagicMock
+
+    registry = MCPToolsRegistry()
+    registry._initialized = True
+
+    # 构造一个已包装的工具
+    original_tool = MagicMock()
+    original_tool.name = "search"
+    original_tool.description = "搜索工具"
+    already_wrapped = MCPToolToLangChainAdapter(
+        mcp_tool=original_tool,
+        mcp_server_name="amap",
+        tool_config=MCPToolConfig(unwrap_result=False),
+    )
+
+    mock_client = MagicMock()
+    mock_client.get_server_names = MagicMock(return_value=["amap"])
+    mock_client.get_server_tools = AsyncMock(return_value={"tools": [already_wrapped]})
+    registry._client = mock_client
+
+    registry._server_configs["amap"] = {
+        "type": "sse",
+        "tool_config": {"unwrap_result": True},
+    }
+
+    results = asyncio.run(registry._get_tools_with_server_async())
+
+    assert len(results) == 1
+    tool, _, _ = results[0]
+    # 幂等：返回的就是原包装实例，未被二次包装
+    assert tool is already_wrapped
+    # tool_config 保持原值（未被 server_config 覆盖）
+    assert tool.tool_config.unwrap_result is False

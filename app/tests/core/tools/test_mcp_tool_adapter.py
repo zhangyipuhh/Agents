@@ -211,3 +211,95 @@ def test_mcp_tool_to_langchain_adapter_exists():
     """
     assert hasattr(adapter, "MCPToolToLangChainAdapter")
     assert inspect.isclass(adapter.MCPToolToLangChainAdapter)
+
+
+# =============================================================================
+# MCPToolConfig.from_dict 工厂方法测试（2026-06-24 新增）
+# =============================================================================
+
+
+def test_mcp_tool_config_from_dict_none():
+    """
+    测试 from_dict：传入 None 应返回默认实例。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 返回值不是默认实例时抛出
+    """
+    config = adapter.MCPToolConfig.from_dict(None)
+    assert config.enable_injection is True
+    assert config.default_param_keys == []
+    assert config.hidden_param_keys == []
+    assert config.unwrap_result is False
+
+
+def test_mcp_tool_config_from_dict_empty():
+    """
+    测试 from_dict：传入空 dict 应返回默认实例。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 返回值不是默认实例时抛出
+    """
+    config = adapter.MCPToolConfig.from_dict({})
+    assert config.enable_injection is True
+    assert config.default_param_keys == []
+    assert config.hidden_param_keys == []
+    assert config.unwrap_result is False
+
+
+def test_mcp_tool_config_from_dict_full():
+    """
+    测试 from_dict：传入完整 dict 应正确构造配置。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 字段值与输入不一致时抛出
+    """
+    config = adapter.MCPToolConfig.from_dict({
+        "enable_injection": False,
+        "default_param_keys": ["session_id", "geometry_data"],
+        "hidden_param_keys": ["geometry_data"],
+        "unwrap_result": True,
+    })
+    assert config.enable_injection is False
+    assert config.default_param_keys == ["session_id", "geometry_data"]
+    assert config.hidden_param_keys == ["geometry_data"]
+    assert config.unwrap_result is True
+
+
+def test_mcp_tool_config_from_dict_partial():
+    """
+    测试 from_dict：传入部分键应使用默认值补齐缺失键。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 缺失键未使用默认值时抛出
+    """
+    config = adapter.MCPToolConfig.from_dict({
+        "default_param_keys": ["session_id"],
+    })
+    assert config.enable_injection is True
+    assert config.default_param_keys == ["session_id"]
+    assert config.hidden_param_keys == []
+    assert config.unwrap_result is False
