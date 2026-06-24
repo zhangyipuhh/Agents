@@ -138,13 +138,13 @@ class AgentConfig:
     base_url: Optional[str] = field(default=LLM_CONFIG["base_url"])
     """API 基础 URL，指定模型服务的地址。如果为 None，则使用默认地址"""
     
-    max_tokens: int = field(default=999999999)
+    max_tokens: int = field(default=200000)
     """最大 token 数，限制单次生成的最大长度，防止生成过长响应，默认 999999999"""
     
-    max_tokens_before_summary: int = field(default=999999999)
+    max_tokens_before_summary: int = field(default=180000)
     """触发摘要的 token 阈值，当消息历史超过此值时触发摘要操作，默认 999999999"""
     
-    max_summary_tokens: int = field(default=999999999)
+    max_summary_tokens: int = field(default=20000)
     """摘要后的最大 token 数，控制摘要的长度，避免摘要过于冗长，默认 999999999"""
     
     checkpointer: BaseCheckpointSaver = field(default=None)
