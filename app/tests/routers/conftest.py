@@ -47,6 +47,46 @@ def _init_agent_config_service(app):
 
 
 @pytest.fixture(autouse=True)
+def _init_db(app):
+    """初始化 app.state.db 供 agent_admin_router 直接读取使用。
+
+    agent_admin_router.py 中 list_agents / get_agent 等端点会直接访问
+    `request.app.state.db.fetch / fetchrow`，需要 MagicMock 实例。
+
+    注意：AgentConfigService 在 _init_agent_config_service 中构造时仍传入 db=None，
+    其内部 fetchrow 由 service 方法直接调用。
+    测试需要 service 方法时可使用 MagicMock 替换 service._db。
+    """
+    from unittest.mock import MagicMock
+    if not hasattr(app.state, "db") or app.state.db is None:
+        app.state.db = MagicMock()
+
+
+@pytest.fixture(autouse=True)
+def _mock_user_db_for_admin_auth(monkeypatch):
+    """Mock UserDB.get_user_by_username 根据 username 返回对应 role 用户。
+
+    真实 auth_middleware 通过查询 UserDB 获取 role。测试环境下 DB 已 mock，
+    get_user_by_username 返回 None 导致 role='user'，require_admin 拒绝。
+    此处 patch 后：
+    - username='admin' 返回 role='admin'
+    - username='testuser' 返回 role='user'
+    - 其他返回 None
+    """
+    from unittest.mock import AsyncMock
+    async def fake_get_user_by_username(username):
+        if username == "admin":
+            return {"id": 1, "username": "admin", "role": "admin"}
+        if username == "testuser":
+            return {"id": 2, "username": "testuser", "role": "user"}
+        return None
+    monkeypatch.setattr(
+        "app.shared.utils.auth.user_db.UserDB.get_user_by_username",
+        fake_get_user_by_username,
+    )
+
+
+@pytest.fixture(autouse=True)
 def _mock_session_cache_for_agent(monkeypatch):
     """Mock session_cache.verify_session 以绕过 /api/agent/ 路径的 Session 校验。
 

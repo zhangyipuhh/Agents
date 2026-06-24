@@ -372,7 +372,7 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 | revoked | BOOLEAN DEFAULT FALSE | ~~软删除标志（已废弃，逻辑上改为物理删除，不再使用）~~ |
 | created_at | TIMESTAMP DEFAULT NOW() | 创建时间 |
 
-### agents 表（2026-06-23 新增）
+### agents 表（2026-06-23 新增，2026-06-24 升级 config_schema 三层结构）
 统一智能体架构的运行时配置表，存储智能体元信息、状态 schema、上下文 schema 及 MCP 标签等。
 
 | 字段 | 类型 | 说明 |
@@ -382,13 +382,42 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 | display_name | VARCHAR(200) | 显示名称 |
 | description | TEXT | 描述 |
 | agents_md_path | VARCHAR(500) | AGENTS.md 配置文件路径 |
-| state_schema | JSONB DEFAULT '{}' | 状态 schema 定义 |
-| context_schema | JSONB DEFAULT '{}' | 上下文 schema 定义 |
+| state_schema | JSONB DEFAULT '{}' | **遗留**状态 schema（兼容旧版本，由 config_schema.state_fields 拆分同步写入） |
+| context_schema | JSONB DEFAULT '{}' | **遗留**上下文 schema（兼容旧版本，由 config_schema.context_fields 拆分同步写入） |
+| **config_schema** | **JSONB DEFAULT '{}'** | **2026-06-24 新增**：三层嵌套结构，覆盖 AgentConfig dataclass 字段 + state/context 字段 |
 | mcp_tags | JSONB DEFAULT '[]' | MCP 标签列表 |
 | enabled | BOOLEAN DEFAULT TRUE | 是否启用 |
 | sort_order | INT DEFAULT 0 | 排序权重 |
 | created_at | TIMESTAMP | 创建时间 |
 | updated_at | TIMESTAMP | 更新时间 |
+
+#### config_schema 三层嵌套结构（2026-06-24 重构）
+
+合并原 `state_schema` + `context_schema` 两字段为统一 `config_schema`，并扩展覆盖 AgentConfig dataclass 的运行参数（如 temperature / max_tokens / model_name 等）。
+
+```json
+{
+  "model_type":    {"type": "str",   "default": "deepseek"},
+  "temperature":   {"type": "float", "default": 0.5},
+  "max_tokens":    {"type": "int",   "default": 4096},
+  "state_fields": {
+    "map_zoom":   {"type": "int",  "default": 10},
+    "map_layer":  {"type": "str",  "default": "standard"}
+  },
+  "context_fields": {
+    "audit_root": {"type": "str", "default": "data/audit"}
+  }
+}
+```
+
+- **顶层字段**（如 `model_type`/`temperature`）：覆盖 AgentConfig dataclass 字段
+  - 通过 `dynamic_schema.parse_config_schema` → `build_agent_config_overrides` 提取
+  - 在 `chat` 端点构造 AgentConfig 时通过 `**overrides` 解包注入
+  - **保留字段**（不可覆盖）：`state_class` / `context_class` / `checkpointer` / `store`
+- **state_fields**：state 字典的扩展字段（除 AgentState 基类保留字段外）
+- **context_fields**：context 字典的扩展字段（除 AgentContext 基类保留字段外）
+
+**迁移策略**：旧 `state_schema` + `context_schema` 数据保留（数据不丢失），由迁移 SQL 段 14.3/14.4 合并到 `config_schema.state_fields` / `context_fields`。后续版本稳定后可 `DROP COLUMN state_schema, context_schema`。
 
 ### agent_tool_bindings 表（2026-06-23 新增）
 智能体与工具的绑定关系表，多对多映射。
@@ -1573,6 +1602,14 @@ environment:
 - **文件**：`FileList.vue`、`FilePreview.vue`、`FolderTree.vue`、`FileManagerModal.vue`
 - **知识库**：`KnowledgeChat.vue`、`ProfileInputBox.vue`
 - **公共**：`Sidebar.vue`、`HelloWorld.vue`、`UserSettingsDialog.vue`
+- **Admin 管理**（2026-06-23 / 2026-06-24 新增）：
+  - `UserSettingsDialog.vue`：admin 角色可访问的「用户设置与管理」对话框；包含 6 个 Tab —— `profile`（个人设置）/ `user-management`（用户管理）/ `online-monitor`（在线监控）/ `session-query`（会话查询）/ `mcp-management`（MCP 管理，调用 `McpServerManager.vue`）/ `agent-management`（智能体管理，2026-06-24 新增，调用 `AgentManager.vue`）
+  - `McpServerManager.vue`：MCP server CRUD + 方法列表 + 启禁用切换（前后端）
+  - `AgentManager.vue`（**2026-06-24 新增**）：智能体管理 Tab 内容；左侧智能体列表 + 右侧三组可编辑表格（AgentConfig 字段 / State 字段 / Context 字段）；支持完整 CRUD：
+    - **新增智能体**：弹窗表单（8 字段）+ 内嵌 config_schema 编辑器；调用 `fetchAgentConfigFieldTemplates` 获取 AgentConfig 字段模板做下拉选择
+    - **编辑字段**：每组表格独立增删改；section = `root` / `state_fields` / `context_fields`；通过 `updateAdminAgentConfigSchema` / `addAdminAgentConfigField` / `deleteAdminAgentConfigField` 增量更新
+    - **删除智能体**：含确认弹窗（保留历史会话）
+    - **启用/禁用开关**：右上角 switch，立即调用 `setAdminAgentEnabled`，不进入「未保存修改」队列
 - **Subagent 折叠与抽屉（2026-06-13 新增，2026-06-14 改造）**：
   - `SubAgentCard.vue`：通用子智能体折叠卡片（含沙箱），**2026-06-14 改造后挂在父 AI 气泡的 `timeline.tool` 块内**（按 toolCallId 匹配，遵循事件流时序，不再堆在会话末尾）；工具图标 + 父 prompt 预览 + 状态徽章 + 耗时 + 消息数 + "查看详情" 入口；点击 emit('click', subAgent)
   - `SubAgentDrawer.vue`：通用子智能体详情 Push Drawer；**2026-06-14 改造合并原 `SandboxDrawer` 职责**（`SandboxProgress` / `SandboxDrawer` / `SandboxEventItem` 三个组件已删除），沙箱专属摘要与事件时间线 **2026-06-15 再次精简后整段移除**；分层展示父 prompt / HumanMessage / AIMessage（含 tool_calls 决策区） / ToolMessage 三类消息 + 底部耗时/消息数/工具调用次数摘要；`renderMessageContent` 扩展支持 LangChain 0.3+ 多模态 ContentBlock（text / thinking / tool_use / tool_result）
@@ -2329,28 +2366,33 @@ app/shared/utils/agent/
 - 路径：`app/tests/shared/utils/agent/test_agents_md_loader.py`（5 用例）
 - 覆盖：模块可导入 / 读取 markdown 内容 / 缓存命中（同路径第二次加载走缓存）/ 文件不存在抛 FileNotFoundError / clear_cache 后重新加载读取最新内容
 
-### map_agent AGENTS.md 文件（Task 11，2026-06-23 新增）
+### map_agent AGENTS.md 文件（Task 11，2026-06-23 新增；2026-06-24 改造）
 
 首个落地于 `agents/<agent_name>/AGENTS.md` 约定的纯 markdown 提示词文件，供 `AgentsMdLoader` 读取后作为 `system_prompt` 注入 LLM。
 
 **文件位置**: `agents/map_agent/AGENTS.md`
 
-**内容章节**:
+**内容章节**（2026-06-24 改造：从原"身份与职责 / 可用工具 / 可用 Skill / Skill 使用指南 / 行为规范"重写为直接来自 `agents/map_agent/prompts.py` 的提示词片段，并追加精简的"Agent Capability"+"load_skill 使用方法"）:
 
 | 章节 | 作用 |
 |------|------|
-| 身份与职责 | 地图控制智能体的角色定位与主要职责 |
-| 可用工具 | 13 个工具表格（explore、query_knowledge、generate_report、save_business_info、ask_user_question、sandbox、load_skill、read_skill_file、get_current_time、open_file、open_file_by_id、load_web_page、read_cached_chunk） |
-| 可用 Skill | data-skill（数据查询与分析工作流） |
-| Skill 使用指南 | data-skill 的何时使用 / 如何使用 / 注意事项 |
-| 行为规范 | 中文响应、坐标校验、报告数据来源、HITL 问题选项、错误处理 |
+| Task Rules | 工具选择规则与 ask_user_question 使用约束（来自 prompts.py `DEFAULT_SYSTEM_PROMPT`） |
+| TOOL DESCRIPTION / `### explore` | explore 工具的使用场景、优先级与返回值限制（来自 prompts.py `MAP_AGENT_SYSTEM_PROMPT` 头部） |
+| TOOL DESCRIPTION / `### load_skill` | 通用约束：这两个工具仅在触发 skill 时使用；未触发 skill 时不要用它们，查找仍走 `explore` |
+| Agent Capability | 英文声明核心能力（合规性审查 + 项目预审，关键术语保留中文）+ 具体触发条件：调用 `load_skill("hgsc")` + `read_skill_file(absolute_path)` 获取详情 |
 
 **纯 markdown 原则**: 不包含 `state_schema` / `context_schema` / `TypedDict` 等运行时配置（这些在数据库 `agents` 表中），仅包含 LLM 可见的提示词内容。
 
 **内容测试**:
 
-- 路径：`app/tests/shared/utils/agent/test_agents_md_content.py`（5 用例）
-- 覆盖：文件存在 / 包含身份与职责章节 / 包含可用工具章节 / 包含行为规范章节 / 不包含 state 字段定义（纯 markdown 原则）
+- 路径：`app/tests/shared/utils/agent/test_agents_md_content.py`（4 用例，2026-06-24 由 5 用例精简）
+- 覆盖：文件存在 / 包含 Task Rules 章节 / 包含 TOOL DESCRIPTION 章节（含 explore 工具说明） / 不包含 state 字段定义（纯 markdown 原则）
+
+### hgsc skill（2026-06-24 新增）
+
+**文件位置**: `app/skills/hgsc/skill.md`（frontmatter `name: hgsc`）
+
+合规性审查（Compliance Review）与项目预审（Project Pre-review）工作流 skill，内容来源于 `agents/map_agent/prompts.py::MAP_AGENT_SYSTEM_PROMPT` 第 22-55 行（Workflow / 合规性审查步骤 / Task Examples / Output Requirements）。Workflow 部分描述"合规性审查"四步流程：上下文收集 → explore 验证附件 → ask_user_question 确认 → save_business_info 持久化 → quality_inspection_analysis → generate_report；原文为英文，保留英文原文。
 
 ## AgentConfigService 配置加载服务（Task 12，2026-06-23 新增）
 
@@ -2533,6 +2575,38 @@ app/routers/
 - **`app/features/map_agent/client.py`**：`MapAgentClient.chat_stream` URL 从 `/api/map/chat` 更新为 `/api/agent/chat`，新增 `agent_name` 参数（默认 `map_agent`）
 - **`app/tests/conftest.py`**：新增全局 mock `filesystem_encoding_fix.apply_fix` 为 no-op，支持根级测试导入 `app.main`
 - **测试**：`app/tests/test_main_routes_registered.py` 3 用例（mcp_admin_router 注册 / agent_router 注册 / 旧 /api/map/chat 已移除）
+
+## Agent Admin Router（2026-06-24 新增）
+
+提供智能体的完整 CRUD + config_schema 三层结构管理 API，前缀 `/api/admin/agents`，admin 权限（复用 `require_admin`）。在 `app/main.py::register_routers` 中注册。
+
+### 端点清单
+
+| 方法 | 路径 | 状态码 | 说明 |
+|---|---|---|---|
+| GET | `/api/admin/agents` | 200 | 列出所有 agent（含 config_schema 完整数据） |
+| GET | `/api/admin/agents/check-name?name=xxx` | 200 | name 唯一性预校验（返回 `{available: bool}`） |
+| POST | `/api/admin/agents/validate-md-path` | 200 | 校验 AGENTS.md 路径是否存在 |
+| GET | `/api/admin/agents/field-templates` | 200 | 获取 AgentConfig 字段模板列表（前端新增字段时下拉选择） |
+| GET | `/api/admin/agents/{name}` | 200 | 获取单个 agent 完整配置（含 agent_config_overrides 拆分结果） |
+| POST | `/api/admin/agents` | 201 | 新增智能体；name 已存在返回 409；AGENTS.md 不存在返回 400 |
+| DELETE | `/api/admin/agents/{name}` | 204 | 删除智能体（级联清理 agent_tool_bindings / agent_skill_bindings 关联） |
+| PUT | `/api/admin/agents/{name}/enabled` | 200 | 启用 / 禁用单个智能体（body: `{enabled: bool}`） |
+| PUT | `/api/admin/agents/{name}/config-schema` | 200 | 全量替换 config_schema |
+| POST | `/api/admin/agents/{name}/config-schema/field` | 200 | 增量添加字段（body: `{section, field_name, field_def}`） |
+| DELETE | `/api/admin/agents/{name}/config-schema/field` | 200 | 增量删除字段（query: `section + field_name`） |
+
+**section 取值**：`root`（顶层 AgentConfig 字段）/ `state_fields`（state 扩展字段）/ `context_fields`（context 扩展字段）
+
+### 设计要点
+
+- **保留字段校验**：`config_schema` 顶层不能包含 `state_class` / `context_class` / `checkpointer` / `store`（运行时对象），由 `service.update_agent_config_schema` 和 `create_agent` 在写库前校验
+- **name 唯一性**：DB UNIQUE 约束 + service 层预检 + admin API 409 Conflict 响应
+- **AGENTS.md 路径**：必须在 service 层 `Path.is_file()` 校验失败返回 400（防止脏数据写入）
+- **field_def 校验**：必须包含 `type` 键，type 必须在 `TYPE_MAP` 支持的类型中（`str`/`int`/`float`/`bool`/`dict`/`list`）
+- **错误映射**：`_handle_agent_error` 统一转换 service 异常（AgentAlreadyExistsError → 409 / AgentNotFoundError → 404 / ValueError → 400 / FileNotFoundError → 400 / KeyError → 400）
+- **Pydantic 模型**：`CreateAgentRequest` 强制 name 格式 `[a-z0-9_]{3,50}` / `display_name` 1-200 字符 / `field_name` Python 标识符格式；`AddFieldRequest.section` 自由字符串（由 service 校验）；`SetEnabledRequest.enabled` bool
+- **测试**：`app/tests/routers/test_agent_admin_router.py` 16 用例（P0 导入 / 路由注册 / 字段模板 / 校验 / CRUD / 鉴权 403）；`app/tests/routers/conftest.py` 新增 `_init_db`（注入 `app.state.db` MagicMock）和 `_mock_user_db_for_admin_auth`（根据 username 返回 role）两个 autouse fixture
 
 ### SSE 流式逻辑完整迁移（Task 24，2026-06-23 落地）
 

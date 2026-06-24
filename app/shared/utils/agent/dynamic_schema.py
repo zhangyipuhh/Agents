@@ -22,10 +22,14 @@ Author: AI Assistant
 """
 
 import copy
+import logging
 from typing import Any, Callable
 
 from app.core.agent.AgentConfig import AgentState
 from app.core.agent.AgentContext import AgentContext
+
+
+logger = logging.getLogger(__name__)
 
 
 RESERVED_STATE_FIELDS = {
@@ -40,6 +44,42 @@ RESERVED_CONTEXT_FIELDS = {
     "host_session_id", "process_data",
 }
 """AgentContext 基类保留字段集合。"""
+
+# 2026-06-24 新增：AgentConfig 保留字段集合
+# 这些字段不能通过 config_schema 覆盖（运行时对象 / 句柄无法被 JSON 描述）。
+# state_class / context_class 由 schema 动态生成；checkpointer / store 是 LangGraph 运行时句柄。
+RESERVED_CONFIG_FIELDS = {
+    "state_class", "context_class", "checkpointer", "store",
+}
+"""AgentConfig 中不可被 schema 覆盖的字段集合。"""
+
+# 2026-06-24 新增：AgentConfig 字段元信息
+# 用于前端「添加字段」时从 AgentConfig 已有字段模板选择。
+# 每个字段包含 type (TYPE_MAP 支持的基础类型) 和 default (运行时默认值)。
+# 字段顺序按 AgentConfig 定义顺序排列。
+_AGENT_CONFIG_FIELDS = [
+    ("model_type",                   "str"),
+    ("model_name",                   "str"),
+    ("temperature",                  "float"),
+    ("api_key",                      "str"),
+    ("base_url",                     "str"),
+    ("max_tokens",                   "int"),
+    ("max_tokens_before_summary",    "int"),
+    ("max_summary_tokens",           "int"),
+    ("system_prompt",                "str"),
+    ("name",                         "str"),
+    ("max_input_tokens",             "int"),
+    ("trim_tool_messages",           "bool"),
+    ("keep_last_n_tools",            "int"),
+    ("IS_MULTIMODAL",                "bool"),
+    ("llm_retry_max_attempts",       "int"),
+    ("llm_retry_initial_interval",   "float"),
+    ("tool_retry_max_attempts",      "int"),
+    ("tool_retry_initial_interval",  "float"),
+    ("summarize_retry_max_attempts",  "int"),
+    ("summarize_retry_initial_interval", "float"),
+]
+"""AgentConfig 字段清单（按定义顺序），用于前端字段模板选择与运行时校验。"""
 
 # === 新增（2026-06-24）：基类保留字段的运行时默认值 ===
 # TypedDict 的类型注解默认值（形如 `error_limit: int = 5`）仅用于静态类型检查，
@@ -247,3 +287,231 @@ def build_context(agent_name: str, context_schema: dict, request: Any) -> AgentC
         **safe_overrides,
     )
     return instance
+
+
+# ============================================================
+# 2026-06-24 新增：三层嵌套 config_schema 解析函数
+# ============================================================
+
+def parse_config_schema(config_schema: dict) -> dict:
+    """把 config_schema 拆分为 (agent_config_overrides, state_schema, context_schema)。
+
+    参数:
+        config_schema: 三层嵌套字典，结构：
+            {
+                <AgentConfig 字段>: {"type": "...", "default": ...},
+                state_fields:   {<字段>: {...}},
+                context_fields: {<字段>: {...}},
+            }
+            也兼容旧的两段结构：{"state_fields": {...}, "context_fields": {...}}
+            或纯 dict（视为顶层字段全部为 AgentConfig 字段覆盖）
+
+    返回:
+        dict: 包含以下键：
+            - agent_config_overrides: dict —— AgentConfig 字段覆盖（含 Python 原生类型值）
+            - state_schema: dict —— state_fields 子字典
+            - context_schema: dict —— context_fields 子字典
+            - raw_root_fields: dict —— config_schema 中不属于保留段的顶层字段
+              （含 type/default 信息，供后续 service 层做白名单过滤）
+
+    说明:
+        - state_fields / context_fields 子段必须是 dict；缺失时回退到空 dict
+        - 顶层非 state_fields/context_fields 的字段视为 AgentConfig 字段覆盖
+        - RESERVED_CONFIG_FIELDS 中的字段被过滤（不能被覆盖）
+        - RESERVED_STATE_FIELDS / RESERVED_CONTEXT_FIELDS 中的字段仅允许重写默认值
+    """
+    if not config_schema:
+        config_schema = {}
+    if not isinstance(config_schema, dict):
+        logger.warning("config_schema is not a dict, using empty defaults")
+        config_schema = {}
+
+    # 提取 state_fields / context_fields
+    state_schema = config_schema.get("state_fields") or {}
+    context_schema = config_schema.get("context_fields") or {}
+    if not isinstance(state_schema, dict):
+        logger.warning("config_schema.state_fields is not a dict, using empty dict")
+        state_schema = {}
+    if not isinstance(context_schema, dict):
+        logger.warning("config_schema.context_fields is not a dict, using empty dict")
+        context_schema = {}
+
+    # 提取顶层 AgentConfig 字段（排除保留段 + 保留字段）
+    raw_root_fields = {}
+    for key, value in config_schema.items():
+        if key in ("state_fields", "context_fields"):
+            continue
+        if key in RESERVED_CONFIG_FIELDS:
+            logger.warning(
+                "config_schema contains reserved field '%s', ignored", key
+            )
+            continue
+        if not isinstance(value, dict):
+            logger.warning(
+                "config_schema top-level field '%s' is not a dict, ignored", key
+            )
+            continue
+        raw_root_fields[key] = value
+
+    # 转换为 Python 原生类型
+    agent_config_overrides = build_agent_config_overrides(config_schema)
+
+    return {
+        "agent_config_overrides": agent_config_overrides,
+        "state_schema": state_schema,
+        "context_schema": context_schema,
+        "raw_root_fields": raw_root_fields,
+    }
+
+
+def build_agent_config_overrides(config_schema: dict) -> dict:
+    """从 config_schema 中提取 AgentConfig 字段覆盖（Python 原生类型值）。
+
+    参数:
+        config_schema: 三层嵌套字典（可为空 dict）
+
+    返回:
+        dict: 如 {"temperature": 0.7, "max_tokens": 4096}
+              仅返回 schema 中显式声明且不在 RESERVED_CONFIG_FIELDS 中的字段
+              不在 schema 中的字段保留 AgentConfig 默认值，不在此返回
+
+    说明:
+        - 类型字符串通过 TYPE_MAP 转换为 Python 原生类型
+        - dict / list 等可变类型使用 copy.deepcopy 避免跨实例污染
+        - 缺失 "default" 键的字段会被跳过（仅声明类型无值，不覆盖）
+    """
+    import copy as _copy
+
+    if not config_schema or not isinstance(config_schema, dict):
+        return {}
+
+    overrides: dict = {}
+    for key, value in config_schema.items():
+        if key in ("state_fields", "context_fields"):
+            continue
+        if key in RESERVED_CONFIG_FIELDS:
+            continue
+        if not isinstance(value, dict):
+            continue
+        if "default" not in value:
+            continue
+
+        py_type = TYPE_MAP.get(value.get("type", "str"), str)
+        raw_default = value["default"]
+
+        # 类型转换 / 校验
+        try:
+            converted = _convert_to_python_type(raw_default, py_type)
+        except (ValueError, TypeError) as e:
+            logger.warning(
+                "config_schema field '%s' default value %r cannot be converted to %s: %s",
+                key, raw_default, py_type, e,
+            )
+            continue
+
+        if isinstance(converted, (dict, list)):
+            overrides[key] = _copy.deepcopy(converted)
+        else:
+            overrides[key] = converted
+
+    return overrides
+
+
+def _convert_to_python_type(value: Any, py_type: type) -> Any:
+    """把 schema 中的 default 值转换为指定 Python 类型。
+
+    参数:
+        value: 原始值（来自 JSON 反序列化，可能是 str / int / float / bool / dict / list / None）
+        py_type: 目标 Python 类型
+
+    返回:
+        Any: 转换后的值
+
+    异常:
+        ValueError: 无法转换时抛出
+    """
+    if value is None:
+        return None
+    if py_type is str:
+        return str(value)
+    if py_type is int:
+        return int(value)
+    if py_type is float:
+        return float(value)
+    if py_type is bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.lower() in ("true", "1", "yes")
+        return bool(value)
+    if py_type is dict:
+        if not isinstance(value, dict):
+            raise ValueError(f"expected dict, got {type(value).__name__}")
+        return dict(value)
+    if py_type is list:
+        if not isinstance(value, list):
+            raise ValueError(f"expected list, got {type(value).__name__}")
+        return list(value)
+    return value
+
+
+def get_agent_config_field_schema(field_name: str) -> dict | None:
+    """获取 AgentConfig 中某个字段的 schema 定义（type + 默认值）。
+
+    用于前端「添加字段」时从 AgentConfig 已有字段模板选择。
+
+    参数:
+        field_name: 字段名
+
+    返回:
+        dict | None: 如 {"type": "float", "default": 0, "field_name": "temperature"}
+                      字段不存在或属于保留字段时返回 None
+
+    说明:
+        - 返回的 default 是 AgentConfig.dataclass 的字段默认值
+        - 调用方应允许用户修改 default 值（覆盖原始默认值）
+    """
+    # 延迟导入避免循环依赖
+    from app.core.agent.AgentConfig import AgentConfig
+
+    field_names = {f[0] for f in _AGENT_CONFIG_FIELDS}
+    if field_name not in field_names:
+        return None
+    if field_name in RESERVED_CONFIG_FIELDS:
+        return None
+
+    # 从 dataclass 字段获取默认值
+    from dataclasses import fields as _dc_fields
+    for f in _dc_fields(AgentConfig):
+        if f.name == field_name:
+            py_type = next((t for n, t in _AGENT_CONFIG_FIELDS if n == field_name), "str")
+            default = f.default
+            # default 是 dataclasses.MISSING 时返回 None
+            try:
+                if default is f.default_factory():  # type: ignore[misc]
+                    pass
+            except TypeError:
+                pass
+            return {
+                "field_name": field_name,
+                "type": py_type,
+                "default": default if not isinstance(default, type) else None,
+            }
+    return None
+
+
+def get_agent_config_field_templates() -> list:
+    """获取 AgentConfig 所有可被 schema 覆盖的字段模板列表。
+
+    返回:
+        list: 每项为 {"field_name": str, "type": str, "default": Any}
+              按 AgentConfig 定义顺序排列，不含 RESERVED_CONFIG_FIELDS
+    """
+    templates = []
+    for field_name, type_str in _AGENT_CONFIG_FIELDS:
+        if field_name in RESERVED_CONFIG_FIELDS:
+            continue
+        schema = get_agent_config_field_schema(field_name)
+        if schema:
+            templates.append(schema)
+    return templates

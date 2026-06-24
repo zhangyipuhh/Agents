@@ -11,8 +11,13 @@ from app.shared.utils.agent.dynamic_schema import (
     build_agent_state,
     build_agent_context,
     build_context,
+    parse_config_schema,
+    build_agent_config_overrides,
+    get_agent_config_field_schema,
+    get_agent_config_field_templates,
     RESERVED_STATE_FIELDS,
     RESERVED_CONTEXT_FIELDS,
+    RESERVED_CONFIG_FIELDS,
 )
 
 
@@ -226,6 +231,149 @@ def test_build_agent_state_empty_schema_creates_valid_state():
     assert instance["messages"] == []
     # 至少包含 messages 字段（来自 _MessagesState 基类）
     assert "messages" in instance
+
+
+# ============================================================
+# 2026-06-24 新增：parse_config_schema / build_agent_config_overrides 测试
+# ============================================================
+
+def test_parse_config_schema_importable():
+    """测试 parse_config_schema 可被导入。"""
+    from app.shared.utils.agent import dynamic_schema
+    assert hasattr(dynamic_schema, "parse_config_schema")
+    assert hasattr(dynamic_schema, "build_agent_config_overrides")
+    assert hasattr(dynamic_schema, "RESERVED_CONFIG_FIELDS")
+
+
+def test_parse_config_schema_three_layer_structure():
+    """测试三层嵌套 config_schema 正确拆分。
+
+    验证 agent_config_overrides / state_schema / context_schema / raw_root_fields。
+    """
+    config_schema = {
+        "temperature": {"type": "float", "default": 0.5},
+        "max_tokens":  {"type": "int",   "default": 4096},
+        "state_fields": {
+            "map_zoom": {"type": "int", "default": 10},
+        },
+        "context_fields": {
+            "knowledge_root": {"type": "str", "default": "data/Knowledge"},
+        },
+    }
+    result = parse_config_schema(config_schema)
+    assert result["agent_config_overrides"]["temperature"] == 0.5
+    assert result["agent_config_overrides"]["max_tokens"] == 4096
+    assert result["state_schema"]["map_zoom"]["default"] == 10
+    assert result["context_schema"]["knowledge_root"]["default"] == "data/Knowledge"
+    assert "temperature" in result["raw_root_fields"]
+
+
+def test_parse_config_schema_empty_input():
+    """测试空 config_schema / None / 非 dict 输入的兜底行为。"""
+    assert parse_config_schema({})["agent_config_overrides"] == {}
+    assert parse_config_schema(None)["agent_config_overrides"] == {}
+    # 非 dict 类型应回退到空 dict
+    result = parse_config_schema("not a dict")  # type: ignore[arg-type]
+    assert result["state_schema"] == {}
+    assert result["context_schema"] == {}
+
+
+def test_parse_config_schema_filters_reserved_fields():
+    """测试保留字段（state_class / context_class / checkpointer / store）被过滤。"""
+    config_schema = {
+        "temperature": {"type": "float", "default": 0.5},
+        "state_class": {"type": "str", "default": "should_be_ignored"},
+        "checkpointer": {"type": "str", "default": "should_be_ignored"},
+    }
+    result = parse_config_schema(config_schema)
+    # 保留字段不会出现在 overrides / raw_root_fields 中
+    assert "state_class" not in result["agent_config_overrides"]
+    assert "checkpointer" not in result["agent_config_overrides"]
+    assert "state_class" not in result["raw_root_fields"]
+    assert "checkpointer" not in result["raw_root_fields"]
+    # 但 temperature 保留
+    assert result["agent_config_overrides"]["temperature"] == 0.5
+
+
+def test_build_agent_config_overrides_type_conversion():
+    """测试 build_agent_config_overrides 把 JSON 值转换为 Python 原生类型。"""
+    config_schema = {
+        "temperature":     {"type": "float", "default": 0.7},
+        "max_tokens":      {"type": "int",   "default": 8192},
+        "trim_tool_messages": {"type": "bool", "default": False},
+        "mcp_tags":        {"type": "list",  "default": ["a", "b"]},
+        "api_key":         {"type": "str",   "default": "sk-xxx"},
+    }
+    overrides = build_agent_config_overrides(config_schema)
+    assert overrides["temperature"] == 0.7
+    assert isinstance(overrides["temperature"], float)
+    assert overrides["max_tokens"] == 8192
+    assert isinstance(overrides["max_tokens"], int)
+    assert overrides["trim_tool_messages"] is False
+    assert isinstance(overrides["trim_tool_messages"], bool)
+    assert overrides["mcp_tags"] == ["a", "b"]
+    assert isinstance(overrides["mcp_tags"], list)
+    assert overrides["api_key"] == "sk-xxx"
+
+
+def test_build_agent_config_overrides_skips_no_default():
+    """测试缺少 default 键的字段被跳过（仅声明类型无值）。"""
+    config_schema = {
+        "temperature": {"type": "float"},  # 缺 default
+        "max_tokens":  {"type": "int", "default": 4096},
+    }
+    overrides = build_agent_config_overrides(config_schema)
+    assert "temperature" not in overrides
+    assert overrides["max_tokens"] == 4096
+
+
+def test_get_agent_config_field_schema_returns_dict():
+    """测试已知字段返回完整 schema。"""
+    schema = get_agent_config_field_schema("temperature")
+    assert schema is not None
+    assert schema["field_name"] == "temperature"
+    assert schema["type"] == "float"
+
+
+def test_get_agent_config_field_schema_unknown_field_returns_none():
+    """测试未知字段返回 None。"""
+    assert get_agent_config_field_schema("non_existent_field") is None
+    # 保留字段也返回 None
+    assert get_agent_config_field_schema("state_class") is None
+    assert get_agent_config_field_schema("checkpointer") is None
+
+
+def test_get_agent_config_field_templates_returns_list():
+    """测试 AgentConfig 字段模板列表非空。"""
+    templates = get_agent_config_field_templates()
+    assert isinstance(templates, list)
+    assert len(templates) > 0
+    # 不包含保留字段
+    field_names = [t["field_name"] for t in templates]
+    assert "state_class" not in field_names
+    assert "checkpointer" not in field_names
+    # 包含常用字段
+    assert "temperature" in field_names
+    assert "max_tokens" in field_names
+
+
+def test_parse_config_schema_state_fields_preserved_through_pipeline():
+    """端到端：parse_config_schema → build_agent_state 应能正确生成 state 子类。"""
+    config_schema = {
+        "temperature": {"type": "float", "default": 0.5},
+        "state_fields": {
+            "map_zoom": {"type": "int", "default": 12},
+            "map_layer": {"type": "str", "default": "satellite"},
+        },
+    }
+    parsed = parse_config_schema(config_schema)
+    cls = build_agent_state("map_agent", parsed["state_schema"])
+    annotations = cls.__annotations__
+    assert "map_zoom" in annotations
+    assert "map_layer" in annotations
+    instance = cls(messages=[])
+    assert instance["map_zoom"] == 12
+    assert instance["map_layer"] == "satellite"
 
 
 def test_build_agent_context_fills_base_reserved_defaults():

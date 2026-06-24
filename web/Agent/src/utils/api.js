@@ -1025,8 +1025,201 @@ export async function deleteMcpServer(name) {
   })
   if (!response.ok) {
     const detail = await response.json().catch(() => ({}))
-    throw new Error(detail.detail || `HTTP ${response.status}`)
+    throw new Error(detail.detail || `删除 MCP 服务器失败: ${response.status}`)
   }
+}
+
+
+/* ============================================
+   智能体管理 API（2026-06-24 新增）
+   ============================================ */
+
+/**
+ * 列出所有智能体（含 config_schema 完整数据）
+ * @returns {Promise<Array>} 智能体列表
+ */
+export async function fetchAdminAgentList() {
+  const response = await fetchWithAuth('/api/admin/agents')
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取智能体列表失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 获取单个智能体完整配置
+ * @param {string} name - 智能体名称
+ * @returns {Promise<Object>} 智能体完整配置（含 agent_config_overrides）
+ */
+export async function fetchAdminAgentConfig(name) {
+  const response = await fetchWithAuth(`/api/admin/agents/${encodeURIComponent(name)}`)
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取智能体配置失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 新增智能体
+ * @param {Object} payload - { name, display_name, description, agents_md_path, config_schema, mcp_tags, enabled, sort_order }
+ * @returns {Promise<Object>} 新创建的智能体记录
+ */
+export async function createAdminAgent(payload) {
+  const response = await fetchWithAuth('/api/admin/agents', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `新增智能体失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 删除智能体（级联清理工具/技能绑定）
+ * @param {string} name - 智能体名称
+ * @returns {Promise<void>}
+ */
+export async function deleteAdminAgent(name) {
+  const response = await fetchWithAuth(`/api/admin/agents/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `删除智能体失败: ${response.status}`)
+  }
+}
+
+/**
+ * 启用 / 禁用智能体
+ * @param {string} name - 智能体名称
+ * @param {boolean} enabled - 目标状态
+ * @returns {Promise<Object>} 更新后的记录
+ */
+export async function setAdminAgentEnabled(name, enabled) {
+  const response = await fetchWithAuth(`/api/admin/agents/${encodeURIComponent(name)}/enabled`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `更新智能体启用状态失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 全量替换 config_schema
+ * @param {string} name - 智能体名称
+ * @param {Object} configSchema - 三层嵌套字典
+ * @returns {Promise<Object>} 更新后的记录
+ */
+export async function updateAdminAgentConfigSchema(name, configSchema) {
+  const response = await fetchWithAuth(`/api/admin/agents/${encodeURIComponent(name)}/config-schema`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ config_schema: configSchema }),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `更新 config_schema 失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 增量添加 config_schema 字段
+ * @param {string} name - 智能体名称
+ * @param {string} section - root / state_fields / context_fields
+ * @param {string} fieldName - 字段名
+ * @param {Object} fieldDef - { type, default }
+ * @returns {Promise<Object>} 更新后的记录
+ */
+export async function addAdminAgentConfigField(name, section, fieldName, fieldDef) {
+  const response = await fetchWithAuth(
+    `/api/admin/agents/${encodeURIComponent(name)}/config-schema/field`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ section, field_name: fieldName, field_def: fieldDef }),
+    }
+  )
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `添加字段失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 增量删除 config_schema 字段
+ * @param {string} name - 智能体名称
+ * @param {string} section - root / state_fields / context_fields
+ * @param {string} fieldName - 字段名
+ * @returns {Promise<Object>} 更新后的记录
+ */
+export async function deleteAdminAgentConfigField(name, section, fieldName) {
+  const response = await fetchWithAuth(
+    `/api/admin/agents/${encodeURIComponent(name)}/config-schema/field?section=${encodeURIComponent(section)}&field_name=${encodeURIComponent(fieldName)}`,
+    { method: 'DELETE' }
+  )
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `删除字段失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 获取 AgentConfig 字段模板列表（用于新增字段时下拉选择）
+ * @returns {Promise<Array<{field_name, type, default}>>} 字段模板列表
+ */
+export async function fetchAgentConfigFieldTemplates() {
+  const response = await fetchWithAuth('/api/admin/agents/field-templates')
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取字段模板失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 校验 AGENTS.md 路径是否存在
+ * @param {string} path - AGENTS.md 文件路径
+ * @returns {Promise<{path, exists, is_file}>} 校验结果
+ */
+export async function validateAgentMdPath(path) {
+  const response = await fetchWithAuth('/api/admin/agents/validate-md-path', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `校验 AGENTS.md 路径失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 检查智能体 name 是否唯一
+ * @param {string} name - 智能体名称
+ * @returns {Promise<{name, available}>} 校验结果
+ */
+export async function checkAgentNameUnique(name) {
+  const response = await fetchWithAuth(
+    `/api/admin/agents/check-name?name=${encodeURIComponent(name)}`
+  )
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `name 唯一性校验失败: ${response.status}`)
+  }
+  return response.json()
 }
 
 /**

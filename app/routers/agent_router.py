@@ -127,12 +127,20 @@ async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse
 
         # 获取全局异步 checkpointer，支持 resume 与多轮对话状态持久化
         checkpointer = await get_async_checkpointer()
+        # 2026-06-24 重构：把 config_schema 中 AgentConfig 字段覆盖（如 temperature /
+        # model_name / max_tokens 等）解包注入 AgentConfig 构造器。未在 schema 中声明的
+        # 字段保留 AgentConfig 默认值（来自 LLM_CONFIG / 环境变量），向后兼容。
+        # 保留字段（state_class / context_class / checkpointer / store）已由
+        # dynamic_schema.parse_config_schema 在 RESERVED_CONFIG_FIELDS 阶段过滤，
+        # 不会出现在 agent_config_overrides 中。
+        agent_config_overrides = config.agent_config_overrides or {}
         agent_config = AgentConfig(
             name=config.name,
             system_prompt=config.system_prompt,
             state_class=config.state_class,
             context_class=config.context_class,
             checkpointer=checkpointer,
+            **agent_config_overrides,
         )
         agent = Agent(agent_config)
         await agent.__ainit__()
