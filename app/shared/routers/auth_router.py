@@ -211,7 +211,7 @@ async def register(request: RegisterRequest):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="密码必须包含数字"
         )
-    if not re.search(r'[!@#$%^&*()_+\-=\[\]{}|;:,.<>?]', request.password):
+    if not re.search(r'[!@#$%^&*()_+\-=[]{}|;:,.<>?]', request.password):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="密码必须包含特殊字符"
