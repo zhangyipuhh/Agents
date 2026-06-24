@@ -2500,7 +2500,7 @@ app/shared/utils/agent/agent_config_service.py
 | `UnifiedAgentConfig`                                             | 统一智能体配置 dataclass（name / display_name / description / system_prompt / state_class / context_class / mcp_tags / enabled_tool_names / enabled_skill_names / agents_md_path） |
 | `AgentNotFoundError`                                             | 智能体未找到或已禁用时抛出的异常                                                                                                                                                   |
 | `AgentConfigService(db, agents_md_loader)`                       | 构造器，参数 `db` 需支持异步 `fetch` / `fetchrow` / `execute`，`agents_md_loader` 为 `AgentsMdLoader` 实例                                                             |
-| `AgentConfigService.get_agent_config(agent_name)`                | 异步加载完整配置：查询 agents 表 → 加载 AGENTS.md → 构建 state/context 类 → 加载 tool/skill 绑定，返回 `UnifiedAgentConfig`                                                   |
+| `AgentConfigService.get_agent_config(agent_name)`                | 异步加载完整配置：查询 agents 表 → 加载 AGENTS.md → 构建 state/context 类 → 加载 tool/skill 绑定，返回 `UnifiedAgentConfig`；**agent_name 为空时返回框架默认配置（AgentState/AgentContext 基类，system_prompt 为空由 Agent 内部回退到 BASE_SYSTEM_PROMPT）** |
 | `AgentConfigService.list_agents()`                               | 异步列出所有启用智能体（仅返回 name / display_name / description 摘要）                                                                                                            |
 | `AgentConfigService.create_agent(config)`                        | Admin 创建智能体（INSERT INTO agents RETURNING *）                                                                                                                                 |
 | `AgentConfigService.bind_tool(agent_name, tool_name, enabled)`   | 绑定/解绑工具（upsert agent_tool_bindings）                                                                                                                                        |
@@ -2651,7 +2651,8 @@ app/routers/
 - **服务获取**：`_get_service(request)` 从 `app.state.agent_config_service` 获取 `AgentConfigService` 实例；未初始化时抛 500（与 mcp_admin_router 模式一致）
 - **SSE 复用**：`_stream_helper.generate_stream_response` 完整迁移自 map_router.py（Task 24，2026-06-23），保留全部 SSE 处理逻辑：ContextVar 挂载/清理（子智能体停止信号）、精确延迟中断（disconnect 标记 + tools 节点完成时真正断开）、HITL 中断检测（多模式兼容）+ `_extract_interrupt_requests`、updates/custom/messages 三种 stream_mode 差异化处理、thread_id/langgraph_node 透传、`stream_format_context.format_message` 格式化；统一签名 `(agent, input_state, context, session_id, request)`，供 agent_router 与 map_router knowledge-chat 复用
 - **SSE 响应头**：`StreamingResponse` 显式设置 `Cache-Control: no-cache` / `Connection: keep-alive` / `X-Accel-Buffering: no`，防止 Nginx 等反向代理缓冲 SSE 流
-- **ChatRequest 模型**：Pydantic BaseModel，字段含 message / session_id / agent_name（默认 map_agent）/ attachments（暂未实现，预留字段）/ resume（HITL 恢复）/ context_overrides
+- **ChatRequest 模型**：Pydantic BaseModel，字段含 message / session_id / **agent_name（`Optional[str] = None`，为空时由后端使用框架默认配置）** / attachments（暂未实现，预留字段）/ resume（HITL 恢复）/ context_overrides
+- **默认智能体**：`agent_name` 为 `None` 或空字符串时，`AgentConfigService.get_agent_config` 返回默认 `UnifiedAgentConfig`，使用 `AgentState` / `AgentContext` 基类、`system_prompt=""`（Agent 内部拼接 `BASE_SYSTEM_PROMPT`），不绑定任何工具或 skill；配置获取统一收敛到 service 层，路由层无独立 else 默认分支
 - **context_overrides 过滤**：构造 context 实例前过滤 `RESERVED_CONTEXT_FIELDS`（session_id / store_id / namespace 等），避免与显式传入的 session_id 关键字参数冲突（TypeError: got multiple values for keyword argument）
 - **Agent 构造**：chat 端点从 `UnifiedAgentConfig` 提取 name / system_prompt / state_class / context_class 构造 `AgentConfig`，并通过 `get_async_checkpointer()` 注入全局 checkpointer（支持 resume 与多轮对话状态持久化），实例化 `Agent` 并调用 `await agent.__ainit__()` 完成异步初始化；初始化过程包裹 try/except，失败时抛 500
 - **输入状态**：resume 存在时构造 `Command(resume=...)`，否则构造 `state_class(messages=[HumanMessage(...)])`
@@ -2661,8 +2662,8 @@ app/routers/
 
 ### 前端切换（Task 15，2026-06-23 落地）
 
-- **`web/Agent/src/utils/api.js::chatStream`** 从 `/api/map/chat` 切换到 `/api/agent/chat`，函数签名追加第 5 个参数 `agentName = 'map_agent'`，请求体新增 `agent_name` 字段
-- **向后兼容**：`App.vue` 两处 call site（正常发送 + HITL resume）均使用 3-4 个参数，依赖默认值 `map_agent`，无需改动
+- **`web/Agent/src/utils/api.js::chatStream`** 从 `/api/map/chat` 切换到 `/api/agent/chat`，函数签名追加第 5 个参数 **`agentName = null`**，仅在非空时请求体才包含 `agent_name` 字段
+- **向后兼容**：`App.vue` 中 `agentName` 初始值为 `null`（未选择智能体），`InputBox.vue` 取消选择时 emit `null`；选择智能体后传入具体名称
 - **`knowledgeChatStream` 不变**：仍使用 `/api/map/knowledge-chat`（知识库聊天暂未纳入统一 Agent 架构）
 - **测试**：`web/Agent/src/utils/__tests__/api.agent-chat.test.js` 3 个用例（URL 切换 / agent_name 传参 / 默认值）
 

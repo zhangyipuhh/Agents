@@ -87,15 +87,18 @@ def test_chat_with_explicit_agent_name_uses_service(client, admin_headers, monke
     """测试传入 agent_name 时仍通过 AgentConfigService 加载配置。"""
     async def fake_get(self, name):
         from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
-        from app.core.agent.AgentConfig import AgentState
-        from app.core.agent.AgentContext import AgentContext
+        from unittest.mock import MagicMock
+        # 使用 MagicMock 替代真实 AgentState/AgentContext，避免测试环境下
+        # MessagesState 被根 conftest Mock 后导致 AgentState 继承异常。
+        state_mock = MagicMock(return_value={"messages": []})
+        context_mock = MagicMock(return_value={"session_id": "test"})
         return UnifiedAgentConfig(
             name=name,
             display_name="地图",
             description="",
             system_prompt="# 地图智能体",
-            state_class=AgentState,
-            context_class=AgentContext,
+            state_class=state_mock,
+            context_class=context_mock,
             mcp_tags=[],
             enabled_tool_names=[],
             enabled_skill_names=[],
