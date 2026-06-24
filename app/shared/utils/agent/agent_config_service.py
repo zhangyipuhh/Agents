@@ -208,6 +208,76 @@ class AgentConfigService:
         )
         return [dict(r) for r in rows]
 
+    async def list_all_agents_admin(self) -> List[Dict[str, Any]]:
+        """Admin 端点专用：列出所有智能体（含禁用项），返回全字段。
+
+        与 ``list_agents`` 的区别：
+        - 不带 ``WHERE enabled = TRUE`` 过滤，包含已禁用的智能体
+        - 返回全部数据库字段（含 config_schema / mcp_tags / sort_order 等）
+        - 排序与 ``agent_admin_router`` 保持一致：先 ``sort_order``，再 ``name``
+
+        用途：供 ``GET /api/admin/agents`` 列表端点使用，前端需要看到禁用项才能做启用/禁用切换。
+
+        参数:
+            无
+
+        返回:
+            List[Dict[str, Any]]: 智能体列表，每项包含 name / display_name /
+                description / agents_md_path / state_schema / context_schema /
+                config_schema / mcp_tags / enabled / sort_order / created_at /
+                updated_at
+
+        异常:
+            无（数据库异常由调用方处理）
+        """
+        rows = await self._db.fetch(
+            "SELECT name, display_name, description, agents_md_path, "
+            "state_schema, context_schema, config_schema, mcp_tags, "
+            "enabled, sort_order, created_at, updated_at "
+            "FROM agents ORDER BY sort_order, name"
+        )
+        return [dict(r) for r in rows]
+
+    async def get_agent_admin(self, agent_name: str) -> Dict[str, Any]:
+        """Admin 端点专用：获取单个智能体完整配置。
+
+        与 ``get_agent_config`` 的区别：
+        - 不校验 ``enabled`` 字段（admin 端点允许查看已禁用项）
+        - 不加载 AGENTS.md、不构造 state_class / context_class（避免无谓 IO）
+        - 直接返回 dict，并在 result 中追加 ``agent_config_overrides`` 拆分结果
+
+        用途：供 ``GET /api/admin/agents/{name}`` 详情端点使用。
+
+        参数:
+            agent_name: 智能体名称（唯一标识）
+
+        返回:
+            Dict[str, Any]: 智能体完整记录 + ``agent_config_overrides`` 字段
+                （由 ``parse_config_schema`` 从 ``config_schema`` 顶层字段提取）
+
+        异常:
+            AgentNotFoundError: 智能体不存在时抛出
+        """
+        row = await self._db.fetchrow(
+            "SELECT name, display_name, description, agents_md_path, "
+            "state_schema, context_schema, config_schema, mcp_tags, "
+            "enabled, sort_order, created_at, updated_at "
+            "FROM agents WHERE name = $1",
+            agent_name,
+        )
+        if not row:
+            raise AgentNotFoundError(f"Agent {agent_name} not found")
+        result = dict(row)
+        # 防御性反序列化：asyncpg 未注册 JSONB codec 时，config_schema 可能是 str
+        config_schema = self._decode_jsonb(result.get("config_schema"), {})
+        if not isinstance(config_schema, dict):
+            config_schema = {}
+        # 函数内延迟 import，与 agent_admin_router.get_agent 历史 import 模式保持一致
+        from app.shared.utils.agent.dynamic_schema import parse_config_schema
+        parsed = parse_config_schema(config_schema)
+        result["agent_config_overrides"] = parsed["agent_config_overrides"]
+        return result
+
     async def create_agent(self, config: Dict[str, Any]) -> Dict[str, Any]:
         """Admin 创建智能体（2026-06-24 支持 config_schema）。
 
@@ -548,3 +618,20 @@ class AgentConfigService:
             agent_name, skill_name, enabled,
         )
         logger.info("Bound skill %s to agent %s (enabled=%s)", skill_name, agent_name, enabled)
+
+    async def check_name_unique(self, name: str) -> bool:
+        """检查智能体名称是否可用。
+
+        参数:
+            name: 待校验名称
+
+        返回:
+            bool: True 表示可用，False 表示已存在
+
+        异常:
+            无（数据库异常由调用方处理）
+        """
+        existing = await self._db.fetchrow(
+            "SELECT 1 FROM agents WHERE name = $1 LIMIT 1", name,
+        )
+        return existing is None

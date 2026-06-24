@@ -483,6 +483,208 @@ def test_delete_agent_cascades_bindings():
     assert "DELETE FROM agents" in all_sqls
 
 
+# ============================================================
+# 2026-06-24 新增：admin 端点专用方法测试
+# 覆盖 AgentConfigService.list_all_agents_admin / get_agent_admin
+# 用于 agent_admin_router 重构后替代直接访问 app.state.db 的接口
+# ============================================================
+
+
+def test_list_all_agents_admin_returns_all_fields():
+    """测试 list_all_agents_admin 返回所有智能体（含禁用项）+ 全字段。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 断言失败时抛出
+    """
+    db = MagicMock()
+    db.fetch = AsyncMock(return_value=[
+        {
+            "name": "map_agent",
+            "display_name": "地图智能体",
+            "description": "地图控制",
+            "agents_md_path": "agents/map_agent/AGENTS.md",
+            "state_schema": "{}",
+            "context_schema": "{}",
+            "config_schema": {
+                "state_fields": {"map_zoom": {"type": "int", "default": 10}},
+                "context_fields": {},
+            },
+            "mcp_tags": ["map"],
+            "enabled": True,
+            "sort_order": 0,
+            "created_at": None,
+            "updated_at": None,
+        },
+        {
+            "name": "disabled_agent",
+            "display_name": "已禁用",
+            "description": "禁用项也应返回",
+            "agents_md_path": "agents/disabled/AGENTS.md",
+            "state_schema": "{}",
+            "context_schema": "{}",
+            "config_schema": {},
+            "mcp_tags": [],
+            "enabled": False,  # 关键：禁用项也要出现
+            "sort_order": 99,
+            "created_at": None,
+            "updated_at": None,
+        },
+    ])
+    service = AgentConfigService(db, MagicMock())
+
+    result = asyncio.run(service.list_all_agents_admin())
+
+    # 1. 长度 = 2（含禁用项）
+    assert len(result) == 2
+    # 2. 禁用项必须返回（与 list_agents 不同）
+    names = [r["name"] for r in result]
+    assert "disabled_agent" in names
+    # 3. 全字段都在
+    first = result[0]
+    for field in (
+        "name", "display_name", "description", "agents_md_path",
+        "state_schema", "context_schema", "config_schema", "mcp_tags",
+        "enabled", "sort_order", "created_at", "updated_at",
+    ):
+        assert field in first, f"缺少字段: {field}"
+
+
+def test_list_all_agents_admin_orders_by_sort_order_then_name():
+    """测试 list_all_agents_admin 传 SQL 时使用 ORDER BY sort_order, name。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: SQL 不含期望的 ORDER BY 子句时抛出
+    """
+    db = MagicMock()
+    db.fetch = AsyncMock(return_value=[])
+    service = AgentConfigService(db, MagicMock())
+    asyncio.run(service.list_all_agents_admin())
+
+    # 验证 SQL 含 ORDER BY sort_order, name（顺序敏感：admin 端点约定）
+    call_args = db.fetch.call_args
+    sql = call_args.args[0] if call_args.args else call_args[0][0]
+    assert "ORDER BY sort_order, name" in sql
+    # 不应过滤 enabled
+    assert "WHERE enabled" not in sql
+
+
+def test_get_agent_admin_returns_full_config_with_overrides():
+    """测试 get_agent_admin 返回完整 dict + agent_config_overrides 拆分。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 拆分结果不正确时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value={
+        "name": "map_agent",
+        "display_name": "地图智能体",
+        "description": "地图控制",
+        "agents_md_path": "agents/map_agent/AGENTS.md",
+        "state_schema": "{}",
+        "context_schema": "{}",
+        "config_schema": {
+            "temperature": {"type": "float", "default": 0.5},
+            "max_tokens": {"type": "int", "default": 4096},
+            "state_fields": {
+                "map_zoom": {"type": "int", "default": 10},
+            },
+            "context_fields": {},
+        },
+        "mcp_tags": ["map"],
+        "enabled": True,
+        "sort_order": 0,
+        "created_at": None,
+        "updated_at": None,
+    })
+    service = AgentConfigService(db, MagicMock())
+    result = asyncio.run(service.get_agent_admin("map_agent"))
+
+    # 1. 顶层字段全在
+    assert result["name"] == "map_agent"
+    assert result["display_name"] == "地图智能体"
+    assert result["enabled"] is True
+    # 2. agent_config_overrides 拆分正确
+    assert result["agent_config_overrides"]["temperature"] == 0.5
+    assert result["agent_config_overrides"]["max_tokens"] == 4096
+    # 3. state_fields / context_fields 不应出现在 overrides 中
+    assert "map_zoom" not in result["agent_config_overrides"]
+
+
+def test_get_agent_admin_raises_not_found():
+    """测试 get_agent_admin 在智能体不存在时抛 AgentNotFoundError。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        pytest.raises 期望的 AgentNotFoundError（异常外则测试失败）
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value=None)
+    service = AgentConfigService(db, MagicMock())
+
+    with pytest.raises(AgentNotFoundError, match="nonexistent_agent"):
+        asyncio.run(service.get_agent_admin("nonexistent_agent"))
+
+
+def test_get_agent_admin_handles_non_dict_config_schema():
+    """测试 get_agent_admin 在 config_schema 为非 dict 时不崩，回退空 dict。
+
+    防御性测试：覆盖 asyncpg JSONB 字段返回 str / list / None 的边缘情况。
+    _decode_jsonb 已有 str → json.loads 兼容；list 类型应原样返回后被识别为非 dict。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 拆分结果异常时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value={
+        "name": "weird_agent",
+        "display_name": "X",
+        "description": "",
+        "agents_md_path": "x",
+        "state_schema": "{}",
+        "context_schema": "{}",
+        "config_schema": ["unexpected", "list", "type"],  # 非 dict，模拟脏数据
+        "mcp_tags": [],
+        "enabled": True,
+        "sort_order": 0,
+        "created_at": None,
+        "updated_at": None,
+    })
+    service = AgentConfigService(db, MagicMock())
+    result = asyncio.run(service.get_agent_admin("weird_agent"))
+
+    # 不应崩溃；overrides 应为空 dict
+    assert result["agent_config_overrides"] == {}
+
+
 def test_delete_agent_nonexistent_raises():
     """测试删除不存在的智能体抛出 AgentNotFoundError。"""
     db = MagicMock()

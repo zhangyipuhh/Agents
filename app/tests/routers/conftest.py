@@ -38,28 +38,21 @@ def _init_mcp_config_service(app):
 def _init_agent_config_service(app):
     """初始化 app.state.agent_config_service 供 agent_router 使用。
 
-    lifespan 集成（Task 14）尚未完成，此处在测试中手动注入 AgentConfigService 实例。
-    测试通过 monkeypatch 替换类方法，因此 db=None 和 loader=None 即可。
+    生产对应初始化点：``app/core/server.py::lifespan`` 第 113-128 行
+    （db_pool 存在时构造 AgentConfigService 并挂到 ``app.state.agent_config_service``）。
+
+    lifespan 在测试环境中不会自动触发，因此 autouse fixture 在测试启动时
+    注入与生产同构的 service 实例（db=None 是合法 stub，因为路由层只调
+    service 的方法，不直接读 service._db；具体方法需要 db 时通过
+    ``monkeypatch`` 或 ``service._db = MagicMock()`` 按需注入）。
+
+    反模式防御：禁止用 ``app.state.db = MagicMock()`` 注入生产 lifespan
+    根本不存在的对象（违反 AGENTS.md「禁止在测试中虚构生产不存在的依赖」
+    硬约束，会掩盖路由层错读 ``app.state.db`` 的 bug）。
     """
     from app.shared.utils.agent.agent_config_service import AgentConfigService
     from app.shared.utils.agent.agents_md_loader import AgentsMdLoader
     app.state.agent_config_service = AgentConfigService(db=None, agents_md_loader=AgentsMdLoader())
-
-
-@pytest.fixture(autouse=True)
-def _init_db(app):
-    """初始化 app.state.db 供 agent_admin_router 直接读取使用。
-
-    agent_admin_router.py 中 list_agents / get_agent 等端点会直接访问
-    `request.app.state.db.fetch / fetchrow`，需要 MagicMock 实例。
-
-    注意：AgentConfigService 在 _init_agent_config_service 中构造时仍传入 db=None，
-    其内部 fetchrow 由 service 方法直接调用。
-    测试需要 service 方法时可使用 MagicMock 替换 service._db。
-    """
-    from unittest.mock import MagicMock
-    if not hasattr(app.state, "db") or app.state.db is None:
-        app.state.db = MagicMock()
 
 
 @pytest.fixture(autouse=True)

@@ -146,14 +146,7 @@ async def list_agents(request: Request) -> List[Dict[str, Any]]:
                     mcp_tags / enabled / sort_order 等
     """
     service = _get_service(request)
-    db = request.app.state.db
-    rows = await db.fetch(
-        "SELECT name, display_name, description, agents_md_path, "
-        "state_schema, context_schema, config_schema, mcp_tags, "
-        "enabled, sort_order, created_at, updated_at "
-        "FROM agents ORDER BY sort_order, name"
-    )
-    return [dict(r) for r in rows]
+    return await service.list_all_agents_admin()
 
 
 @router.get("/check-name")
@@ -161,12 +154,10 @@ async def check_name_unique(
     request: Request,
     name: str = Query(..., min_length=3, max_length=50),
 ) -> Dict[str, Any]:
-    """name 唯一性预校验。"""
-    db = request.app.state.db
-    existing = await db.fetchrow(
-        "SELECT name FROM agents WHERE name = $1", name,
-    )
-    return {"name": name, "available": existing is None}
+    """name 唯一性预校验（走 service 层，避免直读 app.state.db）。"""
+    service = _get_service(request)
+    available = await service.check_name_unique(name)
+    return {"name": name, "available": available}
 
 
 @router.post("/validate-md-path")
@@ -194,30 +185,16 @@ async def list_field_templates() -> List[Dict[str, Any]]:
 
 @router.get("/{name}", response_model=Dict[str, Any])
 async def get_agent(request: Request, name: str) -> Dict[str, Any]:
-    """获取单个 agent 的完整配置。"""
+    """获取单个 agent 的完整配置。
+
+    异常:
+        HTTPException 404: 智能体不存在
+    """
     service = _get_service(request)
-    db = request.app.state.db
-    row = await db.fetchrow(
-        "SELECT name, display_name, description, agents_md_path, "
-        "state_schema, context_schema, config_schema, mcp_tags, "
-        "enabled, sort_order, created_at, updated_at "
-        "FROM agents WHERE name = $1",
-        name,
-    )
-    if not row:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Agent {name} not found",
-        )
-    result = dict(row)
-    # 额外拆分 agent_config_overrides
-    from app.shared.utils.agent.dynamic_schema import parse_config_schema
-    config_schema = result.get("config_schema") or {}
-    if not isinstance(config_schema, dict):
-        config_schema = {}
-    parsed = parse_config_schema(config_schema)
-    result["agent_config_overrides"] = parsed["agent_config_overrides"]
-    return result
+    try:
+        return await service.get_agent_admin(name)
+    except AgentNotFoundError as e:
+        raise _handle_agent_error(e)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)

@@ -119,7 +119,12 @@ def test_list_agents_returns_db_rows(client, admin_headers):
     async def fake_fetch(*args, **kwargs):
         return fake_rows
 
-    client.app.state.db.fetch = fake_fetch
+    # 2026-06-24 重构后 list_agents 改走 service，需先注入 _db 再挂 fetch
+    service = client.app.state.agent_config_service
+    if service._db is None:
+        from unittest.mock import MagicMock
+        service._db = MagicMock()
+    service._db.fetch = fake_fetch
 
     response = client.get("/api/admin/agents", headers=admin_headers)
     assert response.status_code == 200
@@ -154,7 +159,12 @@ def test_get_agent_returns_full_config(client, admin_headers):
     async def fake_fetchrow(*args, **kwargs):
         return fake_row
 
-    client.app.state.db.fetchrow = fake_fetchrow
+    # 2026-06-24 重构后 get_agent 改走 service，需先注入 _db 再挂 fetchrow
+    service = client.app.state.agent_config_service
+    if service._db is None:
+        from unittest.mock import MagicMock
+        service._db = MagicMock()
+    service._db.fetchrow = fake_fetchrow
 
     response = client.get("/api/admin/agents/map_agent", headers=admin_headers)
     assert response.status_code == 200

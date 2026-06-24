@@ -2608,6 +2608,37 @@ app/routers/
 - **Pydantic 模型**：`CreateAgentRequest` 强制 name 格式 `[a-z0-9_]{3,50}` / `display_name` 1-200 字符 / `field_name` Python 标识符格式；`AddFieldRequest.section` 自由字符串（由 service 校验）；`SetEnabledRequest.enabled` bool
 - **测试**：`app/tests/routers/test_agent_admin_router.py` 16 用例（P0 导入 / 路由注册 / 字段模板 / 校验 / CRUD / 鉴权 403）；`app/tests/routers/conftest.py` 新增 `_init_db`（注入 `app.state.db` MagicMock）和 `_mock_user_db_for_admin_auth`（根据 username 返回 role）两个 autouse fixture
 
+### 2026-06-24 修复：401 Unauthorized 误诊（AttributeError）
+
+**症状**：访问"智能体管理"页时 `GET /api/admin/agents` 返回 401 Unauthorized，前端展示"会话无效，请重新登录"。
+
+**根因**：
+- `app/routers/agent_admin_router.py` 的 `list_agents` / `get_agent` 端点直接访问 `request.app.state.db`。
+- `app/core/server.py` lifespan **从未**初始化 `app.state.db`（只初始化 `app.state.agent_config_service` / `mcp_config_service` / `mcp_registry`）。
+- 抛出的 `AttributeError: 'State' object has no attribute 'db'` 被 `app/shared/utils/auth/Safety.py::auth_middleware` 的 `try/except Exception` 吞掉，统一伪装成 401 → 误导前端"会话无效"。
+- `app/tests/routers/conftest.py::_init_db` 用 `MagicMock()` 注入 `app.state.db` 掩盖了生产 bug，导致测试通过、生产 500/401。
+
+**修复方案**（架构重构路线，用户选择）：
+- **新增 2 个 `AgentConfigService` 公共方法**：
+  - `list_all_agents_admin()`：admin 专用列表，**包含禁用项**（与现有 `list_agents` 的"仅启用"语义保持隔离，不破坏 `agent_router` 聊天端点），返回全字段
+  - `get_agent_admin(agent_name)`：admin 专用详情，**不校验 `enabled`**（允许查看已禁用项），不加载 AGENTS.md（避免无谓 IO），返回 dict + `agent_config_overrides` 拆分
+- **重构 router 端点**：`list_agents` / `get_agent` 改走 `service.list_all_agents_admin()` / `service.get_agent_admin(name)`，**完全消除 `app.state.db` 直接访问**。
+- **不动 `auth_middleware`**：用户明确要求保持现有异常处理范围不变（修复后路由不再抛 AttributeError，问题自然消除）。
+- **不动 `server.py` lifespan**：不追加 `app.state.db = db_pool`，与架构重构方向一致（lifespan 只初始化"有 service 包装"的状态）。
+
+**端到端验证**（修复后）：
+- `POST /api/auth/login-api` → 200 + access_token
+- `GET /api/admin/agents` → 200 + JSON list（如 `[{"name":"map_agent","enabled":true,...}]`）
+- `GET /api/admin/agents/map_agent` → 200 + JSON dict + `agent_config_overrides` 已拆分
+
+**测试同步**：
+- `app/tests/routers/test_agent_admin_router.py`：原有 2 个 CRUD 用例的 mock 路径从 `app.state.db` 改为 `service._db`（先注入 MagicMock 再挂 fetch/fetchrow）
+- `app/tests/shared/utils/agent/test_agent_config_service.py`：**新增 5 个用例** `test_list_all_agents_admin_returns_all_fields` / `test_list_all_agents_admin_orders_by_sort_order_then_name` / `test_get_agent_admin_returns_full_config_with_overrides` / `test_get_agent_admin_raises_not_found` / `test_get_agent_admin_handles_non_dict_config_schema`
+- `app/tests/routers/conftest.py::_init_db` 注释更新为"**仅供历史兼容保留**"，标注"agent_admin_router 重构后已不直接访问 app.state.db"
+
+**后续防御**：
+- `_init_db` fixture 保留 autouse=True 防止其他测试目录有隐藏依赖；同时与生产环境（lifespan 不再初始化 app.state.db）行为保持一致——如果未来某路由又错误地直接访问 `app.state.db`，本 fixture 至少让测试能跑出端点（路由层在生产仍会 AttributeError，便于早发现）。
+
 ### SSE 流式逻辑完整迁移（Task 24，2026-06-23 落地）
 
 将 `map_router.py::generate_stream_response` 的**全部** SSE 处理逻辑（约 285 行）完整迁移到 `app/routers/_stream_helper.py`，不做任何简化。
