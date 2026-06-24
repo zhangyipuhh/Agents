@@ -29,7 +29,7 @@ def test_query_knowledge_importable():
     """
     P0: query_knowledge 工具可导入且为 async 函数。
     """
-    from app.features.map_agent.tools.MapTools import query_knowledge
+    from app.shared.tools.skills.map_agent.MapTools import query_knowledge
 
     assert query_knowledge is not None
     import inspect
@@ -55,7 +55,7 @@ def test_query_knowledge_uses_knowledge_root(tmp_path):
     """
     P1: query_knowledge 使用 runtime.context["knowledge_root"] 作为 root_path。
     """
-    from app.features.map_agent.tools.MapTools import query_knowledge
+    from app.shared.tools.skills.map_agent.MapTools import query_knowledge
 
     knowledge_root = tmp_path / "knowledge"
     knowledge_root.mkdir()
@@ -79,7 +79,7 @@ def test_query_knowledge_uses_knowledge_root(tmp_path):
             }
         )
 
-    with patch("app.features.map_agent.tools.MapTools.BaseFilesystemTool.arun", fake_arun):
+    with patch("app.shared.tools.skills.map_agent.MapTools.BaseFilesystemTool.arun", fake_arun):
         rt = _make_fake_runtime()
         rt.context["knowledge_root"] = str(knowledge_root)
         result = asyncio.run(query_knowledge("search knowledge", rt))
@@ -100,14 +100,14 @@ def test_query_knowledge_returns_error_when_missing_root():
     """
     P1: 未配置 knowledge_root 时，query_knowledge 直接返回错误 Command。
     """
-    from app.features.map_agent.tools.MapTools import query_knowledge
+    from app.shared.tools.skills.map_agent.MapTools import query_knowledge
     from unittest.mock import patch
 
     rt = _make_fake_runtime(tool_call_id="call_no_root")
     # 确保 context 中没有 knowledge_root
     assert "knowledge_root" not in rt.context
 
-    with patch("app.features.map_agent.tools.MapTools.ToolMessage", _RecordingToolMessage):
+    with patch("app.shared.tools.skills.map_agent.MapTools.ToolMessage", _RecordingToolMessage):
         result = asyncio.run(query_knowledge("search", rt))
 
     assert result is not None

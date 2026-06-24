@@ -126,6 +126,11 @@ async def lifespan(app: FastAPI):
 
             await app.state.mcp_config_service.seed_from_yaml_if_empty()
             logging.info("AgentConfigService and McpConfigService initialized")
+
+            # 2026-06-24 新增：将 AgentConfigService 设置到 knowledge_router 全局变量，
+            # 供 get_map_agent 等模块级函数使用（无法直接访问 request.app.state）
+            from app.routers.knowledge_router import set_agent_config_service
+            set_agent_config_service(app.state.agent_config_service)
         else:
             logging.warning(
                 "Database pool not available, AgentConfigService/McpConfigService not initialized"

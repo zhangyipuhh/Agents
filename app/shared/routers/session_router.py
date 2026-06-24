@@ -365,9 +365,8 @@ async def get_session_messages(
         raw_messages_data: list = []
         use_graph_state = False
         try:
-            from app.features.map_agent.router.map_router import get_map_agent
-            map_agent = await get_map_agent()
-            agent = await map_agent.get_agent()
+            from app.routers.knowledge_router import get_map_agent
+            agent = await get_map_agent()
             graph_config = {"configurable": {"thread_id": session_id}}
             state = await agent.graph.aget_state(graph_config)
             values = getattr(state, "values", None) or {}

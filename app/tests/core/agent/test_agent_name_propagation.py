@@ -27,7 +27,10 @@ def test_agent_config_base_name_default_is_none():
 
 def test_all_subagent_configs_have_correct_name_default():
     """
-    7 个子智能体 *Config 类的 name 字段默认值应严格匹配 app/features/<dir>/ 目录名。
+    6 个子智能体 *Config 类的 name 字段默认值应严格匹配 app/features/<dir>/ 目录名。
+
+    注意：map_agent 已迁移到新架构（数据库 JSON + AGENTS.md），
+    MapAgentConfig 已删除，不再在此测试中验证。
 
     Returns:
         None
@@ -42,10 +45,8 @@ def test_all_subagent_configs_have_correct_name_default():
     )
     from app.features.contract_document_agent.config.DocAgentConfig import DocAgentConfig
     from app.features.contract_host_agent.config.HtAgentConfig import HtAgentConfig
-    from app.features.map_agent.config.MapAgentConfig import MapAgentConfig
 
     expected = {
-        MapAgentConfig: "map_agent",
         HtAgentConfig: "contract_host_agent",
         DocAgentConfig: "contract_document_agent",
         ApprovalAgentConfig: "contract_approval_agent",
@@ -61,34 +62,6 @@ def test_all_subagent_configs_have_correct_name_default():
             f"{cls.__name__}.name default should be {expected_name!r}, "
             f"got {cls_fields['name'].default!r}"
         )
-
-
-def test_agent_config_name_can_be_overridden_at_instantiation():
-    """
-    AgentConfig(name="custom") 显式传参时，name 字段会覆盖子类的默认字面量。
-
-    Returns:
-        None
-    """
-    from app.features.map_agent.config.MapAgentConfig import MapAgentConfig
-
-    config = MapAgentConfig(name="override_name")
-    assert config.name == "override_name"
-
-
-def test_agent_name_attribute_propagates_from_config():
-    """
-    Agent.__init__ 会从 config.name 读取并赋给 self.agent_name。
-
-    Returns:
-        None
-    """
-    from app.core.agent.agent import Agent
-    from app.features.map_agent.config.MapAgentConfig import MapAgentConfig
-
-    config = MapAgentConfig(system_prompt="dummy")
-    agent = Agent(config=config)
-    assert agent.agent_name == "map_agent"
 
 
 def test_agent_name_attribute_defaults_to_none_for_base_config():
