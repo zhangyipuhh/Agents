@@ -41,6 +41,36 @@ RESERVED_CONTEXT_FIELDS = {
 }
 """AgentContext 基类保留字段集合。"""
 
+# === 新增（2026-06-24）：基类保留字段的运行时默认值 ===
+# TypedDict 的类型注解默认值（形如 `error_limit: int = 5`）仅用于静态类型检查，
+# 运行时不会生效。动态生成的 state / context 包装器必须显式声明这些默认值，
+# 以保证调用方只传 messages / session_id 等必需字段时，state / context 实例仍
+# 包含全部基类字段，避免 LangGraph 节点或工具访问 state[key] / context[key] 时
+# 抛 KeyError。
+# 与 AgentState（app/core/agent/AgentConfig.py:51-101）、
+# AgentContext（app/core/agent/AgentContext.py:17-43）的字段定义保持一致。
+_BASE_STATE_DEFAULTS: dict = {
+    "error_limit": 5,
+    "limit": 25,
+    "file_chunk_read_progress": 1,
+    "tool_progress": {},          # dict[str, dict]
+    "intermediate_results": {},   # dict[str, Any]
+    "pending_question": None,
+    "question_answers": [],
+    "agent_name": None,
+}
+"""AgentState 基类保留字段的运行时默认值，作为 build_agent_state 的兜底。"""
+
+_BASE_CONTEXT_DEFAULTS: dict = {
+    "session_id": "default",
+    "namespace": {},
+    "store_id": "default",
+    "image_ids": [],
+    "host_session_id": None,
+    "process_data": {},
+}
+"""AgentContext 基类保留字段的运行时默认值，作为 build_agent_context 的兜底。"""
+
 TYPE_MAP = {
     "str": str, "int": int, "float": float, "bool": bool,
     "dict": dict, "list": list,
@@ -115,9 +145,14 @@ def build_agent_state(agent_name: str, state_schema: dict) -> Callable:
         - 保留字段（RESERVED_STATE_FIELDS）的类型注解沿用基类，仅允许重写默认值
         - 非保留字段追加新的类型注解和默认值
         - 类名格式为 {PascalCaseAgentName}AgentState（如 map_agent → MapAgentAgentState）
+        - 2026-06-24 修复：基类保留字段（error_limit / limit / agent_name 等）的
+          运行时默认值由 _BASE_STATE_DEFAULTS 兜底，调用方只需显式传入 messages 等
+          必需字段，无需重复传入保留字段。三级优先级：
+          调用方 kwargs > schema 重写 > _BASE_STATE_DEFAULTS
     """
+    # 2026-06-24 修复：以基类保留字段默认值作为兜底（详见 _BASE_STATE_DEFAULTS 注释）
+    defaults = dict(_BASE_STATE_DEFAULTS)
     annotations = {}
-    defaults = {}
     for fname, fdef in state_schema.items():
         if fname in RESERVED_STATE_FIELDS:
             # 保留字段：类型注解沿用基类，仅重写默认值
@@ -154,9 +189,14 @@ def build_agent_context(agent_name: str, context_schema: dict) -> Callable:
         - 保留字段（RESERVED_CONTEXT_FIELDS）的类型注解沿用基类，仅允许重写默认值
         - 非保留字段追加新的类型注解和默认值
         - 类名格式为 {PascalCaseAgentName}AgentContext（如 map_agent → MapAgentAgentContext）
+        - 2026-06-24 修复：基类保留字段（session_id / store_id / image_ids 等）
+          的运行时默认值由 _BASE_CONTEXT_DEFAULTS 兜底，调用方只需显式传入
+          session_id 等必需字段，无需重复传入保留字段。三级优先级：
+          调用方 kwargs > schema 重写 > _BASE_CONTEXT_DEFAULTS
     """
+    # 2026-06-24 修复：以基类保留字段默认值作为兜底（详见 _BASE_CONTEXT_DEFAULTS 注释）
+    defaults = dict(_BASE_CONTEXT_DEFAULTS)
     annotations = {}
-    defaults = {}
     for fname, fdef in context_schema.items():
         if fname in RESERVED_CONTEXT_FIELDS:
             if "default" in fdef:

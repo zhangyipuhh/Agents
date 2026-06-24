@@ -171,3 +171,156 @@ def test_build_context_filters_reserved_keywords_in_overrides():
     assert ctx["store_id"] == "store-explicit"
     # 非保留字段的覆盖值应正常生效
     assert ctx["knowledge_root"] == "custom/path"
+
+
+# ============================================================
+# 2026-06-24 新增：基类保留字段默认值自动补全
+# 修复 Bug A（agent_router.py chat 端点重构后 state 缺基类保留字段）
+# 验证 dynamic_schema._BASE_STATE_DEFAULTS / _BASE_CONTEXT_DEFAULTS 兜底逻辑
+# ============================================================
+
+
+def test_build_agent_state_fills_base_reserved_defaults():
+    """验证 state 实例自动包含基类保留字段的默认值（修复 Bug A）。
+
+    构造最小 schema（只含 map_zoom），实例化时不应抛 KeyError，且应自动包含
+    error_limit=5 / limit=25 / file_chunk_read_progress=1 / agent_name=None 等。
+
+    参数:
+        无
+
+    返回:
+        无（断言失败时抛出 AssertionError）
+    """
+    cls = build_agent_state("test", {"map_zoom": {"type": "int", "default": 10}})
+    instance = cls(messages=[])
+    # 基类保留字段默认值应自动补全
+    assert instance["error_limit"] == 5
+    assert instance["limit"] == 25
+    assert instance["file_chunk_read_progress"] == 1
+    assert instance["agent_name"] is None
+    assert instance["pending_question"] is None
+    assert instance["question_answers"] == []
+    assert instance["tool_progress"] == {}
+    assert instance["intermediate_results"] == {}
+    # schema 中显式提供的扩展字段应保留
+    assert instance["map_zoom"] == 10
+
+
+def test_build_agent_state_empty_schema_creates_valid_state():
+    """验证空 schema 也能生成合法 state 实例。
+
+    参数:
+        无
+
+    返回:
+        无
+    """
+    cls = build_agent_state("empty_agent", {})
+    instance = cls(messages=[])
+    # 所有基类保留字段默认值应自动补全
+    assert instance["error_limit"] == 5
+    assert instance["limit"] == 25
+    assert instance["file_chunk_read_progress"] == 1
+    assert instance["agent_name"] is None
+    assert instance["messages"] == []
+    # 至少包含 messages 字段（来自 _MessagesState 基类）
+    assert "messages" in instance
+
+
+def test_build_agent_context_fills_base_reserved_defaults():
+    """验证 context 实例自动包含基类保留字段默认值。
+
+    参数:
+        无
+
+    返回:
+        无
+    """
+    cls = build_agent_context("test", {})
+    instance = cls(session_id="sess-1")
+    # 基类保留字段默认值应自动补全
+    assert instance["session_id"] == "sess-1"  # 调用方显式传入
+    assert instance["store_id"] == "default"
+    assert instance["image_ids"] == []
+    assert instance["host_session_id"] is None
+    assert instance["process_data"] == {}
+
+
+def test_caller_kwargs_override_base_defaults():
+    """验证调用方 kwargs 优先于基类默认值（最高优先级）。
+
+    knowledge_router.py 已使用此模式（显式传 error_limit=2 / limit=10），
+    必须确保这个优先级不被破坏。
+
+    参数:
+        无
+
+    返回:
+        无
+    """
+    cls = build_agent_state("test", {})
+    instance = cls(messages=[], error_limit=2, limit=10, agent_name="map_agent")
+    # 调用方 kwargs 优先
+    assert instance["error_limit"] == 2
+    assert instance["limit"] == 10
+    assert instance["agent_name"] == "map_agent"
+
+
+def test_map_agent_full_schema_creates_complete_state():
+    """端到端验证：模拟 seed_map_agent.py 的完整 schema。
+
+    与 app/migrations/seed_map_agent.py 的 MAP_AGENT_STATE_SCHEMA 保持一致。
+    修复后调用方只需传 messages，应自动补全 5 个 map 扩展字段 + 8 个基类保留字段。
+
+    参数:
+        无
+
+    返回:
+        无
+    """
+    map_schema = {
+        "map_center":   {"type": "dict", "default": {"latitude": 0, "longitude": 0}},
+        "map_zoom":     {"type": "int",  "default": 10},
+        "map_markers":  {"type": "list", "default": []},
+        "map_layer":    {"type": "str",  "default": "standard"},
+        "map_polygons": {"type": "list", "default": []},
+    }
+    cls = build_agent_state("map_agent", map_schema)
+    instance = cls(messages=[])
+    # 5 个 map 扩展字段
+    assert instance["map_center"] == {"latitude": 0, "longitude": 0}
+    assert instance["map_zoom"] == 10
+    assert instance["map_markers"] == []
+    assert instance["map_layer"] == "standard"
+    assert instance["map_polygons"] == []
+    # 8 个基类保留字段
+    assert instance["error_limit"] == 5
+    assert instance["limit"] == 25
+    assert instance["file_chunk_read_progress"] == 1
+    assert instance["agent_name"] is None
+    assert instance["pending_question"] is None
+    assert instance["question_answers"] == []
+    assert instance["tool_progress"] == {}
+    assert instance["intermediate_results"] == {}
+
+
+def test_map_agent_state_reserved_field_override():
+    """验证 schema 可重写基类保留字段默认值（次高优先级）。
+
+    例如：map_agent 在 state_schema 中将 error_limit 从 5 改为 2，
+    应覆盖 _BASE_STATE_DEFAULTS 的默认值。
+
+    参数:
+        无
+
+    返回:
+        无
+    """
+    schema = {"error_limit": {"type": "int", "default": 2}}
+    cls = build_agent_state("custom", schema)
+    instance = cls(messages=[])
+    # schema 重写值优先于基类默认值
+    assert instance["error_limit"] == 2
+    # 未被 schema 重写的基类字段仍使用基类默认值
+    assert instance["limit"] == 25

@@ -21,19 +21,27 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-# map_agent 的 state_schema（与原 MapAgentState 字段一致）
+# map_agent 的 state_schema
+# 2026-06-24 修复：补全原 MapAgentState 全部 5 个扩展字段（map_center / map_zoom /
+# map_markers / map_layer / map_polygons），与原 MapAgentConfig.py 保持一致。
+# 重构前 seed 脚本只存了 map_zoom 一个字段，导致 map_tools 工具运行时 state 中
+# 缺失 map_center / map_markers / map_layer / map_polygons 四个字段。
+# 基类保留字段（error_limit / limit / agent_name 等）由
+# app/shared/utils/agent/dynamic_schema._BASE_STATE_DEFAULTS 兜底，
+# 无需在此重复声明。
 MAP_AGENT_STATE_SCHEMA = {
-    "map_center": {"type": "dict", "default": {"latitude": 0, "longitude": 0}},
-    "map_zoom": {"type": "int", "default": 10},
-    "map_markers": {"type": "list", "default": []},
-    "map_layer": {"type": "str", "default": "standard"},
+    "map_center":   {"type": "dict", "default": {"latitude": 0, "longitude": 0}},
+    "map_zoom":     {"type": "int",  "default": 10},
+    "map_markers":  {"type": "list", "default": []},
+    "map_layer":    {"type": "str",  "default": "standard"},
     "map_polygons": {"type": "list", "default": []},
 }
 
-# map_agent 的 context_schema（与原 MapAgentContext 字段一致）
-MAP_AGENT_CONTEXT_SCHEMA = {
-    "knowledge_root": {"type": "str", "default": "data/Knowledge"},
-}
+# map_agent 的 context_schema
+# 原 MapAgentContext 无新增字段；基类保留字段（session_id / store_id /
+# image_ids / host_session_id / process_data）由
+# app/shared/utils/agent/dynamic_schema._BASE_CONTEXT_DEFAULTS 兜底。
+MAP_AGENT_CONTEXT_SCHEMA = {}
 
 # map_agent 绑定的工具（与 MapAgentConfig.get_tools() 当前启用的工具一致）
 MAP_AGENT_TOOLS = [

@@ -103,6 +103,13 @@ async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse
         k: v for k, v in chat_request.context_overrides.items()
         if k not in RESERVED_CONTEXT_FIELDS
     }
+    # 2026-06-24 修复：state_class / context_class 是 _TypedDictWithDefaults 包装器，
+    # __call__ 时会自动补全基类保留字段默认值（error_limit=5 / limit=25 /
+    # agent_name=None / session_id="default" / store_id="default" / image_ids=[] 等）
+    # 以及 state_schema / context_schema 中定义的扩展字段默认值，调用方只需显式
+    # 传入必需字段（messages / session_id 等），无需重复传入保留字段。
+    # 完整逻辑见 app/shared/utils/agent/dynamic_schema.py:_BASE_STATE_DEFAULTS /
+    # _BASE_CONTEXT_DEFAULTS，以及 build_agent_state / build_agent_context。
     context_instance = config.context_class(
         session_id=chat_request.session_id or "default",
         **safe_overrides,

@@ -13,6 +13,10 @@
 -- 注意: LangGraph checkpointer 表（checkpoints / checkpoint_writes 等）
 --       会在应用首次启动时由 AsyncPostgresSaver.setup() 自动建，
 --       本脚本不包含。
+-- v3 变更（2026-06-24）:
+--   * 合并原 fix_map_agent_schema.sql（map_agent state_schema 字段补全）
+--   * 统一为"建表 + 数据修复"一体化脚本，运维只需 psql 跑一次即可
+--   * 仍然保持全部幂等，重复执行不会破坏已有数据
 -- =============================================
 
 BEGIN;
@@ -266,6 +270,49 @@ CREATE TABLE IF NOT EXISTS mcp_server_methods (
     UNIQUE(server_name, method_name)
 );
 
+-- ============================================================
+-- 2026-06-24 合并自 fix_map_agent_schema.sql
+-- 修复 map_agent state_schema / context_schema 字段不完整
+-- 适用：agents 表中已存在 map_agent 记录但 schema 只有 map_zoom
+-- 来源：2026-06-24 重构 agent_router 时发现原 seed 脚本漏存字段
+-- 幂等：使用 jsonb_set + COALESCE 保留已有键，补充缺失键
+-- 说明：本段在整体 BEGIN/COMMIT 事务内执行（无独立 BEGIN/COMMIT），
+--       若失败则随主事务一起回滚。
+-- ============================================================
+
+-- 14.1 补全 map_agent 的 state_schema 5 个字段
+--      原值（重构前）：{"map_zoom": {"type": "int", "default": 10}}
+--      新值（修复后）：补全 map_center / map_markers / map_layer / map_polygons
+UPDATE agents
+SET state_schema = jsonb_set(
+        state_schema,
+        '{map_center}',
+        COALESCE(state_schema->'map_center', '{"type": "dict", "default": {"latitude": 0, "longitude": 0}}'::jsonb)
+    ) || jsonb_set(
+        state_schema,
+        '{map_markers}',
+        COALESCE(state_schema->'map_markers', '{"type": "list", "default": []}'::jsonb)
+    ) || jsonb_set(
+        state_schema,
+        '{map_layer}',
+        COALESCE(state_schema->'map_layer', '{"type": "str", "default": "standard"}'::jsonb)
+    ) || jsonb_set(
+        state_schema,
+        '{map_polygons}',
+        COALESCE(state_schema->'map_polygons', '{"type": "list", "default": []}'::jsonb)
+    ),
+    updated_at = CURRENT_TIMESTAMP
+WHERE name = 'map_agent';
+
+-- 14.2 context_schema 保持为 {knowledge_root}（基类保留字段由 dynamic_schema 兜底，
+--      不需要在 schema 中重复声明）
+--      注：如果当前 context_schema 已经有 knowledge_root，COALESCE 会保留它；
+--      如果为 null/空，则保持现状。
+UPDATE agents
+SET context_schema = COALESCE(context_schema, '{}'::jsonb),
+    updated_at = CURRENT_TIMESTAMP
+WHERE name = 'map_agent';
+
 COMMIT;
 
 -- =============================================
@@ -282,3 +329,13 @@ WHERE table_schema = 'public'
     'mcp_server_configs', 'mcp_server_methods'
   )
 ORDER BY table_name;
+
+-- =============================================
+-- 验证：列出 map_agent 修复后的完整 schema
+-- （如果 map_agent 记录尚未被 seed_map_agent.py 写入，则查询为空，正常）
+-- =============================================
+SELECT name,
+       jsonb_pretty(state_schema) AS state_schema,
+       jsonb_pretty(context_schema) AS context_schema
+FROM agents
+WHERE name = 'map_agent';
