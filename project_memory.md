@@ -139,7 +139,7 @@ app/
 │   ├── __init__.py           # 包初始化
 │   ├── mcp_admin_router.py   # MCP Admin 路由（CRUD + toggle + refresh methods）
 │   ├── agent_router.py       # 统一 Agent 路由（Task 13，/api/agent/chat|list|agents-md）
-│   └── _stream_helper.py     # SSE 流式响应辅助（Task 13，agent_router 复用）
+│   └── _stream_helper.py     # SSE 流式响应辅助（完整迁移自 map_router，agent_router 与 map_router 复用）
 ├── shared/                 # 共享模块
 │   ├── routers/           # 路由
 │   │   ├── auth_router.py    # 认证路由（登录、注册、验证码、refresh、validate）
@@ -1938,7 +1938,9 @@ from app.core.tools._stop_signal import (
 - **`tests/features/*/`**：9 个 Agent 冒烟测试（config 可导入、提示词非空、tools 可导入、router 已注册到 `/api/*` 路径）
 - **`tests/features/sandbox_agent/`**：沙箱 Agent 专项测试
   - `test_docker_backend.py`：DockerSandboxBackend 容器生命周期、命令执行、文件操作、异常处理
-- **`tests/integration/`**：端到端认证流程（注册→登录→validate→logout）
+- **`tests/integration/`**：端到端集成测试
+  - `test_end_to_end_auth.py`：认证流程（注册→登录→validate→logout）
+  - `test_agent_chat_e2e.py`：`/api/agent/chat` 端到端测试（2 用例：SSE 流式响应正常返回 / 未知 agent 返回 404）
 
 ### Mock 策略
 
@@ -2428,7 +2430,7 @@ app/routers/
 ├── __init__.py              # 空包初始化
 ├── mcp_admin_router.py      # MCP Admin 路由
 ├── agent_router.py          # 统一 Agent 路由（Task 13）
-└── _stream_helper.py        # SSE 流式响应辅助（Task 13）
+└── _stream_helper.py        # SSE 流式响应辅助（完整迁移自 map_router，Task 24）
 ```
 
 ### 路由清单
@@ -2442,7 +2444,7 @@ app/routers/
 ### 设计要点
 
 - **服务获取**：`_get_service(request)` 从 `app.state.agent_config_service` 获取 `AgentConfigService` 实例；未初始化时抛 500（与 mcp_admin_router 模式一致）
-- **SSE 复用**：`_stream_helper.generate_stream_response` 从 map_router 提取通用 SSE 逻辑，支持 `updates` / `custom` / `messages` 三种 stream_mode 组合，检测客户端断开并映射事件类型（interrupt / update / custom / message）；`_map_mode_to_event_type` 对 `data` 做 `isinstance(data, dict)` 校验后再检查 `__interrupt__` 键，避免非 dict 数据触发 TypeError
+- **SSE 复用**：`_stream_helper.generate_stream_response` 完整迁移自 map_router.py（Task 24，2026-06-23），保留全部 SSE 处理逻辑：ContextVar 挂载/清理（子智能体停止信号）、精确延迟中断（disconnect 标记 + tools 节点完成时真正断开）、HITL 中断检测（多模式兼容）+ `_extract_interrupt_requests`、updates/custom/messages 三种 stream_mode 差异化处理、thread_id/langgraph_node 透传、`stream_format_context.format_message` 格式化；统一签名 `(agent, input_state, context, session_id, request)`，供 agent_router 与 map_router knowledge-chat 复用
 - **SSE 响应头**：`StreamingResponse` 显式设置 `Cache-Control: no-cache` / `Connection: keep-alive` / `X-Accel-Buffering: no`，防止 Nginx 等反向代理缓冲 SSE 流
 - **ChatRequest 模型**：Pydantic BaseModel，字段含 message / session_id / agent_name（默认 map_agent）/ attachments（暂未实现，预留字段）/ resume（HITL 恢复）/ context_overrides
 - **context_overrides 过滤**：构造 context 实例前过滤 `RESERVED_CONTEXT_FIELDS`（session_id / store_id / namespace 等），避免与显式传入的 session_id 关键字参数冲突（TypeError: got multiple values for keyword argument）
@@ -2460,11 +2462,45 @@ app/routers/
 
 ### 后端旧端点清理（Task 21，2026-06-23 落地）
 
-- **`app/features/map_agent/router/map_router.py`**：移除 `@router.post('/chat')` 端点及 `chat` 函数（约 110 行），旧 `/api/map/chat` 已被 `/api/agent/chat` 替代；保留 `knowledge/files`、`knowledge/file-download`、`knowledge/file-preview`、`knowledge-chat` 端点及 `generate_stream_response` 函数（供 knowledge-chat 复用）
+- **`app/features/map_agent/router/map_router.py`**：移除 `@router.post('/chat')` 端点及 `chat` 函数（约 110 行），旧 `/api/map/chat` 已被 `/api/agent/chat` 替代；保留 `knowledge/files`、`knowledge/file-download`、`knowledge/file-preview`、`knowledge-chat` 端点。**Task 24（2026-06-23）** 进一步移除本地 `generate_stream_response` 与 `_extract_interrupt_requests`（约 285 行），knowledge-chat 端点改用 `app.routers._stream_helper.generate_stream_response`（统一签名），通过 `MapAgent.get_agent()` 获取底层 Agent 并直接构造 `input_state`（`MapAgentState` 或 `Command(resume=...)`）与 `MapAgentContext`
 - **`app/features/map_agent/config/prompts.py`**：移除死代码 `MAP_AGENT_SYSTEM_PROMPT`（随 /chat 端点移除已无引用）
 - **`app/features/map_agent/client.py`**：`MapAgentClient.chat_stream` URL 从 `/api/map/chat` 更新为 `/api/agent/chat`，新增 `agent_name` 参数（默认 `map_agent`）
 - **`app/tests/conftest.py`**：新增全局 mock `filesystem_encoding_fix.apply_fix` 为 no-op，支持根级测试导入 `app.main`
 - **测试**：`app/tests/test_main_routes_registered.py` 3 用例（mcp_admin_router 注册 / agent_router 注册 / 旧 /api/map/chat 已移除）
+
+### SSE 流式逻辑完整迁移（Task 24，2026-06-23 落地）
+
+将 `map_router.py::generate_stream_response` 的**全部** SSE 处理逻辑（约 285 行）完整迁移到 `app/routers/_stream_helper.py`，不做任何简化。
+
+**迁移内容**：
+- ContextVar 挂载/清理（`set_current_request` / `reset_current_request`）：子智能体工具（sandbox / explore）通过 `get_current_request()` 检测客户端断开
+- 精确延迟中断（2026-06-22 改造）：`disconnect_requested` + `disconnect_executed` 双标记，检测到断开后继续消费 updates 直到 "tools" 节点完成（ToolMessage 写入 state）才真正 break，避免 orphan tool_calls
+- HITL 中断检测（多模式兼容）：直接 dict `{"__interrupt__": [...]}` / tuple `("updates", {"__interrupt__": [...]})` / 嵌套 `("updates", {"node": {"__interrupt__": [...]}})` 三种格式
+- `_extract_interrupt_requests`：解析 LangGraph `Interrupt` 对象为结构化 dict
+- updates 模式：附加 `thread_id`（空字符串）与 `langgraph_node`（节点名）字段
+- custom 模式：从 `data.data.thread_id` / `data.tool_call_id` 推导 `thread_id` 透传到 SSE 顶层
+- messages 模式：`stream_format_context.format_message` 格式化 + 跳过 ToolMessage + 断开后跳过
+- `client_disconnected` 事件：断开时 yield 标记事件
+- `recursion_limit=100`（与原 map_router 一致）
+
+**统一签名**：`generate_stream_response(agent, input_state, context, session_id, request)`
+- `agent`：Agent 实例（需实现 `stream(input_state, context, config, stream_mode)` 方法）
+- `input_state`：`AgentState` 或 `Command(resume=...)`
+- `context`：AgentContext 实例
+- `session_id`：会话 ID
+- `request`：FastAPI Request（可为 None 兼容非 HTTP 上下文）
+
+**map_router.py knowledge-chat 端点改造**：
+- 通过 `await get_map_agent()` 获取 MapAgent 实例
+- 通过 `await map_agent.get_agent()` 获取底层 Agent 实例
+- 直接构造 `input_state`：resume 场景 `Command(resume=...)`，正常场景 `MapAgentState(messages=[HumanMessage(...)], agent_name="map_agent")`
+- 直接构造 `context_instance`：`MapAgentContext(session_id=..., store_id=..., knowledge_root=TMP_DIR, system_prompt=KNOWLEDGE_SYSTEM_PROMPT, geometry_data=...)`
+- 调用 `_stream_helper.generate_stream_response(agent, input_state, context_instance, session_id, request)`
+
+**测试迁移**：
+- `test_map_router_disconnect.py`：9 用例，导入目标从 `map_router` 改为 `_stream_helper`，调用签名改为 `(agent, input_state, context, session_id, request)`，mock 对象从 `get_map_agent` 改为直接传入 `fake_agent`
+- `test_map_router_subagent_stop.py`：5 用例（1 skipped），同上适配
+- 全部 23 passed / 1 skipped（async 测试需 pytest-asyncio 插件，预存在问题）
 
 ### 测试
 

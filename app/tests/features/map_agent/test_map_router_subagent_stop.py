@@ -1,16 +1,19 @@
 # -*- coding:utf-8 -*-
 """
-map_router 子智能体停止信号端到端测试（2026-06-15 新增）
+_stream_helper 子智能体停止信号端到端测试（2026-06-15 新增，2026-06-23 迁移）
 
 覆盖：
 - generate_stream_response 入口挂载 request 到 ContextVar
 - 工具函数能通过 get_current_request() 取出 request
 - generate_stream_response finally 块清理 ContextVar（不影响后续请求）
 - 客户端断开时主 astream 跳出 + 子智能体（sandbox/explore）也跳出
+
+2026-06-23 迁移：测试目标从 map_router.generate_stream_response 迁移到
+_stream_helper.generate_stream_response（统一签名：agent, input_state, context, session_id, request）
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -28,7 +31,13 @@ from app.core.tools._stop_signal import (
 
 def _make_fake_request(disconnect_sequence):
     """
-    构造一个模拟 FastAPI Request 对象的工厂函数（同 test_subagent_stop.py）。
+    构造一个模拟 FastAPI Request 对象的工厂函数。
+
+    Args:
+        disconnect_sequence: list[bool]，按调用顺序返回的断开状态序列
+
+    Returns:
+        MagicMock: 带 is_disconnected 协程方法的模拟 Request 对象
     """
     fake = MagicMock(name="fake_request")
     call_count = {"n": 0}
@@ -54,8 +63,11 @@ def _make_fake_request(disconnect_sequence):
 def test_generate_stream_response_sets_contextvar():
     """
     P1: 进入 generate_stream_response 后，工具函数能通过 get_current_request() 取出 request。
+
+    验证 _stream_helper.generate_stream_response 在调用 agent.stream 前已通过
+    set_current_request(request) 把 FastAPI Request 挂到 ContextVar。
     """
-    from app.features.map_agent.router import map_router
+    from app.routers._stream_helper import generate_stream_response
 
     fake_request = _make_fake_request([False, False, False])
 
@@ -67,27 +79,24 @@ def test_generate_stream_response_sets_contextvar():
         captured_request["value"] = get_current_request()
         yield ("updates", {"llm_call": {"messages": []}})
 
-    fake_agent = MagicMock()
+    fake_agent = Mock()
     fake_agent.stream = fake_stream
 
-    with patch.object(map_router, "get_map_agent", AsyncMock(return_value=fake_agent)):
-        async def collect():
-            results = []
-            async for item in map_router.generate_stream_response(
-                user_input="test",
-                session_id="sid",
-                context=None,
-                geometry_data={},
-                attachments=[],
-                resume=None,
-                request=fake_request,
-            ):
-                results.append(item)
-                if len(results) >= 3:  # tool_start + 1 chunk + end
-                    break
-            return results
+    async def collect():
+        results = []
+        async for item in generate_stream_response(
+            agent=fake_agent,
+            input_state=Mock(),
+            context=None,
+            session_id="sid",
+            request=fake_request,
+        ):
+            results.append(item)
+            if len(results) >= 3:  # tool_start + 1 chunk + end
+                break
+        return results
 
-        asyncio.run(collect())
+    asyncio.run(collect())
 
     # 验证：fake_stream 在执行时能从 ContextVar 取出 fake_request
     assert captured_request["value"] is fake_request, (
@@ -98,8 +107,11 @@ def test_generate_stream_response_sets_contextvar():
 def test_generate_stream_response_resets_contextvar_on_finally():
     """
     P1: generate_stream_response 退出后 ContextVar 被清理（不影响后续请求）。
+
+    验证 _stream_helper.generate_stream_response 的 finally 块正确调用
+    reset_current_request(cv_token) 清理 ContextVar。
     """
-    from app.features.map_agent.router import map_router
+    from app.routers._stream_helper import generate_stream_response
 
     fake_request_1 = _make_fake_request([False])
     fake_request_2 = _make_fake_request([False])
@@ -113,24 +125,25 @@ def test_generate_stream_response_resets_contextvar_on_finally():
         return
         yield
 
-    fake_agent_1 = MagicMock()
+    fake_agent_1 = Mock()
     fake_agent_1.stream = fake_stream_1
-    fake_agent_2 = MagicMock()
+    fake_agent_2 = Mock()
     fake_agent_2.stream = fake_stream_2
 
     # 第一次运行：设置 request_1
-    with patch.object(map_router, "get_map_agent", AsyncMock(return_value=fake_agent_1)):
-        async def run_1():
-            results = []
-            async for item in map_router.generate_stream_response(
-                user_input="t1",
-                session_id="sid",
-                request=fake_request_1,
-            ):
-                results.append(item)
-            return results
+    async def run_1():
+        results = []
+        async for item in generate_stream_response(
+            agent=fake_agent_1,
+            input_state=Mock(),
+            context=None,
+            session_id="sid",
+            request=fake_request_1,
+        ):
+            results.append(item)
+        return results
 
-        asyncio.run(run_1())
+    asyncio.run(run_1())
 
     # 第一次运行后：ContextVar 应已 reset（== None）
     assert get_current_request() is None, (
@@ -138,18 +151,19 @@ def test_generate_stream_response_resets_contextvar_on_finally():
     )
 
     # 第二次运行：设置 request_2
-    with patch.object(map_router, "get_map_agent", AsyncMock(return_value=fake_agent_2)):
-        async def run_2():
-            results = []
-            async for item in map_router.generate_stream_response(
-                user_input="t2",
-                session_id="sid",
-                request=fake_request_2,
-            ):
-                results.append(item)
-            return results
+    async def run_2():
+        results = []
+        async for item in generate_stream_response(
+            agent=fake_agent_2,
+            input_state=Mock(),
+            context=None,
+            session_id="sid",
+            request=fake_request_2,
+        ):
+            results.append(item)
+        return results
 
-        asyncio.run(run_2())
+    asyncio.run(run_2())
 
     # 第二次运行后：ContextVar 应再次 reset
     assert get_current_request() is None
@@ -179,7 +193,7 @@ def test_router_disconnect_propagates_to_main_astream():
     - 之后都是 llm_call update
     - 最后一个是 end 事件
     """
-    from app.features.map_agent.router import map_router
+    from app.routers._stream_helper import generate_stream_response
 
     # 第二次 is_disconnected 返回 True，触发标记 disconnect_requested
     fake_request = _make_fake_request([False, True, True, True])
@@ -192,21 +206,22 @@ def test_router_disconnect_propagates_to_main_astream():
             chunk_count["n"] += 1
             yield ("updates", {"llm_call": {"messages": [MagicMock(content=f"chunk{i}")]}})
 
-    fake_agent = MagicMock()
+    fake_agent = Mock()
     fake_agent.stream = fake_stream
 
-    with patch.object(map_router, "get_map_agent", AsyncMock(return_value=fake_agent)):
-        async def collect():
-            results = []
-            async for item in map_router.generate_stream_response(
-                user_input="test",
-                session_id="sid",
-                request=fake_request,
-            ):
-                results.append(item)
-            return results
+    async def collect():
+        results = []
+        async for item in generate_stream_response(
+            agent=fake_agent,
+            input_state=Mock(),
+            context=None,
+            session_id="sid",
+            request=fake_request,
+        ):
+            results.append(item)
+        return results
 
-        results = asyncio.run(collect())
+    results = asyncio.run(collect())
 
     # 2026-06-22 精确延迟中断新行为：
     # - 第一次 yield 走完处理（is_disconnected=False）
@@ -232,28 +247,29 @@ def test_router_no_request_does_not_block():
     """
     P1: request=None（非 HTTP 上下文）时，generate_stream_response 正常运行不抛错。
     """
-    from app.features.map_agent.router import map_router
+    from app.routers._stream_helper import generate_stream_response
 
     async def fake_stream(*args, **kwargs):
         yield ("updates", {"llm_call": {"messages": []}})
 
-    fake_agent = MagicMock()
+    fake_agent = Mock()
     fake_agent.stream = fake_stream
 
-    with patch.object(map_router, "get_map_agent", AsyncMock(return_value=fake_agent)):
-        async def collect():
-            results = []
-            async for item in map_router.generate_stream_response(
-                user_input="test",
-                session_id="sid",
-                request=None,  # 关键：非 HTTP 上下文
-            ):
-                results.append(item)
-            return results
+    async def collect():
+        results = []
+        async for item in generate_stream_response(
+            agent=fake_agent,
+            input_state=Mock(),
+            context=None,
+            session_id="sid",
+            request=None,  # 关键：非 HTTP 上下文
+        ):
+            results.append(item)
+        return results
 
-        # 关键：不应抛错
-        results = asyncio.run(collect())
-        assert len(results) >= 1
+    # 关键：不应抛错
+    results = asyncio.run(collect())
+    assert len(results) >= 1
 
 
 # ============================================================
@@ -267,7 +283,7 @@ async def test_concurrent_router_requests_isolated():
     P2: 两个并发 generate_stream_response 各自挂不同 request，
     工具函数内 get_current_request() 拿到自己请求的 request（contextvars 隔离性）。
     """
-    from app.features.map_agent.router import map_router
+    from app.routers._stream_helper import generate_stream_response
 
     request_a = _make_fake_request([False, False])
     request_b = _make_fake_request([False, False])
@@ -279,17 +295,18 @@ async def test_concurrent_router_requests_isolated():
         captured_requests.append(get_current_request())
         yield ("updates", {"llm_call": {"messages": []}})
 
-    fake_agent = MagicMock()
+    fake_agent = Mock()
     fake_agent.stream = fake_stream
 
     async def run_with(request):
-        with patch.object(map_router, "get_map_agent", AsyncMock(return_value=fake_agent)):
-            async for _ in map_router.generate_stream_response(
-                user_input="t",
-                session_id="sid",
-                request=request,
-            ):
-                pass
+        async for _ in generate_stream_response(
+            agent=fake_agent,
+            input_state=Mock(),
+            context=None,
+            session_id="sid",
+            request=request,
+        ):
+            pass
 
     # 并发执行
     await asyncio.gather(run_with(request_a), run_with(request_b))
