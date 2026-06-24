@@ -1,4 +1,6 @@
-
+## use subagents
+Use as many subagents  as possible to speed up
+## use skills rule
 Use as many skills and agents as possible to implement features
 
 All code should follow clean code principles and maintain existing functionality
