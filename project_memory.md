@@ -437,6 +437,48 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 
 **测试**: `app/tests/shared/test_seed_map_agent.py`（3 用例：可导入 / INSERT 路径 / UPDATE 幂等路径）
 
+### mcp_server_configs 种子脚本（2026-06-24 新增）
+
+**文件位置**: `app/migrations/seed_mcp_servers.py`
+
+从 `app/shared/tools/mcp/config.yaml` 加载 MCP server 配置，写入 `mcp_server_configs` 表。**幂等**：表已有数据时跳过导入（与 lifespan `seed_from_yaml_if_empty` 行为一致）。
+
+| 函数 | 说明 |
+|------|------|
+| `seed_mcp_servers(db)` | 核心种子函数。先 `SELECT name FROM mcp_server_configs` 判断表是否非空，非空则跳过；空则复用 `McpConfigService.seed_from_yaml_if_empty()` 导入 YAML 种子，返回本次实际写入条数 |
+| `main()` | 脚本入口，从 `DATABASE_URL` 环境变量（默认 `postgresql://postgres:postgres@localhost:5432/feature_agent`）读取连接并执行种子 |
+
+**执行方式**: `python -m app.migrations.seed_mcp_servers`
+
+**测试**: `app/tests/shared/test_seed_mcp_servers.py`（4 用例：可导入 / 表非空跳过 / YAML 导入端到端 / YAML 为空不抛异常）
+
+### _load_yaml_seed str→Path 修复（2026-06-24 bug 修复）
+
+**问题**: `app/shared/utils/agent/mcp_service.py::_load_yaml_seed` 把 `settings.mcp.mcp_config_path`（Pydantic str 字段）直接传给 `mcpClient.shared.config_loader.load_mcp_config(config_path)`，后者调用 `config_path.exists()` 抛 `AttributeError: 'str' object has no attribute 'exists'`，导致：
+- lifespan 启动时 `seed_from_yaml_if_empty` 静默失败（异常被 try/except 吃成 warning）
+- `mcp_server_configs` 表永远为空
+- 必须手工运行 `python -m app.migrations.seed_mcp_servers` 补种
+
+**修复**: `_load_yaml_seed` 入口处 `config_path = Path(settings.mcp.mcp_config_path)` 显式转 Path。修复后 lifespan 自动种子正常工作。
+
+**测试**: `app/tests/shared/utils/agent/test_mcp_service.py`（**17 用例**，2026-06-24 从 9 增至 17）新增：
+- `test_load_yaml_seed_passes_path_to_loader` — 验证传给 `load_mcp_config` 的是 `Path` 实例
+- `test_load_yaml_seed_returns_empty_on_missing_file` — 验证 YAML 不存在时返回空 dict
+
+### McpConfigService JSONB 防御性反序列化（2026-06-24 bug 修复）
+
+**问题**: `McpConfigService` 的 `list_servers` / `get_server` / `create_server` / `update_server` 4 个读路径直接 `dict(row)` 返回 row，asyncpg 默认不注册 JSONB codec，导致 `tags` / `progress_reporting` / `tool_config` / `sampling` / `command` 5 个 JSONB 字段以 str 形式返回给前端。前端遍历 dict 失败 → `/api/admin/mcp/servers` 列表为空。
+
+**修复**: `McpConfigService` 新增静态方法 `_decode_jsonb(value, default)`（与 `AgentConfigService._decode_jsonb` 同实现）与类方法 `_decode_row(row)`，4 个读路径全部改为 `self._decode_row(row)`。`_decode_row` 按 `_JSONB_FIELDS` 元组统一解码 5 个 JSONB 字段，None 用合理默认值（`tags=[]` / `command=None` / 其他 `{"enabled": False}`）。
+
+**测试**: `app/tests/shared/utils/agent/test_mcp_service.py` 新增 6 用例（17 用例总数）：
+- `test_decode_jsonb_none_returns_default` — None 入参走 default
+- `test_decode_jsonb_str_parses_json` — str 入参 json.loads
+- `test_decode_jsonb_dict_list_passthrough` — dict/list 入参原样返回（兼容 codec 已注册场景）
+- `test_decode_row_decodes_all_jsonb_fields` — 所有 JSONB 字段批量解码
+- `test_decode_row_handles_none_jsonb` — None 字段走合理默认值
+- `test_list_servers_decodes_str_jsonb` — 端到端：list_servers 从 str JSONB 解析为 list/dict
+
 ### mcp_server_configs 表（2026-06-23 新增）
 MCP 服务器配置表，从 YAML 迁移至数据库管理。
 
@@ -628,6 +670,24 @@ MCP 服务器方法列表表，用于运行时方法管理。
 
 **扩展方式**:
 - 未来需要查询其他知识库时，可新增一个工具函数，仅修改 `root_path` 来源（如从 `runtime.context["other_knowledge_root"]` 读取），并复用同一个 `BaseFilesystemTool`。
+
+## Agent max_summary_tokens 防御性调整（2026-06-24 bug 修复）
+
+**问题**: `app/core/agent/agent.py` 通过 `langmem.short_term.SummarizationNode` 实现自动摘要，langmem 严格校验 `max_summary_tokens < max_tokens`（在 `_preprocess_messages` 中）。`AgentConfig` 三个相关字段（`max_tokens` / `max_tokens_before_summary` / `max_summary_tokens`）默认值都是 `999999999`，导致 `999999999 < 999999999 == False`，触发 `ValueError: max_summary_tokens must be less than max_tokens`，整个聊天流程崩溃。
+
+**修复**: `Agent.__init__` 在读取 `config.max_summary_tokens` 后立即防御性调整：
+- 若 `max_summary_tokens >= max_tokens`，则 `max_summary_tokens = max(1, max_tokens // 2)`
+- 同时 `logger.warning` 记录原值与调整后值，便于排查
+- 用户已自定义且 `max_summary_tokens < max_tokens` 时保持原值不动
+
+**代码位置**: [app/core/agent/agent.py:130-142](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/core/agent/agent.py#L130-L142)
+
+**测试**: `app/tests/core/agent/test_max_summary_tokens_adjustment.py`（**5 用例**，2026-06-24 新增）：
+- `test_default_values_get_adjusted_to_half` — 默认 999999999 → 调整为 499999999
+- `test_user_customized_summary_keeps_value` — 用户显式设小（2000 < 8000）保持原值
+- `test_user_inverted_values_get_adjusted` — 用户设反（16000 > 8000）触发调整
+- `test_adjustment_logs_warning` — 调整时记录 warning 日志
+- `test_equal_values_at_smaller_scale` — 小规模（100 == 100 → 50）也工作
 
 ## Agent 聊天并发控制（2026-06-15 扩展：动态排队提示 + HITL 早期释放；2026-06-22 严格 FIFO 重构）
 
@@ -2320,6 +2380,7 @@ app/shared/utils/agent/agent_config_service.py
 - **日志记录**：`get_agent_config`（成功/未找到）、`create_agent`、`bind_tool`、`bind_skill` 均通过 `logger.info` / `logger.warning` 记录关键路径
 - **绑定列表过滤**：`enabled_tool_names` / `enabled_skill_names` 通过 `r.get("is_enabled")` 过滤，且在访问 `r["skill_name"]` 前校验 `"skill_name" in r`，避免 mock 返回同一列表时键缺失引发 KeyError
 - **state_class / context_class 类型**：`UnifiedAgentConfig.state_class` / `context_class` 类型注解为 `Callable`（而非 `type`），因 `build_agent_state` / `build_agent_context` 返回的是 `_TypedDictWithDefaults` 包装器实例
+- **JSONB 字段防御性反序列化**（2026-06-24 新增）：`state_schema` / `context_schema` / `mcp_tags` 三个 JSONB 字段读取后先经 `AgentConfigService._decode_jsonb(value, default)` 静态方法处理。asyncpg 默认不注册 JSONB codec，DB 返回 `str`（JSON 字符串）；若将来连接池注册了 codec 则返回 `dict` / `list`。两种情况均需兼容：None 走 default；str 用 `json.loads` 解析（失败回退 default 并 warning）；dict/list 原样返回
 - **依赖模块**：`dynamic_schema.build_agent_state` / `build_agent_context`（Task 2）+ `agents_md_loader.AgentsMdLoader.load`（Task 4）
 
 ### 数据库关联
@@ -2332,8 +2393,8 @@ app/shared/utils/agent/agent_config_service.py
 
 ### 测试
 
-- 路径：`app/tests/shared/utils/agent/test_agent_config_service.py`（9 用例）
-- 覆盖：模块可导入 / 从数据库和 AGENTS.md 加载完整配置 / agent 不存在抛 AgentNotFoundError / agent 禁用抛 AgentNotFoundError / list_agents 只返回启用智能体 / 加载 skill 绑定 / create_agent 插入并返回新行 / bind_tool 执行 upsert / bind_skill 执行 upsert
+- 路径：`app/tests/shared/utils/agent/test_agent_config_service.py`（**15 用例**，2026-06-24 从 9 增至 15）
+- 覆盖：模块可导入 / 从数据库和 AGENTS.md 加载完整配置 / agent 不存在抛 AgentNotFoundError / agent 禁用抛 AgentNotFoundError / list_agents 只返回启用智能体 / 加载 skill 绑定 / create_agent 插入并返回新行 / bind_tool 执行 upsert / bind_skill 执行 upsert / **JSONB 防御性反序列化**：`test_decode_jsonb_none_returns_default` / `test_decode_jsonb_str_parses_json` / `test_decode_jsonb_dict_passthrough` / `test_decode_jsonb_list_passthrough` / `test_decode_jsonb_invalid_str_falls_back_to_default` / `test_get_agent_config_decodes_str_jsonb_fields`（端到端：mock db 返回 str JSONB 也能正确解析为 dict/list）
 - 异步测试使用 `asyncio.run()` 包装（非 pytest-asyncio）
 - Mock 使用 `unittest.mock.AsyncMock` 和 `MagicMock`
 

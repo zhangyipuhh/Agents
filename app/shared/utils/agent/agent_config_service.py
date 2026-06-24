@@ -10,6 +10,7 @@ Date: 2026-06-23
 Author: AI Assistant
 """
 
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List
@@ -71,6 +72,31 @@ class AgentConfigService:
         self._db = db
         self._loader = agents_md_loader
 
+    @staticmethod
+    def _decode_jsonb(value: Any, default: Any) -> Any:
+        """防御性反序列化 JSONB 字段。
+
+        asyncpg 默认不注册 JSONB codec，从数据库读出的 JSONB 字段是 str
+        类型；如果将来连接池注册了 codec，则直接是 dict/list。两种情况
+        都需兼容：str 用 json.loads 解析，dict/list 原样返回，None 走默认。
+
+        参数:
+            value: 数据库返回的字段值，可能为 None / str / dict / list
+            default: 当 value 为 None 时返回的默认值
+
+        返回:
+            Any: 反序列化后的 Python 对象（dict / list / 默认值）
+        """
+        if value is None:
+            return default
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("Failed to decode JSONB value, fallback to default")
+                return default
+        return value
+
     async def get_agent_config(self, agent_name: str) -> UnifiedAgentConfig:
         """根据 agent_name 加载完整配置。
 
@@ -100,8 +126,10 @@ class AgentConfigService:
             raise AgentNotFoundError(f"Agent {agent_name} not found or disabled")
 
         system_prompt = self._loader.load(row["agents_md_path"])
-        state_class = build_agent_state(agent_name, row.get("state_schema") or {})
-        context_class = build_agent_context(agent_name, row.get("context_schema") or {})
+        state_schema = self._decode_jsonb(row.get("state_schema"), {})
+        context_schema = self._decode_jsonb(row.get("context_schema"), {})
+        state_class = build_agent_state(agent_name, state_schema)
+        context_class = build_agent_context(agent_name, context_schema)
 
         tool_bindings = await self._db.fetch(
             "SELECT tool_name, is_enabled FROM agent_tool_bindings "
@@ -122,7 +150,7 @@ class AgentConfigService:
             system_prompt=system_prompt,
             state_class=state_class,
             context_class=context_class,
-            mcp_tags=row.get("mcp_tags") or [],
+            mcp_tags=self._decode_jsonb(row.get("mcp_tags"), []),
             enabled_tool_names=[
                 r["tool_name"] for r in tool_bindings
                 if r.get("is_enabled") and "tool_name" in r

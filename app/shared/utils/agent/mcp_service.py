@@ -46,15 +46,67 @@ class McpConfigService:
         db: 数据库连接池（需支持 fetch/fetchrow/execute 异步方法）
     """
 
+    # JSONB 字段：tags / progress_reporting / tool_config / sampling /
+    # command 需要在读出时防御性反序列化为 list / dict
+    _JSONB_FIELDS = ("tags", "progress_reporting", "tool_config", "sampling", "command")
+
     def __init__(self, db: Any) -> None:
         self._db = db
+
+    @staticmethod
+    def _decode_jsonb(value: Any, default: Any) -> Any:
+        """防御性反序列化 JSONB 字段。
+
+        asyncpg 默认不注册 JSONB codec，从数据库读出的 JSONB 字段是 str
+        类型；如果将来连接池注册了 codec，则直接是 dict/list。两种情况
+        都需兼容：str 用 json.loads 解析，dict/list 原样返回，None 走默认。
+
+        参数:
+            value: 数据库返回的字段值，可能为 None / str / dict / list
+            default: 当 value 为 None 时返回的默认值
+
+        返回:
+            Any: 反序列化后的 Python 对象（dict / list / 默认值）
+        """
+        if value is None:
+            return default
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("Failed to decode JSONB value, fallback to default")
+                return default
+        return value
+
+    @classmethod
+    def _decode_row(cls, row: Any) -> Dict[str, Any]:
+        """将 DB row 转为 dict，并对其中的 JSONB 字段执行反序列化。
+
+        用于统一 list_servers / get_server / create_server / update_server
+        四个读路径，避免每处都重复 _decode_jsonb 调用。
+        """
+        if row is None:
+            return None
+        result = dict(row)
+        for field in cls._JSONB_FIELDS:
+            if field in result:
+                # 字段缺省值：tags=[] / progress_reporting={"enabled": False} 等
+                default: Any
+                if field == "tags":
+                    default = []
+                elif field == "command":
+                    default = None
+                else:
+                    default = {"enabled": False}
+                result[field] = cls._decode_jsonb(result[field], default)
+        return result
 
     async def list_servers(self) -> List[Dict[str, Any]]:
         """列出所有 MCP server 配置。"""
         rows = await self._db.fetch(
             "SELECT * FROM mcp_server_configs ORDER BY created_at"
         )
-        return [dict(r) for r in rows]
+        return [self._decode_row(r) for r in rows]
 
     async def get_server(self, name: str) -> Optional[Dict[str, Any]]:
         """获取单个 server 配置。
@@ -68,7 +120,7 @@ class McpConfigService:
         row = await self._db.fetchrow(
             "SELECT * FROM mcp_server_configs WHERE name = $1", name
         )
-        return dict(row) if row else None
+        return self._decode_row(row) if row else None
 
     async def create_server(self, config: McpServerConfig) -> Dict[str, Any]:
         """新增 MCP server。
@@ -250,10 +302,16 @@ class McpConfigService:
             logger.info("Seeded MCP server '%s' from YAML", name)
 
     def _load_yaml_seed(self) -> Dict[str, Dict[str, Any]]:
-        """从 YAML 种子文件加载配置。"""
+        """从 YAML 种子文件加载配置。
+
+        settings.mcp.mcp_config_path 是 Pydantic str 字段，但
+        load_mcp_config 需要 Path 对象以调用 .exists()。在传入前
+        显式转为 Path，修复 lifespan 启动种子失败的 bug。
+        """
         try:
+            from pathlib import Path
             from app.core.config.config import settings
-            config_path = settings.mcp.mcp_config_path
+            config_path = Path(settings.mcp.mcp_config_path)
             from mcpClient.shared.config_loader import load_mcp_config
             return load_mcp_config(config_path) or {}
         except Exception as e:
