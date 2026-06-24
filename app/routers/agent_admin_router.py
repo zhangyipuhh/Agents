@@ -80,7 +80,7 @@ class AddFieldRequest(BaseModel):
     section: str = Field(..., description="root / state_fields / context_fields")
     field_name: str = Field(..., min_length=1, max_length=100,
                             pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-    field_def: Dict[str, Any] = Field(..., description="如 {\"type\": \"int\", \"default\": 0}")
+    field_def: Dict[str, Any] = Field(..., description='如 {"type": "int", "default": 0}')
 
 
 class SetEnabledRequest(BaseModel):
