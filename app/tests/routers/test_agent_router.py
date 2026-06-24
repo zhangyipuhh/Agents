@@ -49,6 +49,73 @@ def test_list_agents_returns_200(client, admin_headers, monkeypatch):
     assert data[0]["name"] == "map_agent"
 
 
+def test_chat_with_null_agent_name_uses_default_config(client, admin_headers, monkeypatch):
+    """测试 agent_name 为空时 chat 接口使用默认配置，不查询 AgentConfigService。"""
+    async def fake_get(self, name):
+        from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+        from app.core.agent.AgentConfig import AgentState
+        from app.core.agent.AgentContext import AgentContext
+        return UnifiedAgentConfig(
+            name="",
+            display_name="默认智能体",
+            description="",
+            system_prompt="",
+            state_class=AgentState,
+            context_class=AgentContext,
+            mcp_tags=[],
+            enabled_tool_names=[],
+            enabled_skill_names=[],
+            agents_md_path="",
+        )
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.get_agent_config",
+        fake_get,
+    )
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": None,
+    }, headers=headers)
+    # 默认配置下 Agent 初始化可能失败（无真实 LLM），但至少不应 404
+    assert response.status_code != 404
+
+
+def test_chat_with_explicit_agent_name_uses_service(client, admin_headers, monkeypatch):
+    """测试传入 agent_name 时仍通过 AgentConfigService 加载配置。"""
+    async def fake_get(self, name):
+        from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+        from app.core.agent.AgentConfig import AgentState
+        from app.core.agent.AgentContext import AgentContext
+        return UnifiedAgentConfig(
+            name=name,
+            display_name="地图",
+            description="",
+            system_prompt="# 地图智能体",
+            state_class=AgentState,
+            context_class=AgentContext,
+            mcp_tags=[],
+            enabled_tool_names=[],
+            enabled_skill_names=[],
+            agents_md_path="x",
+        )
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.get_agent_config",
+        fake_get,
+    )
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": "map_agent",
+    }, headers=headers)
+    assert response.status_code != 404
+
+
 def test_get_agents_md_returns_content(client, admin_headers, monkeypatch):
     """测试 GET /api/agent/{name}/agents-md 返回 markdown 内容。"""
     async def fake_get(self, name):

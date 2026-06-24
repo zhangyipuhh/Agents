@@ -50,13 +50,24 @@ describe('chatStream 统一接口', () => {
     expect(body.agent_name).toBe('map_agent')
   })
 
-  it('test_chat_stream_default_agent_name 默认 agent_name 为 map_agent', async () => {
+  it('test_chat_stream_default_no_agent_name 默认不传 agent_name', async () => {
     const { chatStream } = await import('../api.js')
     global.fetch.mockResolvedValueOnce({
       ok: true,
       body: { getReader: () => ({ read: async () => ({ done: true }) }) },
     })
     await chatStream('sess-001', 'hello')
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body)
+    expect(body.agent_name).toBeUndefined()
+  })
+
+  it('test_chat_stream_with_agent_name_includes_it 传入 agentName 时请求体包含 agent_name', async () => {
+    const { chatStream } = await import('../api.js')
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      body: { getReader: () => ({ read: async () => ({ done: true }) }) },
+    })
+    await chatStream('sess-001', 'hello', [], null, 'map_agent')
     const body = JSON.parse(global.fetch.mock.calls[0][1].body)
     expect(body.agent_name).toBe('map_agent')
   })

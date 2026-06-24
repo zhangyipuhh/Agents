@@ -55,6 +55,43 @@ def test_get_agent_config_loads_from_db_and_md():
     assert config.mcp_tags == ["map"]
 
 
+def test_get_agent_config_returns_default_when_name_empty():
+    """测试 agent_name 为空时返回框架默认配置。"""
+    db = MagicMock()
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    # None
+    config = asyncio.run(service.get_agent_config(None))
+    assert config.name == ""
+    assert config.system_prompt == ""
+    assert config.enabled_tool_names == []
+    assert config.enabled_skill_names == []
+    assert config.agent_config_overrides == {}
+
+    # 空字符串
+    config2 = asyncio.run(service.get_agent_config(""))
+    assert config2.name == ""
+    assert config2.system_prompt == ""
+
+    # 验证未查询数据库
+    db.fetchrow.assert_not_called()
+
+
+def test_get_agent_config_default_has_base_classes():
+    """测试默认配置的 state_class / context_class 为基类。"""
+    from app.core.agent.AgentConfig import AgentState
+    from app.core.agent.AgentContext import AgentContext
+
+    db = MagicMock()
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+    config = asyncio.run(service.get_agent_config(None))
+
+    assert config.state_class is AgentState
+    assert config.context_class is AgentContext
+
+
 def test_get_agent_config_raises_on_not_found():
     """测试 agent 不存在时抛出 AgentNotFoundError。"""
     db = MagicMock()
