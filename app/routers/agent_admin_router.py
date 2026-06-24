@@ -41,6 +41,8 @@ from app.shared.utils.agent.agent_config_service import (
 from app.shared.utils.agent.dynamic_schema import (
     RESERVED_CONFIG_FIELDS,
     get_agent_config_field_templates,
+    get_agent_state_field_templates,
+    get_agent_context_field_templates,
 )
 from app.shared.utils.auth.Safety import require_admin
 
@@ -175,12 +177,34 @@ async def validate_md_path(req: ValidateMdPathRequest) -> Dict[str, Any]:
 
 
 @router.get("/field-templates")
-async def list_field_templates() -> List[Dict[str, Any]]:
-    """获取 AgentConfig 所有可被 schema 覆盖的字段模板。
+async def list_field_templates(
+    section: str = Query("root", description="root / state_fields / context_fields"),
+) -> List[Dict[str, Any]]:
+    """获取指定 section 的字段模板列表。
 
-    用于前端「添加字段」弹窗中「覆盖来源 = AgentConfig 已有字段」的下拉列表。
+    用于前端「添加字段」弹窗中「覆盖来源 = 已有字段」的下拉列表。
+
+    参数:
+        section: 字段所属段，root 返回 AgentConfig 字段模板，
+                 state_fields 返回 AgentState 字段模板，
+                 context_fields 返回 AgentContext 字段模板
+
+    返回:
+        List[Dict]: 每项为 {"field_name": str, "type": str, "default": Any}
+
+    异常:
+        HTTPException 400: section 参数非法
     """
-    return get_agent_config_field_templates()
+    if section == "root":
+        return get_agent_config_field_templates()
+    if section == "state_fields":
+        return get_agent_state_field_templates()
+    if section == "context_fields":
+        return get_agent_context_field_templates()
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=f"Invalid section: {section}. Must be one of root, state_fields, context_fields.",
+    )
 
 
 @router.get("/{name}", response_model=Dict[str, Any])

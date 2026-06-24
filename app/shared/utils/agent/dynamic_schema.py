@@ -515,3 +515,101 @@ def get_agent_config_field_templates() -> list:
         if schema:
             templates.append(schema)
     return templates
+
+
+def _get_type_str(annotation) -> str:
+    """将 Python 类型注解转换为 TYPE_MAP 支持的类型字符串。
+
+    参数:
+        annotation: Python 类型注解对象
+
+    返回:
+        str: TYPE_MAP 中的类型键（str/int/float/bool/dict/list）
+
+    说明:
+        - 对 typing.Optional[X] 会递归解析非 None 的参数
+        - 对泛型如 dict[str, dict] / list[str] 统一返回 dict/list
+        - 无法识别的类型默认回退为 "str"
+    """
+    import typing
+
+    origin = typing.get_origin(annotation)
+    args = typing.get_args(annotation)
+
+    # 处理 Optional[X]（即 Union[X, None]）
+    if origin is typing.Union and type(None) in args:
+        non_none_args = [a for a in args if a is not type(None)]
+        if non_none_args:
+            return _get_type_str(non_none_args[0])
+
+    # 处理泛型 dict / list
+    if origin in (dict, typing.Dict):
+        return "dict"
+    if origin in (list, typing.List):
+        return "list"
+
+    # 处理原生类型
+    if annotation is str:
+        return "str"
+    if annotation is int:
+        return "int"
+    if annotation is float:
+        return "float"
+    if annotation is bool:
+        return "bool"
+    if annotation is dict:
+        return "dict"
+    if annotation is list:
+        return "list"
+
+    return "str"
+
+
+def get_agent_state_field_templates() -> list:
+    """获取 AgentState 所有可被 schema 覆盖的保留字段模板列表。
+
+    返回:
+        list: 每项为 {"field_name": str, "type": str, "default": Any}
+              按 AgentState 定义顺序排列，不含 messages（运行时必需字段）
+
+    说明:
+        - messages 是 LangGraph MessagesState 的必需字段，运行时由调用方显式传入，
+          不适合通过 schema 覆盖默认值，因此不出现在模板列表中。
+        - 保留字段（如 error_limit / limit）的类型注解沿用基类，默认值来自
+          _BASE_STATE_DEFAULTS。
+    """
+    templates = []
+    for field_name, annotation in AgentState.__annotations__.items():
+        if field_name == "messages":
+            continue
+        type_str = _get_type_str(annotation)
+        default = _BASE_STATE_DEFAULTS.get(field_name)
+        templates.append({
+            "field_name": field_name,
+            "type": type_str,
+            "default": default,
+        })
+    return templates
+
+
+def get_agent_context_field_templates() -> list:
+    """获取 AgentContext 所有可被 schema 覆盖的保留字段模板列表。
+
+    返回:
+        list: 每项为 {"field_name": str, "type": str, "default": Any}
+              按 AgentContext 定义顺序排列
+
+    说明:
+        - 所有保留字段（session_id / namespace / store_id 等）均可通过 schema
+          重写默认值，类型注解沿用基类，默认值来自 _BASE_CONTEXT_DEFAULTS。
+    """
+    templates = []
+    for field_name, annotation in AgentContext.__annotations__.items():
+        type_str = _get_type_str(annotation)
+        default = _BASE_CONTEXT_DEFAULTS.get(field_name)
+        templates.append({
+            "field_name": field_name,
+            "type": type_str,
+            "default": default,
+        })
+    return templates

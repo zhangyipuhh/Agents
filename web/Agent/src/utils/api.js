@@ -1200,11 +1200,12 @@ export async function deleteAdminAgentConfigField(name, section, fieldName) {
 }
 
 /**
- * 获取 AgentConfig 字段模板列表（用于新增字段时下拉选择）
+ * 获取字段模板列表（用于新增字段时下拉选择）
+ * @param {string} section - 字段所属段：root / state_fields / context_fields
  * @returns {Promise<Array<{field_name, type, default}>>} 字段模板列表
  */
-export async function fetchAgentConfigFieldTemplates() {
-  const response = await fetchWithAuth('/api/admin/agents/field-templates')
+export async function fetchAgentConfigFieldTemplates(section = 'root') {
+  const response = await fetchWithAuth(`/api/admin/agents/field-templates?section=${encodeURIComponent(section)}`)
   if (!response.ok) {
     const detail = await response.json().catch(() => ({}))
     throw new Error(detail.detail || `获取字段模板失败: ${response.status}`)
