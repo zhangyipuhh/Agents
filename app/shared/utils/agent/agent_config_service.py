@@ -131,10 +131,15 @@ class AgentConfigService:
             row_dict[key] = self._decode_jsonb(row_dict.get(key), default)
         return row_dict
 
-    async def get_agent_config(self, agent_name: str) -> UnifiedAgentConfig:
+    async def get_agent_config(self, agent_name: Optional[str] = None) -> UnifiedAgentConfig:
         """根据 agent_name 加载完整配置。
 
-        流程：
+        当 agent_name 为空（None / ''）时，返回框架默认配置：
+        - 使用 AgentState / AgentContext 基类
+        - system_prompt 为空字符串（Agent 内部会回退到 BASE_SYSTEM_PROMPT）
+        - 不绑定任何工具或 skill
+
+        流程（非空 agent_name）：
         1. 从 agents 表查询记录（含 enabled 校验）
         2. 通过 AgentsMdLoader 加载 AGENTS.md 内容作为 system_prompt
         3. 解析 config_schema（三层嵌套），回退到旧 state_schema + context_schema
@@ -143,15 +148,34 @@ class AgentConfigService:
         6. 从 agent_skill_bindings 加载启用的 skill 列表
 
         参数:
-            agent_name: 智能体名称
+            agent_name: 智能体名称，为空时返回默认配置
 
         返回:
             UnifiedAgentConfig: 完整配置实例（含 agent_config_overrides）
 
         异常:
-            AgentNotFoundError: agent 不存在或已禁用时抛出
+            AgentNotFoundError: agent 不存在或已禁用时抛出（仅针对非空 agent_name）
             FileNotFoundError: agents_md_path 指向的 AGENTS.md 文件不存在时抛出
         """
+        if not agent_name:
+            from app.core.agent.AgentConfig import AgentState
+            from app.core.agent.AgentContext import AgentContext
+            logger.info("Using default agent config (no agent_name provided)")
+            return UnifiedAgentConfig(
+                name="",
+                display_name="默认智能体",
+                description="",
+                system_prompt="",
+                state_class=AgentState,
+                context_class=AgentContext,
+                agent_config_overrides={},
+                mcp_tags=[],
+                enabled_tool_names=[],
+                enabled_skill_names=[],
+                agents_md_path="",
+                config_schema={},
+            )
+
         row = await self._db.fetchrow(
             "SELECT * FROM agents WHERE name = $1",
             agent_name,

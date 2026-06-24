@@ -49,7 +49,7 @@ class ChatRequest(BaseModel):
     """
     message: str
     session_id: Optional[str] = None
-    agent_name: str = "map_agent"
+    agent_name: Optional[str] = None
     attachments: List[Any] = []
     resume: Optional[Dict[str, Any]] = None
     context_overrides: Dict[str, Any] = {}
@@ -147,7 +147,7 @@ async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Agent initialization failed for %s: %s", chat_request.agent_name, e)
+        logger.exception("Agent initialization failed for %s: %s", chat_request.agent_name or "default", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Agent initialization failed: {str(e)}",

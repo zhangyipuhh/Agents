@@ -13,8 +13,8 @@ import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processCo
 import { redirectToLogin, tryRefreshOrRedirect } from './utils/auth.js'
 
 // 2026-06-23 新增：当前激活的智能体名称（与后端 agents 表 name 字段一致）。
-// 默认 'map_agent'，由 InputBox 的 /agent <name> 命令通过 agent-switched 事件切换。
-const agentName = ref('map_agent')
+// 默认 null，未选择时由后端使用框架默认配置。
+const agentName = ref(null)
 const currentPage = ref('agent')
 const isLoggedIn = ref(false)
 // 认证状态检查是否就绪；用于在 checkAuth 完成前显示 loading 占位，
@@ -559,12 +559,11 @@ function handleToolAction(action) {
 
 /**
  * 处理 InputBox 触发的智能体切换事件
- * @param {string} name - 新激活的智能体名称（如 'map_agent' / 'contract_agent'）
+ * @param {string|null} name - 新激活的智能体名称（如 'map_agent' / 'contract_agent'），null 表示取消选择
  */
 function handleAgentSwitched(name) {
-  if (!name || typeof name !== 'string') return
   if (agentName.value === name) return
-  agentName.value = name
+  agentName.value = name || null
   console.log('[App] 智能体已切换为:', name)
 }
 

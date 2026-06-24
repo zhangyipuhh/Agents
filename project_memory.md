@@ -547,6 +547,19 @@ MCP 服务器配置表，从 YAML 迁移至数据库管理。
 | created_at         | TIMESTAMP                          | 创建时间                                                                               |
 | updated_at         | TIMESTAMP                          | 更新时间                                                                               |
 
+#### 2026-06-24 字段扩展
+
+补齐 4 列使 DB 成为 source of truth：
+
+| 字段             | 类型                  | 默认值       | 说明                       |
+| ---------------- | --------------------- | ------------ | -------------------------- |
+| `args`           | JSONB                 | `'[]'::jsonb`  | stdio 参数列表             |
+| `env`            | JSONB                 | `'{}'::jsonb`  | 进程环境变量               |
+| `headers`        | JSONB                 | `'{}'::jsonb`  | HTTP/SSE 自定义头          |
+| `connect_timeout`| INT                   | `10`           | TCP/HTTP 连接超时（秒）    |
+
+幂等迁移：`ADD COLUMN IF NOT EXISTS`（PostgreSQL 9.6+），兼容已建库。迁移脚本位于 `app/migrations/init_all_tables.sql` 末尾（COMMIT 之前）。
+
 ### mcp_server_methods 表（2026-06-23 新增）
 
 MCP 服务器方法列表表，用于运行时方法管理。
@@ -2574,6 +2587,15 @@ app/shared/utils/agent/mcp_service.py
 - 路径：`app/tests/shared/utils/agent/test_mcp_service.py`（9 用例）
 - 覆盖：模块可导入 / list_servers 返回行 / get_server 返回单条 / create_server 写入（mock fetchrow 两次：存在性检查返回 None + INSERT RETURNING 返回行）/ delete_server 删除主子表 / toggle_server 更新 enabled / list_methods 返回行 / toggle_method 更新 enabled / seed_from_yaml_if_empty 空表导入（mock _load_yaml_seed）
 
+### 2026-06-24 重构：完整字段读写
+
+- `McpServerConfig` dataclass 扩展 4 字段：`args: List[str]` / `env: Dict[str, str]` / `headers: Dict[str, str]` / `connect_timeout: int = 10`
+- `_JSONB_FIELDS` 增加 `args` / `env` / `headers` 三个新 JSONB 字段
+- `_decode_row` 扩展 default 分支：`tags`/`args`→`[]`、`env`/`headers`→`{}`、`command`→`None`、其他→`{"enabled": False}`；`connect_timeout` 非 JSONB 字段用 `int(val) if val is not None else 10` 兜底
+- `create_server` / `update_server` SQL 从 12 个占位符增加到 16 个
+- `seed_from_yaml_if_empty` 从 yaml 读 4 个新字段（`cfg.get("args")` 等）
+- 测试同步：`test_mcp_service.py` 追加 6 个用例（新字段存在性 / _decode_row 新字段 / None 默认值 / create+update SQL 含新字段 / seed 读新字段）
+
 ## MCP Admin Router（2026-06-23 新增）
 
 提供 MCP server 配置的 HTTP API，前缀 `/api/admin/mcp`，在 `app/main.py::register_routers` 中注册。调用 `McpConfigService`（Task 5）执行数据库操作，通过 `request.app.state.mcp_config_service` 获取服务实例（lifespan 集成在 Task 14 已落地）。
@@ -2808,6 +2830,25 @@ app/core/tools/mcp_registry.py
 - 路径：`app/tests/core/tools/test_mcp_registry_runtime.py`（9 用例）
 - 覆盖：5 个方法存在性检查 / add_server 存储配置 / remove_server 删除配置 / toggle_server 更新 enabled / toggle_method 更新 method enabled
 - 测试特点：直接构造 `MCPToolsRegistry()` 实例（构造器无重初始化），通过 `asyncio.run()` 调用异步方法
+
+### 2026-06-24 重构：适配器链路打通 + lifespan 从 DB 读
+
+**适配器链路**：
+- `mcp_registry._get_tools_with_server_async` 拉取工具时用 `MCPToolToLangChainAdapter` 包装（幂等：已包装则跳过）
+- `MCPToolConfig.from_dict(server_config["tool_config"])` 让 4 个字段（`enable_injection` / `default_param_keys` / `hidden_param_keys` / `unwrap_result`）真正生效
+- 测试同步：`test_mcp_registry_runtime.py` 追加 2 个用例（wraps_with_adapter / skips_already_wrapped）
+
+**lifespan 从 DB 读**（`app/core/server.py`）：
+- 顺序调整：McpConfigService 初始化 → `seed_from_yaml_if_empty` → `list_servers` 过滤 `enabled=true` → `registry.initialize`
+- 3 个降级条件：`db_pool` 为 None / `mcp_config_service` 初始化失败 / `list_servers` 返回空
+- 降级路径用 `isinstance(yaml_configs, dict)` 防御 Mock 返回值
+- 测试同步：新建 `app/tests/core/test_server_lifespan.py`（4 用例：DB 读 enabled 过滤 / DB 空降级 / DB 不可用降级 / 新字段完整性）
+
+**mcp_admin_router 热更新**（`app/routers/mcp_admin_router.py`）：
+- 新增 `_get_registry(request)` 辅助函数（返回 None 不抛 500）
+- 新增 `_build_config_dict(server)` 用 `dataclasses.asdict()`
+- 4 个写路由（create / update / delete / toggle）在 DB 操作后调 registry 对应方法，try/except 写 warning
+- 测试同步：`test_mcp_admin_router.py` 追加 5 个用例（4 个 registry 同步 + 1 个 _build_config_dict）；新增 `_FakeRegistryBase` 基类含 `shutdown` 方法供 lifespan 清理调用
 
 ## 前端 MCP 管理 API 封装（2026-06-23 新增，Task 8）
 

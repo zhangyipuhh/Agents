@@ -163,6 +163,7 @@ function selectAgent(agent) {
  */
 function removeSelectedAgent() {
   selectedAgent.value = null
+  emit('agent-switched', null)
   nextTick(() => {
     textareaRef.value?.focus()
   })
