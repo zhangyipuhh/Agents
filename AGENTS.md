@@ -125,6 +125,47 @@ app/{module}/bar/baz.py      →  app/tests/{module}/bar/test_baz.py
 - 若测试失败，需修复源码或测试直至通过
 - 最终回复必须包含 checklist：`[✓ 测试已同步生成并通过]` 或 `[✗ 本次修改无测试同步需要：<理由>]`
 
+## ⚠️ HARD RULE：禁止在测试中虚构生产不存在的依赖
+
+**核心原则**：测试是生产的镜像，不是生产的补丁。**绝不允许**通过 `conftest` / `fixture` 注入生产环境（`lifespan` / 启动钩子）**根本不会初始化**的对象来让测试通过——这是掩盖真实 bug 的反模式，会让「测试全绿、生产崩溃」成为常态。
+
+**典型反模式（2026-06-24 agent_admin_router 401 案例）**：
+
+- 生产 `app/routers/agent_admin_router.py::list_agents` 访问 `request.app.state.db`，但 `app/core/server.py` 的 `lifespan` **从未初始化** `app.state.db`（只初始化了 `agent_config_service` / `mcp_config_service` / `mcp_registry`）
+- 测试 `app/tests/routers/conftest.py::_init_db` 用 `app.state.db = MagicMock()` 让路由代码"看似"能跑
+- 后果：测试 100% 通过，但生产抛 `AttributeError: 'State' object has no attribute 'db'` → 被 `auth_middleware` 的 `try/except Exception` 吞掉 → 用户看到 `401 Unauthorized`
+- 根因：测试用 Mock **虚构**了一个生产中根本不存在的对象，把「lifespan 漏初始化」与「路由错误直接访问 app.state」两层 bug 一起掩盖
+
+**硬约束**：
+
+1. **依赖一致性检查（必做）**：写测试前，先 `Grep` 生产启动路径（`app/core/server.py` lifespan / `app/main.py` `register_routers` / 所有 `app.state.*` 赋值点）确认目标对象在生产**真的会存在**。如不存在 → **先修生产代码**（补 lifespan 或改走 service 层），再写测试。
+
+2. **禁止用 Mock 填补生产空洞**：
+   - ❌ `app.state.xxx = MagicMock()` 但生产 lifespan 没初始化 `xxx`
+   - ❌ `monkeypatch.setattr("module.yyy", MagicMock())` 但生产代码根本不调 `module.yyy`
+   - ✅ 修补生产 `lifespan` 让对象真实存在，再在测试 fixture 注入**真实实例**（即使是 `db=None` 的 stub service）；或重构代码让生产根本不依赖该对象
+
+3. **autouse fixture 必须有生产对等物**：每个 `autouse=True` fixture 都必须在 docstring 明确指向「生产中谁负责初始化这个对象」（lifespan / 启动钩子 / 中间件）。如果只是为了「让测试跑起来」注入 MagicMock → **删除该 fixture** 或改为显式 opt-in（不 autouse）。
+
+4. **测试失败时优先怀疑生产 bug**：测试抛 `AttributeError: 'State' object has no attribute 'xxx'` / `AttributeError: 'NoneType' object has no attribute 'yyy'` 时，**先 `Grep` 生产是否真的会初始化 `xxx` / `yyy`**，不要先想「怎么 Mock 掉这个错」。
+
+5. **历史兼容 fixture 必须标注 + 给出移除时间表**：`@pytest.fixture(autouse=True)` 注入 MagicMock 的兼容 fixture 必须在 docstring 显式标注「仅供历史兼容」「生产未初始化此对象」「如未来路由错误地直接访问此对象，生产仍会 AttributeError」，并写入 `project_memory.md` 待办，给出移除时间表。
+
+**反例 → 正例对照**：
+
+| 反例（掩盖 bug） | 正例（暴露并修复 bug） |
+|-----------------|---------------------|
+| `_init_db` 注入 `app.state.db = MagicMock()` 让路由通过 | ① 修 `lifespan` 让 `app.state.db` 真实存在；② 或改路由改走 `service._db`，让 `app.state.db` 不再被需要；③ 测试 fixture 注入**真实 service 实例**（如 `AgentConfigService(db=None, agents_md_loader=AgentsMdLoader())`）|
+| 测试 `monkeypatch.setattr("xxx", Mock())` 让 import 不报错 | 让生产代码 `try/except ImportError` 优雅降级，或把 import 移到运行时 |
+| 测试 fixture 注入生产 lifespan 不创建的对象 | 删除 fixture，改让测试显式 `monkeypatch` 业务方法（按需 opt-in） |
+
+**审计清单**（每次新增/修改 `app/tests/**/conftest.py` 后必查）：
+
+- [ ] 每个 `autouse=True` fixture 是否有生产对等初始化点？（`Grep "app.state.<attr>" app/core/server.py app/main.py` 验证）
+- [ ] 是否有 `MagicMock()` 直接挂在 `app.state.*` 上？（如有不属于 stub service 的 → 删除或迁移到 service 层）
+- [ ] 测试失败时是否先问「这是生产 bug 还是测试 bug？」而不是「怎么 Mock 掉这个错？」
+- [ ] 历史兼容 fixture 是否在 docstring 标注「仅历史兼容」+ 在 `project_memory.md` 写入待办？
+
 ## Skill 系统使用规范（2026-06-21 落地，v2）
 
 > **详情**：路径约定、frontmatter 格式、模块位置、与 opencode 差异、API 列表等完整信息见 [`project_memory.md` "Skill 系统" 章节](file:///e:/laboratory/AI/Agents/feature-agent-core/project_memory.md)。本节只列**操作硬约束**。
