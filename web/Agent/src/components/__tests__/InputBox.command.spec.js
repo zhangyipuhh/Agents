@@ -161,4 +161,96 @@ describe('InputBox 命令检测', () => {
     expect(wrapper.emitted('send')).toBeTruthy()
     expect(wrapper.emitted('send')[0][0]).toContain('map_agent')
   })
+
+  // 2026-06-24 新增：智能体快速选择下拉菜单测试
+  it('test_slash_shows_agent_dropdown 输入 "/" 显示智能体下拉菜单', async () => {
+    const wrapper = mount(InputBox, {
+      props: { sessionId: 'sid_1', isStreaming: false },
+    })
+    const textarea = wrapper.find('textarea')
+    await textarea.setValue('/')
+    await flushPromises()
+    // 下拉菜单应存在
+    expect(wrapper.find('.agent-dropdown').exists()).toBe(true)
+    // 应显示智能体列表项
+    expect(wrapper.find('.agent-dropdown-item').exists()).toBe(true)
+    expect(wrapper.text()).toContain('地图')
+  })
+
+  it('test_select_agent_from_dropdown 从下拉菜单选中智能体后显示标签', async () => {
+    const wrapper = mount(InputBox, {
+      props: { sessionId: 'sid_1', isStreaming: false },
+    })
+    const textarea = wrapper.find('textarea')
+    await textarea.setValue('/')
+    await flushPromises()
+    // 点击第一个智能体项
+    const firstItem = wrapper.find('.agent-dropdown-item')
+    await firstItem.trigger('mousedown')
+    await flushPromises()
+    // 应显示已选智能体标签
+    expect(wrapper.find('.selected-agent-tag').exists()).toBe(true)
+    expect(wrapper.text()).toContain('地图')
+    // 输入框应被清空
+    expect(textarea.element.value).toBe('')
+  })
+
+  it('test_selected_agent_emits_switch_on_send 选中智能体后发送触发 agent-switched', async () => {
+    const wrapper = mount(InputBox, {
+      props: { sessionId: 'sid_1', isStreaming: false },
+    })
+    const textarea = wrapper.find('textarea')
+    await textarea.setValue('/')
+    await flushPromises()
+    // 选中智能体
+    const firstItem = wrapper.find('.agent-dropdown-item')
+    await firstItem.trigger('mousedown')
+    await flushPromises()
+    // 输入消息并发送
+    await textarea.setValue('hello')
+    const sendBtn = wrapper.find('.send-btn')
+    await sendBtn.trigger('click')
+    await flushPromises()
+    // 应先触发 agent-switched，再触发 send
+    expect(wrapper.emitted('agent-switched')).toBeTruthy()
+    expect(wrapper.emitted('agent-switched')[0]).toEqual(['map_agent'])
+    expect(wrapper.emitted('send')).toBeTruthy()
+    expect(wrapper.emitted('send')[0][0]).toBe('hello')
+  })
+
+  it('test_remove_selected_agent_tag 点击移除按钮可移除已选智能体标签', async () => {
+    const wrapper = mount(InputBox, {
+      props: { sessionId: 'sid_1', isStreaming: false },
+    })
+    const textarea = wrapper.find('textarea')
+    await textarea.setValue('/')
+    await flushPromises()
+    // 选中智能体
+    const firstItem = wrapper.find('.agent-dropdown-item')
+    await firstItem.trigger('mousedown')
+    await flushPromises()
+    expect(wrapper.find('.selected-agent-tag').exists()).toBe(true)
+    // 点击移除按钮
+    const removeBtn = wrapper.find('.agent-remove-btn')
+    await removeBtn.trigger('click')
+    await flushPromises()
+    // 标签应被移除
+    expect(wrapper.find('.selected-agent-tag').exists()).toBe(false)
+  })
+
+  // 2026-06-24 新增：验证组件挂载时自动加载智能体列表
+  it('test_load_agents_on_mount 组件挂载时自动加载智能体列表', async () => {
+    const wrapper = mount(InputBox, {
+      props: { sessionId: 'sid_1', isStreaming: false },
+    })
+    await flushPromises()
+    // 下拉菜单未显示，但 agentList 应在挂载时已填充
+    expect(wrapper.find('.agent-dropdown').exists()).toBe(false)
+    // 输入 / 后应直接展示已加载的列表（无加载中状态）
+    const textarea = wrapper.find('textarea')
+    await textarea.setValue('/')
+    await flushPromises()
+    expect(wrapper.find('.agent-dropdown-item').exists()).toBe(true)
+    expect(wrapper.text()).toContain('地图')
+  })
 })

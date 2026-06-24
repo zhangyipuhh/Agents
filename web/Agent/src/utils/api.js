@@ -1157,6 +1157,30 @@ export async function addAdminAgentConfigField(name, section, fieldName, fieldDe
 }
 
 /**
+ * 直接覆盖 config_schema 中已存在的字段（无需先删后加）
+ * @param {string} name - 智能体名称
+ * @param {string} section - root / state_fields / context_fields
+ * @param {string} fieldName - 字段名
+ * @param {Object} fieldDef - { type, default }
+ * @returns {Promise<Object>} 更新后的记录
+ */
+export async function updateAdminAgentConfigField(name, section, fieldName, fieldDef) {
+  const response = await fetchWithAuth(
+    `/api/admin/agents/${encodeURIComponent(name)}/config-schema/field`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ section, field_name: fieldName, field_def: fieldDef }),
+    }
+  )
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `修改字段失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
  * 增量删除 config_schema 字段
  * @param {string} name - 智能体名称
  * @param {string} section - root / state_fields / context_fields

@@ -1,6 +1,6 @@
 <script setup>
-import { ref, computed, nextTick } from 'vue'
-import { uploadFileInChunks, formatFileSize, getFileExtension, refreshToken } from '../utils/api.js'
+import { ref, computed, nextTick, onMounted } from 'vue'
+import { uploadFileInChunks, formatFileSize, getFileExtension, refreshToken, fetchAgentList } from '../utils/api.js'
 import { handleCommand, COMMAND_REGISTRY } from '../utils/commandRegistry.js'
 
 const SUPPORTED_EXTENSIONS = ['pdf', 'doc', 'docx', 'txt', 'md', 'csv', 'json']
@@ -27,6 +27,14 @@ const isRefreshingToken = ref(false)
 const isExecutingCommand = ref(false)
 const selectedFiles = ref([])
 
+// 2026-06-24 新增：智能体快速选择相关状态
+const agentList = ref([])
+const isLoadingAgents = ref(false)
+const selectedAgent = ref(null)
+const showAgentDropdown = ref(false)
+const activeAgentIndex = ref(-1)
+const agentDropdownRef = ref(null)
+
 const canSend = computed(() => {
   if (props.isStreaming) return false
   if (isRefreshingToken.value) return false
@@ -37,10 +45,13 @@ const canSend = computed(() => {
 })
 
 /**
- * 是否为命令输入（以 / 开头）
+ * 是否为命令输入（以 / 开头，且未通过下拉菜单选中智能体）
  * @returns {boolean} 当前输入是否为斜杠命令
  */
-const isCommand = computed(() => inputValue.value.trim().startsWith('/'))
+const isCommand = computed(() => {
+  const trimmed = inputValue.value.trim()
+  return trimmed.startsWith('/') && !selectedAgent.value
+})
 
 /**
  * 解析当前命令输入
@@ -56,11 +67,13 @@ const parsedCommand = computed(() => {
 /**
  * 命令提示文本
  * 根据输入内容匹配 COMMAND_REGISTRY 中的命令定义，返回描述与用法提示。
- * @returns {string} 命令提示文本；非命令输入返回空字符串
+ * @returns {string} 命令提示文本；非命令输入或仅输入 "/" 时返回空字符串
  */
 const commandHint = computed(() => {
   const parsed = parsedCommand.value
   if (!parsed) return ''
+  // 仅输入 "/" 时不显示命令提示，由下拉菜单替代
+  if (parsed.cmd === '') return ''
   const reg = COMMAND_REGISTRY.find((r) => r.name === parsed.cmd)
   return reg ? `命令：${reg.description}（用法：${reg.usage}）` : `未知命令：/${parsed.cmd}`
 })
@@ -74,12 +87,112 @@ const autoResize = () => {
   }
 }
 
+/**
+ * 加载可用智能体列表（供下拉菜单使用）
+ */
+async function loadAgents() {
+  if (agentList.value.length > 0 || isLoadingAgents.value) return
+  isLoadingAgents.value = true
+  try {
+    const agents = await fetchAgentList()
+    agentList.value = agents || []
+  } catch (err) {
+    console.error('加载智能体列表失败:', err)
+    agentList.value = []
+  } finally {
+    isLoadingAgents.value = false
+  }
+}
+
+// 页面加载时自动获取智能体列表，确保用户输入 "/" 时列表已就绪
+onMounted(() => {
+  loadAgents()
+})
+
+/**
+ * 过滤后的智能体列表（当输入 "/" 后，可继续输入字符进行过滤）
+ */
+const filteredAgents = computed(() => {
+  const trimmed = inputValue.value.trim()
+  if (trimmed === '/') return agentList.value
+  if (!trimmed.startsWith('/')) return []
+  const query = trimmed.slice(1).toLowerCase()
+  return agentList.value.filter(
+    (a) =>
+      a.name.toLowerCase().includes(query) ||
+      (a.display_name && a.display_name.toLowerCase().includes(query))
+  )
+})
+
 const handleInput = (event) => {
   inputValue.value = event.target.value
   autoResize()
+  // 仅输入 "/" 时加载智能体列表并显示下拉菜单
+  const trimmed = inputValue.value.trim()
+  if (trimmed === '/') {
+    showAgentDropdown.value = true
+    activeAgentIndex.value = -1
+    loadAgents()
+  } else if (!trimmed.startsWith('/')) {
+    showAgentDropdown.value = false
+    activeAgentIndex.value = -1
+  } else {
+    // 输入 "/xxx" 时继续显示下拉菜单（过滤模式）
+    showAgentDropdown.value = true
+    activeAgentIndex.value = -1
+  }
+}
+
+/**
+ * 选中智能体（从下拉菜单）
+ * @param {Object} agent - 智能体对象
+ */
+function selectAgent(agent) {
+  selectedAgent.value = agent
+  inputValue.value = ''
+  showAgentDropdown.value = false
+  activeAgentIndex.value = -1
+  nextTick(() => {
+    autoResize()
+    textareaRef.value?.focus()
+  })
+}
+
+/**
+ * 移除已选中的智能体
+ */
+function removeSelectedAgent() {
+  selectedAgent.value = null
+  nextTick(() => {
+    textareaRef.value?.focus()
+  })
 }
 
 const handleKeydown = (event) => {
+  // 下拉菜单打开时，支持键盘导航
+  if (showAgentDropdown.value && filteredAgents.value.length > 0) {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      activeAgentIndex.value = (activeAgentIndex.value + 1) % filteredAgents.value.length
+      return
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      activeAgentIndex.value =
+        (activeAgentIndex.value - 1 + filteredAgents.value.length) % filteredAgents.value.length
+      return
+    }
+    if (event.key === 'Enter' && !event.shiftKey && activeAgentIndex.value >= 0) {
+      event.preventDefault()
+      selectAgent(filteredAgents.value[activeAgentIndex.value])
+      return
+    }
+    if (event.key === 'Escape') {
+      showAgentDropdown.value = false
+      activeAgentIndex.value = -1
+      return
+    }
+  }
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
     handleSend()
@@ -121,7 +234,7 @@ const handleSend = async () => {
   if (!canSend.value) return
 
   const text = inputValue.value.trim()
-  if (!text) return
+  if (!text && !selectedAgent.value) return
 
   // 命令检测：以 / 开头视为命令，不走普通发送流程
   if (text.startsWith('/')) {
@@ -149,10 +262,16 @@ const handleSend = async () => {
       file_size: f.size
     }))
 
-  emit('send', inputValue.value.trim(), uploadedFiles)
+  // 2026-06-24 新增：若通过下拉菜单选中了智能体，先切换智能体再发送消息
+  if (selectedAgent.value) {
+    emit('agent-switched', selectedAgent.value.name)
+  }
+
+  emit('send', text, uploadedFiles)
 
   inputValue.value = ''
   selectedFiles.value = []
+  selectedAgent.value = null
 
   nextTick(() => {
     autoResize()
@@ -165,6 +284,11 @@ const handleFocus = () => {
 
 const handleBlur = () => {
   isFocused.value = false
+  // 延迟关闭下拉菜单，确保点击菜单项的 mousedown 能先触发
+  setTimeout(() => {
+    showAgentDropdown.value = false
+    activeAgentIndex.value = -1
+  }, 200)
 }
 
 const handleAttachmentClick = () => {
@@ -416,11 +540,42 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched'])
           </div>
         </div>
 
+        <!-- 2026-06-24 新增：已选智能体标签 -->
+        <div v-if="selectedAgent" class="selected-agent-tag">
+          <span class="agent-slash">/</span>
+          <span class="agent-name">{{ selectedAgent.display_name || selectedAgent.name }}</span>
+          <button class="agent-remove-btn" @click="removeSelectedAgent" title="移除">
+            <svg viewBox="0 0 20 20" fill="currentColor" class="agent-remove-icon">
+              <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/>
+            </svg>
+          </button>
+        </div>
+
+        <!-- 2026-06-24 新增：智能体下拉菜单 -->
+        <div
+          v-if="showAgentDropdown && isCommand && inputValue.trim() === '/'"
+          ref="agentDropdownRef"
+          class="agent-dropdown"
+        >
+          <div v-if="isLoadingAgents" class="agent-dropdown-loading">加载中...</div>
+          <div v-else-if="filteredAgents.length === 0" class="agent-dropdown-empty">暂无可用智能体</div>
+          <div
+            v-for="(agent, index) in filteredAgents"
+            :key="agent.name"
+            class="agent-dropdown-item"
+            :class="{ active: activeAgentIndex === index }"
+            @mousedown.prevent="selectAgent(agent)"
+            @mouseenter="activeAgentIndex = index"
+          >
+            <div class="agent-dropdown-name">{{ agent.display_name || agent.name }}</div>
+          </div>
+        </div>
+
         <textarea
           ref="textareaRef"
           v-model="inputValue"
           class="text-input"
-          placeholder="请输入你的需求，按「Enter」发送"
+          :placeholder="selectedAgent ? '请输入消息，按「Enter」发送' : '输入 / 快速使用智能体'"
           rows="3"
           @input="handleInput"
           @keydown="handleKeydown"
@@ -428,7 +583,7 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched'])
           @blur="handleBlur"
         ></textarea>
 
-        <div v-if="isCommand" class="command-hint">
+        <div v-if="isCommand && inputValue.trim() !== '/'" class="command-hint">
           {{ commandHint }}
         </div>
 
@@ -898,5 +1053,111 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched'])
   &:hover {
     color: var(--color-text-secondary);
   }
+}
+
+/* 2026-06-24 新增：已选智能体标签 */
+.selected-agent-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background-color: var(--color-accent-light);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-sm);
+  color: var(--color-accent);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  margin-bottom: 4px;
+  align-self: flex-start;
+}
+
+.agent-slash {
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-bold);
+}
+
+.agent-name {
+  line-height: 1.4;
+}
+
+.agent-remove-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  margin-left: 4px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--color-accent);
+  border-radius: var(--radius-sm);
+  transition: var(--transition-colors);
+
+  &:hover {
+    background-color: rgba(99, 102, 241, 0.15);
+  }
+}
+
+.agent-remove-icon {
+  width: 12px;
+  height: 12px;
+}
+
+/* 2026-06-24 新增：智能体下拉菜单 */
+.agent-dropdown {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 240px;
+  overflow-y: auto;
+  background-color: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08);
+  margin-bottom: 8px;
+  padding: 6px;
+  z-index: 10;
+
+  &::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background-color: var(--color-border);
+    border-radius: var(--radius-full);
+  }
+}
+
+.agent-dropdown-loading,
+.agent-dropdown-empty {
+  padding: 12px 16px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.agent-dropdown-item {
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition-colors);
+
+  &:hover,
+  &.active {
+    background-color: var(--color-accent-light);
+  }
+}
+
+.agent-dropdown-name {
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-primary);
+  line-height: 1.4;
 }
 </style>

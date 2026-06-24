@@ -20,6 +20,7 @@ import {
   setAdminAgentEnabled,
   updateAdminAgentConfigSchema,
   addAdminAgentConfigField,
+  updateAdminAgentConfigField,
   deleteAdminAgentConfigField,
   fetchAgentConfigFieldTemplates,
   validateAgentMdPath,
@@ -287,27 +288,46 @@ function removeField(section, name) {
 async function saveAllChanges() {
   if (!hasPendingChanges.value) return
   errorMessage.value = ''
+  const errors = []
   try {
-    // 增量更新策略：使用 add_field / delete_field API
-    // 注意：先删除，再添加（避免冲突）
+    // 增量更新策略：先删除，再修改，最后添加
     for (const section of ['root', 'state_fields', 'context_fields']) {
       const c = pendingChanges[section]
       for (const name of c.deleted) {
-        await deleteAdminAgentConfigField(selectedAgentName.value, section, name)
+        try {
+          await deleteAdminAgentConfigField(selectedAgentName.value, section, name)
+        } catch (err) {
+          errors.push(`删除 ${section}.${name} 失败: ${err.message}`)
+          console.error(`[saveAllChanges] 删除 ${section}.${name} 失败`, err)
+        }
       }
       for (const [name, def] of Object.entries(c.modified)) {
-        // 修改：先删除再添加
-        await deleteAdminAgentConfigField(selectedAgentName.value, section, name)
-        await addAdminAgentConfigField(selectedAgentName.value, section, name, def)
+        try {
+          // 2026-06-24 修复：使用 PUT 直接覆盖，避免"先删后加"导致的数据丢失
+          await updateAdminAgentConfigField(selectedAgentName.value, section, name, def)
+        } catch (err) {
+          errors.push(`修改 ${section}.${name} 失败: ${err.message}`)
+          console.error(`[saveAllChanges] 修改 ${section}.${name} 失败`, err)
+        }
       }
       for (const [name, def] of Object.entries(c.added)) {
-        await addAdminAgentConfigField(selectedAgentName.value, section, name, def)
+        try {
+          await addAdminAgentConfigField(selectedAgentName.value, section, name, def)
+        } catch (err) {
+          errors.push(`添加 ${section}.${name} 失败: ${err.message}`)
+          console.error(`[saveAllChanges] 添加 ${section}.${name} 失败`, err)
+        }
       }
+    }
+    if (errors.length > 0) {
+      errorMessage.value = errors.join('; ')
+      return
     }
     // 重新加载
     await selectAgent(selectedAgentName.value)
   } catch (err) {
     errorMessage.value = err.message || '保存失败'
+    console.error('[saveAllChanges] 未捕获异常', err)
   }
 }
 
