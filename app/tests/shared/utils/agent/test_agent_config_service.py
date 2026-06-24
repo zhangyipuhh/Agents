@@ -446,16 +446,16 @@ def test_delete_agent_config_field_state_fields():
     assert result is not None
 
 
-def test_delete_agent_config_field_nonexistent_raises():
-    """测试删除不存在的字段抛出 ValueError。"""
+def test_delete_agent_config_field_nonexistent_is_idempotent():
+    """测试删除不存在的字段时幂等返回（不抛异常）。"""
     db = MagicMock()
     db.fetchrow = AsyncMock(return_value={
         "name": "x",
         "config_schema": {"state_fields": {"a": {"type": "int", "default": 0}}},
     })
     service = AgentConfigService(db, MagicMock())
-    with pytest.raises(ValueError, match="不存在"):
-        asyncio.run(service.delete_agent_config_field("x", "state_fields", "nonexistent"))
+    result = asyncio.run(service.delete_agent_config_field("x", "state_fields", "nonexistent"))
+    assert result is not None
 
 
 def test_create_agent_validates_name_format(tmp_path):
