@@ -36,10 +36,12 @@ const isLoadingDetail = ref(false)
 const errorMessage = ref('')
 
 // === 字段模板 ===
-const fieldTemplates = ref([]) // AgentConfig 字段模板列表
+const fieldTemplates = ref({ root: [], state_fields: [], context_fields: [] })
 const templateByName = computed(() => {
+  const section = newField.section
+  const templates = fieldTemplates.value[section] || []
   const m = {}
-  for (const t of fieldTemplates.value) m[t.field_name] = t
+  for (const t of templates) m[t.field_name] = t
   return m
 })
 
@@ -117,7 +119,12 @@ async function loadAgentList() {
 
 async function loadFieldTemplates() {
   try {
-    fieldTemplates.value = await fetchAgentConfigFieldTemplates()
+    const [root, state, context] = await Promise.all([
+      fetchAgentConfigFieldTemplates('root'),
+      fetchAgentConfigFieldTemplates('state_fields'),
+      fetchAgentConfigFieldTemplates('context_fields'),
+    ])
+    fieldTemplates.value = { root, state_fields: state, context_fields: context }
   } catch (err) {
     console.error('加载字段模板失败', err)
   }
@@ -532,7 +539,8 @@ onMounted(async () => {
             title="AgentConfig 字段"
             subtitle="覆盖 AgentConfig dataclass 的运行参数（temperature / max_tokens 等）"
             :fields="rootFields"
-            :templates="fieldTemplates"
+            :templates="fieldTemplates.root"
+            source-label="AgentConfig"
             section="root"
             @add="openAddFieldDialog('root')"
             @remove="removeField"
@@ -541,7 +549,8 @@ onMounted(async () => {
             title="State 扩展字段"
             subtitle="state 字典的扩展字段（除基类保留字段外）"
             :fields="stateFields"
-            :templates="[]"
+            :templates="fieldTemplates.state_fields"
+            source-label="AgentState"
             section="state_fields"
             @add="openAddFieldDialog('state_fields')"
             @remove="removeField"
@@ -550,7 +559,8 @@ onMounted(async () => {
             title="Context 扩展字段"
             subtitle="context 字典的扩展字段（除基类保留字段外）"
             :fields="contextFields"
-            :templates="[]"
+            :templates="fieldTemplates.context_fields"
+            source-label="AgentContext"
             section="context_fields"
             @add="openAddFieldDialog('context_fields')"
             @remove="removeField"
@@ -583,15 +593,19 @@ onMounted(async () => {
         <div class="form-group">
           <label>覆盖来源</label>
           <select v-model="newField.source" @change="changeFieldSource">
-            <option value="agent_config">AgentConfig 已有字段</option>
+            <option value="agent_config">
+              {{ newField.section === 'root' ? 'AgentConfig 已有字段' : newField.section === 'state_fields' ? 'AgentState 已有字段' : 'AgentContext 已有字段' }}
+            </option>
             <option value="custom">自定义</option>
           </select>
         </div>
-        <div v-if="newField.source === 'agent_config' && newField.section === 'root'" class="form-group">
-          <label>选择 AgentConfig 字段</label>
+        <div v-if="newField.source === 'agent_config'" class="form-group">
+          <label>
+            {{ newField.section === 'root' ? '选择 AgentConfig 字段' : newField.section === 'state_fields' ? '选择 AgentState 字段' : '选择 AgentContext 字段' }}
+          </label>
           <select :value="newField.fieldName" @change="applyTemplate(templateByName[$event.target.value])">
             <option value="">-- 选择 --</option>
-            <option v-for="t in fieldTemplates" :key="t.field_name" :value="t.field_name">
+            <option v-for="t in fieldTemplates[newField.section]" :key="t.field_name" :value="t.field_name">
               {{ t.field_name }} ({{ t.type }})
             </option>
           </select>
@@ -708,6 +722,7 @@ const SectionEditor = defineComponent({
     fields: { type: Array, required: true },
     templates: { type: Array, default: () => [] },
     section: { type: String, required: true },
+    sourceLabel: { type: String, default: 'AgentConfig' },
   },
   emits: ['add', 'remove'],
   setup(props, { emit }) {
@@ -746,7 +761,7 @@ const SectionEditor = defineComponent({
                   h('td', null, f.isNew
                     ? h('span', { class: 'badge-custom' }, '自定义')
                     : props.templates.some(t => t.field_name === f.name)
-                      ? h('span', { class: 'badge-agent-config' }, 'AgentConfig')
+                      ? h('span', { class: 'badge-agent-config' }, props.sourceLabel)
                       : h('span', { class: 'badge-custom' }, '自定义')
                   ),
                   h('td', null, [

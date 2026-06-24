@@ -51,7 +51,7 @@ def test_all_endpoints_registered(client):
 # ============================================================
 
 def test_field_templates_returns_list(client, admin_headers):
-    """GET /api/admin/agents/field-templates 返回 AgentConfig 字段模板列表。"""
+    """GET /api/admin/agents/field-templates 默认返回 AgentConfig 字段模板列表。"""
     response = client.get("/api/admin/agents/field-templates", headers=admin_headers)
     assert response.status_code == 200
     data = response.json()
@@ -63,6 +63,48 @@ def test_field_templates_returns_list(client, admin_headers):
     # 不包含保留字段
     assert "state_class" not in field_names
     assert "checkpointer" not in field_names
+
+
+def test_field_templates_state_fields_returns_list(client, admin_headers):
+    """GET /api/admin/agents/field-templates?section=state_fields 返回 AgentState 字段模板。"""
+    response = client.get(
+        "/api/admin/agents/field-templates?section=state_fields",
+        headers=admin_headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert isinstance(data, list)
+    assert len(data) > 0
+    field_names = [t["field_name"] for t in data]
+    assert "error_limit" in field_names
+    assert "limit" in field_names
+    # 不应包含运行时必需字段 messages
+    assert "messages" not in field_names
+
+
+def test_field_templates_context_fields_returns_list(client, admin_headers):
+    """GET /api/admin/agents/field-templates?section=context_fields 返回 AgentContext 字段模板。"""
+    response = client.get(
+        "/api/admin/agents/field-templates?section=context_fields",
+        headers=admin_headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert isinstance(data, list)
+    assert len(data) > 0
+    field_names = [t["field_name"] for t in data]
+    assert "session_id" in field_names
+    assert "namespace" in field_names
+    assert "store_id" in field_names
+
+
+def test_field_templates_invalid_section_400(client, admin_headers):
+    """GET /api/admin/agents/field-templates?section=invalid 返回 400。"""
+    response = client.get(
+        "/api/admin/agents/field-templates?section=invalid",
+        headers=admin_headers,
+    )
+    assert response.status_code == 400
 
 
 def test_validate_md_path_for_existing_file(client, admin_headers, tmp_path):

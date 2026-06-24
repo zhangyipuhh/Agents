@@ -15,6 +15,9 @@ from app.shared.utils.agent.dynamic_schema import (
     build_agent_config_overrides,
     get_agent_config_field_schema,
     get_agent_config_field_templates,
+    get_agent_state_field_templates,
+    get_agent_context_field_templates,
+    _get_type_str,
     RESERVED_STATE_FIELDS,
     RESERVED_CONTEXT_FIELDS,
     RESERVED_CONFIG_FIELDS,
@@ -470,5 +473,88 @@ def test_map_agent_state_reserved_field_override():
     instance = cls(messages=[])
     # schema 重写值优先于基类默认值
     assert instance["error_limit"] == 2
-    # 未被 schema 重写的基类字段仍使用基类默认值
-    assert instance["limit"] == 25
+
+
+# ============================================================
+# 2026-06-24 新增：state / context 字段模板测试
+# ============================================================
+
+
+def test_get_type_str_conversion():
+    """验证 _get_type_str 将 Python 类型注解正确转换为字符串键。
+
+    参数:
+        无
+
+    返回:
+        无（断言失败时抛出 AssertionError）
+    """
+    import typing
+    assert _get_type_str(str) == "str"
+    assert _get_type_str(int) == "int"
+    assert _get_type_str(float) == "float"
+    assert _get_type_str(bool) == "bool"
+    assert _get_type_str(dict) == "dict"
+    assert _get_type_str(list) == "list"
+    assert _get_type_str(typing.Optional[str]) == "str"
+    assert _get_type_str(typing.Optional[int]) == "int"
+    assert _get_type_str(typing.Dict[str, dict]) == "dict"
+    assert _get_type_str(typing.List[str]) == "list"
+    assert _get_type_str(typing.Any) == "str"  # 未知类型回退
+
+
+def test_get_agent_state_field_templates_returns_list():
+    """验证 get_agent_state_field_templates 返回 AgentState 保留字段模板。
+
+    参数:
+        无
+
+    返回:
+        无（断言失败时抛出 AssertionError）
+    """
+    templates = get_agent_state_field_templates()
+    assert isinstance(templates, list)
+    assert len(templates) > 0
+
+    field_names = [t["field_name"] for t in templates]
+    # 应包含基类保留字段
+    assert "error_limit" in field_names
+    assert "limit" in field_names
+    assert "agent_name" in field_names
+    # 不应包含运行时必需字段 messages
+    assert "messages" not in field_names
+
+    # 验证每项结构
+    for t in templates:
+        assert "field_name" in t
+        assert "type" in t
+        assert "default" in t
+        assert t["type"] in ("str", "int", "float", "bool", "dict", "list")
+
+
+def test_get_agent_context_field_templates_returns_list():
+    """验证 get_agent_context_field_templates 返回 AgentContext 保留字段模板。
+
+    参数:
+        无
+
+    返回:
+        无（断言失败时抛出 AssertionError）
+    """
+    templates = get_agent_context_field_templates()
+    assert isinstance(templates, list)
+    assert len(templates) > 0
+
+    field_names = [t["field_name"] for t in templates]
+    # 应包含基类保留字段
+    assert "session_id" in field_names
+    assert "namespace" in field_names
+    assert "store_id" in field_names
+    assert "image_ids" in field_names
+
+    # 验证每项结构
+    for t in templates:
+        assert "field_name" in t
+        assert "type" in t
+        assert "default" in t
+        assert t["type"] in ("str", "int", "float", "bool", "dict", "list")

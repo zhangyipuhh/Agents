@@ -15,33 +15,35 @@ Comments need to be added after file generation. The comments should be in Chine
 4. **Trace the `width: 100%` Reference Chain** — `100%` is relative to the containing block, not the parent flex container. Check whether every ancestor in the chain has width constraints.
 5. **Chase One Hypothesis at Most 3 Steps** — If the phenomenon remains unchanged after 3 modifications, change direction. If multiple consecutive modifications to the same property are ineffective, the root cause is not in that property.
 
-## ⚠️ HARD RULE：project_memory.md 同步协议
+## ⚠️ HARD RULE: project_memory.md Synchronization Protocol
 
-**READ 阶段**：在执行任何 `Edit`/`Write` 工具之前，必须先调用 `Read('project_memory.md')` 读取项目记忆。
+**READ Phase**: Before executing any `Edit`/`Write` operation, you must first call `Read('project_memory.md')` to load the project memory.
 
-**WRITE 阶段**：每次 `Edit`/`Write` 工具调用后，必须评估"这次修改是否影响 `project_memory.md` 中的某个章节"：
+**WRITE Phase**: After each `Edit`/`Write` operation, evaluate whether the change affects any chapter in `project_memory.md`:
 
-- 是 → 立即调用 `Edit('project_memory.md', ...)` 同步
-- 否 → 在回复结尾明确说明"无同步需要"
+- Yes → Immediately call `Edit('project_memory.md', ...)` to synchronize.
+- No → Explicitly state at the end of the response: "No sync needed."
 
-**触发清单**（以下任一情况都触发同步）：
+**What to Record**: Only record the **final/current state** in `project_memory.md`. Do **not** record the change process, decision history, or iterative steps. For example, if an API endpoint changes, document only its final signature and behavior. Retrieve historical process via `git log` if needed.
 
-- 新增 / 删除 / 重命名模块
-- 修改数据库 schema（表结构、字段、索引）
-- 改动 API 路由、请求/响应格式
-- 改动前端组件、UI 架构、设计 token
-- 改动部署配置、环境变量、Docker 配置
-- 改动测试用例、测试覆盖率
-- 其他架构层面变化（认证体系、提示词分层、Session/缓存策略等）
+**Trigger List** (synchronization is required if any of the following occurs):
 
-**强制约束**：
+- Adding / deleting / renaming modules
+- Modifying database schema (tables, fields, indexes)
+- Changing API routes, request/response formats
+- Changing frontend components, UI architecture, design tokens
+- Changing deployment config, environment variables, Docker configuration
+- Changing test cases, test coverage
+- Other architectural changes (authentication, prompt layering, session/cache strategy, etc.)
 
-- **禁止使用 `Glob` 探测 `project_memory.md`**（本环境 Glob 工具索引不完整，对根目录文件返回 0 命中，会让 AI 误判文件不存在）
-- 必须用 `Read` 工具直接读取
-- 项目记忆同步必须在主任务回复中完成，**禁止在主任务之外另开新对话处理**
-- 回复结尾必须输出 checklist：`[✓ project_memory.md 已同步]` 或 `[✗ 本次修改无 project_memory.md 同步需要：<理由>]`
+**Mandatory Constraints**:
 
-# Project Memory
+- **Do not use `Glob` to probe `project_memory.md`** (the Glob tool index is incomplete in this environment and returns 0 hits for root-directory files, which may mislead the AI into thinking the file does not exist).
+- You must use the `Read` tool to read it directly.
+- Project memory synchronization must be completed within the main task response. **Do not start a separate conversation to handle it.**
+- At the end of the response, output the checklist: `[✓ project_memory.md synchronized]` or `[✗ No project_memory.md sync needed: <reason>]`.
+
+## Project Memory
 
 - Read project key information through project_memory.md before modification, including project architecture, functional modules, database design, etc.
 - When modifying code, make changes based on the information in project_memory.md to ensure modifications do not affect the normal operation of the project.

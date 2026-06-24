@@ -13,6 +13,29 @@ routers 测试目录的本地 conftest
 """
 import sys
 import types
+from typing import Any
+
+from typing_extensions import TypedDict
+
+# 覆盖根 conftest 中 MessagesState 的 Mock，确保 AgentState 继承真实 TypedDict。
+# 必须在 app.main 首次导入前执行，否则 AgentConfig.py 中的 AgentState 会成为 Mock 对象。
+class _MessagesState(TypedDict):
+    messages: list[Any]
+
+_lg_graph = sys.modules.get("langgraph.graph")
+if _lg_graph is not None:
+    _lg_graph.MessagesState = _MessagesState
+else:
+    _lg_graph = types.ModuleType("langgraph.graph")
+    _lg_graph.MessagesState = _MessagesState
+    sys.modules["langgraph.graph"] = _lg_graph
+
+for _mod in [
+    "app.core.agent.AgentConfig",
+    "app.core.agent.AgentContext",
+    "app.shared.utils.agent.dynamic_schema",
+]:
+    sys.modules.pop(_mod, None)
 
 import pytest
 
