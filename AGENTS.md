@@ -178,3 +178,12 @@ app/{module}/bar/baz.py      →  app/tests/{module}/bar/test_baz.py
   4. 代码内置 `_FALLBACK_TOOL_MAPPING`（最后兜底）
 - **硬约束**：子智能体维度一旦存在 `app/features/<agent>/skills/` 目录，会**完全覆盖**全局默认根扫描（仅扫描该目录，不追加 `app/skills` 与 `.agents/skills`）。添加新全局 skill 时**必须**确认目标子智能体 skills/ 是否已存在，避免被静默覆盖。
 - **测试命令**：`pytest app/tests/core/skills/ -v`
+
+# langchain使用说明
+
+- **凡涉及 LangChain / LangChain-Core / LangGraph / LangSmith / LangMem / deepagents 的 API 使用**，必须通过 **context7 MCP** 查找对应官方文档后再调用，禁止凭记忆使用旧版本 API。
+- 优先查询顺序：
+  1. `usecontext7_mcp` → `get-library-docs` 拉取目标库的最新 docs（如 `/langchain-ai/langchain`、`/langchain-ai/langgraph`）
+  2. 命中失败再降级 WebSearch + 官方文档站（`https://python.langchain.com/`、`https://langchain-ai.github.io/langgraph/`）
+- 版本兼容注意：项目使用 **LangChain 1.x + LangGraph 1.x**（旧版 0.x 的 `create_react_agent`、`AgentExecutor`、`LLMChain` 等签名已变更，迁移文档参考 context7 `/langchain-ai/langchain` 的 v1 migration guide）
+- 更新 `app/requirements.txt` 时，必须同步更新本表版本号，避免文档查错版本

@@ -39,15 +39,6 @@ Agent User Management 是一个基于 FastAPI 的 AI Agent 管理平台，提供
 | `langsmith`                     | 0.7.38 | LangSmith 追踪/评估 SDK                              |
 | `deepagents`                    | 0.5.5  | LangChain 官方 subagent 库（沙箱 Agent 依赖）        |
 
-#### 文档查询约定
-
-- **凡涉及 LangChain / LangChain-Core / LangGraph / LangSmith / LangMem / deepagents 的 API 使用**，必须通过 **context7 MCP** 查找对应官方文档后再调用，禁止凭记忆使用旧版本 API。
-- 优先查询顺序：
-  1. `usecontext7_mcp` → `get-library-docs` 拉取目标库的最新 docs（如 `/langchain-ai/langchain`、`/langchain-ai/langgraph`）
-  2. 命中失败再降级 WebSearch + 官方文档站（`https://python.langchain.com/`、`https://langchain-ai.github.io/langgraph/`）
-- 版本兼容注意：项目使用 **LangChain 1.x + LangGraph 1.x**（旧版 0.x 的 `create_react_agent`、`AgentExecutor`、`LLMChain` 等签名已变更，迁移文档参考 context7 `/langchain-ai/langchain` 的 v1 migration guide）
-- 更新 `app/requirements.txt` 时，必须同步更新本表版本号，避免文档查错版本
-
 ## 数据目录约定（2026-06-19 重构）
 
 运行时数据目录位于**项目根**（非 `app/` 内），便于与代码解耦并避免被打入 Docker 镜像。
@@ -551,12 +542,12 @@ MCP 服务器配置表，从 YAML 迁移至数据库管理。
 
 补齐 4 列使 DB 成为 source of truth：
 
-| 字段             | 类型                  | 默认值       | 说明                       |
-| ---------------- | --------------------- | ------------ | -------------------------- |
-| `args`           | JSONB                 | `'[]'::jsonb`  | stdio 参数列表             |
-| `env`            | JSONB                 | `'{}'::jsonb`  | 进程环境变量               |
-| `headers`        | JSONB                 | `'{}'::jsonb`  | HTTP/SSE 自定义头          |
-| `connect_timeout`| INT                   | `10`           | TCP/HTTP 连接超时（秒）    |
+| 字段                | 类型  | 默认值          | 说明                    |
+| ------------------- | ----- | --------------- | ----------------------- |
+| `args`            | JSONB | `'[]'::jsonb` | stdio 参数列表          |
+| `env`             | JSONB | `'{}'::jsonb` | 进程环境变量            |
+| `headers`         | JSONB | `'{}'::jsonb` | HTTP/SSE 自定义头       |
+| `connect_timeout` | INT   | `10`          | TCP/HTTP 连接超时（秒） |
 
 幂等迁移：`ADD COLUMN IF NOT EXISTS`（PostgreSQL 9.6+），兼容已建库。迁移脚本位于 `app/migrations/init_all_tables.sql` 末尾（COMMIT 之前）。
 
@@ -2689,19 +2680,19 @@ app/routers/
 
 ### 端点清单
 
-| 方法   | 路径                                             | 状态码 | 说明                                                                   |
-| ------ | ------------------------------------------------ | ------ | ---------------------------------------------------------------------- |
-| GET    | `/api/admin/agents`                            | 200    | 列出所有 agent（含 config_schema 完整数据）                            |
-| GET    | `/api/admin/agents/check-name?name=xxx`        | 200    | name 唯一性预校验（返回 `{available: bool}`）                        |
-| POST   | `/api/admin/agents/validate-md-path`           | 200    | 校验 AGENTS.md 路径是否存在                                            |
-| GET    | `/api/admin/agents/field-templates`            | 200    | 获取 AgentConfig 字段模板列表（前端新增字段时下拉选择）                |
-| GET    | `/api/admin/agents/{name}`                     | 200    | 获取单个 agent 完整配置（含 agent_config_overrides 拆分结果）          |
-| POST   | `/api/admin/agents`                            | 201    | 新增智能体；name 已存在返回 409；AGENTS.md 不存在返回 400              |
-| DELETE | `/api/admin/agents/{name}`                     | 204    | 删除智能体（级联清理 agent_tool_bindings / agent_skill_bindings 关联） |
-| PUT    | `/api/admin/agents/{name}/enabled`             | 200    | 启用 / 禁用单个智能体（body:`{enabled: bool}`）                      |
-| PUT    | `/api/admin/agents/{name}/config-schema`       | 200    | 全量替换 config_schema                                                 |
-| POST   | `/api/admin/agents/{name}/config-schema/field` | 200    | 增量添加字段（body:`{section, field_name, field_def}`）              |
-| PUT    | `/api/admin/agents/{name}/config-schema/field` | 200    | 直接覆盖已存在字段（body:`{section, field_name, field_def}`）        |
+| 方法   | 路径                                             | 状态码 | 说明                                                                     |
+| ------ | ------------------------------------------------ | ------ | ------------------------------------------------------------------------ |
+| GET    | `/api/admin/agents`                            | 200    | 列出所有 agent（含 config_schema 完整数据）                              |
+| GET    | `/api/admin/agents/check-name?name=xxx`        | 200    | name 唯一性预校验（返回 `{available: bool}`）                          |
+| POST   | `/api/admin/agents/validate-md-path`           | 200    | 校验 AGENTS.md 路径是否存在                                              |
+| GET    | `/api/admin/agents/field-templates`            | 200    | 获取 AgentConfig 字段模板列表（前端新增字段时下拉选择）                  |
+| GET    | `/api/admin/agents/{name}`                     | 200    | 获取单个 agent 完整配置（含 agent_config_overrides 拆分结果）            |
+| POST   | `/api/admin/agents`                            | 201    | 新增智能体；name 已存在返回 409；AGENTS.md 不存在返回 400                |
+| DELETE | `/api/admin/agents/{name}`                     | 204    | 删除智能体（级联清理 agent_tool_bindings / agent_skill_bindings 关联）   |
+| PUT    | `/api/admin/agents/{name}/enabled`             | 200    | 启用 / 禁用单个智能体（body:`{enabled: bool}`）                        |
+| PUT    | `/api/admin/agents/{name}/config-schema`       | 200    | 全量替换 config_schema                                                   |
+| POST   | `/api/admin/agents/{name}/config-schema/field` | 200    | 增量添加字段（body:`{section, field_name, field_def}`）                |
+| PUT    | `/api/admin/agents/{name}/config-schema/field` | 200    | 直接覆盖已存在字段（body:`{section, field_name, field_def}`）          |
 | DELETE | `/api/admin/agents/{name}/config-schema/field` | 200    | 增量删除字段（query:`section + field_name`）；字段不存在时幂等返回 200 |
 
 **section 取值**：`root`（顶层 AgentConfig 字段）/ `state_fields`（state 扩展字段）/ `context_fields`（context 扩展字段）
@@ -2834,17 +2825,20 @@ app/core/tools/mcp_registry.py
 ### 2026-06-24 重构：适配器链路打通 + lifespan 从 DB 读
 
 **适配器链路**：
+
 - `mcp_registry._get_tools_with_server_async` 拉取工具时用 `MCPToolToLangChainAdapter` 包装（幂等：已包装则跳过）
 - `MCPToolConfig.from_dict(server_config["tool_config"])` 让 4 个字段（`enable_injection` / `default_param_keys` / `hidden_param_keys` / `unwrap_result`）真正生效
 - 测试同步：`test_mcp_registry_runtime.py` 追加 2 个用例（wraps_with_adapter / skips_already_wrapped）
 
 **lifespan 从 DB 读**（`app/core/server.py`）：
+
 - 顺序调整：McpConfigService 初始化 → `seed_from_yaml_if_empty` → `list_servers` 过滤 `enabled=true` → `registry.initialize`
 - 3 个降级条件：`db_pool` 为 None / `mcp_config_service` 初始化失败 / `list_servers` 返回空
 - 降级路径用 `isinstance(yaml_configs, dict)` 防御 Mock 返回值
 - 测试同步：新建 `app/tests/core/test_server_lifespan.py`（4 用例：DB 读 enabled 过滤 / DB 空降级 / DB 不可用降级 / 新字段完整性）
 
 **mcp_admin_router 热更新**（`app/routers/mcp_admin_router.py`）：
+
 - 新增 `_get_registry(request)` 辅助函数（返回 None 不抛 500）
 - 新增 `_build_config_dict(server)` 用 `dataclasses.asdict()`
 - 4 个写路由（create / update / delete / toggle）在 DB 操作后调 registry 对应方法，try/except 写 warning
