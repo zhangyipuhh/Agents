@@ -43,6 +43,18 @@ MAP_AGENT_STATE_SCHEMA = {
 # app/shared/utils/agent/dynamic_schema._BASE_CONTEXT_DEFAULTS 兜底。
 MAP_AGENT_CONTEXT_SCHEMA = {}
 
+# 2026-06-24 重构：合并为三层嵌套 config_schema
+# 结构：{
+#   <AgentConfig 字段>: { type, default },    -- 可选：覆盖 model_type / temperature 等
+#   state_fields:   { <字段>: { type, default } },
+#   context_fields: { <字段>: { type, default } }
+# }
+# 兼容：state_schema / context_schema 旧列仍写入相同数据，作为兜底
+MAP_AGENT_CONFIG_SCHEMA = {
+    "state_fields":   MAP_AGENT_STATE_SCHEMA,
+    "context_fields": MAP_AGENT_CONTEXT_SCHEMA,
+}
+
 # map_agent 绑定的工具（与 MapAgentConfig.get_tools() 当前启用的工具一致）
 MAP_AGENT_TOOLS = [
     "explore",
@@ -91,7 +103,8 @@ async def seed_map_agent(db: Any) -> None:
                 agents_md_path = $4,
                 state_schema = $5,
                 context_schema = $6,
-                mcp_tags = $7,
+                config_schema = $7,
+                mcp_tags = $8,
                 enabled = TRUE,
                 updated_at = CURRENT_TIMESTAMP
             WHERE name = $1
@@ -102,6 +115,7 @@ async def seed_map_agent(db: Any) -> None:
             "agents/map_agent/AGENTS.md",
             json.dumps(MAP_AGENT_STATE_SCHEMA, ensure_ascii=False),
             json.dumps(MAP_AGENT_CONTEXT_SCHEMA, ensure_ascii=False),
+            json.dumps(MAP_AGENT_CONFIG_SCHEMA, ensure_ascii=False),
             json.dumps(["map"], ensure_ascii=False),
         )
         logger.info("map_agent 记录已更新")
@@ -110,8 +124,9 @@ async def seed_map_agent(db: Any) -> None:
         await db.execute(
             """
             INSERT INTO agents (name, display_name, description, agents_md_path,
-                              state_schema, context_schema, mcp_tags, enabled, sort_order)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, 0)
+                              state_schema, context_schema, config_schema,
+                              mcp_tags, enabled, sort_order)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, 0)
             """,
             "map_agent",
             "地图智能体",
@@ -119,6 +134,7 @@ async def seed_map_agent(db: Any) -> None:
             "agents/map_agent/AGENTS.md",
             json.dumps(MAP_AGENT_STATE_SCHEMA, ensure_ascii=False),
             json.dumps(MAP_AGENT_CONTEXT_SCHEMA, ensure_ascii=False),
+            json.dumps(MAP_AGENT_CONFIG_SCHEMA, ensure_ascii=False),
             json.dumps(["map"], ensure_ascii=False),
         )
         logger.info("map_agent 记录已插入")

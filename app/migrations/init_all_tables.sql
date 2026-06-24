@@ -217,6 +217,10 @@ CREATE TABLE IF NOT EXISTS agents (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 防御性补齐：2026-06-24 新增 config_schema（三层嵌套结构：AgentConfig 字段 + state_fields + context_fields）
+-- 与现有 state_schema / context_schema 并存，向后兼容；后续版本稳定后可 DROP COLUMN state_schema/context_schema
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS config_schema JSONB DEFAULT '{}';
+
 -- 11. agent_tool_bindings 表：智能体-工具绑定
 CREATE TABLE IF NOT EXISTS agent_tool_bindings (
     id SERIAL PRIMARY KEY,
@@ -312,6 +316,36 @@ UPDATE agents
 SET context_schema = COALESCE(context_schema, '{}'::jsonb),
     updated_at = CURRENT_TIMESTAMP
 WHERE name = 'map_agent';
+
+-- ============================================================
+-- 2026-06-24 agents.config_schema 三层嵌套结构迁移
+-- 把现有 state_schema + context_schema 数据合并到 config_schema
+-- 三层结构：
+--   config_schema = {
+--     <AgentConfig 字段>: { type, default },     -- 可选，覆盖 model_type / temperature 等
+--     state_fields:   { <字段>: { type, default } },
+--     context_fields: { <字段>: { type, default } }
+--   }
+-- 幂等：使用 COALESCE + jsonb_build_object，可重复执行
+-- ============================================================
+
+-- 14.3 迁移：把旧 state_schema + context_schema 合并到 config_schema（仅当 config_schema 为空时）
+UPDATE agents
+SET config_schema = jsonb_build_object(
+        'state_fields',   COALESCE(state_schema,   '{}'::jsonb),
+        'context_fields', COALESCE(context_schema, '{}'::jsonb)
+    ),
+    updated_at = CURRENT_TIMESTAMP
+WHERE config_schema = '{}'::jsonb OR config_schema IS NULL;
+
+-- 14.4 兜底：config_schema 已有数据但缺少 state_fields / context_fields 时补齐
+UPDATE agents
+SET config_schema = config_schema || jsonb_build_object(
+        'state_fields',   COALESCE(config_schema->'state_fields',   '{}'::jsonb),
+        'context_fields', COALESCE(config_schema->'context_fields', '{}'::jsonb)
+    ),
+    updated_at = CURRENT_TIMESTAMP
+WHERE NOT (config_schema ? 'state_fields') OR NOT (config_schema ? 'context_fields');
 
 COMMIT;
 
