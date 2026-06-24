@@ -21,13 +21,21 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class McpServerConfig:
-    """MCP 服务器配置数据类。"""
+    """MCP 服务器配置数据类。
+
+    字段与 mcp_server_configs 表列一一对应；
+    与 yaml 种子文件（config.yaml）字段一一对应。
+    """
     name: str
     display_name: str = ""
     type: str = "sse"
     url: Optional[str] = None
     command: Optional[List[str]] = None
+    args: List[str] = field(default_factory=list)               # stdio 参数列表
+    env: Dict[str, str] = field(default_factory=dict)           # 进程环境变量
+    headers: Dict[str, str] = field(default_factory=dict)       # HTTP/SSE 自定义头
     timeout: int = 5
+    connect_timeout: int = 10                                   # TCP/HTTP 连接超时（秒）
     read_timeout: int = 300
     tags: List[str] = field(default_factory=list)
     enabled: bool = True
@@ -47,8 +55,9 @@ class McpConfigService:
     """
 
     # JSONB 字段：tags / progress_reporting / tool_config / sampling /
-    # command 需要在读出时防御性反序列化为 list / dict
-    _JSONB_FIELDS = ("tags", "progress_reporting", "tool_config", "sampling", "command")
+    # command / args / env / headers 需要在读出时防御性反序列化为 list / dict
+    _JSONB_FIELDS = ("tags", "progress_reporting", "tool_config", "sampling",
+                     "command", "args", "env", "headers")
 
     def __init__(self, db: Any) -> None:
         self._db = db
@@ -84,21 +93,40 @@ class McpConfigService:
 
         用于统一 list_servers / get_server / create_server / update_server
         四个读路径，避免每处都重复 _decode_jsonb 调用。
+
+        参数:
+            row: asyncpg 的 Record 对象，可能为 None
+
+        返回:
+            Dict[str, Any]: 反序列化后的配置字典；row 为 None 时返回 None
+
+        异常:
+            不主动抛出异常；JSONB 解析失败时回退到字段默认值
         """
         if row is None:
             return None
         result = dict(row)
         for field in cls._JSONB_FIELDS:
             if field in result:
-                # 字段缺省值：tags=[] / progress_reporting={"enabled": False} 等
+                # 字段缺省值：不同字段类型不同
+                # - tags / args: list
+                # - command: None（可选字段）
+                # - env / headers: dict
+                # - progress_reporting / tool_config / sampling: dict（含 enabled 键）
                 default: Any
-                if field == "tags":
+                if field in ("tags", "args"):
                     default = []
                 elif field == "command":
                     default = None
+                elif field in ("env", "headers"):
+                    default = {}
                 else:
                     default = {"enabled": False}
                 result[field] = cls._decode_jsonb(result[field], default)
+        # connect_timeout 为非 JSONB 字段，防御性 int 兜底
+        if "connect_timeout" in result:
+            val = result["connect_timeout"]
+            result["connect_timeout"] = int(val) if val is not None else 10
         return result
 
     async def list_servers(self) -> List[Dict[str, Any]]:
@@ -141,20 +169,24 @@ class McpConfigService:
         row = await self._db.fetchrow(
             """
             INSERT INTO mcp_server_configs
-                (name, display_name, type, url, command, timeout, read_timeout,
+                (name, display_name, type, url, command, args, env, headers,
+                 timeout, connect_timeout, read_timeout,
                  tags, enabled, progress_reporting, tool_config, sampling)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             RETURNING *
             """,
             config.name, config.display_name, config.type, config.url,
             json.dumps(config.command) if config.command else None,
-            config.timeout, config.read_timeout,
+            json.dumps(config.args) if config.args else None,
+            json.dumps(config.env) if config.env else None,
+            json.dumps(config.headers) if config.headers else None,
+            config.timeout, config.connect_timeout, config.read_timeout,
             json.dumps(config.tags), config.enabled,
             json.dumps(config.progress_reporting),
             json.dumps(config.tool_config),
             json.dumps(config.sampling),
         )
-        return dict(row)
+        return self._decode_row(row)
 
     async def update_server(self, name: str, config: McpServerConfig) -> Dict[str, Any]:
         """更新 MCP server 配置。
@@ -166,15 +198,20 @@ class McpConfigService:
             """
             UPDATE mcp_server_configs SET
                 display_name = $2, type = $3, url = $4, command = $5,
-                timeout = $6, read_timeout = $7, tags = $8, enabled = $9,
-                progress_reporting = $10, tool_config = $11, sampling = $12,
+                args = $6, env = $7, headers = $8,
+                timeout = $9, connect_timeout = $10, read_timeout = $11,
+                tags = $12, enabled = $13,
+                progress_reporting = $14, tool_config = $15, sampling = $16,
                 updated_at = CURRENT_TIMESTAMP
             WHERE name = $1
             RETURNING *
             """,
             name, config.display_name, config.type, config.url,
             json.dumps(config.command) if config.command else None,
-            config.timeout, config.read_timeout,
+            json.dumps(config.args) if config.args else None,
+            json.dumps(config.env) if config.env else None,
+            json.dumps(config.headers) if config.headers else None,
+            config.timeout, config.connect_timeout, config.read_timeout,
             json.dumps(config.tags), config.enabled,
             json.dumps(config.progress_reporting),
             json.dumps(config.tool_config),
@@ -182,7 +219,7 @@ class McpConfigService:
         )
         if not row:
             raise ValueError(f"MCP server '{name}' not found")
-        return dict(row)
+        return self._decode_row(row)
 
     async def delete_server(self, name: str) -> None:
         """删除 MCP server 及其关联 methods。"""
@@ -287,7 +324,11 @@ class McpConfigService:
                 type=cfg.get("type", "sse"),
                 url=cfg.get("url"),
                 command=cfg.get("command"),
+                args=cfg.get("args", []),
+                env=cfg.get("env", {}),
+                headers=cfg.get("headers", {}),
                 timeout=cfg.get("timeout", 5),
+                connect_timeout=cfg.get("connect_timeout", 10),
                 read_timeout=cfg.get("read_timeout", 300),
                 tags=cfg.get("tags", []),
                 enabled=cfg.get("enabled", True),

@@ -769,3 +769,85 @@ def test_get_agent_config_decodes_str_jsonb_fields():
     # mcp_tags 被解析为 list
     assert config.mcp_tags == ["map"]
 
+
+def test_get_agent_admin_decodes_str_config_schema():
+    """测试 get_agent_admin：DB 返回 JSONB 字符串时能正确解码并返回 dict。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: config_schema 未被解码为 dict 时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value={
+        "name": "map_agent",
+        "display_name": "地图智能体",
+        "description": "地图控制",
+        "agents_md_path": "agents/map_agent/AGENTS.md",
+        "state_schema": '{}',
+        "context_schema": '{}',
+        "config_schema": '{"max_tokens": {"type": "int", "default": 20000}}',
+        "mcp_tags": '["map"]',
+        "enabled": True,
+        "sort_order": 0,
+        "created_at": None,
+        "updated_at": None,
+    })
+    service = AgentConfigService(db, MagicMock())
+    result = asyncio.run(service.get_agent_admin("map_agent"))
+
+    # config_schema 应为 dict 而非 str
+    assert isinstance(result["config_schema"], dict)
+    assert result["config_schema"]["max_tokens"]["default"] == 20000
+    # agent_config_overrides 应同时正确提取
+    assert result["agent_config_overrides"]["max_tokens"] == 20000
+    # mcp_tags 应为 list
+    assert result["mcp_tags"] == ["map"]
+
+
+def test_list_all_agents_admin_decodes_str_jsonb_fields():
+    """测试 list_all_agents_admin：DB 返回 JSONB 字符串列表时能正确解码。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: JSONB 字段未被解码时抛出
+    """
+    db = MagicMock()
+    db.fetch = AsyncMock(return_value=[
+        {
+            "name": "map_agent",
+            "display_name": "地图智能体",
+            "description": "",
+            "agents_md_path": "agents/map_agent/AGENTS.md",
+            "state_schema": '{"map_zoom": {"type": "int", "default": 10}}',
+            "context_schema": '{}',
+            "config_schema": '{"max_tokens": {"type": "int", "default": 20000}}',
+            "mcp_tags": '["map"]',
+            "enabled": True,
+            "sort_order": 0,
+            "created_at": None,
+            "updated_at": None,
+        },
+    ])
+    service = AgentConfigService(db, MagicMock())
+    result = asyncio.run(service.list_all_agents_admin())
+
+    assert len(result) == 1
+    agent = result[0]
+    # state_schema / context_schema / config_schema 应为 dict
+    assert isinstance(agent["state_schema"], dict)
+    assert agent["state_schema"]["map_zoom"]["default"] == 10
+    assert isinstance(agent["config_schema"], dict)
+    assert agent["config_schema"]["max_tokens"]["default"] == 20000
+    # mcp_tags 应为 list
+    assert agent["mcp_tags"] == ["map"]
+

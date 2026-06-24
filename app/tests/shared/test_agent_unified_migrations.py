@@ -45,11 +45,27 @@ def test_agent_skill_bindings_table_exists():
 
 
 def test_mcp_server_configs_table_exists():
-    """测试迁移脚本包含 mcp_server_configs 表。"""
+    """测试迁移脚本包含 mcp_server_configs 表。
+
+    覆盖：
+    - 基础字段：methods_synced_at / tool_config
+    - 2026-06-24 新增字段：args / env / headers / connect_timeout
+    - 幂等 ALTER：ADD COLUMN IF NOT EXISTS
+    """
     sql = _read_migration_sql()
     assert "CREATE TABLE IF NOT EXISTS mcp_server_configs" in sql
     assert "methods_synced_at" in sql
     assert "tool_config" in sql
+    # 2026-06-24 新增 4 列（CREATE TABLE 内）
+    assert "args JSONB" in sql
+    assert "env JSONB" in sql
+    assert "headers JSONB" in sql
+    assert "connect_timeout INT" in sql
+    # 幂等 ALTER（兼容已建库）
+    assert "ADD COLUMN IF NOT EXISTS args" in sql
+    assert "ADD COLUMN IF NOT EXISTS env" in sql
+    assert "ADD COLUMN IF NOT EXISTS headers" in sql
+    assert "ADD COLUMN IF NOT EXISTS connect_timeout" in sql
 
 
 def test_mcp_server_methods_table_exists():

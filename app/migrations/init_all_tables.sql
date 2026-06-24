@@ -251,7 +251,11 @@ CREATE TABLE IF NOT EXISTS mcp_server_configs (
     type VARCHAR(20) NOT NULL,
     url VARCHAR(500),
     command JSONB,
+    args JSONB DEFAULT '[]'::jsonb,                    -- stdio 参数列表
+    env JSONB DEFAULT '{}'::jsonb,                     -- 进程环境变量
+    headers JSONB DEFAULT '{}'::jsonb,                 -- HTTP/SSE 自定义头
     timeout INT DEFAULT 5,
+    connect_timeout INT DEFAULT 10,                    -- TCP/HTTP 连接超时（秒）
     read_timeout INT DEFAULT 300,
     tags JSONB DEFAULT '[]',
     enabled BOOLEAN DEFAULT TRUE,
@@ -346,6 +350,20 @@ SET config_schema = config_schema || jsonb_build_object(
     ),
     updated_at = CURRENT_TIMESTAMP
 WHERE NOT (config_schema ? 'state_fields') OR NOT (config_schema ? 'context_fields');
+
+-- =============================================
+-- 2026-06-24 mcp_server_configs 字段扩展（兼容已建库）
+-- 补齐 args / env / headers / connect_timeout 4 列，使 DB 成为 source of truth
+-- 幂等：ADD COLUMN IF NOT EXISTS（PostgreSQL 9.6+）
+-- =============================================
+ALTER TABLE mcp_server_configs
+    ADD COLUMN IF NOT EXISTS args JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE mcp_server_configs
+    ADD COLUMN IF NOT EXISTS env JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE mcp_server_configs
+    ADD COLUMN IF NOT EXISTS headers JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE mcp_server_configs
+    ADD COLUMN IF NOT EXISTS connect_timeout INT DEFAULT 10;
 
 COMMIT;
 

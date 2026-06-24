@@ -404,3 +404,43 @@ def test_delete_nonexistent_field_returns_200(client, admin_headers):
         headers=admin_headers,
     )
     assert response.status_code == 200
+
+
+def test_get_agent_returns_decoded_config_schema(client, admin_headers):
+    """GET /api/admin/agents/{name} 在 DB 返回 JSONB 字符串时仍能返回 JSON 对象。"""
+    from unittest.mock import AsyncMock, MagicMock
+
+    fake_row = {
+        "name": "map_agent",
+        "display_name": "地图智能体",
+        "description": "",
+        "agents_md_path": "agents/map_agent/AGENTS.md",
+        "state_schema": '{}',
+        "context_schema": '{}',
+        "config_schema": '{"max_tokens": {"type": "int", "default": 20000}}',
+        "mcp_tags": '["map"]',
+        "enabled": True,
+        "sort_order": 0,
+        "created_at": None,
+        "updated_at": None,
+    }
+
+    async def fake_fetchrow(*args, **kwargs):
+        return fake_row
+
+    service = client.app.state.agent_config_service
+    if service._db is None:
+        service._db = MagicMock()
+    service._db.fetchrow = fake_fetchrow
+
+    response = client.get("/api/admin/agents/map_agent", headers=admin_headers)
+    assert response.status_code == 200
+    data = response.json()
+
+    # 关键断言：config_schema 必须是对象，而不是字符串
+    assert isinstance(data["config_schema"], dict)
+    assert data["config_schema"]["max_tokens"]["default"] == 20000
+    # agent_config_overrides 应正确提取
+    assert data["agent_config_overrides"]["max_tokens"] == 20000
+    # mcp_tags 也必须是数组
+    assert data["mcp_tags"] == ["map"]

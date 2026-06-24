@@ -117,6 +117,20 @@ class AgentConfigService:
                 return default
         return value
 
+    def _decode_agent_row(self, row_dict: dict) -> dict:
+        """对 agents 表行中的 JSONB 字段进行防御性解码并写回。
+
+        参数:
+            row_dict: 从 asyncpg Record 转换来的字典
+
+        返回:
+            dict: 已解码的字典（原地修改并返回同一对象）
+        """
+        for key in ("config_schema", "state_schema", "context_schema", "mcp_tags"):
+            default = {} if key.endswith("_schema") else []
+            row_dict[key] = self._decode_jsonb(row_dict.get(key), default)
+        return row_dict
+
     async def get_agent_config(self, agent_name: str) -> UnifiedAgentConfig:
         """根据 agent_name 加载完整配置。
 
@@ -236,7 +250,7 @@ class AgentConfigService:
             "enabled, sort_order, created_at, updated_at "
             "FROM agents ORDER BY sort_order, name"
         )
-        return [dict(r) for r in rows]
+        return [self._decode_agent_row(dict(r)) for r in rows]
 
     async def get_agent_admin(self, agent_name: str) -> Dict[str, Any]:
         """Admin 端点专用：获取单个智能体完整配置。
@@ -269,9 +283,11 @@ class AgentConfigService:
             raise AgentNotFoundError(f"Agent {agent_name} not found")
         result = dict(row)
         # 防御性反序列化：asyncpg 未注册 JSONB codec 时，config_schema 可能是 str
-        config_schema = self._decode_jsonb(result.get("config_schema"), {})
+        self._decode_agent_row(result)
+        config_schema = result.get("config_schema") or {}
         if not isinstance(config_schema, dict):
             config_schema = {}
+            result["config_schema"] = config_schema
         # 函数内延迟 import，与 agent_admin_router.get_agent 历史 import 模式保持一致
         from app.shared.utils.agent.dynamic_schema import parse_config_schema
         parsed = parse_config_schema(config_schema)
@@ -371,7 +387,7 @@ class AgentConfigService:
             raise
 
         logger.info("Created agent: %s", config["name"])
-        return dict(row)
+        return self._decode_agent_row(dict(row))
 
     async def delete_agent(self, agent_name: str) -> None:
         """删除智能体（级联清理工具/技能绑定）。
@@ -426,7 +442,7 @@ class AgentConfigService:
         if not row:
             raise AgentNotFoundError(f"Agent {agent_name} not found")
         logger.info("Set agent %s enabled=%s", agent_name, enabled)
-        return dict(row)
+        return self._decode_agent_row(dict(row))
 
     async def update_agent_config_schema(
         self, agent_name: str, config_schema: Dict[str, Any]
@@ -471,7 +487,7 @@ class AgentConfigService:
         if not row:
             raise AgentNotFoundError(f"Agent {agent_name} not found")
         logger.info("Updated config_schema for agent: %s", agent_name)
-        return dict(row)
+        return self._decode_agent_row(dict(row))
 
     async def add_agent_config_field(
         self, agent_name: str, section: str, field_name: str, field_def: Dict[str, Any]
@@ -611,7 +627,7 @@ class AgentConfigService:
         config_schema = self._decode_jsonb(row.get("config_schema"), {})
         if not config_schema:
             # config_schema 为空时，目标状态已经是字段不存在，直接返回
-            return dict(row)
+            return self._decode_agent_row(dict(row))
 
         if section == "root":
             target_section = config_schema
@@ -620,7 +636,7 @@ class AgentConfigService:
 
         if field_name not in target_section:
             # 幂等删除：字段不存在视为已成功
-            return dict(row)
+            return self._decode_agent_row(dict(row))
 
         del target_section[field_name]
 
