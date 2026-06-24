@@ -357,8 +357,8 @@ class AgentConfigService:
                 RETURNING *
                 """,
                 config["name"], config["display_name"], config.get("description", ""),
-                config["agents_md_path"], legacy_state, legacy_context,
-                config_schema, config.get("mcp_tags", []),
+                config["agents_md_path"], json.dumps(legacy_state), json.dumps(legacy_context),
+                json.dumps(config_schema), json.dumps(config.get("mcp_tags", [])),
                 config.get("enabled", True), config.get("sort_order", 0),
             )
         except Exception as e:
@@ -466,7 +466,7 @@ class AgentConfigService:
             WHERE name = $1
             RETURNING *
             """,
-            agent_name, config_schema, legacy_state, legacy_context,
+            agent_name, json.dumps(config_schema), json.dumps(legacy_state), json.dumps(legacy_context),
         )
         if not row:
             raise AgentNotFoundError(f"Agent {agent_name} not found")
@@ -512,15 +512,10 @@ class AgentConfigService:
         if not config_schema:
             config_schema = {"state_fields": {}, "context_fields": {}}
 
-        # 校验 section 中的字段冲突
-        target_key = field_name if section == "root" else field_name
+        # 校验 section 中的字段冲突（已存在则覆盖，避免前端"先删后加"失败时中断）
         target_section = config_schema if section == "root" else (
             config_schema.setdefault(section, {})
         )
-        if target_section.get(field_name) is not None:
-            raise ValueError(
-                f"字段 '{field_name}' 已存在于 section '{section}'"
-            )
         # root section 校验保留字段
         if section == "root" and field_name in RESERVED_CONFIG_FIELDS:
             raise ValueError(
@@ -531,10 +526,64 @@ class AgentConfigService:
 
         return await self.update_agent_config_schema(agent_name, config_schema)
 
+    async def update_agent_config_field(
+        self, agent_name: str, section: str, field_name: str, field_def: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """直接覆盖 config_schema 中已存在的字段（无需先删后加）。
+
+        参数:
+            agent_name: 智能体名称
+            section: 字段所属 section，可选值：
+                - "root"：顶层 AgentConfig 字段覆盖
+                - "state_fields"：state 扩展字段
+                - "context_fields"：context 扩展字段
+            field_name: 字段名
+            field_def: 字段定义，如 {"type": "int", "default": 0}
+
+        返回:
+            Dict[str, Any]: 更新后的记录
+
+        异常:
+            AgentNotFoundError: 智能体不存在时抛出
+            ValueError: 非法 section / field_def 格式 / 保留字段 / 字段不存在
+        """
+        if section not in ("root", "state_fields", "context_fields"):
+            raise ValueError(
+                f"section 必须是 root / state_fields / context_fields 之一，收到: {section}"
+            )
+        if not isinstance(field_def, dict) or "type" not in field_def:
+            raise ValueError("field_def 必须包含 'type' 键")
+
+        row = await self._db.fetchrow(
+            "SELECT config_schema FROM agents WHERE name = $1", agent_name,
+        )
+        if not row:
+            raise AgentNotFoundError(f"Agent {agent_name} not found")
+
+        config_schema = self._decode_jsonb(row.get("config_schema"), {})
+        if not config_schema:
+            config_schema = {"state_fields": {}, "context_fields": {}}
+
+        target_section = config_schema if section == "root" else (
+            config_schema.setdefault(section, {})
+        )
+        if field_name not in target_section:
+            raise ValueError(
+                f"字段 '{field_name}' 不存在于 section '{section}'，无法修改"
+            )
+        if section == "root" and field_name in RESERVED_CONFIG_FIELDS:
+            raise ValueError(
+                f"不能修改保留字段 '{field_name}'"
+            )
+
+        target_section[field_name] = field_def
+
+        return await self.update_agent_config_schema(agent_name, config_schema)
+
     async def delete_agent_config_field(
         self, agent_name: str, section: str, field_name: str
     ) -> Dict[str, Any]:
-        """增量删除 config_schema 字段。
+        """增量删除 config_schema 字段（幂等删除）。
 
         参数:
             agent_name: 智能体名称
@@ -542,11 +591,11 @@ class AgentConfigService:
             field_name: 字段名
 
         返回:
-            Dict[str, Any]: 更新后的记录
+            Dict[str, Any]: 更新后的记录；若字段不存在则直接返回当前记录
 
         异常:
             AgentNotFoundError: 智能体不存在时抛出
-            ValueError: 非法 section / 字段不存在
+            ValueError: 非法 section
         """
         if section not in ("root", "state_fields", "context_fields"):
             raise ValueError(
@@ -561,7 +610,8 @@ class AgentConfigService:
 
         config_schema = self._decode_jsonb(row.get("config_schema"), {})
         if not config_schema:
-            raise ValueError("config_schema 为空，无字段可删")
+            # config_schema 为空时，目标状态已经是字段不存在，直接返回
+            return dict(row)
 
         if section == "root":
             target_section = config_schema
@@ -569,9 +619,8 @@ class AgentConfigService:
             target_section = config_schema.get(section) or {}
 
         if field_name not in target_section:
-            raise ValueError(
-                f"字段 '{field_name}' 不存在于 section '{section}'"
-            )
+            # 幂等删除：字段不存在视为已成功
+            return dict(row)
 
         del target_section[field_name]
 

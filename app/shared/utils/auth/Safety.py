@@ -279,15 +279,17 @@ async def auth_middleware(request: Request, call_next):
         print(f"[诊断-auth_middleware] 开始验证JWT令牌")
         await jwt_auth.authenticate(request)
         print(f"[诊断-auth_middleware] JWT验证成功, username={getattr(request.state, 'username', None)}")
-        return await call_next(request)
     except Exception as e:
         import traceback
-        print(f"[诊断-auth_middleware] path={path}, 异常: {e}")
+        print(f"[诊断-auth_middleware] path={path}, 认证异常: {e}")
         print(f"[诊断-auth_middleware] 堆栈: {traceback.format_exc()}")
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={"detail": str(e)}
         )
+
+    # 认证通过后，让路由自身的异常正常向上抛出，避免被包装为 401
+    return await call_next(request)
 
 
 async def session_auth_middleware(request: Request, call_next):

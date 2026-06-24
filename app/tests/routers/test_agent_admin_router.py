@@ -41,6 +41,7 @@ def test_all_endpoints_registered(client):
         "/api/admin/agents/{name}/config-schema",
         "/api/admin/agents/{name}/config-schema/field",
     ]
+    # PUT /config-schema/field 与 POST / DELETE 共享同一 path，已包含在上面的 path 中
     for path in expected:
         assert path in routes, f"路由未注册: {path}"
 
@@ -346,3 +347,60 @@ def test_unauthenticated_access_403(client):
     response = client.get("/api/admin/agents")
     # FastAPI HTTPBearer 缺失时通常 403 而非 401
     assert response.status_code in (401, 403)
+
+
+def test_update_field_success(client, admin_headers):
+    """PUT /api/admin/agents/{name}/config-schema/field 直接修改已存在字段。"""
+    from unittest.mock import MagicMock
+
+    fake_db = MagicMock()
+    call_count = {"n": 0}
+    async def fake_fetchrow(*args, **kwargs):
+        call_count["n"] += 1
+        # 第一次调用返回现有 config_schema；后续返回 UPDATE 结果
+        if call_count["n"] == 1:
+            return {"name": "x", "config_schema": {
+                "state_fields": {"existing": {"type": "int", "default": 0}},
+                "context_fields": {},
+            }}
+        return {"name": "x", "config_schema": {
+            "state_fields": {"existing": {"type": "int", "default": 42}},
+            "context_fields": {},
+        }}
+    fake_db.fetchrow = fake_fetchrow
+
+    client.app.state.db = fake_db
+    client.app.state.agent_config_service._db = fake_db
+
+    response = client.put(
+        "/api/admin/agents/x/config-schema/field",
+        headers=admin_headers,
+        json={
+            "section": "state_fields",
+            "field_name": "existing",
+            "field_def": {"type": "int", "default": 42},
+        },
+    )
+    assert response.status_code == 200
+
+
+def test_delete_nonexistent_field_returns_200(client, admin_headers):
+    """DELETE /config-schema/field 幂等删除：字段不存在时返回 200 而非 400。"""
+    from unittest.mock import MagicMock
+
+    fake_db = MagicMock()
+    async def fake_fetchrow(*args, **kwargs):
+        return {"name": "x", "config_schema": {
+            "state_fields": {},
+            "context_fields": {},
+        }}
+    fake_db.fetchrow = fake_fetchrow
+
+    client.app.state.db = fake_db
+    client.app.state.agent_config_service._db = fake_db
+
+    response = client.delete(
+        "/api/admin/agents/x/config-schema/field?section=state_fields&field_name=not_exist",
+        headers=admin_headers,
+    )
+    assert response.status_code == 200

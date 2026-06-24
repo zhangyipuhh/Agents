@@ -271,6 +271,23 @@ async def add_field(
         raise _handle_agent_error(e)
 
 
+@router.put("/{name}/config-schema/field")
+async def update_field(
+    request: Request, name: str, req: AddFieldRequest
+) -> Dict[str, Any]:
+    """直接覆盖 config_schema 中已存在的字段（无需先删后加）。
+
+    section: root / state_fields / context_fields
+    """
+    service = _get_service(request)
+    try:
+        return await service.update_agent_config_field(
+            name, req.section, req.field_name, req.field_def,
+        )
+    except (AgentNotFoundError, ValueError) as e:
+        raise _handle_agent_error(e)
+
+
 @router.delete("/{name}/config-schema/field")
 async def delete_field(
     request: Request,
