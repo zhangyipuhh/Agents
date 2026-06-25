@@ -1,4 +1,4 @@
-# -*- coding:utf-8 -*-
+﻿# -*- coding:utf-8 -*-
 """
 Agent Admin Router 测试模块
 
@@ -802,3 +802,352 @@ def test_update_tool_bindings_invalid_payload_422(client, admin_headers):
         json={"bindings": [{"tool_type": "builtin"}]},  # 缺少 tool_name
     )
     assert response.status_code == 422
+
+
+# ============================================================
+# 可绑定工具列表 (available-tools) 端点测试
+# ============================================================
+# 端点签名：GET /api/admin/agents/{name}/available-tools
+# 返回结构：{"agent_name": str, "builtin": [...], "mcp": [...]}
+# - builtin 项：name / display_name / category / description / module_path /
+#   file_path / file_basename
+# - mcp 项：server_name / server_display_name / method_name / display_name /
+#   description / tool_name("server.method") / enabled
+# ============================================================
+
+
+def test_available_tools_returns_builtin_and_mcp(client, admin_headers):
+    """GET /api/admin/agents/{name}/available-tools 返回 200 且含 builtin/mcp 字段。
+
+    端点合并 ToolRegistryService.list_tools() 与 McpConfigService.list_servers() +
+    list_methods() 的结果，供前端「工具绑定」面板使用。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 响应结构不符合预期时抛出
+    """
+    from unittest.mock import AsyncMock
+
+    fake_tools = [
+        {
+            "name": "get_current_time",
+            "display_name": "获取当前时间",
+            "category": "utility",
+            "description": "返回当前时间字符串",
+            "module_path": "app.core.tools.BaseTools",
+            "file_path": "app/core/tools/BaseTools.py",
+            "args_schema": {},
+            "return_description": "str",
+            "function_description": "获取当前时间",
+            "enabled": True,
+        },
+    ]
+    fake_servers = [
+        {
+            "name": "amap",
+            "display_name": "高德地图",
+            "type": "sse",
+            "url": "https://example.com/sse",
+            "enabled": True,
+            "tags": ["map"],
+        },
+    ]
+    fake_methods = [
+        {
+            "method_name": "search",
+            "display_name": "地点搜索",
+            "description": "根据关键词搜索 POI",
+            "enabled": True,
+        },
+    ]
+
+    tool_service = client.app.state.tool_service
+    tool_service.list_tools = AsyncMock(return_value=fake_tools)
+    mcp_service = client.app.state.mcp_config_service
+    mcp_service.list_servers = AsyncMock(return_value=fake_servers)
+    mcp_service.list_methods = AsyncMock(return_value=fake_methods)
+
+    response = client.get(
+        "/api/admin/agents/map_agent/available-tools",
+        headers=admin_headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["agent_name"] == "map_agent"
+    assert isinstance(data["builtin"], list)
+    assert isinstance(data["mcp"], list)
+    assert len(data["builtin"]) == 1
+    assert len(data["mcp"]) == 1
+    # 验证 builtin 项关键字段
+    assert data["builtin"][0]["name"] == "get_current_time"
+    # 验证 mcp 项关键字段
+    assert data["mcp"][0]["server_name"] == "amap"
+    assert data["mcp"][0]["method_name"] == "search"
+
+
+def test_available_tools_includes_file_basename_for_builtin(client, admin_headers):
+    """GET .../available-tools builtin 项的 file_basename 从 file_path 提取。
+
+    端点期望对 file_path='app/core/tools/BaseTools.py' 提取
+    file_basename='BaseTools'，前端用于展示「BaseTools.get_current_time」形式。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: file_basename 不正确时抛出
+    """
+    from unittest.mock import AsyncMock
+
+    fake_tools = [
+        {
+            "name": "get_current_time",
+            "display_name": "获取当前时间",
+            "category": "utility",
+            "description": "返回当前时间",
+            "module_path": "app.core.tools.BaseTools",
+            "file_path": "app/core/tools/BaseTools.py",
+            "args_schema": {},
+            "return_description": "str",
+            "function_description": "获取当前时间",
+            "enabled": True,
+        },
+    ]
+    tool_service = client.app.state.tool_service
+    tool_service.list_tools = AsyncMock(return_value=fake_tools)
+    mcp_service = client.app.state.mcp_config_service
+    mcp_service.list_servers = AsyncMock(return_value=[])
+    mcp_service.list_methods = AsyncMock(return_value=[])
+
+    response = client.get(
+        "/api/admin/agents/any_agent/available-tools",
+        headers=admin_headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["builtin"]) == 1
+    builtin_item = data["builtin"][0]
+    assert builtin_item["file_path"] == "app/core/tools/BaseTools.py"
+    # 关键断言：file_basename 应为 "BaseTools"（去除 .py 后缀）
+    assert builtin_item["file_basename"] == "BaseTools"
+    # 其他字段也正确返回
+    assert builtin_item["name"] == "get_current_time"
+    assert builtin_item["display_name"] == "获取当前时间"
+    assert builtin_item["category"] == "utility"
+    assert builtin_item["module_path"] == "app.core.tools.BaseTools"
+
+
+def test_available_tools_uses_server_dot_method_composite_name_for_mcp(client, admin_headers):
+    """GET .../available-tools mcp 项的 tool_name 格式为 'server.method'。
+
+    端点构造复合 tool_name='server_name.method_name'，用于保存到
+    agents.tool_bindings 时作为唯一标识（与 builtin 工具区分命名空间）。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: tool_name 格式不符合预期时抛出
+    """
+    from unittest.mock import AsyncMock
+
+    fake_servers = [
+        {
+            "name": "amap",
+            "display_name": "高德地图",
+            "type": "sse",
+            "url": "https://example.com/sse",
+            "enabled": True,
+            "tags": [],
+        },
+    ]
+    fake_methods = [
+        {
+            "method_name": "search",
+            "display_name": "地点搜索",
+            "description": "搜索 POI",
+            "enabled": True,
+        },
+        {
+            "method_name": "route",
+            "display_name": "路径规划",
+            "description": "规划路径",
+            "enabled": True,
+        },
+    ]
+    tool_service = client.app.state.tool_service
+    tool_service.list_tools = AsyncMock(return_value=[])
+    mcp_service = client.app.state.mcp_config_service
+    mcp_service.list_servers = AsyncMock(return_value=fake_servers)
+    mcp_service.list_methods = AsyncMock(return_value=fake_methods)
+
+    response = client.get(
+        "/api/admin/agents/any_agent/available-tools",
+        headers=admin_headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["mcp"]) == 2
+    tool_names = {item["tool_name"] for item in data["mcp"]}
+    # 关键断言：tool_name 必须为 "server.method" 复合名
+    assert "amap.search" in tool_names
+    assert "amap.route" in tool_names
+    # 每项还应包含 server_name / method_name / server_display_name
+    for item in data["mcp"]:
+        assert item["server_name"] == "amap"
+        assert item["server_display_name"] == "高德地图"
+        assert item["method_name"] in {"search", "route"}
+        assert item["enabled"] is True
+
+
+def test_available_tools_excludes_disabled_mcp_servers(client, admin_headers):
+    """GET .../available-tools MCP server enabled=FALSE 时不返回其 methods。
+
+    端点对 list_servers() 返回的每个 server 检查 enabled 字段；enabled=FALSE
+    的 server 整体跳过，不展开其 methods（保持工具列表最小可用集）。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 禁用 server 未被过滤时抛出
+    """
+    from unittest.mock import AsyncMock
+
+    fake_servers = [
+        {
+            "name": "amap",
+            "display_name": "高德地图",
+            "type": "sse",
+            "url": "https://example.com/sse",
+            "enabled": True,
+            "tags": [],
+        },
+        {
+            "name": "disabled_server",
+            "display_name": "已禁用",
+            "type": "stdio",
+            "command": ["python", "-m", "fake"],
+            "enabled": False,
+            "tags": [],
+        },
+    ]
+    # 即使禁用 server 的 list_methods 被调用，endpoints 应不调用；
+    # 若被意外调用，返回空列表，断言会失败
+    fake_methods_enabled = [
+        {
+            "method_name": "search",
+            "display_name": "搜索",
+            "description": "搜索 POI",
+            "enabled": True,
+        },
+    ]
+
+    async def list_methods_separator(server_name):
+        # 若端点对 disabled_server 调用了 list_methods，立即失败以提示 bug
+        assert server_name != "disabled_server", (
+            f"端点不应查询禁用 server '{server_name}' 的 methods"
+        )
+        return fake_methods_enabled
+
+    tool_service = client.app.state.tool_service
+    tool_service.list_tools = AsyncMock(return_value=[])
+    mcp_service = client.app.state.mcp_config_service
+    mcp_service.list_servers = AsyncMock(return_value=fake_servers)
+    mcp_service.list_methods = AsyncMock(side_effect=list_methods_separator)
+
+    response = client.get(
+        "/api/admin/agents/any_agent/available-tools",
+        headers=admin_headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    # mcp 列表只应包含 amap 的方法，disabled_server 整个被排除
+    assert len(data["mcp"]) == 1
+    assert data["mcp"][0]["server_name"] == "amap"
+    assert data["mcp"][0]["tool_name"] == "amap.search"
+    # 验证 disabled_server 的 tool_name 不存在
+    tool_names = [item["tool_name"] for item in data["mcp"]]
+    assert "disabled_server.search" not in tool_names
+
+
+def test_available_tools_excludes_disabled_mcp_methods(client, admin_headers):
+    """GET .../available-tools MCP method enabled=FALSE 时不返回该 method。
+
+    端点对每个 server 调用 list_methods() 后逐个 method 检查 enabled 字段；
+    enabled=FALSE 的 method 被跳过，enabled=TRUE 的正常返回。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 禁用 method 未被过滤时抛出
+    """
+    from unittest.mock import AsyncMock
+
+    fake_servers = [
+        {
+            "name": "amap",
+            "display_name": "高德地图",
+            "type": "sse",
+            "url": "https://example.com/sse",
+            "enabled": True,
+            "tags": [],
+        },
+    ]
+    fake_methods = [
+        {
+            "method_name": "search",
+            "display_name": "搜索",
+            "description": "搜索 POI",
+            "enabled": True,
+        },
+        {
+            "method_name": "disabled_method",
+            "display_name": "已禁用方法",
+            "description": "暂不开放",
+            "enabled": False,
+        },
+    ]
+
+    tool_service = client.app.state.tool_service
+    tool_service.list_tools = AsyncMock(return_value=[])
+    mcp_service = client.app.state.mcp_config_service
+    mcp_service.list_servers = AsyncMock(return_value=fake_servers)
+    mcp_service.list_methods = AsyncMock(return_value=fake_methods)
+
+    response = client.get(
+        "/api/admin/agents/any_agent/available-tools",
+        headers=admin_headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    # mcp 列表只应包含 enabled=TRUE 的 search，disabled_method 被排除
+    assert len(data["mcp"]) == 1
+    assert data["mcp"][0]["method_name"] == "search"
+    assert data["mcp"][0]["tool_name"] == "amap.search"
+    # 验证 disabled_method 未出现在列表中
+    method_names = [item["method_name"] for item in data["mcp"]]
+    assert "disabled_method" not in method_names

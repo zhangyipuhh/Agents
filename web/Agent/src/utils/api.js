@@ -1551,3 +1551,44 @@ export async function updateAgentToolBindings(name, bindings) {
   }
   return response.json()
 }
+
+/**
+ * 获取指定智能体可绑定的工具列表（内置 + MCP）
+ * 调用 GET /api/admin/agents/{name}/available-tools
+ * 供前端 AgentManager 工具绑定 Tab 使用：一次性返回内置工具 + MCP tool 列表
+ * （MCP tool 已按 server.method 复合名展开，前端直接展示 + 选择）。
+ * @param {string} name - 智能体名称
+ * @returns {Promise<{
+ *   agent_name: string,
+ *   builtin: Array<{
+ *     name: string,              // 函数名（如 get_current_time），用于 binding.tool_name
+ *     display_name: string,
+ *     category: string,           // 分类（前端展示分组）
+ *     description: string,
+ *     module_path: string,
+ *     file_path: string,          // 含文件名（如 app/core/tools/BaseTools.py）
+ *     file_basename: string,      // 文件名不含 .py（前端展示 "BaseTools.get_current_time"）
+ *   }>,
+ *   mcp: Array<{
+ *     server_name: string,        // server 名（如 amap）
+ *     server_display_name: string,// server 显示名（如 "高德地图"）
+ *     method_name: string,        // method 名（如 search）
+ *     display_name: string,
+ *     description: string,
+ *     tool_name: string,          // "server.method" 复合名（如 "amap.search"），用于 binding.tool_name
+ *     enabled: boolean,
+ *   }>
+ * }>}
+ * @throws {Error} 请求失败时抛出错误（含后端 detail 信息）
+ */
+export async function fetchAgentAvailableTools(name) {
+  const response = await fetchWithAuth(
+    `/api/admin/agents/${encodeURIComponent(name)}/available-tools`,
+    { method: 'GET' }
+  )
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取可绑定工具列表失败: ${response.status}`)
+  }
+  return response.json()
+}

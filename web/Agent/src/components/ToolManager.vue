@@ -47,7 +47,7 @@
               @click="selectTool(tool)"
             >
               <div class="tool-item-header">
-                <span class="tool-name">{{ tool.display_name || tool.name }}</span>
+                <span class="tool-name">{{ tool.display_name || formatToolName(tool) }}</span>
                 <label class="tool-toggle-wrapper" @click.stop>
                   <input
                     type="checkbox"
@@ -59,7 +59,7 @@
                 </label>
               </div>
               <div class="tool-item-meta">
-                <span class="tool-name-id">{{ tool.name }}</span>
+                <span class="tool-name-id">{{ formatToolName(tool) }}</span>
                 <span v-if="!tool.enabled" class="tool-disabled-tag">已禁用</span>
               </div>
             </div>
@@ -276,6 +276,23 @@ const scanning = ref(false)
 
 /** @type {import('vue').Ref<'detail'|'scan'>} 右侧面板视图模式 */
 const viewMode = ref('detail')
+
+/**
+ * 提取工具的"文件名.函数名"展示形式
+ * 从 tool.file_path 中取最后一个 / 或 \ 之后的文件名，去掉 .py 后缀
+ * 拼接为 "BaseTools.get_current_time" 格式，便于用户识别工具来源
+ * @param {Object} tool - 工具对象（含 file_path 和 name 字段）
+ * @returns {string} "文件名.函数名" 或仅 "函数名"（当 file_path 为空时）
+ */
+function formatToolName(tool) {
+  if (!tool || !tool.name) return ''
+  const filePath = tool.file_path || ''
+  if (!filePath) return tool.name
+  const parts = filePath.split(/[/\\]/)
+  const fileName = parts[parts.length - 1] || ''
+  const baseName = fileName.replace(/\.py$/i, '')
+  return baseName ? `${baseName}.${tool.name}` : tool.name
+}
 
 /** @type {import('vue').Ref<Set<string>>} 已展开的分类集合 */
 const expandedCategories = ref(new Set())

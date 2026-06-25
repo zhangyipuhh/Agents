@@ -1629,3 +1629,183 @@ def test_unified_agent_config_agent_row_not_in_repr():
     assert "_agent_row" not in repr_str
     assert "secret" not in repr_str
 
+
+# ============================================================
+# 2026-06-25 新增：_parse_mcp_tool_name + _load_tools MCP server.method
+# 复合名解析测试。覆盖 mcp tool_binding "server.method" 格式的拆分、
+# 无 server 前缀的跳过行为、以及 adapted_tool 收集逻辑。
+# ============================================================
+
+
+def test_parse_mcp_tool_name_with_dot():
+    """测试 _parse_mcp_tool_name 解析带点的 server.method 复合名。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 解析结果不符合预期时抛出
+    """
+    server, method = AgentConfigService._parse_mcp_tool_name("amap.search")
+    assert server == "amap"
+    assert method == "search"
+
+
+def test_parse_mcp_tool_name_without_dot():
+    """测试 _parse_mcp_tool_name 解析无点的纯 method 名。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 解析结果不符合预期时抛出
+    """
+    server, method = AgentConfigService._parse_mcp_tool_name("search")
+    assert server == "search"
+    assert method == ""
+
+
+def test_parse_mcp_tool_name_with_multiple_dots():
+    """测试 _parse_mcp_tool_name 仅按第一个 . 分割。
+
+    多点情况下 method 部分仍可能包含 .（如 JSONPath），不应继续拆分。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 分割行为不符合预期时抛出
+    """
+    server, method = AgentConfigService._parse_mcp_tool_name("amap.sub.search")
+    assert server == "amap"
+    assert method == "sub.search"
+
+
+def test_parse_mcp_tool_name_empty():
+    """测试 _parse_mcp_tool_name 解析空字符串返回 ("", "")。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 空字符串解析结果不符合预期时抛出
+    """
+    server, method = AgentConfigService._parse_mcp_tool_name("")
+    assert server == ""
+    assert method == ""
+
+
+def test_load_tools_mcp_binding_uses_server_and_method_filter():
+    """测试 mcp tool_binding "amap.search" 解析后调用 mcp_registry 的
+    get_tools_with_server(server="amap", names=["search"]) 接口。
+
+    验证复合名解析结果被正确传入 MCP registry 的过滤参数。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: MCP registry 调用参数不符合预期时抛出
+    """
+    service = AgentConfigService(MagicMock(), MagicMock())
+    mock_registry = MagicMock()
+    mock_registry.get_tools_with_server = MagicMock(return_value=[])
+    service.set_mcp_registry(mock_registry)
+
+    agent_row = {
+        "tool_bindings": [
+            {"tool_name": "amap.search", "tool_type": "mcp", "enabled": True},
+        ],
+        "mcp_tags": [],
+    }
+    tools = asyncio.run(service._load_tools(agent_row))
+
+    # 验证 server / names 参数被正确传递
+    mock_registry.get_tools_with_server.assert_called_once_with(
+        server="amap", names=["search"]
+    )
+    # 无 mcp 工具返回时 tools 应为空列表（mcp_tags 也不应被触发）
+    assert tools == []
+
+
+def test_load_tools_mcp_binding_without_server_prefix_skipped():
+    """测试 tool_name 无 server 前缀（如纯 "search"）时记录 warning 并跳过。
+
+    避免错误地把 method 当作 server 名去查询 MCP registry。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 跳过行为或 warning 不符合预期时抛出
+    """
+    service = AgentConfigService(MagicMock(), MagicMock())
+    mock_registry = MagicMock()
+    mock_registry.get_tools_with_server = MagicMock(return_value=[])
+    service.set_mcp_registry(mock_registry)
+
+    agent_row = {
+        "tool_bindings": [
+            {"tool_name": "search", "tool_type": "mcp", "enabled": True},
+        ],
+        "mcp_tags": [],
+    }
+    tools = asyncio.run(service._load_tools(agent_row))
+
+    # 无 server 前缀时不应调用 MCP registry
+    mock_registry.get_tools_with_server.assert_not_called()
+    assert tools == []
+
+
+def test_load_tools_mcp_binding_collects_tools():
+    """测试 mcp tool_binding 返回的 adapted_tool 被加入 tools 列表。
+
+    验证 (adapted_tool, server, schema) 元组的首个元素被正确收集。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 工具未被正确收集时抛出
+    """
+    service = AgentConfigService(MagicMock(), MagicMock())
+    mock_amap_tool = MagicMock(name="amap_search_tool")
+    mock_amap_schema = {"type": "object", "properties": {}}
+    mock_registry = MagicMock()
+    mock_registry.get_tools_with_server = MagicMock(
+        return_value=[(mock_amap_tool, "amap", mock_amap_schema)]
+    )
+    service.set_mcp_registry(mock_registry)
+
+    agent_row = {
+        "tool_bindings": [
+            {"tool_name": "amap.search", "tool_type": "mcp", "enabled": True},
+        ],
+        "mcp_tags": [],
+    }
+    tools = asyncio.run(service._load_tools(agent_row))
+
+    assert len(tools) == 1
+    assert tools[0] is mock_amap_tool
+

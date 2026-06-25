@@ -462,6 +462,12 @@ class AgentConfigService:
 
         无默认工具：tool_bindings 和 mcp_tags 都为空时返回空列表。
 
+        MCP 工具命名约定（server.method 复合名）：
+        - tool_bindings[].tool_name 格式为 "server_name.method_name"
+        - 例：tool_name="amap.search" → server="amap", method="search"
+        - 解析后调用 mcp_registry.get_tools_with_server(server="amap", names=["search"])
+        - 同一 server 的不同 method 可独立绑定，避免跨 server 命名冲突
+
         参数:
             agent_row: agent 的原始 DB 行字典（含 tool_bindings / mcp_tags 字段），
                 通常来自 UnifiedAgentConfig._agent_row
@@ -494,8 +500,18 @@ class AgentConfigService:
                         "Builtin tool '%s' not found or has no instance", tool_name
                     )
             elif tool_type == "mcp" and self._mcp_registry:
+                # 解析 server.method 复合名
+                server_name, method_name = self._parse_mcp_tool_name(tool_name)
+                if not method_name:
+                    logger.warning(
+                        "MCP tool binding '%s' missing server prefix (expect 'server.method')",
+                        tool_name,
+                    )
+                    continue
                 # get_tools_with_server 是同步方法（内部用线程池执行异步代码）
-                mcp_tools = self._mcp_registry.get_tools_with_server(names=[tool_name])
+                mcp_tools = self._mcp_registry.get_tools_with_server(
+                    server=server_name, names=[method_name] if method_name else None
+                )
                 for adapted_tool, _, _ in mcp_tools:
                     tools.append(adapted_tool)
 
@@ -508,6 +524,22 @@ class AgentConfigService:
                     tools.append(adapted_tool)
 
         return tools
+
+    @staticmethod
+    def _parse_mcp_tool_name(tool_name: str) -> tuple:
+        """解析 MCP 工具绑定的 server.method 复合名。
+
+        参数:
+            tool_name: tool_bindings 中的 tool_name 字段值
+
+        返回:
+            tuple[str, str]: (server_name, method_name)；
+            无 server 前缀时返回 (tool_name, "")，调用方应回退或跳过
+        """
+        if "." in tool_name:
+            server, _, method = tool_name.partition(".")
+            return server, method
+        return tool_name, ""
 
     async def list_agents(self) -> List[Dict[str, Any]]:
         """列出所有启用的智能体。

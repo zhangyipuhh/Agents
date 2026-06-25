@@ -166,6 +166,28 @@ def _handle_tool_error(e: Exception) -> HTTPException:
     )
 
 
+async def _invalidate_agent_config_cache(request: Request) -> None:
+    """失效 agent_config 缓存（工具变更影响 agent 工具列表）。
+
+    工具注册/更新/删除/启停后，agent 通过 tool_bindings 绑定的工具实例
+    可能失效（disabled 工具不再被加载；新注册工具加入可绑定池）。
+    需清空 AgentConfigService 全部缓存强制下次重新加载。
+
+    生产对等初始化点：app/core/server.py lifespan 中
+    `app.state.agent_config_service = AgentConfigService(...)`。
+    服务未初始化时静默跳过（不抛异常），避免工具写操作因缓存失效失败。
+
+    参数:
+        request: FastAPI Request 对象
+
+    返回:
+        None
+    """
+    agent_service = getattr(request.app.state, "agent_config_service", None)
+    if agent_service is not None:
+        await agent_service.invalidate_all_cache()
+
+
 # === 路由端点 ===
 
 @router.get("", response_model=List[Dict[str, Any]])
@@ -238,9 +260,13 @@ async def create_tool(
     service = _get_service(request)
     payload = req.model_dump(exclude_none=False)
     try:
-        return await service.create_tool(payload)
+        result = await service.create_tool(payload)
     except (ToolAlreadyExistsError, KeyError, ValueError) as e:
         raise _handle_tool_error(e)
+
+    # 失效 agent_config 缓存（工具变更影响 agent 工具列表）
+    await _invalidate_agent_config_cache(request)
+    return result
 
 
 @router.put("/{name}", response_model=Dict[str, Any])
@@ -269,9 +295,13 @@ async def update_tool(
     service = _get_service(request)
     payload = req.model_dump(exclude_none=True)
     try:
-        return await service.update_tool(name, payload)
+        result = await service.update_tool(name, payload)
     except (ToolNotFoundError, ValueError) as e:
         raise _handle_tool_error(e)
+
+    # 失效 agent_config 缓存（工具变更影响 agent 工具列表）
+    await _invalidate_agent_config_cache(request)
+    return result
 
 
 @router.delete("/{name}", status_code=status.HTTP_204_NO_CONTENT)
@@ -297,6 +327,9 @@ async def delete_tool(request: Request, name: str) -> None:
     except ToolNotFoundError as e:
         raise _handle_tool_error(e)
 
+    # 失效 agent_config 缓存（工具变更影响 agent 工具列表）
+    await _invalidate_agent_config_cache(request)
+
 
 @router.put("/{name}/enabled", response_model=Dict[str, Any])
 async def set_tool_enabled(
@@ -321,9 +354,13 @@ async def set_tool_enabled(
     """
     service = _get_service(request)
     try:
-        return await service.set_tool_enabled(name, req.enabled)
+        result = await service.set_tool_enabled(name, req.enabled)
     except ToolNotFoundError as e:
         raise _handle_tool_error(e)
+
+    # 失效 agent_config 缓存（工具启用状态变更影响 agent 工具列表）
+    await _invalidate_agent_config_cache(request)
+    return result
 
 
 @router.post("/scan", response_model=List[Dict[str, Any]])

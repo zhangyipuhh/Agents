@@ -439,6 +439,75 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 
 **索引**：`idx_tools_category(category)`、`idx_tools_enabled(enabled)`
 
+### tools 表种子数据（2026-06-25 新增）
+
+`app/migrations/init_all_tables.sql` 末尾追加 17 条 `INSERT INTO tools ... ON CONFLICT (name) DO NOTHING` 段落，作为内置工具元数据首装数据。
+
+**生成脚本**：`scripts/seed_tools_from_source.py`
+
+- 扫描 `app/core/tools/*.py` + `app/shared/tools/skills/**/*.py` 下所有 `.py` 文件
+- 用 `ast.parse` 提取 `@tool` 装饰函数（支持 `@tool` 和 `@tool(...)` 两种形式）
+- 提取 description 优先取 `@tool(description=...)` 参数，其次 docstring
+- 输出幂等 INSERT SQL（`ON CONFLICT (name) DO NOTHING`）
+- 默认 category 推断：路径含 `skills/{agent}/` → category = agent；其他 → "未分类"
+- 支持 `--category-map` / `SEED_CATEGORY_MAP` 环境变量自定义 file_name → category 映射
+
+**用法**：
+
+```powershell
+# 干跑（仅打印工具数量）
+python scripts/seed_tools_from_source.py --dry-run
+
+# 输出到文件
+python scripts/seed_tools_from_source.py --output app/migrations/seed_tools.sql
+
+# 自定义分类（PowerShell 传 UTF-8）
+$bytes = [System.IO.File]::ReadAllBytes("scripts/category_map.json")
+$env:SEED_CATEGORY_MAP = [System.Text.Encoding]::UTF8.GetString($bytes)
+$env:PYTHONIOENCODING = "utf-8"
+python scripts/seed_tools_from_source.py --output app/migrations/seed_tools.sql
+```
+
+**幂等性**：所有 INSERT 使用 `ON CONFLICT (name) DO NOTHING`，可重复执行。新增工具后重新生成 SQL 追加到 `init_all_tables.sql` 即可。
+
+**当前种子工具数量**：17 个（5 个 BaseTools + 1 explore + 1 ask_user_question + 1 sandbox + 9 map_agent MapTools）
+
+### 工具加载流程
+
+**`_load_tools` 双轨制**（`app/shared/utils/agent/agent_config_service.py:AgentConfigService._load_tools`）：
+
+1. **高优先级**：`tool_bindings` 直接绑定
+   - `tool_type="builtin"` → `tool_service.get_tool_by_name(name)` 返回的 `tool_instance`
+   - `tool_type="mcp"` → 解析 `name="server.method"` 复合名，调 `mcp_registry.get_tools_with_server(server=, names=)`
+2. **低优先级回退**：`tool_bindings` 未加载到工具时，按 `mcp_tags` 过滤整个 server
+3. **无默认工具**：`tool_bindings` 和 `mcp_tags` 都为空时返回空列表
+
+**MCP 工具命名约定**（2026-06-25 落地）：
+
+- `tool_bindings[].tool_name` 格式：`server_name.method_name`（如 `amap.search`）
+- 解析后调用 `mcp_registry.get_tools_with_server(server="amap", names=["search"])`
+- 避免跨 server 命名冲突（如多个 server 都提供 `search` method）
+- 新增辅助方法：`AgentConfigService._parse_mcp_tool_name(tool_name) -> (server, method)`
+
+**`mcp_registry.get_tools_with_server` 新增参数**（2026-06-25 落地）：
+
+- `mcp_client: Optional[Any] = None` 显式传入 MCP 客户端（默认 None，回退到 `self._client`）
+- 三个方法同步增加：`get_tools_with_server` / `_get_tools_with_server_async` / `get_tools_with_server_async`
+
+### 工具热加载链路（2026-06-25 补全）
+
+| 写操作                                    | 触发函数                                       | 缓存影响                                            |
+| ----------------------------------------- | ---------------------------------------------- | --------------------------------------------------- |
+| `tool_admin_router` create/update/delete/set_tool_enabled | `_invalidate_agent_config_cache(request)` → `agent_service.invalidate_all_cache()` | 清空所有 agent 缓存（含 tools 列表）|
+| `mcp_admin_router` create/update/delete/toggle_server | `_invalidate_agent_config_cache(request)`（已有）| 清空所有 agent 缓存（含 tools 列表）|
+| `agent_admin_router` PUT tool-bindings   | `service.update_tool_bindings` → `_refresh_cache(name)` | 单 agent 缓存刷新（tools=None 延迟重新加载）|
+
+**实现位置**：
+
+- `app/routers/tool_admin_router.py:_invalidate_agent_config_cache`（新增）
+- `app/routers/mcp_admin_router.py:_invalidate_agent_config_cache`（已有）
+- `app/routers/agent_admin_router.py:update_agent_tool_bindings`（已自动调 `_refresh_cache`）
+
 ### map_agent 种子脚本
 
 **文件位置**: `app/migrations/seed_map_agent.py`（含 `app/migrations/__init__.py` 包初始化）
@@ -2240,9 +2309,9 @@ app/routers/
 
 ### 测试
 
-- 路径：`app/tests/routers/test_tool_admin_router.py`（25 用例）
+- 路径：`app/tests/routers/test_tool_admin_router.py`（29 用例 = 25 原有 + 4 热加载新增：create/update/delete/set_tool_enabled 后 `agent_config_service.invalidate_all_cache` 被调）
 - 本地 conftest：`app/tests/routers/conftest.py::_init_tool_service` autouse fixture 注入 `ToolRegistryService(db=None)` 实例（生产对等初始化点：`app/core/server.py::lifespan` 第 122-131 行）
-- 覆盖：模块可导入 / 7 个路由注册检查 / list_tools 返回 200 / list_unregistered 返回 200 / create_tool 返回 201 / update_tool 返回 200 / delete_tool 返回 204 / set_tool_enabled 返回 200 / scan 返回 200 / create_tool 冲突返回 409 / update_tool 不存在返回 404 / delete_tool 不存在返回 404 / set_tool_enabled 不存在返回 404 / 非 admin 访问返回 403（3 个端点）/ service 未初始化返回 500（2 个端点）/ 缺必填字段返回 422
+- 覆盖：模块可导入 / 7 个路由注册检查 / list_tools 返回 200 / list_unregistered 返回 200 / create_tool 返回 201 / update_tool 返回 200 / delete_tool 返回 204 / set_tool_enabled 返回 200 / scan 返回 200 / create_tool 冲突返回 409 / update_tool 不存在返回 404 / delete_tool 不存在返回 404 / set_tool_enabled 不存在返回 404 / 非 admin 访问返回 403（3 个端点）/ service 未初始化返回 500（2 个端点）/ 缺必填字段返回 422 / **4 个写操作后 agent_config 缓存失效验证**
 
 ## 统一 Agent Router
 
@@ -2301,6 +2370,7 @@ app/routers/
 | DELETE | `/api/admin/agents/{name}/config-schema/field` | 200    | 增量删除字段（query:`section + field_name`）；字段不存在时幂等返回 200 |
 | GET    | `/api/admin/agents/{name}/tool-bindings`       | 200    | 获取工具绑定列表（返回 `{agent_name, tool_bindings: List}`）；agent 不存在返回 404 |
 | PUT    | `/api/admin/agents/{name}/tool-bindings`       | 200    | 全量替换工具绑定列表（body:`{bindings: List<ToolBindingItem>}`）；agent 不存在返回 404 |
+| GET    | `/api/admin/agents/{name}/available-tools`     | 200    | 获取该 agent 可绑定的工具列表（内置 + MCP）；返回 `{agent_name, builtin: [...], mcp: [...]}`。MCP 项的 `tool_name` 为 `server.method` 复合名（用于保存到 tool_bindings） |
 
 **section 取值**：`root`（顶层 AgentConfig 字段）/ `state_fields`（state 扩展字段）/ `context_fields`（context 扩展字段）
 
@@ -2312,7 +2382,7 @@ app/routers/
 - **field_def 校验**：必须包含 `type` 键，type 必须在 `TYPE_MAP` 支持的类型中（`str`/`int`/`float`/`bool`/`dict`/`list`）
 - **错误映射**：`_handle_agent_error` 统一转换 service 异常（AgentAlreadyExistsError → 409 / AgentNotFoundError → 404 / ValueError → 400 / FileNotFoundError → 400 / KeyError → 400）
 - **Pydantic 模型**：`CreateAgentRequest` 强制 name 格式 `[a-z0-9_]{3,50}` / `display_name` 1-200 字符 / `field_name` Python 标识符格式；`AddFieldRequest.section` 自由字符串（由 service 校验）；`SetEnabledRequest.enabled` bool；`ToolBindingItem`（tool_name 必填 / tool_type 默认 "builtin" / enabled 默认 True / sort_order 默认 0）；`ToolBindingsRequest.bindings` List[ToolBindingItem]
-- **测试**：`app/tests/routers/test_agent_admin_router.py` 30 用例（P0 导入 / 路由注册 / 字段模板 / 校验 / CRUD / 鉴权 403 / PUT 修改字段 / 幂等删除 / GET+PUT tool-bindings 成功+404+空列表+JSONB 解码+422 校验）；`app/tests/routers/conftest.py` 新增 `_init_db`（注入 `app.state.db` MagicMock）和 `_mock_user_db_for_admin_auth`（根据 username 返回 role）两个 autouse fixture
+- **测试**：`app/tests/routers/test_agent_admin_router.py` 35 用例（30 原有 + 5 新增 available-tools：返回结构 / file_basename 提取 / server.method 复合名 / 排除 disabled server / 排除 disabled method）；`app/tests/routers/conftest.py` 新增 `_init_db`（注入 `app.state.db` MagicMock）和 `_mock_user_db_for_admin_auth`（根据 username 返回 role）两个 autouse fixture
 
 
 
@@ -2551,3 +2621,68 @@ web/Agent/src/utils/
 - 路径：`web/Agent/src/components/__tests__/App.agent-switch.spec.js`（2 用例）
 - 测试策略：mount App.vue + mock `global.fetch`（按 URL 分发 `/api/auth/refresh` 与 `/api/auth/validate` 使 `authReady=true`，InputBox 得以渲染）+ mock `global.localStorage`；通过 `findComponent({ name: 'InputBox' }).vm.$emit('agent-switched', ...)` 模拟子组件事件
 - 覆盖：App.vue 有 agentName 状态默认 `map_agent` / 监听 agent-switched 事件后 agentName 更新为目标值
+
+## scripts/ 目录（2026-06-25 新增）
+
+`scripts/` 用于存放项目级离线辅助脚本，与 `app/` 业务代码隔离。
+
+| 脚本 | 作用 |
+| --- | --- |
+| `seed_tools_from_source.py` | 扫描 `app/core/tools/` + `app/shared/tools/skills/` 下所有 `.py` 中的 `@tool` 函数，生成幂等的 `INSERT INTO tools ... ON CONFLICT DO NOTHING` SQL 段落到 `app/migrations/init_all_tables.sql` 末尾 |
+| `README.md` | scripts 目录说明文档 |
+
+**seed 脚本隔离策略**（`app/tests/scripts/test_seed_tools_from_source.py`）：
+
+- 用 `monkeypatch` 把 `TOOL_ROOTS` / `PROJECT_ROOT` 指向 `tmp_path` 下的伪工程，**真实工程文件零污染**
+- 不引入 MagicMock：脚本仅依赖标准库（`ast`/`json`/`argparse`/`pathlib`/`datetime`），全部走真实代码路径；CLI 测试通过 subprocess 真实执行
+- Windows 编码兼容：CLI 测试设置 `PYTHONIOENCODING=utf-8` + `errors="replace"`
+
+**测试覆盖**：`app/tests/scripts/test_seed_tools_from_source.py` 13 用例（_has_tool_decorator 识别 / _extract_tool_description / _file_to_module_path / _infer_category / scan_all_tools / _sql_escape / _json_escape / render_sql / CLI dry-run / CLI output-to-file）
+
+## Agent 工具绑定双轨制（2026-06-25 落地）
+
+### 数据流
+
+```
+[tool_bindings]  →  AgentConfigService._load_tools
+                          ↓
+            ┌─────────────┴─────────────┐
+            │                           │
+   tool_type="builtin"        tool_type="mcp"
+            │                           │
+  ToolRegistryService       MCPToolsRegistry
+   .get_tool_by_name()       .get_tools_with_server(
+                                 server="amap",
+                                 names=["search"]
+                             )
+            │                           │
+   @tool 装饰函数            MCPToolToLangChainAdapter
+            │                           │
+            └─────────────┬─────────────┘
+                          ↓
+                  UnifiedAgentConfig.tools
+                          ↓
+                AgentConfig(tools=...)
+                          ↓
+                     Agent.__ainit__
+                          ↓
+                    self.model.bind_tools
+```
+
+### MCP 工具命名约定
+
+`tool_bindings[].tool_name` 用 `server.method` 复合名（例：`amap.search`）：
+
+- 解析：`AgentConfigService._parse_mcp_tool_name("amap.search") → ("amap", "search")`
+- 过滤：避免跨 server 命名冲突（多个 server 都提供 `search` method 时精确指定 server）
+- 兼容：tool_name 无 `.` 时（如 `search`）会记录 warning 跳过（2026-06-25 修复 `_load_tools` 旧 `if not server_name` 判断错误，应为 `if not method_name`）
+
+### 测试覆盖统计（2026-06-25 更新）
+
+| 测试文件 | 用例数 | 新增（本次） |
+| --- | --- | --- |
+| `app/tests/shared/utils/agent/test_agent_config_service.py` | 74 | +7（_parse_mcp_tool_name 4 + _load_tools MCP 路径 3）|
+| `app/tests/routers/test_agent_admin_router.py` | 35 | +5（available-tools 端点 5）|
+| `app/tests/routers/test_tool_admin_router.py` | 29 | +4（热加载缓存失效 4）|
+| `app/tests/scripts/test_seed_tools_from_source.py` | 13 | 13（新建）|
+| **合计** | **151** | **+29** |

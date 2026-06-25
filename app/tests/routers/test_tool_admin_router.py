@@ -582,3 +582,192 @@ def test_create_tool_missing_required_field_returns_422(client, admin_headers):
         },
     )
     assert response.status_code == 422
+
+
+# =============================================================================
+# P1: 写操作失效 agent_config 缓存（热加载保障）
+# =============================================================================
+
+def test_create_tool_invalidates_agent_config_cache(
+    client, admin_headers, monkeypatch
+):
+    """测试 POST /api/admin/tools 后调用 agent_config_service.invalidate_all_cache。
+
+    验证目标：
+        - 工具注册成功后，路由层通过 _invalidate_agent_config_cache 触发
+          agent_config_service.invalidate_all_cache()，强制 agent 工具列表
+          重新加载（新工具需加入可绑定池）。
+        - 缓存失效失败不应阻断写操作主流程（路由静默忽略异常）。
+
+    参数:
+        client: FastAPI TestClient fixture
+        admin_headers: admin 认证请求头
+        monkeypatch: pytest monkeypatch fixture
+
+    返回:
+        None
+    """
+    from unittest.mock import AsyncMock
+
+    async def fake_create(self, config):
+        return {
+            "name": config["name"],
+            "category": config["category"],
+            "enabled": config.get("enabled", True),
+        }
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.tool_service.ToolRegistryService.create_tool",
+        fake_create,
+    )
+
+    # 替换已注入的 agent_config_service.invalidate_all_cache 为 AsyncMock
+    invalidate_mock = AsyncMock()
+    monkeypatch.setattr(
+        client.app.state.agent_config_service,
+        "invalidate_all_cache",
+        invalidate_mock,
+    )
+
+    response = client.post(
+        "/api/admin/tools",
+        headers=admin_headers,
+        json={
+            "name": "search",
+            "category": "filesystem",
+            "module_path": "app.core.tools.BaseTools",
+            "file_path": "app/core/tools/BaseTools.py",
+        },
+    )
+    assert response.status_code == 201
+    # 写 DB 成功后必须触发缓存失效（热加载）
+    invalidate_mock.assert_awaited_once()
+
+
+def test_update_tool_invalidates_agent_config_cache(
+    client, admin_headers, monkeypatch
+):
+    """测试 PUT /api/admin/tools/{name} 后调用 agent_config_service.invalidate_all_cache。
+
+    验证目标：
+        - 工具配置（category / enabled 等）更新后，agent 工具列表缓存失效，
+          下次请求按新配置加载。
+        - 缓存失效失败不应阻断写操作主流程。
+
+    参数:
+        client: FastAPI TestClient fixture
+        admin_headers: admin 认证请求头
+        monkeypatch: pytest monkeypatch fixture
+
+    返回:
+        None
+    """
+    from unittest.mock import AsyncMock
+
+    async def fake_update(self, name, config):
+        return {"name": name, "category": config.get("category", "")}
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.tool_service.ToolRegistryService.update_tool",
+        fake_update,
+    )
+
+    invalidate_mock = AsyncMock()
+    monkeypatch.setattr(
+        client.app.state.agent_config_service,
+        "invalidate_all_cache",
+        invalidate_mock,
+    )
+
+    response = client.put(
+        "/api/admin/tools/search",
+        headers=admin_headers,
+        json={"category": "sandbox", "enabled": False},
+    )
+    assert response.status_code == 200
+    invalidate_mock.assert_awaited_once()
+
+
+def test_delete_tool_invalidates_agent_config_cache(
+    client, admin_headers, monkeypatch
+):
+    """测试 DELETE /api/admin/tools/{name} 后调用 agent_config_service.invalidate_all_cache。
+
+    验证目标：
+        - 工具删除成功后，agent 工具列表缓存失效（被删工具不应再被绑定）。
+        - 缓存失效失败不应阻断写操作主流程。
+
+    参数:
+        client: FastAPI TestClient fixture
+        admin_headers: admin 认证请求头
+        monkeypatch: pytest monkeypatch fixture
+
+    返回:
+        None
+    """
+    from unittest.mock import AsyncMock
+
+    async def fake_delete(self, name):
+        return None
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.tool_service.ToolRegistryService.delete_tool",
+        fake_delete,
+    )
+
+    invalidate_mock = AsyncMock()
+    monkeypatch.setattr(
+        client.app.state.agent_config_service,
+        "invalidate_all_cache",
+        invalidate_mock,
+    )
+
+    response = client.delete(
+        "/api/admin/tools/search", headers=admin_headers
+    )
+    assert response.status_code == 204
+    invalidate_mock.assert_awaited_once()
+
+
+def test_set_tool_enabled_invalidates_agent_config_cache(
+    client, admin_headers, monkeypatch
+):
+    """测试 PUT /api/admin/tools/{name}/enabled 后调用 agent_config_service.invalidate_all_cache。
+
+    验证目标：
+        - 工具启用/禁用状态变更后，agent 工具列表缓存失效（disabled 工具
+          不应再被加载到 agent）。
+        - 缓存失效失败不应阻断写操作主流程。
+
+    参数:
+        client: FastAPI TestClient fixture
+        admin_headers: admin 认证请求头
+        monkeypatch: pytest monkeypatch fixture
+
+    返回:
+        None
+    """
+    from unittest.mock import AsyncMock
+
+    async def fake_set_enabled(self, name, enabled):
+        return {"name": name, "enabled": enabled}
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.tool_service.ToolRegistryService.set_tool_enabled",
+        fake_set_enabled,
+    )
+
+    invalidate_mock = AsyncMock()
+    monkeypatch.setattr(
+        client.app.state.agent_config_service,
+        "invalidate_all_cache",
+        invalidate_mock,
+    )
+
+    response = client.put(
+        "/api/admin/tools/search/enabled",
+        headers=admin_headers,
+        json={"enabled": False},
+    )
+    assert response.status_code == 200
+    invalidate_mock.assert_awaited_once()

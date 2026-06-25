@@ -521,10 +521,17 @@ const groupedTools = computed(() => {
       groups[category] = []
       order.push(category)
     }
+    // 内置工具展示名 = "文件名.函数名"（如 "BaseTools.get_current_time"），
+    // 绑定时仍传函数名（与后端 tools.name 一致）。
+    const fileBase = (tool.file_path || '').split(/[/\\]/).pop() || ''
+    const fileBaseNoExt = fileBase.replace(/\.py$/i, '')
+    const showName = fileBaseNoExt
+      ? `${fileBaseNoExt}.${tool.name}`
+      : (tool.display_name || tool.name)
     groups[category].push({
       tool_name: tool.name,
       tool_type: 'builtin',
-      display_name: tool.display_name || tool.name,
+      display_name: showName,
       description: tool.description || '',
       sourceEnabled: tool.enabled,
     })
@@ -538,10 +545,13 @@ const groupedTools = computed(() => {
       order.push(category)
     }
     for (const method of server.methods || []) {
+      // MCP 工具 binding 用 "server.method" 复合名（避免跨 server 命名冲突）。
+      // 展示时为可读性，用 "server.method" 完整形式。
+      const compositeName = `${server.name}.${method.method_name}`
       groups[category].push({
-        tool_name: method.method_name,
+        tool_name: compositeName,
         tool_type: 'mcp',
-        display_name: method.method_name,
+        display_name: compositeName,
         description: method.description || '',
         sourceEnabled: method.enabled,
       })

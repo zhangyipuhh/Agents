@@ -18,8 +18,10 @@ Agent Admin Router 模块
                                                     增量添加字段
 - DELETE /api/admin/agents/{name}/config-schema/field?section=&field_name=
                                                     增量删除字段
-- GET    /api/admin/agents/{name}/tool-bindings   获取工具绑定列表
-- PUT    /api/admin/agents/{name}/tool-bindings   更新工具绑定列表（全量替换）
+- GET    /api/admin/agents/{name}/tool-bindings     获取工具绑定列表
+- PUT    /api/admin/agents/{name}/tool-bindings     更新工具绑定列表（全量替换）
+- GET    /api/admin/agents/{name}/available-tools   获取可绑定的工具列表
+                                                    （内置 + MCP）供前端绑定面板用
 
 所有路由均通过 require_admin 鉴权。
 
@@ -46,6 +48,8 @@ from app.shared.utils.agent.dynamic_schema import (
     get_agent_state_field_templates,
     get_agent_context_field_templates,
 )
+from app.shared.utils.agent.mcp_service import McpConfigService
+from app.shared.utils.agent.tool_service import ToolRegistryService
 from app.shared.utils.auth.Safety import require_admin
 
 
@@ -140,6 +144,38 @@ def _get_service(request: Request) -> AgentConfigService:
             detail="AgentConfigService not initialized",
         )
     return service
+
+
+def _get_tool_service(request: Request) -> Optional[ToolRegistryService]:
+    """从 app.state 获取 ToolRegistryService 实例。
+
+    未初始化时返回 None（不抛 500），让调用方降级处理（如返回空列表）。
+    生产对等初始化点：app/core/server.py lifespan 中
+    `app.state.tool_service = ToolRegistryService(...)`。
+
+    参数:
+        request: FastAPI Request 对象
+
+    返回:
+        ToolRegistryService 或 None
+    """
+    return getattr(request.app.state, "tool_service", None)
+
+
+def _get_mcp_service(request: Request) -> Optional[McpConfigService]:
+    """从 app.state 获取 McpConfigService 实例。
+
+    未初始化时返回 None（不抛 500）。
+    生产对等初始化点：app/core/server.py lifespan 中
+    `app.state.mcp_config_service = McpConfigService(db_pool)`。
+
+    参数:
+        request: FastAPI Request 对象
+
+    返回:
+        McpConfigService 或 None
+    """
+    return getattr(request.app.state, "mcp_config_service", None)
 
 
 def _handle_agent_error(e: Exception) -> HTTPException:
@@ -386,7 +422,9 @@ async def update_agent_tool_bindings(
     """更新 agent 的工具绑定列表（全量替换）。
 
     将 agents.tool_bindings JSONB 字段替换为请求体中的 bindings 列表，
-    写入后同步刷新缓存（tools 字段延迟重新加载）。
+    写入后由 service.update_tool_bindings 内部自动调用
+    _refresh_cache(name) 把 UnifiedAgentConfig.tools 置 None，
+    下次 chat 时通过 _load_tools 重新加载（高优先级绑定工具）。
 
     参数:
         name: 智能体名称（唯一标识）
@@ -409,4 +447,121 @@ async def update_agent_tool_bindings(
     return {
         "agent_name": name,
         "tool_bindings": result.get("tool_bindings", []),
+    }
+
+
+@router.get("/{name}/available-tools")
+async def list_available_tools(request: Request, name: str) -> Dict[str, Any]:
+    """获取指定 agent 可绑定的工具列表（内置 + MCP）。
+
+    供前端「工具绑定」面板使用，返回两类工具：
+    - builtin: 来自 ToolRegistryService.list_tools()（已注册内置工具）
+      每项含 name / display_name / category / description / module_path / file_path
+    - mcp: 来自 McpConfigService（仅 enabled 的 server）+ mcp_server_methods
+      每项含 server_name / server_display_name / method_name / display_name /
+      description / tool_name（"server.method" 复合名，用于保存到 tool_bindings）
+
+    数据源：
+    - 内置：ToolRegistryService（DB tools 表 + 装饰器注册实例）
+    - MCP：McpConfigService.list_servers() + mcp_server_methods 表
+
+    参数:
+        name: 智能体名称（仅用于日志/前端匹配，当前不强制存在）
+
+    返回:
+        Dict[str, Any]: {
+            "agent_name": str,
+            "builtin": [
+                {
+                    "name": str,            # 函数名（如 get_current_time）
+                    "display_name": str,
+                    "category": str,        # 分类（前端展示分组用）
+                    "description": str,
+                    "module_path": str,
+                    "file_path": str,       # 含文件名（如 app/core/tools/BaseTools.py）
+                    "file_basename": str,   # 文件名不含 .py（前端展示 "BaseTools.get_current_time"）
+                },
+                ...
+            ],
+            "mcp": [
+                {
+                    "server_name": str,          # server 名（如 amap）
+                    "server_display_name": str,  # server 显示名（如 "高德地图"）
+                    "method_name": str,          # method 名（如 search）
+                    "display_name": str,
+                    "description": str,
+                    "tool_name": str,            # "server.method" 复合名（如 "amap.search"）
+                    "enabled": bool,             # server 是否启用
+                },
+                ...
+            ],
+        }
+
+    异常:
+        HTTPException 500: 仅当 AgentConfigService 未初始化时（必依赖）
+    """
+    # 必依赖：AgentConfigService 未初始化时返回 500（_get_service 抛 500）
+    _get_service(request)
+
+    tool_service = _get_tool_service(request)
+    mcp_service = _get_mcp_service(request)
+
+    # 1. 内置工具
+    builtin_list: List[Dict[str, Any]] = []
+    if tool_service is not None:
+        all_tools = await tool_service.list_tools()
+        for t in all_tools:
+            file_path = t.get("file_path", "")
+            file_basename = ""
+            if file_path and "/" in file_path:
+                file_basename = file_path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+            elif file_path and "\\" in file_path:
+                file_basename = file_path.rsplit("\\", 1)[-1].rsplit(".", 1)[0]
+            elif file_path:
+                file_basename = file_path.rsplit(".", 1)[0]
+            builtin_list.append({
+                "name": t.get("name", ""),
+                "display_name": t.get("display_name") or t.get("name", ""),
+                "category": t.get("category", ""),
+                "description": t.get("description") or "",
+                "module_path": t.get("module_path", ""),
+                "file_path": file_path,
+                "file_basename": file_basename,
+            })
+
+    # 2. MCP 工具（按 server 展开为 method 列表）
+    mcp_list: List[Dict[str, Any]] = []
+    if mcp_service is not None:
+        servers = await mcp_service.list_servers()
+        for server in servers:
+            if not server.get("enabled", True):
+                continue
+            server_name = server.get("name", "")
+            server_display = server.get("display_name") or server_name
+            try:
+                methods = await mcp_service.list_methods(server_name)
+            except Exception as e:
+                logger.warning(
+                    "Failed to list methods for MCP server '%s': %s",
+                    server_name, e,
+                )
+                methods = []
+            for method in methods:
+                if not method.get("enabled", True):
+                    continue
+                method_name = method.get("method_name", "")
+                mcp_list.append({
+                    "server_name": server_name,
+                    "server_display_name": server_display,
+                    "method_name": method_name,
+                    "display_name": method.get("display_name") or method_name,
+                    "description": method.get("description") or "",
+                    "tool_name": f"{server_name}.{method_name}",
+                    "enabled": True,
+                })
+
+    return {
+        "agent_name": name,
+        "builtin": builtin_list,
+        "mcp": mcp_list,
     }
