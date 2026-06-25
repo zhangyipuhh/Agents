@@ -451,10 +451,6 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 
 **测试**: `app/tests/shared/test_seed_mcp_servers.py`（4 用例：可导入 / 表非空跳过 / YAML 导入端到端 / YAML 为空不抛异常）
 
-### _load_yaml_seed str→Path 修复
-
-### McpConfigService JSONB 防御性反序列化
-
 ### mcp_server_configs 表
 
 MCP 服务器配置表，从 YAML 迁移至数据库管理。
@@ -1516,17 +1512,16 @@ map_router 实现：
 
 ### 客户端状态显示
 
-**`web/Agent/src/components/SubAgentCard.vue`** + **`web/Agent/src/components/ToolCallCard.vue`** 改造：
+**`web/Agent/src/components/SubAgentCard.vue`** + **`web/Agent/src/components/ToolCallCard.vue`** 状态映射：
 
-- 新增 ``status === 'stopped_by_user'`` 状态映射：显示"已中止"文本
-- 新增 CSS class ``.stopped_by_user``：橙色徽章（区别于 success 绿色、error 红色、running 紫色）
+- `status === 'stopped_by_user'` 状态映射：显示"已中止"文本
+- CSS class `.stopped_by_user`：橙色徽章（区别于 success 绿色、error 红色、running 紫色）
 - stopped_by_user 状态**静态显示**（无 pulse 动画），与 running 区分
 
-**`web/Agent/src/utils/sseParser.js`** 改造：
+**`web/Agent/src/utils/sseParser.js`** 状态判定：
 
-- `updateSubAgentFromCustomEvent` 中 tool_stop 事件状态判定逻辑扩展：
-  - 优先级（向后兼容）：`stopped_by_user` > `error` / `failure` > 其他（含无 status / `success`）→ success
-  - 旧事件无 status 字段默认 success（向后兼容普通工具 tool_stop）
+- `updateSubAgentFromCustomEvent` 中 tool_stop 事件状态判定逻辑优先级（向后兼容）：`stopped_by_user` > `error` / `failure` > 其他（含无 status / `success`）→ success
+- 旧事件无 status 字段默认 success（向后兼容普通工具 tool_stop）
 
 ### 测试覆盖
 
