@@ -313,11 +313,14 @@ class AgentConfigService:
         # 1. 默认配置路径
         if not agent_name:
             if self._default_config is not None and self._default_config.tools is not None:
+                logger.info("[get_agent_config] return cached default config (tools already loaded, count=%d)", len(self._default_config.tools or []))
                 return self._default_config
+            logger.info("[get_agent_config] loading default config from DB")
             config = await self._load_from_db(None)
             if config.tools is None:
                 async with self._tools_lock:
                     if config.tools is None:
+                        logger.info("[get_agent_config] default config tools is None, triggering _load_tools")
                         config.tools = await self._load_tools(config._agent_row)
             self._default_config = config
             return config
@@ -325,19 +328,23 @@ class AgentConfigService:
         # 2. 命名 agent 路径：先查缓存
         if agent_name in self._cache:
             config = self._cache[agent_name]
+            logger.info("[get_agent_config] cache hit for agent=%s, tools_loaded=%s", agent_name, config.tools is not None)
             if config.tools is None:
                 async with self._tools_lock:
                     if config.tools is None:
+                        logger.info("[get_agent_config] agent=%s tools is None, triggering _load_tools", agent_name)
                         config.tools = await self._load_tools(config._agent_row)
             return config
 
         # 3. 未命中缓存：从 DB 加载并写入缓存
+        logger.info("[get_agent_config] cache miss for agent=%s, loading from DB", agent_name)
         config = await self._load_from_db(agent_name)
         async with self._cache_lock:
             self._cache[agent_name] = config
         if config.tools is None:
             async with self._tools_lock:
                 if config.tools is None:
+                    logger.info("[get_agent_config] agent=%s tools is None after DB load, triggering _load_tools", agent_name)
                     config.tools = await self._load_tools(config._agent_row)
         return config
 
@@ -479,50 +486,97 @@ class AgentConfigService:
         异常:
             不主动抛出异常；工具加载失败时记录日志并跳过
         """
+        agent_name = agent_row.get("name", "<unknown>")
         tools: List[Any] = []
 
         # 1. 加载直接绑定的工具（高优先级）
         tool_bindings = self._decode_jsonb(agent_row.get("tool_bindings"), [])
+        logger.info(
+            "[_load_tools] agent=%s | tool_bindings count=%d | _tool_service is None=%s | _mcp_registry is None=%s",
+            agent_name,
+            len(tool_bindings),
+            self._tool_service is None,
+            self._mcp_registry is None,
+        )
+        if tool_bindings:
+            logger.info("[_load_tools] agent=%s | tool_bindings raw=%s", agent_name, tool_bindings)
+
         for binding in tool_bindings:
             if not binding.get("enabled", True):
+                logger.info("[_load_tools] agent=%s | skip disabled binding=%s", agent_name, binding)
                 continue
             tool_name = binding.get("tool_name")
             if not tool_name:
-                logger.warning("Skipping tool binding without tool_name: %s", binding)
+                logger.warning("[_load_tools] agent=%s | skip binding without tool_name: %s", agent_name, binding)
                 continue
             tool_type = binding.get("tool_type", "builtin")
+            logger.info(
+                "[_load_tools] agent=%s | processing binding: tool_name=%s, tool_type=%s, enabled=%s",
+                agent_name, tool_name, tool_type, binding.get("enabled", True),
+            )
             if tool_type == "builtin" and self._tool_service:
                 tool_info = await self._tool_service.get_tool_by_name(tool_name)
                 if tool_info and tool_info.tool_instance:
                     tools.append(tool_info.tool_instance)
+                    logger.info(
+                        "[_load_tools] agent=%s | loaded builtin tool: %s (instance=%s)",
+                        agent_name, tool_name, type(tool_info.tool_instance).__name__,
+                    )
                 else:
                     logger.warning(
-                        "Builtin tool '%s' not found or has no instance", tool_name
+                        "[_load_tools] agent=%s | builtin tool '%s' not found or has no instance (tool_info=%s)",
+                        agent_name, tool_name, tool_info,
                     )
             elif tool_type == "mcp" and self._mcp_registry:
                 # 解析 server.method 复合名
                 server_name, method_name = self._parse_mcp_tool_name(tool_name)
+                logger.info(
+                    "[_load_tools] agent=%s | parsed mcp tool: server=%s, method=%s",
+                    agent_name, server_name, method_name,
+                )
                 if not method_name:
                     logger.warning(
-                        "MCP tool binding '%s' missing server prefix (expect 'server.method')",
-                        tool_name,
+                        "[_load_tools] agent=%s | MCP tool binding '%s' missing server prefix (expect 'server.method')",
+                        agent_name, tool_name,
                     )
                     continue
                 # get_tools_with_server 是同步方法（内部用线程池执行异步代码）
                 mcp_tools = self._mcp_registry.get_tools_with_server(
                     server=server_name, names=[method_name] if method_name else None
                 )
+                logger.info(
+                    "[_load_tools] agent=%s | mcp_registry returned %d tool(s) for server=%s, method=%s",
+                    agent_name, len(mcp_tools), server_name, method_name,
+                )
                 for adapted_tool, _, _ in mcp_tools:
                     tools.append(adapted_tool)
+            else:
+                logger.warning(
+                    "[_load_tools] agent=%s | skip binding: tool_type=%s, _tool_service=%s, _mcp_registry=%s",
+                    agent_name, tool_type, self._tool_service is not None, self._mcp_registry is not None,
+                )
 
         # 2. 如果没有直接绑定，回退到 mcp_tags 过滤（保持现有逻辑）
         if not tools:
             mcp_tags = self._decode_jsonb(agent_row.get("mcp_tags"), [])
+            logger.info(
+                "[_load_tools] agent=%s | no tools from bindings, fallback to mcp_tags=%s",
+                agent_name, mcp_tags,
+            )
             if mcp_tags and self._mcp_registry:
                 mcp_tools = self._mcp_registry.get_tools_with_server(tags=mcp_tags)
+                logger.info(
+                    "[_load_tools] agent=%s | mcp_tags fallback returned %d tool(s)",
+                    agent_name, len(mcp_tools),
+                )
                 for adapted_tool, _, _ in mcp_tools:
                     tools.append(adapted_tool)
 
+        tool_names = [getattr(t, "name", str(t)) for t in tools]
+        logger.info(
+            "[_load_tools] agent=%s | completed: total=%d, tool_names=%s",
+            agent_name, len(tools), tool_names,
+        )
         return tools
 
     @staticmethod

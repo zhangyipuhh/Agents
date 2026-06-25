@@ -24,6 +24,7 @@ import {
 } from '../utils/api.js'
 import McpServerManager from './McpServerManager.vue'
 import AgentManager from './AgentManager.vue'
+import ToolManager from './ToolManager.vue'
 
 /**
  * 组件属性定义
@@ -1132,6 +1133,11 @@ watch(() => props.visible, (newVal) => {
               <!-- 智能体管理（admin） -->
               <div v-show="activeTab === 'agent-management'">
                 <AgentManager />
+              </div>
+
+              <!-- 工具管理（admin） -->
+              <div v-show="activeTab === 'tool-management'">
+                <ToolManager />
               </div>
             </div>
           </div>

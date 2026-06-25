@@ -184,17 +184,31 @@ async def lifespan(app: FastAPI):
     if hasattr(app.state, "agent_config_service") and app.state.agent_config_service:
         try:
             # 注入依赖到 AgentConfigService
+            tool_service_injected = False
             if hasattr(app.state, "tool_service") and app.state.tool_service:
                 app.state.agent_config_service.set_tool_service(app.state.tool_service)
+                tool_service_injected = True
+                logging.info("[lifespan] ToolRegistryService injected into AgentConfigService")
+            else:
+                logging.warning("[lifespan] ToolRegistryService not available, skipping injection")
+
+            mcp_registry_injected = False
             if hasattr(app.state, "mcp_registry") and app.state.mcp_registry:
                 app.state.agent_config_service.set_mcp_registry(app.state.mcp_registry)
+                mcp_registry_injected = True
+                logging.info("[lifespan] MCPToolsRegistry injected into AgentConfigService")
+            else:
+                logging.warning("[lifespan] MCPToolsRegistry not available, skipping injection")
 
             # 预加载 agent 配置缓存（仅 DB 配置，tools=None 延迟加载，保持 MCP 懒加载）
             await app.state.agent_config_service.preload_all()
             await app.state.mcp_config_service.preload_all()
-            logging.info("All config caches preloaded (tools lazy-loaded on first chat)")
+            logging.info(
+                "[lifespan] All config caches preloaded (tool_service=%s, mcp_registry=%s)",
+                tool_service_injected, mcp_registry_injected,
+            )
         except Exception as e:
-            logging.warning("Failed to preload config caches: %s", e, exc_info=True)
+            logging.warning("[lifespan] Failed to preload config caches: %s", e, exc_info=True)
 
     # 初始化全局 Skill 系统（懒加载单例；agent 维度实例在 _llm_call 中按需创建）
     from app.core.skills.service import SkillsService

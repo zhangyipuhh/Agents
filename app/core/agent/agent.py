@@ -157,6 +157,14 @@ class Agent:
         )
         # 获取审计工具列表,创建工具节点，用于执行工具调用
         self.tools, self.tool_node = self._config.get_tools()
+        tool_names = [getattr(t, "name", str(t)) for t in (self.tools or [])]
+        logging.info(
+            "[Agent.__ainit__] agent=%s | tools_count=%d | tool_names=%s | tool_node is None=%s",
+            getattr(self, "agent_name", "<unknown>"),
+            len(self.tools or []),
+            tool_names,
+            self.tool_node is None,
+        )
 
         # 构建工具绑定参数，根据配置决定是否传入 parallel_tool_calls
         bind_kwargs = {"tools": self.tools}
@@ -166,6 +174,11 @@ class Agent:
 
         # 预绑定工具到模型，避免每次调用时重复绑定
         self.llm = self.model.bind_tools(**bind_kwargs)
+        logging.info(
+            "[Agent.__ainit__] agent=%s | bind_kwargs keys=%s",
+            getattr(self, "agent_name", "<unknown>"),
+            list(bind_kwargs.keys()),
+        )
 
         # 创建摘要模型，绑定最大生成 token 数
         self.summarization_model = self.model.bind(max_tokens=self._max_summary_tokens)
