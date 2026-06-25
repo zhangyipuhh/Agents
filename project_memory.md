@@ -1595,6 +1595,8 @@ map_router 实现：
 - **`tests/features/*/`**：9 个 Agent 冒烟测试（config 可导入、提示词非空、tools 可导入、router 已注册到 `/api/*` 路径）
 - **`tests/features/sandbox_agent/`**：沙箱 Agent 专项测试
   - `test_docker_backend.py`：DockerSandboxBackend 容器生命周期、命令执行、文件操作、异常处理
+- **`tests/scripts/`**：项目根 `scripts/` 目录的离线脚本测试
+  - `test_seed_tools_from_source.py`：13 用例（AST 装饰器识别 / description 提取 / 路径推断 / 分类推断 / scan_all_tools 端到端 / SQL+JSON 转义 / render_sql upsert / 空列表降级 / CLI --dry-run / CLI --output），通过 `monkeypatch` 隔离 `TOOL_ROOTS` / `PROJECT_ROOT` 到 `tmp_path`，不污染真实工程文件
 - **`tests/integration/`**：端到端集成测试
   - `test_end_to_end_auth.py`：认证流程（注册→登录→validate→logout）
   - `test_agent_chat_e2e.py`：`/api/agent/chat` 端到端测试（2 用例：SSE 流式响应正常返回 / 未知 agent 返回 404）
@@ -1957,7 +1959,8 @@ app/shared/utils/agent/agent_config_service.py
 | `preload_all()`                                                  | 预加载所有启用 agent 配置到 `_cache`（tools=None 延迟加载）；启动时由 lifespan 调用；单个 agent 加载失败记录 warning 并跳过                                                         |
 | `get_agent_config(agent_name)`                                   | 异步加载完整配置（带缓存 + 工具延迟加载）：1) agent_name 为空查 `_default_config` 缓存；2) 命名 agent 先查 `_cache`；3) 未命中调 `_load_from_db` 写入缓存；缓存命中但 tools=None 时用 `_tools_lock` 保护触发 `_load_tools`（double-check 模式）。**agent_name 为空时返回框架默认配置（AgentState/AgentContext 基类，system_prompt 为空由 Agent 内部回退到 BASE_SYSTEM_PROMPT）** |
 | `_load_from_db(agent_name)`                                      | 从 DB 加载单个 agent 配置（不含工具实例，tools=None）；原 `get_agent_config` 的 DB 加载逻辑抽取为私有方法；返回的 `_agent_row` 保存原始 DB 行字典                                                                     |
-| `_load_tools(agent_row)`                                         | 延迟加载工具实例：优先从 `tool_bindings` JSONB 加载（builtin 走 `_tool_service.get_tool_by_name`，mcp 走 `_mcp_registry.get_tools_with_server`）；`tool_bindings` 为空时回退到 `mcp_tags` 过滤 MCP 工具；依赖未注入时返回 [] |
+| `_load_tools(agent_row)`                                         | 延迟加载工具实例：优先从 `tool_bindings` JSONB 加载（builtin 走 `_tool_service.get_tool_by_name`，mcp 走 `_mcp_registry.get_tools_with_server`，**mcp 绑定走 `server.method` 复合名解析**——`_parse_mcp_tool_name` 拆出 server / method，调 `get_tools_with_server(server=, names=[method])`；无 method 即无 server 前缀时记录 warning 并跳过）；`tool_bindings` 为空时回退到 `mcp_tags` 过滤 MCP 工具；依赖未注入时返回 [] |
+| `_parse_mcp_tool_name(tool_name)`                                | 静态方法解析 MCP 工具绑定的 `server.method` 复合名：`"amap.search"` → `("amap", "search")`；`"search"`（无 `.`）→ `("search", "")`；`"amap.sub.search"` → `("amap", "sub.search")`（仅按第一个 `.` 分割）；`""` → `("", "")`。调用方应通过 `if not method_name` 判断是否缺少 server 前缀 |
 | `list_agents()`                                                  | 异步列出所有启用智能体（仅返回 name / display_name / description 摘要）                                                                                                            |
 | `create_agent(config)`                                           | Admin 创建智能体（先 SELECT 检查重名，再 INSERT INTO agents RETURNING *）；写 DB 后调 `_refresh_cache(name)` 同步缓存                                                              |
 | `delete_agent(agent_name)`                                       | Admin 删除智能体；写 DB 后调 `_invalidate_cache(name)` 使缓存失效                                                                                                                  |
@@ -1979,7 +1982,7 @@ app/shared/utils/agent/agent_config_service.py
 - **延迟加载语义**：`tools=None` 表示工具尚未加载，`tools=[]` 表示已加载但无工具绑定；首次 `get_agent_config` 时才触发 `_load_tools`，保持 MCP 懒加载语义
 - **double-check 模式**：`get_agent_config` 命中缓存但 `tools=None` 时，用 `_tools_lock` 保护触发 `_load_tools`，防止并发请求重复加载工具
 - **缓存同步策略**：写方法（create / update / bind 等）写 DB 后调 `_refresh_cache` 同步缓存；delete / disable 调 `_invalidate_cache` 使缓存失效；MCP 变更调 `invalidate_all_cache` 清空全部
-- **工具加载优先级**：`_load_tools` 优先从 `tool_bindings` JSONB 加载（builtin 走 `_tool_service`，mcp 走 `_mcp_registry`）；`tool_bindings` 为空时回退到 `mcp_tags` 过滤 MCP 工具
+- **工具加载优先级**：`_load_tools` 优先从 `tool_bindings` JSONB 加载（builtin 走 `_tool_service`，mcp 走 `_mcp_registry`，**mcp 工具名约定 `server.method` 复合格式**——通过 `_parse_mcp_tool_name` 拆解后用 `get_tools_with_server(server=, names=[method])` 过滤加载）；`tool_bindings` 为空时回退到 `mcp_tags` 过滤 MCP 工具
 - **无默认工具**：基础工具需预先注册到 `tools` 表并通过 `tool_bindings` 绑定才会加载；`tool_bindings` 和 `mcp_tags` 都为空时返回空列表，不再隐式注入任何默认工具
 - **AgentConfig.get_tools() 依赖外部传入**：`AgentConfig.get_tools()` 完全依赖外部传入的 `self.tools`（由 `AgentConfigService._load_tools` 加载并写入 `UnifiedAgentConfig.tools`），自身不做任何工具发现/加载逻辑
 - **MCP 工具加载**：`MCPToolsRegistry.get_tools_with_server` 为同步方法（内部用线程池），`_load_tools` 直接调用无需 await
@@ -2006,8 +2009,8 @@ app/shared/utils/agent/agent_config_service.py
 
 ### 测试
 
-- 路径：`app/tests/shared/utils/agent/test_agent_config_service.py`（63 用例）
-- 覆盖：模块可导入 / 从数据库和 AGENTS.md 加载完整配置 / agent 不存在抛 AgentNotFoundError / agent 禁用抛 AgentNotFoundError / list_agents 只返回启用智能体 / 加载 skill 绑定 / create_agent 插入并返回新行 / bind_tool 执行 upsert / bind_skill 执行 upsert / **JSONB 防御性反序列化** / **三层嵌套 config_schema 解析** / **set_tool_service / set_mcp_registry 依赖注入** / **preload_all 预加载** / **_refresh_cache / _invalidate_cache / invalidate_all_cache 缓存同步** / **get_agent_config 缓存命中与未命中路径** / **_load_tools 内置工具 / MCP 工具 / mcp_tags 回退 / 空绑定** / **update_tool_bindings 更新 DB 与缓存** / **写方法缓存同步验证** / **UnifiedAgentConfig 新字段（tools / _agent_row）**
+- 路径：`app/tests/shared/utils/agent/test_agent_config_service.py`（74 用例）
+- 覆盖：模块可导入 / 从数据库和 AGENTS.md 加载完整配置 / agent 不存在抛 AgentNotFoundError / agent 禁用抛 AgentNotFoundError / list_agents 只返回启用智能体 / 加载 skill 绑定 / create_agent 插入并返回新行 / bind_tool 执行 upsert / bind_skill 执行 upsert / **JSONB 防御性反序列化** / **三层嵌套 config_schema 解析** / **set_tool_service / set_mcp_registry 依赖注入** / **preload_all 预加载** / **_refresh_cache / _invalidate_cache / invalidate_all_cache 缓存同步** / **get_agent_config 缓存命中与未命中路径** / **_load_tools 内置工具 / MCP 工具 / mcp_tags 回退 / 空绑定** / **_parse_mcp_tool_name 复合名解析 + _load_tools MCP server.method 绑定加载** / **update_tool_bindings 更新 DB 与缓存** / **写方法缓存同步验证** / **UnifiedAgentConfig 新字段（tools / _agent_row）**
 - 异步测试使用 `asyncio.run()` 包装（非 pytest-asyncio）
 - Mock 使用 `unittest.mock.AsyncMock` 和 `MagicMock`；写方法测试通过 `service._refresh_cache = AsyncMock()` 隔离缓存同步逻辑
 

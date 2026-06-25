@@ -1,3 +1,7 @@
+## Design Rules
+- High cohesion and low coupling; unified entry/exit points, unified configuration entry, unified preloading—make everything configurable whenever possible.
+- Database-intensive loading operations are completed during service startup, with configurations loaded into memory simultaneously; modifications and insertions must synchronize both memory and database.
+
 ## use subagents
 Use as many subagents  as possible to speed up
 ## use skills rule
