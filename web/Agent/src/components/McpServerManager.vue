@@ -77,6 +77,26 @@
             <label>Read Timeout（秒）</label>
             <input type="number" v-model.number="formData.read_timeout" />
           </div>
+          <div class="form-row">
+            <label>Connect Timeout（秒）</label>
+            <input type="number" v-model.number="formData.connect_timeout" />
+          </div>
+          <div class="form-row" v-if="formData.type === 'stdio'">
+            <label>Args（JSON 数组）</label>
+            <textarea v-model="argsText" rows="3" placeholder='["--port", "8080"]'></textarea>
+          </div>
+          <div class="form-row" v-if="formData.type === 'stdio'">
+            <label>Env（JSON 对象）</label>
+            <textarea v-model="envText" rows="3" placeholder='{"NODE_ENV": "production"}'></textarea>
+          </div>
+          <div class="form-row" v-if="formData.type === 'sse' || formData.type === 'http'">
+            <label>Headers（JSON 对象）</label>
+            <textarea v-model="headersText" rows="3" placeholder='{"Authorization": "Bearer xxx"}'></textarea>
+          </div>
+          <div class="form-row">
+            <label>Tool Config（JSON）</label>
+            <textarea v-model="toolConfigText" rows="6" placeholder='{"enable_injection": true, ...}'></textarea>
+          </div>
           <div class="form-actions">
             <button class="save-btn" @click="saveServer">保存</button>
             <button class="cancel-btn" @click="hideForm">取消</button>
@@ -92,6 +112,21 @@
           </div>
           <div class="detail-row" v-if="selectedServer.tags?.length">
             <span>Tags:</span> {{ selectedServer.tags.join(', ') }}
+          </div>
+          <div class="detail-row">
+            <span>Connect Timeout:</span> {{ selectedServer.connect_timeout }}
+          </div>
+          <div class="detail-row" v-if="selectedServer.args?.length">
+            <span>Args:</span> {{ JSON.stringify(selectedServer.args) }}
+          </div>
+          <div class="detail-row" v-if="selectedServer.env && Object.keys(selectedServer.env).length">
+            <span>Env:</span> {{ JSON.stringify(selectedServer.env) }}
+          </div>
+          <div class="detail-row" v-if="selectedServer.headers && Object.keys(selectedServer.headers).length">
+            <span>Headers:</span> {{ JSON.stringify(selectedServer.headers) }}
+          </div>
+          <div class="detail-row" v-if="selectedServer.tool_config">
+            <span>Tool Config:</span> {{ JSON.stringify(selectedServer.tool_config) }}
           </div>
           <div class="detail-row">
             <span>状态:</span>
@@ -157,6 +192,15 @@ const formVisible = ref(false)
 const editingServer = ref(null)
 const commandText = ref('')
 const tagsText = ref('')
+const argsText = ref('[]')
+const envText = ref('{}')
+const headersText = ref('{}')
+const toolConfigText = ref(JSON.stringify({
+  enable_injection: true,
+  default_param_keys: [],
+  hidden_param_keys: [],
+  unwrap_result: false,
+}, null, 2))
 
 const formData = ref({
   name: '',
@@ -165,6 +209,7 @@ const formData = ref({
   url: '',
   timeout: 5,
   read_timeout: 300,
+  connect_timeout: 10,
 })
 
 onMounted(loadServers)
@@ -210,9 +255,19 @@ function showNewForm() {
     url: '',
     timeout: 5,
     read_timeout: 300,
+    connect_timeout: 10,
   }
   commandText.value = ''
   tagsText.value = ''
+  argsText.value = '[]'
+  envText.value = '{}'
+  headersText.value = '{}'
+  toolConfigText.value = JSON.stringify({
+    enable_injection: true,
+    default_param_keys: [],
+    hidden_param_keys: [],
+    unwrap_result: false,
+  }, null, 2)
   formVisible.value = true
 }
 
@@ -229,9 +284,19 @@ function editServer(server) {
     url: server.url || '',
     timeout: server.timeout || 5,
     read_timeout: server.read_timeout || 300,
+    connect_timeout: server.connect_timeout || 10,
   }
   commandText.value = server.command ? JSON.stringify(server.command) : ''
   tagsText.value = (server.tags || []).join(', ')
+  argsText.value = JSON.stringify(server.args || [])
+  envText.value = JSON.stringify(server.env || {})
+  headersText.value = JSON.stringify(server.headers || {})
+  toolConfigText.value = JSON.stringify(server.tool_config || {
+    enable_injection: true,
+    default_param_keys: [],
+    hidden_param_keys: [],
+    unwrap_result: false,
+  }, null, 2)
   formVisible.value = true
 }
 
@@ -254,12 +319,31 @@ async function saveServer() {
       .split(',')
       .map((t) => t.trim())
       .filter(Boolean)
+
+    let parsedArgs = []
+    let parsedEnv = {}
+    let parsedHeaders = {}
+    let parsedToolConfig = {}
+    try {
+      parsedArgs = argsText.value ? JSON.parse(argsText.value) : []
+      parsedEnv = envText.value ? JSON.parse(envText.value) : {}
+      parsedHeaders = headersText.value ? JSON.parse(headersText.value) : {}
+      parsedToolConfig = toolConfigText.value ? JSON.parse(toolConfigText.value) : {}
+    } catch (err) {
+      alert('JSON 格式错误: ' + err.message)
+      return
+    }
+
     const payload = {
       ...formData.value,
       tags,
       command: formData.value.type === 'stdio' && commandText.value
         ? JSON.parse(commandText.value)
         : null,
+      args: parsedArgs,
+      env: parsedEnv,
+      headers: parsedHeaders,
+      tool_config: parsedToolConfig,
     }
     if (editingServer.value) {
       await updateMcpServer(editingServer.value.name, payload)
@@ -496,12 +580,17 @@ async function onToggleMethod(method, enabled, event) {
   margin-bottom: 4px;
 }
 .form-row input,
-.form-row select {
+.form-row select,
+.form-row textarea {
   width: 100%;
   padding: 6px;
   border: 1px solid #d1d5db;
   border-radius: 4px;
   box-sizing: border-box;
+  font-family: inherit;
+}
+.form-row textarea {
+  resize: vertical;
 }
 .form-actions {
   display: flex;

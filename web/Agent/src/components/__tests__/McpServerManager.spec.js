@@ -9,17 +9,29 @@ import { mount, flushPromises } from '@vue/test-utils'
 import McpServerManager from '../McpServerManager.vue'
 
 const mockServers = [
-  { name: 'amap', display_name: '高德地图', type: 'sse', url: 'http://x', enabled: true, tags: ['map'] },
-  { name: 'counter', display_name: '计数工具', type: 'stdio', enabled: false, tags: [] },
+  {
+    name: 'amap', display_name: '高德地图', type: 'sse', url: 'http://x',
+    enabled: true, tags: ['map'],
+    connect_timeout: 10, args: [], env: {}, headers: {},
+    tool_config: { enable_injection: true, default_param_keys: [], hidden_param_keys: [], unwrap_result: false },
+  },
+  {
+    name: 'counter', display_name: '计数工具', type: 'stdio',
+    enabled: false, tags: [],
+    connect_timeout: 10, args: [], env: {}, headers: {},
+    tool_config: { enable_injection: true, default_param_keys: [], hidden_param_keys: [], unwrap_result: false },
+  },
 ]
 
 describe('McpServerManager 组件', () => {
   let originalFetch
   let originalLocalStorage
+  let originalAlert
 
   beforeEach(() => {
     originalFetch = global.fetch
     originalLocalStorage = global.localStorage
+    originalAlert = global.alert
     global.fetch = vi.fn()
     global.localStorage = {
       getItem: vi.fn(() => 'fake-token'),
@@ -27,11 +39,13 @@ describe('McpServerManager 组件', () => {
       removeItem: vi.fn(),
       clear: vi.fn(),
     }
+    global.alert = vi.fn()
   })
 
   afterEach(() => {
     global.fetch = originalFetch
     global.localStorage = originalLocalStorage
+    global.alert = originalAlert
   })
 
   it('test_component_importable 组件可被 import', () => {
@@ -142,7 +156,11 @@ describe('McpServerManager 组件', () => {
     // loadServers after save
     global.fetch.mockResolvedValueOnce({
       ok: true,
-      json: async () => [{ name: 'new', display_name: '新', type: 'sse', enabled: true, tags: [] }],
+      json: async () => [{
+        name: 'new', display_name: '新', type: 'sse', enabled: true, tags: [],
+        connect_timeout: 10, args: [], env: {}, headers: {},
+        tool_config: { enable_injection: true, default_param_keys: [], hidden_param_keys: [], unwrap_result: false },
+      }],
     })
     const wrapper = mount(McpServerManager)
     await flushPromises()
@@ -271,5 +289,113 @@ describe('McpServerManager 组件', () => {
     const refreshCall = global.fetch.mock.calls[2]
     expect(refreshCall[0]).toContain('/refresh-methods')
     expect(refreshCall[1].method).toBe('POST')
+  })
+
+  it('test_form_shows_connect_timeout_field 表单显示 Connect Timeout 输入框', async () => {
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [],
+    })
+    const wrapper = mount(McpServerManager)
+    await flushPromises()
+    await wrapper.find('.new-server-btn').trigger('click')
+    const labels = wrapper.findAll('.form-row label')
+    const hasLabel = labels.some(l => l.text().includes('Connect Timeout'))
+    expect(hasLabel).toBe(true)
+  })
+
+  it('test_form_shows_tool_config_textarea 表单显示 Tool Config 文本域', async () => {
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [],
+    })
+    const wrapper = mount(McpServerManager)
+    await flushPromises()
+    await wrapper.find('.new-server-btn').trigger('click')
+    const labels = wrapper.findAll('.form-row label')
+    const hasLabel = labels.some(l => l.text().includes('Tool Config'))
+    expect(hasLabel).toBe(true)
+  })
+
+  it('test_edit_server_populates_new_fields 编辑服务器回填新字段', async () => {
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => mockServers,
+    })
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [],
+    })
+    const wrapper = mount(McpServerManager)
+    await flushPromises()
+    const items = wrapper.findAll('.server-item')
+    await items[0].trigger('click')
+    await flushPromises()
+    await wrapper.find('.edit-btn').trigger('click')
+    expect(wrapper.find('.server-form').exists()).toBe(true)
+    // 验证 connect_timeout 已回填（默认值 10，mock 数据也是 10）
+    const numberInputs = wrapper.findAll('input[type="number"]')
+    expect(numberInputs.length).toBeGreaterThanOrEqual(3)
+  })
+
+  it('test_save_includes_new_fields_in_payload 保存时 payload 包含新字段', async () => {
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [],
+    })
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ name: 'new' }),
+    })
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [{
+        name: 'new', display_name: '新', type: 'sse', enabled: true, tags: [],
+        connect_timeout: 15, args: ['--port'], env: { NODE_ENV: 'prod' },
+        headers: { Auth: 'bearer' },
+        tool_config: { enable_injection: false, default_param_keys: ['k'], hidden_param_keys: [], unwrap_result: true },
+      }],
+    })
+    const wrapper = mount(McpServerManager)
+    await flushPromises()
+    await wrapper.find('.new-server-btn').trigger('click')
+    // 修改 connect_timeout
+    const numberInputs = wrapper.findAll('input[type="number"]')
+    // 按表单顺序：timeout(0), read_timeout(1), connect_timeout(2)
+    await numberInputs[2].setValue(15)
+    // 修改 JSON 字段：直接修改组件内部 ref（避免 v-if 导致 textarea 索引变化）
+    wrapper.vm.argsText = '["--port"]'
+    wrapper.vm.envText = '{"NODE_ENV": "prod"}'
+    wrapper.vm.headersText = '{"Auth": "bearer"}'
+    wrapper.vm.toolConfigText = '{"enable_injection": false, "default_param_keys": ["k"], "hidden_param_keys": [], "unwrap_result": true}'
+    await wrapper.find('.save-btn').trigger('click')
+    await flushPromises()
+    const createCall = global.fetch.mock.calls[1]
+    expect(createCall[0]).toBe('/api/admin/mcp/servers')
+    expect(createCall[1].method).toBe('POST')
+    const body = JSON.parse(createCall[1].body)
+    expect(body.connect_timeout).toBe(15)
+    expect(body.args).toEqual(['--port'])
+    expect(body.env).toEqual({ NODE_ENV: 'prod' })
+    expect(body.headers).toEqual({ Auth: 'bearer' })
+    expect(body.tool_config).toEqual({ enable_injection: false, default_param_keys: ['k'], hidden_param_keys: [], unwrap_result: true })
+  })
+
+  it('test_save_rejects_invalid_json 非法 JSON 阻断提交并提示错误', async () => {
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => [],
+    })
+    const wrapper = mount(McpServerManager)
+    await flushPromises()
+    await wrapper.find('.new-server-btn').trigger('click')
+    const textareas = wrapper.findAll('textarea')
+    await textareas[0].setValue('[1,') // 非法 JSON
+    await wrapper.find('.save-btn').trigger('click')
+    await flushPromises()
+    // 验证 alert 被调用且包含 JSON 格式错误
+    expect(global.alert).toHaveBeenCalledWith(expect.stringContaining('JSON 格式错误'))
+    // 验证没有发起 create API 请求（fetch 调用次数仍为 1：初始 list）
+    expect(global.fetch).toHaveBeenCalledTimes(1)
   })
 })

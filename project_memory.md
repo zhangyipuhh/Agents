@@ -487,6 +487,16 @@ MCP 服务器配置表，从 YAML 迁移至数据库管理。
 
 幂等迁移：`ADD COLUMN IF NOT EXISTS`（PostgreSQL 9.6+），兼容已建库。迁移脚本位于 `app/migrations/init_all_tables.sql` 末尾（COMMIT 之前）。
 
+### 前端 MCP 管理页面
+
+`web/Agent/src/components/McpServerManager.vue` 提供 MCP server 的增删改查 UI。
+
+**表单字段**：名称、显示名、类型、URL、Command、Tags、Timeout、Read Timeout、Connect Timeout、Args（JSON）、Env（JSON）、Headers（JSON）、Tool Config（JSON）。
+
+- Args/Env 仅在类型为 `stdio` 时显示。
+- Headers 仅在类型为 `sse`/`http` 时显示。
+- Tool Config 支持配置 `enable_injection`/`default_param_keys`/`hidden_param_keys`/`unwrap_result`。
+
 ### mcp_server_methods 表
 
 MCP 服务器方法列表表，用于运行时方法管理。

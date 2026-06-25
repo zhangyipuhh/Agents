@@ -236,6 +236,55 @@ describe('MCP 管理 API', () => {
     await expect(toggleMcpMethod('amap', 'search', false)).rejects.toThrow(/method not found/)
   })
 
+  it('test_create_mcp_server_posts_complex_config 透传含新字段的 payload', async () => {
+    const { createMcpServer } = await import('../api.js')
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      json: async () => ({ name: 'amap' }),
+    })
+    const config = {
+      name: 'amap', type: 'sse', url: 'http://x',
+      connect_timeout: 15,
+      args: ['--port'],
+      env: { NODE_ENV: 'production' },
+      headers: { Authorization: 'Bearer xxx' },
+      tool_config: { enable_injection: true, default_param_keys: ['key1'], hidden_param_keys: [], unwrap_result: false },
+    }
+    await createMcpServer(config)
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/admin/mcp/servers',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify(config),
+      })
+    )
+  })
+
+  it('test_update_mcp_server_puts_complex_config 透传含新字段的 payload', async () => {
+    const { updateMcpServer } = await import('../api.js')
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ name: 'amap' }),
+    })
+    const config = {
+      url: 'http://new',
+      connect_timeout: 20,
+      args: ['--debug'],
+      env: { DEBUG: '1' },
+      headers: { 'X-Custom': 'val' },
+      tool_config: { enable_injection: false, default_param_keys: [], hidden_param_keys: ['secret'], unwrap_result: true },
+    }
+    await updateMcpServer('amap', config)
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/admin/mcp/servers/amap',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify(config),
+      })
+    )
+  })
+
   it('test_fetch_agent_list_throws_with_detail_on_error', async () => {
     const { fetchAgentList } = await import('../api.js')
     global.fetch.mockResolvedValueOnce({
