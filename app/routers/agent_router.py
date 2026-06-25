@@ -140,6 +140,7 @@ async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse
             state_class=config.state_class,
             context_class=config.context_class,
             checkpointer=checkpointer,
+            tools=config.tools,  # 从 UnifiedAgentConfig 注入工具列表（由 AgentConfigService 从 DB + MCP registry 加载）
             **agent_config_overrides,
         )
         agent = Agent(agent_config)

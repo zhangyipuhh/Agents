@@ -1339,3 +1339,215 @@ export async function fetchAgentList() {
   }
   return response.json()
 }
+
+// ============================================================
+// 工具管理 API（2026-06-25 新增）
+// 对应后端 tool_admin_router 的 /api/admin/tools/* 端点
+// 以及 agent_admin_router 的 /api/admin/agents/{name}/tool-bindings 端点
+// ============================================================
+
+/**
+ * 列出所有已注册工具
+ * 调用 GET /api/admin/tools，优先读缓存（仅 enabled=TRUE），
+ * 缓存为空时回退 DB 查询所有工具（含禁用项，供 admin 查看）。
+ * @returns {Promise<Array<Object>>} 工具元数据列表，每项包含
+ *   name / display_name / category / description / module_path /
+ *   file_path / args_schema / return_description /
+ *   function_description / enabled
+ * @throws {Error} 请求失败时抛出错误（含后端 detail 信息）
+ */
+export async function listTools() {
+  const response = await fetchWithAuth('/api/admin/tools', { method: 'GET' })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取工具列表失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 列出未注册工具文件（源码扫描，GET 语义）
+ * 调用 GET /api/admin/tools/unregistered，用 ast.parse 扫描
+ * app/core/tools/ 和 app/shared/tools/skills/ 下所有 .py 文件，
+ * 找出未在 DB 注册的 @tool 函数。
+ * @returns {Promise<Array<Object>>} 未注册工具列表，每项包含
+ *   name / file_path / module_path / args_schema /
+ *   return_description / function_description
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function listUnregisteredTools() {
+  const response = await fetchWithAuth('/api/admin/tools/unregistered', { method: 'GET' })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取未注册工具列表失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 注册新工具
+ * 调用 POST /api/admin/tools，写 DB 后刷新缓存。
+ * 必填字段：name / category / module_path / file_path。
+ * @param {Object} payload - 工具配置
+ * @param {string} payload.name - 工具唯一标识
+ * @param {string} [payload.display_name] - 展示名称
+ * @param {string} payload.category - 工具分类
+ * @param {string} [payload.description] - 工具描述
+ * @param {string} payload.module_path - Python 模块路径
+ * @param {string} payload.file_path - 源文件相对路径
+ * @param {Object} [payload.args_schema] - 参数 schema 字典
+ * @param {string} [payload.return_description] - 返回值类型描述
+ * @param {string} [payload.function_description] - 函数完整描述
+ * @param {boolean} [payload.enabled=true] - 是否启用
+ * @param {number} [payload.sort_order=0] - 排序权重
+ * @returns {Promise<Object>} 新创建的工具记录（含反序列化后的 args_schema）
+ * @throws {Error} name 已存在(409) / 缺少必需键(400) / 服务未初始化(500) 时抛出错误
+ */
+export async function registerTool(payload) {
+  const response = await fetchWithAuth('/api/admin/tools', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `注册工具失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 更新工具配置
+ * 调用 PUT /api/admin/tools/{name}，全量更新工具的可变字段，写 DB 后刷新缓存。
+ * 注意：name 不可修改（由 URL path 指定）；module_path / file_path 不可改。
+ * @param {string} name - 工具名称（URL path 参数）
+ * @param {Object} payload - 待更新字段（None 字段会被 service 层用默认值替换，需传完整配置）
+ * @param {string} [payload.display_name] - 展示名称
+ * @param {string} [payload.category] - 工具分类
+ * @param {string} [payload.description] - 工具描述
+ * @param {Object} [payload.args_schema] - 参数 schema 字典
+ * @param {string} [payload.return_description] - 返回值类型描述
+ * @param {string} [payload.function_description] - 函数完整描述
+ * @param {boolean} [payload.enabled] - 是否启用
+ * @param {number} [payload.sort_order] - 排序权重
+ * @returns {Promise<Object>} 更新后的工具记录
+ * @throws {Error} 工具不存在(404) / 字段非法(400) / 服务未初始化(500) 时抛出错误
+ */
+export async function updateTool(name, payload) {
+  const response = await fetchWithAuth(`/api/admin/tools/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `更新工具失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 删除工具
+ * 调用 DELETE /api/admin/tools/{name}，写 DB 后失效缓存。
+ * 后端返回 204 No Content（无响应体），本函数无返回值。
+ * @param {string} name - 工具名称
+ * @returns {Promise<void>} 无返回值
+ * @throws {Error} 工具不存在(404) / 服务未初始化(500) 时抛出错误
+ */
+export async function deleteTool(name) {
+  const response = await fetchWithAuth(`/api/admin/tools/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  })
+  // 204 No Content 无响应体，不能调用 response.json()
+  if (!response.ok && response.status !== 204) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `删除工具失败: ${response.status}`)
+  }
+}
+
+/**
+ * 启用/禁用工具
+ * 调用 PUT /api/admin/tools/{name}/enabled，写 DB 后刷新缓存
+ * （enabled=TRUE 时加入缓存，enabled=FALSE 时从缓存移除）。
+ * @param {string} name - 工具名称
+ * @param {boolean} enabled - True 启用 / False 禁用
+ * @returns {Promise<Object>} 更新后的工具记录
+ * @throws {Error} 工具不存在(404) / 服务未初始化(500) 时抛出错误
+ */
+export async function setToolEnabled(name, enabled) {
+  const response = await fetchWithAuth(`/api/admin/tools/${encodeURIComponent(name)}/enabled`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `更新工具启用状态失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 扫描未注册工具文件（POST 语义，主动触发）
+ * 调用 POST /api/admin/tools/scan，与 GET /unregistered 功能相同，
+ * 但用 POST 表达副作用语义（扫描是较重操作）。
+ * @returns {Promise<Array<Object>>} 未注册工具列表，每项包含
+ *   name / file_path / module_path / args_schema /
+ *   return_description / function_description
+ * @throws {Error} 服务未初始化(500) 时抛出错误
+ */
+export async function scanTools() {
+  const response = await fetchWithAuth('/api/admin/tools/scan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `扫描工具失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 获取指定智能体的工具绑定列表
+ * 调用 GET /api/admin/agents/{name}/tool-bindings。
+ * @param {string} name - 智能体名称
+ * @returns {Promise<{agent_name: string, tool_bindings: Array}>} 工具绑定列表
+ * @throws {Error} 智能体不存在(404) 时抛出错误
+ */
+export async function getAgentToolBindings(name) {
+  const response = await fetchWithAuth(
+    `/api/admin/agents/${encodeURIComponent(name)}/tool-bindings`,
+    { method: 'GET' }
+  )
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取工具绑定失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 更新指定智能体的工具绑定列表（全量替换）
+ * 调用 PUT /api/admin/agents/{name}/tool-bindings。
+ * @param {string} name - 智能体名称
+ * @param {Array<Object>} bindings - 工具绑定列表，每项含
+ *   tool_name（必填）/ tool_type（默认 "builtin"）/ enabled（默认 True）/ sort_order（默认 0）
+ * @returns {Promise<Object>} 更新结果
+ * @throws {Error} 智能体不存在(404) / 校验失败(422) 时抛出错误
+ */
+export async function updateAgentToolBindings(name, bindings) {
+  const response = await fetchWithAuth(
+    `/api/admin/agents/${encodeURIComponent(name)}/tool-bindings`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bindings }),
+    }
+  )
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `更新工具绑定失败: ${response.status}`)
+  }
+  return response.json()
+}

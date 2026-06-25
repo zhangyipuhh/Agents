@@ -25,6 +25,11 @@ import {
   fetchAgentConfigFieldTemplates,
   validateAgentMdPath,
   checkAgentNameUnique,
+  listTools,
+  getAgentToolBindings,
+  updateAgentToolBindings,
+  listMcpServers,
+  listMcpMethods,
 } from '../utils/api.js'
 
 // === 列表与详情状态 ===
@@ -100,6 +105,19 @@ const nameValidating = ref(false)
 
 const SUPPORTED_TYPES = ['str', 'int', 'float', 'bool', 'dict', 'list']
 
+// === Tab 切换状态 ===
+const activeTab = ref('config') // 'config'（配置字段） | 'tools'（工具绑定）
+
+// === 工具绑定相关状态 ===
+const builtinTools = ref([])              // 内置工具列表（listTools 返回）
+const mcpServersWithMethods = ref([])     // MCP 服务器列表（含 methods，由 listMcpServers + listMcpMethods 组装）
+const agentToolBindings = ref([])         // 当前 agent 已保存的工具绑定（getAgentToolBindings 返回）
+const isLoadingTools = ref(false)         // 工具绑定 Tab 加载状态
+const toolBindingsError = ref('')         // 工具绑定 Tab 错误信息
+const toolBindingsSavedTip = ref('')      // 工具绑定保存成功提示
+const localSelectedBindings = ref({})     // 本地勾选状态：key = `${tool_type}:${tool_name}` -> true
+const toolsInitialized = ref(false)       // 工具列表（builtin + mcp）是否已加载（全局缓存，避免每次切换 agent 重复拉取）
+
 // === 加载与刷新 ===
 
 async function loadAgentList() {
@@ -135,8 +153,19 @@ async function selectAgent(name) {
   isLoadingDetail.value = true
   errorMessage.value = ''
   resetPendingChanges()
+  // 切换 agent 时重置工具绑定本地状态
+  agentToolBindings.value = []
+  localSelectedBindings.value = {}
+  toolBindingsError.value = ''
+  toolBindingsSavedTip.value = ''
+  // 记录切换前是否在工具绑定 Tab，用于决定是否需要重新加载绑定
+  const wasOnToolsTab = activeTab.value === 'tools'
   try {
     selectedAgent.value = await fetchAdminAgentConfig(name)
+    // 若当前停留在工具绑定 Tab，切换 agent 后立即重新加载该 agent 的绑定
+    if (wasOnToolsTab) {
+      await loadAgentBindings()
+    }
   } catch (err) {
     errorMessage.value = err.message || '加载智能体详情失败'
     selectedAgent.value = null
@@ -463,6 +492,232 @@ async function confirmCreate() {
   }
 }
 
+// === 工具绑定：computed ===
+
+/**
+ * 判断指定工具是否在本地勾选集合中
+ * @param {string} toolType - 工具类型（builtin / mcp）
+ * @param {string} toolName - 工具名称
+ * @returns {boolean} 是否勾选
+ */
+function isToolSelected(toolType, toolName) {
+  return !!localSelectedBindings.value[`${toolType}:${toolName}`]
+}
+
+/**
+ * 按分类分组展示所有可用工具（内置 + MCP）
+ * - 内置工具分类 = tools.category
+ * - MCP 工具分类 = mcp_server.display_name
+ * @returns {Array<{category: string, tools: Array}>} 分组后的工具列表
+ */
+const groupedTools = computed(() => {
+  const groups = {}
+  const order = []
+
+  // 内置工具按 category 分组
+  for (const tool of builtinTools.value) {
+    const category = tool.category || '未分类'
+    if (!groups[category]) {
+      groups[category] = []
+      order.push(category)
+    }
+    groups[category].push({
+      tool_name: tool.name,
+      tool_type: 'builtin',
+      display_name: tool.display_name || tool.name,
+      description: tool.description || '',
+      sourceEnabled: tool.enabled,
+    })
+  }
+
+  // MCP 工具按 server display_name 分组
+  for (const server of mcpServersWithMethods.value) {
+    const category = server.display_name || server.name
+    if (!groups[category]) {
+      groups[category] = []
+      order.push(category)
+    }
+    for (const method of server.methods || []) {
+      groups[category].push({
+        tool_name: method.method_name,
+        tool_type: 'mcp',
+        display_name: method.method_name,
+        description: method.description || '',
+        sourceEnabled: method.enabled,
+      })
+    }
+  }
+
+  return order.map(category => ({ category, tools: groups[category] }))
+})
+
+/**
+ * 当前勾选的工具绑定数量
+ */
+const selectedBindingsCount = computed(() => {
+  return Object.keys(localSelectedBindings.value).length
+})
+
+/**
+ * 工具绑定是否有未保存的修改（对比本地勾选与服务端已保存的绑定）
+ * @returns {boolean} 是否存在差异
+ */
+const hasBindingChanges = computed(() => {
+  const savedSet = new Set()
+  for (const b of agentToolBindings.value) {
+    if (b.enabled) savedSet.add(`${b.tool_type}:${b.tool_name}`)
+  }
+  const localSet = new Set(Object.keys(localSelectedBindings.value))
+  if (savedSet.size !== localSet.size) return true
+  for (const k of localSet) {
+    if (!savedSet.has(k)) return true
+  }
+  return false
+})
+
+// === 工具绑定：加载与保存 ===
+
+/**
+ * 加载所有可用工具列表（内置 + MCP），全局缓存只加载一次
+ * 内置工具调用 listTools；MCP 工具先调 listMcpServers 再对每个 server 调 listMcpMethods
+ * @returns {Promise<void>} 无返回值；失败时设置 toolBindingsError
+ */
+async function loadAllTools() {
+  if (toolsInitialized.value) return
+  toolBindingsError.value = ''
+  try {
+    // 并行加载内置工具 + MCP 服务器列表
+    const [tools, servers] = await Promise.all([
+      listTools(),
+      listMcpServers(),
+    ])
+    builtinTools.value = Array.isArray(tools) ? tools : []
+
+    // 对每个 MCP server 加载其方法列表（任一 server 失败不影响其他）
+    const serversWithMethods = await Promise.all(
+      (Array.isArray(servers) ? servers : []).map(async (server) => {
+        try {
+          const methods = await listMcpMethods(server.name)
+          return { ...server, methods: Array.isArray(methods) ? methods : [] }
+        } catch (err) {
+          console.error(`加载 MCP 服务器 ${server.name} 方法列表失败:`, err)
+          return { ...server, methods: [] }
+        }
+      })
+    )
+    mcpServersWithMethods.value = serversWithMethods
+    toolsInitialized.value = true
+  } catch (err) {
+    toolBindingsError.value = err.message || '加载工具列表失败'
+  }
+}
+
+/**
+ * 加载当前选中 agent 的工具绑定，并同步本地勾选状态
+ * @returns {Promise<void>} 无返回值；失败时设置 toolBindingsError
+ */
+async function loadAgentBindings() {
+  if (!selectedAgentName.value) return
+  toolBindingsError.value = ''
+  try {
+    const data = await getAgentToolBindings(selectedAgentName.value)
+    const bindings = data.tool_bindings || []
+    agentToolBindings.value = bindings
+    // 同步本地勾选状态：仅 enabled=true 的工具被勾选
+    const selected = {}
+    for (const b of bindings) {
+      if (b.enabled) {
+        selected[`${b.tool_type}:${b.tool_name}`] = true
+      }
+    }
+    localSelectedBindings.value = selected
+  } catch (err) {
+    toolBindingsError.value = err.message || '加载工具绑定失败'
+    agentToolBindings.value = []
+    localSelectedBindings.value = {}
+  }
+}
+
+/**
+ * 切换到工具绑定 Tab 时触发加载（工具列表 + 当前 agent 绑定）
+ * @returns {Promise<void>} 无返回值
+ */
+async function onSwitchToToolsTab() {
+  isLoadingTools.value = true
+  try {
+    await loadAllTools()
+    await loadAgentBindings()
+  } finally {
+    isLoadingTools.value = false
+  }
+}
+
+/**
+ * 切换 Tab；切到工具绑定 Tab 时按需加载工具数据
+ * @param {string} tab - 目标 Tab 名称（config / tools）
+ * @returns {Promise<void>} 无返回值
+ */
+async function switchTab(tab) {
+  if (activeTab.value === tab) return
+  activeTab.value = tab
+  if (tab === 'tools' && selectedAgentName.value) {
+    await onSwitchToToolsTab()
+  }
+}
+
+/**
+ * 切换单个工具的勾选状态
+ * @param {string} toolType - 工具类型（builtin / mcp）
+ * @param {string} toolName - 工具名称
+ */
+function toggleToolSelection(toolType, toolName) {
+  const key = `${toolType}:${toolName}`
+  if (localSelectedBindings.value[key]) {
+    const next = { ...localSelectedBindings.value }
+    delete next[key]
+    localSelectedBindings.value = next
+  } else {
+    localSelectedBindings.value = { ...localSelectedBindings.value, [key]: true }
+  }
+}
+
+/**
+ * 保存工具绑定到后端
+ * 构造 bindings 数组（仅勾选的工具，sort_order 按分组顺序生成），
+ * 调用 updateAgentToolBindings；成功后重新加载绑定状态并显示提示
+ * @returns {Promise<void>} 无返回值；失败时设置 toolBindingsError
+ */
+async function saveToolBindings() {
+  if (!selectedAgentName.value) return
+  toolBindingsError.value = ''
+  toolBindingsSavedTip.value = ''
+  // 构造 bindings：所有勾选的工具，sort_order 按分组顺序生成
+  const bindings = []
+  let sortOrder = 0
+  for (const group of groupedTools.value) {
+    for (const tool of group.tools) {
+      if (isToolSelected(tool.tool_type, tool.tool_name)) {
+        bindings.push({
+          tool_name: tool.tool_name,
+          tool_type: tool.tool_type,
+          enabled: true,
+          sort_order: sortOrder++,
+        })
+      }
+    }
+  }
+  try {
+    await updateAgentToolBindings(selectedAgentName.value, bindings)
+    // 保存成功后重新加载绑定状态，保持本地与服务端一致
+    await loadAgentBindings()
+    toolBindingsSavedTip.value = '工具绑定保存成功'
+    // 3 秒后自动清除提示
+    setTimeout(() => { toolBindingsSavedTip.value = '' }, 3000)
+  } catch (err) {
+    toolBindingsError.value = err.message || '保存工具绑定失败'
+  }
+}
+
 // === 生命周期 ===
 onMounted(async () => {
   await loadFieldTemplates()
@@ -534,6 +789,26 @@ onMounted(async () => {
             </div>
           </header>
 
+          <!-- Tab 导航栏 -->
+          <nav class="tab-nav">
+            <button
+              class="tab-btn"
+              :class="{ active: activeTab === 'config' }"
+              @click="switchTab('config')"
+            >
+              配置字段
+            </button>
+            <button
+              class="tab-btn"
+              :class="{ active: activeTab === 'tools' }"
+              @click="switchTab('tools')"
+            >
+              工具绑定
+            </button>
+          </nav>
+
+          <!-- 配置字段 Tab -->
+          <div v-if="activeTab === 'config'" class="tab-content">
           <!-- 三组可编辑表格 -->
           <SectionEditor
             title="AgentConfig 字段"
@@ -574,6 +849,80 @@ onMounted(async () => {
               <button class="btn-primary" @click="saveAllChanges">保存全部修改</button>
             </div>
           </div>
+          </div><!-- /配置字段 Tab -->
+
+          <!-- 工具绑定 Tab -->
+          <div v-if="activeTab === 'tools'" class="tab-content">
+            <!-- 错误提示 -->
+            <div v-if="toolBindingsError" class="error-banner">{{ toolBindingsError }}</div>
+            <!-- 保存成功提示 -->
+            <div v-if="toolBindingsSavedTip" class="success-banner">{{ toolBindingsSavedTip }}</div>
+
+            <div v-if="isLoadingTools" class="loading">加载工具列表中...</div>
+            <div v-else>
+              <!-- 工具绑定说明 + 保存按钮 -->
+              <div class="tools-toolbar">
+                <div class="tools-summary">
+                  已勾选 <strong>{{ selectedBindingsCount }}</strong> 个工具
+                  <span v-if="hasBindingChanges" class="badge-pending">有未保存的修改</span>
+                </div>
+                <div class="tools-actions">
+                  <button
+                    class="btn-primary"
+                    :disabled="!hasBindingChanges"
+                    @click="saveToolBindings"
+                  >
+                    保存工具绑定
+                  </button>
+                </div>
+              </div>
+
+              <!-- 按分类分组展示所有可用工具 -->
+              <div v-if="groupedTools.length === 0" class="empty-state">
+                暂无可用工具
+              </div>
+              <div v-else class="tools-groups">
+                <section
+                  v-for="group in groupedTools"
+                  :key="group.category"
+                  class="tool-group"
+                >
+                  <h5 class="tool-group-title">{{ group.category }}</h5>
+                  <ul class="tool-list">
+                    <li
+                      v-for="tool in group.tools"
+                      :key="`${tool.tool_type}:${tool.tool_name}`"
+                      class="tool-item"
+                    >
+                      <label class="tool-checkbox">
+                        <input
+                          type="checkbox"
+                          :checked="isToolSelected(tool.tool_type, tool.tool_name)"
+                          @change="toggleToolSelection(tool.tool_type, tool.tool_name)"
+                        />
+                        <span class="tool-name">{{ tool.display_name }}</span>
+                        <span class="tool-type-badge" :class="tool.tool_type">
+                          {{ tool.tool_type === 'builtin' ? '内置' : 'MCP' }}
+                        </span>
+                        <span v-if="!tool.sourceEnabled" class="tool-disabled-hint">
+                          （来源已禁用）
+                        </span>
+                      </label>
+                      <p v-if="tool.description" class="tool-desc">{{ tool.description }}</p>
+                    </li>
+                  </ul>
+                </section>
+              </div>
+
+              <!-- 底部保存按钮（与顶部一致，方便长列表操作） -->
+              <div v-if="hasBindingChanges" class="changes-summary">
+                <span>工具绑定有未保存的修改</span>
+                <div>
+                  <button class="btn-primary" @click="saveToolBindings">保存工具绑定</button>
+                </div>
+              </div>
+            </div>
+          </div><!-- /工具绑定 Tab -->
         </div>
       </main>
     </div>
@@ -1021,6 +1370,153 @@ export default {
   border: 1px solid #fbbf24;
   border-radius: 6px;
   margin-top: 16px;
+}
+
+/* Tab 导航栏 */
+.tab-nav {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: 16px;
+}
+.tab-btn {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-family: inherit;
+  background-color: transparent;
+  color: var(--color-text-secondary);
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.tab-btn:hover {
+  color: var(--color-text-primary);
+  background-color: var(--color-bg-hover);
+}
+.tab-btn.active {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
+  font-weight: 600;
+}
+.tab-content {
+  min-height: 200px;
+}
+
+/* 工具绑定 Tab */
+.success-banner {
+  padding: 10px 14px;
+  background-color: #ecfdf5;
+  color: #059669;
+  border: 1px solid #a7f3d0;
+  border-radius: 4px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.tools-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  background-color: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  margin-bottom: 16px;
+}
+.tools-summary {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+.tools-summary strong {
+  color: var(--color-accent);
+  font-size: 14px;
+}
+.badge-pending {
+  margin-left: 8px;
+  background-color: #fef3c7;
+  color: #d97706;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.tools-actions {
+  display: flex;
+  gap: 8px;
+}
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tools-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.tool-group {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.tool-group-title {
+  margin: 0;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  background-color: var(--color-bg-secondary);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-primary);
+}
+.tool-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.tool-item {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--color-border-light);
+}
+.tool-item:last-child {
+  border-bottom: none;
+}
+.tool-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.tool-checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+.tool-name {
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+.tool-type-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+.tool-type-badge.builtin {
+  background-color: #e0e7ff;
+  color: #4338ca;
+}
+.tool-type-badge.mcp {
+  background-color: #dbeafe;
+  color: #1d4ed8;
+}
+.tool-disabled-hint {
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+.tool-desc {
+  margin: 4px 0 0 24px;
+  font-size: 12px;
+  color: var(--color-text-muted);
 }
 
 .empty-state {

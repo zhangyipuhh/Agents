@@ -79,6 +79,27 @@ def _init_agent_config_service(app):
 
 
 @pytest.fixture(autouse=True)
+def _init_tool_service(app):
+    """初始化 app.state.tool_service 供 tool_admin_router 使用。
+
+    生产对应初始化点：``app/core/server.py::lifespan`` 第 122-131 行
+    （db_pool 存在时构造 ``ToolRegistryService(db_pool)`` 并挂到
+    ``app.state.tool_service``，随后调用 ``preload_all()`` 预加载缓存）。
+
+    lifespan 在测试环境中不会自动触发，因此 autouse fixture 在测试启动时
+    注入与生产同构的 service 实例（db=None 是合法 stub，因为路由层只调
+    service 的方法，不直接读 service._db；具体方法需要 db 时通过
+    ``monkeypatch`` 替换类方法或 ``service._db = MagicMock()`` 按需注入）。
+
+    反模式防御：禁止用 ``app.state.db = MagicMock()`` 注入生产 lifespan
+    根本不存在的对象（违反 AGENTS.md「禁止在测试中虚构生产不存在的依赖」
+    硬约束，会掩盖路由层错读 ``app.state.db`` 的 bug）。
+    """
+    from app.shared.utils.agent.tool_service import ToolRegistryService
+    app.state.tool_service = ToolRegistryService(db=None)
+
+
+@pytest.fixture(autouse=True)
 def _mock_user_db_for_admin_auth(monkeypatch):
     """Mock UserDB.get_user_by_username 根据 username 返回对应 role 用户。
 

@@ -47,9 +47,10 @@ RESERVED_CONTEXT_FIELDS = {
 
 # 2026-06-24 新增：AgentConfig 保留字段集合
 # 这些字段不能通过 config_schema 覆盖（运行时对象 / 句柄无法被 JSON 描述）。
-# state_class / context_class 由 schema 动态生成；checkpointer / store 是 LangGraph 运行时句柄。
+# state_class / context_class 由 schema 动态生成；checkpointer / store 是 LangGraph 运行时句柄；
+# tools 是运行时工具实例列表（由 AgentConfigService 从 DB + MCP registry 加载注入）。
 RESERVED_CONFIG_FIELDS = {
-    "state_class", "context_class", "checkpointer", "store",
+    "state_class", "context_class", "checkpointer", "store", "tools",
 }
 """AgentConfig 中不可被 schema 覆盖的字段集合。"""
 

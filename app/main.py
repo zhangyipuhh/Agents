@@ -60,6 +60,7 @@ from app.core.router import file_download_router as core_file_download_router
 from app.routers.mcp_admin_router import router as mcp_admin_router
 from app.routers.agent_router import router as agent_router
 from app.routers.agent_admin_router import router as agent_admin_router
+from app.routers.tool_admin_router import router as tool_admin_router
 
 
 app = create_app()
@@ -85,6 +86,7 @@ def register_routers(target_app=None):
     _app.include_router(mcp_admin_router)
     _app.include_router(agent_router)
     _app.include_router(agent_admin_router)
+    _app.include_router(tool_admin_router)
 
 
 register_routers()

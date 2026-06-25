@@ -119,6 +119,17 @@ async def lifespan(app: FastAPI):
             await app.state.mcp_config_service.seed_from_yaml_if_empty()
             logging.info("AgentConfigService and McpConfigService initialized")
 
+            # 初始化 ToolRegistryService（预加载内置工具元数据 + 实例到缓存）
+            # 单独 try/except：失败不应阻止 AgentConfigService/McpConfigService 后续逻辑
+            from app.shared.utils.agent.tool_service import ToolRegistryService
+            try:
+                app.state.tool_service = ToolRegistryService(db_pool)
+                await app.state.tool_service.preload_all()
+            except Exception as e:
+                logging.warning(
+                    "Failed to initialize ToolRegistryService: %s", e, exc_info=True
+                )
+
             # 2026-06-24 新增：将 AgentConfigService 设置到 knowledge_router 全局变量，
             # 供 get_map_agent 等模块级函数使用（无法直接访问 request.app.state）
             from app.routers.knowledge_router import set_agent_config_service
@@ -165,6 +176,25 @@ async def lifespan(app: FastAPI):
             )
         except Exception as e:
             logging.error("Failed to initialize MCPToolsRegistry: %s", e, exc_info=True)
+
+    # === 注入依赖到 AgentConfigService 并预加载缓存 ===
+    # 顺序约束：ToolRegistryService 必须先初始化，才能注入到 AgentConfigService；
+    # AgentConfigService 注入依赖后才能 preload_all（preload_all 只加载 DB 配置，
+    # tools=None 延迟加载，保持 MCP 懒加载）
+    if hasattr(app.state, "agent_config_service") and app.state.agent_config_service:
+        try:
+            # 注入依赖到 AgentConfigService
+            if hasattr(app.state, "tool_service") and app.state.tool_service:
+                app.state.agent_config_service.set_tool_service(app.state.tool_service)
+            if hasattr(app.state, "mcp_registry") and app.state.mcp_registry:
+                app.state.agent_config_service.set_mcp_registry(app.state.mcp_registry)
+
+            # 预加载 agent 配置缓存（仅 DB 配置，tools=None 延迟加载，保持 MCP 懒加载）
+            await app.state.agent_config_service.preload_all()
+            await app.state.mcp_config_service.preload_all()
+            logging.info("All config caches preloaded (tools lazy-loaded on first chat)")
+        except Exception as e:
+            logging.warning("Failed to preload config caches: %s", e, exc_info=True)
 
     # 初始化全局 Skill 系统（懒加载单例；agent 维度实例在 _llm_call 中按需创建）
     from app.core.skills.service import SkillsService

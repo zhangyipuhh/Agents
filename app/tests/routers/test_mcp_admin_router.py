@@ -267,3 +267,204 @@ def test_build_config_dict_contains_new_fields():
     assert result["env"] == {"KEY": "VAL"}
     assert result["headers"] == {"Authorization": "Bearer token"}
     assert result["connect_timeout"] == 30
+
+
+# =============================================================================
+# 缓存失效测试（2026-06-25 新增）
+# 验证 4 个写路由在 DB 操作 + registry 同步后调用 agent_config_service.invalidate_all_cache
+# 生产对等初始化点：conftest._init_agent_config_service autouse fixture 注入
+# AgentConfigService(db=None) 到 app.state.agent_config_service（与 server.py lifespan 同构）
+# =============================================================================
+
+
+def test_invalidate_agent_config_cache_helper_importable():
+    """测试 _invalidate_agent_config_cache 辅助函数可导入。"""
+    from app.routers.mcp_admin_router import _invalidate_agent_config_cache
+    assert callable(_invalidate_agent_config_cache)
+
+
+def test_create_server_invalidates_agent_cache(client, admin_headers, monkeypatch):
+    """测试 POST /servers 创建后失效 agent_config 缓存。
+
+    验证 create_server 端点在 DB 写入 + registry 同步后调用
+    _invalidate_agent_config_cache，确保 MCP 变更后 agent 工具列表重新加载。
+    """
+    async def fake_create(self, config):
+        return {"name": config.name, "type": config.type, "enabled": True}
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.mcp_service.McpConfigService.create_server",
+        fake_create,
+    )
+
+    invalidate_calls = []
+
+    async def fake_invalidate_cache(request):
+        invalidate_calls.append(True)
+
+    monkeypatch.setattr(
+        "app.routers.mcp_admin_router._invalidate_agent_config_cache",
+        fake_invalidate_cache,
+    )
+
+    class FakeRegistry(_FakeRegistryBase):
+        async def add_server(self, name, config):
+            pass
+
+    client.app.state.mcp_registry = FakeRegistry()
+
+    response = client.post(
+        "/api/admin/mcp/servers",
+        headers=admin_headers,
+        json={"name": "amap", "type": "sse", "url": "http://x"},
+    )
+    assert response.status_code == 201
+    assert len(invalidate_calls) == 1
+
+
+def test_update_server_invalidates_agent_cache(client, admin_headers, monkeypatch):
+    """测试 PUT /servers/{name} 更新后失效 agent_config 缓存。
+
+    验证 update_server 端点在 DB 写入 + registry 同步后调用
+    _invalidate_agent_config_cache。
+    """
+    async def fake_update(self, name, config):
+        return {"name": name, "type": config.type, "enabled": True}
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.mcp_service.McpConfigService.update_server",
+        fake_update,
+    )
+
+    invalidate_calls = []
+
+    async def fake_invalidate_cache(request):
+        invalidate_calls.append(True)
+
+    monkeypatch.setattr(
+        "app.routers.mcp_admin_router._invalidate_agent_config_cache",
+        fake_invalidate_cache,
+    )
+
+    class FakeRegistry(_FakeRegistryBase):
+        async def update_server(self, name, config):
+            pass
+
+    client.app.state.mcp_registry = FakeRegistry()
+
+    response = client.put(
+        "/api/admin/mcp/servers/amap",
+        headers=admin_headers,
+        json={"name": "amap", "type": "sse", "url": "http://y"},
+    )
+    assert response.status_code == 200
+    assert len(invalidate_calls) == 1
+
+
+def test_delete_server_invalidates_agent_cache(client, admin_headers, monkeypatch):
+    """测试 DELETE /servers/{name} 删除后失效 agent_config 缓存。
+
+    验证 delete_server 端点在 DB 删除 + registry 同步后调用
+    _invalidate_agent_config_cache。
+    """
+    async def fake_delete(self, name):
+        return None
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.mcp_service.McpConfigService.delete_server",
+        fake_delete,
+    )
+
+    invalidate_calls = []
+
+    async def fake_invalidate_cache(request):
+        invalidate_calls.append(True)
+
+    monkeypatch.setattr(
+        "app.routers.mcp_admin_router._invalidate_agent_config_cache",
+        fake_invalidate_cache,
+    )
+
+    class FakeRegistry(_FakeRegistryBase):
+        async def remove_server(self, name):
+            pass
+
+    client.app.state.mcp_registry = FakeRegistry()
+
+    response = client.delete(
+        "/api/admin/mcp/servers/amap",
+        headers=admin_headers,
+    )
+    assert response.status_code == 204
+    assert len(invalidate_calls) == 1
+
+
+def test_toggle_server_invalidates_agent_cache(client, admin_headers, monkeypatch):
+    """测试 POST /servers/{name}/toggle 后失效 agent_config 缓存。
+
+    验证 toggle_server 端点在 DB 更新 + registry 同步后调用
+    _invalidate_agent_config_cache。
+    """
+    async def fake_toggle(self, name, enabled):
+        return None
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.mcp_service.McpConfigService.toggle_server",
+        fake_toggle,
+    )
+
+    invalidate_calls = []
+
+    async def fake_invalidate_cache(request):
+        invalidate_calls.append(True)
+
+    monkeypatch.setattr(
+        "app.routers.mcp_admin_router._invalidate_agent_config_cache",
+        fake_invalidate_cache,
+    )
+
+    class FakeRegistry(_FakeRegistryBase):
+        async def toggle_server(self, name, enabled):
+            pass
+
+    client.app.state.mcp_registry = FakeRegistry()
+
+    response = client.post(
+        "/api/admin/mcp/servers/amap/toggle",
+        headers=admin_headers,
+        params={"enabled": False},
+    )
+    assert response.status_code == 200
+    assert len(invalidate_calls) == 1
+
+
+def test_invalidate_cache_skips_when_service_missing(client, admin_headers, monkeypatch):
+    """测试 agent_config_service 未初始化时 _invalidate_agent_config_cache 静默跳过。
+
+    验证当 app.state.agent_config_service 为 None 时，写操作不会因缓存失效失败。
+    （生产中 lifespan 已确保初始化，此处验证防御性降级逻辑。）
+    """
+    async def fake_delete(self, name):
+        return None
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.mcp_service.McpConfigService.delete_server",
+        fake_delete,
+    )
+
+    class FakeRegistry(_FakeRegistryBase):
+        async def remove_server(self, name):
+            pass
+
+    client.app.state.mcp_registry = FakeRegistry()
+    # 模拟 agent_config_service 未初始化
+    original = getattr(client.app.state, "agent_config_service", None)
+    client.app.state.agent_config_service = None
+    try:
+        response = client.delete(
+            "/api/admin/mcp/servers/amap",
+            headers=admin_headers,
+        )
+        assert response.status_code == 204
+    finally:
+        client.app.state.agent_config_service = original

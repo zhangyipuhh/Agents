@@ -195,6 +195,8 @@ def test_create_agent_inserts_and_returns_row(tmp_path):
     ])
     loader = MagicMock()
     service = AgentConfigService(db, loader)
+    # mock 缓存同步，隔离测试 create_agent 的核心 INSERT 逻辑
+    service._refresh_cache = AsyncMock()
     config = {
         "name": "new_agent",
         "display_name": "新智能体",
@@ -224,6 +226,8 @@ def test_bind_tool_upserts_binding():
     db.execute = AsyncMock()
     loader = MagicMock()
     service = AgentConfigService(db, loader)
+    # mock 缓存同步，隔离测试 bind_tool 的核心 upsert 逻辑
+    service._refresh_cache = AsyncMock()
     asyncio.run(service.bind_tool("map_agent", "explore", True))
     db.execute.assert_called_once()
     # 验证 SQL 含 ON CONFLICT
@@ -249,6 +253,8 @@ def test_bind_skill_upserts_binding():
     db.execute = AsyncMock()
     loader = MagicMock()
     service = AgentConfigService(db, loader)
+    # mock 缓存同步，隔离测试 bind_skill 的核心 upsert 逻辑
+    service._refresh_cache = AsyncMock()
     asyncio.run(service.bind_skill("map_agent", "data-skill", True))
     db.execute.assert_called_once()
     # 验证 SQL 含 ON CONFLICT
@@ -353,6 +359,8 @@ def test_update_agent_config_schema_replaces_whole():
         },
     })
     service = AgentConfigService(db, MagicMock())
+    # mock 缓存同步，隔离测试 update_agent_config_schema 的核心 UPDATE 逻辑
+    service._refresh_cache = AsyncMock()
 
     new_schema = {
         "temperature": {"type": "float", "default": 0.8},
@@ -394,6 +402,8 @@ def test_add_agent_config_field_root_section():
         },
     })
     service = AgentConfigService(db, MagicMock())
+    # mock 缓存同步，隔离测试 add_agent_config_field 的核心逻辑
+    service._refresh_cache = AsyncMock()
 
     result = asyncio.run(service.add_agent_config_field(
         "x", "root", "max_tokens", {"type": "int", "default": 8192},
@@ -442,6 +452,8 @@ def test_delete_agent_config_field_state_fields():
         },
     })
     service = AgentConfigService(db, MagicMock())
+    # mock 缓存同步，隔离测试 delete_agent_config_field 的核心逻辑
+    service._refresh_cache = AsyncMock()
     result = asyncio.run(service.delete_agent_config_field("x", "state_fields", "to_delete"))
     assert result is not None
 
@@ -887,4 +899,733 @@ def test_list_all_agents_admin_decodes_str_jsonb_fields():
     assert agent["config_schema"]["max_tokens"]["default"] == 20000
     # mcp_tags 应为 list
     assert agent["mcp_tags"] == ["map"]
+
+
+# ============================================================
+# 2026-06-25 新增：缓存层 + 工具延迟加载测试
+# 覆盖 AgentConfigService 的缓存机制、_load_from_db 抽取、
+# _load_tools 工具加载优先级、update_tool_bindings 等新功能
+# ============================================================
+
+
+def test_set_tool_service_sets_field():
+    """测试 set_tool_service 注入 ToolRegistryService 实例。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 注入后 _tool_service 不等于传入值时抛出
+    """
+    service = AgentConfigService(MagicMock(), MagicMock())
+    mock_tool_service = MagicMock()
+    service.set_tool_service(mock_tool_service)
+    assert service._tool_service is mock_tool_service
+
+
+def test_set_mcp_registry_sets_field():
+    """测试 set_mcp_registry 注入 MCPToolsRegistry 实例。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 注入后 _mcp_registry 不等于传入值时抛出
+    """
+    service = AgentConfigService(MagicMock(), MagicMock())
+    mock_registry = MagicMock()
+    service.set_mcp_registry(mock_registry)
+    assert service._mcp_registry is mock_registry
+
+
+def test_preload_all_loads_enabled_agents():
+    """测试 preload_all 预加载所有启用的 agent 配置到缓存。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 缓存未正确填充时抛出
+    """
+    db = MagicMock()
+    # preload_all 先 SELECT name，然后对每个 name 调 _load_from_db
+    db.fetch = AsyncMock(side_effect=[
+        [{"name": "agent_a"}, {"name": "agent_b"}],  # preload_all 的 SELECT name
+        [],  # _load_from_db("agent_a") 的 tool_bindings
+        [],  # _load_from_db("agent_a") 的 skill_bindings
+        [],  # _load_from_db("agent_b") 的 tool_bindings
+        [],  # _load_from_db("agent_b") 的 skill_bindings
+    ])
+    db.fetchrow = AsyncMock(side_effect=[
+        {  # _load_from_db("agent_a")
+            "name": "agent_a", "display_name": "A", "description": "",
+            "agents_md_path": "a.md", "state_schema": {}, "context_schema": {},
+            "config_schema": {}, "mcp_tags": [], "enabled": True,
+        },
+        {  # _load_from_db("agent_b")
+            "name": "agent_b", "display_name": "B", "description": "",
+            "agents_md_path": "b.md", "state_schema": {}, "context_schema": {},
+            "config_schema": {}, "mcp_tags": [], "enabled": True,
+        },
+    ])
+    loader = MagicMock()
+    loader.load = MagicMock(return_value="prompt")
+    service = AgentConfigService(db, loader)
+
+    asyncio.run(service.preload_all())
+
+    assert "agent_a" in service._cache
+    assert "agent_b" in service._cache
+    # 预加载的配置 tools 应为 None（延迟加载）
+    assert service._cache["agent_a"].tools is None
+
+
+def test_refresh_cache_loads_single_agent():
+    """测试 _refresh_cache 从 DB 重新加载单个 agent 到缓存。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 缓存未正确更新时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value={
+        "name": "x", "display_name": "X", "description": "",
+        "agents_md_path": "x.md", "state_schema": {}, "context_schema": {},
+        "config_schema": {}, "mcp_tags": [], "enabled": True,
+    })
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    loader.load = MagicMock(return_value="prompt")
+    service = AgentConfigService(db, loader)
+
+    asyncio.run(service._refresh_cache("x"))
+
+    assert "x" in service._cache
+    assert service._cache["x"].tools is None  # 延迟加载
+
+
+def test_refresh_cache_removes_when_not_found():
+    """测试 _refresh_cache 在 agent 不存在时从缓存移除。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 缓存项未被移除时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value=None)
+    service = AgentConfigService(db, MagicMock())
+    # 预先放入缓存
+    service._cache["ghost"] = MagicMock()
+
+    asyncio.run(service._refresh_cache("ghost"))
+
+    assert "ghost" not in service._cache
+
+
+def test_invalidate_cache_removes_entry():
+    """测试 _invalidate_cache 从缓存移除单个 agent。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 缓存项未被移除时抛出
+    """
+    service = AgentConfigService(MagicMock(), MagicMock())
+    service._cache["x"] = MagicMock()
+
+    asyncio.run(service._invalidate_cache("x"))
+
+    assert "x" not in service._cache
+
+
+def test_invalidate_cache_idempotent_for_nonexistent():
+    """测试 _invalidate_cache 对不存在的缓存项幂等（不抛异常）。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        不应抛出任何异常
+    """
+    service = AgentConfigService(MagicMock(), MagicMock())
+    # 不存在的 key 也不应抛异常
+    asyncio.run(service._invalidate_cache("nonexistent"))
+
+
+def test_invalidate_all_cache_clears_everything():
+    """测试 invalidate_all_cache 清空所有缓存含 _default_config。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 缓存未完全清空时抛出
+    """
+    service = AgentConfigService(MagicMock(), MagicMock())
+    service._cache["a"] = MagicMock()
+    service._cache["b"] = MagicMock()
+    service._default_config = MagicMock()
+
+    asyncio.run(service.invalidate_all_cache())
+
+    assert len(service._cache) == 0
+    assert service._default_config is None
+
+
+def test_get_agent_config_caches_result():
+    """测试 get_agent_config 命中缓存时不再查询 DB。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 第二次调用仍查 DB 时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value={
+        "name": "cached_agent", "display_name": "C", "description": "",
+        "agents_md_path": "c.md", "state_schema": {}, "context_schema": {},
+        "config_schema": {}, "mcp_tags": [], "enabled": True,
+    })
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    loader.load = MagicMock(return_value="prompt")
+    service = AgentConfigService(db, loader)
+
+    # 第一次调用：从 DB 加载
+    config1 = asyncio.run(service.get_agent_config("cached_agent"))
+    assert config1.name == "cached_agent"
+    first_fetchrow_count = db.fetchrow.call_count
+
+    # 第二次调用：应命中缓存，不再查 DB
+    config2 = asyncio.run(service.get_agent_config("cached_agent"))
+    assert config2.name == "cached_agent"
+    assert db.fetchrow.call_count == first_fetchrow_count  # 无新增 DB 查询
+
+
+def test_get_agent_config_default_caches():
+    """测试 get_agent_config(None) 默认配置被缓存。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 默认配置未被缓存时抛出
+    """
+    db = MagicMock()
+    service = AgentConfigService(db, MagicMock())
+
+    # 第一次调用
+    config1 = asyncio.run(service.get_agent_config(None))
+    assert config1.name == ""
+    assert service._default_config is not None
+    assert service._default_config.tools is not None  # _load_tools 返回 []
+
+    # 第二次调用：应直接返回缓存的 _default_config
+    config2 = asyncio.run(service.get_agent_config(None))
+    assert config2 is service._default_config
+
+
+def test_load_tools_from_builtin_bindings():
+    """测试 _load_tools 从 tool_bindings 加载内置工具实例。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 工具实例未正确加载时抛出
+    """
+    service = AgentConfigService(MagicMock(), MagicMock())
+    # 注入 mock tool_service
+    mock_tool = MagicMock(name="builtin_tool_instance")
+    mock_tool_info = MagicMock()
+    mock_tool_info.tool_instance = mock_tool
+    mock_tool_service = MagicMock()
+    mock_tool_service.get_tool_by_name = AsyncMock(return_value=mock_tool_info)
+    service.set_tool_service(mock_tool_service)
+
+    agent_row = {
+        "tool_bindings": [
+            {"tool_name": "search", "tool_type": "builtin", "enabled": True},
+        ],
+        "mcp_tags": ["should_not_be_used"],
+    }
+    tools = asyncio.run(service._load_tools(agent_row))
+
+    assert len(tools) == 1
+    assert tools[0] is mock_tool
+    mock_tool_service.get_tool_by_name.assert_called_once_with("search")
+
+
+def test_load_tools_skips_disabled_bindings():
+    """测试 _load_tools 跳过 enabled=False 的工具绑定。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 禁用工具未被跳过时抛出
+    """
+    service = AgentConfigService(MagicMock(), MagicMock())
+    mock_tool_service = MagicMock()
+    mock_tool_service.get_tool_by_name = AsyncMock()
+    service.set_tool_service(mock_tool_service)
+
+    agent_row = {
+        "tool_bindings": [
+            {"tool_name": "disabled_tool", "tool_type": "builtin", "enabled": False},
+        ],
+        "mcp_tags": [],
+    }
+    tools = asyncio.run(service._load_tools(agent_row))
+
+    assert len(tools) == 0
+    mock_tool_service.get_tool_by_name.assert_not_called()
+
+
+def test_load_tools_fallback_to_mcp_tags():
+    """测试 _load_tools 在无 tool_bindings 时回退到 mcp_tags 过滤。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: mcp_tags 回退未正确触发时抛出
+    """
+    service = AgentConfigService(MagicMock(), MagicMock())
+    mock_mcp_tool = MagicMock(name="mcp_tool")
+    mock_registry = MagicMock()
+    mock_registry.get_tools_with_server = MagicMock(
+        return_value=[(mock_mcp_tool, "server1", {})]
+    )
+    service.set_mcp_registry(mock_registry)
+
+    agent_row = {
+        "tool_bindings": [],
+        "mcp_tags": ["map"],
+    }
+    tools = asyncio.run(service._load_tools(agent_row))
+
+    assert len(tools) == 1
+    assert tools[0] is mock_mcp_tool
+    mock_registry.get_tools_with_server.assert_called_once_with(tags=["map"])
+
+
+def test_load_tools_empty_when_no_bindings_and_no_tags():
+    """测试 _load_tools 在 tool_bindings 和 mcp_tags 都为空时返回空列表。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 返回值不为空列表时抛出
+    """
+    service = AgentConfigService(MagicMock(), MagicMock())
+    agent_row = {"tool_bindings": [], "mcp_tags": []}
+    tools = asyncio.run(service._load_tools(agent_row))
+    assert tools == []
+
+
+def test_load_tools_empty_when_no_services_injected():
+    """测试 _load_tools 在未注入 tool_service / mcp_registry 时返回空列表。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 返回值不为空列表时抛出
+    """
+    service = AgentConfigService(MagicMock(), MagicMock())
+    agent_row = {
+        "tool_bindings": [{"tool_name": "x", "tool_type": "builtin"}],
+        "mcp_tags": ["map"],
+    }
+    tools = asyncio.run(service._load_tools(agent_row))
+    assert tools == []
+
+
+def test_update_tool_bindings_updates_db_and_cache():
+    """测试 update_tool_bindings 写 DB 后同步刷新缓存。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: DB 未更新或缓存未刷新时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value={
+        "name": "x", "display_name": "X", "description": "",
+        "agents_md_path": "x.md", "state_schema": {}, "context_schema": {},
+        "config_schema": {}, "mcp_tags": [], "tool_bindings": [], "enabled": True,
+    })
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    loader.load = MagicMock(return_value="prompt")
+    service = AgentConfigService(db, loader)
+
+    bindings = [{"tool_name": "search", "tool_type": "builtin", "enabled": True}]
+    result = asyncio.run(service.update_tool_bindings("x", bindings))
+
+    assert result["name"] == "x"
+    # 验证第一次 fetchrow 调用是 UPDATE agents SET tool_bindings
+    # （第二次是 _refresh_cache → _load_from_db 的 SELECT）
+    first_call_sql = db.fetchrow.call_args_list[0].args[0]
+    assert "UPDATE agents" in first_call_sql
+    assert "tool_bindings" in first_call_sql
+    # 验证缓存被刷新（_refresh_cache 调 _load_from_db，缓存中有该 agent）
+    assert "x" in service._cache
+
+
+def test_update_tool_bindings_raises_not_found():
+    """测试 update_tool_bindings 在 agent 不存在时抛 AgentNotFoundError。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        pytest.raises 期望的 AgentNotFoundError
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value=None)
+    service = AgentConfigService(db, MagicMock())
+
+    with pytest.raises(AgentNotFoundError, match="x"):
+        asyncio.run(service.update_tool_bindings("x", []))
+
+
+def test_get_tool_bindings_returns_list():
+    """测试 get_tool_bindings 返回解码后的工具绑定列表。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 返回值不符合预期时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value={
+        "tool_bindings": [
+            {"tool_name": "search", "tool_type": "builtin", "enabled": True},
+        ]
+    })
+    service = AgentConfigService(db, MagicMock())
+
+    result = asyncio.run(service.get_tool_bindings("x"))
+
+    assert isinstance(result, list)
+    assert len(result) == 1
+    assert result[0]["tool_name"] == "search"
+
+
+def test_get_tool_bindings_decodes_jsonb_string():
+    """测试 get_tool_bindings 在 DB 返回 JSONB 字符串时正确解码。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 解码结果不符合预期时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value={
+        "tool_bindings": '[{"tool_name": "x", "tool_type": "mcp"}]'
+    })
+    service = AgentConfigService(db, MagicMock())
+
+    result = asyncio.run(service.get_tool_bindings("x"))
+
+    assert isinstance(result, list)
+    assert result[0]["tool_name"] == "x"
+    assert result[0]["tool_type"] == "mcp"
+
+
+def test_get_tool_bindings_returns_empty_when_null():
+    """测试 get_tool_bindings 在字段为 None 时返回空列表。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 返回值不符合预期时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value={"tool_bindings": None})
+    service = AgentConfigService(db, MagicMock())
+
+    result = asyncio.run(service.get_tool_bindings("x"))
+
+    assert result == []
+
+
+def test_get_tool_bindings_raises_not_found():
+    """测试 get_tool_bindings 在 agent 不存在时抛 AgentNotFoundError。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        pytest.raises 期望的 AgentNotFoundError
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value=None)
+    service = AgentConfigService(db, MagicMock())
+
+    with pytest.raises(AgentNotFoundError, match="x"):
+        asyncio.run(service.get_tool_bindings("x"))
+
+
+def test_create_agent_calls_refresh_cache():
+    """测试 create_agent 写 DB 后调用 _refresh_cache。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: _refresh_cache 未被调用时抛出
+    """
+    md_file = MagicMock()
+    md_file.is_file = MagicMock(return_value=True)
+    db = MagicMock()
+    db.fetchrow = AsyncMock(side_effect=[
+        None,  # SELECT 检查不存在
+        {"name": "new", "display_name": "N", "description": "",
+         "agents_md_path": "n.md", "state_schema": {}, "context_schema": {},
+         "config_schema": {}, "mcp_tags": [], "enabled": True},
+    ])
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+    service._refresh_cache = AsyncMock()
+
+    from unittest.mock import patch
+    with patch("pathlib.Path.is_file", return_value=True):
+        asyncio.run(service.create_agent({
+            "name": "new_agent",
+            "display_name": "N",
+            "agents_md_path": "n.md",
+        }))
+
+    service._refresh_cache.assert_called_once_with("new_agent")
+
+
+def test_delete_agent_calls_invalidate_cache():
+    """测试 delete_agent 写 DB 后调用 _invalidate_cache。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: _invalidate_cache 未被调用时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value={"name": "to_delete"})
+    db.execute = AsyncMock()
+    service = AgentConfigService(db, MagicMock())
+    service._invalidate_cache = AsyncMock()
+
+    asyncio.run(service.delete_agent("to_delete"))
+
+    service._invalidate_cache.assert_called_once_with("to_delete")
+
+
+def test_set_agent_enabled_false_calls_invalidate_cache():
+    """测试 set_agent_enabled(enabled=False) 调用 _invalidate_cache。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: _invalidate_cache 未被调用时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value={"name": "x", "enabled": False})
+    service = AgentConfigService(db, MagicMock())
+    service._invalidate_cache = AsyncMock()
+    service._refresh_cache = AsyncMock()
+
+    asyncio.run(service.set_agent_enabled("x", False))
+
+    service._invalidate_cache.assert_called_once_with("x")
+    service._refresh_cache.assert_not_called()
+
+
+def test_set_agent_enabled_true_calls_refresh_cache():
+    """测试 set_agent_enabled(enabled=True) 调用 _refresh_cache。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: _refresh_cache 未被调用时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value={"name": "x", "enabled": True})
+    service = AgentConfigService(db, MagicMock())
+    service._refresh_cache = AsyncMock()
+    service._invalidate_cache = AsyncMock()
+
+    asyncio.run(service.set_agent_enabled("x", True))
+
+    service._refresh_cache.assert_called_once_with("x")
+    service._invalidate_cache.assert_not_called()
+
+
+def test_get_agent_config_tools_loaded_on_first_call():
+    """测试 get_agent_config 首次调用时触发 _load_tools 填充 tools 字段。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: tools 字段未被正确填充时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value={
+        "name": "x", "display_name": "X", "description": "",
+        "agents_md_path": "x.md", "state_schema": {}, "context_schema": {},
+        "config_schema": {}, "mcp_tags": [], "tool_bindings": [], "enabled": True,
+    })
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    loader.load = MagicMock(return_value="prompt")
+    service = AgentConfigService(db, loader)
+
+    config = asyncio.run(service.get_agent_config("x"))
+
+    # tools 应被 _load_tools 填充为空列表（无 tool_service / mcp_registry）
+    assert config.tools is not None
+    assert config.tools == []
+
+
+def test_unified_agent_config_has_agent_row_field():
+    """测试 UnifiedAgentConfig 包含 _agent_row 字段且默认为空 dict。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: _agent_row 字段不存在或默认值不正确时抛出
+    """
+    from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+    from app.core.agent.AgentConfig import AgentState
+    from app.core.agent.AgentContext import AgentContext
+
+    config = UnifiedAgentConfig(
+        name="", display_name="", description="", system_prompt="",
+        state_class=AgentState, context_class=AgentContext,
+    )
+    assert config._agent_row == {}
+    assert config.tools is None
+
+
+def test_unified_agent_config_agent_row_not_in_repr():
+    """测试 _agent_row 不出现在 __repr__ 中（repr=False）。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: _agent_row 出现在 repr 中时抛出
+    """
+    from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+    from app.core.agent.AgentConfig import AgentState
+    from app.core.agent.AgentContext import AgentContext
+
+    config = UnifiedAgentConfig(
+        name="test", display_name="T", description="", system_prompt="",
+        state_class=AgentState, context_class=AgentContext,
+        _agent_row={"secret": "data"},
+    )
+    repr_str = repr(config)
+    assert "_agent_row" not in repr_str
+    assert "secret" not in repr_str
 

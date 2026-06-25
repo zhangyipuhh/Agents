@@ -145,3 +145,119 @@ def test_get_agents_md_returns_content(client, admin_headers, monkeypatch):
     response = client.get("/api/agent/map_agent/agents-md", headers=headers)
     assert response.status_code == 200
     assert response.json()["content"] == "# 地图智能体"
+
+
+def test_chat_passes_tools_to_agent_config(client, admin_headers, monkeypatch):
+    """测试 chat 端点将 UnifiedAgentConfig.tools 传入 AgentConfig。
+
+    验证 Task 6 的核心改动：构造 AgentConfig 时传入 tools=config.tools，
+    确保 AgentConfigService 从 DB + MCP registry 加载的工具列表能传递到 Agent。
+    """
+    from unittest.mock import MagicMock
+
+    captured_configs = []
+
+    class FakeAgent:
+        """FakeAgent 捕获 AgentConfig 实例，避免真实 LLM 初始化。"""
+
+        def __init__(self, config):
+            captured_configs.append(config)
+
+        async def __ainit__(self):
+            pass
+
+    monkeypatch.setattr("app.core.agent.agent.Agent", FakeAgent)
+
+    # Mock generate_stream_response 避免流式响应消费失败
+    def fake_stream(*args, **kwargs):
+        yield "data: test\n\n"
+
+    monkeypatch.setattr("app.routers.agent_router.generate_stream_response", fake_stream)
+
+    # Mock get_async_checkpointer 避免真实 checkpointer 初始化
+    async def fake_checkpointer():
+        return MagicMock()
+
+    monkeypatch.setattr("app.routers.agent_router.get_async_checkpointer", fake_checkpointer)
+
+    async def fake_get(self, name):
+        from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+        return UnifiedAgentConfig(
+            name=name,
+            display_name="测试智能体",
+            description="",
+            system_prompt="# 测试",
+            state_class=MagicMock(return_value={"messages": []}),
+            context_class=MagicMock(return_value={"session_id": "test"}),
+            tools=["fake_tool_1", "fake_tool_2"],
+        )
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.get_agent_config",
+        fake_get,
+    )
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": "test_agent",
+    }, headers=headers)
+
+    assert response.status_code == 200
+    assert len(captured_configs) == 1
+    assert captured_configs[0].tools == ["fake_tool_1", "fake_tool_2"]
+
+
+def test_chat_with_none_tools_does_not_break(client, admin_headers, monkeypatch):
+    """测试 UnifiedAgentConfig.tools 为 None 时 chat 端点不报错。
+
+    验证 tools=None（默认值）传入 AgentConfig 后不会破坏现有逻辑，
+    AgentConfig.tools 默认为 None，get_tools() 会返回空列表。
+    """
+    from unittest.mock import MagicMock
+
+    class FakeAgent:
+        def __init__(self, config):
+            self._config = config
+
+        async def __ainit__(self):
+            pass
+
+    monkeypatch.setattr("app.core.agent.agent.Agent", FakeAgent)
+
+    def fake_stream(*args, **kwargs):
+        yield "data: test\n\n"
+
+    monkeypatch.setattr("app.routers.agent_router.generate_stream_response", fake_stream)
+
+    async def fake_checkpointer():
+        return MagicMock()
+
+    monkeypatch.setattr("app.routers.agent_router.get_async_checkpointer", fake_checkpointer)
+
+    async def fake_get(self, name):
+        from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+        return UnifiedAgentConfig(
+            name=name,
+            display_name="测试智能体",
+            description="",
+            system_prompt="# 测试",
+            state_class=MagicMock(return_value={"messages": []}),
+            context_class=MagicMock(return_value={"session_id": "test"}),
+            # tools 不传，默认为 None
+        )
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.get_agent_config",
+        fake_get,
+    )
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": "test_agent",
+    }, headers=headers)
+
+    assert response.status_code == 200

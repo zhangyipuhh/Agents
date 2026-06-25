@@ -365,6 +365,48 @@ ALTER TABLE mcp_server_configs
 ALTER TABLE mcp_server_configs
     ADD COLUMN IF NOT EXISTS connect_timeout INT DEFAULT 10;
 
+-- ============================================================
+-- 2026-06-25 Agent 配置缓存 + 工具统一管理架构改造
+-- 新增 tools 表 + agents.tool_bindings 字段 + agent_tool_bindings.tool_type 字段
+-- 幂等：所有 DDL 使用 IF NOT EXISTS，可重复执行
+-- ============================================================
+
+-- 15. tools 表：统一工具元数据注册表
+--     用途：将散落在 app/core/tools/ 与 app/features/*/tools/ 下的工具函数元数据
+--           统一登记到数据库，供管理界面展示与 Agent 配置缓存查询
+CREATE TABLE IF NOT EXISTS tools (
+    id                      SERIAL PRIMARY KEY,
+    name                    VARCHAR(100) UNIQUE NOT NULL,   -- 工具唯一标识（与 @register_tool 注册名一致）
+    display_name            VARCHAR(200),                   -- 展示名称（管理界面用）
+    category                VARCHAR(100) NOT NULL,          -- 工具分类（如 filesystem / sandbox / mcp / map 等）
+    description             TEXT,                           -- 工具描述（来自 docstring 摘要）
+    module_path             VARCHAR(500) NOT NULL,          -- Python 模块路径（如 app.core.tools.SandboxTools）
+    file_path               VARCHAR(500) NOT NULL,          -- 源文件相对路径（如 app/core/tools/SandboxTools.py）
+    args_schema             JSONB DEFAULT '{}',             -- 参数 schema（Pydantic model 字段描述）
+    return_description      TEXT,                           -- 返回值描述
+    function_description    TEXT,                           -- 函数完整描述（docstring 全文）
+    enabled                 BOOLEAN DEFAULT TRUE,           -- 是否启用
+    sort_order              INT DEFAULT 0,                  -- 排序权重
+    created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+-- 索引：按分类查询、按启用状态查询
+CREATE INDEX IF NOT EXISTS idx_tools_category ON tools(category);
+CREATE INDEX IF NOT EXISTS idx_tools_enabled  ON tools(enabled);
+
+-- 16. agents 表扩展：tool_bindings 字段
+--     用途：缓存该智能体当前启用的工具列表快照（JSON 数组）
+--           避免每次加载 AgentConfig 时都联表查 agent_tool_bindings
+--     结构示例：[{"name": "sandbox", "type": "builtin"}, {"name": "mcp__weather", "type": "mcp"}]
+--     数据来源：由 AgentConfigService 在保存配置时同步写入
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS tool_bindings JSONB DEFAULT '[]';
+
+-- 17. agent_tool_bindings 表扩展：tool_type 字段
+--     用途：区分工具来源类型，便于管理界面分组展示与运行时按类型加载
+--     取值：'builtin'（内置 @register_tool 工具）/ 'mcp'（MCP server 工具）/ 'skill'（skill 工具）
+--     默认 'builtin'：兼容历史数据（老绑定记录全部视为内置工具）
+ALTER TABLE agent_tool_bindings ADD COLUMN IF NOT EXISTS tool_type VARCHAR(20) DEFAULT 'builtin';
+
 COMMIT;
 
 -- =============================================
@@ -378,7 +420,8 @@ WHERE table_schema = 'public'
     'refresh_tokens', 'audit_logs', 'portal_refresh_tokens',
     'map_business_info', 'map_business_no_counter',
     'agents', 'agent_tool_bindings', 'agent_skill_bindings',
-    'mcp_server_configs', 'mcp_server_methods'
+    'mcp_server_configs', 'mcp_server_methods',
+    'tools'
   )
 ORDER BY table_name;
 

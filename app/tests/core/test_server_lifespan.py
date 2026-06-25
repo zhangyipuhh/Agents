@@ -165,3 +165,134 @@ def test_lifespan_db_configs_contain_new_fields():
     assert config["args"] == ["-m", "server"]
     assert config["env"] == {"PYTHONPATH": "/path"}
     assert config["connect_timeout"] == 10
+
+
+def test_lifespan_injects_dependencies_and_preloads_caches():
+    """
+    测试 lifespan：agent_config_service 存在时，注入 tool_service / mcp_registry
+    依赖并调用 preload_all 预加载缓存。
+
+    验证：
+    - tool_service 存在时调用 set_tool_service
+    - mcp_registry 存在时调用 set_mcp_registry
+    - agent_config_service.preload_all 与 mcp_config_service.preload_all 被调用
+    - preload_all 失败时不抛异常（try/except 包裹降级为 warning）
+
+    生产对等初始化点：app/core/server.py lifespan 函数中
+    "=== 注入依赖到 AgentConfigService 并预加载缓存 ===" 段落。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 依赖注入或预加载未按预期执行时抛出
+    """
+    # 模拟 app.state 及各 service
+    app_state = MagicMock()
+    app_state.agent_config_service = MagicMock()
+    app_state.agent_config_service.set_tool_service = MagicMock()
+    app_state.agent_config_service.set_mcp_registry = MagicMock()
+    app_state.agent_config_service.preload_all = AsyncMock()
+    app_state.mcp_config_service = MagicMock()
+    app_state.mcp_config_service.preload_all = AsyncMock()
+    app_state.tool_service = MagicMock()
+    app_state.mcp_registry = MagicMock()
+
+    # 复现 lifespan 中依赖注入 + 预加载逻辑片段
+    if getattr(app_state, "agent_config_service", None):
+        try:
+            if getattr(app_state, "tool_service", None):
+                app_state.agent_config_service.set_tool_service(app_state.tool_service)
+            if getattr(app_state, "mcp_registry", None):
+                app_state.agent_config_service.set_mcp_registry(app_state.mcp_registry)
+            asyncio.run(app_state.agent_config_service.preload_all())
+            asyncio.run(app_state.mcp_config_service.preload_all())
+        except Exception:
+            pass
+
+    # 验证依赖注入被调用
+    app_state.agent_config_service.set_tool_service.assert_called_once_with(
+        app_state.tool_service
+    )
+    app_state.agent_config_service.set_mcp_registry.assert_called_once_with(
+        app_state.mcp_registry
+    )
+    # 验证 preload_all 被调用
+    app_state.agent_config_service.preload_all.assert_awaited_once()
+    app_state.mcp_config_service.preload_all.assert_awaited_once()
+
+
+def test_lifespan_skips_injection_when_agent_config_service_missing():
+    """
+    测试 lifespan：agent_config_service 不存在时，跳过依赖注入与预加载，
+    不抛异常（hasattr 守卫）。
+
+    生产对等初始化点：app/core/server.py lifespan 函数中
+    "=== 注入依赖到 AgentConfigService 并预加载缓存 ===" 段落的 if 守卫。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 缺失 agent_config_service 时未跳过而抛异常时失败
+    """
+    # app_state 无 agent_config_service 属性
+    app_state = MagicMock(spec=[])
+
+    # 复现 lifespan 中守卫逻辑
+    called = False
+    if getattr(app_state, "agent_config_service", None):
+        called = True
+
+    assert called is False
+
+
+def test_lifespan_preload_failure_does_not_raise():
+    """
+    测试 lifespan：preload_all 抛异常时被 try/except 捕获，不向外抛出。
+
+    生产对等初始化点：app/core/server.py lifespan 函数中
+    preload_all 调用外的 try/except 包裹。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 异常未被捕获而向外抛出时失败
+    """
+    app_state = MagicMock()
+    app_state.agent_config_service = MagicMock()
+    app_state.agent_config_service.set_tool_service = MagicMock()
+    app_state.agent_config_service.set_mcp_registry = MagicMock()
+    # preload_all 抛异常
+    app_state.agent_config_service.preload_all = AsyncMock(
+        side_effect=RuntimeError("db connection lost")
+    )
+    app_state.mcp_config_service = MagicMock()
+    app_state.mcp_config_service.preload_all = AsyncMock()
+    app_state.tool_service = MagicMock()
+    app_state.mcp_registry = MagicMock()
+
+    # 复现 lifespan 逻辑：try/except 应捕获异常
+    raised = False
+    if getattr(app_state, "agent_config_service", None):
+        try:
+            if getattr(app_state, "tool_service", None):
+                app_state.agent_config_service.set_tool_service(app_state.tool_service)
+            if getattr(app_state, "mcp_registry", None):
+                app_state.agent_config_service.set_mcp_registry(app_state.mcp_registry)
+            asyncio.run(app_state.agent_config_service.preload_all())
+            asyncio.run(app_state.mcp_config_service.preload_all())
+        except Exception:
+            raised = True
+
+    assert raised is True

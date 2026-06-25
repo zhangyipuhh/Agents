@@ -11,7 +11,7 @@ Date: 2026-03-10
 Author: 张镒谱
 """
 
-from typing import Optional, Any
+from typing import Optional, Any, List
 from typing_extensions import TypedDict
 from dataclasses import dataclass, field
 from langgraph.graph import MessagesState
@@ -20,10 +20,6 @@ from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import RetryPolicy
 from app.core.agent.AgentContext import AgentContext
-from app.core.tools.BaseTools import get_current_time, open_file, load_web_page, read_cached_chunk,open_file_by_id
-from app.core.tools.SandboxTools import sandbox
-from app.core.tools.FilesystemReadTools import explore
-from app.core.skills.tool import load_skill, read_skill_file
 from app.core.config.config import LLM_CONFIG
 
 class ConfigurableConfig(TypedDict):
@@ -242,19 +238,27 @@ class AgentConfig:
     
     summarize_retry_initial_interval: float = field(default=1.0)
     """摘要操作初始重试间隔（秒），默认 1.0 秒"""
-    
-    def get_tools(self) -> tuple[list[str], ToolNode]:
+
+    tools: Optional[List[Any]] = field(default=None)
+    """外部传入的工具列表。
+
+    设计原则（决策 8）：基础工具不默认加载，所有工具通过绑定实现。
+    - 生产 chat 路径（agent_router）必须传入 tools=config.tools
+    - tools=None 或 [] 时，get_tools() 返回空列表（无工具可用）
+    - 不再有任何硬编码的默认工具回退逻辑
+    """
+
+    def get_tools(self) -> tuple[list, ToolNode]:
         """
-        获取所有审计文档工具名称列表
+        获取工具列表和工具节点。
 
-        返回:
-            tuple[list[str], ToolNode]: 工具名称列表和对应的 ToolNode 对象
+        完全依赖外部传入的 self.tools，不再有硬编码默认工具。
+        若 tools 为 None 或空列表，返回空工具列表（agent 无工具可用）。
 
-        注意:
-            此方法需要子类重写，在子类中添加工具到 tools 列表
+        Returns:
+            tuple[list, ToolNode]: (工具实例列表, 工具节点)
         """
-        tools: list[str] = [get_current_time, open_file, load_web_page, read_cached_chunk,open_file_by_id, sandbox, explore, load_skill, read_skill_file]
-
+        tools = self.tools or []
         return tools, ToolNode(tools, handle_tool_errors=True)
     
     def get_llm_retry_policy(self) -> RetryPolicy:

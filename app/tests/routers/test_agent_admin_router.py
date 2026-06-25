@@ -40,6 +40,7 @@ def test_all_endpoints_registered(client):
         "/api/admin/agents/{name}/enabled",
         "/api/admin/agents/{name}/config-schema",
         "/api/admin/agents/{name}/config-schema/field",
+        "/api/admin/agents/{name}/tool-bindings",
     ]
     # PUT /config-schema/field 与 POST / DELETE 共享同一 path，已包含在上面的 path 中
     for path in expected:
@@ -486,3 +487,318 @@ def test_get_agent_returns_decoded_config_schema(client, admin_headers):
     assert data["agent_config_overrides"]["max_tokens"] == 20000
     # mcp_tags 也必须是数组
     assert data["mcp_tags"] == ["map"]
+
+
+# ============================================================
+# 工具绑定 (tool-bindings) 端点测试
+# ============================================================
+
+def test_get_tool_bindings_returns_list(client, admin_headers):
+    """GET /api/admin/agents/{name}/tool-bindings 返回工具绑定列表。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 返回值不符合预期时抛出
+    """
+    from unittest.mock import MagicMock
+
+    fake_row = {
+        "tool_bindings": [
+            {"tool_name": "search", "tool_type": "builtin",
+             "enabled": True, "sort_order": 0},
+            {"tool_name": "map_mcp", "tool_type": "mcp",
+             "enabled": False, "sort_order": 1},
+        ]
+    }
+
+    async def fake_fetchrow(*args, **kwargs):
+        return fake_row
+
+    service = client.app.state.agent_config_service
+    if service._db is None:
+        service._db = MagicMock()
+    service._db.fetchrow = fake_fetchrow
+
+    response = client.get(
+        "/api/admin/agents/map_agent/tool-bindings", headers=admin_headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["agent_name"] == "map_agent"
+    assert isinstance(data["tool_bindings"], list)
+    assert len(data["tool_bindings"]) == 2
+    assert data["tool_bindings"][0]["tool_name"] == "search"
+    assert data["tool_bindings"][1]["tool_type"] == "mcp"
+
+
+def test_get_tool_bindings_returns_empty_list(client, admin_headers):
+    """GET /api/admin/agents/{name}/tool-bindings 无绑定时返回空列表。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 返回值不符合预期时抛出
+    """
+    from unittest.mock import MagicMock
+
+    async def fake_fetchrow(*args, **kwargs):
+        return {"tool_bindings": []}
+
+    service = client.app.state.agent_config_service
+    if service._db is None:
+        service._db = MagicMock()
+    service._db.fetchrow = fake_fetchrow
+
+    response = client.get(
+        "/api/admin/agents/empty_agent/tool-bindings", headers=admin_headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["agent_name"] == "empty_agent"
+    assert data["tool_bindings"] == []
+
+
+def test_get_tool_bindings_agent_not_found_404(client, admin_headers):
+    """GET /api/admin/agents/{name}/tool-bindings agent 不存在返回 404。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 状态码不符合预期时抛出
+    """
+    from unittest.mock import MagicMock
+
+    async def fake_fetchrow(*args, **kwargs):
+        return None
+
+    service = client.app.state.agent_config_service
+    if service._db is None:
+        service._db = MagicMock()
+    service._db.fetchrow = fake_fetchrow
+
+    response = client.get(
+        "/api/admin/agents/nonexistent/tool-bindings", headers=admin_headers,
+    )
+    assert response.status_code == 404
+
+
+def test_get_tool_bindings_decodes_jsonb_string(client, admin_headers):
+    """GET /api/admin/agents/{name}/tool-bindings 在 DB 返回 JSONB 字符串时正确解码。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 解码结果不符合预期时抛出
+    """
+    from unittest.mock import MagicMock
+
+    async def fake_fetchrow(*args, **kwargs):
+        # asyncpg 未注册 JSONB codec 时返回字符串
+        return {"tool_bindings": '[{"tool_name": "x", "tool_type": "builtin"}]'}
+
+    service = client.app.state.agent_config_service
+    if service._db is None:
+        service._db = MagicMock()
+    service._db.fetchrow = fake_fetchrow
+
+    response = client.get(
+        "/api/admin/agents/x/tool-bindings", headers=admin_headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert isinstance(data["tool_bindings"], list)
+    assert data["tool_bindings"][0]["tool_name"] == "x"
+
+
+def test_update_tool_bindings_success(client, admin_headers):
+    """PUT /api/admin/agents/{name}/tool-bindings 成功更新工具绑定列表。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 返回值不符合预期时抛出
+    """
+    from unittest.mock import MagicMock
+
+    fake_db = MagicMock()
+    # update_tool_bindings 调用 fetchrow（UPDATE RETURNING *），
+    # 随后 _refresh_cache → _load_from_db 再次调用 fetchrow + fetch
+    updated_row = {
+        "name": "map_agent", "display_name": "地图智能体", "description": "",
+        "agents_md_path": "x.md", "state_schema": {}, "context_schema": {},
+        "config_schema": {}, "mcp_tags": [],
+        "tool_bindings": [
+            {"tool_name": "search", "tool_type": "builtin",
+             "enabled": True, "sort_order": 0},
+        ],
+        "enabled": True,
+    }
+
+    async def fake_fetchrow(*args, **kwargs):
+        return updated_row
+
+    async def fake_fetch(*args, **kwargs):
+        return []
+
+    fake_db.fetchrow = fake_fetchrow
+    fake_db.fetch = fake_fetch
+
+    client.app.state.db = fake_db
+    service = client.app.state.agent_config_service
+    service._db = fake_db
+    # _refresh_cache → _load_from_db 会调用 loader.load(agents_md_path)，
+    # 真实 loader 会读文件抛 FileNotFoundError，此处 mock 为返回固定 prompt
+    service._loader.load = MagicMock(return_value="prompt")
+
+    response = client.put(
+        "/api/admin/agents/map_agent/tool-bindings",
+        headers=admin_headers,
+        json={
+            "bindings": [
+                {"tool_name": "search", "tool_type": "builtin",
+                 "enabled": True, "sort_order": 0},
+            ]
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["agent_name"] == "map_agent"
+    assert isinstance(data["tool_bindings"], list)
+    assert data["tool_bindings"][0]["tool_name"] == "search"
+
+
+def test_update_tool_bindings_empty_list_clears_bindings(client, admin_headers):
+    """PUT /api/admin/agents/{name}/tool-bindings 传空列表清空所有绑定。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 返回值不符合预期时抛出
+    """
+    from unittest.mock import MagicMock
+
+    fake_db = MagicMock()
+    updated_row = {
+        "name": "x", "display_name": "X", "description": "",
+        "agents_md_path": "x.md", "state_schema": {}, "context_schema": {},
+        "config_schema": {}, "mcp_tags": [], "tool_bindings": [],
+        "enabled": True,
+    }
+
+    async def fake_fetchrow(*args, **kwargs):
+        return updated_row
+
+    async def fake_fetch(*args, **kwargs):
+        return []
+
+    fake_db.fetchrow = fake_fetchrow
+    fake_db.fetch = fake_fetch
+
+    client.app.state.db = fake_db
+    service = client.app.state.agent_config_service
+    service._db = fake_db
+    # _refresh_cache → _load_from_db 会调用 loader.load(agents_md_path)，
+    # 真实 loader 会读文件抛 FileNotFoundError，此处 mock 为返回固定 prompt
+    service._loader.load = MagicMock(return_value="prompt")
+
+    response = client.put(
+        "/api/admin/agents/x/tool-bindings",
+        headers=admin_headers,
+        json={"bindings": []},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["tool_bindings"] == []
+
+
+def test_update_tool_bindings_agent_not_found_404(client, admin_headers):
+    """PUT /api/admin/agents/{name}/tool-bindings agent 不存在返回 404。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 状态码不符合预期时抛出
+    """
+    from unittest.mock import MagicMock
+
+    fake_db = MagicMock()
+    # UPDATE ... RETURNING * 在 agent 不存在时返回 None
+    async def fake_fetchrow(*args, **kwargs):
+        return None
+
+    async def fake_fetch(*args, **kwargs):
+        return []
+
+    fake_db.fetchrow = fake_fetchrow
+    fake_db.fetch = fake_fetch
+
+    client.app.state.db = fake_db
+    service = client.app.state.agent_config_service
+    service._db = fake_db
+    # agent 不存在时 update_tool_bindings 直接抛 AgentNotFoundError，
+    # 不会进入 _refresh_cache，但防御性 mock loader 避免意外调用
+    service._loader.load = MagicMock(return_value="prompt")
+
+    response = client.put(
+        "/api/admin/agents/nonexistent/tool-bindings",
+        headers=admin_headers,
+        json={"bindings": []},
+    )
+    assert response.status_code == 404
+
+
+def test_update_tool_bindings_invalid_payload_422(client, admin_headers):
+    """PUT /api/admin/agents/{name}/tool-bindings 非法 payload（缺 tool_name）返回 422。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 状态码不符合预期时抛出
+    """
+    response = client.put(
+        "/api/admin/agents/x/tool-bindings",
+        headers=admin_headers,
+        json={"bindings": [{"tool_type": "builtin"}]},  # 缺少 tool_name
+    )
+    assert response.status_code == 422

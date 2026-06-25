@@ -18,6 +18,8 @@ Agent Admin Router 模块
                                                     增量添加字段
 - DELETE /api/admin/agents/{name}/config-schema/field?section=&field_name=
                                                     增量删除字段
+- GET    /api/admin/agents/{name}/tool-bindings   获取工具绑定列表
+- PUT    /api/admin/agents/{name}/tool-bindings   更新工具绑定列表（全量替换）
 
 所有路由均通过 require_admin 鉴权。
 
@@ -93,6 +95,28 @@ class SetEnabledRequest(BaseModel):
 class ValidateMdPathRequest(BaseModel):
     """AGENTS.md 路径校验请求体。"""
     path: str = Field(..., min_length=1, max_length=500)
+
+
+class ToolBindingItem(BaseModel):
+    """单个工具绑定项。
+
+    用于描述 agent 与工具的绑定关系：
+    - tool_name: 工具唯一标识（内置工具名 / MCP 工具名 / skill 名）
+    - tool_type: 工具来源类型，"builtin" 内置 / "mcp" MCP 工具 / "skill" 技能
+    - enabled: 是否启用该绑定
+    - sort_order: 排序权重，越小越靠前
+    """
+    tool_name: str = Field(..., min_length=1, max_length=100,
+                           description="工具唯一标识")
+    tool_type: str = Field("builtin", description="工具来源类型：builtin / mcp / skill")
+    enabled: bool = Field(True, description="是否启用该绑定")
+    sort_order: int = Field(0, ge=0, description="排序权重，越小越靠前")
+
+
+class ToolBindingsRequest(BaseModel):
+    """更新工具绑定列表请求体。"""
+    bindings: List[ToolBindingItem] = Field(default_factory=list,
+                                            description="工具绑定列表（全量替换）")
 
 
 # === 工具函数 ===
@@ -325,3 +349,64 @@ async def delete_field(
         return await service.delete_agent_config_field(name, section, field_name)
     except (AgentNotFoundError, ValueError) as e:
         raise _handle_agent_error(e)
+
+
+@router.get("/{name}/tool-bindings")
+async def get_agent_tool_bindings(
+    request: Request, name: str
+) -> Dict[str, Any]:
+    """获取 agent 的工具绑定列表。
+
+    读取 agents.tool_bindings JSONB 字段，返回该 agent 当前绑定的全部工具。
+
+    参数:
+        name: 智能体名称（唯一标识）
+
+    返回:
+        Dict[str, Any]: {"agent_name": str, "tool_bindings": List[Dict]}
+        其中 tool_bindings 每项格式：
+            {"tool_name": str, "tool_type": str, "enabled": bool,
+             "sort_order": int}
+
+    异常:
+        HTTPException 404: 智能体不存在
+    """
+    service = _get_service(request)
+    try:
+        bindings = await service.get_tool_bindings(name)
+    except AgentNotFoundError as e:
+        raise _handle_agent_error(e)
+    return {"agent_name": name, "tool_bindings": bindings}
+
+
+@router.put("/{name}/tool-bindings")
+async def update_agent_tool_bindings(
+    request: Request, name: str, req: ToolBindingsRequest
+) -> Dict[str, Any]:
+    """更新 agent 的工具绑定列表（全量替换）。
+
+    将 agents.tool_bindings JSONB 字段替换为请求体中的 bindings 列表，
+    写入后同步刷新缓存（tools 字段延迟重新加载）。
+
+    参数:
+        name: 智能体名称（唯一标识）
+        req: 请求体，包含 bindings 列表（全量替换语义）
+
+    返回:
+        Dict[str, Any]: {"agent_name": str, "tool_bindings": List[Dict]}
+        其中 tool_bindings 为更新后的完整绑定列表
+
+    异常:
+        HTTPException 404: 智能体不存在
+    """
+    service = _get_service(request)
+    # 将 Pydantic 模型转为 dict 列表，与 service.update_tool_bindings 签名对齐
+    bindings_payload = [b.model_dump() for b in req.bindings]
+    try:
+        result = await service.update_tool_bindings(name, bindings_payload)
+    except AgentNotFoundError as e:
+        raise _handle_agent_error(e)
+    return {
+        "agent_name": name,
+        "tool_bindings": result.get("tool_bindings", []),
+    }

@@ -15,6 +15,7 @@ Date: 2026-06-23 / 2026-06-24 重构
 Author: AI Assistant
 """
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -59,6 +60,11 @@ class UnifiedAgentConfig:
         enabled_skill_names: 启用的 skill 名称列表
         agents_md_path: AGENTS.md 文件路径
         config_schema: 完整的 config_schema 三层嵌套字典（供 admin API 返回）
+        tools: 工具实例列表（@tool 装饰的函数 / MCPToolToLangChainAdapter 实例）；
+            None 表示尚未加载（延迟加载语义），由 _load_tools 填充；
+            空列表表示已加载但无工具绑定
+        _agent_row: 原始 DB 行字典（含 tool_bindings / mcp_tags 等字段），
+            供 _load_tools 延迟加载工具时使用；repr=False 避免打印大量数据
     """
     name: str
     display_name: str
@@ -72,6 +78,8 @@ class UnifiedAgentConfig:
     enabled_skill_names: List[str] = field(default_factory=list)
     agents_md_path: str = ""
     config_schema: Dict[str, Any] = field(default_factory=dict)
+    tools: Optional[List[Any]] = None
+    _agent_row: Dict = field(default_factory=dict, repr=False)
 
 
 class AgentConfigService:
@@ -80,6 +88,16 @@ class AgentConfigService:
     参数:
         db: 数据库连接池，需支持 fetch / fetchrow / execute 异步方法
         agents_md_loader: AGENTS.md 加载器
+
+    缓存设计（2026-06-25 新增）:
+        _cache: agent_name -> UnifiedAgentConfig 的进程内缓存，
+            启动时由 preload_all() 预加载，读方法优先读缓存，
+            写方法写 DB 后同步刷新或失效缓存。
+        _default_config: 框架默认配置缓存（agent_name 为空时使用）。
+        _cache_lock: asyncio.Lock，保护 _cache 字典写操作的并发安全。
+        _tools_lock: asyncio.Lock，保护工具延迟加载（防止并发重复加载）。
+        _tool_service / _mcp_registry: 由 lifespan 注入的外部依赖，
+            供 _load_tools 加载内置工具和 MCP 工具实例。
     """
 
     def __init__(self, db: Any, agents_md_loader: AgentsMdLoader) -> None:
@@ -88,9 +106,53 @@ class AgentConfigService:
         参数:
             db: 数据库连接池，需支持 fetch / fetchrow / execute 异步方法
             agents_md_loader: AGENTS.md 加载器实例
+
+        说明:
+            缓存字段 _cache / _default_config 在此初始化为空，
+            需调用 preload_all() 预加载；未预加载时读方法会回退到 DB。
+            _tool_service / _mcp_registry 默认为 None，需由 lifespan
+            调用 set_tool_service / set_mcp_registry 注入。
         """
         self._db = db
         self._loader = agents_md_loader
+        # agent_name -> UnifiedAgentConfig 的进程内缓存（tools=None 表示未加载工具）
+        self._cache: Dict[str, UnifiedAgentConfig] = {}
+        # 框架默认配置缓存（agent_name 为空时使用）
+        self._default_config: Optional[UnifiedAgentConfig] = None
+        # 保护 _cache 写操作的异步锁
+        self._cache_lock = asyncio.Lock()
+        # 保护工具延迟加载的异步锁（防止并发重复加载）
+        self._tools_lock = asyncio.Lock()
+        # 由 lifespan 注入的 ToolRegistryService 实例
+        self._tool_service: Optional[Any] = None
+        # 由 lifespan 注入的 MCPToolsRegistry 实例
+        self._mcp_registry: Optional[Any] = None
+
+    # ==================== 依赖注入 setter（由 lifespan 调用） ====================
+
+    def set_tool_service(self, tool_service: Any) -> None:
+        """注入 ToolRegistryService 实例（由 lifespan 调用）。
+
+        参数:
+            tool_service: ToolRegistryService 实例，供 _load_tools
+                按 tool_name 加载内置 @register_tool 工具实例
+
+        返回:
+            None
+        """
+        self._tool_service = tool_service
+
+    def set_mcp_registry(self, registry: Any) -> None:
+        """注入 MCPToolsRegistry 实例（由 lifespan 调用）。
+
+        参数:
+            registry: MCPToolsRegistry 实例，供 _load_tools
+                按 tool_name / mcp_tags 加载 MCP server 工具实例
+
+        返回:
+            None
+        """
+        self._mcp_registry = registry
 
     @staticmethod
     def _decode_jsonb(value: Any, default: Any) -> Any:
@@ -126,41 +188,189 @@ class AgentConfigService:
         返回:
             dict: 已解码的字典（原地修改并返回同一对象）
         """
-        for key in ("config_schema", "state_schema", "context_schema", "mcp_tags"):
+        for key in ("config_schema", "state_schema", "context_schema", "mcp_tags",
+                     "tool_bindings"):
             default = {} if key.endswith("_schema") else []
             row_dict[key] = self._decode_jsonb(row_dict.get(key), default)
         return row_dict
 
+    # ==================== 缓存层方法（2026-06-25 新增） ====================
+
+    async def preload_all(self) -> None:
+        """预加载所有启用的 agent 配置到缓存。
+
+        启动时由 lifespan 调用，将 DB 中所有 enabled=TRUE 的 agent 配置
+        加载到 _cache。加载的配置 tools 字段设为 None（延迟加载，保持
+        MCP 懒加载语义），首次 get_agent_config 时才触发 _load_tools。
+
+        参数:
+            无
+
+        返回:
+            None
+
+        异常:
+            数据库异常会向上抛出（由调用方处理）；
+            单个 agent 加载失败时记录 warning 并跳过，不中断整体预加载
+        """
+        rows = await self._db.fetch(
+            "SELECT name FROM agents WHERE enabled = TRUE ORDER BY sort_order, name"
+        )
+        new_cache: Dict[str, UnifiedAgentConfig] = {}
+        for row in rows:
+            name = row["name"]
+            try:
+                config = await self._load_from_db(name)
+                new_cache[name] = config
+            except AgentNotFoundError:
+                # 理论上不会发生（已过滤 enabled=TRUE），防御性跳过
+                logger.warning("Agent disappeared during preload: %s", name)
+        async with self._cache_lock:
+            self._cache = new_cache
+        logger.info("Preloaded %d agent config(s)", len(new_cache))
+
+    async def _refresh_cache(self, agent_name: str) -> None:
+        """重新从 DB 加载单个 agent 配置到缓存。
+
+        写方法（create / update / bind 等）写 DB 后调用此方法同步缓存。
+        重新加载的配置 tools 设为 None（延迟加载），下次 get_agent_config
+        时触发 _load_tools。若 DB 中该 agent 已不存在或已禁用，则从缓存移除。
+
+        参数:
+            agent_name: 智能体名称
+
+        返回:
+            None
+
+        异常:
+            不主动抛出异常；agent 不存在或已禁用时静默从缓存移除
+        """
+        try:
+            config = await self._load_from_db(agent_name)
+        except AgentNotFoundError:
+            async with self._cache_lock:
+                self._cache.pop(agent_name, None)
+            return
+        async with self._cache_lock:
+            self._cache[agent_name] = config
+
+    async def _invalidate_cache(self, agent_name: str) -> None:
+        """从缓存移除单个 agent。
+
+        delete_agent / set_agent_enabled(enabled=False) 写 DB 后调用此方法
+        使缓存失效，避免读到已删除或已禁用的配置。
+
+        参数:
+            agent_name: 智能体名称
+
+        返回:
+            None
+        """
+        async with self._cache_lock:
+            self._cache.pop(agent_name, None)
+
+    async def invalidate_all_cache(self) -> None:
+        """清空所有缓存（含 _default_config），供 MCP 变更时调用。
+
+        当 MCP server 配置发生变更（新增/删除/更新/启停）时，所有 agent
+        的工具列表可能受影响，需清空全部缓存强制下次重新加载。
+
+        参数:
+            无
+
+        返回:
+            None
+        """
+        async with self._cache_lock:
+            self._cache.clear()
+        self._default_config = None
+        logger.info("Invalidated all agent config cache")
+
     async def get_agent_config(self, agent_name: Optional[str] = None) -> UnifiedAgentConfig:
-        """根据 agent_name 加载完整配置。
+        """根据 agent_name 加载完整配置（带缓存 + 工具延迟加载）。
+
+        缓存策略：
+        1. agent_name 为空时查 _default_config 缓存，未命中调 _load_from_db
+        2. 命名 agent 先查 _cache，未命中调 _load_from_db 并写入缓存
+        3. 缓存命中但 tools=None 时，用 _tools_lock 保护触发 _load_tools
+           （double-check 模式防止并发重复加载）
 
         当 agent_name 为空（None / ''）时，返回框架默认配置：
         - 使用 AgentState / AgentContext 基类
         - system_prompt 为空字符串（Agent 内部会回退到 BASE_SYSTEM_PROMPT）
         - 不绑定任何工具或 skill
 
-        流程（非空 agent_name）：
-        1. 从 agents 表查询记录（含 enabled 校验）
-        2. 通过 AgentsMdLoader 加载 AGENTS.md 内容作为 system_prompt
-        3. 解析 config_schema（三层嵌套），回退到旧 state_schema + context_schema
-        4. 通过 dynamic_schema 构建 state_class / context_class
-        5. 从 agent_tool_bindings 加载启用的工具列表
-        6. 从 agent_skill_bindings 加载启用的 skill 列表
-
         参数:
             agent_name: 智能体名称，为空时返回默认配置
 
         返回:
-            UnifiedAgentConfig: 完整配置实例（含 agent_config_overrides）
+            UnifiedAgentConfig: 完整配置实例（含 tools 工具实例列表）
 
         异常:
             AgentNotFoundError: agent 不存在或已禁用时抛出（仅针对非空 agent_name）
             FileNotFoundError: agents_md_path 指向的 AGENTS.md 文件不存在时抛出
         """
+        # 1. 默认配置路径
+        if not agent_name:
+            if self._default_config is not None and self._default_config.tools is not None:
+                return self._default_config
+            config = await self._load_from_db(None)
+            if config.tools is None:
+                async with self._tools_lock:
+                    if config.tools is None:
+                        config.tools = await self._load_tools(config._agent_row)
+            self._default_config = config
+            return config
+
+        # 2. 命名 agent 路径：先查缓存
+        if agent_name in self._cache:
+            config = self._cache[agent_name]
+            if config.tools is None:
+                async with self._tools_lock:
+                    if config.tools is None:
+                        config.tools = await self._load_tools(config._agent_row)
+            return config
+
+        # 3. 未命中缓存：从 DB 加载并写入缓存
+        config = await self._load_from_db(agent_name)
+        async with self._cache_lock:
+            self._cache[agent_name] = config
+        if config.tools is None:
+            async with self._tools_lock:
+                if config.tools is None:
+                    config.tools = await self._load_tools(config._agent_row)
+        return config
+
+    async def _load_from_db(self, agent_name: Optional[str]) -> UnifiedAgentConfig:
+        """从数据库加载单个 agent 配置（不含工具实例，tools=None）。
+
+        将原 get_agent_config 的 DB 加载逻辑抽取为私有方法，供缓存层调用。
+        返回的 UnifiedAgentConfig.tools 为 None（延迟加载语义），
+        _agent_row 保存原始 DB 行字典供 _load_tools 使用。
+
+        流程（非空 agent_name）：
+        1. 从 agents 表查询记录（含 enabled 校验）
+        2. 通过 AgentsMdLoader 加载 AGENTS.md 内容作为 system_prompt
+        3. 解析 config_schema（三层嵌套），回退到旧 state_schema + context_schema
+        4. 通过 dynamic_schema 构建 state_class / context_class
+        5. 从 agent_tool_bindings 加载启用的工具名称列表
+        6. 从 agent_skill_bindings 加载启用的 skill 名称列表
+
+        参数:
+            agent_name: 智能体名称，为空（None / ''）时返回框架默认配置
+
+        返回:
+            UnifiedAgentConfig: 完整配置实例（tools=None，_agent_row=原始 DB 行）
+
+        异常:
+            AgentNotFoundError: agent 不存在或已禁用时抛出（仅针对非空 agent_name）
+            FileNotFoundError: agents_md_path 指向的 AGENTS.md 文件不存在时抛出
+        """
+        # 默认配置路径
         if not agent_name:
             from app.core.agent.AgentConfig import AgentState
             from app.core.agent.AgentContext import AgentContext
-            logger.info("Using default agent config (no agent_name provided)")
+            logger.info("Loading default agent config (no agent_name provided)")
             return UnifiedAgentConfig(
                 name="",
                 display_name="默认智能体",
@@ -174,6 +384,8 @@ class AgentConfigService:
                 enabled_skill_names=[],
                 agents_md_path="",
                 config_schema={},
+                tools=None,
+                _agent_row={},
             )
 
         row = await self._db.fetchrow(
@@ -184,14 +396,17 @@ class AgentConfigService:
             logger.warning("Agent not found or disabled: %s", agent_name)
             raise AgentNotFoundError(f"Agent {agent_name} not found or disabled")
 
-        system_prompt = self._loader.load(row["agents_md_path"])
+        # 解码 DB 行（含 tool_bindings / mcp_tags 等 JSONB 字段）
+        row_dict = self._decode_agent_row(dict(row))
+
+        system_prompt = self._loader.load(row_dict["agents_md_path"])
 
         # 2026-06-24 重构：优先读 config_schema，回退旧 state_schema + context_schema
-        config_schema = self._decode_jsonb(row.get("config_schema"), {})
+        config_schema = row_dict.get("config_schema") or {}
         if not config_schema:
             # 回退：合并旧字段
-            state_schema = self._decode_jsonb(row.get("state_schema"), {})
-            context_schema = self._decode_jsonb(row.get("context_schema"), {})
+            state_schema = row_dict.get("state_schema") or {}
+            context_schema = row_dict.get("context_schema") or {}
             config_schema = {
                 "state_fields": state_schema,
                 "context_fields": context_schema,
@@ -214,13 +429,13 @@ class AgentConfigService:
         logger.info("Loaded config for agent: %s", agent_name)
         return UnifiedAgentConfig(
             name=agent_name,
-            display_name=row.get("display_name", ""),
-            description=row.get("description", ""),
+            display_name=row_dict.get("display_name", ""),
+            description=row_dict.get("description", ""),
             system_prompt=system_prompt,
             state_class=state_class,
             context_class=context_class,
             agent_config_overrides=parsed["agent_config_overrides"],
-            mcp_tags=self._decode_jsonb(row.get("mcp_tags"), []),
+            mcp_tags=row_dict.get("mcp_tags", []),
             enabled_tool_names=[
                 r["tool_name"] for r in tool_bindings
                 if r.get("is_enabled") and "tool_name" in r
@@ -229,9 +444,70 @@ class AgentConfigService:
                 r["skill_name"] for r in skill_bindings
                 if r.get("is_enabled") and "skill_name" in r
             ],
-            agents_md_path=row["agents_md_path"],
+            agents_md_path=row_dict["agents_md_path"],
             config_schema=config_schema,
+            tools=None,
+            _agent_row=row_dict,
         )
+
+    async def _load_tools(self, agent_row: Dict) -> List[Any]:
+        """加载 agent 的工具列表（内置 + MCP）。
+
+        工具加载优先级：
+        1. tool_bindings 直接绑定（高优先级）：遍历 agents.tool_bindings JSONB
+           字段，按 tool_type 分发到 ToolRegistryService（builtin）或
+           MCPToolsRegistry（mcp）加载工具实例。
+        2. mcp_tags 过滤回退（低优先级）：当 tool_bindings 未加载到任何工具时，
+           回退到 mcp_tags 标签过滤 MCP server 工具，保持向后兼容。
+
+        无默认工具：tool_bindings 和 mcp_tags 都为空时返回空列表。
+
+        参数:
+            agent_row: agent 的原始 DB 行字典（含 tool_bindings / mcp_tags 字段），
+                通常来自 UnifiedAgentConfig._agent_row
+
+        返回:
+            List[Any]: 工具实例列表（@tool 装饰的函数或
+                MCPToolToLangChainAdapter 实例）；无工具时返回空列表
+
+        异常:
+            不主动抛出异常；工具加载失败时记录日志并跳过
+        """
+        tools: List[Any] = []
+
+        # 1. 加载直接绑定的工具（高优先级）
+        tool_bindings = self._decode_jsonb(agent_row.get("tool_bindings"), [])
+        for binding in tool_bindings:
+            if not binding.get("enabled", True):
+                continue
+            tool_name = binding.get("tool_name")
+            if not tool_name:
+                logger.warning("Skipping tool binding without tool_name: %s", binding)
+                continue
+            tool_type = binding.get("tool_type", "builtin")
+            if tool_type == "builtin" and self._tool_service:
+                tool_info = await self._tool_service.get_tool_by_name(tool_name)
+                if tool_info and tool_info.tool_instance:
+                    tools.append(tool_info.tool_instance)
+                else:
+                    logger.warning(
+                        "Builtin tool '%s' not found or has no instance", tool_name
+                    )
+            elif tool_type == "mcp" and self._mcp_registry:
+                # get_tools_with_server 是同步方法（内部用线程池执行异步代码）
+                mcp_tools = self._mcp_registry.get_tools_with_server(names=[tool_name])
+                for adapted_tool, _, _ in mcp_tools:
+                    tools.append(adapted_tool)
+
+        # 2. 如果没有直接绑定，回退到 mcp_tags 过滤（保持现有逻辑）
+        if not tools:
+            mcp_tags = self._decode_jsonb(agent_row.get("mcp_tags"), [])
+            if mcp_tags and self._mcp_registry:
+                mcp_tools = self._mcp_registry.get_tools_with_server(tags=mcp_tags)
+                for adapted_tool, _, _ in mcp_tools:
+                    tools.append(adapted_tool)
+
+        return tools
 
     async def list_agents(self) -> List[Dict[str, Any]]:
         """列出所有启用的智能体。
@@ -411,6 +687,8 @@ class AgentConfigService:
             raise
 
         logger.info("Created agent: %s", config["name"])
+        # 写 DB 后同步缓存（tools 设为 None，延迟加载）
+        await self._refresh_cache(config["name"])
         return self._decode_agent_row(dict(row))
 
     async def delete_agent(self, agent_name: str) -> None:
@@ -441,6 +719,8 @@ class AgentConfigService:
         await self._db.execute(
             "DELETE FROM agents WHERE name = $1", agent_name,
         )
+        # 写 DB 后使缓存失效
+        await self._invalidate_cache(agent_name)
         logger.info("Deleted agent: %s", agent_name)
 
     async def set_agent_enabled(self, agent_name: str, enabled: bool) -> Dict[str, Any]:
@@ -466,6 +746,11 @@ class AgentConfigService:
         if not row:
             raise AgentNotFoundError(f"Agent {agent_name} not found")
         logger.info("Set agent %s enabled=%s", agent_name, enabled)
+        # 写 DB 后同步缓存：启用时刷新缓存，禁用时失效缓存
+        if enabled:
+            await self._refresh_cache(agent_name)
+        else:
+            await self._invalidate_cache(agent_name)
         return self._decode_agent_row(dict(row))
 
     async def update_agent_config_schema(
@@ -511,6 +796,8 @@ class AgentConfigService:
         if not row:
             raise AgentNotFoundError(f"Agent {agent_name} not found")
         logger.info("Updated config_schema for agent: %s", agent_name)
+        # 写 DB 后同步缓存（tools 设为 None，延迟重新加载）
+        await self._refresh_cache(agent_name)
         return self._decode_agent_row(dict(row))
 
     async def add_agent_config_field(
@@ -686,6 +973,8 @@ class AgentConfigService:
             agent_name, tool_name, enabled,
         )
         logger.info("Bound tool %s to agent %s (enabled=%s)", tool_name, agent_name, enabled)
+        # 写 DB 后同步缓存（tools 设为 None，延迟重新加载）
+        await self._refresh_cache(agent_name)
 
     async def bind_skill(self, agent_name: str, skill_name: str, enabled: bool = True) -> None:
         """绑定/解绑 skill。
@@ -707,6 +996,63 @@ class AgentConfigService:
             agent_name, skill_name, enabled,
         )
         logger.info("Bound skill %s to agent %s (enabled=%s)", skill_name, agent_name, enabled)
+        # 写 DB 后同步缓存（tools 设为 None，延迟重新加载）
+        await self._refresh_cache(agent_name)
+
+    async def update_tool_bindings(self, agent_name: str, bindings: List[Dict]) -> Dict:
+        """更新 agent 的工具绑定列表（直接写入 agents.tool_bindings JSONB 字段）。
+
+        参数:
+            agent_name: 智能体名称
+            bindings: 工具绑定列表，格式：
+                [{"tool_name": str, "tool_type": str, "enabled": bool,
+                  "sort_order": int}, ...]
+                - tool_name: 工具唯一标识
+                - tool_type: 工具来源类型（"builtin" / "mcp" / "skill"），
+                  默认 "builtin"
+                - enabled: 是否启用，默认 True
+                - sort_order: 排序权重，默认 0
+
+        返回:
+            Dict[str, Any]: 更新后的 agent 行字典（含反序列化后的 JSONB 字段）
+
+        异常:
+            AgentNotFoundError: agent 不存在时抛出
+        """
+        row = await self._db.fetchrow(
+            "UPDATE agents SET tool_bindings = $2, updated_at = CURRENT_TIMESTAMP "
+            "WHERE name = $1 RETURNING *",
+            agent_name, json.dumps(bindings),
+        )
+        if not row:
+            raise AgentNotFoundError(f"Agent {agent_name} not found")
+        # 写 DB 后同步缓存（tools 设为 None，延迟重新加载）
+        await self._refresh_cache(agent_name)
+        logger.info("Updated tool_bindings for agent: %s", agent_name)
+        return self._decode_agent_row(dict(row))
+
+    async def get_tool_bindings(self, agent_name: str) -> List[Dict]:
+        """获取 agent 的工具绑定列表（读取 agents.tool_bindings JSONB 字段）。
+
+        参数:
+            agent_name: 智能体名称（唯一标识）
+
+        返回:
+            List[Dict]: 工具绑定列表，每项格式：
+                [{"tool_name": str, "tool_type": str, "enabled": bool,
+                  "sort_order": int}, ...]
+                agent 不存在或字段为空时返回空列表 []
+
+        异常:
+            AgentNotFoundError: agent 不存在时抛出
+        """
+        row = await self._db.fetchrow(
+            "SELECT tool_bindings FROM agents WHERE name = $1",
+            agent_name,
+        )
+        if row is None:
+            raise AgentNotFoundError(f"Agent {agent_name} not found")
+        return self._decode_jsonb(row.get("tool_bindings"), [])
 
     async def check_name_unique(self, name: str) -> bool:
         """检查智能体名称是否可用。

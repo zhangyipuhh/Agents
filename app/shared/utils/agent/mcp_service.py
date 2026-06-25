@@ -10,6 +10,7 @@ Date: 2026-06-23
 Author: AI Assistant
 """
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -52,6 +53,12 @@ class McpConfigService:
 
     参数:
         db: 数据库连接池（需支持 fetch/fetchrow/execute 异步方法）
+
+    缓存设计（2026-06-25 新增）:
+        _cache: server name -> server config dict 的进程内缓存，
+            启动时由 preload_all() 预加载，读方法优先读缓存，
+            写方法写 DB 后同步刷新或失效缓存。
+        _cache_lock: asyncio.Lock，保护缓存写操作的并发安全。
     """
 
     # JSONB 字段：tags / progress_reporting / tool_config / sampling /
@@ -60,7 +67,20 @@ class McpConfigService:
                      "command", "args", "env", "headers")
 
     def __init__(self, db: Any) -> None:
+        """初始化服务。
+
+        参数:
+            db: 数据库连接池，需支持 fetch / fetchrow / execute 异步方法
+
+        说明:
+            缓存字段 _cache / _cache_lock 在此初始化为空，
+            需调用 preload_all() 预加载；未预加载时读方法会回退到 DB。
+        """
         self._db = db
+        # server name -> server config dict 的进程内缓存
+        self._cache: Dict[str, Dict[str, Any]] = {}
+        # 保护缓存写操作的异步锁
+        self._cache_lock = asyncio.Lock()
 
     @staticmethod
     def _decode_jsonb(value: Any, default: Any) -> Any:
@@ -129,29 +149,141 @@ class McpConfigService:
             result["connect_timeout"] = int(val) if val is not None else 10
         return result
 
-    async def list_servers(self) -> List[Dict[str, Any]]:
-        """列出所有 MCP server 配置。"""
+    # ============== 缓存层方法（2026-06-25 新增） ==============
+
+    async def preload_all(self) -> None:
+        """预加载所有 MCP server 配置到缓存。
+
+        启动时由 lifespan 调用，将 DB 中所有 server 配置按 created_at
+        排序后加载到 _cache，使后续读方法可直接命中缓存。加载前会先
+        清空旧缓存，保证缓存与 DB 一致。
+
+        参数:
+            无
+
+        返回:
+            None
+
+        异常:
+            数据库异常会向上抛出（由调用方处理）
+        """
         rows = await self._db.fetch(
             "SELECT * FROM mcp_server_configs ORDER BY created_at"
         )
-        return [self._decode_row(r) for r in rows]
+        async with self._cache_lock:
+            self._cache.clear()
+            for r in rows:
+                decoded = self._decode_row(r)
+                if decoded and "name" in decoded:
+                    self._cache[decoded["name"]] = decoded
+        logger.info("Preloaded %d MCP server configs into cache", len(self._cache))
 
-    async def get_server(self, name: str) -> Optional[Dict[str, Any]]:
-        """获取单个 server 配置。
+    async def _refresh_cache(self, name: str) -> None:
+        """重新从 DB 加载单个 server 到缓存。
+
+        写方法（create / update / toggle）写 DB 后调用此方法同步缓存。
+        若 DB 中该 server 已不存在（理论上不应发生），则从缓存移除。
 
         参数:
             name: server 名称
 
         返回:
-            Dict 或 None
+            None
+
+        异常:
+            数据库异常会向上抛出（由调用方处理）
         """
         row = await self._db.fetchrow(
             "SELECT * FROM mcp_server_configs WHERE name = $1", name
         )
-        return self._decode_row(row) if row else None
+        async with self._cache_lock:
+            if row:
+                self._cache[name] = self._decode_row(row)
+            else:
+                # DB 中已不存在则移除缓存项，保持一致
+                self._cache.pop(name, None)
+
+    async def _invalidate_cache(self, name: str) -> None:
+        """从缓存移除单个 server。
+
+        delete_server 写 DB 后调用此方法使缓存失效，避免读到已删除配置。
+
+        参数:
+            name: server 名称
+
+        返回:
+            None
+        """
+        async with self._cache_lock:
+            self._cache.pop(name, None)
+
+    async def _clear_cache(self) -> None:
+        """清空所有缓存。
+
+        供测试用例在测试间隔离缓存状态，生产代码一般不调用。
+
+        参数:
+            无
+
+        返回:
+            None
+        """
+        async with self._cache_lock:
+            self._cache.clear()
+
+    async def list_servers(self) -> List[Dict[str, Any]]:
+        """列出所有 MCP server 配置。
+
+        优先读缓存：若 _cache 非空，直接返回缓存值的浅拷贝列表（保持
+        与原实现一致，外部修改不影响缓存内部状态）；缓存为空时从 DB
+        加载并回填缓存。返回顺序与 preload_all 的 created_at 排序一致。
+
+        返回:
+            List[Dict[str, Any]]: server 配置列表
+        """
+        # 优先读缓存
+        if self._cache:
+            return [dict(v) for v in self._cache.values()]
+        # 缓存未命中，从 DB 加载并回填
+        rows = await self._db.fetch(
+            "SELECT * FROM mcp_server_configs ORDER BY created_at"
+        )
+        decoded_list = [self._decode_row(r) for r in rows]
+        async with self._cache_lock:
+            for d in decoded_list:
+                if d and "name" in d:
+                    self._cache[d["name"]] = d
+        return decoded_list
+
+    async def get_server(self, name: str) -> Optional[Dict[str, Any]]:
+        """获取单个 server 配置。
+
+        优先读缓存：缓存命中时返回浅拷贝；未命中时从 DB 加载并写入缓存。
+
+        参数:
+            name: server 名称
+
+        返回:
+            Dict[str, Any] 或 None：server 不存在时返回 None
+        """
+        # 优先读缓存
+        if name in self._cache:
+            return dict(self._cache[name])
+        # 缓存未命中，从 DB 加载
+        row = await self._db.fetchrow(
+            "SELECT * FROM mcp_server_configs WHERE name = $1", name
+        )
+        if not row:
+            return None
+        decoded = self._decode_row(row)
+        async with self._cache_lock:
+            self._cache[name] = decoded
+        return dict(decoded)
 
     async def create_server(self, config: McpServerConfig) -> Dict[str, Any]:
         """新增 MCP server。
+
+        写 DB 后调用 _refresh_cache 同步缓存。
 
         参数:
             config: server 配置
@@ -186,10 +318,21 @@ class McpConfigService:
             json.dumps(config.tool_config),
             json.dumps(config.sampling),
         )
+        # 写 DB 后同步缓存（从 DB 重新加载，保证缓存与 DB 一致）
+        await self._refresh_cache(config.name)
         return self._decode_row(row)
 
     async def update_server(self, name: str, config: McpServerConfig) -> Dict[str, Any]:
         """更新 MCP server 配置。
+
+        写 DB 后调用 _refresh_cache 同步缓存。
+
+        参数:
+            name: server 名称
+            config: server 配置
+
+        返回:
+            Dict: 更新后的 server 配置
 
         异常:
             ValueError: server 不存在时抛出
@@ -219,23 +362,48 @@ class McpConfigService:
         )
         if not row:
             raise ValueError(f"MCP server '{name}' not found")
+        # 写 DB 后同步缓存
+        await self._refresh_cache(name)
         return self._decode_row(row)
 
     async def delete_server(self, name: str) -> None:
-        """删除 MCP server 及其关联 methods。"""
+        """删除 MCP server 及其关联 methods。
+
+        写 DB 后调用 _invalidate_cache 使缓存失效。
+
+        参数:
+            name: server 名称
+
+        返回:
+            None
+        """
         await self._db.execute(
             "DELETE FROM mcp_server_methods WHERE server_name = $1", name
         )
         await self._db.execute(
             "DELETE FROM mcp_server_configs WHERE name = $1", name
         )
+        # 写 DB 后使缓存失效
+        await self._invalidate_cache(name)
 
     async def toggle_server(self, name: str, enabled: bool) -> None:
-        """启用/禁用 MCP server。"""
+        """启用/禁用 MCP server。
+
+        写 DB 后调用 _refresh_cache 同步缓存（enabled 字段变化）。
+
+        参数:
+            name: server 名称
+            enabled: 是否启用
+
+        返回:
+            None
+        """
         await self._db.execute(
             "UPDATE mcp_server_configs SET enabled = $2, updated_at = CURRENT_TIMESTAMP WHERE name = $1",
             name, enabled,
         )
+        # 写 DB 后同步缓存（enabled 字段已变更）
+        await self._refresh_cache(name)
 
     async def list_methods(self, server_name: str) -> List[Dict[str, Any]]:
         """列出 server 下所有 method。"""

@@ -61,6 +61,24 @@ def _get_registry(request: Request):
     return getattr(request.app.state, "mcp_registry", None)
 
 
+async def _invalidate_agent_config_cache(request: Request) -> None:
+    """失效 agent_config 缓存（MCP 变更影响 agent 工具列表）。
+
+    MCP server 配置变更（新增/更新/删除/启停）后，所有 agent 的工具列表
+    可能受影响，需清空 AgentConfigService 全部缓存强制下次重新加载。
+
+    生产对等初始化点：app/core/server.py lifespan 中
+    `app.state.agent_config_service = AgentConfigService(...)`。
+    服务未初始化时静默跳过（不抛异常），避免 MCP 写操作因缓存失效失败。
+
+    参数:
+        request: FastAPI Request 对象
+    """
+    agent_service = getattr(request.app.state, "agent_config_service", None)
+    if agent_service is not None:
+        await agent_service.invalidate_all_cache()
+
+
 def _build_config_dict(server: McpServerConfig) -> dict:
     """将 McpServerConfig 转为 dict 供 registry 使用。
 
@@ -105,6 +123,9 @@ async def create_server(request: Request, config: McpServerConfig) -> Dict[str, 
                 "Failed to sync registry after create_server '%s': %s",
                 config.name, e,
             )
+
+    # 失效 agent_config 缓存（MCP 变更影响 agent 工具列表）
+    await _invalidate_agent_config_cache(request)
     return result
 
 
@@ -133,6 +154,9 @@ async def update_server(request: Request, name: str, config: McpServerConfig) ->
                 "Failed to sync registry after update_server '%s': %s",
                 name, e,
             )
+
+    # 失效 agent_config 缓存（MCP 变更影响 agent 工具列表）
+    await _invalidate_agent_config_cache(request)
     return result
 
 
@@ -155,6 +179,9 @@ async def delete_server(request: Request, name: str) -> None:
                 "Failed to sync registry after delete_server '%s': %s",
                 name, e,
             )
+
+    # 失效 agent_config 缓存（MCP 变更影响 agent 工具列表）
+    await _invalidate_agent_config_cache(request)
 
 
 @router.post("/servers/{name}/toggle")
@@ -179,6 +206,9 @@ async def toggle_server(request: Request, name: str, enabled: bool) -> Dict[str,
                 "Failed to sync registry after toggle_server '%s': %s",
                 name, e,
             )
+
+    # 失效 agent_config 缓存（MCP 变更影响 agent 工具列表）
+    await _invalidate_agent_config_cache(request)
     return {"name": name, "enabled": enabled}
 
 
