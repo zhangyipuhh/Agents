@@ -41,14 +41,7 @@ function setupFetchMock() {
   global.fetch = vi.fn(async (url, opts = {}) => {
     const method = (opts.method || 'GET').toUpperCase()
     const u = typeof url === 'string' ? url : url.url
-    if (u.includes('/api/admin/agents') && method === 'GET' && !u.match(/agents\/[^?]+/)) {
-      return jsonResponse(mockAgents)
-    }
-    if (u.match(/\/api\/admin\/agents\/[^/]+$/) && method === 'GET') {
-      const name = decodeURIComponent(u.split('/').pop().split('?')[0])
-      const found = mockAgents.find(a => a.name === name)
-      return jsonResponse(found || mockAgents[0])
-    }
+    // field-templates 必须在详情端点之前匹配，避免被 /agents/[^/]+$ 误捕获
     if (u.includes('/api/admin/agents/field-templates')) {
       return jsonResponse(mockTemplates)
     }
@@ -58,6 +51,14 @@ function setupFetchMock() {
     if (u.includes('/api/admin/agents/validate-md-path')) {
       const body = JSON.parse(opts.body || '{}')
       return jsonResponse({ path: body.path, exists: true })
+    }
+    if (u.includes('/api/admin/agents') && method === 'GET' && !u.match(/agents\/[^?]+/)) {
+      return jsonResponse(mockAgents)
+    }
+    if (u.match(/\/api\/admin\/agents\/[^/]+$/) && method === 'GET') {
+      const name = decodeURIComponent(u.split('/').pop().split('?')[0])
+      const found = mockAgents.find(a => a.name === name)
+      return jsonResponse(found || mockAgents[0])
     }
     if (u.includes('/enabled') && method === 'PUT') {
       return jsonResponse({ name: 'map_agent', enabled: false })

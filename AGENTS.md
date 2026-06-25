@@ -6,6 +6,17 @@ Use as many skills and agents as possible to implement features
 All code should follow clean code principles and maintain existing functionality
 
 Comments need to be added after file generation. The comments should be in Chinese and need to include information about function parameters, return values, exceptions, etc.
+## Use PostgreSQL MCP
+
+When querying the database, use this MCP to inspect table schemas and row data.
+
+
+## Database rules
+
+1. After any `Edit`/`Write` operation, check whether it is necessary to append content to `app\migrations\init_all_tables.sql`, including statements for adding new fields and statements for adding new tables
+
+## Debug rules 
+1. When troubleshooting any issues, first use PostgreSQL MCP to verify whether the error originates from database problems before investigating other causes.
 
 ## CSS Debugging Principles
 
