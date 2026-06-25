@@ -157,6 +157,34 @@ class ToolRegistryService:
                 result[f] = self._decode_jsonb(result[f], {})
         return result
 
+    @staticmethod
+    def _get_tool_instance_from_module(module_path: str, name: str) -> Optional[Any]:
+        """从已导入的模块路径中动态获取 @tool 装饰后的工具实例。
+
+        当 ToolRegistry 中未找到 @register_tool 注册记录时，
+        通过 module_path 定位模块并 getattr 获取工具实例，
+        补偿仅有 @tool 而无 @register_tool 的内置工具。
+
+        参数:
+            module_path: Python 模块路径（如 app.core.tools.BaseTools）
+            name: 工具函数名（如 get_current_time）
+
+        返回:
+            Optional[Any]: @tool 装饰后的工具实例；获取失败时返回 None
+        """
+        if not module_path or not name:
+            return None
+        try:
+            mod = importlib.import_module(module_path)
+            obj = getattr(mod, name, None)
+            if obj is not None:
+                return obj
+        except Exception as e:
+            logger.debug(
+                "Failed to get tool instance from module %s: %s", module_path, e
+            )
+        return None
+
     def _build_tool_info(
         self, row_dict: Dict[str, Any], registered: Dict[str, dict]
     ) -> ToolInfo:
@@ -168,11 +196,16 @@ class ToolRegistryService:
                 key=tool_name，value={"func", "agent", "description", "module_path"}
 
         返回:
-            ToolInfo: 工具信息实例（含 tool_instance，未注册时为 None）
+            ToolInfo: 工具信息实例（含 tool_instance，未注册时尝试从模块动态获取）
         """
         name = row_dict.get("name", "")
         reg_entry = registered.get(name)
-        tool_instance = reg_entry["func"] if reg_entry else None
+        if reg_entry:
+            tool_instance = reg_entry["func"]
+        else:
+            tool_instance = self._get_tool_instance_from_module(
+                row_dict.get("module_path", ""), name
+            )
         return ToolInfo(
             name=name,
             display_name=row_dict.get("display_name", ""),

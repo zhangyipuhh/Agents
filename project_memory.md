@@ -2152,7 +2152,7 @@ app/shared/utils/agent/tool_service.py
 | `ToolNotFoundError`                                | 工具未找到时抛出                                                                                                                                    |
 | `ToolAlreadyExistsError`                           | 工具名称重复时抛出                                                                                                                                  |
 | `ToolRegistryService(db)`                          | 服务构造器，参数 `db` 需支持异步 `fetch` / `fetchrow` / `execute`；初始化 `_cache: Dict[str, ToolInfo]` + `_cache_lock`（asyncio.Lock，延迟创建） |
-| `preload_all()`                                    | 预加载所有 enabled=TRUE 工具到缓存：动态导入 `app/core/tools/` + `app/shared/tools/skills/` 下所有 .py 模块 → 从 `ToolRegistry._tools` 获取实例 → 关联 DB 记录 → 原子替换缓存 |
+| `preload_all()`                                    | 预加载所有 enabled=TRUE 工具到缓存：动态导入 `app/core/tools/` + `app/shared/tools/skills/` 下所有 .py 模块 → 从 `ToolRegistry._tools` 获取实例；**若 `@register_tool` 缺失，回退到 `module_path` 动态 `importlib + getattr` 获取 `@tool` 实例** → 关联 DB 记录 → 原子替换缓存 |
 | `list_tools()`                                     | 列出所有工具（优先读缓存，缓存为空回退 DB 查询全量含禁用项）；返回 dict 列表（不含 tool_instance）                                                 |
 | `get_tool_by_name(name)`                           | 获取单个工具（优先读缓存，未命中查 DB 并回填）；返回 `ToolInfo`（含 tool_instance），不存在返回 None                                                |
 | `get_tools_by_names(names)`                        | 批量获取工具实例列表（`@tool` 装饰的函数）；跳过不存在和 tool_instance=None 的工具                                                                  |
@@ -2168,8 +2168,8 @@ app/shared/utils/agent/tool_service.py
 ### 设计要点
 
 - **缓存仅存 enabled=TRUE 工具**：`preload_all` 从 DB 读取 `WHERE enabled = TRUE`，减少运行时内存占用
-- **tool_instance 可为 None**：DB 有记录但 `ToolRegistry._tools` 未注册（如纯 `@tool` 未加 `@register_tool`）时，`tool_instance` 为 None
-- **动态导入触发装饰器**：`preload_all` 先 `importlib.import_module` 所有工具模块，触发 `@register_tool` + `@tool` 装饰器执行，再从 `ToolRegistry.list_all()` 获取实例
+- **tool_instance 双源获取**：`preload_all` 先从 `ToolRegistry._tools`（`@register_tool` 注册表）获取实例；若缺失（纯 `@tool` 未加 `@register_tool` 的场景），回退到 `_get_tool_instance_from_module(module_path, name)` 通过 `importlib.import_module + getattr` 动态获取 `@tool` 实例，补偿内置工具加载
+- **动态导入触发装饰器**：`preload_all` 先 `importlib.import_module` 所有工具模块，触发 `@register_tool` + `@tool` 装饰器执行，再从 `ToolRegistry.list_all()` 获取实例；`@register_tool` 缺失时由模块动态导入兜底
 - **ast 扫描识别 @tool**：`scan_unregistered` 用 `ast.parse` 解析源码，支持 `@tool` / `@tool(...)` / `@langchain.tools.tool(...)` 三种装饰器形式；提取参数签名时排除 `runtime` / `self` / `cls` 框架注入参数
 - **JSONB 防御性反序列化**：`args_schema` 字段用 `_decode_jsonb` 兼容 asyncpg 未注册 codec（str → json.loads）和已注册 codec（dict 原样返回）两种场景
 - **asyncio.Lock 延迟创建**：`_cache_lock` 在首次 `_ensure_lock()` 调用时创建，避免无事件循环时报错，兼容 `asyncio.run()` 测试场景
@@ -2190,8 +2190,8 @@ app/shared/utils/agent/tool_service.py
 
 ### 测试
 
-- 路径：`app/tests/shared/utils/agent/test_tool_service.py`（50 用例）
-- 覆盖：模块可导入 / ToolInfo 字段 / 常量正确性 / _decode_jsonb（None/str/dict/invalid）/ _decode_row / _build_tool_info（有/无注册实例）/ list_tools（缓存命中/回退 DB）/ get_tool_by_name（缓存命中/未命中回填/不存在）/ get_tools_by_names（返回实例/跳过缺失和未注册）/ create_tool（写入+刷新缓存/重复抛异常/缺 name 抛 KeyError）/ update_tool（更新+刷新/不存在抛异常）/ delete_tool（删除+失效缓存/不存在抛异常）/ set_tool_enabled（更新+刷新/不存在抛异常）/ _has_tool_decorator（@tool/@tool(...)/@xxx.tool(...)/非@tool/无装饰器）/ _extract_args_schema（排除框架参数/含默认值/无注解用 Any）/ _extract_return_description（有/无注解）/ _scan_file_for_tools（扫描 BaseTools.py 找到 5 个 @tool / 排除 runtime）/ scan_unregistered（返回未注册工具）/ _refresh_cache（加载启用/移除禁用/移除缺失）/ _invalidate_cache（移除/幂等）/ _clear_cache / preload_all（加载启用工具/跳过禁用/调用 _import_tool_modules）/ _tool_info_to_dict（排除 tool_instance）
+- 路径：`app/tests/shared/utils/agent/test_tool_service.py`（53 用例）
+- 覆盖：模块可导入 / ToolInfo 字段 / 常量正确性 / _decode_jsonb（None/str/dict/invalid）/ _decode_row / _build_tool_info（有注册实例 / 无注册实例 / **module_path 回退获取 @tool 实例**）/ _get_tool_instance_from_module（模块不存在 / 属性不存在）/ list_tools（缓存命中/回退 DB）/ get_tool_by_name（缓存命中/未命中回填/不存在）/ get_tools_by_names（返回实例/跳过缺失和未注册）/ create_tool（写入+刷新缓存/重复抛异常/缺 name 抛 KeyError）/ update_tool（更新+刷新/不存在抛异常）/ delete_tool（删除+失效缓存/不存在抛异常）/ set_tool_enabled（更新+刷新/不存在抛异常）/ _has_tool_decorator（@tool/@tool(...)/@xxx.tool(...)/非@tool/无装饰器）/ _extract_args_schema（排除框架参数/含默认值/无注解用 Any）/ _extract_return_description（有/无注解）/ _scan_file_for_tools（扫描 BaseTools.py 找到 5 个 @tool / 排除 runtime）/ scan_unregistered（返回未注册工具）/ _refresh_cache（加载启用/移除禁用/移除缺失）/ _invalidate_cache（移除/幂等）/ _clear_cache / preload_all（加载启用工具/跳过禁用/调用 _import_tool_modules）/ _tool_info_to_dict（排除 tool_instance）
 
 ## 三层缓存架构
 

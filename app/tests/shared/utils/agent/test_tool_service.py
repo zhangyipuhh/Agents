@@ -162,6 +162,47 @@ def test_build_tool_info_without_registered_instance():
     assert info.tool_instance is None
 
 
+def test_build_tool_info_falls_back_to_module_import():
+    """测试 _build_tool_info：ToolRegistry 中无记录但 module_path 有效时，
+    通过动态导入模块获取 @tool 实例（补偿仅有 @tool 而无 @register_tool 的工具）。
+    """
+    service = ToolRegistryService(MagicMock())
+    row_dict = {
+        "name": "get_current_time",
+        "display_name": "获取当前时间",
+        "category": "基础工具",
+        "description": "获取当前时间",
+        "module_path": "app.core.tools.BaseTools",
+        "file_path": "app/core/tools/BaseTools.py",
+        "args_schema": {},
+        "return_description": "str",
+        "function_description": "获取当前时间",
+        "enabled": True,
+    }
+    info = service._build_tool_info(row_dict, {})
+    assert info.name == "get_current_time"
+    assert info.tool_instance is not None
+    # 测试环境中 langchain.tools.tool 被 conftest mock 为 identity 装饰器，
+    # 返回原始函数；生产环境中返回 StructuredTool。两者均为有效可调用对象。
+    assert callable(info.tool_instance)
+
+
+def test_get_tool_instance_from_module_returns_none_on_missing_module():
+    """测试 _get_tool_instance_from_module：模块路径不存在时返回 None。"""
+    result = ToolRegistryService._get_tool_instance_from_module(
+        "nonexistent.module", "fake_tool"
+    )
+    assert result is None
+
+
+def test_get_tool_instance_from_module_returns_none_on_missing_attr():
+    """测试 _get_tool_instance_from_module：模块存在但属性不存在时返回 None。"""
+    result = ToolRegistryService._get_tool_instance_from_module(
+        "app.core.tools.BaseTools", "nonexistent_tool_name"
+    )
+    assert result is None
+
+
 # ==================== 读方法测试（优先读缓存） ====================
 
 
