@@ -117,34 +117,73 @@ def _safe_numeric(value: Any, default: float, coerce: type = float, minimum: flo
 
 
 def _convert_server_config(name: str, config: dict) -> dict:
-    adapted = dict(config)
+    """将原始配置（可能含 DB 元数据）转换为 MultiServerMCPClient 可用的白名单配置。
 
-    if "transport" not in adapted:
-        type_val = adapted.pop("type", "").lower()
+    按 transport 类型仅保留 create_session 预期的合法字段，过滤掉
+    id/name/enabled/created_at/updated_at 等 DB 元数据以及应用自定义字段。
+
+    参数:
+        name: 服务器名称（仅用于日志）
+        config: 原始配置字典（可能来自 DB 行或 YAML）
+
+    返回:
+        dict: 白名单过滤后的配置字典；无法识别 transport 时返回 {}
+    """
+    raw = dict(config)
+
+    # 1. 确定 transport
+    transport = raw.get("transport")
+    if not transport:
+        type_val = raw.get("type", "").lower()
         if type_val == "sse":
-            adapted["transport"] = "sse"
+            transport = "sse"
         elif type_val in ("http", "streamable_http"):
-            adapted["transport"] = "http"
-        elif "command" in adapted:
-            adapted["transport"] = "stdio"
-        elif "url" in adapted:
-            url = adapted["url"].lower()
+            transport = "http"
+        elif "command" in raw:
+            transport = "stdio"
+        elif "url" in raw:
+            url = raw["url"].lower()
             if "/sse" in url:
-                adapted["transport"] = "sse"
+                transport = "sse"
             else:
-                adapted["transport"] = "http"
+                transport = "http"
         else:
             logger.warning("MCP server '%s': cannot determine transport, skipping", name)
             return {}
 
-    for key in ("tags", "sampling", "env", "tool_config", "progress_reporting"):
-        adapted.pop(key, None)
+    # 2. 规范化超时字段（向后兼容）
+    if "connect_timeout" in raw:
+        raw.setdefault("timeout", raw["connect_timeout"])
+    if "read_timeout" in raw:
+        raw["sse_read_timeout"] = raw["read_timeout"]
 
-    if "connect_timeout" in adapted:
-        adapted.setdefault("timeout", adapted.pop("connect_timeout"))
-    if "read_timeout" in adapted:
-        adapted["sse_read_timeout"] = adapted.pop("read_timeout")
+    # 3. 按 transport 白名单构建最终配置
+    if transport == "stdio":
+        allowed = {
+            "transport", "command", "args", "env", "cwd",
+            "encoding", "encoding_error_handler", "session_kwargs",
+        }
+    elif transport == "sse":
+        allowed = {
+            "transport", "url", "headers", "timeout",
+            "sse_read_timeout", "session_kwargs",
+            "httpx_client_factory", "auth",
+        }
+    elif transport in ("streamable_http", "streamable-http", "http"):
+        allowed = {
+            "transport", "url", "headers", "timeout",
+            "sse_read_timeout", "terminate_on_close",
+            "session_kwargs", "httpx_client_factory", "auth",
+        }
+    elif transport == "websocket":
+        allowed = {
+            "transport", "url", "headers", "timeout", "session_kwargs",
+        }
+    else:
+        logger.warning("MCP server '%s': unknown transport '%s', skipping", name, transport)
+        return {}
 
+    adapted = {k: v for k, v in raw.items() if k in allowed}
     logger.info("MCP server '%s' adapted config: %s", name, adapted)
     return adapted
 
@@ -691,7 +730,11 @@ class UnifiedMCPClient:
 
         try:
             tools = await self._client.get_tools(server_name=server_name)
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                "从服务器 '%s' 获取工具时出错: %s",
+                server_name, e, exc_info=True,
+            )
             tools = []
 
         tags = self._server_configs[server_name].get("tags", [])
