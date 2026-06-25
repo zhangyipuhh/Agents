@@ -540,8 +540,7 @@ class AgentConfigService:
                         agent_name, tool_name,
                     )
                     continue
-                # get_tools_with_server 是同步方法（内部用线程池执行异步代码）
-                mcp_tools = self._mcp_registry.get_tools_with_server(
+                mcp_tools = await self._mcp_registry.get_tools_with_server_async(
                     server=server_name, names=[method_name] if method_name else None
                 )
                 logger.info(
@@ -564,7 +563,7 @@ class AgentConfigService:
                 agent_name, mcp_tags,
             )
             if mcp_tags and self._mcp_registry:
-                mcp_tools = self._mcp_registry.get_tools_with_server(tags=mcp_tags)
+                mcp_tools = await self._mcp_registry.get_tools_with_server_async(tags=mcp_tags)
                 logger.info(
                     "[_load_tools] agent=%s | mcp_tags fallback returned %d tool(s)",
                     agent_name, len(mcp_tools),

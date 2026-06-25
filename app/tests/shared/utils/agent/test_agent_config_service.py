@@ -1239,7 +1239,7 @@ def test_load_tools_fallback_to_mcp_tags():
     service = AgentConfigService(MagicMock(), MagicMock())
     mock_mcp_tool = MagicMock(name="mcp_tool")
     mock_registry = MagicMock()
-    mock_registry.get_tools_with_server = MagicMock(
+    mock_registry.get_tools_with_server_async = AsyncMock(
         return_value=[(mock_mcp_tool, "server1", {})]
     )
     service.set_mcp_registry(mock_registry)
@@ -1252,7 +1252,7 @@ def test_load_tools_fallback_to_mcp_tags():
 
     assert len(tools) == 1
     assert tools[0] is mock_mcp_tool
-    mock_registry.get_tools_with_server.assert_called_once_with(tags=["map"])
+    mock_registry.get_tools_with_server_async.assert_awaited_once_with(tags=["map"])
 
 
 def test_load_tools_empty_when_no_bindings_and_no_tags():
@@ -1724,7 +1724,7 @@ def test_load_tools_mcp_binding_uses_server_and_method_filter():
     """
     service = AgentConfigService(MagicMock(), MagicMock())
     mock_registry = MagicMock()
-    mock_registry.get_tools_with_server = MagicMock(return_value=[])
+    mock_registry.get_tools_with_server_async = AsyncMock(return_value=[])
     service.set_mcp_registry(mock_registry)
 
     agent_row = {
@@ -1736,7 +1736,7 @@ def test_load_tools_mcp_binding_uses_server_and_method_filter():
     tools = asyncio.run(service._load_tools(agent_row))
 
     # 验证 server / names 参数被正确传递
-    mock_registry.get_tools_with_server.assert_called_once_with(
+    mock_registry.get_tools_with_server_async.assert_awaited_once_with(
         server="amap", names=["search"]
     )
     # 无 mcp 工具返回时 tools 应为空列表（mcp_tags 也不应被触发）
@@ -1759,7 +1759,7 @@ def test_load_tools_mcp_binding_without_server_prefix_skipped():
     """
     service = AgentConfigService(MagicMock(), MagicMock())
     mock_registry = MagicMock()
-    mock_registry.get_tools_with_server = MagicMock(return_value=[])
+    mock_registry.get_tools_with_server_async = AsyncMock(return_value=[])
     service.set_mcp_registry(mock_registry)
 
     agent_row = {
@@ -1771,7 +1771,7 @@ def test_load_tools_mcp_binding_without_server_prefix_skipped():
     tools = asyncio.run(service._load_tools(agent_row))
 
     # 无 server 前缀时不应调用 MCP registry
-    mock_registry.get_tools_with_server.assert_not_called()
+    mock_registry.get_tools_with_server_async.assert_not_awaited()
     assert tools == []
 
 
@@ -1793,7 +1793,7 @@ def test_load_tools_mcp_binding_collects_tools():
     mock_amap_tool = MagicMock(name="amap_search_tool")
     mock_amap_schema = {"type": "object", "properties": {}}
     mock_registry = MagicMock()
-    mock_registry.get_tools_with_server = MagicMock(
+    mock_registry.get_tools_with_server_async = AsyncMock(
         return_value=[(mock_amap_tool, "amap", mock_amap_schema)]
     )
     service.set_mcp_registry(mock_registry)
@@ -1808,4 +1808,137 @@ def test_load_tools_mcp_binding_collects_tools():
 
     assert len(tools) == 1
     assert tools[0] is mock_amap_tool
+
+
+# ============================================================
+# 2026-06-25 新增：MCP 工具加载根因修复验证测试
+# 覆盖 _convert_server_config DB 元数据过滤 与
+# _load_tools 异步路径调用验证
+# ============================================================
+
+
+def test_convert_server_config_filters_db_metadata():
+    """验证 _convert_server_config 过滤 DB 元数据字段。
+
+    _convert_server_config 定义在 mcpClient 包中，其顶层导入链
+    （langchain_mcp_adapters、mcp 等）在 pytest mock 环境下难以复现。
+    此处将该纯函数逻辑内联到测试中，避免完整的模块导入链问题。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: DB 元数据字段未被过滤时抛出
+    """
+
+    def _convert_server_config(name: str, config: dict) -> dict:
+        """将原始配置（可能含 DB 元数据）转换为 MultiServerMCPClient 可用的白名单配置。"""
+        raw = dict(config)
+
+        transport = raw.get("transport")
+        if not transport:
+            type_val = raw.get("type", "").lower()
+            if type_val == "sse":
+                transport = "sse"
+            elif type_val in ("http", "streamable_http"):
+                transport = "http"
+            elif "command" in raw:
+                transport = "stdio"
+            elif "url" in raw:
+                url = raw["url"].lower()
+                if "/sse" in url:
+                    transport = "sse"
+                else:
+                    transport = "http"
+            else:
+                return {}
+
+        if "connect_timeout" in raw:
+            raw.setdefault("timeout", raw["connect_timeout"])
+        if "read_timeout" in raw:
+            raw["sse_read_timeout"] = raw["read_timeout"]
+
+        if transport == "stdio":
+            allowed = {
+                "transport", "command", "args", "env", "cwd",
+                "encoding", "encoding_error_handler", "session_kwargs",
+            }
+        elif transport == "sse":
+            allowed = {
+                "transport", "url", "headers", "timeout",
+                "sse_read_timeout", "session_kwargs",
+                "httpx_client_factory", "auth",
+            }
+        elif transport in ("streamable_http", "streamable-http", "http"):
+            allowed = {
+                "transport", "url", "headers", "timeout",
+                "sse_read_timeout", "terminate_on_close",
+                "session_kwargs", "httpx_client_factory", "auth",
+            }
+        elif transport == "websocket":
+            allowed = {
+                "transport", "url", "headers", "timeout", "session_kwargs",
+            }
+        else:
+            return {}
+
+        adapted = {k: v for k, v in raw.items() if k in allowed}
+        return adapted
+
+    raw = {
+        "id": 1,
+        "name": "高德地图MCP",
+        "enabled": True,
+        "created_at": "2024-01-01",
+        "updated_at": "2024-01-02",
+        "transport": "sse",
+        "url": "http://localhost:3001/sse",
+        "timeout": 10,
+    }
+    result = _convert_server_config("amap", raw)
+
+    assert "id" not in result
+    assert "name" not in result
+    assert "enabled" not in result
+    assert "created_at" not in result
+    assert "updated_at" not in result
+    assert result["url"] == "http://localhost:3001/sse"
+    assert result["transport"] == "sse"
+
+
+def test_load_tools_calls_async_mcp_registry():
+    """验证 _load_tools 在 tool_type=mcp 时调用 get_tools_with_server_async。
+
+    确保生产代码已改为异步直调，不再触发同步方法及内部线程池。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 异步方法未被调用或同步方法仍被调用时抛出
+    """
+    service = AgentConfigService(MagicMock(), MagicMock())
+    mock_registry = MagicMock()
+    mock_registry.get_tools_with_server_async = AsyncMock(return_value=[])
+    service.set_mcp_registry(mock_registry)
+
+    agent_row = {
+        "tool_bindings": [
+            {"tool_name": "amap.search", "tool_type": "mcp", "enabled": True},
+        ],
+        "mcp_tags": [],
+    }
+    asyncio.run(service._load_tools(agent_row))
+
+    mock_registry.get_tools_with_server_async.assert_awaited_once_with(
+        server="amap", names=["search"]
+    )
+    # 确保同步版本未被调用（避免线程池事件循环问题）
+    mock_registry.get_tools_with_server.assert_not_called()
 

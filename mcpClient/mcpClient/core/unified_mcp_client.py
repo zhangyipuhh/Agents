@@ -184,6 +184,7 @@ def _convert_server_config(name: str, config: dict) -> dict:
         return {}
 
     adapted = {k: v for k, v in raw.items() if k in allowed}
+    adapted["transport"] = transport
     logger.info("MCP server '%s' adapted config: %s", name, adapted)
     return adapted
 

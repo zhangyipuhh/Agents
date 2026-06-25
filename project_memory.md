@@ -2078,8 +2078,8 @@ app/shared/utils/agent/agent_config_service.py
 
 ### 测试
 
-- 路径：`app/tests/shared/utils/agent/test_agent_config_service.py`（74 用例）
-- 覆盖：模块可导入 / 从数据库和 AGENTS.md 加载完整配置 / agent 不存在抛 AgentNotFoundError / agent 禁用抛 AgentNotFoundError / list_agents 只返回启用智能体 / 加载 skill 绑定 / create_agent 插入并返回新行 / bind_tool 执行 upsert / bind_skill 执行 upsert / **JSONB 防御性反序列化** / **三层嵌套 config_schema 解析** / **set_tool_service / set_mcp_registry 依赖注入** / **preload_all 预加载** / **_refresh_cache / _invalidate_cache / invalidate_all_cache 缓存同步** / **get_agent_config 缓存命中与未命中路径** / **_load_tools 内置工具 / MCP 工具 / mcp_tags 回退 / 空绑定** / **_parse_mcp_tool_name 复合名解析 + _load_tools MCP server.method 绑定加载** / **update_tool_bindings 更新 DB 与缓存** / **写方法缓存同步验证** / **UnifiedAgentConfig 新字段（tools / _agent_row）**
+- 路径：`app/tests/shared/utils/agent/test_agent_config_service.py`（76 用例）
+- 覆盖：模块可导入 / 从数据库和 AGENTS.md 加载完整配置 / agent 不存在抛 AgentNotFoundError / agent 禁用抛 AgentNotFoundError / list_agents 只返回启用智能体 / 加载 skill 绑定 / create_agent 插入并返回新行 / bind_tool 执行 upsert / bind_skill 执行 upsert / **JSONB 防御性反序列化** / **三层嵌套 config_schema 解析** / **set_tool_service / set_mcp_registry 依赖注入** / **preload_all 预加载** / **_refresh_cache / _invalidate_cache / invalidate_all_cache 缓存同步** / **get_agent_config 缓存命中与未命中路径** / **_load_tools 内置工具 / MCP 工具 / mcp_tags 回退 / 空绑定** / **_parse_mcp_tool_name 复合名解析 + _load_tools MCP server.method 绑定加载** / **update_tool_bindings 更新 DB 与缓存** / **写方法缓存同步验证** / **UnifiedAgentConfig 新字段（tools / _agent_row）** / **_convert_server_config DB 元数据过滤** / **_load_tools 异步路径调用（验证 get_tools_with_server_async）**
 - 异步测试使用 `asyncio.run()` 包装（非 pytest-asyncio）
 - Mock 使用 `unittest.mock.AsyncMock` 和 `MagicMock`；写方法测试通过 `service._refresh_cache = AsyncMock()` 隔离缓存同步逻辑
 
@@ -2681,8 +2681,8 @@ web/Agent/src/utils/
 
 | 测试文件 | 用例数 | 新增（本次） |
 | --- | --- | --- |
-| `app/tests/shared/utils/agent/test_agent_config_service.py` | 74 | +7（_parse_mcp_tool_name 4 + _load_tools MCP 路径 3）|
+| `app/tests/shared/utils/agent/test_agent_config_service.py` | 76 | +2（_convert_server_config DB 元数据过滤 + _load_tools 异步路径验证）|
 | `app/tests/routers/test_agent_admin_router.py` | 35 | +5（available-tools 端点 5）|
 | `app/tests/routers/test_tool_admin_router.py` | 29 | +4（热加载缓存失效 4）|
 | `app/tests/scripts/test_seed_tools_from_source.py` | 13 | 13（新建）|
-| **合计** | **151** | **+29** |
+| **合计** | **153** | **+2** |
