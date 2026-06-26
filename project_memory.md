@@ -111,7 +111,7 @@ app/
 │   │   ├── mcp/              # MCP 服务器配置（config.yaml.example）
 │   │   ├── middleware/       # 工具中间件（DockerSandboxBackend / EncodingSafeFileSearch 等）
 │   │   └── skills/           # 按 agent 维度组织的工具模块（@register_tool 装饰）
-│   │       └── map_agent/    # map_agent 工具（MapTools.py，8 个地图工具）
+│   │       └── map_agent/    # map_agent 工具（MapTools.py，11 个工具：8 地图 + query_knowledge + generate_report + save_business_info；配套 config/ 子目录承载报告配置）
 │   └── utils/             # 工具类
 │       ├── auth/          # 认证相关
 │       │   ├── Safety.py          # JWT 认证（双 Token：Access + Refresh）
@@ -771,6 +771,32 @@ MCP 服务器方法列表表，用于运行时方法管理。
 **扩展方式**:
 
 - 未来需要查询其他知识库时，可新增一个工具函数，仅修改 `root_path` 来源（如从 `runtime.context["other_knowledge_root"]` 读取），并复用同一个 `BaseFilesystemTool`。
+
+### generate_report / save_business_info 工具
+
+**文件位置**: `app/shared/tools/skills/map_agent/MapTools.py`
+
+**配套配置模块**: `app/shared/tools/skills/map_agent/config/`（含 `__init__.py` / `settings.py` / `config.py`）
+
+**功能**:
+
+- `generate_report(data, runtime)`：根据项目信息 + 知识库上下文生成 Word 报告并返回下载地址。
+  - 输入模型：`GenerateReportInput`（project_name / project_type，必填）。
+  - 从 `runtime.store.get((store_id, session_id), "process_data")` 读取 `report_data`，使用 `ProjectSiteSelectionCollection.model_validate()` 反序列化。
+  - 调 `get_report_config(data, collection)` 构建 `ReportConfig`，再由 `WordReportGenerator` 生成 docx。
+  - 演示模式（`DEMONSTRATION_CONFIG["demonstration_report_enabled"]=True`）下，切换到示例 docx 文件路径。
+- `save_business_info(input_data, runtime)`：保存项目业务信息并生成业务编号。
+  - 输入模型：`SaveBusinessInfoInput`（5 个 Optional 字段，验证在 `_validate_business_info` 内手动执行）。
+  - 业务编号格式：`YDT{YYYYMMDD}{4位序号}`，通过 `INSERT ... ON CONFLICT DO UPDATE` 数据库原子 Upsert 保证并发安全。
+  - 内存模式（`DatabasePool.is_enabled()=False`）下使用 UUID 前 4 位兜底。
+
+**Schema 初始化**: `init_map_business_info_schema` 使用 `@register_schema` 装饰器，建表 `map_business_info` / `map_business_no_counter` 与 2 个索引（session_id / created_at），与 `app/migrations/init_all_tables.sql:165-191` 同步。
+
+**注册装饰器**: 所有工具均使用 `@register_tool(name=..., agent="map_agent", description=...)` + `@tool` 双装饰器模式，与目标文件中其他工具保持一致。
+
+**来源**: 2026-06-26 从 `e:\laboratory\AI\Agents\dev-main\app\features\map_agent\config\config.py` 和 `MapToolstmp.py`（项目根临时备份）复刻而来，仅修改 1 行 import 路径（`app.features.map_agent.config` → `app.shared.tools.skills.map_agent.config`）。原 `app/features/map_agent/` 目录已废弃。
+
+**测试**: `app/tests/shared/tools/skills/map_agent/`（16 用例：5 个 generate_report + 2 个 init_map_business_info_schema + 9 个 save_business_info）。
 
 ## Agent 聊天并发控制
 
