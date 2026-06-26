@@ -738,6 +738,7 @@ MCP 服务器方法列表表，用于运行时方法管理。
 - `EncodingSafeFileSearchMiddleware`: `app/shared/tools/middleware/encoding_safe_file_search.py`
 - `FilesystemMiddleware` / `FilesystemBackend`: `deepagents`
 - `get_async_checkpointer`: `app/shared/utils/memory/checkpoint.py`
+- `get_async_store`: `app/shared/utils/memory/store.py`（2026-06-26 新增：LangGraph Store 全局单例，与 `get_async_checkpointer` 对齐）
 - `get_current_request`: `app/core/tools/_stop_signal.py`
 
 ### explore 工具
@@ -989,6 +990,60 @@ async def xxx_chat(request: Request, chat_request: ChatRequest):
    - `handleApprovalSubmit` 开头（resume 请求前）
    - `newSession` / `handleSessionSwitch` 中（切换/新建会话时）
 5. **App.vue / KnowledgeApp.vue** `isStreaming` 置位时机从 `chatStream()` 调用前延后到**拿到 SSE reader 之后**，避免排队/握手阶段状态长期悬空
+
+## 记忆存储（Memory）
+
+### Checkpointer 全局单例（短期记忆 / thread-level）
+
+- **文件位置**：[`app/shared/utils/memory/checkpoint.py`](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/shared/utils/memory/checkpoint.py)
+- **获取函数**：`await get_async_checkpointer() -> BaseCheckpointSaver`
+- **两种模式**（按 `DatabasePool.is_enabled()` 即 `AUTH_STORAGE_MODE=postgres` 自动选择）：
+  - `AsyncPostgresSaver`（Postgres 模式）— 数据持久化到 PG，调用 `setup()` 创建 `checkpoints` 表
+  - `MemorySaver`（Memory 模式）— 数据存储在内存中
+- **生命周期**：
+  - 启动：lifespan 阶段调用一次完成初始化
+  - 关闭：`close_global_checkpointer()` 关闭 psycopg 连接池
+  - 测试：`reset_global_checkpointer()` 清空单例
+- **依赖注入点**：`app/routers/agent_router.py::chat` 与 `app/features/contract_host_agent/router/contract_router.py` 均通过 `get_async_checkpointer()` 获取
+
+### Store 全局单例（长期记忆 / cross-thread）
+
+- **文件位置**：[`app/shared/utils/memory/store.py`](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/shared/utils/memory/store.py)（2026-06-26 新增）
+- **获取函数**：`await get_async_store() -> BaseStore`
+- **两种模式**（按 `DatabasePool.is_enabled()` 自动选择）：
+  - `AsyncPostgresStore`（Postgres 模式）— 数据持久化到 PG，调用 `setup()` 创建 `store` / `store_migrations` 表
+  - `InMemoryStore`（Memory 模式）— 数据存储在内存中
+- **与 checkpointer 的关系**：
+  - 各自维护**独立**的 psycopg 连接池（`max_size=20`），不复用以避免两边相互锁定导致死锁
+  - 共享同一个 DSN（`DatabasePool.get_dsn()`）与凭据
+- **生命周期**：
+  - 启动：懒加载，首次 `await get_async_store()` 时完成初始化
+  - 关闭：`close_global_store()` 关闭 store 自建的 psycopg 连接池
+  - 测试：`reset_global_store()` 清空单例（不关闭连接池）
+- **依赖注入点**：
+  - `app/routers/agent_router.py::chat` — 构造 `AgentConfig(store=store, ...)`
+  - `app/features/contract_host_agent/HtAgent.py:40-44` — 通过 `HtAgent.__init__(self, checkpointer, store, store_id, ...)` 透传
+  - `app/features/contract_host_agent/router/contract_router.py:37` — 模块级 `store = InMemoryStore()` 单例（feature 内使用）
+- **设计决策**（2026-06-26 修复）：
+  - 原 `agent_router.py::chat` 缺失 `store=` 注入，导致走统一 router 路径的 agent：
+    1. 多模态图片回填失败（`_llm_call` 中 `self.store is None` 短路）
+    2. LangGraph Store 语义关闭（`workflow.compile(store=None)`）
+    3. 工具内 `self.store.put(...)` 写入的跨会话数据对后续 agent 不可见
+  - 修复方案：路由层显式 `await get_async_store()` 注入 `AgentConfig.store=store`，与 `HtAgent` 路径行为对齐
+  - `store` 字段在 `RESERVED_CONFIG_FIELDS` 中，禁止通过 `config_schema` 覆盖，必须由路由层显式注入（设计硬约束）
+
+### `key_value_memory_store`（独立的键值包装类）
+
+- **文件位置**：[`app/shared/utils/memory/key_value_memory_store.py`](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/shared/utils/memory/key_value_memory_store.py)
+- **用途**：提供 `set / get / append / extend / delete / exists / update` 语义的便捷包装，**不与** `AgentConfig.store` 挂钩
+- **使用方**：`app/features/audit_document_agent/tools/tools.py`（独立于 LangGraph Store）
+- **与 Store 全局单例的关系**：两套独立机制，**不互通**。`key_value_memory_store` 用于非 LangGraph 场景的键值持久化，`get_async_store()` 用于 LangGraph 内部 Store 抽象
+
+### `document_memory_store`（文档记忆存储）
+
+- **文件位置**：[`app/shared/utils/memory/document_memory_store.py`](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/shared/utils/memory/document_memory_store.py)
+- **用途**：封装文档解析结果的存储（合同条款、成交确认书图片等），供审计文档 agent 使用
+- **使用方**：`app/features/audit_document_agent/tools/tools.py`
 
 ## 环境变量
 

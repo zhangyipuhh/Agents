@@ -24,7 +24,7 @@ from app.shared.utils.agent.agent_config_service import (
     AgentNotFoundError,
 )
 from app.shared.utils.agent.dynamic_schema import RESERVED_CONTEXT_FIELDS
-from app.shared.utils.memory import get_async_checkpointer
+from app.shared.utils.memory import get_async_checkpointer, get_async_store
 from app.routers._stream_helper import generate_stream_response
 
 
@@ -127,12 +127,19 @@ async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse
 
         # 获取全局异步 checkpointer，支持 resume 与多轮对话状态持久化
         checkpointer = await get_async_checkpointer()
+        # 2026-06-26 修复：获取全局异步 store，支持 LangGraph Store 长期记忆
+        # （跨 thread / 跨会话键值存储），与 HtAgent 路径行为对齐
+        # （参见 app/features/contract_host_agent/HtAgent.py:40-44）。
+        # 不传 store 会导致 _llm_call 中的多模态图片回填失效
+        # （agent.py:322 self.store is None 时跳过）以及工具内
+        # self.store.put(...) 写入的跨会话数据不可见。
+        store = await get_async_store()
         # 2026-06-24 重构：把 config_schema 中 AgentConfig 字段覆盖（如 temperature /
         # model_name / max_tokens 等）解包注入 AgentConfig 构造器。未在 schema 中声明的
         # 字段保留 AgentConfig 默认值（来自 LLM_CONFIG / 环境变量），向后兼容。
         # 保留字段（state_class / context_class / checkpointer / store）已由
         # dynamic_schema.parse_config_schema 在 RESERVED_CONFIG_FIELDS 阶段过滤，
-        # 不会出现在 agent_config_overrides 中。
+        # 不会出现在 agent_config_overrides 中，必须由路由层显式注入。
         agent_config_overrides = config.agent_config_overrides or {}
         agent_config = AgentConfig(
             name=config.name,
@@ -140,6 +147,7 @@ async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse
             state_class=config.state_class,
             context_class=config.context_class,
             checkpointer=checkpointer,
+            store=store,  # 2026-06-26 修复：原代码缺失
             tools=config.tools,  # 从 UnifiedAgentConfig 注入工具列表（由 AgentConfigService 从 DB + MCP registry 加载）
             **agent_config_overrides,
         )
