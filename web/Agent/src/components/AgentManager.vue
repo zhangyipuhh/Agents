@@ -1371,6 +1371,7 @@ export default {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding-left: 4px; /* 避开左侧 4px accent bar */
 }
 .section-accent-bar {
   position: absolute;
@@ -1404,9 +1405,13 @@ export default {
   color: white;
   font-weight: 500;
   flex-shrink: 0;
+  display: inline-flex;       /* 行内 flex 布局，方便未来加图标 */
+  align-items: center;
+  gap: 4px;
 }
 .btn-add-field:hover {
   background-color: var(--color-accent-hover);
+  transform: scale(1.02);     /* 轻按下微动效 */
 }
 
 .fields-table {
