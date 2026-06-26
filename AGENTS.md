@@ -2,16 +2,19 @@
 - High cohesion and low coupling; unified entry/exit points, unified configuration entry, unified preloading—make everything configurable whenever possible.
 - Database-intensive loading operations are completed during service startup, with configurations loaded into memory simultaneously; modifications and insertions must synchronize both memory and database.
 - Design must prioritize asynchronous programming and performance optimization.
+- All code should follow clean code principles and maintain existing functionality
+- Comments need to be added after file generation. The comments should be in Chinese and need to include information about function parameters, return values, exceptions, etc.
 
+## Frontend Vue Rules
+- When developing frontend interfaces, prioritize using standalone template syntax first. This approach enhances maintainability and prevents syntax conflicts or rendering issues.
+- When using `<style scoped>` in Vue 3 SFC, scoped CSS only applies to elements rendered by template syntax; elements created via `defineComponent` + `h()` render function within the `<script>` block will not automatically receive the `data-v-xxx` scopeId, causing all scoped CSS selectors to silently fail to match, resulting in completely ineffective layouts/styles with no error messages. Prioritize using standalone .vue files with `<template>` syntax.
 
 ## use subagents
 Use as many subagents  as possible to speed up
 ## use skills rule
-Use as many skills and agents as possible to implement features
+- Use as many skills and agents as possible to implement features
 
-All code should follow clean code principles and maintain existing functionality
 
-Comments need to be added after file generation. The comments should be in Chinese and need to include information about function parameters, return values, exceptions, etc.
 ## Use PostgreSQL MCP
 
 When querying the database, use this MCP to inspect table schemas and row data.
