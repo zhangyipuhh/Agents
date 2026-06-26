@@ -760,7 +760,7 @@ MCP 服务器方法列表表，用于运行时方法管理。
 
 **功能**: 启动知识库检索子智能体，在配置的知识库目录中搜索并读取文档。
 
-**使用方式**: 通过 `@register_tool(agent="map_agent")` 注册到 ToolRegistry，供 AgentConfigService 按 agent_name 加载，仅在地图 Agent 场景可用。
+**使用方式**: 通过 LangChain `@tool(description=...)` 装饰器注册；与 agent 的绑定关系由 DB `tools.tool_bindings`（`agent_tool_bindings` 表）控制，可被任意 agent 通过 `tool_bindings` 自由绑定使用，与 `app/core/tools/BaseTools.py` 的绑定风格一致。
 
 **实现细节**:
 
@@ -793,7 +793,7 @@ MCP 服务器方法列表表，用于运行时方法管理。
 
 **Schema 初始化**: `init_map_business_info_schema` 使用 `@register_schema` 装饰器，建表 `map_business_info` / `map_business_no_counter` 与 2 个索引（session_id / created_at），与 `app/migrations/init_all_tables.sql:165-191` 同步。
 
-**注册装饰器**: 所有工具均使用 `@register_tool(name=..., agent="map_agent", description=...)` + `@tool` 双装饰器模式，与目标文件中其他工具保持一致。
+**注册装饰器**（2026-06-26 更新）：所有工具统一改为 LangChain `@tool(description=...)` 单装饰器模式；description 直接挂在 `@tool` 上，归属与启用完全由 DB `tools` / `agent_tool_bindings` 控制，移除了原先 `@register_tool(name=..., agent="map_agent", description=...)` + `@tool` 双装饰器中的 `agent` 字段限制。`@register_tool` 装饰器本身保留（其他模块可能仍在用）。
 
 **来源**: 2026-06-26 从 `e:\laboratory\AI\Agents\dev-main\app\features\map_agent\config\config.py` 和 `MapToolstmp.py`（项目根临时备份）复刻而来，仅修改 1 行 import 路径（`app.features.map_agent.config` → `app.shared.tools.skills.map_agent.config`）。原 `app/features/map_agent/` 目录已废弃。
 

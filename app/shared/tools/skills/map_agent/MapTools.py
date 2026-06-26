@@ -4,10 +4,10 @@
 MapTools - 地图控制Agent工具模块（迁移版）
 
 该模块定义了地图控制Agent可用的工具函数，包括地图定位、标记管理、路径规划等功能。
-所有工具均通过 @register_tool 装饰器注册到 ToolRegistry，供 AgentConfig.get_tools() 按 agent 加载。
+所有工具均通过 @tool 装饰器（LangChain）注册；归属与启用由 DB `tools.tool_bindings` 控制，与 app/core/tools/BaseTools.py 自由绑定风格一致。
 
 迁移来源：app/features/map_agent/tools/MapTools.py
-迁移目的：通过 @register_tool 注册到 ToolRegistry，供 AgentConfigService 按 agent_name + enabled_tool_names 加载。
+迁移目的：通过 @tool 注册到 LangChain，供 AgentConfigService 按 tool_bindings 加载（agent 维度自由绑定）。
 
 工具清单：
 1. set_map_center - 设置地图中心点
@@ -48,8 +48,7 @@ from app.shared.tools.skills.map_agent.config import (
 )
 
 
-@register_tool(name="set_map_center", agent="map_agent", description="设置地图中心点坐标")
-@tool
+@tool(description="设置地图中心点坐标")
 def set_map_center(latitude: float, longitude: float, runtime: ToolRuntime) -> Command:
     """
     【设置地图中心】将地图中心点移动到指定经纬度位置。
@@ -129,8 +128,7 @@ def set_map_center(latitude: float, longitude: float, runtime: ToolRuntime) -> C
     )
 
 
-@register_tool(name="set_map_zoom", agent="map_agent", description="设置地图缩放级别")
-@tool
+@tool(description="设置地图缩放级别")
 def set_map_zoom(zoom_level: int, runtime: ToolRuntime) -> Command:
     """
     【设置地图缩放】调整地图的缩放级别。
@@ -216,8 +214,7 @@ def set_map_zoom(zoom_level: int, runtime: ToolRuntime) -> Command:
     )
 
 
-@register_tool(name="add_map_marker", agent="map_agent", description="在地图上添加标记点")
-@tool
+@tool(description="在地图上添加标记点")
 def add_map_marker(
     latitude: float,
     longitude: float,
@@ -328,8 +325,7 @@ def add_map_marker(
     )
 
 
-@register_tool(name="remove_map_marker", agent="map_agent", description="移除指定的地图标记")
-@tool
+@tool(description="移除指定的地图标记")
 def remove_map_marker(marker_id: str, runtime: ToolRuntime) -> Command:
     """
     【移除地图标记】从地图上移除指定的标记点。
@@ -414,8 +410,7 @@ def remove_map_marker(marker_id: str, runtime: ToolRuntime) -> Command:
     )
 
 
-@register_tool(name="clear_map_markers", agent="map_agent", description="清除地图上所有标记")
-@tool
+@tool(description="清除地图上所有标记")
 def clear_map_markers(runtime: ToolRuntime) -> Command:
     """
     【清除所有标记】清除地图上的所有标记点。
@@ -496,8 +491,7 @@ def clear_map_markers(runtime: ToolRuntime) -> Command:
     )
 
 
-@register_tool(name="get_map_state", agent="map_agent", description="获取当前地图状态信息")
-@tool
+@tool(description="获取当前地图状态信息")
 def get_map_state(runtime: ToolRuntime) -> Command:
     """
     【获取地图状态】获取当前地图的状态信息。
@@ -582,8 +576,7 @@ def get_map_state(runtime: ToolRuntime) -> Command:
     )
 
 
-@register_tool(name="draw_map_polygon", agent="map_agent", description="在地图上绘制多边形区域")
-@tool
+@tool(description="在地图上绘制多边形区域")
 def draw_map_polygon(
     coordinates: List[Dict[str, float]],
     title: str = "",
@@ -684,8 +677,7 @@ def draw_map_polygon(
     )
 
 
-@register_tool(name="set_map_layer", agent="map_agent", description="设置地图显示图层类型")
-@tool
+@tool(description="设置地图显示图层类型")
 def set_map_layer(layer_type: str, runtime: ToolRuntime) -> Command:
     """
     【设置地图图层】切换地图的显示图层类型。
@@ -896,8 +888,7 @@ def _validate_business_info(input_data: SaveBusinessInfoInput) -> list[str]:
     return errors
 
 
-@register_tool(name="generate_report", agent="map_agent", description="根据项目信息生成Word报告")
-@tool
+@tool(description="根据项目信息生成Word报告")
 def generate_report(data: GenerateReportInput, runtime: ToolRuntime) -> Command:
     """
     【生成报告】根据当前地图状态和项目信息生成Word报告并返回下载地址。
@@ -994,10 +985,50 @@ def generate_report(data: GenerateReportInput, runtime: ToolRuntime) -> Command:
         process_data = existing_result.value if existing_result else {}
         collection = process_data.get("report_data", None)
         if collection is None:
-            collection = ProjectSiteSelectionCollection(
-                collection_id="default",
-                collection_name="默认集合",
-                projects=[],
+            # 守卫：当前 store 中没有审查结果数据时，不生成空报告，
+            # 直接通过 ToolMessage 告诉模型需要先做审查
+            end_time = datetime.now()
+            duration_ms = int((end_time - start_time).total_seconds() * 1000)
+
+            result_data = {
+                "status": "no_review_data",
+                "download_url": "",
+                "file_name": "",
+                "message": "当前无审查结果数据，需要先做审查才能生成报告",
+            }
+
+            stop_event = create_tool_event(
+                event_type="tool_stop",
+                tool=tool_name,
+                tool_call_id=tool_call_id,
+                data={
+                    "status": "no_review_data",
+                    "type": "guard",
+                    "result": result_data,
+                    "duration_ms": duration_ms,
+                }
+            )
+            writer(dict(stop_event))
+
+            summary = {
+                "status": "no_review_data",
+                "tool": tool_name,
+                "started_at": start_time.timestamp(),
+                "ended_at": end_time.timestamp(),
+                "duration_ms": duration_ms,
+                "result": "当前无审查结果数据，需要先做审查才能生成报告",
+            }
+
+            return Command(
+                update={
+                    "map_report": result_data,
+                    "messages": [
+                        ToolMessage(
+                            content=json.dumps(summary, ensure_ascii=False),
+                            tool_call_id=tool_call_id
+                        )
+                    ]
+                }
             )
         elif isinstance(collection, dict):
             # 如果 collection 是字典（从 store 中反序列化），转换为 ProjectSiteSelectionCollection 对象
@@ -1132,7 +1163,6 @@ def generate_report(data: GenerateReportInput, runtime: ToolRuntime) -> Command:
         )
 
 
-@register_tool(name="save_business_info", agent="map_agent", description="保存业务信息到数据库并生成业务编号")
 @tool(description="""保存业务信息到数据库，自动生成业务编号。
 
 所有字段均为必填：
@@ -1493,7 +1523,6 @@ Search the knowledge base thoroughly and report your findings clearly.
 """
 
 
-@register_tool(name="query_knowledge", agent="map_agent", description="知识库检索子智能体")
 @tool(description=(
     "Launch a subagent to search and read documents in the knowledge base.\n"
     "Use this tool when the user asks questions that should be answered from the "

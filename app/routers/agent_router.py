@@ -97,6 +97,17 @@ async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse
     except AgentNotFoundError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
+    # 2026-06-26 新增：若当前 session 尚未绑定非 default 智能体，且请求传入了有效的 agent_name，
+    # 则将 agent_type + agent_display_name 持久化到 session（内存 + 数据库）。
+    session_id = chat_request.session_id or "default"
+    agent_name = chat_request.agent_name
+    if agent_name and agent_name != "default":
+        from app.shared.utils.auth.session_db import SessionDB
+        session = await SessionDB.get_session(session_id)
+        if session and session.get("agent_type", "default") in ("default", "", None):
+            display_name = config.display_name or agent_name
+            await SessionDB.update_session_agent(session_id, agent_name, display_name)
+
     # 过滤 context_overrides 中的保留字段，避免与显式传入的 session_id 等
     # 关键字参数冲突（TypeError: got multiple values for keyword argument）
     safe_overrides = {

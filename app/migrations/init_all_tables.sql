@@ -50,6 +50,7 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS title          VARCHAR(200) DEFAUL
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMP    DEFAULT NOW();
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS status         VARCHAR(20)  DEFAULT 'active';
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS agent_type     VARCHAR(50)  DEFAULT 'default';
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS agent_display_name VARCHAR(200) DEFAULT '';
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id             ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_last_active_at      ON sessions(last_active_at);

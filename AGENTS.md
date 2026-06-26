@@ -1,6 +1,8 @@
 ## Design Rules
 - High cohesion and low coupling; unified entry/exit points, unified configuration entry, unified preloading—make everything configurable whenever possible.
 - Database-intensive loading operations are completed during service startup, with configurations loaded into memory simultaneously; modifications and insertions must synchronize both memory and database.
+- Design must prioritize asynchronous programming and performance optimization.
+
 
 ## use subagents
 Use as many subagents  as possible to speed up
@@ -81,6 +83,8 @@ When querying the database, use this MCP to inspect table schemas and row data.
 - 读取文件优先使用 `Read`，禁止用 `cat`/`head`/`tail` 等 shell 命令
 
 ## ⚠️ HARD RULE：测试同步协议
+
+**重要约束**：执行 `Edit`/`Write` 操作后，若功能发生变更，必须同步检查对应测试文件是否需要更新。测试文件必须与源码变更保持一致，禁止出现「源码已改、测试未动」的不一致状态。
 
 **READ 阶段**：在执行 `Edit`/`Write` 修改 `app/` 目录下的 `.py` 文件之前，应先了解对应模块是否已有测试文件及其测试风格。
 
