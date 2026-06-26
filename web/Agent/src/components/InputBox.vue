@@ -14,6 +14,14 @@ const props = defineProps({
   isStreaming: {
     type: Boolean,
     default: false
+  },
+  boundAgentName: {
+    type: String,
+    default: ''
+  },
+  boundAgentDisplayName: {
+    type: String,
+    default: ''
   }
 })
 
@@ -49,6 +57,7 @@ const canSend = computed(() => {
  * @returns {boolean} 当前输入是否为斜杠命令
  */
 const isCommand = computed(() => {
+  if (props.boundAgentName && props.boundAgentName !== 'default') return false
   const trimmed = inputValue.value.trim()
   return trimmed.startsWith('/') && !selectedAgent.value
 })
@@ -127,6 +136,12 @@ const filteredAgents = computed(() => {
 const handleInput = (event) => {
   inputValue.value = event.target.value
   autoResize()
+  // 若当前 session 已绑定非 default 智能体，禁止唤起 /command 下拉菜单
+  if (props.boundAgentName && props.boundAgentName !== 'default') {
+    showAgentDropdown.value = false
+    activeAgentIndex.value = -1
+    return
+  }
   // 仅输入 "/" 时加载智能体列表并显示下拉菜单
   const trimmed = inputValue.value.trim()
   if (trimmed === '/') {
@@ -216,7 +231,11 @@ const executeCommand = async (text) => {
   try {
     const result = await handleCommand(cmd, args)
     if (result.switchAgent) {
-      emit('agent-switched', result.switchAgent)
+      // 2026-06-26 改造：若 result.switchAgent 是字符串，包装为对象以兼容 App.vue
+      const payload = typeof result.switchAgent === 'string'
+        ? { name: result.switchAgent, display_name: result.switchAgent }
+        : result.switchAgent
+      emit('agent-switched', payload)
     }
     // 命令结果作为系统消息显示（通过 send 事件传递）
     emit('send', result.text, [])
@@ -264,8 +283,12 @@ const handleSend = async () => {
     }))
 
   // 2026-06-24 新增：若通过下拉菜单选中了智能体，先切换智能体再发送消息
+  // 2026-06-26 改造：emit 对象包含 display_name，供 App.vue 同步展示名称
   if (selectedAgent.value) {
-    emit('agent-switched', selectedAgent.value.name)
+    emit('agent-switched', {
+      name: selectedAgent.value.name,
+      display_name: selectedAgent.value.display_name || selectedAgent.value.name
+    })
   }
 
   emit('send', text, uploadedFiles)
@@ -541,7 +564,7 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched'])
           </div>
         </div>
 
-        <!-- 2026-06-24 新增：已选智能体标签 -->
+        <!-- 2026-06-24 新增：已选智能体标签（可移除） -->
         <div v-if="selectedAgent" class="selected-agent-tag">
           <span class="agent-slash">/</span>
           <span class="agent-name">{{ selectedAgent.display_name || selectedAgent.name }}</span>
@@ -550,6 +573,12 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched'])
               <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/>
             </svg>
           </button>
+        </div>
+
+        <!-- 2026-06-26 新增：会话已绑定智能体标签（不可移除） -->
+        <div v-if="boundAgentName && boundAgentName !== 'default'" class="selected-agent-tag bound-agent-tag">
+          <span class="agent-slash">/</span>
+          <span class="agent-name">{{ boundAgentDisplayName || boundAgentName }}</span>
         </div>
 
         <!-- 2026-06-24 新增：智能体下拉菜单 -->
@@ -576,7 +605,7 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched'])
           ref="textareaRef"
           v-model="inputValue"
           class="text-input"
-          :placeholder="selectedAgent ? '请输入消息，按「Enter」发送' : '输入 / 快速使用智能体'"
+          :placeholder="selectedAgent ? '请输入消息，按「Enter」发送' : (boundAgentName ? `当前智能体：${boundAgentDisplayName || boundAgentName}` : '输入 / 快速使用智能体')"
           rows="3"
           @input="handleInput"
           @keydown="handleKeydown"
@@ -1102,6 +1131,13 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched'])
 .agent-remove-icon {
   width: 12px;
   height: 12px;
+}
+
+/* 2026-06-26 新增：已绑定智能体标签（不可移除） */
+.bound-agent-tag {
+  background-color: var(--color-bg-tertiary);
+  border-color: var(--color-border);
+  color: var(--color-text-secondary);
 }
 
 /* 2026-06-24 新增：智能体下拉菜单 */

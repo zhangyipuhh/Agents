@@ -1,12 +1,14 @@
 # -*- coding:utf-8 -*-
 """
-Skill 加载工具。
+Skill 系统工具模块。
 
 提供被 LangChain @tool 装饰的工具函数，用于按名称加载已注册的 skill 正文及
 同目录下的相关文件列表，或按绝对路径读取 skill 目录下的具体文件。
 
 - load_skill: 返回 SKILL.md 正文与同目录文件清单（XML 块）
 - read_skill_file: 按绝对路径读取 skill 配套资源文件（白名单限定在已注册 skill 内）
+
+模块路径：app.core.tools.SkillTools（自 2026-06-26 从 app.core.skills.tool 迁移而来）
 """
 
 from pathlib import Path
@@ -17,8 +19,8 @@ from langchain.tools import tool, ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 from app.core.agent.AgentContext import AgentContext
-from .schemas import SkillInfo
-from .service import SkillNotFoundError, SkillsService
+from app.core.skills.schemas import SkillInfo
+from app.core.skills.service import SkillNotFoundError, SkillsService
 
 
 # 单文件大小上限：1 MB。超出则拒绝，避免上下文爆炸。

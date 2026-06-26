@@ -53,14 +53,54 @@ def test_generate_report_input_model_importable():
 
 def test_generate_report_registered():
     """
-    P0: generate_report 已注册到 ToolRegistry。
-    """
-    from app.shared.tools.skills.map_agent import MapTools  # noqa: F401
-    from app.shared.tools.registry import ToolRegistry
+    P0: generate_report 经 LangChain @tool 装饰器注册。
 
-    info = ToolRegistry._tools.get("generate_report")
-    assert info is not None, "generate_report 未注册到 ToolRegistry"
-    assert info["agent"] == "map_agent"
+    迁移说明：2026-06-26 之前使用 `@register_tool(name=..., agent="map_agent", description=...)`
+    强制工具归属 map_agent；迁移后改为 LangChain `@tool(description=...)` 单装饰器，
+    工具归属由 DB `tools.tool_bindings` 控制，与 BaseTools 自由绑定风格一致。
+
+    测试策略：AST 静态解析源码（不依赖运行时装饰器行为，因为 conftest.py
+    在测试环境下把 langchain.tools.tool 替换为 identity 装饰器）。
+    """
+    import ast
+    from pathlib import Path
+
+    # test_generate_report.py 位于 app/tests/shared/tools/skills/map_agent/
+    # parents[5] 跳到 app/，再加 shared/tools/skills/map_agent/MapTools.py
+    map_tools_path = (
+        Path(__file__).resolve().parents[5]
+        / "shared" / "tools" / "skills" / "map_agent" / "MapTools.py"
+    )
+    tree = ast.parse(map_tools_path.read_text(encoding="utf-8"))
+
+    func_node = None
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "generate_report":
+            func_node = node
+            break
+    assert func_node is not None, "MapTools.generate_report 函数不存在"
+
+    has_tool_decorator = False
+    has_description = False
+    for dec in func_node.decorator_list:
+        if isinstance(dec, ast.Call):
+            func_name = (
+                dec.func.id
+                if isinstance(dec.func, ast.Name)
+                else dec.func.attr
+                if isinstance(dec.func, ast.Attribute)
+                else None
+            )
+            if func_name == "tool":
+                has_tool_decorator = True
+                for kw in dec.keywords:
+                    if kw.arg == "description" and isinstance(kw.value, ast.Constant):
+                        assert kw.value.value == "根据项目信息生成Word报告"
+                        has_description = True
+                        break
+
+    assert has_tool_decorator, "generate_report 缺少 @tool 装饰器"
+    assert has_description, "generate_report 的 @tool 装饰器缺少 description 参数"
 
 
 # ============================================================

@@ -63,14 +63,56 @@ def test_save_business_info_input_model_importable():
 
 def test_save_business_info_registered():
     """
-    P0: save_business_info 已注册到 ToolRegistry。
-    """
-    from app.shared.tools.skills.map_agent import MapTools  # noqa: F401
-    from app.shared.tools.registry import ToolRegistry
+    P0: save_business_info 经 LangChain @tool 装饰器注册。
 
-    info = ToolRegistry._tools.get("save_business_info")
-    assert info is not None, "save_business_info 未注册到 ToolRegistry"
-    assert info["agent"] == "map_agent"
+    迁移说明：2026-06-26 之前使用 `@register_tool(name=..., agent="map_agent", description=...)`
+    强制工具归属 map_agent；迁移后改为 LangChain `@tool(description=...)` 单装饰器，
+    description 文本沿用开发者向 LLM 的详细提示（含字段必填说明），归属由 DB `tools.tool_bindings` 控制。
+
+    测试策略：AST 静态解析源码（不依赖运行时装饰器行为，因为 conftest.py
+    在测试环境下把 langchain.tools.tool 替换为 identity 装饰器）。
+    """
+    import ast
+    from pathlib import Path
+
+    # test_save_business_info.py 位于 app/tests/shared/tools/skills/map_agent/
+    # parents[5] 跳到 app/，再加 shared/tools/skills/map_agent/MapTools.py
+    map_tools_path = (
+        Path(__file__).resolve().parents[5]
+        / "shared" / "tools" / "skills" / "map_agent" / "MapTools.py"
+    )
+    tree = ast.parse(map_tools_path.read_text(encoding="utf-8"))
+
+    func_node = None
+    for node in tree.body:
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "save_business_info":
+            func_node = node
+            break
+    assert func_node is not None, "MapTools.save_business_info 函数不存在"
+
+    has_tool_decorator = False
+    has_description = False
+    for dec in func_node.decorator_list:
+        if isinstance(dec, ast.Call):
+            func_name = (
+                dec.func.id
+                if isinstance(dec.func, ast.Name)
+                else dec.func.attr
+                if isinstance(dec.func, ast.Attribute)
+                else None
+            )
+            if func_name == "tool":
+                has_tool_decorator = True
+                for kw in dec.keywords:
+                    if kw.arg == "description":
+                        # 支持三引号多行字符串（ast.Constant 字面量）
+                        if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                            assert "保存业务信息" in kw.value.value
+                            has_description = True
+                            break
+
+    assert has_tool_decorator, "save_business_info 缺少 @tool 装饰器"
+    assert has_description, "save_business_info 的 @tool 装饰器缺少 description 参数"
 
 
 # ============================================================

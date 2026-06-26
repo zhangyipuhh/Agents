@@ -2,6 +2,8 @@
 """
 load_skill / read_skill_file 工具单元测试。
 
+被测对象位于 app.core.tools.SkillTools（自 2026-06-26 从 app.core.skills.tool 迁移）。
+
 load_skill：覆盖成功加载返回 XML 块、包含 base_dir URI、文件列表过滤、skill 不存在时返回错误、
 文件数量限制为 10 以及 @tool 装饰器注册验证。
 
@@ -25,7 +27,7 @@ class _RealToolMessage:
 
     conftest 将 langchain_core.messages.ToolMessage 整体 mock 为 Mock()，
     构造出的对象属性访问仍返回 Mock，无法对 content / tool_call_id 做字符串断言。
-    本类提供 content / tool_call_id 两个真实属性，patch 后 tool.py 内的
+    本类提供 content / tool_call_id 两个真实属性，patch 后 SkillTools 内的
     ToolMessage(content=..., tool_call_id=...) 调用会生成可断言的实例。
     """
 
@@ -77,13 +79,13 @@ def _reset_singleton():
 @pytest.fixture(autouse=True)
 def _patch_tool_message():
     """
-    将 tool.py 模块内的 ToolMessage 替换为 _RealToolMessage，使 Command 中的
+    将 SkillTools 模块内的 ToolMessage 替换为 _RealToolMessage，使 Command 中的
     ToolMessage 实例具有可断言的真实 content / tool_call_id 属性。
 
     Yields:
         None
     """
-    with patch("app.core.skills.tool.ToolMessage", _RealToolMessage):
+    with patch("app.core.tools.SkillTools.ToolMessage", _RealToolMessage):
         yield
 
 
@@ -128,10 +130,10 @@ def test_load_skill_returns_skill_content_block(monkeypatch, tmp_path: Path):
     )
     service = _make_service_mock(info)
     monkeypatch.setattr(
-        "app.core.skills.tool.SkillsService.get_instance", lambda: service
+        "app.core.tools.SkillTools.SkillsService.get_instance", lambda: service
     )
 
-    from app.core.skills.tool import load_skill
+    from app.core.tools.SkillTools import load_skill
 
     result = load_skill.invoke({"name": "alpha"})
 
@@ -167,10 +169,10 @@ def test_load_skill_includes_base_dir_uri(monkeypatch, tmp_path: Path):
     )
     service = _make_service_mock(info)
     monkeypatch.setattr(
-        "app.core.skills.tool.SkillsService.get_instance", lambda: service
+        "app.core.tools.SkillTools.SkillsService.get_instance", lambda: service
     )
 
-    from app.core.skills.tool import load_skill
+    from app.core.tools.SkillTools import load_skill
 
     result = load_skill.invoke({"name": "alpha"})
 
@@ -204,10 +206,10 @@ def test_load_skill_includes_file_list(monkeypatch, tmp_path: Path):
     )
     service = _make_service_mock(info)
     monkeypatch.setattr(
-        "app.core.skills.tool.SkillsService.get_instance", lambda: service
+        "app.core.tools.SkillTools.SkillsService.get_instance", lambda: service
     )
 
-    from app.core.skills.tool import load_skill
+    from app.core.tools.SkillTools import load_skill
 
     result = load_skill.invoke({"name": "alpha"})
 
@@ -231,10 +233,10 @@ def test_load_skill_returns_error_for_missing_skill(monkeypatch):
     """
     service = _make_service_mock(None, available=["alpha", "bravo"])
     monkeypatch.setattr(
-        "app.core.skills.tool.SkillsService.get_instance", lambda: service
+        "app.core.tools.SkillTools.SkillsService.get_instance", lambda: service
     )
 
-    from app.core.skills.tool import load_skill
+    from app.core.tools.SkillTools import load_skill
 
     result = load_skill.invoke({"name": "nope"})
 
@@ -269,10 +271,10 @@ def test_load_skill_limits_files_to_10(monkeypatch, tmp_path: Path):
     )
     service = _make_service_mock(info)
     monkeypatch.setattr(
-        "app.core.skills.tool.SkillsService.get_instance", lambda: service
+        "app.core.tools.SkillTools.SkillsService.get_instance", lambda: service
     )
 
-    from app.core.skills.tool import load_skill
+    from app.core.tools.SkillTools import load_skill
 
     result = load_skill.invoke({"name": "alpha"})
 
@@ -288,7 +290,7 @@ def test_load_skill_tool_is_registered_as_langchain_tool():
     Returns:
         None
     """
-    from app.core.skills.tool import load_skill
+    from app.core.tools.SkillTools import load_skill
 
     assert hasattr(load_skill, "invoke")
 
@@ -340,10 +342,10 @@ def test_read_skill_file_returns_file_content(monkeypatch, tmp_path: Path):
     )
     service = _make_service_with_skills([info])
     monkeypatch.setattr(
-        "app.core.skills.tool.SkillsService.get_instance", lambda: service
+        "app.core.tools.SkillTools.SkillsService.get_instance", lambda: service
     )
 
-    from app.core.skills.tool import read_skill_file
+    from app.core.tools.SkillTools import read_skill_file
 
     result = read_skill_file.invoke({"file_path": str(target)})
 
@@ -382,10 +384,10 @@ def test_read_skill_file_returns_error_for_missing_file(monkeypatch, tmp_path: P
     )
     service = _make_service_with_skills([info])
     monkeypatch.setattr(
-        "app.core.skills.tool.SkillsService.get_instance", lambda: service
+        "app.core.tools.SkillTools.SkillsService.get_instance", lambda: service
     )
 
-    from app.core.skills.tool import read_skill_file
+    from app.core.tools.SkillTools import read_skill_file
 
     result = read_skill_file.invoke({"file_path": str(missing)})
 
@@ -417,10 +419,10 @@ def test_read_skill_file_returns_error_for_directory(monkeypatch, tmp_path: Path
     )
     service = _make_service_with_skills([info])
     monkeypatch.setattr(
-        "app.core.skills.tool.SkillsService.get_instance", lambda: service
+        "app.core.tools.SkillTools.SkillsService.get_instance", lambda: service
     )
 
-    from app.core.skills.tool import read_skill_file
+    from app.core.tools.SkillTools import read_skill_file
 
     result = read_skill_file.invoke({"file_path": str(base_dir)})
 
@@ -457,10 +459,10 @@ def test_read_skill_file_rejects_path_outside_skill_dir(monkeypatch, tmp_path: P
     )
     service = _make_service_with_skills([info])
     monkeypatch.setattr(
-        "app.core.skills.tool.SkillsService.get_instance", lambda: service
+        "app.core.tools.SkillTools.SkillsService.get_instance", lambda: service
     )
 
-    from app.core.skills.tool import read_skill_file
+    from app.core.tools.SkillTools import read_skill_file
 
     result = read_skill_file.invoke({"file_path": str(elsewhere)})
 
@@ -498,12 +500,12 @@ def test_read_skill_file_rejects_relative_path(monkeypatch, tmp_path: Path):
     )
     service = _make_service_with_skills([info])
     monkeypatch.setattr(
-        "app.core.skills.tool.SkillsService.get_instance", lambda: service
+        "app.core.tools.SkillTools.SkillsService.get_instance", lambda: service
     )
     # 切到 tmp_path，让 external 可用相对路径表示
     monkeypatch.chdir(tmp_path)
 
-    from app.core.skills.tool import read_skill_file
+    from app.core.tools.SkillTools import read_skill_file
 
     # 相对路径 "outside/secret.txt" resolve 后 = tmp_path/outside/secret.txt（真实存在），
     # 但不在 skills/alpha 内，应被白名单拒绝
@@ -541,10 +543,10 @@ def test_read_skill_file_rejects_oversized_file(monkeypatch, tmp_path: Path):
     )
     service = _make_service_with_skills([info])
     monkeypatch.setattr(
-        "app.core.skills.tool.SkillsService.get_instance", lambda: service
+        "app.core.tools.SkillTools.SkillsService.get_instance", lambda: service
     )
 
-    from app.core.skills.tool import read_skill_file
+    from app.core.tools.SkillTools import read_skill_file
 
     result = read_skill_file.invoke({"file_path": str(big)})
 
@@ -592,10 +594,10 @@ def test_read_skill_file_identifies_correct_parent_skill(monkeypatch, tmp_path: 
     )
     service = _make_service_with_skills([info_alpha, info_bravo])
     monkeypatch.setattr(
-        "app.core.skills.tool.SkillsService.get_instance", lambda: service
+        "app.core.tools.SkillTools.SkillsService.get_instance", lambda: service
     )
 
-    from app.core.skills.tool import read_skill_file
+    from app.core.tools.SkillTools import read_skill_file
 
     # 读 alpha 文件
     result_a = read_skill_file.invoke({"file_path": str(alpha_file)})
@@ -636,10 +638,10 @@ def test_read_skill_file_handles_unicode_decode_error(monkeypatch, tmp_path: Pat
     )
     service = _make_service_with_skills([info])
     monkeypatch.setattr(
-        "app.core.skills.tool.SkillsService.get_instance", lambda: service
+        "app.core.tools.SkillTools.SkillsService.get_instance", lambda: service
     )
 
-    from app.core.skills.tool import read_skill_file
+    from app.core.tools.SkillTools import read_skill_file
 
     result = read_skill_file.invoke({"file_path": str(binary)})
 
@@ -656,7 +658,7 @@ def test_read_skill_file_tool_is_registered_as_langchain_tool():
     Returns:
         None
     """
-    from app.core.skills.tool import read_skill_file
+    from app.core.tools.SkillTools import read_skill_file
 
     assert hasattr(read_skill_file, "invoke")
 
@@ -723,9 +725,9 @@ def test_load_skill_finds_agent_skill_first(monkeypatch, tmp_path: Path):
     resolver, agent_service, global_service = _make_agent_aware_resolver(
         agent_info=agent_info,
     )
-    monkeypatch.setattr("app.core.skills.tool.SkillsService.get_instance", resolver)
+    monkeypatch.setattr("app.core.tools.SkillTools.SkillsService.get_instance", resolver)
 
-    from app.core.skills.tool import load_skill
+    from app.core.tools.SkillTools import load_skill
 
     mock_runtime = MagicMock()
     mock_runtime.tool_call_id = "call-agent"
@@ -767,9 +769,9 @@ def test_load_skill_falls_back_to_global_when_not_in_agent(
         agent_info=None,
         global_info=global_info,
     )
-    monkeypatch.setattr("app.core.skills.tool.SkillsService.get_instance", resolver)
+    monkeypatch.setattr("app.core.tools.SkillTools.SkillsService.get_instance", resolver)
 
-    from app.core.skills.tool import load_skill
+    from app.core.tools.SkillTools import load_skill
 
     mock_runtime = MagicMock()
     mock_runtime.tool_call_id = "call-fallback"
@@ -821,9 +823,9 @@ def test_load_skill_returns_error_when_not_in_any_scope(
         agent_skills=[agent_info],
         global_skills=[global_info],
     )
-    monkeypatch.setattr("app.core.skills.tool.SkillsService.get_instance", resolver)
+    monkeypatch.setattr("app.core.tools.SkillTools.SkillsService.get_instance", resolver)
 
-    from app.core.skills.tool import load_skill
+    from app.core.tools.SkillTools import load_skill
 
     mock_runtime = MagicMock()
     mock_runtime.tool_call_id = "call-missing"
@@ -864,9 +866,9 @@ def test_read_skill_file_accepts_path_from_agent_skill(monkeypatch, tmp_path: Pa
         agent_skills=[info],
         global_skills=[],
     )
-    monkeypatch.setattr("app.core.skills.tool.SkillsService.get_instance", resolver)
+    monkeypatch.setattr("app.core.tools.SkillTools.SkillsService.get_instance", resolver)
 
-    from app.core.skills.tool import read_skill_file
+    from app.core.tools.SkillTools import read_skill_file
 
     mock_runtime = MagicMock()
     mock_runtime.tool_call_id = "call-agent-file"
@@ -910,9 +912,9 @@ def test_read_skill_file_accepts_path_from_global_skill(
         agent_skills=[],
         global_skills=[info],
     )
-    monkeypatch.setattr("app.core.skills.tool.SkillsService.get_instance", resolver)
+    monkeypatch.setattr("app.core.tools.SkillTools.SkillsService.get_instance", resolver)
 
-    from app.core.skills.tool import read_skill_file
+    from app.core.tools.SkillTools import read_skill_file
 
     mock_runtime = MagicMock()
     mock_runtime.tool_call_id = "call-global-file"
@@ -934,7 +936,7 @@ def test_load_skill_works_when_state_is_missing():
     Returns:
         None
     """
-    from app.core.skills.tool import _get_agent_name
+    from app.core.tools.SkillTools import _get_agent_name
 
     # state 为 None
     mock_runtime_none = MagicMock()

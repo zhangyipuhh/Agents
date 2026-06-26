@@ -15,6 +15,8 @@ import { redirectToLogin, tryRefreshOrRedirect } from './utils/auth.js'
 // 2026-06-23 新增：当前激活的智能体名称（与后端 agents 表 name 字段一致）。
 // 默认 null，未选择时由后端使用框架默认配置。
 const agentName = ref(null)
+// 2026-06-26 新增：当前激活的智能体展示名称（中文）
+const agentDisplayName = ref('')
 const currentPage = ref('agent')
 const isLoggedIn = ref(false)
 // 认证状态检查是否就绪；用于在 checkAuth 完成前显示 loading 占位，
@@ -264,6 +266,8 @@ async function newSession() {
     sessionId.value = ''
     messages.splice(0, messages.length)
     currentAttachments.value = []
+    agentName.value = null
+    agentDisplayName.value = ''
 
     // 关闭子智能体详情抽屉：避免上一个会话的 subagent 数据残留在 UI 上
     // 复用已有的 closeSubAgentDrawer()（会同步将 subAgentDrawerVisible 置 false，无需另清 currentSubAgent）
@@ -559,12 +563,15 @@ function handleToolAction(action) {
 
 /**
  * 处理 InputBox 触发的智能体切换事件
- * @param {string|null} name - 新激活的智能体名称（如 'map_agent' / 'contract_agent'），null 表示取消选择
+ * @param {string|Object|null} payload - 新激活的智能体信息。传对象时包含 name / display_name；传字符串时仅为 name；null 表示取消选择
  */
-function handleAgentSwitched(name) {
+function handleAgentSwitched(payload) {
+  const name = typeof payload === 'string' ? payload : payload?.name
+  const displayName = typeof payload === 'string' ? '' : payload?.display_name
   if (agentName.value === name) return
   agentName.value = name || null
-  console.log('[App] 智能体已切换为:', name)
+  agentDisplayName.value = displayName || ''
+  console.log('[App] 智能体已切换为:', name, displayName)
 }
 
 function handleRegenerate(aiMessageId) {
@@ -638,6 +645,17 @@ async function handleSessionSwitch(targetSessionId) {
   try {
     // 获取会话详情（含附件列表）
     const detail = await fetchSessionDetail(targetSessionId)
+
+    // 2026-06-26 新增：恢复会话绑定的智能体状态
+    const boundAgentType = detail.agent_type
+    const boundDisplayName = detail.agent_display_name
+    if (boundAgentType && boundAgentType !== 'default') {
+      agentName.value = boundAgentType
+      agentDisplayName.value = boundDisplayName || boundAgentType
+    } else {
+      agentName.value = null
+      agentDisplayName.value = ''
+    }
 
     // 还原附件列表
     if (detail.attachments && detail.attachments.length > 0) {
@@ -812,6 +830,8 @@ async function handleSessionSwitch(targetSessionId) {
         v-else
         :session-id="sessionId.value"
         :is-streaming="isStreaming.value"
+        :bound-agent-name="agentName || ''"
+        :bound-agent-display-name="agentDisplayName || ''"
         @send="handleSendMessage"
         @tool-action="handleToolAction"
         @new-chat="newSession"

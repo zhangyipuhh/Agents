@@ -40,7 +40,7 @@ except (ImportError, ModuleNotFoundError):
     SkillsService = None  # type: ignore[misc, assignment]
 
 try:
-    from .tool import load_skill, read_skill_file
+    from app.core.tools.SkillTools import load_skill, read_skill_file
 except (ImportError, ModuleNotFoundError):
     load_skill = None  # type: ignore[misc, assignment]
     read_skill_file = None  # type: ignore[misc, assignment]

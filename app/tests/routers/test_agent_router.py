@@ -505,3 +505,251 @@ def test_chat_with_none_tools_does_not_break(client, admin_headers, monkeypatch)
     }, headers=headers)
 
     assert response.status_code == 200
+
+
+# =============================================================================
+# 2026-06-26 新增：会话智能体绑定持久化测试
+# 验证 agent_router.py::chat 在首次使用非 default agent_name 时，
+# 将 agent_type + agent_display_name 持久化到 SessionDB（内存 + 数据库）。
+# =============================================================================
+
+
+def test_chat_binds_agent_to_session_on_first_non_default_agent(client, admin_headers, monkeypatch):
+    """测试首次传入非 default agent_name 时，chat 端点将智能体绑定到 session。
+
+    验证：
+    - SessionDB.get_session 被调用以检查当前 session 绑定状态
+    - 当当前 session agent_type 为 default 时，update_session_agent 被调用
+    - update_session_agent 参数为 (session_id, agent_name, display_name)
+    """
+    from unittest.mock import MagicMock, AsyncMock
+
+    class FakeAgent:
+        def __init__(self, config):
+            self._config = config
+
+        async def __ainit__(self):
+            pass
+
+    monkeypatch.setattr("app.core.agent.agent.Agent", FakeAgent)
+
+    def fake_stream(*args, **kwargs):
+        yield "data: test\n\n"
+
+    monkeypatch.setattr("app.routers.agent_router.generate_stream_response", fake_stream)
+
+    async def fake_checkpointer():
+        return MagicMock()
+
+    monkeypatch.setattr("app.routers.agent_router.get_async_checkpointer", fake_checkpointer)
+
+    async def fake_store():
+        return MagicMock()
+
+    monkeypatch.setattr("app.routers.agent_router.get_async_store", fake_store)
+
+    async def fake_get(self, name):
+        from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+        return UnifiedAgentConfig(
+            name=name,
+            display_name="地图智能体",
+            description="",
+            system_prompt="# 地图",
+            state_class=MagicMock(return_value={"messages": []}),
+            context_class=MagicMock(return_value={"session_id": "test"}),
+        )
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.get_agent_config",
+        fake_get,
+    )
+
+    # Mock SessionDB：get_session 返回 default 状态，update_session_agent 记录调用
+    updated_calls = []
+
+    async def mock_get_session(session_id):
+        return {
+            "session_id": session_id,
+            "user_id": 1,
+            "username": "admin",
+            "agent_type": "default",
+            "agent_display_name": "",
+        }
+
+    async def mock_update_session_agent(session_id, agent_type, agent_display_name):
+        updated_calls.append((session_id, agent_type, agent_display_name))
+        return True
+
+    monkeypatch.setattr("app.shared.utils.auth.session_db.SessionDB.get_session", mock_get_session)
+    monkeypatch.setattr(
+        "app.shared.utils.auth.session_db.SessionDB.update_session_agent", mock_update_session_agent
+    )
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": "map_agent",
+    }, headers=headers)
+
+    assert response.status_code == 200
+    assert len(updated_calls) == 1
+    assert updated_calls[0] == ("test-session", "map_agent", "地图智能体")
+
+
+def test_chat_does_not_rebind_if_session_already_bound(client, admin_headers, monkeypatch):
+    """测试已绑定非 default 智能体的 session 不会被重新绑定。
+
+    验证：当 session 的 agent_type 已为非 default 时，即使传入其他 agent_name，
+    也不会触发 update_session_agent。
+    """
+    from unittest.mock import MagicMock
+
+    class FakeAgent:
+        def __init__(self, config):
+            self._config = config
+
+        async def __ainit__(self):
+            pass
+
+    monkeypatch.setattr("app.core.agent.agent.Agent", FakeAgent)
+
+    def fake_stream(*args, **kwargs):
+        yield "data: test\n\n"
+
+    monkeypatch.setattr("app.routers.agent_router.generate_stream_response", fake_stream)
+
+    async def fake_checkpointer():
+        return MagicMock()
+
+    monkeypatch.setattr("app.routers.agent_router.get_async_checkpointer", fake_checkpointer)
+
+    async def fake_store():
+        return MagicMock()
+
+    monkeypatch.setattr("app.routers.agent_router.get_async_store", fake_store)
+
+    async def fake_get(self, name):
+        from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+        return UnifiedAgentConfig(
+            name=name,
+            display_name="其他智能体",
+            description="",
+            system_prompt="# 其他",
+            state_class=MagicMock(return_value={"messages": []}),
+            context_class=MagicMock(return_value={"session_id": "test"}),
+        )
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.get_agent_config",
+        fake_get,
+    )
+
+    updated_calls = []
+
+    async def mock_get_session(session_id):
+        return {
+            "session_id": session_id,
+            "user_id": 1,
+            "username": "admin",
+            "agent_type": "map_agent",
+            "agent_display_name": "地图智能体",
+        }
+
+    async def mock_update_session_agent(session_id, agent_type, agent_display_name):
+        updated_calls.append((session_id, agent_type, agent_display_name))
+        return True
+
+    monkeypatch.setattr("app.shared.utils.auth.session_db.SessionDB.get_session", mock_get_session)
+    monkeypatch.setattr(
+        "app.shared.utils.auth.session_db.SessionDB.update_session_agent", mock_update_session_agent
+    )
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": "other_agent",
+    }, headers=headers)
+
+    assert response.status_code == 200
+    assert len(updated_calls) == 0, "已绑定 session 不应被重新绑定"
+
+
+def test_chat_does_not_bind_when_agent_name_is_default(client, admin_headers, monkeypatch):
+    """测试 agent_name 为 default 时不触发 session 绑定。
+
+    验证：即使 session 当前是 default 状态，传入 agent_name='default' 时，
+    update_session_agent 不会被调用。
+    """
+    from unittest.mock import MagicMock
+
+    class FakeAgent:
+        def __init__(self, config):
+            self._config = config
+
+        async def __ainit__(self):
+            pass
+
+    monkeypatch.setattr("app.core.agent.agent.Agent", FakeAgent)
+
+    def fake_stream(*args, **kwargs):
+        yield "data: test\n\n"
+
+    monkeypatch.setattr("app.routers.agent_router.generate_stream_response", fake_stream)
+
+    async def fake_checkpointer():
+        return MagicMock()
+
+    monkeypatch.setattr("app.routers.agent_router.get_async_checkpointer", fake_checkpointer)
+
+    async def fake_store():
+        return MagicMock()
+
+    monkeypatch.setattr("app.routers.agent_router.get_async_store", fake_store)
+
+    async def fake_get(self, name):
+        from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+        return UnifiedAgentConfig(
+            name=name,
+            display_name="默认智能体",
+            description="",
+            system_prompt="# 默认",
+            state_class=MagicMock(return_value={"messages": []}),
+            context_class=MagicMock(return_value={"session_id": "test"}),
+        )
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.get_agent_config",
+        fake_get,
+    )
+
+    updated_calls = []
+
+    async def mock_get_session(session_id):
+        return {
+            "session_id": session_id,
+            "user_id": 1,
+            "username": "admin",
+            "agent_type": "default",
+            "agent_display_name": "",
+        }
+
+    async def mock_update_session_agent(session_id, agent_type, agent_display_name):
+        updated_calls.append((session_id, agent_type, agent_display_name))
+        return True
+
+    monkeypatch.setattr("app.shared.utils.auth.session_db.SessionDB.get_session", mock_get_session)
+    monkeypatch.setattr(
+        "app.shared.utils.auth.session_db.SessionDB.update_session_agent", mock_update_session_agent
+    )
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": "default",
+    }, headers=headers)
+
+    assert response.status_code == 200
+    assert len(updated_calls) == 0, "agent_name 为 default 时不应触发绑定"
