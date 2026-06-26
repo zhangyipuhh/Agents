@@ -9,7 +9,7 @@ import KnowledgePage from './components/KnowledgePage.vue'
 import SubAgentDrawer from './components/SubAgentDrawer.vue'
 import QueueStatusBanner from './components/QueueStatusBanner.vue'
 import { chatStream, createNewSession, logout as apiLogout, fetchSessionDetail, fetchSessionAttachments, fetchSessionMessages, validateToken, refreshToken, clearAuth } from './utils/api.js'
-import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage, isSubAgentHistoryItem, convertSubAgentHistoryToAiSubAgent } from './utils/sseParser.js'
+import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage, isSubAgentHistoryItem, convertSubAgentHistoryToAiSubAgent, isSubAgentTool } from './utils/sseParser.js'
 import { redirectToLogin, tryRefreshOrRedirect } from './utils/auth.js'
 
 // 2026-06-23 新增：当前激活的智能体名称（与后端 agents 表 name 字段一致）。
@@ -702,6 +702,28 @@ async function handleSessionSwitch(targetSessionId) {
             thinking = aiMsg.thinking
             timeline = aiMsg.timeline
             tools = aiMsg.tools
+          }
+
+          // 2026-06-26 新增：后端 AIMessage 携带 tool_calls 时，为普通工具构造
+          // 最小化事件注入 tools / timeline，使历史会话中 ToolCallCard 能渲染。
+          // 子智能体工具跳过（它们已由 type:"subagent" 元素处理）。
+          if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
+            for (const tc of msg.tool_calls) {
+              if (isSubAgentTool(tc.name)) continue
+              const toolCallId = tc.id || ''
+              const toolName = tc.name || '工具调用'
+              const event = {
+                type: 'custom',
+                data: {
+                  type: 'tool_stop',
+                  tool: toolName,
+                  tool_call_id: toolCallId,
+                  data: { status: 'success' }
+                }
+              }
+              tools.push(event)
+              timeline.push({ type: 'tool', content: event })
+            }
           }
 
           const aiMsgObj = {

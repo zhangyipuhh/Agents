@@ -221,6 +221,12 @@ class MCPToolsRegistry:
             if server and server_name != server:
                 continue
             server_config = self._server_configs.get(server_name, {})
+            if not server_config.get("enabled", True):
+                logger.debug(
+                    "服务器 '%s' 已禁用，跳过工具获取",
+                    server_name,
+                )
+                continue
             server_tags = server_config.get("tags", [])
             if tags and not any(t in server_tags for t in tags):
                 logger.debug(

@@ -1177,6 +1177,7 @@ def test_load_tools_from_builtin_bindings():
     # 注入 mock tool_service
     mock_tool = MagicMock(name="builtin_tool_instance")
     mock_tool_info = MagicMock()
+    mock_tool_info.enabled = True
     mock_tool_info.tool_instance = mock_tool
     mock_tool_service = MagicMock()
     mock_tool_service.get_tool_by_name = AsyncMock(return_value=mock_tool_info)
@@ -1222,6 +1223,38 @@ def test_load_tools_skips_disabled_bindings():
 
     assert len(tools) == 0
     mock_tool_service.get_tool_by_name.assert_not_called()
+
+
+def test_load_tools_skips_globally_disabled_tool():
+    """测试 _load_tools 跳过全局禁用的工具（tool_info.enabled=False）。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 全局禁用工具未被跳过时抛出
+    """
+    service = AgentConfigService(MagicMock(), MagicMock())
+    mock_tool_info = MagicMock()
+    mock_tool_info.enabled = False
+    mock_tool_info.tool_instance = MagicMock()
+    mock_tool_service = MagicMock()
+    mock_tool_service.get_tool_by_name = AsyncMock(return_value=mock_tool_info)
+    service.set_tool_service(mock_tool_service)
+
+    agent_row = {
+        "tool_bindings": [
+            {"tool_name": "search", "tool_type": "builtin", "enabled": True},
+        ],
+        "mcp_tags": [],
+    }
+    tools = asyncio.run(service._load_tools(agent_row))
+
+    assert len(tools) == 0
+    mock_tool_service.get_tool_by_name.assert_called_once_with("search")
 
 
 def test_load_tools_fallback_to_mcp_tags():
@@ -1941,4 +1974,38 @@ def test_load_tools_calls_async_mcp_registry():
     )
     # 确保同步版本未被调用（避免线程池事件循环问题）
     mock_registry.get_tools_with_server.assert_not_called()
+
+
+def test_load_tools_skips_disabled_mcp_server():
+    """测试 _load_tools 在 MCP server 禁用时跳过该工具。
+
+    模拟 mcp_registry 因 server 被整体禁用而返回空列表，
+    验证 _load_tools 最终不加载该工具。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 禁用 server 的工具未被跳过时抛出
+    """
+    service = AgentConfigService(MagicMock(), MagicMock())
+    mock_registry = MagicMock()
+    mock_registry.get_tools_with_server_async = AsyncMock(return_value=[])
+    service.set_mcp_registry(mock_registry)
+
+    agent_row = {
+        "tool_bindings": [
+            {"tool_name": "amap.search", "tool_type": "mcp", "enabled": True},
+        ],
+        "mcp_tags": [],
+    }
+    tools = asyncio.run(service._load_tools(agent_row))
+
+    assert len(tools) == 0
+    mock_registry.get_tools_with_server_async.assert_awaited_once_with(
+        server="amap", names=["search"]
+    )
 

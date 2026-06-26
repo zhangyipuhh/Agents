@@ -582,3 +582,53 @@ def test_merge_with_interleaved_tool_messages_last_subagent_preserved():
     assert merged[4]["id"] == "ai-ex2"
     assert merged[5]["type"] == "subagent"
     assert merged[5]["parent_message_id"] == "ai-ex2"
+
+
+# ===== 2026-06-26 新增：_convert_message_to_dict 提取 tool_calls =====
+
+def test_convert_message_to_dict_ai_with_tool_calls():
+    """AIMessage 含 tool_calls 时，转换后的 dict 应携带 tool_calls 字段"""
+    ai = _make_msg(
+        AIMessage, content="ok",
+        tool_calls=[
+            {"id": "call_1", "name": "generate_report", "args": {}},
+            {"id": "call_2", "name": "sandbox", "args": {}}],
+        id="m-ai-1",
+    )
+    d = CheckpointHistoryService._convert_message_to_dict(ai)
+    assert d is not None
+    assert d["type"] == "ai"
+    assert "tool_calls" in d
+    assert len(d["tool_calls"]) == 2
+    assert d["tool_calls"][0]["id"] == "call_1"
+    assert d["tool_calls"][0]["name"] == "generate_report"
+    assert d["tool_calls"][1]["id"] == "call_2"
+    assert d["tool_calls"][1]["name"] == "sandbox"
+
+
+def test_convert_message_to_dict_ai_without_tool_calls():
+    """AIMessage 不含 tool_calls 时，转换后的 dict 不应携带 tool_calls 字段"""
+    ai = _make_msg(AIMessage, content="just text", id="m-ai-2")
+    d = CheckpointHistoryService._convert_message_to_dict(ai)
+    assert d is not None
+    assert d["type"] == "ai"
+    assert "tool_calls" not in d
+
+
+def test_convert_message_to_dict_ai_with_anthropic_tool_use():
+    """Anthropic 风格 content list 中含 tool_use 时，tool_calls 应被提取"""
+    ai = _make_msg(
+        AIMessage,
+        content=[
+            {"type": "text", "text": "ok"},
+            {"type": "tool_use", "id": "call_ant", "name": "generate_report"},
+        ],
+        id="m-ai-3",
+    )
+    d = CheckpointHistoryService._convert_message_to_dict(ai)
+    assert d is not None
+    assert d["type"] == "ai"
+    assert "tool_calls" in d
+    assert len(d["tool_calls"]) == 1
+    assert d["tool_calls"][0]["id"] == "call_ant"
+    assert d["tool_calls"][0]["name"] == "generate_report"

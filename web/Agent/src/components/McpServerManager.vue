@@ -141,25 +141,31 @@
           </div>
 
           <div class="methods-section">
-            <div class="methods-header">
+            <div class="methods-header" @click="toggleMethods">
+              <span
+                class="methods-arrow"
+                :class="{ expanded: methodsExpanded }"
+              >▶</span>
               <h5>方法列表</h5>
-              <button class="refresh-methods-btn" @click="onRefreshMethods">
+              <button class="refresh-methods-btn" @click.stop="onRefreshMethods">
                 刷新方法列表
               </button>
             </div>
-            <div v-if="methods.length === 0" class="methods-empty">
-              暂无方法，点击"刷新方法列表"拉取
-            </div>
-            <div v-for="m in methods" :key="m.method_name" class="method-item">
-              <label class="method-toggle-wrapper">
-                <input
-                  type="checkbox"
-                  :checked="m.enabled"
-                  @change="onToggleMethod(m, $event.target.checked, $event)"
-                />
-                <span>{{ m.method_name }}</span>
-              </label>
-              <span v-if="m.description" class="method-desc">{{ m.description }}</span>
+            <div v-show="methodsExpanded">
+              <div v-if="methods.length === 0" class="methods-empty">
+                暂无方法，点击"刷新方法列表"拉取
+              </div>
+              <div v-for="m in methods" :key="m.method_name" class="method-item">
+                <label class="method-toggle-wrapper">
+                  <input
+                    type="checkbox"
+                    :checked="m.enabled"
+                    @change="onToggleMethod(m, $event.target.checked, $event)"
+                  />
+                  <span>{{ m.method_name }}</span>
+                </label>
+                <span v-if="m.description" class="method-desc">{{ m.description }}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -188,7 +194,15 @@ import {
 const servers = ref([])
 const selectedServer = ref(null)
 const methods = ref([])
+const methodsExpanded = ref(true)
 const formVisible = ref(false)
+
+/**
+ * 切换方法列表的展开/折叠状态
+ */
+function toggleMethods() {
+  methodsExpanded.value = !methodsExpanded.value
+}
 const editingServer = ref(null)
 const commandText = ref('')
 const tagsText = ref('')
@@ -655,11 +669,23 @@ async function onToggleMethod(method, enabled, event) {
 }
 .methods-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
 }
 .methods-header h5 {
   margin: 0;
+  flex: 1;
+}
+.methods-arrow {
+  font-size: 10px;
+  color: #6b7280;
+  transition: transform 0.2s;
+  display: inline-block;
+}
+.methods-arrow.expanded {
+  transform: rotate(90deg);
 }
 .refresh-methods-btn {
   padding: 4px 8px;

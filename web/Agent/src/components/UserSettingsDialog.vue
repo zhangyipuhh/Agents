@@ -1302,7 +1302,7 @@ watch(() => props.visible, (newVal) => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-lg) var(--space-xl);
+  padding: 2px var(--space-xl);
   border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
 }

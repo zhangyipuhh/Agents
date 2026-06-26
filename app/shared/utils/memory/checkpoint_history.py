@@ -89,6 +89,11 @@ class CheckpointHistoryService:
                 "content": readable_content,
             }
 
+            # 2026-06-26 新增：提取 tool_calls，供前端历史恢复时重构普通工具卡片
+            tool_calls = CheckpointHistoryService._extract_ai_tool_call_ids(msg)
+            if tool_calls:
+                result["tool_calls"] = tool_calls
+
             # 若为列表格式，额外解析结构化字段
             if is_list:
                 text_parts = []

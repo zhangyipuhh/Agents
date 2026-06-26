@@ -506,11 +506,13 @@ async def list_available_tools(request: Request, name: str) -> Dict[str, Any]:
     tool_service = _get_tool_service(request)
     mcp_service = _get_mcp_service(request)
 
-    # 1. 内置工具
+    # 1. 内置工具（仅返回已启用的工具，供 Agent 绑定）
     builtin_list: List[Dict[str, Any]] = []
     if tool_service is not None:
         all_tools = await tool_service.list_tools()
         for t in all_tools:
+            if not t.get("enabled", True):
+                continue
             file_path = t.get("file_path", "")
             file_basename = ""
             if file_path and "/" in file_path:

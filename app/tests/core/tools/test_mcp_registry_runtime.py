@@ -294,3 +294,46 @@ def test_get_tools_with_server_skips_already_wrapped():
     assert tool is already_wrapped
     # tool_config 保持原值（未被 server_config 覆盖）
     assert tool.tool_config.unwrap_result is False
+
+
+def test_get_tools_skips_disabled_server():
+    """测试 _get_tools_with_server_async：enabled=False 的 server 被跳过。
+
+    验证：
+    - _server_configs 中 enabled=False 的 server 不返回任何工具
+    - 即使该 server 的 get_server_tools 返回了工具，也应被过滤
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 禁用 server 的工具未被过滤时抛出
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    registry = MCPToolsRegistry()
+    registry._initialized = True
+
+    fake_tool = MagicMock()
+    fake_tool.name = "search"
+
+    mock_client = MagicMock()
+    mock_client.get_server_names = MagicMock(return_value=["disabled_server"])
+    mock_client.get_server_tools = AsyncMock(return_value={"tools": [fake_tool]})
+    registry._client = mock_client
+
+    # server 被禁用
+    registry._server_configs["disabled_server"] = {
+        "enabled": False,
+        "type": "sse",
+        "tags": [],
+    }
+
+    results = asyncio.run(registry._get_tools_with_server_async())
+
+    assert results == []
+    # 验证 get_server_tools 未被调用（在 enabled 检查后就跳过了）
+    mock_client.get_server_tools.assert_not_called()

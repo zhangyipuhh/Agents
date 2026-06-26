@@ -118,6 +118,23 @@ const toolBindingsSavedTip = ref('')      // 工具绑定保存成功提示
 const localSelectedBindings = ref({})     // 本地勾选状态：key = `${tool_type}:${tool_name}` -> true
 const toolsInitialized = ref(false)       // 工具列表（builtin + mcp）是否已加载（全局缓存，避免每次切换 agent 重复拉取）
 
+// === 工具绑定：分组折叠状态 ===
+const expandedToolGroups = ref(new Set()) // 已展开的工具分类集合
+
+/**
+ * 切换工具分组的展开/折叠状态
+ * @param {string} category - 分类名称
+ */
+function toggleToolGroup(category) {
+  const next = new Set(expandedToolGroups.value)
+  if (next.has(category)) {
+    next.delete(category)
+  } else {
+    next.add(category)
+  }
+  expandedToolGroups.value = next
+}
+
 // === 加载与刷新 ===
 
 async function loadAgentList() {
@@ -657,6 +674,10 @@ async function onSwitchToToolsTab() {
   try {
     await loadAllTools()
     await loadAgentBindings()
+    // 首次加载工具列表后，默认展开所有分类
+    if (expandedToolGroups.value.size === 0 && groupedTools.value.length > 0) {
+      expandedToolGroups.value = new Set(groupedTools.value.map(g => g.category))
+    }
   } finally {
     isLoadingTools.value = false
   }
@@ -806,14 +827,16 @@ onMounted(async () => {
               :class="{ active: activeTab === 'config' }"
               @click="switchTab('config')"
             >
-              配置字段
+              <span class="tab-icon">&#9881;</span>
+              <span>配置字段</span>
             </button>
             <button
               class="tab-btn"
               :class="{ active: activeTab === 'tools' }"
               @click="switchTab('tools')"
             >
-              工具绑定
+              <span class="tab-icon">&#129522;</span>
+              <span>工具绑定</span>
             </button>
           </nav>
 
@@ -853,7 +876,7 @@ onMounted(async () => {
 
           <!-- 底部变更摘要 -->
           <div v-if="hasPendingChanges" class="changes-summary">
-            <span>有未保存的修改</span>
+            <span class="changes-summary-text">&#9888; 有未保存的修改</span>
             <div>
               <button class="btn-secondary" @click="discardChanges">放弃修改</button>
               <button class="btn-primary" @click="saveAllChanges">保存全部修改</button>
@@ -897,8 +920,18 @@ onMounted(async () => {
                   :key="group.category"
                   class="tool-group"
                 >
-                  <h5 class="tool-group-title">{{ group.category }}</h5>
-                  <ul class="tool-list">
+                  <div
+                    class="tool-group-header"
+                    @click="toggleToolGroup(group.category)"
+                  >
+                    <span
+                      class="tool-group-arrow"
+                      :class="{ expanded: expandedToolGroups.has(group.category) }"
+                    >▶</span>
+                    <h5 class="tool-group-title">{{ group.category }}</h5>
+                    <span class="tool-group-count">{{ group.tools.length }}</span>
+                  </div>
+                  <ul v-show="expandedToolGroups.has(group.category)" class="tool-list">
                     <li
                       v-for="tool in group.tools"
                       :key="`${tool.tool_type}:${tool.tool_name}`"
@@ -1085,14 +1118,19 @@ const SectionEditor = defineComponent({
   },
   emits: ['add', 'remove'],
   setup(props, { emit }) {
-    return () => h('section', { class: 'section-editor' }, [
+    return () => h('section', {
+      class: 'section-editor',
+    }, [
       h('header', { class: 'section-header' }, [
-        h('div', null, [
-          h('h4', { class: 'section-title' }, props.title),
+        h('div', { class: 'section-title-wrap' }, [
+          h('h4', { class: 'section-title' }, [
+            h('span', { class: 'section-accent-bar' }),
+            props.title,
+          ]),
           h('p', { class: 'section-subtitle' }, props.subtitle),
         ]),
         h('button', {
-          class: 'btn-secondary btn-sm',
+          class: 'btn-add-field',
           onClick: () => emit('add'),
         }, '+ 添加字段'),
       ]),
@@ -1108,11 +1146,17 @@ const SectionEditor = defineComponent({
         ]),
         h('tbody', null,
           props.fields.length === 0
-            ? [h('tr', null, [h('td', { colspan: 5, class: 'empty-row' }, '暂无字段')])]
+            ? [h('tr', null, [h('td', { colspan: 5, class: 'empty-row' }, [
+                h('div', { class: 'empty-row-content' }, [
+                  h('div', { class: 'empty-row-icon' }, '\u2205'),
+                  h('div', { class: 'empty-row-text' }, '暂无字段'),
+                  h('div', { class: 'empty-row-hint' }, '点击上方「添加字段」按钮创建第一个字段'),
+                ]),
+              ])])]
             : props.fields.map(f =>
                 h('tr', { key: f.name, class: { 'pending-row': f.isPending } }, [
                   h('td', null, [
-                    h('code', null, f.name),
+                    h('code', { class: 'field-name-code' }, f.name),
                     f.isNew ? h('span', { class: 'badge-new' }, '新增') : null,
                   ]),
                   h('td', null, f.type),
@@ -1295,78 +1339,183 @@ export default {
 }
 
 .section-editor {
+  position: relative;
+  overflow: hidden;
   margin-bottom: 24px;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: 20px 20px 20px 24px; /* 左侧多 4px 留给 accent bar */
+  transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
+}
+.section-editor:hover {
+  box-shadow: var(--shadow-lg);
+  transform: translateY(-1px);
+  border-color: var(--color-accent);
 }
 .section-header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  margin-bottom: 8px;
+  margin-bottom: 12px;
+}
+.section-title-wrap {
+  flex: 1;
+  min-width: 0;
 }
 .section-title {
   margin: 0;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.section-accent-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 4px;
+  height: 100%;
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
+  background-color: var(--color-accent);
+  transition: width 0.2s ease;
+  flex-shrink: 0;
+}
+.section-editor:hover .section-accent-bar {
+  width: 6px;
 }
 .section-subtitle {
-  margin: 2px 0 0;
+  margin: 6px 0 0;
   font-size: 12px;
   color: var(--color-text-muted);
+  line-height: 1.5;
+}
+.btn-add-field {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+  background-color: var(--color-accent);
+  color: white;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.btn-add-field:hover {
+  background-color: var(--color-accent-hover);
 }
 
 .fields-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
-  background-color: var(--color-bg-primary);
+  background-color: transparent;
   border: 1px solid var(--color-border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
 }
 .fields-table th,
 .fields-table td {
-  padding: 8px 12px;
+  padding: 12px 14px;
   text-align: left;
   border-bottom: 1px solid var(--color-border-light);
 }
 .fields-table th {
   background-color: var(--color-bg-secondary);
   font-weight: 600;
+  color: var(--color-text-primary);
+  border-bottom: 1px solid var(--color-border);
+  font-size: 12px;
+}
+.fields-table tbody tr {
+  transition: background-color 0.15s ease;
+}
+.fields-table tbody tr:nth-child(even) {
+  background-color: var(--color-bg-secondary);
+}
+.fields-table tbody tr:hover {
+  background-color: var(--color-accent-light) !important;
 }
 .fields-table td code {
   font-family: monospace;
   background-color: var(--color-bg-secondary);
-  padding: 1px 4px;
-  border-radius: 3px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.fields-table td code.field-name-code {
+  background-color: var(--color-accent-light);
+  color: var(--color-accent);
+  font-weight: 500;
 }
 .pending-row {
   background-color: #fff7e6;
+  border-left: 3px solid #f59e0b;
 }
 .empty-row {
   text-align: center;
   color: var(--color-text-muted);
-  padding: 20px;
+  padding: 40px 24px;
+}
+.empty-row-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.empty-row-icon {
+  font-size: 36px;
+  width: 56px;
+  height: 56px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--color-accent-light);
+  color: var(--color-accent);
+  border-radius: 50%;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+.empty-row-text {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+.empty-row-hint {
+  font-size: 12px;
+  color: var(--color-text-muted);
 }
 .badge-new {
-  background-color: #dbeafe;
-  color: #2563eb;
+  background-color: #FEF3C7;
+  color: #B45309;
   font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  margin-left: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  margin-left: 6px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
 }
 .badge-agent-config,
 .badge-custom {
   font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
 }
 .badge-agent-config {
-  background-color: #e0e7ff;
-  color: #4338ca;
+  background-color: var(--color-accent-light);
+  color: var(--color-accent);
 }
 .badge-custom {
-  background-color: var(--color-bg-tertiary);
-  color: var(--color-text-muted);
+  background-color: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
 }
 
 .changes-summary {
@@ -1375,30 +1524,42 @@ export default {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px 16px;
+  padding: 14px 18px;
   background-color: #fff7e6;
   border: 1px solid #fbbf24;
-  border-radius: 6px;
+  border-left: 4px solid #f59e0b;
+  border-radius: var(--radius-md);
   margin-top: 16px;
+  box-shadow: var(--shadow-lg);
+}
+.changes-summary-text {
+  font-weight: 500;
+  color: #92400e;
+  font-size: 14px;
 }
 
 /* Tab 导航栏 */
 .tab-nav {
   display: flex;
-  gap: 4px;
+  gap: 8px;
   border-bottom: 1px solid var(--color-border);
-  margin-bottom: 16px;
+  margin-bottom: 20px;
+  padding: 0 4px;
 }
 .tab-btn {
-  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 20px;
   font-size: 13px;
   font-family: inherit;
   background-color: transparent;
   color: var(--color-text-secondary);
   border: none;
-  border-bottom: 2px solid transparent;
+  border-bottom: 3px solid transparent;
+  border-radius: 8px 8px 0 0;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all 0.2s ease;
 }
 .tab-btn:hover {
   color: var(--color-text-primary);
@@ -1408,6 +1569,11 @@ export default {
   color: var(--color-accent);
   border-bottom-color: var(--color-accent);
   font-weight: 600;
+  background-color: var(--color-accent-light);
+}
+.tab-icon {
+  font-size: 14px;
+  line-height: 1;
 }
 .tab-content {
   min-height: 200px;
@@ -1468,14 +1634,42 @@ export default {
   border-radius: 6px;
   overflow: hidden;
 }
-.tool-group-title {
-  margin: 0;
+.tool-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 8px 14px;
-  font-size: 13px;
-  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.15s;
   background-color: var(--color-bg-secondary);
   border-bottom: 1px solid var(--color-border);
+}
+.tool-group-header:hover {
+  background-color: var(--color-bg-hover);
+}
+.tool-group-arrow {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  transition: transform 0.2s;
+  display: inline-block;
+}
+.tool-group-arrow.expanded {
+  transform: rotate(90deg);
+}
+.tool-group-title {
+  margin: 0;
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
   color: var(--color-text-primary);
+}
+.tool-group-count {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  background-color: var(--color-bg-active);
+  padding: 1px 6px;
+  border-radius: 999px;
 }
 .tool-list {
   list-style: none;

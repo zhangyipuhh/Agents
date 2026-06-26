@@ -516,7 +516,7 @@ class AgentConfigService:
             )
             if tool_type == "builtin" and self._tool_service:
                 tool_info = await self._tool_service.get_tool_by_name(tool_name)
-                if tool_info and tool_info.tool_instance:
+                if tool_info and tool_info.enabled and tool_info.tool_instance:
                     tools.append(tool_info.tool_instance)
                     logger.info(
                         "[_load_tools] agent=%s | loaded builtin tool: %s (instance=%s)",
@@ -543,10 +543,16 @@ class AgentConfigService:
                 mcp_tools = await self._mcp_registry.get_tools_with_server_async(
                     server=server_name, names=[method_name] if method_name else None
                 )
-                logger.info(
-                    "[_load_tools] agent=%s | mcp_registry returned %d tool(s) for server=%s, method=%s",
-                    agent_name, len(mcp_tools), server_name, method_name,
-                )
+                if not mcp_tools:
+                    logger.info(
+                        "[_load_tools] agent=%s | no mcp tools returned for server=%s, method=%s (server may be disabled or method not found)",
+                        agent_name, server_name, method_name,
+                    )
+                else:
+                    logger.info(
+                        "[_load_tools] agent=%s | mcp_registry returned %d tool(s) for server=%s, method=%s",
+                        agent_name, len(mcp_tools), server_name, method_name,
+                    )
                 for adapted_tool, _, _ in mcp_tools:
                     tools.append(adapted_tool)
             else:

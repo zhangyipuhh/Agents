@@ -435,9 +435,9 @@ function openRegisterForm(unregisteredItem) {
     function_description: unregisteredItem.function_description || '',
     return_description: unregisteredItem.return_description || '',
     args_schema: unregisteredItem.args_schema || {},
-    display_name: '',
+    display_name: unregisteredItem.name || '',
     category: '',
-    description: '',
+    description: unregisteredItem.decorator_description || '',
     enabled: true,
   }
   registerError.value = ''

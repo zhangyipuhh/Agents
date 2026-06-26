@@ -256,13 +256,13 @@ class ToolRegistryService:
     # ==================== SubTask 2.3: preload_all ====================
 
     async def preload_all(self) -> None:
-        """预加载所有启用工具到缓存。
+        """预加载所有工具到缓存。
 
         流程：
         1. 动态导入 app/core/tools/ 和 app/shared/tools/skills/ 下所有 .py 模块，
            触发 @register_tool + @tool 装饰器执行。
         2. 从 ToolRegistry._tools 获取已注册的工具实例字典。
-        3. 从 DB 读取所有 enabled=TRUE 的 tools 记录。
+        3. 从 DB 读取所有 tools 记录（含禁用项）。
         4. 按 name 关联 DB 记录与 ToolRegistry 实例，构造 ToolInfo。
         5. 原子替换整个缓存。
 
@@ -282,9 +282,9 @@ class ToolRegistryService:
         from app.shared.tools.registry import ToolRegistry
         registered = ToolRegistry.list_all()
 
-        # 3. 从 DB 读取启用的工具记录
+        # 3. 从 DB 读取所有工具记录（含禁用项，确保缓存是 DB 完整镜像）
         rows = await self._db.fetch(
-            "SELECT * FROM tools WHERE enabled = TRUE ORDER BY sort_order, name"
+            "SELECT * FROM tools ORDER BY sort_order, name"
         )
 
         # 4. 构建新缓存（先在锁外构建，减少锁持有时间）
@@ -402,20 +402,23 @@ class ToolRegistryService:
         """批量获取工具实例（@tool 装饰的函数）。
 
         遍历 names 列表，对每个名称获取 ToolInfo，提取 tool_instance。
-        跳过不存在或 tool_instance 为 None 的工具（记录 warning）。
+        跳过不存在、tool_instance 为 None 或已禁用的工具（记录 warning）。
 
         参数:
             names: 工具名称列表
 
         返回:
             List[Any]: 工具实例列表（@tool 装饰的函数）；
-                不存在或未注册的工具被跳过
+                不存在、未注册或已禁用的工具被跳过
         """
         result: List[Any] = []
         for name in names:
             info = await self.get_tool_by_name(name)
             if info is None:
                 logger.warning("Tool not found: %s", name)
+                continue
+            if not info.enabled:
+                logger.info("Tool '%s' is disabled, skip loading", name)
                 continue
             if info.tool_instance is None:
                 logger.warning(
@@ -684,6 +687,7 @@ class ToolRegistryService:
                 "args_schema": self._extract_args_schema(node),
                 "return_description": self._extract_return_description(node),
                 "function_description": ast.get_docstring(node) or "",
+                "decorator_description": self._extract_tool_description(node) or "",
             })
         return results
 
@@ -714,6 +718,78 @@ class ToolRegistryService:
                 if isinstance(func, ast.Attribute) and func.attr == "tool":
                     return True
         return False
+
+    @staticmethod
+    def _extract_tool_description(node: ast.FunctionDef) -> str:
+        """从函数节点的装饰器列表中提取 ``@tool(description="...")`` 的 description 字符串。
+
+        支持的装饰器形态：
+          - ``@tool(description="...")``         → ast.Call，值为 ast.Constant
+          - ``@tool(description=("..."))``       → ast.Call，值为 ast.Tuple + ast.Constant
+          - ``@tool``                            → ast.Name（无 description）
+          - ``@xxx.tool(...)``                   → ast.Call，func 为 ast.Attribute
+
+        参数:
+            node: AST 函数定义节点
+
+        返回:
+            str: description 字符串字面量；未找到返回空字符串
+        """
+        for dec in node.decorator_list:
+            call = None
+            if isinstance(dec, ast.Call):
+                call = dec
+            elif isinstance(dec, ast.Attribute) and isinstance(dec.value, ast.Name):
+                continue
+
+            if call is None:
+                continue
+
+            func_node = call.func
+            is_tool_decorator = (
+                (isinstance(func_node, ast.Name) and func_node.id == "tool")
+                or (isinstance(func_node, ast.Attribute) and func_node.attr == "tool")
+            )
+            if not is_tool_decorator:
+                continue
+
+            for kw in call.keywords:
+                if kw.arg == "description":
+                    value = kw.value
+                    # 单字符串字面量（含三引号多行）
+                    if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                        return value.value
+                    # f-string 拼接（ast.JoinedStr）
+                    if isinstance(value, ast.JoinedStr):
+                        parts = []
+                        for v in value.values:
+                            if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                                parts.append(v.value)
+                        if parts:
+                            return "".join(parts)
+                    # 字符串字面量拼接（"a" + "b" 形式 → ast.BinOp）
+                    if isinstance(value, ast.BinOp):
+                        parts = []
+                        def _collect(_node):
+                            if isinstance(_node, ast.Constant) and isinstance(_node.value, str):
+                                parts.append(_node.value)
+                            elif isinstance(_node, ast.BinOp):
+                                _collect(_node.left)
+                                _collect(_node.right)
+                        _collect(value)
+                        if parts:
+                            return "".join(parts)
+                    # 元组包裹 description=(...) — LangChain ``@tool(description=("a", "b"))``
+                    if isinstance(value, ast.Tuple):
+                        parts = []
+                        for elt in value.elts:
+                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                                parts.append(elt.value)
+                        if parts:
+                            return "".join(parts)
+            # 找到 @tool 装饰器但无 description → 返回空字符串
+            return ""
+        return ""
 
     @staticmethod
     def _extract_args_schema(node: ast.FunctionDef) -> Dict[str, Any]:
@@ -796,8 +872,8 @@ class ToolRegistryService:
         """重新从 DB 加载单个工具到缓存。
 
         从 DB 查询指定 name 的工具记录：
-        - 记录存在且 enabled=TRUE：构造 ToolInfo 并写入缓存
-        - 记录不存在或 enabled=FALSE：从缓存中移除
+        - 记录存在：构造 ToolInfo 并写入缓存（无论 enabled 状态）
+        - 记录不存在：从缓存中移除
 
         参数:
             name: 工具名称
@@ -814,8 +890,8 @@ class ToolRegistryService:
 
         lock = await self._ensure_lock()
         async with lock:
-            if not row or not row.get("enabled", False):
-                # DB 中不存在或已禁用，从缓存移除
+            if not row:
+                # DB 中不存在，从缓存移除
                 self._cache.pop(name, None)
                 return
             info = self._build_tool_info(self._decode_row(row), registered)

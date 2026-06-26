@@ -324,6 +324,25 @@ def test_get_tools_by_names_skips_missing_and_unregistered():
     assert len(result) == 1
 
 
+def test_get_tools_by_names_skips_disabled():
+    """测试 get_tools_by_names：跳过已禁用的工具。"""
+    service = ToolRegistryService(MagicMock())
+    func_a = MagicMock()
+    service._cache["enabled_tool"] = ToolInfo(
+        name="enabled_tool", display_name="", category="", description="",
+        module_path="", file_path="", args_schema={}, return_description="",
+        function_description="", enabled=True, tool_instance=func_a,
+    )
+    service._cache["disabled_tool"] = ToolInfo(
+        name="disabled_tool", display_name="", category="", description="",
+        module_path="", file_path="", args_schema={}, return_description="",
+        function_description="", enabled=False, tool_instance=MagicMock(),
+    )
+    result = asyncio.run(service.get_tools_by_names(["enabled_tool", "disabled_tool"]))
+    assert len(result) == 1
+    assert func_a in result
+
+
 # ==================== 写方法测试（写 DB + 同步缓存） ====================
 
 
@@ -441,8 +460,9 @@ def test_set_tool_enabled_updates_and_refreshes_cache():
     service._cache["tool"] = MagicMock()
 
     asyncio.run(service.set_tool_enabled("tool", False))
-    # enabled=False 时 _refresh_cache 应从缓存移除
-    assert "tool" not in service._cache
+    # enabled=False 时 _refresh_cache 仍保留在缓存中（缓存存全部工具）
+    assert "tool" in service._cache
+    assert service._cache["tool"].enabled is False
 
 
 def test_set_tool_enabled_raises_on_not_found():
@@ -546,6 +566,69 @@ def test_extract_return_description_without_annotation():
     assert ToolRegistryService._extract_return_description(node) == ""
 
 
+def test_extract_tool_description_from_decorator():
+    """测试 _extract_tool_description：提取 ``@tool(description='...')`` 的字面量。"""
+    # 正常情况
+    tree = ast.parse(
+        '@tool(description="echo a string")\n'
+        "def echo(x: str) -> str:\n"
+        "    return x\n"
+    )
+    node = tree.body[0]
+    assert ToolRegistryService._extract_tool_description(node) == "echo a string"
+
+
+def test_extract_tool_description_from_tuple():
+    """测试 _extract_tool_description：提取 ``@tool(description=("a", "b"))`` 的拼接字面量。"""
+    tree = ast.parse(
+        '@tool(description=("multi", "line"))\n'
+        "def my_tool() -> str:\n"
+        "    pass\n"
+    )
+    node = tree.body[0]
+    assert ToolRegistryService._extract_tool_description(node) == "multiline"
+
+
+def test_extract_tool_description_bare_tool():
+    """测试 _extract_tool_description：``@tool``（无括号）返回空字符串。"""
+    tree = ast.parse(
+        "@tool\n"
+        "def my_tool():\n"
+        "    pass\n"
+    )
+    node = tree.body[0]
+    assert ToolRegistryService._extract_tool_description(node) == ""
+
+
+def test_extract_tool_description_empty_call():
+    """测试 _extract_tool_description：``@tool()`` 返回空字符串。"""
+    tree = ast.parse(
+        "@tool()\n"
+        "def my_tool():\n"
+        "    pass\n"
+    )
+    node = tree.body[0]
+    assert ToolRegistryService._extract_tool_description(node) == ""
+
+
+def test_extract_tool_description_attribute_decorator():
+    """测试 _extract_tool_description：``@xxx.tool(description=...)`` 返回描述。"""
+    tree = ast.parse(
+        '@langchain.tools.tool(description="attr tool")\n'
+        "def my_tool():\n"
+        "    pass\n"
+    )
+    node = tree.body[0]
+    assert ToolRegistryService._extract_tool_description(node) == "attr tool"
+
+
+def test_extract_tool_description_no_decorator():
+    """测试 _extract_tool_description：无 @tool 装饰器返回空字符串。"""
+    tree = ast.parse("def my_tool():\n    pass\n")
+    node = tree.body[0]
+    assert ToolRegistryService._extract_tool_description(node) == ""
+
+
 def test_scan_file_for_tools_finds_real_tools():
     """测试 _scan_file_for_tools：扫描 BaseTools.py 能找到 @tool 函数。"""
     from pathlib import Path
@@ -578,9 +661,10 @@ def test_scan_file_for_tools_excludes_runtime_from_args():
 def test_scan_unregistered_returns_unregistered_tools():
     """测试 scan_unregistered：返回未在 DB 注册的 @tool 函数。"""
     db = MagicMock()
-    # list_tools 回退 DB 查询，返回已注册工具名
+    # list_tools 回退 DB 查询，返回已注册工具名（含 disabled）
     db.fetch = AsyncMock(return_value=[
         {"name": "get_current_time", "args_schema": "{}", "enabled": True},
+        {"name": "disabled_tool", "args_schema": "{}", "enabled": False},
     ])
     service = ToolRegistryService(db)
     # 清空缓存强制走 DB 路径
@@ -592,6 +676,8 @@ def test_scan_unregistered_returns_unregistered_tools():
     assert "open_file" in names
     # get_current_time 已注册，不应出现
     assert "get_current_time" not in names
+    # disabled_tool 也在 DB 中（已注册），不应被视为未注册
+    assert "disabled_tool" not in names
 
 
 # ==================== 缓存管理方法测试 ====================
@@ -613,17 +699,22 @@ def test_refresh_cache_loads_enabled_tool():
     assert "tool" in service._cache
 
 
-def test_refresh_cache_removes_disabled_tool():
-    """测试 _refresh_cache：enabled=FALSE 的工具从缓存移除。"""
+def test_refresh_cache_keeps_disabled_tool():
+    """测试 _refresh_cache：enabled=FALSE 的工具仍保留在缓存中。"""
     db = MagicMock()
     db.fetchrow = AsyncMock(return_value={
-        "name": "tool", "enabled": False,
+        "name": "tool", "display_name": "", "category": "", "description": "",
+        "module_path": "", "file_path": "", "args_schema": "{}",
+        "return_description": "", "function_description": "", "enabled": False,
     })
     service = ToolRegistryService(db)
     service._cache["tool"] = MagicMock()
+    from app.shared.tools.registry import ToolRegistry
+    ToolRegistry.clear()
 
     asyncio.run(service._refresh_cache("tool"))
-    assert "tool" not in service._cache
+    assert "tool" in service._cache
+    assert service._cache["tool"].enabled is False
 
 
 def test_refresh_cache_removes_missing_tool():
@@ -668,8 +759,8 @@ def test_clear_cache_empties_all():
 # ==================== preload_all 测试 ====================
 
 
-def test_preload_all_loads_enabled_tools_to_cache():
-    """测试 preload_all：动态导入 + DB 关联 + 缓存构建。"""
+def test_preload_all_loads_all_tools_to_cache():
+    """测试 preload_all：动态导入 + DB 关联 + 缓存构建（含禁用工具）。"""
     db = MagicMock()
     db.fetch = AsyncMock(return_value=[
         {
@@ -684,6 +775,12 @@ def test_preload_all_loads_enabled_tools_to_cache():
             "args_schema": "{}", "return_description": "",
             "function_description": "", "enabled": True, "sort_order": 1,
         },
+        {
+            "name": "tool_disabled", "display_name": "D", "category": "c",
+            "description": "", "module_path": "", "file_path": "",
+            "args_schema": "{}", "return_description": "",
+            "function_description": "", "enabled": False, "sort_order": 2,
+        },
     ])
     service = ToolRegistryService(db)
     from app.shared.tools.registry import ToolRegistry
@@ -693,18 +790,21 @@ def test_preload_all_loads_enabled_tools_to_cache():
     with patch.object(service, "_import_tool_modules", new_callable=AsyncMock):
         asyncio.run(service.preload_all())
 
-    assert len(service._cache) == 2
+    assert len(service._cache) == 3
     assert "tool_a" in service._cache
     assert "tool_b" in service._cache
+    assert "tool_disabled" in service._cache
+    assert service._cache["tool_disabled"].enabled is False
     # tool_instance 应为 None（ToolRegistry 中无注册）
     assert service._cache["tool_a"].tool_instance is None
 
 
-def test_preload_all_skips_disabled_tools():
-    """测试 preload_all：仅加载 enabled=TRUE 的工具（DB 已过滤）。"""
+def test_preload_all_loads_disabled_tools():
+    """测试 preload_all：disabled 工具也会被加载到缓存。"""
     db = MagicMock()
     db.fetch = AsyncMock(return_value=[
         {"name": "enabled_tool", "enabled": True, "args_schema": "{}"},
+        {"name": "disabled_tool", "enabled": False, "args_schema": "{}"},
     ])
     service = ToolRegistryService(db)
     from app.shared.tools.registry import ToolRegistry
@@ -713,8 +813,10 @@ def test_preload_all_skips_disabled_tools():
     with patch.object(service, "_import_tool_modules", new_callable=AsyncMock):
         asyncio.run(service.preload_all())
 
-    # DB 查询已带 WHERE enabled=TRUE，缓存中只有启用的工具
+    # 缓存中包含所有工具（无论 enabled 状态）
     assert "enabled_tool" in service._cache
+    assert "disabled_tool" in service._cache
+    assert service._cache["disabled_tool"].enabled is False
 
 
 def test_preload_all_imports_tool_modules():

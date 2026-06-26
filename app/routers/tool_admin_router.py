@@ -65,7 +65,7 @@ class ToolCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="工具唯一标识")
     display_name: Optional[str] = Field(None, max_length=200, description="展示名称")
     category: str = Field(..., min_length=1, max_length=100, description="工具分类")
-    description: Optional[str] = Field(None, max_length=500, description="工具描述")
+    description: Optional[str] = Field(None, max_length=2000, description="工具描述")
     module_path: str = Field(..., min_length=1, max_length=500, description="Python 模块路径")
     file_path: str = Field(..., min_length=1, max_length=500, description="源文件相对路径")
     args_schema: Dict[str, Any] = Field(default_factory=dict, description="参数 schema 字典")
@@ -94,7 +94,7 @@ class ToolUpdateRequest(BaseModel):
 
     display_name: Optional[str] = Field(None, max_length=200, description="展示名称")
     category: Optional[str] = Field(None, max_length=100, description="工具分类")
-    description: Optional[str] = Field(None, max_length=500, description="工具描述")
+    description: Optional[str] = Field(None, max_length=2000, description="工具描述")
     args_schema: Optional[Dict[str, Any]] = Field(None, description="参数 schema 字典")
     return_description: Optional[str] = Field(None, description="返回值类型描述")
     function_description: Optional[str] = Field(None, description="函数完整描述")

@@ -647,7 +647,7 @@ MCP 服务器方法列表表，用于运行时方法管理。
 | ├ GET /{session_id}/detail         |                        | 获取会话详情（含附件列表）                                                                                                                                                            |
 | ├ PUT /{session_id}/title          |                        | 更新会话标题                                                                                                                                                                          |
 | ├ GET /{session_id}/attachments    |                        | 获取会话附件列表                                                                                                                                                                      |
-| ├ GET /{session_id}/messages       |                        | 获取会话历史消息（从 LangGraph Checkpoint 恢复，默认 50 条；返回 messages 中按时序插入 `type:"subagent"` 元素，承载 sandbox/explore 子智能体的完整轨迹） |
+| ├ GET /{session_id}/messages       |                        | 获取会话历史消息（从 LangGraph Checkpoint 恢复，默认 50 条；返回 messages 中按时序插入 `type:"subagent"` 元素，承载 sandbox/explore 子智能体的完整轨迹；AIMessage 携带 `tool_calls` 字段，前端据此恢复普通工具卡片） |
 | ├ DELETE /admin/{session_id}       |                        | Admin 强制删除任意会话                                                                                                                                                                |
 | ├ GET /admin/search                |                        | Admin 按用户名搜索会话                                                                                                                                                                |
 | /api/files                          | file_router            | 文件管理（上传、下载、删除、列表、PDF 转图片）                                                                                                                                        |
@@ -1466,6 +1466,7 @@ SandboxDrawer 时间线包含 `code_generation` 事件（显示 LLM 生成的代
 - `web/Agent/src/utils/sseParser.js` 新增 2 个导出：`isSubAgentHistoryItem(msg)` / `convertSubAgentHistoryToAiSubAgent(msg)`
 - `web/Agent/src/App.vue` 还原 history 循环中新增 `else if (isSubAgentHistoryItem(msg))` 分支：把后端 subagent 元素转换为 `subAgent` 对象，**追加到上一个 AI 消息的 `subAgents` 列表中**（而非独立 push 到 messages），由 MessageBubble 的 SubAgentCard 渲染
 - 老前端（不识别 `type:"subagent"`）落到 `else` 分支当成普通消息渲染，字段不破坏
+- 2026-06-26 新增：后端 AIMessage 返回 `tool_calls`，`App.vue` 历史恢复循环中为普通工具（非子智能体）构造最小化 `tool_stop` 事件注入 `tools/timeline`，使 `MessageBubble` 的 `ToolCallCard` 在历史会话中正常渲染（状态为"已完成"，步骤数为 1）
 
 ## 前端架构（web/Agent）
 
@@ -2243,22 +2244,22 @@ app/shared/utils/agent/tool_service.py
 | `ToolNotFoundError`                                | 工具未找到时抛出                                                                                                                                    |
 | `ToolAlreadyExistsError`                           | 工具名称重复时抛出                                                                                                                                  |
 | `ToolRegistryService(db)`                          | 服务构造器，参数 `db` 需支持异步 `fetch` / `fetchrow` / `execute`；初始化 `_cache: Dict[str, ToolInfo]` + `_cache_lock`（asyncio.Lock，延迟创建） |
-| `preload_all()`                                    | 预加载所有 enabled=TRUE 工具到缓存：动态导入 `app/core/tools/` + `app/shared/tools/skills/` 下所有 .py 模块 → 从 `ToolRegistry._tools` 获取实例；**若 `@register_tool` 缺失，回退到 `module_path` 动态 `importlib + getattr` 获取 `@tool` 实例** → 关联 DB 记录 → 原子替换缓存 |
-| `list_tools()`                                     | 列出所有工具（优先读缓存，缓存为空回退 DB 查询全量含禁用项）；返回 dict 列表（不含 tool_instance）                                                 |
+| `preload_all()`                                    | 预加载**所有**工具到缓存（含禁用项）：动态导入 `app/core/tools/` + `app/shared/tools/skills/` 下所有 .py 模块 → 从 `ToolRegistry._tools` 获取实例；**若 `@register_tool` 缺失，回退到 `module_path` 动态 `importlib + getattr` 获取 `@tool` 实例** → 关联 DB 记录 → 原子替换缓存 |
+| `list_tools()`                                     | 列出所有工具（优先读缓存，缓存为空回退 DB 查询全量）；返回 dict 列表（不含 tool_instance），含禁用项                                                |
 | `get_tool_by_name(name)`                           | 获取单个工具（优先读缓存，未命中查 DB 并回填）；返回 `ToolInfo`（含 tool_instance），不存在返回 None                                                |
-| `get_tools_by_names(names)`                        | 批量获取工具实例列表（`@tool` 装饰的函数）；跳过不存在和 tool_instance=None 的工具                                                                  |
+| `get_tools_by_names(names)`                        | 批量获取工具实例列表（`@tool` 装饰的函数）；跳过不存在、tool_instance=None 或 **enabled=False** 的工具                                             |
 | `create_tool(config)`                              | 注册新工具；name 已存在抛 `ToolAlreadyExistsError`；写 DB 后调 `_refresh_cache(name)` 同步缓存                                                     |
 | `update_tool(name, config)`                        | 更新工具全量字段；不存在抛 `ToolNotFoundError`；写 DB 后调 `_refresh_cache(name)` 同步缓存                                                         |
 | `delete_tool(name)`                                | 删除工具；不存在抛 `ToolNotFoundError`；写 DB 后调 `_invalidate_cache(name)` 失效缓存                                                              |
-| `set_tool_enabled(name, enabled)`                  | 启用/禁用工具；不存在抛 `ToolNotFoundError`；写 DB 后调 `_refresh_cache(name)`（enabled=FALSE 时自动从缓存移除）                                   |
+| `set_tool_enabled(name, enabled)`                  | 启用/禁用工具；不存在抛 `ToolNotFoundError`；写 DB 后调 `_refresh_cache(name)` 同步缓存（enabled=FALSE 时仍保留在缓存中）                           |
 | `scan_unregistered()`                              | 用 ast.parse 扫描 `app/core/tools/` + `app/shared/tools/skills/` 下 .py 文件，找出 `@tool` 装饰函数，与 DB 已注册名对比，返回未注册列表            |
-| `_refresh_cache(name)`                             | 从 DB 重新加载单个工具到缓存；DB 不存在或 enabled=FALSE 时从缓存移除                                                                                |
+| `_refresh_cache(name)`                             | 从 DB 重新加载单个工具到缓存；DB 不存在时从缓存移除，存在时无论 enabled 状态均写入缓存                                                              |
 | `_invalidate_cache(name)`                          | 从缓存移除单个工具（幂等，不访问 DB）                                                                                                                |
 | `_clear_cache()`                                   | 清空所有缓存（供测试用）                                                                                                                            |
 
 ### 设计要点
 
-- **缓存仅存 enabled=TRUE 工具**：`preload_all` 从 DB 读取 `WHERE enabled = TRUE`，减少运行时内存占用
+- **缓存存储全部工具（含禁用项）**：`preload_all` 从 DB 读取所有 tools 记录，确保缓存是 DB 完整镜像；运行时调用方（`get_tools_by_names` / `agent_config_service._load_tools`）按需过滤 `enabled=True`
 - **tool_instance 双源获取**：`preload_all` 先从 `ToolRegistry._tools`（`@register_tool` 注册表）获取实例；若缺失（纯 `@tool` 未加 `@register_tool` 的场景），回退到 `_get_tool_instance_from_module(module_path, name)` 通过 `importlib.import_module + getattr` 动态获取 `@tool` 实例，补偿内置工具加载
 - **动态导入触发装饰器**：`preload_all` 先 `importlib.import_module` 所有工具模块，触发 `@register_tool` + `@tool` 装饰器执行，再从 `ToolRegistry.list_all()` 获取实例；`@register_tool` 缺失时由模块动态导入兜底
 - **ast 扫描识别 @tool**：`scan_unregistered` 用 `ast.parse` 解析源码，支持 `@tool` / `@tool(...)` / `@langchain.tools.tool(...)` 三种装饰器形式；提取参数签名时排除 `runtime` / `self` / `cls` 框架注入参数
@@ -2300,7 +2301,7 @@ Agent 运行时配置加载采用三层进程内缓存架构，由三个独立 s
 
 `lifespan` 按顺序调用三个 service 的 `preload_all()`：
 1. `McpConfigService.preload_all()` — 预加载所有 MCP server 配置
-2. `ToolRegistryService.preload_all()` — 动态导入工具模块触发 `@register_tool` + `@tool` 装饰器，从 `ToolRegistry._tools` 获取实例并关联 DB 记录，仅缓存 `enabled=TRUE` 工具
+2. `ToolRegistryService.preload_all()` — 动态导入工具模块触发 `@register_tool` + `@tool` 装饰器，从 `ToolRegistry._tools` 获取实例并关联 DB 记录，缓存**全部** tools 记录（含禁用项）
 3. `AgentConfigService.preload_all()` — 预加载所有启用 agent 配置到 `_cache`（`tools=None` 延迟加载），并注入 `ToolRegistryService` / `MCPToolsRegistry` 依赖供后续工具加载
 
 ### 缓存刷新策略
