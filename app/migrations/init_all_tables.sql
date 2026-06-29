@@ -313,10 +313,8 @@ SET state_schema = jsonb_set(
     updated_at = CURRENT_TIMESTAMP
 WHERE name = 'map_agent';
 
--- 14.2 context_schema 保持为 {knowledge_root}（基类保留字段由 dynamic_schema 兜底，
---      不需要在 schema 中重复声明）
---      注：如果当前 context_schema 已经有 knowledge_root，COALESCE 会保留它；
---      如果为 null/空，则保持现状。
+-- 14.2 context_schema 兜底（map_agent 历史上曾有 knowledge_root 字段，
+--      已于 2026-06-29 重构为 KNOWLEDGE_DIR 常量，此处仅确保 schema 非空）
 UPDATE agents
 SET context_schema = COALESCE(context_schema, '{}'::jsonb),
     updated_at = CURRENT_TIMESTAMP
@@ -735,15 +733,14 @@ Returns:
 ON CONFLICT (name) DO NOTHING;
 
 INSERT INTO tools (name, display_name, category, description, module_path, file_path, args_schema, return_description, function_description, enabled, sort_order) VALUES
-  ('query_knowledge', 'Query Knowledge', 'map_agent', '知识库检索子智能体', 'app.shared.tools.skills.map_agent.MapTools', 'app/shared/tools/skills/map_agent/MapTools.py', '{}', NULL, '启动知识库检索子智能体，在配置的知识库目录中搜索并读取文档。
+  ('query_knowledge', 'Query Knowledge', 'map_agent', '知识库检索子智能体', 'app.shared.tools.skills.map_agent.MapTools', 'app/shared/tools/skills/map_agent/MapTools.py', '{}', NULL, '启动知识库检索子智能体，在项目统一的知识库目录（KNOWLEDGE_DIR）中搜索并读取文档。
 
-目标知识库路径通过 `runtime.context["knowledge_root"]` 传入，便于不同场景
-配置不同的知识库地址。
+目标知识库路径由 `app.core.config.paths.KNOWLEDGE_DIR` 统一管理。
 
 Args:
     prompt: 详细任务描述。父 LLM 应将用户问题改写为高度详细的任务描述，
             包含检索目标、预期返回信息、操作约束等。
-    runtime: 工具运行时上下文，必须包含 knowledge_root 与 tool_call_id。
+    runtime: 工具运行时上下文，仅需 tool_call_id。
 
 Returns:
     Command: 子智能体的知识库检索结果。', TRUE, 0)

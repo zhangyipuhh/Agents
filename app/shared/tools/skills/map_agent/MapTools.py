@@ -39,6 +39,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.core.tools.base import BaseFilesystemTool
 from app.core.tools.events import create_tool_event
 from app.core.config.config import DEMONSTRATION_CONFIG
+from app.core.config.paths import KNOWLEDGE_DIR
 from app.core.database import DatabasePool, register_schema
 from app.shared.utils.report.word.generator import WordReportGenerator
 from app.shared.tools.registry import register_tool
@@ -1524,13 +1525,13 @@ Search the knowledge base thoroughly and report your findings clearly.
 
 
 @tool(description=(
-    "Launch a subagent to search and read documents in the knowledge base.\n"
+    "Launch a subagent to search and read documents in the project's knowledge base (KNOWLEDGE_DIR).\n"
     "Use this tool when the user asks questions that should be answered from the "
-    "configured knowledge base, such as regulations, guidelines, or reference documents.\n\n"
+    "project's knowledge base, such as regulations, guidelines, or reference documents.\n\n"
     "## When to use\n"
     "- When the user's question is about knowledge base documents\n"
     "- When you need to find documents by name or content in the knowledge base\n"
-    "- When the answer should be based on the configured knowledge source\n\n"
+    "- When the answer should be based on the project's knowledge source\n\n"
     "## When NOT to use\n"
     "- For searching files uploaded by the user in the current session (use explore instead)\n"
     "- For tasks unrelated to the knowledge base\n\n"
@@ -1554,27 +1555,27 @@ async def query_knowledge(
     runtime: ToolRuntime,
 ) -> Command:
     """
-    启动知识库检索子智能体，在配置的知识库目录中搜索并读取文档。
+    启动知识库检索子智能体，在项目统一的知识库目录（KNOWLEDGE_DIR）中搜索并读取文档。
 
-    目标知识库路径通过 `runtime.context["knowledge_root"]` 传入，便于不同场景
-    配置不同的知识库地址。
+    知识库根目录由 `app.core.config.paths.KNOWLEDGE_DIR` 集中管理，避免
+    在 context 中传递路径以减少配置耦合。
 
     Args:
         prompt: 详细任务描述。父 LLM 应将用户问题改写为高度详细的任务描述，
                 包含检索目标、预期返回信息、操作约束等。
-        runtime: 工具运行时上下文，必须包含 knowledge_root 与 tool_call_id。
+        runtime: 工具运行时上下文，仅需 tool_call_id。
 
     Returns:
-        Command: 子智能体的知识库检索结果。
+        Command: 子智能体的知识库检索结果；若 KNOWLEDGE_DIR 未配置（空字符串）
+                 则返回包含错误信息的 Command。
     """
-    knowledge_root = runtime.context.get("knowledge_root")
-    if not knowledge_root:
+    if not KNOWLEDGE_DIR:
         return Command(
             update={
                 "messages": [
                     ToolMessage(
                         content=json.dumps(
-                            {"error": "未配置知识库路径"},
+                            {"error": "未配置知识库路径（KNOWLEDGE_DIR 为空）"},
                             ensure_ascii=False,
                         ),
                         tool_call_id=runtime.tool_call_id,
@@ -1587,4 +1588,4 @@ async def query_knowledge(
         tool_name="query_knowledge",
         system_prompt=_KNOWLEDGE_SYSTEM_PROMPT,
     )
-    return await tool.arun(prompt, runtime, Path(knowledge_root))
+    return await tool.arun(prompt, runtime, Path(KNOWLEDGE_DIR))

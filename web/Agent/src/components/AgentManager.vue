@@ -1132,7 +1132,7 @@ onMounted(async () => {
           <input
             v-model="createForm.name"
             type="text"
-            placeholder="小写字母 / 数字 / 下划线，3-50 字符"
+            placeholder="小写字母 / 下划线（数字可选），3-50 字符"
             @blur="validateName"
           />
           <small v-if="createForm.name && !nameAvailable && !nameValidating" class="error-text">

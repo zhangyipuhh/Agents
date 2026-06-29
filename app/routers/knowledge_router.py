@@ -31,20 +31,17 @@ from app.shared.utils.files.doc_converter import (
     check_conversion_support,
     get_libreoffice_installation_guide,
 )
+from app.core.config.paths import (
+    KNOWLEDGE_DIR,
+    METADATA_FILE,
+    TMP_DIR,
+)
 
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# 路径常量
+# 路径常量（统一从 app/core/config/paths 导入，禁止在本文件内自行 dirname 计算）
 # ============================================================================
-
-# 项目根目录（新文件位于 app/routers/knowledge_router.py，3 次 dirname 到项目根）
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-KNOWLEDGE_DIR = os.path.join(_PROJECT_ROOT, "data", "Knowledge")
-# 元数据缓存文件位于 data/tmp/Knowledge/（与 large_tool_results/ 同级），避免污染真实知识库目录
-METADATA_FILE = os.path.join(_PROJECT_ROOT, "data", "tmp", "Knowledge", "metadata.json")
-# query_knowledge 子智能体扫描的真实知识库根目录（与 KNOWLEDGE_DIR 保持一致）
-TMP_DIR = KNOWLEDGE_DIR
 
 # ============================================================================
 # 文件类型常量
@@ -595,11 +592,10 @@ async def knowledge_chat(
     # 手动获取 SSE 模式并发控制 generator（不能用 Depends，详见 stream_with_concurrency 文档）
     dep = chat_concurrency_dependency(request, mode="sse")
 
-    # 构造上下文（知识库专用系统提示词 + 知识库根目录）
+    # 构造上下文（知识库专用系统提示词；知识库根目录由 KNOWLEDGE_DIR 常量管理）
     # 过滤保留字段，避免与显式传入的 session_id 等关键字参数冲突
     safe_overrides = {
         k: v for k, v in {
-            "knowledge_root": TMP_DIR,
             "system_prompt": KNOWLEDGE_SYSTEM_PROMPT,
             "geometry_data": geometry_data,
         }.items() if k not in RESERVED_CONTEXT_FIELDS

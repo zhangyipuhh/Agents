@@ -101,6 +101,9 @@ def test_explore_uses_session_upload_root(tmp_path, monkeypatch):
 def test_explore_ignores_knowledge_root(tmp_path, monkeypatch):
     """
     P1: explore 即使 context 中存在 knowledge_root，也仍然使用日期化 session 上传目录。
+
+    2026-06-29: knowledge_root context 字段已废弃，此处仍以历史字段名验证 explore
+    对 context 中路径字段的"不关心"行为。
     """
     from app.core.tools import FilesystemReadTools
 
@@ -132,6 +135,7 @@ def test_explore_ignores_knowledge_root(tmp_path, monkeypatch):
 
     with patch("app.core.tools.FilesystemReadTools.BaseFilesystemTool.arun", fake_arun):
         rt = _make_fake_runtime(session_id=session_id)
+        # 保留历史字段名验证 explore 对任意 context 路径字段均不敏感
         rt.context["knowledge_root"] = str(tmp_path / "data" / "Knowledge")
         asyncio.run(FilesystemReadTools.explore("search", rt))
 

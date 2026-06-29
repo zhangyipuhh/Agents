@@ -4,18 +4,17 @@ MapTools query_knowledge 测试
 
 覆盖：
 - query_knowledge 工具可导入
-- query_knowledge 使用 runtime.context["knowledge_root"] 作为 root_path
-- 未配置 knowledge_root 时返回错误 Command
-- 成功路径调用 BaseFilesystemTool.arun
+- query_knowledge 使用 app.core.config.paths.KNOWLEDGE_DIR 作为 root_path
+- query_knowledge 调用 BaseFilesystemTool.arun 一次并透传参数
 
-Date: 2026-06-18
+Date: 2026-06-29
 Author: AI Assistant
 """
 
 import asyncio
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -51,21 +50,31 @@ def _make_fake_runtime(tool_call_id="call_knowledge"):
     return rt
 
 
-def test_query_knowledge_uses_knowledge_root(tmp_path):
+def test_query_knowledge_uses_knowledge_dir(tmp_path, monkeypatch):
     """
-    P1: query_knowledge 使用 runtime.context["knowledge_root"] 作为 root_path。
+    P1: query_knowledge 使用 app.core.config.paths.KNOWLEDGE_DIR 作为 root_path。
+
+    通过 monkeypatch 覆盖 KNOWLEDGE_DIR 为 tmp_path，验证子智能体 base 工具
+    接收到的 root_path 与该常量一致。
     """
+    from app.core.config import paths as paths_module
+    from app.shared.tools.skills.map_agent import MapTools
     from app.shared.tools.skills.map_agent.MapTools import query_knowledge
 
-    knowledge_root = tmp_path / "knowledge"
-    knowledge_root.mkdir()
-    (knowledge_root / "doc.txt").write_text("doc")
+    fake_root = tmp_path / "knowledge"
+    fake_root.mkdir()
+    (fake_root / "doc.txt").write_text("doc")
+
+    # 同时 patch 模块源（paths.KNOWLEDGE_DIR）与 MapTools 的本地 import 绑定
+    monkeypatch.setattr(paths_module, "KNOWLEDGE_DIR", str(fake_root))
+    monkeypatch.setattr(MapTools, "KNOWLEDGE_DIR", str(fake_root))
 
     arun_called = {}
 
     async def fake_arun(self, prompt, runtime, root_path):
         arun_called["tool_name"] = self.tool_name
-        arun_called["root_path"] = str(root_path)
+        arun_called["prompt"] = prompt
+        arun_called["root_path"] = root_path
         from langgraph.types import Command
         from langchain_core.messages import ToolMessage
         return Command(
@@ -81,40 +90,44 @@ def test_query_knowledge_uses_knowledge_root(tmp_path):
 
     with patch("app.shared.tools.skills.map_agent.MapTools.BaseFilesystemTool.arun", fake_arun):
         rt = _make_fake_runtime()
-        rt.context["knowledge_root"] = str(knowledge_root)
         result = asyncio.run(query_knowledge("search knowledge", rt))
 
+    # 验证 arun 被调用且参数正确
     assert arun_called["tool_name"] == "query_knowledge"
-    assert arun_called["root_path"] == str(knowledge_root)
+    assert arun_called["prompt"] == "search knowledge"
+    # root_path 应为 Path(KNOWLEDGE_DIR)，Path 在不同 OS 上表示等价即可
+    assert Path(arun_called["root_path"]) == Path(str(fake_root))
     assert result is not None
 
 
-class _RecordingToolMessage:
-    """记录 ToolMessage 构造参数"""
-    def __init__(self, content="", tool_call_id=None, **kwargs):
-        self.content = content
-        self.tool_call_id = tool_call_id
-
-
-def test_query_knowledge_returns_error_when_missing_root():
+def test_query_knowledge_default_knowledge_dir():
     """
-    P1: 未配置 knowledge_root 时，query_knowledge 直接返回错误 Command。
+    P1: 未注入 monkeypatch 时，query_knowledge 默认使用 app.core.config.paths.KNOWLEDGE_DIR。
+
+    验证默认值来自共享路径常量模块（与 knowledge_router 使用的同一个值）。
     """
+    from app.core.config.paths import KNOWLEDGE_DIR
     from app.shared.tools.skills.map_agent.MapTools import query_knowledge
-    from unittest.mock import patch
 
-    rt = _make_fake_runtime(tool_call_id="call_no_root")
-    # 确保 context 中没有 knowledge_root
-    assert "knowledge_root" not in rt.context
+    received = {}
 
-    with patch("app.shared.tools.skills.map_agent.MapTools.ToolMessage", _RecordingToolMessage):
-        result = asyncio.run(query_knowledge("search", rt))
+    async def fake_arun(self, prompt, runtime, root_path):
+        received["root_path"] = root_path
+        from langgraph.types import Command
+        from langchain_core.messages import ToolMessage
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps({"ok": True}, ensure_ascii=False),
+                        tool_call_id=runtime.tool_call_id,
+                    )
+                ]
+            }
+        )
 
-    assert result is not None
-    messages = result.update.get("messages", [])
-    assert len(messages) == 1
-    msg = messages[0]
-    assert isinstance(msg, _RecordingToolMessage)
-    parsed = json.loads(msg.content)
-    assert "error" in parsed
-    assert "未配置知识库路径" in parsed["error"]
+    with patch("app.shared.tools.skills.map_agent.MapTools.BaseFilesystemTool.arun", fake_arun):
+        rt = _make_fake_runtime()
+        asyncio.run(query_knowledge("p", rt))
+
+    assert Path(received["root_path"]) == Path(KNOWLEDGE_DIR)

@@ -31,7 +31,7 @@ def test_get_agent_config_loads_from_db_and_md():
         "description": "地图控制",
         "agents_md_path": "agents/map_agent/AGENTS.md",
         "state_schema": {"map_center": {"type": "dict", "default": {"lat": 0}}},
-        "context_schema": {"knowledge_root": {"type": "str", "default": "data/Knowledge"}},
+        "context_schema": {"custom_kb_dir": {"type": "str", "default": "data/Knowledge"}},
         "mcp_tags": ["map"],
         "enabled": True,
     })
@@ -798,7 +798,7 @@ def test_get_agent_config_decodes_str_jsonb_fields():
         "description": "地图控制",
         "agents_md_path": "agents/map_agent/AGENTS.md",
         "state_schema": '{"map_zoom": {"type": "int", "default": 10}}',
-        "context_schema": '{"knowledge_root": {"type": "str", "default": "data/Knowledge"}}',
+        "context_schema": '{"custom_kb_dir": {"type": "str", "default": "data/Knowledge"}}',
         "mcp_tags": '["map"]',
         "enabled": True,
     })

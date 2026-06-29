@@ -5,6 +5,10 @@
 - All code should follow clean code principles and maintain existing functionality
 - Comments need to be added after file generation. The comments should be in Chinese and need to include information about function parameters, return values, exceptions, etc.
 
+## Path Management Rules
+
+- **所有路径相关常量**（项目根、数据目录、知识库、临时文件、上传目录等）必须集中写在 `app/core/config/paths.py`。
+
 ## Frontend Vue Rules
 - When developing frontend interfaces, prioritize using standalone template syntax first. This approach enhances maintainability and prevents syntax conflicts or rendering issues.
 - When using `<style scoped>` in Vue 3 SFC, scoped CSS only applies to elements rendered by template syntax; elements created via `defineComponent` + `h()` render function within the `<script>` block will not automatically receive the `data-v-xxx` scopeId, causing all scoped CSS selectors to silently fail to match, resulting in completely ineffective layouts/styles with no error messages. Prioritize using standalone .vue files with `<template>` syntax.

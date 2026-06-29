@@ -75,14 +75,14 @@ def test_build_agent_state_overrides_base_default():
 def test_build_agent_context_creates_subclass():
     """测试动态生成 context 子类。"""
     schema = {
-        "knowledge_root": {"type": "str", "default": "data/Knowledge"},
+        "custom_kb_dir": {"type": "str", "default": "data/Knowledge"},
         "geometry_data": {"type": "dict", "default": {}},
     }
     cls = build_agent_context("map_agent", schema)
     assert cls.__name__ == "MapAgentAgentContext"
     annotations = cls.__annotations__
-    assert "knowledge_root" in annotations
-    assert annotations["knowledge_root"] is str
+    assert "custom_kb_dir" in annotations
+    assert annotations["custom_kb_dir"] is str
 
 
 def test_build_agent_context_preserves_base_fields():
@@ -99,13 +99,13 @@ def test_build_context_runtime_instance():
     class FakeRequest:
         session_id = "sess-001"
         store_id = "store-001"
-        context_overrides = {"knowledge_root": "custom/path"}
+        context_overrides = {"custom_kb_dir": "custom/path"}
 
-    schema = {"knowledge_root": {"type": "str", "default": "data/Knowledge"}}
+    schema = {"custom_kb_dir": {"type": "str", "default": "data/Knowledge"}}
     ctx = build_context("map_agent", schema, FakeRequest())
     assert ctx["session_id"] == "sess-001"
     assert ctx["store_id"] == "store-001"
-    assert ctx["knowledge_root"] == "custom/path"
+    assert ctx["custom_kb_dir"] == "custom/path"
 
 
 def test_reserved_state_fields_contains_messages():
@@ -169,16 +169,16 @@ def test_build_context_filters_reserved_keywords_in_overrides():
         context_overrides = {
             "session_id": "sess-override",
             "store_id": "store-override",
-            "knowledge_root": "custom/path",
+            "custom_kb_dir": "custom/path",
         }
 
-    schema = {"knowledge_root": {"type": "str", "default": "data/Knowledge"}}
+    schema = {"custom_kb_dir": {"type": "str", "default": "data/Knowledge"}}
     ctx = build_context("map_agent", schema, FakeRequest())
     # 显式传入的 session_id / store_id 应优先
     assert ctx["session_id"] == "sess-explicit"
     assert ctx["store_id"] == "store-explicit"
     # 非保留字段的覆盖值应正常生效
-    assert ctx["knowledge_root"] == "custom/path"
+    assert ctx["custom_kb_dir"] == "custom/path"
 
 
 # ============================================================
@@ -260,14 +260,14 @@ def test_parse_config_schema_three_layer_structure():
             "map_zoom": {"type": "int", "default": 10},
         },
         "context_fields": {
-            "knowledge_root": {"type": "str", "default": "data/Knowledge"},
+            "custom_kb_dir": {"type": "str", "default": "data/Knowledge"},
         },
     }
     result = parse_config_schema(config_schema)
     assert result["agent_config_overrides"]["temperature"] == 0.5
     assert result["agent_config_overrides"]["max_tokens"] == 4096
     assert result["state_schema"]["map_zoom"]["default"] == 10
-    assert result["context_schema"]["knowledge_root"]["default"] == "data/Knowledge"
+    assert result["context_schema"]["custom_kb_dir"]["default"] == "data/Knowledge"
     assert "temperature" in result["raw_root_fields"]
 
 
