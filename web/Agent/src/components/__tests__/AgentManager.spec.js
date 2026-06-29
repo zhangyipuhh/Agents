@@ -72,6 +72,22 @@ function setupFetchMock() {
     if (u.match(/\/api\/admin\/agents\/[^/]+$/) && method === 'DELETE') {
       return emptyResponse()
     }
+    if (u.match(/\/api\/admin\/agents\/[^/]+\/skill-bindings$/) && method === 'GET') {
+      return jsonResponse({ agent_name: 'map_agent', skill_bindings: [] })
+    }
+    if (u.match(/\/api\/admin\/agents\/[^/]+\/skill-bindings$/) && method === 'PUT') {
+      return jsonResponse({ agent_name: 'map_agent', skill_bindings: [] })
+    }
+    if (u.match(/\/api\/admin\/agents\/[^/]+\/available-skills$/) && method === 'GET') {
+      return jsonResponse({
+        agent_name: 'map_agent',
+        skills: [
+          { name: 'bdc_query', display_name: '不动产查询', category: '数据查询', description: '查询不动产数据' },
+          { name: 'hgsc', display_name: '黄瓜山茶', category: '数据查询', description: '黄瓜山茶技能' },
+          { name: 'knowledge_ydt', display_name: '知识一点通', category: '知识检索', description: '知识检索' },
+        ],
+      })
+    }
     return jsonResponse({})
   })
 }
@@ -163,5 +179,60 @@ describe('AgentManager 组件', () => {
     await flushPromises()
     const addButtons = wrapper.findAll('button').filter(b => b.text().includes('添加字段'))
     expect(addButtons.length).toBeGreaterThanOrEqual(3) // 三组
+  })
+
+  it('test_skill_tab_renders_button 渲染后 Tab 栏包含「Skill 绑定」按钮', async () => {
+    const wrapper = mount(AgentManager)
+    await flushPromises()
+    const skillTabBtn = wrapper.findAll('.tab-btn').find(b => b.text().includes('Skill 绑定'))
+    expect(skillTabBtn).toBeTruthy()
+  })
+
+  it('test_skill_tab_loads_and_groups 切换到 Skill 绑定 Tab 加载并按 category 分组', async () => {
+    const wrapper = mount(AgentManager)
+    await flushPromises()
+    const firstItem = wrapper.find('.agent-item')
+    await firstItem.trigger('click')
+    await flushPromises()
+    const skillTabBtn = wrapper.findAll('.tab-btn').find(b => b.text().includes('Skill 绑定'))
+    expect(skillTabBtn).toBeTruthy()
+    await skillTabBtn.trigger('click')
+    await flushPromises()
+    // 应出现分类标题
+    expect(wrapper.text()).toContain('数据查询')
+    expect(wrapper.text()).toContain('知识检索')
+    // 应出现 skill 展示名
+    expect(wrapper.text()).toContain('不动产查询')
+    expect(wrapper.text()).toContain('知识一点通')
+  })
+
+  it('test_skill_tab_save_calls_api 保存 skill 绑定调用 updateAgentSkillBindings', async () => {
+    const wrapper = mount(AgentManager)
+    await flushPromises()
+    const firstItem = wrapper.find('.agent-item')
+    await firstItem.trigger('click')
+    await flushPromises()
+    const skillTabBtn = wrapper.findAll('.tab-btn').find(b => b.text().includes('Skill 绑定'))
+    await skillTabBtn.trigger('click')
+    await flushPromises()
+    // 展开第一个分组
+    const firstGroupHeader = wrapper.find('.skill-group-header')
+    await firstGroupHeader.trigger('click')
+    await flushPromises()
+    // 勾选第一个 skill
+    const firstCheckbox = wrapper.find('.skill-checkbox input[type="checkbox"]')
+    await firstCheckbox.trigger('change')
+    await flushPromises()
+    // 保存按钮
+    const saveBtn = wrapper.findAll('button').find(b => b.text().includes('保存 skill 绑定'))
+    expect(saveBtn).toBeTruthy()
+    await saveBtn.trigger('click')
+    await flushPromises()
+    // 应有保存成功提示或已被勾选（PUT 调用已发出）
+    const putCalls = global.fetch.mock.calls.filter(([url, opts]) => {
+      const u = typeof url === 'string' ? url : url.url
+      return u.includes('/skill-bindings') && (opts.method || 'GET').toUpperCase() === 'PUT'
+    })
+    expect(putCalls.length).toBeGreaterThanOrEqual(1)
   })
 })

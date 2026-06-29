@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { fetchKnowledgeFiles, fetchFilePreview } from '../utils/api.js'
+import { fetchKnowledgeFiles, fetchFilePreview, createNewSession } from '../utils/api.js'
 import FileList from './FileList.vue'
 import FilePreview from './FilePreview.vue'
 import KnowledgeChat from './KnowledgeChat.vue'
@@ -27,6 +27,15 @@ function toggleFileList() {
 }
 
 onMounted(async () => {
+  // 始终创建新会话，不复用本地缓存的 knowledge_session_id
+  try {
+    const newId = await createNewSession('knowledge_session_id')
+    currentSessionId.value = newId
+    console.log('[KnowledgePage] 初始化知识库会话:', newId)
+  } catch (err) {
+    console.error('知识库初始化会话失败:', err)
+  }
+
   filesLoading.value = true
   try {
     const result = await fetchKnowledgeFiles()

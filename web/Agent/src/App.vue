@@ -193,6 +193,8 @@ async function handleLogout() {
   isLoggedIn.value = false
   currentUser.value = { username: '', role: '', userId: null }
   localStorage.removeItem('user_id')
+  localStorage.removeItem('session_id')
+  localStorage.removeItem('knowledge_session_id')
   messages.splice(0, messages.length)
   sessionId.value = ''
   redirectToLogin({ reason: 'user_logout' })
@@ -209,15 +211,9 @@ function handleUsernameUpdated(data) {
 
 /**
  * 确保当前用户有一个有效的会话
- * 如果本地没有 session_id，则自动创建新会话并刷新侧边栏列表
+ * 始终创建新会话，不复用本地缓存的 session_id
  */
 async function ensureSession() {
-  const existingSessionId = localStorage.getItem('session_id')
-  if (existingSessionId && existingSessionId !== 'undefined') {
-    sessionId.value = existingSessionId
-    return
-  }
-
   try {
     const newId = await createNewSession()
     sessionId.value = newId

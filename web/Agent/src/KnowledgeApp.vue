@@ -123,19 +123,13 @@ onMounted(async () => {
     }
   }
 
-  // 优先复用本地已有的 knowledge_session_id，避免每次挂载都新建会话
-  const existingSessionId = localStorage.getItem('knowledge_session_id')
-  if (existingSessionId && existingSessionId !== 'undefined') {
-    currentSessionId.value = existingSessionId
-  } else {
-    // 首次进入知识库，自动创建新会话，确保后续请求携带 X-Session-ID
-    try {
-      const newId = await createNewSession('knowledge_session_id')
-      currentSessionId.value = newId
-      console.log('[KnowledgeApp] 初始化知识库会话:', newId)
-    } catch (err) {
-      console.error('知识库初始化会话失败:', err)
-    }
+  // 始终创建新会话，不复用本地缓存的 knowledge_session_id
+  try {
+    const newId = await createNewSession('knowledge_session_id')
+    currentSessionId.value = newId
+    console.log('[KnowledgeApp] 初始化知识库会话:', newId)
+  } catch (err) {
+    console.error('知识库初始化会话失败:', err)
   }
 
   // 加载文件列表

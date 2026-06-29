@@ -1614,3 +1614,233 @@ export async function fetchAgentAvailableTools(name) {
   }
   return response.json()
 }
+
+// ============================================================
+// Skill 管理 API（2026-06-29 新增）
+// 对应后端 skill_admin_router 的 /api/admin/skills/* 端点
+// 以及 agent_admin_router 的 /api/admin/agents/{name}/(skill-bindings|available-skills) 端点
+// ============================================================
+
+/**
+ * 列出所有已注册 skill
+ * 调用 GET /api/admin/skills，优先读缓存（仅 enabled=TRUE），
+ * 缓存为空时回退 DB 查询所有 skill（含禁用项，供 admin 查看）。
+ * @returns {Promise<Array<Object>>} skill 元数据列表，每项包含
+ *   name / display_name / category / description / location /
+ *   base_dir / content / enabled / sort_order
+ * @throws {Error} 请求失败时抛出错误（含后端 detail 信息）
+ */
+export async function listSkills() {
+  const response = await fetchWithAuth('/api/admin/skills', { method: 'GET' })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取 skill 列表失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 列出未注册 skill 文件（源码扫描，GET 语义）
+ * 调用 GET /api/admin/skills/unregistered，扫描默认根
+ * （app/skills、.agents/skills）与用户扩展路径下的 SKILL.md，
+ * 找出未在 DB 注册的 skill。
+ * @returns {Promise<Array<Object>>} 未注册 skill 列表，每项包含
+ *   name / description / location / base_dir
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function listUnregisteredSkills() {
+  const response = await fetchWithAuth('/api/admin/skills/unregistered', { method: 'GET' })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取未注册 skill 列表失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 注册新 skill
+ * 调用 POST /api/admin/skills，写 DB 后刷新缓存。
+ * 必填字段：name / category。
+ * @param {Object} payload - skill 配置
+ * @param {string} payload.name - skill 唯一标识（与 SKILL.md frontmatter 一致）
+ * @param {string} [payload.display_name] - 展示名称
+ * @param {string} payload.category - skill 分类
+ * @param {string} [payload.description] - skill 描述
+ * @param {string} [payload.location] - SKILL.md 文件绝对路径
+ * @param {string} [payload.base_dir] - SKILL.md 所在目录绝对路径
+ * @param {string} [payload.content] - 去除 frontmatter 后的正文
+ * @param {boolean} [payload.enabled=true] - 是否启用
+ * @param {number} [payload.sort_order=0] - 排序权重
+ * @returns {Promise<Object>} 新创建的 skill 记录
+ * @throws {Error} name 已存在(409) / 缺少必需键(400) / 服务未初始化(500) 时抛出错误
+ */
+export async function registerSkill(payload) {
+  const response = await fetchWithAuth('/api/admin/skills', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `注册 skill 失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 更新 skill 配置
+ * 调用 PUT /api/admin/skills/{name}，全量更新 skill 的可变字段，写 DB 后刷新缓存。
+ * 注意：name 不可修改（由 URL path 指定）；location / base_dir / content
+ * 涉及源文件位置与内容，修改需谨慎，调用方需传入完整配置。
+ * @param {string} name - skill 名称（URL path 参数）
+ * @param {Object} payload - 待更新字段
+ * @param {string} [payload.display_name] - 展示名称
+ * @param {string} [payload.category] - skill 分类
+ * @param {string} [payload.description] - skill 描述
+ * @param {string} [payload.location] - SKILL.md 文件绝对路径
+ * @param {string} [payload.base_dir] - SKILL.md 所在目录绝对路径
+ * @param {string} [payload.content] - 去除 frontmatter 后的正文
+ * @param {boolean} [payload.enabled] - 是否启用
+ * @param {number} [payload.sort_order] - 排序权重
+ * @returns {Promise<Object>} 更新后的 skill 记录
+ * @throws {Error} skill 不存在(404) / 字段非法(400) / 服务未初始化(500) 时抛出错误
+ */
+export async function updateSkill(name, payload) {
+  const response = await fetchWithAuth(`/api/admin/skills/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `更新 skill 失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 删除 skill
+ * 调用 DELETE /api/admin/skills/{name}，写 DB 后失效缓存。
+ * 后端返回 204 No Content（无响应体），本函数无返回值。
+ * @param {string} name - skill 名称
+ * @returns {Promise<void>} 无返回值
+ * @throws {Error} skill 不存在(404) / 服务未初始化(500) 时抛出错误
+ */
+export async function deleteSkill(name) {
+  const response = await fetchWithAuth(`/api/admin/skills/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  })
+  // 204 No Content 无响应体，不能调用 response.json()
+  if (!response.ok && response.status !== 204) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `删除 skill 失败: ${response.status}`)
+  }
+}
+
+/**
+ * 启用/禁用 skill
+ * 调用 PUT /api/admin/skills/{name}/enabled，写 DB 后刷新缓存
+ * （enabled=TRUE 时加入缓存，enabled=FALSE 时从缓存移除）。
+ * @param {string} name - skill 名称
+ * @param {boolean} enabled - True 启用 / False 禁用
+ * @returns {Promise<Object>} 更新后的 skill 记录
+ * @throws {Error} skill 不存在(404) / 服务未初始化(500) 时抛出错误
+ */
+export async function setSkillEnabled(name, enabled) {
+  const response = await fetchWithAuth(`/api/admin/skills/${encodeURIComponent(name)}/enabled`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `更新 skill 启用状态失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 扫描未注册 skill 文件（POST 语义，主动触发）
+ * 调用 POST /api/admin/skills/scan，与 GET /unregistered 功能相同，
+ * 但用 POST 表达副作用语义（扫描是较重操作）。
+ * @returns {Promise<Array<Object>>} 未注册 skill 列表，每项包含
+ *   name / description / location / base_dir
+ * @throws {Error} 服务未初始化(500) 时抛出错误
+ */
+export async function scanSkills() {
+  const response = await fetchWithAuth('/api/admin/skills/scan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `扫描 skill 失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 获取指定智能体的 skill 绑定列表
+ * 调用 GET /api/admin/agents/{name}/skill-bindings。
+ * 返回 agents.skill_bindings JSONB 字段快照。
+ * @param {string} name - 智能体名称
+ * @returns {Promise<{agent_name: string, skill_bindings: Array<{skill_name: string, enabled: boolean, sort_order: number}>}>} skill 绑定列表
+ * @throws {Error} 智能体不存在(404) 时抛出错误
+ */
+export async function getAgentSkillBindings(name) {
+  const response = await fetchWithAuth(
+    `/api/admin/agents/${encodeURIComponent(name)}/skill-bindings`,
+    { method: 'GET' }
+  )
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取 skill 绑定失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 更新指定智能体的 skill 绑定列表（全量替换）
+ * 调用 PUT /api/admin/agents/{name}/skill-bindings。
+ * @param {string} name - 智能体名称
+ * @param {Array<Object>} bindings - skill 绑定列表，每项含
+ *   skill_name（必填）/ enabled（默认 True）/ sort_order（默认 0）
+ * @returns {Promise<{agent_name: string, skill_bindings: Array}>} 更新结果
+ * @throws {Error} 智能体不存在(404) / 校验失败(422) 时抛出错误
+ */
+export async function updateAgentSkillBindings(name, bindings) {
+  const response = await fetchWithAuth(
+    `/api/admin/agents/${encodeURIComponent(name)}/skill-bindings`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bindings }),
+    }
+  )
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `更新 skill 绑定失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 获取指定智能体可绑定的 skill 列表
+ * 调用 GET /api/admin/agents/{name}/available-skills
+ * 返回 DB skills 表中 enabled=TRUE 的 skill，每项含
+ * name / display_name / category / description。
+ * @param {string} name - 智能体名称
+ * @returns {Promise<{agent_name: string, skills: Array<{name: string, display_name: string, category: string, description: string}>}>} 可绑定 skill 列表
+ * @throws {Error} 请求失败时抛出错误（含后端 detail 信息）
+ */
+export async function fetchAgentAvailableSkills(name) {
+  const response = await fetchWithAuth(
+    `/api/admin/agents/${encodeURIComponent(name)}/available-skills`,
+    { method: 'GET' }
+  )
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取可绑定 skill 列表失败: ${response.status}`)
+  }
+  return response.json()
+}
