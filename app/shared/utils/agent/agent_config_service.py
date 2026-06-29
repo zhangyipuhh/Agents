@@ -127,6 +127,8 @@ class AgentConfigService:
         self._tool_service: Optional[Any] = None
         # 由 lifespan 注入的 MCPToolsRegistry 实例
         self._mcp_registry: Optional[Any] = None
+        # 由 lifespan 注入的 SkillRegistryService 实例
+        self._skill_service: Optional[Any] = None
 
     # ==================== 依赖注入 setter（由 lifespan 调用） ====================
 
@@ -153,6 +155,18 @@ class AgentConfigService:
             None
         """
         self._mcp_registry = registry
+
+    def set_skill_service(self, skill_service: Any) -> None:
+        """注入 SkillRegistryService 实例（由 lifespan 调用）。
+
+        参数:
+            skill_service: SkillRegistryService 实例，供 get_available_skills
+                列出可绑定的 skill 元数据
+
+        返回:
+            None
+        """
+        self._skill_service = skill_service
 
     @staticmethod
     def _decode_jsonb(value: Any, default: Any) -> Any:
@@ -189,7 +203,7 @@ class AgentConfigService:
             dict: 已解码的字典（原地修改并返回同一对象）
         """
         for key in ("config_schema", "state_schema", "context_schema", "mcp_tags",
-                     "tool_bindings"):
+                     "tool_bindings", "skill_bindings"):
             default = {} if key.endswith("_schema") else []
             row_dict[key] = self._decode_jsonb(row_dict.get(key), default)
         return row_dict
@@ -471,7 +485,9 @@ class AgentConfigService:
         3. 解析 config_schema（三层嵌套），回退到旧 state_schema + context_schema
         4. 通过 dynamic_schema 构建 state_class / context_class
         5. 从 agent_tool_bindings 加载启用的工具名称列表
-        6. 从 agent_skill_bindings 加载启用的 skill 名称列表
+        6. 从 agents.skill_bindings（JSONB 缓存）加载启用的 skill 名称列表
+           （skill_bindings 在 agent 写入绑定时由 agent_config_service.update_skill_bindings 同步维护，
+           避免每次加载都联表查 agent_skill_bindings）
 
         参数:
             agent_name: 智能体名称，为空（None / ''）时返回框架默认配置
@@ -537,11 +553,7 @@ class AgentConfigService:
             "WHERE agent_name = $1 ORDER BY sort_order",
             agent_name,
         )
-        skill_bindings = await self._db.fetch(
-            "SELECT skill_name, is_enabled FROM agent_skill_bindings "
-            "WHERE agent_name = $1 ORDER BY sort_order",
-            agent_name,
-        )
+        skill_bindings = row_dict.get("skill_bindings", [])
 
         logger.info("Loaded config for agent: %s", agent_name)
         return UnifiedAgentConfig(
@@ -558,8 +570,8 @@ class AgentConfigService:
                 if r.get("is_enabled") and "tool_name" in r
             ],
             enabled_skill_names=[
-                r["skill_name"] for r in skill_bindings
-                if r.get("is_enabled") and "skill_name" in r
+                b.get("skill_name") for b in skill_bindings
+                if b.get("enabled") and b.get("skill_name")
             ],
             agents_md_path=row_dict["agents_md_path"],
             config_schema=config_schema,
@@ -1211,7 +1223,13 @@ class AgentConfigService:
         await self._refresh_cache(agent_name)
 
     async def bind_skill(self, agent_name: str, skill_name: str, enabled: bool = True) -> None:
-        """绑定/解绑 skill。
+        """绑定/解绑 skill（已废弃）。
+
+        .. deprecated::
+            该方法已废弃，请使用 ``update_skill_bindings`` 全量替换接口。
+            旧接口逐条写入 ``agent_skill_bindings`` 表的方式已被
+            ``agents.skill_bindings`` JSONB 字段取代，调用本方法不再修改
+            任何数据库记录，仅保留日志警告以提示迁移。
 
         参数:
             agent_name: 智能体名称
@@ -1221,17 +1239,12 @@ class AgentConfigService:
         返回:
             None
         """
-        await self._db.execute(
-            """
-            INSERT INTO agent_skill_bindings (agent_name, skill_name, is_enabled)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (agent_name, skill_name) DO UPDATE SET is_enabled = $3
-            """,
+        logger.warning(
+            "bind_skill is deprecated, use update_skill_bindings instead "
+            "(agent=%s, skill=%s, enabled=%s)",
             agent_name, skill_name, enabled,
         )
-        logger.info("Bound skill %s to agent %s (enabled=%s)", skill_name, agent_name, enabled)
-        # 写 DB 后同步缓存（tools 设为 None，延迟重新加载）
-        await self._refresh_cache(agent_name)
+        # 已废弃：使用 update_skill_bindings 全量替换接口
 
     async def update_tool_bindings(self, agent_name: str, bindings: List[Dict]) -> Dict:
         """更新 agent 的工具绑定列表（直接写入 agents.tool_bindings JSONB 字段）。
@@ -1287,6 +1300,88 @@ class AgentConfigService:
         if row is None:
             raise AgentNotFoundError(f"Agent {agent_name} not found")
         return self._decode_jsonb(row.get("tool_bindings"), [])
+
+    async def update_skill_bindings(self, agent_name: str, bindings: List[Dict]) -> Dict:
+        """更新 agent 的 skill 绑定列表（直接写入 agents.skill_bindings JSONB 字段）。
+
+        参数:
+            agent_name: 智能体名称
+            bindings: skill 绑定列表，格式：
+                [{"skill_name": str, "enabled": bool, "sort_order": int}, ...]
+                - skill_name: skill 唯一标识
+                - enabled: 是否启用，默认 True
+                - sort_order: 排序权重，默认 0
+
+        返回:
+            Dict[str, Any]: 更新后的 agent 行字典（含反序列化后的 JSONB 字段）
+
+        异常:
+            AgentNotFoundError: agent 不存在时抛出
+        """
+        row = await self._db.fetchrow(
+            "UPDATE agents SET skill_bindings = $2, updated_at = CURRENT_TIMESTAMP "
+            "WHERE name = $1 RETURNING *",
+            agent_name, json.dumps(bindings),
+        )
+        if not row:
+            raise AgentNotFoundError(f"Agent {agent_name} not found")
+        # 写 DB 后同步缓存（tools 设为 None，延迟重新加载）
+        await self._refresh_cache(agent_name)
+        logger.info("Updated skill_bindings for agent: %s", agent_name)
+        return self._decode_agent_row(dict(row))
+
+    async def get_skill_bindings(self, agent_name: str) -> List[Dict]:
+        """获取 agent 的 skill 绑定列表（读取 agents.skill_bindings JSONB 字段）。
+
+        参数:
+            agent_name: 智能体名称（唯一标识）
+
+        返回:
+            List[Dict]: skill 绑定列表，每项格式：
+                [{"skill_name": str, "enabled": bool, "sort_order": int}, ...]
+                agent 不存在或字段为空时返回空列表 []
+
+        异常:
+            AgentNotFoundError: agent 不存在时抛出
+        """
+        row = await self._db.fetchrow(
+            "SELECT skill_bindings FROM agents WHERE name = $1",
+            agent_name,
+        )
+        if row is None:
+            raise AgentNotFoundError(f"Agent {agent_name} not found")
+        return self._decode_jsonb(row.get("skill_bindings"), [])
+
+    async def get_available_skills(self) -> List[Dict[str, Any]]:
+        """获取所有可用的 skill 列表（供前端绑定面板用）。
+
+        通过注入的 SkillRegistryService.list_skills() 获取全部 skill 元数据，
+        过滤掉 enabled=False 的项，仅返回管理界面展示所需的字段。
+
+        返回:
+            List[Dict[str, Any]]: 可用 skill 列表，每项包含
+                name / display_name / category / description
+
+        异常:
+            不主动抛出异常；SkillRegistryService 未注入时返回空列表并记录 warning
+        """
+        if self._skill_service is None:
+            logger.warning(
+                "get_available_skills called but SkillRegistryService is not injected"
+            )
+            return []
+
+        all_skills = await self._skill_service.list_skills()
+        return [
+            {
+                "name": skill.get("name", ""),
+                "display_name": skill.get("display_name") or skill.get("name", ""),
+                "category": skill.get("category", ""),
+                "description": skill.get("description", ""),
+            }
+            for skill in all_skills
+            if skill.get("enabled", True)
+        ]
 
     async def check_name_unique(self, name: str) -> bool:
         """检查智能体名称是否可用。

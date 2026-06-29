@@ -129,6 +129,26 @@ class ToolBindingsRequest(BaseModel):
                                             description="工具绑定列表（全量替换）")
 
 
+class SkillBindingItem(BaseModel):
+    """单个 skill 绑定项。
+
+    用于描述 agent 与 skill 的绑定关系：
+    - skill_name: skill 唯一标识（来自 skills 表 name 字段）
+    - enabled: 是否启用该绑定
+    - sort_order: 排序权重，越小越靠前
+    """
+    skill_name: str = Field(..., min_length=1, max_length=100,
+                            description="skill 唯一标识")
+    enabled: bool = Field(True, description="是否启用该绑定")
+    sort_order: int = Field(0, ge=0, description="排序权重，越小越靠前")
+
+
+class SkillBindingsRequest(BaseModel):
+    """更新 skill 绑定列表请求体。"""
+    bindings: List[SkillBindingItem] = Field(default_factory=list,
+                                             description="skill 绑定列表（全量替换）")
+
+
 # === 工具函数 ===
 
 def _get_service(request: Request) -> AgentConfigService:
@@ -592,3 +612,86 @@ async def list_available_tools(request: Request, name: str) -> Dict[str, Any]:
         "builtin": builtin_list,
         "mcp": mcp_list,
     }
+
+
+@router.get("/{name}/skill-bindings")
+async def get_agent_skill_bindings(
+    request: Request, name: str
+) -> Dict[str, Any]:
+    """获取 agent 的 skill 绑定列表。
+
+    读取 agents.skill_bindings JSONB 字段，返回该 agent 当前绑定的全部 skill。
+
+    参数:
+        name: 智能体名称（唯一标识）
+
+    返回:
+        Dict[str, Any]: {"agent_name": str, "skill_bindings": List[Dict]}
+        其中 skill_bindings 每项格式：
+            {"skill_name": str, "enabled": bool, "sort_order": int}
+
+    异常:
+        HTTPException 404: 智能体不存在
+    """
+    service = _get_service(request)
+    try:
+        bindings = await service.get_skill_bindings(name)
+    except AgentNotFoundError as e:
+        raise _handle_agent_error(e)
+    return {"agent_name": name, "skill_bindings": bindings}
+
+
+@router.put("/{name}/skill-bindings")
+async def update_agent_skill_bindings(
+    request: Request, name: str, req: SkillBindingsRequest
+) -> Dict[str, Any]:
+    """更新 agent 的 skill 绑定列表（全量替换）。
+
+    将 agents.skill_bindings JSONB 字段替换为请求体中的 bindings 列表，
+    写入后由 service.update_skill_bindings 内部自动调用
+    _refresh_cache(name) 把 UnifiedAgentConfig.tools 置 None，
+    下次 chat 时通过 _load_tools 重新加载（ skill 绑定通过 tool_bindings 中的
+    tool_type="skill" 项进入运行时）。
+
+    参数:
+        name: 智能体名称（唯一标识）
+        req: 请求体，包含 bindings 列表（全量替换语义）
+
+    返回:
+        Dict[str, Any]: {"agent_name": str, "skill_bindings": List[Dict]}
+        其中 skill_bindings 为更新后的完整绑定列表
+
+    异常:
+        HTTPException 404: 智能体不存在
+    """
+    service = _get_service(request)
+    bindings_payload = [b.model_dump() for b in req.bindings]
+    try:
+        result = await service.update_skill_bindings(name, bindings_payload)
+    except AgentNotFoundError as e:
+        raise _handle_agent_error(e)
+    return {
+        "agent_name": name,
+        "skill_bindings": result.get("skill_bindings", []),
+    }
+
+
+@router.get("/{name}/available-skills")
+async def list_available_skills(request: Request, name: str) -> Dict[str, Any]:
+    """获取指定 agent 可绑定的 skill 列表。
+
+    供前端「skill 绑定」面板使用，返回 DB skills 表中 enabled=TRUE 的 skill，
+    每项含 name / display_name / category / description。
+
+    参数:
+        name: 智能体名称（仅用于日志/前端匹配，当前不强制存在）
+
+    返回:
+        Dict[str, Any]: {"agent_name": str, "skills": List[Dict]}
+
+    异常:
+        HTTPException 500: AgentConfigService 未初始化时
+    """
+    service = _get_service(request)
+    skills = await service.get_available_skills()
+    return {"agent_name": name, "skills": skills}

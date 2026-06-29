@@ -138,20 +138,23 @@ def test_list_agents_returns_enabled_only():
 
 
 def test_get_agent_config_loads_skill_bindings():
-    """测试 get_agent_config 加载 skill 绑定。"""
+    """测试 get_agent_config 从 agents.skill_bindings JSONB 加载 skill 绑定。"""
     db = MagicMock()
     db.fetchrow = AsyncMock(return_value={
         "name": "map_agent",
         "agents_md_path": "agents/map_agent/AGENTS.md",
         "state_schema": {},
         "context_schema": {},
+        "skill_bindings": [
+            {"skill_name": "data-skill", "enabled": True, "sort_order": 0},
+            {"skill_name": "disabled-skill", "enabled": False, "sort_order": 1},
+        ],
         "mcp_tags": [],
         "enabled": True,
     })
 
-    db.fetch = AsyncMock(side_effect=[
-        [{"tool_name": "explore", "is_enabled": True}],
-        [{"skill_name": "data-skill", "is_enabled": True}],
+    db.fetch = AsyncMock(return_value=[
+        {"tool_name": "explore", "is_enabled": True},
     ])
 
     loader = MagicMock()
@@ -161,6 +164,9 @@ def test_get_agent_config_loads_skill_bindings():
     config = asyncio.run(service.get_agent_config("map_agent"))
 
     assert "data-skill" in config.enabled_skill_names
+    assert "disabled-skill" not in config.enabled_skill_names
+    # skill_bindings 不再走 agent_skill_bindings 查询，只查询一次 tool_bindings
+    db.fetch.assert_awaited_once()
 
 
 def test_create_agent_inserts_and_returns_row(tmp_path):
@@ -237,31 +243,31 @@ def test_bind_tool_upserts_binding():
     assert "agent_tool_bindings" in sql
 
 
-def test_bind_skill_upserts_binding():
-    """测试 bind_skill 执行 upsert 操作。
+def test_bind_skill_logs_deprecation_and_does_not_execute_sql(caplog):
+    """测试 bind_skill 已废弃，仅记录 warning 且不执行 SQL。
 
     参数:
-        None
+        caplog: pytest 内置 fixture，捕获日志输出
 
     返回:
         None
 
     异常:
-        AssertionError: 断言失败时抛出
+        AssertionError: 行为不符合废弃预期时抛出
     """
     db = MagicMock()
     db.execute = AsyncMock()
     loader = MagicMock()
     service = AgentConfigService(db, loader)
-    # mock 缓存同步，隔离测试 bind_skill 的核心 upsert 逻辑
-    service._refresh_cache = AsyncMock()
-    asyncio.run(service.bind_skill("map_agent", "data-skill", True))
-    db.execute.assert_called_once()
-    # 验证 SQL 含 ON CONFLICT
-    call_args = db.execute.call_args
-    sql = call_args.args[0] if call_args.args else call_args[0][0]
-    assert "ON CONFLICT" in sql
-    assert "agent_skill_bindings" in sql
+
+    with caplog.at_level("WARNING", logger="app.shared.utils.agent.agent_config_service"):
+        asyncio.run(service.bind_skill("map_agent", "data-skill", True))
+
+    # 废弃方法应记录 warning 提示迁移
+    assert "bind_skill is deprecated" in caplog.text
+    # 不应再操作 agent_skill_bindings 表
+    db.execute.assert_not_called()
+
 
 
 # ============== _decode_jsonb 防御性反序列化测试 ==============
@@ -788,7 +794,7 @@ def test_get_agent_config_decodes_str_jsonb_fields():
     """测试 get_agent_config：DB 返回 JSONB 字段为 str 时也能正确反序列化。
 
     模拟 asyncpg 未注册 JSONB codec 的真实场景：
-    state_schema / context_schema / mcp_tags 三个字段均为 JSON 字符串，
+    state_schema / context_schema / mcp_tags / skill_bindings 字段均为 JSON 字符串，
     验证 get_agent_config 内部自动 json.loads 解析为 dict/list。
     """
     db = MagicMock()
@@ -800,11 +806,11 @@ def test_get_agent_config_decodes_str_jsonb_fields():
         "state_schema": '{"map_zoom": {"type": "int", "default": 10}}',
         "context_schema": '{"custom_kb_dir": {"type": "str", "default": "data/Knowledge"}}',
         "mcp_tags": '["map"]',
+        "skill_bindings": '[{"skill_name": "data-skill", "enabled": true}]',
         "enabled": True,
     })
-    db.fetch = AsyncMock(side_effect=[
-        [{"tool_name": "explore", "is_enabled": True}],
-        [{"skill_name": "data-skill", "is_enabled": True}],
+    db.fetch = AsyncMock(return_value=[
+        {"tool_name": "explore", "is_enabled": True},
     ])
 
     loader = MagicMock()
@@ -817,6 +823,8 @@ def test_get_agent_config_decodes_str_jsonb_fields():
     assert config.state_class is not None
     # mcp_tags 被解析为 list
     assert config.mcp_tags == ["map"]
+    # skill_bindings 被解析为 list，并正确提取启用的 skill_name
+    assert "data-skill" in config.enabled_skill_names
 
 
 def test_get_agent_admin_decodes_str_config_schema():
@@ -958,23 +966,22 @@ def test_preload_all_loads_enabled_agents():
     """
     db = MagicMock()
     # preload_all 先 SELECT name，然后对每个 name 调 _load_from_db
+    # _load_from_db 仅查询 agent_tool_bindings（skill_bindings 来自 agents 行）
     db.fetch = AsyncMock(side_effect=[
         [{"name": "agent_a"}, {"name": "agent_b"}],  # preload_all 的 SELECT name
         [],  # _load_from_db("agent_a") 的 tool_bindings
-        [],  # _load_from_db("agent_a") 的 skill_bindings
         [],  # _load_from_db("agent_b") 的 tool_bindings
-        [],  # _load_from_db("agent_b") 的 skill_bindings
     ])
     db.fetchrow = AsyncMock(side_effect=[
         {  # _load_from_db("agent_a")
             "name": "agent_a", "display_name": "A", "description": "",
             "agents_md_path": "a.md", "state_schema": {}, "context_schema": {},
-            "config_schema": {}, "mcp_tags": [], "enabled": True,
+            "config_schema": {}, "mcp_tags": [], "skill_bindings": [], "enabled": True,
         },
         {  # _load_from_db("agent_b")
             "name": "agent_b", "display_name": "B", "description": "",
             "agents_md_path": "b.md", "state_schema": {}, "context_schema": {},
-            "config_schema": {}, "mcp_tags": [], "enabled": True,
+            "config_schema": {}, "mcp_tags": [], "skill_bindings": [], "enabled": True,
         },
     ])
     loader = MagicMock()
@@ -1474,6 +1481,233 @@ def test_get_tool_bindings_raises_not_found():
 
     with pytest.raises(AgentNotFoundError, match="x"):
         asyncio.run(service.get_tool_bindings("x"))
+
+
+# ============================================================
+# skill 绑定测试
+# ============================================================
+
+def test_set_skill_service_sets_field():
+    """测试 set_skill_service 注入 SkillRegistryService 实例。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 注入后 _skill_service 不等于传入值时抛出
+    """
+    service = AgentConfigService(MagicMock(), MagicMock())
+    mock_skill_service = MagicMock()
+    service.set_skill_service(mock_skill_service)
+    assert service._skill_service is mock_skill_service
+
+
+def test_update_skill_bindings_updates_db_and_cache():
+    """测试 update_skill_bindings 写 DB 后同步刷新缓存。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: DB 未更新或缓存未刷新时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value={
+        "name": "x", "display_name": "X", "description": "",
+        "agents_md_path": "x.md", "state_schema": {}, "context_schema": {},
+        "config_schema": {}, "mcp_tags": [], "tool_bindings": [],
+        "skill_bindings": [], "enabled": True,
+    })
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    loader.load = MagicMock(return_value="prompt")
+    service = AgentConfigService(db, loader)
+
+    bindings = [{"skill_name": "data-skill", "enabled": True, "sort_order": 0}]
+    result = asyncio.run(service.update_skill_bindings("x", bindings))
+
+    assert result["name"] == "x"
+    # 验证第一次 fetchrow 调用是 UPDATE agents SET skill_bindings
+    first_call_sql = db.fetchrow.call_args_list[0].args[0]
+    assert "UPDATE agents" in first_call_sql
+    assert "skill_bindings" in first_call_sql
+    # 验证缓存被刷新
+    assert "x" in service._cache
+
+
+def test_update_skill_bindings_raises_not_found():
+    """测试 update_skill_bindings 在 agent 不存在时抛 AgentNotFoundError。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        pytest.raises 期望的 AgentNotFoundError
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value=None)
+    service = AgentConfigService(db, MagicMock())
+
+    with pytest.raises(AgentNotFoundError, match="x"):
+        asyncio.run(service.update_skill_bindings("x", []))
+
+
+def test_get_skill_bindings_returns_list():
+    """测试 get_skill_bindings 返回解码后的 skill 绑定列表。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 返回值不符合预期时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value={
+        "skill_bindings": [
+            {"skill_name": "data-skill", "enabled": True, "sort_order": 0},
+        ]
+    })
+    service = AgentConfigService(db, MagicMock())
+
+    result = asyncio.run(service.get_skill_bindings("x"))
+
+    assert isinstance(result, list)
+    assert len(result) == 1
+    assert result[0]["skill_name"] == "data-skill"
+
+
+def test_get_skill_bindings_decodes_jsonb_string():
+    """测试 get_skill_bindings 在 DB 返回 JSONB 字符串时正确解码。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 解码结果不符合预期时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value={
+        "skill_bindings": '[{"skill_name": "x", "enabled": true}]'
+    })
+    service = AgentConfigService(db, MagicMock())
+
+    result = asyncio.run(service.get_skill_bindings("x"))
+
+    assert isinstance(result, list)
+    assert result[0]["skill_name"] == "x"
+    assert result[0]["enabled"] is True
+
+
+def test_get_skill_bindings_returns_empty_when_null():
+    """测试 get_skill_bindings 在字段为 None 时返回空列表。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 返回值不符合预期时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value={"skill_bindings": None})
+    service = AgentConfigService(db, MagicMock())
+
+    result = asyncio.run(service.get_skill_bindings("x"))
+
+    assert result == []
+
+
+def test_get_skill_bindings_raises_not_found():
+    """测试 get_skill_bindings 在 agent 不存在时抛 AgentNotFoundError。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        pytest.raises 期望的 AgentNotFoundError
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value=None)
+    service = AgentConfigService(db, MagicMock())
+
+    with pytest.raises(AgentNotFoundError, match="x"):
+        asyncio.run(service.get_skill_bindings("x"))
+
+
+def test_get_available_skills_filters_enabled_and_returns_keys():
+    """测试 get_available_skills 过滤 enabled 并返回指定字段。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 返回值不符合预期时抛出
+    """
+    service = AgentConfigService(MagicMock(), MagicMock())
+    mock_skill_service = MagicMock()
+    mock_skill_service.list_skills = AsyncMock(return_value=[
+        {"name": "s1", "display_name": "S1", "category": "cat1",
+         "description": "desc1", "enabled": True},
+        {"name": "s2", "display_name": "S2", "category": "cat2",
+         "description": "desc2", "enabled": False},
+        {"name": "s3", "display_name": "", "category": "cat3",
+         "description": "desc3", "enabled": True},
+    ])
+    service.set_skill_service(mock_skill_service)
+
+    result = asyncio.run(service.get_available_skills())
+
+    assert len(result) == 2
+    names = {s["name"] for s in result}
+    assert "s1" in names
+    assert "s3" in names
+    assert "s2" not in names
+    # 验证返回字段
+    for skill in result:
+        assert set(skill.keys()) == {"name", "display_name", "category", "description"}
+    # display_name 为空时回退到 name
+    s3 = next(s for s in result if s["name"] == "s3")
+    assert s3["display_name"] == "s3"
+
+
+def test_get_available_skills_returns_empty_when_service_not_injected():
+    """测试 SkillRegistryService 未注入时 get_available_skills 返回空列表。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 返回值不符合预期时抛出
+    """
+    service = AgentConfigService(MagicMock(), MagicMock())
+    result = asyncio.run(service.get_available_skills())
+    assert result == []
 
 
 def test_create_agent_calls_refresh_cache():

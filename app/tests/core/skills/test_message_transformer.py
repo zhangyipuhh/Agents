@@ -274,3 +274,111 @@ def test_as_runnable_returns_runnable(fake_service, stub_bootstrap, stub_skills_
 
     assert isinstance(runnable, Runnable)
     assert runnable.invoke({}) == prompt.build()
+
+
+# =============================================================================
+# enabled_skill_names 过滤（2026-06-29 新增）
+# =============================================================================
+
+
+def test_build_default_uses_service_all_when_enabled_skill_names_none(
+    fake_service, stub_bootstrap, stub_skills_block
+):
+    """
+    enabled_skill_names 为 None（默认值）时，build() 应调用 self._service.all() 获取 skill。
+
+    Args:
+        fake_service: 伪造的 SkillsService 实例。
+        stub_bootstrap: bootstrap 渲染存根 fixture。
+        stub_skills_block: skills 块渲染存根 fixture。
+
+    Returns:
+        None
+    """
+    fake_service.all.return_value = [
+        SkillInfo(
+            name="data-skill",
+            description="a data skill",
+            location="/tmp/data/SKILL.md",
+            content="body",
+            base_dir="/tmp/data",
+        )
+    ]
+
+    prompt = SkillsAwarePrompt(
+        base="BASE_PART",
+        agent_specific="AGENT_PART",
+        enabled_skill_names=None,
+    )
+    result = prompt.build()
+
+    fake_service.all.assert_called_once_with()
+    fake_service.available.assert_not_called()
+    assert "BASE_PART" in result
+    assert "AGENT_PART" in result
+
+
+def test_build_with_empty_enabled_skill_names_uses_available_with_empty_filter(
+    fake_service, stub_bootstrap, stub_skills_block
+):
+    """
+    enabled_skill_names 为空列表时，build() 应调用 self._service.available(name_filter=[])，
+    而不是 self._service.all()。
+
+    Args:
+        fake_service: 伪造的 SkillsService 实例。
+        stub_bootstrap: bootstrap 渲染存根 fixture。
+        stub_skills_block: skills 块渲染存根 fixture。
+
+    Returns:
+        None
+    """
+    fake_service.available.return_value = []
+
+    prompt = SkillsAwarePrompt(
+        base="BASE_PART",
+        agent_specific="AGENT_PART",
+        enabled_skill_names=[],
+    )
+    result = prompt.build()
+
+    fake_service.available.assert_called_once_with(name_filter=[])
+    fake_service.all.assert_not_called()
+    assert isinstance(result, str)
+
+
+def test_build_with_enabled_skill_names_uses_available_with_filter(
+    fake_service, stub_bootstrap, stub_skills_block
+):
+    """
+    enabled_skill_names 为非空列表时，build() 应调用
+    self._service.available(name_filter=enabled_skill_names)，
+    而不是 self._service.all()。
+
+    Args:
+        fake_service: 伪造的 SkillsService 实例。
+        stub_bootstrap: bootstrap 渲染存根 fixture。
+        stub_skills_block: skills 块渲染存根 fixture。
+
+    Returns:
+        None
+    """
+    fake_service.available.return_value = [
+        SkillInfo(
+            name="data-skill",
+            description="data skill",
+            location="/tmp/data/SKILL.md",
+            content="body",
+            base_dir="/tmp/data",
+        )
+    ]
+
+    prompt = SkillsAwarePrompt(
+        base="BASE_PART",
+        agent_specific="AGENT_PART",
+        enabled_skill_names=["data-skill"],
+    )
+    prompt.build()
+
+    fake_service.available.assert_called_once_with(name_filter=["data-skill"])
+    fake_service.all.assert_not_called()

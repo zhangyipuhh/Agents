@@ -41,6 +41,8 @@ def test_all_endpoints_registered(client):
         "/api/admin/agents/{name}/config-schema",
         "/api/admin/agents/{name}/config-schema/field",
         "/api/admin/agents/{name}/tool-bindings",
+        "/api/admin/agents/{name}/skill-bindings",
+        "/api/admin/agents/{name}/available-skills",
     ]
     # PUT /config-schema/field 与 POST / DELETE 共享同一 path，已包含在上面的 path 中
     for path in expected:
@@ -823,7 +825,6 @@ def test_update_tool_bindings_empty_list_clears_bindings(client, admin_headers):
     fake_db.fetchrow = fake_fetchrow
     fake_db.fetch = fake_fetch
 
-    client.app.state.db = fake_db
     service = client.app.state.agent_config_service
     service._db = fake_db
     # _refresh_cache → _load_from_db 会调用 loader.load(agents_md_path)，
@@ -866,7 +867,6 @@ def test_update_tool_bindings_agent_not_found_404(client, admin_headers):
     fake_db.fetchrow = fake_fetchrow
     fake_db.fetch = fake_fetch
 
-    client.app.state.db = fake_db
     service = client.app.state.agent_config_service
     service._db = fake_db
     # agent 不存在时 update_tool_bindings 直接抛 AgentNotFoundError，
@@ -1249,3 +1249,310 @@ def test_available_tools_excludes_disabled_mcp_methods(client, admin_headers):
     # 验证 disabled_method 未出现在列表中
     method_names = [item["method_name"] for item in data["mcp"]]
     assert "disabled_method" not in method_names
+
+
+# ============================================================
+# skill 绑定 (skill-bindings) 端点测试
+# ============================================================
+
+
+def test_get_skill_bindings_returns_list(client, admin_headers):
+    """GET /api/admin/agents/{name}/skill-bindings 返回 skill 绑定列表。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 返回值不符合预期时抛出
+    """
+    from unittest.mock import MagicMock
+
+    async def fake_fetchrow(*args, **kwargs):
+        return {
+            "skill_bindings": [
+                {"skill_name": "data-skill", "enabled": True, "sort_order": 0},
+                {"skill_name": "disabled-skill", "enabled": False, "sort_order": 1},
+            ]
+        }
+
+    service = client.app.state.agent_config_service
+    if service._db is None:
+        service._db = MagicMock()
+    service._db.fetchrow = fake_fetchrow
+
+    response = client.get(
+        "/api/admin/agents/map_agent/skill-bindings", headers=admin_headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["agent_name"] == "map_agent"
+    assert isinstance(data["skill_bindings"], list)
+    assert len(data["skill_bindings"]) == 2
+    assert data["skill_bindings"][0]["skill_name"] == "data-skill"
+
+
+def test_get_skill_bindings_agent_not_found_404(client, admin_headers):
+    """GET /api/admin/agents/{name}/skill-bindings agent 不存在返回 404。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 状态码不符合预期时抛出
+    """
+    from unittest.mock import MagicMock
+
+    async def fake_fetchrow(*args, **kwargs):
+        return None
+
+    service = client.app.state.agent_config_service
+    if service._db is None:
+        service._db = MagicMock()
+    service._db.fetchrow = fake_fetchrow
+
+    response = client.get(
+        "/api/admin/agents/nonexistent/skill-bindings", headers=admin_headers,
+    )
+    assert response.status_code == 404
+
+
+def test_update_skill_bindings_success(client, admin_headers):
+    """PUT /api/admin/agents/{name}/skill-bindings 成功更新 skill 绑定列表。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 返回值不符合预期时抛出
+    """
+    from unittest.mock import MagicMock
+
+    fake_db = MagicMock()
+    updated_row = {
+        "name": "map_agent", "display_name": "地图智能体", "description": "",
+        "agents_md_path": "x.md", "state_schema": {}, "context_schema": {},
+        "config_schema": {}, "mcp_tags": [], "tool_bindings": [],
+        "skill_bindings": [
+            {"skill_name": "data-skill", "enabled": True, "sort_order": 0},
+        ],
+        "enabled": True,
+    }
+
+    async def fake_fetchrow(*args, **kwargs):
+        return updated_row
+
+    async def fake_fetch(*args, **kwargs):
+        return []
+
+    fake_db.fetchrow = fake_fetchrow
+    fake_db.fetch = fake_fetch
+
+    client.app.state.db = fake_db
+    service = client.app.state.agent_config_service
+    service._db = fake_db
+    service._loader.load = MagicMock(return_value="prompt")
+
+    response = client.put(
+        "/api/admin/agents/map_agent/skill-bindings",
+        headers=admin_headers,
+        json={
+            "bindings": [
+                {"skill_name": "data-skill", "enabled": True, "sort_order": 0},
+            ]
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["agent_name"] == "map_agent"
+    assert isinstance(data["skill_bindings"], list)
+    assert data["skill_bindings"][0]["skill_name"] == "data-skill"
+
+
+def test_update_skill_bindings_empty_list_clears_bindings(client, admin_headers):
+    """PUT /api/admin/agents/{name}/skill-bindings 传空列表清空所有绑定。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 返回值不符合预期时抛出
+    """
+    from unittest.mock import MagicMock
+
+    fake_db = MagicMock()
+    updated_row = {
+        "name": "x", "display_name": "X", "description": "",
+        "agents_md_path": "x.md", "state_schema": {}, "context_schema": {},
+        "config_schema": {}, "mcp_tags": [], "tool_bindings": [],
+        "skill_bindings": [], "enabled": True,
+    }
+
+    async def fake_fetchrow(*args, **kwargs):
+        return updated_row
+
+    async def fake_fetch(*args, **kwargs):
+        return []
+
+    fake_db.fetchrow = fake_fetchrow
+    fake_db.fetch = fake_fetch
+
+    client.app.state.db = fake_db
+    service = client.app.state.agent_config_service
+    service._db = fake_db
+    service._loader.load = MagicMock(return_value="prompt")
+
+    response = client.put(
+        "/api/admin/agents/x/skill-bindings",
+        headers=admin_headers,
+        json={"bindings": []},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["skill_bindings"] == []
+
+
+def test_update_skill_bindings_agent_not_found_404(client, admin_headers):
+    """PUT /api/admin/agents/{name}/skill-bindings agent 不存在返回 404。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 状态码不符合预期时抛出
+    """
+    from unittest.mock import MagicMock
+
+    fake_db = MagicMock()
+
+    async def fake_fetchrow(*args, **kwargs):
+        return None
+
+    async def fake_fetch(*args, **kwargs):
+        return []
+
+    fake_db.fetchrow = fake_fetchrow
+    fake_db.fetch = fake_fetch
+
+    client.app.state.db = fake_db
+    service = client.app.state.agent_config_service
+    service._db = fake_db
+    service._loader.load = MagicMock(return_value="prompt")
+
+    response = client.put(
+        "/api/admin/agents/nonexistent/skill-bindings",
+        headers=admin_headers,
+        json={"bindings": []},
+    )
+    assert response.status_code == 404
+
+
+def test_update_skill_bindings_invalid_payload_422(client, admin_headers):
+    """PUT /api/admin/agents/{name}/skill-bindings 非法 payload 返回 422。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 状态码不符合预期时抛出
+    """
+    response = client.put(
+        "/api/admin/agents/x/skill-bindings",
+        headers=admin_headers,
+        json={"bindings": [{"enabled": True}]},  # 缺少 skill_name
+    )
+    assert response.status_code == 422
+
+
+# ============================================================
+# 可绑定 skill 列表 (available-skills) 端点测试
+# ============================================================
+
+
+def test_available_skills_returns_enabled_skills(client, admin_headers):
+    """GET /api/admin/agents/{name}/available-skills 返回可用 skill 列表。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 返回值不符合预期时抛出
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    fake_skills = [
+        {"name": "s1", "display_name": "S1", "category": "cat1",
+         "description": "desc1", "enabled": True},
+        {"name": "s2", "display_name": "S2", "category": "cat2",
+         "description": "desc2", "enabled": False},
+    ]
+    mock_skill_service = MagicMock()
+    mock_skill_service.list_skills = AsyncMock(return_value=fake_skills)
+
+    service = client.app.state.agent_config_service
+    service.set_skill_service(mock_skill_service)
+
+    response = client.get(
+        "/api/admin/agents/map_agent/available-skills",
+        headers=admin_headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["agent_name"] == "map_agent"
+    assert isinstance(data["skills"], list)
+    assert len(data["skills"]) == 1
+    assert data["skills"][0]["name"] == "s1"
+    assert set(data["skills"][0].keys()) == {"name", "display_name", "category", "description"}
+
+
+def test_available_skills_returns_empty_when_service_not_injected(client, admin_headers):
+    """GET /api/admin/agents/{name}/available-skills 未注入 skill_service 返回空列表。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 返回值不符合预期时抛出
+    """
+    service = client.app.state.agent_config_service
+    service._skill_service = None
+
+    response = client.get(
+        "/api/admin/agents/map_agent/available-skills",
+        headers=admin_headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["agent_name"] == "map_agent"
+    assert data["skills"] == []

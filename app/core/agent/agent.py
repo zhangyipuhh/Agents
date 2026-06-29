@@ -309,10 +309,12 @@ class Agent:
 
         agent_specific = (self.system_prompt or "") + "\n\n" + (context.get("system_prompt") or "")
         agent_name = getattr(self, "agent_name", None)
+        enabled_skill_names = getattr(self._config, "enabled_skill_names", None)
         system_prompt = SkillsAwarePrompt(
             base=BASE_SYSTEM_PROMPT,
             agent_specific=agent_specific,
             agent_name=agent_name,
+            enabled_skill_names=enabled_skill_names,
         ).build()
         #logging.info(f"system_prompt: {system_prompt}")
         #logging.info(f"system_prompt: {system_prompt}")

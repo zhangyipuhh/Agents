@@ -823,6 +823,194 @@ Returns:
         - zoom_level: 缩放级别值', TRUE, 0)
 ON CONFLICT (name) DO NOTHING;
 
+-- ============================================================
+-- 2026-06-29 Skill 管理 + 智能体 skill 绑定字段扩展
+-- 新增 skills 表、agents.skill_bindings JSONB 字段及种子数据
+-- 幂等：所有 DDL 使用 IF NOT EXISTS，种子使用 ON CONFLICT (name) DO NOTHING
+-- ============================================================
+
+-- 18. skills 表：统一 skill 元数据注册表
+--     用途：将 app/skills/ 与 .agents/skills/ 下的 SKILL.md 元数据
+--           统一登记到数据库，供管理界面展示与 Agent skill 绑定查询
+CREATE TABLE IF NOT EXISTS skills (
+    id              SERIAL PRIMARY KEY,
+    name            VARCHAR(100) UNIQUE NOT NULL,
+    display_name    VARCHAR(200) DEFAULT '',
+    category        VARCHAR(100) DEFAULT '',
+    description     TEXT DEFAULT '',
+    location        VARCHAR(1000) NOT NULL,
+    base_dir        VARCHAR(1000) NOT NULL,
+    content         TEXT DEFAULT '',
+    enabled         BOOLEAN DEFAULT TRUE,
+    sort_order      INT DEFAULT 0,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 索引：按分类查询、按启用状态查询
+CREATE INDEX IF NOT EXISTS idx_skills_category ON skills(category);
+CREATE INDEX IF NOT EXISTS idx_skills_enabled  ON skills(enabled);
+
+-- 19. agents 表扩展：skill_bindings 字段
+--     用途：缓存该智能体当前启用的 skill 列表快照（JSON 数组）
+--     结构示例：[{"name": "hgsc", "enabled": true, "sort_order": 0}]
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS skill_bindings JSONB DEFAULT '[]';
+
+-- ============================================================
+-- Skill 种子数据
+-- 来源：app/skills/<name>/SKILL.md frontmatter + 去 frontmatter 正文
+-- 幂等：ON CONFLICT (name) DO NOTHING 可重复执行
+-- ============================================================
+
+INSERT INTO skills (name, display_name, category, description, location, base_dir, content, enabled, sort_order)
+VALUES (
+    'bdc_query',
+    'bdc_query',
+    '',
+    '',
+    'E:\laboratory\AI\Agents\feature-agent-core-ref\app\skills\bdc_query\SKILL.md',
+    'E:\laboratory\AI\Agents\feature-agent-core-ref\app\skills\bdc_query',
+    $SKILL_BDC_QUERY_BODY$
+
+    $SKILL_BDC_QUERY_BODY$,
+    TRUE,
+    0
+)
+ON CONFLICT (name) DO NOTHING;
+
+INSERT INTO skills (name, display_name, category, description, location, base_dir, content, enabled, sort_order)
+VALUES (
+    'hgsc',
+    'hgsc',
+    '',
+    '合规性审查（Compliance Review）与项目预审（Project Pre-review）工作流，包括业务信息收集、保存、质量检测分析、报告生成。',
+    'E:\laboratory\AI\Agents\feature-agent-core-ref\app\skills\hgsc\SKILL.md',
+    'E:\laboratory\AI\Agents\feature-agent-core-ref\app\skills\hgsc',
+    $SKILL_HGSC_BODY$
+## Workflow
+When handling compliance review or approval-related requests, you act as a **Compliance Reviewer**. You must strictly follow the steps and requirements defined in this prompt. Do NOT request any files, materials, or information from the user that are not explicitly required by the Workflow below. For questions unrelated to compliance review, respond normally.
+
+### 合规性审查
+1. When collecting information for the `save_business_info` tool, follow this EXACT order:
+   - **Step 1**: Check the current conversation context for the required information (project name, construction unit, contact person, phone, address). Collect any information found in the context.
+   - **Step 2**: **ALWAYS** use the `explore` tool to search attachments for the required information, regardless of whether the context already contains some or all of it. This is to verify and supplement the context information.
+   - When using `explore`, instruct it to return ONLY the specific fields needed for `save_business_info`. Do NOT output full attachment content, summaries, file types, or extensions.
+   - Merge the information from context and attachments. If there are conflicts, prefer the information from attachments.
+   - **Step 3**: **Before calling `save_business_info`, ALWAYS use `ask_user_question` to confirm the accuracy and completeness of the collected information with the user**, regardless of whether the information comes from the conversation context or attachments.
+   - Only if information is still missing after checking both context and attachments, use `ask_user_question` to ask the user for the missing information.
+2. After the user confirms the information is accurate, use the `save_business_info` tool to persist the business information. This step is mandatory; refer to the tool parameters for required fields. When asking, use one tab to include all information that needs to be saved.
+3. Invoke the `quality_inspection_analysis` tool and await the results.
+4. Once the analysis completes, review the results and use `ask_user_question` to ask if the user wants to generate a report. If confirmed, call `generate_report`; if declined, inform the user they can request it later by typing "export report".
+
+## Task Examples
+### Example 1: Compliance Review
+- User: Analyze the compliance review results for Project A.
+- Tool Call: quality_inspection_analysis with analysis_categories=["合规性审查"]
+- Response Format:
+  - Categorize the tool output (e.g., farmland area, forest area)
+  - State clearly if no occupancy
+
+### Example 2: Project Pre-review
+- User: Analyze the pre-review results for Project A.
+- Tool Call: quality_inspection_analysis with analysis_categories=["项目预审"]
+- Response Format: Same as above
+
+## Output Requirements
+- Structure the tool output by categories
+- Be concise and direct
+- Provide improvement or adjustment suggestions
+- NEVER mention file types, file extensions, or attachment formats in responses
+- When referencing attachment content, only state the extracted key information, not the source file details
+    $SKILL_HGSC_BODY$,
+    TRUE,
+    0
+)
+ON CONFLICT (name) DO NOTHING;
+
+INSERT INTO skills (name, display_name, category, description, location, base_dir, content, enabled, sort_order)
+VALUES (
+    'knowledge_ydt',
+    'knowledge_ydt',
+    '',
+    'Use when the user asks a question that requires querying the knowledge base, especially when attachments or uploaded files may contain constraints, clauses, or query content.',
+    'E:\laboratory\AI\Agents\feature-agent-core-ref\app\skills\knowledge_ydt\SKILL.md',
+    'E:\laboratory\AI\Agents\feature-agent-core-ref\app\skills\knowledge_ydt',
+    $SKILL_KNOWLEDGE_YDT_BODY$
+# 知识库查询工作流
+
+## 概述
+
+本 skill 指导智能体完成一次规范的知识库查询。核心原则：**先判断意图，再决定是否需要读取附件，最后调用 `query_knowledge` 获取结果并按要求格式返回。**
+
+## 执行步骤
+
+### 步骤 1：识别用户意图
+
+判断用户的问题属于以下哪一类：
+
+- **事实查询**：用户只想知道某个政策、条款、数据、流程、规定的原文或现状。例如：
+  - "建设用地规划许可证的有效期是多久？"
+  - "某文件的第 X 条内容是什么？"
+- **辅助决策**：用户希望基于知识库内容做出判断、选择或建议。例如：
+  - "这个项目是否符合规划要求？"
+  - "我应该选择哪种审批路径？"
+
+### 步骤 2：判断是否需要从附件/上传文件中获取信息
+
+分析用户问题和当前对话上下文：
+
+- **需要附件信息**：当问题涉及具体项目、合同、条款、约束条件，且这些关键信息可能存在于用户上传的文件中时。**不要直接向用户索要文件**，应使用 `explore` 工具从当前 session 的上传目录中主动提取。
+  - 使用 `explore` 时，任务描述要明确：需要提取哪些字段、条款或约束条件。
+  - `explore` 只能读取当前 session 已上传的文件；禁止返回文件类型、扩展名、文件路径等元信息，只返回提取出的关键内容。
+- **不需要附件信息**：当问题仅依赖知识库中的公共政策、法规、流程文档即可回答时，跳过 `explore`。
+
+### 步骤 3：处理相对时间（如适用）
+
+若用户问题中包含相对时间表达（例如"最近3年"、"过去一年"、"2024年至今"、"上月"、"本周"等），在构造 `query_knowledge` 查询前必须执行以下操作：
+
+1. 调用 `get_current_time` 工具获取当前系统时间。
+2. 基于当前时间，将用户表达的相对时间转换为**绝对时间范围**（例如当前日期为 2026-06-29 时，"最近3年"应转换为 "2023-06-29 至 2026-06-29"）。
+3. 在后续传递给 `query_knowledge` 的 `prompt` 中，必须显式写明：
+   - 当前日期
+   - 计算后的绝对时间范围
+   - 原始用户问题
+4. 禁止将包含相对时间的原始问题直接传递给 `query_knowledge`，必须先行解析。
+
+### 步骤 4：构造 `query_knowledge` 查询
+
+- 如果步骤 2 使用了 `explore`，将提取出的关键信息与会话上下文中的相关信息合并，构造为清晰、详细的查询任务，调用 `query_knowledge`。
+- 如果步骤 2 不需要附件，直接基于对话上下文中的信息构造查询任务，调用 `query_knowledge`。
+- `query_knowledge` 的 `prompt` 必须包含：查询目标、已知约束/上下文、期望返回的信息类型、是否需要原文引用。若涉及时间范围，必须包含步骤 3 计算出的绝对时间范围。
+
+### 步骤 5：返回结果
+
+根据步骤 1 识别的意图返回：
+
+- **事实查询**：直接返回知识库中的原文或事实内容，保持准确、完整。如果查询结果为空，可结合预训练知识回答，但必须标注 `"基于预训练知识回答"`。
+- **辅助决策**：返回明确的决策结论，并列出决策依据。决策依据必须引用知识库中的相关条款、政策或数据，禁止无依据的主观判断。
+
+## 输出要求
+
+- 回答语言与用户问题保持一致。
+- 引用知识库内容时，只陈述关键信息，不暴露文件路径、文件类型、扩展名或附件来源。
+- 若 `query_knowledge` 返回为空且无法结合预训练知识给出合理回答，应使用 `ask_user_question` 询问用户是否需要补充信息，而不是编造答案。
+
+## 常见错误
+
+- **错误**：用户问题明显涉及附件条款，却直接调用 `query_knowledge` 而跳过 `explore`。
+  - **修正**：必须先通过 `explore` 提取附件中的约束、条款、查询内容，再构造查询。
+- **错误**：用户问题包含"最近N年"等相对时间，未调用 `get_current_time` 就直接传递给 `query_knowledge`。
+  - **修正**：必须先获取当前时间并转换为绝对时间范围，再写入 `query_knowledge` 的 prompt。
+- **错误**：辅助决策类问题只给出结论，没有列出依据。
+  - **修正**：必须显式返回"决策依据"部分，并引用知识库内容。
+- **错误**：在回答中提及附件文件名、扩展名或路径。
+  - **修正**：只输出提取出的业务信息，不输出任何文件元信息。
+    $SKILL_KNOWLEDGE_YDT_BODY$,
+    TRUE,
+    0
+)
+ON CONFLICT (name) DO NOTHING;
+
 COMMIT;
 
 -- =============================================
@@ -837,7 +1025,7 @@ WHERE table_schema = 'public'
     'map_business_info', 'map_business_no_counter',
     'agents', 'agent_tool_bindings', 'agent_skill_bindings',
     'mcp_server_configs', 'mcp_server_methods',
-    'tools'
+    'tools', 'skills'
   )
 ORDER BY table_name;
 

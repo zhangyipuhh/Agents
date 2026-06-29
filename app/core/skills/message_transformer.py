@@ -6,7 +6,7 @@ SkillsAwarePrompt 模块。
 用于在 AgentBase._llm_call 中统一生成送入 LLM 的系统提示词。
 """
 
-from typing import Optional
+from typing import List, Optional
 from langchain_core.runnables import Runnable, RunnableLambda
 
 from .service import SkillsService
@@ -37,6 +37,7 @@ class SkillsAwarePrompt:
         agent_specific: str = "",
         agent_name: Optional[str] = None,
         project_root=None,
+        enabled_skill_names: Optional[List[str]] = None,
     ):
         """
         初始化 SkillsAwarePrompt。
@@ -46,10 +47,15 @@ class SkillsAwarePrompt:
             agent_specific: Agent 专属及运行时动态系统提示词，默认为空字符串。
             agent_name: 可选的 Agent 名称，用于定位 agent 专属 bootstrap.md。
             project_root: 项目根目录，用于解析 bootstrap 文件相对路径。
+            enabled_skill_names: 启用的 skill 名称列表；为 None 时使用全部已加载 skill，
+                                为列表时（即使为空）使用 service.available(name_filter=...)
+                                进行过滤。空列表会传给 available()，由 service 层决定
+                                返回结果（通常返回空）。
         """
         self.base = base
         self.agent_specific = agent_specific
         self.agent_name = agent_name
+        self.enabled_skill_names = enabled_skill_names
         self._service = SkillsService.get_instance(agent_name=agent_name)
         self._bootstrap = BootstrapProvider(project_root=project_root)
 
@@ -61,7 +67,11 @@ class SkillsAwarePrompt:
             按 base → agent_specific → bootstrap → available_skills 顺序拼接的字符串，
             空部分会被自动过滤。
         """
-        skills_block = render_available_skills_block(self._service.all())
+        if self.enabled_skill_names is None:
+            skills = self._service.all()
+        else:
+            skills = self._service.available(name_filter=self.enabled_skill_names)
+        skills_block = render_available_skills_block(skills)
         agent_bootstrap_path = None
         if self.agent_name:
             from pathlib import Path

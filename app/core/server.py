@@ -130,6 +130,17 @@ async def lifespan(app: FastAPI):
                     "Failed to initialize ToolRegistryService: %s", e, exc_info=True
                 )
 
+            # 初始化 SkillRegistryService（预加载 skills 表到缓存）
+            # 单独 try/except：失败不应阻断 AgentConfigService 后续逻辑
+            from app.shared.utils.agent.skill_service import SkillRegistryService
+            try:
+                app.state.skill_service = SkillRegistryService(db_pool)
+                await app.state.skill_service.preload_all()
+            except Exception as e:
+                logging.warning(
+                    "Failed to initialize SkillRegistryService: %s", e, exc_info=True
+                )
+
             # 2026-06-24 新增：将 AgentConfigService 设置到 knowledge_router 全局变量，
             # 供 get_map_agent 等模块级函数使用（无法直接访问 request.app.state）
             from app.routers.knowledge_router import set_agent_config_service
@@ -200,12 +211,22 @@ async def lifespan(app: FastAPI):
             else:
                 logging.warning("[lifespan] MCPToolsRegistry not available, skipping injection")
 
+            # 2026-06-29 新增：注入 SkillRegistryService，供 AgentConfigService
+            # 通过 get_available_skills 列出可绑定的 skill 元数据
+            skill_service_injected = False
+            if hasattr(app.state, "skill_service") and app.state.skill_service:
+                app.state.agent_config_service.set_skill_service(app.state.skill_service)
+                skill_service_injected = True
+                logging.info("[lifespan] SkillRegistryService injected into AgentConfigService")
+            else:
+                logging.warning("[lifespan] SkillRegistryService not available, skipping injection")
+
             # 预加载 agent 配置缓存（仅 DB 配置，tools=None 延迟加载，保持 MCP 懒加载）
             await app.state.agent_config_service.preload_all()
             await app.state.mcp_config_service.preload_all()
             logging.info(
-                "[lifespan] All config caches preloaded (tool_service=%s, mcp_registry=%s)",
-                tool_service_injected, mcp_registry_injected,
+                "[lifespan] All config caches preloaded (tool_service=%s, mcp_registry=%s, skill_service=%s)",
+                tool_service_injected, mcp_registry_injected, skill_service_injected,
             )
         except Exception as e:
             logging.warning("[lifespan] Failed to preload config caches: %s", e, exc_info=True)
