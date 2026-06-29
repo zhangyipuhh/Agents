@@ -499,9 +499,7 @@ class ToolRegistryService:
     async def update_tool(self, name: str, config: Dict[str, Any]) -> Dict[str, Any]:
         """更新工具配置（写 DB + 刷新缓存）。
 
-        全量更新工具的所有可变字段（display_name / category / description /
-        module_path / file_path / args_schema / return_description /
-        function_description / enabled / sort_order）。
+        部分更新：仅覆盖 config 中显式传入的字段，未传入字段保持数据库原值。
 
         参数:
             name: 工具名称
@@ -513,6 +511,15 @@ class ToolRegistryService:
         异常:
             ToolNotFoundError: 工具不存在时抛出
         """
+        existing = await self._db.fetchrow(
+            "SELECT * FROM tools WHERE name = $1", name
+        )
+        if not existing:
+            raise ToolNotFoundError(f"Tool '{name}' not found")
+
+        merged = dict(existing)
+        merged.update(config)
+
         row = await self._db.fetchrow(
             """
             UPDATE tools SET
@@ -531,19 +538,17 @@ class ToolRegistryService:
             RETURNING *
             """,
             name,
-            config.get("display_name", ""),
-            config.get("category", ""),
-            config.get("description", ""),
-            config.get("module_path", ""),
-            config.get("file_path", ""),
-            json.dumps(config.get("args_schema", {})),
-            config.get("return_description", ""),
-            config.get("function_description", ""),
-            config.get("enabled", True),
-            config.get("sort_order", 0),
+            merged.get("display_name", ""),
+            merged.get("category", ""),
+            merged.get("description", ""),
+            merged.get("module_path", ""),
+            merged.get("file_path", ""),
+            json.dumps(merged.get("args_schema", {})),
+            merged.get("return_description", ""),
+            merged.get("function_description", ""),
+            merged.get("enabled", True),
+            merged.get("sort_order", 0),
         )
-        if not row:
-            raise ToolNotFoundError(f"Tool '{name}' not found")
         result = self._decode_row(row)
 
         # 刷新缓存（enabled 变化时 _refresh_cache 会自动处理）

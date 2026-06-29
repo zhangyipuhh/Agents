@@ -362,8 +362,7 @@ class SkillRegistryService:
     async def update_skill(self, name: str, config: Dict[str, Any]) -> Dict[str, Any]:
         """更新 skill 配置（写 DB + 刷新缓存）。
 
-        全量更新 skill 的所有可变字段（display_name / category / description /
-        location / base_dir / content / enabled / sort_order）。
+        部分更新：仅覆盖 config 中显式传入的字段，未传入字段保持数据库原值。
 
         参数:
             name: skill 名称
@@ -375,6 +374,15 @@ class SkillRegistryService:
         异常:
             SkillNotFoundError: skill 不存在时抛出
         """
+        existing = await self._db.fetchrow(
+            "SELECT * FROM skills WHERE name = $1", name
+        )
+        if not existing:
+            raise SkillNotFoundError(f"Skill '{name}' not found")
+
+        merged = dict(existing)
+        merged.update(config)
+
         row = await self._db.fetchrow(
             """
             UPDATE skills SET
@@ -391,17 +399,15 @@ class SkillRegistryService:
             RETURNING *
             """,
             name,
-            config.get("display_name", ""),
-            config.get("category", ""),
-            config.get("description", ""),
-            config.get("location", ""),
-            config.get("base_dir", ""),
-            config.get("content", ""),
-            config.get("enabled", True),
-            config.get("sort_order", 0),
+            merged.get("display_name", ""),
+            merged.get("category", ""),
+            merged.get("description", ""),
+            merged.get("location", ""),
+            merged.get("base_dir", ""),
+            merged.get("content", ""),
+            merged.get("enabled", True),
+            merged.get("sort_order", 0),
         )
-        if not row:
-            raise SkillNotFoundError(f"Skill '{name}' not found")
         result = self._decode_row(row)
 
         await self._refresh_cache(name)

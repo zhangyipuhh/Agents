@@ -211,6 +211,7 @@ async def get_map_agent():
             state_class=config.state_class,
             context_class=config.context_class,
             checkpointer=checkpointer,
+            enabled_skill_names=config.enabled_skill_names,
         )
         agent = Agent(agent_config)
         await agent.__ainit__()
@@ -644,6 +645,7 @@ async def knowledge_chat(
             state_class=config.state_class,
             context_class=config.context_class,
             checkpointer=checkpointer,
+            enabled_skill_names=config.enabled_skill_names,
         )
         agent = Agent(agent_config)
         await agent.__ainit__()

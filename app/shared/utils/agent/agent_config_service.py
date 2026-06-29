@@ -437,7 +437,22 @@ class AgentConfigService:
                 state_kwargs.update(state_class_kwargs)
             input_state = config.state_class(**state_kwargs)
 
-        # 4. 构造 AgentConfig（保留字段如 checkpointer / store 由 service 注入）
+        # 4. 过滤 enabled_skill_names：仅保留 DB 中注册且启用的 skill
+        enabled_skill_names = config.enabled_skill_names
+        if self._skill_service and enabled_skill_names:
+            filtered = []
+            for name in enabled_skill_names:
+                skill_row = await self._skill_service.get_skill_by_name(name)
+                if skill_row and skill_row.enabled:
+                    filtered.append(name)
+                else:
+                    logger.warning(
+                        "[build_agent_instance] agent=%s skill=%s skipped: not registered or disabled in DB",
+                        config.name, name,
+                    )
+            enabled_skill_names = filtered
+
+        # 5. 构造 AgentConfig（保留字段如 checkpointer / store 由 service 注入）
         from app.core.agent.AgentConfig import AgentConfig
         from app.shared.utils.memory import get_async_checkpointer, get_async_store
 
@@ -453,6 +468,7 @@ class AgentConfigService:
             checkpointer=checkpointer,
             store=store,
             tools=config.tools,
+            enabled_skill_names=enabled_skill_names,
             **agent_config_overrides,
         )
 

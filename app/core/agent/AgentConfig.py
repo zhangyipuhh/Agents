@@ -239,6 +239,14 @@ class AgentConfig:
     summarize_retry_initial_interval: float = field(default=1.0)
     """摘要操作初始重试间隔（秒），默认 1.0 秒"""
 
+    enabled_skill_names: Optional[List[str]] = field(default=None)
+    """该 Agent 绑定的启用 skill 名称列表。
+
+    由 AgentConfigService 从 agents.skill_bindings 解析并注入，
+    供 SkillsAwarePrompt 在构造 system prompt 时过滤可用 skill。
+    None 表示未指定（向后兼容），此时 SkillsAwarePrompt 回退到加载全部 skill。
+    """
+
     tools: Optional[List[Any]] = field(default=None)
     """外部传入的工具列表。
 

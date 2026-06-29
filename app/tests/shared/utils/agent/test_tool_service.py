@@ -397,12 +397,20 @@ def test_create_tool_raises_on_missing_name():
 def test_update_tool_updates_and_refreshes_cache():
     """测试 update_tool：更新 DB 并刷新缓存。"""
     db = MagicMock()
-    db.fetchrow = AsyncMock(return_value={
-        "name": "tool", "display_name": "更新后", "category": "c",
-        "description": "", "module_path": "", "file_path": "",
-        "args_schema": "{}", "return_description": "", "function_description": "",
+    existing = {
+        "name": "tool", "display_name": "原名称", "category": "c",
+        "description": "原描述", "module_path": "m", "file_path": "f",
+        "args_schema": "{}", "return_description": "str", "function_description": "doc",
         "enabled": True, "sort_order": 0,
-    })
+    }
+    updated = {
+        "name": "tool", "display_name": "更新后", "category": "c",
+        "description": "原描述", "module_path": "m", "file_path": "f",
+        "args_schema": "{}", "return_description": "str", "function_description": "doc",
+        "enabled": True, "sort_order": 0,
+    }
+    # 三次 fetchrow：1) SELECT 现有记录 2) UPDATE RETURNING 3) _refresh_cache SELECT
+    db.fetchrow = AsyncMock(side_effect=[existing, updated, updated])
     service = ToolRegistryService(db)
     from app.shared.tools.registry import ToolRegistry
     ToolRegistry.clear()
@@ -412,10 +420,38 @@ def test_update_tool_updates_and_refreshes_cache():
     assert "tool" in service._cache
 
 
+def test_update_tool_preserves_unsent_fields():
+    """测试 update_tool：未传入字段保持数据库原值，不被清空。"""
+    db = MagicMock()
+    existing = {
+        "name": "tool", "display_name": "原名称", "category": "c",
+        "description": "原描述", "module_path": "m", "file_path": "f",
+        "args_schema": '{"k": "v"}', "return_description": "str",
+        "function_description": "doc", "enabled": True, "sort_order": 1,
+    }
+    updated = {
+        "name": "tool", "display_name": "原名称", "category": "新分类",
+        "description": "原描述", "module_path": "m", "file_path": "f",
+        "args_schema": '{"k": "v"}', "return_description": "str",
+        "function_description": "doc", "enabled": True, "sort_order": 1,
+    }
+    # 三次 fetchrow：1) SELECT 现有记录 2) UPDATE RETURNING 3) _refresh_cache SELECT
+    db.fetchrow = AsyncMock(side_effect=[existing, updated, updated])
+    service = ToolRegistryService(db)
+    from app.shared.tools.registry import ToolRegistry
+    ToolRegistry.clear()
+
+    result = asyncio.run(service.update_tool("tool", {"category": "新分类"}))
+    assert result["category"] == "新分类"
+    assert result["description"] == "原描述"
+    assert result["module_path"] == "m"
+    assert result["sort_order"] == 1
+
+
 def test_update_tool_raises_on_not_found():
     """测试 update_tool：工具不存在时抛出 ToolNotFoundError。"""
     db = MagicMock()
-    db.fetchrow = AsyncMock(return_value=None)  # UPDATE RETURNING 无结果
+    db.fetchrow = AsyncMock(return_value=None)  # SELECT 无结果
     service = ToolRegistryService(db)
 
     with pytest.raises(ToolNotFoundError):

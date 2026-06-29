@@ -275,9 +275,8 @@ async def update_tool(
 ) -> Dict[str, Any]:
     """更新工具配置。
 
-    调用 tool_service.update_tool(name, payload)，全量更新工具的可变字段，
-    写 DB 后刷新缓存。None 字段会被 service 层用默认值替换（空字符串 / True / 0），
-    因此调用方需传入完整配置。
+    调用 tool_service.update_tool(name, payload)，部分更新工具的可变字段，
+    未传入字段保持数据库原值，写 DB 后刷新缓存。
 
     参数:
         request: FastAPI Request 对象

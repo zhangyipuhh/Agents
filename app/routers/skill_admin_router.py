@@ -268,9 +268,8 @@ async def update_skill(
 ) -> Dict[str, Any]:
     """更新 skill 配置。
 
-    调用 skill_service.update_skill(name, payload)，全量更新 skill 的所有可变字段，
-    写 DB 后刷新缓存。None 字段会被 service 层用默认值替换（空字符串 / True / 0），
-    因此调用方需传入完整配置。
+    调用 skill_service.update_skill(name, payload)，部分更新 skill 的可变字段，
+    未传入字段保持数据库原值，写 DB 后刷新缓存。
 
     参数:
         request: FastAPI Request 对象

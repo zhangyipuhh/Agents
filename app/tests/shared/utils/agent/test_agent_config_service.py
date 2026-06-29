@@ -2765,3 +2765,103 @@ def test_build_agent_instance_with_empty_message_uses_empty_string(monkeypatch):
     assert "messages" in captured_kwargs
     assert len(captured_kwargs["messages"]) == 1
 
+
+def test_build_agent_instance_filters_disabled_skills(monkeypatch):
+    """测试 build_agent_instance 过滤 DB 中已禁用的 skill。
+
+    验证：当 config.enabled_skill_names 包含一个已禁用 skill 时，
+    注入的 SkillRegistryService 会将其过滤掉，最终 AgentConfig
+    的 enabled_skill_names 不包含该 skill。
+    """
+    db = MagicMock()
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+    fake_config = UnifiedAgentConfig(
+        name="map_agent",
+        display_name="",
+        description="",
+        system_prompt="",
+        state_class=MagicMock(return_value={"messages": []}),
+        context_class=MagicMock(return_value={"session_id": "test"}),
+        enabled_skill_names=["hgsc", "disabled-skill"],
+    )
+
+    _, captured_configs = _patch_service_for_build(service, monkeypatch, fake_config=fake_config)
+
+    # 注入 mock SkillRegistryService
+    class FakeSkillRow:
+        def __init__(self, enabled):
+            self.enabled = enabled
+
+    class FakeSkillService:
+        async def get_skill_by_name(self, name):
+            if name == "hgsc":
+                return FakeSkillRow(enabled=True)
+            if name == "disabled-skill":
+                return FakeSkillRow(enabled=False)
+            return None
+
+    service.set_skill_service(FakeSkillService())
+
+    asyncio.run(
+        service.build_agent_instance(
+            agent_name="map_agent",
+            session_id="session-1",
+            message="hi",
+        )
+    )
+
+    assert len(captured_configs) == 1
+    assert captured_configs[0].enabled_skill_names == ["hgsc"]
+
+
+def test_build_agent_instance_filters_unregistered_skills(monkeypatch):
+    """测试 build_agent_instance 过滤 DB 中未注册的 skill。
+
+    验证：当 config.enabled_skill_names 包含一个未在 DB skills 表
+    注册的 skill 时，会被过滤掉。
+    """
+    db = MagicMock()
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+    fake_config = UnifiedAgentConfig(
+        name="map_agent",
+        display_name="",
+        description="",
+        system_prompt="",
+        state_class=MagicMock(return_value={"messages": []}),
+        context_class=MagicMock(return_value={"session_id": "test"}),
+        enabled_skill_names=["hgsc", "unregistered-skill"],
+    )
+
+    _, captured_configs = _patch_service_for_build(service, monkeypatch, fake_config=fake_config)
+
+    class FakeSkillRow:
+        def __init__(self, enabled):
+            self.enabled = enabled
+
+    class FakeSkillService:
+        async def get_skill_by_name(self, name):
+            if name == "hgsc":
+                return FakeSkillRow(enabled=True)
+            return None
+
+    service.set_skill_service(FakeSkillService())
+
+    asyncio.run(
+        service.build_agent_instance(
+            agent_name="map_agent",
+            session_id="session-1",
+            message="hi",
+        )
+    )
+
+    assert len(captured_configs) == 1
+    assert captured_configs[0].enabled_skill_names == ["hgsc"]
+
