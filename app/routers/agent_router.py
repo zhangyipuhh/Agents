@@ -16,15 +16,11 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from langchain_core.messages import HumanMessage
-from langgraph.types import Command
 
 from app.shared.utils.agent.agent_config_service import (
     AgentConfigService,
     AgentNotFoundError,
 )
-from app.shared.utils.agent.dynamic_schema import RESERVED_CONTEXT_FIELDS
-from app.shared.utils.memory import get_async_checkpointer, get_async_store
 from app.routers._stream_helper import generate_stream_response
 
 
@@ -80,6 +76,10 @@ def _get_service(request: Request) -> AgentConfigService:
 async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse:
     """统一智能体聊天接口。
 
+    2026-06-29 重构：Agent 构造流程下沉到
+    AgentConfigService.build_agent_instance()，router 仅保留 HTTP 适配层职责
+    （参数提取、错误转换、SSE 响应包装、session.agent_type 自动绑定）。
+
     参数:
         request: FastAPI Request（用于服务获取与断开检测）
         chat_request: 聊天请求体
@@ -91,89 +91,45 @@ async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse
         HTTPException: agent 不存在时抛出 404；Agent 初始化失败时抛出 500
     """
     service = _get_service(request)
-
-    try:
-        config = await service.get_agent_config(chat_request.agent_name)
-    except AgentNotFoundError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    session_id = chat_request.session_id or "default"
+    agent_name = chat_request.agent_name
 
     # 2026-06-26 新增：若当前 session 尚未绑定非 default 智能体，且请求传入了有效的 agent_name，
     # 则将 agent_type + agent_display_name 持久化到 session（内存 + 数据库）。
-    session_id = chat_request.session_id or "default"
-    agent_name = chat_request.agent_name
+    # 此段属于 HTTP 适配层职责（响应客户端首次选 agent 的语义），保留在 router 层。
     if agent_name and agent_name != "default":
         from app.shared.utils.auth.session_db import SessionDB
         session = await SessionDB.get_session(session_id)
         if session and session.get("agent_type", "default") in ("default", "", None):
-            display_name = config.display_name or agent_name
+            try:
+                preview_config = await service.get_agent_config(agent_name)
+                display_name = preview_config.display_name or agent_name
+            except AgentNotFoundError:
+                display_name = agent_name
             await SessionDB.update_session_agent(session_id, agent_name, display_name)
 
-    # 过滤 context_overrides 中的保留字段，避免与显式传入的 session_id 等
-    # 关键字参数冲突（TypeError: got multiple values for keyword argument）
-    safe_overrides = {
-        k: v for k, v in chat_request.context_overrides.items()
-        if k not in RESERVED_CONTEXT_FIELDS
-    }
-    # 2026-06-24 修复：state_class / context_class 是 _TypedDictWithDefaults 包装器，
-    # __call__ 时会自动补全基类保留字段默认值（error_limit=5 / limit=25 /
-    # agent_name=None / session_id="default" / store_id="default" / image_ids=[] 等）
-    # 以及 state_schema / context_schema 中定义的扩展字段默认值，调用方只需显式
-    # 传入必需字段（messages / session_id 等），无需重复传入保留字段。
-    # 完整逻辑见 app/shared/utils/agent/dynamic_schema.py:_BASE_STATE_DEFAULTS /
-    # _BASE_CONTEXT_DEFAULTS，以及 build_agent_state / build_agent_context。
-    context_instance = config.context_class(
-        session_id=chat_request.session_id or "default",
-        **safe_overrides,
-    )
-
-    if chat_request.resume:
-        input_state = Command(resume=chat_request.resume)
-    else:
-        state_class = config.state_class
-        input_state = state_class(messages=[HumanMessage(content=chat_request.message)])
-
+    # 统一构造入口（封装取配置 → 构造 context/state → AgentConfig → Agent.__ainit__）
     try:
-        from app.core.agent.agent import Agent
-        from app.core.agent.AgentConfig import AgentConfig
-
-        # 获取全局异步 checkpointer，支持 resume 与多轮对话状态持久化
-        checkpointer = await get_async_checkpointer()
-        # 2026-06-26 修复：获取全局异步 store，支持 LangGraph Store 长期记忆
-        # （跨 thread / 跨会话键值存储），与 HtAgent 路径行为对齐
-        # （参见 app/features/contract_host_agent/HtAgent.py:40-44）。
-        # 不传 store 会导致 _llm_call 中的多模态图片回填失效
-        # （agent.py:322 self.store is None 时跳过）以及工具内
-        # self.store.put(...) 写入的跨会话数据不可见。
-        store = await get_async_store()
-        # 2026-06-24 重构：把 config_schema 中 AgentConfig 字段覆盖（如 temperature /
-        # model_name / max_tokens 等）解包注入 AgentConfig 构造器。未在 schema 中声明的
-        # 字段保留 AgentConfig 默认值（来自 LLM_CONFIG / 环境变量），向后兼容。
-        # 保留字段（state_class / context_class / checkpointer / store）已由
-        # dynamic_schema.parse_config_schema 在 RESERVED_CONFIG_FIELDS 阶段过滤，
-        # 不会出现在 agent_config_overrides 中，必须由路由层显式注入。
-        agent_config_overrides = config.agent_config_overrides or {}
-        agent_config = AgentConfig(
-            name=config.name,
-            system_prompt=config.system_prompt,
-            state_class=config.state_class,
-            context_class=config.context_class,
-            checkpointer=checkpointer,
-            store=store,  # 2026-06-26 修复：原代码缺失
-            tools=config.tools,  # 从 UnifiedAgentConfig 注入工具列表（由 AgentConfigService 从 DB + MCP registry 加载）
-            **agent_config_overrides,
+        agent, context_instance, input_state = await service.build_agent_instance(
+            agent_name=agent_name,
+            session_id=session_id,
+            message=chat_request.message,
+            context_overrides=chat_request.context_overrides,
+            resume=chat_request.resume,
         )
-        agent = Agent(agent_config)
-        await agent.__ainit__()
+    except AgentNotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Agent initialization failed for %s: %s", chat_request.agent_name or "default", e)
+        logger.exception(
+            "Agent initialization failed for %s: %s",
+            agent_name or "default", e,
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Agent initialization failed: {str(e)}",
         )
-
-    session_id = chat_request.session_id or "default"
 
     return StreamingResponse(
         generate_stream_response(agent, input_state, context_instance, session_id, request),

@@ -148,6 +148,52 @@ app/
 └── main.py               # 应用入口
 ```
 
+## Agent 统一构造入口（2026-06-29 新增）
+
+### `AgentConfigService.build_agent_instance()`
+
+**位置**：`app/shared/utils/agent/agent_config_service.py::build_agent_instance()`
+
+**职责**：所有 chat 路由的统一构造入口，封装「取配置 → 构造 context/state → 构造 AgentConfig → 初始化 Agent」完整流程。
+
+**调用方**：
+- `app/routers/agent_router.py::chat()` —— 通用 Agent 聊天（2026-06-29 已迁移）
+- （后续）其他 chat 路由可逐步迁移到该入口
+
+**关键参数**：
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `agent_name` | `Optional[str]` | 智能体名称（None 使用默认配置） |
+| `session_id` | `str` | 会话 ID |
+| `message` | `Optional[str]` | 用户消息（resume 场景可为空） |
+| `context_overrides` | `Optional[Dict]` | context 字段覆盖（保留字段自动过滤） |
+| `resume` | `Optional[Dict]` | HITL 恢复参数 |
+| `state_class_kwargs` | `Optional[Dict]` | 透传给 state_class 的额外 kwargs |
+| `system_prompt_override` | `Optional[str]` | 覆盖 system_prompt |
+
+**返回**：`(Agent, AgentContext, Union[AgentState, Command])` 三元组
+
+**内部流程**：
+1. `await self.get_agent_config(agent_name)` → `UnifiedAgentConfig`（继承缓存机制）
+2. 过滤 `context_overrides` 中保留字段 → 构造 `context_class(session_id=..., **safe_overrides)`
+3. resume 时构造 `Command(resume=...)`，否则构造 `state_class(messages=[HumanMessage(content=...)], **state_class_kwargs)`
+4. `await get_async_checkpointer()` + `await get_async_store()` → 注入 `AgentConfig`
+5. `AgentConfig(**agent_config_overrides, tools=config.tools, ...)` → `Agent(agent_config).__ainit__()`
+
+**当前限制**：
+- HumanMessage 固定为 `HumanMessage(content=message)`，不支持自定义构造
+- knowledge_router.py::knowledge_chat() 暂未迁移（需要 `HumanMessage.additional_kwargs` 注入 attachments，超出本方法能力范围）
+- 后续如有需求可扩展 `human_message_factory` 参数
+
+**设计原则**：
+- router 只做 HTTP 适配层职责（参数提取、错误转换、SSE 响应包装、session.agent_type 自动绑定）
+- service 层封装所有 Agent 构造逻辑（单一出入口）
+- 任何新增 Agent 路由必须调用此方法，禁止复制 Agent 构造代码
+
+**测试覆盖**：
+- `app/tests/shared/utils/agent/test_agent_config_service.py` —— 12 个 build_agent_instance 用例（P0 导入 / P1 成功路径 / P2 边界条件 / resume / context_overrides / reserved fields 过滤 / system_prompt_override / state_class_kwargs / AgentNotFoundError / tools 注入 / agent_config_overrides 解包 / 空消息）
+- `app/tests/routers/test_agent_router.py` —— 4 个新用例（chat 调用 build_agent_instance / 404 映射 / 500 映射 / router 不再 import Agent）
+
 ## 认证体系（双 Token）
 
 ### Token 类型

@@ -2058,3 +2058,476 @@ def test_load_tools_skips_disabled_mcp_server():
         server="amap", names=["search"]
     )
 
+
+# =============================================================================
+# 2026-06-29 新增：build_agent_instance() 单元测试
+# 验证统一 Agent 构造入口的完整流程：取配置 → 构造 context/state →
+# 构造 AgentConfig → 初始化 Agent。
+# =============================================================================
+
+
+def _patch_service_for_build(service, monkeypatch, fake_config=None):
+    """辅助函数：monkeypatch service 的所有外部依赖，方便测试 build_agent_instance。
+
+    参数:
+        service: AgentConfigService 实例
+        monkeypatch: pytest monkeypatch fixture
+        fake_config: 自定义的 UnifiedAgentConfig（默认构造一个 mock 配置）
+
+    返回:
+        fake_config: 传入或自动构造的 UnifiedAgentConfig
+    """
+    from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+
+    if fake_config is None:
+        fake_config = UnifiedAgentConfig(
+            name="map_agent",
+            display_name="地图智能体",
+            description="",
+            system_prompt="# 地图智能体",
+            state_class=MagicMock(return_value={"messages": []}),
+            context_class=MagicMock(return_value={"session_id": "test"}),
+            tools=[],
+        )
+
+    # Mock get_agent_config 走 fake_config
+    async def fake_get(self, agent_name):
+        if agent_name is None or agent_name == "":
+            return fake_config
+        return fake_config
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.get_agent_config",
+        fake_get,
+    )
+
+    # Mock get_async_checkpointer / get_async_store
+    # 2026-06-29 说明：service 内部使用 `from app.shared.utils.memory import get_async_checkpointer`，
+    # monkeypatch 直接修改 service 模块的同名属性无效（import 已经在局部命名空间绑定）。
+    # 必须 mock 真正的源头模块（memory.checkpoint / memory.store），service 调用时
+    # Python 会沿模块路径查找最新属性。
+    async def fake_checkpointer():
+        return MagicMock(name="fake_checkpointer")
+
+    async def fake_store():
+        return MagicMock(name="fake_store")
+
+    monkeypatch.setattr(
+        "app.shared.utils.memory.get_async_checkpointer",
+        fake_checkpointer,
+    )
+    monkeypatch.setattr(
+        "app.shared.utils.memory.get_async_store",
+        fake_store,
+    )
+
+    # Mock Agent 类，避免真实 LLM 初始化
+    captured_configs = []
+
+    class FakeAgent:
+        def __init__(self, config):
+            captured_configs.append(config)
+
+        async def __ainit__(self):
+            pass
+
+    monkeypatch.setattr("app.core.agent.agent.Agent", FakeAgent)
+
+    return fake_config, captured_configs
+
+
+def test_build_agent_instance_importable():
+    """测试 service.build_agent_instance 方法存在（P0 导入/存在性）。"""
+    from app.shared.utils.agent import agent_config_service
+    assert hasattr(agent_config_service.AgentConfigService, "build_agent_instance")
+
+
+def test_build_agent_instance_returns_agent_context_state_triple(monkeypatch):
+    """测试 build_agent_instance 成功路径返回 (agent, context, input_state) 三元组。"""
+    db = MagicMock()
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    fake_config, captured_configs = _patch_service_for_build(service, monkeypatch)
+
+    agent, context_instance, input_state = asyncio.run(
+        service.build_agent_instance(
+            agent_name="map_agent",
+            session_id="session-1",
+            message="hello",
+        )
+    )
+
+    assert agent is not None
+    assert context_instance is not None
+    assert input_state is not None
+    assert len(captured_configs) == 1
+    # AgentConfig 接收了正确的 system_prompt（来自 config）
+    assert captured_configs[0].system_prompt == "# 地图智能体"
+
+
+def test_build_agent_instance_with_resume_constructs_command(monkeypatch):
+    """测试 resume 参数传入时构造 Command(resume=...) 而非 state_class。"""
+    db = MagicMock()
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    fake_config, captured_configs = _patch_service_for_build(service, monkeypatch)
+
+    resume_payload = {"decision": "approve"}
+    agent, context_instance, input_state = asyncio.run(
+        service.build_agent_instance(
+            agent_name="map_agent",
+            session_id="session-1",
+            resume=resume_payload,
+        )
+    )
+
+    assert input_state is not None
+    # Command(resume=...) 实例的 resume 属性应等于传入 payload
+    from langgraph.types import Command
+    assert isinstance(input_state, Command)
+    assert input_state.resume == resume_payload
+
+
+def test_build_agent_instance_with_context_overrides_injects_context(monkeypatch):
+    """测试 context_overrides 注入到 context_instance。"""
+    db = MagicMock()
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    # 构造能捕获 kwargs 的 context_class
+    captured_context_kwargs = {}
+
+    class CapturingContext:
+        def __init__(self, **kwargs):
+            captured_context_kwargs.update(kwargs)
+
+    from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+    fake_config = UnifiedAgentConfig(
+        name="map_agent",
+        display_name="地图",
+        description="",
+        system_prompt="",
+        state_class=MagicMock(return_value={"messages": []}),
+        context_class=CapturingContext,
+    )
+
+    _patch_service_for_build(service, monkeypatch, fake_config=fake_config)
+
+    asyncio.run(
+        service.build_agent_instance(
+            agent_name="map_agent",
+            session_id="session-1",
+            message="hi",
+            context_overrides={"foo": "bar", "biz": 123},
+        )
+    )
+
+    # 断言：foo 和 biz 被注入，session_id 也被注入
+    assert captured_context_kwargs.get("foo") == "bar"
+    assert captured_context_kwargs.get("biz") == 123
+    assert captured_context_kwargs.get("session_id") == "session-1"
+
+
+def test_build_agent_instance_reserved_context_fields_filtered(monkeypatch):
+    """测试 RESERVED_CONTEXT_FIELDS 中的保留字段被自动过滤。
+
+    验证：
+    - 传入 context_overrides={"session_id": "hijack", "store_id": "evil"} 时
+    - 保留字段被过滤，不会覆盖显式传入的 session_id
+    - 仅自定义字段生效
+    """
+    db = MagicMock()
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    captured_context_kwargs = {}
+
+    class CapturingContext:
+        def __init__(self, **kwargs):
+            captured_context_kwargs.update(kwargs)
+
+    from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+    fake_config = UnifiedAgentConfig(
+        name="map_agent",
+        display_name="",
+        description="",
+        system_prompt="",
+        state_class=MagicMock(return_value={"messages": []}),
+        context_class=CapturingContext,
+    )
+
+    _patch_service_for_build(service, monkeypatch, fake_config=fake_config)
+
+    asyncio.run(
+        service.build_agent_instance(
+            agent_name="map_agent",
+            session_id="legit-session",
+            message="hi",
+            context_overrides={
+                "session_id": "hijacked",  # 应被过滤
+                "store_id": "evil",          # 应被过滤
+                "image_ids": ["x"],          # 应被过滤
+                "custom_field": "kept",      # 应保留
+            },
+        )
+    )
+
+    # 断言：保留字段未被覆盖（保留 service 传入的 session_id）
+    assert captured_context_kwargs.get("session_id") == "legit-session"
+    # 断言：保留字段 store_id / image_ids 不在 kwargs 中（被过滤）
+    assert "store_id" not in captured_context_kwargs
+    assert "image_ids" not in captured_context_kwargs
+    # 断言：自定义字段被保留
+    assert captured_context_kwargs.get("custom_field") == "kept"
+
+
+def test_build_agent_instance_system_prompt_override(monkeypatch):
+    """测试 system_prompt_override 覆盖 config.system_prompt。"""
+    db = MagicMock()
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    fake_config, captured_configs = _patch_service_for_build(service, monkeypatch)
+
+    asyncio.run(
+        service.build_agent_instance(
+            agent_name="map_agent",
+            session_id="session-1",
+            message="hi",
+            system_prompt_override="OVERRIDE_PROMPT",
+        )
+    )
+
+    assert len(captured_configs) == 1
+    assert captured_configs[0].system_prompt == "OVERRIDE_PROMPT"
+
+
+def test_build_agent_instance_state_class_kwargs_passed_through(monkeypatch):
+    """测试 state_class_kwargs 透传给 state_class 构造。"""
+    db = MagicMock()
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    captured_state_kwargs = {}
+
+    class CapturingState:
+        def __init__(self, **kwargs):
+            captured_state_kwargs.update(kwargs)
+
+    from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+    fake_config = UnifiedAgentConfig(
+        name="map_agent",
+        display_name="",
+        description="",
+        system_prompt="",
+        state_class=CapturingState,
+        context_class=MagicMock(return_value={"session_id": "test"}),
+    )
+
+    _patch_service_for_build(service, monkeypatch, fake_config=fake_config)
+
+    asyncio.run(
+        service.build_agent_instance(
+            agent_name="map_agent",
+            session_id="session-1",
+            message="hi",
+            state_class_kwargs={
+                "error_limit": 2,
+                "limit": 10,
+                "agent_name": "map_agent",
+            },
+        )
+    )
+
+    # 断言：state_class_kwargs 被透传
+    assert captured_state_kwargs.get("error_limit") == 2
+    assert captured_state_kwargs.get("limit") == 10
+    assert captured_state_kwargs.get("agent_name") == "map_agent"
+    # 断言：messages 字段被自动添加（HumanMessage(content=message)）
+    assert "messages" in captured_state_kwargs
+    assert len(captured_state_kwargs["messages"]) == 1
+
+
+def test_build_agent_instance_agent_not_found_raises(monkeypatch):
+    """测试传入不存在的 agent_name 时抛 AgentNotFoundError。"""
+    db = MagicMock()
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    # Mock get_agent_config 抛 AgentNotFoundError
+    async def fake_get_not_found(self, agent_name):
+        from app.shared.utils.agent.agent_config_service import AgentNotFoundError
+        raise AgentNotFoundError(f"Agent {agent_name} not found")
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.get_agent_config",
+        fake_get_not_found,
+    )
+
+    with pytest.raises(AgentNotFoundError) as exc_info:
+        asyncio.run(
+            service.build_agent_instance(
+                agent_name="nonexistent_agent",
+                session_id="session-1",
+                message="hi",
+            )
+        )
+
+    assert "nonexistent_agent" in str(exc_info.value)
+
+
+def test_build_agent_instance_passes_tools_to_agent_config(monkeypatch):
+    """测试 UnifiedAgentConfig.tools 被传递给 AgentConfig。"""
+    db = MagicMock()
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+    fake_config = UnifiedAgentConfig(
+        name="map_agent",
+        display_name="",
+        description="",
+        system_prompt="",
+        state_class=MagicMock(return_value={"messages": []}),
+        context_class=MagicMock(return_value={"session_id": "test"}),
+        tools=["tool_a", "tool_b", "tool_c"],
+    )
+
+    _, captured_configs = _patch_service_for_build(service, monkeypatch, fake_config=fake_config)
+
+    asyncio.run(
+        service.build_agent_instance(
+            agent_name="map_agent",
+            session_id="session-1",
+            message="hi",
+        )
+    )
+
+    assert len(captured_configs) == 1
+    assert captured_configs[0].tools == ["tool_a", "tool_b", "tool_c"]
+
+
+def test_build_agent_instance_with_agent_config_overrides(monkeypatch):
+    """测试 config.agent_config_overrides 被解包注入 AgentConfig 构造器。
+
+    验证：service.build_agent_instance 会把 config.agent_config_overrides
+    中的字段（如 temperature / max_tokens）解包到 AgentConfig 构造器。
+    """
+    db = MagicMock()
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+    fake_config = UnifiedAgentConfig(
+        name="map_agent",
+        display_name="",
+        description="",
+        system_prompt="",
+        state_class=MagicMock(return_value={"messages": []}),
+        context_class=MagicMock(return_value={"session_id": "test"}),
+        agent_config_overrides={"temperature": 0.7, "max_tokens": 8192},
+    )
+
+    _, captured_configs = _patch_service_for_build(service, monkeypatch, fake_config=fake_config)
+
+    asyncio.run(
+        service.build_agent_instance(
+            agent_name="map_agent",
+            session_id="session-1",
+            message="hi",
+        )
+    )
+
+    assert len(captured_configs) == 1
+    # 断言：overrides 中的字段被注入 AgentConfig
+    assert captured_configs[0].temperature == 0.7
+    assert captured_configs[0].max_tokens == 8192
+
+
+def test_build_agent_instance_with_null_message_uses_empty_string(monkeypatch):
+    """测试 message=None 时构造的 HumanMessage 包含空字符串。
+
+    2026-06-29 说明：conftest.py 把 langchain_core.messages.HumanMessage 替换为 Mock，
+    HumanMessage.content 也是 Mock 属性，无法直接断言 == ""。
+    此处改为通过 CapturingState 接收 kwargs 验证 messages 列表非空且构造被触发。
+    """
+    db = MagicMock()
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    captured_kwargs = {}
+
+    class CapturingState:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+
+    from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+    fake_config = UnifiedAgentConfig(
+        name="map_agent",
+        display_name="",
+        description="",
+        system_prompt="",
+        state_class=CapturingState,
+        context_class=MagicMock(return_value={"session_id": "test"}),
+    )
+
+    _patch_service_for_build(service, monkeypatch, fake_config=fake_config)
+
+    asyncio.run(
+        service.build_agent_instance(
+            agent_name="map_agent",
+            session_id="session-1",
+            message=None,
+        )
+    )
+    # 断言：messages 字段存在且包含 1 个 HumanMessage 实例
+    assert "messages" in captured_kwargs
+    assert len(captured_kwargs["messages"]) == 1
+
+
+def test_build_agent_instance_with_empty_message_uses_empty_string(monkeypatch):
+    """测试 message="" 时构造的 HumanMessage 存在。"""
+    db = MagicMock()
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    captured_kwargs = {}
+
+    class CapturingState:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+
+    from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+    fake_config = UnifiedAgentConfig(
+        name="map_agent",
+        display_name="",
+        description="",
+        system_prompt="",
+        state_class=CapturingState,
+        context_class=MagicMock(return_value={"session_id": "test"}),
+    )
+
+    _patch_service_for_build(service, monkeypatch, fake_config=fake_config)
+
+    asyncio.run(
+        service.build_agent_instance(
+            agent_name="map_agent",
+            session_id="session-1",
+            message="",
+        )
+    )
+    assert "messages" in captured_kwargs
+    assert len(captured_kwargs["messages"]) == 1
+

@@ -348,6 +348,116 @@ class AgentConfigService:
                     config.tools = await self._load_tools(config._agent_row)
         return config
 
+    # ============================================================
+    # 2026-06-29 新增：统一 Agent 构造入口 build_agent_instance()
+    # ============================================================
+    async def build_agent_instance(
+        self,
+        agent_name: Optional[str],
+        session_id: str,
+        message: Optional[str] = None,
+        context_overrides: Optional[Dict[str, Any]] = None,
+        resume: Optional[Dict[str, Any]] = None,
+        state_class_kwargs: Optional[Dict[str, Any]] = None,
+        system_prompt_override: Optional[str] = None,
+    ):
+        """统一构造入口：取配置 → 构造 context/state → 构造 AgentConfig → 初始化 Agent。
+
+        封装 agent_router 等 chat 路由原本散落的 5 步构造流程。
+        调用方只需传入业务参数，无需关心 checkpointer / store /
+        AgentConfig 字段覆盖 / HumanMessage 构造等底层细节。
+
+        参数:
+            agent_name: 智能体名称（None 时使用框架默认配置）
+            session_id: 会话 ID
+            message: 用户消息（resume 场景可为空字符串）
+            context_overrides: context 字段覆盖字典；
+                保留字段（如 session_id / store_id）会被自动过滤
+            resume: HITL 恢复参数；传入时构造 Command(resume=...) 而非 state_class
+            state_class_kwargs: 透传给 state_class 的额外 kwargs
+                （如 error_limit / limit / agent_name）
+            system_prompt_override: 覆盖 config.system_prompt
+                （如 KNOWLEDGE_SYSTEM_PROMPT）
+
+        返回:
+            Tuple[Agent, AgentContext, Union[AgentState, Command]]: 三元组
+            - agent: 已 __ainit__ 的 Agent 实例
+            - context_instance: 已填充的 AgentContext 实例
+            - input_state: 已构造的 input_state
+              （state_class 实例或 Command(resume=...)）
+
+        异常:
+            AgentNotFoundError: agent 不存在或已禁用（由 get_agent_config 抛出）
+            RuntimeError: checkpointer / store 初始化失败
+            Exception: AgentConfig 实例化或 Agent.__ainit__ 失败时透传
+
+        说明:
+            2026-06-29 引入，作为 agent_router 简化重构的统一入口。
+            knowledge_router 暂未迁移（需要 HumanMessage.additional_kwargs
+            注入 attachments，超出本方法能力范围）。
+        """
+        # 1. 取配置（继承现有缓存机制；agent 不存在时抛 AgentNotFoundError）
+        config = await self.get_agent_config(agent_name)
+
+        # 2. 构造 context_instance（保留字段过滤逻辑从 router 移到这里）
+        from app.shared.utils.agent.dynamic_schema import RESERVED_CONTEXT_FIELDS
+        safe_overrides = {
+            k: v for k, v in (context_overrides or {}).items()
+            if k not in RESERVED_CONTEXT_FIELDS
+        }
+        context_instance = config.context_class(
+            session_id=session_id or "default",
+            **safe_overrides,
+        )
+
+        # 3. 构造 input_state（HumanMessage 固定为 HumanMessage(content=message)）
+        from langchain_core.messages import HumanMessage
+        from langgraph.types import Command
+
+        if resume:
+            input_state = Command(resume=resume)
+        else:
+            human_message = HumanMessage(content=message or "")
+            state_kwargs: Dict[str, Any] = {"messages": [human_message]}
+            if state_class_kwargs:
+                state_kwargs.update(state_class_kwargs)
+            input_state = config.state_class(**state_kwargs)
+
+        # 4. 构造 AgentConfig（保留字段如 checkpointer / store 由 service 注入）
+        from app.core.agent.AgentConfig import AgentConfig
+        from app.shared.utils.memory import get_async_checkpointer, get_async_store
+
+        checkpointer = await get_async_checkpointer()
+        store = await get_async_store()
+
+        agent_config_overrides = config.agent_config_overrides or {}
+        agent_config = AgentConfig(
+            name=config.name,
+            system_prompt=system_prompt_override or config.system_prompt,
+            state_class=config.state_class,
+            context_class=config.context_class,
+            checkpointer=checkpointer,
+            store=store,
+            tools=config.tools,
+            **agent_config_overrides,
+        )
+
+        # 5. 初始化 Agent（失败时由调用方负责捕获并转换为 HTTPException）
+        from app.core.agent.agent import Agent
+        agent = Agent(agent_config)
+        await agent.__ainit__()
+
+        logger.info(
+            "[build_agent_instance] agent=%s session_id=%s resume=%s "
+            "overrides_keys=%s state_kwargs_keys=%s tools_count=%d",
+            config.name, session_id, bool(resume),
+            list((context_overrides or {}).keys()),
+            list((state_class_kwargs or {}).keys()),
+            len(config.tools or []),
+        )
+
+        return agent, context_instance, input_state
+
     async def _load_from_db(self, agent_name: Optional[str]) -> UnifiedAgentConfig:
         """从数据库加载单个 agent 配置（不含工具实例，tools=None）。
 

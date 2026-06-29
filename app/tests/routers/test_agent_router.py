@@ -178,13 +178,13 @@ def test_chat_passes_tools_to_agent_config(client, admin_headers, monkeypatch):
     async def fake_checkpointer():
         return MagicMock()
 
-    monkeypatch.setattr("app.routers.agent_router.get_async_checkpointer", fake_checkpointer)
+    monkeypatch.setattr("app.shared.utils.memory.get_async_checkpointer", fake_checkpointer)
 
     # Mock get_async_store 避免真实 store 初始化（2026-06-26 新增）
     async def fake_store():
         return MagicMock()
 
-    monkeypatch.setattr("app.routers.agent_router.get_async_store", fake_store)
+    monkeypatch.setattr("app.shared.utils.memory.get_async_store", fake_store)
 
     async def fake_get(self, name):
         from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
@@ -256,13 +256,13 @@ def test_chat_passes_store_to_agent_config(client, admin_headers, monkeypatch):
     async def fake_checkpointer():
         return MagicMock()
 
-    monkeypatch.setattr("app.routers.agent_router.get_async_checkpointer", fake_checkpointer)
+    monkeypatch.setattr("app.shared.utils.memory.get_async_checkpointer", fake_checkpointer)
 
     # 核心：让 get_async_store() 返回固定 mock，便于断言
     async def fake_store():
         return fake_store_instance
 
-    monkeypatch.setattr("app.routers.agent_router.get_async_store", fake_store)
+    monkeypatch.setattr("app.shared.utils.memory.get_async_store", fake_store)
 
     async def fake_get(self, name):
         from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
@@ -319,7 +319,7 @@ def test_chat_calls_get_async_store_per_request(client, admin_headers, monkeypat
     async def fake_checkpointer():
         return MagicMock()
 
-    monkeypatch.setattr("app.routers.agent_router.get_async_checkpointer", fake_checkpointer)
+    monkeypatch.setattr("app.shared.utils.memory.get_async_checkpointer", fake_checkpointer)
 
     store_call_count = {"n": 0}
 
@@ -327,7 +327,7 @@ def test_chat_calls_get_async_store_per_request(client, admin_headers, monkeypat
         store_call_count["n"] += 1
         return MagicMock(name=f"store_{store_call_count['n']}")
 
-    monkeypatch.setattr("app.routers.agent_router.get_async_store", fake_store)
+    monkeypatch.setattr("app.shared.utils.memory.get_async_store", fake_store)
 
     async def fake_get(self, name):
         from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
@@ -472,13 +472,13 @@ def test_chat_with_none_tools_does_not_break(client, admin_headers, monkeypatch)
     async def fake_checkpointer():
         return MagicMock()
 
-    monkeypatch.setattr("app.routers.agent_router.get_async_checkpointer", fake_checkpointer)
+    monkeypatch.setattr("app.shared.utils.memory.get_async_checkpointer", fake_checkpointer)
 
     # Mock get_async_store 避免真实 store 初始化（2026-06-26 新增）
     async def fake_store():
         return MagicMock()
 
-    monkeypatch.setattr("app.routers.agent_router.get_async_store", fake_store)
+    monkeypatch.setattr("app.shared.utils.memory.get_async_store", fake_store)
 
     async def fake_get(self, name):
         from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
@@ -541,12 +541,12 @@ def test_chat_binds_agent_to_session_on_first_non_default_agent(client, admin_he
     async def fake_checkpointer():
         return MagicMock()
 
-    monkeypatch.setattr("app.routers.agent_router.get_async_checkpointer", fake_checkpointer)
+    monkeypatch.setattr("app.shared.utils.memory.get_async_checkpointer", fake_checkpointer)
 
     async def fake_store():
         return MagicMock()
 
-    monkeypatch.setattr("app.routers.agent_router.get_async_store", fake_store)
+    monkeypatch.setattr("app.shared.utils.memory.get_async_store", fake_store)
 
     async def fake_get(self, name):
         from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
@@ -622,12 +622,12 @@ def test_chat_does_not_rebind_if_session_already_bound(client, admin_headers, mo
     async def fake_checkpointer():
         return MagicMock()
 
-    monkeypatch.setattr("app.routers.agent_router.get_async_checkpointer", fake_checkpointer)
+    monkeypatch.setattr("app.shared.utils.memory.get_async_checkpointer", fake_checkpointer)
 
     async def fake_store():
         return MagicMock()
 
-    monkeypatch.setattr("app.routers.agent_router.get_async_store", fake_store)
+    monkeypatch.setattr("app.shared.utils.memory.get_async_store", fake_store)
 
     async def fake_get(self, name):
         from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
@@ -701,12 +701,12 @@ def test_chat_does_not_bind_when_agent_name_is_default(client, admin_headers, mo
     async def fake_checkpointer():
         return MagicMock()
 
-    monkeypatch.setattr("app.routers.agent_router.get_async_checkpointer", fake_checkpointer)
+    monkeypatch.setattr("app.shared.utils.memory.get_async_checkpointer", fake_checkpointer)
 
     async def fake_store():
         return MagicMock()
 
-    monkeypatch.setattr("app.routers.agent_router.get_async_store", fake_store)
+    monkeypatch.setattr("app.shared.utils.memory.get_async_store", fake_store)
 
     async def fake_get(self, name):
         from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
@@ -753,3 +753,213 @@ def test_chat_does_not_bind_when_agent_name_is_default(client, admin_headers, mo
 
     assert response.status_code == 200
     assert len(updated_calls) == 0, "agent_name 为 default 时不应触发绑定"
+
+
+# =============================================================================
+# 2026-06-29 新增：chat 端点调用 service.build_agent_instance() 验证
+# 验证重构后 chat 端点必然通过 service.build_agent_instance() 构造 Agent，
+# 不再在 router 内自行构造 AgentConfig / Agent。
+# =============================================================================
+
+
+def test_chat_calls_service_build_agent_instance(client, admin_headers, monkeypatch):
+    """测试 chat 端点调用 service.build_agent_instance() 而非自行构造。
+
+    验证：
+    - 重构后 chat 端点必然调用 service.build_agent_instance() 一次
+    - 传入参数包含 agent_name / session_id / message / resume / context_overrides
+    - 不再在 router 内 import AgentConfig / Agent
+    """
+    from unittest.mock import MagicMock
+
+    captured_calls = []
+
+    async def fake_build(self, agent_name, session_id, message=None,
+                          context_overrides=None, resume=None,
+                          state_class_kwargs=None, system_prompt_override=None):
+        captured_calls.append({
+            "agent_name": agent_name,
+            "session_id": session_id,
+            "message": message,
+            "context_overrides": context_overrides,
+            "resume": resume,
+        })
+        # 返回 fake (agent, context, input_state) 三元组
+        return MagicMock(name="fake_agent"), MagicMock(name="fake_context"), MagicMock(name="fake_state")
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.build_agent_instance",
+        fake_build,
+    )
+
+    # 同步 mock get_agent_config（router 在 session.agent_type 绑定分支会调用）
+    async def fake_get(self, name):
+        from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+        return UnifiedAgentConfig(
+            name=name,
+            display_name="地图智能体",
+            description="",
+            system_prompt="# 地图",
+            state_class=MagicMock(return_value={"messages": []}),
+            context_class=MagicMock(return_value={"session_id": "test"}),
+        )
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.get_agent_config",
+        fake_get,
+    )
+
+    def fake_stream(*args, **kwargs):
+        yield "data: test\n\n"
+
+    monkeypatch.setattr("app.routers.agent_router.generate_stream_response", fake_stream)
+
+    # Mock get_session / update_session_agent 避免触发 session 绑定分支（agent_name=map_agent）
+    async def mock_get_session(session_id):
+        return {
+            "session_id": session_id,
+            "user_id": 1,
+            "username": "admin",
+            "agent_type": "default",
+            "agent_display_name": "",
+        }
+
+    async def mock_update_session_agent(session_id, agent_type, agent_display_name):
+        return True
+
+    monkeypatch.setattr("app.shared.utils.auth.session_db.SessionDB.get_session", mock_get_session)
+    monkeypatch.setattr(
+        "app.shared.utils.auth.session_db.SessionDB.update_session_agent", mock_update_session_agent
+    )
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": "map_agent",
+        "context_overrides": {"foo": "bar"},
+    }, headers=headers)
+
+    assert response.status_code == 200
+    assert len(captured_calls) == 1
+    call = captured_calls[0]
+    assert call["agent_name"] == "map_agent"
+    assert call["session_id"] == "test-session"
+    assert call["message"] == "hello"
+    assert call["context_overrides"] == {"foo": "bar"}
+    assert call["resume"] is None
+
+
+def test_chat_returns_404_when_agent_not_found(client, admin_headers, monkeypatch):
+    """测试 service.build_agent_instance 抛 AgentNotFoundError 时 chat 返回 404。
+
+    验证：
+    - service.build_agent_instance 内部调用 get_agent_config 抛 AgentNotFoundError
+    - router 捕获后转换为 HTTPException(404)
+    """
+    from app.shared.utils.agent.agent_config_service import AgentNotFoundError
+
+    async def fake_build_raise(self, agent_name, session_id, **kwargs):
+        raise AgentNotFoundError(f"Agent {agent_name} not found")
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.build_agent_instance",
+        fake_build_raise,
+    )
+
+    # 同步 mock get_agent_config（router 在 session.agent_type 绑定分支会调用）
+    async def fake_get_raise(self, name):
+        raise AgentNotFoundError(f"Agent {name} not found")
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.get_agent_config",
+        fake_get_raise,
+    )
+
+    # Mock SessionDB.get_session 返回 None，跳过 session 绑定分支
+    async def mock_get_session(session_id):
+        return None
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.session_db.SessionDB.get_session", mock_get_session
+    )
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": "nonexistent_agent",
+    }, headers=headers)
+
+    assert response.status_code == 404
+    assert "nonexistent_agent" in response.json()["detail"]
+
+
+def test_chat_returns_500_when_init_fails(client, admin_headers, monkeypatch):
+    """测试 service.build_agent_instance 抛通用 Exception 时 chat 返回 500。
+
+    验证：
+    - service.build_agent_instance 抛 RuntimeError 等非 HTTP 异常时
+    - router 捕获后转换为 HTTPException(500)
+    """
+    async def fake_build_raise(self, agent_name, session_id, **kwargs):
+        raise RuntimeError("LLM 初始化失败")
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.build_agent_instance",
+        fake_build_raise,
+    )
+
+    # 同步 mock get_agent_config（router 在 session.agent_type 绑定分支会调用）
+    from unittest.mock import MagicMock
+    async def fake_get(self, name):
+        from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+        return UnifiedAgentConfig(
+            name=name, display_name="测试", description="", system_prompt="",
+            state_class=MagicMock(return_value={"messages": []}),
+            context_class=MagicMock(return_value={"session_id": "test"}),
+        )
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.get_agent_config",
+        fake_get,
+    )
+
+    # Mock SessionDB.get_session 返回 None，跳过 session 绑定分支
+    async def mock_get_session(session_id):
+        return None
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.session_db.SessionDB.get_session", mock_get_session
+    )
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": "test_agent",
+    }, headers=headers)
+
+    assert response.status_code == 500
+    assert "LLM 初始化失败" in response.json()["detail"]
+
+
+def test_chat_no_longer_imports_agent_or_agent_config_in_router():
+    """测试 router 模块不再 import Agent / AgentConfig（验证下沉完整性）。
+
+    验证：
+    - 重构后 agent_router.py 不再持有 AgentConfig / Agent / Command /
+      HumanMessage / get_async_checkpointer / get_async_store 等 import
+    - 所有 Agent 构造逻辑已下沉到 service.build_agent_instance()
+    """
+    import app.routers.agent_router as router_module
+    source = open(router_module.__file__, encoding="utf-8").read()
+
+    # 已下沉的引用不应再出现在 router 中
+    assert "from app.core.agent.AgentConfig import AgentConfig" not in source
+    assert "from app.core.agent.agent import Agent" not in source
+    assert "from langchain_core.messages import HumanMessage" not in source
+    assert "from langgraph.types import Command" not in source
+    assert "get_async_checkpointer" not in source
+    assert "get_async_store" not in source
+    assert "RESERVED_CONTEXT_FIELDS" not in source
