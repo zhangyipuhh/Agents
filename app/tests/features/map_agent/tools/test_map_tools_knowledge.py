@@ -6,6 +6,7 @@ MapTools query_knowledge 测试
 - query_knowledge 工具可导入
 - query_knowledge 使用 app.core.config.paths.KNOWLEDGE_DIR 作为 root_path
 - query_knowledge 调用 BaseFilesystemTool.arun 一次并透传参数
+- KNOWLEDGE_DIR 为空时直接返回错误 Command，不调用 arun
 
 Date: 2026-06-29
 Author: AI Assistant
@@ -131,3 +132,62 @@ def test_query_knowledge_default_knowledge_dir():
         asyncio.run(query_knowledge("p", rt))
 
     assert Path(received["root_path"]) == Path(KNOWLEDGE_DIR)
+
+
+def test_query_knowledge_returns_error_when_knowledge_dir_empty(monkeypatch):
+    """
+    P1: 当 KNOWLEDGE_DIR 为空字符串时，query_knowledge 直接返回错误 Command，
+    不调用 BaseFilesystemTool.arun。
+
+    防止在测试环境或初始化异常场景下，子智能体拿到空路径去扫描。
+
+    注：conftest.py 全局 mock 了 langchain_core.messages.ToolMessage 为 Mock，
+    本测试用 _RealToolMessage 替换以校验真实 content。
+    """
+    from app.core.config import paths as paths_module
+    from app.shared.tools.skills.map_agent import MapTools
+
+    # 同时 patch 模块源与 MapTools 的本地 import 绑定，覆盖为空字符串
+    monkeypatch.setattr(paths_module, "KNOWLEDGE_DIR", "")
+    monkeypatch.setattr(MapTools, "KNOWLEDGE_DIR", "")
+
+    arun_called = {"count": 0}
+
+    async def fake_arun(self, prompt, runtime, root_path):
+        arun_called["count"] += 1
+        from langgraph.types import Command
+        from langchain_core.messages import ToolMessage
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps({"should": "not_reach"}, ensure_ascii=False),
+                        tool_call_id=runtime.tool_call_id,
+                    )
+                ]
+            }
+        )
+
+    class _RealToolMessage:
+        """绕过 conftest 全局 Mock 的轻量 ToolMessage。"""
+        def __init__(self, content="", tool_call_id=None, **kwargs):
+            self.content = content
+            self.tool_call_id = tool_call_id
+
+    with patch("app.shared.tools.skills.map_agent.MapTools.BaseFilesystemTool.arun", fake_arun), \
+         patch("app.shared.tools.skills.map_agent.MapTools.ToolMessage", _RealToolMessage):
+        rt = _make_fake_runtime(tool_call_id="call_empty_root")
+        from app.shared.tools.skills.map_agent.MapTools import query_knowledge
+        result = asyncio.run(query_knowledge("search", rt))
+
+    # arun 不应被调用
+    assert arun_called["count"] == 0
+    # 返回 Command 含错误信息
+    assert result is not None
+    messages = result.update.get("messages", [])
+    assert len(messages) == 1
+    msg = messages[0]
+    assert isinstance(msg, _RealToolMessage)
+    parsed = json.loads(msg.content)
+    assert "error" in parsed
+    assert "未配置知识库路径" in parsed["error"]
