@@ -1504,14 +1504,15 @@ SandboxDrawer 时间线包含 `code_generation` 事件（显示 LLM 生成的代
 - **Admin 管理**：
   - `UserSettingsDialog.vue`：admin 角色可访问的「用户设置与管理」对话框；包含 7 个 Tab —— `profile`（个人设置）/ `user-management`（用户管理）/ `online-monitor`（在线监控）/ `session-query`（会话查询）/ `mcp-management`（MCP 管理，调用 `McpServerManager.vue`）/ `agent-management`（智能体管理，调用 `AgentManager.vue`）/ `tool-management`（工具管理，调用 `ToolManager.vue`）
   - `McpServerManager.vue`：MCP server CRUD + 方法列表 + 启禁用切换（前后端）
-  - `AgentManager.vue`：智能体管理 Tab 内容；左侧智能体列表 + 右侧 Tab 结构（「配置字段」Tab + 「工具绑定」Tab）；支持完整 CRUD：
+  - `AgentManager.vue`：智能体管理 Tab 内容；左侧智能体列表 + 右侧 Tab 结构（「基本信息」Tab + 「配置字段」Tab + 「工具绑定」Tab）；支持完整 CRUD：
     - **新增智能体**：弹窗表单（8 字段）+ 内嵌 config_schema 编辑器；调用 `fetchAgentConfigFieldTemplates` 获取字段模板做下拉选择
+    - **基本信息 Tab**（2026-06-29 新增）：编辑当前智能体的 `display_name` 和 `description`，调用 `updateAdminAgent(name, {display_name, description})`（PUT `/api/admin/agents/{name}`）保存；保存成功后刷新左侧列表和当前详情头部
     - **编辑字段**：每组表格独立增删改；section = `root` / `state_fields` / `context_fields`；通过 `updateAdminAgentConfigSchema` / `addAdminAgentConfigField` / `updateAdminAgentConfigField` / `deleteAdminAgentConfigField` 增量更新
     - **字段模板下拉选择**：`root` / `state_fields` / `context_fields` 三组均支持「覆盖来源 = 已有字段」时下拉选择对应基类字段（AgentConfig / AgentState / AgentContext），自动填充字段名、类型、默认值
     - **保存策略**：`modified` 字段改用 `PUT /config-schema/field` 直接覆盖，避免旧版"先删后加"导致的数据丢失；`delete` 失败时记录具体字段名并继续处理其他变更，错误信息汇总展示；失败时保留 `pendingChanges` 不自动清空
     - **删除智能体**：含确认弹窗（保留历史会话）
     - **启用/禁用开关**：右上角 switch，立即调用 `setAdminAgentEnabled`，不进入「未保存修改」队列
-    - **工具绑定 Tab**（2026-06-25 新增）：右侧第二个 Tab，展示所有可用工具（内置 + MCP）按分类分组，复选框勾选绑定到当前 agent；内置工具分类 = `tools.category`，MCP 工具分类 = `mcp_server.display_name`；工具列表全局缓存（`toolsInitialized`，避免每次切换 agent 重复拉取），切换 agent 时仅重新加载该 agent 的绑定；绑定格式 `{tool_name, tool_type: "builtin"|"mcp", enabled: true, sort_order}`；保存调用 `updateAgentToolBindings(name, bindings)`（PUT 全量替换）；MCP 工具的 `tool_name` = `method_name`（不带 server 前缀，与后端 `mcp_registry.get_tools_with_server` 匹配逻辑一致）；API 函数 `listTools` / `getAgentToolBindings` / `updateAgentToolBindings` 定义在 `api.js`
+    - **工具绑定 Tab**（2026-06-25 新增）：右侧第三个 Tab，展示所有可用工具（内置 + MCP）按分类分组，复选框勾选绑定到当前 agent；内置工具分类 = `tools.category`，MCP 工具分类 = `mcp_server.display_name`；工具列表全局缓存（`toolsInitialized`，避免每次切换 agent 重复拉取），切换 agent 时仅重新加载该 agent 的绑定；绑定格式 `{tool_name, tool_type: "builtin"|"mcp", enabled: true, sort_order}`；保存调用 `updateAgentToolBindings(name, bindings)`（PUT 全量替换）；MCP 工具的 `tool_name` = `method_name`（不带 server 前缀，与后端 `mcp_registry.get_tools_with_server` 匹配逻辑一致）；API 函数 `listTools` / `getAgentToolBindings` / `updateAgentToolBindings` 定义在 `api.js`
   - `ToolManager.vue`：工具管理 Tab 内容，挂载于 `UserSettingsDialog.vue` 的 `tool-management` Tab（admin 可见）；左侧已注册工具列表按 `category` 分组（可折叠）+ 右侧详情/扫描结果面板；调用 `listTools` / `scanTools` / `listUnregisteredTools` / `registerTool` / `setToolEnabled` / `deleteTool`（对应后端 `tool_admin_router` 的 `/api/admin/tools/*` 端点）；支持扫描未注册工具、注册弹窗（回填自动解析的只读字段 + 补充 description/category）、启用/禁用 toggle（失败回滚 DOM）、删除（含 confirm）
 - **Subagent 折叠与抽屉**：
   - `SubAgentCard.vue`：通用子智能体折叠卡片（含沙箱），挂在父 AI 气泡的 `timeline.tool` 块内（按 toolCallId 匹配，遵循事件流时序）；工具图标 + 父 prompt 预览 + 状态徽章 + 耗时 + 消息数 + "查看详情" 入口；点击 emit('click', subAgent)
@@ -2455,6 +2456,7 @@ app/routers/
 | GET    | `/api/admin/agents/{name}`                     | 200    | 获取单个 agent 完整配置（含 agent_config_overrides 拆分结果）            |
 | POST   | `/api/admin/agents`                            | 201    | 新增智能体；name 已存在返回 409；AGENTS.md 不存在返回 400                |
 | DELETE | `/api/admin/agents/{name}`                     | 204    | 删除智能体（级联清理 agent_tool_bindings / agent_skill_bindings 关联）   |
+| PUT    | `/api/admin/agents/{name}`                     | 200    | 更新智能体基本信息（body:`{display_name, description}`）                 |
 | PUT    | `/api/admin/agents/{name}/enabled`             | 200    | 启用 / 禁用单个智能体（body:`{enabled: bool}`）                        |
 | PUT    | `/api/admin/agents/{name}/config-schema`       | 200    | 全量替换 config_schema                                                   |
 | POST   | `/api/admin/agents/{name}/config-schema/field` | 200    | 增量添加字段（body:`{section, field_name, field_def}`）                |
@@ -2473,7 +2475,7 @@ app/routers/
 - **AGENTS.md 路径**：必须在 service 层 `Path.is_file()` 校验失败返回 400（防止脏数据写入）
 - **field_def 校验**：必须包含 `type` 键，type 必须在 `TYPE_MAP` 支持的类型中（`str`/`int`/`float`/`bool`/`dict`/`list`）
 - **错误映射**：`_handle_agent_error` 统一转换 service 异常（AgentAlreadyExistsError → 409 / AgentNotFoundError → 404 / ValueError → 400 / FileNotFoundError → 400 / KeyError → 400）
-- **Pydantic 模型**：`CreateAgentRequest` 强制 name 格式 `[a-z0-9_]{3,50}` / `display_name` 1-200 字符 / `field_name` Python 标识符格式；`AddFieldRequest.section` 自由字符串（由 service 校验）；`SetEnabledRequest.enabled` bool；`ToolBindingItem`（tool_name 必填 / tool_type 默认 "builtin" / enabled 默认 True / sort_order 默认 0）；`ToolBindingsRequest.bindings` List[ToolBindingItem]
+- **Pydantic 模型**：`CreateAgentRequest` 强制 name 格式 `[a-z0-9_]{3,50}` / `display_name` 1-200 字符 / `field_name` Python 标识符格式；`UpdateAgentRequest` 含 `display_name`（必填，1-200 字符）和 `description`（可选，max_length=500）；`AddFieldRequest.section` 自由字符串（由 service 校验）；`SetEnabledRequest.enabled` bool；`ToolBindingItem`（tool_name 必填 / tool_type 默认 "builtin" / enabled 默认 True / sort_order 默认 0）；`ToolBindingsRequest.bindings` List[ToolBindingItem]
 - **测试**：`app/tests/routers/test_agent_admin_router.py` 35 用例（30 原有 + 5 新增 available-tools：返回结构 / file_basename 提取 / server.method 复合名 / 排除 disabled server / 排除 disabled method）；`app/tests/routers/conftest.py` 新增 `_init_db`（注入 `app.state.db` MagicMock）和 `_mock_user_db_for_admin_auth`（根据 username 返回 role）两个 autouse fixture
 
 

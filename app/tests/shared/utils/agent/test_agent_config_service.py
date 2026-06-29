@@ -1583,6 +1583,55 @@ def test_set_agent_enabled_true_calls_refresh_cache():
     service._invalidate_cache.assert_not_called()
 
 
+def test_update_agent_basic_info_success():
+    """测试 update_agent_basic_info 成功更新 display_name 和 description。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 返回值或缓存调用不符合预期时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value={
+        "name": "x", "display_name": "新名称", "description": "新描述",
+        "agents_md_path": "x.md", "state_schema": {}, "context_schema": {},
+        "config_schema": {}, "mcp_tags": [], "tool_bindings": [],
+        "enabled": True,
+    })
+    service = AgentConfigService(db, MagicMock())
+    service._refresh_cache = AsyncMock()
+
+    result = asyncio.run(service.update_agent_basic_info("x", "新名称", "新描述"))
+
+    assert result["display_name"] == "新名称"
+    assert result["description"] == "新描述"
+    service._refresh_cache.assert_called_once_with("x")
+
+
+def test_update_agent_basic_info_not_found_raises():
+    """测试 update_agent_basic_info 在 agent 不存在时抛出 AgentNotFoundError。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 未抛出预期异常时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value=None)
+    service = AgentConfigService(db, MagicMock())
+
+    with pytest.raises(AgentNotFoundError):
+        asyncio.run(service.update_agent_basic_info("nonexistent", "名称", "描述"))
+
+
 def test_get_agent_config_tools_loaded_on_first_call():
     """测试 get_agent_config 首次调用时触发 _load_tools 填充 tools 字段。
 

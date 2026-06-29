@@ -18,6 +18,7 @@ import {
   createAdminAgent,
   deleteAdminAgent,
   setAdminAgentEnabled,
+  updateAdminAgent,
   updateAdminAgentConfigSchema,
   addAdminAgentConfigField,
   updateAdminAgentConfigField,
@@ -106,7 +107,15 @@ const nameValidating = ref(false)
 const SUPPORTED_TYPES = ['str', 'int', 'float', 'bool', 'dict', 'list']
 
 // === Tab 切换状态 ===
-const activeTab = ref('config') // 'config'（配置字段） | 'tools'（工具绑定）
+const activeTab = ref('basic') // 'basic'（基本信息） | 'config'（配置字段） | 'tools'（工具绑定）
+
+// === 基本信息编辑状态 ===
+const basicForm = reactive({
+  display_name: '',
+  description: '',
+})
+const basicSaving = ref(false)
+const basicSavedTip = ref('')
 
 // === 工具绑定相关状态 ===
 const builtinTools = ref([])              // 内置工具列表（listTools 返回）
@@ -680,8 +689,34 @@ async function onSwitchToToolsTab() {
 }
 
 /**
+ * 保存智能体基本信息（display_name / description）
+ * @returns {Promise<void>} 无返回值
+ */
+async function saveBasicInfo() {
+  if (!selectedAgentName.value) return
+  basicSaving.value = true
+  errorMessage.value = ''
+  basicSavedTip.value = ''
+  try {
+    await updateAdminAgent(selectedAgentName.value, {
+      display_name: basicForm.display_name.trim(),
+      description: basicForm.description.trim(),
+    })
+    basicSavedTip.value = '基本信息保存成功'
+    setTimeout(() => { basicSavedTip.value = '' }, 3000)
+    // 同步刷新列表和当前详情
+    await loadAgentList()
+    await selectAgent(selectedAgentName.value)
+  } catch (err) {
+    errorMessage.value = err.message || '保存基本信息失败'
+  } finally {
+    basicSaving.value = false
+  }
+}
+
+/**
  * 切换 Tab；切到工具绑定 Tab 时按需加载工具数据
- * @param {string} tab - 目标 Tab 名称（config / tools）
+ * @param {string} tab - 目标 Tab 名称（basic / config / tools）
  * @returns {Promise<void>} 无返回值
  */
 async function switchTab(tab) {
@@ -744,6 +779,21 @@ async function saveToolBindings() {
     toolBindingsError.value = err.message || '保存工具绑定失败'
   }
 }
+
+// === 监听 selectedAgent 变化，同步基本信息表单 ===
+watch(
+  () => selectedAgent.value,
+  (agent) => {
+    if (agent) {
+      basicForm.display_name = agent.display_name || ''
+      basicForm.description = agent.description || ''
+    } else {
+      basicForm.display_name = ''
+      basicForm.description = ''
+    }
+  },
+  { immediate: true }
+)
 
 // === 生命周期 ===
 onMounted(async () => {
@@ -820,6 +870,14 @@ onMounted(async () => {
           <nav class="tab-nav">
             <button
               class="tab-btn"
+              :class="{ active: activeTab === 'basic' }"
+              @click="switchTab('basic')"
+            >
+              <span class="tab-icon">&#128196;</span>
+              <span>基本信息</span>
+            </button>
+            <button
+              class="tab-btn"
               :class="{ active: activeTab === 'config' }"
               @click="switchTab('config')"
             >
@@ -835,6 +893,47 @@ onMounted(async () => {
               <span>工具绑定</span>
             </button>
           </nav>
+
+          <!-- 基本信息 Tab -->
+          <div v-if="activeTab === 'basic'" class="tab-content">
+            <div v-if="basicSavedTip" class="success-banner">{{ basicSavedTip }}</div>
+            <section class="section-editor">
+              <header class="section-header">
+                <div class="section-title-wrap">
+                  <h4 class="section-title">
+                    <span class="section-accent-bar"></span>
+                    基本信息
+                  </h4>
+                  <p class="section-subtitle">编辑智能体的显示名称和描述</p>
+                </div>
+              </header>
+              <div class="form-group">
+                <label>显示名称 (display_name) *</label>
+                <input
+                  v-model="basicForm.display_name"
+                  type="text"
+                  placeholder="例如：地图智能体"
+                />
+              </div>
+              <div class="form-group">
+                <label>描述</label>
+                <textarea
+                  v-model="basicForm.description"
+                  rows="3"
+                  placeholder="智能体描述"
+                ></textarea>
+              </div>
+              <div class="basic-form-actions">
+                <button
+                  class="btn-primary"
+                  :disabled="basicSaving"
+                  @click="saveBasicInfo"
+                >
+                  {{ basicSaving ? '保存中...' : '保存修改' }}
+                </button>
+              </div>
+            </section>
+          </div><!-- /基本信息 Tab -->
 
           <!-- 配置字段 Tab -->
           <div v-if="activeTab === 'config'" class="tab-content">
@@ -1325,6 +1424,15 @@ export default {
 }
 .tab-content {
   min-height: 200px;
+}
+
+/* 基本信息 Tab */
+.basic-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--color-border);
 }
 
 /* 工具绑定 Tab */

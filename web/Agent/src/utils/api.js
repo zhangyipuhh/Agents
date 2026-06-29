@@ -1114,6 +1114,28 @@ export async function setAdminAgentEnabled(name, enabled) {
 }
 
 /**
+ * 更新智能体基本信息（display_name / description）
+ * @param {string} name - 智能体名称
+ * @param {Object} payload - { display_name, description }
+ * @returns {Promise<Object>} 更新后的记录
+ */
+export async function updateAdminAgent(name, payload) {
+  const response = await fetchWithAuth(
+    `/api/admin/agents/${encodeURIComponent(name)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  )
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `更新智能体信息失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
  * 全量替换 config_schema
  * @param {string} name - 智能体名称
  * @param {Object} configSchema - 三层嵌套字典

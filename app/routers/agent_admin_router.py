@@ -78,6 +78,12 @@ class CreateAgentRequest(BaseModel):
     sort_order: int = 0
 
 
+class UpdateAgentRequest(BaseModel):
+    """更新智能体基本信息请求体。"""
+    display_name: str = Field(..., min_length=1, max_length=200)
+    description: str = Field("", max_length=500)
+
+
 class UpdateConfigSchemaRequest(BaseModel):
     """全量替换 config_schema 请求体。"""
     config_schema: Dict[str, Any]
@@ -323,6 +329,25 @@ async def set_enabled(
     try:
         return await service.set_agent_enabled(name, req.enabled)
     except AgentNotFoundError as e:
+        raise _handle_agent_error(e)
+
+
+@router.put("/{name}")
+async def update_agent(
+    request: Request, name: str, req: UpdateAgentRequest
+) -> Dict[str, Any]:
+    """更新智能体基本信息（display_name / description）。
+
+    异常:
+        HTTPException 404: 智能体不存在
+        HTTPException 400: 参数非法
+    """
+    service = _get_service(request)
+    try:
+        return await service.update_agent_basic_info(
+            name, req.display_name, req.description
+        )
+    except (AgentNotFoundError, ValueError) as e:
         raise _handle_agent_error(e)
 
 

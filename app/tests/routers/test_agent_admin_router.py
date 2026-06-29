@@ -1,4 +1,4 @@
-﻿# -*- coding:utf-8 -*-
+# -*- coding:utf-8 -*-
 """
 Agent Admin Router 测试模块
 
@@ -328,6 +328,104 @@ def test_set_agent_enabled(client, admin_headers):
         json={"enabled": False},
     )
     assert response.status_code == 200
+
+
+def test_update_agent_basic_info_success(client, admin_headers):
+    """PUT /api/admin/agents/{name} 成功更新 display_name 和 description。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 状态码或返回值不符合预期时抛出
+    """
+    from unittest.mock import MagicMock
+
+    async def fake_fetchrow(*args, **kwargs):
+        return {
+            "name": "x", "display_name": "新名称", "description": "新描述",
+            "agents_md_path": "x.md", "state_schema": {}, "context_schema": {},
+            "config_schema": {}, "mcp_tags": [], "tool_bindings": [],
+            "enabled": True,
+        }
+
+    async def fake_fetch(*args, **kwargs):
+        return []
+
+    fake_db = MagicMock()
+    fake_db.fetchrow = fake_fetchrow
+    fake_db.fetch = fake_fetch
+
+    client.app.state.db = fake_db
+    service = client.app.state.agent_config_service
+    service._db = fake_db
+    service._loader.load = MagicMock(return_value="prompt")
+
+    response = client.put(
+        "/api/admin/agents/x",
+        headers=admin_headers,
+        json={"display_name": "新名称", "description": "新描述"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["display_name"] == "新名称"
+    assert data["description"] == "新描述"
+
+
+def test_update_agent_basic_info_not_found_404(client, admin_headers):
+    """PUT /api/admin/agents/{name} agent 不存在返回 404。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 状态码不符合预期时抛出
+    """
+    from unittest.mock import MagicMock
+
+    async def fake_fetchrow(*args, **kwargs):
+        return None
+
+    service = client.app.state.agent_config_service
+    if service._db is None:
+        service._db = MagicMock()
+    service._db.fetchrow = fake_fetchrow
+
+    response = client.put(
+        "/api/admin/agents/nonexistent",
+        headers=admin_headers,
+        json={"display_name": "名称", "description": "描述"},
+    )
+    assert response.status_code == 404
+
+
+def test_update_agent_basic_info_missing_display_name_422(client, admin_headers):
+    """PUT /api/admin/agents/{name} 缺少 display_name 返回 422。
+
+    参数:
+        client: FastAPI TestClient
+        admin_headers: admin 认证头
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 状态码不符合预期时抛出
+    """
+    response = client.put(
+        "/api/admin/agents/x",
+        headers=admin_headers,
+        json={"description": "只有描述"},
+    )
+    assert response.status_code == 422
 
 
 def test_add_field_to_state_fields(client, admin_headers):

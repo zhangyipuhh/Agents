@@ -844,6 +844,39 @@ class AgentConfigService:
             await self._invalidate_cache(agent_name)
         return self._decode_agent_row(dict(row))
 
+    async def update_agent_basic_info(
+        self, agent_name: str, display_name: str, description: str
+    ) -> Dict[str, Any]:
+        """更新智能体基本信息（display_name / description）。
+
+        参数:
+            agent_name: 智能体名称
+            display_name: 新的显示名称
+            description: 新的描述
+
+        返回:
+            Dict[str, Any]: 更新后的记录
+
+        异常:
+            AgentNotFoundError: 智能体不存在时抛出
+        """
+        row = await self._db.fetchrow(
+            """
+            UPDATE agents SET display_name = $2, description = $3,
+                              updated_at = CURRENT_TIMESTAMP
+            WHERE name = $1 RETURNING *
+            """,
+            agent_name, display_name, description,
+        )
+        if not row:
+            raise AgentNotFoundError(f"Agent {agent_name} not found")
+        logger.info(
+            "Updated agent basic info: %s display_name=%s",
+            agent_name, display_name,
+        )
+        await self._refresh_cache(agent_name)
+        return self._decode_agent_row(dict(row))
+
     async def update_agent_config_schema(
         self, agent_name: str, config_schema: Dict[str, Any]
     ) -> Dict[str, Any]:
