@@ -2142,6 +2142,19 @@ app/shared/utils/agent/
 
 合规性审查（Compliance Review）与项目预审（Project Pre-review）工作流 skill，内容来源于 `agents/map_agent/prompts.py::MAP_AGENT_SYSTEM_PROMPT` 第 22-55 行（Workflow / 合规性审查步骤 / Task Examples / Output Requirements）。Workflow 部分描述"合规性审查"四步流程：上下文收集 → explore 验证附件 → ask_user_question 确认 → save_business_info 持久化 → quality_inspection_analysis → generate_report；原文为英文，保留英文原文。
 
+### knowledge_ydt skill
+
+**文件位置**: `app/skills/knowledge_ydt/SKILL.md`（frontmatter `name: knowledge_ydt`）
+
+知识库查询工作流 skill，供 `agents/knowledge_ydt/AGENTS.md` 调用。每次知识库查询前必须先 `load_skill("knowledge_ydt")` 并遵循其流程：
+
+1. **识别意图**：区分事实查询与辅助决策。
+2. **判断附件依赖**：若问题涉及具体项目、合同、条款或约束，先使用 `explore` 从当前 session 上传目录提取关键信息；否则直接基于对话上下文查询。
+3. **调用 `query_knowledge`**：将提取出的附件信息与会话上下文合并，构造详细查询任务。
+4. **返回结果**：事实查询类返回原文；辅助决策类返回决策结论 + 决策依据。
+
+**配套 AGENTS.md**: `agents/knowledge_ydt/AGENTS.md` 已精简为只保留 Task Rules、Agent Capability 和 Tool Priority，强制要求每次知识库查询必须先加载 `knowledge_ydt` skill。
+
 ## AgentConfigService 配置加载服务
 
 从数据库 `agents` 表 + AGENTS.md 文件加载完整 Agent 配置，封装为 `UnifiedAgentConfig` 实例供 `agent_router` 使用。是连接数据库配置和运行时 Agent 的核心服务，整合 `dynamic_schema` + `agents_md_loader` 两个模块的输出。

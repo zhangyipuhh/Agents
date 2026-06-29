@@ -829,7 +829,7 @@ class AgentConfigService:
         import re as _re
         if not _re.match(r"^[a-z0-9_]{3,50}$", config["name"]):
             raise ValueError(
-                "name 必须由小写字母 / 数字 / 下划线组成，长度 3-50 字符"
+                "name 必须由小写字母 / 下划线组成（数字可选），长度 3-50 字符"
             )
 
         # agents_md_path 文件存在性校验
