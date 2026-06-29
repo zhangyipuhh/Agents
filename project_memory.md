@@ -78,6 +78,7 @@ app/
 │   ├── server.py           # FastAPI 应用配置（生命周期、中间件、CORS）
 │   ├── config/settings.py  # 配置管理
 │   ├── database.py         # 数据库连接池
+│   ├── prompts.py          # 通用基类系统提示词（BASE_SYSTEM_PROMPT），已包含时间处理策略：当用户问题涉及时间/日期/相对时间（如“今天”“明天”）时，必须首先调用 get_current_time 工具获取当前时间，再据此判断用户所指时间
 │   ├── concurrency/        # 并发控制模块
 │   │   ├── agent_concurrency_queue.py  # 基于内存的 Agent 聊天并发队列
 │   │   ├── chat_concurrency_dependency.py  # FastAPI 依赖封装
