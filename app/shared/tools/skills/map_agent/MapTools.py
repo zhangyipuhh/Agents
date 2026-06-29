@@ -1519,6 +1519,7 @@ Guidelines:
 - Return file paths as absolute paths in your final response
 - For clear communication, avoid using emojis
 - Do not create any files, or run any commands that modify the user's system state in any way
+- If the caller provides an explicit current date or absolute time range in the prompt, you MUST use that range and MUST NOT infer the current date or year from your internal knowledge
 
 Search the knowledge base thoroughly and report your findings clearly.
 """

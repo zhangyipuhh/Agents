@@ -21,7 +21,12 @@ def test_base_system_prompt_contains_time_handling():
     assert "# Time Handling" in BASE_SYSTEM_PROMPT
     assert "get_current_time" in BASE_SYSTEM_PROMPT
     assert "今天" in BASE_SYSTEM_PROMPT
+    assert "最近N年" in BASE_SYSTEM_PROMPT
+    assert "ABSOLUTE time range" in BASE_SYSTEM_PROMPT
+    assert "query_knowledge" in BASE_SYSTEM_PROMPT
 
+
+def test_base_system_prompt_is_non_empty_string():
     """
     测试 BASE_SYSTEM_PROMPT 为非空字符串。
 
@@ -33,5 +38,4 @@ def test_base_system_prompt_contains_time_handling():
     """
     assert isinstance(BASE_SYSTEM_PROMPT, str)
     assert len(BASE_SYSTEM_PROMPT.strip()) > 0
-
 
