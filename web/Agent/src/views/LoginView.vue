@@ -31,6 +31,17 @@ const loading = ref(false)
 /** @type {import('vue').Ref<string>} 错误提示信息 */
 const errorMessage = ref('')
 
+/** @type {import('vue').Ref<boolean>} 大写锁定状态 */
+const capsLockOn = ref(false)
+
+/**
+ * 检测大写锁定键状态
+ * @param {KeyboardEvent} event - 键盘事件对象
+ */
+function checkCapsLock(event) {
+  capsLockOn.value = event.getModifierState('CapsLock')
+}
+
 /**
  * 组件事件定义
  * @event login-success - 登录成功时触发，参数: { token: string, role: string, username: string }
@@ -166,7 +177,13 @@ onMounted(() => {
             placeholder="请输入密码"
             autocomplete="current-password"
             :disabled="loading"
+            @keydown="checkCapsLock"
+            @keyup="checkCapsLock"
           />
+          <div v-if="capsLockOn" class="caps-lock-hint">
+            <span class="caps-lock-icon">⚠</span>
+            <span>大写锁定已开启</span>
+          </div>
         </div>
 
         <!-- 验证码输入框和图片 -->
@@ -443,6 +460,25 @@ onMounted(() => {
   font-size: var(--font-size-xs);
   color: var(--color-text-muted);
   background-color: var(--color-bg-tertiary);
+}
+
+/* 大写锁定提示 */
+.caps-lock-hint {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-top: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  font-size: var(--font-size-sm);
+  color: #92400E;
+  background-color: #FFFBEB;
+  border-radius: var(--radius-sm);
+  border: 1px solid #FCD34D;
+  line-height: var(--line-height-normal);
+}
+
+.caps-lock-icon {
+  font-size: var(--font-size-base);
 }
 
 /* 错误提示 */

@@ -391,12 +391,12 @@ function discardChanges() {
 
 // === 启用 / 禁用 ===
 
-async function toggleEnabled() {
-  if (!selectedAgent.value) return
-  const newEnabled = !selectedAgent.value.enabled
+async function toggleAgentEnabled(agent) {
+  if (!agent) return
+  const newEnabled = !agent.enabled
   try {
-    const updated = await setAdminAgentEnabled(selectedAgentName.value, newEnabled)
-    selectedAgent.value = { ...selectedAgent.value, ...updated }
+    const updated = await setAdminAgentEnabled(agent.name, newEnabled)
+    agent.enabled = updated.enabled
     await loadAgentList()
   } catch (err) {
     errorMessage.value = err.message || '更新启用状态失败'
@@ -405,8 +405,8 @@ async function toggleEnabled() {
 
 // === 删除智能体 ===
 
-function openDeleteAgentConfirm() {
-  agentToDelete.value = selectedAgent.value
+function openDeleteAgent(agent) {
+  agentToDelete.value = agent
   showAgentDeleteConfirm.value = true
 }
 
@@ -674,10 +674,6 @@ async function onSwitchToToolsTab() {
   try {
     await loadAllTools()
     await loadAgentBindings()
-    // 首次加载工具列表后，默认展开所有分类
-    if (expandedToolGroups.value.size === 0 && groupedTools.value.length > 0) {
-      expandedToolGroups.value = new Set(groupedTools.value.map(g => g.category))
-    }
   } finally {
     isLoadingTools.value = false
   }
@@ -790,6 +786,13 @@ onMounted(async () => {
               <span class="agent-name">{{ agent.name }}</span>
               <span class="agent-order">#{{ agent.sort_order || 0 }}</span>
             </div>
+            <div class="header-actions">
+              <label class="switch-label">
+                <input type="checkbox" :checked="agent.enabled" @change.stop="toggleAgentEnabled(agent)" />
+                <span>{{ agent.enabled ? '已启用' : '已禁用' }}</span>
+              </label>
+              <button class="btn-danger btn-sm" @click.stop="openDeleteAgent(agent)">删除智能体</button>
+            </div>
           </li>
         </ul>
       </aside>
@@ -810,13 +813,6 @@ onMounted(async () => {
                 <span class="separator">·</span>
                 <span>{{ selectedAgent.description || '暂无描述' }}</span>
               </p>
-            </div>
-            <div class="header-actions">
-              <label class="switch-label">
-                <input type="checkbox" :checked="selectedAgent.enabled" @change="toggleEnabled" />
-                <span>{{ selectedAgent.enabled ? '已启用' : '已禁用' }}</span>
-              </label>
-              <button class="btn-danger" @click="openDeleteAgentConfirm">删除智能体</button>
             </div>
           </header>
 
@@ -1168,6 +1164,9 @@ export default {
 }
 
 .agent-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   padding: 10px 14px;
   border-bottom: 1px solid var(--color-border-light);
   cursor: pointer;
@@ -1200,7 +1199,6 @@ export default {
   justify-content: space-between;
   font-size: 11px;
   color: var(--color-text-muted);
-  margin-top: 4px;
 }
 .agent-name {
   font-family: monospace;
@@ -1221,7 +1219,6 @@ export default {
 
 .agent-detail-header {
   display: flex;
-  justify-content: space-between;
   align-items: flex-start;
   padding: 12px 0;
   border-bottom: 1px solid var(--color-border);
@@ -1249,6 +1246,14 @@ export default {
   display: flex;
   gap: 12px;
   align-items: center;
+}
+.agent-item .header-actions {
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+}
+.agent-item .header-actions .switch-label {
+  font-size: 12px;
 }
 .switch-label {
   display: flex;
