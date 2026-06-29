@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, nextTick, computed } from 'vue'
-import { fetchKnowledgeFiles, fetchFilePreview, createNewSession, knowledgeChatStream, validateToken, refreshToken } from './utils/api.js'
+import { fetchKnowledgeFiles, fetchFilePreview, createNewSession, chatStream, validateToken, refreshToken } from './utils/api.js'
 import { createAiMessage, processSSEEvent } from './utils/sseParser.js'
 import { redirectToLogin } from './utils/auth.js'
 import FileList from './components/FileList.vue'
@@ -291,7 +291,7 @@ async function startChatStream(message, uploadedFiles, aiMsg, resumeData = null)
   let interrupted = false
   currentStreamReader = null
   try {
-    const stream = await knowledgeChatStream(currentSessionId.value, message, uploadedFiles, resumeData)
+    const stream = await chatStream(currentSessionId.value, message, uploadedFiles, resumeData, 'knowledge_ydt')
     currentStreamReader = stream.getReader()
     // 2026-06-22 修复：拿到 reader 后再置位 isStreaming，避免排队/握手阶段状态长期悬空无法复位
     isStreaming.value = true

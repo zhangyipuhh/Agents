@@ -736,7 +736,7 @@ MCP 服务器方法列表表，用于运行时方法管理。
 | ├ GET /knowledge/files             |                        | 获取知识库文件元数据（自动扫描 Knowledge 目录）                                                                                                                                       |
 | ├ GET /knowledge/file-download     |                        | 下载知识库文件                                                                                                                                                                        |
 | ├ GET /knowledge/file-preview      |                        | 知识库文件预览（支持 .doc 自动转 .docx）                                                                                                                                              |
-| ├ POST /knowledge-chat             |                        | 地图智能体知识库聊天（SSE，使用知识库系统提示词，受 `chat_concurrency_dependency` 并发控制）                                                                                        |
+| ├ POST /knowledge-chat             |                        | ~~地图智能体知识库聊天~~（2026-06-29 起，知识库页面 `/knowledge.html` 已切换至 `/api/agent/chat` 并固定使用 `agent_name=knowledge_ydt`，本端点保留但前端不再调用）                                                                                        |
 | /api/ai-coding-check                | ai_coding_check_router | AI 代码检查 Agent                                                                                                                                                                     |
 | ├ POST /review                     |                        | 评审开发者数据（非流式 JSON API）                                                                                                                                                     |
 | /mcp                                | mcp_router             | MCP 服务器工具调用                                                                                                                                                                    |
@@ -1559,7 +1559,7 @@ SandboxDrawer 时间线包含 `code_generation` 事件（显示 LLM 生成的代
 - **知识库**：`KnowledgeChat.vue`、`ProfileInputBox.vue`
 - **公共**：`Sidebar.vue`、`HelloWorld.vue`、`UserSettingsDialog.vue`
 - **Admin 管理**：
-  - `UserSettingsDialog.vue`：admin 角色可访问的「用户设置与管理」对话框；包含 7 个 Tab —— `profile`（个人设置）/ `user-management`（用户管理）/ `online-monitor`（在线监控）/ `session-query`（会话查询）/ `mcp-management`（MCP 管理，调用 `McpServerManager.vue`）/ `agent-management`（智能体管理，调用 `AgentManager.vue`）/ `tool-management`（工具管理，调用 `ToolManager.vue`）
+  - `UserSettingsDialog.vue`：admin 角色可访问的「用户设置与管理」对话框；包含 7 个 Tab —— `profile`（个人设置）/ `user-management`（用户管理）/ `online-monitor`（在线监控）/ `session-query`（会话查询）/ `agent-management`（智能体管理，调用 `AgentManager.vue`）/ `mcp-management`（MCP 管理，调用 `McpServerManager.vue`）/ `tool-management`（工具管理，调用 `ToolManager.vue`）
   - `McpServerManager.vue`：MCP server CRUD + 方法列表 + 启禁用切换（前后端）
   - `AgentManager.vue`：智能体管理 Tab 内容；左侧智能体列表 + 右侧 Tab 结构（「基本信息」Tab + 「配置字段」Tab + 「工具绑定」Tab）；支持完整 CRUD：
     - **新增智能体**：弹窗表单（8 字段）+ 内嵌 config_schema 编辑器；调用 `fetchAgentConfigFieldTemplates` 获取字段模板做下拉选择
