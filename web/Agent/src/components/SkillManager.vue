@@ -568,12 +568,14 @@ async function submitEdit() {
       enabled: editForm.value.enabled,
     }
     const result = await updateSkill(selectedSkill.value.name, payload)
+    console.log('[submitEdit] result:', result)
     // 同步刷新本地列表与当前选中项
     const idx = skills.value.findIndex(s => s.name === result.name)
     if (idx >= 0) {
       skills.value[idx] = { ...skills.value[idx], ...result }
     }
     selectedSkill.value = skills.value[idx] || null
+    console.log('[submitEdit] selectedSkill after merge:', selectedSkill.value)
   } catch (err) {
     editError.value = err.message || '保存失败'
   } finally {

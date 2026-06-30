@@ -380,8 +380,20 @@ class SkillRegistryService:
         if not existing:
             raise SkillNotFoundError(f"Skill '{name}' not found")
 
-        merged = dict(existing)
+        logger.info("[update_skill] name=%s, config=%s", name, config)
+        existing_dict = dict(existing)
+        logger.info("[update_skill] existing_dict=%s", existing_dict)
+        for key in ("description", "location", "base_dir", "content"):
+            if key not in existing_dict:
+                logger.warning("[update_skill] existing missing key: %s", key)
+            elif existing_dict[key] is None:
+                logger.warning("[update_skill] existing key %s is None", key)
+            elif existing_dict[key] == "":
+                logger.warning("[update_skill] existing key %s is empty string", key)
+
+        merged = dict(existing_dict)
         merged.update(config)
+        logger.info("[update_skill] merged=%s", merged)
 
         row = await self._db.fetchrow(
             """
@@ -409,6 +421,7 @@ class SkillRegistryService:
             merged.get("sort_order", 0),
         )
         result = self._decode_row(row)
+        logger.info("[update_skill] result=%s", result)
 
         await self._refresh_cache(name)
         logger.info("Updated skill: %s", name)
