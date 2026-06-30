@@ -21,6 +21,7 @@ from langgraph.types import Command
 from app.core.agent.AgentContext import AgentContext
 from app.core.skills.schemas import SkillInfo
 from app.core.skills.service import SkillNotFoundError, SkillsService
+from app.shared.utils.agent.skill_service import SkillRegistryService, get_project_root
 
 
 # 单文件大小上限：1 MB。超出则拒绝，避免上下文爆炸。
@@ -74,7 +75,7 @@ def load_skill(name: str,runtime: ToolRuntime[AgentContext],) -> Command:
             }
         )
 
-    base_dir = Path(info.base_dir)
+    base_dir = SkillRegistryService._to_absolute(info.base_dir, get_project_root())
     files = sorted(
         p for p in base_dir.iterdir()
         if p.is_file() and p.name != "SKILL.md"
@@ -231,7 +232,7 @@ def _resolve_skill_root(skills: list[SkillInfo], path: Path) -> Optional[str]:
     """
     for info in skills:
         try:
-            root = Path(info.base_dir).resolve()
+            root = SkillRegistryService._to_absolute(info.base_dir, get_project_root())
         except OSError:
             continue
         try:

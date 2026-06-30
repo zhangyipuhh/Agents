@@ -38,8 +38,24 @@ from app.core.skills.loader import SkillDiscovery
 logger = logging.getLogger(__name__)
 
 # 项目根目录：skill_service.py 位于 app/shared/utils/agent/skill_service.py，
-# 向上 4 级 parents[4] 到达项目根目录
-_PROJECT_ROOT = Path(__file__).resolve().parents[4]
+# 向上 4 级 parents[4] 到达项目根目录。
+# 通过 get_project_root() 惰性求值，避免 import 期在打包/单测场景下出错。
+_PROJECT_ROOT: Optional[Path] = None
+
+
+def get_project_root() -> Path:
+    """获取项目根目录绝对路径（惰性求值）。
+
+    skill_service.py 位于 app/shared/utils/agent/skill_service.py，
+    向上 4 级 parents[4] 到达项目根目录。第一次调用时计算并缓存。
+
+    返回:
+        Path: 项目根目录绝对路径
+    """
+    global _PROJECT_ROOT
+    if _PROJECT_ROOT is None:
+        _PROJECT_ROOT = Path(__file__).resolve().parents[4]
+    return _PROJECT_ROOT
 
 
 @dataclass
@@ -192,6 +208,57 @@ class SkillRegistryService:
         return self._cache_lock
 
     # ==================== 路径解析 ====================
+
+    @staticmethod
+    def _to_relative(path: Path, project_root: Path) -> str:
+        """把绝对路径转换为相对 project_root 的 POSIX 字符串。
+
+        实现：用 Path.resolve().relative_to() + as_posix()。失败时
+        降级返回原绝对路径的 POSIX 字符串（路径不在 project_root 下、
+        跨盘符、外部用户扩展路径等场景）。
+
+        参数:
+            path: 待归一化的绝对路径
+            project_root: 项目根目录
+
+        返回:
+            str: POSIX 风格相对路径字符串（Windows/Linux 通用）
+        """
+        try:
+            return path.resolve().relative_to(project_root.resolve()).as_posix()
+        except ValueError:
+            # 路径不在 project_root 下，常见场景：
+            #   1) 用户扩展路径（settings.skills.paths）指向项目外
+            #   2) Windows 跨盘符
+            # 降级返回绝对路径的 POSIX 形式，保留信息但兼容性未知
+            logger.debug(
+                "skill path %s not under project_root %s, fallback to absolute",
+                path, project_root,
+            )
+            return path.resolve().as_posix()
+
+    @staticmethod
+    def _to_absolute(path_or_rel: str, project_root: Path) -> Path:
+        """把字符串解析为绝对 Path。
+
+        规则：
+        - 已绝对（Windows: 盘符/UNC；Unix: /开头）：原样 resolve
+        - 相对：与 project_root 拼接后 resolve
+        - 空字符串：返回 project_root（防御性，避免 iterdir() 抛错）
+
+        参数:
+            path_or_rel: 待解析的路径字符串（POSIX 相对路径或绝对路径）
+            project_root: 项目根目录（相对路径的拼接基准）
+
+        返回:
+            Path: 绝对路径
+        """
+        if not path_or_rel:
+            return project_root
+        p = Path(path_or_rel)
+        if not p.is_absolute():
+            p = project_root / p
+        return p.resolve()
 
     @staticmethod
     def _resolve_skill_paths(
@@ -486,6 +553,9 @@ class SkillRegistryService:
         settings.skills.to_skills_config().paths 配置的用户扩展路径，与 DB 已注册
         skill 名对比，返回未注册的 skill 信息。
 
+        location / base_dir 字段统一转换为相对项目根的 POSIX 路径字符串，
+        保证 Windows/Linux 兼容。
+
         参数:
             无
 
@@ -493,8 +563,8 @@ class SkillRegistryService:
             List[Dict[str, Any]]: 未注册 skill 列表，每项包含:
                 - name (str): skill 名称
                 - description (str | None): skill 描述
-                - location (str): SKILL.md 绝对路径
-                - base_dir (str): SKILL.md 所在目录绝对路径
+                - location (str): SKILL.md 相对项目根的 POSIX 路径
+                - base_dir (str): SKILL.md 所在目录相对项目根的 POSIX 路径
 
         异常:
             不主动抛出异常；扫描失败时记录 warning 并继续
@@ -503,10 +573,11 @@ class SkillRegistryService:
         registered_names = {s["name"] for s in registered_skills}
 
         skills_config = settings.skills.to_skills_config()
-        extra_paths = self._resolve_skill_paths(_PROJECT_ROOT, skills_config.paths)
+        project_root = get_project_root()
+        extra_paths = self._resolve_skill_paths(project_root, skills_config.paths)
 
         discovery = SkillDiscovery()
-        discovered = discovery.scan(_PROJECT_ROOT, extra_paths)
+        discovered = discovery.scan(project_root, extra_paths)
 
         results: List[Dict[str, Any]] = []
         for info in discovered.values():
@@ -514,8 +585,8 @@ class SkillRegistryService:
                 results.append({
                     "name": info.name,
                     "description": info.description,
-                    "location": info.location,
-                    "base_dir": info.base_dir,
+                    "location": self._to_relative(Path(info.location), project_root),
+                    "base_dir": self._to_relative(Path(info.base_dir), project_root),
                 })
 
         logger.info("Scan found %d unregistered skills", len(results))

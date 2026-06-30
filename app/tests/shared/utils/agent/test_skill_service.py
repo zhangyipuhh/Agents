@@ -5,16 +5,18 @@ SkillRegistryService 测试模块
 验证 skill 注册中心服务的核心功能：
 1. 可导入性与基本存在性
 2. 写方法写 DB 后同步刷新缓存（update_skill）
+3. 路径归一化工具方法（_to_relative / _to_absolute / get_project_root）
 """
 import asyncio
 import pytest
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 from app.shared.utils.agent.skill_service import (
     SkillRegistryService,
     SkillRow,
     SkillNotFoundError,
-    _PROJECT_ROOT,
+    get_project_root,
 )
 
 
@@ -25,6 +27,9 @@ def test_skill_service_importable():
     assert hasattr(skill_service, "SkillRow")
     assert hasattr(skill_service, "SkillNotFoundError")
     assert hasattr(skill_service, "SkillAlreadyExistsError")
+    assert hasattr(skill_service, "get_project_root")
+    assert hasattr(SkillRegistryService, "_to_relative")
+    assert hasattr(SkillRegistryService, "_to_absolute")
 
 
 def test_skill_row_dataclass_has_all_fields():
@@ -34,8 +39,8 @@ def test_skill_row_dataclass_has_all_fields():
         display_name="数据 Skill",
         category="data",
         description="测试描述",
-        location="/tmp/app/skills/data-skill/SKILL.md",
-        base_dir="/tmp/app/skills/data-skill",
+        location="app/skills/data-skill/SKILL.md",
+        base_dir="app/skills/data-skill",
         content="# 正文",
         enabled=True,
         sort_order=1,
@@ -46,10 +51,52 @@ def test_skill_row_dataclass_has_all_fields():
 
 
 def test_project_root_points_to_repo_root():
-    """测试 _PROJECT_ROOT 指向仓库根目录。"""
-    from pathlib import Path
-    assert isinstance(_PROJECT_ROOT, Path)
-    assert (_PROJECT_ROOT / "app" / "core" / "skills").exists()
+    """测试 get_project_root() 指向仓库根目录。"""
+    root = get_project_root()
+    assert isinstance(root, Path)
+    assert (root / "app" / "core" / "skills").exists()
+
+
+# ==================== 路径归一化工具方法测试 ====================
+
+
+def test_to_relative_under_project_root(tmp_path: Path):
+    """路径在 project_root 下时返回 POSIX 形式相对路径（无反斜杠）。"""
+    target = (tmp_path / "app" / "skills" / "x" / "SKILL.md").resolve()
+
+    rel = SkillRegistryService._to_relative(target, tmp_path)
+
+    assert rel == "app/skills/x/SKILL.md"
+    assert "\\" not in rel
+
+
+def test_to_relative_fallback_outside_project_root(tmp_path: Path):
+    """路径不在 project_root 下时降级返回原绝对路径的 POSIX 形式。
+
+    使用与 tmp_path 同级的 sibling 目录，确保目标路径不在 project_root 子树下。
+    """
+    sibling = tmp_path.parent / "sibling_dir_for_fallback_test_svc"
+    sibling.mkdir(exist_ok=True)
+    other = sibling / "SKILL.md"
+
+    rel = SkillRegistryService._to_relative(other, tmp_path)
+
+    assert rel == other.resolve().as_posix()
+
+
+def test_to_absolute_relative_path(tmp_path: Path):
+    """相对路径字符串与 project_root 拼接后返回绝对路径。"""
+    abs_path = SkillRegistryService._to_absolute("app/skills/x/SKILL.md", tmp_path)
+
+    assert abs_path.is_absolute()
+    assert abs_path == (tmp_path / "app" / "skills" / "x" / "SKILL.md").resolve()
+
+
+def test_to_absolute_empty_string_returns_project_root(tmp_path: Path):
+    """空字符串降级返回 project_root（防御性，避免 iterdir 抛错）。"""
+    abs_path = SkillRegistryService._to_absolute("", tmp_path)
+
+    assert abs_path == tmp_path.resolve()
 
 
 # ==================== 写方法测试（写 DB + 同步缓存） ====================

@@ -500,10 +500,9 @@ class AgentConfigService:
         2. 通过 AgentsMdLoader 加载 AGENTS.md 内容作为 system_prompt
         3. 解析 config_schema（三层嵌套），回退到旧 state_schema + context_schema
         4. 通过 dynamic_schema 构建 state_class / context_class
-        5. 从 agent_tool_bindings 加载启用的工具名称列表
+5. 从 agent_tool_bindings 加载启用的工具名称列表
         6. 从 agents.skill_bindings（JSONB 缓存）加载启用的 skill 名称列表
-           （skill_bindings 在 agent 写入绑定时由 agent_config_service.update_skill_bindings 同步维护，
-           避免每次加载都联表查 agent_skill_bindings）
+           （skill_bindings 在 agent 写入绑定时由 agent_config_service.update_skill_bindings 同步维护）
 
         参数:
             agent_name: 智能体名称，为空（None / ''）时返回框架默认配置
@@ -943,9 +942,6 @@ class AgentConfigService:
             "DELETE FROM agent_tool_bindings WHERE agent_name = $1", agent_name,
         )
         await self._db.execute(
-            "DELETE FROM agent_skill_bindings WHERE agent_name = $1", agent_name,
-        )
-        await self._db.execute(
             "DELETE FROM agents WHERE name = $1", agent_name,
         )
         # 写 DB 后使缓存失效
@@ -1243,7 +1239,7 @@ class AgentConfigService:
 
         .. deprecated::
             该方法已废弃，请使用 ``update_skill_bindings`` 全量替换接口。
-            旧接口逐条写入 ``agent_skill_bindings`` 表的方式已被
+            旧接口逐条写入 skill 绑定表的方式已被
             ``agents.skill_bindings`` JSONB 字段取代，调用本方法不再修改
             任何数据库记录，仅保留日志警告以提示迁移。
 

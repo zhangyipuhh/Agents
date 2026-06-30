@@ -523,18 +523,21 @@ def test_create_agent_duplicate_name_raises(tmp_path):
 
 
 def test_delete_agent_cascades_bindings():
-    """测试 delete_agent 级联清理工具和技能绑定。"""
+    """测试 delete_agent 级联清理工具绑定。
+
+    注：2026-06-30 起 skill 绑定迁移至 agents.skill_bindings JSONB 字段，
+    不再需要独立的 agent_skill_bindings 表，级联 SQL 减少为 2 次。
+    """
     db = MagicMock()
     db.fetchrow = AsyncMock(return_value={"name": "to_delete"})
     db.execute = AsyncMock()
     service = AgentConfigService(db, MagicMock())
     asyncio.run(service.delete_agent("to_delete"))
-    # 验证 execute 被调用 3 次（tool_bindings / skill_bindings / agents）
-    assert db.execute.await_count == 3
-    # 检查 SQL 含三类表名
+    # 验证 execute 被调用 2 次（tool_bindings / agents）
+    assert db.execute.await_count == 2
+    # 检查 SQL 含两类表名
     all_sqls = " ".join(call.args[0] for call in db.execute.await_args_list)
     assert "agent_tool_bindings" in all_sqls
-    assert "agent_skill_bindings" in all_sqls
     assert "DELETE FROM agents" in all_sqls
 
 

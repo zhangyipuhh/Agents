@@ -53,9 +53,10 @@ def test_scan_finds_skill_md_files(tmp_path: Path):
     info = skills["a"]
     assert info.name == "a"
     assert info.description == "first skill"
-    assert info.location == str((tmp_path / "app" / "skills" / "a" / "SKILL.md").resolve())
+    # location / base_dir 应为相对 project_root 的 POSIX 路径（Windows/Linux 通用）
+    assert info.location == "app/skills/a/SKILL.md"
+    assert info.base_dir == "app/skills/a"
     assert info.content == "skill body\n"
-    assert info.base_dir == str((tmp_path / "app" / "skills" / "a").resolve())
 
 
 def test_scan_finds_multiple_roots(tmp_path: Path):
@@ -133,7 +134,7 @@ def test_scan_later_overrides_earlier(tmp_path: Path, caplog):
         None
     """
     _write_skill(tmp_path / "app" / "skills" / "a", "a", description="first", body="first body\n")
-    later_md = _write_skill(
+    _write_skill(
         tmp_path / ".agents" / "skills" / "a",
         "a",
         description="second",
@@ -145,7 +146,8 @@ def test_scan_later_overrides_earlier(tmp_path: Path, caplog):
 
     assert skills["a"].description == "second"
     assert skills["a"].content == "second body\n"
-    assert skills["a"].location == str(later_md.resolve())
+    # 后扫描的 .agents/skills 版本覆盖前者，location 是相对路径
+    assert skills["a"].location == ".agents/skills/a/SKILL.md"
     assert any("duplicate skill name 'a'" in record.message for record in caplog.records)
 
 
@@ -199,3 +201,48 @@ def test_scan_returns_empty_for_no_skills(tmp_path: Path):
     skills = SkillDiscovery().scan(tmp_path, [])
 
     assert skills == {}
+
+
+def test_to_relative_under_project_root(tmp_path: Path):
+    """
+    _to_relative：路径在 project_root 下时返回 POSIX 形式相对路径。
+
+    Args:
+        tmp_path: pytest 提供的临时目录，作为 project_root。
+
+    Returns:
+        None
+    """
+    _write_skill(tmp_path / "app" / "skills" / "x", "x")
+    target = (tmp_path / "app" / "skills" / "x" / "SKILL.md").resolve()
+
+    rel = SkillDiscovery._to_relative(target, tmp_path)
+
+    # 跨平台统一为 POSIX 形式（正斜杠）
+    assert rel == "app/skills/x/SKILL.md"
+    assert "\\" not in rel
+
+
+def test_to_relative_fallback_outside_project_root(tmp_path: Path):
+    """
+    _to_relative：路径不在 project_root 下时降级返回原绝对路径的 POSIX 形式。
+
+    构造一个兄弟目录的路径（与 tmp_path 共享父目录），保证目标路径不在
+    project_root 子树下。
+
+    Args:
+        tmp_path: pytest 提供的临时目录。
+
+    Returns:
+        None
+    """
+    # sibling 目录：与 tmp_path 同级，路径不在 tmp_path 子树下
+    sibling = tmp_path.parent / "sibling_dir_for_fallback_test"
+    sibling.mkdir(exist_ok=True)
+    target = sibling / "SKILL.md"
+
+    rel = SkillDiscovery._to_relative(target, tmp_path)
+
+    assert rel == target.resolve().as_posix()
+    # 验证返回的是绝对路径（POSIX 形式含盘符）
+    assert ":\\" in str(target) or rel.startswith("/")

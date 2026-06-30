@@ -957,3 +957,53 @@ def test_load_skill_works_when_state_is_missing():
     mock_runtime_set = MagicMock()
     mock_runtime_set.state = {"agent_name": "map_agent"}
     assert _get_agent_name(mock_runtime_set) == "map_agent"
+
+
+# ---------------------------------------------------------------------------
+# 2026-06-30 base_dir 相对路径兼容：load_skill 应能解析 POSIX 相对路径
+# ---------------------------------------------------------------------------
+
+
+def test_load_skill_resolves_relative_base_dir(monkeypatch, tmp_path: Path):
+    """
+    SkillInfo.base_dir 为相对项目根的 POSIX 路径时，load_skill 应能
+    通过 SkillRegistryService._to_absolute() 还原为绝对路径并 iterdir()。
+
+    模拟 DB 中已存的 `app/skills/alpha` 格式相对路径。
+
+    Args:
+        monkeypatch: pytest monkeypatch fixture。
+        tmp_path: pytest 提供的临时目录，模拟项目根。
+
+    Returns:
+        None
+    """
+    # 在 tmp_path/app/skills/alpha/ 下创建 SKILL.md + 一个附属文件
+    base_dir = tmp_path / "app" / "skills" / "alpha"
+    base_dir.mkdir(parents=True)
+    (base_dir / "SKILL.md").write_text("---\nname: alpha\n---\nbody", encoding="utf-8")
+    (base_dir / "script.py").write_text("# script", encoding="utf-8")
+
+    # 把 get_project_root monkeypatch 为 tmp_path
+    import app.core.tools.SkillTools as tools_module
+    monkeypatch.setattr(tools_module, "get_project_root", lambda: tmp_path)
+
+    info = SkillInfo(
+        name="alpha",
+        description="Alpha skill",
+        location="app/skills/alpha/SKILL.md",  # POSIX 相对路径
+        content="body",
+        base_dir="app/skills/alpha",  # POSIX 相对路径
+    )
+    service = _make_service_mock(info)
+    monkeypatch.setattr(tools_module.SkillsService, "get_instance", lambda: service)
+
+    from app.core.tools.SkillTools import load_skill
+
+    result = load_skill.invoke({"name": "alpha"})
+
+    assert isinstance(result, Command)
+    content = _unwrap(result)
+    assert "<skill_content name=\"alpha\">" in content
+    assert content.count("<file>") == 1
+    assert "script.py" in content

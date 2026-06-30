@@ -88,10 +88,10 @@ class SkillsService:
                 # agent skills 完全覆盖默认根（仅扫描 agent_dir，不追加 DEFAULT_ROOTS）
                 discovery = SkillDiscovery()
                 skills: dict[str, SkillInfo] = {}
-                discovery._scan_dir(agent_skills_dir, skills)
+                discovery._scan_dir(agent_skills_dir, self.project_root, skills)
                 for p in extra:
                     if p.exists():
-                        discovery._scan_dir(p, skills)
+                        discovery._scan_dir(p, self.project_root, skills)
                 return skills
         extra = [self._resolve(p) for p in self.config.paths]
         return SkillDiscovery().scan(self.project_root, extra)

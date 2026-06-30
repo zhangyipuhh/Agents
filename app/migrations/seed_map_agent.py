@@ -3,7 +3,7 @@
 """
 map_agent 数据库种子脚本
 
-向 agents / agent_tool_bindings / agent_skill_bindings 表写入 map_agent 的初始配置。
+向 agents / agent_tool_bindings 表写入 map_agent 的初始配置。
 幂等：重复执行会 UPDATE 已存在的记录。
 
 执行方式：
@@ -152,20 +152,6 @@ async def seed_map_agent(db: Any) -> None:
             idx,
         )
     logger.info("map_agent 工具绑定已写入 %d 条", len(MAP_AGENT_TOOLS))
-
-    # 3. 写入 skill 绑定（幂等）
-    for idx, skill_name in enumerate(MAP_AGENT_SKILLS):
-        await db.execute(
-            """
-            INSERT INTO agent_skill_bindings (agent_name, skill_name, is_enabled, sort_order)
-            VALUES ($1, $2, TRUE, $3)
-            ON CONFLICT (agent_name, skill_name) DO UPDATE SET is_enabled = TRUE, sort_order = $3
-            """,
-            "map_agent",
-            skill_name,
-            idx,
-        )
-    logger.info("map_agent skill 绑定已写入 %d 条", len(MAP_AGENT_SKILLS))
 
 
 async def main() -> None:

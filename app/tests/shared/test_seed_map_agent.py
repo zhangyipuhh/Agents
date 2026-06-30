@@ -2,7 +2,7 @@
 """
 map_agent 数据库种子脚本测试模块
 
-验证 seed_map_agent 脚本能向 agents / agent_tool_bindings / agent_skill_bindings
+验证 seed_map_agent 脚本能向 agents / agent_tool_bindings
 表写入 map_agent 的初始配置，且重复执行幂等。
 """
 import asyncio
@@ -33,7 +33,6 @@ def test_seed_map_agent_inserts_rows():
     inserted = []
     updated = []
     tool_bindings_inserted = []
-    skill_bindings_inserted = []
 
     class FakeDB:
         """模拟 asyncpg.Connection，记录 INSERT/UPDATE 调用。"""
@@ -54,8 +53,6 @@ def test_seed_map_agent_inserts_rows():
                 inserted.append(args)
             elif "INSERT" in sql and "agent_tool_bindings" in sql:
                 tool_bindings_inserted.append(args)
-            elif "INSERT" in sql and "agent_skill_bindings" in sql:
-                skill_bindings_inserted.append(args)
             elif "UPDATE" in sql:
                 updated.append(args)
             return "OK"
@@ -71,7 +68,6 @@ def test_seed_map_agent_inserts_rows():
     assert len(inserted) == 1
     assert inserted[0][0] == "map_agent"  # name 参数
     assert len(tool_bindings_inserted) == 9  # MAP_AGENT_TOOLS 有 9 个工具
-    assert len(skill_bindings_inserted) == 1  # MAP_AGENT_SKILLS 有 1 个 skill
 
 
 def test_seed_map_agent_idempotent():

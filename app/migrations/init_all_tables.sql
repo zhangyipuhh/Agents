@@ -233,18 +233,7 @@ CREATE TABLE IF NOT EXISTS agent_tool_bindings (
     UNIQUE(agent_name, tool_name)
 );
 
--- 12. agent_skill_bindings 表：智能体-skill 绑定
-CREATE TABLE IF NOT EXISTS agent_skill_bindings (
-    id SERIAL PRIMARY KEY,
-    agent_name VARCHAR(100) NOT NULL,
-    skill_name VARCHAR(100) NOT NULL,
-    is_enabled BOOLEAN DEFAULT TRUE,
-    sort_order INT DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(agent_name, skill_name)
-);
-
--- 13. mcp_server_configs 表：MCP 服务器配置
+-- 12. mcp_server_configs 表：MCP 服务器配置
 CREATE TABLE IF NOT EXISTS mcp_server_configs (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) UNIQUE NOT NULL,
@@ -868,8 +857,8 @@ VALUES (
     'bdc_query',
     '',
     '',
-    'E:\laboratory\AI\Agents\feature-agent-core-ref\app\skills\bdc_query\SKILL.md',
-    'E:\laboratory\AI\Agents\feature-agent-core-ref\app\skills\bdc_query',
+    'app/skills/bdc_query/SKILL.md',
+    'app/skills/bdc_query',
     $SKILL_BDC_QUERY_BODY$
 
     $SKILL_BDC_QUERY_BODY$,
@@ -884,8 +873,8 @@ VALUES (
     'hgsc',
     '',
     '合规性审查（Compliance Review）与项目预审（Project Pre-review）工作流，包括业务信息收集、保存、质量检测分析、报告生成。',
-    'E:\laboratory\AI\Agents\feature-agent-core-ref\app\skills\hgsc\SKILL.md',
-    'E:\laboratory\AI\Agents\feature-agent-core-ref\app\skills\hgsc',
+    'app/skills/hgsc/SKILL.md',
+    'app/skills/hgsc',
     $SKILL_HGSC_BODY$
 ## Workflow
 When handling compliance review or approval-related requests, you act as a **Compliance Reviewer**. You must strictly follow the steps and requirements defined in this prompt. Do NOT request any files, materials, or information from the user that are not explicitly required by the Workflow below. For questions unrelated to compliance review, respond normally.
@@ -933,8 +922,8 @@ VALUES (
     'knowledge_ydt',
     '',
     'Use when the user asks a question that requires querying the knowledge base, especially when attachments or uploaded files may contain constraints, clauses, or query content.',
-    'E:\laboratory\AI\Agents\feature-agent-core-ref\app\skills\knowledge_ydt\SKILL.md',
-    'E:\laboratory\AI\Agents\feature-agent-core-ref\app\skills\knowledge_ydt',
+    'app/skills/knowledge_ydt/SKILL.md',
+    'app/skills/knowledge_ydt',
     $SKILL_KNOWLEDGE_YDT_BODY$
 # 知识库查询工作流
 
@@ -1011,6 +1000,34 @@ VALUES (
 )
 ON CONFLICT (name) DO NOTHING;
 
+-- ============================================================
+-- 2026-06-30 skill location/base_dir 改为相对项目根的 POSIX 路径
+-- 历史数据迁移：把已存在的 Windows 绝对路径转换为相对路径（POSIX 形式）
+-- 幂等：WHERE 限定只更新仍为绝对路径的行，避免覆盖已迁移的相对路径数据
+-- 触发条件：location LIKE '%\\%' 表示当前是 Windows 风格路径（含反斜杠）
+-- ============================================================
+
+UPDATE skills
+SET location = 'app/skills/bdc_query/SKILL.md',
+    base_dir = 'app/skills/bdc_query',
+    updated_at = CURRENT_TIMESTAMP
+WHERE name = 'bdc_query'
+  AND location LIKE '%\%';
+
+UPDATE skills
+SET location = 'app/skills/hgsc/SKILL.md',
+    base_dir = 'app/skills/hgsc',
+    updated_at = CURRENT_TIMESTAMP
+WHERE name = 'hgsc'
+  AND location LIKE '%\%';
+
+UPDATE skills
+SET location = 'app/skills/knowledge_ydt/SKILL.md',
+    base_dir = 'app/skills/knowledge_ydt',
+    updated_at = CURRENT_TIMESTAMP
+WHERE name = 'knowledge_ydt'
+  AND location LIKE '%\%';
+
 COMMIT;
 
 -- =============================================
@@ -1023,7 +1040,7 @@ WHERE table_schema = 'public'
     'users', 'sessions', 'conversation_records', 'attachments',
     'refresh_tokens', 'audit_logs', 'portal_refresh_tokens',
     'map_business_info', 'map_business_no_counter',
-    'agents', 'agent_tool_bindings', 'agent_skill_bindings',
+    'agents', 'agent_tool_bindings',
     'mcp_server_configs', 'mcp_server_methods',
     'tools', 'skills'
   )

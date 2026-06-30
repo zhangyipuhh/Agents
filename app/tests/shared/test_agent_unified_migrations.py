@@ -37,13 +37,6 @@ def test_agent_tool_bindings_table_exists():
     assert "UNIQUE(agent_name, tool_name)" in sql
 
 
-def test_agent_skill_bindings_table_exists():
-    """测试迁移脚本包含 agent_skill_bindings 表。"""
-    sql = _read_migration_sql()
-    assert "CREATE TABLE IF NOT EXISTS agent_skill_bindings" in sql
-    assert "UNIQUE(agent_name, skill_name)" in sql
-
-
 def test_mcp_server_configs_table_exists():
     """测试迁移脚本包含 mcp_server_configs 表。
 
