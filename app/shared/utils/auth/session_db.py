@@ -60,6 +60,11 @@ async def init_session_schema():
     await DatabasePool.execute("""
         ALTER TABLE sessions ADD COLUMN IF NOT EXISTS agent_display_name VARCHAR(200) DEFAULT ''
     """)
+    # 2026-06-30 新增：会话关联的项目 ID（NULL = 不使用文件夹）
+    #   * 引用 projects.id；ON DELETE SET NULL：项目被删除时会话自动解绑
+    await DatabasePool.execute("""
+        ALTER TABLE sessions ADD COLUMN IF NOT EXISTS project_id INTEGER
+    """)
 
     # sessions 表索引
     await DatabasePool.execute("""
@@ -170,7 +175,7 @@ class SessionDB:
             return
 
         rows = await DatabasePool.fetch(
-            "SELECT session_id, user_id, username, created_at, title, last_active_at, status, agent_type, agent_display_name FROM sessions"
+            "SELECT session_id, user_id, username, created_at, title, last_active_at, status, agent_type, agent_display_name, project_id FROM sessions"
         )
         with cls._lock:
             for row in rows:
@@ -183,11 +188,12 @@ class SessionDB:
                     'status': row.get('status', 'active'),
                     'agent_type': row.get('agent_type', 'default'),
                     'agent_display_name': row.get('agent_display_name', ''),
+                    'project_id': row.get('project_id'),
                 }
         cls._initialized = True
 
     @classmethod
-    async def add_session(cls, session_id: str, user_id: int, username: str):
+    async def add_session(cls, session_id: str, user_id: int, username: str, project_id: int = None):
         """
         添加 Session（双向写入）
 
@@ -195,9 +201,10 @@ class SessionDB:
             session_id: 会话 ID
             user_id: 用户 ID
             username: 用户名
+            project_id: 关联的项目 ID（None = 不使用文件夹 / 旧会话）
         """
         now = datetime.now()
-        print(f"[诊断-SessionDB] add_session: session_id={session_id}, user_id={user_id}, username={username}")
+        print(f"[诊断-SessionDB] add_session: session_id={session_id}, user_id={user_id}, username={username}, project_id={project_id}")
 
         # 写入内存
         with cls._lock:
@@ -210,6 +217,7 @@ class SessionDB:
                 'status': 'active',
                 'agent_type': 'default',
                 'agent_display_name': '',
+                'project_id': project_id,
             }
             #print(f"[诊断-SessionDB] 已写入内存, _memory_cache keys={list(cls._memory_cache.keys())}")
 
@@ -217,8 +225,8 @@ class SessionDB:
         if cls.is_enabled():
             await DatabasePool.execute(
                 """
-                INSERT INTO sessions (session_id, user_id, username, created_at, title, last_active_at, status, agent_type, agent_display_name)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                INSERT INTO sessions (session_id, user_id, username, created_at, title, last_active_at, status, agent_type, agent_display_name, project_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 ON CONFLICT (session_id) DO NOTHING
                 """,
                 session_id,
@@ -229,7 +237,8 @@ class SessionDB:
                 now,
                 'active',
                 'default',
-                ''
+                '',
+                project_id
             )
 
     @classmethod
@@ -255,7 +264,7 @@ class SessionDB:
         # 内存未命中，查数据库
         if cls.is_enabled():
             row = await DatabasePool.fetchrow(
-                "SELECT session_id, user_id, username, created_at, title, last_active_at, status, agent_type, agent_display_name FROM sessions WHERE session_id = $1",
+                "SELECT session_id, user_id, username, created_at, title, last_active_at, status, agent_type, agent_display_name, project_id FROM sessions WHERE session_id = $1",
                 session_id
             )
             if row:
@@ -268,6 +277,7 @@ class SessionDB:
                     'status': row.get('status', 'active'),
                     'agent_type': row.get('agent_type', 'default'),
                     'agent_display_name': row.get('agent_display_name', ''),
+                    'project_id': row.get('project_id'),
                 }
                 # 回填内存
                 with cls._lock:
@@ -480,6 +490,31 @@ class SessionDB:
         return True
 
     @classmethod
+    async def update_session_project(cls, session_id: str, project_id: Optional[int]) -> bool:
+        """更新会话绑定的项目（2026-06-30 新增）
+
+        Args:
+            session_id: 会话 ID
+            project_id: 项目 ID；传入 None 表示解除关联（"不使用文件夹"）
+
+        Returns:
+            bool: 更新成功返回 True
+        """
+        # 更新内存
+        with cls._lock:
+            if session_id in cls._memory_cache:
+                cls._memory_cache[session_id]['project_id'] = project_id
+
+        # 更新数据库
+        if cls.is_enabled():
+            await DatabasePool.execute(
+                "UPDATE sessions SET project_id = $1 WHERE session_id = $2",
+                project_id,
+                session_id,
+            )
+        return True
+
+    @classmethod
     async def get_user_sessions(cls, user_id: int) -> list:
         """
         获取用户的所有会话列表（按最后活跃时间倒序）
@@ -493,7 +528,7 @@ class SessionDB:
         if cls.is_enabled():
             rows = await DatabasePool.fetch(
                 """
-                SELECT session_id, title, last_active_at, status, agent_type, agent_display_name, created_at
+                SELECT session_id, title, last_active_at, status, agent_type, agent_display_name, created_at, project_id
                 FROM sessions
                 WHERE user_id = $1
                 ORDER BY last_active_at DESC
@@ -515,6 +550,7 @@ class SessionDB:
                         'agent_type': s.get('agent_type', 'default'),
                         'agent_display_name': s.get('agent_display_name', ''),
                         'created_at': s.get('created_at'),
+                        'project_id': s.get('project_id'),
                     })
             sessions.sort(key=lambda x: x.get('last_active_at') or datetime.min, reverse=True)
             return sessions
@@ -586,7 +622,7 @@ class SessionDB:
         if cls.is_enabled():
             rows = await DatabasePool.fetch(
                 """
-                SELECT s.session_id, s.username, s.title, s.last_active_at, s.status, s.agent_type, s.agent_display_name, s.created_at
+                SELECT s.session_id, s.username, s.title, s.last_active_at, s.status, s.agent_type, s.agent_display_name, s.created_at, s.project_id
                 FROM sessions s
                 JOIN users u ON s.user_id = u.id
                 WHERE u.username ILIKE $1
@@ -614,6 +650,7 @@ class SessionDB:
                         'agent_type': s.get('agent_type', 'default'),
                         'agent_display_name': s.get('agent_display_name', ''),
                         'created_at': s.get('created_at'),
+                        'project_id': s.get('project_id'),
                     })
             sessions.sort(key=lambda x: x.get('last_active_at') or datetime.min, reverse=True)
             return sessions
@@ -643,7 +680,7 @@ class SessionDB:
         if cls.is_enabled():
             rows = await DatabasePool.fetch(
                 """
-                SELECT id, file_name, stored_path, file_type, file_size, mime_type, file_id, created_at
+                SELECT id, file_name, stored_path, file_type, file_size, mime_type, file_id, created_at, project_id
                 FROM attachments
                 WHERE session_id = $1
                 ORDER BY created_at

@@ -5,7 +5,7 @@ import asyncio
 import aiofiles
 import shutil
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Request
 from pydantic import BaseModel
 from requests import RequestException
@@ -18,6 +18,12 @@ from app.shared.utils.files.session_path_manager import (
     get_session_upload_dir,
     get_session_tmp_upload_dir,
 )
+# 2026-06-30 新增：项目路由支持
+from app.shared.utils.files.project_path_manager import (
+    get_project_upload_dir,
+    get_project_tmp_upload_dir,
+)
+from app.shared.utils.project.project_db import ProjectDB
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +51,14 @@ async def upload_files(
 ):
     """批量上传文件并解析为 Markdown。
 
-    原文件保留在 data/upload/{yyyy}/{mm}/{dd}/{session_id}/，
-    解析结果统一保存为 .md 文件到 data/tmp/upload/{yyyy}/{mm}/{dd}/{session_id}/。
+    路径规则（2026-06-30 改造）：
+        - 有 project_id（项目文件夹）→ data/project/{project_uuid}/
+        - 无 project_id（不使用文件夹 / 默认）→ data/upload/{yyyy}/{mm}/{dd}/{session_id}/
+
+    原文件保留在对应目录，解析结果统一保存为 .md 文件到对应的 tmp 目录。
 
     Args:
-        request: FastAPI 请求对象，用于获取 session_id。
+        request: FastAPI 请求对象，用于获取 session_id 与 project_id（中间件注入）。
         files: 上传文件列表。
 
     Returns:
@@ -60,8 +69,34 @@ async def upload_files(
     """
     try:
         session_id = getattr(request.state, "session_id", "default")
-        session_upload_dir = get_session_upload_dir(session_id, create=True)
-        session_tmp_dir = get_session_tmp_upload_dir(session_id, create=True)
+        project_id = getattr(request.state, "project_id", None)
+
+        # 2026-06-30 新增：项目目录路由
+        if project_id:
+            # 先确保项目在内存中（启动时已加载）；若 DB 模式且未初始化，兜底查一次
+            project = ProjectDB._memory_cache.get(project_id)
+            if not project and ProjectDB.is_enabled():
+                # DB 未命中内存（如重启后首请求）；用 username 校验后回填
+                username = getattr(request.state, "username", None)
+                user = None
+                if username:
+                    from app.shared.utils.auth.user_db import UserDB
+                    user = await UserDB.get_user_by_username(username)
+                project = await ProjectDB.get_project_by_id(
+                    project_id,
+                    user_id=user['id'] if user else None,
+                )
+                if project:
+                    with ProjectDB._lock:
+                        ProjectDB._memory_cache[project_id] = project
+            if not project:
+                raise HTTPException(status_code=404, detail=f"项目不存在: project_id={project_id}")
+            project_uuid = project['uuid']
+            session_upload_dir = get_project_upload_dir(project_uuid, create=True)
+            session_tmp_dir = get_project_tmp_upload_dir(project_uuid, create=True)
+        else:
+            session_upload_dir = get_session_upload_dir(session_id, create=True)
+            session_tmp_dir = get_session_tmp_upload_dir(session_id, create=True)
 
         parser_enabled = FILE_PARSER_CONFIG.get("enabled", False)
         parser_mode = "remote" if parser_enabled else "local"
@@ -73,7 +108,7 @@ async def upload_files(
 
             content = await file.read()
 
-            # 保留原文件到日期化 session 目录
+            # 保留原文件到对应目录
             original_path = session_upload_dir / f"{original_stem}{original_suffix}"
             async with aiofiles.open(original_path, "wb") as f:
                 await f.write(content)
@@ -123,6 +158,17 @@ async def upload_files(
                     stored_path=str(output_path),
                     file_type="md",
                 ))
+
+            # 记录附件元数据（携带 project_id 用于聚合查询）
+            await _record_attachment(
+                session_id=session_id,
+                file_info=UploadedFileInfo(
+                    filename=file.filename,
+                    stored_path=str(session_tmp_dir / f"{original_stem}.md") if not parser_enabled else result_path,
+                    file_type="md",
+                ),
+                project_id=project_id,
+            )
 
         return CoreFileUploadResponse(
             files=uploaded_files,
@@ -178,11 +224,12 @@ async def upload_chunk(
 async def merge_chunks(request: Request, merge_request: MergeChunksRequest):
     """合并分片并解析为 Markdown。
 
-    合并后的原文件保留在 data/upload/{yyyy}/{mm}/{dd}/{session_id}/，
-    解析结果统一保存为 .md 文件到 data/tmp/upload/{yyyy}/{mm}/{dd}/{session_id}/。
+    路径规则（2026-06-30 改造）：
+        - 有 project_id（项目文件夹）→ data/project/{project_uuid}/
+        - 无 project_id（不使用文件夹 / 默认）→ data/upload/{yyyy}/{mm}/{dd}/{session_id}/
 
     Args:
-        request: FastAPI 请求对象，用于获取 session_id。
+        request: FastAPI 请求对象，用于获取 session_id 与 project_id。
         merge_request: 分片合并请求，包含 file_id、filename、total_chunks。
 
     Returns:
@@ -193,8 +240,32 @@ async def merge_chunks(request: Request, merge_request: MergeChunksRequest):
     """
     try:
         session_id = getattr(request.state, "session_id", "default")
-        session_upload_dir = get_session_upload_dir(session_id, create=True)
-        session_tmp_dir = get_session_tmp_upload_dir(session_id, create=True)
+        project_id = getattr(request.state, "project_id", None)
+
+        # 2026-06-30 新增：项目目录路由
+        if project_id:
+            project = ProjectDB._memory_cache.get(project_id)
+            if not project and ProjectDB.is_enabled():
+                username = getattr(request.state, "username", None)
+                user = None
+                if username:
+                    from app.shared.utils.auth.user_db import UserDB
+                    user = await UserDB.get_user_by_username(username)
+                project = await ProjectDB.get_project_by_id(
+                    project_id,
+                    user_id=user['id'] if user else None,
+                )
+                if project:
+                    with ProjectDB._lock:
+                        ProjectDB._memory_cache[project_id] = project
+            if not project:
+                raise HTTPException(status_code=404, detail=f"项目不存在: project_id={project_id}")
+            project_uuid = project['uuid']
+            session_upload_dir = get_project_upload_dir(project_uuid, create=True)
+            session_tmp_dir = get_project_tmp_upload_dir(project_uuid, create=True)
+        else:
+            session_upload_dir = get_session_upload_dir(session_id, create=True)
+            session_tmp_dir = get_session_tmp_upload_dir(session_id, create=True)
 
         chunk_dir = CHUNKS_DIR / merge_request.file_id
         if not chunk_dir.exists():
@@ -278,9 +349,14 @@ async def merge_chunks(request: Request, merge_request: MergeChunksRequest):
                     file_type="md",
                 )]
 
-            # 记录附件信息到数据库
+            # 记录附件信息到数据库（携带 project_id 用于聚合查询）
             for f in uploaded_files:
-                await _record_attachment(session_id, f, merge_request.file_id)
+                await _record_attachment(
+                    session_id=session_id,
+                    file_info=f,
+                    file_id=merge_request.file_id,
+                    project_id=project_id,
+                )
 
             return CoreFileUploadResponse(
                 files=uploaded_files,
@@ -296,15 +372,22 @@ async def merge_chunks(request: Request, merge_request: MergeChunksRequest):
         raise HTTPException(status_code=500, detail=f"合并分片失败: {str(e)}")
 
 
-async def _record_attachment(session_id: str, file_info: UploadedFileInfo, file_id: str = None):
+async def _record_attachment(
+    session_id: str,
+    file_info: UploadedFileInfo,
+    file_id: str = None,
+    project_id: Optional[int] = None,
+):
     """记录附件信息到数据库
 
     在文件上传成功后调用，将附件元数据写入 attachments 表。
+    2026-06-30 改造：携带 project_id 用于按项目聚合查询。
 
     Args:
         session_id: 会话 ID
         file_info: 上传文件信息
         file_id: 上传时的 file_id
+        project_id: 所属项目 ID（None = 不使用文件夹 / 默认）
     """
     try:
         import mimetypes
@@ -321,6 +404,7 @@ async def _record_attachment(session_id: str, file_info: UploadedFileInfo, file_
             file_size=file_size,
             mime_type=mime_type,
             file_id=file_id,
+            project_id=project_id,
         )
     except Exception as e:
         logger.warning(f"记录附件信息失败: {e}")

@@ -15,11 +15,14 @@ Date: 2026/2/6
 Author: 张镒谱
 """
 import jwt
+import logging
 from datetime import datetime, timedelta
 from typing import Optional, List
 from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from app.shared.utils.Session.SessionCache import session_cache
+
+logger = logging.getLogger(__name__)
 
 
 class JWTAuth:
@@ -353,6 +356,16 @@ async def session_auth_middleware(request: Request, call_next):
         )
 
     request.state.session_id = session_id
+
+    # 2026-06-30 新增：注入会话关联的项目 ID，供上传路由/工具层做项目目录路由
+    #   * session_cache.get_session 返回的 dict 已包含 project_id 字段（可能为 None）
+    try:
+        session_data = await session_cache.get_session(session_id)
+        request.state.project_id = session_data.get('project_id') if session_data else None
+    except Exception as e:
+        logger.warning(f"[session_auth_middleware] 注入 project_id 失败: {e}")
+        request.state.project_id = None
+
     return await call_next(request)
 
 

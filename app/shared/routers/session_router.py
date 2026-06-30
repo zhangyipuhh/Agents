@@ -44,6 +44,15 @@ class SessionCreateResponse(BaseModel):
     message: str
 
 
+class SessionCreateRequest(BaseModel):
+    """会话创建请求体（2026-06-30 新增 project_id）
+
+    Attributes:
+        project_id: 关联的项目 ID；None = 不使用文件夹（默认行为）
+    """
+    project_id: Optional[int] = None
+
+
 class SessionDeleteResponse(BaseModel):
     """
     会话删除响应模型
@@ -76,12 +85,14 @@ router = APIRouter(prefix='/api/session', tags=['Session Management'])
 
 
 @router.post('/create', response_model=SessionCreateResponse)
-async def create_session(request: Request):
+async def create_session(request: Request, body: Optional[SessionCreateRequest] = None):
     """
     创建新会话API端点
 
     生成一个新的会话ID，用于隔离不同用户的文件。
     需要提供有效的 JWT token。
+
+    2026-06-30 改造：接受可选的 project_id body，将 session 关联到指定项目。
     """
     try:
         username = request.state.username
@@ -95,12 +106,14 @@ async def create_session(request: Request):
             raise HTTPException(status_code=401, detail="用户不存在")
 
         session_id = str(uuid.uuid4())
+        project_id = body.project_id if body else None
 
         # 注册 session 上传日期索引，确保后续文件上传、沙箱、explore 等工具能定位日期化目录
+        # 注意：项目目录不走日期化路径，不受影响
         register_session_upload_date(session_id)
 
-        # 添加 session（传入 user_id）
-        await session_cache.add_session(session_id, username, user['id'])
+        # 添加 session（传入 user_id 和 project_id）
+        await session_cache.add_session(session_id, username, user['id'], project_id=project_id)
 
         return SessionCreateResponse(
             session_id=session_id,

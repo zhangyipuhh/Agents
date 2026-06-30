@@ -45,6 +45,7 @@ class AttachmentDB:
         file_size: int = 0,
         mime_type: Optional[str] = None,
         file_id: Optional[str] = None,
+        project_id: Optional[int] = None,
     ) -> Optional[int]:
         """
         添加附件记录
@@ -57,6 +58,7 @@ class AttachmentDB:
             file_size: 文件大小（字节）
             mime_type: MIME 类型
             file_id: 上传时的 file_id
+            project_id: 所属项目 ID（2026-06-30 新增；None = 未关联项目 / 旧数据兼容）
 
         Returns:
             Optional[int]: 新增记录的 ID，未启用数据库时返回 None
@@ -69,8 +71,8 @@ class AttachmentDB:
 
         row = await DatabasePool.fetchrow(
             """
-            INSERT INTO attachments (session_id, file_name, stored_path, file_type, file_size, mime_type, file_id, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            INSERT INTO attachments (session_id, file_name, stored_path, file_type, file_size, mime_type, file_id, created_at, project_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING id
             """,
             session_id,
@@ -81,6 +83,7 @@ class AttachmentDB:
             mime_type,
             file_id,
             datetime.utcnow(),
+            project_id,
         )
         return row['id'] if row else None
 
@@ -93,14 +96,14 @@ class AttachmentDB:
             session_id: 会话 ID
 
         Returns:
-            List[dict]: 附件列表，每项包含 id、file_name、stored_path、file_type、file_size、mime_type、file_id、created_at
+            List[dict]: 附件列表，每项包含 id、file_name、stored_path、file_type、file_size、mime_type、file_id、created_at、project_id
         """
         if not cls.is_enabled():
             return []
 
         rows = await DatabasePool.fetch(
             """
-            SELECT id, file_name, stored_path, file_type, file_size, mime_type, file_id, created_at
+            SELECT id, file_name, stored_path, file_type, file_size, mime_type, file_id, created_at, project_id
             FROM attachments
             WHERE session_id = $1
             ORDER BY created_at
@@ -125,7 +128,7 @@ class AttachmentDB:
 
         row = await DatabasePool.fetchrow(
             """
-            SELECT id, session_id, file_name, stored_path, file_type, file_size, mime_type, file_id, created_at
+            SELECT id, session_id, file_name, stored_path, file_type, file_size, mime_type, file_id, created_at, project_id
             FROM attachments
             WHERE id = $1
             """,

@@ -8,7 +8,25 @@ import HumanApprovalBox from './components/HumanApprovalBox.vue'
 import KnowledgePage from './components/KnowledgePage.vue'
 import SubAgentDrawer from './components/SubAgentDrawer.vue'
 import QueueStatusBanner from './components/QueueStatusBanner.vue'
-import { chatStream, createNewSession, logout as apiLogout, fetchSessionDetail, fetchSessionAttachments, fetchSessionMessages, validateToken, refreshToken, clearAuth } from './utils/api.js'
+// 2026-06-30 新增：项目工作下拉框与弹窗
+import ProjectDropdown from './components/ProjectDropdown.vue'
+import ProjectDialog from './components/ProjectDialog.vue'
+import {
+  chatStream,
+  createNewSession,
+  logout as apiLogout,
+  fetchSessionDetail,
+  fetchSessionAttachments,
+  fetchSessionMessages,
+  validateToken,
+  refreshToken,
+  clearAuth,
+  // 2026-06-30 新增：项目 API
+  createProject,
+  fetchProjectInfo,
+  bindSessionToProject,
+  unbindSessionFromProject
+} from './utils/api.js'
 import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage, isSubAgentHistoryItem, convertSubAgentHistoryToAiSubAgent, isSubAgentTool } from './utils/sseParser.js'
 import { redirectToLogin, tryRefreshOrRedirect } from './utils/auth.js'
 
@@ -31,6 +49,15 @@ const sidebarRef = ref(null)
 const currentAttachments = ref([])
 const approvalMode = ref(false)
 const approvalData = ref({ questions: [] })
+
+// 2026-06-30 新增：项目文件夹状态机
+//   * currentProject: {id, name, uuid} | null
+//   * null = 不使用文件夹（默认 / 旧会话）
+const currentProject = ref(null)
+const isProjectDialogOpen = ref(false)
+const projectDialogMode = ref('create') // 'create' | 'pick'
+const projects = ref([]) // pick 模式使用的项目列表缓存
+const isProjectMutating = ref(false) // 防止项目切换过程中的并发请求
 
 // 2026-06-15 新增：持有当前 SSE reader，供 InputBox 的 stop 事件调用 cancel() 立即中断 LLM
 let currentStreamReader = null
@@ -265,13 +292,16 @@ async function newSession() {
     agentName.value = null
     agentDisplayName.value = ''
 
+    // 2026-06-30 新增：新建会话时把当前项目一并传过去
+    const projectIdForNew = currentProject.value ? currentProject.value.id : null
+
     // 关闭子智能体详情抽屉：避免上一个会话的 subagent 数据残留在 UI 上
     // 复用已有的 closeSubAgentDrawer()（会同步将 subAgentDrawerVisible 置 false，无需另清 currentSubAgent）
     closeSubAgentDrawer()
 
-    const newId = await createNewSession()
+    const newId = await createNewSession('session_id', projectIdForNew)
     sessionId.value = newId
-    console.log('[newSession] 新会话创建成功:', newId)
+    console.log('[newSession] 新会话创建成功:', newId, 'projectId:', projectIdForNew)
 
     // 刷新侧边栏会话列表
     if (sidebarRef.value) {
@@ -284,6 +314,97 @@ async function newSession() {
     await tryRefreshOrRedirect()
   } finally {
     isCreatingNewSession = false
+  }
+}
+
+/**
+ * 2026-06-30 新增：项目工作下拉框事件处理
+ *
+ * 设计：
+ *   - select-project(null)         → 调 unbindSessionFromProject
+ *   - select-project(project)      → 调 bindSessionToProject
+ *   - create-project(name)         → 调 createProject + bindSessionToProject
+ *   - pick-existing                 → 打开 pick 模式弹窗
+ *   - picked(project)               → 选中后 bindSessionToProject
+ *
+ * 注意：
+ *   - 切项目会清空已选文件 + 已上传附件（跨项目隔离）
+ *   - 当前会话已存在的附件由后端从旧 stored_path 读取，前端只更新 UI 状态
+ */
+async function handleProjectSelectNone() {
+  if (isProjectMutating.value || !sessionId.value) return
+  isProjectMutating.value = true
+  try {
+    await unbindSessionFromProject(sessionId.value)
+    currentProject.value = null
+    currentAttachments.value = []
+  } catch (err) {
+    console.error('解除项目关联失败:', err)
+    alert(`解除项目关联失败：${err.message}`)
+  } finally {
+    isProjectMutating.value = false
+  }
+}
+
+async function handleProjectPick(project) {
+  if (isProjectMutating.value || !sessionId.value) return
+  isProjectMutating.value = true
+  try {
+    await bindSessionToProject(sessionId.value, project.id)
+    currentProject.value = project
+    currentAttachments.value = []
+  } catch (err) {
+    console.error('切换项目失败:', err)
+    alert(`切换项目失败：${err.message}`)
+  } finally {
+    isProjectMutating.value = false
+  }
+}
+
+async function handleProjectCreate({ name }) {
+  if (isProjectMutating.value || !sessionId.value) return
+  isProjectMutating.value = true
+  try {
+    // uuid = 当前 session_id（约定）
+    const result = await createProject(name, sessionId.value)
+    const project = result.project
+    // 自动把当前会话绑定到该项目
+    await bindSessionToProject(sessionId.value, project.id)
+    currentProject.value = project
+    currentAttachments.value = []
+  } catch (err) {
+    console.error('创建项目失败:', err)
+    alert(`创建项目失败：${err.message}`)
+  } finally {
+    isProjectMutating.value = false
+  }
+}
+
+function openCreateProjectDialog() {
+  projectDialogMode.value = 'create'
+  isProjectDialogOpen.value = true
+}
+
+async function openPickProjectDialog() {
+  projectDialogMode.value = 'pick'
+  isProjectDialogOpen.value = true
+}
+
+/**
+ * 通过 session detail 恢复项目选择
+ */
+async function restoreProjectFromDetail(detail) {
+  const projectId = detail.project_id
+  if (projectId) {
+    try {
+      const data = await fetchProjectInfo(projectId)
+      currentProject.value = data.project
+    } catch (err) {
+      console.warn('恢复项目选择失败:', err)
+      currentProject.value = null
+    }
+  } else {
+    currentProject.value = null
   }
 }
 
@@ -653,6 +774,9 @@ async function handleSessionSwitch(targetSessionId) {
       agentDisplayName.value = ''
     }
 
+    // 2026-06-30 新增：恢复会话绑定的项目状态
+    await restoreProjectFromDetail(detail)
+
     // 还原附件列表
     if (detail.attachments && detail.attachments.length > 0) {
       currentAttachments.value = detail.attachments.map(a => ({
@@ -844,19 +968,40 @@ async function handleSessionSwitch(targetSessionId) {
         @submit="handleApprovalSubmit"
         @cancel="handleApprovalCancel"
       />
-      <InputBox
-        v-else
-        :session-id="sessionId.value"
-        :is-streaming="isStreaming.value"
-        :bound-agent-name="agentName || ''"
-        :bound-agent-display-name="agentDisplayName || ''"
-        @send="handleSendMessage"
-        @tool-action="handleToolAction"
-        @new-chat="newSession"
-        @stop="handleStopMessage"
-        @agent-switched="handleAgentSwitched"
-      />
+      <template v-else>
+        <!-- 2026-06-30 新增：项目工作下拉框（紧挨着 InputBox 上方） -->
+        <div class="project-dropdown-row">
+          <ProjectDropdown
+            :current-project="currentProject"
+            :disabled="isStreaming.value"
+            @select-project="(p) => p === null ? handleProjectSelectNone() : handleProjectPick(p)"
+            @create-project="openCreateProjectDialog"
+            @pick-existing="openPickProjectDialog"
+          />
+        </div>
+        <InputBox
+          :session-id="sessionId.value"
+          :is-streaming="isStreaming.value"
+          :bound-agent-name="agentName || ''"
+          :bound-agent-display-name="agentDisplayName || ''"
+          :current-project="currentProject"
+          @send="handleSendMessage"
+          @tool-action="handleToolAction"
+          @new-chat="newSession"
+          @stop="handleStopMessage"
+          @agent-switched="handleAgentSwitched"
+        />
+      </template>
     </main>
+
+    <!-- 2026-06-30 新增：项目弹窗（双模式：create / pick） -->
+    <ProjectDialog
+      v-model:visible="isProjectDialogOpen"
+      :mode="projectDialogMode"
+      :projects="projects"
+      @created="handleProjectCreate"
+      @picked="handleProjectPick"
+    />
 
     <KnowledgePage
       v-if="currentPage === 'knowledge'"
@@ -957,5 +1102,18 @@ async function handleSessionSwitch(targetSessionId) {
    若保留 padding 会导致横幅被二次收缩，故在此场景下移除 padding */
 .content-area.empty-layout .queue-banner-wrapper {
   padding: 0;
+}
+
+/* 2026-06-30 新增：项目工作下拉框容器（紧挨 InputBox 上方，左对齐） */
+.project-dropdown-row {
+  padding: 0 40px 8px;
+  background-color: rgb(249, 250, 251);
+  display: flex;
+  justify-content: flex-start;
+}
+
+/* empty-layout 下项目下拉框容器受 max-width 限制 */
+.content-area.empty-layout .project-dropdown-row {
+  padding: 0 0 8px;
 }
 </style>

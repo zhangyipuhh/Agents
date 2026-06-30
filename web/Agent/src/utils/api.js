@@ -579,10 +579,11 @@ let pendingSessionPromise = null
  * 创建新会话
  * 使用当前认证信息创建新的聊天会话，带有防重复创建机制
  * @param {string} storageKey - 存储 session_id 的 localStorage key，默认为 'session_id'
+ * @param {number|null} projectId - 2026-06-30 新增；项目 ID，传入时把会话绑定到项目
  * @returns {Promise<string>} 新会话 ID
  * @throws {Error} 创建会话失败时抛出错误
  */
-export async function createNewSession(storageKey = 'session_id') {
+export async function createNewSession(storageKey = 'session_id', projectId = null) {
   if (isCreatingSession && pendingSessionPromise) {
     return pendingSessionPromise
   }
@@ -592,7 +593,8 @@ export async function createNewSession(storageKey = 'session_id') {
       localStorage.removeItem(storageKey)
       const response = await fetchWithAuth('/api/session/create', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(projectId ? { project_id: projectId } : {})
       })
       if (!response.ok) throw new Error(`创建会话失败: ${response.status}`)
       const sessionData = await response.json()
@@ -605,6 +607,98 @@ export async function createNewSession(storageKey = 'session_id') {
     }
   })()
   return pendingSessionPromise
+}
+
+/* ============================================
+   项目文件夹 API（2026-06-30 新增）
+   ============================================ */
+
+/**
+ * 创建新项目
+ * @param {string} name - 项目名称
+ * @param {string} uuid - 项目的 uuid（约定 = 创建时的 session_id）
+ * @returns {Promise<{success: boolean, message: string, project: Object}>} 创建结果
+ * @throws {Error} 创建失败时抛出错误
+ */
+export async function createProject(name, uuid) {
+  const response = await fetchWithAuth('/api/project/create', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, uuid })
+  })
+  if (!response.ok) {
+    const errData = await response.json().catch(() => ({}))
+    throw new Error(errData.detail || `创建项目失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 获取当前用户的项目列表
+ * @returns {Promise<{projects: Array<{id, name, uuid, user_id, created_at}>}>} 项目列表
+ * @throws {Error} 获取失败时抛出错误
+ */
+export async function fetchProjectList() {
+  const response = await fetchWithAuth('/api/project/list', {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`获取项目列表失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 获取单个项目详情
+ * @param {number} projectId - 项目主键 ID
+ * @returns {Promise<{project: Object}>} 项目信息
+ * @throws {Error} 获取失败时抛出错误
+ */
+export async function fetchProjectInfo(projectId) {
+  const response = await fetchWithAuth(`/api/project/${projectId}/info`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`获取项目详情失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 将会话绑定到指定项目
+ * @param {string} sessionId - 目标会话 ID
+ * @param {number} projectId - 目标项目 ID
+ * @returns {Promise<{success: boolean, message: string}>} 绑定结果
+ * @throws {Error} 绑定失败时抛出错误
+ */
+export async function bindSessionToProject(sessionId, projectId) {
+  const response = await fetchWithAuth('/api/project/session/bind', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId, project_id: projectId })
+  })
+  if (!response.ok) {
+    const errData = await response.json().catch(() => ({}))
+    throw new Error(errData.detail || `绑定项目失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 解除会话与项目的关联
+ * @param {string} sessionId - 目标会话 ID
+ * @returns {Promise<{success: boolean, message: string}>} 解绑结果
+ * @throws {Error} 解绑失败时抛出错误
+ */
+export async function unbindSessionFromProject(sessionId) {
+  const response = await fetchWithAuth('/api/project/session/unbind', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId })
+  })
+  if (!response.ok) {
+    const errData = await response.json().catch(() => ({}))
+    throw new Error(errData.detail || `解绑项目失败: ${response.status}`)
+  }
+  return response.json()
 }
 
 export async function chatStream(sessionId, message, attachments = [], resume = null, agentName = null) {

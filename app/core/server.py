@@ -52,6 +52,10 @@ async def lifespan(app: FastAPI):
     from app.shared.utils.auth.session_db import SessionDB
     await SessionDB.initialize()
 
+    # 2026-06-30 新增：启动时加载项目元数据到内存缓存
+    from app.shared.utils.project.project_db import ProjectDB
+    await ProjectDB.initialize()
+
     # 确保管理员账户存在
     from app.shared.utils.auth.user_db import UserDB
     await UserDB.ensure_admin_exists()

@@ -38,6 +38,21 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS email      VARCHAR(100) DEFAULT '';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS department VARCHAR(100) DEFAULT '';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS position   VARCHAR(100) DEFAULT '';
 
+-- ========== 1.5. projects（项目元数据，2026-06-30 新增）==========
+-- 项目文件夹方案：用户从聊天框下拉框选择"新建空白项目"或"使用现有文件夹"
+--   * uuid：项目的逻辑标识 = 创建时的 session_id（可保证全局唯一）
+--   * 用户隔离：通过 user_id 限定可见范围
+--   * 物理路径：<项目根>/data/project/{uuid}/ （原文件）与 <项目根>/data/tmp/project/{uuid}/ （解析md）
+CREATE TABLE IF NOT EXISTS projects (
+    id          SERIAL PRIMARY KEY,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name        VARCHAR(200) NOT NULL,
+    uuid        VARCHAR(64)  UNIQUE NOT NULL,
+    created_at  TIMESTAMP    DEFAULT NOW(),
+    updated_at  TIMESTAMP    DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id);
+
 -- ========== 2. sessions（会话）==========
 CREATE TABLE IF NOT EXISTS sessions (
     session_id      VARCHAR(100) PRIMARY KEY,
@@ -52,6 +67,7 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS status          VARCHAR(20)  DEFAU
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS agent_type      VARCHAR(50)  DEFAULT 'default';
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS agent_display_name VARCHAR(200) DEFAULT '';
 -- 2026-06-30 新增：会话关联的项目 ID（一对多：多会话可共用同一项目）
+--   * 引用 projects(id)，projects 表已在 1.5 段创建
 --   * ON DELETE SET NULL：项目被删除时会话自动解除关联，文件保留
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL;
 
@@ -104,9 +120,14 @@ ALTER TABLE attachments ADD COLUMN IF NOT EXISTS file_size    BIGINT  DEFAULT 0;
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS mime_type    VARCHAR(100);
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS file_id      VARCHAR(100);
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS created_at   TIMESTAMP DEFAULT NOW();
--- 索引
+-- 2026-06-30 新增：附件冗余存储所属项目 ID，便于按项目聚合查询
+--   * 不强制 NOT NULL：旧附件无 project_id（兼容存量数据）
+--   * ON DELETE SET NULL：项目被删除时附件记录保留，project_id 置 NULL
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL;
+
 CREATE INDEX IF NOT EXISTS idx_attachments_session_id       ON attachments(session_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_session_created ON attachments(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_attachments_project_id       ON attachments(project_id);
 
 -- ========== 5. refresh_tokens（主站 RefreshToken）==========
 CREATE TABLE IF NOT EXISTS refresh_tokens (

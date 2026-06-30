@@ -93,3 +93,69 @@ class TestFileTransferDatedPaths:
         deleted = await transfer.delete_session("session-ft-999")
 
         assert deleted is False
+
+    @pytest.mark.asyncio
+    async def test_upload_files_with_project_id_routes_to_project_dir(self, isolated_spm, monkeypatch):
+        """2026-06-30 新增：传 project_id 时文件应保存到 data/project/{uuid}/ 下。"""
+        from app.shared.utils.project import project_db
+        from app.shared.utils.project.project_db import ProjectDB
+
+        # 把 project_path_manager 也重定向到 tmp_path
+        from app.shared.utils.files import project_path_manager as ppm
+        monkeypatch.setattr(ppm, "_get_project_root", lambda: isolated_spm)
+        # 准备内存中的 project
+        with ProjectDB._lock:
+            ProjectDB._memory_cache.clear()
+            ProjectDB._memory_cache[100] = {
+                "id": 100,
+                "user_id": 1,
+                "name": "test",
+                "uuid": "session-uuid-100",
+                "created_at": None,
+                "updated_at": None,
+            }
+        monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
+
+        transfer = FileTransfer(upload_dir="data/upload")
+        fake_file = _FakeUploadFile("report.pdf", b"project content")
+
+        result = await transfer.upload_files(
+            [fake_file], "session-1111", project_id=100
+        )
+
+        expected_dir = isolated_spm / "data/project/session-uuid-100"
+        assert expected_dir.exists()
+        assert len(result) == 1
+        # 旧 session 目录不应被创建
+        assert not (isolated_spm / "data/upload").exists() or not list(
+            (isolated_spm / "data/upload").rglob("*session-1111*")
+        )
+
+    @pytest.mark.asyncio
+    async def test_delete_session_with_project_id_routes_to_project_dir(self, isolated_spm, monkeypatch):
+        """2026-06-30 新增：delete_session 传 project_id 时应清理项目目录。"""
+        from app.shared.utils.files import project_path_manager as ppm
+        from app.shared.utils.project.project_db import ProjectDB
+
+        monkeypatch.setattr(ppm, "_get_project_root", lambda: isolated_spm)
+        with ProjectDB._lock:
+            ProjectDB._memory_cache.clear()
+            ProjectDB._memory_cache[200] = {
+                "id": 200,
+                "user_id": 1,
+                "name": "test",
+                "uuid": "session-uuid-200",
+                "created_at": None,
+                "updated_at": None,
+            }
+        monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
+
+        project_dir = isolated_spm / "data/project/session-uuid-200"
+        project_dir.mkdir(parents=True)
+        (project_dir / "test.txt").write_text("data", encoding="utf-8")
+
+        transfer = FileTransfer(upload_dir="data/upload")
+        deleted = await transfer.delete_session("session-1111", project_id=200)
+
+        assert deleted is True
+        assert not project_dir.exists()

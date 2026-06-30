@@ -24,6 +24,7 @@ class AgentContext(TypedDict):
     Attributes:
         session_id: 会话 ID，用于区分不同用户的对话，相同 session_id 的对话共享记忆
         host_session_id: 主机会话 ID，用于多智能体协作时数据隔离
+        project_id: 2026-06-30 新增；当前会话关联的项目 ID（None = 不使用文件夹）
 
     Example:
         >>> context = AgentContext(session_id="user_123")
@@ -41,3 +42,5 @@ class AgentContext(TypedDict):
     """主机会话 ID，用于多智能体协作时数据隔离，默认 None"""
     process_data: dict = {}
     """过程数据字典，用于存储业务逻辑中的临时过程值，默认空字典"""
+    project_id: Optional[int] = None
+    """2026-06-30 新增：当前会话关联的项目 ID。None = 不使用文件夹（默认 / 旧会话）"""

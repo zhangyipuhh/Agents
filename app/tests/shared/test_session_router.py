@@ -11,6 +11,7 @@ from unittest.mock import patch, AsyncMock
 import pytest
 
 from app.shared.utils.auth.user_db import UserDB
+from app.shared.utils.auth.session_db import SessionDB
 
 
 @pytest.fixture(autouse=True)
@@ -113,3 +114,40 @@ def test_delete_session(client, admin_headers):
     data = response.json()
     assert data["success"] is True
     assert "删除成功" in data["message"] or data["message"] == "会话删除成功"
+
+
+def test_create_session_with_project_id(client, admin_headers):
+    """2026-06-30 新增：create_session 接受 project_id body 并把会话绑定到项目。"""
+    from app.shared.utils.project.project_db import ProjectDB
+    from app.shared.utils.Session.SessionCache import session_cache
+
+    p = asyncio.run(ProjectDB.create_project(user_id=1, name="test", uuid="uuid-1"))
+
+    response = client.post(
+        "/api/session/create",
+        json={"project_id": p["id"]},
+        headers=admin_headers,
+    )
+    assert response.status_code == 200
+    session_id = response.json()["session_id"]
+
+    # 验证 session.project_id 已绑定（兼容 Memory / DB 两种模式，从 session_cache 读）
+    session = asyncio.run(session_cache.get_session(session_id))
+    assert session is not None
+    assert session.get("project_id") == p["id"]
+
+
+def test_create_session_without_project_id(client, admin_headers):
+    """2026-06-30 新增：不传 project_id 时按默认行为（不绑定项目）。"""
+    from app.shared.utils.Session.SessionCache import session_cache
+
+    response = client.post(
+        "/api/session/create",
+        json={},
+        headers=admin_headers,
+    )
+    assert response.status_code == 200
+    session_id = response.json()["session_id"]
+    session = asyncio.run(session_cache.get_session(session_id))
+    assert session is not None
+    assert session.get("project_id") is None

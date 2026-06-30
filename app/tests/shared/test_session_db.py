@@ -43,6 +43,41 @@ def test_add_session():
     assert session["user_id"] == 1
 
 
+def test_add_session_with_project_id():
+    """2026-06-30 新增：add_session 接受 project_id 参数并持久化。"""
+    asyncio.run(SessionDB.add_session("sess-p001", 1, "user1", project_id=42))
+    session = asyncio.run(SessionDB.get_session("sess-p001"))
+    assert session is not None
+    assert session["project_id"] == 42
+
+
+def test_update_session_project():
+    """2026-06-30 新增：update_session_project 修改会话关联的项目。"""
+    asyncio.run(SessionDB.add_session("sess-p002", 1, "user1"))
+    # 初始 project_id 为 None
+    session = asyncio.run(SessionDB.get_session("sess-p002"))
+    assert session["project_id"] is None
+
+    # 绑定
+    asyncio.run(SessionDB.update_session_project("sess-p002", 5))
+    session = asyncio.run(SessionDB.get_session("sess-p002"))
+    assert session["project_id"] == 5
+
+    # 解除（传 None）
+    asyncio.run(SessionDB.update_session_project("sess-p002", None))
+    session = asyncio.run(SessionDB.get_session("sess-p002"))
+    assert session["project_id"] is None
+
+
+def test_get_user_sessions_includes_project_id():
+    """2026-06-30 新增：get_user_sessions 返回的会话应包含 project_id 字段。"""
+    asyncio.run(SessionDB.add_session("sess-p003", 1, "user1", project_id=99))
+    sessions = asyncio.run(SessionDB.get_user_sessions(1))
+    assert len(sessions) >= 1
+    sess = next(s for s in sessions if s["session_id"] == "sess-p003")
+    assert sess["project_id"] == 99
+
+
 def test_get_session_not_found():
     """
     测试查询不存在的会话返回 None。

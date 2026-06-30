@@ -5,10 +5,15 @@ Session 上传路径管理器
 
 统一管理 session 上传目录的日期化路径解析，并提供 session_id 到日期目录的索引维护。
 
-目录结构：
+目录结构（2026-06-30 新增项目路由）：
+    # 默认（无 project 关联）—— 沿用旧行为
     data/upload/{yyyy}/{mm}/{dd}/{session_id}/          # 原文件
     data/tmp/upload/{yyyy}/{mm}/{dd}/{session_id}/      # 解析后的 md 缓存
     data/upload/session_index.json                      # session_id -> "yyyy/mm/dd"
+
+    # 关联项目时 —— 走项目独立目录（与 session_id 无关）
+    data/project/{project_uuid}/                        # 原文件
+    data/tmp/project/{project_uuid}/                    # 解析后的 md 缓存
 
 使用方式：
     from app.shared.utils.files.session_path_manager import (
@@ -16,10 +21,10 @@ Session 上传路径管理器
         get_session_tmp_upload_dir,
         register_session_upload_date,
     )
-    upload_dir = get_session_upload_dir(session_id, create=True)
-    tmp_dir = get_session_tmp_upload_dir(session_id, create=True)
+    upload_dir = get_session_upload_dir(session_id, create=True, project_id=5)
+    tmp_dir = get_session_tmp_upload_dir(session_id, create=True, project_id=5)
 
-Date: 2026-06-19
+Date: 2026-06-19 (updated 2026-06-30)
 """
 
 import json
@@ -180,18 +185,44 @@ def get_session_upload_dir(
     session_id: str,
     create: bool = False,
     d: Optional[date] = None,
+    project_id: Optional[int] = None,
 ) -> Path:
-    """获取 session 原文件上传目录。
+    """获取 session 原文件上传目录（2026-06-30 扩展支持 project 路由）。
 
     Args:
         session_id: 会话 ID。
         create: 是否在目录不存在时自动创建并注册索引，默认 False。
         d: 指定日期，默认为今天或索引中已记录的日期。
+        project_id: 2026-06-30 新增；非空时走项目独立目录 data/project/{project_uuid}/，
+                    忽略 session_id 维度。用于项目文件夹语义。
 
     Returns:
-        Path: session 原文件目录路径。
-              若 create=False 且无法解析日期，则兜底返回 data/upload/{session_id}。
+        Path: 原文件目录路径。
+              - 有 project_id：data/project/{project_uuid}/
+              - 无 project_id（默认）：data/upload/{yyyy}/{mm}/{dd}/{session_id}/
+              - 兜底：data/upload/{session_id}/
     """
+    # 2026-06-30 新增：项目路由（优先于 session 路径）
+    if project_id:
+        from app.shared.utils.project.project_db import ProjectDB
+        from app.shared.utils.files.project_path_manager import get_project_upload_dir
+        # 同步查 DB 获取 uuid；同步 IO 在工具/上传场景足够
+        # 若项目不存在则 fallback 到 session 路径
+        try:
+            project = ProjectDB._memory_cache.get(project_id)
+            if not project and ProjectDB.is_enabled():
+                # 同步路径不能 await，调用方应已通过 request.state 注入；
+                # 这里走 DB 同步访问在异步上下文中不安全
+                # 兜底：直接返回 session 路径
+                logger.warning(
+                    "get_session_upload_dir: project_id=%s 未在内存缓存中，fallback 到 session 路径",
+                    project_id,
+                )
+            if project:
+                return get_project_upload_dir(project['uuid'], create=create)
+        except Exception as e:
+            logger.warning("get_session_upload_dir: project_id 路由失败，fallback 到 session 路径: %s", e)
+
     if not session_id:
         session_id = "default"
 
@@ -218,18 +249,33 @@ def get_session_tmp_upload_dir(
     session_id: str,
     create: bool = False,
     d: Optional[date] = None,
+    project_id: Optional[int] = None,
 ) -> Path:
-    """获取 session 解析后的 md 缓存目录。
+    """获取 session 解析后的 md 缓存目录（2026-06-30 扩展支持 project 路由）。
 
     Args:
         session_id: 会话 ID。
         create: 是否在目录不存在时自动创建，默认 False。
         d: 指定日期，默认为今天或索引中已记录的日期。
+        project_id: 2026-06-30 新增；非空时走项目独立目录 data/tmp/project/{project_uuid}/。
 
     Returns:
-        Path: session md 缓存目录路径。
-              若 create=False 且无法解析日期，则兜底返回 data/tmp/upload/{session_id}。
+        Path: md 缓存目录路径。
+              - 有 project_id：data/tmp/project/{project_uuid}/
+              - 无 project_id（默认）：data/tmp/upload/{yyyy}/{mm}/{dd}/{session_id}/
+              - 兜底：data/tmp/upload/{session_id}/
     """
+    # 2026-06-30 新增：项目路由
+    if project_id:
+        from app.shared.utils.project.project_db import ProjectDB
+        from app.shared.utils.files.project_path_manager import get_project_tmp_upload_dir
+        try:
+            project = ProjectDB._memory_cache.get(project_id)
+            if project:
+                return get_project_tmp_upload_dir(project['uuid'], create=create)
+        except Exception as e:
+            logger.warning("get_session_tmp_upload_dir: project_id 路由失败，fallback 到 session 路径: %s", e)
+
     if not session_id:
         session_id = "default"
 

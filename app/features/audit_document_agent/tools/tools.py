@@ -18,7 +18,7 @@ import os
 import re
 import uuid
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
 from app.shared.utils.files.word_untils import WordProcessor
@@ -158,7 +158,8 @@ class AuditDocumentTools:
         file_path: str,
         file_id: str,
         session_id: str,
-        file_name: str = ""
+        file_name: str = "",
+        project_id: Optional[int] = None,  # 2026-06-30 新增
     ) -> Dict[str, Any]:
         """
         解析成交确认书 PDF 并保存到长期记忆
@@ -180,7 +181,7 @@ class AuditDocumentTools:
             output_format='jpg'
         )
 
-        image_dir = get_session_upload_dir(session_id) / step_id / file_id
+        image_dir = get_session_upload_dir(session_id, project_id=project_id) / step_id / file_id
         image_paths = sorted(image_dir.glob("*.jpg"))
 
         if not image_paths:

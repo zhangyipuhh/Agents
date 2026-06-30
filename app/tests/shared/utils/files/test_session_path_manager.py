@@ -76,3 +76,71 @@ class TestSessionPathManager:
         """空 session_id 应回退到 default。"""
         upload_dir = spm.get_session_upload_dir("", create=True)
         assert upload_dir.name == "default"
+
+    def test_get_upload_dir_with_project_id_routes_to_project_dir(self, fresh_manager, monkeypatch):
+        """2026-06-30 新增：传 project_id 时应走项目目录，忽略 session_id。"""
+        from app.shared.utils.project.project_db import ProjectDB
+        from app.shared.utils.files import project_path_manager as ppm
+
+        # 同步重定向 project_path_manager 的根
+        monkeypatch.setattr(ppm, "_get_project_root", lambda: fresh_manager)
+        # 准备内存中的 project
+        with ProjectDB._lock:
+            ProjectDB._memory_cache.clear()
+            ProjectDB._memory_cache[10] = {
+                "id": 10,
+                "user_id": 1,
+                "name": "test",
+                "uuid": "session-9999",
+                "created_at": None,
+                "updated_at": None,
+            }
+        monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
+
+        upload_dir = spm.get_session_upload_dir(
+            "session-1111", create=True, project_id=10
+        )
+        # 应走项目目录而非 session 目录
+        assert upload_dir == fresh_manager / "data/project/session-9999"
+        assert upload_dir.exists()
+
+    def test_get_upload_dir_project_id_not_found_falls_back(self, fresh_manager, monkeypatch):
+        """project_id 在内存中不存在时，fallback 到 session 路径。"""
+        from app.shared.utils.project.project_db import ProjectDB
+
+        with ProjectDB._lock:
+            ProjectDB._memory_cache.clear()
+        monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
+
+        # 传不存在的 project_id
+        upload_dir = spm.get_session_upload_dir(
+            "session-1111", create=True, project_id=99999
+        )
+        # 应 fallback 到 session 目录
+        today = date.today()
+        expected = fresh_manager / f"data/upload/{today.year}/{today.month:02d}/{today.day:02d}/session-1111"
+        assert upload_dir == expected
+
+    def test_get_tmp_upload_dir_with_project_id(self, fresh_manager, monkeypatch):
+        """2026-06-30 新增：tmp 目录也支持 project_id 路由。"""
+        from app.shared.utils.project.project_db import ProjectDB
+        from app.shared.utils.files import project_path_manager as ppm
+
+        monkeypatch.setattr(ppm, "_get_project_root", lambda: fresh_manager)
+        with ProjectDB._lock:
+            ProjectDB._memory_cache.clear()
+            ProjectDB._memory_cache[20] = {
+                "id": 20,
+                "user_id": 1,
+                "name": "test",
+                "uuid": "session-8888",
+                "created_at": None,
+                "updated_at": None,
+            }
+        monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
+
+        tmp_dir = spm.get_session_tmp_upload_dir(
+            "session-1111", create=True, project_id=20
+        )
+        assert tmp_dir == fresh_manager / "data/tmp/project/session-8888"
+        assert tmp_dir.exists()

@@ -92,6 +92,7 @@ def convert_pdfs_to_images(
     file_ids: List[str],
     dpi: int = 300,
     max_workers: int = 4,
+    project_id: int = None,  # 2026-06-30 新增：项目目录路由
     output_format: str = 'jpg',
     upload_dir: str = "data/upload",
     output_dir: Optional[str] = None
@@ -120,7 +121,7 @@ def convert_pdfs_to_images(
     if not file_ids:
         raise ValueError("file_ids列表不能为空")
 
-    session_upload_dir = get_session_upload_dir(session_id, create=True)
+    session_upload_dir = get_session_upload_dir(session_id, create=True, project_id=project_id)
     output_dir = _resolve_path(output_dir) if output_dir else session_upload_dir
 
     step_id = str(uuid.uuid4())

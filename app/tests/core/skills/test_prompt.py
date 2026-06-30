@@ -142,3 +142,39 @@ def test_xml_special_chars_escaped(tmp_path: Path):
     assert "<description>Use &lt;tag&gt; &amp; more \"text\"</description>" in result
     assert "<tag>" not in result
     assert "&amp;" in result
+
+
+def test_relative_location_is_resolved_to_absolute_uri(tmp_path: Path, monkeypatch):
+    """2026-06-30 修复：s.location 为相对路径时不应抛 ValueError。
+
+    场景复现：实际生产中 SkillInfo.location 是 project_root 相对路径（POSIX 风格），
+    直接 Path(s.location).as_uri() 会抛 "relative path can't be expressed as a file URI"。
+    修复后应通过 SkillRegistryService._to_absolute 还原为绝对路径再构造 URI。
+
+    Args:
+        tmp_path: pytest 提供的临时目录。
+        monkeypatch: pytest monkeypatch fixture。
+
+    Returns:
+        None
+    """
+    # 模拟项目根：把 tmp_path 当作项目根
+    # 注意 prompt.py 用 Path(__file__).parent.parent.parent.parent 取项目根，
+    # 测试时已是项目根目录（tests 在 app/tests 下），无法 monkeypatch 路径计算。
+    # 改为直接构造相对路径格式的 location，让 _to_absolute 通过 POSIX 相对路径逻辑处理。
+    relative_location = "app/skills/test_skill/SKILL.md"
+    skills = [
+        SkillInfo(
+            name="relative_skill",
+            description="Skill with relative location",
+            location=relative_location,
+            content="body",
+            base_dir="app/skills/test_skill",
+        )
+    ]
+
+    result = render_available_skills_block(skills)
+
+    # 不应抛 ValueError，输出应包含 file:// URI
+    assert "<location>file:///" in result
+    assert "<name>relative_skill</name>" in result

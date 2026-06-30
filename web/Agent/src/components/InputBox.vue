@@ -22,6 +22,11 @@ const props = defineProps({
   boundAgentDisplayName: {
     type: String,
     default: ''
+  },
+  // 2026-06-30 新增：当前会话关联的项目
+  currentProject: {
+    type: Object,
+    default: null
   }
 })
 
@@ -474,7 +479,7 @@ const getFileIconColor = (ext) => {
   return colorMap[ext] || '#9CA3AF'
 }
 
-const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched'])
+const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched', 'project-changed'])
 </script>
 
 <template>

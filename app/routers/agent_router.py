@@ -110,11 +110,19 @@ async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse
 
     # 统一构造入口（封装取配置 → 构造 context/state → AgentConfig → Agent.__ainit__）
     try:
+        # 2026-06-30 新增：把会话关联的 project_id 透传到 context_instance
+        #   * 由 session_auth_middleware 注入到 request.state.project_id
+        #   * 工具通过 runtime.context.get('project_id') 读取后用于项目目录路由
+        project_id = getattr(request.state, "project_id", None)
+        merged_overrides = dict(chat_request.context_overrides or {})
+        if project_id is not None and "project_id" not in merged_overrides:
+            merged_overrides["project_id"] = project_id
+
         agent, context_instance, input_state = await service.build_agent_instance(
             agent_name=agent_name,
             session_id=session_id,
             message=chat_request.message,
-            context_overrides=chat_request.context_overrides,
+            context_overrides=merged_overrides,
             resume=chat_request.resume,
         )
     except AgentNotFoundError as e:

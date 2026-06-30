@@ -66,32 +66,53 @@ class FileTransfer:
         """
         self.upload_dir.mkdir(parents=True, exist_ok=True)
 
-    def _get_session_dir(self, session_id: str) -> Path:
+    def _get_session_dir(self, session_id: str, project_id: int = None) -> Path:
         """
         获取会话目录路径
 
         目录按日期组织：data/upload/{yyyy}/{mm}/{dd}/{session_id}
+        2026-06-30 改造：有 project_id 时走项目目录 data/project/{project_uuid}/
 
         Args:
             session_id (str): 会话ID
+            project_id (Optional[int]): 2026-06-30 新增；项目 ID
 
         Returns:
             Path: 会话目录的完整路径
         """
-        return get_session_upload_dir(session_id, create=True)
+        return get_session_upload_dir(session_id, create=True, project_id=project_id)
+
+    def _get_session_tmp_dir(self, session_id: str, project_id: int = None) -> Path:
+        """
+        获取会话解析缓存目录路径
+
+        目录按日期组织：data/tmp/upload/{yyyy}/{mm}/{dd}/{session_id}
+        2026-06-30 改造：有 project_id 时走项目目录 data/tmp/project/{project_uuid}/
+
+        Args:
+            session_id (str): 会话ID
+            project_id (Optional[int]): 2026-06-30 新增；项目 ID
+
+        Returns:
+            Path: 解析缓存目录的完整路径
+        """
+        return get_session_tmp_upload_dir(session_id, create=True, project_id=project_id)
     
-    def _get_file_path(self, file_uuid: str, session_id: str) -> Path:
+    def _get_file_path(self, file_uuid: str, session_id: str, project_id: int = None) -> Path:
         """
         根据UUID和会话ID获取文件的完整路径
+        
+        2026-06-30 改造：接受 project_id；走项目目录时按 projects.uuid 路径
         
         Args:
             file_uuid (str): 文件的UUID
             session_id (str): 会话ID
+            project_id (Optional[int]): 2026-06-30 新增；项目 ID
             
         Returns:
             Path: 文件的完整路径
         """
-        session_dir = self._get_session_dir(session_id)
+        session_dir = self._get_session_dir(session_id, project_id=project_id)
         return session_dir / file_uuid
     
     def _get_file_uuid_with_extension(self, original_filename: str) -> str:
@@ -146,30 +167,23 @@ class FileTransfer:
         else:
             return 'doc'
     
-    async def upload_files(self, files: List[UploadFile], session_id: str) -> List[dict]:
+    async def upload_files(self, files: List[UploadFile], session_id: str, project_id: int = None) -> List[dict]:
         """
         批量上传文件
 
         将多个文件上传到指定会话目录，每个文件使用 UUID 命名。
+        2026-06-30 改造：接受 project_id，文件落到项目目录而非 session 目录。
 
         Args:
             files (List[UploadFile]): 要上传的文件列表
             session_id (str): 会话 ID
+            project_id (Optional[int]): 2026-06-30 新增；项目 ID
 
         Returns:
             List[dict]: 上传成功后的文件信息列表，每个元素包含 id（UUID，无扩展名）和 filename（原始文件名，无扩展名）
 
         Raises:
             HTTPException: 当上传过程中发生错误时抛出
-
-        Examples:
-            >>> files = [UploadFile(filename="document.pdf", ...), UploadFile(filename="image.png", ...)]
-            >>> result = await file_transfer.upload_files(files, "session_123")
-            >>> print(result)
-            [
-                {"id": "550e8400-e29b-41d4-a716-446655440000", "filename": "document"},
-                {"id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8", "filename": "image"}
-            ]
         """
         uploaded_files = []
         
@@ -177,7 +191,7 @@ class FileTransfer:
             try:
                 # 生成 UUID 文件名（带扩展名）
                 file_uuid_with_ext = self._get_file_uuid_with_extension(file.filename)
-                file_path = self._get_file_path(file_uuid_with_ext, session_id)
+                file_path = self._get_file_path(file_uuid_with_ext, session_id, project_id=project_id)
                 
                 # 使用 aiofiles 异步保存文件
                 async with aiofiles.open(file_path, "wb") as buffer:
@@ -202,12 +216,12 @@ class FileTransfer:
             except Exception as e:
                 # 如果上传失败，删除已上传的文件
                 for file_info in uploaded_files:
-                    await self.delete_file(file_info["id"], session_id)
+                    await self.delete_file(file_info["id"], session_id, project_id=project_id)
                 raise HTTPException(status_code=500, detail=f"文件上传失败：{str(e)}")
         
         return uploaded_files
     
-    async def upload_base64_files(self, files: List[dict], session_id: str) -> List[dict]:
+    async def upload_base64_files(self, files: List[dict], session_id: str, project_id: int = None) -> List[dict]:
         """
         批量上传 base64 编码的文件
 
@@ -215,9 +229,12 @@ class FileTransfer:
         文件存储位置: {upload_dir}/{yyyy}/{mm}/{dd}/{session_id}/{uuid}.{ext}
         例如: data/upload/2026/06/19/session_123/550e8400-e29b-41d4-a716-446655440000.pdf
 
+        2026-06-30 改造：接受 project_id，文件落到项目目录而非 session 目录。
+
         Args:
             files (List[dict]): 要上传的文件列表，每个元素包含 filename 和 base64_data
             session_id (str): 会话 ID
+            project_id (Optional[int]): 2026-06-30 新增；项目 ID
 
         Returns:
             List[dict]: 上传成功后的文件信息列表，每个元素包含 id（UUID，无扩展名）和 filename（原始文件名，无扩展名）
@@ -226,26 +243,26 @@ class FileTransfer:
             HTTPException: 当上传或解码过程中发生错误时抛出
         """
         uploaded_files = []
-        
+
         for file_info in files:
             try:
                 filename = file_info["filename"]
                 base64_data = file_info["base64_data"]
-                
+
                 # 生成 UUID 文件名（带扩展名）
                 file_uuid_with_ext = self._get_file_uuid_with_extension(filename)
-                file_path = self._get_file_path(file_uuid_with_ext, session_id)
-                
+                file_path = self._get_file_path(file_uuid_with_ext, session_id, project_id=project_id)
+
                 # 解码 base64 数据
                 file_content = base64.b64decode(base64_data)
-                
+
                 # 使用 aiofiles 异步保存文件
                 async with aiofiles.open(file_path, "wb") as buffer:
                     await buffer.write(file_content)
-                
+
                 # 获取 UUID（去除扩展名）
                 file_uuid = Path(file_uuid_with_ext).stem
-                
+
                 # 获取原始文件名（去除扩展名）
                 original_filename = Path(filename).stem
 
@@ -261,17 +278,19 @@ class FileTransfer:
             except Exception as e:
                 # 如果上传失败，删除已上传的文件
                 for file_info in uploaded_files:
-                    await self.delete_file(file_info["id"], session_id)
+                    await self.delete_file(file_info["id"], session_id, project_id=project_id)
                 raise HTTPException(status_code=500, detail=f"Base64 文件上传失败：{str(e)}")
-        
+
         return uploaded_files
     
-    def get_file_path(self, file_uuid: str, session_id: str) -> Path:
+    def get_file_path(self, file_uuid: str, session_id: str, project_id: int = None) -> Path:
         """
         通过UUID和会话ID获取文件路径
 
         支持传入带扩展名或不带扩展名的UUID。
         如果传入不带扩展名的UUID，会自动查找匹配的文件。
+
+        2026-06-30 改造：接受 project_id；有项目目录时优先查项目目录。
 
         查找逻辑：
             1. 首先尝试直接查找（假设传入的是带扩展名的完整文件名）
@@ -280,6 +299,7 @@ class FileTransfer:
         Args:
             file_uuid (str): 文件的UUID（可以带或不带扩展名）
             session_id (str): 会话ID
+            project_id (Optional[int]): 2026-06-30 新增；项目 ID
 
         Returns:
             Path: 文件的完整路径
@@ -308,7 +328,7 @@ class FileTransfer:
             >>> file_path = file_transfer.get_file_path("not-exist-uuid", "session_123")
             HTTPException: 404 文件不存在: not-exist-uuid
         """
-        session_dir = self._get_session_dir(session_id)
+        session_dir = self._get_session_dir(session_id, project_id=project_id)
         file_path = session_dir / file_uuid
 
         # 首先尝试直接查找（传入的是带扩展名的完整文件名）
@@ -322,7 +342,7 @@ class FileTransfer:
 
         raise HTTPException(status_code=404, detail=f"文件不存在: {file_uuid}")
     
-    async def get_file_info(self, file_uuid: str, session_id: str) -> dict:
+    async def get_file_info(self, file_uuid: str, session_id: str, project_id: int = None) -> dict:
         """
         通过UUID和会话ID获取文件信息
         
@@ -336,7 +356,7 @@ class FileTransfer:
         Raises:
             HTTPException: 当文件不存在时抛出404错误
         """
-        file_path = self.get_file_path(file_uuid, session_id)
+        file_path = self.get_file_path(file_uuid, session_id, project_id=project_id)
         
         stat = file_path.stat()
         
@@ -348,7 +368,7 @@ class FileTransfer:
             "modified_time": stat.st_mtime
         }
 
-    async def get_file_as_base64(self, file_uuid: str, session_id: str) -> dict:
+    async def get_file_as_base64(self, file_uuid: str, session_id: str, project_id: int = None) -> dict:
         """
         通过UUID和会话ID获取文件，并返回base64编码的内容
 
@@ -394,30 +414,33 @@ class FileTransfer:
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"文件读取失败: {str(e)}")
 
-    async def delete_file(self, file_uuid: str, session_id: str) -> bool:
+    async def delete_file(self, file_uuid: str, session_id: str, project_id: int = None) -> bool:
         """
         通过UUID和会话ID删除文件
-        
+
+        2026-06-30 改造：接受 project_id；走项目目录时按 projects.uuid 路径。
+
         Args:
             file_uuid (str): 文件的UUID
             session_id (str): 会话ID
-            
+            project_id (Optional[int]): 2026-06-30 新增；项目 ID
+
         Returns:
             bool: 删除成功返回True，文件不存在返回False
-            
+
         Raises:
             HTTPException: 当删除过程中发生错误时抛出
         """
         try:
-            file_path = self.get_file_path(file_uuid, session_id)
+            file_path = self.get_file_path(file_uuid, session_id, project_id=project_id)
             file_path.unlink()
             return True
         except HTTPException:
             return False
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"文件删除失败: {str(e)}")
-    
-    async def delete_files(self, file_uuids: List[str], session_id: str) -> dict:
+
+    async def delete_files(self, file_uuids: List[str], session_id: str, project_id: int = None) -> dict:
         """
         批量删除文件
         
@@ -435,16 +458,16 @@ class FileTransfer:
         
         for file_uuid in file_uuids:
             try:
-                if await self.delete_file(file_uuid, session_id):
+                if await self.delete_file(file_uuid, session_id, project_id=project_id):
                     results["success"].append(file_uuid)
                 else:
                     results["failed"].append({"uuid": file_uuid, "reason": "文件不存在"})
             except HTTPException as e:
                 results["failed"].append({"uuid": file_uuid, "reason": str(e.detail)})
-        
+
         return results
-    
-    async def list_files(self, session_id: str) -> List[dict]:
+
+    async def list_files(self, session_id: str, project_id: int = None) -> List[dict]:
         """
         列出指定会话的所有已上传文件
         
@@ -470,15 +493,21 @@ class FileTransfer:
         
         return files
     
-    async def delete_session(self, session_id: str) -> bool:
+    async def delete_session(self, session_id: str, project_id: int = None) -> bool:
         """
         删除整个会话目录及其所有文件
 
         同时删除原文件目录 data/upload/{yyyy}/{mm}/{dd}/{session_id} 与解析缓存目录
         data/tmp/upload/{yyyy}/{mm}/{dd}/{session_id}，并从索引中移除记录。
 
+        2026-06-30 改造：
+        - 有 project_id：仅删除项目目录 data/project/{project_uuid}/（不删 session 目录，
+          因为多个 session 共享同一项目目录）
+        - 无 project_id：保持原行为
+
         Args:
             session_id (str): 要删除的会话ID
+            project_id (Optional[int]): 2026-06-30 新增；项目 ID
 
         Returns:
             bool: 删除成功返回True，会话不存在返回False
@@ -486,6 +515,33 @@ class FileTransfer:
         Raises:
             HTTPException: 当删除过程中发生错误时抛出
         """
+        if project_id:
+            # 2026-06-30 新增：项目目录清理
+            from app.shared.utils.project.project_db import ProjectDB
+            from app.shared.utils.files.project_path_manager import (
+                get_project_upload_dir,
+                get_project_tmp_upload_dir,
+            )
+            project = ProjectDB._memory_cache.get(project_id)
+            if not project and ProjectDB.is_enabled():
+                project = await ProjectDB.get_project_by_id(project_id)
+            if project:
+                project_uuid = project['uuid']
+                project_upload = get_project_upload_dir(project_uuid)
+                project_tmp = get_project_tmp_upload_dir(project_uuid)
+                existed = project_upload.exists() or project_tmp.exists()
+                if not existed:
+                    return False
+                try:
+                    if project_upload.exists():
+                        shutil.rmtree(project_upload)
+                    if project_tmp.exists():
+                        shutil.rmtree(project_tmp)
+                    return True
+                except Exception as e:
+                    raise HTTPException(status_code=500, detail=f"删除项目目录失败: {str(e)}")
+            return False
+
         session_dir = get_session_upload_dir(session_id)
         tmp_session_dir = get_session_tmp_upload_dir(session_id)
 

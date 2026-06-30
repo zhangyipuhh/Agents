@@ -112,7 +112,8 @@ async def explore(
         Command: 子智能体的文件搜索与分析结果；若目录为空则返回提示未找到文件的 Command。
     """
     session_id = runtime.context.get("session_id", "default")
-    root_path = get_session_upload_dir(session_id, create=True)
+    project_id = runtime.context.get("project_id")  # 2026-06-30 新增：项目目录路由
+    root_path = get_session_upload_dir(session_id, create=True, project_id=project_id)
 
     # 静默处理空目录：未上传文件时直接返回"未找到文件"，不启动子智能体，不抛异常
     if not any(Path(root_path).iterdir()):

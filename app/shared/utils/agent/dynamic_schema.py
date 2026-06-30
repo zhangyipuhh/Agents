@@ -41,7 +41,7 @@ RESERVED_STATE_FIELDS = {
 
 RESERVED_CONTEXT_FIELDS = {
     "session_id", "namespace", "store_id", "image_ids",
-    "host_session_id", "process_data",
+    "host_session_id", "process_data", "project_id",  # 2026-06-30 新增
 }
 """AgentContext 基类保留字段集合。"""
 
@@ -109,6 +109,7 @@ _BASE_CONTEXT_DEFAULTS: dict = {
     "image_ids": [],
     "host_session_id": None,
     "process_data": {},
+    "project_id": None,  # 2026-06-30 新增：会话关联的项目 ID 兜底默认 None
 }
 """AgentContext 基类保留字段的运行时默认值，作为 build_agent_context 的兜底。"""
 

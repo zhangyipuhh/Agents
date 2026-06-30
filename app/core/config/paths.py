@@ -30,3 +30,12 @@ METADATA_FILE = os.path.join(_PROJECT_ROOT, "data", "tmp", "Knowledge", "metadat
 
 # 知识库扫描根目录别名（与 KNOWLEDGE_DIR 保持一致，供 query_knowledge 等工具使用）
 TMP_DIR = KNOWLEDGE_DIR
+
+# 项目文件夹原文件根目录（2026-06-30 新增）
+#   * 与会话上传目录完全隔离的物理路径
+#   * 完整结构：<项目根>/data/project/{project_uuid}/
+PROJECT_ROOT = os.path.join(_PROJECT_ROOT, "data", "project")
+
+# 项目文件夹解析缓存根目录
+#   * 完整结构：<项目根>/data/tmp/project/{project_uuid}/
+PROJECT_TMP_ROOT = os.path.join(_PROJECT_ROOT, "data", "tmp", "project")

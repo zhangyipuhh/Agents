@@ -18,18 +18,22 @@ class SessionCacheOriginal:
         self._cache: Dict[str, dict] = {}
         self._lock = threading.Lock()
 
-    def add_session(self, session_id: str, username: str):
+    def add_session(self, session_id: str, username: str, project_id: int = None):
         """
         添加会话到缓存
+
+        2026-06-30 改造：接受可选的 project_id，存入内存缓存（测试场景用）。
 
         Args:
             session_id: 会话ID
             username: 用户名
+            project_id: 项目 ID（2026-06-30 新增；None 表示未关联项目）
         """
         with self._lock:
             self._cache[session_id] = {
                 "username": username,
-                "created_at": datetime.utcnow()
+                "created_at": datetime.utcnow(),
+                "project_id": project_id,  # 2026-06-30 新增
             }
 
     def get_session(self, session_id: str) -> Optional[dict]:
