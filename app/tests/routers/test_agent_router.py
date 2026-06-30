@@ -963,3 +963,230 @@ def test_chat_no_longer_imports_agent_or_agent_config_in_router():
     assert "get_async_checkpointer" not in source
     assert "get_async_store" not in source
     assert "RESERVED_CONTEXT_FIELDS" not in source
+
+
+# =============================================================================
+# 2026-06-30 新增：context_overrides 空值过滤测试
+# 验证 router 在合并 context_overrides 时自动过滤容器型空值（None/""/[]/{}），
+# 避免覆盖 agent context_class 字段默认值。该机制为通用通道，不针对具体字段硬编码。
+# =============================================================================
+
+
+def _setup_chat_capture_for_context_overrides(monkeypatch, captured):
+    """为 context_overrides 系列测试准备 monkeypatch：mock build_agent_instance 捕获调用参数。"""
+    from unittest.mock import MagicMock
+
+    async def fake_build(self, agent_name, session_id, message=None,
+                          context_overrides=None, resume=None,
+                          state_class_kwargs=None, system_prompt_override=None):
+        captured.append({
+            "agent_name": agent_name,
+            "session_id": session_id,
+            "message": message,
+            "context_overrides": context_overrides,
+            "resume": resume,
+        })
+        return MagicMock(name="fake_agent"), MagicMock(name="fake_context"), MagicMock(name="fake_state")
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.build_agent_instance",
+        fake_build,
+    )
+
+    # 同步 mock get_agent_config（避免触发 session 绑定分支的真实数据库调用）
+    async def fake_get(self, name):
+        from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+        return UnifiedAgentConfig(
+            name=name,
+            display_name="测试智能体",
+            description="",
+            system_prompt="# 测试",
+            state_class=MagicMock(return_value={"messages": []}),
+            context_class=MagicMock(return_value={"session_id": "test"}),
+        )
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.get_agent_config",
+        fake_get,
+    )
+
+    # Mock session 绑定相关，避免触发真实 SessionDB 调用
+    async def mock_get_session(session_id):
+        return None
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.session_db.SessionDB.get_session", mock_get_session
+    )
+
+
+def test_chat_filters_empty_dict_geometry_data_from_context_overrides(
+    client, admin_headers, monkeypatch
+):
+    """测试 context_overrides 中的空 dict（如 geometry_data={}）被过滤掉。
+
+    验证：前端传入 ``context_overrides={"geometry_data": {}}`` 时，
+    service.build_agent_instance 收到的 context_overrides 不包含 geometry_data 键，
+    避免覆盖 MapAgentContext.geometry_data 默认值（虽然值相同，但避免语义混淆）。
+    """
+    captured = []
+    _setup_chat_capture_for_context_overrides(monkeypatch, captured)
+
+    def fake_stream(*args, **kwargs):
+        yield "data: test\n\n"
+
+    monkeypatch.setattr("app.routers.agent_router.generate_stream_response", fake_stream)
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": "map_agent",
+        "context_overrides": {"geometry_data": {}},
+    }, headers=headers)
+
+    assert response.status_code == 200
+    assert len(captured) == 1
+    # 核心断言：空 dict 已被过滤
+    assert "geometry_data" not in captured[0]["context_overrides"]
+
+
+def test_chat_filters_none_value_from_context_overrides(
+    client, admin_headers, monkeypatch
+):
+    """测试 context_overrides 中的 None 值被过滤掉。"""
+    captured = []
+    _setup_chat_capture_for_context_overrides(monkeypatch, captured)
+
+    def fake_stream(*args, **kwargs):
+        yield "data: test\n\n"
+
+    monkeypatch.setattr("app.routers.agent_router.generate_stream_response", fake_stream)
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": "map_agent",
+        "context_overrides": {
+            "geometry_data": None,
+            "audit_root": None,
+        },
+    }, headers=headers)
+
+    assert response.status_code == 200
+    assert len(captured) == 1
+    # 核心断言：所有 None 值已被过滤
+    assert captured[0]["context_overrides"] == {}
+
+
+def test_chat_filters_empty_string_and_empty_list_from_context_overrides(
+    client, admin_headers, monkeypatch
+):
+    """测试 context_overrides 中的空字符串 / 空列表也被过滤。"""
+    captured = []
+    _setup_chat_capture_for_context_overrides(monkeypatch, captured)
+
+    def fake_stream(*args, **kwargs):
+        yield "data: test\n\n"
+
+    monkeypatch.setattr("app.routers.agent_router.generate_stream_response", fake_stream)
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": "map_agent",
+        "context_overrides": {
+            "geometry_data": "",
+            "audit_files": [],
+            "map_center": "",
+        },
+    }, headers=headers)
+
+    assert response.status_code == 200
+    assert len(captured) == 1
+    # 核心断言：所有空值已被过滤
+    assert captured[0]["context_overrides"] == {}
+
+
+def test_chat_passes_non_empty_geometry_data_to_context_overrides(
+    client, admin_headers, monkeypatch
+):
+    """测试非空的 geometry_data 能正确透传到 context_overrides。
+
+    验证：前端传入 ``context_overrides={"geometry_data": {"point": [...]}}`` 时，
+    service.build_agent_instance 收到的 context_overrides 包含完整 geometry_data 字典，
+    最终注入到 MapAgentContext.geometry_data 供工具通过 runtime.context.get('geometry_data') 读取。
+    """
+    captured = []
+    _setup_chat_capture_for_context_overrides(monkeypatch, captured)
+
+    def fake_stream(*args, **kwargs):
+        yield "data: test\n\n"
+
+    monkeypatch.setattr("app.routers.agent_router.generate_stream_response", fake_stream)
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    geometry = {
+        "point": [{"lat": 1.0, "lng": 2.0}],
+        "line": [],
+        "polygon": [],
+    }
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": "map_agent",
+        "context_overrides": {"geometry_data": geometry},
+    }, headers=headers)
+
+    assert response.status_code == 200
+    assert len(captured) == 1
+    # 核心断言：非空 geometry_data 完整透传
+    assert captured[0]["context_overrides"] == {"geometry_data": geometry}
+
+
+def test_chat_arbitrary_context_overrides_pass_through(
+    client, admin_headers, monkeypatch
+):
+    """测试任意非空 context_overrides 键都能透传（验证通用化机制）。
+
+    设计原则：router 不针对任何具体字段硬编码键名。
+    任意子智能体的 context 扩展字段（geometry_data / audit_root / map_center 等）
+    只要值非空，都能通过通用通道注入到 context_class。
+    """
+    captured = []
+    _setup_chat_capture_for_context_overrides(monkeypatch, captured)
+
+    def fake_stream(*args, **kwargs):
+        yield "data: test\n\n"
+
+    monkeypatch.setattr("app.routers.agent_router.generate_stream_response", fake_stream)
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": "audit_document_agent",
+        "context_overrides": {
+            "geometry_data": {"point": [{"lat": 1, "lng": 2}]},
+            "audit_root": "/tmp/audit",
+            "map_center": {"lat": 41.0, "lng": 123.0},
+            "is_visible": False,           # bool False 不应被过滤
+            "priority": 0,                 # int 0 不应被过滤
+            "tags": ["urgent"],            # 非空 list 透传
+            "empty_list": [],              # 空 list 应被过滤
+            "empty_str": "",               # 空 str 应被过滤
+        },
+    }, headers=headers)
+
+    assert response.status_code == 200
+    assert len(captured) == 1
+    expected = {
+        "geometry_data": {"point": [{"lat": 1, "lng": 2}]},
+        "audit_root": "/tmp/audit",
+        "map_center": {"lat": 41.0, "lng": 123.0},
+        "is_visible": False,              # 保留
+        "priority": 0,                    # 保留
+        "tags": ["urgent"],               # 保留
+    }
+    assert captured[0]["context_overrides"] == expected

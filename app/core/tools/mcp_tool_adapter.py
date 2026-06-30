@@ -889,12 +889,16 @@ class MCPToolToLangChainAdapter(BaseTool):
                     session_id = runtime.context.get("session_id", "default")
                     namespace = (store_id, session_id)
                     # 获取现有的 process_data
-                    existing_result = runtime.store.get(namespace, "process_data")
+                    # 必须使用异步接口（aget/aput）：
+                    # 当 runtime.store 是 AsyncPostgresStore 时，在主事件循环中
+                    # 调用同步 get/put 会触发 "Synchronous calls to AsyncPostgresStore"
+                    # 死锁/性能警告并 raise，因此本方法（_arun）必须 await 异步版本
+                    existing_result = await runtime.store.aget(namespace, "process_data")
                     process_data = existing_result.value if existing_result else {}
                     # 更新数据
                     process_data.update(runtime_data)
-                    # 保存回 store
-                    runtime.store.put(namespace, "process_data", process_data)
+                    # 保存回 store（必须使用异步接口，理由同上）
+                    await runtime.store.aput(namespace, "process_data", process_data)
             else:
                 event_result = result
                 return_result = result

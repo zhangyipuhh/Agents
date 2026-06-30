@@ -40,8 +40,13 @@ class ChatRequest(BaseModel):
         agent_name: 目标智能体名称（默认 map_agent）
         attachments: 附件列表（暂未实现，预留字段）
         resume: HITL 恢复参数（从中断处恢复执行时传入）
-        context_overrides: 上下文字段覆盖（注入到 context_class 构造参数，
-            其中的保留字段如 session_id / store_id 会被自动过滤）
+        context_overrides: 上下文字段覆盖；作为通用通道注入到目标 agent 的
+            ``context_class(**overrides)``，供任意子智能体的 context 扩展字段使用
+            （如 map_agent 的 ``geometry_data``、audit_document_agent 的 ``audit_root``）。
+            值语义：
+              - 非空 dict/list/str/None（保留）→ 透传到 service.build_agent_instance
+              - 空值（None / "" / [] / {}）→ 由 router 自动过滤，避免覆盖 agent 默认值
+            注：本字段是**通用字段通道**，不针对具体 agent 硬编码键名。
     """
     message: str
     session_id: Optional[str] = None
@@ -117,6 +122,17 @@ async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse
         merged_overrides = dict(chat_request.context_overrides or {})
         if project_id is not None and "project_id" not in merged_overrides:
             merged_overrides["project_id"] = project_id
+
+        # 2026-06-30 新增：过滤 context_overrides 中的空值键（None / "" / [] / {}），
+        # 避免覆盖 agent context_class 字段默认值（如 MapAgentContext.geometry_data = {}）。
+        # 设计为通用机制，不针对任何具体 agent 或字段硬编码键名 —— 任意子智能体的
+        # context 扩展字段（如 geometry_data / audit_root）都能通过 context_overrides
+        # 注入；仅当值"实际为空"时才过滤，service 层负责保留字段与关键字参数的最终管控。
+        # 注意：仅过滤容器型空值；bool False / 数字 0 不在过滤范围（避免误杀业务字段）。
+        _EMPTY_VALUES = (None, "", [], {})
+        merged_overrides = {
+            k: v for k, v in merged_overrides.items() if v not in _EMPTY_VALUES
+        }
 
         agent, context_instance, input_state = await service.build_agent_instance(
             agent_name=agent_name,

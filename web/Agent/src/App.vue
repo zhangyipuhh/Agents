@@ -8,8 +8,7 @@ import HumanApprovalBox from './components/HumanApprovalBox.vue'
 import KnowledgePage from './components/KnowledgePage.vue'
 import SubAgentDrawer from './components/SubAgentDrawer.vue'
 import QueueStatusBanner from './components/QueueStatusBanner.vue'
-// 2026-06-30 新增：项目工作下拉框与弹窗
-import ProjectDropdown from './components/ProjectDropdown.vue'
+// 2026-06-30 新增：项目弹窗
 import ProjectDialog from './components/ProjectDialog.vue'
 import {
   chatStream,
@@ -969,16 +968,6 @@ async function handleSessionSwitch(targetSessionId) {
         @cancel="handleApprovalCancel"
       />
       <template v-else>
-        <!-- 2026-06-30 新增：项目工作下拉框（紧挨着 InputBox 上方） -->
-        <div class="project-dropdown-row">
-          <ProjectDropdown
-            :current-project="currentProject"
-            :disabled="isStreaming.value"
-            @select-project="(p) => p === null ? handleProjectSelectNone() : handleProjectPick(p)"
-            @create-project="openCreateProjectDialog"
-            @pick-existing="openPickProjectDialog"
-          />
-        </div>
         <InputBox
           :session-id="sessionId.value"
           :is-streaming="isStreaming.value"
@@ -990,6 +979,9 @@ async function handleSessionSwitch(targetSessionId) {
           @new-chat="newSession"
           @stop="handleStopMessage"
           @agent-switched="handleAgentSwitched"
+          @select-project="(p) => p === null ? handleProjectSelectNone() : handleProjectPick(p)"
+          @create-project="openCreateProjectDialog"
+          @pick-existing="openPickProjectDialog"
         />
       </template>
     </main>
@@ -1104,16 +1096,4 @@ async function handleSessionSwitch(targetSessionId) {
   padding: 0;
 }
 
-/* 2026-06-30 新增：项目工作下拉框容器（紧挨 InputBox 上方，左对齐） */
-.project-dropdown-row {
-  padding: 0 40px 8px;
-  background-color: rgb(249, 250, 251);
-  display: flex;
-  justify-content: flex-start;
-}
-
-/* empty-layout 下项目下拉框容器受 max-width 限制 */
-.content-area.empty-layout .project-dropdown-row {
-  padding: 0 0 8px;
-}
 </style>

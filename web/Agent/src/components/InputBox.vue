@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, nextTick, onMounted } from 'vue'
 import { uploadFileInChunks, formatFileSize, getFileExtension, refreshToken, fetchAgentList } from '../utils/api.js'
+import ProjectDropdown from './ProjectDropdown.vue'
 import { handleCommand, COMMAND_REGISTRY } from '../utils/commandRegistry.js'
 
 const SUPPORTED_EXTENSIONS = ['pdf', 'doc', 'docx', 'txt', 'md', 'csv', 'json']
@@ -479,7 +480,7 @@ const getFileIconColor = (ext) => {
   return colorMap[ext] || '#9CA3AF'
 }
 
-const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched', 'project-changed'])
+const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched', 'project-changed', 'select-project', 'create-project', 'pick-existing'])
 </script>
 
 <template>
@@ -656,6 +657,16 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched', 'proj
             </svg>
           </button>
         </div>
+      </div>
+
+      <div class="project-dropdown-slot">
+        <ProjectDropdown
+          :current-project="currentProject"
+          :disabled="isStreaming"
+          @select-project="$emit('select-project', $event)"
+          @create-project="$emit('create-project')"
+          @pick-existing="$emit('pick-existing')"
+        />
       </div>
     </div>
 
@@ -1201,5 +1212,12 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched', 'proj
   font-weight: var(--font-weight-medium);
   color: var(--color-text-primary);
   line-height: 1.4;
+}
+
+/* 2026-06-30 新增：项目下拉框位于 input-main 下方 */
+.project-dropdown-slot {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-start;
 }
 </style>
