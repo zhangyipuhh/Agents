@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { validateToken, refreshToken, logout, clearAuth, issuePortalRefreshToken } from './utils/api.js'
 import { redirectToLogin } from './utils/auth.js'
-import { getNavItems, appConfig } from './config/portal.js'
+import { getNavItems, appConfig, loadAppConfig } from './config/portal.js'
 
 /**
  * 导航栏高度（像素）
@@ -335,7 +335,20 @@ function handleNavClick(key) {
   activeNav.value = key
 }
 
+/**
+ * 将浏览器 Tab 标题同步为当前 appConfig.brandTitle
+ * 加载失败时保持默认 title，不抛错
+ * @returns {Promise<void>}
+ */
+async function applyBrandTitle() {
+  await loadAppConfig()
+  if (appConfig.brandTitle) {
+    document.title = appConfig.brandTitle
+  }
+}
+
 onMounted(() => {
+  applyBrandTitle()
   checkAuth()
   document.addEventListener('click', handleClickOutside)
   document.addEventListener('keydown', handleKeydown)

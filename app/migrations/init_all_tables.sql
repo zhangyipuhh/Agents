@@ -48,14 +48,19 @@ CREATE TABLE IF NOT EXISTS sessions (
 -- 防御性补齐
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS title          VARCHAR(200) DEFAULT '新对话';
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMP    DEFAULT NOW();
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS status         VARCHAR(20)  DEFAULT 'active';
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS agent_type     VARCHAR(50)  DEFAULT 'default';
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS status          VARCHAR(20)  DEFAULT 'active';
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS agent_type      VARCHAR(50)  DEFAULT 'default';
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS agent_display_name VARCHAR(200) DEFAULT '';
--- 索引
-CREATE INDEX IF NOT EXISTS idx_sessions_user_id             ON sessions(user_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_last_active_at      ON sessions(last_active_at);
-CREATE INDEX IF NOT EXISTS idx_sessions_status              ON sessions(status);
+-- 2026-06-30 新增：会话关联的项目 ID（一对多：多会话可共用同一项目）
+--   * ON DELETE SET NULL：项目被删除时会话自动解除关联，文件保留
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL;
+
+-- sessions 表索引
+CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_last_active_at ON sessions(last_active_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id_last_active ON sessions(user_id, last_active_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id);
 
 -- ========== 3. conversation_records（对话记录）==========
 CREATE TABLE IF NOT EXISTS conversation_records (
