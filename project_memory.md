@@ -429,7 +429,7 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 | enabled                 | BOOLEAN DEFAULT TRUE         | 是否启用                                                                                      |
 | sort_order              | INT DEFAULT 0                | 排序权重                                                                                      |
 | **tool_bindings** | **JSONB DEFAULT '[]'** | agent 直接绑定的工具列表快照（缓存该智能体当前启用的工具列表，避免每次加载都联表查 agent_tool_bindings）。格式：`[{"tool_name":"sandbox","tool_type":"builtin","enabled":true,"sort_order":0}, ...]`，由 AgentConfigService.update_tool_bindings 保存配置时同步写入；`tool_type` 取值 `builtin`（内置 @register_tool 工具）/ `mcp`（MCP server 工具）/ `skill`（skill 工具） |
-| **skill_bindings** | **JSONB DEFAULT '[]'** | agent 直接绑定的 skill 列表快照（缓存该智能体当前启用的 skill 列表，避免每次加载都联表查 agent_skill_bindings）。格式：`[{"name":"hgsc","enabled":true,"sort_order":0}, ...]`，2026-06-29 随 skills 表新增 |
+| **skill_bindings** | **JSONB DEFAULT '[]'** | agent 直接绑定的 skill 列表快照（缓存该智能体当前启用的 skill 列表，避免每次加载都联表查 skill 绑定）。格式：`[{"name":"hgsc","enabled":true,"sort_order":0}, ...]`，2026-06-29 随 skills 表新增。注：2026-06-30 起 `agent_skill_bindings` 表已废弃移除，skill 绑定完全改由本 JSONB 字段承载 |
 | created_at              | TIMESTAMP                    | 创建时间                                                                                      |
 | updated_at              | TIMESTAMP                    | 更新时间                                                                                      |
 
@@ -476,9 +476,11 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 | created_at | TIMESTAMP                     | 创建时间                               |
 |            | UNIQUE(agent_name, tool_name) | 唯一约束：同一智能体同一工具仅一条绑定 |
 
-### agent_skill_bindings 表
+### agent_skill_bindings 表（已废弃移除）
 
-智能体与 skill 的绑定关系表，多对多映射。
+> **2026-06-30 起移除**：原本用于存储智能体-skill 绑定关系的 `agent_skill_bindings` 表已废弃并从 `app/migrations/init_all_tables.sql` 中移除。Skill 绑定关系现在直接存储于 `agents.skill_bindings` JSONB 字段（参见上文 agents 表），由 `AgentConfigService.update_skill_bindings` / `get_skill_bindings` 全量维护，避免每次加载配置都联表查询。
+
+历史上该表的字段如下（已不再使用，仅供 git log 回溯）：
 
 | 字段       | 类型                           | 说明                                      |
 | ---------- | ------------------------------ | ----------------------------------------- |
@@ -515,7 +517,7 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 
 ### skills 表
 
-统一 skill 元数据注册表，将项目中的 SKILL.md 文件元数据登记到数据库，供管理界面展示与 `agent_skill_bindings` 绑定引用。2026-06-29 新增。
+统一 skill 元数据注册表，将项目中的 SKILL.md 文件元数据登记到数据库，供管理界面展示与 `agents.skill_bindings` JSONB 字段绑定引用。2026-06-29 新增。
 
 | 字段          | 类型                         | 说明                                                          |
 | ------------- | ---------------------------- | ------------------------------------------------------------- |
@@ -614,11 +616,11 @@ python scripts/seed_tools_from_source.py --output app/migrations/seed_tools.sql
 
 **文件位置**: `app/migrations/seed_map_agent.py`（含 `app/migrations/__init__.py` 包初始化）
 
-向 `agents` / `agent_tool_bindings` / `agent_skill_bindings` 表写入 map_agent 初始配置，幂等可重复执行。
+向 `agents` / `agent_tool_bindings` 表写入 map_agent 初始配置，幂等可重复执行。Skill 绑定由 `agents.skill_bindings` JSONB 字段管理，不再写入独立的 `agent_skill_bindings` 表（已废弃移除）。
 
 | 函数                   | 说明                                                                                                                                                   |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `seed_map_agent(db)` | 核心种子函数。先 `SELECT` 判断 agents 表是否已有 map_agent，已存在则 UPDATE，不存在则 INSERT；工具/skill 绑定使用 `ON CONFLICT DO UPDATE` 幂等写入 |
+| `seed_map_agent(db)` | 核心种子函数。先 `SELECT` 判断 agents 表是否已有 map_agent，已存在则 UPDATE，不存在则 INSERT；工具绑定使用 `ON CONFLICT DO UPDATE` 幂等写入 |
 | `main()`             | 脚本入口，从 `DATABASE_URL` 环境变量（默认 `postgresql://postgres:postgres@localhost:5432/feature_agent`）读取连接并执行种子                       |
 
 **map_agent 配置常量**:
@@ -2268,7 +2270,7 @@ app/shared/utils/agent/agent_config_service.py
 | `add_agent_config_field(agent_name, section, field_name, field_def)` | 向 config_schema 指定 section（root / state_fields / context_fields）追加字段；内部调 `update_agent_config_schema`                                                                |
 | `delete_agent_config_field(agent_name, section, field_name)`     | 从 config_schema 指定 section 删除字段；内部调 `update_agent_config_schema`                                                                                                        |
 | `bind_tool(agent_name, tool_name, enabled)`                      | 绑定/解绑工具（upsert agent_tool_bindings）；写 DB 后调 `_refresh_cache(name)` 同步缓存                                                                                            |
-| `bind_skill(agent_name, skill_name, enabled)`                    | **已废弃**。原绑定/解绑 skill（upsert agent_skill_bindings）逻辑已停止执行，调用时仅记录 `logger.warning` 提示使用 `update_skill_bindings` 全量替换接口                               |
+| `bind_skill(agent_name, skill_name, enabled)`                    | **已废弃**。原绑定/解绑 skill（曾 upsert agent_skill_bindings 表）逻辑已停止执行，调用时仅记录 `logger.warning` 提示使用 `update_skill_bindings` 全量替换接口（直接更新 `agents.skill_bindings` JSONB 字段）。`agent_skill_bindings` 表本身已于 2026-06-30 从 `init_all_tables.sql` 移除 |
 | `update_tool_bindings(agent_name, bindings)`                     | 全量更新 agents 表 `tool_bindings` JSONB 字段（工具绑定快照）；写 DB 后调 `_refresh_cache(name)` 同步缓存；agent 不存在抛 `AgentNotFoundError`                                     |
 | `get_tool_bindings(agent_name)`                                  | 读取 agents 表 `tool_bindings` JSONB 字段并解码返回列表；agent 不存在抛 `AgentNotFoundError`；字段为空返回 `[]`                                                                       |
 | `update_skill_bindings(agent_name, bindings)`                    | 全量更新 agents 表 `skill_bindings` JSONB 字段（skill 绑定快照，格式 `[{"skill_name": str, "enabled": bool, "sort_order": int}]`）；写 DB 后调 `_refresh_cache(name)` 同步缓存；agent 不存在抛 `AgentNotFoundError` |
@@ -2308,7 +2310,6 @@ app/shared/utils/agent/agent_config_service.py
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
 | `agents`               | 主表，存储 name / display_name / description / agents_md_path / state_schema / context_schema / config_schema / mcp_tags / tool_bindings（JSONB 快照）/ skill_bindings（JSONB 快照）/ enabled / sort_order |
 | `agent_tool_bindings`  | 工具绑定表（关系型），存储 agent_name / tool_name / is_enabled / sort_order；`tool_bindings` JSONB 为该表的快照缓存，避免每次加载都联表查 |
-| `agent_skill_bindings` | skill 绑定表，存储 agent_name / skill_name / is_enabled / sort_order                                                            |
 
 ### 测试
 
@@ -2648,7 +2649,7 @@ app/routers/
 | GET    | `/api/admin/agents/field-templates?section=`   | 200    | 获取字段模板列表；section=`root` 返回 AgentConfig 模板，`state_fields` 返回 AgentState 模板，`context_fields` 返回 AgentContext 模板（前端新增字段时下拉选择） |
 | GET    | `/api/admin/agents/{name}`                     | 200    | 获取单个 agent 完整配置（含 agent_config_overrides 拆分结果）            |
 | POST   | `/api/admin/agents`                            | 201    | 新增智能体；name 已存在返回 409；AGENTS.md 不存在返回 400                |
-| DELETE | `/api/admin/agents/{name}`                     | 204    | 删除智能体（级联清理 agent_tool_bindings / agent_skill_bindings 关联）   |
+| DELETE | `/api/admin/agents/{name}`                     | 204    | 删除智能体（级联清理 agent_tool_bindings 关联；skill 绑定走 agents.skill_bindings JSONB 字段，无独立表） |
 | PUT    | `/api/admin/agents/{name}`                     | 200    | 更新智能体基本信息（body:`{display_name, description}`）                 |
 | PUT    | `/api/admin/agents/{name}/enabled`             | 200    | 启用 / 禁用单个智能体（body:`{enabled: bool}`）                        |
 | PUT    | `/api/admin/agents/{name}/config-schema`       | 200    | 全量替换 config_schema                                                   |
