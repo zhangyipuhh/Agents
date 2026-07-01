@@ -838,6 +838,30 @@ return data/upload/yyyy/mm/dd/{session_id}/
 | `ProjectDialog.vue` | 双模式弹窗（create / pick） |
 | `App.vue` | `currentProject` 状态机 + handleSessionSwitch 恢复 + newSession 透传 |
 
+### 前端 chat 请求体显式携带 project_id（2026-07-01 新增）
+
+为消除 chat 时对 `sessions.project_id` 隐式链路的完全依赖，前端在调用 `chatStream` / `knowledgeChatStream` 时把当前项目 ID **显式放进请求 body 的 `context_overrides.project_id` 字段**，与 `newSession` 显式传 `projectId`（`App.vue:301`）的设计保持一致（"显式优于隐式"）。
+
+**前端改动**：
+
+- **`web/Agent/src/utils/api.js`**：`chatStream` / `knowledgeChatStream` 签名扩展 `projectId` 参数（向后兼容，默认 `null`）；body 把原本硬编码的 `geometry_data: {}` 合并进 `context_overrides.geometry_data`（`chatStream`），把 `projectId` 在非 null 时注入 `context_overrides.project_id`。
+- **`web/Agent/src/App.vue`**：`handleSendMessage`（行 442）/ `handleApprovalSubmit` resume（行 539）调 `chatStream` 时从 `currentProject.value.id` 取出传入。
+- **`web/Agent/src/KnowledgeApp.vue`**：本次未接入（无 `currentProject` ref）；仍依赖 `session_auth_middleware` 注入 `request.state.project_id` 兜底。
+- **`web/Agent/src/components/KnowledgeChat.vue`**：本次未修改；调 `knowledgeChatStream` 时不传 `projectId`，等 `knowledge_router.py` 后续改造。
+
+**后端兼容性**：
+
+- `app/routers/agent_router.py` 的合并逻辑（行 122-124）天然支持「前端值优先于 middleware 注入」：`if project_id is not None and "project_id" not in merged_overrides:`。
+- `_EMPTY_VALUES` 过滤（行 132-135）确保 `geometry_data: {}` 不会覆盖 agent context_class 默认值。
+- `app/routers/knowledge_router.py` 本次未修改，仍依赖 `request.state.project_id` 注入；前端预留 `context_overrides.project_id` 字段供后续改造。
+
+**测试覆盖**：
+
+- 前端 Vitest `web/Agent/src/utils/__tests__/api.agent-chat.test.js` 新增 6 用例（默认含 geometry_data / 传 projectId 写入 / 不传 projectId 省略 / 顶层 geometry_data 移除 / knowledgeChatStream 传 projectId / knowledgeChatStream 不传省略）。
+- 后端 pytest `app/tests/routers/test_agent_router.py` 新增 2 用例（前端覆盖 middleware / 不传回退 middleware），共 29 用例全过。
+
+**设计原则**：与 `newSession` 显式传 `projectId` 一致，「显式优于隐式」；保留 `session_auth_middleware` 注入作为兜底通道，向后兼容旧前端客户端。
+
 ## API 路由汇总
 
 | 前缀                                | 模块                   | 说明                                                                                                                                                                                  |

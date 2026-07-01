@@ -1190,3 +1190,170 @@ def test_chat_arbitrary_context_overrides_pass_through(
         "tags": ["urgent"],               # 保留
     }
     assert captured[0]["context_overrides"] == expected
+
+
+# =============================================================================
+# 2026-07-01 新增：context_overrides.project_id 与 middleware 注入 project_id 合并优先级
+# 验证前端显式传入的 project_id 优先于 session_auth_middleware 注入的 request.state.project_id；
+# 同时保留 middleware 兜底语义，向后兼容旧前端（不传 project_id 场景）。
+#
+# 测试策略：通过 httpx.ASGITransport + 自定义 ASGI 中间件构造独立 HTTP 客户端，
+#   避免与 session-scoped app fixture 的中间件链冲突（TestClient 启动后无法 add_middleware）。
+#   同时 mock session_cache 让 session_auth_middleware 真实查询逻辑可用。
+# =============================================================================
+
+
+def _build_async_chat_client(app, middleware_project_id):
+    """构造带 ASGI 中间件注入 project_id 的异步 HTTP 客户端。
+
+    使用纯 ASGI callable 中间件（避开 BaseHTTPMiddleware 的 Request 重建问题），
+    在 scope 层面注入 state.project_id，确保 FastAPI Request.state 可读到。
+
+    参数:
+        app: FastAPI 应用实例
+        middleware_project_id: 模拟 session_auth_middleware 注入到 request.state.project_id 的值
+
+    返回:
+        httpx.AsyncClient 实例
+    """
+    import httpx
+
+    class _InjectProjectIdASGI:
+        def __init__(self, inner_app):
+            self.inner_app = inner_app
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] == "http":
+                scope.setdefault("state", {})["project_id"] = middleware_project_id
+            await self.inner_app(scope, receive, send)
+
+    wrapped_app = _InjectProjectIdASGI(app)
+    transport = httpx.ASGITransport(app=wrapped_app)
+    return httpx.AsyncClient(transport=transport, base_url="http://testserver")
+
+
+def _patch_agent_router_for_capture(monkeypatch, captured, middleware_project_id=None):
+    """mock chat 路由依赖：build_agent_instance / get_agent_config / get_session / session_cache。
+
+    参数:
+        middleware_project_id: 若非 None，mock session_cache.get_session 返回
+            {'project_id': middleware_project_id}，模拟 session_auth_middleware 的真实注入。
+    """
+    from unittest.mock import MagicMock
+    from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+
+    async def fake_build(self, agent_name, session_id, message=None,
+                          context_overrides=None, resume=None,
+                          state_class_kwargs=None, system_prompt_override=None):
+        captured.append({
+            "agent_name": agent_name,
+            "session_id": session_id,
+            "context_overrides": dict(context_overrides or {}),
+        })
+        return MagicMock(name="fake_agent"), MagicMock(name="fake_context"), MagicMock(name="fake_state")
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.build_agent_instance",
+        fake_build,
+    )
+
+    async def fake_get(self, name):
+        return UnifiedAgentConfig(
+            name=name,
+            display_name="测试智能体",
+            description="",
+            system_prompt="# 测试",
+            state_class=MagicMock(return_value={"messages": []}),
+            context_class=MagicMock(return_value={"session_id": "test"}),
+        )
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.get_agent_config",
+        fake_get,
+    )
+
+    async def mock_get_session(session_id):
+        return None
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.session_db.SessionDB.get_session", mock_get_session
+    )
+
+    if middleware_project_id is not None:
+        async def mock_session_cache_verify(session_id, username):
+            return True
+
+        async def mock_session_cache_get(session_id):
+            return {"project_id": middleware_project_id}
+
+        monkeypatch.setattr(
+            "app.shared.utils.Session.SessionCache.session_cache.verify_session",
+            mock_session_cache_verify,
+        )
+        monkeypatch.setattr(
+            "app.shared.utils.Session.SessionCache.session_cache.get_session",
+            mock_session_cache_get,
+        )
+
+
+@pytest.mark.asyncio
+async def test_chat_context_overrides_project_id_overrides_middleware(app, admin_headers, monkeypatch):
+    """前端 context_overrides.project_id 优先于 middleware 注入。
+
+    验证：当 context_overrides 含 project_id=42 且 session_auth_middleware 注入 project_id=999 时，
+    service.build_agent_instance 收到的 context_overrides.project_id === 42。
+    """
+    captured = []
+    _patch_agent_router_for_capture(monkeypatch, captured, middleware_project_id=999)
+
+    def fake_stream(*args, **kwargs):
+        yield "data: test\n\n"
+
+    monkeypatch.setattr("app.routers.agent_router.generate_stream_response", fake_stream)
+
+    async with _build_async_chat_client(app, middleware_project_id=999) as ac:
+        headers = {**admin_headers, "X-Session-ID": "test-session"}
+        response = await ac.post("/api/agent/chat", json={
+            "message": "hello",
+            "session_id": "test-session",
+            "agent_name": "map_agent",
+            "context_overrides": {
+                "geometry_data": {},
+                "project_id": 42,
+            },
+        }, headers=headers)
+
+    assert response.status_code == 200
+    assert len(captured) == 1
+    assert captured[0]["context_overrides"]["project_id"] == 42
+
+
+@pytest.mark.asyncio
+async def test_chat_without_context_overrides_project_id_falls_back_to_middleware(app, admin_headers, monkeypatch):
+    """不传 project_id 时回退到 middleware 注入。
+
+    验证：当 context_overrides 不含 project_id 且 session_auth_middleware 注入 project_id=777 时，
+    service.build_agent_instance 收到的 context_overrides.project_id === 777。
+    """
+    captured = []
+    _patch_agent_router_for_capture(monkeypatch, captured, middleware_project_id=777)
+
+    def fake_stream(*args, **kwargs):
+        yield "data: test\n\n"
+
+    monkeypatch.setattr("app.routers.agent_router.generate_stream_response", fake_stream)
+
+    async with _build_async_chat_client(app, middleware_project_id=777) as ac:
+        headers = {**admin_headers, "X-Session-ID": "test-session"}
+        response = await ac.post("/api/agent/chat", json={
+            "message": "hello",
+            "session_id": "test-session",
+            "agent_name": "map_agent",
+            "context_overrides": {
+                "geometry_data": {},
+            },
+        }, headers=headers)
+
+    assert response.status_code == 200
+    assert len(captured) == 1
+    assert captured[0]["context_overrides"]["project_id"] == 777

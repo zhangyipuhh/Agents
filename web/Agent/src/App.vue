@@ -439,7 +439,10 @@ async function handleSendMessage(message, attachments = []) {
   currentStreamReader = null
 
   try {
-    const stream = await chatStream(sessionId.value, message, attachments, null, agentName.value)
+    // 2026-07-01 新增：把当前会话绑定的项目 ID 通过 context_overrides.project_id 显式传入，
+    // 与 sessions.project_id 隐式链路解耦；null 时由 chatStream 内部不写入该键，由 middleware 注入兜底。
+    const projectIdForChat = currentProject.value ? currentProject.value.id : null
+    const stream = await chatStream(sessionId.value, message, attachments, null, agentName.value, projectIdForChat)
     currentStreamReader = stream.getReader()
     // 拿到 SSE reader 后再置位 isStreaming，避免排队/握手阶段状态长期悬空无法复位
     isStreaming.value = true
@@ -536,7 +539,9 @@ async function handleApprovalSubmit({ answers }) {
   currentStreamReader = null
 
   try {
-    const stream = await chatStream(sessionId.value, '', [], resumeData, agentName.value)
+    // 2026-07-01 新增：resume 时同样把当前项目 ID 显式带入，避免会话中断恢复后丢失项目上下文
+    const projectIdForChat = currentProject.value ? currentProject.value.id : null
+    const stream = await chatStream(sessionId.value, '', [], resumeData, agentName.value, projectIdForChat)
     currentStreamReader = stream.getReader()
     isStreaming.value = true
     const decoder = new TextDecoder()

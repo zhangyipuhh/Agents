@@ -701,7 +701,25 @@ export async function unbindSessionFromProject(sessionId) {
   return response.json()
 }
 
-export async function chatStream(sessionId, message, attachments = [], resume = null, agentName = null) {
+/**
+ * 统一 chat 流式接口
+ *
+ * 2026-07-01 新增：把 project_id 与 geometry_data 一并通过 context_overrides 通道传入
+ *   - project_id：会话当前绑定的项目 ID；非 null 时注入 context_overrides.project_id，
+ *     agent_router 合并逻辑（agent_router.py:122-124）让前端值优先于 middleware 注入；
+ *     null 时不传该键，由 middleware 注入兜底（与 sessions.project_id 保持一致）。
+ *   - geometry_data：从 body 顶层硬编码字段迁移到 context_overrides.geometry_data，
+ *     统一通过通用 context 通道，避免散落在 body 顶层造成维护混乱。
+ *
+ * @param {string} sessionId - 会话 ID
+ * @param {string} message - 用户消息文本
+ * @param {Array} [attachments=[]] - 附件列表
+ * @param {Object|null} [resume=null] - HITL 恢复参数
+ * @param {string|null} [agentName=null] - 目标智能体名称
+ * @param {number|null} [projectId=null] - 当前会话绑定的项目 ID；null 时不写入 context_overrides
+ * @returns {Promise<ReadableStream>} SSE 响应 body 流
+ */
+export async function chatStream(sessionId, message, attachments = [], resume = null, agentName = null, projectId = null) {
   const sid = sessionId || localStorage.getItem('session_id') || ''
   const response = await fetchWithAuth('/api/agent/chat', {
     method: 'POST',
@@ -714,8 +732,11 @@ export async function chatStream(sessionId, message, attachments = [], resume = 
     body: JSON.stringify({
       message: resume ? '' : message,
       session_id: sid,
-      geometry_data: {},
       attachments,
+      context_overrides: {
+        geometry_data: {},
+        ...(projectId != null ? { project_id: projectId } : {})
+      },
       ...(resume ? { resume } : {}),
       ...(agentName ? { agent_name: agentName } : {})
     })
@@ -732,7 +753,22 @@ export async function chatStream(sessionId, message, attachments = [], resume = 
   return response.body
 }
 
-export async function knowledgeChatStream(sessionId, message, attachments = [], resume = null) {
+/**
+ * 知识库 chat 流式接口
+ *
+ * 2026-07-01 新增：把 project_id 通过 context_overrides.project_id 显式传给后端。
+ *   注意：knowledge_router.py 当前不读取 context_overrides（保留独立 geometry_data 字段），
+ *   故本字段当前仅作为兼容性占位，等后续 knowledge_router 改造后即可生效。
+ *   项目目录路由暂时仍依赖 middleware 注入 request.state.project_id 兜底。
+ *
+ * @param {string} sessionId - 会话 ID
+ * @param {string} message - 用户消息文本
+ * @param {Array} [attachments=[]] - 附件列表
+ * @param {Object|null} [resume=null] - HITL 恢复参数
+ * @param {number|null} [projectId=null] - 当前会话绑定的项目 ID
+ * @returns {Promise<ReadableStream>} SSE 响应 body 流
+ */
+export async function knowledgeChatStream(sessionId, message, attachments = [], resume = null, projectId = null) {
   const sid = sessionId || localStorage.getItem('knowledge_session_id') || ''
   const response = await fetchWithAuth('/api/map/knowledge-chat', {
     method: 'POST',
@@ -745,8 +781,10 @@ export async function knowledgeChatStream(sessionId, message, attachments = [], 
     body: JSON.stringify({
       message: resume ? '' : message,
       session_id: sid,
-      geometry_data: {},
       attachments,
+      context_overrides: {
+        ...(projectId != null ? { project_id: projectId } : {})
+      },
       ...(resume ? { resume } : {})
     })
   })
