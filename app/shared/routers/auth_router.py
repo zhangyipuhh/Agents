@@ -211,7 +211,7 @@ async def register(request: RegisterRequest):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="密码必须包含数字"
         )
-    if not re.search(r'[!@#$%^&*()_+\-=[]{}|;:,.<>?]', request.password):
+    if not re.search(r'[!@#$%^&*()_+\-=\[\]{}|;:,.<>?]', request.password):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="密码必须包含特殊字符"
@@ -642,7 +642,8 @@ async def validate_token(request: Request):
     return {
         "username": payload["username"],
         "role": role,
-        "user_id": user.get('id') if user else None
+        "user_id": user.get('id') if user else None,
+        "allowed_agents": user.get('allowed_agents', []) if user else []
     }
 
 

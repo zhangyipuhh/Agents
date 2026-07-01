@@ -9,6 +9,9 @@ import SubAgentDrawer from './components/SubAgentDrawer.vue'
 import QueueStatusBanner from './components/QueueStatusBanner.vue'
 // 2026-06-30 新增：项目弹窗
 import ProjectDialog from './components/ProjectDialog.vue'
+// 2026-07-01 新增：会话文件抽屉与文件预览弹窗
+import SessionFileDrawer from './components/SessionFileDrawer.vue'
+import FilePreviewModal from './components/FilePreviewModal.vue'
 import {
   chatStream,
   createNewSession,
@@ -23,7 +26,10 @@ import {
   createProject,
   fetchProjectInfo,
   bindSessionToProject,
-  unbindSessionFromProject
+  unbindSessionFromProject,
+  // 2026-07-01 新增：会话文件 API
+  fetchSessionFileTree,
+  previewSessionFile
 } from './utils/api.js'
 import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage, isSubAgentHistoryItem, convertSubAgentHistoryToAiSubAgent, isSubAgentTool } from './utils/sseParser.js'
 import { redirectToLogin, tryRefreshOrRedirect } from './utils/auth.js'
@@ -39,6 +45,8 @@ const isLoggedIn = ref(false)
 // 避免因异步资源加载造成"页面内容闪烁两次"的视觉问题
 const authReady = ref(false)
 const currentUser = ref({ username: '', role: '', userId: null })
+// 2026-07-01 新增：当前用户允许使用的智能体名称列表
+const allowedAgents = ref([])
 
 const messages = reactive([])
 const sessionId = reactive({ value: '' })
@@ -64,6 +72,21 @@ let currentStreamReader = null
 // 2026-06-13 新增：子智能体详情抽屉状态
 const subAgentDrawerVisible = ref(false)
 const currentSubAgent = ref(null)
+
+// 2026-07-01 新增：会话文件抽屉与文件预览弹窗状态
+const sessionFileDrawerVisible = ref(false)
+const sessionFileTree = ref(null)
+const sessionFileTreeLoading = ref(false)
+const sessionFileTreeError = ref('')
+const filePreviewModalOpen = ref(false)
+const filePreviewData = ref({
+  content: '',
+  fileType: 'txt',
+  fileName: '',
+  loading: false,
+  previewMode: 'text',
+  fileUrl: ''
+})
 
 // 2026-06-15 新增：排队状态机（SSE queue 事件 / HTTP 429 共同驱动）
 // event: 'idle' | 'waiting' | 'ready'
@@ -146,6 +169,10 @@ const isEmptyState = computed(() => messages.length === 0)
 const historyLoadFailed = ref(false)
 const canEditProject = computed(() => isEmptyState.value && !historyLoadFailed.value)
 
+// 2026-07-01 新增：当前会话标题，用于 ChatArea 头部展示
+const currentSessionTitle = ref('')
+const currentSessionName = computed(() => currentSessionTitle.value || '新对话')
+
 /**
  * 应用用户数据到当前状态
  * @param {Object} data - 包含 username 和 role
@@ -165,6 +192,7 @@ function applyUserData(data) {
     role: data.role,
     userId: data.user_id || null
   }
+  allowedAgents.value = data.allowed_agents || []
   isLoggedIn.value = true
 }
 
@@ -300,6 +328,8 @@ async function newSession() {
 
     // 2026-07-01 新增：新建会话时重置历史加载失败标记（保守锁定策略失效，新会话允许选择项目）
     historyLoadFailed.value = false
+    // 2026-07-01 新增：重置当前会话标题
+    currentSessionTitle.value = ''
 
     // 2026-06-30 新增：新建会话时把当前项目一并传过去
     const projectIdForNew = currentProject.value ? currentProject.value.id : null
@@ -307,6 +337,8 @@ async function newSession() {
     // 关闭子智能体详情抽屉：避免上一个会话的 subagent 数据残留在 UI 上
     // 复用已有的 closeSubAgentDrawer()（会同步将 subAgentDrawerVisible 置 false，无需另清 currentSubAgent）
     closeSubAgentDrawer()
+    // 2026-07-01 新增：关闭会话文件抽屉
+    closeSessionFileDrawer()
 
     const newId = await createNewSession('session_id', projectIdForNew)
     sessionId.value = newId
@@ -684,6 +716,70 @@ function closeSubAgentDrawer() {
   subAgentDrawerVisible.value = false
 }
 
+// 2026-07-01 新增：会话文件抽屉打开/关闭与数据加载
+function openSessionFileDrawer() {
+  sessionFileDrawerVisible.value = true
+  loadSessionFileTree()
+}
+
+function closeSessionFileDrawer() {
+  sessionFileDrawerVisible.value = false
+}
+
+async function loadSessionFileTree() {
+  if (!sessionId.value) return
+  sessionFileTreeLoading.value = true
+  sessionFileTreeError.value = ''
+  try {
+    const data = await fetchSessionFileTree(sessionId.value)
+    sessionFileTree.value = data.tree || null
+  } catch (err) {
+    console.error('加载会话文件树失败:', err)
+    sessionFileTreeError.value = err.message || '加载文件列表失败'
+    sessionFileTree.value = null
+  } finally {
+    sessionFileTreeLoading.value = false
+  }
+}
+
+async function handleSessionFileClick(file) {
+  if (!file || !file.path) return
+  filePreviewModalOpen.value = true
+  filePreviewData.value = {
+    content: '',
+    fileType: file.name ? file.name.split('.').pop().toLowerCase() : 'txt',
+    fileName: file.name || '文件预览',
+    loading: true,
+    previewMode: 'text',
+    fileUrl: ''
+  }
+  try {
+    const data = await previewSessionFile(sessionId.value, file.path)
+    filePreviewData.value = {
+      content: data.content || '',
+      fileType: data.type || 'txt',
+      fileName: data.file_name || file.name || '文件预览',
+      loading: false,
+      previewMode: data.preview_mode || 'text',
+      fileUrl: data.file_url || ''
+    }
+  } catch (err) {
+    console.error('预览文件失败:', err)
+    filePreviewData.value = {
+      content: err.message || '预览文件失败',
+      fileType: 'txt',
+      fileName: file.name || '文件预览',
+      loading: false,
+      previewMode: 'text',
+      fileUrl: ''
+    }
+  }
+}
+
+function closeFilePreviewModal() {
+  filePreviewModalOpen.value = false
+}
+
 function handleTagSelect(tag, index) {
   console.log('选择技能标签:', tag.label)
 }
@@ -767,10 +863,14 @@ async function handleSessionSwitch(targetSessionId) {
 
   // 2026-07-01 新增：进入新的切换会话前重置历史加载失败标记
   historyLoadFailed.value = false
+  // 2026-07-01 新增：重置当前会话标题，等待 detail 返回后再设置
+  currentSessionTitle.value = ''
 
   // 关闭子智能体详情抽屉：上一个会话的 subagent 详情不应在切换后仍残留
   // 与 newSession() 保持一致行为
   closeSubAgentDrawer()
+  // 2026-07-01 新增：关闭会话文件抽屉
+  closeSessionFileDrawer()
 
   // 切换到新会话
   sessionId.value = targetSessionId
@@ -779,6 +879,9 @@ async function handleSessionSwitch(targetSessionId) {
   try {
     // 获取会话详情（含附件列表）
     const detail = await fetchSessionDetail(targetSessionId)
+
+    // 2026-07-01 新增：恢复会话标题到 ChatArea 头部
+    currentSessionTitle.value = detail.title || ''
 
     // 2026-06-26 新增：恢复会话绑定的智能体状态
     const boundAgentType = detail.agent_type
@@ -962,11 +1065,14 @@ async function handleSessionSwitch(targetSessionId) {
         v-if="!isEmptyState"
         :messages="messages"
         :is-streaming="isStreaming.value"
+        :session-name="currentSessionName"
+        :show-file-icon="true"
         @regenerate="handleRegenerate"
         @like="handleLike"
         @dislike="handleDislike"
         @copy="handleCopy"
         @open-subagent-drawer="openSubAgentDrawer"
+        @open-session-file-drawer="openSessionFileDrawer"
       />
 
       <div v-if="isEmptyState" class="welcome-title">Agent, 让你的工作更轻松</div>
@@ -993,6 +1099,7 @@ async function handleSessionSwitch(targetSessionId) {
           :bound-agent-display-name="agentDisplayName || ''"
           :current-project="currentProject"
           :project-locked="!canEditProject"
+          :allowed-agents="allowedAgents"
           @send="handleSendMessage"
           @tool-action="handleToolAction"
           @new-chat="newSession"
@@ -1029,6 +1136,28 @@ async function handleSessionSwitch(targetSessionId) {
       :visible="subAgentDrawerVisible"
       :sub-agent="currentSubAgent"
       @close="closeSubAgentDrawer"
+    />
+
+    <!-- 2026-07-01 新增：会话文件抽屉 -->
+    <SessionFileDrawer
+      :visible="sessionFileDrawerVisible"
+      :file-tree="sessionFileTree"
+      :loading="sessionFileTreeLoading"
+      :error="sessionFileTreeError"
+      @close="closeSessionFileDrawer"
+      @file-click="handleSessionFileClick"
+    />
+
+    <!-- 2026-07-01 新增：文件预览弹窗 -->
+    <FilePreviewModal
+      :is-open="filePreviewModalOpen"
+      :content="filePreviewData.content"
+      :file-type="filePreviewData.fileType"
+      :file-name="filePreviewData.fileName"
+      :loading="filePreviewData.loading"
+      :preview-mode="filePreviewData.previewMode"
+      :file-url="filePreviewData.fileUrl"
+      @close="closeFilePreviewModal"
     />
   </div>
 </template>

@@ -56,7 +56,7 @@ describe('InputBox 命令检测', () => {
 
   it('test_normal_text_emits_send 普通文本触发 send 事件', async () => {
     const wrapper = mount(InputBox, {
-      props: { sessionId: 'sid_1', isStreaming: false },
+      props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] },
     })
     const textarea = wrapper.find('textarea')
     await textarea.setValue('hello world')
@@ -71,7 +71,7 @@ describe('InputBox 命令检测', () => {
 
   it('test_slash_input_identified_as_command / 开头识别为命令', async () => {
     const wrapper = mount(InputBox, {
-      props: { sessionId: 'sid_1', isStreaming: false },
+      props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] },
     })
     const textarea = wrapper.find('textarea')
     await textarea.setValue('/agent map_agent')
@@ -82,7 +82,7 @@ describe('InputBox 命令检测', () => {
 
   it('test_agent_command_emits_agent_switched /agent 命令触发切换事件', async () => {
     const wrapper = mount(InputBox, {
-      props: { sessionId: 'sid_1', isStreaming: false },
+      props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] },
     })
     const textarea = wrapper.find('textarea')
     await textarea.setValue('/agent map_agent')
@@ -99,7 +99,7 @@ describe('InputBox 命令检测', () => {
 
   it('test_unknown_command_shows_hint 未知命令显示未知命令提示', async () => {
     const wrapper = mount(InputBox, {
-      props: { sessionId: 'sid_1', isStreaming: false },
+      props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] },
     })
     const textarea = wrapper.find('textarea')
     await textarea.setValue('/foo bar')
@@ -113,7 +113,7 @@ describe('InputBox 命令检测', () => {
       json: async () => [{ name: 'map_agent', display_name: '地图' }],
     })
     const wrapper = mount(InputBox, {
-      props: { sessionId: 'sid_1', isStreaming: false },
+      props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] },
     })
     const textarea = wrapper.find('textarea')
     await textarea.setValue('/agent non_exist')
@@ -135,7 +135,7 @@ describe('InputBox 命令检测', () => {
       return Promise.resolve({ ok: true, json: async () => ({ access_token: 'token' }) })
     })
     const wrapper = mount(InputBox, {
-      props: { sessionId: 'sid_1', isStreaming: false },
+      props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] },
     })
     const textarea = wrapper.find('textarea')
     await textarea.setValue('/agent map_agent')
@@ -153,7 +153,7 @@ describe('InputBox 命令检测', () => {
       json: async () => [{ name: 'map_agent', display_name: '地图' }],
     })
     const wrapper = mount(InputBox, {
-      props: { sessionId: 'sid_1', isStreaming: false },
+      props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] },
     })
     const textarea = wrapper.find('textarea')
     await textarea.setValue('/agents')
@@ -168,7 +168,7 @@ describe('InputBox 命令检测', () => {
   // 2026-06-24 新增：智能体快速选择下拉菜单测试
   it('test_slash_shows_agent_dropdown 输入 "/" 显示智能体下拉菜单', async () => {
     const wrapper = mount(InputBox, {
-      props: { sessionId: 'sid_1', isStreaming: false },
+      props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] },
     })
     const textarea = wrapper.find('textarea')
     await textarea.setValue('/')
@@ -182,7 +182,7 @@ describe('InputBox 命令检测', () => {
 
   it('test_select_agent_from_dropdown 从下拉菜单选中智能体后显示标签', async () => {
     const wrapper = mount(InputBox, {
-      props: { sessionId: 'sid_1', isStreaming: false },
+      props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] },
     })
     const textarea = wrapper.find('textarea')
     await textarea.setValue('/')
@@ -200,7 +200,7 @@ describe('InputBox 命令检测', () => {
 
   it('test_selected_agent_emits_switch_on_send 选中智能体后发送触发 agent-switched', async () => {
     const wrapper = mount(InputBox, {
-      props: { sessionId: 'sid_1', isStreaming: false },
+      props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] },
     })
     const textarea = wrapper.find('textarea')
     await textarea.setValue('/')
@@ -224,7 +224,7 @@ describe('InputBox 命令检测', () => {
 
   it('test_remove_selected_agent_tag 点击移除按钮可移除已选智能体标签', async () => {
     const wrapper = mount(InputBox, {
-      props: { sessionId: 'sid_1', isStreaming: false },
+      props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] },
     })
     const textarea = wrapper.find('textarea')
     await textarea.setValue('/')
@@ -245,7 +245,7 @@ describe('InputBox 命令检测', () => {
   // 2026-06-24 新增：验证组件挂载时自动加载智能体列表
   it('test_load_agents_on_mount 组件挂载时自动加载智能体列表', async () => {
     const wrapper = mount(InputBox, {
-      props: { sessionId: 'sid_1', isStreaming: false },
+      props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] }
     })
     await flushPromises()
     // 下拉菜单未显示，但 agentList 应在挂载时已填充
@@ -256,5 +256,60 @@ describe('InputBox 命令检测', () => {
     await flushPromises()
     expect(wrapper.find('.agent-dropdown-item').exists()).toBe(true)
     expect(wrapper.text()).toContain('地图')
+  })
+
+  // 2026-07-01 新增：allowedAgents 权限过滤测试
+  it('test_allowed_agents_filters_dropdown allowedAgents 过滤下拉列表', async () => {
+    global.fetch = vi.fn((url) => {
+      if (url === '/api/auth/refresh') {
+        return Promise.resolve({ ok: true, json: async () => ({ access_token: 'new-fake-token' }) })
+      }
+      if (url === '/api/agent/list') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => [
+            { name: 'map_agent', display_name: '地图' },
+            { name: 'audit_agent', display_name: '审计' }
+          ]
+        })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    })
+
+    const wrapper = mount(InputBox, {
+      props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] }
+    })
+    const textarea = wrapper.find('textarea')
+    await textarea.setValue('/')
+    await flushPromises()
+
+    expect(wrapper.find('.agent-dropdown-item').exists()).toBe(true)
+    expect(wrapper.text()).toContain('地图')
+    expect(wrapper.text()).not.toContain('审计')
+  })
+
+  it('test_empty_allowed_agents_shows_no_agents allowedAgents 为空时显示暂无可用智能体', async () => {
+    global.fetch = vi.fn((url) => {
+      if (url === '/api/auth/refresh') {
+        return Promise.resolve({ ok: true, json: async () => ({ access_token: 'new-fake-token' }) })
+      }
+      if (url === '/api/agent/list') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => [{ name: 'map_agent', display_name: '地图' }]
+        })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    })
+
+    const wrapper = mount(InputBox, {
+      props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: [] }
+    })
+    const textarea = wrapper.find('textarea')
+    await textarea.setValue('/')
+    await flushPromises()
+
+    expect(wrapper.find('.agent-dropdown-item').exists()).toBe(false)
+    expect(wrapper.text()).toContain('暂无可用智能体')
   })
 })

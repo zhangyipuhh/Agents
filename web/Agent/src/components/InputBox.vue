@@ -33,6 +33,11 @@ const props = defineProps({
   projectLocked: {
     type: Boolean,
     default: false
+  },
+  // 2026-07-01 新增：当前用户允许使用的智能体名称列表
+  allowedAgents: {
+    type: Array,
+    default: () => []
   }
 })
 
@@ -131,13 +136,19 @@ onMounted(() => {
 
 /**
  * 过滤后的智能体列表（当输入 "/" 后，可继续输入字符进行过滤）
+ * 额外按当前用户 allowedAgents 做权限过滤，空列表时返回 []
  */
 const filteredAgents = computed(() => {
+  const allowedList = props.allowedAgents || []
+  if (!allowedList.length) return []
+  const allowedSet = new Set(allowedList)
+  const allowedOnly = agentList.value.filter((a) => allowedSet.has(a.name))
+
   const trimmed = inputValue.value.trim()
-  if (trimmed === '/') return agentList.value
+  if (trimmed === '/') return allowedOnly
   if (!trimmed.startsWith('/')) return []
   const query = trimmed.slice(1).toLowerCase()
-  return agentList.value.filter(
+  return allowedOnly.filter(
     (a) =>
       a.name.toLowerCase().includes(query) ||
       (a.display_name && a.display_name.toLowerCase().includes(query))

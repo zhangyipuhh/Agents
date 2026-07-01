@@ -177,7 +177,7 @@ export async function updateUsername(userId, newUsername) {
 /**
  * 获取用户个人资料
  * @param {number} userId - 用户ID
- * @returns {Promise<{id: number, username: string, role: string, real_name: string, phone: string, email: string, department: string, position: string, created_at: string, updated_at: string}>} 用户资料
+ * @returns {Promise<{id: number, username: string, role: string, real_name: string, phone: string, email: string, department: string, position: string, allowed_agents: Array<string>, created_at: string, updated_at: string}>} 用户资料
  * @throws {Error} 获取失败时抛出错误
  */
 export async function fetchUserProfile(userId) {
@@ -206,6 +206,7 @@ export async function fetchUserProfile(userId) {
  * @param {string} profileData.email - 邮箱
  * @param {string} profileData.department - 部门
  * @param {string} profileData.position - 职位
+ * @param {Array<string>} [profileData.allowed_agents] - 允许使用的智能体名称列表
  * @returns {Promise<{message: string}>} 更新结果
  * @throws {Error} 更新失败时抛出错误
  */
@@ -224,7 +225,8 @@ export async function updateUserProfile(userId, profileData) {
       phone: profileData.phone || '',
       email: profileData.email || '',
       department: profileData.department || '',
-      position: profileData.position || ''
+      position: profileData.position || '',
+      allowed_agents: profileData.allowed_agents || []
     })
   })
 
@@ -312,7 +314,7 @@ async function refreshAccessToken() {
 /**
  * 验证 Access Token 有效性
  * 调用 /api/auth/validate 检查当前 Access Token 是否有效
- * @returns {Promise<{username: string, role: string}>}
+ * @returns {Promise<{username: string, role: string, allowed_agents: Array<string>}>}
  * @throws {Error} Token 无效或过期时抛出错误
  */
 export async function validateToken() {
@@ -873,6 +875,28 @@ export async function updateSessionTitle(sessionId, title) {
 }
 
 /**
+ * 导出会话为 Markdown 文件
+ * @param {string} sessionId - 会话 ID
+ * @returns {Promise<{text: string, filename: string}>} Markdown 文本与文件名
+ * @throws {Error} 导出失败时抛出错误
+ */
+export async function exportSessionMarkdown(sessionId) {
+  const response = await fetchWithAuth(`/api/session/${sessionId}/export/markdown`, {
+    method: 'GET',
+    headers: { 'Accept': 'text/markdown' }
+  })
+  if (!response.ok) throw new Error(`导出失败: ${response.status}`)
+
+  const text = await response.text()
+  const disposition = response.headers.get('content-disposition') || ''
+  let filename = 'session.md'
+  const match = disposition.match(/filename\*=UTF-8''([^;]+)/i)
+  if (match) filename = decodeURIComponent(match[1])
+
+  return { text, filename }
+}
+
+/**
  * 获取会话附件列表
  * @param {string} sessionId - 会话 ID
  * @returns {Promise<{attachments: Array}>} 附件列表
@@ -884,6 +908,43 @@ export async function fetchSessionAttachments(sessionId) {
     headers: { 'Content-Type': 'application/json' }
   })
   if (!response.ok) throw new Error(`获取附件列表失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 获取会话文件空间树形结构
+ * @param {string} sessionId - 会话 ID
+ * @returns {Promise<{tree: Object}>} 文件树根节点
+ * @throws {Error} 获取失败时抛出错误
+ */
+export async function fetchSessionFileTree(sessionId) {
+  const response = await fetchWithAuth(`/api/session/${sessionId}/files/tree`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `获取文件树失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 预览会话文件空间中的单个文件
+ * @param {string} sessionId - 会话 ID
+ * @param {string} storedPath - 文件存储路径
+ * @returns {Promise<{path: string, content: string, type: string, preview_mode: string, file_url: string, file_name: string}>} 预览数据
+ * @throws {Error} 预览失败时抛出错误
+ */
+export async function previewSessionFile(sessionId, storedPath) {
+  const response = await fetchWithAuth(
+    `/api/session/${sessionId}/files/preview?stored_path=${encodeURIComponent(storedPath)}`,
+    { method: 'GET', headers: { 'Content-Type': 'application/json' } }
+  )
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `预览文件失败: ${response.status}`)
+  }
   return response.json()
 }
 
@@ -943,7 +1004,7 @@ export async function fetchFilePreview(path) {
 
 /**
  * 获取用户列表（admin 专用）
- * @returns {Promise<{users: Array}>} 用户列表
+ * @returns {Promise<Array<{id: number, username: string, real_name: string, role: string, allowed_agents: Array<string>, created_at: string, updated_at: string}>>} 用户列表
  * @throws {Error} 获取失败时抛出错误
  */
 export async function fetchUserList() {
@@ -966,6 +1027,7 @@ export async function fetchUserList() {
  * @param {string} userData.email - 邮箱
  * @param {string} userData.department - 部门
  * @param {string} userData.position - 职位
+ * @param {Array<string>} [userData.allowed_agents] - 允许使用的智能体名称列表
  * @returns {Promise<{message: string, user_id: number}>} 创建结果
  * @throws {Error} 创建失败时抛出错误
  */
@@ -992,6 +1054,7 @@ export async function createUser(userData) {
  * @param {string} userData.department - 部门
  * @param {string} userData.position - 职位
  * @param {string} userData.role - 角色
+ * @param {Array<string>} [userData.allowed_agents] - 允许使用的智能体名称列表
  * @returns {Promise<{message: string}>} 更新结果
  * @throws {Error} 更新失败时抛出错误
  */

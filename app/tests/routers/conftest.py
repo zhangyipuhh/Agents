@@ -113,9 +113,9 @@ def _mock_user_db_for_admin_auth(monkeypatch):
     from unittest.mock import AsyncMock
     async def fake_get_user_by_username(username):
         if username == "admin":
-            return {"id": 1, "username": "admin", "role": "admin"}
+            return {"id": 1, "username": "admin", "role": "admin", "allowed_agents": ["map_agent", "test_agent"]}
         if username == "testuser":
-            return {"id": 2, "username": "testuser", "role": "user"}
+            return {"id": 2, "username": "testuser", "role": "user", "allowed_agents": []}
         return None
     monkeypatch.setattr(
         "app.shared.utils.auth.user_db.UserDB.get_user_by_username",

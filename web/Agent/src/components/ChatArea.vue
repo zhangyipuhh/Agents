@@ -10,10 +10,19 @@ const props = defineProps({
   isStreaming: {
     type: Boolean,
     default: false
+  },
+  // 2026-07-01 新增：会话名称与文件抽屉入口控制
+  sessionName: {
+    type: String,
+    default: ''
+  },
+  showFileIcon: {
+    type: Boolean,
+    default: true
   }
 })
 
-const emit = defineEmits(['copy', 'regenerate', 'like', 'dislike', 'open-subagent-drawer'])
+const emit = defineEmits(['copy', 'regenerate', 'like', 'dislike', 'open-subagent-drawer', 'open-session-file-drawer'])
 
 const chatContainer = ref(null)
 const showScrollButton = ref(false)
@@ -145,6 +154,23 @@ defineExpose({
 
 <template>
   <div class="chat-area" ref="chatContainer">
+    <!-- 2026-07-01 新增：会话名称头部与文件抽屉入口 -->
+    <div v-if="sessionName" class="chat-area-header">
+      <span class="chat-session-name" :title="sessionName">{{ sessionName }}</span>
+      <button
+        v-if="showFileIcon"
+        type="button"
+        class="chat-file-drawer-btn"
+        title="打开会话文件空间"
+        aria-label="打开会话文件空间"
+        @click="emit('open-session-file-drawer')"
+      >
+        <svg viewBox="0 0 24 24" fill="currentColor" class="file-drawer-icon">
+          <path d="M2 6a2 2 0 012-2h5l2 2h9a2 2 0 012 2v9a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/>
+        </svg>
+      </button>
+    </div>
+
     <div class="messages-container">
       <div v-if="messages.length === 0" class="empty-state">
         <div class="empty-icon">
@@ -246,6 +272,59 @@ defineExpose({
 
   scrollbar-width: thin;
   scrollbar-color: var(--color-border) transparent;
+}
+
+/* 2026-07-01 新增：会话名称头部 */
+.chat-area-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 900px;
+  margin: 0 auto 16px;
+  padding: 8px 0;
+}
+
+.chat-session-name {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-file-drawer-btn {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-left: 12px;
+  background-color: #22c55e;
+  border: none;
+  border-radius: 50%;
+  color: #ffffff;
+  cursor: pointer;
+  transition: background-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+  box-shadow: 0 2px 6px rgba(34, 197, 94, 0.35);
+}
+
+.chat-file-drawer-btn:hover {
+  background-color: #16a34a;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(34, 197, 94, 0.45);
+}
+
+.chat-file-drawer-btn:active {
+  transform: scale(var(--scale-active));
+}
+
+.file-drawer-icon {
+  width: 20px;
+  height: 20px;
 }
 
 .messages-container {

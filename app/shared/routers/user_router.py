@@ -30,6 +30,7 @@ class UserResponse(BaseModel):
         username (str): 用户名
         real_name (str): 真实姓名
         role (str): 用户角色（admin / user）
+        allowed_agents (List[str]): 允许使用的智能体名称列表
         created_at (str): 创建时间
         updated_at (str): 更新时间
     """
@@ -37,6 +38,7 @@ class UserResponse(BaseModel):
     username: str
     real_name: str
     role: str
+    allowed_agents: List[str] = []
     created_at: str
     updated_at: str
 
@@ -72,11 +74,13 @@ class ProfileUpdateRequest(BaseModel):
         email (str): 邮箱
         department (str): 部门
         position (str): 职位
+        allowed_agents (List[str]): 允许使用的智能体名称列表
     """
     phone: str
     email: str
     department: str
     position: str
+    allowed_agents: List[str] = []
 
 
 class UserCreateRequest(BaseModel):
@@ -92,6 +96,7 @@ class UserCreateRequest(BaseModel):
         email (str): 邮箱
         department (str): 部门
         position (str): 职位
+        allowed_agents (List[str]): 允许使用的智能体名称列表
     """
     username: str
     password: str
@@ -101,6 +106,7 @@ class UserCreateRequest(BaseModel):
     email: str = ''
     department: str = ''
     position: str = ''
+    allowed_agents: List[str] = []
 
 
 class UserUpdateRequest(BaseModel):
@@ -114,6 +120,7 @@ class UserUpdateRequest(BaseModel):
         department (str): 部门
         position (str): 职位
         role (str): 角色
+        allowed_agents (List[str]): 允许使用的智能体名称列表
     """
     real_name: str = ''
     phone: str = ''
@@ -121,6 +128,7 @@ class UserUpdateRequest(BaseModel):
     department: str = ''
     position: str = ''
     role: str = 'user'
+    allowed_agents: List[str] = []
 
 
 class UserProfileResponse(BaseModel):
@@ -136,6 +144,7 @@ class UserProfileResponse(BaseModel):
         email (str): 邮箱
         department (str): 部门
         position (str): 职位
+        allowed_agents (List[str]): 允许使用的智能体名称列表
         created_at (str): 创建时间
         updated_at (str): 更新时间
     """
@@ -147,6 +156,7 @@ class UserProfileResponse(BaseModel):
     email: str
     department: str
     position: str
+    allowed_agents: List[str] = []
     created_at: str
     updated_at: str
 
@@ -167,6 +177,7 @@ async def list_users():
             username=u['username'],
             real_name=u.get('real_name', ''),
             role=u.get('role', 'user'),
+            allowed_agents=u.get('allowed_agents', []),
             created_at=str(u['created_at']),
             updated_at=str(u['updated_at'])
         )
@@ -234,7 +245,8 @@ async def create_user_admin(request: UserCreateRequest, req: Request):
             phone=request.phone,
             email=request.email,
             department=request.department,
-            position=request.position
+            position=request.position,
+            allowed_agents=request.allowed_agents
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -361,7 +373,8 @@ async def update_user_admin(user_id: int, request: UserUpdateRequest, req: Reque
         email=request.email,
         department=request.department,
         position=request.position,
-        role=request.role
+        role=request.role,
+        allowed_agents=request.allowed_agents
     )
     if not success:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="更新失败")
@@ -597,6 +610,7 @@ async def get_user_profile(user_id: int, req: Request):
         email=user.get('email', ''),
         department=user.get('department', ''),
         position=user.get('position', ''),
+        allowed_agents=user.get('allowed_agents', []),
         created_at=str(user['created_at']),
         updated_at=str(user['updated_at'])
     )
@@ -652,7 +666,9 @@ async def update_user_profile(user_id: int, request: ProfileUpdateRequest, req: 
             detail="请输入有效的邮箱地址"
         )
 
-    success = await UserDB.update_profile(user_id, phone, email, department, position)
+    success = await UserDB.update_profile(
+        user_id, phone, email, department, position, allowed_agents=request.allowed_agents
+    )
     if not success:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="更新失败")
 

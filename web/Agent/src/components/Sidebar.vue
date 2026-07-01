@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import UserSettingsDialog from './UserSettingsDialog.vue'
-import { fetchSessionList, deleteSession, fetchProjectList } from '../utils/api.js'
+import { fetchSessionList, deleteSession, fetchProjectList, updateSessionTitle, exportSessionMarkdown } from '../utils/api.js'
 
 const props = defineProps({
   currentPage: {
@@ -44,6 +44,16 @@ const isLoadingSessions = ref(false)
 const projects = ref([])
 const isLoadingProjects = ref(false)
 const projectCollapsedMap = ref({})
+
+/* ---- 右键菜单状态 ---- */
+const contextMenuVisible = ref(false)
+const contextMenuPosition = ref({ x: 0, y: 0 })
+const contextMenuSession = ref(null)
+
+/* ---- 行内重命名状态 ---- */
+const editingSessionId = ref(null)
+const editingTitle = ref('')
+const editingInputRef = ref(null)
 
 /**
  * 从后端加载会话列表
@@ -329,6 +339,105 @@ const handleClickOutside = (event) => {
   if (!isClickOnAvatar && !isClickOnMenu) {
     closeUserMenu()
   }
+
+  // 点击会话右键菜单外部时关闭右键菜单
+  const isClickOnSessionContextMenu = event.target.closest('.session-context-menu')
+  if (!isClickOnSessionContextMenu) {
+    closeContextMenu()
+  }
+}
+
+/* ---- 会话右键菜单与行内重命名 ---- */
+
+/**
+ * 打开会话右键菜单
+ * @param {Object} session - 会话对象
+ * @param {MouseEvent} event - 鼠标事件对象
+ */
+const handleSessionContextMenu = (session, event) => {
+  event.preventDefault()
+  contextMenuSession.value = session
+  contextMenuPosition.value = { x: event.clientX, y: event.clientY }
+  contextMenuVisible.value = true
+}
+
+/**
+ * 关闭会话右键菜单
+ */
+const closeContextMenu = () => {
+  contextMenuVisible.value = false
+  contextMenuSession.value = null
+}
+
+/**
+ * 开始行内重命名会话
+ * @param {Object} session - 会话对象
+ */
+const startRenameSession = (session) => {
+  closeContextMenu()
+  editingSessionId.value = session.sessionId
+  editingTitle.value = session.title
+  nextTick(() => {
+    editingInputRef.value?.focus()
+  })
+}
+
+/**
+ * 确认保存重命名后的标题
+ * @returns {Promise<void>}
+ */
+const confirmRename = async () => {
+  const id = editingSessionId.value
+  const newTitle = editingTitle.value.trim()
+  editingSessionId.value = null
+
+  if (!id || !newTitle) return
+
+  // 乐观更新本地标题
+  const session = historySessions.value.find(s => s.sessionId === id)
+  const oldTitle = session ? session.title : ''
+  if (session) session.title = newTitle
+
+  try {
+    await updateSessionTitle(id, newTitle)
+  } catch (err) {
+    console.error('重命名失败:', err)
+    // 失败时回滚
+    if (session) session.title = oldTitle
+    await loadSessionList()
+  }
+}
+
+/**
+ * 取消行内重命名
+ */
+const cancelRename = () => {
+  editingSessionId.value = null
+  editingTitle.value = ''
+}
+
+/**
+ * 导出会话为 Markdown 文件
+ * @param {Object} session - 会话对象
+ * @returns {Promise<void>}
+ */
+const exportSession = async (session) => {
+  closeContextMenu()
+  try {
+    const { text, filename } = await exportSessionMarkdown(session.sessionId)
+    const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch (err) {
+    console.error('导出失败:', err)
+    alert('导出失败，请重试')
+  }
 }
 
 // 监听菜单显示状态变化，更新位置
@@ -468,9 +577,20 @@ onUnmounted(() => {
                   class="history-item"
                   :class="{ active: session.active }"
                   @click="handleSessionClick(session)"
+                  @contextmenu.prevent="handleSessionContextMenu(session, $event)"
                 >
                   <div class="history-content">
-                    <span class="history-title-text">{{ session.title }}</span>
+                    <input
+                      v-if="editingSessionId === session.sessionId"
+                      ref="editingInputRef"
+                      v-model="editingTitle"
+                      class="history-title-input"
+                      type="text"
+                      @blur="confirmRename"
+                      @keydown.enter="confirmRename"
+                      @keydown.esc="cancelRename"
+                    />
+                    <span v-else class="history-title-text">{{ session.title }}</span>
                     <div class="history-meta">
                       <span class="history-time">{{ session.time }}</span>
                       <button class="history-delete-btn" @click="handleDeleteSession(session.sessionId, session.title, $event)" title="删除会话">
@@ -529,9 +649,20 @@ onUnmounted(() => {
             class="history-item"
             :class="{ active: session.active }"
             @click="handleSessionClick(session)"
+            @contextmenu.prevent="handleSessionContextMenu(session, $event)"
           >
             <div class="history-content">
-              <span class="history-title-text">{{ session.title }}</span>
+              <input
+                v-if="editingSessionId === session.sessionId"
+                ref="editingInputRef"
+                v-model="editingTitle"
+                class="history-title-input"
+                type="text"
+                @blur="confirmRename"
+                @keydown.enter="confirmRename"
+                @keydown.esc="cancelRename"
+              />
+              <span v-else class="history-title-text">{{ session.title }}</span>
               <div class="history-meta">
                 <span class="history-time">{{ session.time }}</span>
                 <button class="history-delete-btn" @click="handleDeleteSession(session.sessionId, session.title, $event)" title="删除会话">
@@ -623,6 +754,32 @@ onUnmounted(() => {
           </div>
         </div>
       </Transition>
+    </Teleport>
+
+    <!--
+      会话右键菜单 - 使用 Teleport 挂载到 body 层级
+      原因：sidebar 容器设置 overflow: hidden，若不 Teleport 菜单会被裁剪
+    -->
+    <Teleport to="body">
+      <div
+        v-if="contextMenuVisible"
+        class="session-context-menu"
+        :style="{ top: `${contextMenuPosition.y}px`, left: `${contextMenuPosition.x}px` }"
+        @click.stop
+      >
+        <div class="session-context-menu-item" @click="startRenameSession(contextMenuSession)">
+          <svg class="menu-item-icon" viewBox="0 0 20 20" fill="currentColor">
+            <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"/>
+          </svg>
+          <span>重命名</span>
+        </div>
+        <div class="session-context-menu-item" @click="exportSession(contextMenuSession)">
+          <svg class="menu-item-icon" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd"/>
+          </svg>
+          <span>导出为 Markdown</span>
+        </div>
+      </div>
     </Teleport>
   </aside>
 </template>
@@ -1644,5 +1801,58 @@ onUnmounted(() => {
 
 .project-sessions .history-item {
   padding: 8px 10px;
+}
+
+/* =============================================
+   会话右键菜单
+   - 通过 Teleport 挂载到 body，避免 sidebar overflow:hidden 裁剪
+   ============================================= */
+.session-context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 160px;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  padding: 6px;
+  animation: menuFadeIn 0.15s ease;
+}
+
+.session-context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: var(--transition-colors);
+}
+
+.session-context-menu-item:hover {
+  background-color: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.session-context-menu-item:active {
+  transform: scale(var(--scale-active));
+}
+
+/* 行内重命名输入框 */
+.history-title-input {
+  width: 100%;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-primary);
+  background: transparent;
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  outline: none;
+}
+
+.history-title-input:focus {
+  background-color: var(--color-bg-secondary);
 }
 </style>

@@ -164,3 +164,78 @@ def test_ensure_admin_exists():
     admin = asyncio.run(UserDB.get_user_by_username("admin"))
     assert admin is not None
     assert admin["role"] == "admin"
+
+
+def test_create_user_default_allowed_agents():
+    """
+    测试创建用户时 allowed_agents 默认为空列表。
+
+    Returns:
+        None
+    """
+    asyncio.run(UserDB.create_user("agent_default_user", "password123"))
+    user = asyncio.run(UserDB.get_user_by_username("agent_default_user"))
+    assert user is not None
+    assert user.get("allowed_agents") == []
+
+
+def test_create_user_with_allowed_agents():
+    """
+    测试创建用户时传入 allowed_agents 可被正确保存和查询。
+
+    Returns:
+        None
+    """
+    allowed = ["map_agent", "audit_document_agent"]
+    asyncio.run(UserDB.create_user(
+        "agent_allowed_user",
+        "password123",
+        allowed_agents=allowed
+    ))
+    user = asyncio.run(UserDB.get_user_by_username("agent_allowed_user"))
+    assert user is not None
+    assert user.get("allowed_agents") == allowed
+
+
+def test_update_profile_allowed_agents():
+    """
+    测试 update_profile 可更新 allowed_agents 字段。
+
+    Returns:
+        None
+    """
+    user_id = asyncio.run(UserDB.create_user("agent_update_user", "password123"))
+    updated = asyncio.run(UserDB.update_profile(
+        user_id,
+        phone="",
+        email="",
+        department="",
+        position="",
+        allowed_agents=["map_agent"]
+    ))
+    assert updated is True
+    user = asyncio.run(UserDB.get_user_by_id(user_id))
+    assert user.get("allowed_agents") == ["map_agent"]
+
+
+def test_update_user_info_allowed_agents():
+    """
+    测试 update_user_info 可更新 allowed_agents 字段。
+
+    Returns:
+        None
+    """
+    user_id = asyncio.run(UserDB.create_user("agent_admin_update_user", "password123"))
+    updated = asyncio.run(UserDB.update_user_info(
+        user_id,
+        real_name="",
+        phone="",
+        email="",
+        department="",
+        position="",
+        role="user",
+        allowed_agents=["test_agent"]
+    ))
+    assert updated is True
+    user = asyncio.run(UserDB.get_user_by_id(user_id))
+    assert user.get("allowed_agents") == ["test_agent"]

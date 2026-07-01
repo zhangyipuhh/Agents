@@ -231,9 +231,11 @@ class JWTAuth:
         if user:
             request.state.role = user.get('role', 'user')
             request.state.user_id = user.get('id')
+            request.state.allowed_agents = user.get('allowed_agents', [])
         else:
             request.state.role = 'user'
             request.state.user_id = None
+            request.state.allowed_agents = []
 
         return payload
 

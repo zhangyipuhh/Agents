@@ -470,16 +470,16 @@ class FileTransfer:
     async def list_files(self, session_id: str, project_id: int = None) -> List[dict]:
         """
         列出指定会话的所有已上传文件
-        
+
         Args:
             session_id (str): 会话ID
-            
+
         Returns:
             List[dict]: 包含所有文件信息的列表
         """
         files = []
         session_dir = self._get_session_dir(session_id)
-        
+
         for file_path in session_dir.iterdir():
             if file_path.is_file():
                 stat = file_path.stat()
@@ -490,8 +490,203 @@ class FileTransfer:
                     "created_time": stat.st_ctime,
                     "modified_time": stat.st_mtime
                 })
-        
+
         return files
+
+    def _scan_dir_tree(self, dir_path: Path, relative_root: Path) -> dict:
+        """
+        递归扫描目录并生成前端 FolderTree 约定的树形结构。
+
+        Args:
+            dir_path: 要扫描的目录路径。
+            relative_root: 用于计算相对路径的根目录（通常为 upload_dir 或 tmp_dir）。
+
+        Returns:
+            dict: 包含 name、type、path、children 的节点字典。
+        """
+        node = {
+            "name": dir_path.name,
+            "type": "folder",
+            "path": str(dir_path.resolve()),
+            "children": []
+        }
+        try:
+            entries = sorted(
+                dir_path.iterdir(),
+                key=lambda x: (not x.is_dir(), x.name.lower())
+            )
+            for entry in entries:
+                if entry.is_dir():
+                    node["children"].append(self._scan_dir_tree(entry, relative_root))
+                else:
+                    stat = entry.stat()
+                    node["children"].append({
+                        "name": entry.name,
+                        "type": "file",
+                        "path": str(entry.resolve()),
+                        "size": stat.st_size,
+                        "created_time": stat.st_ctime,
+                        "modified_time": stat.st_mtime
+                    })
+        except OSError:
+            # 目录不可读时返回空 children
+            pass
+        return node
+
+    async def build_session_file_tree(
+        self,
+        session_id: str,
+        project_id: Optional[int] = None,
+        project_relative_path: Optional[str] = None
+    ) -> dict:
+        """
+        构建当前会话文件空间的树形结构。
+
+        无项目时扫描 data/upload/.../{session_id}/ 与 data/tmp/upload/.../{session_id}/；
+        有项目时扫描项目对应的原文件目录与解析缓存目录。
+
+        Args:
+            session_id: 会话 ID。
+            project_id: 关联的项目 ID；None 表示未关联项目。
+            project_relative_path: 项目的相对路径（从 data/project 开始）。
+
+        Returns:
+            dict: 树根节点，包含 name、type、path、children。
+        """
+        if project_id and project_relative_path:
+            from app.shared.utils.files.project_path_manager import (
+                get_project_upload_dir,
+                get_project_tmp_upload_dir,
+            )
+            upload_dir = get_project_upload_dir(project_relative_path)
+            tmp_dir = get_project_tmp_upload_dir(project_relative_path)
+            root_name = "项目文件"
+        else:
+            upload_dir = self._get_session_dir(session_id)
+            tmp_dir = self._get_session_tmp_dir(session_id)
+            root_name = "会话文件"
+
+        root = {
+            "name": root_name,
+            "type": "folder",
+            "path": str(upload_dir.resolve()) if upload_dir.exists() else ".",
+            "children": []
+        }
+
+        for label, dir_path in [("原文件", upload_dir), ("解析缓存", tmp_dir)]:
+            if dir_path.exists() and dir_path.is_dir():
+                child = self._scan_dir_tree(dir_path, dir_path)
+                child["name"] = label
+                child["path"] = str(dir_path.resolve())
+                root["children"].append(child)
+
+        return root
+
+    def _get_preview_mode(self, file_path: Path) -> str:
+        """
+        根据文件扩展名判断预览模式。
+
+        Args:
+            file_path: 文件路径。
+
+        Returns:
+            str: 预览模式标识（pdf/docx/excel/pptx/markdown/text/image/unsupported）。
+        """
+        ext = file_path.suffix.lower()
+        if ext == ".pdf":
+            return "pdf"
+        if ext == ".docx":
+            return "docx"
+        if ext in (".xls", ".xlsx"):
+            return "excel"
+        if ext in (".ppt", ".pptx"):
+            return "pptx"
+        if ext in (".md", ".markdown"):
+            return "markdown"
+        if ext in (
+            ".txt", ".json", ".yaml", ".yml", ".xml", ".csv",
+            ".log", ".py", ".js", ".css", ".html", ".htm", ".vue", ".ts"
+        ):
+            return "text"
+        if ext in (
+            ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg", ".ico"
+        ):
+            return "image"
+        return "unsupported"
+
+    async def read_session_file_content(self, file_path: Path) -> str:
+        """
+        异步读取会话文件文本内容。
+
+        Args:
+            file_path: 文件绝对路径。
+
+        Returns:
+            str: 文件内容；遇到编码错误时使用替换模式解码。
+        """
+        try:
+            async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
+                return await f.read()
+        except UnicodeDecodeError:
+            async with aiofiles.open(file_path, "rb") as f:
+                raw = await f.read()
+                return raw.decode("utf-8", errors="replace")
+
+    def resolve_session_file_path(
+        self,
+        stored_path: str,
+        session_id: str,
+        project_id: Optional[int] = None,
+        project_relative_path: Optional[str] = None
+    ) -> Path:
+        """
+        校验并解析 stored_path 为当前会话/项目允许访问的绝对路径。
+
+        Args:
+            stored_path: 客户端传入的存储路径（相对或绝对）。
+            session_id: 会话 ID。
+            project_id: 关联的项目 ID；None 表示未关联项目。
+            project_relative_path: 项目的相对路径（从 data/project 开始）。
+
+        Returns:
+            Path: 校验通过的文件绝对路径。
+
+        Raises:
+            HTTPException: 403 路径越权；404 文件不存在。
+        """
+        raw_path = Path(stored_path)
+        if raw_path.is_absolute():
+            path = raw_path.resolve()
+        else:
+            # 相对路径统一按项目根解析
+            project_root = Path(__file__).parent.parent.parent.parent.parent
+            path = (project_root / raw_path).resolve()
+
+        if project_id and project_relative_path:
+            from app.shared.utils.files.project_path_manager import (
+                get_project_upload_dir,
+                get_project_tmp_upload_dir,
+            )
+            allowed_dirs = [
+                get_project_upload_dir(project_relative_path).resolve(),
+                get_project_tmp_upload_dir(project_relative_path).resolve(),
+            ]
+        else:
+            allowed_dirs = [
+                self._get_session_dir(session_id).resolve(),
+                self._get_session_tmp_dir(session_id).resolve(),
+            ]
+
+        for allowed in allowed_dirs:
+            try:
+                path.relative_to(allowed)
+            except ValueError:
+                continue
+            if path.exists() and path.is_file():
+                return path
+            raise HTTPException(status_code=404, detail="文件不存在")
+
+        raise HTTPException(status_code=403, detail="无权访问该文件路径")
     
     async def delete_session(self, session_id: str, project_id: int = None) -> bool:
         """

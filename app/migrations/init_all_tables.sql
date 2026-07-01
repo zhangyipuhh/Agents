@@ -37,6 +37,7 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS phone      VARCHAR(20)  DEFAULT '';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email      VARCHAR(100) DEFAULT '';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS department VARCHAR(100) DEFAULT '';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS position   VARCHAR(100) DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS allowed_agents JSONB DEFAULT '[]';
 
 -- ========== 1.5. projects（项目元数据，2026-06-30 新增）==========
 -- 项目文件夹方案：用户从聊天框下拉框选择"新建空白项目"或"使用现有文件夹"

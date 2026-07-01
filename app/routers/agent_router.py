@@ -99,6 +99,15 @@ async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse
     session_id = chat_request.session_id or "default"
     agent_name = chat_request.agent_name
 
+    # 按用户 allowed_agents 校验目标智能体访问权限
+    if agent_name and agent_name != "default":
+        allowed_agents = getattr(request.state, 'allowed_agents', [])
+        if agent_name not in allowed_agents:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"无权使用智能体 '{agent_name}'"
+            )
+
     # 2026-06-26 新增：若当前 session 尚未绑定非 default 智能体，且请求传入了有效的 agent_name，
     # 则将 agent_type + agent_display_name 持久化到 session（内存 + 数据库）。
     # 此段属于 HTTP 适配层职责（响应客户端首次选 agent 的语义），保留在 router 层。
@@ -161,16 +170,21 @@ async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse
 
 @router.get("/list")
 async def list_agents(request: Request) -> List[Dict[str, Any]]:
-    """列出所有启用的智能体。
+    """列出当前用户有权使用的启用的智能体。
 
     参数:
         request: FastAPI Request
 
     返回:
-        List[Dict[str, Any]]: 智能体摘要列表
+        List[Dict[str, Any]]: 按用户 allowed_agents 过滤后的智能体摘要列表
     """
     service = _get_service(request)
-    return await service.list_agents()
+    agents = await service.list_agents()
+    allowed_agents = getattr(request.state, 'allowed_agents', [])
+    if not allowed_agents:
+        return []
+    allowed_set = set(allowed_agents)
+    return [a for a in agents if a.get('name') in allowed_set]
 
 
 @router.get("/{agent_name}/agents-md")

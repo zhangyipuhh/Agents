@@ -669,7 +669,7 @@ def test_chat_does_not_rebind_if_session_already_bound(client, admin_headers, mo
     response = client.post("/api/agent/chat", json={
         "message": "hello",
         "session_id": "test-session",
-        "agent_name": "other_agent",
+        "agent_name": "test_agent",
     }, headers=headers)
 
     assert response.status_code == 200
@@ -882,6 +882,19 @@ def test_chat_returns_404_when_agent_not_found(client, admin_headers, monkeypatc
 
     monkeypatch.setattr(
         "app.shared.utils.auth.session_db.SessionDB.get_session", mock_get_session
+    )
+
+    # 将 nonexistent_agent 加入当前用户 allowed_agents，确保权限校验通过后再测 404
+    async def fake_get_user(username):
+        return {
+            "id": 1,
+            "username": username,
+            "role": "admin",
+            "allowed_agents": ["nonexistent_agent"],
+        }
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.user_db.UserDB.get_user_by_username", fake_get_user
     )
 
     headers = {**admin_headers, "X-Session-ID": "test-session"}
@@ -1166,7 +1179,7 @@ def test_chat_arbitrary_context_overrides_pass_through(
     response = client.post("/api/agent/chat", json={
         "message": "hello",
         "session_id": "test-session",
-        "agent_name": "audit_document_agent",
+        "agent_name": "test_agent",
         "context_overrides": {
             "geometry_data": {"point": [{"lat": 1, "lng": 2}]},
             "audit_root": "/tmp/audit",
@@ -1441,3 +1454,120 @@ async def test_chat_context_project_id_reaches_agent_context_runtime(app, admin_
 
     assert response.status_code == 200
     assert captured_context["safe_overrides"].get("project_id") == 42
+
+
+# =============================================================================
+# 2026-07-01 新增：智能体选择权限控制测试
+# 验证 /api/agent/list 按 request.state.allowed_agents 过滤，
+# /api/agent/chat 对未授权智能体返回 403。
+# =============================================================================
+
+
+def test_list_agents_empty_allowed_returns_empty(client, admin_headers, monkeypatch):
+    """测试当前用户 allowed_agents 为空时 /api/agent/list 返回 []。"""
+    async def fake_list(self):
+        return [{"name": "map_agent", "display_name": "地图智能体"}]
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.list_agents",
+        fake_list,
+    )
+
+    async def fake_get_user(username):
+        return {"id": 1, "username": "admin", "role": "admin", "allowed_agents": []}
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.user_db.UserDB.get_user_by_username",
+        fake_get_user,
+    )
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    response = client.get("/api/agent/list", headers=headers)
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_list_agents_filters_by_allowed_agents(client, admin_headers, monkeypatch):
+    """测试 /api/agent/list 仅返回 allowed_agents 中包含的智能体。"""
+    async def fake_list(self):
+        return [
+            {"name": "map_agent", "display_name": "地图智能体"},
+            {"name": "audit_document_agent", "display_name": "审计文档智能体"},
+            {"name": "test_agent", "display_name": "测试智能体"},
+        ]
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.list_agents",
+        fake_list,
+    )
+
+    async def fake_get_user(username):
+        return {"id": 1, "username": "admin", "role": "admin", "allowed_agents": ["map_agent"]}
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.user_db.UserDB.get_user_by_username",
+        fake_get_user,
+    )
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    response = client.get("/api/agent/list", headers=headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["name"] == "map_agent"
+
+
+def test_chat_forbidden_agent_returns_403(client, admin_headers, monkeypatch):
+    """测试请求未授权的智能体时 /api/agent/chat 返回 403。"""
+    async def fake_get_user(username):
+        return {"id": 1, "username": "admin", "role": "admin", "allowed_agents": ["map_agent"]}
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.user_db.UserDB.get_user_by_username",
+        fake_get_user,
+    )
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": "audit_document_agent",
+    }, headers=headers)
+
+    assert response.status_code == 403
+    assert "audit_document_agent" in response.json()["detail"]
+
+
+def test_chat_default_agent_name_not_restricted(client, admin_headers, monkeypatch):
+    """测试 agent_name 为 default 时不受 allowed_agents 限制。"""
+    from unittest.mock import MagicMock
+
+    async def fake_get_user(username):
+        return {"id": 1, "username": "admin", "role": "admin", "allowed_agents": []}
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.user_db.UserDB.get_user_by_username",
+        fake_get_user,
+    )
+
+    async def fake_build(self, **kwargs):
+        return MagicMock(name="fake_agent"), MagicMock(name="fake_context"), MagicMock(name="fake_state")
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.build_agent_instance",
+        fake_build,
+    )
+
+    def fake_stream(*args, **kwargs):
+        yield "data: test\n\n"
+
+    monkeypatch.setattr("app.routers.agent_router.generate_stream_response", fake_stream)
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": "default",
+    }, headers=headers)
+
+    assert response.status_code == 200

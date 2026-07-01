@@ -122,3 +122,37 @@ def test_refresh_token_rejected_by_auth_middleware(jwt_auth):
     assert response.status_code == 401
     body = json.loads(response.body)
     assert "无效的令牌类型" in body["detail"]
+
+
+def test_authenticate_sets_allowed_agents(jwt_auth, monkeypatch):
+    """
+    测试 JWTAuth.authenticate 将 allowed_agents 写入 request.state。
+
+    Args:
+        jwt_auth: JWTAuth 实例（来自 conftest）
+        monkeypatch: pytest monkeypatch fixture
+
+    Returns:
+        None
+    """
+    access_token = _run_async(jwt_auth.generate_token("testuser"))
+
+    async def fake_get_user(username):
+        return {
+            "id": 2,
+            "username": "testuser",
+            "role": "user",
+            "allowed_agents": ["map_agent"],
+        }
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.user_db.UserDB.get_user_by_username",
+        fake_get_user,
+    )
+
+    request = MagicMock(spec=Request)
+    request.headers.get.return_value = f"Bearer {access_token}"
+
+    payload = _run_async(jwt_auth.authenticate(request))
+    assert payload is not None
+    assert request.state.allowed_agents == ["map_agent"]

@@ -13,6 +13,7 @@ import {
   fetchUserProfile,
   updateUserProfile,
   fetchUserList,
+  fetchAgentList,
   deleteUser,
   kickUser,
   createUser,
@@ -165,9 +166,14 @@ const formPhone = ref('')
 const formEmail = ref('')
 const formDepartment = ref('')
 const formPosition = ref('')
+const formAllowedAgents = ref([])
 const formError = ref('')
 const formSuccess = ref('')
 const isSubmitting = ref(false)
+
+// 2026-07-01 新增：所有可用智能体列表（用于用户表单中的权限配置）
+const allAgents = ref([])
+const isLoadingAgents = ref(false)
 
 /** 过滤后的人员列表（前端实时过滤） */
 const filteredPersonnelList = computed(() => {
@@ -257,9 +263,11 @@ function openAddUser() {
   formEmail.value = ''
   formDepartment.value = ''
   formPosition.value = ''
+  formAllowedAgents.value = []
   formError.value = ''
   formSuccess.value = ''
   showUserForm.value = true
+  loadAllAgents()
 }
 
 /**
@@ -276,9 +284,11 @@ function openEditUser(user) {
   formEmail.value = user.email || ''
   formDepartment.value = user.department || ''
   formPosition.value = user.position || ''
+  formAllowedAgents.value = user.allowed_agents || []
   formError.value = ''
   formSuccess.value = ''
   showUserForm.value = true
+  loadAllAgents()
 }
 
 /**
@@ -295,6 +305,7 @@ function closeUserForm() {
   formEmail.value = ''
   formDepartment.value = ''
   formPosition.value = ''
+  formAllowedAgents.value = []
   formError.value = ''
   formSuccess.value = ''
 }
@@ -352,7 +363,8 @@ async function handleSubmitUser() {
         email: formEmail.value.trim(),
         department: formDepartment.value.trim(),
         position: formPosition.value.trim(),
-        role: formRole.value
+        role: formRole.value,
+        allowed_agents: formAllowedAgents.value
       }
       await updateUser(editingUser.value.id, payload)
       formSuccess.value = '用户更新成功'
@@ -370,7 +382,8 @@ async function handleSubmitUser() {
         phone: formPhone.value.trim(),
         email: formEmail.value.trim(),
         department: formDepartment.value.trim(),
-        position: formPosition.value.trim()
+        position: formPosition.value.trim(),
+        allowed_agents: formAllowedAgents.value
       }
       await createUser(payload)
       formSuccess.value = '用户创建成功'
@@ -577,6 +590,23 @@ async function handleSave() {
 }
 
 /* ---- Admin 用户管理逻辑 ---- */
+
+/**
+ * 加载所有可用智能体列表（用于用户权限配置）
+ */
+async function loadAllAgents() {
+  if (allAgents.value.length > 0 || isLoadingAgents.value) return
+  isLoadingAgents.value = true
+  try {
+    const agents = await fetchAgentList()
+    allAgents.value = agents || []
+  } catch (err) {
+    console.error('加载智能体列表失败:', err)
+    allAgents.value = []
+  } finally {
+    isLoadingAgents.value = false
+  }
+}
 
 async function loadUserList() {
   loading.value = true
@@ -980,6 +1010,7 @@ watch(() => props.visible, (newVal) => {
                         <th>用户名</th>
                         <th>真名</th>
                         <th>角色</th>
+                        <th>已授权智能体</th>
                         <th>创建时间</th>
                         <th>操作</th>
                       </tr>
@@ -992,6 +1023,7 @@ watch(() => props.visible, (newVal) => {
                         <td>
                           <span class="role-tag" :class="user.role">{{ user.role }}</span>
                         </td>
+                        <td>{{ (user.allowed_agents || []).length }}</td>
                         <td>{{ formatTime(user.created_at) }}</td>
                         <td>
                           <button class="table-btn btn-edit" @click="openEditUser(user)">编辑</button>
@@ -1252,6 +1284,43 @@ watch(() => props.visible, (newVal) => {
                       />
                     </div>
                   </div>
+
+                  <!-- 2026-07-01 新增：可选智能体权限配置 -->
+                  <div class="form-group">
+                    <label class="form-label">可选智能体</label>
+                    <div v-if="isLoadingAgents" class="agent-loading">加载中...</div>
+                    <div v-else-if="allAgents.length === 0" class="agent-empty">暂无可配置智能体</div>
+                    <div v-else class="agent-checkbox-list">
+                      <div class="agent-checkbox-actions">
+                        <button
+                          type="button"
+                          class="table-btn btn-edit"
+                          :disabled="isSubmitting"
+                          @click="formAllowedAgents = allAgents.map(a => a.name)"
+                        >全选</button>
+                        <button
+                          type="button"
+                          class="table-btn btn-back"
+                          :disabled="isSubmitting"
+                          @click="formAllowedAgents = []"
+                        >清空</button>
+                      </div>
+                      <label
+                        v-for="agent in allAgents"
+                        :key="agent.name"
+                        class="agent-checkbox-item"
+                      >
+                        <input
+                          v-model="formAllowedAgents"
+                          type="checkbox"
+                          :value="agent.name"
+                          :disabled="isSubmitting"
+                        />
+                        <span class="agent-checkbox-name">{{ agent.display_name || agent.name }}</span>
+                      </label>
+                    </div>
+                  </div>
+
                   <div v-if="formError" class="error-message">{{ formError }}</div>
                   <div v-if="formSuccess" class="success-message">{{ formSuccess }}</div>
                   <div class="form-actions">
@@ -1929,5 +1998,55 @@ watch(() => props.visible, (newVal) => {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   opacity: var(--opacity-disabled);
+}
+
+/* 2026-07-01 新增：用户表单中智能体权限配置复选框列表 */
+.agent-checkbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  max-height: 200px;
+  overflow-y: auto;
+  padding: var(--space-base);
+  background-color: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.agent-checkbox-actions {
+  display: flex;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+
+.agent-checkbox-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 4px 0;
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-primary);
+}
+
+.agent-checkbox-item input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.agent-checkbox-name {
+  line-height: 1.4;
+}
+
+.agent-loading,
+.agent-empty {
+  padding: var(--space-base);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  background-color: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
 }
 </style>

@@ -179,3 +179,125 @@ def test_delete_user_admin(client, admin_headers):
     response = client.delete(f"/api/users/{user_id}", headers=admin_headers)
     assert response.status_code == 200
     assert response.json()["message"] == "删除成功"
+
+
+def test_create_user_with_allowed_agents(client, admin_headers):
+    """
+    测试 admin 创建用户时 allowed_agents 可被写入并返回。
+
+    Args:
+        client: FastAPI TestClient
+        admin_headers: admin 认证请求头（来自 conftest）
+
+    Returns:
+        None
+    """
+    payload = {
+        "username": "agent_user_001",
+        "password": "Pass@123",
+        "role": "user",
+        "real_name": "智能体用户",
+        "phone": "13800138000",
+        "email": "agent@example.com",
+        "department": "测试部",
+        "position": "工程师",
+        "allowed_agents": ["map_agent", "test_agent"],
+    }
+    create_resp = client.post("/api/users/", json=payload, headers=admin_headers)
+    assert create_resp.status_code == 200
+    assert create_resp.json()["message"] == "创建成功"
+
+    list_resp = client.get("/api/users/", headers=admin_headers)
+    assert list_resp.status_code == 200
+    users = list_resp.json()
+    target = next((u for u in users if u["username"] == "agent_user_001"), None)
+    assert target is not None
+    assert target["allowed_agents"] == ["map_agent", "test_agent"]
+
+
+def test_update_user_allowed_agents(client, admin_headers):
+    """
+    测试 admin 更新用户时 allowed_agents 可被修改。
+
+    Args:
+        client: FastAPI TestClient
+        admin_headers: admin 认证请求头（来自 conftest）
+
+    Returns:
+        None
+    """
+    payload = {
+        "username": "agent_user_002",
+        "password": "Pass@123",
+        "role": "user",
+        "real_name": "智能体用户二",
+        "phone": "13900139000",
+        "email": "agent2@example.com",
+        "department": "研发部",
+        "position": "开发",
+        "allowed_agents": ["map_agent"],
+    }
+    create_resp = client.post("/api/users/", json=payload, headers=admin_headers)
+    assert create_resp.status_code == 200
+    user_id = create_resp.json()["user_id"]
+
+    update_payload = {
+        "real_name": "智能体用户二",
+        "phone": "13900139000",
+        "email": "agent2@example.com",
+        "department": "研发部",
+        "position": "开发",
+        "role": "user",
+        "allowed_agents": ["map_agent", "audit_document_agent"],
+    }
+    update_resp = client.put(f"/api/users/{user_id}", json=update_payload, headers=admin_headers)
+    assert update_resp.status_code == 200
+    assert update_resp.json()["message"] == "更新成功"
+
+    list_resp = client.get("/api/users/", headers=admin_headers)
+    assert list_resp.status_code == 200
+    users = list_resp.json()
+    target = next((u for u in users if u["id"] == user_id), None)
+    assert target is not None
+    assert target["allowed_agents"] == ["map_agent", "audit_document_agent"]
+
+
+def test_list_users_returns_200_with_native_list_allowed_agents(
+    client, admin_headers, monkeypatch
+):
+    """
+    验证 GET /api/users/ 在 UserDB.list_users 返回 native list 时
+    Pydantic 校验通过（allowed_agents 字段类型 List[str]）。
+
+    单元层面 UserDB postgres 分支的 JSONB 字符串解码由
+    test_user_db_postgres_jsonb.py 覆盖；本测试验证路由层契约。
+
+    Args:
+        client: FastAPI TestClient
+        admin_headers: admin 认证请求头（来自 conftest）
+        monkeypatch: pytest 内置 fixture，用于替换 UserDB.list_users
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 状态码非 200 或响应结构不符时抛出。
+    """
+    from app.shared.utils.auth.user_db import UserDB
+
+    async def fake_list_users():
+        return [{
+            "id": 1, "username": "admin", "role": "admin",
+            "real_name": "Admin", "phone": "", "email": "",
+            "department": "", "position": "",
+            "allowed_agents": ["map_agent", "audit_document_agent"],
+            "created_at": "2026-07-01", "updated_at": "2026-07-01",
+        }]
+
+    monkeypatch.setattr(UserDB, "list_users", fake_list_users)
+    response = client.get("/api/users/", headers=admin_headers)
+    assert response.status_code == 200
+    users = response.json()
+    assert len(users) == 1
+    assert isinstance(users[0]["allowed_agents"], list)
+    assert users[0]["allowed_agents"] == ["map_agent", "audit_document_agent"]
