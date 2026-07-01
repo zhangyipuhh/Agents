@@ -22,6 +22,7 @@ describe('App.vue 项目锁定 canEditProject（2026-07-01 新增）', () => {
     originalFetch = global.fetch
     originalLocalStorage = global.localStorage
     // mock fetch：让 checkAuth 跑通（refresh / validate 都返回成功）
+    // 2026-07-01 同步：恢复页面加载后自动创建会话，mock /api/session/create
     global.fetch = vi.fn((url) => {
       if (url === '/api/auth/refresh') {
         return Promise.resolve({
@@ -33,6 +34,12 @@ describe('App.vue 项目锁定 canEditProject（2026-07-01 新增）', () => {
         return Promise.resolve({
           ok: true,
           json: async () => ({ username: 'tester', role: 'user', user_id: 1 }),
+        })
+      }
+      if (url === '/api/session/create') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ session_id: 'sess_auto_001' }),
         })
       }
       return Promise.resolve({ ok: true, json: async () => ({}) })
