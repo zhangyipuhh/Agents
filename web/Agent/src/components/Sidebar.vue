@@ -1,7 +1,7 @@
 <script setup>
-import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import UserSettingsDialog from './UserSettingsDialog.vue'
-import { fetchSessionList, deleteSession } from '../utils/api.js'
+import { fetchSessionList, deleteSession, fetchProjectList } from '../utils/api.js'
 
 const props = defineProps({
   currentPage: {
@@ -41,6 +41,10 @@ const settingsInitialTab = ref('profile')
 const historySessions = ref([])
 const isLoadingSessions = ref(false)
 
+const projects = ref([])
+const isLoadingProjects = ref(false)
+const projectCollapsedMap = ref({})
+
 /**
  * 从后端加载会话列表
  */
@@ -54,13 +58,64 @@ const loadSessionList = async () => {
       title: s.title || '新对话',
       time: formatTime(s.last_active_at || s.created_at),
       active: s.session_id === props.currentSessionId,
-      sessionId: s.session_id
+      sessionId: s.session_id,
+      projectId: s.project_id
     }))
   } catch (err) {
     console.error('加载会话列表失败:', err)
+    historySessions.value = []
   } finally {
     isLoadingSessions.value = false
   }
+}
+
+/**
+ * 从后端加载项目列表
+ */
+const loadProjectList = async () => {
+  if (!props.username || props.username === '用户名') return
+  isLoadingProjects.value = true
+  try {
+    const data = await fetchProjectList()
+    const list = data.projects || []
+    projects.value = list
+    // 初始化折叠状态：默认展开
+    list.forEach(p => {
+      if (!(p.id in projectCollapsedMap.value)) {
+        projectCollapsedMap.value[p.id] = false
+      }
+    })
+  } catch (err) {
+    console.error('加载项目列表失败:', err)
+    projects.value = []
+  } finally {
+    isLoadingProjects.value = false
+  }
+}
+
+/**
+ * 获取指定项目下的会话
+ * @param {number} projectId - 项目 ID
+ * @returns {Array} 会话列表
+ */
+const getProjectSessions = (projectId) => {
+  return historySessions.value.filter(s => s.projectId === projectId)
+}
+
+/**
+ * 获取未绑定项目的会话
+ * @returns {Array} 会话列表
+ */
+const unprojectedSessions = computed(() => {
+  return historySessions.value.filter(s => !s.projectId)
+})
+
+/**
+ * 切换项目折叠状态
+ * @param {number} projectId - 项目 ID
+ */
+const toggleProjectCollapsed = (projectId) => {
+  projectCollapsedMap.value[projectId] = !projectCollapsedMap.value[projectId]
 }
 
 /**
@@ -304,6 +359,7 @@ onMounted(() => {
   document.addEventListener('click', handleClickOutside)
   window.addEventListener('resize', handleResize)
   loadSessionList()
+  loadProjectList()
 })
 
 onUnmounted(() => {
@@ -347,12 +403,12 @@ onUnmounted(() => {
       </button>
     </div>
 
-    <!-- 分组：ZYP实验室 -->
+    <!-- 分组：项目 -->
     <div class="sidebar-group" :class="{ 'collapsed-group': isSidebarCollapsed }">
       <button
         class="group-header"
         :class="{ 'collapsed-header': isSidebarCollapsed }"
-        data-tooltip="ZYP实验室"
+        data-tooltip="项目"
         @click="toggleLab"
       >
         <svg
@@ -370,61 +426,67 @@ onUnmounted(() => {
           viewBox="0 0 20 20"
           fill="currentColor"
         >
-          <path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clip-rule="evenodd"/>
+          <path fill-rule="evenodd" d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clip-rule="evenodd"/>
         </svg>
-        <span v-show="!isSidebarCollapsed" class="group-title">ZYP实验室</span>
+        <span v-show="!isSidebarCollapsed" class="group-title">项目</span>
       </button>
       <transition name="slide">
         <div v-show="!isLabCollapsed && !isSidebarCollapsed" class="group-items">
-          <!-- 地图操作 (Beta) -->
-          <button
-            class="menu-item menu-item-sm"
-            :class="{ active: activeMenu === 'map' }"
-            @click="handleMenuClick('map')"
+          <div v-if="isLoadingProjects" class="history-loading">加载中...</div>
+          <div v-else-if="projects.length === 0" class="history-empty">暂无项目</div>
+          <!-- 每个项目是一个子分组 -->
+          <div
+            v-for="project in projects"
+            :key="project.id"
+            class="project-item"
           >
-            <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
-              <path fill-rule="evenodd" d="M12 1.586l-4 4v12.828l4-4V1.586zM3.707 3.293A1 1 0 002 4v10a1 1 0 00.293.707L6 18.414V5.586L3.707 3.293zM17.707 5.293L14 1.586v12.828l2.293 2.293A1 1 0 0018 16V6a1 1 0 00-.293-.707z" clip-rule="evenodd"/>
-            </svg>
-            <span class="menu-text">地图操作</span>
-            <span class="tag tag-beta">Beta</span>
-          </button>
-
-          <!-- 知识库 -->
-          <button
-            class="menu-item menu-item-sm"
-            :class="{ active: activeMenu === 'knowledge' }"
-            @click="handleMenuClick('knowledge')"
-          >
-            <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
-              <path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z"/>
-            </svg>
-            <span class="menu-text">知识库</span>
-          </button>
-
-          <!-- 数据分析 -->
-          <button
-            class="menu-item menu-item-sm"
-            :class="{ active: activeMenu === 'analytics' }"
-            @click="handleMenuClick('analytics')"
-          >
-            <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
-              <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/>
-            </svg>
-            <span class="menu-text">数据分析</span>
-          </button>
-
-          <!-- Skills技能 (New) -->
-          <button
-            class="menu-item menu-item-sm"
-            :class="{ active: activeMenu === 'skills' }"
-            @click="handleMenuClick('skills')"
-          >
-            <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
-              <path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd"/>
-            </svg>
-            <span class="menu-text">Skills技能</span>
-            <span class="tag tag-new">New</span>
-          </button>
+            <button
+              class="project-header"
+              @click.stop="toggleProjectCollapsed(project.id)"
+            >
+              <svg
+                class="project-collapse-icon"
+                :class="{ collapsed: projectCollapsedMap[project.id] }"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+              >
+                <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"/>
+              </svg>
+              <svg class="project-folder-icon" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clip-rule="evenodd"/>
+              </svg>
+              <span class="project-name">{{ project.name }}</span>
+            </button>
+            <transition name="slide">
+              <div
+                v-show="!projectCollapsedMap[project.id]"
+                class="project-sessions"
+              >
+                <div
+                  v-for="session in getProjectSessions(project.id)"
+                  :key="session.id"
+                  class="history-item"
+                  :class="{ active: session.active }"
+                  @click="handleSessionClick(session)"
+                >
+                  <div class="history-content">
+                    <span class="history-title-text">{{ session.title }}</span>
+                    <div class="history-meta">
+                      <span class="history-time">{{ session.time }}</span>
+                      <button class="history-delete-btn" @click="handleDeleteSession(session.sessionId, session.title, $event)" title="删除会话">
+                        <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
+                          <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"/>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div v-if="getProjectSessions(project.id).length === 0" class="history-empty">
+                  暂无会话
+                </div>
+              </div>
+            </transition>
+          </div>
         </div>
       </transition>
     </div>
@@ -460,9 +522,9 @@ onUnmounted(() => {
       <transition name="slide">
         <div v-show="!isHistoryCollapsed && !isSidebarCollapsed" class="history-list">
           <div v-if="isLoadingSessions" class="history-loading">加载中...</div>
-          <div v-else-if="historySessions.length === 0" class="history-empty">暂无会话记录</div>
+          <div v-else-if="unprojectedSessions.length === 0" class="history-empty">暂无会话记录</div>
           <div
-            v-for="session in historySessions"
+            v-for="session in unprojectedSessions"
             :key="session.id"
             class="history-item"
             :class="{ active: session.active }"
@@ -1509,5 +1571,78 @@ onUnmounted(() => {
 .delete-confirm-leave-to .delete-confirm-container {
   transform: scale(0.96);
   opacity: 0;
+}
+
+/* =============================================
+   项目分组样式
+   ============================================= */
+.project-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.project-header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  text-align: left;
+  transition: var(--transition-colors), var(--transition-shadow);
+
+  &:hover {
+    color: var(--color-text-primary);
+    background-color: var(--color-bg-hover);
+  }
+
+  &:active {
+    transform: scale(var(--scale-active));
+  }
+}
+
+.project-collapse-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  transition: transform var(--transition);
+
+  &.collapsed {
+    transform: rotate(-90deg);
+  }
+}
+
+.project-folder-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.project-name {
+  flex: 1;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 20px;
+}
+
+.project-sessions .history-item {
+  padding: 8px 10px;
 }
 </style>
