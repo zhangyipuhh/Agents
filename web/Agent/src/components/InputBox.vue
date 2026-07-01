@@ -669,7 +669,7 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched', 'proj
 
       <!-- 2026-07-01 调整：项目下拉框置于 .input-main 外部，
            作为独立浅灰卡片紧跟主卡下方，与主卡形成「主卡 + 次卡」分层结构。 -->
-      <div class="project-dropdown-slot">
+      <div v-if="!projectLocked" class="project-dropdown-slot">
         <ProjectDropdown
           :current-project="currentProject"
           :disabled="isStreaming"

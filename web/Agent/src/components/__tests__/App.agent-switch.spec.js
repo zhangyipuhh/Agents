@@ -96,6 +96,20 @@ describe('App.vue agent 切换', () => {
     await flushPromises()
 
     // 模拟用户发送消息，触发 handleSendMessage → chatStream 调用链
+    // 2026-07-01 同步：session 改为首次发送时按需创建，需 mock /api/session/create
+    global.fetch = vi.fn((url) => {
+      if (url === '/api/auth/refresh') {
+        return Promise.resolve({ ok: true, json: async () => ({ access_token: 'fake-token' }) })
+      }
+      if (url === '/api/auth/validate') {
+        return Promise.resolve({ ok: true, json: async () => ({ username: 'tester', role: 'user', user_id: 1 }) })
+      }
+      if (url === '/api/session/create') {
+        return Promise.resolve({ ok: true, json: async () => ({ session_id: 'sess_new_001' }) })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    })
+
     const inputBox = wrapper.findComponent({ name: 'InputBox' })
     inputBox.vm.$emit('send', 'hello', [])
     await flushPromises()

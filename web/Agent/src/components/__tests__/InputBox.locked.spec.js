@@ -19,7 +19,7 @@ describe('InputBox projectLocked 透传（2026-07-01 新增）', () => {
     expect(InputBox).toBeDefined()
   })
 
-  it('test_inputbox_passes_project_locked_true_to_dropdown projectLocked=true → ProjectDropdown.locked=true', () => {
+  it('test_inputbox_passes_project_locked_true_to_dropdown projectLocked=true → ProjectDropdown 被隐藏', () => {
     const wrapper = mount(InputBox, {
       props: {
         sessionId: 'sid_lock_1',
@@ -29,8 +29,7 @@ describe('InputBox projectLocked 透传（2026-07-01 新增）', () => {
       }
     })
     const dropdown = wrapper.findComponent({ name: 'ProjectDropdown' })
-    expect(dropdown.exists()).toBe(true)
-    expect(dropdown.props('locked')).toBe(true)
+    expect(dropdown.exists()).toBe(false)
   })
 
   it('test_inputbox_passes_project_locked_false_to_dropdown projectLocked=false → ProjectDropdown.locked=false', () => {
@@ -73,7 +72,7 @@ describe('InputBox projectLocked 透传（2026-07-01 新增）', () => {
     expect(dropdown.props('locked')).toBe(false)
   })
 
-  it('test_inputbox_locked_and_streaming_combine 当 projectLocked=true + isStreaming=true 都传下去', () => {
+  it('test_inputbox_locked_and_streaming_combine 当 projectLocked=true + isStreaming=true 时 ProjectDropdown 被隐藏', () => {
     const wrapper = mount(InputBox, {
       props: {
         sessionId: 'sid_lock_5',
@@ -83,7 +82,6 @@ describe('InputBox projectLocked 透传（2026-07-01 新增）', () => {
       }
     })
     const dropdown = wrapper.findComponent({ name: 'ProjectDropdown' })
-    expect(dropdown.props('disabled')).toBe(true)
-    expect(dropdown.props('locked')).toBe(true)
+    expect(dropdown.exists()).toBe(false)
   })
 })
