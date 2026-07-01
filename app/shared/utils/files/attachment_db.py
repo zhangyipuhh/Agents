@@ -137,6 +137,31 @@ class AttachmentDB:
         return dict(row) if row else None
 
     @classmethod
+    async def get_attachment_by_stored_path(cls, stored_path: str, session_id: str) -> Optional[dict]:
+        """根据 stored_path 和 session_id 获取附件记录。
+
+        Args:
+            stored_path: 服务器存储路径。
+            session_id: 会话 ID，用于校验归属。
+
+        Returns:
+            Optional[dict]: 附件信息，不存在或无权限返回 None。
+        """
+        if not cls.is_enabled():
+            return None
+
+        row = await DatabasePool.fetchrow(
+            """
+            SELECT id, session_id, file_name, stored_path, file_type, file_size, mime_type, file_id, created_at, project_id
+            FROM attachments
+            WHERE stored_path = $1 AND session_id = $2
+            """,
+            stored_path,
+            session_id,
+        )
+        return dict(row) if row else None
+
+    @classmethod
     async def delete_attachment(cls, attachment_id: int) -> bool:
         """
         删除单个附件记录
@@ -153,6 +178,27 @@ class AttachmentDB:
         await DatabasePool.execute(
             "DELETE FROM attachments WHERE id = $1",
             attachment_id,
+        )
+        return True
+
+    @classmethod
+    async def delete_attachment_by_stored_path(cls, stored_path: str, session_id: str) -> bool:
+        """根据 stored_path 删除附件记录。
+
+        Args:
+            stored_path: 服务器存储路径。
+            session_id: 会话 ID，用于校验归属。
+
+        Returns:
+            bool: 删除成功返回 True。
+        """
+        if not cls.is_enabled():
+            return False
+
+        await DatabasePool.execute(
+            "DELETE FROM attachments WHERE stored_path = $1 AND session_id = $2",
+            stored_path,
+            session_id,
         )
         return True
 

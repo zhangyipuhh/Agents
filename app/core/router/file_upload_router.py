@@ -44,6 +44,23 @@ class CoreFileUploadResponse(BaseModel):
     parser_mode: str
 
 
+class AttachmentDeleteRequest(BaseModel):
+    """附件批量删除请求模型。"""
+    stored_paths: List[str]
+
+
+class AttachmentDeleteItem(BaseModel):
+    """单个附件删除失败明细。"""
+    stored_path: str
+    reason: str
+
+
+class AttachmentDeleteResponse(BaseModel):
+    """附件批量删除响应模型。"""
+    success: List[str]
+    failed: List[AttachmentDeleteItem]
+
+
 @router.post('/uploadfile', response_model=CoreFileUploadResponse)
 async def upload_files(
     request: Request,
@@ -370,6 +387,116 @@ async def merge_chunks(request: Request, merge_request: MergeChunksRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"合并分片失败: {str(e)}")
+
+
+@router.delete('/attachments', response_model=AttachmentDeleteResponse)
+async def delete_attachments(request: Request, delete_request: AttachmentDeleteRequest):
+    """批量删除附件。
+
+    根据 stored_path 删除对应的 .md 缓存文件、原文件以及 attachments 表记录。
+    仅允许删除属于当前 session_id 的附件；若存在 project_id，还需校验项目一致性。
+
+    Args:
+        request: FastAPI 请求对象，用于获取 session_id 与 project_id（中间件注入）。
+        delete_request: 包含要删除的 stored_path 列表。
+
+    Returns:
+        AttachmentDeleteResponse: 包含删除成功与失败的 stored_path 列表。
+    """
+    session_id = getattr(request.state, "session_id", "default")
+    project_id = getattr(request.state, "project_id", None)
+
+    success_paths: List[str] = []
+    failed_items: List[AttachmentDeleteItem] = []
+
+    for stored_path in delete_request.stored_paths:
+        try:
+            attachment = await AttachmentDB.get_attachment_by_stored_path(stored_path, session_id)
+            if not attachment:
+                failed_items.append(AttachmentDeleteItem(
+                    stored_path=stored_path,
+                    reason="附件不存在或无权限"
+                ))
+                continue
+
+            if project_id is not None and attachment.get("project_id") != project_id:
+                failed_items.append(AttachmentDeleteItem(
+                    stored_path=stored_path,
+                    reason="附件不属于当前项目"
+                ))
+                continue
+
+            md_path = Path(_resolve_project_root()) / stored_path
+            if md_path.exists():
+                md_path.unlink()
+
+            original_path = _resolve_original_path(md_path)
+            if original_path and original_path.exists():
+                original_path.unlink()
+
+            await AttachmentDB.delete_attachment_by_stored_path(stored_path, session_id)
+            success_paths.append(stored_path)
+        except Exception as e:
+            failed_items.append(AttachmentDeleteItem(
+                stored_path=stored_path,
+                reason=f"删除失败: {str(e)}"
+            ))
+
+    return AttachmentDeleteResponse(
+        success=success_paths,
+        failed=failed_items,
+    )
+
+
+def _resolve_original_path(md_path: Path) -> Optional[Path]:
+    """根据 .md 缓存绝对路径推导原文件绝对路径。
+
+    推导规则：
+        - <root>/data/tmp/upload/...  -> <root>/data/upload/...
+        - <root>/data/tmp/project/... -> <root>/data/project/...
+
+    由于 .md 缓存文件的后缀与原文件不同，推导后会优先在目标目录中查找
+    与缓存文件 stem 相同的任意文件；找不到时返回以原文件常见后缀猜测的路径。
+
+    Args:
+        md_path: .md 缓存文件的绝对路径。
+
+    Returns:
+        Optional[Path]: 原文件绝对路径；无法推导时返回 None。
+    """
+    try:
+        parts = md_path.parts
+        for i in range(len(parts) - 2):
+            if parts[i] == "data" and parts[i + 1] == "tmp":
+                if parts[i + 2] == "upload":
+                    original_dir_parts = list(parts[:i]) + ["data", "upload"] + list(parts[i + 3:-1])
+                    original_stem = Path(parts[-1]).stem
+                elif parts[i + 2] == "project":
+                    original_dir_parts = list(parts[:i]) + ["data", "project"] + list(parts[i + 3:-1])
+                    original_stem = Path(parts[-1]).stem
+                else:
+                    return None
+
+                original_dir = Path(*original_dir_parts)
+                if original_dir.exists():
+                    for candidate in original_dir.iterdir():
+                        if candidate.is_file() and candidate.stem == original_stem:
+                            return candidate
+
+                return None
+        return None
+    except Exception:
+        return None
+
+
+def _resolve_project_root() -> Path:
+    """获取项目根目录绝对路径。
+
+    Returns:
+        Path: 项目根目录绝对路径。
+    """
+    from app.core.config.paths import _PROJECT_ROOT
+    return Path(_PROJECT_ROOT)
 
 
 async def _record_attachment(

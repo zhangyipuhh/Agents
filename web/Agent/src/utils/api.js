@@ -484,6 +484,19 @@ function mergeChunks(fileId, filename, totalChunks) {
   })
 }
 
+export async function deleteAttachments(storedPaths) {
+  const response = await fetchWithAuth('/api/core/attachments', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ stored_paths: storedPaths })
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '删除附件失败')
+  }
+  return response.json()
+}
+
 export async function uploadFileInChunks(file, onProgress, onCancel) {
   await forceRefreshAuth()
 
@@ -1109,6 +1122,7 @@ export async function listMcpServers() {
  * @param {string} config.name - 服务器名称
  * @param {string} config.type - 传输类型（sse|stdio|streamable_http）
  * @param {string} [config.url] - SSE/HTTP 模式的 URL
+ * @param {Object} [config.progress_reporting] - 进度上报配置，格式 { enabled: boolean }
  * @returns {Promise<Object>} 创建结果
  * @throws {Error} 创建失败时抛出错误（含后端 detail 信息）
  */
@@ -1129,6 +1143,7 @@ export async function createMcpServer(config) {
  * 更新 MCP 服务器配置
  * @param {string} name - 服务器名称
  * @param {Object} config - 待更新的配置对象
+ * @param {Object} [config.progress_reporting] - 进度上报配置，格式 { enabled: boolean }
  * @returns {Promise<Object>} 更新结果
  * @throws {Error} 更新失败时抛出错误
  */

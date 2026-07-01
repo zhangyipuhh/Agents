@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, nextTick, onMounted } from 'vue'
-import { uploadFileInChunks, formatFileSize, getFileExtension, refreshToken, fetchAgentList } from '../utils/api.js'
+import { uploadFileInChunks, formatFileSize, getFileExtension, refreshToken, fetchAgentList, deleteAttachments } from '../utils/api.js'
 import ProjectDropdown from './ProjectDropdown.vue'
 import { handleCommand, COMMAND_REGISTRY } from '../utils/commandRegistry.js'
 
@@ -429,10 +429,22 @@ const startUpload = (fileItem) => {
   })
 }
 
-const removeFile = (fileItem) => {
+const removeFile = async (fileItem) => {
   if (fileItem.status === 'uploading' && fileItem.cancelFn) {
     fileItem.cancelFn()
   }
+
+  // 已上传成功的文件需要先删除服务器上的真实文件
+  if (fileItem.status === 'success' && fileItem.uploadResult?.stored_path) {
+    try {
+      await deleteAttachments([fileItem.uploadResult.stored_path])
+    } catch (err) {
+      console.error('删除附件失败:', err)
+      alert(`删除附件失败: ${err.message}`)
+      return
+    }
+  }
+
   const idx = selectedFiles.value.findIndex(f => f.id === fileItem.id)
   if (idx !== -1) selectedFiles.value.splice(idx, 1)
 }

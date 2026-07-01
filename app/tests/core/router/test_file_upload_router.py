@@ -2,8 +2,8 @@
 """
 核心文件上传路由测试
 
-测试 app/core/router/file_upload_router 中 upload_files 与 merge_chunks 的
-日期化目录存储、原文件保留、md 文件生成逻辑。
+测试 app/core/router/file_upload_router 中 upload_files、merge_chunks 与 delete_attachments 的
+日期化目录存储、原文件保留、md 文件生成及删除逻辑。
 """
 
 import json
@@ -16,7 +16,15 @@ import pytest
 from fastapi import UploadFile
 from starlette.datastructures import State
 
-from app.core.router.file_upload_router import router, MergeChunksRequest, upload_files, merge_chunks
+import app.shared.utils.files.attachment_db as attachment_db_module
+from app.core.router.file_upload_router import (
+    router,
+    MergeChunksRequest,
+    upload_files,
+    merge_chunks,
+    AttachmentDeleteRequest,
+    delete_attachments,
+)
 from app.shared.utils.files import session_path_manager as spm
 from app.shared.utils.project import project_db as pdb
 from app.core.config import paths as path_config
@@ -232,3 +240,107 @@ class TestMergeChunks:
         assert resp.count == 1
         assert resp.files[0].stored_path == str(md_path)
         assert resp.files[0].file_type == "md"
+
+
+class TestDeleteAttachments:
+    """附件批量删除接口测试。"""
+
+    @pytest.mark.asyncio
+    async def test_delete_attachments_removes_md_original_and_db_record(self, mock_request, tmp_path, monkeypatch):
+        """删除附件应同时删除 .md 缓存、原文件及数据库记录。"""
+        content = b"hello world\nthis is a test"
+        upload_file = UploadFile(filename="test.txt", file=BytesIO(content))
+
+        with patch("app.core.router.file_upload_router.FILE_PARSER_CONFIG", {"enabled": False}), \
+             patch("app.core.router.file_upload_router.DocumentLoader", _FakeDocumentLoader):
+            resp = await upload_files(mock_request, [upload_file])
+
+        today = date.today()
+        original_path = tmp_path / f"data/upload/{today.year}/{today.month:02d}/{today.day:02d}/session-abc/test.txt"
+        md_path = tmp_path / f"data/tmp/upload/{today.year}/{today.month:02d}/{today.day:02d}/session-abc/test.md"
+
+        assert original_path.exists()
+        assert md_path.exists()
+
+        stored_path = resp.files[0].stored_path
+        delete_req = AttachmentDeleteRequest(stored_paths=[stored_path])
+
+        deleted_records = []
+
+        async def fake_get_attachment_by_stored_path(sp, sid):
+            return {
+                "id": 1,
+                "session_id": sid,
+                "stored_path": sp,
+                "file_name": "test.txt",
+                "project_id": None,
+            }
+
+        async def fake_delete_attachment_by_stored_path(sp, sid):
+            deleted_records.append((sp, sid))
+            return True
+
+        monkeypatch.setattr(
+            attachment_db_module.AttachmentDB,
+            "get_attachment_by_stored_path",
+            fake_get_attachment_by_stored_path,
+        )
+        monkeypatch.setattr(
+            attachment_db_module.AttachmentDB,
+            "delete_attachment_by_stored_path",
+            fake_delete_attachment_by_stored_path,
+        )
+
+        del_resp = await delete_attachments(mock_request, delete_req)
+
+        assert stored_path in del_resp.success
+        assert len(del_resp.failed) == 0
+        assert not md_path.exists()
+        assert not original_path.exists()
+        assert (stored_path, "session-abc") in deleted_records
+
+    @pytest.mark.asyncio
+    async def test_delete_attachments_rejects_other_session_path(self, mock_request, tmp_path, monkeypatch):
+        """删除其他 session 的 stored_path 应返回失败。"""
+        delete_req = AttachmentDeleteRequest(stored_paths=["data/tmp/upload/2026/07/01/other-session/file.md"])
+
+        async def fake_get_attachment_by_stored_path(sp, sid):
+            return None
+
+        monkeypatch.setattr(
+            attachment_db_module.AttachmentDB,
+            "get_attachment_by_stored_path",
+            fake_get_attachment_by_stored_path,
+        )
+
+        del_resp = await delete_attachments(mock_request, delete_req)
+
+        assert len(del_resp.success) == 0
+        assert len(del_resp.failed) == 1
+        assert "无权限" in del_resp.failed[0].reason or "不存在" in del_resp.failed[0].reason
+
+    @pytest.mark.asyncio
+    async def test_delete_attachments_with_project_id_rejects_mismatch(self, mock_project_request, tmp_path, monkeypatch):
+        """有 project_id 时删除不属于当前项目的附件应失败。"""
+        stored_path = "data/tmp/project/2026/07/01/proj-uuid/file.md"
+        delete_req = AttachmentDeleteRequest(stored_paths=[stored_path])
+
+        async def fake_get_attachment_by_stored_path(sp, sid):
+            return {
+                "id": 1,
+                "session_id": sid,
+                "stored_path": sp,
+                "project_id": 999,
+            }
+
+        monkeypatch.setattr(
+            attachment_db_module.AttachmentDB,
+            "get_attachment_by_stored_path",
+            fake_get_attachment_by_stored_path,
+        )
+
+        del_resp = await delete_attachments(mock_project_request, delete_req)
+
+        assert len(del_resp.success) == 0
+        assert len(del_resp.failed) == 1
+        assert "项目" in del_resp.failed[0].reason

@@ -242,14 +242,34 @@ function handleUsernameUpdated(data) {
   localStorage.setItem('username', data.username)
 }
 
+/**
+ * 确保当前用户有一个有效的会话
+ * 始终创建新会话，不复用本地缓存的 session_id
+ */
+async function ensureSession() {
+  try {
+    const newId = await createNewSession()
+    sessionId.value = newId
+    if (sidebarRef.value) {
+      sidebarRef.value.loadSessionList()
+    }
+  } catch (err) {
+    console.error('自动创建会话失败:', err)
+  }
+}
+
 onMounted(async () => {
   await checkAuth()
+
+  if (isLoggedIn.value) {
+    await ensureSession()
+  }
 })
 
 async function newSession() {
-  // 防止重复点击
+  // 防止重复创建
   if (isCreatingNewSession) {
-    console.log('[newSession] 正在处理中，跳过重复请求')
+    console.log('[newSession] 正在创建中，跳过重复请求')
     return
   }
 
@@ -267,7 +287,7 @@ async function newSession() {
   approvalMode.value = false
 
   isCreatingNewSession = true
-  console.log('[newSession] 开始新建任务')
+  console.log('[newSession] 开始创建新会话')
 
   try {
     // 先清除旧的 session_id，确保新建任务时一定会重新生成
@@ -281,9 +301,26 @@ async function newSession() {
     // 2026-07-01 新增：新建会话时重置历史加载失败标记（保守锁定策略失效，新会话允许选择项目）
     historyLoadFailed.value = false
 
+    // 2026-06-30 新增：新建会话时把当前项目一并传过去
+    const projectIdForNew = currentProject.value ? currentProject.value.id : null
+
     // 关闭子智能体详情抽屉：避免上一个会话的 subagent 数据残留在 UI 上
     // 复用已有的 closeSubAgentDrawer()（会同步将 subAgentDrawerVisible 置 false，无需另清 currentSubAgent）
     closeSubAgentDrawer()
+
+    const newId = await createNewSession('session_id', projectIdForNew)
+    sessionId.value = newId
+    console.log('[newSession] 新会话创建成功:', newId, 'projectId:', projectIdForNew)
+
+    // 刷新侧边栏会话列表
+    if (sidebarRef.value) {
+      sidebarRef.value.loadSessionList()
+    }
+  } catch (err) {
+    console.error('新建会话失败:', err)
+    // API 报错时先尝试 refresh_token；失败再跳登录页（带 redirect）
+    // 注意：不再"看到'未登录'/'过期'字样就清登录态"，避免误踢
+    await tryRefreshOrRedirect()
   } finally {
     isCreatingNewSession = false
   }
@@ -393,27 +430,6 @@ function extractApprovalData(interruptArray) {
 async function handleSendMessage(message, attachments = []) {
   if (!message.trim() && attachments.length === 0) return
   if (isStreaming.value) return
-  if (isInitializingSession) return
-
-  // 2026-07-01 新增：首次发送时若尚无 session，先按需创建
-  if (!sessionId.value) {
-    isInitializingSession = true
-    try {
-      const projectIdForNew = currentProject.value ? currentProject.value.id : null
-      const newId = await createNewSession('session_id', projectIdForNew)
-      sessionId.value = newId
-      // 刷新侧边栏会话列表，使新 session 出现
-      if (sidebarRef.value) {
-        sidebarRef.value.loadSessionList()
-      }
-    } catch (err) {
-      console.error('发送前创建会话失败:', err)
-      alert('创建会话失败，请稍后重试')
-      return
-    } finally {
-      isInitializingSession = false
-    }
-  }
 
   const userMsg = {
     id: Date.now(),

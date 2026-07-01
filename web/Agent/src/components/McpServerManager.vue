@@ -97,6 +97,12 @@
             <label>Tool Config（JSON）</label>
             <textarea v-model="toolConfigText" rows="6" placeholder='{"enable_injection": true, ...}'></textarea>
           </div>
+          <div v-if="editingServer" class="form-row form-row-inline">
+            <label>
+              <input type="checkbox" v-model="progressReportingEnabled" />
+              启用进度上报
+            </label>
+          </div>
           <div class="form-actions">
             <button class="save-btn" @click="saveServer">保存</button>
             <button class="cancel-btn" @click="hideForm">取消</button>
@@ -127,6 +133,12 @@
           </div>
           <div class="detail-row" v-if="selectedServer.tool_config">
             <span>Tool Config:</span> {{ JSON.stringify(selectedServer.tool_config) }}
+          </div>
+          <div class="detail-row">
+            <span>进度上报:</span>
+            <span :class="selectedServer.progress_reporting?.enabled ? 'status-on' : 'status-off'">
+              {{ selectedServer.progress_reporting?.enabled ? '启用' : '禁用' }}
+            </span>
           </div>
           <div class="detail-row">
             <span>状态:</span>
@@ -209,6 +221,7 @@ const tagsText = ref('')
 const argsText = ref('[]')
 const envText = ref('{}')
 const headersText = ref('{}')
+const progressReportingEnabled = ref(false)
 const toolConfigText = ref(JSON.stringify({
   enable_injection: true,
   default_param_keys: [],
@@ -276,6 +289,7 @@ function showNewForm() {
   argsText.value = '[]'
   envText.value = '{}'
   headersText.value = '{}'
+  progressReportingEnabled.value = false
   toolConfigText.value = JSON.stringify({
     enable_injection: true,
     default_param_keys: [],
@@ -305,6 +319,7 @@ function editServer(server) {
   argsText.value = JSON.stringify(server.args || [])
   envText.value = JSON.stringify(server.env || {})
   headersText.value = JSON.stringify(server.headers || {})
+  progressReportingEnabled.value = server.progress_reporting?.enabled || false
   toolConfigText.value = JSON.stringify(server.tool_config || {
     enable_injection: true,
     default_param_keys: [],
@@ -360,6 +375,7 @@ async function saveServer() {
       tool_config: parsedToolConfig,
     }
     if (editingServer.value) {
+      payload.progress_reporting = { enabled: progressReportingEnabled.value }
       await updateMcpServer(editingServer.value.name, payload)
     } else {
       await createMcpServer(payload)
@@ -605,6 +621,17 @@ async function onToggleMethod(method, enabled, event) {
 }
 .form-row textarea {
   resize: vertical;
+}
+.form-row-inline label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: #374151;
+  cursor: pointer;
+}
+.form-row-inline input[type="checkbox"] {
+  width: auto;
 }
 .form-actions {
   display: flex;
