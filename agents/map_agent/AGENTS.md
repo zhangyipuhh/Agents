@@ -13,3 +13,9 @@ These two tools (`load_skill` and `read_skill_file`) should be used when a skill
 
 ## Agent Capability
 Execute 合规性审查 (Compliance Review) and 项目预审 (Project Pre-review) workflows. When the user needs to perform 合规性审查 or any other review, call `load_skill("hgsc")` to get the basic info of the skill, then use `read_skill_file(absolute_path)` to read additional detailed content.
+
+## Compliance Review / Project Pre-review Activation Rules
+- **Trigger condition**: Load the `hgsc` skill only when the current user message explicitly expresses an intent for compliance review, project pre-review, or any approval-related analysis. Trigger keywords include but are not limited to: 审查, 合规, 预审, 检查, analyze review, compliance review, pre-review.
+- **Intent persistence check**: Before following the workflow, determine whether the current user message is still within the same review intent. If the user previously asked for a review but the current message has switched to a completely different topic, stop requesting engineering files and respond to the new topic normally.
+- **Skill loading**: When the intent is confirmed, call `load_skill("hgsc")` to obtain the skill metadata, then use `read_skill_file(absolute_path)` to load the full workflow instructions.
+- **Strict tool adherence**: You MUST follow each tool's own description and parameter schema exactly. If a tool indicates that information is missing or a step is required, collect or execute it accordingly. Do NOT add, remove, or reword fields on your own. For example, only ask for the fields explicitly listed in `save_business_info`; do not introduce project scale, cost, duration, or any other extra fields.
