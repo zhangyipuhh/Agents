@@ -151,18 +151,18 @@ describe('AgentManager 组件', () => {
     expect(wrapper.text()).toContain('AGENTS.md 路径')
   })
 
-  it('test_select_agent_displays_fields 点击列表项后显示三组字段', async () => {
+  it('test_select_agent_displays_fields 点击列表项后显示配置项', async () => {
     const wrapper = mount(AgentManager)
     await flushPromises()
     const firstItem = wrapper.find('.agent-item')
     await firstItem.trigger('click')
     await flushPromises()
-    // 应显示 AgentConfig / State / Context 三组标题
-    expect(wrapper.text()).toContain('AgentConfig 字段')
-    expect(wrapper.text()).toContain('State 扩展字段')
-    expect(wrapper.text()).toContain('Context 扩展字段')
-    // map_agent 应有 map_zoom 字段
-    expect(wrapper.text()).toContain('map_zoom')
+    // 2026-07-01 同步：业务代码已演进为「基本信息 / 配置字段 / 工具绑定 / Skill 绑定」四组 section，
+    // 选中智能体后默认展示「基本信息」（含 display_name / description 表单）。
+    // 不再断言 map_zoom（业务不再默认展开配置字段 section）
+    expect(wrapper.text()).toContain('基本信息')
+    expect(wrapper.text()).toContain('display_name')
+    expect(wrapper.text()).toContain('描述')
   })
 
   it('test_disabled_agent_shows_badge 已禁用智能体显示「已禁用」徽章', async () => {
@@ -171,14 +171,17 @@ describe('AgentManager 组件', () => {
     expect(wrapper.text()).toContain('已禁用')
   })
 
-  it('test_has_add_field_button 每个 section 都有「+ 添加字段」按钮', async () => {
+  it('test_has_section_titles 渲染后包含至少一个 section 标题', async () => {
     const wrapper = mount(AgentManager)
     await flushPromises()
     const firstItem = wrapper.find('.agent-item')
     await firstItem.trigger('click')
     await flushPromises()
-    const addButtons = wrapper.findAll('button').filter(b => b.text().includes('添加字段'))
-    expect(addButtons.length).toBeGreaterThanOrEqual(3) // 三组
+    // 2026-07-01 同步：业务代码已演进为「基本信息 / 配置字段 / 工具绑定 / Skill 绑定」四组 section，
+    // 不再有统一的「+ 添加字段」按钮；改为断言至少出现一个 section 标题
+    const sectionTitles = ['基本信息', '配置字段', '工具绑定', 'Skill 绑定']
+    const foundCount = sectionTitles.filter((t) => wrapper.text().includes(t)).length
+    expect(foundCount).toBeGreaterThanOrEqual(1)
   })
 
   it('test_skill_tab_renders_button 渲染后 Tab 栏包含「Skill 绑定」按钮', async () => {

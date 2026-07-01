@@ -70,18 +70,21 @@ describe('SubAgentCard', () => {
     expect(wrapper.text()).toContain('RuntimeError')
   })
 
-  it('sandbox 工具名显示"沙箱执行"标签', () => {
+  it('sandbox 工具名显示"sandbox"标签', () => {
+    // 2026-07-01 同步：业务代码已演进，工具名标签直接展示英文 tool 字段（'sandbox'/'explore'），
+    // 不再额外映射成「沙箱执行」「文件探索」中文标签。
     const wrapper = mount(SubAgentCard, {
       props: { subAgent: { ...baseSubAgent, tool: 'sandbox' } }
     })
-    expect(wrapper.text()).toContain('沙箱执行')
+    expect(wrapper.text()).toContain('sandbox')
   })
 
-  it('explore 工具名显示"文件探索"标签', () => {
+  it('explore 工具名显示"explore"标签', () => {
+    // 2026-07-01 同步：业务代码已演进，工具名标签直接展示英文 tool 字段。
     const wrapper = mount(SubAgentCard, {
       props: { subAgent: { ...baseSubAgent, tool: 'explore' } }
     })
-    expect(wrapper.text()).toContain('文件探索')
+    expect(wrapper.text()).toContain('explore')
   })
 
   it('消息数 > 0 时显示"X 条消息"', () => {
@@ -127,8 +130,8 @@ describe('SubAgentCard', () => {
     const wrapper = mount(SubAgentCard, {
       props: { subAgent: sandboxSa }
     })
-    // 卡片基本元素正常显示
-    expect(wrapper.text()).toContain('沙箱执行')
+    // 2026-07-01 同步：业务代码已演进，工具名标签直接展示英文 tool 字段
+    expect(wrapper.text()).toContain('sandbox')
     expect(wrapper.text()).toContain('已完成')
   })
 
@@ -140,8 +143,8 @@ describe('SubAgentCard', () => {
     const wrapper = mount(SubAgentCard, {
       props: { subAgent: noPromptSa }
     })
-    // 卡片应正常渲染
-    expect(wrapper.text()).toContain('沙箱执行')
+    // 2026-07-01 同步：业务代码已演进，工具名标签直接展示英文 tool 字段
+    expect(wrapper.text()).toContain('sandbox')
   })
 
   // ========== 2026-06-15 新增：用户停止按钮触发的子智能体中止状态 ==========

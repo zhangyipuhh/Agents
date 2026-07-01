@@ -89,9 +89,12 @@ describe('InputBox 命令检测', () => {
     const sendBtn = wrapper.find('.send-btn')
     await sendBtn.trigger('click')
     await flushPromises()
-    // /agent 命令成功时应 emit('agent-switched', 'map_agent')
+    // /agent 命令成功时应 emit('agent-switched', { name, display_name })
+    // 2026-07-01 同步：2026-06-26 改造后 InputBox 把字符串包装成 { name, display_name } 对象；
+    // 当前 InputBox.vue:247 在 result.switchAgent 为字符串时直接用该字符串作为 display_name 兜底，
+    // 故 payload.display_name === 'map_agent'（与 fixture 的 display_name '地图' 不同，属正常封装行为）
     expect(wrapper.emitted('agent-switched')).toBeTruthy()
-    expect(wrapper.emitted('agent-switched')[0]).toEqual(['map_agent'])
+    expect(wrapper.emitted('agent-switched')[0][0]).toMatchObject({ name: 'map_agent' })
   })
 
   it('test_unknown_command_shows_hint 未知命令显示未知命令提示', async () => {
@@ -212,8 +215,9 @@ describe('InputBox 命令检测', () => {
     await sendBtn.trigger('click')
     await flushPromises()
     // 应先触发 agent-switched，再触发 send
+    // 2026-07-01 同步：2026-06-26 改造后 InputBox 发送对象（含 display_name）而不是字符串
     expect(wrapper.emitted('agent-switched')).toBeTruthy()
-    expect(wrapper.emitted('agent-switched')[0]).toEqual(['map_agent'])
+    expect(wrapper.emitted('agent-switched')[0]).toEqual([{ name: 'map_agent', display_name: '地图' }])
     expect(wrapper.emitted('send')).toBeTruthy()
     expect(wrapper.emitted('send')[0][0]).toBe('hello')
   })

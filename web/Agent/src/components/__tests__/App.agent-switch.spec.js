@@ -58,8 +58,10 @@ describe('App.vue agent 切换', () => {
       },
     })
     await flushPromises()
-    // agentName 应该有默认值 map_agent
-    expect(wrapper.vm.agentName).toBe('map_agent')
+    // 2026-07-01 同步：App.vue 默认值已演进为 null（2026-06-26 改造），
+    // 由后端 chat 时通过 context_overrides 兜底 agent 选择，
+    // 前端只在用户主动选择智能体后才赋值。
+    expect(wrapper.vm.agentName).toBe(null)
   })
 
   it('test_app_listens_agent_switched App.vue 监听 agent-switched 事件', async () => {
@@ -98,10 +100,10 @@ describe('App.vue agent 切换', () => {
     inputBox.vm.$emit('send', 'hello', [])
     await flushPromises()
 
-    // 验证 chatStream 被调用且第 5 个参数是 agentName.value（默认 map_agent）
+    // 验证 chatStream 被调用且第 5 个参数是 agentName.value（默认 null，2026-07-01 同步）
     expect(chatStreamSpy).toHaveBeenCalled()
     const callArgs = chatStreamSpy.mock.calls[0]
-    expect(callArgs[4]).toBe('map_agent')
+    expect(callArgs[4]).toBe(null)
 
     chatStreamSpy.mockRestore()
   })
@@ -120,8 +122,8 @@ describe('App.vue agent 切换', () => {
     inputBox.vm.$emit('agent-switched', '')
     await flushPromises()
 
-    // agentName 应保持默认值 map_agent
-    expect(wrapper.vm.agentName).toBe('map_agent')
+    // agentName 应保持默认值 null（2026-07-01 同步）
+    expect(wrapper.vm.agentName).toBe(null)
   })
 
   it('test_agent_switched_ignores_non_string 非字符串不触发切换', async () => {
@@ -138,7 +140,8 @@ describe('App.vue agent 切换', () => {
     inputBox.vm.$emit('agent-switched', 123)
     await flushPromises()
 
-    expect(wrapper.vm.agentName).toBe('map_agent')
+    // agentName 应保持默认值 null（2026-07-01 同步）
+    expect(wrapper.vm.agentName).toBe(null)
   })
 
   it('test_agent_switched_ignores_same_value 同值不触发重复设置', async () => {
