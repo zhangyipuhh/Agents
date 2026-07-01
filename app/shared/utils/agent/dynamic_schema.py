@@ -41,9 +41,15 @@ RESERVED_STATE_FIELDS = {
 
 RESERVED_CONTEXT_FIELDS = {
     "session_id", "namespace", "store_id", "image_ids",
-    "host_session_id", "process_data", "project_id",  # 2026-06-30 新增
+    "host_session_id", "process_data",
 }
-"""AgentContext 基类保留字段集合。"""
+"""AgentContext 基类保留字段集合。
+
+说明:
+    2026-07-01 移除 ``project_id``：AgentContext 已删除该字段（见 AgentContext.py docstring），
+    调用方通过 ``context_overrides.project_id`` 显式注入运行时上下文；为保证从 HTTP body
+    透传到 ``runtime.context``，该键不应再被保留字段过滤拦截。
+"""
 
 # 2026-06-24 新增：AgentConfig 保留字段集合
 # 这些字段不能通过 config_schema 覆盖（运行时对象 / 句柄无法被 JSON 描述）。

@@ -1297,21 +1297,21 @@ def _patch_agent_router_for_capture(monkeypatch, captured, middleware_project_id
 
 
 @pytest.mark.asyncio
-async def test_chat_context_overrides_project_id_overrides_middleware(app, admin_headers, monkeypatch):
-    """前端 context_overrides.project_id 优先于 middleware 注入。
+async def test_chat_context_overrides_project_id_passed_through(app, admin_headers, monkeypatch):
+    """前端 context_overrides.project_id 透传到 build_agent_instance 入参。
 
-    验证：当 context_overrides 含 project_id=42 且 session_auth_middleware 注入 project_id=999 时，
-    service.build_agent_instance 收到的 context_overrides.project_id === 42。
+    2026-07-01 新语义：删除 AgentContext.project_id + RESERVED_CONTEXT_FIELDS 后，
+    前端可通过 context_overrides 显式注入 project_id，由 build_agent_instance 透传。
     """
     captured = []
-    _patch_agent_router_for_capture(monkeypatch, captured, middleware_project_id=999)
+    _patch_agent_router_for_capture(monkeypatch, captured)
 
     def fake_stream(*args, **kwargs):
         yield "data: test\n\n"
 
     monkeypatch.setattr("app.routers.agent_router.generate_stream_response", fake_stream)
 
-    async with _build_async_chat_client(app, middleware_project_id=999) as ac:
+    async with _build_async_chat_client(app, middleware_project_id=None) as ac:
         headers = {**admin_headers, "X-Session-ID": "test-session"}
         response = await ac.post("/api/agent/chat", json={
             "message": "hello",
@@ -1329,21 +1329,20 @@ async def test_chat_context_overrides_project_id_overrides_middleware(app, admin
 
 
 @pytest.mark.asyncio
-async def test_chat_without_context_overrides_project_id_falls_back_to_middleware(app, admin_headers, monkeypatch):
-    """不传 project_id 时回退到 middleware 注入。
+async def test_chat_context_overrides_without_project_id_is_empty(app, admin_headers, monkeypatch):
+    """前端不传 project_id 时 build_agent_instance 收到的 context_overrides 不含 project_id。
 
-    验证：当 context_overrides 不含 project_id 且 session_auth_middleware 注入 project_id=777 时，
-    service.build_agent_instance 收到的 context_overrides.project_id === 777。
+    2026-07-01 新语义：agent_router 不再合并 request.state.project_id；纯靠前端显式传入。
     """
     captured = []
-    _patch_agent_router_for_capture(monkeypatch, captured, middleware_project_id=777)
+    _patch_agent_router_for_capture(monkeypatch, captured)
 
     def fake_stream(*args, **kwargs):
         yield "data: test\n\n"
 
     monkeypatch.setattr("app.routers.agent_router.generate_stream_response", fake_stream)
 
-    async with _build_async_chat_client(app, middleware_project_id=777) as ac:
+    async with _build_async_chat_client(app, middleware_project_id=None) as ac:
         headers = {**admin_headers, "X-Session-ID": "test-session"}
         response = await ac.post("/api/agent/chat", json={
             "message": "hello",
@@ -1356,4 +1355,89 @@ async def test_chat_without_context_overrides_project_id_falls_back_to_middlewar
 
     assert response.status_code == 200
     assert len(captured) == 1
-    assert captured[0]["context_overrides"]["project_id"] == 777
+    assert "project_id" not in captured[0]["context_overrides"]
+
+
+@pytest.mark.asyncio
+async def test_chat_context_project_id_reaches_agent_context_runtime(app, admin_headers, monkeypatch):
+    """端到端验证：context_overrides.project_id 透传到 AgentContext 实例（runtime.context）。
+
+    验证：当 context_overrides 含 project_id=42 时，
+    config.context_class(...) 构造的 AgentContext 实例含 project_id 键（运行时 dict），
+    即 runtime.context.get('project_id') === 42。
+
+    2026-07-01 新语义：AgentContext 删除 project_id 字段后，TypedDict 运行时仍允许任意额外键。
+    """
+    from unittest.mock import MagicMock
+    from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+
+    class CapturingContextClass(dict):
+        last_kwargs = {}
+
+        def __init__(self, **kwargs):
+            CapturingContextClass.last_kwargs = dict(kwargs)
+            super().__init__(**kwargs)
+
+    captured_context = {}
+
+    async def fake_build(self, agent_name, session_id, message=None,
+                          context_overrides=None, resume=None,
+                          state_class_kwargs=None, system_prompt_override=None):
+        # 新路径：safe_overrides 不再过滤 project_id（已从 RESERVED_CONTEXT_FIELDS 移除）
+        from app.shared.utils.agent.dynamic_schema import RESERVED_CONTEXT_FIELDS
+        safe_overrides = {
+            k: v for k, v in (context_overrides or {}).items()
+            if k not in RESERVED_CONTEXT_FIELDS
+        }
+        captured_context["safe_overrides"] = dict(safe_overrides)
+        return MagicMock(name="fake_agent"), CapturingContextClass(
+            session_id=session_id or "default",
+            **safe_overrides,
+        ), MagicMock(name="fake_state")
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.build_agent_instance",
+        fake_build,
+    )
+
+    async def fake_get(self, name):
+        return UnifiedAgentConfig(
+            name=name,
+            display_name="测试智能体",
+            description="",
+            system_prompt="# 测试",
+            state_class=MagicMock(return_value={"messages": []}),
+            context_class=CapturingContextClass,
+        )
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.get_agent_config",
+        fake_get,
+    )
+
+    async def mock_get_session(session_id):
+        return None
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.session_db.SessionDB.get_session", mock_get_session
+    )
+
+    def fake_stream(*args, **kwargs):
+        yield "data: test\n\n"
+
+    monkeypatch.setattr("app.routers.agent_router.generate_stream_response", fake_stream)
+
+    async with _build_async_chat_client(app, middleware_project_id=None) as ac:
+        headers = {**admin_headers, "X-Session-ID": "test-session"}
+        response = await ac.post("/api/agent/chat", json={
+            "message": "hello",
+            "session_id": "test-session",
+            "agent_name": "map_agent",
+            "context_overrides": {
+                "geometry_data": {},
+                "project_id": 42,
+            },
+        }, headers=headers)
+
+    assert response.status_code == 200
+    assert captured_context["safe_overrides"].get("project_id") == 42

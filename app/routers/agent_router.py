@@ -115,23 +115,16 @@ async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse
 
     # 统一构造入口（封装取配置 → 构造 context/state → AgentConfig → Agent.__ainit__）
     try:
-        # 2026-06-30 新增：把会话关联的 project_id 透传到 context_instance
-        #   * 由 session_auth_middleware 注入到 request.state.project_id
-        #   * 工具通过 runtime.context.get('project_id') 读取后用于项目目录路由
-        project_id = getattr(request.state, "project_id", None)
-        merged_overrides = dict(chat_request.context_overrides or {})
-        if project_id is not None and "project_id" not in merged_overrides:
-            merged_overrides["project_id"] = project_id
-
-        # 2026-06-30 新增：过滤 context_overrides 中的空值键（None / "" / [] / {}），
+        # 过滤 context_overrides 中的空值键（None / "" / [] / {}），
         # 避免覆盖 agent context_class 字段默认值（如 MapAgentContext.geometry_data = {}）。
         # 设计为通用机制，不针对任何具体 agent 或字段硬编码键名 —— 任意子智能体的
-        # context 扩展字段（如 geometry_data / audit_root）都能通过 context_overrides
+        # context 扩展字段（如 geometry_data / audit_root / project_id）都能通过 context_overrides
         # 注入；仅当值"实际为空"时才过滤，service 层负责保留字段与关键字参数的最终管控。
         # 注意：仅过滤容器型空值；bool False / 数字 0 不在过滤范围（避免误杀业务字段）。
         _EMPTY_VALUES = (None, "", [], {})
         merged_overrides = {
-            k: v for k, v in merged_overrides.items() if v not in _EMPTY_VALUES
+            k: v for k, v in (chat_request.context_overrides or {}).items()
+            if v not in _EMPTY_VALUES
         }
 
         agent, context_instance, input_state = await service.build_agent_instance(
