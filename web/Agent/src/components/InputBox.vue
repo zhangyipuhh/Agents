@@ -28,6 +28,11 @@ const props = defineProps({
   currentProject: {
     type: Object,
     default: null
+  },
+  // 2026-07-01 新增：项目是否锁定（已发送过消息或历史会话时为 true）
+  projectLocked: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -570,23 +575,6 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched', 'proj
           </div>
         </div>
 
-        <!-- 2026-06-24 新增：已选智能体标签（可移除） -->
-        <div v-if="selectedAgent" class="selected-agent-tag">
-          <span class="agent-slash">/</span>
-          <span class="agent-name">{{ selectedAgent.display_name || selectedAgent.name }}</span>
-          <button class="agent-remove-btn" @click="removeSelectedAgent" title="移除">
-            <svg viewBox="0 0 20 20" fill="currentColor" class="agent-remove-icon">
-              <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/>
-            </svg>
-          </button>
-        </div>
-
-        <!-- 2026-06-26 新增：会话已绑定智能体标签（不可移除） -->
-        <div v-if="boundAgentName && boundAgentName !== 'default'" class="selected-agent-tag bound-agent-tag">
-          <span class="agent-slash">/</span>
-          <span class="agent-name">{{ boundAgentDisplayName || boundAgentName }}</span>
-        </div>
-
         <!-- 2026-06-24 新增：智能体下拉菜单 -->
         <div
           v-if="showAgentDropdown && isCommand && inputValue.trim() === '/'"
@@ -607,17 +595,37 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched', 'proj
           </div>
         </div>
 
-        <textarea
-          ref="textareaRef"
-          v-model="inputValue"
-          class="text-input"
-          :placeholder="selectedAgent ? '请输入消息，按「Enter」发送' : (boundAgentName ? `当前智能体：${boundAgentDisplayName || boundAgentName}` : '输入 / 快速使用智能体')"
-          rows="3"
-          @input="handleInput"
-          @keydown="handleKeydown"
-          @focus="handleFocus"
-          @blur="handleBlur"
-        ></textarea>
+        <!-- 新增：输入区域包裹层，将标签与 textarea 并排 -->
+        <div class="text-input-area">
+          <!-- 2026-06-24 新增：已选智能体标签（可移除） -->
+          <div v-if="selectedAgent" class="selected-agent-tag">
+            <span class="agent-slash">/</span>
+            <span class="agent-name">{{ selectedAgent.display_name || selectedAgent.name }}</span>
+            <button class="agent-remove-btn" @click="removeSelectedAgent" title="移除">
+              <svg viewBox="0 0 20 20" fill="currentColor" class="agent-remove-icon">
+                <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/>
+              </svg>
+            </button>
+          </div>
+
+          <!-- 2026-06-26 新增：会话已绑定智能体标签（不可移除） -->
+          <div v-if="boundAgentName && boundAgentName !== 'default'" class="selected-agent-tag bound-agent-tag">
+            <span class="agent-slash">/</span>
+            <span class="agent-name">{{ boundAgentDisplayName || boundAgentName }}</span>
+          </div>
+
+          <textarea
+            ref="textareaRef"
+            v-model="inputValue"
+            class="text-input"
+            :placeholder="selectedAgent ? '请输入消息，按「Enter」发送' : (boundAgentName ? `当前智能体：${boundAgentDisplayName || boundAgentName}` : '输入 / 快速使用智能体')"
+            rows="3"
+            @input="handleInput"
+            @keydown="handleKeydown"
+            @focus="handleFocus"
+            @blur="handleBlur"
+          ></textarea>
+        </div>
 
         <div v-if="isCommand && inputValue.trim() !== '/'" class="command-hint">
           {{ commandHint }}
@@ -665,6 +673,7 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched', 'proj
         <ProjectDropdown
           :current-project="currentProject"
           :disabled="isStreaming"
+          :locked="projectLocked"
           @select-project="$emit('select-project', $event)"
           @create-project="$emit('create-project')"
           @pick-existing="$emit('pick-existing')"

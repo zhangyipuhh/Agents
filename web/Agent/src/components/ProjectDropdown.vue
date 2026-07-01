@@ -21,6 +21,12 @@ const props = defineProps({
   disabled: {
     type: Boolean,
     default: false
+  },
+  // 2026-07-01 新增：是否锁定（已发送过消息或历史会话时为 true）
+  // 与 disabled（streaming 中）独立：两者任一为 true 都禁用按钮
+  locked: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -30,6 +36,10 @@ const isOpen = ref(false)
 const dropdownRef = ref(null)
 const triggerRef = ref(null)
 const dropdownStyle = ref({})
+
+// 2026-07-01 新增：effectiveDisabled 统一 disabled（streaming）+ locked（已发送）两个维度，
+// 模板和 toggleDropdown 都消费这个计算值，避免散落重复判断。
+const effectiveDisabled = computed(() => props.disabled || props.locked)
 
 /**
  * 触发按钮显示文本
@@ -44,7 +54,9 @@ const triggerLabel = computed(() => {
 })
 
 function toggleDropdown() {
-  if (props.disabled) return
+  // 2026-07-01 修复：locked=true 时（已发送过消息或历史会话）也短路 toggle，
+  // 避免下拉菜单通过正常点击路径打开
+  if (effectiveDisabled.value) return
   if (isOpen.value) {
     closeDropdown()
   } else {
@@ -110,8 +122,8 @@ onUnmounted(() => {
     <button
       ref="triggerRef"
       class="project-trigger"
-      :class="{ disabled, open: isOpen }"
-      :disabled="disabled"
+      :class="{ disabled: effectiveDisabled, open: isOpen }"
+      :disabled="effectiveDisabled"
       @click.stop="toggleDropdown"
     >
       <svg class="project-icon" viewBox="0 0 20 20" fill="currentColor">

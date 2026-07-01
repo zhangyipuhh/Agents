@@ -139,6 +139,14 @@ let isCreatingNewSession = false
 
 const isEmptyState = computed(() => messages.length === 0)
 
+// 2026-07-01 新增：项目文件夹可编辑性判定（用于锁定项目选择器）
+// 派生自 isEmptyState + 历史加载失败标记：
+//   * 新建会话（messages 空）→ true，可选择项目
+//   * 已发送过消息或历史会话有消息 → false，锁定项目选择器
+//   * 历史会话拉取失败 → false，默认锁定（保守策略，避免未知状态下误操作）
+const historyLoadFailed = ref(false)
+const canEditProject = computed(() => isEmptyState.value && !historyLoadFailed.value)
+
 /**
  * 应用用户数据到当前状态
  * @param {Object} data - 包含 username 和 role
@@ -290,6 +298,9 @@ async function newSession() {
     currentAttachments.value = []
     agentName.value = null
     agentDisplayName.value = ''
+
+    // 2026-07-01 新增：新建会话时重置历史加载失败标记（保守锁定策略失效，新会话允许选择项目）
+    historyLoadFailed.value = false
 
     // 2026-06-30 新增：新建会话时把当前项目一并传过去
     const projectIdForNew = currentProject.value ? currentProject.value.id : null
@@ -755,6 +766,9 @@ async function handleSessionSwitch(targetSessionId) {
   messages.splice(0, messages.length)
   currentAttachments.value = []
 
+  // 2026-07-01 新增：进入新的切换会话前重置历史加载失败标记
+  historyLoadFailed.value = false
+
   // 关闭子智能体详情抽屉：上一个会话的 subagent 详情不应在切换后仍残留
   // 与 newSession() 保持一致行为
   closeSubAgentDrawer()
@@ -910,6 +924,8 @@ async function handleSessionSwitch(targetSessionId) {
     }
   } catch (err) {
     console.error('切换会话失败:', err)
+    // 2026-07-01 新增：fetchSessionMessages 失败时按用户决策默认锁定项目选择器
+    historyLoadFailed.value = true
     // 401/过期场景：先尝试 refresh_token；失败再跳登录页
     // 不再"看到'未登录'/'过期'字样就清登录态"，避免误踢
     await tryRefreshOrRedirect()
@@ -979,6 +995,7 @@ async function handleSessionSwitch(targetSessionId) {
           :bound-agent-name="agentName || ''"
           :bound-agent-display-name="agentDisplayName || ''"
           :current-project="currentProject"
+          :project-locked="!canEditProject"
           @send="handleSendMessage"
           @tool-action="handleToolAction"
           @new-chat="newSession"

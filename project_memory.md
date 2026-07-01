@@ -834,9 +834,35 @@ return data/upload/yyyy/mm/dd/{session_id}/
 
 | 组件 | 职责 |
 |------|------|
-| `ProjectDropdown.vue` | 紧挨着 InputBox 上方的下拉框（顶部只读预览 + 3 个动作） |
+| `ProjectDropdown.vue` | 紧挨着 InputBox 上方的下拉框（顶部只读预览 + 3 个动作 + 锁定支持） |
 | `ProjectDialog.vue` | 双模式弹窗（create / pick） |
-| `App.vue` | `currentProject` 状态机 + handleSessionSwitch 恢复 + newSession 透传 |
+| `App.vue` | `currentProject` 状态机 + handleSessionSwitch 恢复 + newSession 透传 + `canEditProject` 锁定判定 |
+
+### 项目选择器锁定逻辑（2026-07-01 新增）
+
+**规则**：
+
+- 新建会话、`messages` 数组为空时 → 项目选择器**可编辑**
+- 一旦该会话成功发送过一条消息（或被恢复的历史会话本身有消息）→ 项目选择器**永久锁定**（同一会话再也不能改项目）
+- 切到历史会话时 → 若历史消息数 > 0，**锁定**；若历史为空，**仍可编辑**（允许给从未发过消息的空会话补绑项目）
+- 历史会话 `fetchSessionMessages` 失败时 → **默认锁定**（保守策略，避免未知状态下误操作）
+- `streaming` 中 → 仍按 `disabled` 短路（与锁定独立，两个维度均可独立触发 disable）
+
+**实现**：
+
+- `App.vue` 新增 `historyLoadFailed = ref(false)` 与派生 `canEditProject = computed(() => isEmptyState.value && !historyLoadFailed.value)`，零新状态（复用既有 `isEmptyState`）
+- `App.vue::handleSessionSwitch` 入口重置 `historyLoadFailed`，catch 块置 true
+- `App.vue::newSession` 重置 `historyLoadFailed`
+- `App.vue` 模板：`<InputBox :project-locked="!canEditProject" ... />`
+- `InputBox.vue` 新增 prop `projectLocked`，透传给 `<ProjectDropdown :locked="projectLocked" />`
+- `ProjectDropdown.vue` 新增 prop `locked`，与 `disabled` 通过 `effectiveDisabled = computed(() => disabled || locked)` 合并；`toggleDropdown()` 短路 `effectiveDisabled`；按钮 `:disabled="effectiveDisabled"`、class `disabled` 同步
+- **视觉**：复用现有 `.disabled` 样式（灰 + not-allowed），不新增图标（设计决策：避免与 streaming 状态视觉混淆，用户可通过 hover tooltip "项目已锁定" 知晓原因）
+
+**测试**（Vitest，全过）：
+
+- `web/Agent/src/components/__tests__/ProjectDropdown.locked.spec.js` — `locked=true` 时按钮 disabled、点击不开下拉、已选项 label 保留可见、`disabled || locked` 任一为 true 都短路
+- `web/Agent/src/components/__tests__/InputBox.locked.spec.js` — `projectLocked` prop 透传到 `ProjectDropdown.locked`，默认值 false，与 `isStreaming` 解耦
+- `web/Agent/src/components/__tests__/App.project-lock.spec.js` — `canEditProject` 派生：初始 true、恢复历史会话后 false、history 拉取失败默认锁定 false、`newSession` 重置回 true、`projectLocked` 透传到 InputBox
 
 ### 前端 chat 请求体显式携带 project_id（2026-07-01 新增）
 
@@ -849,18 +875,49 @@ return data/upload/yyyy/mm/dd/{session_id}/
 - **`web/Agent/src/KnowledgeApp.vue`**：本次未接入（无 `currentProject` ref）；仍依赖 `session_auth_middleware` 注入 `request.state.project_id` 兜底。
 - **`web/Agent/src/components/KnowledgeChat.vue`**：本次未修改；调 `knowledgeChatStream` 时不传 `projectId`，等 `knowledge_router.py` 后续改造。
 
-**后端兼容性**：
+**后端透传路径（2026-07-01 简化）**：
 
-- `app/routers/agent_router.py` 的合并逻辑（行 122-124）天然支持「前端值优先于 middleware 注入」：`if project_id is not None and "project_id" not in merged_overrides:`。
-- `_EMPTY_VALUES` 过滤（行 132-135）确保 `geometry_data: {}` 不会覆盖 agent context_class 默认值。
-- `app/routers/knowledge_router.py` 本次未修改，仍依赖 `request.state.project_id` 注入；前端预留 `context_overrides.project_id` 字段供后续改造。
+1. 前端 `chatStream` body `context_overrides.project_id` → `ChatRequest.context_overrides`（`agent_router.py:56`）→ `agent_router` 仅做空值过滤（`_EMPTY_VALUES`）后透传 `build_agent_instance`。
+2. `agent_config_service.py::build_agent_instance` 通过 `RESERVED_CONTEXT_FIELDS` 过滤 `safe_overrides` 后注入 `context_class(**safe_overrides)`。
+3. **2026-07-01 移除 `project_id` 字段后**：`AgentContext` 不再预声明 `project_id`（见下节），`RESERVED_CONTEXT_FIELDS` 也同步移除该键；`project_id` 作为"自定义上下文键"由前端经 `context_overrides` 注入，运行时经 TypedDict dict 落到 `runtime.context.get("project_id")` 供 `SandboxTools` / `FilesystemReadTools` 等工具读取。
+
+**修改文件（2026-07-01）**：
+
+- `web/Agent/src/utils/api.js` —— `chatStream` / `knowledgeChatStream` 扩签名 + body 改造
+- `web/Agent/src/App.vue` —— `handleSendMessage` / `handleApprovalSubmit` resume 传 `projectId`
+- `app/core/agent/AgentContext.py` —— **删除** `project_id: Optional[int] = None` 字段（含 import 调整）；类文档注释说明 `project_id` 由调用方通过 `context_overrides` 显式注入
+- `app/shared/utils/agent/dynamic_schema.py` —— 从 `RESERVED_CONTEXT_FIELDS` 移除 `"project_id"`（不再属于基类保留字段）
+- `app/shared/utils/agent/agent_config_service.py::build_agent_instance` —— 回退特殊处理，恢复通用 `context_class(session_id=..., **safe_overrides)` 形式
+- `app/routers/agent_router.py::chat` —— 回退 `request.state.project_id` 合并逻辑（删除 `getattr(request.state, "project_id", None)` 与 merged_overrides 合并分支），改纯透传 `chat_request.context_overrides`；保留 `_EMPTY_VALUES` 空值过滤
+
+**未修改（保持兼容）**：
+
+- `app/shared/utils/auth/Safety.py::session_auth_middleware` —— 仍向 `request.state.project_id` 注入值（`app/core/router/file_upload_router.py` 上传/合并分片路由还在用 `request.state.project_id`）
+- `app/routers/knowledge_router.py` —— 本次不同步（用户决策）
+- `get_session_upload_dir(session_id, project_id=...)` 工具链不变
+- `app/routers/file_upload_router.py` —— 上传路径仍依赖 `request.state.project_id`（这是 HTTP 路由层而非 agent runtime 层，链路不同）
 
 **测试覆盖**：
 
-- 前端 Vitest `web/Agent/src/utils/__tests__/api.agent-chat.test.js` 新增 6 用例（默认含 geometry_data / 传 projectId 写入 / 不传 projectId 省略 / 顶层 geometry_data 移除 / knowledgeChatStream 传 projectId / knowledgeChatStream 不传省略）。
-- 后端 pytest `app/tests/routers/test_agent_router.py` 新增 2 用例（前端覆盖 middleware / 不传回退 middleware），共 29 用例全过。
+- 前端 Vitest `web/Agent/src/utils/__tests__/api.agent-chat.test.js` 共 10 用例全过（4 旧 + 6 新）
+- 后端 pytest `app/tests/routers/test_agent_router.py` 共 30 用例全过（含重写的 `test_chat_context_overrides_project_id_passed_through` / `test_chat_context_overrides_without_project_id_is_empty` / `test_chat_context_project_id_reaches_agent_context_runtime` 三个新语义用例）
 
-**设计原则**：与 `newSession` 显式传 `projectId` 一致，「显式优于隐式」；保留 `session_auth_middleware` 注入作为兜底通道，向后兼容旧前端客户端。
+**设计原则**：「显式优于隐式」；前端 `context_overrides` 通道作为唯一透传路径，移除 agent runtime 对基类字段的硬编码依赖；任何自定义上下文键（如 `project_id` / `geometry_data` / `audit_root` 等）都通过同一通道注入，符合 `RESERVED_CONTEXT_FIELDS` 的本意（仅过滤与显式 `cls(...)` 构造参数冲突的基类字段）。
+
+### 关键设计决策：为什么删除 AgentContext.project_id
+
+**原状态**：2026-06-30 新增 `project_id: Optional[int] = None` 字段，同时错误归入 `RESERVED_CONTEXT_FIELDS`，导致 `safe_overrides` 过滤永远剥除该键，前端透传失败。
+
+**新设计（2026-07-01）**：
+- `AgentContext` 不预声明任何"运行时可能用到的业务字段"（如 `project_id`）；
+- 所有运行时业务上下文键均由前端通过 `context_overrides` 显式注入；
+- TypedDict 运行时仍允许任意额外键（dict 不受 type 注解限制），所以工具侧 `runtime.context.get("project_id")` 仍能正常工作；
+- `RESERVED_CONTEXT_FIELDS` 仅保留真正需要保护的"基类构造参数"（`session_id` 等），不再混入业务字段。
+
+**好处**：
+1. 任何新业务键（不限于 `project_id`）都可走同一透传通道，无需修改 AgentContext / RESERVED_CONTEXT_FIELDS / agent_config_service 三处。
+2. 前端完全控制透传内容，后端不再做隐式合并/兜底，链路更清晰。
+3. 避免"基类字段 + 保留字段集合"双源同步维护的不一致风险（如本次 RESERVED_CONTEXT_FIELDS 与 AgentContext 的 project_id 不一致 bug）。
 
 ## API 路由汇总
 
