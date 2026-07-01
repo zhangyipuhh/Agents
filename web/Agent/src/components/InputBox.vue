@@ -659,6 +659,8 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched', 'proj
         </div>
       </div>
 
+      <!-- 2026-07-01 调整：项目下拉框置于 .input-main 外部，
+           作为独立浅灰卡片紧跟主卡下方，与主卡形成「主卡 + 次卡」分层结构。 -->
       <div class="project-dropdown-slot">
         <ProjectDropdown
           :current-project="currentProject"
@@ -681,11 +683,15 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched', 'proj
   contain: layout style paint;
 }
 
+/* 2026-07-01 样式微调：.input-wrapper 保持为透明容器（仅约束宽度与居中），
+   视觉外壳由 .input-main 独立承担。 */
 .input-wrapper {
   max-width: 900px;
   margin: 0 auto;
 }
 
+/* 2026-07-01 样式微调：.input-main 保留 2px 实色蓝边框与厚重阴影，
+   与下方的项目卡形成「主卡 + 独立次卡」的视觉层级。 */
 .input-main {
   display: flex;
   flex-direction: column;
@@ -1214,14 +1220,17 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched', 'proj
   line-height: 1.4;
 }
 
-/* 2026-06-30 新增：项目下拉框位于 input-main 下方 */
+/* 2026-07-01 样式微调：项目下拉框作为独立浅灰卡片置于 .input-main 外部下方，
+   8px 间距，无阴影无边框，圆角与主卡风格一致，
+   与上方主卡形成「主卡 + 次卡」视觉层级。 */
 .project-dropdown-slot {
-  margin-top: 0;
+  margin-top: 8px;
   display: flex;
   justify-content: flex-start;
-  background-color: var(--color-bg-secondary);
-  border-radius: var(--radius-lg);
-  padding: 8px 16px 10px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+  background-color: var(--color-bg-primary);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  box-shadow: none;
+  border: none;
 }
 </style>

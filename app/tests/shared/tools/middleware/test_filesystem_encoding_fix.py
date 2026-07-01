@@ -11,7 +11,6 @@ Filesystem Encoding Fix 测试
 """
 
 import importlib.util
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -204,7 +203,7 @@ class TestPatchedRead:
         (tmp_dir / "doc.md").write_text("Project doc markdown", encoding="utf-8")
 
         backend = _FakeBackend(project_dir)
-        result = patched_read(backend, "/doc.pdf")
+        result = patched_read(backend, "/doc.txt")
 
         assert result.error is None
         assert result.file_data is not None
