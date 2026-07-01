@@ -959,6 +959,8 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched', 'proj
 }
 
 .text-input {
+  flex: 1;
+  min-width: 0;
   width: 100%;
   height: 80px;
   min-height: 80px;
@@ -1116,6 +1118,15 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched', 'proj
   }
 }
 
+/* 新增：输入区域包裹层，标签与 textarea 并排 */
+.text-input-area {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+}
+
 /* 2026-06-24 新增：已选智能体标签 */
 .selected-agent-tag {
   display: inline-flex;
@@ -1128,8 +1139,8 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched', 'proj
   color: var(--color-accent);
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-medium);
-  margin-bottom: 4px;
-  align-self: flex-start;
+  margin-top: 4px;
+  flex-shrink: 0;
 }
 
 .agent-slash {
