@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from app.core.config import paths as core_paths
 from app.shared.utils.files.fileTransfer import FileTransfer
 from app.shared.utils.files import session_path_manager as spm
 
@@ -96,14 +97,15 @@ class TestFileTransferDatedPaths:
 
     @pytest.mark.asyncio
     async def test_upload_files_with_project_id_routes_to_project_dir(self, isolated_spm, monkeypatch):
-        """2026-06-30 新增：传 project_id 时文件应保存到 data/project/{uuid}/ 下。"""
+        """2026-06-30 新增：传 project_id 时文件应保存到 data/project/yyyy/mm/dd/{uuid}/ 下。"""
         from app.shared.utils.project import project_db
         from app.shared.utils.project.project_db import ProjectDB
 
-        # 把 project_path_manager 也重定向到 tmp_path
-        from app.shared.utils.files import project_path_manager as ppm
-        monkeypatch.setattr(ppm, "_get_project_root", lambda: isolated_spm)
-        # 准备内存中的 project
+        # 将项目根目录重定向到临时目录，避免污染真实 data/
+        monkeypatch.setattr(core_paths, "_PROJECT_ROOT", str(isolated_spm))
+        # 准备内存中的 project，携带日期化 relative_path
+        today = date.today()
+        relative_path = f"data/project/{today.year}/{today.month:02d}/{today.day:02d}/session-uuid-100"
         with ProjectDB._lock:
             ProjectDB._memory_cache.clear()
             ProjectDB._memory_cache[100] = {
@@ -111,6 +113,7 @@ class TestFileTransferDatedPaths:
                 "user_id": 1,
                 "name": "test",
                 "uuid": "session-uuid-100",
+                "relative_path": relative_path,
                 "created_at": None,
                 "updated_at": None,
             }
@@ -123,7 +126,7 @@ class TestFileTransferDatedPaths:
             [fake_file], "session-1111", project_id=100
         )
 
-        expected_dir = isolated_spm / "data/project/session-uuid-100"
+        expected_dir = isolated_spm / relative_path
         assert expected_dir.exists()
         assert len(result) == 1
         # 旧 session 目录不应被创建
@@ -133,11 +136,14 @@ class TestFileTransferDatedPaths:
 
     @pytest.mark.asyncio
     async def test_delete_session_with_project_id_routes_to_project_dir(self, isolated_spm, monkeypatch):
-        """2026-06-30 新增：delete_session 传 project_id 时应清理项目目录。"""
-        from app.shared.utils.files import project_path_manager as ppm
+        """2026-06-30 新增：delete_session 传 project_id 时应清理日期化项目目录。"""
         from app.shared.utils.project.project_db import ProjectDB
 
-        monkeypatch.setattr(ppm, "_get_project_root", lambda: isolated_spm)
+        # 将项目根目录重定向到临时目录
+        monkeypatch.setattr(core_paths, "_PROJECT_ROOT", str(isolated_spm))
+        # 准备内存中的 project，携带日期化 relative_path
+        today = date.today()
+        relative_path = f"data/project/{today.year}/{today.month:02d}/{today.day:02d}/session-uuid-200"
         with ProjectDB._lock:
             ProjectDB._memory_cache.clear()
             ProjectDB._memory_cache[200] = {
@@ -145,12 +151,13 @@ class TestFileTransferDatedPaths:
                 "user_id": 1,
                 "name": "test",
                 "uuid": "session-uuid-200",
+                "relative_path": relative_path,
                 "created_at": None,
                 "updated_at": None,
             }
         monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
 
-        project_dir = isolated_spm / "data/project/session-uuid-200"
+        project_dir = isolated_spm / relative_path
         project_dir.mkdir(parents=True)
         (project_dir / "test.txt").write_text("data", encoding="utf-8")
 

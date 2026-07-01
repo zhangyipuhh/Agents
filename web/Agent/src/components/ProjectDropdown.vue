@@ -176,8 +176,9 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
+  margin-top: 1px;
   background-color: var(--color-bg-primary);
-  border: 1px solid var(--color-border);
+  border: none;
   border-radius: var(--radius-sm);
   color: var(--color-text-secondary);
   font-size: var(--font-size-sm);
@@ -188,15 +189,13 @@ onUnmounted(() => {
 }
 
 .project-trigger:hover:not(.disabled) {
-  background-color: var(--color-bg-hover);
+  background-color: var(--color-bg-active);
   color: var(--color-text-primary);
-  border-color: var(--color-text-muted);
 }
 
 .project-trigger.open {
   background-color: var(--color-accent-light);
   color: var(--color-accent);
-  border-color: var(--color-accent);
 }
 
 .project-trigger.disabled {

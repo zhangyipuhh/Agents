@@ -697,18 +697,18 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched', 'proj
   transition: var(--transition-colors), var(--transition-shadow), border-color 0.25s ease;
   position: relative;
   max-width: 900px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15), 0 2px 6px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08);
 
   &:hover:not(.focused):not(.dragging) {
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2), 0 4px 10px rgba(0, 0, 0, 0.15);
+    box-shadow: 0 10px 32px rgba(0, 0, 0, 0.16), 0 4px 12px rgba(0, 0, 0, 0.1);
   }
 
   &.focused {
-    box-shadow: 0 8px 24px rgba(99, 102, 241, 0.3), 0 4px 10px rgba(99, 102, 241, 0.2), 0 0 0 4px rgba(99, 102, 241, 0.15);
+    box-shadow: 0 10px 32px rgba(99, 102, 241, 0.25), 0 4px 12px rgba(99, 102, 241, 0.15), 0 0 0 4px rgba(99, 102, 241, 0.12);
   }
 
   &.dragging {
-    box-shadow: 0 8px 24px rgba(99, 102, 241, 0.35), 0 4px 10px rgba(99, 102, 241, 0.25), 0 0 0 4px rgba(99, 102, 241, 0.2);
+    box-shadow: 0 10px 32px rgba(99, 102, 241, 0.3), 0 4px 12px rgba(99, 102, 241, 0.2), 0 0 0 4px rgba(99, 102, 241, 0.18);
     background-color: var(--color-accent-light);
   }
 }
@@ -1216,8 +1216,12 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched', 'proj
 
 /* 2026-06-30 新增：项目下拉框位于 input-main 下方 */
 .project-dropdown-slot {
-  margin-top: 8px;
+  margin-top: 0;
   display: flex;
   justify-content: flex-start;
+  background-color: var(--color-bg-secondary);
+  border-radius: var(--radius-lg);
+  padding: 8px 16px 10px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
 }
 </style>

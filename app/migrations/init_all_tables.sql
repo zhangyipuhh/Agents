@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS projects (
     updated_at  TIMESTAMP    DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id);
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS relative_path VARCHAR(500);
 
 -- ========== 2. sessions（会话）==========
 CREATE TABLE IF NOT EXISTS sessions (

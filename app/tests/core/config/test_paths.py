@@ -12,7 +12,17 @@ Date: 2026-06-29
 Author: AI Assistant
 """
 
+import pytest
 from pathlib import Path
+
+from app.core.config import paths as paths_module
+from app.core.config.paths import (
+    KNOWLEDGE_DIR,
+    METADATA_FILE,
+    TMP_DIR,
+    resolve_project_dir,
+    resolve_project_tmp_dir,
+)
 
 
 # ============================================================
@@ -126,3 +136,53 @@ def test_knowledge_dir_is_absolute():
     from app.core.config.paths import KNOWLEDGE_DIR
 
     assert Path(KNOWLEDGE_DIR).is_absolute()
+
+
+# ============================================================
+# P1: 路径解析函数
+# ============================================================
+
+
+def test_resolve_project_dir():
+    """
+    P1: resolve_project_dir 将 data/project/... 解析为项目根下的绝对路径。
+    """
+    relative = "data/project/2026/07/01/uuid-1"
+    expected = Path(paths_module._PROJECT_ROOT) / "data" / "project" / "2026" / "07" / "01" / "uuid-1"
+
+    assert resolve_project_dir(relative) == expected
+
+
+def test_resolve_project_tmp_dir():
+    """
+    P1: resolve_project_tmp_dir 将 data/project/... 映射为 data/tmp/project/... 绝对路径。
+    """
+    relative = "data/project/2026/07/01/uuid-1"
+    expected = (
+        Path(paths_module._PROJECT_ROOT)
+        / "data"
+        / "tmp"
+        / "project"
+        / "2026"
+        / "07"
+        / "01"
+        / "uuid-1"
+    )
+
+    assert resolve_project_tmp_dir(relative) == expected
+
+
+def test_resolve_project_dir_empty_raises():
+    """
+    P1: resolve_project_dir 传入空字符串时抛出 ValueError。
+    """
+    with pytest.raises(ValueError):
+        resolve_project_dir("")
+
+
+def test_resolve_project_tmp_dir_empty_raises():
+    """
+    P1: resolve_project_tmp_dir 传入空字符串时抛出 ValueError。
+    """
+    with pytest.raises(ValueError):
+        resolve_project_tmp_dir("")

@@ -46,6 +46,9 @@ async def init_project_schema():
     await DatabasePool.execute("""
         CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id)
     """)
+    await DatabasePool.execute("""
+        ALTER TABLE projects ADD COLUMN IF NOT EXISTS relative_path VARCHAR(500)
+    """)
 
 
 class ProjectDB:
@@ -79,7 +82,7 @@ class ProjectDB:
         if not cls.is_enabled() or cls._initialized:
             return
         rows = await DatabasePool.fetch(
-            "SELECT id, user_id, name, uuid, created_at, updated_at FROM projects"
+            "SELECT id, user_id, name, uuid, relative_path, created_at, updated_at FROM projects"
         )
         with cls._lock:
             for row in rows:
@@ -88,9 +91,11 @@ class ProjectDB:
                     'user_id': row['user_id'],
                     'name': row['name'],
                     'uuid': row['uuid'],
+                    'relative_path': row['relative_path'],
                     'created_at': row['created_at'],
                     'updated_at': row['updated_at'],
                 }
+        await cls._backfill_missing_relative_paths()
         cls._initialized = True
 
     @classmethod
@@ -99,6 +104,7 @@ class ProjectDB:
         user_id: int,
         name: str,
         uuid: str,
+        relative_path: Optional[str] = None,
     ) -> Optional[dict]:
         """创建项目（双向写入）
 
@@ -106,6 +112,7 @@ class ProjectDB:
             user_id: 创建者用户 ID。
             name: 项目名称（用户输入）。
             uuid: 项目唯一标识（约定 = 创建时的 session_id）。
+            relative_path: 项目对应现有文件夹的相对路径；为空时按当前日期自动生成。
 
         Returns:
             Optional[dict]: 创建成功的项目信息（含 id）；DB 未启用时返回 None。
@@ -116,25 +123,26 @@ class ProjectDB:
         if not user_id or not name or not uuid:
             raise ValueError("user_id / name / uuid 均不可为空")
         now = datetime.now()
+        relative_path = relative_path or f"data/project/{now.year}/{now.month:02d}/{now.day:02d}/{uuid}"
         new_id: Optional[int] = None
 
         # 写入数据库
         if cls.is_enabled():
             row = await DatabasePool.fetchrow(
                 """
-                INSERT INTO projects (user_id, name, uuid, created_at, updated_at)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO projects (user_id, name, uuid, relative_path, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 ON CONFLICT (uuid) DO NOTHING
                 RETURNING id
                 """,
-                user_id, name, uuid, now, now,
+                user_id, name, uuid, relative_path, now, now,
             )
             if row:
                 new_id = row['id']
             else:
                 # uuid 已存在，幂等返回已有记录
                 existing = await DatabasePool.fetchrow(
-                    "SELECT id, user_id, name, uuid, created_at, updated_at FROM projects WHERE uuid = $1",
+                    "SELECT id, user_id, name, uuid, relative_path, created_at, updated_at FROM projects WHERE uuid = $1",
                     uuid,
                 )
                 if existing:
@@ -151,6 +159,7 @@ class ProjectDB:
             'user_id': user_id,
             'name': name,
             'uuid': uuid,
+            'relative_path': relative_path,
             'created_at': now,
             'updated_at': now,
         }
@@ -162,6 +171,38 @@ class ProjectDB:
         return project_data
 
     @classmethod
+    async def _backfill_missing_relative_paths(cls) -> None:
+        """补齐缺失的 relative_path
+
+        遍历内存缓存，对 relative_path 为空或 None 的记录按 created_at 生成默认路径，
+        并在 DB 模式下同步更新数据库。
+
+        Returns:
+            None
+        """
+        need_update: List[tuple] = []
+
+        with cls._lock:
+            for project_id, proj in cls._memory_cache.items():
+                if not proj.get('relative_path'):
+                    created_at = proj.get('created_at') or datetime.now()
+                    if isinstance(created_at, str):
+                        try:
+                            created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                        except ValueError:
+                            created_at = datetime.now()
+                    backfill_path = f"data/project/{created_at.year}/{created_at.month:02d}/{created_at.day:02d}/{proj['uuid']}"
+                    proj['relative_path'] = backfill_path
+                    need_update.append((backfill_path, project_id))
+
+        if cls.is_enabled() and need_update:
+            for backfill_path, project_id in need_update:
+                await DatabasePool.execute(
+                    "UPDATE projects SET relative_path = $1 WHERE id = $2",
+                    backfill_path, project_id,
+                )
+
+    @classmethod
     async def list_user_projects(cls, user_id: int) -> List[dict]:
         """获取用户的所有项目（按 created_at DESC）
 
@@ -169,12 +210,12 @@ class ProjectDB:
             user_id: 用户 ID。
 
         Returns:
-            List[dict]: 项目列表，每项含 id、user_id、name、uuid、created_at、updated_at。
+            List[dict]: 项目列表，每项含 id、user_id、name、uuid、relative_path、created_at、updated_at。
         """
         if cls.is_enabled():
             rows = await DatabasePool.fetch(
                 """
-                SELECT id, user_id, name, uuid, created_at, updated_at
+                SELECT id, user_id, name, uuid, relative_path, created_at, updated_at
                 FROM projects
                 WHERE user_id = $1
                 ORDER BY created_at DESC
@@ -211,7 +252,7 @@ class ProjectDB:
         if cls.is_enabled():
             row = await DatabasePool.fetchrow(
                 """
-                SELECT id, user_id, name, uuid, created_at, updated_at
+                SELECT id, user_id, name, uuid, relative_path, created_at, updated_at
                 FROM projects
                 WHERE id = $1
                 """,
@@ -246,7 +287,7 @@ class ProjectDB:
         if cls.is_enabled():
             row = await DatabasePool.fetchrow(
                 """
-                SELECT id, user_id, name, uuid, created_at, updated_at
+                SELECT id, user_id, name, uuid, relative_path, created_at, updated_at
                 FROM projects
                 WHERE uuid = $1
                 """,

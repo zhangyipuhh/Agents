@@ -18,17 +18,47 @@ from starlette.datastructures import State
 
 from app.core.router.file_upload_router import router, MergeChunksRequest, upload_files, merge_chunks
 from app.shared.utils.files import session_path_manager as spm
+from app.shared.utils.project import project_db as pdb
+from app.core.config import paths as path_config
 
 
 @pytest.fixture
 def mock_request(tmp_path, monkeypatch):
     """构造带 session_id 的 FastAPI Request 模拟对象，并隔离项目根目录。"""
     monkeypatch.setattr(spm, "_get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(path_config, "_PROJECT_ROOT", str(tmp_path))
 
     class DummyRequest:
         state = State({"session_id": "session-abc"})
 
     return DummyRequest()
+
+
+@pytest.fixture
+def mock_project_request(tmp_path, monkeypatch):
+    """构造带 project_id 的 FastAPI Request 模拟对象，并隔离项目根目录。"""
+    monkeypatch.setattr(spm, "_get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(path_config, "_PROJECT_ROOT", str(tmp_path))
+
+    project_id = 42
+    relative_path = f"data/project/{date.today().year}/{date.today().month:02d}/{date.today().day:02d}/proj-uuid"
+    pdb.ProjectDB._memory_cache[project_id] = {
+        "id": project_id,
+        "user_id": 1,
+        "name": "测试项目",
+        "uuid": "proj-uuid",
+        "relative_path": relative_path,
+        "created_at": "2026-07-01T00:00:00",
+        "updated_at": "2026-07-01T00:00:00",
+    }
+
+    class DummyRequest:
+        state = State({"session_id": "session-abc", "project_id": project_id})
+
+    yield DummyRequest()
+
+    # 清理内存缓存，避免影响其他测试
+    pdb.ProjectDB._memory_cache.pop(project_id, None)
 
 
 class _FakeDocument:
@@ -107,6 +137,30 @@ class TestUploadFiles:
         assert resp.files[0].stored_path == str(expected_md)
         assert resp.files[0].file_type == "md"
 
+    @pytest.mark.asyncio
+    async def test_uploadfile_with_project_id_uses_dated_path(self, mock_project_request, tmp_path):
+        """有 project_id 时应保存到 data/project/yyyy/mm/dd/{uuid}/ 目录。"""
+        content = b"hello project\nthis is a test"
+        upload_file = UploadFile(filename="proj.txt", file=BytesIO(content))
+
+        with patch("app.core.router.file_upload_router.FILE_PARSER_CONFIG", {"enabled": False}), \
+             patch("app.core.router.file_upload_router.DocumentLoader", _FakeDocumentLoader):
+            resp = await upload_files(mock_project_request, [upload_file])
+
+        today = date.today()
+        original_path = tmp_path / f"data/project/{today.year}/{today.month:02d}/{today.day:02d}/proj-uuid/proj.txt"
+        md_path = tmp_path / f"data/tmp/project/{today.year}/{today.month:02d}/{today.day:02d}/proj-uuid/proj.md"
+
+        assert original_path.exists()
+        assert original_path.read_text(encoding="utf-8") == content.decode("utf-8")
+        assert md_path.exists()
+        assert "hello world" in md_path.read_text(encoding="utf-8")
+
+        assert resp.count == 1
+        assert resp.files[0].stored_path == str(md_path)
+        assert resp.files[0].file_type == "md"
+        assert resp.files[0].filename == "proj.txt"
+
 
 class TestMergeChunks:
     """分片合并接口测试。"""
@@ -138,6 +192,40 @@ class TestMergeChunks:
 
         assert original_path.exists()
         assert original_path.read_text(encoding="utf-8") == "hello world"
+        assert md_path.exists()
+        assert "hello world" in md_path.read_text(encoding="utf-8")
+
+        assert resp.count == 1
+        assert resp.files[0].stored_path == str(md_path)
+        assert resp.files[0].file_type == "md"
+
+    @pytest.mark.asyncio
+    async def test_merge_chunks_with_project_id_uses_dated_path(self, mock_project_request, tmp_path):
+        """有 project_id 时合并分片应保存到 data/project/yyyy/mm/dd/{uuid}/ 目录。"""
+        file_id = "chunk-proj-001"
+        chunks_dir = tmp_path / "upload_chunks"
+        chunk_dir = chunks_dir / file_id
+        chunk_dir.mkdir(parents=True)
+        (chunk_dir / "chunk_0").write_text("hello ", encoding="utf-8")
+        (chunk_dir / "chunk_1").write_text("project", encoding="utf-8")
+
+        merge_request = MergeChunksRequest(
+            file_id=file_id,
+            filename="merge-proj.txt",
+            total_chunks=2,
+        )
+
+        with patch("app.core.router.file_upload_router.CHUNKS_DIR", chunks_dir), \
+             patch("app.core.router.file_upload_router.FILE_PARSER_CONFIG", {"enabled": False}):
+            with patch("app.core.router.file_upload_router.DocumentLoader", _FakeDocumentLoader):
+                resp = await merge_chunks(mock_project_request, merge_request)
+
+        today = date.today()
+        original_path = tmp_path / f"data/project/{today.year}/{today.month:02d}/{today.day:02d}/proj-uuid/merge-proj.txt"
+        md_path = tmp_path / f"data/tmp/project/{today.year}/{today.month:02d}/{today.day:02d}/proj-uuid/merge-proj.md"
+
+        assert original_path.exists()
+        assert original_path.read_text(encoding="utf-8") == "hello project"
         assert md_path.exists()
         assert "hello world" in md_path.read_text(encoding="utf-8")
 

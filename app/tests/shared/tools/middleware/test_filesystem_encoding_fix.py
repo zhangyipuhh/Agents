@@ -10,13 +10,31 @@ Filesystem Encoding Fix 测试
 - 读取后 self.cwd 恢复
 """
 
+import importlib.util
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from app.shared.tools.middleware import filesystem_encoding_fix as fix
 from app.shared.utils.files import session_path_manager as spm
+
+
+# 全局 conftest 与 routers/conftest 都会把 filesystem_encoding_fix mock 为仅含 apply_fix 的 stub，
+# 但本测试需要验证真实实现。为了避免 sys.modules 被其它 conftest 覆盖导致拿到 mock，
+# 这里直接从源文件加载真实模块，不依赖 sys.modules 中的条目。
+_fix_path = (
+    Path(__file__).resolve().parents[4]
+    / "shared"
+    / "tools"
+    / "middleware"
+    / "filesystem_encoding_fix.py"
+)
+_spec = importlib.util.spec_from_file_location(
+    "app.shared.tools.middleware.filesystem_encoding_fix", _fix_path
+)
+fix = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(fix)
 
 
 class _FakeBackend:
@@ -177,6 +195,20 @@ class TestPatchedRead:
         assert result.file_data is not None
         assert result.file_data["encoding"] == "utf-8"
         assert result.file_data["content"] == plain_text
+
+    def test_read_project_date_path_maps_to_tmp_md(self, tmp_path, patched_read):
+        """项目文件夹日期化路径 data/project/yyyy/mm/dd/{uuid}/ 能自然映射到 data/tmp/project/..."""
+        project_dir = tmp_path / "data/project/2026/07/01/project-uuid"
+        tmp_dir = tmp_path / "data/tmp/project/2026/07/01/project-uuid"
+        tmp_dir.mkdir(parents=True)
+        (tmp_dir / "doc.md").write_text("Project doc markdown", encoding="utf-8")
+
+        backend = _FakeBackend(project_dir)
+        result = patched_read(backend, "/doc.pdf")
+
+        assert result.error is None
+        assert result.file_data is not None
+        assert result.file_data["content"] == "Project doc markdown"
 
 
 class _FakeMiddleware:

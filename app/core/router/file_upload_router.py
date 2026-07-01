@@ -52,7 +52,7 @@ async def upload_files(
     """批量上传文件并解析为 Markdown。
 
     路径规则（2026-06-30 改造）：
-        - 有 project_id（项目文件夹）→ data/project/{project_uuid}/
+        - 有 project_id（项目文件夹）→ data/project/{yyyy}/{mm}/{dd}/{project_uuid}/
         - 无 project_id（不使用文件夹 / 默认）→ data/upload/{yyyy}/{mm}/{dd}/{session_id}/
 
     原文件保留在对应目录，解析结果统一保存为 .md 文件到对应的 tmp 目录。
@@ -91,9 +91,9 @@ async def upload_files(
                         ProjectDB._memory_cache[project_id] = project
             if not project:
                 raise HTTPException(status_code=404, detail=f"项目不存在: project_id={project_id}")
-            project_uuid = project['uuid']
-            session_upload_dir = get_project_upload_dir(project_uuid, create=True)
-            session_tmp_dir = get_project_tmp_upload_dir(project_uuid, create=True)
+            relative_path = project['relative_path']
+            session_upload_dir = get_project_upload_dir(relative_path, create=True)
+            session_tmp_dir = get_project_tmp_upload_dir(relative_path, create=True)
         else:
             session_upload_dir = get_session_upload_dir(session_id, create=True)
             session_tmp_dir = get_session_tmp_upload_dir(session_id, create=True)
@@ -225,7 +225,7 @@ async def merge_chunks(request: Request, merge_request: MergeChunksRequest):
     """合并分片并解析为 Markdown。
 
     路径规则（2026-06-30 改造）：
-        - 有 project_id（项目文件夹）→ data/project/{project_uuid}/
+        - 有 project_id（项目文件夹）→ data/project/{yyyy}/{mm}/{dd}/{project_uuid}/
         - 无 project_id（不使用文件夹 / 默认）→ data/upload/{yyyy}/{mm}/{dd}/{session_id}/
 
     Args:
@@ -260,9 +260,9 @@ async def merge_chunks(request: Request, merge_request: MergeChunksRequest):
                         ProjectDB._memory_cache[project_id] = project
             if not project:
                 raise HTTPException(status_code=404, detail=f"项目不存在: project_id={project_id}")
-            project_uuid = project['uuid']
-            session_upload_dir = get_project_upload_dir(project_uuid, create=True)
-            session_tmp_dir = get_project_tmp_upload_dir(project_uuid, create=True)
+            relative_path = project['relative_path']
+            session_upload_dir = get_project_upload_dir(relative_path, create=True)
+            session_tmp_dir = get_project_tmp_upload_dir(relative_path, create=True)
         else:
             session_upload_dir = get_session_upload_dir(session_id, create=True)
             session_tmp_dir = get_session_tmp_upload_dir(session_id, create=True)

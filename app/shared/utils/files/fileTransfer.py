@@ -526,9 +526,8 @@ class FileTransfer:
             if not project and ProjectDB.is_enabled():
                 project = await ProjectDB.get_project_by_id(project_id)
             if project:
-                project_uuid = project['uuid']
-                project_upload = get_project_upload_dir(project_uuid)
-                project_tmp = get_project_tmp_upload_dir(project_uuid)
+                project_upload = get_project_upload_dir(project['relative_path'])
+                project_tmp = get_project_tmp_upload_dir(project['relative_path'])
                 existed = project_upload.exists() or project_tmp.exists()
                 if not existed:
                     return False

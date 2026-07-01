@@ -1,15 +1,18 @@
 # -*- coding:utf-8 -*-
 """
-ProjectDB 单元测试（2026-06-30 新增）
+ProjectDB 单元测试（2026-06-30 新增，2026-07-01 扩展 relative_path）
 
 测试 app/shared/utils/project/project_db.py 的：
   * create_project
   * list_user_projects
   * get_project_by_id
   * get_project_by_uuid
+  * _backfill_missing_relative_paths
 
 由于 ProjectDB 主要在 PG 模式下工作，测试在 Memory 模式下覆盖基础逻辑分支。
 """
+
+import asyncio
 
 import pytest
 
@@ -32,11 +35,8 @@ class TestProjectDBCreate:
     """create_project 测试。"""
 
     def test_create_project_in_memory_mode(self, fresh_project_db, monkeypatch):
-        """Memory 模式：create_project 返回含 id 的字典。"""
+        """Memory 模式：create_project 返回含 id 与 relative_path 的字典。"""
         monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
-        project = ProjectDB.run = None  # placeholder
-        # 直接调内部方法
-        import asyncio
 
         async def _run():
             return await ProjectDB.create_project(
@@ -51,11 +51,13 @@ class TestProjectDBCreate:
         assert result["uuid"] == "session-1111"
         assert result["user_id"] == 1
         assert "id" in result
+        assert "relative_path" in result
+        assert result["relative_path"].startswith("data/project/")
+        assert result["relative_path"].endswith("/session-1111")
 
     def test_create_project_raises_on_missing_params(self, fresh_project_db, monkeypatch):
         """缺少必填参数应抛 ValueError。"""
         monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
-        import asyncio
 
         async def _run():
             return await ProjectDB.create_project(user_id=0, name="", uuid="x")
@@ -66,7 +68,6 @@ class TestProjectDBCreate:
     def test_create_project_duplicate_uuid_idempotent(self, fresh_project_db, monkeypatch):
         """uuid 重复时 Memory 模式不会真正去重（仅 DB 模式生效）。"""
         monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
-        import asyncio
 
         async def _run():
             p1 = await ProjectDB.create_project(user_id=1, name="A", uuid="dup-uuid")
@@ -78,6 +79,88 @@ class TestProjectDBCreate:
         assert p1 is not None
         assert p2 is not None
         assert p1["id"] != p2["id"]
+        # 相同 uuid 且通常同日期，默认 relative_path 会相同
+        assert p1["relative_path"] == p2["relative_path"]
+
+    def test_create_project_stores_relative_path(self, fresh_project_db, monkeypatch):
+        """未传 relative_path 时，默认生成按日期分层的相对路径。"""
+        monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
+        from datetime import datetime
+
+        async def _run():
+            return await ProjectDB.create_project(
+                user_id=1,
+                name="Auto-path",
+                uuid="session-auto",
+            )
+
+        result = asyncio.run(_run())
+        now = datetime.now()
+        expected = f"data/project/{now.year}/{now.month:02d}/{now.day:02d}/session-auto"
+        assert result["relative_path"] == expected
+
+    def test_create_project_custom_relative_path(self, fresh_project_db, monkeypatch):
+        """传入 relative_path 时应原样保存。"""
+        monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
+
+        async def _run():
+            return await ProjectDB.create_project(
+                user_id=1,
+                name="Custom-path",
+                uuid="session-custom",
+                relative_path="custom/folder/path",
+            )
+
+        result = asyncio.run(_run())
+        assert result["relative_path"] == "custom/folder/path"
+
+
+class TestProjectDBInitialize:
+    """initialize / 数据补齐 测试。"""
+
+    def test_initialize_backfills_missing_relative_path(self, fresh_project_db, monkeypatch):
+        """模拟旧记录缺失 relative_path，调用 _backfill_missing_relative_paths 后补齐。"""
+        monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
+        from datetime import datetime
+
+        old_time = datetime(2025, 8, 15, 10, 30, 0)
+        with ProjectDB._lock:
+            ProjectDB._memory_cache[1] = {
+                "id": 1,
+                "user_id": 1,
+                "name": "Old",
+                "uuid": "old-uuid",
+                "relative_path": None,
+                "created_at": old_time,
+                "updated_at": old_time,
+            }
+            ProjectDB._memory_cache[2] = {
+                "id": 2,
+                "user_id": 1,
+                "name": "Empty",
+                "uuid": "empty-uuid",
+                "relative_path": "",
+                "created_at": old_time,
+                "updated_at": old_time,
+            }
+            ProjectDB._memory_cache[3] = {
+                "id": 3,
+                "user_id": 1,
+                "name": "HasPath",
+                "uuid": "has-uuid",
+                "relative_path": "existing/path",
+                "created_at": old_time,
+                "updated_at": old_time,
+            }
+
+        async def _run():
+            await ProjectDB._backfill_missing_relative_paths()
+
+        asyncio.run(_run())
+
+        assert ProjectDB._memory_cache[1]["relative_path"] == "data/project/2025/08/15/old-uuid"
+        assert ProjectDB._memory_cache[2]["relative_path"] == "data/project/2025/08/15/empty-uuid"
+        assert ProjectDB._memory_cache[3]["relative_path"] == "existing/path"
 
 
 class TestProjectDBList:
@@ -86,7 +169,6 @@ class TestProjectDBList:
     def test_list_user_projects_filters_by_user(self, fresh_project_db, monkeypatch):
         """应只返回指定 user 的项目。"""
         monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
-        import asyncio
 
         async def _run():
             await ProjectDB.create_project(user_id=1, name="U1-Project", uuid="u1-1")
@@ -97,11 +179,11 @@ class TestProjectDBList:
         result = asyncio.run(_run())
         assert len(result) == 2
         assert all(p["user_id"] == 1 for p in result)
+        assert all("relative_path" in p for p in result)
 
     def test_list_user_projects_empty(self, fresh_project_db, monkeypatch):
         """空时返回空列表。"""
         monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
-        import asyncio
 
         async def _run():
             return await ProjectDB.list_user_projects(user_id=999)
@@ -116,7 +198,6 @@ class TestProjectDBGetById:
     def test_get_existing_project(self, fresh_project_db, monkeypatch):
         """存在的项目应能正确查询。"""
         monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
-        import asyncio
 
         async def _run():
             p = await ProjectDB.create_project(user_id=1, name="test", uuid="uuid-1")
@@ -125,11 +206,11 @@ class TestProjectDBGetById:
         result = asyncio.run(_run())
         assert result is not None
         assert result["name"] == "test"
+        assert "relative_path" in result
 
     def test_get_project_user_mismatch(self, fresh_project_db, monkeypatch):
         """user_id 不匹配时返回 None。"""
         monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
-        import asyncio
 
         async def _run():
             p = await ProjectDB.create_project(user_id=1, name="test", uuid="uuid-1")
@@ -141,7 +222,6 @@ class TestProjectDBGetById:
     def test_get_nonexistent_project(self, fresh_project_db, monkeypatch):
         """不存在的项目 ID 返回 None。"""
         monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
-        import asyncio
 
         async def _run():
             return await ProjectDB.get_project_by_id(9999)
@@ -156,7 +236,6 @@ class TestProjectDBGetByUuid:
     def test_get_by_uuid(self, fresh_project_db, monkeypatch):
         """通过 uuid 查找项目。"""
         monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
-        import asyncio
 
         async def _run():
             await ProjectDB.create_project(user_id=1, name="test", uuid="unique-uuid")
@@ -165,10 +244,10 @@ class TestProjectDBGetByUuid:
         result = asyncio.run(_run())
         assert result is not None
         assert result["uuid"] == "unique-uuid"
+        assert "relative_path" in result
 
     def test_get_by_uuid_empty(self, fresh_project_db, monkeypatch):
         """空 uuid 返回 None。"""
-        import asyncio
 
         async def _run():
             return await ProjectDB.get_project_by_uuid("")
@@ -179,10 +258,17 @@ class TestProjectDBGetByUuid:
     def test_get_by_uuid_not_found(self, fresh_project_db, monkeypatch):
         """不存在的 uuid 返回 None。"""
         monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
-        import asyncio
 
         async def _run():
             return await ProjectDB.get_project_by_uuid("nonexistent-uuid")
 
         result = asyncio.run(_run())
         assert result is None
+
+
+class TestProjectDBModule:
+    """模块级兼容测试。"""
+
+    def test_init_project_schema_alias_exists(self):
+        """module-level 别名与类引用保持一致。"""
+        assert project_db.ProjectDB is ProjectDB

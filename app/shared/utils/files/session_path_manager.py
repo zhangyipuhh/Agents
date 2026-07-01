@@ -12,8 +12,8 @@ Session 上传路径管理器
     data/upload/session_index.json                      # session_id -> "yyyy/mm/dd"
 
     # 关联项目时 —— 走项目独立目录（与 session_id 无关）
-    data/project/{project_uuid}/                        # 原文件
-    data/tmp/project/{project_uuid}/                    # 解析后的 md 缓存
+    data/project/yyyy/mm/dd/{project_uuid}/                        # 原文件
+    data/tmp/project/yyyy/mm/dd/{project_uuid}/                    # 解析后的 md 缓存
 
 使用方式：
     from app.shared.utils.files.session_path_manager import (
@@ -193,12 +193,12 @@ def get_session_upload_dir(
         session_id: 会话 ID。
         create: 是否在目录不存在时自动创建并注册索引，默认 False。
         d: 指定日期，默认为今天或索引中已记录的日期。
-        project_id: 2026-06-30 新增；非空时走项目独立目录 data/project/{project_uuid}/，
+        project_id: 2026-06-30 新增；非空时走项目独立目录 data/project/yyyy/mm/dd/{project_uuid}/，
                     忽略 session_id 维度。用于项目文件夹语义。
 
     Returns:
         Path: 原文件目录路径。
-              - 有 project_id：data/project/{project_uuid}/
+              - 有 project_id：data/project/yyyy/mm/dd/{project_uuid}/
               - 无 project_id（默认）：data/upload/{yyyy}/{mm}/{dd}/{session_id}/
               - 兜底：data/upload/{session_id}/
     """
@@ -219,7 +219,7 @@ def get_session_upload_dir(
                     project_id,
                 )
             if project:
-                return get_project_upload_dir(project['uuid'], create=create)
+                return get_project_upload_dir(project['relative_path'], create=create)
         except Exception as e:
             logger.warning("get_session_upload_dir: project_id 路由失败，fallback 到 session 路径: %s", e)
 
@@ -257,11 +257,11 @@ def get_session_tmp_upload_dir(
         session_id: 会话 ID。
         create: 是否在目录不存在时自动创建，默认 False。
         d: 指定日期，默认为今天或索引中已记录的日期。
-        project_id: 2026-06-30 新增；非空时走项目独立目录 data/tmp/project/{project_uuid}/。
+        project_id: 2026-06-30 新增；非空时走项目独立目录 data/tmp/project/yyyy/mm/dd/{project_uuid}/。
 
     Returns:
         Path: md 缓存目录路径。
-              - 有 project_id：data/tmp/project/{project_uuid}/
+              - 有 project_id：data/tmp/project/yyyy/mm/dd/{project_uuid}/
               - 无 project_id（默认）：data/tmp/upload/{yyyy}/{mm}/{dd}/{session_id}/
               - 兜底：data/tmp/upload/{session_id}/
     """
@@ -272,7 +272,7 @@ def get_session_tmp_upload_dir(
         try:
             project = ProjectDB._memory_cache.get(project_id)
             if project:
-                return get_project_tmp_upload_dir(project['uuid'], create=create)
+                return get_project_tmp_upload_dir(project['relative_path'], create=create)
         except Exception as e:
             logger.warning("get_session_tmp_upload_dir: project_id 路由失败，fallback 到 session 路径: %s", e)
 
