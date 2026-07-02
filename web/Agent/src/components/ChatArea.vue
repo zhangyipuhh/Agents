@@ -274,7 +274,7 @@ defineExpose({
   scrollbar-color: var(--color-border) transparent;
 }
 
-/* 2026-07-01 新增：会话名称头部 */
+/* 2026-07-01 新增：会话名称头部；2026-07-02 修正：粘性固定，滚动时始终可见 */
 .chat-area-header {
   display: flex;
   align-items: center;
@@ -282,6 +282,10 @@ defineExpose({
   max-width: 900px;
   margin: 0 auto 16px;
   padding: 8px 0;
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background-color: var(--color-bg-secondary);
 }
 
 .chat-session-name {

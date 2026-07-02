@@ -912,43 +912,6 @@ export async function fetchSessionAttachments(sessionId) {
 }
 
 /**
- * 获取会话文件空间树形结构
- * @param {string} sessionId - 会话 ID
- * @returns {Promise<{tree: Object}>} 文件树根节点
- * @throws {Error} 获取失败时抛出错误
- */
-export async function fetchSessionFileTree(sessionId) {
-  const response = await fetchWithAuth(`/api/session/${sessionId}/files/tree`, {
-    method: 'GET',
-    headers: { 'Content-Type': 'application/json' }
-  })
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}))
-    throw new Error(errorData.detail || `获取文件树失败: ${response.status}`)
-  }
-  return response.json()
-}
-
-/**
- * 预览会话文件空间中的单个文件
- * @param {string} sessionId - 会话 ID
- * @param {string} storedPath - 文件存储路径
- * @returns {Promise<{path: string, content: string, type: string, preview_mode: string, file_url: string, file_name: string}>} 预览数据
- * @throws {Error} 预览失败时抛出错误
- */
-export async function previewSessionFile(sessionId, storedPath) {
-  const response = await fetchWithAuth(
-    `/api/session/${sessionId}/files/preview?stored_path=${encodeURIComponent(storedPath)}`,
-    { method: 'GET', headers: { 'Content-Type': 'application/json' } }
-  )
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}))
-    throw new Error(errorData.detail || `预览文件失败: ${response.status}`)
-  }
-  return response.json()
-}
-
-/**
  * 获取会话历史消息
  * 从 LangGraph Checkpoint 中恢复指定会话的对话历史
  * @param {string} sessionId - 会话 ID
@@ -963,6 +926,38 @@ export async function fetchSessionMessages(sessionId, limit = 50) {
     headers: { 'Content-Type': 'application/json' }
   })
   if (!response.ok) throw new Error(`获取历史消息失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 获取会话文件空间的树形结构
+ * @param {string} sessionId - 会话 ID
+ * @returns {Promise<{tree: Object}>} 文件树根节点
+ * @throws {Error} 获取失败时抛出错误
+ */
+export async function fetchSessionFileTree(sessionId) {
+  const response = await fetchWithAuth(`/api/session/${sessionId}/files/tree`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`获取会话文件树失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 预览会话文件空间中的单个文件
+ * @param {string} sessionId - 会话 ID
+ * @param {string} storedPath - 文件存储路径
+ * @returns {Promise<{path: string, content: string, type: string, preview_mode: string, file_url: string, file_name: string}>} 预览数据
+ * @throws {Error} 预览失败时抛出错误
+ */
+export async function previewSessionFile(sessionId, storedPath) {
+  const encodedPath = encodeURIComponent(storedPath)
+  const response = await fetchWithAuth(`/api/session/${sessionId}/files/preview?stored_path=${encodedPath}`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`预览文件失败: ${response.status}`)
   return response.json()
 }
 
@@ -1143,6 +1138,61 @@ export async function adminDeleteSession(sessionId) {
   })
   if (!response.ok) throw new Error(`删除会话失败: ${response.status}`)
   return response.json()
+}
+
+/**
+ * Admin 批量删除会话
+ * @param {string[]} sessionIds - 会话 ID 列表
+ * @returns {Promise<{success: boolean, deleted_count: number, total: number, failed: Array}>} 批量删除结果
+ * @throws {Error} 删除失败时抛出错误
+ */
+export async function adminBatchDeleteSessions(sessionIds) {
+  const response = await fetchWithAuth('/api/session/admin/batch', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_ids: sessionIds })
+  })
+  if (!response.ok) throw new Error(`批量删除会话失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * Admin 获取任意会话历史消息
+ * @param {string} sessionId - 会话 ID
+ * @param {number} limit - 返回消息数量限制，默认 100 条，设为 0 表示返回所有
+ * @returns {Promise<{session_id: string, messages: Array, total: number}>} 历史消息
+ * @throws {Error} 获取失败时抛出错误
+ */
+export async function adminFetchSessionMessages(sessionId, limit = 100) {
+  const queryParams = limit > 0 ? `?limit=${limit}` : ''
+  const response = await fetchWithAuth(`/api/session/admin/${sessionId}/messages${queryParams}`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`获取历史消息失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * Admin 导出任意会话为 Markdown 文件
+ * @param {string} sessionId - 会话 ID
+ * @returns {Promise<{text: string, filename: string}>} Markdown 文本与文件名
+ * @throws {Error} 导出失败时抛出错误
+ */
+export async function adminExportSessionMarkdown(sessionId) {
+  const response = await fetchWithAuth(`/api/session/admin/${sessionId}/export/markdown`, {
+    method: 'GET',
+    headers: { 'Accept': 'text/markdown' }
+  })
+  if (!response.ok) throw new Error(`导出失败: ${response.status}`)
+
+  const text = await response.text()
+  const disposition = response.headers.get('content-disposition') || ''
+  let filename = 'session.md'
+  const match = disposition.match(/filename\*=UTF-8''([^;]+)/i)
+  if (match) filename = decodeURIComponent(match[1])
+
+  return { text, filename }
 }
 
 /**

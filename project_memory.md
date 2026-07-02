@@ -1852,9 +1852,9 @@ SandboxDrawer 时间线包含 `code_generation` 事件（显示 LLM 生成的代
 - **根组件**：`App.vue`（主）、`KnowledgeApp.vue`（知识库）、`PortalApp.vue`（门户）、`KnowledgePage.vue`（旧版，被 `KnowledgeApp.vue` 替代，仍保留以兼容旧引用）
 - **登录入口**：`login.html` + `src/login-main.js`（独立 Vite 入口；承载 `LoginView`；由 `redirectToLogin()` 跳到 `/login?redirect=...` 统一访问）
 - **聊天**：`ChatArea.vue`、`InputBox.vue`、`MessageBubble.vue`、`SkillTags.vue`、`HumanApprovalBox.vue`、`TopBar.vue`
-  - `ChatArea.vue`（2026-07-01 新增）：顶部显示会话名称（`sessionName`）与绿色文件夹图标按钮；点击图标 emit `open-session-file-drawer` 事件，由 `App.vue` 打开右侧会话文件抽屉
+  - `ChatArea.vue`（2026-07-01 新增，2026-07-02 修正头部 sticky）：顶部显示会话名称（`sessionName`）与绿色文件夹图标按钮；头部使用 `position: sticky` 固定在聊天区域顶部，不随消息滚动；点击图标 emit `open-session-file-drawer` 事件，由 `App.vue` 打开右侧会话文件抽屉
 - **文件**：`FileList.vue`、`FilePreview.vue`、`FolderTree.vue`、`FileManagerModal.vue`
-  - `SessionFileDrawer.vue`（2026-07-01 新增）：右侧可拖拽宽度的抽屉，展示当前会话/项目文件空间的完整树形结构；复用 `FolderTree.vue`，点击文件 emit `file-click`
+  - `SessionFileDrawer.vue`（2026-07-01 新增）：右侧可拖拽宽度的抽屉，仅展示当前会话/项目文件空间中的原文件目录；复用 `FolderTree.vue`，点击文件 emit `file-click`
   - `FilePreviewModal.vue`（2026-07-01 新增）：文件预览弹窗，复用 `FilePreview.vue`；支持点击遮罩层、按 ESC 键关闭
 - **知识库**：`KnowledgeChat.vue`、`ProfileInputBox.vue`
 - **公共**：`Sidebar.vue`、`HelloWorld.vue`、`UserSettingsDialog.vue`

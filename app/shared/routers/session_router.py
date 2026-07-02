@@ -80,6 +80,32 @@ class SessionTitleUpdateRequest(BaseModel):
     title: str
 
 
+class AdminBatchDeleteRequest(BaseModel):
+    """
+    Admin 批量删除会话请求模型
+
+    Attributes:
+        session_ids (List[str]): 要删除的会话 ID 列表
+    """
+    session_ids: List[str]
+
+
+class AdminBatchDeleteResponse(BaseModel):
+    """
+    Admin 批量删除会话响应模型
+
+    Attributes:
+        success (bool): 整体是否成功（只要存在成功删除即视为 True）
+        deleted_count (int): 成功删除的数量
+        total (int): 请求删除的总数量
+        failed (List[Dict[str, str]]): 删除失败的会话及原因
+    """
+    success: bool
+    deleted_count: int
+    total: int
+    failed: List[Dict[str, str]]
+
+
 # 创建文件传输工具实例
 file_transfer = FileTransfer()
 
@@ -549,6 +575,113 @@ async def export_session_markdown(session_id: str, request: Request):
         raise HTTPException(status_code=500, detail=f"导出 Markdown 失败: {str(e)}")
 
 
+async def _delete_session_core(session_id: str, admin_username: str = "unknown", client_ip: str = "unknown") -> bool:
+    """
+    执行会话数据清理，供 Admin 单条/批量删除复用。
+
+    清理内容包括：对话记录、附件记录、文件目录、LangGraph Checkpoint（含子智能体 thread）、缓存。
+    每条删除都会记录审计日志。
+
+    Args:
+        session_id (str): 要删除的会话 ID
+        admin_username (str): 执行删除的管理员用户名
+        client_ip (str): 管理员客户端 IP
+
+    Returns:
+        bool: 文件目录删除是否成功（会话是否存在）
+    """
+    from app.shared.utils.auth.audit_log import AuditLog
+
+    # 删除关联的对话记录
+    await ConversationDB.delete_session_records(session_id)
+
+    # 删除关联的附件记录
+    await AttachmentDB.delete_session_attachments(session_id)
+
+    # 删除会话目录
+    _file_transfer = FileTransfer()
+    success = await _file_transfer.delete_session(session_id)
+
+    # 删除 LangGraph Checkpoint 中的对话状态
+    # 2026-06-16 改造：先收集主 thread 下所有子智能体 thread_id，逐个清理后再删主 thread
+    try:
+        checkpointer = await get_async_checkpointer()
+        sub_thread_ids = await CheckpointHistoryService.collect_subagent_thread_ids_for_cleanup(
+            checkpointer=checkpointer,
+            session_id=session_id,
+        )
+        for sub_tid in sub_thread_ids:
+            try:
+                await checkpointer.adelete_thread(sub_tid)
+            except Exception as e_sub:
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"删除子智能体 checkpoint 失败: sub_thread_id={sub_tid}, error={e_sub}"
+                )
+        await checkpointer.adelete_thread(session_id)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"删除 checkpoint 失败: session_id={session_id}, error={e}"
+        )
+
+    # 从缓存中删除 session_id
+    await session_cache.delete_session(session_id)
+
+    # 记录审计日志
+    await AuditLog.write_log(
+        action='admin_delete_session',
+        username=admin_username,
+        detail=f'Admin 删除会话 {session_id}',
+        ip_address=client_ip
+    )
+
+    return success
+
+
+@router.delete('/admin/batch', dependencies=[Depends(require_admin)])
+async def admin_batch_delete_sessions(request: Request, body: AdminBatchDeleteRequest):
+    """
+    Admin 批量删除会话
+
+    不需要验证 session 归属，admin 特权操作。
+    对每个 session_id 执行与单条删除相同的清理逻辑，返回成功/失败统计。
+
+    Args:
+        request (Request): FastAPI 请求对象
+        body (AdminBatchDeleteRequest): 包含 session_ids 列表的请求体
+
+    Returns:
+        AdminBatchDeleteResponse: 批量删除结果
+    """
+    admin_username = getattr(request.state, 'username', 'unknown')
+    client_ip = request.client.host if request.client else "unknown"
+
+    deleted_count = 0
+    failed: List[Dict[str, str]] = []
+
+    for session_id in body.session_ids:
+        try:
+            await _delete_session_core(session_id, admin_username, client_ip)
+            deleted_count += 1
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"批量删除会话失败: session_id={session_id}, error={e}"
+            )
+            failed.append({
+                "session_id": session_id,
+                "reason": f"删除失败: {str(e)}"
+            })
+
+    return {
+        "success": deleted_count > 0,
+        "deleted_count": deleted_count,
+        "total": len(body.session_ids),
+        "failed": failed
+    }
+
+
 @router.delete('/admin/{session_id}', dependencies=[Depends(require_admin)])
 async def admin_delete_session(session_id: str, request: Request):
     """
@@ -564,61 +697,92 @@ async def admin_delete_session(session_id: str, request: Request):
     Returns:
         SessionDeleteResponse: 删除结果
     """
-    from app.shared.utils.auth.audit_log import AuditLog
-
     try:
-        # 删除关联的对话记录
-        await ConversationDB.delete_session_records(session_id)
-
-        # 删除关联的附件记录
-        await AttachmentDB.delete_session_attachments(session_id)
-
-        # 删除会话目录
-        file_transfer = FileTransfer()
-        success = await file_transfer.delete_session(session_id)
-
-        # 删除 LangGraph Checkpoint 中的对话状态
-        # 2026-06-16 改造：先收集主 thread 下所有子智能体 thread_id，逐个清理后再删主 thread
-        try:
-            checkpointer = await get_async_checkpointer()
-            sub_thread_ids = await CheckpointHistoryService.collect_subagent_thread_ids_for_cleanup(
-                checkpointer=checkpointer,
-                session_id=session_id,
-            )
-            for sub_tid in sub_thread_ids:
-                try:
-                    await checkpointer.adelete_thread(sub_tid)
-                except Exception as e_sub:
-                    import logging
-                    logging.getLogger(__name__).warning(
-                        f"删除子智能体 checkpoint 失败: sub_thread_id={sub_tid}, error={e_sub}"
-                    )
-            await checkpointer.adelete_thread(session_id)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(
-                f"删除 checkpoint 失败: session_id={session_id}, error={e}"
-            )
-
-        # 从缓存中删除 session_id
-        await session_cache.delete_session(session_id)
-
-        # 记录审计日志
         admin_username = getattr(request.state, 'username', 'unknown')
         client_ip = request.client.host if request.client else "unknown"
-        await AuditLog.write_log(
-            action='admin_delete_session',
-            username=admin_username,
-            detail=f'Admin 删除会话 {session_id}',
-            ip_address=client_ip
-        )
-
+        success = await _delete_session_core(session_id, admin_username, client_ip)
         return {
             "success": success,
             "message": "会话删除成功" if success else "会话不存在"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"删除会话失败: {str(e)}")
+
+
+@router.get('/admin/{session_id}/messages', dependencies=[Depends(require_admin)])
+async def admin_get_session_messages(session_id: str, limit: Optional[int] = 50):
+    """
+    Admin 获取任意会话的历史消息
+
+    不需要验证 session 归属，admin 特权操作。
+    从 LangGraph Checkpoint 恢复指定会话的对话历史，包含子智能体轨迹。
+
+    Args:
+        session_id (str): 会话 ID
+        limit (Optional[int]): 返回消息数量限制，默认 50 条，设为 0 表示返回所有
+
+    Returns:
+        dict: 包含 messages 列表和元数据
+    """
+    try:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"[History] admin_get_session_messages session_id={session_id}")
+
+        merged_messages = await _load_merged_session_messages(session_id)
+
+        # 应用 limit（基于合并后总数）
+        if limit and limit > 0:
+            merged_messages = merged_messages[-limit:]
+
+        logger.warning(f"[History] 返回 messages 总数={len(merged_messages)}")
+
+        return {
+            "session_id": session_id,
+            "messages": merged_messages,
+            "total": len(merged_messages),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取历史消息失败: {str(e)}")
+
+
+@router.get('/admin/{session_id}/export/markdown', dependencies=[Depends(require_admin)])
+async def admin_export_session_markdown(session_id: str):
+    """
+    Admin 导出任意会话为 Markdown 文件
+
+    不需要验证 session 归属，admin 特权操作。
+    返回指定会话的完整对话（含子智能体轨迹）作为 Markdown 文本。
+
+    Args:
+        session_id (str): 会话 ID
+
+    Returns:
+        Response: text/markdown 响应，附带下载文件名
+    """
+    try:
+        session = await session_cache.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="会话不存在")
+
+        title = session.get('title') or '新对话'
+        merged_messages = await _load_merged_session_messages(session_id)
+        markdown_body = _messages_to_markdown(merged_messages, level=2)
+        markdown = f"# {title}\n\n{markdown_body}"
+
+        filename = f"{title}.md"
+        encoded_filename = quote(filename, safe='')
+        return Response(
+            content=markdown,
+            media_type="text/markdown; charset=utf-8",
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"导出 Markdown 失败: {str(e)}")
 
 
 @router.get('/admin/search', dependencies=[Depends(require_admin)])

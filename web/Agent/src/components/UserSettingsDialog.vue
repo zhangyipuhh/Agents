@@ -1,4 +1,4 @@
-![1780555291563](image/UserSettingsDialog/1780555291563.png)![1780555293156](image/UserSettingsDialog/1780555293156.png)![1780555297908](image/UserSettingsDialog/1780555297908.png)![1780555298784](image/UserSettingsDialog/1780555298784.png)![1780555299910](image/UserSettingsDialog/1780555299910.png)<script setup>
+<script setup>
 /**
  * UserSettingsDialog - 用户设置对话框组件
  * 支持分层面板导航：
@@ -13,7 +13,7 @@ import {
   fetchUserProfile,
   updateUserProfile,
   fetchUserList,
-  fetchAgentList,
+  fetchAdminAgentList,
   deleteUser,
   kickUser,
   createUser,
@@ -21,12 +21,25 @@ import {
   fetchOnlineUsers,
   fetchUserSessions,
   adminDeleteSession,
+  adminBatchDeleteSessions,
+  adminExportSessionMarkdown,
+  adminFetchSessionMessages,
   searchSessionsByUsername
 } from '../utils/api.js'
+import {
+  createAiMessage,
+  parseMessageContent,
+  isSubAgentHistoryItem,
+  convertSubAgentHistoryToAiSubAgent,
+  isSubAgentTool
+} from '../utils/sseParser.js'
 import McpServerManager from './McpServerManager.vue'
 import AgentManager from './AgentManager.vue'
 import ToolManager from './ToolManager.vue'
 import SkillManager from './SkillManager.vue'
+import MessageBubble from './MessageBubble.vue'
+import ToolCallCard from './ToolCallCard.vue'
+import SubAgentCard from './SubAgentCard.vue'
 
 /**
  * 组件属性定义
@@ -149,6 +162,16 @@ const personnelSearchKeyword = ref('')
 const userSessions = ref([])
 /** @type {import('vue').Ref<boolean>} 会话列表加载状态 */
 const sessionsLoading = ref(false)
+/** @type {import('vue').Ref<Set<string>>} 批量选中的会话 ID 集合 */
+const selectedSessionIds = ref(new Set())
+/** @type {import('vue').Ref<boolean>} 是否显示历史会话弹窗 */
+const showHistoryDialog = ref(false)
+/** @type {import('vue').Ref<Object | null>} 历史弹窗当前会话 */
+const historySession = ref(null)
+/** @type {import('vue').Ref<Array>} 历史弹窗消息列表（转换后） */
+const historyMessages = ref([])
+/** @type {import('vue').Ref<boolean>} 历史弹窗加载状态 */
+const historyLoading = ref(false)
 
 /* ---- Admin 用户新增/编辑弹窗状态 ---- */
 
@@ -246,6 +269,11 @@ function resetForms() {
   personnelSearchKeyword.value = ''
   userSessions.value = []
   sessionsLoading.value = false
+  selectedSessionIds.value.clear()
+  showHistoryDialog.value = false
+  historySession.value = null
+  historyMessages.value = []
+  historyLoading.value = false
 }
 
 /* ---- Admin 用户新增/编辑弹窗逻辑 ---- */
@@ -598,7 +626,7 @@ async function loadAllAgents() {
   if (allAgents.value.length > 0 || isLoadingAgents.value) return
   isLoadingAgents.value = true
   try {
-    const agents = await fetchAgentList()
+    const agents = await fetchAdminAgentList()
     allAgents.value = agents || []
   } catch (err) {
     console.error('加载智能体列表失败:', err)
@@ -712,6 +740,7 @@ function backToPersonnelList() {
   selectedUser.value = null
   userSessions.value = []
   sessionQueryView.value = 'personnel-list'
+  selectedSessionIds.value.clear()
 }
 
 /**
@@ -720,6 +749,7 @@ function backToPersonnelList() {
  */
 async function loadUserSessions(userId) {
   sessionsLoading.value = true
+  selectedSessionIds.value.clear()
   try {
     const data = await fetchUserSessions(userId)
     userSessions.value = data.sessions || []
@@ -747,6 +777,204 @@ async function handleDeleteUserSession(sessionId) {
   } catch (err) {
     alert(err.message || '删除会话失败')
   }
+}
+
+/**
+ * 是否已全选当前页会话
+ * @type {import('vue').ComputedRef<boolean>}
+ */
+const isAllSelected = computed(() => {
+  return userSessions.value.length > 0 && selectedSessionIds.value.size === userSessions.value.length
+})
+
+/**
+ * 切换全选状态
+ * @param {boolean} checked - 是否选中
+ */
+function toggleSelectAll(checked) {
+  if (checked) {
+    selectedSessionIds.value = new Set(userSessions.value.map(s => s.session_id))
+  } else {
+    selectedSessionIds.value.clear()
+  }
+}
+
+/**
+ * 切换单个会话的选中状态
+ * @param {string} sessionId - 会话ID
+ * @param {boolean} checked - 是否选中
+ */
+function toggleSession(sessionId, checked) {
+  const next = new Set(selectedSessionIds.value)
+  if (checked) {
+    next.add(sessionId)
+  } else {
+    next.delete(sessionId)
+  }
+  selectedSessionIds.value = next
+}
+
+/**
+ * 批量删除选中的会话
+ */
+async function handleBatchDelete() {
+  const ids = Array.from(selectedSessionIds.value)
+  if (!ids.length) return
+  if (!confirm(`确定批量删除选中的 ${ids.length} 个会话？此操作不可恢复。`)) return
+  try {
+    const res = await adminBatchDeleteSessions(ids)
+    alert(`删除完成：成功 ${res.deleted_count}/${res.total}`)
+    selectedSessionIds.value.clear()
+    if (selectedUser.value) {
+      loadUserSessions(selectedUser.value.id)
+    }
+  } catch (err) {
+    alert(err.message || '批量删除失败')
+  }
+}
+
+/**
+ * 导出指定会话为 Markdown 文件
+ * @param {Object} session - 会话对象
+ */
+async function handleExportSession(session) {
+  try {
+    const { text, filename } = await adminExportSessionMarkdown(session.session_id)
+    const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch (err) {
+    console.error('导出失败:', err)
+    alert(err.message || '导出失败')
+  }
+}
+
+/**
+ * 将后端历史消息转换为前端消息对象数组
+ * @param {Array} rawMessages - 后端返回的原始消息列表
+ * @returns {Array} 前端可用的消息对象数组
+ */
+function buildMessagesFromHistory(rawMessages) {
+  const result = []
+  let lastAiMsgRef = null
+  for (const msg of rawMessages) {
+    const msgAttachments = msg.attachments || []
+    if (msg.type === 'ai') {
+      let text = ''
+      let thinking = []
+      let timeline = []
+      let tools = []
+      if (msg.timeline && Array.isArray(msg.timeline)) {
+        timeline = msg.timeline
+        thinking = msg.thinking || []
+        text = msg.text || ''
+        tools = msg.tools || []
+      } else {
+        const aiMsg = createAiMessage()
+        parseMessageContent(msg.content, aiMsg, true)
+        text = aiMsg.text
+        thinking = aiMsg.thinking
+        timeline = aiMsg.timeline
+        tools = aiMsg.tools
+      }
+      if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
+        for (const tc of msg.tool_calls) {
+          if (isSubAgentTool(tc.name)) continue
+          const event = {
+            type: 'custom',
+            data: {
+              type: 'tool_stop',
+              tool: tc.name || '工具调用',
+              tool_call_id: tc.id || '',
+              data: { status: 'success' }
+            }
+          }
+          tools.push(event)
+          timeline.push({ type: 'tool', content: event })
+        }
+      }
+      const aiMsgObj = {
+        id: msg.id || Date.now() + Math.random(),
+        type: 'ai',
+        content: msg.content,
+        text,
+        thinking,
+        timeline,
+        tools,
+        subAgents: [],
+        attachments: msgAttachments.map(a => ({
+          file_name: a.file_name || a.filename || '未知文件',
+          stored_path: a.stored_path || '',
+          file_type: a.file_type || '',
+          file_size: a.file_size || a.size || 0,
+          original_name: a.original_name || a.file_name || a.filename || '未知文件'
+        })),
+        ended: true
+      }
+      result.push(aiMsgObj)
+      lastAiMsgRef = aiMsgObj
+    } else if (isSubAgentHistoryItem(msg)) {
+      const sa = convertSubAgentHistoryToAiSubAgent(msg)
+      if (sa && lastAiMsgRef) {
+        if (!Array.isArray(lastAiMsgRef.subAgents)) {
+          lastAiMsgRef.subAgents = []
+        }
+        if (!lastAiMsgRef.subAgents.some(s => s.toolCallId === sa.toolCallId)) {
+          lastAiMsgRef.subAgents.push(sa)
+        }
+      }
+    } else {
+      result.push({
+        id: msg.id || Date.now() + Math.random(),
+        type: msg.type,
+        content: msg.content,
+        attachments: msgAttachments.map(a => ({
+          file_name: a.file_name || a.filename || '未知文件',
+          stored_path: a.stored_path || '',
+          file_type: a.file_type || '',
+          file_size: a.file_size || a.size || 0,
+          original_name: a.original_name || a.file_name || a.filename || '未知文件'
+        })),
+        ended: true
+      })
+    }
+  }
+  return result
+}
+
+/**
+ * 打开历史会话弹窗并加载消息
+ * @param {Object} session - 会话对象
+ */
+async function openHistoryDialog(session) {
+  historySession.value = session
+  showHistoryDialog.value = true
+  historyLoading.value = true
+  historyMessages.value = []
+  try {
+    const data = await adminFetchSessionMessages(session.session_id, 0)
+    historyMessages.value = buildMessagesFromHistory(data.messages || [])
+  } catch (err) {
+    console.error('加载历史消息失败:', err)
+    alert(err.message || '加载历史消息失败')
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+/**
+ * 关闭历史会话弹窗
+ */
+function closeHistoryDialog() {
+  showHistoryDialog.value = false
+  historySession.value = null
+  historyMessages.value = []
 }
 
 function formatTime(dateStr) {
@@ -1132,12 +1360,22 @@ watch(() => props.visible, (newVal) => {
                         ← 返回人员列表
                       </button>
                       <h3 class="section-title">用户：{{ selectedUser?.username }} 的会话</h3>
+                      <button
+                        v-if="selectedSessionIds.size > 0"
+                        class="table-btn btn-danger batch-delete-btn"
+                        @click="handleBatchDelete"
+                      >
+                        批量删除 ({{ selectedSessionIds.size }})
+                      </button>
                     </div>
                     <div v-if="sessionsLoading" class="admin-loading">加载中...</div>
                     <div v-else-if="userSessions.length === 0" class="admin-empty">该用户暂无会话</div>
                     <table v-else class="admin-table">
                       <thead>
                         <tr>
+                          <th class="checkbox-cell">
+                            <input type="checkbox" :checked="isAllSelected" @change="toggleSelectAll($event.target.checked)">
+                          </th>
                           <th>会话ID</th>
                           <th>标题</th>
                           <th>最后活跃</th>
@@ -1146,11 +1384,15 @@ watch(() => props.visible, (newVal) => {
                       </thead>
                       <tbody>
                         <tr v-for="session in userSessions" :key="session.session_id">
+                          <td class="checkbox-cell">
+                            <input type="checkbox" :checked="selectedSessionIds.has(session.session_id)" @change="toggleSession(session.session_id, $event.target.checked)">
+                          </td>
                           <td class="session-id" :title="session.session_id">{{ session.session_id.slice(0, 8) }}...</td>
-                          <td>{{ session.title || '新对话' }}</td>
+                          <td class="session-title clickable" @click="openHistoryDialog(session)">{{ session.title || '新对话' }}</td>
                           <td>{{ formatTime(session.last_active_at) }}</td>
                           <td>
-                            <button class="table-btn btn-danger" @click="handleDeleteUserSession(session.session_id)">删除</button>
+                            <button class="table-btn" @click.stop="handleExportSession(session)">导出</button>
+                            <button class="table-btn btn-danger" @click.stop="handleDeleteUserSession(session.session_id)">删除</button>
                           </td>
                         </tr>
                       </tbody>
@@ -1337,6 +1579,39 @@ watch(() => props.visible, (newVal) => {
               </div>
             </div>
           </Transition>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- 历史会话详情弹窗 -->
+    <Transition name="dialog-fade">
+      <div
+        v-if="showHistoryDialog"
+        class="dialog-overlay"
+        @click.self.stop="closeHistoryDialog"
+      >
+        <div class="dialog-card history-dialog-card" @click.stop>
+          <div class="dialog-header">
+            <h3 class="dialog-title">{{ historySession?.title || '新对话' }}</h3>
+            <button class="dialog-close" @click="closeHistoryDialog" aria-label="关闭">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <path d="M15 5L5 15M5 5l10 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+          </div>
+          <div class="dialog-body history-dialog-body">
+            <div v-if="historyLoading" class="admin-loading">加载中...</div>
+            <div v-else-if="historyMessages.length === 0" class="admin-empty">暂无历史消息</div>
+            <template v-else>
+              <div
+                v-for="msg in historyMessages"
+                :key="msg.id"
+                class="history-message-item"
+              >
+                <MessageBubble :message="msg" />
+              </div>
+            </template>
+          </div>
         </div>
       </div>
     </Transition>
@@ -1817,6 +2092,28 @@ watch(() => props.visible, (newVal) => {
   font-size: 11px;
 }
 
+.session-title.clickable {
+  color: var(--color-accent);
+  cursor: pointer;
+}
+
+.session-title.clickable:hover {
+  text-decoration: underline;
+}
+
+.checkbox-cell {
+  width: 40px;
+  text-align: center;
+}
+
+.checkbox-cell input[type="checkbox"] {
+  cursor: pointer;
+}
+
+.batch-delete-btn {
+  margin-left: auto;
+}
+
 /* Admin 用户管理新增/编辑弹窗样式 */
 .admin-header-actions {
   display: flex;
@@ -2048,5 +2345,24 @@ watch(() => props.visible, (newVal) => {
   background-color: var(--color-bg-secondary);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
+}
+
+/* 历史会话详情弹窗 */
+.history-dialog-card {
+  width: 800px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.history-dialog-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-base);
+}
+
+.history-message-item {
+  margin-bottom: var(--space-base);
 }
 </style>

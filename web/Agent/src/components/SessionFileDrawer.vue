@@ -3,7 +3,7 @@
  * SessionFileDrawer - 会话文件空间抽屉（2026-07-01 新增）
  *
  * 位于 ChatArea 右侧，点击绿色文件夹图标后展开。
- * 展示当前会话/项目对应的原文件目录与解析缓存目录的完整层级结构。
+ * 展示当前会话/项目对应的原文件目录。
  * 点击文件时向父组件抛出 file-click 事件，由父组件打开文件预览弹窗。
  *
  * Props:
@@ -151,8 +151,21 @@ const drawerStyle = computed(() => ({
   '--drawer-width': drawerWidth.value + 'px'
 }))
 
+/**
+ * 从后端返回的完整文件树中过滤出"原文件"目录
+ * 后端返回的根节点 children 包含"原文件"与"解析缓存"，本组件仅展示前者
+ * @returns {Object|null} 原文件目录节点；未找到时返回 null
+ */
+const displayTree = computed(() => {
+  if (!props.fileTree || !Array.isArray(props.fileTree.children)) return null
+  const original = props.fileTree.children.find(
+    child => child.type === 'folder' && child.name === '原文件'
+  )
+  return original || null
+})
+
 const hasChildren = computed(() => {
-  return props.fileTree && Array.isArray(props.fileTree.children) && props.fileTree.children.length > 0
+  return displayTree.value && Array.isArray(displayTree.value.children) && displayTree.value.children.length > 0
 })
 </script>
 
@@ -208,7 +221,7 @@ const hasChildren = computed(() => {
       </div>
 
       <div v-else class="tree-wrapper">
-        <FolderTree :folder="fileTree" :depth="0" @file-click="handleFileClick" />
+        <FolderTree :folder="displayTree" :depth="0" @file-click="handleFileClick" />
       </div>
     </div>
   </aside>

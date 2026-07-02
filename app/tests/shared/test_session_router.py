@@ -6,6 +6,7 @@
 包括创建会话、获取列表和删除会话。
 """
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import patch, AsyncMock, MagicMock
 
@@ -466,3 +467,182 @@ def test_download_session_file_unauthorized(client):
     """未登录访问下载接口返回 401。"""
     resp = client.get("/api/session/any/files/download?stored_path=x")
     assert resp.status_code == 401
+
+
+# ===== Admin 批量删除/历史消息/导出 Markdown 测试 =====
+
+def test_admin_batch_delete_sessions_success(client, admin_headers):
+    """Admin 批量删除接口应成功删除多个会话并返回统计。"""
+    session_ids = []
+    for _ in range(3):
+        create_resp = client.post("/api/session/create", headers=admin_headers)
+        assert create_resp.status_code == 200, create_resp.text
+        session_ids.append(create_resp.json()["session_id"])
+
+    headers = {**admin_headers, "Content-Type": "application/json"}
+    with patch(
+        "app.shared.routers.session_router.FileTransfer.delete_session",
+        AsyncMock(return_value=True),
+    ):
+        resp = client.request(
+            "DELETE",
+            "/api/session/admin/batch",
+            content=json.dumps({"session_ids": session_ids}),
+            headers=headers,
+        )
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["success"] is True
+    assert data["deleted_count"] == 3
+    assert data["total"] == 3
+    assert data["failed"] == []
+
+
+def test_admin_batch_delete_sessions_partial_failure(client, admin_headers):
+    """Admin 批量删除接口应返回部分失败结果。"""
+    create_resp = client.post("/api/session/create", headers=admin_headers)
+    assert create_resp.status_code == 200, create_resp.text
+    existing_session_id = create_resp.json()["session_id"]
+    non_existent_session_id = "non-existent-session-id"
+
+    async def _fake_delete_session(session_id):
+        if session_id == non_existent_session_id:
+            raise RuntimeError("会话目录不存在")
+        return True
+
+    headers = {**admin_headers, "Content-Type": "application/json"}
+    with patch(
+        "app.shared.routers.session_router.FileTransfer.delete_session",
+        AsyncMock(side_effect=_fake_delete_session),
+    ):
+        resp = client.request(
+            "DELETE",
+            "/api/session/admin/batch",
+            content=json.dumps({"session_ids": [existing_session_id, non_existent_session_id]}),
+            headers=headers,
+        )
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["success"] is True
+    assert data["deleted_count"] == 1
+    assert data["total"] == 2
+    assert len(data["failed"]) == 1
+    assert data["failed"][0]["session_id"] == non_existent_session_id
+    assert "会话目录不存在" in data["failed"][0]["reason"]
+
+
+def test_admin_batch_delete_sessions_unauthorized(client):
+    """未登录访问 Admin 批量删除接口返回 401。"""
+    resp = client.request(
+        "DELETE",
+        "/api/session/admin/batch",
+        content=json.dumps({"session_ids": ["any-session-id"]}),
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 401
+
+
+def test_admin_get_session_messages_success(client, admin_headers):
+    """Admin 历史消息接口应返回含子智能体的合并消息。"""
+    create_resp = client.post("/api/session/create", headers=admin_headers)
+    assert create_resp.status_code == 200, create_resp.text
+    session_id = create_resp.json()["session_id"]
+
+    h1 = _msg(TestHumanMessage, content="你好")
+    ai1 = _msg(
+        TestAIMessage,
+        content="好的",
+        tool_calls=[{"id": "call_x", "name": "sandbox", "args": {}}],
+        id="m-ai-1",
+    )
+    main_messages = [h1, ai1]
+
+    sub_state = {
+        "channel_values": {
+            "messages": [
+                _msg(TestHumanMessage, content="子任务输入"),
+                _msg(TestAIMessage, content="子任务输出"),
+            ]
+        }
+    }
+    cp = _build_mock_checkpointer({"call_x": sub_state})
+    map_agent = _build_mock_agent_graph(main_messages)
+
+    with patch(
+        "app.shared.routers.session_router.get_async_checkpointer",
+        AsyncMock(return_value=cp),
+    ), patch(
+        "app.routers.knowledge_router.get_map_agent",
+        AsyncMock(return_value=map_agent),
+    ):
+        resp = client.get(
+            f"/api/session/admin/{session_id}/messages",
+            headers=admin_headers,
+        )
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["session_id"] == session_id
+    assert "messages" in data
+    assert "total" in data
+    assert any(msg.get("type") == "subagent" for msg in data["messages"])
+
+
+def test_admin_export_session_markdown_success(client, admin_headers):
+    """Admin 导出 Markdown 接口应包含主消息与子智能体消息。"""
+    create_resp = client.post("/api/session/create", headers=admin_headers)
+    assert create_resp.status_code == 200, create_resp.text
+    session_id = create_resp.json()["session_id"]
+
+    h1 = _msg(TestHumanMessage, content="你好")
+    ai1 = _msg(
+        TestAIMessage,
+        content="好的",
+        tool_calls=[{"id": "call_x", "name": "sandbox", "args": {}}],
+        id="m-ai-1",
+    )
+    main_messages = [h1, ai1]
+
+    sub_state = {
+        "channel_values": {
+            "messages": [
+                _msg(TestHumanMessage, content="子任务输入"),
+                _msg(TestAIMessage, content="子任务输出"),
+            ]
+        }
+    }
+    cp = _build_mock_checkpointer({"call_x": sub_state})
+    map_agent = _build_mock_agent_graph(main_messages)
+
+    with patch(
+        "app.shared.routers.session_router.get_async_checkpointer",
+        AsyncMock(return_value=cp),
+    ), patch(
+        "app.routers.knowledge_router.get_map_agent",
+        AsyncMock(return_value=map_agent),
+    ):
+        resp = client.get(
+            f"/api/session/admin/{session_id}/export/markdown",
+            headers=admin_headers,
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"] == "text/markdown; charset=utf-8"
+    body = resp.text
+    assert "# 新对话" in body
+    assert "## 用户" in body
+    assert "你好" in body
+    assert "## Assistant" in body
+    assert "## 子智能体" in body
+    assert "子任务输出" in body
+
+
+def test_admin_export_session_markdown_not_found(client, admin_headers):
+    """Admin 导出 Markdown 接口对不存在的会话返回 404。"""
+    resp = client.get(
+        "/api/session/admin/non-existent-session/export/markdown",
+        headers=admin_headers,
+    )
+    assert resp.status_code == 404
