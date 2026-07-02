@@ -15,8 +15,9 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from app.core.database import DatabasePool
 from app.shared.utils.agent.agent_config_service import (
     AgentConfigService,
     AgentNotFoundError,
@@ -207,3 +208,119 @@ async def get_agents_md(request: Request, agent_name: str) -> Dict[str, str]:
     except AgentNotFoundError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     return {"content": config.system_prompt}
+
+
+# ============================================================================
+# 2026-07-02 新增：AI 回复的赞/踩反馈入库
+# 路由前缀 /api/agent + /message-feedback = /api/agent/message-feedback
+# 该接口为本次新增的**唯一**新增端点；/chat、/list、/{name}/agents-md 保持原样
+# ============================================================================
+
+
+class MessageFeedbackRequest(BaseModel):
+    """AI 回复反馈（赞/踩）的请求体。
+
+    Attributes:
+        session_id: 会话 ID
+        message_id: 前端消息 ID（与 ChatArea 中 message.id 对齐）
+        feedback_type: 'like'（赞）或 'dislike'（踩）
+        problem_type: 踩时的问题类型，事实错误 / 逻辑不通 / 答非所问 / 其他；赞/不填写原因时为 None
+        problem_description: 踩时用户填写的"问题描述"
+        expected_answer: 踩时用户填写的"期望的样子"
+        message_content: 消息内容快照（便于回溯上下文）
+        ai_reply: AI 回复内容快照
+        agent_name: 当前绑定的 Agent 名称
+    """
+
+    session_id: str
+    message_id: str
+    feedback_type: str
+    problem_type: Optional[str] = None
+    problem_description: Optional[str] = None
+    expected_answer: Optional[str] = None
+    message_content: Optional[str] = None
+    ai_reply: Optional[str] = None
+    agent_name: Optional[str] = None
+
+
+@router.post("/message-feedback", status_code=status.HTTP_201_CREATED)
+async def post_message_feedback(
+    request: Request, payload: MessageFeedbackRequest
+) -> Dict[str, Any]:
+    """提交 AI 回复的赞/踩反馈。
+
+    2026-07-02 新增接口：
+      * 赞（feedback_type='like'）直接入库，不要求任何附加内容
+      * 踩（feedback_type='dislike'）携带 problem_type / problem_description / expected_answer
+      * 数据库模式未启用（`AUTH_STORAGE_MODE=memory`）时返回 503
+      * 非法 feedback_type 返回 400
+
+    参数:
+        request: FastAPI Request（用于获取当前 user_id 与 User-Agent）
+        payload: MessageFeedbackRequest 请求体
+
+    返回:
+        Dict[str, Any]: ``{"id": 新记录 ID, "created_at": 入库时间 ISO 字符串}``
+
+    异常:
+        HTTPException: 未登录 401 / 非法 feedback_type 400 / 库模式关闭 503 / DB 异常 500
+    """
+    # 1) 当前用户必须已登录（auth_middleware 已注入 request.state.user_id）
+    user_id = getattr(request.state, "user_id", None)
+    if user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="未登录，无法提交反馈",
+        )
+
+    # 2) feedback_type 合法性校验（CHECK 约束是兜底，这里给前端友好错误）
+    if payload.feedback_type not in ("like", "dislike"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="feedback_type 必须是 like 或 dislike",
+        )
+
+    # 3) 数据库模式未启用 → 503
+    if not DatabasePool.is_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="反馈功能仅在数据库模式下可用",
+        )
+
+    # 4) 写入 message_feedback 表
+    user_agent = request.headers.get("user-agent", "")[:255] or None
+    try:
+        row = await DatabasePool.fetchrow(
+            """
+            INSERT INTO message_feedback (
+                user_id, session_id, message_id, feedback_type,
+                problem_type, problem_description, expected_answer,
+                message_content, ai_reply, agent_name, user_agent
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            RETURNING id, created_at
+            """,
+            user_id,
+            payload.session_id,
+            payload.message_id,
+            payload.feedback_type,
+            payload.problem_type,
+            payload.problem_description,
+            payload.expected_answer,
+            payload.message_content,
+            payload.ai_reply,
+            payload.agent_name,
+            user_agent,
+        )
+    except Exception as e:
+        logger.exception("写入 message_feedback 失败: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"反馈入库失败: {e}",
+        )
+
+    created_at = row["created_at"]
+    return {
+        "id": row["id"],
+        "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+    }

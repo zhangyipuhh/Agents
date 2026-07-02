@@ -40,6 +40,8 @@ import SkillManager from './SkillManager.vue'
 import MessageBubble from './MessageBubble.vue'
 import ToolCallCard from './ToolCallCard.vue'
 import SubAgentCard from './SubAgentCard.vue'
+// 2026-07-02 新增：历史弹窗内就地显示子智能体抽屉（Teleport 到 .history-dialog-card 容器内）
+import SubAgentDrawer from './SubAgentDrawer.vue'
 
 /**
  * 组件属性定义
@@ -85,7 +87,45 @@ const props = defineProps({
 // 2026-07-02 新增 'open-subagent-drawer' 事件:历史会话详情弹窗中的 SubAgentCard
 // 点击后,把子智能体数据经 Sidebar → App.vue 一路冒泡,触发全局 SubAgentDrawer
 // 显示该子智能体的完整调用过程(消息流 + 工具调用决策 + 状态摘要)。
-const emit = defineEmits(['update:visible', 'username-updated', 'open-subagent-drawer'])
+//
+// 2026-07-02 改动：移除 'open-subagent-drawer' 事件。
+// 原因：历史弹窗里的 subagent 卡片点击后，期望在**弹窗内**就地显示抽屉（push 效果），
+// 而非冒泡到 App.vue 触发全局抽屉（之前会被弹窗遮挡）。
+// 改为在本组件内就地打开 <SubAgentDrawer>（见 historySubAgentDrawerVisible / historyCurrentSubAgent）。
+const emit = defineEmits(['update:visible', 'username-updated'])
+
+// 2026-07-02 新增：历史会话弹窗内的子智能体抽屉状态（独立于 App.vue 的全局抽屉）
+const historySubAgentDrawerVisible = ref(false)
+const historyCurrentSubAgent = ref(null)
+// 历史弹窗的 DOM 容器 ref，用于 Teleport 目标
+// 用 ref 形式而非 CSS 选择器，避免 mount 阶段目标节点尚未挂载的问题
+const historyDialogCardRef = ref(null)
+
+/**
+ * 2026-07-02 新增：就地打开历史弹窗内的子智能体抽屉。
+ * 行为对齐 App.vue 的 openSubAgentDrawer：再次点击同一 subagent 时切换关闭。
+ * @param {Object} sa - SubAgentSummary
+ */
+function openHistorySubAgentDrawer(sa) {
+  if (
+    historySubAgentDrawerVisible.value &&
+    historyCurrentSubAgent.value &&
+    sa && sa.toolCallId &&
+    historyCurrentSubAgent.value.toolCallId === sa.toolCallId
+  ) {
+    closeHistorySubAgentDrawer()
+    return
+  }
+  historyCurrentSubAgent.value = sa
+  historySubAgentDrawerVisible.value = true
+}
+
+/**
+ * 2026-07-02 新增：关闭历史弹窗内的子智能体抽屉。
+ */
+function closeHistorySubAgentDrawer() {
+  historySubAgentDrawerVisible.value = false
+}
 
 /* ---- 导航与视图状态 ---- */
 
@@ -975,6 +1015,8 @@ async function openHistoryDialog(session) {
  * 关闭历史会话弹窗
  */
 function closeHistoryDialog() {
+  // 2026-07-02 新增：关闭历史弹窗前同步关闭就地子智能体抽屉，避免状态泄漏
+  closeHistorySubAgentDrawer()
   showHistoryDialog.value = false
   historySession.value = null
   historyMessages.value = []
@@ -1593,7 +1635,7 @@ watch(() => props.visible, (newVal) => {
         class="dialog-overlay dialog-overlay--centered"
         @click.self.stop="closeHistoryDialog"
       >
-        <div class="dialog-card history-dialog-card" @click.stop>
+        <div ref="historyDialogCardRef" class="dialog-card history-dialog-card" @click.stop>
           <div class="dialog-header">
             <h3 class="dialog-title">{{ historySession?.title || '新对话' }}</h3>
             <button class="dialog-close" @click="closeHistoryDialog" aria-label="关闭">
@@ -1602,7 +1644,26 @@ watch(() => props.visible, (newVal) => {
               </svg>
             </button>
           </div>
-          <div class="dialog-body history-dialog-body">
+
+          <!--
+            2026-07-02 新增：就地子智能体抽屉（Teleport 到 historyDialogCardRef 容器内）
+            - 行为：与 App.vue 全局 push 抽屉视觉/交互完全一致（拖拽改宽、状态徽章、消息流）
+            - 触发：history-dialog-body 内 MessageBubble → SubAgentCard → open-subagent-drawer → openHistorySubAgentDrawer
+            - 关闭：closeHistorySubAgentDrawer（@close 事件）或 closeHistoryDialog
+            - teleport-to 用 ref 而非 CSS 选择器：避免 mount 阶段目标节点尚未挂载的问题
+            - 弹窗内 push 效果：依赖 .history-dialog-card 的 flex column + .history-dialog-body--collapsed 收缩
+          -->
+          <SubAgentDrawer
+            :visible="historySubAgentDrawerVisible"
+            :sub-agent="historyCurrentSubAgent"
+            :teleport-to="historyDialogCardRef"
+            @close="closeHistorySubAgentDrawer"
+          />
+
+          <div
+            class="dialog-body history-dialog-body"
+            :class="{ 'history-dialog-body--collapsed': historySubAgentDrawerVisible }"
+          >
             <div v-if="historyLoading" class="admin-loading">加载中...</div>
             <div v-else-if="historyMessages.length === 0" class="admin-empty">暂无历史消息</div>
             <template v-else>
@@ -1623,7 +1684,7 @@ watch(() => props.visible, (newVal) => {
                   :error="msg.error"
                   :message-id="msg.id"
                   :sub-agents="msg.subAgents"
-                  @open-subagent-drawer="(sa) => emit('open-subagent-drawer', sa)"
+                  @open-subagent-drawer="openHistorySubAgentDrawer"
                 />
               </div>
             </template>
@@ -2404,5 +2465,25 @@ watch(() => props.visible, (newVal) => {
 
 .history-message-item {
   margin-bottom: var(--space-base);
+}
+
+/*
+  2026-07-02 新增：历史弹窗内 body 在子智能体抽屉打开时折叠，让 push 抽屉效果在弹窗内成立。
+  工作原理：
+    - .history-dialog-card 是 flex column 容器
+    - 抽屉通过 teleport 挂到 .history-dialog-card 内，作为 flex 子项
+    - 当 historySubAgentDrawerVisible=true，给 body 加上 --collapsed 修饰类
+      → body flex-basis 收缩为 0，max-height: 0
+      → 抽屉 (flex: 0 0 0 → visible 时 flex-basis: var(--drawer-width)) 推挤占满
+    - 视觉上：抽屉从右往左展开，body 区折叠隐藏，与主界面 push 抽屉完全一致
+*/
+.history-dialog-body--collapsed {
+  flex: 0 0 0;
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height 0.3s ease, opacity 0.2s ease;
 }
 </style>

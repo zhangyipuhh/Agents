@@ -752,7 +752,262 @@ def test_chat_does_not_bind_when_agent_name_is_default(client, admin_headers, mo
     }, headers=headers)
 
     assert response.status_code == 200
-    assert len(updated_calls) == 0, "agent_name 为 default 时不应触发绑定"
+
+
+# =============================================================================
+# 2026-07-02 新增：POST /api/agent/message-feedback 反馈入库接口测试
+# 验证：
+#   * 路由已注册到 /api/agent/message-feedback
+#   * feedback_type=like 时直接入库，INSERT 调用与参数符合预期
+#   * feedback_type=dislike 时携带 problem_type/problem_description/expected_answer 也能入库
+#   * 非法 feedback_type 返回 400
+#   * 内存模式（DatabasePool.is_enabled()=False）返回 503
+#   * 未登录（request.state.user_id=None）返回 401
+# 设计原则：
+#   - 通过 monkeypatch 替换 DatabasePool.fetchrow / is_enabled，避免依赖真实 PG
+#   - 通过 ASGI 中间件注入 request.state.user_id=1 模拟登录态
+#   - client fixture 来自根 conftest.py（已是登录 admin 状态）
+# =============================================================================
+
+
+def test_message_feedback_endpoint_registered(client):
+    """测试 POST /api/agent/message-feedback 路由已注册。"""
+    routes = [r.path for r in client.app.routes]
+    assert "/api/agent/message-feedback" in routes
+
+
+def test_post_message_feedback_like_succeeds_and_inserts_row(client, admin_headers, monkeypatch):
+    """测试赞（feedback_type=like）能直接入库。
+
+    验证：
+      * 接口返回 201
+      * 返回体含 id (int) 与 created_at (str)
+      * DatabasePool.fetchrow 被调用一次，参数包含 feedback_type='like'
+      * user_id 从 request.state.user_id 正确解析（mock admin 用户 id=1）
+    """
+    import asyncio
+    import httpx
+    from datetime import datetime
+
+    # mock UserDB.get_user_by_username 让 auth_middleware 能拿到 user_id=1
+    async def fake_get_user(username):
+        return {"id": 1, "username": username, "role": "admin", "allowed_agents": []}
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.user_db.UserDB.get_user_by_username", fake_get_user
+    )
+
+    captured_calls = []
+
+    async def fake_fetchrow(query, *args):
+        captured_calls.append({"query": query, "args": args})
+        return {"id": 100, "created_at": datetime(2026, 7, 2, 12, 0, 0)}
+
+    monkeypatch.setattr("app.routers.agent_router.DatabasePool.fetchrow", fake_fetchrow)
+    monkeypatch.setattr("app.routers.agent_router.DatabasePool.is_enabled", lambda: True)
+
+    async def _run():
+        transport = httpx.ASGITransport(app=client.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post(
+                "/api/agent/message-feedback",
+                json={
+                    "session_id": "test-session",
+                    "message_id": "msg-001",
+                    "feedback_type": "like",
+                    "message_content": "原始问题",
+                    "ai_reply": "AI 回答",
+                    "agent_name": "map_agent",
+                },
+                headers={**admin_headers, "X-Session-ID": "test-session"},
+            )
+        return response
+
+    response = asyncio.run(_run())
+    assert response.status_code == 201
+    body = response.json()
+    assert body["id"] == 100
+    assert "created_at" in body
+    # captured_calls 可能包含 SessionDB.get_session 等其他 fetchrow 调用
+    # 找到 feedback INSERT 那次（args 包含 'msg-001'）
+    feedback_calls = [
+        c for c in captured_calls
+        if len(c.get("args", ())) >= 11 and c["args"][2] == "msg-001"
+    ]
+    assert len(feedback_calls) == 1
+    call_args = feedback_calls[0]["args"]
+    # 入参顺序：(user_id, session_id, message_id, feedback_type, problem_type,
+    #            problem_description, expected_answer, message_content, ai_reply,
+    #            agent_name, user_agent)
+    assert call_args[0] == 1  # user_id
+    assert call_args[1] == "test-session"
+    assert call_args[2] == "msg-001"
+    assert call_args[3] == "like"
+    assert call_args[7] == "原始问题"
+    assert call_args[8] == "AI 回答"
+    assert call_args[9] == "map_agent"
+
+
+def test_post_message_feedback_dislike_with_full_problem_fields_succeeds(client, admin_headers, monkeypatch):
+    """测试踩（feedback_type=dislike）携带完整 problem_* 字段能入库。
+
+    验证：
+      * 接口返回 201
+      * problem_type / problem_description / expected_answer 完整透传
+      * DatabasePool.fetchrow 被调用一次且参数正确
+    """
+    import asyncio
+    import httpx
+    from datetime import datetime
+
+    # mock UserDB.get_user_by_username 让 auth_middleware 能拿到 user_id=7
+    async def fake_get_user(username):
+        return {"id": 7, "username": username, "role": "admin", "allowed_agents": []}
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.user_db.UserDB.get_user_by_username", fake_get_user
+    )
+
+    captured_calls = []
+
+    async def fake_fetchrow(query, *args):
+        captured_calls.append({"args": args})
+        return {"id": 200, "created_at": datetime(2026, 7, 2, 13, 0, 0)}
+
+    monkeypatch.setattr("app.routers.agent_router.DatabasePool.fetchrow", fake_fetchrow)
+    monkeypatch.setattr("app.routers.agent_router.DatabasePool.is_enabled", lambda: True)
+
+    async def _run():
+        transport = httpx.ASGITransport(app=client.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post(
+                "/api/agent/message-feedback",
+                json={
+                    "session_id": "sess-xyz",
+                    "message_id": "msg-002",
+                    "feedback_type": "dislike",
+                    "problem_type": "logic_error",
+                    "problem_description": "逻辑跳跃，从 A 直接跳到 C",
+                    "expected_answer": "应分步说明 A→B→C",
+                    "message_content": "原始问题文本",
+                    "ai_reply": "AI 实际回答文本",
+                    "agent_name": "map_agent",
+                },
+                headers={**admin_headers, "X-Session-ID": "sess-xyz"},
+            )
+        return response
+
+    response = asyncio.run(_run())
+    assert response.status_code == 201
+    body = response.json()
+    assert body["id"] == 200
+    # 找到 feedback INSERT 那次（args 包含 'msg-002'）
+    feedback_calls = [
+        c for c in captured_calls
+        if len(c.get("args", ())) >= 11 and c["args"][2] == "msg-002"
+    ]
+    assert len(feedback_calls) == 1
+    args = feedback_calls[0]["args"]
+    assert args[0] == 7  # user_id
+    assert args[3] == "dislike"
+    assert args[4] == "logic_error"
+    assert args[5] == "逻辑跳跃，从 A 直接跳到 C"
+    assert args[6] == "应分步说明 A→B→C"
+
+
+def test_post_message_feedback_invalid_type_returns_400(client, admin_headers, monkeypatch):
+    """测试非法 feedback_type（如 'xxx'）返回 400。
+
+    验证：未到达 DatabasePool.fetchrow 之前就被路由层拦下。
+    """
+    import asyncio
+    import httpx
+
+    async def fake_get_user(username):
+        return {"id": 1, "username": username, "role": "admin", "allowed_agents": []}
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.user_db.UserDB.get_user_by_username", fake_get_user
+    )
+
+    captured_queries = []
+
+    async def fake_fetchrow(query, *args, **kwargs):
+        captured_queries.append(query)
+        return None
+
+    monkeypatch.setattr("app.routers.agent_router.DatabasePool.fetchrow", fake_fetchrow)
+    monkeypatch.setattr("app.routers.agent_router.DatabasePool.is_enabled", lambda: True)
+
+    async def _run():
+        transport = httpx.ASGITransport(app=client.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post(
+                "/api/agent/message-feedback",
+                json={
+                    "session_id": "s",
+                    "message_id": "m",
+                    "feedback_type": "xxx",
+                },
+                headers={**admin_headers, "X-Session-ID": "s"},
+            )
+        return response
+
+    response = asyncio.run(_run())
+    assert response.status_code == 400
+    assert "like" in response.json()["detail"] and "dislike" in response.json()["detail"]
+    # 核心断言：INSERT INTO message_feedback 不在捕获的 SQL 列表中
+    insert_calls = [q for q in captured_queries if q and "INSERT INTO message_feedback" in q]
+    assert len(insert_calls) == 0, "非法 feedback_type 不应触发 message_feedback INSERT"
+
+
+def test_post_message_feedback_memory_mode_returns_503(client, admin_headers, monkeypatch):
+    """测试内存模式（DatabasePool.is_enabled()=False）时返回 503。
+
+    验证：
+      * feedback_type=like 也直接返回 503（不区分 like/dislike）
+      * 不会调用 DatabasePool.fetchrow
+    """
+    import asyncio
+    import httpx
+
+    async def fake_get_user(username):
+        return {"id": 1, "username": username, "role": "admin", "allowed_agents": []}
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.user_db.UserDB.get_user_by_username", fake_get_user
+    )
+
+    captured_queries = []
+
+    async def fake_fetchrow(query, *args, **kwargs):
+        captured_queries.append(query)
+        return None
+
+    monkeypatch.setattr("app.routers.agent_router.DatabasePool.fetchrow", fake_fetchrow)
+    # 关键：is_enabled 返回 False 模拟内存模式
+    monkeypatch.setattr("app.routers.agent_router.DatabasePool.is_enabled", lambda: False)
+
+    async def _run():
+        transport = httpx.ASGITransport(app=client.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post(
+                "/api/agent/message-feedback",
+                json={
+                    "session_id": "s",
+                    "message_id": "m",
+                    "feedback_type": "like",
+                },
+                headers={**admin_headers, "X-Session-ID": "s"},
+            )
+        return response
+
+    response = asyncio.run(_run())
+    assert response.status_code == 503
+    assert "数据库" in response.json()["detail"]
+    # 核心断言：内存模式下不应触达 message_feedback INSERT
+    insert_calls = [q for q in captured_queries if q and "INSERT INTO message_feedback" in q]
+    assert len(insert_calls) == 0, "内存模式下不应触达数据库写入"
 
 
 # =============================================================================

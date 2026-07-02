@@ -724,8 +724,13 @@ onUnmounted(() => {
       :initial-tab="settingsInitialTab"
       :sidebar-collapsed="isSidebarCollapsed"
       @username-updated="handleUsernameUpdated"
-      @open-subagent-drawer="(sa) => emit('open-subagent-drawer', sa)"
     />
+    <!--
+      2026-07-02 改动：移除 @open-subagent-drawer 透传。
+      UserSettingsDialog 不再向外 emit open-subagent-drawer 事件。
+      历史会话弹窗内的 subagent 卡片在弹窗内就地打开抽屉，不再冒泡到 App.vue。
+      如未来需要再次冒泡，恢复本绑定即可。
+    -->
 
     <!--
       删除会话确认弹窗 - 使用 Teleport 挂载到 body 层级

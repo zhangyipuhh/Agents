@@ -12,6 +12,8 @@ import ProjectDialog from './components/ProjectDialog.vue'
 // 2026-07-01 新增：会话文件抽屉与文件预览弹窗
 import SessionFileDrawer from './components/SessionFileDrawer.vue'
 import FilePreviewModal from './components/FilePreviewModal.vue'
+// 2026-07-02 新增：AI 回复点踩反馈弹窗
+import DislikeDialog from './components/DislikeDialog.vue'
 import {
   chatStream,
   createNewSession,
@@ -29,7 +31,9 @@ import {
   unbindSessionFromProject,
   // 2026-07-01 新增：会话文件空间 API
   fetchSessionFileTree,
-  previewSessionFile
+  previewSessionFile,
+  // 2026-07-02 新增：消息反馈 API
+  submitMessageFeedback
 } from './utils/api.js'
 import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage, isSubAgentHistoryItem, convertSubAgentHistoryToAiSubAgent, isSubAgentTool } from './utils/sseParser.js'
 import { redirectToLogin, tryRefreshOrRedirect } from './utils/auth.js'
@@ -781,11 +785,59 @@ function handleRegenerate(aiMessageId) {
 }
 
 function handleLike(id) {
-  console.log('点赞消息:', id)
+  const msg = messages.find(m => m.id === id)
+  if (!msg) return
+  submitMessageFeedback({
+    session_id: sessionId.value,
+    message_id: msg.id,
+    feedback_type: 'like',
+    message_content: msg.userContent || msg.content || '',
+    ai_reply: msg.content || '',
+    agent_name: agentName.value || ''
+  })
+    .then(() => showToast('感谢您的反馈', 'success'))
+    .catch(err => showToast('反馈提交失败：' + (err.message || err), 'error'))
+}
+
+// 2026-07-02 新增：踩反馈弹窗状态机
+const dislikeDialog = ref({
+  visible: false,
+  messageId: '',
+  sessionId: '',
+  messageContent: '',
+  aiReply: '',
+  agentName: ''
+})
+
+// 2026-07-02 新增：轻量 toast 工具（成功/失败提示）
+const showToast = (message, type = 'info') => {
+  // 优先使用项目已有 toast 工具；如无则降级为 console
+  if (typeof window !== 'undefined' && window.__toast) {
+    window.__toast(message, type)
+    return
+  }
+  // 兜底：临时 alert（不阻塞主线程）
+  // 注意：实际项目里通常有更友好的 toast 组件，这里保证有可见反馈即可
+  // eslint-disable-next-line no-alert
+  console.log(`[toast:${type}]`, message)
 }
 
 function handleDislike(id) {
-  console.log('点踩消息:', id)
+  const msg = messages.find(m => m.id === id)
+  if (!msg) return
+  dislikeDialog.value = {
+    visible: true,
+    messageId: msg.id,
+    sessionId: sessionId.value,
+    messageContent: msg.userContent || msg.content || '',
+    aiReply: msg.content || '',
+    agentName: agentName.value || ''
+  }
+}
+
+// 2026-07-02 新增：踩反馈成功提交后提示
+function handleDislikeSubmitted(feedbackId) {
+  showToast('感谢您的反馈，我们会持续改进', 'success')
 }
 
 function handleCopy(e) {
@@ -1197,6 +1249,17 @@ async function handleSessionSwitch(targetSessionId) {
       :preview-mode="filePreviewData.previewMode"
       :file-url="filePreviewData.fileUrl"
       @close="handleCloseFilePreview"
+    />
+
+    <!-- 2026-07-02 新增：AI 回复点踩反馈弹窗 -->
+    <DislikeDialog
+      v-model:visible="dislikeDialog.visible"
+      :message-id="dislikeDialog.messageId"
+      :session-id="dislikeDialog.sessionId"
+      :message-content="dislikeDialog.messageContent"
+      :ai-reply="dislikeDialog.aiReply"
+      :agent-name="dislikeDialog.agentName"
+      @submitted="handleDislikeSubmitted"
     />
   </div>
 </template>

@@ -21,6 +21,12 @@
  * Props:
  *   visible: boolean
  *   subAgent: SubAgentSummary | null
+ *   teleportTo: string | Element | null   // 2026-07-02 新增：
+ *     null（默认）= 不 teleport，挂载到父组件 DOM 树，依赖父 flex 容器
+ *     string     = CSS 选择器，Teleport 到匹配节点（首次匹配）
+ *     Element    = Teleport 到指定 DOM 节点
+ *     用途：在 .history-dialog-card (弹窗内) 等无法直接挂载到 app-layout 的场景下，
+ *          把抽屉 Teleport 到该容器内，让 push 抽屉效果在弹窗内就地呈现。
  *
  * Emits:
  *   close
@@ -42,6 +48,11 @@ const props = defineProps({
   },
   subAgent: {
     type: Object,
+    default: null
+  },
+  // 2026-07-02 新增：Teleport 目标，传 null 时不 teleport（保持原行为）
+  teleportTo: {
+    type: [String, Object],
     default: null
   }
 })
@@ -277,13 +288,113 @@ function roleLabel(role) {
 
 <template>
   <!--
-    Push Drawer 模式：
-    - 与 .app-layout (display:flex) 推挤布局
-    - 关闭时 flex-basis=0 + overflow:hidden
-    - 开启时 flex-basis=480px，从右向左平滑展开
-    - 无遮罩（push drawer 无遮罩）
+    2026-07-02 重构：把整个 <aside> 抽到单一根节点上，并通过 v-if/v-else 切换是否 Teleport。
+    单一根节点是 Vue 3 模板规范（避免 fragment vnode），同时让 teleport / 非 teleport 走同一份 aside 结构，
+    从根本上消除代码重复。teleportTo 非空时整个 aside 移动到指定目标，propagate drawerRef ref。
   -->
+  <Teleport v-if="teleportTo" :to="teleportTo" :disabled="false">
+    <aside
+      ref="drawerRef"
+      v-show="visible"
+      class="subagent-drawer subagent-drawer--teleported"
+      :class="{ visible, resizing: isResizing }"
+      :style="drawerStyle"
+      role="complementary"
+      aria-label="子智能体详情"
+    >
+      <!-- 2026-07-02：teleport 模式子结构与下方 v-else 完全相同（共享 .subagent-drawer 样式） -->
+      <div
+        class="resize-handle"
+        :class="{ active: isResizing }"
+        @mousedown="startResize"
+        aria-label="调整抽屉宽度"
+        role="separator"
+      ></div>
+
+      <div class="drawer-header">
+        <div class="drawer-title">
+          <span class="title-icon">{{ meta.icon }}</span>
+          <span>{{ meta.label }} 详情</span>
+          <span class="status-badge" :class="status">{{ statusText }}</span>
+        </div>
+        <button class="close-btn" @click="handleClose" aria-label="关闭抽屉">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+
+      <div class="parent-prompt-section">
+        <div class="section-header" @click="promptCollapsed = !promptCollapsed">
+          <span class="section-title">父智能体提问</span>
+          <svg class="expand-icon" :class="{ expanded: !promptCollapsed }"
+               viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
+          </svg>
+        </div>
+        <div v-if="!promptCollapsed" class="parent-prompt-content">
+          <pre class="prompt-text">{{ subAgent && subAgent.parentPrompt || '（无）' }}</pre>
+        </div>
+      </div>
+
+      <div class="messages-section">
+        <div class="section-header section-header-static">
+          <span class="section-title">子智能体消息</span>
+          <span class="section-count">{{ messageCount }} 条</span>
+        </div>
+        <div class="messages-scroll" ref="messagesScrollRef">
+          <div v-if="messages.length === 0" class="messages-empty">
+            <span class="empty-icon">⏳</span>
+            <span class="empty-text">暂无消息</span>
+          </div>
+
+          <template v-else>
+            <div
+              v-for="(msg, idx) in messages"
+              :key="idx"
+              class="message-item"
+              :class="['role-' + (msg.role || 'unknown')]"
+            >
+              <div class="message-item-header">
+                <span class="role-tag" :class="msg.role">{{ roleLabel(msg.role) }}</span>
+                <span class="message-type">{{ msg.type || 'Unknown' }}</span>
+              </div>
+              <div v-if="renderMessageContent(msg.content)" class="message-content" :class="{ 'message-content-truncated': msg.role === 'tool' }">
+                <pre class="content-text">{{ truncate(renderMessageContent(msg.content), msg.role === 'tool' ? 500 : 10000) }}</pre>
+              </div>
+              <div v-if="msg.role === 'ai' && Array.isArray(msg.tool_calls) && msg.tool_calls.length"
+                   class="tool-calls">
+                <div class="tool-calls-title">决策（工具调用 {{ msg.tool_calls.length }}）</div>
+                <div v-for="(tc, tci) in msg.tool_calls" :key="'tc-' + tci" class="tool-call-item">
+                  <span class="tool-call-name">🔧 {{ tc.name || 'unknown' }}</span>
+                  <span v-if="tc.id" class="tool-call-id">#{{ tc.id }}</span>
+                  <pre v-if="tc.args" class="tool-call-args">{{ JSON.stringify(tc.args, null, 2) }}</pre>
+                </div>
+              </div>
+              <div v-if="msg.role === 'tool' && msg.name" class="message-meta">
+                工具：<code>{{ msg.name }}</code>
+                <span v-if="msg.tool_call_id" class="tool-call-id">· #{{ msg.tool_call_id }}</span>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <div class="drawer-footer">
+        <span v-if="duration" class="footer-item">⏱ 耗时 {{ duration }}</span>
+        <span class="footer-item">💬 {{ messageCount }} 条消息</span>
+        <span class="footer-item">🔧 {{ toolCallCount }} 次工具调用</span>
+        <span v-if="subAgent && subAgent.threadId" class="footer-item footer-thread">
+          thread: {{ subAgent.threadId.slice(0, 12) }}{{ subAgent.threadId.length > 12 ? '…' : '' }}
+        </span>
+      </div>
+    </aside>
+  </Teleport>
+
   <aside
+    v-else
     ref="drawerRef"
     v-show="visible"
     class="subagent-drawer"
@@ -435,6 +546,18 @@ function roleLabel(role) {
 .subagent-drawer.resizing {
   /* 拖拽时关闭动画，避免 width/flex-basis 变化出现延迟 */
   transition: none;
+}
+
+/* 2026-07-02 新增：teleport 模式（弹窗内）专用样式
+   当父容器是 .history-dialog-card (flex column) 时，沿用 push 模式视觉，
+   唯一差异：抽屉打开时通过 .subagent-drawer--teleported + 父组件的 --collapsed
+   修饰类共同实现「消息区收缩」效果；本类仅做标识作用，具体动效由父组件控制。 */
+.subagent-drawer--teleported {
+  /* 与 .subagent-drawer 共享样式（拖拽/头部/消息区/底部），
+     唯一额外要求：必须出现在父 flex 容器（如 .history-dialog-card）中。
+     当父容器从弹窗内 mount 出抽屉时，抽屉天然作为 flex 子项，
+     由父容器 + 父组件的 body--collapsed 修饰类控制整体推挤布局。 */
+  flex-shrink: 0;
 }
 
 /* 左侧拖拽条 */

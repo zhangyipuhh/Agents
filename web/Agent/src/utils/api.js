@@ -2104,3 +2104,44 @@ export async function fetchAgentAvailableSkills(name) {
   }
   return response.json()
 }
+
+// ============================================================
+// 消息反馈 API（2026-07-02 新增）
+// 对应后端 message_feedback_router 的 POST /api/agent/message-feedback
+// 用于 AI 回复点赞 / 点踩（点踩时携带详细原因）
+// ============================================================
+
+/**
+ * 提交 AI 回复的点赞 / 点踩反馈（2026-07-02 新增）
+ *
+ * 调用后端 POST /api/agent/message-feedback，自动注入 Authorization / X-Session-ID 头，
+ * 并在 401 时由 fetchWithAuth 自动尝试一次 refresh_token + 重试（透明处理）。
+ *
+ * @param {Object} payload - 反馈负载
+ * @param {string} payload.session_id - 会话 ID（必填）
+ * @param {string} payload.message_id - 消息 ID（必填；与 LangGraph checkpoint 中的 message id 对应）
+ * @param {'like'|'dislike'} payload.feedback_type - 反馈类型：点赞 / 点踩（必填）
+ * @param {string} [payload.problem_type] - 点踩时的具体问题类型（fact_error / logic_error / off_topic / other 等，后端会宽容接收）
+ * @param {string} [payload.problem_description] - 点踩时的详细描述
+ * @param {string} [payload.expected_answer] - 点踩时用户期望的回答
+ * @param {string} [payload.message_content] - 用户原始问题内容（用于后端审计）
+ * @param {string} [payload.ai_reply] - AI 回复内容（用于后端审计）
+ * @param {string} [payload.agent_name] - 当前智能体名称（用于后端审计）
+ * @returns {Promise<{id: number, created_at: string}>} 反馈记录 ID 与创建时间
+ * @throws {Error} 网络错误 / 后端校验失败 / 服务异常时抛出错误（错误信息包含 HTTP 状态码与 detail 字段）
+ */
+export async function submitMessageFeedback(payload) {
+  const response = await fetchWithAuth('/api/agent/message-feedback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+  if (!response.ok) {
+    let errBody = null
+    try { errBody = await response.json() } catch {}
+    throw new Error(
+      `反馈提交失败: ${response.status} ${JSON.stringify(errBody?.detail || errBody || response.statusText)}`
+    )
+  }
+  return response.json()
+}
