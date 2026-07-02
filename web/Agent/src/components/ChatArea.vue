@@ -206,40 +206,40 @@ defineExpose({
         @dislike="(id) => emit('dislike', id)"
         @open-subagent-drawer="(sa) => emit('open-subagent-drawer', sa)"
       />
+    </div>
 
-      <!-- 滚动按钮组 -->
-      <div class="scroll-buttons-wrapper">
-        <transition name="fade">
-          <button
-            v-show="showScrollToTopButton"
-            type="button"
-            class="scroll-btn scroll-to-top-btn"
-            @click="scrollToTop('smooth')"
-            title="滚动到顶部"
-            aria-label="滚动到顶部"
-          >
-            <svg viewBox="0 0 20 20" fill="currentColor" class="scroll-icon">
-              <path fill-rule="evenodd" d="M14.707 12.707a1 1 0 01-1.414 0L10 9.414l-3.293 3.293a1 1 0 01-1.414-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 010 1.414z" clip-rule="evenodd"/>
-            </svg>
-          </button>
-        </transition>
+    <!-- 滚动按钮组 -->
+    <div class="scroll-buttons-wrapper">
+      <transition name="fade">
+        <button
+          v-show="showScrollToTopButton"
+          type="button"
+          class="scroll-btn scroll-to-top-btn"
+          @click="scrollToTop('smooth')"
+          title="滚动到顶部"
+          aria-label="滚动到顶部"
+        >
+          <svg viewBox="0 0 20 20" fill="currentColor" class="scroll-icon">
+            <path fill-rule="evenodd" d="M14.707 12.707a1 1 0 01-1.414 0L10 9.414l-3.293 3.293a1 1 0 01-1.414-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 010 1.414z" clip-rule="evenodd"/>
+          </svg>
+        </button>
+      </transition>
 
-        <transition name="fade">
-          <button
-            v-show="showScrollButton"
-            type="button"
-            class="scroll-btn scroll-to-bottom-btn"
-            @click="handleScrollToBottomClick"
-            :title="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
-            :aria-label="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
-          >
-            <svg viewBox="0 0 20 20" fill="currentColor" class="scroll-icon">
-              <path fill-rule="evenodd" d="M5.293 12.707a1 1 0 011.414 0L10 9.414l3.293 3.293a1 1 0 111.414-1.414l-4-4a1 1 0 01-1.414 0l-4 4a1 1 0 010 1.414z" clip-rule="evenodd"/>
-            </svg>
-            <span v-if="unreadCount > 0" class="unread-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
-          </button>
-        </transition>
-      </div>
+      <transition name="fade">
+        <button
+          v-show="showScrollButton"
+          type="button"
+          class="scroll-btn scroll-to-bottom-btn"
+          @click="handleScrollToBottomClick"
+          :title="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
+          :aria-label="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
+        >
+          <svg viewBox="0 0 20 20" fill="currentColor" class="scroll-icon">
+            <path fill-rule="evenodd" d="M5.293 12.707a1 1 0 011.414 0L10 9.414l3.293 3.293a1 1 0 111.414-1.414l-4-4a1 1 0 01-1.414 0l-4 4a1 1 0 010 1.414z" clip-rule="evenodd"/>
+          </svg>
+          <span v-if="unreadCount > 0" class="unread-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+        </button>
+      </transition>
     </div>
   </div>
 </template>
