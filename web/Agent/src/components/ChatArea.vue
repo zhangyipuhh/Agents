@@ -153,7 +153,7 @@ defineExpose({
 </script>
 
 <template>
-  <div class="chat-area" ref="chatContainer">
+  <div class="chat-area">
     <!-- 2026-07-01 新增：会话名称头部与文件抽屉入口 -->
     <div v-if="sessionName" class="chat-area-header">
       <span class="chat-session-name" :title="sessionName">{{ sessionName }}</span>
@@ -165,13 +165,14 @@ defineExpose({
         aria-label="打开会话文件空间"
         @click="emit('open-session-file-drawer')"
       >
-        <svg viewBox="0 0 24 24" fill="currentColor" class="file-drawer-icon">
-          <path d="M2 6a2 2 0 012-2h5l2 2h9a2 2 0 012 2v9a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" class="file-drawer-icon">
+          <rect x="3.5" y="3.5" width="17" height="17" rx="2" ry="2"/>
+          <line x1="8.5" y1="3.5" x2="8.5" y2="20.5"/>
         </svg>
       </button>
     </div>
 
-    <div class="messages-container">
+    <div class="messages-container" ref="chatContainer">
       <div v-if="messages.length === 0" class="empty-state">
         <div class="empty-icon">
           <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -205,40 +206,40 @@ defineExpose({
         @dislike="(id) => emit('dislike', id)"
         @open-subagent-drawer="(sa) => emit('open-subagent-drawer', sa)"
       />
-    </div>
 
-    <!-- 滚动按钮组 -->
-    <div class="scroll-buttons-wrapper">
-      <transition name="fade">
-        <button
-          v-show="showScrollToTopButton"
-          type="button"
-          class="scroll-btn scroll-to-top-btn"
-          @click="scrollToTop('smooth')"
-          title="滚动到顶部"
-          aria-label="滚动到顶部"
-        >
-          <svg viewBox="0 0 20 20" fill="currentColor" class="scroll-icon">
-            <path fill-rule="evenodd" d="M14.707 12.707a1 1 0 01-1.414 0L10 9.414l-3.293 3.293a1 1 0 01-1.414-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 010 1.414z" clip-rule="evenodd"/>
-          </svg>
-        </button>
-      </transition>
+      <!-- 滚动按钮组 -->
+      <div class="scroll-buttons-wrapper">
+        <transition name="fade">
+          <button
+            v-show="showScrollToTopButton"
+            type="button"
+            class="scroll-btn scroll-to-top-btn"
+            @click="scrollToTop('smooth')"
+            title="滚动到顶部"
+            aria-label="滚动到顶部"
+          >
+            <svg viewBox="0 0 20 20" fill="currentColor" class="scroll-icon">
+              <path fill-rule="evenodd" d="M14.707 12.707a1 1 0 01-1.414 0L10 9.414l-3.293 3.293a1 1 0 01-1.414-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 010 1.414z" clip-rule="evenodd"/>
+            </svg>
+          </button>
+        </transition>
 
-      <transition name="fade">
-        <button
-          v-show="showScrollButton"
-          type="button"
-          class="scroll-btn scroll-to-bottom-btn"
-          @click="handleScrollToBottomClick"
-          :title="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
-          :aria-label="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
-        >
-          <svg viewBox="0 0 20 20" fill="currentColor" class="scroll-icon">
-            <path fill-rule="evenodd" d="M5.293 12.707a1 1 0 011.414 0L10 9.414l3.293 3.293a1 1 0 111.414-1.414l-4-4a1 1 0 01-1.414 0l-4 4a1 1 0 010 1.414z" clip-rule="evenodd"/>
-          </svg>
-          <span v-if="unreadCount > 0" class="unread-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
-        </button>
-      </transition>
+        <transition name="fade">
+          <button
+            v-show="showScrollButton"
+            type="button"
+            class="scroll-btn scroll-to-bottom-btn"
+            @click="handleScrollToBottomClick"
+            :title="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
+            :aria-label="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
+          >
+            <svg viewBox="0 0 20 20" fill="currentColor" class="scroll-icon">
+              <path fill-rule="evenodd" d="M5.293 12.707a1 1 0 011.414 0L10 9.414l3.293 3.293a1 1 0 111.414-1.414l-4-4a1 1 0 01-1.414 0l-4 4a1 1 0 010 1.414z" clip-rule="evenodd"/>
+            </svg>
+            <span v-if="unreadCount > 0" class="unread-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+          </button>
+        </transition>
+      </div>
     </div>
   </div>
 </template>
@@ -246,11 +247,81 @@ defineExpose({
 <style scoped>
 .chat-area {
   flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 24px 40px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background-color: var(--color-bg-secondary);
   position: relative;
+}
+
+/* 2026-07-01 新增：会话名称头部；2026-07-02 修正：与 .chat-area 采用 flex 纵向布局，
+   避免 sticky 标题栏压盖滚动消息内容 */
+.chat-area-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  margin: 0;
+  padding: 8px 12px;
+  background-color: var(--color-bg-secondary);
+}
+
+.chat-session-name {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-file-drawer-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-left: 12px;
+  padding: 0;
+  background-color: rgba(30, 90, 168, 0.06);
+  border: 0.5px solid rgba(30, 90, 168, 0.16);
+  border-radius: 6px;
+  color: #1E5AA8;
+  cursor: pointer;
+  transition: background-color 0.2s ease, border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+  box-shadow: none;
+}
+
+.chat-file-drawer-btn:hover {
+  background-color: rgba(30, 90, 168, 0.1);
+  border-color: rgba(30, 90, 168, 0.28);
+  transform: translateY(-1px);
+  box-shadow: 0 1px 4px rgba(30, 90, 168, 0.1);
+}
+
+.chat-file-drawer-btn:active {
+  transform: scale(var(--scale-active));
+}
+
+.file-drawer-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.messages-container {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 40px 24px;
+  position: relative;
+  max-width: 900px;
+  margin: 0 auto;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
 
   &::-webkit-scrollbar {
     width: 6px;
@@ -272,71 +343,6 @@ defineExpose({
 
   scrollbar-width: thin;
   scrollbar-color: var(--color-border) transparent;
-}
-
-/* 2026-07-01 新增：会话名称头部；2026-07-02 修正：粘性固定，滚动时始终可见 */
-.chat-area-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  max-width: 900px;
-  margin: 0 auto 16px;
-  padding: 8px 0;
-  position: sticky;
-  top: 0;
-  z-index: 50;
-  background-color: var(--color-bg-secondary);
-}
-
-.chat-session-name {
-  font-size: var(--font-size-lg);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-  min-width: 0;
-}
-
-.chat-file-drawer-btn {
-  width: 36px;
-  height: 36px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  margin-left: 12px;
-  background-color: #22c55e;
-  border: none;
-  border-radius: 50%;
-  color: #ffffff;
-  cursor: pointer;
-  transition: background-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
-  box-shadow: 0 2px 6px rgba(34, 197, 94, 0.35);
-}
-
-.chat-file-drawer-btn:hover {
-  background-color: #16a34a;
-  transform: translateY(-1px);
-  box-shadow: 0 4px 10px rgba(34, 197, 94, 0.45);
-}
-
-.chat-file-drawer-btn:active {
-  transform: scale(var(--scale-active));
-}
-
-.file-drawer-icon {
-  width: 20px;
-  height: 20px;
-}
-
-.messages-container {
-  max-width: 900px;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  min-height: 100%;
 }
 
 .empty-state {

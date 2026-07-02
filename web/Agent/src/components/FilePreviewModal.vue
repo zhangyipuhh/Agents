@@ -121,6 +121,7 @@ onUnmounted(() => {
               :loading="loading"
               :preview-mode="previewMode"
               :file-url="fileUrl"
+              :show-header="false"
               @close="handleClose"
             />
           </div>

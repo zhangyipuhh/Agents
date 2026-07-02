@@ -37,6 +37,10 @@ const props = defineProps({
   fileUrl: {
     type: String,
     default: ''
+  },
+  showHeader: {
+    type: Boolean,
+    default: true
   }
 })
 
@@ -370,7 +374,7 @@ const handleOfficeError = (error) => {
 <template>
   <div v-if="isOpen" class="preview-panel" :style="{ width: panelWidth + '%' }">
     <div class="resize-handle" :class="{ active: isResizing }" @mousedown="startResize"></div>
-    <div class="preview-header">
+    <div v-if="showHeader" class="preview-header">
       <span class="preview-title">{{ fileName || '文件预览' }}</span>
       <button class="preview-close-btn" @click="emit('close')">
         <svg viewBox="0 0 20 20" fill="currentColor" class="close-icon">

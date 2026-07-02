@@ -1608,7 +1608,19 @@ watch(() => props.visible, (newVal) => {
                 :key="msg.id"
                 class="history-message-item"
               >
-                <MessageBubble :message="msg" />
+                <MessageBubble
+                  :type="msg.type"
+                  :content="msg.content"
+                  :attachments="msg.attachments"
+                  :timeline="msg.timeline"
+                  :thinking="msg.thinking"
+                  :tools="msg.tools"
+                  :text="msg.text"
+                  :ended="msg.ended"
+                  :error="msg.error"
+                  :message-id="msg.id"
+                  :sub-agents="msg.subAgents"
+                />
               </div>
             </template>
           </div>

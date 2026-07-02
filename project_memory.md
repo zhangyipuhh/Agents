@@ -185,6 +185,8 @@ app/
 │   ├── main.js / knowledge-main.js / portal-main.js  # 三个入口 JS
 │   ├── src/
 │   │   ├── App.vue        # 主应用根组件（未登录：Login/Register；已登录：Sidebar + ChatArea + InputBox）
+│   │   ├── components/ChatArea.vue  # 2026-07-02 修正：标题栏与消息区改为 flex 分栏布局，
+│   │   │                              标题栏不再使用 sticky，消息内容不会被标题栏压盖
 │   │   ├── KnowledgeApp.vue # 知识库独立页根组件
 │   │   ├── PortalApp.vue  # 门户根组件（顶部蓝色导航 + iframe 内嵌 knowledge.html）
 │   │   ├── components/    # 业务组件（Sidebar/ChatArea/InputBox/HumanApprovalBox/FileList/FilePreview/...）
@@ -1852,10 +1854,11 @@ SandboxDrawer 时间线包含 `code_generation` 事件（显示 LLM 生成的代
 - **根组件**：`App.vue`（主）、`KnowledgeApp.vue`（知识库）、`PortalApp.vue`（门户）、`KnowledgePage.vue`（旧版，被 `KnowledgeApp.vue` 替代，仍保留以兼容旧引用）
 - **登录入口**：`login.html` + `src/login-main.js`（独立 Vite 入口；承载 `LoginView`；由 `redirectToLogin()` 跳到 `/login?redirect=...` 统一访问）
 - **聊天**：`ChatArea.vue`、`InputBox.vue`、`MessageBubble.vue`、`SkillTags.vue`、`HumanApprovalBox.vue`、`TopBar.vue`
-  - `ChatArea.vue`（2026-07-01 新增，2026-07-02 修正头部 sticky）：顶部显示会话名称（`sessionName`）与绿色文件夹图标按钮；头部使用 `position: sticky` 固定在聊天区域顶部，不随消息滚动；点击图标 emit `open-session-file-drawer` 事件，由 `App.vue` 打开右侧会话文件抽屉
+  - `ChatArea.vue`（2026-07-01 新增，2026-07-02 修正头部 sticky + 改为撑满主区宽度与贴顶）：顶部显示会话名称（`sessionName`）与绿色文件夹图标按钮；头部使用 `position: sticky` 固定在聊天区域顶部，不随消息滚动；header 撑满主区宽度（去掉原 max-width: 900px / 水平居中），紧贴主区顶部（去掉 chat-area 顶 padding、改为 header 内 padding: 8px 12px，与 sidebar-logo 顶部 y=0 齐平），与左侧 sidebar-logo 形成水平对齐节奏；点击图标 emit `open-session-file-drawer` 事件，由 `App.vue` 打开右侧会话文件抽屉
 - **文件**：`FileList.vue`、`FilePreview.vue`、`FolderTree.vue`、`FileManagerModal.vue`
   - `SessionFileDrawer.vue`（2026-07-01 新增）：右侧可拖拽宽度的抽屉，仅展示当前会话/项目文件空间中的原文件目录；复用 `FolderTree.vue`，点击文件 emit `file-click`
-  - `FilePreviewModal.vue`（2026-07-01 新增）：文件预览弹窗，复用 `FilePreview.vue`；支持点击遮罩层、按 ESC 键关闭
+  - `FilePreviewModal.vue`（2026-07-01 新增）：文件预览弹窗，复用 `FilePreview.vue`；支持点击遮罩层、按 ESC 键关闭；为避免弹窗标题与 `FilePreview.vue` 自身标题重复，弹窗内调用 `FilePreview` 时传入 `:show-header="false"`
+  - `FilePreview.vue`：文件预览面板组件，新增 `showHeader` prop（默认 `true`），用于控制是否渲染内部标题栏和关闭按钮
 - **知识库**：`KnowledgeChat.vue`、`ProfileInputBox.vue`
 - **公共**：`Sidebar.vue`、`HelloWorld.vue`、`UserSettingsDialog.vue`
 - **Admin 管理**：

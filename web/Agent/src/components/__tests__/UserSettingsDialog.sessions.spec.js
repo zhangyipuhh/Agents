@@ -86,7 +86,7 @@ function createMockFetch() {
 function findByBodyText(text) {
   const nodes = document.body.querySelectorAll('*')
   for (const node of nodes) {
-    if (node.children.length === 0 && node.textContent && node.textContent.includes(text)) {
+    if (node.textContent && node.textContent.trim() === text) {
       return node
     }
   }
@@ -137,36 +137,40 @@ describe('UserSettingsDialog 会话查询 Tab', () => {
   })
 
   it('test_session_query_renders_personnel_list 会话查询 Tab 渲染人员列表', async () => {
-    mount(UserSettingsDialog, {
+    const wrapper = mount(UserSettingsDialog, {
       props: {
-        visible: true,
+        visible: false,
         role: 'admin',
         userId: 1,
         username: 'admin',
         initialTab: 'session-query'
       }
     })
+    await wrapper.setProps({ visible: true })
     await flushPromises()
 
     const userCell = findByBodyText('user1')
     expect(userCell).not.toBeNull()
+    wrapper.unmount()
   })
 
   it('test_click_personnel_shows_session_list 点击人员行进入会话列表', async () => {
-    mount(UserSettingsDialog, {
+    const wrapper = mount(UserSettingsDialog, {
       props: {
-        visible: true,
+        visible: false,
         role: 'admin',
         userId: 1,
         username: 'admin',
         initialTab: 'session-query'
       }
     })
+    await wrapper.setProps({ visible: true })
     await flushPromises()
 
-    const userCell = findByBodyText('user1')
-    expect(userCell).not.toBeNull()
-    userCell.click()
+    const row = document.body.querySelector('.clickable-row')
+    expect(row).not.toBeNull()
+    expect(row.textContent).toContain('user1')
+    row.click()
     await flushPromises()
 
     const sessionTitle = findByBodyText('测试会话')
@@ -178,21 +182,25 @@ describe('UserSettingsDialog 会话查询 Tab', () => {
     const deleteBtn = findByBodyText('删除')
     expect(deleteBtn).not.toBeNull()
     expect(document.body.querySelector('input[type="checkbox"]')).not.toBeNull()
+    wrapper.unmount()
   })
 
   it('test_select_session_shows_batch_delete 勾选会话后显示批量删除按钮', async () => {
-    mount(UserSettingsDialog, {
+    const wrapper = mount(UserSettingsDialog, {
       props: {
-        visible: true,
+        visible: false,
         role: 'admin',
         userId: 1,
         username: 'admin',
         initialTab: 'session-query'
       }
     })
+    await wrapper.setProps({ visible: true })
     await flushPromises()
 
-    findByBodyText('user1').click()
+    const row = document.body.querySelector('.clickable-row')
+    expect(row).not.toBeNull()
+    row.click()
     await flushPromises()
 
     // 初始不应显示批量删除按钮
@@ -205,21 +213,25 @@ describe('UserSettingsDialog 会话查询 Tab', () => {
     await flushPromises()
 
     expect(findByBodyText('批量删除')).not.toBeNull()
+    wrapper.unmount()
   })
 
   it('test_click_session_title_opens_history_dialog 点击标题打开历史消息弹窗', async () => {
-    mount(UserSettingsDialog, {
+    const wrapper = mount(UserSettingsDialog, {
       props: {
-        visible: true,
+        visible: false,
         role: 'admin',
         userId: 1,
         username: 'admin',
         initialTab: 'session-query'
       }
     })
+    await wrapper.setProps({ visible: true })
     await flushPromises()
 
-    findByBodyText('user1').click()
+    const row = document.body.querySelector('.clickable-row')
+    expect(row).not.toBeNull()
+    row.click()
     await flushPromises()
 
     const sessionTitle = findByBodyText('测试会话')
@@ -231,21 +243,25 @@ describe('UserSettingsDialog 会话查询 Tab', () => {
 
     // 历史消息应被渲染
     expect(findByBodyText('你好')).not.toBeNull()
+    wrapper.unmount()
   })
 
   it('test_click_export_triggers_download 点击导出触发 Markdown 下载', async () => {
-    mount(UserSettingsDialog, {
+    const wrapper = mount(UserSettingsDialog, {
       props: {
-        visible: true,
+        visible: false,
         role: 'admin',
         userId: 1,
         username: 'admin',
         initialTab: 'session-query'
       }
     })
+    await wrapper.setProps({ visible: true })
     await flushPromises()
 
-    findByBodyText('user1').click()
+    const row = document.body.querySelector('.clickable-row')
+    expect(row).not.toBeNull()
+    row.click()
     await flushPromises()
 
     const exportBtn = findByBodyText('导出')
@@ -253,21 +269,25 @@ describe('UserSettingsDialog 会话查询 Tab', () => {
     await flushPromises()
 
     expect(global.URL.createObjectURL).toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it('test_click_batch_delete_triggers_api_and_refreshes 点击批量删除触发 API 并刷新列表', async () => {
-    mount(UserSettingsDialog, {
+    const wrapper = mount(UserSettingsDialog, {
       props: {
-        visible: true,
+        visible: false,
         role: 'admin',
         userId: 1,
         username: 'admin',
         initialTab: 'session-query'
       }
     })
+    await wrapper.setProps({ visible: true })
     await flushPromises()
 
-    findByBodyText('user1').click()
+    const row = document.body.querySelector('.clickable-row')
+    expect(row).not.toBeNull()
+    row.click()
     await flushPromises()
 
     const checkbox = document.body.querySelector('input[type="checkbox"]')
@@ -283,5 +303,6 @@ describe('UserSettingsDialog 会话查询 Tab', () => {
     expect(batchCalls.length).toBeGreaterThan(0)
     const body = JSON.parse(batchCalls[0][1].body)
     expect(body.session_ids).toContain('sess-001')
+    wrapper.unmount()
   })
 })

@@ -2,7 +2,7 @@
 /**
  * SessionFileDrawer - 会话文件空间抽屉（2026-07-01 新增）
  *
- * 位于 ChatArea 右侧，点击绿色文件夹图标后展开。
+ * 位于 ChatArea 右侧，点击蓝色双矩形图标后展开。
  * 展示当前会话/项目对应的原文件目录。
  * 点击文件时向父组件抛出 file-click 事件，由父组件打开文件预览弹窗。
  *
@@ -18,6 +18,52 @@
  */
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import FolderTree from './FolderTree.vue'
+
+/**
+ * 获取文件扩展名
+ * @param {string} name - 文件名
+ * @returns {string} 扩展名小写
+ */
+function getFileExtension(name) {
+  if (!name) return ''
+  const parts = name.split('.')
+  return parts.length > 1 ? parts.pop().toLowerCase() : ''
+}
+
+/**
+ * 根据文件扩展名获取图标颜色
+ * @param {string} name - 文件名
+ * @returns {string} 图标颜色
+ */
+function getFileIconColor(name) {
+  const ext = getFileExtension(name)
+  const colorMap = {
+    md: '#6B7280',
+    pdf: '#EF4444',
+    doc: '#3B82F6',
+    docx: '#3B82F6',
+    csv: '#10B981',
+    xlsx: '#10B981',
+    xls: '#10B981',
+    txt: '#9CA3AF',
+    json: '#F59E0B'
+  }
+  return colorMap[ext] || '#1E5AA8'
+}
+
+/**
+ * 格式化文件大小
+ * @param {number} bytes - 字节数
+ * @returns {string} 格式化后的大小字符串
+ */
+function formatSize(bytes) {
+  if (!bytes && bytes !== 0) return ''
+  const num = Number(bytes)
+  if (isNaN(num)) return bytes
+  if (num < 1024) return num + ' B'
+  if (num < 1024 * 1024) return (num / 1024).toFixed(1) + ' KB'
+  return (num / (1024 * 1024)).toFixed(1) + ' MB'
+}
 
 // 抽屉宽度相关常量（单位：px）
 const DEFAULT_DRAWER_WIDTH = 380
@@ -152,21 +198,48 @@ const drawerStyle = computed(() => ({
 }))
 
 /**
- * 从后端返回的完整文件树中过滤出"原文件"目录
- * 后端返回的根节点 children 包含"原文件"与"解析缓存"，本组件仅展示前者
- * @returns {Object|null} 原文件目录节点；未找到时返回 null
+ * 把后端返回树中的"原文件"文件夹展开，将其内部子节点提升到根级展示。
+ * 同时过滤掉"解析缓存"等后端内部目录，避免暴露临时文件。
+ * @returns {Array} 提升后需要展示的根级节点列表
  */
-const displayTree = computed(() => {
-  if (!props.fileTree || !Array.isArray(props.fileTree.children)) return null
-  const original = props.fileTree.children.find(
-    child => child.type === 'folder' && child.name === '原文件'
-  )
-  return original || null
+const displayNodes = computed(() => {
+  if (!props.fileTree || !Array.isArray(props.fileTree.children)) return []
+
+  const result = []
+  for (const child of props.fileTree.children) {
+    if (child.type !== 'folder') {
+      result.push(child)
+      continue
+    }
+    if (child.name === '解析缓存') {
+      continue
+    }
+    if (child.name === '原文件' && Array.isArray(child.children)) {
+      result.push(...child.children)
+    } else {
+      result.push(child)
+    }
+  }
+  return result
 })
 
-const hasChildren = computed(() => {
-  return displayTree.value && Array.isArray(displayTree.value.children) && displayTree.value.children.length > 0
+/**
+ * 需要展示的文件夹节点（根级，已去掉"原文件"这一层）
+ * @returns {Array} 文件夹节点列表
+ */
+const displayFolders = computed(() => {
+  return displayNodes.value.filter(child => child.type === 'folder')
 })
+
+/**
+ * 根目录下直接挂载的文件（兜底）
+ * @returns {Array} 根级文件列表
+ */
+const displayFiles = computed(() => {
+  return displayNodes.value.filter(child => child.type !== 'folder')
+})
+
+const hasChildren = computed(() => displayNodes.value.length > 0)
 </script>
 
 <template>
@@ -177,7 +250,7 @@ const hasChildren = computed(() => {
     :class="{ visible, resizing: isResizing }"
     :style="drawerStyle"
     role="complementary"
-    aria-label="会话文件空间"
+    aria-label="工作空间"
   >
     <!-- 左侧拖拽条：用于调整抽屉宽度 -->
     <div
@@ -194,7 +267,7 @@ const hasChildren = computed(() => {
         <svg class="title-icon" viewBox="0 0 24 24" fill="currentColor">
           <path d="M2 6a2 2 0 012-2h5l2 2h9a2 2 0 012 2v9a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/>
         </svg>
-        <span>会话文件空间</span>
+        <span>工作空间</span>
       </div>
       <button class="close-btn" @click="handleClose" aria-label="关闭抽屉">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -221,7 +294,38 @@ const hasChildren = computed(() => {
       </div>
 
       <div v-else class="tree-wrapper">
-        <FolderTree :folder="displayTree" :depth="0" @file-click="handleFileClick" />
+        <FolderTree
+          v-for="folder in displayFolders"
+          :key="folder.path || folder.name"
+          :folder="folder"
+          :depth="0"
+          @file-click="handleFileClick"
+        />
+
+        <button
+          v-for="file in displayFiles"
+          :key="file.path || file.name"
+          class="file-item"
+          :style="{ '--depth': 0 }"
+          @click="handleFileClick(file)"
+        >
+          <svg class="file-type-icon" viewBox="0 0 20 20" fill="currentColor" :style="{ color: getFileIconColor(file.name) }">
+            <path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"/>
+          </svg>
+          <div class="file-info">
+            <div class="file-info-top">
+              <span class="file-name" :title="file.name">{{ file.name }}</span>
+              <span v-if="file.size" class="file-size">{{ formatSize(file.size) }}</span>
+            </div>
+            <div v-if="file.summary" class="file-summary">{{ file.summary }}</div>
+            <div class="file-meta">
+              <span v-if="file.date" class="file-date">{{ file.date }}</span>
+              <div v-if="file.keywords && file.keywords.length" class="file-keywords">
+                <span v-for="kw in file.keywords" :key="kw" class="keyword-tag">{{ kw }}</span>
+              </div>
+            </div>
+          </div>
+        </button>
       </div>
     </div>
   </aside>
@@ -369,6 +473,111 @@ const hasChildren = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.file-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 0;
+  padding-left: calc(var(--depth) + 12px);
+  border-radius: var(--radius-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: var(--transition-colors);
+  background: none;
+  border: none;
+}
+
+.file-item:hover {
+  background-color: var(--color-bg-hover);
+}
+
+.file-item:active {
+  transform: scale(var(--scale-active));
+}
+
+.file-type-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.file-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.file-info-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.file-name {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-all;
+  flex: 1;
+  min-width: 0;
+  line-height: 1.4;
+}
+
+.file-size {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.file-summary {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  line-height: var(--line-height-normal);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.file-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.file-date {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.file-keywords {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.keyword-tag {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  background-color: var(--color-accent-light);
+  color: var(--color-accent);
+  white-space: nowrap;
 }
 
 @keyframes spin {
