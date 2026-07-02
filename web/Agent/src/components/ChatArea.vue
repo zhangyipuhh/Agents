@@ -154,22 +154,25 @@ defineExpose({
 
 <template>
   <div class="chat-area">
-    <!-- 2026-07-01 新增：会话名称头部与文件抽屉入口 -->
+    <!-- 2026-07-01 新增：会话名称头部与文件抽屉入口；2026-07-02 修正：外层 div 撑满主区两侧，
+         内层 chat-area-header-inner 与下方 messages-container 一致采用 max-width: 900px + margin: 0 auto 居中 -->
     <div v-if="sessionName" class="chat-area-header">
-      <span class="chat-session-name" :title="sessionName">{{ sessionName }}</span>
-      <button
-        v-if="showFileIcon"
-        type="button"
-        class="chat-file-drawer-btn"
-        title="打开会话文件空间"
-        aria-label="打开会话文件空间"
-        @click="emit('open-session-file-drawer')"
-      >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" class="file-drawer-icon">
-          <rect x="3.5" y="3.5" width="17" height="17" rx="2" ry="2"/>
-          <line x1="8.5" y1="3.5" x2="8.5" y2="20.5"/>
-        </svg>
-      </button>
+      <div class="chat-area-header-inner">
+        <span class="chat-session-name" :title="sessionName">{{ sessionName }}</span>
+        <button
+          v-if="showFileIcon"
+          type="button"
+          class="chat-file-drawer-btn"
+          title="打开会话文件空间"
+          aria-label="打开会话文件空间"
+          @click="emit('open-session-file-drawer')"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" class="file-drawer-icon">
+            <rect x="3.5" y="3.5" width="17" height="17" rx="2" ry="2"/>
+            <line x1="8.5" y1="3.5" x2="8.5" y2="20.5"/>
+          </svg>
+        </button>
+      </div>
     </div>
 
     <div class="messages-container" ref="chatContainer">
