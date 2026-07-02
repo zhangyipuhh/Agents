@@ -79,7 +79,7 @@ function createMockFetch() {
 }
 
 /**
- * 从 document.body 查询文本包含指定内容的元素
+ * 从 document.body 查询文本完全匹配指定内容的元素
  * @param {string} text - 要查找的文本
  * @returns {Element | null} 匹配的元素
  */
@@ -87,6 +87,21 @@ function findByBodyText(text) {
   const nodes = document.body.querySelectorAll('*')
   for (const node of nodes) {
     if (node.textContent && node.textContent.trim() === text) {
+      return node
+    }
+  }
+  return null
+}
+
+/**
+ * 从 document.body 查询文本包含指定内容的元素
+ * @param {string} text - 要查找的文本片段
+ * @returns {Element | null} 匹配的元素
+ */
+function findByBodyTextContaining(text) {
+  const nodes = document.body.querySelectorAll('*')
+  for (const node of nodes) {
+    if (node.textContent && node.textContent.trim().includes(text)) {
       return node
     }
   }
@@ -204,7 +219,7 @@ describe('UserSettingsDialog 会话查询 Tab', () => {
     await flushPromises()
 
     // 初始不应显示批量删除按钮
-    expect(findByBodyText('批量删除')).toBeNull()
+    expect(findByBodyTextContaining('批量删除')).toBeNull()
 
     const checkbox = document.body.querySelector('input[type="checkbox"]')
     expect(checkbox).not.toBeNull()
@@ -212,7 +227,7 @@ describe('UserSettingsDialog 会话查询 Tab', () => {
     checkbox.dispatchEvent(new Event('change', { bubbles: true }))
     await flushPromises()
 
-    expect(findByBodyText('批量删除')).not.toBeNull()
+    expect(findByBodyTextContaining('批量删除')).not.toBeNull()
     wrapper.unmount()
   })
 
@@ -295,7 +310,8 @@ describe('UserSettingsDialog 会话查询 Tab', () => {
     checkbox.dispatchEvent(new Event('change', { bubbles: true }))
     await flushPromises()
 
-    const batchDeleteBtn = findByBodyText('批量删除')
+    const batchDeleteBtn = document.body.querySelector('.batch-delete-btn')
+    expect(batchDeleteBtn).not.toBeNull()
     batchDeleteBtn.click()
     await flushPromises()
 

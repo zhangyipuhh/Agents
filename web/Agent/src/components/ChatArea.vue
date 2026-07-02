@@ -30,33 +30,31 @@ const showScrollToTopButton = ref(false)
 const unreadCount = ref(0)
 const lastScrollHeight = ref(0)
 
-const scrollToBottom = (behavior = 'smooth') => {
-  console.log('scrollToBottom called, chatContainer:', chatContainer.value)
-  if (chatContainer.value) {
-    const scrollHeight = chatContainer.value.scrollHeight
-    console.log('Scrolling to:', scrollHeight)
-    chatContainer.value.scrollTo({
-      top: scrollHeight,
-      behavior
-    })
+/**
+ * 滚动到消息列表底部
+ * 2026-07-02 修复：移除 behavior 参数与 scrollTo 调用，改为直接赋值 scrollTop（瞬时滚动），
+ *   避免与全局 html { scroll-behavior: smooth } 叠加导致 smooth 滚动被中断、scrollTop 回弹到原值。
+ *   nextTick 包裹确保 Vue 重渲染完成后再读取最新 scrollHeight。
+ */
+const scrollToBottom = () => {
+  if (!chatContainer.value) return
+  nextTick(() => {
+    if (!chatContainer.value) return
+    chatContainer.value.scrollTop = chatContainer.value.scrollHeight
     unreadCount.value = 0
-  }
+  })
 }
 
-// 处理按钮点击事件
-const handleScrollToBottomClick = (event) => {
-  console.log('Button clicked!', event)
-  scrollToBottom('smooth')
-}
-
-// 滚动到顶部
-const scrollToTop = (behavior = 'smooth') => {
-  if (chatContainer.value) {
-    chatContainer.value.scrollTo({
-      top: 0,
-      behavior
-    })
-  }
+/**
+ * 滚动到消息列表顶部
+ * 2026-07-02 修复：与 scrollToBottom 保持一致的瞬时滚动策略，直接赋值 scrollTop = 0。
+ */
+const scrollToTop = () => {
+  if (!chatContainer.value) return
+  nextTick(() => {
+    if (!chatContainer.value) return
+    chatContainer.value.scrollTop = 0
+  })
 }
 
 const handleScroll = () => {
@@ -130,8 +128,9 @@ const handleKeyDown = (e) => {
 
 onMounted(() => {
   // 使用 setTimeout 确保 DOM 完全渲染后再滚动
+  // 2026-07-02 修复：scrollToBottom 已改为无参函数，移除 'auto' 参数
   setTimeout(() => {
-    scrollToBottom('auto')
+    scrollToBottom()
   }, 0)
   if (chatContainer.value) {
     chatContainer.value.addEventListener('scroll', handleScroll)
@@ -212,37 +211,36 @@ defineExpose({
     </div>
 
     <!-- 滚动按钮组 -->
+    <!-- 2026-07-02 修复：去掉 <transition> 包裹，避免 leave 动画与 smooth scroll 的 reflow 竞态
+         导致 scrollTop 中断回弹（用户反馈「会话跳了一下又回到原位」的根因）。
+         改为依赖 v-show 的 display 切换（无动画），保证滚动行为稳定。 -->
     <div class="scroll-buttons-wrapper">
-      <transition name="fade">
-        <button
-          v-show="showScrollToTopButton"
-          type="button"
-          class="scroll-btn scroll-to-top-btn"
-          @click="scrollToTop('smooth')"
-          title="滚动到顶部"
-          aria-label="滚动到顶部"
-        >
-          <svg viewBox="0 0 20 20" fill="currentColor" class="scroll-icon">
-            <path fill-rule="evenodd" d="M14.707 12.707a1 1 0 01-1.414 0L10 9.414l-3.293 3.293a1 1 0 01-1.414-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 010 1.414z" clip-rule="evenodd"/>
-          </svg>
-        </button>
-      </transition>
+      <button
+        v-show="showScrollToTopButton"
+        type="button"
+        class="scroll-btn scroll-to-top-btn"
+        @click="scrollToTop"
+        title="滚动到顶部"
+        aria-label="滚动到顶部"
+      >
+        <svg viewBox="0 0 20 20" fill="currentColor" class="scroll-icon">
+          <path fill-rule="evenodd" d="M14.707 12.707a1 1 0 01-1.414 0L10 9.414l-3.293 3.293a1 1 0 01-1.414-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 010 1.414z" clip-rule="evenodd"/>
+        </svg>
+      </button>
 
-      <transition name="fade">
-        <button
-          v-show="showScrollButton"
-          type="button"
-          class="scroll-btn scroll-to-bottom-btn"
-          @click="handleScrollToBottomClick"
-          :title="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
-          :aria-label="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
-        >
-          <svg viewBox="0 0 20 20" fill="currentColor" class="scroll-icon">
-            <path fill-rule="evenodd" d="M5.293 12.707a1 1 0 011.414 0L10 9.414l3.293 3.293a1 1 0 111.414-1.414l-4-4a1 1 0 01-1.414 0l-4 4a1 1 0 010 1.414z" clip-rule="evenodd"/>
-          </svg>
-          <span v-if="unreadCount > 0" class="unread-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
-        </button>
-      </transition>
+      <button
+        v-show="showScrollButton"
+        type="button"
+        class="scroll-btn scroll-to-bottom-btn"
+        @click="scrollToBottom"
+        :title="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
+        :aria-label="unreadCount > 0 ? `有 ${unreadCount} 条新消息` : '滚动到底部'"
+      >
+        <svg viewBox="0 0 20 20" fill="currentColor" class="scroll-icon">
+          <path fill-rule="evenodd" d="M5.293 12.707a1 1 0 011.414 0L10 9.414l3.293 3.293a1 1 0 111.414-1.414l-4-4a1 1 0 01-1.414 0l-4 4a1 1 0 010 1.414z" clip-rule="evenodd"/>
+        </svg>
+        <span v-if="unreadCount > 0" class="unread-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+      </button>
     </div>
   </div>
 </template>
@@ -258,15 +256,23 @@ defineExpose({
 }
 
 /* 2026-07-01 新增：会话名称头部；2026-07-02 修正：与 .chat-area 采用 flex 纵向布局，
-   避免 sticky 标题栏压盖滚动消息内容 */
+   避免 sticky 标题栏压盖滚动消息内容；2026-07-02 二次修正：外层 chat-area-header 撑满主区宽度
+   与两侧连接(背景色铺满),内层 chat-area-header-inner 与下方 .messages-container 一致采用
+   max-width: 900px + margin: 0 auto 居中,实现"外层连接两侧 + 内容向中间靠拢与聊天区对齐" */
 .chat-area-header {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 8px 0;
+  background-color: var(--color-bg-secondary);
+}
+
+.chat-area-header-inner {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 0 40px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  flex-shrink: 0;
-  margin: 0;
-  padding: 8px 12px;
-  background-color: var(--color-bg-secondary);
 }
 
 .chat-session-name {
@@ -446,16 +452,10 @@ defineExpose({
   height: 20px;
 }
 
-.fade-enter-active,
-.fade-leave-active {
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
-  transform: translateY(8px) scale(0.9);
-}
+/* 2026-07-02 移除：旧的 .fade-* transition 规则与 smooth scroll 存在 reflow 竞态，
+   当前模板已不再使用 <transition name="fade">，保留为空以避免被误用恢复原 bug。
+   若未来需要按钮淡入淡出，请改用 transition-group + 单层 wrapper，避免 leave 动画
+   与 in-flight scrollTo 在同一帧触发。 */
 
 @keyframes fadeInUp {
   from {

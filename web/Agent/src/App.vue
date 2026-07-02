@@ -1093,6 +1093,7 @@ async function handleSessionSwitch(targetSessionId) {
       @logout="handleLogout"
       @username-updated="handleUsernameUpdated"
       @session-switch="handleSessionSwitch"
+      @open-subagent-drawer="openSubAgentDrawer"
     />
 
     <main v-if="currentPage === 'agent'" class="content-area" :class="{ 'empty-layout': isEmptyState }">

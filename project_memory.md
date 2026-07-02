@@ -981,7 +981,7 @@ return data/upload/yyyy/mm/dd/{session_id}/
 | ├ PUT /{user_id}/username          |                        | 修改用户名（仅限修改自己的用户名）                                                                                                                                                    |
 | ├ GET /{user_id}/profile           |                        | 获取用户个人资料（仅限查看自己的资料）                                                                                                                                                |
 | ├ PUT /{user_id}/profile           |                        | 更新用户个人资料（仅限修改自己的资料）                                                                                                                                                |
-| /api/session                        | session_router         | 会话管理（创建、删除、列表、详情、标题、导出、附件、消息、文件空间）                                                                                                                  |
+| /api/session                        | session_router         | 会话管理（创建、删除、列表、详情、标题、导出、附件、消息、文件空间）+ Admin 批量删除/历史消息/导出 Markdown                                                                           |
 | ├ POST /create                     |                        | 创建新会话                                                                                                                                                                            |
 | ├ DELETE /delete/{session_id}      |                        | 删除会话（同时清理对话记录、附件、文件目录、checkpoint、缓存）                                                                                                                        |
 | ├ GET /list                        |                        | 获取当前用户的会话列表                                                                                                                                                                |
@@ -994,6 +994,9 @@ return data/upload/yyyy/mm/dd/{session_id}/
 | ├ GET /{session_id}/files/preview  |                        | 2026-07-01 新增：预览会话文件空间中单个文件（文本/Markdown 返回 content；Office/PDF/图片返回下载 URL）                                                                                |
 | ├ GET /{session_id}/files/download |                        | 2026-07-01 新增：下载会话文件空间中的文件（带路径遍历校验）                                                                                                                           |
 | ├ DELETE /admin/{session_id}       |                        | Admin 强制删除任意会话                                                                                                                                                                |
+| ├ DELETE /admin/batch              |                        | Admin 批量删除会话（body: {session_ids}），返回 success / deleted_count / total / failed                                                                                              |
+| ├ GET  /admin/{session_id}/messages |                        | Admin 获取任意会话历史消息（从 LangGraph Checkpoint 恢复，含子智能体轨迹；默认 50 条，limit=0 返回全部）                                                                              |
+| ├ GET  /admin/{session_id}/export/markdown |                        | Admin 导出任意会话完整对话为 Markdown（含子智能体轨迹）                                                                                                                               |
 | ├ GET /admin/search                |                        | Admin 按用户名搜索会话                                                                                                                                                                |
 | /api/files                          | file_router            | 文件管理（上传、下载、删除、列表、PDF 转图片）                                                                                                                                        |
 | ├ POST /upload                     |                        | 批量上传文件                                                                                                                                                                          |
@@ -1854,15 +1857,23 @@ SandboxDrawer 时间线包含 `code_generation` 事件（显示 LLM 生成的代
 - **根组件**：`App.vue`（主）、`KnowledgeApp.vue`（知识库）、`PortalApp.vue`（门户）、`KnowledgePage.vue`（旧版，被 `KnowledgeApp.vue` 替代，仍保留以兼容旧引用）
 - **登录入口**：`login.html` + `src/login-main.js`（独立 Vite 入口；承载 `LoginView`；由 `redirectToLogin()` 跳到 `/login?redirect=...` 统一访问）
 - **聊天**：`ChatArea.vue`、`InputBox.vue`、`MessageBubble.vue`、`SkillTags.vue`、`HumanApprovalBox.vue`、`TopBar.vue`
-  - `ChatArea.vue`（2026-07-01 新增，2026-07-02 修正头部 sticky + 改为撑满主区宽度与贴顶）：顶部显示会话名称（`sessionName`）与绿色文件夹图标按钮；头部使用 `position: sticky` 固定在聊天区域顶部，不随消息滚动；header 撑满主区宽度（去掉原 max-width: 900px / 水平居中），紧贴主区顶部（去掉 chat-area 顶 padding、改为 header 内 padding: 8px 12px，与 sidebar-logo 顶部 y=0 齐平），与左侧 sidebar-logo 形成水平对齐节奏；点击图标 emit `open-session-file-drawer` 事件，由 `App.vue` 打开右侧会话文件抽屉
+  - `ChatArea.vue`（2026-07-01 新增，2026-07-02 修正头部 sticky + 改为撑满主区宽度与贴顶，2026-07-02 二次修正 header 内部居中，2026-07-02 三次修复滚动按钮「跳一下又回到原位」竞态）：顶部显示会话名称（`sessionName`）与绿色文件夹图标按钮；头部使用 `position: sticky` 固定在聊天区域顶部，不随消息滚动；header **外层** `.chat-area-header` 撑满主区宽度（背景色铺满两侧），**内层** `.chat-area-header-inner` 与下方 `.messages-container` 一致采用 `max-width: 900px + margin: 0 auto + padding: 0 40px` 居中布局，实现"外层连接两侧 + 内容向中间靠拢与聊天区对齐"；紧贴主区顶部（去掉 chat-area 顶 padding、改为 header 外层 padding: 8px 0），与左侧 sidebar-logo 形成水平对齐节奏；点击图标 emit `open-session-file-drawer` 事件，由 `App.vue` 打开右侧会话文件抽屉
+  - **2026-07-02 滚动按钮修复**（仅 ChatArea.vue 单文件改动）：右下角 `.scroll-buttons-wrapper` 内的 `scroll-to-top-btn` / `scroll-to-bottom-btn` 之前包裹 `<transition name="fade">`，结合 `scrollTo({ behavior: 'smooth' })` 在 click 同一帧触发时，leave 动画的 reflow/repaint 会中断 in-flight smooth 滚动，导致 scrollTop 回弹到原值（用户反馈「会话跳了一下又回到原位」）；修复方案：① 去掉两层 `<transition>` 包裹，依赖 v-show 的 display 切换（无动画）；② `scrollToBottom` / `scrollToTop` 改为直接赋值 `chatContainer.value.scrollTop`（瞬时），并用 `nextTick` 包裹读取最新 `scrollHeight`；③ 移除 `handleScrollToBottomClick` 中间函数；④ 删除 `.fade-enter-active / .fade-leave-active / .fade-enter-from / .fade-leave-to` CSS（保留为注释占位，避免误用恢复原 bug）；⑤ `onMounted` 中 `scrollToBottom('auto')` 改为无参调用。若未来需要按钮淡入淡出动画，必须改用 `<transition-group>` 包整组按钮并配合 RAF/nextTick 调度，**禁止**再次对单按钮用 `<transition>` + `v-show` + `scrollTo({ behavior: 'smooth' })` 同帧触发。
 - **文件**：`FileList.vue`、`FilePreview.vue`、`FolderTree.vue`、`FileManagerModal.vue`
   - `SessionFileDrawer.vue`（2026-07-01 新增）：右侧可拖拽宽度的抽屉，仅展示当前会话/项目文件空间中的原文件目录；复用 `FolderTree.vue`，点击文件 emit `file-click`
   - `FilePreviewModal.vue`（2026-07-01 新增）：文件预览弹窗，复用 `FilePreview.vue`；支持点击遮罩层、按 ESC 键关闭；为避免弹窗标题与 `FilePreview.vue` 自身标题重复，弹窗内调用 `FilePreview` 时传入 `:show-header="false"`
   - `FilePreview.vue`：文件预览面板组件，新增 `showHeader` prop（默认 `true`），用于控制是否渲染内部标题栏和关闭按钮
 - **知识库**：`KnowledgeChat.vue`、`ProfileInputBox.vue`
 - **公共**：`Sidebar.vue`、`HelloWorld.vue`、`UserSettingsDialog.vue`
+  - `Sidebar.vue`（2026-07-02 调整）：侧边栏「项目」分组默认展开，其下各项目内的会话列表默认折叠，点击项目头部可切换展开/折叠
 - **Admin 管理**：
-  - `UserSettingsDialog.vue`：admin 角色可访问的「用户设置与管理」对话框；包含 8 个 Tab —— `profile`（个人设置）/ `user-management`（用户管理）/ `online-monitor`（在线监控）/ `session-query`（会话查询）/ `agent-management`（智能体管理，调用 `AgentManager.vue`）/ `mcp-management`（MCP 管理，调用 `McpServerManager.vue`）/ `tool-management`（工具管理，调用 `ToolManager.vue`）/ `skill-management`（Skill 管理，调用 `SkillManager.vue`）
+  - `UserSettingsDialog.vue`：admin 角色可访问的「用户设置与管理」对话框；包含 8 个 Tab —— `profile`（个人设置）/ `user-management`（用户管理）/ `online-monitor`（在线监控）/ `session-query`（会话查询）/ `agent-management`（智能体管理，调用 `AgentManager.vue`）/ `mcp-management`（MCP 管理，调用 `McpServerManager.vue`）/ `tool-management`（工具管理，调用 `ToolManager.vue`）/ `skill-management`（Skill 管理，调用 `SkillManager.vue`）。其中 `session-query` Tab 为两级视图：人员列表 → 点击人员进入该用户的会话列表；会话表格支持复选框批量选择、批量删除、单条导出 Markdown，点击会话标题弹出历史消息对话框，使用 `MessageBubble` 渲染完整消息（含 `ToolCallCard` 工具卡片与 `SubAgentCard` 子智能体卡片）
+    - **2026-07-02 改造**：历史会话详情弹窗居中 + 子智能体抽屉事件冒泡链路打通：
+      1. **主弹窗铺满行为保留**：用户设置与管理（admin 多面板布局）必须铺满全屏提供操作空间；`.dialog-card` 维持原 `position:absolute; inset:0` 不变
+      2. **居中通过修饰类实现**：新增 `.dialog-overlay--centered`（flex + 居中对齐）+ `.dialog-overlay--centered > .dialog-card`（position:relative + 圆角 + max-height:90vh）；**只有历史会话详情弹窗模板叠加 `--centered` 修饰类**（800px 居中卡片），主弹窗不受影响
+      3. `defineEmits` 新增 `'open-subagent-drawer'`；历史会话弹窗内 `<MessageBubble>` 增加 `@open-subagent-drawer="(sa) => emit('open-subagent-drawer', sa)"`
+      4. `Sidebar.vue` 同步新增 `defineEmits` 项 + 模板转发；`App.vue` Sidebar 标签监听 `@open-subagent-drawer="openSubAgentDrawer"`，复用全局 `SubAgentDrawer`
+      5. 数据契约：后端 `/api/session/admin/{id}/messages` 返回的 `type:"subagent"` 元素含完整 `messages` 数组（`app/shared/utils/memory/checkpoint_history.py:411-423`），`convertSubAgentHistoryToAiSubAgent`（`sseParser.js:743`）直接转成 `SubAgentDrawer` 所需的 props 结构，无需额外接口
   - `McpServerManager.vue`：MCP server CRUD + 方法列表 + 启禁用切换（前后端）
   - `AgentManager.vue`：智能体管理 Tab 内容；左侧智能体列表 + 右侧 Tab 结构（「基本信息」Tab + 「配置字段」Tab + 「工具绑定」Tab）；支持完整 CRUD：
     - **新增智能体**：弹窗表单（8 字段）+ 内嵌 config_schema 编辑器；调用 `fetchAgentConfigFieldTemplates` 获取字段模板做下拉选择
@@ -1887,6 +1898,7 @@ SandboxDrawer 时间线包含 `code_generation` 事件（显示 LLM 生成的代
 
 - **`api.js`**：登录/注册/验证码/登出/refresh/validate；会话创建/列表/删除/详情/标题/附件/消息/文件空间；文件上传（普通 + 分片 + base64）/下载/列表/删除；SSE `chatStream`（ 起改用 `/api/agent/chat`，新增 `agentName` 参数默认 `map_agent`）/ `knowledgeChatStream`（仍用 `/api/map/knowledge-chat`）；`X-Session-ID` 头注入；附件元数据组装
   - **会话文件空间 API 段**（2026-07-01 新增）：`fetchSessionFileTree(sessionId)` 获取 `/api/session/{id}/files/tree` 树形结构；`previewSessionFile(sessionId, storedPath)` 获取 `/api/session/{id}/files/preview` 预览数据（文本/Markdown 返回 content，Office/PDF/图片返回 file_url）
+  - **Admin 会话管理 API 段**（2026-07-01 新增）：`adminBatchDeleteSessions(sessionIds)` 调用 `DELETE /api/session/admin/batch` 批量删除；`adminFetchSessionMessages(sessionId, limit)` 调用 `GET /api/session/admin/{session_id}/messages` 获取任意会话历史消息；`adminExportSessionMarkdown(sessionId)` 调用 `GET /api/session/admin/{session_id}/export/markdown` 导出 Markdown
   - **工具管理 API 段**（2026-06-25 新增）：`listTools` / `listUnregisteredTools` / `registerTool` / `updateTool` / `deleteTool` / `setToolEnabled` / `scanTools` 对应后端 `tool_admin_router` 的 `/api/admin/tools/*` 端点；`getAgentToolBindings` / `updateAgentToolBindings` / `fetchAgentAvailableTools` 对应后端 `agent_admin_router` 的 `/api/admin/agents/{name}/(tool-bindings|available-tools)` 端点
   - **Skill 管理 API 段**（2026-06-29 新增）：`listSkills` / `listUnregisteredSkills` / `registerSkill` / `updateSkill` / `deleteSkill` / `setSkillEnabled` / `scanSkills` 对应后端 `skill_admin_router` 的 `/api/admin/skills/*` 端点；`getAgentSkillBindings` / `updateAgentSkillBindings` / `fetchAgentAvailableSkills` 对应后端 `agent_admin_router` 的 `/api/admin/agents/{name}/(skill-bindings|available-skills)` 端点；所有函数复用既有 `fetchWithAuth` 包装器（401 自动重试一次）
 - **AgentManager Skill 绑定 Tab**（2026-06-29 新增，`web/Agent/src/components/AgentManager.vue`）：在 basic / config / tools 三个 Tab 之外新增 `skills` Tab；调用 `fetchAgentAvailableSkills` 拉取可绑定 skill 后按 category 分组渲染可折叠列表，复用工具绑定 Tab 的折叠/勾选/保存模式；`localSelectedSkillBindings` 用 `{skill_name: {enabled, sort_order}}` 记录勾选；`saveSkillBindings` 按分组顺序生成 sort_order 调用 `updateAgentSkillBindings`；`selectAgent` 切换 agent 时若当前在 skills Tab 则立即重载；切换 skill Tab 由 `onSwitchToSkillsTab` 触发
@@ -2015,6 +2027,7 @@ SandboxDrawer 时间线包含 `code_generation` 事件（显示 LLM 生成的代
   - `SubAgentCard.spec.js`：折叠卡片（**11** 用例）
   - `SubAgentDrawer.spec.js`：独立 Push Drawer（**19** 用例）
   - `MessageBubble.spec.js`：timeline.tool 内按 toolCallId 渲染 SubAgentCard 等（5 用例）
+  - `UserSettingsDialog.subagent.spec.js`（2026-07-02 新增）：历史会话详情弹窗居中 CSS 回归保护 + 子智能体事件冒泡链路（**5** 用例）
 
 
 **背景**：上一节"停止按钮（中断 LLM 生成）"仅停止主智能体的 LangGraph astream，但子智能体（sandbox / explore）工具函数内的 `for chunk in child_agent.stream(...)` 是同步 for 循环，没有任何停止信号感知。子智能体会一直运行直到自然结束，消耗 LLM token、占用 Docker 容器，停止按钮无法真正中断。

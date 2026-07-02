@@ -82,7 +82,10 @@ const props = defineProps({
  * @event update:visible - 更新对话框可见状态，用于 v-model:visible
  * @event username-updated - 用户名修改成功时触发，参数: { username: string }
  */
-const emit = defineEmits(['update:visible', 'username-updated'])
+// 2026-07-02 新增 'open-subagent-drawer' 事件:历史会话详情弹窗中的 SubAgentCard
+// 点击后,把子智能体数据经 Sidebar → App.vue 一路冒泡,触发全局 SubAgentDrawer
+// 显示该子智能体的完整调用过程(消息流 + 工具调用决策 + 状态摘要)。
+const emit = defineEmits(['update:visible', 'username-updated', 'open-subagent-drawer'])
 
 /* ---- 导航与视图状态 ---- */
 
@@ -1587,7 +1590,7 @@ watch(() => props.visible, (newVal) => {
     <Transition name="dialog-fade">
       <div
         v-if="showHistoryDialog"
-        class="dialog-overlay"
+        class="dialog-overlay dialog-overlay--centered"
         @click.self.stop="closeHistoryDialog"
       >
         <div class="dialog-card history-dialog-card" @click.stop>
@@ -1620,6 +1623,7 @@ watch(() => props.visible, (newVal) => {
                   :error="msg.error"
                   :message-id="msg.id"
                   :sub-agents="msg.subAgents"
+                  @open-subagent-drawer="(sa) => emit('open-subagent-drawer', sa)"
                 />
               </div>
             </template>
@@ -1643,6 +1647,16 @@ watch(() => props.visible, (newVal) => {
   backdrop-filter: blur(4px);
 }
 
+/* 居中弹窗遮罩层(2026-07-02 新增)
+   用途:历史会话详情弹窗需要居中显示(800px 卡片),而不是铺满全屏
+   使用方式:在 dialog-overlay 上叠加 .dialog-overlay--centered
+   主用户设置弹窗(用户设置与管理/admin 多面板布局)仍铺满全屏,保持原行为 */
+.dialog-overlay--centered {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 /* 对话框卡片 */
 .dialog-card {
   position: absolute;
@@ -1658,6 +1672,20 @@ watch(() => props.visible, (newVal) => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* 居中弹窗卡片(2026-07-02 新增)
+   用途:历史会话详情弹窗由 width:800px + max-height:80vh 自然撑开并居中,
+   配合 .dialog-overlay--centered 的 flex 居中生效。
+   注意:position:relative + 取消 inset:0 + border-radius:圆角 */
+.dialog-overlay--centered > .dialog-card {
+  position: relative;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  left: auto;
+  max-height: 90vh;
+  border-radius: var(--radius-lg);
 }
 
 /* 对话框头部 */

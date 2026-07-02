@@ -30,7 +30,7 @@ const emit = defineEmits(['toggle-sidebar', 'new-chat', 'page-change', 'logout',
 
 const isSidebarCollapsed = ref(false)
 const isHistoryCollapsed = ref(false)
-const isLabCollapsed = ref(true)
+const isLabCollapsed = ref(false)
 const activeMenu = ref('new-task')
 const isUserMenuVisible = ref(false)
 const userMenuRef = ref(null)
@@ -89,10 +89,10 @@ const loadProjectList = async () => {
     const data = await fetchProjectList()
     const list = data.projects || []
     projects.value = list
-    // 初始化折叠状态：默认展开
+    // 初始化折叠状态：项目分组默认展开，但其下属会话默认折叠，避免一次性展示过多历史记录
     list.forEach(p => {
       if (!(p.id in projectCollapsedMap.value)) {
-        projectCollapsedMap.value[p.id] = false
+        projectCollapsedMap.value[p.id] = true
       }
     })
   } catch (err) {
@@ -724,6 +724,7 @@ onUnmounted(() => {
       :initial-tab="settingsInitialTab"
       :sidebar-collapsed="isSidebarCollapsed"
       @username-updated="handleUsernameUpdated"
+      @open-subagent-drawer="(sa) => emit('open-subagent-drawer', sa)"
     />
 
     <!--
