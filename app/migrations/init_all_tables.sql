@@ -1056,6 +1056,41 @@ SET location = 'app/skills/knowledge_ydt/SKILL.md',
 WHERE name = 'knowledge_ydt'
   AND location LIKE '%\%';
 
+-- ============================================================
+-- 2026-07-02 新增：project 智能体依赖的 skills 种子数据
+-- 来源：app/skills/project-doc-*/SKILL.md 与 app/skills/intent-clarification/SKILL.md
+-- 幂等：ON CONFLICT (name) DO UPDATE 可重复执行
+-- 等价内容由 scripts/generate_project_skills_seed.py 同步生成到 seed_project_skills.sql
+-- ============================================================
+\i app/migrations/seed_project_skills.sql
+
+-- ========== 16. message_feedback（2026-07-02 新增：AI 回复的赞/踩反馈入库）==========
+-- 用户对 AI 回复的赞/踩评价持久化表。
+--   * 赞（feedback_type='like'）直接入库，不要求任何附加内容
+--   * 踩（feedback_type='dislike'）弹窗收集 problem_type / problem_description / expected_answer
+--   * user_id 通过 auth_middleware 注入到 request.state.user_id；session_id/message_id 由前端传入
+--   * ON DELETE CASCADE：用户被删除时其全部反馈记录一并删除
+CREATE TABLE IF NOT EXISTS message_feedback (
+    id                   SERIAL PRIMARY KEY,
+    user_id              INTEGER       NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_id           VARCHAR(100)  NOT NULL,
+    message_id           VARCHAR(64)   NOT NULL,
+    feedback_type        VARCHAR(16)   NOT NULL,
+    problem_type         VARCHAR(32)   DEFAULT NULL,
+    problem_description  TEXT          DEFAULT NULL,
+    expected_answer      TEXT          DEFAULT NULL,
+    message_content      TEXT          DEFAULT NULL,
+    ai_reply             TEXT          DEFAULT NULL,
+    agent_name           VARCHAR(64)   DEFAULT NULL,
+    user_agent           VARCHAR(255)  DEFAULT NULL,
+    created_at           TIMESTAMP     NOT NULL DEFAULT NOW(),
+    CONSTRAINT message_feedback_type_chk CHECK (feedback_type IN ('like', 'dislike'))
+);
+CREATE INDEX IF NOT EXISTS idx_message_feedback_user_id     ON message_feedback(user_id);
+CREATE INDEX IF NOT EXISTS idx_message_feedback_session_id  ON message_feedback(session_id);
+CREATE INDEX IF NOT EXISTS idx_message_feedback_type        ON message_feedback(feedback_type);
+CREATE INDEX IF NOT EXISTS idx_message_feedback_created_at  ON message_feedback(created_at DESC);
+
 COMMIT;
 
 -- =============================================
@@ -1070,7 +1105,8 @@ WHERE table_schema = 'public'
     'map_business_info', 'map_business_no_counter',
     'agents', 'agent_tool_bindings',
     'mcp_server_configs', 'mcp_server_methods',
-    'tools', 'skills'
+    'tools', 'skills',
+    'message_feedback'
   )
 ORDER BY table_name;
 

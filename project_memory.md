@@ -161,7 +161,8 @@ app/
 │   │   ├── mcp/              # MCP 服务器配置（config.yaml.example）
 │   │   ├── middleware/       # 工具中间件（DockerSandboxBackend / EncodingSafeFileSearch 等）
 │   │   └── skills/           # 按 agent 维度组织的工具模块（@register_tool 装饰）
-│   │       └── map_agent/    # map_agent 工具（MapTools.py，11 个工具：8 地图 + query_knowledge + generate_report + save_business_info；配套 config/ 子目录承载报告配置）
+│   │       ├── map_agent/    # map_agent 工具（MapTools.py，11 个工具：8 地图 + query_knowledge + generate_report + save_business_info；配套 config/ 子目录承载报告配置）
+│   │       └── project/      # project 智能体工具（ProjectTools.py，8 个工具：intent_clarification / project_doc_query / project_doc_outline / project_doc_write / project_doc_workflow / manage_project_log / append_change_log / generate_project_docx）
 │   └── utils/             # 工具类
 │       ├── auth/          # 认证相关
 │       │   ├── Safety.py          # JWT 认证（双 Token：Access + Refresh）
@@ -365,6 +366,34 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
   - [docs/refresh-token-misunderstanding.md](file:///e:/laboratory/AI/Agents/agent-user-mangerment/docs/refresh-token-misunderstanding.md) — Refresh Token 调研澄清报告
 
 ## 数据库设计
+
+### message_feedback 表（2026-07-02 新增）
+
+AI 回复的赞/踩反馈入库表。用户对每条 AI 回复可以"赞"或"踩"，踩时可填写问题描述、问题类型、期望的样子，用于运营/算法团队分析质量问题。
+
+| 字段                  | 类型                         | 必填 | 说明                                                          |
+| --------------------- | ---------------------------- | ---- | ------------------------------------------------------------- |
+| id                    | SERIAL PRIMARY KEY           | 是   | 自增主键                                                      |
+| user_id               | INTEGER FK → users (CASCADE) | 是   | 操作用户 ID，删除用户时其全部反馈记录一并删除                  |
+| session_id            | VARCHAR(100)                 | 是   | 所属会话 ID                                                    |
+| message_id            | VARCHAR(64)                  | 是   | 前端消息 ID（与 ChatArea message.id 对齐）                      |
+| feedback_type         | VARCHAR(16)                  | 是   | `like`（赞）/ `dislike`（踩），CHECK 约束                       |
+| problem_type          | VARCHAR(32)                  | 否   | 仅踩时填写：`factual_error` / `logic_error` / `off_topic` / `other` |
+| problem_description   | TEXT                         | 否   | 踩时用户填写的"问题描述"（多行文本）                            |
+| expected_answer       | TEXT                         | 否   | 踩时用户填写的"期望的样子"                                      |
+| message_content       | TEXT                         | 否   | 消息内容快照，便于回溯                                          |
+| ai_reply              | TEXT                         | 否   | AI 回复内容快照                                                |
+| agent_name            | VARCHAR(64)                  | 否   | 当前绑定的 Agent 名称                                          |
+| user_agent            | VARCHAR(255)                 | 否   | 浏览器 UA 字符串                                                |
+| created_at            | TIMESTAMP                    | 是   | 入库时间，默认 `NOW()`                                          |
+
+索引：`idx_message_feedback_user_id` / `idx_message_feedback_session_id` / `idx_message_feedback_type` / `idx_message_feedback_created_at`（DSC）
+
+**接口**：`POST /api/agent/message-feedback`（`app/routers/agent_router.py`，与 `/api/agent/chat` 同前缀，本接口为该文件本次**唯一**新增的端点）。401（未登录）/ 400（feedback_type 非法）/ 503（内存模式）/ 201（成功）。
+
+**前端组件**：`web/agent/src/components/DislikeDialog.vue`（踩时弹窗）+ `web/agent/src/utils/api.js::submitMessageFeedback`（工具方法）+ `App.vue::handleLike` / `handleDislike` 改造。
+
+**降级**：内存模式（`AUTH_STORAGE_MODE=memory`）下后端返回 503，前端 catch 后 toast "反馈功能仅在数据库模式下可用"，不阻塞用户继续聊天。
 
 ### users 表
 
@@ -2513,6 +2542,70 @@ app/shared/utils/agent/
 4. **返回结果**：事实查询类返回原文；辅助决策类返回决策结论 + 决策依据。
 
 **配套 AGENTS.md**: `agents/knowledge_ydt/AGENTS.md` 已精简为只保留 Task Rules、Agent Capability 和 Tool Priority，强制要求每次知识库查询必须先加载 `knowledge_ydt` skill。
+
+### project-doc 套件
+
+2026-07-02 新增：从外部 skill 套件迁移到 `app/skills/` 的 7 个项目文档相关 skill，统一处理软件工程项目文档（策划表、需求、设计、计划、测试、验收、部署、培训等）。
+
+| Skill | 文件位置 | 核心职责 |
+|---|---|---|
+| `project-doc-overview` | `app/skills/project-doc-overview/SKILL.md` | 套件总览与入口调度说明，供模型理解 7 个 skill 的关系与 dispatch 规则 |
+| `project-doc-hub` | `app/skills/project-doc-hub/SKILL.md` | 用户提出“项目 + 文档”请求时的调度入口，按意图分流到 query/outline/write/workflow |
+| `project-doc-query` | `app/skills/project-doc-query/SKILL.md` | 回答项目事实类问题与 PMO 决策建议，强制使用 PMP/PRINCE2/系统分析师三层框架 |
+| `project-doc-outline` | `app/skills/project-doc-outline/SKILL.md` | 为 10 种软件工程交付物生成章节级大纲（无正文） |
+| `project-doc-write` | `app/skills/project-doc-write/SKILL.md` | 在已有大纲基础上严格基于项目资料填充正文，生成决策建议 |
+| `project-doc-workflow` | `app/skills/project-doc-workflow/SKILL.md` | 端到端 4 步流水线检查清单（hub → query → outline → write → save-to-disk） |
+| `intent-clarification` | `app/skills/intent-clarification/SKILL.md` | 统一澄清协议：任何需要向用户确认的问题都必须先调用该 skill |
+
+**迁移改造要点**（相对原外部套件）：
+- 原 `scripts/` 目录未迁移，所有文件读取统一改为调用 `explore(...)`；
+- SKILL.md 中删除了 `python scripts/...` 等 CLI 调用示例与 `scripts/` 路径引用；
+- 保留 YAML frontmatter、核心理念（no-fabrication、澄清顺序、文档类型分类）与 `references/` 原文；
+- 变更日志/主日志写入改用文件写入工具直接操作 `.project/<项目号>/` 下文件。
+
+### project 智能体（2026-07-02 新增）
+
+`project` 是统一智能体架构下的项目文档专用智能体，入口为 `agents/project/AGENTS.md`，与 `map_agent` 平行挂在 `agents` 表 `name='project'` 一行。激活关键词包括「项目文档/项目材料/实施方案/生成大纲/写文档/更新文档/项目查询/交付物/里程碑/评审计划」等。
+
+**核心能力**：
+- 通过 `intent_clarification` 工具按统一澄清协议向用户发起 1-4 个结构化问题，所有需要追问的场景都必须先调用该工具，禁止以纯文本回复。
+- 通过 `load_skill(...)` / `read_skill_file(...)` 加载 project-doc 套件 skill（`project-doc-overview` / `project-doc-hub` / `project-doc-query` / `project-doc-outline` / `project-doc-write` / `project-doc-workflow`）与 `intent-clarification`。
+- 通过 `explore(...)` 读取项目文件夹（`data/project/<project_id>/`）原文件，禁止以脚本/CLI 方式直接读文件。
+- 通过 `manage_project_log` / `append_change_log` 维护项目操作日志与变更记录。
+- 通过 `generate_project_docx` 将生成的 Markdown 正文转 Word（.docx），落盘到 `data/download/{session_id}/<时间戳>.docx`，返回 `download_url`。
+- 严格禁止虚构人名/日期/数字/工具名/角色签字表/文档状态/框架标签，所有数据必须来自项目材料或用户确认。
+
+**8 个内置工具**（`app/shared/tools/skills/project/ProjectTools.py`）：
+
+| 工具 | 类型 | 说明 |
+|---|---|---|
+| `intent_clarification` | builtin | 统一澄清协议；返回 `Command(update={"pending_question": ..., "messages": ...})` |
+| `project_doc_query` | builtin | 项目事实查询（async）；调度 `explore` 检索项目文件夹 |
+| `project_doc_outline` | builtin | 按文档类型生成章节大纲（async）；支持从项目现有 docx 提取格式模板 |
+| `project_doc_write` | builtin | 在已有大纲上填充正文（async） |
+| `project_doc_workflow` | builtin | 端到端工作流编排检查清单（hub → query → outline → write → save） |
+| `manage_project_log` | builtin | 维护 `.project/project_log.md`（append / read） |
+| `append_change_log` | builtin | 追加变更记录到 `.project/变更记录.md` |
+| `generate_project_docx` | builtin | Markdown → docx，落盘到 `data/download/{session_id}/` |
+
+**绑定 7 个 skill**（`agents.skill_bindings` JSONB 字段）：`project-doc-overview` / `project-doc-hub` / `project-doc-query` / `project-doc-outline` / `project-doc-write` / `project-doc-workflow` / `intent-clarification`。
+
+**文件布局**：
+- `agents/project/AGENTS.md` —— 智能体入口与任务规则
+- `app/skills/project-doc-*/SKILL.md` + `references/` —— 7 个 skill 元数据与参考文档（references 原文迁移，未合并到 SKILL.md）
+- `app/shared/tools/skills/project/ProjectTools.py` —— 8 个 `@tool` 工具实现
+- `app/shared/tools/skills/project/__init__.py` —— 工具包导出
+- `app/migrations/seed_project_agent.py` —— 数据库种子脚本（写入 agents / agent_tool_bindings / skills）
+- `app/migrations/seed_project_skills.sql` —— skills 表种子 SQL（被 `init_all_tables.sql` 末尾 `\i` 引用）
+- `scripts/generate_project_skills_seed.py` —— 重新生成 `seed_project_skills.sql` 的工具脚本（解析 SKILL.md frontmatter + 正文，输出幂等 INSERT）
+- `app/tests/shared/tools/skills/project/test_project_tools.py` —— 11 个 P0/P1 单测（覆盖导入/注册、Pydantic 入参校验、文件落盘、docx 落盘）
+
+**DB 种子执行**：
+```powershell
+$env:DATABASE_URL = (Get-Content .env | Select-String "^DATABASE_URL=").Line.Split("=",2)[1]
+python -m app.migrations.seed_project_agent
+```
+幂等：重复执行会 UPDATE 已存在的 agents 记录、刷新 skills 记录、刷新 agent_tool_bindings。
 
 ## AgentConfigService 配置加载服务
 
