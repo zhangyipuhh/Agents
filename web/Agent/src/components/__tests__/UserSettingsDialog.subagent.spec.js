@@ -32,6 +32,12 @@ const userSettingsDialogSource = readFileSync(
   'utf-8'
 )
 
+// 读取 SubAgentDrawer.vue 源码字符串用于 Teleport 场景 CSS 回归断言
+const subAgentDrawerSource = readFileSync(
+  resolve(__dirname, '../SubAgentDrawer.vue'),
+  'utf-8'
+)
+
 /**
  * 构造 mock fetch
  * - /api/users         → 人员列表
@@ -288,6 +294,15 @@ describe('UserSettingsDialog 历史会话弹窗 - 子智能体抽屉事件转发
     // 注意：vue-test-utils 即使组件未声明 emit，wrapper.vm.$emit 仍能记录事件，
     // 所以不能依赖 wrapper.emitted() 的结果；改为断言源码不再包含 emit 冒泡模板。
     expect(userSettingsDialogSource).not.toMatch(/@open-subagent-drawer="emit\('open-subagent-drawer'/)
+
+    // 10) 回归保护：Teleport 到 .history-dialog-main 的抽屉必须使用 align-self:stretch + height:auto，
+    //     否则父容器仅有 max-height 时 height:100% 解析失败，抽屉被内容撑高，消息区无法滚动。
+    const teleportedMatch = subAgentDrawerSource.match(/\.subagent-drawer--teleported\s*\{([\s\S]*?)\}/)
+    expect(teleportedMatch).not.toBeNull()
+    const teleportedBody = teleportedMatch[1]
+    expect(teleportedBody).toMatch(/align-self:\s*stretch/)
+    expect(teleportedBody).toMatch(/height:\s*auto/)
+    expect(teleportedBody).toMatch(/min-height:\s*0/)
 
     wrapper.unmount()
   })

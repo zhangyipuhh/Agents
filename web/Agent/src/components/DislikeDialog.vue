@@ -12,8 +12,8 @@
  *   visible: boolean (v-model:visible)
  *   messageId: string
  *   sessionId: string
- *   messageContent?: string
- *   aiReply?: string
+ *   messageContent?: string - 用户原始问题内容（用于反馈时填充 message_content）
+ *   aiReply?: string - AI 回复内容（用于反馈时填充 ai_reply）
  *   agentName?: string
  *
  * Emits:

@@ -381,7 +381,7 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 | problem_type          | VARCHAR(32)                  | 否   | 仅踩时填写：`factual_error` / `logic_error` / `off_topic` / `other` |
 | problem_description   | TEXT                         | 否   | 踩时用户填写的"问题描述"（多行文本）                            |
 | expected_answer       | TEXT                         | 否   | 踩时用户填写的"期望的样子"                                      |
-| message_content       | TEXT                         | 否   | 消息内容快照，便于回溯                                          |
+| message_content       | TEXT                         | 否   | 用户原始问题内容快照                                           |
 | ai_reply              | TEXT                         | 否   | AI 回复内容快照                                                |
 | agent_name            | VARCHAR(64)                  | 否   | 当前绑定的 Agent 名称                                          |
 | user_agent            | VARCHAR(255)                 | 否   | 浏览器 UA 字符串                                                |
@@ -391,7 +391,7 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 
 **接口**：`POST /api/agent/message-feedback`（`app/routers/agent_router.py`，与 `/api/agent/chat` 同前缀，本接口为该文件本次**唯一**新增的端点）。同一用户同一条消息已有反馈时，后端使用 `INSERT ... ON CONFLICT ... DO UPDATE` 更新为最新反馈，保证赞/踩互斥。401（未登录）/ 400（feedback_type 非法）/ 503（内存模式）/ 201（成功）。
 
-**前端组件**：`web/agent/src/components/DislikeDialog.vue`（踩时弹窗）+ `web/agent/src/utils/api.js::submitMessageFeedback`（工具方法）+ `App.vue::handleLike` / `handleDislike` 改造。
+**前端组件**：`web/Agent/src/components/DislikeDialog.vue`（踩时弹窗）+ `web/Agent/src/utils/api.js::submitMessageFeedback`（工具方法）+ `App.vue::handleLike` / `handleDislike` 改造。
 
 **降级**：内存模式（`AUTH_STORAGE_MODE=memory`）下后端返回 503，前端 catch 后 toast "反馈功能仅在数据库模式下可用"，不阻塞用户继续聊天。
 
@@ -1901,7 +1901,8 @@ SandboxDrawer 时间线包含 `code_generation` 事件（显示 LLM 生成的代
       1. **居中显示**：历史会话详情弹窗使用 `.dialog-overlay--centered`（flex + 居中对齐）+ `.dialog-overlay--centered > .dialog-card`（position:relative + 圆角 + max-height:90vh），宽度 800px；主弹窗（用户设置与管理）仍铺满全屏
       2. **子智能体抽屉就地打开**：历史弹窗内的 `SubAgentCard` 点击后不再冒泡到 `App.vue`，而是在弹窗内就地打开独立的 `<SubAgentDrawer>`（`historySubAgentDrawerVisible` / `historyCurrentSubAgent` 状态控制）
       3. **左右并排布局（2026-07-04）**：header 下方新增 `.history-dialog-main` flex-row 容器，左侧 `.history-dialog-body` 保留会话消息流，右侧通过 Teleport 挂载 `SubAgentDrawer`，两者同时可见；废弃原 `.history-dialog-body--collapsed` 折叠隐藏方案
-      4. 数据契约：后端 `/api/session/admin/{id}/messages` 返回的 `type:"subagent"` 元素含完整 `messages` 数组（`app/shared/utils/memory/checkpoint_history.py:411-423`），`convertSubAgentHistoryToAiSubAgent`（`sseParser.js:743`）直接转成 `SubAgentDrawer` 所需的 props 结构，无需额外接口
+      4. **抽屉消息区滚动（2026-07-04）**：Teleport 到 `.history-dialog-main` 的抽屉使用 `.subagent-drawer--teleported { align-self: stretch; height: auto; min-height: 0; }`，避免弹窗卡片仅有 `max-height` 时 `height:100%` 解析失败导致抽屉被内容撑高、消息区无法滚动
+      5. 数据契约：后端 `/api/session/admin/{id}/messages` 返回的 `type:"subagent"` 元素含完整 `messages` 数组（`app/shared/utils/memory/checkpoint_history.py:411-423`），`convertSubAgentHistoryToAiSubAgent`（`sseParser.js:743`）直接转成 `SubAgentDrawer` 所需的 props 结构，无需额外接口
   - `McpServerManager.vue`：MCP server CRUD + 方法列表 + 启禁用切换（前后端）
   - `AgentManager.vue`：智能体管理 Tab 内容；左侧智能体列表 + 右侧 Tab 结构（「基本信息」Tab + 「配置字段」Tab + 「工具绑定」Tab）；支持完整 CRUD：
     - **新增智能体**：弹窗表单（8 字段）+ 内嵌 config_schema 编辑器；调用 `fetchAgentConfigFieldTemplates` 获取字段模板做下拉选择

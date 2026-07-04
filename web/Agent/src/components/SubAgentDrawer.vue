@@ -558,6 +558,12 @@ function roleLabel(role) {
      当父容器从弹窗内 mount 出抽屉时，抽屉天然作为 flex 子项，
      由父容器 + 父组件的 body--collapsed 修饰类控制整体推挤布局。 */
   flex-shrink: 0;
+  /* 2026-07-04 修复：弹窗内 Teleport 场景下，父 .history-dialog-main 仅有 max-height，
+     若使用 height:100% 解析失败会导致抽屉被内容撑高，消息区无法溢出滚动。
+     改为 align-self: stretch + height:auto，让 flex 容器把抽屉拉伸到 cross-axis 剩余高度。 */
+  align-self: stretch;
+  height: auto;
+  min-height: 0;
 }
 
 /* 左侧拖拽条 */

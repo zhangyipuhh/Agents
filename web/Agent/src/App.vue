@@ -784,6 +784,19 @@ function handleRegenerate(aiMessageId) {
   handleSendMessage(userMsg.content, userMsg.attachments || [])
 }
 
+// 2026-07-04 新增：根据 AI 消息 id 回溯最近一条用户消息内容，用于反馈时填充 message_content
+function findUserContentByAiMessageId(aiMessageId) {
+  const aiIndex = messages.findIndex(m => m.id === aiMessageId)
+  if (aiIndex === -1) return ''
+  for (let i = aiIndex - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.type === 'user') {
+      return typeof m.content === 'string' ? m.content : ''
+    }
+  }
+  return ''
+}
+
 function handleLike(id) {
   const msg = messages.find(m => m.id === id)
   if (!msg) return
@@ -791,7 +804,7 @@ function handleLike(id) {
     session_id: sessionId.value,
     message_id: msg.id,
     feedback_type: 'like',
-    message_content: msg.userContent || msg.content || '',
+    message_content: findUserContentByAiMessageId(msg.id),
     ai_reply: msg.content || '',
     agent_name: agentName.value || ''
   })
@@ -829,7 +842,7 @@ function handleDislike(id) {
     visible: true,
     messageId: msg.id,
     sessionId: sessionId.value,
-    messageContent: msg.userContent || msg.content || '',
+    messageContent: findUserContentByAiMessageId(msg.id),
     aiReply: msg.content || '',
     agentName: agentName.value || ''
   }
