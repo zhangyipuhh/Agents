@@ -252,6 +252,7 @@ async def post_message_feedback(
     2026-07-02 新增接口：
       * 赞（feedback_type='like'）直接入库，不要求任何附加内容
       * 踩（feedback_type='dislike'）携带 problem_type / problem_description / expected_answer
+      * 同一用户对同一条 message_id 已有反馈时，更新为最新反馈，保证 like/dislike 互斥
       * 数据库模式未启用（`AUTH_STORAGE_MODE=memory`）时返回 503
       * 非法 feedback_type 返回 400
 
@@ -287,7 +288,7 @@ async def post_message_feedback(
             detail="反馈功能仅在数据库模式下可用",
         )
 
-    # 4) 写入 message_feedback 表
+    # 4) 写入 message_feedback 表（使用 upsert，保证同一用户同一条消息只有一种反馈）
     user_agent = request.headers.get("user-agent", "")[:255] or None
     try:
         row = await DatabasePool.fetchrow(
@@ -298,6 +299,16 @@ async def post_message_feedback(
                 message_content, ai_reply, agent_name, user_agent
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            ON CONFLICT (user_id, session_id, message_id) DO UPDATE SET
+                feedback_type = EXCLUDED.feedback_type,
+                problem_type = EXCLUDED.problem_type,
+                problem_description = EXCLUDED.problem_description,
+                expected_answer = EXCLUDED.expected_answer,
+                message_content = EXCLUDED.message_content,
+                ai_reply = EXCLUDED.ai_reply,
+                agent_name = EXCLUDED.agent_name,
+                user_agent = EXCLUDED.user_agent,
+                created_at = NOW()
             RETURNING id, created_at
             """,
             user_id,

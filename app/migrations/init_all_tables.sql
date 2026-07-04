@@ -1086,6 +1086,21 @@ CREATE TABLE IF NOT EXISTS message_feedback (
     created_at           TIMESTAMP     NOT NULL DEFAULT NOW(),
     CONSTRAINT message_feedback_type_chk CHECK (feedback_type IN ('like', 'dislike'))
 );
+
+-- 防御性清理：同一用户同一消息的反馈只保留最新一条（id 最大），否则后续唯一索引会失败
+DELETE FROM message_feedback a
+WHERE EXISTS (
+    SELECT 1 FROM message_feedback b
+    WHERE b.user_id = a.user_id
+      AND b.session_id = a.session_id
+      AND b.message_id = a.message_id
+      AND b.id > a.id
+);
+
+-- 唯一约束：同一用户对同一条消息只能有一种反馈，确保赞/踩互斥
+CREATE UNIQUE INDEX IF NOT EXISTS idx_message_feedback_user_session_message
+    ON message_feedback(user_id, session_id, message_id);
+
 CREATE INDEX IF NOT EXISTS idx_message_feedback_user_id     ON message_feedback(user_id);
 CREATE INDEX IF NOT EXISTS idx_message_feedback_session_id  ON message_feedback(session_id);
 CREATE INDEX IF NOT EXISTS idx_message_feedback_type        ON message_feedback(feedback_type);

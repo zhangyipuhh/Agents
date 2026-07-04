@@ -100,6 +100,9 @@ const historyCurrentSubAgent = ref(null)
 // 历史弹窗的 DOM 容器 ref，用于 Teleport 目标
 // 用 ref 形式而非 CSS 选择器，避免 mount 阶段目标节点尚未挂载的问题
 const historyDialogCardRef = ref(null)
+// 2026-07-04 新增：历史弹窗主内容区 ref（header 下方的 flex-row 容器）
+// SubAgentDrawer 通过 Teleport 挂载到该容器内，与会话内容左右并排
+const historyDialogMainRef = ref(null)
 
 /**
  * 2026-07-02 新增：就地打开历史弹窗内的子智能体抽屉。
@@ -1646,48 +1649,53 @@ watch(() => props.visible, (newVal) => {
           </div>
 
           <!--
-            2026-07-02 新增：就地子智能体抽屉（Teleport 到 historyDialogCardRef 容器内）
-            - 行为：与 App.vue 全局 push 抽屉视觉/交互完全一致（拖拽改宽、状态徽章、消息流）
-            - 触发：history-dialog-body 内 MessageBubble → SubAgentCard → open-subagent-drawer → openHistorySubAgentDrawer
-            - 关闭：closeHistorySubAgentDrawer（@close 事件）或 closeHistoryDialog
-            - teleport-to 用 ref 而非 CSS 选择器：避免 mount 阶段目标节点尚未挂载的问题
-            - 弹窗内 push 效果：依赖 .history-dialog-card 的 flex column + .history-dialog-body--collapsed 收缩
+            2026-07-04 改造：历史会话弹窗内容区改为左右并排布局
+            - .history-dialog-main 作为 header 下方的 flex-row 容器
+            - 左侧 .history-dialog-body 保留原会话消息流
+            - 右侧 SubAgentDrawer 通过 Teleport 挂载到 .history-dialog-main 内
+            - 两者同时可见，实现"卡片的详细内容与会话内容在一个页面中"
           -->
-          <SubAgentDrawer
-            :visible="historySubAgentDrawerVisible"
-            :sub-agent="historyCurrentSubAgent"
-            :teleport-to="historyDialogCardRef"
-            @close="closeHistorySubAgentDrawer"
-          />
+          <div ref="historyDialogMainRef" class="history-dialog-main">
+            <!--
+              2026-07-04 调整：Teleport 目标从 historyDialogCardRef 改为 historyDialogMainRef，
+              使抽屉与消息体处于同一 flex-row 容器，实现左右并排。
+            -->
+            <SubAgentDrawer
+              :visible="historySubAgentDrawerVisible"
+              :sub-agent="historyCurrentSubAgent"
+              :teleport-to="historyDialogMainRef"
+              @close="closeHistorySubAgentDrawer"
+            />
 
-          <div
-            class="dialog-body history-dialog-body"
-            :class="{ 'history-dialog-body--collapsed': historySubAgentDrawerVisible }"
-          >
-            <div v-if="historyLoading" class="admin-loading">加载中...</div>
-            <div v-else-if="historyMessages.length === 0" class="admin-empty">暂无历史消息</div>
-            <template v-else>
-              <div
-                v-for="msg in historyMessages"
-                :key="msg.id"
-                class="history-message-item"
-              >
-                <MessageBubble
-                  :type="msg.type"
-                  :content="msg.content"
-                  :attachments="msg.attachments"
-                  :timeline="msg.timeline"
-                  :thinking="msg.thinking"
-                  :tools="msg.tools"
-                  :text="msg.text"
-                  :ended="msg.ended"
-                  :error="msg.error"
-                  :message-id="msg.id"
-                  :sub-agents="msg.subAgents"
-                  @open-subagent-drawer="openHistorySubAgentDrawer"
-                />
-              </div>
-            </template>
+            <div
+              class="dialog-body history-dialog-body"
+              :class="{ 'history-dialog-body--with-drawer': historySubAgentDrawerVisible }"
+            >
+              <div v-if="historyLoading" class="admin-loading">加载中...</div>
+              <div v-else-if="historyMessages.length === 0" class="admin-empty">暂无历史消息</div>
+              <template v-else>
+                <div
+                  v-for="msg in historyMessages"
+                  :key="msg.id"
+                  class="history-message-item"
+                >
+                  <MessageBubble
+                    :type="msg.type"
+                    :content="msg.content"
+                    :attachments="msg.attachments"
+                    :timeline="msg.timeline"
+                    :thinking="msg.thinking"
+                    :tools="msg.tools"
+                    :text="msg.text"
+                    :ended="msg.ended"
+                    :error="msg.error"
+                    :message-id="msg.id"
+                    :sub-agents="msg.subAgents"
+                    @open-subagent-drawer="openHistorySubAgentDrawer"
+                  />
+                </div>
+              </template>
+            </div>
           </div>
         </div>
       </div>
@@ -2457,10 +2465,34 @@ watch(() => props.visible, (newVal) => {
   flex-direction: column;
 }
 
+/*
+  2026-07-04 新增：历史弹窗主内容区。
+  header 下方使用 flex-row，左侧为会话消息流，右侧为子智能体详情抽屉，
+  实现两者在同一弹窗页面中左右并排展示。
+*/
+.history-dialog-main {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+  min-height: 0;
+}
+
 .history-dialog-body {
   flex: 1;
   overflow-y: auto;
   padding: var(--space-base);
+  min-width: 0;
+  transition: flex-basis 0.3s ease;
+}
+
+/*
+  2026-07-04 新增：抽屉打开时给 body 的标记类。
+  当前布局下 body 通过 flex:1 与抽屉共享剩余宽度，无需折叠隐藏，
+  保留此类用于未来可能的样式微调（如右侧内边距、边框等）。
+*/
+.history-dialog-body--with-drawer {
+  /* body 与抽屉并排，无额外收缩逻辑 */
 }
 
 .history-message-item {
@@ -2468,22 +2500,8 @@ watch(() => props.visible, (newVal) => {
 }
 
 /*
-  2026-07-02 新增：历史弹窗内 body 在子智能体抽屉打开时折叠，让 push 抽屉效果在弹窗内成立。
-  工作原理：
-    - .history-dialog-card 是 flex column 容器
-    - 抽屉通过 teleport 挂到 .history-dialog-card 内，作为 flex 子项
-    - 当 historySubAgentDrawerVisible=true，给 body 加上 --collapsed 修饰类
-      → body flex-basis 收缩为 0，max-height: 0
-      → 抽屉 (flex: 0 0 0 → visible 时 flex-basis: var(--drawer-width)) 推挤占满
-    - 视觉上：抽屉从右往左展开，body 区折叠隐藏，与主界面 push 抽屉完全一致
+  2026-07-04 废弃：历史弹窗不再使用 body 折叠方案。
+  原 .history-dialog-body--collapsed 会将 body 完全隐藏，导致会话内容与抽屉无法同时可见。
+  现改为 .history-dialog-body--with-drawer + .history-dialog-main flex-row 布局。
 */
-.history-dialog-body--collapsed {
-  flex: 0 0 0;
-  max-height: 0;
-  padding-top: 0;
-  padding-bottom: 0;
-  opacity: 0;
-  overflow: hidden;
-  transition: max-height 0.3s ease, opacity 0.2s ease;
-}
 </style>

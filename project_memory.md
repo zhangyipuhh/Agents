@@ -369,7 +369,7 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 
 ### message_feedback 表（2026-07-02 新增）
 
-AI 回复的赞/踩反馈入库表。用户对每条 AI 回复可以"赞"或"踩"，踩时可填写问题描述、问题类型、期望的样子，用于运营/算法团队分析质量问题。
+AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保留一种反馈（赞/踩互斥），踩时可填写问题描述、问题类型、期望的样子，用于运营/算法团队分析质量问题。
 
 | 字段                  | 类型                         | 必填 | 说明                                                          |
 | --------------------- | ---------------------------- | ---- | ------------------------------------------------------------- |
@@ -387,9 +387,9 @@ AI 回复的赞/踩反馈入库表。用户对每条 AI 回复可以"赞"或"踩
 | user_agent            | VARCHAR(255)                 | 否   | 浏览器 UA 字符串                                                |
 | created_at            | TIMESTAMP                    | 是   | 入库时间，默认 `NOW()`                                          |
 
-索引：`idx_message_feedback_user_id` / `idx_message_feedback_session_id` / `idx_message_feedback_type` / `idx_message_feedback_created_at`（DSC）
+索引：`idx_message_feedback_user_id` / `idx_message_feedback_session_id` / `idx_message_feedback_type` / `idx_message_feedback_created_at`（DSC） / `idx_message_feedback_user_session_message`（UNIQUE，保证同一用户同一会话同一条消息只有一种反馈）
 
-**接口**：`POST /api/agent/message-feedback`（`app/routers/agent_router.py`，与 `/api/agent/chat` 同前缀，本接口为该文件本次**唯一**新增的端点）。401（未登录）/ 400（feedback_type 非法）/ 503（内存模式）/ 201（成功）。
+**接口**：`POST /api/agent/message-feedback`（`app/routers/agent_router.py`，与 `/api/agent/chat` 同前缀，本接口为该文件本次**唯一**新增的端点）。同一用户同一条消息已有反馈时，后端使用 `INSERT ... ON CONFLICT ... DO UPDATE` 更新为最新反馈，保证赞/踩互斥。401（未登录）/ 400（feedback_type 非法）/ 503（内存模式）/ 201（成功）。
 
 **前端组件**：`web/agent/src/components/DislikeDialog.vue`（踩时弹窗）+ `web/agent/src/utils/api.js::submitMessageFeedback`（工具方法）+ `App.vue::handleLike` / `handleDislike` 改造。
 
@@ -1897,12 +1897,11 @@ SandboxDrawer 时间线包含 `code_generation` 事件（显示 LLM 生成的代
   - `Sidebar.vue`（2026-07-02 调整）：侧边栏「项目」分组默认展开，其下各项目内的会话列表默认折叠，点击项目头部可切换展开/折叠
 - **Admin 管理**：
   - `UserSettingsDialog.vue`：admin 角色可访问的「用户设置与管理」对话框；包含 8 个 Tab —— `profile`（个人设置）/ `user-management`（用户管理）/ `online-monitor`（在线监控）/ `session-query`（会话查询）/ `agent-management`（智能体管理，调用 `AgentManager.vue`）/ `mcp-management`（MCP 管理，调用 `McpServerManager.vue`）/ `tool-management`（工具管理，调用 `ToolManager.vue`）/ `skill-management`（Skill 管理，调用 `SkillManager.vue`）。其中 `session-query` Tab 为两级视图：人员列表 → 点击人员进入该用户的会话列表；会话表格支持复选框批量选择、批量删除、单条导出 Markdown，点击会话标题弹出历史消息对话框，使用 `MessageBubble` 渲染完整消息（含 `ToolCallCard` 工具卡片与 `SubAgentCard` 子智能体卡片）
-    - **2026-07-02 改造**：历史会话详情弹窗居中 + 子智能体抽屉事件冒泡链路打通：
-      1. **主弹窗铺满行为保留**：用户设置与管理（admin 多面板布局）必须铺满全屏提供操作空间；`.dialog-card` 维持原 `position:absolute; inset:0` 不变
-      2. **居中通过修饰类实现**：新增 `.dialog-overlay--centered`（flex + 居中对齐）+ `.dialog-overlay--centered > .dialog-card`（position:relative + 圆角 + max-height:90vh）；**只有历史会话详情弹窗模板叠加 `--centered` 修饰类**（800px 居中卡片），主弹窗不受影响
-      3. `defineEmits` 新增 `'open-subagent-drawer'`；历史会话弹窗内 `<MessageBubble>` 增加 `@open-subagent-drawer="(sa) => emit('open-subagent-drawer', sa)"`
-      4. `Sidebar.vue` 同步新增 `defineEmits` 项 + 模板转发；`App.vue` Sidebar 标签监听 `@open-subagent-drawer="openSubAgentDrawer"`，复用全局 `SubAgentDrawer`
-      5. 数据契约：后端 `/api/session/admin/{id}/messages` 返回的 `type:"subagent"` 元素含完整 `messages` 数组（`app/shared/utils/memory/checkpoint_history.py:411-423`），`convertSubAgentHistoryToAiSubAgent`（`sseParser.js:743`）直接转成 `SubAgentDrawer` 所需的 props 结构，无需额外接口
+    - **历史会话详情弹窗布局**：
+      1. **居中显示**：历史会话详情弹窗使用 `.dialog-overlay--centered`（flex + 居中对齐）+ `.dialog-overlay--centered > .dialog-card`（position:relative + 圆角 + max-height:90vh），宽度 800px；主弹窗（用户设置与管理）仍铺满全屏
+      2. **子智能体抽屉就地打开**：历史弹窗内的 `SubAgentCard` 点击后不再冒泡到 `App.vue`，而是在弹窗内就地打开独立的 `<SubAgentDrawer>`（`historySubAgentDrawerVisible` / `historyCurrentSubAgent` 状态控制）
+      3. **左右并排布局（2026-07-04）**：header 下方新增 `.history-dialog-main` flex-row 容器，左侧 `.history-dialog-body` 保留会话消息流，右侧通过 Teleport 挂载 `SubAgentDrawer`，两者同时可见；废弃原 `.history-dialog-body--collapsed` 折叠隐藏方案
+      4. 数据契约：后端 `/api/session/admin/{id}/messages` 返回的 `type:"subagent"` 元素含完整 `messages` 数组（`app/shared/utils/memory/checkpoint_history.py:411-423`），`convertSubAgentHistoryToAiSubAgent`（`sseParser.js:743`）直接转成 `SubAgentDrawer` 所需的 props 结构，无需额外接口
   - `McpServerManager.vue`：MCP server CRUD + 方法列表 + 启禁用切换（前后端）
   - `AgentManager.vue`：智能体管理 Tab 内容；左侧智能体列表 + 右侧 Tab 结构（「基本信息」Tab + 「配置字段」Tab + 「工具绑定」Tab）；支持完整 CRUD：
     - **新增智能体**：弹窗表单（8 字段）+ 内嵌 config_schema 编辑器；调用 `fetchAgentConfigFieldTemplates` 获取字段模板做下拉选择

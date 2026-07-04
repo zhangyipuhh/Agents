@@ -1010,6 +1010,78 @@ def test_post_message_feedback_memory_mode_returns_503(client, admin_headers, mo
     assert len(insert_calls) == 0, "内存模式下不应触达数据库写入"
 
 
+def test_post_message_feedback_like_then_dislike_upserts_same_row(client, admin_headers, monkeypatch):
+    """测试同一消息先赞后踩会更新为踩，不会同时存在两条记录。
+
+    验证：
+      * 第一次 like 返回 201
+      * 第二次 dislike 返回 201 且 id 与第一次相同（upsert 保留原记录 id）
+      * 捕获的 SQL 包含 ON CONFLICT 子句
+      * 第二次 args 中 feedback_type='dislike' 且 problem_* 字段透传
+    """
+    import asyncio
+    import httpx
+    from datetime import datetime
+
+    async def fake_get_user(username):
+        return {"id": 1, "username": username, "role": "admin", "allowed_agents": []}
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.user_db.UserDB.get_user_by_username", fake_get_user
+    )
+
+    captured_calls = []
+
+    async def fake_fetchrow(query, *args):
+        captured_calls.append({"query": query, "args": args})
+        return {"id": 42, "created_at": datetime(2026, 7, 4, 15, 0, 0)}
+
+    monkeypatch.setattr("app.routers.agent_router.DatabasePool.fetchrow", fake_fetchrow)
+    monkeypatch.setattr("app.routers.agent_router.DatabasePool.is_enabled", lambda: True)
+
+    async def _post(feedback_type, problem_type=None, problem_description=None):
+        transport = httpx.ASGITransport(app=client.app)
+        payload = {
+            "session_id": "mutex-session",
+            "message_id": "msg-mutex-001",
+            "feedback_type": feedback_type,
+            "message_content": "问题",
+            "ai_reply": "回答",
+            "agent_name": "map_agent",
+        }
+        if problem_type:
+            payload["problem_type"] = problem_type
+        if problem_description:
+            payload["problem_description"] = problem_description
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            return await ac.post(
+                "/api/agent/message-feedback",
+                json=payload,
+                headers={**admin_headers, "X-Session-ID": "mutex-session"},
+            )
+
+    async def _run():
+        r1 = await _post("like")
+        r2 = await _post("dislike", problem_type="logic_error", problem_description="逻辑不通")
+        return r1, r2
+
+    r1, r2 = asyncio.run(_run())
+    assert r1.status_code == 201
+    assert r2.status_code == 201
+    assert r1.json()["id"] == r2.json()["id"] == 42
+
+    feedback_calls = [
+        c for c in captured_calls
+        if len(c.get("args", ())) >= 11 and c["args"][2] == "msg-mutex-001"
+    ]
+    assert len(feedback_calls) == 2
+    assert "ON CONFLICT" in feedback_calls[0]["query"].upper()
+    assert feedback_calls[0]["args"][3] == "like"
+    assert feedback_calls[1]["args"][3] == "dislike"
+    assert feedback_calls[1]["args"][4] == "logic_error"
+    assert feedback_calls[1]["args"][5] == "逻辑不通"
+
+
 # =============================================================================
 # 2026-06-29 新增：chat 端点调用 service.build_agent_instance() 验证
 # 验证重构后 chat 端点必然通过 service.build_agent_instance() 构造 Agent，

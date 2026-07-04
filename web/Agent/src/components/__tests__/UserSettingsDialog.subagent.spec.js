@@ -221,8 +221,9 @@ describe('UserSettingsDialog 历史会话弹窗 - 子智能体抽屉事件转发
   it('test_history_dialog_subagent_click_opens_local_drawer 历史会话弹窗内 SubAgentCard 点击 → 就地打开 SubAgentDrawer（不再向外冒泡）', async () => {
     // 2026-07-02 改动：原本"向外 emit open-subagent-drawer"的行为不再存在。
     // 现在 UserSettingsDialog 在历史弹窗内就地打开一个 <SubAgentDrawer> 实例。
+    // 2026-07-04 改造：抽屉与会话内容左右并排，不再折叠隐藏 body。
     // 本测试验证：
-    //   1) 模板中存在 <SubAgentDrawer :teleport-to=".history-dialog-card"> 绑定
+    //   1) 模板中存在 <SubAgentDrawer :teleport-to="historyDialogMainRef"> 绑定
     //   2) 调用 openHistorySubAgentDrawer 后，抽屉 visible=true（通过 .subagent-drawer.visible 类断言）
     //   3) wrapper.emitted('open-subagent-drawer') 为空（不再冒泡）
     const wrapper = mount(UserSettingsDialog, {
@@ -257,21 +258,31 @@ describe('UserSettingsDialog 历史会话弹窗 - 子智能体抽屉事件转发
     const historyDialog = Array.from(document.body.querySelectorAll('.dialog-card.history-dialog-card'))[0]
     expect(historyDialog).toBeDefined()
 
-    // 5) 源码断言：UserSettingsDialog 模板中存在 <SubAgentDrawer :teleport-to="historyDialogCardRef">
-    // 2026-07-02 改动：teleport-to 从 CSS 选择器改为 ref 形式，避免 mount 时目标节点未挂载问题
-    expect(userSettingsDialogSource).toMatch(/<SubAgentDrawer[\s\S]*?:teleport-to="historyDialogCardRef"/)
+    // 5) 源码断言：UserSettingsDialog 模板中存在 <SubAgentDrawer :teleport-to="historyDialogMainRef">
+    // 2026-07-04 改动：teleport-to 从 historyDialogCardRef 改为 historyDialogMainRef，
+    // 使抽屉与消息体处于同一 flex-row 容器，实现左右并排。
+    expect(userSettingsDialogSource).toMatch(/<SubAgentDrawer[\s\S]*?:teleport-to="historyDialogMainRef"/)
     expect(userSettingsDialogSource).toMatch(/historySubAgentDrawerVisible/)
 
-    // 6) 源码断言：body 在抽屉打开时折叠（push 效果依赖 .history-dialog-body--collapsed 修饰类）
-    expect(userSettingsDialogSource).toMatch(/history-dialog-body--collapsed/)
+    // 6) 源码断言：存在 .history-dialog-main flex-row 容器（左右并排布局基础）
+    expect(userSettingsDialogSource).toMatch(/class="history-dialog-main"/)
+    const mainMatch = userSettingsDialogSource.match(/\.history-dialog-main\s*\{([\s\S]*?)\}/)
+    expect(mainMatch).not.toBeNull()
+    expect(mainMatch[1]).toMatch(/display:\s*flex/)
+    expect(mainMatch[1]).toMatch(/flex-direction:\s*row/)
 
-    // 7) 模拟子组件冒泡：调用 openHistorySubAgentDrawer（通过 wrapper.vm 访问）
+    // 7) 源码断言：body 在抽屉打开时使用 .history-dialog-body--with-drawer 标记类，不再折叠隐藏
+    expect(userSettingsDialogSource).toMatch(/history-dialog-body--with-drawer/)
+    // 精确断言模板中不再绑定 history-dialog-body--collapsed 类（注释中可能保留历史说明文字，因此不只匹配类名字符串）
+    expect(userSettingsDialogSource).not.toMatch(/:class=\{[\s\S]*?'history-dialog-body--collapsed'[\s\S]*?\}/)
+
+    // 8) 模拟子组件冒泡：调用 openHistorySubAgentDrawer（通过 wrapper.vm 访问）
     //    注意：组件内部函数不能直接调用，但响应式状态可访问；这里通过修改内部 ref 来模拟就地抽屉打开
     //    子组件 emit 链路：MessageBubble::handleSubAgentClick → emit('open-subagent-drawer', sa) → @open-subagent-drawer="openHistorySubAgentDrawer"
     //    因此验证源码中存在该绑定即可（无需模拟完整链路）：
     expect(userSettingsDialogSource).toMatch(/@open-subagent-drawer="openHistorySubAgentDrawer"/)
 
-    // 8) 断言不再向外 emit 'open-subagent-drawer' 事件
+    // 9) 断言不再向外 emit 'open-subagent-drawer' 事件
     // 2026-07-02 改动后：UserSettingsDialog 不再注册/转发该事件。
     // 通过源码 defineEmits 检查即可（已在 case 1 中验证 emitsList 不含 'open-subagent-drawer'）。
     // 注意：vue-test-utils 即使组件未声明 emit，wrapper.vm.$emit 仍能记录事件，
