@@ -90,6 +90,19 @@ let isCreatingNewSession = false
 // 2026-06-15 新增：持有当前 SSE reader，供 ProfileInputBox 的 stop 事件调用 cancel() 立即中断 LLM
 let currentStreamReader = null
 
+// 2026-07-06 新增：中断待生效锁（与 App.vue::toolStopPending 同语义）
+// 注意：KnowledgeApp 没有独立的 KnowledgeChat 内部 isStopPending，
+// 由 ProfileInputBox 接收 prop 显示 stop-pending 态，KnowledgeApp 维护此锁。
+let toolStopPending = false
+
+/**
+ * 统一清锁入口（2026-07-06 新增）。
+ * @returns {void}
+ */
+function clearToolStopPending() {
+  toolStopPending = false
+}
+
 function toggleSidebar() {
   isSidebarCollapsed.value = !isSidebarCollapsed.value
 }
@@ -207,6 +220,9 @@ async function handleNewChat() {
     return
   }
 
+  // 2026-07-06 新增：入口前置清锁（避免脏状态延续到下一次会话）
+  clearToolStopPending()
+
   isCreatingNewSession = true
   console.log('[handleNewChat] 开始创建新会话')
 
@@ -284,10 +300,12 @@ function extractApprovalData(interruptArray) {
 async function startChatStream(message, uploadedFiles, aiMsg, resumeData = null) {
   let interrupted = false
   currentStreamReader = null
+  // 2026-07-06 新增：入口前置清锁（兜底层；正常路径下 toolStopPending 已是 false）
+  clearToolStopPending()
   try {
     const stream = await chatStream(currentSessionId.value, message, uploadedFiles, resumeData, 'knowledge_ydt')
     currentStreamReader = stream.getReader()
-    // 2026-06-22 修复：拿到 reader 后再置位 isStreaming，避免排队/握手阶段状态长期悬空无法复位
+    // 2026-06-22 修复：拿到 SSE reader 后再置位 isStreaming，避免排队/握手阶段状态长期悬空无法复位
     isStreaming.value = true
     const decoder = new TextDecoder()
     let buffer = ''
@@ -299,6 +317,8 @@ async function startChatStream(message, uploadedFiles, aiMsg, resumeData = null)
           aiMsg.value.ended = true
           aiMsg.value.isThinkingActive = false
         }
+        // 2026-07-06 新增：流自然走完 → 复位 toolStopPending（白名单：done 等价 end）
+        clearToolStopPending()
         break
       }
       buffer += decoder.decode(value, { stream: true })
@@ -308,6 +328,10 @@ async function startChatStream(message, uploadedFiles, aiMsg, resumeData = null)
         if (!event.startsWith('data: ')) continue
         try {
           const data = JSON.parse(event.slice(6))
+          // 2026-07-06 新增：白名单复位 toolStopPending（end/error/interrupt）
+          if (data && (data.type === 'end' || data.type === 'error' || data.type === 'interrupt')) {
+            clearToolStopPending()
+          }
           processSSEEvent(data, aiMsg.value, { onQueueEvent: handleQueueEvent })
 
           if (aiMsg.value.interrupt) {
@@ -334,6 +358,8 @@ async function startChatStream(message, uploadedFiles, aiMsg, resumeData = null)
       nextTick(() => scrollToBottom())
     }
   } catch (err) {
+    // 2026-07-06 新增：异常路径兜底复位（避免锁死）
+    clearToolStopPending()
     if (err && err.status === 429) {
       handleQueueError(err)
       aiMsg.value.ended = true
@@ -348,8 +374,10 @@ async function startChatStream(message, uploadedFiles, aiMsg, resumeData = null)
     aiMsg.value.error = '不好意思，刚刚出了点小故障，可以晚点再问我一遍。'
     aiMsg.value.ended = true
   } finally {
+    // 2026-07-06 新增：finally 兜底复位（兜底层；正常路径已被白名单覆盖）
+    clearToolStopPending()
     if (!interrupted) {
-      isStreaming.value = false
+isStreaming.value = false
     }
     currentStreamReader = null
   }
@@ -386,6 +414,8 @@ async function handleApprovalSubmit({ answers }) {
   if (!aiMsg || aiMsg.type !== 'ai') {
     isStreaming.value = false
     currentStreamReader = null
+    // 2026-07-06 新增：异常路径兜底复位
+    clearToolStopPending()
     return
   }
 
@@ -400,9 +430,11 @@ async function handleApprovalSubmit({ answers }) {
 
 /**
  * 取消问答：退出 approval 模式并重置流状态
+ * 2026-07-06 新增：入口前置清锁 toolStopPending（避免脏状态延续）
  */
 function handleApprovalCancel() {
   approvalMode.value = false
+  clearToolStopPending()
   isStreaming.value = false
   const aiMsg = messages.value[messages.value.length - 1]
   if (aiMsg && aiMsg.type === 'ai') {
@@ -412,37 +444,41 @@ function handleApprovalCancel() {
 }
 
 /**
- * 停止 LLM 生成（2026-06-15 新增）：用户点击停止按钮触发
- * 与 App.vue 的 handleStopMessage 行为一致：
- * 1. 调用 currentStreamReader.cancel() 断开 SSE 连接
- * 2. 标记最后一条 AI 消息 ended = true + 追加"已停止"提示
- * 3. 重置 isStreaming
+ * 停止 LLM 生成（2026-06-15 新增；2026-07-06 改造）：用户点击停止按钮触发
+ * 与 App.vue::handleStopMessage 行为一致：
+ * 1. 加锁 toolStopPending = true（重复点击短路）
+ * 2. 调用 currentStreamReader.cancel() 断开 SSE 连接（后端走精确延迟中断）
+ * 3. 标记最后一条 AI 消息 ended = true + 追加「中断中...」提示
+ * 4. 不重置 isStreaming —— 由 SSE 流自然走完时复位
  */
 async function handleStopMessage() {
   if (!isStreaming.value) return
+  // 2026-07-06 新增：重复点击短路
+  if (toolStopPending) return
 
-  // 1. 取消 SSE reader
+  // 1. 加锁（UI 由 ProfileInputBox 的 isStopPending 接收，立即变灰 + 旋转 badge）
+  toolStopPending = true
+
+  // 2. 取消 SSE reader（不置 null：让 SSE 继续推完当前 tools 节点的 chunk）
   if (currentStreamReader) {
     try {
       await currentStreamReader.cancel()
     } catch (err) {
       console.warn('[KnowledgeApp] stop reader.cancel 异常（可忽略）:', err)
     }
-    currentStreamReader = null
   }
 
-  // 2. 标记 AI 消息已停止
+  // 3. 标记 AI 消息为「中断中」状态
   const aiMsg = messages.value[messages.value.length - 1]
   if (aiMsg && aiMsg.type === 'ai') {
     aiMsg.ended = true
     aiMsg.isThinkingActive = false
-    if (typeof aiMsg.text === 'string' && !aiMsg.text.includes('[生成已被用户中止]')) {
-      aiMsg.text = (aiMsg.text || '') + '\n\n[生成已被用户中止]'
+    if (typeof aiMsg.text === 'string' && !aiMsg.text.includes('[中断中')) {
+      aiMsg.text = (aiMsg.text || '') + '\n\n[中断中，等待工具完成...]'
     }
   }
 
-  // 3. 重置流式状态
-  isStreaming.value = false
+  // 4. 不重置 isStreaming —— 由 SSE 流自然走完时复位
 }
 
 // 2026-06-15 新增：子智能体详情抽屉 open / close（独立 SPA 自持；与 App.vue 同款签名）
@@ -514,6 +550,7 @@ function closeSubAgentDrawer() {
             v-else
             :session-id="currentSessionId"
             :is-streaming="isStreaming"
+            :is-stop-pending="toolStopPending"
             @send="handleProfileSend"
             @tool-action="handleToolAction"
             @new-chat="handleNewChat"
@@ -581,6 +618,7 @@ function closeSubAgentDrawer() {
             v-else
             :session-id="currentSessionId"
             :is-streaming="isStreaming"
+            :is-stop-pending="toolStopPending"
             @send="handleProfileSend"
             @tool-action="handleToolAction"
             @new-chat="handleNewChat"

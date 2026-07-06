@@ -13,6 +13,13 @@ const props = defineProps({
   isStreaming: {
     type: Boolean,
     default: false
+  },
+  // 2026-07-06 新增：停止按钮是否处于「中断待生效」状态。
+  // 父组件 KnowledgeApp.vue 在用户点击停止且后端正在等工具完成时置 true，
+  // 期间按钮显示 stop-pending 样式 + 旋转 badge + disabled 拦截重复点击。
+  isStopPending: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -26,6 +33,9 @@ const selectedFiles = ref([])
 
 const canSend = computed(() => {
   if (props.isStreaming) return false
+  // 2026-07-06 新增：中断待生效期间禁用发送按钮，
+  // 避免用户在等待工具完成时重复点击导致状态混乱。
+  if (props.isStopPending) return false
   if (isRefreshingToken.value) return false
   const hasText = inputValue.value.trim().length > 0
   const hasUploadedFiles = selectedFiles.value.some(f => f.status === 'success')
@@ -84,6 +94,23 @@ const handleSend = async () => {
   nextTick(() => {
     autoResize()
   })
+}
+
+/**
+ * 发送/停止按钮统一点击处理（2026-07-06 新增）。
+ * 与 InputBox.vue::handleSendBtnClick 同款三态分支：
+ *   1. isStopPending=true → 直接 return（防御性，避免键盘 Enter 绕过 disabled）
+ *   2. isStreaming=true    → emit('stop')
+ *   3. 其余情况             → handleSend()
+ * @returns {void}
+ */
+const handleSendBtnClick = () => {
+  if (props.isStopPending) return
+  if (props.isStreaming) {
+    emit('stop')
+    return
+  }
+  handleSend()
 }
 
 const handleFocus = () => {
@@ -385,22 +412,31 @@ const emit = defineEmits(['send', 'tool-action', 'new-chat', 'stop'])
           <button
             class="send-btn"
             :class="{
-              'send-mode': !isStreaming,
-              'stop-mode': isStreaming,
-              'disabled': !canSend && !isStreaming
+              'send-mode': !isStreaming && !isStopPending,
+              'stop-mode': isStreaming && !isStopPending,
+              'stop-pending-mode': isStopPending,
+              'disabled': !canSend && !isStreaming && !isStopPending
             }"
-            :disabled="!canSend && !isStreaming"
-            :title="isStreaming ? '停止生成' : '发送消息'"
-            @click="isStreaming ? emit('stop') : handleSend()"
+            :disabled="!canSend && !isStreaming && !isStopPending"
+            :title="isStopPending
+              ? '中断中，等待工具完成...'
+              : (isStreaming ? '停止生成' : '发送消息')"
+            @click="handleSendBtnClick"
           >
             <!-- 发送模式：纸飞机图标 -->
-            <svg v-if="!isStreaming" viewBox="0 0 20 20" fill="currentColor" class="send-icon">
+            <svg v-if="!isStreaming && !isStopPending" viewBox="0 0 20 20" fill="currentColor" class="send-icon">
               <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z"/>
+            </svg>
+            <!-- 2026-07-06 新增：中断待生效模式：旋转圆环图标 -->
+            <svg v-else-if="isStopPending" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="stop-pending-inner-icon">
+              <circle cx="10" cy="10" r="6" stroke-dasharray="20 8" />
             </svg>
             <!-- 停止模式：实心方块图标 -->
             <svg v-else viewBox="0 0 20 20" fill="currentColor" class="stop-icon">
               <rect x="5" y="5" width="10" height="10" rx="1.5" />
             </svg>
+            <!-- 2026-07-06 新增：中断待生效右上角旋转 badge -->
+            <span v-if="isStopPending" class="stop-pending-badge" aria-label="中断中"></span>
           </button>
         </div>
       </div>
@@ -796,6 +832,51 @@ const emit = defineEmits(['send', 'tool-action', 'new-chat', 'stop'])
   width: 14px;
   height: 14px;
   color: white;
+}
+
+/* 2026-07-06 新增：中断待生效模式（isStopPending=true 时）
+   与 InputBox.vue 同款：背景灰、cursor not-allowed、内嵌旋转圆环 + 右上角橙色 badge。 */
+.send-btn.stop-pending-mode {
+  background-color: var(--color-text-muted);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.send-btn.stop-pending-mode:hover {
+  background-color: var(--color-text-muted);
+  transform: none;
+  box-shadow: none;
+}
+
+.send-btn.stop-pending-mode::before {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.05) 0%, transparent 100%);
+}
+
+.stop-pending-inner-icon {
+  width: 16px;
+  height: 16px;
+  color: white;
+  animation: stopPendingSpin 0.9s linear infinite;
+}
+
+.stop-pending-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #f59e0b;
+  border: 2px solid var(--color-bg-secondary);
+  box-sizing: content-box;
+  animation: stopPendingSpin 0.9s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes stopPendingSpin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* 缩放+阴影脉冲动画：背景色不变，仅缩放与阴影扩散传达「生成中」语义 */

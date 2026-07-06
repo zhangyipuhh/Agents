@@ -38,6 +38,14 @@ const props = defineProps({
   allowedAgents: {
     type: Array,
     default: () => []
+  },
+  // 2026-07-06 新增：停止按钮是否处于「中断待生效」状态。
+  // 当用户在工具/子智能体执行期间点击停止按钮后置 true，
+  // 期间按钮保持 stop-mode 样式 + 右上角旋转 badge + disabled 拦截重复点击，
+  // 直到后端完成 tools 节点（toolStopPending 由父组件 App.vue/KnowledgeApp.vue 维护）。
+  isStopPending: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -61,6 +69,9 @@ const agentDropdownRef = ref(null)
 
 const canSend = computed(() => {
   if (props.isStreaming) return false
+  // 2026-07-06 新增：中断待生效期间禁用发送按钮，避免用户在等待工具完成时
+  // 重复点击导致状态混乱或产生孤儿 tool_calls（2013 错误根因）。
+  if (props.isStopPending) return false
   if (isRefreshingToken.value) return false
   if (isExecutingCommand.value) return false
   const hasText = inputValue.value.trim().length > 0
@@ -322,6 +333,30 @@ const handleSend = async () => {
   nextTick(() => {
     autoResize()
   })
+}
+
+/**
+ * 发送/停止按钮统一点击处理（2026-07-06 新增）。
+ *
+ * 三态分支：
+ *   1. isStopPending=true → 直接返回（按钮 disabled + 灰态 + 旋转 badge，
+ *      但保留 click 拦截作为防御性，避免键盘 Enter 等绕过 disabled 的场景）
+ *   2. isStreaming=true    → emit('stop')，由父组件 App.vue::handleStopMessage 加锁
+ *   3. 其余情况             → handleSend() 走原有发送逻辑
+ *
+ * 替代原先模板里的内联三元表达式：原表达式在 isStreaming 与 isStopPending 同时
+ * 为 true 时会出现「按钮看起来是 stop-mode 但点击会被外层 disabled 拦截」的歧义，
+ * 统一收敛到函数里更清晰，也方便测试断言。
+ *
+ * @returns {void}
+ */
+const handleSendBtnClick = () => {
+  if (props.isStopPending) return
+  if (props.isStreaming) {
+    emit('stop')
+    return
+  }
+  handleSend()
 }
 
 const handleFocus = () => {
@@ -670,22 +705,31 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched', 'proj
           <button
             class="send-btn"
             :class="{
-              'send-mode': !isStreaming,
-              'stop-mode': isStreaming,
-              'disabled': !canSend && !isStreaming
+              'send-mode': !isStreaming && !isStopPending,
+              'stop-mode': isStreaming && !isStopPending,
+              'stop-pending-mode': isStopPending,
+              'disabled': !canSend && !isStreaming && !isStopPending
             }"
-            :disabled="!canSend && !isStreaming"
-            :title="isStreaming ? '停止生成' : '发送消息'"
-            @click="isStreaming ? emit('stop') : handleSend()"
+            :disabled="!canSend && !isStreaming && !isStopPending"
+            :title="isStopPending
+              ? '中断中，等待工具完成...'
+              : (isStreaming ? '停止生成' : '发送消息')"
+            @click="handleSendBtnClick"
           >
             <!-- 发送模式：纸飞机图标 -->
-            <svg v-if="!isStreaming" viewBox="0 0 20 20" fill="currentColor" class="send-icon">
+            <svg v-if="!isStreaming && !isStopPending" viewBox="0 0 20 20" fill="currentColor" class="send-icon">
               <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z"/>
+            </svg>
+            <!-- 2026-07-06 新增：中断待生效模式：旋转圆环图标 -->
+            <svg v-else-if="isStopPending" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="stop-pending-inner-icon">
+              <circle cx="10" cy="10" r="6" stroke-dasharray="20 8" />
             </svg>
             <!-- 停止模式：实心方块图标 -->
             <svg v-else viewBox="0 0 20 20" fill="currentColor" class="stop-icon">
               <rect x="5" y="5" width="10" height="10" rx="1.5" />
             </svg>
+            <!-- 2026-07-06 新增：中断待生效右上角旋转 badge，传达"等待工具完成"语义 -->
+            <span v-if="isStopPending" class="stop-pending-badge" aria-label="中断中"></span>
           </button>
         </div>
       </div>
@@ -1124,6 +1168,55 @@ const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched', 'proj
     box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3),
                 0 2px 4px rgba(99, 102, 241, 0.2),
                 0 0 0 8px rgba(99, 102, 241, 0);
+  }
+}
+
+/* 2026-07-06 新增：中断待生效模式（isStopPending=true 时）
+   用户已点击停止按钮，正在等待后端 tools 节点完成 ToolMessage 后真正断开。
+   设计要点：
+   - 背景色变灰（禁用感），但保留 stop-mode 同色 accent 作为底色，避免与 disabled 完全一致
+   - hover 不变（cursor: not-allowed 传达不可交互）
+   - 内嵌旋转圆环图标 + 右上角橙色旋转 badge，双重视觉反馈 */
+.send-btn.stop-pending-mode {
+  background-color: var(--color-text-muted);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.send-btn.stop-pending-mode:hover {
+  background-color: var(--color-text-muted);
+  transform: none;
+  box-shadow: none;
+}
+
+.send-btn.stop-pending-mode::before {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.05) 0%, transparent 100%);
+}
+
+.stop-pending-inner-icon {
+  width: 16px;
+  height: 16px;
+  color: white;
+  animation: stopPendingSpin 0.9s linear infinite;
+}
+
+.stop-pending-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #f59e0b;          /* 橙色：与 .stopped_by_user 徽章同色，传达"中断等待中" */
+  border: 2px solid var(--color-bg-secondary);
+  box-sizing: content-box;
+  animation: stopPendingSpin 0.9s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes stopPendingSpin {
+  to {
+    transform: rotate(360deg);
   }
 }
 
