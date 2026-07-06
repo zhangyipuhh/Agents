@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import UserSettingsDialog from './UserSettingsDialog.vue'
-import { fetchSessionList, deleteSession, fetchProjectList, updateSessionTitle, exportSessionMarkdown } from '../utils/api.js'
+import { fetchSessionList, deleteSession, fetchProjectList, updateSessionTitle, exportSessionMarkdown, deleteProject, renameProject } from '../utils/api.js'
 
 const props = defineProps({
   currentPage: {
@@ -49,11 +49,21 @@ const projectCollapsedMap = ref({})
 const contextMenuVisible = ref(false)
 const contextMenuPosition = ref({ x: 0, y: 0 })
 const contextMenuSession = ref(null)
+const contextMenuProject = ref(null)
 
 /* ---- 行内重命名状态 ---- */
 const editingSessionId = ref(null)
 const editingTitle = ref('')
 const editingInputRef = ref(null)
+
+/* ---- 项目行内重命名状态 ---- */
+const editingProjectId = ref(null)
+const editingProjectName = ref('')
+const editingProjectInputRef = ref(null)
+
+/* ---- 删除项目确认弹窗状态 ---- */
+const pendingDeleteProjectId = ref(null)
+const pendingDeleteProjectName = ref('')
 
 /**
  * 从后端加载会话列表
@@ -357,6 +367,7 @@ const handleClickOutside = (event) => {
 const handleSessionContextMenu = (session, event) => {
   event.preventDefault()
   contextMenuSession.value = session
+  contextMenuProject.value = null
   contextMenuPosition.value = { x: event.clientX, y: event.clientY }
   contextMenuVisible.value = true
 }
@@ -367,6 +378,7 @@ const handleSessionContextMenu = (session, event) => {
 const closeContextMenu = () => {
   contextMenuVisible.value = false
   contextMenuSession.value = null
+  contextMenuProject.value = null
 }
 
 /**
@@ -438,6 +450,106 @@ const exportSession = async (session) => {
     console.error('导出失败:', err)
     alert('导出失败，请重试')
   }
+}
+
+/* ---- 项目右键菜单与行内重命名 ---- */
+
+/**
+ * 打开项目右键菜单
+ * @param {Object} project - 项目对象
+ * @param {MouseEvent} event - 鼠标事件对象
+ */
+const handleProjectContextMenu = (project, event) => {
+  event.preventDefault()
+  contextMenuProject.value = project
+  contextMenuSession.value = null
+  contextMenuPosition.value = { x: event.clientX, y: event.clientY }
+  contextMenuVisible.value = true
+}
+
+/**
+ * 开始行内重命名项目
+ * @param {Object} project - 项目对象
+ */
+const startRenameProject = (project) => {
+  closeContextMenu()
+  editingProjectId.value = project.id
+  editingProjectName.value = project.name
+  nextTick(() => {
+    editingProjectInputRef.value?.focus?.()
+  })
+}
+
+/**
+ * 确认保存重命名后的项目名称
+ * @returns {Promise<void>}
+ */
+const confirmRenameProject = async () => {
+  const id = editingProjectId.value
+  const newName = editingProjectName.value.trim()
+  editingProjectId.value = null
+
+  if (!id || !newName) return
+
+  // 乐观更新本地名称
+  const project = projects.value.find(p => p.id === id)
+  const oldName = project ? project.name : ''
+  if (project) project.name = newName
+
+  try {
+    await renameProject(id, newName)
+  } catch (err) {
+    console.error('重命名项目失败:', err)
+    // 失败时回滚
+    if (project) project.name = oldName
+    await loadProjectList()
+  }
+}
+
+/**
+ * 取消项目行内重命名
+ */
+const cancelRenameProject = () => {
+  editingProjectId.value = null
+  editingProjectName.value = ''
+}
+
+/**
+ * 删除项目（点击垃圾桶按钮触发，仅打开确认弹窗）
+ * @param {number} projectId - 项目 ID
+ * @param {string} projectName - 项目名称
+ * @param {MouseEvent} event - 鼠标事件
+ */
+const handleDeleteProject = (projectId, projectName, event) => {
+  event.stopPropagation()
+  pendingDeleteProjectName.value = projectName || ''
+  pendingDeleteProjectId.value = projectId
+}
+
+/**
+ * 确认删除项目
+ * @returns {Promise<void>}
+ */
+const confirmDeleteProject = async () => {
+  const id = pendingDeleteProjectId.value
+  if (!id) return
+  pendingDeleteProjectId.value = null
+  pendingDeleteProjectName.value = ''
+  try {
+    await deleteProject(id)
+    await loadProjectList()
+    await loadSessionList()
+  } catch (err) {
+    console.error('删除项目失败:', err)
+  }
+}
+
+/**
+ * 取消删除项目
+ */
+const cancelDeleteProject = () => {
+  pendingDeleteProjectId.value = null
+  pendingDeleteProjectName.value = ''
 }
 
 // 监听菜单显示状态变化，更新位置
@@ -552,6 +664,7 @@ onUnmounted(() => {
             <button
               class="project-header"
               @click.stop="toggleProjectCollapsed(project.id)"
+              @contextmenu.prevent="handleProjectContextMenu(project, $event)"
             >
               <svg
                 class="project-collapse-icon"
@@ -564,7 +677,30 @@ onUnmounted(() => {
               <svg class="project-folder-icon" viewBox="0 0 20 20" fill="currentColor">
                 <path fill-rule="evenodd" d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clip-rule="evenodd"/>
               </svg>
-              <span class="project-name">{{ project.name }}</span>
+              <input
+                v-if="editingProjectId === project.id"
+                ref="editingProjectInputRef"
+                v-model="editingProjectName"
+                class="project-name-input"
+                type="text"
+                @click.stop
+                @blur="confirmRenameProject"
+                @keydown.enter="confirmRenameProject"
+                @keydown.esc="cancelRenameProject"
+              />
+              <span v-else class="project-name">{{ project.name }}</span>
+              <span
+                class="project-delete-btn"
+                role="button"
+                tabindex="0"
+                title="删除项目"
+                @click.stop="handleDeleteProject(project.id, project.name, $event)"
+                @keydown.enter.stop="handleDeleteProject(project.id, project.name, $event)"
+              >
+                <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
+                  <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"/>
+                </svg>
+              </span>
             </button>
             <transition name="slide">
               <div
@@ -763,7 +899,36 @@ onUnmounted(() => {
     </Teleport>
 
     <!--
-      会话右键菜单 - 使用 Teleport 挂载到 body 层级
+      删除项目确认弹窗 - 使用 Teleport 挂载到 body 层级
+    -->
+    <Teleport to="body">
+      <Transition name="delete-confirm">
+        <div
+          v-if="pendingDeleteProjectId"
+          class="delete-confirm-overlay"
+          @click.self="cancelDeleteProject"
+        >
+          <div class="delete-confirm-container" role="alertdialog" aria-modal="true">
+            <div class="delete-confirm-header">
+              <svg class="delete-confirm-icon" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"/>
+              </svg>
+              <h3 class="delete-confirm-title">确认删除项目</h3>
+            </div>
+            <div class="delete-confirm-body">
+              即将移除项目「<strong>{{ pendingDeleteProjectName || '该项目' }}</strong>」，项目下的会话将变为未分组状态，此操作无法撤销。
+            </div>
+            <div class="delete-confirm-footer">
+              <button class="btn-cancel" @click="cancelDeleteProject">取消</button>
+              <button class="btn-confirm" @click="confirmDeleteProject">确认删除</button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!--
+      会话/项目右键菜单 - 使用 Teleport 挂载到 body 层级
       原因：sidebar 容器设置 overflow: hidden，若不 Teleport 菜单会被裁剪
     -->
     <Teleport to="body">
@@ -773,18 +938,28 @@ onUnmounted(() => {
         :style="{ top: `${contextMenuPosition.y}px`, left: `${contextMenuPosition.x}px` }"
         @click.stop
       >
-        <div class="session-context-menu-item" @click="startRenameSession(contextMenuSession)">
-          <svg class="menu-item-icon" viewBox="0 0 20 20" fill="currentColor">
-            <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"/>
-          </svg>
-          <span>重命名</span>
-        </div>
-        <div class="session-context-menu-item" @click="exportSession(contextMenuSession)">
-          <svg class="menu-item-icon" viewBox="0 0 20 20" fill="currentColor">
-            <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd"/>
-          </svg>
-          <span>导出为 Markdown</span>
-        </div>
+        <template v-if="contextMenuProject">
+          <div class="session-context-menu-item" @click="startRenameProject(contextMenuProject)">
+            <svg class="menu-item-icon" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"/>
+            </svg>
+            <span>重命名</span>
+          </div>
+        </template>
+        <template v-else>
+          <div class="session-context-menu-item" @click="startRenameSession(contextMenuSession)">
+            <svg class="menu-item-icon" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"/>
+            </svg>
+            <span>重命名</span>
+          </div>
+          <div class="session-context-menu-item" @click="exportSession(contextMenuSession)">
+            <svg class="menu-item-icon" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd"/>
+            </svg>
+            <span>导出为 Markdown</span>
+          </div>
+        </template>
       </div>
     </Teleport>
   </aside>
@@ -1809,8 +1984,46 @@ onUnmounted(() => {
   padding: 8px 10px;
 }
 
+.project-delete-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease, background-color 0.15s ease;
+  flex-shrink: 0;
+
+  &:hover {
+    color: var(--color-accent);
+    background-color: var(--color-bg-hover);
+  }
+}
+
+.project-header:hover .project-delete-btn {
+  opacity: 1;
+}
+
+.project-name-input {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-primary);
+  background: transparent;
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  outline: none;
+
+  &:focus {
+    background-color: var(--color-bg-secondary);
+  }
+}
+
 /* =============================================
-   会话右键菜单
+   会话/项目右键菜单
    - 通过 Teleport 挂载到 body，避免 sidebar overflow:hidden 裁剪
    ============================================= */
 .session-context-menu {

@@ -12,6 +12,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import Sidebar from '../Sidebar.vue'
+import { fetchProjectList, renameProject, deleteProject } from '../../utils/api.js'
 
 const mockProjects = [
   { id: 1, name: '我的文件夹' },
@@ -33,18 +34,29 @@ const mockSessions = [
   }
 ]
 
-vi.mock('../../utils/api.js', () => ({
-  fetchSessionList: vi.fn(async () => ({ sessions: mockSessions })),
-  deleteSession: vi.fn(async () => ({})),
-  fetchProjectList: vi.fn(async () => ({ projects: mockProjects })),
-  updateSessionTitle: vi.fn(async () => ({})),
-  exportSessionMarkdown: vi.fn(async () => ({ text: '# 测试', filename: 'test.md' }))
-}))
+vi.mock('../../utils/api.js', () => {
+  const mockRenameProject = vi.fn(async () => ({ success: true, project: { id: 1, name: '重命名后' } }))
+  const mockDeleteProject = vi.fn(async () => ({ success: true }))
+  return {
+    fetchSessionList: vi.fn(async () => ({ sessions: mockSessions })),
+    deleteSession: vi.fn(async () => ({})),
+    fetchProjectList: vi.fn(async () => ({ projects: mockProjects })),
+    updateSessionTitle: vi.fn(async () => ({})),
+    exportSessionMarkdown: vi.fn(async () => ({ text: '# 测试', filename: 'test.md' })),
+    renameProject: mockRenameProject,
+    deleteProject: mockDeleteProject
+  }
+})
 
 describe('Sidebar 项目分组默认展开（2026-07-02 新增）', () => {
   let wrapper
+  let freshProjects
 
   beforeEach(() => {
+    // 深拷贝，避免测试间修改 project.name 互相污染
+    freshProjects = JSON.parse(JSON.stringify(mockProjects))
+    fetchProjectList.mockResolvedValue({ projects: freshProjects })
+
     wrapper = mount(Sidebar, {
       props: {
         currentPage: 'agent',
@@ -100,5 +112,72 @@ describe('Sidebar 项目分组默认展开（2026-07-02 新增）', () => {
     await header.trigger('click')
     await flushPromises()
     expect(wrapper.find('.group-items').element.style.display).not.toBe('none')
+  })
+
+  it('test_project_delete_button_exists 项目行存在删除按钮', async () => {
+    await flushPromises()
+    const projectHeader = wrapper.find('.project-header')
+    expect(projectHeader.exists()).toBe(true)
+
+    const deleteBtn = projectHeader.find('.project-delete-btn')
+    expect(deleteBtn.exists()).toBe(true)
+  })
+
+  it('test_project_context_menu_opens_on_right_click 右键项目行弹出重命名菜单', async () => {
+    await flushPromises()
+    const projectHeader = wrapper.find('.project-header')
+    expect(projectHeader.exists()).toBe(true)
+
+    await projectHeader.trigger('contextmenu')
+    await flushPromises()
+
+    const menu = document.querySelector('.session-context-menu')
+    expect(menu).not.toBeNull()
+    expect(menu.textContent).toContain('重命名')
+    expect(menu.textContent).not.toContain('导出为 Markdown')
+  })
+
+  it('test_project_rename_inline_enter_calls_api 项目行内重命名回车时调用 renameProject', async () => {
+    await flushPromises()
+    const projectHeader = wrapper.find('.project-header')
+
+    // 打开右键菜单并点击重命名
+    await projectHeader.trigger('contextmenu')
+    await flushPromises()
+    const menuItem = document.querySelector('.session-context-menu-item')
+    await menuItem.click()
+    await flushPromises()
+
+    // 应出现输入框
+    const input = projectHeader.find('.project-name-input')
+    expect(input.exists()).toBe(true)
+
+    // 修改值并回车
+    await input.setValue('新的项目名')
+    await input.trigger('keydown.enter')
+    await flushPromises()
+
+    expect(renameProject).toHaveBeenCalledWith(1, '新的项目名')
+  })
+
+  it('test_project_delete_button_opens_confirm_dialog 项目删除按钮打开确认弹窗', async () => {
+    await flushPromises()
+    const deleteBtn = wrapper.find('.project-delete-btn')
+    expect(deleteBtn.exists()).toBe(true)
+
+    await deleteBtn.trigger('click')
+    await flushPromises()
+
+    const dialog = document.querySelector('.delete-confirm-container')
+    expect(dialog).not.toBeNull()
+    expect(dialog.textContent).toContain('确认删除项目')
+    expect(dialog.textContent).toContain('我的文件夹')
+
+    // 点击确认删除
+    const confirmBtn = dialog.querySelector('.btn-confirm')
+    await confirmBtn.click()
+    await flushPromises()
+
+    expect(deleteProject).toHaveBeenCalledWith(1)
   })
 })

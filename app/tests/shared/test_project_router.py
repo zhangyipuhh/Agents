@@ -142,3 +142,70 @@ def test_unbind_session_from_project(client, admin_headers):
     # 验证 session.project_id 已置 None
     session = asyncio.run(SessionDB.get_session("sess-001"))
     assert session["project_id"] is None
+
+
+def test_delete_project_success(client, admin_headers):
+    """测试删除项目成功，关联会话解除绑定。"""
+    p = asyncio.run(ProjectDB.create_project(user_id=1, name="ToDelete", uuid="uuid-del"))
+    asyncio.run(SessionDB.update_session_project("sess-001", p["id"]))
+
+    response = client.delete(
+        f"/api/project/{p['id']}/delete",
+        headers=admin_headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+
+    # 验证项目已删除
+    assert asyncio.run(ProjectDB.get_project_by_id(p["id"], user_id=1)) is None
+    # 验证关联会话已解绑
+    session = asyncio.run(SessionDB.get_session("sess-001"))
+    assert session["project_id"] is None
+
+
+def test_delete_project_not_found(client, admin_headers):
+    """删除不存在的项目返回 404。"""
+    response = client.delete("/api/project/9999/delete", headers=admin_headers)
+    assert response.status_code == 404
+
+
+def test_rename_project_success(client, admin_headers):
+    """测试重命名项目成功。"""
+    p = asyncio.run(ProjectDB.create_project(user_id=1, name="Old", uuid="uuid-rename"))
+
+    response = client.put(
+        f"/api/project/{p['id']}/rename",
+        json={"name": "New"},
+        headers=admin_headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert data["project"]["name"] == "New"
+
+    # 验证数据库/缓存已更新
+    updated = asyncio.run(ProjectDB.get_project_by_id(p["id"], user_id=1))
+    assert updated["name"] == "New"
+
+
+def test_rename_project_empty_name(client, admin_headers):
+    """空项目名称返回 400。"""
+    p = asyncio.run(ProjectDB.create_project(user_id=1, name="Old", uuid="uuid-empty"))
+
+    response = client.put(
+        f"/api/project/{p['id']}/rename",
+        json={"name": "  "},
+        headers=admin_headers,
+    )
+    assert response.status_code == 400
+
+
+def test_rename_project_not_found(client, admin_headers):
+    """重命名不存在的项目返回 404。"""
+    response = client.put(
+        "/api/project/9999/rename",
+        json={"name": "New"},
+        headers=admin_headers,
+    )
+    assert response.status_code == 404

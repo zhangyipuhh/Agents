@@ -266,6 +266,107 @@ class TestProjectDBGetByUuid:
         assert result is None
 
 
+class TestProjectDBDelete:
+    """delete_project 测试。"""
+
+    def test_delete_existing_project(self, fresh_project_db, monkeypatch):
+        """删除存在的项目，内存缓存同步移除。"""
+        monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
+
+        async def _run():
+            p = await ProjectDB.create_project(user_id=1, name="ToDelete", uuid="uuid-del")
+            deleted = await ProjectDB.delete_project(p["id"], user_id=1)
+            return deleted, p["id"]
+
+        deleted, project_id = asyncio.run(_run())
+        assert deleted is True
+        assert project_id not in ProjectDB._memory_cache
+
+    def test_delete_nonexistent_project(self, fresh_project_db, monkeypatch):
+        """删除不存在的项目返回 False。"""
+        monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
+
+        async def _run():
+            return await ProjectDB.delete_project(9999, user_id=1)
+
+        result = asyncio.run(_run())
+        assert result is False
+
+    def test_delete_project_user_mismatch(self, fresh_project_db, monkeypatch):
+        """user_id 不匹配时不删除。"""
+        monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
+
+        async def _run():
+            p = await ProjectDB.create_project(user_id=1, name="U1", uuid="uuid-u1")
+            deleted = await ProjectDB.delete_project(p["id"], user_id=2)
+            return deleted, p["id"]
+
+        deleted, project_id = asyncio.run(_run())
+        assert deleted is False
+        assert project_id in ProjectDB._memory_cache
+
+
+class TestProjectDBRename:
+    """rename_project 测试。"""
+
+    def test_rename_existing_project(self, fresh_project_db, monkeypatch):
+        """重命名存在的项目，内存缓存同步更新。"""
+        monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
+
+        async def _run():
+            p = await ProjectDB.create_project(user_id=1, name="Old", uuid="uuid-rename")
+            updated = await ProjectDB.rename_project(p["id"], new_name="New", user_id=1)
+            return updated, p["id"]
+
+        updated, project_id = asyncio.run(_run())
+        assert updated is not None
+        assert updated["name"] == "New"
+        assert ProjectDB._memory_cache[project_id]["name"] == "New"
+
+    def test_rename_project_empty_name(self, fresh_project_db, monkeypatch):
+        """空名称应返回 None。"""
+        monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
+
+        async def _run():
+            p = await ProjectDB.create_project(user_id=1, name="Old", uuid="uuid-empty")
+            return await ProjectDB.rename_project(p["id"], new_name="  ", user_id=1)
+
+        result = asyncio.run(_run())
+        assert result is None
+
+    def test_rename_project_too_long(self, fresh_project_db, monkeypatch):
+        """超过 50 字符应返回 None。"""
+        monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
+
+        async def _run():
+            p = await ProjectDB.create_project(user_id=1, name="Old", uuid="uuid-long")
+            return await ProjectDB.rename_project(p["id"], new_name="a" * 51, user_id=1)
+
+        result = asyncio.run(_run())
+        assert result is None
+
+    def test_rename_project_not_found(self, fresh_project_db, monkeypatch):
+        """重命名不存在的项目返回 None。"""
+        monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
+
+        async def _run():
+            return await ProjectDB.rename_project(9999, new_name="New", user_id=1)
+
+        result = asyncio.run(_run())
+        assert result is None
+
+    def test_rename_project_user_mismatch(self, fresh_project_db, monkeypatch):
+        """user_id 不匹配时返回 None。"""
+        monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
+
+        async def _run():
+            p = await ProjectDB.create_project(user_id=1, name="U1", uuid="uuid-u1-rename")
+            return await ProjectDB.rename_project(p["id"], new_name="New", user_id=2)
+
+        result = asyncio.run(_run())
+        assert result is None
+
+
 class TestProjectDBModule:
     """模块级兼容测试。"""
 

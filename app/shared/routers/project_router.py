@@ -72,6 +72,15 @@ class BindSessionRequest(BaseModel):
     project_id: Optional[int] = None
 
 
+class RenameProjectRequest(BaseModel):
+    """项目重命名请求体
+
+    Attributes:
+        name: 新的项目名称（1-50 字符）。
+    """
+    name: str
+
+
 def _project_to_dict(p: dict) -> dict:
     """将 ProjectDB 返回的 dict 序列化为响应 dict
 
@@ -273,3 +282,87 @@ async def unbind_session_from_project(request: Request, body: BindSessionRequest
     except Exception as e:
         logger.exception("解除会话项目关联失败: %s", e)
         raise HTTPException(status_code=500, detail=f"解除失败: {str(e)}")
+
+
+@router.delete('/{project_id}/delete')
+async def delete_project(project_id: int, request: Request):
+    """删除项目
+
+    删除项目元数据，并将当前用户下所有绑定到该项目的会话解除关联。
+
+    Args:
+        project_id: 项目主键 ID。
+
+    Returns:
+        dict: success / message
+    """
+    try:
+        username = request.state.username
+        if not username:
+            raise HTTPException(status_code=401, detail="未认证")
+        user = await UserDB.get_user_by_username(username)
+        if not user:
+            raise HTTPException(status_code=401, detail="用户不存在")
+
+        # 先解绑当前用户下关联到该项目的会话
+        sessions = await SessionDB.get_user_sessions(user['id'])
+        for session in sessions:
+            if session.get('project_id') == project_id:
+                await SessionDB.update_session_project(session['session_id'], None)
+
+        # 删除项目元数据
+        deleted = await ProjectDB.delete_project(project_id, user_id=user['id'])
+        if not deleted:
+            raise HTTPException(status_code=404, detail="项目不存在或无权访问")
+
+        return {"success": True, "message": "项目已删除"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("删除项目失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"删除项目失败: {str(e)}")
+
+
+@router.put('/{project_id}/rename')
+async def rename_project(project_id: int, request: Request, body: RenameProjectRequest):
+    """重命名项目
+
+    Args:
+        project_id: 项目主键 ID。
+        body.name: 新的项目名称（1-50 字符）。
+
+    Returns:
+        dict: success / message / project
+    """
+    try:
+        username = request.state.username
+        if not username:
+            raise HTTPException(status_code=401, detail="未认证")
+        user = await UserDB.get_user_by_username(username)
+        if not user:
+            raise HTTPException(status_code=401, detail="用户不存在")
+
+        new_name = body.name.strip()
+        if not new_name:
+            raise HTTPException(status_code=400, detail="项目名称不能为空")
+        if len(new_name) > 50:
+            raise HTTPException(status_code=400, detail="项目名称不能超过 50 字符")
+
+        updated = await ProjectDB.rename_project(
+            project_id,
+            new_name=new_name,
+            user_id=user['id'],
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail="项目不存在或无权访问")
+
+        return {
+            "success": True,
+            "message": "项目名称已更新",
+            "project": _project_to_dict(updated),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("重命名项目失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"重命名项目失败: {str(e)}")

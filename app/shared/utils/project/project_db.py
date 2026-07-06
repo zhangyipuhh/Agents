@@ -300,3 +300,88 @@ class ProjectDB:
                 if proj.get('uuid') == uuid:
                     return dict(proj)
         return None
+
+    @classmethod
+    async def delete_project(cls, project_id: int, user_id: Optional[int] = None) -> bool:
+        """删除项目元数据（双向删除：数据库 + 内存缓存）
+
+        Args:
+            project_id: 项目主键 ID。
+            user_id: 可选，传入时校验项目归属，不匹配则不删除。
+
+        Returns:
+            bool: 删除成功返回 True，未找到或无权限返回 False。
+        """
+        # 先校验归属
+        project = await cls.get_project_by_id(project_id, user_id=user_id)
+        if not project:
+            return False
+
+        # 删除数据库记录
+        if cls.is_enabled():
+            await DatabasePool.execute(
+                "DELETE FROM projects WHERE id = $1",
+                project_id,
+            )
+
+        # 同步删除内存缓存
+        with cls._lock:
+            cls._memory_cache.pop(project_id, None)
+
+        return True
+
+    @classmethod
+    async def rename_project(
+        cls,
+        project_id: int,
+        new_name: str,
+        user_id: Optional[int] = None,
+    ) -> Optional[dict]:
+        """重命名项目（双向更新：数据库 + 内存缓存）
+
+        Args:
+            project_id: 项目主键 ID。
+            new_name: 新的项目名称。
+            user_id: 可选，传入时校验项目归属，不匹配返回 None。
+
+        Returns:
+            Optional[dict]: 更新后的项目信息；参数非法、未找到或无权限返回 None。
+        """
+        name = (new_name or "").strip()
+        if not name or len(name) > 50:
+            return None
+
+        # 校验归属
+        project = await cls.get_project_by_id(project_id, user_id=user_id)
+        if not project:
+            return None
+
+        now = datetime.now()
+
+        # 更新数据库
+        if cls.is_enabled():
+            row = await DatabasePool.fetchrow(
+                """
+                UPDATE projects
+                SET name = $1, updated_at = $2
+                WHERE id = $3
+                RETURNING id, user_id, name, uuid, relative_path, created_at, updated_at
+                """,
+                name,
+                now,
+                project_id,
+            )
+            updated = dict(row) if row else None
+        else:
+            updated = dict(project)
+            updated['name'] = name
+            updated['updated_at'] = now
+
+        # 同步更新内存缓存
+        if updated:
+            with cls._lock:
+                if project_id in cls._memory_cache:
+                    cls._memory_cache[project_id]['name'] = name
+                    cls._memory_cache[project_id]['updated_at'] = now
+
+        return updated

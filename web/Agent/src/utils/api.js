@@ -717,6 +717,44 @@ export async function unbindSessionFromProject(sessionId) {
 }
 
 /**
+ * 删除项目
+ * @param {number} projectId - 项目主键 ID
+ * @returns {Promise<{success: boolean, message: string}>} 删除结果
+ * @throws {Error} 删除失败时抛出错误
+ */
+export async function deleteProject(projectId) {
+  const response = await fetchWithAuth(`/api/project/${projectId}/delete`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) {
+    const errData = await response.json().catch(() => ({}))
+    throw new Error(errData.detail || `删除项目失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 重命名项目
+ * @param {number} projectId - 项目主键 ID
+ * @param {string} newName - 新的项目名称
+ * @returns {Promise<{success: boolean, message: string, project: Object}>} 更新结果
+ * @throws {Error} 重命名失败时抛出错误
+ */
+export async function renameProject(projectId, newName) {
+  const response = await fetchWithAuth(`/api/project/${projectId}/rename`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: newName })
+  })
+  if (!response.ok) {
+    const errData = await response.json().catch(() => ({}))
+    throw new Error(errData.detail || `重命名项目失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
  * 统一 chat 流式接口
  *
  * 2026-07-01 新增：把 project_id 与 geometry_data 一并通过 context_overrides 通道传入
