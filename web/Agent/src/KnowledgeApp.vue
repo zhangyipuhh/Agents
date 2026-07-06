@@ -93,14 +93,15 @@ let currentStreamReader = null
 // 2026-07-06 新增：中断待生效锁（与 App.vue::toolStopPending 同语义）
 // 注意：KnowledgeApp 没有独立的 KnowledgeChat 内部 isStopPending，
 // 由 ProfileInputBox 接收 prop 显示 stop-pending 态，KnowledgeApp 维护此锁。
-let toolStopPending = false
+// 2026-07-06 修复：必须用 ref() 才能触发模板响应式更新，普通 let 变量 Vue 不会追踪。
+const toolStopPending = ref(false)
 
 /**
  * 统一清锁入口（2026-07-06 新增）。
  * @returns {void}
  */
 function clearToolStopPending() {
-  toolStopPending = false
+  toolStopPending.value = false
 }
 
 function toggleSidebar() {
@@ -446,7 +447,7 @@ function handleApprovalCancel() {
 /**
  * 停止 LLM 生成（2026-06-15 新增；2026-07-06 改造）：用户点击停止按钮触发
  * 与 App.vue::handleStopMessage 行为一致：
- * 1. 加锁 toolStopPending = true（重复点击短路）
+ * 1. 加锁 toolStopPending.value = true（重复点击短路）
  * 2. 调用 currentStreamReader.cancel() 断开 SSE 连接（后端走精确延迟中断）
  * 3. 标记最后一条 AI 消息 ended = true + 追加「中断中...」提示
  * 4. 不重置 isStreaming —— 由 SSE 流自然走完时复位
@@ -454,10 +455,10 @@ function handleApprovalCancel() {
 async function handleStopMessage() {
   if (!isStreaming.value) return
   // 2026-07-06 新增：重复点击短路
-  if (toolStopPending) return
+  if (toolStopPending.value) return
 
   // 1. 加锁（UI 由 ProfileInputBox 的 isStopPending 接收，立即变灰 + 旋转 badge）
-  toolStopPending = true
+  toolStopPending.value = true
 
   // 2. 取消 SSE reader（不置 null：让 SSE 继续推完当前 tools 节点的 chunk）
   if (currentStreamReader) {
@@ -550,7 +551,7 @@ function closeSubAgentDrawer() {
             v-else
             :session-id="currentSessionId"
             :is-streaming="isStreaming"
-            :is-stop-pending="toolStopPending"
+            :is-stop-pending="toolStopPending.value"
             @send="handleProfileSend"
             @tool-action="handleToolAction"
             @new-chat="handleNewChat"
@@ -618,7 +619,7 @@ function closeSubAgentDrawer() {
             v-else
             :session-id="currentSessionId"
             :is-streaming="isStreaming"
-            :is-stop-pending="toolStopPending"
+            :is-stop-pending="toolStopPending.value"
             @send="handleProfileSend"
             @tool-action="handleToolAction"
             @new-chat="handleNewChat"

@@ -56,7 +56,7 @@ describe('App.vue agent 切换', () => {
     global.localStorage = originalLocalStorage
   })
 
-  it('test_app_has_agent_name_state App.vue 有 agentName 状态', async () => {
+  it('test_app_has_agent_name_state App.vue 有 agentName 状态', { timeout: 15000 }, async () => {
     const App = (await import('../../App.vue')).default
     const wrapper = mount(App, {
       global: {

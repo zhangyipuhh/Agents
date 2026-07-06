@@ -1,5 +1,5 @@
 <script setup>
-import { reactive, onMounted, computed, ref } from 'vue'
+import { reactive, onMounted, onBeforeUnmount, computed, ref } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import ChatArea from './components/ChatArea.vue'
 import InputBox from './components/InputBox.vue'
@@ -98,15 +98,16 @@ let currentStreamReader = null
 //   - 置 false（白名单）：SSE end / error / interrupt 事件；SSE 流自然走完（done=true）
 //   - 置 false（兜底）：catch（异常）、finally（任何路径兜底）、newSession/handleSessionSwitch/handleApprovalCancel/handleStopMessage 入口前置
 // 设计要点：白名单管"已知流走完"，兜底管"未知异常"，互不污染。
-let toolStopPending = false
+// 2026-07-06 修复：必须用 ref() 才能触发模板响应式更新，普通 let 变量 Vue 不会追踪。
+const toolStopPending = ref(false)
 
 /**
  * 统一清锁入口（2026-07-06 新增）。所有需要复位的路径都调用此函数，
- * 避免在多处直接赋值 toolStopPending = false 时遗漏或不一致。
+ * 避免在多处直接赋值 toolStopPending.value = false 时遗漏或不一致。
  * @returns {void}
  */
 function clearToolStopPending() {
-  toolStopPending = false
+  toolStopPending.value = false
 }
 
 // 2026-06-14 改造：原 SandboxDrawer 已删除，沙箱数据统一由 SubAgentDrawer 展示
@@ -261,11 +262,10 @@ async function checkAuth() {
 
 // 兜底：若 checkAuth 在 5 秒内未完成，强制将 authReady 置为 true，
 // 避免网络异常等极端情况下页面卡死在 loading 占位
-setTimeout(() => {
-  if (!authReady.value) {
-    authReady.value = true
-  }
-}, 5000)
+// 2026-07-XX：原实现在模块顶层注册 setTimeout，全量 vitest 跑时（>400 个 mount(App, ...)）
+// 偶发触发 5s 单测超时；改用模块级 ref 持有 timer id，组件 unmount 时清理。
+let authReadyFallbackTimer = null
+
 
 /**
  * 处理登出事件
@@ -312,37 +312,55 @@ async function refreshSessionTitle(id) {
 }
 
 /**
- * 确保当前用户有一个有效的会话
- * 始终创建新会话，不复用本地缓存的 session_id
+ * 2026-07-XX 新增：按需创建 session。
+ * 仅在需要后端 session 的入口（首次发送 / 首次上传 / 首次斜杠命令等）前调用；
+ * 内部使用 createNewSession 自带的 isCreatingSession / pendingSessionPromise 防重复锁，
+ * 并发场景下不会触发多次 /api/session/create。
+ * @param {number|null} projectId - 关联的项目 ID；None 表示不使用文件夹（默认）
+ * @returns {Promise<string>} 当前有效的 session_id
+ * @throws {Error} 创建会话失败时抛出错误（由调用方决定如何兜底）
  */
-async function ensureSession() {
-  try {
-    const newId = await createNewSession()
-    sessionId.value = newId
-    // 2026-07-01 新增：同步新会话标题并关闭上一个会话的文件抽屉
-    sessionTitle.value = '新对话'
-    closeSessionFileDrawer()
-    refreshSessionTitle(newId)
-    if (sidebarRef.value) {
-      sidebarRef.value.loadSessionList()
-    }
-  } catch (err) {
-    console.error('自动创建会话失败:', err)
+async function ensureSessionForFirstOp(projectId) {
+  if (sessionId.value) return sessionId.value
+  const newId = await createNewSession('session_id', projectId)
+  sessionId.value = newId
+  // 2026-07-XX 新增：同步新会话标题，避免 ChatArea 顶部空白 / 占位
+  sessionTitle.value = '新对话'
+  refreshSessionTitle(newId)
+  if (sidebarRef.value) {
+    sidebarRef.value.loadSessionList()
   }
+  return newId
 }
 
 onMounted(async () => {
+  // 仅做认证检查；不再自动建 session。
+  // 2026-07-XX 改造：用户需求是"只有上传文件 / 单击发送时才建 session"，
+  // 首次进入页面保持 sessionId 为空，避免空 session 写入 DB；
+  // 侧边栏在首次交互前不显示任何"新对话"条目与高亮项。
   await checkAuth()
+  // 2026-07-XX：5s 兜底 timer 改在 onMounted 中注册 + onBeforeUnmount 清理，
+  // 避免全量 vitest 跑时（>400 mount）模块顶层 setTimeout 偶发触发 5s 单测超时。
+  authReadyFallbackTimer = setTimeout(() => {
+    if (!authReady.value) {
+      authReady.value = true
+    }
+    authReadyFallbackTimer = null
+  }, 5000)
+})
 
-  if (isLoggedIn.value) {
-    await ensureSession()
+// 2026-07-XX：组件卸载时清理兜底 timer，避免泄漏 + 防止跨测试污染。
+onBeforeUnmount(() => {
+  if (authReadyFallbackTimer) {
+    clearTimeout(authReadyFallbackTimer)
+    authReadyFallbackTimer = null
   }
 })
 
 async function newSession() {
   // 防止重复创建
   if (isCreatingNewSession) {
-    console.log('[newSession] 正在创建中，跳过重复请求')
+    console.log('[newSession] 正在重置中，跳过重复请求')
     return
   }
 
@@ -362,10 +380,13 @@ async function newSession() {
   approvalMode.value = false
 
   isCreatingNewSession = true
-  console.log('[newSession] 开始创建新会话')
+  // 2026-07-XX 改造：点击"新建任务"改为纯前端重置，不再立刻调后端建 session；
+  // session 的实际创建延后到 ensureSessionForFirstOp：首次发送 / 首次上传 / 首次斜杠命令时。
+  console.log('[newSession] 重置前端页面状态（不建 session）')
 
   try {
-    // 先清除旧的 session_id，确保新建任务时一定会重新生成
+    // 2026-07-XX：先清掉 sessionId 与 localStorage，避免下游 upload/chat 接口误用旧 session。
+    // 此时并不重新创建 session，留待首次需要时由 ensureSessionForFirstOp 按需建。
     localStorage.removeItem('session_id')
     sessionId.value = ''
     messages.splice(0, messages.length)
@@ -376,31 +397,15 @@ async function newSession() {
     // 2026-07-01 新增：新建会话时重置历史加载失败标记（保守锁定策略失效，新会话允许选择项目）
     historyLoadFailed.value = false
 
-    // 2026-06-30 新增：新建会话时把当前项目一并传过去
-    const projectIdForNew = currentProject.value ? currentProject.value.id : null
-
     // 关闭子智能体详情抽屉：避免上一个会话的 subagent 数据残留在 UI 上
-    // 复用已有的 closeSubAgentDrawer()（会同步将 subAgentDrawerVisible 置 false，无需另清 currentSubAgent）
     closeSubAgentDrawer()
     // 2026-07-01 新增：关闭上一个会话的文件抽屉，避免残留
     closeSessionFileDrawer()
 
-    const newId = await createNewSession('session_id', projectIdForNew)
-    sessionId.value = newId
-    // 2026-07-01 新增：先显示默认标题，再异步刷新真实标题
-    sessionTitle.value = '新对话'
-    refreshSessionTitle(newId)
-    console.log('[newSession] 新会话创建成功:', newId, 'projectId:', projectIdForNew)
-
-    // 刷新侧边栏会话列表
-    if (sidebarRef.value) {
-      sidebarRef.value.loadSessionList()
-    }
-  } catch (err) {
-    console.error('新建会话失败:', err)
-    // API 报错时先尝试 refresh_token；失败再跳登录页（带 redirect）
-    // 注意：不再"看到'未登录'/'过期'字样就清登录态"，避免误踢
-    await tryRefreshOrRedirect()
+    // 2026-07-XX：当前实现下"会话标题"无值（session 还没建），ChatArea 顶部自然走占位分支，
+    // 此处显式置空保持语义清晰
+    sessionTitle.value = ''
+    console.log('[newSession] 前端态已清空，等待首次交互触发 ensureSessionForFirstOp')
   } finally {
     isCreatingNewSession = false
   }
@@ -534,6 +539,11 @@ async function handleSendMessage(message, attachments = []) {
     // 2026-07-01 新增：把当前会话绑定的项目 ID 通过 context_overrides.project_id 显式传入，
     // 与 sessions.project_id 隐式链路解耦；null 时由 chatStream 内部不写入该键，由 middleware 注入兜底。
     const projectIdForChat = currentProject.value ? currentProject.value.id : null
+
+    // 2026-07-XX 新增：首次发送 / 无 session 时按需创建 session，
+    // 复用 createNewSession 自带的防重复锁，并发场景下仅发一次 /api/session/create。
+    await ensureSessionForFirstOp(projectIdForChat)
+
     const stream = await chatStream(sessionId.value, message, attachments, null, agentName.value, projectIdForChat)
     currentStreamReader = stream.getReader()
     // 拿到 SSE reader 后再置位 isStreaming，避免排队/握手阶段状态长期悬空无法复位
@@ -624,6 +634,15 @@ async function handleSendMessage(message, attachments = []) {
 }
 
 async function handleApprovalSubmit({ answers }) {
+  // 2026-07-XX 防御性兜底：resume 必须在已有 session 的前提下进行，
+  // 没有 session 直接退出（用户实际不会到这里，因为触达 HITL 必然经历了 handleSendMessage → 已建 session）。
+  if (!sessionId.value) {
+    console.warn('[App] handleApprovalSubmit 缺少 sessionId，跳过')
+    approvalMode.value = false
+    clearToolStopPending()
+    return
+  }
+
   approvalMode.value = false
   let interrupted = false
 
@@ -740,7 +759,7 @@ function handleApprovalCancel() {
 /**
  * 停止 LLM 生成（2026-06-15 新增；2026-07-06 改造）：用户点击停止按钮触发
  * 流程：
- * 1. 加锁 toolStopPending = true（重复点击短路，避免 user 重复触发）
+ * 1. 加锁 toolStopPending.value = true（重复点击短路，避免 user 重复触发）
  * 2. 调用 currentStreamReader.cancel() 断开 SSE 连接
  *    - 后端 _stream_helper.py 的 is_disconnected() 检测生效，但走「精确延迟中断」机制，
  *      等当前 tools 节点完成 ToolMessage 后才真正断开，避免 orphan tool_calls 触发 2013
@@ -751,10 +770,10 @@ function handleApprovalCancel() {
 async function handleStopMessage() {
   if (!isStreaming.value) return
   // 2026-07-06 新增：重复点击短路（防止用户在等待工具完成时重复点击）
-  if (toolStopPending) return
+  if (toolStopPending.value) return
 
   // 1. 加锁（UI 由 InputBox 的 isStopPending 接收，立即变灰 + 旋转 badge）
-  toolStopPending = true
+  toolStopPending.value = true
 
   // 2. 取消 SSE reader（不置 null：让 SSE 继续推完当前 tools 节点的 chunk）
   if (currentStreamReader) {
@@ -1256,12 +1275,13 @@ async function handleSessionSwitch(targetSessionId) {
         <InputBox
           :session-id="sessionId.value"
           :is-streaming="isStreaming.value"
-          :is-stop-pending="toolStopPending"
+          :is-stop-pending="toolStopPending.value"
           :bound-agent-name="agentName || ''"
           :bound-agent-display-name="agentDisplayName || ''"
           :current-project="currentProject"
           :project-locked="!canEditProject"
           :allowed-agents="allowedAgents"
+          :ensure-session="ensureSessionForFirstOp"
           @send="handleSendMessage"
           @tool-action="handleToolAction"
           @new-chat="newSession"

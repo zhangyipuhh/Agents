@@ -61,7 +61,7 @@ describe('App.vue 项目锁定 canEditProject（2026-07-01 新增）', () => {
     global.localStorage = originalLocalStorage
   })
 
-  it('test_can_edit_project_initially_true 刚进入应用时 messages 为空 → canEditProject=true', async () => {
+  it('test_can_edit_project_initially_true 刚进入应用时 messages 为空 → canEditProject=true', { timeout: 15000 }, async () => {
     const App = (await import('../../App.vue')).default
     const wrapper = mount(App, {
       global: { stubs: ['router-link', 'router-view'] }

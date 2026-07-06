@@ -896,7 +896,36 @@ return data/upload/yyyy/mm/dd/{session_id}/
 |------|------|
 | `ProjectDropdown.vue` | 紧挨着 InputBox 上方的下拉框（顶部只读预览 + 3 个动作 + 锁定支持） |
 | `ProjectDialog.vue` | 双模式弹窗（create / pick） |
-| `App.vue` | `currentProject` 状态机 + handleSessionSwitch 恢复 + newSession 透传 + `canEditProject` 锁定判定 |
+| `App.vue` | `currentProject` 状态机 + handleSessionSwitch 恢复 + newSession 纯前端重置（2026-07-XX 改造）+ `canEditProject` 锁定判定 + `ensureSessionForFirstOp` 按需建 session |
+
+### 前端 Session 创建时机改为「首次交互时」（2026-07-XX 改造）
+
+**动机**：原实现中点击「新建任务」按钮或刷新页面都会触发 `/api/session/create`，产生大量"用户未实际交互"的空 session 入库，污染 DB 与侧边栏。
+
+**新规则**：
+
+- **首次进入页面 / 刷新页面**：**不**自动建 session；`sessionId` 保持空字符串，侧边栏无激活项、无"新对话"条目。
+- **点击「新建任务」按钮（Sidebar 菜单 / InputBox 的 `@new-chat` 等）**：仅做纯前端页面重置（清 messages / attachments / agentName / sessionTitle / SubAgentDrawer / SessionFileDrawer / approvalMode / `toolStopPending` / `queueStatus`），**不**调 `/api/session/create`。
+- **session 的实际创建延后到真正需要后端的入口**：
+  1. **首条消息发送**（`handleSendMessage` 在 `chatStream` 前先 `await ensureSessionForFirstOp(projectIdForChat)`）
+  2. **首次文件上传**（`InputBox::startUpload` 通过父组件注入的 `ensureSession` 回调确保；并发上传由 `createNewSession` 自带的 `isCreatingSession / pendingSessionPromise` 防重锁收敛到 1 次后端调用）
+  3. **首次斜杠命令**：命令结果走 `emit('send', result.text, [])` 进入 `handleSendMessage` → 命中第 ① 点。
+
+**实现要点**：
+
+- `App.vue` 删除原 `ensureSession()`，`onMounted` 仅保留 `checkAuth()`。
+- `App.vue` 新增 `ensureSessionForFirstOp(projectId)`：若 `sessionId.value` 已存在则短路返回；否则 `createNewSession('session_id', projectId)` → 同步 `sessionId.value` / `sessionTitle` → `refreshSessionTitle` 异步刷新真实标题 → `sidebarRef.loadSessionList()` 刷新侧边栏。
+- `App.vue::handleApprovalSubmit` 加防御性 early-return：缺 `sessionId` 时直接退出（实际不会触发，因为触达 HITL 必然先经历 `handleSendMessage`）。
+- `App.vue` 模板 `<InputBox :ensure-session="ensureSessionForFirstOp" ... />`。
+- `InputBox.vue` 新增 prop `ensureSession: Function`（默认 null，向后兼容）；`startUpload` 内首调上传前 `await props.ensureSession()`，失败时把 `fileItem.status = 'error'` 并附错误信息，仅当 promise 正常才进入 `runChunkUpload()`。
+- 兼容并发：多个 `startUpload` 同时 await 同一 `ensureSessionForFirstOp()` → `createNewSession` 防重锁保证对后端只发一次 `/api/session/create`，其它 await 在同一 promise 上串接结果。
+- `Sidebar.vue` 的 `currentSessionId` 默认值已为 `''`，与历史 session_id 比较时天然不匹配；空 session 时不高亮任何条目，无需额外改动。
+
+**影响面**：
+
+- 后端 `/api/session/create` 接口契约不变；`createNewSession` 自带的防重复锁机制复用。
+- `KnowledgeApp.vue` / `KnowledgePage.vue` 维持独立链路（独立 `knowledge_session_id`），本次未在范围内，逻辑保持原状。
+- 项目选择器锁定（`canEditProject`）语义无变化：新建任务（messages 空）→ 可编辑；首条消息发送成功 → 锁定。
 
 ### 项目选择器锁定逻辑（2026-07-01 新增）
 

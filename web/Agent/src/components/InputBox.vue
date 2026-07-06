@@ -46,6 +46,14 @@ const props = defineProps({
   isStopPending: {
     type: Boolean,
     default: false
+  },
+  // 2026-07-XX 新增：父组件注入的"确保 session 存在"异步回调。
+  // InputBox 不直接 import createNewSession（保持与 KnowledgeApp 等宿主解耦），
+  // 在 startUpload() 首调上传前调用，避免文件落到后端 middleware 的 'default' 公共目录。
+  // 类型签名：接受 projectId（number|null）并返回 Promise<string>（新 session_id）。
+  ensureSession: {
+    type: Function,
+    default: null
   }
 })
 
@@ -444,6 +452,36 @@ const startUpload = (fileItem) => {
   fileItem.progress = 0
   fileItem.errorMsg = ''
 
+  // 2026-07-XX 新增：首次上传前按需创建 session，避免文件落到后端 middleware 的 'default' 公共目录。
+  // 并发场景下（用户一次性拖入 N 个文件，N 个 startUpload 并发进入）：
+  // - 若已有 session → props.ensureSession 直接短路返回
+  // - 若无 session → 父组件 ensureSessionForFirstOp 内部使用 createNewSession 自带的 isCreatingSession / pendingSessionPromise 防重锁，
+  //   保证对后端只发一次 /api/session/create，其它的 await 在同一 promise 上串接结果。
+  const ensurePromise = (typeof props.ensureSession === 'function')
+    ? Promise.resolve(props.ensureSession()).catch((err) => err)
+    : Promise.resolve(null)
+
+  ensurePromise.then((maybeError) => {
+    if (maybeError instanceof Error) {
+      fileItem.status = 'error'
+      fileItem.errorMsg = `会话未就绪：${maybeError.message}`
+      return
+    }
+    runChunkUpload(fileItem)
+  }).catch((err) => {
+    // 兜底：理论上 catch 已被 ensurePromise 接住，这里是 ensurePromise 之外的兜底
+    fileItem.status = 'error'
+    fileItem.errorMsg = `上传启动失败：${err?.message || err}`
+  })
+}
+
+/**
+ * 实际执行分片上传逻辑（2026-07-XX 抽离）：
+ * startUpload() 在确保 session 存在后调用此函数，避免嵌套太多层使逻辑不清。
+ * @param {Object} fileItem - selectedFiles 中的文件项
+ * @returns {void}
+ */
+function runChunkUpload(fileItem) {
   uploadFileInChunks(
     fileItem.file,
     (progress) => {
