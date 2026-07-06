@@ -25,7 +25,13 @@ from fastapi import Request
 from langchain_core.messages import ToolMessage
 
 from app.core.format.stream import stream_format_context
-from app.core.tools._stop_signal import reset_current_request, set_current_request
+from app.core.tools._stop_signal import (
+    register_abort_signal,
+    reset_current_request,
+    set_current_request,
+    trigger_abort,
+    unregister_abort_signal,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -78,6 +84,14 @@ async def generate_stream_response(
     # 异步 generator 的 ContextVar 在 with 块退出时自动清理。
     cv_token = set_current_request(request)
 
+    # 2026-07-06 新增：注册 abort_event（按 session_id 索引）
+    # 主动 abort 通道：用户点"停止"按钮时，前端调 POST /api/agent/{session_id}/abort
+    # → trigger_abort(session_id) → abort_event.set() → 工具下次 check 感知
+    # 与 ContextVar 是互补关系：
+    #   - abort_event：主动 abort（用户显式点停止）
+    #   - is_disconnected：兜底（浏览器关闭、网络异常等非主动关闭）
+    abort_event = register_abort_signal(session_id)
+
     # 构建执行配置（recursion_limit=100 与原 map_router 保持一致，支持更多轮次的工具调用）
     execute_config = ExecuteConfig(
         configurable={"thread_id": session_id},
@@ -108,6 +122,7 @@ async def generate_stream_response(
             stream_mode=["updates", "custom", "messages"],
         ):
             # 2026-06-22 改造：客户端断开检测（停止按钮触发）
+            # 2026-07-06 增强：检测到 disconnect 时同时 trigger_abort（双保险）
             # 检测到 disconnect → 标记 disconnect_requested = True，但不 return。
             # 让 LangGraph 自然跑完当前工具/子智能体（产生 ToolMessage 写入 state），
             # 然后在 updates chunk 中检测到 "tools" 节点完成时真正断开。
@@ -120,6 +135,9 @@ async def generate_stream_response(
                             f"延迟中断：等待当前工具/子智能体完成 ToolMessage 后再断开"
                         )
                         disconnect_requested = True
+                        # 2026-07-06 新增：双保险——reader 关闭也触发 abort_event
+                        # 场景：前端 reader 关闭（无论是否调 /abort），都让工具感知停止
+                        trigger_abort(session_id)
                         # 向已断开的前端发一个标记（前端可能已收不到，仅作日志）
                         yield f"data: {json.dumps({'type': 'client_disconnected', 'data': {'message': '已记录停止信号，当前工具完成后停止'}}, ensure_ascii=False)}\n\n"
                 except Exception as e:
@@ -276,6 +294,12 @@ async def generate_stream_response(
             reset_current_request(cv_token)
         except Exception as reset_error:
             logger.warning(f"[Chat] reset_current_request 异常: {reset_error}")
+        # 2026-07-06 新增：清理 abort_signal，避免全局 dict 内存泄漏。
+        # 即使流提前 return / 抛异常，也保证清理。
+        try:
+            unregister_abort_signal(session_id)
+        except Exception as unregister_error:
+            logger.warning(f"[Chat] unregister_abort_signal 异常: {unregister_error}")
 
 
 def _extract_interrupt_requests(interrupt_data):

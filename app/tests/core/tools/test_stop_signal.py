@@ -277,3 +277,221 @@ def test_exception_in_caller_still_resets():
 
     # 异常后 reset 已执行，get 应返回 None
     assert get_current_request() is None
+
+
+# ============================================================
+# 2026-07-06 新增：主动 abort signals（按 session_id 索引）
+# 设计目标：前端调 /abort → trigger_abort(session_id) → event.set() →
+#          工具下次 is_set() 检查时感知，主动构造 ToolMessage 返回。
+# ============================================================
+
+def test_register_abort_signal_creates_event():
+    """P1：register_abort_signal 创建新 event，可通过 get_abort_signal 取出"""
+    from app.core.tools._stop_signal import (
+        get_abort_signal,
+        register_abort_signal,
+        unregister_abort_signal,
+    )
+
+    session_id = "test_session_register_basic"
+    try:
+        event = register_abort_signal(session_id)
+        assert event is not None
+        # 取出后应该是同一个 event
+        retrieved = get_abort_signal(session_id)
+        assert retrieved is event
+        # 初始状态：未 set
+        assert not retrieved.is_set()
+    finally:
+        unregister_abort_signal(session_id)
+
+
+def test_trigger_abort_sets_event():
+    """P1：trigger_abort 后 event.is_set() 为 True"""
+    from app.core.tools._stop_signal import (
+        get_abort_signal,
+        register_abort_signal,
+        trigger_abort,
+        unregister_abort_signal,
+    )
+
+    session_id = "test_session_trigger_basic"
+    try:
+        event = register_abort_signal(session_id)
+        assert not event.is_set()
+        # 触发 abort
+        result = trigger_abort(session_id)
+        assert result is True
+        # 验证 event 已被 set
+        assert event.is_set()
+        # get_abort_signal 取出的 event 也应是 set 状态
+        assert get_abort_signal(session_id).is_set()
+    finally:
+        unregister_abort_signal(session_id)
+
+
+def test_trigger_abort_returns_false_for_unknown_session():
+    """P1：对未注册的 session 调 trigger_abort 返回 False（不抛错）"""
+    from app.core.tools._stop_signal import trigger_abort
+
+    # 未注册 session，触发应静默返回 False
+    result = trigger_abort("nonexistent_session_id_xyz")
+    assert result is False
+
+
+def test_trigger_abort_is_idempotent():
+    """P1：多次 trigger_abort 同一 session，event 状态不变（set 后再 set 是 noop）"""
+    from app.core.tools._stop_signal import (
+        register_abort_signal,
+        trigger_abort,
+        unregister_abort_signal,
+    )
+
+    session_id = "test_session_idempotent"
+    try:
+        event = register_abort_signal(session_id)
+        trigger_abort(session_id)
+        assert event.is_set()
+        # 第二次 trigger：仍 True，不抛错
+        result = trigger_abort(session_id)
+        assert result is True
+        assert event.is_set()
+        # 第三次
+        trigger_abort(session_id)
+        assert event.is_set()
+    finally:
+        unregister_abort_signal(session_id)
+
+
+def test_unregister_abort_signal_clears_entry():
+    """P1：unregister 后 get_abort_signal 返回 None"""
+    from app.core.tools._stop_signal import (
+        get_abort_signal,
+        register_abort_signal,
+        unregister_abort_signal,
+    )
+
+    session_id = "test_session_unregister_basic"
+    event = register_abort_signal(session_id)
+    assert get_abort_signal(session_id) is event
+    unregister_abort_signal(session_id)
+    # 清理后取出应为 None
+    assert get_abort_signal(session_id) is None
+
+
+def test_unregister_abort_signal_is_idempotent():
+    """P1：unregister 多次或对未知 session 调，都不抛错"""
+    from app.core.tools._stop_signal import unregister_abort_signal
+
+    # 多次清理不抛错
+    unregister_abort_signal("never_registered_session_aaa")
+    unregister_abort_signal("never_registered_session_aaa")  # idempotent
+
+
+def test_get_abort_signal_returns_none_for_unknown_session():
+    """P1：get_abort_signal 对未注册 session 返回 None"""
+    from app.core.tools._stop_signal import get_abort_signal
+
+    result = get_abort_signal("definitely_not_registered_12345")
+    assert result is None
+
+
+def test_register_abort_signal_overwrites_old():
+    """P1：同一 session_id 重复 register 时，旧 event 被覆盖（防御内存泄漏）"""
+    from app.core.tools._stop_signal import (
+        get_abort_signal,
+        register_abort_signal,
+        unregister_abort_signal,
+    )
+
+    session_id = "test_session_overwrite"
+    try:
+        # 第一次注册
+        old_event = register_abort_signal(session_id)
+        # 第二次注册（应覆盖）
+        new_event = register_abort_signal(session_id)
+        # 两次返回的应该是不同对象
+        assert old_event is not new_event
+        # 当前取出应该是新的
+        assert get_abort_signal(session_id) is new_event
+    finally:
+        unregister_abort_signal(session_id)
+
+
+def test_abort_signals_isolated_across_sessions():
+    """P1：不同 session 的 abort event 互不干扰"""
+    from app.core.tools._stop_signal import (
+        get_abort_signal,
+        register_abort_signal,
+        trigger_abort,
+        unregister_abort_signal,
+    )
+
+    sid_a = "test_session_isolation_a"
+    sid_b = "test_session_isolation_b"
+    try:
+        event_a = register_abort_signal(sid_a)
+        event_b = register_abort_signal(sid_b)
+
+        # 只触发 A
+        trigger_abort(sid_a)
+        assert event_a.is_set()
+        assert not event_b.is_set()  # B 不受影响
+
+        # 触发 B
+        trigger_abort(sid_b)
+        assert event_b.is_set()
+        # A 仍 set（set 是单调的）
+        assert event_a.is_set()
+    finally:
+        unregister_abort_signal(sid_a)
+        unregister_abort_signal(sid_b)
+
+
+def test_abort_signal_full_lifecycle():
+    """P1：完整生命周期 register → trigger → 工具 is_set 检测 → unregister"""
+    from app.core.tools._stop_signal import (
+        get_abort_signal,
+        register_abort_signal,
+        trigger_abort,
+        unregister_abort_signal,
+    )
+
+    sid = "test_session_full_lifecycle"
+    # 1. 注册
+    event = register_abort_signal(sid)
+
+    # 2. 模拟工具取出 event 并检查（初始未 set）
+    tool_event = get_abort_signal(sid)
+    assert tool_event is event
+    assert not tool_event.is_set()
+
+    # 3. 触发 abort（模拟前端调 /abort）
+    trigger_abort(sid)
+
+    # 4. 工具下次检查时感知
+    assert tool_event.is_set()
+
+    # 5. 清理
+    unregister_abort_signal(sid)
+    assert get_abort_signal(sid) is None
+
+
+def test_abort_signal_set_state_persists_across_gets():
+    """P1：event 被 set 后，多次 get_abort_signal 取出的 event 都应保持 set 状态"""
+    from app.core.tools._stop_signal import (
+        get_abort_signal,
+        register_abort_signal,
+        trigger_abort,
+        unregister_abort_signal,
+    )
+
+    sid = "test_session_persist_set"
+    try:
+        register_abort_signal(sid)
+        trigger_abort(sid)
+        # 多次取出都应是 set
+        for _ in range(3):
+            assert get_abort_signal(sid).is_set()
+    finally:
+        unregister_abort_signal(sid)

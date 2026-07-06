@@ -23,6 +23,7 @@ from app.shared.utils.agent.agent_config_service import (
     AgentNotFoundError,
 )
 from app.routers._stream_helper import generate_stream_response
+from app.core.tools._stop_signal import trigger_abort
 
 
 logger = logging.getLogger(__name__)
@@ -186,6 +187,43 @@ async def list_agents(request: Request) -> List[Dict[str, Any]]:
         return []
     allowed_set = set(allowed_agents)
     return [a for a in agents if a.get('name') in allowed_set]
+
+
+@router.post("/{session_id}/abort")
+async def abort_session(session_id: str) -> Dict[str, str]:
+    """
+    主动中止指定 session 的流式响应（2026-07-06 新增）。
+
+    核心机制：
+    - 前端调此端点后，trigger_abort(session_id) 设置 abort_event
+    - 工具函数（sandbox / explore）下次 is_set() 检查时感知，主动构造
+      ToolMessage 返回（stopped_by_user 分支）→ 避免 orphan tool_calls
+    - 后端 _stream_helper 的延迟中断机制继续生效，等 tools 节点完成
+    - LangGraph 正常推进 → yield tools update + end 事件 → SSE 自然关闭
+
+    Args:
+        session_id: 会话 ID（即 thread_id）
+
+    Returns:
+        Dict[str, str]: 包含 status 与 session_id 字段
+            - status="aborted": 找到 abort event 并 set
+            - status="not_found": session 未注册（可能未启动或已结束），调用方可忽略
+
+    设计要点：
+    - 永远 idempotent：多次调用或对未注册 session 都不抛错
+    - 不依赖 SSE 连接状态：abort_event 走全局 dict，与 reader 无关
+    - 不阻塞：仅 set event，毫秒级返回
+    """
+    success = trigger_abort(session_id)
+    if success:
+        logger.info(
+            f"[abort] session_id={session_id} 收到主动 abort 请求，abort_event 已 set"
+        )
+        return {"status": "aborted", "session_id": session_id}
+    logger.info(
+        f"[abort] session_id={session_id} 收到 abort 请求但 session 未注册（可能已结束），忽略"
+    )
+    return {"status": "not_found", "session_id": session_id}
 
 
 @router.get("/{agent_name}/agents-md")

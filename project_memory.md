@@ -1952,39 +1952,81 @@ SandboxDrawer 时间线包含 `code_generation` 事件（显示 LLM 生成的代
   - `QueueStatusBanner.vue`：**挂在 ChatArea 与 InputBox 之间**（用户要求位置），实时显示 Agent 聊天接口的并发排队状态；黄色系背景 + 橙色感叹号图标 + 位置 badge（带 2s pulse 动画）；Props：`queueStatus: {event, waitingCount, activeCount, maxConcurrency, position, timestamp}` + `isVisible: Boolean`；进场 `slide-down 200ms` / 退场 `fade-out 200ms`；数据由后端 SSE `queue` 事件（`onQueueEvent` 回调）或 HTTP 429 响应驱动
 - **视图**（`src/views/`）：`LoginView.vue`、`RegisterView.vue`
 
-### 停止按钮 - 中断待生效（toolStopPending，2026-07-06 新增）
+### 停止按钮 - 中断待生效（toolStopPending，2026-07-06 新增 / 重构）
 
-**背景**：原停止按钮在用户点击后立即断开 SSE 并复位 UI；但工具/子智能体执行期间的 ToolMessage 未及时写入 state，下次会话恢复时 LLM API 报 `tool call result does not follow tool call (2013)`。后端 `_stream_helper.py` 已实现「精确延迟中断」机制（disconnect 标记 + tools 节点完成时真正断开），但前端缺少「工具未完成时按钮保持停止态」的视觉反馈，用户可能在等待期间误触发送按钮产生孤儿状态。
+**两阶段演进**：
+- **第一阶段（2026-07-06 上午）**：UI 态从"发送"扩展到"发送/停止/中断待生效"三态，使用 `toolStopPending` 锁 + `reader.cancel()` + `_stream_helper` 延迟中断机制
+- **第二阶段（2026-07-06 下午）**：发现 reader.cancel() 仍会导致子智能体被粗暴取消（前端 reader 关闭 = 收不到后续 SSE 事件），改用 **LangGraph 标准做法**：工具内部检测 abort_event + 主动构造 ToolMessage 返回（避免 CancelledError 打断 ToolMessage 写入）
 
-**目标**：用户点击停止后，按钮立即进入「中断待生效」态（停止图标 + 灰色 + 右上角旋转 badge），直到后端完成当前 tools 节点的 ToolMessage 写入才真正复位，期间禁用重复点击和发送。
+**核心问题与根因**：
+- LLM API 报 `tool call result does not follow tool call (2013)` 的根因是：用户点停止 → 前端 `reader.cancel()` → LangGraph `astream` 协程被粗暴取消 → 工具子智能体来不及 return ToolMessage → checkpoint 中 AIMessage 含 tool_calls 但无对应 ToolMessage → 下次会话恢复时 LLM API 报 2013
+- 第一阶段（reader.cancel + `_stream_helper` 延迟中断）只解决"前端不丢事件"，但仍让子智能体被 CancelledError 取消 → ToolMessage 写入被打断
+- 第二阶段（abort_event 通道）：让工具**自己检测** abort signal，**主动构造** ToolMessage + `return Command` —— 这是 LangGraph 推荐的"工具失败语义"，比 CancelledError 优雅
 
-**前端组件职责**：
-- `InputBox.vue` / `KnowledgeChat.vue` / `ProfileInputBox.vue`：新增 `isStopPending` 状态（KnowledgeChat 为局部 ref，另两个为 prop）；按钮新增 `stop-pending-mode` class 与 `handleSendBtnClick` 统一处理三态点击；模板新增 `.stop-pending-inner-icon` 旋转圆环 SVG 与 `.stop-pending-badge` 右上角 10×10 橙色旋转角标；CSS 新增 `@keyframes stopPendingSpin` 0.9s 线性旋转
-- `App.vue` / `KnowledgeApp.vue`：新增模块级 `toolStopPending` 状态 + `clearToolStopPending` 函数；`handleStopMessage` 加锁（重复点击短路）+ 不再立即重置 `isStreaming` + 文本标记改为「[中断中，等待工具完成...]」+ 不清空 `currentStreamReader`；SSE while 循环内白名单事件（`end`/`error`/`interrupt`）+ 流自然走完（`done=true`）触发清锁；catch/finally 兜底清锁；`newSession` / `handleSessionSwitch` / `handleApprovalCancel` 入口前置清锁
+**核心机制（第二阶段最终态）**：
+1. **前端** `handleStopMessage` 调 `POST /api/agent/{sessionId}/abort`（或知识库路径 `/api/map/knowledge/{sessionId}/abort`）→ 后端 `trigger_abort(session_id)` → 全局 dict `_abort_signals[session_id].set()`
+2. **后端 `_stream_helper.py`** 入口 `register_abort_signal(session_id)` 创建 event；finally 块 `unregister_abort_signal(session_id)` 清理；`is_disconnected` 检测时同时 `trigger_abort`（双保险）
+3. **后端工具**（sandbox / explore）：从 `request.is_disconnected()` 改为 `get_abort_signal(session_id).is_set()`，主循环每 N chunk 检测一次 → 触发 `stopped_by_user` 分支 → **主动构造** `ToolMessage(tool_call_id=...)` 通过 `return Command` 返回
+4. **LangGraph** 收到 `Command(update={"messages": [ToolMessage]})` → 正常推进 → yield `tools` 节点 update → yield `end` 事件 → 自然关闭 SSE
+5. **前端 SSE while 循环** 识别白名单事件：`end` / `error` / `interrupt` / **`tools` 节点 update 含 ToolMessage**（abort 真正生效的信号）→ 触发 `clearToolStopPending()` + 清 60s 兜底 timer
+
+**为什么不用 reader.cancel() + 延迟中断**：
+- reader.cancel() 让前端 SSE 立即 done → 收不到后续任何事件 → `toolStopPending` 锁只能靠 finally 立即清锁 → UI 永远来不及呈现 stop-pending 态
+- abort_event 通道不依赖 reader 状态，事件走全局 dict，后端 yield 的 tools 节点 update 仍能到达前端
+
+**为什么不用纯 LangGraph SDK `AsyncGraphRunStream.abort()`**：
+- LangGraph 1.x 的 abort 是 SDK 层概念（`client.threads.stream()` 上下文管理器）
+- 项目用裸 `agent.graph.astream()` + 手动 SSE 透传，没有用 LangGraph SDK
+- 所以自建 `POST /abort` 端点作为"应用层 abort 协议"，核心机制遵循 LangGraph 推荐做法
+
+**60s 兜底 timer 是什么**：
+- 防止后端工具卡死在长 I/O（Docker exec 大文件解压、shell 等待），导致 `toolStopPending` 锁永远不清
+- 用户点 stop → 启动 60s timer
+- 60s 内收到白名单事件 → clearToolStopPending 清掉 timer
+- 60s 到期仍未收到 → 强制 `reader.cancel()` + 追加「[工具执行超时，已强制停止]」+ 清锁
+
+**关键文件改动**：
+- 后端 `app/core/tools/_stop_signal.py`（Phase 1）：新增全局 dict `_abort_signals` + `register_abort_signal` / `trigger_abort` / `unregister_abort_signal` / `get_abort_signal` 四个函数；保留原有 ContextVar 机制作为 `is_disconnected` 兜底
+- 后端 `app/core/tools/SandboxTools.py`（Phase 2）：从 `request.is_disconnected()` 改为 `get_abort_signal(session_id).is_set()`；保留每 5 chunk 检测频率（不激进到每 chunk）；新增进入 stream 前的预检查
+- 后端 `app/routers/_stream_helper.py`（Phase 3）：入口 `register_abort_signal` 创建 event；finally 块 `unregister_abort_signal` 清理；`is_disconnected` 检测时同时 `trigger_abort`（双保险）
+- 后端 `app/routers/agent_router.py`（Phase 3）：新增 `POST /api/agent/{session_id}/abort` 路由
+- 后端 `app/routers/knowledge_router.py`（Phase 3）：新增 `POST /api/map/knowledge/{session_id}/abort` 路由
+- 前端 `web/Agent/src/utils/api.js`（Phase 4）：新增 `triggerAbort(sessionId, options)` 函数
+- 前端 `web/Agent/src/App.vue`（Phase 4）：模块级 `toolStopPending` ref + `clearToolStopPending` + `startStopTimeout` 函数；`handleStopMessage` 调 `triggerAbort` 而非 `reader.cancel`；SSE while 循环新增"tools 节点 update 含 ToolMessage"识别分支
+- 前端 `web/Agent/src/KnowledgeApp.vue`（Phase 4）：同 App.vue 模式（知识库路径 `isKnowledge=true`）
+- 前端 `web/Agent/src/components/InputBox.vue`（第一阶段遗留）：`isStopPending` prop + `stop-pending-mode` class + `handleSendBtnClick` 三态分支 + `.stop-pending-badge` 角标
 
 **状态机矩阵**：
 
 | 触发点 | toolStopPending | isStreaming | 说明 |
 |--------|----------------|------------|------|
-| handleStopMessage 入口（无 pending） | true | 保持 true | 加锁 |
-| handleStopMessage 入口（已 pending） | - | - | 直接 return |
-| SSE `end` 事件 | false | false | 正常完成 |
-| SSE `error` 事件 | false | false | 错误收尾 |
-| SSE `interrupt` 事件 | false | false | 进入 HITL |
-| SSE 流 done=true | false | false | 延迟中断完成 |
+| handleStopMessage 入口（无 pending） | true | 保持 true | 加锁 + 调 triggerAbort + 启动 60s timer |
+| handleStopMessage 入口（已 pending） | - | - | 直接 return（重复点击短路） |
+| SSE `client_disconnected` 事件 | true | 保持 true | 锁保持（后端在等工具） |
+| SSE `tools` 节点 update 含 ToolMessage | false | 保持 true | **新白名单：abort 真正生效** |
+| SSE `end` / `error` / `interrupt` 事件 | false | false | 流走完 |
+| SSE 流 done=true | false | false | 自然结束 |
+| 60s 兜底 timer 到期 | false | false | reader.cancel + 追加「[工具执行超时]」 |
 | handleSendMessage catch / finally | false | - | 异常兜底 |
 | newSession / handleSessionSwitch | false | false | 切换兜底 |
 | handleApprovalCancel | false | false | HITL 取消兜底 |
 
-**测试覆盖**：
-- `web/Agent/src/components/__tests__/InputBox.stop-pending.spec.js`（新增，11 用例）：三态 class 切换、旋转圆环 + badge 渲染、title 文案、canSend 禁用、点击拦截、`handleSendBtnClick` 三态分支
-- `web/Agent/src/components/__tests__/App.stop-pending.spec.js`（新增，21 用例）：纯函数复刻 `handleStopMessage` + `clearToolStopPending` + `shouldClearToolStopPending`；覆盖加锁、重复点击短路、白名单事件判定（end/error/interrupt/message/update/custom/null）、兜底幂等、4 个综合场景（点 stop → end / error / interrupt / newsession）
-- `web/Agent/src/components/__tests__/KnowledgeChat.stop.spec.js`（扩展，5 个新用例）：stop-pending 样式渲染、handleStop 重复点击短路、`handleSendBtnClick` 拦截、handleNewChat/handleApprovalCancel 入口清锁；同步改造原有用例以适配新文本标记「[中断中，等待工具完成...]」与 currentReader 不立即清空、internalStreaming 不再被 handleStop 重置
+**测试覆盖（90+ 用例）**：
+- 后端 `app/tests/core/tools/test_stop_signal.py`（11 + 10 = 21 用例）：原有 ContextVar 机制 + 新增 abort signals dict 全套测试（register/trigger/unregister 生命周期、idempotent、并发隔离）
+- 后端 `app/tests/core/tools/test_sandbox_abort.py`（4 用例，新增）：abort_event 触发 stopped_by_user 分支、is_disconnected 兜底、abort_event 优先于 is_disconnected、正常完成路径
+- 后端 `app/tests/routers/test_agent_router_abort.py`（5 用例，新增）：/abort 端点注册、未注册 session 兜底、已注册 session 触发、idempotent、与 agents-md 路由不冲突
+- 后端 `app/tests/features/map_agent/test_map_router_disconnect.py`（9 用例，未改）：原有延迟中断机制测试，仍通过
+- 后端 `app/tests/features/map_agent/test_map_router_subagent_stop.py`（5 用例，未改）：子智能体停止信号端到端测试，仍通过
+- 后端 `app/tests/core/tools/test_sandbox_tools.py`（45 用例，未改）：辅助函数全套，仍通过
+- 前端 `web/Agent/src/components/__tests__/InputBox.stop-pending.spec.js`（11 用例）：三态 class 切换、旋转圆环 + badge 渲染、title 文案、canSend 禁用、点击拦截、handleSendBtnClick 三态分支
+- 前端 `web/Agent/src/components/__tests__/App.stop-pending.spec.js`（25 用例，含第二阶段扩展）：纯函数复刻 handleStopMessage + clearToolStopPending + shouldClearToolStopPending（识别 end/error/interrupt/tools update）；新增 triggerAbort 调用、60s timer 启动断言
+- 前端 `web/Agent/src/components/__tests__/KnowledgeChat.stop.spec.js`（11 用例，扩展）：stop-pending 样式、handleStop 重复点击短路、handleSendBtnClick 拦截、handleNewChat/handleApprovalCancel 入口清锁
 
 **与既有章节关系**：
-- 「精确延迟中断」（`_stream_helper.py:101-201`）：后端机制，本章不重复描述，只引用
-- 「停止按钮（中断 LLM 生成）」（知识库章节）：后端 + 子智能体停止信号感知，本章只补充前端视觉态
-- 「前端 `isStreaming` 状态同步」（并发排队修复）：保持 `isStreaming` 复位路径不变，仅增加 `toolStopPending` 锁
+- 「精确延迟中断」（`_stream_helper.py:101-201`）：后端延迟中断机制仍存在，但**不是 abort 主路径**（仅作 is_disconnected 兜底）；abort 主路径是 abort_event 通道
+- 「停止按钮（中断 LLM 生成）」（知识库章节，2026-06-15 新增）：原始"request.is_disconnected() 检测"机制，保留作为非主动关闭场景的兜底
+- 「前端 `isStreaming` 状态同步」（并发排队修复）：保持 isStreaming 复位路径不变
+- 「ToolNode 错误处理（handle_tool_errors）」（LangGraph 推荐做法）：本节实现与该做法同源 —— 工具失败时主动 return ToolMessage 而非抛异常
 
 ### 工具函数（src/utils）
 

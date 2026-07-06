@@ -824,6 +824,53 @@ export async function fetchKnowledgeFiles() {
   return response.json()
 }
 
+/**
+ * 主动中止指定 session 的流式响应（2026-07-06 新增）
+ *
+ * 调用后端 POST /api/agent/{sessionId}/abort，触发 abort_event.set()。
+ * 后端 _stream_helper 的延迟中断机制继续生效：等当前 tools 节点完成 ToolMessage
+ * 后才真正断开 SSE，避免 orphan tool_calls 触发 2013 错误。
+ *
+ * 设计要点：
+ * - 永远 idempotent：多次调用或对未注册 session 都不抛错
+ * - 不依赖 SSE 连接状态：abort_event 走后端全局 dict，与 reader 无关
+ * - 必须在 reader.cancel() 之前调用（让后端有时间响应）
+ * - 知识库路径：POST /api/map/knowledge/{sessionId}/abort
+ *
+ * Args:
+ *   sessionId: 会话 ID
+ *   options.isKnowledge: 是否为知识库路径（默认 false，走 /api/agent/）
+ *
+ * Returns:
+ *   Promise<{status: 'aborted' | 'not_found', session_id: string}>
+ *     - status='aborted': 找到 abort event 并 set
+ *     - status='not_found': session 未注册（可能已结束或从未启动）
+ */
+export async function triggerAbort(sessionId, options = {}) {
+  const { isKnowledge = false } = options
+  if (!sessionId) {
+    throw new Error('triggerAbort: sessionId 不能为空')
+  }
+  const url = isKnowledge
+    ? `/api/map/knowledge/${sessionId}/abort`
+    : `/api/agent/${sessionId}/abort`
+
+  const response = await fetchWithAuth(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Session-ID': sessionId
+    },
+    body: JSON.stringify({})
+  })
+  if (!response.ok) {
+    // 不抛错：abort 是 best-effort，失败时上层仍可走 reader.cancel() 兜底
+    console.warn(`[triggerAbort] HTTP ${response.status}: ${response.statusText}`)
+    return { status: 'http_error', session_id: sessionId }
+  }
+  return response.json()
+}
+
 /* ============================================
    会话历史管理 API
    ============================================ */

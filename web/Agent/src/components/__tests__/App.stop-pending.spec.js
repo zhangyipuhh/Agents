@@ -17,16 +17,18 @@
 import { describe, it, expect, vi } from 'vitest'
 
 /**
- * 复刻 App.vue 的 handleStopMessage 行为（纯函数版）
+ * 复刻 App.vue 的 handleStopMessage 行为（纯函数版，2026-07-06 重构）
  *
  * 与旧版（App.stop.spec.js）差异：
  *   - 加锁 toolStopPending = true（重复点击短路）
+ *   - 调 triggerAbort 而非 reader.cancel（2026-07-06 重构）
+ *   - 启动 60s 兜底 timer（2026-07-06 新增）
  *   - 不重置 isStreaming —— 由 SSE 事件流自然走完时复位
  *   - 文本标记从「[生成已被用户中止]」改为「[中断中，等待工具完成...]」
- *   - 不再清空 currentStreamReader（保留引用让 SSE 继续推完 tools 节点 chunk）
+ *   - currentStreamReader 不再被清空（保留引用让 SSE 继续推完 tools 节点 chunk）
  *
  * Args:
- *   state: { isStreaming, toolStopPending, currentStreamReader, messages }
+ *   state: { isStreaming, toolStopPending, currentStreamReader, messages, triggerAbortFn, stopTimeoutMs }
  *
  * Returns: 修改后的 state
  */
@@ -38,14 +40,16 @@ async function handleStopMessage(state) {
   // 加锁
   state.toolStopPending = true
 
-  // 取消 SSE reader（不置 null）
-  if (state.currentStreamReader) {
+  // 2026-07-06 改造：调 triggerAbort 而非 reader.cancel
+  if (state.triggerAbortFn) {
     try {
-      await state.currentStreamReader.cancel()
+      await state.triggerAbortFn()
     } catch (err) {
-      // 静默忽略
+      // best-effort，失败时 60s 兜底 timer 兜底
     }
   }
+  // 2026-07-06 新增：模拟启动 60s 兜底 timer（测试中不真正跑 60s，仅记录）
+  state.stopTimeoutStarted = true
 
   // 标记 AI 消息为「中断中」状态
   const aiMsg = state.messages[state.messages.length - 1]
@@ -73,20 +77,41 @@ function clearToolStopPending(state) {
  * 复刻 App.vue SSE while 循环白名单复位逻辑（纯函数版）
  * 接收单个 SSE 事件，返回是否应该清锁
  *
- * @param {object} data - SSE 事件数据 { type: 'end' | 'error' | 'interrupt' | ... }
+ * 白名单事件（2026-07-06 扩展）：
+ *   - end: 工具完成 + 流走完
+ *   - error: 错误收尾
+ *   - interrupt: HITL 进入审批
+ *   - tools 节点 update（含 ToolMessage）：abort 真正生效的信号
+ *     data 格式：{ type: 'update', data: { tools: { messages: [ToolMessage, ...] } } }
+ *
+ * @param {object} data - SSE 事件数据
  * @returns {boolean}
  */
 function shouldClearToolStopPending(data) {
-  return !!(data && (data.type === 'end' || data.type === 'error' || data.type === 'interrupt'))
+  if (!data) return false
+  if (data.type === 'end' || data.type === 'error' || data.type === 'interrupt') return true
+  if (
+    data.type === 'update' &&
+    data.data &&
+    typeof data.data === 'object' &&
+    data.data.tools &&
+    Array.isArray(data.data.tools.messages) &&
+    data.data.tools.messages.length > 0
+  ) {
+    return true
+  }
+  return false
 }
 
 describe('App.vue toolStopPending 状态机（2026-07-06 新增）', () => {
   it('test_handleStopMessage_locks_toolStopPending 流式时点击 stop 加锁 toolStopPending', async () => {
     const cancelFn = vi.fn().mockResolvedValue(undefined)
+    const triggerAbortFn = vi.fn().mockResolvedValue(undefined)
     const state = {
       isStreaming: true,
       toolStopPending: false,
       currentStreamReader: { cancel: cancelFn },
+      triggerAbortFn,
       messages: [
         { id: 1, type: 'ai', text: 'partial', ended: false, isThinkingActive: true }
       ]
@@ -96,12 +121,16 @@ describe('App.vue toolStopPending 状态机（2026-07-06 新增）', () => {
 
     // 加锁
     expect(state.toolStopPending).toBe(true)
-    // cancel 被调用
-    expect(cancelFn).toHaveBeenCalledTimes(1)
-    // currentStreamReader 不被立即清空（保留引用）
+    // 2026-07-06 改造：调 triggerAbort 而非 reader.cancel
+    expect(triggerAbortFn).toHaveBeenCalledTimes(1)
+    // reader.cancel 不应被调（避免立即断开 SSE）
+    expect(cancelFn).not.toHaveBeenCalled()
+    // currentStreamReader 不被立即清空（保留引用让 SSE 继续推完 tools 节点 chunk）
     expect(state.currentStreamReader).not.toBeNull()
     // isStreaming 不被立即重置（保留 stop-pending 期间 true）
     expect(state.isStreaming).toBe(true)
+    // 60s 兜底 timer 启动
+    expect(state.stopTimeoutStarted).toBe(true)
     // AI 消息 ended = true
     expect(state.messages[0].ended).toBe(true)
     expect(state.messages[0].isThinkingActive).toBe(false)
@@ -112,23 +141,25 @@ describe('App.vue toolStopPending 状态机（2026-07-06 新增）', () => {
 
   it('test_handleStopMessage_short_circuit_when_already_pending 重复点击短路', async () => {
     const cancelFn = vi.fn().mockResolvedValue(undefined)
+    const triggerAbortFn = vi.fn().mockResolvedValue(undefined)
     const state = {
       isStreaming: true,
       toolStopPending: false,
       currentStreamReader: { cancel: cancelFn },
+      triggerAbortFn,
       messages: [
         { id: 1, type: 'ai', text: 'partial', ended: false, isThinkingActive: true }
       ]
     }
 
-    // 第一次点击：加锁
+    // 第一次点击：加锁 + 调 triggerAbort
     await handleStopMessage(state)
-    expect(cancelFn).toHaveBeenCalledTimes(1)
+    expect(triggerAbortFn).toHaveBeenCalledTimes(1)
     expect(state.toolStopPending).toBe(true)
 
-    // 第二次点击：短路
+    // 第二次点击：短路（triggerAbort 不再被调）
     await handleStopMessage(state)
-    expect(cancelFn).toHaveBeenCalledTimes(1)  // cancel 仍只被调用一次
+    expect(triggerAbortFn).toHaveBeenCalledTimes(1)  // 仍只调用一次
     expect(state.toolStopPending).toBe(true)
   })
 
@@ -183,16 +214,21 @@ describe('App.vue toolStopPending 状态机（2026-07-06 新增）', () => {
 
   it('test_handleStopMessage_handles_no_ai_message messages 为空时不报错', async () => {
     const cancelFn = vi.fn().mockResolvedValue(undefined)
+    const triggerAbortFn = vi.fn().mockResolvedValue(undefined)
     const state = {
       isStreaming: true,
       toolStopPending: false,
       currentStreamReader: { cancel: cancelFn },
+      triggerAbortFn,
       messages: []
     }
 
     await expect(handleStopMessage(state)).resolves.toBeTruthy()
-    expect(cancelFn).toHaveBeenCalledTimes(1)
+    // 2026-07-06 改造：调 triggerAbort 而非 reader.cancel
+    expect(triggerAbortFn).toHaveBeenCalledTimes(1)
+    expect(cancelFn).not.toHaveBeenCalled()
     expect(state.toolStopPending).toBe(true)
+    expect(state.stopTimeoutStarted).toBe(true)
     // isStreaming 保持
     expect(state.isStreaming).toBe(true)
   })
@@ -243,6 +279,40 @@ describe('App.vue toolStopPending 白名单复位（2026-07-06 新增）', () =>
     expect(shouldClearToolStopPending(null)).toBe(false)
     expect(shouldClearToolStopPending(undefined)).toBe(false)
   })
+
+  // ===== 2026-07-06 新增：tools 节点 update 识别（abort 真正生效的信号） =====
+
+  it('test_shouldClearToolStopPending_tools_update_event SSE tools 节点 update 含 ToolMessage 时清锁', () => {
+    // 模拟 abort 真正生效：sandbox 工具主动 return ToolMessage 后，
+    // LangGraph yield tools 节点 update，data.data.tools.messages 含 ToolMessage
+    expect(shouldClearToolStopPending({
+      type: 'update',
+      data: { tools: { messages: [{ __class__: 'ToolMessage', tool_call_id: 'call_001' }] } }
+    })).toBe(true)
+  })
+
+  it('test_shouldClearToolStopPending_tools_update_empty_messages tools 节点 update 但 messages 为空时不清锁', () => {
+    // 防御：只有 messages 数组非空时才视为"工具完成"信号
+    expect(shouldClearToolStopPending({
+      type: 'update',
+      data: { tools: { messages: [] } }
+    })).toBe(false)
+  })
+
+  it('test_shouldClearToolStopPending_tools_update_missing_messages tools 节点 update 缺 messages 字段时不清锁', () => {
+    expect(shouldClearToolStopPending({
+      type: 'update',
+      data: { tools: {} }
+    })).toBe(false)
+  })
+
+  it('test_shouldClearToolStopPending_other_node_update llm_call 节点 update 不清锁', () => {
+    // llm_call 节点 update 仍走流，不应立即清锁（等真正 end 事件）
+    expect(shouldClearToolStopPending({
+      type: 'update',
+      data: { llm_call: { messages: [] } }
+    })).toBe(false)
+  })
 })
 
 describe('App.vue toolStopPending 兜底复位（2026-07-06 新增）', () => {
@@ -269,10 +339,12 @@ describe('App.vue toolStopPending 兜底复位（2026-07-06 新增）', () => {
 describe('App.vue toolStopPending 综合场景（2026-07-06 新增）', () => {
   it('test_full_workflow_pending_then_end 用户点 stop → 工具完成 → SSE end 复位', async () => {
     const cancelFn = vi.fn().mockResolvedValue(undefined)
+    const triggerAbortFn = vi.fn().mockResolvedValue(undefined)
     const state = {
       isStreaming: true,
       toolStopPending: false,
       currentStreamReader: { cancel: cancelFn },
+      triggerAbortFn,
       messages: [
         { id: 1, type: 'ai', text: 'partial', ended: false, isThinkingActive: true }
       ]

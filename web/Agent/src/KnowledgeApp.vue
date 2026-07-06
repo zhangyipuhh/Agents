@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, nextTick, computed } from 'vue'
-import { fetchKnowledgeFiles, fetchFilePreview, createNewSession, chatStream, validateToken, refreshToken } from './utils/api.js'
+import { fetchKnowledgeFiles, fetchFilePreview, createNewSession, chatStream, validateToken, refreshToken, triggerAbort } from './utils/api.js'
 import { createAiMessage, processSSEEvent } from './utils/sseParser.js'
 import { redirectToLogin } from './utils/auth.js'
 import FileList from './components/FileList.vue'
@@ -90,6 +90,10 @@ let isCreatingNewSession = false
 // 2026-06-15 新增：持有当前 SSE reader，供 ProfileInputBox 的 stop 事件调用 cancel() 立即中断 LLM
 let currentStreamReader = null
 
+// 2026-07-06 新增：60s 兜底 timer（与 App.vue 同语义）
+let stopTimeoutId = null
+const STOP_TIMEOUT_MS = 60 * 1000
+
 // 2026-07-06 新增：中断待生效锁（与 App.vue::toolStopPending 同语义）
 // 注意：KnowledgeApp 没有独立的 KnowledgeChat 内部 isStopPending，
 // 由 ProfileInputBox 接收 prop 显示 stop-pending 态，KnowledgeApp 维护此锁。
@@ -97,11 +101,42 @@ let currentStreamReader = null
 const toolStopPending = ref(false)
 
 /**
- * 统一清锁入口（2026-07-06 新增）。
+ * 统一清锁入口（2026-07-06 新增）。同时清理 60s 兜底 timer。
  * @returns {void}
  */
 function clearToolStopPending() {
   toolStopPending.value = false
+  if (stopTimeoutId !== null) {
+    clearTimeout(stopTimeoutId)
+    stopTimeoutId = null
+  }
+}
+
+/**
+ * 启动 60s 兜底 timer（2026-07-06 新增；与 App.vue::startStopTimeout 同语义）
+ * @returns {void}
+ */
+function startStopTimeout() {
+  if (stopTimeoutId !== null) {
+    clearTimeout(stopTimeoutId)
+  }
+  stopTimeoutId = setTimeout(() => {
+    stopTimeoutId = null
+    console.warn('[KnowledgeApp] 60s 兜底 timer 到期，强制取消 reader 并清锁')
+    if (currentStreamReader) {
+      try {
+        currentStreamReader.cancel()
+      } catch (err) {
+        console.warn('[KnowledgeApp] 60s 兜底 reader.cancel 异常（可忽略）:', err)
+      }
+    }
+    const aiMsg = messages.value[messages.value.length - 1]
+    if (aiMsg && aiMsg.type === 'ai' && !aiMsg.text?.includes('[工具执行超时')) {
+      aiMsg.text = (aiMsg.text || '') + '\n\n[工具执行超时，已强制停止]'
+    }
+    clearToolStopPending()
+    isStreaming.value = false
+  }, STOP_TIMEOUT_MS)
 }
 
 function toggleSidebar() {
@@ -333,6 +368,16 @@ async function startChatStream(message, uploadedFiles, aiMsg, resumeData = null)
           if (data && (data.type === 'end' || data.type === 'error' || data.type === 'interrupt')) {
             clearToolStopPending()
           }
+          // 2026-07-06 新增：识别 abort 真正生效的信号 — tools 节点完成 update
+          if (
+            data && data.type === 'update' && data.data &&
+            typeof data.data === 'object' &&
+            data.data.tools &&
+            Array.isArray(data.data.tools.messages) &&
+            data.data.tools.messages.length > 0
+          ) {
+            clearToolStopPending()
+          }
           processSSEEvent(data, aiMsg.value, { onQueueEvent: handleQueueEvent })
 
           if (aiMsg.value.interrupt) {
@@ -445,12 +490,13 @@ function handleApprovalCancel() {
 }
 
 /**
- * 停止 LLM 生成（2026-06-15 新增；2026-07-06 改造）：用户点击停止按钮触发
+ * 停止 LLM 生成（2026-06-15 新增；2026-07-06 重构）：用户点击停止按钮触发
  * 与 App.vue::handleStopMessage 行为一致：
  * 1. 加锁 toolStopPending.value = true（重复点击短路）
- * 2. 调用 currentStreamReader.cancel() 断开 SSE 连接（后端走精确延迟中断）
- * 3. 标记最后一条 AI 消息 ended = true + 追加「中断中...」提示
- * 4. 不重置 isStreaming —— 由 SSE 流自然走完时复位
+ * 2. 调 triggerAbort(sessionId) 通知后端触发 abort_event（知识库路径）
+ * 3. 启动 60s 兜底 timer（防后端工具卡死时锁永远不清）
+ * 4. 标记最后一条 AI 消息 ended = true + 追加「中断中...」提示
+ * 5. 不重置 isStreaming —— 由 SSE 白名单事件（end/error/interrupt/tools 节点完成）触发清锁
  */
 async function handleStopMessage() {
   if (!isStreaming.value) return
@@ -460,16 +506,17 @@ async function handleStopMessage() {
   // 1. 加锁（UI 由 ProfileInputBox 的 isStopPending 接收，立即变灰 + 旋转 badge）
   toolStopPending.value = true
 
-  // 2. 取消 SSE reader（不置 null：让 SSE 继续推完当前 tools 节点的 chunk）
-  if (currentStreamReader) {
-    try {
-      await currentStreamReader.cancel()
-    } catch (err) {
-      console.warn('[KnowledgeApp] stop reader.cancel 异常（可忽略）:', err)
-    }
+  // 2. 通知后端触发 abort_event（知识库路径）
+  try {
+    await triggerAbort(currentSessionId.value, { isKnowledge: true })
+  } catch (err) {
+    console.warn('[KnowledgeApp] triggerAbort 调用失败（继续走 60s 兜底）:', err)
   }
 
-  // 3. 标记 AI 消息为「中断中」状态
+  // 3. 启动 60s 兜底 timer
+  startStopTimeout()
+
+  // 4. 标记 AI 消息为「中断中」状态
   const aiMsg = messages.value[messages.value.length - 1]
   if (aiMsg && aiMsg.type === 'ai') {
     aiMsg.ended = true

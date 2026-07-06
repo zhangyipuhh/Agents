@@ -31,6 +31,7 @@ from app.shared.utils.files.doc_converter import (
     check_conversion_support,
     get_libreoffice_installation_guide,
 )
+from app.core.tools._stop_signal import trigger_abort
 from app.core.config.paths import (
     KNOWLEDGE_DIR,
     METADATA_FILE,
@@ -312,6 +313,25 @@ def _scan_knowledge_dir() -> dict:
 # ============================================================================
 # 知识库文件元数据接口
 # ============================================================================
+
+
+@router.post("/knowledge/{session_id}/abort")
+async def abort_knowledge_session(session_id: str):
+    """
+    主动中止指定 session 的知识库流式响应（2026-07-06 新增）。
+
+    与 agent_router.abort_session 同语义，区别仅路径前缀。
+    """
+    success = trigger_abort(session_id)
+    if success:
+        logging.getLogger(__name__).info(
+            f"[abort] knowledge session_id={session_id} 收到主动 abort 请求，abort_event 已 set"
+        )
+        return {"status": "aborted", "session_id": session_id}
+    logging.getLogger(__name__).info(
+        f"[abort] knowledge session_id={session_id} 收到 abort 请求但 session 未注册，忽略"
+    )
+    return {"status": "not_found", "session_id": session_id}
 
 
 @router.get('/knowledge/files')
