@@ -491,6 +491,11 @@ async function handleProjectSelectNone() {
 
 async function handleProjectPick(project) {
   if (isProjectMutating.value) return
+  if (!project || !project.id) {
+    console.error('切换项目失败：项目信息不完整')
+    alert('切换项目失败：项目信息不完整')
+    return
+  }
   isProjectMutating.value = true
   try {
     // 2026-07-06 修复：项目是独立实体，选择项目不依赖 sessionId；已有 session 时同步绑定
@@ -513,13 +518,23 @@ async function handleProjectCreate({ name }) {
   try {
     // 2026-07-06 修复：项目是独立实体，创建项目不再使用 session_id 作为 uuid
     const result = await createProject(name)
-    const project = result.project
+    // 2026-07-06 修正：对后端返回值做防御性读取，避免返回结构异常导致 currentProject 被清空
+    const project = result?.project || result
+    if (!project || !project.id) {
+      throw new Error('创建项目成功但未返回项目信息')
+    }
     // 已有 session 时自动绑定到该项目；无 session 时仅更新前端状态
     if (sessionId.value) {
       await bindSessionToProject(sessionId.value, project.id)
     }
     currentProject.value = project
     currentAttachments.value = []
+    // 2026-07-06 修正：创建成功后由父组件关闭弹窗，确保 currentProject 已更新再卸载弹窗
+    isProjectDialogOpen.value = false
+    // 2026-07-06 修正：创建成功后同步刷新 Sidebar 项目列表，避免左侧「项目」分组仍显示「暂无项目」
+    if (sidebarRef.value) {
+      sidebarRef.value.loadProjectList()
+    }
   } catch (err) {
     console.error('创建项目失败:', err)
     alert(`创建项目失败：${err.message}`)

@@ -573,8 +573,8 @@ watch(() => props.currentSessionId, (newId) => {
   })
 })
 
-// 暴露 loadSessionList 方法给父组件调用
-defineExpose({ loadSessionList })
+// 暴露 loadSessionList / loadProjectList 方法给父组件调用
+defineExpose({ loadSessionList, loadProjectList })
 
 onMounted(() => {
   document.addEventListener('click', handleClickOutside)

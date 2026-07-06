@@ -88,9 +88,9 @@ async function handleCreateSubmit() {
   try {
     // 注意：uuid 必须由调用方在 create 之前确定 = 当前 session_id
     // 但本组件不直接知道 session_id，所以把"生成 uuid"的职责放在父组件的 onCreate 事件里
-    // 这里只 emit 'created' 让父组件去调 createProject(name, uuid)
+    // 这里只 emit 'created' 让父组件去调 createProject(name, uuid)；
+    // 2026-07-06 修正：弹窗关闭由父组件控制，确保 App.vue 更新 currentProject 后再卸载弹窗
     emit('created', { name })
-    closeDialog()
   } catch (err) {
     createError.value = err.message || '创建项目失败'
   } finally {

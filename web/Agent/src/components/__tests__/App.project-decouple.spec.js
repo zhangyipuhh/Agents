@@ -120,10 +120,13 @@ describe('App.vue 项目选择与 session 解耦（2026-07-06）', () => {
 
     expect(wrapper.vm.sessionId.value).toBe('')
 
+    wrapper.vm.isProjectDialogOpen = true
     wrapper.vm.handleProjectCreate({ name: 'New Project' })
     await flushPromises()
 
     expect(wrapper.vm.currentProject).toMatchObject({ id: 1, name: 'New Project' })
+    // 2026-07-06 修正：创建成功后父组件负责关闭弹窗
+    expect(wrapper.vm.isProjectDialogOpen).toBe(false)
     const createProjectCalls = global.fetch.mock.calls.filter(([url]) => url === '/api/project/create')
     expect(createProjectCalls).toHaveLength(1)
     const [, options] = createProjectCalls[0]
@@ -181,5 +184,63 @@ describe('App.vue 项目选择与 session 解耦（2026-07-06）', () => {
     const [, options] = createSessionCalls[0]
     const body = JSON.parse(options.body)
     expect(body).toMatchObject({ project_id: 2 })
+  })
+
+  it('test_create_project_updates_trigger_label 创建成功后项目按钮文案立即刷新', { timeout: 15000 }, async () => {
+    global.fetch = createMockFetch()
+    const App = (await import('../../App.vue')).default
+    const wrapper = mount(App, {
+      global: { stubs: ['router-link', 'router-view'] }
+    })
+    await flushPromises()
+
+    // 初始状态下按钮显示默认文案
+    const labelBefore = wrapper.find('.project-trigger-label')
+    expect(labelBefore.exists()).toBe(true)
+    expect(labelBefore.text()).toBe('不使用文件夹')
+
+    wrapper.vm.isProjectDialogOpen = true
+    wrapper.vm.handleProjectCreate({ name: 'New Project' })
+    await flushPromises()
+
+    // 创建成功后按钮文案应立即变为新项目名
+    const labelAfter = wrapper.find('.project-trigger-label')
+    expect(labelAfter.exists()).toBe(true)
+    expect(labelAfter.text()).toBe('New Project')
+    expect(wrapper.vm.isProjectDialogOpen).toBe(false)
+  })
+
+  it('test_create_project_invalid_response_keeps_dialog_open 创建返回异常结构时不更新状态且弹窗保持打开', { timeout: 15000 }, async () => {
+    const originalAlert = window.alert
+    const alertSpy = vi.fn()
+    window.alert = alertSpy
+    global.fetch = vi.fn((url, options) => {
+      if (url === '/api/auth/refresh') {
+        return Promise.resolve({ ok: true, json: async () => ({ access_token: 'fake-token' }) })
+      }
+      if (url === '/api/auth/validate') {
+        return Promise.resolve({ ok: true, json: async () => ({ username: 'tester', role: 'user', user_id: 1 }) })
+      }
+      if (url === '/api/project/create') {
+        // 模拟后端返回异常结构：缺少 project 字段
+        return Promise.resolve({ ok: true, json: async () => ({ success: true, message: 'ok' }) })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    })
+
+    const App = (await import('../../App.vue')).default
+    const wrapper = mount(App, {
+      global: { stubs: ['router-link', 'router-view'] }
+    })
+    await flushPromises()
+
+    wrapper.vm.isProjectDialogOpen = true
+    wrapper.vm.handleProjectCreate({ name: 'Bad Project' })
+    await flushPromises()
+
+    expect(wrapper.vm.currentProject).toBeNull()
+    expect(wrapper.vm.isProjectDialogOpen).toBe(true)
+    expect(alertSpy).toHaveBeenCalledWith('创建项目失败：创建项目成功但未返回项目信息')
+    window.alert = originalAlert
   })
 })

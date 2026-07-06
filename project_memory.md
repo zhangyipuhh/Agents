@@ -896,8 +896,8 @@ return data/upload/yyyy/mm/dd/{session_id}/
 | 组件 | 职责 |
 |------|------|
 | `ProjectDropdown.vue` | 紧挨着 InputBox 上方的下拉框（顶部只读预览 + 3 个动作 + 锁定支持） |
-| `ProjectDialog.vue` | 双模式弹窗（create / pick） |
-| `App.vue` | `currentProject` 状态机 + handleSessionSwitch 恢复 + newSession 纯前端重置（2026-07-XX 改造）+ `canEditProject` 锁定判定 + `ensureSessionForFirstOp` 按需建 session |
+| `ProjectDialog.vue` | 双模式弹窗（create / pick）；create 模式点击保存后 emit `created`，弹窗关闭由父组件控制 |
+| `App.vue` | `currentProject` 状态机 + handleSessionSwitch 恢复 + newSession 纯前端重置（2026-07-XX 改造）+ `canEditProject` 锁定判定 + `ensureSessionForFirstOp` 按需建 session + `handleProjectCreate` 成功后关闭弹窗并刷新按钮文案 |
 
 ### 前端 Session 创建时机改为「首次交互时」（2026-07-XX 改造）
 
@@ -919,7 +919,7 @@ return data/upload/yyyy/mm/dd/{session_id}/
 - `App.vue` 删除原 `ensureSession()`，`onMounted` 仅保留 `checkAuth()`。
 - `App.vue` 新增 `ensureSessionForFirstOp(projectId)`：若 `sessionId.value` 已存在则短路返回；否则 `createNewSession('session_id', projectId)` → 同步 `sessionId.value` / `sessionTitle` → `refreshSessionTitle` 异步刷新真实标题 → `sidebarRef.loadSessionList()` 刷新侧边栏。
 - `App.vue::handleApprovalSubmit` 加防御性 early-return：缺 `sessionId` 时直接退出（实际不会触发，因为触达 HITL 必然先经历 `handleSendMessage`）。
-- `App.vue::handleProjectPick` / `handleProjectCreate` / `handleProjectSelectNone`（2026-07-06 修正）：项目是独立实体，选择/创建/解绑项目不再以 `sessionId.value` 为前提。无 session 时仅更新前端 `currentProject` / `currentAttachments` 状态；有 session 时才调用 `/api/project/session/bind` 或 `/api/project/session/unbind` 同步当前会话的项目关联。创建项目时 `createProject(name)` 不再传入 `session_id` 作为 uuid，由后端独立生成。
+- `App.vue::handleProjectPick` / `handleProjectCreate` / `handleProjectSelectNone`（2026-07-06 修正）：项目是独立实体，选择/创建/解绑项目不再以 `sessionId.value` 为前提。无 session 时仅更新前端 `currentProject` / `currentAttachments` 状态；有 session 时才调用 `/api/project/session/bind` 或 `/api/project/session/unbind` 同步当前会话的项目关联。创建项目时 `createProject(name)` 不再传入 `session_id` 作为 uuid，由后端独立生成。`handleProjectCreate` 对返回值做防御性读取，成功设置 `currentProject` 后由父组件关闭弹窗，确保按钮文案实时刷新；`handleProjectPick` 对入参做基础校验。
 - `App.vue` 模板 `<InputBox :ensure-session="ensureSessionForFirstOp" ... />`。
 - `InputBox.vue` 新增 prop `ensureSession: Function`（默认 null，向后兼容）；`startUpload` 内首调上传前 `await props.ensureSession()`，失败时把 `fileItem.status = 'error'` 并附错误信息，仅当 promise 正常才进入 `runChunkUpload()`。
 - 兼容并发：多个 `startUpload` 同时 await 同一 `ensureSessionForFirstOp()` → `createNewSession` 防重锁保证对后端只发一次 `/api/session/create`，其它 await 在同一 promise 上串接结果。
