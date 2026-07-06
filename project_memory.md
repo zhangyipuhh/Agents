@@ -1148,6 +1148,16 @@ return data/upload/yyyy/mm/dd/{session_id}/
 
 **功能**: 封装文件系统子智能体的通用执行逻辑：创建子智能体、流式执行、事件推送、用户停止信号感知、结果提取与异常处理。
 
+**2026-07-06 改造（与 sandbox 保持一致）**：`explore` 与 `query_knowledge` 都通过本类的 `arun` 启动子智能体，因此**改造 arun 一处即同时覆盖两个子智能体的 abort_event 感知**。
+
+- import 调整：`get_current_request` → `get_abort_signal, get_current_request`
+- 进入 `arun` 时取出 `session_id = runtime.context.get("session_id", "default")` + `abort_event = get_abort_signal(session_id)`
+- 进入 stream 前的预检查：仅记录日志（不直接置 `stopped_by_user`，由主循环统一处理）
+- 主循环检测改为**双保险**：abort_event 优先（主动 abort 通道）→ is_disconnected 兜底（非主动关闭场景）；任一触发即视为用户停止
+- `stopped_by_user` 分支**无需改**——已正确构造 `ToolMessage(tool_call_id=...)` + `Command(update={"messages": [ToolMessage]})` 返回，避免 orphan tool_calls 触发 2013 错误
+
+**与 sandbox 改造的一致性**：`BaseFilesystemTool.arun` 的 abort_event 检测路径与 `SandboxTools.sandbox` 完全一致，差别仅是 sandbox 额外需要清理 Docker 容器（`middleware.cleanup()`）——本类不需要此步（无 Docker 资源）
+
 **使用方式**: 上层工具（如 `explore`、`query_knowledge`）实例化 `BaseFilesystemTool`，传入 `tool_name`、`system_prompt`，然后调用 `await tool.arun(prompt, runtime, root_path)`。
 
 **设计目的**:

@@ -38,7 +38,7 @@ from langgraph.types import Command
 from app.core.agent.AgentContext import AgentContext
 from app.core.config.config import LLM_CONFIG
 from app.core.llmcalls.model_factory import ModelFactory
-from app.core.tools._stop_signal import get_current_request
+from app.core.tools._stop_signal import get_abort_signal, get_current_request
 from app.core.tools.events import create_tool_event
 from app.core.tools.subagent_message_extractor import extract_structured_messages
 from app.core.tools.subagent_registry import get_subagent_meta
@@ -234,6 +234,24 @@ class BaseFilesystemTool:
         request = get_current_request()
         actual_task_id = tool_call_id
 
+        # 2026-07-06 新增：取出 session_id + abort_event
+        # 主动 abort 通道：用户点"停止"按钮时由 /abort 路由触发 event.set()，
+        # 工具下次 check 时感知，主动构造 ToolMessage 返回（避免 orphan tool_calls）。
+        # None 场景：session 未注册（流未启动或已结束）→ 跳过 abort 检查
+        session_id = runtime.context.get("session_id", "default")
+        abort_event = get_abort_signal(session_id)
+
+        # 2026-07-06 新增：进入子智能体 stream 前的预检查
+        # 捕捉"刚点 stop 就进 BaseFilesystemTool"的场景：避免哪怕跑一个 chunk 就立即 break
+        # 设计：仅记录日志，不直接置 stopped_by_user=True（由下方主循环统一处理 stopped_by_user 分支）
+        if abort_event is not None and abort_event.is_set():
+            self.logger.info(
+                "[%s] 进入 stream 前已检测到 abort_event，"
+                "主循环首次 check 时将立即触发 stopped_by_user 分支。"
+                "tool_call_id=%s, session_id=%s",
+                self.tool_name, tool_call_id, session_id,
+            )
+
         root_path = self._validate_root_path(root_path)
 
         start_event = create_tool_event(
@@ -268,19 +286,31 @@ class BaseFilesystemTool:
                 config=config,
                 stream_mode=["updates", "values", "messages"],
             ):
-                # 用户停止信号检测
-                if request is not None and len(all_messages) % self._STOP_CHECK_INTERVAL == 0:
-                    try:
-                        if await request.is_disconnected():
-                            self.logger.info(
-                                "[%s] 客户端已断开，停止子智能体。tool_call_id=%s",
-                                self.tool_name,
-                                tool_call_id,
-                            )
-                            stopped_by_user = True
-                            break
-                    except Exception as e:
-                        self.logger.warning(f"[{self.tool_name}] is_disconnected 检测异常: {e}")
+                # 2026-07-06 改造：用户停止信号检测（abort_event 优先 + is_disconnected 兜底）
+                # 检测顺序：abort_event（主动 abort 通道）→ is_disconnected（兜底）
+                # 任一触发即视为用户停止。
+                if len(all_messages) % self._STOP_CHECK_INTERVAL == 0:
+                    # 1. 主动 abort 检查（优先）—— abort_event.set() 由 /abort 路由触发
+                    if abort_event is not None and abort_event.is_set():
+                        self.logger.info(
+                            "[%s] abort_event 已 set，停止子智能体。tool_call_id=%s, session_id=%s",
+                            self.tool_name, tool_call_id, session_id,
+                        )
+                        stopped_by_user = True
+                        break
+                    # 2. is_disconnected 兜底——浏览器关闭/网络异常等非主动关闭场景
+                    if request is not None:
+                        try:
+                            if await request.is_disconnected():
+                                self.logger.info(
+                                    "[%s] 客户端已断开（兜底），停止子智能体。tool_call_id=%s",
+                                    self.tool_name,
+                                    tool_call_id,
+                                )
+                                stopped_by_user = True
+                                break
+                        except Exception as e:
+                            self.logger.warning(f"[{self.tool_name}] is_disconnected 检测异常: {e}")
 
                 if isinstance(chunk, tuple) and len(chunk) == 2:
                     stream_mode, data = chunk
