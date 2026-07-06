@@ -1923,6 +1923,40 @@ SandboxDrawer 时间线包含 `code_generation` 事件（显示 LLM 生成的代
   - `QueueStatusBanner.vue`：**挂在 ChatArea 与 InputBox 之间**（用户要求位置），实时显示 Agent 聊天接口的并发排队状态；黄色系背景 + 橙色感叹号图标 + 位置 badge（带 2s pulse 动画）；Props：`queueStatus: {event, waitingCount, activeCount, maxConcurrency, position, timestamp}` + `isVisible: Boolean`；进场 `slide-down 200ms` / 退场 `fade-out 200ms`；数据由后端 SSE `queue` 事件（`onQueueEvent` 回调）或 HTTP 429 响应驱动
 - **视图**（`src/views/`）：`LoginView.vue`、`RegisterView.vue`
 
+### 停止按钮 - 中断待生效（toolStopPending，2026-07-06 新增）
+
+**背景**：原停止按钮在用户点击后立即断开 SSE 并复位 UI；但工具/子智能体执行期间的 ToolMessage 未及时写入 state，下次会话恢复时 LLM API 报 `tool call result does not follow tool call (2013)`。后端 `_stream_helper.py` 已实现「精确延迟中断」机制（disconnect 标记 + tools 节点完成时真正断开），但前端缺少「工具未完成时按钮保持停止态」的视觉反馈，用户可能在等待期间误触发送按钮产生孤儿状态。
+
+**目标**：用户点击停止后，按钮立即进入「中断待生效」态（停止图标 + 灰色 + 右上角旋转 badge），直到后端完成当前 tools 节点的 ToolMessage 写入才真正复位，期间禁用重复点击和发送。
+
+**前端组件职责**：
+- `InputBox.vue` / `KnowledgeChat.vue` / `ProfileInputBox.vue`：新增 `isStopPending` 状态（KnowledgeChat 为局部 ref，另两个为 prop）；按钮新增 `stop-pending-mode` class 与 `handleSendBtnClick` 统一处理三态点击；模板新增 `.stop-pending-inner-icon` 旋转圆环 SVG 与 `.stop-pending-badge` 右上角 10×10 橙色旋转角标；CSS 新增 `@keyframes stopPendingSpin` 0.9s 线性旋转
+- `App.vue` / `KnowledgeApp.vue`：新增模块级 `toolStopPending` 状态 + `clearToolStopPending` 函数；`handleStopMessage` 加锁（重复点击短路）+ 不再立即重置 `isStreaming` + 文本标记改为「[中断中，等待工具完成...]」+ 不清空 `currentStreamReader`；SSE while 循环内白名单事件（`end`/`error`/`interrupt`）+ 流自然走完（`done=true`）触发清锁；catch/finally 兜底清锁；`newSession` / `handleSessionSwitch` / `handleApprovalCancel` 入口前置清锁
+
+**状态机矩阵**：
+
+| 触发点 | toolStopPending | isStreaming | 说明 |
+|--------|----------------|------------|------|
+| handleStopMessage 入口（无 pending） | true | 保持 true | 加锁 |
+| handleStopMessage 入口（已 pending） | - | - | 直接 return |
+| SSE `end` 事件 | false | false | 正常完成 |
+| SSE `error` 事件 | false | false | 错误收尾 |
+| SSE `interrupt` 事件 | false | false | 进入 HITL |
+| SSE 流 done=true | false | false | 延迟中断完成 |
+| handleSendMessage catch / finally | false | - | 异常兜底 |
+| newSession / handleSessionSwitch | false | false | 切换兜底 |
+| handleApprovalCancel | false | false | HITL 取消兜底 |
+
+**测试覆盖**：
+- `web/Agent/src/components/__tests__/InputBox.stop-pending.spec.js`（新增，11 用例）：三态 class 切换、旋转圆环 + badge 渲染、title 文案、canSend 禁用、点击拦截、`handleSendBtnClick` 三态分支
+- `web/Agent/src/components/__tests__/App.stop-pending.spec.js`（新增，21 用例）：纯函数复刻 `handleStopMessage` + `clearToolStopPending` + `shouldClearToolStopPending`；覆盖加锁、重复点击短路、白名单事件判定（end/error/interrupt/message/update/custom/null）、兜底幂等、4 个综合场景（点 stop → end / error / interrupt / newsession）
+- `web/Agent/src/components/__tests__/KnowledgeChat.stop.spec.js`（扩展，5 个新用例）：stop-pending 样式渲染、handleStop 重复点击短路、`handleSendBtnClick` 拦截、handleNewChat/handleApprovalCancel 入口清锁；同步改造原有用例以适配新文本标记「[中断中，等待工具完成...]」与 currentReader 不立即清空、internalStreaming 不再被 handleStop 重置
+
+**与既有章节关系**：
+- 「精确延迟中断」（`_stream_helper.py:101-201`）：后端机制，本章不重复描述，只引用
+- 「停止按钮（中断 LLM 生成）」（知识库章节）：后端 + 子智能体停止信号感知，本章只补充前端视觉态
+- 「前端 `isStreaming` 状态同步」（并发排队修复）：保持 `isStreaming` 复位路径不变，仅增加 `toolStopPending` 锁
+
 ### 工具函数（src/utils）
 
 - **`api.js`**：登录/注册/验证码/登出/refresh/validate；会话创建/列表/删除/详情/标题/附件/消息/文件空间；文件上传（普通 + 分片 + base64）/下载/列表/删除；SSE `chatStream`（ 起改用 `/api/agent/chat`，新增 `agentName` 参数默认 `map_agent`）/ `knowledgeChatStream`（仍用 `/api/map/knowledge-chat`）；`X-Session-ID` 头注入；附件元数据组装
