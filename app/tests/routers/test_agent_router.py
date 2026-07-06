@@ -49,6 +49,44 @@ def test_list_agents_returns_200(client, admin_headers, monkeypatch):
     assert data[0]["name"] == "map_agent"
 
 
+def test_list_agents_works_without_session_id(client, admin_headers, monkeypatch):
+    """2026-07-XX 新增：/api/agent/list 不依赖 session_id 隔离（按需建 session 配套白名单）。
+
+    验证 session_auth_middleware 的 SESSION_WHITELIST_PREFIXES 已包含 /api/agent/list，
+    首次进入页面 / localStorage.session_id 为空时仍能正常返回 200，不抛 400 "缺少 X-Session-ID 请求头"。
+    """
+    async def fake_list(self):
+        return [{"name": "map_agent", "display_name": "地图智能体"}]
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.list_agents",
+        fake_list,
+    )
+
+    # 关键：headers 中**不携带** X-Session-ID，模拟前端首次进入 / 按需建 session 阶段
+    response = client.get("/api/agent/list", headers=admin_headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert isinstance(data, list)
+    assert data[0]["name"] == "map_agent"
+
+
+def test_agent_chat_still_requires_session_id(client, admin_headers, monkeypatch):
+    """2026-07-XX 新增：/api/agent/chat 仍必须携带 X-Session-ID，验证白名单精确前缀不会误伤。
+
+    验证 SESSION_WHITELIST_PREFIXES 中的 "/api/agent/list" 是精确前缀匹配，
+    不会通过 startswith 误把 /api/agent/chat 放行。/api/agent/chat 仍命中 SESSION_REQUIRED_PREFIXES。
+    """
+    # 不携带 X-Session-ID 访问 chat → 期望 400（session_auth_middleware 拒绝）
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "",
+        "agent_name": None,
+    }, headers=admin_headers)
+    assert response.status_code == 400
+    assert "缺少 X-Session-ID" in response.json()["detail"]
+
+
 def test_chat_with_null_agent_name_uses_default_config(client, admin_headers, monkeypatch):
     """测试 agent_name 为空时 chat 接口使用默认配置，不查询 AgentConfigService。"""
     async def fake_get(self, name):

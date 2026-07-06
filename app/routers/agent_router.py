@@ -179,6 +179,12 @@ async def list_agents(request: Request) -> List[Dict[str, Any]]:
 
     返回:
         List[Dict[str, Any]]: 按用户 allowed_agents 过滤后的智能体摘要列表
+
+    说明（2026-07-XX 新增）：
+        本端点**不依赖 session_id 隔离**，仅读 ``request.state.allowed_agents``（来自 JWT 注入）。
+        因此后端 ``session_auth_middleware`` 把 ``/api/agent/list`` 加入 ``SESSION_WHITELIST_PREFIXES``，
+        首次进入页面 / 按需建 session 阶段 localStorage.session_id 为空时仍能正常返回 200。
+        注意：``/api/agent/chat`` 仍命中 ``SESSION_REQUIRED_PREFIXES``（``/api/agent/``）保留校验。
     """
     service = _get_service(request)
     agents = await service.list_agents()

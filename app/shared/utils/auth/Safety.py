@@ -379,6 +379,11 @@ SESSION_WHITELIST_PREFIXES = [
     "/api/session/list",
     "/api/session/delete",
     "/api/session/admin",
+    # 2026-07-XX 新增：/api/agent/list 不依赖 session 隔离，仅读 allowed_agents（来自 JWT），
+    # 与 /api/session/list、/api/project/list 语义一致。前端按需建 session 后首次进入页面
+    # localStorage.session_id 为空，不发 X-Session-ID 也能访问。
+    # 注意：/api/agent/chat 仍命中 SESSION_REQUIRED_PREFIXES（/api/agent/）保留校验。
+    "/api/agent/list",
 ]
 
 # 需要 Session 验证的路径前缀

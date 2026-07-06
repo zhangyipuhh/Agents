@@ -927,6 +927,29 @@ return data/upload/yyyy/mm/dd/{session_id}/
 - `KnowledgeApp.vue` / `KnowledgePage.vue` 维持独立链路（独立 `knowledge_session_id`），本次未在范围内，逻辑保持原状。
 - 项目选择器锁定（`canEditProject`）语义无变化：新建任务（messages 空）→ 可编辑；首条消息发送成功 → 锁定。
 
+### 后端 `/api/agent/list` 加入 Session 白名单（2026-07-XX 配套）
+
+**动机**：前端按需建 session 改造后，`<InputBox onMounted>` 调 `fetchAgentList()`（`GET /api/agent/list`）时 `localStorage.session_id` 为空 → 后端 `session_auth_middleware` 命中 `SESSION_REQUIRED_PREFIXES`（`/api/agent/`）→ 抛 400 "缺少 X-Session-ID 请求头"，导致侧边栏"项目 / 智能体下拉"等首屏交互失效。
+
+**新规则**：
+
+- `app/shared/utils/auth/Safety.py::SESSION_WHITELIST_PREFIXES` 追加 `"/api/agent/list"`（与 `/api/session/list` 同模式：精确前缀匹配）。
+- `list_agents` 路由**不依赖 session 隔离**，仅读 `request.state.allowed_agents`（来自 JWT），跳过 X-Session-ID 校验。
+- `/api/agent/chat` 仍命中 `SESSION_REQUIRED_PREFIXES`（`/api/agent/`），保持 session 校验不变（按需建 session 的核心保证）。
+
+**实现要点**：
+
+- `app/shared/utils/auth/Safety.py`：`SESSION_WHITELIST_PREFIXES` 列表末尾追加 `"/api/agent/list"` + 注释。
+- `app/routers/agent_router.py::list_agents` docstring 补充"不依赖 session_id 隔离"说明。
+- `app/tests/routers/test_agent_router.py` 新增 2 个回归测试：
+  - `test_list_agents_works_without_session_id`：不带 `X-Session-ID` 头调用 `GET /api/agent/list` → 期望 200。
+  - `test_agent_chat_still_requires_session_id`：不带 `X-Session-ID` 头调 `POST /api/agent/chat` → 期望 400，验证白名单精确前缀不会误伤 `chat`。
+
+**影响面**：
+
+- 与 `/api/agent/list` 同语义的 `/api/session/list` / `/api/project/list` 早就走白名单或自然放行，行为对齐。
+- 前端 `InputBox::loadAgents()` / `fetchAgentList()` 调用链路不变；冷启动 / 按需建 session 阶段 `GET /api/agent/list` 自动 200，智能体下拉正常工作。
+
 ### 项目选择器锁定逻辑（2026-07-01 新增）
 
 **规则**：
