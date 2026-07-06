@@ -10,7 +10,7 @@
     id          SERIAL PRIMARY KEY
     user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE
     name        VARCHAR(200) NOT NULL
-    uuid        VARCHAR(64)  UNIQUE NOT NULL    -- 创建时的 session_id
+    uuid        VARCHAR(64)  UNIQUE NOT NULL    -- 项目独立唯一标识
     created_at  TIMESTAMP    DEFAULT NOW()
     updated_at  TIMESTAMP    DEFAULT NOW()
 
@@ -20,6 +20,7 @@ Date: 2026-06-30
 Author: AI Assistant
 """
 import threading
+import uuid as uuid_module
 from datetime import datetime
 from typing import Optional, Dict, List
 
@@ -103,7 +104,7 @@ class ProjectDB:
         cls,
         user_id: int,
         name: str,
-        uuid: str,
+        uuid: Optional[str] = None,
         relative_path: Optional[str] = None,
     ) -> Optional[dict]:
         """创建项目（双向写入）
@@ -111,7 +112,7 @@ class ProjectDB:
         Args:
             user_id: 创建者用户 ID。
             name: 项目名称（用户输入）。
-            uuid: 项目唯一标识（约定 = 创建时的 session_id）。
+            uuid: 项目唯一标识；为空时按 UUID v4 自动生成，不再强制等于 session_id。
             relative_path: 项目对应现有文件夹的相对路径；为空时按当前日期自动生成。
 
         Returns:
@@ -120,10 +121,12 @@ class ProjectDB:
         Raises:
             ValueError: 缺少必填参数。
         """
-        if not user_id or not name or not uuid:
-            raise ValueError("user_id / name / uuid 均不可为空")
+        if not user_id or not name:
+            raise ValueError("user_id / name 均不可为空")
+        # 2026-07-06 修正：项目是独立实体，uuid 不再强制等于 session_id
+        project_uuid = uuid or str(uuid_module.uuid4())
         now = datetime.now()
-        relative_path = relative_path or f"data/project/{now.year}/{now.month:02d}/{now.day:02d}/{uuid}"
+        relative_path = relative_path or f"data/project/{now.year}/{now.month:02d}/{now.day:02d}/{project_uuid}"
         new_id: Optional[int] = None
 
         # 写入数据库
@@ -135,7 +138,7 @@ class ProjectDB:
                 ON CONFLICT (uuid) DO NOTHING
                 RETURNING id
                 """,
-                user_id, name, uuid, relative_path, now, now,
+                user_id, name, project_uuid, relative_path, now, now,
             )
             if row:
                 new_id = row['id']
@@ -143,7 +146,7 @@ class ProjectDB:
                 # uuid 已存在，幂等返回已有记录
                 existing = await DatabasePool.fetchrow(
                     "SELECT id, user_id, name, uuid, relative_path, created_at, updated_at FROM projects WHERE uuid = $1",
-                    uuid,
+                    project_uuid,
                 )
                 if existing:
                     return dict(existing)
@@ -158,7 +161,7 @@ class ProjectDB:
             'id': new_id,
             'user_id': user_id,
             'name': name,
-            'uuid': uuid,
+            'uuid': project_uuid,
             'relative_path': relative_path,
             'created_at': now,
             'updated_at': now,
@@ -277,7 +280,7 @@ class ProjectDB:
         """按 uuid 查项目
 
         Args:
-            uuid: 项目 uuid（约定 = 创建时的 session_id）。
+            uuid: 项目 uuid（独立唯一标识）。
 
         Returns:
             Optional[dict]: 项目信息，未找到返回 None。

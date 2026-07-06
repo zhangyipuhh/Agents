@@ -19,6 +19,7 @@ Date: 2026-06-30
 Author: AI Assistant
 """
 import logging
+import uuid
 from typing import Optional, List
 
 from fastapi import APIRouter, HTTPException, Request
@@ -38,10 +39,10 @@ class ProjectCreateRequest(BaseModel):
 
     Attributes:
         name: 项目名称（用户输入，1-50 字符）。
-        uuid: 项目唯一标识，约定 = 创建时的 session_id。
+        uuid: 项目唯一标识；为空时由后端独立生成，不再强制等于 session_id。
     """
     name: str
-    uuid: str
+    uuid: Optional[str] = None
 
 
 class ProjectInfo(BaseModel):
@@ -50,7 +51,7 @@ class ProjectInfo(BaseModel):
     Attributes:
         id: 项目主键 ID。
         name: 项目名称。
-        uuid: 项目 uuid（= 创建时的 session_id）。
+        uuid: 项目 uuid（独立唯一标识）。
         user_id: 创建者用户 ID。
         created_at: 创建时间（ISO 字符串）。
     """
@@ -106,7 +107,7 @@ async def create_project(request: Request, body: ProjectCreateRequest):
 
     入参：
         name: 用户输入的项目名称
-        uuid: 由前端传入 = 当前 session_id
+        uuid: 可选；为空时后端生成独立 UUID，不再强制等于当前 session_id
 
     Returns:
         dict: 新创建项目的完整信息
@@ -123,23 +124,23 @@ async def create_project(request: Request, body: ProjectCreateRequest):
             raise HTTPException(status_code=400, detail="项目名称不能为空")
         if len(body.name) > 50:
             raise HTTPException(status_code=400, detail="项目名称不能超过 50 字符")
-        if not body.uuid or not body.uuid.strip():
-            raise HTTPException(status_code=400, detail="uuid 不能为空")
 
         user = await UserDB.get_user_by_username(username)
         if not user:
             raise HTTPException(status_code=401, detail="用户不存在")
 
+        # 2026-07-06 修正：项目是独立实体，uuid 不再强制等于 session_id；为空时后端生成
+        project_uuid = body.uuid.strip() if body.uuid and body.uuid.strip() else str(uuid.uuid4())
+
         # 创建项目
         project = await ProjectDB.create_project(
             user_id=user['id'],
             name=body.name.strip(),
-            uuid=body.uuid.strip(),
+            uuid=project_uuid,
         )
         if not project:
             raise HTTPException(status_code=500, detail="项目创建失败")
 
-        # 自动把当前会话绑定到该项目（如果传入了 session_id 走 bind，否则由前端单独调）
         return {
             "success": True,
             "message": "项目创建成功",

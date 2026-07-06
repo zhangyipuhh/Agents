@@ -59,14 +59,33 @@ def test_create_project_empty_name(client, admin_headers):
     assert response.status_code == 400
 
 
+def test_create_project_without_uuid(client, admin_headers):
+    """不传 uuid 时后端应自动生成独立 uuid 并创建成功。"""
+    response = client.post(
+        "/api/project/create",
+        json={"name": "Auto-uuid-project"},
+        headers=admin_headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert data["project"]["name"] == "Auto-uuid-project"
+    assert data["project"]["uuid"]
+    assert len(data["project"]["uuid"]) > 0
+
+
 def test_create_project_empty_uuid(client, admin_headers):
-    """空 uuid 应返回 400。"""
+    """空 uuid 应视为未提供，后端自动生成并返回 200。"""
     response = client.post(
         "/api/project/create",
         json={"name": "test", "uuid": ""},
         headers=admin_headers,
     )
-    assert response.status_code == 400
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert data["project"]["uuid"]
+    assert len(data["project"]["uuid"]) > 0
 
 
 def test_list_projects_empty(client, admin_headers):

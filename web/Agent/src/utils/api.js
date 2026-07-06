@@ -631,15 +631,16 @@ export async function createNewSession(storageKey = 'session_id', projectId = nu
 /**
  * 创建新项目
  * @param {string} name - 项目名称
- * @param {string} uuid - 项目的 uuid（约定 = 创建时的 session_id）
+ * @param {string|null} [uuid=null] - 项目的 uuid；为空时由后端独立生成，不再强制等于 session_id
  * @returns {Promise<{success: boolean, message: string, project: Object}>} 创建结果
  * @throws {Error} 创建失败时抛出错误
  */
-export async function createProject(name, uuid) {
+export async function createProject(name, uuid = null) {
+  const body = uuid != null ? { name, uuid } : { name }
   const response = await fetchWithAuth('/api/project/create', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, uuid })
+    body: JSON.stringify(body)
   })
   if (!response.ok) {
     const errData = await response.json().catch(() => ({}))

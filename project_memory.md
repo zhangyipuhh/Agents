@@ -793,7 +793,7 @@ MCP 服务器方法列表表，用于运行时方法管理。
 | id            | SERIAL PK                         | 项目主键 ID                                                   |
 | user_id       | INTEGER NOT NULL REFERENCES users | 创建者用户 ID（ON DELETE CASCADE）                            |
 | name          | VARCHAR(200) NOT NULL             | 项目名称（用户输入）                                          |
-| uuid          | VARCHAR(64) UNIQUE NOT NULL       | 项目唯一标识 = 创建时的 session_id（核心约定）               |
+| uuid          | VARCHAR(64) UNIQUE NOT NULL       | 项目独立唯一标识；为空时后端按 UUID v4 自动生成，不再强制等于 session_id |
 | relative_path | VARCHAR(500)                      | 2026-07-01 新增：项目对应现有文件夹的相对路径（仅"使用现有文件夹"场景非空） |
 | created_at    | TIMESTAMP DEFAULT NOW()           | 创建时间                                                      |
 | updated_at    | TIMESTAMP DEFAULT NOW()           | 更新时间                                                      |
@@ -801,10 +801,10 @@ MCP 服务器方法列表表，用于运行时方法管理。
 **索引**：`idx_projects_user_id(user_id)`
 
 **uuid 语义**：
-- uuid = 创建项目时所在 session 的 session_id
-- 一个 uuid 全局唯一（UNIQUE 约束）
-- 多 session 可共享同一项目（通过 `sessions.project_id` 关联）
-- 物理路径 = `<项目根>/data/project/{uuid}/`
+- uuid 是项目独立唯一标识，由后端生成（UUID v4），不再复用创建时所在 session 的 session_id。
+- 一个 uuid 全局唯一（UNIQUE 约束）。
+- 多 session 可共享同一项目（通过 `sessions.project_id` 关联）。
+- 物理路径按 `relative_path` 字段解析；默认路径格式为 `<项目根>/data/project/yyyy/mm/dd/{uuid}/`。
 
 ### sessions.project_id 字段（2026-06-30 新增）
 
@@ -846,12 +846,13 @@ CREATE INDEX idx_attachments_project_id ON attachments(project_id);
 
 | 操作 | sessions.project_id | projects.uuid | 物理路径 |
 |------|---------------------|---------------|----------|
-| session 1111 新建项目"Daily-work" | 1 | **1111** | `data/project/1111/` |
-| session 2222 使用现有文件夹（项目1） | 1 | 1111 | `data/project/1111/`（共享 1111 目录）|
+| 用户新建项目"Daily-work"（无 session） | NULL | `proj-uuid-a` | `data/project/2026/07/06/proj-uuid-a/` |
+| session 1111 绑定到项目 1 | 1 | `proj-uuid-a` | `data/project/2026/07/06/proj-uuid-a/`（共享项目目录）|
+| session 2222 绑定到项目 1 | 1 | `proj-uuid-a` | `data/project/2026/07/06/proj-uuid-a/`（共享项目目录）|
 | session 2222 切回不使用文件夹 | NULL | - | `data/upload/.../2222/` |
 | 旧历史会话（无 project） | NULL | - | `data/upload/.../session_id/` |
 
-**关键点**：项目文件实际存储**与项目创建者 session_id 关联**，不与使用该项目的其他 session 关联。
+**关键点**：项目是独立实体，`projects.uuid` 不再与 session_id 绑定；多 session 通过 `sessions.project_id` 关联到同一项目目录。
 
 ### 路径查找策略
 
@@ -859,12 +860,12 @@ CREATE INDEX idx_attachments_project_id ON attachments(project_id);
 # session_path_manager.get_session_upload_dir(session_id, project_id=None)
 if project_id:
     project = ProjectDB.get_project_by_id(project_id)
-    return get_project_upload_dir(project['uuid'])  # data/project/{uuid}/
+    return get_project_upload_dir(project['relative_path'])  # data/project/yyyy/mm/dd/{uuid}/
 # 无 project_id：原 session 路径
 return data/upload/yyyy/mm/dd/{session_id}/
 ```
 
-**有 project_id 就用 project_id，没有再用 session_id**——兼容旧 session 逻辑。
+**有 project_id 就用 project_id，没有再用 session_id**——兼容旧 session 逻辑。项目目录按 `projects.relative_path` 解析，不再直接用 `uuid` 推导。
 
 ### 关键模块
 
@@ -911,11 +912,14 @@ return data/upload/yyyy/mm/dd/{session_id}/
   2. **首次文件上传**（`InputBox::startUpload` 通过父组件注入的 `ensureSession` 回调确保；并发上传由 `createNewSession` 自带的 `isCreatingSession / pendingSessionPromise` 防重锁收敛到 1 次后端调用）
   3. **首次斜杠命令**：命令结果走 `emit('send', result.text, [])` 进入 `handleSendMessage` → 命中第 ① 点。
 
+- **项目选择/创建本身不触发 session 创建**（2026-07-06 修正）：项目是独立实体，`App.vue::handleProjectPick` / `handleProjectCreate` / `handleProjectSelectNone` 不再以 `sessionId.value` 是否存在为前提。无 session 时仅更新前端 `currentProject` 状态；有 session 时才调用 `/api/project/session/bind` 或 `/api/project/session/unbind` 同步当前会话的项目关联。未建 session 时若用户发送首条消息 / 上传文件，`ensureSessionForFirstOp(currentProject.id)` 会一并把项目 ID 带到 `/api/session/create`。
+
 **实现要点**：
 
 - `App.vue` 删除原 `ensureSession()`，`onMounted` 仅保留 `checkAuth()`。
 - `App.vue` 新增 `ensureSessionForFirstOp(projectId)`：若 `sessionId.value` 已存在则短路返回；否则 `createNewSession('session_id', projectId)` → 同步 `sessionId.value` / `sessionTitle` → `refreshSessionTitle` 异步刷新真实标题 → `sidebarRef.loadSessionList()` 刷新侧边栏。
 - `App.vue::handleApprovalSubmit` 加防御性 early-return：缺 `sessionId` 时直接退出（实际不会触发，因为触达 HITL 必然先经历 `handleSendMessage`）。
+- `App.vue::handleProjectPick` / `handleProjectCreate` / `handleProjectSelectNone`（2026-07-06 修正）：项目是独立实体，选择/创建/解绑项目不再以 `sessionId.value` 为前提。无 session 时仅更新前端 `currentProject` / `currentAttachments` 状态；有 session 时才调用 `/api/project/session/bind` 或 `/api/project/session/unbind` 同步当前会话的项目关联。创建项目时 `createProject(name)` 不再传入 `session_id` 作为 uuid，由后端独立生成。
 - `App.vue` 模板 `<InputBox :ensure-session="ensureSessionForFirstOp" ... />`。
 - `InputBox.vue` 新增 prop `ensureSession: Function`（默认 null，向后兼容）；`startUpload` 内首调上传前 `await props.ensureSession()`，失败时把 `fileItem.status = 'error'` 并附错误信息，仅当 promise 正常才进入 `runChunkUpload()`。
 - 兼容并发：多个 `startUpload` 同时 await 同一 `ensureSessionForFirstOp()` → `createNewSession` 防重锁保证对后端只发一次 `/api/session/create`，其它 await 在同一 promise 上串接结果。

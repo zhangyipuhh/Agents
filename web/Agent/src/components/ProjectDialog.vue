@@ -35,7 +35,7 @@ const createError = ref('')
 
 // === pick 模式 ===
 const isLoadingProjects = ref(false)
-const projects = ref([])
+const internalProjects = ref([])
 const pickError = ref('')
 
 const isCreateMode = computed(() => props.mode === 'create')
@@ -61,7 +61,7 @@ async function loadProjectList() {
   pickError.value = ''
   try {
     const data = await fetchProjectList()
-    projects.value = data.projects || []
+    internalProjects.value = data.projects || []
   } catch (err) {
     pickError.value = err.message || '加载项目列表失败'
   } finally {
@@ -156,12 +156,12 @@ onMounted(() => {
             <template v-else>
               <div v-if="isLoadingProjects" class="project-dialog-loading">加载中...</div>
               <div v-else-if="pickError" class="project-dialog-error">{{ pickError }}</div>
-              <div v-else-if="projects.length === 0" class="project-dialog-empty">
+              <div v-else-if="internalProjects.length === 0" class="project-dialog-empty">
                 暂无已创建的项目
               </div>
               <div v-else class="project-dialog-list">
                 <div
-                  v-for="project in projects"
+                  v-for="project in internalProjects"
                   :key="project.id"
                   class="project-dialog-item"
                   @click="handlePickProject(project)"

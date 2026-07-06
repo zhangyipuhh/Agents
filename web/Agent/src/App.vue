@@ -362,7 +362,8 @@ async function refreshSessionTitle(id) {
 
 /**
  * 2026-07-XX 新增：按需创建 session。
- * 仅在需要后端 session 的入口（首次发送 / 首次上传 / 首次斜杠命令等）前调用；
+ * 仅在需要后端 session 的入口（首次发送 / 首次上传 / 首次斜杠命令）前调用；
+ * 项目选择本身不触发 session 创建，只在首次需要后端时附带当前 projectId 一并绑定。
  * 内部使用 createNewSession 自带的 isCreatingSession / pendingSessionPromise 防重复锁，
  * 并发场景下不会触发多次 /api/session/create。
  * @param {number|null} projectId - 关联的项目 ID；None 表示不使用文件夹（默认）
@@ -462,23 +463,22 @@ async function newSession() {
 
 /**
  * 2026-06-30 新增：项目工作下拉框事件处理
- *
- * 设计：
- *   - select-project(null)         → 调 unbindSessionFromProject
- *   - select-project(project)      → 调 bindSessionToProject
- *   - create-project(name)         → 调 createProject + bindSessionToProject
- *   - pick-existing                 → 打开 pick 模式弹窗
- *   - picked(project)               → 选中后 bindSessionToProject
+ * 2026-07-06 修正：项目是独立实体，选择/创建/解绑项目不再以 sessionId 为前提。
+ *   - 无 session 时只更新前端 currentProject 状态；
+ *   - 有 session 时才调用 bind/unbind 同步当前会话的项目关联。
  *
  * 注意：
  *   - 切项目会清空已选文件 + 已上传附件（跨项目隔离）
  *   - 当前会话已存在的附件由后端从旧 stored_path 读取，前端只更新 UI 状态
  */
 async function handleProjectSelectNone() {
-  if (isProjectMutating.value || !sessionId.value) return
+  if (isProjectMutating.value) return
   isProjectMutating.value = true
   try {
-    await unbindSessionFromProject(sessionId.value)
+    // 2026-07-06 修复：项目是独立实体，无 session 时只更新前端状态，不强制创建 session
+    if (sessionId.value) {
+      await unbindSessionFromProject(sessionId.value)
+    }
     currentProject.value = null
     currentAttachments.value = []
   } catch (err) {
@@ -490,10 +490,13 @@ async function handleProjectSelectNone() {
 }
 
 async function handleProjectPick(project) {
-  if (isProjectMutating.value || !sessionId.value) return
+  if (isProjectMutating.value) return
   isProjectMutating.value = true
   try {
-    await bindSessionToProject(sessionId.value, project.id)
+    // 2026-07-06 修复：项目是独立实体，选择项目不依赖 sessionId；已有 session 时同步绑定
+    if (sessionId.value) {
+      await bindSessionToProject(sessionId.value, project.id)
+    }
     currentProject.value = project
     currentAttachments.value = []
   } catch (err) {
@@ -505,14 +508,16 @@ async function handleProjectPick(project) {
 }
 
 async function handleProjectCreate({ name }) {
-  if (isProjectMutating.value || !sessionId.value) return
+  if (isProjectMutating.value) return
   isProjectMutating.value = true
   try {
-    // uuid = 当前 session_id（约定）
-    const result = await createProject(name, sessionId.value)
+    // 2026-07-06 修复：项目是独立实体，创建项目不再使用 session_id 作为 uuid
+    const result = await createProject(name)
     const project = result.project
-    // 自动把当前会话绑定到该项目
-    await bindSessionToProject(sessionId.value, project.id)
+    // 已有 session 时自动绑定到该项目；无 session 时仅更新前端状态
+    if (sessionId.value) {
+      await bindSessionToProject(sessionId.value, project.id)
+    }
     currentProject.value = project
     currentAttachments.value = []
   } catch (err) {

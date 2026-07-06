@@ -55,12 +55,25 @@ class TestProjectDBCreate:
         assert result["relative_path"].startswith("data/project/")
         assert result["relative_path"].endswith("/session-1111")
 
+    def test_create_project_auto_uuid(self, fresh_project_db, monkeypatch):
+        """未传 uuid 时应自动生成独立 uuid。"""
+        monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
+
+        async def _run():
+            return await ProjectDB.create_project(user_id=1, name="Auto-uuid")
+
+        result = asyncio.run(_run())
+        assert result is not None
+        assert result["name"] == "Auto-uuid"
+        assert result["uuid"]
+        assert len(result["uuid"]) > 0
+
     def test_create_project_raises_on_missing_params(self, fresh_project_db, monkeypatch):
         """缺少必填参数应抛 ValueError。"""
         monkeypatch.setattr(ProjectDB, "is_enabled", classmethod(lambda cls: False))
 
         async def _run():
-            return await ProjectDB.create_project(user_id=0, name="", uuid="x")
+            return await ProjectDB.create_project(user_id=0, name="")
 
         with pytest.raises(ValueError):
             asyncio.run(_run())
