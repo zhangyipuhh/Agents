@@ -65,6 +65,8 @@ const isDragging = ref(false)
 const isRefreshingToken = ref(false)
 // 命令执行中标记：防止命令执行期间用户重复点击发送按钮导致重复触发
 const isExecutingCommand = ref(false)
+// 发送时上传文件标记：防止上传期间重复点击发送
+const isUploading = ref(false)
 const selectedFiles = ref([])
 
 // 2026-06-24 新增：智能体快速选择相关状态
@@ -82,17 +84,16 @@ const canSend = computed(() => {
   if (props.isStopPending) return false
   if (isRefreshingToken.value) return false
   if (isExecutingCommand.value) return false
+  // 2026-07-07 新增：发送时上传文件期间禁用发送按钮，避免重复触发上传与发送流程
+  if (isUploading.value) return false
   const hasText = inputValue.value.trim().length > 0
-  const hasUploadedFiles = selectedFiles.value.some(f => f.status === 'success')
-  return hasText || hasUploadedFiles
+  return hasText
 })
 
-// 2026-07-06 新增：是否存在已成功上传的文件。
-// 用于向上游同步项目选择器锁定状态：只要存在成功上传的文件，
-// 即使尚未发送消息，也应禁止切换项目。
-const hasSuccessfullyUploadedFiles = computed(() =>
-  selectedFiles.value.some(f => f.status === 'success')
-)
+// 2026-07-07 新增：是否存在已选中的文件（含待上传、上传中、已上传、失败）。
+// 用于向上游同步项目选择器锁定状态：只要用户已选择文件，即使尚未发送，
+// 也应禁止切换项目，避免文件在发送时被挂接到错误的 projectId。
+const hasSelectedFiles = computed(() => selectedFiles.value.length > 0)
 
 /**
  * 是否为命令输入（以 / 开头，且未通过下拉菜单选中智能体）
@@ -302,7 +303,8 @@ const handleSend = async () => {
   if (!canSend.value) return
 
   const text = inputValue.value.trim()
-  if (!text && !selectedAgent.value) return
+  // 2026-07-07 修正：必须有文本才能发送，禁止纯附件发送。
+  if (!text) return
 
   // 命令检测：以 / 开头视为命令，不走普通发送流程
   if (text.startsWith('/')) {
@@ -319,6 +321,33 @@ const handleSend = async () => {
     return
   }
   isRefreshingToken.value = false
+
+  // 2026-07-07 改造：上传文件移到发送时统一处理。
+  // 仅当存在待上传文件时，才需要在 InputBox 内先创建 session 并挂接 projectId；
+  // 纯文本发送仍由 App.vue 负责 session 创建，保持与历史行为一致。
+  const pendingFiles = selectedFiles.value.filter(f => f.status === 'pending')
+  if (pendingFiles.length > 0) {
+    isUploading.value = true
+    try {
+      const projectIdForUpload = props.currentProject ? props.currentProject.id : null
+      if (typeof props.ensureSession === 'function') {
+        await props.ensureSession(projectIdForUpload)
+      } else {
+        throw new Error('会话初始化失败：未提供 ensureSession 回调')
+      }
+
+      await Promise.all(pendingFiles.map(f => startUpload(f)))
+
+      const failedFiles = selectedFiles.value.filter(f => f.status === 'error')
+      if (failedFiles.length > 0) {
+        throw new Error(`以下文件上传失败：${failedFiles.map(f => f.name).join(', ')}`)
+      }
+    } catch (err) {
+      alert(err?.message || '发送失败，请重试')
+      isUploading.value = false
+      return
+    }
+  }
 
   const uploadedFiles = selectedFiles.value
     .filter(f => f.status === 'success')
@@ -348,6 +377,7 @@ const handleSend = async () => {
   nextTick(() => {
     autoResize()
   })
+  isUploading.value = false
 }
 
 /**
@@ -400,6 +430,7 @@ const handleFileSelect = (event) => {
 }
 
 const addFiles = (files) => {
+  let hasValidFileAdded = false
   for (const file of files) {
     const ext = getFileExtension(file.name)
     if (!SUPPORTED_EXTENSIONS.includes(ext)) {
@@ -450,7 +481,12 @@ const addFiles = (files) => {
       cancelFn: null
     }
     selectedFiles.value.push(fileItem)
-    startUpload(fileItem)
+    hasValidFileAdded = true
+  }
+  // 2026-07-07 新增：只要有待上传文件被选中，即锁定项目选择器，
+  // 防止用户切项目后再发送，导致文件被挂接到错误 projectId。
+  if (hasValidFileAdded) {
+    emit('project-lock-change', true)
   }
 }
 
@@ -458,30 +494,7 @@ const startUpload = (fileItem) => {
   fileItem.status = 'uploading'
   fileItem.progress = 0
   fileItem.errorMsg = ''
-
-  // 2026-07-XX 新增：首次上传前按需创建 session，避免文件落到后端 middleware 的 'default' 公共目录。
-  // 并发场景下（用户一次性拖入 N 个文件，N 个 startUpload 并发进入）：
-  // - 若已有 session → props.ensureSession 直接短路返回
-  // - 若无 session → 父组件 ensureSessionForFirstOp 内部使用 createNewSession 自带的 isCreatingSession / pendingSessionPromise 防重锁，
-  //   保证对后端只发一次 /api/session/create，其它的 await 在同一 promise 上串接结果。
-  // 2026-07-06 修正：上传时携带当前项目 ID，确保新创建的 session 立即与 project 关联。
-  const projectIdForUpload = props.currentProject ? props.currentProject.id : null
-  const ensurePromise = (typeof props.ensureSession === 'function')
-    ? Promise.resolve(props.ensureSession(projectIdForUpload)).catch((err) => err)
-    : Promise.resolve(null)
-
-  ensurePromise.then((maybeError) => {
-    if (maybeError instanceof Error) {
-      fileItem.status = 'error'
-      fileItem.errorMsg = `会话未就绪：${maybeError.message}`
-      return
-    }
-    runChunkUpload(fileItem)
-  }).catch((err) => {
-    // 兜底：理论上 catch 已被 ensurePromise 接住，这里是 ensurePromise 之外的兜底
-    fileItem.status = 'error'
-    fileItem.errorMsg = `上传启动失败：${err?.message || err}`
-  })
+  return runChunkUpload(fileItem)
 }
 
 /**
@@ -491,7 +504,7 @@ const startUpload = (fileItem) => {
  * @returns {void}
  */
 function runChunkUpload(fileItem) {
-  uploadFileInChunks(
+  return uploadFileInChunks(
     fileItem.file,
     (progress) => {
       const item = selectedFiles.value.find(f => f.id === fileItem.id)
@@ -507,10 +520,6 @@ function runChunkUpload(fileItem) {
       item.status = 'success'
       item.progress = 100
       item.uploadResult = result.files?.[0] || result
-      // 2026-07-06 新增：首次出现成功上传文件时通知父组件锁定项目选择器
-      if (hasSuccessfullyUploadedFiles.value) {
-        emit('project-lock-change', true)
-      }
     }
   }).catch(err => {
     const item = selectedFiles.value.find(f => f.id === fileItem.id)
@@ -545,8 +554,9 @@ const removeFile = async (fileItem) => {
   const idx = selectedFiles.value.findIndex(f => f.id === fileItem.id)
   if (idx !== -1) selectedFiles.value.splice(idx, 1)
 
-  // 2026-07-06 新增：删除后若已无成功上传文件，通知父组件解除项目选择器锁定
-  if (!hasSuccessfullyUploadedFiles.value) {
+  // 2026-07-07 修正：当已选文件全部移除后解除项目选择器锁定。
+  // 由于项目锁定时机已提前到"文件被选中"时，此处只需在列表为空时解锁。
+  if (!hasSelectedFiles.value) {
     emit('project-lock-change', false)
   }
 }
