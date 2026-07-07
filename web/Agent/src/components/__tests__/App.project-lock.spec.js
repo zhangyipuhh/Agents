@@ -267,4 +267,24 @@ describe('App.vue 项目锁定 canEditProject（2026-07-01 新增）', () => {
     expect(wrapper.vm.projectLockedByUpload).toBe(false)
     expect(wrapper.vm.canEditProject).toBe(true)
   })
+
+  it('test_new_session_resets_current_project_to_null 新建会话时 currentProject 重置为 null', async () => {
+    const App = (await import('../../App.vue')).default
+    const wrapper = mount(App, {
+      global: { stubs: ['router-link', 'router-view'] }
+    })
+    await flushPromises()
+
+    // 模拟用户已选择项目
+    wrapper.vm.currentProject = { id: 42, name: '测试项目', uuid: 'proj-42' }
+    await flushPromises()
+    expect(wrapper.vm.currentProject).toEqual({ id: 42, name: '测试项目', uuid: 'proj-42' })
+
+    // 触发新建任务
+    wrapper.vm.newSession()
+    await flushPromises()
+
+    // 断言项目已被重置为 null
+    expect(wrapper.vm.currentProject).toBeNull()
+  })
 })

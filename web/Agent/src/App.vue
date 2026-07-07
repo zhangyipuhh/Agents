@@ -455,6 +455,8 @@ async function newSession() {
     historyLoadFailed.value = false
     // 2026-07-06 新增：新建会话时重置上传文件锁定标记
     projectLockedByUpload.value = false
+    // 2026-07-06 新增：新建会话时重置项目选择为「不使用文件夹」，避免旧项目残留到新会话
+    currentProject.value = null
 
     // 关闭子智能体详情抽屉：避免上一个会话的 subagent 数据残留在 UI 上
     closeSubAgentDrawer()
