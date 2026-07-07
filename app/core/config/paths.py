@@ -79,3 +79,31 @@ def resolve_project_tmp_dir(relative_path: str) -> Path:
         raise ValueError("relative_path 不能为空字符串")
     project_rel = Path(relative_path).relative_to("data/project")
     return Path(_PROJECT_ROOT) / "data" / "tmp" / "project" / project_rel
+
+
+def resolve_tmp_mirror_path(original_path: str | Path) -> Path | None:
+    """
+    将 data/ 下的原文件路径映射为 data/tmp/... 下的 .md 镜像路径。
+
+    用于支持子智能体（explore / query_knowledge / sandbox）读取文档类文件的 .md 缓存。
+    原路径必须位于 ``<项目根>/data/`` 下；否则返回 ``None``。
+    返回路径的扩展名统一替换为 ``.md``。
+
+    例如：
+        - ``data/upload/2026/07/07/session-abc/report.docx``
+          → ``data/tmp/upload/2026/07/07/session-abc/report.md``
+        - ``data/project/2026/07/07/uuid/readme.md``
+          → ``data/tmp/project/2026/07/07/uuid/readme.md``
+
+    :param original_path: 原文件路径（字符串或 Path）。
+    :type original_path: str | Path
+    :return: 对应的 .md 镜像路径；若原路径不在 data/ 下则返回 None。
+    :rtype: Path | None
+    """
+    original_path = Path(original_path)
+    data_root = Path(_PROJECT_ROOT) / "data"
+    try:
+        rel = original_path.resolve().relative_to(data_root.resolve())
+    except ValueError:
+        return None
+    return (Path(_PROJECT_ROOT) / "data" / "tmp" / rel).with_suffix(".md")

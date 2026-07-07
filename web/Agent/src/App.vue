@@ -1443,6 +1443,7 @@ async function handleSessionSwitch(targetSessionId) {
       :file-tree="sessionFileTree"
       :loading="sessionFileDrawerLoading"
       :error="sessionFileDrawerError"
+      :session-id="sessionId.value"
       @close="closeSessionFileDrawer"
       @file-click="handleSessionFileClick"
     />

@@ -298,10 +298,18 @@ class _ReadResult:
         self.error = error
 
 
+class _WriteResult:
+    """模拟 deepagents WriteResult。"""
+    def __init__(self, path="", error=None):
+        self.path = path
+        self.error = error
+
+
 sys.modules["deepagents.backends.protocol"].FileUploadResponse = _FileUploadResponse
 sys.modules["deepagents.backends.protocol"].FileDownloadResponse = _FileDownloadResponse
 sys.modules["deepagents.backends.protocol"].FileData = _FileData
 sys.modules["deepagents.backends.protocol"].ReadResult = _ReadResult
+sys.modules["deepagents.backends.protocol"].WriteResult = _WriteResult
 
 class _FilesystemMiddleware:
     def __init__(self, backend=None, **kwargs):

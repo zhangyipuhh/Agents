@@ -2,11 +2,11 @@
 """
 Filesystem Encoding Fix 测试
 
-测试 app/shared/tools/middleware/filesystem_encoding_fix 模块的 read 猴补丁：
+测试 app/shared/tools/middleware/filesystem_encoding_fix 模块的 read/write 猴补丁：
 - deepagents FilesystemMiddleware 传入的是以 "/" 开头的虚拟绝对路径
-- 猴补丁通过临时转换 self.cwd 把虚拟路径解析到 data/tmp/upload/...
-- 扩展名统一替换为 .md
-- md 文件不存在时返回 not found 且错误信息使用原路径
+- read 补丁对 pdf/docx/xlsx/md/txt 扩展名临时映射到 data/tmp/upload/... 的 .md 缓存
+- read 补丁对非文档类扩展名直接读取 self.cwd 下的原文件
+- write 补丁对 pdf/docx/xlsx/md/txt 扩展名同步写入 data/tmp/... 的 .md 镜像
 - 读取后 self.cwd 恢复
 """
 
@@ -61,6 +61,14 @@ def patched_read(tmp_path, monkeypatch):
     """返回可直接调用的 _patched_read，并隔离项目根目录。"""
     monkeypatch.setattr(spm, "_get_project_root", lambda: tmp_path)
     return fix._patched_read
+
+
+@pytest.fixture
+def patched_write(tmp_path, monkeypatch):
+    """返回可直接调用的 _patched_write，并隔离项目根与 paths._PROJECT_ROOT。"""
+    monkeypatch.setattr(spm, "_get_project_root", lambda: tmp_path)
+    monkeypatch.setattr("app.core.config.paths._PROJECT_ROOT", str(tmp_path))
+    return fix._patched_write
 
 
 class TestPatchedRead:
@@ -195,6 +203,20 @@ class TestPatchedRead:
         assert result.file_data["encoding"] == "utf-8"
         assert result.file_data["content"] == plain_text
 
+    def test_read_non_doc_extension_reads_original(self, tmp_path, patched_read):
+        """非文档类扩展名（如 .py）应直接读取 self.cwd 下的原文件，不重定向到 .md。"""
+        upload_dir = tmp_path / "data/upload/2026/06/19/session-abc"
+        upload_dir.mkdir(parents=True)
+        (upload_dir / "script.py").write_text("print('hello')", encoding="utf-8")
+
+        backend = _FakeBackend(upload_dir)
+        result = patched_read(backend, "/script.py")
+
+        assert result.error is None
+        assert result.file_data is not None
+        assert result.file_data["encoding"] == "utf-8"
+        assert result.file_data["content"] == "print('hello')"
+
     def test_read_project_date_path_maps_to_tmp_md(self, tmp_path, patched_read):
         """项目文件夹日期化路径 data/project/yyyy/mm/dd/{uuid}/ 能自然映射到 data/tmp/project/..."""
         project_dir = tmp_path / "data/project/2026/07/01/project-uuid"
@@ -208,6 +230,60 @@ class TestPatchedRead:
         assert result.error is None
         assert result.file_data is not None
         assert result.file_data["content"] == "Project doc markdown"
+
+
+class TestPatchedWrite:
+    """_patched_write 单元测试。"""
+
+    def test_write_doc_extension_creates_md_mirror(self, tmp_path, patched_write, monkeypatch):
+        """写 .docx 时同步生成 data/tmp/.../.md 镜像。"""
+        from deepagents.backends.protocol import WriteResult
+
+        upload_dir = tmp_path / "data/upload/2026/06/19/session-abc"
+        upload_dir.mkdir(parents=True)
+
+        def _fake_orig_write(self, file_path, content):
+            p = self._resolve_path(file_path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding="utf-8")
+            return WriteResult(path=file_path)
+
+        monkeypatch.setattr(fix, "_orig_write", _fake_orig_write)
+        backend = _FakeBackend(upload_dir)
+
+        result = patched_write(backend, "/report.docx", "# Report\ncontent")
+
+        assert result.error is None
+        assert result.path == "/report.docx"
+        assert (upload_dir / "report.docx").read_text(encoding="utf-8") == "# Report\ncontent"
+
+        md_mirror = tmp_path / "data/tmp/upload/2026/06/19/session-abc/report.md"
+        assert md_mirror.exists()
+        assert md_mirror.read_text(encoding="utf-8") == "# Report\ncontent"
+
+    def test_write_non_doc_extension_no_mirror(self, tmp_path, patched_write, monkeypatch):
+        """写 .py 时不生成 .md 镜像。"""
+        from deepagents.backends.protocol import WriteResult
+
+        upload_dir = tmp_path / "data/upload/2026/06/19/session-abc"
+        upload_dir.mkdir(parents=True)
+
+        def _fake_orig_write(self, file_path, content):
+            p = self._resolve_path(file_path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding="utf-8")
+            return WriteResult(path=file_path)
+
+        monkeypatch.setattr(fix, "_orig_write", _fake_orig_write)
+        backend = _FakeBackend(upload_dir)
+
+        result = patched_write(backend, "/script.py", "print('hello')")
+
+        assert result.error is None
+        assert (upload_dir / "script.py").read_text(encoding="utf-8") == "print('hello')"
+
+        md_mirror = tmp_path / "data/tmp/upload/2026/06/19/session-abc/script.md"
+        assert not md_mirror.exists()
 
 
 class _FakeMiddleware:
@@ -330,6 +406,7 @@ class TestApplyFix:
 
         fake_fs_module = MagicMock()
         fake_fs_module.FilesystemBackend.read = lambda self, x: x
+        fake_fs_module.FilesystemBackend.write = lambda self, x, y: y
         monkeypatch.setattr(fix, "fs_module", fake_fs_module)
 
         fake_module = MagicMock()
@@ -339,3 +416,20 @@ class TestApplyFix:
         fix.apply_fix()
 
         assert fake_fs_module.FilesystemBackend.read is fix._patched_read
+
+    def test_apply_fix_registers_write_patch(self, monkeypatch):
+        """apply_fix 应将 FilesystemBackend.write 替换为 _patched_write。"""
+        import sys
+
+        fake_fs_module = MagicMock()
+        fake_fs_module.FilesystemBackend.read = lambda self, x: x
+        fake_fs_module.FilesystemBackend.write = lambda self, x, y: y
+        monkeypatch.setattr(fix, "fs_module", fake_fs_module)
+
+        fake_module = MagicMock()
+        fake_module.EncodingSafeFileSearchMiddleware._python_search = lambda self, pattern, base_path, include: {}
+        monkeypatch.setitem(sys.modules, "app.shared.tools.middleware.encoding_safe_file_search", fake_module)
+
+        fix.apply_fix()
+
+        assert fake_fs_module.FilesystemBackend.write is fix._patched_write

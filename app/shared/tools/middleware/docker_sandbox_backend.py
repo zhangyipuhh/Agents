@@ -14,7 +14,9 @@ Date: 2026-06-11
 """
 
 import os
+import asyncio
 import logging
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 import docker
@@ -25,11 +27,16 @@ from deepagents.backends.protocol import (
     ExecuteResponse,
     FileUploadResponse,
     FileDownloadResponse,
+    WriteResult,
 )
 from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
 logger = logging.getLogger(__name__)
+
+# sandbox 生成文档类文件时，需要同步写入 .md 镜像的扩展名集合。
+# 与 filesystem_encoding_fix.py 中的 _DOC_ONLY_EXTENSIONS 保持一致。
+_DOC_ONLY_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".md", ".txt"}
 
 
 class DockerSandboxBackend(BaseSandbox):
@@ -251,6 +258,93 @@ class DockerSandboxBackend(BaseSandbox):
             str: 会话ID，作为沙箱唯一标识
         """
         return self.session_id
+
+    def _resolve_workspace_path(self, file_path: str) -> str:
+        """将虚拟路径或绝对路径解析为 workspace 内的绝对路径。
+
+        子智能体通过 write_file 传入的路径通常是以 "/" 开头的虚拟路径，
+        需要映射到当前 session 的 workspace 下。若传入的已是 workspace 内的
+        绝对路径，则直接返回。
+
+        Args:
+            file_path: 原始传入路径（如 "/report.docx" 或 workspace 绝对路径）。
+
+        Returns:
+            str: workspace 内的绝对路径。
+
+        Raises:
+            ValueError: file_path 为空时抛出。
+        """
+        if not file_path:
+            raise ValueError("file_path 不能为空字符串")
+        if os.path.isabs(file_path):
+            workspace_abs = os.path.abspath(self.workspace)
+            file_abs = os.path.abspath(file_path)
+            if file_abs.startswith(workspace_abs):
+                return file_path
+            # 在 Linux 下 "/file.txt" 会被 os.path.isabs 判定为 True，
+            # 但它只是虚拟路径，需要去掉前导 "/" 后拼接到 workspace。
+            file_path = file_path.lstrip("/")
+        return os.path.join(self.workspace, file_path)
+
+    def write(self, file_path: str, content: str) -> WriteResult:
+        """在 workspace 中创建新文件，并为文档类扩展名同步写入 .md 镜像。
+
+        直接在当前 Python 进程（宿主机侧）写入文件，避免 BaseSandbox.write
+        在容器内执行 preflight 路径检查时可能无法识别宿主机路径的问题。
+
+        Args:
+            file_path: 虚拟绝对路径或 workspace 内的绝对路径。
+            content: 待写入的 UTF-8 文本内容。
+
+        Returns:
+            WriteResult: 成功时返回 path，失败时返回错误信息。
+        """
+        try:
+            abs_path = self._resolve_workspace_path(file_path)
+            workspace_abs = os.path.abspath(self.workspace)
+            if not os.path.abspath(abs_path).startswith(workspace_abs):
+                return WriteResult(error=f"Path outside workspace: {file_path}")
+
+            if os.path.exists(abs_path):
+                return WriteResult(
+                    error=f"Cannot write to {file_path} because it already exists."
+                )
+
+            parent = os.path.dirname(abs_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+
+            with open(abs_path, "w", encoding="utf-8", newline="") as f:
+                f.write(content)
+
+            original_ext = Path(file_path).suffix.lower()
+            if original_ext in _DOC_ONLY_EXTENSIONS:
+                try:
+                    from app.core.config.paths import resolve_tmp_mirror_path
+                    md_path = resolve_tmp_mirror_path(abs_path)
+                    if md_path is not None:
+                        md_path.parent.mkdir(parents=True, exist_ok=True)
+                        with open(md_path, "w", encoding="utf-8", newline="") as f:
+                            f.write(content)
+                except Exception as e:
+                    logger.warning("Failed to write .md mirror for %s: %s", file_path, e)
+
+            return WriteResult(path=file_path)
+        except (OSError, UnicodeEncodeError) as e:
+            return WriteResult(error=f"Error writing file '{file_path}': {e}")
+
+    async def awrite(self, file_path: str, content: str) -> WriteResult:
+        """write 的异步包装，使用线程池执行文件写入。
+
+        Args:
+            file_path: 虚拟绝对路径或 workspace 内的绝对路径。
+            content: 待写入的 UTF-8 文本内容。
+
+        Returns:
+            WriteResult: 成功时返回 path，失败时返回错误信息。
+        """
+        return await asyncio.to_thread(self.write, file_path, content)
 
     def execute(
         self,

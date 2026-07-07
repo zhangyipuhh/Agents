@@ -211,3 +211,113 @@ class TestDockerSandboxBackend:
         with pytest.raises(ValueError) as exc_info:
             DockerSandboxBackend(session_id="no-workspace")
         assert "必须显式传入 workspace" in str(exc_info.value)
+
+
+class TestDockerSandboxBackendWrite:
+    """DockerSandboxBackend.write/awrite 测试类。"""
+
+    @staticmethod
+    def _setup_project_root(tmp_path, monkeypatch):
+        """将 paths._PROJECT_ROOT 指向临时目录，确保 resolve_tmp_mirror_path 可映射。"""
+        from app.core.config import paths
+        monkeypatch.setattr(paths, "_PROJECT_ROOT", str(tmp_path))
+
+    @staticmethod
+    def _make_backend(tmp_path, workspace_relative: str):
+        """创建 DockerSandboxBackend 实例并返回 workspace 路径与 backend。"""
+        with patch("docker.from_env") as mock_from_env:
+            mock_client = Mock()
+            mock_client.ping.return_value = True
+            mock_client.images.get.return_value = Mock()
+            from docker.errors import NotFound
+            mock_client.containers.get.side_effect = NotFound("not found")
+            mock_container = Mock()
+            mock_container.id = "test123"
+            mock_client.containers.run.return_value = mock_container
+            mock_from_env.return_value = mock_client
+
+            from app.shared.tools.middleware.docker_sandbox_backend import (
+                DockerSandboxBackend,
+            )
+
+            workspace = tmp_path / workspace_relative
+            workspace.mkdir(parents=True)
+            backend = DockerSandboxBackend(
+                session_id="test-write",
+                workspace=str(workspace),
+            )
+            return workspace, backend
+
+    def test_write_creates_original_file(self, tmp_path, monkeypatch):
+        """写 /script.py 应在 workspace 下创建原文件。"""
+        self._setup_project_root(tmp_path, monkeypatch)
+        workspace, backend = self._make_backend(tmp_path, "data/upload/2026/07/07/session-abc")
+        try:
+            result = backend.write("/script.py", "print('hello')")
+
+            assert result.error is None
+            assert result.path == "/script.py"
+            assert (workspace / "script.py").read_text(encoding="utf-8") == "print('hello')"
+        finally:
+            backend.cleanup()
+
+    def test_write_doc_extension_creates_md_mirror(self, tmp_path, monkeypatch):
+        """workspace 位于 data/upload/... 时，写 .docx 应同步生成 data/tmp/.../.md。"""
+        self._setup_project_root(tmp_path, monkeypatch)
+        workspace, backend = self._make_backend(tmp_path, "data/upload/2026/07/07/session-abc")
+        try:
+            result = backend.write("/report.docx", "# Report\ncontent")
+
+            assert result.error is None
+            assert (workspace / "report.docx").read_text(encoding="utf-8") == "# Report\ncontent"
+
+            md_mirror = tmp_path / "data/tmp/upload/2026/07/07/session-abc/report.md"
+            assert md_mirror.exists()
+            assert md_mirror.read_text(encoding="utf-8") == "# Report\ncontent"
+        finally:
+            backend.cleanup()
+
+    def test_write_non_doc_extension_no_mirror(self, tmp_path, monkeypatch):
+        """写 .json 时不应生成 .md 镜像。"""
+        self._setup_project_root(tmp_path, monkeypatch)
+        workspace, backend = self._make_backend(tmp_path, "data/upload/2026/07/07/session-abc")
+        try:
+            result = backend.write("/data.json", "{}")
+
+            assert result.error is None
+            assert (workspace / "data.json").read_text(encoding="utf-8") == "{}"
+
+            md_mirror = tmp_path / "data/tmp/upload/2026/07/07/session-abc/data.md"
+            assert not md_mirror.exists()
+        finally:
+            backend.cleanup()
+
+    def test_write_outside_workspace_returns_error(self, tmp_path, monkeypatch):
+        """写 workspace 外的路径应返回错误。"""
+        self._setup_project_root(tmp_path, monkeypatch)
+        workspace, backend = self._make_backend(tmp_path, "data/upload/2026/07/07/session-abc")
+        try:
+            result = backend.write("/../../outside.txt", "should fail")
+
+            assert result.error is not None
+            assert "outside workspace" in result.error.lower()
+        finally:
+            backend.cleanup()
+
+    def test_awrite_creates_original_file(self, tmp_path, monkeypatch):
+        """awrite 应异步创建原文件及 .md 镜像。"""
+        import asyncio
+
+        self._setup_project_root(tmp_path, monkeypatch)
+        workspace, backend = self._make_backend(tmp_path, "data/upload/2026/07/07/session-abc")
+        try:
+            result = asyncio.run(backend.awrite("/notes.md", "# Notes"))
+
+            assert result.error is None
+            assert (workspace / "notes.md").read_text(encoding="utf-8") == "# Notes"
+
+            md_mirror = tmp_path / "data/tmp/upload/2026/07/07/session-abc/notes.md"
+            assert md_mirror.exists()
+            assert md_mirror.read_text(encoding="utf-8") == "# Notes"
+        finally:
+            backend.cleanup()

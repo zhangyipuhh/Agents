@@ -11,13 +11,89 @@
  *   fileTree: Object | null   // 来自 /api/session/{id}/files/tree 的 tree 根节点
  *   loading: boolean
  *   error: string
+ *   sessionId: string         // 2026-07-07 新增：当前会话 ID，用于拼下载 URL
  *
  * Emits:
  *   close
  *   file-click(file)
+ *
+ * 行内交互（不冒泡）：
+ *   - 点击 .file-item 主体 → file-click 预览（div[role=button]）
+ *   - 点击 .download-btn → handleDownload 直链下载（stopPropagation）
  */
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import FolderTree from './FolderTree.vue'
+import { fetchWithAuth } from '../utils/api.js'
+
+/**
+ * 触发单个文件下载。
+ * 通过后端 GET /api/session/{sessionId}/files/download?stored_path=... 拉取原文件，
+ * 由浏览器自动开始保存（不打开新页签）。
+ *
+ * 设计要点（2026-07-07 二次修订）：
+ *   1. 必须传完整 stored_path 而非 fileUuid —— 工作空间抽屉里的文件并非都经过
+ *      FileTransfer.upload_files 写入 UUID 命名（外部同步 / 演示数据 / 项目模板等
+ *      直接落盘的场景 basename 仍是原文件名，如"三河市...报告.docx"）。
+ *      后端 /api/session/{id}/files/download?stored_path= 通过
+ *      FileTransfer.resolve_session_file_path 做了会话/项目目录白名单校验，安全性等价。
+ *   2. 必须使用 fetch + Authorization 头，不能用 <a href download> —— 后端
+ *      auth_middleware 从 Authorization 头读 JWT，<a> 触发的导航请求不带自定义头，
+ *      会直接 401 拒绝（实测 2026-07-07 终端日志确认）。fetchWithAuth 还会自动
+ *      处理 401 → 刷新 access_token → 重试，URL 含中文路径时由浏览器自动 percent-encode。
+ *   3. 拿到 blob 后用 URL.createObjectURL 触发原生下载，避免在浏览器中打开新页签。
+ *
+ * @param {MouseEvent} event - 鼠标事件，用于 stopPropagation 防止冒泡触发预览
+ * @param {Object} file - 文件树节点，至少包含 name / path / stored_path
+ */
+async function handleDownload(event, file) {
+  event.stopPropagation()
+  event.preventDefault()
+  const storedPath = (file && (file.stored_path || file.path)) || ''
+  if (!storedPath) {
+    console.warn('[SessionFileDrawer] 文件缺少有效 stored_path / path，无法下载:', file)
+    return
+  }
+  if (!props.sessionId) {
+    console.warn('[SessionFileDrawer] 缺少 sessionId，无法拼下载 URL')
+    return
+  }
+  const url = `/api/session/${encodeURIComponent(props.sessionId)}/files/download?stored_path=${encodeURIComponent(storedPath)}`
+  let blobUrl = null
+  try {
+    const response = await fetchWithAuth(url, { method: 'GET' })
+    if (!response.ok) {
+      const text = await response.text().catch(() => '')
+      throw new Error(`下载失败: HTTP ${response.status} ${text}`)
+    }
+    const blob = await response.blob()
+    // 尝试从 Content-Disposition 头解析后端设置的 filename（含中文）
+    const cdHeader = response.headers.get('content-disposition') || ''
+    let downloadName = (file && file.name) || 'download'
+    const utf8Match = cdHeader.match(/filename\*=UTF-8''([^;]+)/i)
+    const asciiMatch = cdHeader.match(/filename="?([^";]+)"?/i)
+    if (utf8Match) {
+      try { downloadName = decodeURIComponent(utf8Match[1]) } catch { /* 保持 fallback */ }
+    } else if (asciiMatch) {
+      downloadName = asciiMatch[1]
+    }
+    blobUrl = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = blobUrl
+    link.download = downloadName
+    link.rel = 'noopener'
+    link.style.display = 'none'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    // 释放对象 URL 留出 GC 空间（部分浏览器需要 setTimeout 推后）
+    setTimeout(() => {
+      if (blobUrl) URL.revokeObjectURL(blobUrl)
+    }, 1000)
+  } catch (err) {
+    console.error('[SessionFileDrawer] 下载文件失败:', err, file)
+    if (blobUrl) URL.revokeObjectURL(blobUrl)
+  }
+}
 
 /**
  * 获取文件扩展名
@@ -86,6 +162,12 @@ const props = defineProps({
     default: false
   },
   error: {
+    type: String,
+    default: ''
+  },
+  // 2026-07-07 新增：当前会话 ID，用于拼下载 URL
+  // (/api/session/{sessionId}/files/download?stored_path=...)
+  sessionId: {
     type: String,
     default: ''
   }
@@ -299,33 +381,56 @@ const hasChildren = computed(() => displayNodes.value.length > 0)
           :key="folder.path || folder.name"
           :folder="folder"
           :depth="0"
+          :session-id="sessionId"
           @file-click="handleFileClick"
         />
 
-        <button
+        <div
           v-for="file in displayFiles"
           :key="file.path || file.name"
           class="file-item"
           :style="{ '--depth': 0 }"
+          role="button"
+          tabindex="0"
           @click="handleFileClick(file)"
+          @keydown.enter="handleFileClick(file)"
+          @keydown.space.prevent="handleFileClick(file)"
         >
-          <svg class="file-type-icon" viewBox="0 0 20 20" fill="currentColor" :style="{ color: getFileIconColor(file.name) }">
-            <path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"/>
-          </svg>
-          <div class="file-info">
-            <div class="file-info-top">
-              <span class="file-name" :title="file.name">{{ file.name }}</span>
-              <span v-if="file.size" class="file-size">{{ formatSize(file.size) }}</span>
-            </div>
-            <div v-if="file.summary" class="file-summary">{{ file.summary }}</div>
-            <div class="file-meta">
-              <span v-if="file.date" class="file-date">{{ file.date }}</span>
-              <div v-if="file.keywords && file.keywords.length" class="file-keywords">
-                <span v-for="kw in file.keywords" :key="kw" class="keyword-tag">{{ kw }}</span>
+          <div class="file-row">
+            <div class="file-row-main">
+              <svg class="file-type-icon" viewBox="0 0 20 20" fill="currentColor" :style="{ color: getFileIconColor(file.name) }">
+                <path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"/>
+              </svg>
+              <div class="file-info">
+                <div class="file-info-top">
+                  <span class="file-name" :title="file.name">{{ file.name }}</span>
+                  <span v-if="file.size" class="file-size">{{ formatSize(file.size) }}</span>
+                </div>
+                <div v-if="file.summary" class="file-summary">{{ file.summary }}</div>
+                <div class="file-meta">
+                  <span v-if="file.date" class="file-date">{{ file.date }}</span>
+                  <div v-if="file.keywords && file.keywords.length" class="file-keywords">
+                    <span v-for="kw in file.keywords" :key="kw" class="keyword-tag">{{ kw }}</span>
+                  </div>
+                </div>
               </div>
             </div>
+            <button
+              class="download-btn"
+              type="button"
+              :aria-label="`下载 ${file.name}`"
+              :title="`下载 ${file.name}`"
+              @click="handleDownload($event, file)"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+            </button>
           </div>
-        </button>
+        </div>
       </div>
     </div>
   </aside>
@@ -488,6 +593,65 @@ const hasChildren = computed(() => displayNodes.value.length > 0)
   transition: var(--transition-colors);
   background: none;
   border: none;
+  outline: none;
+}
+
+.file-item:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-accent, #1E5AA8);
+  background-color: var(--color-bg-hover);
+}
+
+/* 文件行容器：左主信息 + 右下载按钮 */
+.file-row {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+  gap: 8px;
+}
+
+.file-row-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* 下载按钮（2026-07-07 新增） */
+.download-btn {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  margin-top: 2px;
+}
+
+.download-btn:hover {
+  background-color: var(--color-accent-light);
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.download-btn:active {
+  transform: scale(var(--scale-active));
+}
+
+.download-btn:focus-visible {
+  outline: 2px solid var(--color-accent, #1E5AA8);
+  outline-offset: 1px;
+}
+
+.download-btn svg {
+  width: 16px;
+  height: 16px;
 }
 
 .file-item:hover {
