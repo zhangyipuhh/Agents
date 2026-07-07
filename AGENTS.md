@@ -1,20 +1,35 @@
-Current is conda environment
+## Design Rules
+- High cohesion and low coupling; unified entry/exit points, unified configuration entry, unified preloading—make everything configurable whenever possible.
+- Database-intensive loading operations are completed during service startup, with configurations loaded into memory simultaneously; modifications and insertions must synchronize both memory and database.
+- Design must prioritize asynchronous programming and performance optimization.
+- All code should follow clean code principles and maintain existing functionality
+- Comments need to be added after file generation. The comments should be in Chinese and need to include information about function parameters, return values, exceptions, etc.
 
-```bash
-conda activate E:\laboratory\AI\Agents
-```
+## Path Management Rules
 
-Current project path is
+- **所有路径相关常量**（项目根、数据目录、知识库、临时文件、上传目录等）必须集中写在 `app/core/config/paths.py`。
 
-```bash
-cd E:\laboratory\AI\Agents\agent-user-mangerment\
-```
+## Frontend Vue Rules
+- When developing frontend interfaces, prioritize using standalone template syntax first. This approach enhances maintainability and prevents syntax conflicts or rendering issues.
+- When using `<style scoped>` in Vue 3 SFC, scoped CSS only applies to elements rendered by template syntax; elements created via `defineComponent` + `h()` render function within the `<script>` block will not automatically receive the `data-v-xxx` scopeId, causing all scoped CSS selectors to silently fail to match, resulting in completely ineffective layouts/styles with no error messages. Prioritize using standalone .vue files with `<template>` syntax.
 
-Use as many skills and agents as possible to implement features
+## use subagents
+Use as many subagents  as possible to speed up
+## use skills rule
+- Use as many skills and agents as possible to implement features
 
-All code should follow clean code principles and maintain existing functionality
 
-Comments need to be added after file generation. The comments should be in Chinese and need to include information about function parameters, return values, exceptions, etc.
+## Use PostgreSQL MCP
+
+When querying the database, use this MCP to inspect table schemas and row data.
+
+
+## Database rules
+
+1. After any `Edit`/`Write` operation, check whether it is necessary to append content to `app\migrations\init_all_tables.sql`, including statements for adding new fields and statements for adding new tables
+
+## Debug rules 
+1. When troubleshooting any issues, first use PostgreSQL MCP to verify whether the error originates from database problems before investigating other causes.
 
 ## CSS Debugging Principles
 
@@ -24,33 +39,35 @@ Comments need to be added after file generation. The comments should be in Chine
 4. **Trace the `width: 100%` Reference Chain** — `100%` is relative to the containing block, not the parent flex container. Check whether every ancestor in the chain has width constraints.
 5. **Chase One Hypothesis at Most 3 Steps** — If the phenomenon remains unchanged after 3 modifications, change direction. If multiple consecutive modifications to the same property are ineffective, the root cause is not in that property.
 
-## ⚠️ HARD RULE：project_memory.md 同步协议
+## ⚠️ HARD RULE: project_memory.md Synchronization Protocol
 
-**READ 阶段**：在执行任何 `Edit`/`Write` 工具之前，必须先调用 `Read('project_memory.md')` 读取项目记忆。
+**READ Phase**: Before executing any `Edit`/`Write` operation, you must first call `Read('project_memory.md')` to load the project memory.
 
-**WRITE 阶段**：每次 `Edit`/`Write` 工具调用后，必须评估"这次修改是否影响 `project_memory.md` 中的某个章节"：
+**WRITE Phase**: After each `Edit`/`Write` operation, evaluate whether the change affects any chapter in `project_memory.md`:
 
-- 是 → 立即调用 `Edit('project_memory.md', ...)` 同步
-- 否 → 在回复结尾明确说明"无同步需要"
+- Yes → Immediately call `Edit('project_memory.md', ...)` to synchronize.
+- No → Explicitly state at the end of the response: "No sync needed."
 
-**触发清单**（以下任一情况都触发同步）：
+**What to Record**: Only record the **final/current state** in `project_memory.md`. Do **not** record the change process, decision history, or iterative steps. For example, if an API endpoint changes, document only its final signature and behavior. Retrieve historical process via `git log` if needed.
 
-- 新增 / 删除 / 重命名模块
-- 修改数据库 schema（表结构、字段、索引）
-- 改动 API 路由、请求/响应格式
-- 改动前端组件、UI 架构、设计 token
-- 改动部署配置、环境变量、Docker 配置
-- 改动测试用例、测试覆盖率
-- 其他架构层面变化（认证体系、提示词分层、Session/缓存策略等）
+**Trigger List** (synchronization is required if any of the following occurs):
 
-**强制约束**：
+- Adding / deleting / renaming modules
+- Modifying database schema (tables, fields, indexes)
+- Changing API routes, request/response formats
+- Changing frontend components, UI architecture, design tokens
+- Changing deployment config, environment variables, Docker configuration
+- Changing test cases, test coverage
+- Other architectural changes (authentication, prompt layering, session/cache strategy, etc.)
 
-- **禁止使用 `Glob` 探测 `project_memory.md`**（本环境 Glob 工具索引不完整，对根目录文件返回 0 命中，会让 AI 误判文件不存在）
-- 必须用 `Read` 工具直接读取
-- 项目记忆同步必须在主任务回复中完成，**禁止在主任务之外另开新对话处理**
-- 回复结尾必须输出 checklist：`[✓ project_memory.md 已同步]` 或 `[✗ 本次修改无 project_memory.md 同步需要：<理由>]`
+**Mandatory Constraints**:
 
-# Project Memory
+- **Do not use `Glob` to probe `project_memory.md`** (the Glob tool index is incomplete in this environment and returns 0 hits for root-directory files, which may mislead the AI into thinking the file does not exist).
+- You must use the `Read` tool to read it directly.
+- Project memory synchronization must be completed within the main task response. **Do not start a separate conversation to handle it.**
+- At the end of the response, output the checklist: `[✓ project_memory.md synchronized]` or `[✗ No project_memory.md sync needed: <reason>]`.
+
+## Project Memory
 
 - Read project key information through project_memory.md before modification, including project architecture, functional modules, database design, etc.
 - When modifying code, make changes based on the information in project_memory.md to ensure modifications do not affect the normal operation of the project.
@@ -73,6 +90,8 @@ Comments need to be added after file generation. The comments should be in Chine
 - 读取文件优先使用 `Read`，禁止用 `cat`/`head`/`tail` 等 shell 命令
 
 ## ⚠️ HARD RULE：测试同步协议
+
+**重要约束**：执行 `Edit`/`Write` 操作后，若功能发生变更，必须同步检查对应测试文件是否需要更新。测试文件必须与源码变更保持一致，禁止出现「源码已改、测试未动」的不一致状态。
 
 **READ 阶段**：在执行 `Edit`/`Write` 修改 `app/` 目录下的 `.py` 文件之前，应先了解对应模块是否已有测试文件及其测试风格。
 
@@ -133,3 +152,66 @@ app/{module}/bar/baz.py      →  app/tests/{module}/bar/test_baz.py
 - 生成测试后必须执行 `pytest app/tests/对应路径 -v` 验证通过
 - 若测试失败，需修复源码或测试直至通过
 - 最终回复必须包含 checklist：`[✓ 测试已同步生成并通过]` 或 `[✗ 本次修改无测试同步需要：<理由>]`
+
+## ⚠️ HARD RULE：禁止在测试中虚构生产不存在的依赖
+
+**核心原则**：测试是生产的镜像，不是生产的补丁。**绝不允许**通过 `conftest` / `fixture` 注入生产环境（`lifespan` / 启动钩子）**根本不会初始化**的对象来让测试通过——这是掩盖真实 bug 的反模式，会让「测试全绿、生产崩溃」成为常态。
+
+**典型反模式（2026-06-24 agent_admin_router 401 案例）**：
+
+- 生产 `app/routers/agent_admin_router.py::list_agents` 访问 `request.app.state.db`，但 `app/core/server.py` 的 `lifespan` **从未初始化** `app.state.db`（只初始化了 `agent_config_service` / `mcp_config_service` / `mcp_registry`）
+- 测试 `app/tests/routers/conftest.py::_init_db` 用 `app.state.db = MagicMock()` 让路由代码"看似"能跑
+- 后果：测试 100% 通过，但生产抛 `AttributeError: 'State' object has no attribute 'db'` → 被 `auth_middleware` 的 `try/except Exception` 吞掉 → 用户看到 `401 Unauthorized`
+- 根因：测试用 Mock **虚构**了一个生产中根本不存在的对象，把「lifespan 漏初始化」与「路由错误直接访问 app.state」两层 bug 一起掩盖
+
+**硬约束**：
+
+1. **依赖一致性检查（必做）**：写测试前，先 `Grep` 生产启动路径（`app/core/server.py` lifespan / `app/main.py` `register_routers` / 所有 `app.state.*` 赋值点）确认目标对象在生产**真的会存在**。如不存在 → **先修生产代码**（补 lifespan 或改走 service 层），再写测试。
+
+2. **禁止用 Mock 填补生产空洞**：
+   - ❌ `app.state.xxx = MagicMock()` 但生产 lifespan 没初始化 `xxx`
+   - ❌ `monkeypatch.setattr("module.yyy", MagicMock())` 但生产代码根本不调 `module.yyy`
+   - ✅ 修补生产 `lifespan` 让对象真实存在，再在测试 fixture 注入**真实实例**（即使是 `db=None` 的 stub service）；或重构代码让生产根本不依赖该对象
+
+3. **autouse fixture 必须有生产对等物**：每个 `autouse=True` fixture 都必须在 docstring 明确指向「生产中谁负责初始化这个对象」（lifespan / 启动钩子 / 中间件）。如果只是为了「让测试跑起来」注入 MagicMock → **删除该 fixture** 或改为显式 opt-in（不 autouse）。
+
+4. **测试失败时优先怀疑生产 bug**：测试抛 `AttributeError: 'State' object has no attribute 'xxx'` / `AttributeError: 'NoneType' object has no attribute 'yyy'` 时，**先 `Grep` 生产是否真的会初始化 `xxx` / `yyy`**，不要先想「怎么 Mock 掉这个错」。
+
+5. **历史兼容 fixture 必须标注 + 给出移除时间表**：`@pytest.fixture(autouse=True)` 注入 MagicMock 的兼容 fixture 必须在 docstring 显式标注「仅供历史兼容」「生产未初始化此对象」「如未来路由错误地直接访问此对象，生产仍会 AttributeError」，并写入 `project_memory.md` 待办，给出移除时间表。
+
+**反例 → 正例对照**：
+
+| 反例（掩盖 bug） | 正例（暴露并修复 bug） |
+|-----------------|---------------------|
+| `_init_db` 注入 `app.state.db = MagicMock()` 让路由通过 | ① 修 `lifespan` 让 `app.state.db` 真实存在；② 或改路由改走 `service._db`，让 `app.state.db` 不再被需要；③ 测试 fixture 注入**真实 service 实例**（如 `AgentConfigService(db=None, agents_md_loader=AgentsMdLoader())`）|
+| 测试 `monkeypatch.setattr("xxx", Mock())` 让 import 不报错 | 让生产代码 `try/except ImportError` 优雅降级，或把 import 移到运行时 |
+| 测试 fixture 注入生产 lifespan 不创建的对象 | 删除 fixture，改让测试显式 `monkeypatch` 业务方法（按需 opt-in） |
+
+**审计清单**（每次新增/修改 `app/tests/**/conftest.py` 后必查）：
+
+- [ ] 每个 `autouse=True` fixture 是否有生产对等初始化点？（`Grep "app.state.<attr>" app/core/server.py app/main.py` 验证）
+- [ ] 是否有 `MagicMock()` 直接挂在 `app.state.*` 上？（如有不属于 stub service 的 → 删除或迁移到 service 层）
+- [ ] 测试失败时是否先问「这是生产 bug 还是测试 bug？」而不是「怎么 Mock 掉这个错？」
+- [ ] 历史兼容 fixture 是否在 docstring 标注「仅历史兼容」+ 在 `project_memory.md` 写入待办？
+
+## Skill 系统使用规范（2026-06-21 落地，v2）
+
+> **详情**：路径约定、frontmatter 格式、模块位置、与 opencode 差异、API 列表等完整信息见 [`project_memory.md` "Skill 系统" 章节](file:///e:/laboratory/AI/Agents/feature-agent-core/project_memory.md)。本节只列**操作硬约束**。
+
+- **硬约束**：**禁止** 使用 `<system-reminder>` 标签包装 skill 内容（项目 `BASE_SYSTEM_PROMPT:54` 已声明其为 LangChain 运行时系统提醒专用，不能用作业务包装层）。
+- **硬约束**：bootstrap 优先级链（从高到低）**禁止** 任意颠倒：
+  1. `app/features/<agent>/config/bootstrap.md`（子智能体）
+  2. `settings.skills_bootstrap_path`（用户自定义全局）
+  3. `app/core/skills/bootstrap.md`（系统默认）
+  4. 代码内置 `_FALLBACK_TOOL_MAPPING`（最后兜底）
+- **硬约束**：子智能体维度一旦存在 `app/features/<agent>/skills/` 目录，会**完全覆盖**全局默认根扫描（仅扫描该目录，不追加 `app/skills` 与 `.agents/skills`）。添加新全局 skill 时**必须**确认目标子智能体 skills/ 是否已存在，避免被静默覆盖。
+- **测试命令**：`pytest app/tests/core/skills/ -v`
+
+# langchain使用说明
+
+- **凡涉及 LangChain / LangChain-Core / LangGraph / LangSmith / LangMem / deepagents 的 API 使用**，必须通过 **context7 MCP** 查找对应官方文档后再调用，禁止凭记忆使用旧版本 API。
+- 优先查询顺序：
+  1. `usecontext7_mcp` → `get-library-docs` 拉取目标库的最新 docs（如 `/langchain-ai/langchain`、`/langchain-ai/langgraph`）
+  2. 命中失败再降级 WebSearch + 官方文档站（`https://python.langchain.com/`、`https://langchain-ai.github.io/langgraph/`）
+- 版本兼容注意：项目使用 **LangChain 1.x + LangGraph 1.x**（旧版 0.x 的 `create_react_agent`、`AgentExecutor`、`LLMChain` 等签名已变更，迁移文档参考 context7 `/langchain-ai/langchain` 的 v1 migration guide）
+- 更新 `app/requirements.txt` 时，必须同步更新本表版本号，避免文档查错版本

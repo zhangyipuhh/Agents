@@ -12,11 +12,38 @@
 
 Date: 2026/5/15
 """
+import json
 import threading
 import bcrypt
 from typing import Optional, List, Dict
 from datetime import datetime
 from app.core.database import DatabasePool, register_schema
+
+
+def _coerce_allowed_agents(value):
+    """
+    防御性兜底：把 postgres JSONB 列解码结果规整为 Python list。
+
+    asyncpg 默认将 JSONB 列解码为 JSON 字符串；虽然 DatabasePool.initialize()
+    已注册 jsonb codec 将其反序列化为 list，但调用方在 codec 未生效（如 memory
+    模式混入、单测 stub 字符串值、第三方 monkeypatch）时仍可能拿到 str。
+    此函数统一兜底，保证下游 Pydantic 模型收到合法 list。
+
+    Args:
+        value: 来自 DB 行或内存字典的 allowed_agents 原始值。
+
+    Returns:
+        list: 规整后的列表；解析失败或非 str/list 时返回 []。
+    """
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value) if value else []
+            return parsed if isinstance(parsed, list) else []
+        except (json.JSONDecodeError, ValueError):
+            return []
+    return []
 
 
 @register_schema
@@ -38,6 +65,7 @@ async def init_user_schema():
             email VARCHAR(100) DEFAULT '',
             department VARCHAR(100) DEFAULT '',
             position VARCHAR(100) DEFAULT '',
+            allowed_agents JSONB DEFAULT '[]',
             created_at TIMESTAMP DEFAULT NOW(),
             updated_at TIMESTAMP DEFAULT NOW()
         )
@@ -49,6 +77,7 @@ async def init_user_schema():
         ('email', 'VARCHAR(100) DEFAULT \'\''),
         ('department', 'VARCHAR(100) DEFAULT \'\''),
         ('position', 'VARCHAR(100) DEFAULT \'\''),
+        ('allowed_agents', "JSONB DEFAULT '[]'"),
     ]:
         await DatabasePool.execute(
             f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {column} {col_type}"
@@ -114,7 +143,8 @@ class UserDB:
     @classmethod
     async def create_user(cls, username: str, password: str, role: str = 'user',
                           real_name: str = '', phone: str = '', email: str = '',
-                          department: str = '', position: str = '') -> int:
+                          department: str = '', position: str = '',
+                          allowed_agents: Optional[List[str]] = None) -> int:
         """
         创建新用户
 
@@ -127,6 +157,7 @@ class UserDB:
             email: 邮箱
             department: 部门
             position: 职位
+            allowed_agents: 允许使用的智能体名称列表，默认为空列表
 
         Returns:
             int: 新用户 ID
@@ -135,6 +166,7 @@ class UserDB:
             ValueError: 用户名已存在
         """
         password_hash = cls.hash_password(password)
+        allowed_agents = allowed_agents or []
 
         if not cls.is_enabled():
             # Memory 模式：使用内存存储
@@ -154,6 +186,7 @@ class UserDB:
                     'email': email,
                     'department': department,
                     'position': position,
+                    'allowed_agents': allowed_agents,
                     'created_at': now,
                     'updated_at': now
                 }
@@ -164,8 +197,8 @@ class UserDB:
         try:
             row = await DatabasePool.fetchrow(
                 """
-                INSERT INTO users (username, password_hash, role, real_name, phone, email, department, position)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                INSERT INTO users (username, password_hash, role, real_name, phone, email, department, position, allowed_agents)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
                 RETURNING id
                 """,
                 username,
@@ -175,7 +208,8 @@ class UserDB:
                 phone,
                 email,
                 department,
-                position
+                position,
+                json.dumps(allowed_agents)
             )
             return row['id']
         except asyncpg.UniqueViolationError:
@@ -236,14 +270,31 @@ class UserDB:
                     'email': user.get('email', ''),
                     'department': user.get('department', ''),
                     'position': user.get('position', ''),
+                    'allowed_agents': user.get('allowed_agents', []),
                     'created_at': user['created_at'],
                     'updated_at': user['updated_at']
                 }
 
-        return await DatabasePool.fetchrow(
-            "SELECT id, username, password_hash, role, real_name, phone, email, department, position, created_at, updated_at FROM users WHERE username = $1",
+        record = await DatabasePool.fetchrow(
+            "SELECT id, username, password_hash, role, real_name, phone, email, department, position, allowed_agents, created_at, updated_at FROM users WHERE username = $1",
             username
         )
+        if record is None:
+            return None
+        return {
+            'id': record['id'],
+            'username': record['username'],
+            'password_hash': record['password_hash'],
+            'role': record['role'],
+            'real_name': record.get('real_name', ''),
+            'phone': record.get('phone', ''),
+            'email': record.get('email', ''),
+            'department': record.get('department', ''),
+            'position': record.get('position', ''),
+            'allowed_agents': _coerce_allowed_agents(record.get('allowed_agents', [])),
+            'created_at': record['created_at'],
+            'updated_at': record['updated_at'],
+        }
 
     @classmethod
     async def get_user_by_id(cls, user_id: int) -> Optional[dict]:
@@ -270,15 +321,32 @@ class UserDB:
                             'email': user.get('email', ''),
                             'department': user.get('department', ''),
                             'position': user.get('position', ''),
+                            'allowed_agents': user.get('allowed_agents', []),
                             'created_at': user['created_at'],
                             'updated_at': user['updated_at']
                         }
                 return None
 
-        return await DatabasePool.fetchrow(
-            "SELECT id, username, password_hash, role, real_name, phone, email, department, position, created_at, updated_at FROM users WHERE id = $1",
+        record = await DatabasePool.fetchrow(
+            "SELECT id, username, password_hash, role, real_name, phone, email, department, position, allowed_agents, created_at, updated_at FROM users WHERE id = $1",
             user_id
         )
+        if record is None:
+            return None
+        return {
+            'id': record['id'],
+            'username': record['username'],
+            'password_hash': record['password_hash'],
+            'role': record['role'],
+            'real_name': record.get('real_name', ''),
+            'phone': record.get('phone', ''),
+            'email': record.get('email', ''),
+            'department': record.get('department', ''),
+            'position': record.get('position', ''),
+            'allowed_agents': _coerce_allowed_agents(record.get('allowed_agents', [])),
+            'created_at': record['created_at'],
+            'updated_at': record['updated_at'],
+        }
 
     @classmethod
     async def list_users(cls, limit: int = 100, offset: int = 0) -> List[dict]:
@@ -307,17 +375,34 @@ class UserDB:
                         'email': user.get('email', ''),
                         'department': user.get('department', ''),
                         'position': user.get('position', ''),
+                        'allowed_agents': user.get('allowed_agents', []),
                         'created_at': user['created_at'],
                         'updated_at': user['updated_at']
                     }
                     for user in paginated_users
                 ]
 
-        return await DatabasePool.fetch(
-            "SELECT id, username, role, real_name, phone, email, department, position, created_at, updated_at FROM users ORDER BY id LIMIT $1 OFFSET $2",
+        records = await DatabasePool.fetch(
+            "SELECT id, username, role, real_name, phone, email, department, position, allowed_agents, created_at, updated_at FROM users ORDER BY id LIMIT $1 OFFSET $2",
             limit,
             offset
         )
+        return [
+            {
+                'id': r['id'],
+                'username': r['username'],
+                'role': r['role'],
+                'real_name': r.get('real_name', ''),
+                'phone': r.get('phone', ''),
+                'email': r.get('email', ''),
+                'department': r.get('department', ''),
+                'position': r.get('position', ''),
+                'allowed_agents': _coerce_allowed_agents(r.get('allowed_agents', [])),
+                'created_at': r['created_at'],
+                'updated_at': r['updated_at'],
+            }
+            for r in records
+        ]
 
     @classmethod
     async def delete_user(cls, user_id: int) -> bool:
@@ -421,7 +506,8 @@ class UserDB:
 
     @classmethod
     async def update_profile(cls, user_id: int, phone: str, email: str,
-                             department: str, position: str) -> bool:
+                             department: str, position: str,
+                             allowed_agents: Optional[List[str]] = None) -> bool:
         """
         更新用户个人资料
 
@@ -431,10 +517,13 @@ class UserDB:
             email: 邮箱
             department: 部门
             position: 职位
+            allowed_agents: 允许使用的智能体名称列表（可选）
 
         Returns:
             bool: 更新成功返回 True
         """
+        allowed_agents = allowed_agents or []
+
         if not cls.is_enabled():
             with cls._lock:
                 for user in cls._memory_users.values():
@@ -443,6 +532,7 @@ class UserDB:
                         user['email'] = email
                         user['department'] = department
                         user['position'] = position
+                        user['allowed_agents'] = allowed_agents
                         user['updated_at'] = datetime.utcnow()
                         return True
                 return False
@@ -450,10 +540,11 @@ class UserDB:
         result = await DatabasePool.execute(
             """
             UPDATE users
-            SET phone = $1, email = $2, department = $3, position = $4, updated_at = NOW()
-            WHERE id = $5
+            SET phone = $1, email = $2, department = $3, position = $4,
+                allowed_agents = $5::jsonb, updated_at = NOW()
+            WHERE id = $6
             """,
-            phone, email, department, position, user_id
+            phone, email, department, position, json.dumps(allowed_agents), user_id
         )
         # 兼容不同数据库驱动返回格式：字符串、CommandComplete、None 等
         result_str = str(result) if result else ''
@@ -462,7 +553,7 @@ class UserDB:
     @classmethod
     async def update_user_info(cls, user_id: int, real_name: str, phone: str,
                                email: str, department: str, position: str,
-                               role: str) -> bool:
+                               role: str, allowed_agents: Optional[List[str]] = None) -> bool:
         """
         Admin 更新用户完整资料
 
@@ -474,10 +565,13 @@ class UserDB:
             department: 部门
             position: 职位
             role: 角色
+            allowed_agents: 允许使用的智能体名称列表（可选）
 
         Returns:
             bool: 更新成功返回 True
         """
+        allowed_agents = allowed_agents or []
+
         if not cls.is_enabled():
             with cls._lock:
                 for user in cls._memory_users.values():
@@ -488,6 +582,7 @@ class UserDB:
                         user['department'] = department
                         user['position'] = position
                         user['role'] = role
+                        user['allowed_agents'] = allowed_agents
                         user['updated_at'] = datetime.utcnow()
                         return True
                 return False
@@ -496,10 +591,10 @@ class UserDB:
             """
             UPDATE users
             SET real_name = $1, phone = $2, email = $3, department = $4,
-                position = $5, role = $6, updated_at = NOW()
-            WHERE id = $7
+                position = $5, role = $6, allowed_agents = $7::jsonb, updated_at = NOW()
+            WHERE id = $8
             """,
-            real_name, phone, email, department, position, role, user_id
+            real_name, phone, email, department, position, role, json.dumps(allowed_agents), user_id
         )
         return "UPDATE 1" in result
 

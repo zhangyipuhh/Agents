@@ -176,7 +176,7 @@ def _cache_content(
     }, ensure_ascii=False)
 
 
-@tool(description="获取当前时间，仅在用户询问时间相关问题时调用")
+@tool(description="获取当前时间。当用户问题涉及任何时间、日期、相对时间（如今天、明天、最近N年、过去N个月、未来N天等）时，必须先调用本工具获取当前系统时间，再据此推断或计算绝对时间范围。禁止仅依赖内部知识猜测当前时间。")
 def get_current_time(runtime: ToolRuntime[AgentContext]) -> str:
     """
     获取当前时间工具。仅在用户明确询问时间、日期或需要时间上下文时才调用。

@@ -49,7 +49,8 @@ def reset_user_db():
 
 def _build_mock_agent_graph(main_messages, thread_values=None):
     """
-    构造 mock map_agent，graph.aget_state 返回含 messages 的 state
+    构造 mock agent（新架构：get_map_agent 直接返回 Agent 实例，无需 .get_agent()），
+    graph.aget_state 返回含 messages 的 state
     """
     values = thread_values if thread_values is not None else {"messages": main_messages}
     state = SimpleNamespace(values=values)
@@ -57,9 +58,7 @@ def _build_mock_agent_graph(main_messages, thread_values=None):
     graph.aget_state = AsyncMock(return_value=state)
     agent = MagicMock()
     agent.graph = graph
-    map_agent = MagicMock()
-    map_agent.get_agent = AsyncMock(return_value=agent)
-    return map_agent
+    return agent
 
 
 def _build_mock_checkpointer(thread_states):
@@ -118,7 +117,7 @@ def test_messages_returns_merged_subagent(client, admin_headers):
         "app.shared.routers.session_router.get_async_checkpointer",
         AsyncMock(return_value=cp),
     ), patch(
-        "app.features.map_agent.router.map_router.get_map_agent",
+        "app.routers.knowledge_router.get_map_agent",
         AsyncMock(return_value=map_agent),
     ):
         resp = client.get(
@@ -159,7 +158,7 @@ def test_messages_no_subagent_when_no_tool_calls(client, admin_headers):
         "app.shared.routers.session_router.get_async_checkpointer",
         AsyncMock(return_value=cp),
     ), patch(
-        "app.features.map_agent.router.map_router.get_map_agent",
+        "app.routers.knowledge_router.get_map_agent",
         AsyncMock(return_value=map_agent),
     ):
         resp = client.get(
@@ -228,7 +227,7 @@ def test_messages_limit_applied_to_merged(client, admin_headers):
         "app.shared.routers.session_router.get_async_checkpointer",
         AsyncMock(return_value=cp),
     ), patch(
-        "app.features.map_agent.router.map_router.get_map_agent",
+        "app.routers.knowledge_router.get_map_agent",
         AsyncMock(return_value=map_agent),
     ):
         resp = client.get(
@@ -328,7 +327,7 @@ def test_messages_filters_non_subagent_tool_call(client, admin_headers):
         "app.shared.routers.session_router.get_async_checkpointer",
         AsyncMock(return_value=cp),
     ), patch(
-        "app.features.map_agent.router.map_router.get_map_agent",
+        "app.routers.knowledge_router.get_map_agent",
         AsyncMock(return_value=map_agent),
     ):
         resp = client.get(
@@ -408,7 +407,7 @@ def test_messages_multiple_subagents_with_tool_messages(client, admin_headers):
         "app.shared.routers.session_router.get_async_checkpointer",
         AsyncMock(return_value=cp),
     ), patch(
-        "app.features.map_agent.router.map_router.get_map_agent",
+        "app.routers.knowledge_router.get_map_agent",
         AsyncMock(return_value=map_agent),
     ):
         resp = client.get(

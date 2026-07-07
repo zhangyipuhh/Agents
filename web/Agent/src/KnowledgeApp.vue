@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, nextTick, computed } from 'vue'
-import { fetchKnowledgeFiles, fetchFilePreview, createNewSession, knowledgeChatStream, validateToken, refreshToken } from './utils/api.js'
+import { fetchKnowledgeFiles, fetchFilePreview, createNewSession, chatStream, validateToken, refreshToken, triggerAbort } from './utils/api.js'
 import { createAiMessage, processSSEEvent } from './utils/sseParser.js'
 import { redirectToLogin } from './utils/auth.js'
 import FileList from './components/FileList.vue'
@@ -40,6 +40,18 @@ const queueStatus = ref({
 })
 const isQueueBannerVisible = computed(() => queueStatus.value.event === 'waiting')
 
+// 2026-06-22 新增：重置 queueStatus 到初始 idle 状态，避免上一次请求的 ready/idle 残留影响下一次请求
+function resetQueueStatus() {
+  queueStatus.value = {
+    event: 'idle',
+    waitingCount: 0,
+    activeCount: 0,
+    maxConcurrency: 0,
+    position: 0,
+    timestamp: 0
+  }
+}
+
 function handleQueueEvent(data) {
   if (!data || data.type !== 'queue') return
   queueStatus.value = {
@@ -78,6 +90,55 @@ let isCreatingNewSession = false
 // 2026-06-15 新增：持有当前 SSE reader，供 ProfileInputBox 的 stop 事件调用 cancel() 立即中断 LLM
 let currentStreamReader = null
 
+// 2026-07-06 新增：60s 兜底 timer（与 App.vue 同语义）
+let stopTimeoutId = null
+const STOP_TIMEOUT_MS = 60 * 1000
+
+// 2026-07-06 新增：中断待生效锁（与 App.vue::toolStopPending 同语义）
+// 注意：KnowledgeApp 没有独立的 KnowledgeChat 内部 isStopPending，
+// 由 ProfileInputBox 接收 prop 显示 stop-pending 态，KnowledgeApp 维护此锁。
+// 2026-07-06 修复：必须用 ref() 才能触发模板响应式更新，普通 let 变量 Vue 不会追踪。
+const toolStopPending = ref(false)
+
+/**
+ * 统一清锁入口（2026-07-06 新增）。同时清理 60s 兜底 timer。
+ * @returns {void}
+ */
+function clearToolStopPending() {
+  toolStopPending.value = false
+  if (stopTimeoutId !== null) {
+    clearTimeout(stopTimeoutId)
+    stopTimeoutId = null
+  }
+}
+
+/**
+ * 启动 60s 兜底 timer（2026-07-06 新增；与 App.vue::startStopTimeout 同语义）
+ * @returns {void}
+ */
+function startStopTimeout() {
+  if (stopTimeoutId !== null) {
+    clearTimeout(stopTimeoutId)
+  }
+  stopTimeoutId = setTimeout(() => {
+    stopTimeoutId = null
+    console.warn('[KnowledgeApp] 60s 兜底 timer 到期，强制取消 reader 并清锁')
+    if (currentStreamReader) {
+      try {
+        currentStreamReader.cancel()
+      } catch (err) {
+        console.warn('[KnowledgeApp] 60s 兜底 reader.cancel 异常（可忽略）:', err)
+      }
+    }
+    const aiMsg = messages.value[messages.value.length - 1]
+    if (aiMsg && aiMsg.type === 'ai' && !aiMsg.text?.includes('[工具执行超时')) {
+      aiMsg.text = (aiMsg.text || '') + '\n\n[工具执行超时，已强制停止]'
+    }
+    clearToolStopPending()
+    isStreaming.value = false
+  }, STOP_TIMEOUT_MS)
+}
+
 function toggleSidebar() {
   isSidebarCollapsed.value = !isSidebarCollapsed.value
 }
@@ -111,19 +172,13 @@ onMounted(async () => {
     }
   }
 
-  // 优先复用本地已有的 knowledge_session_id，避免每次挂载都新建会话
-  const existingSessionId = localStorage.getItem('knowledge_session_id')
-  if (existingSessionId && existingSessionId !== 'undefined') {
-    currentSessionId.value = existingSessionId
-  } else {
-    // 首次进入知识库，自动创建新会话，确保后续请求携带 X-Session-ID
-    try {
-      const newId = await createNewSession('knowledge_session_id')
-      currentSessionId.value = newId
-      console.log('[KnowledgeApp] 初始化知识库会话:', newId)
-    } catch (err) {
-      console.error('知识库初始化会话失败:', err)
-    }
+  // 始终创建新会话，不复用本地缓存的 knowledge_session_id
+  try {
+    const newId = await createNewSession('knowledge_session_id')
+    currentSessionId.value = newId
+    console.log('[KnowledgeApp] 初始化知识库会话:', newId)
+  } catch (err) {
+    console.error('知识库初始化会话失败:', err)
   }
 
   // 加载文件列表
@@ -200,6 +255,9 @@ async function handleNewChat() {
     console.log('[handleNewChat] 正在创建中，跳过重复请求')
     return
   }
+
+  // 2026-07-06 新增：入口前置清锁（避免脏状态延续到下一次会话）
+  clearToolStopPending()
 
   isCreatingNewSession = true
   console.log('[handleNewChat] 开始创建新会话')
@@ -278,9 +336,13 @@ function extractApprovalData(interruptArray) {
 async function startChatStream(message, uploadedFiles, aiMsg, resumeData = null) {
   let interrupted = false
   currentStreamReader = null
+  // 2026-07-06 新增：入口前置清锁（兜底层；正常路径下 toolStopPending 已是 false）
+  clearToolStopPending()
   try {
-    const stream = await knowledgeChatStream(currentSessionId.value, message, uploadedFiles, resumeData)
+    const stream = await chatStream(currentSessionId.value, message, uploadedFiles, resumeData, 'knowledge_ydt')
     currentStreamReader = stream.getReader()
+    // 2026-06-22 修复：拿到 SSE reader 后再置位 isStreaming，避免排队/握手阶段状态长期悬空无法复位
+    isStreaming.value = true
     const decoder = new TextDecoder()
     let buffer = ''
 
@@ -291,6 +353,8 @@ async function startChatStream(message, uploadedFiles, aiMsg, resumeData = null)
           aiMsg.value.ended = true
           aiMsg.value.isThinkingActive = false
         }
+        // 2026-07-06 新增：流自然走完 → 复位 toolStopPending（白名单：done 等价 end）
+        clearToolStopPending()
         break
       }
       buffer += decoder.decode(value, { stream: true })
@@ -300,6 +364,20 @@ async function startChatStream(message, uploadedFiles, aiMsg, resumeData = null)
         if (!event.startsWith('data: ')) continue
         try {
           const data = JSON.parse(event.slice(6))
+          // 2026-07-06 新增：白名单复位 toolStopPending（end/error/interrupt）
+          if (data && (data.type === 'end' || data.type === 'error' || data.type === 'interrupt')) {
+            clearToolStopPending()
+          }
+          // 2026-07-06 新增：识别 abort 真正生效的信号 — tools 节点完成 update
+          if (
+            data && data.type === 'update' && data.data &&
+            typeof data.data === 'object' &&
+            data.data.tools &&
+            Array.isArray(data.data.tools.messages) &&
+            data.data.tools.messages.length > 0
+          ) {
+            clearToolStopPending()
+          }
           processSSEEvent(data, aiMsg.value, { onQueueEvent: handleQueueEvent })
 
           if (aiMsg.value.interrupt) {
@@ -326,9 +404,14 @@ async function startChatStream(message, uploadedFiles, aiMsg, resumeData = null)
       nextTick(() => scrollToBottom())
     }
   } catch (err) {
+    // 2026-07-06 新增：异常路径兜底复位（避免锁死）
+    clearToolStopPending()
     if (err && err.status === 429) {
       handleQueueError(err)
       aiMsg.value.ended = true
+      // 2026-06-22 修复：429 错误路径必须复位 isStreaming，避免按钮永久卡死
+      isStreaming.value = false
+      currentStreamReader = null
       return
     }
     if (interrupted) {
@@ -337,8 +420,10 @@ async function startChatStream(message, uploadedFiles, aiMsg, resumeData = null)
     aiMsg.value.error = '不好意思，刚刚出了点小故障，可以晚点再问我一遍。'
     aiMsg.value.ended = true
   } finally {
+    // 2026-07-06 新增：finally 兜底复位（兜底层；正常路径已被白名单覆盖）
+    clearToolStopPending()
     if (!interrupted) {
-      isStreaming.value = false
+isStreaming.value = false
     }
     currentStreamReader = null
   }
@@ -360,7 +445,9 @@ async function handleProfileSend(message, uploadedFiles) {
   const aiMsg = ref(createAiMessage())
   messages.value.push(aiMsg.value)
 
-  isStreaming.value = true
+  // 2026-06-22 修复：发送前重置 queueStatus
+  resetQueueStatus()
+  // isStreaming 由 startChatStream 在拿到 reader 后置位
   nextTick(() => scrollToBottom())
 
   await startChatStream(message, uploadedFiles, aiMsg)
@@ -372,6 +459,9 @@ async function handleApprovalSubmit({ answers }) {
   const aiMsg = messages.value[messages.value.length - 1]
   if (!aiMsg || aiMsg.type !== 'ai') {
     isStreaming.value = false
+    currentStreamReader = null
+    // 2026-07-06 新增：异常路径兜底复位
+    clearToolStopPending()
     return
   }
 
@@ -386,9 +476,11 @@ async function handleApprovalSubmit({ answers }) {
 
 /**
  * 取消问答：退出 approval 模式并重置流状态
+ * 2026-07-06 新增：入口前置清锁 toolStopPending（避免脏状态延续）
  */
 function handleApprovalCancel() {
   approvalMode.value = false
+  clearToolStopPending()
   isStreaming.value = false
   const aiMsg = messages.value[messages.value.length - 1]
   if (aiMsg && aiMsg.type === 'ai') {
@@ -398,41 +490,57 @@ function handleApprovalCancel() {
 }
 
 /**
- * 停止 LLM 生成（2026-06-15 新增）：用户点击停止按钮触发
- * 与 App.vue 的 handleStopMessage 行为一致：
- * 1. 调用 currentStreamReader.cancel() 断开 SSE 连接
- * 2. 标记最后一条 AI 消息 ended = true + 追加"已停止"提示
- * 3. 重置 isStreaming
+ * 停止 LLM 生成（2026-06-15 新增；2026-07-06 重构）：用户点击停止按钮触发
+ * 与 App.vue::handleStopMessage 行为一致：
+ * 1. 加锁 toolStopPending.value = true（重复点击短路）
+ * 2. 调 triggerAbort(sessionId) 通知后端触发 abort_event（知识库路径）
+ * 3. 启动 60s 兜底 timer（防后端工具卡死时锁永远不清）
+ * 4. 标记最后一条 AI 消息 ended = true + 追加「中断中...」提示
+ * 5. 不重置 isStreaming —— 由 SSE 白名单事件（end/error/interrupt/tools 节点完成）触发清锁
  */
 async function handleStopMessage() {
   if (!isStreaming.value) return
+  // 2026-07-06 新增：重复点击短路
+  if (toolStopPending.value) return
 
-  // 1. 取消 SSE reader
-  if (currentStreamReader) {
-    try {
-      await currentStreamReader.cancel()
-    } catch (err) {
-      console.warn('[KnowledgeApp] stop reader.cancel 异常（可忽略）:', err)
-    }
-    currentStreamReader = null
+  // 1. 加锁（UI 由 ProfileInputBox 的 isStopPending 接收，立即变灰 + 旋转 badge）
+  toolStopPending.value = true
+
+  // 2. 通知后端触发 abort_event（知识库路径）
+  try {
+    await triggerAbort(currentSessionId.value, { isKnowledge: true })
+  } catch (err) {
+    console.warn('[KnowledgeApp] triggerAbort 调用失败（继续走 60s 兜底）:', err)
   }
 
-  // 2. 标记 AI 消息已停止
+  // 3. 启动 60s 兜底 timer
+  startStopTimeout()
+
+  // 4. 标记 AI 消息为「中断中」状态
   const aiMsg = messages.value[messages.value.length - 1]
   if (aiMsg && aiMsg.type === 'ai') {
     aiMsg.ended = true
     aiMsg.isThinkingActive = false
-    if (typeof aiMsg.text === 'string' && !aiMsg.text.includes('[生成已被用户中止]')) {
-      aiMsg.text = (aiMsg.text || '') + '\n\n[生成已被用户中止]'
+    if (typeof aiMsg.text === 'string' && !aiMsg.text.includes('[中断中')) {
+      aiMsg.text = (aiMsg.text || '') + '\n\n[中断中，等待工具完成...]'
     }
   }
 
-  // 3. 重置流式状态
-  isStreaming.value = false
+  // 4. 不重置 isStreaming —— 由 SSE 流自然走完时复位
 }
 
 // 2026-06-15 新增：子智能体详情抽屉 open / close（独立 SPA 自持；与 App.vue 同款签名）
+// 2026-06-17 新增 toggle 行为：再次点击同一 subagent 卡片时关闭抽屉，点击不同卡片时切换抽屉内容
 function openSubAgentDrawer(subAgent) {
+  if (
+    subAgentDrawerVisible.value &&
+    currentSubAgent.value &&
+    subAgent && subAgent.toolCallId &&
+    currentSubAgent.value.toolCallId === subAgent.toolCallId
+  ) {
+    closeSubAgentDrawer()
+    return
+  }
   currentSubAgent.value = subAgent
   subAgentDrawerVisible.value = true
 }
@@ -490,6 +598,7 @@ function closeSubAgentDrawer() {
             v-else
             :session-id="currentSessionId"
             :is-streaming="isStreaming"
+            :is-stop-pending="toolStopPending.value"
             @send="handleProfileSend"
             @tool-action="handleToolAction"
             @new-chat="handleNewChat"
@@ -557,6 +666,7 @@ function closeSubAgentDrawer() {
             v-else
             :session-id="currentSessionId"
             :is-streaming="isStreaming"
+            :is-stop-pending="toolStopPending.value"
             @send="handleProfileSend"
             @tool-action="handleToolAction"
             @new-chat="handleNewChat"

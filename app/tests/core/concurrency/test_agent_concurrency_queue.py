@@ -251,40 +251,37 @@ async def test_queue_position_increments_for_later_waiters(reset_singleton):
     queue = AgentConcurrencyQueue(max_concurrency=1)
     holder_started = asyncio.Event()
     release_holder = asyncio.Event()
+    positions = {}
 
     async def holder():
         async with queue:
             holder_started.set()
             await release_holder.wait()
 
-    async def waiter1():
-        # 第 1 个等待者
+    async def waiter(name, delay=0):
+        # 第 N 个等待者：先预注册，再查询 position，最后 acquire
         await holder_started.wait()
-        await queue.acquire()
-        await queue.release()
-
-    async def waiter2():
-        # 第 2 个等待者
-        await holder_started.wait()
-        # 等待第 1 个 waiter 进入排队后再调用 acquire
-        await asyncio.sleep(0.05)
-        # waiter2 入队后 position 应该是 1（自己是下一个）
+        await asyncio.sleep(delay)
+        await queue.enqueue()
         pos = await queue.position()
-        assert pos == 1
+        positions[name] = pos
         await queue.acquire()
         await queue.release()
 
     h_task = asyncio.create_task(holder())
     await holder_started.wait()
 
-    w1_task = asyncio.create_task(waiter1())
-    w2_task = asyncio.create_task(waiter2())
+    w1_task = asyncio.create_task(waiter("w1", 0))
+    w2_task = asyncio.create_task(waiter("w2", 0.05))
 
     await asyncio.sleep(0.15)
     release_holder.set()
     await h_task
     await w1_task
     await w2_task
+
+    assert positions.get("w1") == 1, f"第 1 个等待者 position 应为 1，实际 {positions.get('w1')}"
+    assert positions.get("w2") == 2, f"第 2 个等待者 position 应为 2，实际 {positions.get('w2')}"
 
 
 @pytest.mark.asyncio
@@ -332,7 +329,7 @@ async def test_queue_position_decrements_as_others_release(reset_singleton):
 @pytest.mark.asyncio
 async def test_queue_enqueue_time_records_monotonic(reset_singleton):
     """
-    测试 enqueue_time 在 task 入队时被记录。
+    测试 enqueue_time 在当前 task 入队时被记录。
 
     参数:
         reset_singleton: 重置单例 fixture
@@ -360,23 +357,239 @@ async def test_queue_enqueue_time_records_monotonic(reset_singleton):
         nonlocal enq_time_waiter
         await started.wait()
         await asyncio.sleep(0.05)
-        # 此时 queue 满员，acquire 会阻塞
-        waiter_task = asyncio.create_task(queue.acquire())
-        await asyncio.sleep(0.05)
+        # 当前 task 调用 acquire 后会被注册到 _enqueue_times
+        await queue.acquire()
         enq_time_waiter = queue.enqueue_time()
         assert enq_time_waiter is not None
         assert isinstance(enq_time_waiter, float)
-        await waiter_task
         await queue.release()
+
+    async def release_holder_task():
+        await asyncio.sleep(0.15)
+        release_holder.set()
 
     holder_task = asyncio.create_task(holder())
     waiter_task = asyncio.create_task(waiter())
+    asyncio.create_task(release_holder_task())
     await started.wait()
 
-    await asyncio.sleep(0.15)
-    release_holder.set()
     await holder_task
     await waiter_task
 
-    assert enq_time_holder is None  # holder 已激活，enqueue_time 已清理
+    # holder 在持有锁期间 enqueue_time 非空；释放后 _enqueue_times 被清理
+    assert enq_time_holder is not None
     assert enq_time_waiter is not None
+
+
+@pytest.mark.asyncio
+async def test_queue_enqueue_registers_task_without_blocking(reset_singleton):
+    """
+    测试 enqueue() 仅预注册任务而不阻塞。
+
+    参数:
+        reset_singleton: 重置单例 fixture
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 预注册后 waiting_count 或 position 不符合预期时抛出
+    """
+    queue = AgentConcurrencyQueue(max_concurrency=1)
+    started = asyncio.Event()
+
+    async def holder():
+        async with queue:
+            started.set()
+            await asyncio.sleep(0.2)
+
+    holder_task = asyncio.create_task(holder())
+    await started.wait()
+
+    # 第二个任务只 enqueue，不阻塞
+    async def waiter():
+        await queue.enqueue()
+        return await queue.position()
+
+    waiter_task = asyncio.create_task(waiter())
+    pos = await waiter_task
+    # holder 仍占用槽位，waiter 预注册后 position 应为 1
+    assert pos == 1
+    assert queue.waiting_count == 1
+
+    await holder_task
+
+
+@pytest.mark.asyncio
+async def test_queue_enqueue_is_idempotent(reset_singleton):
+    """
+    测试同一 task 多次 enqueue 不会重复计数。
+
+    参数:
+        reset_singleton: 重置单例 fixture
+
+    返回:
+        None
+
+    异常:
+        AssertionError: waiting_count 被重复增加时抛出
+    """
+    queue = AgentConcurrencyQueue(max_concurrency=1)
+    started = asyncio.Event()
+
+    async def holder():
+        async with queue:
+            started.set()
+            await asyncio.sleep(0.2)
+
+    holder_task = asyncio.create_task(holder())
+    await started.wait()
+
+    async def waiter():
+        await queue.enqueue()
+        await queue.enqueue()
+        await queue.enqueue()
+        return queue.waiting_count
+
+    waiter_task = asyncio.create_task(waiter())
+    waiting = await waiter_task
+    assert waiting == 1
+
+    await holder_task
+
+
+@pytest.mark.asyncio
+async def test_queue_position_correct_after_multiple_enqueues(reset_singleton):
+    """
+    测试多个 task 依次 enqueue 后 position 递增。
+
+    参数:
+        reset_singleton: 重置单例 fixture
+
+    返回:
+        None
+
+    异常:
+        AssertionError: position 计算不符预期
+    """
+    queue = AgentConcurrencyQueue(max_concurrency=1)
+    started = asyncio.Event()
+
+    async def holder():
+        async with queue:
+            started.set()
+            await asyncio.sleep(0.5)
+
+    holder_task = asyncio.create_task(holder())
+    await started.wait()
+
+    async def waiter(name, delay=0):
+        await asyncio.sleep(delay)
+        await queue.enqueue()
+        return name, await queue.position()
+
+    w1 = asyncio.create_task(waiter("w1", 0))
+    w2 = asyncio.create_task(waiter("w2", 0.05))
+
+    r1 = await w1
+    r2 = await w2
+
+    assert r1 == ("w1", 1)
+    assert r2 == ("w2", 2)
+
+    await holder_task
+
+
+@pytest.mark.asyncio
+async def test_queue_enqueue_then_acquire_does_not_double_count(reset_singleton):
+    """
+    测试 enqueue() 后再调用 acquire() 不会重复增加 waiting_count。
+
+    参数:
+        reset_singleton: 重置单例 fixture
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 计数异常时抛出
+    """
+    queue = AgentConcurrencyQueue(max_concurrency=1)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def holder():
+        async with queue:
+            started.set()
+            await release.wait()
+
+    async def release_holder():
+        await asyncio.sleep(0.05)
+        release.set()
+
+    async def waiter():
+        await queue.enqueue()
+        # 此时 waiting_count 已为 1
+        assert queue.waiting_count == 1
+        # 同一 task 后续调用 acquire 不应再加一次
+        asyncio.create_task(release_holder())
+        await queue.acquire()
+        assert queue.active_count == 1
+        assert queue.waiting_count == 0
+        await queue.release()
+
+    holder_task = asyncio.create_task(holder())
+    await started.wait()
+    await waiter()
+    await holder_task
+
+
+@pytest.mark.asyncio
+async def test_queue_enqueue_cancelled_rolls_back_waiting_count(reset_singleton):
+    """
+    测试 enqueue() 后 task 在 acquire 等待中被取消时 waiting_count 正确回滚。
+
+    参数:
+        reset_singleton: 重置单例 fixture
+
+    返回:
+        None
+
+    异常:
+        AssertionError: waiting_count 未正确回滚时抛出
+    """
+    queue = AgentConcurrencyQueue(max_concurrency=1)
+    started = asyncio.Event()
+    release_holder = asyncio.Event()
+    entered_acquire = asyncio.Event()
+
+    async def holder():
+        async with queue:
+            started.set()
+            await release_holder.wait()
+
+    async def waiter():
+        await queue.enqueue()
+        entered_acquire.set()
+        # 阻塞在 acquire 中，直到被 cancel
+        await queue.acquire()
+
+    holder_task = asyncio.create_task(holder())
+    await started.wait()
+
+    waiter_task = asyncio.create_task(waiter())
+    # 等待 waiter 已经进入 acquire 阻塞
+    await entered_acquire.wait()
+    await asyncio.sleep(0.05)
+    assert queue.waiting_count == 1
+
+    waiter_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter_task
+
+    # enqueue 增加的 waiting_count 应被回滚
+    assert queue.waiting_count == 0
+
+    release_holder.set()
+    await holder_task
+

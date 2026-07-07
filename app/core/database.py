@@ -9,6 +9,7 @@
 
 Date: 2026/5/15
 """
+import json
 import os
 import asyncpg
 from typing import Optional, Callable, List
@@ -73,6 +74,30 @@ class DatabasePool:
         return result
 
     @classmethod
+    async def _init_connection(cls, conn):
+        """
+        asyncpg 连接初始化回调：注册 JSONB / JSON 类型 codec。
+
+        使 JSONB / JSON 列自动反序列化为 Python 对象（list / dict），
+        避免业务层拿到 JSON 字符串导致 Pydantic 校验失败。
+
+        Args:
+            conn: asyncpg 连接实例
+        """
+        await conn.set_type_codec(
+            'jsonb',
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema='pg_catalog',
+        )
+        await conn.set_type_codec(
+            'json',
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema='pg_catalog',
+        )
+
+    @classmethod
     async def initialize(cls, min_size: int = 5, max_size: int = 20):
         """
         初始化连接池
@@ -95,6 +120,7 @@ class DatabasePool:
             dsn=cls.get_dsn(),
             min_size=min_size,
             max_size=max_size,
+            init=cls._init_connection,
         )
         cls._initialized = True
 

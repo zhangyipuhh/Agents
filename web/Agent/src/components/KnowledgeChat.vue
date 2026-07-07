@@ -20,7 +20,8 @@ const props = defineProps({
 })
 
 // 2026-06-15 新增：open-subagent-drawer emit 透传，触发父组件（KnowledgePage / App.vue）打开子智能体详情抽屉
-const emit = defineEmits(['new-chat', 'send', 'open-subagent-drawer'])
+// 2026-06-22 修复并发排队后按钮卡死：新增 stream-end 事件，让父组件同步复位 isStreaming
+const emit = defineEmits(['new-chat', 'send', 'stream-end', 'open-subagent-drawer'])
 
 const messages = reactive([])
 const inputValue = ref('')
@@ -32,6 +33,10 @@ const isRefreshingToken = ref(false)
 const selectedFiles = ref([])
 const chatContainer = ref(null)
 const internalStreaming = ref(false)
+// 2026-07-06 新增：中断待生效（用户已点停止，等待后端 tools 节点完成）
+// 由 handleStop 置 true，由 while 循环内白名单事件（end/error/interrupt）复位，
+// 配合 catch/finally 兜底复位（详见 handleSend 内置注释）。
+const isStopPending = ref(false)
 const showScrollButton = ref(false)
 const showScrollToTopButton = ref(false)
 const unreadCount = ref(0)
@@ -50,6 +55,18 @@ const queueStatus = ref({
   timestamp: 0
 })
 const isQueueBannerVisible = computed(() => queueStatus.value.event === 'waiting')
+
+// 2026-06-22 新增：重置 queueStatus 到初始 idle 状态，避免上一次请求的 ready/idle 残留影响下一次请求
+function resetQueueStatus() {
+  queueStatus.value = {
+    event: 'idle',
+    waitingCount: 0,
+    activeCount: 0,
+    maxConcurrency: 0,
+    position: 0,
+    timestamp: 0
+  }
+}
 
 function handleQueueEvent(data) {
   if (!data || data.type !== 'queue') return
@@ -87,6 +104,8 @@ const canSend = computed(() => {
   // 2026-06-15 修改：isCurrentlyStreaming=true 时不禁用按钮（停止按钮必须可点）
   // 按钮可点性统一在模板的 :disabled 中通过 !canSend && !isCurrentlyStreaming 管控
   if (isRefreshingToken.value) return false
+  // 2026-07-06 新增：中断待生效期间禁用发送按钮（按钮在 stop-pending 模式下 disable）
+  if (isStopPending.value) return false
   const hasText = inputValue.value.trim().length > 0
   const hasUploadedFiles = selectedFiles.value.some(f => f.status === 'success')
   return hasText || hasUploadedFiles
@@ -112,12 +131,22 @@ const handleInput = (event) => {
 const handleKeydown = (event) => {
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
-    handleSend()
+    // 2026-06-22 修复：流式中按 Enter 应优先触发停止，避免「卡死」状态下再次发送新请求
+    if (isCurrentlyStreaming.value) {
+      handleStop()
+    } else {
+      handleSend()
+    }
   }
 }
 
 const handleSend = async () => {
   if (!canSend.value) return
+  // 2026-06-22 修复：流式状态中不再创建新请求，避免状态悬空或重复触发 SSE
+  if (isCurrentlyStreaming.value) {
+    await handleStop()
+    return
+  }
 
   const message = inputValue.value.trim()
   const uploadedFiles = selectedFiles.value
@@ -131,6 +160,9 @@ const handleSend = async () => {
     }))
 
   if (!message && uploadedFiles.length === 0) return
+
+  // 2026-06-22 修复：发送前重置 queueStatus
+  resetQueueStatus()
 
   isRefreshingToken.value = true
   try {
@@ -159,8 +191,6 @@ const handleSend = async () => {
   const aiMsg = reactive(createAiMessage())
   messages.push(aiMsg)
 
-  internalStreaming.value = true
-
   nextTick(() => scrollToBottom())
 
   currentReader = null
@@ -168,6 +198,8 @@ const handleSend = async () => {
   try {
     const stream = await knowledgeChatStream(props.sessionId, message)
     currentReader = stream.getReader()
+    // 拿到 SSE reader 后再置位，避免排队/握手阶段状态长期悬空无法复位
+    internalStreaming.value = true
     const decoder = new TextDecoder()
     let buffer = ''
     let interrupted = false
@@ -181,6 +213,8 @@ const handleSend = async () => {
           aiMsg.ended = true
           aiMsg.isThinkingActive = false
         }
+        // 2026-07-06 新增：流自然走完 → 复位 isStopPending（白名单：done 等价 end）
+        isStopPending.value = false
         break
       }
       buffer += decoder.decode(value, { stream: true })
@@ -190,6 +224,13 @@ const handleSend = async () => {
         if (!event.startsWith('data: ')) continue
         try {
           const data = JSON.parse(event.slice(6))
+          // 2026-07-06 新增：白名单复位 isStopPending（end/error/interrupt）
+          // - end: 工具完成+流走完
+          // - error: 错误收尾
+          // - interrupt: HITL 进入审批（isStopPending 已无意义，InputBox 不再渲染）
+          if (data && (data.type === 'end' || data.type === 'error' || data.type === 'interrupt')) {
+            isStopPending.value = false
+          }
           // 2026-06-15 透传 onQueueEvent 回调
           processSSEEvent(data, aiMsg, { onQueueEvent: handleQueueEvent })
           // 2026-06-15 HITL interrupt 主动 cancel reader（与 App.vue 同逻辑）
@@ -210,6 +251,8 @@ const handleSend = async () => {
       nextTick(() => scrollToBottom())
     }
   } catch (err) {
+    // 2026-07-06 新增：异常路径兜底复位 isStopPending（避免锁死）
+    isStopPending.value = false
     // 2026-06-15 新增：HTTP 429 排队拒绝 → 显示 banner
     if (err && err.status === 429) {
       handleQueueError(err)
@@ -219,14 +262,34 @@ const handleSend = async () => {
     aiMsg.error = '不好意思，刚刚出了点小故障，可以晚点再问我一遍。'
     aiMsg.ended = true
   } finally {
+    // 2026-07-06 新增：finally 兜底复位（兜底层，正常路径已被白名单覆盖）
+    isStopPending.value = false
     internalStreaming.value = false
     currentReader = null
+    // 2026-06-22 修复：流结束/异常/取消时通知父组件复位 isStreaming，避免按钮永久卡死
+    emit('stream-end')
   }
 }
 
 const handleNewChat = async () => {
   // 不在这里创建会话，只发射事件让父组件处理
   // 避免父子组件重复创建会话
+  // 2026-06-22 修复：新建会话时若还有未结束的 SSE，先 cancel 并复位状态
+  if (currentReader) {
+    try {
+      await currentReader.cancel()
+    } catch (err) {
+      console.warn('[KnowledgeChat] 新建会话 reader.cancel 异常（可忽略）:', err)
+    }
+    currentReader = null
+  }
+  // 2026-07-06 新增：入口前置清锁（避免脏状态延续到下一次会话）
+  isStopPending.value = false
+  internalStreaming.value = false
+  approvalMode.value = false
+  approvalData.value = { questions: [] }
+  emit('stream-end')
+
   messages.splice(0, messages.length)
   selectedFiles.value = []
   inputValue.value = ''
@@ -250,6 +313,8 @@ function handleApprovalSubmit({ answers }) {
   const aiMsg = messages[messages.length - 1]
   if (!aiMsg || aiMsg.type !== 'ai') {
     internalStreaming.value = false
+    // 2026-06-22 修复：HITL 异常路径通知父组件复位
+    emit('stream-end')
     return
   }
 
@@ -258,14 +323,14 @@ function handleApprovalSubmit({ answers }) {
 
   const resumeData = { answers }
 
-  internalStreaming.value = true
-
   currentReader = null
 
   const readStream = async () => {
     try {
       const stream = await knowledgeChatStream(props.sessionId, '', [], resumeData)
       currentReader = stream.getReader()
+      // 拿到 reader 后再置位
+      internalStreaming.value = true
       const decoder = new TextDecoder()
       let buffer = ''
       let interrupted = false
@@ -320,6 +385,8 @@ function handleApprovalSubmit({ answers }) {
         internalStreaming.value = false
       }
       currentReader = null
+      // 2026-06-22 修复：resume 流结束/异常/再次 interrupt 时通知父组件复位
+      emit('stream-end')
     }
   }
 
@@ -328,48 +395,69 @@ function handleApprovalSubmit({ answers }) {
 
 /**
  * 取消问答：退出 approval 模式并重置流状态
+ * 2026-07-06 新增：入口前置清锁 isStopPending（避免脏状态延续）
  */
 function handleApprovalCancel() {
   approvalMode.value = false
+  isStopPending.value = false
   internalStreaming.value = false
-  const aiMsg = messages[messages.length - 1]
-  if (aiMsg && aiMsg.type === 'ai') {
-    aiMsg.ended = true
-    aiMsg.isThinkingActive = false
-  }
+  // 2026-06-22 修复：用户主动停止时通知父组件复位
+  emit('stream-end')
 }
 
 /**
- * 停止生成（2026-06-15 新增）：用户点击停止按钮触发
+ * 发送/停止按钮统一点击处理（2026-07-06 新增）。
+ * 与 InputBox/ProfileInputBox 同款三态分支。
+ * @returns {void}
+ */
+const handleSendBtnClick = () => {
+  if (isStopPending.value) return
+  if (isCurrentlyStreaming.value) {
+    handleStop()
+    return
+  }
+  handleSend()
+}
+
+/**
+ * 停止生成（2026-06-15 新增；2026-07-06 改造）：用户点击停止按钮触发
  * 与 App.vue / KnowledgeApp.vue 的 handleStopMessage 行为一致：
- * 1. 调用 currentReader.cancel() 断开 SSE 连接
- * 2. 标记最后一条 AI 消息 ended = true + 追加"已停止"提示
- * 3. 重置 internalStreaming
+ * 1. 加锁 isStopPending = true（白名单 + 兜底复位，详见 handleSend 循环内注释）
+ * 2. 调用 currentReader.cancel() 断开 SSE 连接（后端 _stream_helper 走精确延迟中断，
+ *    等当前 tools 节点完成 ToolMessage 后才真正断开，避免 orphan tool_calls 触发 2013）
+ * 3. 标记最后一条 AI 消息 ended = true + 追加「中断中...」提示
+ * 4. 不重置 internalStreaming（按钮继续 stop-pending 模式）；真正复位由 while 循环内
+ *    白名单事件（end/error/interrupt）+ catch/finally 兜底完成
  */
 async function handleStop() {
   if (!isCurrentlyStreaming.value) return
+  // 2026-07-06 新增：重复点击短路（与 App.vue::handleStopMessage 同语义）
+  if (isStopPending.value) return
 
-  // 取消 SSE reader
+  isStopPending.value = true
+
+  // 取消 SSE reader（不置 null：让 SSE 继续推完当前 tools 节点的 chunk）
   if (currentReader) {
     try {
       await currentReader.cancel()
     } catch (err) {
       console.warn('[KnowledgeChat] stop reader.cancel 异常（可忽略）:', err)
     }
-    currentReader = null
   }
 
-  // 标记最后一条 AI 消息为已停止
+  // 标记最后一条 AI 消息为「中断中」状态
   const aiMsg = messages[messages.length - 1]
   if (aiMsg && aiMsg.type === 'ai') {
     aiMsg.ended = true
     aiMsg.isThinkingActive = false
-    if (typeof aiMsg.text === 'string' && !aiMsg.text.includes('[生成已被用户中止]')) {
-      aiMsg.text = (aiMsg.text || '') + '\n\n[生成已被用户中止]'
+    if (typeof aiMsg.text === 'string' && !aiMsg.text.includes('[中断中')) {
+      aiMsg.text = (aiMsg.text || '') + '\n\n[中断中，等待工具完成...]'
     }
   }
 
-  internalStreaming.value = false
+  // 不重置 internalStreaming —— 由 SSE 事件流自然走完时复位
+  // 2026-06-22 修复：仍 emit('stream-end') 让父组件同步 isStreaming 状态
+  emit('stream-end')
 }
 
 const scrollToBottom = (behavior = 'smooth') => {
@@ -778,22 +866,31 @@ const getFileIconColor = (ext) => {
             <button
               class="send-btn"
               :class="{
-                'send-mode': !isCurrentlyStreaming,
-                'stop-mode': isCurrentlyStreaming,
-                'disabled': !canSend && !isCurrentlyStreaming
+                'send-mode': !isCurrentlyStreaming && !isStopPending,
+                'stop-mode': isCurrentlyStreaming && !isStopPending,
+                'stop-pending-mode': isStopPending,
+                'disabled': !canSend && !isCurrentlyStreaming && !isStopPending
               }"
-              :disabled="!canSend && !isCurrentlyStreaming"
-              :title="isCurrentlyStreaming ? '停止生成' : '发送消息'"
-              @click="isCurrentlyStreaming ? handleStop() : handleSend()"
+              :disabled="!canSend && !isCurrentlyStreaming && !isStopPending"
+              :title="isStopPending
+                ? '中断中，等待工具完成...'
+                : (isCurrentlyStreaming ? '停止生成' : '发送消息')"
+              @click="handleSendBtnClick"
             >
               <!-- 发送模式：纸飞机图标 -->
-              <svg v-if="!isCurrentlyStreaming" viewBox="0 0 20 20" fill="currentColor" class="send-icon">
+              <svg v-if="!isCurrentlyStreaming && !isStopPending" viewBox="0 0 20 20" fill="currentColor" class="send-icon">
                 <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z"/>
+              </svg>
+              <!-- 2026-07-06 新增：中断待生效模式：旋转圆环图标 -->
+              <svg v-else-if="isStopPending" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="stop-pending-inner-icon">
+                <circle cx="10" cy="10" r="6" stroke-dasharray="20 8" />
               </svg>
               <!-- 停止模式：实心方块图标 -->
               <svg v-else viewBox="0 0 20 20" fill="currentColor" class="stop-icon">
                 <rect x="5" y="5" width="10" height="10" rx="1.5" />
               </svg>
+              <!-- 2026-07-06 新增：中断待生效右上角旋转 badge -->
+              <span v-if="isStopPending" class="stop-pending-badge" aria-label="中断中"></span>
             </button>
           </div>
         </div>
@@ -1357,6 +1454,51 @@ const getFileIconColor = (ext) => {
   width: 14px;
   height: 14px;
   color: white;
+}
+
+/* 2026-07-06 新增：中断待生效模式（isStopPending=true 时）
+   与 InputBox / ProfileInputBox 同款：背景灰、cursor not-allowed、内嵌旋转圆环 + 右上角橙色 badge。 */
+.send-btn.stop-pending-mode {
+  background-color: var(--color-text-muted);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.send-btn.stop-pending-mode:hover {
+  background-color: var(--color-text-muted);
+  transform: none;
+  box-shadow: none;
+}
+
+.send-btn.stop-pending-mode::before {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.05) 0%, transparent 100%);
+}
+
+.stop-pending-inner-icon {
+  width: 16px;
+  height: 16px;
+  color: white;
+  animation: stopPendingSpin 0.9s linear infinite;
+}
+
+.stop-pending-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #f59e0b;
+  border: 2px solid var(--color-bg-secondary);
+  box-sizing: content-box;
+  animation: stopPendingSpin 0.9s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes stopPendingSpin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* 缩放+阴影脉冲动画：背景色不变，仅缩放与阴影扩散传达「生成中」语义 */

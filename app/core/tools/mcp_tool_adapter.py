@@ -405,6 +405,30 @@ class MCPToolConfig:
         self.unwrap_result = unwrap_result
         self.hidden_param_keys = hidden_param_keys or []
 
+    @classmethod
+    def from_dict(cls, config: Optional[dict]) -> "MCPToolConfig":
+        """从 dict 构造 MCPToolConfig（用于从 DB / yaml 的 tool_config 字段加载）。
+
+        参数:
+            config: 工具配置字典，可能为 None / {} / 含部分键。
+                    预期键：enable_injection / default_param_keys /
+                    hidden_param_keys / unwrap_result
+
+        返回:
+            MCPToolConfig: 配置对象；config 为 None 或空时返回默认实例
+
+        异常:
+            不主动抛出异常；缺键时使用默认值
+        """
+        if not config:
+            return cls()
+        return cls(
+            enable_injection=bool(config.get("enable_injection", True)),
+            default_param_keys=list(config.get("default_param_keys") or []),
+            hidden_param_keys=list(config.get("hidden_param_keys") or []),
+            unwrap_result=bool(config.get("unwrap_result", False)),
+        )
+
 
 class MCPToolToLangChainAdapter(BaseTool):
     """
@@ -865,12 +889,16 @@ class MCPToolToLangChainAdapter(BaseTool):
                     session_id = runtime.context.get("session_id", "default")
                     namespace = (store_id, session_id)
                     # 获取现有的 process_data
-                    existing_result = runtime.store.get(namespace, "process_data")
+                    # 必须使用异步接口（aget/aput）：
+                    # 当 runtime.store 是 AsyncPostgresStore 时，在主事件循环中
+                    # 调用同步 get/put 会触发 "Synchronous calls to AsyncPostgresStore"
+                    # 死锁/性能警告并 raise，因此本方法（_arun）必须 await 异步版本
+                    existing_result = await runtime.store.aget(namespace, "process_data")
                     process_data = existing_result.value if existing_result else {}
                     # 更新数据
                     process_data.update(runtime_data)
-                    # 保存回 store
-                    runtime.store.put(namespace, "process_data", process_data)
+                    # 保存回 store（必须使用异步接口，理由同上）
+                    await runtime.store.aput(namespace, "process_data", process_data)
             else:
                 event_result = result
                 return_result = result

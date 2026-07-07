@@ -24,6 +24,7 @@ from fastapi import UploadFile
 
 from app.shared.utils.files.fileTransfer import FileTransfer
 from app.shared.utils.files.pdfToImage import pdf_to_images_parallel
+from app.shared.utils.files.session_path_manager import get_session_upload_dir
 
 
 class FileUploadHandler:
@@ -204,44 +205,42 @@ class FileUploadHandler:
     async def _process_document_files(
         self,
         store,
-        namespace: Tuple[str, str],
+        namespace: Tuple[str],
         doc_files: List[dict],
-        session_id: str
+        session_id: str,
+        project_id: int = None,
     ) -> List[str]:
         """
         处理文档文件
-        
+
         对于非 PDF 扫描件的文档文件（如 doc/docx/txt 等），
         上传成功后生成 file_id 和对应的 file_path，
         并将文件信息存储到 LangGraph Store 中。
-        
-        处理流程：
-        1. 遍历所有文档文件
-        2. 获取每个文件的存储路径
-        3. 将文件信息存储到 Store
-        4. 收集处理成功的文件 ID
-        
+
+        2026-06-30 改造：接受 project_id；走项目目录时 file_path 走项目路径。
+
         Args:
             store: LangGraph Store 对象
             namespace (Tuple[str, str]): namespace 元组
             doc_files (List[dict]): 文档文件信息列表，每个元素包含 id 和 filename
             session_id (str): 会话 ID，用于构建文件存储路径
-            
+            project_id (Optional[int]): 2026-06-30 新增；项目 ID
+
         Returns:
             List[str]: 处理成功的文件 ID 列表
-            
+
         Raises:
             Exception: 处理过程中发生错误时抛出，包含文件名和错误详情
         """
         file_ids = []
-        
+
         # 遍历处理每个文档文件
         for file_info in doc_files:
             try:
                 # 获取文件的唯一标识符
                 file_id = file_info["id"]
                 # 根据文件ID和会话ID构建完整的文件存储路径
-                file_path = str(self.file_transfer.get_file_path(file_id, session_id))
+                file_path = str(self.file_transfer.get_file_path(file_id, session_id, project_id=project_id))
                 
                 # 将文件信息存储到 LangGraph Store（追加模式）
                 await self._store_file_info(store, namespace, file_id, file_path)
@@ -257,9 +256,10 @@ class FileUploadHandler:
     async def _process_scan_files(
         self,
         store,
-        namespace: Tuple[str, str],
+        namespace: Tuple[str],
         scan_files: List[dict],
-        session_id: str
+        session_id: str,
+        project_id: int = None,
     ) -> List[str]:
         """
         处理 PDF 扫描件
@@ -297,11 +297,11 @@ class FileUploadHandler:
                 # 获取PDF文件的唯一标识符
                 file_id = file_info["id"]
                 # 获取PDF文件的存储路径
-                pdf_path = self.file_transfer.get_file_path(file_id, session_id)
-                
+                pdf_path = self.file_transfer.get_file_path(file_id, session_id, project_id=project_id)
+
                 # 为当前PDF创建独立的图片输出目录
                 # 使用UUID确保目录名唯一，避免多文件处理时的冲突
-                scan_output_dir = self.upload_dir / session_id / f"scan_{uuid.uuid4()}"
+                scan_output_dir = get_session_upload_dir(session_id, create=True, project_id=project_id) / f"scan_{uuid.uuid4()}"
                 scan_output_dir.mkdir(parents=True, exist_ok=True)
                 
                 # 将PDF转换为图片，使用并行处理提高效率
@@ -344,9 +344,10 @@ class FileUploadHandler:
     async def _process_image_files(
         self,
         store,
-        namespace: Tuple[str, str],
+        namespace: Tuple[str],
         img_files: List[dict],
-        session_id: str
+        session_id: str,
+        project_id: int = None,
     ) -> List[str]:
         """
         处理图片文件
@@ -381,7 +382,7 @@ class FileUploadHandler:
                 # 获取图片文件的唯一标识符
                 file_id = file_info["id"]
                 # 获取图片文件的存储路径
-                img_path = self.file_transfer.get_file_path(file_id, session_id)
+                img_path = self.file_transfer.get_file_path(file_id, session_id, project_id=project_id)
                 
                 # 将图片内容转换为base64编码
                 base64_data = await self._read_file_as_base64(img_path)
@@ -405,35 +406,31 @@ class FileUploadHandler:
         store,
         store_id: str,
         session_id: str,
-        files: List[UploadFile]
+        files: List[UploadFile],
+        project_id: int = None,
     ) -> Dict[str, List]:
         """
         主处理方法 - 处理上传的文件列表
-        
+
         对上传的每个文件进行类型判断和相应处理，根据文件类型执行不同的存储逻辑。
         这是文件上传处理的入口方法，协调各子处理方法完成完整的文件处理流程。
-        
-        处理流程：
-        1. 初始化结果字典
-        2. 调用文件传输工具上传文件到服务器
-        3. 根据文件类型（doc/scan/img）进行分类
-        4. 分别处理不同类型的文件
-        5. 对图片ID进行滚动分组
-        6. 返回处理结果
-        
+
+        2026-06-30 改造：接受 project_id；走项目目录时所有处理走项目路径。
+
         Args:
             store: LangGraph Store 对象，用于数据持久化
             store_id (str): 存储 ID，用于构建 namespace
             session_id (str): 会话 ID，用于构建 namespace 和文件存储路径
             files (List[UploadFile]): 上传的文件列表
-            
+            project_id (Optional[int]): 2026-06-30 新增；项目 ID
+
         Returns:
             Dict[str, List]: 处理结果，格式为:
                 {
                     "doc": [fileid1, fileid2, ...],  # 文档文件 ID 列表
                     "img": [[img_id1, img_id2, img_id3], [img_id2, img_id3, img_id4], ...]  # 图片分组列表，每组3个连续图片ID
                 }
-                
+
         Raises:
             Exception: 文件上传或处理失败时抛出，包含详细的错误信息
         """
@@ -442,26 +439,26 @@ class FileUploadHandler:
             "doc": [],
             "img": []
         }
-        
+
         # 空文件列表直接返回空结果
         if not files:
             return result
-        
+
         # 执行文件上传操作，将文件保存到服务器
         try:
-            uploaded_files = await self.file_transfer.upload_files(files, session_id)
+            uploaded_files = await self.file_transfer.upload_files(files, session_id, project_id=project_id)
         except Exception as e:
             raise Exception(f"文件上传失败: {str(e)}")
-        
+
         # 初始化三种文件类型的列表
         doc_files = []    # 普通文档文件
         scan_files = []   # PDF扫描件
         img_files = []    # 图片文件
-        
+
         # 根据文件类型进行分类
         for file_info in uploaded_files:
             file_type = file_info.get("file_type", "doc")
-            
+
             # 根据文件类型添加到对应的列表
             if file_type == "doc":
                 doc_files.append(file_info)
@@ -469,59 +466,59 @@ class FileUploadHandler:
                 scan_files.append(file_info)
             elif file_type == "img":
                 img_files.append(file_info)
-        
+
         # 构建 LangGraph Store 的 namespace
         namespace = self._get_namespace(store_id, )
-        
+
         # 收集所有图片ID，用于后续分组
         all_image_ids = []
-        
+
         # 标记所有已成功处理的文件ID，用于失败时清理
         processed_file_ids = []
-        
+
         try:
             # 处理文档文件
             if doc_files:
                 try:
-                    doc_ids = await self._process_document_files(store, namespace, doc_files, session_id)
+                    doc_ids = await self._process_document_files(store, namespace, doc_files, session_id, project_id=project_id)
                     result["doc"].extend(doc_ids)
                     processed_file_ids.extend(doc_ids)
                 except Exception as e:
                     raise Exception(f"文档文件处理失败: {str(e)}")
-            
+
             # 处理PDF扫描件
             if scan_files:
                 try:
-                    scan_image_ids = await self._process_scan_files(store, namespace, scan_files, session_id)
+                    scan_image_ids = await self._process_scan_files(store, namespace, scan_files, session_id, project_id=project_id)
                     all_image_ids.extend(scan_image_ids)
                     # 标记扫描件的file_id为已处理
                     processed_file_ids.extend([f["id"] for f in scan_files])
                 except Exception as e:
                     raise Exception(f"PDF扫描件处理失败: {str(e)}")
-            
+
             # 处理图片文件
             if img_files:
                 try:
-                    img_image_ids = await self._process_image_files(store, namespace, img_files, session_id)
+                    img_image_ids = await self._process_image_files(store, namespace, img_files, session_id, project_id=project_id)
                     all_image_ids.extend(img_image_ids)
                     # 标记图片文件的file_id为已处理
                     processed_file_ids.extend([f["id"] for f in img_files])
                 except Exception as e:
                     raise Exception(f"图片文件处理失败: {str(e)}")
-            
+
         except Exception as e:
             # 处理失败，清理已上传但处理失败的文件
             for file_id in processed_file_ids:
                 try:
-                    await self.file_transfer.delete_file(file_id, session_id)
+                    await self.file_transfer.delete_file(file_id, session_id, project_id=project_id)
                 except Exception:
                     pass  # 忽略删除失败
             raise Exception(f"文件处理失败: {str(e)}")
-        
+
         # 如果有图片ID，进行滚动分组处理
         if all_image_ids:
             result["img"] = self._group_images(all_image_ids)
-        
+
         return result
 if __name__ == "__main__":
     file_upload_handler = FileUploadHandler()

@@ -4,7 +4,7 @@
 附件数据库操作模块
 
 提供附件记录的增删查功能，附件与会话（session）关联。
-附件的文件实体存储在文件系统 upload_dir/{session_id}/ 目录，
+附件的文件实体存储在文件系统 upload_dir/{yyyy}/{mm}/{dd}/{session_id}/ 目录，
 本模块仅管理附件的元数据记录。
 
 表结构通过 @register_schema 装饰器自动注册，启动时统一初始化。
@@ -45,6 +45,7 @@ class AttachmentDB:
         file_size: int = 0,
         mime_type: Optional[str] = None,
         file_id: Optional[str] = None,
+        project_id: Optional[int] = None,
     ) -> Optional[int]:
         """
         添加附件记录
@@ -57,6 +58,7 @@ class AttachmentDB:
             file_size: 文件大小（字节）
             mime_type: MIME 类型
             file_id: 上传时的 file_id
+            project_id: 所属项目 ID（2026-06-30 新增；None = 未关联项目 / 旧数据兼容）
 
         Returns:
             Optional[int]: 新增记录的 ID，未启用数据库时返回 None
@@ -69,8 +71,8 @@ class AttachmentDB:
 
         row = await DatabasePool.fetchrow(
             """
-            INSERT INTO attachments (session_id, file_name, stored_path, file_type, file_size, mime_type, file_id, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            INSERT INTO attachments (session_id, file_name, stored_path, file_type, file_size, mime_type, file_id, created_at, project_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING id
             """,
             session_id,
@@ -81,6 +83,7 @@ class AttachmentDB:
             mime_type,
             file_id,
             datetime.utcnow(),
+            project_id,
         )
         return row['id'] if row else None
 
@@ -93,14 +96,14 @@ class AttachmentDB:
             session_id: 会话 ID
 
         Returns:
-            List[dict]: 附件列表，每项包含 id、file_name、stored_path、file_type、file_size、mime_type、file_id、created_at
+            List[dict]: 附件列表，每项包含 id、file_name、stored_path、file_type、file_size、mime_type、file_id、created_at、project_id
         """
         if not cls.is_enabled():
             return []
 
         rows = await DatabasePool.fetch(
             """
-            SELECT id, file_name, stored_path, file_type, file_size, mime_type, file_id, created_at
+            SELECT id, file_name, stored_path, file_type, file_size, mime_type, file_id, created_at, project_id
             FROM attachments
             WHERE session_id = $1
             ORDER BY created_at
@@ -125,11 +128,36 @@ class AttachmentDB:
 
         row = await DatabasePool.fetchrow(
             """
-            SELECT id, session_id, file_name, stored_path, file_type, file_size, mime_type, file_id, created_at
+            SELECT id, session_id, file_name, stored_path, file_type, file_size, mime_type, file_id, created_at, project_id
             FROM attachments
             WHERE id = $1
             """,
             attachment_id,
+        )
+        return dict(row) if row else None
+
+    @classmethod
+    async def get_attachment_by_stored_path(cls, stored_path: str, session_id: str) -> Optional[dict]:
+        """根据 stored_path 和 session_id 获取附件记录。
+
+        Args:
+            stored_path: 服务器存储路径。
+            session_id: 会话 ID，用于校验归属。
+
+        Returns:
+            Optional[dict]: 附件信息，不存在或无权限返回 None。
+        """
+        if not cls.is_enabled():
+            return None
+
+        row = await DatabasePool.fetchrow(
+            """
+            SELECT id, session_id, file_name, stored_path, file_type, file_size, mime_type, file_id, created_at, project_id
+            FROM attachments
+            WHERE stored_path = $1 AND session_id = $2
+            """,
+            stored_path,
+            session_id,
         )
         return dict(row) if row else None
 
@@ -150,6 +178,27 @@ class AttachmentDB:
         await DatabasePool.execute(
             "DELETE FROM attachments WHERE id = $1",
             attachment_id,
+        )
+        return True
+
+    @classmethod
+    async def delete_attachment_by_stored_path(cls, stored_path: str, session_id: str) -> bool:
+        """根据 stored_path 删除附件记录。
+
+        Args:
+            stored_path: 服务器存储路径。
+            session_id: 会话 ID，用于校验归属。
+
+        Returns:
+            bool: 删除成功返回 True。
+        """
+        if not cls.is_enabled():
+            return False
+
+        await DatabasePool.execute(
+            "DELETE FROM attachments WHERE stored_path = $1 AND session_id = $2",
+            stored_path,
+            session_id,
         )
         return True
 

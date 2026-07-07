@@ -10,7 +10,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   isSubAgentHistoryItem,
-  convertSubAgentHistoryToAiSubAgent
+  convertSubAgentHistoryToAiSubAgent,
+  getSubAgentMeta
 } from '../sseParser.js'
 
 describe('isSubAgentHistoryItem（2026-06-16 新增）', () => {
@@ -278,5 +279,33 @@ describe('parentPrompt 兜底（2026-06-16-2 新增）', () => {
       ]
     })
     expect(result.parentPrompt).toBe('')
+  })
+})
+
+
+describe('subagent history meta 缓存（2026-06-18 新增）', () => {
+  it('历史项携带 meta 时缓存 icon/label', () => {
+    convertSubAgentHistoryToAiSubAgent({
+      type: 'subagent',
+      thread_id: 'meta_1',
+      tool: 'query_knowledge',
+      meta: { icon: '📚', label: '知识库检索' },
+      messages: []
+    })
+
+    expect(getSubAgentMeta('query_knowledge')).toEqual({ icon: '📚', label: '知识库检索' })
+  })
+
+  it('历史项 meta 不合法时不缓存，返回兜底', () => {
+    // 使用未缓存过的工具名，避免其它测试的合法缓存影响本断言
+    convertSubAgentHistoryToAiSubAgent({
+      type: 'subagent',
+      thread_id: 'meta_bad',
+      tool: 'bad_meta_tool_history',
+      meta: { icon: null, label: 123 },
+      messages: []
+    })
+
+    expect(getSubAgentMeta('bad_meta_tool_history')).toEqual({ icon: '🤖', label: 'bad_meta_tool_history' })
   })
 })

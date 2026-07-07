@@ -16,11 +16,14 @@ import { processSSEEvent } from '../../utils/sseParser.js'
 
 /**
  * 构造一个模拟 SSE 流：发送 SSE chunk 字符串列表，每个 chunk 以 \n\n 结尾。
- * 返回 { stream, reader, cancelCount }
+ * 返回 { stream, reader, cancelSpy }
+ *
+ * 2026-07-01 同步：happy-dom 的 ReadableStream 在 close 之后调用 reader.cancel() 不会触发
+ * stream 的 cancel 回调，因此 spy 改为包裹 reader.cancel 本身，才能在测试里观察到 cancel 调用。
+ * 注意：cancelSpy 不能再调用 rawReader.cancel，否则会触发 spy 自身导致无限递归。
  */
 function createMockSSEStream(chunks) {
   const encoder = new TextEncoder()
-  const cancelSpy = vi.fn()
   const stream = new ReadableStream({
     start(controller) {
       for (const chunk of chunks) {
@@ -29,11 +32,14 @@ function createMockSSEStream(chunks) {
       controller.close()
     },
     cancel() {
-      cancelSpy()
+      // happy-dom 在某些场景下仍会调用此回调，但 spy 主体已迁到 reader.cancel
     }
   })
-  const reader = stream.getReader()
-  return { stream, reader, cancelSpy }
+  const rawReader = stream.getReader()
+  // 仅记录调用次数，不再调用 rawReader.cancel（避免无限递归）
+  const cancelSpy = vi.fn()
+  rawReader.cancel = cancelSpy
+  return { stream, reader: rawReader, cancelSpy }
 }
 
 function createTestAiMsg() {
@@ -53,6 +59,9 @@ function createTestAiMsg() {
 /**
  * 模拟 App.vue 的 reader.read() 循环 + processSSEEvent 处理逻辑
  * （不带 Vue 组件，纯逻辑函数）
+ *
+ * 2026-07-01 同步：try/catch 包 reader.cancel() 以模拟 App.vue:481-485 的真实代码路径
+ * （App.vue 中 cancel 异常被吞掉，避免中断整个 SSE 处理循环）
  */
 async function driveSSE(reader, aiMsg, callbacks) {
   const decoder = new TextDecoder()
@@ -72,8 +81,12 @@ async function driveSSE(reader, aiMsg, callbacks) {
         processSSEEvent(data, aiMsg, callbacks)
         if (aiMsg.interrupt) {
           interrupted = true
-          // 关键：模拟 App.vue 的 reader.cancel()
-          await reader.cancel()
+          // 关键：模拟 App.vue 的 reader.cancel() —— App.vue 内部 try/catch 吞掉异常
+          try {
+            await reader.cancel()
+          } catch (cancelErr) {
+            // 异常被吞掉，模拟 App.vue:484 的 console.warn
+          }
           break
         }
       } catch {}
@@ -138,9 +151,9 @@ describe('App.vue HITL interrupt reader.cancel integration (2026-06-15)', () => 
   })
 
   // 4. P2：reader.cancel() 调用本身抛出时不传播
+  // 2026-07-01 同步：happy-dom 不保证 stream.cancel 回调被调用，改为 spy on reader.cancel 本身
   it('test_reader_cancel_swallows_cancel_error', async () => {
     const encoder = new TextEncoder()
-    let cancelInvoked = false
     const stream = new ReadableStream({
       start(controller) {
         controller.enqueue(
@@ -149,19 +162,20 @@ describe('App.vue HITL interrupt reader.cancel integration (2026-06-15)', () => 
           )
         )
         controller.close()
-      },
-      cancel() {
-        cancelInvoked = true
-        throw new Error('cancel failed')
       }
     })
-    const reader = stream.getReader()
+    const rawReader = stream.getReader()
+    let cancelInvoked = false
+    rawReader.cancel = async () => {
+      cancelInvoked = true
+      throw new Error('cancel failed')
+    }
     const aiMsg = createTestAiMsg()
 
     // driveSSE 内部 try { await reader.cancel() } catch 应该吞掉 cancel 异常
     let threwError = false
     try {
-      await driveSSE(reader, aiMsg, {})
+      await driveSSE(rawReader, aiMsg, {})
     } catch {
       threwError = true
     }

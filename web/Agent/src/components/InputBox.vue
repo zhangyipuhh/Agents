@@ -1,6 +1,8 @@
 <script setup>
-import { ref, computed, nextTick } from 'vue'
-import { uploadFileInChunks, formatFileSize, getFileExtension, refreshToken } from '../utils/api.js'
+import { ref, computed, nextTick, onMounted } from 'vue'
+import { uploadFileInChunks, formatFileSize, getFileExtension, refreshToken, fetchAgentList, deleteAttachments } from '../utils/api.js'
+import ProjectDropdown from './ProjectDropdown.vue'
+import { handleCommand, COMMAND_REGISTRY } from '../utils/commandRegistry.js'
 
 const SUPPORTED_EXTENSIONS = ['pdf', 'doc', 'docx', 'txt', 'md', 'csv', 'json']
 const MAX_FILE_SIZE = 50 * 1024 * 1024
@@ -13,6 +15,45 @@ const props = defineProps({
   isStreaming: {
     type: Boolean,
     default: false
+  },
+  boundAgentName: {
+    type: String,
+    default: ''
+  },
+  boundAgentDisplayName: {
+    type: String,
+    default: ''
+  },
+  // 2026-06-30 新增：当前会话关联的项目
+  currentProject: {
+    type: Object,
+    default: null
+  },
+  // 2026-07-01 新增：项目是否锁定（已发送过消息或历史会话时为 true）
+  projectLocked: {
+    type: Boolean,
+    default: false
+  },
+  // 2026-07-01 新增：当前用户允许使用的智能体名称列表
+  allowedAgents: {
+    type: Array,
+    default: () => []
+  },
+  // 2026-07-06 新增：停止按钮是否处于「中断待生效」状态。
+  // 当用户在工具/子智能体执行期间点击停止按钮后置 true，
+  // 期间按钮保持 stop-mode 样式 + 右上角旋转 badge + disabled 拦截重复点击，
+  // 直到后端完成 tools 节点（toolStopPending 由父组件 App.vue/KnowledgeApp.vue 维护）。
+  isStopPending: {
+    type: Boolean,
+    default: false
+  },
+  // 2026-07-XX 新增：父组件注入的"确保 session 存在"异步回调。
+  // InputBox 不直接 import createNewSession（保持与 KnowledgeApp 等宿主解耦），
+  // 在 startUpload() 首调上传前调用，避免文件落到后端 middleware 的 'default' 公共目录。
+  // 类型签名：接受 projectId（number|null）并返回 Promise<string>（新 session_id）。
+  ensureSession: {
+    type: Function,
+    default: null
   }
 })
 
@@ -22,14 +63,71 @@ const fileInputRef = ref(null)
 const isFocused = ref(false)
 const isDragging = ref(false)
 const isRefreshingToken = ref(false)
+// 命令执行中标记：防止命令执行期间用户重复点击发送按钮导致重复触发
+const isExecutingCommand = ref(false)
+// 发送时上传文件标记：防止上传期间重复点击发送
+const isUploading = ref(false)
 const selectedFiles = ref([])
+
+// 2026-06-24 新增：智能体快速选择相关状态
+const agentList = ref([])
+const isLoadingAgents = ref(false)
+const selectedAgent = ref(null)
+const showAgentDropdown = ref(false)
+const activeAgentIndex = ref(-1)
+const agentDropdownRef = ref(null)
 
 const canSend = computed(() => {
   if (props.isStreaming) return false
+  // 2026-07-06 新增：中断待生效期间禁用发送按钮，避免用户在等待工具完成时
+  // 重复点击导致状态混乱或产生孤儿 tool_calls（2013 错误根因）。
+  if (props.isStopPending) return false
   if (isRefreshingToken.value) return false
+  if (isExecutingCommand.value) return false
+  // 2026-07-07 新增：发送时上传文件期间禁用发送按钮，避免重复触发上传与发送流程
+  if (isUploading.value) return false
   const hasText = inputValue.value.trim().length > 0
-  const hasUploadedFiles = selectedFiles.value.some(f => f.status === 'success')
-  return hasText || hasUploadedFiles
+  return hasText
+})
+
+// 2026-07-07 新增：是否存在已选中的文件（含待上传、上传中、已上传、失败）。
+// 用于向上游同步项目选择器锁定状态：只要用户已选择文件，即使尚未发送，
+// 也应禁止切换项目，避免文件在发送时被挂接到错误的 projectId。
+const hasSelectedFiles = computed(() => selectedFiles.value.length > 0)
+
+/**
+ * 是否为命令输入（以 / 开头，且未通过下拉菜单选中智能体）
+ * @returns {boolean} 当前输入是否为斜杠命令
+ */
+const isCommand = computed(() => {
+  if (props.boundAgentName && props.boundAgentName !== 'default') return false
+  const trimmed = inputValue.value.trim()
+  return trimmed.startsWith('/') && !selectedAgent.value
+})
+
+/**
+ * 解析当前命令输入
+ * 复用单一解析逻辑，避免 commandHint 与 handleSend 中重复解析命令字符串。
+ * @returns {{cmd: string, args: string[]} | null} 命令对象（含命令名与参数数组）；非命令输入返回 null
+ */
+const parsedCommand = computed(() => {
+  if (!isCommand.value) return null
+  const parts = inputValue.value.trim().slice(1).split(/\s+/)
+  return { cmd: parts[0], args: parts.slice(1) }
+})
+
+/**
+ * 命令提示文本
+ * 根据输入内容匹配 COMMAND_REGISTRY 中的命令定义，返回描述与用法提示。
+ * @returns {string} 命令提示文本；非命令输入或仅输入 "/" 时返回空字符串
+ */
+const commandHint = computed(() => {
+  const parsed = parsedCommand.value
+  if (!parsed) return ''
+  // 仅输入 "/" 时不显示命令提示，由下拉菜单替代
+  if (parsed.cmd === '') return ''
+  const reg = COMMAND_REGISTRY.find((r) => r.name === parsed.cmd)
+  return reg ? `命令：${reg.description}（用法：${reg.usage}）` : `未知命令：/${parsed.cmd}`
 })
 
 const autoResize = () => {
@@ -41,20 +139,178 @@ const autoResize = () => {
   }
 }
 
+/**
+ * 加载可用智能体列表（供下拉菜单使用）
+ */
+async function loadAgents() {
+  if (agentList.value.length > 0 || isLoadingAgents.value) return
+  isLoadingAgents.value = true
+  try {
+    const agents = await fetchAgentList()
+    agentList.value = agents || []
+  } catch (err) {
+    console.error('加载智能体列表失败:', err)
+    agentList.value = []
+  } finally {
+    isLoadingAgents.value = false
+  }
+}
+
+// 页面加载时自动获取智能体列表，确保用户输入 "/" 时列表已就绪
+onMounted(() => {
+  loadAgents()
+})
+
+/**
+ * 过滤后的智能体列表（当输入 "/" 后，可继续输入字符进行过滤）
+ * 额外按当前用户 allowedAgents 做权限过滤，空列表时返回 []
+ */
+const filteredAgents = computed(() => {
+  const allowedList = props.allowedAgents || []
+  if (!allowedList.length) return []
+  const allowedSet = new Set(allowedList)
+  const allowedOnly = agentList.value.filter((a) => allowedSet.has(a.name))
+
+  const trimmed = inputValue.value.trim()
+  if (trimmed === '/') return allowedOnly
+  if (!trimmed.startsWith('/')) return []
+  const query = trimmed.slice(1).toLowerCase()
+  return allowedOnly.filter(
+    (a) =>
+      a.name.toLowerCase().includes(query) ||
+      (a.display_name && a.display_name.toLowerCase().includes(query))
+  )
+})
+
 const handleInput = (event) => {
   inputValue.value = event.target.value
   autoResize()
+  // 若当前 session 已绑定非 default 智能体，禁止唤起 /command 下拉菜单
+  if (props.boundAgentName && props.boundAgentName !== 'default') {
+    showAgentDropdown.value = false
+    activeAgentIndex.value = -1
+    return
+  }
+  // 仅输入 "/" 时加载智能体列表并显示下拉菜单
+  const trimmed = inputValue.value.trim()
+  if (trimmed === '/') {
+    showAgentDropdown.value = true
+    activeAgentIndex.value = -1
+    loadAgents()
+  } else if (!trimmed.startsWith('/')) {
+    showAgentDropdown.value = false
+    activeAgentIndex.value = -1
+  } else {
+    // 输入 "/xxx" 时继续显示下拉菜单（过滤模式）
+    showAgentDropdown.value = true
+    activeAgentIndex.value = -1
+  }
+}
+
+/**
+ * 选中智能体（从下拉菜单）
+ * @param {Object} agent - 智能体对象
+ */
+function selectAgent(agent) {
+  selectedAgent.value = agent
+  inputValue.value = ''
+  showAgentDropdown.value = false
+  activeAgentIndex.value = -1
+  nextTick(() => {
+    autoResize()
+    textareaRef.value?.focus()
+  })
+}
+
+/**
+ * 移除已选中的智能体
+ */
+function removeSelectedAgent() {
+  selectedAgent.value = null
+  emit('agent-switched', null)
+  nextTick(() => {
+    textareaRef.value?.focus()
+  })
 }
 
 const handleKeydown = (event) => {
+  // 下拉菜单打开时，支持键盘导航
+  if (showAgentDropdown.value && filteredAgents.value.length > 0) {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      activeAgentIndex.value = (activeAgentIndex.value + 1) % filteredAgents.value.length
+      return
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      activeAgentIndex.value =
+        (activeAgentIndex.value - 1 + filteredAgents.value.length) % filteredAgents.value.length
+      return
+    }
+    if (event.key === 'Enter' && !event.shiftKey && activeAgentIndex.value >= 0) {
+      event.preventDefault()
+      selectAgent(filteredAgents.value[activeAgentIndex.value])
+      return
+    }
+    if (event.key === 'Escape') {
+      showAgentDropdown.value = false
+      activeAgentIndex.value = -1
+      return
+    }
+  }
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
     handleSend()
   }
 }
 
+/**
+ * 执行斜杠命令
+ * 在命令执行期间设置 isExecutingCommand 锁，防止用户重复点击发送；
+ * 命令结果通过 send 事件作为系统消息显示，switchAgent 信号通过 agent-switched 事件传递。
+ * @param {string} text - 已 trim 的输入文本（以 / 开头）
+ * @returns {Promise<void>}
+ * @throws {Error} 命令执行失败时通过 emit('send', '命令执行失败：...') 兜底处理，不向上抛出
+ */
+const executeCommand = async (text) => {
+  const parsed = parsedCommand.value
+  if (!parsed) return
+  const { cmd, args } = parsed
+  isExecutingCommand.value = true
+  try {
+    const result = await handleCommand(cmd, args)
+    if (result.switchAgent) {
+      // 2026-06-26 改造：若 result.switchAgent 是字符串，包装为对象以兼容 App.vue
+      const payload = typeof result.switchAgent === 'string'
+        ? { name: result.switchAgent, display_name: result.switchAgent }
+        : result.switchAgent
+      emit('agent-switched', payload)
+    }
+    // 命令结果作为系统消息显示（通过 send 事件传递）
+    emit('send', result.text, [])
+  } catch (err) {
+    emit('send', `命令执行失败：${err.message}`, [])
+  } finally {
+    isExecutingCommand.value = false
+    inputValue.value = ''
+    nextTick(() => {
+      autoResize()
+    })
+  }
+}
+
 const handleSend = async () => {
   if (!canSend.value) return
+
+  const text = inputValue.value.trim()
+  // 2026-07-07 修正：必须有文本才能发送，禁止纯附件发送。
+  if (!text) return
+
+  // 命令检测：以 / 开头视为命令，不走普通发送流程
+  if (text.startsWith('/')) {
+    await executeCommand(text)
+    return
+  }
 
   isRefreshingToken.value = true
   try {
@@ -66,6 +322,33 @@ const handleSend = async () => {
   }
   isRefreshingToken.value = false
 
+  // 2026-07-07 改造：上传文件移到发送时统一处理。
+  // 仅当存在待上传文件时，才需要在 InputBox 内先创建 session 并挂接 projectId；
+  // 纯文本发送仍由 App.vue 负责 session 创建，保持与历史行为一致。
+  const pendingFiles = selectedFiles.value.filter(f => f.status === 'pending')
+  if (pendingFiles.length > 0) {
+    isUploading.value = true
+    try {
+      const projectIdForUpload = props.currentProject ? props.currentProject.id : null
+      if (typeof props.ensureSession === 'function') {
+        await props.ensureSession(projectIdForUpload)
+      } else {
+        throw new Error('会话初始化失败：未提供 ensureSession 回调')
+      }
+
+      await Promise.all(pendingFiles.map(f => startUpload(f)))
+
+      const failedFiles = selectedFiles.value.filter(f => f.status === 'error')
+      if (failedFiles.length > 0) {
+        throw new Error(`以下文件上传失败：${failedFiles.map(f => f.name).join(', ')}`)
+      }
+    } catch (err) {
+      alert(err?.message || '发送失败，请重试')
+      isUploading.value = false
+      return
+    }
+  }
+
   const uploadedFiles = selectedFiles.value
     .filter(f => f.status === 'success')
     .map(f => ({
@@ -76,14 +359,49 @@ const handleSend = async () => {
       file_size: f.size
     }))
 
-  emit('send', inputValue.value.trim(), uploadedFiles)
+  // 2026-06-24 新增：若通过下拉菜单选中了智能体，先切换智能体再发送消息
+  // 2026-06-26 改造：emit 对象包含 display_name，供 App.vue 同步展示名称
+  if (selectedAgent.value) {
+    emit('agent-switched', {
+      name: selectedAgent.value.name,
+      display_name: selectedAgent.value.display_name || selectedAgent.value.name
+    })
+  }
+
+  emit('send', text, uploadedFiles)
 
   inputValue.value = ''
   selectedFiles.value = []
+  selectedAgent.value = null
 
   nextTick(() => {
     autoResize()
   })
+  isUploading.value = false
+}
+
+/**
+ * 发送/停止按钮统一点击处理（2026-07-06 新增）。
+ *
+ * 三态分支：
+ *   1. isStopPending=true → 直接返回（按钮 disabled + 灰态 + 旋转 badge，
+ *      但保留 click 拦截作为防御性，避免键盘 Enter 等绕过 disabled 的场景）
+ *   2. isStreaming=true    → emit('stop')，由父组件 App.vue::handleStopMessage 加锁
+ *   3. 其余情况             → handleSend() 走原有发送逻辑
+ *
+ * 替代原先模板里的内联三元表达式：原表达式在 isStreaming 与 isStopPending 同时
+ * 为 true 时会出现「按钮看起来是 stop-mode 但点击会被外层 disabled 拦截」的歧义，
+ * 统一收敛到函数里更清晰，也方便测试断言。
+ *
+ * @returns {void}
+ */
+const handleSendBtnClick = () => {
+  if (props.isStopPending) return
+  if (props.isStreaming) {
+    emit('stop')
+    return
+  }
+  handleSend()
 }
 
 const handleFocus = () => {
@@ -92,6 +410,11 @@ const handleFocus = () => {
 
 const handleBlur = () => {
   isFocused.value = false
+  // 延迟关闭下拉菜单，确保点击菜单项的 mousedown 能先触发
+  setTimeout(() => {
+    showAgentDropdown.value = false
+    activeAgentIndex.value = -1
+  }, 200)
 }
 
 const handleAttachmentClick = () => {
@@ -107,6 +430,7 @@ const handleFileSelect = (event) => {
 }
 
 const addFiles = (files) => {
+  let hasValidFileAdded = false
   for (const file of files) {
     const ext = getFileExtension(file.name)
     if (!SUPPORTED_EXTENSIONS.includes(ext)) {
@@ -157,7 +481,12 @@ const addFiles = (files) => {
       cancelFn: null
     }
     selectedFiles.value.push(fileItem)
-    startUpload(fileItem)
+    hasValidFileAdded = true
+  }
+  // 2026-07-07 新增：只要有待上传文件被选中，即锁定项目选择器，
+  // 防止用户切项目后再发送，导致文件被挂接到错误 projectId。
+  if (hasValidFileAdded) {
+    emit('project-lock-change', true)
   }
 }
 
@@ -165,8 +494,17 @@ const startUpload = (fileItem) => {
   fileItem.status = 'uploading'
   fileItem.progress = 0
   fileItem.errorMsg = ''
+  return runChunkUpload(fileItem)
+}
 
-  uploadFileInChunks(
+/**
+ * 实际执行分片上传逻辑（2026-07-XX 抽离）：
+ * startUpload() 在确保 session 存在后调用此函数，避免嵌套太多层使逻辑不清。
+ * @param {Object} fileItem - selectedFiles 中的文件项
+ * @returns {void}
+ */
+function runChunkUpload(fileItem) {
+  return uploadFileInChunks(
     fileItem.file,
     (progress) => {
       const item = selectedFiles.value.find(f => f.id === fileItem.id)
@@ -197,12 +535,30 @@ const startUpload = (fileItem) => {
   })
 }
 
-const removeFile = (fileItem) => {
+const removeFile = async (fileItem) => {
   if (fileItem.status === 'uploading' && fileItem.cancelFn) {
     fileItem.cancelFn()
   }
+
+  // 已上传成功的文件需要先删除服务器上的真实文件
+  if (fileItem.status === 'success' && fileItem.uploadResult?.stored_path) {
+    try {
+      await deleteAttachments([fileItem.uploadResult.stored_path])
+    } catch (err) {
+      console.error('删除附件失败:', err)
+      alert(`删除附件失败: ${err.message}`)
+      return
+    }
+  }
+
   const idx = selectedFiles.value.findIndex(f => f.id === fileItem.id)
   if (idx !== -1) selectedFiles.value.splice(idx, 1)
+
+  // 2026-07-07 修正：当已选文件全部移除后解除项目选择器锁定。
+  // 由于项目锁定时机已提前到"文件被选中"时，此处只需在列表为空时解锁。
+  if (!hasSelectedFiles.value) {
+    emit('project-lock-change', false)
+  }
 }
 
 const retryUpload = (fileItem) => {
@@ -253,7 +609,18 @@ const getFileIconColor = (ext) => {
   return colorMap[ext] || '#9CA3AF'
 }
 
-const emit = defineEmits(['send', 'tool-action', 'stop'])
+const emit = defineEmits([
+  'send',
+  'tool-action',
+  'stop',
+  'agent-switched',
+  'project-changed',
+  'select-project',
+  'create-project',
+  'pick-existing',
+  // 2026-07-06 新增：向上游报告项目选择器应否锁定
+  'project-lock-change'
+])
 </script>
 
 <template>
@@ -343,17 +710,61 @@ const emit = defineEmits(['send', 'tool-action', 'stop'])
           </div>
         </div>
 
-        <textarea
-          ref="textareaRef"
-          v-model="inputValue"
-          class="text-input"
-          placeholder="请输入你的需求，按「Enter」发送"
-          rows="3"
-          @input="handleInput"
-          @keydown="handleKeydown"
-          @focus="handleFocus"
-          @blur="handleBlur"
-        ></textarea>
+        <!-- 2026-06-24 新增：智能体下拉菜单 -->
+        <div
+          v-if="showAgentDropdown && isCommand && inputValue.trim() === '/'"
+          ref="agentDropdownRef"
+          class="agent-dropdown"
+        >
+          <div v-if="isLoadingAgents" class="agent-dropdown-loading">加载中...</div>
+          <div v-else-if="filteredAgents.length === 0" class="agent-dropdown-empty">暂无可用智能体</div>
+          <div
+            v-for="(agent, index) in filteredAgents"
+            :key="agent.name"
+            class="agent-dropdown-item"
+            :class="{ active: activeAgentIndex === index }"
+            @mousedown.prevent="selectAgent(agent)"
+            @mouseenter="activeAgentIndex = index"
+          >
+            <div class="agent-dropdown-name">{{ agent.display_name || agent.name }}</div>
+          </div>
+        </div>
+
+        <!-- 新增：输入区域包裹层，将标签与 textarea 并排 -->
+        <div class="text-input-area">
+          <!-- 2026-06-24 新增：已选智能体标签（可移除） -->
+          <div v-if="selectedAgent" class="selected-agent-tag">
+            <span class="agent-slash">/</span>
+            <span class="agent-name">{{ selectedAgent.display_name || selectedAgent.name }}</span>
+            <button class="agent-remove-btn" @click="removeSelectedAgent" title="移除">
+              <svg viewBox="0 0 20 20" fill="currentColor" class="agent-remove-icon">
+                <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/>
+              </svg>
+            </button>
+          </div>
+
+          <!-- 2026-06-26 新增：会话已绑定智能体标签（不可移除） -->
+          <div v-if="boundAgentName && boundAgentName !== 'default'" class="selected-agent-tag bound-agent-tag">
+            <span class="agent-slash">/</span>
+            <span class="agent-name">{{ boundAgentDisplayName || boundAgentName }}</span>
+          </div>
+
+          <textarea
+            ref="textareaRef"
+            v-model="inputValue"
+            class="text-input"
+            :placeholder="selectedAgent ? '请输入消息，按「Enter」发送' : (boundAgentName ? `当前智能体：${boundAgentDisplayName || boundAgentName}` : '输入 / 快速使用智能体')"
+            rows="3"
+            @input="handleInput"
+            @keydown="handleKeydown"
+            @focus="handleFocus"
+            @blur="handleBlur"
+          ></textarea>
+        </div>
+
+        <div v-if="isCommand && inputValue.trim() !== '/'" class="command-hint">
+          {{ commandHint }}
+        </div>
 
         <div class="bottom-row">
           <div class="toolbar">
@@ -371,24 +782,46 @@ const emit = defineEmits(['send', 'tool-action', 'stop'])
           <button
             class="send-btn"
             :class="{
-              'send-mode': !isStreaming,
-              'stop-mode': isStreaming,
-              'disabled': !canSend && !isStreaming
+              'send-mode': !isStreaming && !isStopPending,
+              'stop-mode': isStreaming && !isStopPending,
+              'stop-pending-mode': isStopPending,
+              'disabled': !canSend && !isStreaming && !isStopPending
             }"
-            :disabled="!canSend && !isStreaming"
-            :title="isStreaming ? '停止生成' : '发送消息'"
-            @click="isStreaming ? emit('stop') : handleSend()"
+            :disabled="!canSend && !isStreaming && !isStopPending"
+            :title="isStopPending
+              ? '中断中，等待工具完成...'
+              : (isStreaming ? '停止生成' : '发送消息')"
+            @click="handleSendBtnClick"
           >
             <!-- 发送模式：纸飞机图标 -->
-            <svg v-if="!isStreaming" viewBox="0 0 20 20" fill="currentColor" class="send-icon">
+            <svg v-if="!isStreaming && !isStopPending" viewBox="0 0 20 20" fill="currentColor" class="send-icon">
               <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z"/>
+            </svg>
+            <!-- 2026-07-06 新增：中断待生效模式：旋转圆环图标 -->
+            <svg v-else-if="isStopPending" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="stop-pending-inner-icon">
+              <circle cx="10" cy="10" r="6" stroke-dasharray="20 8" />
             </svg>
             <!-- 停止模式：实心方块图标 -->
             <svg v-else viewBox="0 0 20 20" fill="currentColor" class="stop-icon">
               <rect x="5" y="5" width="10" height="10" rx="1.5" />
             </svg>
+            <!-- 2026-07-06 新增：中断待生效右上角旋转 badge，传达"等待工具完成"语义 -->
+            <span v-if="isStopPending" class="stop-pending-badge" aria-label="中断中"></span>
           </button>
         </div>
+      </div>
+
+      <!-- 2026-07-01 调整：项目下拉框置于 .input-main 外部，
+           作为独立浅灰卡片紧跟主卡下方，与主卡形成「主卡 + 次卡」分层结构。 -->
+      <div v-if="!projectLocked" class="project-dropdown-slot">
+        <ProjectDropdown
+          :current-project="currentProject"
+          :disabled="isStreaming"
+          :locked="projectLocked"
+          @select-project="$emit('select-project', $event)"
+          @create-project="$emit('create-project')"
+          @pick-existing="$emit('pick-existing')"
+        />
       </div>
     </div>
 
@@ -403,11 +836,15 @@ const emit = defineEmits(['send', 'tool-action', 'stop'])
   contain: layout style paint;
 }
 
+/* 2026-07-01 样式微调：.input-wrapper 保持为透明容器（仅约束宽度与居中），
+   视觉外壳由 .input-main 独立承担。 */
 .input-wrapper {
   max-width: 900px;
   margin: 0 auto;
 }
 
+/* 2026-07-01 样式微调：.input-main 保留 2px 实色蓝边框与厚重阴影，
+   与下方的项目卡形成「主卡 + 独立次卡」的视觉层级。 */
 .input-main {
   display: flex;
   flex-direction: column;
@@ -419,18 +856,18 @@ const emit = defineEmits(['send', 'tool-action', 'stop'])
   transition: var(--transition-colors), var(--transition-shadow), border-color 0.25s ease;
   position: relative;
   max-width: 900px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15), 0 2px 6px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08);
 
   &:hover:not(.focused):not(.dragging) {
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2), 0 4px 10px rgba(0, 0, 0, 0.15);
+    box-shadow: 0 10px 32px rgba(0, 0, 0, 0.16), 0 4px 12px rgba(0, 0, 0, 0.1);
   }
 
   &.focused {
-    box-shadow: 0 8px 24px rgba(99, 102, 241, 0.3), 0 4px 10px rgba(99, 102, 241, 0.2), 0 0 0 4px rgba(99, 102, 241, 0.15);
+    box-shadow: 0 10px 32px rgba(99, 102, 241, 0.25), 0 4px 12px rgba(99, 102, 241, 0.15), 0 0 0 4px rgba(99, 102, 241, 0.12);
   }
 
   &.dragging {
-    box-shadow: 0 8px 24px rgba(99, 102, 241, 0.35), 0 4px 10px rgba(99, 102, 241, 0.25), 0 0 0 4px rgba(99, 102, 241, 0.2);
+    box-shadow: 0 10px 32px rgba(99, 102, 241, 0.3), 0 4px 12px rgba(99, 102, 241, 0.2), 0 0 0 4px rgba(99, 102, 241, 0.18);
     background-color: var(--color-accent-light);
   }
 }
@@ -666,6 +1103,8 @@ const emit = defineEmits(['send', 'tool-action', 'stop'])
 }
 
 .text-input {
+  flex: 1;
+  min-width: 0;
   width: 100%;
   height: 80px;
   min-height: 80px;
@@ -699,6 +1138,16 @@ const emit = defineEmits(['send', 'tool-action', 'stop'])
     outline: none;
     box-shadow: none;
   }
+}
+
+/* 命令提示样式：以 / 开头输入时显示命令说明 */
+.command-hint {
+  padding: 6px 8px;
+  font-size: var(--font-size-sm);
+  color: var(--color-accent);
+  background-color: var(--color-accent-light);
+  border-radius: var(--radius-sm);
+  margin-top: 4px;
 }
 
 .send-btn {
@@ -799,6 +1248,55 @@ const emit = defineEmits(['send', 'tool-action', 'stop'])
   }
 }
 
+/* 2026-07-06 新增：中断待生效模式（isStopPending=true 时）
+   用户已点击停止按钮，正在等待后端 tools 节点完成 ToolMessage 后真正断开。
+   设计要点：
+   - 背景色变灰（禁用感），但保留 stop-mode 同色 accent 作为底色，避免与 disabled 完全一致
+   - hover 不变（cursor: not-allowed 传达不可交互）
+   - 内嵌旋转圆环图标 + 右上角橙色旋转 badge，双重视觉反馈 */
+.send-btn.stop-pending-mode {
+  background-color: var(--color-text-muted);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.send-btn.stop-pending-mode:hover {
+  background-color: var(--color-text-muted);
+  transform: none;
+  box-shadow: none;
+}
+
+.send-btn.stop-pending-mode::before {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.05) 0%, transparent 100%);
+}
+
+.stop-pending-inner-icon {
+  width: 16px;
+  height: 16px;
+  color: white;
+  animation: stopPendingSpin 0.9s linear infinite;
+}
+
+.stop-pending-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #f59e0b;          /* 橙色：与 .stopped_by_user 徽章同色，传达"中断等待中" */
+  border: 2px solid var(--color-bg-secondary);
+  box-sizing: content-box;
+  animation: stopPendingSpin 0.9s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes stopPendingSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .disclaimer {
   text-align: center;
   font-size: var(--font-size-xs);
@@ -811,5 +1309,141 @@ const emit = defineEmits(['send', 'tool-action', 'stop'])
   &:hover {
     color: var(--color-text-secondary);
   }
+}
+
+/* 新增：输入区域包裹层，标签与 textarea 并排 */
+.text-input-area {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+}
+
+/* 2026-06-24 新增：已选智能体标签 */
+.selected-agent-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background-color: var(--color-accent-light);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-sm);
+  color: var(--color-accent);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  margin-top: 4px;
+  flex-shrink: 0;
+}
+
+.agent-slash {
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-bold);
+}
+
+.agent-name {
+  line-height: 1.4;
+}
+
+.agent-remove-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  margin-left: 4px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--color-accent);
+  border-radius: var(--radius-sm);
+  transition: var(--transition-colors);
+
+  &:hover {
+    background-color: rgba(99, 102, 241, 0.15);
+  }
+}
+
+.agent-remove-icon {
+  width: 12px;
+  height: 12px;
+}
+
+/* 2026-06-26 新增：已绑定智能体标签（不可移除） */
+.bound-agent-tag {
+  background-color: var(--color-bg-tertiary);
+  border-color: var(--color-border);
+  color: var(--color-text-secondary);
+}
+
+/* 2026-06-24 新增：智能体下拉菜单 */
+.agent-dropdown {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 240px;
+  overflow-y: auto;
+  background-color: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08);
+  margin-bottom: 8px;
+  padding: 6px;
+  z-index: 10;
+
+  &::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background-color: var(--color-border);
+    border-radius: var(--radius-full);
+  }
+}
+
+.agent-dropdown-loading,
+.agent-dropdown-empty {
+  padding: 12px 16px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.agent-dropdown-item {
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition-colors);
+
+  &:hover,
+  &.active {
+    background-color: var(--color-accent-light);
+  }
+}
+
+.agent-dropdown-name {
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-primary);
+  line-height: 1.4;
+}
+
+/* 2026-07-01 样式微调：项目下拉框作为独立浅灰卡片置于 .input-main 外部下方，
+   8px 间距，无阴影无边框，圆角与主卡风格一致，
+   与上方主卡形成「主卡 + 次卡」视觉层级。 */
+.project-dropdown-slot {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-start;
+  background-color: var(--color-bg-primary);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  box-shadow: none;
+  border: none;
 }
 </style>

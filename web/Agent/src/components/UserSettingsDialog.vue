@@ -1,4 +1,4 @@
-![1780555291563](image/UserSettingsDialog/1780555291563.png)![1780555293156](image/UserSettingsDialog/1780555293156.png)![1780555297908](image/UserSettingsDialog/1780555297908.png)![1780555298784](image/UserSettingsDialog/1780555298784.png)![1780555299910](image/UserSettingsDialog/1780555299910.png)<script setup>
+<script setup>
 /**
  * UserSettingsDialog - 用户设置对话框组件
  * 支持分层面板导航：
@@ -13,6 +13,7 @@ import {
   fetchUserProfile,
   updateUserProfile,
   fetchUserList,
+  fetchAdminAgentList,
   deleteUser,
   kickUser,
   createUser,
@@ -20,8 +21,27 @@ import {
   fetchOnlineUsers,
   fetchUserSessions,
   adminDeleteSession,
+  adminBatchDeleteSessions,
+  adminExportSessionMarkdown,
+  adminFetchSessionMessages,
   searchSessionsByUsername
 } from '../utils/api.js'
+import {
+  createAiMessage,
+  parseMessageContent,
+  isSubAgentHistoryItem,
+  convertSubAgentHistoryToAiSubAgent,
+  isSubAgentTool
+} from '../utils/sseParser.js'
+import McpServerManager from './McpServerManager.vue'
+import AgentManager from './AgentManager.vue'
+import ToolManager from './ToolManager.vue'
+import SkillManager from './SkillManager.vue'
+import MessageBubble from './MessageBubble.vue'
+import ToolCallCard from './ToolCallCard.vue'
+import SubAgentCard from './SubAgentCard.vue'
+// 2026-07-02 新增：历史弹窗内就地显示子智能体抽屉（Teleport 到 .history-dialog-card 容器内）
+import SubAgentDrawer from './SubAgentDrawer.vue'
 
 /**
  * 组件属性定义
@@ -64,7 +84,51 @@ const props = defineProps({
  * @event update:visible - 更新对话框可见状态，用于 v-model:visible
  * @event username-updated - 用户名修改成功时触发，参数: { username: string }
  */
+// 2026-07-02 新增 'open-subagent-drawer' 事件:历史会话详情弹窗中的 SubAgentCard
+// 点击后,把子智能体数据经 Sidebar → App.vue 一路冒泡,触发全局 SubAgentDrawer
+// 显示该子智能体的完整调用过程(消息流 + 工具调用决策 + 状态摘要)。
+//
+// 2026-07-02 改动：移除 'open-subagent-drawer' 事件。
+// 原因：历史弹窗里的 subagent 卡片点击后，期望在**弹窗内**就地显示抽屉（push 效果），
+// 而非冒泡到 App.vue 触发全局抽屉（之前会被弹窗遮挡）。
+// 改为在本组件内就地打开 <SubAgentDrawer>（见 historySubAgentDrawerVisible / historyCurrentSubAgent）。
 const emit = defineEmits(['update:visible', 'username-updated'])
+
+// 2026-07-02 新增：历史会话弹窗内的子智能体抽屉状态（独立于 App.vue 的全局抽屉）
+const historySubAgentDrawerVisible = ref(false)
+const historyCurrentSubAgent = ref(null)
+// 历史弹窗的 DOM 容器 ref，用于 Teleport 目标
+// 用 ref 形式而非 CSS 选择器，避免 mount 阶段目标节点尚未挂载的问题
+const historyDialogCardRef = ref(null)
+// 2026-07-04 新增：历史弹窗主内容区 ref（header 下方的 flex-row 容器）
+// SubAgentDrawer 通过 Teleport 挂载到该容器内，与会话内容左右并排
+const historyDialogMainRef = ref(null)
+
+/**
+ * 2026-07-02 新增：就地打开历史弹窗内的子智能体抽屉。
+ * 行为对齐 App.vue 的 openSubAgentDrawer：再次点击同一 subagent 时切换关闭。
+ * @param {Object} sa - SubAgentSummary
+ */
+function openHistorySubAgentDrawer(sa) {
+  if (
+    historySubAgentDrawerVisible.value &&
+    historyCurrentSubAgent.value &&
+    sa && sa.toolCallId &&
+    historyCurrentSubAgent.value.toolCallId === sa.toolCallId
+  ) {
+    closeHistorySubAgentDrawer()
+    return
+  }
+  historyCurrentSubAgent.value = sa
+  historySubAgentDrawerVisible.value = true
+}
+
+/**
+ * 2026-07-02 新增：关闭历史弹窗内的子智能体抽屉。
+ */
+function closeHistorySubAgentDrawer() {
+  historySubAgentDrawerVisible.value = false
+}
 
 /* ---- 导航与视图状态 ---- */
 
@@ -81,7 +145,11 @@ const navItems = computed(() => {
     items.push(
       { id: 'user-management', label: '用户管理', icon: 'M9 6a3 3 0 11-6 0 3 3 0 016 0zM17 6a3 3 0 11-6 0 3 3 0 016 0zM12.93 17c.046-.327.07-.66.07-1a6.97 6.97 0 00-1.5-4.33A5 5 0 0119 16v1h-6.07zM6 11a5 5 0 015 5v1H1v-1a5 5 0 015-5z' },
       { id: 'online-monitor', label: '在线监控', icon: 'M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z' },
-      { id: 'session-query', label: '会话查询', icon: 'M9 2a1 1 0 000 2h2a1 1 0 100-2H9zM4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z' }
+      { id: 'session-query', label: '会话查询', icon: 'M9 2a1 1 0 000 2h2a1 1 0 100-2H9zM4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z' },
+      { id: 'agent-management', label: '智能体管理', icon: 'M12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16zm-1-13h2v6h-2V7zm0 8h2v2h-2v-2z' },
+      { id: 'mcp-management', label: 'MCP 管理', icon: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z' },
+      { id: 'tool-management', label: '工具管理', icon: 'M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z' },
+      { id: 'skill-management', label: 'Skill 管理', icon: 'M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z' }
     )
   }
   return items
@@ -140,6 +208,16 @@ const personnelSearchKeyword = ref('')
 const userSessions = ref([])
 /** @type {import('vue').Ref<boolean>} 会话列表加载状态 */
 const sessionsLoading = ref(false)
+/** @type {import('vue').Ref<Set<string>>} 批量选中的会话 ID 集合 */
+const selectedSessionIds = ref(new Set())
+/** @type {import('vue').Ref<boolean>} 是否显示历史会话弹窗 */
+const showHistoryDialog = ref(false)
+/** @type {import('vue').Ref<Object | null>} 历史弹窗当前会话 */
+const historySession = ref(null)
+/** @type {import('vue').Ref<Array>} 历史弹窗消息列表（转换后） */
+const historyMessages = ref([])
+/** @type {import('vue').Ref<boolean>} 历史弹窗加载状态 */
+const historyLoading = ref(false)
 
 /* ---- Admin 用户新增/编辑弹窗状态 ---- */
 
@@ -157,9 +235,14 @@ const formPhone = ref('')
 const formEmail = ref('')
 const formDepartment = ref('')
 const formPosition = ref('')
+const formAllowedAgents = ref([])
 const formError = ref('')
 const formSuccess = ref('')
 const isSubmitting = ref(false)
+
+// 2026-07-01 新增：所有可用智能体列表（用于用户表单中的权限配置）
+const allAgents = ref([])
+const isLoadingAgents = ref(false)
 
 /** 过滤后的人员列表（前端实时过滤） */
 const filteredPersonnelList = computed(() => {
@@ -190,6 +273,10 @@ function switchTab(tabId) {
     userSessions.value = []
     loadUserList()
   }
+  // 智能体管理 Tab（agent-management）由 AgentManager 组件自管理数据加载（onMounted 触发 fetchAdminAgentList），
+  // 无需在此处显式触发；组件通过 v-show 始终挂载，切换 Tab 时仅 display 切换。
+  // MCP 管理 Tab（mcp-management）由 McpServerManager 组件自管理数据加载（onMounted 触发 listMcpServers），
+  // 无需在此处显式触发；组件通过 v-show 始终挂载，切换 Tab 时仅 display 切换。
 }
 
 /**
@@ -228,6 +315,11 @@ function resetForms() {
   personnelSearchKeyword.value = ''
   userSessions.value = []
   sessionsLoading.value = false
+  selectedSessionIds.value.clear()
+  showHistoryDialog.value = false
+  historySession.value = null
+  historyMessages.value = []
+  historyLoading.value = false
 }
 
 /* ---- Admin 用户新增/编辑弹窗逻辑 ---- */
@@ -245,9 +337,11 @@ function openAddUser() {
   formEmail.value = ''
   formDepartment.value = ''
   formPosition.value = ''
+  formAllowedAgents.value = []
   formError.value = ''
   formSuccess.value = ''
   showUserForm.value = true
+  loadAllAgents()
 }
 
 /**
@@ -264,9 +358,11 @@ function openEditUser(user) {
   formEmail.value = user.email || ''
   formDepartment.value = user.department || ''
   formPosition.value = user.position || ''
+  formAllowedAgents.value = user.allowed_agents || []
   formError.value = ''
   formSuccess.value = ''
   showUserForm.value = true
+  loadAllAgents()
 }
 
 /**
@@ -283,6 +379,7 @@ function closeUserForm() {
   formEmail.value = ''
   formDepartment.value = ''
   formPosition.value = ''
+  formAllowedAgents.value = []
   formError.value = ''
   formSuccess.value = ''
 }
@@ -340,7 +437,8 @@ async function handleSubmitUser() {
         email: formEmail.value.trim(),
         department: formDepartment.value.trim(),
         position: formPosition.value.trim(),
-        role: formRole.value
+        role: formRole.value,
+        allowed_agents: formAllowedAgents.value
       }
       await updateUser(editingUser.value.id, payload)
       formSuccess.value = '用户更新成功'
@@ -358,7 +456,8 @@ async function handleSubmitUser() {
         phone: formPhone.value.trim(),
         email: formEmail.value.trim(),
         department: formDepartment.value.trim(),
-        position: formPosition.value.trim()
+        position: formPosition.value.trim(),
+        allowed_agents: formAllowedAgents.value
       }
       await createUser(payload)
       formSuccess.value = '用户创建成功'
@@ -566,6 +665,23 @@ async function handleSave() {
 
 /* ---- Admin 用户管理逻辑 ---- */
 
+/**
+ * 加载所有可用智能体列表（用于用户权限配置）
+ */
+async function loadAllAgents() {
+  if (allAgents.value.length > 0 || isLoadingAgents.value) return
+  isLoadingAgents.value = true
+  try {
+    const agents = await fetchAdminAgentList()
+    allAgents.value = agents || []
+  } catch (err) {
+    console.error('加载智能体列表失败:', err)
+    allAgents.value = []
+  } finally {
+    isLoadingAgents.value = false
+  }
+}
+
 async function loadUserList() {
   loading.value = true
   try {
@@ -670,6 +786,7 @@ function backToPersonnelList() {
   selectedUser.value = null
   userSessions.value = []
   sessionQueryView.value = 'personnel-list'
+  selectedSessionIds.value.clear()
 }
 
 /**
@@ -678,6 +795,7 @@ function backToPersonnelList() {
  */
 async function loadUserSessions(userId) {
   sessionsLoading.value = true
+  selectedSessionIds.value.clear()
   try {
     const data = await fetchUserSessions(userId)
     userSessions.value = data.sessions || []
@@ -705,6 +823,206 @@ async function handleDeleteUserSession(sessionId) {
   } catch (err) {
     alert(err.message || '删除会话失败')
   }
+}
+
+/**
+ * 是否已全选当前页会话
+ * @type {import('vue').ComputedRef<boolean>}
+ */
+const isAllSelected = computed(() => {
+  return userSessions.value.length > 0 && selectedSessionIds.value.size === userSessions.value.length
+})
+
+/**
+ * 切换全选状态
+ * @param {boolean} checked - 是否选中
+ */
+function toggleSelectAll(checked) {
+  if (checked) {
+    selectedSessionIds.value = new Set(userSessions.value.map(s => s.session_id))
+  } else {
+    selectedSessionIds.value.clear()
+  }
+}
+
+/**
+ * 切换单个会话的选中状态
+ * @param {string} sessionId - 会话ID
+ * @param {boolean} checked - 是否选中
+ */
+function toggleSession(sessionId, checked) {
+  const next = new Set(selectedSessionIds.value)
+  if (checked) {
+    next.add(sessionId)
+  } else {
+    next.delete(sessionId)
+  }
+  selectedSessionIds.value = next
+}
+
+/**
+ * 批量删除选中的会话
+ */
+async function handleBatchDelete() {
+  const ids = Array.from(selectedSessionIds.value)
+  if (!ids.length) return
+  if (!confirm(`确定批量删除选中的 ${ids.length} 个会话？此操作不可恢复。`)) return
+  try {
+    const res = await adminBatchDeleteSessions(ids)
+    alert(`删除完成：成功 ${res.deleted_count}/${res.total}`)
+    selectedSessionIds.value.clear()
+    if (selectedUser.value) {
+      loadUserSessions(selectedUser.value.id)
+    }
+  } catch (err) {
+    alert(err.message || '批量删除失败')
+  }
+}
+
+/**
+ * 导出指定会话为 Markdown 文件
+ * @param {Object} session - 会话对象
+ */
+async function handleExportSession(session) {
+  try {
+    const { text, filename } = await adminExportSessionMarkdown(session.session_id)
+    const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch (err) {
+    console.error('导出失败:', err)
+    alert(err.message || '导出失败')
+  }
+}
+
+/**
+ * 将后端历史消息转换为前端消息对象数组
+ * @param {Array} rawMessages - 后端返回的原始消息列表
+ * @returns {Array} 前端可用的消息对象数组
+ */
+function buildMessagesFromHistory(rawMessages) {
+  const result = []
+  let lastAiMsgRef = null
+  for (const msg of rawMessages) {
+    const msgAttachments = msg.attachments || []
+    if (msg.type === 'ai') {
+      let text = ''
+      let thinking = []
+      let timeline = []
+      let tools = []
+      if (msg.timeline && Array.isArray(msg.timeline)) {
+        timeline = msg.timeline
+        thinking = msg.thinking || []
+        text = msg.text || ''
+        tools = msg.tools || []
+      } else {
+        const aiMsg = createAiMessage()
+        parseMessageContent(msg.content, aiMsg, true)
+        text = aiMsg.text
+        thinking = aiMsg.thinking
+        timeline = aiMsg.timeline
+        tools = aiMsg.tools
+      }
+      if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
+        for (const tc of msg.tool_calls) {
+          if (isSubAgentTool(tc.name)) continue
+          const event = {
+            type: 'custom',
+            data: {
+              type: 'tool_stop',
+              tool: tc.name || '工具调用',
+              tool_call_id: tc.id || '',
+              data: { status: 'success' }
+            }
+          }
+          tools.push(event)
+          timeline.push({ type: 'tool', content: event })
+        }
+      }
+      const aiMsgObj = {
+        id: msg.id || Date.now() + Math.random(),
+        type: 'ai',
+        content: msg.content,
+        text,
+        thinking,
+        timeline,
+        tools,
+        subAgents: [],
+        attachments: msgAttachments.map(a => ({
+          file_name: a.file_name || a.filename || '未知文件',
+          stored_path: a.stored_path || '',
+          file_type: a.file_type || '',
+          file_size: a.file_size || a.size || 0,
+          original_name: a.original_name || a.file_name || a.filename || '未知文件'
+        })),
+        ended: true
+      }
+      result.push(aiMsgObj)
+      lastAiMsgRef = aiMsgObj
+    } else if (isSubAgentHistoryItem(msg)) {
+      const sa = convertSubAgentHistoryToAiSubAgent(msg)
+      if (sa && lastAiMsgRef) {
+        if (!Array.isArray(lastAiMsgRef.subAgents)) {
+          lastAiMsgRef.subAgents = []
+        }
+        if (!lastAiMsgRef.subAgents.some(s => s.toolCallId === sa.toolCallId)) {
+          lastAiMsgRef.subAgents.push(sa)
+        }
+      }
+    } else {
+      result.push({
+        id: msg.id || Date.now() + Math.random(),
+        type: msg.type,
+        content: msg.content,
+        attachments: msgAttachments.map(a => ({
+          file_name: a.file_name || a.filename || '未知文件',
+          stored_path: a.stored_path || '',
+          file_type: a.file_type || '',
+          file_size: a.file_size || a.size || 0,
+          original_name: a.original_name || a.file_name || a.filename || '未知文件'
+        })),
+        ended: true
+      })
+    }
+  }
+  return result
+}
+
+/**
+ * 打开历史会话弹窗并加载消息
+ * @param {Object} session - 会话对象
+ */
+async function openHistoryDialog(session) {
+  historySession.value = session
+  showHistoryDialog.value = true
+  historyLoading.value = true
+  historyMessages.value = []
+  try {
+    const data = await adminFetchSessionMessages(session.session_id, 0)
+    historyMessages.value = buildMessagesFromHistory(data.messages || [])
+  } catch (err) {
+    console.error('加载历史消息失败:', err)
+    alert(err.message || '加载历史消息失败')
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+/**
+ * 关闭历史会话弹窗
+ */
+function closeHistoryDialog() {
+  // 2026-07-02 新增：关闭历史弹窗前同步关闭就地子智能体抽屉，避免状态泄漏
+  closeHistorySubAgentDrawer()
+  showHistoryDialog.value = false
+  historySession.value = null
+  historyMessages.value = []
 }
 
 function formatTime(dateStr) {
@@ -739,6 +1057,8 @@ watch(() => props.visible, (newVal) => {
     } else if (activeTab.value === 'session-query') {
       loadUserList()
     }
+    // 智能体管理 Tab 由 AgentManager 组件自管理加载（onMounted），无需在此处处理
+    // MCP 管理 Tab 由 McpServerManager 组件自管理加载（onMounted），无需在此处处理
   }
 })
 </script>
@@ -966,6 +1286,7 @@ watch(() => props.visible, (newVal) => {
                         <th>用户名</th>
                         <th>真名</th>
                         <th>角色</th>
+                        <th>已授权智能体</th>
                         <th>创建时间</th>
                         <th>操作</th>
                       </tr>
@@ -978,6 +1299,7 @@ watch(() => props.visible, (newVal) => {
                         <td>
                           <span class="role-tag" :class="user.role">{{ user.role }}</span>
                         </td>
+                        <td>{{ (user.allowed_agents || []).length }}</td>
                         <td>{{ formatTime(user.created_at) }}</td>
                         <td>
                           <button class="table-btn btn-edit" @click="openEditUser(user)">编辑</button>
@@ -1086,12 +1408,22 @@ watch(() => props.visible, (newVal) => {
                         ← 返回人员列表
                       </button>
                       <h3 class="section-title">用户：{{ selectedUser?.username }} 的会话</h3>
+                      <button
+                        v-if="selectedSessionIds.size > 0"
+                        class="table-btn btn-danger batch-delete-btn"
+                        @click="handleBatchDelete"
+                      >
+                        批量删除 ({{ selectedSessionIds.size }})
+                      </button>
                     </div>
                     <div v-if="sessionsLoading" class="admin-loading">加载中...</div>
                     <div v-else-if="userSessions.length === 0" class="admin-empty">该用户暂无会话</div>
                     <table v-else class="admin-table">
                       <thead>
                         <tr>
+                          <th class="checkbox-cell">
+                            <input type="checkbox" :checked="isAllSelected" @change="toggleSelectAll($event.target.checked)">
+                          </th>
                           <th>会话ID</th>
                           <th>标题</th>
                           <th>最后活跃</th>
@@ -1100,17 +1432,41 @@ watch(() => props.visible, (newVal) => {
                       </thead>
                       <tbody>
                         <tr v-for="session in userSessions" :key="session.session_id">
+                          <td class="checkbox-cell">
+                            <input type="checkbox" :checked="selectedSessionIds.has(session.session_id)" @change="toggleSession(session.session_id, $event.target.checked)">
+                          </td>
                           <td class="session-id" :title="session.session_id">{{ session.session_id.slice(0, 8) }}...</td>
-                          <td>{{ session.title || '新对话' }}</td>
+                          <td class="session-title clickable" @click="openHistoryDialog(session)">{{ session.title || '新对话' }}</td>
                           <td>{{ formatTime(session.last_active_at) }}</td>
                           <td>
-                            <button class="table-btn btn-danger" @click="handleDeleteUserSession(session.session_id)">删除</button>
+                            <button class="table-btn" @click.stop="handleExportSession(session)">导出</button>
+                            <button class="table-btn btn-danger" @click.stop="handleDeleteUserSession(session.session_id)">删除</button>
                           </td>
                         </tr>
                       </tbody>
                     </table>
                   </template>
                 </div>
+              </div>
+
+              <!-- MCP 管理（admin） -->
+              <div v-show="activeTab === 'mcp-management'">
+                <McpServerManager />
+              </div>
+
+              <!-- 智能体管理（admin） -->
+              <div v-show="activeTab === 'agent-management'">
+                <AgentManager />
+              </div>
+
+              <!-- 工具管理（admin） -->
+              <div v-show="activeTab === 'tool-management'">
+                <ToolManager />
+              </div>
+
+              <!-- Skill 管理（admin） -->
+              <div v-show="activeTab === 'skill-management'">
+                <SkillManager />
               </div>
             </div>
           </div>
@@ -1218,6 +1574,43 @@ watch(() => props.visible, (newVal) => {
                       />
                     </div>
                   </div>
+
+                  <!-- 2026-07-01 新增：可选智能体权限配置 -->
+                  <div class="form-group">
+                    <label class="form-label">可选智能体</label>
+                    <div v-if="isLoadingAgents" class="agent-loading">加载中...</div>
+                    <div v-else-if="allAgents.length === 0" class="agent-empty">暂无可配置智能体</div>
+                    <div v-else class="agent-checkbox-list">
+                      <div class="agent-checkbox-actions">
+                        <button
+                          type="button"
+                          class="table-btn btn-edit"
+                          :disabled="isSubmitting"
+                          @click="formAllowedAgents = allAgents.map(a => a.name)"
+                        >全选</button>
+                        <button
+                          type="button"
+                          class="table-btn btn-back"
+                          :disabled="isSubmitting"
+                          @click="formAllowedAgents = []"
+                        >清空</button>
+                      </div>
+                      <label
+                        v-for="agent in allAgents"
+                        :key="agent.name"
+                        class="agent-checkbox-item"
+                      >
+                        <input
+                          v-model="formAllowedAgents"
+                          type="checkbox"
+                          :value="agent.name"
+                          :disabled="isSubmitting"
+                        />
+                        <span class="agent-checkbox-name">{{ agent.display_name || agent.name }}</span>
+                      </label>
+                    </div>
+                  </div>
+
                   <div v-if="formError" class="error-message">{{ formError }}</div>
                   <div v-if="formSuccess" class="success-message">{{ formSuccess }}</div>
                   <div class="form-actions">
@@ -1237,6 +1630,76 @@ watch(() => props.visible, (newVal) => {
         </div>
       </div>
     </Transition>
+
+    <!-- 历史会话详情弹窗 -->
+    <Transition name="dialog-fade">
+      <div
+        v-if="showHistoryDialog"
+        class="dialog-overlay dialog-overlay--centered"
+        @click.self.stop="closeHistoryDialog"
+      >
+        <div ref="historyDialogCardRef" class="dialog-card history-dialog-card" @click.stop>
+          <div class="dialog-header">
+            <h3 class="dialog-title">{{ historySession?.title || '新对话' }}</h3>
+            <button class="dialog-close" @click="closeHistoryDialog" aria-label="关闭">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <path d="M15 5L5 15M5 5l10 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+          </div>
+
+          <!--
+            2026-07-04 改造：历史会话弹窗内容区改为左右并排布局
+            - .history-dialog-main 作为 header 下方的 flex-row 容器
+            - 左侧 .history-dialog-body 保留原会话消息流
+            - 右侧 SubAgentDrawer 通过 Teleport 挂载到 .history-dialog-main 内
+            - 两者同时可见，实现"卡片的详细内容与会话内容在一个页面中"
+          -->
+          <div ref="historyDialogMainRef" class="history-dialog-main">
+            <!--
+              2026-07-04 调整：Teleport 目标从 historyDialogCardRef 改为 historyDialogMainRef，
+              使抽屉与消息体处于同一 flex-row 容器，实现左右并排。
+            -->
+            <SubAgentDrawer
+              :visible="historySubAgentDrawerVisible"
+              :sub-agent="historyCurrentSubAgent"
+              :teleport-to="historyDialogMainRef"
+              @close="closeHistorySubAgentDrawer"
+            />
+
+            <div
+              class="dialog-body history-dialog-body"
+              :class="{ 'history-dialog-body--with-drawer': historySubAgentDrawerVisible }"
+            >
+              <div v-if="historyLoading" class="admin-loading">加载中...</div>
+              <div v-else-if="historyMessages.length === 0" class="admin-empty">暂无历史消息</div>
+              <template v-else>
+                <div
+                  v-for="msg in historyMessages"
+                  :key="msg.id"
+                  class="history-message-item"
+                >
+                  <MessageBubble
+                    :type="msg.type"
+                    :content="msg.content"
+                    :attachments="msg.attachments"
+                    :timeline="msg.timeline"
+                    :thinking="msg.thinking"
+                    :tools="msg.tools"
+                    :text="msg.text"
+                    :ended="msg.ended"
+                    :error="msg.error"
+                    :message-id="msg.id"
+                    :sub-agents="msg.subAgents"
+                    @open-subagent-drawer="openHistorySubAgentDrawer"
+                  />
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Transition>
   </Teleport>
 </template>
 
@@ -1251,6 +1714,16 @@ watch(() => props.visible, (newVal) => {
   z-index: 2000;
   background-color: rgba(0, 0, 0, 0.4);
   backdrop-filter: blur(4px);
+}
+
+/* 居中弹窗遮罩层(2026-07-02 新增)
+   用途:历史会话详情弹窗需要居中显示(800px 卡片),而不是铺满全屏
+   使用方式:在 dialog-overlay 上叠加 .dialog-overlay--centered
+   主用户设置弹窗(用户设置与管理/admin 多面板布局)仍铺满全屏,保持原行为 */
+.dialog-overlay--centered {
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* 对话框卡片 */
@@ -1270,12 +1743,26 @@ watch(() => props.visible, (newVal) => {
   overflow: hidden;
 }
 
+/* 居中弹窗卡片(2026-07-02 新增)
+   用途:历史会话详情弹窗由 width:800px + max-height:80vh 自然撑开并居中,
+   配合 .dialog-overlay--centered 的 flex 居中生效。
+   注意:position:relative + 取消 inset:0 + border-radius:圆角 */
+.dialog-overlay--centered > .dialog-card {
+  position: relative;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  left: auto;
+  max-height: 90vh;
+  border-radius: var(--radius-lg);
+}
+
 /* 对话框头部 */
 .dialog-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-lg) var(--space-xl);
+  padding: 2px var(--space-xl);
   border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
 }
@@ -1714,6 +2201,28 @@ watch(() => props.visible, (newVal) => {
   font-size: 11px;
 }
 
+.session-title.clickable {
+  color: var(--color-accent);
+  cursor: pointer;
+}
+
+.session-title.clickable:hover {
+  text-decoration: underline;
+}
+
+.checkbox-cell {
+  width: 40px;
+  text-align: center;
+}
+
+.checkbox-cell input[type="checkbox"] {
+  cursor: pointer;
+}
+
+.batch-delete-btn {
+  margin-left: auto;
+}
+
 /* Admin 用户管理新增/编辑弹窗样式 */
 .admin-header-actions {
   display: flex;
@@ -1896,4 +2405,103 @@ watch(() => props.visible, (newVal) => {
   border-radius: var(--radius-md);
   opacity: var(--opacity-disabled);
 }
+
+/* 2026-07-01 新增：用户表单中智能体权限配置复选框列表 */
+.agent-checkbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  max-height: 200px;
+  overflow-y: auto;
+  padding: var(--space-base);
+  background-color: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.agent-checkbox-actions {
+  display: flex;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+
+.agent-checkbox-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 4px 0;
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-primary);
+}
+
+.agent-checkbox-item input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.agent-checkbox-name {
+  line-height: 1.4;
+}
+
+.agent-loading,
+.agent-empty {
+  padding: var(--space-base);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  background-color: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+/* 历史会话详情弹窗 */
+.history-dialog-card {
+  width: 800px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/*
+  2026-07-04 新增：历史弹窗主内容区。
+  header 下方使用 flex-row，左侧为会话消息流，右侧为子智能体详情抽屉，
+  实现两者在同一弹窗页面中左右并排展示。
+*/
+.history-dialog-main {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.history-dialog-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-base);
+  min-width: 0;
+  transition: flex-basis 0.3s ease;
+}
+
+/*
+  2026-07-04 新增：抽屉打开时给 body 的标记类。
+  当前布局下 body 通过 flex:1 与抽屉共享剩余宽度，无需折叠隐藏，
+  保留此类用于未来可能的样式微调（如右侧内边距、边框等）。
+*/
+.history-dialog-body--with-drawer {
+  /* body 与抽屉并排，无额外收缩逻辑 */
+}
+
+.history-message-item {
+  margin-bottom: var(--space-base);
+}
+
+/*
+  2026-07-04 废弃：历史弹窗不再使用 body 折叠方案。
+  原 .history-dialog-body--collapsed 会将 body 完全隐藏，导致会话内容与抽屉无法同时可见。
+  现改为 .history-dialog-body--with-drawer + .history-dialog-main flex-row 布局。
+*/
 </style>

@@ -52,11 +52,17 @@ from app.shared.routers.file_router import router as file_router
 from app.shared.routers.session_router import router as session_router
 from app.shared.routers.auth_router import router as auth_router
 from app.shared.routers.user_router import router as user_router
+from app.shared.routers.project_router import router as project_router  # 2026-06-30 新增：项目路由
 from app.features.contract_host_agent.router.contract_router import router as contract_router
-from app.features.map_agent.router.map_router import router as map_router
+from app.routers.knowledge_router import router as knowledge_router
 from app.features.AI_Coding_Check_agent.router.ai_coding_check_router import router as ai_coding_check_router
 from app.core.router import file_upload_router as core_file_upload_router
 from app.core.router import file_download_router as core_file_download_router
+from app.routers.mcp_admin_router import router as mcp_admin_router
+from app.routers.agent_router import router as agent_router
+from app.routers.agent_admin_router import router as agent_admin_router
+from app.routers.tool_admin_router import router as tool_admin_router
+from app.routers.skill_admin_router import router as skill_admin_router
 
 
 app = create_app()
@@ -74,11 +80,17 @@ def register_routers(target_app=None):
     _app.include_router(user_router)
     _app.include_router(file_router)
     _app.include_router(session_router)
+    _app.include_router(project_router)  # 2026-06-30 新增：项目路由
     _app.include_router(contract_router)
-    _app.include_router(map_router)
+    _app.include_router(knowledge_router)
     _app.include_router(ai_coding_check_router)
     _app.include_router(core_file_upload_router)
     _app.include_router(core_file_download_router)
+    _app.include_router(mcp_admin_router)
+    _app.include_router(agent_router)
+    _app.include_router(agent_admin_router)
+    _app.include_router(tool_admin_router)
+    _app.include_router(skill_admin_router)
 
 
 register_routers()

@@ -176,6 +176,8 @@ def test_validate_token(client, admin_headers):
     assert response.status_code == 200
     data = response.json()
     assert data["username"] == "admin"
+    assert "allowed_agents" in data
+    assert isinstance(data["allowed_agents"], list)
 
 
 def test_logout(client, admin_headers):

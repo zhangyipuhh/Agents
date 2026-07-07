@@ -15,6 +15,8 @@ from typing import List, Optional
 import fitz  # PyMuPDF
 from concurrent.futures import ThreadPoolExecutor
 
+from app.shared.utils.files.session_path_manager import get_session_upload_dir
+
 
 def _get_project_root() -> Path:
     return Path(__file__).parent.parent.parent.parent.parent
@@ -90,6 +92,7 @@ def convert_pdfs_to_images(
     file_ids: List[str],
     dpi: int = 300,
     max_workers: int = 4,
+    project_id: int = None,  # 2026-06-30 新增：项目目录路由
     output_format: str = 'jpg',
     upload_dir: str = "data/upload",
     output_dir: Optional[str] = None
@@ -118,16 +121,16 @@ def convert_pdfs_to_images(
     if not file_ids:
         raise ValueError("file_ids列表不能为空")
 
-    upload_dir = _resolve_path(upload_dir)
-    output_dir = _resolve_path(output_dir) if output_dir else upload_dir
+    session_upload_dir = get_session_upload_dir(session_id, create=True, project_id=project_id)
+    output_dir = _resolve_path(output_dir) if output_dir else session_upload_dir
 
     step_id = str(uuid.uuid4())
 
-    step_output_dir = output_dir / session_id / step_id
+    step_output_dir = output_dir / step_id
     step_output_dir.mkdir(parents=True, exist_ok=True)
 
     for file_id in file_ids:
-        pdf_file = upload_dir / session_id / f"{file_id}.pdf"
+        pdf_file = session_upload_dir / f"{file_id}.pdf"
 
         if not pdf_file.exists():
             raise FileNotFoundError(f"找不到PDF文件: {file_id}")

@@ -119,7 +119,7 @@ async def test_dependency_blocks_when_full(app_fixture):
 
 @pytest.mark.asyncio
 async def test_sse_dependency_no_queue_event_when_available(reset_singleton):
-    """无需等待时直接 yield None，无 queue 事件。"""
+    """无需等待时不 yield waiting 事件；获取许可后 yield ready + None。"""
     AgentConcurrencyQueue(max_concurrency=1)
 
     # 构造一个最小 Request 替身
@@ -133,8 +133,15 @@ async def test_sse_dependency_no_queue_event_when_available(reset_singleton):
     gen = chat_concurrency_dependency(_FakeRequest(), mode="sse")
     async for item in gen:
         items.append(item)
-    # 无等待 → 应该只 yield None 一次
-    assert items == [None]
+        if item is None:
+            break
+    # 必须显式 aclose，否则生成器会卡在 release_done.wait()
+    await gen.aclose()
+    # 无等待 → 应收到 ready 事件 + None
+    assert len(items) == 2
+    assert items[0]["type"] == "queue"
+    assert items[0]["event"] == "ready"
+    assert items[1] is None
     # 释放后 active_count 归 0
     assert AgentConcurrencyQueue().active_count == 0
 
@@ -275,18 +282,17 @@ async def test_sse_dependency_release_handle_releases_immediately_on_call(reset_
         def __init__(self):
             self.state = self._State()
 
+    req = _FakeRequest()
+
     async def driver():
-        async for item in chat_concurrency_dependency(_FakeRequest(), mode="sse"):
+        async for item in chat_concurrency_dependency(req, mode="sse"):
             if item is None:
-                captured["handle"] = _FakeRequest().state.concurrency_release_handle
                 captured["active_before"] = queue.active_count
-                await _FakeRequest().state.concurrency_release_handle()
+                await req.state.concurrency_release_handle()
                 captured["active_after"] = queue.active_count
                 break
             # 跳过 queue 事件
 
-    # 用 queue.acquire 占用许可
-    await queue.acquire()
     drv = asyncio.create_task(driver())
     await asyncio.sleep(0.05)
     await drv
@@ -300,9 +306,6 @@ async def test_sse_dependency_release_handle_is_idempotent(reset_singleton):
     """多次调用 release handle 不会重复释放。"""
     AgentConcurrencyQueue(max_concurrency=1)
     queue = AgentConcurrencyQueue()
-    await queue.acquire()
-
-    captured = {}
 
     class _FakeRequest:
         class _State:
@@ -310,10 +313,12 @@ async def test_sse_dependency_release_handle_is_idempotent(reset_singleton):
         def __init__(self):
             self.state = self._State()
 
+    req = _FakeRequest()
+
     async def driver():
-        async for item in chat_concurrency_dependency(_FakeRequest(), mode="sse"):
+        async for item in chat_concurrency_dependency(req, mode="sse"):
             if item is None:
-                h = _FakeRequest().state.concurrency_release_handle
+                h = req.state.concurrency_release_handle
                 await h()
                 await h()  # 第二次
                 await h()  # 第三次
@@ -328,7 +333,7 @@ async def test_sse_dependency_release_handle_is_idempotent(reset_singleton):
 
 @pytest.mark.asyncio
 async def test_sse_dependency_releases_on_hitl_interrupt_path(reset_singleton):
-    """HITL 核心场景：业务生成器 yield interrupt → 路由在 yield 前调用 release_handle → active_count 立即归 0 → 第二个并发请求立即 acquire 成功。"""
+    """HITL 核心场景：业务生成器 yield interrupt → 路由在 yield 前调用 release_handle → active_count 立即归 0。"""
     AgentConcurrencyQueue(max_concurrency=1)
     queue = AgentConcurrencyQueue()
 
@@ -340,13 +345,15 @@ async def test_sse_dependency_releases_on_hitl_interrupt_path(reset_singleton):
         def __init__(self):
             self.state = self._State()
 
+    req = _FakeRequest()
+
     async def business_gen_with_interrupt() -> AsyncGenerator[str, None]:
         yield 'data: {"type":"update","data":{"x":1}}\n\n'
         # HITL interrupt 事件
         interrupt_chunk = 'data: {"type":"interrupt","data":{"requests":[]}}\n\n'
 
         # 模拟路由在 yield 前调用 release_handle
-        h = _FakeRequest().state.concurrency_release_handle
+        h = req.state.concurrency_release_handle
         if h is not None:
             captured["active_before_handle"] = queue.active_count
             await h()
@@ -355,7 +362,7 @@ async def test_sse_dependency_releases_on_hitl_interrupt_path(reset_singleton):
         return  # 结束流
 
     async def driver():
-        async for item in chat_concurrency_dependency(_FakeRequest(), mode="sse"):
+        async for item in chat_concurrency_dependency(req, mode="sse"):
             if item is None:
                 async for chunk in business_gen_with_interrupt():
                     collected.append(chunk)
@@ -363,8 +370,6 @@ async def test_sse_dependency_releases_on_hitl_interrupt_path(reset_singleton):
             collected.append(item)
 
     collected: List = []
-    # 占用唯一许可
-    await queue.acquire()
     drv = asyncio.create_task(driver())
     await asyncio.sleep(0.05)
     await drv
@@ -389,16 +394,16 @@ async def test_sse_dependency_finally_release_when_handle_never_called(reset_sin
         def __init__(self):
             self.state = self._State()
 
+    req = _FakeRequest()
+
     async def driver():
         # 直接退出 async for，不调用 release_handle
-        async for item in chat_concurrency_dependency(_FakeRequest(), mode="sse"):
+        async for item in chat_concurrency_dependency(req, mode="sse"):
             if item is None:
                 return
             # 跳过 queue 事件
 
-    # 占用唯一许可
-    await queue.acquire()
-    assert queue.active_count == 1
+    assert queue.active_count == 0
     drv = asyncio.create_task(driver())
     await asyncio.sleep(0.05)
     # 让 driver 退出（拿到 None 后 return）
@@ -547,3 +552,80 @@ async def test_sse_dependency_breaks_polling_when_slot_freed(reset_singleton):
     # 业务结束后 finally 兜底应正确 release（active_count 归 0）
     await asyncio.sleep(0.05)
     assert AgentConcurrencyQueue().active_count == 0
+
+
+# =====================================================================
+# 2026-06-22 新增：排队位置 position 必须正确回传前端
+# 场景：max_concurrency=1，holder 占用槽位；
+#       waiter1 先 enqueue 并进入 SSE 轮询，waiter2 随后 enqueue；
+#       waiter2 收到的 waiting 事件 position 应为 2（前面还有 1 人）。
+# 原 bug：enqueue 前 snapshot 导致 position=0，前端显示"前面还有 0 位"。
+# =====================================================================
+
+
+@pytest.mark.asyncio
+async def test_sse_dependency_waiting_event_reports_correct_position(reset_singleton):
+    """
+    回归测试：多个请求排队时，SSE waiting 事件携带正确的 position。
+
+    参数:
+        reset_singleton: 重置单例 fixture
+
+    返回:
+        None
+
+    异常:
+        AssertionError: position 不符合 FIFO 顺序时抛出
+    """
+    AgentConcurrencyQueue(max_concurrency=1)
+    queue = AgentConcurrencyQueue()
+
+    holder_started = asyncio.Event()
+    release_holder = asyncio.Event()
+
+    async def holder():
+        async with queue:
+            holder_started.set()
+            await release_holder.wait()
+
+    holder_task = asyncio.create_task(holder())
+    await holder_started.wait()
+
+    class _FakeRequest:
+        class _State:
+            pass
+
+        def __init__(self):
+            self.state = self._State()
+
+    collected_positions = {"waiter1": [], "waiter2": []}
+
+    async def drive_waiter(name, delay=0):
+        await asyncio.sleep(delay)
+        async for item in chat_concurrency_dependency(_FakeRequest(), mode="sse"):
+            if item is None:
+                break
+            if item.get("event") == "waiting":
+                collected_positions[name].append(item.get("position"))
+
+    w1 = asyncio.create_task(drive_waiter("waiter1", 0))
+    # 确保 waiter1 先进入轮询
+    await asyncio.sleep(0.05)
+    w2 = asyncio.create_task(drive_waiter("waiter2", 0))
+
+    # 给两个 waiter 一点时间收集 waiting 事件
+    await asyncio.sleep(0.15)
+
+    release_holder.set()
+    await holder_task
+    await w1
+    await w2
+
+    # waiter1 的 position 应为 1（下一个就是自己）
+    assert any(p == 1 for p in collected_positions["waiter1"]), (
+        f"waiter1 的 waiting position 应为 1，实际 {collected_positions['waiter1']}"
+    )
+    # waiter2 的 position 应为 2（前面有 1 人）
+    assert any(p == 2 for p in collected_positions["waiter2"]), (
+        f"waiter2 的 waiting position 应为 2，实际 {collected_positions['waiter2']}"
+    )

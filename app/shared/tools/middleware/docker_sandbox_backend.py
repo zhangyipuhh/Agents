@@ -14,7 +14,9 @@ Date: 2026-06-11
 """
 
 import os
+import asyncio
 import logging
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 import docker
@@ -25,10 +27,16 @@ from deepagents.backends.protocol import (
     ExecuteResponse,
     FileUploadResponse,
     FileDownloadResponse,
+    WriteResult,
 )
+from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
 logger = logging.getLogger(__name__)
+
+# sandbox 生成文档类文件时，需要同步写入 .md 镜像的扩展名集合。
+# 与 filesystem_encoding_fix.py 中的 _DOC_ONLY_EXTENSIONS 保持一致。
+_DOC_ONLY_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".md", ".txt"}
 
 
 class DockerSandboxBackend(BaseSandbox):
@@ -76,7 +84,7 @@ class DockerSandboxBackend(BaseSandbox):
         Args:
             session_id: 会话ID，用于容器命名和工作目录隔离
             image: Docker 镜像名，默认使用 python:3.12-alpine
-            workspace: 主机工作目录，默认使用 /tmp/sandbox/{session_id}
+            workspace: 主机工作目录，必须由调用方提前创建并传入
             max_memory_mb: 容器内存限制（MB），默认 512
             max_cpu_percent: 容器 CPU 限制（百分比），默认 100
             network_enabled: 是否启用网络，默认 False（完全隔离）
@@ -87,11 +95,18 @@ class DockerSandboxBackend(BaseSandbox):
             container_workspace: 容器内工作目录（bind mount target），默认 /workspace
 
         Raises:
+            ValueError: workspace 未传入时抛出
             RuntimeError: Docker daemon 不可用时、或 socket 模式缺 host_workspace_prefix 时抛出
         """
+        if not workspace:
+            raise ValueError(
+                "DockerSandboxBackend 必须显式传入 workspace。"
+                "workspace 应由调用方（如 app.core.tools.SandboxTools）统一创建。"
+            )
+
         self.session_id = session_id
         self.image = image
-        self.workspace = workspace or os.path.join("/tmp/sandbox", session_id)
+        self.workspace = workspace
         self.container_workspace = container_workspace
         self.max_memory_mb = max_memory_mb
         self.max_cpu_percent = max_cpu_percent
@@ -102,9 +117,6 @@ class DockerSandboxBackend(BaseSandbox):
         self.host_workspace_prefix = host_workspace_prefix
         self._client: docker.DockerClient | None = None
         self._container = None
-
-        # 创建工作目录（应用进程视角）
-        os.makedirs(self.workspace, exist_ok=True)
 
         # 解析宿主机视角路径（用于 bind mount）
         self.host_workspace = self._resolve_host_workspace()
@@ -246,6 +258,93 @@ class DockerSandboxBackend(BaseSandbox):
             str: 会话ID，作为沙箱唯一标识
         """
         return self.session_id
+
+    def _resolve_workspace_path(self, file_path: str) -> str:
+        """将虚拟路径或绝对路径解析为 workspace 内的绝对路径。
+
+        子智能体通过 write_file 传入的路径通常是以 "/" 开头的虚拟路径，
+        需要映射到当前 session 的 workspace 下。若传入的已是 workspace 内的
+        绝对路径，则直接返回。
+
+        Args:
+            file_path: 原始传入路径（如 "/report.docx" 或 workspace 绝对路径）。
+
+        Returns:
+            str: workspace 内的绝对路径。
+
+        Raises:
+            ValueError: file_path 为空时抛出。
+        """
+        if not file_path:
+            raise ValueError("file_path 不能为空字符串")
+        if os.path.isabs(file_path):
+            workspace_abs = os.path.abspath(self.workspace)
+            file_abs = os.path.abspath(file_path)
+            if file_abs.startswith(workspace_abs):
+                return file_path
+            # 在 Linux 下 "/file.txt" 会被 os.path.isabs 判定为 True，
+            # 但它只是虚拟路径，需要去掉前导 "/" 后拼接到 workspace。
+            file_path = file_path.lstrip("/")
+        return os.path.join(self.workspace, file_path)
+
+    def write(self, file_path: str, content: str) -> WriteResult:
+        """在 workspace 中创建新文件，并为文档类扩展名同步写入 .md 镜像。
+
+        直接在当前 Python 进程（宿主机侧）写入文件，避免 BaseSandbox.write
+        在容器内执行 preflight 路径检查时可能无法识别宿主机路径的问题。
+
+        Args:
+            file_path: 虚拟绝对路径或 workspace 内的绝对路径。
+            content: 待写入的 UTF-8 文本内容。
+
+        Returns:
+            WriteResult: 成功时返回 path，失败时返回错误信息。
+        """
+        try:
+            abs_path = self._resolve_workspace_path(file_path)
+            workspace_abs = os.path.abspath(self.workspace)
+            if not os.path.abspath(abs_path).startswith(workspace_abs):
+                return WriteResult(error=f"Path outside workspace: {file_path}")
+
+            if os.path.exists(abs_path):
+                return WriteResult(
+                    error=f"Cannot write to {file_path} because it already exists."
+                )
+
+            parent = os.path.dirname(abs_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+
+            with open(abs_path, "w", encoding="utf-8", newline="") as f:
+                f.write(content)
+
+            original_ext = Path(file_path).suffix.lower()
+            if original_ext in _DOC_ONLY_EXTENSIONS:
+                try:
+                    from app.core.config.paths import resolve_tmp_mirror_path
+                    md_path = resolve_tmp_mirror_path(abs_path)
+                    if md_path is not None:
+                        md_path.parent.mkdir(parents=True, exist_ok=True)
+                        with open(md_path, "w", encoding="utf-8", newline="") as f:
+                            f.write(content)
+                except Exception as e:
+                    logger.warning("Failed to write .md mirror for %s: %s", file_path, e)
+
+            return WriteResult(path=file_path)
+        except (OSError, UnicodeEncodeError) as e:
+            return WriteResult(error=f"Error writing file '{file_path}': {e}")
+
+    async def awrite(self, file_path: str, content: str) -> WriteResult:
+        """write 的异步包装，使用线程池执行文件写入。
+
+        Args:
+            file_path: 虚拟绝对路径或 workspace 内的绝对路径。
+            content: 待写入的 UTF-8 文本内容。
+
+        Returns:
+            WriteResult: 成功时返回 path，失败时返回错误信息。
+        """
+        return await asyncio.to_thread(self.write, file_path, content)
 
     def execute(
         self,
@@ -511,47 +610,80 @@ class DockerSandboxMiddleware(FilesystemMiddleware):
             - host_workspace_prefix: 宿主机视角前缀，socket 模式专用
             - container_workspace: 容器内工作目录，默认 /workspace
 
+        2026-06-18 新增：Docker 不可用时，若 fallback_to_local=true，
+        自动降级到 LocalShellBackend，在本地 workspace 继续执行。
+
         Args:
             session_id: 会话ID，用于容器命名和工作目录隔离
             image: Docker 镜像名，默认使用 python:3.12-alpine
-            workspace: 主机工作目录，默认使用 /tmp/sandbox/{session_id}
+            workspace: 主机工作目录，必须由调用方提前创建并传入
             max_memory_mb: 容器内存限制（MB），默认 512
             max_cpu_percent: 容器 CPU 限制（百分比），默认 100
             network_enabled: 是否启用网络，默认 False（完全隔离）
             default_timeout: 命令默认超时（秒），默认 60
             **kwargs: 额外参数，容器化字段 + FilesystemMiddleware 父类参数
+                - fallback_to_local: bool, Docker 不可用时是否降级到本地执行
 
         Raises:
-            RuntimeError: Docker daemon 不可用时、或 socket 模式缺配置时抛出
+            ValueError: workspace 未传入时抛出
+            RuntimeError: Docker daemon 不可用时、且未开启 fallback_to_local 时抛出
         """
+        if not workspace:
+            raise ValueError(
+                "DockerSandboxMiddleware 必须显式传入 workspace。"
+                "workspace 应由调用方（如 app.core.tools.SandboxTools）统一创建。"
+            )
+
         # 从 kwargs 中提取容器化部署字段，其余透传给父类
         docker_mode = kwargs.pop("docker_mode", "local")
         docker_host = kwargs.pop("docker_host", "")
         host_workspace_prefix = kwargs.pop("host_workspace_prefix", "")
         container_workspace = kwargs.pop("container_workspace", "/workspace")
+        fallback_to_local = kwargs.pop("fallback_to_local", False)
 
-        self.backend = DockerSandboxBackend(
-            session_id=session_id,
-            image=image,
-            workspace=workspace,
-            max_memory_mb=max_memory_mb,
-            max_cpu_percent=max_cpu_percent,
-            network_enabled=network_enabled,
-            default_timeout=default_timeout,
-            docker_mode=docker_mode,
-            docker_host=docker_host,
-            host_workspace_prefix=host_workspace_prefix,
-            container_workspace=container_workspace,
-        )
+        try:
+            self.backend = DockerSandboxBackend(
+                session_id=session_id,
+                image=image,
+                workspace=workspace,
+                max_memory_mb=max_memory_mb,
+                max_cpu_percent=max_cpu_percent,
+                network_enabled=network_enabled,
+                default_timeout=default_timeout,
+                docker_mode=docker_mode,
+                docker_host=docker_host,
+                host_workspace_prefix=host_workspace_prefix,
+                container_workspace=container_workspace,
+            )
+            self._docker_backend = True
+        except (RuntimeError, DockerException) as e:
+            if fallback_to_local:
+                logger.warning(
+                    "Docker daemon 不可用，已降级到本地文件系统执行。"
+                    "session_id=%s, error=%s",
+                    session_id,
+                    e,
+                )
+                # workspace 由调用方统一创建，此处直接使用
+                self.backend = LocalShellBackend(
+                    root_dir=workspace,
+                    virtual_mode=True,
+                    timeout=default_timeout,
+                )
+                self._docker_backend = False
+            else:
+                raise
+
         super().__init__(backend=self.backend, **kwargs)
 
     def cleanup(self) -> None:
         """清理沙箱资源
 
         停止并删除 Docker 容器，释放资源。
+        本地回退模式下无需清理容器。
         建议在 Session 结束或 Agent 销毁时调用。
         """
-        if hasattr(self, "backend") and self.backend is not None:
+        if hasattr(self, "backend") and self.backend is not None and getattr(self, "_docker_backend", True):
             self.backend.cleanup()
 
     def __del__(self):

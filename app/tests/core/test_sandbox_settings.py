@@ -28,6 +28,7 @@ _ENV_KEYS = [
     "SANDBOX_CONTAINER_WORKSPACE",
     "SANDBOX_HOST_WORKSPACE_PREFIX",
     "SANDBOX_K8S_NAMESPACE",
+    "SANDBOX_FALLBACK_TO_LOCAL",
 ]
 
 
@@ -97,6 +98,11 @@ class TestSandboxSettingsDefaults:
         cfg = SandboxSettings()
         assert cfg.sandbox_k8s_namespace == "default"
 
+    def test_default_fallback_to_local_is_false(self):
+        """P1: 默认不开启本地回退。"""
+        cfg = SandboxSettings()
+        assert cfg.sandbox_fallback_to_local is False
+
 
 class TestSandboxSettingsConstraints:
     """字段约束测试"""
@@ -158,6 +164,13 @@ class TestSandboxSettingsConstraints:
         expected = value.lower() in ("true", "1", "yes", "on")
         assert cfg.sandbox_network_enabled is expected
 
+    @pytest.mark.parametrize("value", ["true", "True", "false", "False", "1", "0", "yes", "no"])
+    def test_fallback_to_local_string_parsing(self, value):
+        """P1: fallback_to_local 字符串布尔值正确解析。"""
+        cfg = SandboxSettings(sandbox_fallback_to_local=value)
+        expected = value.lower() in ("true", "1", "yes", "on")
+        assert cfg.sandbox_fallback_to_local is expected
+
 
 class TestSandboxSettingsEnvOverride:
     """环境变量覆盖测试"""
@@ -186,6 +199,12 @@ class TestSandboxSettingsEnvOverride:
         cfg = SandboxSettings()
         assert cfg.sandbox_host_workspace_prefix == "/host/app/data"
 
+    def test_fallback_to_local_env_override(self, monkeypatch):
+        """P1: SANDBOX_FALLBACK_TO_LOCAL 环境变量覆盖。"""
+        monkeypatch.setenv("SANDBOX_FALLBACK_TO_LOCAL", "true")
+        cfg = SandboxSettings()
+        assert cfg.sandbox_fallback_to_local is True
+
 
 class TestSettingsGetSandboxConfig:
     """Settings.get_sandbox_config() 聚合方法测试"""
@@ -200,6 +219,7 @@ class TestSettingsGetSandboxConfig:
             "docker_mode", "docker_host", "image", "max_memory_mb",
             "max_cpu_percent", "network_enabled", "default_timeout",
             "container_workspace", "host_workspace_prefix", "k8s_namespace",
+            "fallback_to_local",
         }
         assert set(cfg.keys()) == expected_keys
 

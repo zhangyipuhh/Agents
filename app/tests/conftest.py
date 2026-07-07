@@ -28,6 +28,14 @@ sys.modules["mcpClient.shared.config_loader"] = Mock()
 sys.modules["mcpClient.core"] = Mock()
 sys.modules["mcpClient.core.unified_mcp_client"] = Mock()
 
+# 2026-06-23 新增：mock filesystem_encoding_fix 模块，使 apply_fix 成为 no-op。
+# app.main 模块加载时会调用 apply_fix()，其内部访问 EncodingSafeFileSearchMiddleware._python_search
+# 等属性在纯 Mock 环境下不存在，导致 AttributeError。将 apply_fix 替换为 no-op 可让
+# app/tests/ 根目录下的测试也能通过 app fixture 导入 app.main。
+_fs_fix = types.ModuleType("app.shared.tools.middleware.filesystem_encoding_fix")
+_fs_fix.apply_fix = lambda: None
+sys.modules["app.shared.tools.middleware.filesystem_encoding_fix"] = _fs_fix
+
 # mock langchain 及其子模块（使用 ModuleType 以支持 from xxx import yyy）
 for _lc_mod in [
     "langchain", "langchain.tools", "langchain.messages", "langchain.chat_models", "langchain_core", "langchain_core.messages",
@@ -39,7 +47,20 @@ for _lc_mod in [
 
 # 为 langchain 子模块添加常用属性
 # tool 装饰器需要保留被装饰的原始函数，否则测试无法调用 .func
-sys.modules["langchain.tools"].tool = lambda *args, **kwargs: lambda func: func
+# 注意：必须兼容 @tool 与 @tool(...) 两种写法
+
+def _tool_identity(*args, **kwargs):
+    """identity 装饰器：@tool 与 @tool(...) 均返回原函数。"""
+    if len(args) == 1 and callable(args[0]) and not kwargs:
+        return args[0]
+
+    def _decorator(func):
+        return func
+
+    return _decorator
+
+
+sys.modules["langchain.tools"].tool = _tool_identity
 
 # 2026-06-15 新增：mock langchain.agents 子模块（FilesystemReadTools.explore 依赖）
 # FilesystemReadTools.py 顶层 import：
@@ -93,6 +114,24 @@ sys.modules["langchain_core.messages.utils"] = types.ModuleType("langchain_core.
 sys.modules["langchain_core.messages.utils"].trim_messages = Mock()
 sys.modules["langchain_core.messages.utils"].count_tokens_approximately = Mock()
 sys.modules["langchain_core.runnables"].RunnableConfig = Mock()
+
+
+class _Runnable:
+    """模拟 langchain Runnable 基类，供 isinstance 检查使用。"""
+
+
+class _RunnableLambda(_Runnable):
+    """模拟 langchain RunnableLambda，保存可调用对象并支持 invoke。"""
+
+    def __init__(self, func):
+        self.func = func
+
+    def invoke(self, _input, config=None):
+        return self.func(_input)
+
+
+sys.modules["langchain_core.runnables"].Runnable = _Runnable
+sys.modules["langchain_core.runnables"].RunnableLambda = _RunnableLambda
 sys.modules["langchain_core.tools"] = types.ModuleType("langchain_core.tools")
 
 
@@ -104,7 +143,7 @@ class _BaseTool:
 sys.modules["langchain_core.tools"].BaseTool = _BaseTool
 sys.modules["langchain_core.tools"].StructuredTool = _BaseTool
 # 2026-06-15 新增：encoding_safe_file_search 依赖
-sys.modules["langchain_core.tools"].tool = lambda *args, **kwargs: lambda func: func
+sys.modules["langchain_core.tools"].tool = _tool_identity
 
 class _RecursiveCharacterTextSplitter:
     """模拟 RecursiveCharacterTextSplitter，提供基础 split_text 功能"""
@@ -129,7 +168,40 @@ class _RecursiveCharacterTextSplitter:
 sys.modules["langchain_text_splitters"].RecursiveCharacterTextSplitter = _RecursiveCharacterTextSplitter
 
 # mock 其他常用缺失模块
-sys.modules["aiofiles"] = Mock()
+# aiofiles 需要保留真实文件能力，因此提供一个支持异步上下文管理器的轻量 mock
+class _AiofilesOpenContext:
+    """模拟 aiofiles.open 返回的异步文件上下文。
+
+    将真实文件对象包装为 async read/write，以满足业务代码中 await f.write() 的调用。
+    """
+    def __init__(self, path, *args, **kwargs):
+        self._path = path
+        self._args = args
+        self._kwargs = kwargs
+        self._f = None
+
+    async def __aenter__(self):
+        self._f = open(self._path, *self._args, **self._kwargs)
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self._f:
+            self._f.close()
+
+    async def read(self):
+        return self._f.read()
+
+    async def write(self, data):
+        return self._f.write(data)
+
+
+class _AiofilesMock:
+    """模拟 aiofiles 模块，open 返回真实文件操作的异步上下文。"""
+    def open(self, path, *args, **kwargs):
+        return _AiofilesOpenContext(path, *args, **kwargs)
+
+
+sys.modules["aiofiles"] = _AiofilesMock()
 sys.modules["aiofiles.os"] = Mock()
 sys.modules["sse_starlette"] = Mock()
 sys.modules["sse_starlette.sse"] = Mock()
@@ -214,8 +286,30 @@ class _FileDownloadResponse:
         self.content = content
         self.error = error
 
+class _FileData(dict):
+    """模拟 deepagents FileData。"""
+    pass
+
+
+class _ReadResult:
+    """模拟 deepagents ReadResult。"""
+    def __init__(self, file_data=None, error=None):
+        self.file_data = file_data
+        self.error = error
+
+
+class _WriteResult:
+    """模拟 deepagents WriteResult。"""
+    def __init__(self, path="", error=None):
+        self.path = path
+        self.error = error
+
+
 sys.modules["deepagents.backends.protocol"].FileUploadResponse = _FileUploadResponse
 sys.modules["deepagents.backends.protocol"].FileDownloadResponse = _FileDownloadResponse
+sys.modules["deepagents.backends.protocol"].FileData = _FileData
+sys.modules["deepagents.backends.protocol"].ReadResult = _ReadResult
+sys.modules["deepagents.backends.protocol"].WriteResult = _WriteResult
 
 class _FilesystemMiddleware:
     def __init__(self, backend=None, **kwargs):
@@ -233,9 +327,25 @@ class _FilesystemBackend:
     @staticmethod
     def _ripgrep_search(*args, **kwargs):
         return []
+    # 2026-06-23 新增：filesystem_encoding_fix 模块加载时访问 FilesystemBackend.read，
+    # 必须提供该属性否则 app.main 导入失败（AttributeError）
+    @staticmethod
+    def read(*args, **kwargs):
+        return None
 
 
 sys.modules["deepagents.backends.filesystem"].FilesystemBackend = _FilesystemBackend
+
+# 2026-06-18 新增：模拟 LocalShellBackend，供 DockerSandboxMiddleware fallback 测试使用
+class _LocalShellBackend:
+    """模拟 deepagents LocalShellBackend"""
+    def __init__(self, *args, **kwargs):
+        pass
+
+_mock_deepagents_backends_local_shell = types.ModuleType("deepagents.backends.local_shell")
+_mock_deepagents_backends_local_shell.LocalShellBackend = _LocalShellBackend
+sys.modules["deepagents.backends.local_shell"] = _mock_deepagents_backends_local_shell
+sys.modules["deepagents"].LocalShellBackend = _LocalShellBackend
 
 # 2026-06-15 新增：把 FilesystemMiddleware / FilesystemBackend 也注册到 deepagents 顶层
 # （FilesystemReadTools.explore 依赖这两个 from ... import 形式）

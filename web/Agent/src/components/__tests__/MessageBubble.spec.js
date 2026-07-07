@@ -972,3 +972,78 @@ describe('MessageBubble 独立 subagent 渲染位（2026-06-16-2 修复历史 su
   })
 })
 
+// ========== 2026-06-17 新增：subagent 卡片 toggle 抽屉回归测试 ==========
+// 背景：用户需求 — "subagent 卡片单击是打开子智能体抽屉，再单击一下需要实现关闭"
+// 实现位置：App.vue / KnowledgeApp.vue 的 openSubAgentDrawer()
+// 实现逻辑：当 subAgentDrawerVisible=true 且 currentSubAgent.toolCallId === subAgent.toolCallId
+//          时调用 closeSubAgentDrawer()；否则正常打开 / 切换。
+// 本测试仅验证组件层事件透传链不被破坏（SubAgentCard click → MessageBubble emit
+// 'open-subagent-drawer'）。toggle 关闭行为由父组件 App.vue / KnowledgeApp.vue 负责，
+// 已通过 SubAgentDrawer.spec.js 中 "关闭按钮触发 close 事件" 用例间接覆盖 close 事件链。
+
+describe('MessageBubble SubAgentCard 事件透传（2026-06-17 toggle 抽屉回归）', () => {
+  it('连续点击同一 SubAgentCard 每次都正常发出 open-subagent-drawer 事件', async () => {
+    const sa = {
+      toolCallId: 'tc_toggle_1',
+      threadId: 'tc_toggle_1',
+      tool: 'sandbox',
+      parentPrompt: 'toggle 测试',
+      messages: [],
+      events: [],
+      status: 'running',
+      startTime: Date.now() - 1000,
+      endTime: null,
+      error: null
+    }
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'ai',
+        timeline: [
+          { type: 'tool', content: makeToolEvent('tc_toggle_1') }
+        ],
+        subAgents: [sa]
+      }
+    })
+    const card = wrapper.find('.timeline-subagent-list .subagent-card')
+    expect(card.exists()).toBe(true)
+    // 连续点击 3 次（模拟用户"再单击关闭再单击打开"的手势）
+    await card.trigger('click')
+    await card.trigger('click')
+    await card.trigger('click')
+    // 每次点击都应正常发出事件，toggle 决策由父组件处理
+    expect(wrapper.emitted('open-subagent-drawer')).toBeTruthy()
+    expect(wrapper.emitted('open-subagent-drawer')).toHaveLength(3)
+    // 每次发出的事件载荷都包含同一个 subAgent（含 toolCallId 用于父组件判断 toggle）
+    for (const call of wrapper.emitted('open-subagent-drawer')) {
+      expect(call[0].toolCallId).toBe('tc_toggle_1')
+    }
+  })
+
+  it('点击不同 SubAgentCard 各自发出独立 open-subagent-drawer 事件（携带各自 toolCallId）', async () => {
+    const subAgents = [
+      { toolCallId: 'tc_a', threadId: 'tc_a', tool: 'sandbox', parentPrompt: 'A', messages: [], events: [], status: 'running', startTime: 0, endTime: null, error: null },
+      { toolCallId: 'tc_b', threadId: 'tc_b', tool: 'explore', parentPrompt: 'B', messages: [], events: [], status: 'success', startTime: 0, endTime: 100, error: null }
+    ]
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'ai',
+        timeline: [
+          { type: 'tool', content: makeToolEvent('tc_a', 'sandbox') },
+          { type: 'tool', content: makeToolEvent('tc_b', 'explore') }
+        ],
+        subAgents
+      }
+    })
+    const cards = wrapper.findAll('.subagent-card')
+    expect(cards).toHaveLength(2)
+    // 依次点击两张卡片
+    await cards[0].trigger('click')
+    await cards[1].trigger('click')
+    // 两次事件都正常发出，载荷中 toolCallId 各不相同
+    const emissions = wrapper.emitted('open-subagent-drawer')
+    expect(emissions).toHaveLength(2)
+    expect(emissions[0][0].toolCallId).toBe('tc_a')
+    expect(emissions[1][0].toolCallId).toBe('tc_b')
+  })
+})
+

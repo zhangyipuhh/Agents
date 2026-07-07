@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Optional
 
 from mcpClient.core.unified_mcp_client import UnifiedMCPClient
 
+from app.core.tools.mcp_tool_adapter import MCPToolConfig, MCPToolToLangChainAdapter
+
 logger = logging.getLogger(__name__)
 
 
@@ -105,6 +107,7 @@ class MCPToolsRegistry:
         tags: Optional[List[str]] = None,
         names: Optional[List[str]] = None,
         server: Optional[str] = None,
+        mcp_client: Optional[Any] = None,
     ) -> List[tuple[Any, str, dict]]:
         """
         获取工具列表（带服务器信息）
@@ -113,6 +116,8 @@ class MCPToolsRegistry:
             tags: 工具标签过滤列表，可选
             names: 工具名称过滤列表，可选
             server: 服务器名称过滤，可选
+            mcp_client: 显式传入 MCP 客户端（默认 None，回退到 self._client）；
+                允许调用方在需要时替换为自定义 client 池
 
         Returns:
             List[tuple[Any, str, dict]]: 工具及其服务器名称、服务器配置的元组列表
@@ -125,7 +130,9 @@ class MCPToolsRegistry:
         from concurrent.futures import ThreadPoolExecutor
 
         def run_async_in_thread():
-            return asyncio.run(self._get_tools_with_server_async(tags, names, server))
+            return asyncio.run(
+                self._get_tools_with_server_async(tags, names, server, mcp_client)
+            )
 
         try:
             loop = asyncio.get_event_loop()
@@ -135,7 +142,7 @@ class MCPToolsRegistry:
                     return future.result(timeout=60)
             else:
                 return loop.run_until_complete(
-                    self._get_tools_with_server_async(tags, names, server)
+                    self._get_tools_with_server_async(tags, names, server, mcp_client)
                 )
         except RuntimeError:
             try:
@@ -155,6 +162,7 @@ class MCPToolsRegistry:
         tags: Optional[List[str]] = None,
         names: Optional[List[str]] = None,
         server: Optional[str] = None,
+        mcp_client: Optional[Any] = None,
     ) -> List[tuple[Any, str, dict]]:
         """
         同步收集工具列表（带服务器信息）- 使用线程池执行异步代码
@@ -165,7 +173,9 @@ class MCPToolsRegistry:
         import asyncio
 
         def run_async_in_thread():
-            return asyncio.run(self._get_tools_with_server_async(tags, names, server))
+            return asyncio.run(
+                self._get_tools_with_server_async(tags, names, server, mcp_client)
+            )
 
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
@@ -180,6 +190,7 @@ class MCPToolsRegistry:
         tags: Optional[List[str]] = None,
         names: Optional[List[str]] = None,
         server: Optional[str] = None,
+        mcp_client: Optional[Any] = None,
     ) -> List[tuple[Any, str, dict]]:
         """
         异步获取工具列表（带服务器信息）
@@ -188,6 +199,7 @@ class MCPToolsRegistry:
             tags: 工具标签过滤列表，可选
             names: 工具名称过滤列表，可选
             server: 服务器名称过滤，可选
+            mcp_client: 显式传入 MCP 客户端（默认 None，回退到 self._client）
 
         Returns:
             List[tuple[Any, str, dict]]: 工具及其服务器名称、服务器配置的元组列表
@@ -196,9 +208,11 @@ class MCPToolsRegistry:
             logger.warning("MCPToolsRegistry 尚未初始化，无法查询工具")
             return []
 
+        effective_client = mcp_client if mcp_client is not None else self._client
+
         results: List[tuple[Any, str, dict]] = []
         server_names = self._client.get_server_names()
-        
+
         if not server_names:
             logger.debug("没有配置任何 MCP 服务器")
             return []
@@ -207,6 +221,12 @@ class MCPToolsRegistry:
             if server and server_name != server:
                 continue
             server_config = self._server_configs.get(server_name, {})
+            if not server_config.get("enabled", True):
+                logger.debug(
+                    "服务器 '%s' 已禁用，跳过工具获取",
+                    server_name,
+                )
+                continue
             server_tags = server_config.get("tags", [])
             if tags and not any(t in server_tags for t in tags):
                 logger.debug(
@@ -218,7 +238,7 @@ class MCPToolsRegistry:
             try:
                 logger.debug("正在从服务器 '%s' 获取工具...", server_name)
                 server_tools_info = await self._client.get_server_tools(server_name)
-                
+
                 if not server_tools_info:
                     logger.warning(
                         "服务器 '%s' 返回空的工具信息，可能是连接问题或验证错误",
@@ -236,7 +256,21 @@ class MCPToolsRegistry:
                     tool_name = getattr(tool, "name", str(tool))
                     if names and tool_name not in names:
                         continue
-                    results.append((tool, server_name, server_config))
+                    # 应用 MCPToolToLangChainAdapter 包装（幂等：已包装则跳过）
+                    # 让 server_config["tool_config"] 的 4 个字段真正生效
+                    if not isinstance(tool, MCPToolToLangChainAdapter):
+                        tool_config = MCPToolConfig.from_dict(
+                            server_config.get("tool_config")
+                        )
+                        adapted_tool = MCPToolToLangChainAdapter(
+                            mcp_tool=tool,
+                            mcp_server_name=server_name,
+                            mcp_client=effective_client,
+                            tool_config=tool_config,
+                        )
+                    else:
+                        adapted_tool = tool
+                    results.append((adapted_tool, server_name, server_config))
 
             except Exception as e:
                 error_msg = str(e)
@@ -257,7 +291,7 @@ class MCPToolsRegistry:
                 "未找到匹配的工具 (tags=%s, names=%s, server=%s)",
                 tags, names, server
             )
-        
+
         return results
 
     async def get_tools_with_server_async(
@@ -265,6 +299,7 @@ class MCPToolsRegistry:
         tags: Optional[List[str]] = None,
         names: Optional[List[str]] = None,
         server: Optional[str] = None,
+        mcp_client: Optional[Any] = None,
     ) -> List[tuple[Any, str, dict]]:
         """
         异步获取工具列表（带服务器信息）- 显式异步版本
@@ -273,11 +308,12 @@ class MCPToolsRegistry:
             tags: 工具标签过滤列表，可选
             names: 工具名称过滤列表，可选
             server: 服务器名称过滤，可选
+            mcp_client: 显式传入 MCP 客户端（默认 None，回退到 self._client）
 
         Returns:
             List[tuple[Any, str, dict]]: 工具及其服务器名称、服务器配置的元组列表
         """
-        return await self._get_tools_with_server_async(tags, names, server)
+        return await self._get_tools_with_server_async(tags, names, server, mcp_client)
 
     async def refresh_tools(self, server_name: Optional[str] = None) -> None:
         """
@@ -292,6 +328,129 @@ class MCPToolsRegistry:
         logger.info(
             "工具列表刷新完成（UnifiedMCPClient 自动管理），server_name=%s", server_name
         )
+
+    async def add_server(self, name: str, config: dict) -> None:
+        """
+        运行时新增 MCP server 配置
+
+        将配置存入 _server_configs，并在客户端已初始化时尝试连接新服务器。
+        连接失败仅记录 warning，不抛出异常，保证配置至少被持久化。
+
+        Args:
+            name: server 名称，作为 _server_configs 的键
+            config: server 配置字典，格式为 {type, url, tags, ...}
+
+        Returns:
+            None
+
+        Raises:
+            不主动抛出异常；客户端连接失败时仅记录日志
+        """
+        self._server_configs[name] = config
+        if self._client and self._initialized:
+            try:
+                await self._client.add_server(name, config)
+            except Exception as e:
+                logger.warning(
+                    "运行时新增 MCP server '%s' 连接失败: %s", name, e
+                )
+
+    async def update_server(self, name: str, config: dict) -> None:
+        """
+        更新 MCP server 配置
+
+        覆盖 _server_configs 中的旧配置，并在客户端已初始化时
+        先移除旧服务器再添加新配置以重建连接。
+
+        Args:
+            name: server 名称
+            config: 新的 server 配置字典
+
+        Returns:
+            None
+
+        Raises:
+            不主动抛出异常；客户端重建连接失败时仅记录日志
+        """
+        self._server_configs[name] = config
+        if self._client and self._initialized:
+            try:
+                await self._client.remove_server(name)
+                await self._client.add_server(name, config)
+            except Exception as e:
+                logger.warning(
+                    "运行时更新 MCP server '%s' 连接失败: %s", name, e
+                )
+
+    async def remove_server(self, name: str) -> None:
+        """
+        移除 MCP server
+
+        从 _server_configs 中删除指定配置，并在客户端已初始化时
+        断开对应连接。配置不存在时静默忽略。
+
+        Args:
+            name: 要移除的 server 名称
+
+        Returns:
+            None
+
+        Raises:
+            不主动抛出异常；客户端断开失败时仅记录日志
+        """
+        self._server_configs.pop(name, None)
+        if self._client and self._initialized:
+            try:
+                await self._client.remove_server(name)
+            except Exception as e:
+                logger.warning(
+                    "运行时移除 MCP server '%s' 连接失败: %s", name, e
+                )
+
+    async def toggle_server(self, name: str, enabled: bool) -> None:
+        """
+        启用/禁用 MCP server
+
+        更新 _server_configs 中指定 server 的 enabled 字段。
+        server 不存在时静默忽略。
+
+        Args:
+            name: server 名称
+            enabled: 目标启用状态，True 为启用，False 为禁用
+
+        Returns:
+            None
+
+        Raises:
+            不抛出异常
+        """
+        if name in self._server_configs:
+            self._server_configs[name]["enabled"] = enabled
+
+    async def toggle_method(
+        self, server_name: str, method_name: str, enabled: bool
+    ) -> None:
+        """
+        启用/禁用单个 method
+
+        更新 _server_configs 中指定 server 下指定 method 的 enabled 字段。
+        server 或 method 不存在时静默忽略。
+
+        Args:
+            server_name: server 名称
+            method_name: method 名称
+            enabled: 目标启用状态，True 为启用，False 为禁用
+
+        Returns:
+            None
+
+        Raises:
+            不抛出异常
+        """
+        if server_name in self._server_configs:
+            methods = self._server_configs[server_name].setdefault("methods", {})
+            if method_name in methods:
+                methods[method_name]["enabled"] = enabled
 
     async def shutdown(self) -> None:
         """

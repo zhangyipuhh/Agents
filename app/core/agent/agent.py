@@ -129,6 +129,7 @@ class Agent:
         self.checkpointer = config.checkpointer
         self.store = config.store
         self.system_prompt = config.system_prompt
+        self.agent_name = config.name
         self._trim_tool_messages = config.trim_tool_messages
         self._keep_last_n_tools = config.keep_last_n_tools
         self._ollama_reasoning =  LLM_CONFIG["ollama_reasoning"]
@@ -156,6 +157,14 @@ class Agent:
         )
         # 获取审计工具列表,创建工具节点，用于执行工具调用
         self.tools, self.tool_node = self._config.get_tools()
+        tool_names = [getattr(t, "name", str(t)) for t in (self.tools or [])]
+        logging.info(
+            "[Agent.__ainit__] agent=%s | tools_count=%d | tool_names=%s | tool_node is None=%s",
+            getattr(self, "agent_name", "<unknown>"),
+            len(self.tools or []),
+            tool_names,
+            self.tool_node is None,
+        )
 
         # 构建工具绑定参数，根据配置决定是否传入 parallel_tool_calls
         bind_kwargs = {"tools": self.tools}
@@ -165,6 +174,11 @@ class Agent:
 
         # 预绑定工具到模型，避免每次调用时重复绑定
         self.llm = self.model.bind_tools(**bind_kwargs)
+        logging.info(
+            "[Agent.__ainit__] agent=%s | bind_kwargs keys=%s",
+            getattr(self, "agent_name", "<unknown>"),
+            list(bind_kwargs.keys()),
+        )
 
         # 创建摘要模型，绑定最大生成 token 数
         self.summarization_model = self.model.bind(max_tokens=self._max_summary_tokens)
@@ -290,7 +304,18 @@ class Agent:
         # messages = state["messages"]
         # 系统提示词，指导模型如何根据文件类型调用相应的解析工具
         #运行时可以通过上下文动态添加主提示词
-        system_prompt = BASE_SYSTEM_PROMPT + "\n\n" + (self.system_prompt or "")+"\n\n"+(context.get("system_prompt") or "")
+        # 使用 SkillsAwarePrompt 拼接 base + agent + bootstrap + available_skills
+        from app.core.skills.message_transformer import SkillsAwarePrompt
+
+        agent_specific = (self.system_prompt or "") + "\n\n" + (context.get("system_prompt") or "")
+        agent_name = getattr(self, "agent_name", None)
+        enabled_skill_names = getattr(self._config, "enabled_skill_names", None)
+        system_prompt = SkillsAwarePrompt(
+            base=BASE_SYSTEM_PROMPT,
+            agent_specific=agent_specific,
+            agent_name=agent_name,
+            enabled_skill_names=enabled_skill_names,
+        ).build()
         #logging.info(f"system_prompt: {system_prompt}")
         #logging.info(f"system_prompt: {system_prompt}")
         # 从状态中获取图片路径列表,如果传入了需要处理图片,则从状态中获取图片路径列表

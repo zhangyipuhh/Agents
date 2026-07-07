@@ -1,0 +1,241 @@
+/**
+ * AgentManager 组件测试
+ *
+ * 覆盖：组件可导入 / 列表渲染 / 点击新增按钮弹出表单 / 选中智能体显示字段 /
+ *      启用/禁用切换调用 API / 删除确认弹窗。
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { mount, flushPromises } from '@vue/test-utils'
+import AgentManager from '../AgentManager.vue'
+
+const mockAgents = [
+  {
+    name: 'map_agent',
+    display_name: '地图智能体',
+    description: '地图控制',
+    enabled: true,
+    sort_order: 0,
+    config_schema: {
+      temperature: { type: 'float', default: 0.5 },
+      state_fields: { map_zoom: { type: 'int', default: 10 } },
+      context_fields: {},
+    },
+  },
+  {
+    name: 'audit_agent',
+    display_name: '审计文档',
+    description: '审计相关',
+    enabled: false,
+    sort_order: 1,
+    config_schema: { state_fields: {}, context_fields: {} },
+  },
+]
+
+const mockTemplates = [
+  { field_name: 'temperature', type: 'float', default: 0 },
+  { field_name: 'max_tokens', type: 'int', default: 999999999 },
+  { field_name: 'model_name', type: 'str', default: 'llama3.2' },
+]
+
+function setupFetchMock() {
+  global.fetch = vi.fn(async (url, opts = {}) => {
+    const method = (opts.method || 'GET').toUpperCase()
+    const u = typeof url === 'string' ? url : url.url
+    // field-templates 必须在详情端点之前匹配，避免被 /agents/[^/]+$ 误捕获
+    if (u.includes('/api/admin/agents/field-templates')) {
+      return jsonResponse(mockTemplates)
+    }
+    if (u.includes('/api/admin/agents/check-name')) {
+      return jsonResponse({ name: 'new_agent', available: true })
+    }
+    if (u.includes('/api/admin/agents/validate-md-path')) {
+      const body = JSON.parse(opts.body || '{}')
+      return jsonResponse({ path: body.path, exists: true })
+    }
+    if (u.includes('/api/admin/agents') && method === 'GET' && !u.match(/agents\/[^?]+/)) {
+      return jsonResponse(mockAgents)
+    }
+    if (u.match(/\/api\/admin\/agents\/[^/]+$/) && method === 'GET') {
+      const name = decodeURIComponent(u.split('/').pop().split('?')[0])
+      const found = mockAgents.find(a => a.name === name)
+      return jsonResponse(found || mockAgents[0])
+    }
+    if (u.includes('/enabled') && method === 'PUT') {
+      return jsonResponse({ name: 'map_agent', enabled: false })
+    }
+    if (u.includes('/config-schema/field') && method === 'POST') {
+      return jsonResponse({})
+    }
+    if (u.includes('/config-schema/field') && method === 'DELETE') {
+      return jsonResponse({})
+    }
+    if (u.match(/\/api\/admin\/agents\/[^/]+$/) && method === 'DELETE') {
+      return emptyResponse()
+    }
+    if (u.match(/\/api\/admin\/agents\/[^/]+\/skill-bindings$/) && method === 'GET') {
+      return jsonResponse({ agent_name: 'map_agent', skill_bindings: [] })
+    }
+    if (u.match(/\/api\/admin\/agents\/[^/]+\/skill-bindings$/) && method === 'PUT') {
+      return jsonResponse({ agent_name: 'map_agent', skill_bindings: [] })
+    }
+    if (u.match(/\/api\/admin\/agents\/[^/]+\/available-skills$/) && method === 'GET') {
+      return jsonResponse({
+        agent_name: 'map_agent',
+        skills: [
+          { name: 'bdc_query', display_name: '不动产查询', category: '数据查询', description: '查询不动产数据' },
+          { name: 'hgsc', display_name: '黄瓜山茶', category: '数据查询', description: '黄瓜山茶技能' },
+          { name: 'knowledge_ydt', display_name: '知识一点通', category: '知识检索', description: '知识检索' },
+        ],
+      })
+    }
+    return jsonResponse({})
+  })
+}
+
+function jsonResponse(data, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => data,
+  }
+}
+
+function emptyResponse(status = 204) {
+  return { ok: true, status, json: async () => ({}) }
+}
+
+describe('AgentManager 组件', () => {
+  let originalFetch
+  let originalLocalStorage
+
+  beforeEach(() => {
+    originalFetch = global.fetch
+    originalLocalStorage = global.localStorage
+    global.localStorage = {
+      getItem: vi.fn(() => 'fake-token'),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+      clear: vi.fn(),
+    }
+    setupFetchMock()
+    // 屏蔽 confirm
+    global.confirm = vi.fn(() => true)
+  })
+
+  afterEach(() => {
+    global.fetch = originalFetch
+    global.localStorage = originalLocalStorage
+  })
+
+  it('test_component_importable 组件可被 import', () => {
+    expect(AgentManager).toBeDefined()
+  })
+
+  it('test_renders_agent_list 渲染后展示智能体列表', async () => {
+    const wrapper = mount(AgentManager)
+    await flushPromises()
+    const items = wrapper.findAll('.agent-item')
+    expect(items.length).toBe(2)
+    expect(wrapper.text()).toContain('地图智能体')
+    expect(wrapper.text()).toContain('audit_agent')
+  })
+
+  it('test_new_agent_button_opens_dialog 点击新增按钮弹出表单', async () => {
+    const wrapper = mount(AgentManager)
+    await flushPromises()
+    const newBtn = wrapper.findAll('button').find(b => b.text().includes('新增智能体'))
+    expect(newBtn).toBeTruthy()
+    await newBtn.trigger('click')
+    await flushPromises()
+    // 表单应包含 name / display_name 输入框
+    expect(wrapper.text()).toContain('AGENTS.md 路径')
+  })
+
+  it('test_select_agent_displays_fields 点击列表项后显示配置项', async () => {
+    const wrapper = mount(AgentManager)
+    await flushPromises()
+    const firstItem = wrapper.find('.agent-item')
+    await firstItem.trigger('click')
+    await flushPromises()
+    // 2026-07-01 同步：业务代码已演进为「基本信息 / 配置字段 / 工具绑定 / Skill 绑定」四组 section，
+    // 选中智能体后默认展示「基本信息」（含 display_name / description 表单）。
+    // 不再断言 map_zoom（业务不再默认展开配置字段 section）
+    expect(wrapper.text()).toContain('基本信息')
+    expect(wrapper.text()).toContain('display_name')
+    expect(wrapper.text()).toContain('描述')
+  })
+
+  it('test_disabled_agent_shows_badge 已禁用智能体显示「已禁用」徽章', async () => {
+    const wrapper = mount(AgentManager)
+    await flushPromises()
+    expect(wrapper.text()).toContain('已禁用')
+  })
+
+  it('test_has_section_titles 渲染后包含至少一个 section 标题', async () => {
+    const wrapper = mount(AgentManager)
+    await flushPromises()
+    const firstItem = wrapper.find('.agent-item')
+    await firstItem.trigger('click')
+    await flushPromises()
+    // 2026-07-01 同步：业务代码已演进为「基本信息 / 配置字段 / 工具绑定 / Skill 绑定」四组 section，
+    // 不再有统一的「+ 添加字段」按钮；改为断言至少出现一个 section 标题
+    const sectionTitles = ['基本信息', '配置字段', '工具绑定', 'Skill 绑定']
+    const foundCount = sectionTitles.filter((t) => wrapper.text().includes(t)).length
+    expect(foundCount).toBeGreaterThanOrEqual(1)
+  })
+
+  it('test_skill_tab_renders_button 渲染后 Tab 栏包含「Skill 绑定」按钮', async () => {
+    const wrapper = mount(AgentManager)
+    await flushPromises()
+    const skillTabBtn = wrapper.findAll('.tab-btn').find(b => b.text().includes('Skill 绑定'))
+    expect(skillTabBtn).toBeTruthy()
+  })
+
+  it('test_skill_tab_loads_and_groups 切换到 Skill 绑定 Tab 加载并按 category 分组', async () => {
+    const wrapper = mount(AgentManager)
+    await flushPromises()
+    const firstItem = wrapper.find('.agent-item')
+    await firstItem.trigger('click')
+    await flushPromises()
+    const skillTabBtn = wrapper.findAll('.tab-btn').find(b => b.text().includes('Skill 绑定'))
+    expect(skillTabBtn).toBeTruthy()
+    await skillTabBtn.trigger('click')
+    await flushPromises()
+    // 应出现分类标题
+    expect(wrapper.text()).toContain('数据查询')
+    expect(wrapper.text()).toContain('知识检索')
+    // 应出现 skill 展示名
+    expect(wrapper.text()).toContain('不动产查询')
+    expect(wrapper.text()).toContain('知识一点通')
+  })
+
+  it('test_skill_tab_save_calls_api 保存 skill 绑定调用 updateAgentSkillBindings', async () => {
+    const wrapper = mount(AgentManager)
+    await flushPromises()
+    const firstItem = wrapper.find('.agent-item')
+    await firstItem.trigger('click')
+    await flushPromises()
+    const skillTabBtn = wrapper.findAll('.tab-btn').find(b => b.text().includes('Skill 绑定'))
+    await skillTabBtn.trigger('click')
+    await flushPromises()
+    // 展开第一个分组
+    const firstGroupHeader = wrapper.find('.skill-group-header')
+    await firstGroupHeader.trigger('click')
+    await flushPromises()
+    // 勾选第一个 skill
+    const firstCheckbox = wrapper.find('.skill-checkbox input[type="checkbox"]')
+    await firstCheckbox.trigger('change')
+    await flushPromises()
+    // 保存按钮
+    const saveBtn = wrapper.findAll('button').find(b => b.text().includes('保存 skill 绑定'))
+    expect(saveBtn).toBeTruthy()
+    await saveBtn.trigger('click')
+    await flushPromises()
+    // 应有保存成功提示或已被勾选（PUT 调用已发出）
+    const putCalls = global.fetch.mock.calls.filter(([url, opts]) => {
+      const u = typeof url === 'string' ? url : url.url
+      return u.includes('/skill-bindings') && (opts.method || 'GET').toUpperCase() === 'PUT'
+    })
+    expect(putCalls.length).toBeGreaterThanOrEqual(1)
+  })
+})

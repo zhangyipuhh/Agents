@@ -642,7 +642,8 @@ async def validate_token(request: Request):
     return {
         "username": payload["username"],
         "role": role,
-        "user_id": user.get('id') if user else None
+        "user_id": user.get('id') if user else None,
+        "allowed_agents": user.get('allowed_agents', []) if user else []
     }
 
 

@@ -15,11 +15,14 @@ Date: 2026/2/6
 Author: 张镒谱
 """
 import jwt
+import logging
 from datetime import datetime, timedelta
 from typing import Optional, List
 from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from app.shared.utils.Session.SessionCache import session_cache
+
+logger = logging.getLogger(__name__)
 
 
 class JWTAuth:
@@ -228,9 +231,11 @@ class JWTAuth:
         if user:
             request.state.role = user.get('role', 'user')
             request.state.user_id = user.get('id')
+            request.state.allowed_agents = user.get('allowed_agents', [])
         else:
             request.state.role = 'user'
             request.state.user_id = None
+            request.state.allowed_agents = []
 
         return payload
 
@@ -279,15 +284,17 @@ async def auth_middleware(request: Request, call_next):
         print(f"[诊断-auth_middleware] 开始验证JWT令牌")
         await jwt_auth.authenticate(request)
         print(f"[诊断-auth_middleware] JWT验证成功, username={getattr(request.state, 'username', None)}")
-        return await call_next(request)
     except Exception as e:
         import traceback
-        print(f"[诊断-auth_middleware] path={path}, 异常: {e}")
+        print(f"[诊断-auth_middleware] path={path}, 认证异常: {e}")
         print(f"[诊断-auth_middleware] 堆栈: {traceback.format_exc()}")
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={"detail": str(e)}
         )
+
+    # 认证通过后，让路由自身的异常正常向上抛出，避免被包装为 401
+    return await call_next(request)
 
 
 async def session_auth_middleware(request: Request, call_next):
@@ -351,6 +358,16 @@ async def session_auth_middleware(request: Request, call_next):
         )
 
     request.state.session_id = session_id
+
+    # 2026-06-30 新增：注入会话关联的项目 ID，供上传路由/工具层做项目目录路由
+    #   * session_cache.get_session 返回的 dict 已包含 project_id 字段（可能为 None）
+    try:
+        session_data = await session_cache.get_session(session_id)
+        request.state.project_id = session_data.get('project_id') if session_data else None
+    except Exception as e:
+        logger.warning(f"[session_auth_middleware] 注入 project_id 失败: {e}")
+        request.state.project_id = None
+
     return await call_next(request)
 
 
@@ -362,6 +379,11 @@ SESSION_WHITELIST_PREFIXES = [
     "/api/session/list",
     "/api/session/delete",
     "/api/session/admin",
+    # 2026-07-XX 新增：/api/agent/list 不依赖 session 隔离，仅读 allowed_agents（来自 JWT），
+    # 与 /api/session/list、/api/project/list 语义一致。前端按需建 session 后首次进入页面
+    # localStorage.session_id 为空，不发 X-Session-ID 也能访问。
+    # 注意：/api/agent/chat 仍命中 SESSION_REQUIRED_PREFIXES（/api/agent/）保留校验。
+    "/api/agent/list",
 ]
 
 # 需要 Session 验证的路径前缀

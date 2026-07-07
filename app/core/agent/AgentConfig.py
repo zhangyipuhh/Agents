@@ -11,7 +11,7 @@ Date: 2026-03-10
 Author: 张镒谱
 """
 
-from typing import Optional, Any
+from typing import Optional, Any, List
 from typing_extensions import TypedDict
 from dataclasses import dataclass, field
 from langgraph.graph import MessagesState
@@ -20,8 +20,6 @@ from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import RetryPolicy
 from app.core.agent.AgentContext import AgentContext
-from app.core.tools.BaseTools import get_current_time, open_file, load_web_page, read_cached_chunk,open_file_by_id
-from app.core.tools.SandboxTools import sandbox
 from app.core.config.config import LLM_CONFIG
 
 class ConfigurableConfig(TypedDict):
@@ -88,6 +86,15 @@ class AgentState(MessagesState):
     格式：[{"questions": [...], "answers": [[...]], "timestamp": "..."}, ...]
     """
 
+    agent_name: Optional[str] = None
+    """
+    当前 Agent 的注册名（与 app/features/<name>/ 目录名一致）。
+
+    用于工具按 agent 维度隔离的子系统（如 SkillsService）查找对应资源。
+    来源：包装类（如 MapAgent.stream()）构造 state 时从对应 *AgentConfig.name 注入；
+    工具通过 runtime.state.get("agent_name") 读取（与 SkillsAwarePrompt 的 agent_name
+    取值链路一致），缺失时 SkillsService 回退到全局默认根。
+    """
 
 
 @dataclass(kw_only=True)
@@ -127,13 +134,13 @@ class AgentConfig:
     base_url: Optional[str] = field(default=LLM_CONFIG["base_url"])
     """API 基础 URL，指定模型服务的地址。如果为 None，则使用默认地址"""
     
-    max_tokens: int = field(default=999999999)
+    max_tokens: int = field(default=200000)
     """最大 token 数，限制单次生成的最大长度，防止生成过长响应，默认 999999999"""
     
-    max_tokens_before_summary: int = field(default=999999999)
+    max_tokens_before_summary: int = field(default=180000)
     """触发摘要的 token 阈值，当消息历史超过此值时触发摘要操作，默认 999999999"""
     
-    max_summary_tokens: int = field(default=999999999)
+    max_summary_tokens: int = field(default=20000)
     """摘要后的最大 token 数，控制摘要的长度，避免摘要过于冗长，默认 999999999"""
     
     checkpointer: BaseCheckpointSaver = field(default=None)
@@ -191,12 +198,22 @@ class AgentConfig:
     
     system_prompt: Optional[str] = field(default=None)
     """系统提示词，用于设置 AI 的行为角色、性格和约束条件，默认 None"""
-    
+
+    name: Optional[str] = field(default=None)
+    """Agent 注册名（2026-06-21 新增，与 app/features/<dir>/ 目录名一致）。
+
+    用于 skill 系统按子智能体维度隔离（agent_name 维度 SkillsService 实例 +
+    子智能体专属 config/bootstrap.md 覆盖）。None 表示该 Agent 不绑定特定子智能体，
+    SkillAwarePrompt 会回退到全局 skill 注册表。
+
+    子智能体应在自身的 *AgentConfig 子类中通过 ``field(default="<dir_name>")`` 覆盖。
+    """
+
     max_input_tokens: int = field(default=999999999)
     """最大输入 token 数，限制单次输入的最大长度，防止输入过长导致上下文超限，默认 999999999"""
 
-    trim_tool_messages: bool = field(default=True)
-    """是否启用工具消息 trim，启用后会删除旧的工具消息，只保留最近 keep_last_n_tools 条，默认 True"""
+    trim_tool_messages: bool = field(default=False)
+    """是否启用工具消息 trim，启用后会删除旧的工具消息，只保留最近 keep_last_n_tools 条，默认 False"""
 
     keep_last_n_tools: int = field(default=2)
     """保留最近几条工具消息，用于控制发送给 LLM 的工具消息数量，默认 2"""
@@ -221,19 +238,35 @@ class AgentConfig:
     
     summarize_retry_initial_interval: float = field(default=1.0)
     """摘要操作初始重试间隔（秒），默认 1.0 秒"""
-    
-    def get_tools(self) -> tuple[list[str], ToolNode]:
+
+    enabled_skill_names: Optional[List[str]] = field(default=None)
+    """该 Agent 绑定的启用 skill 名称列表。
+
+    由 AgentConfigService 从 agents.skill_bindings 解析并注入，
+    供 SkillsAwarePrompt 在构造 system prompt 时过滤可用 skill。
+    None 表示未指定（向后兼容），此时 SkillsAwarePrompt 回退到加载全部 skill。
+    """
+
+    tools: Optional[List[Any]] = field(default=None)
+    """外部传入的工具列表。
+
+    设计原则（决策 8）：基础工具不默认加载，所有工具通过绑定实现。
+    - 生产 chat 路径（agent_router）必须传入 tools=config.tools
+    - tools=None 或 [] 时，get_tools() 返回空列表（无工具可用）
+    - 不再有任何硬编码的默认工具回退逻辑
+    """
+
+    def get_tools(self) -> tuple[list, ToolNode]:
         """
-        获取所有审计文档工具名称列表
+        获取工具列表和工具节点。
 
-        返回:
-            tuple[list[str], ToolNode]: 工具名称列表和对应的 ToolNode 对象
+        完全依赖外部传入的 self.tools，不再有硬编码默认工具。
+        若 tools 为 None 或空列表，返回空工具列表（agent 无工具可用）。
 
-        注意:
-            此方法需要子类重写，在子类中添加工具到 tools 列表
+        Returns:
+            tuple[list, ToolNode]: (工具实例列表, 工具节点)
         """
-        tools: list[str] = [get_current_time, open_file, load_web_page, read_cached_chunk,open_file_by_id, sandbox]
-
+        tools = self.tools or []
         return tools, ToolNode(tools, handle_tool_errors=True)
     
     def get_llm_retry_policy(self) -> RetryPolicy:

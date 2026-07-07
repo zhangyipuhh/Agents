@@ -11,6 +11,7 @@ Author: AI Assistant
 from .document_memory_store import document_memory_store
 from .key_value_memory_store import key_value_memory_store, KeyValueMemoryStore
 from .checkpoint import get_global_checkpointer, reset_global_checkpointer, close_global_checkpointer, get_async_checkpointer
+from .store import get_async_store, close_global_store, reset_global_store
 
 __all__ = [
     "document_memory_store",
@@ -19,5 +20,8 @@ __all__ = [
     "get_global_checkpointer",
     "reset_global_checkpointer",
     "close_global_checkpointer",
-    "get_async_checkpointer"
+    "get_async_checkpointer",
+    "get_async_store",
+    "close_global_store",
+    "reset_global_store",
 ]

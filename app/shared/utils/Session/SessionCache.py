@@ -35,19 +35,23 @@ class SessionCache:
         """
         self._db = SessionDB()
 
-    async def add_session(self, session_id: str, username: str, user_id: int = 0):
+    async def add_session(self, session_id: str, username: str, user_id: int = 0, project_id: int = None):
         """
         添加会话
+
+        2026-06-30 改造：接受 project_id 透传给 SessionDB。
 
         Args:
             session_id (str): 会话ID
             username (str): 用户名
             user_id (int): 用户ID，默认为0
+            project_id (Optional[int]): 2026-06-30 新增；项目 ID
         """
         if SessionDB.is_enabled():
-            await self._db.add_session(session_id, user_id, username)
+            await self._db.add_session(session_id, user_id, username, project_id=project_id)
         else:
-            session_cache_original.add_session(session_id, username)
+            # 2026-06-30 改造：Memory 模式也透传 project_id
+            session_cache_original.add_session(session_id, username, project_id=project_id)
 
     async def get_session(self, session_id: str) -> Optional[dict]:
         """

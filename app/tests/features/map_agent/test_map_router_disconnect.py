@@ -1,23 +1,30 @@
 # -*- coding:utf-8 -*-
 """
-map_router 客户端断开检测测试（2026-06-15 新增）
+_stream_helper 客户端断开检测测试（2026-06-15 新增，2026-06-22 扩展，2026-06-23 迁移）
 
 覆盖需求：
 - 用户点击停止按钮 → 前端 reader.cancel() 断开 SSE → 后端 is_disconnected() 检测
-- generate_stream_response 主循环在客户端断开时立即 return（不再继续 LangGraph astream）
-- /api/map/chat 和 /api/map/knowledge-chat 路由都把 request 传给业务生成器
+- generate_stream_response 主循环在客户端断开时**精确延迟中断**：
+  * 检测到 disconnect 仅标记，不 return
+  * 跳过 messages 模式（不推 LLM token 给已断开的前端）
+  * 继续消费 updates 模式
+  * 当 "tools" 节点完成 chunk（data["tools"]["messages"] 包含 ToolMessage）时 break
+  * 这样保证当前工具/子智能体完成 ToolMessage 写入 state 后才真正断开
+- /api/map/knowledge-chat 路由通过 _stream_helper.generate_stream_response 处理 SSE
+- **2026-06-22 新增**：多工具并行调用场景验证（依赖 LangGraph ToolNode 全或无语义）
+- **2026-06-23 迁移**：测试目标从 map_router.generate_stream_response 迁移到
+  _stream_helper.generate_stream_response（统一签名：agent, input_state, context, session_id, request）
 
 测试策略：
-- 直接 import generate_stream_response 函数（不依赖 conftest 的 app fixture 启动真实 FastAPI）
-- 用 mock MapAgent 替换 get_map_agent，让 astream 产生可控的 chunk 序列
-- 第一次 is_disconnected() 返回 False（继续 yield），第二次返回 True（应跳出循环）
+- 直接 import _stream_helper.generate_stream_response 函数（不依赖 conftest 的 app fixture 启动真实 FastAPI）
+- 用 mock agent 替换真实 Agent，让 stream 产生可控的 chunk 序列
+- 用 Mock 对象模拟 ToolMessage 验证类型判断逻辑
 """
 
 import asyncio
+import inspect
 import json
-from unittest.mock import AsyncMock, Mock, patch
-
-import pytest
+from unittest.mock import Mock
 
 
 def _make_fake_request(disconnect_sequence):
@@ -49,39 +56,52 @@ def _make_fake_request(disconnect_sequence):
 
 def test_generate_stream_response_importable():
     """P0: generate_stream_response 可被 import（不会被 conftest 误伤）"""
-    from app.features.map_agent.router.map_router import generate_stream_response
+    from app.routers._stream_helper import generate_stream_response
 
     assert generate_stream_response is not None
     assert callable(generate_stream_response)
 
 
 def test_generate_stream_response_signature_accepts_request():
-    """P0: generate_stream_response 签名包含 request: Request = None 形参（向后兼容）"""
-    import inspect
-
-    from app.features.map_agent.router.map_router import generate_stream_response
+    """P0: generate_stream_response 签名包含 agent, input_state, context, session_id, request 形参"""
+    from app.routers._stream_helper import generate_stream_response
 
     sig = inspect.signature(generate_stream_response)
-    assert "request" in sig.parameters
-    # 默认值为 None（不破坏调用方便）
-    assert sig.parameters["request"].default is None
+    expected_params = ["agent", "input_state", "context", "session_id", "request"]
+    actual_params = list(sig.parameters.keys())
+    assert actual_params == expected_params, (
+        f"签名参数不匹配，期望 {expected_params}，实际 {actual_params}"
+    )
 
 
-def test_generate_stream_response_stops_on_client_disconnect():
+def test_generate_stream_response_delayed_disconnect_single_tool():
     """
-    P1: 客户端断开（is_disconnected 返回 True）时立即跳出 stream 循环
+    P1（2026-06-22 改造）：单工具场景 - 客户端断开后延迟到工具完成才真正断开
+
+    流程：
+    - 第一次 yield LLM 节点的 update（is_disconnected=False，正常 yield）
+    - 第二次循环检测到 is_disconnected=True → 标记 disconnect_requested，跳过 messages
+    - 第三次 yield "tools" 节点完成 chunk（含 ToolMessage）→ 真正断开
+    - 之后不应再有 chunk（不应继续到 llm_call 等节点）
+
     验证：
-    - 第一次循环 is_disconnected() == False → 继续 yield
-    - 第二次循环 is_disconnected() == True → 跳出循环，return 而非继续
-    - 不会继续消费 stream 中剩余的 chunks
+    - yield 数量为 4：LLM update + client_disconnected 标记 + tools 完成 update + end
     """
-    from app.features.map_agent.router import map_router
+    from app.routers._stream_helper import generate_stream_response
 
-    # 构造一个会 yield 多次的 fake map_agent.stream
+    # 构造 mock ToolMessage（通过 __class__.__name__ 兼容）
+    class MockToolMessage:
+        def __init__(self, content="tool result"):
+            self.content = content
+            self.tool_call_id = "call_1"
+
+    # 构造一个 LLM update + 工具完成 update 的 chunk 序列
     chunks = [
-        ("updates", {"llm_call": {"messages": [Mock(content="hello")]}}),
-        ("updates", {"llm_call": {"messages": [Mock(content="world")]}}),
-        ("updates", {"llm_call": {"messages": [Mock(content="more")]}}),
+        # LLM 节点 update
+        ("updates", {"llm_call": {"messages": [Mock(content="thinking...")]}}),
+        # tools 节点完成（包含 1 个 ToolMessage）
+        ("updates", {"tools": {"messages": [MockToolMessage("tool result")]}}),
+        # 后续 LLM 节点（不应被处理）
         ("updates", {"llm_call": {"messages": [Mock(content="should_not_appear")]}}),
     ]
 
@@ -89,23 +109,234 @@ def test_generate_stream_response_stops_on_client_disconnect():
         for c in chunks:
             yield c
 
-    # 第一次 False（继续 yield），第二次 True（应跳出循环）
+    # 第二次 is_disconnected 返回 True（模拟客户端在 LLM 思考时点击停止）
     fake_request = _make_fake_request([False, True, True, True])
 
-    # 替换 get_map_agent，让 MapAgent.stream 走 fake_stream
     fake_agent = Mock()
     fake_agent.stream = fake_stream
 
-    with patch.object(map_router, "get_map_agent", AsyncMock(return_value=fake_agent)):
+    async def collect():
+        results = []
+        async for item in generate_stream_response(
+            agent=fake_agent,
+            input_state=Mock(),
+            context=None,
+            session_id="sid_test",
+            request=fake_request,
+        ):
+            results.append(item)
+        return results
+
+    results = asyncio.run(collect())
+
+    # 预期 yield 4 个事件：
+    # 1. LLM update（is_disconnected=False 时正常 yield）
+    # 2. client_disconnected 标记
+    # 3. tools 节点完成 update（disconnect_executed=True，break 前 yield）
+    # 4. end 事件（break 退出循环后，循环结束统一 yield）
+    assert len(results) == 4, f"期望 4 个 SSE 输出，实际 {len(results)}: {results}"
+
+    # 验证 SSE 内容
+    assert "llm_call" in results[0] or "thinking" in results[0]
+    assert '"type": "client_disconnected"' in results[1]
+    assert "tools" in results[2]
+    assert '"type": "end"' in results[3]
+
+    # 验证 is_disconnected 至少被调用过
+    assert fake_request._call_count["n"] >= 1
+
+
+def test_generate_stream_response_delayed_disconnect_multiple_tools():
+    """
+    P1（2026-06-22 改造）：多工具并行场景 - 客户端断开后等到所有工具完成才断开
+
+    验证 LangGraph ToolNode 的"全或无"语义：
+    - LLM 一次性发起 3 个 tool_calls（多工具并行）
+    - LangGraph ToolNode 用 asyncio.gather 等所有 3 个 tool_calls 都完成
+    - 然后才 yield "tools" 节点完成 chunk（包含 3 个 ToolMessage）
+    - SSE 路由检测到 3 个 ToolMessage → 真正断开
+    - 不会在 1 个或 2 个工具完成时就提前断开
+    """
+    from app.routers._stream_helper import generate_stream_response
+
+    class MockToolMessage:
+        def __init__(self, content="result", tool_call_id=None):
+            self.content = content
+            self.tool_call_id = tool_call_id or f"call_{id(self)}"
+
+    # 模拟多工具并行：3 个 ToolMessage 一次性出现
+    chunks = [
+        # LLM 节点 update（含 3 个 tool_calls）
+        ("updates", {
+            "llm_call": {"messages": [Mock(content="I'll call 3 tools in parallel")]}
+        }),
+        # tools 节点完成（包含 3 个 ToolMessage，模拟 asyncio.gather 全部完成）
+        ("updates", {
+            "tools": {"messages": [
+                MockToolMessage("result_1", "call_1"),
+                MockToolMessage("result_2", "call_2"),
+                MockToolMessage("result_3", "call_3"),
+            ]}
+        }),
+        # 后续不应被处理
+        ("updates", {"llm_call": {"messages": [Mock(content="should_not_appear")]}}),
+    ]
+
+    async def fake_stream(*args, **kwargs):
+        for c in chunks:
+            yield c
+
+    # 第二次 is_disconnected 返回 True
+    fake_request = _make_fake_request([False, True, True, True])
+
+    fake_agent = Mock()
+    fake_agent.stream = fake_stream
+
+    async def collect():
+        results = []
+        async for item in generate_stream_response(
+            agent=fake_agent,
+            input_state=Mock(),
+            context=None,
+            session_id="sid_test",
+            request=fake_request,
+        ):
+            results.append(item)
+        return results
+
+    results = asyncio.run(collect())
+
+    # 4 个事件：LLM update + client_disconnected + tools update（含 3 个 ToolMessage） + end
+    assert len(results) == 4, f"期望 4 个 SSE 输出，实际 {len(results)}: {results}"
+    assert '"type": "client_disconnected"' in results[1]
+    # tools 节点完成 chunk 应包含 3 个 ToolMessage
+    # 注意：JSON 序列化时 MockToolMessage 会变成 "<MockToolMessage object at 0x...>" 格式
+    # 所以验证 "tools" 节点被 yield 且包含 3 个 MockToolMessage 字符串
+    assert "tools" in results[2]
+    # 计算结果[2]中 MockToolMessage 字符串出现次数
+    mock_count = results[2].count("MockToolMessage object")
+    assert mock_count == 3, f"期望 tools 节点完成 chunk 包含 3 个 MockToolMessage，实际 {mock_count} 个"
+    assert '"type": "end"' in results[3]
+
+
+def test_generate_stream_response_no_disconnect_during_non_tools_update():
+    """
+    P1（2026-06-22 改造）：客户端断开后遇到非 tools 节点 update，不应立即断开
+
+    场景：客户端在 LLM 调用阶段断开，后续流中先出现 summarize 节点 update，
+    然后才是 tools 节点。SSE 路由应继续等待 tools 节点完成才真正断开。
+    """
+    from app.routers._stream_helper import generate_stream_response
+
+    class MockToolMessage:
+        def __init__(self, content="tool result"):
+            self.content = content
+            self.tool_call_id = "call_1"
+
+    chunks = [
+        # LLM 节点 update
+        ("updates", {"llm_call": {"messages": [Mock(content="hello")]}}),
+        # summarize 节点 update（非 tools 节点，不应触发断开）
+        ("updates", {"summarize": {"messages": []}}),
+        # hitl_check 节点 update
+        ("updates", {"hitl_check": {"messages": []}}),
+        # tools 节点完成（最终触发断开）
+        ("updates", {"tools": {"messages": [MockToolMessage("result")]}}),
+        # 后续不应被处理
+        ("updates", {"llm_call": {"messages": [Mock(content="should_not_appear")]}}),
+    ]
+
+    async def fake_stream(*args, **kwargs):
+        for c in chunks:
+            yield c
+
+    fake_request = _make_fake_request([False, True, True, True, True, True])
+
+    fake_agent = Mock()
+    fake_agent.stream = fake_stream
+
+    async def collect():
+        results = []
+        async for item in generate_stream_response(
+            agent=fake_agent,
+            input_state=Mock(),
+            context=None,
+            session_id="sid_test",
+            request=fake_request,
+        ):
+            results.append(item)
+        return results
+
+    results = asyncio.run(collect())
+
+    # 预期 yield 6 个事件：
+    # 1. LLM update
+    # 2. client_disconnected 标记
+    # 3. summarize update（不应触发断开）
+    # 4. hitl_check update（不应触发断开）
+    # 5. tools update（触发断开）
+    # 6. end 事件
+    assert len(results) == 6, f"期望 6 个 SSE 输出，实际 {len(results)}: {results}"
+
+    # 验证 client_disconnected 在第二个事件
+    assert '"type": "client_disconnected"' in results[1]
+    # 验证 summarize 和 hitl_check 都被 yield（虽然客户端断开）
+    assert "summarize" in results[2]
+    assert "hitl_check" in results[3]
+    # 验证 tools 节点完成时触发断开
+    assert "tools" in results[4]
+    assert '"type": "end"' in results[5]
+
+
+def test_generate_stream_response_skips_messages_after_disconnect():
+    """
+    P1（2026-06-22 改造）：客户端断开后跳过 messages 模式（不再推 LLM token）
+
+    验证 messages 模式 chunk 在 disconnect_requested=True 时被跳过，
+    不浪费带宽，前端也不会看到不完整的 LLM 输出。
+    """
+    from app.routers._stream_helper import generate_stream_response
+
+    class MockToolMessage:
+        def __init__(self, content="tool result"):
+            self.content = content
+            self.tool_call_id = "call_1"
+
+    # Mock AIMessage for messages 模式
+    mock_ai_msg = Mock()
+    mock_ai_msg.__class__.__name__ = "AIMessageChunk"
+
+    # 模拟流：先 messages 模式输出 LLM token（disconnect 后应被跳过）
+    # 然后 tools 节点完成（触发断开）
+    chunks = [
+        # LLM update 节点
+        ("updates", {"llm_call": {"messages": [Mock(content="thinking...")]}}),
+        # messages 模式：LLM token（disconnect 后应被跳过）
+        ("messages", (mock_ai_msg, {"langgraph_node": "llm_call"})),
+        # tools 节点完成
+        ("updates", {"tools": {"messages": [MockToolMessage("result")]}}),
+    ]
+
+    async def fake_stream(*args, **kwargs):
+        for c in chunks:
+            yield c
+
+    # 第二次 is_disconnected 返回 True
+    fake_request = _make_fake_request([False, True, True, True])
+
+    fake_agent = Mock()
+    fake_agent.stream = fake_stream
+
+    # Mock format_message to return a content string
+    from unittest.mock import patch
+    with patch("app.routers._stream_helper.stream_format_context.format_message", return_value="chunk_content"):
         async def collect():
             results = []
-            async for item in map_router.generate_stream_response(
-                user_input="test",
-                session_id="sid_test",
+            async for item in generate_stream_response(
+                agent=fake_agent,
+                input_state=Mock(),
                 context=None,
-                geometry_data={},
-                attachments=[],
-                resume=None,
+                session_id="sid_test",
                 request=fake_request,
             ):
                 results.append(item)
@@ -113,18 +344,34 @@ def test_generate_stream_response_stops_on_client_disconnect():
 
         results = asyncio.run(collect())
 
-    # 第一次 is_disconnected()==False 时已 yield 1 个 chunk；第二次 True 时跳出循环
-    # 因此结果中只应有 1 个 SSE 输出（与 hello 对应的 update 事件）
-    assert len(results) == 1, f"期望 yield 1 次后跳出，实际 {len(results)} 次"
-    # 验证 is_disconnected 至少被调用过（说明断连检测逻辑生效）
-    assert fake_request._call_count["n"] >= 1
+    # 4 个事件：LLM update + client_disconnected + tools update + end
+    # messages 模式（"chunk_content"）不应出现在结果中
+    for r in results:
+        assert "chunk_content" not in r, \
+            f"messages 模式在 disconnect 后应被跳过，但出现了: {r}"
+
+
+def test_generate_stream_response_legacy_immediate_disconnect():
+    """
+    P1（向后兼容测试）：现有测试用例验证"立即断开"行为已被替换为"延迟断开"
+
+    原行为：检测到 disconnect 立即 return（仅 yield 1 个 chunk）
+    新行为：检测到 disconnect 仅标记，继续 yield 直到 tools 节点完成
+
+    旧测试期望的是原行为，本测试明确：原有测试已被新行为覆盖，新行为更安全
+    （避免 orphan tool_calls 导致 LLM API 报错）。
+    """
+    # 此测试作为文档说明：旧的"立即 return"行为已被替换
+    # 实际新行为在 test_generate_stream_response_delayed_disconnect_single_tool 中验证
+    # 不在此重复实现，仅文档化变更
+    pass
 
 
 def test_generate_stream_response_runs_to_end_when_not_disconnected():
     """
     P1: 客户端未断开时（is_disconnected 始终 False），正常 yield 所有 chunk + end 事件
     """
-    from app.features.map_agent.router import map_router
+    from app.routers._stream_helper import generate_stream_response
 
     chunks = [
         ("updates", {"llm_call": {"messages": [Mock(content="hello")]}}),
@@ -138,26 +385,23 @@ def test_generate_stream_response_runs_to_end_when_not_disconnected():
     # 全部返回 False（未断开）
     fake_request = _make_fake_request([False, False, False, False, False])
 
-    # 替换 get_map_agent，让 MapAgent.stream 走 fake_stream
+    # 替换 agent.stream，让 stream 走 fake_stream
     fake_agent = Mock()
     fake_agent.stream = fake_stream
 
-    with patch.object(map_router, "get_map_agent", AsyncMock(return_value=fake_agent)):
-        async def collect():
-            results = []
-            async for item in map_router.generate_stream_response(
-                user_input="test",
-                session_id="sid_test",
-                context=None,
-                geometry_data={},
-                attachments=[],
-                resume=None,
-                request=fake_request,
-            ):
-                results.append(item)
-            return results
+    async def collect():
+        results = []
+        async for item in generate_stream_response(
+            agent=fake_agent,
+            input_state=Mock(),
+            context=None,
+            session_id="sid_test",
+            request=fake_request,
+        ):
+            results.append(item)
+        return results
 
-        results = asyncio.run(collect())
+    results = asyncio.run(collect())
 
     # 2 个 update chunk + 1 个 end 事件 = 3 个 SSE 输出
     assert len(results) == 3, f"期望 3 个 SSE 输出，实际 {len(results)}"
@@ -172,7 +416,7 @@ def test_generate_stream_response_works_without_request():
     P1: request=None 时（向后兼容：旧调用方不传 request）仍能正常工作
     不抛异常、不进入断连检查分支
     """
-    from app.features.map_agent.router import map_router
+    from app.routers._stream_helper import generate_stream_response
 
     chunks = [
         ("updates", {"llm_call": {"messages": [Mock(content="hello")]}}),
@@ -185,22 +429,20 @@ def test_generate_stream_response_works_without_request():
     fake_agent = Mock()
     fake_agent.stream = fake_stream
 
-    with patch.object(map_router, "get_map_agent", AsyncMock(return_value=fake_agent)):
-        async def collect():
-            results = []
-            # 关键：request=None（默认参数）
-            async for item in map_router.generate_stream_response(
-                user_input="test",
-                session_id="sid_test",
-                context=None,
-                geometry_data={},
-                attachments=[],
-                resume=None,
-            ):
-                results.append(item)
-            return results
+    async def collect():
+        results = []
+        # 关键：request=None（默认参数）
+        async for item in generate_stream_response(
+            agent=fake_agent,
+            input_state=Mock(),
+            context=None,
+            session_id="sid_test",
+            request=None,
+        ):
+            results.append(item)
+        return results
 
-        results = asyncio.run(collect())
+    results = asyncio.run(collect())
 
     # 1 个 update + 1 个 end = 2 个 SSE 输出
     assert len(results) == 2

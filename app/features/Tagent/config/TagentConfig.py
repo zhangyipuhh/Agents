@@ -53,13 +53,16 @@ class TAgentState(BaseAgentState):
 class TAgentConfig(BaseAgentConfig):
     """
     TAgent 配置类
-    
+
     封装 Agent 的所有配置参数，用于初始化和管理 Agent 实例。
     该类使用数据类实现，支持默认值配置，便于灵活创建 Agent。
     支持继承，子类可重写默认值或添加新字段。
     """
- 
-    
+
+    name: str = field(default="Tagent")
+    """TAgent 在 skill 系统中的注册名（与 app/features/Tagent/ 目录名一致），
+    用于子智能体维度 skill 与 bootstrap 覆盖。"""
+
     state_class: type[TAgentState] = field(default=None)
     """
     状态类，需要传入一个继承自 AgentState 的 TypedDict 类型，用于管理对话状态，在会话中是可被操作的值   
