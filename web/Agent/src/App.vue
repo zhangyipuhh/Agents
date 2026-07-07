@@ -238,12 +238,19 @@ let isCreatingNewSession = false
 const isEmptyState = computed(() => messages.length === 0)
 
 // 2026-07-01 新增：项目文件夹可编辑性判定（用于锁定项目选择器）
-// 派生自 isEmptyState + 历史加载失败标记：
-//   * 新建会话（messages 空）→ true，可选择项目
+// 派生自 isEmptyState + 历史加载失败标记 + 上传文件锁定标记：
+//   * 新建会话（messages 空）且无成功上传文件 → true，可选择项目
 //   * 已发送过消息或历史会话有消息 → false，锁定项目选择器
 //   * 历史会话拉取失败 → false，默认锁定（保守策略，避免未知状态下误操作）
+//   * 仅上传文件但未发送消息 → false，锁定项目选择器（2026-07-06 新增）
 const historyLoadFailed = ref(false)
-const canEditProject = computed(() => isEmptyState.value && !historyLoadFailed.value)
+// 2026-07-06 新增：记录 InputBox 中是否存在已成功上传的文件
+const projectLockedByUpload = ref(false)
+const canEditProject = computed(() =>
+  isEmptyState.value &&
+  !historyLoadFailed.value &&
+  !projectLockedByUpload.value
+)
 
 /**
  * 应用用户数据到当前状态
@@ -446,6 +453,8 @@ async function newSession() {
 
     // 2026-07-01 新增：新建会话时重置历史加载失败标记（保守锁定策略失效，新会话允许选择项目）
     historyLoadFailed.value = false
+    // 2026-07-06 新增：新建会话时重置上传文件锁定标记
+    projectLockedByUpload.value = false
 
     // 关闭子智能体详情抽屉：避免上一个会话的 subagent 数据残留在 UI 上
     closeSubAgentDrawer()
@@ -1388,6 +1397,7 @@ async function handleSessionSwitch(targetSessionId) {
           @new-chat="newSession"
           @stop="handleStopMessage"
           @agent-switched="handleAgentSwitched"
+          @project-lock-change="projectLockedByUpload = $event"
           @select-project="(p) => p === null ? handleProjectSelectNone() : handleProjectPick(p)"
           @create-project="openCreateProjectDialog"
           @pick-existing="openPickProjectDialog"

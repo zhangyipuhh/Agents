@@ -87,6 +87,13 @@ const canSend = computed(() => {
   return hasText || hasUploadedFiles
 })
 
+// 2026-07-06 新增：是否存在已成功上传的文件。
+// 用于向上游同步项目选择器锁定状态：只要存在成功上传的文件，
+// 即使尚未发送消息，也应禁止切换项目。
+const hasSuccessfullyUploadedFiles = computed(() =>
+  selectedFiles.value.some(f => f.status === 'success')
+)
+
 /**
  * 是否为命令输入（以 / 开头，且未通过下拉菜单选中智能体）
  * @returns {boolean} 当前输入是否为斜杠命令
@@ -457,8 +464,10 @@ const startUpload = (fileItem) => {
   // - 若已有 session → props.ensureSession 直接短路返回
   // - 若无 session → 父组件 ensureSessionForFirstOp 内部使用 createNewSession 自带的 isCreatingSession / pendingSessionPromise 防重锁，
   //   保证对后端只发一次 /api/session/create，其它的 await 在同一 promise 上串接结果。
+  // 2026-07-06 修正：上传时携带当前项目 ID，确保新创建的 session 立即与 project 关联。
+  const projectIdForUpload = props.currentProject ? props.currentProject.id : null
   const ensurePromise = (typeof props.ensureSession === 'function')
-    ? Promise.resolve(props.ensureSession()).catch((err) => err)
+    ? Promise.resolve(props.ensureSession(projectIdForUpload)).catch((err) => err)
     : Promise.resolve(null)
 
   ensurePromise.then((maybeError) => {
@@ -498,6 +507,10 @@ function runChunkUpload(fileItem) {
       item.status = 'success'
       item.progress = 100
       item.uploadResult = result.files?.[0] || result
+      // 2026-07-06 新增：首次出现成功上传文件时通知父组件锁定项目选择器
+      if (hasSuccessfullyUploadedFiles.value) {
+        emit('project-lock-change', true)
+      }
     }
   }).catch(err => {
     const item = selectedFiles.value.find(f => f.id === fileItem.id)
@@ -531,6 +544,11 @@ const removeFile = async (fileItem) => {
 
   const idx = selectedFiles.value.findIndex(f => f.id === fileItem.id)
   if (idx !== -1) selectedFiles.value.splice(idx, 1)
+
+  // 2026-07-06 新增：删除后若已无成功上传文件，通知父组件解除项目选择器锁定
+  if (!hasSuccessfullyUploadedFiles.value) {
+    emit('project-lock-change', false)
+  }
 }
 
 const retryUpload = (fileItem) => {
@@ -581,7 +599,18 @@ const getFileIconColor = (ext) => {
   return colorMap[ext] || '#9CA3AF'
 }
 
-const emit = defineEmits(['send', 'tool-action', 'stop', 'agent-switched', 'project-changed', 'select-project', 'create-project', 'pick-existing'])
+const emit = defineEmits([
+  'send',
+  'tool-action',
+  'stop',
+  'agent-switched',
+  'project-changed',
+  'select-project',
+  'create-project',
+  'pick-existing',
+  // 2026-07-06 新增：向上游报告项目选择器应否锁定
+  'project-lock-change'
+])
 </script>
 
 <template>

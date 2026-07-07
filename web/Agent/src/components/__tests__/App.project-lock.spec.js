@@ -232,4 +232,39 @@ describe('App.vue 项目锁定 canEditProject（2026-07-01 新增）', () => {
     // messages 已被 splice 清空 → canEditProject=true
     expect(wrapper.vm.canEditProject).toBe(true)
   })
+
+  it('test_upload_lock_makes_can_edit_false 存在成功上传文件时 → canEditProject=false', async () => {
+    const App = (await import('../../App.vue')).default
+    const wrapper = mount(App, {
+      global: { stubs: ['router-link', 'router-view'] }
+    })
+    await flushPromises()
+
+    // 初始可编辑
+    expect(wrapper.vm.canEditProject).toBe(true)
+
+    // 模拟 InputBox 上报存在成功上传文件
+    wrapper.vm.projectLockedByUpload = true
+    await flushPromises()
+
+    expect(wrapper.vm.canEditProject).toBe(false)
+  })
+
+  it('test_new_session_resets_project_locked_by_upload 新建会话时 projectLockedByUpload 复位', async () => {
+    const App = (await import('../../App.vue')).default
+    const wrapper = mount(App, {
+      global: { stubs: ['router-link', 'router-view'] }
+    })
+    await flushPromises()
+
+    wrapper.vm.projectLockedByUpload = true
+    await flushPromises()
+    expect(wrapper.vm.canEditProject).toBe(false)
+
+    wrapper.vm.newSession()
+    await flushPromises()
+
+    expect(wrapper.vm.projectLockedByUpload).toBe(false)
+    expect(wrapper.vm.canEditProject).toBe(true)
+  })
 })

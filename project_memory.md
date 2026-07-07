@@ -921,15 +921,15 @@ return data/upload/yyyy/mm/dd/{session_id}/
 - `App.vue::handleApprovalSubmit` 加防御性 early-return：缺 `sessionId` 时直接退出（实际不会触发，因为触达 HITL 必然先经历 `handleSendMessage`）。
 - `App.vue::handleProjectPick` / `handleProjectCreate` / `handleProjectSelectNone`（2026-07-06 修正）：项目是独立实体，选择/创建/解绑项目不再以 `sessionId.value` 为前提。无 session 时仅更新前端 `currentProject` / `currentAttachments` 状态；有 session 时才调用 `/api/project/session/bind` 或 `/api/project/session/unbind` 同步当前会话的项目关联。创建项目时 `createProject(name)` 不再传入 `session_id` 作为 uuid，由后端独立生成。`handleProjectCreate` 对返回值做防御性读取，成功设置 `currentProject` 后由父组件关闭弹窗，确保按钮文案实时刷新；`handleProjectPick` 对入参做基础校验。
 - `App.vue` 模板 `<InputBox :ensure-session="ensureSessionForFirstOp" ... />`。
-- `InputBox.vue` 新增 prop `ensureSession: Function`（默认 null，向后兼容）；`startUpload` 内首调上传前 `await props.ensureSession()`，失败时把 `fileItem.status = 'error'` 并附错误信息，仅当 promise 正常才进入 `runChunkUpload()`。
-- 兼容并发：多个 `startUpload` 同时 await 同一 `ensureSessionForFirstOp()` → `createNewSession` 防重锁保证对后端只发一次 `/api/session/create`，其它 await 在同一 promise 上串接结果。
+- `InputBox.vue` 新增 prop `ensureSession: Function`（默认 null，向后兼容）；`startUpload` 内首调上传前 `await props.ensureSession(projectIdForUpload)`，其中 `projectIdForUpload = props.currentProject?.id ?? null`，失败时把 `fileItem.status = 'error'` 并附错误信息，仅当 promise 正常才进入 `runChunkUpload()`。2026-07-06 修正：上传必须携带当前项目 ID，确保新 session 与 project 即时关联，文件落入项目目录。
+- 兼容并发：多个 `startUpload` 同时 await 同一 `ensureSessionForFirstOp(projectIdForUpload)` → `createNewSession` 防重锁保证对后端只发一次 `/api/session/create`，其它 await 在同一 promise 上串接结果。
 - `Sidebar.vue` 的 `currentSessionId` 默认值已为 `''`，与历史 session_id 比较时天然不匹配；空 session 时不高亮任何条目，无需额外改动。
 
 **影响面**：
 
 - 后端 `/api/session/create` 接口契约不变；`createNewSession` 自带的防重复锁机制复用。
 - `KnowledgeApp.vue` / `KnowledgePage.vue` 维持独立链路（独立 `knowledge_session_id`），本次未在范围内，逻辑保持原状。
-- 项目选择器锁定（`canEditProject`）语义无变化：新建任务（messages 空）→ 可编辑；首条消息发送成功 → 锁定。
+- 项目选择器锁定（`canEditProject`）语义扩展：新建任务（messages 空且无成功上传文件）→ 可编辑；首条消息发送成功或存在成功上传文件 → 锁定（详见「项目选择器锁定逻辑」章节）。
 
 ### 后端 `/api/agent/list` 加入 Session 白名单（2026-07-XX 配套）
 
@@ -954,23 +954,25 @@ return data/upload/yyyy/mm/dd/{session_id}/
 - 与 `/api/agent/list` 同语义的 `/api/session/list` / `/api/project/list` 早就走白名单或自然放行，行为对齐。
 - 前端 `InputBox::loadAgents()` / `fetchAgentList()` 调用链路不变；冷启动 / 按需建 session 阶段 `GET /api/agent/list` 自动 200，智能体下拉正常工作。
 
-### 项目选择器锁定逻辑（2026-07-01 新增）
+### 项目选择器锁定逻辑（2026-07-01 新增，2026-07-06 扩展）
 
 **规则**：
 
-- 新建会话、`messages` 数组为空时 → 项目选择器**可编辑**
+- 新建会话、`messages` 数组为空且不存在成功上传文件时 → 项目选择器**可编辑**
 - 一旦该会话成功发送过一条消息（或被恢复的历史会话本身有消息）→ 项目选择器**永久锁定**（同一会话再也不能改项目）
+- 仅上传文件但未发送消息 → 项目选择器**锁定**（2026-07-06 新增：只要 `selectedFiles` 中存在 `status === 'success'` 的文件即锁定）
+- 删除所有已上传文件且 `messages` 仍为空 → 项目选择器**恢复可编辑**（2026-07-06 新增）
 - 切到历史会话时 → 若历史消息数 > 0，**锁定**；若历史为空，**仍可编辑**（允许给从未发过消息的空会话补绑项目）
 - 历史会话 `fetchSessionMessages` 失败时 → **默认锁定**（保守策略，避免未知状态下误操作）
 - `streaming` 中 → 仍按 `disabled` 短路（与锁定独立，两个维度均可独立触发 disable）
 
 **实现**：
 
-- `App.vue` 新增 `historyLoadFailed = ref(false)` 与派生 `canEditProject = computed(() => isEmptyState.value && !historyLoadFailed.value)`，零新状态（复用既有 `isEmptyState`）
+- `App.vue` 新增 `historyLoadFailed = ref(false)`、`projectLockedByUpload = ref(false)` 与派生 `canEditProject = computed(() => isEmptyState.value && !historyLoadFailed.value && !projectLockedByUpload.value)`
 - `App.vue::handleSessionSwitch` 入口重置 `historyLoadFailed`，catch 块置 true
-- `App.vue::newSession` 重置 `historyLoadFailed`
-- `App.vue` 模板：`<InputBox :project-locked="!canEditProject" ... />`
-- `InputBox.vue` 新增 prop `projectLocked`，透传给 `<ProjectDropdown :locked="projectLocked" />`
+- `App.vue::newSession` 重置 `historyLoadFailed` 与 `projectLockedByUpload`
+- `App.vue` 模板：`<InputBox :project-locked="!canEditProject" @project-lock-change="projectLockedByUpload = $event" ... />`
+- `InputBox.vue` 新增 prop `projectLocked`，透传给 `<ProjectDropdown :locked="projectLocked" />`；新增计算属性 `hasSuccessfullyUploadedFiles`，并在文件上传成功时 `emit('project-lock-change', true)`、删除后无成功文件时 `emit('project-lock-change', false)`
 - `ProjectDropdown.vue` 新增 prop `locked`，与 `disabled` 通过 `effectiveDisabled = computed(() => disabled || locked)` 合并；`toggleDropdown()` 短路 `effectiveDisabled`；按钮 `:disabled="effectiveDisabled"`、class `disabled` 同步
 - **视觉**：复用现有 `.disabled` 样式（灰 + not-allowed），不新增图标（设计决策：避免与 streaming 状态视觉混淆，用户可通过 hover tooltip "项目已锁定" 知晓原因）
 
@@ -978,7 +980,8 @@ return data/upload/yyyy/mm/dd/{session_id}/
 
 - `web/Agent/src/components/__tests__/ProjectDropdown.locked.spec.js` — `locked=true` 时按钮 disabled、点击不开下拉、已选项 label 保留可见、`disabled || locked` 任一为 true 都短路
 - `web/Agent/src/components/__tests__/InputBox.locked.spec.js` — `projectLocked` prop 透传到 `ProjectDropdown.locked`，默认值 false，与 `isStreaming` 解耦
-- `web/Agent/src/components/__tests__/App.project-lock.spec.js` — `canEditProject` 派生：初始 true、恢复历史会话后 false、history 拉取失败默认锁定 false、`newSession` 重置回 true、`projectLocked` 透传到 InputBox
+- `web/Agent/src/components/__tests__/InputBox.upload-lock.spec.js` — 上传成功后 emit `project-lock-change(true)`，删除全部成功后 emit `project-lock-change(false)`，`ensureSession` 携带当前 projectId
+- `web/Agent/src/components/__tests__/App.project-lock.spec.js` — `canEditProject` 派生：初始 true、恢复历史会话后 false、history 拉取失败默认锁定 false、`newSession` 重置回 true、`projectLocked` 透传到 InputBox；存在成功上传文件时 `projectLockedByUpload` 为 true 导致 `canEditProject` 为 false
 
 ### 前端 chat 请求体显式携带 project_id（2026-07-01 新增）
 
