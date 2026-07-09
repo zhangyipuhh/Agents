@@ -16,7 +16,8 @@ services:
       - .env
     volumes:
       - ./app/shared/tools/mcp/config.yaml:/app/app/shared/tools/mcp/config.yaml:ro
-      - ./app/data/Knowledge:/app/data/Knowledge:rw
+      # 数据目录挂载（2026-07-09：数据从 ./app/data 迁移至项目根 ./data 后改为整体挂载）
+      - ./data:/app/data:rw
       # 代码目录挂载（开发模式）：宿主机修改代码后立即生效，无需重建镜像
       - ./app:/app/app:rw
       # 挂载 .env 文件，让容器内 find_dotenv() 与 pydantic-settings 的 env_file 能正确读取
