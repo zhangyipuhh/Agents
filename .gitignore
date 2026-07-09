@@ -76,7 +76,8 @@ web/Agent/public/app-config.json
 # 包含根目录的 docker-compose
 !docker-compose.yml
 !docker-compose.yaml
-
+!dockers/
+!dockers/**
 !AGENTS.md
 !img/
 !img/**
