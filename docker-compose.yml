@@ -50,6 +50,7 @@ services:
       - "9001:80"
     environment:
       - VITE_API_TARGET=${VITE_API_TARGET:-http://preview-app:8001}
+    mem_limit: 8g
     depends_on:
       - agents
     networks:
