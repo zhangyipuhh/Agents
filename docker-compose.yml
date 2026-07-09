@@ -15,6 +15,10 @@ services:
     env_file:
       - .env
     volumes:
+      # ===== 新增（2026-07-09）：让 preview-app 能通过 socket 连宿主机 docker daemon =====
+      # 不加这一行，容器内的 docker.DockerClient(base_url='unix:///var/run/docker.sock') 
+      # 会因找不到文件/无权限而抛 DockerException，sandbox 工具永远起不了子容器。
+      - /var/run/docker.sock:/var/run/docker.sock
       - ./app/shared/tools/mcp/config.yaml:/app/app/shared/tools/mcp/config.yaml:ro
       # 数据目录挂载（2026-07-09：数据从 ./app/data 迁移至项目根 ./data 后改为整体挂载）
       - ./data:/app/data:rw
