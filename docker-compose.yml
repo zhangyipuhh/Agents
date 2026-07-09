@@ -20,6 +20,11 @@ services:
       - ./data:/app/data:rw
       # 代码目录挂载（开发模式）：宿主机修改代码后立即生效，无需重建镜像
       - ./app:/app/app:rw
+      # 仓库根 agents/ 目录挂载（2026-07-09 新增）：
+      #   agents 表的 agents_md_path 是相对路径 agents/<name>/AGENTS.md，
+      #   容器 CWD=/app 下需访问 /app/agents/...；挂载到 :rw 以支持开发期
+      #   修改 AGENTS.md 后立即生效，无需 docker compose build。
+      - ./agents:/app/agents:rw
       # 挂载 .env 文件，让容器内 find_dotenv() 与 pydantic-settings 的 env_file 能正确读取
       - ./.env:/app/.env:ro
     mem_limit: 8g

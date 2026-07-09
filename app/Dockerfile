@@ -47,6 +47,15 @@ COPY --from=builder /install /usr/local
 
 COPY app/ /app/app/
 
+# 复制仓库根的 agents/ 目录到镜像 /app/agents/（2026-07-09 新增）
+# 原因：agents 表的 agents_md_path 字段存储相对路径 agents/<name>/AGENTS.md，
+# AgentsMdLoader 在 docker 容器（CWD=/app）下通过该相对路径查找文件，
+# 必须把仓库根的 agents/ 目录同步打入镜像，否则 docker 启动后会抛
+# FileNotFoundError: AGENTS.md not found at: agents/<name>/AGENTS.md。
+# 本 COPY 仅影响镜像构建期；运行时仍由 docker-compose 的 ./agents:/app/agents:rw
+# 卷挂载覆盖，便于在不重建镜像的情况下热更新 AGENTS.md。
+COPY agents/ /app/agents/
+
 RUN pip install --no-cache-dir packaging>=23.0
 
 EXPOSE 8001
