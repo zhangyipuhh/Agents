@@ -2192,6 +2192,148 @@ export async function fetchAgentAvailableSkills(name) {
 }
 
 // ============================================================
+// 智能体定时任务 API（2026-07-10 新增）
+// 对应后端 /api/admin/task-schedules 管理接口
+// ============================================================
+
+/**
+ * 获取智能体定时任务列表
+ * @returns {Promise<Array>} 定时任务列表
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function fetchTaskSchedules() {
+  const response = await fetchWithAuth('/api/admin/task-schedules', { method: 'GET' })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取定时任务列表失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 获取单个智能体定时任务
+ * @param {number|string} id - 定时任务 ID
+ * @returns {Promise<Object>} 定时任务详情
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function fetchTaskSchedule(id) {
+  const response = await fetchWithAuth(`/api/admin/task-schedules/${encodeURIComponent(id)}`, { method: 'GET' })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取定时任务失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 创建智能体定时任务
+ * @param {Object} payload - 定时任务配置
+ * @returns {Promise<Object>} 新建任务记录
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function createTaskSchedule(payload) {
+  const response = await fetchWithAuth('/api/admin/task-schedules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `创建定时任务失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 更新智能体定时任务
+ * @param {number|string} id - 定时任务 ID
+ * @param {Object} payload - 需要更新的字段
+ * @returns {Promise<Object>} 更新后的任务记录
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function updateTaskSchedule(id, payload) {
+  const response = await fetchWithAuth(`/api/admin/task-schedules/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `更新定时任务失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 删除智能体定时任务
+ * @param {number|string} id - 定时任务 ID
+ * @returns {Promise<void>} 无返回值
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function deleteTaskSchedule(id) {
+  const response = await fetchWithAuth(`/api/admin/task-schedules/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `删除定时任务失败: ${response.status}`)
+  }
+}
+
+/**
+ * 启用或禁用智能体定时任务
+ * @param {number|string} id - 定时任务 ID
+ * @param {boolean} enabled - 是否启用
+ * @returns {Promise<Object>} 更新后的任务记录
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function setTaskScheduleEnabled(id, enabled) {
+  const response = await fetchWithAuth(`/api/admin/task-schedules/${encodeURIComponent(id)}/enabled`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `更新定时任务启用状态失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 立即运行一次智能体定时任务
+ * @param {number|string} id - 定时任务 ID
+ * @returns {Promise<Object>} pending 状态的执行记录
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function triggerTaskSchedule(id) {
+  const response = await fetchWithAuth(`/api/admin/task-schedules/${encodeURIComponent(id)}/trigger`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `立即运行定时任务失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 获取智能体定时任务执行历史
+ * @param {number|string} id - 定时任务 ID
+ * @param {number} limit - 最大返回条数
+ * @returns {Promise<Array>} 执行历史列表
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function fetchTaskRuns(id, limit = 50) {
+  const response = await fetchWithAuth(`/api/admin/task-schedules/${encodeURIComponent(id)}/runs?limit=${encodeURIComponent(limit)}`, {
+    method: 'GET',
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取定时任务执行历史失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+// ============================================================
 // 消息反馈 API（2026-07-02 新增）
 // 对应后端 message_feedback_router 的 POST /api/agent/message-feedback
 // 用于 AI 回复点赞 / 点踩（点踩时携带详细原因）

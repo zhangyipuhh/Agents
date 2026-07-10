@@ -58,3 +58,27 @@ def test_old_map_chat_route_removed(client):
     """
     routes = [r.path for r in client.app.routes]
     assert "/api/map/chat" not in routes, "旧 /api/map/chat 路由仍存在，应已替换为 /api/agent/chat"
+
+
+def test_task_scheduler_router_registered(client):
+    """测试 /api/admin/task-schedules 前缀路由已注册。
+
+    Args:
+        client: FastAPI TestClient fixture，提供 app.routes 访问能力。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 当定时任务管理路由未注册时触发。
+    """
+    routes = [r.path for r in client.app.routes]
+    expected = [
+        "/api/admin/task-schedules",
+        "/api/admin/task-schedules/{schedule_id}",
+        "/api/admin/task-schedules/{schedule_id}/enabled",
+        "/api/admin/task-schedules/{schedule_id}/trigger",
+        "/api/admin/task-schedules/{schedule_id}/runs",
+    ]
+    for path in expected:
+        assert path in routes, f"定时任务管理路由未注册: {path}"

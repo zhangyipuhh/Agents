@@ -100,6 +100,25 @@ def _init_tool_service(app):
 
 
 @pytest.fixture(autouse=True)
+def _init_task_scheduler_service(app):
+    """初始化 app.state.task_scheduler_service 供 task_scheduler_router 使用。
+
+    生产对应初始化点：``app/core/server.py::lifespan`` 中
+    ``TaskSchedulerService(db_pool, app.state.agent_config_service)`` 创建并挂到
+    ``app.state.task_scheduler_service``，随后 preload_all/start 启动应用内调度器。
+
+    测试环境注入真实 TaskSchedulerService 实例，db=None 是合法 stub；
+    单测通过替换 service 方法或按需注入 fake db 验证行为。禁止注入
+    ``app.state.db = MagicMock()`` 这类生产不存在的对象。
+    """
+    from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+    app.state.task_scheduler_service = TaskSchedulerService(
+        db=None,
+        agent_config_service=app.state.agent_config_service,
+    )
+
+
+@pytest.fixture(autouse=True)
 def _mock_user_db_for_admin_auth(monkeypatch):
     """Mock UserDB.get_user_by_username 根据 username 返回对应 role 用户。
 

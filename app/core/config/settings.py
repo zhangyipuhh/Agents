@@ -483,6 +483,19 @@ class Settings(BaseSettings):
         ge=1,
         description="Agent 聊天接口最大并发数，超出时进入内存队列等待；环境变量 AGENT_CHAT_MAX_CONCURRENCY",
     )
+    task_scheduler_enabled: bool = Field(
+        default=True,
+        description="智能体定时任务应用内调度器总开关；环境变量 TASK_SCHEDULER_ENABLED",
+    )
+    task_scheduler_timezone: str = Field(
+        default="Asia/Shanghai",
+        description="智能体定时任务默认时区；环境变量 TASK_SCHEDULER_TIMEZONE",
+    )
+    task_scheduler_max_concurrency: int = Field(
+        default=1,
+        ge=1,
+        description="智能体定时任务全局最大并发执行数；环境变量 TASK_SCHEDULER_MAX_CONCURRENCY",
+    )
 
     def get_llm_config(self) -> dict:
         """

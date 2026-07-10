@@ -63,6 +63,7 @@ from app.routers.agent_router import router as agent_router
 from app.routers.agent_admin_router import router as agent_admin_router
 from app.routers.tool_admin_router import router as tool_admin_router
 from app.routers.skill_admin_router import router as skill_admin_router
+from app.routers.task_scheduler_router import router as task_scheduler_router
 
 
 app = create_app()
@@ -91,6 +92,7 @@ def register_routers(target_app=None):
     _app.include_router(agent_admin_router)
     _app.include_router(tool_admin_router)
     _app.include_router(skill_admin_router)
+    _app.include_router(task_scheduler_router)
 
 
 register_routers()

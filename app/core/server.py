@@ -228,6 +228,25 @@ async def lifespan(app: FastAPI):
             # 预加载 agent 配置缓存（仅 DB 配置，tools=None 延迟加载，保持 MCP 懒加载）
             await app.state.agent_config_service.preload_all()
             await app.state.mcp_config_service.preload_all()
+
+            # 初始化智能体定时任务服务：数据库为任务定义真相源，应用内调度器负责触发。
+            # 顺序要求：必须晚于 AgentConfigService 依赖注入与缓存预加载，确保执行时可复用 build_agent_instance。
+            if settings.task_scheduler_enabled and db_pool:
+                try:
+                    from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+                    app.state.task_scheduler_service = TaskSchedulerService(
+                        db_pool,
+                        app.state.agent_config_service,
+                    )
+                    await app.state.task_scheduler_service.preload_all()
+                    await app.state.task_scheduler_service.start()
+                    logging.info("[lifespan] TaskSchedulerService initialized and started")
+                except Exception as scheduler_exc:
+                    logging.warning(
+                        "[lifespan] Failed to initialize TaskSchedulerService: %s",
+                        scheduler_exc,
+                        exc_info=True,
+                    )
             logging.info(
                 "[lifespan] All config caches preloaded (tool_service=%s, mcp_registry=%s, skill_service=%s)",
                 tool_service_injected, mcp_registry_injected, skill_service_injected,

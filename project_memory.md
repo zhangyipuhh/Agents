@@ -408,6 +408,49 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 
 **降级**：内存模式（`AUTH_STORAGE_MODE=memory`）下后端返回 503，前端 catch 后 toast "反馈功能仅在数据库模式下可用"，不阻塞用户继续聊天。
 
+### agent_task_schedules / agent_task_runs 表（2026-07-10 新增）
+
+智能体定时任务采用**应用内调度**，不为每条业务任务写入 Windows Task Scheduler 或 Linux cron/systemd timer；数据库是任务定义与执行历史的真相源。服务重启时由 `app/core/server.py::lifespan()` 初始化 `TaskSchedulerService`，从 `agent_task_schedules` 加载 `enabled=true` 的任务注册到 APScheduler；服务停机期间错过的触发不补跑，重启后按下一次计划时间执行。每次触发都会创建新的 `session_id`，并复用 `AgentConfigService.build_agent_instance()` 构造智能体，确保 AGENTS.md、Skill 绑定与工具绑定和聊天路径一致。
+
+`agent_task_schedules` 字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| id | SERIAL PRIMARY KEY | 定时任务 ID |
+| name | VARCHAR(200) | 任务名称 |
+| description | TEXT | 任务描述 |
+| agent_name | VARCHAR(100) FK → agents(name) | 目标智能体 |
+| prompt | TEXT | 定时触发时发送给智能体的提示词 |
+| cron_expression | VARCHAR(100) | 5 段 crontab 表达式，如 `0 9 * * *` |
+| timezone | VARCHAR(64) | IANA 时区，默认 `Asia/Shanghai` |
+| enabled | BOOLEAN | 是否启用 |
+| created_by_user_id | INTEGER FK → users(id) | 创建人，用于后台执行时创建 session |
+| context_overrides | JSONB | 注入 AgentContext 的扩展字段，默认 `{}` |
+| max_concurrent_runs | INT | 单任务并发配置，默认 1 |
+| last_run_at / next_run_at | TIMESTAMP | 最近运行与下次运行时间 |
+| created_at / updated_at | TIMESTAMP | 创建与更新时间 |
+
+`agent_task_runs` 字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| id | SERIAL PRIMARY KEY | 执行记录 ID |
+| schedule_id | INTEGER FK → agent_task_schedules(id) | 所属定时任务 |
+| session_id | VARCHAR(100) | 本次触发创建的新会话 ID |
+| agent_name | VARCHAR(100) | 执行时智能体名称快照 |
+| prompt_snapshot | TEXT | 执行时提示词快照 |
+| status | VARCHAR(32) | `pending` / `running` / `success` / `failed` / `skipped` |
+| trigger_type | VARCHAR(32) | `scheduled` / `manual` |
+| scheduled_at / started_at / finished_at | TIMESTAMP | 计划、开始、结束时间 |
+| duration_ms | INTEGER | 执行耗时毫秒 |
+| output_text | TEXT | 最后一条 AI 消息文本 |
+| error_message | TEXT | 失败或跳过原因 |
+| created_at | TIMESTAMP | 记录创建时间 |
+
+**接口**：`app/routers/task_scheduler_router.py`，前缀 `/api/admin/task-schedules`，全部受 `require_admin` 保护；提供列表、详情、新建、更新、删除、启停、立即运行与执行历史查询。
+
+**服务**：`app/shared/utils/agent/task_scheduler_service.py::TaskSchedulerService`，由 lifespan 真实初始化到 `app.state.task_scheduler_service`；测试中只能注入真实 service 实例，不允许通过 `app.state.db = MagicMock()` 虚构生产不存在的依赖。
+
 ### users 表
 
 | 字段          | 类型                       | 说明               |
@@ -2001,6 +2044,7 @@ SandboxDrawer 时间线包含 `code_generation` 事件（显示 LLM 生成的代
     - **启用/禁用开关**：右上角 switch，立即调用 `setAdminAgentEnabled`，不进入「未保存修改」队列
     - **工具绑定 Tab**（2026-06-25 新增）：右侧第三个 Tab，展示所有可用工具（内置 + MCP）按分类分组，复选框勾选绑定到当前 agent；内置工具分类 = `tools.category`，MCP 工具分类 = `mcp_server.display_name`；工具列表全局缓存（`toolsInitialized`，避免每次切换 agent 重复拉取），切换 agent 时仅重新加载该 agent 的绑定；绑定格式 `{tool_name, tool_type: "builtin"|"mcp", enabled: true, sort_order}`；保存调用 `updateAgentToolBindings(name, bindings)`（PUT 全量替换）；MCP 工具的 `tool_name` = `method_name`（不带 server 前缀，与后端 `mcp_registry.get_tools_with_server` 匹配逻辑一致）；API 函数 `listTools` / `getAgentToolBindings` / `updateAgentToolBindings` 定义在 `api.js`
   - `ToolManager.vue`：工具管理 Tab 内容，挂载于 `UserSettingsDialog.vue` 的 `tool-management` Tab（admin 可见）；左侧已注册工具列表按 `category` 分组（可折叠）+ 右侧详情/扫描结果面板；调用 `listTools` / `scanTools` / `listUnregisteredTools` / `registerTool` / `setToolEnabled` / `deleteTool`（对应后端 `tool_admin_router` 的 `/api/admin/tools/*` 端点）；支持扫描未注册工具、注册弹窗（回填自动解析的只读字段 + 补充 description/category）、启用/禁用 toggle（失败回滚 DOM）、删除（含 confirm）
+  - `TaskSchedulerManager.vue`（2026-07-10 新增）：智能体定时任务管理 Tab 内容，挂载于 `UserSettingsDialog.vue` 的 `task-scheduler` Tab（admin 可见）；左侧展示定时任务列表（名称、agent_name、cron、启停状态），右侧表单编辑 `name/description/agent_name/prompt/cron_expression/timezone/enabled/context_overrides`；支持新增、保存、启停、立即运行、删除和最近 50 条执行历史展示；调用 `fetchTaskSchedules` / `createTaskSchedule` / `updateTaskSchedule` / `deleteTaskSchedule` / `setTaskScheduleEnabled` / `triggerTaskSchedule` / `fetchTaskRuns`（对应后端 `task_scheduler_router` 的 `/api/admin/task-schedules/*` 端点）
 - **Subagent 折叠与抽屉**：
   - `SubAgentCard.vue`：通用子智能体折叠卡片（含沙箱），挂在父 AI 气泡的 `timeline.tool` 块内（按 toolCallId 匹配，遵循事件流时序）；工具图标 + 父 prompt 预览 + 状态徽章 + 耗时 + 消息数 + "查看详情" 入口；点击 emit('click', subAgent)
   - `SubAgentDrawer.vue`：通用子智能体详情 Push Drawer；分层展示父 prompt / HumanMessage / AIMessage（含 tool_calls 决策区） / ToolMessage 三类消息 + 底部耗时/消息数/工具调用次数摘要；`renderMessageContent` 扩展支持 LangChain 0.3+ 多模态 ContentBlock（text / thinking / tool_use / tool_result）
@@ -2759,8 +2803,8 @@ app/shared/utils/agent/
 - `app/shared/tools/skills/project/ProjectTools.py` —— 8 个 `@tool` 工具实现
 - `app/shared/tools/skills/project/__init__.py` —— 工具包导出
 - `app/migrations/seed_project_agent.py` —— 数据库种子脚本（写入 agents / agent_tool_bindings / skills）
-- `app/migrations/seed_project_skills.sql` —— skills 表种子 SQL（被 `init_all_tables.sql` 末尾 `\i` 引用）
-- `scripts/generate_project_skills_seed.py` —— 重新生成 `seed_project_skills.sql` 的工具脚本（解析 SKILL.md frontmatter + 正文，输出幂等 INSERT）
+- ~~`app/migrations/seed_project_skills.sql`~~ —— **已废弃（2026-07-10）**：原为独立 skills 表种子 SQL，曾被 `init_all_tables.sql` 末尾 `\i` 引用。因 `\i` 是 psql 命令行专属元命令，pgAdmin/Navicat/DBeaver 等 GUI 工具不识别、执行时报"语法错误 在 \"\\\" 或附近的"并终止整个 BEGIN 事务。已将其全部内容**内联**到 `app/migrations/init_all_tables.sql` 末尾（保留原注释头说明），并删除独立文件
+- `scripts/generate_project_skills_seed.py` —— 重新生成 skills 种子 SQL 段的工具脚本（解析 SKILL.md frontmatter + 正文，输出幂等 INSERT）。注意：2026-07-10 合并后，本脚本输出目标应改为追加到 `init_all_tables.sql` 而非写独立文件
 - `app/tests/shared/tools/skills/project/test_project_tools.py` —— 11 个 P0/P1 单测（覆盖导入/注册、Pydantic 入参校验、文件落盘、docx 落盘）
 
 **DB 种子执行**：
