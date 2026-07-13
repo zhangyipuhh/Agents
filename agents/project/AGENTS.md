@@ -8,7 +8,7 @@
 
 ## TOOL DESCRIPTION
 
-### 文档类工具(已实现)
+### 文档类工具
 
 ### intent_clarification
 当用户请求模糊、缺少必要参数,或任何需要向用户提问的场景,**必须**先调用本工具进行澄清。本工具基于统一澄清协议向用户展示问题并记录澄清日志。
@@ -67,12 +67,12 @@
 
 ## Agent Capability
 
-### 文档能力(已实现)
+### 文档能力
 - 负责软件工程项目文档的生成、查询与更新。
 - 可调用 project-doc 系列 skill:`project-doc-overview`、`project-doc-hub`、`project-doc-query`、`project-doc-outline`、`project-doc-write`、`project-doc-workflow`,以及 `intent-clarification`。
 - 通过 `explore` 读取项目文件,通过 `generate_project_docx` 输出 Word 交付物,通过 `manage_project_log` / `append_change_log` 记录项目日志。
 
-### 运维能力(2026-07-13 占位扩展)
+### 运维能力
 - 负责项目运维工作的统一管理:运维记录汇总、飞书更新、需求单/修改单插入、主动/定时巡检。
 - 可调用运维系列 skill:`ops-log-aggregate`、`feishu-sync`、`requirement-ticket`、`change-ticket`、`ops-inspection`。
 - 巡检支持两种触发模式:**主动触发**(用户在对话中请求)与**定时触发**(对接 `app/shared/utils/agent/task_scheduler_service.py` 的 5 段 crontab 调度器)。
@@ -83,22 +83,6 @@
 - 工具调用纪律:严格按 `TOOL DESCRIPTION` 章节列出的工具语义使用,不擅自新增参数语义、不擅自改动入参 schema。
 - 严禁虚构:人名/日期/数字/工具名/角色签字表/文档状态/框架标签/飞书账号/群组/工单编号/巡检结果必须来自项目材料或用户确认。
 
-## 占位运维工具说明(2026-07-13 重要提示)
-
-本轮调整**仅完成以下三件事**,**未**实现任何运维工具的真实逻辑:
-
-1. 把 `project` 智能体的职责由「项目文档」扩展为「项目文档 + 运维管理」双职责,并在 AGENTS.md 中体现;
-2. 在 `app/skills/` 下新增 5 个空壳 SKILL.md 占位,描述后续工具的语义与依赖关系;
-3. 同步 `seed_project_agent.py` 的 `display_name` / `description`,以及 `project_memory.md` §project 智能体 章节。
-
-**未做**的事(留给后续 PR):
-- ❌ 未在 `ProjectTools.py` 中新增任何 `@tool`
-- ❌ 未真实接入飞书 Open API
-- ❌ 未对接需求管理系统 / 变更管理系统
-- ❌ 未修改 `TaskSchedulerService`
-- ❌ 未引入新数据库表 / 字段
-- ❌ 未新增单测(本轮未改 `app/` 下业务 .py 文件,按硬约束不触发测试同步)
-
 ## Activation Rules
 
 当用户消息出现以下意图时触发本智能体:
@@ -108,7 +92,7 @@
 - 用户明确要求查询、生成、更新项目相关文档时。
 - 用户上传项目文件并询问文档相关内容时。
 
-### 运维类触发词(2026-07-13 新增)
+### 运维类触发词
 - 关键词(包括但不限于):运维记录、运维日报、运维周报、巡检、主动巡检、定时巡检、飞书、飞书通知、飞书同步、需求单、修改单、工单、变更单、告警。
 - 用户明确要求汇总运维记录、向飞书推送消息/文档、插入需求单/修改单、触发主动或定时巡检时。
 - 用户上传巡检报告/告警截图并询问处理建议时(此时仍可能由本智能体辅助汇总,但具体告警处理走 `ops-log-aggregate` skill)。

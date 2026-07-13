@@ -5,6 +5,51 @@
 - All code should follow clean code principles and maintain existing functionality
 - Comments need to be added after file generation. The comments should be in Chinese and need to include information about function parameters, return values, exceptions, etc.
 
+## ⚠️ HARD RULE：agents/AGENTS.md 与 app/skills/SKILL.md 文档契约边界
+
+**适用范围**:
+
+- `agents/<agent>/AGENTS.md` —— 各智能体的入口契约文档(project / map_agent / knowledge_ydt / ...)
+- `app/skills/<skill-name>/SKILL.md` —— 各 skill 的元数据与工作流文档(project-doc-* / ops-* / feishu-sync / ...)
+
+**编写原则——只写最终结果**:
+
+- ✅ **允许**写:智能体职责、工具清单与语义、skill 触发条件与工作流、参数契约、能力清单、最终生效的触发关键词
+- ❌ **禁止**写:
+  - "本轮调整/本次新增/本次扩展"等变更过程标记
+  - "未做/未实现/留待后续 PR/请勿删除"等未做清单
+  - 日期后缀(如「(2026-07-13 新增)」「(已实现)」)除非该日期属于工具/SKILL 本身的契约字段
+  - 工具描述里的 `【占位】` 标记(在最终契约中,要么实现并删除占位标记,要么把占位工具从契约中删除,**不要让占位标记污染最终契约**——占位状态由 `seed_*_agent.py` / `ProjectTools.py` 真实代码反映,而不是 SKILL.md 文字)
+  - 决策历史、迭代步骤、变更前后的对比
+
+**过程记录的归属**:
+
+- 变更过程、未做清单、PR 计划、决策历史**只**记录在 `project_memory.md`
+- `git log` 负责保留完整的"何时/由谁/为什么"信息,不需要在 AGENTS.md / SKILL.md 重复
+
+**反模式示例**(禁止):
+
+```markdown
+## 占位运维工具说明(2026-07-13 重要提示)
+本轮调整**仅完成以下三件事**...
+- ❌ 未在 ProjectTools.py 中新增任何 @tool
+- ❌ 未真实接入飞书 Open API
+```
+
+**正例**(只写契约):
+
+```markdown
+## TOOL DESCRIPTION
+### ops_log_aggregate
+汇总项目运维记录(巡检结果、告警条目、人工处理记录)...
+```
+
+**审计清单**(每次新增/修改 `agents/**/*.md` 或 `app/skills/**/SKILL.md` 后必查):
+
+- [ ] 是否包含日期后缀 / 变更过程标记 / 未做清单?如有 → 删除,迁到 `project_memory.md`
+- [ ] 工具描述里是否有 `【占位】` 字样?如有 → 要么真正实现并删除,要么把工具从契约中删掉
+- [ ] 标题里是否有 `(xxx 新增)` / `(已实现)` / `(本轮)`?如有 → 删除
+
 ## Path Management Rules
 
 - **所有路径相关常量**（项目根、数据目录、知识库、临时文件、上传目录等）必须集中写在 `app/core/config/paths.py`。

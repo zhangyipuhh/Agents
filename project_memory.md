@@ -2860,6 +2860,8 @@ python -m app.migrations.seed_project_agent
 - 定时巡检模式必须复用现有 `TaskSchedulerService`,**不要**新建独立的定时任务服务
 - 所有运维工具的输入数据(飞书账号/群组/工单编号/巡检结果)必须来自用户确认或系统实际产生,严禁虚构
 
+**AGENTS.md 文档契约边界**(2026-07-13 反馈后修正):AGENTS.md 只写智能体**最终行为契约**(职责 / 工具 / 能力 / 触发词),**不**写变更过程/未做清单/后续 PR 计划。本轮起,本章节是这些"过程记录"的唯一存放处;`agents/project/AGENTS.md` 不再出现 "本轮调整/未做/留给后续 PR" 之类的描述。
+
 ## AgentConfigService 配置加载服务
 
 从数据库 `agents` 表 + AGENTS.md 文件加载完整 Agent 配置，封装为 `UnifiedAgentConfig` 实例供 `agent_router` 使用。是连接数据库配置和运行时 Agent 的核心服务，整合 `dynamic_schema` + `agents_md_loader` 两个模块的输出。
