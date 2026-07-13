@@ -196,8 +196,8 @@ async def seed_project_agent(db: Any) -> None:
             WHERE name = $1
             """,
             "project",
-            "项目文档智能体",
-            "负责软件工程项目文档的查询、生成、更新与管理",
+            "项目文档与运维智能体",
+            "负责软件工程项目文档的查询、生成、更新与管理,以及项目运维记录汇总、飞书同步、需求/修改单插入、主动/定时巡检等运维管理工作",
             "agents/project/AGENTS.md",
             json.dumps(PROJECT_AGENT_STATE_SCHEMA, ensure_ascii=False),
             json.dumps(PROJECT_AGENT_CONTEXT_SCHEMA, ensure_ascii=False),
@@ -217,8 +217,8 @@ async def seed_project_agent(db: Any) -> None:
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, TRUE, 0)
             """,
             "project",
-            "项目文档智能体",
-            "负责软件工程项目文档的查询、生成、更新与管理",
+            "项目文档与运维智能体",
+            "负责软件工程项目文档的查询、生成、更新与管理,以及项目运维记录汇总、飞书同步、需求/修改单插入、主动/定时巡检等运维管理工作",
             "agents/project/AGENTS.md",
             json.dumps(PROJECT_AGENT_STATE_SCHEMA, ensure_ascii=False),
             json.dumps(PROJECT_AGENT_CONTEXT_SCHEMA, ensure_ascii=False),

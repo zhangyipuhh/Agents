@@ -2824,6 +2824,42 @@ python -m app.migrations.seed_project_agent
 ```
 幂等：重复执行会 UPDATE 已存在的 agents 记录、刷新 skills 记录、刷新 agent_tool_bindings。
 
+### 2026-07-13 定位扩展:文档 + 运维双职责
+
+`project` 智能体由「软件工程项目文档智能体」扩展为「**项目文档与运维智能体**」,运维侧覆盖运维记录汇总、飞书同步、需求/修改单插入、主动/定时巡检。
+
+**最终状态**:
+
+- `agents` 表 `display_name` = `项目文档与运维智能体`
+- `agents` 表 `description` = `负责软件工程项目文档的查询、生成、更新与管理,以及项目运维记录汇总、飞书同步、需求/修改单插入、主动/定时巡检等运维管理工作`
+- `agents` 表 `agents_md_path` = `agents/project/AGENTS.md`(路径未变)
+- 入口文档 [agents/project/AGENTS.md](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/agents/project/AGENTS.md) 已重写,新增「运维类工具(占位)」与「占位运维工具说明」章节
+- `seed_project_agent.py` 的 `PROJECT_AGENT_TOOLS` / `PROJECT_AGENT_SKILLS` 列表**未改动**,因此 `agents.tool_bindings` / `agents.skill_bindings` JSONB 字段内容保持不变
+- `state_schema` / `context_schema` / `config_schema` 仍为空对象兜底
+
+**5 个新增占位 SKILL.md**(仅作为定位扩展占位,未实现 `@tool`):
+
+- [app/skills/ops-log-aggregate/SKILL.md](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/skills/ops-log-aggregate/SKILL.md) — 运维记录汇总(对应未来 `ops_log_aggregate` / `ops_log_query` 工具)
+- [app/skills/feishu-sync/SKILL.md](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/skills/feishu-sync/SKILL.md) — 飞书 Open API 同步(对应未来 `feishu_notify` 工具,**被依赖基础能力**)
+- [app/skills/requirement-ticket/SKILL.md](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/skills/requirement-ticket/SKILL.md) — 需求单插入(对应未来 `requirement_ticket_create` 工具)
+- [app/skills/change-ticket/SKILL.md](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/skills/change-ticket/SKILL.md) — 修改单插入(对应未来 `change_ticket_create` 工具)
+- [app/skills/ops-inspection/SKILL.md](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/skills/ops-inspection/SKILL.md) — 主动/定时巡检(对应未来 `inspection_run` 工具,定时模式对接 `TaskSchedulerService` 5 段 crontab)
+
+**后续 PR 计划**(本轮**未做**):
+
+1. 在 `app/shared/tools/skills/project/OpsTools.py` 中实现 5 个 `@tool`(`ops_log_aggregate` / `ops_log_query` / `feishu_notify` / `requirement_ticket_create` / `change_ticket_create` / `inspection_run`)
+2. 接入飞书 SDK(`lark-oapi` 优先)并在 `app/requirements.txt` 中加依赖
+3. 把 5 个占位 skill 加入 `seed_project_agent.py` 的 `PROJECT_AGENT_SKILLS`,把 5 个 `@tool` 加入 `PROJECT_AGENT_TOOLS`
+4. 引入新数据库表(预计 `requirement_tickets` / `change_tickets` / `inspection_runs` / `inspection_items`)与对应 schema,同步追加到 `app/migrations/init_all_tables.sql`
+5. 新增单测 `app/tests/shared/tools/skills/project/test_ops_tools.py`
+6. 在 `app/core/config/settings.py` 中新增 `feishu_app_id` / `feishu_app_secret` / `feishu_default_chat_id` 等敏感配置,通过环境变量注入
+
+**关键约束**(防止后续 PR 误改):
+
+- 飞书 sync 是 `requirement-ticket` / `change-ticket` / `ops-inspection` 的**被依赖基础能力**,**必须先实现**
+- 定时巡检模式必须复用现有 `TaskSchedulerService`,**不要**新建独立的定时任务服务
+- 所有运维工具的输入数据(飞书账号/群组/工单编号/巡检结果)必须来自用户确认或系统实际产生,严禁虚构
+
 ## AgentConfigService 配置加载服务
 
 从数据库 `agents` 表 + AGENTS.md 文件加载完整 Agent 配置，封装为 `UnifiedAgentConfig` 实例供 `agent_router` 使用。是连接数据库配置和运行时 Agent 的核心服务，整合 `dynamic_schema` + `agents_md_loader` 两个模块的输出。
