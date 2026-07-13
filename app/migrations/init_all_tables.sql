@@ -924,7 +924,7 @@ When handling compliance review or approval-related requests, you act as a **Com
    - Only if information is still missing after checking both context and attachments, use `ask_user_question` to ask the user for the missing information.
 2. After the user confirms the information is accurate, use the `save_business_info` tool to persist the business information. This step is mandatory, refer to the tool parameters for required fields. When asking, use one tab to include all information that needs to be saved.
 3. Invoke the `quality_inspection_analysis` tool and await the results.
-4. Once the analysis completes, review the results and use `ask_user_question` to ask if the user wants to generate a report. If confirmed, call `generate_report`; if declined, inform the user they can request it later by typing "export report".
+4. Once the analysis completes, review the results and use `ask_user_question` to ask if the user wants to generate a report. If confirmed, call `generate_report`； if declined, inform the user they can request it later by typing "export report".
 
 ## Task Examples
 ### Example 1: Compliance Review
@@ -1077,6 +1077,7 @@ WHERE name = 'knowledge_ydt'
 -- ============================================================
 
 -- >>> BEGIN_INLINE_SEED_PROJECT_SKILLS
+
 -- ============================================================
 -- 2026-07-02 新增：project 智能体依赖的 skills 种子数据
 -- 来源：app/skills/project-doc-*/SKILL.md 与 app/skills/intent-clarification/SKILL.md
@@ -1118,18 +1119,18 @@ See `../intent-clarification/references/no_fabrication.md` and the `<HARD-GATE: 
 
 ```dot
 digraph dispatch {
-    "User question" [shape=box];
-    "Question type?" [shape=diamond];
-    "Technical document" [shape=box, color=red, style="rounded,filled", fillcolor="#fff5f5"];
-    "Management document" [shape=box, color=blue, style="rounded,filled", fillcolor="#f0f8ff"];
-    "Factual query" [shape=box, color=green, style="rounded,filled", fillcolor="#f0fff0"];
-    "Advisory" [shape=box, color=purple, style="rounded,filled", fillcolor="#f8f0ff"];
+    "User question" [shape=box]；
+    "Question type?" [shape=diamond]；
+    "Technical document" [shape=box, color=red, style="rounded,filled", fillcolor="#fff5f5"]；
+    "Management document" [shape=box, color=blue, style="rounded,filled", fillcolor="#f0f8ff"]；
+    "Factual query" [shape=box, color=green, style="rounded,filled", fillcolor="#f0fff0"]；
+    "Advisory" [shape=box, color=purple, style="rounded,filled", fillcolor="#f8f0ff"]；
 
-    "User question" -> "Question type?";
-    "Question type?" -> "Technical document\n→ A0.technical_doc\n→ Must ask doc_type + C.environment" [label="Write technical document"];
-    "Question type?" -> "Management document\n→ A0.administrative\n→ D.document_attr" [label="Write management document"];
-    "Question type?" -> "Factual query\n→ A0.factual_query\n→ A.intent (fact)" [label="Query facts"];
-    "Question type?" -> "Advisory\n→ A0.advisory\n→ A.intent (decision) + three-layer framework" [label="Get advice"];
+    "User question" -> "Question type?"；
+    "Question type?" -> "Technical document\n→ A0.technical_doc\n→ Must ask doc_type + C.environment" [label="Write technical document"]；
+    "Question type?" -> "Management document\n→ A0.administrative\n→ D.document_attr" [label="Write management document"]；
+    "Question type?" -> "Factual query\n→ A0.factual_query\n→ A.intent (fact)" [label="Query facts"]；
+    "Question type?" -> "Advisory\n→ A0.advisory\n→ A.intent (decision) + three-layer framework" [label="Get advice"]；
 }
 ```
 
@@ -1144,7 +1145,7 @@ digraph dispatch {
 This suite is used to manage **software-engineering project documents** (策划表, requirements, design, plans, test, acceptance, deployment, training, etc.).
 This skill is the **model-read** entry document, not a user document.
 
-Core principle: **Deterministic things are done by scripts; things requiring judgment/confirmation are done by the LLM**.
+Core principle: **Deterministic things are done by scripts； things requiring judgment/confirmation are done by the LLM**.
 
 ## Suite Roster (7 skills)
 
@@ -1284,7 +1285,7 @@ Accepts user requests related to "software-engineering project documents" and se
 3. `project-doc-write` — Strictly fills the outline based on project materials + generates decision advisory
 4. `project-doc-workflow` — Orchestrates the 4-step pipeline checklist
 
-> **Note**: This skill is the **dispatch layer**, it does not directly write documents; document writing is completed in `project-doc-write`.
+> **Note**: This skill is the **dispatch layer**, it does not directly write documents； document writing is completed in `project-doc-write`.
 
 ---
 
@@ -1305,7 +1306,7 @@ Step 2  Clarification (Dispatch first, then ask · 5 dimensions · Fixed order)
    ↓ (If no project specified, list all projects under root directory and let user choose)
 Step 2-a  [New · Required] intent-clarification · E.intent_detail (4-Choice-1 Creation Mode)
    ├─ E1 Generate based on existing materials → proceed to query to load materials
-   ├─ E2 Brand-new independent generation  → skip query; must go through C.environment including 5 business materials
+   ├─ E2 Brand-new independent generation  → skip query； must go through C.environment including 5 business materials
    ├─ E3 Incremental update of existing document → proceed to query to load existing docx
    └─ E4 Mimic writing from other project → let user specify reference project, load that docx
    ↓
@@ -1344,7 +1345,7 @@ Step 5  Report output paths
 - Library path: `<TBD · to be specified by company>` (Recommended: `<company archive root>/sales_archive/<industry>/<client>/<project>/`)
 - Library-invoking method: `<TBD>` (Recommended: use `explore(...)` for unified file loading)
 - Extraction field mapping: #11-15 business materials ↔ corresponding fields in sales archive
-- Status: **Not implemented** in this round; if library is available in the future, `project-doc-hub` in Step 2-c will auto-detect library existence and dispatch to X2
+- Status: **Not implemented** in this round； if library is available in the future, `project-doc-hub` in Step 2-c will auto-detect library existence and dispatch to X2
 
 **Current Default Behavior**: Library does not exist → auto-degrade to X1 or X3
 ```
@@ -1547,7 +1548,7 @@ See `../intent-clarification/references/no_fabrication.md` for details.
 |---|---|
 | Need to read project files or attachments | Use `explore(file_path="<path>")` |
 | Need to search within file content | Use `explore(file_path="<path>", keyword="<keyword>")` |
-| Need structured output | `explore(...)` returns readable text; process it directly |
+| Need structured output | `explore(...)` returns readable text； process it directly |
 
 **Code violating this constraint is considered an anti-pattern** and should be rewritten to call `explore(...)`.
 
@@ -1557,7 +1558,7 @@ See `../intent-clarification/references/no_fabrication.md` for details.
 
 Provides answers for two types of questions about software-engineering projects: **facts/data** and **decision advisory**, applying the **PMP + PRINCE2 + Systems Analyst three-layer framework overlay**.
 
-Before answering, **must** first do "intent clarification" (fact vs decision); the answer **must** explicitly mark the framework used.
+Before answering, **must** first do "intent clarification" (fact vs decision)； the answer **must** explicitly mark the framework used.
 
 ---
 
@@ -1578,7 +1579,7 @@ Before answering, **must** first do "intent clarification" (fact vs decision); t
    - **PMP Framework Layer**: 5 Process Groups / 10 Knowledge Areas (provides "management system panorama")
    - **PRINCE2 Implementation Layer**: 7 Principles / 7 Themes / 7 Processes (provides "how to do it specifically")
    - **Systems Analyst Practice Layer**: 5 Major Modules (System Planning/Requirements Analysis/System Design/Test & Maintenance/Informatization) (provides "software engineering practice")
-5. **Strictly forbid fabrication**: All numbers, dates, people names in answers must come from project materials; invoke `intent-clarification` for the data dimension when materials are missing.
+5. **Strictly forbid fabrication**: All numbers, dates, people names in answers must come from project materials； invoke `intent-clarification` for the data dimension when materials are missing.
 
 ---
 
@@ -1723,9 +1724,9 @@ The outline must conform to software-engineering standards (GB/T 8564, ISO/IEC/I
 ## Rigid Constraints
 
 1. **Outline ≠ Body**: Only output chapter titles (level 1/2), do not write body
-2. **Chapter numbering convention**: Level 1: 1, 2, 3; Level 2: 1.1, 1.2; Level 3: 1.1.1 (when necessary)
+2. **Chapter numbering convention**: Level 1: 1, 2, 3； Level 2: 1.1, 1.2； Level 3: 1.1.1 (when necessary)
 3. **Each chapter must explain**: purpose (what problem this chapter solves) + required sub-sections (if any spec)
-4. **Reference template source**: Default extracts chapters from `<项目根>/03_技术文档及评审/01_实施方案/*.docx`; if empty, fall back to 02 Requirements → 03 High-Level
+4. **Reference template source**: Default extracts chapters from `<项目根>/03_技术文档及评审/01_实施方案/*.docx`； if empty, fall back to 02 Requirements → 03 High-Level
 5. **Extraction method**: Use `explore(...)` to read existing docx files and extract chapter structure
 6. **Environment/Technology/Compliance clarification required**: Before writing the outline, **must** invoke `intent-clarification` (C.environment dimension, 10 technical point references: tech_hardware.md / tech_software.md / tech_database.md / tech_network.md / tech_deployment.md / tech_third_party_ops.md / tech_security_level.md / tech_localization.md / tech_architecture.md / tech_localization_list.md)
    - Even if user has uploaded materials, **still must ask** and completely cite the original + mark source file + line number, let user confirm "whether to write based on existing info"
@@ -1779,12 +1780,12 @@ Step 2  Load corresponding reference template (select version by E)
    ↓
 Step 3  (Optional) Extract format template from existing similar docx in project (use `explore(...)`)
    ├─ E1/E3/E4 → read docx in project and extract chapter structure
-   └─ E2      → skip (no project materials); optional "reference industry-general docx"
+   └─ E2      → skip (no project materials)； optional "reference industry-general docx"
    ↓
 Step 4  Output "chapter-level" outline (no body)
    ├─ E1/E3/E4 → implementation-detail oriented
-   ├─ E2 + Pre-Sales Proposal → value-proposition oriented (embed "Customer Value" + "Relative Advantage" at end of each chapter); **"To Be Supplemented (待补)" placeholder not allowed**
-   └─ E2 + other doc_type → value-proposition oriented; "To Be Supplemented (待补)" placeholder **only** used when user has explicitly agreed
+   ├─ E2 + Pre-Sales Proposal → value-proposition oriented (embed "Customer Value" + "Relative Advantage" at end of each chapter)； **"To Be Supplemented (待补)" placeholder not allowed**
+   └─ E2 + other doc_type → value-proposition oriented； "To Be Supplemented (待补)" placeholder **only** used when user has explicitly agreed
    ↓
 Step 5  Mark "Purpose" and "Required sub-section" hints at end of each chapter
    ├─ E1/E3/E4 → data source marking
@@ -1802,7 +1803,7 @@ Step 6  Append operation record to `.project/<项目号>/project_log.md`
 - Library path: `<TBD · to be specified by company>` (Recommended: `<company archive root>/sales_archive/<industry>/<client>/<project>/`)
 - Library-invoking method: `<TBD>` (Recommended: use `explore(...)` for unified file loading)
 - Extraction field mapping: #11-15 business materials ↔ corresponding fields in sales archive
-- Status: **Not implemented** in this round; if library is available in the future, this skill in Step 0-d will auto-detect library existence and dispatch
+- Status: **Not implemented** in this round； if library is available in the future, this skill in Step 0-d will auto-detect library existence and dispatch
 
 **Current Default Behavior**: Library does not exist → auto-degrade to X1 (user provides) or X3 (exit)
 
@@ -1955,8 +1956,8 @@ See `../intent-clarification/references/no_fabrication.md`.
 
 On the chapter outline output by `project-doc-outline`, **strictly based on existing project artifacts** fill in the body, and generate "Decision and Opinion" based on the delta between actual values and baseline values from planning sheet / contract / weekly report.
 
-> **Core principle: mechanical work is done by tools; judgments are made by the LLM.**
-> Reading planning sheet subtags, extracting docx chapters — all "mechanical work" goes through `explore(...)`; body writing and decision advisory are done by the model.
+> **Core principle: mechanical work is done by tools； judgments are made by the LLM.**
+> Reading planning sheet subtags, extracting docx chapters — all "mechanical work" goes through `explore(...)`； body writing and decision advisory are done by the model.
 
 ---
 
@@ -1979,7 +1980,7 @@ On the chapter outline output by `project-doc-outline`, **strictly based on exis
 7. **Scanned document detection**: PDFLoader extracts < 100 characters → treat as scanned → ask user to provide a readable version.
 8. **TOC mandatory**: every generated .md document **must** contain a `## Table of Contents` section listing 1-3 level heading links (markdown static layer).
 9. **Content purification**: when writing body, follow `references/document_content_purification_rule.md` — do not write "Draft for review", do not write "Prepared by/Reviewed by/Approved by" (when planning sheet has not specified), do not write "—" placeholders, do not write empty quotes, do not write tools not mentioned in project artifacts.
-10. **Sections without data**: use `**Pending-fill**: [specific explanation]` pattern, do not write "—" placeholders; before writing, use `references/data_integrity_query_template.md` to actively ask the user.
+10. **Sections without data**: use `**Pending-fill**: [specific explanation]` pattern, do not write "—" placeholders； before writing, use `references/data_integrity_query_template.md` to actively ask the user.
 11. **word save-to-disk**: after writing .md **must** convert to .docx via "word operation skill" (e.g. docx-skill) and save to project directory. write **does not** implement markdown → docx itself, **does not** hard-code third-party skill paths. See `references/word_save_to_disk_workflow.md`.
 
 ---
@@ -1997,7 +1998,7 @@ Step 1.0  [2026-06-XX New · Pre-Sales Proposal 5-Item All-Required Check] (E2 +
    ↓
 Step 2  Load project artifacts (DocumentLoader)
    ├─ E1/E3/E4 → load project artifacts (planning sheet / requirements / contract etc.)
-   └─ E2      → skip project artifact loading (none available); directly load value_proposition_template.md
+   └─ E2      → skip project artifact loading (none available)； directly load value_proposition_template.md
    ↓
 Step 3  [Key · By E branching] Fill in order of chapters
    ↓
@@ -2224,7 +2225,7 @@ See `../intent-clarification/references/no_fabrication.md` for details.
 
 Orchestrates the requests accepted by `project-doc-hub` into an executable checklist following the 4-step pipeline (query → outline → write → save-to-disk + change record), **guiding the work skill (executing agent) to execute in order**.
 
-> **Core principle: Deterministic things are done by scripts; things requiring judgment are done by the LLM.**
+> **Core principle: Deterministic things are done by scripts； things requiring judgment are done by the LLM.**
 
 ---
 
@@ -2479,7 +2480,7 @@ When in doubt: ASK, don't WRITE.
 
 - Technical document scenarios **must first ask E.intent_detail** (4-Choice-1 Creation Mode), then ask A.intent 5 sub-items, finally ask C.environment
 - Brand-new independent generation (E2) scenarios **must** additionally ask the 5 business material sub-items of C.environment (see `references/tech_value_proposition.md`)
-- Must not skip E.intent_detail to directly ask doc_type; must not skip E.intent_detail when action_intent = "Generate"
+- Must not skip E.intent_detail to directly ask doc_type； must not skip E.intent_detail when action_intent = "Generate"
 - 5 question dimensions (intent/data/environment/document_attr/intent_detail) are named alphabetically, **E.intent_detail is the newly added highest-priority dimension**
 
 ## Where to Log (Key: All Process Files Are Outside the Skill)
