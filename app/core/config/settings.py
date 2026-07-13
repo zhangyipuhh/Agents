@@ -202,6 +202,11 @@ class FileParserSettings(BaseSettings):
     file_parser_timeout: int = Field(
         default=300, description="请求超时时间（秒）"
     )
+    file_parser_max_file_size: int = Field(
+        default=3,
+        ge=1,
+        description="远程解析允许的最大文件大小（MB），默认 3；前端校验 + 后端校验共用",
+    )
 
     @field_validator("file_parser_enabled", mode="before")
     @classmethod
@@ -552,6 +557,7 @@ class Settings(BaseSettings):
             "max_retries": self.file_parser.file_parser_max_retries,
             "poll_interval": self.file_parser.file_parser_poll_interval,
             "timeout": self.file_parser.file_parser_timeout,
+            "max_file_size_mb": self.file_parser.file_parser_max_file_size,
         }
 
     def get_demonstration_config(self) -> dict:

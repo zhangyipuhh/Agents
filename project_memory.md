@@ -1155,10 +1155,11 @@ return data/upload/yyyy/mm/dd/{session_id}/
 | ├ DELETE /delete                   |                        | 批量删除文件                                                                                                                                                                          |
 | ├ GET /list                        |                        | 列出所有文件                                                                                                                                                                          |
 | ├ POST /convert                    |                        | 批量转换 PDF 为图片                                                                                                                                                                   |
-| /api/core                           | file_upload_router     | 核心文件上传（支持远程解析服务/本地 DocumentLoader 解析）                                                                                                                             |
-| ├ POST /uploadfile                 |                        | 批量上传文件（含文本提取/远程解析）                                                                                                                                                   |
+| /api/core                           | file_upload_router     | 核心文件上传（支持远程解析服务/本地 DocumentLoader 解析；2026-07-13 统一 3MB 上限，与 `FILE_PARSER_ENABLED` 无关）                                                                     |
+| ├ GET /upload-config               |                        | 2026-07-13 新增：返回 `{max_file_size_mb, parser_enabled}`，供前端在 onMounted 时拉取并启用客户端预校验                                                                  |
+| ├ POST /uploadfile                 |                        | 批量上传文件（含文本提取/远程解析）；超 `max_file_size_mb` 返回 413                                                                                                                  |
 | ├ POST /upload-chunk               |                        | 分片上传                                                                                                                                                                              |
-| ├ POST /merge-chunks               |                        | 合并分片                                                                                                                                                                              |
+| ├ POST /merge-chunks               |                        | 合并分片；合并后总大小超 `max_file_size_mb` 返回 413                                                                                                                                |
 | ├ DELETE /attachments              |                        | 2026-07-01 新增：按 stored_path 批量删除附件（.md 缓存 + 原文件 + attachments 记录），校验 session_id/project_id 归属                                                                                                                                                              |
 | /api/core/download                  | file_download_router   | 核心文件下载（支持 Range 断点续传、批量打包 ZIP）                                                                                                                                     |
 | ├ GET /file                        |                        | 下载文件（支持 Range 请求、自定义下载文件名）                                                                                                                                         |
@@ -1583,6 +1584,15 @@ async def xxx_chat(request: Request, chat_request: ChatRequest):
   - `SANDBOX_HOST_WORKSPACE_PREFIX` — 宿主机视角工作目录前缀，socket 模式必填
   - `SANDBOX_K8S_NAMESPACE` — K8s 模式命名空间（占位）
   - `SANDBOX_FALLBACK_TO_LOCAL` — Docker 不可用时是否降级到本地文件系统执行，默认 `false`
+- **文件解析（远程解析 + 大小限制）**：
+  - `FILE_PARSER_ENABLED` — 是否启用远程解析（`true`/`false`），默认 `false`
+  - `FILE_PARSER_SERVER_URL` — 远程解析服务地址，默认 `http://mineru-openai-server:30000`
+  - `FILE_PARSER_OUTPUT_FORMAT` — 输出格式 `json` 或 `md`，默认 `json`
+  - `FILE_PARSER_API_URL` — 远程解析 API 地址
+  - `FILE_PARSER_MAX_RETRIES` — 最大轮询重试次数，默认 60
+  - `FILE_PARSER_POLL_INTERVAL` — 轮询间隔（秒），默认 2.0
+  - `FILE_PARSER_TIMEOUT` — 请求超时时间（秒），默认 300
+  - `FILE_PARSER_MAX_FILE_SIZE` — 上传文件最大大小（**MB，整数**，下限 1），默认 `3`。2026-07-13 新增：前后端共用上传大小上限，原前端硬编码 50MB 已被替换为读取本配置；后端在 `/api/core/uploadfile` 与 `/api/core/merge-chunks` 内做 413 校验；前端通过 `GET /api/core/upload-config` 拉取后做客户端预校验
 - 其他 LLM API Key 等
 
 ## 提示词三层架构

@@ -31,6 +31,11 @@ router = APIRouter(prefix='/api/core', tags=['Core File Upload'])
 
 CHUNKS_DIR = Path("data/upload_chunks")
 
+# 2026-07-13 新增：上传文件最大字节数（从 FILE_PARSER_CONFIG['max_file_size_mb'] 计算）。
+# 前端校验 + 后端校验共用，前后端不一致时以本值为准。
+MAX_FILE_SIZE_MB = FILE_PARSER_CONFIG.get("max_file_size_mb", 3)
+MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+
 
 class UploadedFileInfo(BaseModel):
     filename: str
@@ -59,6 +64,25 @@ class AttachmentDeleteResponse(BaseModel):
     """附件批量删除响应模型。"""
     success: List[str]
     failed: List[AttachmentDeleteItem]
+
+
+class UploadConfigResponse(BaseModel):
+    """2026-07-13 新增：上传配置响应，供前端校验使用。"""
+    max_file_size_mb: int
+    parser_enabled: bool
+
+
+@router.get('/upload-config', response_model=UploadConfigResponse)
+async def get_upload_config():
+    """获取上传相关配置（前端启动时调用一次）。
+
+    Returns:
+        UploadConfigResponse: 包含最大文件大小（MB）与是否启用远程解析。
+    """
+    return UploadConfigResponse(
+        max_file_size_mb=MAX_FILE_SIZE_MB,
+        parser_enabled=FILE_PARSER_CONFIG.get("enabled", False),
+    )
 
 
 @router.post('/uploadfile', response_model=CoreFileUploadResponse)
@@ -124,6 +148,13 @@ async def upload_files(
             original_suffix = Path(file.filename).suffix
 
             content = await file.read()
+
+            # 2026-07-13 新增：统一大小校验（与 file_parser_enabled 无关）
+            if len(content) > MAX_FILE_SIZE_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"文件大小超过限制（最大 {MAX_FILE_SIZE_MB} MB）：{file.filename}",
+                )
 
             # 保留原文件到对应目录
             original_path = session_upload_dir / f"{original_stem}{original_suffix}"
@@ -309,6 +340,14 @@ async def merge_chunks(request: Request, merge_request: MergeChunksRequest):
                         await out_f.write(content)
 
             shutil.rmtree(chunk_dir, ignore_errors=True)
+
+            # 2026-07-13 新增：合并分片后立即校验总大小（与 file_parser_enabled 无关）
+            if merged_path.stat().st_size > MAX_FILE_SIZE_BYTES:
+                merged_path.unlink(missing_ok=True)
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"文件大小超过限制（最大 {MAX_FILE_SIZE_MB} MB）：{merge_request.filename}",
+                )
 
             # 将合并后的原文件保留到日期化 session 目录
             original_path = session_upload_dir / f"{original_stem}{original_suffix}"

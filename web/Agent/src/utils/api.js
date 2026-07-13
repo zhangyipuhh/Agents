@@ -578,6 +578,24 @@ export function getFileExtension(filename) {
 }
 
 /**
+ * 2026-07-13 新增：获取上传相关配置（最大文件大小、是否启用远程解析）。
+ * 前端在 onMounted 时调用一次，失败时使用默认 3MB 兜底。
+ *
+ * @returns {Promise<{max_file_size_mb: number, parser_enabled: boolean}>}
+ * @throws {Error} 接口失败时抛出错误，由调用方决定是否使用默认值
+ */
+export async function fetchUploadConfig() {
+  const response = await fetchWithAuth('/api/core/upload-config', {
+    method: 'GET'
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '获取上传配置失败')
+  }
+  return response.json()
+}
+
+/**
  * 创建新会话
  * 使用当前认证信息创建新的聊天会话
  * @returns {Promise<string>} 新会话 ID

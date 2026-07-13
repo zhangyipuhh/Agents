@@ -6,6 +6,7 @@
 日期化目录存储、原文件保留、md 文件生成及删除逻辑。
 """
 
+import asyncio
 import json
 from datetime import date
 from io import BytesIO
@@ -22,8 +23,11 @@ from app.core.router.file_upload_router import (
     MergeChunksRequest,
     upload_files,
     merge_chunks,
+    get_upload_config,
     AttachmentDeleteRequest,
     delete_attachments,
+    MAX_FILE_SIZE_MB,
+    MAX_FILE_SIZE_BYTES,
 )
 from app.shared.utils.files import session_path_manager as spm
 from app.shared.utils.project import project_db as pdb
@@ -136,10 +140,6 @@ class TestUploadFiles:
         }):
             with patch("app.shared.utils.files.file_parser_client.FileParserClient.parse", side_effect=fake_parse):
                 resp = await upload_files(mock_request, [upload_file])
-
-        assert resp.count == 1
-        assert resp.files[0].stored_path == str(expected_md)
-        assert resp.files[0].file_type == "md"
 
         assert resp.count == 1
         assert resp.files[0].stored_path == str(expected_md)
@@ -330,7 +330,8 @@ class TestDeleteAttachments:
                 "id": 1,
                 "session_id": sid,
                 "stored_path": sp,
-                "project_id": 999,
+                "file_name": "file.md",
+                "project_id": 999,  # 与 mock_project_request 中的 project_id=42 不一致
             }
 
         monkeypatch.setattr(
@@ -344,3 +345,78 @@ class TestDeleteAttachments:
         assert len(del_resp.success) == 0
         assert len(del_resp.failed) == 1
         assert "项目" in del_resp.failed[0].reason
+
+
+class TestUploadSizeLimit:
+    """2026-07-13 新增：上传文件大小限制测试。"""
+
+    def test_upload_config_response_model_fields(self):
+        """UploadConfigResponse 应包含 max_file_size_mb 和 parser_enabled 字段。"""
+        from app.core.router.file_upload_router import UploadConfigResponse
+        field_names = set(UploadConfigResponse.model_fields.keys())
+        assert "max_file_size_mb" in field_names
+        assert "parser_enabled" in field_names
+
+    def test_max_file_size_bytes_default_is_3mb(self):
+        """默认情况下 MAX_FILE_SIZE_BYTES 应等于 MAX_FILE_SIZE_MB * 1MB。"""
+        assert MAX_FILE_SIZE_MB >= 1
+        assert MAX_FILE_SIZE_BYTES == MAX_FILE_SIZE_MB * 1024 * 1024
+
+    def test_upload_files_rejects_oversize_file(self, mock_request):
+        """上传文件 > MAX_FILE_SIZE_BYTES 应返回 413。"""
+        content = b"a" * (4 * 1024 * 1024)  # 4MB
+        upload_file = UploadFile(filename="big.txt", file=BytesIO(content))
+
+        with patch("app.core.router.file_upload_router.FILE_PARSER_CONFIG", {"enabled": False, "max_file_size_mb": 3}), \
+             patch("app.core.router.file_upload_router.MAX_FILE_SIZE_BYTES", 3 * 1024 * 1024), \
+             patch("app.core.router.file_upload_router.MAX_FILE_SIZE_MB", 3):
+            with pytest.raises(Exception) as exc_info:
+                asyncio.run(upload_files(mock_request, [upload_file]))
+            assert exc_info.value.status_code == 413
+            assert "超过限制" in str(exc_info.value.detail)
+            assert "big.txt" in str(exc_info.value.detail)
+
+    def test_upload_files_accepts_within_limit_file(self, mock_request, tmp_path):
+        """上传文件 <= MAX_FILE_SIZE_BYTES 应正常通过。"""
+        content = b"a" * (1 * 1024 * 1024)  # 1MB
+        upload_file = UploadFile(filename="ok.txt", file=BytesIO(content))
+
+        with patch("app.core.router.file_upload_router.FILE_PARSER_CONFIG", {"enabled": False, "max_file_size_mb": 3}), \
+             patch("app.core.router.file_upload_router.MAX_FILE_SIZE_BYTES", 3 * 1024 * 1024), \
+             patch("app.core.router.file_upload_router.DocumentLoader", _FakeDocumentLoader):
+            resp = asyncio.run(upload_files(mock_request, [upload_file]))
+
+        assert resp.count == 1
+        assert resp.files[0].filename == "ok.txt"
+
+    def test_merge_chunks_rejects_oversize_total(self, mock_request, tmp_path):
+        """合并分片后总大小 > MAX_FILE_SIZE_BYTES 应返回 413。"""
+        file_id = "chunk-big-001"
+        chunks_dir = tmp_path / "upload_chunks"
+        chunk_dir = chunks_dir / file_id
+        chunk_dir.mkdir(parents=True)
+        chunk_size = 2 * 1024 * 1024
+        (chunk_dir / "chunk_0").write_bytes(b"a" * chunk_size)
+        (chunk_dir / "chunk_1").write_bytes(b"b" * chunk_size)
+
+        merge_request = MergeChunksRequest(
+            file_id=file_id,
+            filename="big.pdf",
+            total_chunks=2,
+        )
+
+        with patch("app.core.router.file_upload_router.CHUNKS_DIR", chunks_dir), \
+             patch("app.core.router.file_upload_router.FILE_PARSER_CONFIG", {"enabled": False, "max_file_size_mb": 3}), \
+             patch("app.core.router.file_upload_router.MAX_FILE_SIZE_BYTES", 3 * 1024 * 1024):
+            with pytest.raises(Exception) as exc_info:
+                asyncio.run(merge_chunks(mock_request, merge_request))
+            assert exc_info.value.status_code == 413
+            assert "超过限制" in str(exc_info.value.detail)
+            assert "big.pdf" in str(exc_info.value.detail)
+
+    def test_get_upload_config_returns_max_size(self):
+        """GET /upload-config 应返回 {max_file_size_mb, parser_enabled} 结构。"""
+        cfg = asyncio.run(get_upload_config())
+        assert hasattr(cfg, "max_file_size_mb")
+        assert hasattr(cfg, "parser_enabled")
+        assert cfg.max_file_size_mb == MAX_FILE_SIZE_MB

@@ -1,9 +1,11 @@
 <script setup>
 import { ref, computed, nextTick } from 'vue'
-import { uploadFileInChunks, formatFileSize, getFileExtension, refreshToken } from '../utils/api.js'
+import { uploadFileInChunks, formatFileSize, getFileExtension, refreshToken, fetchUploadConfig } from '../utils/api.js'
 
 const SUPPORTED_EXTENSIONS = ['pdf', 'doc', 'docx', 'txt', 'md', 'csv', 'json']
-const MAX_FILE_SIZE = 50 * 1024 * 1024
+// 2026-07-13 修改：原硬编码 50MB 改为由后端 /api/core/upload-config 动态下发，默认 3MB
+const DEFAULT_MAX_FILE_SIZE_MB = 3
+const maxFileSizeBytes = ref(DEFAULT_MAX_FILE_SIZE_MB * 1024 * 1024)
 
 const props = defineProps({
   sessionId: {
@@ -125,6 +127,20 @@ const handleAttachmentClick = () => {
   fileInputRef.value?.click()
 }
 
+// 2026-07-13 新增：拉取后端下发的最大文件大小（失败时保留默认 3MB）
+onMounted(() => {
+  fetchUploadConfig()
+    .then((cfg) => {
+      const mb = Number(cfg?.max_file_size_mb)
+      if (mb && mb > 0) {
+        maxFileSizeBytes.value = mb * 1024 * 1024
+      }
+    })
+    .catch((err) => {
+      console.warn('[ProfileInputBox] 获取上传配置失败，使用默认 3MB：', err)
+    })
+})
+
 const handleFileSelect = (event) => {
   const files = Array.from(event.target.files || [])
   addFiles(files)
@@ -153,7 +169,7 @@ const addFiles = (files) => {
       selectedFiles.value.push(fileItem)
       continue
     }
-    if (file.size > MAX_FILE_SIZE) {
+    if (file.size > maxFileSizeBytes.value) {
       const fileItem = {
         id: `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
         file,
@@ -164,7 +180,7 @@ const addFiles = (files) => {
         status: 'error',
         progress: 0,
         uploadResult: null,
-        errorMsg: `文件大小超过限制（最大 ${formatFileSize(MAX_FILE_SIZE)}）`,
+        errorMsg: `文件大小超过限制（最大 ${formatFileSize(maxFileSizeBytes.value)}）`,
         cancelFn: null
       }
       selectedFiles.value.push(fileItem)
@@ -236,7 +252,7 @@ const retryUpload = (fileItem) => {
   if (!SUPPORTED_EXTENSIONS.includes(fileItem.extension)) {
     return
   }
-  if (fileItem.size > MAX_FILE_SIZE) {
+  if (fileItem.size > maxFileSizeBytes.value) {
     return
   }
   fileItem.status = 'pending'
@@ -344,7 +360,7 @@ const emit = defineEmits(['send', 'tool-action', 'new-chat', 'stop'])
             </svg>
 
             <svg
-              v-if="fileItem.status === 'error' && SUPPORTED_EXTENSIONS.includes(fileItem.extension) && fileItem.size <= MAX_FILE_SIZE"
+              v-if="fileItem.status === 'error' && SUPPORTED_EXTENSIONS.includes(fileItem.extension) && fileItem.size <= maxFileSizeBytes"
               class="status-icon error-icon"
               viewBox="0 0 20 20"
               fill="currentColor"
@@ -355,7 +371,7 @@ const emit = defineEmits(['send', 'tool-action', 'new-chat', 'stop'])
             </svg>
 
             <svg
-              v-if="fileItem.status === 'error' && (!SUPPORTED_EXTENSIONS.includes(fileItem.extension) || fileItem.size > MAX_FILE_SIZE)"
+              v-if="fileItem.status === 'error' && (!SUPPORTED_EXTENSIONS.includes(fileItem.extension) || fileItem.size > maxFileSizeBytes)"
               class="status-icon error-icon"
               viewBox="0 0 20 20"
               fill="currentColor"
