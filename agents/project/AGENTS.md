@@ -34,12 +34,7 @@
 ### generate_project_docx
 将生成的文档内容输出为 Word(.docx)交付物。
 
-### 运维类工具(2026-07-13 占位 · 尚未实现 @tool)
-
-> **占位声明**:下列 5 个工具目前**仅作为定位扩展的占位**,尚未在 `app/shared/tools/skills/project/ProjectTools.py` 中注册 `@tool` 实现,也未真实对接飞书 Open API、需求管理系统、变更管理系统、定时任务调度服务。后续 PR 将补充:
-> 1. `app/shared/tools/skills/project/OpsTools.py` 中对应的 `@tool` 实现
-> 2. `seed_project_agent.py` 的 `PROJECT_AGENT_TOOLS` / `PROJECT_AGENT_SKILLS` 同步注册
-> 3. 单测 `app/tests/shared/tools/skills/project/test_ops_tools.py`
+### 运维类工具
 
 ### ops_log_aggregate
 【占位】汇总项目运维记录(巡检结果、告警条目、人工处理记录),按时间/类型/责任人维度聚合,生成运维日报/周报底稿。
