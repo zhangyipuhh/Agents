@@ -48,12 +48,12 @@
 <details>
 <summary>📚 一句话能力摘要</summary>
 
-通用智能体运行框架 · 多 LLM Provider 适配 · 三层提示词协议 · 消息裁剪与多模态提取 · SSE 流式策略 · 异步并发队列 · 文件分片上传 · 异步连接池 · FastAPI 应用工厂 · MCP / 子智能体 / HITL 工具生态 · 双 Token 认证 · 图形验证码 · 用户 / 角色管理 · 强制下线 · 审计日志
+通用智能体运行框架 · **典型业务场景：`project` 智能体**（项目文档 + 项目运维双职责）· 多 LLM Provider 适配 · 三层提示词协议 · 消息裁剪与多模态提取 · SSE 流式策略 · 异步并发队列 · 文件分片上传 · 异步连接池 · FastAPI 应用工厂 · MCP / 子智能体 / HITL 工具生态 · 双 Token 认证 · 图形验证码 · 用户 / 角色管理 · 强制下线 · 审计日志
 
 **🔌 接入方式**
 
 - AI 编程工具：MCP 协议 — 任意 LangChain / LlamaIndex / 自研 Agent 框架
-- 业务子图：`Agent` 基类 + `AgentConfig` + `AgentContext` 三件套继承即用
+- 业务子图：`Agent` 基类 + `AgentConfig` + `AgentContext` 三件套继承即用（已落地 `project` / `contract_*` / `audit_document` / `DevOps` / `AI_Coding_Check` / `Tagent` / `map_agent` 等实例）
 - 开发集成：Python SDK · FastAPI · Docker Compose
 
 </details>
@@ -120,19 +120,103 @@
   <img src="img/cover.png" width="100%" alt="系统演示截图" />
 </p>
 
-# 项目介绍
+# 项目定位
 
-**Feature Agent Core** 是一套面向 LLM · RAG · Agent 场景的**通用方法层基础设施**。
+**Feature Agent Core** 是一套**以业务场景为锚点的企业级智能体运行框架**。
 
-它不绑定具体业务场景，而是为上层智能体应用提供可复用、可扩展、可替换的运行底座 —— 涵盖 Agent 运行框架、多模型适配、提示词协议、消息治理、流式输出、并发调度、文件 I/O、数据持久化等横切关注点。业务开发者只需继承 `Agent` 基类、配置 `AgentConfig`、实现专属工具与提示词，即可快速搭建一个生产级智能体服务。
+它既不是空泛的通用框架宣传，也不是单一业务的封闭产品 —— 而是**沉淀一套"框架底座 + 业务场景实例"双向驱动的工程化方法论**：
 
-> 项目诞生于自然资源业务智能化的预研过程，目标是沉淀一套与业务解耦的智能体工程化方法论。
+- **底座层** (`app/core/`)：LLM 多 Provider 适配、Agent 运行框架、提示词协议、消息治理、流式输出、并发调度、文件 I/O、数据持久化等横切关注点的可复用基础设施。
+- **业务层** (`app/features/`)：在底座之上构建的领域智能体，目前已落地 **`project`**（项目文档与运维）、`contract_*`（合同 4 个）、`audit_document`（审计）、`DevOps`（运维）、`AI_Coding_Check`（AI 编程审查）、`Tagent`、`map_agent`（地图）等实例。
+- **场景实例**：每个业务智能体都是一个具体的、可演示的场景切片 —— 其中 **`project` 智能体是业务价值最完整、双职责最典型的实例**（详见下一章节）。
+
+业务开发者只需继承 `Agent` 基类、配置 `AgentConfig`、实现专属工具与提示词，即可基于同一底座快速搭建新的生产级智能体服务。
+
+> **为什么做这个项目**：项目诞生于自然资源业务智能化的预研过程，目标是沉淀一套"既能落地真实业务、又能横向复用"的智能体工程化方法论。
+
+## 🎯 典型业务场景：`project` 智能体
+
+`project` 智能体是本框架**首个完整落地**的业务实例，承接 [agents/project/AGENTS.md](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/agents/project/AGENTS.md) 中定义的双职责——**项目文档工作流**与**项目运维管理**。它的存在完整地回答了"框架底座如何在具体业务场景中落地"这一问题。
+
+### 1. 业务定位
+
+`project` 智能体面向软件工程团队的两类核心痛点：
+
+| 业务线 | 解决什么问题 | 典型产物 |
+|---|---|---|
+| **项目文档工作流** | 策划表/需求规格/概要设计/详细设计/测试计划/测试报告/验收报告/实施部署/培训计划 等 10 类软件工程文档的查询、生成与更新；多项目管理框架（PMP / PRINCE2 / 信息系统项目管理师）支持 | 实施方案、需求规格书、概要/详细设计文档、测试报告、验收报告等 `.docx` 交付物 |
+| **项目运维管理** | 运维记录汇总（巡检结果/告警/人工处理）、飞书消息同步、需求/修改单插入、主动巡检 + 定时巡检（对接 `TaskSchedulerService` 5 段 crontab） | 运维日报/周报、飞书卡片、需求工单、修改单、巡检报告 |
+
+### 2. 已落地的能力 — 项目文档线
+
+- **入口契约**：[agents/project/AGENTS.md](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/agents/project/AGENTS.md) 明确智能体职责、工具清单与 skill 触发条件
+- **已实现的 7 个 skill**：
+  - `project-doc-overview` — 套件总览与分流入口（模型自读入口文档）
+  - `project-doc-hub` — 文档生成/查询/更新的统一调度入口
+  - `project-doc-query` — 回答"项目里有什么 / 何时评审 / 谁负责"等事实性问题
+  - `project-doc-outline` — 为 10 类文档生成符合软件工程规范的章节大纲
+  - `project-doc-write` — 基于真实项目材料填充正文 + 生成决策与意见（严禁虚构）
+  - `project-doc-workflow` — 端到端 4 步流水线编排（query → outline → write → save-to-disk + 变更记录）
+  - `intent-clarification` — 统一澄清协议（所有"问用户"的步骤必须经过它）
+- **已注册的 8 个 `@tool`**：[ProjectTools.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/shared/tools/skills/project/ProjectTools.py) 实现 `intent_clarification` / `project_doc_query` / `project_doc_outline` / `project_doc_write` / `project_doc_workflow` / `manage_project_log` / `append_change_log` / `generate_project_docx`
+- **典型调用契约示例**：
+
+  ```python
+  # 事实问答（项目里有什么）
+  result = project_doc_query(scope="project", query="评审计划")
+
+  # 端到端编排 query → outline → write → save-to-disk
+  result = project_doc_workflow(
+      project_root="<项目根>",
+      doc_type="implementation_plan",
+      creation_mode="E1_based_on_materials",  # E1/E2/E3/E4 四选一
+  )
+
+  # 输出 Word 交付物
+  generate_project_docx(content=doc_body, output_path="<项目根>/03_技术文档及评审/...")
+  ```
+
+- **核心约束**（来自 AGENTS.md 硬规则）：
+  - **统一澄清协议**：所有追问必须先调 `intent_clarification`，禁止 SKILL.md 内联提问
+  - **严禁虚构**：人名/日期/数字/工具名/角色签字表/文档状态/框架标签必须来自项目材料或用户确认
+  - **4 步流水线**：`query → outline → write → save-to-disk` + 变更记录追加
+
+### 3. 规划中的能力 — 项目运维线
+
+已在 `agents/project/AGENTS.md` 中规划、SKILL.md 已起草、待补 `@tool` 与外部对接：
+
+- **5 个 skill**：
+  - `ops-log-aggregate` — 汇总运维记录（巡检/告警/人工处理），按时间/类型/责任人聚合生成日报/周报底稿
+  - `feishu-sync` — 封装飞书 Open API 推送消息/文档/卡片（**被依赖基础能力**：其他 3 个运维 skill 都会调用它）
+  - `requirement-ticket` — 向需求管理系统插入需求单 + 飞书通知
+  - `change-ticket` — 向变更管理系统插入修改单 + 飞书通知审批人
+  - `ops-inspection` — 主动/定时触发项目巡检（定时模式对接 `TaskSchedulerService` 5 段 crontab），异常时飞书告警
+- **巡检两种触发模式**：
+  - **主动触发**：用户在对话中发起"巡检一下"
+  - **定时触发**：对接 `app/shared/utils/agent/task_scheduler_service.py` 的 5 段 crontab 调度器
+
+### 4. `project` 智能体如何复用框架底座
+
+`project` 智能体并不是孤立功能，而是**深度复用**了通用框架的每一层基础设施：
+
+| 框架底座能力 | `project` 智能体的复用点 |
+|---|---|
+| `Agent` 基类 + `AgentConfig` + `AgentContext` | 智能体的运行骨架与配置三件套 |
+| `ModelFactory` 多 LLM Provider | 文档生成时调用不同模型厂商 |
+| 三层提示词协议（基类 + 专有 + 上下文） | `project` 智能体注入专属业务角色提示词 |
+| `ToolNode` + `explore(...)` 子智能体 | 读取项目材料（策划表、需求、设计稿、邮件等） |
+| `SkillTools` 加载 skill | 调用 7 个 project-doc-* skill + intent-clarification |
+| 消息治理（trim / 多模态提取） | 长会话上下文裁剪与多模态附件处理 |
+| 文件分片上传 + 文档缓存镜像 | 项目根目录 `.md` 镜像 + 文档缓存读取 |
+| MCP 工具生态 | 可横向挂载文档解析/翻译/审稿等 MCP 工具 |
+
+> 这正是"框架是基础、场景是落地"的具象体现 —— `project` 智能体**没有重新发明轮子**，而是在通用底座上组合出完整的业务价值。
 
 ---
 
 # 🧠 核心能力
 
-本节按通用方法视角介绍 `app/core/` 中沉淀的六大基础设施能力。
+本节按通用方法视角介绍 `app/core/` 中沉淀的六大基础设施能力。它们是上层 **`project`** 等业务智能体的运行底座——理解这些底座能力，有助于判断"某个业务场景在底座上是否能落地"以及"如何组合底座能力"。
 
 ## 🏭 多 Provider LLM 工厂
 
@@ -323,6 +407,8 @@ class MCPToolWrapper(BaseTool):
             return summary
         return result
 ```
+
+**典型场景实例 — `project` 智能体**：以 `project` 智能体为例，它通过 `project_doc_*` 工具直接复用 `explore(...)` 子智能体读取项目材料（策划表、需求文档、设计稿、邮件等），并通过 `SkillTools` 调用 7 个项目文档类 skill；不重新发明文件系统读取、消息治理、SSE 流式，而是**组合底座能力形成完整业务闭环**。
 
 ---
 
@@ -1073,6 +1159,22 @@ server {
 - **状态可观测** — `AgentState` 内置 `tool_progress` / `intermediate_results`，支持审计与调试
 - **中断可恢复** — 统一的 `interrupt()` / `Command(resume=...)` 协议，HITL 与子智能体共用
 
+**业务层（features/）已落地的领域智能体**：
+
+`app/features/` 在 core/ Agent 基座上已经构建了多个**具体业务场景**实例：
+
+| 智能体 | 业务场景 | 入口 |
+|---|---|---|
+| **`project`**（**典型**） | 项目文档与运维双职责（文档生成 + 运维管理） | [agents/project/AGENTS.md](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/agents/project/AGENTS.md) |
+| `contract_*`（4 个） | 合同相关场景（审批 / 文档 / 主持） | `app/features/contract_*/` |
+| `audit_document` | 审计文档智能体 | `app/features/audit_document_agent/` |
+| `DevOps` | 运维执行智能体（含 SSH / 命令拦截） | `app/features/DevOps_agent/` |
+| `AI_Coding_Check` | AI 编程审查智能体 | `app/features/AI_Coding_Check_agent/` |
+| `Tagent` | 测试类智能体 | `app/features/Tagent/` |
+| `map_agent` | 地图相关业务 | `agents/map_agent/AGENTS.md` |
+
+其中 **`project` 是业务价值最完整、双职责最典型的实例**——它完整回答了"框架底座如何在具体业务场景中落地"这一问题（详见 [🎯 典型业务场景：`project` 智能体](#-典型业务场景project-智能体) 章节）。
+
 ---
 
 # 🧩 扩展指南
@@ -1085,7 +1187,7 @@ server {
 | 新流式策略      | `app/core/format/stream/`    | 继承 `StreamFormatStrategy` 实现 `format_content` 与 `provider_name` |
 | 新工具          | `app/core/tools/`            | 继承 `BaseTools` 或使用 `@tool` 装饰器                                 |
 | 新 MCP Server   | `mcp_registry`               | 在 `settings.mcp` 中追加配置                                             |
-| 新业务智能体    | `app/features/<your_agent>/` | 继承 `Agent` 基类 + 自定义 `AgentConfig` + `AgentContext`            |
+| 新业务智能体    | `app/features/<your_agent>/` | 继承 `Agent` 基类 + 自定义 `AgentConfig` + `AgentContext`（参考 [`project` 智能体](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/agents/project/AGENTS.md) 的入口契约与 `ProjectTools.py` 实现） |
 | 新 Schema       | `database.py`                | `@register_schema` 装饰器声明初始化函数                                  |
 
 ---
