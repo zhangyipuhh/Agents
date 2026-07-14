@@ -2,6 +2,8 @@
 import { ref, computed, nextTick, onMounted } from 'vue'
 import { uploadFileInChunks, formatFileSize, getFileExtension, refreshToken, fetchAgentList, deleteAttachments, fetchUploadConfig } from '../utils/api.js'
 import ProjectDropdown from './ProjectDropdown.vue'
+// 2026-07-14 新增：子智能体快选条组件（常驻在 InputBox 下方）
+import SubAgentSuggestionStrip from './SubAgentSuggestionStrip.vue'
 import { handleCommand, COMMAND_REGISTRY } from '../utils/commandRegistry.js'
 
 const SUPPORTED_EXTENSIONS = ['pdf', 'doc', 'docx', 'txt', 'md', 'csv', 'json']
@@ -193,6 +195,17 @@ const filteredAgents = computed(() => {
       a.name.toLowerCase().includes(query) ||
       (a.display_name && a.display_name.toLowerCase().includes(query))
   )
+})
+
+// 2026-07-14 新增：常驻子智能体快选条所需的智能体列表。
+// 与 filteredAgents 不同，它不依赖 trim 后的输入字符，
+// 仅受 allowedAgents 与 agentList 加载状态约束。
+// 父组件 ProjectDropdown 同级，在 !projectLocked 时挂载 SubAgentSuggestionStrip 消费。
+const suggestionAgents = computed(() => {
+  const allowedList = props.allowedAgents || []
+  if (!allowedList.length) return []
+  const allowedSet = new Set(allowedList)
+  return agentList.value.filter((a) => allowedSet.has(a.name))
 })
 
 const handleInput = (event) => {
@@ -836,6 +849,16 @@ const emit = defineEmits([
           @pick-existing="$emit('pick-existing')"
         />
       </div>
+
+      <!-- 2026-07-14 新增：常驻子智能体快选条。
+           仅在 !projectLocked（未发送 / 非历史会话 / 未选待上传文件）时显示。
+           选中胶囊 → 复用现有 selectAgent() 路径，把智能体以 /xx 形式注入 InputBox。 -->
+      <SubAgentSuggestionStrip
+        v-if="!projectLocked"
+        :agents="suggestionAgents"
+        :disabled="isStreaming"
+        @select="selectAgent"
+      />
     </div>
 
     <p class="disclaimer">内容由AI生成，重要信息请务必核查</p>

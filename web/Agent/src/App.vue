@@ -1367,7 +1367,7 @@ async function handleSessionSwitch(targetSessionId) {
         @open-session-file-drawer="handleOpenSessionFileDrawer"
       />
 
-      <div v-if="isEmptyState" class="welcome-title">Agent, 让你的工作更轻松</div>
+      <div v-if="isEmptyState" class="welcome-title">Agent, 让你的运维工作更轻松</div>
 
       <!-- 2026-06-15 新增：动态排队提示横幅，挂在 ChatArea 与 HumanApprovalBox/InputBox 之间 -->
       <div class="queue-banner-wrapper">

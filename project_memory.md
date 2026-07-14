@@ -952,6 +952,7 @@ return data/upload/yyyy/mm/dd/{session_id}/
 | 组件 | 职责 |
 |------|------|
 | `ProjectDropdown.vue` | 紧挨着 InputBox 上方的下拉框（顶部只读预览 + 3 个动作 + 锁定支持） |
+| `SubAgentSuggestionStrip.vue` | InputBox 项目卡下方常驻子智能体胶囊条（2026-07-14 新增）；按 `allowedAgents` 过滤 + 居中展示；点击胶囊 → `emit('select', agent)` 复用 `InputBox.selectAgent` |
 | `ProjectDialog.vue` | 双模式弹窗（create / pick）；create 模式点击保存后 emit `created`，弹窗关闭由父组件控制 |
 | `App.vue` | `currentProject` 状态机 + handleSessionSwitch 恢复 + newSession 纯前端重置（2026-07-XX 改造）+ `canEditProject` 锁定判定 + `ensureSessionForFirstOp` 按需建 session + `handleProjectCreate` 成功后关闭弹窗并刷新按钮文案 |
 
