@@ -2,7 +2,12 @@
 /**
  * TaskSchedulerManager - 智能体定时任务管理组件（admin）
  *
- * 提供定时任务列表、任务表单、启停、立即运行和执行历史查看能力。
+ * 提供定时任务列表、任务表单、启停、立即运行和执行历史查看能力；
+ * 以及「服务器扫描入库」Tab，在该 Tab 中按需拉取 DevOps 服务器脱敏列表并触发扫描。
+ *
+ * 安全设计：服务器列表只展示白名单字段（id / business_name / server_type / updated_at），
+ * 绝不渲染 ip / port / username / password / blacklist / whitelist / 文件路径。
+ * 扫描错误信息做脱敏处理：仅展示通用提示，不把后端 detail 透出到页面。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import {
@@ -14,7 +19,17 @@ import {
   setTaskScheduleEnabled,
   triggerTaskSchedule,
   fetchTaskRuns,
+  fetchDevOpsServers,
+  scanDevOpsServers,
 } from '../utils/api.js'
+
+const TAB_TASK = 'task'
+const TAB_SCAN = 'scan'
+
+const TAB_LABELS = [
+  { id: TAB_TASK, label: '编辑任务' },
+  { id: TAB_SCAN, label: '服务器扫描入库' },
+]
 
 const schedules = ref([])
 const agents = ref([])
@@ -26,6 +41,25 @@ const errorMessage = ref('')
 const successMessage = ref('')
 const isCreating = ref(false)
 const contextJson = ref('{}')
+
+// Tab 状态
+const activeTab = ref(TAB_TASK)
+
+// 服务器扫描状态
+const devopsServers = ref([])
+const isLoadingServers = ref(false)
+const isScanning = ref(false)
+const scanErrorMessage = ref('')
+const listErrorMessage = ref('')
+const scanSuccessMessage = ref('')
+const scanSummary = ref(null)
+const hasLoaded = ref(false)
+
+// 扫描结果只接受这 4 个数字；任何未知敏感字段都不会进入 DOM
+const SUMMARY_FIELDS = ['scanned', 'inserted', 'updated', 'failed']
+
+// 服务器字段白名单：仅显示这些键，绝不显示敏感字段
+const SERVER_WHITELIST = ['id', 'business_name', 'server_type', 'updated_at']
 
 const form = reactive({
   name: '',
@@ -40,6 +74,27 @@ const form = reactive({
 })
 
 const enabledAgents = computed(() => agents.value.filter((agent) => agent.enabled !== false))
+
+/**
+ * 脱敏后的服务器列表：仅保留白名单字段，避免 ip/password 等敏感值流入 UI。
+ * @param {Array} rows - 后端原始返回数组
+ * @returns {Array} 仅含白名单字段的对象数组
+ */
+function maskServers(rows) {
+  if (!Array.isArray(rows)) return []
+  return rows
+    .map((row) => {
+      const safe = {}
+      for (const key of SERVER_WHITELIST) {
+        if (row && Object.prototype.hasOwnProperty.call(row, key)) {
+          safe[key] = row[key]
+        }
+      }
+      // 即使后端返回了多余字段，spread 也被刻意不使用，确保 UI 永不会触达
+      return safe
+    })
+    .filter((row) => row && row.id !== undefined && row.id !== null)
+}
 
 /**
  * 初始化数据。
@@ -93,6 +148,80 @@ async function loadRuns(scheduleId) {
     runs.value = await fetchTaskRuns(scheduleId, 50)
   } catch (error) {
     errorMessage.value = error.message || '加载执行历史失败'
+  }
+}
+
+/**
+ * 切换 Tab。切到扫描 Tab 时按需加载服务器列表，并仅保留白名单字段。
+ * 切回任务 Tab 时不再触发任何 devops 请求。
+ * 第一次加载完成后置 ``hasLoaded=true``，之后切回再进入不再重复 GET。
+ * @param {string} tabId - TAB_TASK 或 TAB_SCAN
+ * @returns {Promise<void>} 无返回值
+ */
+async function switchTab(tabId) {
+  if (activeTab.value === tabId) return
+  activeTab.value = tabId
+  if (tabId === TAB_SCAN && !hasLoaded.value) {
+    await loadDevopsServers()
+  }
+}
+
+/**
+ * 加载并脱敏 DevOps 服务器列表。
+ * @returns {Promise<void>} 无返回值
+ */
+async function loadDevopsServers() {
+  isLoadingServers.value = true
+  listErrorMessage.value = ''
+  try {
+    const rows = await fetchDevOpsServers()
+    devopsServers.value = maskServers(rows)
+    hasLoaded.value = true
+  } catch {
+    listErrorMessage.value = '服务器列表加载失败'
+    devopsServers.value = []
+  } finally {
+    isLoadingServers.value = false
+  }
+}
+
+/**
+ * 把后端返回的统计对象严格白名单复制为 4 个整数。
+ * 避免 ``scanSummary.value = summary`` 直接暴露后端可能附带的敏感字段。
+ * @param {unknown} raw - 后端 /scan 响应
+ * @returns {{scanned: number, inserted: number, updated: number, failed: number}}
+ */
+function sanitizeSummary(raw) {
+  const out = { scanned: 0, inserted: 0, updated: 0, failed: 0 }
+  if (!raw || typeof raw !== 'object') return out
+  for (const key of SUMMARY_FIELDS) {
+    const value = Number(raw[key])
+    out[key] = Number.isFinite(value) ? value : 0
+  }
+  return out
+}
+
+/**
+ * 触发服务器扫描。带防重复提交：scanning 过程中再次点击会被忽略。
+ * 扫描成功后刷新列表；任何错误使用脱敏提示。
+ * @returns {Promise<void>} 无返回值
+ */
+async function triggerServerScan() {
+  if (isScanning.value) return
+  isScanning.value = true
+  scanErrorMessage.value = ''
+  scanSuccessMessage.value = ''
+  scanSummary.value = null
+  try {
+    const summary = await scanDevOpsServers()
+    scanSummary.value = sanitizeSummary(summary)
+    scanSuccessMessage.value = '扫描完成'
+    // 扫描成功后主动刷新服务器列表
+    await loadDevopsServers()
+  } catch {
+    scanErrorMessage.value = '扫描失败，请稍后重试'
+  } finally {
+    isScanning.value = false
   }
 }
 
@@ -282,79 +411,213 @@ onMounted(loadInitialData)
     </aside>
 
     <main class="task-detail">
-      <div v-if="errorMessage" class="alert error">{{ errorMessage }}</div>
-      <div v-if="successMessage" class="alert success">{{ successMessage }}</div>
+      <div
+        class="tablist"
+        role="tablist"
+        aria-label="定时任务管理"
+        data-testid="tablist"
+      >
+        <button
+          v-for="tab in TAB_LABELS"
+          :key="tab.id"
+          type="button"
+          role="tab"
+          :id="`tab-${tab.id}`"
+          :aria-controls="`panel-${tab.id}`"
+          :aria-selected="activeTab === tab.id ? 'true' : 'false'"
+          :tabindex="activeTab === tab.id ? 0 : -1"
+          :class="['tab', { active: activeTab === tab.id }]"
+          :data-testid="`tab-${tab.id}`"
+          @click="switchTab(tab.id)"
+        >
+          {{ tab.label }}
+        </button>
+      </div>
 
-      <header class="detail-header">
-        <div>
-          <h3>{{ isCreating ? '新增定时任务' : '编辑定时任务' }}</h3>
-          <p>每次触发都会创建新的会话记录，停机期间错过的触发不会补跑。</p>
-        </div>
-        <div class="actions" v-if="!isCreating && selectedSchedule">
-          <button type="button" class="secondary-btn" @click="toggleTask">
-            {{ selectedSchedule.enabled ? '停用任务' : '启用任务' }}
-          </button>
-          <button type="button" class="secondary-btn" @click="runNow">立即运行</button>
-          <button type="button" class="danger-btn" @click="removeTask">删除任务</button>
-        </div>
-      </header>
+      <!-- 任务 Tab -->
+      <section
+        v-if="activeTab === TAB_TASK"
+        :id="`panel-${TAB_TASK}`"
+        role="tabpanel"
+        aria-labelledby="tab-task"
+        data-testid="panel-task"
+      >
+        <div v-if="errorMessage" class="alert error">{{ errorMessage }}</div>
+        <div v-if="successMessage" class="alert success">{{ successMessage }}</div>
 
-      <form class="task-form" @submit.prevent="saveTask">
-        <label class="form-field">
-          <span>任务名称 *</span>
-          <input v-model="form.name" type="text" placeholder="例如：每日巡检" />
-        </label>
-        <label class="form-field">
-          <span>Cron 表达式 *</span>
-          <input v-model="form.cron_expression" type="text" placeholder="0 9 * * *" />
-        </label>
-        <label class="form-field">
-          <span>目标智能体 *</span>
-          <select v-model="form.agent_name">
-            <option v-for="agent in enabledAgents" :key="agent.name" :value="agent.name">
-              {{ agent.display_name || agent.name }}（{{ agent.name }}）
-            </option>
-          </select>
-        </label>
-        <label class="form-field">
-          <span>时区</span>
-          <input v-model="form.timezone" type="text" placeholder="Asia/Shanghai" />
-        </label>
-        <label class="form-field full">
-          <span>任务提示词 *</span>
-          <textarea v-model="form.prompt" rows="5" placeholder="描述定时触发时需要智能体完成的任务"></textarea>
-        </label>
-        <label class="form-field full">
-          <span>描述</span>
-          <input v-model="form.description" type="text" placeholder="可选：说明该任务的用途" />
-        </label>
-        <label class="form-field full">
-          <span>context_overrides JSON</span>
-          <textarea v-model="contextJson" rows="4" placeholder='{}'></textarea>
-        </label>
-        <label class="inline-field">
-          <input v-model="form.enabled" type="checkbox" />
-          <span>保存后启用任务</span>
-        </label>
-        <div class="form-actions">
-          <button class="primary-btn" type="submit" :disabled="isSaving">
-            {{ isSaving ? '保存中...' : '保存任务' }}
-          </button>
-        </div>
-      </form>
-
-      <section class="run-history" v-if="!isCreating">
-        <h4>执行历史</h4>
-        <div v-if="!runs.length" class="empty-state">暂无执行记录</div>
-        <div v-for="run in runs" :key="run.id" class="run-item">
-          <div class="run-main">
-            <strong>{{ run.status }}</strong>
-            <span>{{ run.trigger_type }}</span>
-            <span>{{ run.created_at || run.started_at }}</span>
+        <header class="detail-header">
+          <div>
+            <h3>{{ isCreating ? '新增定时任务' : '编辑定时任务' }}</h3>
+            <p>每次触发都会创建新的会话记录，停机期间错过的触发不会补跑。</p>
           </div>
-          <p v-if="run.output_text">{{ run.output_text }}</p>
-          <p v-if="run.error_message" class="run-error">{{ run.error_message }}</p>
+          <div class="actions" v-if="!isCreating && selectedSchedule">
+            <button type="button" class="secondary-btn" @click="toggleTask">
+              {{ selectedSchedule.enabled ? '停用任务' : '启用任务' }}
+            </button>
+            <button type="button" class="secondary-btn" @click="runNow">立即运行</button>
+            <button type="button" class="danger-btn" @click="removeTask">删除任务</button>
+          </div>
+        </header>
+
+        <form class="task-form" @submit.prevent="saveTask">
+          <label class="form-field">
+            <span>任务名称 *</span>
+            <input v-model="form.name" type="text" placeholder="例如：每日巡检" />
+          </label>
+          <label class="form-field">
+            <span>Cron 表达式 *</span>
+            <input v-model="form.cron_expression" type="text" placeholder="0 9 * * *" />
+          </label>
+          <label class="form-field">
+            <span>目标智能体 *</span>
+            <select v-model="form.agent_name">
+              <option v-for="agent in enabledAgents" :key="agent.name" :value="agent.name">
+                {{ agent.display_name || agent.name }}（{{ agent.name }}）
+              </option>
+            </select>
+          </label>
+          <label class="form-field">
+            <span>时区</span>
+            <input v-model="form.timezone" type="text" placeholder="Asia/Shanghai" />
+          </label>
+          <label class="form-field full">
+            <span>任务提示词 *</span>
+            <textarea v-model="form.prompt" rows="5" placeholder="描述定时触发时需要智能体完成的任务"></textarea>
+          </label>
+          <label class="form-field full">
+            <span>描述</span>
+            <input v-model="form.description" type="text" placeholder="可选：说明该任务的用途" />
+          </label>
+          <label class="form-field full">
+            <span>context_overrides JSON</span>
+            <textarea v-model="contextJson" rows="4" placeholder='{}'></textarea>
+          </label>
+          <label class="inline-field">
+            <input v-model="form.enabled" type="checkbox" />
+            <span>保存后启用任务</span>
+          </label>
+          <div class="form-actions">
+            <button class="primary-btn" type="submit" :disabled="isSaving">
+              {{ isSaving ? '保存中...' : '保存任务' }}
+            </button>
+          </div>
+        </form>
+
+        <section class="run-history" v-if="!isCreating">
+          <h4>执行历史</h4>
+          <div v-if="!runs.length" class="empty-state">暂无执行记录</div>
+          <div v-for="run in runs" :key="run.id" class="run-item">
+            <div class="run-main">
+              <strong>{{ run.status }}</strong>
+              <span>{{ run.trigger_type }}</span>
+              <span>{{ run.created_at || run.started_at }}</span>
+            </div>
+            <p v-if="run.output_text">{{ run.output_text }}</p>
+            <p v-if="run.error_message" class="run-error">{{ run.error_message }}</p>
+          </div>
+        </section>
+      </section>
+
+      <!-- 服务器扫描 Tab -->
+      <section
+        v-else
+        :id="`panel-${TAB_SCAN}`"
+        role="tabpanel"
+        aria-labelledby="tab-scan"
+        data-testid="panel-scan"
+      >
+        <header class="detail-header">
+          <div>
+            <h3>服务器扫描入库</h3>
+            <p>仅展示脱敏字段（业务名 / 类型 / 更新时间），敏感信息不会显示在前端。</p>
+          </div>
+          <div class="actions">
+            <button
+              type="button"
+              class="primary-btn"
+              data-testid="scan-servers-btn"
+              :disabled="isScanning"
+              :aria-busy="isScanning ? 'true' : 'false'"
+              @click="triggerServerScan"
+            >
+              <span v-if="isScanning" data-testid="scan-loading">扫描中...</span>
+              <span v-else>立即扫描</span>
+            </button>
+          </div>
+        </header>
+
+        <div
+          v-if="scanErrorMessage"
+          class="alert error"
+          role="alert"
+          data-testid="scan-error"
+        >
+          {{ scanErrorMessage }}
         </div>
+        <div
+          v-if="listErrorMessage"
+          class="alert error"
+          role="alert"
+          data-testid="list-error"
+        >
+          {{ listErrorMessage }}
+        </div>
+        <div
+          v-if="scanSuccessMessage"
+          class="alert success"
+          data-testid="scan-status"
+        >
+          {{ scanSuccessMessage }}
+        </div>
+
+        <div
+          v-if="scanSummary"
+          class="alert info summary"
+          data-testid="scan-summary"
+        >
+          <span data-testid="summary-scanned">扫描 {{ scanSummary.scanned }}</span>
+          <span data-testid="summary-inserted">新增 {{ scanSummary.inserted }}</span>
+          <span data-testid="summary-updated">更新 {{ scanSummary.updated }}</span>
+          <span data-testid="summary-failed">失败 {{ scanSummary.failed }}</span>
+        </div>
+
+        <div v-if="isLoadingServers" class="empty-state" data-testid="scan-loading-list">
+          正在加载服务器列表...
+        </div>
+
+        <div
+          v-else-if="!devopsServers.length"
+          class="empty-state"
+          data-testid="scan-empty"
+        >
+          暂无可入库的服务器
+        </div>
+
+        <table
+          v-else
+          class="server-table"
+          data-testid="server-table"
+          aria-label="DevOps 服务器列表（脱敏）"
+        >
+          <thead>
+            <tr>
+              <th scope="col">业务名</th>
+              <th scope="col">系统类型</th>
+              <th scope="col">最近同步</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="row in devopsServers"
+              :key="row.id"
+              :data-testid="`server-row-${row.id}`"
+            >
+              <td>{{ row.business_name }}</td>
+              <td>{{ row.server_type }}</td>
+              <td>{{ row.updated_at }}</td>
+            </tr>
+          </tbody>
+        </table>
       </section>
     </main>
   </section>
@@ -509,6 +772,12 @@ textarea {
   background: #2563eb;
 }
 
+.primary-btn:disabled,
+.primary-btn[disabled] {
+  background: #93c5fd;
+  cursor: not-allowed;
+}
+
 .secondary-btn {
   color: #1f2937;
   background: #e5e7eb;
@@ -533,6 +802,19 @@ textarea {
 .alert.success {
   color: #065f46;
   background: #d1fae5;
+}
+
+.alert.info {
+  color: #1e3a8a;
+  background: #dbeafe;
+}
+
+.alert.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  color: #1e40af;
+  background: #eff6ff;
 }
 
 .empty-state {
@@ -574,9 +856,62 @@ textarea {
   color: #b91c1c !important;
 }
 
+.tablist {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid #e5e7eb;
+  margin-bottom: 18px;
+}
+
+.tab {
+  background: transparent;
+  border: 0;
+  padding: 10px 14px;
+  border-radius: 8px 8px 0 0;
+  color: #4b5563;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.tab.active {
+  color: #2563eb;
+  border-bottom: 2px solid #2563eb;
+  background: #eff6ff;
+}
+
+.tab:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.server-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 12px;
+}
+
+.server-table th,
+.server-table td {
+  border-bottom: 1px solid #e5e7eb;
+  padding: 10px 12px;
+  text-align: left;
+  font-size: 13px;
+  color: #111827;
+}
+
+.server-table th {
+  background: #f9fafb;
+  color: #374151;
+  font-weight: 600;
+}
+
 @media (max-width: 900px) {
   .task-scheduler-manager {
     grid-template-columns: 1fr;
+  }
+  .tablist {
+    flex-wrap: wrap;
   }
 }
 </style>

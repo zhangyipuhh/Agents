@@ -1168,7 +1168,7 @@ server {
 | **`project`**（**典型**） | 项目文档与运维双职责（文档生成 + 运维管理） | [agents/project/AGENTS.md](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/agents/project/AGENTS.md) |
 | `contract_*`（4 个） | 合同相关场景（审批 / 文档 / 主持） | `app/features/contract_*/` |
 | `audit_document` | 审计文档智能体 | `app/features/audit_document_agent/` |
-| `DevOps` | 运维执行智能体（含 SSH / 命令拦截） | `app/features/DevOps_agent/` |
+| `DevOps` | 已下线，SSH 工具集迁至 `app/shared/tools/skills/devops/` | `app/routers/devops_server_admin_router.py` |
 | `AI_Coding_Check` | AI 编程审查智能体 | `app/features/AI_Coding_Check_agent/` |
 | `Tagent` | 测试类智能体 | `app/features/Tagent/` |
 | `map_agent` | 地图相关业务 | `agents/map_agent/AGENTS.md` |

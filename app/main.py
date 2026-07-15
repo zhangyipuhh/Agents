@@ -64,6 +64,9 @@ from app.routers.agent_admin_router import router as agent_admin_router
 from app.routers.tool_admin_router import router as tool_admin_router
 from app.routers.skill_admin_router import router as skill_admin_router
 from app.routers.task_scheduler_router import router as task_scheduler_router
+from app.routers.devops_server_admin_router import (
+    router as devops_server_admin_router,  # 2026-07-15 新增：DevOps 服务器管理
+)
 
 
 app = create_app()
@@ -93,6 +96,7 @@ def register_routers(target_app=None):
     _app.include_router(tool_admin_router)
     _app.include_router(skill_admin_router)
     _app.include_router(task_scheduler_router)
+    _app.include_router(devops_server_admin_router)
 
 
 register_routers()

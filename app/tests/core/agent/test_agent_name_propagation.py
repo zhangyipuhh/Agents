@@ -4,7 +4,8 @@ AgentConfig.name 字段与 Agent.agent_name 透传链路测试。
 
 覆盖：
     - AgentConfig 基类 name 字段默认值
-    - 7 个子智能体 *Config 类覆盖 name 为字面量
+    - 6 个子智能体 *Config 类覆盖 name 为字面量（DevOps_agent 2026-07-15 已下线，
+      map_agent 已迁移到数据库 JSON + AGENTS.md，不再在此测试中验证）
     - Agent.__init__ 读取 config.name 赋给 self.agent_name
 """
 
@@ -27,10 +28,12 @@ def test_agent_config_base_name_default_is_none():
 
 def test_all_subagent_configs_have_correct_name_default():
     """
-    6 个子智能体 *Config 类的 name 字段默认值应严格匹配 app/features/<dir>/ 目录名。
+    5 个子智能体 *Config 类的 name 字段默认值应严格匹配 app/features/<dir>/ 目录名。
 
-    注意：map_agent 已迁移到新架构（数据库 JSON + AGENTS.md），
-    MapAgentConfig 已删除，不再在此测试中验证。
+    注意：
+      * map_agent 已迁移到新架构（数据库 JSON + AGENTS.md），MapAgentConfig 已删除
+      * DevOps_agent 已于 2026-07-15 下线，DevOpsAgentConfig 已删除
+      两者均不在此测试中验证。
 
     Returns:
         None
@@ -38,7 +41,6 @@ def test_all_subagent_configs_have_correct_name_default():
     from app.features.AI_Coding_Check_agent.config.AICodingCheckConfig import (
         AICodingCheckConfig,
     )
-    from app.features.DevOps_agent.config.DevOpsAgentConfig import DevOpsAgentConfig
     from app.features.Tagent.config.TagentConfig import TAgentConfig
     from app.features.contract_approval_agent.config.ApprovalAgentConfig import (
         ApprovalAgentConfig,
@@ -50,7 +52,6 @@ def test_all_subagent_configs_have_correct_name_default():
         HtAgentConfig: "contract_host_agent",
         DocAgentConfig: "contract_document_agent",
         ApprovalAgentConfig: "contract_approval_agent",
-        DevOpsAgentConfig: "DevOps_agent",
         AICodingCheckConfig: "AI_Coding_Check_agent",
         TAgentConfig: "Tagent",
     }

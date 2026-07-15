@@ -2352,6 +2352,46 @@ export async function fetchTaskRuns(id, limit = 50) {
 }
 
 // ============================================================
+// DevOps 服务器扫描 API（2026-07-15 新增）
+// 对应后端 /api/admin/devops-servers 管理接口
+// 仅返回脱敏后的服务器列表（id / business_name / server_type / updated_at），
+// 不涉及 ip / port / username / password / blacklist / whitelist 等敏感字段。
+// ============================================================
+
+/**
+ * 获取脱敏后的 DevOps 服务器列表
+ * 调用 GET /api/admin/devops-servers。
+ * @returns {Promise<Array<{id: number|string, business_name: string, server_type: string, updated_at: string}>>} 脱敏服务器列表
+ * @throws {Error} 请求失败时抛出错误（含后端 detail / HTTP 状态信息）
+ */
+export async function fetchDevOpsServers() {
+  const response = await fetchWithAuth('/api/admin/devops-servers', { method: 'GET' })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取 DevOps 服务器列表失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 触发 DevOps 服务器扫描并入库
+ * 调用 POST /api/admin/devops-servers/scan，返回扫描统计信息
+ * （scanned / inserted / updated / failed 4 个整数）。
+ * @returns {Promise<{scanned: number, inserted: number, updated: number, failed: number}>} 扫描结果
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function scanDevOpsServers() {
+  const response = await fetchWithAuth('/api/admin/devops-servers/scan', {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `扫描 DevOps 服务器失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+// ============================================================
 // 消息反馈 API（2026-07-02 新增）
 // 对应后端 message_feedback_router 的 POST /api/agent/message-feedback
 // 用于 AI 回复点赞 / 点踩（点踩时携带详细原因）

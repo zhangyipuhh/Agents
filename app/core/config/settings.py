@@ -396,6 +396,88 @@ class SandboxSettings(BaseSettings):
         return bool(v)
 
 
+class DevOpsSettings(BaseSettings):
+    """
+    DevOps（SSH 远程服务器管理）配置（2026-07-15 新增）
+
+    管理 DevOpsServerService 运行所需的 YAML 配置路径与密码加密密钥（Fernet）。
+    - servers_config_path：servers.yaml 路径，相对项目根或绝对路径均可
+    - credential_key：Fernet 对称密钥（44 字节 base64），用于加密 SSH 密码字段
+
+    注意：
+        - 为避免导入期崩溃，credential_key 默认值为空字符串，
+          Fernet 密钥的严格校验推迟到 DevOpsServerService 实际初始化时进行。
+        - 测试场景可通过显式传入 ``DevOpsSettings(credential_key=...)`` 注入合法密钥。
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+        protected_namespaces=("settings_",),
+    )
+
+    @staticmethod
+    def _default_servers_config_path() -> str:
+        """默认 servers.yaml 路径直接来自 ``app.core.config.paths.DEVOPS_SERVER_CONFIG_PATH``。"""
+        # 延迟导入避免循环（settings → paths）；模块加载顺序无强依赖
+        from app.core.config.paths import DEVOPS_SERVER_CONFIG_PATH
+
+        return str(DEVOPS_SERVER_CONFIG_PATH)
+
+    servers_config_path: str = Field(
+        default_factory=_default_servers_config_path,
+        description=(
+            "DevOps 服务器配置 YAML 文件路径。"
+            "相对项目根解析；可通过环境变量 DEVOPS_SERVERS_CONFIG_PATH 覆盖"
+        ),
+    )
+    credential_key: str = Field(
+        default="",
+        description=(
+            "Fernet 对称密钥（44 字节 base64 字符串），用于加解密 SSH 密码。"
+            "可通过环境变量 DEVOPS_CREDENTIAL_KEY 覆盖；空字符串代表未配置，"
+            "由 DevOpsServerService 在初始化阶段做严格校验"
+        ),
+    )
+
+
+class FeishuSettings(BaseSettings):
+    """
+    飞书 Open API 配置
+
+    管理飞书 SDK（lark-oapi）所需的应用凭证与默认接收方。
+    所有字段均可通过 .env 环境变量覆盖。
+
+    Attributes:
+        feishu_app_id: 飞书应用 App ID（必填，空字符串表示未配置）
+        feishu_app_secret: 飞书应用 App Secret（必填，空字符串表示未配置）
+        feishu_default_receive_id: 默认接收方 ID（如群 chat_id）；空字符串表示未配置
+        feishu_default_receive_id_type: 默认接收方类型，可选 chat_id / open_id / user_id / email
+        feishu_log_level: SDK 日志级别，DEBUG / INFO / WARNING / ERROR
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    feishu_app_id: str = Field(default="", description="飞书应用 App ID")
+    feishu_app_secret: str = Field(default="", description="飞书应用 App Secret")
+    feishu_default_receive_id: str = Field(
+        default="",
+        description="默认接收方 ID（群 chat_id 或用户 open_id）",
+    )
+    feishu_default_receive_id_type: str = Field(
+        default="chat_id",
+        description="默认接收方类型：chat_id / open_id / user_id / email",
+    )
+    feishu_log_level: str = Field(default="INFO", description="飞书 SDK 日志级别")
+
+
 class SkillsSettings(BaseSettings):
     """
     Skill 系统配置（2026-06-21 新增）
@@ -483,6 +565,8 @@ class Settings(BaseSettings):
     portal_auth: PortalAuthSettings = Field(default_factory=PortalAuthSettings)
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     skills: SkillsSettings = Field(default_factory=SkillsSettings)
+    devops: DevOpsSettings = Field(default_factory=DevOpsSettings)
+    feishu: FeishuSettings = Field(default_factory=FeishuSettings)
     agent_chat_max_concurrency: int = Field(
         default=1,
         ge=1,
@@ -601,6 +685,21 @@ class Settings(BaseSettings):
             "host_workspace_prefix": self.sandbox.sandbox_host_workspace_prefix,
             "k8s_namespace": self.sandbox.sandbox_k8s_namespace,
             "fallback_to_local": self.sandbox.sandbox_fallback_to_local,
+        }
+
+    def get_feishu_config(self) -> dict:
+        """
+        获取飞书 Open API 配置字典
+
+        Returns:
+            dict: 飞书配置扁平字典，供 FeishuClient 与飞书工具读取
+        """
+        return {
+            "app_id": self.feishu.feishu_app_id,
+            "app_secret": self.feishu.feishu_app_secret,
+            "default_receive_id": self.feishu.feishu_default_receive_id,
+            "default_receive_id_type": self.feishu.feishu_default_receive_id_type,
+            "log_level": self.feishu.feishu_log_level,
         }
 
 

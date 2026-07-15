@@ -88,10 +88,7 @@
 ### features/
 - **用途**：功能智能体模块
 - **说明**：包含各种业务领域的智能体实现
-
-#### features/DevOps_agent/
-- DevOps 智能体
-- 提供 SSH 远程命令执行和服务器管理功能
+- **DevOps 智能体已于 2026-07-15 下线**：SSH 工具集迁至 `app/shared/tools/skills/devops/`，配置管理迁至 `app/shared/utils/devops_server_service.py`，admin 接口由 `app/routers/devops_server_admin_router.py` 提供（`/api/admin/devops-servers` 与 `/api/admin/devops-servers/scan`）。
 
 #### features/Tagent/
 - T 智能体（基础文本智能体）

@@ -2665,6 +2665,83 @@ CREATE INDEX IF NOT EXISTS idx_agent_task_runs_schedule_id ON agent_task_runs(sc
 CREATE INDEX IF NOT EXISTS idx_agent_task_runs_status      ON agent_task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_agent_task_runs_created_at  ON agent_task_runs(created_at DESC);
 
+-- ========== 18. devops_servers（DevOps SSH 服务器配置，2026-07-15 新增）==========
+-- DevOpsServerService 的运行时配置真实数据源：
+--   * business_name 唯一，作为 upsert 键（与 YAML 中的 name/host 别名规范化为统一字段）
+--   * password_encrypted 使用 Fernet 对称加密（base64），由 DevOpsServerService 在
+--     scan_and_upsert 阶段写入；读取时通过 credential_key 解密
+--   * blacklist / whitelist 是 list[str]（存为 jsonb），CommandInterceptor 重建时按
+--     精确 / 前缀 / 正则 三类分别编译
+--   * server_type 仅 'windows' / 'linux'，由 CHECK 约束兜底
+--   * 扫描时校验：port 1-65535；每服务器名单必须为 list；业务名唯一
+-- 幂等：所有 DDL / CHECK / INDEX 使用 IF NOT EXISTS，可重复执行
+CREATE TABLE IF NOT EXISTS devops_servers (
+    id                 SERIAL PRIMARY KEY,
+    business_name      VARCHAR(200) UNIQUE NOT NULL,
+    ip                 VARCHAR(64)  NOT NULL,
+    port               INTEGER      NOT NULL,
+    username           VARCHAR(100) NOT NULL,
+    password_encrypted BYTEA        NOT NULL,
+    server_type        VARCHAR(16)  NOT NULL DEFAULT 'linux',
+    blacklist          JSONB        DEFAULT '[]'::jsonb,
+    whitelist          JSONB        DEFAULT '[]'::jsonb,
+    created_at         TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+    updated_at         TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT devops_servers_server_type_chk CHECK (server_type IN ('linux', 'windows')),
+    CONSTRAINT devops_servers_port_range_chk  CHECK (port BETWEEN 1 AND 65535)
+);
+-- 防御性补齐（覆盖代码所有 INSERT/UPDATE/SELECT 用到的列）
+ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS business_name      VARCHAR(200);
+ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS ip                 VARCHAR(64);
+ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS port               INTEGER;
+ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS username           VARCHAR(100);
+ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS password_encrypted BYTEA;
+ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS server_type        VARCHAR(16);
+ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS blacklist          JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS whitelist          JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS updated_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+-- 索引：按 server_type 过滤 / 按 updated_at 排序
+CREATE INDEX IF NOT EXISTS idx_devops_servers_server_type ON devops_servers(server_type);
+CREATE INDEX IF NOT EXISTS idx_devops_servers_updated_at  ON devops_servers(updated_at DESC);
+
+-- 18.1 工具元数据：DevOpsServerService 的 3 个 @tool（execute_command / batch / logs）
+--     元数据由 ToolRegistryService 在启动时通过源码扫描发现；这里登记到 DB 便于
+--     Tool Admin 界面展示（不创建任何 Agent / agent_tool_bindings / seed 脚本）。
+--     参数 schema 显式不含 runtime（LangChain ToolRuntime 由框架运行时自动注入）。
+INSERT INTO tools (name, display_name, category, description, module_path, file_path, args_schema, return_description, function_description, enabled, sort_order) VALUES
+  ('execute_command', 'Execute SSH Command', 'devops', '在已配置的远程服务器上执行单条命令（Linux/bash 或 Windows/powershell）。', 'app.shared.tools.skills.devops.SSHTools', 'app/shared/tools/skills/devops/SSHTools.py', '{"properties": {"command": {"type": "string"}, "business_name": {"type": "string", "nullable": true}, "timeout": {"type": "integer", "default": 30}}}', NULL, 'execute_command：在远程服务器执行单条命令。', TRUE, 0)
+ON CONFLICT (name) DO UPDATE
+SET display_name = EXCLUDED.display_name,
+    category = EXCLUDED.category,
+    description = EXCLUDED.description,
+    module_path = EXCLUDED.module_path,
+    file_path = EXCLUDED.file_path,
+    args_schema = EXCLUDED.args_schema,
+    updated_at = CURRENT_TIMESTAMP;
+
+INSERT INTO tools (name, display_name, category, description, module_path, file_path, args_schema, return_description, function_description, enabled, sort_order) VALUES
+  ('execute_batch_commands', 'Execute SSH Batch Commands', 'devops', '在已配置的远程服务器上批量执行多条命令；任一条被策略拦截即整批拒绝。', 'app.shared.tools.skills.devops.SSHTools', 'app/shared/tools/skills/devops/SSHTools.py', '{"properties": {"commands": {"type": "array", "items": {"type": "string"}}, "business_name": {"type": "string", "nullable": true}, "timeout": {"type": "integer", "default": 30}}}', NULL, 'execute_batch_commands：批量 SSH 命令执行。', TRUE, 0)
+ON CONFLICT (name) DO UPDATE
+SET display_name = EXCLUDED.display_name,
+    category = EXCLUDED.category,
+    description = EXCLUDED.description,
+    module_path = EXCLUDED.module_path,
+    file_path = EXCLUDED.file_path,
+    args_schema = EXCLUDED.args_schema,
+    updated_at = CURRENT_TIMESTAMP;
+
+INSERT INTO tools (name, display_name, category, description, module_path, file_path, args_schema, return_description, function_description, enabled, sort_order) VALUES
+  ('get_system_logs', 'Get System Logs', 'devops', '获取远程服务器系统日志（tail），返回成功摘要，不含连接配置。', 'app.shared.tools.skills.devops.SSHTools', 'app/shared/tools/skills/devops/SSHTools.py', '{"properties": {"business_name": {"type": "string", "nullable": true}, "log_type": {"type": "string", "default": "syslog"}, "lines": {"type": "integer", "default": 100}}}', NULL, 'get_system_logs：系统日志获取。', TRUE, 0)
+ON CONFLICT (name) DO UPDATE
+SET display_name = EXCLUDED.display_name,
+    category = EXCLUDED.category,
+    description = EXCLUDED.description,
+    module_path = EXCLUDED.module_path,
+    file_path = EXCLUDED.file_path,
+    args_schema = EXCLUDED.args_schema,
+    updated_at = CURRENT_TIMESTAMP;
+
 COMMIT;
 
 -- =============================================
@@ -2681,7 +2758,8 @@ WHERE table_schema = 'public'
     'mcp_server_configs', 'mcp_server_methods',
     'tools', 'skills',
     'message_feedback',
-    'agent_task_schedules', 'agent_task_runs'
+    'agent_task_schedules', 'agent_task_runs',
+    'devops_servers'
   )
 ORDER BY table_name;
 

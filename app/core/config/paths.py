@@ -45,6 +45,13 @@ PROJECT_TMP_ROOT = os.path.join(_PROJECT_ROOT, "data", "tmp", "project")
 #   * 文件扩展名仍为 .log，但内容为 Markdown
 TASK_LOG_DIR = os.path.join(_PROJECT_ROOT, "data", "logs", "Task")
 
+# DevOps 服务器配置目录（2026-07-15 新增）
+#   * SSH 远程服务器配置（业务名/IP/端口/用户名/密码/类型/黑白名单）的 YAML 文件目录
+#   * 完整结构：<项目根>/data/devops/servers.yaml（默认文件名）
+DEVOPS_SERVER_CONFIG_PATH = os.path.join(_PROJECT_ROOT, "data", "devops", "servers.yaml")
+# DevOps 服务器配置目录（用于存放扫描时找不到 config.yaml 的默认目录）
+DEVOPS_SERVER_CONFIG_DIR = os.path.join(_PROJECT_ROOT, "data", "devops")
+
 from pathlib import Path
 import re as _re
 
@@ -169,3 +176,26 @@ def resolve_tmp_mirror_path(original_path: str | Path) -> Path | None:
     except ValueError:
         return None
     return (Path(_PROJECT_ROOT) / "data" / "tmp" / rel).with_suffix(".md")
+
+
+def resolve_devops_server_config_path(path: str | Path) -> Path:
+    """
+    将 DevOps servers.yaml 路径解析为绝对路径。
+
+    规则：
+        - 已经是绝对路径（任意平台）→ 原样返回；
+        - 相对路径（包含 ``data/devops/...`` 形式）→ 相对项目根解析；
+        - 空字符串抛 ``ValueError``。
+
+    :param path: 配置路径（绝对 / 相对项目根）。
+    :type path: str | Path
+    :return: 解析后的绝对路径。
+    :rtype: Path
+    :raises ValueError: 当 ``path`` 为空字符串时抛出。
+    """
+    if path is None or str(path) == "":
+        raise ValueError("path 不能为空字符串")
+    p = Path(str(path))
+    if p.is_absolute():
+        return p
+    return Path(_PROJECT_ROOT) / p
