@@ -50,6 +50,9 @@ router = APIRouter(
 def _get_service(request: Request) -> DevOpsServerService:
     """从 ``app.state`` 取 ``DevOpsServerService``，缺失时 500。
 
+    缺失时优先返回 lifespan 缓存的可执行 hint（区分 missing / misspelled /
+    invalid_fernet 三类），无 hint 时退回通用文案，便于运维一眼定位配置问题。
+
     Args:
         request: FastAPI Request 对象
 
@@ -57,13 +60,15 @@ def _get_service(request: Request) -> DevOpsServerService:
         DevOpsServerService: 实例
 
     Raises:
-        HTTPException: 服务未初始化时抛出 500
+        HTTPException: 服务未初始化时抛出 500，detail 含 lifespan 写入的 hint
     """
     svc = getattr(request.app.state, "devops_server_service", None)
     if svc is None:
+        hint = getattr(request.app.state, "devops_server_service_hint", None)
+        detail = hint or "DevOpsServerService not initialized"
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="DevOpsServerService not initialized",
+            detail=detail,
         )
     return svc
 

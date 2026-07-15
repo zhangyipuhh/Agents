@@ -1763,10 +1763,12 @@ system_prompt = (
 
 ### 生命周期 / admin API
 
-- `app/core/server.py::lifespan`：数据库池建立后构造 `DevOpsServerService` 并 `set_instance(svc)` + 挂 `app.state.devops_server_service`；yield 后 `reset()` 单例并清理 `app.state.devops_server_service`。
-- `app/routers/devops_server_admin_router.py`：router 级 `require_admin`；服务未初始化返回 500 + `detail="DevOpsServerService not initialized"`；`GET` 严格只返回 `{id, business_name, server_type, updated_at}`；`POST /scan` 严格只返回 `{scanned, inserted, updated, failed}`；扫描异常时不回显原始 `detail` / 路径 / IP / 密码 / 名单。
+- `app/core/server.py::lifespan`：数据库池建立后调用 `app.core.config.devops_diagnostics.diagnose_credential_key()` 校验密钥；通过则构造 `DevOpsServerService` 并 `set_instance(svc)` + 挂 `app.state.devops_server_service`；yield 后 `reset()` 单例并清理 `app.state.devops_server_service`。失败时把诊断 hint 写入 `app.state.devops_server_service_hint`，router 会读取并放入 500 detail。
+- `app/core/config/devops_diagnostics.py`（2026-07-15 新增）：从 `settings.devops.credential_key` 读取，分 4 类返回诊断结果：`missing`（完全没配）/ `misspelled`（env 里有相近键）/ `settings_unread`（env 里有精确键名但 settings 读不到）/ `invalid_fernet`（值非空但 Fernet 校验失败）。hint 不打印完整密钥，只显示长度+前 4 字符指纹。
+- `app/routers/devops_server_admin_router.py`：router 级 `require_admin`；服务未初始化返回 500 + `detail=<lifespan 写入的 hint>`（无 hint 时退回 `"DevOpsServerService not initialized"`）；`GET` 严格只返回 `{id, business_name, server_type, updated_at}`；`POST /scan` 严格只返回 `{scanned, inserted, updated, failed}`；扫描异常时不回显原始 `detail` / 路径 / IP / 密码 / 名单。
 - **不再为 DevOps 工具创建 Agent**——工具通过 ToolRegistryService 扫描 `app/shared/tools/skills/devops/SSHTools.py` 自动发现，admin 界面按元数据展示。
-- **运行时必备配置**：lifespan 内 `if credential_key:` 是硬闸门，`.env` 缺 `DEVOPS_CREDENTIAL_KEY` 时只产生 `warning` 并跳过挂载，admin API 全部 500；该键必须由 `Fernet.generate_key()` 生成（44 字节 base64），非法格式会在 service 构造时抛 `ValueError`，效果同上。`data/devops/servers.yaml` 由 `.gitignore` 排除（`servers.yaml.example` 是公开模板），缺失时 `scan_and_upsert` 安全返回 0 但列表为空，不报错。
+- **运行时必备配置**：`settings.devops.credential_key` 必须由 `Fernet.generate_key()` 生成（44 字节 base64），非法格式会在 `diagnose_credential_key()` 走 `invalid_fernet` 分支，效果同上。`data/devops/servers.yaml` 由 `.gitignore` 排除（`servers.yaml.example` 是公开模板），缺失时 `scan_and_upsert` 安全返回 0 但列表为空，不报错。
+- **已知限制：pydantic-settings v2 嵌套 BaseSettings 不递归读 .env**：`Settings.devops: DevOpsSettings = Field(default_factory=DevOpsSettings)` 这种嵌套写法，顶层 `.env` 的扁平 key `DEVOPS_CREDENTIAL_KEY` 不会穿透到 `settings.devops.credential_key`（同时其他子 settings 如 `llm.model_name` 因为字段名直接对应环境变量名而能正常加载）。诊断函数会返回 `settings_unread` 并提示临时绕过：`export DEVOPS_CREDENTIAL_KEY=<密钥>`（让 `os.environ` 带上）后启动。长期修复：把顶层 `Settings` 的 `devops` 字段改为显式读取 `os.environ`/`BaseSettings` 的 `env_prefix`，或在子 settings 上声明 `env_prefix="DEVOPS_"` 并加 `env_nested_delimiter`。
 
 ### 强白名单契约（2026-07-15 落地）
 
@@ -1810,6 +1812,7 @@ system_prompt = (
 - `app/tests/shared/tools/skills/devops/test_ssh_tools.py` —— 13 个用例：平台派生、整批拒绝、批量拦截不返回 allowed、通用错误不携带凭据、Windows Get-WinEvent、敏感字段不进入 result、运行时通过 `runtime.context.business_name` 注入。
 - `app/tests/core/test_devops_server_lifespan.py` —— 4 个用例：DB 池就绪、空池降级、空 key 跳过、单例 reset。
 - `app/tests/routers/test_devops_server_admin_router.py` —— 9 个用例：路由注册、白名单二次过滤、扫描 4 数字、异常不外泄、service 缺失返 500。
+- `app/tests/core/test_devops_diagnostics.py` —— 8 个用例（2026-07-15 新增）：`missing` / `misspelled` / `settings_unread` / `invalid_fernet` 4 类分支、首尾空白忽略、`frozen=True` 不变性、通过路径不打印完整密钥。
 - `web/Agent/src/components/__tests__/TaskSchedulerManager.spec.js` —— 21 个用例：默认 Tab、扫描 Tab 按需加载、白名单脱敏、防重复提交、扫描统计 4 数字、错误不外泄、不渲染 ID 列、POST 无 Content-Type/body、扫描 vs 列表错误独立、`hasLoaded` 避免重复 GET。
 
 ## 飞书工具（Feishu Tools）

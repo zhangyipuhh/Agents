@@ -265,24 +265,36 @@ async def lifespan(app: FastAPI):
             len(SkillsService.get_instance().all()),
         )
 
-    # 2026-07-15 新增：在 DB 池就绪后初始化 DevOpsServerService，与其它 service 一并
-    # 在通用 service 初始化区域完成。空 key 跳过但 API 仍会 500。
-    # 路径解析统一走 ``paths.resolve_devops_server_config_path``；preload / 初始化异常
-    # 仅记 warning（异常类型），不泄漏敏感细节。
+    # 2026-07-15：在 DB 池就绪后初始化 DevOpsServerService
+    # 密钥诊断统一走 devops_diagnostics.diagnose_credential_key()，区分
+    # missing / misspelled / invalid_fernet 三类失败原因。空 key 跳过但 API
+    # 仍会 500；path 解析统一走 ``paths.resolve_devops_server_config_path``；
+    # preload / 初始化异常仅记 warning（异常类型），不泄漏敏感细节。
     if DatabasePool.is_enabled() and DatabasePool._pool is not None:
         try:
+            from app.core.config.devops_diagnostics import diagnose_credential_key
             from app.core.config.paths import resolve_devops_server_config_path
             from app.shared.utils.devops_server_service import DevOpsServerService
 
-            cfg_path = resolve_devops_server_config_path(
-                settings.devops.servers_config_path
-            )
-            credential_key = settings.devops.credential_key
-            if credential_key:
+            diag = diagnose_credential_key()
+            if not diag.ok:
+                # 不挂载 app.state；router 会以 diag.hint 作为 500 detail 返回
+                # 把 hint 缓存到 app.state，供 router 读取
+                app.state.devops_server_service = None
+                app.state.devops_server_service_hint = diag.hint
+                logging.warning(
+                    "[lifespan] DevOpsServerService skipped: %s | %s",
+                    diag.reason,
+                    diag.hint,
+                )
+            else:
+                cfg_path = resolve_devops_server_config_path(
+                    settings.devops.servers_config_path
+                )
                 svc = DevOpsServerService(
                     db=DatabasePool._pool,
                     config_path=str(cfg_path),
-                    credential_key=credential_key,
+                    credential_key=settings.devops.credential_key,
                 )
                 try:
                     await svc.preload_all()
@@ -293,13 +305,11 @@ async def lifespan(app: FastAPI):
                     )
                 DevOpsServerService.set_instance(svc)
                 app.state.devops_server_service = svc
+                # 诊断通过,清理 hint
+                app.state.devops_server_service_hint = None
                 logging.info(
                     "[lifespan] DevOpsServerService initialized: %d server(s)",
                     len(svc._cache),
-                )
-            else:
-                logging.warning(
-                    "[lifespan] DEVOPS_CREDENTIAL_KEY 未配置，跳过 DevOpsServerService 初始化"
                 )
         except Exception as devops_exc:
             logging.warning(
