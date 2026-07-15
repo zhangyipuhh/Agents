@@ -84,6 +84,12 @@ def _resolve_server_config(
 ) -> Dict[str, Any]:
     """从 ``DevOpsServerService`` 单例解析指定业务的 SSH 连接配置。
 
+    业务名解析容错：
+      - 优先使用函数入参 ``business_name``
+      - 兜底从 ``runtime.context["business_name"]`` 读取
+      - 兜底时要求 ``isinstance(name, str) and name.strip()``,
+        防止 MagicMock / None 等异常类型逃过空值检查导致下游 KeyError
+
     Args:
         runtime: 工具运行时（用于读取 ``context.business_name`` 兜底）
         business_name: 业务名（优先于 ``runtime.context["business_name"]``）
@@ -95,12 +101,15 @@ def _resolve_server_config(
     Raises:
         RuntimeError: 单例未初始化时抛出
         KeyError: 业务名不存在时抛出
+        ValueError: Fernet 解密失败时抛出（密钥错配）
     """
     svc = DevOpsServerService.get_instance()
     name = business_name
-    if not name:
+    # Bug-4 修复:non-str（如 MagicMock / None）一律视为缺失
+    if not isinstance(name, str) or not name.strip():
         ctx = getattr(runtime, "context", {}) or {}
-        name = ctx.get("business_name")
+        cand = ctx.get("business_name") if isinstance(ctx, dict) else None
+        name = cand if isinstance(cand, str) and cand.strip() else None
     if not name:
         # 给一个清晰错误：业务名缺失时不让工具失败得莫名其妙
         raise RuntimeError("business_name 缺失（请通过 tool context 注入）")
@@ -156,22 +165,56 @@ def _wrap_for_platform(server_type: str, command: str) -> str:
     return f"/bin/bash -c '{escaped}'"
 
 
+def _clamp_timeout(timeout: Any, default: int = 30, lo: int = 1, hi: int = 120) -> int:
+    """把 LLM 端传入的 timeout 钳制到 ``[lo, hi]`` 区间。
+
+    设计意图:
+      - 防止 LLM 误传 ``timeout=999999`` 或负数 / 0 导致工具卡死
+      - 非 int 输入（None / str）退回到 ``default``
+
+    Args:
+        timeout: 原始 timeout 值
+        default: 非整数或越界时的兜底值
+        lo: 最小允许值（含）
+        hi: 最大允许值（含）
+
+    Returns:
+        int: 钳制后的合法 timeout
+    """
+    try:
+        v = int(timeout)
+    except (TypeError, ValueError):
+        return default
+    if v < lo:
+        return lo
+    if v > hi:
+        return hi
+    return v
+
+
 def _open_client(config: Dict[str, Any]) -> paramiko.SSHClient:
     """打开一个 Paramiko SSHClient 并返回。
 
     Args:
-        config: SSH 连接配置（含明文 password）
+        config: SSH 连接配置（含明文 password / 可选 ``ssh_connect_timeout``）
 
     Returns:
         paramiko.SSHClient: 已建立连接的客户端
     """
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    # Bug-5 修复:连接期显式 timeout,默认 10s；防止对端不可达时工具 hang 死
+    connect_timeout = _clamp_timeout(
+        config.get("ssh_connect_timeout"), default=10, lo=1, hi=60
+    )
     client.connect(
         hostname=config["ip"],
         port=int(config.get("port") or 22),
         username=config["username"],
         password=config["password"],
+        timeout=connect_timeout,
+        auth_timeout=connect_timeout,
+        banner_timeout=connect_timeout,
     )
     return client
 
@@ -253,7 +296,7 @@ def execute_command(
         )
     try:
         config = _resolve_server_config(runtime, business_name)
-    except (RuntimeError, KeyError):
+    except Exception:  # noqa: BLE001 - Bug-3 修复:覆盖 ValueError（Fernet 密钥错配）等所有异常,统一返回通用错误避免密钥错配细节泄漏
         return Command(
             update={
                 "messages": [
@@ -286,10 +329,12 @@ def execute_command(
 
     # 平台派生（service 决定 platform）
     wrapped = _wrap_for_platform(config["server_type"], command)
+    # Bug-5 修复:LLM 端 timeout 钳制到 [1, 120]
+    safe_timeout = _clamp_timeout(timeout, default=30, lo=1, hi=120)
     client = None
     try:
         client = _open_client(config)
-        stdin, stdout, stderr = client.exec_command(wrapped, timeout=timeout)
+        stdin, stdout, stderr = client.exec_command(wrapped, timeout=safe_timeout)
         output = stdout.read().decode("utf-8", errors="replace").strip()
         err = stderr.read().decode("utf-8", errors="replace").strip()
         exit_code = stdout.channel.recv_exit_status()
@@ -384,9 +429,21 @@ def execute_batch_commands(
                 ]
             }
         )
+    # Bug-7 修复:显式校验 commands 非空 list，防止 LLM 误传 None / []
+    if not isinstance(commands, list) or not commands:
+        return Command(
+            update={
+                "messages": [
+                    _make_tool_message(
+                        tool_call_id,
+                        {"success": False, "error": "commands 不能为空"},
+                    )
+                ]
+            }
+        )
     try:
         config = _resolve_server_config(runtime, business_name)
-    except (RuntimeError, KeyError):
+    except Exception:  # noqa: BLE001 - Bug-3 修复:统一吞掉异常,避免泄漏密钥错配等内部细节
         return Command(
             update={
                 "messages": [
@@ -427,13 +484,15 @@ def execute_batch_commands(
 
     # 全部通过；按顺序执行
     results: List[Dict[str, Any]] = []
+    # Bug-5 修复:批量同样钳制 timeout
+    safe_timeout = _clamp_timeout(timeout, default=30, lo=1, hi=120)
     client = None
     try:
         client = _open_client(config)
         for cmd in allowed_cmds:
             wrapped = _wrap_for_platform(config["server_type"], cmd)
             try:
-                stdin, stdout, stderr = client.exec_command(wrapped, timeout=timeout)
+                stdin, stdout, stderr = client.exec_command(wrapped, timeout=safe_timeout)
                 output = stdout.read().decode("utf-8", errors="replace").strip()
                 err = stderr.read().decode("utf-8", errors="replace").strip()
                 exit_code = stdout.channel.recv_exit_status()
@@ -547,7 +606,7 @@ def get_system_logs(
         )
     try:
         config = _resolve_server_config(runtime, business_name)
-    except (RuntimeError, KeyError):
+    except Exception:  # noqa: BLE001 - Bug-3 修复:统一吞掉异常,避免泄漏密钥错配等内部细节
         return Command(
             update={
                 "messages": [
@@ -571,6 +630,9 @@ def get_system_logs(
         }
         log_name = win_log_map.get(log_type.lower(), log_type)
         # PowerShell 内部命令（不含外层 powershell.exe 包裹，由 _wrap_for_platform 注入）
+        # Bug-1 提示:该命令会被 CommandInterceptor 拆成多段（管道 / 函数调用），
+        # 白名单需覆盖 ``Get-WinEvent`` / ``Select-Object`` / ``Format-Table`` /
+        # ``Out-String`` 等每个子段关键词（含尾空格前缀模式）。
         inner_cmd = (
             f"Get-WinEvent -LogName {log_name} -MaxEvents {int(lines)} "
             f"| Select-Object TimeCreated,Message | Format-Table -AutoSize | Out-String"
@@ -609,7 +671,9 @@ def get_system_logs(
     try:
         client = _open_client(config)
         wrapped = _wrap_for_platform(config["server_type"], inner_cmd)
-        stdin, stdout, stderr = client.exec_command(wrapped, timeout=30)
+        # Bug-5 修复:get_system_logs 内部命令固定 30s,这里用钳制函数统一约束
+        safe_timeout = _clamp_timeout(30, default=30, lo=1, hi=120)
+        stdin, stdout, stderr = client.exec_command(wrapped, timeout=safe_timeout)
         output = stdout.read().decode("utf-8", errors="replace").strip()
         err = stderr.read().decode("utf-8", errors="replace").strip()
         exit_code = stdout.channel.recv_exit_status()

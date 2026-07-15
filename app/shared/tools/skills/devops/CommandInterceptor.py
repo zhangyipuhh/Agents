@@ -1,15 +1,15 @@
 #!/usr/bin/python
 # -*- coding:utf-8 -*-
 """
-CommandInterceptor - 命令策略过滤器（2026-07-15）
+CommandInterceptor - 命令策略过滤器（2026-07-15 重构）
 
 职责：
     - 接收黑名单与白名单，提供 ``is_allowed(command) -> (allowed, reason)``
     - 支持三种匹配模式：
-        * 精确条目（无尾空格、无正则特征）:命令名 + 可选空格匹配
+        * 精确条目（无尾空格、无显式正则标记）:命令名 + 可选空格匹配
           （``df`` → ``df`` / ``df -h``，但不放行 ``dfu``）
         * 前缀条目（尾空格）:startswith 匹配
-        * 正则条目（以 ``^`` 开头或包含正则元字符）:re.search 匹配
+        * 正则条目（仅当显式以 ``^`` 开头或包含显式正则转义序列）:re.search 匹配
     - 内置安全黑名单（默认拒绝命令替换 / 进程替换 / 单 & 后台执行）
     - 黑名单优先于白名单
     - 逐段拆分校验：管道 / 逻辑与或 / 分号连接的子命令均需独立通过校验
@@ -21,11 +21,19 @@ CommandInterceptor - 命令策略过滤器（2026-07-15）
     - 命令大小写不敏感（统一 ``.lower()``）
     - 拆分器识别 shell 操作符 ``|`` ``||`` ``&&`` ``;``（不在引号内）
     - 子段再走一遍用户黑名单 + 白名单
+    - **Bug-2 修复（2026-07-15）**：精确条目含 ``.``/``*``/``+``/``|`` 等普通字符
+      不再被误判为正则；正则必须显式以 ``^`` 开头或包含 ``\\d``/``\\s``/``\\w``/``.*``
+      /``\\``/``[``/``]``/``(``/``)``/``{``/``}``/``$`` 等正则转义特征之一
+    - **Bug-1 修复（2026-07-15）**：``_split_pipeline`` 输出的子段进入白名单匹配前
+      会 ``lstrip("| ;")`` 去前导符号，外部可直接复用 ``normalize_segment``
 """
 from __future__ import annotations
 
+import logging
 import re
 from typing import List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 class CommandBlockedError(Exception):
@@ -71,14 +79,26 @@ class CommandInterceptor:
         Args:
             blacklist: 用户黑名单条目列表（精确 / 前缀 / 正则）。
                 传 ``None`` 等价于 ``[]``。
-                内部自动前置 ``_SAFETY_BLACKLIST``（命令替换 / 进程替换 / 后台执行）。
+                内部自动前置 ``_SAFETY_BLACKLIST``（命令替换 / 进程替换 / 后台执行）,
+                这些内置条目**始终**按正则编译(不依赖用户模式判定)。
             whitelist: 白名单条目列表。
                 强白名单契约：``whitelist=None`` 与 ``whitelist=[]`` 一律视为
                 「空白名单」并开启 allowlist，**所有非黑名单命令必须命中白名单才放行**。
                 命中规则与黑名单一致（精确 / 前缀 / 正则）。
         """
-        # 内置安全黑名单在前，用户黑名单在后；编译时统一走正则路径
-        self._blacklist_raw: List[str] = list(_SAFETY_BLACKLIST) + list(blacklist or [])
+        # 内置安全黑名单**始终**按正则编译:这些条目必须 re.search 命中,
+        # 不依赖用户的正则判定特征(以 ^ 开头 / 显式正则转义等)。
+        self._blacklist_safety_regex: List[Tuple[str, "re.Pattern[str]"]] = []
+        for src in _SAFETY_BLACKLIST:
+            try:
+                self._blacklist_safety_regex.append((src, re.compile(src, re.IGNORECASE)))
+            except re.error as e:
+                # 内置正则不应出错;出错则忽略,避免阻塞构造
+                logger.warning(
+                    "[CommandInterceptor] 内置安全黑名单 %r 编译失败: %s", src, e
+                )
+        # 用户黑名单走收紧后的精确 / 前缀 / 正则判定(Bug-2 修复)
+        self._blacklist_raw: List[str] = list(blacklist or [])
         # 强白名单：None 与 [] 都视为「空白名单 → 拒绝所有非黑名单命令」。
         self._whitelist_raw: List[str] = list(whitelist or [])
         self._blacklist_exact: List[str] = []
@@ -100,6 +120,51 @@ class CommandInterceptor:
             self._whitelist_regex,
         )
 
+    # 正则模式的显式特征（Bug-2 修复:收紧判定,避免 . * + | 等普通字符被误判为正则）
+    # 只有以下两类条目才被识别为正则:
+    #   1) 以 ``^`` 开头
+    #   2) 包含以下显式正则转义 / 元字符序列之一
+    _REGEX_TOKENS: Tuple[str, ...] = (
+        "\\d", "\\s", "\\w", "\\b", "\\D", "\\S", "\\W", "\\B",
+        ".*", ".+", ".?",
+        "\\(", "\\)", "\\[", "\\]", "\\{", "\\}",
+        "\\$", "\\^", "\\.", "\\+", "\\*", "\\?", "\\|",
+        "\\\\",
+    )
+
+    @classmethod
+    def _looks_like_regex(cls, pattern: str) -> bool:
+        """判断 pattern 是否应该被编译为正则（Bug-2 修复后）。
+
+        仅以下两类视为正则:
+          1) 以 ``^`` 开头
+          2) 包含 ``_REGEX_TOKENS`` 中任一显式正则序列
+
+        Args:
+            pattern: 已 ``.strip()`` 后的字符串
+
+        Returns:
+            bool: 是否应走正则路径
+        """
+        if pattern.startswith("^"):
+            return True
+        return any(tok in pattern for tok in cls._REGEX_TOKENS)
+
+    @staticmethod
+    def normalize_segment(segment: str) -> str:
+        """对 ``_split_pipeline`` 输出的子段做标准化（Bug-1 修复）。
+
+        去除前导的 ``|`` / ``;`` / 空白，便于精确白名单条目与子段匹配。
+        例如 ``" Select-Object foo"`` → ``"Select-Object foo"``。
+
+        Args:
+            segment: 子段原始字符串
+
+        Returns:
+            str: 标准化后的字符串（strip 后再做前导符号去除）
+        """
+        return segment.strip().lstrip("|;").strip()
+
     @staticmethod
     def _compile_patterns(
         raw_list: List[str],
@@ -109,11 +174,11 @@ class CommandInterceptor:
     ) -> None:
         """把字符串条目分类为精确 / 前缀 / 正则三种模式。
 
-        分类规则：
+        分类规则（Bug-2 修复后）:
           - 空字符串忽略；
-          - 以 ``^`` 开头或包含正则元字符 → 尝试编译为正则；
+          - 以 ``^`` 开头或包含显式正则转义序列 → 尝试编译为正则；
           - 以空格结尾（前缀模式）→ 写入 ``prefix_out``（保留单个尾部空格）；
-          - 否则 → 写入 ``exact_out``（小写）。
+          - 否则 → 写入 ``exact_out``（小写），含 ``.``/``*``/``+``/``|`` 等普通字符不再误判为正则。
 
         Args:
             raw_list: 原始字符串列表
@@ -121,15 +186,14 @@ class CommandInterceptor:
             prefix_out: 收集前缀条目（保留原始尾空格）
             regex_out: 收集正则表达式（已编译），元素为 (源串, compiled)
         """
-        regex_meta = (".*", "\\s", "\\d", "(?", "\\(", "\\[", "\\$", "\\^", "\\.", "\\+", "\\*", "\\|", "\\{", "\\}", "\\\\", "`", "<", ">")
         for raw in raw_list:
             if not isinstance(raw, str):
                 continue
             pattern = raw.strip()
             if not pattern:
                 continue
-            # 正则模式：典型以 ^ 开头或包含正则元字符（含反斜杠转义序列）
-            if pattern.startswith("^") or any(meta in pattern for meta in regex_meta):
+            # 正则模式:仅当显式 ^ 开头或包含显式正则转义序列
+            if CommandInterceptor._looks_like_regex(pattern):
                 try:
                     compiled = re.compile(pattern, re.IGNORECASE)
                     regex_out.append((pattern, compiled))
@@ -145,7 +209,7 @@ class CommandInterceptor:
                     continue
                 prefix_out.append(trimmed.lower() + " ")
                 continue
-            # 精确匹配（小写）
+            # 精确匹配（小写）—— 含 . / * / + / | 等普通字符按字面量匹配
             exact_out.append(pattern.lower())
 
     # ------------------------------------------------------------------
@@ -276,7 +340,11 @@ class CommandInterceptor:
 
         lower_full = stripped.lower()
 
-        # 2) 整串黑名单（包含内置安全黑名单 + 用户黑名单）
+        # 2) 内置安全黑名单（始终按正则,优先于用户黑名单/白名单）
+        for source, compiled in self._blacklist_safety_regex:
+            if compiled.search(stripped):
+                return False, f"命令在黑名单中（内置安全正则: {source}）"
+        # 3) 整串用户黑名单（精确 / 前缀 / 正则）
         blk_exact_hit, blk_exact_pat = self._match_blacklist_exact(lower_full)
         if blk_exact_hit:
             return False, f"命令在黑名单中（精确匹配: {blk_exact_pat}）"
@@ -288,13 +356,15 @@ class CommandInterceptor:
             if compiled.search(stripped):
                 return False, f"命令在黑名单中（正则匹配: {source}）"
 
-        # 3) 拆分子命令，逐段校验
+        # 4) 拆分子命令，逐段校验
         segments = self._split_pipeline(stripped)
         if not segments:
             return False, "命令不能为空"
 
         for idx, seg in enumerate(segments):
-            seg_lower = seg.lower()
+            # Bug-1 修复:子段去前导 | ; 与空白,便于精确白名单条目匹配管道后续子段
+            seg_norm = CommandInterceptor.normalize_segment(seg)
+            seg_lower = seg_norm.lower()
             # 子段黑名单（精确 / 前缀 / 正则）
             seg_blk_exact_hit, seg_blk_exact_pat = self._match_blacklist_exact(seg_lower)
             if seg_blk_exact_hit:
@@ -312,7 +382,7 @@ class CommandInterceptor:
                     return False, (
                         f"子命令[{idx}]='{seg}' 在黑名单中（正则匹配: {source}）"
                     )
-            # 子段白名单
+            # 子段白名单（Bug-1:使用 normalize 后的子段,精确条目能正常匹配）
             if not self._match_whitelist(seg_lower):
                 return False, f"子命令[{idx}]='{seg}' 不在白名单中"
 

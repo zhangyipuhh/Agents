@@ -1782,9 +1782,16 @@ system_prompt = (
   - 黑名单精确条目仍按 `==` 严格匹配，不被白名单 startswith 弱化（防御层语义不变）。
 - 管道 / 组合命令逐段拆分校验：`CommandInterceptor._split_pipeline` 按 `|`/`||`/`&&`/`;`/`&` 在引号外拆分；引号（单 / 双）内的分隔符视为普通字符，不拆分。
 - 每段子命令独立走「黑名单 → 白名单」校验：任一子段失败即整批拒绝，错误信息标注失败子段索引（如 `子命令[1]='rm -rf /tmp' 不在白名单中`）。
+- **子段标准化（2026-07-15）**：管道后续子段进入白名单匹配前会先走 `CommandInterceptor.normalize_segment`（`strip + lstrip("|;") + strip`），去除前导分隔符与空白，让精确白名单条目（如 `Select-Object`、`Out-String`）能正常命中 `| Select-Object ...` / `| Out-String`。
 - 内置安全黑名单（默认生效，运维不可关闭）：`$\(`（命令替换）、`` ` ``（反引号）、`<\(` / `>\(`（进程替换）、单 `&` 后台执行（正则 `(?<![&|])&(?!&)` 避开 `&&` 与 `&|`）。
 - 管道命令运维配置：白名单需逐段子命令都列入；常用只读管道工具集合建议 `["ls ", "cat ", "grep ", "tail ", "awk ", "sort ", "head ", "wc ", "df", "echo "]`。
 - 重定向（`>` / `<`）不在内置黑名单内：若运维需禁止可自行追加黑名单正则（如 `> *\S` 防写文件）。
+
+### 正则判定收紧与内置安全黑名单分离（2026-07-15）
+
+- 用户配置的黑/白名单条目判定规则收紧：**仅当显式以 `^` 开头或包含显式正则转义序列**（`\\d` / `\\s` / `\\w` / `\\b` / `.*` / `.+` / `\\(` / `\\)` / `\\[` / `\\]` / `\\{` / `\\}` / `\\$` / `\\^` / `\\.` / `\\+` / `\\*` / `\\?` / `\\|` / `\\\\`）才被识别为正则；含普通字符 `.` / `*` / `+` / `|` / `%` 等的精确条目按字面量匹配，不再误判为正则。
+- 内置安全黑名单 `_SAFETY_BLACKLIST` 在 `__init__` 时**强制按正则编译**并独立存放于 `self._blacklist_safety_regex`，不依赖用户的正则判定特征，避免收紧规则后安全条目（反引号、`$\(` 等）被绕过。
+- `is_allowed` 决策顺序：① 空命令 ② 内置安全黑名单（强制正则）③ 整串用户黑名单（精确/前缀/正则）④ `_split_pipeline` 子段逐段校验（每段：用户黑名单 → 白名单）。
 
 ### 路径集中（2026-07-15）
 
@@ -1797,6 +1804,7 @@ system_prompt = (
 - `DevOpsServerService.scan_and_upsert` 输入兼容两种顶层形态：`[ ... ]` 与 `{ "servers": [ ... ] }`；非 list 的 `servers` 字段记 `failed` 计数，不抛异常。
 - 写入采用单条 `INSERT ... ON CONFLICT (business_name) DO UPDATE ... RETURNING *, (xmax = 0) AS inserted`：缓存通过 RETURNING 行直接同步 `id` / `created_at` / `updated_at` / `password_encrypted`，不依赖再读 DB，扫描成功后 `get_connection_config(business_name)` 可立即解密。
 - 同一 `business_name` 重复出现 → 直接计入 `failed`（不允许后者覆盖前者），重复条目不进入缓存。
+- **写入路径持 `asyncio.Lock`（2026-07-15）**：`DevOpsServerService._write_lock` 保护 `preload_all` 与 `scan_and_upsert` 中的 `_cache` 写入段；读路径（`get_connection_config` / `list_public_servers`）无锁。多次并发扫描时缓存替换原子化，避免读路径拿到半新半旧快照。
 
 ### 前端契约（2026-07-15）
 
@@ -1815,12 +1823,16 @@ system_prompt = (
 6. **SSH 异常通用化**：`AuthenticationException` / `SSHException` / 其他异常一律返回中文通用错误（不携带原始异常字符串），杜绝 IP / 密码 / 用户名泄漏。
 7. **Windows 日志命令**：`get_system_logs` 在 Windows 平台走 `Get-WinEvent` 命令（带 LogName 映射），Linux 仍走 `tail -n`，命令本身同样过 `CommandInterceptor`。
 8. **批量拦截响应**：被拦截时不返回 `allowed_commands`（避免额外命令回显），仅返回 `blocked_commands` 的 `index` / `command` / `reason`。
+9. **解析异常通用化（2026-07-15）**：SSHTools 三个工具 `_resolve_server_config` 的异常捕获改为 `except Exception`，覆盖 `ValueError`（Fernet 密钥错配 `解密失败（Fernet key 与加密时不一致？）: <business_name>`）等所有内部异常，统一返回通用错误 `"无法解析服务器配置"`，不外泄密钥错配细节与业务名。
+10. **业务名容错（2026-07-15）**：`_resolve_server_config` 兜底从 `runtime.context["business_name"]` 取值时要求 `isinstance(name, str) and name.strip()`，非字符串类型（MagicMock / None）一律视为缺失，避免下游 KeyError 噪声。
+11. **连接期 timeout（2026-07-15）**：`SSHTools._open_client` 显式传 `timeout / auth_timeout / banner_timeout` 给 paramiko.connect，默认 10s（可由 DB 行 `ssh_connect_timeout` 字段覆盖，钳制到 `[1, 60]`）；`exec_command` 的 `timeout` 参数由 `_clamp_timeout` 钳制到 `[1, 120]`。防止对端不可达时工具 hang 死、防止 LLM 误传 `timeout=999999` 导致阻塞。
 
 ### 测试覆盖
 
 - `app/tests/shared/test_devops_server_service.py` —— 31 个用例：Fernet 校验、Singleton、preload、扫描别名/字段/统计 / `servers:` 顶层 dict / 重复拒绝 / 缓存 RETURNING 同步 / 路径 resolver / 默认路径来自 paths / `_ensure_list` 防御性 JSONB 反序列化（9 个用例覆盖 list 透传 / JSON 字符串还原 / dict 包装 / 非法 JSON 兜底 / None 与基本类型兜底 / `preload_all` 与 `get_connection_config` 端到端字符串还原）。
-- `app/tests/shared/tools/skills/devops/test_command_interceptor.py` —— 23 个用例：空命令、精确/正则/前缀、黑名单优先、强白名单（`None` 等价于 `[]`）、白名单精确条目 startswith 放宽、管道/逻辑与或/分号逐段校验、内置安全黑名单（`$()` / 反引号 / 进程替换 / 单 `&`）、引号内分隔符不拆分、`_split_pipeline` 分词器单元测试、`add_pattern`。
-- `app/tests/shared/tools/skills/devops/test_ssh_tools.py` —— 17 个用例：平台派生、整批拒绝、批量拦截不返回 allowed、通用错误不携带凭据、Windows Get-WinEvent、敏感字段不进入 result、`business_name` 必填 + 空值/纯空白验空（4 个用例覆盖三个工具）。
+- `app/tests/shared/utils/test_devops_server_service.py` —— 10 个用例（2026-07-15 新增）：单例生命周期、`credential_key` 校验（空/非法）、`_write_lock` 类型校验（Bug-6）、`preload_all` 与 `scan_and_upsert` 写路径持锁观测、并发 `scan_and_upsert` 序列化、`_ensure_list` 防御性还原（list / dict / str-JSON / None / 非 JSON / 数字）、`list_public_servers` 严格白名单字段不外泄、`get_connection_config` 未注册业务名抛 KeyError。
+- `app/tests/shared/tools/skills/devops/test_command_interceptor.py` —— 31 个用例（2026-07-15 扩展）：原 23 + Bug-1/Bug-2 回归 8 个（`normalize_segment` 去除前导 `|`/`;`、精确白名单 `system.service` / `100%` 按字面量匹配、`^` 前缀仍走正则、`\d` 转义序列仍走正则、管道后续子段精确白名单命中、子段未列入拒绝）。
+- `app/tests/shared/tools/skills/devops/test_ssh_tools.py` —— 27 个用例（2026-07-15 扩展）：原 17 + Bug-3/4/5/7 回归 10 个（Fernet ValueError 通用化、业务名 MagicMock 兜底、`_open_client` 传 timeout / auth_timeout / banner_timeout、`_clamp_timeout` 钳制边界、`execute_batch_commands` 拒绝 None / 空列表）。
 - `app/tests/core/test_devops_server_lifespan.py` —— 4 个用例：DB 池就绪、空池降级、空 key 跳过、单例 reset。
 - `app/tests/routers/test_devops_server_admin_router.py` —— 9 个用例：路由注册、白名单二次过滤、扫描 4 数字、异常不外泄、service 缺失返 500。
 - `app/tests/core/test_devops_diagnostics.py` —— 8 个用例（2026-07-15 新增）：`missing` / `misspelled` / `settings_unread` / `invalid_fernet` 4 类分支、首尾空白忽略、`frozen=True` 不变性、通过路径不打印完整密钥。

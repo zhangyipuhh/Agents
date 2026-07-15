@@ -26,6 +26,7 @@ DevOpsServerService - SSH 服务器配置管理服务（2026-07-15 新增）
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -85,6 +86,8 @@ class DevOpsServerService:
         credential_key: Fernet 对称密钥（44 字节 base64 字符串）
         _cache: 内存缓存，键为 business_name，值为包含 password_encrypted 字节的记录
         _fernet: Fernet 实例（构造时根据 credential_key 创建）
+        _write_lock: ``asyncio.Lock``（Bug-6 修复）保护 ``_cache`` 写入（preload_all / scan_and_upsert），
+          读路径（``get_connection_config`` / ``list_public_servers``）无锁
     """
 
     _instance: Optional["DevOpsServerService"] = None
@@ -153,6 +156,8 @@ class DevOpsServerService:
             ) from e
         self._cache: Dict[str, Dict[str, Any]] = {}
         self.credential_key = credential_key
+        # Bug-6 修复:写入路径( preload_all / scan_and_upsert )持锁保证 _cache 快照一致
+        self._write_lock: asyncio.Lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Preload from DB
@@ -166,6 +171,7 @@ class DevOpsServerService:
           password_encrypted (bytes 或 str) / server_type /
           blacklist (list) / whitelist (list) / created_at / updated_at
         - business_name 唯一约束 → 同名行以后到为准；本方法按 DB 自然顺序覆盖
+        - **Bug-6**：cache 替换段持 ``self._write_lock``,避免并发扫描时读路径拿到半新半旧快照
 
         Returns:
             None
@@ -194,7 +200,9 @@ class DevOpsServerService:
             data["blacklist"] = _ensure_list(data.get("blacklist"))
             data["whitelist"] = _ensure_list(data.get("whitelist"))
             new_cache[business_name] = data
-        self._cache = new_cache
+        # Bug-6 修复:cache 替换原子化,读路径快照一致
+        async with self._write_lock:
+            self._cache = new_cache
         logger.info("[devops_server_service] preloaded %d server(s)", len(self._cache))
 
     # ------------------------------------------------------------------
@@ -345,19 +353,21 @@ class DevOpsServerService:
             penv = row_data.get("password_encrypted")
             if isinstance(penv, str):
                 penv = penv.encode("ascii")
-            self._cache[name] = {
-                "id": row_data.get("id"),
-                "business_name": name,
-                "ip": normalized["ip"],
-                "port": normalized["port"],
-                "username": normalized["username"],
-                "password_encrypted": penv,
-                "server_type": normalized["server_type"],
-                "blacklist": normalized["blacklist"],
-                "whitelist": normalized["whitelist"],
-                "created_at": row_data.get("created_at"),
-                "updated_at": row_data.get("updated_at"),
-            }
+            # Bug-6 修复:cache 写入原子化,与并发读取串行
+            async with self._write_lock:
+                self._cache[name] = {
+                    "id": row_data.get("id"),
+                    "business_name": name,
+                    "ip": normalized["ip"],
+                    "port": normalized["port"],
+                    "username": normalized["username"],
+                    "password_encrypted": penv,
+                    "server_type": normalized["server_type"],
+                    "blacklist": normalized["blacklist"],
+                    "whitelist": normalized["whitelist"],
+                    "created_at": row_data.get("created_at"),
+                    "updated_at": row_data.get("updated_at"),
+                }
 
             if inserted:
                 stats["inserted"] += 1

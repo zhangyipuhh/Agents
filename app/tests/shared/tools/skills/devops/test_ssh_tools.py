@@ -724,3 +724,206 @@ def test_get_system_logs_rejects_empty_business_name(monkeypatch):
     assert "business_name 不能为空" in payload.get("error", "")
     fake_client.exec_command.assert_not_called()
 
+
+# ----------------------------------------------------------------------
+# Bug-3:ValueError(Fernet 密钥错配)被统一吞掉,不外泄 business_name / 密钥错配细节
+# ----------------------------------------------------------------------
+
+
+def test_execute_command_fernet_value_error_normalized(monkeypatch):
+    """Bug-3 回归:get_connection_config 抛 ValueError(Fernet 密钥错配)时,
+    工具返回通用错误,不携带 business_name 与「密钥错配」字样。
+
+    Args:
+        monkeypatch: pytest monkeypatch
+
+    Returns:
+        None
+    """
+    fake_service = MagicMock(name="DevOpsServerService")
+    fake_service.get_connection_config = MagicMock(
+        side_effect=ValueError("解密失败（Fernet key 与加密时不一致？）: mybiz")
+    )
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    DevOpsServerService.set_instance(fake_service)
+
+    from app.shared.tools.skills.devops.SSHTools import execute_command
+
+    runtime = _build_runtime(business_name="mybiz")
+    out = execute_command(command="echo hi", business_name="mybiz", runtime=runtime)
+    payload = json.loads(out.update["messages"][0].content)
+    assert payload.get("success") is False
+    assert payload.get("error") == "无法解析服务器配置"
+    # 不外泄密钥错配细节
+    raw = out.update["messages"][0].content
+    assert "Fernet" not in raw
+    assert "解密失败" not in raw
+
+
+# ----------------------------------------------------------------------
+# Bug-4:_resolve_server_config 对 runtime.context 中的非 str 业务名做容错
+# ----------------------------------------------------------------------
+
+
+def test_resolve_server_config_rejects_non_string_business_name_in_context(monkeypatch):
+    """Bug-4 回归:runtime.context["business_name"] 是 MagicMock(非 str)时,
+    _resolve_server_config 不应把它当作合法 name 传给下游,避免 KeyError 噪声。
+
+    通过直接调用 ``_resolve_server_config`` 验证兜底分支对非 str 容错。
+
+    Args:
+        monkeypatch: pytest monkeypatch
+
+    Returns:
+        None
+    """
+    fake_service = MagicMock(name="DevOpsServerService")
+    fake_service.get_connection_config = MagicMock(
+        side_effect=AssertionError("不应到达 service.get_connection_config")
+    )
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    DevOpsServerService.set_instance(fake_service)
+
+    # runtime.context["business_name"] 返回 MagicMock(非 str)
+    runtime = MagicMock(name="ToolRuntime")
+    runtime.context = {"business_name": MagicMock()}
+
+    from app.shared.tools.skills.devops.SSHTools import _resolve_server_config
+
+    with pytest.raises(RuntimeError, match="business_name 缺失"):
+        _resolve_server_config(runtime, business_name="")
+
+
+# ----------------------------------------------------------------------
+# Bug-5:_open_client 显式 timeout / exec_command timeout 钳制
+# ----------------------------------------------------------------------
+
+
+def test_open_client_uses_configured_timeout(monkeypatch):
+    """Bug-5 回归:_open_client 把 config.ssh_connect_timeout 传给 paramiko.connect。
+
+    Args:
+        monkeypatch: pytest monkeypatch
+
+    Returns:
+        None
+    """
+    from app.shared.tools.skills.devops import SSHTools
+
+    # 构造一个能捕获 connect() 调用的 fake client
+    fake_client2 = MagicMock(name="paramiko.SSHClient")
+    fake_client2.set_missing_host_key_policy = MagicMock()
+    fake_client2.close = MagicMock()
+    stdin = MagicMock()
+    stdout = MagicMock()
+    stderr = MagicMock()
+    stdout.read = MagicMock(return_value=b"hi\n")
+    stderr.read = MagicMock(return_value=b"")
+    stdout.channel.recv_exit_status = MagicMock(return_value=0)
+    fake_client2.exec_command = MagicMock(return_value=(stdin, stdout, stderr))
+    fake_paramiko = MagicMock(name="paramiko")
+    fake_paramiko.SSHClient = MagicMock(return_value=fake_client2)
+    fake_paramiko.AutoAddPolicy = MagicMock(return_value=MagicMock())
+    monkeypatch.setattr(SSHTools, "paramiko", fake_paramiko, raising=False)
+
+    cfg = {
+        "ip": "10.0.0.10",
+        "port": 22,
+        "username": "u",
+        "password": "pw",
+        "server_type": "linux",
+        "blacklist": [],
+        "whitelist": ["echo "],
+        "ssh_connect_timeout": 7,
+    }
+    _patch_service(monkeypatch, cfg)
+    runtime2 = _build_runtime(business_name="t1")
+    from app.shared.tools.skills.devops.SSHTools import execute_command
+
+    execute_command(command="echo hi", business_name="t1", runtime=runtime2)
+    _, kwargs = fake_client2.connect.call_args
+    assert kwargs.get("timeout") == 7
+    assert kwargs.get("auth_timeout") == 7
+    assert kwargs.get("banner_timeout") == 7
+
+
+def test_clamp_timeout_clamps_to_range():
+    """Bug-5 辅助:_clamp_timeout 把异常值钳制到 [lo, hi]。"""
+    from app.shared.tools.skills.devops.SSHTools import _clamp_timeout
+
+    assert _clamp_timeout(30, default=30, lo=1, hi=120) == 30
+    assert _clamp_timeout(0, default=30, lo=1, hi=120) == 1
+    assert _clamp_timeout(99999, default=30, lo=1, hi=120) == 120
+    assert _clamp_timeout(-5, default=30, lo=1, hi=120) == 1
+    assert _clamp_timeout(None, default=30, lo=1, hi=120) == 30
+    assert _clamp_timeout("bad", default=30, lo=1, hi=120) == 30
+
+
+# ----------------------------------------------------------------------
+# Bug-7:execute_batch_commands 入参 commands=None / [] 时返回明确错误
+# ----------------------------------------------------------------------
+
+
+def test_execute_batch_commands_rejects_none_commands(monkeypatch):
+    """Bug-7 回归:commands=None 时不崩溃,返回明确错误。
+
+    Args:
+        monkeypatch: pytest monkeypatch
+
+    Returns:
+        None
+    """
+    cfg = {
+        "ip": "10.0.0.20",
+        "port": 22,
+        "username": "u",
+        "password": "pw",
+        "server_type": "linux",
+        "blacklist": [],
+        "whitelist": ["ls"],
+    }
+    _patch_service(monkeypatch, cfg)
+    fake_client = _patch_paramiko(monkeypatch, stdout_text="", exit_code=0)
+    runtime = _build_runtime(business_name="b1")
+
+    from app.shared.tools.skills.devops.SSHTools import execute_batch_commands
+
+    out = execute_batch_commands(commands=None, business_name="b1", runtime=runtime)
+    payload = json.loads(out.update["messages"][0].content)
+    assert payload.get("success") is False
+    assert "commands 不能为空" in payload.get("error", "")
+    fake_client.exec_command.assert_not_called()
+
+
+def test_execute_batch_commands_rejects_empty_list(monkeypatch):
+    """Bug-7 回归:commands=[] 时返回明确错误。
+
+    Args:
+        monkeypatch: pytest monkeypatch
+
+    Returns:
+        None
+    """
+    cfg = {
+        "ip": "10.0.0.21",
+        "port": 22,
+        "username": "u",
+        "password": "pw",
+        "server_type": "linux",
+        "blacklist": [],
+        "whitelist": ["ls"],
+    }
+    _patch_service(monkeypatch, cfg)
+    fake_client = _patch_paramiko(monkeypatch, stdout_text="", exit_code=0)
+    runtime = _build_runtime(business_name="b2")
+
+    from app.shared.tools.skills.devops.SSHTools import execute_batch_commands
+
+    out = execute_batch_commands(commands=[], business_name="b2", runtime=runtime)
+    payload = json.loads(out.update["messages"][0].content)
+    assert payload.get("success") is False
+    assert "commands 不能为空" in payload.get("error", "")
+    fake_client.exec_command.assert_not_called()
+

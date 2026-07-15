@@ -384,3 +384,137 @@ def test_split_pipeline_helper():
     assert CommandInterceptor._split_pipeline("a || b") == ["a", "b"]
     assert CommandInterceptor._split_pipeline('echo "a|b" | wc') == ['echo "a|b"', "wc"]
     assert CommandInterceptor._split_pipeline("echo 'a;b'") == ["echo 'a;b'"]
+
+
+# ----------------------------------------------------------------------
+# Bug-2 修复回归:精确条目含 . * + | 等普通字符不再误判为正则
+# ----------------------------------------------------------------------
+
+
+def test_exact_whitelist_with_dot_treated_as_literal():
+    """Bug-2 回归:精确白名单 ``system.service`` 不再被识别为正则。
+
+    旧实现:``system.service`` 含 ``.`` → 当成正则 → ``re.search`` 行为不一致。
+    修复后:按字面量精确匹配;``system.service foo`` 放行,``systemXservice foo`` 不放行。
+
+    Returns:
+        None
+    """
+    from app.shared.tools.skills.devops.CommandInterceptor import CommandInterceptor
+    ci = CommandInterceptor(blacklist=[], whitelist=["system.service"])
+    assert ci.is_allowed("system.service foo")[0] is True
+    assert ci.is_allowed("systemXservice foo")[0] is False
+    assert ci.is_allowed("system")[0] is False
+
+
+def test_exact_blacklist_with_percent_treated_as_literal():
+    """Bug-2 回归:精确黑名单 ``100%`` 不再被识别为正则。
+
+    旧实现:``100%`` 含 ``%`` → 不构成显式正则,但 ``$`` 才会被识别,这里验证
+    ``%`` 不会触发任何正则分支。
+
+    精确条目按整串匹配;``"100%"`` 作为精确条目**不会**误识别为正则,
+    也不会意外触发正则引擎。整串相等才命中,因此 ``echo 100%`` 不命中黑名单
+    (走白名单 ``echo `` 命中,放行);``100%`` 整串命令才被拒。
+
+    Returns:
+        None
+    """
+    from app.shared.tools.skills.devops.CommandInterceptor import CommandInterceptor
+    ci = CommandInterceptor(blacklist=["100%"], whitelist=["echo ", "100%"])
+    # 整串 "100%" → 精确黑名单命中 → 拒绝
+    assert ci.is_allowed("100%")[0] is False
+    # "echo 100% complete" → 走白名单 echo 命中放行,黑名单精确不命中(整串不等)
+    assert ci.is_allowed("echo 100% complete")[0] is True
+
+
+def test_caret_prefix_still_treated_as_regex():
+    """Bug-2 保留行为:以 ``^`` 开头的条目仍走正则分支。
+
+    Returns:
+        None
+    """
+    from app.shared.tools.skills.devops.CommandInterceptor import CommandInterceptor
+    ci = CommandInterceptor(blacklist=[r"^shutdown\s"], whitelist=["whoami"])
+    assert ci.is_allowed("shutdown now")[0] is False
+    assert ci.is_allowed("whoami")[0] is True
+
+
+def test_explicit_regex_escape_treated_as_regex():
+    """Bug-2 保留行为:含显式 ``\\d`` / ``\\s`` 等转义序列仍走正则分支。
+
+    Returns:
+        None
+    """
+    from app.shared.tools.skills.devops.CommandInterceptor import CommandInterceptor
+    ci = CommandInterceptor(blacklist=[r"\d+\.\d+\.\d+\.\d+"], whitelist=["echo "])
+    # 含 IPv4 字面量 → 正则命中 → 拒绝
+    assert ci.is_allowed("echo 10.0.0.1")[0] is False
+    assert ci.is_allowed("echo hello")[0] is True
+
+
+# ----------------------------------------------------------------------
+# Bug-1 修复回归:子段标准化 + 管道后续子段精确白名单匹配
+# ----------------------------------------------------------------------
+
+
+def test_normalize_segment_strips_leading_pipe():
+    """``normalize_segment`` 去除前导 ``|`` / ``;`` / 空白。
+
+    Returns:
+        None
+    """
+    from app.shared.tools.skills.devops.CommandInterceptor import CommandInterceptor
+    assert CommandInterceptor.normalize_segment(" Select-Object foo") == "Select-Object foo"
+    assert CommandInterceptor.normalize_segment("|grep tmp") == "grep tmp"
+    assert CommandInterceptor.normalize_segment("; ls") == "ls"
+    assert CommandInterceptor.normalize_segment("  echo hi  ") == "echo hi"
+
+
+def test_pipeline_tail_segment_with_exact_whitelist():
+    """Bug-1 修复:管道后续子段 ``Select-Object TimeCreated,Message`` 即使是
+    精确白名单 ``Select-Object``(无尾空格)也能命中,因为 ``normalize_segment``
+    已去除前导空白。
+
+    Returns:
+        None
+    """
+    from app.shared.tools.skills.devops.CommandInterceptor import CommandInterceptor
+    ci = CommandInterceptor(
+        blacklist=[],
+        # 显式不带尾空格的精确条目 + 带尾空格的前缀条目共存
+        whitelist=[
+            "Get-WinEvent",          # exact
+            "Select-Object",         # exact
+            "Format-Table",          # exact
+            "Out-String",            # exact
+        ],
+    )
+    cmd = (
+        "Get-WinEvent -LogName System -MaxEvents 10 | "
+        "Select-Object TimeCreated,Message | "
+        "Format-Table -AutoSize | Out-String"
+    )
+    allowed, reason = ci.is_allowed(cmd)
+    assert allowed is True, reason
+
+
+def test_pipeline_tail_segment_rejects_unknown():
+    """Bug-1 修复反例:未列入白名单的管道后续子段仍应拒绝。
+
+    Returns:
+        None
+    """
+    from app.shared.tools.skills.devops.CommandInterceptor import CommandInterceptor
+    ci = CommandInterceptor(
+        blacklist=[],
+        whitelist=["Get-WinEvent", "Select-Object"],
+    )
+    cmd = (
+        "Get-WinEvent -LogName System -MaxEvents 10 | "
+        "Remove-Item -Recurse C:\\Windows"
+    )
+    allowed, reason = ci.is_allowed(cmd)
+    assert allowed is False
+    assert "子命令[1]" in reason
+    assert "白名单" in reason
