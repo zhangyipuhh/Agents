@@ -1,0 +1,55 @@
+# -*- coding:utf-8 -*-
+# DevOps SSH 服务器配置模板（2026-07-15 新增）
+#
+# 作用：
+#   * 由后端 DevOpsServerService.scan_and_upsert() 扫描并加密入库；
+#   * 前端 /api/admin/devops-servers 接口只回显脱敏字段（id / business_name /
+#     server_type / updated_at），不会返回本文件中的 IP、用户名、密码、黑白名单。
+#
+# 必填：
+#   * business_name：业务唯一标识，重复视为 failed 不入库。
+#   * ip / port / username / password / server_type（windows | linux）。
+#
+# 可选：
+#   * blacklist（list[str]）：黑名单，优先级最高；命中即拒绝。
+#   * whitelist（list[str]）：强白名单；空白名单时所有非空命令被拒绝。
+#   * 模式：精确匹配 / 以空格结尾的前缀匹配 / 以 ^ 开头的正则匹配。
+#
+# 占位说明：
+#   * password 仅可填占位或实际凭据；占位示例是文档保留 IP 与示例账号，不要把生产
+#     凭据直接提交到仓库；通过 DEVOPS_CREDENTIAL_KEY（Fernet 密钥）加密落库。
+#   * host 是 ip 的旧字段别名；扫描时同时兼容 host / ip。
+#
+# 触发方式：
+#   * 在「定时任务管理」->「服务器扫描入库」Tab 点击「立即扫描」；
+#   * 或调用 POST /api/admin/devops-servers/scan（admin 鉴权）。
+
+servers:
+  # ===== Linux 巡检服务器示例 =====
+  - business_name: dev-linux-01
+    ip: 192.0.2.10
+    port: 22
+    username: ops
+    password: "REPLACE_ME"
+    server_type: linux
+    blacklist:
+      - "rm -rf "
+      - "shutdown "
+    whitelist:
+      - "systemctl status "
+      - "df -h"
+      - "tail "
+
+  # ===== Windows 巡检服务器示例 =====
+  - business_name: dev-windows-01
+    ip: 198.51.100.20
+    port: 22
+    username: administrator
+    password: "REPLACE_ME"
+    server_type: windows
+    blacklist:
+      - "Remove-Item "
+      - "Stop-Service "
+    whitelist:
+      - "Get-Service"
+      - "Get-WinEvent "
