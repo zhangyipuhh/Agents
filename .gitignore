@@ -58,6 +58,9 @@ mcpClient/**/*.yaml
 .env
 app/test/
 data/
+# 显式允许 data/devops/servers.yaml.example 入库（覆盖 *.yaml 与 data/ 规则）
+!data/devops/
+!data/devops/servers.yaml.example
 app/**/*.csv
 app/**/*.pdf
 app/**/*.docx
