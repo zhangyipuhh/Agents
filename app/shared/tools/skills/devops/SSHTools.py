@@ -107,6 +107,20 @@ def _resolve_server_config(
     return svc.get_connection_config(name)
 
 
+def _validate_business_name(business_name: str) -> Optional[str]:
+    """校验 ``business_name`` 非空且非纯空白。
+
+    Args:
+        business_name: 待校验的业务名
+
+    Returns:
+        Optional[str]: 校验失败时返回错误消息；通过时返回 None
+    """
+    if not business_name or not business_name.strip():
+        return "business_name 不能为空"
+    return None
+
+
 def _make_interceptor(config: Dict[str, Any]) -> CommandInterceptor:
     """根据服务器配置构造 ``CommandInterceptor``。
 
@@ -204,7 +218,7 @@ def _make_tool_message(
 @tool(description="在已配置的远程服务器上执行单条命令（Linux/bash 或 Windows/powershell）。")
 def execute_command(
     command: str,
-    business_name: Optional[str] = None,
+    business_name: str,
     timeout: int = 30,
     runtime: ToolRuntime = None,
 ) -> Command:
@@ -218,7 +232,7 @@ def execute_command(
 
     Args:
         command: 待执行的命令字符串
-        business_name: 业务名（可选；缺省时读 ``runtime.context["business_name"]``）
+        business_name: 业务名（必填，不可为空）
         timeout: 命令执行超时（秒）
         runtime: LangChain ToolRuntime（langchain runtime 自动注入）
 
@@ -226,6 +240,17 @@ def execute_command(
         Command: 包含 messages 的 LangChain 命令对象
     """
     tool_call_id = getattr(runtime, "tool_call_id", "unknown") if runtime else "unknown"
+    err = _validate_business_name(business_name)
+    if err:
+        return Command(
+            update={
+                "messages": [
+                    _make_tool_message(
+                        tool_call_id, {"success": False, "error": err}
+                    )
+                ]
+            }
+        )
     try:
         config = _resolve_server_config(runtime, business_name)
     except (RuntimeError, KeyError):
@@ -328,7 +353,7 @@ def execute_command(
 @tool(description="在已配置的远程服务器上批量执行多条命令；任何一条被策略拦截即整批拒绝。")
 def execute_batch_commands(
     commands: List[str],
-    business_name: Optional[str] = None,
+    business_name: str,
     timeout: int = 30,
     runtime: ToolRuntime = None,
 ) -> Command:
@@ -340,7 +365,7 @@ def execute_batch_commands(
 
     Args:
         commands: 命令字符串列表
-        business_name: 业务名
+        business_name: 业务名（必填，不可为空）
         timeout: 单条命令超时（秒）
         runtime: LangChain ToolRuntime
 
@@ -348,6 +373,17 @@ def execute_batch_commands(
         Command: 含 messages 的 LangChain 命令对象
     """
     tool_call_id = getattr(runtime, "tool_call_id", "unknown") if runtime else "unknown"
+    err = _validate_business_name(business_name)
+    if err:
+        return Command(
+            update={
+                "messages": [
+                    _make_tool_message(
+                        tool_call_id, {"success": False, "error": err}
+                    )
+                ]
+            }
+        )
     try:
         config = _resolve_server_config(runtime, business_name)
     except (RuntimeError, KeyError):
@@ -479,7 +515,7 @@ def execute_batch_commands(
 
 @tool(description="获取远程服务器系统日志（tail）。返回成功摘要，不含连接配置。")
 def get_system_logs(
-    business_name: Optional[str] = None,
+    business_name: str,
     log_type: str = "syslog",
     lines: int = 100,
     runtime: ToolRuntime = None,
@@ -489,7 +525,7 @@ def get_system_logs(
     内部命令 ``tail -n <lines> <path>`` 同样走 ``CommandInterceptor`` 检查。
 
     Args:
-        business_name: 业务名
+        business_name: 业务名（必填，不可为空）
         log_type: 日志类型（syslog / auth / kern / 其他）
         lines: 行数
         runtime: LangChain ToolRuntime
@@ -498,6 +534,17 @@ def get_system_logs(
         Command: 含 messages 的 LangChain 命令对象
     """
     tool_call_id = getattr(runtime, "tool_call_id", "unknown") if runtime else "unknown"
+    err = _validate_business_name(business_name)
+    if err:
+        return Command(
+            update={
+                "messages": [
+                    _make_tool_message(
+                        tool_call_id, {"success": False, "error": err}
+                    )
+                ]
+            }
+        )
     try:
         config = _resolve_server_config(runtime, business_name)
     except (RuntimeError, KeyError):

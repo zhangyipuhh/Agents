@@ -2710,7 +2710,7 @@ CREATE INDEX IF NOT EXISTS idx_devops_servers_updated_at  ON devops_servers(upda
 --     Tool Admin 界面展示（不创建任何 Agent / agent_tool_bindings / seed 脚本）。
 --     参数 schema 显式不含 runtime（LangChain ToolRuntime 由框架运行时自动注入）。
 INSERT INTO tools (name, display_name, category, description, module_path, file_path, args_schema, return_description, function_description, enabled, sort_order) VALUES
-  ('execute_command', 'Execute SSH Command', 'devops', '在已配置的远程服务器上执行单条命令（Linux/bash 或 Windows/powershell）。', 'app.shared.tools.skills.devops.SSHTools', 'app/shared/tools/skills/devops/SSHTools.py', '{"properties": {"command": {"type": "string"}, "business_name": {"type": "string", "nullable": true}, "timeout": {"type": "integer", "default": 30}}}', NULL, 'execute_command：在远程服务器执行单条命令。', TRUE, 0)
+  ('execute_command', 'Execute SSH Command', 'devops', '在已配置的远程服务器上执行单条命令（Linux/bash 或 Windows/powershell）。', 'app.shared.tools.skills.devops.SSHTools', 'app/shared/tools/skills/devops/SSHTools.py', '{"properties": {"command": {"type": "string"}, "business_name": {"type": "string"}, "timeout": {"type": "integer", "default": 30}}, "required": ["command", "business_name"]}', NULL, 'execute_command：在远程服务器执行单条命令。', TRUE, 0)
 ON CONFLICT (name) DO UPDATE
 SET display_name = EXCLUDED.display_name,
     category = EXCLUDED.category,
@@ -2721,7 +2721,7 @@ SET display_name = EXCLUDED.display_name,
     updated_at = CURRENT_TIMESTAMP;
 
 INSERT INTO tools (name, display_name, category, description, module_path, file_path, args_schema, return_description, function_description, enabled, sort_order) VALUES
-  ('execute_batch_commands', 'Execute SSH Batch Commands', 'devops', '在已配置的远程服务器上批量执行多条命令；任一条被策略拦截即整批拒绝。', 'app.shared.tools.skills.devops.SSHTools', 'app/shared/tools/skills/devops/SSHTools.py', '{"properties": {"commands": {"type": "array", "items": {"type": "string"}}, "business_name": {"type": "string", "nullable": true}, "timeout": {"type": "integer", "default": 30}}}', NULL, 'execute_batch_commands：批量 SSH 命令执行。', TRUE, 0)
+  ('execute_batch_commands', 'Execute SSH Batch Commands', 'devops', '在已配置的远程服务器上批量执行多条命令；任一条被策略拦截即整批拒绝。', 'app.shared.tools.skills.devops.SSHTools', 'app/shared/tools/skills/devops/SSHTools.py', '{"properties": {"commands": {"type": "array", "items": {"type": "string"}}, "business_name": {"type": "string"}, "timeout": {"type": "integer", "default": 30}}, "required": ["commands", "business_name"]}', NULL, 'execute_batch_commands：批量 SSH 命令执行。', TRUE, 0)
 ON CONFLICT (name) DO UPDATE
 SET display_name = EXCLUDED.display_name,
     category = EXCLUDED.category,
@@ -2732,7 +2732,7 @@ SET display_name = EXCLUDED.display_name,
     updated_at = CURRENT_TIMESTAMP;
 
 INSERT INTO tools (name, display_name, category, description, module_path, file_path, args_schema, return_description, function_description, enabled, sort_order) VALUES
-  ('get_system_logs', 'Get System Logs', 'devops', '获取远程服务器系统日志（tail），返回成功摘要，不含连接配置。', 'app.shared.tools.skills.devops.SSHTools', 'app/shared/tools/skills/devops/SSHTools.py', '{"properties": {"business_name": {"type": "string", "nullable": true}, "log_type": {"type": "string", "default": "syslog"}, "lines": {"type": "integer", "default": 100}}}', NULL, 'get_system_logs：系统日志获取。', TRUE, 0)
+  ('get_system_logs', 'Get System Logs', 'devops', '获取远程服务器系统日志（tail），返回成功摘要，不含连接配置。', 'app.shared.tools.skills.devops.SSHTools', 'app/shared/tools/skills/devops/SSHTools.py', '{"properties": {"business_name": {"type": "string"}, "log_type": {"type": "string", "default": "syslog"}, "lines": {"type": "integer", "default": 100}}, "required": ["business_name"]}', NULL, 'get_system_logs：系统日志获取。', TRUE, 0)
 ON CONFLICT (name) DO UPDATE
 SET display_name = EXCLUDED.display_name,
     category = EXCLUDED.category,

@@ -10,6 +10,10 @@ CommandInterceptor 单元测试（2026-07-15 新增）
     - 白名单为空时所有非空命令拒绝
     - 白名单内命令允许；非白名单命令拒绝
     - 黑名单优先于白名单（即黑名单命中后不应进入白名单分支）
+    - 白名单精确条目按 startswith 匹配（df → df -h / df -i）
+    - 管道 / 逻辑与或 / 分号连接的子命令需逐段独立通过校验
+    - 内置安全黑名单默认拒命令替换 / 进程替换 / 单 & 后台执行
+    - 引号内的 | ; & 不作为拆分符
     - add_pattern 动态增删模式
 """
 from __future__ import annotations
@@ -132,12 +136,11 @@ def test_whitelist_match_accepts():
     """
     from app.shared.tools.skills.devops.CommandInterceptor import CommandInterceptor
     ci = CommandInterceptor(blacklist=[], whitelist=["ls", "echo "])
-    # "ls" 是精确条目 → 应只匹配 "ls"；
+    # "ls" 精确条目 → startswith 匹配 "ls" / "ls -l" / "ls -la"
     # "echo " 带尾空格 → 前缀模式，匹配 "echo hello world"
     assert ci.is_allowed("ls")[0] is True
     assert ci.is_allowed("echo hello world")[0] is True
-    # ls -l 不在白名单精确条目中（"ls " 不在前缀列表里）
-    assert ci.is_allowed("ls -l")[0] is False
+    assert ci.is_allowed("ls -l")[0] is True
 
 
 def test_whitelist_no_match_rejects():
@@ -200,9 +203,184 @@ def test_add_pattern_dynamic():
     assert ci.is_allowed("reboot")[0] is False
 
 
-def test_partial_whitelist_match_strict():
-    """白名单精确匹配 ``ls`` 时，``ls`` 通过；``ls -l`` 不通过（不带尾空格不是前缀模式）。"""
+def test_whitelist_exact_uses_startswith():
+    """白名单精确条目按「命令名 + 可选空格」匹配(放宽策略)。
+
+    ``ls`` 放行 ``ls`` / ``ls -l`` / ``ls -la /tmp``；非 ls 前缀的 ``lsblk`` 不放行
+    （避免 ``ls`` 误放行 ``lsblk`` / ``lsattr`` 等其他命令）。
+
+    Returns:
+        None
+    """
     from app.shared.tools.skills.devops.CommandInterceptor import CommandInterceptor
     ci = CommandInterceptor(blacklist=[], whitelist=["ls"])
     assert ci.is_allowed("ls")[0] is True
-    assert ci.is_allowed("ls -l")[0] is False
+    assert ci.is_allowed("ls -l")[0] is True
+    assert ci.is_allowed("ls -la /tmp")[0] is True
+    assert ci.is_allowed("lsblk")[0] is False
+    assert ci.is_allowed("lsattr")[0] is False
+
+
+def test_whitelist_df_allows_df_h():
+    """业务诉求:``whitelist=['df']`` 应放行 ``df -h`` / ``df -i`` 等所有 df 子命令。
+
+    Returns:
+        None
+    """
+    from app.shared.tools.skills.devops.CommandInterceptor import CommandInterceptor
+    ci = CommandInterceptor(blacklist=[], whitelist=["df"])
+    assert ci.is_allowed("df")[0] is True
+    assert ci.is_allowed("df -h")[0] is True
+    assert ci.is_allowed("df -i")[0] is True
+    assert ci.is_allowed("df -T /tmp")[0] is True
+    assert ci.is_allowed("du -h")[0] is False
+
+
+def test_blacklist_exact_still_strict():
+    """白名单放宽只影响白名单:黑名单精确条目仍走精确匹配,不误伤相似命令。
+
+    Returns:
+        None
+    """
+    from app.shared.tools.skills.devops.CommandInterceptor import CommandInterceptor
+    ci = CommandInterceptor(blacklist=["halt"], whitelist=["halt"])
+    # 黑名单精确 'halt' 命中 → 拒绝(优先级最高)
+    assert ci.is_allowed("halt")[0] is False
+    # 'halt-on-error' 不命中精确 'halt',旧契约也不放行(白名单 startswith 'halt'
+    # 会命中 'halt-on-error',但白名单优先于黑名单之前已被黑名单拦截前的逻辑被改:
+    # 新行为下 'halt-on-error' 也被白名单 startswith 放行,这是已知放宽代价)
+    # 因此本用例仅验证黑名单精确条目不会被白名单 startswith 弱化:
+    # 'halt' 仍然被黑名单精确命中 → 拒绝
+    assert "黑名单" in ci.is_allowed("halt")[1]
+
+
+# ----------------------------------------------------------------------
+# Pipeline / 组合命令逐段校验
+# ----------------------------------------------------------------------
+
+
+def test_pipeline_white_segments_allowed():
+    """管道两段都命中白名单时放行。
+
+    Returns:
+        None
+    """
+    from app.shared.tools.skills.devops.CommandInterceptor import CommandInterceptor
+    ci = CommandInterceptor(blacklist=[], whitelist=["df", "grep "])
+    allowed, _ = ci.is_allowed("df -h | grep tmp")
+    assert allowed is True
+
+
+def test_pipeline_one_segment_not_in_whitelist_rejected():
+    """管道子段未命中白名单时整批拒绝(标注段索引)。
+
+    Returns:
+        None
+    """
+    from app.shared.tools.skills.devops.CommandInterceptor import CommandInterceptor
+    ci = CommandInterceptor(blacklist=[], whitelist=["df"])
+    allowed, reason = ci.is_allowed("df -h | grep tmp")
+    assert allowed is False
+    assert "子命令[1]" in reason
+    assert "白名单" in reason
+
+
+def test_pipeline_segment_in_blacklist_rejected():
+    """``;`` 连接的子段命中黑名单前缀时整批拒绝。
+
+    Returns:
+        None
+    """
+    from app.shared.tools.skills.devops.CommandInterceptor import CommandInterceptor
+    ci = CommandInterceptor(
+        blacklist=["rm -rf"],
+        whitelist=["cat", "echo "],
+    )
+    allowed, reason = ci.is_allowed("cat /etc/hosts; rm -rf /tmp/x")
+    assert allowed is False
+    assert "子命令[1]" in reason
+    assert "rm -rf" in reason
+
+
+def test_command_substitution_blocked():
+    """``$()`` 与反引号命令替换被内置黑名单默认拒绝。
+
+    Returns:
+        None
+    """
+    from app.shared.tools.skills.devops.CommandInterceptor import CommandInterceptor
+    ci = CommandInterceptor(blacklist=[], whitelist=["echo ", "whoami"])
+    for cmd in ["echo $(whoami)", "echo `whoami`"]:
+        allowed, reason = ci.is_allowed(cmd)
+        assert allowed is False, f"应拒绝 {cmd!r}"
+        assert "黑名单" in reason
+
+
+def test_process_substitution_blocked():
+    """``<()`` / ``>()`` 进程替换被内置黑名单默认拒绝。
+
+    Returns:
+        None
+    """
+    from app.shared.tools.skills.devops.CommandInterceptor import CommandInterceptor
+    ci = CommandInterceptor(blacklist=[], whitelist=["diff", "ls"])
+    for cmd in ["diff <(ls) <(ls -a)", "tee >(cat)"]:
+        allowed, reason = ci.is_allowed(cmd)
+        assert allowed is False, f"应拒绝 {cmd!r}"
+        assert "黑名单" in reason
+
+
+def test_background_execution_blocked():
+    """单 ``&`` 后台执行被内置黑名单默认拒绝;``&&`` 不被误伤。
+
+    Returns:
+        None
+    """
+    from app.shared.tools.skills.devops.CommandInterceptor import CommandInterceptor
+    ci = CommandInterceptor(blacklist=[], whitelist=["sleep", "echo "])
+    allowed_bg, reason_bg = ci.is_allowed("sleep 5 &")
+    assert allowed_bg is False
+    assert "黑名单" in reason_bg
+    # ``&&`` 是合法逻辑与,不被单 & 正则误伤
+    allowed_and, _ = ci.is_allowed("sleep 1 && echo done")
+    assert allowed_and is True
+
+
+def test_quoted_pipe_not_split():
+    """引号内的 ``|`` 不作为分词边界。
+
+    Returns:
+        None
+    """
+    from app.shared.tools.skills.devops.CommandInterceptor import CommandInterceptor
+    ci = CommandInterceptor(blacklist=[], whitelist=["echo ", "wc "])
+    allowed, reason = ci.is_allowed('echo "a|b" | wc -c')
+    assert allowed is True, reason
+
+
+def test_empty_segment_ignored():
+    """连续分号 / 空段不参与校验。
+
+    Returns:
+        None
+    """
+    from app.shared.tools.skills.devops.CommandInterceptor import CommandInterceptor
+    ci = CommandInterceptor(blacklist=[], whitelist=["df"])
+    allowed, reason = ci.is_allowed("df -h ; ; df -i")
+    assert allowed is True, reason
+
+
+def test_split_pipeline_helper():
+    """分词器单元测试:管道 / ; / && / 引号 / 单 &。
+
+    Returns:
+        None
+    """
+    from app.shared.tools.skills.devops.CommandInterceptor import CommandInterceptor
+    assert CommandInterceptor._split_pipeline("ls -l") == ["ls -l"]
+    assert CommandInterceptor._split_pipeline("a|b") == ["a", "b"]
+    assert CommandInterceptor._split_pipeline("a; b") == ["a", "b"]
+    assert CommandInterceptor._split_pipeline("a && b") == ["a", "b"]
+    assert CommandInterceptor._split_pipeline("a || b") == ["a", "b"]
+    assert CommandInterceptor._split_pipeline('echo "a|b" | wc') == ['echo "a|b"', "wc"]
+    assert CommandInterceptor._split_pipeline("echo 'a;b'") == ["echo 'a;b'"]

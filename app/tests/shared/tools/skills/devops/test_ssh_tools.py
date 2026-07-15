@@ -167,6 +167,7 @@ def test_execute_command_runs_linux_and_uses_bash(monkeypatch):
 
     out = execute_command(
         command="echo hello",
+        business_name="alpha",
         runtime=runtime,
     )
     msgs = out.update["messages"]
@@ -213,6 +214,7 @@ def test_execute_command_runs_windows_and_uses_powershell(monkeypatch):
 
     out = execute_command(
         command="Get-Service",
+        business_name="beta",
         runtime=runtime,
     )
     args, _ = fake_client.exec_command.call_args
@@ -252,6 +254,7 @@ def test_execute_command_blacklist_blocks_command(monkeypatch):
 
     out = execute_command(
         command="rm -rf /tmp/x",
+        business_name="gamma",
         runtime=runtime,
     )
     msgs = out.update["messages"]
@@ -284,7 +287,7 @@ def test_execute_command_whitelist_empty_blocks(monkeypatch):
 
     from app.shared.tools.skills.devops.SSHTools import execute_command
 
-    out = execute_command(command="ls", runtime=runtime)
+    out = execute_command(command="ls", business_name="delta", runtime=runtime)
     msgs = out.update["messages"]
     payload = json.loads(msgs[0].content)
     assert payload.get("success") is False
@@ -322,6 +325,7 @@ def test_batch_blocked_response_does_not_echo_allowed_commands(monkeypatch):
 
     out = execute_batch_commands(
         commands=["ls", "shutdown -h now", "whoami"],
+        business_name="zeta2",
         runtime=runtime,
     )
     msgs = out.update["messages"]
@@ -379,7 +383,7 @@ def test_execute_command_generic_error_does_not_leak_credential(monkeypatch):
 
     from app.shared.tools.skills.devops.SSHTools import execute_command
 
-    out = execute_command(command="echo hello", runtime=runtime)
+    out = execute_command(command="echo hello", business_name="kappa", runtime=runtime)
     msgs = out.update["messages"]
     raw = msgs[0].content
     # 通用错误：不含敏感片段
@@ -404,7 +408,13 @@ def test_get_system_logs_windows_uses_get_winevent(monkeypatch):
         "password": "winpwd",
         "server_type": "windows",
         "blacklist": [],
-        "whitelist": ["powershell ", "Get-WinEvent "],
+        "whitelist": [
+            "powershell ",
+            "Get-WinEvent ",
+            "Select-Object ",
+            "Format-Table ",
+            "Out-String",
+        ],
     }
     _patch_service(monkeypatch, cfg)
     fake_client = _patch_paramiko(monkeypatch, stdout_text="log lines", exit_code=0)
@@ -413,6 +423,7 @@ def test_get_system_logs_windows_uses_get_winevent(monkeypatch):
     from app.shared.tools.skills.devops.SSHTools import get_system_logs
 
     out = get_system_logs(
+        business_name="winlogs",
         log_type="System",
         lines=10,
         runtime=runtime,
@@ -453,6 +464,7 @@ def test_batch_any_block_rejects_entire_batch(monkeypatch):
 
     out = execute_batch_commands(
         commands=["ls", "shutdown -h now"],
+        business_name="eps",
         runtime=runtime,
     )
     msgs = out.update["messages"]
@@ -488,6 +500,7 @@ def test_batch_success_runs_all(monkeypatch):
 
     out = execute_batch_commands(
         commands=["whoami", "date"],
+        business_name="zeta",
         runtime=runtime,
     )
     msgs = out.update["messages"]
@@ -527,6 +540,7 @@ def test_get_system_logs_uses_policy(monkeypatch):
     from app.shared.tools.skills.devops.SSHTools import get_system_logs
 
     out = get_system_logs(
+        business_name="eta",
         log_type="syslog",
         lines=10,
         runtime=runtime,
@@ -563,6 +577,7 @@ def test_get_system_logs_success(monkeypatch):
     from app.shared.tools.skills.devops.SSHTools import get_system_logs
 
     out = get_system_logs(
+        business_name="theta",
         log_type="syslog",
         lines=100,
         runtime=runtime,
@@ -573,3 +588,139 @@ def test_get_system_logs_success(monkeypatch):
     assert "10.0.0.8" not in payload
     args, _ = fake_client.exec_command.call_args
     assert "tail" in args[0]
+
+
+# ----------------------------------------------------------------------
+# 5. business_name 必填 + 验空
+# ----------------------------------------------------------------------
+
+
+def test_execute_command_rejects_empty_business_name(monkeypatch):
+    """execute_command 收到空字符串 business_name 时返回明确错误，不调 paramiko。
+
+    Args:
+        monkeypatch: pytest monkeypatch
+
+    Returns:
+        None
+    """
+    cfg = {
+        "ip": "10.0.0.1",
+        "port": 22,
+        "username": "u",
+        "password": "pwd",
+        "server_type": "linux",
+        "blacklist": [],
+        "whitelist": ["echo "],
+    }
+    _patch_service(monkeypatch, cfg)
+    fake_client = _patch_paramiko(monkeypatch, stdout_text="", exit_code=0)
+    runtime = _build_runtime(business_name="alpha")
+
+    from app.shared.tools.skills.devops.SSHTools import execute_command
+
+    out = execute_command(command="echo hi", business_name="", runtime=runtime)
+    msgs = out.update["messages"]
+    payload = json.loads(msgs[0].content)
+    assert payload.get("success") is False
+    assert "business_name 不能为空" in payload.get("error", "")
+    fake_client.exec_command.assert_not_called()
+
+
+def test_execute_command_rejects_whitespace_business_name(monkeypatch):
+    """execute_command 收到纯空白 business_name 时返回明确错误，不调 paramiko。
+
+    Args:
+        monkeypatch: pytest monkeypatch
+
+    Returns:
+        None
+    """
+    cfg = {
+        "ip": "10.0.0.1",
+        "port": 22,
+        "username": "u",
+        "password": "pwd",
+        "server_type": "linux",
+        "blacklist": [],
+        "whitelist": ["echo "],
+    }
+    _patch_service(monkeypatch, cfg)
+    fake_client = _patch_paramiko(monkeypatch, stdout_text="", exit_code=0)
+    runtime = _build_runtime(business_name="alpha")
+
+    from app.shared.tools.skills.devops.SSHTools import execute_command
+
+    out = execute_command(command="echo hi", business_name="   ", runtime=runtime)
+    msgs = out.update["messages"]
+    payload = json.loads(msgs[0].content)
+    assert payload.get("success") is False
+    assert "business_name 不能为空" in payload.get("error", "")
+    fake_client.exec_command.assert_not_called()
+
+
+def test_execute_batch_commands_rejects_empty_business_name(monkeypatch):
+    """execute_batch_commands 收到空 business_name 时返回明确错误，不调 paramiko。
+
+    Args:
+        monkeypatch: pytest monkeypatch
+
+    Returns:
+        None
+    """
+    cfg = {
+        "ip": "10.0.0.1",
+        "port": 22,
+        "username": "u",
+        "password": "pwd",
+        "server_type": "linux",
+        "blacklist": [],
+        "whitelist": ["ls"],
+    }
+    _patch_service(monkeypatch, cfg)
+    fake_client = _patch_paramiko(monkeypatch, stdout_text="", exit_code=0)
+    runtime = _build_runtime(business_name="zeta")
+
+    from app.shared.tools.skills.devops.SSHTools import execute_batch_commands
+
+    out = execute_batch_commands(
+        commands=["ls"], business_name="", runtime=runtime
+    )
+    msgs = out.update["messages"]
+    payload = json.loads(msgs[0].content)
+    assert payload.get("success") is False
+    assert "business_name 不能为空" in payload.get("error", "")
+    fake_client.exec_command.assert_not_called()
+
+
+def test_get_system_logs_rejects_empty_business_name(monkeypatch):
+    """get_system_logs 收到空 business_name 时返回明确错误，不调 paramiko。
+
+    Args:
+        monkeypatch: pytest monkeypatch
+
+    Returns:
+        None
+    """
+    cfg = {
+        "ip": "10.0.0.1",
+        "port": 22,
+        "username": "u",
+        "password": "pwd",
+        "server_type": "linux",
+        "blacklist": [],
+        "whitelist": ["tail "],
+    }
+    _patch_service(monkeypatch, cfg)
+    fake_client = _patch_paramiko(monkeypatch, stdout_text="", exit_code=0)
+    runtime = _build_runtime(business_name="eta")
+
+    from app.shared.tools.skills.devops.SSHTools import get_system_logs
+
+    out = get_system_logs(business_name="", runtime=runtime)
+    msgs = out.update["messages"]
+    payload = json.loads(msgs[0].content)
+    assert payload.get("success") is False
+    assert "business_name 不能为空" in payload.get("error", "")
+    fake_client.exec_command.assert_not_called()
+

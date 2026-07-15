@@ -1759,7 +1759,7 @@ system_prompt = (
 - 列：`id` / `business_name UNIQUE` / `ip` / `port` / `username` / `password_encrypted BYTEA` / `server_type` / `blacklist JSONB` / `whitelist JSONB` / `created_at` / `updated_at`
 - CHECK：`server_type IN ('linux', 'windows')`、`port BETWEEN 1 AND 65535`
 - 索引：`idx_devops_servers_server_type`、`idx_devops_servers_updated_at DESC`
-- 工具元数据：在 `app/migrations/init_all_tables.sql` 的 `tools` 表中登记了 `execute_command` / `execute_batch_commands` / `get_system_logs` 三个工具（`module_path=app.shared.tools.skills.devops.SSHTools` / `file_path=app/shared/tools/skills/devops/SSHTools.py`；`args_schema` 显式不含 `runtime`）。
+- 工具元数据：在 `app/migrations/init_all_tables.sql` 的 `tools` 表中登记了 `execute_command` / `execute_batch_commands` / `get_system_logs` 三个工具（`module_path=app.shared.tools.skills.devops.SSHTools` / `file_path=app/shared/tools/skills/devops/SSHTools.py`；`args_schema` 显式不含 `runtime`；`business_name` 为必填字段，`args_schema` 标记 `required` 且工具入口验空）。
 
 ### 生命周期 / admin API
 
@@ -1774,6 +1774,17 @@ system_prompt = (
 
 - `CommandInterceptor(whitelist=None)` 与 `whitelist=[]` 行为完全等价：均视为「空白名单」并启用 allowlist，**所有非黑名单命令必须命中白名单才放行**。
 - SSHTools 在内部构造拦截器时直接传入 DB 行 `whitelist` 字段（dict / JSONB 反序列化结果）；DB 中 `whitelist` 为 `NULL` 或 `[]` 都表示「拒绝所有非黑名单命令」，调用方必须显式配置命中项（Linux：`echo ` / `ls ` / `tail ` 等；Windows：`Get-Service` / `powershell ` 等）。
+
+### 命令白名单放宽与管道逐段校验（2026-07-15）
+
+- 白名单条目匹配语义统一为 `startswith`（大小写不敏感）：精确条目（无尾空格）和前缀条目（尾空格）都按 startswith 判断；正则条目按 `re.search` 判断。
+  - `whitelist=["df"]` 自动放行 `df`、`df -h`、`df -i`、`df -T /tmp`。
+  - 黑名单精确条目仍按 `==` 严格匹配，不被白名单 startswith 弱化（防御层语义不变）。
+- 管道 / 组合命令逐段拆分校验：`CommandInterceptor._split_pipeline` 按 `|`/`||`/`&&`/`;`/`&` 在引号外拆分；引号（单 / 双）内的分隔符视为普通字符，不拆分。
+- 每段子命令独立走「黑名单 → 白名单」校验：任一子段失败即整批拒绝，错误信息标注失败子段索引（如 `子命令[1]='rm -rf /tmp' 不在白名单中`）。
+- 内置安全黑名单（默认生效，运维不可关闭）：`$\(`（命令替换）、`` ` ``（反引号）、`<\(` / `>\(`（进程替换）、单 `&` 后台执行（正则 `(?<![&|])&(?!&)` 避开 `&&` 与 `&|`）。
+- 管道命令运维配置：白名单需逐段子命令都列入；常用只读管道工具集合建议 `["ls ", "cat ", "grep ", "tail ", "awk ", "sort ", "head ", "wc ", "df", "echo "]`。
+- 重定向（`>` / `<`）不在内置黑名单内：若运维需禁止可自行追加黑名单正则（如 `> *\S` 防写文件）。
 
 ### 路径集中（2026-07-15）
 
@@ -1808,8 +1819,8 @@ system_prompt = (
 ### 测试覆盖
 
 - `app/tests/shared/test_devops_server_service.py` —— 22 个用例：Fernet 校验、Singleton、preload、扫描别名/字段/统计 / `servers:` 顶层 dict / 重复拒绝 / 缓存 RETURNING 同步 / 路径 resolver / 默认路径来自 paths。
-- `app/tests/shared/tools/skills/devops/test_command_interceptor.py` —— 14 个用例：空命令、精确/正则/前缀、黑名单优先、强白名单（`None` 等价于 `[]`）、`add_pattern`。
-- `app/tests/shared/tools/skills/devops/test_ssh_tools.py` —— 13 个用例：平台派生、整批拒绝、批量拦截不返回 allowed、通用错误不携带凭据、Windows Get-WinEvent、敏感字段不进入 result、运行时通过 `runtime.context.business_name` 注入。
+- `app/tests/shared/tools/skills/devops/test_command_interceptor.py` —— 23 个用例：空命令、精确/正则/前缀、黑名单优先、强白名单（`None` 等价于 `[]`）、白名单精确条目 startswith 放宽、管道/逻辑与或/分号逐段校验、内置安全黑名单（`$()` / 反引号 / 进程替换 / 单 `&`）、引号内分隔符不拆分、`_split_pipeline` 分词器单元测试、`add_pattern`。
+- `app/tests/shared/tools/skills/devops/test_ssh_tools.py` —— 17 个用例：平台派生、整批拒绝、批量拦截不返回 allowed、通用错误不携带凭据、Windows Get-WinEvent、敏感字段不进入 result、`business_name` 必填 + 空值/纯空白验空（4 个用例覆盖三个工具）。
 - `app/tests/core/test_devops_server_lifespan.py` —— 4 个用例：DB 池就绪、空池降级、空 key 跳过、单例 reset。
 - `app/tests/routers/test_devops_server_admin_router.py` —— 9 个用例：路由注册、白名单二次过滤、扫描 4 数字、异常不外泄、service 缺失返 500。
 - `app/tests/core/test_devops_diagnostics.py` —— 8 个用例（2026-07-15 新增）：`missing` / `misspelled` / `settings_unread` / `invalid_fernet` 4 类分支、首尾空白忽略、`frozen=True` 不变性、通过路径不打印完整密钥。
