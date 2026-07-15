@@ -1811,6 +1811,42 @@ system_prompt = (
 - `app/tests/routers/test_devops_server_admin_router.py` —— 9 个用例：路由注册、白名单二次过滤、扫描 4 数字、异常不外泄、service 缺失返 500。
 - `web/Agent/src/components/__tests__/TaskSchedulerManager.spec.js` —— 21 个用例：默认 Tab、扫描 Tab 按需加载、白名单脱敏、防重复提交、扫描统计 4 数字、错误不外泄、不渲染 ID 列、POST 无 Content-Type/body、扫描 vs 列表错误独立、`hasLoaded` 避免重复 GET。
 
+## 飞书工具（Feishu Tools）
+
+### 核心模块
+
+| 路径 | 职责 |
+|---|---|
+| `app/shared/tools/skills/feishu/FeishuClient.py` | `get_lark_client()` 公共工厂：从 `settings.feishu` 读取凭证，构造线程安全单例 `lark.Client`；`reset_lark_client()` 供测试重置缓存 |
+| `app/shared/tools/skills/feishu/FeishuMessageTools.py` | 1 个 `@tool(description=...)`：`send_feishu_message`（发送文本消息到群/用户） |
+
+### 配置（FeishuSettings）
+
+`app/core/config/settings.py::FeishuSettings`，通过 `.env` 环境变量注入：
+
+- `feishu_app_id`（env `FEISHU_APP_ID`）—— 飞书应用 App ID，空字符串表示未配置
+- `feishu_app_secret`（env `FEISHU_APP_SECRET`）—— 飞书应用 App Secret
+- `feishu_default_receive_id`（env `FEISHU_DEFAULT_RECEIVE_ID`）—— 默认接收方 ID（群 chat_id 或用户 open_id）
+- `feishu_default_receive_id_type`（env `FEISHU_DEFAULT_RECEIVE_ID_TYPE`，默认 `chat_id`）—— 接收方类型：chat_id / open_id / user_id / email
+- `feishu_log_level`（env `FEISHU_LOG_LEVEL`，默认 `INFO`）—— SDK 日志级别
+
+`Settings.get_feishu_config()` 返回扁平字典供旧代码访问。
+
+### 依赖
+
+- `lark-oapi>=1.4.0`（见 `app/requirements.txt`）
+
+### 工具发现
+
+- 仅使用 `@tool(description=...)` 装饰，不调用 `register_tool`
+- 工具元数据由 `ToolRegistryService` 源码扫描 `app/shared/tools/skills/feishu/FeishuMessageTools.py` 自动发现
+
+### 测试覆盖
+
+- `app/tests/shared/tools/skills/feishu/test_feishu_client.py` —— 9 个用例：导入存在性、凭证缺失抛 RuntimeError、单例缓存、reset 清空、日志级别映射
+- `app/tests/shared/tools/skills/feishu/test_feishu_message_tools.py` —— 7 个用例：导入存在性、receive_id 缺失、client 初始化失败、API 成功/失败/异常、显式参数覆盖默认配置
+- `app/tests/shared/tools/skills/feishu/conftest.py` —— 沙箱环境 mock lark_oapi SDK（Client.builder 链、LogLevel 枚举、CreateMessageRequest builder 链）
+
 ## 沙箱 Agent 架构（Sandbox Agent）
 
 基于 LangChain `deepagents` 库实现，提供安全的代码执行与文件操作环境，通过 Docker 容器隔离保证安全性。
