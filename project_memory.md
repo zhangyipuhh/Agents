@@ -1764,8 +1764,9 @@ system_prompt = (
 ### 生命周期 / admin API
 
 - `app/core/server.py::lifespan`：数据库池建立后构造 `DevOpsServerService` 并 `set_instance(svc)` + 挂 `app.state.devops_server_service`；yield 后 `reset()` 单例并清理 `app.state.devops_server_service`。
-- `app/routers/devops_server_admin_router.py`：router 级 `require_admin`；服务未初始化返回 500；`GET` 严格只返回 `{id, business_name, server_type, updated_at}`；`POST /scan` 严格只返回 `{scanned, inserted, updated, failed}`；扫描异常时不回显原始 `detail` / 路径 / IP / 密码 / 名单。
+- `app/routers/devops_server_admin_router.py`：router 级 `require_admin`；服务未初始化返回 500 + `detail="DevOpsServerService not initialized"`；`GET` 严格只返回 `{id, business_name, server_type, updated_at}`；`POST /scan` 严格只返回 `{scanned, inserted, updated, failed}`；扫描异常时不回显原始 `detail` / 路径 / IP / 密码 / 名单。
 - **不再为 DevOps 工具创建 Agent**——工具通过 ToolRegistryService 扫描 `app/shared/tools/skills/devops/SSHTools.py` 自动发现，admin 界面按元数据展示。
+- **运行时必备配置**：lifespan 内 `if credential_key:` 是硬闸门，`.env` 缺 `DEVOPS_CREDENTIAL_KEY` 时只产生 `warning` 并跳过挂载，admin API 全部 500；该键必须由 `Fernet.generate_key()` 生成（44 字节 base64），非法格式会在 service 构造时抛 `ValueError`，效果同上。`data/devops/servers.yaml` 由 `.gitignore` 排除（`servers.yaml.example` 是公开模板），缺失时 `scan_and_upsert` 安全返回 0 但列表为空，不报错。
 
 ### 强白名单契约（2026-07-15 落地）
 
