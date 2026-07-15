@@ -35,6 +35,40 @@ import yaml
 from cryptography.fernet import Fernet, InvalidToken
 
 
+def _ensure_list(value: Any) -> List[Any]:
+    """防御性还原 JSONB 列值。
+
+    asyncpg 0.31 的 jsonb codec 在某些配置下不会自动反序列化,
+    而是返回原始 JSON 字符串。这里做防御性还原:
+      - 已经是 list:原样返回
+      - 已经是 dict:返回 ``[dict]`` 单元素 list(白/黑名单场景不期望 dict)
+      - 是 str 且可被 ``json.loads`` 解析为 list:解析后返回
+      - 是 str 且可被 ``json.loads`` 解析为 dict:返回 ``[dict]`` 单元素 list
+      - 解析失败或为 None:返回 ``[]``(兜底,保持原 ``list(value or [])`` 行为)
+
+    Args:
+        value: 来自 DB row 的 jsonb 字段值,可能是 list / dict / str / None / 其它
+
+    Returns:
+        List[Any]: 始终返回 list 类型
+    """
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        if isinstance(parsed, list):
+            return parsed
+        if isinstance(parsed, dict):
+            return [parsed]
+        return []
+    return []
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -154,6 +188,11 @@ class DevOpsServerService:
             if isinstance(penv, str):
                 penv = penv.encode("ascii")
             data["password_encrypted"] = penv
+            # JSONB 防御性还原：asyncpg 0.31 的 jsonb codec 在某些配置下
+            # 不会自动反序列化，会返回原始 JSON 字符串。此处统一还原为 list/dict，
+            # 避免下游 ``list(str)`` 把字符串拆成字符数组的灾难性 bug。
+            data["blacklist"] = _ensure_list(data.get("blacklist"))
+            data["whitelist"] = _ensure_list(data.get("whitelist"))
             new_cache[business_name] = data
         self._cache = new_cache
         logger.info("[devops_server_service] preloaded %d server(s)", len(self._cache))

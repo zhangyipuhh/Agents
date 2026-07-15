@@ -908,3 +908,181 @@ def test_get_connection_config_does_not_leak_in_public_listing(tmp_yaml):
     assert "10.0.0.1" not in blob
     assert "rm -rf" not in blob
     assert "root" not in blob
+
+
+# ----------------------------------------------------------------------
+# 10. JSONB 反序列化防御（2026-07-15 新增）
+# ----------------------------------------------------------------------
+
+
+def test_ensure_list_already_list_passthrough():
+    """``_ensure_list`` 收到 list 时原样返回。
+
+    Returns:
+        None
+    """
+    from app.shared.utils.devops_server_service import _ensure_list
+    assert _ensure_list(["a", "b"]) == ["a", "b"]
+    assert _ensure_list([]) == []
+    # 嵌套 list 也直接返回
+    assert _ensure_list([["x"], ["y"]]) == [["x"], ["y"]]
+
+
+def test_ensure_list_string_json_parses_to_list():
+    """``_ensure_list`` 收到 JSON 字符串时还原为 list。
+
+    这是 asyncpg 0.31 jsonb codec 失效场景的核心防御:
+    DB 拿到 ``'["a", "b"]'`` 这种字符串时,不能 ``list(value)``(会拆成字符),
+    而应 ``json.loads`` 还原。
+
+    Returns:
+        None
+    """
+    from app.shared.utils.devops_server_service import _ensure_list
+    assert _ensure_list('["systemctl ", "df", "tail "]') == ["systemctl ", "df", "tail "]
+    assert _ensure_list("[]") == []
+    assert _ensure_list('["rm -rf"]') == ["rm -rf"]
+
+
+def test_ensure_list_dict_wraps_in_list():
+    """``_ensure_list`` 收到 dict 时包成单元素 list。
+
+    白/黑名单场景不期望 dict,但兼容 asyncpg 误返回 dict 的极端情况。
+
+    Returns:
+        None
+    """
+    from app.shared.utils.devops_server_service import _ensure_list
+    assert _ensure_list({"key": "value"}) == [{"key": "value"}]
+
+
+def test_ensure_list_string_json_dict_wraps():
+    """``_ensure_list`` 收到 JSON dict 字符串时包成单元素 list。
+
+    Returns:
+        None
+    """
+    from app.shared.utils.devops_server_service import _ensure_list
+    assert _ensure_list('{"foo": "bar"}') == [{"foo": "bar"}]
+
+
+def test_ensure_list_invalid_string_returns_empty():
+    """``_ensure_list`` 收到非法 JSON 字符串时返回 ``[]``(兜底)。
+
+    Returns:
+        None
+    """
+    from app.shared.utils.devops_server_service import _ensure_list
+    assert _ensure_list("not json") == []
+    assert _ensure_list("{invalid}") == []
+
+
+def test_ensure_list_none_or_other_returns_empty():
+    """``_ensure_list`` 收到 None / 非 list/dict/str 时返回 ``[]``。
+
+    Returns:
+        None
+    """
+    from app.shared.utils.devops_server_service import _ensure_list
+    assert _ensure_list(None) == []
+    assert _ensure_list(123) == []
+    assert _ensure_list(0.5) == []
+    assert _ensure_list(True) == []
+
+
+def test_ensure_list_string_json_primitives_returns_empty():
+    """``_ensure_list`` 收到 JSON 字符串但解析为基本类型(数字 / bool / null)时返回 ``[]``。
+
+    Returns:
+        None
+    """
+    from app.shared.utils.devops_server_service import _ensure_list
+    assert _ensure_list("123") == []
+    assert _ensure_list("true") == []
+    assert _ensure_list("null") == []
+    assert _ensure_list('"plain_string"') == []
+
+
+def test_preload_all_decodes_string_whitelist(tmp_yaml):
+    """``preload_all`` 收到 JSON 字符串形式的 whitelist/blacklist 时还原为 list。
+
+    模拟 asyncpg jsonb codec 失效场景(DB row 的 whitelist/blacklist 是 str):
+    验证 _cache 里存的是真正的 list,不是被 list() 拆过字符的字符串。
+
+    Args:
+        tmp_yaml: 临时 yaml 路径
+
+    Returns:
+        None
+    """
+    import asyncio
+    db = _make_db()
+    db.fetch.return_value = [
+        {
+            "id": 1,
+            "business_name": "alpha",
+            "ip": "10.0.0.1",
+            "port": 22,
+            "username": "root",
+            "password_encrypted": b"enc",
+            "server_type": "linux",
+            # 模拟 asyncpg jsonb 反序列化失效:返回原始 JSON 字符串
+            "blacklist": '["rm -rf "]',
+            "whitelist": '["systemctl ", "df", "tail "]',
+            "created_at": None,
+            "updated_at": None,
+        }
+    ]
+    from app.shared.utils.devops_server_service import DevOpsServerService
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    asyncio.run(svc.preload_all())
+    assert svc._cache["alpha"]["blacklist"] == ["rm -rf "]
+    assert svc._cache["alpha"]["whitelist"] == ["systemctl ", "df", "tail "]
+    # 关键防御验证:如果防御失效,list() 会拆字符串成字符数组
+    assert len(svc._cache["alpha"]["whitelist"]) == 3
+    assert isinstance(svc._cache["alpha"]["whitelist"][0], str)
+
+
+def test_get_connection_config_handles_string_whitelist(tmp_yaml):
+    """``get_connection_config`` 收到 JSON 字符串形式的 whitelist/blacklist 时还原为 list。
+
+    即便 preload_all 缓存里存的是 list,get_connection_config 仍做一次防御性还原,
+    保证返回配置始终是 list 类型,不会污染下游 ``CommandInterceptor``。
+
+    Args:
+        tmp_yaml: 临时 yaml 路径
+
+    Returns:
+        None
+    """
+    import asyncio
+    db = _make_db()
+    # 用合法 Fernet token 作为 password_encrypted
+    from cryptography.fernet import Fernet
+    fernet = Fernet(VALID_FERNET_KEY.encode("ascii"))
+    encrypted_pw = fernet.encrypt(b"plaintext-secret")
+
+    db.fetch.return_value = [
+        {
+            "id": 1,
+            "business_name": "alpha",
+            "ip": "10.0.0.1",
+            "port": 22,
+            "username": "root",
+            "password_encrypted": encrypted_pw,
+            "server_type": "linux",
+            "blacklist": '["rm -rf "]',
+            "whitelist": '["df"]',
+            "created_at": None,
+            "updated_at": None,
+        }
+    ]
+    from app.shared.utils.devops_server_service import DevOpsServerService
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    asyncio.run(svc.preload_all())
+    cfg = svc.get_connection_config("alpha")
+    assert cfg["whitelist"] == ["df"]
+    assert cfg["blacklist"] == ["rm -rf "]
+    # 关键防御验证
+    assert isinstance(cfg["whitelist"], list)
+    assert cfg["whitelist"][0] == "df"

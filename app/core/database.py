@@ -81,6 +81,11 @@ class DatabasePool:
         使 JSONB / JSON 列自动反序列化为 Python 对象（list / dict），
         避免业务层拿到 JSON 字符串导致 Pydantic 校验失败。
 
+        注意：必须显式 ``format='text'``，asyncpg 默认 binary 协议无法被
+        ``json.loads`` 解码。某些 asyncpg 版本即便指定 ``format='text'``
+        也可能仍返回 JSON 字符串，业务层须做防御性还原
+        （见 ``app/shared/utils/devops_server_service.py::_ensure_list``）。
+
         Args:
             conn: asyncpg 连接实例
         """
@@ -89,12 +94,14 @@ class DatabasePool:
             encoder=json.dumps,
             decoder=json.loads,
             schema='pg_catalog',
+            format='text',
         )
         await conn.set_type_codec(
             'json',
             encoder=json.dumps,
             decoder=json.loads,
             schema='pg_catalog',
+            format='text',
         )
 
     @classmethod

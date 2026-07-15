@@ -40,12 +40,13 @@ def test_init_connection_registers_jsonb_and_json():
         def __init__(self):
             self.calls = []
 
-        async def set_type_codec(self, typename, encoder, decoder, schema):
+        async def set_type_codec(self, typename, encoder, decoder, schema, format=None):
             self.calls.append({
                 "typename": typename,
                 "encoder": encoder,
                 "decoder": decoder,
                 "schema": schema,
+                "format": format,
             })
 
     async def _run():
@@ -59,6 +60,10 @@ def test_init_connection_registers_jsonb_and_json():
             assert c["schema"] == "pg_catalog"
             assert callable(c["encoder"])
             assert callable(c["decoder"])
+            # 2026-07-15:必须显式 format='text',asyncpg 默认 binary 无法被 json.loads 解码
+            assert c["format"] == "text", (
+                f"codec {c['typename']} 必须显式 format='text' 以便 json.loads 解码"
+            )
 
     asyncio.run(_run())
 

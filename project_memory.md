@@ -1818,7 +1818,7 @@ system_prompt = (
 
 ### 测试覆盖
 
-- `app/tests/shared/test_devops_server_service.py` —— 22 个用例：Fernet 校验、Singleton、preload、扫描别名/字段/统计 / `servers:` 顶层 dict / 重复拒绝 / 缓存 RETURNING 同步 / 路径 resolver / 默认路径来自 paths。
+- `app/tests/shared/test_devops_server_service.py` —— 31 个用例：Fernet 校验、Singleton、preload、扫描别名/字段/统计 / `servers:` 顶层 dict / 重复拒绝 / 缓存 RETURNING 同步 / 路径 resolver / 默认路径来自 paths / `_ensure_list` 防御性 JSONB 反序列化（9 个用例覆盖 list 透传 / JSON 字符串还原 / dict 包装 / 非法 JSON 兜底 / None 与基本类型兜底 / `preload_all` 与 `get_connection_config` 端到端字符串还原）。
 - `app/tests/shared/tools/skills/devops/test_command_interceptor.py` —— 23 个用例：空命令、精确/正则/前缀、黑名单优先、强白名单（`None` 等价于 `[]`）、白名单精确条目 startswith 放宽、管道/逻辑与或/分号逐段校验、内置安全黑名单（`$()` / 反引号 / 进程替换 / 单 `&`）、引号内分隔符不拆分、`_split_pipeline` 分词器单元测试、`add_pattern`。
 - `app/tests/shared/tools/skills/devops/test_ssh_tools.py` —— 17 个用例：平台派生、整批拒绝、批量拦截不返回 allowed、通用错误不携带凭据、Windows Get-WinEvent、敏感字段不进入 result、`business_name` 必填 + 空值/纯空白验空（4 个用例覆盖三个工具）。
 - `app/tests/core/test_devops_server_lifespan.py` —— 4 个用例：DB 池就绪、空池降级、空 key 跳过、单例 reset。
