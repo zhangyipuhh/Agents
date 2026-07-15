@@ -146,7 +146,34 @@ def test_diagnose_settings_unread_when_exact_env_key_present(reset_devops_creden
     diag = diagnose_credential_key()
     assert diag.ok is False
     assert diag.reason == "settings_unread"
-    # hint 必须提到嵌套 BaseSettings 这个根因
-    assert "嵌套 BaseSettings" in diag.hint or "BaseSettings" in diag.hint
+    # hint 必须提到 env_prefix 修复（2026-07-15 后此分支为防御性诊断）
+    assert "env_prefix" in diag.hint or "DEVOPS_" in diag.hint
     # 必须给出临时绕过方式
     assert "export" in diag.hint or "os.environ" in diag.hint
+
+
+def test_devops_settings_reads_env_via_prefix(monkeypatch):
+    """回归测试（2026-07-15 修复）：DevOpsSettings 声明 env_prefix='DEVOPS_' 后,
+    字段 ``credential_key`` 应能从环境变量 ``DEVOPS_CREDENTIAL_KEY`` 自动读取。
+
+    修复前:字段名 ``credential_key`` 只匹配 env ``CREDENTIAL_KEY``,与 .env 中的
+            ``DEVOPS_CREDENTIAL_KEY`` 不匹配 → settings.devops.credential_key 恒为空。
+    修复后:env_prefix='DEVOPS_' 让字段名 ``credential_key`` 匹配 env
+            ``DEVOPS_CREDENTIAL_KEY``,正常加载。
+
+    Args:
+        monkeypatch: pytest fixture,用于隔离环境变量与 .env 文件加载。
+
+    Raises:
+        AssertionError: 若 DevOpsSettings 未从环境变量读取到值,说明 env_prefix 修复失效。
+    """
+    from app.core.config.settings import DevOpsSettings
+
+    # 隔离:清空可能干扰的 .env 加载路径,仅靠环境变量验证 env_prefix 行为
+    monkeypatch.setenv("DEVOPS_CREDENTIAL_KEY", VALID_FERNET_KEY)
+    # 通过显式 env_file=None 构造,避免本地 .env 干扰;env_prefix 仍应让环境变量命中字段
+    fresh = DevOpsSettings(_env_file=None)
+    assert fresh.credential_key == VALID_FERNET_KEY, (
+        "DevOpsSettings 未从环境变量 DEVOPS_CREDENTIAL_KEY 读取到值,"
+        "env_prefix='DEVOPS_' 修复可能失效"
+    )

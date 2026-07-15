@@ -99,12 +99,12 @@ def diagnose_credential_key() -> CredentialDiagnosis:
                 reason="settings_unread",
                 hint=(
                     f"shell 环境里有 {EXPECTED_ENV_KEY},但 settings.devops"
-                    f".credential_key 为空。这是 pydantic-settings v2 嵌套"
-                    f" BaseSettings 不递归读 .env 的已知行为。临时绕过:"
-                    f"启动前 `export {EXPECTED_ENV_KEY}=<密钥>`(直接读"
-                    f" os.environ);长期修复:见 project_memory.md 'DevOps 系统'"
-                    f" 章节。DevOpsServerService 不会初始化,admin API 将"
-                    f" 返回 500。"
+                    f".credential_key 为空。DevOpsSettings 已声明 env_prefix="
+                    f"'DEVOPS_'(2026-07-15 修复),正常情况下应能自动读取环境"
+                    f"变量;此分支触发说明 settings 单例被显式传入空值覆盖,"
+                    f"或 .env 文件路径/编码异常导致未加载。临时绕过:启动前"
+                    f" `export {EXPECTED_ENV_KEY}=<密钥>`(直接读 os.environ)。"
+                    f"DevOpsServerService 不会初始化,admin API 将返回 500。"
                 ),
             )
         if similar:

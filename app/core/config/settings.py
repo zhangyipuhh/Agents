@@ -408,11 +408,17 @@ class DevOpsSettings(BaseSettings):
         - 为避免导入期崩溃，credential_key 默认值为空字符串，
           Fernet 密钥的严格校验推迟到 DevOpsServerService 实际初始化时进行。
         - 测试场景可通过显式传入 ``DevOpsSettings(credential_key=...)`` 注入合法密钥。
+        - env_prefix="DEVOPS_"：字段 ``credential_key`` 匹配 env ``DEVOPS_CREDENTIAL_KEY``，
+          字段 ``servers_config_path`` 匹配 env ``DEVOPS_SERVERS_CONFIG_PATH``。
+          2026-07-15 修复：此前未声明 env_prefix，导致 pydantic-settings v2 把字段名
+          ``credential_key`` 直接转大写只匹配 ``CREDENTIAL_KEY``，与 .env 中的
+          ``DEVOPS_CREDENTIAL_KEY`` 不匹配；devops_diagnostics 走 ``settings_unread`` 分支。
     """
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
+        env_prefix="DEVOPS_",
         case_sensitive=False,
         extra="ignore",
         protected_namespaces=("settings_",),

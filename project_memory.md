@@ -1752,7 +1752,7 @@ system_prompt = (
 
 - `app/core/config/paths.py::DEVOPS_SERVER_CONFIG_PATH` = `<项目根>/data/devops/servers.yaml`
 - `app/core/config/paths.py::DEVOPS_SERVER_CONFIG_DIR` = `<项目根>/data/devops`
-- `app/core/config/settings.py::DevOpsSettings`：字段 `servers_config_path`（env `DEVOPS_SERVERS_CONFIG_PATH`）、`credential_key`（env `DEVOPS_CREDENTIAL_KEY`，空字符串走「延期到初始化时严格校验」语义，不让 import 崩溃）
+- `app/core/config/settings.py::DevOpsSettings`：字段 `servers_config_path`（env `DEVOPS_SERVERS_CONFIG_PATH`）、`credential_key`（env `DEVOPS_CREDENTIAL_KEY`，空字符串走「延期到初始化时严格校验」语义，不让 import 崩溃）。`model_config` 声明 `env_prefix="DEVOPS_"`（2026-07-15 修复），使字段 `credential_key` 匹配 env `DEVOPS_CREDENTIAL_KEY`、`servers_config_path` 匹配 env `DEVOPS_SERVERS_CONFIG_PATH`
 
 ### 数据库表 `devops_servers`（2026-07-15 新增）
 
@@ -1768,7 +1768,7 @@ system_prompt = (
 - `app/routers/devops_server_admin_router.py`：router 级 `require_admin`；服务未初始化返回 500 + `detail=<lifespan 写入的 hint>`（无 hint 时退回 `"DevOpsServerService not initialized"`）；`GET` 严格只返回 `{id, business_name, server_type, updated_at}`；`POST /scan` 严格只返回 `{scanned, inserted, updated, failed}`；扫描异常时不回显原始 `detail` / 路径 / IP / 密码 / 名单。
 - **不再为 DevOps 工具创建 Agent**——工具通过 ToolRegistryService 扫描 `app/shared/tools/skills/devops/SSHTools.py` 自动发现，admin 界面按元数据展示。
 - **运行时必备配置**：`settings.devops.credential_key` 必须由 `Fernet.generate_key()` 生成（44 字节 base64），非法格式会在 `diagnose_credential_key()` 走 `invalid_fernet` 分支，效果同上。`data/devops/servers.yaml` 由 `.gitignore` 排除（`servers.yaml.example` 是公开模板），缺失时 `scan_and_upsert` 安全返回 0 但列表为空，不报错。
-- **已知限制：pydantic-settings v2 嵌套 BaseSettings 不递归读 .env**：`Settings.devops: DevOpsSettings = Field(default_factory=DevOpsSettings)` 这种嵌套写法，顶层 `.env` 的扁平 key `DEVOPS_CREDENTIAL_KEY` 不会穿透到 `settings.devops.credential_key`（同时其他子 settings 如 `llm.model_name` 因为字段名直接对应环境变量名而能正常加载）。诊断函数会返回 `settings_unread` 并提示临时绕过：`export DEVOPS_CREDENTIAL_KEY=<密钥>`（让 `os.environ` 带上）后启动。长期修复：把顶层 `Settings` 的 `devops` 字段改为显式读取 `os.environ`/`BaseSettings` 的 `env_prefix`，或在子 settings 上声明 `env_prefix="DEVOPS_"` 并加 `env_nested_delimiter`。
+- **pydantic-settings v2 嵌套 BaseSettings 不递归读 .env（2026-07-15 已修复）**：`Settings.devops: DevOpsSettings = Field(default_factory=DevOpsSettings)` 这种嵌套写法，顶层 `.env` 的扁平 key `DEVOPS_CREDENTIAL_KEY` 默认不会穿透到 `settings.devops.credential_key`（其他子 settings 如 `LLMSettings.model_name` 因为字段名直接对应环境变量名而能正常加载；`FeishuSettings.feishu_app_id` / `SandboxSettings.sandbox_docker_mode` 因字段名自带前缀而能正常加载；唯独 `DevOpsSettings.credential_key` 字段名不带 `devops_` 前缀但 env 名带 `DEVOPS_` 前缀，导致不匹配）。**修复方案**：在 `DevOpsSettings.model_config` 声明 `env_prefix="DEVOPS_"`，使字段 `credential_key` 匹配 env `DEVOPS_CREDENTIAL_KEY`。诊断函数 `diagnose_credential_key()` 的 `settings_unread` 分支保留为防御性诊断，hint 文本已更新为「理论上不应触发，可能是 settings 单例被显式传入空值覆盖或 .env 文件路径/编码异常」。回归测试：`app/tests/core/test_devops_diagnostics.py::test_devops_settings_reads_env_via_prefix`。
 
 ### 强白名单契约（2026-07-15 落地）
 
