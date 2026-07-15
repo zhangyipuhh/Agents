@@ -298,3 +298,196 @@ def test_execute_schedule_skips_when_previous_run_is_running():
     skipped_runs = [run for run in db.runs.values() if run["status"] == "skipped"]
     assert skipped_runs
     assert "previous run still running" in skipped_runs[0]["error_message"]
+
+
+# ===== 任务运行日志落盘测试（2026-07-15 新增） =====
+
+
+def test_run_logger_name_format():
+    """测试 _run_logger_name 返回形如 task.run.{id} 的稳定名称。"""
+    from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+
+    assert TaskSchedulerService._run_logger_name(1) == "task.run.1"
+    assert TaskSchedulerService._run_logger_name(42) == "task.run.42"
+
+
+def test_resolve_task_log_path_uses_run_id_and_timestamp(monkeypatch, tmp_path):
+    """测试 resolve_task_log_path 生成包含 run_id 与时间戳的路径。"""
+    from datetime import datetime
+
+    from app.core.config import paths as paths_module
+
+    # 把 TASK_LOG_DIR 切到 tmp，避免污染真实 data/logs/Task
+    monkeypatch.setattr(paths_module, "TASK_LOG_DIR", str(tmp_path))
+
+    target = paths_module.resolve_task_log_path(
+        "测试巡检",
+        run_id=88,
+        when=datetime(2026, 7, 15, 10, 30, 0),
+    )
+    assert target.parent.parent == tmp_path
+    assert target.name == "20260715_103000_88.log"
+
+
+def test_slugify_task_name_sanitizes_path_traversal():
+    """测试 slugify_task_name 拒绝路径分隔符与控制字符。"""
+    from app.core.config.paths import slugify_task_name
+
+    assert "/" not in slugify_task_name("../../etc/passwd")
+    assert "\\" not in slugify_task_name("..\\windows\\system32")
+    assert slugify_task_name("") == "task"
+    assert slugify_task_name("///") == "task"
+    assert slugify_task_name("测试/巡检:A B") == "测试_巡检_A_B"
+
+
+def test_install_and_uninstall_run_logger_creates_file(monkeypatch, tmp_path):
+    """测试 _install_run_logger 创建 Markdown 文件，_uninstall_run_logger 清空 handlers。"""
+    import logging
+
+    from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+
+    from app.core.config import paths as paths_module
+
+    monkeypatch.setattr(paths_module, "TASK_LOG_DIR", str(tmp_path))
+
+    service = TaskSchedulerService(db=MagicMock(), agent_config_service=MagicMock(), scheduler=FakeScheduler())
+    schedule = {
+        "id": 1,
+        "name": "测试巡检",
+        "agent_name": "map_agent",
+    }
+    run_logger = service._install_run_logger(
+        run_id=101,
+        schedule=schedule,
+        session_id="task-1-abc",
+        started_at=datetime(2026, 7, 15, 11, 0, 0),
+        trigger_type="manual",
+    )
+
+    assert run_logger.name == "task.run.101"
+    assert run_logger.propagate is False
+    assert run_logger.handlers, "FileHandler 应该已经被挂上"
+
+    run_logger.info("业务日志样例")
+    service._uninstall_run_logger(101, run_logger)
+
+    assert run_logger.handlers == [], "uninstall 后必须清空所有 handler，防止泄漏"
+
+    log_path = tmp_path / "测试巡检" / "20260715_110000_101.log"
+    assert log_path.exists()
+    content = log_path.read_text(encoding="utf-8")
+    assert "# 定时任务运行记录" in content
+    assert "schedule_id: 1" in content
+    assert "run_id: 101" in content
+    assert "trigger_type: manual" in content
+    assert "业务日志样例" in content
+
+
+def test_execute_schedule_writes_run_log_on_success(monkeypatch, tmp_path):
+    """测试 execute_schedule 成功路径会写一份 run 级 Markdown 日志。"""
+    from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+
+    from app.core.config import paths as paths_module
+
+    monkeypatch.setattr(paths_module, "TASK_LOG_DIR", str(tmp_path))
+
+    class FakeAgent:
+        async def invoke(self, input_state, context, config):
+            return {"messages": [SimpleNamespace(content="执行完成")]}
+
+    fake_agent_config_service = MagicMock()
+    fake_agent_config_service.get_agent_config = AsyncMock(return_value=SimpleNamespace(display_name="地图智能体"))
+    fake_agent_config_service.build_agent_instance = AsyncMock(
+        return_value=(FakeAgent(), SimpleNamespace(session_id="task-1"), {"messages": []})
+    )
+
+    db = FakeDb()
+    service = TaskSchedulerService(db=db, agent_config_service=fake_agent_config_service, scheduler=FakeScheduler())
+    row = asyncio.run(service.create_schedule(make_payload(name="测试巡检"), created_by_user_id=1))
+
+    monkeypatch.setattr("app.shared.utils.auth.session_db.SessionDB.add_session", AsyncMock())
+    monkeypatch.setattr("app.shared.utils.auth.session_db.SessionDB.update_session_agent", AsyncMock())
+
+    asyncio.run(service.execute_schedule(row["id"], trigger_type="manual"))
+
+    success_runs = [r for r in db.runs.values() if r["status"] == "success"]
+    assert success_runs
+
+    log_files = list((tmp_path / "测试巡检").glob("*.log"))
+    assert len(log_files) == 1, f"应该恰好生成 1 个 log 文件，实际: {log_files}"
+    content = log_files[0].read_text(encoding="utf-8")
+    assert "任务执行成功" in content
+    assert f"run_id: {success_runs[0]['id']}" in content
+
+
+def test_execute_schedule_writes_run_log_on_failure(monkeypatch, tmp_path):
+    """测试 execute_schedule 失败路径也会写一份 run 级日志（包含异常）。"""
+    from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+
+    from app.core.config import paths as paths_module
+
+    monkeypatch.setattr(paths_module, "TASK_LOG_DIR", str(tmp_path))
+
+    fake_agent_config_service = MagicMock()
+    fake_agent_config_service.get_agent_config = AsyncMock(return_value=SimpleNamespace(display_name="地图智能体"))
+    fake_agent_config_service.build_agent_instance = AsyncMock(side_effect=RuntimeError("boom"))
+
+    db = FakeDb()
+    service = TaskSchedulerService(db=db, agent_config_service=fake_agent_config_service, scheduler=FakeScheduler())
+    row = asyncio.run(service.create_schedule(make_payload(name="测试巡检"), created_by_user_id=1))
+
+    monkeypatch.setattr("app.shared.utils.auth.session_db.SessionDB.add_session", AsyncMock())
+    monkeypatch.setattr("app.shared.utils.auth.session_db.SessionDB.update_session_agent", AsyncMock())
+
+    asyncio.run(service.execute_schedule(row["id"], trigger_type="manual"))
+
+    failed_runs = [r for r in db.runs.values() if r["status"] == "failed"]
+    assert failed_runs
+
+    log_files = list((tmp_path / "测试巡检").glob("*.log"))
+    assert len(log_files) == 1, f"失败时也应该写 1 个 log 文件，实际: {log_files}"
+    content = log_files[0].read_text(encoding="utf-8")
+    assert "任务执行失败" in content
+    assert "boom" in content
+
+    run_logger_name = f"task.run.{failed_runs[0]['id']}"
+    import logging
+    assert logging.getLogger(run_logger_name).handlers == []
+
+
+def test_execute_schedule_run_logger_isolated_between_runs(monkeypatch, tmp_path):
+    """测试同一个 run_id 在两次 execute_schedule 调用间互不污染 handler。"""
+    from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+
+    from app.core.config import paths as paths_module
+
+    monkeypatch.setattr(paths_module, "TASK_LOG_DIR", str(tmp_path))
+
+    class FakeAgent:
+        async def invoke(self, input_state, context, config):
+            return {"messages": [SimpleNamespace(content="完成")]}
+
+    fake_agent_config_service = MagicMock()
+    fake_agent_config_service.get_agent_config = AsyncMock(return_value=SimpleNamespace(display_name="地图智能体"))
+    fake_agent_config_service.build_agent_instance = AsyncMock(
+        return_value=(FakeAgent(), SimpleNamespace(session_id="task-1"), {"messages": []})
+    )
+
+    db = FakeDb()
+    service = TaskSchedulerService(db=db, agent_config_service=fake_agent_config_service, scheduler=FakeScheduler())
+    row = asyncio.run(service.create_schedule(make_payload(name="测试巡检"), created_by_user_id=1))
+
+    monkeypatch.setattr("app.shared.utils.auth.session_db.SessionDB.add_session", AsyncMock())
+    monkeypatch.setattr("app.shared.utils.auth.session_db.SessionDB.update_session_agent", AsyncMock())
+
+    asyncio.run(service.execute_schedule(row["id"], trigger_type="manual"))
+    import logging
+    run_logger = logging.getLogger("task.run.1")
+    assert run_logger.handlers == [], "第一次 run 后 handler 必须清空"
+
+    asyncio.run(service.execute_schedule(row["id"], trigger_type="manual"))
+    run_logger_2 = logging.getLogger("task.run.2")
+    assert run_logger_2.handlers == [], "第二次 run 后 handler 必须清空"
+
+    log_files = list((tmp_path / "测试巡检").glob("*.log"))
+    assert len(log_files) == 2, f"两次 run 应该生成 2 个文件，实际: {log_files}"

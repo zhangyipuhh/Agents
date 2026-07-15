@@ -20,6 +20,7 @@ from apscheduler.triggers.cron import CronTrigger
 from zoneinfo import ZoneInfo
 
 from app.core.agent.AgentConfig import ExecuteConfig
+from app.core.config.paths import resolve_task_log_path
 from app.core.config.settings import settings
 from app.shared.utils.auth.session_db import SessionDB
 
@@ -523,6 +524,7 @@ class TaskSchedulerService:
                 started_at=started_at,
             )
 
+            run_logger = self._install_run_logger(run_id, schedule, session_id, started_at, trigger_type)
             try:
                 user = await self._get_created_by_user(schedule["created_by_user_id"])
                 agent_preview = await self._agent_config_service.get_agent_config(
@@ -540,6 +542,7 @@ class TaskSchedulerService:
                     message=schedule["prompt"],
                     context_overrides=schedule.get("context_overrides") or {},
                 )
+                run_logger.info("Agent 实例构建完成，开始 invoke")
                 result = await agent.invoke(
                     input_state=input_state,
                     context=context_instance,
@@ -560,8 +563,13 @@ class TaskSchedulerService:
                     output_text=output_text,
                 )
                 await self._mark_schedule_run_completed(schedule_id, finished_at)
+                run_logger.info("任务执行成功，耗时 %s ms", self._duration_ms(started_at, finished_at))
             except Exception as exc:
                 logger.exception("Task schedule %s execution failed", schedule_id)
+                try:
+                    run_logger.exception("任务执行失败: %s", exc)
+                except Exception:
+                    pass
                 finished_at = datetime.now()
                 await self._update_run(
                     run_id,
@@ -572,6 +580,8 @@ class TaskSchedulerService:
                     duration_ms=self._duration_ms(started_at, finished_at),
                     error_message=str(exc),
                 )
+            finally:
+                self._uninstall_run_logger(run_id, run_logger)
 
     def _validate_payload(self, payload: Dict[str, Any], partial: bool) -> None:
         """校验任务 payload。
@@ -783,6 +793,117 @@ class TaskSchedulerService:
             finished_at,
             next_run_at,
         )
+
+    @staticmethod
+    def _run_logger_name(run_id: int) -> str:
+        """生成 run 级专用 logger 名称。
+
+        参数:
+            run_id: 执行记录 ID。
+
+        返回:
+            str: logger 名称，形如 ``task.run.42``。
+        """
+        return f"task.run.{int(run_id)}"
+
+    def _install_run_logger(
+        self,
+        run_id: int,
+        schedule: Dict[str, Any],
+        session_id: str,
+        started_at: datetime,
+        trigger_type: str,
+    ) -> logging.Logger:
+        """为本次 run 安装独立文件日志 handler（Markdown 格式）。
+
+        步骤：
+            1. 计算日志文件路径 ``data/logs/Task/{slug}/{YYYYMMDD_HHMMSS}_{run_id}.log``；
+            2. 父目录不存在时创建；
+            3. 写入 Markdown 文件头（标题 + 元数据）；
+            4. 拿到独立 logger ``task.run.{run_id}`` 并挂上 ``FileHandler``；
+            5. 设置 ``propagate=False`` 避免污染根 logger。
+
+        即使文件创建或 handler 安装失败，也保证返回一个**可用**的 logger（无 handler），
+        不会让 ``execute_schedule`` 因日志异常而中断业务执行。
+
+        参数:
+            run_id: 执行记录 ID。
+            schedule: 定时任务记录。
+            session_id: 本次会话 ID。
+            started_at: 开始时间。
+
+        返回:
+            logging.Logger: 本次 run 专用 logger。
+        """
+        run_logger = logging.getLogger(self._run_logger_name(run_id))
+        run_logger.setLevel(logging.DEBUG)
+        run_logger.propagate = False
+
+        try:
+            log_path = resolve_task_log_path(
+                schedule.get("name") or f"schedule-{schedule.get('id')}",
+                run_id,
+                started_at,
+            )
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+
+            handler = logging.FileHandler(str(log_path), mode="w", encoding="utf-8")
+            handler.setLevel(logging.DEBUG)
+            handler.setFormatter(
+                logging.Formatter(
+                    fmt="### %(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d\n%(message)s\n",
+                    datefmt="%Y-%m-%d %H:%M:%S",
+                )
+            )
+            run_logger.addHandler(handler)
+
+            run_logger.info(
+                "# 定时任务运行记录\n\n"
+                "## 元数据\n\n"
+                "- schedule_id: %s\n"
+                "- run_id: %s\n"
+                "- session_id: %s\n"
+                "- agent_name: %s\n"
+                "- trigger_type: %s\n"
+                "- started_at: %s\n"
+                "- log_file: %s\n",
+                schedule.get("id"),
+                run_id,
+                session_id,
+                schedule.get("agent_name"),
+                trigger_type,
+                started_at.strftime("%Y-%m-%d %H:%M:%S"),
+                str(log_path),
+            )
+        except Exception as exc:
+            # 日志落盘失败不能阻断业务执行：log 到模块 logger 并继续
+            logger.warning("Failed to install run logger for run_id=%s: %s", run_id, exc)
+
+        return run_logger
+
+    def _uninstall_run_logger(self, run_id: int, run_logger: logging.Logger) -> None:
+        """卸载并关闭 run 专用 logger 的所有 handler。
+
+        必须在 ``finally`` 中调用，否则 handler 会泄漏到下一个 run。
+        该方法本身容错：任何异常都不会向上抛出。
+
+        参数:
+            run_id: 执行记录 ID。
+            run_logger: :meth:`_install_run_logger` 返回的 logger。
+        """
+        try:
+            for handler in list(run_logger.handlers):
+                try:
+                    handler.flush()
+                except Exception:
+                    pass
+                try:
+                    handler.close()
+                except Exception:
+                    pass
+                run_logger.removeHandler(handler)
+        except Exception as exc:
+            logger.warning("Failed to uninstall run logger for run_id=%s: %s", run_id, exc)
 
     @staticmethod
     def _extract_output_text(result: Any) -> str:

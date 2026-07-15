@@ -40,7 +40,17 @@ PROJECT_ROOT = os.path.join(_PROJECT_ROOT, "data", "project")
 #   * 完整结构：<项目根>/data/tmp/project/{project_uuid}/
 PROJECT_TMP_ROOT = os.path.join(_PROJECT_ROOT, "data", "tmp", "project")
 
+# 定时任务运行日志根目录（2026-07-15 新增）
+#   * 完整结构：<项目根>/data/logs/Task/{任务名 slug}/{YYYYMMDD_HHMMSS}_{run_id}.log
+#   * 文件扩展名仍为 .log，但内容为 Markdown
+TASK_LOG_DIR = os.path.join(_PROJECT_ROOT, "data", "logs", "Task")
+
 from pathlib import Path
+import re as _re
+
+
+# 用于把任务名安全化到目录名的正则：非字母数字下划线连字符全部替换为 _
+_TASK_NAME_SLUG_RE = _re.compile(r"[^\w\-]+", flags=_re.UNICODE)
 
 
 def resolve_project_dir(relative_path: str) -> Path:
@@ -79,6 +89,58 @@ def resolve_project_tmp_dir(relative_path: str) -> Path:
         raise ValueError("relative_path 不能为空字符串")
     project_rel = Path(relative_path).relative_to("data/project")
     return Path(_PROJECT_ROOT) / "data" / "tmp" / "project" / project_rel
+
+
+def slugify_task_name(name: str) -> str:
+    """
+    把定时任务名安全化到文件系统目录名片段。
+
+    规则：
+      - 非字母数字、下划线、连字符的字符替换为 ``_``；
+      - 连续下划线折叠为单个；
+      - 去掉首尾下划线；
+      - 空字符串或纯非法字符时返回 ``"task"``，避免生成隐藏目录或写穿路径。
+
+    :param name: 原始任务名。
+    :type name: str
+    :return: 安全化后的目录名片段。
+    :rtype: str
+    """
+    if not name:
+        return "task"
+    cleaned = _TASK_NAME_SLUG_RE.sub("_", name.strip())
+    cleaned = _re.sub(r"_+", "_", cleaned).strip("_")
+    return cleaned or "task"
+
+
+def resolve_task_log_path(
+    name: str,
+    run_id: int,
+    when: "datetime",
+) -> Path:
+    """
+    生成定时任务运行日志文件路径（不创建文件，仅返回路径对象）。
+
+    完整结构：``<项目根>/data/logs/Task/{slug}/{YYYYMMDD_HHMMSS}_{run_id}.log``。
+
+    :param name: 任务名，会经过 :func:`slugify_task_name` 安全化。
+    :type name: str
+    :param run_id: 执行记录 ID（来自 ``agent_task_runs.id``）。
+    :type run_id: int
+    :param when: 执行开始时间，用于文件名时间戳。
+    :type when: datetime
+    :return: 日志文件的绝对路径（父目录可能尚未创建，调用方负责 ``mkdir(parents=True, exist_ok=True)``）。
+    :rtype: Path
+    :raises ValueError: 当 ``run_id`` 非正整数或 ``when`` 为 ``None`` 时抛出。
+    """
+    if run_id is None or int(run_id) <= 0:
+        raise ValueError("run_id must be a positive integer")
+    if when is None:
+        raise ValueError("when must be a datetime instance")
+    slug = slugify_task_name(name)
+    timestamp = when.strftime("%Y%m%d_%H%M%S")
+    file_name = f"{timestamp}_{int(run_id)}.log"
+    return Path(TASK_LOG_DIR) / slug / file_name
 
 
 def resolve_tmp_mirror_path(original_path: str | Path) -> Path | None:
