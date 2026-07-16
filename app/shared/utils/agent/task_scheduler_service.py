@@ -786,7 +786,27 @@ class TaskSchedulerService:
 
         返回:
             Dict[str, Any]: 执行记录。
+
+        异常:
+            asyncpg.NotNullViolationError: 底层数据库写入失败时抛出（脚本任务占位
+                写入逻辑保证 agent_name / prompt_snapshot 始终有值，正常情况下不会
+                触发该异常；如出现说明占位逻辑被绕过）。
         """
+        # 脚本任务的 agent_name / prompt 在 agent_task_schedules 上为 NULL，但
+        # agent_task_runs.agent_name / prompt_snapshot 为 NOT NULL 列，需要使用
+        # 占位字符串写入以满足约束，避免 asyncpg.NotNullViolationError。
+        target_type = schedule.get("target_type") or "agent"
+        script_name = schedule.get("script_name")
+        if target_type == "script":
+            effective_agent_name = (
+                f"script:{script_name}" if script_name else "script:unknown"
+            )
+            effective_prompt = (
+                f"[script] {script_name}" if script_name else "[script] unknown"
+            )
+        else:
+            effective_agent_name = schedule.get("agent_name")
+            effective_prompt = schedule.get("prompt") or ""
         row = await self._db.fetchrow(
             """
             INSERT INTO agent_task_runs (
@@ -797,13 +817,13 @@ class TaskSchedulerService:
             """,
             schedule["id"],
             None,
-            schedule.get("agent_name"),
-            schedule.get("prompt") or "",
+            effective_agent_name,
+            effective_prompt,
             status,
             trigger_type,
             scheduled_at,
-            schedule.get("target_type") or "agent",
-            schedule.get("script_name"),
+            target_type,
+            script_name,
         )
         return self._decode_run_row(row)
 

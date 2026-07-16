@@ -9,6 +9,7 @@
 
 from typing import Any, Dict, List, Literal, Optional
 
+from asyncpg import PostgresError as _AsyncPGPostgresError
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, model_validator
 
@@ -209,6 +210,12 @@ def _handle_service_error(exc: Exception) -> None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     if isinstance(exc, TaskScheduleValidationError):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    # 数据库错误兜底：避免错误信息被中间件吞掉只显示 401/500 而无业务 detail。
+    if isinstance(exc, _AsyncPGPostgresError):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"database error: {type(exc).__name__}: {exc}",
+        )
     raise exc
 
 
