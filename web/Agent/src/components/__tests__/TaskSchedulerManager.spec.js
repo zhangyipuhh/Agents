@@ -158,17 +158,33 @@ describe('TaskSchedulerManager 组件', () => {
     await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
     await flushPromises()
 
+    // 任务名称（第一个 input）
     const inputs = wrapper.findAll('input')
     await inputs[0].setValue('周报任务')
-    await inputs[1].setValue('0 10 * * 1')
-    await wrapper.find('select').setValue('map_agent')
+    // 执行频率=每周（SCHEDULE_TYPES[1] = weekly）
+    await wrapper.find('[data-testid="schedule-type"]').findAll('option')[1].setSelected()
+    // 星期几=周一（WEEKDAYS[0] = 周一, value=1）
+    await wrapper.find('[data-testid="schedule-weekday"]').findAll('option')[0].setSelected()
+    // 时=10（HOURS[10] = 10）
+    await wrapper.find('[data-testid="schedule-hour"]').findAll('option')[10].setSelected()
+    // 分=0（MINUTES[0] = 0）
+    await wrapper.find('[data-testid="schedule-minute"]').findAll('option')[0].setSelected()
+    // 目标智能体
+    await wrapper
+      .find('[data-testid="schedule-agent"]')
+      .findAll('option')
+      .find((o) => o.text() === '地图智能体（map_agent）')
+      .setSelected()
     await wrapper.find('textarea').setValue('生成周报')
     await wrapper.find('form').trigger('submit.prevent')
     await flushPromises()
 
     const postCall = global.fetch.mock.calls.find(([url, opts]) => url === '/api/admin/task-schedules' && opts.method === 'POST')
     expect(postCall).toBeTruthy()
-    expect(JSON.parse(postCall[1].body).name).toBe('周报任务')
+    const body = JSON.parse(postCall[1].body)
+    expect(body.name).toBe('周报任务')
+    // 每周一 10:00 → '0 10 * * 1'
+    expect(body.cron_expression).toBe('0 10 * * 1')
   })
 
   it('test_toggle_task_calls_enabled_api 启停任务调用 enabled API', async () => {
@@ -637,5 +653,247 @@ describe('TaskSchedulerManager 组件', () => {
       ([url, opts]) => url === '/api/admin/devops-servers' && (opts?.method || 'GET') === 'GET'
     ).length
     expect(secondCount).toBe(firstCount)
+  })
+
+  // ===== 预设调度 UI 测试 =====
+
+  it('test_layout_agent_select_appears_before_schedule_type 目标智能体 select 在执行频率 select 之前', async () => {
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+
+    const agentSelect = wrapper.find('[data-testid="schedule-agent"]')
+    const typeSelect = wrapper.find('[data-testid="schedule-type"]')
+
+    expect(agentSelect.exists()).toBe(true)
+    expect(typeSelect.exists()).toBe(true)
+    expect(
+      agentSelect.element.compareDocumentPosition(typeSelect.element) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+  })
+
+  it('test_default_schedule_config_is_daily_9am 新增任务时默认每天 09:00', async () => {
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="schedule-type"]').element.value).toBe('daily')
+    expect(wrapper.find('[data-testid="schedule-hour"]').element.value).toBe('9')
+    expect(wrapper.find('[data-testid="schedule-minute"]').element.value).toBe('0')
+  })
+
+  it('test_weekly_mode_generates_correct_cron 每周三 14:30 生成 30 14 * * 3', async () => {
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
+    await flushPromises()
+
+    // schedule-type=weekly（SCHEDULE_TYPES[1]）
+    await wrapper.find('[data-testid="schedule-type"]').findAll('option')[1].setSelected()
+    // schedule-weekday=3（WEEKDAYS[2]=周三, value=3）
+    await wrapper.find('[data-testid="schedule-weekday"]').findAll('option')[2].setSelected()
+    // schedule-hour=14（HOURS[14]）
+    await wrapper.find('[data-testid="schedule-hour"]').findAll('option')[14].setSelected()
+    // schedule-minute=30（MINUTES[30]）
+    await wrapper.find('[data-testid="schedule-minute"]').findAll('option')[30].setSelected()
+
+    const inputs = wrapper.findAll('input')
+    await inputs[0].setValue('周任务')
+    await wrapper
+      .find('[data-testid="schedule-agent"]')
+      .findAll('option')
+      .find((o) => o.text() === '地图智能体（map_agent）')
+      .setSelected()
+    await wrapper.find('textarea').setValue('周报')
+    await wrapper.find('form').trigger('submit.prevent')
+    await flushPromises()
+
+    const postCall = global.fetch.mock.calls.find(([url, opts]) => url === '/api/admin/task-schedules' && opts.method === 'POST')
+    expect(JSON.parse(postCall[1].body).cron_expression).toBe('30 14 * * 3')
+  })
+
+  it('test_monthly_mode_generates_correct_cron 每月 15 日 08:00 生成 0 8 15 * *', async () => {
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
+    await flushPromises()
+
+    // schedule-type=monthly（SCHEDULE_TYPES[2]）
+    await wrapper.find('[data-testid="schedule-type"]').findAll('option')[2].setSelected()
+    // schedule-day=15（MONTH_DAYS[14]=15）
+    await wrapper.find('[data-testid="schedule-day"]').findAll('option')[14].setSelected()
+    // schedule-hour=8（HOURS[8]）
+    await wrapper.find('[data-testid="schedule-hour"]').findAll('option')[8].setSelected()
+    // schedule-minute=0（MINUTES[0]）
+    await wrapper.find('[data-testid="schedule-minute"]').findAll('option')[0].setSelected()
+
+    const inputs = wrapper.findAll('input')
+    await inputs[0].setValue('月任务')
+    await wrapper
+      .find('[data-testid="schedule-agent"]')
+      .findAll('option')
+      .find((o) => o.text() === '地图智能体（map_agent）')
+      .setSelected()
+    await wrapper.find('textarea').setValue('月报')
+    await wrapper.find('form').trigger('submit.prevent')
+    await flushPromises()
+
+    const postCall = global.fetch.mock.calls.find(([url, opts]) => url === '/api/admin/task-schedules' && opts.method === 'POST')
+    expect(JSON.parse(postCall[1].body).cron_expression).toBe('0 8 15 * *')
+  })
+
+  it('test_yearly_mode_generates_correct_cron 每年 3 月 1 日 09:00 生成 0 9 1 3 *', async () => {
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
+    await flushPromises()
+
+    // schedule-type=yearly（SCHEDULE_TYPES[3]）
+    await wrapper.find('[data-testid="schedule-type"]').findAll('option')[3].setSelected()
+    // schedule-month=3（MONTHS[2]=3）
+    await wrapper.find('[data-testid="schedule-month"]').findAll('option')[2].setSelected()
+    // schedule-day=1（MONTH_DAYS[0]=1）
+    await wrapper.find('[data-testid="schedule-day"]').findAll('option')[0].setSelected()
+    // schedule-hour=9（HOURS[9]）
+    await wrapper.find('[data-testid="schedule-hour"]').findAll('option')[9].setSelected()
+    // schedule-minute=0（MINUTES[0]）
+    await wrapper.find('[data-testid="schedule-minute"]').findAll('option')[0].setSelected()
+
+    const inputs = wrapper.findAll('input')
+    await inputs[0].setValue('年任务')
+    await wrapper
+      .find('[data-testid="schedule-agent"]')
+      .findAll('option')
+      .find((o) => o.text() === '地图智能体（map_agent）')
+      .setSelected()
+    await wrapper.find('textarea').setValue('年报')
+    await wrapper.find('form').trigger('submit.prevent')
+    await flushPromises()
+
+    const postCall = global.fetch.mock.calls.find(([url, opts]) => url === '/api/admin/task-schedules' && opts.method === 'POST')
+    expect(JSON.parse(postCall[1].body).cron_expression).toBe('0 9 1 3 *')
+  })
+
+  it('test_interval_minutes_mode_generates_correct_cron 每隔 5 分钟生成 */5 * * * *', async () => {
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
+    await flushPromises()
+
+    // schedule-type = interval_minutes（SCHEDULE_TYPES[4]）
+    await wrapper.find('[data-testid="schedule-type"]').findAll('option')[4].setSelected()
+    await wrapper.find('[data-testid="schedule-interval"]').setValue('5')
+
+    await wrapper.findAll('input')[0].setValue('分钟级巡检')
+    await wrapper
+      .find('[data-testid="schedule-agent"]')
+      .findAll('option')
+      .find((o) => o.text() === '地图智能体（map_agent）')
+      .setSelected()
+    await wrapper.find('textarea').setValue('每分钟检查')
+    await wrapper.find('form').trigger('submit.prevent')
+    await flushPromises()
+
+    const postCall = global.fetch.mock.calls.find(
+      ([url, opts]) => url === '/api/admin/task-schedules' && opts.method === 'POST'
+    )
+    expect(JSON.parse(postCall[1].body).cron_expression).toBe('*/5 * * * *')
+  })
+
+  it('test_interval_hours_mode_generates_correct_cron 每隔 3 小时生成 0 */3 * * *', async () => {
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
+    await flushPromises()
+
+    // schedule-type = interval_hours（SCHEDULE_TYPES[5]）
+    await wrapper.find('[data-testid="schedule-type"]').findAll('option')[5].setSelected()
+    await wrapper.find('[data-testid="schedule-interval"]').setValue('3')
+
+    await wrapper.findAll('input')[0].setValue('小时级巡检')
+    await wrapper
+      .find('[data-testid="schedule-agent"]')
+      .findAll('option')
+      .find((o) => o.text() === '地图智能体（map_agent）')
+      .setSelected()
+    await wrapper.find('textarea').setValue('每几小时检查')
+    await wrapper.find('form').trigger('submit.prevent')
+    await flushPromises()
+
+    const postCall = global.fetch.mock.calls.find(
+      ([url, opts]) => url === '/api/admin/task-schedules' && opts.method === 'POST'
+    )
+    expect(JSON.parse(postCall[1].body).cron_expression).toBe('0 */3 * * *')
+  })
+
+  it('test_edit_existing_task_fills_schedule_config 编辑 daily 任务时 UI 回显每天 09:00', async () => {
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+
+    // mockSchedules[0] cron_expression='0 9 * * *'，默认选中
+    expect(wrapper.find('[data-testid="schedule-type"]').element.value).toBe('daily')
+    expect(wrapper.find('[data-testid="schedule-hour"]').element.value).toBe('9')
+    expect(wrapper.find('[data-testid="schedule-minute"]').element.value).toBe('0')
+  })
+
+  it('test_edit_weekly_task_fills_weekday 编辑 weekly 任务时 UI 回显每周三 14:30', async () => {
+    // 用 weekly cron 替换 mockSchedules 第一条
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const method = (opts.method || 'GET').toUpperCase()
+      const u = typeof url === 'string' ? url : url.url
+      if (u === '/api/admin/task-schedules' && method === 'GET') {
+        return jsonResponse([{ ...mockSchedules[0], cron_expression: '30 14 * * 3' }])
+      }
+      if (u === '/api/admin/agents' && method === 'GET') return jsonResponse(mockAgents)
+      if (u.includes('/api/admin/task-schedules/1/runs')) return jsonResponse(mockRuns)
+      return jsonResponse({})
+    })
+
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="schedule-type"]').element.value).toBe('weekly')
+    expect(wrapper.find('[data-testid="schedule-weekday"]').element.value).toBe('3')
+    expect(wrapper.find('[data-testid="schedule-hour"]').element.value).toBe('14')
+    expect(wrapper.find('[data-testid="schedule-minute"]').element.value).toBe('30')
+  })
+
+  it('test_edit_interval_minutes_task_fills_interval 编辑 */20 * * * * 回显每隔 20 分钟', async () => {
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const method = (opts.method || 'GET').toUpperCase()
+      const u = typeof url === 'string' ? url : url.url
+      if (u === '/api/admin/task-schedules' && method === 'GET') {
+        return jsonResponse([{ ...mockSchedules[0], cron_expression: '*/20 * * * *' }])
+      }
+      if (u === '/api/admin/agents' && method === 'GET') return jsonResponse(mockAgents)
+      if (u.includes('/api/admin/task-schedules/1/runs')) return jsonResponse(mockRuns)
+      return jsonResponse({})
+    })
+
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="schedule-type"]').element.value).toBe('interval_minutes')
+    expect(wrapper.find('[data-testid="schedule-interval"]').element.value).toBe('20')
+  })
+
+  it('test_unparseable_cron_falls_back_to_daily_9am 编辑含逗号的 cron 时 UI 回退为每天 09:00', async () => {
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const method = (opts.method || 'GET').toUpperCase()
+      const u = typeof url === 'string' ? url : url.url
+      if (u === '/api/admin/task-schedules' && method === 'GET') {
+        return jsonResponse([{ ...mockSchedules[0], cron_expression: '0 9,10 * * *' }])
+      }
+      if (u === '/api/admin/agents' && method === 'GET') return jsonResponse(mockAgents)
+      if (u.includes('/api/admin/task-schedules/1/runs')) return jsonResponse(mockRuns)
+      return jsonResponse({})
+    })
+
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="schedule-type"]').element.value).toBe('daily')
+    expect(wrapper.find('[data-testid="schedule-hour"]').element.value).toBe('9')
+    expect(wrapper.find('[data-testid="schedule-minute"]').element.value).toBe('0')
   })
 })

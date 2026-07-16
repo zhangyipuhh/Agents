@@ -66,12 +66,138 @@ const form = reactive({
   description: '',
   agent_name: '',
   prompt: '',
-  cron_expression: '0 9 * * *',
   timezone: 'Asia/Shanghai',
   enabled: true,
   context_overrides: {},
   max_concurrent_runs: 1,
 })
+
+// 预设调度模式类型（每天 / 每周 / 每月 / 每年 / 每隔 N 分钟 / 每隔 N 小时）
+const SCHEDULE_TYPES = [
+  { value: 'daily', label: '每天' },
+  { value: 'weekly', label: '每周' },
+  { value: 'monthly', label: '每月' },
+  { value: 'yearly', label: '每年' },
+  { value: 'interval_minutes', label: '每隔 N 分钟' },
+  { value: 'interval_hours', label: '每隔 N 小时' },
+]
+
+// 星期映射（cron 0-6，0=周日；APScheduler from_crontab 兼容 0-6）
+const WEEKDAYS = [
+  { value: 1, label: '周一' },
+  { value: 2, label: '周二' },
+  { value: 3, label: '周三' },
+  { value: 4, label: '周四' },
+  { value: 5, label: '周五' },
+  { value: 6, label: '周六' },
+  { value: 0, label: '周日' },
+]
+
+// 1-31 日选项
+const MONTH_DAYS = Array.from({ length: 31 }, (_, i) => i + 1)
+// 1-12 月选项
+const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1)
+// 0-23 时选项
+const HOURS = Array.from({ length: 24 }, (_, i) => i)
+// 0-59 分选项
+const MINUTES = Array.from({ length: 60 }, (_, i) => i)
+
+// 友好调度配置（提交时由 buildCronExpression 转为 cron_expression）
+// 字段统一用字符串存储，避免 v-model.number 在 <select> 上的兼容问题
+const scheduleConfig = reactive({
+  type: 'daily',            // daily | weekly | monthly | yearly | interval_minutes | interval_hours
+  weekday: '1',             // 0-6（仅 weekly 用）
+  month: '1',               // 1-12（仅 yearly 用）
+  day: '1',                 // 1-31（monthly / yearly 用）
+  hour: '9',                // 0-23
+  minute: '0',              // 0-59
+  interval: '15',           // 仅 interval_minutes / interval_hours 用（分钟 1-59，小时 1-23）
+})
+
+/**
+ * 把结构化配置转为 5 段 cron 表达式。
+ * @param {Object} cfg - scheduleConfig
+ * @returns {string} cron 表达式，如 "0 9 * * *"
+ */
+function buildCronExpression(cfg) {
+  const m = parseInt(cfg.minute, 10)
+  const h = parseInt(cfg.hour, 10)
+  const minute = Number.isNaN(m) ? 0 : m
+  const hour = Number.isNaN(h) ? 0 : h
+  switch (cfg.type) {
+    case 'weekly': {
+      const w = parseInt(cfg.weekday, 10)
+      return `${minute} ${hour} * * ${Number.isNaN(w) ? 1 : w}`
+    }
+    case 'monthly': {
+      const d = parseInt(cfg.day, 10)
+      return `${minute} ${hour} ${Number.isNaN(d) ? 1 : d} * *`
+    }
+    case 'yearly': {
+      const d = parseInt(cfg.day, 10)
+      const mon = parseInt(cfg.month, 10)
+      return `${minute} ${hour} ${Number.isNaN(d) ? 1 : d} ${Number.isNaN(mon) ? 1 : mon} *`
+    }
+    case 'interval_minutes': {
+      const n = parseInt(cfg.interval, 10)
+      const interval = Number.isNaN(n) || n < 1 || n > 59 ? 1 : n
+      return `*/${interval} * * * *`
+    }
+    case 'interval_hours': {
+      const n = parseInt(cfg.interval, 10)
+      const interval = Number.isNaN(n) || n < 1 || n > 23 ? 1 : n
+      return `0 */${interval} * * *`
+    }
+    case 'daily':
+    default:
+      return `${minute} ${hour} * * *`
+  }
+}
+
+/**
+ * 把 5 段 cron 表达式反向解析为结构化配置；无法识别时回退为 daily 09:00。
+ * @param {string} cron - 5 段 crontab 表达式
+ * @returns {Object} scheduleConfig 字段集（字符串值）
+ */
+function parseCronExpression(cron) {
+  const fallback = { type: 'daily', weekday: '1', month: '1', day: '1', hour: '9', minute: '0', interval: '1' }
+  const parts = String(cron || '').trim().split(/\s+/)
+  if (parts.length !== 5) return fallback
+  const [m, h, d, mon, w] = parts
+
+  // 每隔 N 分钟：*/N * * * *
+  if (/^\*\/\d+$/.test(m) && h === '*' && d === '*' && mon === '*' && w === '*') {
+    return { type: 'interval_minutes', weekday: '1', month: '1', day: '1', hour: '9', minute: '0', interval: m.replace('*/', '') }
+  }
+  // 每隔 N 小时：0 */N * * *
+  if (m === '0' && /^\*\/\d+$/.test(h) && d === '*' && mon === '*' && w === '*') {
+    return { type: 'interval_hours', weekday: '1', month: '1', day: '1', hour: '9', minute: '0', interval: h.replace('*/', '') }
+  }
+
+  // 任何含 *,/,- 等复杂语法的字段都视为无法识别
+  if ([m, h, d, mon, w].some((p) => /[^0-9]/.test(p) && p !== '*')) return fallback
+  const minute = parseInt(m, 10)
+  const hour = parseInt(h, 10)
+  if (Number.isNaN(minute) || Number.isNaN(hour)) return fallback
+
+  const dayIsAny = d === '*'
+  const monIsAny = mon === '*'
+  const wIsAny = w === '*'
+
+  if (dayIsAny && monIsAny && wIsAny) {
+    return { type: 'daily', weekday: '1', month: '1', day: '1', hour: String(hour), minute: String(minute), interval: '1' }
+  }
+  if (!dayIsAny && monIsAny && wIsAny) {
+    return { type: 'monthly', weekday: '1', month: '1', day: d, hour: String(hour), minute: String(minute), interval: '1' }
+  }
+  if (dayIsAny && monIsAny && !wIsAny) {
+    return { type: 'weekly', weekday: w, month: '1', day: '1', hour: String(hour), minute: String(minute), interval: '1' }
+  }
+  if (!dayIsAny && !monIsAny && wIsAny) {
+    return { type: 'yearly', weekday: '1', month: mon, day: d, hour: String(hour), minute: String(minute), interval: '1' }
+  }
+  return fallback
+}
 
 const enabledAgents = computed(() => agents.value.filter((agent) => agent.enabled !== false))
 
@@ -234,7 +360,7 @@ function fillForm(schedule) {
   form.description = schedule.description || ''
   form.agent_name = schedule.agent_name || enabledAgents.value[0]?.name || ''
   form.prompt = schedule.prompt || ''
-  form.cron_expression = schedule.cron_expression || '0 9 * * *'
+  Object.assign(scheduleConfig, parseCronExpression(schedule.cron_expression))
   form.timezone = schedule.timezone || 'Asia/Shanghai'
   form.enabled = schedule.enabled !== false
   form.context_overrides = schedule.context_overrides || {}
@@ -253,7 +379,15 @@ function startCreate() {
   form.description = ''
   form.agent_name = enabledAgents.value[0]?.name || ''
   form.prompt = ''
-  form.cron_expression = '0 9 * * *'
+  Object.assign(scheduleConfig, {
+    type: 'daily',
+    weekday: '1',
+    month: '1',
+    day: '1',
+    hour: '9',
+    minute: '0',
+    interval: '15',
+  })
   form.timezone = 'Asia/Shanghai'
   form.enabled = true
   form.context_overrides = {}
@@ -280,7 +414,7 @@ function buildPayload() {
     description: form.description.trim(),
     agent_name: form.agent_name,
     prompt: form.prompt.trim(),
-    cron_expression: form.cron_expression.trim(),
+    cron_expression: buildCronExpression(scheduleConfig).trim(),
     timezone: form.timezone.trim() || 'Asia/Shanghai',
     enabled: form.enabled,
     context_overrides: contextOverrides,
@@ -465,16 +599,78 @@ onMounted(loadInitialData)
             <input v-model="form.name" type="text" placeholder="例如：每日巡检" />
           </label>
           <label class="form-field">
-            <span>Cron 表达式 *</span>
-            <input v-model="form.cron_expression" type="text" placeholder="0 9 * * *" />
-          </label>
-          <label class="form-field">
             <span>目标智能体 *</span>
-            <select v-model="form.agent_name">
+            <select v-model="form.agent_name" data-testid="schedule-agent">
               <option v-for="agent in enabledAgents" :key="agent.name" :value="agent.name">
                 {{ agent.display_name || agent.name }}（{{ agent.name }}）
               </option>
             </select>
+          </label>
+          <label class="form-field">
+            <span>执行频率 *</span>
+            <select v-model="scheduleConfig.type" data-testid="schedule-type">
+              <option v-for="t in SCHEDULE_TYPES" :key="t.value" :value="t.value">{{ t.label }}</option>
+            </select>
+          </label>
+          <label v-if="scheduleConfig.type === 'interval_minutes'" class="form-field">
+            <span>间隔（分钟）*</span>
+            <input
+              v-model="scheduleConfig.interval"
+              data-testid="schedule-interval"
+              type="number"
+              min="1"
+              max="59"
+              placeholder="1-59"
+            />
+          </label>
+          <label v-if="scheduleConfig.type === 'interval_hours'" class="form-field">
+            <span>间隔（小时）*</span>
+            <input
+              v-model="scheduleConfig.interval"
+              data-testid="schedule-interval"
+              type="number"
+              min="1"
+              max="23"
+              placeholder="1-23"
+            />
+          </label>
+          <label v-if="scheduleConfig.type === 'weekly'" class="form-field">
+            <span>星期几 *</span>
+            <select v-model="scheduleConfig.weekday" data-testid="schedule-weekday">
+              <option v-for="w in WEEKDAYS" :key="w.value" :value="w.value">{{ w.label }}</option>
+            </select>
+          </label>
+          <label v-if="scheduleConfig.type === 'monthly'" class="form-field">
+            <span>几号 *</span>
+            <select v-model="scheduleConfig.day" data-testid="schedule-day">
+              <option v-for="d in MONTH_DAYS" :key="d" :value="d">{{ d }} 日</option>
+            </select>
+          </label>
+          <template v-if="scheduleConfig.type === 'yearly'">
+            <label class="form-field">
+              <span>月份 *</span>
+              <select v-model="scheduleConfig.month" data-testid="schedule-month">
+                <option v-for="mo in MONTHS" :key="mo" :value="mo">{{ mo }} 月</option>
+              </select>
+            </label>
+            <label class="form-field">
+              <span>日期 *</span>
+              <select v-model="scheduleConfig.day" data-testid="schedule-day">
+                <option v-for="d in MONTH_DAYS" :key="d" :value="d">{{ d }} 日</option>
+              </select>
+            </label>
+          </template>
+          <label class="form-field">
+            <span>执行时间 *</span>
+            <div class="time-input" data-testid="schedule-time">
+              <select v-model="scheduleConfig.hour" data-testid="schedule-hour">
+                <option v-for="h in HOURS" :key="h" :value="h">{{ String(h).padStart(2, '0') }}</option>
+              </select>
+              <span class="time-sep">:</span>
+              <select v-model="scheduleConfig.minute" data-testid="schedule-minute">
+                <option v-for="mi in MINUTES" :key="mi" :value="mi">{{ String(mi).padStart(2, '0') }}</option>
+              </select>
+            </div>
           </label>
           <label class="form-field">
             <span>时区</span>
@@ -748,6 +944,27 @@ textarea {
 
 textarea {
   resize: vertical;
+}
+
+input[type="number"] {
+  width: auto;
+  min-width: 80px;
+}
+
+.time-input {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.time-input select {
+  width: auto;
+  min-width: 70px;
+}
+
+.time-sep {
+  color: #374151;
+  font-weight: 600;
 }
 
 .actions,
