@@ -226,13 +226,15 @@ describe('TaskSchedulerManager 组件', () => {
     expect(tablist.exists()).toBe(true)
 
     const tabs = tablist.findAll('[role="tab"]')
-    expect(tabs.length).toBe(2)
+    expect(tabs.length).toBe(3)
     expect(tabs[0].text()).toContain('编辑任务')
     expect(tabs[1].text()).toContain('服务器扫描入库')
+    expect(tabs[2].text()).toContain('脚本扫描入库')
 
     // 默认激活态：第一个 Tab aria-selected=true
     expect(tabs[0].attributes('aria-selected')).toBe('true')
     expect(tabs[1].attributes('aria-selected')).toBe('false')
+    expect(tabs[2].attributes('aria-selected')).toBe('false')
 
     // 默认显示编辑面板
     expect(wrapper.find('[role="tabpanel"]').exists()).toBe(true)
@@ -895,5 +897,62 @@ describe('TaskSchedulerManager 组件', () => {
     expect(wrapper.find('[data-testid="schedule-type"]').element.value).toBe('daily')
     expect(wrapper.find('[data-testid="schedule-hour"]').element.value).toBe('9')
     expect(wrapper.find('[data-testid="schedule-minute"]').element.value).toBe('0')
+  })
+
+  // ===== 「执行时间」字段条件渲染（interval 模式隐藏） =====
+
+  it('test_daily_shows_time_field daily 模式展示「执行时间」字段', async () => {
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
+    await flushPromises()
+
+    // 默认 type='daily'，「执行时间」字段必须可见
+    expect(wrapper.find('[data-testid="schedule-type"]').element.value).toBe('daily')
+    expect(wrapper.find('[data-testid="schedule-time"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="schedule-hour"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="schedule-minute"]').exists()).toBe(true)
+  })
+
+  it('test_interval_minutes_hides_time_field interval_minutes 模式隐藏「执行时间」字段', async () => {
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
+    await flushPromises()
+
+    // 切到 interval_minutes（SCHEDULE_TYPES[4]）
+    await wrapper.find('[data-testid="schedule-type"]').findAll('option')[4].setSelected()
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="schedule-type"]').element.value).toBe('interval_minutes')
+    // 「执行时间」字段必须不可见，但「间隔（分钟）」仍可见
+    expect(wrapper.find('[data-testid="schedule-time"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="schedule-hour"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="schedule-minute"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="schedule-interval"]').exists()).toBe(true)
+
+    // 切回 daily，「执行时间」字段重新可见
+    await wrapper.find('[data-testid="schedule-type"]').findAll('option')[0].setSelected()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="schedule-time"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="schedule-hour"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="schedule-minute"]').exists()).toBe(true)
+  })
+
+  it('test_interval_hours_hides_time_field interval_hours 模式隐藏「执行时间」字段', async () => {
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
+    await flushPromises()
+
+    // 切到 interval_hours（SCHEDULE_TYPES[5]）
+    await wrapper.find('[data-testid="schedule-type"]').findAll('option')[5].setSelected()
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="schedule-type"]').element.value).toBe('interval_hours')
+    expect(wrapper.find('[data-testid="schedule-time"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="schedule-hour"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="schedule-minute"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="schedule-interval"]').exists()).toBe(true)
   })
 })

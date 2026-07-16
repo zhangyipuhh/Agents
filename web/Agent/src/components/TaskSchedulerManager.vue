@@ -816,7 +816,11 @@ onMounted(loadInitialData)
               </select>
             </label>
           </template>
-          <label class="form-field">
+          <!-- interval 模式下 cron 表达式忽略 hour/minute，不展示「执行时间」字段 -->
+          <label
+            v-if="scheduleConfig.type !== 'interval_minutes' && scheduleConfig.type !== 'interval_hours'"
+            class="form-field"
+          >
             <span>执行时间 *</span>
             <div class="time-input" data-testid="schedule-time">
               <select v-model="scheduleConfig.hour" data-testid="schedule-hour">

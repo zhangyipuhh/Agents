@@ -11,7 +11,7 @@
  * - SMTP 密码字段在 GET 接口中返回空字符串，前端"密码留空"表示不修改原密码。
  * - 发送测试邮件使用 multipart/form-data 以支持附件上传。
  */
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import {
   fetchEmailServerConfig,
   updateEmailServerConfig,
@@ -200,6 +200,7 @@ function startCreatePolicy() {
   policyForm.name = ''
   policyForm.description = ''
   policyForm.recipient_user_ids = []
+  recipientKeyword.value = ''
   policyError.value = ''
   policyMessage.value = ''
 }
@@ -214,6 +215,7 @@ function selectPolicy(policy) {
   policyForm.name = policy.name
   policyForm.description = policy.description || ''
   policyForm.recipient_user_ids = [...(policy.recipient_user_ids || [])]
+  recipientKeyword.value = ''
   policyError.value = ''
   policyMessage.value = ''
 }
@@ -227,6 +229,64 @@ function cancelEditPolicy() {
   policyForm.name = ''
   policyForm.description = ''
   policyForm.recipient_user_ids = []
+  recipientKeyword.value = ''
+}
+
+/**
+ * 按搜索关键词过滤后的可选用户列表。
+ * @returns {Array<Object>} 过滤后的用户列表。
+ */
+const filteredEmailableUsers = computed(() => {
+  const kw = recipientKeyword.value.trim().toLowerCase()
+  if (!kw) return emailableUsers.value
+  return emailableUsers.value.filter(
+    (u) =>
+      (u.real_name || '').toLowerCase().includes(kw) ||
+      (u.username || '').toLowerCase().includes(kw) ||
+      (u.email || '').toLowerCase().includes(kw),
+  )
+})
+
+/**
+ * 当前已选中的收件人（含姓名 / 邮箱）列表，用于顶部 chip 展示。
+ * @returns {Array<Object>} 已选用户对象列表。
+ */
+const selectedRecipientChips = computed(() =>
+  emailableUsers.value.filter((u) => policyForm.recipient_user_ids.includes(u.id)),
+)
+
+/**
+ * 已选收件人数量。
+ * @returns {number} 已选人数。
+ */
+const selectedCount = computed(() => selectedRecipientChips.value.length)
+
+/**
+ * 全选当前过滤结果中的所有用户。
+ */
+function selectAllRecipients() {
+  policyForm.recipient_user_ids = filteredEmailableUsers.value.map((u) => u.id)
+}
+
+/**
+ * 清空当前已选收件人。
+ */
+function clearRecipients() {
+  policyForm.recipient_user_ids = []
+}
+
+/**
+ * 切换某用户的选中状态（用于 chip 上的移除按钮）。
+ * @param {number} id - 用户 ID。
+ */
+function toggleRecipient(id) {
+  const set = new Set(policyForm.recipient_user_ids)
+  if (set.has(id)) {
+    set.delete(id)
+  } else {
+    set.add(id)
+  }
+  policyForm.recipient_user_ids = Array.from(set)
 }
 
 /**
@@ -390,21 +450,21 @@ onMounted(async () => {
           <span>SMTP 端口 *</span>
           <input v-model.number="serverConfig.port" type="number" min="1" max="65535" placeholder="465" />
         </label>
-        <label class="inline-field">
-          <input v-model="serverConfig.use_ssl" type="checkbox" />
-          <span>使用 SMTP_SSL（取消则走 STARTTLS，推荐 587）</span>
-        </label>
         <label class="form-field">
           <span>登录账号 *</span>
           <input v-model="serverConfig.username" type="text" placeholder="发件邮箱地址" />
         </label>
         <label class="form-field">
+          <span>发件人显示名</span>
+          <input v-model="serverConfig.sender_name" type="text" placeholder="如：管理员" />
+        </label>
+        <label class="form-field full">
           <span>密码 / 授权码</span>
           <input v-model="serverConfig.password" type="password" placeholder="留空表示不修改原密码" />
         </label>
-        <label class="form-field">
-          <span>发件人显示名</span>
-          <input v-model="serverConfig.sender_name" type="text" placeholder="如：管理员" />
+        <label class="inline-field">
+          <input v-model="serverConfig.use_ssl" type="checkbox" />
+          <span>使用 SMTP_SSL（取消则走 STARTTLS，推荐 587）</span>
         </label>
         <label class="inline-field">
           <input v-model="serverConfig.enabled" type="checkbox" />
@@ -460,48 +520,121 @@ onMounted(async () => {
 
         <div class="policy-editor" v-if="isEditingPolicy">
           <h4>{{ selectedPolicy ? '编辑策略' : '新建策略' }}</h4>
-          <form class="email-form" @submit.prevent="savePolicy">
-            <label class="form-field">
-              <span>策略名称 *</span>
-              <input v-model="policyForm.name" type="text" placeholder="例如：运维告警通知" />
-            </label>
-            <label class="form-field full">
-              <span>策略描述</span>
-              <textarea v-model="policyForm.description" rows="2" placeholder="可选"></textarea>
-            </label>
-            <div class="form-field full">
-              <span>收件人 *</span>
-              <div class="recipient-list">
-                <label
-                  v-for="u in emailableUsers"
-                  :key="u.id"
-                  class="recipient-item"
-                >
-                  <input
-                    type="checkbox"
-                    :value="u.id"
-                    v-model="policyForm.recipient_user_ids"
-                  />
-                  <span>{{ u.real_name || u.username }} ({{ u.email }})</span>
-                </label>
-              </div>
-              <div v-if="!emailableUsers.length" class="empty-state">
-                暂无可选用户（所有用户邮箱为空）
+          <form class="email-form form-grid" @submit.prevent="savePolicy">
+            <div class="field-row">
+              <label class="field-label" for="policy-name">策略名称 *</label>
+              <div class="field-control">
+                <input
+                  id="policy-name"
+                  v-model="policyForm.name"
+                  type="text"
+                  placeholder="例如：运维告警通知"
+                />
               </div>
             </div>
-            <div class="form-actions">
-              <button class="primary-btn" type="submit" :disabled="isSavingPolicy">
-                {{ isSavingPolicy ? '保存中...' : '保存策略' }}
-              </button>
-              <button class="secondary-btn" type="button" @click="cancelEditPolicy">取消</button>
-              <button
-                v-if="selectedPolicy"
-                class="danger-btn"
-                type="button"
-                @click="removePolicy(selectedPolicy)"
-              >
-                删除
-              </button>
+
+            <div class="field-row">
+              <label class="field-label" for="policy-desc">策略描述</label>
+              <div class="field-control">
+                <textarea
+                  id="policy-desc"
+                  v-model="policyForm.description"
+                  rows="2"
+                  placeholder="可选"
+                ></textarea>
+              </div>
+            </div>
+
+            <div class="field-row full">
+              <label class="field-label">收件人 *</label>
+              <div class="field-control">
+                <div class="recipient-panel">
+                  <div class="recipient-panel__toolbar">
+                    <input
+                      v-model="recipientKeyword"
+                      type="search"
+                      class="recipient-search"
+                      placeholder="搜索姓名/邮箱…"
+                      aria-label="搜索收件人"
+                    />
+                    <div class="recipient-toolbar__actions">
+                      <button type="button" class="link-btn" @click="selectAllRecipients">
+                        全选
+                      </button>
+                      <span class="divider"></span>
+                      <button type="button" class="link-btn" @click="clearRecipients">
+                        清空
+                      </button>
+                    </div>
+                    <div class="recipient-counter" :class="{ active: selectedCount > 0 }">
+                      已选 <strong>{{ selectedCount }}</strong> /
+                      {{ filteredEmailableUsers.length }}
+                    </div>
+                  </div>
+
+                  <div v-if="filteredEmailableUsers.length" class="recipient-list">
+                    <label
+                      v-for="u in filteredEmailableUsers"
+                      :key="u.id"
+                      class="recipient-item"
+                    >
+                      <input
+                        type="checkbox"
+                        :value="u.id"
+                        v-model="policyForm.recipient_user_ids"
+                      />
+                      <span class="recipient-name">{{ u.real_name || u.username }}</span>
+                      <span class="recipient-email">{{ u.email }}</span>
+                    </label>
+                  </div>
+                  <div v-else-if="emailableUsers.length" class="empty-state">
+                    没有匹配「{{ recipientKeyword }}」的用户
+                  </div>
+                  <div v-else class="empty-state">暂无可选用户（所有用户邮箱为空）</div>
+
+                  <div
+                    v-if="selectedRecipientChips.length"
+                    class="recipient-chips"
+                    aria-label="已选收件人"
+                  >
+                    <span
+                      v-for="u in selectedRecipientChips"
+                      :key="u.id"
+                      class="chip"
+                    >
+                      {{ u.real_name || u.username }}
+                      <button
+                        type="button"
+                        class="chip-remove"
+                        :aria-label="`移除 ${u.real_name || u.username}`"
+                        @click="toggleRecipient(u.id)"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="field-row full form-actions-row">
+              <div class="field-label"></div>
+              <div class="field-control form-actions">
+                <button class="primary-btn" type="submit" :disabled="isSavingPolicy">
+                  {{ isSavingPolicy ? '保存中...' : '保存策略' }}
+                </button>
+                <button class="secondary-btn" type="button" @click="cancelEditPolicy">
+                  取消
+                </button>
+                <button
+                  v-if="selectedPolicy"
+                  class="danger-btn"
+                  type="button"
+                  @click="removePolicy(selectedPolicy)"
+                >
+                  删除
+                </button>
+              </div>
             </div>
           </form>
         </div>
@@ -637,6 +770,15 @@ onMounted(async () => {
 .inline-field {
   flex-direction: row;
   align-items: center;
+  gap: 8px;
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+.inline-field input[type="checkbox"] {
+  width: auto;
+  flex: 0 0 auto;
+  margin: 0;
 }
 
 .form-field.full,
@@ -786,25 +928,202 @@ input[type="file"] {
 .recipient-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   max-height: 240px;
   overflow-y: auto;
-  padding: 8px;
+  padding: 6px 8px;
   background: #ffffff;
-  border: 1px solid #d1d5db;
+  border: 1px solid #e5e7eb;
   border-radius: 8px;
 }
 
 .recipient-item {
-  display: flex;
-  flex-direction: row;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
   font-size: 13px;
+  cursor: pointer;
+}
+
+.recipient-item:hover {
+  background: #f3f4f6;
 }
 
 .recipient-item input[type="checkbox"] {
-  width: auto;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.recipient-name {
+  color: #111827;
+  font-weight: 500;
+}
+
+.recipient-email {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+/* —— 收件人面板（带头部 / 工具栏 / 已选 chip） —— */
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 20px;
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+}
+
+.field-row.full {
+  grid-column: 1 / -1;
+}
+
+.field-label {
+  font-size: 13px;
+  color: #374151;
+  font-weight: 600;
+  line-height: 1.5;
+  padding-top: 10px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.field-control {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.form-actions-row {
+  margin-top: 4px;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+}
+
+.recipient-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+}
+
+.recipient-panel__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.recipient-search {
+  flex: 1 1 200px;
+  min-width: 160px;
+  height: 32px;
+  padding: 6px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 13px;
+  background: #ffffff;
+  color: #111827;
+}
+
+.recipient-search:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+}
+
+.recipient-toolbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.link-btn {
+  background: none;
+  border: 0;
+  color: #2563eb;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+
+.link-btn:hover {
+  text-decoration: underline;
+  background: #eff6ff;
+}
+
+.divider {
+  width: 1px;
+  height: 14px;
+  background: #e5e7eb;
+}
+
+.recipient-counter {
+  margin-left: auto;
+  font-size: 12px;
+  color: #6b7280;
+  padding: 4px 10px;
+  background: #f3f4f6;
+  border-radius: 999px;
+}
+
+.recipient-counter.active {
+  color: #1e3a8a;
+  background: #dbeafe;
+  font-weight: 600;
+}
+
+.recipient-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 4px;
+  border-top: 1px dashed #e5e7eb;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  background: #eff6ff;
+  color: #1e40af;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.chip-remove {
+  background: none;
+  border: 0;
+  color: #1e40af;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.chip-remove:hover {
+  color: #dc2626;
 }
 
 .attachment-list {
