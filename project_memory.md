@@ -606,6 +606,27 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 - `app/tests/routers/test_task_scheduler_router.py`（13 用例，含 3 个 script 用例）：创建 script 任务 201、缺 script_name 422、agent 携带 script_name 422
 - `app/tests/core/test_server_lifespan.py`（11 用例，含 4 个 script 用例）：script_scan_enabled 启停、注入 TaskSchedulerService、shutdown 清理
 
+### 脚本任务 run 写入占位约定（2026-07-16 修复）
+
+`agent_task_schedules.target_type='script'` 的任务，`agent_name` 与 `prompt` 在 schedules 表里允许为 NULL（已通过 `ALTER COLUMN DROP NOT NULL` 放宽），但下游写入执行历史 `agent_task_runs` 时，`agent_name VARCHAR(100) NOT NULL` 与 `prompt_snapshot TEXT NOT NULL` 仍为 NOT NULL 列；`_create_run` 直接 `schedule.get("agent_name")` 传 None 会触发 `asyncpg.NotNullViolationError`。
+
+**约定**：`TaskSchedulerService._create_run` 在 `target_type=='script'` 时写入占位字符串，避免 NOT NULL 约束被违反：
+
+| 列                  | agent 任务              | script 任务占位                                |
+| ------------------- | ----------------------- | ---------------------------------------------- |
+| `agent_name`        | `schedule["agent_name"]`| `script:{script_name}`（缺则 `script:unknown`）|
+| `prompt_snapshot`   | `schedule["prompt"] or ""` | `[script] {script_name}`（缺则 `[script] unknown`）|
+| `target_type`       | `agent`                 | `script`                                       |
+| `script_name`       | `NULL`                  | `schedule["script_name"]`                      |
+
+下游读取 run 列表 / 详情时应优先判断 `target_type`：若为 `script`，渲染占位符而非尝试在 `agents` 表中查询 `agent_name`。
+
+**关联改动**：`app/routers/task_scheduler_router.py::_handle_service_error` 增加 `asyncpg.PostgresError` 兜底分支，将所有 DB 错误转为 `HTTPException(500, detail="database error: <Type>: <msg>")`，避免异常被 `auth_middleware` 的 `try/except Exception` 吞掉只显示无 detail 的 401/500。
+
+**测试覆盖**：
+- `app/tests/shared/utils/agent/test_task_scheduler_service_script_run.py`（4 用例）：占位写入、unknown 回退、agent 任务 passthrough、prompt None → 空串
+- `app/tests/routers/test_task_scheduler_router_script_trigger.py`（3 用例）：script 任务 trigger 返回 202、NotNullViolationError 路径返回 500 含 detail、`_handle_service_error` 直接传参分支
+
 ### users 表
 
 | 字段          | 类型                       | 说明               |

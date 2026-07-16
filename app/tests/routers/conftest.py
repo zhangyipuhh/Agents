@@ -46,6 +46,68 @@ _fs_fix.apply_fix = lambda: None
 sys.modules["app.shared.tools.middleware.filesystem_encoding_fix"] = _fs_fix
 
 
+def _restore_real_asyncpg_if_possible():
+    """在 routers 测试套件中恢复真实 asyncpg 模块。
+
+    根 conftest 在测试会话级把 ``sys.modules["asyncpg"]`` 替换为 ``Mock()``，
+    导致 ``app.routers.task_scheduler_router`` 通过
+    ``from asyncpg import PostgresError as _AsyncPGPostgresError`` 拿到的是
+    ``Mock().PostgresError``，``isinstance(exc, Mock)`` 抛 TypeError。
+
+    本函数检测 sys.modules["asyncpg"] 是否被 Mock 替换，若是则弹出该键后
+    重新 ``import asyncpg`` 触发真正的模块加载，并放回 sys.modules。router
+    模块级 ``from asyncpg import ...`` 已被绑定为 Mock，需要通过
+    ``_ensure_real_asyncpg_in_router`` autouse fixture 在 ``app`` fixture
+    之后重新绑定 ``_AsyncPGPostgresError``。该函数幂等，多次调用安全。
+    """
+    current = sys.modules.get("asyncpg")
+    if current is not None and getattr(current, "__file__", None):
+        # 真实 asyncpg 已经加载，跳过
+        return
+    sys.modules.pop("asyncpg", None)
+    try:
+        import asyncpg as _real_asyncpg  # noqa: F401
+    except Exception:
+        return  # 真实 asyncpg 不可用，保持现状
+    sys.modules["asyncpg"] = _real_asyncpg
+
+
+_restore_real_asyncpg_if_possible()
+
+
+@pytest.fixture(autouse=True)
+def _ensure_real_asyncpg_in_router(app):
+    """确保 ``app.routers.task_scheduler_router._AsyncPGPostgresError`` 是真类。
+
+    根 conftest 在测试会话级把 ``sys.modules["asyncpg"]`` 替换为 ``Mock()``，
+    router 模块级 ``from asyncpg import PostgresError as _AsyncPGPostgresError``
+    在 import 时拿到的是 ``Mock().PostgresError``。该 fixture 在 ``app``
+    fixture 之后运行：若当前 ``sys.modules["asyncpg"]`` 是 Mock，先弹出再
+    ``import asyncpg`` 触发真实模块加载，然后绑定到 router 模块属性。
+
+    每次测试都重新做检查与绑定，确保在 shared 子目录测试把 sys.modules
+    重新污染为 Mock 后，routers 测试仍能拿到真 asyncpg。
+    """
+    current = sys.modules.get("asyncpg")
+    if current is None or not getattr(current, "__file__", None):
+        sys.modules.pop("asyncpg", None)
+        try:
+            import asyncpg as _real_asyncpg  # noqa: F401
+        except Exception:
+            return
+        sys.modules["asyncpg"] = _real_asyncpg
+    else:
+        _real_asyncpg = current
+
+    pg_err = _real_asyncpg.PostgresError
+    # asyncpg.PostgresError 是 PostgresMessageMeta（abc.ABCMeta 子类）实例，
+    # isinstance(pg_err, type) 为 False，但 isinstance(exc, pg_err) 能正确
+    # 返回 True。
+    from app.routers import task_scheduler_router as router_module
+
+    router_module._AsyncPGPostgresError = pg_err
+
+
 @pytest.fixture(autouse=True)
 def _init_mcp_config_service(app):
     """初始化 app.state.mcp_config_service 供 mcp_admin_router 使用。
