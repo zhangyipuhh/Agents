@@ -2051,7 +2051,52 @@ system_prompt = (
 
 - `app/tests/shared/tools/skills/feishu/test_feishu_client.py` —— 9 个用例：导入存在性、凭证缺失抛 RuntimeError、单例缓存、reset 清空、日志级别映射
 - `app/tests/shared/tools/skills/feishu/test_feishu_message_tools.py` —— 7 个用例：导入存在性、receive_id 缺失、client 初始化失败、API 成功/失败/异常、显式参数覆盖默认配置
-- `app/tests/shared/tools/skills/feishu/conftest.py` —— 沙箱环境 mock lark_oapi SDK（Client.builder 链、LogLevel 枚举、CreateMessageRequest builder 链）
+- `app/tests/shared/tools/skills/feishu/test_feishu_websocket_service.py` —— 30 个用例：模块导入存在性、消息字段提取（p2p / group）、session_id 构造、群聊 @机器人 检测（精确 + 降级）、消息分发到 agent、非文本消息跳过、回复发送（含截断）、单条消息异常隔离、agent.stream messages 模式 chunk 拼接、loop 注入、stop 标志
+- `app/tests/shared/tools/skills/feishu/conftest.py` —— 沙箱环境 mock lark_oapi SDK（Client.builder 链、LogLevel 枚举、CreateMessageRequest/Body builder 链、P2ImMessageReceiveV1 类型占位、bot.v1.GetBotRequest、lark.ws.Client、lark.EventDispatcherHandler）
+
+### 飞书 WebSocket 长连接（被动接收）
+
+| 组件 | 文件位置 | 职责 |
+|---|---|---|
+| `FeishuWebSocketService` | `app/shared/tools/skills/feishu/FeishuWebSocketService.py` | 启动 lark.ws.Client 订阅 `im.message.receive_v1`；将消息路由到目标智能体处理后回复 |
+
+**启动方式**：随 FastAPI lifespan 自动启停，受 `settings.feishu.feishu_ws_enabled` 控制（默认关闭，凭证就绪后开启）。
+
+**会话范围**：
+- 私聊（p2p）：全部回复
+- 群聊（group）：仅响应 @机器人 消息
+
+**session_id 格式**：
+- 私聊：`feishu:p2p:{open_id}`（按用户区分会话上下文）
+- 群聊：`feishu:group:{chat_id}`（按群区分会话上下文）
+
+**群聊@机器人检测**：
+1. 优先匹配 `data.event.message.mentions[].id.open_id == <bot_open_id>`（启动时通过 `client.bot.v3.bot.get` 一次性缓存）
+2. 获取失败降级使用 `'@' in content_raw`（宽松匹配）
+
+**消息处理流程**（lark SDK 同步回调）：
+1. 解析 chat_type / chat_id / open_id / msg_type / text
+2. 群聊未 @机器人 或 非文本消息 → 跳过
+3. 调用 `agent_config_service.build_agent_instance(agent_name, session_id, text)`
+4. 用 `agent.stream(input_state, context=ctx, config=..., stream_mode=["messages"])` 收集所有 message chunk 拼接完整回复
+5. 通过 `client.im.v1.message.create(CreateMessageRequest)` 直接发送回复（**不走** `send_feishu_message` LangChain 工具，避免 ToolRuntime 依赖）
+6. 回复文本 > 4000 字符时截断并追加 `...(内容过长已截断)`
+
+**线程模型**：
+- `lark.ws.Client.start()` 同步阻塞，用 `threading.Thread(daemon=True)` 包装到后台线程
+- **lark SDK 模块级 loop 陷阱**：`lark_oapi.ws.client` 在模块顶层执行 `loop = asyncio.get_event_loop()` 并把该 loop 缓存在模块级变量。FastAPI/uvicorn 主线程的 loop 在 lifespan 期间已运行，所以后台线程直接调用 `loop.run_until_complete(...)` 会触发 `RuntimeError: This event loop is already running`。
+  - 解决方案：在 `_run_ws_blocking` 入口创建独立的新 event loop，把它 `set_event_loop` 到当前线程，并通过 `_lark_ws_client_mod.loop = new_loop` 把 lark SDK 模块级 loop 指向新 loop。
+- 事件回调（`_on_message`）内通过 `asyncio.run_coroutine_threadsafe(coro, loop)` 把协程投递回主事件循环（用户消息处理需要 DB pool 与 agent stream）。
+- 主事件循环在 lifespan 启动时通过 `service.set_event_loop(asyncio.get_event_loop())` 注入。
+- 获取机器人 open_id（同步 HTTP）的 `_fetch_bot_open_id` 走 `asyncio.to_thread(...)` 包装，避免在主线程中阻塞 loop。
+
+**异常隔离**：单条消息处理失败仅记日志，不影响 WebSocket 连接与后续消息。
+
+**新增 FeishuSettings 配置项**：
+- `feishu_ws_enabled`（env `FEISHU_WS_ENABLED`，默认 `False`）—— 是否启用 WebSocket 长连接接收
+- `feishu_ws_agent_name`（env `FEISHU_WS_AGENT_NAME`，默认 `project`）—— 飞书消息路由到的目标智能体名称
+
+**飞书后台要求**：事件订阅 `im.message.receive_v1`，订阅类型必须选 WebSocket（非 HTTP Webhook）。群聊场景需开启相关消息权限。
 
 ## 沙箱 Agent 架构（Sandbox Agent）
 

@@ -56,11 +56,21 @@ class _ClientBuilder:
         return self
 
     def build(self):
-        """构造一个 mock client 实例（每次 build 返回新实例，以支持单例缓存测试）。"""
+        """构造一个 mock client 实例（每次 build 返回新实例，以支持单例缓存测试）。
+
+        2026-07-16 修复：模拟 lark.Client 真实存储结构 —— 凭证放在 _config.app_id /
+        _config.app_secret（不在 _app_id/_app_secret 顶层属性）。同时保留旧属性名
+        以兼容历史测试。
+        """
         client = MagicMock(name="lark.Client")
         client._app_id = self._app_id
         client._app_secret = self._app_secret
         client._log_level = self._log_level
+        # 新代码通过 _config.app_id / _config.app_secret 拿凭证；模拟真实结构
+        mock_config = MagicMock(name="_config")
+        mock_config.app_id = self._app_id
+        mock_config.app_secret = self._app_secret
+        client._config = mock_config
         return client
 
 
@@ -138,12 +148,109 @@ class _CreateMessageRequestBody:
 _lark_api_im_v1.CreateMessageRequest = _CreateMessageRequest
 _lark_api_im_v1.CreateMessageRequestBody = _CreateMessageRequestBody
 
+
+class _P2ImMessageReceiveV1:
+    """模拟 lark_oapi.api.im.v1.P2ImMessageReceiveV1（仅作类型提示用）。"""
+
+    pass
+
+
+_lark_api_im_v1.P2ImMessageReceiveV1 = _P2ImMessageReceiveV1
+
 _lark_api.im = _lark_api_im
 _lark_api_im.v1 = _lark_api_im_v1
 _lark.api = _lark_api
+
+
+# ---------------------------------------------------------------------------
+# 构造 lark_oapi.api.bot.v1 子模块（供 FeishuWebSocketService 获取机器人 open_id）
+# ---------------------------------------------------------------------------
+_lark_api_bot = types.ModuleType("lark_oapi.api.bot")
+_lark_api_bot.__path__ = []
+_lark_api_bot_v1 = types.ModuleType("lark_oapi.api.bot.v1")
+
+
+class _GetBotRequestBuilder:
+    """模拟 GetBotRequest.builder()。"""
+
+    def build(self):
+        return MagicMock(name="GetBotRequest")
+
+
+class _GetBotRequest:
+    """模拟 lark_oapi.api.bot.v1.GetBotRequest。"""
+
+    @staticmethod
+    def builder():
+        return _GetBotRequestBuilder()
+
+
+_lark_api_bot_v1.GetBotRequest = _GetBotRequest
+_lark_api_bot.v1 = _lark_api_bot_v1
+_lark_api.bot = _lark_api_bot
+
+
+# ---------------------------------------------------------------------------
+# 构造 lark_oapi.ws 与 lark.EventDispatcherHandler（供 FeishuWebSocketService）
+# ---------------------------------------------------------------------------
+class _WsClient:
+    """模拟 lark.ws.Client（仅记录实例化参数，不真正连接）。"""
+
+    instances: list = []  # 记录所有实例，便于测试断言
+
+    def __init__(self, app_id, app_secret, event_handler=None, log_level=None):
+        self._app_id = app_id
+        self._app_secret = app_secret
+        self._event_handler = event_handler
+        self._log_level = log_level
+        _WsClient.instances.append(self)
+
+    def start(self):
+        """模拟 SDK start()：在测试中默认不阻塞，立即返回。"""
+        return None
+
+
+class _EventDispatcherHandlerBuilder:
+    """模拟 lark.EventDispatcherHandler.builder() 链。"""
+
+    def __init__(self, encryption_key: str = "", verification_token: str = ""):
+        self._handlers: list = []
+        self._encryption_key = encryption_key
+        self._verification_token = verification_token
+
+    def register_p2_im_message_receive_v1(self, handler):
+        self._handlers.append(("p2_im_message_receive_v1", handler))
+        return self
+
+    def build(self):
+        return MagicMock(name="EventDispatcherHandler", handlers=self._handlers)
+
+
+class _EventDispatcherHandler:
+    """模拟 lark.EventDispatcherHandler。"""
+
+    @staticmethod
+    def builder(encryption_key: str = "", verification_token: str = ""):
+        return _EventDispatcherHandlerBuilder(encryption_key, verification_token)
+
+
+class _WsModule:
+    """模拟 lark.ws 子模块。"""
+
+    Client = _WsClient
+
+
+_ws_module = types.ModuleType("lark_oapi.ws")
+_ws_module.Client = _WsClient
+_lark.ws = _WsModule
+_lark.EventDispatcherHandler = _EventDispatcherHandler
+
 
 # 注册到 sys.modules
 sys.modules["lark_oapi"] = _lark
 sys.modules["lark_oapi.api"] = _lark_api
 sys.modules["lark_oapi.api.im"] = _lark_api_im
 sys.modules["lark_oapi.api.im.v1"] = _lark_api_im_v1
+sys.modules["lark_oapi.api.bot"] = _lark_api_bot
+sys.modules["lark_oapi.api.bot.v1"] = _lark_api_bot_v1
+sys.modules["lark_oapi.ws"] = _ws_module

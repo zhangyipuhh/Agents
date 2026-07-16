@@ -482,6 +482,22 @@ class FeishuSettings(BaseSettings):
         description="默认接收方类型：chat_id / open_id / user_id / email",
     )
     feishu_log_level: str = Field(default="INFO", description="飞书 SDK 日志级别")
+    feishu_ws_enabled: bool = Field(
+        default=False,
+        description="是否启用飞书 WebSocket 长连接接收消息（默认关闭，凭证就绪后开启）",
+    )
+    feishu_ws_agent_name: str = Field(
+        default="project",
+        description="飞书消息路由到的目标智能体名称（默认 project）",
+    )
+
+    @field_validator("feishu_ws_enabled", mode="before")
+    @classmethod
+    def parse_feishu_ws_enabled(cls, v):
+        """将字符串转换为布尔值。"""
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes", "on")
+        return bool(v)
 
 
 class SkillsSettings(BaseSettings):
@@ -714,6 +730,8 @@ class Settings(BaseSettings):
             "default_receive_id": self.feishu.feishu_default_receive_id,
             "default_receive_id_type": self.feishu.feishu_default_receive_id_type,
             "log_level": self.feishu.feishu_log_level,
+            "ws_enabled": self.feishu.feishu_ws_enabled,
+            "ws_agent_name": self.feishu.feishu_ws_agent_name,
         }
 
 

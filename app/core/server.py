@@ -374,6 +374,48 @@ async def lifespan(app: FastAPI):
             "EmailConfigService not initialized"
         )
 
+    # 2026-07-16 新增：飞书 WebSocket 长连接（订阅 im.message.receive_v1，被动接收消息）
+    # 受 settings.feishu.feishu_ws_enabled 控制；默认关闭，凭证就绪后开启
+    try:
+        from app.shared.tools.skills.feishu.FeishuClient import get_lark_client
+        if settings.feishu.feishu_ws_enabled:
+            if not hasattr(app.state, "agent_config_service") or app.state.agent_config_service is None:
+                logging.warning(
+                    "[lifespan] FeishuWebSocketService skipped: agent_config_service 未初始化"
+                )
+                app.state.feishu_ws_service = None
+            else:
+                from app.shared.tools.skills.feishu.FeishuWebSocketService import (
+                    FeishuWebSocketService,
+                )
+                ws_service = FeishuWebSocketService(
+                    lark_client=get_lark_client(),
+                    agent_config_service=app.state.agent_config_service,
+                    agent_name=settings.feishu.feishu_ws_agent_name,
+                    log_level=settings.feishu.feishu_log_level,
+                )
+                # 注入主事件循环，供后台 SDK 回调投递协程
+                import asyncio as _asyncio
+                ws_service.set_event_loop(_asyncio.get_event_loop())
+                await ws_service.start_async()
+                app.state.feishu_ws_service = ws_service
+                logging.info(
+                    "[lifespan] FeishuWebSocketService started (agent_name=%s)",
+                    settings.feishu.feishu_ws_agent_name,
+                )
+        else:
+            app.state.feishu_ws_service = None
+            logging.info(
+                "[lifespan] FeishuWebSocketService disabled (feishu_ws_enabled=false)"
+            )
+    except Exception as ws_exc:
+        logging.warning(
+            "[lifespan] FeishuWebSocketService start failed: %s",
+            type(ws_exc).__name__,
+            exc_info=True,
+        )
+        app.state.feishu_ws_service = None
+
     print("[DEBUG] lifespan yield 即将执行")
     yield
     print("[DEBUG] lifespan yield 后，清理资源")
@@ -405,6 +447,18 @@ async def lifespan(app: FastAPI):
     except Exception as cleanup_exc:
         logging.warning(
             "[lifespan] Failed to cleanup ScriptDiscoveryService: %s",
+            type(cleanup_exc).__name__,
+        )
+
+    # 2026-07-16 新增：清理飞书 WebSocket 服务
+    try:
+        if hasattr(app.state, "feishu_ws_service") and app.state.feishu_ws_service is not None:
+            app.state.feishu_ws_service.stop()
+            app.state.feishu_ws_service = None
+            logging.info("[lifespan] FeishuWebSocketService stopped")
+    except Exception as cleanup_exc:
+        logging.warning(
+            "[lifespan] Failed to stop FeishuWebSocketService: %s",
             type(cleanup_exc).__name__,
         )
 
