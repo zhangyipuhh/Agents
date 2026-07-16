@@ -770,8 +770,7 @@ onMounted(async () => {
 .inline-field {
   flex-direction: row;
   align-items: center;
-  gap: 8px;
-  grid-column: 1 / -1;
+  gap: 4px;
   justify-self: start;
 }
 
@@ -779,6 +778,10 @@ onMounted(async () => {
   width: auto;
   flex: 0 0 auto;
   margin: 0;
+}
+
+.inline-field span {
+  white-space: nowrap;
 }
 
 .form-field.full,

@@ -1161,6 +1161,12 @@ onMounted(loadInitialData)
 .inline-field {
   flex-direction: row;
   align-items: center;
+  gap: 4px;
+  justify-self: start;
+}
+
+.inline-field span {
+  white-space: nowrap;
 }
 
 .form-field.full,

@@ -318,7 +318,8 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 
 ### 前端
 
-- `web/Agent/src/components/EmailSettingsManager.vue` —— 邮件设置组件（3 Tab：服务器配置 / 发送策略 / 测试发送）。服务器配置表单采用 2 列网格；`密码 / 授权码` 跨两列；`使用 SMTP_SSL` 与 `启用此配置` 两个复选框（`.inline-field`）独占全宽行（`grid-column: 1 / -1` + `justify-self: start`）并置于操作按钮之前。
+- `web/Agent/src/components/EmailSettingsManager.vue` —— 邮件设置组件（3 Tab：服务器配置 / 发送策略 / 测试发送）。服务器配置表单采用 2 列网格；`密码 / 授权码` 跨两列；`使用 SMTP_SSL` 与 `启用此配置` 两个复选框（`.inline-field`，`gap: 4px` + `justify-self: start`，只占内容宽度，左对齐）并置于操作按钮之前。
+- `web/Agent/src/components/TaskSchedulerManager.vue` —— 任务计划组件，表单 `保存后启用任务` 复选框使用 `.inline-field`（`gap: 4px` + `justify-self: start`，与 `EmailSettingsManager` 保持一致的紧凑左对齐风格）。
 - 在 `web/Agent/src/components/UserSettingsDialog.vue` 中作为「邮件设置」侧边栏项（位于「定时任务」下方，admin 可见）。
 - API 封装位于 `web/Agent/src/utils/api.js`：`fetchEmailServerConfig` / `updateEmailServerConfig` / `testEmailServerConfig` / `fetchEmailableUsers` / `fetchEmailPolicies` / `createEmailPolicy` / `updateEmailPolicy` / `deleteEmailPolicy` / `sendTestEmail`（multipart/form-data）/ `sendEmailByPolicy`。
 
@@ -596,6 +597,12 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 **配置项**：`settings.script_scan_enabled: bool`（`app/core/config/settings.py` L598）控制是否启用脚本扫描。
 
 **前端**：`web/Agent/src/components/TaskSchedulerManager.vue` 新增 TAB_SCRIPT tab 页，含扫描按钮、summary 统计、脚本表格；任务表单的 `select` 改造为 `target_type` + 条件子 select（agent/script），创建/更新 payload 根据 `target_type` 分支构造。
+
+**调度表单字段契约**：
+- 「执行频率」可选 6 种类型（daily / weekly / monthly / yearly / interval_minutes / interval_hours），对应不同的 cron 表达式
+- 「执行时间」字段（小时 + 分钟）由 `v-if="scheduleConfig.type !== 'interval_minutes' && scheduleConfig.type !== 'interval_hours'"` 控制显隐；interval 模式下 cron 表达式为 `*/N * * * *` 或 `0 */N * * *`，hour/minute 已被强制丢弃，UI 不展示这两个字段以避免误导
+- 切换「执行频率」时 form 字段即时联动；切回非 interval 模式后「执行时间」字段重新出现
+- `data-testid="schedule-time"` / `schedule-hour` / `schedule-minute` 在 interval 模式下不存在，单元测试用 `wrapper.find('[data-testid="schedule-time"]').exists()` 断言显隐
 
 **测试覆盖**：
 - `app/tests/scripts/test_registry.py`（10 用例）：装饰器注册、重复名拒绝、签名校验、registry 清理
