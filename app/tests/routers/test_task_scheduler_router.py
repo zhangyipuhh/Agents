@@ -286,3 +286,42 @@ def test_create_agent_task_with_script_name_returns_422(client, admin_headers):
     )
 
     assert response.status_code == 422
+
+
+def test_create_task_schedule_empty_name_returns_422(client, admin_headers):
+    """测试 name 为空字符串时返回 422（Pydantic min_length=1 校验）。
+
+    复现 2026-07-16 排查过程中前端表单忘记填任务名称直接提交的场景：
+    后端 CreateTaskScheduleRequest.name 字段的 min_length=1 校验会拒绝空字符串，
+    此时 detail 应为 [{type:"string_too_short", loc:["body","name"], msg:"..."}]。
+
+    参数:
+        client: TestClient fixture。
+        admin_headers: admin 身份头 fixture。
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 状态码非 422 时失败
+    """
+    response = client.post(
+        "/api/admin/task-schedules",
+        headers=admin_headers,
+        json={
+            "name": "",  # 故意为空字符串，触发 Pydantic min_length=1
+            "target_type": "script",
+            "script_name": "hello_script",
+            "cron_expression": "*/5 * * * *",
+            "timezone": "Asia/Shanghai",
+            "enabled": True,
+            "context_overrides": {},
+        },
+    )
+
+    assert response.status_code == 422
+    detail = response.json().get("detail")
+    assert isinstance(detail, list), "Pydantic 422 detail 应为列表"
+    assert any(d.get("loc") == ["body", "name"] for d in detail), (
+        "期望 detail 中包含 loc=['body','name'] 的字段错误"
+    )

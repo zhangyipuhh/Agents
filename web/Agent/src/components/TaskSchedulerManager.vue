@@ -511,6 +511,11 @@ function startCreate() {
  * @throws {Error} context_overrides 或 script_args JSON 非法时抛出
  */
 function buildPayload() {
+  // 前端防御性校验：任务名称为空时直接拦截，避免触发后端 422。
+  const trimmedName = form.name.trim()
+  if (!trimmedName) {
+    throw new Error('任务名称不能为空')
+  }
   let contextOverrides = {}
   try {
     contextOverrides = contextJson.value.trim() ? JSON.parse(contextJson.value) : {}
@@ -518,7 +523,7 @@ function buildPayload() {
     throw new Error('上下文 JSON 格式不正确')
   }
   const payload = {
-    name: form.name.trim(),
+    name: trimmedName,
     description: form.description.trim(),
     target_type: form.target_type,
     cron_expression: buildCronExpression(scheduleConfig).trim(),
@@ -565,7 +570,16 @@ async function saveTask() {
       await refreshSchedules(updated.id)
     }
   } catch (error) {
-    errorMessage.value = error.message || '保存任务失败'
+    // 优先取 err.detail（Pydantic 422 数组已由 api.js 解析）；
+    // 兜底用 error.message，避免在 error 非 Error 对象时显示 [object Object]。
+    const detail = error && error.detail
+    if (Array.isArray(detail)) {
+      errorMessage.value = detail
+        .map((d) => `${(d.loc || []).slice(1).join('.') || '字段'}: ${d.msg}`)
+        .join('；')
+    } else {
+      errorMessage.value = (error && error.message) || '保存任务失败'
+    }
   } finally {
     isSaving.value = false
   }

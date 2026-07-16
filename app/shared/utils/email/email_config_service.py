@@ -85,6 +85,38 @@ class EmailConfigService:
             ) from exc
         return self._fernet
 
+    @staticmethod
+    def _to_db_str(value: Any) -> str:
+        """将 Fernet 密文规范化为可写入 ``TEXT`` 列的字符串。
+
+        ``email_server_configs.password_encrypted`` 列类型为 ``TEXT``，
+        asyncpg 对 ``TEXT`` 列不接受 ``bytes``（会抛
+        ``DataError: expected str, got bytes``）。Fernet 加密结果天然
+        是 ``bytes``，因此在写入前统一规范化为 ``str``（Fernet token
+        仅含 url-safe base64 ASCII 字符，可用 ``ascii`` 解码）。
+
+        参数:
+            value: 密文（``bytes`` 或 ``str``）。
+
+        返回:
+            str: 规范化后的密文字符串。
+
+        异常:
+            EmailConfigError: 输入不是合法的 Fernet token（解码失败）时抛出。
+        """
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (bytes, bytearray)):
+            try:
+                return bytes(value).decode("ascii")
+            except UnicodeDecodeError as exc:
+                raise EmailConfigError(
+                    "Fernet 密文包含非 ASCII 字符，无法存入 TEXT 列"
+                ) from exc
+        raise EmailConfigError(
+            f"password_encrypted 类型非法，期望 bytes/str，实际 {type(value).__name__}"
+        )
+
     # ------------------------------------------------------------------
     # Preload
     # ------------------------------------------------------------------
@@ -209,9 +241,12 @@ class EmailConfigService:
             encrypted_existing = existing["password_encrypted"]
             if isinstance(encrypted_existing, str):
                 encrypted_existing = encrypted_existing.encode("ascii")
-            encrypted = encrypted_existing
+            # 归一化为 str 后再写库（TEXT 列不接受 bytes）
+            encrypted = self._to_db_str(encrypted_existing)
         else:
-            encrypted = fernet.encrypt(config.password.encode("utf-8"))
+            encrypted = self._to_db_str(
+                fernet.encrypt(config.password.encode("utf-8"))
+            )
 
         if existing is not None:
             row = await self._db.fetchrow(
@@ -252,6 +287,14 @@ class EmailConfigService:
     async def test_connection(self, config: EmailServerConfig) -> Dict[str, Any]:
         """测试 SMTP 连接（不发送邮件）。
 
+        异常分类（便于前端展示与服务器日志定位）：
+        - ``smtplib.SMTPAuthenticationError`` → 535 等授权错误（账号/授权码错）
+        - ``ssl.SSLError`` → SSL 握手失败（证书校验 / 协议版本 / 端口被 RST）
+        - ``smtplib.SMTPServerDisconnected`` → 服务器主动关闭连接
+          （常见原因：账号域名不被该 SMTP 服务器识别，如企业邮用 smtp.qq.com）
+        - ``OSError`` / ``socket.gaierror`` → 网络层失败（DNS / 防火墙阻断）
+        - 其他异常 → 兜底返回
+
         参数:
             config: 待测试的 SMTP 配置。
 
@@ -272,10 +315,64 @@ class EmailConfigService:
                         smtp.login(config.username, config.password)
             return {"success": True, "message": "SMTP 连接成功"}
         except smtplib.SMTPAuthenticationError as exc:
+            logger.warning(
+                "[email_config_service] test_connection auth failed: %s", exc, exc_info=True
+            )
             return {"success": False, "message": f"SMTP 认证失败: {exc}"}
+        except smtplib.SMTPServerDisconnected as exc:
+            logger.warning(
+                "[email_config_service] test_connection server disconnected: %s",
+                exc, exc_info=True,
+            )
+            return {
+                "success": False,
+                "message": (
+                    f"服务器主动断开连接: {exc}。"
+                    "可能原因：账号域名（如 foxmail.com.cn / 企业邮）不被该 SMTP 服务器识别；"
+                    "可尝试切换主机（如 smtp.qq.com → smtp.exmail.qq.com）。"
+                ),
+            }
         except smtplib.SMTPConnectError as exc:
-            return {"success": False, "message": f"SMTP 连接失败: {exc}"}
+            logger.warning(
+                "[email_config_service] test_connection connect failed: %s",
+                exc, exc_info=True,
+            )
+            hint = (
+                "若正在使用 SSL(465)，请取消勾选改用 STARTTLS(587) 后重试。"
+                if config.use_ssl
+                else "请检查端口与主机是否正确，或确认网络环境未对该端口做 RST 阻断。"
+            )
+            return {"success": False, "message": f"SMTP 连接失败: {exc}。{hint}"}
+        except ssl.SSLError as exc:
+            logger.warning(
+                "[email_config_service] test_connection SSL failed: %s",
+                exc, exc_info=True,
+            )
+            return {
+                "success": False,
+                "message": (
+                    f"SSL 握手失败: {exc}。"
+                    "可能原因：证书校验失败 / 端口被防火墙 RST / 协议版本不兼容；"
+                    "可尝试取消勾选 SMTP_SSL 改用 587（STARTTLS）。"
+                ),
+            }
+        except OSError as exc:
+            logger.warning(
+                "[email_config_service] test_connection network failed: %s",
+                exc, exc_info=True,
+            )
+            return {
+                "success": False,
+                "message": (
+                    f"网络层失败: {exc}。"
+                    "可能原因：DNS 无法解析 / 主机不可达 / 防火墙阻断 / 端口被运营商拦截。"
+                ),
+            }
         except Exception as exc:
+            logger.warning(
+                "[email_config_service] test_connection unexpected failure: %s",
+                exc, exc_info=True,
+            )
             return {"success": False, "message": f"SMTP 测试失败: {exc}"}
 
     # ------------------------------------------------------------------

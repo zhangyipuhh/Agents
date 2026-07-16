@@ -2256,8 +2256,28 @@ export async function createTaskSchedule(payload) {
     body: JSON.stringify(payload),
   })
   if (!response.ok) {
-    const detail = await response.json().catch(() => ({}))
-    throw new Error(detail.detail || `创建定时任务失败: ${response.status}`)
+    // Pydantic 校验失败时 detail 是数组 [{loc, msg, type}, ...]；
+    // 简单后端错误时 detail 是字符串。这里把 detail 解析成可读中文消息，
+    // 避免上层 catch 时 `error.message` 显示 `[object Object]`。
+    let detail = null
+    try { detail = (await response.json()).detail } catch {}
+    let message
+    if (Array.isArray(detail)) {
+      message = detail
+        .map((d) => {
+          const field = (d.loc || []).slice(1).join('.') || '字段'
+          return `${field}: ${d.msg}`
+        })
+        .join('；')
+    } else if (typeof detail === 'string' && detail) {
+      message = detail
+    } else {
+      message = `创建定时任务失败: ${response.status}`
+    }
+    const err = new Error(message)
+    err.status = response.status
+    err.detail = detail
+    throw err
   }
   return response.json()
 }

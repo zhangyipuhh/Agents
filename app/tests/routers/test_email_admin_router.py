@@ -5,7 +5,8 @@ Email Admin Router 测试模块。
 验证 /api/admin/email/* 路由的注册、SMTP 配置 CRUD、策略 CRUD、
 测试连接与邮件发送接口的权限控制与成功/失败路径。
 """
-from unittest.mock import AsyncMock, patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -288,3 +289,144 @@ class MockConfig:
     password = "authcode"
     sender_name = "管理员"
     enabled = True
+
+
+# =============================================================================
+# P1: bytes→str 归一化（service 层覆盖，避免 asyncpg bytes/str 类型错误）
+# =============================================================================
+
+def _build_upsert_capture_db(encrypt_token_bytes: bytes = b"gAAAAABqStub=="):
+    """构造一个能捕获 upsert SQL 参数的 fake db。
+
+    第一次 fetchrow：查询现有记录，返回 None（新建场景）或包含
+    password_encrypted 的 record（更新场景）。
+    第二次 fetchrow：执行 INSERT/UPDATE 并返回 id/updated_at。
+    """
+    captured: dict = {"params": None}
+
+    async def fake_fetchrow(sql: str, *args, **kwargs):
+        captured["params"] = args
+        if "SELECT id, password_encrypted FROM email_server_configs" in sql:
+            # 查询现有启用配置
+            return None  # 由调用方在测试中通过 monkeypatch 切换
+        return {"id": 1, "updated_at": "2026-07-16T00:00:00Z"}
+
+    db = MagicMock()
+    db.fetchrow = AsyncMock(side_effect=fake_fetchrow)
+    return db, captured
+
+
+def test_upsert_new_config_writes_str_not_bytes(monkeypatch):
+    """测试新增配置时 password_encrypted 入库参数是 str（不是 bytes）。
+
+    覆盖场景：前端填写新密码保存 → fernet.encrypt 返回 bytes →
+    upsert_server_config 写入前必须 _to_db_str 归一化，
+    否则 asyncpg 会抛 ``DataError: expected str, got bytes``。
+    """
+    from cryptography.fernet import Fernet
+    from app.shared.utils.email.email_config_service import EmailConfigService
+    from app.shared.utils.email.email_models import EmailServerConfig
+
+    credential_key = Fernet.generate_key().decode()
+    db, captured = _build_upsert_capture_db()
+    # 第一次 fetchrow（查询现有）返回 None → 走 INSERT 分支
+    db.fetchrow = AsyncMock(side_effect=[
+        None,  # SELECT existing
+        {"id": 1, "updated_at": "2026-07-16T00:00:00Z"},  # INSERT RETURNING
+    ])
+
+    service = EmailConfigService(db=db, credential_key=credential_key)
+    config = EmailServerConfig(
+        host="smtp.qq.com",
+        port=465,
+        use_ssl=True,
+        username="x@qq.com",
+        password="new-authcode",
+        sender_name="",
+        enabled=True,
+    )
+
+    result = asyncio.run(service.upsert_server_config(config, keep_existing_password=False))
+
+    assert result["id"] == 1
+    # 第二次 fetchrow（INSERT）的参数，password_encrypted 应该是 str
+    insert_call = db.fetchrow.call_args_list[1]
+    insert_params = insert_call.args[1:]  # 跳过 SQL
+    password_param = insert_params[4]  # $5 = password_encrypted
+    assert isinstance(password_param, str), (
+        f"password_encrypted 应为 str，实际 {type(password_param).__name__}"
+    )
+
+
+def test_upsert_keep_existing_password_writes_str_not_bytes():
+    """测试 keep_existing_password=True 时入参也是 str。
+
+    覆盖核心 bug：DB 返回的 password_encrypted 是 bytes → upsert 写入前
+    必须归一化为 str。这是本次 500 错误的直接成因。
+    """
+    from cryptography.fernet import Fernet
+    from app.shared.utils.email.email_config_service import EmailConfigService
+    from app.shared.utils.email.email_models import EmailServerConfig
+
+    credential_key = Fernet.generate_key().decode()
+    fernet = Fernet(credential_key.encode("ascii"))
+    existing_encrypted = fernet.encrypt(b"original-authcode")
+
+    db = MagicMock()
+    db.fetchrow = AsyncMock(side_effect=[
+        {"id": 7, "password_encrypted": existing_encrypted},  # SELECT existing
+        {"id": 7, "updated_at": "2026-07-16T00:00:00Z"},  # UPDATE RETURNING
+    ])
+
+    service = EmailConfigService(db=db, credential_key=credential_key)
+    config = EmailServerConfig(
+        host="smtp.qq.com",
+        port=465,
+        use_ssl=True,
+        username="x@qq.com",
+        password="",  # 留空表示不修改
+        sender_name="",
+        enabled=True,
+    )
+
+    result = asyncio.run(service.upsert_server_config(config, keep_existing_password=True))
+
+    assert result["id"] == 7
+    # 第二次 fetchrow（UPDATE）的参数，password_encrypted 应该是 str
+    update_call = db.fetchrow.call_args_list[1]
+    update_params = update_call.args[1:]
+    password_param = update_params[4]  # $5 = password_encrypted
+    assert isinstance(password_param, str), (
+        f"keep_existing_password=True 时 password_encrypted 应为 str，实际 {type(password_param).__name__}"
+    )
+    # 关键：写入的 str 必须能用 fernet 解密回原密码（数据不损坏）
+    decrypted = fernet.decrypt(password_param.encode("ascii")).decode("utf-8")
+    assert decrypted == "original-authcode"
+
+
+def test_upsert_keep_existing_password_raises_when_no_record():
+    """回归测试：keep_existing_password=True 但 DB 无记录时抛 EmailConfigError。"""
+    from cryptography.fernet import Fernet
+    from app.shared.utils.email.email_config_service import (
+        EmailConfigError,
+        EmailConfigService,
+    )
+    from app.shared.utils.email.email_models import EmailServerConfig
+
+    credential_key = Fernet.generate_key().decode()
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value=None)  # 无现有记录
+
+    service = EmailConfigService(db=db, credential_key=credential_key)
+    config = EmailServerConfig(
+        host="smtp.qq.com",
+        port=465,
+        use_ssl=True,
+        username="x@qq.com",
+        password="",
+        sender_name="",
+        enabled=True,
+    )
+
+    with pytest.raises(EmailConfigError):
+        asyncio.run(service.upsert_server_config(config, keep_existing_password=True))

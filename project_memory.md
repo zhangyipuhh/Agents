@@ -267,6 +267,14 @@ asyncio.run(EmailService(config).send_email(
 
 `email_server_configs` 字段：id / host / port / use_ssl / username / password_encrypted / sender_name / enabled / created_at / updated_at。通过 `CREATE UNIQUE INDEX ... WHERE enabled = TRUE` 保证全局仅一条启用配置。
 
+#### `password_encrypted` 列类型与 Fernet 写入约定
+
+列类型固定为 `TEXT`（**不**用 `BYTEA`）。asyncpg 对 `TEXT` 列不接受 `bytes` 入参，会抛 `DataError: expected str, got bytes`；而 Fernet `encrypt()` / `decrypt()` 默认返回 `bytes`。因此：
+
+- **写库前**：`EmailConfigService._to_db_str(value)` 把 `bytes` 用 `ascii` 解码为 `str`，再作为 `$5` 参数传给 `INSERT` / `UPDATE` SQL。Fernet token 仅含 url-safe base64 ASCII 字符，解码零成本。
+- **读库后**：`EmailConfigService.get_active_server_config()` 将 `str` 字段 `encode("ascii")` 回 `bytes` 再喂给 `fernet.decrypt(...)`。
+- 两方向不能合并：service 必须同时维护「bytes → DB（str）」与「DB（str） → bytes」两条归一化路径，任何一边遗漏都会立刻抛异常。
+
 `email_policies` 字段：id / name / description / created_by_user_id (FK→users) / created_at / updated_at。
 
 `email_policy_recipients` 字段：policy_id (FK→email_policies, CASCADE) / user_id (FK→users, CASCADE)，联合主键。
@@ -316,12 +324,14 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 
 ### 设计决策
 
-1. **SMTP 协议**：`SMTP_SSL` (465) 优先，`SMTP+starttls` (587) 备选（QQ 邮箱官方推荐 465）。
+1. **SMTP 协议**：`SMTP_SSL` (465) 与 `SMTP+starttls` (587) 二选一，由前端表单 `use_ssl` 勾选框决定（QQ 邮箱官方推荐 587+STARTTLS，465 在部分网络环境会被运营商 RST）。**不应**硬编码为某一端。
 2. **认证方式**：用户名 + 密码（QQ 用授权码），不实现 OAuth2。
 3. **附件支持**：`email.message.EmailMessage.add_attachment`，Python 标准库，无需额外依赖。
 4. **密码加密**：复用 `DEVOPS_CREDENTIAL_KEY`（Fernet），避免新增加密基础设施。
 5. **策略范围**：仅收件人集合（用户确认），不含主题/正文模板；调用方负责主题/正文。
 6. **不实现定时触发**：策略仅是收件人集合，定时发邮件可通过 `agent_task_schedules.target_type='script'` 调用邮件脚本实现。
+7. **SMTP 主机与账号域名一致性**：`username` 的域名后缀必须与 `host` 指向的 SMTP 服务匹配。个人 QQ 邮箱 → `smtp.qq.com`；腾讯企业邮箱 → `smtp.exmail.qq.com`；不匹配时服务器会在协议握手后主动断开连接（`smtplib.SMTPServerDisconnected`）。`test_connection` 已对该类异常做单独捕获并给出切换主机建议。
+8. **test_connection 异常分类**：错误消息按 `SMTPAuthenticationError` / `SMTPServerDisconnected` / `SMTPConnectError` / `ssl.SSLError` / `OSError` / 其他 6 类细分返回，便于前端展示与日志定位（全部带 `logger.warning` 调用栈）。
 
 ## Agent 统一构造入口（2026-06-29 新增）
 
