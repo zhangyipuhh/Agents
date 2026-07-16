@@ -2068,7 +2068,7 @@ system_prompt = (
 
 **session_id 格式**：
 - 私聊：`feishu:p2p:{open_id}`（按用户区分会话上下文）
-- 群聊：`feishu:group:{chat_id}`（按群区分会话上下文）
+- 群聊：`feishu:group:{chat_id}:{open_id}`（**Per-User in Group**，2026-07-16 调整）—— 同群不同用户各自维护独立会话上下文，避免群里所有人的消息堆到同一个 LangGraph checkpointer thread 导致上下文无限膨胀、token 飙升
 
 **群聊@机器人检测**：
 1. 优先匹配 `data.event.message.mentions[].id.open_id == <bot_open_id>`（启动时通过 `client.bot.v3.bot.get` 一次性缓存）

@@ -344,6 +344,12 @@ class FeishuWebSocketService:
     def _build_session_id(self, chat_type: str, chat_id: str, open_id: str) -> str:
         """构造 session_id，私聊/群聊分别隔离会话上下文。
 
+        策略（2026-07-16 调整）：
+            - 私聊（p2p）：按用户 open_id 区分，每个用户独立会话上下文
+            - 群聊（group）：按 chat_id + open_id 组合区分，每位用户在每个群里
+              各自维护独立会话上下文。这样能避免群里所有人的消息都堆到一个
+              LangGraph checkpointer thread 中导致上下文无限膨胀、token 飙升。
+
         Args:
             chat_type: p2p / group
             chat_id: 飞书 chat_id
@@ -353,7 +359,7 @@ class FeishuWebSocketService:
             str: session_id
         """
         if chat_type == "group":
-            return f"feishu:group:{chat_id}"
+            return f"feishu:group:{chat_id}:{open_id}"
         return f"feishu:p2p:{open_id}"
 
     def _dispatch_async(self, coro: Any) -> None:

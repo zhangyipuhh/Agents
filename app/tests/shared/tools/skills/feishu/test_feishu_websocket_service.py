@@ -133,18 +133,26 @@ def test_extract_message_invalid_json_text():
 # ---------------------------------------------------------------------------
 # P1 session_id 构造
 # ---------------------------------------------------------------------------
+def test_build_session_id_group():
+    """P1：群聊 session_id 按群 + 用户区分（Per-User in Group，2026-07-16）。"""
+    svc = _make_service()
+    sid = svc._build_session_id("group", "oc_group_001", "ou_bob")
+    assert sid == "feishu:group:oc_group_001:ou_bob"
+
+
+def test_build_session_id_group_isolates_per_user():
+    """P2：同群不同用户产生独立 session_id。"""
+    svc = _make_service()
+    sid_a = svc._build_session_id("group", "oc_g1", "ou_alice")
+    sid_b = svc._build_session_id("group", "oc_g1", "ou_bob")
+    assert sid_a != sid_b
+
+
 def test_build_session_id_p2p():
     """P1：私聊 session_id 按用户区分。"""
     svc = _make_service()
     sid = svc._build_session_id("p2p", "oc_chat_001", "ou_alice")
     assert sid == "feishu:p2p:ou_alice"
-
-
-def test_build_session_id_group():
-    """P1：群聊 session_id 按群区分。"""
-    svc = _make_service()
-    sid = svc._build_session_id("group", "oc_group_001", "ou_bob")
-    assert sid == "feishu:group:oc_group_001"
 
 
 # ---------------------------------------------------------------------------
