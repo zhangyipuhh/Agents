@@ -372,7 +372,12 @@ onMounted(async () => {
       <header class="detail-header">
         <div>
           <h3>SMTP 服务器配置</h3>
-          <p>配置 QQ 邮箱 SMTP_SSL（465）+ 授权码；密码留空表示不修改原密码。</p>
+          <p>
+            配置 QQ 邮箱 SMTP：SSL(465) 或 STARTTLS(587) 二选一（QQ 官方推荐 587）。
+            若 465 报「SSL 握手失败」「服务器主动断开」，请取消勾选改用 587；
+            若账号是企业邮箱，请把主机从 <code>smtp.qq.com</code> 改为
+            <code>smtp.exmail.qq.com</code>。密码留空表示不修改原密码。
+          </p>
         </div>
       </header>
 
@@ -387,7 +392,7 @@ onMounted(async () => {
         </label>
         <label class="inline-field">
           <input v-model="serverConfig.use_ssl" type="checkbox" />
-          <span>使用 SMTP_SSL（取消则走 STARTTLS）</span>
+          <span>使用 SMTP_SSL（取消则走 STARTTLS，推荐 587）</span>
         </label>
         <label class="form-field">
           <span>登录账号 *</span>
