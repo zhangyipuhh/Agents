@@ -21,14 +21,18 @@ import {
   fetchTaskRuns,
   fetchDevOpsServers,
   scanDevOpsServers,
+  fetchScripts,
+  scanScripts,
 } from '../utils/api.js'
 
 const TAB_TASK = 'task'
 const TAB_SCAN = 'scan'
+const TAB_SCRIPT = 'script'
 
 const TAB_LABELS = [
   { id: TAB_TASK, label: '编辑任务' },
   { id: TAB_SCAN, label: '服务器扫描入库' },
+  { id: TAB_SCRIPT, label: '脚本扫描入库' },
 ]
 
 const schedules = ref([])
@@ -55,17 +59,34 @@ const scanSuccessMessage = ref('')
 const scanSummary = ref(null)
 const hasLoaded = ref(false)
 
+// 脚本扫描状态
+const scripts = ref([])
+const isLoadingScripts = ref(false)
+const isScanningScripts = ref(false)
+const scriptError = ref('')
+const scriptSuccess = ref('')
+const scanScriptSummary = ref(null)
+const hasLoadedScripts = ref(false)
+const scriptArgsJson = ref('{}')
+
 // 扫描结果只接受这 4 个数字；任何未知敏感字段都不会进入 DOM
 const SUMMARY_FIELDS = ['scanned', 'inserted', 'updated', 'failed']
 
 // 服务器字段白名单：仅显示这些键，绝不显示敏感字段
 const SERVER_WHITELIST = ['id', 'business_name', 'server_type', 'updated_at']
 
+// 脚本展示白名单字段：仅显示这些键，绝不显示 func 等内部对象
+const SCRIPT_PUBLIC_FIELDS = ['name', 'display_name', 'description', 'module_path']
+const SCRIPT_SUMMARY_FIELDS = ['scanned', 'registered', 'failed']
+
 const form = reactive({
   name: '',
   description: '',
+  target_type: 'agent',
   agent_name: '',
   prompt: '',
+  script_name: '',
+  script_args: {},
   timezone: 'Asia/Shanghai',
   enabled: true,
   context_overrides: {},
@@ -279,9 +300,10 @@ async function loadRuns(scheduleId) {
 
 /**
  * 切换 Tab。切到扫描 Tab 时按需加载服务器列表，并仅保留白名单字段。
- * 切回任务 Tab 时不再触发任何 devops 请求。
- * 第一次加载完成后置 ``hasLoaded=true``，之后切回再进入不再重复 GET。
- * @param {string} tabId - TAB_TASK 或 TAB_SCAN
+ * 切到脚本 Tab 时按需加载脚本列表。
+ * 切回任务 Tab 时不再触发任何 devops / scripts 请求。
+ * 第一次加载完成后置 ``hasLoaded=true`` / ``hasLoadedScripts=true``，之后切回再进入不再重复 GET。
+ * @param {string} tabId - TAB_TASK / TAB_SCAN / TAB_SCRIPT
  * @returns {Promise<void>} 无返回值
  */
 async function switchTab(tabId) {
@@ -289,6 +311,9 @@ async function switchTab(tabId) {
   activeTab.value = tabId
   if (tabId === TAB_SCAN && !hasLoaded.value) {
     await loadDevopsServers()
+  }
+  if (tabId === TAB_SCRIPT && !hasLoadedScripts.value) {
+    await loadScripts()
   }
 }
 
@@ -352,20 +377,98 @@ async function triggerServerScan() {
 }
 
 /**
+ * 加载已注册脚本列表（白名单字段过滤）。
+ * 仅保留 SCRIPT_PUBLIC_FIELDS 中的字段，绝不渲染 func 等内部对象。
+ * @returns {Promise<void>} 无返回值
+ */
+async function loadScripts() {
+  isLoadingScripts.value = true
+  scriptError.value = ''
+  try {
+    const raw = await fetchScripts()
+    scripts.value = (raw || []).map((item) => {
+      const safe = {}
+      for (const key of SCRIPT_PUBLIC_FIELDS) {
+        if (item && Object.prototype.hasOwnProperty.call(item, key)) {
+          safe[key] = item[key]
+        }
+      }
+      return safe
+    }).filter((item) => item && item.name)
+    hasLoadedScripts.value = true
+  } catch {
+    scriptError.value = '脚本列表加载失败'
+    scripts.value = []
+  } finally {
+    isLoadingScripts.value = false
+  }
+}
+
+/**
+ * 触发脚本目录扫描，成功后刷新列表。
+ * 带防重复提交：scanning 过程中再次点击会被忽略。
+ * @returns {Promise<void>} 无返回值
+ */
+async function triggerScriptScan() {
+  if (isScanningScripts.value) return
+  isScanningScripts.value = true
+  scriptError.value = ''
+  scriptSuccess.value = ''
+  scanScriptSummary.value = null
+  try {
+    const raw = await scanScripts()
+    const summary = { scanned: 0, registered: 0, failed: 0 }
+    for (const key of SCRIPT_SUMMARY_FIELDS) {
+      const v = Number(raw[key])
+      summary[key] = Number.isFinite(v) ? v : 0
+    }
+    scanScriptSummary.value = summary
+    scriptSuccess.value = `扫描完成：扫描 ${summary.scanned} 个文件，注册 ${summary.registered} 个脚本，失败 ${summary.failed} 个`
+    await loadScripts()
+  } catch {
+    scriptError.value = '扫描失败，请稍后重试'
+  } finally {
+    isScanningScripts.value = false
+  }
+}
+
+/**
+ * 目标类型切换时清理无关字段并按需加载脚本列表。
+ * 切到 agent 时清空 script_name/script_args；切到 script 时清空 agent_name/prompt。
+ */
+function onTargetTypeChange() {
+  if (form.target_type === 'agent') {
+    form.script_name = ''
+    form.script_args = {}
+    scriptArgsJson.value = '{}'
+  } else {
+    form.agent_name = ''
+    form.prompt = ''
+    if (!hasLoadedScripts.value) {
+      loadScripts()
+    }
+  }
+}
+
+/**
  * 将任务记录填充到表单。
  * @param {Object} schedule - 定时任务记录
  */
 function fillForm(schedule) {
   form.name = schedule.name || ''
   form.description = schedule.description || ''
+  form.target_type = schedule.target_type || 'agent'
   form.agent_name = schedule.agent_name || enabledAgents.value[0]?.name || ''
   form.prompt = schedule.prompt || ''
+  form.script_name = schedule.script_name || ''
+  form.script_args = schedule.script_args || {}
   Object.assign(scheduleConfig, parseCronExpression(schedule.cron_expression))
   form.timezone = schedule.timezone || 'Asia/Shanghai'
   form.enabled = schedule.enabled !== false
   form.context_overrides = schedule.context_overrides || {}
   form.max_concurrent_runs = schedule.max_concurrent_runs || 1
   contextJson.value = JSON.stringify(form.context_overrides, null, 2)
+  scriptArgsJson.value = JSON.stringify(form.script_args, null, 2)
 }
 
 /**
@@ -377,8 +480,11 @@ function startCreate() {
   runs.value = []
   form.name = ''
   form.description = ''
+  form.target_type = 'agent'
   form.agent_name = enabledAgents.value[0]?.name || ''
   form.prompt = ''
+  form.script_name = ''
+  form.script_args = {}
   Object.assign(scheduleConfig, {
     type: 'daily',
     weekday: '1',
@@ -393,14 +499,16 @@ function startCreate() {
   form.context_overrides = {}
   form.max_concurrent_runs = 1
   contextJson.value = '{}'
+  scriptArgsJson.value = '{}'
   errorMessage.value = ''
   successMessage.value = ''
 }
 
 /**
- * 构造提交 payload。
+ * 构造提交 payload。根据 target_type 分支构造：
+ * agent 任务包含 agent_name/prompt；script 任务包含 script_name/script_args。
  * @returns {Object} 后端请求体
- * @throws {Error} context_overrides JSON 非法时抛出
+ * @throws {Error} context_overrides 或 script_args JSON 非法时抛出
  */
 function buildPayload() {
   let contextOverrides = {}
@@ -409,17 +517,30 @@ function buildPayload() {
   } catch {
     throw new Error('上下文 JSON 格式不正确')
   }
-  return {
+  const payload = {
     name: form.name.trim(),
     description: form.description.trim(),
-    agent_name: form.agent_name,
-    prompt: form.prompt.trim(),
+    target_type: form.target_type,
     cron_expression: buildCronExpression(scheduleConfig).trim(),
     timezone: form.timezone.trim() || 'Asia/Shanghai',
     enabled: form.enabled,
     context_overrides: contextOverrides,
     max_concurrent_runs: Number(form.max_concurrent_runs) || 1,
   }
+  if (form.target_type === 'agent') {
+    payload.agent_name = form.agent_name
+    payload.prompt = form.prompt.trim()
+  } else {
+    let scriptArgs = {}
+    try {
+      scriptArgs = scriptArgsJson.value.trim() ? JSON.parse(scriptArgsJson.value) : {}
+    } catch {
+      throw new Error('脚本参数 JSON 格式不正确')
+    }
+    payload.script_name = form.script_name
+    payload.script_args = scriptArgs
+  }
+  return payload
 }
 
 /**
@@ -536,7 +657,12 @@ onMounted(loadInitialData)
         @click="selectSchedule(schedule)"
       >
         <span class="task-name">{{ schedule.name }}</span>
-        <span class="task-agent">{{ schedule.agent_name }}</span>
+        <span class="task-agent">
+          <span class="badge" :class="schedule.target_type === 'script' ? 'badge-script' : 'badge-agent'">
+            {{ schedule.target_type === 'script' ? '脚本' : '智能体' }}
+          </span>
+          {{ schedule.target_type === 'script' ? schedule.script_name : schedule.agent_name }}
+        </span>
         <span class="task-cron">{{ schedule.cron_expression }}</span>
         <span class="task-status" :class="schedule.enabled ? 'enabled' : 'disabled'">
           {{ schedule.enabled ? '已启用' : '已停用' }}
@@ -599,10 +725,26 @@ onMounted(loadInitialData)
             <input v-model="form.name" type="text" placeholder="例如：每日巡检" />
           </label>
           <label class="form-field">
+            <span>目标类型 *</span>
+            <select v-model="form.target_type" data-testid="schedule-target-type" @change="onTargetTypeChange">
+              <option value="agent">智能体</option>
+              <option value="script">脚本</option>
+            </select>
+          </label>
+          <label v-if="form.target_type === 'agent'" class="form-field">
             <span>目标智能体 *</span>
             <select v-model="form.agent_name" data-testid="schedule-agent">
               <option v-for="agent in enabledAgents" :key="agent.name" :value="agent.name">
                 {{ agent.display_name || agent.name }}（{{ agent.name }}）
+              </option>
+            </select>
+          </label>
+          <label v-else class="form-field">
+            <span>目标脚本 *</span>
+            <select v-model="form.script_name" data-testid="schedule-script" :disabled="isLoadingScripts">
+              <option value="" disabled>{{ isLoadingScripts ? '加载中...' : '请选择脚本' }}</option>
+              <option v-for="script in scripts" :key="script.name" :value="script.name">
+                {{ script.display_name || script.name }}（{{ script.name }}）
               </option>
             </select>
           </label>
@@ -676,9 +818,13 @@ onMounted(loadInitialData)
             <span>时区</span>
             <input v-model="form.timezone" type="text" placeholder="Asia/Shanghai" />
           </label>
-          <label class="form-field full">
+          <label v-if="form.target_type === 'agent'" class="form-field full">
             <span>任务提示词 *</span>
             <textarea v-model="form.prompt" rows="5" placeholder="描述定时触发时需要智能体完成的任务"></textarea>
+          </label>
+          <label v-else class="form-field full">
+            <span>脚本参数 (JSON)</span>
+            <textarea v-model="scriptArgsJson" rows="4" data-testid="schedule-script-args" placeholder='{"greeting":"Hello"}'></textarea>
           </label>
           <label class="form-field full">
             <span>描述</span>
@@ -716,7 +862,7 @@ onMounted(loadInitialData)
 
       <!-- 服务器扫描 Tab -->
       <section
-        v-else
+        v-else-if="activeTab === TAB_SCAN"
         :id="`panel-${TAB_SCAN}`"
         role="tabpanel"
         aria-labelledby="tab-scan"
@@ -811,6 +957,80 @@ onMounted(loadInitialData)
               <td>{{ row.business_name }}</td>
               <td>{{ row.server_type }}</td>
               <td>{{ row.updated_at }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 脚本扫描 Tab -->
+      <section
+        v-else-if="activeTab === TAB_SCRIPT"
+        :id="`panel-${TAB_SCRIPT}`"
+        role="tabpanel"
+        aria-labelledby="tab-script"
+        data-testid="panel-script"
+      >
+        <header class="detail-header">
+          <div>
+            <h3>脚本扫描入库</h3>
+            <p>扫描 app/scripts/ 目录下所有 .py 文件，通过 @register_script 装饰器注册到全局 registry。</p>
+          </div>
+          <div class="actions">
+            <button
+              type="button"
+              class="primary-btn"
+              data-testid="scan-scripts-btn"
+              :disabled="isScanningScripts"
+              :aria-busy="isScanningScripts ? 'true' : 'false'"
+              @click="triggerScriptScan"
+            >
+              <span v-if="isScanningScripts" data-testid="scan-scripts-loading">扫描中...</span>
+              <span v-else>立即扫描</span>
+            </button>
+          </div>
+        </header>
+
+        <div v-if="scriptError" class="alert error" role="alert" data-testid="scan-scripts-error">
+          {{ scriptError }}
+        </div>
+        <div v-if="scriptSuccess" class="alert success" data-testid="scan-scripts-status">
+          {{ scriptSuccess }}
+        </div>
+        <div
+          v-if="scanScriptSummary"
+          class="alert info summary"
+          data-testid="scan-scripts-summary"
+        >
+          <span data-testid="script-summary-scanned">扫描 {{ scanScriptSummary.scanned }}</span>
+          <span data-testid="script-summary-registered">注册 {{ scanScriptSummary.registered }}</span>
+          <span data-testid="script-summary-failed">失败 {{ scanScriptSummary.failed }}</span>
+        </div>
+
+        <div v-if="isLoadingScripts" class="empty-state" data-testid="scan-scripts-loading-list">
+          正在加载脚本列表...
+        </div>
+        <div v-else-if="!scripts.length" class="empty-state" data-testid="scan-scripts-empty">
+          暂无已注册脚本，点击「立即扫描」加载。
+        </div>
+        <table v-else class="data-table" data-testid="script-table">
+          <thead>
+            <tr>
+              <th scope="col">脚本名</th>
+              <th scope="col">显示名</th>
+              <th scope="col">描述</th>
+              <th scope="col">模块路径</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="s in scripts"
+              :key="s.name"
+              :data-testid="`script-row-${s.name}`"
+            >
+              <td>{{ s.name }}</td>
+              <td>{{ s.display_name }}</td>
+              <td>{{ s.description }}</td>
+              <td>{{ s.module_path }}</td>
             </tr>
           </tbody>
         </table>
@@ -1118,6 +1338,46 @@ input[type="number"] {
 }
 
 .server-table th {
+  background: #f9fafb;
+  color: #374151;
+  font-weight: 600;
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  margin-right: 4px;
+  font-weight: 600;
+}
+
+.badge-agent {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.badge-script {
+  background: #f3e5f5;
+  color: #7b1fa2;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 12px;
+}
+
+.data-table th,
+.data-table td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid #e5e7eb;
+  font-size: 13px;
+  color: #111827;
+}
+
+.data-table th {
   background: #f9fafb;
   color: #374151;
   font-weight: 600;

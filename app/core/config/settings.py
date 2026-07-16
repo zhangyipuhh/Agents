@@ -591,6 +591,14 @@ class Settings(BaseSettings):
         ge=1,
         description="智能体定时任务全局最大并发执行数；环境变量 TASK_SCHEDULER_MAX_CONCURRENCY",
     )
+    email_enabled: bool = Field(
+        default=True,
+        description="邮件系统总开关；环境变量 EMAIL_ENABLED",
+    )
+    script_scan_enabled: bool = Field(
+        default=True,
+        description="脚本扫描服务总开关；环境变量 SCRIPT_SCAN_ENABLED",
+    )
 
     def get_llm_config(self) -> dict:
         """

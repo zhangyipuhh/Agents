@@ -233,10 +233,31 @@ async def lifespan(app: FastAPI):
             # 顺序要求：必须晚于 AgentConfigService 依赖注入与缓存预加载，确保执行时可复用 build_agent_instance。
             if settings.task_scheduler_enabled and db_pool:
                 try:
+                    # 先初始化脚本发现服务（独立于 TaskSchedulerService，但会被注入）
+                    script_discovery_service = None
+                    if settings.script_scan_enabled:
+                        try:
+                            from pathlib import Path
+                            from app.core.config.paths import SCRIPTS_DIR
+                            from app.shared.utils.agent.script_discovery_service import ScriptDiscoveryService
+                            script_discovery_service = ScriptDiscoveryService(Path(SCRIPTS_DIR))
+                            await script_discovery_service.scan()
+                            app.state.script_discovery_service = script_discovery_service
+                            logging.info(
+                                "[lifespan] ScriptDiscoveryService initialized and scanned"
+                            )
+                        except Exception as scan_exc:
+                            logging.warning(
+                                "[lifespan] ScriptDiscoveryService init failed: %s",
+                                type(scan_exc).__name__,
+                            )
+                            app.state.script_discovery_service = None
+                    # 再初始化 TaskSchedulerService，注入 script_discovery_service
                     from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
                     app.state.task_scheduler_service = TaskSchedulerService(
                         db_pool,
                         app.state.agent_config_service,
+                        script_discovery_service=script_discovery_service,
                     )
                     await app.state.task_scheduler_service.preload_all()
                     await app.state.task_scheduler_service.start()
@@ -321,6 +342,38 @@ async def lifespan(app: FastAPI):
             "[lifespan] Database pool not available, DevOpsServerService not initialized"
         )
 
+    # 2026-07-16 新增：初始化 EmailConfigService（数据库为 SMTP 配置真相源）
+    # 复用 DEVOPS_CREDENTIAL_KEY 作为 Fernet 密钥加密 SMTP 密码字段
+    if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.email_enabled:
+        try:
+            from app.core.config.devops_diagnostics import diagnose_credential_key
+            from app.shared.utils.email.email_config_service import EmailConfigService
+
+            email_diag = diagnose_credential_key()
+            if not email_diag.ok:
+                app.state.email_config_service = None
+                logging.warning(
+                    "[lifespan] EmailConfigService skipped: %s | %s",
+                    email_diag.reason, email_diag.hint,
+                )
+            else:
+                app.state.email_config_service = EmailConfigService(
+                    db=DatabasePool._pool,
+                    credential_key=settings.devops.credential_key,
+                )
+                await app.state.email_config_service.preload_all()
+                logging.info("[lifespan] EmailConfigService initialized")
+        except Exception as email_exc:
+            logging.warning(
+                "[lifespan] Failed to initialize EmailConfigService: %s",
+                type(email_exc).__name__,
+            )
+    else:
+        logging.warning(
+            "[lifespan] Database pool not available or email disabled, "
+            "EmailConfigService not initialized"
+        )
+
     print("[DEBUG] lifespan yield 即将执行")
     yield
     print("[DEBUG] lifespan yield 后，清理资源")
@@ -341,6 +394,17 @@ async def lifespan(app: FastAPI):
     except Exception as cleanup_exc:
         logging.warning(
             "[lifespan] Failed to cleanup DevOpsServerService: %s",
+            type(cleanup_exc).__name__,
+        )
+
+    # 2026-07-16 新增：清理 ScriptDiscoveryService 引用
+    try:
+        if hasattr(app.state, "script_discovery_service"):
+            app.state.script_discovery_service = None
+        logging.info("[lifespan] ScriptDiscoveryService reference cleared")
+    except Exception as cleanup_exc:
+        logging.warning(
+            "[lifespan] Failed to cleanup ScriptDiscoveryService: %s",
             type(cleanup_exc).__name__,
         )
 

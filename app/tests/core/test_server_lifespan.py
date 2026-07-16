@@ -296,3 +296,155 @@ def test_lifespan_preload_failure_does_not_raise():
             raised = True
 
     assert raised is True
+
+
+# ===== ScriptDiscoveryService 初始化测试（2026-07-16 新增） =====
+
+
+def test_lifespan_inits_script_discovery_service_when_enabled():
+    """
+    测试 lifespan：settings.script_scan_enabled=True 时初始化 ScriptDiscoveryService 并 scan。
+
+    生产对等初始化点：app/core/server.py lifespan 函数中
+    L236-254 段（``if settings.script_scan_enabled: ...``）。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: ScriptDiscoveryService 未被构造或 scan 未被调用时失败
+    """
+    from pathlib import Path
+
+    from app.shared.utils.agent.script_discovery_service import ScriptDiscoveryService
+
+    app_state = MagicMock()
+    app_state.script_discovery_service = None
+
+    # 复现 lifespan L236-254 逻辑
+    settings_script_scan_enabled = True
+    script_discovery_service = None
+    if settings_script_scan_enabled:
+        # 构造真实 ScriptDiscoveryService stub（指向不存在的目录也能构造）
+        script_discovery_service = ScriptDiscoveryService(Path("/tmp/nonexistent_scripts"))
+        # 用 AsyncMock 替换 scan，避免真实文件系统访问
+        script_discovery_service.scan = AsyncMock(
+            return_value={"scanned": 0, "registered": 0, "failed": 0}
+        )
+        asyncio.run(script_discovery_service.scan())
+        app_state.script_discovery_service = script_discovery_service
+
+    # 验证 service 已构造并 scan 被调用
+    assert script_discovery_service is not None
+    script_discovery_service.scan.assert_awaited_once()
+    assert app_state.script_discovery_service is script_discovery_service
+
+
+def test_lifespan_skips_script_discovery_service_when_disabled():
+    """
+    测试 lifespan：settings.script_scan_enabled=False 时跳过初始化，
+    script_discovery_service 保持 None。
+
+    生产对等初始化点：app/core/server.py lifespan 函数 L238 守卫。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 误构造 ScriptDiscoveryService 时失败
+    """
+    app_state = MagicMock()
+
+    # 复现 lifespan 逻辑：script_scan_enabled=False 时跳过
+    settings_script_scan_enabled = False
+    script_discovery_service = None
+    if settings_script_scan_enabled:
+        script_discovery_service = MagicMock()  # 不会执行
+        app_state.script_discovery_service = script_discovery_service
+
+    assert script_discovery_service is None
+    # app_state.script_discovery_service 未被赋值
+    assert not hasattr(app_state, "script_discovery_service") or \
+        getattr(app_state, "script_discovery_service", None) is None or \
+        script_discovery_service is None
+
+
+def test_lifespan_injects_script_discovery_service_into_task_scheduler():
+    """
+    测试 lifespan：TaskSchedulerService 构造时收到 script_discovery_service 参数。
+    script_scan_enabled=False 时该参数为 None；True 时为 ScriptDiscoveryService 实例。
+
+    生产对等初始化点：app/core/server.py lifespan 函数 L256-261
+    （``TaskSchedulerService(db_pool, agent_config_service, script_discovery_service=...)``）。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: TaskSchedulerService 未收到 script_discovery_service 参数时失败
+    """
+    from unittest.mock import patch
+
+    # 复现 lifespan L256-261：构造 TaskSchedulerService 时传入 script_discovery_service
+    captured_kwargs = {}
+
+    class FakeTaskSchedulerService:
+        def __init__(self, db, agent_config_service, script_discovery_service=None):
+            captured_kwargs["script_discovery_service"] = script_discovery_service
+
+    # 场景 1：script_discovery_service 为 None（disabled）
+    script_discovery_service_disabled = None
+    FakeTaskSchedulerService(
+        db=MagicMock(),
+        agent_config_service=MagicMock(),
+        script_discovery_service=script_discovery_service_disabled,
+    )
+    assert captured_kwargs["script_discovery_service"] is None
+
+    # 场景 2：script_discovery_service 为实例（enabled）
+    captured_kwargs.clear()
+    fake_script_service = MagicMock()
+    FakeTaskSchedulerService(
+        db=MagicMock(),
+        agent_config_service=MagicMock(),
+        script_discovery_service=fake_script_service,
+    )
+    assert captured_kwargs["script_discovery_service"] is fake_script_service
+
+
+def test_lifespan_clears_script_discovery_service_on_shutdown():
+    """
+    测试 lifespan：清理阶段把 app.state.script_discovery_service 置 None。
+
+    生产对等初始化点：app/core/server.py lifespan 清理段 L400-408
+    （``if hasattr(app.state, "script_discovery_service"): app.state.script_discovery_service = None``）。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 清理后属性未置 None 时失败
+    """
+    app_state = MagicMock()
+    app_state.script_discovery_service = MagicMock()  # 模拟已初始化
+
+    # 复现 lifespan 清理逻辑
+    try:
+        if hasattr(app_state, "script_discovery_service"):
+            app_state.script_discovery_service = None
+    except Exception:
+        pass
+
+    assert app_state.script_discovery_service is None

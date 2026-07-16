@@ -173,3 +173,116 @@ def test_task_scheduler_service_missing_returns_500(client, admin_headers):
 
     assert response.status_code == 500
     assert response.json()["detail"] == "TaskSchedulerService not initialized"
+
+
+# =============================================================================
+# P1: 脚本任务（target_type='script'）路径
+# =============================================================================
+
+def test_create_script_task_schedule_returns_201(client, admin_headers):
+    """测试 POST 创建 target_type='script' 的任务返回 201。
+
+    参数:
+        client: TestClient fixture。
+        admin_headers: admin 身份头 fixture。
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 状态码非 201 或返回字段不匹配时失败
+    """
+    service = client.app.state.task_scheduler_service
+    service.create_schedule = AsyncMock(
+        return_value={
+            "id": 2,
+            "name": "脚本巡检",
+            "target_type": "script",
+            "script_name": "hello_script",
+            "script_args": {"greeting": "hi"},
+        }
+    )
+
+    response = client.post(
+        "/api/admin/task-schedules",
+        headers=admin_headers,
+        json={
+            "name": "脚本巡检",
+            "target_type": "script",
+            "script_name": "hello_script",
+            "script_args": {"greeting": "hi"},
+            "cron_expression": "0 9 * * *",
+            "timezone": "Asia/Shanghai",
+            "enabled": True,
+            "context_overrides": {},
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["id"] == 2
+    assert body["target_type"] == "script"
+    assert body["script_name"] == "hello_script"
+    service.create_schedule.assert_awaited_once()
+
+
+def test_create_script_task_without_script_name_returns_422(client, admin_headers):
+    """测试 target_type='script' 但缺 script_name 时返回 422（Pydantic model_validator）。
+
+    参数:
+        client: TestClient fixture。
+        admin_headers: admin 身份头 fixture。
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 状态码非 422 时失败
+    """
+    response = client.post(
+        "/api/admin/task-schedules",
+        headers=admin_headers,
+        json={
+            "name": "脚本巡检",
+            "target_type": "script",
+            # 故意缺 script_name
+            "cron_expression": "0 9 * * *",
+            "timezone": "Asia/Shanghai",
+            "enabled": True,
+            "context_overrides": {},
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_create_agent_task_with_script_name_returns_422(client, admin_headers):
+    """测试 target_type='agent' 但携带 script_name 时返回 422。
+
+    参数:
+        client: TestClient fixture。
+        admin_headers: admin 身份头 fixture。
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 状态码非 422 时失败
+    """
+    response = client.post(
+        "/api/admin/task-schedules",
+        headers=admin_headers,
+        json={
+            "name": "智能体巡检",
+            "target_type": "agent",
+            "agent_name": "map_agent",
+            "prompt": "检查",
+            "script_name": "hello_script",  # agent 类型不应携带 script_name
+            "cron_expression": "0 9 * * *",
+            "timezone": "Asia/Shanghai",
+            "enabled": True,
+            "context_overrides": {},
+        },
+    )
+
+    assert response.status_code == 422

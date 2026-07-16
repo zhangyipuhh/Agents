@@ -38,6 +38,7 @@ import AgentManager from './AgentManager.vue'
 import ToolManager from './ToolManager.vue'
 import SkillManager from './SkillManager.vue'
 import TaskSchedulerManager from './TaskSchedulerManager.vue'
+import EmailSettingsManager from './EmailSettingsManager.vue'
 import MessageBubble from './MessageBubble.vue'
 import ToolCallCard from './ToolCallCard.vue'
 import SubAgentCard from './SubAgentCard.vue'
@@ -136,6 +137,15 @@ function closeHistorySubAgentDrawer() {
 /** @type {import('vue').Ref<string>} 当前激活的标签页 */
 const activeTab = ref('profile')
 
+/**
+ * 用户管理内容区子 tab 标识
+ * - 'users'：用户列表
+ * - 'online-monitor'：在线监控（原独立 Tab，现合并为子 tab）
+ * - 'session-query'：会话查询（原独立 Tab，现合并为子 tab）
+ * @type {import('vue').Ref<'users' | 'online-monitor' | 'session-query'>}
+ */
+const activeUserMgmtTab = ref('users')
+
 /** @type {import('vue').Ref<boolean>} 是否管理员角色 */
 const isAdmin = computed(() => props.role === 'admin')
 
@@ -145,13 +155,12 @@ const navItems = computed(() => {
   if (isAdmin.value) {
     items.push(
       { id: 'user-management', label: '用户管理', icon: 'M9 6a3 3 0 11-6 0 3 3 0 016 0zM17 6a3 3 0 11-6 0 3 3 0 016 0zM12.93 17c.046-.327.07-.66.07-1a6.97 6.97 0 00-1.5-4.33A5 5 0 0119 16v1h-6.07zM6 11a5 5 0 015 5v1H1v-1a5 5 0 015-5z' },
-      { id: 'online-monitor', label: '在线监控', icon: 'M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z' },
-      { id: 'session-query', label: '会话查询', icon: 'M9 2a1 1 0 000 2h2a1 1 0 100-2H9zM4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z' },
       { id: 'agent-management', label: '智能体管理', icon: 'M12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16zm-1-13h2v6h-2V7zm0 8h2v2h-2v-2z' },
       { id: 'mcp-management', label: 'MCP 管理', icon: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z' },
       { id: 'tool-management', label: '工具管理', icon: 'M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z' },
       { id: 'skill-management', label: 'Skill 管理', icon: 'M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z' },
-      { id: 'task-scheduler', label: '定时任务', icon: 'M10 2a8 8 0 100 16 8 8 0 000-16zm1 4a1 1 0 10-2 0v4c0 .265.105.52.293.707l2.5 2.5a1 1 0 001.414-1.414L11 9.586V6z' }
+      { id: 'task-scheduler', label: '定时任务', icon: 'M10 2a8 8 0 100 16 8 8 0 000-16zm1 4a1 1 0 10-2 0v4c0 .265.105.52.293.707l2.5 2.5a1 1 0 001.414-1.414L11 9.586V6z' },
+      { id: 'email-settings', label: '邮件设置', icon: 'M3 4h14v2H3V4zm0 4h14v2H3V8zm0 4h8v2H3v-2zm10 0l4 3-4 3v-6z' }
     )
   }
   return items
@@ -266,19 +275,33 @@ const isSaving = ref(false)
 function switchTab(tabId) {
   activeTab.value = tabId
   if (tabId === 'user-management') {
-    loadUserList()
-  } else if (tabId === 'online-monitor') {
-    loadOnlineUsers()
-  } else if (tabId === 'session-query') {
-    sessionQueryView.value = 'personnel-list'
-    selectedUser.value = null
-    userSessions.value = []
-    loadUserList()
+    // 进入用户管理主 tab 时，按当前子 tab 触发对应数据加载
+    switchUserMgmtTab(activeUserMgmtTab.value)
   }
   // 智能体管理 Tab（agent-management）由 AgentManager 组件自管理数据加载（onMounted 触发 fetchAdminAgentList），
   // 无需在此处显式触发；组件通过 v-show 始终挂载，切换 Tab 时仅 display 切换。
   // MCP 管理 Tab（mcp-management）由 McpServerManager 组件自管理数据加载（onMounted 触发 listMcpServers），
   // 无需在此处显式触发；组件通过 v-show 始终挂载，切换 Tab 时仅 display 切换。
+}
+
+/**
+ * 切换用户管理内容区的子 tab
+ * @param {'users' | 'online-monitor' | 'session-query'} tabId - 子 tab ID
+ * @returns {void}
+ */
+function switchUserMgmtTab(tabId) {
+  activeUserMgmtTab.value = tabId
+  if (tabId === 'users') {
+    loadUserList()
+  } else if (tabId === 'online-monitor') {
+    loadOnlineUsers()
+  } else if (tabId === 'session-query') {
+    // 进入会话查询子 tab 时重置为人员列表视图并加载用户列表
+    sessionQueryView.value = 'personnel-list'
+    selectedUser.value = null
+    userSessions.value = []
+    loadUserList()
+  }
 }
 
 /**
@@ -322,6 +345,7 @@ function resetForms() {
   historySession.value = null
   historyMessages.value = []
   historyLoading.value = false
+  activeUserMgmtTab.value = 'users'
 }
 
 /* ---- Admin 用户新增/编辑弹窗逻辑 ---- */
@@ -1049,15 +1073,29 @@ function handleOverlayClick(event) {
 watch(() => props.visible, (newVal) => {
   if (newVal) {
     resetForms()
-    activeTab.value = props.initialTab || 'profile'
-    if (activeTab.value === 'profile') {
-      loadUserProfile()
-    } else if (activeTab.value === 'user-management') {
-      loadUserList()
-    } else if (activeTab.value === 'online-monitor') {
-      loadOnlineUsers()
-    } else if (activeTab.value === 'session-query') {
-      loadUserList()
+    const requested = props.initialTab || 'profile'
+    // 兼容历史入口：online-monitor / session-query 已合并到 user-management 内的子 tab，
+    // 外部传入这两个旧值时自动映射到 user-management 主 tab + 对应子 tab。
+    if (requested === 'online-monitor' || requested === 'session-query') {
+      activeTab.value = 'user-management'
+      activeUserMgmtTab.value = requested
+      if (requested === 'online-monitor') {
+        loadOnlineUsers()
+      } else {
+        // 进入会话查询子 tab：重置两级视图并加载人员列表
+        sessionQueryView.value = 'personnel-list'
+        selectedUser.value = null
+        userSessions.value = []
+        loadUserList()
+      }
+    } else {
+      activeTab.value = requested
+      if (activeTab.value === 'profile') {
+        loadUserProfile()
+      } else if (activeTab.value === 'user-management') {
+        // 按当前子 tab 触发对应数据加载
+        switchUserMgmtTab(activeUserMgmtTab.value)
+      }
     }
     // 智能体管理 Tab 由 AgentManager 组件自管理加载（onMounted），无需在此处处理
     // MCP 管理 Tab 由 McpServerManager 组件自管理加载（onMounted），无需在此处处理
@@ -1271,7 +1309,15 @@ watch(() => props.visible, (newVal) => {
 
               <!-- 用户管理（admin） -->
               <div v-show="activeTab === 'user-management'">
-                <div class="admin-section">
+                <!-- 子 tab 切换器：用户列表 / 在线监控 / 会话查询 -->
+                <div class="sub-tabs">
+                  <button class="sub-tab" :class="{ active: activeUserMgmtTab === 'users' }" @click="switchUserMgmtTab('users')">用户列表</button>
+                  <button class="sub-tab" :class="{ active: activeUserMgmtTab === 'online-monitor' }" @click="switchUserMgmtTab('online-monitor')">在线监控</button>
+                  <button class="sub-tab" :class="{ active: activeUserMgmtTab === 'session-query' }" @click="switchUserMgmtTab('session-query')">会话查询</button>
+                </div>
+
+                <!-- 用户列表子 tab -->
+                <div v-show="activeUserMgmtTab === 'users'" class="admin-section">
                   <div class="admin-header">
                     <h3 class="section-title">用户管理</h3>
                     <div class="admin-header-actions">
@@ -1312,11 +1358,9 @@ watch(() => props.visible, (newVal) => {
                     </tbody>
                   </table>
                 </div>
-              </div>
 
-              <!-- 在线监控（admin） -->
-              <div v-show="activeTab === 'online-monitor'">
-                <div class="admin-section">
+                <!-- 在线监控子 tab -->
+                <div v-show="activeUserMgmtTab === 'online-monitor'" class="admin-section">
                   <div class="admin-header">
                     <h3 class="section-title">在线监控</h3>
                     <button class="table-btn btn-refresh" @click="loadOnlineUsers">刷新</button>
@@ -1353,11 +1397,9 @@ watch(() => props.visible, (newVal) => {
                     </tbody>
                   </table>
                 </div>
-              </div>
 
-              <!-- 会话查询（admin） -->
-              <div v-show="activeTab === 'session-query'">
-                <div class="admin-section">
+                <!-- 会话查询子 tab -->
+                <div v-show="activeUserMgmtTab === 'session-query'" class="admin-section">
                   <!-- 人员列表视图 -->
                   <template v-if="sessionQueryView === 'personnel-list'">
                     <div class="admin-header">
@@ -1474,6 +1516,11 @@ watch(() => props.visible, (newVal) => {
               <!-- 定时任务（admin） -->
               <div v-show="activeTab === 'task-scheduler'">
                 <TaskSchedulerManager />
+              </div>
+
+              <!-- 邮件设置（admin） -->
+              <div v-show="activeTab === 'email-settings'">
+                <EmailSettingsManager />
               </div>
             </div>
           </div>
@@ -2511,4 +2558,35 @@ watch(() => props.visible, (newVal) => {
   原 .history-dialog-body--collapsed 会将 body 完全隐藏，导致会话内容与抽屉无法同时可见。
   现改为 .history-dialog-body--with-drawer + .history-dialog-main flex-row 布局。
 */
+
+/* 用户管理内容区子 tab 切换器 */
+.sub-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: var(--space-base);
+}
+
+.sub-tab {
+  padding: 8px 16px;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-secondary);
+  background-color: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: var(--transition-colors);
+  margin-bottom: -1px;
+}
+
+.sub-tab:hover {
+  color: var(--color-text-primary);
+  background-color: var(--color-bg-hover);
+}
+
+.sub-tab.active {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
+}
 </style>

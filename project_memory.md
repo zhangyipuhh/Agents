@@ -166,6 +166,7 @@ app/
 │   ├── knowledge_router.py   # 知识库路由
 │   ├── tool_admin_router.py  # Tool Admin 路由
 │   ├── skill_admin_router.py # Skill Admin 路由
+│   ├── email_admin_router.py # 邮件系统 Admin 路由（SMTP 配置 + 策略 CRUD + 测试发送，prefix=/api/admin/email）
 │   └── _stream_helper.py     # SSE 流式响应辅助（完整迁移自 map_router，agent_router 与 knowledge_router 复用）
 ├── shared/                 # 共享模块
 │   ├── routers/           # 路由
@@ -196,6 +197,10 @@ app/
 │       │   ├── fileTransfer.py          # 文件清理/列出
 │       │   ├── file_upload_handler.py   # 上传处理
 │       │   └── pdfToImage.py            # PDF 转图片
+│       ├── email/          # 邮件系统（与 FastAPI 解耦，脚本可直接 asyncio.run 调用）
+│       │   ├── email_models.py          # EmailServerConfig / EmailPolicy / SendEmailRequest Pydantic 模型
+│       │   ├── email_config_service.py  # EmailConfigService（SMTP 配置 CRUD + 策略 CRUD + Fernet 加解密 + @register_schema 建表）
+│       │   └── email_service.py         # EmailService（核心发送，smtplib + asyncio.to_thread 异步包装）
 │       └── memory/        # 记忆存储（Checkpoint）
 ├── web/Agent/             # 前端 SPA（Vue 3 + Vite，多入口）
 │   ├── index.html         # 主入口（Agent 聊天 + 知识库 Tab）
@@ -219,6 +224,104 @@ app/
 │   └── Dockerfile         # 多阶段构建：node:20-alpine 构建 → nginx:alpine 运行
 └── main.py               # 应用入口
 ```
+
+## 邮件系统
+
+### 核心设计
+
+邮件系统采用**核心服务层与 FastAPI 解耦**的设计，支持两种调用方式：
+
+1. **HTTP 路由层**：`/api/admin/email/*` 端点（admin 权限），供前端管理界面调用。
+2. **脚本/定时任务直接调用**：`asyncio.run(EmailService(config).send_email(...))`，无需启动 FastAPI 应用。
+
+### 核心服务层
+
+- `EmailService(config: EmailServerConfig)` —— 核心发送服务，构造时仅依赖配置对象（不依赖 `Request` / `app.state`）。使用 `smtplib.SMTP_SSL` (465) 或 `smtplib.SMTP+starttls` (587)，通过 `asyncio.to_thread` 在线程池中执行同步 SMTP 调用。支持 `attachment_paths`（脚本绝对路径）和 `attachment_streams`（FastAPI 上传的 bytes 流）两种附件传入方式。
+- `EmailConfigService(db, credential_key)` —— 配置服务，提供 SMTP 配置 CRUD + 策略 CRUD + Fernet 加解密。`@register_schema` 装饰的 `init_email_schema()` 在应用启动时自动建表。
+
+### 脚本调用示例
+
+```python
+import asyncio
+from app.shared.utils.email.email_models import EmailServerConfig
+from app.shared.utils.email.email_service import EmailService
+
+config = EmailServerConfig(host="smtp.qq.com", port=465, use_ssl=True,
+                           username="xxx@qq.com", password="授权码",
+                           sender_name="管理员", enabled=True)
+asyncio.run(EmailService(config).send_email(
+    to=["target@example.com"],
+    subject="脚本测试",
+    body="来自脚本的邮件",
+    attachment_paths=["/abs/path/test.pdf"],
+))
+```
+
+### 数据库表
+
+| 表名 | 用途 |
+|---|---|
+| `email_server_configs` | SMTP 服务器配置（单行约束，`password_encrypted` Fernet 加密，复用 `DEVOPS_CREDENTIAL_KEY`） |
+| `email_policies` | 发送策略（策略名 + 描述 + 创建者用户 ID） |
+| `email_policy_recipients` | 策略-收件人多对多关联（policy_id + user_id 联合主键） |
+
+`email_server_configs` 字段：id / host / port / use_ssl / username / password_encrypted / sender_name / enabled / created_at / updated_at。通过 `CREATE UNIQUE INDEX ... WHERE enabled = TRUE` 保证全局仅一条启用配置。
+
+`email_policies` 字段：id / name / description / created_by_user_id (FK→users) / created_at / updated_at。
+
+`email_policy_recipients` 字段：policy_id (FK→email_policies, CASCADE) / user_id (FK→users, CASCADE)，联合主键。
+
+### API 端点（`/api/admin/email`，全部 `require_admin`）
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/server-config` | 获取 SMTP 配置（密码字段返回空字符串，不外泄） |
+| PUT | `/server-config` | 保存 SMTP 配置（密码为空字符串时保留原密码） |
+| POST | `/server-config/test` | 测试 SMTP 连接（不发送邮件） |
+| GET | `/emailable-users` | 列出已注册且邮箱非空用户（供前端挑选收件人） |
+| GET | `/policies` | 策略列表 |
+| POST | `/policies` | 新建策略 |
+| GET | `/policies/{id}` | 策略详情 |
+| PUT | `/policies/{id}` | 更新策略 |
+| DELETE | `/policies/{id}` | 删除策略 |
+| POST | `/test` | 发送测试邮件（multipart/form-data，支持本地附件上传） |
+| POST | `/send-by-policy/{policy_id}` | 按策略发送邮件（JSON body：subject / body / attachment_paths） |
+
+### 配置项
+
+- `settings.email_enabled: bool = True` —— 邮件系统总开关（环境变量 `EMAIL_ENABLED`），关闭时 lifespan 跳过 `EmailConfigService` 初始化。
+
+### Lifespan 集成
+
+`app/core/server.py::lifespan` 在 `DatabasePool.register_schemas()` 后初始化 `EmailConfigService`：
+
+```python
+if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.email_enabled:
+    email_diag = diagnose_credential_key()
+    if email_diag.ok:
+        app.state.email_config_service = EmailConfigService(
+            db=DatabasePool._pool,
+            credential_key=settings.devops.credential_key,
+        )
+        await app.state.email_config_service.preload_all()
+```
+
+若 `DEVOPS_CREDENTIAL_KEY` 未配置，邮件服务降级（`app.state.email_config_service = None`），API 返回 503。
+
+### 前端
+
+- `web/Agent/src/components/EmailSettingsManager.vue` —— 邮件设置组件（3 Tab：服务器配置 / 发送策略 / 测试发送）。
+- 在 `web/Agent/src/components/UserSettingsDialog.vue` 中作为「邮件设置」侧边栏项（位于「定时任务」下方，admin 可见）。
+- API 封装位于 `web/Agent/src/utils/api.js`：`fetchEmailServerConfig` / `updateEmailServerConfig` / `testEmailServerConfig` / `fetchEmailableUsers` / `fetchEmailPolicies` / `createEmailPolicy` / `updateEmailPolicy` / `deleteEmailPolicy` / `sendTestEmail`（multipart/form-data）/ `sendEmailByPolicy`。
+
+### 设计决策
+
+1. **SMTP 协议**：`SMTP_SSL` (465) 优先，`SMTP+starttls` (587) 备选（QQ 邮箱官方推荐 465）。
+2. **认证方式**：用户名 + 密码（QQ 用授权码），不实现 OAuth2。
+3. **附件支持**：`email.message.EmailMessage.add_attachment`，Python 标准库，无需额外依赖。
+4. **密码加密**：复用 `DEVOPS_CREDENTIAL_KEY`（Fernet），避免新增加密基础设施。
+5. **策略范围**：仅收件人集合（用户确认），不含主题/正文模板；调用方负责主题/正文。
+6. **不实现定时触发**：策略仅是收件人集合，定时发邮件可通过 `agent_task_schedules.target_type='script'` 调用邮件脚本实现。
 
 ## Agent 统一构造入口（2026-06-29 新增）
 
@@ -424,14 +527,17 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 | id | SERIAL PRIMARY KEY | 定时任务 ID |
 | name | VARCHAR(200) | 任务名称 |
 | description | TEXT | 任务描述 |
-| agent_name | VARCHAR(100) FK → agents(name) | 目标智能体 |
-| prompt | TEXT | 定时触发时发送给智能体的提示词 |
+| agent_name | VARCHAR(100) FK → agents(name) | 目标智能体（target_type='agent' 时必填，'script' 时为 NULL） |
+| prompt | TEXT | 定时触发时发送给智能体的提示词（target_type='agent' 时必填） |
 | cron_expression | VARCHAR(100) | 5 段 crontab 表达式，如 `0 9 * * *` |
 | timezone | VARCHAR(64) | IANA 时区，默认 `Asia/Shanghai` |
 | enabled | BOOLEAN | 是否启用 |
 | created_by_user_id | INTEGER FK → users(id) | 创建人，用于后台执行时创建 session |
 | context_overrides | JSONB | 注入 AgentContext 的扩展字段，默认 `{}` |
 | max_concurrent_runs | INT | 单任务并发配置，默认 1 |
+| target_type | VARCHAR(16) DEFAULT 'agent' | 目标类型：`agent`（智能体）或 `script`（脚本） |
+| script_name | VARCHAR(100) | 目标脚本名（target_type='script' 时必填，'agent' 时为 NULL） |
+| script_args | JSONB | 脚本参数，默认 `{}`（target_type='script' 时使用） |
 | last_run_at / next_run_at | TIMESTAMP | 最近运行与下次运行时间 |
 | created_at / updated_at | TIMESTAMP | 创建与更新时间 |
 
@@ -442,19 +548,53 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 | id | SERIAL PRIMARY KEY | 执行记录 ID |
 | schedule_id | INTEGER FK → agent_task_schedules(id) | 所属定时任务 |
 | session_id | VARCHAR(100) | 本次触发创建的新会话 ID |
-| agent_name | VARCHAR(100) | 执行时智能体名称快照 |
+| agent_name | VARCHAR(100) | 执行时智能体名称快照（agent 任务） |
 | prompt_snapshot | TEXT | 执行时提示词快照 |
 | status | VARCHAR(32) | `pending` / `running` / `success` / `failed` / `skipped` |
 | trigger_type | VARCHAR(32) | `scheduled` / `manual` |
+| target_type | VARCHAR(16) DEFAULT 'agent' | 目标类型快照 |
+| script_name | VARCHAR(100) | 目标脚本名快照（script 任务） |
 | scheduled_at / started_at / finished_at | TIMESTAMP | 计划、开始、结束时间 |
 | duration_ms | INTEGER | 执行耗时毫秒 |
 | output_text | TEXT | 最后一条 AI 消息文本 |
 | error_message | TEXT | 失败或跳过原因 |
 | created_at | TIMESTAMP | 记录创建时间 |
 
-**接口**：`app/routers/task_scheduler_router.py`，前缀 `/api/admin/task-schedules`，全部受 `require_admin` 保护；提供列表、详情、新建、更新、删除、启停、立即运行与执行历史查询。
+**接口**：`app/routers/task_scheduler_router.py`，前缀 `/api/admin/task-schedules`，全部受 `require_admin` 保护；提供列表、详情、新建、更新、删除、启停、立即运行与执行历史查询。`CreateTaskScheduleRequest` / `UpdateTaskScheduleRequest` 通过 Pydantic `model_validator(mode="after")` 跨字段校验 `target_type` 与 `agent_name`/`prompt`/`script_name` 一致性。
 
-**服务**：`app/shared/utils/agent/task_scheduler_service.py::TaskSchedulerService`，由 lifespan 真实初始化到 `app.state.task_scheduler_service`；测试中只能注入真实 service 实例，不允许通过 `app.state.db = MagicMock()` 虚构生产不存在的依赖。
+**服务**：`app/shared/utils/agent/task_scheduler_service.py::TaskSchedulerService`，由 lifespan 真实初始化到 `app.state.task_scheduler_service`；测试中只能注入真实 service 实例，不允许通过 `app.state.db = MagicMock()` 虚构生产不存在的依赖。`execute_schedule` 根据 `target_type` 分支：`agent` 复用 `build_agent_instance + agent.invoke`；`script` 通过 `script_discovery_service.get_script()` 取 `RegisteredScript`，构造 `ScriptContext` 调用 `registered.func(context)`。
+
+### 脚本定时任务系统（target_type='script'）
+
+定时任务支持 `target_type='script'` 类型，允许把 `app/scripts/` 下用 `@register_script` 装饰的 Python 异步函数绑定为定时任务，与智能体任务共用 `agent_task_schedules` 表、调度器、执行历史与日志文件。
+
+**脚本扫描源**：`app/scripts/` 目录（`paths.SCRIPTS_DIR`），递归扫描 `.py` 文件，跳过 `__init__.py` / `base.py` / `registry.py` 与下划线开头文件；通过 `importlib.util.spec_from_file_location` 动态加载触发 `@register_script` 装饰器执行。
+
+**注册契约**：`app/scripts/registry.py::register_script(name, display_name, description="", params_schema=None)` 装饰 `async def run(context: ScriptContext) -> str` 函数；`ScriptContext`（`app/scripts/base.py`，Pydantic BaseModel）含 `schedule_id`/`run_id`/`session_id`/`schedule_name`/`script_args`/`log_logger`/`started_at`/`trigger_type` 字段。
+
+**发现服务**：`app/shared/utils/agent/script_discovery_service.py::ScriptDiscoveryService(scripts_dir: Path)`，由 lifespan 在 `settings.script_scan_enabled=True` 时初始化到 `app.state.script_discovery_service`；提供 `scan()`（返回 `{scanned, registered, failed}`）、`list_scripts()`（白名单字段：`name`/`display_name`/`description`/`params_schema`/`module_path`）、`get_script(name)`（返回含 `func` 引用的 `RegisteredScript`）。
+
+**管理接口**：`app/routers/script_admin_router.py`，前缀 `/api/admin/scripts`，全部受 `require_admin` 保护；提供 `GET /api/admin/scripts`（白名单字段列表）与 `POST /api/admin/scripts/scan`（触发扫描，返回 `ScanSummary`）。
+
+**lifespan 初始化顺序**（`app/core/server.py` L232-270）：
+1. `if settings.task_scheduler_enabled and db_pool:` 进入定时任务初始化块
+2. 先初始化 `ScriptDiscoveryService`（受 `settings.script_scan_enabled` 控制），失败降级为 `None`
+3. 再构造 `TaskSchedulerService(db_pool, agent_config_service, script_discovery_service=...)`，注入上一步的 service（可能为 None）
+4. 调用 `preload_all()` 加载启用任务，`start()` 启动调度器
+5. 清理阶段把 `app.state.script_discovery_service = None`
+
+**配置项**：`settings.script_scan_enabled: bool`（`app/core/config/settings.py` L598）控制是否启用脚本扫描。
+
+**前端**：`web/Agent/src/components/TaskSchedulerManager.vue` 新增 TAB_SCRIPT tab 页，含扫描按钮、summary 统计、脚本表格；任务表单的 `select` 改造为 `target_type` + 条件子 select（agent/script），创建/更新 payload 根据 `target_type` 分支构造。
+
+**测试覆盖**：
+- `app/tests/scripts/test_registry.py`（10 用例）：装饰器注册、重复名拒绝、签名校验、registry 清理
+- `app/tests/scripts/test_examples.py`（4 用例）：示例脚本导入、注册、执行、默认参数
+- `app/tests/shared/utils/agent/test_script_discovery_service.py`（9 用例）：扫描、容错、白名单过滤、get_script
+- `app/tests/shared/utils/agent/test_task_scheduler_service.py`（19 用例，含 5 个 script 用例）：FakeDb 扩展、validate_payload 跨字段校验、execute_schedule script 分支、_install_run_logger 含 target_type/script_name
+- `app/tests/routers/test_script_admin_router.py`（6 用例）：路由注册、列表、扫描、500、403
+- `app/tests/routers/test_task_scheduler_router.py`（13 用例，含 3 个 script 用例）：创建 script 任务 201、缺 script_name 422、agent 携带 script_name 422
+- `app/tests/core/test_server_lifespan.py`（11 用例，含 4 个 script 用例）：script_scan_enabled 启停、注入 TaskSchedulerService、shutdown 清理
 
 ### users 表
 
@@ -1191,6 +1331,7 @@ return data/upload/yyyy/mm/dd/{session_id}/
 | ├ GET /servers                     |                        | 列出所有已连接的 MCP 服务器及其工具                                                                                                                                                   |
 | ├ POST /call                       |                        | 调用指定 MCP 服务器的工具                                                                                                                                                             |
 | ├ GET /tools/{server_name}         |                        | 列出指定 MCP 服务器的工具详情                                                                                                                                                         |
+| /api/admin/email                    | email_admin_router     | 邮件系统管理（详见「邮件系统」章节）：SMTP 配置 CRUD + 连接测试 + 策略 CRUD + 测试发送（multipart/form-data）+ 按策略发送                                                           |
 
 ## 核心工具 (Core Tools)
 
@@ -2181,7 +2322,7 @@ SandboxDrawer 时间线包含 `code_generation` 事件（显示 LLM 生成的代
 - **公共**：`Sidebar.vue`、`HelloWorld.vue`、`UserSettingsDialog.vue`
   - `Sidebar.vue`（2026-07-02 调整）：侧边栏「项目」分组默认展开，其下各项目内的会话列表默认折叠，点击项目头部可切换展开/折叠
 - **Admin 管理**：
-  - `UserSettingsDialog.vue`：admin 角色可访问的「用户设置与管理」对话框；包含 8 个 Tab —— `profile`（个人设置）/ `user-management`（用户管理）/ `online-monitor`（在线监控）/ `session-query`（会话查询）/ `agent-management`（智能体管理，调用 `AgentManager.vue`）/ `mcp-management`（MCP 管理，调用 `McpServerManager.vue`）/ `tool-management`（工具管理，调用 `ToolManager.vue`）/ `skill-management`（Skill 管理，调用 `SkillManager.vue`）。其中 `session-query` Tab 为两级视图：人员列表 → 点击人员进入该用户的会话列表；会话表格支持复选框批量选择、批量删除、单条导出 Markdown，点击会话标题弹出历史消息对话框，使用 `MessageBubble` 渲染完整消息（含 `ToolCallCard` 工具卡片与 `SubAgentCard` 子智能体卡片）
+  - `UserSettingsDialog.vue`：admin 角色可访问的「用户设置与管理」对话框；左侧主导航包含 7 个 Tab —— `profile`（个人设置）/ `user-management`（用户管理）/ `agent-management`（智能体管理，调用 `AgentManager.vue`）/ `mcp-management`（MCP 管理，调用 `McpServerManager.vue`）/ `tool-management`（工具管理，调用 `ToolManager.vue`）/ `skill-management`（Skill 管理，调用 `SkillManager.vue`）/ `task-scheduler`（定时任务，调用 `TaskSchedulerManager.vue`）。其中 `user-management` Tab 内部以水平子 tab（`.sub-tabs` / `.sub-tab`）形式展示三个子页面：用户列表 / 在线监控 / 会话查询，由 `activeUserMgmtTab` 状态控制，`switchUserMgmtTab` 切换并触发对应数据加载；`session-query` 子 tab 为两级视图：人员列表 → 点击人员进入该用户的会话列表；会话表格支持复选框批量选择、批量删除、单条导出 Markdown，点击会话标题弹出历史消息对话框，使用 `MessageBubble` 渲染完整消息（含 `ToolCallCard` 工具卡片与 `SubAgentCard` 子智能体卡片）。`initialTab` 仍兼容传入 `online-monitor` / `session-query` 旧值，会自动映射到 `user-management` 主 tab + 对应子 tab
     - **历史会话详情弹窗布局**：
       1. **居中显示**：历史会话详情弹窗使用 `.dialog-overlay--centered`（flex + 居中对齐）+ `.dialog-overlay--centered > .dialog-card`（position:relative + 圆角 + max-height:90vh），宽度 800px；主弹窗（用户设置与管理）仍铺满全屏
       2. **子智能体抽屉就地打开**：历史弹窗内的 `SubAgentCard` 点击后不再冒泡到 `App.vue`，而是在弹窗内就地打开独立的 `<SubAgentDrawer>`（`historySubAgentDrawerVisible` / `historyCurrentSubAgent` 状态控制）

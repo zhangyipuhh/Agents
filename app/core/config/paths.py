@@ -45,6 +45,12 @@ PROJECT_TMP_ROOT = os.path.join(_PROJECT_ROOT, "data", "tmp", "project")
 #   * 文件扩展名仍为 .log，但内容为 Markdown
 TASK_LOG_DIR = os.path.join(_PROJECT_ROOT, "data", "logs", "Task")
 
+# 脚本扫描根目录（2026-07-16 新增）
+#   * ScriptDiscoveryService 扫描此目录下所有 .py 文件
+#   * 通过 @register_script 装饰器注册到全局 registry
+#   * 完整结构：<项目根>/app/scripts/
+SCRIPTS_DIR = os.path.join(_PROJECT_ROOT, "app", "scripts")
+
 # DevOps 服务器配置目录（2026-07-15 新增）
 #   * SSH 远程服务器配置（业务名/IP/端口/用户名/密码/类型/黑白名单）的 YAML 文件目录
 #   * 完整结构：<项目根>/data/devops/servers.yaml（默认文件名）

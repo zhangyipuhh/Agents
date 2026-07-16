@@ -2392,6 +2392,45 @@ export async function scanDevOpsServers() {
 }
 
 // ============================================================
+// 脚本管理 API（2026-07-16 新增）
+// 对应后端 script_admin_router 的 GET /api/admin/scripts 与 POST /api/admin/scripts/scan
+// 用于 TaskSchedulerManager 的「脚本扫描入库」Tab 与任务表单的脚本选择
+// ============================================================
+
+/**
+ * 获取已注册脚本列表
+ * 调用 GET /api/admin/scripts，返回白名单字段（name/display_name/description/params_schema/module_path）。
+ * @returns {Promise<Array<{name: string, display_name: string, description: string, params_schema: Object, module_path: string}>>} 脚本元数据列表
+ * @throws {Error} 请求失败时抛出错误（含后端 detail / HTTP 状态信息）
+ */
+export async function fetchScripts() {
+  const response = await fetchWithAuth('/api/admin/scripts', { method: 'GET' })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取脚本列表失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 触发脚本目录扫描
+ * 调用 POST /api/admin/scripts/scan，返回扫描统计信息
+ * （scanned / registered / failed 3 个整数）。
+ * @returns {Promise<{scanned: number, registered: number, failed: number}>} 扫描结果
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function scanScripts() {
+  const response = await fetchWithAuth('/api/admin/scripts/scan', {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `扫描脚本失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+// ============================================================
 // 消息反馈 API（2026-07-02 新增）
 // 对应后端 message_feedback_router 的 POST /api/agent/message-feedback
 // 用于 AI 回复点赞 / 点踩（点踩时携带详细原因）
@@ -2428,6 +2467,205 @@ export async function submitMessageFeedback(payload) {
     throw new Error(
       `反馈提交失败: ${response.status} ${JSON.stringify(errBody?.detail || errBody || response.statusText)}`
     )
+  }
+  return response.json()
+}
+
+// ============================================================
+// 邮件系统 API（2026-07-16 新增）
+// 对应后端 /api/admin/email 管理接口
+// ============================================================
+
+/**
+ * 获取当前启用的 SMTP 服务器配置（密码字段返回空字符串）
+ * 调用 GET /api/admin/email/server-config
+ * @returns {Promise<Object|null>} SMTP 配置；未配置时返回 null
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function fetchEmailServerConfig() {
+  const response = await fetchWithAuth('/api/admin/email/server-config', { method: 'GET' })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取 SMTP 配置失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 保存 SMTP 服务器配置（密码为空字符串表示不修改原密码）
+ * 调用 PUT /api/admin/email/server-config
+ * @param {Object} payload - SMTP 配置
+ * @param {string} payload.host - SMTP 主机
+ * @param {number} payload.port - SMTP 端口
+ * @param {boolean} payload.use_ssl - 是否使用 SMTP_SSL
+ * @param {string} payload.username - 登录账号
+ * @param {string} payload.password - 密码或授权码（空字符串表示不修改）
+ * @param {string} payload.sender_name - 发件人显示名
+ * @param {boolean} payload.enabled - 是否启用
+ * @returns {Promise<{id: number, updated_at: string}>} 保存结果
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function updateEmailServerConfig(payload) {
+  const response = await fetchWithAuth('/api/admin/email/server-config', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `保存 SMTP 配置失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 测试 SMTP 连接（不发送邮件）
+ * 调用 POST /api/admin/email/server-config/test
+ * @param {Object} payload - 测试配置
+ * @returns {Promise<{success: boolean, message: string}>} 测试结果
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function testEmailServerConfig(payload) {
+  const response = await fetchWithAuth('/api/admin/email/server-config/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `测试 SMTP 连接失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 列出已注册且邮箱非空的用户（供发送策略页挑选收件人）
+ * 调用 GET /api/admin/email/emailable-users
+ * @returns {Promise<Array<{id: number, username: string, real_name: string, email: string}>>} 用户列表
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function fetchEmailableUsers() {
+  const response = await fetchWithAuth('/api/admin/email/emailable-users', { method: 'GET' })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取可发邮件用户列表失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 列出所有邮件发送策略
+ * 调用 GET /api/admin/email/policies
+ * @returns {Promise<Array>} 策略列表
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function fetchEmailPolicies() {
+  const response = await fetchWithAuth('/api/admin/email/policies', { method: 'GET' })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取邮件策略列表失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 新建邮件发送策略
+ * 调用 POST /api/admin/email/policies
+ * @param {Object} payload - 策略配置
+ * @param {string} payload.name - 策略名称
+ * @param {string} payload.description - 策略描述
+ * @param {number[]} payload.recipient_user_ids - 收件人用户 ID 列表
+ * @returns {Promise<Object>} 新建策略
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function createEmailPolicy(payload) {
+  const response = await fetchWithAuth('/api/admin/email/policies', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `新建邮件策略失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 更新邮件发送策略
+ * 调用 PUT /api/admin/email/policies/{id}
+ * @param {number|string} id - 策略 ID
+ * @param {Object} payload - 需要更新的字段
+ * @returns {Promise<Object>} 更新后的策略
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function updateEmailPolicy(id, payload) {
+  const response = await fetchWithAuth(`/api/admin/email/policies/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `更新邮件策略失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 删除邮件发送策略
+ * 调用 DELETE /api/admin/email/policies/{id}
+ * @param {number|string} id - 策略 ID
+ * @returns {Promise<void>} 无返回值
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function deleteEmailPolicy(id) {
+  const response = await fetchWithAuth(`/api/admin/email/policies/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `删除邮件策略失败: ${response.status}`)
+  }
+}
+
+/**
+ * 发送测试邮件（multipart/form-data，支持附件上传）
+ * 调用 POST /api/admin/email/test
+ * @param {FormData} formData - 表单数据（to / cc / subject / body / files）
+ * @returns {Promise<{success: boolean, message_id: string, sent_to: string[]}>} 发送结果
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function sendTestEmail(formData) {
+  const response = await fetchWithAuth('/api/admin/email/test', {
+    method: 'POST',
+    body: formData,
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `发送测试邮件失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 按策略发送邮件
+ * 调用 POST /api/admin/email/send-by-policy/{policyId}
+ * @param {number|string} policyId - 策略 ID
+ * @param {Object} payload - 发送请求
+ * @param {string} payload.subject - 邮件主题
+ * @param {string} payload.body - 邮件正文
+ * @param {string[]} [payload.attachment_paths] - 附件绝对路径列表
+ * @returns {Promise<{success: boolean, message_id: string, sent_to: string[]}>} 发送结果
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function sendEmailByPolicy(policyId, payload) {
+  const response = await fetchWithAuth(`/api/admin/email/send-by-policy/${encodeURIComponent(policyId)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `按策略发送邮件失败: ${response.status}`)
   }
   return response.json()
 }

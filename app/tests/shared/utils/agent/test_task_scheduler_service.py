@@ -71,6 +71,9 @@ class FakeDb:
                 row["enabled"] = args[1]
                 row["next_run_at"] = args[2]
             else:
+                # update_schedule 全量更新分支：14 个 args
+                # args[0]=id, args[1]=name, ..., args[10]=target_type,
+                # args[11]=script_name, args[12]=script_args, args[13]=next_run_at
                 row.update({
                     "name": args[1],
                     "description": args[2],
@@ -81,7 +84,10 @@ class FakeDb:
                     "enabled": args[7],
                     "context_overrides": args[8],
                     "max_concurrent_runs": args[9],
-                    "next_run_at": args[10],
+                    "target_type": args[10],
+                    "script_name": args[11],
+                    "script_args": args[12],
+                    "next_run_at": args[13],
                 })
             return row
         if "FROM agent_task_schedules" in query and "WHERE id" in query:
@@ -92,6 +98,8 @@ class FakeDb:
         if "FROM users" in query:
             return {"id": args[0], "username": "admin"}
         if "INSERT INTO agent_task_schedules" in query:
+            # create_schedule INSERT：13 个 args
+            # args[0]=name, ..., args[10]=target_type, args[11]=script_name, args[12]=script_args
             row = {
                 "id": self.next_schedule_id,
                 "name": args[0],
@@ -104,6 +112,9 @@ class FakeDb:
                 "created_by_user_id": args[7],
                 "context_overrides": args[8],
                 "max_concurrent_runs": args[9],
+                "target_type": args[10],
+                "script_name": args[11],
+                "script_args": args[12],
                 "last_run_at": None,
                 "next_run_at": None,
                 "created_at": datetime(2026, 7, 10, 8, 0, 0),
@@ -113,6 +124,9 @@ class FakeDb:
             self.next_schedule_id += 1
             return row
         if "INSERT INTO agent_task_runs" in query:
+            # _create_run INSERT：9 个 args
+            # args[0]=schedule_id, ..., args[6]=scheduled_at,
+            # args[7]=target_type, args[8]=script_name
             row = {
                 "id": self.next_run_id,
                 "schedule_id": args[0],
@@ -122,6 +136,8 @@ class FakeDb:
                 "status": args[4],
                 "trigger_type": args[5],
                 "scheduled_at": args[6],
+                "target_type": args[7],
+                "script_name": args[8],
                 "started_at": None,
                 "finished_at": None,
                 "duration_ms": None,
@@ -491,3 +507,244 @@ def test_execute_schedule_run_logger_isolated_between_runs(monkeypatch, tmp_path
 
     log_files = list((tmp_path / "测试巡检").glob("*.log"))
     assert len(log_files) == 2, f"两次 run 应该生成 2 个文件，实际: {log_files}"
+
+
+# ===== 脚本任务（target_type='script'）测试 =====
+
+
+def test_validate_payload_rejects_script_task_without_script_name():
+    """测试 target_type='script' 但缺 script_name 时抛 TaskScheduleValidationError。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 未抛出 TaskScheduleValidationError 时失败
+    """
+    from app.shared.utils.agent.task_scheduler_service import (
+        TaskScheduleValidationError,
+        TaskSchedulerService,
+    )
+
+    service = TaskSchedulerService(
+        db=MagicMock(), agent_config_service=MagicMock(), scheduler=FakeScheduler()
+    )
+    payload = {
+        "name": "脚本任务",
+        "target_type": "script",
+        "cron_expression": "0 9 * * *",
+        # 故意缺 script_name
+    }
+    with pytest.raises(TaskScheduleValidationError) as exc_info:
+        service._validate_payload(payload, partial=False)
+    assert "script_name is required" in str(exc_info.value)
+
+
+def test_validate_payload_rejects_agent_task_without_agent_name():
+    """测试 target_type='agent' 但缺 agent_name 时抛 TaskScheduleValidationError。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 未抛出 TaskScheduleValidationError 时失败
+    """
+    from app.shared.utils.agent.task_scheduler_service import (
+        TaskScheduleValidationError,
+        TaskSchedulerService,
+    )
+
+    service = TaskSchedulerService(
+        db=MagicMock(), agent_config_service=MagicMock(), scheduler=FakeScheduler()
+    )
+    payload = {
+        "name": "智能体任务",
+        "target_type": "agent",
+        "prompt": "检查",
+        "cron_expression": "0 9 * * *",
+        # 故意缺 agent_name
+    }
+    with pytest.raises(TaskScheduleValidationError) as exc_info:
+        service._validate_payload(payload, partial=False)
+    assert "agent_name is required" in str(exc_info.value)
+
+
+def test_execute_schedule_script_branch_calls_func(monkeypatch, tmp_path):
+    """测试 execute_schedule 在 target_type='script' 时调用 registered.func 并写 success run。
+
+    验证：
+    - script_discovery_service.get_script 被调用
+    - registered.func 被调用一次，参数为 ScriptContext
+    - run 状态为 success，output_text 来自 func 返回值
+    - 日志文件包含 target_type: script 和 script_name
+
+    参数:
+        monkeypatch: pytest fixture，用于替换 TASK_LOG_DIR。
+        tmp_path: pytest fixture，隔离日志目录。
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 任一断言不满足时失败
+    """
+    from app.core.config import paths as paths_module
+    from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+
+    monkeypatch.setattr(paths_module, "TASK_LOG_DIR", str(tmp_path))
+
+    # 构造 fake script_discovery_service，返回带 AsyncMock func 的 registered 对象
+    fake_registered = SimpleNamespace(
+        name="hello_script",
+        display_name="示例脚本",
+        description="",
+        func=AsyncMock(return_value="脚本执行输出"),
+        params_schema=None,
+        module_path="app.scripts.examples.hello_script",
+    )
+    fake_script_service = MagicMock()
+    fake_script_service.get_script = MagicMock(return_value=fake_registered)
+
+    db = FakeDb()
+    service = TaskSchedulerService(
+        db=db,
+        agent_config_service=MagicMock(),
+        scheduler=FakeScheduler(),
+        script_discovery_service=fake_script_service,
+    )
+    # 构造 script 类型 payload 并移除 agent_name/prompt
+    payload = make_payload(
+        target_type="script",
+        script_name="hello_script",
+        script_args={"greeting": "hi"},
+    )
+    payload.pop("agent_name", None)
+    payload.pop("prompt", None)
+    row = asyncio.run(service.create_schedule(payload, created_by_user_id=1))
+
+    asyncio.run(service.execute_schedule(row["id"], trigger_type="manual"))
+
+    # 验证 func 被调用一次，参数是 ScriptContext
+    fake_registered.func.assert_awaited_once()
+    context_arg = fake_registered.func.await_args.args[0]
+    assert context_arg.script_args == {"greeting": "hi"}
+    assert context_arg.schedule_name == "每日巡检"
+
+    # 验证 run 状态为 success
+    success_runs = [r for r in db.runs.values() if r["status"] == "success"]
+    assert success_runs, "应该有 success 状态的 run"
+    assert success_runs[0]["output_text"] == "脚本执行输出"
+    assert success_runs[0]["target_type"] == "script"
+    assert success_runs[0]["script_name"] == "hello_script"
+
+    # 验证日志文件包含 target_type 和 script_name
+    log_files = list((tmp_path / "每日巡检").glob("*.log"))
+    assert log_files, "应该生成日志文件"
+    content = log_files[0].read_text(encoding="utf-8")
+    assert "target_type: script" in content
+    assert "script_name: hello_script" in content
+
+
+def test_execute_schedule_script_branch_handles_missing_script(monkeypatch, tmp_path):
+    """测试 target_type='script' 但 script 未注册时写 failed run。
+
+    验证：
+    - run 状态为 failed
+    - error_message 包含 'not registered'
+
+    参数:
+        monkeypatch: pytest fixture，用于替换 TASK_LOG_DIR。
+        tmp_path: pytest fixture，隔离日志目录。
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 任一断言不满足时失败
+    """
+    from app.core.config import paths as paths_module
+    from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+
+    monkeypatch.setattr(paths_module, "TASK_LOG_DIR", str(tmp_path))
+
+    # script_discovery_service.get_script 返回 None（未注册）
+    fake_script_service = MagicMock()
+    fake_script_service.get_script = MagicMock(return_value=None)
+
+    db = FakeDb()
+    service = TaskSchedulerService(
+        db=db,
+        agent_config_service=MagicMock(),
+        scheduler=FakeScheduler(),
+        script_discovery_service=fake_script_service,
+    )
+    payload = make_payload(
+        target_type="script",
+        script_name="missing_script",
+        script_args={},
+    )
+    payload.pop("agent_name", None)
+    payload.pop("prompt", None)
+    row = asyncio.run(service.create_schedule(payload, created_by_user_id=1))
+
+    asyncio.run(service.execute_schedule(row["id"], trigger_type="manual"))
+
+    failed_runs = [r for r in db.runs.values() if r["status"] == "failed"]
+    assert failed_runs, "应该有 failed 状态的 run"
+    assert "not registered" in failed_runs[0]["error_message"]
+
+
+def test_install_run_logger_includes_target_type_and_script_name(monkeypatch, tmp_path):
+    """测试 _install_run_logger 生成的 Markdown 日志包含 target_type 和 script_name 字段。
+
+    参数:
+        monkeypatch: pytest fixture，用于替换 TASK_LOG_DIR。
+        tmp_path: pytest fixture，隔离日志目录。
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 日志内容缺失 target_type/script_name 时失败
+    """
+    from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+
+    from app.core.config import paths as paths_module
+
+    monkeypatch.setattr(paths_module, "TASK_LOG_DIR", str(tmp_path))
+
+    service = TaskSchedulerService(
+        db=MagicMock(), agent_config_service=MagicMock(), scheduler=FakeScheduler()
+    )
+    schedule = {
+        "id": 7,
+        "name": "脚本巡检",
+        "target_type": "script",
+        "script_name": "hello_script",
+        "agent_name": None,
+    }
+    run_logger = service._install_run_logger(
+        run_id=77,
+        schedule=schedule,
+        session_id="task-7-abc",
+        started_at=datetime(2026, 7, 16, 14, 0, 0),
+        trigger_type="scheduled",
+    )
+
+    log_files = list((tmp_path / "脚本巡检").glob("*.log"))
+    assert log_files, "应该生成日志文件"
+    content = log_files[0].read_text(encoding="utf-8")
+    assert "target_type: script" in content
+    assert "script_name: hello_script" in content
+    assert "schedule_id: 7" in content
+    assert "run_id: 77" in content
+
+    # 清理 handler，避免泄漏
+    service._uninstall_run_logger(77, run_logger)
+    assert run_logger.handlers == []

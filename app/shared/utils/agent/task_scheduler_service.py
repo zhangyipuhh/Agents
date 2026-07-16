@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 from app.core.agent.AgentConfig import ExecuteConfig
 from app.core.config.paths import resolve_task_log_path
 from app.core.config.settings import settings
+from app.scripts.base import ScriptContext
 from app.shared.utils.auth.session_db import SessionDB
 
 
@@ -44,6 +45,7 @@ class TaskSchedulerService:
         agent_config_service: AgentConfigService 实例，用于构造智能体。
         scheduler: 可选调度器实例，测试中可注入 FakeScheduler。
         max_concurrency: 全局最大并发执行数；未传入时读取配置。
+        script_discovery_service: 可选 ScriptDiscoveryService 实例，用于执行脚本任务。
     """
 
     def __init__(
@@ -52,6 +54,7 @@ class TaskSchedulerService:
         agent_config_service: Any,
         scheduler: Optional[Any] = None,
         max_concurrency: Optional[int] = None,
+        script_discovery_service: Optional[Any] = None,
     ) -> None:
         """初始化定时任务服务。
 
@@ -60,6 +63,7 @@ class TaskSchedulerService:
             agent_config_service: 智能体配置服务。
             scheduler: 应用内调度器，默认创建 AsyncIOScheduler。
             max_concurrency: 全局最大并发数。
+            script_discovery_service: 脚本发现服务，用于 target_type='script' 的任务执行。
         """
         self._db = db
         self._agent_config_service = agent_config_service
@@ -68,6 +72,7 @@ class TaskSchedulerService:
             max_concurrency or settings.task_scheduler_max_concurrency
         )
         self._started = False
+        self._script_discovery_service = script_discovery_service
 
     @staticmethod
     def _job_id(schedule_id: int) -> str:
@@ -118,6 +123,12 @@ class TaskSchedulerService:
         result["context_overrides"] = cls._decode_jsonb(
             result.get("context_overrides"), {}
         )
+        result["script_args"] = cls._decode_jsonb(
+            result.get("script_args"), {}
+        )
+        # 兼容旧记录：target_type 缺失时默认 'agent'
+        if not result.get("target_type"):
+            result["target_type"] = "agent"
         return result
 
     @staticmethod
@@ -266,25 +277,40 @@ class TaskSchedulerService:
             TaskScheduleValidationError: 参数非法时抛出。
         """
         self._validate_payload(payload, partial=False)
+        target_type = payload.get("target_type") or "agent"
+        # 根据目标类型确定 agent_name / prompt / script_name / script_args
+        if target_type == "agent":
+            agent_name = payload["agent_name"]
+            prompt = payload["prompt"]
+            script_name = None
+            script_args = {}
+        else:
+            agent_name = None
+            prompt = None
+            script_name = payload["script_name"]
+            script_args = payload.get("script_args") or {}
         row = await self._db.fetchrow(
             """
             INSERT INTO agent_task_schedules (
                 name, description, agent_name, prompt, cron_expression,
                 timezone, enabled, created_by_user_id, context_overrides,
-                max_concurrent_runs
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
+                max_concurrent_runs, target_type, script_name, script_args
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13::jsonb)
             RETURNING *
             """,
             payload["name"],
             payload.get("description"),
-            payload["agent_name"],
-            payload["prompt"],
+            agent_name,
+            prompt,
             payload["cron_expression"],
             payload.get("timezone") or settings.task_scheduler_timezone,
             payload.get("enabled", True),
             created_by_user_id,
             json.dumps(payload.get("context_overrides") or {}, ensure_ascii=False),
             payload.get("max_concurrent_runs") or 1,
+            target_type,
+            script_name,
+            json.dumps(script_args, ensure_ascii=False),
         )
         schedule = self._decode_schedule_row(row)
         next_run_at = self._calculate_next_run_at(schedule)
@@ -324,6 +350,18 @@ class TaskSchedulerService:
         merged = {**current, **{k: v for k, v in payload.items() if v is not None}}
         self._validate_payload(merged, partial=False)
         next_run_at = self._calculate_next_run_at(merged)
+        target_type = merged.get("target_type") or "agent"
+        # 根据目标类型确定 agent_name / prompt / script_name / script_args
+        if target_type == "agent":
+            agent_name = merged["agent_name"]
+            prompt = merged["prompt"]
+            script_name = None
+            script_args = {}
+        else:
+            agent_name = None
+            prompt = None
+            script_name = merged["script_name"]
+            script_args = merged.get("script_args") or {}
         row = await self._db.fetchrow(
             """
             UPDATE agent_task_schedules
@@ -336,7 +374,10 @@ class TaskSchedulerService:
                 enabled = $8,
                 context_overrides = $9::jsonb,
                 max_concurrent_runs = $10,
-                next_run_at = $11,
+                target_type = $11,
+                script_name = $12,
+                script_args = $13::jsonb,
+                next_run_at = $14,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = $1
             RETURNING *
@@ -344,13 +385,16 @@ class TaskSchedulerService:
             schedule_id,
             merged["name"],
             merged.get("description"),
-            merged["agent_name"],
-            merged["prompt"],
+            agent_name,
+            prompt,
             merged["cron_expression"],
             merged["timezone"],
             merged.get("enabled", True),
             json.dumps(merged.get("context_overrides") or {}, ensure_ascii=False),
             merged.get("max_concurrent_runs") or 1,
+            target_type,
+            script_name,
+            json.dumps(script_args, ensure_ascii=False),
             next_run_at,
         )
         schedule = self._decode_schedule_row(row)
@@ -525,45 +569,90 @@ class TaskSchedulerService:
             )
 
             run_logger = self._install_run_logger(run_id, schedule, session_id, started_at, trigger_type)
+            target_type = schedule.get("target_type") or "agent"
             try:
-                user = await self._get_created_by_user(schedule["created_by_user_id"])
-                agent_preview = await self._agent_config_service.get_agent_config(
-                    schedule["agent_name"]
-                )
-                await SessionDB.add_session(session_id, user["id"], user["username"])
-                await SessionDB.update_session_agent(
-                    session_id,
-                    schedule["agent_name"],
-                    getattr(agent_preview, "display_name", schedule["agent_name"]),
-                )
-                agent, context_instance, input_state = await self._agent_config_service.build_agent_instance(
-                    agent_name=schedule["agent_name"],
-                    session_id=session_id,
-                    message=schedule["prompt"],
-                    context_overrides=schedule.get("context_overrides") or {},
-                )
-                run_logger.info("Agent 实例构建完成，开始 invoke")
-                result = await agent.invoke(
-                    input_state=input_state,
-                    context=context_instance,
-                    config=ExecuteConfig(
-                        configurable={"thread_id": session_id},
-                        recursion_limit=100,
-                    ),
-                )
-                output_text = self._extract_output_text(result)
-                finished_at = datetime.now()
-                await self._update_run(
-                    run_id,
-                    status="success",
-                    session_id=session_id,
-                    started_at=started_at,
-                    finished_at=finished_at,
-                    duration_ms=self._duration_ms(started_at, finished_at),
-                    output_text=output_text,
-                )
-                await self._mark_schedule_run_completed(schedule_id, finished_at)
-                run_logger.info("任务执行成功，耗时 %s ms", self._duration_ms(started_at, finished_at))
+                if target_type == "script":
+                    # 脚本任务分支：不创建 SessionDB 会话，直接调用 registered.func(context)
+                    if self._script_discovery_service is None:
+                        raise TaskScheduleValidationError(
+                            "script_discovery_service not configured"
+                        )
+                    registered = self._script_discovery_service.get_script(
+                        schedule.get("script_name")
+                    )
+                    if registered is None:
+                        raise TaskScheduleValidationError(
+                            f"script {schedule.get('script_name')} not registered"
+                        )
+                    run_logger.info(
+                        "脚本已定位，开始执行: %s", schedule.get("script_name")
+                    )
+                    context = ScriptContext(
+                        schedule_id=schedule["id"],
+                        run_id=run_id,
+                        session_id=session_id,
+                        schedule_name=schedule.get("name") or "",
+                        script_args=schedule.get("script_args") or {},
+                        log_logger=run_logger,
+                        started_at=started_at,
+                        trigger_type=trigger_type,
+                    )
+                    output_text = await registered.func(context)
+                    finished_at = datetime.now()
+                    await self._update_run(
+                        run_id,
+                        status="success",
+                        session_id=session_id,
+                        started_at=started_at,
+                        finished_at=finished_at,
+                        duration_ms=self._duration_ms(started_at, finished_at),
+                        output_text=output_text,
+                    )
+                    await self._mark_schedule_run_completed(schedule_id, finished_at)
+                    run_logger.info(
+                        "脚本任务执行成功，耗时 %s ms",
+                        self._duration_ms(started_at, finished_at),
+                    )
+                else:
+                    # agent 任务分支：保持原有 build_agent_instance + agent.invoke 流程
+                    user = await self._get_created_by_user(schedule["created_by_user_id"])
+                    agent_preview = await self._agent_config_service.get_agent_config(
+                        schedule["agent_name"]
+                    )
+                    await SessionDB.add_session(session_id, user["id"], user["username"])
+                    await SessionDB.update_session_agent(
+                        session_id,
+                        schedule["agent_name"],
+                        getattr(agent_preview, "display_name", schedule["agent_name"]),
+                    )
+                    agent, context_instance, input_state = await self._agent_config_service.build_agent_instance(
+                        agent_name=schedule["agent_name"],
+                        session_id=session_id,
+                        message=schedule["prompt"],
+                        context_overrides=schedule.get("context_overrides") or {},
+                    )
+                    run_logger.info("Agent 实例构建完成，开始 invoke")
+                    result = await agent.invoke(
+                        input_state=input_state,
+                        context=context_instance,
+                        config=ExecuteConfig(
+                            configurable={"thread_id": session_id},
+                            recursion_limit=100,
+                        ),
+                    )
+                    output_text = self._extract_output_text(result)
+                    finished_at = datetime.now()
+                    await self._update_run(
+                        run_id,
+                        status="success",
+                        session_id=session_id,
+                        started_at=started_at,
+                        finished_at=finished_at,
+                        duration_ms=self._duration_ms(started_at, finished_at),
+                        output_text=output_text,
+                    )
+                    await self._mark_schedule_run_completed(schedule_id, finished_at)
+                    run_logger.info("任务执行成功，耗时 %s ms", self._duration_ms(started_at, finished_at))
             except Exception as exc:
                 logger.exception("Task schedule %s execution failed", schedule_id)
                 try:
@@ -596,11 +685,47 @@ class TaskSchedulerService:
         异常:
             TaskScheduleValidationError: 参数非法时抛出。
         """
-        required = ("name", "agent_name", "prompt", "cron_expression")
+        target_type = payload.get("target_type") or "agent"
+        if target_type not in ("agent", "script"):
+            raise TaskScheduleValidationError(
+                f"target_type must be 'agent' or 'script', got '{target_type}'"
+            )
+
         if not partial:
-            for field in required:
+            # name 与 cron_expression 对两种类型都必填
+            for field in ("name", "cron_expression"):
                 if not str(payload.get(field) or "").strip():
                     raise TaskScheduleValidationError(f"{field} is required")
+
+            if target_type == "agent":
+                for field in ("agent_name", "prompt"):
+                    if not str(payload.get(field) or "").strip():
+                        raise TaskScheduleValidationError(
+                            f"{field} is required when target_type='agent'"
+                        )
+                # agent 任务不应携带 script_name
+                if payload.get("script_name"):
+                    raise TaskScheduleValidationError(
+                        "script_name must be empty when target_type='agent'"
+                    )
+            else:  # target_type == 'script'
+                if not str(payload.get("script_name") or "").strip():
+                    raise TaskScheduleValidationError(
+                        "script_name is required when target_type='script'"
+                    )
+                # script 任务不应携带 agent_name / prompt
+                if payload.get("agent_name") or payload.get("prompt"):
+                    raise TaskScheduleValidationError(
+                        "agent_name and prompt must be empty when target_type='script'"
+                    )
+                # script_args 必须是 dict
+                if payload.get("script_args") is not None and not isinstance(
+                    payload.get("script_args"), dict
+                ):
+                    raise TaskScheduleValidationError(
+                        "script_args must be a JSON object"
+                    )
+
         if payload.get("cron_expression") and payload.get("timezone"):
             self._build_trigger(payload["cron_expression"], payload["timezone"])
         if int(payload.get("max_concurrent_runs") or 1) < 1:
@@ -666,17 +791,19 @@ class TaskSchedulerService:
             """
             INSERT INTO agent_task_runs (
                 schedule_id, session_id, agent_name, prompt_snapshot,
-                status, trigger_type, scheduled_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                status, trigger_type, scheduled_at, target_type, script_name
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING *
             """,
             schedule["id"],
             None,
-            schedule["agent_name"],
-            schedule["prompt"],
+            schedule.get("agent_name"),
+            schedule.get("prompt") or "",
             status,
             trigger_type,
             scheduled_at,
+            schedule.get("target_type") or "agent",
+            schedule.get("script_name"),
         )
         return self._decode_run_row(row)
 
@@ -863,14 +990,18 @@ class TaskSchedulerService:
                 "- schedule_id: %s\n"
                 "- run_id: %s\n"
                 "- session_id: %s\n"
+                "- target_type: %s\n"
                 "- agent_name: %s\n"
+                "- script_name: %s\n"
                 "- trigger_type: %s\n"
                 "- started_at: %s\n"
                 "- log_file: %s\n",
                 schedule.get("id"),
                 run_id,
                 session_id,
+                schedule.get("target_type") or "agent",
                 schedule.get("agent_name"),
+                schedule.get("script_name"),
                 trigger_type,
                 started_at.strftime("%Y-%m-%d %H:%M:%S"),
                 str(log_path),

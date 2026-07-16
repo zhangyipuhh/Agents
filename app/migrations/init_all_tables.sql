@@ -2665,6 +2665,37 @@ CREATE INDEX IF NOT EXISTS idx_agent_task_runs_schedule_id ON agent_task_runs(sc
 CREATE INDEX IF NOT EXISTS idx_agent_task_runs_status      ON agent_task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_agent_task_runs_created_at  ON agent_task_runs(created_at DESC);
 
+-- 17.1 扩展：支持脚本作为调度目标（2026-07-16 新增）
+--   * target_type 区分 'agent' / 'script'，默认 'agent' 保证旧记录向后兼容
+--   * script_name 脚本任务时引用 app/scripts/ 中注册的脚本名
+--   * script_args JSONB 注入脚本参数
+--   * agent_name / prompt 放松为可空（脚本任务时为 NULL）
+--   * CHECK 约束确保两种任务类型的字段一致性
+ALTER TABLE agent_task_schedules ADD COLUMN IF NOT EXISTS target_type VARCHAR(16) NOT NULL DEFAULT 'agent';
+ALTER TABLE agent_task_schedules ADD COLUMN IF NOT EXISTS script_name VARCHAR(100) DEFAULT NULL;
+ALTER TABLE agent_task_schedules ADD COLUMN IF NOT EXISTS script_args JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE agent_task_schedules ALTER COLUMN agent_name DROP NOT NULL;
+ALTER TABLE agent_task_schedules ALTER COLUMN prompt DROP NOT NULL;
+ALTER TABLE agent_task_schedules DROP CONSTRAINT IF EXISTS agent_task_schedules_target_type_chk;
+ALTER TABLE agent_task_schedules ADD CONSTRAINT agent_task_schedules_target_type_chk
+    CHECK (target_type IN ('agent', 'script'));
+ALTER TABLE agent_task_schedules DROP CONSTRAINT IF EXISTS agent_task_schedules_target_payload_chk;
+ALTER TABLE agent_task_schedules ADD CONSTRAINT agent_task_schedules_target_payload_chk
+    CHECK (
+        (target_type = 'agent' AND agent_name IS NOT NULL AND prompt IS NOT NULL)
+        OR
+        (target_type = 'script' AND script_name IS NOT NULL)
+    );
+CREATE INDEX IF NOT EXISTS idx_agent_task_schedules_target_type ON agent_task_schedules(target_type);
+CREATE INDEX IF NOT EXISTS idx_agent_task_schedules_script_name ON agent_task_schedules(script_name);
+
+-- 17.2 扩展：agent_task_runs 同步加 target_type / script_name，便于执行历史区分
+ALTER TABLE agent_task_runs ADD COLUMN IF NOT EXISTS target_type VARCHAR(16) NOT NULL DEFAULT 'agent';
+ALTER TABLE agent_task_runs ADD COLUMN IF NOT EXISTS script_name VARCHAR(100) DEFAULT NULL;
+ALTER TABLE agent_task_runs DROP CONSTRAINT IF EXISTS agent_task_runs_target_type_chk;
+ALTER TABLE agent_task_runs ADD CONSTRAINT agent_task_runs_target_type_chk
+    CHECK (target_type IN ('agent', 'script'));
+
 -- ========== 18. devops_servers（DevOps SSH 服务器配置，2026-07-15 新增）==========
 -- DevOpsServerService 的运行时配置真实数据源：
 --   * business_name 唯一，作为 upsert 键（与 YAML 中的 name/host 别名规范化为统一字段）
@@ -2742,6 +2773,44 @@ SET display_name = EXCLUDED.display_name,
     args_schema = EXCLUDED.args_schema,
     updated_at = CURRENT_TIMESTAMP;
 
+-- ========== 19. email_server_configs（邮件服务器配置，2026-07-16 新增）==========
+-- 全局唯一的 SMTP 出口配置；密码字段 password_encrypted 使用 Fernet 对称加密
+-- （复用 DEVOPS_CREDENTIAL_KEY），明文密码仅在内存中流转
+CREATE TABLE IF NOT EXISTS email_server_configs (
+    id                SERIAL PRIMARY KEY,
+    host              VARCHAR(200) NOT NULL,
+    port              INTEGER NOT NULL DEFAULT 465,
+    use_ssl           BOOLEAN NOT NULL DEFAULT TRUE,
+    username          VARCHAR(200) NOT NULL,
+    password_encrypted TEXT NOT NULL,
+    sender_name       VARCHAR(200) DEFAULT '',
+    enabled           BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+-- 单行启用约束：全局仅允许一条 enabled=TRUE 配置
+CREATE UNIQUE INDEX IF NOT EXISTS idx_email_server_configs_enabled
+    ON email_server_configs(enabled) WHERE enabled = TRUE;
+
+-- ========== 20. email_policies / email_policy_recipients（邮件发送策略）==========
+-- 策略仅包含收件人集合（用户确认）；策略与 users 多对多关系
+-- 调用方（脚本/定时任务/手动）通过 policy_id 调用 EmailService 发送邮件
+CREATE TABLE IF NOT EXISTS email_policies (
+    id                SERIAL PRIMARY KEY,
+    name              VARCHAR(200) NOT NULL,
+    description       TEXT DEFAULT '',
+    created_by_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS email_policy_recipients (
+    policy_id   INTEGER NOT NULL REFERENCES email_policies(id) ON DELETE CASCADE,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (policy_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_email_policy_recipients_user_id ON email_policy_recipients(user_id);
+
 COMMIT;
 
 -- =============================================
@@ -2759,7 +2828,8 @@ WHERE table_schema = 'public'
     'tools', 'skills',
     'message_feedback',
     'agent_task_schedules', 'agent_task_runs',
-    'devops_servers'
+    'devops_servers',
+    'email_server_configs', 'email_policies', 'email_policy_recipients'
   )
 ORDER BY table_name;
 
