@@ -227,6 +227,117 @@ def test_to_card_json_numbered_list_paren_form_strips_prefix():
     assert "2. 第二项" in contents
 
 
+# ---------------------------------------------------------------------------
+# P1 行内多编号拆分（2026-07-17 新增，修复 LLM 同行多编号被串行问题）
+# ---------------------------------------------------------------------------
+def test_to_card_json_inline_numbered_list_real_user_case():
+    """复现用户最新截图源文本。
+
+    前 4 个编号项挤在同一行(`1. xxx2. xxx3. xxx4. xxx`),第 5 项单独一行。
+    本测试断言：每个编号项独立成 markdown 元素，与原 5 项各自独占一行的写法等价。
+    """
+    text = (
+        "不动产权登记的意义：\n"
+        "\n"
+        "1. **保护产权** —明确归属，防止纠纷"
+        "2. **规范市场** —保障交易安全与透明"
+        "3. 防止风险 — 杜绝一房二卖、重复抵押"
+        "4. 便于管理 — 支持税收与宏观决策\n"
+        "5. **提高效率** — 信息共享，减少重复审查\n"
+    )
+    card = MarkdownToCardConverter.to_card_json(text)
+    md_elems = [e for e in card["body"]["elements"] if e.get("tag") == "markdown"]
+    numbered = [
+        e["content"]
+        for e in md_elems
+        if e["content"].startswith(("1. ", "2. ", "3. ", "4. ", "5. "))
+    ]
+
+    # 关键修复点：5 个编号项都被切出
+    assert len(numbered) == 5, (
+        f"应有 5 个独立编号项，实际 {len(numbered)}: {numbered}"
+    )
+    assert "1. **保护产权** —明确归属，防止纠纷" in numbered
+    assert "2. **规范市场** —保障交易安全与透明" in numbered
+    assert "3. 防止风险 — 杜绝一房二卖、重复抵押" in numbered
+    assert "4. 便于管理 — 支持税收与宏观决策" in numbered
+    assert "5. **提高效率** — 信息共享，减少重复审查" in numbered
+
+    # 关键：item 1 不应再含后续编号项的内容
+    item_1 = next(c for c in numbered if c.startswith("1. "))
+    assert "规范市场" not in item_1
+    assert "防止风险" not in item_1
+    assert "便于管理" not in item_1
+
+
+def test_to_card_json_inline_numbered_list_no_split_when_no_cjk_anchor():
+    """反例：纯含数字文本不被误拆。
+
+    `今天是 2026年7月17日。苹果 20 元一斤。` 中"20 元""2026年"前是 CJK
+    字符,但后续没有 `.` / `)`,不应触发拆分；既不会被误拆成"2026 年"、
+    也不会被误拆成"20 元一斤"。整体应原样保留为单元素。
+    """
+    text = "今天是 2026 年 7 月 17 日，苹果 20 元一斤。"
+    card = MarkdownToCardConverter.to_card_json(text)
+    md_elems = [e for e in card["body"]["elements"] if e.get("tag") == "markdown"]
+    contents = [e["content"] for e in md_elems]
+    # 整体保留为单元素
+    assert any("今天是 2026 年 7 月 17 日" in c and "苹果" in c for c in contents)
+
+
+def test_to_card_json_inline_numbered_list_with_cjk_terminator_split():
+    """行内编号前是 CJK 终止符"。" → 应触发拆分。"""
+    text = "1. 第一步。2. 第二步。3. 第三步。"
+    card = MarkdownToCardConverter.to_card_json(text)
+    md_elems = [e for e in card["body"]["elements"] if e.get("tag") == "markdown"]
+    numbered = [
+        e["content"]
+        for e in md_elems
+        if e["content"].startswith(("1. ", "2. ", "3. "))
+    ]
+    # 全部切出 3 个独立元素
+    assert len(numbered) == 3
+    assert "1. 第一步。" in numbered
+    assert "2. 第二步。" in numbered
+    assert "3. 第三步。" in numbered
+
+
+def test_to_card_json_inline_numbered_list_paren_form():
+    """`1) xxx2) xxx3) xxx` 也走行内拆分。"""
+    text = "1) 第一项2) 第二项3) 第三项"
+    card = MarkdownToCardConverter.to_card_json(text)
+    md_elems = [e for e in card["body"]["elements"] if e.get("tag") == "markdown"]
+    numbered = [
+        e["content"]
+        for e in md_elems
+        if e["content"].startswith(("1. ", "2. ", "3. "))
+    ]
+    # 飞书渲染统一用 "1." 前缀，所以这里也写作 "1. xxx"
+    assert len(numbered) == 3
+    assert "1. 第一项" in numbered
+    assert "2. 第二项" in numbered
+    assert "3. 第三项" in numbered
+
+
+def test_to_card_json_normal_numbered_list_lines_unchanged():
+    """回归保护：常规多行有序列表（每行一项，缩进对齐）行为不变。
+
+    这是上一轮已加的'每行独立' case，新加的行内拆分不能破坏它。
+    """
+    md = "1. 第一项\n2. 第二项\n3. 第三项"
+    card = MarkdownToCardConverter.to_card_json(md)
+    md_elems = [e for e in card["body"]["elements"] if e.get("tag") == "markdown"]
+    numbered = [
+        e["content"]
+        for e in md_elems
+        if e["content"].startswith(("1. ", "2. ", "3. "))
+    ]
+    assert len(numbered) == 3
+    assert "1. 第一项" in numbered
+    assert "2. 第二项" in numbered
+    assert "3. 第三项" in numbered
+
+
 def test_to_card_json_custom_header_title():
     """自定义 header_title 生效。"""
     card = MarkdownToCardConverter.to_card_json("hi", header_title="客服回复")

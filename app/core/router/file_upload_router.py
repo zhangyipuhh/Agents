@@ -36,6 +36,44 @@ CHUNKS_DIR = Path("data/upload_chunks")
 MAX_FILE_SIZE_MB = FILE_PARSER_CONFIG.get("max_file_size_mb", 3)
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 
+# 2026-07-17 新增：跳过远程 mineru 解析、可直接转 md 的扩展名集合。
+# 即使 file_parser_enabled=true，这些后缀也按本地模式处理（原文转 md 写入 tmp）。
+_PASSTHROUGH_SUFFIXES = {".md", ".markdown", ".txt"}
+
+
+def _is_passthrough_suffix(suffix: str) -> bool:
+    """判断后缀是否属于无需远程解析、可直接复制为 md 的类型（md/markdown/txt）。
+
+    Args:
+        suffix: 文件后缀（如 ".md", ".TXT"）。
+
+    Returns:
+        bool: 命中 PASSTHROUGH_SUFFIXES 时返回 True。
+    """
+    return (suffix or "").lower() in _PASSTHROUGH_SUFFIXES
+
+
+async def _write_md_passthrough(original_path: Path, output_path: Path) -> None:
+    """读取原文件文本，按行拼接后写入 output_path（.md）。
+
+    行为与本地 DocumentLoader 分支完全一致：按 utf-8 解码，失败降级 latin-1，
+    避免 UnicodeDecodeError 导致整个上传失败。
+
+    Args:
+        original_path: 原文件绝对路径（.md / .txt / .markdown）。
+        output_path: 目标 .md 文件绝对路径。
+    """
+    raw = original_path.read_bytes()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1", errors="replace")
+    # 与本地分支行为对齐：按换行拼接后整段写入（保持原文顺序与空行）。
+    content = text
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    async with aiofiles.open(output_path, "w", encoding="utf-8") as f:
+        await f.write(content)
+
 
 class UploadedFileInfo(BaseModel):
     filename: str
@@ -162,26 +200,33 @@ async def upload_files(
                 await f.write(content)
 
             if parser_enabled:
-                client = FileParserClient(
-                    server_url=FILE_PARSER_CONFIG["server_url"],
-                    max_retries=FILE_PARSER_CONFIG["max_retries"],
-                    poll_interval=FILE_PARSER_CONFIG["poll_interval"],
-                    timeout=FILE_PARSER_CONFIG["timeout"],
-                )
-                try:
-                    result_path = await asyncio.to_thread(
-                        client.parse,
-                        file_path=str(original_path),
-                        output_dir=str(session_tmp_dir),
-                        api_url=FILE_PARSER_CONFIG["api_url"],
-                        output_format="md",
+                # 2026-07-17 新增：md / txt / markdown 跳过 mineru 远程解析，直接转 md 写入 tmp。
+                # mineru 面向 PDF/图片，md/txt 远程解析会报错，行为对齐本地 DocumentLoader 分支。
+                if _is_passthrough_suffix(original_suffix):
+                    output_path = session_tmp_dir / f"{original_stem}.md"
+                    await _write_md_passthrough(original_path, output_path)
+                    result_path = str(output_path)
+                else:
+                    client = FileParserClient(
+                        server_url=FILE_PARSER_CONFIG["server_url"],
+                        max_retries=FILE_PARSER_CONFIG["max_retries"],
+                        poll_interval=FILE_PARSER_CONFIG["poll_interval"],
+                        timeout=FILE_PARSER_CONFIG["timeout"],
                     )
-                except RequestException as e:
-                    raise HTTPException(status_code=503, detail=f"远程解析服务不可用: {str(e)}")
-                except (ValueError, RuntimeError) as e:
-                    raise HTTPException(status_code=503, detail=f"远程解析服务错误: {str(e)}")
-                except TimeoutError as e:
-                    raise HTTPException(status_code=503, detail=f"远程解析服务超时: {str(e)}")
+                    try:
+                        result_path = await asyncio.to_thread(
+                            client.parse,
+                            file_path=str(original_path),
+                            output_dir=str(session_tmp_dir),
+                            api_url=FILE_PARSER_CONFIG["api_url"],
+                            output_format="md",
+                        )
+                    except RequestException as e:
+                        raise HTTPException(status_code=503, detail=f"远程解析服务不可用: {str(e)}")
+                    except (ValueError, RuntimeError) as e:
+                        raise HTTPException(status_code=503, detail=f"远程解析服务错误: {str(e)}")
+                    except TimeoutError as e:
+                        raise HTTPException(status_code=503, detail=f"远程解析服务超时: {str(e)}")
 
                 uploaded_files.append(UploadedFileInfo(
                     filename=file.filename,
@@ -360,26 +405,33 @@ async def merge_chunks(request: Request, merge_request: MergeChunksRequest):
             parser_mode = "remote" if parser_enabled else "local"
 
             if parser_enabled:
-                client = FileParserClient(
-                    server_url=FILE_PARSER_CONFIG["server_url"],
-                    max_retries=FILE_PARSER_CONFIG["max_retries"],
-                    poll_interval=FILE_PARSER_CONFIG["poll_interval"],
-                    timeout=FILE_PARSER_CONFIG["timeout"],
-                )
-                try:
-                    result_path = await asyncio.to_thread(
-                        client.parse,
-                        file_path=str(original_path),
-                        output_dir=str(session_tmp_dir),
-                        api_url=FILE_PARSER_CONFIG["api_url"],
-                        output_format="md",
+                # 2026-07-17 新增：md / txt / markdown 跳过 mineru 远程解析，直接转 md 写入 tmp。
+                # 行为对齐 upload_files() 的对应短路分支。
+                if _is_passthrough_suffix(original_suffix):
+                    output_path = session_tmp_dir / f"{original_stem}.md"
+                    await _write_md_passthrough(original_path, output_path)
+                    result_path = str(output_path)
+                else:
+                    client = FileParserClient(
+                        server_url=FILE_PARSER_CONFIG["server_url"],
+                        max_retries=FILE_PARSER_CONFIG["max_retries"],
+                        poll_interval=FILE_PARSER_CONFIG["poll_interval"],
+                        timeout=FILE_PARSER_CONFIG["timeout"],
                     )
-                except RequestException as e:
-                    raise HTTPException(status_code=503, detail=f"远程解析服务不可用: {str(e)}")
-                except (ValueError, RuntimeError) as e:
-                    raise HTTPException(status_code=503, detail=f"远程解析服务错误: {str(e)}")
-                except TimeoutError as e:
-                    raise HTTPException(status_code=503, detail=f"远程解析服务超时: {str(e)}")
+                    try:
+                        result_path = await asyncio.to_thread(
+                            client.parse,
+                            file_path=str(original_path),
+                            output_dir=str(session_tmp_dir),
+                            api_url=FILE_PARSER_CONFIG["api_url"],
+                            output_format="md",
+                        )
+                    except RequestException as e:
+                        raise HTTPException(status_code=503, detail=f"远程解析服务不可用: {str(e)}")
+                    except (ValueError, RuntimeError) as e:
+                        raise HTTPException(status_code=503, detail=f"远程解析服务错误: {str(e)}")
+                    except TimeoutError as e:
+                        raise HTTPException(status_code=503, detail=f"远程解析服务超时: {str(e)}")
 
                 uploaded_files = [UploadedFileInfo(
                     filename=merge_request.filename,

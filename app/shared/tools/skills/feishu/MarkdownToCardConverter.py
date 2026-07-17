@@ -37,8 +37,17 @@ _RE_INLINE_CODE = re.compile(r"`[^`\n]+`")
 _RE_HEADING = re.compile(r"(?m)^#{1,6}\s+\S")
 _RE_LIST = re.compile(r"(?m)^\s{0,3}[-*+]\s+\S")
 # 有序列表项: 行首 1. / 2. / …… / 99. + 空格 + 非空白字符
-# 允许 0~3 个前导空格(与无序列表一致);编号限定 1~2 位避免误吞带年份等的长数字
+# 允许 0~3 个前导空格（与无序列表一致）；编号限定 1~2 位避免误吞带年份等的长数字
 _RE_ORDERED_LIST = re.compile(r"(?m)^\s{0,3}\d{1,2}[.)]\s+\S")
+# 行内编号项的拆分锚（2026-07-17 新增）: 数字 +（. 或 )）+ 空格 的**前一个字符**
+# 必须是 CJK 字符 / CJK 标点 / 半角中英标点 —— 即"前一个 item 末尾 + 编号前缀"
+# 的边界位置。LLM 输出"1. xxx2. xxx3. xxx"(编号挤在同一行)时,前一个 item
+# 末尾几乎不跟空白,只能靠 CJK 终止字符作为锚。仅靠 CJK 单字符锚可避免把
+# "今天是 2026 年 7 月 17 日" / "苹果 20 元一斤" 等含数字的非编号文本误拆。
+# re.split 在捕获组（数字）位置切开,捕获到的数字单独成 entry,便于 walk 重组。
+_RE_INLINE_ORDERED_SPLIT = re.compile(
+    r"(?<=[一-鿿。,，;:；、！？」】）)])\s*(\d{1,2})[.)]\s+"
+)
 _RE_BLOCKQUOTE = re.compile(r"(?m)^\s*>\s+\S")
 _RE_HR = re.compile(r"(?m)^\s*---\s*$")
 _RE_FENCE = re.compile(r"```")
@@ -282,15 +291,44 @@ class MarkdownToCardConverter:
             # 有序列表项：每项单独一个 markdown 元素(保留"1."原前缀，
             # 由飞书 markdown 元素原生渲染编号递增)。编号限定 1~2 位数字。
             # 同时识别 "1." 与 "1)" 两种写法。
+            #
+            # 2026-07-17 增补：行内多编号拆分。LLM 经常把多个编号项挤到同一行
+            # (`1. xxx2. xxx3. xxx4. xxx`),仅靠行扫描会丢内容。
+            # 故对每个 emit 的有序列表项内容做 `_RE_INLINE_ORDERED_SPLIT` 拆分,
+            # 把同行多编号切成多个独立 markdown 元素。仅靠 CJK 字符/CJK 标点作锚
+            # 避免误拆"20 元一斤""2026 年"等含数字的非编号文本。
             ordered_match = re.match(r"^\s*(\d{1,2})[.)]\s+(\S.*)$", line)
             if ordered_match:
                 while i < n:
                     om = re.match(r"^\s*(\d{1,2})[.)]\s+(\S.*)$", lines[i])
                     if not om:
                         break
-                    elements.append(
-                        {"tag": "markdown", "content": f"{om.group(1)}. {om.group(2)}"}
-                    )
+                    full_content = f"{om.group(1)}. {om.group(2)}"
+                    # 行内编号拆分
+                    inline_parts = _RE_INLINE_ORDERED_SPLIT.split(full_content)
+                    if len(inline_parts) == 1:
+                        elements.append(
+                            {"tag": "markdown", "content": full_content}
+                        )
+                    else:
+                        # parts[0] 是含行首 "1. xxx" 的第一个 item（行首编号已拼回）
+                        # parts[1] = num, parts[2] = next_seg, parts[3] = num, ...
+                        elements.append(
+                            {"tag": "markdown", "content": inline_parts[0].rstrip()}
+                        )
+                        for k in range(1, len(inline_parts), 2):
+                            num = inline_parts[k]
+                            seg = (
+                                inline_parts[k + 1]
+                                if k + 1 < len(inline_parts)
+                                else ""
+                            )
+                            elements.append(
+                                {
+                                    "tag": "markdown",
+                                    "content": f"{num}. {seg.rstrip()}",
+                                }
+                            )
                     i += 1
                 continue
 

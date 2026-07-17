@@ -347,6 +347,130 @@ class TestDeleteAttachments:
         assert "项目" in del_resp.failed[0].reason
 
 
+class TestPassthroughSuffixes:
+    """2026-07-17 新增：md/txt/markdown 在 file_parser_enabled=true 时跳过 mineru 远程解析。"""
+
+    @pytest.mark.asyncio
+    async def test_upload_files_txt_skips_mineru(self, mock_request, tmp_path):
+        """parser_enabled=true 时上传 .txt 应直接转 md 写入 tmp，不调用 FileParserClient.parse。"""
+        content = b"hello txt\nline2"
+        upload_file = UploadFile(filename="note.txt", file=BytesIO(content))
+
+        with patch("app.core.router.file_upload_router.FILE_PARSER_CONFIG", {
+            "enabled": True,
+            "server_url": "http://test",
+            "max_retries": 1,
+            "poll_interval": 0.1,
+            "timeout": 1,
+            "api_url": "http://test/api",
+        }) as _, patch("app.shared.utils.files.file_parser_client.FileParserClient.parse") as mock_parse:
+            resp = await upload_files(mock_request, [upload_file])
+
+        today = date.today()
+        original_path = tmp_path / f"data/upload/{today.year}/{today.month:02d}/{today.day:02d}/session-abc/note.txt"
+        md_path = tmp_path / f"data/tmp/upload/{today.year}/{today.month:02d}/{today.day:02d}/session-abc/note.md"
+
+        # 远程解析必须未被调用
+        mock_parse.assert_not_called()
+        # 原文件保留
+        assert original_path.exists()
+        # tmp md 写入且内容等于 txt 原文
+        assert md_path.exists()
+        assert md_path.read_text(encoding="utf-8") == "hello txt\nline2"
+        # 响应元数据
+        assert resp.count == 1
+        assert resp.files[0].stored_path == str(md_path)
+        assert resp.files[0].file_type == "md"
+        assert resp.parser_mode == "remote"  # 全局开关仍是 remote
+
+    @pytest.mark.asyncio
+    async def test_upload_files_md_skips_mineru(self, mock_request, tmp_path):
+        """parser_enabled=true 时上传 .md 应原样复制到 tmp，不调用远程解析。"""
+        content = b"# Title\n\nbody line"
+        upload_file = UploadFile(filename="doc.md", file=BytesIO(content))
+
+        with patch("app.core.router.file_upload_router.FILE_PARSER_CONFIG", {
+            "enabled": True,
+            "server_url": "http://test",
+            "max_retries": 1,
+            "poll_interval": 0.1,
+            "timeout": 1,
+            "api_url": "http://test/api",
+        }) as _, patch("app.shared.utils.files.file_parser_client.FileParserClient.parse") as mock_parse:
+            resp = await upload_files(mock_request, [upload_file])
+
+        today = date.today()
+        md_path = tmp_path / f"data/tmp/upload/{today.year}/{today.month:02d}/{today.day:02d}/session-abc/doc.md"
+
+        mock_parse.assert_not_called()
+        assert md_path.exists()
+        assert md_path.read_text(encoding="utf-8") == "# Title\n\nbody line"
+        assert resp.files[0].stored_path == str(md_path)
+
+    @pytest.mark.asyncio
+    async def test_upload_files_remote_still_routes_pdf(self, mock_request, tmp_path):
+        """parser_enabled=true 时上传 .pdf 应仍走 FileParserClient.parse。"""
+        content = b"fake pdf content"
+        upload_file = UploadFile(filename="report.pdf", file=BytesIO(content))
+
+        today = date.today()
+        expected_md = tmp_path / f"data/tmp/upload/{today.year}/{today.month:02d}/{today.day:02d}/session-abc/report.md"
+
+        def fake_parse(*args, **kwargs):
+            expected_md.parent.mkdir(parents=True, exist_ok=True)
+            expected_md.write_text("# Report\n", encoding="utf-8")
+            return str(expected_md)
+
+        with patch("app.core.router.file_upload_router.FILE_PARSER_CONFIG", {
+            "enabled": True,
+            "server_url": "http://test",
+            "max_retries": 1,
+            "poll_interval": 0.1,
+            "timeout": 1,
+            "api_url": "http://test/api",
+        }) as _, patch("app.shared.utils.files.file_parser_client.FileParserClient.parse", side_effect=fake_parse) as mock_parse:
+            resp = await upload_files(mock_request, [upload_file])
+
+        mock_parse.assert_called_once()
+        assert resp.files[0].stored_path == str(expected_md)
+
+    @pytest.mark.asyncio
+    async def test_merge_chunks_txt_skips_mineru(self, mock_request, tmp_path):
+        """parser_enabled=true 时合并分片 .txt 应直接转 md，不调用 FileParserClient.parse。"""
+        file_id = "chunk-txt-001"
+        chunks_dir = tmp_path / "upload_chunks"
+        chunk_dir = chunks_dir / file_id
+        chunk_dir.mkdir(parents=True)
+        (chunk_dir / "chunk_0").write_text("hello ", encoding="utf-8")
+        (chunk_dir / "chunk_1").write_text("merged", encoding="utf-8")
+
+        merge_request = MergeChunksRequest(
+            file_id=file_id,
+            filename="merged.txt",
+            total_chunks=2,
+        )
+
+        with patch("app.core.router.file_upload_router.CHUNKS_DIR", chunks_dir), \
+             patch("app.core.router.file_upload_router.FILE_PARSER_CONFIG", {
+                 "enabled": True,
+                 "server_url": "http://test",
+                 "max_retries": 1,
+                 "poll_interval": 0.1,
+                 "timeout": 1,
+                 "api_url": "http://test/api",
+             }), \
+             patch("app.shared.utils.files.file_parser_client.FileParserClient.parse") as mock_parse:
+            resp = await merge_chunks(mock_request, merge_request)
+
+        today = date.today()
+        md_path = tmp_path / f"data/tmp/upload/{today.year}/{today.month:02d}/{today.day:02d}/session-abc/merged.md"
+
+        mock_parse.assert_not_called()
+        assert md_path.exists()
+        assert md_path.read_text(encoding="utf-8") == "hello merged"
+        assert resp.files[0].stored_path == str(md_path)
+
+
 class TestUploadSizeLimit:
     """2026-07-13 新增：上传文件大小限制测试。"""
 

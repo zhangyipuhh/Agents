@@ -2052,7 +2052,7 @@ system_prompt = (
 - `app/tests/shared/tools/skills/feishu/test_feishu_client.py` —— 9 个用例：导入存在性、凭证缺失抛 RuntimeError、单例缓存、reset 清空、日志级别映射
 - `app/tests/shared/tools/skills/feishu/test_feishu_message_tools.py` —— 7 个用例：导入存在性、receive_id 缺失、client 初始化失败、API 成功/失败/异常、显式参数覆盖默认配置
 - `app/tests/shared/tools/skills/feishu/test_feishu_websocket_service.py` —— 56 个用例：模块导入存在性、消息字段提取（p2p / group）、session_id 构造、群聊 @机器人 检测（精确 + 降级）、消息分发到 agent、非文本消息跳过、回复发送（含截断）、单条消息异常隔离、agent.stream messages 模式 chunk 拼接、loop 注入、stop 标志、markdown 卡片路由、卡片 API 失败回退文本、HITL interrupt 检测（含 `__interrupt__` 多模式解析）、`_send_interrupt_card` 发送、`_on_card_action` 回调解析与 resume 投递、`_resume_agent` 续跑 + pending 清理、`p2_card_action_trigger` 事件注册
-- `app/tests/shared/tools/skills/feishu/test_markdown_to_card_converter.py` —— 40 个用例：导入存在性、`looks_like_markdown` 触发（粗体 / 斜体 / 行内代码 / 标题 / 列表 / **有序列表(1./1) / 双位数字,2026-07-17 新增)** / 引用 / 分隔线 / 代码围栏）、`looks_like_markdown` 否定、`to_card_json` 基本结构、h1-h3 标题、hr、列表合并、**有序列表 单层 / 含子项 / 用户复现,2026-07-17 新增) / 括号形式(1))**、引用、代码块（带 / 不带语言）、纯文本段落、粗体保留、截断、Unicode / emoji
+- `app/tests/shared/tools/skills/feishu/test_markdown_to_card_converter.py` —— 45 个用例：导入存在性、`looks_like_markdown` 触发（粗体 / 斜体 / 行内代码 / 标题 / 列表 / 有序列表(1./1) / 双位数字）/ 引用 / 分隔线 / 代码围栏）、`looks_like_markdown` 否定、`to_card_json` 基本结构、h1-h3 标题、hr、列表合并、有序列表 单层 / 含子项 / 用户复现 / 括号形式(1) / **行内多编号拆分（用户截图复现）/ CJK 终止符触发 / 括号形式行内 / 反例（数字不被误拆）/ 常规多行回归保护 2026-07-17 新增**、引用、代码块（带 / 不带语言）、纯文本段落、粗体保留、截断、Unicode / emoji
 - `app/tests/shared/tools/skills/feishu/test_interrupt_to_card_converter.py` —— 13 个用例：导入存在性、单题单选、多题、按钮 value 携带 session_id / chat_id、options=[] 退化、questions=[] 占位、None 请求占位、multiSelect 退化为单选、选项数超限截断、自定义 header_title、`parse_card_action_value` 解析 dict / JSON 字符串 / 失败
 - `app/tests/shared/tools/skills/feishu/conftest.py` —— 沙箱环境 mock lark_oapi SDK（Client.builder 链、LogLevel 枚举、CreateMessageRequest/Body builder 链、P2ImMessageReceiveV1 类型占位、bot.v1.GetBotRequest、lark.ws.Client、lark.EventDispatcherHandler 注册 `p2_card_action_trigger`）
 
@@ -2150,6 +2150,12 @@ system_prompt = (
 - 新增 `_RE_ORDERED_LIST = (?m)^\s{0,3}\d{1,2}[.)]\s+\S` 正则；`looks_like_markdown` 增补触发；`_parse_block_elements` 在无序列表分支之后新增"有序列表项"分支，匹配 `^\s*\d{1,2}[.)]\s+\S`（同时支持 `1.` 与 `1)` 写法，编号限定 1~2 位避免误吞带年份等的长数字）；普通段落分支的 while 退出条件增加 `^\s*\d{1,2}[.)]\s+\S` 检测，遇到编号行立刻终止段落。
 - 每个编号项独立成 markdown 元素（保留 `1.` 原前缀），由飞书原生渲染编号递增；`_solo_bold` / `_safe_leading_emoji` 预处理对编号行同样生效（不会误给数字行首补空格，因为 emoji 字符集不含数字）。
 - 修复用户反馈的"`1. xxx` 编号项被合并到同一个 markdown 元素、`**4. 便于管理**` / `**5. 提高效率**` 被串到上一子项目末尾"问题（编号项原本被当作普通段落，多行内容累加到 `para_lines`，飞书 markdown 渲染无法正确展示编号位置）。
+
+**行内多编号拆分（2026-07-17 同一日第二轮新增）**：
+- 新增 `_RE_INLINE_ORDERED_SPLIT = (?<=[一-鿿。,，;:；、！？」】）)])\s*(\d{1,2})[.)]\s+`：在有序列表项 emit 之前对内容做 `re.split`，捕获到的数字单独成 entry。
+- 触发场景：LLM 把多个编号项挤在同一行（如 `1. xxx2. xxx3. xxx4. xxx`，用户最新截图复现）。仅靠 CJK 字符 / CJK 标点 / 半角中英标点作 `lookbehind` 锚，避免误拆"今天是 2026 年 7 月 17 日。苹果 20 元一斤。"等含数字的非编号文本。
+- 拆分后 walk：`re.split` 返回 `[seg1, num1, seg2, num2, seg3, ...]`，parts[0] 是含行首编号的第一个 item（保留 `1. xxx`），其余按 `(num, seg)` 对重组为 `"N. xxx"`。
+- 修复用户反馈"依然有问题"(前 4 个编号项挤一行,只看到 1 项)问题。
 
 ## 沙箱 Agent 架构（Sandbox Agent）
 
