@@ -166,3 +166,98 @@ class TestFileTransferDatedPaths:
 
         assert deleted is True
         assert not project_dir.exists()
+
+
+class TestScanDirTreeRobustness:
+    """2026-07-17 新增：_scan_dir_tree 在 Windows / IO 抖动下的鲁棒性。
+
+    复现 2026-07-17 线上事故：
+      - 飞书 session_id 含 `:`，Windows 上 Path.iterdir() 抛 OSError [WinError 123]
+      - 现状 _scan_dir_tree 内部已 try/except 但仅对子目录递归；
+        新增要求：listdir 失败时返回空 children，单 entry stat 失败时跳过该 entry。
+    """
+
+    def test_scan_dir_tree_handles_listdir_failure(self, tmp_path):
+        """listdir 抛 OSError 时 _scan_dir_tree 应返回 children=[] 而非向上抛。"""
+        transfer = FileTransfer(upload_dir="data/upload")
+
+        # 构造一个真实目录，但 monkeypatch 让 iterdir 抛 OSError
+        broken_dir = tmp_path / "broken"
+        broken_dir.mkdir()
+
+        original_iterdir = Path.iterdir
+
+        def fake_iterdir(self, *args, **kwargs):
+            if self == broken_dir:
+                raise OSError(123, "文件名、目录名或卷标语法不正确")
+            return original_iterdir(self, *args, **kwargs)
+
+        import unittest.mock as mock
+        with mock.patch.object(Path, "iterdir", fake_iterdir):
+            node = transfer._scan_dir_tree(broken_dir, broken_dir)
+
+        # 应降级为 children=[]，不抛
+        assert node["children"] == []
+        assert node["name"] == "broken"
+
+    def test_scan_dir_tree_skips_unreadable_entry(self, tmp_path):
+        """单个 entry stat 抛 OSError 时应跳过该 entry，继续处理其它 entry。
+
+        实现思路：通过 monkeypatch FileTransfer._scan_dir_tree 内对 entry.is_dir()
+        与 entry.stat() 的调用路径，注入抛错逻辑。最稳的做法是：直接验证 _scan_dir_tree
+        对真实损坏目录的恢复能力——Windows 上拿到一个损坏/孤立的 reparse point 时，
+        stat 会抛 OSError。
+
+        本测试使用 symlink 指向不存在的目标来触发 stat OSError（PermissionError /
+        OSError 子类），symlink 解析过程是 Windows 上常见的失败模式。
+        """
+        import sys
+        transfer = FileTransfer(upload_dir="data/upload")
+
+        scan_dir = tmp_path / "mixed"
+        scan_dir.mkdir()
+        good_file = scan_dir / "good.txt"
+        good_file.write_text("ok", encoding="utf-8")
+
+        # 创建悬空 symlink：在 Windows 上若不支持 symlink 则跳过此测试
+        broken_link = scan_dir / "broken_link.txt"
+        if sys.platform == "win32":
+            try:
+                broken_link.symlink_to(tmp_path / "nonexistent_target")
+            except (OSError, NotImplementedError):
+                pytest.skip("Windows 上 symlink 不可用，跳过此测试")
+        else:
+            broken_link.symlink_to(tmp_path / "nonexistent_target")
+
+        # 在 Windows 上，悬空 symlink 的 stat() 抛 OSError。
+        # _scan_dir_tree 应通过 per-entry try/except 跳过，不应 crash。
+        node = transfer._scan_dir_tree(scan_dir, scan_dir)
+
+        # 验证：函数正常返回（不抛 OSError），good.txt 在结果中
+        file_names = [c["name"] for c in node["children"]]
+        assert "good.txt" in file_names
+
+    @pytest.mark.asyncio
+    async def test_build_session_file_tree_recovers_from_listdir_failure(self, tmp_path, monkeypatch):
+        """build_session_file_tree 在 Windows 路径非法字符下应降级为空根而非 500。"""
+        # 重定向项目根到临时目录
+        monkeypatch.setattr(spm, "_get_project_root", lambda: tmp_path)
+        # 用 register_session_upload_date 让解析能找到日期路径
+        from datetime import date
+        spm.register_session_upload_date("feishu:p2p:ou_test", date(2026, 7, 17))
+
+        # 预先创建一个**下划线形式**的目录（模拟飞书 WS 已落盘的真实目录）
+        real_dir = tmp_path / "data/upload/2026/07/17/feishu_p2p_ou_test"
+        real_dir.mkdir(parents=True)
+        (real_dir / "创建python.md").write_text("content", encoding="utf-8")
+
+        transfer = FileTransfer(upload_dir="data/upload")
+
+        # 不应抛 OSError，应返回 children 非空（因为核心修复后 _get_session_dir 会走下划线路径）
+        tree = await transfer.build_session_file_tree("feishu:p2p:ou_test")
+        assert tree["type"] == "folder"
+        # 找到原文件节点
+        children = tree["children"]
+        assert len(children) >= 1
+        first_child = children[0]
+        assert first_child["children"][0]["name"] == "创建python.md"

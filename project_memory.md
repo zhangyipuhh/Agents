@@ -1116,7 +1116,10 @@ return data/upload/yyyy/mm/dd/{session_id}/
 | `session_auth_middleware` | 中间件注入 `request.state.project_id` |
 | `app/routers/agent_router.py::chat` | 把 project_id 注入 `context_overrides` |
 | `AgentContext.project_id` | 工具通过 `runtime.context.get("project_id")` 读取 |
-| `app/shared/utils/files/fileTransfer.py` | 2026-07-01 新增：`build_session_file_tree` 构建会话/项目文件树；`resolve_session_file_path` 解析并校验文件路径（防路径遍历）；`_get_preview_mode` / `read_session_file_content` 支持文本/图片/Office/PDF 预览；`delete_session` 同步支持项目目录清理
+| `app/shared/utils/files/fileTransfer.py` | 2026-07-01 新增：`build_session_file_tree` 构建会话/项目文件树；`resolve_session_file_path` 解析并校验文件路径（防路径遍历）；`_get_preview_mode` / `read_session_file_content` 支持文本/图片/Office/PDF 预览；`delete_session` 同步支持项目目录清理；2026-07-17 加固 `_scan_dir_tree`：listdir 失败返回空 children、单 entry stat 失败 per-entry try/except 跳过
+| `app/shared/utils/files/session_path_manager.py` | 2026-07-17 新增 `_to_filesystem_safe(session_id)`：读路径入口把 `:` 替换为 `_`，与飞书 WS 写路径 `_safe_session_marker` 保持等价语义；`get_session_upload_dir` / `get_session_tmp_upload_dir` 入口调用，避免 Windows 上 Path.iterdir 抛 WinError 123
+| `app/shared/utils/auth/Safety.py` | 2026-07-17 `SESSION_WHITELIST_PREFIXES` 追加 `/api/core/upload-config`：前端 onMounted 拉取的只读配置，不需要 session 隔离（与 `/api/agent/list` 语义一致）；**不放行整个 `/api/core` 前缀**，避免误伤 uploadfile/merge-chunks 等写接口
+| `app/shared/routers/session_router.py::get_session_files_tree` | 2026-07-17 补 `logger.exception` 日志：500 时先打完整 traceback 再 raise，便于运维定位根因
 
 ### 工具透传链
 
@@ -2115,13 +2118,22 @@ system_prompt = (
 - **下载**：`FeishuWebSocketService._download_feishu_resource(session_id, message_id, file_key, file_name)` 同步调用 `client.im.v1.message_resource.get(GetMessageResourceRequest.builder().message_id(...).file_key(...).type("file").build())`（**注意**：是 `message_resource` 子资源，不是 `message` 主资源；误用 `client.im.v1.message.get_message_resource` 会抛 `AttributeError: 'Message' object has no attribute 'get_message_resource'`），读 `resp.file.read()` 字节流，写入 `get_session_upload_dir(self._safe_session_marker(session_id), create=True) / file_name`。本方法放线程池（`asyncio.to_thread`）异步执行，避免阻塞主事件循环。
 - **Windows 路径安全（跨平台修正）**：`FeishuWebSocketService._safe_session_marker(session_id)` 把原始 session_id（如 `feishu:p2p:ou_xxx`）中的 `:` 替换为 `_`，因为 Windows 上 `:` 是盘符分隔符，会让 `Path.mkdir` 抛 `OSError [WinError 123]`。仅在文件系统路径边界使用该 marker；LangGraph thread_id / PostgreSQL 仍用原始 session_id。
 - **大小校验**：`FeishuWebSocketService._resolve_max_file_size_bytes()` 取 `settings.file_parser.file_parser_max_file_size`（MB）与飞书官方隐式 100MB 的较小值，乘 1024²。超过会删除已落盘文件并回发「文件过大已被拒绝」提示。
-- **解析**：`FeishuWebSocketService._parse_uploaded_attachment(stored_path, file_name, ext)`：
-  - `.md / .txt` → 直接读字节作为 `.md` 内容，跳过任何远程解析
-  - `.pdf / .docx / .xlsx` + `settings.file_parser.file_parser_enabled == True` → `FileParserClient.parse(output_format="md")` 走 `asyncio.to_thread`，失败降级 `DocumentLoader.load()`
-  - `.pdf / .docx / .xlsx` + `file_parser_enabled == False` → 直接 `DocumentLoader.load()`
-- **路径管理**：复用 `app.shared.utils.files.session_path_manager`（同 Web 上传链路），落地 `data/upload/yyyy/mm/dd/{safe_marker}/`，解析产物落到 `data/tmp/upload/yyyy/mm/dd/{safe_marker}/`。
-- **拼接注入 user text**：成功解析的多个附件按 `<attached file: name>\n<markdown>` 段组合，附用户伴随文本后整体送 `_call_agent`（再走既有 markdown/card 渲染路径）。失败/被拒的附件不阻塞其他成功附件。
-- **失败回执**：`_handle_file_message` 内任意阶段失败均走 `_send_text_reply(chat_id, reason)`，不抛异常，不影响 WebSocket 与后续消息。
+- **解析**：`FeishuWebSocketService._parse_uploaded_attachment(stored_path, file_name, ext, session_id)` 返回 `{"text": Optional[str], "md_path": Optional[str]}`：
+  - 解析产物同时落 `data/tmp/upload/<safe_marker>/<stem>.md` 镜像（与 Web 上传链路一致），agent 可通过 `explore / query_knowledge` 等工具按需读取；
+  - `.md / .txt` → 直接读原文件内容并写一份 `.md` 镜像；
+  - `.pdf / .docx / .xlsx` + `settings.file_parser.file_parser_enabled == True` → `FileParserClient.parse(output_format="md")` 走 `asyncio.to_thread`，失败降级 `DocumentLoader.load()` 并把内容也落 `.md` 镜像；
+  - `.pdf / .docx / .xlsx` + `file_parser_enabled == False` → 直接 `DocumentLoader.load()`；
+- **user text 仅含路径引用（不再 inline 全文）**：每个成功附件生成一段 YAML 风格：
+  ```
+  - name: <file_name>
+    original: <data/upload/<safe_marker>/<file_name>>
+    parsed_md: <data/tmp/upload/<safe_marker>/<stem>.md>     # 若解析成功
+    preview: |
+      <最多 200 字预览>                                     # preview > 200 字截断并加 "已截断"
+  ```
+  把所有附件块拼起来（`用户上传了以下文件（不要复述文件原文整段，按需通过工具读取对应路径）: ...`）后附 `[用户文本] <text>` 一起给 `_call_agent`。长文件不再挤压会话上下文。
+- **解析失败分支**：`_parse_uploaded_attachment` 抛错 / 返回 `{"text": None, "md_path": None}` 但 `stored_path` 仍有 → 把 "原文路径" 写进 user text 引用，让 agent 继续；只当"文件也没落盘（解析与下载同时失败）"时才回退到提示用户且不调 agent。
+- **失败回执**：`白名单外 / 超大 / 下载失败` → `_send_text_reply(chat_id, reason)`，不抛异常，不影响 WebSocket 与后续消息。
 - **复用组件**：`FileParserClient`（`app/shared/utils/files/file_parser_client.py`）、`DocumentLoader`（`app/shared/utils/files/DocumentLoader.py`）、`session_path_manager.get_session_upload_dir / get_session_tmp_upload_dir` — 均与 Web 上传共享。
 
 **新增 FeishuSettings 配置项**：

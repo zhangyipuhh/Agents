@@ -146,3 +146,57 @@ class TestSessionPathManager:
         )
         assert tmp_dir == fresh_manager / "data/tmp/project/2026/07/01/session-8888"
         assert tmp_dir.exists()
+
+
+class TestFilesystemSafeSessionId:
+    """2026-07-17 新增：飞书 session_id 含 `:`，需要做文件系统安全转换。"""
+
+    def test_to_filesystem_safe_replaces_colons(self):
+        """冒号必须替换为下划线。"""
+        assert spm._to_filesystem_safe("feishu:p2p:ou_0a4bb") == "feishu_p2p_ou_0a4bb"
+
+    def test_to_filesystem_safe_keeps_uuid_unchanged(self):
+        """普通 UUID 不含冒号，转换应 no-op。"""
+        assert spm._to_filesystem_safe("550e8400-e29b-41d4-a716-446655440000") == \
+               "550e8400-e29b-41d4-a716-446655440000"
+
+    def test_to_filesystem_safe_handles_empty(self):
+        """空值应回退到 default（与 get_session_upload_dir 旧行为一致）。"""
+        assert spm._to_filesystem_safe("") == "default"
+        assert spm._to_filesystem_safe(None) == "default"
+
+    def test_get_upload_dir_collapses_feishu_colons(self, fresh_manager):
+        """飞书 session_id 在路径上应自动转为下划线形式，避免 Windows WinError 123。
+
+        复现 2026-07-17 线上事故：data/upload/2026/07/17/feishu:p2p:ou_xxx
+        在 Windows 上 iterdir() 抛 OSError，引发文件树 500。
+        """
+        spm.register_session_upload_date(
+            "feishu:p2p:ou_0a4bb8715bc1c45f5024a2bfc4a56261",
+            date(2026, 7, 17),
+        )
+        upload_dir = spm.get_session_upload_dir(
+            "feishu:p2p:ou_0a4bb8715bc1c45f5024a2bfc4a56261",
+            create=False,
+        )
+        # 路径中不应再包含 `:`，应是下划线形式
+        assert "feishu:p2p:ou_" not in str(upload_dir)
+        assert str(upload_dir).endswith(
+            "feishu_p2p_ou_0a4bb8715bc1c45f5024a2bfc4a56261"
+        )
+        assert upload_dir == fresh_manager / \
+            "data/upload/2026/07/17/feishu_p2p_ou_0a4bb8715bc1c45f5024a2bfc4a56261"
+
+    def test_get_tmp_upload_dir_collapses_feishu_colons(self, fresh_manager):
+        """tmp 目录也应做同样的转换。"""
+        spm.register_session_upload_date(
+            "feishu:p2p:ou_abc",
+            date(2026, 7, 17),
+        )
+        tmp_dir = spm.get_session_tmp_upload_dir(
+            "feishu:p2p:ou_abc",
+            create=True,
+        )
+        assert "feishu:p2p:ou_abc" not in str(tmp_dir)
+        assert str(tmp_dir).endswith("feishu_p2p_ou_abc")
+        assert tmp_dir.exists()

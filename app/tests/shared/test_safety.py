@@ -17,7 +17,12 @@ import jwt
 import pytest
 from fastapi import Request
 
-from app.shared.utils.auth.Safety import JWTAuth, jwt_auth, auth_middleware
+from app.shared.utils.auth.Safety import (
+    JWTAuth,
+    SESSION_WHITELIST_PREFIXES,
+    jwt_auth,
+    auth_middleware,
+)
 
 
 def _run_async(coro):
@@ -156,3 +161,29 @@ def test_authenticate_sets_allowed_agents(jwt_auth, monkeypatch):
     payload = _run_async(jwt_auth.authenticate(request))
     assert payload is not None
     assert request.state.allowed_agents == ["map_agent"]
+
+
+def test_upload_config_is_in_session_whitelist():
+    """2026-07-17 新增：/api/core/upload-config 必须在 Session 白名单中。
+
+    复现：onMounted 阶段 localStorage.session_id 为空时拉取配置，
+    强制 X-Session-ID 校验会 400。前端用户每次刷新都看到噪音。
+    """
+    assert "/api/core/upload-config" in SESSION_WHITELIST_PREFIXES
+
+
+def test_upload_file_is_not_in_session_whitelist():
+    """2026-07-17 新增：/api/core/uploadfile 必须仍要求 X-Session-ID（不能误伤写接口）。"""
+    # 用 startswith 检查白名单没有覆盖整个 /api/core 前缀
+    for prefix in SESSION_WHITELIST_PREFIXES:
+        assert not prefix.startswith("/api/core") or prefix == "/api/core/upload-config"
+    # 更直接的断言：白名单不能前缀匹配 /api/core/uploadfile
+    matched = [p for p in SESSION_WHITELIST_PREFIXES if "/api/core/uploadfile".startswith(p)]
+    assert matched == ["/api/core/upload-config"] or matched == [], (
+        "意外白名单: %s 覆盖 /api/core/uploadfile 的前缀" % matched
+    )
+    # 关键：/api/core/uploadfile 不应仅因 /api/core/upload-config 在白名单就被放行
+    # 用 startswith 反向验证
+    assert not any(
+        p == "/api/core" for p in SESSION_WHITELIST_PREFIXES
+    ), "/api/core 不能整段放行（会误伤 uploadfile / merge-chunks 等写接口）"

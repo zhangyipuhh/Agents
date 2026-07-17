@@ -35,6 +35,33 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+
+def _to_filesystem_safe(session_id: Optional[str]) -> str:
+    """把 session_id 转换为文件系统安全的目录片段（2026-07-17 新增）。
+
+    飞书 WebSocket 产生的 session_id 形如 ``feishu:p2p:open_id``，含 ``:``
+    字符。Windows 不允许 ``:`` 出现在路径中（仅作盘符分隔符），否则
+    ``Path.iterdir()`` 会抛 ``OSError [WinError 123]``（参见 2026-07-17
+    线上事故：飞书 session 文件抽屉 500）。
+
+    飞书 WS 写文件路径时已经过等价转换（``FeishuWebSocketService.
+    _safe_session_marker``，``replace(":", "_")``），本函数把同一转换下沉
+    到**读路径入口**，保证读写两侧落到同一目录。普通 session_id 不含
+    ``:``，转换是 no-op，不影响非飞书场景。
+
+    此函数不接受空值；空值请走 ``"default"`` 兜底（与 ``get_session_upload_dir``
+    历史行为一致）。
+
+    Args:
+        session_id: 原始 session_id（可能含 ``:``）。
+
+    Returns:
+        str: 文件系统安全标记（``:`` 已替换为 ``_``）。
+    """
+    if not session_id:
+        return "default"
+    return str(session_id).replace(":", "_")
+
 _UPLOAD_ROOT = Path("data/upload")
 _TMP_UPLOAD_ROOT = Path("data/tmp/upload")
 _INDEX_FILE = _UPLOAD_ROOT / "session_index.json"
@@ -237,9 +264,13 @@ def get_session_upload_dir(
             date_path = _date_path(date.today())
             register_session_upload_date(session_id, date.today())
         else:
-            return _get_project_root() / _UPLOAD_ROOT / session_id
+            return _get_project_root() / _UPLOAD_ROOT / _to_filesystem_safe(session_id)
 
-    session_dir = _get_project_root() / _UPLOAD_ROOT / date_path / session_id
+    # 2026-07-17 新增：读路径侧统一做 : → _ 转换，与飞书 WS 写路径
+    # （_safe_session_marker）保持一致，避免 Windows 上 Path.iterdir()
+    # 抛 WinError 123 引发文件树 500。
+    fs_session_id = _to_filesystem_safe(session_id)
+    session_dir = _get_project_root() / _UPLOAD_ROOT / date_path / fs_session_id
     if create:
         session_dir.mkdir(parents=True, exist_ok=True)
     return session_dir
@@ -290,9 +321,12 @@ def get_session_tmp_upload_dir(
             date_path = _date_path(date.today())
             register_session_upload_date(session_id, date.today())
         else:
-            return _get_project_root() / _TMP_UPLOAD_ROOT / session_id
+            return _get_project_root() / _TMP_UPLOAD_ROOT / _to_filesystem_safe(session_id)
 
-    tmp_dir = _get_project_root() / _TMP_UPLOAD_ROOT / date_path / session_id
+    # 2026-07-17 新增：读路径侧统一做 : → _ 转换，与 get_session_upload_dir
+    # 行为对齐，参见 _to_filesystem_safe 注释。
+    fs_session_id = _to_filesystem_safe(session_id)
+    tmp_dir = _get_project_root() / _TMP_UPLOAD_ROOT / date_path / fs_session_id
     if create:
         tmp_dir.mkdir(parents=True, exist_ok=True)
     return tmp_dir

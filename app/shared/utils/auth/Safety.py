@@ -384,6 +384,11 @@ SESSION_WHITELIST_PREFIXES = [
     # localStorage.session_id 为空，不发 X-Session-ID 也能访问。
     # 注意：/api/agent/chat 仍命中 SESSION_REQUIRED_PREFIXES（/api/agent/）保留校验。
     "/api/agent/list",
+    # 2026-07-17 新增：/api/core/upload-config 是前端 onMounted 拉取的只读配置
+    # （返回 max_file_size_mb / parser_enabled），无任何写副作用，与 /api/agent/list
+    # 语义一致。不放行整个 /api/core 前缀（避免误伤 /api/core/uploadfile、
+    # /api/core/merge-chunks 等真正需要 session 隔离的写接口）。
+    "/api/core/upload-config",
 ]
 
 # 需要 Session 验证的路径前缀

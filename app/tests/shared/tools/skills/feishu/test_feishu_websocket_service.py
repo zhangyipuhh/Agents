@@ -424,9 +424,13 @@ async def test_handle_file_message_supported_extension_dispatches_agent(tmp_path
 
     monkeypatch.setattr(svc, "_download_feishu_resource", _fake_download)
 
-    # 让 _parse_uploaded_attachment 直接返回固定文本，避开真实解析路径
-    async def _fake_parse(stored_path, file_name, ext):
-        return "PDFParsedContent"
+    # 让 _parse_uploaded_attachment 直接返回固定文本 + md_path，避开真实解析路径
+    # 新签名：_parse_uploaded_attachment(stored_path, file_name, ext, session_id) -> dict
+    async def _fake_parse(stored_path, file_name, ext, session_id):
+        return {
+            "text": "PDFParsedContent\nline2",
+            "md_path": str(tmp_path / "doc.md"),
+        }
 
     monkeypatch.setattr(svc, "_parse_uploaded_attachment", _fake_parse)
     # 关闭落库依赖，走 fake
@@ -452,9 +456,17 @@ async def test_handle_file_message_supported_extension_dispatches_agent(tmp_path
     )
 
     assert "text" in captured
+    # 文件正文不再 inline 到 user text，仅出现"preview"摘要
     assert "PDFParsedContent" in captured["text"]
-    assert "<attached file: doc.pdf>" in captured["text"]
-    assert "请帮我总结" in captured["text"]
+    # 摘要包含文档名 + original / parsed_md 路径
+    assert "doc.pdf" in captured["text"]
+    assert "_fake_download" not in captured["text"]  # 占位说明，保留以防误读
+    assert "doc.pdf" in captured["text"]
+    # 摘要里的"original / parsed_md"路径告诉 agent
+    assert "original:" in captured["text"]
+    assert "parsed_md:" in captured["text"]
+    # 用户伴随文本仍然拼上
+    assert "[用户文本] 请帮我总结" in captured["text"] or "请帮我总结" in captured["text"]
     assert sent == []  # 没有失败回执
 
 
@@ -503,10 +515,20 @@ async def test_handle_file_message_size_exceeds_replies_with_413_hint(tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_handle_file_message_parse_failure_replies_with_hint(tmp_path, monkeypatch):
-    """P2：解析失败 → 回发「文件解析失败」提示，不调 agent。"""
+async def test_handle_file_message_parse_failure_falls_back_to_original_path(tmp_path, monkeypatch):
+    """P2：解析失败但文件已落盘 → 仍调 agent，仅把"原文路径"告诉 agent。
+
+    新语义（不再 inline 全文）：解析失败不阻塞用户。Agent 收到的是
+    ``original=...pdf`` + 没有 ``parsed_md`` 字段的引用块，agent 按需自己读文件。
+    """
     svc = _make_service()
-    svc._call_agent = AsyncMock(return_value=(None, None))
+    captured: dict = {}
+
+    async def _fake_call_agent(sid, text, **kw):
+        captured["text"] = text
+        return ("ok", None)
+
+    svc._call_agent = _fake_call_agent
 
     sent: list = []
     monkeypatch.setattr(svc, "_send_text_reply", lambda chat_id, text: sent.append((chat_id, text)))
@@ -523,10 +545,70 @@ async def test_handle_file_message_parse_failure_replies_with_hint(tmp_path, mon
 
     monkeypatch.setattr(svc, "_download_feishu_resource", _fake_download)
 
-    async def _fake_parse_fail(stored_path, file_name, ext):
-        return None  # 解析失败
+    # 新签名：解析失败 → 返回 ``{"text": None, "md_path": None}``
+    async def _fake_parse_fail(stored_path, file_name, ext, session_id):
+        return {"text": None, "md_path": None}
 
     monkeypatch.setattr(svc, "_parse_uploaded_attachment", _fake_parse_fail)
+
+    async def _fake_session_recorded(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(svc, "_ensure_session_recorded", _fake_session_recorded)
+    monkeypatch.setattr(svc, "_send_reply", lambda *a, **kw: None)
+    monkeypatch.setattr(svc, "_send_card_reply", lambda *a, **kw: None)
+
+    attachments = [
+        {"message_id": "om_msg_001", "file_key": "file_xxx", "file_name": "bad.pdf"}
+    ]
+    await svc._handle_file_message(
+        session_id="feishu:p2p:ou_alice",
+        chat_id="oc_chat_001",
+        attachments=attachments,
+        text="看这个文件",
+        chat_type="p2p",
+    )
+
+    # 关键：解析失败但文件已落盘 → 仍调 agent（不再视为致命错误）
+    assert "text" in captured
+    # user text 只包含路径引用 + 用户文本，文件全文不出现
+    assert "bad.pdf" in captured["text"]
+    assert "original:" in captured["text"]
+    # 解析失败时不应出现 parsed_md 字段
+    assert "parsed_md:" not in captured["text"]
+    # 文件正文没塞进来
+    assert captured["text"].count("x" * 50) == 0
+    # 不发"解析失败"提示（避免噪音）
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_handle_file_message_parse_and_download_both_failed_replies_hint(tmp_path, monkeypatch):
+    """P2：解析 + 下载同时失败 → 回发「解析失败」提示，不调 agent。
+
+    极端分支：连 ``stored_path`` 都没有时退化为发提示，不调 agent。
+    """
+    svc = _make_service()
+    svc._call_agent = AsyncMock(return_value=(None, None))
+
+    sent: list = []
+    monkeypatch.setattr(svc, "_send_text_reply", lambda chat_id, text: sent.append((chat_id, text)))
+
+    async def _fake_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
+
+    # 让 download 返回空 stored_path 模拟"下载失败未留任何东西"
+    def _fake_download(session_id, message_id, file_key, file_name):
+        return {"content_bytes": b"", "stored_path": ""}
+
+    monkeypatch.setattr(svc, "_download_feishu_resource", _fake_download)
+
+    async def _fake_parse(stored_path, file_name, ext, session_id):
+        return {"text": None, "md_path": None}
+
+    monkeypatch.setattr(svc, "_parse_uploaded_attachment", _fake_parse)
 
     async def _fake_session_recorded(*args, **kwargs):
         return None
@@ -544,8 +626,79 @@ async def test_handle_file_message_parse_failure_replies_with_hint(tmp_path, mon
         chat_type="p2p",
     )
 
+    # 下载失败已经被分支处理成"文件保存失败: bad.pdf"
+    assert any("文件保存失败" in t for _id, t in sent)
     assert not svc._call_agent.called
-    assert any("文件解析失败" in t for _id, t in sent)
+
+
+@pytest.mark.asyncio
+async def test_handle_file_message_never_inlines_full_body(tmp_path, monkeypatch):
+    """P0：file 消息 user text 不再包含文件全文，只包含路径引用与最多 800 字 preview。
+
+    用户反馈 (2026-07-17)：之前会把整个文件正文 inline 进 user text，导致对话
+    流式输出了完整的"创建python 文件实现冒泡排序法，并..."。本测试断言：
+      - 文件原文（长字符串）**不**原封不动出现在 user text 中
+      - 仅出现路径引用 + 截断的 preview（含"已截断"标记）
+    """
+    svc = _make_service()
+    captured: dict = {}
+
+    async def _fake_call_agent(sid, text, **kw):
+        captured["text"] = text
+        return ("ok", None)
+
+    svc._call_agent = _fake_call_agent
+
+    monkeypatch.setattr(svc, "_send_text_reply", lambda *a, **kw: None)
+    monkeypatch.setattr(svc, "_send_reply", lambda *a, **kw: None)
+    monkeypatch.setattr(svc, "_send_card_reply", lambda *a, **kw: None)
+    monkeypatch.setattr(svc, "_ensure_session_recorded", AsyncMock(return_value=None))
+
+    async def _fake_to_thread(fn, *a, **kw):
+        return fn(*a, **kw)
+
+    monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
+
+    big_body = "这是文件正文：" + ("x" * 4096)
+
+    def _fake_download(session_id, message_id, file_key, file_name):
+        target = tmp_path / file_name
+        target.write_bytes(big_body.encode("utf-8"))
+        return {"content_bytes": big_body.encode("utf-8"), "stored_path": str(target)}
+
+    monkeypatch.setattr(svc, "_download_feishu_resource", _fake_download)
+
+    parsed_md = tmp_path / "report.md"
+    parsed_md.write_text(big_body, encoding="utf-8")
+
+    async def _fake_parse(stored_path, file_name, ext, session_id):
+        return {"text": big_body, "md_path": str(parsed_md)}
+
+    monkeypatch.setattr(svc, "_parse_uploaded_attachment", _fake_parse)
+
+    attachments = [
+        {"message_id": "om_msg_001", "file_key": "file_xxx", "file_name": "report.txt"}
+    ]
+    await svc._handle_file_message(
+        session_id="feishu:p2p:ou_alice",
+        chat_id="oc_chat_001",
+        attachments=attachments,
+        text="",
+        chat_type="p2p",
+    )
+
+    txt = captured["text"]
+    # 路径引用必须出现
+    assert "report.txt" in txt
+    assert "original:" in txt
+    assert "parsed_md:" in txt
+    # 4KB 正文不应原样进 user text：preview 截断到 ≤ 200 字。
+    # 关键断言：连续 1000 个 'x' 出现次数 == 0（说明 4KB 正文中 4KB 这一段没整体塞进来）
+    assert txt.count("x" * 1000) == 0, (
+        "user text 里出现了 1000 字以上的连续 'x'，说明文件原文没被截断就送进 agent"
+    )
+    # preview 应该有"已截断"标记
+    assert "已截断" in txt
 
 
 @pytest.mark.asyncio

@@ -524,19 +524,22 @@ class FeishuWebSocketService:
         text: str,
         chat_type: str = "p2p",
     ) -> None:
-        """处理飞书 ``message_type == "file"`` 的消息：下载→落本地→解析→注入 user text。
+        """处理飞书 ``message_type == "file"`` 的消息：下载→落本地→解析为 .md 镜像→只把路径引用送给 agent。
 
         流程：
             1. 遍历 attachments：白名单 / 大小校验。
-            2. 通过 ``client.im.v1.message.get_message_resource`` 下载到 session 上传目录。
-            3. 调用 ``FileParserClient``（远程）或 ``DocumentLoader``（本地）解析为 ``.md``。
-            4. 拼入 user text 后调用 ``_call_agent``，最后走 ``_send_reply`` 自动渲染。
+            2. 通过 ``client.im.v1.message_resource.get`` 下载到 session 上传目录。
+            3. 调用 ``FileParserClient``（远程）或 ``DocumentLoader``（本地）解析，
+               落到 ``data/tmp/upload/<session_marker>/<stem>.md`` 镜像。
+            4. user text **仅含元数据**："用户上传了文件 X，原文路径 ...，解析镜像 ..."，**不**
+               把整篇文件内容塞给 LLM。agent 后续通过 ``explore / query_knowledge`` 等工具
+               按需读取对应路径。
             5. 任意步骤失败 → ``_send_text_reply`` 把原因告诉用户，不抛异常。
 
         注意：
             - 解析可能耗时（file_parser 同步阻塞可达 5 分钟），全部放异步协程内执行。
             - 飞书 WS 事件回调 3 秒内必须 ack；下载/解析已在新协程里，可安全做。
-            - 至少一个附件成功解析后会触发一次 ``_call_agent``；
+            - 至少一个附件成功落盘后会触发一次 ``_call_agent``；
               若所有附件都失败，本协程结束后不调 agent，由 ``_send_text_reply`` 兜底。
 
         Args:
@@ -549,7 +552,7 @@ class FeishuWebSocketService:
         try:
             await self._ensure_session_recorded(session_id, chat_id, chat_type, text)
 
-            attachment_sections: list = []
+            attachment_refs: list = []
             max_bytes = self._resolve_max_file_size_bytes()
             for att in attachments or []:
                 file_name = att.get("file_name") or ""
@@ -626,29 +629,56 @@ class FeishuWebSocketService:
                     self._send_text_reply(chat_id, too_big_text)
                     continue
 
-                # 解析为 .md
+                # 解析为 .md；失败也不阻塞（仅把原文路径告诉 agent，让其按需读取）。
+                parsed_md_path: Optional[str] = None
                 parsed_text: Optional[str] = None
                 try:
-                    parsed_text = await self._parse_uploaded_attachment(
-                        stored_path, file_name, ext
+                    parse_result = await self._parse_uploaded_attachment(
+                        stored_path, file_name, ext, session_id
                     )
+                    parsed_md_path = parse_result.get("md_path")
+                    parsed_text = parse_result.get("text")
                 except Exception as e:  # noqa: BLE001
                     logger.exception(
                         "飞书文件解析失败 file=%s ext=%s: %s",
                         file_name, ext, e,
                     )
-                if not parsed_text:
+
+                if not parsed_md_path and not stored_path:
                     self._send_text_reply(
                         chat_id,
                         f"文件解析失败: {file_name}（请确认文件未损坏）",
                     )
                     continue
+                if not parsed_md_path:
+                    logger.info(
+                        "飞书文件解析失败但原文件已落盘 file=%s path=%s，仅告知路径",
+                        file_name, stored_path,
+                    )
 
-                attachment_sections.append(
-                    f"<attached file: {file_name}>\n{parsed_text.strip()}"
-                )
+                # 仅路径引用（不再 inline 文件正文）
+                ref_lines = [
+                    f"- name: {file_name}",
+                    f"  original: {stored_path}",
+                ]
+                if parsed_md_path:
+                    ref_lines.append(f"  parsed_md: {parsed_md_path}")
+                    if parsed_text:
+                        # 仅暴露最多 8 行 + 总长 ≤ 200 字 的"预览摘要"帮 agent
+                        # 快速判断文件类型；正文超长截断并提示。全文仍走
+                        # file_read / explore / query_knowledge 按需读
+                        # ``parsed_md_path``，杜绝长文件挤压会话上下文。
+                        snippet = parsed_text.strip().splitlines()[:8]
+                        snippet_str = "\n".join(snippet)
+                        if len(snippet_str) > 200:
+                            snippet_str = (
+                                snippet_str[:200]
+                                + "\n…（已截断，按需读取上方路径获取完整内容）"
+                            )
+                        ref_lines.append(f"  preview: |\n{snippet_str}")
+                attachment_refs.append("\n".join(ref_lines))
 
-            if not attachment_sections:
+            if not attachment_refs:
                 # 全部附件被拒绝/失败，且都已发过提示文本 → 不调 agent
                 logger.info(
                     "飞书文件消息无可用附件，session_id=%s chat_id=%s",
@@ -656,9 +686,14 @@ class FeishuWebSocketService:
                 )
                 return
 
+            attachment_block = (
+                "用户上传了以下文件（不要复述文件原文整段，按需通过工具读取对应路径）：\n\n"
+                + "\n\n".join(attachment_refs)
+            )
             composed_text = (
-                "\n\n".join(attachment_sections)
-                + (f"\n\n[用户文本] {text}" if text else "")
+                f"{attachment_block}\n\n[用户文本] {text}"
+                if text
+                else attachment_block
             )
             reply, interrupt_req = await self._call_agent(
                 session_id, composed_text
@@ -763,80 +798,106 @@ class FeishuWebSocketService:
         }
 
     async def _parse_uploaded_attachment(
-        self, stored_path: str, file_name: str, ext: str
-    ) -> Optional[str]:
-        """把已落盘的飞书附件解析为 Markdown 文本。
+        self,
+        stored_path: str,
+        file_name: str,
+        ext: str,
+        session_id: str,
+    ) -> Dict[str, Any]:
+        """把已落盘的飞书附件解析为 ``.md`` 镜像（落 ``data/tmp/upload/<marker>/<stem>.md``）。
 
         解析策略：
-            - ``.md`` / ``.txt`` → 直接读字节并作为 ``.md`` 内容，跳过任何远程解析。
+            - ``.md`` / ``.txt`` → 落一份 ``<stem>.md`` 镜像（内容 == 原文本，路径告诉 agent 即可）。
             - ``.docx`` / ``.pdf`` / ``.xlsx`` → 若
-              ``settings.file_parser.file_parser_enabled == True``，调用 ``FileParserClient.parse``；
-              否则回退 ``DocumentLoader.load``。
-            - 解析结果统一返回字符串文本，调用方负责拼接。
-
-        Args:
-            stored_path: 落盘的绝对路径
-            file_name: 原始文件名（用于诊断日志）
-            ext: 小写后缀（带 ``.``）
+              ``settings.file_parser.file_parser_enabled == True``，调用 ``FileParserClient.parse``
+              落 ``.md`` 镜像；失败回退 ``DocumentLoader.load`` 并把内容也落成 ``.md`` 镜像。
 
         Returns:
-            Optional[str]: 解析后的文本；失败返回 ``None``。
+            Dict[str, Any]: ``{"text": Optional[str], "md_path": Optional[str]}``。
+                - ``text``：解析后的文本（用于在 user text 中作为"预览摘要"，截断到 800 字）。
+                - ``md_path``：落盘的 ``.md`` 镜像绝对路径，agent 用 ``explore / query_knowledge``
+                  等工具按需读取。两个字段在解析失败时都为 ``None``。
         """
         import asyncio as _asyncio
         from pathlib import Path as _Path
 
         from app.core.config.config import FILE_PARSER_CONFIG
+        from app.shared.utils.files.session_path_manager import (
+            get_session_tmp_upload_dir,
+        )
 
         path_obj = _Path(stored_path)
 
+        # 解析产物落到 session 的 tmp 目录（与 Web 上传链路一致），agent 的 explore/
+        # query_knowledge 工具可直接读 ``data/tmp/upload/<marker>/<stem>.md``。
+        marker = self._safe_session_marker(session_id)
+        tmp_dir = get_session_tmp_upload_dir(marker, create=True)
+        md_mirror_path = tmp_dir / f"{path_obj.stem}.md"
+
+        text: Optional[str] = None
+        md_path: Optional[str] = None
+
         if ext in (".md", ".txt"):
             try:
-                return path_obj.read_text(encoding="utf-8", errors="ignore")
+                text = path_obj.read_text(encoding="utf-8", errors="ignore")
             except Exception as e:  # noqa: BLE001
                 logger.warning("读取纯文本附件失败 file=%s: %s", file_name, e)
-                return None
+                return {"text": None, "md_path": None}
+            # 把 .md/.txt 内容也写到 .md 镜像，方便后续 explore 工具按 md 处理。
+            try:
+                md_mirror_path.write_text(text or "", encoding="utf-8")
+                md_path = str(md_mirror_path)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("写入 .md 镜像失败 file=%s: %s", file_name, e)
+            return {"text": text, "md_path": md_path}
 
         parser_enabled = bool(FILE_PARSER_CONFIG.get("enabled", False))
         try_use_remote = parser_enabled and ext in self._FILE_EXT_REMOTE_PARSER
         if try_use_remote:
             try:
                 from app.shared.utils.files.file_parser_client import FileParserClient
-                from app.shared.utils.files.session_path_manager import (
-                    get_session_tmp_upload_dir,
-                )
 
-                # 解析输出目录：用同 session 的 tmp 目录
-                marker = path_obj.parent.name  # session_id 维度的目录名（marker 形式）
-                tmp_dir = get_session_tmp_upload_dir(marker, create=True)
                 client = FileParserClient(
                     server_url=FILE_PARSER_CONFIG["server_url"],
                     max_retries=FILE_PARSER_CONFIG["max_retries"],
                     poll_interval=FILE_PARSER_CONFIG["poll_interval"],
                     timeout=FILE_PARSER_CONFIG["timeout"],
                 )
-                md_path = await _asyncio.to_thread(
+                parsed_path = await _asyncio.to_thread(
                     client.parse,
                     file_path=str(path_obj),
                     output_dir=str(tmp_dir),
                     api_url=FILE_PARSER_CONFIG["api_url"],
                     output_format="md",
                 )
-                return _Path(md_path).read_text(encoding="utf-8", errors="ignore")
+                md_path = parsed_path
+                text = _Path(parsed_path).read_text(encoding="utf-8", errors="ignore")
+                return {"text": text, "md_path": md_path}
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "FileParserClient 解析失败 file=%s: %s，回退本地 DocumentLoader",
                     file_name, e,
                 )
                 # 降级到本地 parser
+
         try:
             from app.shared.utils.files.DocumentLoader import DocumentLoader
 
             loader = DocumentLoader(path=str(path_obj))
             docs = await _asyncio.to_thread(loader.load)
-            return "\n".join((getattr(d, "page_content", "") or "") for d in docs)
+            text = "\n".join(
+                (getattr(d, "page_content", "") or "") for d in docs
+            )
+            # 本地解析后落 .md 镜像
+            try:
+                md_mirror_path.write_text(text or "", encoding="utf-8")
+                md_path = str(md_mirror_path)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("写入 .md 镜像失败 file=%s: %s", file_name, e)
+            return {"text": text, "md_path": md_path}
         except Exception as e:  # noqa: BLE001
             logger.warning("DocumentLoader 解析失败 file=%s: %s", file_name, e)
-            return None
+            return {"text": None, "md_path": None}
 
     def _is_bot_mentioned(self, data: P2ImMessageReceiveV1) -> bool:
         """判断群聊消息中是否 @机器人。

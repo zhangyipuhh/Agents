@@ -18,10 +18,14 @@ import os
 import uuid
 import base64
 import shutil
+import logging
 from pathlib import Path
 from typing import List, Optional
 from fastapi import UploadFile, HTTPException
 import aiofiles
+
+# 2026-07-17 新增：模块级 logger，用于 _scan_dir_tree 在跳过不可读 entry 时打 WARN
+logger = logging.getLogger(__name__)
 
 from app.shared.utils.files.pdf_untils import PDFProcessor
 from app.shared.utils.files.session_path_manager import (
@@ -510,12 +514,20 @@ class FileTransfer:
             "path": str(dir_path.resolve()),
             "children": []
         }
+        # 2026-07-17 改造：listdir/单 entry stat 都可能抛 OSError
+        #   - listdir 失败（目录句柄被独占 / 临时 IO 错误 / Windows 路径含 : 非法字符）→ 返回空 children，不再向上抛
+        #   - 单 entry 失败（PermissionError / FileNotFoundError）→ 跳过该 entry
+        # 这样扫描失败时前端抽屉仍可打开（空 children），外层日志保留根因。
         try:
             entries = sorted(
                 dir_path.iterdir(),
                 key=lambda x: (not x.is_dir(), x.name.lower())
             )
-            for entry in entries:
+        except OSError as e:
+            logger.warning("[_scan_dir_tree] listdir 失败 dir=%s err=%s", dir_path, e)
+            return node
+        for entry in entries:
+            try:
                 if entry.is_dir():
                     node["children"].append(self._scan_dir_tree(entry, relative_root))
                 else:
@@ -528,9 +540,9 @@ class FileTransfer:
                         "created_time": stat.st_ctime,
                         "modified_time": stat.st_mtime
                     })
-        except OSError:
-            # 目录不可读时返回空 children
-            pass
+            except OSError as e:
+                logger.warning("[_scan_dir_tree] 跳过不可读 entry=%s err=%s", entry, e)
+                continue
         return node
 
     async def build_session_file_tree(

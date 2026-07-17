@@ -16,6 +16,7 @@ Date: 2026/2/6
 Author: 张镒谱
 """
 import uuid
+import logging
 from fastapi import APIRouter, HTTPException, Request, Depends, Query, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -108,6 +109,10 @@ class AdminBatchDeleteResponse(BaseModel):
 
 # 创建文件传输工具实例
 file_transfer = FileTransfer()
+
+# 2026-07-17 新增：模块级 logger，用于 get_session_files_tree 在扫描失败时
+# 打印完整 traceback 便于运维定位（外层 HTTPException 500 只带 detail 字符串）。
+logger = logging.getLogger(__name__)
 
 # 创建API路由实例，设置前缀和标签
 router = APIRouter(prefix='/api/session', tags=['Session Management'])
@@ -866,6 +871,10 @@ async def get_session_files_tree(session_id: str, request: Request):
     except HTTPException:
         raise
     except Exception as e:
+        # 2026-07-17 改造：先 logger.exception 打 traceback，再 500
+        # 外层 HTTPException.detail 只能承载字符串，运维需在日志看完整堆栈定位根因
+        # （典型场景：飞书 session_id 含 : → Windows 上 Path.iterdir 抛 WinError 123）
+        logger.exception("[get_session_files_tree] 扫描失败 session_id=%s err=%s", session_id, e)
         raise HTTPException(status_code=500, detail=f"获取会话文件树失败: {str(e)}")
 
 
