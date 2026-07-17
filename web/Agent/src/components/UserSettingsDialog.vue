@@ -160,7 +160,7 @@ const navItems = computed(() => {
       { id: 'tool-management', label: '工具管理', icon: 'M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z' },
       { id: 'skill-management', label: 'Skill 管理', icon: 'M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z' },
       { id: 'task-scheduler', label: '定时任务', icon: 'M10 2a8 8 0 100 16 8 8 0 000-16zm1 4a1 1 0 10-2 0v4c0 .265.105.52.293.707l2.5 2.5a1 1 0 001.414-1.414L11 9.586V6z' },
-      { id: 'email-settings', label: '邮件设置', icon: 'M3 4h14v2H3V4zm0 4h14v2H3V8zm0 4h8v2H3v-2zm10 0l4 3-4 3v-6z' }
+      { id: 'email-settings', label: '邮件设置', icon: 'M2.5 6.5l7.5 5 7.5-5M3 5h14a1 1 0 011 1v10a1 1 0 01-1 1H3a1 1 0 01-1-1V6a1 1 0 011-1z' }
     )
   }
   return items

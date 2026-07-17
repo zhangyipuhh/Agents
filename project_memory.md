@@ -2051,14 +2051,16 @@ system_prompt = (
 
 - `app/tests/shared/tools/skills/feishu/test_feishu_client.py` —— 9 个用例：导入存在性、凭证缺失抛 RuntimeError、单例缓存、reset 清空、日志级别映射
 - `app/tests/shared/tools/skills/feishu/test_feishu_message_tools.py` —— 7 个用例：导入存在性、receive_id 缺失、client 初始化失败、API 成功/失败/异常、显式参数覆盖默认配置
-- `app/tests/shared/tools/skills/feishu/test_feishu_websocket_service.py` —— 30 个用例：模块导入存在性、消息字段提取（p2p / group）、session_id 构造、群聊 @机器人 检测（精确 + 降级）、消息分发到 agent、非文本消息跳过、回复发送（含截断）、单条消息异常隔离、agent.stream messages 模式 chunk 拼接、loop 注入、stop 标志
-- `app/tests/shared/tools/skills/feishu/conftest.py` —— 沙箱环境 mock lark_oapi SDK（Client.builder 链、LogLevel 枚举、CreateMessageRequest/Body builder 链、P2ImMessageReceiveV1 类型占位、bot.v1.GetBotRequest、lark.ws.Client、lark.EventDispatcherHandler）
+- `app/tests/shared/tools/skills/feishu/test_feishu_websocket_service.py` —— 56 个用例：模块导入存在性、消息字段提取（p2p / group）、session_id 构造、群聊 @机器人 检测（精确 + 降级）、消息分发到 agent、非文本消息跳过、回复发送（含截断）、单条消息异常隔离、agent.stream messages 模式 chunk 拼接、loop 注入、stop 标志、markdown 卡片路由、卡片 API 失败回退文本、HITL interrupt 检测（含 `__interrupt__` 多模式解析）、`_send_interrupt_card` 发送、`_on_card_action` 回调解析与 resume 投递、`_resume_agent` 续跑 + pending 清理、`p2_card_action_trigger` 事件注册
+- `app/tests/shared/tools/skills/feishu/test_markdown_to_card_converter.py` —— 27 个用例：导入存在性、`looks_like_markdown` 触发（粗体 / 斜体 / 行内代码 / 标题 / 列表 / 引用 / 分隔线 / 代码围栏）、`looks_like_markdown` 否定、`to_card_json` 基本结构、h1-h3 标题、hr、列表合并、引用、代码块（带 / 不带语言）、纯文本段落、粗体保留、截断、Unicode / emoji
+- `app/tests/shared/tools/skills/feishu/test_interrupt_to_card_converter.py` —— 13 个用例：导入存在性、单题单选、多题、按钮 value 携带 session_id / chat_id、options=[] 退化、questions=[] 占位、None 请求占位、multiSelect 退化为单选、选项数超限截断、自定义 header_title、`parse_card_action_value` 解析 dict / JSON 字符串 / 失败
+- `app/tests/shared/tools/skills/feishu/conftest.py` —— 沙箱环境 mock lark_oapi SDK（Client.builder 链、LogLevel 枚举、CreateMessageRequest/Body builder 链、P2ImMessageReceiveV1 类型占位、bot.v1.GetBotRequest、lark.ws.Client、lark.EventDispatcherHandler 注册 `p2_card_action_trigger`）
 
 ### 飞书 WebSocket 长连接（被动接收）
 
 | 组件 | 文件位置 | 职责 |
 |---|---|---|
-| `FeishuWebSocketService` | `app/shared/tools/skills/feishu/FeishuWebSocketService.py` | 启动 lark.ws.Client 订阅 `im.message.receive_v1`；将消息路由到目标智能体处理后回复 |
+| `FeishuWebSocketService` | `app/shared/tools/skills/feishu/FeishuWebSocketService.py` | 启动 lark.ws.Client 订阅 `im.message.receive_v1` 与 `card.action.trigger`；将消息路由到目标智能体处理后以"纯文本"或"交互式卡片"回复；HITL 中断发带选项按钮的卡片，接收用户点击后 resume agent |
 
 **启动方式**：随 FastAPI lifespan 自动启停，受 `settings.feishu.feishu_ws_enabled` 控制（默认关闭，凭证就绪后开启）。
 
@@ -2078,15 +2080,22 @@ system_prompt = (
 1. 解析 chat_type / chat_id / open_id / msg_type / text
 2. 群聊未 @机器人 或 非文本消息 → 跳过
 3. 调用 `agent_config_service.build_agent_instance(agent_name, session_id, text)`
-4. 用 `agent.stream(input_state, context=ctx, config=..., stream_mode=["messages"])` 收集所有 message chunk 拼接完整回复
+4. 用 `agent.stream(input_state, context=ctx, config=..., stream_mode=["messages", "updates"])` 收集 message chunk 拼接完整回复；同时检测 `__interrupt__` 触发 HITL
 5. 通过 `client.im.v1.message.create(CreateMessageRequest)` 直接发送回复（**不走** `send_feishu_message` LangChain 工具，避免 ToolRuntime 依赖）
 6. 回复文本 > 4000 字符时截断并追加 `...(内容过长已截断)`
+
+**回复渲染路由**（2026-07-17 新增）：
+- 路径 1（被动展示）：agent 回复文本经 `MarkdownToCardConverter.looks_like_markdown` 检测，含 markdown 特征 → 转飞书交互式卡片（`msg_type="interactive"`，`content={"card": {...}}`）；纯文本 → 走 `msg_type="text"`，`content={"text": ...}`。
+- 路径 2（HITL 人工回路）：agent 触发 LangGraph `interrupt()` 暂停 → 通过 `InterruptToCardConverter` 转带选项按钮的交互式卡片；用户点击按钮 → 飞书回调 `card.action.trigger` → `_on_card_action` 解析 `session_id` / `qid` / `oid` → 构造 `Command(resume={"answers": [...]})` → `_resume_agent` 续跑 → 最终回复走路径 1。
+- 卡片 API 任何失败（网络 / 序列化 / 卡片过大）→ 自动降级 `_send_text_reply`，保证可达性。
+- `_pending_interrupts` 内存 dict 存 session_id → `{chat_id, request}`；lifespan 重启后丢失（不持久化）。
+- 飞书 SDK 按钮回调 3 秒内必须 ack；`_on_card_action` 仅做解析 + `_dispatch_async` 投递，**不**在 SDK 回调线程内调 agent.stream。
 
 **线程模型**：
 - `lark.ws.Client.start()` 同步阻塞，用 `threading.Thread(daemon=True)` 包装到后台线程
 - **lark SDK 模块级 loop 陷阱**：`lark_oapi.ws.client` 在模块顶层执行 `loop = asyncio.get_event_loop()` 并把该 loop 缓存在模块级变量。FastAPI/uvicorn 主线程的 loop 在 lifespan 期间已运行，所以后台线程直接调用 `loop.run_until_complete(...)` 会触发 `RuntimeError: This event loop is already running`。
   - 解决方案：在 `_run_ws_blocking` 入口创建独立的新 event loop，把它 `set_event_loop` 到当前线程，并通过 `_lark_ws_client_mod.loop = new_loop` 把 lark SDK 模块级 loop 指向新 loop。
-- 事件回调（`_on_message`）内通过 `asyncio.run_coroutine_threadsafe(coro, loop)` 把协程投递回主事件循环（用户消息处理需要 DB pool 与 agent stream）。
+- 事件回调（`_on_message` / `_on_card_action`）内通过 `asyncio.run_coroutine_threadsafe(coro, loop)` 把协程投递回主事件循环（用户消息处理需要 DB pool 与 agent stream）。
 - 主事件循环在 lifespan 启动时通过 `service.set_event_loop(asyncio.get_event_loop())` 注入。
 - 获取机器人 open_id（同步 HTTP）的 `_fetch_bot_open_id` 走 `asyncio.to_thread(...)` 包装，避免在主线程中阻塞 loop。
 
@@ -2096,7 +2105,39 @@ system_prompt = (
 - `feishu_ws_enabled`（env `FEISHU_WS_ENABLED`，默认 `False`）—— 是否启用 WebSocket 长连接接收
 - `feishu_ws_agent_name`（env `FEISHU_WS_AGENT_NAME`，默认 `project`）—— 飞书消息路由到的目标智能体名称
 
-**飞书后台要求**：事件订阅 `im.message.receive_v1`，订阅类型必须选 WebSocket（非 HTTP Webhook）。群聊场景需开启相关消息权限。
+**飞书后台要求**：
+- 事件订阅 `im.message.receive_v1` 与 `card.action.trigger`，订阅类型必须选 WebSocket（非 HTTP Webhook）。
+- 群聊场景需开启相关消息权限。
+- 卡片按钮回调要求后端在 3 秒内 ack；后端已通过 `_dispatch_async` 把慢操作投递到主事件循环，避免超时。
+
+### 飞书 Markdown 卡片 + HITL 按钮回路
+
+| 组件 | 文件位置 | 职责 |
+|---|---|---|
+| `MarkdownToCardConverter` | `app/shared/tools/skills/feishu/MarkdownToCardConverter.py` | Markdown 文本 → 飞书交互式卡片 JSON；提供 `looks_like_markdown` 自动检测；支持 h1-h6 标题、`**粗体**` / `*斜体*` / `` `code` ``、列表项合并、`> 引用`、`---` 分隔线、``` ``` ``` 代码围栏；>4000 字符截断 |
+| `InterruptToCardConverter` | `app/shared/tools/skills/feishu/InterruptToCardConverter.py` | LangGraph interrupt 请求 → 飞书带选项按钮的交互式卡片；每个按钮 value 含 `action="hitl_answer"` / `qid` / `oid` / `session_id` / `chat_id`；每题最多 5 个选项 + 1 个 "其他（自由输入）" 按钮；提供 `parse_card_action_value` 反序列化回调 value |
+
+**卡片协议依据**：[飞书消息卡片文档](https://open.feishu.cn/document/develop-a-card-interactive-bot/card-building-steps)
+
+**按钮 value 契约**（飞书回调时由 `_on_card_action` 解析）：
+```json
+{
+  "action": "hitl_answer",
+  "qid": 0,
+  "oid": 1,
+  "session_id": "feishu:p2p:ou_alice",
+  "chat_id": "oc_chat_001"
+}
+```
+- `oid == -1` 或 `"is_other": true`：表示用户点击"其他（自由输入）"按钮，清理 pending 并提示用户直接输入。
+- `qid` / `oid` 对应 LangGraph `interrupt({"action": "ask_user_question", "questions": [...]})` 中的问题 / 选项索引。
+
+**resume 数据契约**：`_resume_agent` 调用 `build_agent_instance(..., resume={"answers": [{"qid": 0, "oid": [1]}]})`，与 `app/core/agent/agent.py::hitl_check_node` 的 `interrupt(request)` 恢复后的 `response.get("answers", [])` 解析对齐。
+
+**失败策略**：
+- `_send_card_reply`：API 失败（`resp.success() == False` 或抛异常）→ 自动降级 `_send_text_reply`
+- `_send_interrupt_card`：失败仅记录日志（不能降级为纯文本，否则按钮失效；用户需重新提问或等待）
+- `_pending_interrupts` 未命中（lifespan 重启 / 超时）：`_resume_agent` 仅警告，不抛异常
 
 ## 沙箱 Agent 架构（Sandbox Agent）
 

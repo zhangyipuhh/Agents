@@ -222,6 +222,10 @@ class _EventDispatcherHandlerBuilder:
         self._handlers.append(("p2_im_message_receive_v1", handler))
         return self
 
+    def register_p2_card_action_trigger(self, handler):
+        self._handlers.append(("p2_card_action_trigger", handler))
+        return self
+
     def build(self):
         return MagicMock(name="EventDispatcherHandler", handlers=self._handlers)
 
