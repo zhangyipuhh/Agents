@@ -522,7 +522,7 @@ onMounted(async () => {
         <div class="policy-editor" v-if="isEditingPolicy">
           <h4>{{ selectedPolicy ? '编辑策略' : '新建策略' }}</h4>
           <form class="email-form form-grid" @submit.prevent="savePolicy">
-            <div class="field-row">
+            <div class="field-row full">
               <label class="field-label" for="policy-name">策略名称 *</label>
               <div class="field-control">
                 <input
@@ -534,7 +534,7 @@ onMounted(async () => {
               </div>
             </div>
 
-            <div class="field-row">
+            <div class="field-row full">
               <label class="field-label" for="policy-desc">策略描述</label>
               <div class="field-control">
                 <textarea

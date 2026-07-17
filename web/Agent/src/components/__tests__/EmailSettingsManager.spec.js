@@ -98,6 +98,20 @@ describe('EmailSettingsManager 收件人策略', () => {
     expect(wrapper.find('input[aria-label="搜索收件人"]').element.value).toBe('')
   })
 
+  it('test_policy_name_and_description_use_full_rows 策略名称和描述各占满一行', async () => {
+    const wrapper = mount(EmailSettingsManager)
+    await flushPromises()
+    await openPolicyEditor(wrapper)
+
+    const nameRow = wrapper.find('#policy-name').element.closest('.field-row')
+    const descRow = wrapper.find('#policy-desc').element.closest('.field-row')
+
+    expect(nameRow).not.toBeNull()
+    expect(descRow).not.toBeNull()
+    expect(nameRow.classList.contains('full')).toBe(true)
+    expect(descRow.classList.contains('full')).toBe(true)
+  })
+
   it('test_recipient_keyword_filters_users 收件人搜索只展示匹配用户', async () => {
     const wrapper = mount(EmailSettingsManager)
     await flushPromises()

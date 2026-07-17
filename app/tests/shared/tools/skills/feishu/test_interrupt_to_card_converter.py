@@ -52,7 +52,7 @@ def test_to_interactive_card_single_question_single_select():
     card = InterruptToCardConverter.to_interactive_card(req, SID, CHAT_ID)
 
     assert card["config"]["wide_screen_mode"] is True
-    elements = card["card"]["elements"]
+    elements = card["body"]["elements"]
     # 第一个元素：题目 markdown
     assert elements[0]["tag"] == "markdown"
     assert "Q1:" in elements[0]["content"]
@@ -91,7 +91,7 @@ def test_to_interactive_card_multi_questions():
         ],
     }
     card = InterruptToCardConverter.to_interactive_card(req, SID, CHAT_ID)
-    elements = card["card"]["elements"]
+    elements = card["body"]["elements"]
     # 期望：[q1_md, q1_action, hr, q2_md, q2_action]
     tags = [e["tag"] for e in elements]
     assert "markdown" in tags
@@ -119,7 +119,7 @@ def test_to_interactive_card_button_value_carries_session_id_and_chat_id():
         ],
     }
     card = InterruptToCardConverter.to_interactive_card(req, SID, CHAT_ID)
-    actions = card["card"]["elements"][1]["actions"]
+    actions = card["body"]["elements"][1]["actions"]
     for oid, action in enumerate(actions[:2]):
         assert action["value"]["action"] == "hitl_answer"
         assert action["value"]["session_id"] == SID
@@ -140,7 +140,7 @@ def test_to_interactive_card_options_count_zero():
         ],
     }
     card = InterruptToCardConverter.to_interactive_card(req, SID, CHAT_ID)
-    elements = card["card"]["elements"]
+    elements = card["body"]["elements"]
     # 仅 markdown（题目） + action（只有"其他"按钮）
     md_elems = [e for e in elements if e["tag"] == "markdown"]
     assert any("Q?" in e["content"] for e in md_elems)
@@ -154,7 +154,7 @@ def test_to_interactive_card_no_questions_fallback():
     """P2：questions=[] → 退化到"（暂无可回答的问题）"占位。"""
     req = {"action": "ask_user_question", "questions": []}
     card = InterruptToCardConverter.to_interactive_card(req, SID, CHAT_ID)
-    elements = card["card"]["elements"]
+    elements = card["body"]["elements"]
     assert len(elements) == 1
     assert "无可回答" in elements[0]["content"]
 
@@ -162,7 +162,7 @@ def test_to_interactive_card_no_questions_fallback():
 def test_to_interactive_card_none_request_fallback():
     """P2：request=None → 不抛异常。"""
     card = InterruptToCardConverter.to_interactive_card(None, SID, CHAT_ID)
-    elements = card["card"]["elements"]
+    elements = card["body"]["elements"]
     assert len(elements) == 1
     assert "无可回答" in elements[0]["content"]
 
@@ -183,11 +183,11 @@ def test_to_interactive_card_multiselect_rendered_as_select_hint():
         ],
     }
     card = InterruptToCardConverter.to_interactive_card(req, SID, CHAT_ID)
-    md_elems = [e for e in card["card"]["elements"] if e["tag"] == "markdown"]
+    md_elems = [e for e in card["body"]["elements"] if e["tag"] == "markdown"]
     assert any("多选" in e["content"] for e in md_elems)
     # 按钮仍按单选实现（每个选项 1 个按钮 + 其他）
     actions = [
-        e for e in card["card"]["elements"] if e["tag"] == "action"
+        e for e in card["body"]["elements"] if e["tag"] == "action"
     ][0]["actions"]
     assert len(actions) == 3
 
@@ -205,7 +205,7 @@ def test_to_interactive_card_truncates_excess_options():
         ],
     }
     card = InterruptToCardConverter.to_interactive_card(req, SID, CHAT_ID)
-    elements = card["card"]["elements"]
+    elements = card["body"]["elements"]
     action_elems = [e for e in elements if e["tag"] == "action"]
     assert len(action_elems) == 1
     # 5 个选项 + "其他" = 6
@@ -219,7 +219,7 @@ def test_to_interactive_card_truncates_excess_options():
 # P2 自定义 header_title
 # ---------------------------------------------------------------------------
 def test_to_interactive_card_custom_header_title():
-    """P2：自定义 header_title 生效。"""
+    """P2：自定义 header_title 生效（HITL 卡片默认 template=orange）。"""
     req = {
         "action": "ask_user_question",
         "questions": [
@@ -229,7 +229,10 @@ def test_to_interactive_card_custom_header_title():
     card = InterruptToCardConverter.to_interactive_card(
         req, SID, CHAT_ID, header_title="🤖 请确认"
     )
-    assert card["card"]["header"]["title"]["content"] == "🤖 请确认"
+    assert card["schema"] == "2.0"
+    assert card["header"]["template"] == "orange"
+    assert card["header"]["title"]["content"] == "🤖 请确认"
+    assert "card" not in card  # v2.0 schema 不再有外层 card
 
 
 # ---------------------------------------------------------------------------

@@ -71,12 +71,16 @@ class InterruptToCardConverter:
             header_title: 卡片头部标题
 
         Returns:
-            dict: 飞书卡片 JSON，结构形如::
+            dict: 飞书卡片 JSON（schema 2.0），结构形如::
 
                 {
-                    "config": {"wide_screen_mode": True, "enable_forward": True},
-                    "card": {
-                        "header": {"title": {"tag": "plain_text", "content": "❓ 需要确认"}},
+                    "schema": "2.0",
+                    "config": {"wide_screen_mode": True},
+                    "header": {
+                        "template": "orange",
+                        "title": {"tag": "plain_text", "content": "❓ 需要确认"},
+                    },
+                    "body": {
                         "elements": [
                             {"tag": "markdown", "content": "**Q1:** 你想用哪种方案？\n> 单选"},
                             {"tag": "hr"},
@@ -90,11 +94,13 @@ class InterruptToCardConverter:
         if not questions:
             # 无 questions：退化为普通 markdown 提示卡片
             return {
-                "config": {"wide_screen_mode": True, "enable_forward": True},
-                "card": {
-                    "header": {
-                        "title": {"tag": "plain_text", "content": header_title},
-                    },
+                "schema": "2.0",
+                "config": {"wide_screen_mode": True},
+                "header": {
+                    "template": "orange",
+                    "title": {"tag": "plain_text", "content": header_title},
+                },
+                "body": {
                     "elements": [
                         {
                             "tag": "markdown",
@@ -175,13 +181,13 @@ class InterruptToCardConverter:
                 elements.append({"tag": "hr"})
 
         return {
-            "config": {"wide_screen_mode": True, "enable_forward": True},
-            "card": {
-                "header": {
-                    "title": {"tag": "plain_text", "content": header_title},
-                },
-                "elements": elements,
+            "schema": "2.0",
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "template": "orange",
+                "title": {"tag": "plain_text", "content": header_title},
             },
+            "body": {"elements": elements},
         }
 
     # ------------------------------------------------------------------ #

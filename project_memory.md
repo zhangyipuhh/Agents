@@ -2052,7 +2052,7 @@ system_prompt = (
 - `app/tests/shared/tools/skills/feishu/test_feishu_client.py` —— 9 个用例：导入存在性、凭证缺失抛 RuntimeError、单例缓存、reset 清空、日志级别映射
 - `app/tests/shared/tools/skills/feishu/test_feishu_message_tools.py` —— 7 个用例：导入存在性、receive_id 缺失、client 初始化失败、API 成功/失败/异常、显式参数覆盖默认配置
 - `app/tests/shared/tools/skills/feishu/test_feishu_websocket_service.py` —— 56 个用例：模块导入存在性、消息字段提取（p2p / group）、session_id 构造、群聊 @机器人 检测（精确 + 降级）、消息分发到 agent、非文本消息跳过、回复发送（含截断）、单条消息异常隔离、agent.stream messages 模式 chunk 拼接、loop 注入、stop 标志、markdown 卡片路由、卡片 API 失败回退文本、HITL interrupt 检测（含 `__interrupt__` 多模式解析）、`_send_interrupt_card` 发送、`_on_card_action` 回调解析与 resume 投递、`_resume_agent` 续跑 + pending 清理、`p2_card_action_trigger` 事件注册
-- `app/tests/shared/tools/skills/feishu/test_markdown_to_card_converter.py` —— 27 个用例：导入存在性、`looks_like_markdown` 触发（粗体 / 斜体 / 行内代码 / 标题 / 列表 / 引用 / 分隔线 / 代码围栏）、`looks_like_markdown` 否定、`to_card_json` 基本结构、h1-h3 标题、hr、列表合并、引用、代码块（带 / 不带语言）、纯文本段落、粗体保留、截断、Unicode / emoji
+- `app/tests/shared/tools/skills/feishu/test_markdown_to_card_converter.py` —— 40 个用例：导入存在性、`looks_like_markdown` 触发（粗体 / 斜体 / 行内代码 / 标题 / 列表 / **有序列表(1./1) / 双位数字,2026-07-17 新增)** / 引用 / 分隔线 / 代码围栏）、`looks_like_markdown` 否定、`to_card_json` 基本结构、h1-h3 标题、hr、列表合并、**有序列表 单层 / 含子项 / 用户复现,2026-07-17 新增) / 括号形式(1))**、引用、代码块（带 / 不带语言）、纯文本段落、粗体保留、截断、Unicode / emoji
 - `app/tests/shared/tools/skills/feishu/test_interrupt_to_card_converter.py` —— 13 个用例：导入存在性、单题单选、多题、按钮 value 携带 session_id / chat_id、options=[] 退化、questions=[] 占位、None 请求占位、multiSelect 退化为单选、选项数超限截断、自定义 header_title、`parse_card_action_value` 解析 dict / JSON 字符串 / 失败
 - `app/tests/shared/tools/skills/feishu/conftest.py` —— 沙箱环境 mock lark_oapi SDK（Client.builder 链、LogLevel 枚举、CreateMessageRequest/Body builder 链、P2ImMessageReceiveV1 类型占位、bot.v1.GetBotRequest、lark.ws.Client、lark.EventDispatcherHandler 注册 `p2_card_action_trigger`）
 
@@ -2116,10 +2116,10 @@ system_prompt = (
 
 | 组件 | 文件位置 | 职责 |
 |---|---|---|
-| `MarkdownToCardConverter` | `app/shared/tools/skills/feishu/MarkdownToCardConverter.py` | Markdown 文本 → 飞书交互式卡片 JSON；提供 `looks_like_markdown` 自动检测；支持 h1-h6 标题、`**粗体**` / `*斜体*` / `` `code` ``、列表项每项独立、`> 引用`每行独立、`---` 分隔线、``` ``` ``` 代码围栏；>4000 字符截断；**v1 schema 兼容处理**（2026-07-17）：单独成行的 `**xxx**` / `*xxx*` 包装被剥离，行首/行尾 `**`/`*` 标记被清理，每个 markdown 元素强制单行（避免飞书 markdown 解析不稳定，规避 code=200621 "parse card json err"） |
-| `InterruptToCardConverter` | `app/shared/tools/skills/feishu/InterruptToCardConverter.py` | LangGraph interrupt 请求 → 飞书带选项按钮的交互式卡片；每个按钮 value 含 `action="hitl_answer"` / `qid` / `oid` / `session_id` / `chat_id`；每题最多 5 个选项 + 1 个 "其他（自由输入）" 按钮；提供 `parse_card_action_value` 反序列化回调 value |
+| `MarkdownToCardConverter` | `app/shared/tools/skills/feishu/MarkdownToCardConverter.py` | Markdown 文本 → 飞书交互式卡片 JSON；提供 `looks_like_markdown` 自动检测；支持 h1-h6 标题、`**粗体**` / `*斜体*` / `` `code` ``、列表项每项独立、有序列表项(1. / 1) 形式,2026-07-17 新增)、`> 引用`每行独立、`---` 分隔线、``` ``` ``` 代码围栏；>4000 字符截断；**schema=2.0 输出**（2026-07-17）：顶层 `{"schema": "2.0", "config": {...}, "header": {...}, "body": {"elements": [...]}}`；header.template 默认 `"blue"`；预处理剥离独立成行的 `**xxx**` / `*xxx*` 包装，行首/行尾 `**`/`*` 标记被清理，每个 markdown 元素强制单行；行首 emoji 前补 ASCII 空格 |
+| `InterruptToCardConverter` | `app/shared/tools/skills/feishu/InterruptToCardConverter.py` | LangGraph interrupt 请求 → 飞书带选项按钮的交互式卡片（schema=2.0，header.template=`"orange"`）；每个按钮 value 含 `action="hitl_answer"` / `qid` / `oid` / `session_id` / `chat_id`；每题最多 5 个选项 + 1 个 "其他（自由输入）" 按钮；提供 `parse_card_action_value` 反序列化回调 value |
 
-**卡片协议依据**：[飞书消息卡片文档](https://open.feishu.cn/document/develop-a-card-interactive-bot/card-building-steps)
+**卡片协议依据**：[飞书消息卡片文档](https://open.feishu.cn/document/develop-a-card-interactive-bot/card-building-steps)；当前使用 [JSON 2.0 schema](https://open.feishu.cn/document/feishu-cards/card-json-v2-components/content-components/rich-text)（2026-07-17 从 v1 升级，原因为：v1 schema 下"独立加粗行 + 全角冒号"组合触发 `ErrCode: 200621; ErrMsg: parse card json err`，导致卡片发送失败 → 自动降级纯文本 → 用户看到 `**xxx**` 原始 markdown 源码）
 
 **按钮 value 契约**（飞书回调时由 `_on_card_action` 解析）：
 ```json
@@ -2140,6 +2140,16 @@ system_prompt = (
 - `_send_card_reply`：API 失败（`resp.success() == False` 或抛异常）→ 自动降级 `_send_text_reply`，同时记录完整卡片 JSON 前 500 字符到 ERROR 日志，便于排查 `code=200621`（parse card json err）等卡片 schema 问题
 - `_send_interrupt_card`：失败仅记录日志（不能降级为纯文本，否则按钮失效；用户需重新提问或等待）
 - `_pending_interrupts` 未命中（lifespan 重启 / 超时）：`_resume_agent` 仅警告，不抛异常
+
+**schema 版本演进（2026-07-17）**：
+- 升级前（v1 schema）：`{"config": {...}, "card": {"header": {...}, "elements": [...]}}`，在 markdown 元素含独立加粗行（如 `**核心原则：**`）时，飞书 API 返回 `code=230099 ext=ErrCode: 200621 parse card json err`，导致整张卡片失败降级为纯文本——用户看到 `**xxx**` / `- xxx` 原始 markdown 源码
+- 升级后（v2 schema）：`{"schema": "2.0", "config": {...}, "header": {"template": "blue", "title": {...}}, "body": {"elements": [...]}}`，markdown 解析器对孤立加粗行 / 全角符号 / 列表项前缀的兼容性显著优于 v1；`MarkdownToCardConverter` 与 `InterruptToCardConverter` 已同步升级
+- `_send_card_reply` / `_send_interrupt_card` 调用方无需感知 schema 版本变化（card JSON 整体序列化后传给 SDK）
+
+**有序列表支持扩展（2026-07-17 新增）**：
+- 新增 `_RE_ORDERED_LIST = (?m)^\s{0,3}\d{1,2}[.)]\s+\S` 正则；`looks_like_markdown` 增补触发；`_parse_block_elements` 在无序列表分支之后新增"有序列表项"分支，匹配 `^\s*\d{1,2}[.)]\s+\S`（同时支持 `1.` 与 `1)` 写法，编号限定 1~2 位避免误吞带年份等的长数字）；普通段落分支的 while 退出条件增加 `^\s*\d{1,2}[.)]\s+\S` 检测，遇到编号行立刻终止段落。
+- 每个编号项独立成 markdown 元素（保留 `1.` 原前缀），由飞书原生渲染编号递增；`_solo_bold` / `_safe_leading_emoji` 预处理对编号行同样生效（不会误给数字行首补空格，因为 emoji 字符集不含数字）。
+- 修复用户反馈的"`1. xxx` 编号项被合并到同一个 markdown 元素、`**4. 便于管理**` / `**5. 提高效率**` 被串到上一子项目末尾"问题（编号项原本被当作普通段落，多行内容累加到 `para_lines`，飞书 markdown 渲染无法正确展示编号位置）。
 
 ## 沙箱 Agent 架构（Sandbox Agent）
 
