@@ -652,31 +652,14 @@ class FeishuWebSocketService:
                     continue
                 if not parsed_md_path:
                     logger.info(
-                        "飞书文件解析失败但原文件已落盘 file=%s path=%s，仅告知路径",
+                        "飞书文件解析失败但原文件已落盘 file=%s path=%s",
                         file_name, stored_path,
                     )
 
-                # 仅路径引用（不再 inline 文件正文）
-                ref_lines = [
-                    f"- name: {file_name}",
-                    f"  original: {stored_path}",
-                ]
-                if parsed_md_path:
-                    ref_lines.append(f"  parsed_md: {parsed_md_path}")
-                    if parsed_text:
-                        # 仅暴露最多 8 行 + 总长 ≤ 200 字 的"预览摘要"帮 agent
-                        # 快速判断文件类型；正文超长截断并提示。全文仍走
-                        # file_read / explore / query_knowledge 按需读
-                        # ``parsed_md_path``，杜绝长文件挤压会话上下文。
-                        snippet = parsed_text.strip().splitlines()[:8]
-                        snippet_str = "\n".join(snippet)
-                        if len(snippet_str) > 200:
-                            snippet_str = (
-                                snippet_str[:200]
-                                + "\n…（已截断，按需读取上方路径获取完整内容）"
-                            )
-                        ref_lines.append(f"  preview: |\n{snippet_str}")
-                attachment_refs.append("\n".join(ref_lines))
+                # user text 中只保留文件名（不暴露路径 / preview / 解析镜像；
+                # 文件按保存在 data/upload 与 data/tmp/upload 下，agent 通过
+                # ``explore / query_knowledge / file_read`` 等工具按需读取）。
+                attachment_refs.append(f"- {file_name}")
 
             if not attachment_refs:
                 # 全部附件被拒绝/失败，且都已发过提示文本 → 不调 agent
@@ -686,9 +669,8 @@ class FeishuWebSocketService:
                 )
                 return
 
-            attachment_block = (
-                "用户上传了以下文件（不要复述文件原文整段，按需通过工具读取对应路径）：\n\n"
-                + "\n\n".join(attachment_refs)
+            attachment_block = "用户上传了以下文件：" + "".join(
+                f"\n- {name}" for name in attachment_refs
             )
             composed_text = (
                 f"{attachment_block}\n\n[用户文本] {text}"

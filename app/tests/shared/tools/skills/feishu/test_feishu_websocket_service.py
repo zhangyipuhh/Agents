@@ -456,17 +456,16 @@ async def test_handle_file_message_supported_extension_dispatches_agent(tmp_path
     )
 
     assert "text" in captured
-    # 文件正文不再 inline 到 user text，仅出现"preview"摘要
-    assert "PDFParsedContent" in captured["text"]
-    # 摘要包含文档名 + original / parsed_md 路径
+    # 文件名仍在 user text
     assert "doc.pdf" in captured["text"]
-    assert "_fake_download" not in captured["text"]  # 占位说明，保留以防误读
-    assert "doc.pdf" in captured["text"]
-    # 摘要里的"original / parsed_md"路径告诉 agent
-    assert "original:" in captured["text"]
-    assert "parsed_md:" in captured["text"]
+    # 路径/preview/正文都不应出现
+    for forbidden in ("original:", "parsed_md:", "preview:", "已截断", "PDFParsedContent"):
+        assert forbidden not in captured["text"], (
+            f"user text 中不应出现 {forbidden!r}；新合约下只保留文件名。"
+            f"实际: {captured['text']!r}"
+        )
     # 用户伴随文本仍然拼上
-    assert "[用户文本] 请帮我总结" in captured["text"] or "请帮我总结" in captured["text"]
+    assert "[用户文本] 请帮我总结" in captured["text"]
     assert sent == []  # 没有失败回执
 
 
@@ -515,11 +514,10 @@ async def test_handle_file_message_size_exceeds_replies_with_413_hint(tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_handle_file_message_parse_failure_falls_back_to_original_path(tmp_path, monkeypatch):
-    """P2：解析失败但文件已落盘 → 仍调 agent，仅把"原文路径"告诉 agent。
+async def test_handle_file_message_parse_failure_still_dispatches_agent(tmp_path, monkeypatch):
+    """P2：解析失败但文件已落盘 → 仍调 agent，user text 仅保留文件名。
 
-    新语义（不再 inline 全文）：解析失败不阻塞用户。Agent 收到的是
-    ``original=...pdf`` + 没有 ``parsed_md`` 字段的引用块，agent 按需自己读文件。
+    新语义（只保留文件名）：解析失败不阻塞用户。
     """
     svc = _make_service()
     captured: dict = {}
@@ -545,7 +543,6 @@ async def test_handle_file_message_parse_failure_falls_back_to_original_path(tmp
 
     monkeypatch.setattr(svc, "_download_feishu_resource", _fake_download)
 
-    # 新签名：解析失败 → 返回 ``{"text": None, "md_path": None}``
     async def _fake_parse_fail(stored_path, file_name, ext, session_id):
         return {"text": None, "md_path": None}
 
@@ -571,12 +568,11 @@ async def test_handle_file_message_parse_failure_falls_back_to_original_path(tmp
 
     # 关键：解析失败但文件已落盘 → 仍调 agent（不再视为致命错误）
     assert "text" in captured
-    # user text 只包含路径引用 + 用户文本，文件全文不出现
     assert "bad.pdf" in captured["text"]
-    assert "original:" in captured["text"]
-    # 解析失败时不应出现 parsed_md 字段
-    assert "parsed_md:" not in captured["text"]
-    # 文件正文没塞进来
+    # 路径 / preview / 解析镜像 都不应出现
+    for forbidden in ("original:", "parsed_md:", "preview:", "已截断"):
+        assert forbidden not in captured["text"]
+    # 文件正文没有塞进来
     assert captured["text"].count("x" * 50) == 0
     # 不发"解析失败"提示（避免噪音）
     assert sent == []
@@ -632,13 +628,14 @@ async def test_handle_file_message_parse_and_download_both_failed_replies_hint(t
 
 
 @pytest.mark.asyncio
-async def test_handle_file_message_never_inlines_full_body(tmp_path, monkeypatch):
-    """P0：file 消息 user text 不再包含文件全文，只包含路径引用与最多 800 字 preview。
+async def test_handle_file_message_user_text_only_has_filename(tmp_path, monkeypatch):
+    """P0：file 消息 user text 只包含文件名，不暴露路径 / preview / 解析镜像 / 文件正文。
 
-    用户反馈 (2026-07-17)：之前会把整个文件正文 inline 进 user text，导致对话
-    流式输出了完整的"创建python 文件实现冒泡排序法，并..."。本测试断言：
-      - 文件原文（长字符串）**不**原封不动出现在 user text 中
-      - 仅出现路径引用 + 截断的 preview（含"已截断"标记）
+    用户最终反馈 (2026-07-17)：发送内容中只保留文件名称，其他都不要。
+    验证：
+      - 文件名出现在 user text
+      - 路径（``original`` / ``parsed_md`` / 任何 disk path）**不**出现
+      - 4KB 文件正文**不**出现
     """
     svc = _make_service()
     captured: dict = {}
@@ -688,17 +685,24 @@ async def test_handle_file_message_never_inlines_full_body(tmp_path, monkeypatch
     )
 
     txt = captured["text"]
-    # 路径引用必须出现
+    # 文件名必须在 user text 中
     assert "report.txt" in txt
-    assert "original:" in txt
-    assert "parsed_md:" in txt
-    # 4KB 正文不应原样进 user text：preview 截断到 ≤ 200 字。
-    # 关键断言：连续 1000 个 'x' 出现次数 == 0（说明 4KB 正文中 4KB 这一段没整体塞进来）
-    assert txt.count("x" * 1000) == 0, (
-        "user text 里出现了 1000 字以上的连续 'x'，说明文件原文没被截断就送进 agent"
-    )
-    # preview 应该有"已截断"标记
-    assert "已截断" in txt
+    # 关键：路径 / preview 字段 / 文件正文都不能出现
+    for forbidden in (
+        str(parsed_md),
+        str(tmp_path / "report.txt"),
+        "original:",
+        "parsed_md:",
+        "preview:",
+        "已截断",
+        "xxxx",
+    ):
+        assert forbidden not in txt, (
+            f"user text 中不应出现 {forbidden!r}；只允许保留文件名。"
+            f"实际 user text: {txt!r}"
+        )
+    # 仍保留前缀"用户上传了以下文件："说明意图
+    assert "用户上传了以下文件" in txt
 
 
 @pytest.mark.asyncio
@@ -737,7 +741,14 @@ async def test_handle_file_message_download_failure_replies_with_hint(monkeypatc
 
 @pytest.mark.asyncio
 async def test_handle_file_message_md_attachment_skips_remote_parser(tmp_path, monkeypatch):
-    """P2：.md 文件直接读本地，不走 FileParserClient。"""
+    """P2：.md 文件本地解析后落 .md 镜像；user text 仅保留文件名，不带正文。
+
+    通过 monkeypatch 把 ``_parse_uploaded_attachment`` 替换为走真实本地读取的 stub：
+    该 stub 直接 ``Path.read_text`` 拿 .md 内容并写一份 .md 镜像；测试断言：
+      - 用户文件名出现在 user text
+      - .md 正文不出现（user text 只保留文件名）
+      - .md 镜像文件被写出到 ``data/tmp/upload/<safe_marker>/<stem>.md``
+    """
     svc = _make_service()
     captured: dict = {}
 
@@ -748,6 +759,8 @@ async def test_handle_file_message_md_attachment_skips_remote_parser(tmp_path, m
     svc._call_agent = _fake_call_agent
 
     monkeypatch.setattr(svc, "_send_text_reply", lambda chat_id, text: None)
+    monkeypatch.setattr(svc, "_send_reply", lambda *a, **kw: None)
+    monkeypatch.setattr(svc, "_send_card_reply", lambda *a, **kw: None)
 
     async def _fake_to_thread(func, *args, **kwargs):
         return func(*args, **kwargs)
@@ -781,7 +794,10 @@ async def test_handle_file_message_md_attachment_skips_remote_parser(tmp_path, m
         chat_type="p2p",
     )
 
-    assert "Title" in captured["text"] and "Hello World" in captured["text"]
+    # user text 仅保留文件名
+    assert "notes.md" in captured["text"]
+    assert "Title" not in captured["text"]
+    assert "Hello World" not in captured["text"]
 
 
 def test_on_message_file_with_supported_extension_dispatches_handle_file():

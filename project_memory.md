@@ -2123,16 +2123,18 @@ system_prompt = (
   - `.md / .txt` → 直接读原文件内容并写一份 `.md` 镜像；
   - `.pdf / .docx / .xlsx` + `settings.file_parser.file_parser_enabled == True` → `FileParserClient.parse(output_format="md")` 走 `asyncio.to_thread`，失败降级 `DocumentLoader.load()` 并把内容也落 `.md` 镜像；
   - `.pdf / .docx / .xlsx` + `file_parser_enabled == False` → 直接 `DocumentLoader.load()`；
-- **user text 仅含路径引用（不再 inline 全文）**：每个成功附件生成一段 YAML 风格：
-  ```
-  - name: <file_name>
-    original: <data/upload/<safe_marker>/<file_name>>
-    parsed_md: <data/tmp/upload/<safe_marker>/<stem>.md>     # 若解析成功
-    preview: |
-      <最多 200 字预览>                                     # preview > 200 字截断并加 "已截断"
-  ```
-  把所有附件块拼起来（`用户上传了以下文件（不要复述文件原文整段，按需通过工具读取对应路径）: ...`）后附 `[用户文本] <text>` 一起给 `_call_agent`。长文件不再挤压会话上下文。
-- **解析失败分支**：`_parse_uploaded_attachment` 抛错 / 返回 `{"text": None, "md_path": None}` 但 `stored_path` 仍有 → 把 "原文路径" 写进 user text 引用，让 agent 继续；只当"文件也没落盘（解析与下载同时失败）"时才回退到提示用户且不调 agent。
+- **user text 仅含文件名列表（最终契约，2026-07-17 多次迭代）**：
+  - 写入形如
+    ```
+    用户上传了以下文件：
+    - <file_name>
+    - <file_name>
+    ```
+    后附 `[用户文本] <text>`（若有）一并送给 `_call_agent`；
+  - **不**暴露路径（`original`）、解析镜像路径（`parsed_md`）、preview、文件正文。
+  - 文件实际仍按保存在 `data/upload/<safe_marker>/` 与 `data/tmp/upload/<safe_marker>/<stem>.md`，agent 通过 `explore / query_knowledge / file_read` 等工具按文件名**按需**读取。
+  - 早期版本曾把 YAML 路径块或 200 字 preview 给 agent，用户最终反馈"只保留文件名称"，所以现在 user text 里只写文件名；下游依赖均通过临时文件路径间接访问。
+- **解析失败分支**：`_parse_uploaded_attachment` 抛错 / 返回 `{"text": None, "md_path": None}` 但 `stored_path` 仍有 → 把文件名纳入上方列表后让 agent 继续；只当"文件也没落盘（解析与下载同时失败）"时才回退到提示用户且不调 agent。
 - **失败回执**：`白名单外 / 超大 / 下载失败` → `_send_text_reply(chat_id, reason)`，不抛异常，不影响 WebSocket 与后续消息。
 - **复用组件**：`FileParserClient`（`app/shared/utils/files/file_parser_client.py`）、`DocumentLoader`（`app/shared/utils/files/DocumentLoader.py`）、`session_path_manager.get_session_upload_dir / get_session_tmp_upload_dir` — 均与 Web 上传共享。
 
