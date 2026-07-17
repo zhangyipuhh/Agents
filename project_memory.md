@@ -2060,7 +2060,7 @@ system_prompt = (
 
 | 组件 | 文件位置 | 职责 |
 |---|---|---|
-| `FeishuWebSocketService` | `app/shared/tools/skills/feishu/FeishuWebSocketService.py` | 启动 lark.ws.Client 订阅 `im.message.receive_v1` 与 `card.action.trigger`；将消息路由到目标智能体处理后以"纯文本"或"交互式卡片"回复；HITL 中断发带选项按钮的卡片，接收用户点击后 resume agent |
+| `FeishuWebSocketService` | `app/shared/tools/skills/feishu/FeishuWebSocketService.py` | 启动 lark.ws.Client 订阅 `im.message.receive_v1` 与 `card.action.trigger`；将消息路由到目标智能体处理后以"纯文本"或"交互式卡片"回复；HITL 中断发带选项按钮的卡片，接收用户点击后 resume agent；处理 `msg_type=file` 时按后缀白名单下载→解析→注入 user text |
 
 **启动方式**：随 FastAPI lifespan 自动启停，受 `settings.feishu.feishu_ws_enabled` 控制（默认关闭，凭证就绪后开启）。
 
@@ -2077,13 +2077,16 @@ system_prompt = (
 2. 获取失败降级使用 `'@' in content_raw`（宽松匹配）
 
 **消息处理流程**（lark SDK 同步回调）：
-1. 解析 chat_type / chat_id / open_id / msg_type / text
-2. 群聊未 @机器人 或 非文本消息 → 跳过
-3. 调用 `FeishuWebSocketService._ensure_session_recorded(session_id, chat_id, chat_type, text)`（2026-07-17 新增）把 session 写入 `sessions` 表，归属到 `feishu_ws_receiver_username` 配置的固定系统用户；首次创建时 title 取首条消息截 20 字 + `…`、绑定 `agent_type` + `agent_display_name`；后续消息仅刷新 `last_active_at`，title 沿用首次
-4. 调用 `agent_config_service.build_agent_instance(agent_name, session_id, text)`
-5. 用 `agent.stream(input_state, context=ctx, config=..., stream_mode=["messages", "updates"])` 收集 message chunk 拼接完整回复；同时检测 `__interrupt__` 触发 HITL
-6. 通过 `client.im.v1.message.create(CreateMessageRequest)` 直接发送回复（**不走** `send_feishu_message` LangChain 工具，避免 ToolRuntime 依赖）
-7. 回复文本 > 4000 字符时截断并追加 `...(内容过长已截断)`
+1. 解析 chat_type / chat_id / open_id / msg_type / text / attachments
+2. 群聊未 @机器人 → 跳过
+3. `msg_type=file` 且后缀在白名单 → 投递 `_handle_file_message`（下载→解析→注入 user text），最终仍调用 `_call_agent` 收尾
+4. `msg_type=text` → 直接走 `_handle_message` 普通路径
+5. 其他类型（image/post/audio/...）→ 跳过 + 日志
+6. 调用 `FeishuWebSocketService._ensure_session_recorded(session_id, chat_id, chat_type, text)` 把 session 写入 `sessions` 表，归属到 `feishu_ws_receiver_username` 配置的固定系统用户；首次创建时 title 取首条消息截 20 字 + `…`、绑定 `agent_type` + `agent_display_name`；后续消息仅刷新 `last_active_at`，title 沿用首次
+7. 调用 `agent_config_service.build_agent_instance(agent_name, session_id, text)`
+8. 用 `agent.stream(input_state, context=ctx, config=..., stream_mode=["messages", "updates"])` 收集 message chunk 拼接完整回复；同时检测 `__interrupt__` 触发 HITL
+9. 通过 `client.im.v1.message.create(CreateMessageRequest)` 直接发送回复（**不走** `send_feishu_message` LangChain 工具，避免 ToolRuntime 依赖）
+10. 回复文本 > 4000 字符时截断并追加 `...(内容过长已截断)`
 
 **回复渲染路由**（2026-07-17 新增）：
 - 路径 1（被动展示）：agent 回复文本经 `MarkdownToCardConverter.looks_like_markdown` 检测，含 markdown 特征 → 转飞书交互式卡片（`msg_type="interactive"`，`content={"card": {...}}`）；纯文本 → 走 `msg_type="text"`，`content={"text": ...}`。
@@ -2101,6 +2104,20 @@ system_prompt = (
 - 获取机器人 open_id（同步 HTTP）的 `_fetch_bot_open_id` 走 `asyncio.to_thread(...)` 包装，避免在主线程中阻塞 loop。
 
 **异常隔离**：单条消息处理失败仅记日志，不影响 WebSocket 连接与后续消息。
+
+**飞书文件消息对接**（`msg_type=file` 接收侧，支持自动下载→解析→注入 user text）：
+- **后缀白名单**：`docx / pdf / xlsx / md / txt`，实现位于 `FeishuWebSocketService._FILE_EXT_SUPPORTED`。白名单外后缀（png/zip/...）→ `_send_text_reply(chat_id, "暂不支持的文件类型: ...")`，**不**触发 agent。
+- **下载**：`FeishuWebSocketService._download_feishu_resource(session_id, message_id, file_key, file_name)` 同步调用 `client.im.v1.message.get_message_resource(GetMessageResourceRequest.builder().message_id(...).file_key(...).type("file").build())`，读 `resp.file.read()` 字节流，写入 `get_session_upload_dir(self._safe_session_marker(session_id), create=True) / file_name`。本方法放线程池（`asyncio.to_thread`）异步执行，避免阻塞主事件循环。
+- **Windows 路径安全（跨平台修正）**：`FeishuWebSocketService._safe_session_marker(session_id)` 把原始 session_id（如 `feishu:p2p:ou_xxx`）中的 `:` 替换为 `_`，因为 Windows 上 `:` 是盘符分隔符，会让 `Path.mkdir` 抛 `OSError [WinError 123]`。仅在文件系统路径边界使用该 marker；LangGraph thread_id / PostgreSQL 仍用原始 session_id。
+- **大小校验**：`FeishuWebSocketService._resolve_max_file_size_bytes()` 取 `settings.file_parser.file_parser_max_file_size`（MB）与飞书官方隐式 100MB 的较小值，乘 1024²。超过会删除已落盘文件并回发「文件过大已被拒绝」提示。
+- **解析**：`FeishuWebSocketService._parse_uploaded_attachment(stored_path, file_name, ext)`：
+  - `.md / .txt` → 直接读字节作为 `.md` 内容，跳过任何远程解析
+  - `.pdf / .docx / .xlsx` + `settings.file_parser.file_parser_enabled == True` → `FileParserClient.parse(output_format="md")` 走 `asyncio.to_thread`，失败降级 `DocumentLoader.load()`
+  - `.pdf / .docx / .xlsx` + `file_parser_enabled == False` → 直接 `DocumentLoader.load()`
+- **路径管理**：复用 `app.shared.utils.files.session_path_manager`（同 Web 上传链路），落地 `data/upload/yyyy/mm/dd/{safe_marker}/`，解析产物落到 `data/tmp/upload/yyyy/mm/dd/{safe_marker}/`。
+- **拼接注入 user text**：成功解析的多个附件按 `<attached file: name>\n<markdown>` 段组合，附用户伴随文本后整体送 `_call_agent`（再走既有 markdown/card 渲染路径）。失败/被拒的附件不阻塞其他成功附件。
+- **失败回执**：`_handle_file_message` 内任意阶段失败均走 `_send_text_reply(chat_id, reason)`，不抛异常，不影响 WebSocket 与后续消息。
+- **复用组件**：`FileParserClient`（`app/shared/utils/files/file_parser_client.py`）、`DocumentLoader`（`app/shared/utils/files/DocumentLoader.py`）、`session_path_manager.get_session_upload_dir / get_session_tmp_upload_dir` — 均与 Web 上传共享。
 
 **新增 FeishuSettings 配置项**：
 - `feishu_ws_enabled`（env `FEISHU_WS_ENABLED`，默认 `False`）—— 是否启用 WebSocket 长连接接收

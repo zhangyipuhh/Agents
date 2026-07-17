@@ -14,6 +14,7 @@ FeishuWebSocketService 单元测试
 """
 import asyncio
 import json
+import tempfile
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -34,13 +35,21 @@ def _make_msg(
     msg_type="text",
     text="hello",
     mentions=None,
+    content_raw=None,
 ):
-    """构造一个飞书 P2ImMessageReceiveV1 风格的事件对象。"""
+    """构造一个飞书 P2ImMessageReceiveV1 风格的事件对象。
+
+    Args:
+        content_raw: 直接指定消息 content 字符串；为 None 时按 msg_type/text 构造默认
+    """
     msg = MagicMock()
     msg.chat_type = chat_type
     msg.chat_id = chat_id
     msg.message_type = msg_type
-    msg.content = json.dumps({"text": text}, ensure_ascii=False)
+    if content_raw is None:
+        msg.content = json.dumps({"text": text}, ensure_ascii=False)
+    else:
+        msg.content = content_raw
     msg.mentions = mentions or []
 
     sender = MagicMock()
@@ -99,12 +108,13 @@ def test_extract_message_p2p_text():
     svc = _make_service()
     data = _make_msg(chat_type="p2p", chat_id="oc_001", open_id="ou_alice", text="hello")
 
-    chat_type, chat_id, open_id, msg_type, text = svc._extract_message(data)
+    chat_type, chat_id, open_id, msg_type, text, attachments = svc._extract_message(data)
     assert chat_type == "p2p"
     assert chat_id == "oc_001"
     assert open_id == "ou_alice"
     assert msg_type == "text"
     assert text == "hello"
+    assert attachments == []
 
 
 def test_extract_message_group_text():
@@ -112,12 +122,13 @@ def test_extract_message_group_text():
     svc = _make_service()
     data = _make_msg(chat_type="group", chat_id="oc_group_001", open_id="ou_bob", text="@bot hi")
 
-    chat_type, chat_id, open_id, msg_type, text = svc._extract_message(data)
+    chat_type, chat_id, open_id, msg_type, text, attachments = svc._extract_message(data)
     assert chat_type == "group"
     assert chat_id == "oc_group_001"
     assert open_id == "ou_bob"
     assert msg_type == "text"
     assert text == "@bot hi"
+    assert attachments == []
 
 
 def test_extract_message_invalid_json_text():
@@ -126,8 +137,48 @@ def test_extract_message_invalid_json_text():
     data = _make_msg()
     data.event.message.content = "{not-json"
 
-    chat_type, chat_id, open_id, msg_type, text = svc._extract_message(data)
+    chat_type, chat_id, open_id, msg_type, text, attachments = svc._extract_message(data)
     assert text == ""
+    assert attachments == []
+
+
+def test_extract_message_file_returns_attachments():
+    """P1：file 类型消息返回 attachments，并包含 file_name/file_key/message_id。"""
+    svc = _make_service()
+    content = json.dumps(
+        {"file_name": "report.pdf", "file_key": "file_abc123"},
+        ensure_ascii=False,
+    )
+    data = _make_msg(
+        chat_type="p2p",
+        chat_id="oc_001",
+        open_id="ou_alice",
+        msg_type="file",
+        text="",
+        content_raw=content,
+    )
+    # 注入 message_id（事件对象字段）
+    data.event.message.message_id = "om_msg_001"
+
+    chat_type, chat_id, open_id, msg_type, text, attachments = svc._extract_message(data)
+    assert msg_type == "file"
+    assert text == ""
+    assert len(attachments) == 1
+    att = attachments[0]
+    assert att["file_name"] == "report.pdf"
+    assert att["file_key"] == "file_abc123"
+    assert att["message_id"] == "om_msg_001"
+
+
+def test_extract_message_file_missing_keys_returns_empty_attachments():
+    """P2：file 消息缺 file_name / file_key 时 attachments=[]。"""
+    svc = _make_service()
+    content = json.dumps({"file_name": "a.pdf"}, ensure_ascii=False)
+    data = _make_msg(msg_type="file", content_raw=content)
+    data.event.message.message_id = "om_msg_002"
+    _, _, _, msg_type, _text, attachments = svc._extract_message(data)
+    assert msg_type == "file"
+    assert attachments == []  # file_key 缺失 → 不构成附件
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +343,490 @@ def test_on_message_exception_isolated():
     with patch.object(svc, "_extract_message", side_effect=RuntimeError("boom")):
         # 不应该把异常抛出
         svc._on_message(_make_msg())
+
+
+# ---------------------------------------------------------------------------
+# P1 _handle_file_message：飞书文件消息下载→解析→注入 user text
+# ---------------------------------------------------------------------------
+
+
+def _build_file_msg(file_name: str, file_key: str, message_id: str = "om_msg_001"):
+    """构造一个 msg_type="file" 的飞书事件对象。"""
+    content = json.dumps(
+        {"file_name": file_name, "file_key": file_key}, ensure_ascii=False
+    )
+    data = _make_msg(
+        chat_type="p2p",
+        chat_id="oc_chat_001",
+        open_id="ou_alice",
+        msg_type="file",
+        text="",
+        content_raw=content,
+    )
+    data.event.message.message_id = message_id
+    return data
+
+
+@pytest.mark.asyncio
+async def test_handle_file_message_unsupported_extension_replies_with_hint(tmp_path, monkeypatch):
+    """P1：白名单外的扩展名（如 .png / .zip），回发提示文本，不调 _call_agent。"""
+    svc = _make_service()
+    svc._call_agent = AsyncMock(return_value=(None, None))
+
+    # _send_text_reply 在 _on_message 同步路径不会触发，这里直接替换为可观测的 fake
+    sent: list = []
+    monkeypatch.setattr(svc, "_send_text_reply", lambda chat_id, text: sent.append((chat_id, text)))
+
+    attachments = [
+        {"message_id": "om_msg_001", "file_key": "file_xyz", "file_name": "image.png"}
+    ]
+    await svc._handle_file_message(
+        session_id="feishu:p2p:ou_alice",
+        chat_id="oc_chat_001",
+        attachments=attachments,
+        text="",
+        chat_type="p2p",
+    )
+    assert not svc._call_agent.called
+    assert len(sent) == 1
+    assert "暂不支持的文件类型" in sent[0][1]
+    assert ".png" in sent[0][1] or "image.png" in sent[0][1]
+
+
+@pytest.mark.asyncio
+async def test_handle_file_message_supported_extension_dispatches_agent(tmp_path, monkeypatch):
+    """P1：白名单内扩展名 + 解析成功 → 调用 _call_agent，user text 含解析后内容。"""
+    svc = _make_service()
+    captured: dict = {}
+
+    async def _fake_call_agent(sid, text, **kw):
+        captured["text"] = text
+        return ("reply", None)
+
+    svc._call_agent = _fake_call_agent
+
+    sent: list = []
+    monkeypatch.setattr(svc, "_send_text_reply", lambda chat_id, text: sent.append((chat_id, text)))
+
+    # 直接 mock 下载函数：返回固定字节（1KB）
+    async def _fake_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
+
+    # 让下载函数写到受控的 tmp_path 目录：覆盖 _download_feishu_resource 的实际 IO
+    test_bytes = b"%PDF-1.4\n%hello pdf content for testing only" * 8  # 几百字节
+
+    def _fake_download(session_id, message_id, file_key, file_name):
+        target = tmp_path / file_name
+        target.write_bytes(test_bytes)
+        return {"content_bytes": test_bytes, "stored_path": str(target)}
+
+    monkeypatch.setattr(svc, "_download_feishu_resource", _fake_download)
+
+    # 让 _parse_uploaded_attachment 直接返回固定文本，避开真实解析路径
+    async def _fake_parse(stored_path, file_name, ext):
+        return "PDFParsedContent"
+
+    monkeypatch.setattr(svc, "_parse_uploaded_attachment", _fake_parse)
+    # 关闭落库依赖，走 fake
+    async def _fake_session_recorded(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(svc, "_ensure_session_recorded", _fake_session_recorded)
+    # 把 _send_reply / _send_text_reply / _send_card_reply 全部 mock 掉，避免捕获到正常回复
+    monkeypatch.setattr(svc, "_send_reply", lambda *a, **kw: None)
+    monkeypatch.setattr(svc, "_send_text_reply", lambda *a, **kw: sent.append(("text", a[1])))
+    monkeypatch.setattr(svc, "_send_card_reply", lambda *a, **kw: None)
+
+    # 解析方法 max_bytes 通过 settings 项目内限制了 3MB；1KB 文件远低于上限
+    attachments = [
+        {"message_id": "om_msg_001", "file_key": "file_abc", "file_name": "doc.pdf"}
+    ]
+    await svc._handle_file_message(
+        session_id="feishu:p2p:ou_alice",
+        chat_id="oc_chat_001",
+        attachments=attachments,
+        text="请帮我总结",
+        chat_type="p2p",
+    )
+
+    assert "text" in captured
+    assert "PDFParsedContent" in captured["text"]
+    assert "<attached file: doc.pdf>" in captured["text"]
+    assert "请帮我总结" in captured["text"]
+    assert sent == []  # 没有失败回执
+
+
+@pytest.mark.asyncio
+async def test_handle_file_message_size_exceeds_replies_with_413_hint(tmp_path, monkeypatch):
+    """P1：文件超过 file_parser_max_file_size，回发「文件过大」提示，不调 agent。"""
+    svc = _make_service()
+    svc._call_agent = AsyncMock(return_value=(None, None))
+
+    sent: list = []
+    monkeypatch.setattr(svc, "_send_text_reply", lambda chat_id, text: sent.append((chat_id, text)))
+
+    async def _fake_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
+
+    # 模拟下载到 4MB 大文件（>3MB 阈值）
+    big_bytes = b"x" * (4 * 1024 * 1024)
+
+    def _fake_download(session_id, message_id, file_key, file_name):
+        target = tmp_path / file_name
+        target.write_bytes(big_bytes)
+        return {"content_bytes": big_bytes, "stored_path": str(target)}
+
+    monkeypatch.setattr(svc, "_download_feishu_resource", _fake_download)
+
+    async def _fake_session_recorded(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(svc, "_ensure_session_recorded", _fake_session_recorded)
+
+    attachments = [
+        {"message_id": "om_msg_001", "file_key": "file_big", "file_name": "huge.pdf"}
+    ]
+    await svc._handle_file_message(
+        session_id="feishu:p2p:ou_alice",
+        chat_id="oc_chat_001",
+        attachments=attachments,
+        text="",
+        chat_type="p2p",
+    )
+
+    assert not svc._call_agent.called
+    assert any("文件过大已被拒绝" in t for _id, t in sent)
+
+
+@pytest.mark.asyncio
+async def test_handle_file_message_parse_failure_replies_with_hint(tmp_path, monkeypatch):
+    """P2：解析失败 → 回发「文件解析失败」提示，不调 agent。"""
+    svc = _make_service()
+    svc._call_agent = AsyncMock(return_value=(None, None))
+
+    sent: list = []
+    monkeypatch.setattr(svc, "_send_text_reply", lambda chat_id, text: sent.append((chat_id, text)))
+
+    async def _fake_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
+
+    def _fake_download(session_id, message_id, file_key, file_name):
+        target = tmp_path / file_name
+        target.write_bytes(b"x" * 100)
+        return {"content_bytes": b"x" * 100, "stored_path": str(target)}
+
+    monkeypatch.setattr(svc, "_download_feishu_resource", _fake_download)
+
+    async def _fake_parse_fail(stored_path, file_name, ext):
+        return None  # 解析失败
+
+    monkeypatch.setattr(svc, "_parse_uploaded_attachment", _fake_parse_fail)
+
+    async def _fake_session_recorded(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(svc, "_ensure_session_recorded", _fake_session_recorded)
+
+    attachments = [
+        {"message_id": "om_msg_001", "file_key": "file_xxx", "file_name": "bad.pdf"}
+    ]
+    await svc._handle_file_message(
+        session_id="feishu:p2p:ou_alice",
+        chat_id="oc_chat_001",
+        attachments=attachments,
+        text="",
+        chat_type="p2p",
+    )
+
+    assert not svc._call_agent.called
+    assert any("文件解析失败" in t for _id, t in sent)
+
+
+@pytest.mark.asyncio
+async def test_handle_file_message_download_failure_replies_with_hint(monkeypatch):
+    """P2：下载失败 → 回发「文件下载失败」提示，不调 agent。"""
+    svc = _make_service()
+    svc._call_agent = AsyncMock(return_value=(None, None))
+
+    sent: list = []
+    monkeypatch.setattr(svc, "_send_text_reply", lambda chat_id, text: sent.append((chat_id, text)))
+
+    async def _fake_to_thread(func, *args, **kwargs):
+        raise RuntimeError("network broken")
+
+    monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
+
+    async def _fake_session_recorded(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(svc, "_ensure_session_recorded", _fake_session_recorded)
+
+    attachments = [
+        {"message_id": "om_msg_001", "file_key": "file_dl", "file_name": "report.pdf"}
+    ]
+    await svc._handle_file_message(
+        session_id="feishu:p2p:ou_alice",
+        chat_id="oc_chat_001",
+        attachments=attachments,
+        text="",
+        chat_type="p2p",
+    )
+
+    assert not svc._call_agent.called
+    assert any("文件下载失败" in t for _id, t in sent)
+
+
+@pytest.mark.asyncio
+async def test_handle_file_message_md_attachment_skips_remote_parser(tmp_path, monkeypatch):
+    """P2：.md 文件直接读本地，不走 FileParserClient。"""
+    svc = _make_service()
+    captured: dict = {}
+
+    async def _fake_call_agent(sid, text, **kw):
+        captured["text"] = text
+        return ("md reply", None)
+
+    svc._call_agent = _fake_call_agent
+
+    monkeypatch.setattr(svc, "_send_text_reply", lambda chat_id, text: None)
+
+    async def _fake_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
+
+    # 写一个 .md 文件
+    md_content = "# Title\n\nHello World"
+
+    def _fake_download(session_id, message_id, file_key, file_name):
+        target = tmp_path / file_name
+        target.write_text(md_content, encoding="utf-8")
+        return {"content_bytes": md_content.encode("utf-8"), "stored_path": str(target)}
+
+    monkeypatch.setattr(svc, "_download_feishu_resource", _fake_download)
+
+    # 用真实 _parse_uploaded_attachment（不走 mock），验证 .md 走本地读取路径
+    async def _fake_session_recorded(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(svc, "_ensure_session_recorded", _fake_session_recorded)
+
+    attachments = [
+        {"message_id": "om_msg_001", "file_key": "file_md", "file_name": "notes.md"}
+    ]
+    await svc._handle_file_message(
+        session_id="feishu:p2p:ou_alice",
+        chat_id="oc_chat_001",
+        attachments=attachments,
+        text="",
+        chat_type="p2p",
+    )
+
+    assert "Title" in captured["text"] and "Hello World" in captured["text"]
+
+
+def test_on_message_file_with_supported_extension_dispatches_handle_file():
+    """P1：msg_type=file + 白名单 → 通过 _dispatch_async 投递 _handle_file_message。"""
+    svc = _make_service()
+    fake_loop = MagicMock()
+    fake_loop.is_closed.return_value = False
+    svc.set_event_loop(fake_loop)
+
+    captured = []
+
+    def fake_run_coroutine_threadsafe(coro, loop):
+        captured.append(coro)
+        return MagicMock()
+
+    with patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coroutine_threadsafe):
+        data = _build_file_msg("report.pdf", "file_xyz")
+        svc._on_message(data)
+
+    assert len(captured) == 1
+    # 协程名应是 _handle_file_message
+    assert "_handle_file_message" in repr(captured[0])
+
+
+@pytest.mark.parametrize(
+    "session_id,expected",
+    [
+        ("feishu:p2p:ou_alice", "feishu_p2p_ou_alice"),
+        ("feishu:group:oc_chat:ou_bob", "feishu_group_oc_chat_ou_bob"),
+        ("plain-id", "plain-id"),
+        ("", "feishu_default"),
+    ],
+)
+def test_safe_session_marker_replaces_colons(session_id, expected):
+    """P0：Windows 路径不接受 ``:``，safe marker 把 ``:`` 全部替换为 ``_``。
+
+    飞书 session_id 形如 ``feishu:p2p:open_id``，含 ``:`` 字符。在 Windows 上
+    直接当目录名调用 ``Path.mkdir`` 会抛 ``OSError [WinError 123]``（参见 2026-07-17
+    线上事故）。本测试覆盖转换规则。
+    """
+    assert FeishuWebSocketService._safe_session_marker(session_id) == expected
+
+
+@pytest.mark.asyncio
+async def test_handle_file_message_safe_marker_paths_do_not_carry_colons(monkeypatch, tmp_path):
+    """P1：下载阶段写到磁盘时，目录 marker 不含 ``:``，避免 Windows 失败。
+
+    验证：``_download_feishu_resource`` 内部把 session_id 转 marker 后再传给
+    ``get_session_upload_dir``。
+    """
+    svc = _make_service()
+    captured: list = []
+
+    async def _fake_call_agent(sid, text, **kw):
+        return ("ok", None)
+
+    svc._call_agent = _fake_call_agent
+    monkeypatch.setattr(svc, "_ensure_session_recorded",
+                        AsyncMock(return_value=None))
+    monkeypatch.setattr(svc, "_send_text_reply", lambda *a, **kw: None)
+    monkeypatch.setattr(svc, "_send_reply", lambda *a, **kw: None)
+
+    # mock 文件解析（避免依赖真实 lark SDK 业务实现）
+    async def _fake_parse(stored_path, file_name, ext):
+        return "PARSED"
+
+    monkeypatch.setattr(svc, "_parse_uploaded_attachment", _fake_parse)
+
+    # 拦截 get_session_upload_dir：记录传入的 session_id（必须是 marker 形式）
+    import app.shared.utils.files.session_path_manager as spm
+
+    def _fake_upload(sid, create=False):
+        captured.append(sid)
+        assert ":" not in sid, f"session_id 含 : 字符: {sid}"
+        return tmp_path
+
+    monkeypatch.setattr(spm, "get_session_upload_dir", _fake_upload)
+
+    # 让 lark SDK fake-client 但保留 _download_feishu_resource 走真实路径：
+    # mock 掉 lark SDK 的 GetMessageResourceRequest 与客户端方法
+    from lark_oapi.api.im.v1 import GetMessageResourceRequest
+    fake_resp = MagicMock()
+    fake_resp.success.return_value = True
+    fake_resp.code = 0
+    fake_resp.msg = ""
+
+    class _F:
+        def read(self): return b"%PDF-1.4 hi"
+    fake_resp.file = _F()
+
+    svc._lark_client.im.v1.message.get_message_resource = MagicMock(
+        return_value=fake_resp
+    )
+
+    attachments = [
+        {"message_id": "om_msg_001", "file_key": "file_abc",
+         "file_name": "report.pdf"},
+    ]
+    await svc._handle_file_message(
+        session_id="feishu:p2p:ou_0a4bb8715bc1c45f5024a2bfc4a56261",
+        chat_id="oc_chat_001",
+        attachments=attachments,
+        text="",
+        chat_type="p2p",
+    )
+
+    # 验证：传给 get_session_upload_dir 的是 marker 形式，而不是原始 session_id
+    assert len(captured) >= 1
+    assert ":" not in captured[0]
+    assert captured[0] == "feishu_p2p_ou_0a4bb8715bc1c45f5024a2bfc4a56261"
+
+
+def test_get_message_resource_request_builder_records_args():
+    """P1：lark SDK 的 GetMessageResourceRequest builder 必须传 path 参数 + type='file'。"""
+    captured: dict = {}
+
+    class _FakeLarkClient:
+        def __init__(self, resp_factory):
+            self.im = MagicMock()
+            # 用闭包持有 resp_factory，避免 ``or`` 二义性
+            def _side(req):
+                captured["req"] = req
+                return resp_factory()
+            self.im.v1.message.get_message_resource = MagicMock(side_effect=_side)
+
+    # 观测 builder 的参数
+    from app.tests.shared.tools.skills.feishu.conftest import (
+        _GetMessageResourceRequestBuilder,
+    )
+    # 清空之前累积的测试副作用
+    _GetMessageResourceRequestBuilder.instances.clear()
+
+    # 真实调用 _download_feishu_resource 会 import SDK
+    # 由于 lark_oapi 已在 sys.modules 注册了 mock，import 不会失败
+    from pathlib import Path
+
+    out_dir = Path(tempfile.mkdtemp(prefix="feishu_dl_test_"))
+    target = out_dir / "report.pdf"
+
+    # 直接覆盖 download 路径上的写盘部分
+    def _fake_write_file(content, path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        return path
+
+    # 用 monkeypatch 改 get_session_upload_dir
+    import app.shared.utils.files.session_path_manager as spm
+    monkeypatch_local = None  # 占位变量
+    # 通过 monkeypatch fixture 替换
+    # 直接 monkeypatch
+    import pytest as _pytest
+    # 这里不能加 fixture，只能手动 patch
+    _orig = spm.get_session_upload_dir
+
+    def _stub(sid, create=False):
+        return out_dir
+
+    spm.get_session_upload_dir = _stub
+    try:
+        # 准备 response factory：让 resp.file.read() 返回 bytes
+        def _make_resp():
+            class _Resp:
+                def __init__(self, data: bytes):
+                    self._data = data
+                    self.code = 0
+                    self.msg = ""
+                    class _F:
+                        def __init__(self, d):
+                            self._d = d
+                        def read(self):
+                            return self._d
+                    self.file = _F(data)
+
+                def success(self):
+                    return True
+
+            return _Resp(b"%PDF-1.4 hi")
+
+        lark_client = _FakeLarkClient(_make_resp)
+
+        svc = FeishuWebSocketService(lark_client=lark_client, agent_config_service=MagicMock())
+        payload = svc._download_feishu_resource(
+            session_id="feishu:p2p:ou_alice",
+            message_id="om_msg_001",
+            file_key="file_abc",
+            file_name="report.pdf",
+        )
+
+        # 校验：SDK 请求对象被记录
+        assert "req" in captured
+        # 校验：实际文件已落盘
+        assert target.exists()
+        assert target.read_bytes() == b"%PDF-1.4 hi"
+        # 校验：返回结构
+        assert payload["content_bytes"] == b"%PDF-1.4 hi"
+        assert payload["stored_path"].endswith("report.pdf")
+    finally:
+        spm.get_session_upload_dir = _orig
 
 
 # ---------------------------------------------------------------------------

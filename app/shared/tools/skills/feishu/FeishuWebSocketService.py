@@ -272,17 +272,21 @@ class FeishuWebSocketService:
     def _on_message(self, data: P2ImMessageReceiveV1) -> None:
         """lark SDK 同步事件回调入口。
 
-        1) 解析 chat_type / chat_id / open_id / text
+        1) 解析 chat_type / chat_id / open_id / text / attachments（file 消息含 attachments）
         2) 群聊未 @机器人 → 跳过
-        3) 非文本消息 → 跳过
-        4) 构造 session_id
-        5) 投递协程 _handle_message 到主事件循环
+        3) msg_type == "file" → 走 _handle_file_message（下载→解析→注入 user text）
+        4) msg_type == "text" → 走 _handle_message 普通文本路径
+        5) 其他类型（image/post/audio/...）→ 跳过 + 日志
+        6) 构造 session_id
+        7) 投递协程到主事件循环
 
         Args:
             data: 飞书消息事件对象
         """
         try:
-            chat_type, chat_id, open_id, msg_type, text = self._extract_message(data)
+            chat_type, chat_id, open_id, msg_type, text, attachments = self._extract_message(
+                data
+            )
             if not chat_id or not open_id:
                 logger.warning("飞书消息缺少 chat_id 或 open_id，跳过")
                 return
@@ -294,6 +298,16 @@ class FeishuWebSocketService:
                         "群聊 %s 消息未 @机器人，跳过（msg_type=%s）", chat_id, msg_type
                     )
                     return
+
+            # 文件消息 → 走下载+解析路径（白名单/大小校验失败时 service 会回发提示文本）
+            if msg_type == "file" and attachments:
+                session_id = self._build_session_id(chat_type, chat_id, open_id)
+                self._dispatch_async(
+                    self._handle_file_message(
+                        session_id, chat_id, attachments, text, chat_type
+                    )
+                )
+                return
 
             # 非文本消息：跳过（仅日志）
             if msg_type != "text":
@@ -312,14 +326,22 @@ class FeishuWebSocketService:
 
     def _extract_message(
         self, data: P2ImMessageReceiveV1
-    ) -> tuple[str, str, str, str, str]:
+    ) -> tuple[str, str, str, str, str, list]:
         """从飞书消息事件中提取关键字段。
 
         Args:
             data: 飞书消息事件对象
 
         Returns:
-            tuple: (chat_type, chat_id, open_id, msg_type, text)
+            tuple: (chat_type, chat_id, open_id, msg_type, text, attachments)
+                - chat_type: p2p / group
+                - chat_id: 飞书 chat_id
+                - open_id: 用户 open_id
+                - msg_type: 飞书消息类型（text / file / image / post / ...）
+                - text: 用户伴随文本（text 消息下为正文；file 消息下通常为空，仅在 content 同
+                  时含 text 字段时被填充）
+                - attachments: 文件附件列表，仅在 msg_type == "file" 时填充；
+                  元素 dict 含 ``message_id / file_key / file_name``，其他 msg_type 为 ``[]``
         """
         event = getattr(data, "event", None)
         msg = getattr(event, "message", None) if event else None
@@ -336,15 +358,452 @@ class FeishuWebSocketService:
         msg_type = getattr(msg, "message_type", None) or "" if msg else ""
 
         text = ""
+        attachments: list = []
         content_raw = getattr(msg, "content", None) if msg else None
         if content_raw:
             try:
                 payload = json.loads(content_raw)
-                text = str(payload.get("text", "") or "").strip()
+                if isinstance(payload, dict):
+                    # text 字段：text 消息正文 / file 消息偶尔带的伴随文本
+                    raw_text = payload.get("text", "")
+                    if isinstance(raw_text, str):
+                        text = raw_text.strip()
+                    # file 消息：file_name / file_key 字段
+                    if msg_type == "file":
+                        att = self._extract_attachments_from_message(
+                            msg, payload
+                        )
+                        attachments = att
             except Exception:  # noqa: BLE001
                 text = ""
 
-        return chat_type, chat_id, open_id, msg_type, text
+        return chat_type, chat_id, open_id, msg_type, text, attachments
+
+    def _extract_attachments_from_message(
+        self, msg: Any, payload: Dict[str, Any]
+    ) -> list:
+        """从飞书 ``message_type == "file"`` 的消息 content 解析附件列表。
+
+        飞书文件消息 ``content`` JSON 形态（参考 [events/receive](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/events/receive)）::
+
+            {
+                "file_name": "report.docx",
+                "file_key": "file_xxx",
+                "file_size": "1024",
+                "file_type": "docx"
+            }
+
+        Args:
+            msg: 飞书消息对象（用于取 ``message_id``）
+            payload: 已解析的 content JSON dict
+
+        Returns:
+            list[dict]: 附件元数据列表，元素含 ``message_id / file_key / file_name``。
+                任一关键字段缺失时返回 ``[]``。
+        """
+        if not isinstance(payload, dict):
+            return []
+        file_name = str(payload.get("file_name") or "").strip()
+        file_key = str(payload.get("file_key") or "").strip()
+        if not file_name or not file_key:
+            return []
+        message_id = getattr(msg, "message_id", None) or ""
+        return [
+            {
+                "message_id": str(message_id),
+                "file_key": file_key,
+                "file_name": file_name,
+            }
+        ]
+
+
+    # ------------------------------------------------------------------ #
+    # File message handling (下载→解析→注入 user text)                        #
+    # ------------------------------------------------------------------ #
+
+    # 飞书单条消息资源大小上限（官方接口限制 100 MB）
+    _FEISHU_RESOURCE_MAX_BYTES = 100 * 1024 * 1024
+    # 支持解析的文件后缀白名单（小写，含 ``.`` 前缀）
+    _FILE_EXT_SUPPORTED: tuple = (".docx", ".pdf", ".xlsx", ".md", ".txt")
+    # FileParserClient 支持的后缀（仅当 settings.file_parser.file_parser_enabled 为 True 时走远程解析）
+    _FILE_EXT_REMOTE_PARSER: tuple = (".pdf", ".docx", ".xlsx")
+
+    @staticmethod
+    def _safe_session_marker(session_id: str) -> str:
+        """把 session_id 转换为文件系统安全的目录名片段。
+
+        飞书 session_id 形如 ``feishu:p2p:open_id`` 或 ``feishu:group:chat_id:open_id``，
+        含 ``:`` 字符。Windows 路径不接受 ``:``（仅作盘符分隔符），会在
+        ``Path.mkdir`` 时抛 ``OSError [WinError 123]``（参见 2026-07-17 线上事故）。
+        Linux / macOS 上 ``:`` 合法，但出于跨平台一致考虑也统一替换为 ``_``。
+
+        此函数仅用于文件系统路径生成；LangGraph thread_id / PostgreSQL 仍用
+        原始 session_id（这些下游对 ``:`` 无限制）。
+
+        Args:
+            session_id: 原始 session_id。空串视作缺省并回退到占位符。
+
+        Returns:
+            str: 文件系统安全标记
+        """
+        if not session_id:
+            return "feishu_default"
+        return str(session_id).replace(":", "_")
+
+    def _file_ext(self, file_name: str) -> str:
+        """提取小写后缀（带 ``.`` 前缀，无扩展名时返回空串）。
+
+        Args:
+            file_name: 文件名
+
+        Returns:
+            str: ``.pdf`` 这类后缀；无扩展名返回 ``""``。
+        """
+        if not file_name:
+            return ""
+        from pathlib import PurePosixPath
+
+        suffix = PurePosixPath(file_name).suffix.lower()
+        return suffix
+
+    def _resolve_max_file_size_bytes(self) -> int:
+        """计算最终大小上限（字节）。
+
+        策略：取项目内 ``file_parser.file_parser_max_file_size MB`` 与飞书官方接口
+        隐式上限 ``100 MB`` 的较小值。如果 ``file_parser_max_file_size`` 缺失/非法，
+        退回到飞书官方 100 MB。
+
+        Returns:
+            int: 字节数。
+        """
+        from app.core.config.settings import settings
+
+        max_mb = 100  # 飞书官方限制
+        try:
+            file_parser_max = (
+                settings.file_parser.file_parser_max_file_size
+            )
+            if isinstance(file_parser_max, int) and file_parser_max > 0:
+                max_mb = min(int(file_parser_max), max_mb)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("读取 file_parser_max_file_size 失败，回退到 100MB: %s", e)
+        return max_mb * 1024 * 1024
+
+    async def _handle_file_message(
+        self,
+        session_id: str,
+        chat_id: str,
+        attachments: list,
+        text: str,
+        chat_type: str = "p2p",
+    ) -> None:
+        """处理飞书 ``message_type == "file"`` 的消息：下载→落本地→解析→注入 user text。
+
+        流程：
+            1. 遍历 attachments：白名单 / 大小校验。
+            2. 通过 ``client.im.v1.message.get_message_resource`` 下载到 session 上传目录。
+            3. 调用 ``FileParserClient``（远程）或 ``DocumentLoader``（本地）解析为 ``.md``。
+            4. 拼入 user text 后调用 ``_call_agent``，最后走 ``_send_reply`` 自动渲染。
+            5. 任意步骤失败 → ``_send_text_reply`` 把原因告诉用户，不抛异常。
+
+        注意：
+            - 解析可能耗时（file_parser 同步阻塞可达 5 分钟），全部放异步协程内执行。
+            - 飞书 WS 事件回调 3 秒内必须 ack；下载/解析已在新协程里，可安全做。
+            - 至少一个附件成功解析后会触发一次 ``_call_agent``；
+              若所有附件都失败，本协程结束后不调 agent，由 ``_send_text_reply`` 兜底。
+
+        Args:
+            session_id: 飞书 session_id（LangGraph thread_id）
+            chat_id: 飞书 chat_id
+            attachments: ``_extract_message`` 返回的附件列表
+            text: 用户伴随文本（可为空）
+            chat_type: 2026-07-17 新增 p2p / group；用于诊断日志
+        """
+        try:
+            await self._ensure_session_recorded(session_id, chat_id, chat_type, text)
+
+            attachment_sections: list = []
+            max_bytes = self._resolve_max_file_size_bytes()
+            for att in attachments or []:
+                file_name = att.get("file_name") or ""
+                file_key = att.get("file_key") or ""
+                message_id = att.get("message_id") or ""
+                if not file_name or not file_key or not message_id:
+                    logger.warning(
+                        "飞书文件附件字段缺失，跳过: %s",
+                        att,
+                    )
+                    continue
+                ext = self._file_ext(file_name)
+                if ext not in self._FILE_EXT_SUPPORTED:
+                    supported = ", ".join(self._FILE_EXT_SUPPORTED)
+                    self._send_text_reply(
+                        chat_id,
+                        f"暂不支持的文件类型: {file_name or ext or '未知'}。"
+                        f"当前支持: {supported}",
+                    )
+                    logger.info(
+                        "飞书文件消息非白名单扩展名 ext=%s file=%s，跳过",
+                        ext, file_name,
+                    )
+                    continue
+
+                # 下载（同步阻塞 IO → 放到线程池）
+                download_payload: Dict[str, Any]
+                try:
+                    download_payload = await asyncio.to_thread(
+                        self._download_feishu_resource,
+                        session_id,
+                        message_id,
+                        file_key,
+                        file_name,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        "飞书文件下载失败 file=%s key=%s: %s", file_name, file_key, e
+                    )
+                    self._send_text_reply(
+                        chat_id,
+                        f"文件下载失败: {file_name}",
+                    )
+                    continue
+
+                content_bytes = download_payload.get("content_bytes") or b""
+                stored_path = download_payload.get("stored_path") or ""
+                if not stored_path:
+                    logger.warning(
+                        "飞书文件未落盘 file=%s key=%s", file_name, file_key
+                    )
+                    self._send_text_reply(
+                        chat_id,
+                        f"文件保存失败: {file_name}",
+                    )
+                    continue
+                if len(content_bytes) > max_bytes:
+                    too_big_text = (
+                        f"文件过大已被拒绝: {file_name}"
+                        f"（{len(content_bytes) // 1024} KB > {max_bytes // (1024 * 1024)} MB）"
+                    )
+                    logger.info(
+                        "飞书文件超限 file=%s size=%s > %s",
+                        file_name, len(content_bytes), max_bytes,
+                    )
+                    # 删除已落盘但超限的临时文件，避免污染上传目录
+                    try:
+                        import os as _os
+
+                        if stored_path and _os.path.exists(stored_path):
+                            _os.remove(stored_path)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    self._send_text_reply(chat_id, too_big_text)
+                    continue
+
+                # 解析为 .md
+                parsed_text: Optional[str] = None
+                try:
+                    parsed_text = await self._parse_uploaded_attachment(
+                        stored_path, file_name, ext
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        "飞书文件解析失败 file=%s ext=%s: %s",
+                        file_name, ext, e,
+                    )
+                if not parsed_text:
+                    self._send_text_reply(
+                        chat_id,
+                        f"文件解析失败: {file_name}（请确认文件未损坏）",
+                    )
+                    continue
+
+                attachment_sections.append(
+                    f"<attached file: {file_name}>\n{parsed_text.strip()}"
+                )
+
+            if not attachment_sections:
+                # 全部附件被拒绝/失败，且都已发过提示文本 → 不调 agent
+                logger.info(
+                    "飞书文件消息无可用附件，session_id=%s chat_id=%s",
+                    session_id, chat_id,
+                )
+                return
+
+            composed_text = (
+                "\n\n".join(attachment_sections)
+                + (f"\n\n[用户文本] {text}" if text else "")
+            )
+            reply, interrupt_req = await self._call_agent(
+                session_id, composed_text
+            )
+            if interrupt_req:
+                self._pending_interrupts[session_id] = {
+                    "chat_id": chat_id,
+                    "request": interrupt_req,
+                }
+                self._send_interrupt_card(chat_id, interrupt_req, session_id)
+            elif reply:
+                self._send_reply(chat_id, reply)
+            else:
+                logger.info(
+                    "飞书文件消息智能体未产生回复/HITL session_id=%s", session_id
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.exception(
+                "处理飞书文件消息失败（已隔离，session_id=%s）: %s",
+                session_id, e,
+            )
+
+    def _download_feishu_resource(
+        self,
+        session_id: str,
+        message_id: str,
+        file_key: str,
+        file_name: str,
+    ) -> Dict[str, Any]:
+        """同步下载飞书消息内的资源文件并落到 session 上传目录。
+
+        Args:
+            session_id: 飞书 session_id（用于把同会话的文件归到同一目录）
+            message_id: 飞书消息 ID
+            file_key: 飞书 file_key
+            file_name: 原始文件名（用于落盘文件名）
+
+        Returns:
+            Dict[str, Any]: 含 ``content_bytes / stored_path`` 两个字段；下载失败抛异常。
+
+        Raises:
+            RuntimeError: 当 lark SDK 返回失败响应或文件落地失败时抛出。
+        """
+        # 路径管理
+        from app.shared.utils.files.session_path_manager import (
+            get_session_upload_dir,
+        )
+
+        upload_dir = get_session_upload_dir(
+            self._safe_session_marker(session_id),
+            create=True,
+        )
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        from lark_oapi.api.im.v1 import GetMessageResourceRequest
+
+        request = (
+            GetMessageResourceRequest.builder()
+            .message_id(message_id)
+            .file_key(file_key)
+            .type("file")
+            .build()
+        )
+        resp = self._lark_client.im.v1.message.get_message_resource(request)
+        if not resp.success():
+            logger.error(
+                "飞书 get_message_resource 失败 code=%s msg=%s file=%s",
+                getattr(resp, "code", None),
+                getattr(resp, "msg", None),
+                file_name,
+            )
+            raise RuntimeError(
+                f"飞书资源下载失败 code={getattr(resp, 'code', None)}"
+            )
+
+        file_obj = getattr(resp, "file", None) or getattr(resp, "data", None)
+        content_bytes = b""
+        if hasattr(file_obj, "read"):
+            try:
+                content_bytes = file_obj.read()
+            except Exception as e:  # noqa: BLE001
+                raise RuntimeError(f"读取飞书资源字节流失败: {e}") from e
+        if not isinstance(content_bytes, (bytes, bytearray)) or len(content_bytes) == 0:
+            raise RuntimeError("飞书资源字节流为空")
+
+        from pathlib import Path as _Path
+
+        target_path: _Path = upload_dir / file_name
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(target_path, "wb") as f:
+            f.write(content_bytes)
+
+        return {
+            "content_bytes": bytes(content_bytes),
+            "stored_path": str(target_path),
+        }
+
+    async def _parse_uploaded_attachment(
+        self, stored_path: str, file_name: str, ext: str
+    ) -> Optional[str]:
+        """把已落盘的飞书附件解析为 Markdown 文本。
+
+        解析策略：
+            - ``.md`` / ``.txt`` → 直接读字节并作为 ``.md`` 内容，跳过任何远程解析。
+            - ``.docx`` / ``.pdf`` / ``.xlsx`` → 若
+              ``settings.file_parser.file_parser_enabled == True``，调用 ``FileParserClient.parse``；
+              否则回退 ``DocumentLoader.load``。
+            - 解析结果统一返回字符串文本，调用方负责拼接。
+
+        Args:
+            stored_path: 落盘的绝对路径
+            file_name: 原始文件名（用于诊断日志）
+            ext: 小写后缀（带 ``.``）
+
+        Returns:
+            Optional[str]: 解析后的文本；失败返回 ``None``。
+        """
+        import asyncio as _asyncio
+        from pathlib import Path as _Path
+
+        from app.core.config.config import FILE_PARSER_CONFIG
+
+        path_obj = _Path(stored_path)
+
+        if ext in (".md", ".txt"):
+            try:
+                return path_obj.read_text(encoding="utf-8", errors="ignore")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("读取纯文本附件失败 file=%s: %s", file_name, e)
+                return None
+
+        parser_enabled = bool(FILE_PARSER_CONFIG.get("enabled", False))
+        try_use_remote = parser_enabled and ext in self._FILE_EXT_REMOTE_PARSER
+        if try_use_remote:
+            try:
+                from app.shared.utils.files.file_parser_client import FileParserClient
+                from app.shared.utils.files.session_path_manager import (
+                    get_session_tmp_upload_dir,
+                )
+
+                # 解析输出目录：用同 session 的 tmp 目录
+                marker = path_obj.parent.name  # session_id 维度的目录名（marker 形式）
+                tmp_dir = get_session_tmp_upload_dir(marker, create=True)
+                client = FileParserClient(
+                    server_url=FILE_PARSER_CONFIG["server_url"],
+                    max_retries=FILE_PARSER_CONFIG["max_retries"],
+                    poll_interval=FILE_PARSER_CONFIG["poll_interval"],
+                    timeout=FILE_PARSER_CONFIG["timeout"],
+                )
+                md_path = await _asyncio.to_thread(
+                    client.parse,
+                    file_path=str(path_obj),
+                    output_dir=str(tmp_dir),
+                    api_url=FILE_PARSER_CONFIG["api_url"],
+                    output_format="md",
+                )
+                return _Path(md_path).read_text(encoding="utf-8", errors="ignore")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "FileParserClient 解析失败 file=%s: %s，回退本地 DocumentLoader",
+                    file_name, e,
+                )
+                # 降级到本地 parser
+        try:
+            from app.shared.utils.files.DocumentLoader import DocumentLoader
+
+            loader = DocumentLoader(path=str(path_obj))
+            docs = await _asyncio.to_thread(loader.load)
+            return "\n".join((getattr(d, "page_content", "") or "") for d in docs)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("DocumentLoader 解析失败 file=%s: %s", file_name, e)
+            return None
 
     def _is_bot_mentioned(self, data: P2ImMessageReceiveV1) -> bool:
         """判断群聊消息中是否 @机器人。

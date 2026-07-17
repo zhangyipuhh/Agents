@@ -157,6 +157,67 @@ class _P2ImMessageReceiveV1:
 
 _lark_api_im_v1.P2ImMessageReceiveV1 = _P2ImMessageReceiveV1
 
+
+# ---------------------------------------------------------------------------
+# 构造 GetMessageResourceRequest builder（供 FeishuWebSocketService 下载文件）
+# ---------------------------------------------------------------------------
+class _GetMessageResourceRequestBuilder:
+    """模拟 lark_oapi.api.im.v1.GetMessageResourceRequest.builder() 链。
+
+    真实 SDK 的用法：
+        req = GetMessageResourceRequest.builder() \\
+            .message_id(message_id) \\      # path 参数
+            .file_key(file_key) \\          # path 参数
+            .type("file") \\                # query 参数（"file" 或 "image"）
+            .build()
+        resp = client.im.v1.message.get_message_resource(req)
+        # resp.file 是 IO-like 对象，.read() 返回 bytes
+    """
+
+    instances: list = []  # 记录所有实例，便于测试断言
+
+    def __init__(self):
+        self._message_id = None
+        self._file_key = None
+        self._type = None
+
+    def message_id(self, mid: str):
+        self._message_id = mid
+        return self
+
+    def file_key(self, key: str):
+        self._file_key = key
+        return self
+
+    def type(self, t: str):
+        self._type = t
+        return self
+
+    def build(self):
+        req = MagicMock(name="GetMessageResourceRequest")
+        req._message_id = self._message_id
+        req._file_key = self._file_key
+        req._type = self._type
+        _GetMessageResourceRequestBuilder.instances.append(
+            (self._message_id, self._file_key, self._type)
+        )
+        return req
+
+
+class _GetMessageResourceRequest:
+    """模拟 lark_oapi.api.im.v1.GetMessageResourceRequest。"""
+
+    instances: list = []
+
+    @staticmethod
+    def builder():
+        return _GetMessageResourceRequestBuilder()
+
+
+# 让 GetMessageResourceRequest.instances 与 builder.instances 等价（兼容两种访问）
+_GetMessageResourceRequest.instances = _GetMessageResourceRequestBuilder.instances
+_lark_api_im_v1.GetMessageResourceRequest = _GetMessageResourceRequest
+
 _lark_api.im = _lark_api_im
 _lark_api_im.v1 = _lark_api_im_v1
 _lark.api = _lark_api
