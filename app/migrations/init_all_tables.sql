@@ -2689,6 +2689,17 @@ ALTER TABLE agent_task_schedules ADD CONSTRAINT agent_task_schedules_target_payl
 CREATE INDEX IF NOT EXISTS idx_agent_task_schedules_target_type ON agent_task_schedules(target_type);
 CREATE INDEX IF NOT EXISTS idx_agent_task_schedules_script_name ON agent_task_schedules(script_name);
 
+-- 17.3 扩展：定时任务邮件通知（脚本任务可选启用）
+--   * notify_enabled 启用邮件通知后，脚本执行完成时自动按 notify_policy_id 模板渲染并发送邮件
+--   * notify_policy_id 引用 email_policies(id)；删除策略时自动置 NULL，避免任务被级联删除
+ALTER TABLE agent_task_schedules
+    ADD COLUMN IF NOT EXISTS notify_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE agent_task_schedules
+    ADD COLUMN IF NOT EXISTS notify_policy_id INTEGER
+        DEFAULT NULL REFERENCES email_policies(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_agent_task_schedules_notify_policy
+    ON agent_task_schedules(notify_policy_id);
+
 -- 17.2 扩展：agent_task_runs 同步加 target_type / script_name，便于执行历史区分
 ALTER TABLE agent_task_runs ADD COLUMN IF NOT EXISTS target_type VARCHAR(16) NOT NULL DEFAULT 'agent';
 ALTER TABLE agent_task_runs ADD COLUMN IF NOT EXISTS script_name VARCHAR(100) DEFAULT NULL;
@@ -2810,6 +2821,14 @@ CREATE TABLE IF NOT EXISTS email_policy_recipients (
     PRIMARY KEY (policy_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_email_policy_recipients_user_id ON email_policy_recipients(user_id);
+
+-- 20.1 扩展：邮件主题/正文模板（含 {{var}} 占位符）
+-- 定时任务执行完成后用模板渲染主题与正文，再通过 EmailService 发送。
+-- 留空字符串时：subject_template 用策略名；body_template 用脚本返回的 body。
+ALTER TABLE email_policies
+    ADD COLUMN IF NOT EXISTS subject_template VARCHAR(500) NOT NULL DEFAULT '';
+ALTER TABLE email_policies
+    ADD COLUMN IF NOT EXISTS body_template TEXT NOT NULL DEFAULT '';
 
 COMMIT;
 

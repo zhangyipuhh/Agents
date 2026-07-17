@@ -23,6 +23,7 @@ import {
   scanDevOpsServers,
   fetchScripts,
   scanScripts,
+  fetchEmailPolicies,
 } from '../utils/api.js'
 
 const TAB_TASK = 'task'
@@ -69,6 +70,11 @@ const scanScriptSummary = ref(null)
 const hasLoadedScripts = ref(false)
 const scriptArgsJson = ref('{}')
 
+// 邮件策略状态（仅 script 任务启用邮件通知时按需加载）
+const emailPolicies = ref([])
+const hasLoadedEmailPolicies = ref(false)
+const isLoadingEmailPolicies = ref(false)
+
 // 扫描结果只接受这 4 个数字；任何未知敏感字段都不会进入 DOM
 const SUMMARY_FIELDS = ['scanned', 'inserted', 'updated', 'failed']
 
@@ -91,6 +97,8 @@ const form = reactive({
   enabled: true,
   context_overrides: {},
   max_concurrent_runs: 1,
+  notify_enabled: false,
+  notify_policy_id: null,
 })
 
 // 预设调度模式类型（每天 / 每周 / 每月 / 每年 / 每隔 N 分钟 / 每隔 N 小时）
@@ -441,12 +449,60 @@ function onTargetTypeChange() {
     form.script_name = ''
     form.script_args = {}
     scriptArgsJson.value = '{}'
+    // agent 任务不发送邮件通知，重置字段
+    form.notify_enabled = false
+    form.notify_policy_id = null
   } else {
     form.agent_name = ''
     form.prompt = ''
     if (!hasLoadedScripts.value) {
       loadScripts()
     }
+  }
+}
+
+/**
+ * 加载邮件策略列表（仅 script 任务启用邮件通知时按需调用）。
+ * 使用白名单字段，避免注入 recipients 数组等额外字段到 UI。
+ * @returns {Promise<void>} 无返回值
+ */
+async function loadEmailPolicies() {
+  if (hasLoadedEmailPolicies.value || isLoadingEmailPolicies.value) return
+  isLoadingEmailPolicies.value = true
+  try {
+    const rows = await fetchEmailPolicies()
+    emailPolicies.value = (rows || []).map((item) => ({
+      id: item.id,
+      name: item.name || `策略 ${item.id}`,
+      recipient_count: Array.isArray(item.recipient_user_ids)
+        ? item.recipient_user_ids.length
+        : 0,
+    }))
+    hasLoadedEmailPolicies.value = true
+  } catch {
+    emailPolicies.value = []
+  } finally {
+    isLoadingEmailPolicies.value = false
+  }
+}
+
+/**
+ * 切换 notify_enabled 时按需加载策略列表，并把 notify_policy_id 切换到合法值。
+ * @param {boolean} value - 新开关值
+ */
+function onNotifyEnabledChange(value) {
+  if (value && !hasLoadedEmailPolicies.value) {
+    loadEmailPolicies()
+  }
+  if (!value) {
+    // 关闭时清空已选策略
+    form.notify_policy_id = null
+  } else if (
+    form.notify_policy_id != null
+    && !emailPolicies.value.some((p) => p.id === form.notify_policy_id)
+  ) {
+    // 策略列表已加载但当前值不在其中，重置
+    form.notify_policy_id = null
   }
 }
 
@@ -467,8 +523,14 @@ function fillForm(schedule) {
   form.enabled = schedule.enabled !== false
   form.context_overrides = schedule.context_overrides || {}
   form.max_concurrent_runs = schedule.max_concurrent_runs || 1
+  form.notify_enabled = schedule.notify_enabled === true
+  form.notify_policy_id = schedule.notify_policy_id || null
   contextJson.value = JSON.stringify(form.context_overrides, null, 2)
   scriptArgsJson.value = JSON.stringify(form.script_args, null, 2)
+  // 切换到 script 时按需加载邮件策略
+  if (form.target_type === 'script' && form.notify_enabled) {
+    loadEmailPolicies()
+  }
 }
 
 /**
@@ -498,6 +560,8 @@ function startCreate() {
   form.enabled = true
   form.context_overrides = {}
   form.max_concurrent_runs = 1
+  form.notify_enabled = false
+  form.notify_policy_id = null
   contextJson.value = '{}'
   scriptArgsJson.value = '{}'
   errorMessage.value = ''
@@ -544,6 +608,10 @@ function buildPayload() {
     }
     payload.script_name = form.script_name
     payload.script_args = scriptArgs
+    payload.notify_enabled = !!form.notify_enabled
+    payload.notify_policy_id = form.notify_enabled
+      ? (form.notify_policy_id || null)
+      : null
   }
   return payload
 }
@@ -844,6 +912,36 @@ onMounted(loadInitialData)
             <span>脚本参数 (JSON)</span>
             <textarea v-model="scriptArgsJson" rows="4" data-testid="schedule-script-args" placeholder='{"greeting":"Hello"}'></textarea>
           </label>
+          <!-- 脚本任务专属：邮件通知开关与策略选择 -->
+          <template v-if="form.target_type === 'script'">
+            <label class="form-field full">
+              <span>脚本执行完成后自动发送邮件</span>
+              <label class="inline-field">
+                <input
+                  v-model="form.notify_enabled"
+                  type="checkbox"
+                  data-testid="schedule-notify-enabled"
+                  @change="onNotifyEnabledChange($event.target.checked)"
+                />
+                <span>启用邮件通知（脚本返回值将作为邮件正文，附件路径取自脚本返回值第二项）</span>
+              </label>
+            </label>
+            <label v-if="form.notify_enabled" class="form-field">
+              <span>邮件策略 *</span>
+              <select
+                v-model="form.notify_policy_id"
+                data-testid="schedule-notify-policy"
+                :disabled="isLoadingEmailPolicies"
+              >
+                <option :value="null" disabled>
+                  {{ isLoadingEmailPolicies ? '加载中…' : '请选择策略' }}
+                </option>
+                <option v-for="p in emailPolicies" :key="p.id" :value="p.id">
+                  {{ p.name }}（{{ p.recipient_count }} 个收件人）
+                </option>
+              </select>
+            </label>
+          </template>
           <label class="form-field full">
             <span>描述</span>
             <input v-model="form.description" type="text" placeholder="可选：说明该任务的用途" />

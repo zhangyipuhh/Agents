@@ -258,6 +258,9 @@ async def lifespan(app: FastAPI):
                         db_pool,
                         app.state.agent_config_service,
                         script_discovery_service=script_discovery_service,
+                        email_config_service=getattr(
+                            app.state, "email_config_service", None
+                        ),
                     )
                     await app.state.task_scheduler_service.preload_all()
                     await app.state.task_scheduler_service.start()

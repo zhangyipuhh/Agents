@@ -71,9 +71,10 @@ class FakeDb:
                 row["enabled"] = args[1]
                 row["next_run_at"] = args[2]
             else:
-                # update_schedule 全量更新分支：14 个 args
+                # update_schedule 全量更新分支：16 个 args
                 # args[0]=id, args[1]=name, ..., args[10]=target_type,
-                # args[11]=script_name, args[12]=script_args, args[13]=next_run_at
+                # args[11]=script_name, args[12]=script_args,
+                # args[13]=notify_enabled, args[14]=notify_policy_id, args[15]=next_run_at
                 row.update({
                     "name": args[1],
                     "description": args[2],
@@ -87,7 +88,9 @@ class FakeDb:
                     "target_type": args[10],
                     "script_name": args[11],
                     "script_args": args[12],
-                    "next_run_at": args[13],
+                    "notify_enabled": args[13],
+                    "notify_policy_id": args[14],
+                    "next_run_at": args[15],
                 })
             return row
         if "FROM agent_task_schedules" in query and "WHERE id" in query:
@@ -98,8 +101,9 @@ class FakeDb:
         if "FROM users" in query:
             return {"id": args[0], "username": "admin"}
         if "INSERT INTO agent_task_schedules" in query:
-            # create_schedule INSERT：13 个 args
-            # args[0]=name, ..., args[10]=target_type, args[11]=script_name, args[12]=script_args
+            # create_schedule INSERT：15 个 args
+            # args[0]=name, ..., args[10]=target_type, args[11]=script_name, args[12]=script_args,
+            # args[13]=notify_enabled, args[14]=notify_policy_id
             row = {
                 "id": self.next_schedule_id,
                 "name": args[0],
@@ -115,6 +119,8 @@ class FakeDb:
                 "target_type": args[10],
                 "script_name": args[11],
                 "script_args": args[12],
+                "notify_enabled": args[13],
+                "notify_policy_id": args[14],
                 "last_run_at": None,
                 "next_run_at": None,
                 "created_at": datetime(2026, 7, 10, 8, 0, 0),
@@ -575,6 +581,81 @@ def test_validate_payload_rejects_agent_task_without_agent_name():
     assert "agent_name is required" in str(exc_info.value)
 
 
+def test_validate_payload_rejects_notify_enabled_without_policy_id():
+    """notify_enabled=True 但缺 notify_policy_id 时抛 TaskScheduleValidationError。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 未抛出 TaskScheduleValidationError 时失败
+    """
+    from app.shared.utils.agent.task_scheduler_service import (
+        TaskScheduleValidationError,
+        TaskSchedulerService,
+    )
+
+    service = TaskSchedulerService(
+        db=MagicMock(), agent_config_service=MagicMock(), scheduler=FakeScheduler()
+    )
+    payload = {
+        "name": "脚本任务",
+        "target_type": "script",
+        "script_name": "hello_script",
+        "cron_expression": "0 9 * * *",
+        "notify_enabled": True,
+        # 故意缺 notify_policy_id
+    }
+    with pytest.raises(TaskScheduleValidationError) as exc_info:
+        service._validate_payload(payload, partial=False)
+    assert "notify_policy_id is required" in str(exc_info.value)
+
+
+def test_validate_payload_rejects_non_positive_notify_policy_id():
+    """notify_policy_id 必须为正整数。"""
+    from app.shared.utils.agent.task_scheduler_service import (
+        TaskScheduleValidationError,
+        TaskSchedulerService,
+    )
+
+    service = TaskSchedulerService(
+        db=MagicMock(), agent_config_service=MagicMock(), scheduler=FakeScheduler()
+    )
+    payload = {
+        "name": "脚本任务",
+        "target_type": "script",
+        "script_name": "hello_script",
+        "cron_expression": "0 9 * * *",
+        "notify_enabled": True,
+        "notify_policy_id": 0,
+    }
+    with pytest.raises(TaskScheduleValidationError) as exc_info:
+        service._validate_payload(payload, partial=False)
+    assert "positive integer" in str(exc_info.value)
+
+
+def test_validate_payload_accepts_notify_enabled_with_policy_id():
+    """notify_enabled=True + notify_policy_id 时不应抛异常。"""
+    from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+
+    service = TaskSchedulerService(
+        db=MagicMock(), agent_config_service=MagicMock(), scheduler=FakeScheduler()
+    )
+    payload = {
+        "name": "脚本任务",
+        "target_type": "script",
+        "script_name": "hello_script",
+        "cron_expression": "0 9 * * *",
+        "notify_enabled": True,
+        "notify_policy_id": 7,
+    }
+    # 不应抛异常
+    service._validate_payload(payload, partial=False)
+
+
 def test_execute_schedule_script_branch_calls_func(monkeypatch, tmp_path):
     """测试 execute_schedule 在 target_type='script' 时调用 registered.func 并写 success run。
 
@@ -748,3 +829,394 @@ def test_install_run_logger_includes_target_type_and_script_name(monkeypatch, tm
     # 清理 handler，避免泄漏
     service._uninstall_run_logger(77, run_logger)
     assert run_logger.handlers == []
+
+
+# =============================================================================
+# _dispatch_script_email 邮件派发测试
+# =============================================================================
+
+def _make_email_service_stub(
+    *,
+    config=None,
+    send_email=None,
+    get_policy=None,
+    get_active_server_config=None,
+):
+    """构造 EmailConfigService stub。"""
+    svc = MagicMock()
+    if config is not None:
+        # 0 = no config；非 0 = 有配置（用任意 fake EmailServerConfig）
+        svc.get_active_server_config = AsyncMock(
+            return_value=config if config is not False else None
+        )
+    else:
+        svc.get_active_server_config = AsyncMock(return_value=None)
+    svc.get_policy = AsyncMock(return_value=get_policy or {"recipients": []})
+    return svc
+
+
+def test_dispatch_script_email_renders_template_and_sends():
+    """脚本任务完成后应按策略模板渲染并调用 EmailService.send_email。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 渲染或发送流程异常时失败
+    """
+    from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+
+    fake_config = MagicMock()
+    fake_config.host = "smtp.qq.com"
+    fake_config.port = 465
+    fake_config.use_ssl = True
+    fake_config.username = "u@qq.com"
+    fake_config.password = "auth"
+    fake_config.sender_name = "ops"
+
+    fake_email_service_instance = MagicMock()
+    fake_email_service_instance.send_email = AsyncMock(
+        return_value={"success": True, "message_id": "m1"}
+    )
+
+    fake_email_config_service = MagicMock()
+    fake_email_config_service.get_policy = AsyncMock(
+        return_value={
+            "id": 7,
+            "name": "运维告警",
+            "subject_template": "[{{schedule_name}}#{{run_id}}]",
+            "body_template": "正文：{{script_output}}",
+            "recipients": [
+                {"user_id": 1, "email": "u1@example.com"},
+                {"user_id": 2, "email": "u2@example.com"},
+            ],
+        }
+    )
+    fake_email_config_service.get_active_server_config = AsyncMock(
+        return_value=fake_config
+    )
+
+    service = TaskSchedulerService(
+        db=MagicMock(),
+        agent_config_service=MagicMock(),
+        scheduler=FakeScheduler(),
+        email_config_service=fake_email_config_service,
+    )
+
+    # 通过 monkey-patch 让 EmailService(...) 返回我们的 stub
+    import app.shared.utils.email.email_service as email_service_module
+
+    original_email_service = email_service_module.EmailService
+    email_service_module.EmailService = lambda cfg: fake_email_service_instance
+    try:
+        started_at = datetime(2026, 7, 17, 9, 0, 0)
+        finished_at = datetime(2026, 7, 17, 9, 1, 0)
+        run_logger = MagicMock()
+
+        asyncio.run(
+            service._dispatch_script_email(
+                schedule={"id": 5, "name": "脚本巡检", "notify_policy_id": 7},
+                run_id=99,
+                script_name="hello_script",
+                script_output="巡检通过",
+                attachments=None,
+                started_at=started_at,
+                finished_at=finished_at,
+                trigger_type="scheduled",
+                run_logger=run_logger,
+            )
+        )
+    finally:
+        email_service_module.EmailService = original_email_service
+
+    fake_email_service_instance.send_email.assert_awaited_once()
+    call_kwargs = fake_email_service_instance.send_email.await_args.kwargs
+    assert call_kwargs["to"] == ["u1@example.com", "u2@example.com"]
+    assert call_kwargs["subject"] == "[脚本巡检#99]"
+    assert call_kwargs["body"] == "正文：巡检通过"
+    assert call_kwargs["attachment_paths"] is None
+    run_logger.info.assert_any_call(
+        "脚本任务通知邮件已发送：policy_id=%s recipients=%d attachments=%d",
+        7, 2, 0,
+    )
+
+
+def test_dispatch_script_email_uses_policy_name_when_no_subject_template():
+    """未配置 subject_template 时使用策略名作为主题。"""
+    from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+
+    fake_config = MagicMock()
+    fake_config.host = "smtp.qq.com"
+    fake_config.port = 465
+    fake_config.use_ssl = True
+    fake_config.username = "u@qq.com"
+    fake_config.password = "auth"
+    fake_config.sender_name = "ops"
+
+    fake_email_service_instance = MagicMock()
+    fake_email_service_instance.send_email = AsyncMock(
+        return_value={"success": True, "message_id": "m1"}
+    )
+
+    fake_email_config_service = MagicMock()
+    fake_email_config_service.get_policy = AsyncMock(
+        return_value={
+            "id": 7,
+            "name": "默认主题策略",
+            "subject_template": "",
+            "body_template": "",
+            "recipients": [{"user_id": 1, "email": "u1@example.com"}],
+        }
+    )
+    fake_email_config_service.get_active_server_config = AsyncMock(
+        return_value=fake_config
+    )
+
+    service = TaskSchedulerService(
+        db=MagicMock(),
+        agent_config_service=MagicMock(),
+        scheduler=FakeScheduler(),
+        email_config_service=fake_email_config_service,
+    )
+
+    import app.shared.utils.email.email_service as email_service_module
+
+    original = email_service_module.EmailService
+    email_service_module.EmailService = lambda cfg: fake_email_service_instance
+    try:
+        started_at = datetime(2026, 7, 17, 9, 0, 0)
+        finished_at = datetime(2026, 7, 17, 9, 1, 0)
+        run_logger = MagicMock()
+
+        asyncio.run(
+            service._dispatch_script_email(
+                schedule={"id": 5, "name": "cron", "notify_policy_id": 7},
+                run_id=99,
+                script_name="hello_script",
+                script_output="脚本返回 body",
+                attachments=None,
+                started_at=started_at,
+                finished_at=finished_at,
+                trigger_type="manual",
+                run_logger=run_logger,
+            )
+        )
+    finally:
+        email_service_module.EmailService = original
+
+    # 验证 send_email 被调用（不应被 fail-soft 静默吞掉）
+    assert fake_email_service_instance.send_email.await_count >= 1, (
+        f"send_email 应被调用但未调用。warning: "
+        f"{[c for c in run_logger.warning.call_args_list]}"
+    )
+    call_kwargs = fake_email_service_instance.send_email.await_args.kwargs
+    assert call_kwargs["subject"] == "默认主题策略"
+    # body_template 为空时，body 直接使用 script_output
+    assert call_kwargs["body"] == "脚本返回 body"
+
+
+def test_dispatch_script_email_skips_when_email_service_not_configured():
+    """email_config_service 未注入时跳过发邮件（不抛异常）。"""
+    from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+
+    service = TaskSchedulerService(
+        db=MagicMock(),
+        agent_config_service=MagicMock(),
+        scheduler=FakeScheduler(),
+        email_config_service=None,
+    )
+
+    started_at = datetime(2026, 7, 17, 9, 0, 0)
+    finished_at = datetime(2026, 7, 17, 9, 1, 0)
+    run_logger = MagicMock()
+
+    # 不抛异常
+    asyncio.run(
+        service._dispatch_script_email(
+            schedule={"id": 5, "name": "x", "notify_policy_id": 1},
+            run_id=99,
+            script_name="hello_script",
+            script_output="body",
+            attachments=None,
+            started_at=started_at,
+            finished_at=finished_at,
+            trigger_type="scheduled",
+            run_logger=run_logger,
+        )
+    )
+
+    # 应有 warning 记录未注入
+    warning_calls = [
+        c for c in run_logger.warning.call_args_list
+        if "email_config_service 未注入" in str(c)
+    ]
+    assert warning_calls, "应记录 email_config_service 未注入的 warning"
+
+
+def test_dispatch_script_email_skips_when_no_recipients():
+    """策略无有效收件人时跳过发邮件。"""
+    from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+
+    fake_email_config_service = MagicMock()
+    fake_email_config_service.get_policy = AsyncMock(
+        return_value={
+            "id": 7,
+            "name": "空策略",
+            "subject_template": "",
+            "body_template": "",
+            "recipients": [],
+        }
+    )
+
+    service = TaskSchedulerService(
+        db=MagicMock(),
+        agent_config_service=MagicMock(),
+        scheduler=FakeScheduler(),
+        email_config_service=fake_email_config_service,
+    )
+
+    started_at = datetime(2026, 7, 17, 9, 0, 0)
+    finished_at = datetime(2026, 7, 17, 9, 1, 0)
+    run_logger = MagicMock()
+
+    asyncio.run(
+        service._dispatch_script_email(
+            schedule={"id": 5, "name": "x", "notify_policy_id": 7},
+            run_id=99,
+            script_name="hello_script",
+            script_output="body",
+            attachments=None,
+            started_at=started_at,
+            finished_at=finished_at,
+            trigger_type="scheduled",
+            run_logger=run_logger,
+        )
+    )
+
+    warning_calls = [
+        c for c in run_logger.warning.call_args_list
+        if "没有有效收件人" in str(c)
+    ]
+    assert warning_calls
+
+
+def test_dispatch_script_email_skips_when_smtp_not_configured():
+    """未配置启用 SMTP 时跳过发邮件。"""
+    from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+
+    fake_email_config_service = MagicMock()
+    fake_email_config_service.get_policy = AsyncMock(
+        return_value={
+            "id": 7,
+            "name": "策略",
+            "subject_template": "",
+            "body_template": "",
+            "recipients": [{"user_id": 1, "email": "u@e.com"}],
+        }
+    )
+    fake_email_config_service.get_active_server_config = AsyncMock(return_value=None)
+
+    service = TaskSchedulerService(
+        db=MagicMock(),
+        agent_config_service=MagicMock(),
+        scheduler=FakeScheduler(),
+        email_config_service=fake_email_config_service,
+    )
+
+    started_at = datetime(2026, 7, 17, 9, 0, 0)
+    finished_at = datetime(2026, 7, 17, 9, 1, 0)
+    run_logger = MagicMock()
+
+    asyncio.run(
+        service._dispatch_script_email(
+            schedule={"id": 5, "name": "x", "notify_policy_id": 7},
+            run_id=99,
+            script_name="hello_script",
+            script_output="body",
+            attachments=None,
+            started_at=started_at,
+            finished_at=finished_at,
+            trigger_type="scheduled",
+            run_logger=run_logger,
+        )
+    )
+
+    warning_calls = [
+        c for c in run_logger.warning.call_args_list
+        if "SMTP" in str(c)
+    ]
+    assert warning_calls
+
+
+def test_dispatch_script_email_send_failure_does_not_raise():
+    """邮件发送失败不应抛异常（fail-soft）。"""
+    from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+
+    fake_config = MagicMock()
+    fake_config.host = "smtp.qq.com"
+    fake_config.port = 465
+    fake_config.use_ssl = True
+    fake_config.username = "u@qq.com"
+    fake_config.password = "auth"
+    fake_config.sender_name = "ops"
+
+    fake_email_service_instance = MagicMock()
+    fake_email_service_instance.send_email = AsyncMock(
+        side_effect=Exception("smtp connection refused")
+    )
+
+    fake_email_config_service = MagicMock()
+    fake_email_config_service.get_policy = AsyncMock(
+        return_value={
+            "id": 7,
+            "name": "策略",
+            "subject_template": "",
+            "body_template": "",
+            "recipients": [{"user_id": 1, "email": "u@e.com"}],
+        }
+    )
+    fake_email_config_service.get_active_server_config = AsyncMock(
+        return_value=fake_config
+    )
+
+    service = TaskSchedulerService(
+        db=MagicMock(),
+        agent_config_service=MagicMock(),
+        scheduler=FakeScheduler(),
+        email_config_service=fake_email_config_service,
+    )
+
+    import app.shared.utils.email.email_service as email_service_module
+
+    original = email_service_module.EmailService
+    email_service_module.EmailService = lambda cfg: fake_email_service_instance
+    try:
+        started_at = datetime(2026, 7, 17, 9, 0, 0)
+        finished_at = datetime(2026, 7, 17, 9, 1, 0)
+        run_logger = MagicMock()
+
+        # 不抛异常
+        asyncio.run(
+            service._dispatch_script_email(
+                schedule={"id": 5, "name": "x", "notify_policy_id": 7},
+                run_id=99,
+                script_name="hello_script",
+                script_output="body",
+                attachments=None,
+                started_at=started_at,
+                finished_at=finished_at,
+                trigger_type="scheduled",
+                run_logger=run_logger,
+            )
+        )
+    finally:
+        email_service_module.EmailService = original
+
+    warning_calls = [
+        c for c in run_logger.warning.call_args_list
+        if "邮件发送失败" in str(c)
+    ]
+    assert warning_calls

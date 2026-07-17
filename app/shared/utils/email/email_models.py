@@ -40,7 +40,7 @@ class EmailServerConfig(BaseModel):
 
 
 class EmailPolicy(BaseModel):
-    """邮件发送策略（仅含收件人集合）。
+    """邮件发送策略（含收件人集合与可选模板）。
 
     Attributes:
         id: 策略 ID；新建时为 None。
@@ -48,6 +48,11 @@ class EmailPolicy(BaseModel):
         description: 策略描述；空字符串表示无描述。
         recipient_user_ids: 收件人用户 ID 列表（指向 ``users.id``）；
             用户必须已注册且 ``email`` 字段非空。
+        subject_template: 邮件主题模板，含 ``{{var}}`` 占位符；空字符串表示
+            使用策略名作为主题。
+        body_template: 邮件正文模板，含 ``{{var}}`` 占位符；空字符串表示直接使用
+            脚本返回值作为正文。可用变量由 ``EmailTemplateRenderer.SUPPORTED_VARS``
+            定义。
         created_at: 创建时间；新建时为 None。
         updated_at: 更新时间；新建时为 None。
     """
@@ -57,6 +62,15 @@ class EmailPolicy(BaseModel):
     description: str = Field(default="", max_length=2000, description="策略描述")
     recipient_user_ids: List[int] = Field(
         default_factory=list, description="收件人用户 ID 列表"
+    )
+    subject_template: str = Field(
+        default="",
+        max_length=500,
+        description="主题模板（{{var}} 占位符，留空使用策略名）",
+    )
+    body_template: str = Field(
+        default="",
+        description="正文模板（{{var}} 占位符，留空使用脚本返回 body）",
     )
     created_at: Optional[datetime] = Field(default=None, description="创建时间")
     updated_at: Optional[datetime] = Field(default=None, description="更新时间")

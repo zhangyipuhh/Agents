@@ -325,3 +325,126 @@ def test_create_task_schedule_empty_name_returns_422(client, admin_headers):
     assert any(d.get("loc") == ["body", "name"] for d in detail), (
         "期望 detail 中包含 loc=['body','name'] 的字段错误"
     )
+
+
+# =============================================================================
+# P1: 邮件通知字段（script + notify_enabled + notify_policy_id）路径
+# =============================================================================
+
+def test_create_script_task_with_notify_enabled_passes_through(client, admin_headers):
+    """脚本任务带 notify_enabled=True + notify_policy_id 时 payload 应透传。"""
+    service = client.app.state.task_scheduler_service
+    service.create_schedule = AsyncMock(
+        return_value={
+            "id": 3,
+            "name": "脚本告警",
+            "target_type": "script",
+            "script_name": "hello_script",
+            "notify_enabled": True,
+            "notify_policy_id": 5,
+        }
+    )
+
+    response = client.post(
+        "/api/admin/task-schedules",
+        headers=admin_headers,
+        json={
+            "name": "脚本告警",
+            "target_type": "script",
+            "script_name": "hello_script",
+            "cron_expression": "0 9 * * *",
+            "timezone": "Asia/Shanghai",
+            "enabled": True,
+            "context_overrides": {},
+            "notify_enabled": True,
+            "notify_policy_id": 5,
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["notify_enabled"] is True
+    assert body["notify_policy_id"] == 5
+    # 透传给 service 的 payload 也应包含这两个字段
+    call_args = service.create_schedule.await_args
+    payload = call_args.args[0]
+    assert payload["notify_enabled"] is True
+    assert payload["notify_policy_id"] == 5
+
+
+def test_update_script_task_can_change_notify_enabled(client, admin_headers):
+    """PUT 更新可单独修改 notify_enabled 与 notify_policy_id。"""
+    service = client.app.state.task_scheduler_service
+    service.update_schedule = AsyncMock(
+        return_value={
+            "id": 3,
+            "notify_enabled": True,
+            "notify_policy_id": 7,
+        }
+    )
+
+    response = client.put(
+        "/api/admin/task-schedules/3",
+        headers=admin_headers,
+        json={"notify_enabled": True, "notify_policy_id": 7},
+    )
+
+    assert response.status_code == 200
+    service.update_schedule.assert_awaited_once()
+
+
+def test_create_script_task_notify_enabled_without_policy_id_returns_400(
+    client, admin_headers
+):
+    """notify_enabled=True 但 notify_policy_id 缺失时 service 抛 TaskScheduleValidationError → 400。"""
+    service = client.app.state.task_scheduler_service
+    from app.shared.utils.agent.task_scheduler_service import (
+        TaskScheduleValidationError,
+    )
+
+    async def raise_validation(payload, **_kwargs):
+        raise TaskScheduleValidationError(
+            "notify_policy_id is required when notify_enabled=True"
+        )
+
+    service.create_schedule = AsyncMock(side_effect=raise_validation)
+
+    response = client.post(
+        "/api/admin/task-schedules",
+        headers=admin_headers,
+        json={
+            "name": "脚本告警",
+            "target_type": "script",
+            "script_name": "hello_script",
+            "cron_expression": "0 9 * * *",
+            "timezone": "Asia/Shanghai",
+            "enabled": True,
+            "context_overrides": {},
+            "notify_enabled": True,
+            # notify_policy_id 缺失
+        },
+    )
+
+    assert response.status_code == 400
+    assert "notify_policy_id" in response.json()["detail"]
+
+
+def test_create_script_task_notify_policy_id_zero_returns_422(client, admin_headers):
+    """notify_policy_id <= 0 时 Pydantic ge=1 校验拒绝，返回 422。"""
+    response = client.post(
+        "/api/admin/task-schedules",
+        headers=admin_headers,
+        json={
+            "name": "脚本告警",
+            "target_type": "script",
+            "script_name": "hello_script",
+            "cron_expression": "0 9 * * *",
+            "timezone": "Asia/Shanghai",
+            "enabled": True,
+            "context_overrides": {},
+            "notify_enabled": True,
+            "notify_policy_id": 0,  # 非法：必须 >= 1
+        },
+    )
+
+    assert response.status_code == 422

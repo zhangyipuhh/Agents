@@ -12,7 +12,7 @@
 """
 import pytest
 
-from app.scripts.base import ScriptContext
+from app.scripts.base import ScriptContext, ScriptExecutionError, normalize_script_result
 from app.scripts.registry import (
     clear_registry,
     get_registered_script,
@@ -133,3 +133,69 @@ def test_get_registered_scripts_returns_copy():
     # 原注册表不受影响
     assert "copy_test" in get_registered_scripts()
     clear_registry()
+
+
+# =============================================================================
+# normalize_script_result 兼容测试（2026-07-17 新约定）
+# =============================================================================
+
+def test_normalize_script_result_str_returns_pair_none():
+    """str 输入应归一化为 ``(str, None)``（向后兼容旧契约）。"""
+    assert normalize_script_result("hello") == ("hello", None)
+
+
+def test_normalize_script_result_tuple_with_none_attachments():
+    """``(body, None)`` 应归一化为 ``(body, None)``。"""
+    assert normalize_script_result(("hi", None)) == ("hi", None)
+
+
+def test_normalize_script_result_tuple_with_single_str_attachment():
+    """``(body, "path")`` 应归一化为 ``(body, ["path"])``。"""
+    assert normalize_script_result(("hi", "/tmp/a.pdf")) == ("hi", ["/tmp/a.pdf"])
+
+
+def test_normalize_script_result_tuple_with_list_attachments():
+    """``(body, list[str])`` 应归一化为 ``(body, list[str])``。"""
+    assert normalize_script_result(("hi", ["/a.pdf", "/b.docx"])) == (
+        "hi",
+        ["/a.pdf", "/b.docx"],
+    )
+
+
+def test_normalize_script_result_empty_list_treated_as_none():
+    """``(body, [])`` 应归一化为 ``(body, None)``（无附件场景）。"""
+    assert normalize_script_result(("hi", [])) == ("hi", None)
+
+
+def test_normalize_script_result_rejects_non_string_body():
+    """tuple[0] 非 str 应抛 ``ScriptExecutionError``。"""
+    with pytest.raises(ScriptExecutionError):
+        normalize_script_result((123, None))
+
+
+def test_normalize_script_result_rejects_non_str_non_tuple():
+    """非 str / 非 tuple 类型应抛 ``ScriptExecutionError``。"""
+    with pytest.raises(ScriptExecutionError):
+        normalize_script_result(123)
+    with pytest.raises(ScriptExecutionError):
+        normalize_script_result(["body", None])
+
+
+def test_normalize_script_result_rejects_invalid_attachment_type():
+    """tuple[1] 非 str / list[str] / None 应抛 ``ScriptExecutionError``。"""
+    with pytest.raises(ScriptExecutionError):
+        normalize_script_result(("hi", 123))
+    with pytest.raises(ScriptExecutionError):
+        normalize_script_result(("hi", {"a": 1}))
+
+
+def test_normalize_script_result_rejects_list_with_non_str_items():
+    """attachments list 含非 str 元素应抛 ``ScriptExecutionError``。"""
+    with pytest.raises(ScriptExecutionError):
+        normalize_script_result(("hi", ["/a.pdf", 123]))
+
+
+def test_normalize_script_result_rejects_wrong_tuple_length():
+    """长度非 2 的 tuple 应抛 ``ScriptExecutionError``。"""
+    with pytest.raises(ScriptExecutionError):
+        normalize_script_result(("hi", "/a.pdf", "extra"))

@@ -61,6 +61,8 @@ const policyForm = reactive({
   name: '',
   description: '',
   recipient_user_ids: [],
+  subject_template: '',
+  body_template: '',
 })
 const policyError = ref('')
 const policyMessage = ref('')
@@ -201,6 +203,8 @@ function startCreatePolicy() {
   policyForm.name = ''
   policyForm.description = ''
   policyForm.recipient_user_ids = []
+  policyForm.subject_template = ''
+  policyForm.body_template = ''
   recipientKeyword.value = ''
   policyError.value = ''
   policyMessage.value = ''
@@ -216,6 +220,8 @@ function selectPolicy(policy) {
   policyForm.name = policy.name
   policyForm.description = policy.description || ''
   policyForm.recipient_user_ids = [...(policy.recipient_user_ids || [])]
+  policyForm.subject_template = policy.subject_template || ''
+  policyForm.body_template = policy.body_template || ''
   recipientKeyword.value = ''
   policyError.value = ''
   policyMessage.value = ''
@@ -230,6 +236,8 @@ function cancelEditPolicy() {
   policyForm.name = ''
   policyForm.description = ''
   policyForm.recipient_user_ids = []
+  policyForm.subject_template = ''
+  policyForm.body_template = ''
   recipientKeyword.value = ''
 }
 
@@ -311,6 +319,8 @@ async function savePolicy() {
         name: policyForm.name,
         description: policyForm.description,
         recipient_user_ids: policyForm.recipient_user_ids,
+        subject_template: policyForm.subject_template,
+        body_template: policyForm.body_template,
       })
       policyMessage.value = '策略已更新'
     } else {
@@ -318,6 +328,8 @@ async function savePolicy() {
         name: policyForm.name,
         description: policyForm.description,
         recipient_user_ids: policyForm.recipient_user_ids,
+        subject_template: policyForm.subject_template,
+        body_template: policyForm.body_template,
       })
       policyMessage.value = '策略已创建'
     }
@@ -542,6 +554,32 @@ onMounted(async () => {
                   v-model="policyForm.description"
                   rows="2"
                   placeholder="可选"
+                ></textarea>
+              </div>
+            </div>
+
+            <div class="field-row full">
+              <label class="field-label" for="policy-subject-template">主题模板</label>
+              <div class="field-control">
+                <input
+                  id="policy-subject-template"
+                  v-model="policyForm.subject_template"
+                  type="text"
+                  data-testid="policy-subject-template"
+                  placeholder="留空使用策略名称作为主题。支持 {{schedule_name}} {{run_id}} 等占位符"
+                />
+              </div>
+            </div>
+
+            <div class="field-row full">
+              <label class="field-label" for="policy-body-template">正文模板</label>
+              <div class="field-control">
+                <textarea
+                  id="policy-body-template"
+                  v-model="policyForm.body_template"
+                  rows="6"
+                  data-testid="policy-body-template"
+                  placeholder="可选。支持占位符：{{schedule_name}} {{script_name}} {{script_output}} {{attachment_paths}} {{run_id}} {{started_at}} {{trigger_type}} {{finished_at}}"
                 ></textarea>
               </div>
             </div>

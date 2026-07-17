@@ -44,6 +44,8 @@ class CreateTaskScheduleRequest(BaseModel):
         enabled: 是否启用。
         context_overrides: 注入 AgentContext 的扩展字段。
         max_concurrent_runs: 单任务最大并发，第一版固定用于配置记录。
+        notify_enabled: 脚本任务完成后是否发送通知邮件（仅 target_type='script' 生效）。
+        notify_policy_id: 邮件策略 ID；notify_enabled=True 时必填。
     """
 
     name: str = Field(..., min_length=1, max_length=200)
@@ -58,6 +60,8 @@ class CreateTaskScheduleRequest(BaseModel):
     enabled: bool = Field(default=True)
     context_overrides: Dict[str, Any] = Field(default_factory=dict)
     max_concurrent_runs: int = Field(default=1, ge=1)
+    notify_enabled: bool = Field(default=False)
+    notify_policy_id: Optional[int] = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _validate_target_fields(self) -> "CreateTaskScheduleRequest":
@@ -106,6 +110,8 @@ class UpdateTaskScheduleRequest(BaseModel):
         enabled: 是否启用。
         context_overrides: 注入 AgentContext 的扩展字段。
         max_concurrent_runs: 单任务最大并发。
+        notify_enabled: 是否启用邮件通知。
+        notify_policy_id: 邮件策略 ID。
     """
 
     name: Optional[str] = Field(None, min_length=1, max_length=200)
@@ -120,6 +126,8 @@ class UpdateTaskScheduleRequest(BaseModel):
     enabled: Optional[bool] = Field(None)
     context_overrides: Optional[Dict[str, Any]] = Field(None)
     max_concurrent_runs: Optional[int] = Field(None, ge=1)
+    notify_enabled: Optional[bool] = Field(None)
+    notify_policy_id: Optional[int] = Field(None, ge=1)
 
     @model_validator(mode="after")
     def _validate_target_fields_partial(self) -> "UpdateTaskScheduleRequest":

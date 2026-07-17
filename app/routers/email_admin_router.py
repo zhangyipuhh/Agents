@@ -97,11 +97,17 @@ class CreatePolicyRequest(BaseModel):
         name: 策略名称。
         description: 策略描述。
         recipient_user_ids: 收件人用户 ID 列表。
+        subject_template: 主题模板，含 ``{{var}}`` 占位符；空字符串表示
+            使用策略名作为主题。
+        body_template: 正文模板，含 ``{{var}}`` 占位符；空字符串表示直接使用
+            脚本返回值作为正文。
     """
 
     name: str = Field(..., min_length=1, max_length=200)
     description: str = Field(default="", max_length=2000)
     recipient_user_ids: List[int] = Field(..., min_length=1)
+    subject_template: str = Field(default="", max_length=500)
+    body_template: str = Field(default="")
 
 
 class UpdatePolicyRequest(BaseModel):
@@ -111,11 +117,15 @@ class UpdatePolicyRequest(BaseModel):
         name: 策略名称。
         description: 策略描述。
         recipient_user_ids: 收件人用户 ID 列表。
+        subject_template: 主题模板；None 表示不修改。
+        body_template: 正文模板；None 表示不修改。
     """
 
     name: Optional[str] = Field(None, min_length=1, max_length=200)
     description: Optional[str] = Field(None, max_length=2000)
     recipient_user_ids: Optional[List[int]] = Field(None, min_length=1)
+    subject_template: Optional[str] = Field(None, max_length=500)
+    body_template: Optional[str] = Field(None)
 
 
 class SendByPolicyRequest(BaseModel):
@@ -336,6 +346,8 @@ async def create_policy(
             description=body.description,
             recipient_user_ids=body.recipient_user_ids,
             created_by_user_id=_request_user_id(request),
+            subject_template=body.subject_template,
+            body_template=body.body_template,
         )
     except Exception as exc:
         _handle_config_error(exc)
@@ -365,6 +377,8 @@ async def update_policy(
             name=body.name,
             description=body.description,
             recipient_user_ids=body.recipient_user_ids,
+            subject_template=body.subject_template,
+            body_template=body.body_template,
         )
     except Exception as exc:
         _handle_config_error(exc)

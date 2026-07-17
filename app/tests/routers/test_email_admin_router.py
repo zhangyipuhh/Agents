@@ -195,6 +195,139 @@ def test_delete_policy_returns_204(client, admin_headers):
     assert response.status_code == 204
 
 
+def test_create_policy_with_templates_returns_201(client, admin_headers):
+    """新建策略时可携带主题/正文模板字段，service 收到后被透传。"""
+    service = client.app.state.email_config_service
+    service.create_policy = AsyncMock(return_value={
+        "id": 7,
+        "name": "运维告警",
+        "description": "",
+        "recipient_user_ids": [1],
+        "subject_template": "[{{schedule_name}}] 任务完成",
+        "body_template": "正文：{{script_output}}",
+    })
+
+    response = client.post(
+        "/api/admin/email/policies",
+        headers=admin_headers,
+        json={
+            "name": "运维告警",
+            "description": "",
+            "recipient_user_ids": [1],
+            "subject_template": "[{{schedule_name}}] 任务完成",
+            "body_template": "正文：{{script_output}}",
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["subject_template"] == "[{{schedule_name}}] 任务完成"
+    assert body["body_template"] == "正文：{{script_output}}"
+
+    # 验证透传给 service 的参数包含模板字段
+    kwargs = service.create_policy.await_args.kwargs
+    assert kwargs["subject_template"] == "[{{schedule_name}}] 任务完成"
+    assert kwargs["body_template"] == "正文：{{script_output}}"
+
+
+def test_create_policy_without_templates_uses_defaults(client, admin_headers):
+    """新建策略不传模板时使用空字符串默认值。"""
+    service = client.app.state.email_config_service
+    service.create_policy = AsyncMock(return_value={
+        "id": 8,
+        "name": "默认",
+        "description": "",
+        "recipient_user_ids": [1],
+        "subject_template": "",
+        "body_template": "",
+    })
+
+    response = client.post(
+        "/api/admin/email/policies",
+        headers=admin_headers,
+        json={
+            "name": "默认",
+            "description": "",
+            "recipient_user_ids": [1],
+            # 不传 subject_template / body_template
+        },
+    )
+
+    assert response.status_code == 201
+    kwargs = service.create_policy.await_args.kwargs
+    assert kwargs["subject_template"] == ""
+    assert kwargs["body_template"] == ""
+
+
+def test_update_policy_can_change_templates(client, admin_headers):
+    """更新策略时可修改主题/正文模板字段。"""
+    service = client.app.state.email_config_service
+    service.update_policy = AsyncMock(return_value={
+        "id": 1,
+        "name": "策略1",
+        "description": "",
+        "recipient_user_ids": [1],
+        "subject_template": "new-subject-{{run_id}}",
+        "body_template": "new-body",
+    })
+
+    response = client.put(
+        "/api/admin/email/policies/1",
+        headers=admin_headers,
+        json={
+            "subject_template": "new-subject-{{run_id}}",
+            "body_template": "new-body",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["subject_template"] == "new-subject-{{run_id}}"
+    assert body["body_template"] == "new-body"
+    # 验证 update_policy 收到模板字段
+    kwargs = service.update_policy.await_args.kwargs
+    assert kwargs["subject_template"] == "new-subject-{{run_id}}"
+    assert kwargs["body_template"] == "new-body"
+
+
+def test_create_policy_subject_template_too_long_returns_422(client, admin_headers):
+    """主题模板超过 500 字符时 Pydantic max_length 校验拒绝，返回 422。"""
+    too_long = "x" * 501
+    response = client.post(
+        "/api/admin/email/policies",
+        headers=admin_headers,
+        json={
+            "name": "策略",
+            "description": "",
+            "recipient_user_ids": [1],
+            "subject_template": too_long,
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_list_policies_returns_template_fields(client, admin_headers):
+    """GET /policies 应返回 subject_template / body_template 字段。"""
+    service = client.app.state.email_config_service
+    service.list_policies = AsyncMock(return_value=[
+        {
+            "id": 1,
+            "name": "策略1",
+            "description": "",
+            "recipient_user_ids": [1],
+            "subject_template": "主题-{{run_id}}",
+            "body_template": "正文",
+        }
+    ])
+
+    response = client.get("/api/admin/email/policies", headers=admin_headers)
+
+    assert response.status_code == 200
+    data = response.json()[0]
+    assert data["subject_template"] == "主题-{{run_id}}"
+    assert data["body_template"] == "正文"
+
+
 # =============================================================================
 # P1: 发送邮件
 # =============================================================================

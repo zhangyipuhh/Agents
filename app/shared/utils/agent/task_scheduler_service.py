@@ -22,8 +22,10 @@ from zoneinfo import ZoneInfo
 from app.core.agent.AgentConfig import ExecuteConfig
 from app.core.config.paths import resolve_task_log_path
 from app.core.config.settings import settings
-from app.scripts.base import ScriptContext
+from app.scripts.base import ScriptContext, normalize_script_result
 from app.shared.utils.auth.session_db import SessionDB
+from app.shared.utils.email import EmailTemplateRenderer
+from app.shared.utils.email.template_renderer import build_render_context
 
 
 logger = logging.getLogger(__name__)
@@ -46,6 +48,8 @@ class TaskSchedulerService:
         scheduler: 可选调度器实例，测试中可注入 FakeScheduler。
         max_concurrency: 全局最大并发执行数；未传入时读取配置。
         script_discovery_service: 可选 ScriptDiscoveryService 实例，用于执行脚本任务。
+        email_config_service: 可选 EmailConfigService 实例，用于脚本任务完成后
+            按策略模板渲染并发送邮件。
     """
 
     def __init__(
@@ -55,6 +59,7 @@ class TaskSchedulerService:
         scheduler: Optional[Any] = None,
         max_concurrency: Optional[int] = None,
         script_discovery_service: Optional[Any] = None,
+        email_config_service: Optional[Any] = None,
     ) -> None:
         """初始化定时任务服务。
 
@@ -64,6 +69,8 @@ class TaskSchedulerService:
             scheduler: 应用内调度器，默认创建 AsyncIOScheduler。
             max_concurrency: 全局最大并发数。
             script_discovery_service: 脚本发现服务，用于 target_type='script' 的任务执行。
+            email_config_service: 邮件配置服务，用于 target_type='script' 任务完成后
+                按 notify_policy_id 自动发送通知邮件。
         """
         self._db = db
         self._agent_config_service = agent_config_service
@@ -73,6 +80,7 @@ class TaskSchedulerService:
         )
         self._started = False
         self._script_discovery_service = script_discovery_service
+        self._email_config_service = email_config_service
 
     @staticmethod
     def _job_id(schedule_id: int) -> str:
@@ -129,6 +137,9 @@ class TaskSchedulerService:
         # 兼容旧记录：target_type 缺失时默认 'agent'
         if not result.get("target_type"):
             result["target_type"] = "agent"
+        # notify_enabled 默认 False（SQL 层已设 NOT NULL DEFAULT FALSE）
+        if "notify_enabled" not in result or result["notify_enabled"] is None:
+            result["notify_enabled"] = False
         return result
 
     @staticmethod
@@ -289,13 +300,19 @@ class TaskSchedulerService:
             prompt = None
             script_name = payload["script_name"]
             script_args = payload.get("script_args") or {}
+        notify_enabled = bool(payload.get("notify_enabled", False))
+        notify_policy_id = payload.get("notify_policy_id") or None
         row = await self._db.fetchrow(
             """
             INSERT INTO agent_task_schedules (
                 name, description, agent_name, prompt, cron_expression,
                 timezone, enabled, created_by_user_id, context_overrides,
-                max_concurrent_runs, target_type, script_name, script_args
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13::jsonb)
+                max_concurrent_runs, target_type, script_name, script_args,
+                notify_enabled, notify_policy_id
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13::jsonb,
+                $14, $15
+            )
             RETURNING *
             """,
             payload["name"],
@@ -311,6 +328,8 @@ class TaskSchedulerService:
             target_type,
             script_name,
             json.dumps(script_args, ensure_ascii=False),
+            notify_enabled,
+            notify_policy_id,
         )
         schedule = self._decode_schedule_row(row)
         next_run_at = self._calculate_next_run_at(schedule)
@@ -362,6 +381,8 @@ class TaskSchedulerService:
             prompt = None
             script_name = merged["script_name"]
             script_args = merged.get("script_args") or {}
+        notify_enabled = bool(merged.get("notify_enabled", False))
+        notify_policy_id = merged.get("notify_policy_id") or None
         row = await self._db.fetchrow(
             """
             UPDATE agent_task_schedules
@@ -377,7 +398,9 @@ class TaskSchedulerService:
                 target_type = $11,
                 script_name = $12,
                 script_args = $13::jsonb,
-                next_run_at = $14,
+                notify_enabled = $14,
+                notify_policy_id = $15,
+                next_run_at = $16,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = $1
             RETURNING *
@@ -395,6 +418,8 @@ class TaskSchedulerService:
             target_type,
             script_name,
             json.dumps(script_args, ensure_ascii=False),
+            notify_enabled,
+            notify_policy_id,
             next_run_at,
         )
         schedule = self._decode_schedule_row(row)
@@ -597,7 +622,9 @@ class TaskSchedulerService:
                         started_at=started_at,
                         trigger_type=trigger_type,
                     )
-                    output_text = await registered.func(context)
+                    script_output_raw = await registered.func(context)
+                    # 把脚本返回值归一化为 (body, attachments_list)
+                    body, attachments = normalize_script_result(script_output_raw)
                     finished_at = datetime.now()
                     await self._update_run(
                         run_id,
@@ -606,13 +633,26 @@ class TaskSchedulerService:
                         started_at=started_at,
                         finished_at=finished_at,
                         duration_ms=self._duration_ms(started_at, finished_at),
-                        output_text=output_text,
+                        output_text=body,
                     )
                     await self._mark_schedule_run_completed(schedule_id, finished_at)
                     run_logger.info(
                         "脚本任务执行成功，耗时 %s ms",
                         self._duration_ms(started_at, finished_at),
                     )
+                    # 脚本任务邮件通知（fail-soft：失败仅记 warning，不污染 run 状态）
+                    if schedule.get("notify_enabled") and schedule.get("notify_policy_id"):
+                        await self._dispatch_script_email(
+                            schedule=schedule,
+                            run_id=run_id,
+                            script_name=schedule.get("script_name") or "",
+                            script_output=body,
+                            attachments=attachments,
+                            started_at=started_at,
+                            finished_at=finished_at,
+                            trigger_type=trigger_type,
+                            run_logger=run_logger,
+                        )
                 else:
                     # agent 任务分支：保持原有 build_agent_instance + agent.invoke 流程
                     user = await self._get_created_by_user(schedule["created_by_user_id"])
@@ -724,6 +764,18 @@ class TaskSchedulerService:
                 ):
                     raise TaskScheduleValidationError(
                         "script_args must be a JSON object"
+                    )
+                # notify_policy_id 必须为正整数（不为 0/负数/字符串）
+                if payload.get("notify_policy_id") is not None:
+                    npid = payload["notify_policy_id"]
+                    if not isinstance(npid, int) or npid <= 0:
+                        raise TaskScheduleValidationError(
+                            "notify_policy_id must be a positive integer"
+                        )
+                # notify_enabled=True 时必须指定 notify_policy_id（已通过上面校验过类型）
+                if payload.get("notify_enabled") and not payload.get("notify_policy_id"):
+                    raise TaskScheduleValidationError(
+                        "notify_policy_id is required when notify_enabled=True"
                     )
 
         if payload.get("cron_expression") and payload.get("timezone"):
@@ -1075,6 +1127,123 @@ class TaskSchedulerService:
                     return str(content)
                 return str(last_message)
         return str(result or "")
+
+    async def _dispatch_script_email(
+        self,
+        schedule: Dict[str, Any],
+        run_id: int,
+        script_name: str,
+        script_output: str,
+        attachments: Optional[List[str]],
+        started_at: datetime,
+        finished_at: datetime,
+        trigger_type: str,
+        run_logger: Any,
+    ) -> None:
+        """脚本任务完成后按策略模板渲染并发送邮件（fail-soft）。
+
+        异常不会向上抛出：失败仅写 ``run_logger.warning`` 并记录异常类型，
+        避免邮件发送故障污染脚本任务本身的 success 状态。
+
+        参数:
+            schedule: 定时任务 dict（需含 notify_enabled / notify_policy_id）。
+            run_id: 本次执行记录 ID。
+            script_name: 脚本名。
+            script_output: 脚本返回的正文（已 ``normalize_script_result``）。
+            attachments: 附件绝对路径列表（可能为 ``None``）。
+            started_at: 本次执行开始时间。
+            finished_at: 本次执行结束时间。
+            trigger_type: 触发方式。
+            run_logger: run 级专用 logger。
+
+        返回:
+            None。
+        """
+        try:
+            if self._email_config_service is None:
+                run_logger.warning(
+                    "脚本任务配置 notify_enabled=True 但 email_config_service 未注入，跳过发邮件"
+                )
+                return
+            policy_id = schedule.get("notify_policy_id")
+            if not policy_id:
+                run_logger.warning("notify_policy_id 缺失，跳过发邮件")
+                return
+
+            policy = await self._email_config_service.get_policy(int(policy_id))
+            recipients = policy.get("recipients") or []
+            to_list = [
+                str(r.get("email") or "")
+                for r in recipients
+                if r.get("email")
+            ]
+            if not to_list:
+                run_logger.warning(
+                    "邮件策略 %s 没有有效收件人，跳过发邮件", policy_id
+                )
+                return
+
+            render_ctx = build_render_context(
+                schedule=schedule,
+                run_id=run_id,
+                script_output=script_output,
+                attachments=attachments,
+                started_at=started_at,
+                finished_at=finished_at,
+                trigger_type=trigger_type,
+                script_name=script_name,
+            )
+            subject_template = policy.get("subject_template") or ""
+            body_template = policy.get("body_template") or ""
+            subject = (
+                EmailTemplateRenderer.render(subject_template, render_ctx)
+                if subject_template
+                else policy.get("name") or "定时任务通知"
+            )
+            body = (
+                EmailTemplateRenderer.render(body_template, render_ctx)
+                if body_template
+                else script_output or ""
+            )
+
+            config = await self._email_config_service.get_active_server_config()
+            if config is None:
+                run_logger.warning(
+                    "未配置启用的 SMTP 服务器，跳过发邮件（policy_id=%s）", policy_id
+                )
+                return
+
+            from app.shared.utils.email.email_service import EmailService
+            from app.shared.utils.email.email_config_service import EmailConfigError
+
+            email_service = EmailService(config)
+            try:
+                await email_service.send_email(
+                    to=to_list,
+                    subject=subject,
+                    body=body,
+                    attachment_paths=attachments,
+                )
+                run_logger.info(
+                    "脚本任务通知邮件已发送：policy_id=%s recipients=%d attachments=%d",
+                    policy_id, len(to_list), len(attachments or []),
+                )
+            except EmailConfigError as exc:
+                # Fernet 解密失败 / 数据库问题
+                run_logger.warning(
+                    "邮件配置错误，跳过发邮件：%s", exc,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # EmailSendError / SMTP 异常 / 附件不存在等
+                run_logger.warning(
+                    "脚本任务邮件发送失败（run status 仍保持 success）：%s: %s",
+                    type(exc).__name__, exc,
+                )
+        except Exception as exc:  # 防御性兜底，绝不污染 run status
+            run_logger.warning(
+                "邮件调度异常：%s: %s",
+                type(exc).__name__, exc,
+            )
 
     @staticmethod
     def _duration_ms(started_at: datetime, finished_at: datetime) -> int:

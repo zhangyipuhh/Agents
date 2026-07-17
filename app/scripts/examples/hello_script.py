@@ -5,7 +5,10 @@
 通过定时任务调度时：
     * ``context.script_args`` 由 ``agent_task_schedules.script_args`` JSON 注入
     * ``context.log_logger`` 写入 ``data/logs/Task/{slug}/{YYYYMMDD_HHMMSS}_{run_id}.log``
-    * 返回字符串作为 ``output_text`` 写入 ``agent_task_runs``
+    * 返回 ``str`` 时作为 ``output_text`` 写入 ``agent_task_runs``
+    * 返回 ``(body, attachments)`` 元组时，``body`` 作为 ``output_text``，
+      ``attachments``（str 或 list[str]）作为邮件附件路径（须配置 notify_enabled +
+      notify_policy_id 才会被消费）。
 """
 from app.scripts.base import ScriptContext
 from app.scripts.registry import register_script
@@ -34,6 +37,8 @@ async def run(context: ScriptContext) -> str:
 
     返回:
         str: 拼接后的问候字符串，作为 ``output_text`` 写入执行历史。
+        也可返回 ``(body, attachments)`` 元组：``body`` 写入 ``output_text``，
+        ``attachments`` 为邮件附件绝对路径（str / list[str]）。
 
     异常:
         无：本示例不会主动抛出异常。

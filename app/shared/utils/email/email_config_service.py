@@ -410,18 +410,20 @@ class EmailConfigService:
     # ------------------------------------------------------------------
 
     async def list_policies(self) -> List[Dict[str, Any]]:
-        """列出所有邮件发送策略（含收件人列表）。
+        """列出所有邮件发送策略（含收件人列表与模板字段）。
 
         返回:
             List[Dict[str, Any]]: 策略列表，每项含
             ``id`` / ``name`` / ``description`` / ``recipient_user_ids`` /
-            ``recipients`` (含 email) / ``created_at`` / ``updated_at``。
+            ``recipients`` (含 email) / ``subject_template`` / ``body_template`` /
+            ``created_at`` / ``updated_at``。
         """
         if self._db is None:
             return []
         rows = await self._db.fetch(
             """
-            SELECT p.id, p.name, p.description, p.created_at, p.updated_at,
+            SELECT p.id, p.name, p.description, p.subject_template,
+                   p.body_template, p.created_at, p.updated_at,
                    COALESCE(
                        json_agg(
                            json_build_object(
@@ -435,7 +437,8 @@ class EmailConfigService:
             FROM email_policies p
             LEFT JOIN email_policy_recipients r ON r.policy_id = p.id
             LEFT JOIN users u ON u.id = r.user_id
-            GROUP BY p.id, p.name, p.description, p.created_at, p.updated_at
+            GROUP BY p.id, p.name, p.description, p.subject_template,
+                     p.body_template, p.created_at, p.updated_at
             ORDER BY p.id DESC
             """
         )
@@ -451,6 +454,8 @@ class EmailConfigService:
                 "description": row.get("description", ""),
                 "recipient_user_ids": [r["user_id"] for r in recipients],
                 "recipients": recipients,
+                "subject_template": row.get("subject_template", "") or "",
+                "body_template": row.get("body_template", "") or "",
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
             })
@@ -472,7 +477,8 @@ class EmailConfigService:
             raise EmailConfigNotFoundError("数据库未初始化")
         row = await self._db.fetchrow(
             """
-            SELECT p.id, p.name, p.description, p.created_at, p.updated_at,
+            SELECT p.id, p.name, p.description, p.subject_template,
+                   p.body_template, p.created_at, p.updated_at,
                    COALESCE(
                        json_agg(
                            json_build_object(
@@ -487,7 +493,8 @@ class EmailConfigService:
             LEFT JOIN email_policy_recipients r ON r.policy_id = p.id
             LEFT JOIN users u ON u.id = r.user_id
             WHERE p.id = $1
-            GROUP BY p.id, p.name, p.description, p.created_at, p.updated_at
+            GROUP BY p.id, p.name, p.description, p.subject_template,
+                     p.body_template, p.created_at, p.updated_at
             """,
             policy_id,
         )
@@ -503,6 +510,8 @@ class EmailConfigService:
             "description": row.get("description", ""),
             "recipient_user_ids": [r["user_id"] for r in recipients],
             "recipients": recipients,
+            "subject_template": row.get("subject_template", "") or "",
+            "body_template": row.get("body_template", "") or "",
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
@@ -513,6 +522,8 @@ class EmailConfigService:
         description: str,
         recipient_user_ids: List[int],
         created_by_user_id: int,
+        subject_template: str = "",
+        body_template: str = "",
     ) -> Dict[str, Any]:
         """新建邮件发送策略。
 
@@ -521,6 +532,10 @@ class EmailConfigService:
             description: 策略描述。
             recipient_user_ids: 收件人用户 ID 列表。
             created_by_user_id: 创建者用户 ID（用于审计）。
+            subject_template: 主题模板，含 ``{{var}}`` 占位符；空字符串表示
+                使用策略名作为主题。
+            body_template: 正文模板，含 ``{{var}}`` 占位符；空字符串表示直接使用
+                脚本返回值作为正文。
 
         返回:
             Dict[str, Any]: 新建策略详情。
@@ -539,11 +554,15 @@ class EmailConfigService:
             async with conn.transaction():
                 row = await conn.fetchrow(
                     """
-                    INSERT INTO email_policies (name, description, created_by_user_id)
-                    VALUES ($1, $2, $3)
+                    INSERT INTO email_policies (
+                        name, description, created_by_user_id,
+                        subject_template, body_template
+                    )
+                    VALUES ($1, $2, $3, $4, $5)
                     RETURNING id, name, description, created_at, updated_at
                     """,
                     name.strip(), description, created_by_user_id,
+                    subject_template, body_template,
                 )
                 policy_id = row["id"]
                 # 去重
@@ -563,6 +582,8 @@ class EmailConfigService:
         name: Optional[str] = None,
         description: Optional[str] = None,
         recipient_user_ids: Optional[List[int]] = None,
+        subject_template: Optional[str] = None,
+        body_template: Optional[str] = None,
     ) -> Dict[str, Any]:
         """更新策略字段（未传入的字段保持原值）。
 
@@ -571,6 +592,8 @@ class EmailConfigService:
             name: 新名称；None 表示不修改。
             description: 新描述；None 表示不修改。
             recipient_user_ids: 新收件人列表；None 表示不修改。
+            subject_template: 新主题模板；None 表示不修改。
+            body_template: 新正文模板；None 表示不修改。
 
         返回:
             Dict[str, Any]: 更新后的策略详情。
@@ -604,6 +627,18 @@ class EmailConfigService:
                         "UPDATE email_policies SET description = $1, "
                         "updated_at = CURRENT_TIMESTAMP WHERE id = $2",
                         description, policy_id,
+                    )
+                if subject_template is not None:
+                    await conn.execute(
+                        "UPDATE email_policies SET subject_template = $1, "
+                        "updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+                        subject_template, policy_id,
+                    )
+                if body_template is not None:
+                    await conn.execute(
+                        "UPDATE email_policies SET body_template = $1, "
+                        "updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+                        body_template, policy_id,
                     )
                 if recipient_user_ids is not None:
                     if not recipient_user_ids:
