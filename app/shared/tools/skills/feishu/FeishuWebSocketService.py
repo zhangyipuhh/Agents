@@ -157,8 +157,21 @@ class FeishuWebSocketService:
             完成，线程只负责建立 WebSocket。
 
         重连处理：SDK 内部自动捕获断开并重连，循环直到 _should_run=False 或进程退出。
+
+        关停容忍（2026-07-17）：uWSGI / uvicorn / Ctrl-C 触发的进程关闭阶段，
+        lark SDK 重连线程仍可能尝试排新 future，本线程 catch ``RuntimeError("cannot
+        schedule new futures after interpreter shutdown")`` 时一律静默退出；
+        与此同时 ``_should_run`` 标志关闭后，本线程也直接绕过 ``start()``。
         """
         import lark_oapi.ws.client as _lark_ws_client_mod
+
+        # 1. 关停期短路：lifespan 进程关停是先 stop() 再等后台线程死，期间
+        #    _should_run=False 已经置上；此时再启动 SDK 等于浪费且必失败。
+        if not self._should_run:
+            logger.info(
+                "飞书 WebSocket 后台线程入口：_should_run=False，跳过 start()"
+            )
+            return
 
         new_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(new_loop)
@@ -167,6 +180,20 @@ class FeishuWebSocketService:
         try:
             if self._ws_client is not None:
                 self._ws_client.start()
+        except RuntimeError as e:  # noqa: BLE001
+            # 关停期 SDK 重连失败不报错（典型：interpreter shutdown）。
+            # 业务异常仍走下面 except 块打 ERROR 日志。
+            msg = str(e) if e else ""
+            if (
+                "interpreter shutdown" in msg
+                or "cannot schedule new futures" in msg
+                or "Event loop is closed" in msg
+            ):
+                logger.info(
+                    "飞书 WebSocket 线程因关停期正常退出（%s）", msg or "loop closed"
+                )
+            else:
+                logger.error("飞书 WebSocket 异常退出: %s", e, exc_info=True)
         except Exception as e:  # noqa: BLE001
             logger.error("飞书 WebSocket 异常退出: %s", e, exc_info=True)
         finally:
@@ -695,7 +722,13 @@ class FeishuWebSocketService:
             .type("file")
             .build()
         )
-        resp = self._lark_client.im.v1.message.get_message_resource(request)
+        # 飞书 OpenAPI 路径 `/im/v1/messages/{message_id}/resources/{file_key}`
+        # 对应的 SDK 资源命名空间是 ``message_resource``（不是 ``message``：
+        # ``message`` 资源类只暴露 create/delete/get 等"消息本身"操作；
+        # ``message_resource`` 子资源专门管"消息内的附件资源"）。
+        # 历史踩坑 (2026-07-17)：误用 ``client.im.v1.message.get_message_resource``
+        # 抛 ``AttributeError: 'Message' object has no attribute 'get_message_resource'``。
+        resp = self._lark_client.im.v1.message_resource.get(request)
         if not resp.success():
             logger.error(
                 "飞书 get_message_resource 失败 code=%s msg=%s file=%s",

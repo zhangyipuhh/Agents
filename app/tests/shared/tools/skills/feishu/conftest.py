@@ -159,7 +159,8 @@ _lark_api_im_v1.P2ImMessageReceiveV1 = _P2ImMessageReceiveV1
 
 
 # ---------------------------------------------------------------------------
-# 构造 GetMessageResourceRequest builder（供 FeishuWebSocketService 下载文件）
+# 构造 GetMessageResourceRequest builder + message_resource 资源（供
+# FeishuWebSocketService 下载文件）
 # ---------------------------------------------------------------------------
 class _GetMessageResourceRequestBuilder:
     """模拟 lark_oapi.api.im.v1.GetMessageResourceRequest.builder() 链。
@@ -170,7 +171,7 @@ class _GetMessageResourceRequestBuilder:
             .file_key(file_key) \\          # path 参数
             .type("file") \\                # query 参数（"file" 或 "image"）
             .build()
-        resp = client.im.v1.message.get_message_resource(req)
+        resp = client.im.v1.message_resource.get(req)
         # resp.file 是 IO-like 对象，.read() 返回 bytes
     """
 
@@ -217,6 +218,28 @@ class _GetMessageResourceRequest:
 # 让 GetMessageResourceRequest.instances 与 builder.instances 等价（兼容两种访问）
 _GetMessageResourceRequest.instances = _GetMessageResourceRequestBuilder.instances
 _lark_api_im_v1.GetMessageResourceRequest = _GetMessageResourceRequest
+
+
+# 在 im.v1.message_resource 命名空间下挂 get() 方法。
+# 真实 SDK 的结构： client.im.v1.message_resource.get(request)
+# （2026-07-17 修正：之前误用 client.im.v1.message.get_message_resource() 路径
+# 会撞到 Message 资源类的边界，运行期抛 AttributeError。）
+class _MessageResourceNamespace:
+    """模拟 lark.im.v1.message_resource 命名空间，仅暴露 ``get()``。
+
+    测试中通过 ``lark_client.im.v1.message_resource.get = MagicMock(...)``
+    直接覆盖 ``get``；不进 conftest 自动塞值（避免与生产 SDK 行为不一致）。
+    """
+
+    def __init__(self) -> None:
+        self.get = None  # 测试阶段通过 setattr 注入
+
+
+_message_resource_ns = _MessageResourceNamespace()
+# 暴露为 ``lark_client.im.v1.message_resource`` 引用同一对象
+# 但实际上每个真实 client 是不同实例，这一层仅供类型标注/import 探测，
+# 真正的 mock 在测试里覆盖 ``client.im.v1.message_resource.get``。
+
 
 _lark_api.im = _lark_api_im
 _lark_api_im.v1 = _lark_api_im_v1
@@ -300,15 +323,25 @@ class _EventDispatcherHandler:
 
 
 class _WsModule:
-    """模拟 lark.ws 子模块。"""
+    """类形式占位（已被裸 ModuleType 取代），保留以避免历史引用误删。"""
 
     Client = _WsClient
 
 
+# 单一 ``_ws_module`` 实例，必须同时挂到 ``_lark.ws`` 与 ``sys.modules``，
+# 并在内部暴露 ``.client`` 子模块供 ``import lark_oapi.ws.client`` 走通。
 _ws_module = types.ModuleType("lark_oapi.ws")
+_ws_module.__path__ = []  # 标记为 package，使 ``lark_oapi.ws.client`` 可被导入
 _ws_module.Client = _WsClient
-_lark.ws = _WsModule
+_lark.ws = _ws_module
 _lark.EventDispatcherHandler = _EventDispatcherHandler
+
+# 为 _run_ws_blocking 提供的 ``import lark_oapi.ws.client`` 路径做兜底：
+# 真实 SDK 路径 ``lark_oapi.ws.client``；本模块只需含 ``loop`` 属性供 monkey patch。
+_ws_client_mod = types.ModuleType("lark_oapi.ws.client")
+_ws_client_mod.loop = None
+_ws_module.client = _ws_client_mod
+sys.modules["lark_oapi.ws.client"] = _ws_client_mod
 
 
 # 注册到 sys.modules

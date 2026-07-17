@@ -719,7 +719,7 @@ async def test_handle_file_message_safe_marker_paths_do_not_carry_colons(monkeyp
         def read(self): return b"%PDF-1.4 hi"
     fake_resp.file = _F()
 
-    svc._lark_client.im.v1.message.get_message_resource = MagicMock(
+    svc._lark_client.im.v1.message_resource.get = MagicMock(
         return_value=fake_resp
     )
 
@@ -742,7 +742,14 @@ async def test_handle_file_message_safe_marker_paths_do_not_carry_colons(monkeyp
 
 
 def test_get_message_resource_request_builder_records_args():
-    """P1：lark SDK 的 GetMessageResourceRequest builder 必须传 path 参数 + type='file'。"""
+    """P1：lark SDK 的 GetMessageResourceRequest builder 必须传 path 参数 + type='file'，
+    且调用入口是 ``client.im.v1.message_resource.get``（不是 ``message`` 主资源）。
+
+    历史踩坑 (2026-07-17)：误用 ``client.im.v1.message.get_message_resource`` 会撞到
+    ``Message`` 主资源类的边界，运行期抛
+    ``AttributeError: 'Message' object has no attribute 'get_message_resource'``。
+    本测试断言 SDK 调用路径正确。
+    """
     captured: dict = {}
 
     class _FakeLarkClient:
@@ -752,7 +759,8 @@ def test_get_message_resource_request_builder_records_args():
             def _side(req):
                 captured["req"] = req
                 return resp_factory()
-            self.im.v1.message.get_message_resource = MagicMock(side_effect=_side)
+            # 真实 SDK 路径在 message_resource 子资源下，不是 message 主资源
+            self.im.v1.message_resource.get = MagicMock(side_effect=_side)
 
     # 观测 builder 的参数
     from app.tests.shared.tools.skills.feishu.conftest import (
@@ -827,6 +835,66 @@ def test_get_message_resource_request_builder_records_args():
         assert payload["stored_path"].endswith("report.pdf")
     finally:
         spm.get_session_upload_dir = _orig
+
+
+def test_download_calls_message_resource_get_not_message_get_message_resource(monkeypatch, tmp_path):
+    """P0：下载必须走 ``client.im.v1.message_resource.get``，不可走 ``message.get_message_resource``。
+
+    防止有人手滑把命名空间改回错误的 ``message``。验证：
+      - ``client.im.v1.message_resource.get`` 被调用 1 次（断言被调用）
+      - ``client.im.v1.message.get_message_resource`` **不**被调用
+    """
+    import app.shared.utils.files.session_path_manager as spm
+    monkeypatch.setattr(spm, "get_session_upload_dir", lambda *a, **kw: tmp_path)
+
+    message_resource_mock = MagicMock()
+    message_mock = MagicMock()
+
+    class _FakeClient:
+        def __init__(self):
+            self.im = MagicMock()
+            self.im.v1.message_resource = message_resource_mock
+            self.im.v1.message = message_mock
+
+        @staticmethod
+        def _resp_factory():
+            class _Resp:
+                def __init__(self):
+                    self.code = 0
+                    self.msg = ""
+                def success(self):
+                    return True
+                class _F:
+                    def read(self): return b"%PDF-1.4 hi"
+                file = _F()
+            return _Resp()
+
+    fake_client = _FakeClient()
+    fake_client.im.v1.message_resource.get.side_effect = (
+        lambda req: _FakeClient._resp_factory()
+    )
+
+    svc = FeishuWebSocketService(
+        lark_client=fake_client, agent_config_service=MagicMock()
+    )
+    payload = svc._download_feishu_resource(
+        session_id="feishu:p2p:ou_alice",
+        message_id="om_msg_001",
+        file_key="file_abc",
+        file_name="report.pdf",
+    )
+
+    # 关键断言：必须走 message_resource.get，不能走 message.get_message_resource
+    assert fake_client.im.v1.message_resource.get.called, (
+        "未调用 client.im.v1.message_resource.get，"
+        "SDK 路径错误（参考 2026-07-17 线上 AttributeError）"
+    )
+    # MagicMock 对任意属性访问返回新 Mock，hasattr 必为 True，但 .called=False 是关键
+    assert not fake_client.im.v1.message.get_message_resource.called, (
+        "误用了 client.im.v1.message.get_message_resource，"
+        "应该用 message_resource.get"
+    )
+    assert payload["stored_path"].endswith("report.pdf")
 
 
 # ---------------------------------------------------------------------------
@@ -1114,6 +1182,56 @@ def test_stop_sets_flag():
     svc._should_run = True
     svc.stop()
     assert svc._should_run is False
+
+
+def test_run_ws_blocking_skips_start_when_should_run_false():
+    """P0：_should_run=False 时 _run_ws_blocking 直接 return，不调 ws_client.start()。
+
+    对应 lifespan stop → 关停期短路（防止 process shutdown 期间还尝试重连）。
+    """
+    svc = _make_service()
+    svc._should_run = False
+    fake_ws = MagicMock()
+    svc._ws_client = fake_ws
+    # 不应触发 fake_ws.start() 调用，且不应阻塞在异常上
+    svc._run_ws_blocking()
+    assert not fake_ws.start.called
+
+
+@pytest.mark.parametrize(
+    "exc_msg",
+    [
+        "cannot schedule new futures after interpreter shutdown",
+        "Event loop is closed",
+        "interpreter shutdown",
+    ],
+)
+def test_run_ws_blocking_quietly_exits_on_shutdown_runtime_error(exc_msg):
+    """P0：lark SDK 在进程关停期抛 RuntimeError 时静默退出（不 ERROR 日志）。
+
+    真实线上场景 (2026-07-17)：uvicorn 关闭时 lark SDK 重连抛
+    "cannot schedule new futures after interpreter shutdown"，
+    此处不应刷 ERROR 日志让用户以为故障。
+    """
+    svc = _make_service()
+    svc._should_run = True
+    fake_ws = MagicMock()
+    fake_ws.start.side_effect = RuntimeError(exc_msg)
+    svc._ws_client = fake_ws
+    # 应正常返回，不抛
+    svc._run_ws_blocking()
+    assert fake_ws.start.called
+
+
+def test_run_ws_blocking_logs_other_runtime_errors():
+    """P2：与关停期无关的 RuntimeError 仍走 ERROR 日志，不静默吞掉。"""
+    svc = _make_service()
+    svc._should_run = True
+    fake_ws = MagicMock()
+    fake_ws.start.side_effect = RuntimeError("unrelated failure")
+    svc._ws_client = fake_ws
+    svc._run_ws_blocking()  # 不抛即可
+    assert fake_ws.start.called
 
 
 def test_dispatch_async_without_loop_no_op():

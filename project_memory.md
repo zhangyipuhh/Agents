@@ -2105,9 +2105,14 @@ system_prompt = (
 
 **异常隔离**：单条消息处理失败仅记日志，不影响 WebSocket 连接与后续消息。
 
+**关停容忍（2026-07-17 新增）**：uWSGI / uvicorn / Ctrl-C 触发的进程关闭阶段，lark SDK 重连线程仍可能尝试排新 future。后台线程入口与异常分支都有短路/静默退出口：
+- `_run_ws_blocking` 入口先检查 `self._should_run`，lifespan stop 后该标志已置 False 时**直接 return**，不再调用 `ws_client.start()`。
+- `ws_client.start()` 抛 `RuntimeError("cannot schedule new futures after interpreter shutdown")` / `"Event loop is closed"` / 含 `"interpreter shutdown"` → 静默退出（INFO 日志），不再刷 ERROR。
+- 与关停期无关的 `RuntimeError` 仍走 ERROR 日志，正常业务故障可见性不被吞掉。
+
 **飞书文件消息对接**（`msg_type=file` 接收侧，支持自动下载→解析→注入 user text）：
 - **后缀白名单**：`docx / pdf / xlsx / md / txt`，实现位于 `FeishuWebSocketService._FILE_EXT_SUPPORTED`。白名单外后缀（png/zip/...）→ `_send_text_reply(chat_id, "暂不支持的文件类型: ...")`，**不**触发 agent。
-- **下载**：`FeishuWebSocketService._download_feishu_resource(session_id, message_id, file_key, file_name)` 同步调用 `client.im.v1.message.get_message_resource(GetMessageResourceRequest.builder().message_id(...).file_key(...).type("file").build())`，读 `resp.file.read()` 字节流，写入 `get_session_upload_dir(self._safe_session_marker(session_id), create=True) / file_name`。本方法放线程池（`asyncio.to_thread`）异步执行，避免阻塞主事件循环。
+- **下载**：`FeishuWebSocketService._download_feishu_resource(session_id, message_id, file_key, file_name)` 同步调用 `client.im.v1.message_resource.get(GetMessageResourceRequest.builder().message_id(...).file_key(...).type("file").build())`（**注意**：是 `message_resource` 子资源，不是 `message` 主资源；误用 `client.im.v1.message.get_message_resource` 会抛 `AttributeError: 'Message' object has no attribute 'get_message_resource'`），读 `resp.file.read()` 字节流，写入 `get_session_upload_dir(self._safe_session_marker(session_id), create=True) / file_name`。本方法放线程池（`asyncio.to_thread`）异步执行，避免阻塞主事件循环。
 - **Windows 路径安全（跨平台修正）**：`FeishuWebSocketService._safe_session_marker(session_id)` 把原始 session_id（如 `feishu:p2p:ou_xxx`）中的 `:` 替换为 `_`，因为 Windows 上 `:` 是盘符分隔符，会让 `Path.mkdir` 抛 `OSError [WinError 123]`。仅在文件系统路径边界使用该 marker；LangGraph thread_id / PostgreSQL 仍用原始 session_id。
 - **大小校验**：`FeishuWebSocketService._resolve_max_file_size_bytes()` 取 `settings.file_parser.file_parser_max_file_size`（MB）与飞书官方隐式 100MB 的较小值，乘 1024²。超过会删除已落盘文件并回发「文件过大已被拒绝」提示。
 - **解析**：`FeishuWebSocketService._parse_uploaded_attachment(stored_path, file_name, ext)`：
