@@ -154,16 +154,16 @@ def test_to_card_json_hr():
 
 
 def test_to_card_json_list_items_merged():
-    """连续列表项合并为单个 markdown 元素。"""
+    """连续列表项每项单独一个 markdown 元素（避免飞书多行解析）。"""
     md = "- 第一项\n- 第二项\n- 第三项"
     card = MarkdownToCardConverter.to_card_json(md)
     md_elems = [e for e in card["card"]["elements"] if e.get("tag") == "markdown"]
-    # 列表被合并为单元素
-    list_elems = [e for e in md_elems if "- 第一项" in e["content"]]
-    assert len(list_elems) == 1
-    # 三项都在
-    assert "- 第二项" in list_elems[0]["content"]
-    assert "- 第三项" in list_elems[0]["content"]
+    # 三项各自独立 markdown 元素
+    list_elems = [e for e in md_elems if e["content"].startswith("- ")]
+    assert len(list_elems) == 3
+    assert list_elems[0]["content"] == "- 第一项"
+    assert list_elems[1]["content"] == "- 第二项"
+    assert list_elems[2]["content"] == "- 第三项"
 
 
 def test_to_card_json_blockquote():
@@ -202,10 +202,65 @@ def test_to_card_json_plain_paragraph():
 
 
 def test_to_card_json_bold_passes_through_markdown_element():
-    """**粗体** 在 markdown 元素内保留原样（飞书原生渲染）。"""
+    """行内粗体 **xxx 文字** 保留（飞书 markdown 元素原生渲染）。"""
     card = MarkdownToCardConverter.to_card_json("**强调** 文字")
     md_elems = [e for e in card["card"]["elements"] if e.get("tag") == "markdown"]
     assert any("**强调**" in e["content"] for e in md_elems)
+
+
+def test_to_card_json_solo_bold_stripped():
+    """单独一行的 **xxx** 包装被剥离，且行首 emoji 前补 ASCII 空格。
+
+    飞书卡片 v1 schema 的 markdown 元素对独立成行的纯加粗行解析不稳定，
+    故解析前预处理剥离包装；同时为防止 emoji 行首解析失败补一个 ASCII 空格。
+    """
+    card = MarkdownToCardConverter.to_card_json("**📝 文档工作流**")
+    md_elems = [e for e in card["card"]["elements"] if e.get("tag") == "markdown"]
+    assert len(md_elems) == 1
+    # ** 剥离后剩 📝 文档工作流，再经 emoji 前缀处理 → " 📝 文档工作流"
+    assert md_elems[0]["content"].strip() == "📝 文档工作流"
+    assert md_elems[0]["content"].startswith(" ")
+
+
+def test_to_card_json_solo_italic_stripped():
+    """单独一行的 *xxx* 包装被剥离。"""
+    card = MarkdownToCardConverter.to_card_json("*斜体*")
+    md_elems = [e for e in card["card"]["elements"] if e.get("tag") == "markdown"]
+    assert len(md_elems) == 1
+    assert md_elems[0]["content"] == "斜体"
+
+
+def test_to_card_json_blockquote_each_line_separate_element():
+    """> 引用 每行单独一个 markdown 元素。"""
+    md = "> 第一行\n> 第二行"
+    card = MarkdownToCardConverter.to_card_json(md)
+    md_elems = [e for e in card["card"]["elements"] if e.get("tag") == "markdown"]
+    quote_elems = [e for e in md_elems if e["content"].startswith("> ")]
+    assert len(quote_elems) == 2
+    assert quote_elems[0]["content"] == "> 第一行"
+    assert quote_elems[1]["content"] == "> 第二行"
+
+
+def test_to_card_json_leading_emoji_gets_space_prefix():
+    """行首 emoji 前补 ASCII 空格，避免飞书解析失败（code=200621）。
+
+    飞书 v1 markdown 元素对"行首为孤立 emoji"的解析不稳定，
+    必须在前面有普通字符（ASCII 即可）。
+    """
+    card = MarkdownToCardConverter.to_card_json("📝 文档工作流")
+    md_elems = [e for e in card["card"]["elements"] if e.get("tag") == "markdown"]
+    assert len(md_elems) == 1
+    # emoji 前补了一个空格
+    assert md_elems[0]["content"].startswith(" ")
+    assert "📝" in md_elems[0]["content"]
+
+
+def test_to_card_json_solo_emoji_line_gets_space_prefix():
+    """行首只有 emoji 的行 → 整行前补 ASCII 空格。"""
+    card = MarkdownToCardConverter.to_card_json("🔧")
+    md_elems = [e for e in card["card"]["elements"] if e.get("tag") == "markdown"]
+    assert len(md_elems) == 1
+    assert md_elems[0]["content"] == " 🔧"
 
 
 # ---------------------------------------------------------------------------

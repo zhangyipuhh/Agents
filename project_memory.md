@@ -318,7 +318,7 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 
 ### 前端
 
-- `web/Agent/src/components/EmailSettingsManager.vue` —— 邮件设置组件（3 Tab：服务器配置 / 发送策略 / 测试发送）。服务器配置表单采用 2 列网格；`密码 / 授权码` 跨两列；`使用 SMTP_SSL` 与 `启用此配置` 两个复选框（`.inline-field`，`gap: 4px` + `justify-self: start`，只占内容宽度，左对齐）并置于操作按钮之前。
+- `web/Agent/src/components/EmailSettingsManager.vue` —— 邮件设置组件（3 Tab：服务器配置 / 发送策略 / 测试发送）。服务器配置表单采用 2 列网格；`密码 / 授权码` 跨两列；`使用 SMTP_SSL` 与 `启用此配置` 两个复选框（`.inline-field`，`gap: 4px` + `justify-self: start`，只占内容宽度，左对齐）并置于操作按钮之前。发送策略 Tab 使用 `recipientKeyword` 响应式状态筛选收件人姓名、用户名和邮箱，并在新建、编辑、取消编辑时重置。
 - `web/Agent/src/components/TaskSchedulerManager.vue` —— 任务计划组件，表单 `保存后启用任务` 复选框使用 `.inline-field`（`gap: 4px` + `justify-self: start`，与 `EmailSettingsManager` 保持一致的紧凑左对齐风格）。
 - 在 `web/Agent/src/components/UserSettingsDialog.vue` 中作为「邮件设置」侧边栏项（位于「定时任务」下方，admin 可见）。
 - API 封装位于 `web/Agent/src/utils/api.js`：`fetchEmailServerConfig` / `updateEmailServerConfig` / `testEmailServerConfig` / `fetchEmailableUsers` / `fetchEmailPolicies` / `createEmailPolicy` / `updateEmailPolicy` / `deleteEmailPolicy` / `sendTestEmail`（multipart/form-data）/ `sendEmailByPolicy`。
@@ -2079,10 +2079,11 @@ system_prompt = (
 **消息处理流程**（lark SDK 同步回调）：
 1. 解析 chat_type / chat_id / open_id / msg_type / text
 2. 群聊未 @机器人 或 非文本消息 → 跳过
-3. 调用 `agent_config_service.build_agent_instance(agent_name, session_id, text)`
-4. 用 `agent.stream(input_state, context=ctx, config=..., stream_mode=["messages", "updates"])` 收集 message chunk 拼接完整回复；同时检测 `__interrupt__` 触发 HITL
-5. 通过 `client.im.v1.message.create(CreateMessageRequest)` 直接发送回复（**不走** `send_feishu_message` LangChain 工具，避免 ToolRuntime 依赖）
-6. 回复文本 > 4000 字符时截断并追加 `...(内容过长已截断)`
+3. 调用 `FeishuWebSocketService._ensure_session_recorded(session_id, chat_id, chat_type, text)`（2026-07-17 新增）把 session 写入 `sessions` 表，归属到 `feishu_ws_receiver_username` 配置的固定系统用户；首次创建时 title 取首条消息截 20 字 + `…`、绑定 `agent_type` + `agent_display_name`；后续消息仅刷新 `last_active_at`，title 沿用首次
+4. 调用 `agent_config_service.build_agent_instance(agent_name, session_id, text)`
+5. 用 `agent.stream(input_state, context=ctx, config=..., stream_mode=["messages", "updates"])` 收集 message chunk 拼接完整回复；同时检测 `__interrupt__` 触发 HITL
+6. 通过 `client.im.v1.message.create(CreateMessageRequest)` 直接发送回复（**不走** `send_feishu_message` LangChain 工具，避免 ToolRuntime 依赖）
+7. 回复文本 > 4000 字符时截断并追加 `...(内容过长已截断)`
 
 **回复渲染路由**（2026-07-17 新增）：
 - 路径 1（被动展示）：agent 回复文本经 `MarkdownToCardConverter.looks_like_markdown` 检测，含 markdown 特征 → 转飞书交互式卡片（`msg_type="interactive"`，`content={"card": {...}}`）；纯文本 → 走 `msg_type="text"`，`content={"text": ...}`。
@@ -2104,6 +2105,7 @@ system_prompt = (
 **新增 FeishuSettings 配置项**：
 - `feishu_ws_enabled`（env `FEISHU_WS_ENABLED`，默认 `False`）—— 是否启用 WebSocket 长连接接收
 - `feishu_ws_agent_name`（env `FEISHU_WS_AGENT_NAME`，默认 `project`）—— 飞书消息路由到的目标智能体名称
+- `feishu_ws_receiver_username`（env `FEISHU_WS_RECEIVER_USERNAME`，默认 `feishu_bot`，2026-07-17 新增）—— 飞书 session 归属到的系统用户名；lifespan 启动时通过 `UserDB.get_user_by_username` 解析为 `user_id`，用户不存在则 ERROR 日志并跳过 WS 服务启动
 
 **飞书后台要求**：
 - 事件订阅 `im.message.receive_v1` 与 `card.action.trigger`，订阅类型必须选 WebSocket（非 HTTP Webhook）。
@@ -2114,7 +2116,7 @@ system_prompt = (
 
 | 组件 | 文件位置 | 职责 |
 |---|---|---|
-| `MarkdownToCardConverter` | `app/shared/tools/skills/feishu/MarkdownToCardConverter.py` | Markdown 文本 → 飞书交互式卡片 JSON；提供 `looks_like_markdown` 自动检测；支持 h1-h6 标题、`**粗体**` / `*斜体*` / `` `code` ``、列表项合并、`> 引用`、`---` 分隔线、``` ``` ``` 代码围栏；>4000 字符截断 |
+| `MarkdownToCardConverter` | `app/shared/tools/skills/feishu/MarkdownToCardConverter.py` | Markdown 文本 → 飞书交互式卡片 JSON；提供 `looks_like_markdown` 自动检测；支持 h1-h6 标题、`**粗体**` / `*斜体*` / `` `code` ``、列表项每项独立、`> 引用`每行独立、`---` 分隔线、``` ``` ``` 代码围栏；>4000 字符截断；**v1 schema 兼容处理**（2026-07-17）：单独成行的 `**xxx**` / `*xxx*` 包装被剥离，行首/行尾 `**`/`*` 标记被清理，每个 markdown 元素强制单行（避免飞书 markdown 解析不稳定，规避 code=200621 "parse card json err"） |
 | `InterruptToCardConverter` | `app/shared/tools/skills/feishu/InterruptToCardConverter.py` | LangGraph interrupt 请求 → 飞书带选项按钮的交互式卡片；每个按钮 value 含 `action="hitl_answer"` / `qid` / `oid` / `session_id` / `chat_id`；每题最多 5 个选项 + 1 个 "其他（自由输入）" 按钮；提供 `parse_card_action_value` 反序列化回调 value |
 
 **卡片协议依据**：[飞书消息卡片文档](https://open.feishu.cn/document/develop-a-card-interactive-bot/card-building-steps)
@@ -2135,7 +2137,7 @@ system_prompt = (
 **resume 数据契约**：`_resume_agent` 调用 `build_agent_instance(..., resume={"answers": [{"qid": 0, "oid": [1]}]})`，与 `app/core/agent/agent.py::hitl_check_node` 的 `interrupt(request)` 恢复后的 `response.get("answers", [])` 解析对齐。
 
 **失败策略**：
-- `_send_card_reply`：API 失败（`resp.success() == False` 或抛异常）→ 自动降级 `_send_text_reply`
+- `_send_card_reply`：API 失败（`resp.success() == False` 或抛异常）→ 自动降级 `_send_text_reply`，同时记录完整卡片 JSON 前 500 字符到 ERROR 日志，便于排查 `code=200621`（parse card json err）等卡片 schema 问题
 - `_send_interrupt_card`：失败仅记录日志（不能降级为纯文本，否则按钮失效；用户需重新提问或等待）
 - `_pending_interrupts` 未命中（lifespan 重启 / 超时）：`_resume_agent` 仅警告，不抛异常
 

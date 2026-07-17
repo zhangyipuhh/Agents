@@ -64,6 +64,7 @@ const policyForm = reactive({
 })
 const policyError = ref('')
 const policyMessage = ref('')
+const recipientKeyword = ref('')
 
 // 测试发送状态
 const testForm = reactive({

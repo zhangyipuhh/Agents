@@ -161,6 +161,40 @@ class MarkdownToCardConverter:
         """
         elements: List[Dict[str, Any]] = []
         lines = text.splitlines()
+        # 预处理：剥离单独成行的 **xxx** 加粗 / *xxx* 斜体包装，
+        # 清理行首/行尾的内联标记；同时给纯 emoji 行首补一个普通
+        # ASCII 空格作为前缀缓冲，避免飞书 markdown 解析器对孤立
+        # emoji 行触发 "parse card json err"（code=200621）。
+        # 飞书 v1 schema 的 markdown 元素要求行首必须是普通字符；
+        # emoji 在前会被解析器误判为非法。补一个空格视觉上几乎无感，
+        # 但能保证卡片解析成功。视觉加粗由卡片整体结构承担。
+        _solo_bold = re.compile(r"^\*\*([^*\n]+)\*\*\s*$")
+        _solo_italic = re.compile(r"^\*([^*\n]+)\*\s*$")
+        _leading_marker = re.compile(r"^\*+\s+")
+        _trailing_marker = re.compile(r"\s+\*+$")
+        # 匹配"行首是 emoji（一个或多个 emoji 字符）+ 可选空格 + 文本"
+        _leading_emoji = re.compile(
+            r"^([\U0001F300-\U0001FAFF\U00002600-\U000027BF"
+            r"\U0001F000-\U0001F02F\U0001F100-\U0001F1FF"
+            r"\U0001F200-\U0001F2FF]+)(\s*)(.*)$"
+        )
+
+        def _safe_leading_emoji(line: str) -> str:
+            m = _leading_emoji.match(line)
+            if not m:
+                return line
+            emoji, spaces, rest = m.group(1), m.group(2), m.group(3)
+            # 行首只有 emoji（无后续文字）→ 在前补 ASCII 空格
+            if not rest.strip():
+                return " " + line
+            # emoji + 空格 + 文本 → emoji 前补 ASCII 空格
+            return " " + emoji + (spaces or " ") + rest
+
+        lines = [_solo_bold.sub(r"\1", line) for line in lines]
+        lines = [_solo_italic.sub(r"\1", line) for line in lines]
+        lines = [_leading_marker.sub("", line) for line in lines]
+        lines = [_trailing_marker.sub("", line) for line in lines]
+        lines = [_safe_leading_emoji(line) for line in lines]
         i = 0
         n = len(lines)
 
@@ -210,28 +244,23 @@ class MarkdownToCardConverter:
                 i += 1
                 continue
 
-            # 引用：连续行合并
+            # 引用：每行单独一个 markdown 元素（避免多行解析问题）
             if stripped.startswith(">"):
-                quote_lines: List[str] = []
                 while i < n and lines[i].lstrip().startswith(">"):
                     inner = lines[i].lstrip()[1:].lstrip()
-                    quote_lines.append(f"> {inner}")
+                    elements.append(
+                        {"tag": "markdown", "content": f"> {inner}"}
+                    )
                     i += 1
-                elements.append(
-                    {"tag": "markdown", "content": "\n".join(quote_lines)}
-                )
                 continue
 
-            # 列表项：连续行合并
+            # 列表项：每项单独一个 markdown 元素（避免飞书 v1 markdown 元素
+            # 多行内容解析问题）。连续项仍聚拢在一起便于阅读。
             if re.match(r"^\s*[-*+]\s+\S", line):
-                list_lines: List[str] = []
                 while i < n and re.match(r"^\s*[-*+]\s+\S", lines[i]):
                     bullet = re.sub(r"^\s*[-*+]\s+", "- ", lines[i])
-                    list_lines.append(bullet)
+                    elements.append({"tag": "markdown", "content": bullet})
                     i += 1
-                elements.append(
-                    {"tag": "markdown", "content": "\n".join(list_lines)}
-                )
                 continue
 
             # 空行：跳过（用于段落分隔）
@@ -258,9 +287,9 @@ class MarkdownToCardConverter:
                     break
                 para_lines.append(cur)
                 i += 1
-            if para_lines:
-                elements.append(
-                    {"tag": "markdown", "content": "\n".join(para_lines)}
-                )
+            # 每段拆成单独 markdown 元素（每行一个），避免飞书 v1
+            # markdown 元素多行内容解析不稳定的问题
+            for line in para_lines:
+                elements.append({"tag": "markdown", "content": line})
 
         return elements

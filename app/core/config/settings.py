@@ -490,6 +490,18 @@ class FeishuSettings(BaseSettings):
         default="project",
         description="飞书消息路由到的目标智能体名称（默认 project）",
     )
+    # 2026-07-17 新增：飞书会话接收者用户名
+    #   飞书 WebSocket 产生的会话（feishu:p2p:{open_id} / feishu:group:{chat_id}:{open_id}）
+    #   归属到该系统用户。前端以该账号登录后,/api/session/list 可看到所有飞书会话。
+    #   该用户必须预先在系统中存在(username 唯一)。缺失时 lifespan 会跳过 WS 服务启动。
+    feishu_ws_receiver_username: str = Field(
+        default="feishu_bot",
+        description=(
+            "飞书 WebSocket 产生的会话归属到该系统用户。"
+            "前端以该账号登录后,可在会话列表看到所有飞书 session。"
+            "该用户必须预先在系统中存在(username 唯一)。"
+        ),
+    )
 
     @field_validator("feishu_ws_enabled", mode="before")
     @classmethod
@@ -732,6 +744,7 @@ class Settings(BaseSettings):
             "log_level": self.feishu.feishu_log_level,
             "ws_enabled": self.feishu.feishu_ws_enabled,
             "ws_agent_name": self.feishu.feishu_ws_agent_name,
+            "ws_receiver_username": self.feishu.feishu_ws_receiver_username,
         }
 
 

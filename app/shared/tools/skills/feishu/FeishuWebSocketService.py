@@ -66,6 +66,8 @@ class FeishuWebSocketService:
         lark_client: lark.Client,
         agent_config_service: Any,
         agent_name: str = "project",
+        receiver_user_id: Optional[int] = None,
+        receiver_username: str = "",
         log_level: str = "INFO",
     ) -> None:
         """初始化飞书 WebSocket 服务。
@@ -74,11 +76,17 @@ class FeishuWebSocketService:
             lark_client: 已配置好的 lark.Client 实例
             agent_config_service: AgentConfigService 实例，用于 build_agent_instance
             agent_name: 智能体名称
+            receiver_user_id: 2026-07-17 新增：飞书 session 归属到的系统用户 ID；
+                来自 lifespan 通过 UserDB.get_user_by_username(receiver_username) 解析。
+                为 None 时表示未配置接收账号，飞书消息处理时跳过 sessions 表写入（仅 WARN 日志）。
+            receiver_username: 2026-07-17 新增：接收账号的用户名（用于日志 / sessions.username 字段）
             log_level: lark SDK 日志级别（DEBUG/INFO/WARNING/ERROR）
         """
         self._lark_client = lark_client
         self._agent_config_service = agent_config_service
         self._agent_name = agent_name
+        self._receiver_user_id = receiver_user_id
+        self._receiver_username = receiver_username
         self._log_level = log_level
         self._ws_client: Optional[lark.ws.Client] = None
         self._should_run = False
@@ -296,7 +304,9 @@ class FeishuWebSocketService:
                 return
 
             session_id = self._build_session_id(chat_type, chat_id, open_id)
-            self._dispatch_async(self._handle_message(session_id, chat_id, text))
+            self._dispatch_async(
+                self._handle_message(session_id, chat_id, text, chat_type)
+            )
         except Exception as e:  # noqa: BLE001
             logger.exception("处理飞书消息异常（不影响 WebSocket）: %s", e)
 
@@ -401,21 +411,35 @@ class FeishuWebSocketService:
     # Agent orchestration                                                #
     # ------------------------------------------------------------------ #
 
-    async def _handle_message(self, session_id: str, chat_id: str, text: str) -> None:
+    async def _handle_message(
+        self,
+        session_id: str,
+        chat_id: str,
+        text: str,
+        chat_type: str = "p2p",
+    ) -> None:
         """路由消息到目标智能体，收集完整回复后发回飞书。
 
         优先处理 HITL：若 agent 触发 interrupt 暂停 → 发带选项按钮卡片 → 等待用户
         在飞书里点击 → 飞书回调 → 续跑 agent。否则走普通文本/卡片回复路径。
 
+        2026-07-17 新增：在调 agent 前先把 session 落到 sessions 表（_ensure_session_recorded），
+        让前端 `/api/session/list` 能查到飞书产生的会话。
+
         Args:
             session_id: 会话 ID（LangGraph thread_id）
             chat_id: 飞书 chat_id
             text: 用户消息文本
+            chat_type: 2026-07-17 新增：p2p / group；用于诊断日志
         """
         if not text:
             logger.info("飞书消息 text 为空，跳过（session_id=%s）", session_id)
             return
         try:
+            # 2026-07-17 新增：把 session 写入 sessions 表（首次创建 + 后续刷新 last_active_at）。
+            # 该步骤在 _call_agent 之前：保证即便 agent 流式处理失败，session 至少已在表中可查。
+            await self._ensure_session_recorded(session_id, chat_id, chat_type, text)
+
             reply, interrupt_req = await self._call_agent(session_id, text)
             if interrupt_req:
                 # 路径 2：HITL 人工回路
@@ -432,6 +456,102 @@ class FeishuWebSocketService:
         except Exception as e:  # noqa: BLE001
             # 单条消息异常不影响 WebSocket 连接
             logger.exception("处理飞书消息失败（已隔离，session_id=%s）: %s", session_id, e)
+
+    async def _ensure_session_recorded(
+        self,
+        session_id: str,
+        chat_id: str,
+        chat_type: str,
+        text: str,
+    ) -> None:
+        """确保飞书 session 已落到 sessions 表（2026-07-17 新增）。
+
+        行为：
+            - 接收账号未配置（_receiver_user_id 为 None）→ 记 WARN 日志后跳过，
+              不阻塞消息处理（飞书侧仍正常回复）。
+            - SessionDB 未启用（memory 模式）→ 记 WARN 日志后跳过，与项目其他
+              路由在 memory 模式下不写库的行为保持一致。
+            - session 已存在 → 仅刷新 last_active_at（不重写 title）。
+            - session 不存在 → add_session(..., username=receiver_username,
+              project_id=None) + update_session_title（首条消息截 20 字）
+              + update_session_agent（绑定 feishu_ws_agent_name）。
+
+        title 截取规则：
+            - 去掉首尾空白 + 替换换行为空格 → 取前 20 字符 → 超长追加 "…"
+            - 空文本时回退 "飞书新会话"
+
+        Args:
+            session_id: 飞书 session_id（feishu:p2p:{open_id} 或 feishu:group:{chat_id}:{open_id}）
+            chat_id: 飞书 chat_id（用于诊断日志）
+            chat_type: p2p / group（用于诊断日志）
+            text: 用户消息文本（用于生成 title）
+        """
+        if self._receiver_user_id is None:
+            logger.warning(
+                "飞书 session 落库跳过：未配置接收账号（feishu_ws_receiver_username 不存在或用户缺失）"
+                "session_id=%s chat_id=%s chat_type=%s",
+                session_id, chat_id, chat_type,
+            )
+            return
+
+        # 局部 import：避免循环依赖 + 仅在需要时加载 SessionDB
+        from app.shared.utils.auth.session_db import SessionDB
+
+        # 注：不检查 SessionDB.is_enabled()——memory 模式下 SessionDB 也能正常工作
+        # （写 _memory_cache + get_user_sessions 从 _memory_cache 过滤），
+        # 与 test_session_db.py 中"memory 模式 CRUD"测试覆盖一致。
+        # 这里只在 _receiver_user_id 未配置时才跳过。
+        try:
+            existing = await SessionDB.get_session(session_id)
+            if existing:
+                # 已存在：仅刷新 last_active_at，title 沿用首次创建时的内容
+                await SessionDB.update_last_active(session_id)
+                return
+
+            # 首次创建：add_session + title + agent 绑定
+            await SessionDB.add_session(
+                session_id,
+                user_id=self._receiver_user_id,
+                username=self._receiver_username,
+                project_id=None,
+            )
+
+            # 标题：首条用户消息截取（20 字符），空文本时回退占位
+            normalized = (text or "").strip().replace("\n", " ")
+            if normalized:
+                title = normalized[:20] + ("…" if len(normalized) > 20 else "")
+            else:
+                title = "飞书新会话"
+            await SessionDB.update_session_title(session_id, title)
+
+            # agent 绑定：复用 agent_router.py 的 display_name 解析模式
+            display_name = self._agent_name
+            try:
+                get_agent_config = getattr(
+                    self._agent_config_service, "get_agent_config", None
+                )
+                if get_agent_config is not None:
+                    cfg = await get_agent_config(self._agent_name)
+                    display_name = getattr(cfg, "display_name", None) or self._agent_name
+            except Exception as e:  # noqa: BLE001
+                logger.debug(
+                    "解析 agent display_name 失败，回退使用 agent_name: %s", e
+                )
+            await SessionDB.update_session_agent(
+                session_id, self._agent_name, display_name
+            )
+
+            logger.info(
+                "飞书 session 已落库：session_id=%s chat_type=%s chat_id=%s "
+                "receiver=%s title=%r agent=%s",
+                session_id, chat_type, chat_id,
+                self._receiver_username, title, self._agent_name,
+            )
+        except Exception as e:  # noqa: BLE001
+            # 落库失败不影响飞书消息处理（仅记日志）
+            logger.exception(
+                "飞书 session 落库失败（已隔离，session_id=%s）: %s", session_id, e
+            )
 
     async def _call_agent(
         self,
@@ -751,8 +871,8 @@ class FeishuWebSocketService:
                 )
             else:
                 logger.error(
-                    "飞书卡片回复失败 code=%s msg=%s，降级文本",
-                    resp.code, resp.msg,
+                    "飞书卡片回复失败 code=%s msg=%s，降级文本。卡片JSON=%s",
+                    resp.code, resp.msg, content_str[:500],
                 )
                 self._send_text_reply(chat_id, text)
         except Exception as e:  # noqa: BLE001

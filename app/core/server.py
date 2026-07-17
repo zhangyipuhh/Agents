@@ -388,21 +388,42 @@ async def lifespan(app: FastAPI):
                 from app.shared.tools.skills.feishu.FeishuWebSocketService import (
                     FeishuWebSocketService,
                 )
-                ws_service = FeishuWebSocketService(
-                    lark_client=get_lark_client(),
-                    agent_config_service=app.state.agent_config_service,
-                    agent_name=settings.feishu.feishu_ws_agent_name,
-                    log_level=settings.feishu.feishu_log_level,
-                )
-                # 注入主事件循环，供后台 SDK 回调投递协程
-                import asyncio as _asyncio
-                ws_service.set_event_loop(_asyncio.get_event_loop())
-                await ws_service.start_async()
-                app.state.feishu_ws_service = ws_service
-                logging.info(
-                    "[lifespan] FeishuWebSocketService started (agent_name=%s)",
-                    settings.feishu.feishu_ws_agent_name,
-                )
+                # 2026-07-17 新增：解析飞书会话接收账号
+                #   飞书消息产生的 session（feishu:p2p:{open_id} / feishu:group:{chat_id}:{open_id}）
+                #   归属到 feishu_ws_receiver_username 指定的固定系统用户，便于前端会话列表可见。
+                #   该用户必须预先存在；缺失则 WS 服务不启动（与 EmailConfigService 失败策略一致）。
+                from app.shared.utils.auth.user_db import UserDB
+
+                receiver_username = settings.feishu.feishu_ws_receiver_username
+                receiver_user = await UserDB.get_user_by_username(receiver_username)
+                if receiver_user is None:
+                    logging.error(
+                        "[lifespan] FeishuWebSocketService skipped: 接收账号 %r 不存在,"
+                        "请先在系统中创建该用户或在 .env 调整 feishu_ws_receiver_username",
+                        receiver_username,
+                    )
+                    app.state.feishu_ws_service = None
+                else:
+                    ws_service = FeishuWebSocketService(
+                        lark_client=get_lark_client(),
+                        agent_config_service=app.state.agent_config_service,
+                        agent_name=settings.feishu.feishu_ws_agent_name,
+                        receiver_user_id=receiver_user["id"],
+                        receiver_username=receiver_username,
+                        log_level=settings.feishu.feishu_log_level,
+                    )
+                    # 注入主事件循环，供后台 SDK 回调投递协程
+                    import asyncio as _asyncio
+                    ws_service.set_event_loop(_asyncio.get_event_loop())
+                    await ws_service.start_async()
+                    app.state.feishu_ws_service = ws_service
+                    logging.info(
+                        "[lifespan] FeishuWebSocketService started "
+                        "(agent_name=%s, receiver=%s, receiver_user_id=%s)",
+                        settings.feishu.feishu_ws_agent_name,
+                        receiver_username,
+                        receiver_user["id"],
+                    )
         else:
             app.state.feishu_ws_service = None
             logging.info(

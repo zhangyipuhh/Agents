@@ -215,8 +215,8 @@ def test_on_message_p2p_text_dispatches_to_agent():
     svc = _make_service()
     captured: list = []
 
-    async def fake_handle(session_id, chat_id, text):
-        captured.append((session_id, chat_id, text))
+    async def fake_handle(session_id, chat_id, text, chat_type):
+        captured.append((session_id, chat_id, text, chat_type))
 
     svc._handle_message = fake_handle
 
@@ -1142,3 +1142,264 @@ def test_build_ws_client_registers_card_action_trigger():
     handler_types = [h[0] for h in handler.handlers]
     assert "p2_im_message_receive_v1" in handler_types
     assert "p2_card_action_trigger" in handler_types
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-17 新增：飞书 session 落库（_ensure_session_recorded / receiver_user_id）
+# ---------------------------------------------------------------------------
+def _make_service_with_receiver(receiver_user_id=42, receiver_username="feishu_bot"):
+    """构造一个携带接收账号的 FeishuWebSocketService。"""
+    return FeishuWebSocketService(
+        lark_client=MagicMock(name="lark.Client"),
+        agent_config_service=MagicMock(name="agent_config_service"),
+        agent_name="project",
+        receiver_user_id=receiver_user_id,
+        receiver_username=receiver_username,
+        log_level="INFO",
+    )
+
+
+@pytest.fixture
+def reset_session_db_memory():
+    """每个测试隔离 SessionDB._memory_cache 状态。"""
+    from app.shared.utils.auth.session_db import SessionDB
+
+    SessionDB._memory_cache.clear()
+    SessionDB._initialized = False
+    yield
+    SessionDB._memory_cache.clear()
+    SessionDB._initialized = False
+
+
+@pytest.mark.asyncio
+async def test_ensure_session_recorded_first_message_creates_session(reset_session_db_memory):
+    """P1：首次飞书消息触发后,SessionDB._memory_cache 含目标 session_id,username=receiver_username,
+    title=首条消息截 20 字。"""
+    from app.shared.utils.auth.session_db import SessionDB
+
+    svc = _make_service_with_receiver(
+        receiver_user_id=42, receiver_username="feishu_bot"
+    )
+    long_text = "你好帮我看一下项目文档结构的具体写法是否符合 PMP 规范"  # > 20 字符
+
+    await svc._ensure_session_recorded(
+        session_id="feishu:p2p:ou_alice_001",
+        chat_id="oc_chat_001",
+        chat_type="p2p",
+        text=long_text,
+    )
+
+    # 验证 sessions 内存缓存里有该 session_id
+    assert "feishu:p2p:ou_alice_001" in SessionDB._memory_cache
+    sess = SessionDB._memory_cache["feishu:p2p:ou_alice_001"]
+    assert sess["user_id"] == 42
+    assert sess["username"] == "feishu_bot"
+    assert sess["agent_type"] == "project"
+    assert sess["status"] == "active"
+    # title 取前 20 字 + …（len > 20）
+    assert sess["title"].endswith("…")
+    assert sess["title"].startswith(long_text[:20])
+
+
+@pytest.mark.asyncio
+async def test_ensure_session_recorded_existing_session_only_refreshes_last_active(
+    reset_session_db_memory,
+):
+    """P1：第二次同 session_id 消息 → 仅刷新 last_active_at,title 不变。"""
+    from app.shared.utils.auth.session_db import SessionDB
+
+    svc = _make_service_with_receiver()
+    sid = "feishu:group:oc_g_001:ou_bob_001"
+
+    # 首次创建
+    await svc._ensure_session_recorded(
+        session_id=sid, chat_id="oc_g_001", chat_type="group", text="hello"
+    )
+    first_sess = SessionDB._memory_cache[sid].copy()
+    first_title = first_sess["title"]
+    first_active = first_sess["last_active_at"]
+
+    # 第二次：换 text，但 title 应不变（沿用首次）
+    await asyncio.sleep(0.01)  # 确保时间戳有差异
+    await svc._ensure_session_recorded(
+        session_id=sid, chat_id="oc_g_001", chat_type="group", text="完全不同的话题"
+    )
+
+    second_sess = SessionDB._memory_cache[sid]
+    assert second_sess["title"] == first_title, "title 不应被后续消息覆盖"
+    assert second_sess["last_active_at"] >= first_active, "last_active_at 应被刷新"
+
+
+@pytest.mark.asyncio
+async def test_ensure_session_recorded_no_receiver_skipped():
+    """P1：_receiver_user_id=None 时不入库,仅 WARN 日志。"""
+    from app.shared.utils.auth.session_db import SessionDB
+
+    svc = _make_service_with_receiver(receiver_user_id=None, receiver_username="")
+    # 关键：未配置接收账号,即便 SessionDB 启用也不应写库
+    await svc._ensure_session_recorded(
+        session_id="feishu:p2p:ou_alice_001",
+        chat_id="oc_chat_001",
+        chat_type="p2p",
+        text="hello",
+    )
+    assert "feishu:p2p:ou_alice_001" not in SessionDB._memory_cache
+
+
+@pytest.mark.asyncio
+async def test_handle_message_invokes_ensure_session_before_call_agent(reset_session_db_memory):
+    """P1：_handle_message 应在 _call_agent 之前调用 _ensure_session_recorded。"""
+    from app.shared.utils.auth.session_db import SessionDB
+
+    call_order: list = []
+
+    async def fake_ensure(session_id, chat_id, chat_type, text):
+        call_order.append("ensure")
+
+    async def fake_call_agent(sid, text, **kwargs):
+        call_order.append("call_agent")
+        return "Reply", None
+
+    svc = _make_service_with_receiver()
+    svc._ensure_session_recorded = fake_ensure
+    svc._call_agent = fake_call_agent
+
+    with patch.object(svc, "_send_reply") as send_mock:
+        await svc._handle_message(
+            "feishu:p2p:ou_alice_001", "oc_chat_001", "hello", "p2p"
+        )
+        send_mock.assert_called_once_with("oc_chat_001", "Reply")
+
+    # 顺序：ensure → call_agent
+    assert call_order == ["ensure", "call_agent"]
+
+
+@pytest.mark.asyncio
+async def test_on_message_passes_chat_type_to_handle_message():
+    """P1：_on_message 应把 chat_type 透传给 _handle_message（p2p 与 group 两路径）。"""
+    svc = _make_service_with_receiver()
+    captured_coroutines: list = []
+
+    async def capture(session_id, chat_id, text, chat_type):
+        # 此处逻辑不重要：捕获已通过 _dispatch_async 的 patch 完成
+        return None
+
+    svc._handle_message = capture
+    fake_loop = MagicMock()
+    fake_loop.is_closed.return_value = False
+    svc.set_event_loop(fake_loop)
+
+    def _capture_coro(coro, _loop):
+        """记录 _handle_message 创建的 coroutine 对象,从 cr_frame 反射其绑定参数。
+
+        注：必须先读取 f_locals 再 close,否则 cr_frame 会被清空。
+        """
+        # 先反射参数到闭包 list,再关闭 coro
+        try:
+            captured_coroutines.append(coro.cr_frame.f_locals.copy())
+        except Exception:  # noqa: BLE001
+            captured_coroutines.append(None)
+        try:
+            coro.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return MagicMock()
+
+    with patch("asyncio.run_coroutine_threadsafe", side_effect=_capture_coro):
+        # 路径 1：p2p
+        data_p2p = _make_msg(chat_type="p2p", text="hi p2p", open_id="ou_alice")
+        svc._on_message(data_p2p)
+        # 路径 2：group（@机器人降级）
+        svc._bot_open_id = None  # 走 '@' in content 降级
+        data_group = _make_msg(chat_type="group", text="@bot hi", open_id="ou_bob")
+        svc._on_message(data_group)
+
+    # 验证：两次 _handle_message 调用都按 (session_id, chat_id, text, chat_type) 4 参数透传
+    assert len(captured_coroutines) == 2
+
+    # 反射读出 coro 的位置参数（capture 是个 async def,接受 4 个位置参数）
+    args1 = captured_coroutines[0]
+    args2 = captured_coroutines[1]
+    assert args1["session_id"] == "feishu:p2p:ou_alice"
+    assert args1["chat_id"] == "oc_chat_001"
+    assert args1["text"] == "hi p2p"
+    assert args1["chat_type"] == "p2p"
+
+    assert args2["session_id"] == "feishu:group:oc_chat_001:ou_bob"
+    assert args2["chat_id"] == "oc_chat_001"
+    assert args2["text"] == "@bot hi"
+    assert args2["chat_type"] == "group"
+
+
+@pytest.mark.asyncio
+async def test_init_accepts_receiver_args():
+    """P1：构造函数正确存储 receiver_user_id / receiver_username。"""
+    svc = FeishuWebSocketService(
+        lark_client=MagicMock(),
+        agent_config_service=MagicMock(),
+        agent_name="project",
+        receiver_user_id=99,
+        receiver_username="custom_bot",
+    )
+    assert svc._receiver_user_id == 99
+    assert svc._receiver_username == "custom_bot"
+
+
+@pytest.mark.asyncio
+async def test_ensure_session_recorded_short_text_no_ellipsis(reset_session_db_memory):
+    """P2：首条消息 ≤ 20 字符时,title 不带 "…" 后缀。"""
+    from app.shared.utils.auth.session_db import SessionDB
+
+    svc = _make_service_with_receiver()
+    await svc._ensure_session_recorded(
+        session_id="feishu:p2p:ou_short",
+        chat_id="oc_chat",
+        chat_type="p2p",
+        text="你好",
+    )
+    sess = SessionDB._memory_cache["feishu:p2p:ou_short"]
+    assert sess["title"] == "你好"
+
+
+@pytest.mark.asyncio
+async def test_ensure_session_recorded_empty_text_fallback_title(reset_session_db_memory):
+    """P2：空文本回退占位标题『飞书新会话』。"""
+    from app.shared.utils.auth.session_db import SessionDB
+
+    svc = _make_service_with_receiver()
+    await svc._ensure_session_recorded(
+        session_id="feishu:p2p:ou_empty",
+        chat_id="oc_chat",
+        chat_type="p2p",
+        text="   \n  ",
+    )
+    sess = SessionDB._memory_cache["feishu:p2p:ou_empty"]
+    assert sess["title"] == "飞书新会话"
+
+
+@pytest.mark.asyncio
+async def test_get_user_sessions_returns_feishu_sessions(reset_session_db_memory):
+    """P1：feishu session 通过 get_user_sessions(receiver_user_id) 可查到。"""
+    from app.shared.utils.auth.session_db import SessionDB
+
+    svc = _make_service_with_receiver(
+        receiver_user_id=42, receiver_username="feishu_bot"
+    )
+    await svc._ensure_session_recorded(
+        session_id="feishu:p2p:ou_alice",
+        chat_id="oc_001",
+        chat_type="p2p",
+        text="hello alice",
+    )
+    await svc._ensure_session_recorded(
+        session_id="feishu:group:oc_g:ou_bob",
+        chat_id="oc_g",
+        chat_type="group",
+        text="hello bob in group",
+    )
+
+    # 接收者 user_id=42 的会话列表应包含两个 feishu session
+    sessions = await SessionDB.get_user_sessions(42)
+    sids = {s["session_id"] for s in sessions}
+    assert "feishu:p2p:ou_alice" in sids
+    assert "feishu:group:oc_g:ou_bob" in sids
