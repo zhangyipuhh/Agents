@@ -62,6 +62,36 @@ class EmailConfigService:
         self._cache: Dict[str, EmailServerConfig] = {}
         self._write_lock = asyncio.Lock()
 
+    # ------------------------------------------------------------------
+    # TLS context helper（2026-07-18 新增：企业邮箱协议兼容）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_ssl_context(config: EmailServerConfig) -> ssl.SSLContext:
+        """根据配置构造 SSL 上下文，支持企业邮箱老 TLS 版本。
+
+        设计要点：
+        - 默认 ``ctx.minimum_version = TLSv1``：兼容老企业 SMTP（TLSv1.0/1.1），
+          Python 3.10+ ``ssl.create_default_context()`` 默认要求 TLSv1.2 会导致
+          旧服务器握手失败（WRONG_VERSION_NUMBER）。
+        - ``verify_ssl=False`` 时关闭证书校验（企业自签证书场景）。
+        - ``ctx.check_hostname=False`` 必须与 ``verify_ssl=False`` 一同设置，
+          否则 Python 会在 verify_mode=CERT_NONE 时仍强制校验主机名导致抛错。
+
+        参数:
+            config: SMTP 配置。
+
+        返回:
+            ssl.SSLContext: 配置好的 SSL 上下文。
+        """
+        ctx = ssl.create_default_context()
+        # 兼容 TLSv1.0/1.1，企业邮箱服务器常仅支持这些老协议
+        ctx.minimum_version = ssl.TLSVersion.TLSv1
+        if not config.verify_ssl:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
     def _ensure_fernet(self) -> Fernet:
         """惰性构造 Fernet 实例。
 
@@ -158,7 +188,8 @@ class EmailConfigService:
         row = await self._db.fetchrow(
             """
             SELECT id, host, port, use_ssl, username, password_encrypted,
-                   sender_name, enabled, created_at, updated_at
+                   sender_name, enabled, force_plain, verify_ssl,
+                   created_at, updated_at
             FROM email_server_configs
             WHERE enabled = TRUE
             ORDER BY id ASC
@@ -183,6 +214,8 @@ class EmailConfigService:
             password=password,
             sender_name=row["sender_name"] or "",
             enabled=row["enabled"],
+            force_plain=row["force_plain"],
+            verify_ssl=row["verify_ssl"],
         )
 
     async def get_server_config_public(self) -> Optional[Dict[str, Any]]:
@@ -202,6 +235,8 @@ class EmailConfigService:
             "password": "",  # 永远不外泄
             "sender_name": config.sender_name,
             "enabled": config.enabled,
+            "force_plain": config.force_plain,
+            "verify_ssl": config.verify_ssl,
         }
 
     async def upsert_server_config(
@@ -254,12 +289,14 @@ class EmailConfigService:
                 UPDATE email_server_configs
                 SET host = $1, port = $2, use_ssl = $3, username = $4,
                     password_encrypted = $5, sender_name = $6, enabled = $7,
+                    force_plain = $8, verify_ssl = $9,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = $8
+                WHERE id = $10
                 RETURNING id, updated_at
                 """,
                 config.host, config.port, config.use_ssl, config.username,
                 encrypted, config.sender_name, config.enabled,
+                config.force_plain, config.verify_ssl,
                 existing["id"],
             )
         else:
@@ -267,12 +304,13 @@ class EmailConfigService:
                 """
                 INSERT INTO email_server_configs
                     (host, port, use_ssl, username, password_encrypted,
-                     sender_name, enabled)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                     sender_name, enabled, force_plain, verify_ssl)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 RETURNING id, updated_at
                 """,
                 config.host, config.port, config.use_ssl, config.username,
                 encrypted, config.sender_name, config.enabled,
+                config.force_plain, config.verify_ssl,
             )
 
         # 更新内存缓存
@@ -303,8 +341,8 @@ class EmailConfigService:
             ``{"success": False, "message": "..."}``。
         """
         try:
+            context = self._build_ssl_context(config)
             if config.use_ssl:
-                context = ssl.create_default_context()
                 with smtplib.SMTP_SSL(
                     config.host, config.port,
                     context=context, timeout=15,
@@ -318,7 +356,10 @@ class EmailConfigService:
                     timeout=15,
                     local_hostname=config.host,
                 ) as smtp:
-                    smtp.starttls(context=ssl.create_default_context())
+                    # 2026-07-18 新增：force_plain=True 时跳过 STARTTLS，
+                    # 支持企业邮 25 端口明文 SMTP（Foxmail/Outlook 走 25 不加密）
+                    if not config.force_plain:
+                        smtp.starttls(context=context)
                     if config.password:
                         smtp.login(config.username, config.password)
             return {"success": True, "message": "SMTP 连接成功"}
@@ -721,6 +762,19 @@ def _register_email_schema() -> None:
                 created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+            """
+        )
+        # 2026-07-18 扩展：企业邮箱兼容字段（方案 Z）
+        await DatabasePool.execute(
+            """
+            ALTER TABLE email_server_configs
+                ADD COLUMN IF NOT EXISTS force_plain BOOLEAN NOT NULL DEFAULT FALSE
+            """
+        )
+        await DatabasePool.execute(
+            """
+            ALTER TABLE email_server_configs
+                ADD COLUMN IF NOT EXISTS verify_ssl BOOLEAN NOT NULL DEFAULT TRUE
             """
         )
         # 单行启用约束：全局仅允许一条 enabled=TRUE 配置

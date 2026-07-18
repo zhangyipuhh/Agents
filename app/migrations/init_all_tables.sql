@@ -2803,6 +2803,14 @@ CREATE TABLE IF NOT EXISTS email_server_configs (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_email_server_configs_enabled
     ON email_server_configs(enabled) WHERE enabled = TRUE;
 
+-- 19.1 扩展：企业邮箱兼容字段（2026-07-18 新增，方案 Z）
+-- force_plain：跳过 STARTTLS，仅 use_ssl=False 时生效；支持 25 端口明文 SMTP
+-- verify_ssl：是否校验 SMTP 服务器 TLS 证书；企业自签证书时可设为 False
+ALTER TABLE email_server_configs
+    ADD COLUMN IF NOT EXISTS force_plain BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE email_server_configs
+    ADD COLUMN IF NOT EXISTS verify_ssl BOOLEAN NOT NULL DEFAULT TRUE;
+
 -- ========== 20. email_policies / email_policy_recipients（邮件发送策略）==========
 -- 策略仅包含收件人集合（用户确认）；策略与 users 多对多关系
 -- 调用方（脚本/定时任务/手动）通过 policy_id 调用 EmailService 发送邮件

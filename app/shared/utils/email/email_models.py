@@ -28,6 +28,9 @@ class EmailServerConfig(BaseModel):
             ``EmailConfigService`` 使用 Fernet 加密）。
         sender_name: 发件人显示名称；空字符串表示使用 username 作为显示名。
         enabled: 是否启用；同一时刻只允许一条配置启用（DB 唯一索引约束）。
+        force_plain: 跳过 STARTTLS，仅在 ``use_ssl=False`` 时生效；
+            企业邮箱 25 端口明文 SMTP 场景使用。默认 False。
+        verify_ssl: 是否校验 SMTP 服务器 TLS 证书；企业自签证书时可设为 False。默认 True。
     """
 
     host: str = Field(..., min_length=1, max_length=200, description="SMTP 主机")
@@ -37,6 +40,15 @@ class EmailServerConfig(BaseModel):
     password: str = Field(default="", description="密码或授权码（明文，仅内存）")
     sender_name: str = Field(default="", max_length=200, description="发件人显示名")
     enabled: bool = Field(default=True, description="是否启用")
+    # 2026-07-18 新增：企业邮箱兼容字段（方案 Z）
+    force_plain: bool = Field(
+        default=False,
+        description="跳过 STARTTLS，仅在 use_ssl=False 时生效；支持 25 端口明文 SMTP",
+    )
+    verify_ssl: bool = Field(
+        default=True,
+        description="是否校验 SMTP 服务器 TLS 证书；自签证书可设为 False",
+    )
 
 
 class EmailPolicy(BaseModel):

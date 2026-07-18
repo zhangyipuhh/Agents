@@ -61,6 +61,8 @@ class UpdateServerConfigRequest(BaseModel):
         password: 密码或授权码；空字符串表示不修改原密码。
         sender_name: 发件人显示名。
         enabled: 是否启用。
+        force_plain: 2026-07-18 新增；跳过 STARTTLS，仅 use_ssl=False 时生效。
+        verify_ssl: 2026-07-18 新增；是否校验 SMTP 服务器 TLS 证书。
     """
 
     host: str = Field(..., min_length=1, max_length=200)
@@ -70,6 +72,8 @@ class UpdateServerConfigRequest(BaseModel):
     password: str = Field(default="", description="空字符串表示不修改原密码")
     sender_name: str = Field(default="", max_length=200)
     enabled: bool = Field(default=True)
+    force_plain: bool = Field(default=False, description="跳过 STARTTLS（25 端口明文 SMTP）")
+    verify_ssl: bool = Field(default=True, description="是否校验 TLS 证书")
 
 
 class TestConnectionRequest(BaseModel):
@@ -81,6 +85,8 @@ class TestConnectionRequest(BaseModel):
         use_ssl: 是否使用 SMTP_SSL。
         username: 登录账号。
         password: 密码或授权码。
+        force_plain: 2026-07-18 新增；跳过 STARTTLS。
+        verify_ssl: 2026-07-18 新增；是否校验 TLS 证书。
     """
 
     host: str = Field(..., min_length=1, max_length=200)
@@ -88,6 +94,8 @@ class TestConnectionRequest(BaseModel):
     use_ssl: bool = Field(default=True)
     username: str = Field(..., min_length=1, max_length=200)
     password: str = Field(default="")
+    force_plain: bool = Field(default=False)
+    verify_ssl: bool = Field(default=True)
 
 
 class CreatePolicyRequest(BaseModel):
@@ -238,6 +246,9 @@ async def update_server_config(
         password=body.password,
         sender_name=body.sender_name,
         enabled=body.enabled,
+        # 2026-07-18 新增：企业邮箱兼容字段
+        force_plain=body.force_plain,
+        verify_ssl=body.verify_ssl,
     )
     try:
         return await service.upsert_server_config(
@@ -281,6 +292,9 @@ async def test_server_config(
         password=password,
         sender_name="",
         enabled=True,
+        # 2026-07-18 新增：企业邮箱兼容字段
+        force_plain=body.force_plain,
+        verify_ssl=body.verify_ssl,
     )
     return await service.test_connection(config)
 

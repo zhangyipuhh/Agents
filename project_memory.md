@@ -265,7 +265,13 @@ asyncio.run(EmailService(config).send_email(
 | `email_policies` | 发送策略（策略名 + 描述 + 创建者用户 ID） |
 | `email_policy_recipients` | 策略-收件人多对多关联（policy_id + user_id 联合主键） |
 
-`email_server_configs` 字段：id / host / port / use_ssl / username / password_encrypted / sender_name / enabled / created_at / updated_at。通过 `CREATE UNIQUE INDEX ... WHERE enabled = TRUE` 保证全局仅一条启用配置。
+`email_server_configs` 字段：id / host / port / use_ssl / username / password_encrypted / sender_name / enabled / **force_plain** / **verify_ssl** / created_at / updated_at。通过 `CREATE UNIQUE INDEX ... WHERE enabled = TRUE` 保证全局仅一条启用配置。
+
+`force_plain`（BOOLEAN，默认 FALSE）与 `verify_ssl`（BOOLEAN，默认 TRUE）是 2026-07-18 新增的企业邮箱兼容字段：
+- `force_plain=True` 时 `smtplib` 不调用 `starttls()`，支持 25 端口明文 SMTP（Foxmail 走 25 时不加密）
+- `verify_ssl=False` 时 `SSLContext.check_hostname=False` + `verify_mode=CERT_NONE`，跳过证书校验（企业自签证书场景）
+- `EmailConfigService._build_ssl_context(config)` 统一构造 `SSLContext`，默认把 `minimum_version` 降级到 `TLSv1`，兼容老企业 SMTP（Python 3.10+ 默认 `TLSv1.2` 会触发 `[SSL: WRONG_VERSION_NUMBER]`）
+- 前端 `EmailSettingsManager.vue` 把这两个选项放在「服务器配置」Tab 末尾的折叠面板「高级选项（企业邮箱兼容）」内，默认收起，避免新手误操作
 
 #### `password_encrypted` 列类型与 Fernet 写入约定
 
@@ -345,6 +351,7 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 6. **不实现定时触发**：策略仅是收件人集合，定时发邮件可通过 `agent_task_schedules.target_type='script'` 调用邮件脚本实现。
 7. **SMTP 主机与账号域名一致性**：`username` 的域名后缀必须与 `host` 指向的 SMTP 服务匹配。个人 QQ 邮箱 → `smtp.qq.com`；腾讯企业邮箱 → `smtp.exmail.qq.com`；不匹配时服务器会在协议握手后主动断开连接（`smtplib.SMTPServerDisconnected`）。`test_connection` 已对该类异常做单独捕获并给出切换主机建议。
 8. **test_connection 异常分类**：错误消息按 `SMTPAuthenticationError` / `SMTPServerDisconnected` / `SMTPConnectError` / `ssl.SSLError` / `OSError` / 其他 6 类细分返回，便于前端展示与日志定位（全部带 `logger.warning` 调用栈）。
+9. **企业邮箱协议兼容（2026-07-18 新增）**：`_build_ssl_context(config)` 把 `SSLContext.minimum_version` 降级到 `TLSv1`（Python 3.10+ 默认 `TLSv1.2` 会触发 `[SSL: WRONG_VERSION_NUMBER]`）；`force_plain=True` 时跳过 `starttls()`；`verify_ssl=False` 时关闭证书校验。`EmailService._smtp_send` 复用同一 helper，保证测试连接与实际发送使用一致的协议栈。
 
 ## Agent 统一构造入口（2026-06-29 新增）
 

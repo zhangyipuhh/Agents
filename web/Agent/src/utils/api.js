@@ -2522,6 +2522,8 @@ export async function fetchEmailServerConfig() {
  * @param {string} payload.password - 密码或授权码（空字符串表示不修改）
  * @param {string} payload.sender_name - 发件人显示名
  * @param {boolean} payload.enabled - 是否启用
+ * @param {boolean} [payload.force_plain=false] - 2026-07-18 新增；跳过 STARTTLS，仅 use_ssl=false 时生效（企业邮 25 端口明文 SMTP）
+ * @param {boolean} [payload.verify_ssl=true] - 2026-07-18 新增；是否校验 TLS 证书（自签证书可设 false）
  * @returns {Promise<{id: number, updated_at: string}>} 保存结果
  * @throws {Error} 请求失败时抛出错误
  */
@@ -2542,6 +2544,8 @@ export async function updateEmailServerConfig(payload) {
  * 测试 SMTP 连接（不发送邮件）
  * 调用 POST /api/admin/email/server-config/test
  * @param {Object} payload - 测试配置
+ * @param {boolean} [payload.force_plain=false] - 2026-07-18 新增；跳过 STARTTLS
+ * @param {boolean} [payload.verify_ssl=true] - 2026-07-18 新增；是否校验 TLS 证书
  * @returns {Promise<{success: boolean, message: string}>} 测试结果
  * @throws {Error} 请求失败时抛出错误
  */

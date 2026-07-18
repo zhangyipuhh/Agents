@@ -223,11 +223,18 @@ class EmailService:
             显式传入 ``local_hostname=cfg.host`` 以规避 Windows 中文主机名
             场景下 ``socket.getfqdn()`` 返回非 ASCII 字符串导致 ``EHLO``
             命令在 ``smtplib`` 内部以 ``ascii`` 编码失败的问题。
+
+        2026-07-18 新增：复用 ``EmailConfigService._build_ssl_context``
+        兼容企业邮箱老 TLS 协议；``cfg.force_plain=True`` 时跳过 STARTTLS
+        支持 25 端口明文 SMTP。
         """
         cfg = self._config
         recipients = list(to) + list(cc)
+        # 延迟导入避免循环依赖（email_config_service 反向依赖 email_models）
+        from app.shared.utils.email.email_config_service import EmailConfigService
+
+        context = EmailConfigService._build_ssl_context(cfg)
         if cfg.use_ssl:
-            context = ssl.create_default_context()
             with smtplib.SMTP_SSL(
                 cfg.host, cfg.port,
                 context=context, timeout=30,
@@ -241,6 +248,8 @@ class EmailService:
                 timeout=30,
                 local_hostname=cfg.host,
             ) as smtp:
-                smtp.starttls(context=ssl.create_default_context())
+                # 2026-07-18 新增：force_plain=True 时跳过 STARTTLS
+                if not cfg.force_plain:
+                    smtp.starttls(context=context)
                 smtp.login(cfg.username, cfg.password)
                 smtp.send_message(msg, to_addrs=recipients)

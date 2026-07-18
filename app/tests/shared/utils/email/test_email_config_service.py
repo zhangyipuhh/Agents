@@ -266,3 +266,78 @@ def test_test_connection_starttls_uses_ascii_local_hostname():
     assert all(ord(ch) < 128 for ch in kwargs["local_hostname"]), (
         "local_hostname 必须为 ASCII 字符串"
     )
+
+
+# =============================================================================
+# P1: 2026-07-18 新增 - 企业邮箱兼容字段（方案 Z）
+# =============================================================================
+
+def test_force_plain_skips_starttls():
+    """force_plain=True 时不应调用 smtp.starttls（支持 25 端口明文 SMTP）。"""
+    svc = _make_service()
+    fake_smtp = MagicMock()
+    fake_smtp.__enter__.return_value = fake_smtp
+    fake_smtp.__exit__.return_value = False
+
+    config = _make_config(use_ssl=False, password="authcode")
+    config.force_plain = True  # 2026-07-18 新增字段
+
+    with patch("smtplib.SMTP", return_value=fake_smtp) as mock_smtp:
+        result = asyncio.run(svc.test_connection(config))
+
+    assert result == {"success": True, "message": "SMTP 连接成功"}
+    fake_smtp.starttls.assert_not_called()
+    fake_smtp.login.assert_called_once_with("zhangyipu@foxmail.com.cn", "authcode")
+    mock_smtp.assert_called_once()
+
+
+def test_default_force_plain_still_calls_starttls():
+    """force_plain 默认 False 时仍应调用 smtp.starttls（保持向后兼容）。"""
+    svc = _make_service()
+    fake_smtp = MagicMock()
+    fake_smtp.__enter__.return_value = fake_smtp
+    fake_smtp.__exit__.return_value = False
+
+    config = _make_config(use_ssl=False, password="authcode")
+    # force_plain 不显式设置，走默认 False
+    assert config.force_plain is False
+
+    with patch("smtplib.SMTP", return_value=fake_smtp):
+        result = asyncio.run(svc.test_connection(config))
+
+    assert result["success"] is True
+    fake_smtp.starttls.assert_called_once()
+
+
+def test_build_ssl_context_minimum_tls_v1():
+    """_build_ssl_context 必须把 SSLContext.minimum_version 降级到 TLSv1，
+    以兼容老企业 SMTP 服务器（Python 3.10+ 默认要求 TLSv1.2 会触发 WRONG_VERSION_NUMBER）。
+    """
+    config = _make_config(use_ssl=True, password="authcode")
+    ctx = EmailConfigService._build_ssl_context(config)
+
+    # minimum_version 属性返回 TLSVersion 枚举；TLSv1 对应整数 769 (0x0301)
+    assert ctx.minimum_version <= ssl.TLSVersion.TLSv1, (
+        f"minimum_version 应 <= TLSv1，实际 {ctx.minimum_version}"
+    )
+
+
+def test_build_ssl_context_disables_verification_when_verify_ssl_false():
+    """verify_ssl=False 时应关闭证书校验（自签证书场景）。"""
+    config = _make_config(use_ssl=True, password="authcode")
+    config.verify_ssl = False
+
+    ctx = EmailConfigService._build_ssl_context(config)
+
+    assert ctx.check_hostname is False
+    assert ctx.verify_mode == ssl.CERT_NONE
+
+
+def test_build_ssl_context_default_verify_ssl_true_keeps_strict():
+    """verify_ssl 默认 True 时保持证书校验严格（CERT_REQUIRED）。"""
+    config = _make_config(use_ssl=True, password="authcode")
+    ctx = EmailConfigService._build_ssl_context(config)
+
+    # 默认 verify_ssl=True，证书校验应为 REQUIRED
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.check_hostname is True

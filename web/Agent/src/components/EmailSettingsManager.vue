@@ -45,7 +45,12 @@ const serverConfig = reactive({
   password: '',
   sender_name: '',
   enabled: true,
+  // 2026-07-18 新增：企业邮箱兼容字段（方案 Z）
+  force_plain: false,
+  verify_ssl: true,
 })
+// 高级选项折叠面板展开状态（默认收起，避免新手误操作）
+const showAdvancedOptions = ref(false)
 const isSavingServer = ref(false)
 const isTestingConnection = ref(false)
 const serverMessage = ref('')
@@ -104,6 +109,9 @@ async function loadServerConfig() {
       serverConfig.password = '' // 永远不显示已保存的密码
       serverConfig.sender_name = data.sender_name || ''
       serverConfig.enabled = data.enabled !== false
+      // 2026-07-18 新增：企业邮箱兼容字段（后端缺省 false/true）
+      serverConfig.force_plain = data.force_plain === true
+      serverConfig.verify_ssl = data.verify_ssl !== false
     }
   } catch (err) {
     serverError.value = err.message
@@ -130,6 +138,9 @@ async function saveServerConfig() {
       password: serverConfig.password, // 空字符串表示不修改
       sender_name: serverConfig.sender_name,
       enabled: serverConfig.enabled,
+      // 2026-07-18 新增：企业邮箱兼容字段
+      force_plain: serverConfig.force_plain,
+      verify_ssl: serverConfig.verify_ssl,
     })
     serverMessage.value = 'SMTP 配置已保存'
     serverConfig.password = '' // 清空密码框
@@ -158,6 +169,9 @@ async function testConnection() {
       use_ssl: serverConfig.use_ssl,
       username: serverConfig.username,
       password: serverConfig.password,
+      // 2026-07-18 新增：企业邮箱兼容字段
+      force_plain: serverConfig.force_plain,
+      verify_ssl: serverConfig.verify_ssl,
     })
     if (result.success) {
       serverMessage.value = result.message || '连接成功'
@@ -483,6 +497,42 @@ onMounted(async () => {
           <input v-model="serverConfig.enabled" type="checkbox" />
           <span>启用此配置</span>
         </label>
+
+        <!-- 2026-07-18 新增：高级选项（企业邮箱兼容） -->
+        <div class="advanced-section">
+          <button
+            type="button"
+            class="advanced-toggle"
+            :aria-expanded="showAdvancedOptions ? 'true' : 'false'"
+            data-testid="email-advanced-toggle"
+            @click="showAdvancedOptions = !showAdvancedOptions"
+          >
+            <span>{{ showAdvancedOptions ? '▼' : '▶' }}</span>
+            <span>高级选项（企业邮箱兼容）</span>
+          </button>
+          <div v-if="showAdvancedOptions" class="advanced-body">
+            <p class="advanced-hint">
+              仅当 SMTP 协议兼容性异常时报「SSL 握手失败」或「网络层超时」时勾选。
+              普通邮箱（QQ/163/Gmail）保持默认即可。
+            </p>
+            <label class="inline-field">
+              <input
+                v-model="serverConfig.force_plain"
+                type="checkbox"
+                data-testid="email-force-plain"
+              />
+              <span>强制明文 SMTP（跳过 STARTTLS）</span>
+            </label>
+            <label class="inline-field">
+              <input
+                v-model="serverConfig.verify_ssl"
+                type="checkbox"
+                data-testid="email-verify-ssl"
+              />
+              <span>校验 TLS 证书（取消则跳过证书校验）</span>
+            </label>
+          </div>
+        </div>
         <div class="form-actions">
           <button class="primary-btn" type="submit" :disabled="isSavingServer">
             {{ isSavingServer ? '保存中...' : '保存配置' }}
@@ -952,6 +1002,41 @@ input[type="file"] {
 .policy-meta {
   color: #6b7280;
   font-size: 12px;
+}
+
+/* 2026-07-18 新增：高级选项折叠面板（企业邮箱兼容） */
+.advanced-section {
+  width: 100%;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f9fafb;
+  padding: 8px 12px;
+}
+.advanced-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: #374151;
+  font-size: 13px;
+  padding: 4px 0;
+}
+.advanced-toggle:hover {
+  color: #2563eb;
+}
+.advanced-body {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.advanced-hint {
+  color: #6b7280;
+  font-size: 12px;
+  margin: 0 0 6px;
+  line-height: 1.5;
 }
 
 .policy-editor {
