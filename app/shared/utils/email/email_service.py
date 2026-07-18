@@ -241,7 +241,14 @@ class EmailService:
                 local_hostname=cfg.host,
             ) as smtp:
                 smtp.login(cfg.username, cfg.password)
-                smtp.send_message(msg, to_addrs=recipients)
+                refused = smtp.send_message(msg, to_addrs=recipients)
+                # 2026-07-18 新增：send_message 在收件人/RCPT TO 被拒时
+                # 会把失败项存到 refused 字典而不抛异常，导致 UI 显示
+                # 成功但实际邮件未送达。这里做显式校验。
+                if refused:
+                    raise EmailSendError(
+                        f"SMTP 服务器拒收部分收件人: {refused}"
+                    )
         else:
             with smtplib.SMTP(
                 cfg.host, cfg.port,
@@ -252,4 +259,9 @@ class EmailService:
                 if not cfg.force_plain:
                     smtp.starttls(context=context)
                 smtp.login(cfg.username, cfg.password)
-                smtp.send_message(msg, to_addrs=recipients)
+                refused = smtp.send_message(msg, to_addrs=recipients)
+                # 同上：send_message 的静默拒收校验
+                if refused:
+                    raise EmailSendError(
+                        f"SMTP 服务器拒收部分收件人: {refused}"
+                    )

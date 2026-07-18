@@ -352,6 +352,7 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 7. **SMTP 主机与账号域名一致性**：`username` 的域名后缀必须与 `host` 指向的 SMTP 服务匹配。个人 QQ 邮箱 → `smtp.qq.com`；腾讯企业邮箱 → `smtp.exmail.qq.com`；不匹配时服务器会在协议握手后主动断开连接（`smtplib.SMTPServerDisconnected`）。`test_connection` 已对该类异常做单独捕获并给出切换主机建议。
 8. **test_connection 异常分类**：错误消息按 `SMTPAuthenticationError` / `SMTPServerDisconnected` / `SMTPConnectError` / `ssl.SSLError` / `OSError` / 其他 6 类细分返回，便于前端展示与日志定位（全部带 `logger.warning` 调用栈）。
 9. **企业邮箱协议兼容（2026-07-18 新增）**：`_build_ssl_context(config)` 把 `SSLContext.minimum_version` 降级到 `TLSv1`（Python 3.10+ 默认 `TLSv1.2` 会触发 `[SSL: WRONG_VERSION_NUMBER]`）；`force_plain=True` 时跳过 `starttls()`；`verify_ssl=False` 时关闭证书校验。`EmailService._smtp_send` 复用同一 helper，保证测试连接与实际发送使用一致的协议栈。
+10. **send_message refused 静默拒收校验（2026-07-18 新增）**：`smtplib.SMTP.send_message()` 在 RCPT TO 被拒时仅把失败项存到 `smtp.refused` 字典**不抛异常**，导致 UI 显示「发送成功」但实际邮件未送达（典型场景：企业邮箱 → QQ 邮箱被反垃圾拦截）。`EmailService._smtp_send` 在调用 `send_message` 后必须显式检查返回值，非空时抛 `EmailSendError` 让上层返回失败。**这是 P0 防御性检查，不可省略**。
 
 ## Agent 统一构造入口（2026-06-29 新增）
 

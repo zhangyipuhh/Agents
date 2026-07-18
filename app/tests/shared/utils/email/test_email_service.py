@@ -61,6 +61,8 @@ def test_send_email_ssl_success():
     fake_smtp = MagicMock()
     fake_smtp.__enter__.return_value = fake_smtp
     fake_smtp.__exit__.return_value = False
+    # 2026-07-18 显式置空：smtplib.send_message 在成功时返回空字典
+    fake_smtp.send_message.return_value = {}
 
     with patch("smtplib.SMTP_SSL", return_value=fake_smtp) as mock_ssl:
         result = asyncio.run(svc.send_email(
@@ -82,6 +84,7 @@ def test_send_email_starttls_success():
     fake_smtp = MagicMock()
     fake_smtp.__enter__.return_value = fake_smtp
     fake_smtp.__exit__.return_value = False
+    fake_smtp.send_message.return_value = {}
 
     with patch("smtplib.SMTP", return_value=fake_smtp) as mock_smtp:
         result = asyncio.run(svc.send_email(
@@ -102,6 +105,7 @@ def test_send_email_with_cc():
     fake_smtp = MagicMock()
     fake_smtp.__enter__.return_value = fake_smtp
     fake_smtp.__exit__.return_value = False
+    fake_smtp.send_message.return_value = {}
 
     with patch("smtplib.SMTP_SSL", return_value=fake_smtp):
         result = asyncio.run(svc.send_email(
@@ -127,6 +131,7 @@ def test_send_email_with_attachment_path(tmp_path):
     fake_smtp = MagicMock()
     fake_smtp.__enter__.return_value = fake_smtp
     fake_smtp.__exit__.return_value = False
+    fake_smtp.send_message.return_value = {}
 
     with patch("smtplib.SMTP_SSL", return_value=fake_smtp):
         result = asyncio.run(svc.send_email(
@@ -146,6 +151,7 @@ def test_send_email_with_attachment_stream():
     fake_smtp = MagicMock()
     fake_smtp.__enter__.return_value = fake_smtp
     fake_smtp.__exit__.return_value = False
+    fake_smtp.send_message.return_value = {}
 
     with patch("smtplib.SMTP_SSL", return_value=fake_smtp):
         result = asyncio.run(svc.send_email(
@@ -214,6 +220,7 @@ def test_smtp_ssl_uses_ascii_local_hostname():
     fake_smtp = MagicMock()
     fake_smtp.__enter__.return_value = fake_smtp
     fake_smtp.__exit__.return_value = False
+    fake_smtp.send_message.return_value = {}
 
     with patch("smtplib.SMTP_SSL", return_value=fake_smtp) as mock_ssl:
         asyncio.run(svc.send_email(
@@ -240,6 +247,7 @@ def test_smtp_starttls_uses_ascii_local_hostname():
     fake_smtp = MagicMock()
     fake_smtp.__enter__.return_value = fake_smtp
     fake_smtp.__exit__.return_value = False
+    fake_smtp.send_message.return_value = {}
 
     with patch("smtplib.SMTP", return_value=fake_smtp) as mock_smtp:
         asyncio.run(svc.send_email(
@@ -256,3 +264,55 @@ def test_smtp_starttls_uses_ascii_local_hostname():
     assert all(ord(ch) < 128 for ch in kwargs["local_hostname"]), (
         "local_hostname 必须为 ASCII 字符串"
     )
+
+
+# =============================================================================
+# P1: 2026-07-18 新增 - send_message refused 静默拒收校验
+# =============================================================================
+
+def test_send_email_raises_when_smtp_refuses_recipients_ssl():
+    """SSL 模式下 smtp.send_message() 返回非空 refused 字典时，
+    EmailService 必须抛 EmailSendError 而不是返回 success=True。
+
+    设计原因：smtplib.SMTP.send_message() 在 RCPT TO 被拒时仅把失败项
+    存到 smtp.refused 字典而不抛异常，导致 UI 显示「发送成功」但实际
+    邮件未送达（用户场景：企业邮箱 → QQ 邮箱被反垃圾拦截）。
+    """
+    config = _make_config(use_ssl=True)
+    svc = EmailService(config)
+
+    fake_smtp = MagicMock()
+    fake_smtp.__enter__.return_value = fake_smtp
+    fake_smtp.__exit__.return_value = False
+    # 模拟 send_message 返回 refused 字典（非空 → 部分收件人被拒）
+    fake_smtp.send_message.return_value = {
+        "bad@qq.com": (550, b"User unknown"),
+    }
+
+    with patch("smtplib.SMTP_SSL", return_value=fake_smtp):
+        with pytest.raises(EmailSendError) as exc_info:
+            asyncio.run(svc.send_email(
+                to=["bad@qq.com"], subject="ceshi", body="ceshi",
+            ))
+
+    assert "拒收部分收件人" in str(exc_info.value)
+    assert "bad@qq.com" in str(exc_info.value)
+
+
+def test_send_email_raises_when_smtp_refuses_recipients_starttls():
+    """STARTTLS 模式下同样的 refused 校验。"""
+    config = _make_config(use_ssl=False)
+    svc = EmailService(config)
+
+    fake_smtp = MagicMock()
+    fake_smtp.__enter__.return_value = fake_smtp
+    fake_smtp.__exit__.return_value = False
+    fake_smtp.send_message.return_value = {
+        "spam@qq.com": (550, b"Message rejected as spam"),
+    }
+
+    with patch("smtplib.SMTP", return_value=fake_smtp):
+        with pytest.raises(EmailSendError):
+            asyncio.run(svc.send_email(
+                to=["spam@qq.com"], subject="ceshi", body="ceshi",
+            ))
