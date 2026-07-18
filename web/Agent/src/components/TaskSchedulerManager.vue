@@ -1263,6 +1263,12 @@ onMounted(loadInitialData)
   justify-self: start;
 }
 
+.inline-field input[type="checkbox"] {
+  width: auto;
+  flex: 0 0 auto;
+  margin: 0;
+}
+
 .inline-field span {
   white-space: nowrap;
 }
