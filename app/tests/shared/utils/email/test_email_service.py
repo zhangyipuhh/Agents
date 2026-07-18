@@ -316,3 +316,78 @@ def test_send_email_raises_when_smtp_refuses_recipients_starttls():
             asyncio.run(svc.send_email(
                 to=["spam@qq.com"], subject="ceshi", body="ceshi",
             ))
+
+
+# =============================================================================
+# P1: 2026-07-18 新增 - RFC 5322 必备头（Date / MIME-Version / Message-ID 域）
+# =============================================================================
+
+def test_build_message_includes_date_header():
+    """邮件必须包含 Date 头，否则被反垃圾系统判为伪造邮件。
+
+    根因：Python EmailMessage 默认不自动加 Date；用户实测发现，
+    用我们系统发到企业邮箱 / QQ 邮箱的邮件全部"显示成功但收不到"，
+    但用 QQ 邮箱网页版直接发就能收到。补齐 Date / MIME-Version 后
+    通过主流邮件服务器反垃圾校验。
+    """
+    from email.utils import parsedate_to_datetime
+
+    config = _make_config()
+    svc = EmailService(config)
+    msg = svc._build_message(
+        to=["recv@example.com"], subject="s", body="b",
+        cc=None, attachment_paths=None, attachment_streams=None,
+    )
+
+    assert msg["Date"] is not None
+    # 解析回 datetime 不抛异常 = 格式合法
+    parsedate_to_datetime(msg["Date"])
+
+
+def test_build_message_includes_mime_version_header():
+    """包含附件或非 ASCII 字符时，MIME-Version: 1.0 是 RFC 2045 必备字段。"""
+    config = _make_config()
+    svc = EmailService(config)
+    msg = svc._build_message(
+        to=["recv@example.com"], subject="s", body="b",
+        cc=None, attachment_paths=None, attachment_streams=None,
+    )
+
+    assert msg["MIME-Version"] == "1.0"
+
+
+def test_build_message_uses_from_addr_domain_for_message_id():
+    """Message-ID 域必须与 From 域一致，否则反垃圾判为伪造邮件。
+
+    原代码用 cfg.host（如 smtp.qq.com）作为 Message-ID 域，
+    但 From 是 zhangyipu@foxmail.com，域不一致会被反垃圾系统标记。
+    """
+    config = _make_config()
+    config.host = "smtp.qq.com"
+    config.username = "zhangyipu@foxmail.com"  # 故意让 host 与 username 域不一致
+    svc = EmailService(config)
+    msg = svc._build_message(
+        to=["recv@example.com"], subject="s", body="b",
+        cc=None, attachment_paths=None, attachment_streams=None,
+    )
+
+    # Message-ID 必须是 <...@foxmail.com>，不是 <...@smtp.qq.com>
+    message_id = msg["Message-ID"]
+    assert message_id.endswith("@foxmail.com>"), (
+        f"Message-ID 域应等于 From 域（foxmail.com），实际: {message_id}"
+    )
+
+
+def test_build_message_message_id_fallback_when_no_at_in_username():
+    """username 不含 @ 时退化为 cfg.host（防御性 fallback）。"""
+    config = _make_config()
+    config.host = "mail.geostar.com.cn"
+    config.username = "zhangyipu"  # 无 @ 后缀
+    svc = EmailService(config)
+    msg = svc._build_message(
+        to=["recv@example.com"], subject="s", body="b",
+        cc=None, attachment_paths=None, attachment_streams=None,
+    )
+
+    # 没有 @ 时回退到 host
+    assert msg["Message-ID"].endswith("@mail.geostar.com.cn>")

@@ -23,7 +23,7 @@ import os
 import smtplib
 import ssl
 from email.message import EmailMessage
-from email.utils import formataddr, make_msgid
+from email.utils import formataddr, formatdate, make_msgid
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.shared.utils.email.email_models import EmailServerConfig
@@ -161,7 +161,19 @@ class EmailService:
         if cc:
             msg["Cc"] = ", ".join(cc)
         msg["Subject"] = subject
-        msg["Message-ID"] = make_msgid(domain=cfg.host)
+        # 2026-07-18 新增：补齐 RFC 5322 必备头，规避反垃圾误判
+        # - Date：缺 Date 头会被多家邮件服务器（QQ / 网易 / 企业 Exchange）
+        #   判为伪造邮件直接拒收或进垃圾箱
+        # - MIME-Version：包含附件/HTML 时必须 1.0，否则部分服务器拒收
+        msg["Date"] = formatdate(localtime=True)
+        msg["MIME-Version"] = "1.0"
+        # Message-ID 域必须与 From 域一致（反垃圾关键校验点）。
+        # cfg.host 是 SMTP 主机（smtp.qq.com / mail.geostar.com.cn），
+        # cfg.username 的 @ 后面才是真实的发件人域（qq.com / foxmail.com /
+        # geostar.com.cn）。注意：cfg.username 可能已经是邮箱全地址，
+        # 需要先剥掉 @ 之前的本地部分。
+        from_addr_domain = cfg.username.rsplit("@", 1)[-1] if "@" in cfg.username else cfg.host
+        msg["Message-ID"] = make_msgid(domain=from_addr_domain)
         msg.set_content(body)
 
         # 附件：本地文件路径
