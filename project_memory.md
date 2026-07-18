@@ -275,9 +275,20 @@ asyncio.run(EmailService(config).send_email(
 - **读库后**：`EmailConfigService.get_active_server_config()` 将 `str` 字段 `encode("ascii")` 回 `bytes` 再喂给 `fernet.decrypt(...)`。
 - 两方向不能合并：service 必须同时维护「bytes → DB（str）」与「DB（str） → bytes」两条归一化路径，任何一边遗漏都会立刻抛异常。
 
-`email_policies` 字段：id / name / description / created_by_user_id (FK→users) / created_at / updated_at。
+`email_policies` 字段：id / name / description / created_by_user_id (FK→users) / subject_template / body_template / created_at / updated_at。
 
 `email_policy_recipients` 字段：policy_id (FK→email_policies, CASCADE) / user_id (FK→users, CASCADE)，联合主键。
+
+#### 策略模板（subject_template / body_template）
+
+策略可携带两个模板字段用于定时任务通知邮件：
+
+- `subject_template VARCHAR(500)` —— 邮件主题模板，含 `{{var}}` 占位符；空字符串时使用策略名作为主题。
+- `body_template TEXT` —— 邮件正文模板；空字符串时直接使用脚本返回值（`normalize_script_result` 第一项）作为正文。
+
+占位符白名单（见 `app/shared/utils/email/template_renderer.py::EmailTemplateRenderer.SUPPORTED_VARS`）：`schedule_name` / `schedule_id` / `run_id` / `started_at` / `finished_at` / `trigger_type` / `script_name` / `script_output` / `attachment_paths`。非白名单占位符保留原样（方便排查）；`datetime` 渲染为 `YYYY-MM-DD HH:MM:SS`；`list` 渲染为逗号拼接；`None` 渲染为空串。
+
+模板渲染不引入 Jinja2，仅 `re.sub(r"\{\{\s*(\w+)\s*\}\}", ...)` + 白名单校验，避免任意表达式执行。
 
 ### API 端点（`/api/admin/email`，全部 `require_admin`）
 
@@ -318,7 +329,8 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 
 ### 前端
 
-- `web/Agent/src/components/EmailSettingsManager.vue` —— 邮件设置组件（3 Tab：服务器配置 / 发送策略 / 测试发送）。服务器配置表单采用 2 列网格；`密码 / 授权码` 跨两列；`使用 SMTP_SSL` 与 `启用此配置` 两个复选框（`.inline-field`，`gap: 4px` + `justify-self: start`，只占内容宽度，左对齐）并置于操作按钮之前。发送策略 Tab 使用 `recipientKeyword` 响应式状态筛选收件人姓名、用户名和邮箱，并在新建、编辑、取消编辑时重置。
+- `web/Agent/src/components/EmailSettingsManager.vue` —— 邮件设置组件（3 Tab：服务器配置 / 发送策略 / 测试发送）。服务器配置表单采用 2 列网格；`密码 / 授权码` 跨两列；`使用 SMTP_SSL` 与 `启用此配置` 两个复选框（`.inline-field`，`gap: 4px` + `justify-self: start`，只占内容宽度，左对齐）并置于操作按钮之前。发送策略 Tab 使用 `recipientKeyword` 响应式状态筛选收件人姓名、用户名和邮箱，并在新建、编辑、取消编辑时重置。策略编辑器在「策略描述」下方、「收件人」上方新增「主题模板」「正文模板」两个字段（`data-testid="policy-subject-template"` / `data-testid="policy-body-template"`），模板支持 `{{var}}` 占位符；前端保存时把 `subject_template` / `body_template` 加入 payload。
+- `web/Agent/src/components/TaskSchedulerManager.vue` —— 当 `target_type === 'script'` 时显示「启用邮件通知」复选框（`data-testid="schedule-notify-enabled"`）与「邮件策略」下拉（`data-testid="schedule-notify-policy"`，按需调用 `fetchEmailPolicies()`）；切换 `target_type` 到 `agent` 时自动清空 `notify_enabled` / `notify_policy_id`。
 - `web/Agent/src/components/TaskSchedulerManager.vue` —— 任务计划组件，表单 `保存后启用任务` 复选框使用 `.inline-field`（`gap: 4px` + `justify-self: start`，与 `EmailSettingsManager` 保持一致的紧凑左对齐风格）。
 - 在 `web/Agent/src/components/UserSettingsDialog.vue` 中作为「邮件设置」侧边栏项（位于「定时任务」下方，admin 可见）。
 - API 封装位于 `web/Agent/src/utils/api.js`：`fetchEmailServerConfig` / `updateEmailServerConfig` / `testEmailServerConfig` / `fetchEmailableUsers` / `fetchEmailPolicies` / `createEmailPolicy` / `updateEmailPolicy` / `deleteEmailPolicy` / `sendTestEmail`（multipart/form-data）/ `sendEmailByPolicy`。
@@ -549,6 +561,8 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 | target_type | VARCHAR(16) DEFAULT 'agent' | 目标类型：`agent`（智能体）或 `script`（脚本） |
 | script_name | VARCHAR(100) | 目标脚本名（target_type='script' 时必填，'agent' 时为 NULL） |
 | script_args | JSONB | 脚本参数，默认 `{}`（target_type='script' 时使用） |
+| notify_enabled | BOOLEAN NOT NULL DEFAULT FALSE | 脚本任务完成后是否按 notify_policy_id 发送通知邮件 |
+| notify_policy_id | INTEGER FK → email_policies(id) ON DELETE SET NULL | 邮件策略 ID；删除策略时自动置 NULL |
 | last_run_at / next_run_at | TIMESTAMP | 最近运行与下次运行时间 |
 | created_at / updated_at | TIMESTAMP | 创建与更新时间 |
 
@@ -573,7 +587,7 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 
 **接口**：`app/routers/task_scheduler_router.py`，前缀 `/api/admin/task-schedules`，全部受 `require_admin` 保护；提供列表、详情、新建、更新、删除、启停、立即运行与执行历史查询。`CreateTaskScheduleRequest` / `UpdateTaskScheduleRequest` 通过 Pydantic `model_validator(mode="after")` 跨字段校验 `target_type` 与 `agent_name`/`prompt`/`script_name` 一致性。
 
-**服务**：`app/shared/utils/agent/task_scheduler_service.py::TaskSchedulerService`，由 lifespan 真实初始化到 `app.state.task_scheduler_service`；测试中只能注入真实 service 实例，不允许通过 `app.state.db = MagicMock()` 虚构生产不存在的依赖。`execute_schedule` 根据 `target_type` 分支：`agent` 复用 `build_agent_instance + agent.invoke`；`script` 通过 `script_discovery_service.get_script()` 取 `RegisteredScript`，构造 `ScriptContext` 调用 `registered.func(context)`。
+**服务**：`app/shared/utils/agent/task_scheduler_service.py::TaskSchedulerService`，由 lifespan 真实初始化到 `app.state.task_scheduler_service`；测试中只能注入真实 service 实例，不允许通过 `app.state.db = MagicMock()` 虚构生产不存在的依赖。`execute_schedule` 根据 `target_type` 分支：`agent` 复用 `build_agent_instance + agent.invoke`；`script` 通过 `script_discovery_service.get_script()` 取 `RegisteredScript`，构造 `ScriptContext` 调用 `registered.func(context)`，把返回值用 `normalize_script_result` 拆为 `(body, attachments)` 后写入 `output_text`。当 `notify_enabled=True` 且 `notify_policy_id` 非空时，调用 `_dispatch_script_email` 按策略模板渲染并通过 `EmailService.send_email` 发邮件（fail-soft：邮件失败仅记 warning，不污染 run 状态）。`TaskSchedulerService.__init__` 新增 `email_config_service` 入参（可选），由 `app/core/server.py::lifespan` 在初始化时透传 `app.state.email_config_service`。
 
 ### 脚本定时任务系统（target_type='script'）
 
@@ -581,7 +595,9 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 
 **脚本扫描源**：`app/scripts/` 目录（`paths.SCRIPTS_DIR`），递归扫描 `.py` 文件，跳过 `__init__.py` / `base.py` / `registry.py` 与下划线开头文件；通过 `importlib.util.spec_from_file_location` 动态加载触发 `@register_script` 装饰器执行。
 
-**注册契约**：`app/scripts/registry.py::register_script(name, display_name, description="", params_schema=None)` 装饰 `async def run(context: ScriptContext) -> str` 函数；`ScriptContext`（`app/scripts/base.py`，Pydantic BaseModel）含 `schedule_id`/`run_id`/`session_id`/`schedule_name`/`script_args`/`log_logger`/`started_at`/`trigger_type` 字段。
+**注册契约**：`app/scripts/registry.py::register_script(name, display_name, description="", params_schema=None)` 装饰 `async def run(context: ScriptContext) -> ScriptResult` 函数；`ScriptContext`（`app/scripts/base.py`，Pydantic BaseModel）含 `schedule_id`/`run_id`/`session_id`/`schedule_name`/`script_args`/`log_logger`/`started_at`/`trigger_type` 字段。
+
+**返回值约定（`ScriptResult`）**：`str`（向后兼容旧契约，输出文本无附件）或 `(body, attachments)` 元组（`body=str`，`attachments=str / list[str] / None`）。`app/scripts/base.py::normalize_script_result` 把返回值归一化为 `(body, attachments_list)`；非白名单类型抛 `ScriptExecutionError`。调度器把 `body` 写入 `agent_task_runs.output_text`，把 `attachments_list` 作为通知邮件附件路径（仅当任务配置 `notify_enabled=True`）。
 
 **发现服务**：`app/shared/utils/agent/script_discovery_service.py::ScriptDiscoveryService(scripts_dir: Path)`，由 lifespan 在 `settings.script_scan_enabled=True` 时初始化到 `app.state.script_discovery_service`；提供 `scan()`（返回 `{scanned, registered, failed}`）、`list_scripts()`（白名单字段：`name`/`display_name`/`description`/`params_schema`/`module_path`）、`get_script(name)`（返回含 `func` 引用的 `RegisteredScript`）。
 
