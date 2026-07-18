@@ -109,6 +109,42 @@ async def lifespan(app: FastAPI):
     db_pool = DatabasePool._pool
     mcp_configs = None  # 优先从 DB 读，降级为 yaml
 
+    # 2026-07-18：初始化 EmailConfigService（数据库为 SMTP 配置真相源）
+    # 顺序约束：EmailConfigService 必须在 TaskSchedulerService 之前构造完成，
+    # 否则脚本任务邮件通知会在 _dispatch_script_email 内命中
+    # "email_config_service 未注入" 短路分支。复用 DEVOPS_CREDENTIAL_KEY
+    # 作为 Fernet 密钥加密 SMTP 密码字段；诊断失败 / 邮件禁用 / DB 不可用
+    # 时挂 None，保留系统降级行为。
+    if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.email_enabled:
+        try:
+            from app.core.config.devops_diagnostics import diagnose_credential_key
+            from app.shared.utils.email.email_config_service import EmailConfigService
+
+            email_diag = diagnose_credential_key()
+            if not email_diag.ok:
+                app.state.email_config_service = None
+                logging.warning(
+                    "[lifespan] EmailConfigService skipped: %s | %s",
+                    email_diag.reason, email_diag.hint,
+                )
+            else:
+                app.state.email_config_service = EmailConfigService(
+                    db=DatabasePool._pool,
+                    credential_key=settings.devops.credential_key,
+                )
+                await app.state.email_config_service.preload_all()
+                logging.info("[lifespan] EmailConfigService initialized")
+        except Exception as email_exc:
+            logging.warning(
+                "[lifespan] Failed to initialize EmailConfigService: %s",
+                type(email_exc).__name__,
+            )
+    else:
+        logging.warning(
+            "[lifespan] Database pool not available or email disabled, "
+            "EmailConfigService not initialized"
+        )
+
     if db_pool:
         try:
             from app.shared.utils.agent.agent_config_service import AgentConfigService
@@ -343,38 +379,6 @@ async def lifespan(app: FastAPI):
     else:
         logging.warning(
             "[lifespan] Database pool not available, DevOpsServerService not initialized"
-        )
-
-    # 2026-07-16 新增：初始化 EmailConfigService（数据库为 SMTP 配置真相源）
-    # 复用 DEVOPS_CREDENTIAL_KEY 作为 Fernet 密钥加密 SMTP 密码字段
-    if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.email_enabled:
-        try:
-            from app.core.config.devops_diagnostics import diagnose_credential_key
-            from app.shared.utils.email.email_config_service import EmailConfigService
-
-            email_diag = diagnose_credential_key()
-            if not email_diag.ok:
-                app.state.email_config_service = None
-                logging.warning(
-                    "[lifespan] EmailConfigService skipped: %s | %s",
-                    email_diag.reason, email_diag.hint,
-                )
-            else:
-                app.state.email_config_service = EmailConfigService(
-                    db=DatabasePool._pool,
-                    credential_key=settings.devops.credential_key,
-                )
-                await app.state.email_config_service.preload_all()
-                logging.info("[lifespan] EmailConfigService initialized")
-        except Exception as email_exc:
-            logging.warning(
-                "[lifespan] Failed to initialize EmailConfigService: %s",
-                type(email_exc).__name__,
-            )
-    else:
-        logging.warning(
-            "[lifespan] Database pool not available or email disabled, "
-            "EmailConfigService not initialized"
         )
 
     # 2026-07-16 新增：飞书 WebSocket 长连接（订阅 im.message.receive_v1，被动接收消息）
