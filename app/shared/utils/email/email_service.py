@@ -218,16 +218,29 @@ class EmailService:
 
         异常:
             smtplib.SMTPException: 任意 SMTP 操作失败时抛出。
+
+        注意:
+            显式传入 ``local_hostname=cfg.host`` 以规避 Windows 中文主机名
+            场景下 ``socket.getfqdn()`` 返回非 ASCII 字符串导致 ``EHLO``
+            命令在 ``smtplib`` 内部以 ``ascii`` 编码失败的问题。
         """
         cfg = self._config
         recipients = list(to) + list(cc)
         if cfg.use_ssl:
             context = ssl.create_default_context()
-            with smtplib.SMTP_SSL(cfg.host, cfg.port, context=context, timeout=30) as smtp:
+            with smtplib.SMTP_SSL(
+                cfg.host, cfg.port,
+                context=context, timeout=30,
+                local_hostname=cfg.host,
+            ) as smtp:
                 smtp.login(cfg.username, cfg.password)
                 smtp.send_message(msg, to_addrs=recipients)
         else:
-            with smtplib.SMTP(cfg.host, cfg.port, timeout=30) as smtp:
+            with smtplib.SMTP(
+                cfg.host, cfg.port,
+                timeout=30,
+                local_hostname=cfg.host,
+            ) as smtp:
                 smtp.starttls(context=ssl.create_default_context())
                 smtp.login(cfg.username, cfg.password)
                 smtp.send_message(msg, to_addrs=recipients)

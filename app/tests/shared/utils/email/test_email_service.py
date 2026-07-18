@@ -197,3 +197,62 @@ def test_send_email_raises_on_missing_attachment(tmp_path):
             to=["a@b.com"], subject="主题", body="正文",
             attachment_paths=[str(tmp_path / "nonexistent.pdf")],
         ))
+
+
+# =============================================================================
+# P2: 回归测试 - ASCII 安全的 local_hostname
+# =============================================================================
+
+def test_smtp_ssl_uses_ascii_local_hostname():
+    """回归测试：SSL 分支必须显式传入 local_hostname=cfg.host，避免
+    Windows 中文主机名场景下 socket.getfqdn() 返回非 ASCII 字符串
+    导致 smtplib 在 EHLO 命令上抛 UnicodeEncodeError。
+    """
+    config = _make_config(use_ssl=True)
+    svc = EmailService(config)
+
+    fake_smtp = MagicMock()
+    fake_smtp.__enter__.return_value = fake_smtp
+    fake_smtp.__exit__.return_value = False
+
+    with patch("smtplib.SMTP_SSL", return_value=fake_smtp) as mock_ssl:
+        asyncio.run(svc.send_email(
+            to=["a@b.com"], subject="主题", body="正文",
+        ))
+
+    assert mock_ssl.call_count == 1
+    kwargs = mock_ssl.call_args.kwargs
+    assert "local_hostname" in kwargs, (
+        "smtplib.SMTP_SSL 必须显式传入 local_hostname 参数，"
+        "否则 socket.getfqdn() 在中文主机名下会触发 ascii 编码错误"
+    )
+    assert kwargs["local_hostname"] == config.host
+    assert all(ord(ch) < 128 for ch in kwargs["local_hostname"]), (
+        "local_hostname 必须为 ASCII 字符串"
+    )
+
+
+def test_smtp_starttls_uses_ascii_local_hostname():
+    """回归测试：STARTTLS 分支必须显式传入 local_hostname=cfg.host。"""
+    config = _make_config(use_ssl=False)
+    svc = EmailService(config)
+
+    fake_smtp = MagicMock()
+    fake_smtp.__enter__.return_value = fake_smtp
+    fake_smtp.__exit__.return_value = False
+
+    with patch("smtplib.SMTP", return_value=fake_smtp) as mock_smtp:
+        asyncio.run(svc.send_email(
+            to=["a@b.com"], subject="主题", body="正文",
+        ))
+
+    assert mock_smtp.call_count == 1
+    kwargs = mock_smtp.call_args.kwargs
+    assert "local_hostname" in kwargs, (
+        "smtplib.SMTP 必须显式传入 local_hostname 参数，"
+        "否则 socket.getfqdn() 在中文主机名下会触发 ascii 编码错误"
+    )
+    assert kwargs["local_hostname"] == config.host
+    assert all(ord(ch) < 128 for ch in kwargs["local_hostname"]), (
+        "local_hostname 必须为 ASCII 字符串"
+    )
