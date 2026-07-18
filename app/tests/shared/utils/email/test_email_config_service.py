@@ -14,7 +14,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.shared.utils.email.email_config_service import EmailConfigService
+from app.shared.utils.email.email_config_service import (
+    EmailConfigService,
+    EmailConfigValidationError,
+)
 from app.shared.utils.email.email_models import EmailServerConfig
 
 
@@ -331,6 +334,25 @@ def test_build_ssl_context_disables_verification_when_verify_ssl_false():
 
     assert ctx.check_hostname is False
     assert ctx.verify_mode == ssl.CERT_NONE
+
+
+# =============================================================================
+# P1: 2026-07-18 新增 - upsert_server_config username 必须含 @ 的防御校验
+# =============================================================================
+
+def test_upsert_server_config_raises_on_username_without_at():
+    """upsert 时 username 不含 @ 必须抛 EmailConfigValidationError（路由层映射 400）。
+
+    设计原因：From 头由 username 构造，无 @ 时生成无域名畸形 From，
+    收件方反垃圾网关会静默丢弃；在保存配置时 fail-fast 可避免运行时
+    才暴露问题。校验在任何 DB / Fernet 操作之前触发，故用 MagicMock db。
+    """
+    svc = EmailConfigService(db=MagicMock(), credential_key="")
+    config = _make_config()
+    config.username = "zhangyipu"  # 纯用户名，无 @ 域名
+
+    with pytest.raises(EmailConfigValidationError, match="完整邮箱地址"):
+        asyncio.run(svc.upsert_server_config(config))
 
 
 def test_build_ssl_context_default_verify_ssl_true_keeps_strict():

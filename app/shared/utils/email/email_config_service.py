@@ -256,9 +256,17 @@ class EmailConfigService:
 
         异常:
             EmailConfigError: ``keep_existing_password=True`` 但数据库无记录时抛出。
+            EmailConfigValidationError: ``config.username`` 不含 ``@`` 时抛出
+                （From 头由 username 构造，无域名的畸形 From 会被收件方
+                反垃圾网关静默丢弃）。
         """
         if self._db is None:
             raise EmailConfigError("数据库未初始化")
+        if "@" not in (config.username or ""):
+            raise EmailConfigValidationError(
+                f"SMTP 登录账号必须是完整邮箱地址（含 @ 域名），"
+                f"当前为: {config.username!r}"
+            )
 
         fernet = self._ensure_fernet()
 

@@ -391,3 +391,47 @@ def test_build_message_message_id_fallback_when_no_at_in_username():
 
     # 没有 @ 时回退到 host
     assert msg["Message-ID"].endswith("@mail.geostar.com.cn>")
+
+
+# =============================================================================
+# P1: 2026-07-18 新增 - username 必须含 @ 的防御校验 + 成功路径日志
+# =============================================================================
+
+def test_send_email_raises_on_username_without_at():
+    """username 不含 @ 时 send_email 必须 fail-fast 抛 EmailSendError。
+
+    设计原因：From 头由 username 构造，无 @ 时会生成无域名畸形 From，
+    SMTP 服务器可能正常返回 250，但收件方反垃圾网关会静默丢弃
+    （"显示成功但收不到"的典型根因之一），因此在发送前直接拦截。
+    """
+    config = _make_config()
+    config.username = "zhangyipu"  # 纯用户名，无 @ 域名
+    svc = EmailService(config)
+
+    with pytest.raises(EmailSendError, match="完整邮箱地址"):
+        asyncio.run(svc.send_email(to=["a@b.com"], subject="s", body="b"))
+
+
+def test_send_email_logs_success(caplog):
+    """成功路径必须记录 INFO 日志（含 message_id 与收件人）。
+
+    设计原因：SMTP 250 仅代表服务器已接收不代表对方已投递，
+    事后排查"显示成功但收不到"问题时依赖该日志确认 envelope 信息。
+    """
+    import logging
+
+    config = _make_config()
+    svc = EmailService(config)
+
+    fake_smtp = MagicMock()
+    fake_smtp.__enter__.return_value = fake_smtp
+    fake_smtp.__exit__.return_value = False
+    fake_smtp.send_message.return_value = {}
+
+    with caplog.at_level(logging.INFO, logger="app.shared.utils.email.email_service"):
+        with patch("smtplib.SMTP_SSL", return_value=fake_smtp):
+            asyncio.run(svc.send_email(to=["a@b.com"], subject="s", body="b"))
+
+    success_records = [r for r in caplog.records if "发送成功" in r.message]
+    assert success_records, "成功路径必须记录 INFO 日志"
+    assert "a@b.com" in success_records[0].message

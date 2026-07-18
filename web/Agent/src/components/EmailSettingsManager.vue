@@ -404,7 +404,7 @@ async function sendTest() {
       formData.append('files', file, file.name)
     }
     const result = await sendTestEmail(formData)
-    testMessage.value = `发送成功！共发送给 ${result.sent_to.length} 个收件人`
+    testMessage.value = `发送成功！共发送给 ${result.sent_to.length} 个收件人（SMTP 已接收；若对方未收到，请检查对方垃圾箱 / 网关隔离区）`
   } catch (err) {
     testError.value = err.message
   } finally {
@@ -744,7 +744,12 @@ onMounted(async () => {
       <header class="detail-header">
         <div>
           <h3>发送测试邮件</h3>
-          <p>使用当前已保存的 SMTP 配置发送；附件从本地浏览器上传。</p>
+          <p>
+            使用当前已保存的 SMTP 配置发送；附件从本地浏览器上传。
+            「发送成功」仅代表 SMTP 服务器已接收（250 OK），不代表对方邮箱已投递；
+            跨域发送（如 QQ/foxmail → 企业邮箱）可能被对方反垃圾网关静默丢弃，
+            未收到时请检查对方垃圾箱 / 网关隔离区，或改用与收件人同域的 SMTP 服务器。
+          </p>
         </div>
       </header>
 

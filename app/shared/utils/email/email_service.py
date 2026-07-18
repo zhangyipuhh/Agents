@@ -105,11 +105,22 @@ class EmailService:
             Dict[str, Any]: 含 ``success`` / ``message_id`` / ``sent_to`` 三个字段。
 
         异常:
-            EmailSendError: SMTP 连接 / 登录 / 发送失败时抛出。
+            EmailSendError: 收件人列表为空、``config.username`` 不含 ``@``
+                （From 头会畸形）、或 SMTP 连接 / 登录 / 发送失败时抛出。
             FileNotFoundError: ``attachment_paths`` 中的路径不存在时抛出。
         """
         if not to:
             raise EmailSendError("收件人列表不能为空")
+
+        # 防御性校验：username 必须是完整邮箱地址（含 @ 域名）。
+        # From 头由 username 构造，无 @ 时会生成 "显示名 <zhangyipu>" 这类
+        # 无域名畸形地址；SMTP 服务器可能正常返回 250，但收件方反垃圾网关
+        # 会将其静默丢弃（显示成功但收不到的典型根因之一）。
+        if "@" not in (self._config.username or ""):
+            raise EmailSendError(
+                f"SMTP 登录账号必须是完整邮箱地址（含 @ 域名），"
+                f"当前为: {self._config.username!r}"
+            )
 
         msg = self._build_message(
             to=to, subject=subject, body=body, cc=cc,
@@ -122,6 +133,13 @@ class EmailService:
         except Exception as exc:
             logger.error("[email_service] 发送失败: %s", exc, exc_info=True)
             raise EmailSendError(f"邮件发送失败: {exc}") from exc
+
+        # 成功路径日志：SMTP 250 仅代表服务器已接收，事后排查
+        # "显示成功但收不到"问题时依赖此日志确认 message_id 与信封收件人
+        logger.info(
+            "[email_service] 发送成功: message_id=%s from=%s to=%s",
+            msg["Message-ID"], msg["From"], ", ".join(list(to) + list(cc or [])),
+        )
 
         return {
             "success": True,
