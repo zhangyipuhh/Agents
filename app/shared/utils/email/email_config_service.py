@@ -305,11 +305,19 @@ class EmailConfigService:
         try:
             if config.use_ssl:
                 context = ssl.create_default_context()
-                with smtplib.SMTP_SSL(config.host, config.port, context=context, timeout=15) as smtp:
+                with smtplib.SMTP_SSL(
+                    config.host, config.port,
+                    context=context, timeout=15,
+                    local_hostname=config.host,
+                ) as smtp:
                     if config.password:
                         smtp.login(config.username, config.password)
             else:
-                with smtplib.SMTP(config.host, config.port, timeout=15) as smtp:
+                with smtplib.SMTP(
+                    config.host, config.port,
+                    timeout=15,
+                    local_hostname=config.host,
+                ) as smtp:
                     smtp.starttls(context=ssl.create_default_context())
                     if config.password:
                         smtp.login(config.username, config.password)
