@@ -157,15 +157,19 @@ class UserProfileResponse(BaseModel):
     """
     id: int
     username: str
-    role: str
-    real_name: str
-    phone: str
-    email: str
-    department: str
-    position: str
+    # 2026-07-19 修复:补默认值,与 UserResponse(2026-07-18 修复)风格对齐,
+    # 防止 DB 行字段为 None 时抛 500。
+    # 同时与 list_users 的 UserResponse 修复形成"详情接口对称"防御层,
+    # 避免用户报告"个人设置邮箱显示 placeholder"的现象再次发生。
+    role: str = 'user'
+    real_name: str = ''
+    phone: str = ''
+    email: str = ''
+    department: str = ''
+    position: str = ''
     allowed_agents: List[str] = []
-    created_at: str
-    updated_at: str
+    created_at: str = ''
+    updated_at: str = ''
 
 
 @router.get('', response_model=List[UserResponse], dependencies=[Depends(require_admin)])
@@ -614,18 +618,20 @@ async def get_user_profile(user_id: int, req: Request):
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
 
+    # 2026-07-19 修复:显式把 None 兜底为空字符串,防止 DB 行字段为 None 时 Pydantic 抛 500。
+    # Pydantic V2 的默认值仅在字段缺失时生效,不接管显式 None,所以在路由层兜底更稳。
     return UserProfileResponse(
         id=user['id'],
         username=user['username'],
-        role=user.get('role', 'user'),
-        real_name=user.get('real_name', ''),
-        phone=user.get('phone', ''),
-        email=user.get('email', ''),
-        department=user.get('department', ''),
-        position=user.get('position', ''),
-        allowed_agents=user.get('allowed_agents', []),
-        created_at=str(user['created_at']),
-        updated_at=str(user['updated_at'])
+        role=user.get('role') or 'user',
+        real_name=user.get('real_name') or '',
+        phone=user.get('phone') or '',
+        email=user.get('email') or '',
+        department=user.get('department') or '',
+        position=user.get('position') or '',
+        allowed_agents=user.get('allowed_agents') or [],
+        created_at=str(user.get('created_at') or ''),
+        updated_at=str(user.get('updated_at') or '')
     )
 
 

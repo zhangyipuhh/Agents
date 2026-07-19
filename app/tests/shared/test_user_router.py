@@ -360,3 +360,104 @@ def test_list_users_response_model_includes_profile_fields(client, admin_headers
     assert "phone" in user
     assert "department" in user
     assert "position" in user
+
+
+def test_get_user_profile_response_includes_profile_fields(client, admin_headers, monkeypatch):
+    """
+    2026-07-19 回归测试:GET /api/users/{user_id}/profile 响应模型必须保留 email/phone/department/position/real_name/role/allowed_agents 等字段。
+
+    根因记录:与 2026-07-18 的 test_list_users_response_model_includes_profile_fields 对称。
+    之前 UserProfileResponse 字段未声明默认值,若 DB 行某字段为 None 会抛 500,
+    导致前端 loadUserProfile catch 后 editEmail.value 保持 '',渲染时显示 placeholder。
+    修复:UserProfileResponse 补默认值;同时新增本测试锁定契约,防止未来被裁剪。
+
+    Args:
+        client: FastAPI TestClient。
+        admin_headers: admin 认证请求头(来自 conftest)。
+        monkeypatch: pytest 内置 fixture,替换 UserDB.get_user_by_id。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 响应中缺少任一字段时抛出。
+    """
+    from app.shared.utils.auth.user_db import UserDB
+
+    async def fake_get_user_by_id(user_id):
+        # 模拟 DB 返回含真实 email 的完整字典(与生产 users 表 admin 行一致)
+        return {
+            "id": 1,
+            "username": "admin",
+            "password_hash": "",
+            "role": "admin",
+            "real_name": "",
+            "phone": "",
+            "email": "542995981@qq.com",
+            "department": "",
+            "position": "",
+            "allowed_agents": [],
+            "created_at": "2026-07-19T00:00:00",
+            "updated_at": "2026-07-19T00:00:00",
+        }
+
+    monkeypatch.setattr(UserDB, "get_user_by_id", fake_get_user_by_id)
+    response = client.get("/api/users/1/profile", headers=admin_headers)
+    assert response.status_code == 200
+    payload = response.json()
+    # 关键断言:DB 中已存 email 必须出现在响应里(不被 response_model 过滤)
+    assert payload["email"] == "542995981@qq.com"
+    # 所有字段必须在响应中存在(防止 future 字段被裁剪)
+    for field in [
+        "id", "username", "role", "real_name", "phone", "email",
+        "department", "position", "allowed_agents",
+        "created_at", "updated_at",
+    ]:
+        assert field in payload, f"missing field {field} in response"
+
+
+def test_get_user_profile_handles_none_fields(client, admin_headers, monkeypatch):
+    """
+    2026-07-19 防御性测试:DB 行字段为 None 时,GET /api/users/{user_id}/profile 仍返回 200 + 空字符串兜底,不抛 500。
+
+    根因记录:UserProfileResponse 修复后字段均有默认值 str='' / List[str]=[] / str='user',
+    当 DB 行某字段为 None(老数据 / 异常迁移场景)时,接口不应崩溃。
+
+    Args:
+        client: FastAPI TestClient。
+        admin_headers: admin 认证请求头。
+        monkeypatch: pytest 内置 fixture。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 接口返回非 200 时抛出。
+    """
+    from app.shared.utils.auth.user_db import UserDB
+
+    async def fake_get_user_by_id_none(user_id):
+        # 模拟 DB 行字段全为 None(异常场景)
+        return {
+            "id": 1,
+            "username": "admin",
+            "password_hash": "",
+            "role": None,
+            "real_name": None,
+            "phone": None,
+            "email": None,
+            "department": None,
+            "position": None,
+            "allowed_agents": None,
+            "created_at": None,
+            "updated_at": None,
+        }
+
+    monkeypatch.setattr(UserDB, "get_user_by_id", fake_get_user_by_id_none)
+    response = client.get("/api/users/1/profile", headers=admin_headers)
+    # 不抛 500,允许 200(空字符串兜底)或 4xx(业务拒绝)
+    assert response.status_code == 200, f"unexpected status {response.status_code}: {response.text}"
+    payload = response.json()
+    assert payload["email"] == ""
+    assert payload["phone"] == ""
+    assert payload["role"] == "user"  # 默认值兜底

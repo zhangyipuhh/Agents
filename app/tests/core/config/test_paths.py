@@ -19,6 +19,7 @@ from app.core.config import paths as paths_module
 from app.core.config.paths import (
     KNOWLEDGE_DIR,
     METADATA_FILE,
+    TASK_ATTACHMENT_DIR,
     TMP_DIR,
     resolve_project_dir,
     resolve_project_tmp_dir,
@@ -186,3 +187,15 @@ def test_resolve_project_tmp_dir_empty_raises():
     """
     with pytest.raises(ValueError):
         resolve_project_tmp_dir("")
+
+
+def test_task_attachment_dir_under_project_root():
+    """
+    P1: TASK_ATTACHMENT_DIR 位于项目根的 data/attachments/Task 子目录。
+    """
+    from app.core.config.paths import TASK_ATTACHMENT_DIR
+
+    expected = Path(paths_module._PROJECT_ROOT) / "data" / "attachments" / "Task"
+
+    assert Path(TASK_ATTACHMENT_DIR) == expected
+    assert Path(TASK_ATTACHMENT_DIR).is_absolute()

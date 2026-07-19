@@ -274,7 +274,13 @@ const isSaving = ref(false)
  */
 function switchTab(tabId) {
   activeTab.value = tabId
-  if (tabId === 'user-management') {
+  if (tabId === 'profile') {
+    // 2026-07-19 修复:从其他 tab 切回"个人设置"时,必须重新加载用户资料。
+    // 之前 watch 只在 props.visible 变化时触发,activeTab 切换不会触发 watch,
+    // 导致 admin 场景下"管理后台"→"个人设置"切换时 loadUserProfile 永远不被调用,
+    // 邮箱等字段保持初始空字符串,渲染时显示 placeholder。
+    loadUserProfile()
+  } else if (tabId === 'user-management') {
     // 进入用户管理主 tab 时，按当前子 tab 触发对应数据加载
     switchUserMgmtTab(activeUserMgmtTab.value)
   }
@@ -1862,8 +1868,7 @@ watch(() => props.visible, (newVal) => {
 
 /* 左侧导航 */
 .dialog-nav {
-  /* 基础 200px，最小 18% 父容器宽，最大 32% 父容器宽 —— 兼顾窄屏可用与宽屏留白 */
-  flex: 0 0 clamp(200px, 22%, 280px);
+  flex: 0 0 200px;
   border-right: 1px solid var(--color-border);
   padding: var(--space-lg) var(--space-sm);
   background-color: var(--color-bg-secondary);
@@ -1875,13 +1880,14 @@ watch(() => props.visible, (newVal) => {
 .nav-item {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 10px;
   padding: 10px 16px;
+  border-radius: var(--radius-sm);
   font-size: var(--font-size-sm);
   color: var(--color-text-secondary);
   text-align: left;
-  transition: var(--transition-colors);
-  border-left: 3px solid transparent;
+  transition: var(--transition-colors), var(--transition-shadow);
 }
 
 .nav-item:hover {
@@ -1889,10 +1895,13 @@ watch(() => props.visible, (newVal) => {
   color: var(--color-text-primary);
 }
 
+.nav-item:focus-visible {
+  box-shadow: var(--focus-ring-inset);
+}
+
 .nav-item.active {
   background-color: var(--color-accent-light);
   color: var(--color-accent);
-  border-left-color: var(--color-accent);
 }
 
 .nav-icon {

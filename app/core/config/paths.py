@@ -45,6 +45,11 @@ PROJECT_TMP_ROOT = os.path.join(_PROJECT_ROOT, "data", "tmp", "project")
 #   * 文件扩展名仍为 .log，但内容为 Markdown
 TASK_LOG_DIR = os.path.join(_PROJECT_ROOT, "data", "logs", "Task")
 
+# 定时任务附件存储根目录（用于定时脚本生成的邮件附件）
+#   * 完整结构：<项目根>/data/attachments/Task/{任务名 slug}/{YYYYMMDD_HHMMSS}_{run_id}.docx
+#   * 仅记录路径约定，物理写入由调用方负责创建目录（mkdir(parents=True, exist_ok=True)）
+TASK_ATTACHMENT_DIR = os.path.join(_PROJECT_ROOT, "data", "attachments", "Task")
+
 # 脚本扫描根目录（2026-07-16 新增）
 #   * ScriptDiscoveryService 扫描此目录下所有 .py 文件
 #   * 通过 @register_script 装饰器注册到全局 registry
