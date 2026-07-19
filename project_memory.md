@@ -119,10 +119,11 @@ agents 表 `agents_md_path` 字段存储**相对路径**（如 `agents/project/A
 - **写入端约定**：保留 `$N::jsonb` 显式 cast + `json.dumps(...)` 调用（asyncpg 会先 dumps 再入库，与 codec 无冲突；未来单独 PR 清理）
 - **防御性兜底**：`UserDB.list_users` / `get_user_by_username` / `get_user_by_id` 三处 postgres 返回路径统一调用 `_coerce_allowed_agents()`，把 JSONB 字符串 / 异常 JSON / 原生 list 规整为合法 list，避免 codec 注册失败或单测 stub 字符串值时下游 Pydantic 校验失败
 - **修复触发**：2026-07-01 `GET /api/users` 返回 500 —— Pydantic 校验 `UserResponse.allowed_agents` 时收到 `str '[]'` 而非 `list`
+- **修复触发**：2026-07-18 `GET /api/users` 编辑用户时邮箱/手机/部门/职位显示为空 —— `UserResponse` 模型仅声明 7 个字段(缺 `email/phone/department/position`),路由层 `list_users` 又显式构造 `UserResponse` 只传 7 个字段,Pydantic 用默认值 `''` 填充,前端 `UserSettingsDialog.vue::openEditUser` 拿到 `user.email === undefined` 被 `|| ''` 兜底为空字符串。修复:`UserResponse` 追加 4 个字段 + 路由构造时显式 `u.get(...)` 透传
 - **测试**：
   - `app/tests/shared/test_user_db_postgres_jsonb.py` —— 7 用例覆盖 postgres 分支 JSONB 字符串 / 空串 / 非法 JSON / 原生 list / 未命中记录
   - `app/tests/core/test_database_jsonb_codec.py` —— 2 用例覆盖 `_init_connection` 行为 + `initialize` 源码静态分析
-  - `app/tests/shared/test_user_router.py` —— 追加 `test_list_users_returns_200_with_native_list_allowed_agents` 路由契约测试
+  - `app/tests/shared/test_user_router.py` —— 追加 `test_list_users_returns_200_with_native_list_allowed_agents` 路由契约测试 + `test_list_users_response_model_includes_profile_fields` 锁定 `email/phone/department/position` 字段
 
 ## 项目架构
 
@@ -318,7 +319,7 @@ asyncio.run(EmailService(config).send_email(
 
 ### Lifespan 集成
 
-`app/core/server.py::lifespan` 在 `DatabasePool.register_schemas()` 后初始化 `EmailConfigService`：
+`app/core/server.py::lifespan` 在 `DatabasePool.register_schemas()` 完成、`db_pool = DatabasePool._pool` 取到之后立即初始化 `EmailConfigService`（**早于 Agent/MCP/ScriptDiscovery/TaskScheduler**），确保 `TaskSchedulerService` 构造时能拿到真实 `email_config_service` 实例：
 
 ```python
 if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.email_enabled:
@@ -330,6 +331,8 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
         )
         await app.state.email_config_service.preload_all()
 ```
+
+后续 `TaskSchedulerService(...)` 通过 `email_config_service=getattr(app.state, "email_config_service", None)` 注入同一实例，邮件管理路由（`/api/admin/email/*`）与脚本任务通知共享同一 `EmailConfigService`，避免缓存分叉。
 
 若 `DEVOPS_CREDENTIAL_KEY` 未配置，邮件服务降级（`app.state.email_config_service = None`），API 返回 503。
 
@@ -355,6 +358,13 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 10. **send_message refused 静默拒收校验（2026-07-18 新增）**：`smtplib.SMTP.send_message()` 在 RCPT TO 被拒时仅把失败项存到 `smtp.refused` 字典**不抛异常**，导致 UI 显示「发送成功」但实际邮件未送达（典型场景：企业邮箱 → QQ 邮箱被反垃圾拦截）。`EmailService._smtp_send` 在调用 `send_message` 后必须显式检查返回值，非空时抛 `EmailSendError` 让上层返回失败。**这是 P0 防御性检查，不可省略**。
 11. **企业邮箱 → QQ 邮箱单向不通的根因（2026-07-18 实测）**：Foxmail 发到 QQ 也收不到，但 QQ 发到企业能收到 → 双向不对称投递。这是**企业邮箱出站 IP 在 QQ 黑名单**或**域名 `geostar.com.cn` 缺 SPF/DKIM**导致被 QQ 拒收。SMTP 协议层返回 250 OK 后企业服务器"接收即丢弃"。**代码层面无法解决，必须 IT 介入**：① `nslookup mail.geostar.com.cn` 拿 IP 查 mxtoolbox.com/blacklists；② `dig TXT geostar.com.cn` 查 SPF；③ `dig TXT default._domainkey.geostar.com.cn` 查 DKIM；④ 收件方在 QQ 邮箱「反垃圾→白名单」加 `geostar.com.cn`。
 12. **邮件消息 RFC 5322 必备头缺失导致反垃圾拦截（2026-07-18 修复）**：Python `email.message.EmailMessage` **不会自动添加 `Date` / `MIME-Version` 头**。原 `_build_message` 只设置 `From` / `To` / `Subject` / `Message-ID`，导致我们系统的邮件普遍被反垃圾系统判为"伪造邮件"静默丢弃（QQ 邮箱 / 企业邮箱 / 网易等都会拦截）。同时 `Message-ID` 域用 `cfg.host`（如 `smtp.qq.com`），但 `From` 域是 `cfg.username` 的 `@` 后部分（如 `foxmail.com`），**域不一致**也被反垃圾标记。修复：`msg["Date"] = formatdate(localtime=True)` + `msg["MIME-Version"] = "1.0"` + `make_msgid(domain=cfg.username.rsplit("@",1)[-1])`。这是"显示成功但收不到"的最常见根因，**必须在所有 `_build_message` 路径上加这三个头**。
+12a. **反垃圾判定头 + envelope 一致性（2026-07-18 用户实测补充）**：跨域投递（QQ SMTP → 企业邮箱）场景下，仅补齐 Date/MIME-Version/Message-ID 仍会被收件方反垃圾网关静默拒收（SMTP 仍 250 OK）。需要同时满足：
+    - `msg["X-Mailer"] = "feature-agent-core/internal-mailer"`：声明发件客户端，未声明被判"未知脚本发信"。
+    - `msg["X-Priority"] = "3"`：Normal 优先级，避免 1 (High) 被判为脚本批量通知垃圾特征。
+    - `msg["Return-Path"] = cfg.username`：必须与 From 同地址，否则 envelope MAIL FROM 与 header From 域不一致 → SPF/DKIM 校验失败 → 反垃圾直接拒收。
+    - `msg["Reply-To"] = cfg.username`：避免空 Reply-To 触发"无回复地址"扣分。
+    - `smtp.send_message(..., from_addr=cfg.username, mail_options=["SMTPUTF8"], ...)`：显式传 envelope sender（部分 SMTP 转发时会改写 envelope MAIL FROM）+ UTF-8 envelope（中文 display name 不被 ascii 编码失败）。
+    任意一条缺失都可能导致 250 OK 但邮件被静默丢弃。**这 4 个头 + envelope 显式传入是不可省略的反垃圾前置条件**。
 13. **QQ SMTP → 企业邮箱可正常投递（2026-07-18 最终实测）**：用本系统配 `smtp.qq.com`（foxmail 账号）发到 `zhangyipu@geostar.com.cn` 已成功送达收件箱。此前"QQ SMTP 出口对陌生域名外发有限制、代码无法解决"的定性系**误判**，真实原因是两个混杂变量：① 失败测试跑在**未重启的旧进程**上，RFC 5322 头修复（第 12 条）尚未生效，缺 `Date` 头被企业网关判伪造静默丢弃；② 测试内容为主题/正文均为"测试"的垃圾特征词。**教训：改完代码必须重启服务再测（否则在测旧代码）；测试邮件避免使用"测试"类垃圾特征词**。归因备注：重启与换内容两个变量同时变化，未做单变量隔离实验，但"QQ 出口封禁"定性已被成功投递事实推翻。
 14. **系统代码正确性已最终确认（2026-07-18 用户实测）**：企业邮箱 SMTP（mail.geostar.com.cn）→ 企业内部邮箱能通，且 QQ SMTP（smtp.qq.com）→ 企业邮箱也已实测打通（见第 13 条）→ 系统邮件发送代码两个方向均验证正确；所有代码修改（RFC 5322 必备头、SSL 兼容、STARTTLS 跳过、证书校验关闭、refused 校验）都是**必要且正确的预防性修复**。剩余唯一不通方向是**企业邮箱 → QQ 邮箱**（见第 11 条，系 QQ 侧对 geostar 域的接收策略，与本系统代码无关）。
 15. **username 必须含 @ 的防御校验（2026-07-18 新增）**：From 头由 `cfg.username` 构造，纯用户名（无 @ 域名）会生成 `显示名 <zhangyipu>` 这类畸形 From，SMTP 返回 250 但收件方反垃圾网关静默丢弃。两处 fail-fast：① `EmailService.send_email` 发送前抛 `EmailSendError`；② `EmailConfigService.upsert_server_config` 保存时抛 `EmailConfigValidationError`（路由层 `_handle_config_error` 自动映射 400）。`_build_message` 的 Message-ID 域 host fallback 保留作为底层防御。
@@ -618,12 +628,16 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 
 **管理接口**：`app/routers/script_admin_router.py`，前缀 `/api/admin/scripts`，全部受 `require_admin` 保护；提供 `GET /api/admin/scripts`（白名单字段列表）与 `POST /api/admin/scripts/scan`（触发扫描，返回 `ScanSummary`）。
 
-**lifespan 初始化顺序**（`app/core/server.py` L232-270）：
-1. `if settings.task_scheduler_enabled and db_pool:` 进入定时任务初始化块
-2. 先初始化 `ScriptDiscoveryService`（受 `settings.script_scan_enabled` 控制），失败降级为 `None`
-3. 再构造 `TaskSchedulerService(db_pool, agent_config_service, script_discovery_service=...)`，注入上一步的 service（可能为 None）
-4. 调用 `preload_all()` 加载启用任务，`start()` 启动调度器
-5. 清理阶段把 `app.state.script_discovery_service = None`
+**lifespan 初始化顺序**：
+1. `DatabasePool.initialize()` + `register_schemas()`（`init_*_schema` 自动建表，包含邮件 / 定时任务 / 脚本相关表）
+2. `db_pool = DatabasePool._pool` 取连接池引用
+3. **初始化 `EmailConfigService`**：`app.state.email_config_service = EmailConfigService(db=db_pool, credential_key=...)` + `preload_all()`；早于 TaskSchedulerService，否则 `_dispatch_script_email` 会因 `self._email_config_service is None` 命中短路分支跳过发邮件。`settings.email_enabled=False` / DB 不可用 / `DEVOPS_CREDENTIAL_KEY` 诊断失败时挂 `None`，保留降级
+4. `AgentConfigService` / `McpConfigService` / `ToolRegistryService` / `SkillRegistryService` 初始化与依赖注入
+5. `MCPToolsRegistry` 初始化（DB 优先，yaml 兜底）
+6. `agent_config_service.preload_all()` + `mcp_config_service.preload_all()` 预加载
+7. `ScriptDiscoveryService`（受 `settings.script_scan_enabled` 控制）→ `app.state.script_discovery_service`
+8. **`TaskSchedulerService(db_pool, agent_config_service, script_discovery_service=..., email_config_service=getattr(app.state, "email_config_service", None))`** → `preload_all()` → `start()`
+9. 清理阶段：`app.state.script_discovery_service = None`、`TaskSchedulerService.shutdown()`、`DatabasePool.close()`
 
 **配置项**：`settings.script_scan_enabled: bool`（`app/core/config/settings.py` L598）控制是否启用脚本扫描。
 

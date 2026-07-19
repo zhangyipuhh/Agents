@@ -394,6 +394,169 @@ def test_build_message_message_id_fallback_when_no_at_in_username():
 
 
 # =============================================================================
+# P1: 2026-07-18 用户实测补充 - 反垃圾网关判定头 + envelope 一致性
+# =============================================================================
+
+def test_build_message_includes_x_mailer_header():
+    """邮件必须声明 X-Mailer，否则收件方反垃圾判为"未知脚本发信"静默丢弃。
+
+    用户实测：用我们系统发到企业邮箱的邮件全部"显示成功但收不到"，
+    但用 QQ 邮箱网页版直接发就能收到。两者差异之一就是 QQ 网页版
+    自动加 X-Mailer: Foxmail/QQMail，而我们的脚本未声明该头。
+    """
+    config = _make_config()
+    svc = EmailService(config)
+    msg = svc._build_message(
+        to=["recv@example.com"], subject="s", body="b",
+        cc=None, attachment_paths=None, attachment_streams=None,
+    )
+
+    assert msg["X-Mailer"] is not None
+    # 固定为内部系统名，便于收件方白名单配置
+    assert msg["X-Mailer"] == "feature-agent-core/internal-mailer"
+
+
+def test_build_message_includes_x_priority_normal():
+    """邮件 X-Priority 必须为 3 (Normal)，避免被反垃圾判为"垃圾特征"。
+
+    X-Priority: 1 (High) 是脚本批量通知的典型垃圾特征。Normal (3) 是
+    常规业务通知的标准优先级。
+    """
+    config = _make_config()
+    svc = EmailService(config)
+    msg = svc._build_message(
+        to=["recv@example.com"], subject="s", body="b",
+        cc=None, attachment_paths=None, attachment_streams=None,
+    )
+
+    assert msg["X-Priority"] == "3"
+
+
+def test_build_message_return_path_matches_from_username():
+    """Return-Path 必须等于 From 头地址，否则 envelope 与 header 域不一致，
+    SPF/DKIM 校验失败 → 反垃圾静默拒收。
+
+    email.message.EmailMessage 不会自动添加该头，需手动 set。
+    """
+    config = _make_config()
+    config.username = "zhangyipu@foxmail.com"
+    svc = EmailService(config)
+    msg = svc._build_message(
+        to=["recv@example.com"], subject="s", body="b",
+        cc=None, attachment_paths=None, attachment_streams=None,
+    )
+
+    # Return-Path 不带 display name，只保留裸地址
+    assert msg["Return-Path"] == "zhangyipu@foxmail.com"
+    # 必须与 From 同源
+    assert "zhangyipu@foxmail.com" in msg["From"]
+
+
+def test_build_message_reply_to_matches_from_username():
+    """Reply-To 显式设为 From 同地址，避免某些 MUA / 服务器把空 Reply-To
+    触发反垃圾"无回复地址"扣分。
+    """
+    config = _make_config()
+    config.username = "zhangyipu@foxmail.com"
+    svc = EmailService(config)
+    msg = svc._build_message(
+        to=["recv@example.com"], subject="s", body="b",
+        cc=None, attachment_paths=None, attachment_streams=None,
+    )
+
+    assert msg["Reply-To"] == "zhangyipu@foxmail.com"
+
+
+def test_smtp_send_uses_explicit_from_addr_and_smtputf8():
+    """smtp.send_message 必须显式传入 from_addr=cfg.username 与 mail_options=['SMTPUTF8']，
+    否则 envelope MAIL FROM 可能与 header From 不一致（SMTP 服务器在转发时改写），
+    跨域投递触发 SPF / DKIM 失败 → 反垃圾静默拒收。
+    """
+    config = _make_config(use_ssl=True)
+    config.username = "zhangyipu@foxmail.com"
+    svc = EmailService(config)
+
+    captured_kwargs = {}
+
+    class FakeSMTP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def login(self, user, password):
+            pass
+
+        def send_message(self, msg, **kwargs):
+            captured_kwargs.update(kwargs)
+            return {}
+
+    with patch("smtplib.SMTP_SSL", FakeSMTP):
+        asyncio.run(svc.send_email(
+            to=["recv@example.com"],
+            subject="s",
+            body="b",
+        ))
+
+    # envelope sender 必须显式传入，与 cfg.username 一致
+    assert captured_kwargs.get("from_addr") == "zhangyipu@foxmail.com", (
+        f"smtp.send_message 必须显式传入 from_addr=cfg.username, "
+        f"实际: {captured_kwargs.get('from_addr')!r}"
+    )
+    # 收件人地址列表必须传入
+    assert "zhangyipu@foxmail.com" not in (captured_kwargs.get("to_addrs") or [])
+    assert "recv@example.com" in captured_kwargs.get("to_addrs", [])
+    # 必须声明 SMTPUTF8 让 envelope 使用 UTF-8，避免中文 display name ascii 编码失败
+    assert "SMTPUTF8" in (captured_kwargs.get("mail_options") or []), (
+        f"smtp.send_message 必须传入 mail_options=['SMTPUTF8'], "
+        f"实际: {captured_kwargs.get('mail_options')!r}"
+    )
+
+
+def test_smtp_send_uses_explicit_from_addr_starttls():
+    """STARTTLS 分支同样必须显式 from_addr + SMTPUTF8（SSL/STARTTLS 路径对称）。"""
+    config = _make_config(use_ssl=False)
+    config.username = "zhangyipu@foxmail.com"
+    svc = EmailService(config)
+
+    captured_kwargs = {}
+
+    class FakeSMTP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def starttls(self, **kwargs):
+            pass
+
+        def login(self, user, password):
+            pass
+
+        def send_message(self, msg, **kwargs):
+            captured_kwargs.update(kwargs)
+            return {}
+
+    with patch("smtplib.SMTP", FakeSMTP):
+        asyncio.run(svc.send_email(
+            to=["recv@example.com"],
+            subject="s",
+            body="b",
+        ))
+
+    assert captured_kwargs.get("from_addr") == "zhangyipu@foxmail.com"
+    assert "SMTPUTF8" in (captured_kwargs.get("mail_options") or [])
+
+
+# =============================================================================
 # P1: 2026-07-18 新增 - username 必须含 @ 的防御校验 + 成功路径日志
 # =============================================================================
 

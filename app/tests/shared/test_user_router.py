@@ -288,8 +288,8 @@ def test_list_users_returns_200_with_native_list_allowed_agents(
     async def fake_list_users():
         return [{
             "id": 1, "username": "admin", "role": "admin",
-            "real_name": "Admin", "phone": "", "email": "",
-            "department": "", "position": "",
+            "real_name": "Admin", "phone": "13800138000", "email": "admin@example.com",
+            "department": "研发部", "position": "负责人",
             "allowed_agents": ["map_agent", "audit_document_agent"],
             "created_at": "2026-07-01", "updated_at": "2026-07-01",
         }]
@@ -301,3 +301,62 @@ def test_list_users_returns_200_with_native_list_allowed_agents(
     assert len(users) == 1
     assert isinstance(users[0]["allowed_agents"], list)
     assert users[0]["allowed_agents"] == ["map_agent", "audit_document_agent"]
+    # 2026-07-18 回归断言:编辑用户表单依赖 email/phone/department/position 字段,
+    # UserResponse 必须保留它们,否则前端 openEditUser 拿不到值,详情弹窗为空。
+    assert users[0]["email"] == "admin@example.com"
+    assert users[0]["phone"] == "13800138000"
+    assert users[0]["department"] == "研发部"
+    assert users[0]["position"] == "负责人"
+
+
+def test_list_users_response_model_includes_profile_fields(client, admin_headers, monkeypatch):
+    """
+    2026-07-18 回归测试:GET /api/users 响应模型必须保留 email/phone/department/position。
+
+    根因记录:之前 UserResponse 模型只声明 7 个字段,FastAPI 用 response_model 序列化
+    时会把未声明的 email/phone/department/position 字段过滤掉,导致前端
+    UserSettingsDialog.vue::openEditUser 拿不到 user.email,被 `|| ''` 兜底为空字符串,
+    编辑弹窗里邮箱/手机/部门/职位显示为空。
+
+    Args:
+        client: FastAPI TestClient。
+        admin_headers: admin 认证请求头。
+        monkeypatch: pytest 内置 fixture,替换 UserDB.list_users。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 响应中缺少任一字段时抛出。
+    """
+    from app.shared.utils.auth.user_db import UserDB
+
+    async def fake_list_users():
+        return [{
+            "id": 7, "username": "alice", "role": "user",
+            "real_name": "Alice",
+            "phone": "13700137000",
+            "email": "alice@example.com",
+            "department": "运营部",
+            "position": "运营",
+            "allowed_agents": [],
+            "created_at": "2026-07-18",
+            "updated_at": "2026-07-18",
+        }]
+
+    monkeypatch.setattr(UserDB, "list_users", fake_list_users)
+    response = client.get("/api/users/", headers=admin_headers)
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 1
+    user = payload[0]
+    # 必传字段不应被 response_model 过滤
+    assert user["email"] == "alice@example.com"
+    assert user["phone"] == "13700137000"
+    assert user["department"] == "运营部"
+    assert user["position"] == "运营"
+    # 同时验证未填充的旧值(空串)不会因字段缺失变成缺失键
+    assert "email" in user
+    assert "phone" in user
+    assert "department" in user
+    assert "position" in user

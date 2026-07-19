@@ -41,6 +41,13 @@ class UserResponse(BaseModel):
     allowed_agents: List[str] = []
     created_at: str
     updated_at: str
+    # 2026-07-18 修复:编辑用户时邮箱/手机/部门/职位不能为空
+    # 之前这些字段未在 UserResponse 声明,FastAPI 用 response_model 序列化
+    # 时会被过滤,导致前端 openEditUser 拿不到 email 等值。
+    phone: str = ''
+    email: str = ''
+    department: str = ''
+    position: str = ''
 
 
 class PasswordUpdateRequest(BaseModel):
@@ -179,7 +186,13 @@ async def list_users():
             role=u.get('role', 'user'),
             allowed_agents=u.get('allowed_agents', []),
             created_at=str(u['created_at']),
-            updated_at=str(u['updated_at'])
+            updated_at=str(u['updated_at']),
+            # 2026-07-18 修复:必须显式把 email/phone/department/position 透传,
+            # 否则 FastAPI 会用模型默认值 '' 填充,前端编辑弹窗拿不到真实值。
+            phone=u.get('phone', ''),
+            email=u.get('email', ''),
+            department=u.get('department', ''),
+            position=u.get('position', ''),
         )
         for u in users
     ]

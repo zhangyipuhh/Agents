@@ -179,7 +179,7 @@ class EmailService:
         if cc:
             msg["Cc"] = ", ".join(cc)
         msg["Subject"] = subject
-        # 2026-07-18 新增：补齐 RFC 5322 必备头，规避反垃圾误判
+        # 2026-07-18 补齐 RFC 5322 必备头，规避反垃圾误判：
         # - Date：缺 Date 头会被多家邮件服务器（QQ / 网易 / 企业 Exchange）
         #   判为伪造邮件直接拒收或进垃圾箱
         # - MIME-Version：包含附件/HTML 时必须 1.0，否则部分服务器拒收
@@ -192,6 +192,22 @@ class EmailService:
         # 需要先剥掉 @ 之前的本地部分。
         from_addr_domain = cfg.username.rsplit("@", 1)[-1] if "@" in cfg.username else cfg.host
         msg["Message-ID"] = make_msgid(domain=from_addr_domain)
+        # 2026-07-18 用户实测补充：跨域投递（QQ SMTP → 企业邮箱）场景下，
+        # 收件方反垃圾系统会综合以下 4 类头判定"是否合法邮件"：
+        # 1) X-Mailer：声明发件客户端。缺该头会被部分反垃圾网关判定为"未知脚本发信"
+        #    直接静默丢弃（SMTP 仍返回 250 OK）。固定声明为内部系统名称，便于
+        #    收件方白名单配置。
+        # 2) X-Priority：3 (Normal)。缺该头或被设为 1 (High) 会被判定为"垃圾特征"
+        #    (脚本批量通知常被错配为 High)。
+        # 3) Return-Path：必须与 From 一致，否则 SMTP envelope MAIL FROM 与
+        #    header From 不匹配，SPF / DKIM 校验失败 → 反垃圾直接拒收。
+        #    email.message.EmailMessage 不会自动添加该头，需手动 set。
+        # 4) Reply-To：显式设为 From 同地址，避免某些 MUA / 邮件服务器把 Reply-To
+        #    默认为空并触发反垃圾"无回复地址"扣分。
+        msg["X-Mailer"] = "feature-agent-core/internal-mailer"
+        msg["X-Priority"] = "3"
+        msg["Return-Path"] = cfg.username
+        msg["Reply-To"] = cfg.username
         msg.set_content(body)
 
         # 附件：本地文件路径
@@ -263,6 +279,14 @@ class EmailService:
         # 延迟导入避免循环依赖（email_config_service 反向依赖 email_models）
         from app.shared.utils.email.email_config_service import EmailConfigService
 
+        # 2026-07-18 用户实测补充：envelope sender (MAIL FROM) 必须显式
+        # 传入 from_addr=cfg.username，与 header From / Return-Path 完全一致。
+        # 否则部分 SMTP 服务器（特别是 QQ SMTP 在转发到企业邮箱时）会用
+        # 登录账号作 envelope，但当 From 头含 display name 时会被改写，
+        # 导致 SPF / DKIM 校验时 envelope 与 header 域不一致 → 反垃圾静默拒收。
+        # mail_options=['SMTPUTF8'] 显式声明 envelope 使用 UTF-8，避免
+        # 中文显示名被某些服务器以 ascii 编码失败。
+        mail_options = ["SMTPUTF8"]
         context = EmailConfigService._build_ssl_context(cfg)
         if cfg.use_ssl:
             with smtplib.SMTP_SSL(
@@ -271,8 +295,13 @@ class EmailService:
                 local_hostname=cfg.host,
             ) as smtp:
                 smtp.login(cfg.username, cfg.password)
-                refused = smtp.send_message(msg, to_addrs=recipients)
-                # 2026-07-18 新增：send_message 在收件人/RCPT TO 被拒时
+                refused = smtp.send_message(
+                    msg,
+                    from_addr=cfg.username,
+                    to_addrs=recipients,
+                    mail_options=mail_options,
+                )
+                # 2026-07-18 send_message 在收件人/RCPT TO 被拒时
                 # 会把失败项存到 refused 字典而不抛异常，导致 UI 显示
                 # 成功但实际邮件未送达。这里做显式校验。
                 if refused:
@@ -285,12 +314,17 @@ class EmailService:
                 timeout=30,
                 local_hostname=cfg.host,
             ) as smtp:
-                # 2026-07-18 新增：force_plain=True 时跳过 STARTTLS
+                # 2026-07-18 force_plain=True 时跳过 STARTTLS
                 if not cfg.force_plain:
                     smtp.starttls(context=context)
                 smtp.login(cfg.username, cfg.password)
-                refused = smtp.send_message(msg, to_addrs=recipients)
-                # 同上：send_message 的静默拒收校验
+                refused = smtp.send_message(
+                    msg,
+                    from_addr=cfg.username,
+                    to_addrs=recipients,
+                    mail_options=mail_options,
+                )
+                # send_message 的静默拒收校验
                 if refused:
                     raise EmailSendError(
                         f"SMTP 服务器拒收部分收件人: {refused}"
