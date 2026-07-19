@@ -915,6 +915,7 @@ def test_dispatch_script_email_renders_template_and_sends():
         started_at = datetime(2026, 7, 17, 9, 0, 0)
         finished_at = datetime(2026, 7, 17, 9, 1, 0)
         run_logger = MagicMock()
+        attachments = [r"E:\laboratory\AI\Agents\feature-agent-core-ref\data\attachments\Task\脚本巡检\report.docx"]
 
         asyncio.run(
             service._dispatch_script_email(
@@ -922,7 +923,7 @@ def test_dispatch_script_email_renders_template_and_sends():
                 run_id=99,
                 script_name="hello_script",
                 script_output="巡检通过",
-                attachments=None,
+                attachments=attachments,
                 started_at=started_at,
                 finished_at=finished_at,
                 trigger_type="scheduled",
@@ -937,10 +938,10 @@ def test_dispatch_script_email_renders_template_and_sends():
     assert call_kwargs["to"] == ["u1@example.com", "u2@example.com"]
     assert call_kwargs["subject"] == "[脚本巡检#99]"
     assert call_kwargs["body"] == "正文：巡检通过"
-    assert call_kwargs["attachment_paths"] is None
+    assert call_kwargs["attachment_paths"] == attachments
     run_logger.info.assert_any_call(
         "脚本任务通知邮件已发送：policy_id=%s recipients=%d attachments=%d",
-        7, 2, 0,
+        7, 2, 1,
     )
 
 

@@ -124,12 +124,14 @@ agents 表 `agents_md_path` 字段存储**相对路径**（如 `agents/project/A
 - **修复触发**：2026-07-01 `GET /api/users` 返回 500 —— Pydantic 校验 `UserResponse.allowed_agents` 时收到 `str '[]'` 而非 `list`
 - **修复触发**:2026-07-18 `GET /api/users` 编辑用户时邮箱/手机/部门/职位显示为空 —— `UserResponse` 模型仅声明 7 个字段(缺 `email/phone/department/position`),路由层 `list_users` 又显式构造 `UserResponse` 只传 7 个字段,Pydantic 用默认值 `''` 填充,前端 `UserSettingsDialog.vue::openEditUser` 拿到 `user.email === undefined` 被 `|| ''` 兜底为空字符串。修复:`UserResponse` 追加 4 个字段 + 路由构造时显式 `u.get(...)` 透传
 - **修复触发**:2026-07-19「个人设置」Tab 打开时邮箱输入框显示 placeholder 而非数据库已有值(`admin` 用户 DB `email='542995981@qq.com'` 实际存在)。根因:双重缺失 —— (1) 后端 `UserProfileResponse` 字段全部无默认值(无 `str=''` 兜底),`get_user_profile` 路由又用 `user.get(key, '')`(仅在字段缺失时兜底,不接管显式 `None`),当 DB 行字段为 `None` 时 Pydantic V2 抛 ValidationError(500),前端 catch 后 `editEmail` 保持 `''`,渲染时显示 placeholder; (2) 前端 `switchTab` 函数缺少 `profile` 分支调用 `loadUserProfile`,当 admin 先点"管理后台"(activeTab='user-management')再在 dialog 内切换到"个人设置"时,`activeTab` 切换不会触发 `watch(props.visible)`,**`loadUserProfile` 永远不被调用**,邮箱等字段保持初始空字符串显示 placeholder。修复:`UserProfileResponse` 各字段补默认值 + 路由层 `user.get(key) or ''` 接管显式 `None` 形成「模型 + 路由」双层防御 + `switchTab` 增加 `if (tabId === 'profile') loadUserProfile()` 分支;与 2026-07-18 的 `UserResponse` 修复形成「列表 + 详情」对称契约,与 watch 形成「visible 切换 + activeTab 切换」对称触发
+- **修复触发**:2026-07-19「个人设置 → 修改密码 → 旧密码」输入框在 Chrome/Edge 浏览器下即使 value 为空也会渲染 6 个默认占位圆点,造成"密码框已填"错觉。根因:`<input type="password">` 在 WebKit/Blink 内核下,空值时仍会渲染无障碍默认的占位圆点。修复:`type="password"` → `type="text"` + CSS class `password-mask` 应用 `-webkit-text-security: disc; text-security: disc;`,输入字符仍以圆点形式保护隐私,但空值时只显示 placeholder;**仅作用于旧密码**,新密码/确认新密码保持 `type="password"`(用户未要求改动)
 - **测试**:
   - `app/tests/shared/test_user_db_postgres_jsonb.py` —— 7 用例覆盖 postgres 分支 JSONB 字符串 / 空串 / 非法 JSON / 原生 list / 未命中记录
   - `app/tests/core/test_database_jsonb_codec.py` —— 2 用例覆盖 `_init_connection` 行为 + `initialize` 源码静态分析
   - `app/tests/shared/test_user_router.py` —— 追加 `test_list_users_returns_200_with_native_list_allowed_agents` 路由契约测试 + `test_list_users_response_model_includes_profile_fields` 锁定 `email/phone/department/position` 字段;2026-07-19 追加 `test_get_user_profile_response_includes_profile_fields`(详情接口响应契约)+ `test_get_user_profile_handles_none_fields`(防御性 None 兜底)
   - `web/Agent/src/components/__tests__/UserSettingsDialog.profile-email.spec.js` —— 2026-07-19 新增;端到端验证「visible:false→true」切换后 `#settings-email` 输入框正确显示后端 email
   - `web/Agent/src/components/__tests__/UserSettingsDialog.admin-profile-switch.spec.js` —— 2026-07-19 新增;端到端验证 admin 先点"管理后台"再切回"个人设置"时邮箱也能正确加载(锁定 switchTab profile 分支契约)
+- `web/Agent/src/components/__tests__/UserSettingsDialog.old-password.spec.js` —— 2026-07-19 新增;验证旧密码 input 为 type=text + .password-mask 类,空值时不显示 Chrome/Edge 默认占位圆点,同时 v-model 仍正确工作
 
 ## 项目架构
 
@@ -680,9 +682,9 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 
 **测试覆盖**：
 - `app/tests/scripts/test_registry.py`（10 用例）：装饰器注册、重复名拒绝、签名校验、registry 清理
-- `app/tests/scripts/test_examples.py`（6 用例）：示例脚本导入、注册、`run` 返回签名 `tuple[str, str]`、`ReportConfig` 精确契约（`data` 键/封面 `title`/`date` 文本/`toc=None`/sections 序列与正文模板/两个 heading 的 `in_toc=False`/footer）、默认问候、生成器异常透传、`asyncio.to_thread` 调用顺序与参数锁定
+- `app/tests/scripts/test_examples.py`（7 用例）：示例脚本导入、注册（`importlib.reload` 隔离全局 registry）、`run` 返回签名 `tuple[str, str]`（`typing.get_type_hints` 精确断言参数名仅 `["context"]` + `context is ScriptContext` + `return == tuple[str, str]`）、`ReportConfig` 精确契约（`data` 键/封面 `title.text`+`title.space_before=3`+`title.space_after=1`/`date.text`+`date.space_before=2`/`toc=None`/sections 序列与正文模板/两个 heading 的 `in_toc=False` 且 `level=1`/footer）、默认问候、生成器异常透传、保存异常透传、`asyncio.to_thread` 调用次数严格 `==2` 且顺序与参数锁定
 - `app/tests/shared/utils/agent/test_script_discovery_service.py`（9 用例）：扫描、容错、白名单过滤、get_script
-- `app/tests/shared/utils/agent/test_task_scheduler_service.py`（19 用例，含 5 个 script 用例）：FakeDb 扩展、validate_payload 跨字段校验、execute_schedule script 分支、_install_run_logger 含 target_type/script_name
+- `app/tests/shared/utils/agent/test_task_scheduler_service.py`（19 用例，含 5 个 script 用例）：FakeDb 扩展、validate_payload 跨字段校验、execute_schedule script 分支、_install_run_logger 含 target_type/script_name、脚本通知邮件 Word `attachment_paths` 原样透传
 - `app/tests/routers/test_script_admin_router.py`（6 用例）：路由注册、列表、扫描、500、403
 - `app/tests/routers/test_task_scheduler_router.py`（13 用例，含 3 个 script 用例）：创建 script 任务 201、缺 script_name 422、agent 携带 script_name 422
 - `app/tests/core/test_server_lifespan.py`（11 用例，含 4 个 script 用例）：script_scan_enabled 启停、注入 TaskSchedulerService、shutdown 清理

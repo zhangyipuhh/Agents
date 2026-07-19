@@ -1244,11 +1244,16 @@ watch(() => props.visible, (newVal) => {
                     <h3 class="section-title">修改密码</h3>
                     <div class="form-group">
                       <label class="form-label" for="settings-old-password">旧密码</label>
+                      <!-- 2026-07-19 修复:type=password 在某些浏览器(Chrome/Edge 等)中,
+                           即使 value 为空也会渲染默认的 6 个占位圆点,造成"密码框已填"错觉。
+                           改用 type=text + CSS -webkit-text-security / text-security,
+                           让输入字符仍以圆点形式保护隐私,但空值时只显示 placeholder,
+                           与新密码/确认新密码视觉一致。 -->
                       <input
                         id="settings-old-password"
                         v-model="oldPassword"
-                        type="password"
-                        class="form-input"
+                        type="text"
+                        class="form-input password-mask"
                         placeholder="请输入旧密码"
                         autocomplete="current-password"
                         :disabled="isSaving"
@@ -1764,6 +1769,14 @@ watch(() => props.visible, (newVal) => {
 </template>
 
 <style scoped>
+/* 2026-07-19 修复:旧密码输入框视觉脱敏
+   使用 text-security 让输入字符仍以圆点形式保护隐私,
+   同时空值时不显示 Chrome/Edge 默认的 6 个占位圆点。 */
+.password-mask {
+  -webkit-text-security: disc;
+  text-security: disc;
+}
+
 /* 遮罩层 */
 .dialog-overlay {
   position: fixed;
