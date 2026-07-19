@@ -198,6 +198,146 @@ def test_yields_text_chunk_skips_empty_content():
     assert text_events[0].text == "real"
 
 
+def test_yields_text_chunks_from_list_content_ollama(monkeypatch):
+    """P1：messages 模式 content 为 Ollama 结构化 list → 归一化为字符串 yield text。
+
+    OllamaStreamFormatStrategy 会返回 ``[{"text": "...", "type": "text"}]``，
+    StreamEventSource 应把它转换为纯字符串后再产出 ``text`` 事件。
+
+    Args:
+        monkeypatch: pytest fixture
+
+    Returns:
+        None
+    """
+    def _fake_format(message_chunk, metadata):
+        return [{"text": message_chunk.content, "type": "text"}]
+
+    monkeypatch.setattr(
+        "app.core.agent.stream_event_source.stream_format_context.format_message",
+        _fake_format,
+    )
+
+    chunks = [
+        ("messages", (_FakeMessageChunk("Hello"), {"ls_provider": "ollama"})),
+        ("messages", (_FakeMessageChunk(" world"), {"ls_provider": "ollama"})),
+    ]
+    agent = _FakeAgent(chunks)
+    source = StreamEventSource(
+        agent=agent,
+        input_state=None,
+        context=None,
+        config={"configurable": {"thread_id": "test"}},
+    )
+
+    events = _collect_events(source.events)
+    text_events = [e for e in events if e.kind == "text"]
+    assert len(text_events) == 2
+    assert text_events[0].text == "Hello"
+    assert text_events[1].text == " world"
+
+
+def test_yields_text_chunks_from_list_of_strings(monkeypatch):
+    """P1：messages 模式 content 为 list[str] → 拼接后 yield text。
+
+    Args:
+        monkeypatch: pytest fixture
+
+    Returns:
+        None
+    """
+    def _fake_format(message_chunk, metadata):
+        return ["Hello", " world"]
+
+    monkeypatch.setattr(
+        "app.core.agent.stream_event_source.stream_format_context.format_message",
+        _fake_format,
+    )
+
+    chunks = [
+        ("messages", (_FakeMessageChunk("ignored"), {"ls_provider": "openai"})),
+    ]
+    agent = _FakeAgent(chunks)
+    source = StreamEventSource(
+        agent=agent,
+        input_state=None,
+        context=None,
+        config={"configurable": {"thread_id": "test"}},
+    )
+
+    events = _collect_events(source.events)
+    text_events = [e for e in events if e.kind == "text"]
+    assert len(text_events) == 1
+    assert text_events[0].text == "Hello world"
+
+
+def test_yields_text_chunks_from_thinking_content(monkeypatch):
+    """P1：messages 模式 content 为 thinking list → 提取 thinking 文本 yield text。
+
+    Args:
+        monkeypatch: pytest fixture
+
+    Returns:
+        None
+    """
+    def _fake_format(message_chunk, metadata):
+        return [{"thinking": "thinking...", "type": "thinking"}]
+
+    monkeypatch.setattr(
+        "app.core.agent.stream_event_source.stream_format_context.format_message",
+        _fake_format,
+    )
+
+    chunks = [
+        ("messages", (_FakeMessageChunk("ignored"), {"ls_provider": "ollama"})),
+    ]
+    agent = _FakeAgent(chunks)
+    source = StreamEventSource(
+        agent=agent,
+        input_state=None,
+        context=None,
+        config={"configurable": {"thread_id": "test"}},
+    )
+
+    events = _collect_events(source.events)
+    text_events = [e for e in events if e.kind == "text"]
+    assert len(text_events) == 1
+    assert text_events[0].text == "thinking..."
+
+
+def test_skips_text_chunks_when_normalized_empty(monkeypatch):
+    """P1：messages 模式 content 归一化后为空 → 不 yield text 事件。
+
+    Args:
+        monkeypatch: pytest fixture
+
+    Returns:
+        None
+    """
+    def _fake_format(message_chunk, metadata):
+        return [{}, {"type": "text"}]
+
+    monkeypatch.setattr(
+        "app.core.agent.stream_event_source.stream_format_context.format_message",
+        _fake_format,
+    )
+
+    chunks = [
+        ("messages", (_FakeMessageChunk("ignored"), {"ls_provider": "ollama"})),
+    ]
+    agent = _FakeAgent(chunks)
+    source = StreamEventSource(
+        agent=agent,
+        input_state=None,
+        context=None,
+        config={"configurable": {"thread_id": "test"}},
+    )
+
+    events = _collect_events(source.events)
+    text_events = [e for e in events if e.kind == "text"]
+    assert len(text_events) == 0
+
+
 # ---------------------------------------------------------------------------
 # P1：update 事件
 # ---------------------------------------------------------------------------

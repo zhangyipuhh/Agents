@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 # 注意：本模块刻意不 import ``langchain_core.messages.ToolMessage``，因为
 # 测试环境 conftest 会把该符号替换为 ``Mock()``，导致 ``isinstance`` 抛
@@ -92,6 +92,11 @@ class StreamEventSource:
         """异步产出 ``StreamEvent`` 序列。
 
         Consumer 负责解释事件并推送到对应渠道。事件类型见模块 docstring。
+
+        注意：``messages`` 模式 chunk 经 ``stream_format_context.format_message``
+        格式化后可能是 ``str`` 或结构化 ``list``；本方法会在 yield ``text`` 事件前
+        通过 ``_normalize_text_content`` 归一化为纯字符串，以符合 ``StreamEvent.text``
+        与 ``ChannelConsumer.on_text_chunk`` 的字符串契约。
 
         Yields:
             StreamEvent: 按 ``session_start`` → (``text`` | ``update``)* →
@@ -168,9 +173,10 @@ class StreamEventSource:
                             content = stream_format_context.format_message(
                                 message_chunk, metadata
                             )
-                            if content is None:
+                            text = _normalize_text_content(content)
+                            if not text:
                                 continue
-                            yield StreamEvent.text_chunk(content)
+                            yield StreamEvent.text_chunk(text)
                         # else: data 格式不符合预期，丢弃（不抛错）
 
                     # mode == "custom"：当前 stream_event_source 不向 Consumer 暴露
@@ -267,6 +273,50 @@ class StreamEventSource:
             ):
                 return True
         return False
+
+
+def _normalize_text_content(content: Any) -> Optional[str]:
+    """把 ``format_message`` 返回的结构化内容归一化为纯字符串。
+
+    某些 Provider（如 Ollama）的 ``format_content`` 会返回 ``list[dict]``
+    （例如 ``[{"text": "...", "type": "text"}]``），而 ``StreamEvent.text``
+    与 ``ChannelConsumer.on_text_chunk`` 的契约要求传入字符串。本函数在事件源
+    内部完成归一化，不影响前端 SSE 路径（SSE 直接序列化原始返回值）。
+
+    兼容：
+    - ``str``：直接返回。
+    - ``list[str]``：直接拼接。
+    - ``list[dict]``：提取 ``"text"`` 或 ``"thinking"`` 字段后拼接；
+      thinking 内容也作为文本输出，保证飞书侧能看到推理过程。
+    - ``None``：返回 ``None``。
+    - 其他类型：``str()`` 转换。
+
+    Args:
+        content: ``stream_format_context.format_message`` 的返回值。
+
+    Returns:
+        str: 归一化后的纯文本；无有效内容返回 ``None``。
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                # 优先取 text，其次是 thinking；避免同时取导致重复
+                text = item.get("text") or item.get("thinking")
+                if isinstance(text, str):
+                    parts.append(text)
+            elif isinstance(item, str):
+                parts.append(item)
+            else:
+                parts.append(str(item))
+        result = "".join(parts)
+        return result if result else None
+    if content is None:
+        return None
+    result = str(content)
+    return result if result else None
 
 
 def _extract_interrupt_requests(interrupt_data: Any) -> list:
