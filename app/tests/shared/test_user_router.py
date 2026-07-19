@@ -416,6 +416,105 @@ def test_get_user_profile_response_includes_profile_fields(client, admin_headers
         assert field in payload, f"missing field {field} in response"
 
 
+def test_update_profile_route_does_not_overwrite_allowed_agents(
+    client, user_headers, monkeypatch
+):
+    """
+    2026-07-19 回归测试:个人设置路径 `PUT /api/users/{user_id}/profile` 不允许清空 admin 设置的可选智能体。
+
+    根因记录：修复前,ProfileUpdateRequest 含 allowed_agents 字段,后端 UserDB.update_profile
+    的 SQL 同时把该列覆盖为请求里的值(前端默认 []),导致 admin 在"用户管理→编辑用户"
+    中设置的可选智能体在用户保存个人资料后被清空。
+
+    修复策略：ProfileUpdateRequest 移除 allowed_agents;UserDB.update_profile SQL 不再更新该列。
+    本测试锁定契约,防止后续误把该字段加回去。
+
+    Args:
+        client: FastAPI TestClient。
+        user_headers: 普通用户认证请求头(来自 conftest)。
+        monkeypatch: pytest 内置 fixture。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: allowed_agents 被改动时抛出。
+    """
+    from app.shared.utils.auth.user_db import UserDB
+
+    stored_users = {
+        2: {
+            "id": 2,
+            "username": "testuser",
+            "password_hash": "",
+            "role": "user",
+            "real_name": "Test User",
+            "phone": "",
+            "email": "",
+            "department": "",
+            "position": "",
+            "allowed_agents": ["admin_set_agent_a", "admin_set_agent_b"],
+            "created_at": "2026-07-19T00:00:00",
+            "updated_at": "2026-07-19T00:00:00",
+        }
+    }
+
+    async def fake_get_user_by_id(user_id):
+        return stored_users.get(user_id)
+
+    async def fake_update_profile(user_id, phone, email, department, position):
+        # 修复后的实现不应修改 allowed_agents;若此处看到 allowed_agents 被重置为 [],断言就成立。
+        assert user_id in stored_users
+        stored_users[user_id]["phone"] = phone
+        stored_users[user_id]["email"] = email
+        stored_users[user_id]["department"] = department
+        stored_users[user_id]["position"] = position
+        # 关键防御：本方法不允许触碰 allowed_agents,DB 行应保持原值。
+        return True
+
+    monkeypatch.setattr(UserDB, "get_user_by_id", fake_get_user_by_id)
+    monkeypatch.setattr(UserDB, "update_profile", fake_update_profile)
+
+    # 用户进入"个人设置"修改一个字段(phone),按 fix 后的契约 body 不带 allowed_agents
+    payload = {
+        "phone": "13900139000",
+        "email": "testuser@example.com",
+        "department": "研发部",
+        "position": "开发"
+    }
+    response = client.put("/api/users/2/profile", json=payload, headers=user_headers)
+    assert response.status_code == 200, f"unexpected status {response.status_code}: {response.text}"
+
+    # 关键断言：admin 设置的可选智能体必须保留
+    assert stored_users[2]["allowed_agents"] == ["admin_set_agent_a", "admin_set_agent_b"], (
+        "PUT /api/users/{id}/profile 不应清空 allowed_agents,"
+        " 当前值: " + repr(stored_users[2]["allowed_agents"])
+    )
+    # 同时 phone 等基础字段应被正确更新
+    assert stored_users[2]["phone"] == "13900139000"
+
+
+def test_profile_update_request_excludes_allowed_agents():
+    """
+    2026-07-19 契约级回归测试:ProfileUpdateRequest 必须不再含 allowed_agents 字段。
+
+    该模型绑定 `PUT /api/users/{user_id}/profile` 路径,职责限定为"个人设置"基础资料维护。
+    若后续误把 allowed_agents 加回去,会导致 admin 设置的可选智能体被覆盖 bug 复现。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 模型中仍含 allowed_agents 字段时抛出。
+    """
+    from app.shared.routers.user_router import ProfileUpdateRequest
+
+    assert "allowed_agents" not in ProfileUpdateRequest.model_fields, (
+        "ProfileUpdateRequest 不应再含 allowed_agents 字段。"
+        "可选智能体的写入应由 admin 路径 UserUpdateRequest 处理。"
+    )
+
+
 def test_get_user_profile_handles_none_fields(client, admin_headers, monkeypatch):
     """
     2026-07-19 防御性测试:DB 行字段为 None 时,GET /api/users/{user_id}/profile 仍返回 200 + 空字符串兜底,不抛 500。

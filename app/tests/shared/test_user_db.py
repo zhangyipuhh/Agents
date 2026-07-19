@@ -197,25 +197,64 @@ def test_create_user_with_allowed_agents():
     assert user.get("allowed_agents") == allowed
 
 
-def test_update_profile_allowed_agents():
+def test_update_profile_does_not_overwrite_allowed_agents():
     """
-    测试 update_profile 可更新 allowed_agents 字段。
+    验证 update_profile 不再修改 allowed_agents 字段。
+
+    背景：2026-07-19 bug 修复前,update_profile 同时把 allowed_agents 整列覆盖为空数组,
+    导致 admin 在"用户管理→编辑用户"中设置的可选智能体,被用户在"个人设置"中保存资料后清空。
+    修复后,update_profile 仅维护 phone/email/department/position 四字段,allowed_agents 必须保留。
 
     Returns:
         None
     """
-    user_id = asyncio.run(UserDB.create_user("agent_update_user", "password123"))
-    updated = asyncio.run(UserDB.update_profile(
+    user_id = asyncio.run(UserDB.create_user("profile_no_overwrite_user", "password123"))
+
+    # 模拟 admin 通过 update_user_info 设置 allowed_agents
+    asyncio.run(UserDB.update_user_info(
         user_id,
+        real_name="",
         phone="",
         email="",
         department="",
         position="",
-        allowed_agents=["map_agent"]
+        role="user",
+        allowed_agents=["admin_set_agent_a", "admin_set_agent_b"]
+    ))
+
+    # 用户进入"个人设置"保存资料(只改 phone),不再传 allowed_agents
+    updated = asyncio.run(UserDB.update_profile(
+        user_id,
+        phone="13800001111",
+        email="",
+        department="",
+        position=""
     ))
     assert updated is True
+
     user = asyncio.run(UserDB.get_user_by_id(user_id))
-    assert user.get("allowed_agents") == ["map_agent"]
+    # 关键断言：admin 设置的可选智能体必须保留,不允许被清空。
+    assert user.get("allowed_agents") == ["admin_set_agent_a", "admin_set_agent_b"]
+    assert user.get("phone") == "13800001111"
+
+
+def test_update_profile_signature_no_allowed_agents():
+    """
+    验证 update_profile 签名已不再接受 allowed_agents 参数。
+
+    这是契约级回归保护：防止后续开发者误把该字段加回去,
+    重新引入"个人设置保存覆盖可选智能体"的 bug。
+
+    Returns:
+        None
+    """
+    import inspect
+
+    sig = inspect.signature(UserDB.update_profile)
+    assert "allowed_agents" not in sig.parameters, (
+        "UserDB.update_profile 不应再接受 allowed_agents 参数,"
+        " 该字段仅允许通过 admin 路径 UserDB.update_user_info 写入"
+    )
 
 
 def test_update_user_info_allowed_agents():

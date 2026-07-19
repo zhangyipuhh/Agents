@@ -74,20 +74,24 @@ class UsernameUpdateRequest(BaseModel):
 
 class ProfileUpdateRequest(BaseModel):
     """
-    用户资料更新请求模型
+    用户资料更新请求模型（个人设置）
+
+    说明：本请求模型不包含 allowed_agents 字段。
+    可选智能体(allowed_agents)由 admin 路径(UserUpdateRequest)负责维护,
+    与"个人设置"路径职责分离,避免普通用户保存资料时把 admin 设置的可选智能体清空。
+    历史 Bug：2026-07-19 修复前,本模型曾含 allowed_agents 字段且后端 SQL 无条件覆盖,
+    导致 admin→用户管理中设置的可选智能体,在用户进入"个人设置"保存后丢失。
 
     Attributes:
         phone (str): 手机号
         email (str): 邮箱
         department (str): 部门
         position (str): 职位
-        allowed_agents (List[str]): 允许使用的智能体名称列表
     """
     phone: str
     email: str
     department: str
     position: str
-    allowed_agents: List[str] = []
 
 
 class UserCreateRequest(BaseModel):
@@ -643,6 +647,11 @@ async def update_user_profile(user_id: int, request: ProfileUpdateRequest, req: 
     仅允许用户修改自己的资料。
     会对手机号和邮箱格式进行校验。
 
+    说明：本接口不维护 allowed_agents(可选智能体)字段,
+    后端调用 UserDB.update_profile 时也不会修改 allowed_agents 列,
+    避免 admin 在"用户管理→编辑用户"中设置的可选智能体被本路径覆盖。
+    allowed_agents 的写入由 admin 路径 `PUT /api/users/{user_id}`(UserUpdateRequest) 负责。
+
     Args:
         user_id (int): 用户ID
         request (ProfileUpdateRequest): 包含手机、邮箱、部门、职位的请求
@@ -686,7 +695,7 @@ async def update_user_profile(user_id: int, request: ProfileUpdateRequest, req: 
         )
 
     success = await UserDB.update_profile(
-        user_id, phone, email, department, position, allowed_agents=request.allowed_agents
+        user_id, phone, email, department, position
     )
     if not success:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="更新失败")

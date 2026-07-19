@@ -200,13 +200,20 @@ export async function fetchUserProfile(userId) {
 
 /**
  * 更新用户个人资料
+ *
+ * 说明：本接口只维护 phone/email/department/position 四项基础资料,
+ * 不发送 allowed_agents(可选智能体)字段。
+ * 后端对应的 `PUT /api/users/{userId}/profile` 也不维护该字段,
+ * 避免"个人设置"保存覆盖 admin 在"用户管理→编辑用户"中设置的可选智能体。
+ * 历史 Bug：2026-07-19 修复前,本函数会把 undefined 兜底为 [],
+ * 导致用户每次保存资料都会把 admin 设置的可选智能体清空。
+ *
  * @param {number} userId - 用户ID
  * @param {Object} profileData - 资料数据
  * @param {string} profileData.phone - 手机号
  * @param {string} profileData.email - 邮箱
  * @param {string} profileData.department - 部门
  * @param {string} profileData.position - 职位
- * @param {Array<string>} [profileData.allowed_agents] - 允许使用的智能体名称列表
  * @returns {Promise<{message: string}>} 更新结果
  * @throws {Error} 更新失败时抛出错误
  */
@@ -225,8 +232,7 @@ export async function updateUserProfile(userId, profileData) {
       phone: profileData.phone || '',
       email: profileData.email || '',
       department: profileData.department || '',
-      position: profileData.position || '',
-      allowed_agents: profileData.allowed_agents || []
+      position: profileData.position || ''
     })
   })
 

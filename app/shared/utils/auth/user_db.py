@@ -506,10 +506,14 @@ class UserDB:
 
     @classmethod
     async def update_profile(cls, user_id: int, phone: str, email: str,
-                             department: str, position: str,
-                             allowed_agents: Optional[List[str]] = None) -> bool:
+                             department: str, position: str) -> bool:
         """
         更新用户个人资料
+
+        说明：本方法仅维护 phone/email/department/position 四个字段,
+        不修改 allowed_agents(可选智能体)。后者由 admin 路径 UserDB.update_user_info 负责。
+        历史 Bug：2026-07-19 修复前,本方法曾同时将 allowed_agents 整列覆盖为空数组,
+        导致用户在"个人设置"中保存资料后丢失 admin 设置的可选智能体。
 
         Args:
             user_id: 用户 ID
@@ -517,13 +521,10 @@ class UserDB:
             email: 邮箱
             department: 部门
             position: 职位
-            allowed_agents: 允许使用的智能体名称列表（可选）
 
         Returns:
             bool: 更新成功返回 True
         """
-        allowed_agents = allowed_agents or []
-
         if not cls.is_enabled():
             with cls._lock:
                 for user in cls._memory_users.values():
@@ -532,7 +533,6 @@ class UserDB:
                         user['email'] = email
                         user['department'] = department
                         user['position'] = position
-                        user['allowed_agents'] = allowed_agents
                         user['updated_at'] = datetime.utcnow()
                         return True
                 return False
@@ -541,10 +541,10 @@ class UserDB:
             """
             UPDATE users
             SET phone = $1, email = $2, department = $3, position = $4,
-                allowed_agents = $5::jsonb, updated_at = NOW()
-            WHERE id = $6
+                updated_at = NOW()
+            WHERE id = $5
             """,
-            phone, email, department, position, json.dumps(allowed_agents), user_id
+            phone, email, department, position, user_id
         )
         # 兼容不同数据库驱动返回格式：字符串、CommandComplete、None 等
         result_str = str(result) if result else ''
