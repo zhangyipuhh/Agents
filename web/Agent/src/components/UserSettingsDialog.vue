@@ -1862,10 +1862,10 @@ watch(() => props.visible, (newVal) => {
 
 /* 左侧导航 */
 .dialog-nav {
-  width: 160px;
-  flex-shrink: 0;
+  /* 基础 200px，最小 18% 父容器宽，最大 32% 父容器宽 —— 兼顾窄屏可用与宽屏留白 */
+  flex: 0 0 clamp(200px, 22%, 280px);
   border-right: 1px solid var(--color-border);
-  padding: var(--space-lg) 0;
+  padding: var(--space-lg) var(--space-sm);
   background-color: var(--color-bg-secondary);
   display: flex;
   flex-direction: column;

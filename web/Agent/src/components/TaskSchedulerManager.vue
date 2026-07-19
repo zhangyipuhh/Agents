@@ -259,12 +259,25 @@ async function loadInitialData() {
   isLoading.value = true
   errorMessage.value = ''
   try {
-    const [taskRows, agentRows] = await Promise.all([
+    // 预加载脚本列表：避免首次点击「脚本类型」任务时下拉无 option 导致 form.script_name 不显示。
+    // 失败降级为空数组，与 loadScripts() 失败行为一致，不阻塞任务列表加载。
+    const [taskRows, agentRows, scriptRows] = await Promise.all([
       fetchTaskSchedules(),
       fetchAdminAgentList(),
+      fetchScripts().catch(() => []),
     ])
     schedules.value = taskRows || []
     agents.value = agentRows || []
+    scripts.value = (scriptRows || []).map((item) => {
+      const safe = {}
+      for (const key of SCRIPT_PUBLIC_FIELDS) {
+        if (item && Object.prototype.hasOwnProperty.call(item, key)) {
+          safe[key] = item[key]
+        }
+      }
+      return safe
+    }).filter((item) => item && item.name)
+    hasLoadedScripts.value = true
     if (schedules.value.length > 0) {
       await selectSchedule(schedules.value[0])
     } else {
