@@ -381,6 +381,29 @@ async def lifespan(app: FastAPI):
             "[lifespan] Database pool not available, DevOpsServerService not initialized"
         )
 
+    # 2026-07-19 新增：注册多渠道消费者（飞书 / 未来钉钉 / 企微 / Slack 等）
+    # 通过 import 触发各渠道包 __init__.py 内的 channel_registry.register(...) 调用。
+    # 顺序约束：必须在 FeishuWebSocketService 启动之前完成注册，否则
+    # FeishuWebSocketService._call_agent 调用 channel_registry.resolve(session_id)
+    # 时会抛 ValueError（未命中已注册前缀）。
+    # 注意：必须用 ``from app.shared.tools.channels import feishu`` 而非
+    # ``import app.shared.tools.channels.feishu`` —— 后者会让 Python 把 ``app``
+    # 绑定为 ``sys.modules['app']`` 模块对象，覆盖 lifespan 函数参数 ``app: FastAPI``，
+    # 导致后续 ``app.state.xxx`` 抛 ``AttributeError: module 'app' has no attribute 'state'``。
+    try:
+        from app.shared.tools.channels import feishu  # noqa: F401 触发自动注册
+        from app.shared.tools.channels.registry import channel_registry
+        logging.info(
+            "[lifespan] ChannelRegistry initialized with prefixes: %s",
+            channel_registry.list_prefixes(),
+        )
+    except Exception as channel_exc:
+        logging.warning(
+            "[lifespan] Channel registry initialization failed: %s",
+            type(channel_exc).__name__,
+            exc_info=True,
+        )
+
     # 2026-07-16 新增：飞书 WebSocket 长连接（订阅 im.message.receive_v1，被动接收消息）
     # 受 settings.feishu.feishu_ws_enabled 控制；默认关闭，凭证就绪后开启
     try:

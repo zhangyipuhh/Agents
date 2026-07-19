@@ -344,6 +344,224 @@ _ws_module.client = _ws_client_mod
 sys.modules["lark_oapi.ws.client"] = _ws_client_mod
 
 
+# ---------------------------------------------------------------------------
+# 构造 lark_oapi.api.cardkit.v1 子模块（供 FeishuCardConsumer 创建/更新 CardKit 卡片）
+# ---------------------------------------------------------------------------
+# 真实 SDK 用法：
+#     from lark_oapi.api.cardkit.v1 import (
+#         Card, CreateCardRequest, CreateCardRequestBody,
+#         UpdateCardRequest, UpdateCardRequestBody,
+#     )
+#     req = CreateCardRequest.builder().request_body(
+#         CreateCardRequestBody.builder().type("card_json").data(json_str).build()
+#     ).build()
+#     resp = client.cardkit.v1.card.create(req)        # → resp.data.card_id
+#     patch_req = UpdateCardRequest.builder().card_id(...).request_body(
+#         UpdateCardRequestBody.builder()
+#         .card(Card.builder().type("card_json").data(json_str).build())
+#         .sequence(1).build()
+#     ).build()
+#     resp = client.cardkit.v1.card.update(patch_req)
+_lark_api_cardkit = types.ModuleType("lark_oapi.api.cardkit")
+_lark_api_cardkit.__path__ = []
+_lark_api_cardkit_v1 = types.ModuleType("lark_oapi.api.cardkit.v1")
+
+
+class _CardBuilder:
+    """模拟 Card.builder() 链。"""
+
+    def __init__(self):
+        self._type = None
+        self._data = None
+
+    def type(self, t):
+        self._type = t
+        return self
+
+    def data(self, d):
+        self._data = d
+        return self
+
+    def build(self):
+        card = MagicMock(name="Card")
+        card._type = self._type
+        card._data = self._data
+        return card
+
+
+class _Card:
+    """模拟 lark_oapi.api.cardkit.v1.Card。"""
+
+    @staticmethod
+    def builder():
+        return _CardBuilder()
+
+
+class _CreateCardRequestBodyBuilder:
+    """模拟 CreateCardRequestBody.builder() 链。"""
+
+    def __init__(self):
+        self._type = None
+        self._data = None
+
+    def type(self, t):
+        self._type = t
+        return self
+
+    def data(self, d):
+        self._data = d
+        return self
+
+    def build(self):
+        body = MagicMock(name="CreateCardRequestBody")
+        body._type = self._type
+        body._data = self._data
+        return body
+
+
+class _CreateCardRequestBody:
+    @staticmethod
+    def builder():
+        return _CreateCardRequestBodyBuilder()
+
+
+class _CreateCardRequestBuilder:
+    """模拟 CreateCardRequest.builder() 链。"""
+
+    def __init__(self):
+        self._request_body = None
+
+    def request_body(self, body):
+        self._request_body = body
+        return self
+
+    def build(self):
+        req = MagicMock(name="CreateCardRequest")
+        req._request_body = self._request_body
+        return req
+
+
+class _CreateCardRequest:
+    @staticmethod
+    def builder():
+        return _CreateCardRequestBuilder()
+
+
+class _UpdateCardRequestBodyBuilder:
+    """模拟 UpdateCardRequestBody.builder() 链。"""
+
+    def __init__(self):
+        self._card = None
+        self._sequence = None
+
+    def card(self, c):
+        self._card = c
+        return self
+
+    def sequence(self, s):
+        self._sequence = s
+        return self
+
+    def build(self):
+        body = MagicMock(name="UpdateCardRequestBody")
+        body._card = self._card
+        body._sequence = self._sequence
+        return body
+
+
+class _UpdateCardRequestBody:
+    @staticmethod
+    def builder():
+        return _UpdateCardRequestBodyBuilder()
+
+
+class _UpdateCardRequestBuilder:
+    """模拟 UpdateCardRequest.builder() 链。"""
+
+    def __init__(self):
+        self._card_id = None
+        self._request_body = None
+
+    def card_id(self, cid):
+        self._card_id = cid
+        return self
+
+    def request_body(self, body):
+        self._request_body = body
+        return self
+
+    def build(self):
+        req = MagicMock(name="UpdateCardRequest")
+        req._card_id = self._card_id
+        req._request_body = self._request_body
+        return req
+
+
+class _UpdateCardRequest:
+    @staticmethod
+    def builder():
+        return _UpdateCardRequestBuilder()
+
+
+_lark_api_cardkit_v1.Card = _Card
+_lark_api_cardkit_v1.CreateCardRequest = _CreateCardRequest
+_lark_api_cardkit_v1.CreateCardRequestBody = _CreateCardRequestBody
+_lark_api_cardkit_v1.UpdateCardRequest = _UpdateCardRequest
+_lark_api_cardkit_v1.UpdateCardRequestBody = _UpdateCardRequestBody
+
+
+# 在 _ClientBuilder.build() 返回的 mock client 上挂 cardkit.v1.card 命名空间。
+# 由于 client 是 MagicMock，本身就支持任意属性链访问，但为了让
+# `client.cardkit.v1.card.create(...)` 与 `client.cardkit.v1.card.update(...)`
+# 的返回值可被测试断言，这里提供一个共享的 CardKitNamespace。
+class _CardKitCardNamespace:
+    """模拟 client.cardkit.v1.card 命名空间，暴露 create / update。
+
+    测试中通过 ``client.cardkit.v1.card.create = MagicMock(...)``
+    直接覆盖；本类仅作为默认占位（返回 success=False）。
+    """
+
+    def __init__(self):
+        # 默认 create / update 返回 success=False 的 MagicMock，
+        # 测试用例通过 setattr 注入 success 响应或 Mock
+        self.create = MagicMock(name="cardkit.create", return_value=MagicMock(success=lambda: False))
+        self.update = MagicMock(name="cardkit.update", return_value=MagicMock(success=lambda: False))
+
+
+class _CardKitV1Namespace:
+    """模拟 client.cardkit.v1 命名空间。"""
+
+    def __init__(self):
+        self.card = _CardKitCardNamespace()
+
+
+class _CardKitNamespace:
+    """模拟 client.cardkit 命名空间。"""
+
+    def __init__(self):
+        self.v1 = _CardKitV1Namespace()
+
+
+# 把 cardkit 命名空间挂到所有现有 client 实例（兼容 _ClientBuilder.build
+# 返回的 MagicMock；MagicMock 本身支持任意属性链，但显式挂载可让测试断言
+# ``client.cardkit.v1.card.create.call_count`` 时拿到同一对象）。
+# 这里通过给 _ClientBuilder.build 注入 cardkit 字段实现。
+_orig_client_build = _ClientBuilder.build
+
+
+def _patched_client_build(self):
+    client = _orig_client_build(self)
+    client.cardkit = _CardKitNamespace()
+    return client
+
+
+_ClientBuilder.build = _patched_client_build
+
+
+_lark_api_cardkit.v1 = _lark_api_cardkit_v1
+_lark_api.cardkit = _lark_api_cardkit
+
+
 # 注册到 sys.modules
 sys.modules["lark_oapi"] = _lark
 sys.modules["lark_oapi.api"] = _lark_api
@@ -351,4 +569,6 @@ sys.modules["lark_oapi.api.im"] = _lark_api_im
 sys.modules["lark_oapi.api.im.v1"] = _lark_api_im_v1
 sys.modules["lark_oapi.api.bot"] = _lark_api_bot
 sys.modules["lark_oapi.api.bot.v1"] = _lark_api_bot_v1
+sys.modules["lark_oapi.api.cardkit"] = _lark_api_cardkit
+sys.modules["lark_oapi.api.cardkit.v1"] = _lark_api_cardkit_v1
 sys.modules["lark_oapi.ws"] = _ws_module

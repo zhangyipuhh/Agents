@@ -148,6 +148,8 @@ app/
 │   │   ├── chat_concurrency_dependency.py  # FastAPI 依赖封装
 │   │   └── __init__.py     # 包初始化
 │   ├── agent/              # Agent 基类
+│   │   ├── stream_event.py          # StreamEvent dataclass（流式事件统一载体）
+│   │   └── stream_event_source.py   # StreamEventSource：消费 agent.stream 多模式 chunk → StreamEvent 序列
 │   ├── llmcalls/           # LLM 调用封装
 │   ├── skills/             # Skill 系统（schema / 加载 / 提示词渲染 / bootstrap / prompt 构造 / load_skill 工具）
 │   │   ├── schemas.py      # SkillInfo / SkillsConfig Pydantic 模型
@@ -189,6 +191,13 @@ app/
 │   │   ├── registry.py       # ToolRegistry + @register_tool 装饰器（按 agent 维度注册工具，供 AgentConfig.get_tools() 查询）
 │   │   ├── mcp/              # MCP 服务器配置（config.yaml.example）
 │   │   ├── middleware/       # 工具中间件（DockerSandboxBackend / EncodingSafeFileSearch 等）
+│   │   ├── channels/         # 多渠道消费者（飞书 / 未来钉钉 / 企微 / Slack 等输出渠道）
+│   │   │   ├── base.py           # ChannelConsumer ABC（6 个回调接口）
+│   │   │   ├── registry.py       # ChannelRegistry：按 session_id 前缀路由到对应 Consumer
+│   │   │   └── feishu/           # 飞书渠道实现
+│   │   │       ├── __init__.py           # 包初始化时把 FeishuCardConsumer 注册到 channel_registry
+│   │   │       ├── FeishuCardConsumer.py # 飞书 CardKit 同卡片流式 + HITL 同卡片按钮消费者
+│   │   │       └── Throttler.py          # 时间窗 + 字符增量双条件节流器
 │   │   └── skills/           # 按 agent 维度组织的工具模块（@register_tool 装饰）
 │   │       ├── map_agent/    # map_agent 工具（MapTools.py，11 个工具：8 地图 + query_knowledge + generate_report + save_business_info；配套 config/ 子目录承载报告配置）
 │   │       └── project/      # project 智能体工具（ProjectTools.py，8 个工具：intent_clarification / project_doc_query / project_doc_outline / project_doc_write / project_doc_workflow / manage_project_log / append_change_log / generate_project_docx）
@@ -2225,6 +2234,97 @@ system_prompt = (
 - 群聊场景需开启相关消息权限。
 - 卡片按钮回调要求后端在 3 秒内 ack；后端已通过 `_dispatch_async` 把慢操作投递到主事件循环，避免超时。
 
+### 飞书流式卡片输出（多渠道架构）
+
+**目标**：把飞书侧 LLM 流式 token 实时 patch 到同一张 CardKit 卡片，HITL 按钮也追加到同一张卡片（上下文连贯），解决原方案"流式 token 全丢 / HITL 与终态卡片分离 / 消息编辑次数受限"问题。架构层面抽象出多渠道路由（飞书 / 未来钉钉 / 企微 / Slack 平级），不感知 LangGraph。
+
+**架构分层（依赖倒置）**：
+
+```
+FeishuWebSocketService._call_agent
+  ├─ channel_registry.resolve(session_id, **ctx) → ChannelConsumer 实例（按前缀路由）
+  ├─ StreamEventSource.consume(agent.stream(...))  → 产出 StreamEvent 序列
+  └─ 把 StreamEvent 分发到 Consumer 的 6 个回调      → Consumer 翻译为渠道渲染动作
+```
+
+- `StreamEventSource`（`app/core/agent/stream_event_source.py`）只负责消费 `agent.stream(stream_mode=["updates", "custom", "messages"])` 多模式 chunk，产出统一 `StreamEvent`，**不感知**任何渠道
+- `ChannelConsumer`（`app/shared/tools/channels/base.py`）只声明 6 个回调接口，**不感知** LangGraph
+- `ChannelRegistry`（`app/shared/tools/channels/registry.py`）按 session_id 前缀路由到对应 Consumer 类，支持运行时 `register(prefix, consumer_cls)`
+
+**核心模块**：
+
+| 组件 | 文件位置 | 职责 |
+|---|---|---|
+| `StreamEvent` | `app/core/agent/stream_event.py` | 流式事件 dataclass：`type ∈ {session_start, text_chunk, node_update, interrupt, abort, end}` + `text` / `node_name` / `node_data` / `interrupt_requests` 字段 |
+| `StreamEventSource` | `app/core/agent/stream_event_source.py` | 消费 `agent.stream(...)` 多模式 chunk（messages / updates / custom），统一产出 `StreamEvent` 序列；支持 abort 信号检测；HITL interrupt 三形态兼容检测（dict 直含 `__interrupt__` / tuple 嵌套 / node 嵌套）+ `hasattr(item, "value")` 解包 LangGraph `Interrupt` 对象 |
+| `ChannelConsumer` | `app/shared/tools/channels/base.py` | 渠道消费者 ABC，6 个抽象回调：`on_session_start` / `on_text_chunk` / `on_node_update` / `on_interrupt` / `on_session_end` / `on_abort`；基类维护 `accumulated_text` / `last_interrupt_req` 公共状态 |
+| `ChannelRegistry` | `app/shared/tools/channels/registry.py` | `channel_registry` 全局单例；`register(prefix, consumer_cls)` 注册前缀；`resolve(session_id, **ctx)` 按前缀最长匹配实例化 Consumer；前缀冲突抛 `ValueError` |
+| `FeishuCardConsumer` | `app/shared/tools/channels/feishu/FeishuCardConsumer.py` | 飞书渠道 Consumer 实现：`on_session_start` 创建 CardKit 卡片实体 + 关联消息（占位「🤖 AI 正在思考…」）；`on_text_chunk` 累积→节流→patch 同卡片；`on_interrupt` 同卡片 elements 末尾追加按钮；`on_session_end` 强制 flush；`on_abort` 追加「（已停止）」标记 |
+| `Throttler` | `app/shared/tools/channels/feishu/Throttler.py` | 时间窗 + 字符增量双条件节流器：`should_push(last_len, current_len, now)` 同时满足 `now - last_push_time ≥ 600ms` 与 `current_len - last_push_len ≥ 50`；`force_flush()` 仅更新 `last_push_len` 不阻塞；初始 `last_push_time = -inf` 保证首次推送必发 |
+
+**飞书渠道前缀路由**：
+- `channel_registry.register("feishu", FeishuCardConsumer)` 在 `app/shared/tools/channels/feishu/__init__.py` 包导入时执行
+- `lifespan` 中通过 `from app.shared.tools.channels import feishu` 触发自动注册
+- ⚠️ **关键约束**：lifespan 中**禁止**用 `import app.shared.tools.channels.feishu` 形式 —— 该语句会让 Python 把 `app` 绑定为 `sys.modules['app']` 模块对象，覆盖 lifespan 函数参数 `app: FastAPI`，导致后续 `app.state.xxx` 抛 `AttributeError: module 'app' has no attribute 'state'`。必须用 `from app.shared.tools.channels import feishu` 形式
+
+**`_call_agent` 重写流程**（`FeishuWebSocketService._call_agent(session_id, text, chat_id, resume=None)`）：
+1. 通过 `channel_registry.resolve(session_id, lark_client=self._lark_client, chat_id=chat_id)` 拿到 Consumer 实例
+   - interrupt 后保留 Consumer 到 `self._active_consumers[session_id]`；resume 时复用同一实例（保留 `_card_id` / `_message_id`，让续跑 token 继续 patch 同卡片）
+2. **Consumer 状态重置**（关键）：resume 复用旧 Consumer 时，必须在驱动事件流前重置 `consumer.accumulated_text = ""` 与 `consumer.last_interrupt_req = None`，否则上轮 interrupt 留下的 `last_interrupt_req` 会让 `_call_agent` 错误返回非 None interrupt_req
+3. 调用 `agent_config_service.build_agent_instance(agent_name, session_id, text, resume=resume)` 拿到 agent
+4. `StreamEventSource.consume(agent.stream(...))` 产出 StreamEvent 序列
+5. 每个 StreamEvent 分发到 Consumer 对应回调（`on_session_start` → `on_text_chunk` × N → `on_interrupt` / `on_node_update` → `on_session_end`）
+6. 流自然结束：清理 `_active_consumers[session_id]`，返回 `None`（表示无 HITL pending）
+7. 流 interrupt：返回 `consumer.last_interrupt_req`（供 `_handle_message` 写入 `_pending_interrupts`）
+8. abort 信号触发：调用 `consumer.on_abort()`，清理 Consumer
+
+**节流策略**（`Throttler` + 单卡片 `asyncio.Lock`）：
+- 时间窗 600ms + 字符增量 50 字符 + 单卡片 `asyncio.Lock` 三重保险
+- 飞书官方限频：CardKit update 单卡片 10 QPS / 秒（global 50 QPS）；600ms 时间窗 ≈ 1.6 QPS，远低于限频
+- 卡片 30KB 上限 → 沿用 `MarkdownToCardConverter._MAX_CARD_TEXT_LEN = 4000` 字符截断
+- patch 序号 `sequence` 严格递增（飞书要求）
+
+**HITL 同卡片按钮**（与原"独立卡片"方案的关键差异）：
+- `on_interrupt` 把 `InterruptToCardConverter` 生成的按钮 elements **追加到当前卡片 elements 末尾**，不发独立卡片
+- 用户点击按钮 → `_on_card_action` 解析 → `_resume_agent` 复用同一 Consumer 实例 → 续跑 token 继续 patch 同卡片
+- 上下文连贯：用户在原卡片看到 token 流 + 按钮选择 + 续跑 token，不需要切换消息
+- 仅在 CardKit create 失败降级模式下才走 `_send_interrupt_card`（独立卡片）
+
+**降级路径**（鲁棒性优先）：
+- CardKit create 失败 → Consumer 内部 `_degraded = True` → `on_text_chunk` / `on_interrupt` 改走一次性 `_send_card_reply` / `_send_interrupt_card`
+- CardKit patch 连续失败 ≥ 3 次（`_MAX_PATCH_FAILURES`）→ 降级为一次性发送
+- `_send_card_reply` 失败 → 降级 `_send_text_reply`（最终兜底，保证可达性）
+
+**abort 信号机制**：
+- 复用全局 `register_abort_signal(session_id)` / `trigger_abort(session_id)` / `unregister_abort_signal(session_id)`（与前端 SSE abort 通道共用一套基础设施）
+- `StreamEventSource.consume` 每轮迭代检查 `is_abort_triggered(session_id)`，触发后 yield `StreamEvent(type="abort")` 并 break
+- Consumer 在 `on_abort` 中追加 `_STOPPED_MARKER = "\n\n_（已停止）_"` + 设置 `_stopped = True` 停止后续 patch
+
+**测试覆盖**：
+- `app/tests/core/agent/test_stream_event_source.py`（13 个）：导入 / messages 模式 text 提取 / 空内容跳过 / updates 模式 / interrupt 三形态检测 / abort 信号 / 流结束 / session_start 首事件 / tools 节点完成触发 abort / 异常隔离 / 无 abort 信号不检查
+- `app/tests/shared/tools/channels/feishu/test_feishu_card_consumer.py`（22 个）：导入 / CardKit create + 关联消息 / create 失败降级 / 节流 patch / 节流跳过 / 空文本 noop / 降级模式仅累积 / HITL 同卡片按钮 / 空 requests noop / 降级模式新卡片 / session_end force_flush / 降级模式一次性回复 / abort 后跳过 session_end / abort 标记 / 降级模式 abort / patch 失败静默重试 / 连续失败降级 / `_send_card_reply` 失败降级文本 / sequence 严格递增 / 截断
+- `app/tests/shared/tools/channels/feishu/test_throttler.py`（9 个）：导入 / 时间窗满足 / 时间窗内跳过 / 字符增量不足跳过 / 双条件满足 / force_flush 更新 len / force_flush 后允许立即推送 / 并发 should_push 串行化 / 默认值
+- `app/tests/shared/tools/skills/feishu/test_feishu_websocket_service.py`（93 个）：原 70+ 测试改造（`_call_agent` 签名加 `chat_id` + Consumer 路由）+ 新增 3 个 Consumer 相关测试（`test_call_agent_routes_to_feishu_consumer_by_session_prefix` / `test_call_agent_returns_interrupt_consumer_state` / `test_resume_agent_continues_same_consumer`）
+
+**与前端 SSE 的边界**：
+- 前端 SSE 流式（`/api/agent/*`）仍走 `app/routers/_stream_helper.py`，**一行未改**（硬约束）
+- 飞书侧流式走独立路径：`FeishuWebSocketService._call_agent` → `StreamEventSource` → `ChannelConsumer`
+- 两条路径互不影响：前端 SSE 通过 HTTP 响应流推送；飞书侧通过 CardKit API patch 同一张卡片
+
+**关键设计决策**：
+
+| 决策点 | 选择 | 理由 |
+|---|---|---|
+| 是否改 `_stream_helper` | **不改** | 用户硬约束；前端 SSE 行为完全冻结 |
+| 事件源抽象层 | 新建 `StreamEventSource`（独立于 `_stream_helper`） | `_stream_helper` 内 SSE 推送逻辑不抽离；新模块从零实现核心循环 |
+| 渠道抽象 | `ChannelConsumer` 接口 + `ChannelRegistry` 路由 | 飞书 / 钉钉 / 企微平级；按 session_id 前缀分发 |
+| 更新通道 | CardKit（卡片实体） | 消息编辑有隐性 ~20-30 次上限；CardKit 无明确上限；官方推荐流式方案 |
+| 节流策略 | 时间窗 600ms + 长度增量 50 字符 + 单卡片 asyncio.Lock | 官方限频 50 QPS / 秒；600ms 留余量；50 字符避免无意义 patch |
+| HITL 按钮位置 | 同一卡片 elements 末尾追加 | 用户上下文连贯；避免再发一张图 |
+| abort 信号 | 复用 `register_abort_signal` / `trigger_abort` | 与前端 abort 通道共用一套基础设施 |
+| 降级触发 | CardKit create 失败 / 连续 N 次 patch 失败 → 一次性 `_send_card_reply` | 鲁棒性优先，避免无限重试 |
+| 多 Consumer 实例化 | 每次 `_call_agent` 新建 Consumer，resume 时复用同一实例 | session 内 Consumer 持有同一 card_id / message_id，跨 resume 续写 |
+
 ### 飞书 Markdown 卡片 + HITL 按钮回路
 
 | 组件 | 文件位置 | 职责 |
@@ -2725,6 +2825,7 @@ SandboxDrawer 时间线包含 `code_generation` 事件（显示 LLM 生成的代
   - `interrupt`：HITL 中断（payload = `{action: "ask_user_question", questions: [...]}`）
 - **HITL 恢复**：`HumanApprovalBox` 提交 `{answers: string[][]}` → `chatStream(..., resumeData)` → 后端 `Command(resume=...)` 继续执行
 - **渲染**：`MessageBubble` 统一展示，marked 转 HTML、highlight.js 代码高亮
+- **与飞书侧流式的边界**：本节 SSE 流式仅服务前端 Web 入口，由 `app/routers/_stream_helper.py` 统一包装（**飞书流式卡片输出改造一行未改此文件**）。飞书 WebSocket 入口的流式输出走独立路径：`FeishuWebSocketService._call_agent` → `StreamEventSource` → `ChannelConsumer` → CardKit patch（详见「飞书流式卡片输出（多渠道架构）」章节）。两条路径互不影响，abort 信号共用 `register_abort_signal` / `trigger_abort` 全局 dict
 
 ### Vite 开发代理（vite.config.js）
 

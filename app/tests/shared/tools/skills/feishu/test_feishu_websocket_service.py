@@ -77,6 +77,135 @@ def _make_service(bot_open_id=None):
 
 
 # ---------------------------------------------------------------------------
+# 辅助：Mock ChannelConsumer（2026-07-19 新增，配合 _call_agent 重写）
+# ---------------------------------------------------------------------------
+
+
+class _MockConsumer:
+    """模拟 ChannelConsumer，记录所有回调调用并模拟累积行为。
+
+    用于 ``_call_agent`` 测试：把 Consumer 的 6 个回调替换为可观测的记录器，
+    让测试断言"事件流是否被正确分发到 Consumer"，而非"token 是否被正确提取"
+    （后者由 ``test_stream_event_source.py`` 覆盖）。
+
+    Attributes:
+        session_id: 会话 ID
+        accumulated_text: 累积文本（``on_text_chunk`` 自动追加，模拟真实 Consumer 行为）
+        last_interrupt_req: 最后一次 interrupt 请求（``on_interrupt`` 自动记录首个 req）
+        calls: 所有回调调用记录列表，元素为 tuple，如 ``("on_text_chunk", "Hello")``
+        _card_id / _message_id: 占位字段，供 ``_call_agent`` 内部 ``getattr(consumer, "_card_id")`` 读取
+    """
+
+    def __init__(
+        self,
+        *,
+        session_id: str = "feishu:p2p:ou_test",
+        accumulated_text: str = "",
+        last_interrupt_req=None,
+        **ctx,
+    ):
+        """初始化 mock consumer。
+
+        Args:
+            session_id: 会话 ID
+            accumulated_text: 初始累积文本（默认空）
+            last_interrupt_req: 初始 interrupt 请求（默认 None）
+            **ctx: 兼容 ChannelRegistry.resolve 透传的额外上下文（忽略）
+        """
+        self.session_id = session_id
+        self.accumulated_text = accumulated_text
+        self.last_interrupt_req = last_interrupt_req
+        self.calls: list = []
+        # 占位字段，供 _call_agent 内部 getattr(consumer, "_card_id") 读取
+        self._card_id = "card_mock"
+        self._message_id = "msg_mock"
+
+    async def on_session_start(self):
+        """记录 on_session_start 调用。"""
+        self.calls.append(("on_session_start",))
+
+    async def on_text_chunk(self, text: str):
+        """记录 on_text_chunk 调用 + 自动累积文本（模拟真实 Consumer 行为）。
+
+        Args:
+            text: token 文本片段
+        """
+        self.calls.append(("on_text_chunk", text))
+        self.accumulated_text += text
+
+    async def on_node_update(self, node_name: str, node_data: dict):
+        """记录 on_node_update 调用。
+
+        Args:
+            node_name: 节点名称
+            node_data: 节点状态更新 dict
+        """
+        self.calls.append(("on_node_update", node_name, node_data))
+
+    async def on_interrupt(self, requests: list):
+        """记录 on_interrupt 调用 + 自动记录首个 req 为 last_interrupt_req。
+
+        Args:
+            requests: 结构化 HITL 中断请求列表
+        """
+        self.calls.append(("on_interrupt", requests))
+        if requests:
+            # 取首个含 action 的 req（与 FeishuCardConsumer.on_interrupt 行为一致）
+            for req in requests:
+                if isinstance(req, dict) and req.get("action"):
+                    self.last_interrupt_req = req
+                    break
+            else:
+                self.last_interrupt_req = requests[0]
+
+    async def on_session_end(self):
+        """记录 on_session_end 调用。"""
+        self.calls.append(("on_session_end",))
+
+    async def on_abort(self):
+        """记录 on_abort 调用。"""
+        self.calls.append(("on_abort",))
+
+
+def _patch_channel_registry(monkeypatch, consumer: _MockConsumer):
+    """把全局 ``channel_registry.resolve`` 替换为返回指定 consumer 的 stub。
+
+    Args:
+        monkeypatch: pytest fixture
+        consumer: 测试期望 ``_call_agent`` 使用的 mock Consumer 实例
+    """
+    from app.shared.tools.channels.registry import channel_registry
+
+    # 注意：channel_registry.resolve 签名为 resolve(session_id, **ctx)，
+    # session_id 是 positional argument，lambda 必须显式接收。
+    monkeypatch.setattr(
+        channel_registry, "resolve", lambda session_id, **kw: consumer
+    )
+    return consumer
+
+
+class _FakeInterrupt:
+    """模拟 LangGraph ``Interrupt(value=...)`` 对象。
+
+    ``StreamEventSource._extract_interrupt_requests`` 通过 ``hasattr(item, "value")``
+    识别 Interrupt 对象并解包 ``.value`` 字段。测试中必须用此类包装 interrupt
+    payload，否则直接 yield ``{"value": {...}}`` dict 不会被解包，导致
+    ``Consumer.last_interrupt_req`` 是 ``{"value": {...}}`` 而非 ``{...}``。
+
+    Attributes:
+        value: interrupt 载荷（通常是含 ``action`` / ``questions`` 字段的 dict）
+    """
+
+    def __init__(self, value):
+        """初始化 FakeInterrupt。
+
+        Args:
+            value: interrupt 载荷
+        """
+        self.value = value
+
+
+# ---------------------------------------------------------------------------
 # P0 导入/存在性
 # ---------------------------------------------------------------------------
 def test_FeishuWebSocketService_importable():
@@ -399,7 +528,7 @@ async def test_handle_file_message_supported_extension_dispatches_agent(tmp_path
     svc = _make_service()
     captured: dict = {}
 
-    async def _fake_call_agent(sid, text, **kw):
+    async def _fake_call_agent(sid, text, chat_id, **kw):
         captured["text"] = text
         return ("reply", None)
 
@@ -522,7 +651,7 @@ async def test_handle_file_message_parse_failure_still_dispatches_agent(tmp_path
     svc = _make_service()
     captured: dict = {}
 
-    async def _fake_call_agent(sid, text, **kw):
+    async def _fake_call_agent(sid, text, chat_id, **kw):
         captured["text"] = text
         return ("ok", None)
 
@@ -640,7 +769,7 @@ async def test_handle_file_message_user_text_only_has_filename(tmp_path, monkeyp
     svc = _make_service()
     captured: dict = {}
 
-    async def _fake_call_agent(sid, text, **kw):
+    async def _fake_call_agent(sid, text, chat_id, **kw):
         captured["text"] = text
         return ("ok", None)
 
@@ -752,7 +881,7 @@ async def test_handle_file_message_md_attachment_skips_remote_parser(tmp_path, m
     svc = _make_service()
     captured: dict = {}
 
-    async def _fake_call_agent(sid, text, **kw):
+    async def _fake_call_agent(sid, text, chat_id, **kw):
         captured["text"] = text
         return ("md reply", None)
 
@@ -851,7 +980,7 @@ async def test_handle_file_message_safe_marker_paths_do_not_carry_colons(monkeyp
     svc = _make_service()
     captured: list = []
 
-    async def _fake_call_agent(sid, text, **kw):
+    async def _fake_call_agent(sid, text, chat_id, **kw):
         return ("ok", None)
 
     svc._call_agent = _fake_call_agent
@@ -1067,22 +1196,29 @@ def test_download_calls_message_resource_get_not_message_get_message_resource(mo
 
 
 # ---------------------------------------------------------------------------
-# P1 _call_agent + _send_reply
+# P1 _call_agent + Consumer 驱动（2026-07-19 重写：StreamEventSource + ChannelConsumer）
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_call_agent_collects_message_chunks():
-    """P1：agent.stream 返回 messages chunk 应拼接成回复。"""
+async def test_call_agent_collects_message_chunks(monkeypatch):
+    """P1：agent.stream 返回 messages chunk → Consumer 的 on_text_chunk 被正确驱动。
 
-    # 用 SimpleNamespace 显式设置 .content，
-    # 测试字符串用 ASCII 避免 Windows PowerShell 中文编码干扰
+    新流程（2026-07-19）：``_call_agent`` 通过 ``StreamEventSource`` 消费
+    ``agent.stream``，把 text 事件转发给 ``Consumer.on_text_chunk``。
+    本测试断言 Consumer 收到正确的 token 序列，且返回值 = ``consumer.accumulated_text``。
+
+    Args:
+        monkeypatch: pytest fixture
+    """
+    # 用 SimpleNamespace 显式设置 .content
     m1 = types.SimpleNamespace(content="Hello")
     m2 = types.SimpleNamespace(content=" ")
     m3 = types.SimpleNamespace(content="World")
 
     async def fake_stream(*args, **kwargs):
-        yield ("messages", (m1, {}))
-        yield ("messages", (m2, {}))
-        yield ("messages", (m3, {}))
+        # metadata 必须含 ls_provider，否则 StreamEventSource.format_message 返回 None
+        yield ("messages", (m1, {"ls_provider": "openai"}))
+        yield ("messages", (m2, {"ls_provider": "openai"}))
+        yield ("messages", (m3, {"ls_provider": "openai"}))
 
     fake_agent = types.SimpleNamespace(stream=fake_stream)
 
@@ -1092,66 +1228,70 @@ async def test_call_agent_collects_message_chunks():
             state = MagicMock()
             return fake_agent, ctx, state
 
-
     svc = FeishuWebSocketService(
         lark_client=MagicMock(),
         agent_config_service=FakeService(),
         agent_name="project",
     )
-    reply, interrupt_req = await svc._call_agent("feishu:p2p:ou_alice", "hello")
+
+    # mock channel_registry.resolve 返回 mock Consumer
+    mock_consumer = _MockConsumer(session_id="feishu:p2p:ou_alice")
+    _patch_channel_registry(monkeypatch, mock_consumer)
+
+    reply, interrupt_req = await svc._call_agent(
+        "feishu:p2p:ou_alice", "hello", "oc_chat_001"
+    )
+
+    # 断言 Consumer 回调被正确驱动
+    assert ("on_session_start",) in mock_consumer.calls
+    assert ("on_text_chunk", "Hello") in mock_consumer.calls
+    assert ("on_text_chunk", " ") in mock_consumer.calls
+    assert ("on_text_chunk", "World") in mock_consumer.calls
+    assert ("on_session_end",) in mock_consumer.calls
+
+    # 断言返回值 = consumer.accumulated_text
     assert reply == "Hello World"
     assert interrupt_req is None
 
+    # 断言 interrupt 时 Consumer 被保留（此处无 interrupt → 应被清理）
+    assert "feishu:p2p:ou_alice" not in svc._active_consumers
+
 
 @pytest.mark.asyncio
-async def test_call_agent_falls_back_to_updates_when_no_tokens():
-    """P2：当 messages 模式无 token、updates 模式带 messages 列表时，回退到 updates 内容。"""
+async def test_call_agent_returns_none_when_empty(monkeypatch):
+    """P1：agent 无输出时返回 (None, None)，Consumer 仅收到 session_start + session_end。
 
-    last_msg = types.SimpleNamespace(content="FromUpdates")
-
-    async def fake_stream(*args, **kwargs):
-        # messages 模式产出空 content
-        yield ("messages", (types.SimpleNamespace(content=""), {}))
-        yield ("updates", {"some_node": {"messages": [types.SimpleNamespace(content="ignored"), last_msg]}})
-
-    fake_agent = types.SimpleNamespace(stream=fake_stream)
+    Args:
+        monkeypatch: pytest fixture
+    """
+    class FakeAgent:
+        async def stream(self, _state, **kwargs):
+            if False:
+                yield  # pragma: no cover
+            return
 
     class FakeService:
         async def build_agent_instance(self, name, sid, msg, **kwargs):
-            return fake_agent, MagicMock(), MagicMock()
+            return FakeAgent(), MagicMock(), MagicMock()
 
-    svc = FeishuWebSocketService(lark_client=MagicMock(), agent_config_service=FakeService())
-    reply, interrupt_req = await svc._call_agent("feishu:p2p:ou_alice", "hello")
-    assert reply == "FromUpdates"
-    assert interrupt_req is None
-
-
-@pytest.mark.asyncio
-async def test_call_agent_handles_list_content():
-    """P2：兼容 AIMessage content 为 list[tuple] 或 list[dict] 的情况。"""
-
-    list_chunk = types.SimpleNamespace(
-        content=[
-            {"type": "text", "text": "from-dict "},
-            ("tool_call", "from-tuple "),
-            "from-str",
-        ]
+    svc = FeishuWebSocketService(
+        lark_client=MagicMock(),
+        agent_config_service=FakeService(),
     )
 
-    async def fake_stream(*args, **kwargs):
-        yield ("messages", (list_chunk, {}))
+    mock_consumer = _MockConsumer(session_id="feishu:p2p:ou_alice")
+    _patch_channel_registry(monkeypatch, mock_consumer)
 
-    fake_agent = types.SimpleNamespace(stream=fake_stream)
-
-    class FakeService:
-        async def build_agent_instance(self, name, sid, msg, **kwargs):
-            return fake_agent, MagicMock(), MagicMock()
-
-    svc = FeishuWebSocketService(lark_client=MagicMock(), agent_config_service=FakeService())
-    reply, interrupt_req = await svc._call_agent("feishu:p2p:ou_alice", "hello")
-    # 三段拼接：dict 文本 + tuple 文本 + str
-    assert reply == "from-dict from-tuple from-str"
+    reply, interrupt_req = await svc._call_agent(
+        "feishu:p2p:ou_alice", "hello", "oc_chat_001"
+    )
+    assert reply is None
     assert interrupt_req is None
+    # Consumer 仅收到 session_start + session_end，无 text_chunk
+    assert ("on_session_start",) in mock_consumer.calls
+    assert ("on_session_end",) in mock_consumer.calls
+    text_calls = [c for c in mock_consumer.calls if c[0] == "on_text_chunk"]
+    assert text_calls == []
 
 
 @pytest.mark.asyncio
@@ -1180,48 +1320,6 @@ async def test_extract_text_from_message_none():
     """P2：_extract_text_from_message 无 content 返回 None。"""
     m = types.SimpleNamespace(content=None)
     assert FeishuWebSocketService._extract_text_from_message(m) is None
-
-
-@pytest.mark.asyncio
-async def test_call_agent_returns_none_when_empty():
-    """P2：agent 无输出时返回 None。"""
-
-    class FakeAgent:
-        async def stream(self, _state, **kwargs):
-            if False:
-                yield  # pragma: no cover
-            return
-
-    svc = FeishuWebSocketService(
-        lark_client=MagicMock(),
-        agent_config_service=FakeService(),
-        agent_name="project",
-    )
-    reply = await svc._call_agent("feishu:p2p:ou_alice", "hello")
-    assert reply == "你好，我是助手"
-
-
-@pytest.mark.asyncio
-async def test_call_agent_returns_none_when_empty():
-    """P2：agent 无输出时返回 None。"""
-
-    class FakeAgent:
-        async def stream(self, _state, context=None, config=None, stream_mode=None):
-            if False:
-                yield  # pragma: no cover
-            return
-
-    class FakeService:
-        async def build_agent_instance(self, name, sid, msg, **kwargs):
-            return FakeAgent(), MagicMock(), MagicMock()
-
-    svc = FeishuWebSocketService(
-        lark_client=MagicMock(),
-        agent_config_service=FakeService(),
-    )
-    reply, interrupt_req = await svc._call_agent("feishu:p2p:ou_alice", "hello")
-    assert reply is None
-    assert interrupt_req is None
 
 
 def test_send_reply_truncates_long_text():
@@ -1286,12 +1384,24 @@ def test_send_reply_exception_handled():
 # P1 _handle_message 端到端
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_handle_message_calls_agent_and_sends():
-    """P1：_handle_message 应调用 agent 并发送回复。"""
+async def test_handle_message_calls_agent_and_sends(monkeypatch):
+    """P1：_handle_message 应调用 _call_agent 驱动 Consumer 完成流式 patch。
+
+    新流程（2026-07-19）：流式 token 已由 ``FeishuCardConsumer.on_text_chunk``
+    实时 patch 到 CardKit 卡片；``_handle_message`` 不再调用 ``_send_reply``
+    （否则会重复发送同一条回复）。本测试断言：
+        - ``_call_agent`` 被调用（返回 reply="Reply"）
+        - ``_send_reply`` **不**被调用（Consumer 已处理流式 patch）
+        - ``Consumer.on_session_end`` 被调用（流自然结束）
+
+    Args:
+        monkeypatch: pytest fixture
+    """
     received_msg = types.SimpleNamespace(content="Reply")
 
-    async def fake_stream(*args, **kwargs):
-        yield ("messages", (received_msg, {}))
+    async def fake_stream(_state, context=None, config=None, stream_mode=None):
+        # metadata 必须含 ls_provider，否则 StreamEventSource.format_message 返回 None
+        yield ("messages", (received_msg, {"ls_provider": "openai"}))
 
     fake_agent = types.SimpleNamespace(stream=fake_stream)
 
@@ -1303,9 +1413,20 @@ async def test_handle_message_calls_agent_and_sends():
         lark_client=MagicMock(),
         agent_config_service=FakeService(),
     )
-    with patch.object(svc, "_send_reply") as send_mock:
+
+    mock_consumer = _MockConsumer(session_id="feishu:p2p:ou_alice")
+    _patch_channel_registry(monkeypatch, mock_consumer)
+
+    with patch.object(svc, "_send_reply") as send_mock, \
+         patch.object(svc, "_ensure_session_recorded", new=AsyncMock()):
         await svc._handle_message("feishu:p2p:ou_alice", "oc_chat_001", "hello")
-        send_mock.assert_called_once_with("oc_chat_001", "Reply")
+        # 新流程：流式 token 由 Consumer patch，_send_reply 不再被调用
+        send_mock.assert_not_called()
+
+    # Consumer 流自然结束 → on_session_end 被调用
+    assert ("on_session_end",) in mock_consumer.calls
+    # 无 interrupt → Consumer 被清理
+    assert "feishu:p2p:ou_alice" not in svc._active_consumers
 
 
 @pytest.mark.asyncio
@@ -1518,13 +1639,30 @@ def test_send_card_reply_success_no_fallback():
 # P1 Interrupt 检测（HITL 触发）
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_call_agent_returns_interrupt_when_updates_have_interrupt_key():
-    """P1：updates chunk 含 __interrupt__ → 返回 (None, interrupt_req)。"""
+async def test_call_agent_returns_interrupt_when_updates_have_interrupt_key(monkeypatch):
+    """P1：updates chunk 含 __interrupt__ → Consumer.on_interrupt 被调用 + 返回 interrupt_req。
 
-    async def fake_stream(*args, **kwargs):
+    新流程（2026-07-19）：interrupt 由 ``StreamEventSource._extract_interrupt_data`` 检测，
+    ``Consumer.on_interrupt`` 被调用；``_call_agent`` 返回
+    ``(None, consumer.last_interrupt_req)``，并把 Consumer 保留在
+    ``_active_consumers`` 供 resume 复用。
+
+    注意：真实 LangGraph 产出的是 ``Interrupt(value={...})`` 对象（带 ``.value`` 属性），
+    ``_extract_interrupt_requests`` 会解包 ``.value`` 得到结构化 dict。测试中用
+    ``FakeInterrupt`` 模拟此对象；若直接 yield ``{"value": {...}}`` dict 则
+    ``_extract_interrupt_requests`` 不会解包，断言会失败。
+
+    Args:
+        monkeypatch: pytest fixture
+    """
+    class FakeInterrupt:
+        def __init__(self, value):
+            self.value = value
+
+    async def fake_stream(_state, context=None, config=None, stream_mode=None):
         yield ("updates", {"some_node": {"__interrupt__": [
-            {"value": {"action": "ask_user_question",
-                       "questions": [{"question": "Q?", "options": [{"label": "A"}], "multiSelect": False}]}}
+            FakeInterrupt({"action": "ask_user_question",
+                           "questions": [{"question": "Q?", "options": [{"label": "A"}], "multiSelect": False}]})
         ]}})
 
     fake_agent = types.SimpleNamespace(stream=fake_stream)
@@ -1537,22 +1675,41 @@ async def test_call_agent_returns_interrupt_when_updates_have_interrupt_key():
         lark_client=MagicMock(),
         agent_config_service=FakeService(),
     )
-    reply, interrupt_req = await svc._call_agent("feishu:p2p:ou_alice", "hi")
+
+    mock_consumer = _MockConsumer(session_id="feishu:p2p:ou_alice")
+    _patch_channel_registry(monkeypatch, mock_consumer)
+
+    reply, interrupt_req = await svc._call_agent(
+        "feishu:p2p:ou_alice", "hi", "oc_chat_001"
+    )
     assert reply is None
     assert interrupt_req is not None
     assert interrupt_req.get("action") == "ask_user_question"
     assert len(interrupt_req.get("questions") or []) == 1
+    # Consumer 收到 on_interrupt 回调
+    on_interrupt_calls = [c for c in mock_consumer.calls if c[0] == "on_interrupt"]
+    assert len(on_interrupt_calls) == 1
+    # interrupt 时 Consumer 被保留供 resume 复用
+    assert "feishu:p2p:ou_alice" in svc._active_consumers
 
 
 @pytest.mark.asyncio
-async def test_call_agent_handles_interrupt_object_value():
-    """P1：Interrupt 对象（带 .value）能被解析。"""
+async def test_call_agent_handles_interrupt_object_value(monkeypatch):
+    """P1：Interrupt 对象（带 .value）能被 StreamEventSource 解析为结构化 dict。
 
+    新流程：LangGraph ``Interrupt`` 对象（有 ``.value`` 属性）由
+    ``_extract_interrupt_requests`` 解析，``Consumer.on_interrupt`` 收到结构化 list；
+    ``_call_agent`` 返回 ``(None, interrupt_req)``。
+
+    Args:
+        monkeypatch: pytest fixture
+    """
     class FakeInterrupt:
         def __init__(self, value):
             self.value = value
 
-    async def fake_stream(*args, **kwargs):
+    async def fake_stream(_state, context=None, config=None, stream_mode=None):
+        # 直接 yield dict 含 __interrupt__（StreamEventSource 情况 1）
         yield {"__interrupt__": [FakeInterrupt({"action": "ask_user_question",
                                                  "questions": [{"question": "Q",
                                                                 "options": [{"label": "A"}],
@@ -1568,60 +1725,86 @@ async def test_call_agent_handles_interrupt_object_value():
         lark_client=MagicMock(),
         agent_config_service=FakeService(),
     )
-    reply, interrupt_req = await svc._call_agent("feishu:p2p:ou_alice", "hi")
+
+    mock_consumer = _MockConsumer(session_id="feishu:p2p:ou_alice")
+    _patch_channel_registry(monkeypatch, mock_consumer)
+
+    reply, interrupt_req = await svc._call_agent(
+        "feishu:p2p:ou_alice", "hi", "oc_chat_001"
+    )
     assert reply is None
     assert interrupt_req is not None
+    assert interrupt_req.get("action") == "ask_user_question"
 
 
-def test_extract_interrupt_from_chunk_direct_dict():
-    """P1：直接 dict 含 __interrupt__ → 提取。"""
-    chunk = {"__interrupt__": [{"value": "x"}]}
-    assert FeishuWebSocketService._extract_interrupt_from_chunk(chunk) == [{"value": "x"}]
-
-
-def test_extract_interrupt_from_chunk_tuple_nested():
-    """P1：tuple 模式 (updates, {node: {__interrupt__: [...]}}) → 提取。"""
-    chunk = ("updates", {"hitl_check_node": {"__interrupt__": ["interrupts"]}})
-    result = FeishuWebSocketService._extract_interrupt_from_chunk(chunk)
-    assert result == ["interrupts"]
-
-
-def test_extract_interrupt_from_chunk_tuple_top_level():
-    """P1：tuple 模式 (updates, {__interrupt__: [...]}) → 提取。"""
-    chunk = ("updates", {"__interrupt__": ["interrupts"]})
-    assert FeishuWebSocketService._extract_interrupt_from_chunk(chunk) == ["interrupts"]
-
-
-def test_extract_interrupt_from_chunk_no_match():
-    """P2：无 __interrupt__ 返回 None。"""
-    assert FeishuWebSocketService._extract_interrupt_from_chunk(
-        ("messages", (MagicMock(), {}))
-    ) is None
-
-
-def test_parse_interrupt_data_returns_action_dict():
-    """P1：解析含 action 的 dict。"""
-    intr = [{"value": {"action": "ask_user_question", "questions": []}}]
-    result = FeishuWebSocketService._parse_interrupt_data(intr)
-    assert result == {"action": "ask_user_question", "questions": []}
-
-
-def test_parse_interrupt_data_no_action_returns_none():
-    """P2：无 action 字段返回 None。"""
-    intr = [{"value": {"data": "随便"}}]
-    assert FeishuWebSocketService._parse_interrupt_data(intr) is None
-
-
-# ---------------------------------------------------------------------------
-# P1 _handle_message 路由（reply / interrupt / both）
-# ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_handle_message_routes_to_interrupt_card_on_interrupt():
-    """P1：agent 触发 interrupt → 发卡片 + 写入 pending。"""
-    async def fake_stream(*args, **kwargs):
+async def test_call_agent_routes_to_feishu_consumer_by_session_prefix(monkeypatch):
+    """P1：_call_agent 通过 channel_registry.resolve 按 session_id 前缀路由 Consumer。
+
+    新流程（2026-07-19）：``_call_agent`` 调用
+    ``channel_registry.resolve(session_id, lark_client=..., chat_id=...)`` 拿 Consumer。
+    本测试断言：
+        - ``resolve`` 被调用且传入正确 ``session_id`` / ``lark_client`` / ``chat_id``
+        - 返回的 Consumer 实例被 ``_call_agent`` 使用（``on_session_start`` 被调用）
+
+    Args:
+        monkeypatch: pytest fixture
+    """
+    captured_resolve_args: dict = {}
+
+    async def fake_stream(_state, context=None, config=None, stream_mode=None):
+        if False:
+            yield  # pragma: no cover
+
+    fake_agent = types.SimpleNamespace(stream=fake_stream)
+
+    class FakeService:
+        async def build_agent_instance(self, name, sid, msg, **kwargs):
+            return fake_agent, MagicMock(), MagicMock()
+
+    svc = FeishuWebSocketService(
+        lark_client=MagicMock(name="lark_client_marker"),
+        agent_config_service=FakeService(),
+    )
+
+    mock_consumer = _MockConsumer(session_id="feishu:p2p:ou_alice")
+    from app.shared.tools.channels.registry import channel_registry
+
+    def fake_resolve(session_id, **ctx):
+        """捕获 resolve 调用参数，返回 mock_consumer。"""
+        captured_resolve_args["session_id"] = session_id
+        captured_resolve_args["ctx"] = ctx
+        return mock_consumer
+
+    monkeypatch.setattr(channel_registry, "resolve", fake_resolve)
+
+    await svc._call_agent("feishu:p2p:ou_alice", "hi", "oc_chat_001")
+
+    # resolve 被调用且传入正确的 session_id / lark_client / chat_id
+    assert captured_resolve_args.get("session_id") == "feishu:p2p:ou_alice"
+    assert captured_resolve_args.get("ctx", {}).get("chat_id") == "oc_chat_001"
+    assert captured_resolve_args.get("ctx", {}).get("lark_client") is svc._lark_client
+    # Consumer.on_session_start 被调用（首次调用必走）
+    assert ("on_session_start",) in mock_consumer.calls
+
+
+@pytest.mark.asyncio
+async def test_call_agent_returns_interrupt_consumer_state(monkeypatch):
+    """P1：interrupt 后 Consumer 状态被保留（供 resume 复用 _card_id / _message_id）。
+
+    新流程（2026-07-19）：interrupt 时 ``_call_agent`` 把 Consumer 挂入
+    ``_active_consumers``，让 resume 调用能复用同一 Consumer（保留 ``_card_id`` /
+    ``_message_id``，让续跑 token 继续 patch 同卡片）。本测试断言：
+        - interrupt 后 Consumer 出现在 ``_active_consumers`` 中
+        - ``_active_consumers[session_id]`` 的 ``_card_id`` / ``_message_id`` 保留
+        - 自然结束时 Consumer 被清理
+
+    Args:
+        monkeypatch: pytest fixture
+    """
+    async def fake_stream(_state, context=None, config=None, stream_mode=None):
         yield ("updates", {"hitl": {"__interrupt__": [
-            {"value": {"action": "ask_user_question",
-                       "questions": [{"question": "Q", "options": [{"label": "A"}], "multiSelect": False}]}}
+            _FakeInterrupt({"action": "ask_user_question", "questions": []})
         ]}})
 
     fake_agent = types.SimpleNamespace(stream=fake_stream)
@@ -1634,21 +1817,112 @@ async def test_handle_message_routes_to_interrupt_card_on_interrupt():
         lark_client=MagicMock(),
         agent_config_service=FakeService(),
     )
-    with patch.object(svc, "_send_interrupt_card") as card_mock:
-        await svc._handle_message("feishu:p2p:ou_alice", "oc_chat_001", "hi")
-        card_mock.assert_called_once()
-        # pending 已写入
-        assert "feishu:p2p:ou_alice" in svc._pending_interrupts
-        assert svc._pending_interrupts["feishu:p2p:ou_alice"]["chat_id"] == "oc_chat_001"
+
+    # 用带特殊 _card_id / _message_id 的 Consumer 模拟真实 FeishuCardConsumer 状态
+    mock_consumer = _MockConsumer(session_id="feishu:p2p:ou_alice")
+    mock_consumer._card_id = "card_session_active_001"
+    mock_consumer._message_id = "om_session_active_001"
+    _patch_channel_registry(monkeypatch, mock_consumer)
+
+    reply, interrupt_req = await svc._call_agent(
+        "feishu:p2p:ou_alice", "hi", "oc_chat_001"
+    )
+    assert interrupt_req is not None
+    # Consumer 被保留供 resume 复用
+    retained = svc._active_consumers.get("feishu:p2p:ou_alice")
+    assert retained is mock_consumer
+    # 关键状态被保留（resume 后续 patch 需要这两个字段）
+    assert retained._card_id == "card_session_active_001"
+    assert retained._message_id == "om_session_active_001"
 
 
 @pytest.mark.asyncio
-async def test_handle_message_routes_to_reply_for_plain_text():
-    """P1：纯文本回复走 _send_reply。"""
-    received_msg = types.SimpleNamespace(content="你好")
+async def test_resume_agent_continues_same_consumer(monkeypatch):
+    """P1：_resume_agent 复用同一 Consumer 实例（保留 _card_id 让续跑 patch 同卡片）。
 
-    async def fake_stream(*args, **kwargs):
-        yield ("messages", (received_msg, {}))
+    新流程（2026-07-19）：resume 调用从 ``_active_consumers`` 取旧 Consumer，
+    跳过 ``channel_registry.resolve`` 和 ``on_session_start``。本测试模拟完整流程：
+        1. 首次 _call_agent 触发 interrupt → Consumer A 挂入 _active_consumers
+        2. _resume_agent 调用 → 应复用 Consumer A（不创建新实例）
+
+    通过让 ``channel_registry.resolve`` 在 resume 调用时抛错来验证：
+    若 resume 走了 resolve 路径则测试失败。
+
+    Args:
+        monkeypatch: pytest fixture
+    """
+    # 第一阶段：模拟首轮 interrupt 产生的 Consumer A
+    consumer_a = _MockConsumer(session_id="feishu:p2p:ou_alice")
+    consumer_a._card_id = "card_round1"
+    consumer_a._message_id = "om_round1"
+    consumer_a.last_interrupt_req = {"action": "ask_user_question", "questions": []}
+    svc = _make_service()
+    svc._active_consumers["feishu:p2p:ou_alice"] = consumer_a
+    svc._pending_interrupts["feishu:p2p:ou_alice"] = {
+        "chat_id": "oc_chat_001",
+        "request": consumer_a.last_interrupt_req,
+    }
+
+    # 第二阶段：resume 调用应复用 consumer_a，不能再调 resolve
+    async def fake_build(name, sid, msg, **kwargs):
+        async def stream(_state, context=None, config=None, stream_mode=None):
+            yield ("messages", (types.SimpleNamespace(content="完成"), {"ls_provider": "openai"}))
+        return types.SimpleNamespace(stream=stream), MagicMock(), MagicMock()
+
+    svc._agent_config_service.build_agent_instance = fake_build
+
+    from app.shared.tools.channels.registry import channel_registry
+    monkeypatch.setattr(
+        channel_registry, "resolve",
+        lambda **kw: (_ for _ in ()).throw(
+            AssertionError("resume 不应再调 channel_registry.resolve")
+        ),
+    )
+
+    await svc._resume_agent(
+        "feishu:p2p:ou_alice",
+        {"answers": [{"qid": 0, "oid": [1]}]},
+    )
+
+    # Consumer A 仍是 _active_consumers 中的实例（resume 不应替换）
+    # 注意：终态后 _call_agent 会清理 _active_consumers，所以这里只验证
+    # 在 _call_agent 内部 resume 期间 Consumer A 被复用（通过 consumer_a.calls 增长验证）
+    on_text_calls = [c for c in consumer_a.calls if c[0] == "on_text_chunk"]
+    on_end_calls = [c for c in consumer_a.calls if c[0] == "on_session_end"]
+    # 终态：流自然结束 → Consumer A 收到 on_session_end
+    assert len(on_end_calls) == 1
+    # 终态后 pending 与 _active_consumers 均被清理
+    assert "feishu:p2p:ou_alice" not in svc._pending_interrupts
+    assert "feishu:p2p:ou_alice" not in svc._active_consumers
+
+
+# ---------------------------------------------------------------------------
+# P1 _handle_message 路由（reply / interrupt / both）
+#
+# 2026-07-19：新流程下 _handle_message 不再调用 _send_reply / _send_interrupt_card；
+# 流式 token / HITL 按钮均由 FeishuCardConsumer 在同一张 CardKit 卡片上 patch 实现。
+# 因此本组测试改为断言"调用 _call_agent + pending 写入"而非"调用 _send_reply"。
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_handle_message_routes_to_interrupt_card_on_interrupt(monkeypatch):
+    """P1：agent 触发 interrupt → pending 写入 + Consumer 被保留（不再调 _send_interrupt_card）。
+
+    新流程（2026-07-19）：HITL 卡片由 ``FeishuCardConsumer.on_interrupt`` 在同一张
+    CardKit 卡片上追加按钮 elements 实现，``_handle_message`` 不再调用
+    ``_send_interrupt_card``（否则会重复发按钮卡片）。本测试断言：
+        - pending 已写入（session_id / chat_id / request）
+        - ``_send_interrupt_card`` **不**被调用（Consumer 已 patch 按钮）
+        - Consumer 收到 ``on_interrupt`` 回调
+        - Consumer 被保留在 ``_active_consumers`` 供 resume 复用
+
+    Args:
+        monkeypatch: pytest fixture
+    """
+    async def fake_stream(_state, context=None, config=None, stream_mode=None):
+        yield ("updates", {"hitl": {"__interrupt__": [
+            _FakeInterrupt({"action": "ask_user_question",
+                            "questions": [{"question": "Q", "options": [{"label": "A"}], "multiSelect": False}]})
+        ]}})
 
     fake_agent = types.SimpleNamespace(stream=fake_stream)
 
@@ -1660,11 +1934,70 @@ async def test_handle_message_routes_to_reply_for_plain_text():
         lark_client=MagicMock(),
         agent_config_service=FakeService(),
     )
-    with patch.object(svc, "_send_reply") as reply_mock, \
-         patch.object(svc, "_send_interrupt_card") as card_mock:
+
+    mock_consumer = _MockConsumer(session_id="feishu:p2p:ou_alice")
+    _patch_channel_registry(monkeypatch, mock_consumer)
+
+    with patch.object(svc, "_send_interrupt_card") as card_mock, \
+         patch.object(svc, "_ensure_session_recorded", new=AsyncMock()):
         await svc._handle_message("feishu:p2p:ou_alice", "oc_chat_001", "hi")
-        reply_mock.assert_called_once_with("oc_chat_001", "你好")
+        # 新流程：HITL 卡片由 Consumer patch，_send_interrupt_card 不再被调用
         card_mock.assert_not_called()
+        # pending 已写入
+        assert "feishu:p2p:ou_alice" in svc._pending_interrupts
+        assert svc._pending_interrupts["feishu:p2p:ou_alice"]["chat_id"] == "oc_chat_001"
+
+    # Consumer 收到 on_interrupt 回调
+    on_interrupt_calls = [c for c in mock_consumer.calls if c[0] == "on_interrupt"]
+    assert len(on_interrupt_calls) == 1
+    # interrupt 时 Consumer 被保留供 resume 复用
+    assert "feishu:p2p:ou_alice" in svc._active_consumers
+
+
+@pytest.mark.asyncio
+async def test_handle_message_routes_to_reply_for_plain_text(monkeypatch):
+    """P1：纯文本回复 → Consumer 流式 patch（不再调 _send_reply）。
+
+    新流程（2026-07-19）：流式 token 由 ``FeishuCardConsumer.on_text_chunk`` 实时
+    patch 到 CardKit 卡片，``_handle_message`` 不再调用 ``_send_reply``。
+    本测试断言：
+        - ``_send_reply`` **不**被调用（Consumer 已处理流式 patch）
+        - ``_send_interrupt_card`` **不**被调用
+        - Consumer 收到 ``on_session_end`` 回调（流自然结束）
+
+    Args:
+        monkeypatch: pytest fixture
+    """
+    received_msg = types.SimpleNamespace(content="你好")
+
+    async def fake_stream(_state, context=None, config=None, stream_mode=None):
+        # metadata 必须含 ls_provider，否则 StreamEventSource.format_message 返回 None
+        yield ("messages", (received_msg, {"ls_provider": "openai"}))
+
+    fake_agent = types.SimpleNamespace(stream=fake_stream)
+
+    class FakeService:
+        async def build_agent_instance(self, name, sid, msg, **kwargs):
+            return fake_agent, MagicMock(), MagicMock()
+
+    svc = FeishuWebSocketService(
+        lark_client=MagicMock(),
+        agent_config_service=FakeService(),
+    )
+
+    mock_consumer = _MockConsumer(session_id="feishu:p2p:ou_alice")
+    _patch_channel_registry(monkeypatch, mock_consumer)
+
+    with patch.object(svc, "_send_reply") as reply_mock, \
+         patch.object(svc, "_send_interrupt_card") as card_mock, \
+         patch.object(svc, "_ensure_session_recorded", new=AsyncMock()):
+        await svc._handle_message("feishu:p2p:ou_alice", "oc_chat_001", "hi")
+        # 新流程：流式 token 由 Consumer patch，两者均不被调用
+        reply_mock.assert_not_called()
+        card_mock.assert_not_called()
+
+    # Consumer 流自然结束 → on_session_end 被调用
+    assert ("on_session_end",) in mock_consumer.calls
 
 
 # ---------------------------------------------------------------------------
@@ -1725,14 +2058,22 @@ def test_on_card_action_extracts_resume_and_dispatches():
 
 
 @pytest.mark.asyncio
-async def test_resume_agent_calls_build_with_resume_param():
-    """P1：_resume_agent 调用 build_agent_instance 时传 resume 参数。"""
+async def test_resume_agent_calls_build_with_resume_param(monkeypatch):
+    """P1：_resume_agent 调用 build_agent_instance 时传 resume 参数 + 复用 Consumer。
+
+    新流程（2026-07-19）：resume 调用从 ``_active_consumers`` 取旧 Consumer；
+    若旧 Consumer 存在 → 跳过 ``channel_registry.resolve`` + ``on_session_start``，
+    直接复用 ``_card_id`` / ``_message_id`` 让续跑 token 继续 patch 同卡片。
+
+    Args:
+        monkeypatch: pytest fixture
+    """
     captured_kwargs: list = []
 
     async def fake_build(name, sid, msg, **kwargs):
         captured_kwargs.append(kwargs)
         # 返回一个空 agent
-        async def empty_stream(*a, **kw):
+        async def empty_stream(_state, context=None, config=None, stream_mode=None):
             if False:
                 yield  # pragma: no cover
         agent = types.SimpleNamespace(stream=empty_stream)
@@ -1745,6 +2086,17 @@ async def test_resume_agent_calls_build_with_resume_param():
         "request": {"action": "ask_user_question", "questions": []},
     }
 
+    # 模拟前一轮 interrupt 留下的 Consumer（resume 应复用，不应再调 on_session_start）
+    mock_consumer = _MockConsumer(session_id="feishu:p2p:ou_alice")
+    mock_consumer.calls.clear()  # 清空首次 on_session_start 等历史
+    svc._active_consumers["feishu:p2p:ou_alice"] = mock_consumer
+    # 即便 channel_registry.resolve 被错误调用也应抛错（验证 resume 走复用分支）
+    from app.shared.tools.channels.registry import channel_registry
+    monkeypatch.setattr(
+        channel_registry, "resolve",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("resume 不应再调 resolve")),
+    )
+
     with patch.object(svc, "_send_reply") as reply_mock, \
          patch.object(svc, "_send_interrupt_card") as card_mock:
         await svc._resume_agent(
@@ -1753,19 +2105,33 @@ async def test_resume_agent_calls_build_with_resume_param():
         )
         assert len(captured_kwargs) == 1
         assert captured_kwargs[0].get("resume") == {"answers": [{"qid": 0, "oid": [1]}]}
-        # 空 stream → reply=None → 不调 _send_reply，但 pending 已清理
+        # 新流程：Consumer 流式 patch，reply 不再走 _send_reply
         reply_mock.assert_not_called()
+        card_mock.assert_not_called()
+        # 空 stream → reply=None → pending 已清理
         assert "feishu:p2p:ou_alice" not in svc._pending_interrupts
+        # resume 不应再触发 on_session_start（复用旧 Consumer）
+        assert ("on_session_start",) not in mock_consumer.calls
 
 
 @pytest.mark.asyncio
-async def test_pending_interrupts_cleared_on_terminal_reply():
-    """P1：续跑产生最终回复 → pending 被清理。"""
+async def test_pending_interrupts_cleared_on_terminal_reply(monkeypatch):
+    """P1：续跑产生最终回复 → pending 被清理（不再调 _send_reply）。
+
+    新流程（2026-07-19）：最终回复已由 Consumer 流式 patch 到同卡片，
+    ``_resume_agent`` 不再调用 ``_send_reply``。本测试断言：
+        - pending 已清理
+        - ``_send_reply`` **不**被调用（Consumer 已处理流式 patch）
+        - Consumer 收到 ``on_session_end`` 回调
+
+    Args:
+        monkeypatch: pytest fixture
+    """
     last_msg = types.SimpleNamespace(content="完成")
 
     async def fake_build(name, sid, msg, **kwargs):
-        async def stream(*a, **kw):
-            yield ("messages", (last_msg, {}))
+        async def stream(_state, context=None, config=None, stream_mode=None):
+            yield ("messages", (last_msg, {"ls_provider": "openai"}))
         return types.SimpleNamespace(stream=stream), MagicMock(), MagicMock()
 
     svc = _make_service()
@@ -1775,6 +2141,11 @@ async def test_pending_interrupts_cleared_on_terminal_reply():
         "request": {"action": "ask_user_question", "questions": []},
     }
 
+    # 模拟前一轮 interrupt 留下的 Consumer
+    mock_consumer = _MockConsumer(session_id="feishu:p2p:ou_alice")
+    mock_consumer.calls.clear()
+    svc._active_consumers["feishu:p2p:ou_alice"] = mock_consumer
+
     with patch.object(svc, "_send_reply") as reply_mock:
         await svc._resume_agent(
             "feishu:p2p:ou_alice",
@@ -1782,19 +2153,36 @@ async def test_pending_interrupts_cleared_on_terminal_reply():
         )
         # pending 已清理
         assert "feishu:p2p:ou_alice" not in svc._pending_interrupts
-        reply_mock.assert_called_once_with("oc_chat_001", "完成")
+        # 新流程：Consumer 流式 patch，不再调 _send_reply
+        reply_mock.assert_not_called()
+
+    # Consumer 流自然结束 → on_session_end 被调用
+    assert ("on_session_end",) in mock_consumer.calls
+    # 终态后 Consumer 被清理
+    assert "feishu:p2p:ou_alice" not in svc._active_consumers
 
 
 @pytest.mark.asyncio
-async def test_resume_agent_multi_round_interrupt_updates_pending():
-    """P1：续跑再次产生 interrupt → 更新 pending + 再次发卡片。"""
+async def test_resume_agent_multi_round_interrupt_updates_pending(monkeypatch):
+    """P1：续跑再次产生 interrupt → 更新 pending（不再调 _send_interrupt_card）。
+
+    新流程（2026-07-19）：HITL 卡片由 ``FeishuCardConsumer.on_interrupt`` 在同一张
+    CardKit 卡片上追加按钮 elements 实现，``_resume_agent`` 不再调用
+    ``_send_interrupt_card``。本测试断言：
+        - pending 仍保留（覆盖为新 interrupt）
+        - ``_send_interrupt_card`` **不**被调用（Consumer 已 patch 按钮）
+        - Consumer 收到第二次 ``on_interrupt`` 回调
+
+    Args:
+        monkeypatch: pytest fixture
+    """
     async def fake_build(name, sid, msg, **kwargs):
-        async def stream(*a, **kw):
+        async def stream(_state, context=None, config=None, stream_mode=None):
             yield ("updates", {"hitl": {"__interrupt__": [
-                {"value": {"action": "ask_user_question",
-                           "questions": [{"question": "Q2",
-                                          "options": [{"label": "B"}],
-                                          "multiSelect": False}]}}
+                _FakeInterrupt({"action": "ask_user_question",
+                                "questions": [{"question": "Q2",
+                                               "options": [{"label": "B"}],
+                                               "multiSelect": False}]})
             ]}})
         return types.SimpleNamespace(stream=stream), MagicMock(), MagicMock()
 
@@ -1805,17 +2193,29 @@ async def test_resume_agent_multi_round_interrupt_updates_pending():
         "request": {"action": "ask_user_question", "questions": []},
     }
 
+    # 模拟前一轮 interrupt 留下的 Consumer
+    mock_consumer = _MockConsumer(session_id="feishu:p2p:ou_alice")
+    mock_consumer.calls.clear()
+    svc._active_consumers["feishu:p2p:ou_alice"] = mock_consumer
+
     with patch.object(svc, "_send_reply") as reply_mock, \
          patch.object(svc, "_send_interrupt_card") as card_mock:
         await svc._resume_agent(
             "feishu:p2p:ou_alice",
             {"answers": [{"qid": 0, "oid": [1]}]},
         )
-        card_mock.assert_called_once()
+        # 新流程：Consumer 已 patch 按钮到同卡片，不再调 _send_interrupt_card
+        card_mock.assert_not_called()
         # pending 仍保留（覆盖为新 interrupt）
         assert "feishu:p2p:ou_alice" in svc._pending_interrupts
         assert "Q2" in str(svc._pending_interrupts["feishu:p2p:ou_alice"]["request"])
         reply_mock.assert_not_called()
+
+    # Consumer 收到第二次 on_interrupt 回调
+    on_interrupt_calls = [c for c in mock_consumer.calls if c[0] == "on_interrupt"]
+    assert len(on_interrupt_calls) == 1
+    # 多轮 interrupt → Consumer 仍保留
+    assert "feishu:p2p:ou_alice" in svc._active_consumers
 
 
 @pytest.mark.asyncio
@@ -2070,7 +2470,13 @@ async def test_ensure_session_recorded_no_receiver_skipped():
 
 @pytest.mark.asyncio
 async def test_handle_message_invokes_ensure_session_before_call_agent(reset_session_db_memory):
-    """P1：_handle_message 应在 _call_agent 之前调用 _ensure_session_recorded。"""
+    """P1：_handle_message 应在 _call_agent 之前调用 _ensure_session_recorded。
+
+    新流程（2026-07-19）：``_handle_message`` 不再调用 ``_send_reply``（流式 token
+    由 Consumer patch）；本测试聚焦"调用顺序"，断言：
+        - 调用顺序为 ``ensure → call_agent``
+        - ``_send_reply`` **不**被调用（新流程下生产代码已不调用）
+    """
     from app.shared.utils.auth.session_db import SessionDB
 
     call_order: list = []
@@ -2078,7 +2484,7 @@ async def test_handle_message_invokes_ensure_session_before_call_agent(reset_ses
     async def fake_ensure(session_id, chat_id, chat_type, text):
         call_order.append("ensure")
 
-    async def fake_call_agent(sid, text, **kwargs):
+    async def fake_call_agent(sid, text, chat_id, **kwargs):
         call_order.append("call_agent")
         return "Reply", None
 
@@ -2090,7 +2496,8 @@ async def test_handle_message_invokes_ensure_session_before_call_agent(reset_ses
         await svc._handle_message(
             "feishu:p2p:ou_alice_001", "oc_chat_001", "hello", "p2p"
         )
-        send_mock.assert_called_once_with("oc_chat_001", "Reply")
+        # 新流程：流式 token 由 Consumer patch，_send_reply 不再被调用
+        send_mock.assert_not_called()
 
     # 顺序：ensure → call_agent
     assert call_order == ["ensure", "call_agent"]

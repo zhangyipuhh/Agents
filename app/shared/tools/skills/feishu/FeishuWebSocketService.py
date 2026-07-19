@@ -96,6 +96,11 @@ class FeishuWebSocketService:
         # HITL 状态：session_id → {"chat_id": ..., "request": ...}
         # 仅存内存，lifespan 重启后丢失；用户需重新提问。
         self._pending_interrupts: Dict[str, Dict[str, Any]] = {}
+        # 2026-07-19 新增：session_id → ChannelConsumer 实例
+        # 用途：HITL resume 时复用同一 Consumer（保留 _card_id / _message_id），
+        # 让续跑产生的新 token 继续 patch 同一张卡片，避免上下文割裂。
+        # 生命周期：_call_agent 内 interrupt 时挂入；自然结束 / abort 时弹出。
+        self._active_consumers: Dict[str, Any] = {}
 
     # ------------------------------------------------------------------ #
     # Lifecycle                                                          #
@@ -678,16 +683,21 @@ class FeishuWebSocketService:
                 else attachment_block
             )
             reply, interrupt_req = await self._call_agent(
-                session_id, composed_text
+                session_id, composed_text, chat_id
             )
             if interrupt_req:
                 self._pending_interrupts[session_id] = {
                     "chat_id": chat_id,
                     "request": interrupt_req,
                 }
-                self._send_interrupt_card(chat_id, interrupt_req, session_id)
+                # 注意：HITL 卡片由 FeishuCardConsumer.on_interrupt 在同一张卡片上
+                # 追加按钮 elements，无需再单独发 _send_interrupt_card
             elif reply:
-                self._send_reply(chat_id, reply)
+                # 流式 token 已由 Consumer 实时 patch 到 CardKit 卡片，此处仅日志
+                logger.info(
+                    "[FeishuWS] 文件消息 agent 回复完成 session_id=%s reply_len=%d",
+                    session_id, len(reply),
+                )
             else:
                 logger.info(
                     "飞书文件消息智能体未产生回复/HITL session_id=%s", session_id
@@ -975,17 +985,25 @@ class FeishuWebSocketService:
             # 该步骤在 _call_agent 之前：保证即便 agent 流式处理失败，session 至少已在表中可查。
             await self._ensure_session_recorded(session_id, chat_id, chat_type, text)
 
-            reply, interrupt_req = await self._call_agent(session_id, text)
+            reply, interrupt_req = await self._call_agent(session_id, text, chat_id)
             if interrupt_req:
                 # 路径 2：HITL 人工回路
                 self._pending_interrupts[session_id] = {
                     "chat_id": chat_id,
                     "request": interrupt_req,
                 }
-                self._send_interrupt_card(chat_id, interrupt_req, session_id)
+                # 注意：HITL 卡片由 FeishuCardConsumer.on_interrupt 在同一张卡片上
+                # 追加按钮 elements，无需再单独发 _send_interrupt_card
+                # （Consumer 内部已通过 patch 实现"同卡片按钮"语义）
             elif reply:
-                # 路径 1：普通回复（自动 markdown → 卡片 / 文本）
-                self._send_reply(chat_id, reply)
+                # 路径 1：普通回复
+                # 注意：流式 token 已通过 Consumer 的 on_text_chunk 实时 patch 到
+                # 同一张 CardKit 卡片；此处 reply 仅作日志/兜底，不再 _send_reply
+                # （否则会重复发送同一条回复）
+                logger.info(
+                    "[FeishuWS] agent 回复完成 session_id=%s reply_len=%d",
+                    session_id, len(reply),
+                )
             else:
                 logger.info("智能体未产生回复/HITL（session_id=%s）", session_id)
         except Exception as e:  # noqa: BLE001
@@ -1092,27 +1110,36 @@ class FeishuWebSocketService:
         self,
         session_id: str,
         text: str,
+        chat_id: str,
         resume: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
-        """调用 build_agent_instance 构造 agent，遍历 stream 收集完整回复。
+        """调用 build_agent_instance 构造 agent，通过 StreamEventSource 驱动 ChannelConsumer。
 
-        收集策略（兼容 LangGraph 不同图结构）：
-            1) messages 模式流式 token → 直接拼接为回复
-            2) updates 模式节点输出 → 从每个节点的 state 找最新 AI/AIMessage
-            3) HITL 中断 / interrupt 事件 → 不计入回复，保留 checkpoint
-                （返回 (None, structured_interrupt)）
+        新流程（2026-07-19 重写）：
+            1. ``build_agent_instance(...)`` 构造 agent + context + input_state
+            2. ``channel_registry.resolve(session_id, lark_client=..., chat_id=...)``
+               拿到 Consumer 实例（按 session_id 前缀路由，飞书侧 → FeishuCardConsumer）
+            3. 首次调用 → ``consumer.on_session_start()`` 创建 CardKit 卡片；
+               resume 调用 → 复用 ``self._active_consumers`` 中的同一 Consumer
+               （保留 ``_card_id`` / ``_message_id``，让续跑 token 继续 patch 同卡片）
+            4. ``StreamEventSource.events()`` 产出 ``StreamEvent`` 序列，
+               本方法把事件分发到 Consumer 6 个回调（``on_text_chunk`` / ``on_node_update``
+               / ``on_interrupt`` / ``on_session_end`` / ``on_abort``）
+            5. 返回 ``(consumer.accumulated_text, consumer.last_interrupt_req)``
 
-        项目内 project 智能体经测试 stream_mode=["updates", "messages"] 组合模式
-        可同时拿到 token 和节点状态。
+        Consumer 生命周期管理：
+            - 触发 interrupt → ``self._active_consumers[session_id] = consumer``（供 resume 复用）
+            - 自然结束 / abort → ``self._active_consumers.pop(session_id, None)``（清理）
 
         Args:
-            session_id: 会话 ID（LangGraph thread_id）
+            session_id: 会话 ID（LangGraph thread_id，前缀决定路由到哪个 Consumer）
             text: 用户消息（resume 场景可为空）
-            resume: HITL 恢复参数；传入时构造 Command(resume=...)
+            chat_id: 飞书 chat_id（Consumer 用作 patch 目标消息所属会话）
+            resume: HITL 恢复参数；传入时构造 ``Command(resume=...)`` 并复用旧 Consumer
 
         Returns:
             tuple: (reply_text, interrupt_request)
-                - reply_text: 拼接后的完整回复；agent 无输出时为 None
+                - reply_text: Consumer 累积的完整回复；agent 无输出时为 None
                 - interrupt_request: 结构化 interrupt 请求（HITL 触发时），否则 None
         """
         build = getattr(self._agent_config_service, "build_agent_instance", None)
@@ -1135,69 +1162,117 @@ class FeishuWebSocketService:
             logger.exception("build_agent_instance 失败: %s", e)
             return None, None
 
-        # 收集策略：优先 messages 模式的流式 token；备选 updates 模式下从
-        # state 的 messages 列表提取最后一条 AI/AIMessage 内容。
-        chunks_token: list[str] = []
-        last_ai_content: Optional[str] = None
-        interrupt_request: Optional[Dict[str, Any]] = None
+        # ===== 解析 Consumer：resume 时复用同一 Consumer，否则新建 =====
+        consumer: Optional[Any] = None
+        if resume is not None:
+            consumer = self._active_consumers.get(session_id)
+            if consumer is not None:
+                logger.info(
+                    "[FeishuWS] resume 复用 Consumer session_id=%s card_id=%s",
+                    session_id, getattr(consumer, "_card_id", None),
+                )
+
+        if consumer is None:
+            try:
+                from app.shared.tools.channels.registry import channel_registry
+                consumer = channel_registry.resolve(
+                    session_id,
+                    lark_client=self._lark_client,
+                    chat_id=chat_id,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.exception(
+                    "[FeishuWS] channel_registry.resolve 失败（session_id=%s）: %s",
+                    session_id, e,
+                )
+                return None, None
+            # 首次调用 → on_session_start 创建 CardKit 卡片实体 + 关联消息
+            try:
+                await consumer.on_session_start()
+            except Exception as e:  # noqa: BLE001
+                logger.exception(
+                    "[FeishuWS] consumer.on_session_start 异常（已降级处理）: %s", e
+                )
+                # on_session_start 内部已设置 _degraded=True 走降级路径，继续流式
+
+        # ===== 注册 abort 信号 + 构造 StreamEventSource =====
+        from app.core.tools._stop_signal import (
+            register_abort_signal,
+            unregister_abort_signal,
+        )
+        from app.core.agent.stream_event_source import StreamEventSource
+
+        abort_event = register_abort_signal(session_id)
+        config = {
+            "configurable": {"thread_id": session_id},
+            "recursion_limit": 100,
+        }
+        source = StreamEventSource(
+            agent=agent,
+            input_state=_input_state,
+            context=_context,
+            config=config,
+            abort_event=abort_event,
+        )
+
+        # ===== 重置 Consumer 本轮状态（resume 复用旧 Consumer 时关键）=====
+        # resume 场景下 consumer 是从 _active_consumers 取的旧实例，
+        # 上轮 interrupt 留下的 last_interrupt_req 仍非 None；若本轮流自然结束
+        # （无新 interrupt），last_interrupt_req 必须重置为 None，否则
+        # _call_agent 会错误返回非 None interrupt_req，导致 _resume_agent
+        # 走 if intr 分支覆盖 pending 而非清理。accumulated_text 同理需重置。
+        consumer.accumulated_text = ""
+        consumer.last_interrupt_req = None
+
+        # ===== 驱动 Consumer 处理事件流 =====
         try:
-            async for chunk in agent.stream(
-                _input_state,
-                context=_context,
-                config={"configurable": {"thread_id": session_id}, "recursion_limit": 100},
-                stream_mode=["messages", "updates"],
-            ):
-                # ===== 中断检测（多模式兼容，参考 app/routers/_stream_helper.py） =====
-                interrupt_data = self._extract_interrupt_from_chunk(chunk)
-                if interrupt_data:
-                    interrupt_request = self._parse_interrupt_data(interrupt_data)
-                    if interrupt_request:
-                        # HITL 触发：停止继续收集 token
-                        break
-
-                if not (isinstance(chunk, tuple) and len(chunk) == 2):
-                    continue
-                mode, payload = chunk
-                if mode == "messages":
-                    # payload = (msg_chunk, metadata)
-                    if not (isinstance(payload, tuple) and len(payload) == 2):
-                        continue
-                    msg_chunk, _meta = payload
-                    text_part = self._extract_text_from_message(msg_chunk)
-                    if text_part:
-                        chunks_token.append(text_part)
-                elif mode == "updates":
-                    # payload = {node_name: {state_updates}}
-                    if not isinstance(payload, dict):
-                        continue
-                    for _node, node_data in payload.items():
-                        if not isinstance(node_data, dict):
-                            continue
-                        msgs = node_data.get("messages") or []
-                        if isinstance(msgs, list) and msgs:
-                            last = msgs[-1]
-                            # AIMessage / ToolMessage / HumanMessage 都有 content
-                            ai_text = self._extract_text_from_message(last)
-                            if ai_text:
-                                last_ai_content = ai_text
+            async for event in source.events():
+                kind = event.kind
+                if kind == "text":
+                    if event.text:
+                        await consumer.on_text_chunk(event.text)
+                elif kind == "update":
+                    await consumer.on_node_update(
+                        event.node_name or "",
+                        event.node_data or {},
+                    )
+                elif kind == "interrupt":
+                    await consumer.on_interrupt(event.interrupt_requests or [])
+                    # interrupt 后 StreamEventSource 已 return，跳出循环
+                    break
+                elif kind == "abort":
+                    await consumer.on_abort()
+                    break
+                elif kind == "session_end":
+                    await consumer.on_session_end()
+                    break
         except Exception as e:  # noqa: BLE001
-            logger.exception("agent.stream 调用失败: %s", e)
-            return None, None
+            logger.exception(
+                "[FeishuWS] Consumer 驱动异常（session_id=%s）: %s", session_id, e
+            )
+        finally:
+            unregister_abort_signal(session_id)
 
-        if interrupt_request:
-            return None, interrupt_request
+        # ===== Consumer 生命周期管理：interrupt 保留，end/abort 清理 =====
+        if consumer.last_interrupt_req is not None:
+            self._active_consumers[session_id] = consumer
+        else:
+            self._active_consumers.pop(session_id, None)
 
-        token_reply = "".join(chunks_token).strip()
-        if token_reply:
-            return token_reply, None
-        # 流式 token 为空时回退到 last_ai_content（适用于不输出 token 的 agent）
-        if last_ai_content:
-            return last_ai_content.strip(), None
-        return None, None
+        reply_text = consumer.accumulated_text.strip() or None
+        return reply_text, consumer.last_interrupt_req
 
     @staticmethod
     def _extract_text_from_message(msg: Any) -> Optional[str]:
-        """从 LangChain Message 对象提取文本内容。
+        """从 LangChain Message 对象提取文本内容（2026-07-19 已弃用）。
+
+        .. deprecated::
+            本方法原用于在 ``_call_agent`` 内提取 messages 模式 token / updates 模式
+            AIMessage 内容。2026-07-19 重写后，token 提取由 ``StreamEventSource``
+            委托 ``stream_format_context.format_message`` 完成；interrupt 解析由
+            ``StreamEventSource._extract_interrupt_data`` + 模块级
+            ``_extract_interrupt_requests`` 完成。本方法仅保留为向后兼容的兜底工具，
+            不再被主流程调用。
 
         兼容三种 content 形态：
             - str：直接返回
@@ -1230,90 +1305,6 @@ class FeishuWebSocketService:
                         parts.append(text_part)
             joined = "".join(parts).strip()
             return joined or None
-        return None
-
-    @staticmethod
-    def _extract_interrupt_from_chunk(chunk: Any) -> Optional[Any]:
-        """从 agent.stream 的 chunk 中提取 ``__interrupt__`` 数据。
-
-        兼容多种 stream 模式（参考 ``app/routers/_stream_helper.py``）：
-            1) chunk 直接是 dict 且含 ``__interrupt__``
-            2) chunk 是 (mode, data) 元组，mode="updates" 且 data 含 ``__interrupt__``
-            3) chunk 是 (mode, data) 元组，mode="updates" 且 data 的某节点含 ``__interrupt__``
-
-        Args:
-            chunk: agent.stream 产出的单个 chunk
-
-        Returns:
-            interrupt_data: 原始 interrupt 数据（含 Interrupt 对象或 dict），未命中返回 None
-        """
-        # 情况 1：直接 dict 含 __interrupt__
-        if isinstance(chunk, dict) and "__interrupt__" in chunk:
-            return chunk["__interrupt__"]
-
-        # 情况 2/3：组合模式 (mode, data)
-        if isinstance(chunk, tuple) and len(chunk) == 2:
-            mode, data = chunk
-            if mode == "updates" and isinstance(data, dict):
-                if "__interrupt__" in data:
-                    return data["__interrupt__"]
-                for _node_name, node_data in data.items():
-                    if isinstance(node_data, dict) and "__interrupt__" in node_data:
-                        return node_data["__interrupt__"]
-        return None
-
-    @staticmethod
-    def _parse_interrupt_data(interrupt_data: Any) -> Optional[Dict[str, Any]]:
-        """把 LangGraph interrupt 数据解析为结构化 dict。
-
-        复用 ``app/routers/_stream_helper.py::_extract_interrupt_requests`` 的逻辑：
-            - Interrupt 对象（有 ``.value`` 属性）→ 取 ``.value``
-            - dict 含 ``value`` 字段 → 取 ``item["value"]``（duck-typed Interrupt）
-            - list → 遍历提取 dict
-            - dict → 直接使用
-
-        Args:
-            interrupt_data: ``__interrupt__`` 字段值
-
-        Returns:
-            dict: 结构化 interrupt 请求（含 ``action`` / ``questions`` 等），解析失败返回 None
-        """
-        requests: list = []
-        items = interrupt_data if isinstance(interrupt_data, list) else [interrupt_data]
-        for item in items:
-            if hasattr(item, "value"):
-                # LangGraph Interrupt 对象
-                value = item.value
-                if isinstance(value, list):
-                    for req in value:
-                        if isinstance(req, dict):
-                            requests.append(req)
-                        else:
-                            requests.append({"data": str(req)})
-                elif isinstance(value, dict):
-                    requests.append(value)
-                else:
-                    requests.append({"data": str(value)})
-            elif isinstance(item, dict):
-                # duck-typed Interrupt：{"value": {...}} 形态
-                if "value" in item and isinstance(item["value"], (dict, list)):
-                    v = item["value"]
-                    if isinstance(v, list):
-                        for req in v:
-                            if isinstance(req, dict):
-                                requests.append(req)
-                            else:
-                                requests.append({"data": str(req)})
-                    else:
-                        requests.append(v)
-                else:
-                    requests.append(item)
-            else:
-                requests.append({"data": str(item)})
-        # 取第一个 action 类型的请求（当前 project 智能体只发一个 interrupt）
-        for req in requests:
-            if isinstance(req, dict) and req.get("action"):
-                return req
         return None
 
     # ------------------------------------------------------------------ #
@@ -1567,22 +1558,26 @@ class FeishuWebSocketService:
             return
         chat_id = pending.get("chat_id") or ""
         try:
-            reply, intr = await self._call_agent(session_id, "", resume=resume)
+            reply, intr = await self._call_agent(session_id, "", chat_id, resume=resume)
         except Exception as e:  # noqa: BLE001
             logger.exception("续跑 agent 失败 session_id=%s: %s", session_id, e)
             return
 
         if intr:
-            # 多轮 interrupt（可能连续追问）→ 更新 pending + 再次发卡片
+            # 多轮 interrupt（可能连续追问）→ 更新 pending + Consumer 已 patch 按钮到同卡片
             self._pending_interrupts[session_id] = {
                 "chat_id": chat_id,
                 "request": intr,
             }
-            self._send_interrupt_card(chat_id, intr, session_id)
+            # 注意：FeishuCardConsumer.on_interrupt 已在同一张卡片上追加按钮，
+            # 无需再 _send_interrupt_card（否则会重复发按钮卡片）
         elif reply:
-            # 完成 → 清理 pending + 发最终回复
+            # 完成 → 清理 pending；最终回复已由 Consumer 流式 patch 到同卡片
             self._pending_interrupts.pop(session_id, None)
-            self._send_reply(chat_id, reply)
+            logger.info(
+                "[FeishuWS] 续跑完成 session_id=%s reply_len=%d",
+                session_id, len(reply),
+            )
         else:
             # 续跑无产出（异常路径）
             logger.info(
