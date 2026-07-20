@@ -26,11 +26,13 @@ Author: AI Assistant
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any, List
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.core.config.settings import settings
 from app.shared.tools.channels.feishu.FeishuCardConsumer import (
     FeishuCardConsumer,
     _PLACEHOLDER_TEXT,
@@ -235,7 +237,7 @@ def test_on_text_chunk_accumulates_then_patches(
     stub_throttler: MagicMock,
     mock_lark_client: MagicMock,
 ):
-    """P1：token 累积 → Throttler 命中 → CardKit update 被调用。
+    """P1：token 累积 → Throttler 命中 → CardKit 元素级 update 被调用。
 
     Args:
         consumer: FeishuCardConsumer fixture
@@ -251,8 +253,8 @@ def test_on_text_chunk_accumulates_then_patches(
     _run(consumer.on_text_chunk("你好"))
 
     assert consumer.accumulated_text == "你好"
-    # CardKit update 被调用
-    assert mock_lark_client.cardkit.v1.card.update.called
+    # CardKit 元素级 update 被调用
+    assert mock_lark_client.cardkit.v1.card_element.update.called
     # Throttler.should_push 被调用 1 次
     stub_throttler.should_push.assert_called_once_with(len("你好"))
 
@@ -346,7 +348,7 @@ def test_on_interrupt_patches_buttons_to_same_card(
 
     验证：
         - ``last_interrupt_req`` 被记录
-        - CardKit update 被调用（force=True，跳过节流器）
+        - CardKit 元素级 update 被调用（force=True，跳过节流器）
         - 不创建新消息（``im.v1.message.create`` 调用次数仍为 1，仅 session_start 时调过）
 
     Args:
@@ -366,8 +368,8 @@ def test_on_interrupt_patches_buttons_to_same_card(
 
     # last_interrupt_req 被记录
     assert consumer.last_interrupt_req == interrupt_req
-    # CardKit update 被调用（force=True）
-    assert mock_lark_client.cardkit.v1.card.update.called
+    # CardKit 元素级 update 被调用（force=True）
+    assert mock_lark_client.cardkit.v1.card_element.update.called
     # 不创建新消息：im.v1.message.create 仅在 session_start 时调过 1 次
     assert mock_lark_client.im.v1.message.create.call_count == 1
 
@@ -453,21 +455,24 @@ def test_on_session_end_force_flushes_last_chunk(
     # Throttler 未命中 → 累积但不 patch
     stub_throttler.should_push.return_value = False
     _run(consumer.on_text_chunk("你好"))
-    mock_lark_client.cardkit.v1.card.update.assert_not_called()
+    mock_lark_client.cardkit.v1.card_element.update.assert_not_called()
 
     # session_end 强制 flush
     _run(consumer.on_session_end())
 
     # force_flush 被调用
     stub_throttler.force_flush.assert_called_once_with(len("你好"))
-    # patch 被调用（force=True）
-    assert mock_lark_client.cardkit.v1.card.update.called
+    # 元素级 patch 被调用（force=True）
+    assert mock_lark_client.cardkit.v1.card_element.update.called
 
 
 def test_on_session_end_degraded_mode_sends_one_off_reply(
     mock_lark_client: MagicMock, stub_throttler: MagicMock
 ):
-    """P1：降级模式下 session_end → 一次性 _send_reply。
+    """P1：降级模式下 session_end → 一次性 _send_reply 统一发卡片。
+
+    即使 accumulated_text 是纯文本（无 Markdown 特征），也应走
+    ``_send_card_reply``，确保降级路径视觉一致。
 
     Args:
         mock_lark_client: mock lark_client fixture
@@ -485,14 +490,18 @@ def test_on_session_end_degraded_mode_sends_one_off_reply(
         chat_id="oc_test_chat",
         throttler=stub_throttler,
     )
-    _run(consumer.on_session_start())
-    _run(consumer.on_text_chunk("你好"))
-    _run(consumer.on_session_end())
+
+    with patch.object(consumer, "_send_card_reply") as card_mock, \
+         patch.object(consumer, "_send_text_reply") as text_mock:
+        _run(consumer.on_session_start())
+        _run(consumer.on_text_chunk("你好"))
+        _run(consumer.on_session_end())
 
     # 降级模式：不调 CardKit update
     mock_lark_client.cardkit.v1.card.update.assert_not_called()
-    # 降级模式：调 im.v1.message.create 发送一次性回复
-    assert mock_lark_client.im.v1.message.create.called
+    # 降级模式：统一走 _send_card_reply，不走 _send_text_reply
+    card_mock.assert_called_once_with("oc_test_chat", "你好")
+    text_mock.assert_not_called()
 
 
 def test_on_session_end_skipped_after_abort(consumer: FeishuCardConsumer):
@@ -547,7 +556,7 @@ def test_on_abort_appends_stopped_marker_and_stops_patches(
     _run(_start_session(consumer))
     _run(consumer.on_text_chunk("正在生成"))
 
-    update_count_before_abort = mock_lark_client.cardkit.v1.card.update.call_count
+    update_count_before_abort = mock_lark_client.cardkit.v1.card_element.update.call_count
 
     _run(consumer.on_abort())
 
@@ -557,14 +566,14 @@ def test_on_abort_appends_stopped_marker_and_stops_patches(
     assert consumer._stopped is True
     # force_flush 被调用
     stub_throttler.force_flush.assert_called()
-    # abort 内部触发了一次 force patch
-    assert mock_lark_client.cardkit.v1.card.update.call_count == update_count_before_abort + 1
+    # abort 内部触发了一次 force patch（元素级）
+    assert mock_lark_client.cardkit.v1.card_element.update.call_count == update_count_before_abort + 1
 
-    update_count_after_abort = mock_lark_client.cardkit.v1.card.update.call_count
+    update_count_after_abort = mock_lark_client.cardkit.v1.card_element.update.call_count
 
     # 后续 on_text_chunk 不应再触发 patch
     _run(consumer.on_text_chunk("更多内容"))
-    assert mock_lark_client.cardkit.v1.card.update.call_count == update_count_after_abort
+    assert mock_lark_client.cardkit.v1.card_element.update.call_count == update_count_after_abort
     # 后续文本不累积（_stopped=True 时直接 return）
     assert "更多内容" not in consumer.accumulated_text
 
@@ -572,7 +581,7 @@ def test_on_abort_appends_stopped_marker_and_stops_patches(
 def test_on_abort_degraded_mode_sends_one_off_reply(
     mock_lark_client: MagicMock, stub_throttler: MagicMock
 ):
-    """P1：降级模式下 abort → 一次性 _send_reply（追加停止标记后）。
+    """P1：降级模式下 abort → 一次性 _send_reply 统一发卡片（追加停止标记后）。
 
     Args:
         mock_lark_client: mock lark_client fixture
@@ -590,21 +599,22 @@ def test_on_abort_degraded_mode_sends_one_off_reply(
         chat_id="oc_test_chat",
         throttler=stub_throttler,
     )
-    _run(consumer.on_session_start())
-    _run(consumer.on_text_chunk("正在生成"))
 
-    # 重置 mock，便于断言 abort 触发的调用
-    mock_lark_client.im.v1.message.create.reset_mock()
-    mock_lark_client.cardkit.v1.card.update.reset_mock()
-
-    _run(consumer.on_abort())
+    with patch.object(consumer, "_send_card_reply") as card_mock, \
+         patch.object(consumer, "_send_text_reply") as text_mock:
+        _run(consumer.on_session_start())
+        _run(consumer.on_text_chunk("正在生成"))
+        _run(consumer.on_abort())
 
     # 停止标记被追加
     assert _STOPPED_MARKER in consumer.accumulated_text
     # 降级模式：不调 CardKit update
     mock_lark_client.cardkit.v1.card.update.assert_not_called()
-    # 降级模式：调 im.v1.message.create 发送一次性回复（含停止标记）
-    assert mock_lark_client.im.v1.message.create.called
+    # 降级模式：统一走 _send_card_reply，且文本含停止标记
+    assert card_mock.called
+    call_text = card_mock.call_args[0][1]
+    assert _STOPPED_MARKER in call_text
+    text_mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -617,11 +627,11 @@ def test_cardkit_patch_failure_silent_retry(
     stub_throttler: MagicMock,
     mock_lark_client: MagicMock,
 ):
-    """P1：patch 失败静默，下次 patch 重试。
+    """P1：元素级 patch 失败静默，下次 patch 重试。
 
     场景：
-        - 第一次 patch：CardKit update 返回 success=False → 抛 RuntimeError → _patch_failures=1
-        - 第二次 patch：CardKit update 返回 success=True → _patch_failures 重置为 0
+        - 第一次 patch：CardKit card_element.update 返回 success=False → 抛 RuntimeError → _patch_failures=1
+        - 第二次 patch：CardKit card_element.update 返回 success=True → _patch_failures 重置为 0
 
     Args:
         consumer: FeishuCardConsumer fixture
@@ -633,13 +643,13 @@ def test_cardkit_patch_failure_silent_retry(
     """
     _run(_start_session(consumer))
 
-    # 让 patch 第一次失败
-    mock_lark_client.cardkit.v1.card.update.return_value.success.return_value = False
+    # 让元素级 patch 第一次失败
+    mock_lark_client.cardkit.v1.card_element.update.return_value.success.return_value = False
     _run(consumer.on_text_chunk("片段1"))
     assert consumer._patch_failures == 1
 
-    # 恢复 patch 成功
-    mock_lark_client.cardkit.v1.card.update.return_value.success.return_value = True
+    # 恢复元素级 patch 成功
+    mock_lark_client.cardkit.v1.card_element.update.return_value.success.return_value = True
     _run(consumer.on_text_chunk("片段2"))
     # 成功后 _patch_failures 重置
     assert consumer._patch_failures == 0
@@ -655,6 +665,9 @@ def test_cardkit_patch_consecutive_failures_triggers_degradation(
 ):
     """P1：patch 连续失败超过 _MAX_PATCH_FAILURES → 切换降级模式。
 
+    元素级 update 失败后本会话会回退到整卡 update；
+    为验证降级触发，同时让元素级与整卡 update 均失败。
+
     Args:
         consumer: FeishuCardConsumer fixture
         stub_throttler: stub Throttler fixture
@@ -665,7 +678,8 @@ def test_cardkit_patch_consecutive_failures_triggers_degradation(
     """
     _run(_start_session(consumer))
 
-    # 让 patch 持续失败
+    # 让元素级 patch 与整卡 patch 均持续失败
+    mock_lark_client.cardkit.v1.card_element.update.return_value.success.return_value = False
     mock_lark_client.cardkit.v1.card.update.return_value.success.return_value = False
 
     # 触发 3 次失败 patch（_MAX_PATCH_FAILURES=3）
@@ -728,6 +742,45 @@ def test_send_card_reply_failure_falls_back_to_text(
     assert mock_lark_client.im.v1.message.create.call_count == 2
 
 
+def test_send_reply_plain_text_degraded_still_sends_card(
+    mock_lark_client: MagicMock, stub_throttler: MagicMock
+):
+    """P1：降级路径下纯文本也统一发卡片。
+
+    场景：
+        - CardKit create 失败 → 降级模式
+        - accumulated_text 为纯文本“你好”（无 Markdown 特征）
+        - on_session_end 时 _send_reply 应走 _send_card_reply
+        - 最终发送 msg_type="interactive" 的卡片消息
+
+    Args:
+        mock_lark_client: mock lark_client fixture
+        stub_throttler: stub Throttler fixture
+
+    Returns:
+        None
+    """
+    # CardKit create 失败 → 降级
+    mock_lark_client.cardkit.v1.card.create.return_value.success.return_value = False
+
+    consumer = FeishuCardConsumer(
+        session_id="feishu:p2p:ou_test",
+        lark_client=mock_lark_client,
+        chat_id="oc_test_chat",
+        throttler=stub_throttler,
+    )
+
+    with patch.object(consumer, "_send_card_reply") as card_mock, \
+         patch.object(consumer, "_send_text_reply") as text_mock:
+        _run(consumer.on_session_start())
+        _run(consumer.on_text_chunk("你好"))
+        _run(consumer.on_session_end())
+
+    # 纯文本在降级路径下也应走 _send_card_reply，而非 _send_text_reply
+    card_mock.assert_called_once_with("oc_test_chat", "你好")
+    text_mock.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # P2：sequence 严格递增
 # ---------------------------------------------------------------------------
@@ -760,8 +813,8 @@ def test_sequence_strictly_increments(
 
     # sequence 严格递增到 3
     assert consumer._sequence == 3
-    # CardKit update 被调用 3 次
-    assert mock_lark_client.cardkit.v1.card.update.call_count == 3
+    # CardKit 元素级 update 被调用 3 次
+    assert mock_lark_client.cardkit.v1.card_element.update.call_count == 3
 
 
 # ---------------------------------------------------------------------------
@@ -813,3 +866,213 @@ def test_truncate_text_default_max_len_4000():
     result = FeishuCardConsumer._truncate_text(text_over)
     assert len(result) <= 4000
     assert "截断" in result
+
+
+# ---------------------------------------------------------------------------
+# P1：从 settings.feishu 读取 CardKit 流式/节流配置（2026-07-19 新增）
+# ---------------------------------------------------------------------------
+
+
+def test_consumer_reads_streaming_config_from_settings(
+    mock_lark_client: MagicMock,
+    monkeypatch,
+):
+    """P1：FeishuCardConsumer 从 settings.feishu 读取 6 个流式/节流参数。
+
+    验证：
+        - _streaming_enabled / _streaming_print_* / _update_* 与 settings 一致
+        - 默认启用的 streaming 模式下不处于降级状态
+
+    Args:
+        mock_lark_client: mock lark_client fixture
+        monkeypatch: pytest fixture
+
+    Returns:
+        None
+    """
+    monkeypatch.setattr(
+        settings.feishu,
+        "feishu_card_streaming_enabled",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        settings.feishu,
+        "feishu_card_streaming_print_frequency_ms",
+        120,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        settings.feishu,
+        "feishu_card_streaming_print_step",
+        2,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        settings.feishu,
+        "feishu_card_streaming_print_strategy",
+        "smooth",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        settings.feishu,
+        "feishu_card_update_interval_ms",
+        800,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        settings.feishu,
+        "feishu_card_update_delta_chars",
+        100,
+        raising=False,
+    )
+
+    consumer = FeishuCardConsumer(
+        session_id="feishu:p2p:ou_test",
+        lark_client=mock_lark_client,
+        chat_id="oc_test_chat",
+    )
+
+    assert consumer._streaming_enabled is True
+    assert consumer._streaming_print_frequency_ms == 120
+    assert consumer._streaming_print_step == 2
+    assert consumer._streaming_print_strategy == "smooth"
+    assert consumer._update_interval_ms == 800
+    assert consumer._update_delta_chars == 100
+
+
+def test_consumer_passes_settings_to_internal_throttler(
+    mock_lark_client: MagicMock,
+    monkeypatch,
+):
+    """P1：FeishuCardConsumer 把 settings.feishu 的节流参数传给内部 Throttler。
+
+    Args:
+        mock_lark_client: mock lark_client fixture
+        monkeypatch: pytest fixture
+
+    Returns:
+        None
+    """
+    monkeypatch.setattr(
+        settings.feishu,
+        "feishu_card_update_interval_ms",
+        900,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        settings.feishu,
+        "feishu_card_update_delta_chars",
+        77,
+        raising=False,
+    )
+
+    consumer = FeishuCardConsumer(
+        session_id="feishu:p2p:ou_test",
+        lark_client=mock_lark_client,
+        chat_id="oc_test_chat",
+    )
+
+    assert consumer._throttler.min_interval_ms == 900
+    assert consumer._throttler.min_delta_chars == 77
+
+
+def test_build_card_json_uses_streaming_config_from_settings(
+    mock_lark_client: MagicMock,
+    monkeypatch,
+):
+    """P1：_build_card_json 使用 settings.feishu 的 streaming 参数构造卡片 JSON。
+
+    验证：
+        - streaming_config.print_frequency_ms / print_step / print_strategy 与 settings 一致
+        - config.streaming_mode / update_multi 为 True
+        - 第一个 markdown 元素带 element_id
+
+    Args:
+        mock_lark_client: mock lark_client fixture
+        monkeypatch: pytest fixture
+
+    Returns:
+        None
+    """
+    monkeypatch.setattr(
+        settings.feishu,
+        "feishu_card_streaming_print_frequency_ms",
+        150,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        settings.feishu,
+        "feishu_card_streaming_print_step",
+        3,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        settings.feishu,
+        "feishu_card_streaming_print_strategy",
+        "fast",
+        raising=False,
+    )
+
+    consumer = FeishuCardConsumer(
+        session_id="feishu:p2p:ou_test",
+        lark_client=mock_lark_client,
+        chat_id="oc_test_chat",
+    )
+
+    card = consumer._build_card_json("你好", include_buttons=False)
+
+    assert card["config"]["streaming_mode"] is True
+    assert card["config"]["update_multi"] is True
+    assert card["config"]["streaming_config"]["print_strategy"] == "fast"
+    assert (
+        card["config"]["streaming_config"]["print_frequency_ms"]["default"] == 150
+    )
+    assert card["config"]["streaming_config"]["print_step"]["default"] == 3
+
+    md_elems = [e for e in card["body"]["elements"] if e.get("tag") == "markdown"]
+    assert md_elems
+    assert md_elems[0].get("element_id") == "markdown_main"
+
+
+def test_streaming_disabled_falls_back_to_entity_update(
+    mock_lark_client: MagicMock,
+    stub_throttler: MagicMock,
+    monkeypatch,
+):
+    """P1：feishu_card_streaming_enabled=False 时 Consumer 走整卡更新路径。
+
+    验证：
+        - _streaming_enabled=False
+        - on_text_chunk 触发的 patch 调用整卡 update，不调用元素级 card_element.update
+
+    Args:
+        mock_lark_client: mock lark_client fixture
+        stub_throttler: stub Throttler fixture
+        monkeypatch: pytest fixture
+
+    Returns:
+        None
+    """
+    monkeypatch.setattr(
+        settings.feishu,
+        "feishu_card_streaming_enabled",
+        False,
+        raising=False,
+    )
+
+    consumer = FeishuCardConsumer(
+        session_id="feishu:p2p:ou_test",
+        lark_client=mock_lark_client,
+        chat_id="oc_test_chat",
+        throttler=stub_throttler,
+    )
+    assert consumer._streaming_enabled is False
+
+    _run(consumer.on_session_start())
+    _run(consumer.on_text_chunk("你好"))
+
+    # 整卡 update 被调用
+    assert mock_lark_client.cardkit.v1.card.update.called
+    # 元素级 update 未被调用
+    assert mock_lark_client.cardkit.v1.card_element.update.call_count == 0

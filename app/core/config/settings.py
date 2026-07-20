@@ -502,14 +502,48 @@ class FeishuSettings(BaseSettings):
             "该用户必须预先在系统中存在(username 唯一)。"
         ),
     )
+    # 2026-07-19 新增：飞书 CardKit 卡片流式/节流配置
+    feishu_card_streaming_enabled: bool = Field(
+        default=True,
+        description="是否启用 CardKit 元素级流式更新；false 时回退到整卡更新",
+    )
+    feishu_card_streaming_print_frequency_ms: int = Field(
+        default=70,
+        ge=0,
+        description="CardKit streaming 打印频率（毫秒）",
+    )
+    feishu_card_streaming_print_step: int = Field(
+        default=1,
+        ge=1,
+        description="CardKit streaming 打印步长（字符数）",
+    )
+    feishu_card_streaming_print_strategy: str = Field(
+        default="fast",
+        description="CardKit streaming 打印策略，如 fast",
+    )
+    feishu_card_update_interval_ms: int = Field(
+        default=600,
+        ge=0,
+        description="CardKit 两次更新最小时间间隔（毫秒）",
+    )
+    feishu_card_update_delta_chars: int = Field(
+        default=50,
+        ge=0,
+        description="CardKit 两次更新最小字符增量",
+    )
 
-    @field_validator("feishu_ws_enabled", mode="before")
+    @field_validator(
+        "feishu_ws_enabled",
+        "feishu_card_streaming_enabled",
+        mode="before",
+    )
     @classmethod
-    def parse_feishu_ws_enabled(cls, v):
+    def parse_feishu_bool(cls, v):
         """将字符串转换为布尔值。"""
         if isinstance(v, str):
             return v.lower() in ("true", "1", "yes", "on")
         return bool(v)
+
 
 
 class SkillsSettings(BaseSettings):
@@ -745,6 +779,12 @@ class Settings(BaseSettings):
             "ws_enabled": self.feishu.feishu_ws_enabled,
             "ws_agent_name": self.feishu.feishu_ws_agent_name,
             "ws_receiver_username": self.feishu.feishu_ws_receiver_username,
+            "card_streaming_enabled": self.feishu.feishu_card_streaming_enabled,
+            "card_streaming_print_frequency_ms": self.feishu.feishu_card_streaming_print_frequency_ms,
+            "card_streaming_print_step": self.feishu.feishu_card_streaming_print_step,
+            "card_streaming_print_strategy": self.feishu.feishu_card_streaming_print_strategy,
+            "card_update_interval_ms": self.feishu.feishu_card_update_interval_ms,
+            "card_update_delta_chars": self.feishu.feishu_card_update_delta_chars,
         }
 
 

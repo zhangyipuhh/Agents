@@ -101,6 +101,10 @@ class FeishuWebSocketService:
         # 让续跑产生的新 token 继续 patch 同一张卡片，避免上下文割裂。
         # 生命周期：_call_agent 内 interrupt 时挂入；自然结束 / abort 时弹出。
         self._active_consumers: Dict[str, Any] = {}
+        # 2026-07-19 新增：session_id → asyncio.Lock
+        # 用途：同一用户的连续多条消息串行化处理，避免并发读写同一个 LangGraph thread
+        # 以及并发创建多个 CardKit 卡片导致窗口混乱。
+        self._session_locks: Dict[str, asyncio.Lock] = {}
 
     # ------------------------------------------------------------------ #
     # Lifecycle                                                          #
@@ -554,11 +558,11 @@ class FeishuWebSocketService:
             text: 用户伴随文本（可为空）
             chat_type: 2026-07-17 新增 p2p / group；用于诊断日志
         """
-        try:
-            await self._ensure_session_recorded(session_id, chat_id, chat_type, text)
 
-            attachment_refs: list = []
-            max_bytes = self._resolve_max_file_size_bytes()
+        max_bytes = self._resolve_max_file_size_bytes()
+        attachment_refs: list = []
+
+        try:
             for att in attachments or []:
                 file_name = att.get("file_name") or ""
                 file_key = att.get("file_key") or ""
@@ -980,35 +984,39 @@ class FeishuWebSocketService:
         if not text:
             logger.info("飞书消息 text 为空，跳过（session_id=%s）", session_id)
             return
-        try:
-            # 2026-07-17 新增：把 session 写入 sessions 表（首次创建 + 后续刷新 last_active_at）。
-            # 该步骤在 _call_agent 之前：保证即便 agent 流式处理失败，session 至少已在表中可查。
-            await self._ensure_session_recorded(session_id, chat_id, chat_type, text)
 
-            reply, interrupt_req = await self._call_agent(session_id, text, chat_id)
-            if interrupt_req:
-                # 路径 2：HITL 人工回路
-                self._pending_interrupts[session_id] = {
-                    "chat_id": chat_id,
-                    "request": interrupt_req,
-                }
-                # 注意：HITL 卡片由 FeishuCardConsumer.on_interrupt 在同一张卡片上
-                # 追加按钮 elements，无需再单独发 _send_interrupt_card
-                # （Consumer 内部已通过 patch 实现"同卡片按钮"语义）
-            elif reply:
-                # 路径 1：普通回复
-                # 注意：流式 token 已通过 Consumer 的 on_text_chunk 实时 patch 到
-                # 同一张 CardKit 卡片；此处 reply 仅作日志/兜底，不再 _send_reply
-                # （否则会重复发送同一条回复）
-                logger.info(
-                    "[FeishuWS] agent 回复完成 session_id=%s reply_len=%d",
-                    session_id, len(reply),
-                )
-            else:
-                logger.info("智能体未产生回复/HITL（session_id=%s）", session_id)
-        except Exception as e:  # noqa: BLE001
-            # 单条消息异常不影响 WebSocket 连接
-            logger.exception("处理飞书消息失败（已隔离，session_id=%s）: %s", session_id, e)
+        # 同一 session 串行化处理：避免并发读写同一个 LangGraph thread
+        lock = self._session_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            try:
+                # 2026-07-17 新增：把 session 写入 sessions 表（首次创建 + 后续刷新 last_active_at）。
+                # 该步骤在 _call_agent 之前：保证即便 agent 流式处理失败，session 至少已在表中可查。
+                await self._ensure_session_recorded(session_id, chat_id, chat_type, text)
+
+                reply, interrupt_req = await self._call_agent(session_id, text, chat_id)
+                if interrupt_req:
+                    # 路径 2：HITL 人工回路
+                    self._pending_interrupts[session_id] = {
+                        "chat_id": chat_id,
+                        "request": interrupt_req,
+                    }
+                    # 注意：HITL 卡片由 FeishuCardConsumer.on_interrupt 在同一张卡片上
+                    # 追加按钮 elements，无需再单独发 _send_interrupt_card
+                    # （Consumer 内部已通过 patch 实现"同卡片按钮"语义）
+                elif reply:
+                    # 路径 1：普通回复
+                    # 注意：流式 token 已通过 Consumer 的 on_text_chunk 实时 patch 到
+                    # 同一张 CardKit 卡片；此处 reply 仅作日志/兜底，不再 _send_reply
+                    # （否则会重复发送同一条回复）
+                    logger.info(
+                        "[FeishuWS] agent 回复完成 session_id=%s reply_len=%d",
+                        session_id, len(reply),
+                    )
+                else:
+                    logger.info("智能体未产生回复/HITL（session_id=%s）", session_id)
+            except Exception as e:  # noqa: BLE001
+                # 单条消息异常不影响 WebSocket 连接
+                logger.exception("处理飞书消息失败（已隔离，session_id=%s）: %s", session_id, e)
 
     async def _ensure_session_recorded(
         self,
@@ -1312,7 +1320,11 @@ class FeishuWebSocketService:
     # ------------------------------------------------------------------ #
 
     def _send_reply(self, chat_id: str, text: str) -> None:
-        """路由入口：根据 Markdown 特征自动选择"纯文本"或"卡片"渲染。
+        """路由入口：统一把回复包装成卡片渲染。
+
+        与 ``FeishuCardConsumer._send_reply`` 降级策略保持一致，不再根据文本是否
+        含 Markdown 特征分支，避免不同内容导致视觉不一致。
+        ``_send_card_reply`` 内部会在卡片 API 失败时再降级为纯文本，保证可达性。
 
         Args:
             chat_id: 飞书 chat_id
@@ -1320,10 +1332,11 @@ class FeishuWebSocketService:
         """
         if not text:
             return
-        if MarkdownToCardConverter.looks_like_markdown(text):
-            self._send_card_reply(chat_id, text)
-        else:
-            self._send_text_reply(chat_id, text)
+        logger.info(
+            "[FeishuWebSocketService] 统一发卡片 chat_id=%s text_len=%s",
+            chat_id, len(text),
+        )
+        self._send_card_reply(chat_id, text)
 
     def _send_text_reply(self, chat_id: str, text: str) -> None:
         """通过飞书 Open API 发送纯文本回复。

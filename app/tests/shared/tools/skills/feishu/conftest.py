@@ -503,11 +503,153 @@ class _UpdateCardRequest:
         return _UpdateCardRequestBuilder()
 
 
+# ---------------------------------------------------------------------------
+# 新增：UpdateCardElementRequest / UpdateCardElementRequestBody builder
+# 供 FeishuCardConsumer._patch_cardkit_text 元素级更新使用
+# ---------------------------------------------------------------------------
+class _UpdateCardElementRequestBodyBuilder:
+    """模拟 UpdateCardElementRequestBody.builder() 链。"""
+
+    def __init__(self):
+        self._uuid = None
+        self._sequence = None
+        self._element = None
+
+    def uuid(self, u):
+        self._uuid = u
+        return self
+
+    def sequence(self, s):
+        self._sequence = s
+        return self
+
+    def element(self, e):
+        self._element = e
+        return self
+
+    def build(self):
+        body = MagicMock(name="UpdateCardElementRequestBody")
+        body._uuid = self._uuid
+        body._sequence = self._sequence
+        body._element = self._element
+        return body
+
+
+class _UpdateCardElementRequestBody:
+    @staticmethod
+    def builder():
+        return _UpdateCardElementRequestBodyBuilder()
+
+
+class _UpdateCardElementRequestBuilder:
+    """模拟 UpdateCardElementRequest.builder() 链。"""
+
+    def __init__(self):
+        self._card_id = None
+        self._element_id = None
+        self._request_body = None
+
+    def card_id(self, cid):
+        self._card_id = cid
+        return self
+
+    def element_id(self, eid):
+        self._element_id = eid
+        return self
+
+    def request_body(self, body):
+        self._request_body = body
+        return self
+
+    def build(self):
+        req = MagicMock(name="UpdateCardElementRequest")
+        req._card_id = self._card_id
+        req._element_id = self._element_id
+        req._request_body = self._request_body
+        return req
+
+
+class _UpdateCardElementRequest:
+    @staticmethod
+    def builder():
+        return _UpdateCardElementRequestBuilder()
+
+
+# ---------------------------------------------------------------------------
+# 新增：SettingsCardRequest / SettingsCardRequestBody builder
+# 供 FeishuCardConsumer._close_streaming_mode 使用
+# ---------------------------------------------------------------------------
+class _SettingsCardRequestBodyBuilder:
+    """模拟 SettingsCardRequestBody.builder() 链。"""
+
+    def __init__(self):
+        self._uuid = None
+        self._sequence = None
+        self._settings = None
+
+    def uuid(self, u):
+        self._uuid = u
+        return self
+
+    def sequence(self, s):
+        self._sequence = s
+        return self
+
+    def settings(self, s):
+        self._settings = s
+        return self
+
+    def build(self):
+        body = MagicMock(name="SettingsCardRequestBody")
+        body._uuid = self._uuid
+        body._sequence = self._sequence
+        body._settings = self._settings
+        return body
+
+
+class _SettingsCardRequestBody:
+    @staticmethod
+    def builder():
+        return _SettingsCardRequestBodyBuilder()
+
+
+class _SettingsCardRequestBuilder:
+    """模拟 SettingsCardRequest.builder() 链。"""
+
+    def __init__(self):
+        self._card_id = None
+        self._request_body = None
+
+    def card_id(self, cid):
+        self._card_id = cid
+        return self
+
+    def request_body(self, body):
+        self._request_body = body
+        return self
+
+    def build(self):
+        req = MagicMock(name="SettingsCardRequest")
+        req._card_id = self._card_id
+        req._request_body = self._request_body
+        return req
+
+
+class _SettingsCardRequest:
+    @staticmethod
+    def builder():
+        return _SettingsCardRequestBuilder()
+
+
 _lark_api_cardkit_v1.Card = _Card
 _lark_api_cardkit_v1.CreateCardRequest = _CreateCardRequest
 _lark_api_cardkit_v1.CreateCardRequestBody = _CreateCardRequestBody
 _lark_api_cardkit_v1.UpdateCardRequest = _UpdateCardRequest
 _lark_api_cardkit_v1.UpdateCardRequestBody = _UpdateCardRequestBody
+_lark_api_cardkit_v1.UpdateCardElementRequest = _UpdateCardElementRequest
+_lark_api_cardkit_v1.UpdateCardElementRequestBody = _UpdateCardElementRequestBody
+_lark_api_cardkit_v1.SettingsCardRequest = _SettingsCardRequest
+_lark_api_cardkit_v1.SettingsCardRequestBody = _SettingsCardRequestBody
 
 
 # 在 _ClientBuilder.build() 返回的 mock client 上挂 cardkit.v1.card 命名空间。
@@ -515,17 +657,31 @@ _lark_api_cardkit_v1.UpdateCardRequestBody = _UpdateCardRequestBody
 # `client.cardkit.v1.card.create(...)` 与 `client.cardkit.v1.card.update(...)`
 # 的返回值可被测试断言，这里提供一个共享的 CardKitNamespace。
 class _CardKitCardNamespace:
-    """模拟 client.cardkit.v1.card 命名空间，暴露 create / update。
+    """模拟 client.cardkit.v1.card 命名空间，暴露 create / update / settings。
 
     测试中通过 ``client.cardkit.v1.card.create = MagicMock(...)``
     直接覆盖；本类仅作为默认占位（返回 success=False）。
     """
 
     def __init__(self):
-        # 默认 create / update 返回 success=False 的 MagicMock，
-        # 测试用例通过 setattr 注入 success 响应或 Mock
+        # 默认 create / update / settings 返回 success=False 的 MagicMock，
+        # 测试用例通过 setattr 注入成功响应或 Mock
         self.create = MagicMock(name="cardkit.create", return_value=MagicMock(success=lambda: False))
         self.update = MagicMock(name="cardkit.update", return_value=MagicMock(success=lambda: False))
+        self.settings = MagicMock(name="cardkit.settings", return_value=MagicMock(success=lambda: False))
+
+
+class _CardKitCardElementNamespace:
+    """模拟 client.cardkit.v1.card_element 命名空间，暴露 update。
+
+    元素级更新使用 ``client.cardkit.v1.card_element.update(...)``。
+    """
+
+    def __init__(self):
+        self.update = MagicMock(
+            name="cardkit.card_element.update",
+            return_value=MagicMock(success=lambda: False),
+        )
 
 
 class _CardKitV1Namespace:
@@ -533,6 +689,7 @@ class _CardKitV1Namespace:
 
     def __init__(self):
         self.card = _CardKitCardNamespace()
+        self.card_element = _CardKitCardElementNamespace()
 
 
 class _CardKitNamespace:

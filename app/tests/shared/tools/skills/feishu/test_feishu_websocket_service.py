@@ -1325,7 +1325,7 @@ async def test_extract_text_from_message_none():
 def test_send_reply_truncates_long_text():
     """P2：>4000 字符截断 + 追加 hint。"""
     svc = _make_service()
-    long_text = "a" * 5000  # 纯文本（无 markdown 特征）→ 走 _send_text_reply
+    long_text = "a" * 5000  # 纯文本也统一走 _send_card_reply，由 to_card_json 内部截断
 
     with patch.object(svc._lark_client.im.v1.message, "create") as create_mock:
         resp = MagicMock()
@@ -1357,7 +1357,7 @@ def test_send_reply_success_logs():
 
 
 def test_send_reply_failure_handled():
-    """P1：回复失败时记录日志，不抛异常。"""
+    """P1：卡片发送失败后自动降级文本，共调用 create 两次。"""
     svc = _make_service()
     with patch.object(svc._lark_client.im.v1.message, "create") as create_mock:
         resp = MagicMock()
@@ -1367,7 +1367,9 @@ def test_send_reply_failure_handled():
         create_mock.return_value = resp
 
         svc._send_reply("oc_chat_001", "hello")
-        create_mock.assert_called_once()
+        # 统一走 _send_card_reply；卡片 API 失败后再降级 _send_text_reply，
+        # 因此 create 被调用 2 次
+        assert create_mock.call_count == 2
 
 
 def test_send_reply_exception_handled():
@@ -1575,14 +1577,14 @@ def test_send_reply_routes_to_card_for_markdown():
         text_mock.assert_not_called()
 
 
-def test_send_reply_routes_to_text_for_plain():
-    """P1：纯文本走 _send_text_reply。"""
+def test_send_reply_routes_to_card_for_plain():
+    """P1：纯文本也统一走 _send_card_reply。"""
     svc = _make_service()
     with patch.object(svc, "_send_text_reply") as text_mock, \
          patch.object(svc, "_send_card_reply") as card_mock:
         svc._send_reply("oc_chat_001", "你好世界")
-        text_mock.assert_called_once()
-        card_mock.assert_not_called()
+        card_mock.assert_called_once_with("oc_chat_001", "你好世界")
+        text_mock.assert_not_called()
 
 
 def test_send_reply_empty_text_no_op():

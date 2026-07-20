@@ -30,6 +30,9 @@ from typing import Any, Dict, List, Optional
 _MAX_CARD_TEXT_LEN = 4000
 _TRUNCATE_HINT = "...（内容过长已截断）"
 
+# 流式卡片主文本元素 ID，供 CardKit 元素级更新 API 定位
+_STREAMING_ELEMENT_ID = "markdown_main"
+
 # Markdown 特征检测正则（任一命中即视为 markdown）
 _RE_BOLD = re.compile(r"\*\*[^*\n]+\*\*")
 _RE_ITALIC = re.compile(r"(?<![*\w])\*[^*\n]+\*(?![*\w])")
@@ -160,6 +163,65 @@ class MarkdownToCardConverter:
             },
             "body": {"elements": elements},
         }
+
+    @staticmethod
+    def to_streaming_card_json(
+        markdown_text: str,
+        header_title: str = "🤖 AI 智能体回复",
+        *,
+        element_id: str = _STREAMING_ELEMENT_ID,
+        print_frequency_ms: int = 70,
+        print_step: int = 1,
+        print_strategy: str = "fast",
+    ) -> Dict[str, Any]:
+        """把 Markdown 文本转换为支持 CardKit 流式更新的卡片 JSON。
+
+        与 ``to_card_json`` 的区别：
+            - 给主文本 markdown 元素增加 ``element_id``，供元素级更新 API 定位
+            - ``config`` 中开启 ``streaming_mode``、``update_multi`` 并填充
+              ``streaming_config``（打印频率/步长/策略）
+
+        Args:
+            markdown_text: Markdown 文本
+            header_title: 卡片头部标题
+            element_id: 主文本元素 ID，用于元素级更新；默认 ``markdown_main``
+            print_frequency_ms: streaming 打印频率（毫秒）
+            print_step: streaming 打印步长（字符数）
+            print_strategy: streaming 打印策略，如 ``fast``
+
+        Returns:
+            dict: 飞书卡片 JSON（schema 2.0 + streaming 配置）
+        """
+        card = MarkdownToCardConverter.to_card_json(
+            markdown_text, header_title=header_title
+        )
+        # 给第一个 markdown 元素设置 element_id（作为主文本容器）
+        body = card.setdefault("body", {})
+        elements = body.setdefault("elements", [])
+        for element in elements:
+            if isinstance(element, dict) and element.get("tag") == "markdown":
+                element["element_id"] = element_id
+                break
+
+        config = card.setdefault("config", {})
+        config["update_multi"] = True
+        config["streaming_mode"] = True
+        config["streaming_config"] = {
+            "print_frequency_ms": {
+                "default": print_frequency_ms,
+                "android": print_frequency_ms,
+                "ios": print_frequency_ms,
+                "pc": print_frequency_ms,
+            },
+            "print_step": {
+                "default": print_step,
+                "android": print_step,
+                "ios": print_step,
+                "pc": print_step,
+            },
+            "print_strategy": print_strategy,
+        }
+        return card
 
     # ------------------------------------------------------------------ #
     # Block-level parsing                                                 #

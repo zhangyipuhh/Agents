@@ -2124,8 +2124,19 @@ system_prompt = (
 - `feishu_default_receive_id`（env `FEISHU_DEFAULT_RECEIVE_ID`）—— 默认接收方 ID（群 chat_id 或用户 open_id）
 - `feishu_default_receive_id_type`（env `FEISHU_DEFAULT_RECEIVE_ID_TYPE`，默认 `chat_id`）—— 接收方类型：chat_id / open_id / user_id / email
 - `feishu_log_level`（env `FEISHU_LOG_LEVEL`，默认 `INFO`）—— SDK 日志级别
+- `feishu_ws_enabled`（env `FEISHU_WS_ENABLED`，默认 `False`）—— 是否启用 WebSocket 长连接接收消息
+- `feishu_ws_agent_name`（env `FEISHU_WS_AGENT_NAME`，默认 `project`）—— 飞书消息路由到的目标智能体名称
+- `feishu_ws_receiver_username`（env `FEISHU_WS_RECEIVER_USERNAME`，默认 `feishu_bot`）—— 飞书 WebSocket 产生的会话归属到的系统用户名
+- `feishu_card_streaming_enabled`（env `FEISHU_CARD_STREAMING_ENABLED`，默认 `True`）—— 是否启用 CardKit 元素级流式更新；`False` 时回退到整卡更新
+- `feishu_card_streaming_print_frequency_ms`（env `FEISHU_CARD_STREAMING_PRINT_FREQUENCY_MS`，默认 `70`）—— CardKit streaming 打印频率（毫秒）
+- `feishu_card_streaming_print_step`（env `FEISHU_CARD_STREAMING_PRINT_STEP`，默认 `1`）—— CardKit streaming 打印步长（字符数）
+- `feishu_card_streaming_print_strategy`（env `FEISHU_CARD_STREAMING_PRINT_STRATEGY`，默认 `"fast"`）—— CardKit streaming 打印策略
+- `feishu_card_update_interval_ms`（env `FEISHU_CARD_UPDATE_INTERVAL_MS`，默认 `600`）—— CardKit 两次更新最小时间间隔（毫秒）
+- `feishu_card_update_delta_chars`（env `FEISHU_CARD_UPDATE_DELTA_CHARS`，默认 `50`）—— CardKit 两次更新最小字符增量
 
-`Settings.get_feishu_config()` 返回扁平字典供旧代码访问。
+字符串布尔值兼容：`feishu_ws_enabled` 与 `feishu_card_streaming_enabled` 的 `@field_validator` 会把 `"true" / "1" / "yes" / "on"` 统一转为 `True`。
+
+`Settings.get_feishu_config()` 返回扁平字典供旧代码访问，包含上述全部字段。
 
 ### 依赖
 
@@ -2172,13 +2183,14 @@ system_prompt = (
 4. `msg_type=text` → 直接走 `_handle_message` 普通路径
 5. 其他类型（image/post/audio/...）→ 跳过 + 日志
 6. 调用 `FeishuWebSocketService._ensure_session_recorded(session_id, chat_id, chat_type, text)` 把 session 写入 `sessions` 表，归属到 `feishu_ws_receiver_username` 配置的固定系统用户；首次创建时 title 取首条消息截 20 字 + `…`、绑定 `agent_type` + `agent_display_name`；后续消息仅刷新 `last_active_at`，title 沿用首次
-7. 调用 `agent_config_service.build_agent_instance(agent_name, session_id, text)`
-8. 用 `agent.stream(input_state, context=ctx, config=..., stream_mode=["messages", "updates"])` 收集 message chunk 拼接完整回复；同时检测 `__interrupt__` 触发 HITL
-9. 通过 `client.im.v1.message.create(CreateMessageRequest)` 直接发送回复（**不走** `send_feishu_message` LangChain 工具，避免 ToolRuntime 依赖）
-10. 回复文本 > 4000 字符时截断并追加 `...(内容过长已截断)`
+7. **同一 session 串行化（2026-07-19 新增）**：通过 `self._session_locks.setdefault(session_id, asyncio.Lock())` 获取/创建 per-session `asyncio.Lock`，在锁内执行 `_ensure_session_recorded` → `_call_agent`。避免同一用户连续多条消息并发读写同一个 LangGraph checkpointer thread，以及并发创建多个 CardKit 卡片导致窗口混乱。
+8. 调用 `agent_config_service.build_agent_instance(agent_name, session_id, text)`
+9. 用 `agent.stream(input_state, context=ctx, config=..., stream_mode=["messages", "updates"])` 收集 message chunk 拼接完整回复；同时检测 `__interrupt__` 触发 HITL
+10. 通过 `client.im.v1.message.create(CreateMessageRequest)` 直接发送回复（**不走** `send_feishu_message` LangChain 工具，避免 ToolRuntime 依赖）
+11. 回复文本 > 4000 字符时截断并追加 `...(内容过长已截断)`
 
-**回复渲染路由**（2026-07-17 新增）：
-- 路径 1（被动展示）：agent 回复文本经 `MarkdownToCardConverter.looks_like_markdown` 检测，含 markdown 特征 → 转飞书交互式卡片（`msg_type="interactive"`，`content={"card": {...}}`）；纯文本 → 走 `msg_type="text"`，`content={"text": ...}`。
+**回复渲染路由**（2026-07-17 新增，2026-07-19 调整降级策略）：
+- 路径 1（被动展示）：正常流式路径由 `FeishuCardConsumer` 通过 CardKit 维护同一张卡片；当 CardKit create/patch 失败进入降级路径时，统一把回复包装为飞书交互式卡片发送（`msg_type="interactive"`，`content={"card": {...}}`），不再根据文本是否含 Markdown 特征分支，确保用户端视觉一致。仅在卡片 API 再次失败时才兜底为 `msg_type="text"` 纯文本。
 - 路径 2（HITL 人工回路）：agent 触发 LangGraph `interrupt()` 暂停 → 通过 `InterruptToCardConverter` 转带选项按钮的交互式卡片；用户点击按钮 → 飞书回调 `card.action.trigger` → `_on_card_action` 解析 `session_id` / `qid` / `oid` → 构造 `Command(resume={"answers": [...]})` → `_resume_agent` 续跑 → 最终回复走路径 1。
 - 卡片 API 任何失败（网络 / 序列化 / 卡片过大）→ 自动降级 `_send_text_reply`，保证可达性。
 - `_pending_interrupts` 内存 dict 存 session_id → `{chat_id, request}`；lifespan 重启后丢失（不持久化）。
@@ -2224,10 +2236,7 @@ system_prompt = (
 - **失败回执**：`白名单外 / 超大 / 下载失败` → `_send_text_reply(chat_id, reason)`，不抛异常，不影响 WebSocket 与后续消息。
 - **复用组件**：`FileParserClient`（`app/shared/utils/files/file_parser_client.py`）、`DocumentLoader`（`app/shared/utils/files/DocumentLoader.py`）、`session_path_manager.get_session_upload_dir / get_session_tmp_upload_dir` — 均与 Web 上传共享。
 
-**新增 FeishuSettings 配置项**：
-- `feishu_ws_enabled`（env `FEISHU_WS_ENABLED`，默认 `False`）—— 是否启用 WebSocket 长连接接收
-- `feishu_ws_agent_name`（env `FEISHU_WS_AGENT_NAME`，默认 `project`）—— 飞书消息路由到的目标智能体名称
-- `feishu_ws_receiver_username`（env `FEISHU_WS_RECEIVER_USERNAME`，默认 `feishu_bot`，2026-07-17 新增）—— 飞书 session 归属到的系统用户名；lifespan 启动时通过 `UserDB.get_user_by_username` 解析为 `user_id`，用户不存在则 ERROR 日志并跳过 WS 服务启动
+**相关配置**：WebSocket 启停与路由参数见上文「配置（FeishuSettings）」章节（`feishu_ws_enabled` / `feishu_ws_agent_name` / `feishu_ws_receiver_username`）。
 
 **飞书后台要求**：
 - 事件订阅 `im.message.receive_v1` 与 `card.action.trigger`，订阅类型必须选 WebSocket（非 HTTP Webhook）。
@@ -2259,8 +2268,8 @@ FeishuWebSocketService._call_agent
 | `StreamEventSource` | `app/core/agent/stream_event_source.py` | 消费 `agent.stream(...)` 多模式 chunk（messages / updates / custom），统一产出 `StreamEvent` 序列；支持 abort 信号检测；HITL interrupt 三形态兼容检测（dict 直含 `__interrupt__` / tuple 嵌套 / node 嵌套）+ `hasattr(item, "value")` 解包 LangGraph `Interrupt` 对象 |
 | `ChannelConsumer` | `app/shared/tools/channels/base.py` | 渠道消费者 ABC，6 个抽象回调：`on_session_start` / `on_text_chunk` / `on_node_update` / `on_interrupt` / `on_session_end` / `on_abort`；基类维护 `accumulated_text` / `last_interrupt_req` 公共状态 |
 | `ChannelRegistry` | `app/shared/tools/channels/registry.py` | `channel_registry` 全局单例；`register(prefix, consumer_cls)` 注册前缀；`resolve(session_id, **ctx)` 按前缀最长匹配实例化 Consumer；前缀冲突抛 `ValueError` |
-| `FeishuCardConsumer` | `app/shared/tools/channels/feishu/FeishuCardConsumer.py` | 飞书渠道 Consumer 实现：`on_session_start` 创建 CardKit 卡片实体 + 关联消息（占位「🤖 AI 正在思考…」）；`on_text_chunk` 累积→节流→patch 同卡片；`on_interrupt` 同卡片 elements 末尾追加按钮；`on_session_end` 强制 flush；`on_abort` 追加「（已停止）」标记 |
-| `Throttler` | `app/shared/tools/channels/feishu/Throttler.py` | 时间窗 + 字符增量双条件节流器：`should_push(last_len, current_len, now)` 同时满足 `now - last_push_time ≥ 600ms` 与 `current_len - last_push_len ≥ 50`；`force_flush()` 仅更新 `last_push_len` 不阻塞；初始 `last_push_time = -inf` 保证首次推送必发 |
+| `FeishuCardConsumer` | `app/shared/tools/channels/feishu/FeishuCardConsumer.py` | 飞书渠道 Consumer 实现：`on_session_start` 创建 CardKit 卡片实体 + 关联消息（占位「🤖 AI 正在思考…」）；`on_text_chunk` 累积→节流→patch 同卡片；默认启用元素级流式更新（`UpdateCardElementRequest`），失败时自动回退整卡更新（`UpdateCardRequest`）；流结束时调用 `SettingsCardRequest` 关闭 `streaming_mode`；`on_interrupt` 同卡片 elements 末尾追加按钮；`on_session_end` 强制 flush；`on_abort` 追加「（已停止）」标记 |
+| `Throttler` | `app/shared/tools/channels/feishu/Throttler.py` | 时间窗 + 字符增量双条件节流器：默认参数由 `settings.feishu` 的 `feishu_card_update_interval_ms`（默认 600 ms）与 `feishu_card_update_delta_chars`（默认 50）注入；`should_push(last_len, current_len, now)` 同时满足 `now - last_push_time ≥ min_interval_ms` 与 `current_len - last_push_len ≥ min_delta_chars`；`force_flush()` 仅更新 `last_push_len` 不阻塞；初始 `last_push_time = -inf` 保证首次推送必发 |
 
 **飞书渠道前缀路由**：
 - `channel_registry.register("feishu", FeishuCardConsumer)` 在 `app/shared/tools/channels/feishu/__init__.py` 包导入时执行
@@ -2295,6 +2304,12 @@ FeishuWebSocketService._call_agent
 - CardKit patch 连续失败 ≥ 3 次（`_MAX_PATCH_FAILURES`）→ 降级为一次性发送
 - `_send_card_reply` 失败 → 降级 `_send_text_reply`（最终兜底，保证可达性）
 
+**元素级流式更新与 streaming_mode 关闭（2026-07-19 新增）**：
+- 默认启用元素级流式更新：`FeishuCardConsumer._patch_card_safe` 优先调用 `lark_client.cardkit.v1.card_element.update(UpdateCardElementRequest)`，只更新主 markdown 元素（`element_id="markdown_main"`），payload 更小、符合 CardKit streaming 协议。
+- 元素级更新失败时，单次回退到整卡更新（`UpdateCardRequest`）；下次新 token 到来时仍优先尝试元素级更新。
+- 当 `settings.feishu.feishu_card_streaming_enabled=False` 时，直接走整卡更新，不尝试元素级更新。
+- 流自然结束 / abort 时调用 `_close_streaming_mode`，通过 `lark_client.cardkit.v1.card.settings(SettingsCardRequest)` 将卡片 `config.streaming_mode` 置为 `false` 并保留 `update_multi=True`，避免后续整卡更新被 streaming 状态拒绝。失败仅记日志，不影响主流程。
+
 **abort 信号机制**：
 - 复用全局 `register_abort_signal(session_id)` / `trigger_abort(session_id)` / `unregister_abort_signal(session_id)`（与前端 SSE abort 通道共用一套基础设施）
 - `StreamEventSource.consume` 每轮迭代检查 `is_abort_triggered(session_id)`，触发后 yield `StreamEvent(type="abort")` 并 break
@@ -2302,9 +2317,9 @@ FeishuWebSocketService._call_agent
 
 **测试覆盖**：
 - `app/tests/core/agent/test_stream_event_source.py`（13 个）：导入 / messages 模式 text 提取 / 空内容跳过 / updates 模式 / interrupt 三形态检测 / abort 信号 / 流结束 / session_start 首事件 / tools 节点完成触发 abort / 异常隔离 / 无 abort 信号不检查
-- `app/tests/shared/tools/channels/feishu/test_feishu_card_consumer.py`（22 个）：导入 / CardKit create + 关联消息 / create 失败降级 / 节流 patch / 节流跳过 / 空文本 noop / 降级模式仅累积 / HITL 同卡片按钮 / 空 requests noop / 降级模式新卡片 / session_end force_flush / 降级模式一次性回复 / abort 后跳过 session_end / abort 标记 / 降级模式 abort / patch 失败静默重试 / 连续失败降级 / `_send_card_reply` 失败降级文本 / sequence 严格递增 / 截断
+- `app/tests/shared/tools/channels/feishu/test_feishu_card_consumer.py`（30 个）：导入 / CardKit create + 关联消息 / create 失败降级 / 节流 patch / 节流跳过 / 空文本 noop / 降级模式仅累积 / HITL 同卡片按钮 / 空 requests noop / 降级模式新卡片 / session_end force_flush / 降级模式一次性回复 / abort 后跳过 session_end / abort 标记 / 降级模式 abort / patch 失败静默重试 / 连续失败降级 / `_send_card_reply` 失败降级文本 / sequence 严格递增 / 截断 / 从 `settings.feishu` 读取 6 个流式/节流参数 / 节流参数透传至内部 Throttler / `_build_card_json` 使用 streaming 配置 / streaming 禁用回退整卡更新
 - `app/tests/shared/tools/channels/feishu/test_throttler.py`（9 个）：导入 / 时间窗满足 / 时间窗内跳过 / 字符增量不足跳过 / 双条件满足 / force_flush 更新 len / force_flush 后允许立即推送 / 并发 should_push 串行化 / 默认值
-- `app/tests/shared/tools/skills/feishu/test_feishu_websocket_service.py`（93 个）：原 70+ 测试改造（`_call_agent` 签名加 `chat_id` + Consumer 路由）+ 新增 3 个 Consumer 相关测试（`test_call_agent_routes_to_feishu_consumer_by_session_prefix` / `test_call_agent_returns_interrupt_consumer_state` / `test_resume_agent_continues_same_consumer`）
+- `app/tests/shared/tools/skills/feishu/test_feishu_websocket_service.py`（89 个）：原 70+ 测试改造（`_call_agent` 签名加 `chat_id` + Consumer 路由）+ 新增 3 个 Consumer 相关测试（`test_call_agent_routes_to_feishu_consumer_by_session_prefix` / `test_call_agent_returns_interrupt_consumer_state` / `test_resume_agent_continues_same_consumer`）+ 文件消息处理 / session 记录 / 群聊 @检测等
 
 **与前端 SSE 的边界**：
 - 前端 SSE 流式（`/api/agent/*`）仍走 `app/routers/_stream_helper.py`，**一行未改**（硬约束）
@@ -2319,7 +2334,8 @@ FeishuWebSocketService._call_agent
 | 事件源抽象层 | 新建 `StreamEventSource`（独立于 `_stream_helper`） | `_stream_helper` 内 SSE 推送逻辑不抽离；新模块从零实现核心循环 |
 | 渠道抽象 | `ChannelConsumer` 接口 + `ChannelRegistry` 路由 | 飞书 / 钉钉 / 企微平级；按 session_id 前缀分发 |
 | 更新通道 | CardKit（卡片实体） | 消息编辑有隐性 ~20-30 次上限；CardKit 无明确上限；官方推荐流式方案 |
-| 节流策略 | 时间窗 600ms + 长度增量 50 字符 + 单卡片 asyncio.Lock | 官方限频 50 QPS / 秒；600ms 留余量；50 字符避免无意义 patch |
+| 节流策略 | 时间窗 + 长度增量 双条件 + 单卡片 asyncio.Lock；默认值由 `settings.feishu` 注入（`feishu_card_update_interval_ms=600`、`feishu_card_update_delta_chars=50`） | 统一配置入口，便于线上快速调整；官方限频 50 QPS / 秒；600ms 留余量；50 字符避免无意义 patch |
+| 流式更新粒度 | 默认元素级 `UpdateCardElementRequest`（`element_id="markdown_main"`），失败单次回退整卡 `UpdateCardRequest`；流结束调 `SettingsCardRequest` 关闭 `streaming_mode` | payload 更小、符合 CardKit streaming 协议；关闭 streaming 避免后续整卡更新被状态拒绝 |
 | HITL 按钮位置 | 同一卡片 elements 末尾追加 | 用户上下文连贯；避免再发一张图 |
 | abort 信号 | 复用 `register_abort_signal` / `trigger_abort` | 与前端 abort 通道共用一套基础设施 |
 | 降级触发 | CardKit create 失败 / 连续 N 次 patch 失败 → 一次性 `_send_card_reply` | 鲁棒性优先，避免无限重试 |

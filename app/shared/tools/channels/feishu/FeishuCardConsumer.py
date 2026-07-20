@@ -40,6 +40,7 @@ from lark_oapi.api.im.v1 import (
     CreateMessageRequestBody,
 )
 
+from app.core.config.settings import settings
 from app.shared.tools.channels.base import ChannelConsumer
 from app.shared.tools.channels.feishu.Throttler import Throttler
 from app.shared.tools.skills.feishu.InterruptToCardConverter import (
@@ -58,6 +59,8 @@ _PLACEHOLDER_TEXT = "🤖 AI 正在思考…"
 _STOPPED_MARKER = "\n\n_（已停止）_"
 # CardKit patch 连续失败上限，超过后降级为一次性发送
 _MAX_PATCH_FAILURES = 3
+# 元素级流式更新使用的主文本元素 ID（与 MarkdownToCardConverter 默认值一致）
+_STREAMING_ELEMENT_ID = "markdown_main"
 
 
 class FeishuCardConsumer(ChannelConsumer):
@@ -107,9 +110,31 @@ class FeishuCardConsumer(ChannelConsumer):
         super().__init__(session_id=session_id)
         self._lark_client = lark_client
         self._chat_id = chat_id
-        self._throttler = throttler if throttler is not None else Throttler()
         self._markdown_converter = markdown_converter
         self._header_title = header_title
+
+        # 从统一配置读取流式/节流参数
+        feishu_cfg = settings.feishu
+        self._streaming_enabled = bool(feishu_cfg.feishu_card_streaming_enabled)
+        self._streaming_print_frequency_ms = int(
+            feishu_cfg.feishu_card_streaming_print_frequency_ms
+        )
+        self._streaming_print_step = int(feishu_cfg.feishu_card_streaming_print_step)
+        self._streaming_print_strategy = str(
+            feishu_cfg.feishu_card_streaming_print_strategy
+        )
+        self._update_interval_ms = int(feishu_cfg.feishu_card_update_interval_ms)
+        self._update_delta_chars = int(feishu_cfg.feishu_card_update_delta_chars)
+
+        self._throttler = (
+            throttler
+            if throttler is not None
+            else Throttler(
+                min_interval_ms=self._update_interval_ms,
+                min_delta_chars=self._update_delta_chars,
+            )
+        )
+
         self._card_id: Optional[str] = None
         self._message_id: Optional[str] = None
         self._sequence: int = 0
@@ -118,6 +143,8 @@ class FeishuCardConsumer(ChannelConsumer):
         self._interrupt_buttons: List[Dict[str, Any]] = []
         self._stopped: bool = False
         self._patch_failures: int = 0
+        # 元素级更新失败后是否回退到整卡更新
+        self._entity_fallback: bool = False
 
     # ------------------------------------------------------------------ #
     # ChannelConsumer 接口实现                                            #
@@ -226,7 +253,7 @@ class FeishuCardConsumer(ChannelConsumer):
         if self._degraded:
             # 降级模式：一次性发新卡片（不复用 CardKit 卡片）
             if self.last_interrupt_req:
-                self._send_interrupt_card(
+                await self._send_interrupt_card(
                     self._chat_id, self.last_interrupt_req, self.session_id
                 )
             return
@@ -245,7 +272,7 @@ class FeishuCardConsumer(ChannelConsumer):
 
         - ``_degraded=True`` → 走一次性 ``_send_card_reply``
         - ``_stopped=True`` → 已在 ``on_abort`` patch 过停止标记，跳过
-        - 否则强制 patch 最后一次（确保用户看到完整文本）
+        - 否则强制 patch 最后一次（确保用户看到完整文本），并关闭 streaming 模式
         """
         if self._stopped:
             # abort 已处理过最终 patch，不重复
@@ -253,12 +280,14 @@ class FeishuCardConsumer(ChannelConsumer):
         if self._degraded:
             # 降级模式：一次性发送完整回复
             if self.accumulated_text:
-                self._send_reply(self._chat_id, self.accumulated_text)
+                await self._send_reply(self._chat_id, self.accumulated_text)
             return
         # 正常模式：强制 flush 最后一次 patch
         self._throttler.force_flush(len(self.accumulated_text))
         if self.accumulated_text:
             await self._patch_card_safe(force=True)
+        # 流式更新结束后必须显式关闭 streaming 模式
+        await self._close_streaming_mode()
 
     async def on_abort(self) -> None:
         """abort：卡片末尾追加「（已停止）」 → 设置 ``_stopped=True`` → flush。
@@ -271,11 +300,13 @@ class FeishuCardConsumer(ChannelConsumer):
 
         if self._degraded:
             if self.accumulated_text:
-                self._send_reply(self._chat_id, self.accumulated_text)
+                await self._send_reply(self._chat_id, self.accumulated_text)
             return
         # 强制 patch 让停止标记立即出现
         self._throttler.force_flush(len(self.accumulated_text))
         await self._patch_card_safe(force=True)
+        # abort 后同样需要关闭 streaming 模式
+        await self._close_streaming_mode()
 
     # ------------------------------------------------------------------ #
     # CardKit 调用                                                       #
@@ -314,16 +345,24 @@ class FeishuCardConsumer(ChannelConsumer):
                 .build()
             )
             resp = self._lark_client.cardkit.v1.card.create(req)
+            code = getattr(resp, "code", None)
+            msg = getattr(resp, "msg", None)
             if resp.success() and resp.data and getattr(resp.data, "card_id", None):
-                return resp.data.card_id
+                card_id = resp.data.card_id
+                logger.info(
+                    "[FeishuCardConsumer] CardKit create 成功 session_id=%s card_id=%s code=%s msg=%s",
+                    self.session_id, card_id, code, msg,
+                )
+                return card_id
             logger.error(
-                "[FeishuCardConsumer] CardKit create 失败 code=%s msg=%s",
-                getattr(resp, "code", None), getattr(resp, "msg", None),
+                "[FeishuCardConsumer] CardKit create 失败 session_id=%s code=%s msg=%s",
+                self.session_id, code, msg,
             )
             return None
         except Exception as e:  # noqa: BLE001
             logger.exception(
-                "[FeishuCardConsumer] CardKit create 异常: %s", e
+                "[FeishuCardConsumer] CardKit create 异常 session_id=%s: %s",
+                self.session_id, e,
             )
             return None
 
@@ -361,16 +400,24 @@ class FeishuCardConsumer(ChannelConsumer):
                 .build()
             )
             resp = self._lark_client.im.v1.message.create(req)
+            code = getattr(resp, "code", None)
+            msg = getattr(resp, "msg", None)
             if resp.success() and resp.data and getattr(resp.data, "message_id", None):
-                return resp.data.message_id
+                message_id = resp.data.message_id
+                logger.info(
+                    "[FeishuCardConsumer] CardKit 关联消息发送成功 session_id=%s card_id=%s message_id=%s code=%s msg=%s",
+                    self.session_id, card_id, message_id, code, msg,
+                )
+                return message_id
             logger.error(
-                "[FeishuCardConsumer] CardKit 关联消息发送失败 code=%s msg=%s",
-                getattr(resp, "code", None), getattr(resp, "msg", None),
+                "[FeishuCardConsumer] CardKit 关联消息发送失败 session_id=%s card_id=%s code=%s msg=%s",
+                self.session_id, card_id, code, msg,
             )
             return None
         except Exception as e:  # noqa: BLE001
             logger.exception(
-                "[FeishuCardConsumer] CardKit 关联消息发送异常: %s", e
+                "[FeishuCardConsumer] CardKit 关联消息发送异常 session_id=%s: %s",
+                self.session_id, e,
             )
             return None
 
@@ -378,7 +425,7 @@ class FeishuCardConsumer(ChannelConsumer):
         """线程安全地 patch 当前卡片。
 
         使用 ``self._lock`` 串行化 patch 调用，避免并发竞态。
-        patch 失败 → 静默记日志 + 增加 ``_patch_failures``；
+        优先使用 CardKit 元素级流式更新（更轻量、更可靠）；失败时回退到整卡更新；
         连续失败超过 ``_MAX_PATCH_FAILURES`` → 切换降级模式。
 
         Args:
@@ -388,23 +435,91 @@ class FeishuCardConsumer(ChannelConsumer):
             return
         async with self._lock:
             try:
-                await self._patch_cardkit_entity()
+                if self._streaming_enabled and not self._entity_fallback:
+                    await self._patch_cardkit_text()
+                else:
+                    await self._patch_cardkit_entity()
                 self._patch_failures = 0  # 成功则重置计数
+                self._entity_fallback = False  # 成功后重置 fallback 标记
             except Exception as e:  # noqa: BLE001
                 self._patch_failures += 1
                 logger.warning(
                     "[FeishuCardConsumer] patch 失败 %s 次 session_id=%s: %s",
                     self._patch_failures, self.session_id, e,
                 )
-                if self._patch_failures >= _MAX_PATCH_FAILURES:
+                if self._streaming_enabled and not self._entity_fallback:
+                    # 元素级更新失败：本次先回退到整卡更新，下次重试
+                    logger.info(
+                        "[FeishuCardConsumer] 元素级更新失败，回退到整卡更新 session_id=%s",
+                        self.session_id,
+                    )
+                    self._entity_fallback = True
+                elif self._patch_failures >= _MAX_PATCH_FAILURES:
                     logger.warning(
                         "[FeishuCardConsumer] patch 连续失败 %s 次，切换降级模式",
                         self._patch_failures,
                     )
                     self._degraded = True
 
+    async def _patch_cardkit_text(self) -> None:
+        """调用 CardKit 元素级更新 API 更新主文本元素。
+
+        比整卡更新更轻量，专为流式文本设计。失败时抛出异常，由
+        ``_patch_card_safe`` 捕获并决定是否回退到整卡更新。
+
+        Raises:
+            Exception: patch 失败时抛出
+        """
+        if not self._card_id:
+            return
+        self._sequence += 1
+        try:
+            from lark_oapi.api.cardkit.v1 import (
+                UpdateCardElementRequest,
+                UpdateCardElementRequestBody,
+            )
+        except ImportError as e:
+            raise RuntimeError(
+                f"lark_oapi.api.cardkit.v1 不可用: {e}"
+            ) from e
+
+        content = self.accumulated_text or _PLACEHOLDER_TEXT
+        element = json.dumps(
+            {
+                "element_id": _STREAMING_ELEMENT_ID,
+                "tag": "markdown",
+                "content": content,
+            },
+            ensure_ascii=False,
+        )
+        req = (
+            UpdateCardElementRequest.builder()
+            .card_id(self._card_id)
+            .element_id(_STREAMING_ELEMENT_ID)
+            .request_body(
+                UpdateCardElementRequestBody.builder()
+                .uuid(str(uuid.uuid4()))
+                .sequence(self._sequence)
+                .element(element)
+                .build()
+            )
+            .build()
+        )
+        resp = self._lark_client.cardkit.v1.card_element.update(req)
+        code = getattr(resp, "code", None)
+        msg = getattr(resp, "msg", None)
+        if resp.success():
+            logger.info(
+                "[FeishuCardConsumer] CardKit 元素级 update 成功 session_id=%s card_id=%s sequence=%s code=%s msg=%s content_len=%s",
+                self.session_id, self._card_id, self._sequence, code, msg, len(content),
+            )
+            return
+        raise RuntimeError(
+            f"CardKit 元素级 update 失败 code={code} msg={msg}"
+        )
+
     async def _patch_cardkit_entity(self) -> None:
-        """调用 CardKit update API patch 当前卡片。
+        """调用 CardKit update API patch 当前卡片（整卡更新，fallback）。
 
         Raises:
             Exception: patch 失败时抛出（由 ``_patch_card_safe`` 捕获）
@@ -446,11 +561,18 @@ class FeishuCardConsumer(ChannelConsumer):
             .build()
         )
         resp = self._lark_client.cardkit.v1.card.update(req)
-        if not resp.success():
-            raise RuntimeError(
-                f"CardKit update 失败 code={getattr(resp, 'code', None)} "
-                f"msg={getattr(resp, 'msg', None)}"
+        code = getattr(resp, "code", None)
+        msg = getattr(resp, "msg", None)
+        if resp.success():
+            logger.info(
+                "[FeishuCardConsumer] CardKit 整卡 update 成功 session_id=%s card_id=%s sequence=%s code=%s msg=%s content_len=%s",
+                self.session_id, self._card_id, self._sequence, code, msg,
+                len(self.accumulated_text or _PLACEHOLDER_TEXT),
             )
+            return
+        raise RuntimeError(
+            f"CardKit 整卡 update 失败 code={code} msg={msg}"
+        )
 
     # ------------------------------------------------------------------ #
     # 卡片 JSON 构造                                                     #
@@ -459,9 +581,9 @@ class FeishuCardConsumer(ChannelConsumer):
     def _build_card_json(
         self, text: str, include_buttons: bool = False
     ) -> Dict[str, Any]:
-        """构造飞书卡片 JSON（schema 2.0）。
+        """构造飞书卡片 JSON（schema 2.0，含 streaming 配置）。
 
-        复用 ``MarkdownToCardConverter.to_card_json`` 生成 body elements，
+        复用 ``MarkdownToCardConverter.to_streaming_card_json`` 生成 body elements，
         若 ``include_buttons=True`` 则把 ``self._interrupt_buttons`` 追加到末尾。
 
         Args:
@@ -471,19 +593,25 @@ class FeishuCardConsumer(ChannelConsumer):
         Returns:
             dict: 飞书卡片 JSON（schema 2.0，含 streaming_mode 配置）
         """
-        # 复用现有 converter 生成基础 elements
+        # 复用现有 converter 生成基础 elements（带 element_id 与 streaming_config）
         if self._markdown_converter is not None:
-            card = self._markdown_converter.to_card_json(
-                text, header_title=self._header_title
+            card = self._markdown_converter.to_streaming_card_json(
+                text,
+                header_title=self._header_title,
+                element_id=_STREAMING_ELEMENT_ID,
+                print_frequency_ms=self._streaming_print_frequency_ms,
+                print_step=self._streaming_print_step,
+                print_strategy=self._streaming_print_strategy,
             )
         else:
-            card = MarkdownToCardConverter.to_card_json(
-                text, header_title=self._header_title
+            card = MarkdownToCardConverter.to_streaming_card_json(
+                text,
+                header_title=self._header_title,
+                element_id=_STREAMING_ELEMENT_ID,
+                print_frequency_ms=self._streaming_print_frequency_ms,
+                print_step=self._streaming_print_step,
+                print_strategy=self._streaming_print_strategy,
             )
-        # 流式卡片必须配置 streaming_mode + update_multi
-        config = card.setdefault("config", {})
-        config["update_multi"] = True
-        config["streaming_mode"] = True
 
         if include_buttons and self._interrupt_buttons:
             body = card.setdefault("body", {})
@@ -493,6 +621,64 @@ class FeishuCardConsumer(ChannelConsumer):
                 elements.append({"tag": "hr"})
             elements.extend(self._interrupt_buttons)
         return card
+
+    async def _close_streaming_mode(self) -> None:
+        """关闭 CardKit 卡片的 streaming 模式。
+
+        飞书要求基于 JSON 开启 streaming 的卡片在流式更新结束后调用
+        Update Card Configuration API 将 ``streaming_mode`` 置为 ``false``。
+        失败仅记录日志，不影响主流程。
+        """
+        if not self._card_id:
+            return
+        self._sequence += 1
+        try:
+            from lark_oapi.api.cardkit.v1 import (
+                SettingsCardRequest,
+                SettingsCardRequestBody,
+            )
+        except ImportError as e:
+            logger.warning(
+                "[FeishuCardConsumer] 关闭 streaming 模式失败（SDK 不可用）session_id=%s: %s",
+                self.session_id, e,
+            )
+            return
+
+        settings_payload = json.dumps(
+            {"config": {"streaming_mode": False, "update_multi": True}},
+            ensure_ascii=False,
+        )
+        try:
+            req = (
+                SettingsCardRequest.builder()
+                .card_id(self._card_id)
+                .request_body(
+                    SettingsCardRequestBody.builder()
+                    .uuid(str(uuid.uuid4()))
+                    .sequence(self._sequence)
+                    .settings(settings_payload)
+                    .build()
+                )
+                .build()
+            )
+            resp = self._lark_client.cardkit.v1.card.settings(req)
+            code = getattr(resp, "code", None)
+            msg = getattr(resp, "msg", None)
+            if resp.success():
+                logger.info(
+                    "[FeishuCardConsumer] streaming 模式关闭成功 session_id=%s card_id=%s sequence=%s code=%s msg=%s",
+                    self.session_id, self._card_id, self._sequence, code, msg,
+                )
+            else:
+                logger.warning(
+                    "[FeishuCardConsumer] streaming 模式关闭失败 session_id=%s card_id=%s code=%s msg=%s",
+                    self.session_id, self._card_id, code, msg,
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.exception(
+                "[FeishuCardConsumer] streaming 模式关闭异常 session_id=%s: %s",
+                self.session_id, e,
+            )
 
     def _build_interrupt_elements(
         self, interrupt_request: Dict[str, Any]
@@ -529,10 +715,12 @@ class FeishuCardConsumer(ChannelConsumer):
     # 降级路径：一次性发送（CardKit 失败时兜底）                            #
     # ------------------------------------------------------------------ #
 
-    def _send_reply(self, chat_id: str, text: str) -> None:
-        """降级路径：根据 Markdown 特征选择"纯文本"或"卡片"一次性发送。
+    async def _send_reply(self, chat_id: str, text: str) -> None:
+        """降级路径：统一把回复包装成卡片一次性发送。
 
         与 ``FeishuWebSocketService._send_reply`` 同构。
+        不再根据文本是否含 Markdown 特征分支，避免不同内容导致视觉不一致。
+        ``_send_card_reply`` 内部会在卡片 API 失败时再降级为纯文本，保证可达性。
 
         Args:
             chat_id: 飞书 chat_id
@@ -540,12 +728,13 @@ class FeishuCardConsumer(ChannelConsumer):
         """
         if not text:
             return
-        if MarkdownToCardConverter.looks_like_markdown(text):
-            self._send_card_reply(chat_id, text)
-        else:
-            self._send_text_reply(chat_id, text)
+        logger.info(
+            "[FeishuCardConsumer] 降级路径统一发卡片 session_id=%s text_len=%s",
+            self.session_id, len(text),
+        )
+        await self._send_card_reply(chat_id, text)
 
-    def _send_text_reply(self, chat_id: str, text: str) -> None:
+    async def _send_text_reply(self, chat_id: str, text: str) -> None:
         """降级路径：通过飞书 Open API 发送纯文本回复。
 
         Args:
@@ -568,22 +757,24 @@ class FeishuCardConsumer(ChannelConsumer):
         )
         try:
             resp = self._lark_client.im.v1.message.create(request)
+            code = getattr(resp, "code", None)
+            msg = getattr(resp, "msg", None)
             if resp.success():
                 logger.info(
-                    "[FeishuCardConsumer] 降级文本回复成功 chat_id=%s",
-                    chat_id,
+                    "[FeishuCardConsumer] 降级文本回复成功 chat_id=%s code=%s msg=%s",
+                    chat_id, code, msg,
                 )
             else:
                 logger.error(
-                    "[FeishuCardConsumer] 降级文本回复失败 code=%s msg=%s",
-                    getattr(resp, "code", None), getattr(resp, "msg", None),
+                    "[FeishuCardConsumer] 降级文本回复失败 chat_id=%s code=%s msg=%s",
+                    chat_id, code, msg,
                 )
         except Exception as e:  # noqa: BLE001
             logger.exception(
-                "[FeishuCardConsumer] 降级文本回复异常: %s", e
+                "[FeishuCardConsumer] 降级文本回复异常 chat_id=%s: %s", chat_id, e
             )
 
-    def _send_card_reply(self, chat_id: str, text: str) -> None:
+    async def _send_card_reply(self, chat_id: str, text: str) -> None:
         """降级路径：通过飞书 Open API 发送交互式卡片（Markdown → 卡片 JSON）。
 
         失败时再降级到 ``_send_text_reply`` 保证可达性。
@@ -609,26 +800,28 @@ class FeishuCardConsumer(ChannelConsumer):
         )
         try:
             resp = self._lark_client.im.v1.message.create(request)
+            code = getattr(resp, "code", None)
+            msg = getattr(resp, "msg", None)
             if resp.success():
                 logger.info(
-                    "[FeishuCardConsumer] 降级卡片回复成功 chat_id=%s",
-                    chat_id,
+                    "[FeishuCardConsumer] 降级卡片回复成功 chat_id=%s code=%s msg=%s",
+                    chat_id, code, msg,
                 )
             else:
                 logger.error(
-                    "[FeishuCardConsumer] 降级卡片回复失败 code=%s msg=%s，"
+                    "[FeishuCardConsumer] 降级卡片回复失败 chat_id=%s code=%s msg=%s，"
                     "再降级文本。卡片JSON=%s",
-                    getattr(resp, "code", None), getattr(resp, "msg", None),
-                    content_str[:500],
+                    chat_id, code, msg, content_str[:500],
                 )
-                self._send_text_reply(chat_id, text)
+                await self._send_text_reply(chat_id, text)
         except Exception as e:  # noqa: BLE001
             logger.exception(
-                "[FeishuCardConsumer] 降级卡片回复异常，再降级文本: %s", e
+                "[FeishuCardConsumer] 降级卡片回复异常 chat_id=%s，再降级文本: %s",
+                chat_id, e,
             )
-            self._send_text_reply(chat_id, text)
+            await self._send_text_reply(chat_id, text)
 
-    def _send_interrupt_card(
+    async def _send_interrupt_card(
         self,
         chat_id: str,
         interrupt_request: Dict[str, Any],
@@ -662,19 +855,22 @@ class FeishuCardConsumer(ChannelConsumer):
         )
         try:
             resp = self._lark_client.im.v1.message.create(request)
+            code = getattr(resp, "code", None)
+            msg = getattr(resp, "msg", None)
             if resp.success():
                 logger.info(
-                    "[FeishuCardConsumer] 降级 HITL 卡片发送成功 chat_id=%s session_id=%s",
-                    chat_id, session_id,
+                    "[FeishuCardConsumer] 降级 HITL 卡片发送成功 chat_id=%s session_id=%s code=%s msg=%s",
+                    chat_id, session_id, code, msg,
                 )
             else:
                 logger.error(
-                    "[FeishuCardConsumer] 降级 HITL 卡片发送失败 code=%s msg=%s",
-                    getattr(resp, "code", None), getattr(resp, "msg", None),
+                    "[FeishuCardConsumer] 降级 HITL 卡片发送失败 chat_id=%s session_id=%s code=%s msg=%s",
+                    chat_id, session_id, code, msg,
                 )
         except Exception as e:  # noqa: BLE001
             logger.exception(
-                "[FeishuCardConsumer] 降级 HITL 卡片发送异常: %s", e
+                "[FeishuCardConsumer] 降级 HITL 卡片发送异常 chat_id=%s session_id=%s: %s",
+                chat_id, session_id, e,
             )
 
     # ------------------------------------------------------------------ #
