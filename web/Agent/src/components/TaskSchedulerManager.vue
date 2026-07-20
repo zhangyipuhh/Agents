@@ -68,7 +68,16 @@ const scriptError = ref('')
 const scriptSuccess = ref('')
 const scanScriptSummary = ref(null)
 const hasLoadedScripts = ref(false)
-const scriptArgsJson = ref('{}')
+
+// 脚本参数 schema-driven 状态：
+// scriptParamValues：当前已添加、可编辑的受支持参数值（例如 { server_list: ['业务A'] }）。
+// legacyScriptArgs：旧任务中未在 schema 中声明或当前 UI 暂不支持的参数键值；只做无损保留，不通过 UI 编辑。
+// serverKeyword：服务器列表搜索词。
+// 使用 ref({}) 而非 reactive({}) 是因为 Vue 3 在 reactive object 上动态添加 key 时，
+// 由 hasOwnProperty 检查构成的 computed 依赖不会被自动追踪；ref 整体替换值时会强制触发依赖更新。
+const scriptParamValues = ref({})
+const legacyScriptArgs = ref({})
+const serverKeyword = ref('')
 
 // 邮件策略状态（仅 script 任务启用邮件通知时按需加载）
 const emailPolicies = ref([])
@@ -81,9 +90,77 @@ const SUMMARY_FIELDS = ['scanned', 'inserted', 'updated', 'failed']
 // 服务器字段白名单：仅显示这些键，绝不显示敏感字段
 const SERVER_WHITELIST = ['id', 'business_name', 'server_type', 'updated_at']
 
-// 脚本展示白名单字段：仅显示这些键，绝不显示 func 等内部对象
-const SCRIPT_PUBLIC_FIELDS = ['name', 'display_name', 'description', 'module_path']
+// 脚本展示白名单字段：仅显示这些键，绝不显示 func 等内部对象。
+// params_schema 由后端返回，驱动前端 schema-aware 参数 UI；前端只识别 x-control=server-multiselect 的参数。
+const SCRIPT_PUBLIC_FIELDS = ['name', 'display_name', 'description', 'module_path', 'params_schema']
 const SCRIPT_SUMMARY_FIELDS = ['scanned', 'registered', 'failed']
+
+/**
+ * 判断一个 schema 属性定义是否为前端受支持的「服务器列表多选」参数。
+ * 仅当 key 精确等于 `server_list` 且所有 5 个 schema 约束均满足时返回 true：
+ * type=array、items.type=string、x-control=server-multiselect、
+ * x-source=devops-servers、x-value-field=business_name。
+ * 把 key 纳入判定可避免「同形态、同 x-* 的影子 key（如 target_servers）」
+ * 误识别为受支持控件。
+ * @param {string} key - schema 属性名
+ * @param {unknown} def - schema 中的单个属性定义
+ * @returns {boolean} 是否为受支持的 server_list 参数
+ */
+function isServerListParamDefinition(key, def) {
+  if (key !== 'server_list') return false
+  if (!def || typeof def !== 'object') return false
+  if (def.type !== 'array') return false
+  const items = def.items
+  if (!items || items.type !== 'string') return false
+  return def['x-control'] === 'server-multiselect'
+    && def['x-source'] === 'devops-servers'
+    && def['x-value-field'] === 'business_name'
+}
+
+/**
+ * 把任意值规整为「非空字符串、按首次出现顺序去重」的列表。
+ * 仅在白名单 server_list 边界使用：去掉非字符串 / null / 空串 / 重复项，
+ * 避免下游 `Set`、`Array.includes`、JSON 序列化出现 [object Object] / null 等脏数据。
+ * 不接受空参数（返回空数组），不复制原始数组（已构造新数组）。
+ * @param {unknown} value - 原始输入（数组 / 其他类型）
+ * @returns {string[]} 规范化后的字符串数组（保持首次出现顺序）
+ */
+function normalizeServerList(value) {
+  if (!Array.isArray(value)) return []
+  const out = []
+  const seen = new Set()
+  for (const item of value) {
+    if (typeof item !== 'string' || !item) continue
+    if (seen.has(item)) continue
+    seen.add(item)
+    out.push(item)
+  }
+  return out
+}
+
+/**
+ * 按 schema default 构造参数初值；非数组默认值被回退为对应默认值或 []。
+ * @param {unknown} def - schema 属性定义
+ * @returns {unknown} 适合作为 script_param 初值的副本
+ */
+function cloneParamDefault(def) {
+  if (!def || typeof def !== 'object') return undefined
+  if (Object.prototype.hasOwnProperty.call(def, 'default')) {
+    const d = def.default
+    if (Array.isArray(d)) return d.slice()
+    try {
+      return JSON.parse(JSON.stringify(d))
+    } catch {
+      return d
+    }
+  }
+  if (def.type === 'array') return []
+  if (def.type === 'object') return {}
+  if (def.type === 'string') return ''
+  if (def.type === 'number' || def.type === 'integer') return 0
+  if (def.type === 'boolean') return false
+  return undefined
+}
 
 const form = reactive({
   name: '',
@@ -231,9 +308,345 @@ function parseCronExpression(cron) {
 const enabledAgents = computed(() => agents.value.filter((agent) => agent.enabled !== false))
 
 /**
- * 脱敏后的服务器列表：仅保留白名单字段，避免 ip/password 等敏感值流入 UI。
+ * 当前所选脚本的注册信息（从 scripts 列表按 name 查找）。
+ * @returns {Object|null} 含 params_schema 的脚本对象，未匹配为 null。
+ */
+const currentScript = computed(() => {
+  const name = form.script_name
+  if (!name) return null
+  return scripts.value.find((s) => s && s.name === name) || null
+})
+
+/**
+ * 读取当前 scriptParamValues 的内部引用（非副本）。
+ * 注意：返回的是 `scriptParamValues.value` 本身，调用方若要修改应通过
+ * `writeScriptParamValues` 或先 `{ ...obj }` 浅拷贝再写回，避免破坏 Vue 响应式跟踪。
+ * @returns {Object} 当前参数值对象（内部引用）
+ */
+function readScriptParamValues() {
+  return scriptParamValues.value || {}
+}
+
+/**
+ * 当前脚本 params_schema 中所有受支持（目前只识别 server_list）的参数定义。
+ * @returns {Array<{key: string, def: Object}>} 受支持参数定义数组。
+ */
+const supportedScriptParamDefinitions = computed(() => {
+  const script = currentScript.value
+  if (!script || !script.params_schema) return []
+  const properties = script.params_schema.properties
+  if (!properties || typeof properties !== 'object') return []
+  const out = []
+  for (const key of Object.keys(properties)) {
+    const def = properties[key]
+    if (isServerListParamDefinition(key, def)) {
+      out.push({ key, def })
+    }
+  }
+  return out
+})
+
+/**
+ * 当前尚未添加、但可继续添加的参数（用于「添加参数」选择器）。
+ * @returns {Array<{key: string, def: Object, label: string}>} 可添加参数列表。
+ */
+const availableScriptParams = computed(() => {
+  const has = Object.prototype.hasOwnProperty
+  const values = readScriptParamValues()
+  return supportedScriptParamDefinitions.value
+    .filter(({ key }) => !has.call(values, key))
+    .map(({ key, def }) => ({
+      key,
+      def,
+      label: def.title || key,
+    }))
+})
+
+/**
+ * 当前脚本参数区中已添加参数 key 的稳定列表。
+ * @returns {string[]} 当前已添加参数 key（顺序与定义一致）。
+ */
+const addedScriptParamKeys = computed(() => {
+  const has = Object.prototype.hasOwnProperty
+  const values = readScriptParamValues()
+  return supportedScriptParamDefinitions.value
+    .map(({ key }) => key)
+    .filter((key) => has.call(values, key))
+})
+
+/**
+ * 按关键词过滤后的服务器候选列表（仅展示白名单字段后的 devopsServers）。
+ * @returns {Array} 过滤后的服务器数组，每项均为 {id, business_name, server_type, updated_at}。
+ */
+const filteredDevopsServers = computed(() => {
+  const kw = serverKeyword.value.trim().toLowerCase()
+  const list = Array.isArray(devopsServers.value) ? devopsServers.value : []
+  if (!kw) return list
+  return list.filter((row) => {
+    if (!row) return false
+    const name = String(row.business_name || '').toLowerCase()
+    const type = String(row.server_type || '').toLowerCase()
+    return name.includes(kw) || type.includes(kw)
+  })
+})
+
+/**
+ * 当前已在 scriptParamValues.server_list 中、且仍能在 devopsServers 中匹配到的有效服务器。
+ * 仅返回非空字符串业务名 + 仍存在的服务器 row。
+ * @returns {Array<{row: Object, name: string}>} 有效服务器数组。
+ */
+const selectedValidServerListRows = computed(() => {
+  const selected = readScriptParamValues().server_list
+  if (!Array.isArray(selected)) return []
+  const validNames = []
+  for (const name of selected) {
+    if (typeof name !== 'string' || !name) continue
+    const row = devopsServers.value.find((r) => r && r.business_name === name)
+    if (row) {
+      validNames.push({ row, name })
+    }
+  }
+  return validNames
+})
+
+/**
+ * 当前已在 server_list 中、但 devopsServers 已不再提供的失效业务名（按顺序保留）。
+ * @returns {string[]} 失效业务名列表。
+ */
+const selectedInvalidServerNames = computed(() => {
+  const selected = readScriptParamValues().server_list
+  if (!Array.isArray(selected)) return []
+  return selected.filter((name) => {
+    if (typeof name !== 'string' || !name) return false
+    return !devopsServers.value.some((r) => r && r.business_name === name)
+  })
+})
+
+/**
+ * 已选服务器总数（有效 + 失效）。
+ * @returns {number} 已选数量。
+ */
+const selectedServerCount = computed(() => {
+  const selected = readScriptParamValues().server_list
+  return Array.isArray(selected) ? selected.length : 0
+})
+
+/**
+ * 清空脚本参数相关的状态（scriptParamValues / legacyScriptArgs / 搜索词）。
+ * 切脚本 / 新建任务 / 切到 agent / 编辑不同任务前都应调用，避免跨脚本污染。
+ */
+function clearScriptParamState() {
+  scriptParamValues.value = {}
+  legacyScriptArgs.value = {}
+  serverKeyword.value = ''
+}
+
+/**
+ * 写入当前已添加的参数（整体替换 ref.value 以便触发 computed 依赖）。
+ * @param {Object} obj - 新的参数对象
+ */
+function writeScriptParamValues(obj) {
+  scriptParamValues.value = obj || {}
+}
+
+/**
+ * 编辑已有任务或 hydrate 回调：根据当前脚本 schema 把已存参数分配到 scriptParamValues。
+ * - 已声明且受支持的参数（目前只有 server_list）→ 进入 scriptParamValues，
+ *   经过 normalizeServerList 规范化（非空字符串 + 去重）；
+ * - 其他键值（含 mode/content 等 schema 声明但 UI 暂不支持的参数，
+ *   以及完全未在 schema 中的键）→ 进入 legacyScriptArgs 无损保留。
+ * - 一旦检测到 server_list，按需触发 loadDevopsServers()（复用 in-flight，不重复 GET）。
+ * @param {string} scriptName - 脚本名（与 scripts.value 中 name 对应）
+ * @param {Object} rawArgs - 后端存储的原始 script_args
+ */
+function hydrateScriptArgs(scriptName, rawArgs) {
+  clearScriptParamState()
+  const args = (rawArgs && typeof rawArgs === 'object') ? rawArgs : {}
+  const script = scripts.value.find((s) => s && s.name === scriptName)
+  const supportedDefs = script && script.params_schema && script.params_schema.properties
+    ? script.params_schema.properties
+    : null
+  const legacy = {}
+  const params = {}
+  for (const key of Object.keys(args)) {
+    const def = supportedDefs ? supportedDefs[key] : null
+    const value = args[key]
+    if (isServerListParamDefinition(key, def)) {
+      params[key] = normalizeServerList(value)
+    } else {
+      // schema 未声明或 schema 声明但 UI 暂不支持的字段，均进入 legacy 无损保留
+      legacy[key] = value
+    }
+  }
+  writeScriptParamValues(params)
+  legacyScriptArgs.value = legacy
+  if (Object.prototype.hasOwnProperty.call(params, 'server_list')) {
+    if (!hasLoaded.value) {
+      loadDevopsServers()
+    }
+  }
+}
+
+/**
+ * 新增一个受支持参数：按 schema default 初始化数组值，并在首次添加 server_list 时加载服务器列表。
+ * 仅支持当前 isServerListParamDefinition 白名单内的 key（实质上只有 server_list）。
+ * server_list 的初值经 normalizeServerList 规范化，避免 default 中混入非字符串 / 重复项。
+ * @param {string} key - 参数键名（必须已在 supportedScriptParamDefinitions 中）
+ */
+function addScriptParam(key) {
+  if (!key) return
+  const defRecord = supportedScriptParamDefinitions.value.find((d) => d.key === key)
+  if (!defRecord) return
+  const current = { ...readScriptParamValues() }
+  if (Object.prototype.hasOwnProperty.call(current, key)) return
+  const fallback = cloneParamDefault(defRecord.def) ?? []
+  current[key] = key === 'server_list' ? normalizeServerList(fallback) : fallback
+  writeScriptParamValues(current)
+  if (key === 'server_list' && !hasLoaded.value) {
+    loadDevopsServers()
+  }
+}
+
+/**
+ * 移除一个已添加参数：同时从 scriptParamValues 删除键，确保提交 payload 不再包含该参数。
+ * @param {string} key - 参数键名
+ */
+function removeScriptParam(key) {
+  if (!key) return
+  const current = { ...readScriptParamValues() }
+  if (Object.prototype.hasOwnProperty.call(current, key)) {
+    delete current[key]
+    writeScriptParamValues(current)
+  }
+}
+
+/**
+ * 把 legacyScriptArgs 与 scriptParamValues 合并为最终提交 payload。
+ * - server_list 在合并时统一经 normalizeServerList 规范化（非空字符串 + 去重），
+ *   即便上游 hydrate / add / set / toggle 路径漏掉了过滤，仍能在提交边界兜底。
+ * - 其他数组值统一复制为新数组，避免外部修改响应式源对象。
+ * - legacyScriptArgs 的内容保持原样：非 server_list 的未知数组透传，不污染。
+ * @returns {Object} 合并后的 script_args 对象
+ */
+function buildScriptArgs() {
+  const out = {}
+  for (const [k, v] of Object.entries(legacyScriptArgs.value || {})) {
+    out[k] = Array.isArray(v) ? v.slice() : v
+  }
+  const values = readScriptParamValues()
+  for (const key of Object.keys(values)) {
+    const v = values[key]
+    if (key === 'server_list') {
+      out[key] = normalizeServerList(v)
+    } else if (Array.isArray(v)) {
+      out[key] = v.slice()
+    } else {
+      out[key] = v
+    }
+  }
+  return out
+}
+
+/**
+ * 脚本选择变更处理：切换脚本时同步清空旧脚本参数与 form.script_args，
+ * 避免把上一个脚本的 server_list 等带过来，也避免 UI（scriptParamValues）
+ * 与原始 form.script_args 出现双重状态歧义。
+ * 切换同时使 fillForm 旧 hydrate 回调失效（递增 fillVersion），
+ * 避免上一个脚本的 hydrate 在 loadScripts 完成时反扑。
+ * 在 fillForm 编辑已有任务时不会调用本函数（由 fillForm 直接 hydrate）。
+ */
+function onScriptNameChange() {
+  bumpFillVersion()
+  clearScriptParamState()
+  form.script_args = {}
+}
+
+/**
+ * 把 server_list 替换为给定数组（触发 ref 重写），同时经 normalizeServerList 规范化。
+ * @param {Array<string>} list - 新服务器列表
+ */
+function setServerList(list) {
+  const values = { ...readScriptParamValues() }
+  values.server_list = normalizeServerList(list)
+  writeScriptParamValues(values)
+}
+
+/**
+ * 全选当前过滤结果中、且仍出现在已选 server_list 中的服务器之外的所有候选。
+ * 即「全选」只作用于当前过滤后的候选。
+ * 候选 business_name 不是非空字符串的行由 maskServers 提前过滤掉，循环里再次防御。
+ */
+function selectAllVisibleServers() {
+  const current = normalizeServerList(readScriptParamValues().server_list)
+  const set = new Set(current)
+  for (const row of filteredDevopsServers.value) {
+    if (!row || typeof row.business_name !== 'string' || !row.business_name) continue
+    if (set.has(row.business_name)) continue
+    current.push(row.business_name)
+    set.add(row.business_name)
+  }
+  setServerList(current)
+}
+
+/**
+ * 清空当前已选服务器（包括失效项）。
+ */
+function clearAllSelectedServers() {
+  setServerList([])
+}
+
+/**
+ * 单个服务器 checkbox 切换。
+ * business_name 不是非空字符串的候选 row 直接拒绝（防御 maskServers 漏过滤）。
+ * @param {Object} row - 候选服务器对象（含 business_name）
+ * @param {boolean} checked - 勾选状态
+ */
+function toggleServerSelection(row, checked) {
+  if (!row || typeof row.business_name !== 'string' || !row.business_name) return
+  const current = normalizeServerList(readScriptParamValues().server_list)
+  const set = new Set(current)
+  if (checked) {
+    if (!set.has(row.business_name)) {
+      current.push(row.business_name)
+    }
+  } else {
+    const next = current.filter((n) => n !== row.business_name)
+    setServerList(next)
+    return
+  }
+  setServerList(current)
+}
+
+/**
+ * 按业务名从 server_list 中移除（用于 chip 上的移除按钮）。
+ * name 不是非空字符串时直接返回（防御空 chip / 非法 name）。
+ * @param {string} name - 已选服务器的业务名
+ */
+function removeSelectedServerByName(name) {
+  if (typeof name !== 'string' || !name) return
+  const current = normalizeServerList(readScriptParamValues().server_list)
+  const next = current.filter((n) => n !== name)
+  setServerList(next)
+}
+
+/**
+ * 检查某业务名是否已在 server_list 中。
+ * @param {string} name - 业务名
+ * @returns {boolean} 是否已选
+ */
+function isServerSelected(name) {
+  if (!name) return false
+  const list = readScriptParamValues().server_list
+  return Array.isArray(list) && list.includes(name)
+}
+
+/**
+ * 脱敏后的服务器列表：仅保留白名单字段 + id 非空 + business_name 为非空字符串，
+ * 避免 ip/password 等敏感值流入 UI，并阻止后端把 null / 空串 / 非字符串
+ * business_name 的"幽灵行"作为候选进入 UI（toggleServerSelection /
+ * selectedValidServerListRows 等虽再防御，但白名单边界直接过滤更稳）。
  * @param {Array} rows - 后端原始返回数组
- * @returns {Array} 仅含白名单字段的对象数组
+ * @returns {Array} 仅含白名单字段的合法候选对象数组
  */
 function maskServers(rows) {
   if (!Array.isArray(rows)) return []
@@ -248,36 +661,35 @@ function maskServers(rows) {
       // 即使后端返回了多余字段，spread 也被刻意不使用，确保 UI 永不会触达
       return safe
     })
-    .filter((row) => row && row.id !== undefined && row.id !== null)
+    .filter((row) => {
+      if (!row || row.id === undefined || row.id === null) return false
+      // business_name 必须是字符串且非空，否则视为幽灵行从候选中剔除
+      return typeof row.business_name === 'string' && row.business_name.length > 0
+    })
 }
 
 /**
  * 初始化数据。
+ * 任务列表 + 智能体列表 + 脚本列表三者并行加载；脚本列表复用 loadScripts 的
+ * 共享 in-flight Promise 与失败重试机制（不再用 fetchScripts().catch(()=>[])
+ * 把失败错误吞掉再伪装成 hasLoadedScripts=true），保持与切到 script Tab 时
+ * 加载路径的一致性。脚本加载失败不会 reject（loadScripts 内部已吞错并保持
+ * hasLoadedScripts=false 允许重试），因此不会阻断任务列表加载。
  * @returns {Promise<void>} 无返回值
  */
 async function loadInitialData() {
   isLoading.value = true
   errorMessage.value = ''
   try {
-    // 预加载脚本列表：避免首次点击「脚本类型」任务时下拉无 option 导致 form.script_name 不显示。
-    // 失败降级为空数组，与 loadScripts() 失败行为一致，不阻塞任务列表加载。
-    const [taskRows, agentRows, scriptRows] = await Promise.all([
+    // 三路并行：task / agent 失败会被外层 catch 接住；
+    // loadScripts 内部已吞错不会 reject，等同于「失败不阻断任务列表加载」
+    const [taskRows, agentRows] = await Promise.all([
       fetchTaskSchedules(),
       fetchAdminAgentList(),
-      fetchScripts().catch(() => []),
+      loadScripts(),
     ])
     schedules.value = taskRows || []
     agents.value = agentRows || []
-    scripts.value = (scriptRows || []).map((item) => {
-      const safe = {}
-      for (const key of SCRIPT_PUBLIC_FIELDS) {
-        if (item && Object.prototype.hasOwnProperty.call(item, key)) {
-          safe[key] = item[key]
-        }
-      }
-      return safe
-    }).filter((item) => item && item.name)
-    hasLoadedScripts.value = true
     if (schedules.value.length > 0) {
       await selectSchedule(schedules.value[0])
     } else {
@@ -292,13 +704,15 @@ async function loadInitialData() {
 
 /**
  * 选中已有任务并加载执行历史。
+ * fillForm 现在可能是 async（脚本列表尚未加载时需要等 loadScripts 完成才能 hydrate），
+ * 因此这里必须 await fillForm，避免后续的 runs 加载在 hydrate 之前跑完导致 UI 闪旧值。
  * @param {Object} schedule - 定时任务记录
  * @returns {Promise<void>} 无返回值
  */
 async function selectSchedule(schedule) {
   selectedSchedule.value = schedule
   isCreating.value = false
-  fillForm(schedule)
+  await fillForm(schedule)
   await loadRuns(schedule.id)
 }
 
@@ -338,23 +752,71 @@ async function switchTab(tabId) {
   }
 }
 
+// DevOps 服务器列表的共享 in-flight Promise：避免并发调用触发多次 GET。
+// 当普通加载与按需扫描刷新请求同时存在时，后者会 await 该 Promise 后再发起新请求。
+let devopsLoadPromise = null
+
+// fillForm 单调递增版本号：startCreate / onTargetTypeChange / onScriptNameChange
+// 与下一次 fillForm 入口都会自增 1；loadScripts 完成后的 hydrate 回调捕获调用时
+// 的快照版本，仅当当前版本仍等于快照且目标类型仍为 script / script_name 未变时
+// 才执行 hydrate，避免旧回调用上一个任务的 script_args 覆盖新表单。
+let fillVersion = 0
+function bumpFillVersion() {
+  fillVersion += 1
+}
+
 /**
  * 加载并脱敏 DevOps 服务器列表。
+ * - 普通调用：已成功加载过（hasLoaded=true）或已有 pending 请求时直接复用，不重复 GET。
+ * - 失败时保持 hasLoaded=false 并允许下次重试（不固化缓存）。
+ * - { force: true }：跳过 hasLoaded 缓存短路；若此时已有 pending 请求，
+ *   先 await 等待旧请求结束（避免旧响应覆盖新响应），再发起一次全新 GET。
+ * - 错误一律走通用脱敏文案「服务器列表加载失败」，不外泄后端 detail；
+ *   无论是否首次加载或强制刷新，只要失败就设置 listErrorMessage。
+ * - 失败时仅在 force 且存在非空缓存时保留 devopsServers 与加载状态；
+ *   其余失败均清空列表并显式设置 hasLoaded=false，包括普通失败时旧状态异常为 true 的情况。
+ * @param {Object} [opts] - 选项
+ * @param {boolean} [opts.force=false] - 强制刷新，跳过已加载短路
  * @returns {Promise<void>} 无返回值
  */
-async function loadDevopsServers() {
-  isLoadingServers.value = true
-  listErrorMessage.value = ''
-  try {
-    const rows = await fetchDevOpsServers()
-    devopsServers.value = maskServers(rows)
-    hasLoaded.value = true
-  } catch {
-    listErrorMessage.value = '服务器列表加载失败'
-    devopsServers.value = []
-  } finally {
-    isLoadingServers.value = false
+async function loadDevopsServers(opts = {}) {
+  const force = opts && opts.force === true
+  if (!force && hasLoaded.value) return
+  if (!force && devopsLoadPromise) return devopsLoadPromise
+  if (force && devopsLoadPromise) {
+    // 扫描刷新遇到 pending：串行等待旧请求完成，再发起新请求
+    try {
+      await devopsLoadPromise
+    } catch {
+      // 旧请求失败已被原 caller 记录，吞掉后继续 force
+    }
   }
+  const promise = (async () => {
+    isLoadingServers.value = true
+    listErrorMessage.value = ''
+    try {
+      const rows = await fetchDevOpsServers()
+      devopsServers.value = maskServers(rows)
+      hasLoaded.value = true
+    } catch {
+      // 统一使用脱敏文案；仅强制刷新且存在缓存时保留旧候选与加载状态
+      listErrorMessage.value = '服务器列表加载失败'
+      const hasCachedServers = force && Array.isArray(devopsServers.value) && devopsServers.value.length > 0
+      if (!hasCachedServers) {
+        devopsServers.value = []
+        hasLoaded.value = false
+      }
+    } finally {
+      isLoadingServers.value = false
+    }
+  })()
+  const tracked = promise.finally(() => {
+    if (devopsLoadPromise === tracked) {
+      devopsLoadPromise = null
+    }
+  })
+  devopsLoadPromise = tracked
+  return tracked
 }
 
 /**
@@ -375,7 +837,7 @@ function sanitizeSummary(raw) {
 
 /**
  * 触发服务器扫描。带防重复提交：scanning 过程中再次点击会被忽略。
- * 扫描成功后刷新列表；任何错误使用脱敏提示。
+ * 扫描成功后用 force 强制刷新列表；任何错误使用脱敏提示。
  * @returns {Promise<void>} 无返回值
  */
 async function triggerServerScan() {
@@ -388,8 +850,9 @@ async function triggerServerScan() {
     const summary = await scanDevOpsServers()
     scanSummary.value = sanitizeSummary(summary)
     scanSuccessMessage.value = '扫描完成'
-    // 扫描成功后主动刷新服务器列表
-    await loadDevopsServers()
+    // 扫描成功后显式 force 刷新：绕过 hasLoaded 短路，
+    // 若此时已有 pending 加载会先串行等待，避免旧响应覆盖新数据
+    await loadDevopsServers({ force: true })
   } catch {
     scanErrorMessage.value = '扫描失败，请稍后重试'
   } finally {
@@ -397,32 +860,64 @@ async function triggerServerScan() {
   }
 }
 
+// 脚本列表的共享 in-flight Promise：避免 loadInitialData 与切到 script Tab
+// 等并发调用触发多次 GET。失败时不固化 hasLoadedScripts=true，允许下次重试。
+let scriptsLoadPromise = null
+
 /**
  * 加载已注册脚本列表（白名单字段过滤）。
  * 仅保留 SCRIPT_PUBLIC_FIELDS 中的字段，绝不渲染 func 等内部对象。
+ * - 普通调用：已成功加载过（hasLoadedScripts=true）或已有 pending 请求时直接复用，不重复 GET。
+ * - { force: true }：跳过 hasLoadedScripts 缓存短路；若此时已有 pending 请求，
+ *   先 await 等待旧请求完成（避免旧响应覆盖新响应），再发起一次全新 GET。
+ * - 失败时保持 hasLoadedScripts=false，允许下次重试；不再把失败错误吞掉伪装成空数组。
+ * - 脚本加载失败不阻断任务列表加载（loadInitialData 会 catch 该 Promise 的 reject）。
+ * @param {Object} [opts] - 选项
+ * @param {boolean} [opts.force=false] - 强制刷新，跳过已加载短路
  * @returns {Promise<void>} 无返回值
  */
-async function loadScripts() {
-  isLoadingScripts.value = true
-  scriptError.value = ''
-  try {
-    const raw = await fetchScripts()
-    scripts.value = (raw || []).map((item) => {
-      const safe = {}
-      for (const key of SCRIPT_PUBLIC_FIELDS) {
-        if (item && Object.prototype.hasOwnProperty.call(item, key)) {
-          safe[key] = item[key]
-        }
-      }
-      return safe
-    }).filter((item) => item && item.name)
-    hasLoadedScripts.value = true
-  } catch {
-    scriptError.value = '脚本列表加载失败'
-    scripts.value = []
-  } finally {
-    isLoadingScripts.value = false
+async function loadScripts(opts = {}) {
+  const force = opts && opts.force === true
+  if (!force && hasLoadedScripts.value) return
+  if (!force && scriptsLoadPromise) return scriptsLoadPromise
+  if (force && scriptsLoadPromise) {
+    // 扫描刷新遇到 pending：串行等待旧请求完成，再发起新请求，避免旧响应覆盖新数据
+    try {
+      await scriptsLoadPromise
+    } catch {
+      // 旧请求失败已被原 caller 记录，吞掉后继续 force
+    }
   }
+  const promise = (async () => {
+    isLoadingScripts.value = true
+    scriptError.value = ''
+    try {
+      const raw = await fetchScripts()
+      scripts.value = (raw || []).map((item) => {
+        const safe = {}
+        for (const key of SCRIPT_PUBLIC_FIELDS) {
+          if (item && Object.prototype.hasOwnProperty.call(item, key)) {
+            safe[key] = item[key]
+          }
+        }
+        return safe
+      }).filter((item) => item && item.name)
+      hasLoadedScripts.value = true
+    } catch {
+      scriptError.value = '脚本列表加载失败'
+      scripts.value = []
+      // 失败保持 hasLoadedScripts=false，不固化缓存，允许下次重试
+    } finally {
+      isLoadingScripts.value = false
+    }
+  })()
+  const tracked = promise.finally(() => {
+    if (scriptsLoadPromise === tracked) {
+      scriptsLoadPromise = null
+    }
+  })
+  scriptsLoadPromise = tracked
+  return tracked
 }
 
 /**
@@ -445,7 +940,9 @@ async function triggerScriptScan() {
     }
     scanScriptSummary.value = summary
     scriptSuccess.value = `扫描完成：扫描 ${summary.scanned} 个文件，注册 ${summary.registered} 个脚本，失败 ${summary.failed} 个`
-    await loadScripts()
+    // 扫描成功后用 force 强制刷新：绕过 hasLoadedScripts 短路，
+    // 若此时已有 pending 加载会先串行等待，避免旧响应覆盖新数据
+    await loadScripts({ force: true })
   } catch {
     scriptError.value = '扫描失败，请稍后重试'
   } finally {
@@ -456,12 +953,15 @@ async function triggerScriptScan() {
 /**
  * 目标类型切换时清理无关字段并按需加载脚本列表。
  * 切到 agent 时清空 script_name/script_args；切到 script 时清空 agent_name/prompt。
+ * 切换同时使 fillForm 旧 hydrate 回调失效（递增 fillVersion），
+ * 避免旧 fillForm 在 loadScripts 完成后用旧 schedule 数据覆盖新表单。
  */
 function onTargetTypeChange() {
+  bumpFillVersion()
   if (form.target_type === 'agent') {
     form.script_name = ''
     form.script_args = {}
-    scriptArgsJson.value = '{}'
+    clearScriptParamState()
     // agent 任务不发送邮件通知，重置字段
     form.notify_enabled = false
     form.notify_policy_id = null
@@ -521,16 +1021,27 @@ function onNotifyEnabledChange(value) {
 
 /**
  * 将任务记录填充到表单。
+ * 加载是 async：脚本列表尚未就绪时，需 await loadScripts() 完成再 hydrate
+ * scriptParamValues（hydrate 需要 script.params_schema 才能识别 server_list）。
+ * 为防止旧回调覆盖新任务：每次进入 fillForm 自增 fillVersion；脚本列表加载
+ * 完成的 hydrate 回调捕获调用时的 (version, scriptName) 快照，仅当当前版本
+ * 仍等于快照、目标类型仍为 script 且 script_name 未变化时才执行 hydrate。
  * @param {Object} schedule - 定时任务记录
+ * @returns {Promise<void>} 无返回值
  */
 function fillForm(schedule) {
+  // 本次 fillForm 的版本快照 + 同步字段写入必须在最前完成，避免 hydrate 完成时
+  // 看到 form.script_name 已被并发 fillForm 改写
+  const myVersion = ++fillVersion
+  const snapshotScriptName = schedule.script_name || ''
+  const snapshotScriptArgs = schedule.script_args || {}
   form.name = schedule.name || ''
   form.description = schedule.description || ''
   form.target_type = schedule.target_type || 'agent'
   form.agent_name = schedule.agent_name || enabledAgents.value[0]?.name || ''
   form.prompt = schedule.prompt || ''
-  form.script_name = schedule.script_name || ''
-  form.script_args = schedule.script_args || {}
+  form.script_name = snapshotScriptName
+  form.script_args = snapshotScriptArgs
   Object.assign(scheduleConfig, parseCronExpression(schedule.cron_expression))
   form.timezone = schedule.timezone || 'Asia/Shanghai'
   form.enabled = schedule.enabled !== false
@@ -539,17 +1050,35 @@ function fillForm(schedule) {
   form.notify_enabled = schedule.notify_enabled === true
   form.notify_policy_id = schedule.notify_policy_id || null
   contextJson.value = JSON.stringify(form.context_overrides, null, 2)
-  scriptArgsJson.value = JSON.stringify(form.script_args, null, 2)
+  // 根据当前脚本 schema 把已存参数分配到 scriptParamValues 或 legacyScriptArgs
+  if (form.target_type === 'script') {
+    if (!hasLoadedScripts.value && scripts.value.length === 0) {
+      // 等待脚本列表加载完成后 hydrate；hydrate 前再校验版本 + 目标 + script_name
+      return loadScripts().then(() => {
+        if (myVersion !== fillVersion) return
+        if (form.target_type !== 'script') return
+        if (form.script_name !== snapshotScriptName) return
+        hydrateScriptArgs(snapshotScriptName, snapshotScriptArgs)
+      })
+    }
+    hydrateScriptArgs(snapshotScriptName, snapshotScriptArgs)
+  } else {
+    clearScriptParamState()
+  }
   // 切换到 script 时按需加载邮件策略
   if (form.target_type === 'script' && form.notify_enabled) {
     loadEmailPolicies()
   }
+  return Promise.resolve()
 }
 
 /**
  * 开始创建新任务。
+ * 同时使 fillForm 旧 hydrate 回调失效（递增 fillVersion），
+ * 避免上一个编辑任务的 hydrate 在 loadScripts 完成时反扑到新任务表单。
  */
 function startCreate() {
+  bumpFillVersion()
   selectedSchedule.value = null
   isCreating.value = true
   runs.value = []
@@ -576,7 +1105,7 @@ function startCreate() {
   form.notify_enabled = false
   form.notify_policy_id = null
   contextJson.value = '{}'
-  scriptArgsJson.value = '{}'
+  clearScriptParamState()
   errorMessage.value = ''
   successMessage.value = ''
 }
@@ -584,8 +1113,10 @@ function startCreate() {
 /**
  * 构造提交 payload。根据 target_type 分支构造：
  * agent 任务包含 agent_name/prompt；script 任务包含 script_name/script_args。
+ * context_overrides 来自 contextJson 文本框，需 JSON.parse；script_args 不再走
+ * JSON.parse（已切到 schema-driven 参数面板，由 buildScriptArgs 直接合并）。
  * @returns {Object} 后端请求体
- * @throws {Error} context_overrides 或 script_args JSON 非法时抛出
+ * @throws {Error} 任务名称为空或 context_overrides JSON 非法时抛出
  */
 function buildPayload() {
   // 前端防御性校验：任务名称为空时直接拦截，避免触发后端 422。
@@ -613,14 +1144,8 @@ function buildPayload() {
     payload.agent_name = form.agent_name
     payload.prompt = form.prompt.trim()
   } else {
-    let scriptArgs = {}
-    try {
-      scriptArgs = scriptArgsJson.value.trim() ? JSON.parse(scriptArgsJson.value) : {}
-    } catch {
-      throw new Error('脚本参数 JSON 格式不正确')
-    }
     payload.script_name = form.script_name
-    payload.script_args = scriptArgs
+    payload.script_args = buildScriptArgs()
     payload.notify_enabled = !!form.notify_enabled
     payload.notify_policy_id = form.notify_enabled
       ? (form.notify_policy_id || null)
@@ -789,7 +1314,11 @@ onMounted(loadInitialData)
         </button>
       </div>
 
-      <!-- 任务 Tab -->
+      <!-- 任务 Tab —— 使用 v-if 互斥挂载：
+           form / scriptParamValues / devopsServers 都保存在 setup() 内的 ref / reactive 中，
+           与 panel 是否挂载无关：切回任务 Tab 时 panel 重新挂载，computed 会基于现有状态
+           重建 UI，无需把隐藏表单常驻 DOM。
+      -->
       <section
         v-if="activeTab === TAB_TASK"
         :id="`panel-${TAB_TASK}`"
@@ -836,7 +1365,12 @@ onMounted(loadInitialData)
           </label>
           <label v-else class="form-field">
             <span>目标脚本 *</span>
-            <select v-model="form.script_name" data-testid="schedule-script" :disabled="isLoadingScripts">
+            <select
+              v-model="form.script_name"
+              data-testid="schedule-script"
+              :disabled="isLoadingScripts"
+              @change="onScriptNameChange"
+            >
               <option value="" disabled>{{ isLoadingScripts ? '加载中...' : '请选择脚本' }}</option>
               <option v-for="script in scripts" :key="script.name" :value="script.name">
                 {{ script.display_name || script.name }}（{{ script.name }}）
@@ -921,10 +1455,243 @@ onMounted(loadInitialData)
             <span>任务提示词 *</span>
             <textarea v-model="form.prompt" rows="5" placeholder="描述定时触发时需要智能体完成的任务"></textarea>
           </label>
-          <label v-else class="form-field full">
-            <span>脚本参数 (JSON)</span>
-            <textarea v-model="scriptArgsJson" rows="4" data-testid="schedule-script-args" placeholder='{"greeting":"Hello"}'></textarea>
-          </label>
+          <!-- 脚本任务：参数化容器（testid 沿用 schedule-script-args），由 params_schema 驱动 -->
+          <div v-else class="form-field full script-params" data-testid="schedule-script-args" role="group" aria-label="脚本参数">
+            <span class="script-params__title">脚本参数</span>
+            <p class="script-params__hint">只能由当前脚本 params_schema 声明，受支持参数以「添加参数」按钮添加，未支持的旧参数自动保留。</p>
+
+            <!-- 已添加参数列表 -->
+            <div
+              v-if="addedScriptParamKeys.length"
+              class="script-param-list"
+              aria-label="已添加脚本参数"
+            >
+              <div
+                v-for="paramKey in addedScriptParamKeys"
+                :key="paramKey"
+                class="script-param-item"
+                :data-testid="`schedule-param-${paramKey}`"
+              >
+                <!-- 当前唯一受支持的控件就是 server_list；不再渲染通用占位分支。 -->
+                <template v-if="paramKey === 'server_list'">
+                  <!-- server_list 多选控件 -->
+                  <section class="server-list-panel" data-testid="schedule-param-server-list" :aria-label="`参数 ${paramKey}`">
+                    <header class="script-param-item__head">
+                      <div>
+                        <strong>{{ supportedScriptParamDefinitions.find((d) => d.key === paramKey)?.def.title || paramKey }}</strong>
+                        <span class="script-param-item__key">{{ paramKey }}</span>
+                      </div>
+                      <button
+                        type="button"
+                        class="link-btn"
+                        :data-testid="`schedule-remove-param-${paramKey}`"
+                        :aria-label="`移除参数 ${paramKey}`"
+                        @click="removeScriptParam(paramKey)"
+                      >
+                        移除参数
+                      </button>
+                    </header>
+                    <p
+                      v-if="supportedScriptParamDefinitions.find((d) => d.key === paramKey)?.def.description"
+                      class="script-param-item__desc"
+                    >
+                      {{ supportedScriptParamDefinitions.find((d) => d.key === paramKey).def.description }}
+                    </p>
+
+                    <!-- 工具栏：搜索 / 全选 / 清空 / 计数 -->
+                    <div class="server-list-panel__toolbar">
+                      <input
+                        v-model="serverKeyword"
+                        type="search"
+                        class="server-search"
+                        placeholder="搜索业务名或系统类型..."
+                        aria-label="搜索服务器"
+                        data-testid="schedule-server-search"
+                      />
+                      <div class="server-list-panel__actions">
+                        <button
+                          type="button"
+                          class="link-btn"
+                          :disabled="!filteredDevopsServers.length"
+                          aria-label="全选当前过滤服务器"
+                          @click="selectAllVisibleServers"
+                        >
+                          全选
+                        </button>
+                        <span class="divider" aria-hidden="true"></span>
+                        <button
+                          type="button"
+                          class="link-btn"
+                          :disabled="selectedServerCount === 0"
+                          aria-label="清空已选服务器"
+                          @click="clearAllSelectedServers"
+                        >
+                          清空
+                        </button>
+                      </div>
+                      <span
+                        class="server-counter"
+                        :class="{ active: selectedServerCount > 0 }"
+                        aria-label="已选服务器计数"
+                      >
+                        已选 <strong>{{ selectedServerCount }}</strong> /
+                        {{ filteredDevopsServers.length }}
+                      </span>
+                    </div>
+
+                    <!-- 状态链不包含候选列表，force 刷新失败时错误与缓存候选可同时展示 -->
+                    <div
+                      v-if="isLoadingServers && !hasLoaded"
+                      class="empty-state"
+                      data-testid="schedule-server-list-loading"
+                    >
+                      正在加载服务器列表...
+                    </div>
+                    <div
+                      v-else-if="listErrorMessage && !isLoadingServers"
+                      class="alert error"
+                      role="alert"
+                      data-testid="schedule-server-list-error"
+                    >
+                      <span>{{ listErrorMessage }}</span>
+                      <button
+                        type="button"
+                        class="link-btn"
+                        :data-testid="'schedule-server-list-retry'"
+                        aria-label="重新加载服务器"
+                        @click="loadDevopsServers({ force: true })"
+                      >
+                        重新加载服务器
+                      </button>
+                    </div>
+                    <div
+                      v-else-if="hasLoaded && !devopsServers.length"
+                      class="empty-state"
+                      data-testid="schedule-server-list-empty"
+                    >
+                      暂无已扫描入库的服务器，请先在「服务器扫描入库」中扫描。
+                    </div>
+
+                    <!-- 多选列表独立于状态链，允许与缓存刷新错误同时展示 -->
+                    <ul
+                      v-if="filteredDevopsServers.length"
+                      class="server-options"
+                      role="listbox"
+                      aria-multiselectable="true"
+                      :aria-label="`已扫描服务器候选列表`"
+                      data-testid="schedule-server-options"
+                    >
+                      <li
+                        v-for="row in filteredDevopsServers"
+                        :key="row.id"
+                        class="server-option"
+                        :class="{ selected: isServerSelected(row.business_name) }"
+                      >
+                        <label class="server-option__label">
+                          <input
+                            type="checkbox"
+                            :checked="isServerSelected(row.business_name)"
+                            :data-testid="`schedule-server-option-${row.id}`"
+                            @change="toggleServerSelection(row, $event.target.checked)"
+                          />
+                          <span class="server-option__main">{{ row.business_name }}</span>
+                          <span class="server-option__meta">{{ row.server_type }}</span>
+                        </label>
+                      </li>
+                    </ul>
+                    <div
+                      v-if="!filteredDevopsServers.length && serverKeyword.trim() && devopsServers.length"
+                      class="empty-state"
+                      data-testid="schedule-server-list-no-match"
+                    >
+                      没有匹配「{{ serverKeyword }}」的服务器
+                    </div>
+
+                    <!-- 已选 / 失效 chips -->
+                    <div
+                      v-if="selectedValidServerListRows.length || selectedInvalidServerNames.length"
+                      class="selected-server-chips"
+                      aria-label="已选服务器列表"
+                      data-testid="schedule-selected-server-list"
+                    >
+                      <span
+                        v-for="entry in selectedValidServerListRows"
+                        :key="`valid-${entry.row.id}-${entry.name}`"
+                        class="chip selected-server-chip"
+                        :data-testid="`schedule-selected-server-chip-${entry.name}`"
+                      >
+                        <span>{{ entry.name }}</span>
+                        <button
+                          type="button"
+                          class="chip-remove"
+                          :aria-label="`移除已选服务器 ${entry.name}`"
+                          @click="removeSelectedServerByName(entry.name)"
+                        >
+                          ×
+                        </button>
+                      </span>
+                      <span
+                        v-for="name in selectedInvalidServerNames"
+                        :key="`invalid-${name}`"
+                        class="chip selected-server-chip invalid"
+                        data-testid="schedule-selected-server-invalid-chip"
+                      >
+                        <span class="invalid-name">{{ name }}</span>
+                        <span class="invalid-tag" aria-label="已失效">已失效</span>
+                        <button
+                          type="button"
+                          class="chip-remove"
+                          :aria-label="`移除已选服务器 ${name}`"
+                          @click="removeSelectedServerByName(name)"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    </div>
+                  </section>
+                </template>
+                <!--
+                  注意：故意不提供 v-else 分支。当前 isServerListParamDefinition 仅识别
+                  server_list；任何被识别进入 addedScriptParamKeys 的 key 必然命中上面
+                  的 v-if 分支并渲染 server_list 控件。若未来新增受支持控件，
+                  必须在 isServerListParamDefinition 中显式枚举并在模板中加入对应分支。
+                -->
+              </div>
+            </div>
+
+            <!-- 添加参数下拉：始终保持 DOM 存在（testid 已添加参数下拉），仅在可用项为空时显示提示 -->
+            <div
+              v-if="supportedScriptParamDefinitions.length"
+              class="add-script-param"
+            >
+              <label class="add-script-param__label">
+                <span>添加参数</span>
+                <select
+                  class="add-script-param__select"
+                  data-testid="schedule-add-script-param"
+                  :value="''"
+                  aria-label="添加脚本参数"
+                  :disabled="!availableScriptParams.length"
+                  @change="addScriptParam($event.target.value); $event.target.value = ''"
+                >
+                  <option value="" disabled selected>请选择要添加的参数</option>
+                  <option v-for="p in availableScriptParams" :key="p.key" :value="p.key">
+                    {{ p.label }}
+                  </option>
+                </select>
+              </label>
+              <span
+                v-if="!availableScriptParams.length"
+                class="add-script-param__hint"
+                data-testid="schedule-add-script-param-empty"
+              >
+                已添加当前脚本所有受支持参数。
+              </span>
+            </div>
+            <div v-else-if="!currentScript" class="empty-state">
+              请先选择脚本以加载参数定义。
+            </div>
+          </div>
           <!-- 脚本任务专属：邮件通知开关与策略选择 -->
           <template v-if="form.target_type === 'script'">
             <label class="form-field full">
@@ -959,7 +1726,7 @@ onMounted(loadInitialData)
             <span>描述</span>
             <input v-model="form.description" type="text" placeholder="可选：说明该任务的用途" />
           </label>
-          <label class="form-field full">
+          <label v-if="form.target_type === 'agent'" class="form-field full">
             <span>context_overrides JSON</span>
             <textarea v-model="contextJson" rows="4" placeholder='{}'></textarea>
           </label>
@@ -989,7 +1756,7 @@ onMounted(loadInitialData)
         </section>
       </section>
 
-      <!-- 服务器扫描 Tab -->
+      <!-- 服务器扫描 Tab —— v-else-if 互斥挂载，理由同任务 Tab -->
       <section
         v-else-if="activeTab === TAB_SCAN"
         :id="`panel-${TAB_SCAN}`"
@@ -1091,7 +1858,7 @@ onMounted(loadInitialData)
         </table>
       </section>
 
-      <!-- 脚本扫描 Tab -->
+      <!-- 脚本扫描 Tab —— v-else-if 互斥挂载，理由同任务 Tab -->
       <section
         v-else-if="activeTab === TAB_SCRIPT"
         :id="`panel-${TAB_SCRIPT}`"
@@ -1531,5 +2298,278 @@ input[type="number"] {
   .tablist {
     flex-wrap: wrap;
   }
+  .script-param-list {
+    grid-template-columns: 1fr;
+  }
+  .server-list-panel__toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .server-options {
+    grid-template-columns: 1fr;
+  }
+  .selected-server-chips .chip {
+    max-width: 100%;
+  }
+}
+
+/* ===== 脚本参数 schema-driven 面板样式 ===== */
+.script-params {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.script-params__title {
+  font-weight: 600;
+  color: #111827;
+  font-size: 14px;
+}
+
+.script-params__hint {
+  margin: 0;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.script-param-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.script-param-item {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.script-param-item__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.script-param-item__head strong {
+  color: #111827;
+  margin-right: 8px;
+}
+
+.script-param-item__key {
+  color: #6b7280;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.script-param-item__desc {
+  margin: 4px 0 10px;
+  color: #4b5563;
+  font-size: 12px;
+}
+
+.server-list-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.server-list-panel__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.server-search {
+  flex: 1 1 200px;
+  min-width: 160px;
+  height: 32px;
+  padding: 6px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 13px;
+  background: #ffffff;
+  color: #111827;
+}
+
+.server-search:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+}
+
+.server-list-panel__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.link-btn {
+  background: none;
+  border: 0;
+  color: #2563eb;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+
+.link-btn:hover:not(:disabled) {
+  text-decoration: underline;
+  background: #eff6ff;
+}
+
+.link-btn:disabled {
+  color: #9ca3af;
+  cursor: not-allowed;
+  text-decoration: none;
+}
+
+.divider {
+  width: 1px;
+  height: 14px;
+  background: #e5e7eb;
+}
+
+.server-counter {
+  margin-left: auto;
+  font-size: 12px;
+  color: #6b7280;
+  padding: 4px 10px;
+  background: #f3f4f6;
+  border-radius: 999px;
+}
+
+.server-counter.active {
+  color: #1e3a8a;
+  background: #dbeafe;
+  font-weight: 600;
+}
+
+.server-options {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 6px;
+}
+
+.server-option {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.server-option.selected {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.server-option__label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #111827;
+}
+
+.server-option__label input[type='checkbox'] {
+  width: auto;
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.server-option__main {
+  flex: 1 1 auto;
+  font-weight: 500;
+  word-break: break-all;
+}
+
+.server-option__meta {
+  color: #6b7280;
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+
+.selected-server-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 4px;
+  border-top: 1px dashed #e5e7eb;
+}
+
+.selected-server-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  background: #eff6ff;
+  color: #1e40af;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  font-size: 12px;
+  max-width: 100%;
+}
+
+.selected-server-chip.invalid {
+  background: #fef2f2;
+  color: #991b1b;
+  border-color: #fecaca;
+}
+
+.selected-server-chip.invalid .invalid-tag {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.selected-server-chip .chip-remove {
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.add-script-param {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.add-script-param__label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+
+.add-script-param__select {
+  width: 100%;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 14px;
+  color: #111827;
+  background: #ffffff;
+}
+
+.add-script-param__hint {
+  color: #6b7280;
+  font-size: 12px;
+  margin-top: 4px;
 }
 </style>

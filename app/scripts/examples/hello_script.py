@@ -19,6 +19,12 @@
     * ``single``: 生成一个 ``.txt`` 附件并返回 ``(body, [path])``。
     * ``multi``: 生成 ``.txt`` 与 ``.md`` 两个附件并返回 ``(body, [path1, path2])``。
     * ``error``: 抛出 ``ScriptExecutionError``,由调度器将本次 run 标记为 ``failed``。
+
+脚本参数 ``server_list`` 为字符串数组，每个元素是目标服务器的 ``business_name``
+业务名（前端通过 ``x-value-field=business_name`` 唯一约束选择）;脚本仅演示
+对该参数的读取、类型校验与输出追加,不读取连接配置、不执行 SSH、不做去重,
+具体运维动作由真实脚本按需实现。空数组与缺失键行为等价,均不修改既有
+摘要文本。
 """
 import asyncio
 from pathlib import Path
@@ -46,34 +52,55 @@ from app.scripts.registry import register_script
                 "default": "定时任务执行成功",
                 "description": "输出正文内容",
             },
+            "server_list": {
+                "type": "array",
+                "title": "服务器列表",
+                "description": "选择本次运维任务需要处理的已入库服务器",
+                "items": {"type": "string"},
+                "uniqueItems": True,
+                "default": [],
+                "x-control": "server-multiselect",
+                "x-source": "devops-servers",
+                "x-value-field": "business_name",
+            },
         },
     },
 )
 async def run(context: ScriptContext) -> str | tuple[str, list[str]]:
     """执行样板脚本，根据 ``mode`` 返回不同结果。
 
+    ``server_list`` 元素为业务名 (``business_name``),脚本仅演示对其读取、类型
+    校验与摘要追加,不会读取连接配置或执行 SSH；空数组与缺失键保持既有摘要。
+
     参数:
-        context: 脚本运行上下文，含 ``script_args`` / ``log_logger`` / ``started_at`` /
+        context: 脚本运行上下文,含 ``script_args`` / ``log_logger`` / ``started_at`` /
             ``run_id`` / ``schedule_name`` / ``trigger_type`` 等字段。
 
     返回:
         str | tuple[str, list[str]]:
             * ``text`` 模式下返回纯文本摘要；
             * ``single`` / ``multi`` 模式下返回 ``(正文, 附件绝对路径列表)``。
+            ``server_list`` 非空时其业务名会追加到正文摘要末尾；空数组或缺失时
+            不修改摘要文本。
 
     异常:
-        ScriptExecutionError: ``mode=error`` 或 ``mode`` 不合法时抛出，调度器会将其
-        消息写入 ``agent_task_runs.error_message`` 并将 run 标记为 ``failed``。
+        ScriptExecutionError:
+            * ``server_list`` 不是列表、元素不是非空字符串时抛出,错误消息包含
+              ``server_list`` 字段名,便于调度器日志定位；
+            * ``mode=error`` 或 ``mode`` 不合法时抛出,调度器会将其消息写入
+              ``agent_task_runs.error_message`` 并将 run 标记为 ``failed``。
     """
     script_args = context.script_args or {}
     mode = script_args.get("mode", "text")
     content = script_args.get("content", "定时任务执行成功")
+    server_list = _resolve_server_list(script_args)
 
     summary = (
         f"{content} | schedule={context.schedule_name} "
         f"(run_id={context.run_id}, trigger={context.trigger_type}, "
         f"started_at={context.started_at.strftime('%Y-%m-%d %H:%M:%S')})"
     )
+    summary = _append_server_list_to_summary(summary, server_list, context.log_logger)
 
     context.log_logger.info("hello_script 开始执行，mode=%s", mode)
 
@@ -104,6 +131,75 @@ async def run(context: ScriptContext) -> str | tuple[str, list[str]]:
         )
 
     raise ScriptExecutionError(f"不支持的 mode: {mode}")
+
+
+def _resolve_server_list(script_args: dict) -> list[str]:
+    """读取并校验 ``server_list`` 脚本参数。
+
+    缺失键时按空列表处理；非列表或元素不是非空字符串时抛
+    ``ScriptExecutionError``。脚本不去重，前端已按 schema 的 ``uniqueItems``
+    约束保证唯一性，此处只做类型边界校验。
+
+    参数:
+        script_args: 脚本运行参数字典。
+
+    返回:
+        list[str]: 通过校验的业务名列表（缺失或空数组时返回 ``[]``）。
+
+    异常:
+        ScriptExecutionError: ``server_list`` 类型不合法时抛出，错误消息包含
+        字段名 ``server_list``。
+    """
+    raw_value = script_args.get("server_list", [])
+    if raw_value is None:
+        raw_value = []
+
+    if not isinstance(raw_value, list):
+        raise ScriptExecutionError(
+            "server_list 必须为字符串数组（业务名列表），"
+            f"实际收到类型: {type(raw_value).__name__}"
+        )
+
+    validated: list[str] = []
+    for index, item in enumerate(raw_value):
+        if not isinstance(item, str):
+            raise ScriptExecutionError(
+                f"server_list[{index}] 必须为非空字符串，业务名列表中包含"
+                f"非字符串元素: {type(item).__name__}"
+            )
+        if not item:
+            raise ScriptExecutionError(
+                f"server_list[{index}] 不能为空字符串，业务名必须非空"
+            )
+        validated.append(item)
+
+    return validated
+
+
+def _append_server_list_to_summary(
+    summary: str,
+    server_list: list[str],
+    log_logger,
+) -> str:
+    """将 ``server_list`` 业务名追加到既有摘要末尾。
+
+    空数组时原样返回 ``summary``,不追加空文案,保持与旧实现完全一致；非空
+    时同时通过 ``log_logger.info`` 记录业务名列表,便于运维回溯。
+
+    参数:
+        summary: 既有摘要文本。
+        server_list: 已校验的业务名列表。
+        log_logger: ``ScriptContext.log_logger`` 提供的日志记录器。
+
+    返回:
+        str: 追加 ``server_list`` 后的摘要文本；空数组时返回原 ``summary``。
+    """
+    if not server_list:
+        return summary
+
+    suffix = " | server_list=" + ",".join(server_list)
+    log_logger.info("server_list=%s", ",".join(server_list))
+    return summary + suffix
 
 
 def _make_attachment_path(context: ScriptContext, ext: str) -> Path:

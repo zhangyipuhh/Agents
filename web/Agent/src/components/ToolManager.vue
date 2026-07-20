@@ -346,7 +346,7 @@ onMounted(loadTools)
 
 /**
  * 加载已注册工具列表
- * 首次加载时自动展开所有分类
+ * 默认所有分类保持折叠,用户点击 category-header 即可展开
  * @returns {Promise<void>} 无返回值；成功时更新 tools.value，失败时仅 console.error
  * @throws {Error} 内部捕获，不向上抛出
  */
@@ -355,10 +355,7 @@ async function loadTools() {
   try {
     const data = await listTools()
     tools.value = Array.isArray(data) ? data : []
-    // 首次加载自动展开所有分类
-    if (expandedCategories.value.size === 0 && groupedTools.value.length > 0) {
-      expandedCategories.value = new Set(groupedTools.value.map(g => g.category))
-    }
+    // 默认所有分类保持折叠,用户点击 category-header 即可展开
   } catch (err) {
     console.error('加载工具列表失败:', err)
     tools.value = []

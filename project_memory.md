@@ -652,14 +652,17 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 
 **管理接口**：`app/routers/script_admin_router.py`，前缀 `/api/admin/scripts`，全部受 `require_admin` 保护；提供 `GET /api/admin/scripts`（白名单字段列表）与 `POST /api/admin/scripts/scan`（触发扫描，返回 `ScanSummary`）。
 
-**hello_script 脚本开发样板**：`app/scripts/examples/hello_script.py` 注册名为 `hello_script` / 展示名 `脚本开发样板`，是后续脚本开发的复制模板。参数 `mode`（默认 `text`）控制运行模式，`content`（默认 `定时任务执行成功`）控制输出正文。签名严格为 `async def run(context: ScriptContext) -> str | tuple[str, list[str]]`。
+**脚本参数表单元数据契约**：`params_schema.properties.server_list` 仅在同时满足 `type=array`、`items.type=string`、`x-control=server-multiselect`、`x-source=devops-servers`、`x-value-field=business_name` 时由前端识别；`uniqueItems=true`，默认值为 `[]`。`server_list` 的持久化类型固定为 `list[str]`，元素为 `devops_servers.business_name`。`script_args` 继续使用开放字典与 JSONB 存储，schema 未声明或前端暂不支持的旧参数在编辑、保存时原样保留。
 
-- **参数读取**：`context.script_args` 中读取 `mode` / `content`，缺失时使用默认值。
+**hello_script 脚本开发样板**：`app/scripts/examples/hello_script.py` 注册名为 `hello_script` / 展示名 `脚本开发样板`，是后续脚本开发的复制模板。参数 `mode`（默认 `text`）控制运行模式，`content`（默认 `定时任务执行成功`）控制输出正文，`server_list`（默认 `[]`）提供目标服务器业务名数组。签名严格为 `async def run(context: ScriptContext) -> str | tuple[str, list[str]]`。
+
+- **参数读取**：`context.script_args` 中读取 `mode` / `content` / `server_list`；`server_list` 缺失时按空数组处理，非列表、包含非字符串或空字符串时抛 `ScriptExecutionError`。
+- **服务器参数语义**：`server_list` 元素为 `business_name`；样板只演示读取、校验、日志与摘要输出，不读取连接配置、不执行 SSH。
 - **纯文本返回（`mode=text`）**：直接 `return summary`，无附件。
 - **单附件返回（`mode=single`）**：生成一个 `.txt` 附件，返回 `(summary, [attachment_path])`。
 - **多附件返回（`mode=multi`）**：生成 `.txt` 与 `.md` 两个附件，返回 `(summary, [path1, path2])`。
 - **异常演示（`mode=error`）**：抛出 `ScriptExecutionError`，由调度器标记 run 为 `failed`。
-- **正文摘要**：`f"{content} | schedule={schedule_name} (run_id={run_id}, trigger={trigger_type}, started_at=...)"`
+- **正文摘要**：基础格式为 `f"{content} | schedule={schedule_name} (run_id={run_id}, trigger={trigger_type}, started_at=...)"`；`server_list` 非空时在末尾追加 ` | server_list=<business_name,...>`，空数组时保持基础摘要不变。
 - **附件路径约定**：`TASK_ATTACHMENT_DIR/{slugify_task_name(schedule_name)}/{started_at.strftime("%Y%m%d_%H%M%S")}_{run_id}.{ext}`
 - **异步 IO**：附件写入通过 `await asyncio.to_thread(path.write_text, ...)` 执行，不阻塞调度器事件循环。
 - **异常语义**：参数非法或 `mode=error` 时抛 `ScriptExecutionError`；IO 异常向上透出，由 `TaskSchedulerService.execute_schedule()` 标记 run 为 `failed`。
@@ -679,7 +682,7 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 
 **配置项**：`settings.script_scan_enabled: bool`（`app/core/config/settings.py` L598）控制是否启用脚本扫描。
 
-**前端**：`web/Agent/src/components/TaskSchedulerManager.vue` 新增 TAB_SCRIPT tab 页，含扫描按钮、summary 统计、脚本表格；任务表单的 `select` 改造为 `target_type` + 条件子 select（agent/script），创建/更新 payload 根据 `target_type` 分支构造。
+**前端**：`web/Agent/src/components/TaskSchedulerManager.vue` 提供 TAB_SCRIPT tab 页，含扫描按钮、summary 统计、脚本表格；任务表单按 `target_type` 条件显示 agent/script 字段。脚本参数不直接编辑 JSON，而是由所选脚本 `params_schema` 驱动“添加参数”列表；当前只支持 `server_list` 服务器多选控件，候选通过 `GET /api/admin/devops-servers` 按需加载并共享 in-flight 请求。控件支持搜索、全选当前过滤结果、清空、逐项移除、失效业务名标识；已失效业务名与旧任务未知参数只有在用户显式移除时才从提交 payload 删除。服务器清单仅渲染 `business_name` / `server_type`，脚本扫描和服务器扫描成功后均强制刷新对应列表。
 
 **调度表单字段契约**：
 - 「执行频率」可选 6 种类型（daily / weekly / monthly / yearly / interval_minutes / interval_hours），对应不同的 cron 表达式
@@ -688,8 +691,8 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 - `data-testid="schedule-time"` / `schedule-hour` / `schedule-minute` 在 interval 模式下不存在，单元测试用 `wrapper.find('[data-testid="schedule-time"]').exists()` 断言显隐
 
 **测试覆盖**：
-- `app/tests/scripts/test_registry.py`（10 用例）：装饰器注册、重复名拒绝、签名校验、registry 清理
-- `app/tests/scripts/test_examples.py`（8 用例）：模块导入、`importlib.reload` 隔离注册、签名 `str | tuple[str, list[str]]`、四种 `mode` 分支（text 返回 str / single 返回单附件 / multi 返回双附件 / error 抛 `ScriptExecutionError`）、默认参数行为
+- `app/tests/scripts/test_registry.py`（20 用例）：装饰器注册、重复名拒绝、签名校验、registry 清理
+- `app/tests/scripts/test_examples.py`（15 用例）：模块导入、`importlib.reload` 隔离注册、签名 `str | tuple[str, list[str]]`、四种 `mode` 分支（text 返回 str / single 返回单附件 / multi 返回双附件 / error 抛 `ScriptExecutionError`）、默认参数行为、`server_list` schema、非空业务名摘要、缺失/空数组兼容、非法类型/元素校验
 - `app/tests/shared/utils/agent/test_script_discovery_service.py`（9 用例）：扫描、容错、白名单过滤、get_script
 - `app/tests/shared/utils/agent/test_task_scheduler_service.py`：FakeDb 扩展、validate_payload 跨字段校验、execute_schedule script 分支、_install_run_logger 含 target_type/script_name、脚本通知邮件 Word `attachment_paths` 原样透传
 - `app/tests/routers/test_script_admin_router.py`（6 用例）：路由注册、列表、扫描、500、403
@@ -2075,7 +2078,8 @@ system_prompt = (
 
 - `web/Agent/src/utils/api.js` 导出 `fetchDevOpsServers` / `scanDevOpsServers`（大写 O），POST 不带 `Content-Type` / body。
 - `TaskSchedulerManager.vue` 服务器表只显示「业务名 / 系统类型 / 最近同步」三列；扫描统计严格只渲染 `scanned / inserted / updated / failed` 4 个整数（白名单复制），未知字段不进入 DOM。
-- 切换服务器 Tab 首次加载后置 `hasLoaded=true`，再次进入不重复 GET；扫描成功后显式刷新列表。
+- 切换服务器 Tab 首次加载后置 `hasLoaded=true`，再次进入不重复 GET；服务器列表加载共享 in-flight Promise，参数面板与扫描 Tab 并发请求复用同一次 GET；扫描成功后强制刷新列表。
+- 脚本任务的 `server_list` 候选来自同一脱敏清单，提交值只包含 `business_name` 字符串数组；连接配置仍仅允许服务端通过 `DevOpsServerService.get_connection_config(business_name)` 获取，`ip` / `port` / `username` / `password` / `blacklist` / `whitelist` 不得写入 `script_args` 或前端 DOM。
 - 列表加载失败显示「服务器列表加载失败」，扫描失败显示「扫描失败，请稍后重试」，两者状态独立。
 
 ### 安全约束
@@ -2101,7 +2105,7 @@ system_prompt = (
 - `app/tests/core/test_devops_server_lifespan.py` —— 4 个用例：DB 池就绪、空池降级、空 key 跳过、单例 reset。
 - `app/tests/routers/test_devops_server_admin_router.py` —— 9 个用例：路由注册、白名单二次过滤、扫描 4 数字、异常不外泄、service 缺失返 500。
 - `app/tests/core/test_devops_diagnostics.py` —— 8 个用例（2026-07-15 新增）：`missing` / `misspelled` / `settings_unread` / `invalid_fernet` 4 类分支、首尾空白忽略、`frozen=True` 不变性、通过路径不打印完整密钥。
-- `web/Agent/src/components/__tests__/TaskSchedulerManager.spec.js` —— 21 个用例：默认 Tab、扫描 Tab 按需加载、白名单脱敏、防重复提交、扫描统计 4 数字、错误不外泄、不渲染 ID 列、POST 无 Content-Type/body、扫描 vs 列表错误独立、`hasLoaded` 避免重复 GET。
+- `web/Agent/src/components/__tests__/TaskSchedulerManager.spec.js` —— 54 个用例：任务列表与调度表单、目标类型显隐、服务器/脚本扫描与强制刷新、白名单脱敏、防重复请求与失败重试、`server_list` schema 参数添加/搜索/多选/回显/失效项/旧参数兼容、并发加载、脚本切换隔离、首次加载与强制刷新失败后的脱敏重试。
 
 ## 飞书工具（Feishu Tools）
 
