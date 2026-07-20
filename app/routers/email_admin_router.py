@@ -106,9 +106,10 @@ class CreatePolicyRequest(BaseModel):
         description: 策略描述。
         recipient_user_ids: 收件人用户 ID 列表。
         subject_template: 主题模板，含 ``{{var}}`` 占位符；空字符串表示
-            使用策略名作为主题。
+            使用策略名作为主题。支持 ``{{timestamp|FORMAT}}`` 动态插入当前时间，
+            例如 ``{{timestamp|%Y%m%d%H%M}}``。
         body_template: 正文模板，含 ``{{var}}`` 占位符；空字符串表示直接使用
-            脚本返回值作为正文。
+            脚本返回值作为正文。支持 ``{{timestamp|FORMAT}}`` 动态插入当前时间。
     """
 
     name: str = Field(..., min_length=1, max_length=200)
@@ -125,8 +126,10 @@ class UpdatePolicyRequest(BaseModel):
         name: 策略名称。
         description: 策略描述。
         recipient_user_ids: 收件人用户 ID 列表。
-        subject_template: 主题模板；None 表示不修改。
-        body_template: 正文模板；None 表示不修改。
+        subject_template: 主题模板；None 表示不修改。支持 ``{{timestamp|FORMAT}}``
+            动态插入当前时间，例如 ``{{timestamp|%Y%m%d%H%M}}``。
+        body_template: 正文模板；None 表示不修改。支持 ``{{timestamp|FORMAT}}``
+            动态插入当前时间。
     """
 
     name: Optional[str] = Field(None, min_length=1, max_length=200)

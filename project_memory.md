@@ -311,9 +311,14 @@ asyncio.run(EmailService(config).send_email(
 - `subject_template VARCHAR(500)` —— 邮件主题模板，含 `{{var}}` 占位符；空字符串时使用策略名作为主题。
 - `body_template TEXT` —— 邮件正文模板；空字符串时直接使用脚本返回值（`normalize_script_result` 第一项）作为正文。
 
-占位符白名单（见 `app/shared/utils/email/template_renderer.py::EmailTemplateRenderer.SUPPORTED_VARS`）：`schedule_name` / `schedule_id` / `run_id` / `started_at` / `finished_at` / `trigger_type` / `script_name` / `script_output` / `attachment_paths`。非白名单占位符保留原样（方便排查）；`datetime` 渲染为 `YYYY-MM-DD HH:MM:SS`；`list` 渲染为逗号拼接；`None` 渲染为空串。
+占位符白名单（见 `app/shared/utils/email/template_renderer.py::EmailTemplateRenderer.SUPPORTED_VARS`）：`schedule_name` / `schedule_id` / `run_id` / `started_at` / `finished_at` / `trigger_type` / `script_name` / `script_output` / `attachment_paths` / `timestamp`。非白名单占位符保留原样（方便排查）；`datetime` 渲染为 `YYYY-MM-DD HH:MM:SS`；`list` 渲染为逗号拼接；`None` 渲染为空串。
 
-模板渲染不引入 Jinja2，仅 `re.sub(r"\{\{\s*(\w+)\s*\}\}", ...)` + 白名单校验，避免任意表达式执行。
+`timestamp` 为特殊变量，不依赖执行上下文，在邮件发送时动态取当前时间：
+- `{{timestamp}}` 默认渲染为 `YYYY-MM-DD HH:MM:SS`；
+- `{{timestamp|FORMAT}}` 使用自定义 strftime 格式，例如 `{{timestamp|%Y%m%d%H%M}}` 渲染为 `202607201109`，`{{timestamp|%Y-%m-%d %H:%M}}` 渲染为 `2026-07-20 11:09`；
+- 格式非法时保留原占位符文本，避免发送失败。
+
+模板渲染不引入 Jinja2，仅 `re.sub(r"\{\{\s*(\w+)(?:\|([^}]*)?)?\s*\}\}", ...)` + 白名单校验，避免任意表达式执行。
 
 ### API 端点（`/api/admin/email`，全部 `require_admin`）
 
@@ -647,27 +652,19 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 
 **管理接口**：`app/routers/script_admin_router.py`，前缀 `/api/admin/scripts`，全部受 `require_admin` 保护；提供 `GET /api/admin/scripts`（白名单字段列表）与 `POST /api/admin/scripts/scan`（触发扫描，返回 `ScanSummary`）。
 
-**hello_script 示例脚本（Word 附件契约，最终状态）**：`app/scripts/examples/hello_script.py` 注册名为 `hello_script` / 展示名 `示例 Word 附件脚本`，参数 `greeting`（默认 `Hello`）。签名严格为 `async def run(context: ScriptContext) -> tuple[str, str]`。
+**hello_script 脚本开发样板**：`app/scripts/examples/hello_script.py` 注册名为 `hello_script` / 展示名 `脚本开发样板`，是后续脚本开发的复制模板。参数 `mode`（默认 `text`）控制运行模式，`content`（默认 `定时任务执行成功`）控制输出正文。签名严格为 `async def run(context: ScriptContext) -> str | tuple[str, list[str]]`。
 
-- **正文 message**：`f"{greeting} from schedule {schedule_name} (run_id={run_id}, trigger={trigger_type})"`
-- **report_data 精确键**：`{任务名称: schedule_name, 执行记录: str(run_id), 触发方式: trigger_type, 开始时间: started_at.strftime("%Y-%m-%d %H:%M:%S"), 问候内容: message}`
-- **封面 `CoverConfig.from_legacy(title="{{任务名称}}定时任务执行报告", date_text="生成日期：{{开始时间}}", blank_lines_before_title=3, blank_lines_after_title=1, blank_lines_before_date=2)`** —— 仅传 `title` / `date_text` / 三个 blank_lines 参数
-- **目录 `toc=None`**
-- **sections 精确序列**：
-  1. `heading` content=`一、执行结果` level=1 `in_toc=False`
-  2. `paragraph` content=`{{问候内容}}`
-  3. `heading` content=`二、任务信息` level=1 `in_toc=False`
-  4. `paragraph` content=`任务名称：{{任务名称}}`
-  5. `paragraph` content=`执行记录：{{执行记录}}`
-  6. `paragraph` content=`触发方式：{{触发方式}}`
-  7. `paragraph` content=`开始时间：{{开始时间}}`
-- **footer**：`FooterConfig(format="第{page}页", start_from="content")`
-- **输出路径**：`TASK_ATTACHMENT_DIR/{slugify_task_name(schedule_name)}/{started_at.strftime("%Y%m%d_%H%M%S")}_{run_id}.docx`
-- **生成流水线**：`WordReportGenerator(config).generate()` 与 `.save(path)` 通过 `await asyncio.to_thread(...)` 异步执行，不阻塞调度器事件循环
-- **返回值**：`return message, str(attachment_path.resolve())`（绝对路径，便于邮件服务直接消费）
-- **异常语义**：报告生成或保存过程中产生的异常向上透出，由 `TaskSchedulerService.execute_schedule()` 标记 run 为 `failed`
+- **参数读取**：`context.script_args` 中读取 `mode` / `content`，缺失时使用默认值。
+- **纯文本返回（`mode=text`）**：直接 `return summary`，无附件。
+- **单附件返回（`mode=single`）**：生成一个 `.txt` 附件，返回 `(summary, [attachment_path])`。
+- **多附件返回（`mode=multi`）**：生成 `.txt` 与 `.md` 两个附件，返回 `(summary, [path1, path2])`。
+- **异常演示（`mode=error`）**：抛出 `ScriptExecutionError`，由调度器标记 run 为 `failed`。
+- **正文摘要**：`f"{content} | schedule={schedule_name} (run_id={run_id}, trigger={trigger_type}, started_at=...)"`
+- **附件路径约定**：`TASK_ATTACHMENT_DIR/{slugify_task_name(schedule_name)}/{started_at.strftime("%Y%m%d_%H%M%S")}_{run_id}.{ext}`
+- **异步 IO**：附件写入通过 `await asyncio.to_thread(path.write_text, ...)` 执行，不阻塞调度器事件循环。
+- **异常语义**：参数非法或 `mode=error` 时抛 `ScriptExecutionError`；IO 异常向上透出，由 `TaskSchedulerService.execute_schedule()` 标记 run 为 `failed`。
 
-**依赖**：`app.shared.utils.report.word`（`CoverConfig` / `FooterConfig` / `ReportConfig` / `SectionConfig` / `WordReportGenerator`） + `app.core.config.paths`（`TASK_ATTACHMENT_DIR` / `slugify_task_name`） + `app.scripts.base.ScriptContext`。**不依赖** `ToolRuntime` / 地图 store / `ProjectSiteSelectionCollection`。
+**依赖**：`app.core.config.paths`（`TASK_ATTACHMENT_DIR` / `slugify_task_name`） + `app.scripts.base.ScriptContext` / `ScriptExecutionError` + `app.scripts.registry.register_script`。**不依赖** `ToolRuntime` / 地图 store / `ProjectSiteSelectionCollection` / `WordReportGenerator`。
 
 **lifespan 初始化顺序**：
 1. `DatabasePool.initialize()` + `register_schemas()`（`init_*_schema` 自动建表，包含邮件 / 定时任务 / 脚本相关表）
@@ -692,7 +689,7 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 
 **测试覆盖**：
 - `app/tests/scripts/test_registry.py`（10 用例）：装饰器注册、重复名拒绝、签名校验、registry 清理
-- `app/tests/scripts/test_examples.py`（7 用例）：示例脚本导入、注册（`importlib.reload` 隔离全局 registry）、`run` 返回签名 `tuple[str, str]`（`typing.get_type_hints` 精确断言参数名仅 `["context"]` + `context is ScriptContext` + `return == tuple[str, str]`）、`ReportConfig` 精确契约（`data` 键/封面 `title.text`+`title.space_before=3`+`title.space_after=1`/`date.text`+`date.space_before=2`/`toc=None`/sections 序列与正文模板/两个 heading 的 `in_toc=False` 且 `level=1`/footer）、默认问候、生成器异常透传、保存异常透传、`asyncio.to_thread` 调用次数严格 `==2` 且顺序与参数锁定
+- `app/tests/scripts/test_examples.py`（8 用例）：模块导入、`importlib.reload` 隔离注册、签名 `str | tuple[str, list[str]]`、四种 `mode` 分支（text 返回 str / single 返回单附件 / multi 返回双附件 / error 抛 `ScriptExecutionError`）、默认参数行为
 - `app/tests/shared/utils/agent/test_script_discovery_service.py`（9 用例）：扫描、容错、白名单过滤、get_script
 - `app/tests/shared/utils/agent/test_task_scheduler_service.py`：FakeDb 扩展、validate_payload 跨字段校验、execute_schedule script 分支、_install_run_logger 含 target_type/script_name、脚本通知邮件 Word `attachment_paths` 原样透传
 - `app/tests/routers/test_script_admin_router.py`（6 用例）：路由注册、列表、扫描、500、403

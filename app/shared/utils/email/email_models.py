@@ -61,10 +61,11 @@ class EmailPolicy(BaseModel):
         recipient_user_ids: 收件人用户 ID 列表（指向 ``users.id``）；
             用户必须已注册且 ``email`` 字段非空。
         subject_template: 邮件主题模板，含 ``{{var}}`` 占位符；空字符串表示
-            使用策略名作为主题。
+            使用策略名作为主题。支持 ``{{timestamp|FORMAT}}`` 在渲染时动态插入
+            当前时间，例如 ``{{timestamp|%Y%m%d%H%M}}``。
         body_template: 邮件正文模板，含 ``{{var}}`` 占位符；空字符串表示直接使用
             脚本返回值作为正文。可用变量由 ``EmailTemplateRenderer.SUPPORTED_VARS``
-            定义。
+            定义，并支持 ``{{timestamp|FORMAT}}`` 内联时间格式。
         created_at: 创建时间；新建时为 None。
         updated_at: 更新时间；新建时为 None。
     """

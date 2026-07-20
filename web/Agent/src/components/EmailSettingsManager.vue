@@ -616,7 +616,7 @@ onMounted(async () => {
                   v-model="policyForm.subject_template"
                   type="text"
                   data-testid="policy-subject-template"
-                  placeholder="留空使用策略名称作为主题。支持 {{schedule_name}} {{run_id}} 等占位符"
+                  placeholder="留空使用策略名称作为主题。支持 {{schedule_name}} {{run_id}} {{timestamp|%Y%m%d%H%M}} 等占位符"
                 />
               </div>
             </div>
@@ -629,7 +629,7 @@ onMounted(async () => {
                   v-model="policyForm.body_template"
                   rows="6"
                   data-testid="policy-body-template"
-                  placeholder="可选。支持占位符：{{schedule_name}} {{script_name}} {{script_output}} {{attachment_paths}} {{run_id}} {{started_at}} {{trigger_type}} {{finished_at}}"
+                  placeholder="可选。支持占位符：{{schedule_name}} {{script_name}} {{script_output}} {{attachment_paths}} {{run_id}} {{started_at}} {{trigger_type}} {{finished_at}} {{timestamp|%Y-%m-%d %H:%M}}"
                 ></textarea>
               </div>
             </div>

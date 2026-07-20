@@ -139,6 +139,65 @@ def test_render_handles_context_none():
 
 
 # =============================================================================
+# P1: timestamp 占位符
+# =============================================================================
+
+def test_timestamp_in_supported_vars():
+    """timestamp 应出现在白名单中。"""
+    assert "timestamp" in EmailTemplateRenderer.SUPPORTED_VARS
+
+
+def test_render_timestamp_default_format(monkeypatch):
+    """{{timestamp}} 默认渲染为 YYYY-MM-DD HH:MM:SS。"""
+    fixed = datetime(2026, 7, 20, 11, 9, 0)
+    monkeypatch.setattr(
+        "app.shared.utils.email.template_renderer.datetime",
+        type("_FakeDatetime", (), {"now": staticmethod(lambda: fixed)})(),
+    )
+    out = EmailTemplateRenderer.render("{{timestamp}}", {})
+    assert out == "2026-07-20 11:09:00"
+
+
+def test_render_timestamp_custom_format(monkeypatch):
+    """{{timestamp|FORMAT}} 按指定 strftime 格式渲染。"""
+    fixed = datetime(2026, 7, 20, 11, 9, 0)
+    monkeypatch.setattr(
+        "app.shared.utils.email.template_renderer.datetime",
+        type("_FakeDatetime", (), {"now": staticmethod(lambda: fixed)})(),
+    )
+    out = EmailTemplateRenderer.render("运维报告{{timestamp|%Y%m%d%H%M}}", {})
+    assert out == "运维报告202607201109"
+
+
+def test_render_timestamp_format_with_spaces_and_colons(monkeypatch):
+    """格式字符串可包含空格与冒号。"""
+    fixed = datetime(2026, 7, 20, 11, 9, 0)
+    monkeypatch.setattr(
+        "app.shared.utils.email.template_renderer.datetime",
+        type("_FakeDatetime", (), {"now": staticmethod(lambda: fixed)})(),
+    )
+    out = EmailTemplateRenderer.render("{{timestamp|%Y-%m-%d %H:%M}}", {})
+    assert out == "2026-07-20 11:09"
+
+
+def test_render_timestamp_with_spaces_around_placeholder(monkeypatch):
+    """timestamp 占位符内部允许空白。"""
+    fixed = datetime(2026, 7, 20, 11, 9, 0)
+    monkeypatch.setattr(
+        "app.shared.utils.email.template_renderer.datetime",
+        type("_FakeDatetime", (), {"now": staticmethod(lambda: fixed)})(),
+    )
+    out = EmailTemplateRenderer.render("{{ timestamp | %Y%m%d%H%M }}", {})
+    assert out == "202607201109"
+
+
+def test_render_timestamp_keeps_invalid_format_intact():
+    """非法 strftime 格式应保留原占位符，避免发送失败。"""
+    out = EmailTemplateRenderer.render("{{timestamp|%}}", {})
+    assert out == "{{timestamp|%}}"
+
+
+# =============================================================================
 # P1: build_render_context
 # =============================================================================
 
