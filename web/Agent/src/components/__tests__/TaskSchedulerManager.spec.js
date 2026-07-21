@@ -16,6 +16,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import TaskSchedulerManager from '../TaskSchedulerManager.vue'
+import taskSchedulerSource from '../TaskSchedulerManager.vue?raw'
 
 const mockSchedules = [
   {
@@ -2034,5 +2035,44 @@ describe('TaskSchedulerManager 组件', () => {
     )
     expect(devopsGetCalls).toHaveLength(2)
     expect(devopsGetCount).toBe(2)
+  })
+})
+
+/**
+ * 高度链固定后的内部滚动契约（源码静态断言，jsdom 不计算 <style scoped> 布局）
+ *
+ * 背景：.task-sidebar / .task-detail 高度被 flex 高度链固定为可视区域高度后，
+ * 若内部缺少滚动容器，超高内容会溢出卡片边界（表单按钮/执行历史溢出到卡片外）。
+ */
+describe('TaskSchedulerManager 内部滚动契约（防溢出）', () => {
+  /**
+   * 从 SFC 源码提取指定选择器的样式块内容。
+   * @param {string} selector - CSS 选择器（正则安全转义由调用方保证）
+   * @returns {string} 样式块声明内容
+   */
+  function styleBlock(selector) {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const match = taskSchedulerSource.match(new RegExp(escaped + '\\s*\\{([^}]*)\\}'))
+    expect(match, `${selector} 样式块必须存在`).not.toBeNull()
+    return match[1]
+  }
+
+  it('test_task_sidebar_scrolls_internally 任务列表卡片内部滚动', () => {
+    expect(styleBlock('.task-sidebar')).toMatch(/overflow-y\s*:\s*auto/)
+  })
+
+  it('test_tablist_not_shrunk tab 栏不被 flex 压缩', () => {
+    expect(styleBlock('.tablist')).toMatch(/flex-shrink\s*:\s*0/)
+  })
+
+  it('test_business_panels_scroll_internally 业务面板（编辑/扫描）内部滚动', () => {
+    const body = styleBlock('.task-detail > section[role="tabpanel"]:not(.task-panel-api)')
+    expect(body).toMatch(/flex\s*:\s*1/)
+    expect(body).toMatch(/min-height\s*:\s*0/)
+    expect(body).toMatch(/overflow-y\s*:\s*auto/)
+  })
+
+  it('test_api_panel_clips_overflow API 面板裁剪防外溢', () => {
+    expect(styleBlock('.task-detail > .task-panel-api')).toMatch(/overflow\s*:\s*hidden/)
   })
 })

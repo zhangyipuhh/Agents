@@ -1970,15 +1970,31 @@ onMounted(loadInitialData)
   min-height: 0;
 }
 
+/* 卡片高度被高度链固定后，任务列表超高时在卡片内部滚动，避免溢出卡片边界 */
+.task-sidebar {
+  overflow-y: auto;
+}
+
 .task-detail {
   display: flex;
   flex-direction: column;
+}
+
+/* 业务面板（编辑任务 / 服务器扫描 / 脚本扫描）：
+   .task-detail 高度被高度链固定，面板必须收缩并在内部滚动，
+   否则长表单内容会溢出卡片边界（API 面板由子组件自滚动，见下） */
+.task-detail > section[role="tabpanel"]:not(.task-panel-api) {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .task-detail > .task-panel-api {
   display: flex;
   flex: 1;
   min-height: 0;
+  /* 子组件（ApiConfigManager）已负责内部滚动，这里裁剪防止内容外溢 */
+  overflow: hidden;
 }
 
 .panel-header,
@@ -2236,6 +2252,7 @@ input[type="number"] {
   gap: 4px;
   border-bottom: 1px solid #e5e7eb;
   margin-bottom: 18px;
+  flex-shrink: 0; /* flex 列容器内不被压缩，保证 tab 栏始终完整可见 */
 }
 
 .tab {

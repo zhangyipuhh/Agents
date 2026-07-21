@@ -44,7 +44,7 @@ describe('UserSettingsDialog 定时任务 Tab wrapper 高度链', () => {
     document.body.innerHTML = ''
   })
 
-  it('test_task_scheduler_wrapper_has_tab_fill_wrapper_class 定时任务 wrapper 应用 .tab-fill-wrapper', async () => {
+  it('test_task_scheduler_wrapper_has_tab_fill_wrapper_class 运维任务 wrapper 应用 .tab-fill-wrapper', async () => {
     // 直接 Teleport 后挂载，按设计 UserSettingsDialog 模板已在 <Teleport to="body"> 里渲染
     const wrapper = mount(UserSettingsDialog, {
       props: { visible: true, role: 'admin', userId: 1, username: 'admin' },
@@ -52,9 +52,9 @@ describe('UserSettingsDialog 定时任务 Tab wrapper 高度链', () => {
     })
     await flushPromises()
 
-    // 切到定时任务 Tab
+    // 切到运维任务 Tab
     const navNodes = document.body.querySelectorAll('.nav-item')
-    const taskNav = Array.from(navNodes).find((node) => (node.textContent || '').includes('定时任务'))
+    const taskNav = Array.from(navNodes).find((node) => (node.textContent || '').includes('运维任务'))
     expect(taskNav).toBeTruthy()
     taskNav.click()
     await flushPromises()
@@ -102,5 +102,14 @@ describe('UserSettingsDialog 定时任务 Tab wrapper 高度链', () => {
     const body = blockMatch[1]
     expect(body).toMatch(/display\s*:\s*flex/)
     expect(body).toMatch(/flex-direction\s*:\s*column/)
+  })
+
+  it('test_tab_fill_wrapper_scrolls_as_safety_net .tab-fill-wrapper 必须有 overflow-y:auto 安全网', () => {
+    // 高度链固定后 wrapper 高度被锁定为可视区域高度：
+    // 未自滚动填充的组件（如 EmailSettingsManager）内容超高时由 wrapper 滚动，
+    // 否则会被 .dialog-body-horizontal 的 overflow:hidden 直接裁剪且无法滚动。
+    const blockMatch = sourceCode.match(/\.tab-fill-wrapper\s*\{([^}]*)\}/)
+    expect(blockMatch, '.tab-fill-wrapper 样式块必须存在').not.toBeNull()
+    expect(blockMatch[1]).toMatch(/overflow-y\s*:\s*auto/)
   })
 })

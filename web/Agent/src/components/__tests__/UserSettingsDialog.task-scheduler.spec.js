@@ -12,7 +12,7 @@ function getNavItemTexts() {
   return Array.from(nodes).map((n) => n.textContent || '')
 }
 
-describe('UserSettingsDialog 定时任务 Tab', () => {
+describe('UserSettingsDialog 运维任务 Tab', () => {
   let originalFetch
   let originalLocalStorage
 
@@ -40,36 +40,36 @@ describe('UserSettingsDialog 定时任务 Tab', () => {
     document.body.innerHTML = ''
   })
 
-  it('test_admin_sees_task_scheduler_tab admin 显示定时任务 Tab', async () => {
+  it('test_admin_sees_task_scheduler_tab admin 显示运维任务 Tab', async () => {
     const wrapper = mount(UserSettingsDialog, {
       props: { visible: true, role: 'admin', userId: 1, username: 'admin' },
     })
     await flushPromises()
 
     const navTexts = getNavItemTexts()
-    expect(navTexts.some((text) => text.includes('定时任务'))).toBe(true)
+    expect(navTexts.some((text) => text.includes('运维任务'))).toBe(true)
     wrapper.unmount()
   })
 
-  it('test_user_does_not_see_task_scheduler_tab 普通用户不显示定时任务 Tab', async () => {
+  it('test_user_does_not_see_task_scheduler_tab 普通用户不显示运维任务 Tab', async () => {
     const wrapper = mount(UserSettingsDialog, {
       props: { visible: true, role: 'user', userId: 2, username: 'user1' },
     })
     await flushPromises()
 
     const navTexts = getNavItemTexts()
-    expect(navTexts.some((text) => text.includes('定时任务'))).toBe(false)
+    expect(navTexts.some((text) => text.includes('运维任务'))).toBe(false)
     wrapper.unmount()
   })
 
-  it('test_click_task_scheduler_tab_shows_manager 点击定时任务 Tab 显示管理组件', async () => {
+  it('test_click_task_scheduler_tab_shows_manager 点击运维任务 Tab 显示管理组件', async () => {
     const wrapper = mount(UserSettingsDialog, {
       props: { visible: true, role: 'admin', userId: 1, username: 'admin' },
     })
     await flushPromises()
 
     const navNodes = document.body.querySelectorAll('.nav-item')
-    const taskNav = Array.from(navNodes).find((node) => (node.textContent || '').includes('定时任务'))
+    const taskNav = Array.from(navNodes).find((node) => (node.textContent || '').includes('运维任务'))
     expect(taskNav).toBeTruthy()
     taskNav.click()
     await flushPromises()
