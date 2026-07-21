@@ -203,6 +203,94 @@ describe('TaskSchedulerManager 组件', () => {
     expect(wrapper.find('textarea').exists()).toBe(true)
   })
 
+  it('test_save_button_in_header_actions_new_mode 新建模式下顶部 actions 显示保存按钮', async () => {
+    /**
+     * 计划：把「保存任务」按钮从 form 底部移到 detail-header 顶部 actions 行；
+     * 新建模式（isCreating=true）下也需显示「保存任务」，但不显示其他三个编辑按钮。
+     */
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
+    await flushPromises()
+
+    // 顶部 actions 行存在「保存任务」按钮（data-testid 稳定定位）
+    const saveBtn = wrapper.find('[data-testid="schedule-save-btn"]')
+    expect(saveBtn.exists()).toBe(true)
+    expect(saveBtn.text()).toContain('保存任务')
+
+    // 新建模式下不应渲染编辑专属按钮
+    const allButtons = wrapper.findAll('button').map((b) => b.text())
+    const hasEditOnly = allButtons.some((t) => t.includes('停用任务') || t.includes('启用任务'))
+      || allButtons.some((t) => t.includes('立即运行'))
+      || allButtons.some((t) => t.includes('删除任务'))
+    expect(hasEditOnly).toBe(false)
+
+    // form 内已无独立的 .form-actions 区块（避免重复按钮）
+    expect(wrapper.find('form .form-actions').exists()).toBe(false)
+  })
+
+  it('test_save_button_in_header_actions_edit_mode 编辑模式下保存与启停/运行/删除同一行', async () => {
+    /**
+     * 计划：编辑模式（isCreating=false）下，「保存任务」与「停用任务」「立即运行」「删除任务」
+     * 都在 detail-header 顶部 .actions 内渲染。
+     */
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+
+    const headerActions = wrapper.find('.detail-header .actions')
+    expect(headerActions.exists()).toBe(true)
+
+    const actionsHtml = headerActions.html()
+    expect(actionsHtml).toContain('schedule-save-btn')
+    expect(actionsHtml).toContain('停用任务')
+    expect(actionsHtml).toContain('立即运行')
+    expect(actionsHtml).toContain('删除任务')
+
+    // form 内已无独立的 .form-actions 区块
+    expect(wrapper.find('form .form-actions').exists()).toBe(false)
+  })
+
+  it('test_header_save_button_submits_form 顶部保存按钮点击触发 submit', async () => {
+    /**
+     * 计划：顶部保存按钮通过 form="task-scheduler-form" 显式挂回 form，
+     * 浏览器原生会在 click 时触发 form submit 事件并调用 @submit.prevent="saveTask"。
+     * jsdom 不实现 button.form 关联（HTML5 跨 form 提交语义），故此处改用：
+     *  1. 验证按钮 DOM 上确实带有正确的 form="task-scheduler-form" 属性
+     *  2. 验证通过 form 的 submit 事件能正常走通 saveTask（与原 form 底部 submit 等价）
+     *  3. 验证按钮 type="submit"，浏览器在生产环境会触发原生 submit
+     */
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
+    await flushPromises()
+
+    const saveBtn = wrapper.find('[data-testid="schedule-save-btn"]')
+    expect(saveBtn.exists()).toBe(true)
+    // 1. 按钮通过 form 属性显式挂回 form
+    expect(saveBtn.attributes('form')).toBe('task-scheduler-form')
+    // 2. 按钮 type=submit，浏览器原生 click 即可触发 submit 事件
+    expect(saveBtn.attributes('type')).toBe('submit')
+    // 3. form id 与按钮 form 属性一致
+    expect(wrapper.find('form#task-scheduler-form').exists()).toBe(true)
+
+    // 填写必填字段并通过 form submit 事件验证 saveTask 仍可走通
+    await findTaskNameInput(wrapper).setValue('顶部保存按钮任务')
+    await wrapper
+      .find('[data-testid="schedule-agent"]')
+      .findAll('option')
+      .find((o) => o.text() === '地图智能体（map_agent）')
+      .setSelected()
+    await wrapper.find('textarea').setValue('测试顶部保存')
+    await wrapper.find('form').trigger('submit.prevent')
+    await flushPromises()
+
+    const postCall = global.fetch.mock.calls.find(
+      ([url, opts]) => url === '/api/admin/task-schedules' && opts.method === 'POST'
+    )
+    expect(postCall).toBeTruthy()
+    expect(JSON.parse(postCall[1].body).name).toBe('顶部保存按钮任务')
+  })
+
   it('test_save_new_task_posts_payload 保存新任务调用 POST', async () => {
     const wrapper = mount(TaskSchedulerManager)
     await flushPromises()

@@ -1337,16 +1337,27 @@ onMounted(loadInitialData)
             <h3>{{ isCreating ? '新增定时任务' : '编辑定时任务' }}</h3>
             <p>每次触发都会创建新的会话记录，停机期间错过的触发不会补跑。</p>
           </div>
-          <div class="actions" v-if="!isCreating && selectedSchedule">
-            <button type="button" class="secondary-btn" @click="toggleTask">
-              {{ selectedSchedule.enabled ? '停用任务' : '启用任务' }}
+          <div class="actions" v-if="isCreating || selectedSchedule">
+            <button
+              class="primary-btn"
+              type="submit"
+              form="task-scheduler-form"
+              :disabled="isSaving"
+              data-testid="schedule-save-btn"
+            >
+              {{ isSaving ? '保存中...' : '保存任务' }}
             </button>
-            <button type="button" class="secondary-btn" @click="runNow">立即运行</button>
-            <button type="button" class="danger-btn" @click="removeTask">删除任务</button>
+            <template v-if="!isCreating && selectedSchedule">
+              <button type="button" class="secondary-btn" @click="toggleTask">
+                {{ selectedSchedule.enabled ? '停用任务' : '启用任务' }}
+              </button>
+              <button type="button" class="secondary-btn" @click="runNow">立即运行</button>
+              <button type="button" class="danger-btn" @click="removeTask">删除任务</button>
+            </template>
           </div>
         </header>
 
-        <form class="task-form" @submit.prevent="saveTask">
+        <form id="task-scheduler-form" class="task-form" @submit.prevent="saveTask">
           <label class="form-field">
             <span>任务名称 *</span>
             <input v-model="form.name" type="text" placeholder="例如：每日巡检" />
@@ -1669,11 +1680,20 @@ onMounted(loadInitialData)
             >
               <label class="add-script-param__label">
                 <span>添加参数</span>
+                <span
+                  v-if="!availableScriptParams.length"
+                  id="schedule-add-script-param-empty-hint"
+                  class="add-script-param__hint"
+                  data-testid="schedule-add-script-param-empty"
+                >
+                  已添加当前脚本所有受支持参数。
+                </span>
                 <select
                   class="add-script-param__select"
                   data-testid="schedule-add-script-param"
                   :value="''"
                   aria-label="添加脚本参数"
+                  aria-describedby="schedule-add-script-param-empty-hint"
                   :disabled="!availableScriptParams.length"
                   @change="addScriptParam($event.target.value); $event.target.value = ''"
                 >
@@ -1683,13 +1703,6 @@ onMounted(loadInitialData)
                   </option>
                 </select>
               </label>
-              <span
-                v-if="!availableScriptParams.length"
-                class="add-script-param__hint"
-                data-testid="schedule-add-script-param-empty"
-              >
-                已添加当前脚本所有受支持参数。
-              </span>
             </div>
             <div v-else-if="!currentScript" class="empty-state">
               请先选择脚本以加载参数定义。
@@ -1737,11 +1750,6 @@ onMounted(loadInitialData)
             <input v-model="form.enabled" type="checkbox" />
             <span>保存后启用任务</span>
           </label>
-          <div class="form-actions">
-            <button class="primary-btn" type="submit" :disabled="isSaving">
-              {{ isSaving ? '保存中...' : '保存任务' }}
-            </button>
-          </div>
         </form>
 
         <section class="run-history" v-if="!isCreating">
@@ -2099,8 +2107,7 @@ onMounted(loadInitialData)
   white-space: nowrap;
 }
 
-.form-field.full,
-.form-actions {
+.form-field.full {
   grid-column: 1 / -1;
 }
 
@@ -2141,8 +2148,7 @@ input[type="number"] {
   font-weight: 600;
 }
 
-.actions,
-.form-actions {
+.actions {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
@@ -2599,8 +2605,9 @@ input[type="number"] {
 
 .add-script-param__label {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
   width: 100%;
 }
 
@@ -2617,6 +2624,5 @@ input[type="number"] {
 .add-script-param__hint {
   color: #6b7280;
   font-size: 12px;
-  margin-top: 4px;
 }
 </style>
