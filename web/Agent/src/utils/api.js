@@ -2699,3 +2699,156 @@ export async function sendEmailByPolicy(policyId, payload) {
   }
   return response.json()
 }
+
+// ============================================================
+// API 接口配置 API
+// 对应后端 /api/admin/api-configs 管理接口
+// 用于 ApiConfigManager 的树形节点管理与接口配置 / 发送调试
+// ============================================================
+
+/**
+ * 获取 API 配置节点树（平铺结构，前端自行组树）
+ * 调用 GET /api/admin/api-configs/tree
+ * @returns {Promise<{nodes: Array<{id: number, parent_id: number|null, node_type: 'folder'|'api', name: string, sort_order: number}>}>} 节点平铺列表
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function fetchApiConfigTree() {
+  const response = await fetchWithAuth('/api/admin/api-configs/tree', { method: 'GET' })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取 API 配置树失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 新建 API 配置节点（文件夹或接口）
+ * 调用 POST /api/admin/api-configs/nodes
+ * @param {number|null} parentId - 父文件夹 ID；根节点传 null
+ * @param {'folder'|'api'} nodeType - 节点类型
+ * @param {string} name - 节点名称
+ * @returns {Promise<Object>} 新建节点对象
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function createApiConfigNode(parentId, nodeType, name) {
+  const response = await fetchWithAuth('/api/admin/api-configs/nodes', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ parent_id: parentId, node_type: nodeType, name }),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `新建 API 配置节点失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 更新 API 配置节点（重命名 / 移动 / 排序）
+ * 调用 PUT /api/admin/api-configs/nodes/{id}
+ * @param {number|string} id - 节点 ID
+ * @param {Object} payload - 需要更新的字段（name / parent_id / sort_order 可选）
+ * @returns {Promise<Object>} 更新后的节点对象
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function updateApiConfigNode(id, payload) {
+  const response = await fetchWithAuth(`/api/admin/api-configs/nodes/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `更新 API 配置节点失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 删除 API 配置节点（非空文件夹后端返回 400）
+ * 调用 DELETE /api/admin/api-configs/nodes/{id}
+ * @param {number|string} id - 节点 ID
+ * @returns {Promise<void>} 无返回值
+ * @throws {Error} 请求失败时抛出错误（非空文件夹时 message 含后端提示）
+ */
+export async function deleteApiConfigNode(id) {
+  const response = await fetchWithAuth(`/api/admin/api-configs/nodes/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `删除 API 配置节点失败: ${response.status}`)
+  }
+}
+
+/**
+ * 获取接口节点的请求配置
+ * 调用 GET /api/admin/api-configs/nodes/{id}/config
+ * @param {number|string} nodeId - 接口节点 ID
+ * @returns {Promise<{id: number, node_id: number, method: string, url: string, params: Array, headers: Array, body_type: string, body_content: string, form_fields: Array, expectations: Array}>} 配置对象
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function fetchApiConfig(nodeId) {
+  const response = await fetchWithAuth(`/api/admin/api-configs/nodes/${encodeURIComponent(nodeId)}/config`, { method: 'GET' })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取 API 配置失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 保存接口节点的请求配置（全量 upsert）
+ * 调用 PUT /api/admin/api-configs/nodes/{id}/config
+ * @param {number|string} nodeId - 接口节点 ID
+ * @param {Object} config - 完整配置（method / url / params / headers / body_type / body_content / form_fields / expectations）
+ * @returns {Promise<Object>} 保存后的配置对象
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function saveApiConfig(nodeId, config) {
+  const response = await fetchWithAuth(`/api/admin/api-configs/nodes/${encodeURIComponent(nodeId)}/config`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `保存 API 配置失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 发送接口节点的请求（由后端按已保存配置发起真实 HTTP 调用并校验预期规则）
+ * 调用 POST /api/admin/api-configs/nodes/{id}/send
+ * @param {number|string} nodeId - 接口节点 ID
+ * @returns {Promise<{run_id: number, http_status: number|null, duration_ms: number|null, response_body: string, check_passed: boolean, assertion_results: Array<{rule: string, passed: boolean, detail: string}>, error_message: string|null}>} 发送结果
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function sendApiConfig(nodeId) {
+  const response = await fetchWithAuth(`/api/admin/api-configs/nodes/${encodeURIComponent(nodeId)}/send`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `发送 API 请求失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 获取接口节点的发送历史
+ * 调用 GET /api/admin/api-configs/nodes/{id}/runs?limit={limit}
+ * @param {number|string} nodeId - 接口节点 ID
+ * @param {number} [limit=20] - 最大返回条数
+ * @returns {Promise<{runs: Array<{id: number, http_status: number|null, duration_ms: number|null, check_passed: boolean, response_excerpt: string, error_message: string|null, created_at: string}>}>} 发送历史
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function fetchApiConfigRuns(nodeId, limit = 20) {
+  const response = await fetchWithAuth(`/api/admin/api-configs/nodes/${encodeURIComponent(nodeId)}/runs?limit=${encodeURIComponent(limit)}`, {
+    method: 'GET',
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取 API 发送历史失败: ${response.status}`)
+  }
+  return response.json()
+}

@@ -147,6 +147,7 @@ function setupFetchMock() {
     if (u === '/api/admin/devops-servers/scan' && method === 'POST') {
       return jsonResponse({ scanned: 2, inserted: 1, updated: 1, failed: 0 })
     }
+    if (u === '/api/admin/api-configs/tree' && method === 'GET') return jsonResponse({ nodes: [] })
     return jsonResponse({})
   })
 }
@@ -274,20 +275,23 @@ describe('TaskSchedulerManager 组件', () => {
     expect(tablist.exists()).toBe(true)
 
     const tabs = tablist.findAll('[role="tab"]')
-    expect(tabs.length).toBe(3)
+    expect(tabs.length).toBe(4)
     expect(tabs[0].text()).toContain('编辑任务')
     expect(tabs[1].text()).toContain('服务器扫描入库')
     expect(tabs[2].text()).toContain('脚本扫描入库')
+    expect(tabs[3].text()).toContain('API接口配置')
 
     // 默认激活态：第一个 Tab aria-selected=true
     expect(tabs[0].attributes('aria-selected')).toBe('true')
     expect(tabs[1].attributes('aria-selected')).toBe('false')
     expect(tabs[2].attributes('aria-selected')).toBe('false')
+    expect(tabs[3].attributes('aria-selected')).toBe('false')
 
     // 条件挂载语义：默认只有任务面板存在，隐藏面板不得常驻 DOM
     expect(wrapper.find('[data-testid="panel-task"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="panel-scan"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="panel-script"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="panel-api"]').exists()).toBe(false)
 
     // 初始化时不应触发 devops-servers 请求
     const initialDevopsCalls = global.fetch.mock.calls.filter(([url]) =>
@@ -301,6 +305,7 @@ describe('TaskSchedulerManager 组件', () => {
     expect(wrapper.find('[data-testid="panel-task"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="panel-scan"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="panel-script"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="panel-api"]').exists()).toBe(false)
 
     // 切到脚本扫描 Tab 后，仅脚本扫描面板存在
     await tabs[2].trigger('click')
@@ -308,6 +313,17 @@ describe('TaskSchedulerManager 组件', () => {
     expect(wrapper.find('[data-testid="panel-task"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="panel-scan"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="panel-script"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="panel-api"]').exists()).toBe(false)
+
+    // 切到 API 接口配置 Tab 后，仅 API 面板存在，并按需拉取节点树
+    await tabs[3].trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="panel-task"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="panel-scan"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="panel-script"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="panel-api"]').exists()).toBe(true)
+    const treeCalls = global.fetch.mock.calls.filter(([url]) => url === '/api/admin/api-configs/tree')
+    expect(treeCalls.length).toBeGreaterThan(0)
   })
 
   it('test_switch_tab_loads_servers_on_demand 切换 Tab 按需加载服务器列表', async () => {

@@ -2838,6 +2838,48 @@ ALTER TABLE email_policies
 ALTER TABLE email_policies
     ADD COLUMN IF NOT EXISTS body_template TEXT NOT NULL DEFAULT '';
 
+-- ========== 21. api_config_nodes / api_configs / api_check_runs（API接口配置）==========
+-- 树形节点（folder / api）+ 每个 api 节点的请求配置 + 调用历史。
+-- 所有 DDL 使用 IF NOT EXISTS，幂等可重复执行。
+CREATE TABLE IF NOT EXISTS api_config_nodes (
+    id          SERIAL PRIMARY KEY,
+    parent_id   INTEGER NULL REFERENCES api_config_nodes(id) ON DELETE CASCADE,
+    node_type   VARCHAR(16) NOT NULL CHECK (node_type IN ('folder', 'api')),
+    name        VARCHAR(255) NOT NULL,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  TIMESTAMPTZ DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_api_config_nodes_parent ON api_config_nodes(parent_id);
+
+CREATE TABLE IF NOT EXISTS api_configs (
+    id            SERIAL PRIMARY KEY,
+    node_id       INTEGER NOT NULL UNIQUE REFERENCES api_config_nodes(id) ON DELETE CASCADE,
+    method        VARCHAR(8) NOT NULL DEFAULT 'POST' CHECK (method IN ('POST', 'PUT')),
+    url           TEXT NOT NULL DEFAULT '',
+    params        JSONB NOT NULL DEFAULT '[]',
+    headers       JSONB NOT NULL DEFAULT '[]',
+    body_type     VARCHAR(32) NOT NULL DEFAULT 'none'
+                  CHECK (body_type IN ('none', 'json', 'xml', 'text', 'form-data', 'x-www-form-urlencoded')),
+    body_content  TEXT NOT NULL DEFAULT '',
+    form_fields   JSONB NOT NULL DEFAULT '[]',
+    expectations  JSONB NOT NULL DEFAULT '[]',
+    created_at    TIMESTAMPTZ DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS api_check_runs (
+    id               SERIAL PRIMARY KEY,
+    config_id        INTEGER NOT NULL REFERENCES api_configs(id) ON DELETE CASCADE,
+    http_status      INTEGER NULL,
+    duration_ms      INTEGER NULL,
+    check_passed     BOOLEAN NOT NULL DEFAULT FALSE,
+    response_excerpt TEXT NOT NULL DEFAULT '',
+    error_message    TEXT NOT NULL DEFAULT '',
+    created_at       TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_api_check_runs_config ON api_check_runs(config_id, created_at DESC);
+
 COMMIT;
 
 -- =============================================
@@ -2856,7 +2898,8 @@ WHERE table_schema = 'public'
     'message_feedback',
     'agent_task_schedules', 'agent_task_runs',
     'devops_servers',
-    'email_server_configs', 'email_policies', 'email_policy_recipients'
+    'email_server_configs', 'email_policies', 'email_policy_recipients',
+    'api_config_nodes', 'api_configs', 'api_check_runs'
   )
 ORDER BY table_name;
 

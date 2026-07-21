@@ -381,6 +381,26 @@ async def lifespan(app: FastAPI):
             "[lifespan] Database pool not available, DevOpsServerService not initialized"
         )
 
+    # 初始化 ApiConfigService（API 接口配置管理，数据库为节点与配置真相源）
+    # 顺序约束：必须在 DB 池就绪之后；仅依赖连接池，无其他 service 依赖。
+    # DB 不可用时不挂载 app.state，路由层 _get_service 会返回 500。
+    if DatabasePool.is_enabled() and DatabasePool._pool is not None:
+        try:
+            from app.shared.utils.api_config_service import ApiConfigService
+
+            app.state.api_config_service = ApiConfigService(db=DatabasePool._pool)
+            await app.state.api_config_service.preload_all()
+            logging.info("[lifespan] ApiConfigService initialized")
+        except Exception as api_cfg_exc:
+            logging.warning(
+                "[lifespan] Failed to initialize ApiConfigService: %s",
+                type(api_cfg_exc).__name__,
+            )
+    else:
+        logging.warning(
+            "[lifespan] Database pool not available, ApiConfigService not initialized"
+        )
+
     # 2026-07-19 新增：注册多渠道消费者（飞书 / 未来钉钉 / 企微 / Slack 等）
     # 通过 import 触发各渠道包 __init__.py 内的 channel_registry.register(...) 调用。
     # 顺序约束：必须在 FeishuWebSocketService 启动之前完成注册，否则

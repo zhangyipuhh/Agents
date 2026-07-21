@@ -395,6 +395,35 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 16. **成功路径日志（2026-07-18 新增）**：`EmailService.send_email` 成功时 `logger.info` 记录 `message_id / from / to`（此前仅有失败日志），用于事后排查"显示成功但收不到"时确认信封信息。前端测试发送 Tab 同步追加说明文案：「发送成功」仅代表 SMTP 服务器已接收（250 OK）不代表对方已投递，跨域发送可能被对方反垃圾网关静默丢弃。
 17. **EHLO local_hostname=cfg.host 保留不改（2026-07-18 排查结论）**：曾怀疑从动态 IP 以 `EHLO smtp.qq.com` 声明是伪造特征导致对方网关静默丢弃，但第 13 条的最终实测证明：**同一份 EHLO 代码在重启后投递成功**，EHLO 从来不是拦截因素；且改动 `local_hostname` 会让已验证可用的路径承担回归风险，故保持现状。
 
+## API 接口配置（2026-07-20 新增）
+
+「用户设置与管理 → 定时任务」内的第 4 个 Tab「API接口配置」，类 Apifox 的轻量接口管理与健康校验模块。**与定时任务调度完全解耦**（不参与 cron），仅复用其设置入口。
+
+### 数据库表（`init_all_tables.sql` 章节 21，幂等 DDL）
+
+- `api_config_nodes`：树节点（`parent_id` 自引用 NULL=根，`node_type` CHECK `folder|api`，`name`，`sort_order`），索引 `(parent_id)`，删除 ON DELETE CASCADE
+- `api_configs`：接口配置（`node_id` UNIQUE FK 级联），`method` CHECK `POST|PUT`、`url`、`params`/`headers`/`form_fields` JSONB（`[{name,value,description}]`）、`body_type` CHECK `none|json|xml|text|form-data|x-www-form-urlencoded`、`body_content` TEXT、`expectations` JSONB 断言规则
+- `api_check_runs`：调用历史（`config_id` FK 级联），`http_status/duration_ms/check_passed/response_excerpt(截断4000)/error_message`，索引 `(config_id, created_at DESC)`
+
+### 后端
+
+- `app/shared/utils/api_config_service.py::ApiConfigService`：构造注入 db（`db=None` 优雅降级：preload no-op、读返回空、写抛 RuntimeError）；内存+DB 双写；`preload_all()` / `get_tree()` / `create_node()`（api 节点自动建默认配置行；父节点必须是 folder）/ `update_node()`（防环校验）/ `delete_node()`（**非空文件夹抛 ValueError 拒绝删除**）/ `get_config()` / `upsert_config()`（枚举与 expectations 结构校验）/ `send_request()`（httpx.AsyncClient timeout=15 代理发送 + 断言校验 + 落库，网络异常也落库）/ `list_runs()`
+- 断言类型（`_evaluate_expectations`）：`status_code`(eq) / `body_contains`(子串) / `json_field`(点号 path 下钻，`exists|eq`)
+- `app/routers/api_config_router.py`：`/api/admin/api-configs`（全部 `require_admin`）：`GET /tree`、`POST /nodes`、`PUT /nodes/{id}`、`DELETE /nodes/{id}`（非空文件夹 400）、`GET|PUT /nodes/{id}/config`、`POST /nodes/{id}/send`、`GET /nodes/{id}/runs?limit=20`
+- 注册：`app/main.py::register_routers`；lifespan 初始化在 `app/core/server.py`（DB 池就绪后，`app.state.api_config_service`），DB 不可用时不挂载，路由 `_get_service` 返回 500
+
+### 前端（`web/Agent/`）
+
+- `TaskSchedulerManager.vue`：`TAB_API='api'` 追加为第 4 个 tab「API接口配置」，panel 内挂载 `<ApiConfigManager />`
+- `src/components/ApiConfigManager.vue`：左侧自定义递归树（搜索/新建文件夹/新建接口/inline 重命名/删除，api 节点带 method 徽标）；右侧配置区（method 下拉 POST/PUT + URL + 发送/保存），子 tab `Params/Body/Headers/Mock`；Headers 参数名提供常用请求头建议（Content-Type/Authorization/Accept/User-Agent 等）；Body 类型 none/form-data/x-www-form-urlencoded/JSON/XML/Text（**仅文本，不含文件上传**）；Mock 为预期结果断言规则编辑器（状态码等于/响应体包含/JSON字段）；发送结果区展示状态码、耗时、check_passed 徽标、断言明细、响应体预览
+- `src/utils/api.js` 追加封装：`fetchApiConfigTree/createApiConfigNode/updateApiConfigNode/deleteApiConfigNode/fetchApiConfig/saveApiConfig/sendApiConfig/fetchApiConfigRuns`
+
+### 测试
+
+- `app/tests/shared/utils/test_api_config_service.py`（service 单测，httpx 经 monkeypatch 替换 AsyncClient，db 用 stub）
+- `app/tests/routers/test_api_config_router.py`（路由契约；`app/tests/routers/conftest.py` 新增 autouse fixture 注入**真实** `ApiConfigService(db=None)`，生产对应点为 lifespan）
+- `web/Agent/src/components/__tests__/ApiConfigManager.spec.js`（树交互/子tab/Body切换/Mock规则/发送结果）；`TaskSchedulerManager.spec.js` tab 顺序断言更新为 4 tab
+
 ## Agent 统一构造入口（2026-06-29 新增）
 
 ### `AgentConfigService.build_agent_instance()`

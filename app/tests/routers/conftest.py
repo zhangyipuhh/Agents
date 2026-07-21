@@ -197,6 +197,23 @@ def _init_email_config_service(app):
 
 
 @pytest.fixture(autouse=True)
+def _init_api_config_service(app):
+    """初始化 app.state.api_config_service 供 api_config_router 使用。
+
+    生产对应初始化点：``app/core/server.py::lifespan`` 中
+    ``ApiConfigService(db=DatabasePool._pool)`` 创建并挂到
+    ``app.state.api_config_service``，随后 ``preload_all()`` 预加载节点与配置缓存。
+
+    测试环境注入真实 ApiConfigService 实例，db=None 是合法 stub（service
+    层对 db=None 优雅降级：preload no-op、读返回空、写抛 RuntimeError）；
+    单测通过替换 service 方法或按需注入 fake db 验证行为。禁止注入
+    ``app.state.db = MagicMock()`` 这类生产不存在的对象。
+    """
+    from app.shared.utils.api_config_service import ApiConfigService
+    app.state.api_config_service = ApiConfigService(db=None)
+
+
+@pytest.fixture(autouse=True)
 def _mock_user_db_for_admin_auth(monkeypatch):
     """Mock UserDB.get_user_by_username 根据 username 返回对应 role 用户。
 

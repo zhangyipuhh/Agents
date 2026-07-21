@@ -25,15 +25,18 @@ import {
   scanScripts,
   fetchEmailPolicies,
 } from '../utils/api.js'
+import ApiConfigManager from './ApiConfigManager.vue'
 
 const TAB_TASK = 'task'
 const TAB_SCAN = 'scan'
 const TAB_SCRIPT = 'script'
+const TAB_API = 'api'
 
 const TAB_LABELS = [
   { id: TAB_TASK, label: '编辑任务' },
   { id: TAB_SCAN, label: '服务器扫描入库' },
   { id: TAB_SCRIPT, label: '脚本扫描入库' },
+  { id: TAB_API, label: 'API接口配置' },
 ]
 
 const schedules = ref([])
@@ -738,7 +741,7 @@ async function loadRuns(scheduleId) {
  * 切到脚本 Tab 时按需加载脚本列表。
  * 切回任务 Tab 时不再触发任何 devops / scripts 请求。
  * 第一次加载完成后置 ``hasLoaded=true`` / ``hasLoadedScripts=true``，之后切回再进入不再重复 GET。
- * @param {string} tabId - TAB_TASK / TAB_SCAN / TAB_SCRIPT
+ * @param {string} tabId - TAB_TASK / TAB_SCAN / TAB_SCRIPT / TAB_API
  * @returns {Promise<void>} 无返回值
  */
 async function switchTab(tabId) {
@@ -1930,6 +1933,17 @@ onMounted(loadInitialData)
             </tr>
           </tbody>
         </table>
+      </section>
+
+      <!-- API 接口配置 Tab —— v-else-if 互斥挂载，理由同任务 Tab -->
+      <section
+        v-else-if="activeTab === TAB_API"
+        :id="`panel-${TAB_API}`"
+        role="tabpanel"
+        aria-labelledby="tab-api"
+        data-testid="panel-api"
+      >
+        <ApiConfigManager />
       </section>
     </main>
   </section>
