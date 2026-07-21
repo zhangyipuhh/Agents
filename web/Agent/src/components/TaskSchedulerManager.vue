@@ -1942,6 +1942,7 @@ onMounted(loadInitialData)
         role="tabpanel"
         aria-labelledby="tab-api"
         data-testid="panel-api"
+        class="task-panel-api"
       >
         <ApiConfigManager />
       </section>
@@ -1965,6 +1966,18 @@ onMounted(loadInitialData)
   border-radius: 14px;
   padding: 18px;
   height: 100%;
+  min-height: 0;
+}
+
+.task-detail {
+  display: flex;
+  flex-direction: column;
+}
+
+.task-detail > .task-panel-api {
+  display: flex;
+  flex: 1;
+  min-height: 0;
 }
 
 .panel-header,

@@ -414,8 +414,8 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 
 ### 前端（`web/Agent/`）
 
-- `TaskSchedulerManager.vue`：`TAB_API='api'` 追加为第 4 个 tab「API接口配置」，panel 内挂载 `<ApiConfigManager />`
-- `src/components/ApiConfigManager.vue`：左侧自定义递归树（搜索/新建文件夹/新建接口/inline 重命名/删除，api 节点带 method 徽标）；右侧配置区（method 下拉 POST/PUT + URL + 发送/保存），子 tab `Params/Body/Headers/Mock`；Headers 参数名提供常用请求头建议（Content-Type/Authorization/Accept/User-Agent 等）；Body 类型 none/form-data/x-www-form-urlencoded/JSON/XML/Text（**仅文本，不含文件上传**）；Mock 为预期结果断言规则编辑器（状态码等于/响应体包含/JSON字段）；发送结果区展示状态码、耗时、check_passed 徽标、断言明细、响应体预览
+- `TaskSchedulerManager.vue`：`TAB_API='api'` 追加为第 4 个 tab「API接口配置」，panel 内挂载 `<ApiConfigManager />`；API panel 使用 `.task-panel-api` 作为可伸缩布局容器，详情区通过 flex 高度链向下传递可用空间，API 配置详情面板内部负责纵向滚动
+- `src/components/ApiConfigManager.vue`：左侧自定义递归树（搜索/新建文件夹/新建接口/inline 重命名/删除，api 节点带 method 徽标）；右侧配置区（method 下拉 POST/PUT + URL + 发送/保存），子 tab `Params/Body/Headers/Mock`；Headers 参数名提供常用请求头建议（Content-Type/Authorization/Accept/User-Agent 等）；Body 类型 none/form-data/x-www-form-urlencoded/JSON/XML/Text（**仅文本，不含文件上传**）；Mock 为预期结果断言规则编辑器（状态码等于/响应体包含/JSON字段）；发送结果区展示状态码、耗时、check_passed 徽标、断言明细、响应体预览；左右面板填满 API Tab 可用高度，树列表与详情内容分别在面板内部滚动
 - `src/utils/api.js` 追加封装：`fetchApiConfigTree/createApiConfigNode/updateApiConfigNode/deleteApiConfigNode/fetchApiConfig/saveApiConfig/sendApiConfig/fetchApiConfigRuns`
 
 ### 测试
