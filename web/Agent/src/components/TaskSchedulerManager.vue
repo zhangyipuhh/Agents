@@ -1955,8 +1955,9 @@ onMounted(loadInitialData)
   display: grid;
   grid-template-columns: 320px minmax(0, 1fr);
   gap: 20px;
-  min-height: 560px;
-  height: 100%;
+  min-height: 0;    /* 允许父级 flex 收缩时不破坏滚动约束 */
+  min-height: 560px; /* 兜底下限：dialog 视口很小时仍保留最小高度 */
+  flex: 1;          /* 沿父级 flex 高度链占满，确保 aside/main 撑到 .dialog-content 可视高度 */
 }
 
 .task-sidebar,

@@ -11,6 +11,7 @@
  *  - Params 与 Mock 规则增删
  *  - 保存配置调用 PUT 且 expectations 规范化
  *  - 发送结果展示（状态码 / 耗时 / 校验徽标 / 断言明细 / 响应体预览 / 网络错误）
+ *  - 工具栏：搜索框放大镜图标；新建 `+` 触发器与弹出菜单（开关、菜单项触发 createNode）
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
@@ -167,6 +168,10 @@ describe('ApiConfigManager 组件', () => {
   it('test_create_folder_posts_node 新建文件夹调用 POST 并进入重命名', async () => {
     const wrapper = await mountManager()
 
+    // 先点开「+」弹出菜单
+    await wrapper.find('[data-testid="api-new-trigger"]').trigger('click')
+    await flushPromises()
+    // 再点菜单项「新建文件夹」
     await wrapper.find('[data-testid="api-new-folder"]').trigger('click')
     await flushPromises()
 
@@ -187,6 +192,10 @@ describe('ApiConfigManager 组件', () => {
     // 点击文件夹节点使其成为选中节点
     await wrapper.find('[data-testid="tree-node-1"]').trigger('click')
     await flushPromises()
+    // 先点开「+」弹出菜单
+    await wrapper.find('[data-testid="api-new-trigger"]').trigger('click')
+    await flushPromises()
+    // 再点菜单项「新建接口」
     await wrapper.find('[data-testid="api-new-api"]').trigger('click')
     await flushPromises()
 
@@ -398,5 +407,92 @@ describe('ApiConfigManager 组件', () => {
 
     expect(wrapper.find('[data-testid="send-error"]').text()).toContain('连接目标服务器失败')
     expect(wrapper.find('[data-testid="send-check-badge"]').text()).toContain('异常')
+  })
+
+  it('test_toolbar_has_search_icon_and_new_trigger 工具栏呈现单行布局,搜索框带放大镜,+ 触发器存在', async () => {
+    const wrapper = await mountManager()
+
+    // 搜索框存在并带放大镜图标
+    const search = wrapper.find('[data-testid="api-tree-search"]')
+    expect(search.exists()).toBe(true)
+    // 放大镜图标作为兄弟节点存在（.acm-search-icon）
+    const toolbar = wrapper.find('.acm-toolbar')
+    expect(toolbar.find('.acm-search-icon').exists()).toBe(true)
+    // + 触发器存在
+    const trigger = wrapper.find('[data-testid="api-new-trigger"]')
+    expect(trigger.exists()).toBe(true)
+    // 旧的两个独立按钮不再独立存在（被合并进菜单）
+    // 菜单初始关闭
+    expect(wrapper.find('[data-testid="api-new-menu"]').exists()).toBe(false)
+  })
+
+  it('test_new_menu_opens_and_closes 点击 + 触发器打开/关闭弹出菜单,菜单项触发 createNode', async () => {
+    const wrapper = await mountManager()
+
+    // 初始菜单隐藏
+    expect(wrapper.find('[data-testid="api-new-menu"]').exists()).toBe(false)
+
+    // 点击 + 打开菜单
+    await wrapper.find('[data-testid="api-new-trigger"]').trigger('click')
+    await flushPromises()
+    const menu = wrapper.find('[data-testid="api-new-menu"]')
+    expect(menu.exists()).toBe(true)
+    // 菜单包含「新建文件夹」与「新建接口」两项
+    expect(menu.text()).toContain('新建文件夹')
+    expect(menu.text()).toContain('新建接口')
+    expect(menu.findAll('[data-testid="api-new-folder"]').length).toBe(1)
+    expect(menu.findAll('[data-testid="api-new-api"]').length).toBe(1)
+
+    // 再次点击 + 关闭菜单
+    await wrapper.find('[data-testid="api-new-trigger"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="api-new-menu"]').exists()).toBe(false)
+
+    // 打开菜单后点击「新建文件夹」菜单项 → 触发 POST 并自动关闭菜单
+    await wrapper.find('[data-testid="api-new-trigger"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="api-new-folder"]').trigger('click')
+    await flushPromises()
+
+    const postCall = global.fetch.mock.calls.find(
+      ([url, opts]) => url === '/api/admin/api-configs/nodes' && opts.method === 'POST'
+    )
+    expect(postCall).toBeTruthy()
+    expect(JSON.parse(postCall[1].body).node_type).toBe('folder')
+    // 菜单已自动关闭
+    expect(wrapper.find('[data-testid="api-new-menu"]').exists()).toBe(false)
+  })
+
+  it('test_new_menu_closes_on_outside_click 点击工具栏外区域关闭菜单', async () => {
+    const wrapper = await mountManager()
+
+    // 打开菜单
+    await wrapper.find('[data-testid="api-new-trigger"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="api-new-menu"]').exists()).toBe(true)
+
+    // 直接在 document 上派发 click,target 指向工具栏外部(tree 区域),
+    // 模拟「点击工具栏外区域」的真实 DOM 行为（vue-test-utils 的 trigger 不会冒泡到 document）
+    const outsideTarget = wrapper.find('[data-testid="api-tree"]').element
+    const outsideEvent = new MouseEvent('click', { bubbles: true })
+    Object.defineProperty(outsideEvent, 'target', { value: outsideTarget, configurable: true })
+    document.dispatchEvent(outsideEvent)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="api-new-menu"]').exists()).toBe(false)
+  })
+
+  it('test_new_menu_closes_on_escape 按 Esc 关闭菜单', async () => {
+    const wrapper = await mountManager()
+
+    // 打开菜单
+    await wrapper.find('[data-testid="api-new-trigger"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="api-new-menu"]').exists()).toBe(true)
+
+    // 全局派发 Esc 键事件
+    const escapeEvent = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+    document.dispatchEvent(escapeEvent)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="api-new-menu"]').exists()).toBe(false)
   })
 })

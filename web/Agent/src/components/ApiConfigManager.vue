@@ -8,7 +8,7 @@
  *
  * 后端契约：/api/admin/api-configs（见 utils/api.js 中 fetchApiConfigTree 等封装）。
  */
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   fetchApiConfigTree,
   createApiConfigNode,
@@ -79,6 +79,12 @@ const renamingValue = ref('')
 const isLoadingTree = ref(false)
 const treeError = ref('')
 const treeMessage = ref('')
+
+// ---------- 新建菜单 ----------
+// 工具栏根节点模板引用（用于判定点击是否发生在工具栏外）
+const toolbarRef = ref(null)
+// 弹出菜单开关
+const newMenuOpen = ref(false)
 
 // ---------- 配置区状态 ----------
 const config = reactive({
@@ -549,6 +555,72 @@ async function sendRequest() {
 }
 
 onMounted(loadTree)
+
+/**
+ * 切换新建菜单的显示状态（点击 + 触发器自身时切换）。
+ * @param {MouseEvent} [event] - 点击事件，用于阻止冒泡到 document 监听器
+ * @returns {void}
+ */
+function toggleNewMenu(event) {
+  if (event) event.stopPropagation()
+  newMenuOpen.value = !newMenuOpen.value
+}
+
+/**
+ * 关闭新建菜单（点击 toolbar 外部、Esc 键、菜单项被点击后调用）。
+ * @param {MouseEvent} [event] - 可选的点击事件，用于 stopPropagation
+ * @returns {void}
+ */
+function closeNewMenu(event) {
+  if (event) event.stopPropagation()
+  if (newMenuOpen.value) newMenuOpen.value = false
+}
+
+/**
+ * 菜单项点击：调用 createNode 创建节点；创建成功后关闭菜单。
+ * createNode 自身已处理「自动展开父文件夹 + 进入 inline 重命名」。
+ * @param {'folder'|'api'} nodeType - 节点类型
+ * @returns {Promise<void>} 无返回值
+ */
+async function onNewMenuClick(nodeType) {
+  await createNode(nodeType)
+  // 无论成功与否都关闭菜单（失败时 createNode 已写入 treeError）
+  newMenuOpen.value = false
+}
+
+/**
+ * 监听 document 点击：点击发生在工具栏外时关闭菜单。
+ * @param {MouseEvent} event - 全局点击事件
+ * @returns {void}
+ */
+function handleDocumentClick(event) {
+  if (!newMenuOpen.value) return
+  const root = toolbarRef.value
+  if (root && !root.contains(event.target)) {
+    newMenuOpen.value = false
+  }
+}
+
+/**
+ * 监听 Esc 键：按 Esc 关闭菜单。
+ * @param {KeyboardEvent} event - 键盘事件
+ * @returns {void}
+ */
+function handleKeydown(event) {
+  if (event.key === 'Escape' && newMenuOpen.value) {
+    newMenuOpen.value = false
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('click', handleDocumentClick)
+  document.addEventListener('keydown', handleKeydown)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('click', handleDocumentClick)
+  document.removeEventListener('keydown', handleKeydown)
+})
 </script>
 
 <template>
@@ -556,21 +628,64 @@ onMounted(loadTree)
     <div class="acm-layout">
       <!-- 左侧：节点树 -->
       <aside class="acm-sidebar">
-        <div class="acm-toolbar">
-          <input
-            v-model="searchKeyword"
-            type="search"
-            class="acm-search"
-            placeholder="搜索名称…"
-            aria-label="搜索节点"
-            data-testid="api-tree-search"
-          />
-          <div class="acm-toolbar-actions">
-            <button type="button" class="secondary-btn" data-testid="api-new-folder" @click="createNode('folder')">
-              新建文件夹
+        <div class="acm-toolbar" :class="{ 'menu-open': newMenuOpen }" ref="toolbarRef">
+          <div class="acm-search-wrapper">
+            <svg class="acm-search-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M9 17a8 8 0 100-16 8 8 0 000 16zM14 14l4 4" />
+            </svg>
+            <input
+              v-model="searchKeyword"
+              type="search"
+              class="acm-search"
+              placeholder="搜索名称…"
+              aria-label="搜索节点"
+              data-testid="api-tree-search"
+            />
+          </div>
+          <button
+            type="button"
+            class="acm-new-trigger"
+            :class="{ open: newMenuOpen }"
+            data-testid="api-new-trigger"
+            aria-label="新建"
+            aria-haspopup="true"
+            :aria-expanded="newMenuOpen ? 'true' : 'false'"
+            @click="toggleNewMenu"
+          >
+            <span aria-hidden="true">+</span>
+          </button>
+
+          <div
+            v-if="newMenuOpen"
+            class="acm-new-menu"
+            role="menu"
+            aria-label="新建"
+            data-testid="api-new-menu"
+          >
+            <button
+              type="button"
+              role="menuitem"
+              class="acm-new-menu-item"
+              data-testid="api-new-folder"
+              @click="onNewMenuClick('folder')"
+            >
+              <svg class="acm-new-menu-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
+              </svg>
+              <span>新建文件夹</span>
             </button>
-            <button type="button" class="primary-btn" data-testid="api-new-api" @click="createNode('api')">
-              新建接口
+            <button
+              type="button"
+              role="menuitem"
+              class="acm-new-menu-item"
+              data-testid="api-new-api"
+              @click="onNewMenuClick('api')"
+            >
+              <svg class="acm-new-menu-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3 8h14M3 12h14M5 4h10a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z" />
+                <circle cx="8" cy="10" r="0.8" fill="currentColor" stroke="none" />
+              </svg>
+              <span>新建接口</span>
             </button>
           </div>
         </div>
@@ -970,8 +1085,9 @@ onMounted(loadTree)
 .api-config-manager {
   display: flex;
   flex-direction: column;
-  min-height: 480px;
-  height: 100%;
+  min-height: 0;    /* 允许父级 flex 收缩时不破坏滚动约束 */
+  min-height: 480px; /* 兜底下限：dialog 视口很小时仍保留最小高度 */
+  flex: 1;          /* 沿父级（.task-detail > .task-panel-api）flex 高度链占满 */
 }
 
 .acm-layout {
@@ -981,7 +1097,6 @@ onMounted(loadTree)
   gap: 16px;
   flex: 1;
   min-height: 0;
-  height: 100%;
 }
 
 .acm-sidebar,
@@ -1007,18 +1122,41 @@ onMounted(loadTree)
 
 .acm-toolbar {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: center;
   gap: 8px;
   margin-bottom: 10px;
+  position: relative;            /* 菜单 absolute 定位锚点 */
+}
+
+.acm-search-wrapper {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.acm-search-icon {
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 14px;
+  height: 14px;
+  color: #9ca3af;
+  pointer-events: none;
+  z-index: 1;
 }
 
 .acm-search {
   width: 100%;
   border: 1px solid #d1d5db;
   border-radius: 8px;
-  padding: 7px 10px;
+  padding: 7px 10px 7px 30px;     /* 左侧留出放大镜位置 */
   font-size: 13px;
   color: #111827;
+  background: #ffffff;
 }
 
 .acm-search:focus {
@@ -1027,9 +1165,82 @@ onMounted(loadTree)
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
 }
 
-.acm-toolbar-actions {
+.acm-new-trigger {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: #2563eb;
+  color: #ffffff;
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
   display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background-color 0.15s ease;
+}
+
+.acm-new-trigger:hover,
+.acm-new-trigger.open {
+  background: #1d4ed8;
+}
+
+.acm-new-trigger:focus-visible {
+  outline: 2px solid #93c5fd;
+  outline-offset: 2px;
+}
+
+.acm-new-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 168px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.10);
+  padding: 4px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.acm-new-menu-item {
+  display: flex;
+  align-items: center;
   gap: 8px;
+  border: 0;
+  background: transparent;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #111827;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  font-weight: 500;
+}
+
+.acm-new-menu-item:hover {
+  background: #f3f4f6;
+}
+
+.acm-new-menu-item:focus-visible {
+  outline: 2px solid #93c5fd;
+  outline-offset: -2px;
+  background: #f3f4f6;
+}
+
+.acm-new-menu-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: #2563eb;
 }
 
 .acm-tree {
@@ -1145,9 +1356,9 @@ onMounted(loadTree)
 .detail-empty {
   flex: 1;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  padding: 60px 16px;
+  padding-top: 24px;
 }
 
 .request-line {

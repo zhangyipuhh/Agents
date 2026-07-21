@@ -1525,12 +1525,12 @@ watch(() => props.visible, (newVal) => {
               </div>
 
               <!-- 定时任务（admin） -->
-              <div v-show="activeTab === 'task-scheduler'">
+              <div v-show="activeTab === 'task-scheduler'" class="tab-fill-wrapper">
                 <TaskSchedulerManager />
               </div>
 
               <!-- 邮件设置（admin） -->
-              <div v-show="activeTab === 'email-settings'">
+              <div v-show="activeTab === 'email-settings'" class="tab-fill-wrapper">
                 <EmailSettingsManager />
               </div>
             </div>
@@ -1927,12 +1927,29 @@ watch(() => props.visible, (newVal) => {
   font-weight: var(--font-weight-medium);
 }
 
-/* 右侧内容 */
+/* 右侧内容
+   display:flex + flex-direction:column 是 .tab-fill-wrapper（flex:1）高度链生效的前提：
+   父级不是 flex 容器时 wrapper 的 flex:1 惰性失效，高度退化为内容高度，
+   导致定时任务/邮件设置面板下方留白。 */
 .dialog-content {
   flex: 1;
   padding: var(--space-xl);
   overflow-y: auto;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 设置子 Tab 高度链 wrapper：
+   让 .dialog-content 内的任务/邮件 tab wrapper 形成 flex 高度链，
+   沿用 .task-scheduler-manager / EmailSettingsManager 等组件的 flex:1 撑满逻辑，
+   避免内部 grid/flex 子项下方留白。
+   min-height:0 防止 flex item 被内容撑高超过容器，破坏滚动约束。 */
+.tab-fill-wrapper {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
 }
 
 /* 设置分区 */
