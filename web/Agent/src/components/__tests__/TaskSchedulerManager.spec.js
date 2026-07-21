@@ -191,6 +191,91 @@ describe('TaskSchedulerManager 组件', () => {
     expect(wrapper.findAll('.task-item').length).toBe(1)
   })
 
+  it('test_schedule_card_history_button_icon_only 卡片显示仅图标执行历史按钮', async () => {
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+
+    const historyButton = wrapper.find('.task-history-btn')
+    expect(historyButton.exists()).toBe(true)
+    expect(historyButton.text()).toBe('')
+    expect(historyButton.attributes('aria-label')).toBe('查看执行历史')
+    expect(historyButton.attributes('title')).toBe('查看执行历史')
+    expect(wrapper.find('.run-history').exists()).toBe(false)
+  })
+
+  it('test_history_button_expands_target_card_without_selecting_task 点击历史按钮只展开目标卡片', async () => {
+    const secondSchedule = {
+      ...mockSchedules[0],
+      id: 2,
+      name: '任务B',
+      agent_name: 'disabled_agent',
+    }
+    const secondRuns = [{
+      id: 9,
+      status: 'success',
+      trigger_type: 'scheduled',
+      output_text: '任务B执行完成',
+      created_at: '2026-07-11T10:00:00',
+    }]
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const method = (opts.method || 'GET').toUpperCase()
+      const u = typeof url === 'string' ? url : url.url
+      if (u === '/api/admin/task-schedules' && method === 'GET') {
+        return jsonResponse([mockSchedules[0], secondSchedule])
+      }
+      if (u === '/api/admin/agents' && method === 'GET') return jsonResponse(mockAgents)
+      if (u === '/api/admin/scripts' && method === 'GET') return jsonResponse(mockScripts)
+      if (u.includes('/api/admin/task-schedules/1/runs')) return jsonResponse(mockRuns)
+      if (u.includes('/api/admin/task-schedules/2/runs')) return jsonResponse(secondRuns)
+      return jsonResponse({})
+    })
+
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    const historyButtons = wrapper.findAll('.task-history-btn')
+    expect(historyButtons.length).toBe(2)
+
+    const initialRunsForSecond = global.fetch.mock.calls.filter(([url]) =>
+      typeof url === 'string' && url.includes('/api/admin/task-schedules/2/runs')
+    ).length
+    await historyButtons[1].trigger('click')
+    await flushPromises()
+
+    const runsForSecond = global.fetch.mock.calls.filter(([url]) =>
+      typeof url === 'string' && url.includes('/api/admin/task-schedules/2/runs')
+    ).length
+    expect(runsForSecond).toBe(initialRunsForSecond + 1)
+    expect(wrapper.findAll('.run-history').length).toBe(1)
+    expect(wrapper.find('.run-history').text()).toContain('任务B执行完成')
+    expect(wrapper.findAll('.task-item.active')[0].find('.task-name').text()).toBe('每日巡检')
+
+    await historyButtons[1].trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.run-history').exists()).toBe(false)
+    expect(global.fetch.mock.calls.filter(([url]) =>
+      typeof url === 'string' && url.includes('/api/admin/task-schedules/2/runs')
+    ).length).toBe(runsForSecond)
+  })
+
+  it('test_history_button_failure_shows_local_error 执行历史加载失败显示局部错误', async () => {
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const method = (opts.method || 'GET').toUpperCase()
+      const u = typeof url === 'string' ? url : url.url
+      if (u === '/api/admin/task-schedules' && method === 'GET') return jsonResponse(mockSchedules)
+      if (u === '/api/admin/agents' && method === 'GET') return jsonResponse(mockAgents)
+      if (u === '/api/admin/scripts' && method === 'GET') return jsonResponse(mockScripts)
+      if (u.includes('/api/admin/task-schedules/1/runs')) return jsonResponse({ detail: '历史服务不可用' }, 500)
+      return jsonResponse({})
+    })
+
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.find('.task-history-btn').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="task-history-error"]').text()).toContain('历史服务不可用')
+  })
+
   it('test_new_task_button_shows_form 点击新增任务显示表单', async () => {
     const wrapper = mount(TaskSchedulerManager)
     await flushPromises()
@@ -348,6 +433,8 @@ describe('TaskSchedulerManager 组件', () => {
 
   it('test_runs_render_success_and_failed_status 渲染执行历史状态', async () => {
     const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.find('.task-history-btn').trigger('click')
     await flushPromises()
 
     expect(wrapper.text()).toContain('success')

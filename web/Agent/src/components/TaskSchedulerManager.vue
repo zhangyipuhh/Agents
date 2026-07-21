@@ -42,6 +42,9 @@ const TAB_LABELS = [
 const schedules = ref([])
 const agents = ref([])
 const runs = ref([])
+const historyScheduleId = ref(null)
+const isLoadingRuns = ref(false)
+const historyErrorMessage = ref('')
 const selectedSchedule = ref(null)
 const isLoading = ref(false)
 const isSaving = ref(false)
@@ -714,8 +717,26 @@ async function loadInitialData() {
  */
 async function selectSchedule(schedule) {
   selectedSchedule.value = schedule
+  historyScheduleId.value = null
+  historyErrorMessage.value = ''
   isCreating.value = false
   await fillForm(schedule)
+  await loadRuns(schedule.id)
+}
+
+/**
+ * 切换任务卡片内的执行历史展开状态。
+ * @param {Object} schedule - 定时任务记录
+ * @returns {Promise<void>} 无返回值
+ */
+async function toggleHistory(schedule) {
+  if (!schedule || !schedule.id) return
+  if (historyScheduleId.value === schedule.id) {
+    historyScheduleId.value = null
+    return
+  }
+  historyScheduleId.value = schedule.id
+  historyErrorMessage.value = ''
   await loadRuns(schedule.id)
 }
 
@@ -729,10 +750,15 @@ async function loadRuns(scheduleId) {
     runs.value = []
     return
   }
+  isLoadingRuns.value = true
+  historyErrorMessage.value = ''
   try {
     runs.value = await fetchTaskRuns(scheduleId, 50)
   } catch (error) {
-    errorMessage.value = error.message || '加载执行历史失败'
+    runs.value = []
+    historyErrorMessage.value = error.message || '加载执行历史失败'
+  } finally {
+    isLoadingRuns.value = false
   }
 }
 
@@ -1083,6 +1109,8 @@ function fillForm(schedule) {
 function startCreate() {
   bumpFillVersion()
   selectedSchedule.value = null
+  historyScheduleId.value = null
+  historyErrorMessage.value = ''
   isCreating.value = true
   runs.value = []
   form.name = ''
@@ -1231,7 +1259,9 @@ async function runNow() {
   try {
     await triggerTaskSchedule(selectedSchedule.value.id)
     successMessage.value = '任务已提交运行'
-    await loadRuns(selectedSchedule.value.id)
+    if (historyScheduleId.value === selectedSchedule.value.id) {
+      await loadRuns(selectedSchedule.value.id)
+    }
   } catch (error) {
     errorMessage.value = error.message || '立即运行失败'
   }
@@ -1271,26 +1301,67 @@ onMounted(loadInitialData)
 
       <div v-if="isLoading" class="empty-state">正在加载...</div>
       <div v-else-if="!schedules.length" class="empty-state">暂无定时任务</div>
-      <button
+      <article
         v-for="schedule in schedules"
         :key="schedule.id"
         class="task-item"
         :class="{ active: selectedSchedule && selectedSchedule.id === schedule.id }"
-        type="button"
         @click="selectSchedule(schedule)"
       >
-        <span class="task-name">{{ schedule.name }}</span>
-        <span class="task-agent">
-          <span class="badge" :class="schedule.target_type === 'script' ? 'badge-script' : 'badge-agent'">
-            {{ schedule.target_type === 'script' ? '脚本' : '智能体' }}
+        <button
+          class="task-select-btn"
+          type="button"
+          @click.stop="selectSchedule(schedule)"
+        >
+          <span class="task-name">{{ schedule.name }}</span>
+          <span class="task-agent">
+            <span class="badge" :class="schedule.target_type === 'script' ? 'badge-script' : 'badge-agent'">
+              {{ schedule.target_type === 'script' ? '脚本' : '智能体' }}
+            </span>
+            {{ schedule.target_type === 'script' ? schedule.script_name : schedule.agent_name }}
           </span>
-          {{ schedule.target_type === 'script' ? schedule.script_name : schedule.agent_name }}
-        </span>
-        <span class="task-cron">{{ schedule.cron_expression }}</span>
-        <span class="task-status" :class="schedule.enabled ? 'enabled' : 'disabled'">
-          {{ schedule.enabled ? '已启用' : '已停用' }}
-        </span>
-      </button>
+          <span class="task-cron">{{ schedule.cron_expression }}</span>
+          <span class="task-status" :class="schedule.enabled ? 'enabled' : 'disabled'">
+            {{ schedule.enabled ? '已启用' : '已停用' }}
+          </span>
+        </button>
+        <button
+          class="task-history-btn"
+          type="button"
+          :aria-label="historyScheduleId === schedule.id ? '收起执行历史' : '查看执行历史'"
+          :title="historyScheduleId === schedule.id ? '收起执行历史' : '查看执行历史'"
+          :aria-expanded="historyScheduleId === schedule.id ? 'true' : 'false'"
+          :aria-busy="isLoadingRuns && historyScheduleId === schedule.id ? 'true' : 'false'"
+          :disabled="isLoadingRuns && historyScheduleId === schedule.id"
+          @click.stop="toggleHistory(schedule)"
+        >
+          <svg class="task-history-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M12 7v5l3.5 2.1M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" />
+          </svg>
+        </button>
+        <section
+          v-if="historyScheduleId === schedule.id"
+          class="run-history"
+          data-testid="task-card-run-history"
+          aria-live="polite"
+        >
+          <h4>执行历史</h4>
+          <div v-if="isLoadingRuns" class="empty-state">正在加载执行历史...</div>
+          <div v-else-if="historyErrorMessage" class="alert error" data-testid="task-history-error">
+            {{ historyErrorMessage }}
+          </div>
+          <div v-else-if="!runs.length" class="empty-state">暂无执行记录</div>
+          <div v-else v-for="run in runs" :key="run.id" class="run-item">
+            <div class="run-main">
+              <strong>{{ run.status }}</strong>
+              <span>{{ run.trigger_type }}</span>
+              <span>{{ run.created_at || run.started_at }}</span>
+            </div>
+            <p v-if="run.output_text">{{ run.output_text }}</p>
+            <p v-if="run.error_message" class="run-error">{{ run.error_message }}</p>
+          </div>
+        </section>
+      </article>
     </aside>
 
     <main class="task-detail">
@@ -1751,20 +1822,6 @@ onMounted(loadInitialData)
             <span>保存后启用任务</span>
           </label>
         </form>
-
-        <section class="run-history" v-if="!isCreating">
-          <h4>执行历史</h4>
-          <div v-if="!runs.length" class="empty-state">暂无执行记录</div>
-          <div v-for="run in runs" :key="run.id" class="run-item">
-            <div class="run-main">
-              <strong>{{ run.status }}</strong>
-              <span>{{ run.trigger_type }}</span>
-              <span>{{ run.created_at || run.started_at }}</span>
-            </div>
-            <p v-if="run.output_text">{{ run.output_text }}</p>
-            <p v-if="run.error_message" class="run-error">{{ run.error_message }}</p>
-          </div>
-        </section>
       </section>
 
       <!-- 服务器扫描 Tab —— v-else-if 互斥挂载，理由同任务 Tab -->
@@ -2029,23 +2086,80 @@ onMounted(loadInitialData)
 }
 
 .task-item {
+  position: relative;
   width: 100%;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 5px;
+  align-items: stretch;
+  gap: 8px;
   padding: 12px;
   margin-bottom: 10px;
   background: #f9fafb;
   border: 1px solid #e5e7eb;
   border-radius: 10px;
-  cursor: pointer;
-  text-align: left;
 }
 
 .task-item.active {
   border-color: #2563eb;
   background: #eff6ff;
+}
+
+.task-select-btn {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 0 36px 0 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.task-select-btn:focus-visible,
+.task-history-btn:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.task-history-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid #d1d5db;
+  border-radius: 7px;
+  color: #4b5563;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.task-history-btn:hover {
+  color: #1d4ed8;
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.task-history-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.task-history-icon {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
 }
 
 .task-name {
@@ -2221,25 +2335,38 @@ input[type="number"] {
 }
 
 .run-history {
-  margin-top: 22px;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid #dbeafe;
 }
 
 .run-history h4 {
   margin: 0 0 12px;
   color: #111827;
+  font-size: 14px;
+}
+
+.run-history .empty-state {
+  padding: 10px 0;
+}
+
+.run-history .alert {
+  margin-bottom: 0;
 }
 
 .run-item {
+  min-width: 0;
   border: 1px solid #e5e7eb;
   border-radius: 10px;
   padding: 10px 12px;
   margin-bottom: 10px;
-  background: #f9fafb;
+  background: #ffffff;
 }
 
 .run-main {
   display: flex;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
   color: #374151;
   font-size: 13px;
 }
@@ -2247,6 +2374,7 @@ input[type="number"] {
 .run-item p {
   margin: 6px 0 0;
   color: #374151;
+  overflow-wrap: anywhere;
 }
 
 .run-error {
