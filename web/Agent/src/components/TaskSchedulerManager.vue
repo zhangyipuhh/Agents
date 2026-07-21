@@ -1955,6 +1955,7 @@ onMounted(loadInitialData)
   grid-template-columns: 320px minmax(0, 1fr);
   gap: 20px;
   min-height: 560px;
+  height: 100%;
 }
 
 .task-sidebar,
@@ -1963,6 +1964,7 @@ onMounted(loadInitialData)
   border: 1px solid #e5e7eb;
   border-radius: 14px;
   padding: 18px;
+  height: 100%;
 }
 
 .panel-header,

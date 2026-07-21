@@ -969,12 +969,14 @@ onMounted(loadTree)
 <style scoped>
 .api-config-manager {
   min-height: 480px;
+  height: 100%;
 }
 
 .acm-layout {
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
   gap: 16px;
+  height: 100%;
 }
 
 .acm-sidebar,
@@ -983,6 +985,12 @@ onMounted(loadTree)
   border: 1px solid #e5e7eb;
   border-radius: 14px;
   padding: 14px;
+  height: 100%;
+}
+
+.acm-sidebar {
+  display: flex;
+  flex-direction: column;
 }
 
 .acm-toolbar {
@@ -1016,7 +1024,8 @@ onMounted(loadTree)
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-height: 560px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
 }
 
