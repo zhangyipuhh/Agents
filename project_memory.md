@@ -417,14 +417,14 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 ### 前端（`web/Agent/`）
 
 - `TaskSchedulerManager.vue`：`TAB_API='api'` 追加为第 4 个 tab「API接口配置」，panel 内挂载 `<ApiConfigManager />`；API panel 使用 `.task-panel-api` 作为可伸缩布局容器，详情区通过 flex 高度链向下传递可用空间，API 配置详情面板内部负责纵向滚动
-- `src/components/ApiConfigManager.vue`：左侧工具栏（搜索框 + 放大镜图标 + 单个 `+` 触发器，点击 `+` 弹出菜单显示「新建文件夹 / 新建接口」两项，行为与原独立 button 一致；菜单点击外部或按 Esc 关闭）+ 自定义递归树（inline 重命名 / 删除，api 节点带 method 徽标）；右侧配置区（method 下拉 POST/PUT + URL + 发送/保存），子 tab `Params/Body/Headers/Mock`；Headers 参数名提供常用请求头建议（Content-Type/Authorization/Accept/User-Agent 等）；Body 类型 none/form-data/x-www-form-urlencoded/JSON/XML/Text（**仅文本，不含文件上传**）；Mock 为预期结果断言规则编辑器（状态码等于/响应体包含/JSON字段）；发送结果区展示状态码、耗时、check_passed 徽标、断言明细、响应体预览；左右面板填满 API Tab 可用高度，树列表与详情内容分别在面板内部滚动
+- `src/components/ApiConfigManager.vue`：左侧工具栏（搜索框 + 放大镜图标 + 单个 `+` 触发器；触发器内部使用 18×18、20×20 viewBox 的对称 SVG 加号，依靠 32×32 flex 容器双轴居中，不依赖系统字体字形度量；点击 `+` 弹出菜单显示「新建文件夹 / 新建接口」两项，行为与原独立 button 一致；菜单点击外部或按 Esc 关闭）+ 自定义递归树（inline 重命名 / 删除，api 节点带 method 徽标）；右侧配置区（method 下拉 POST/PUT + URL + 发送/保存），子 tab `Params/Body/Headers/Mock`；Headers 参数名提供常用请求头建议（Content-Type/Authorization/Accept/User-Agent 等）；Body 类型 none/form-data/x-www-form-urlencoded/JSON/XML/Text（**仅文本，不含文件上传**）；Mock 为预期结果断言规则编辑器（状态码等于/响应体包含/JSON字段）；发送结果区展示状态码、耗时、check_passed 徽标、断言明细、响应体预览；左右面板填满 API Tab 可用高度，树列表与详情内容分别在面板内部滚动
 - `src/utils/api.js` 追加封装：`fetchApiConfigTree/createApiConfigNode/updateApiConfigNode/deleteApiConfigNode/fetchApiConfig/saveApiConfig/sendApiConfig/fetchApiConfigRuns`
 
 ### 测试
 
 - `app/tests/shared/utils/test_api_config_service.py`（service 单测，httpx 经 monkeypatch 替换 AsyncClient，db 用 stub）
 - `app/tests/routers/test_api_config_router.py`（路由契约；`app/tests/routers/conftest.py` 新增 autouse fixture 注入**真实** `ApiConfigService(db=None)`，生产对应点为 lifespan）
-- `web/Agent/src/components/__tests__/ApiConfigManager.spec.js`（树交互/子tab/Body切换/Mock规则/发送结果）；`TaskSchedulerManager.spec.js` tab 顺序断言更新为 4 tab
+- `web/Agent/src/components/__tests__/ApiConfigManager.spec.js`（树交互/子tab/Body切换/Mock规则/发送结果；锁定新建触发器的 SVG、viewBox、`aria-hidden` 与按钮 `aria-label` 结构契约）；`TaskSchedulerManager.spec.js` tab 顺序断言更新为 4 tab
 
 ## Agent 统一构造入口（2026-06-29 新增）
 

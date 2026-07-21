@@ -652,7 +652,14 @@ onBeforeUnmount(() => {
             :aria-expanded="newMenuOpen ? 'true' : 'false'"
             @click="toggleNewMenu"
           >
-            <span aria-hidden="true">+</span>
+            <svg
+              class="acm-new-trigger-icon"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" />
+            </svg>
           </button>
 
           <div
@@ -1173,15 +1180,19 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   background: #2563eb;
   color: #ffffff;
-  font-size: 22px;
-  font-weight: 500;
-  line-height: 1;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 0;
   transition: background-color 0.15s ease;
+}
+
+.acm-new-trigger-icon {
+  display: block;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
 }
 
 .acm-new-trigger:hover,

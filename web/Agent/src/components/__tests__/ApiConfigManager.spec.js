@@ -409,7 +409,7 @@ describe('ApiConfigManager 组件', () => {
     expect(wrapper.find('[data-testid="send-check-badge"]').text()).toContain('异常')
   })
 
-  it('test_toolbar_has_search_icon_and_new_trigger 工具栏呈现单行布局,搜索框带放大镜,+ 触发器存在', async () => {
+  it('test_toolbar_has_search_icon_and_new_trigger 工具栏呈现单行布局,搜索框带放大镜,新建触发器使用 SVG 加号图标', async () => {
     const wrapper = await mountManager()
 
     // 搜索框存在并带放大镜图标
@@ -418,10 +418,15 @@ describe('ApiConfigManager 组件', () => {
     // 放大镜图标作为兄弟节点存在（.acm-search-icon）
     const toolbar = wrapper.find('.acm-toolbar')
     expect(toolbar.find('.acm-search-icon').exists()).toBe(true)
-    // + 触发器存在
+    // 触发器存在并以 SVG 加号作为唯一可见图标
     const trigger = wrapper.find('[data-testid="api-new-trigger"]')
     expect(trigger.exists()).toBe(true)
-    // 旧的两个独立按钮不再独立存在（被合并进菜单）
+    const icon = trigger.find('svg.acm-new-trigger-icon')
+    expect(icon.exists()).toBe(true)
+    expect(icon.attributes('viewBox')).toBe('0 0 20 20')
+    expect(icon.attributes('aria-hidden')).toBe('true')
+    expect(trigger.attributes('aria-label')).toBe('新建')
+    expect(trigger.find('span').exists()).toBe(false)
     // 菜单初始关闭
     expect(wrapper.find('[data-testid="api-new-menu"]').exists()).toBe(false)
   })
