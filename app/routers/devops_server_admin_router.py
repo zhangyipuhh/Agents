@@ -43,6 +43,16 @@ logger = logging.getLogger(__name__)
 _PUBLIC_FIELDS = ("id", "business_name", "server_type", "updated_at")
 # 扫描结果白名单（4 个数字）
 _SCAN_FIELDS = ("scanned", "inserted", "updated", "failed")
+# 详情字段白名单（与 list 端点不同：允许返回 whitelist + inspection_script）
+_DETAIL_FIELDS = (
+    "id",
+    "business_name",
+    "server_type",
+    "updated_at",
+    "whitelist",
+    "inspection_script",
+    "inspection_parser",
+)
 
 
 router = APIRouter(
@@ -130,6 +140,44 @@ async def scan_devops_servers(request: Request) -> Dict[str, int]:
 
     # 服务侧已经保证返回 4 字段；此处再做一次白名单过滤防御。
     return {k: int(raw.get(k, 0) or 0) for k in _SCAN_FIELDS}
+
+
+@router.get(
+    "/{server_id}",
+    response_model=Dict[str, Any],
+)
+async def get_devops_server(request: Request, server_id: int) -> Dict[str, Any]:
+    """按 ``server_id`` 取服务器详情（白名单 + 巡检脚本）。
+
+    与 GET / 列表端点的差异：
+        - 列表端点严格 4 字段，不外泄脚本（避免 1000 行脚本进入列表响应）；
+        - 详情端点按需返回白名单与脚本原文，供 admin 弹窗展示。
+
+    行为：
+        - 服务未初始化 → 500 + lifespan hint（与 GET / scan / delete 一致）
+        - server_id 在 DB 中不存在 → 404 + 通用 detail「服务器不存在」（不回显 server_id）
+        - service 失误返回含敏感字段 → router 二次过滤到 ``_DETAIL_FIELDS`` 白名单
+        - 成功 → 200 + JSON（白名单与脚本原文）
+
+    Args:
+        request: FastAPI Request
+        server_id: devops_servers 主键 id（path int）
+
+    Returns:
+        Dict[str, Any]: 详情字典，仅含 ``_DETAIL_FIELDS`` 字段
+
+    Raises:
+        HTTPException: 404（不存在）/ 500（服务缺失）
+    """
+    svc = _get_service(request)
+    detail = svc.get_server_detail(server_id)
+    if detail is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="服务器不存在",
+        )
+    # 防御性二次过滤：service 失误返回多余字段时，router 锁回白名单
+    return {k: detail.get(k) for k in _DETAIL_FIELDS}
 
 
 @router.delete(
