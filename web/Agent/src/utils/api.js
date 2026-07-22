@@ -2378,7 +2378,7 @@ export async function fetchTaskRuns(id, limit = 50) {
 }
 
 // ============================================================
-// DevOps 服务器扫描 API（2026-07-15 新增）
+// DevOps 服务器扫描 API（2026-07-15 新增；2026-07-22 增补 deleteDevOpsServer）
 // 对应后端 /api/admin/devops-servers 管理接口
 // 仅返回脱敏后的服务器列表（id / business_name / server_type / updated_at），
 // 不涉及 ip / port / username / password / blacklist / whitelist 等敏感字段。
@@ -2415,6 +2415,27 @@ export async function scanDevOpsServers() {
     throw new Error(detail.detail || `扫描 DevOps 服务器失败: ${response.status}`)
   }
   return response.json()
+}
+
+/**
+ * 删除已入库的 DevOps 服务器
+ * 调用 DELETE /api/admin/devops-servers/{serverId}，成功返 204 No Content（无 body）。
+ * 本函数不解析响应体，避免 204 + 空响应触发 JSON parse 异常。
+ * 失败时按 status 给出中文降级文案 + 后端 detail。
+ * @param {number|string} serverId - devops_servers 主键 id
+ * @returns {Promise<void>} 无返回值
+ * @throws {Error} 鉴权失败 / 服务缺失 (500) / 服务器不存在 (404) 时抛出错误
+ */
+export async function deleteDevOpsServer(serverId) {
+  const response = await fetchWithAuth(
+    `/api/admin/devops-servers/${encodeURIComponent(serverId)}`,
+    { method: 'DELETE' }
+  )
+  // 204 No Content 无响应体，不能调用 response.json()
+  if (!response.ok && response.status !== 204) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `删除 DevOps 服务器失败: ${response.status}`)
+  }
 }
 
 // ============================================================

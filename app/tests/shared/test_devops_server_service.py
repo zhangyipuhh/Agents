@@ -1086,3 +1086,125 @@ def test_get_connection_config_handles_string_whitelist(tmp_yaml):
     # 关键防御验证
     assert isinstance(cfg["whitelist"], list)
     assert cfg["whitelist"][0] == "df"
+
+
+# ----------------------------------------------------------------------
+# delete_server / server_exists
+# ----------------------------------------------------------------------
+
+
+def _service_with_cached_row(tmp_yaml, row_id=1, name="alpha"):
+    """构造一个已缓存一行（默认 id=1, business_name='alpha'）的 service 实例。
+
+    Args:
+        tmp_yaml: 临时 yaml 路径
+        row_id: 缓存行 id
+        name: 缓存行 business_name
+
+    Returns:
+        Tuple[DevOpsServerService, MagicMock]: service 与 db 池替身
+    """
+    db = _make_db()
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    svc._cache[name] = {
+        "id": row_id,
+        "business_name": name,
+        "ip": "10.0.0.1",
+        "port": 22,
+        "username": "root",
+        "password_encrypted": b"x",
+        "server_type": "linux",
+        "blacklist": [],
+        "whitelist": [],
+        "created_at": None,
+        "updated_at": None,
+    }
+    return svc, db
+
+
+def test_delete_server_removes_cache_and_calls_db(tmp_yaml):
+    """删除后 cache 移除 + DB.execute 被调用，参数为 server_id。
+
+    Args:
+        tmp_yaml: 临时 yaml 路径
+
+    Returns:
+        None
+    """
+    import asyncio
+
+    svc, db = _service_with_cached_row(tmp_yaml, row_id=1, name="alpha")
+    asyncio.run(svc.delete_server(1))
+    # 1) 缓存中应被移除
+    assert "alpha" not in svc._cache
+    # 2) DB 应执行过 DELETE
+    db.execute.assert_awaited()
+    sql = db.execute.await_args.args[0]
+    assert "DELETE FROM devops_servers" in sql
+    # 3) 第一个参数是 server_id
+    assert db.execute.await_args.args[1] == 1
+
+
+def test_delete_server_idempotent_when_cache_missing(tmp_yaml):
+    """cache 中不存在对应 id 时，DB DELETE 仍被发出（service 幂等）。
+
+    Args:
+        tmp_yaml: 临时 yaml 路径
+
+    Returns:
+        None
+    """
+    import asyncio
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    db = _make_db()
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    # cache 保持为空
+    asyncio.run(svc.delete_server(99))
+    db.execute.assert_awaited_once()
+    sql = db.execute.await_args.args[0]
+    assert "DELETE FROM devops_servers" in sql
+    assert db.execute.await_args.args[1] == 99
+
+
+def test_server_exists_cache_hit(tmp_yaml):
+    """server_exists：cache 命中时直接返回 True，不查 DB。
+
+    Args:
+        tmp_yaml: 临时 yaml 路径
+
+    Returns:
+        None
+    """
+    import asyncio
+
+    svc, db = _service_with_cached_row(tmp_yaml, row_id=7, name="alpha")
+    assert asyncio.run(svc.server_exists(7)) is True
+    db.fetchrow.assert_not_awaited()
+
+
+def test_server_exists_cache_miss_consults_db(tmp_yaml):
+    """server_exists：cache 未命中时回退 DB 查询。
+
+    Args:
+        tmp_yaml: 临时 yaml 路径
+
+    Returns:
+        None
+    """
+    import asyncio
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    db = _make_db()
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    # cache 为空，DB 命中
+    db.fetchrow = AsyncMock(return_value={"?column?": 1})
+    assert asyncio.run(svc.server_exists(42)) is True
+    db.fetchrow.assert_awaited()
+    sql = db.fetchrow.await_args.args[0]
+    assert "SELECT 1 FROM devops_servers" in sql
+    # cache 未命中 DB 也不存在
+    db.fetchrow = AsyncMock(return_value=None)
+    assert asyncio.run(svc.server_exists(43)) is False

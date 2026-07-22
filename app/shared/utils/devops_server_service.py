@@ -21,7 +21,7 @@ DevOpsServerService - SSH 服务器配置管理服务（2026-07-15 新增）
 
 调用关系：
     - lifespan → DevOpsServerService(db, path, key).preload_all() → app.state.devops_server_service
-    - admin router → service.scan_and_upsert() / list_public_servers()
+    - admin router → service.scan_and_upsert() / list_public_servers() / server_exists() / delete_server()
     - SSHTools (LangChain tool) → service.get_connection_config(business_name)
 """
 from __future__ import annotations
@@ -500,3 +500,68 @@ class DevOpsServerService:
         )
         inserted = bool(row and row.get("inserted"))
         return inserted, row
+
+    # ------------------------------------------------------------------
+    # Existence check (for admin DELETE 404 probe)
+    # ------------------------------------------------------------------
+
+    async def server_exists(self, server_id: int) -> bool:
+        """判断给定 ``server_id`` 是否存在。
+
+        优先遍历 ``_cache``；cache 未命中时回退 DB ``SELECT 1``。
+        HTTP 路由层用于在 DELETE 前判定 404，避免 service 层污染 HTTP 语义。
+
+        Args:
+            server_id: devops_servers 主键 id
+
+        Returns:
+            bool: 行存在 → True，否则 False
+        """
+        for rec in self._cache.values():
+            if rec.get("id") == server_id:
+                return True
+        row = await self.db.fetchrow(
+            "SELECT 1 FROM devops_servers WHERE id = $1 LIMIT 1",
+            server_id,
+        )
+        return row is not None
+
+    # ------------------------------------------------------------------
+    # Delete by server_id
+    # ------------------------------------------------------------------
+
+    async def delete_server(self, server_id: int) -> None:
+        """按 ``server_id`` 删除一行 devops_servers（admin 专用）。
+
+        契约：
+            - 持 ``self._write_lock``，在锁内同时改 ``self._cache`` 与执行
+              ``db.execute("DELETE FROM devops_servers WHERE id = $1", server_id)``，
+              保证 cache 与 DB 一致性（Bug-6 同款修复）。
+            - 按 ``business_name``（``rec.get("business_name")``）定位 cache：
+              找到则删除；找不到视为幂等（DB 仍执行 DELETE，404 由 admin router 判）。
+            - DB 执行抛异常 → 直接抛；admin router 把异常统一映射为 500 + 通用错误，
+              不回显 SQL / 原 detail。
+            - service 层**不抛** 404：HTTP 状态码由 router 层决定，service 只负责
+              cache + DB 同步。
+
+        Args:
+            server_id: devops_servers 主键 id
+
+        Returns:
+            None
+
+        Raises:
+            Exception: DB 执行失败时抛出（由 admin router 捕获并映射为 500）
+        """
+        async with self._write_lock:
+            target_name: Optional[str] = None
+            for name, rec in self._cache.items():
+                if rec.get("id") == server_id:
+                    target_name = name
+                    break
+            if target_name is not None:
+                self._cache.pop(target_name, None)
+            await self.db.execute(
+                "DELETE FROM devops_servers WHERE id = $1",
+                server_id,
+            )

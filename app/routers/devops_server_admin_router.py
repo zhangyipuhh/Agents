@@ -9,23 +9,28 @@ DevOps Server Admin Router（2026-07-15 新增）
     - 扫描异常统一返回通用错误，不回显原始错误细节
 
 端点：
-    - GET  /api/admin/devops-servers
+    - GET    /api/admin/devops-servers
           列出已配置服务器（严格只含 id / business_name / server_type / updated_at）
-    - POST /api/admin/devops-servers/scan
+    - POST   /api/admin/devops-servers/scan
           触发 ``DevOpsServerService.scan_and_upsert()``，
           响应严格只含 scanned / inserted / updated / failed 4 个数字
+    - DELETE /api/admin/devops-servers/{server_id}
+          按 server_id 删除一行；返 204 No Content；
+          不存在 → 404 + "服务器不存在"；服务未初始化 → 500 + lifespan hint
 
 依赖：
     - service 实例从 ``request.app.state.devops_server_service`` 获取；
       生产对等初始化点：``app/core/server.py::lifespan`` 数据库池建立后
       ``app.state.devops_server_service = DevOpsServerService(...)``。
+    - service 方法依赖：``list_public_servers`` / ``scan_and_upsert`` /
+      ``server_exists`` / ``delete_server``
 """
 from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from app.shared.utils.auth.Safety import require_admin
 from app.shared.utils.devops_server_service import DevOpsServerService
@@ -125,3 +130,51 @@ async def scan_devops_servers(request: Request) -> Dict[str, int]:
 
     # 服务侧已经保证返回 4 字段；此处再做一次白名单过滤防御。
     return {k: int(raw.get(k, 0) or 0) for k in _SCAN_FIELDS}
+
+
+@router.delete(
+    "/{server_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+async def delete_devops_server(request: Request, server_id: int) -> Response:
+    """按 ``server_id`` 删除一行 devops_servers。
+
+    行为：
+        - 服务未初始化 → 500 + lifespan hint（与 GET / scan 一致）
+        - server_id 在 DB 中不存在 → 404 + 通用 detail「服务器不存在」（不回显 server_id）
+        - DB 执行异常 → 500 + 通用 detail「删除服务器失败」（不回显 SQL / 原 detail）
+        - 成功 → 204 No Content，无响应体
+
+    Args:
+        request: FastAPI Request
+        server_id: devops_servers 主键 id（path int）
+
+    Returns:
+        Response: 204 空响应
+
+    Raises:
+        HTTPException: 404（不存在）/ 500（服务缺失或 DB 异常）
+    """
+    svc = _get_service(request)
+    try:
+        # 1) 探测行是否存在（避免 service 层抛 HTTPException，保持职责单一）
+        exists = await svc.server_exists(server_id)
+        if not exists:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="服务器不存在",
+            )
+        # 2) 调用 service 层删除（持锁：cache + DB 同步）
+        await svc.delete_server(server_id)
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001 - 异常路径不暴露细节
+        logger.exception(
+            "[devops_server_admin_router] delete_server(%s) failed", server_id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="删除服务器失败",
+        )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

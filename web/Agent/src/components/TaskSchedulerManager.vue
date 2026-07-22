@@ -21,6 +21,7 @@ import {
   fetchTaskRuns,
   fetchDevOpsServers,
   scanDevOpsServers,
+  deleteDevOpsServer,
   fetchScripts,
   scanScripts,
   fetchEmailPolicies,
@@ -66,6 +67,8 @@ const listErrorMessage = ref('')
 const scanSuccessMessage = ref('')
 const scanSummary = ref(null)
 const hasLoaded = ref(false)
+// 删除状态：当前正在删除的行 id（防重复点击）
+const isDeletingRowId = ref(null)
 
 // 脚本扫描状态
 const scripts = ref([])
@@ -1196,6 +1199,39 @@ async function triggerServerScan() {
     scanErrorMessage.value = '扫描失败，请稍后重试'
   } finally {
     isScanning.value = false
+  }
+}
+
+/**
+ * 删除按钮的二次确认与异步调用：
+ *   1. window.confirm 弹出用户确认；
+ *   2. 通过后调用 api.deleteDevOpsServer(row.id)；
+ *   3. 成功：从 devopsServers.value 中按 id 移除该行（无需全表刷新）；
+ *   4. 失败：使用脱敏文案（与扫描失败一致），不回显后端 detail。
+ * 任何删除失败都保持原列表状态，不清理旧 row。
+ * @param {Object} row - 服务器行（含 id / business_name / server_type / updated_at）
+ * @returns {Promise<void>} 无返回值
+ */
+async function confirmDeleteServer(row) {
+  if (!row || row.id === undefined || row.id === null) return
+  // 防重复点击：同一行删除中再次点击会被忽略
+  if (isDeletingRowId.value === row.id) return
+  const ok = window.confirm(`确认删除服务器「${row.business_name}」？此操作不可撤销。`)
+  if (!ok) return
+  isDeletingRowId.value = row.id
+  listErrorMessage.value = ''
+  try {
+    await deleteDevOpsServer(row.id)
+    // 成功：从本地列表移除该行（无需全表刷新）
+    devopsServers.value = devopsServers.value.filter(
+      (item) => item && item.id !== row.id
+    )
+    scanSuccessMessage.value = `服务器「${row.business_name}」已删除`
+  } catch {
+    // 通用脱敏文案，不回显后端 detail（避免泄漏服务器名 / IP 等）
+    listErrorMessage.value = '删除服务器失败，请稍后重试'
+  } finally {
+    isDeletingRowId.value = null
   }
 }
 
@@ -2378,6 +2414,7 @@ onBeforeUnmount(() => {
               <th scope="col">业务名</th>
               <th scope="col">系统类型</th>
               <th scope="col">最近同步</th>
+              <th scope="col">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -2389,6 +2426,19 @@ onBeforeUnmount(() => {
               <td>{{ row.business_name }}</td>
               <td>{{ row.server_type }}</td>
               <td>{{ row.updated_at }}</td>
+              <td class="server-action-cell">
+                <button
+                  type="button"
+                  class="server-delete-btn"
+                  :data-testid="`server-delete-btn-${row.id}`"
+                  :disabled="isDeletingRowId === row.id"
+                  :aria-label="`删除服务器 ${row.business_name}`"
+                  @click="confirmDeleteServer(row)"
+                >
+                  <span v-if="isDeletingRowId === row.id">删除中...</span>
+                  <span v-else>删除</span>
+                </button>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -3068,6 +3118,36 @@ input[type="number"] {
   background: #f9fafb;
   color: #374151;
   font-weight: 600;
+}
+
+.server-action-cell {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.server-delete-btn {
+  border: 1px solid #dc2626;
+  background: #ffffff;
+  color: #dc2626;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.server-delete-btn:hover:not(:disabled) {
+  background: #fee2e2;
+  border-color: #b91c1c;
+  color: #b91c1c;
+}
+
+.server-delete-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+  background: #f3f4f6;
+  color: #6b7280;
+  border-color: #d1d5db;
 }
 
 .badge {

@@ -2058,10 +2058,10 @@ system_prompt = (
 
 | 路径 | 职责 |
 |---|---|
-| `app/shared/utils/devops_server_service.py` | `DevOpsServerService(db, config_path, credential_key)` 单例；`preload_all` / `scan_and_upsert` / `list_public_servers` / `get_connection_config` |
+| `app/shared/utils/devops_server_service.py` | `DevOpsServerService(db, config_path, credential_key)` 单例；`preload_all` / `scan_and_upsert` / `list_public_servers` / `get_connection_config` / `server_exists` / `delete_server` |
 | `app/shared/tools/skills/devops/CommandInterceptor.py` | 命令策略过滤器，黑名单优先 + 白名单 allowlist + 精确/前缀/正则三模式 |
 | `app/shared/tools/skills/devops/SSHTools.py` | 3 个 `@tool(description=...)`：execute_command / execute_batch_commands / get_system_logs |
-| `app/routers/devops_server_admin_router.py` | `GET /api/admin/devops-servers` + `POST /api/admin/devops-servers/scan`，`router=APIRouter(... dependencies=[Depends(require_admin)])` |
+| `app/routers/devops_server_admin_router.py` | `GET /api/admin/devops-servers` + `POST /api/admin/devops-servers/scan` + `DELETE /api/admin/devops-servers/{server_id}`（返 `204 No Content`），`router=APIRouter(... dependencies=[Depends(require_admin)])` |
 
 ### 配置 / 路径常量（2026-07-15）
 
@@ -2080,7 +2080,7 @@ system_prompt = (
 
 - `app/core/server.py::lifespan`：数据库池建立后调用 `app.core.config.devops_diagnostics.diagnose_credential_key()` 校验密钥；通过则构造 `DevOpsServerService` 并 `set_instance(svc)` + 挂 `app.state.devops_server_service`；yield 后 `reset()` 单例并清理 `app.state.devops_server_service`。失败时把诊断 hint 写入 `app.state.devops_server_service_hint`，router 会读取并放入 500 detail。
 - `app/core/config/devops_diagnostics.py`（2026-07-15 新增）：从 `settings.devops.credential_key` 读取，分 4 类返回诊断结果：`missing`（完全没配）/ `misspelled`（env 里有相近键）/ `settings_unread`（env 里有精确键名但 settings 读不到）/ `invalid_fernet`（值非空但 Fernet 校验失败）。hint 不打印完整密钥，只显示长度+前 4 字符指纹。
-- `app/routers/devops_server_admin_router.py`：router 级 `require_admin`；服务未初始化返回 500 + `detail=<lifespan 写入的 hint>`（无 hint 时退回 `"DevOpsServerService not initialized"`）；`GET` 严格只返回 `{id, business_name, server_type, updated_at}`；`POST /scan` 严格只返回 `{scanned, inserted, updated, failed}`；扫描异常时不回显原始 `detail` / 路径 / IP / 密码 / 名单。
+- `app/routers/devops_server_admin_router.py`：router 级 `require_admin`；服务未初始化返回 500 + `detail=<lifespan 写入的 hint>`（无 hint 时退回 `"DevOpsServerService not initialized"`）；`GET` 严格只返回 `{id, business_name, server_type, updated_at}`；`POST /scan` 严格只返回 `{scanned, inserted, updated, failed}`；扫描异常时不回显原始 `detail` / 路径 / IP / 密码 / 名单。`DELETE /api/admin/devops-servers/{server_id}` 返 `204 No Content`：先 `server_exists` 探测（不存在 → 404 + `"服务器不存在"`），再 `delete_server`（service 持 `_write_lock` 同步删 `_cache` + `db.execute("DELETE FROM devops_servers WHERE id = $1", server_id)`）；DB 异常 → 500 + `"删除服务器失败"`，不回显 SQL / 原 detail。
 - **不再为 DevOps 工具创建 Agent**——工具通过 ToolRegistryService 扫描 `app/shared/tools/skills/devops/SSHTools.py` 自动发现，admin 界面按元数据展示。
 - **运行时必备配置**：`settings.devops.credential_key` 必须由 `Fernet.generate_key()` 生成（44 字节 base64），非法格式会在 `diagnose_credential_key()` 走 `invalid_fernet` 分支，效果同上。`data/devops/servers.yaml` 由 `.gitignore` 排除（`servers.yaml.example` 是公开模板），缺失时 `scan_and_upsert` 安全返回 0 但列表为空，不报错。
 - **pydantic-settings v2 嵌套 BaseSettings 不递归读 .env（2026-07-15 已修复）**：`Settings.devops: DevOpsSettings = Field(default_factory=DevOpsSettings)` 这种嵌套写法，顶层 `.env` 的扁平 key `DEVOPS_CREDENTIAL_KEY` 默认不会穿透到 `settings.devops.credential_key`（其他子 settings 如 `LLMSettings.model_name` 因为字段名直接对应环境变量名而能正常加载；`FeishuSettings.feishu_app_id` / `SandboxSettings.sandbox_docker_mode` 因字段名自带前缀而能正常加载；唯独 `DevOpsSettings.credential_key` 字段名不带 `devops_` 前缀但 env 名带 `DEVOPS_` 前缀，导致不匹配）。**修复方案**：在 `DevOpsSettings.model_config` 声明 `env_prefix="DEVOPS_"`，使字段 `credential_key` 匹配 env `DEVOPS_CREDENTIAL_KEY`。诊断函数 `diagnose_credential_key()` 的 `settings_unread` 分支保留为防御性诊断，hint 文本已更新为「理论上不应触发，可能是 settings 单例被显式传入空值覆盖或 .env 文件路径/编码异常」。回归测试：`app/tests/core/test_devops_diagnostics.py::test_devops_settings_reads_env_via_prefix`。
@@ -2119,12 +2119,13 @@ system_prompt = (
 - `DevOpsServerService.scan_and_upsert` 输入兼容两种顶层形态：`[ ... ]` 与 `{ "servers": [ ... ] }`；非 list 的 `servers` 字段记 `failed` 计数，不抛异常。
 - 写入采用单条 `INSERT ... ON CONFLICT (business_name) DO UPDATE ... RETURNING *, (xmax = 0) AS inserted`：缓存通过 RETURNING 行直接同步 `id` / `created_at` / `updated_at` / `password_encrypted`，不依赖再读 DB，扫描成功后 `get_connection_config(business_name)` 可立即解密。
 - 同一 `business_name` 重复出现 → 直接计入 `failed`（不允许后者覆盖前者），重复条目不进入缓存。
-- **写入路径持 `asyncio.Lock`（2026-07-15）**：`DevOpsServerService._write_lock` 保护 `preload_all` 与 `scan_and_upsert` 中的 `_cache` 写入段；读路径（`get_connection_config` / `list_public_servers`）无锁。多次并发扫描时缓存替换原子化，避免读路径拿到半新半旧快照。
+- **写入路径持 `asyncio.Lock`（2026-07-15；2026-07-22 扩展到 `delete_server`）**：`DevOpsServerService._write_lock` 保护 `preload_all` / `scan_and_upsert` / `delete_server` 中的 `_cache` 与 DB 写入段；读路径（`get_connection_config` / `list_public_servers` / `server_exists` 的 cache 命中分支）无锁。多次并发操作（扫描 / 删除交叉）时缓存替换原子化，避免读路径拿到半新半旧快照或「cache 已删但 DB 未删」的幽灵行。
 
-### 前端契约（2026-07-15）
+### 前端契约（2026-07-15；2026-07-22 新增删除按钮）
 
-- `web/Agent/src/utils/api.js` 导出 `fetchDevOpsServers` / `scanDevOpsServers`（大写 O），POST 不带 `Content-Type` / body。
-- `TaskSchedulerManager.vue` 服务器表只显示「业务名 / 系统类型 / 最近同步」三列；扫描统计严格只渲染 `scanned / inserted / updated / failed` 4 个整数（白名单复制），未知字段不进入 DOM。
+- `web/Agent/src/utils/api.js` 导出 `fetchDevOpsServers` / `scanDevOpsServers` / `deleteDevOpsServer`（大写 O），POST / DELETE 均不带 `Content-Type` / body。
+- `TaskSchedulerManager.vue` 服务器表新增「操作」列与每行「删除」按钮（`data-testid="server-delete-btn-{id}"`），点击触发 `window.confirm` 二次确认；通过 `deleteDevOpsServer(serverId)` 调用 `DELETE /api/admin/devops-servers/{server_id}`，成功后仅从本地 `devopsServers.value` 移除该行（不刷新全表），失败走通用脱敏文案「删除服务器失败，请稍后重试」。同一行删除中再次点击会被 `isDeletingRowId` 短路防重复提交。
+- `TaskSchedulerManager.vue` 服务器表显示「业务名 / 系统类型 / 最近同步 / 操作」四列；操作列为每行「删除」按钮（见上文）。扫描统计严格只渲染 `scanned / inserted / updated / failed` 4 个整数（白名单复制），未知字段不进入 DOM。
 - 切换服务器 Tab 首次加载后置 `hasLoaded=true`，再次进入不重复 GET；服务器列表加载共享 in-flight Promise，参数面板与扫描 Tab 并发请求复用同一次 GET；扫描成功后强制刷新列表。
 - 脚本任务的 `server_list` 候选来自同一脱敏清单，提交值只包含 `business_name` 字符串数组；连接配置仍仅允许服务端通过 `DevOpsServerService.get_connection_config(business_name)` 获取，`ip` / `port` / `username` / `password` / `blacklist` / `whitelist` 不得写入 `script_args` 或前端 DOM。
 - 列表加载失败显示「服务器列表加载失败」，扫描失败显示「扫描失败，请稍后重试」，两者状态独立。
@@ -2145,14 +2146,14 @@ system_prompt = (
 
 ### 测试覆盖
 
-- `app/tests/shared/test_devops_server_service.py` —— 31 个用例：Fernet 校验、Singleton、preload、扫描别名/字段/统计 / `servers:` 顶层 dict / 重复拒绝 / 缓存 RETURNING 同步 / 路径 resolver / 默认路径来自 paths / `_ensure_list` 防御性 JSONB 反序列化（9 个用例覆盖 list 透传 / JSON 字符串还原 / dict 包装 / 非法 JSON 兜底 / None 与基本类型兜底 / `preload_all` 与 `get_connection_config` 端到端字符串还原）。
+- `app/tests/shared/test_devops_server_service.py` —— 31 个用例（含 2026-07-22 增补 `delete_server` / `server_exists` 4 个用例）：Fernet 校验、Singleton、preload、扫描别名/字段/统计 / `servers:` 顶层 dict / 重复拒绝 / 缓存 RETURNING 同步 / 路径 resolver / 默认路径来自 paths / `_ensure_list` 防御性 JSONB 反序列化（9 个用例覆盖 list 透传 / JSON 字符串还原 / dict 包装 / 非法 JSON 兜底 / None 与基本类型兜底 / `preload_all` 与 `get_connection_config` 端到端字符串还原）。
 - `app/tests/shared/utils/test_devops_server_service.py` —— 10 个用例（2026-07-15 新增）：单例生命周期、`credential_key` 校验（空/非法）、`_write_lock` 类型校验（Bug-6）、`preload_all` 与 `scan_and_upsert` 写路径持锁观测、并发 `scan_and_upsert` 序列化、`_ensure_list` 防御性还原（list / dict / str-JSON / None / 非 JSON / 数字）、`list_public_servers` 严格白名单字段不外泄、`get_connection_config` 未注册业务名抛 KeyError。
 - `app/tests/shared/tools/skills/devops/test_command_interceptor.py` —— 31 个用例（2026-07-15 扩展）：原 23 + Bug-1/Bug-2 回归 8 个（`normalize_segment` 去除前导 `|`/`;`、精确白名单 `system.service` / `100%` 按字面量匹配、`^` 前缀仍走正则、`\d` 转义序列仍走正则、管道后续子段精确白名单命中、子段未列入拒绝）。
 - `app/tests/shared/tools/skills/devops/test_ssh_tools.py` —— 27 个用例（2026-07-15 扩展）：原 17 + Bug-3/4/5/7 回归 10 个（Fernet ValueError 通用化、业务名 MagicMock 兜底、`_open_client` 传 timeout / auth_timeout / banner_timeout、`_clamp_timeout` 钳制边界、`execute_batch_commands` 拒绝 None / 空列表）。
 - `app/tests/core/test_devops_server_lifespan.py` —— 4 个用例：DB 池就绪、空池降级、空 key 跳过、单例 reset。
-- `app/tests/routers/test_devops_server_admin_router.py` —— 9 个用例：路由注册、白名单二次过滤、扫描 4 数字、异常不外泄、service 缺失返 500。
+- `app/tests/routers/test_devops_server_admin_router.py` —— 14 个用例（含 2026-07-22 增补 DELETE 5 个用例）：路由注册（含 DELETE）、白名单二次过滤、扫描 4 数字、异常不外泄、service 缺失返 500、DELETE 路由注册 / 204 / 404 / service 缺失 500 / DB 失败 500 不外泄。
 - `app/tests/core/test_devops_diagnostics.py` —— 8 个用例（2026-07-15 新增）：`missing` / `misspelled` / `settings_unread` / `invalid_fernet` 4 类分支、首尾空白忽略、`frozen=True` 不变性、通过路径不打印完整密钥。
-- `web/Agent/src/components/__tests__/TaskSchedulerManager.spec.js` —— 61 个用例：任务列表与调度表单、目标类型显隐、服务器/脚本扫描与强制刷新、白名单脱敏、防重复请求与失败重试、`server_list` schema 参数添加/搜索/多选/回显/失效项/旧参数兼容、并发加载、脚本切换隔离、首次加载与强制刷新失败后的脱敏重试、「保存任务」按钮位于 detail-header 顶部 actions 行（新建模式仅保存、编辑模式追加启停/运行/删除）。
+- `web/Agent/src/components/__tests__/TaskSchedulerManager.spec.js` —— 65 个用例（2026-07-22 增补 4 个删除按钮用例）：任务列表与调度表单、目标类型显隐、服务器/脚本扫描与强制刷新、白名单脱敏、防重复请求与失败重试、`server_list` schema 参数添加/搜索/多选/回显/失效项/旧参数兼容、并发加载、脚本切换隔离、首次加载与强制刷新失败后的脱敏重试、「保存任务」按钮位于 detail-header 顶部 actions 行（新建模式仅保存、编辑模式追加启停/运行/删除）、服务器行删除按钮（每行渲染 / confirm 取消 / confirm 确认后本地移除 / 网络错误脱敏文案）。
 
 ## 飞书工具（Feishu Tools）
 

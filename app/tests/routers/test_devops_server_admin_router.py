@@ -219,3 +219,91 @@ def test_scan_service_missing_returns_500(client, admin_headers):
         assert resp.status_code == 500
     finally:
         app.state.devops_server_service = saved
+
+
+# ----------------------------------------------------------------------
+# 4. DELETE /api/admin/devops-servers/{server_id}
+# ----------------------------------------------------------------------
+
+
+def test_delete_endpoint_registered(client, devops_router_setup):
+    """DELETE /{server_id} 路由已注册。"""
+    paths = [
+        r.path
+        for r in devops_router_setup.routes
+        if hasattr(r, "methods") and "DELETE" in r.methods
+    ]
+    assert "/api/admin/devops-servers/{server_id}" in paths
+
+
+def test_delete_returns_204_when_service_succeeds(client, devops_router_setup, admin_headers, monkeypatch):
+    """删除成功 → 204 No Content，无响应体。"""
+
+    async def fake_delete(server_id):
+        return None
+
+    async def fake_exists(server_id):
+        return True
+
+    svc = devops_router_setup.state.devops_server_service
+    monkeypatch.setattr(svc, "delete_server", fake_delete)
+    monkeypatch.setattr(svc, "server_exists", fake_exists)
+
+    resp = client.delete("/api/admin/devops-servers/1", headers=admin_headers)
+    assert resp.status_code == 204
+    assert resp.content == b""
+
+
+def test_delete_missing_server_returns_404(client, devops_router_setup, admin_headers, monkeypatch):
+    """DB 未命中时由 router 主动抛 404（service 本身幂等，不抛 404）。"""
+    async def fake_exists(server_id):
+        return False
+
+    async def fake_delete(server_id):
+        return None
+
+    svc = devops_router_setup.state.devops_server_service
+    monkeypatch.setattr(svc, "server_exists", fake_exists)
+    monkeypatch.setattr(svc, "delete_server", fake_delete)
+
+    resp = client.delete("/api/admin/devops-servers/9999", headers=admin_headers)
+    assert resp.status_code == 404
+    body = resp.json()
+    # 通用 detail，不回显 server_id
+    assert body["detail"] == "服务器不存在"
+    assert "9999" not in resp.text
+
+
+def test_delete_service_missing_returns_500(client, admin_headers):
+    """服务未初始化 → 500（与 GET / POST 一致）。"""
+    from app.main import app
+
+    saved = getattr(app.state, "devops_server_service", None)
+    app.state.devops_server_service = None
+    try:
+        resp = client.delete("/api/admin/devops-servers/1", headers=admin_headers)
+        assert resp.status_code == 500
+    finally:
+        app.state.devops_server_service = saved
+
+
+def test_delete_db_failure_returns_500_without_leak(client, devops_router_setup, admin_headers, monkeypatch):
+    """DB 失败 → 500 + 通用错误，不回显 SQL / 原 detail。"""
+
+    async def fake_exists(server_id):
+        return True
+
+    async def fake_delete(server_id):
+        raise RuntimeError(
+            "asyncpg 报错：DELETE 失败 on devops_servers, leaked=__LEAKED_pwd_hunter2__"
+        )
+
+    svc = devops_router_setup.state.devops_server_service
+    monkeypatch.setattr(svc, "server_exists", fake_exists)
+    monkeypatch.setattr(svc, "delete_server", fake_delete)
+
+    resp = client.delete("/api/admin/devops-servers/1", headers=admin_headers)
+    assert resp.status_code == 500
+    body_text = resp.text
+    assert "__LEAKED_pwd_hunter2__" not in body_text
+    assert "asyncpg" not in body_text

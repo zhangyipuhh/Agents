@@ -160,6 +160,8 @@ function setupFetchMock() {
     if (u === '/api/admin/devops-servers/scan' && method === 'POST') {
       return jsonResponse({ scanned: 2, inserted: 1, updated: 1, failed: 0 })
     }
+    // 2026-07-22 新增：DELETE 单台服务器（204 No Content，无 body）
+    if (u === '/api/admin/devops-servers/1' && method === 'DELETE') return emptyResponse(204)
     if (u === '/api/admin/api-configs/tree' && method === 'GET') return jsonResponse({ nodes: [] })
     return jsonResponse({})
   })
@@ -2251,6 +2253,120 @@ describe('TaskSchedulerManager 组件', () => {
     )
     expect(devopsGetCalls).toHaveLength(2)
     expect(devopsGetCount).toBe(2)
+  })
+
+  // ===== 服务器行删除按钮（2026-07-22 新增） =====
+
+  it('test_server_table_renders_delete_button_per_row 表格每行渲染删除按钮', async () => {
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    // 切到服务器扫描 Tab
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+
+    // 默认 confirm 已在 beforeEach 设为 true，但本用例不点删除，因此无影响
+    const deleteBtns = wrapper.findAll('[data-testid^="server-delete-btn-"]')
+    expect(deleteBtns.length).toBe(rawDevopsServers.length)
+    // 每行按钮的 testid 必须包含对应 id
+    expect(wrapper.find('[data-testid="server-delete-btn-1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="server-delete-btn-2"]').exists()).toBe(true)
+    // aria-label 含业务名（脱敏边界：仅业务名，无 ip / port / password）
+    const btn1 = wrapper.find('[data-testid="server-delete-btn-1"]')
+    expect(btn1.attributes('aria-label')).toBe('删除服务器 业务A-生产')
+    wrapper.unmount()
+  })
+
+  it('test_delete_button_confirm_cancel_keeps_row confirm 取消时不发请求且行保留', async () => {
+    global.confirm = vi.fn(() => false)
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+
+    const callsBefore = global.fetch.mock.calls.length
+    await wrapper.find('[data-testid="server-delete-btn-1"]').trigger('click')
+    await flushPromises()
+
+    // 1) confirm 被调用
+    expect(global.confirm).toHaveBeenCalledTimes(1)
+    // 2) 没有新请求发出
+    const callsAfter = global.fetch.mock.calls.length
+    expect(callsAfter).toBe(callsBefore)
+    // 3) 行仍在 DOM 中
+    expect(wrapper.find('[data-testid="server-row-1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="server-delete-btn-1"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('test_delete_button_confirm_ok_removes_row_locally confirm 确认后调用 DELETE 并从本地列表移除该行', async () => {
+    global.confirm = vi.fn(() => true)
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="server-delete-btn-1"]').trigger('click')
+    await flushPromises()
+
+    // 1) 发起 DELETE 请求
+    const deleteCall = global.fetch.mock.calls.find(
+      ([url, opts]) =>
+        url === '/api/admin/devops-servers/1' && (opts?.method || '').toUpperCase() === 'DELETE'
+    )
+    expect(deleteCall).toBeTruthy()
+    // 2) 该行从 DOM 中消失，其它行仍在
+    expect(wrapper.find('[data-testid="server-row-1"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="server-row-2"]').exists()).toBe(true)
+    // 3) scan 面板内容：只剩 id=2 的行；不应再包含业务 A
+    const panel = wrapper.find('[data-testid="panel-scan"]')
+    expect(panel.exists()).toBe(true)
+    const table = panel.find('[data-testid="server-table"]')
+    expect(table.exists()).toBe(true)
+    const tableText = table.text()
+    expect(tableText).toContain('业务B-测试')
+    expect(tableText).not.toContain('业务A-生产')
+    wrapper.unmount()
+  })
+
+  it('test_delete_button_network_error_shows_sanitized_message 网络错误显示脱敏文案且不修改列表', async () => {
+    global.confirm = vi.fn(() => true)
+    const ERROR_DETAIL = '__LEAKED_DELETE_DETAIL_pwd_hunter2__ ip=__LEAKED_IP_aa__'
+    // 覆盖 fetch：DELETE 返回 500 且 detail 含敏感 sentinel
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const method = (opts.method || 'GET').toUpperCase()
+      const u = typeof url === 'string' ? url : url.url
+      if (u === '/api/admin/task-schedules' && method === 'GET') return jsonResponse(mockSchedules)
+      if (u === '/api/admin/agents' && method === 'GET') return jsonResponse(mockAgents)
+      if (u === '/api/admin/scripts' && method === 'GET') return jsonResponse(mockScripts)
+      if (u.includes('/api/admin/task-schedules/1/runs')) return jsonResponse(mockRuns)
+      if (u === '/api/admin/devops-servers' && method === 'GET') return jsonResponse(rawDevopsServers)
+      if (u === '/api/admin/devops-servers/1' && method === 'DELETE') {
+        return jsonResponse({ detail: ERROR_DETAIL }, 500)
+      }
+      return jsonResponse({})
+    })
+
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="server-delete-btn-1"]').trigger('click')
+    await flushPromises()
+
+    // 1) 列表错误显示脱敏文案
+    const listError = wrapper.find('[data-testid="list-error"]')
+    expect(listError.exists()).toBe(true)
+    expect(listError.text()).toBe('删除服务器失败，请稍后重试')
+    // 2) 后端 detail 的敏感 sentinel 不得进入 DOM
+    const html = wrapper.html()
+    expect(html).not.toContain(ERROR_DETAIL)
+    expect(html).not.toContain('__LEAKED_DELETE_DETAIL_pwd_hunter2__')
+    expect(html).not.toContain('__LEAKED_IP_aa__')
+    // 3) 列表未变更：两行仍在
+    expect(wrapper.find('[data-testid="server-row-1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="server-row-2"]').exists()).toBe(true)
+    wrapper.unmount()
   })
 
   // ===== 脚本参数 api_list（schema 驱动 api-multiselect）行为测试 =====
