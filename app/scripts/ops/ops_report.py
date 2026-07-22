@@ -12,7 +12,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Dict, List, Mapping, Optional
+
+from app.shared.utils.report.word.config import (
+    CoverConfig, CoverElementConfig, ReportConfig, SectionConfig, TableSectionConfig,
+    TocConfig, TocEntry,
+)
 
 
 # 综述段落使用的状态中文映射(从 server_ops._INSPECTION_STATUS_ZH 同步;
@@ -257,3 +263,225 @@ def resolve_server_ip_map(
         except Exception:
             result[srv.business_name] = None
     return result
+
+
+# --------------------------------------------------------------------------
+# Word 报告配置构造(用于 docx 渲染层)
+# --------------------------------------------------------------------------
+
+def _server_meta_rows(item, host: Optional[str]) -> List[List[str]]:
+    """构造单个业务的服务器元信息表行(2 列: 项目/值)。"""
+    return [
+        ["业务名", item.business_name or "-"],
+        ["服务器 IP", host or "-"],
+        ["SSH 退出码", "-" if item.exit_code is None else str(item.exit_code)],
+        ["耗时", "-" if item.duration_ms is None else f"{item.duration_ms} ms"],
+        ["巡检状态", _INSPECTION_STATUS_ZH.get(item.inspection_status, item.inspection_status or "-")],
+    ]
+
+
+def _server_field_rows(item) -> List[List[str]]:
+    """构造单个业务的字段明细表行(5 列)。"""
+    rows: List[List[str]] = []
+    for fr in item.field_results or []:
+        name_zh = fr.get("name_zh") or fr.get("key") or ""
+        message = fr.get("message") or ""
+        metric = f"{name_zh}（{message}）" if message else name_zh
+        rows.append([
+            metric,
+            _format_field_value(fr),
+            _format_field_threshold(fr),
+            _INSPECTION_STATUS_ZH.get(fr.get("status") or "unassessed", "未评估"),
+            message or "-",
+        ])
+    return rows
+
+
+def _api_meta_rows(item) -> List[List[str]]:
+    """构造单个接口的元信息表行(2 列)。"""
+    if item.check_passed is None:
+        result_text = "节点缺失"
+    elif item.check_passed is True:
+        result_text = "通过"
+    else:
+        result_text = "失败"
+    return [
+        ["节点 ID", str(item.node_id)],
+        ["名称", item.name or "-"],
+        ["接口地址", item.path or "-"],
+        ["HTTP 状态", "-" if item.http_status is None else str(item.http_status)],
+        ["耗时", "-" if item.duration_ms is None else f"{item.duration_ms} ms"],
+        ["检查结果", result_text],
+    ]
+
+
+def _api_assertion_rows(item) -> List[List[str]]:
+    """构造单个接口的断言明细表行(5 列)。"""
+    rows: List[List[str]] = []
+    for assertion in item.assertion_results or []:
+        rule = assertion.get("rule") or {}
+        rows.append([
+            str(rule.get("type") or assertion.get("type") or "-"),
+            str(rule.get("value") if rule.get("value") is not None else assertion.get("expected") or "-"),
+            str(assertion.get("actual") or "-"),
+            "✓" if assertion.get("passed") is True else ("✗" if assertion.get("passed") is False else "-"),
+            str(assertion.get("detail") or "-"),
+        ])
+    return rows
+
+
+def build_ops_report_config(
+    *,
+    summary: OpsSummary,
+    alerts: OpsAlerts,
+    server_report,
+    api_report,
+    ip_map: Mapping[str, Optional[str]],
+    schedule_name: str,
+    started_at: datetime,
+) -> ReportConfig:
+    """构建运维巡检 Word 报告的 :class:`ReportConfig`。
+
+    章节结构:
+        0. 封面 (主标题「沈阳不动产运维报告」+ 时间 + 任务名)
+        0. 目录 (5 条 TocEntry,实际为 4 个一级标题)
+        1. 一、综述 (分段叙事段落)
+        2. 二、网络检查 (固定段落)
+        3. 三、服务器基本情况 (按业务循环)
+        4. 四、接口健康检查 (按接口循环)
+
+    参数:
+        summary: :class:`OpsSummary`。
+        alerts: :class:`OpsAlerts`。
+        server_report: :class:`ServerOpsReport`。
+        api_report: :class:`ApiCheckReport`。
+        ip_map: 业务名到 IP 的映射,缺失为 ``None``。
+        schedule_name: 任务名。
+        started_at: 执行开始时间。
+
+    返回:
+        ReportConfig: 完整报告配置。
+    """
+    sections: List[SectionConfig] = []
+
+    # 1. 综述
+    sections.append(SectionConfig(section_type="heading", content="一、综述", level=1))
+    sections.append(SectionConfig(
+        section_type="paragraph",
+        content=(
+            f"本次运维巡检共检查 {summary.total} 大项，其中成功 {summary.passed} 项，"
+            f"有问题 {summary.problem} 项。"
+        ),
+    ))
+    sections.append(SectionConfig(
+        section_type="paragraph",
+        content=(
+            f"网络检查：暂不检查（1 项，已排除）。"
+        ),
+    ))
+    sections.append(SectionConfig(
+        section_type="paragraph",
+        content=(
+            f"服务器：共 {summary.server_total} 项，成功 {summary.server_passed} 项，"
+            f"有问题 {summary.server_problem} 项（其中执行失败/跳过 "
+            f"{summary.server_failed_count} 项，阈值告警 {summary.server_warn_count} 项、"
+            f"严重 {summary.server_crit_count} 项）。"
+        ),
+    ))
+    sections.append(SectionConfig(
+        section_type="paragraph",
+        content=(
+            f"接口：共 {summary.api_total} 项，成功 {summary.api_passed} 项，"
+            f"有问题 {summary.api_problem} 项。"
+        ),
+    ))
+
+    # 2. 网络
+    sections.append(SectionConfig(section_type="heading", content="二、网络检查", level=1))
+    sections.append(SectionConfig(
+        section_type="paragraph", content="本报告暂不检查网络。",
+    ))
+
+    # 3. 服务器
+    sections.append(SectionConfig(section_type="heading", content="三、服务器基本情况", level=1))
+    for item in server_report.items:
+        sections.append(SectionConfig(section_type="heading", content=item.business_name, level=2))
+        # 元信息表
+        sections.append(SectionConfig(
+            section_type="table",
+            table=TableSectionConfig(
+                headers=["项目", "值"],
+                rows=_server_meta_rows(item, ip_map.get(item.business_name)),
+                column_widths=[3.0, 12.0],
+            ),
+        ))
+        # SSH 失败/跳过: 不渲染字段明细表, 追加说明段
+        if item.skipped or item.success is False:
+            reason = item.error_message or item.inspection_error or "未执行"
+            sections.append(SectionConfig(
+                section_type="paragraph",
+                content=f"该服务器本次巡检未执行（{reason}），按 1 项有问题计入。",
+            ))
+            continue
+        # 字段明细表
+        field_rows = _server_field_rows(item)
+        sections.append(SectionConfig(
+            section_type="table",
+            table=TableSectionConfig(
+                headers=["指标", "当前值", "阈值", "状态", "说明"],
+                rows=field_rows,
+                column_widths=[5.0, 3.0, 3.0, 2.0, 2.0],
+                status_column=3,
+            ),
+        ))
+
+    # 4. 接口
+    sections.append(SectionConfig(section_type="heading", content="四、接口健康检查", level=1))
+    for item in api_report.items:
+        title = item.name or f"接口 {item.node_id}"
+        sections.append(SectionConfig(section_type="heading", content=title, level=2))
+        sections.append(SectionConfig(
+            section_type="table",
+            table=TableSectionConfig(
+                headers=["项目", "值"],
+                rows=_api_meta_rows(item),
+                column_widths=[3.0, 12.0],
+            ),
+        ))
+        if item.check_passed is None:
+            sections.append(SectionConfig(
+                section_type="paragraph",
+                content="该接口节点缺失或已删除。",
+            ))
+            continue
+        sections.append(SectionConfig(
+            section_type="table",
+            table=TableSectionConfig(
+                headers=["类型", "期望", "实际", "通过", "说明"],
+                rows=_api_assertion_rows(item),
+                column_widths=[3.0, 2.5, 2.5, 2.0, 5.0],
+            ),
+        ))
+
+    # 封面 / 目录
+    cover = CoverConfig(
+        title=CoverElementConfig(text="沈阳不动产运维报告"),
+        date=CoverElementConfig(
+            text=started_at.strftime("%Y年%m月%d日 %H:%M"),
+        ),
+        attachment=CoverElementConfig(text=f"任务：{schedule_name}", alignment="right"),
+        footer_note=CoverElementConfig(
+            text="本报告由系统自动生成",
+            alignment="center",
+        ),
+    )
+    toc = TocConfig(
+        entries=[
+            TocEntry(text="一、综述", level=0),
+            TocEntry(text="二、网络检查", level=0),
+            TocEntry(text="三、服务器基本情况", level=0),
+            TocEntry(text="四、接口健康检查", level=0),
+        ],
+    )
+
+    return ReportConfig(cover=cover, toc=toc, sections=sections)

@@ -1,8 +1,14 @@
 # -*- coding:utf-8 -*-
 """``app.scripts.ops.ops_report`` 单元测试。"""
+from datetime import datetime
+
+from app.shared.utils.report.word.config import (
+    ReportConfig, SectionConfig, TableSectionConfig,
+)
 from app.scripts.ops.ops_report import OpsSummary, OpsAlerts, OpsAlertItem, compute_ops_summary
 from app.scripts.ops.ops_report import compute_ops_alerts
 from app.scripts.ops.ops_report import resolve_server_ip_map
+from app.scripts.ops.ops_report import build_ops_report_config
 from app.scripts.api_check import ApiCheckItem, ApiCheckReport
 from app.scripts.server_ops import ServerOpsItem, ServerOpsReport
 
@@ -196,3 +202,64 @@ def test_resolve_ip_map_prefers_ip_over_host_alias():
     srv = ServerOpsReport(items=[ServerOpsItem(business_name="A")])
     m = resolve_server_ip_map(_MixedService(), srv)
     assert m == {"A": "10.0.0.7"}
+
+
+# --------------------------------------------------------------------------
+# build_ops_report_config 报告配置构造
+# --------------------------------------------------------------------------
+
+def _build_summary():
+    return compute_ops_summary(ServerOpsReport(items=[
+        ServerOpsItem(business_name="A", success=True, inspection_status="pass"),
+    ]), ApiCheckReport())
+
+
+def test_build_report_config_structure():
+    summary = _build_summary()
+    alerts = compute_ops_alerts(ServerOpsReport(), ApiCheckReport())
+    cfg = build_ops_report_config(
+        summary=summary,
+        alerts=alerts,
+        server_report=ServerOpsReport(items=[
+            ServerOpsItem(business_name="A", success=True, inspection_status="pass"),
+        ]),
+        api_report=ApiCheckReport(),
+        ip_map={"A": "10.0.0.1"},
+        schedule_name="运维巡检",
+        started_at=datetime(2026, 7, 22, 15, 0, 0),
+    )
+    assert isinstance(cfg, ReportConfig)
+    titles = [s.content for s in cfg.sections if s.section_type == "heading"]
+    assert "一、综述" in titles
+    assert "二、网络检查" in titles
+    assert "三、服务器基本情况" in titles
+    assert "四、接口健康检查" in titles
+    # 业务名作为二级标题
+    assert "A" in titles
+    # 表格 SectionConfig
+    tables = [s for s in cfg.sections if s.section_type == "table"]
+    assert len(tables) >= 1
+    # 封面标题
+    assert cfg.cover is not None
+    assert cfg.cover.title.text == "沈阳不动产运维报告"
+
+
+def test_build_report_config_table_section_headers():
+    summary = _build_summary()
+    alerts = compute_ops_alerts(ServerOpsReport(), ApiCheckReport())
+    cfg = build_ops_report_config(
+        summary=summary, alerts=alerts,
+        server_report=ServerOpsReport(items=[
+            ServerOpsItem(business_name="A", success=True, inspection_status="pass"),
+        ]),
+        api_report=ApiCheckReport(),
+        ip_map={"A": "10.0.0.1"},
+        schedule_name="x", started_at=datetime(2026, 7, 22),
+    )
+    tables = [s for s in cfg.sections if s.section_type == "table"]
+    # 元信息表 + 字段明细表 = 至少 1 个
+    headers_combined = []
+    for t in tables:
+        headers_combined.append(t.table.headers[0])
+    # 字段表首列应为「指标」或「项目」之一
+    assert any(h in ["指标", "项目"] for h in headers_combined)
