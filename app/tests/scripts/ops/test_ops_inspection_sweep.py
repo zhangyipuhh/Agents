@@ -21,9 +21,11 @@
 """
 from __future__ import annotations
 
+import asyncio
 import importlib
 import inspect
 import logging
+import os
 import typing
 from datetime import datetime
 from pathlib import Path
@@ -32,7 +34,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from app.scripts.api_check import ApiCheckItem, ApiCheckReport
-from app.scripts.base import ScriptContext, ScriptExecutionError
+from app.scripts.base import ScriptContext, ScriptExecutionError, ScriptResult
 from app.scripts.registry import clear_registry, get_registered_script
 from app.scripts.server_ops import ServerOpsItem, ServerOpsReport
 
@@ -164,7 +166,11 @@ def test_ops_inspection_sweep_registered_in_registry():
 
 
 def test_ops_inspection_sweep_run_signature():
-    """``run`` 签名应为 ``async def run(context: ScriptContext) -> str``。"""
+    """``run`` 签名应为 ``async def run(context: ScriptContext) -> ScriptResult``。
+
+    Phase D 起返回类型从 ``str`` 升级为 ``ScriptResult``(``Union[str, Tuple[...]]``),
+    以承载 docx 附件路径;docx 失败时仍退化为 ``str``。
+    """
     from app.scripts.ops import ops_inspection_sweep
 
     sig = inspect.signature(ops_inspection_sweep.run)
@@ -172,7 +178,7 @@ def test_ops_inspection_sweep_run_signature():
 
     hints = typing.get_type_hints(ops_inspection_sweep.run)
     assert hints["context"] is ScriptContext
-    assert hints["return"] is str
+    assert hints["return"] is ScriptResult
 
 
 def test_ops_inspection_sweep_params_schema_declares_server_and_api():
@@ -791,3 +797,113 @@ def test_generate_docx_report_produces_docx(tmp_path, monkeypatch):
     assert captured["instantiated_with_cfg"] is cfg
     assert captured["generated"] is True
     assert captured["saved_to"] == str(output)
+
+
+# ===== 9) Phase D Task D2: run 返回 docx 附件 =====
+
+
+def _install_docx_fake_and_tmp_path(monkeypatch, tmp_path: Path) -> Dict[str, Any]:
+    """为 ``run`` 测试安装 docx fake 与 tmp_path 重定向。
+
+    返回捕获字典供断言使用。``app/tests/conftest.py`` 在全局 mock 了 ``docx``
+    模块,因此 ``WordReportGenerator`` 真正调用 ``Document()`` 时会抛
+    ``TypeError: 'Mock' object is not subscriptable``;这里注入 fake 生成器,
+    在 ``save()`` 中写出 ``> 1000`` 字节占位 zip 头,以验证文件确实落盘。
+
+    参数:
+        monkeypatch: pytest monkeypatch fixture。
+        tmp_path: pytest 临时目录 fixture,用于隔离真实 ``data/`` 目录。
+
+    返回:
+        Dict[str, Any]: 含 ``saved_to`` 键,记录 fake ``save()`` 收到的路径。
+    """
+    from app.scripts.ops import ops_inspection_sweep
+
+    captured: Dict[str, Any] = {"saved_to": None}
+
+    class _FakeGenerator:
+        def __init__(self, cfg) -> None:
+            self.cfg = cfg
+
+        def generate(self) -> None:
+            return None
+
+        def save(self, path) -> None:
+            captured["saved_to"] = path
+            Path(path).write_bytes(b"PK\x03\x04" + b"\x00" * 1500)
+
+    monkeypatch.setattr(
+        ops_inspection_sweep, "WordReportGenerator", _FakeGenerator,
+    )
+    monkeypatch.setattr(
+        ops_inspection_sweep, "_resolve_attachment_path",
+        lambda *_args, **_kwargs: tmp_path / "ops_report.docx",
+    )
+    return captured
+
+
+def test_run_returns_body_and_docx_path(tmp_path, monkeypatch):
+    """``run`` 成功路径应返回 ``(body, [docx_path])`` 元组,docx 文件实际生成。
+
+    与既有契约的差异:``run`` 在 Phase D 之前返回 ``str``,Phase D 起改为
+    ``ScriptResult = Union[str, Tuple[str, Optional[Union[str, List[str]]]]]``。
+    docx 生成成功时返回 ``(body, [docx_path])`` 元组,失败时退化为 ``body``。
+
+    通过 fake ``WordReportGenerator`` 绕过 ``app/tests/conftest.py`` 全局 mock
+    的 ``docx`` 模块,让 ``_generate_docx_report`` 真正写出 > 1000 字节文件;
+    通过 monkeypatch ``_resolve_attachment_path`` 把 docx 输出重定向到
+    ``tmp_path``,避免污染真实 ``data/attachments/Task/`` 目录。
+    """
+    from app.scripts.ops import ops_inspection_sweep
+
+    captured = _install_docx_fake_and_tmp_path(monkeypatch, tmp_path)
+    # 让 IP 反查跳过(避免触发 devops_server_service)
+    monkeypatch.setattr(
+        ops_inspection_sweep, "resolve_server_ip_map",
+        lambda *_args, **_kwargs: {},
+    )
+
+    ctx = _make_context(script_args={"server_list": [], "api_list": []})
+    result = asyncio.run(ops_inspection_sweep.run(ctx))
+
+    # 1) 返回值必须是 tuple(body, attachments)
+    assert isinstance(result, tuple)
+    assert len(result) == 2
+    body, attachments = result
+    # 2) body 是中文邮件正文,含「运维巡检」「综述」「巡检」其一
+    assert isinstance(body, str)
+    assert "运维巡检" in body or "综述" in body or "巡检" in body
+    # 3) attachments 是单条 .docx 绝对路径列表
+    assert isinstance(attachments, list)
+    assert len(attachments) == 1
+    assert os.path.exists(attachments[0])
+    assert attachments[0].endswith(".docx")
+    # 4) 验证 _generate_docx_report 真的写到了 tmp_path,而不是数据目录
+    assert captured["saved_to"] is not None
+    assert str(tmp_path / "ops_report.docx") in captured["saved_to"]
+
+
+def test_run_docx_generation_failure_returns_body_only(monkeypatch):
+    """docx 生成失败时 ``run`` 仍返回 ``body`` 字符串(fail-soft)。
+
+    Phase D 设计契约:docx 生成抛任何异常都被 try/except 吞掉,
+    ``docx_path`` 重置为 ``None``,``run`` 退化为只返回 ``body`` 字符串,
+    不返回 tuple(避免调度器把整个 run 标记为失败)。
+    """
+    from app.scripts.ops import ops_inspection_sweep
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(ops_inspection_sweep, "_generate_docx_report", _boom)
+    monkeypatch.setattr(
+        ops_inspection_sweep, "resolve_server_ip_map",
+        lambda *_args, **_kwargs: {},
+    )
+
+    ctx = _make_context()
+    result = asyncio.run(ops_inspection_sweep.run(ctx))
+
+    # fail-soft: body 字符串,无附件
+    assert isinstance(result, str)
+    assert "运维巡检" in result or "综述" in result or "巡检" in result

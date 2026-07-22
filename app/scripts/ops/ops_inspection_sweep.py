@@ -45,12 +45,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
 from app.core.config.paths import resolve_task_attachment_path
 from app.scripts.api_check import run_api_checks
-from app.scripts.base import ScriptContext
+from app.scripts.base import ScriptContext, ScriptExecutionError, ScriptResult
 from app.scripts.ops.ops_report import (
     build_ops_email_body,
     build_ops_report_config,
@@ -118,18 +119,16 @@ _FIELD_STATUS_ZH = {
         },
     },
 )
-async def run(context: ScriptContext) -> str:
-    """执行运维巡检扫描,逐字段打印比对结果,返回纯文本摘要。
+async def run(context: ScriptContext) -> "ScriptResult":
+    """执行运维巡检扫描,生成 docx 报告并返回 ``(邮件正文, [附件路径])``。
 
     流程:
-        1. 调用 ``run_server_ops(context)`` 拿到 ``ServerOpsReport``;
-        2. 对每台服务器,打印 ``inspection_script`` 输出原始 stdout + 解析后的
-           ``parsed_values`` + 每条 ``inspection_fields`` 规则的
-           ``(key / name_zh / value / warn / crit / status / message)`` 比对明细;
-        3. 调用 ``run_api_checks(context)`` 拿到 ``ApiCheckReport``;
-        4. 对每个接口,打印 ``(node_id / name / path / http_status / duration_ms
-           / check_passed / assertion_results)`` 明细;
-        5. 拼接 ``server_ops`` 与 ``api_check`` 摘要,作为脚本返回值。
+        1. 调用 ``run_server_ops(context)`` 与 ``run_api_checks(context)``;
+        2. 计算综述统计与关键告警;
+        3. 反查每台服务器 IP;
+        4. 构建 :class:`ReportConfig` 并异步生成 docx;
+        5. 构造邮件正文;
+        6. 返回 ``(body, [docx_path])``;docx 生成失败时退化为 ``body``。
 
     参数:
         context: 脚本运行上下文,需携带 ``devops_server_service`` /
@@ -137,8 +136,8 @@ async def run(context: ScriptContext) -> str:
             等字段。
 
     返回:
-        str: 纯文本摘要; ``server_list`` 与 ``api_list`` 均空时仅返回任务名 + 触发方式
-        + 开始时间;任一非空时其对应摘要行追加到末尾。
+        ScriptResult: ``(body, [docx_path])`` 元组,docx 文件实际落盘;
+            docx 生成失败时退化为 ``body`` 字符串(无附件)。
 
     异常:
         ScriptExecutionError: ``server_list`` 非空但 ``devops_server_service`` 不可用,
@@ -155,7 +154,6 @@ async def run(context: ScriptContext) -> str:
         f"started_at={started_str})"
     )
 
-    # 1) 服务器巡检
     context.log_logger.info(
         "ops_inspection_sweep 开始执行，server_list=%s, api_list=%s",
         script_args.get("server_list", []),
@@ -163,15 +161,64 @@ async def run(context: ScriptContext) -> str:
     )
     server_ops_report = await run_server_ops(context)
     _log_server_ops_detail(server_ops_report, context.log_logger)
-    summary = _append_server_ops_to_summary(base_summary, server_ops_report)
 
-    # 2) 接口健康检查
     api_report = await run_api_checks(context)
     _log_api_check_detail(api_report, context.log_logger)
-    summary = _append_api_check_to_summary(summary, api_report)
+
+    # 综述 / 告警 / IP
+    summary = compute_ops_summary(server_ops_report, api_report)
+    alerts = compute_ops_alerts(server_ops_report, api_report)
+    ip_map = resolve_server_ip_map(
+        getattr(context, "devops_server_service", None),
+        server_ops_report,
+    )
+
+    # docx
+    docx_path = _resolve_attachment_path(
+        context.schedule_name, context.run_id, context.started_at,
+    )
+    try:
+        report_config = build_ops_report_config(
+            summary=summary,
+            alerts=alerts,
+            server_report=server_ops_report,
+            api_report=api_report,
+            ip_map=ip_map,
+            schedule_name=context.schedule_name,
+            started_at=context.started_at,
+        )
+        await asyncio.to_thread(_generate_docx_report, report_config, docx_path)
+        context.log_logger.info(
+            "ops_inspection_sweep docx 生成成功 path=%s size=%d",
+            docx_path, docx_path.stat().st_size,
+        )
+    except Exception as exc:
+        context.log_logger.exception("ops_inspection_sweep docx 生成失败: %s", exc)
+        docx_path = None
+
+    # 邮件正文
+    finished_at = datetime.now()
+    body = build_ops_email_body(
+        summary=summary,
+        alerts=alerts,
+        schedule_name=context.schedule_name,
+        schedule_id=context.schedule_id,
+        run_id=context.run_id,
+        trigger_type=context.trigger_type,
+        started_at=context.started_at,
+        finished_at=finished_at,
+        report_file_name=docx_path.name if docx_path else None,
+    )
+
+    # 兼容旧契约:body 末尾追加旧摘要便于数据库 output_text 可读
+    summary_text = _append_server_ops_to_summary(base_summary, server_ops_report)
+    summary_text = _append_api_check_to_summary(summary_text, api_report)
+    body = body + "\n" + summary_text
 
     context.log_logger.info("ops_inspection_sweep 执行完成")
-    return summary
+    if docx_path:
+        return (body, [str(docx_path)])
+    return body
 
 
 def _append_server_ops_to_summary(summary: str, report) -> str:
