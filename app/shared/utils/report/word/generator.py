@@ -27,6 +27,34 @@ logger.info = _info
 logger.debug = _debug
 
 
+_TABLE_STATUS_COLORS = {
+    "PASS": "00B050",
+    "WARN": "FFC000",
+    "CRIT": "C00000",
+    "未评估": "808080",
+}
+
+
+def _set_cell_shading(cell, fill_hex: str) -> None:
+    """设置单元格底色。
+
+    Args:
+        cell: python-docx 单元格对象。
+        fill_hex: 无 ``#`` 前缀的 HEX 颜色字符串。
+
+    Returns:
+        None。
+
+    Raises:
+        AttributeError: 单元格对象不支持 OOXML 属性访问时抛出。
+    """
+    tc_pr = cell._tc.get_or_add_tcPr()
+    shd = OxmlElement("w:shd")
+    shd.set(qn("w:val"), "clear")
+    shd.set(qn("w:color"), "auto")
+    shd.set(qn("w:fill"), fill_hex)
+    tc_pr.append(shd)
+
 
 
 def set_chinese_font(run, font_name="宋体", font_size=12, bold=False):
@@ -601,6 +629,59 @@ class WordReportGenerator:
         if left_indent:
             paragraph.paragraph_format.left_indent = Cm(left_indent)
 
+    def _render_table(self, section: SectionConfig, document) -> None:
+        """渲染表格章节。
+
+        Args:
+            section: ``section_type="table"`` 的章节配置。
+            document: python-docx Document 对象。
+
+        Returns:
+            None。
+
+        Raises:
+            IndexError: 行数据或列宽配置超出表格列数时抛出。
+        """
+        table_cfg = section.table
+        if table_cfg is None or not table_cfg.headers:
+            return
+
+        rows_count = len(table_cfg.rows) + 1
+        cols_count = len(table_cfg.headers)
+        table = document.add_table(rows=rows_count, cols=cols_count)
+        table.style = "Table Grid"
+
+        if table_cfg.column_widths:
+            for col_idx, width_cm in enumerate(table_cfg.column_widths):
+                for row in table.rows:
+                    row.cells[col_idx].width = Cm(width_cm)
+
+        for col_idx, header_text in enumerate(table_cfg.headers):
+            cell = table.rows[0].cells[col_idx]
+            cell.text = ""
+            paragraph = cell.paragraphs[0]
+            run = paragraph.add_run(header_text)
+            set_chinese_font(run, font_name="宋体", font_size=11, bold=True)
+            if table_cfg.header_fill:
+                _set_cell_shading(cell, table_cfg.header_fill)
+
+        for row_idx, row_data in enumerate(table_cfg.rows, start=1):
+            for col_idx, cell_text in enumerate(row_data):
+                cell = table.rows[row_idx].cells[col_idx]
+                cell.text = ""
+                paragraph = cell.paragraphs[0]
+                if table_cfg.cell_align == "center":
+                    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                run = paragraph.add_run(str(cell_text))
+                set_chinese_font(run, font_name="宋体", font_size=10, bold=False)
+                if (
+                    table_cfg.status_column is not None
+                    and col_idx == table_cfg.status_column
+                    and cell_text in _TABLE_STATUS_COLORS
+                ):
+                    _set_cell_shading(cell, _TABLE_STATUS_COLORS[cell_text])
+                    run.font.bold = True
+
     def _render_page_break(self):
         """
         渲染分页符
@@ -761,8 +842,12 @@ class WordReportGenerator:
             根据 section_type 字段分发到对应的渲染方法：
             - "heading" -> _render_heading()
             - "paragraph" -> _render_paragraph()
+            - "table" -> _render_table()
             - "page_break" -> _render_page_break()
         """
+        if section.section_type == "table":
+            self._render_table(section, self.doc)
+            return
         if section.section_type == "heading":
             self._render_heading(section)
         elif section.section_type == "paragraph":

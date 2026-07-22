@@ -8,6 +8,7 @@ from app.shared.utils.report.word.config import (
     HeadingStyleConfig,
     ParagraphStyleConfig,
     SectionConfig,
+    TableSectionConfig,
     ReportConfig,
     FooterConfig,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "HeadingStyleConfig",
     "ParagraphStyleConfig",
     "SectionConfig",
+    "TableSectionConfig",
     "ReportConfig",
     "FooterConfig",
 ]
