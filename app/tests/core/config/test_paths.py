@@ -320,3 +320,18 @@ def test_resolve_task_attachment_path_validates_suffix():
         resolve_task_attachment_path(
             name="x", run_id=1, when=datetime(2026, 1, 1), suffix=""
         )
+
+
+def test_resolve_task_attachment_path_rejects_non_int_run_id():
+    """
+    P1: ``run_id`` 必须是 ``int``,不能接受 ``str`` / ``float`` / ``bool``。
+
+    严格类型校验，避免 ``int("1") == 1`` / ``int(1.5) == 1`` / ``int(True) == 1``
+    这类隐式转换绕过正整数约束。
+    """
+    with pytest.raises(ValueError):
+        resolve_task_attachment_path(name="x", run_id="1", when=datetime(2026, 1, 1))
+    with pytest.raises(ValueError):
+        resolve_task_attachment_path(name="x", run_id=1.5, when=datetime(2026, 1, 1))
+    with pytest.raises(ValueError):
+        resolve_task_attachment_path(name="x", run_id=True, when=datetime(2026, 1, 1))

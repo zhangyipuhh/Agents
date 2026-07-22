@@ -191,7 +191,7 @@ def resolve_task_attachment_path(
     :rtype: Path
     :raises ValueError: 当 ``run_id`` 非正整数、``when`` 为 ``None`` 或 ``suffix`` 为空时抛出。
     """
-    if run_id is None or int(run_id) <= 0:
+    if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id <= 0:
         raise ValueError("run_id must be a positive integer")
     if when is None:
         raise ValueError("when must be a datetime instance")
