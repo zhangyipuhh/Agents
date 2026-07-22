@@ -569,7 +569,7 @@ class TableSectionConfig:
     表格段落配置类
 
     定义报告内表格的样式与内容，仅在 :class:`SectionConfig.section_type` 为
-    ``"table"`` 时生效。渲染逻辑由 ``generator.py`` 中的表格渲染实现负责。
+    ``"table"`` 时生效。具体渲染由对应的 generator 实现负责。
 
     Attributes:
         headers: 表头文本列表。
@@ -612,7 +612,7 @@ class SectionConfig:
     段落配置类（核心类）
 
     定义报告正文中每个段落/标题的类型、内容、字体样式和排版参数。
-    支持三种段落类型：标题(heading)、正文(paragraph)、分页符(page_break)。
+    支持四种段落类型：标题(heading)、正文(paragraph)、分页符(page_break)、表格(table)。
 
     样式优先级：SectionConfig中显式设置的值 > ReportConfig中heading_styles/paragraph_style统一样式 > 默认值
 
@@ -623,7 +623,7 @@ class SectionConfig:
     2. 内置默认值
 
     Attributes:
-        section_type: 段落类型，"heading"=标题 / "paragraph"=正文 / "page_break"=分页符
+        section_type: 段落类型，"heading"=标题 / "paragraph"=正文 / "page_break"=分页符 / "table"=表格
         content: 文本内容，支持{{变量}}占位符，也支持可调用对象（如lambda或函数），
                  可调用对象在渲染时被调用以获取实际文本
         level: 标题级别1-3，仅heading类型有效，默认1
@@ -652,6 +652,11 @@ class SectionConfig:
         ... )
         >>> # 分页符
         >>> section_break = SectionConfig(section_type="page_break")
+        >>> # 表格段落
+        >>> section_table = SectionConfig(
+        ...     section_type="table",
+        ...     table=TableSectionConfig(headers=["指标", "当前值"], rows=[["CPU", "75%"]])
+        ... )
         >>> # 使用可调用对象作为内容
         >>> section_dynamic = SectionConfig(
         ...     section_type="paragraph",
