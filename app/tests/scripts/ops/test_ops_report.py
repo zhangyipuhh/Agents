@@ -9,6 +9,7 @@ from app.scripts.ops.ops_report import OpsSummary, OpsAlerts, OpsAlertItem, comp
 from app.scripts.ops.ops_report import compute_ops_alerts
 from app.scripts.ops.ops_report import resolve_server_ip_map
 from app.scripts.ops.ops_report import build_ops_report_config
+from app.scripts.ops.ops_report import build_ops_email_body
 from app.scripts.api_check import ApiCheckItem, ApiCheckReport
 from app.scripts.server_ops import ServerOpsItem, ServerOpsReport
 
@@ -263,3 +264,49 @@ def test_build_report_config_table_section_headers():
         headers_combined.append(t.table.headers[0])
     # 字段表首列应为「指标」或「项目」之一
     assert any(h in ["指标", "项目"] for h in headers_combined)
+
+
+# --------------------------------------------------------------------------
+# build_ops_email_body 邮件正文构造
+# --------------------------------------------------------------------------
+
+def test_build_email_body_includes_alerts():
+    summary = OpsSummary(
+        total=3, passed=2, problem=1,
+        server_total=2, server_passed=2, server_problem=0,
+        server_failed_count=0, server_warn_count=0, server_crit_count=0,
+        api_total=1, api_passed=0, api_problem=1,
+    )
+    alerts = OpsAlerts(
+        server_warn_crit=[],
+        api_failed=[OpsAlertItem(business="X", metric="HTTP 检查",
+                                  value="HTTP 500", threshold="-", status="FAIL", detail="")],
+    )
+    body = build_ops_email_body(
+        summary=summary, alerts=alerts,
+        schedule_name="运维巡检", schedule_id=1, run_id=42,
+        trigger_type="scheduled",
+        started_at=datetime(2026, 7, 22, 15, 0, 0),
+        finished_at=datetime(2026, 7, 22, 15, 1, 0),
+        report_file_name="report.docx",
+    )
+    assert "[运维巡检]" in body
+    assert "运行 ID：42" in body
+    assert "本次运维巡检共检查 3 大项" in body
+    assert "【接口 · 检查失败】" in body
+    assert "X · HTTP 检查 · HTTP 500" in body
+    assert "report.docx" in body
+
+
+def test_build_email_body_no_alerts_omits_section():
+    body = build_ops_email_body(
+        summary=OpsSummary(), alerts=OpsAlerts(),
+        schedule_name="x", schedule_id=1, run_id=1,
+        trigger_type="manual",
+        started_at=datetime(2026, 7, 22, 15, 0, 0),
+        finished_at=datetime(2026, 7, 22, 15, 0, 30),
+        report_file_name=None,
+    )
+    assert "—— 综述 ——" in body
+    assert "—— 关键告警 ——" not in body
+    assert "—— 附件 ——" not in body

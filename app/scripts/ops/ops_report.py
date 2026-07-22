@@ -485,3 +485,92 @@ def build_ops_report_config(
     )
 
     return ReportConfig(cover=cover, toc=toc, sections=sections)
+
+
+# --------------------------------------------------------------------------
+# 邮件正文构造(纯文本)
+# --------------------------------------------------------------------------
+
+def _fmt_dt(dt: datetime) -> str:
+    """把 datetime 格式化为中文邮件时间戳;空值为 ``-``。"""
+    return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else "-"
+
+
+def build_ops_email_body(
+    *,
+    summary: OpsSummary,
+    alerts: OpsAlerts,
+    schedule_name: str,
+    schedule_id: int,
+    run_id: int,
+    trigger_type: str,
+    started_at: datetime,
+    finished_at: Optional[datetime],
+    report_file_name: Optional[str],
+) -> str:
+    """构造邮件正文文本(纯文本,不含 HTML)。
+
+    段落结构:
+        * 头部: 任务元数据
+        * 综述
+        * 关键告警(告警为空时省略整段)
+        * 附件(无附件时省略整段)
+
+    参数:
+        summary: :class:`OpsSummary`。
+        alerts: :class:`OpsAlerts`。
+        schedule_name/schedule_id/run_id/trigger_type: 任务元数据。
+        started_at/finished_at: 执行时间。
+        report_file_name: Word 报告文件名;``None`` 时省略附件段落。
+
+    返回:
+        str: 邮件正文。
+    """
+    lines: List[str] = []
+    lines.append(f"[{schedule_name}] 运维巡检报告")
+    lines.append(f"任务 ID：{schedule_id}")
+    lines.append(f"运行 ID：{run_id}")
+    lines.append(f"触发方式：{trigger_type}")
+    lines.append(f"开始时间：{_fmt_dt(started_at)}")
+    lines.append(f"结束时间：{_fmt_dt(finished_at)}")
+    lines.append("")
+    lines.append("—— 综述 ——")
+    lines.append(
+        f"本次运维巡检共检查 {summary.total} 大项，其中成功 {summary.passed} 项，"
+        f"有问题 {summary.problem} 项。"
+    )
+    lines.append("网络检查：暂不检查（1 项，已排除）。")
+    lines.append(
+        f"服务器：共 {summary.server_total} 项，成功 {summary.server_passed} 项，"
+        f"有问题 {summary.server_problem} 项（其中执行失败/跳过 "
+        f"{summary.server_failed_count} 项，阈值告警 {summary.server_warn_count} 项、"
+        f"严重 {summary.server_crit_count} 项）。"
+    )
+    lines.append(
+        f"接口：共 {summary.api_total} 项，成功 {summary.api_passed} 项，"
+        f"有问题 {summary.api_problem} 项。"
+    )
+
+    if not alerts.is_empty:
+        lines.append("")
+        lines.append("—— 关键告警 ——")
+        if alerts.server_warn_crit:
+            lines.append("【服务器 · 阈值告警】")
+            for item in alerts.server_warn_crit:
+                lines.append(
+                    f"- {item.business} · {item.metric} · {item.value} "
+                    f"({item.threshold}) → {item.status}"
+                )
+        if alerts.api_failed:
+            lines.append("【接口 · 检查失败】")
+            for item in alerts.api_failed:
+                lines.append(
+                    f"- {item.business} · {item.metric} · {item.value} → {item.status}"
+                )
+
+    if report_file_name:
+        lines.append("")
+        lines.append("—— 附件 ——")
+        lines.append(f"完整内容请参见附件 Word 报告：{report_file_name}")
+
+    return "\n".join(lines)
