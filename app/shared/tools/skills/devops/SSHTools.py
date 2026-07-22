@@ -337,6 +337,9 @@ def execute_command(
     try:
         client = _open_client(config)
         stdin, stdout, stderr = client.exec_command(wrapped, timeout=safe_timeout)
+        # Windows OpenSSH 非 PTY 通道下远端 shell 会等待 stdin EOF 才退出,
+        # 不关闭写端 read() 将阻塞至超时;命令不读 stdin,关闭写端无副作用。
+        stdin.close()
         output = stdout.read().decode("utf-8", errors="replace").strip()
         err = stderr.read().decode("utf-8", errors="replace").strip()
         exit_code = stdout.channel.recv_exit_status()
@@ -495,6 +498,9 @@ def execute_batch_commands(
             wrapped = _wrap_for_platform(config["server_type"], cmd)
             try:
                 stdin, stdout, stderr = client.exec_command(wrapped, timeout=safe_timeout)
+                # Windows OpenSSH 非 PTY 通道下需关闭 stdin 写端(发送 EOF),
+                # 否则远端 shell 等待输入导致 read() 阻塞至超时。
+                stdin.close()
                 output = stdout.read().decode("utf-8", errors="replace").strip()
                 err = stderr.read().decode("utf-8", errors="replace").strip()
                 exit_code = stdout.channel.recv_exit_status()
@@ -676,6 +682,9 @@ def get_system_logs(
         # Bug-5 修复:get_system_logs 内部命令固定 30s,这里用钳制函数统一约束
         safe_timeout = _clamp_timeout(30, default=30, lo=1, hi=120)
         stdin, stdout, stderr = client.exec_command(wrapped, timeout=safe_timeout)
+        # Windows OpenSSH 非 PTY 通道下需关闭 stdin 写端(发送 EOF),
+        # 否则远端 shell 等待输入导致 read() 阻塞至超时。
+        stdin.close()
         output = stdout.read().decode("utf-8", errors="replace").strip()
         err = stderr.read().decode("utf-8", errors="replace").strip()
         exit_code = stdout.channel.recv_exit_status()

@@ -188,6 +188,40 @@ def test_execute_command_runs_linux_and_uses_bash(monkeypatch):
     fake_service.get_connection_config.assert_called_with("alpha")
 
 
+def test_execute_command_closes_stdin_write_side(monkeypatch):
+    """execute_command 执行后应关闭 stdin 写端（发送 EOF）。
+
+    Windows OpenSSH 默认 shell 在非 PTY exec 通道下会等待 stdin EOF 才退出,
+    不关闭写端会导致 ``stdout.read()`` 阻塞至超时;命令不读 stdin,关闭写端
+    对 Linux / Windows 均无副作用。
+
+    Args:
+        monkeypatch: pytest monkeypatch fixture。
+
+    Returns:
+        None
+    """
+    config = {
+        "ip": "10.0.0.1",
+        "port": 22,
+        "username": "rootuser",
+        "password": "supersecret-pwd-xyz",
+        "server_type": "windows",
+        "blacklist": [],
+        "whitelist": ["Get-Date"],
+    }
+    _patch_service(monkeypatch, config)
+    fake_client = _patch_paramiko(monkeypatch, stdout_text="ok\n", exit_code=0)
+    runtime = _build_runtime(business_name="alpha")
+
+    from app.shared.tools.skills.devops.SSHTools import execute_command
+
+    execute_command(command="Get-Date", business_name="alpha", runtime=runtime)
+
+    stdin = fake_client.exec_command.return_value[0]
+    stdin.close.assert_called_once()
+
+
 def test_execute_command_runs_windows_and_uses_powershell(monkeypatch):
     """windows server_type → powershell.exe。
 

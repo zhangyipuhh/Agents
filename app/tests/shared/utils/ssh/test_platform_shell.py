@@ -60,7 +60,8 @@ def test_wrap_script_for_platform_windows_uses_encoded_command():
 def test_wrap_script_for_platform_windows_multiline_script_decodes_correctly():
     """Windows 多行 PowerShell 脚本经 ``-EncodedCommand`` Base64 反解后必须完整还原。
 
-    验证 round-trip:wrap → 截取 Base64 部分 → 解码 → 与原脚本字节一致(忽略 BOM 差异)。
+    验证 round-trip:wrap → 截取 Base64 部分 → 解码 → 用户脚本原文完整保留在
+    ``Out-String -Width 4096`` 输出收集包装内(规避非 PTY 宿主 80 列硬换行)。
 
     参数:
         无。
@@ -88,9 +89,14 @@ def test_wrap_script_for_platform_windows_multiline_script_decodes_correctly():
     assert len(parts) == 2, wrapped
     encoded_b64 = parts[1].strip()
     decoded = base64.b64decode(encoded_b64).decode("utf-16-le")
-    # PowerShell -EncodedCommand 会跳过 UTF-16 LE BOM,直接接脚本内容
-    assert decoded == script, (
-        f"round-trip 不一致:\nexpected={script!r}\nactual={decoded!r}"
+    # PowerShell -EncodedCommand 会跳过 UTF-16 LE BOM,直接接脚本内容;
+    # 用户脚本原文必须完整保留在输出收集包装内
+    assert script in decoded, (
+        f"用户脚本未完整保留:\nscript={script!r}\ndecoded={decoded!r}"
+    )
+    assert decoded.startswith("$__daimon_out = & {\n")
+    assert decoded.endswith(
+        "} | Out-String -Width 4096\n[Console]::Out.Write($__daimon_out)\n"
     )
 
 
@@ -119,7 +125,34 @@ def test_wrap_script_for_platform_windows_handles_special_chars():
     parts = wrapped.split("-EncodedCommand", 1)
     encoded_b64 = parts[1].strip()
     decoded = base64.b64decode(encoded_b64).decode("utf-16-le")
-    assert decoded == script
+    assert script in decoded
+
+
+def test_wrap_powershell_output_wraps_user_script():
+    """``_wrap_powershell_output`` 应把用户脚本包进 Out-String 输出收集包装。
+
+    非控制台宿主(SSH exec 无 PTY)下 ``Write-Output`` 按宿主 80 列硬换行,
+    会破坏单行 JSON;包装后由 ``Out-String -Width 4096`` 收集输出,
+    再经 ``[Console]::Out.Write`` 原样写出。
+
+    参数:
+        无。
+
+    返回值:
+        None。
+
+    异常:
+        AssertionError: 包装结构不符合预期时抛出。
+    """
+    from app.shared.utils.ssh.platform_shell import _wrap_powershell_output
+
+    script = "Write-Output '{}'"
+    wrapped = _wrap_powershell_output(script)
+
+    assert wrapped.startswith("$__daimon_out = & {\n")
+    assert script in wrapped
+    assert "Out-String -Width 4096" in wrapped
+    assert wrapped.endswith("[Console]::Out.Write($__daimon_out)\n")
 
 
 def test_wrap_script_for_platform_rejects_empty_script():

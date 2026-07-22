@@ -57,7 +57,11 @@ def execute_script(
             auth_timeout=connect_timeout,
             banner_timeout=connect_timeout,
         )
-        _, stdout, stderr = client.exec_command(wrapped, timeout=safe_timeout)
+        stdin, stdout, stderr = client.exec_command(wrapped, timeout=safe_timeout)
+        # Windows OpenSSH 的默认 shell 在非 PTY 通道下会持续等待 stdin,
+        # 不发送 EOF 远端进程不退出、stdout.read() 一直阻塞直至超时;
+        # 巡检脚本均不读 stdin,关闭 stdin 写端对 Linux / Windows 均无副作用。
+        stdin.close()
         output = stdout.read().decode("utf-8", errors="replace").strip()
         error = stderr.read().decode("utf-8", errors="replace").strip()
         exit_code = stdout.channel.recv_exit_status()

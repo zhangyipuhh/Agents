@@ -1155,6 +1155,63 @@ async def test_ssh_exec_failure_default_error_when_stderr_empty(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ssh_stderr_noise_with_zero_exit_still_evaluated(monkeypatch):
+    """退出码 0 但 stderr 非空（shell 启动噪音）时不判失败，正常解析评估。
+
+    场景:远端 ``/root/.bashrc`` 存在语法错误(如 ``//`` 注释),非交互式 SSH
+    会话每次执行都会把报错混入 stderr,但巡检脚本本身 exit=0 且 stdout 为合法
+    JSON。契约:success=True、inspection_status 由评估决定、stderr 原样保留
+    在 ``item.stderr`` 供报告「错误」列展示。
+    """
+    from app.scripts import server_ops as server_ops_module
+    monkeypatch.setattr(
+        server_ops_module,
+        "execute_script",
+        lambda *_: SSHExecResult(
+            False,
+            '{"mem_used_pct": 50}',
+            "/root/.bashrc: line 22: //注释: No such file or directory",
+            0,
+        ),
+    )
+    service = _StubDevOpsService({"biz-A": {
+        "inspection_script": "echo ok", "inspection_parser": "json",
+        "inspection_fields": [{"key": "mem_used_pct", "name_zh": "内存使用率", "unit": "%",
+                              "direction": "high", "warn": 80, "crit": 90}],
+    }})
+    report = await run_server_ops(_make_context_with_service(service, {"server_list": ["biz-A"]}))
+    item = report.items[0]
+    assert item.success is True
+    assert item.exit_code == 0
+    assert item.inspection_status == "pass"
+    assert item.parsed_values == {"mem_used_pct": 50}
+    assert item.field_results and item.field_results[0]["status"] == "pass"
+    assert item.error_message == ""
+    # stderr 噪音保留供报告「错误」列展示
+    assert ".bashrc" in item.stderr
+
+
+@pytest.mark.asyncio
+async def test_ssh_stderr_noise_with_zero_exit_parse_failure_marks_crit(monkeypatch):
+    """退出码 0 + stderr 噪音且 stdout 不可解析时仍走「巡检解析评估失败」crit。"""
+    from app.scripts import server_ops as server_ops_module
+    monkeypatch.setattr(
+        server_ops_module,
+        "execute_script",
+        lambda *_: SSHExecResult(False, "{garbage", "shell noise", 0),
+    )
+    service = _StubDevOpsService({"biz-A": {
+        "inspection_script": "echo ok", "inspection_parser": "json",
+    }})
+    report = await run_server_ops(_make_context_with_service(service, {"server_list": ["biz-A"]}))
+    item = report.items[0]
+    assert item.success is False
+    assert item.inspection_status == "crit"
+    assert item.error_message.startswith("巡检解析评估失败:")
+    assert item.inspection_error.startswith("巡检解析评估失败:")
+
+
+@pytest.mark.asyncio
 async def test_config_exception_inspection_error_message(monkeypatch):
     """get_connection_config 抛非 KeyError 异常应记 crit，且 inspection_error 也有错误说明。"""
     def boom(_):

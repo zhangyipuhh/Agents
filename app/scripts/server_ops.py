@@ -32,10 +32,12 @@
     * ``skipped`` —— 未执行（业务名未注册 / ``inspection_script`` 未配置）。
 
 success 与 inspection_status 解耦：
-    * ``success`` 反映「SSH 退出码 0 且 stderr 为空」的纯执行语义；
+    * ``success`` 反映「SSH 退出码为 0」的执行语义；stderr 非空**不**判失败，
+      仅作为噪音保留在 ``stderr`` 字段供报告展示（典型来源：远端 shell 启动
+      文件如 ``/root/.bashrc`` 的语法错误，非交互式 SSH 会话每次都会触发）；
     * ``inspection_status`` 反映「脚本输出按规则评估」的语义学判定。
     * 当 SSH 成功但评估命中 crit 时，``success=True`` 但 ``inspection_status="crit"``；
-      反之 SSH 失败时 ``success=False`` 且 ``inspection_status="crit"``，
+      反之 SSH 失败（退出码非 0）时 ``success=False`` 且 ``inspection_status="crit"``，
       **不会** 再走 stdout 解析评估。
 
 使用示例::
@@ -142,10 +144,12 @@ class ServerOpsItem:
 
     Attributes:
         business_name: 服务器业务名（``devops_servers.business_name``）。
-        success: SSH 命令执行是否成功（退出码 0 且 stderr 为空）；未执行时为 None。
+        success: SSH 命令执行是否成功（退出码为 0 即视为成功；stderr 非空
+            不判失败，仅保留展示）；未执行时为 None。
         exit_code: 远端进程退出码；未执行或被异常打断时为 None。
         stdout: 标准输出（已 strip）；未执行时为空字符串。
-        stderr: 标准错误（已 strip）；成功执行时为空字符串。
+        stderr: 标准错误（已 strip）；退出码非 0 或存在 shell 启动噪音
+            （如 ``.bashrc`` 语法错误）时非空。
         duration_ms: 执行耗时毫秒；未执行时为 None。
         error_message: 错误描述（鉴权失败 / 连接超时 / 未配置巡检脚本 /
             解析评估失败等）；成功执行时为空字符串。
@@ -507,9 +511,12 @@ async def _run_one(
           但**不**泄漏整个 config（无 ip / password）；
         * SSH 鉴权 / 连接 / paramiko 异常 → crit，``inspection_error`` /
           ``error_message`` 含「Type: message」，**不**泄漏 config；
-        * ``SSHExecResult.success=False`` → crit，**不**调用
+        * 退出码非 0（``SSHExecResult.success=False`` 且 ``exit_code != 0``）
+          → crit，**不**调用
           ``parse_inspection_output`` / ``evaluate_inspection_fields``；
           ``inspection_error`` / ``error_message`` 取 stderr 或「远端巡检脚本执行失败」；
+        * 退出码 0 但 stderr 非空（shell 启动噪音，如远端 ``.bashrc`` 语法错误）
+          → 不判失败，继续解析评估；stderr 保留在 ``item.stderr`` 供展示；
         * 解析 / 评估阶段异常 → crit，保留 stdout / stderr / exit_code /
           duration；``error_message`` / ``inspection_error`` 统一为
           「巡检解析评估失败: Type: message」；**不**泄漏 config；
@@ -571,8 +578,11 @@ async def _run_one(
     duration_ms = int((time.perf_counter() - started) * 1000)
     parser = str(config.get("inspection_parser") or "json")
 
-    # 4) SSH 失败：不解析 stdout，直接 crit
-    if not result.success:
+    # 4) SSH 失败判定（以退出码为准）：退出码非 0 → 不解析 stdout，直接 crit；
+    #    退出码 0 但 stderr 非空（典型场景：远端 .bashrc / profile.d 等 shell
+    #    启动文件的语法错误噪音混入 stderr）不视为失败，继续走解析评估，
+    #    stderr 原样保留在 item.stderr 供报告「错误」列展示。
+    if int(result.exit_code) != 0:
         stderr_text = (result.stderr or "").strip()
         err = stderr_text or _SSH_EXEC_FAILURE_DEFAULT_ERROR
         return ServerOpsItem(
@@ -617,11 +627,13 @@ async def _run_one(
             inspection_error=full_err,
         )
 
-    # 6) 评估成功：success 仍为 SSH 执行语义，inspection_status 取 evaluation.status
+    # 6) 评估成功：走到此处 exit_code 必为 0（非 0 已在步骤 4 返回），
+    #    success 取「退出码为 0」的执行语义；stderr 噪音（如 .bashrc 语法错误）
+    #    仅保留在 item.stderr 供报告展示，不拉低执行与巡检判定。
     eval_error = evaluation.error_message or ""
     return ServerOpsItem(
         business_name=business_name,
-        success=bool(result.success),
+        success=int(result.exit_code) == 0,
         exit_code=int(result.exit_code),
         stdout=result.stdout or "",
         stderr=result.stderr or "",

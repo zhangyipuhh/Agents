@@ -84,3 +84,28 @@ def test_execute_script_empty_script_does_not_connect(monkeypatch, ssh_config):
         execute_script(ssh_config, "\n")
 
     paramiko_mock.SSHClient.assert_not_called()
+
+
+def test_execute_script_closes_stdin_write_side(monkeypatch, ssh_config):
+    """exec_command 后应关闭 stdin 写端（向远端发送 EOF）。
+
+    Windows OpenSSH 默认 shell 在非 PTY exec 通道下会等待 stdin EOF 才退出,
+    不关闭写端会导致 ``stdout.read()`` 永久阻塞直至超时（TimeoutError）;
+    巡检脚本均不读取 stdin,关闭写端对 Linux / Windows 均无副作用。
+
+    参数:
+        monkeypatch: pytest monkeypatch fixture。
+        ssh_config: 测试 SSH 配置 fixture。
+
+    返回:
+        None。
+
+    异常:
+        无（断言失败由 pytest 抛出）。
+    """
+    client = _patch_paramiko(monkeypatch, stdout_text="ok\n")
+
+    execute_script(ssh_config, "echo ok")
+
+    stdin = client.exec_command.return_value[0]
+    stdin.close.assert_called_once()
