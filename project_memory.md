@@ -2058,10 +2058,10 @@ system_prompt = (
 
 | 路径 | 职责 |
 |---|---|
-| `app/shared/utils/devops_server_service.py` | `DevOpsServerService(db, config_path, credential_key)` 单例；`preload_all` / `scan_and_upsert` / `list_public_servers` / `get_connection_config` / `server_exists` / `delete_server` |
+| `app/shared/utils/devops_server_service.py` | `DevOpsServerService(db, config_path, credential_key)` 单例；`preload_all` / `scan_and_upsert` / `list_public_servers` / `get_server_detail` / `get_connection_config` / `server_exists` / `delete_server` |
 | `app/shared/tools/skills/devops/CommandInterceptor.py` | 命令策略过滤器，黑名单优先 + 白名单 allowlist + 精确/前缀/正则三模式 |
 | `app/shared/tools/skills/devops/SSHTools.py` | 3 个 `@tool(description=...)`：execute_command / execute_batch_commands / get_system_logs |
-| `app/routers/devops_server_admin_router.py` | `GET /api/admin/devops-servers` + `POST /api/admin/devops-servers/scan` + `DELETE /api/admin/devops-servers/{server_id}`（返 `204 No Content`），`router=APIRouter(... dependencies=[Depends(require_admin)])` |
+| `app/routers/devops_server_admin_router.py` | `GET /api/admin/devops-servers` + `GET /api/admin/devops-servers/{server_id}`（详情；返 `{id, business_name, server_type, updated_at, whitelist, inspection_script, inspection_parser}`）+ `POST /api/admin/devops-servers/scan` + `DELETE /api/admin/devops-servers/{server_id}`（返 `204 No Content`），`router=APIRouter(... dependencies=[Depends(require_admin)])` |
 
 ### 配置 / 路径常量（2026-07-15）
 
@@ -2080,7 +2080,7 @@ system_prompt = (
 
 - `app/core/server.py::lifespan`：数据库池建立后调用 `app.core.config.devops_diagnostics.diagnose_credential_key()` 校验密钥；通过则构造 `DevOpsServerService` 并 `set_instance(svc)` + 挂 `app.state.devops_server_service`；yield 后 `reset()` 单例并清理 `app.state.devops_server_service`。失败时把诊断 hint 写入 `app.state.devops_server_service_hint`，router 会读取并放入 500 detail。
 - `app/core/config/devops_diagnostics.py`（2026-07-15 新增）：从 `settings.devops.credential_key` 读取，分 4 类返回诊断结果：`missing`（完全没配）/ `misspelled`（env 里有相近键）/ `settings_unread`（env 里有精确键名但 settings 读不到）/ `invalid_fernet`（值非空但 Fernet 校验失败）。hint 不打印完整密钥，只显示长度+前 4 字符指纹。
-- `app/routers/devops_server_admin_router.py`：router 级 `require_admin`；服务未初始化返回 500 + `detail=<lifespan 写入的 hint>`（无 hint 时退回 `"DevOpsServerService not initialized"`）；`GET` 严格只返回 `{id, business_name, server_type, updated_at}`；`POST /scan` 严格只返回 `{scanned, inserted, updated, failed}`；扫描异常时不回显原始 `detail` / 路径 / IP / 密码 / 名单。`DELETE /api/admin/devops-servers/{server_id}` 返 `204 No Content`：先 `server_exists` 探测（不存在 → 404 + `"服务器不存在"`），再 `delete_server`（service 持 `_write_lock` 同步删 `_cache` + `db.execute("DELETE FROM devops_servers WHERE id = $1", server_id)`）；DB 异常 → 500 + `"删除服务器失败"`，不回显 SQL / 原 detail。
+- `app/routers/devops_server_admin_router.py`：router 级 `require_admin`；服务未初始化返回 500 + `detail=<lifespan 写入的 hint>`（无 hint 时退回 `"DevOpsServerService not initialized"`）；`GET` 严格只返回 `{id, business_name, server_type, updated_at}`；`POST /scan` 严格只返回 `{scanned, inserted, updated, failed}`；扫描异常时不回显原始 `detail` / 路径 / IP / 密码 / 名单。`GET /api/admin/devops-servers/{server_id}`（2026-07-22 新增）按需返回详情：仅含 `_DETAIL_FIELDS = {id, business_name, server_type, updated_at, whitelist, inspection_script, inspection_parser}`，命中失败 → 404 + `"服务器不存在"`（不回显 server_id），router 防御性二次过滤保证即便 service 失误返回了 ip/port/username/password 也会被白名单过滤。`DELETE /api/admin/devops-servers/{server_id}` 返 `204 No Content`：先 `server_exists` 探测（不存在 → 404 + `"服务器不存在"`），再 `delete_server`（service 持 `_write_lock` 同步删 `_cache` + `db.execute("DELETE FROM devops_servers WHERE id = $1", server_id)`）；DB 异常 → 500 + `"删除服务器失败"`，不回显 SQL / 原 detail。
 - **不再为 DevOps 工具创建 Agent**——工具通过 ToolRegistryService 扫描 `app/shared/tools/skills/devops/SSHTools.py` 自动发现，admin 界面按元数据展示。
 - **运行时必备配置**：`settings.devops.credential_key` 必须由 `Fernet.generate_key()` 生成（44 字节 base64），非法格式会在 `diagnose_credential_key()` 走 `invalid_fernet` 分支，效果同上。`data/devops/servers.yaml` 由 `.gitignore` 排除（`servers.yaml.example` 是公开模板），缺失时 `scan_and_upsert` 安全返回 0 但列表为空，不报错。
 
@@ -2093,6 +2093,11 @@ system_prompt = (
 - **公开白名单严格 4 字段**：`inspection_script` / `inspection_parser` 仅供 SSHTools 内部消费（`get_connection_config` 返回值），**永不进入** `GET /api/admin/devops-servers` 响应；admin router 的 `_PUBLIC_FIELDS` 防御性二次过滤保证即便 service 失误返回了脚本字段，响应也会被过滤。
 - **本轮不实现 tool**：`run_inspection_script` / `inspection_run` `@tool` 由后续 PR 处理；本轮仅完成「字段入库 + 缓存 + 内部消费通道」基础。
 - **覆盖范围**：`data/devops/servers.yaml` 的两个示例节点（Linux / Windows）均已携带 `inspection_script: |` + `inspection_parser: json` 示例，可作为运维模板参考。
+- **前端按需拉详情（2026-07-22）**：`web/Agent/src/components/TaskSchedulerManager.vue` 服务器列表新增「白名单」「巡检脚本」两列（每行两个查看按钮），点击列按钮通过 `web/Agent/src/utils/api.js::fetchDevOpsServerDetail(serverId)` → `GET /api/admin/devops-servers/{serverId}` 按需拉取详情，再以 `<Teleport>` 弹窗展示：
+  - 白名单弹窗：以 `<table class="whitelist-table">` 逐行展示 `whitelist: string[]`（序号 + 命令），空列表显示「暂无白名单命令」空态。
+  - 巡检脚本弹窗：以 `<pre class="script-content">` 等宽字体保留换行/缩进（`white-space: pre`）展示 `inspection_script`，未配置显示「未配置巡检脚本」空态，标题旁附解析器标签 `inspection_parser`。
+  - 两个弹窗互斥（同一时刻仅一个 open），通过 `whitelistDialog.open` / `scriptDialog.open` 互斥切换。
+  - 列表端点契约不变：仍只返回 4 字段，避免 1000 行脚本进入列表响应；详情按需拉是 `inspection_script` 唯一进入 DOM 的通道。
 - **pydantic-settings v2 嵌套 BaseSettings 不递归读 .env（2026-07-15 已修复）**：`Settings.devops: DevOpsSettings = Field(default_factory=DevOpsSettings)` 这种嵌套写法，顶层 `.env` 的扁平 key `DEVOPS_CREDENTIAL_KEY` 默认不会穿透到 `settings.devops.credential_key`（其他子 settings 如 `LLMSettings.model_name` 因为字段名直接对应环境变量名而能正常加载；`FeishuSettings.feishu_app_id` / `SandboxSettings.sandbox_docker_mode` 因字段名自带前缀而能正常加载；唯独 `DevOpsSettings.credential_key` 字段名不带 `devops_` 前缀但 env 名带 `DEVOPS_` 前缀，导致不匹配）。**修复方案**：在 `DevOpsSettings.model_config` 声明 `env_prefix="DEVOPS_"`，使字段 `credential_key` 匹配 env `DEVOPS_CREDENTIAL_KEY`。诊断函数 `diagnose_credential_key()` 的 `settings_unread` 分支保留为防御性诊断，hint 文本已更新为「理论上不应触发，可能是 settings 单例被显式传入空值覆盖或 .env 文件路径/编码异常」。回归测试：`app/tests/core/test_devops_diagnostics.py::test_devops_settings_reads_env_via_prefix`。
 
 ### 强白名单契约（2026-07-15 落地）
