@@ -50,6 +50,11 @@ TASK_LOG_DIR = os.path.join(_PROJECT_ROOT, "data", "logs", "Task")
 #   * 仅记录路径约定，物理写入由调用方负责创建目录（mkdir(parents=True, exist_ok=True)）
 TASK_ATTACHMENT_DIR = os.path.join(_PROJECT_ROOT, "data", "attachments", "Task")
 
+# 定时任务附件默认文件扩展名（2026-07-22 新增）
+#   * 与 TASK_ATTACHMENT_DIR 配合使用，由 resolve_task_attachment_path 默认拼接 .docx
+#   * 历史报告均以 docx 生成；保留常量以便未来扩展（如 pdf）一处改全局生效
+TASK_ATTACHMENT_SUFFIX = "docx"
+
 # 脚本扫描根目录（2026-07-16 新增）
 #   * ScriptDiscoveryService 扫描此目录下所有 .py 文件
 #   * 通过 @register_script 装饰器注册到全局 registry
@@ -159,6 +164,43 @@ def resolve_task_log_path(
     timestamp = when.strftime("%Y%m%d_%H%M%S")
     file_name = f"{timestamp}_{int(run_id)}.log"
     return Path(TASK_LOG_DIR) / slug / file_name
+
+
+def resolve_task_attachment_path(
+    name: str,
+    run_id: int,
+    when: "datetime",
+    *,
+    suffix: str = TASK_ATTACHMENT_SUFFIX,
+) -> Path:
+    """
+    生成定时任务附件文件路径（不创建文件，仅返回路径对象）。
+
+    完整结构：``<项目根>/data/attachments/Task/{slug}/{YYYYMMDD_HHMMSS}_{run_id}.{suffix}``。
+    与 :func:`resolve_task_log_path` 路径模板一致，便于日志与附件归档对齐。
+
+    :param name: 任务名，会经过 :func:`slugify_task_name` 安全化。
+    :type name: str
+    :param run_id: 执行记录 ID（来自 ``agent_task_runs.id``）。
+    :type run_id: int
+    :param when: 执行开始时间，用于文件名时间戳。
+    :type when: datetime
+    :param suffix: 文件扩展名（不含 ``.``），默认 ``"docx"``。
+    :type suffix: str
+    :return: 附件文件的绝对路径（父目录可能尚未创建）。
+    :rtype: Path
+    :raises ValueError: 当 ``run_id`` 非正整数、``when`` 为 ``None`` 或 ``suffix`` 为空时抛出。
+    """
+    if run_id is None or int(run_id) <= 0:
+        raise ValueError("run_id must be a positive integer")
+    if when is None:
+        raise ValueError("when must be a datetime instance")
+    if not suffix:
+        raise ValueError("suffix must be non-empty")
+    slug = slugify_task_name(name)
+    timestamp = when.strftime("%Y%m%d_%H%M%S")
+    file_name = f"{timestamp}_{int(run_id)}.{suffix}"
+    return Path(TASK_ATTACHMENT_DIR) / slug / file_name
 
 
 def resolve_tmp_mirror_path(original_path: str | Path) -> Path | None:

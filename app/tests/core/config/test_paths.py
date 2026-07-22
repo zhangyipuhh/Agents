@@ -13,6 +13,7 @@ Author: AI Assistant
 """
 
 import pytest
+from datetime import datetime
 from pathlib import Path
 
 from app.core.config import paths as paths_module
@@ -20,9 +21,11 @@ from app.core.config.paths import (
     KNOWLEDGE_DIR,
     METADATA_FILE,
     TASK_ATTACHMENT_DIR,
+    TASK_ATTACHMENT_SUFFIX,
     TMP_DIR,
     resolve_project_dir,
     resolve_project_tmp_dir,
+    resolve_task_attachment_path,
 )
 
 
@@ -199,3 +202,121 @@ def test_task_attachment_dir_under_project_root():
 
     assert Path(TASK_ATTACHMENT_DIR) == expected
     assert Path(TASK_ATTACHMENT_DIR).is_absolute()
+
+
+# ============================================================
+# P0/P1: resolve_task_attachment_path / TASK_ATTACHMENT_SUFFIX
+#   (Phase B 沈阳不动产运维巡检报告 - 附件路径 helper)
+# ============================================================
+
+
+def test_task_attachment_suffix_constant():
+    """
+    P0: TASK_ATTACHMENT_SUFFIX 常量值为 ``"docx"``。
+
+    与 ``TASK_ATTACHMENT_DIR`` 配合使用，标记默认附件扩展名。
+    """
+    assert TASK_ATTACHMENT_SUFFIX == "docx"
+
+
+def test_resolve_task_attachment_path_importable():
+    """
+    P0: ``resolve_task_attachment_path`` 可从 ``app.core.config.paths`` 导入。
+    """
+    from app.core.config.paths import resolve_task_attachment_path as fn
+
+    assert callable(fn)
+
+
+def test_resolve_task_attachment_path_default_suffix():
+    """
+    P1: ``resolve_task_attachment_path`` 默认生成 ``.docx`` 后缀的附件路径。
+
+    文件名规则：``{YYYYMMDD_HHMMSS}_{run_id}.docx``；父目录为任务名 slug。
+    """
+    p = resolve_task_attachment_path(
+        name="运维巡检任务",
+        run_id=42,
+        when=datetime(2026, 7, 22, 15, 30, 0),
+    )
+
+    assert p.name == "20260722_153000_42.docx"
+    assert p.parent.name == "运维巡检任务"  # slug
+    assert str(p).endswith(".docx")
+
+
+def test_resolve_task_attachment_path_custom_suffix():
+    """
+    P1: ``resolve_task_attachment_path`` 支持自定义文件扩展名（不含 ``.``）。
+    """
+    p = resolve_task_attachment_path(
+        name="x",
+        run_id=1,
+        when=datetime(2026, 1, 1, 0, 0, 0),
+        suffix="pdf",
+    )
+
+    assert p.name == "20260101_000000_1.pdf"
+
+
+def test_resolve_task_attachment_path_uses_attachment_dir():
+    """
+    P1: ``resolve_task_attachment_path`` 返回的路径位于 ``TASK_ATTACHMENT_DIR`` 下。
+    """
+    p = resolve_task_attachment_path(
+        name="运维巡检任务",
+        run_id=42,
+        when=datetime(2026, 7, 22, 15, 30, 0),
+    )
+
+    expected_root = Path(TASK_ATTACHMENT_DIR).resolve()
+    assert p.parent.parent.resolve() == expected_root
+
+
+def test_resolve_task_attachment_path_slugifies_name():
+    """
+    P1: 任务名经 ``slugify_task_name`` 安全化后作为目录名片段。
+
+    中文与符号应被替换为下划线，禁止写穿路径或产生隐藏目录。
+    """
+    p = resolve_task_attachment_path(
+        name="运维巡检/任务*",
+        run_id=7,
+        when=datetime(2026, 7, 22, 0, 0, 0),
+    )
+
+    # slug 应过滤斜杠与星号，仅保留字母数字下划线连字符
+    assert p.parent.name != "运维巡检/任务*"
+    assert "/" not in p.parent.name
+    assert "*" not in p.parent.name
+    assert p.parent.name  # 非空
+
+
+def test_resolve_task_attachment_path_validates_run_id():
+    """
+    P1: ``run_id`` 为 0 / 负数 / None 时抛出 ``ValueError``。
+    """
+    with pytest.raises(ValueError):
+        resolve_task_attachment_path(name="x", run_id=0, when=datetime(2026, 1, 1))
+    with pytest.raises(ValueError):
+        resolve_task_attachment_path(name="x", run_id=-1, when=datetime(2026, 1, 1))
+    with pytest.raises(ValueError):
+        resolve_task_attachment_path(name="x", run_id=None, when=datetime(2026, 1, 1))
+
+
+def test_resolve_task_attachment_path_validates_when():
+    """
+    P1: ``when`` 为 ``None`` 时抛出 ``ValueError``。
+    """
+    with pytest.raises(ValueError):
+        resolve_task_attachment_path(name="x", run_id=1, when=None)
+
+
+def test_resolve_task_attachment_path_validates_suffix():
+    """
+    P1: ``suffix`` 为空字符串时抛出 ``ValueError``，防止生成无扩展名文件。
+    """
+    with pytest.raises(ValueError):
+        resolve_task_attachment_path(
+            name="x", run_id=1, when=datetime(2026, 1, 1), suffix=""
+        )
