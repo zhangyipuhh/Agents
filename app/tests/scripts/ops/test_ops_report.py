@@ -170,3 +170,29 @@ def test_resolve_ip_map_handles_exception():
     srv = ServerOpsReport(items=[ServerOpsItem(business_name="X")])
     m = resolve_server_ip_map(_Boom(), srv)
     assert m == {"X": None}
+
+
+def test_resolve_ip_map_reads_ip_field():
+    """真实 DevOpsServerService 返回 ip 字段,非 host。
+
+    参见 ``app/shared/utils/devops_server_service.py:357``:`get_connection_config`
+    返回的 dict 包含 ``ip`` 键,旧版代码只读 ``host`` 会导致所有 IP 都为 None。
+    """
+    class _RealLikeService:
+        def get_connection_config(self, biz):
+            return {"ip": "10.0.0.5", "port": 22, "username": "u"}
+
+    srv = ServerOpsReport(items=[ServerOpsItem(business_name="A")])
+    m = resolve_server_ip_map(_RealLikeService(), srv)
+    assert m == {"A": "10.0.0.5"}
+
+
+def test_resolve_ip_map_prefers_ip_over_host_alias():
+    """``ip`` 字段优先于 ``host`` 别名,避免被历史别名字段误导。"""
+    class _MixedService:
+        def get_connection_config(self, biz):
+            return {"ip": "10.0.0.7", "host": "192.168.0.1", "port": 22}
+
+    srv = ServerOpsReport(items=[ServerOpsItem(business_name="A")])
+    m = resolve_server_ip_map(_MixedService(), srv)
+    assert m == {"A": "10.0.0.7"}

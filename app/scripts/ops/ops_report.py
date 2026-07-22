@@ -226,12 +226,16 @@ def resolve_server_ip_map(
     反查失败的项(服务不可用 / KeyError / 异常)统一返回 ``None``,
     由调用方在报告中渲染为 ``-``,不中断整体流程。
 
+    字段兼容性:真实 :class:`DevOpsServerService.get_connection_config` 返回的字典
+    使用 ``ip`` 字段(参见 ``app/shared/utils/devops_server_service.py:357``),同时兼容
+    ``host`` 别名(历史测试桩 / 旧版 dict 接口)。
+
     参数:
         devops_server_service: 调度器注入的 ``DevOpsServerService`` 实例;可能为 ``None``。
         server_report: :class:`ServerOpsReport`。
 
     返回:
-        Dict[str, Optional[str]]: ``business_name -> host`` 映射;IP 缺失为 ``None``。
+        Dict[str, Optional[str]]: ``business_name -> ip`` 映射;IP 缺失为 ``None``。
     """
     result: Dict[str, Optional[str]] = {}
     if devops_server_service is None:
@@ -242,9 +246,13 @@ def resolve_server_ip_map(
     for srv in server_report.items:
         try:
             config = devops_server_service.get_connection_config(srv.business_name)
-            host = getattr(config, "host", None) if config is not None else None
-            if host is None and isinstance(config, dict):
-                host = config.get("host")
+            # 兼容真实 DevOpsServerService 的 ip 字段与可能的 host 别名
+            if isinstance(config, dict):
+                host = config.get("ip") or config.get("host")
+            elif config is not None:
+                host = getattr(config, "ip", None) or getattr(config, "host", None)
+            else:
+                host = None
             result[srv.business_name] = host
         except Exception:
             result[srv.business_name] = None
