@@ -2349,19 +2349,18 @@ onBeforeUnmount(() => {
               请先选择脚本以加载参数定义。
             </div>
           </div>
-          <!-- 脚本任务专属：邮件通知开关与策略选择 -->
-          <template v-if="form.target_type === 'script'">
-            <label class="form-field full">
-              <span>脚本执行完成后自动发送邮件</span>
-              <label class="inline-field">
-                <input
-                  v-model="form.notify_enabled"
-                  type="checkbox"
-                  data-testid="schedule-notify-enabled"
-                  @change="onNotifyEnabledChange($event.target.checked)"
-                />
-                <span>启用邮件通知（脚本返回值将作为邮件正文，附件路径取自脚本返回值第二项）</span>
-              </label>
+          <!-- 脚本任务专属：邮件通知启用状态与策略选择，同处两列容器 -->
+          <div v-if="form.target_type === 'script'" class="notify-fields">
+            <label class="form-field">
+              <span>启用邮件通知</span>
+              <select
+                v-model="form.notify_enabled"
+                data-testid="schedule-notify-enabled"
+                @change="onNotifyEnabledChange(form.notify_enabled)"
+              >
+                <option :value="false">不启用</option>
+                <option :value="true">启用</option>
+              </select>
             </label>
             <label v-if="form.notify_enabled" class="form-field">
               <span>邮件策略 *</span>
@@ -2378,7 +2377,7 @@ onBeforeUnmount(() => {
                 </option>
               </select>
             </label>
-          </template>
+          </div>
           <label class="form-field full">
             <span>描述</span>
             <input v-model="form.description" type="text" placeholder="可选：说明该任务的用途" />
@@ -3018,8 +3017,15 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-.form-field.full {
+.form-field.full,
+.notify-fields {
   grid-column: 1 / -1;
+}
+
+.notify-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
 }
 
 input,
@@ -3499,6 +3505,9 @@ input[type="number"] {
 
 @media (max-width: 900px) {
   .task-scheduler-manager {
+    grid-template-columns: 1fr;
+  }
+  .notify-fields {
     grid-template-columns: 1fr;
   }
   .tablist {

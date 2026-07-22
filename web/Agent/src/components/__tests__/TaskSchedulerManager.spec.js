@@ -1479,6 +1479,49 @@ describe('TaskSchedulerManager 组件', () => {
     expect(wrapper.text()).toContain('任务提示词 *')
   })
 
+  it('test_script_notify_select_keeps_boolean_and_reveals_policy 脚本邮件通知下拉保持布尔值并控制策略显示', async () => {
+    /**
+     * 验证邮件通知控件的真实交互契约：
+     * - 启用控件是 select，保留稳定 data-testid，且仅提供“不启用/启用”两个选项；
+     * - 选择“启用”后显示同一容器内的策略下拉，并触发策略列表加载；
+     * - 保存时 notify_enabled 仍为 boolean true，而不是字符串。
+     */
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
+    await flushPromises()
+    await switchToScriptAndSelectHello(wrapper)
+
+    const notifyFields = wrapper.find('.notify-fields')
+    expect(notifyFields.exists()).toBe(true)
+
+    const notifySelect = notifyFields.find('[data-testid="schedule-notify-enabled"]')
+    expect(notifySelect.exists()).toBe(true)
+    expect(notifySelect.element.tagName).toBe('SELECT')
+    expect(notifySelect.findAll('option').map((option) => option.text())).toEqual(['不启用', '启用'])
+    expect(wrapper.text()).not.toContain('脚本返回值将作为邮件正文，附件路径取自脚本返回值第二项')
+    expect(notifyFields.find('[data-testid="schedule-notify-policy"]').exists()).toBe(false)
+
+    await notifySelect.setValue('true')
+    await flushPromises()
+
+    const policySelect = notifyFields.find('[data-testid="schedule-notify-policy"]')
+    expect(policySelect.exists()).toBe(true)
+    const policyCall = global.fetch.mock.calls.find(([url]) => url === '/api/admin/email/policies')
+    expect(policyCall).toBeTruthy()
+
+    await findTaskNameInput(wrapper).setValue('邮件通知脚本任务')
+    await wrapper.find('form').trigger('submit.prevent')
+    await flushPromises()
+
+    const postCall = global.fetch.mock.calls.find(
+      ([url, opts]) => url === '/api/admin/task-schedules' && opts.method === 'POST'
+    )
+    expect(postCall).toBeTruthy()
+    expect(JSON.parse(postCall[1].body).notify_enabled).toBe(true)
+    expect(typeof JSON.parse(postCall[1].body).notify_enabled).toBe('boolean')
+  })
+
   // ===== 脚本参数列表（schema 驱动 server_list）行为测试 =====
 
   /**
