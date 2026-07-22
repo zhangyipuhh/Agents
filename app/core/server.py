@@ -300,6 +300,9 @@ async def lifespan(app: FastAPI):
                         api_config_service=getattr(
                             app.state, "api_config_service", None
                         ),
+                        devops_server_service=getattr(
+                            app.state, "devops_server_service", None
+                        ),
                     )
                     await app.state.task_scheduler_service.preload_all()
                     await app.state.task_scheduler_service.start()

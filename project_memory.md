@@ -690,11 +690,14 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 
 **`api_list` 系统级标准参数**（2026-07-22 新增）：`params_schema.properties.api_list` 仅在 `type=array`、`items.type=string`、`x-control=api-multiselect`、`x-source=api-configs`、`x-value-field=id` 时由前端识别；与 `server_list` 并列接入同一「添加参数」下拉与 `scriptParamValues` 容器；元素为 API 节点 id 字符串（如 `"12"`）。脚本侧统一通过 `app.scripts.api_check.run_api_checks(context)` 获取 `ApiCheckReport`（`items` / `total` / `passed` / `failed` / `skipped` + `summary_line()` / `to_markdown()` / `to_dict()`），适用于报告、附件、邮件正文。前端控件候选复用 `GET /api/admin/api-configs/tree`，按 `node_type==='api'` + 白名单 id/parent_id/node_type/name/sort_order 过滤，沿父文件夹链拼 path 用于展示；失效 id 显示「已失效」chip 与 server_list 一致。
 
+**`server_list` 系统级标准参数**（2026-07-22 与 `api_list` 对齐补全）：`params_schema.properties.server_list` 仅在 `type=array`、`items.type=string`、`x-control=server-multiselect`、`x-source=devops-servers`、`x-value-field=business_name` 时由前端识别；元素为服务器业务名字符串（`devops_servers.business_name`）。脚本侧统一通过 `app.scripts.server_ops.run_server_ops(context)` 获取 `ServerOpsReport`（`items` / `total` / `passed` / `failed` / `skipped` + `summary_line()` / `to_markdown()` / `to_dict()`），命令来源是 `devops_servers.inspection_script` 字段（每台服务器预存的巡检脚本），不在脚本入参中重复指定；前端控件候选复用 `GET /api/admin/devops-servers`，脱敏白名单 `id` / `business_name` / `server_type` / `updated_at`，失效业务名显示「已失效」chip。
+
 **hello_script 脚本开发样板**：`app/scripts/examples/hello_script.py` 注册名为 `hello_script` / 展示名 `脚本开发样板`，是后续脚本开发的复制模板。参数 `mode`（默认 `text`）控制运行模式，`content`（默认 `定时任务执行成功`）控制输出正文，`server_list`（默认 `[]`）提供目标服务器业务名数组，`api_list`（默认 `[]`）提供 API 节点 id 数组。签名严格为 `async def run(context: ScriptContext) -> str | tuple[str, list[str]]`。
 
 - **参数读取**：`context.script_args` 中读取 `mode` / `content` / `server_list` / `api_list`；`server_list` / `api_list` 缺失时按空数组处理，非列表、包含非字符串或空字符串时抛 `ScriptExecutionError`；`api_list` 还会额外校验每个元素必须是整数形式的字符串 id。
 - **服务器参数语义**：`server_list` 元素为 `business_name`；样板只演示读取、校验、日志与摘要输出，不读取连接配置、不执行 SSH。
 - **接口参数语义（`api_list`）**：元素为「API接口配置」树中 api 节点 id 的字符串形式；样板通过 `await run_api_checks(context)` 逐 id 执行 `ApiConfigService.send_request`（httpx 代理发送 + Mock/expectations 断言校验 + 落库 `api_check_runs`）；单条失败不中断整体，缺失节点产生 `check_passed=None` 的 skipped 项，其他异常产生 `check_passed=False` 的 failed 项；返回统一 `ApiCheckReport` 结构，正文追加 `api_check=<P>/<N> passed | id=... OK/FAIL/MISSING` 摘要；`mode=multi` 时 `.md` 附件还会包含 `report.to_markdown()` 接口清单表格。
+- **服务器参数语义（`server_list`）**：元素为 `business_name`；样板通过 `await run_server_ops(context)` 对每台服务器读取解密后的连接配置（`DevOpsServerService.get_connection_config`），执行预存的 `inspection_script` 巡检脚本（命令来源是该字段，**不在脚本入参中指定**）；逐台结果封装为 `ServerOpsItem`（`business_name` / `success` / `exit_code` / `stdout` / `stderr` / `duration_ms` / `error_message` / `skipped`），`ServerOpsReport` 提供 `summary_line()` / `to_markdown()`；单台失败（鉴权 / 连接超时 / paramiko 异常 / 未配置 `inspection_script` 等）**不中断**整体；缺少 `inspection_script` 产生 skipped 项；正文追加 `server_ops=<P>/<N> passed | biz-A OK(0,42ms)` 摘要；`mode=multi` 时 `.md` 附件含运维结果表格；阻塞 SSH 调用经 `asyncio.to_thread` 包装避免阻塞事件循环（验证：心跳协程在执行期间可继续推进）。
 - **纯文本返回（`mode=text`）**：直接 `return summary`，无附件。
 - **单附件返回（`mode=single`）**：生成一个 `.txt` 附件，返回 `(summary, [attachment_path])`。
 - **多附件返回（`mode=multi`）**：生成 `.txt` 与 `.md` 两个附件，返回 `(summary, [path1, path2])`；当 `api_list` 非空时 `.md` 包含 `## 接口健康检查` 章节。
@@ -704,7 +707,7 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 - **异步 IO**：附件写入通过 `await asyncio.to_thread(path.write_text, ...)` 执行，不阻塞调度器事件循环。
 - **异常语义**：参数非法或 `mode=error` 时抛 `ScriptExecutionError`；`api_list` 非空且 `context.api_config_service is None` 时同步抛错；IO 异常向上透出，由 `TaskSchedulerService.execute_schedule()` 标记 run 为 `failed`。
 
-**依赖**：`app.core.config.paths`（`TASK_ATTACHMENT_DIR` / `slugify_task_name`） + `app.scripts.base.ScriptContext` / `ScriptExecutionError` + `app.scripts.registry.register_script` + `app.scripts.api_check.run_api_checks`。**不依赖** `ToolRuntime` / 地图 store / `ProjectSiteSelectionCollection` / `WordReportGenerator`。
+**依赖**：`app.core.config.paths`（`TASK_ATTACHMENT_DIR` / `slugify_task_name`） + `app.scripts.base.ScriptContext` / `ScriptExecutionError` + `app.scripts.registry.register_script` + `app.scripts.api_check.run_api_checks` + `app.scripts.server_ops.run_server_ops`。**不依赖** `ToolRuntime` / 地图 store / `ProjectSiteSelectionCollection` / `WordReportGenerator`。
 
 **`app/scripts/api_check.py` 标准化检查器**（2026-07-22 新增）：系统级标准 `api_list` 的统一入口。所有声明 `api_list` 的脚本都通过 `run_api_checks(context) -> ApiCheckReport` 获取一致的检查结果结构，避免各自手写循环。
 
@@ -715,6 +718,17 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 - **`ScriptContext.api_config_service`**：`app/scripts/base.py::ScriptContext` 新增 `api_config_service: Any = None` 字段；`arbitrary_types_allowed=True` 已开启，无需额外 Pydantic 配置。
 - **调度器透传**：`TaskSchedulerService.__init__` 新增 `api_config_service: Optional[Any] = None` 入参；`execute_schedule` 的 script 分支构造 `ScriptContext` 时透传 `self._api_config_service`。
 - **lifespan 注入**：`app/core/server.py::lifespan` 构造 `TaskSchedulerService` 时 `api_config_service=getattr(app.state, "api_config_service", None)`；`ApiConfigService` 在前面「API接口配置」章节已固定为 lifespan 初始化块，顺序约束满足。
+
+**`app/scripts/server_ops.py` 标准化巡检执行器**（2026-07-22 新增）：与 `api_check.py` 完全对称，但面向**真实 SSH 巡检执行**而非 HTTP 健康检查。脚本声明 `server_list` 后，通过 `run_server_ops(context) -> ServerOpsReport` 获取统一执行结果结构。
+
+- **数据类**：`ServerOpsItem`（frozen；`business_name` / `success` / `exit_code` / `stdout` / `stderr` / `duration_ms` / `error_message` / `skipped`），`ServerOpsReport`（`items` + 计数属性 `total` / `passed` / `failed` / `skipped` + 方法 `summary_line()` / `to_markdown()` / `to_dict()`）。
+- **`resolve_server_list(script_args) -> list[str]`**：缺失/None/空数组 → `[]`；非 list / 含非字符串 / 含空字符串 → 抛 `ScriptExecutionError`，消息含 `server_list`。
+- **`run_server_ops(context, server_list=None, *, ssh_timeout=30) -> ServerOpsReport`**：`api_list` 缺省时从 `context.script_args.server_list` 调用 `resolve_server_list`；空 names → 返回 `items=[]`；非空但 `context.devops_server_service is None` → 抛错；其余沿 `service.get_connection_config(business_name)` 取解密配置（包含 `inspection_script` 字段），逐台执行预存的巡检脚本（`asyncio.to_thread(ssh.executor.execute_script, ...)` 包装避免阻塞事件循环）；`inspection_script` 为空/None/纯空白 → skipped 项；`KeyError`（业务名未注册）/ paramiko 异常 → `success=False` 项 + `error_message`，**不中断**整体循环；保留输入顺序。
+- **命令来源**：`devops_servers.inspection_script TEXT` 字段（2026-07-22 已新增），不再由脚本入参指定，与 `api_list` 复用 `service.send_request` + Mock 的模式形成完全对称。
+- **扫描隔离**：`app/shared/utils/agent/script_discovery_service.py::_SKIP_FILENAMES` 追加 `server_ops.py`，避免被 `ScriptDiscoveryService` 误识别为脚本。
+- **`ScriptContext.devops_server_service`**：`app/scripts/base.py::ScriptContext` 新增 `devops_server_service: Any = None` 字段；与 `api_config_service` 并列。
+- **调度器透传**：`TaskSchedulerService.__init__` 新增 `devops_server_service: Optional[Any] = None` 入参；`execute_schedule` 构造 `ScriptContext` 时透传 `self._devops_server_service`。
+- **lifespan 注入**：`app/core/server.py::lifespan` 构造 `TaskSchedulerService` 时 `devops_server_service=getattr(app.state, "devops_server_service", None)`；`DevOpsServerService` 在 lifespan 第 357 行附近初始化，早于 `TaskSchedulerService`，顺序约束天然满足。
 
 **lifespan 初始化顺序**：
 1. `DatabasePool.initialize()` + `register_schemas()`（`init_*_schema` 自动建表，包含邮件 / 定时任务 / 脚本相关表）

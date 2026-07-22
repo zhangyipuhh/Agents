@@ -258,6 +258,13 @@ def test_hello_script_params_schema_declares_server_list():
 async def test_hello_script_text_mode_returns_servers(monkeypatch, tmp_path):
     """``mode=text`` + ``server_list`` 含两个业务名时，结果应保留原 summary 且包含两个业务名。"""
     from app.scripts.examples import hello_script
+    from app.scripts.server_ops import ServerOpsReport
+
+    # 测试只关心"业务名出现在正文"，不验证巡检执行。注入空 report stub 避免
+    # devops_server_service 缺失时 run_server_ops 抛错。
+    async def stub_empty_ops(context):
+        return ServerOpsReport(items=[])
+    monkeypatch.setattr(hello_script, "run_server_ops", stub_empty_ops)
 
     context = _make_context(
         monkeypatch,
@@ -525,3 +532,79 @@ async def test_hello_script_api_list_non_integer_id_raises_when_service_called(
     ctx.api_config_service = _S()
     with pytest.raises(ScriptExecutionError, match="api_list"):
         await hello_script.run(ctx)
+
+
+# ----------------------------------------------------------------------------
+# 脚本样板的 server_list + server_ops 集成（run_server_ops 与 ScriptContext 对接）
+# ----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_hello_script_server_list_with_service_appends_ops_summary(
+    monkeypatch, tmp_path
+):
+    """``server_list`` 非空且 ``context.devops_server_service`` 已注入时，正文应追加
+    ``ServerOpsReport.summary_line()``，``multi`` 模式的 ``.md`` 附件含表格。"""
+    from app.scripts.examples import hello_script
+    from app.scripts.server_ops import ServerOpsItem, ServerOpsReport
+
+    async def stub_report(context):
+        return ServerOpsReport(items=[
+            ServerOpsItem(business_name="biz-A", success=True, exit_code=0,
+                          stdout="ok", stderr="", duration_ms=42),
+            ServerOpsItem(business_name="biz-B", success=False, exit_code=2,
+                          stdout="", stderr="boom", duration_ms=10,
+                          error_message="boom"),
+        ])
+    monkeypatch.setattr(hello_script, "run_server_ops", stub_report)
+
+    context = _make_context(
+        monkeypatch, tmp_path,
+        script_args={"mode": "multi", "content": "Demo",
+                     "server_list": ["biz-A", "biz-B"]},
+    )
+    result = await hello_script.run(context)
+
+    assert isinstance(result, tuple) and len(result) == 2
+    body, attachments = result
+    assert "server_ops=1/2 passed" in body
+    assert "biz-A OK(0,42ms)" in body
+    # multi 模式 .md 附件应含「服务器运维结果」章节
+    md_path = next(p for p in attachments if p.endswith(".md"))
+    md_text = Path(md_path).read_text(encoding="utf-8")
+    assert "## 服务器运维结果" in md_text
+    assert "| biz-A | 通过 | 0 | 42 | ok |" in md_text
+    assert "boom" in md_text
+
+
+@pytest.mark.asyncio
+async def test_hello_script_server_list_without_service_keeps_legacy_summary(
+    monkeypatch, tmp_path
+):
+    """``devops_server_service`` 不可用且 ``server_list`` 非空时，``run_server_ops`` 抛出
+    ``ScriptExecutionError``；该错误与 api_list 同模式向上透出，由调度器标记 failed。"""
+    from app.scripts.examples import hello_script
+
+    ctx = _make_context(
+        monkeypatch, tmp_path,
+        script_args={"mode": "text", "content": "ok", "server_list": ["biz-A"]},
+    )
+    # 默认 _make_context 未注入 devops_server_service，故为 None
+    assert ctx.devops_server_service is None
+    with pytest.raises(ScriptExecutionError, match="devops_server_service"):
+        await hello_script.run(ctx)
+
+
+@pytest.mark.asyncio
+async def test_hello_script_server_list_uses_dedicated_field_name_in_errors(
+    monkeypatch, tmp_path
+):
+    """``server_list`` 含数字时，沿用参数名错误的契约（与 script_args 解析抛错一致）。"""
+    from app.scripts.examples import hello_script
+
+    context = _make_context(
+        monkeypatch, tmp_path,
+        script_args={"mode": "text", "server_list": ["biz-A", 123]},
+    )
+    with pytest.raises(ScriptExecutionError, match="server_list"):
+        await hello_script.run(context)

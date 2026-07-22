@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 
 # 扫描时跳过的文件名（不视为脚本）
-_SKIP_FILENAMES = {"__init__.py", "base.py", "registry.py", "api_check.py"}
+_SKIP_FILENAMES = {"__init__.py", "base.py", "registry.py", "api_check.py", "server_ops.py"}
 
 # 白名单字段：list_scripts 对外只返回这些字段，不暴露 func 引用
 _PUBLIC_FIELDS = ("name", "display_name", "description", "params_schema", "module_path")

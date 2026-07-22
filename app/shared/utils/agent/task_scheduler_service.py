@@ -52,6 +52,9 @@ class TaskSchedulerService:
             按策略模板渲染并发送邮件。
         api_config_service: 可选 ApiConfigService 实例，注入 ``ScriptContext``
             供脚本通过 ``app.scripts.api_check.run_api_checks`` 执行接口健康检查。
+        devops_server_service: 可选 DevOpsServerService 实例，注入 ``ScriptContext``
+            供脚本通过 ``app.scripts.server_ops.run_server_ops`` 执行
+            ``server_list`` 巡检。
     """
 
     def __init__(
@@ -63,6 +66,7 @@ class TaskSchedulerService:
         script_discovery_service: Optional[Any] = None,
         email_config_service: Optional[Any] = None,
         api_config_service: Optional[Any] = None,
+        devops_server_service: Optional[Any] = None,
     ) -> None:
         """初始化定时任务服务。
 
@@ -76,6 +80,8 @@ class TaskSchedulerService:
                 按 notify_policy_id 自动发送通知邮件。
             api_config_service: API 接口配置服务，注入 ``ScriptContext`` 供脚本
                 执行 ``api_list`` 健康检查；未注入时脚本侧按 ``None`` 降级处理。
+            devops_server_service: DevOps 服务器服务，注入 ``ScriptContext`` 供脚本
+                执行 ``server_list`` 巡检；未注入时脚本侧按 ``None`` 降级处理。
         """
         self._db = db
         self._agent_config_service = agent_config_service
@@ -87,6 +93,7 @@ class TaskSchedulerService:
         self._script_discovery_service = script_discovery_service
         self._email_config_service = email_config_service
         self._api_config_service = api_config_service
+        self._devops_server_service = devops_server_service
 
     @staticmethod
     def _job_id(schedule_id: int) -> str:
@@ -628,6 +635,7 @@ class TaskSchedulerService:
                         started_at=started_at,
                         trigger_type=trigger_type,
                         api_config_service=self._api_config_service,
+                        devops_server_service=self._devops_server_service,
                     )
                     script_output_raw = await registered.func(context)
                     # 把脚本返回值归一化为 (body, attachments_list)

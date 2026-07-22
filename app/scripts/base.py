@@ -52,6 +52,10 @@ class ScriptContext(BaseModel):
         api_config_service: 可选 ApiConfigService 实例，由调度器注入；脚本声明
             ``api_list`` 参数时通过 ``app.scripts.api_check.run_api_checks`` 消费，
             执行接口健康检查（Mock 断言）。DB 未就绪或未注入时为 ``None``。
+        devops_server_service: 可选 DevOpsServerService 实例，由调度器注入；
+            脚本声明 ``server_list`` 参数时通过 ``app.scripts.server_ops.run_server_ops``
+            消费，对每台服务器执行预存的 ``inspection_script`` 巡检脚本。DB 未就绪
+            或未注入时为 ``None``。
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -70,6 +74,9 @@ class ScriptContext(BaseModel):
     trigger_type: str = Field(..., description="触发方式：scheduled / manual")
     api_config_service: Any = Field(
         default=None, description="可选 ApiConfigService 实例，由调度器注入"
+    )
+    devops_server_service: Any = Field(
+        default=None, description="可选 DevOpsServerService 实例，由调度器注入"
     )
 
 

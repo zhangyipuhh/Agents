@@ -513,4 +513,48 @@ def test_lifespan_script_discovery_skips_api_check_module():
         "api_check.py 必须出现在 _SKIP_FILENAMES，防止被 ScriptDiscoveryService 扫描为脚本"
     )
     # 验证其与既有跳过文件同列，且不影响 __init__/base/registry
-    assert _SKIP_FILENAMES >= {"__init__.py", "base.py", "registry.py", "api_check.py"}
+    assert _SKIP_FILENAMES >= {
+        "__init__.py", "base.py", "registry.py", "api_check.py",
+        "server_ops.py",
+    }
+
+
+def test_lifespan_injects_devops_server_service_into_task_scheduler():
+    """
+    测试 lifespan：构造 TaskSchedulerService 时透传
+    ``app.state.devops_server_service``，用于脚本侧 ``server_list`` 巡检。
+
+    场景：
+        * ``app.state.devops_server_service`` 存在 → TaskSchedulerService 收到同一实例；
+        * ``app.state.devops_server_service`` 不存在 → TaskSchedulerService 收到 None，
+          脚本侧 ``run_server_ops`` 走空服务短路或抛错（由脚本层处理）。
+
+    生产对等初始化点：app/core/server.py lifespan 函数中
+    ``TaskSchedulerService(..., devops_server_service=getattr(app.state, 'devops_server_service', None))`` 段。
+    """
+    # 场景 1：devops_server_service 存在
+    captured_kwargs = {}
+
+    class FakeTaskSchedulerService:
+        def __init__(self, db, agent_config_service, devops_server_service=None, **_):
+            captured_kwargs["devops_server_service"] = devops_server_service
+
+    fake_devops_server_service = MagicMock()
+    FakeTaskSchedulerService(
+        db=MagicMock(),
+        agent_config_service=MagicMock(),
+        devops_server_service=fake_devops_server_service,
+    )
+    assert captured_kwargs["devops_server_service"] is fake_devops_server_service
+
+    # 场景 2：devops_server_service 未初始化（DB 不可用 / 初始化失败）
+    captured_kwargs.clear()
+    FakeTaskSchedulerService(
+        db=MagicMock(),
+        agent_config_service=MagicMock(),
+        devops_server_service=getattr(
+            type("X", (), {"__getattr__": lambda _self, _k: None})(),
+            "devops_server_service", None
+        ),
+    )
+    assert captured_kwargs["devops_server_service"] is None

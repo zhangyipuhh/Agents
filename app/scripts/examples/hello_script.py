@@ -21,10 +21,15 @@
     * ``error``: 抛出 ``ScriptExecutionError``,由调度器将本次 run 标记为 ``failed``。
 
 脚本参数 ``server_list`` 为字符串数组，每个元素是目标服务器的 ``business_name``
-业务名（前端通过 ``x-value-field=business_name`` 唯一约束选择）;脚本仅演示
-对该参数的读取、类型校验与输出追加,不读取连接配置、不执行 SSH、不做去重,
-具体运维动作由真实脚本按需实现。空数组与缺失键行为等价,均不修改既有
-摘要文本。
+业务名（前端通过 ``x-value-field=business_name`` 唯一约束选择）;脚本通过共享
+执行器 ``app.scripts.server_ops.run_server_ops`` 逐台读取连接配置（解密后的
+``ip`` / ``port`` / ``username`` / ``password`` / ``server_type`` /
+``inspection_script`` / ``inspection_parser``），执行预存的
+``inspection_script`` 巡检脚本（命令来源是 ``devops_servers.inspection_script``
+字段，不在脚本入参中重复指定），得到统一的 ``ServerOpsReport`` 结构后把
+``summary_line()`` 追加到摘要、``to_markdown()`` 写入 ``multi`` 模式的 ``.md``
+附件。空数组与缺失键行为等价，均不执行 SSH 与巡检；``devops_server_service``
+不可用且 ``server_list`` 非空时抛 ``ScriptExecutionError``。
 
 脚本参数 ``api_list`` 为字符串数组，每个元素是「API接口配置」树的 api 节点
 id 字符串形式（前端通过 ``x-value-field=id`` 选择）;脚本通过共享检查器
@@ -40,6 +45,7 @@ from app.core.config.paths import TASK_ATTACHMENT_DIR, slugify_task_name
 from app.scripts.api_check import run_api_checks
 from app.scripts.base import ScriptContext, ScriptExecutionError
 from app.scripts.registry import register_script
+from app.scripts.server_ops import run_server_ops
 
 
 @register_script(
@@ -88,17 +94,18 @@ from app.scripts.registry import register_script
 async def run(context: ScriptContext) -> str | tuple[str, list[str]]:
     """执行样板脚本，根据 ``mode`` 返回不同结果。
 
-    ``server_list`` 元素为业务名 (``business_name``),脚本仅演示对其读取、类型
-    校验与摘要追加,不会读取连接配置或执行 SSH；空数组或缺失键保持既有摘要。
-    ``api_list`` 元素为 API 节点 id 字符串,脚本通过 ``run_api_checks`` 执行
-    接口健康检查（Mock 断言）并把统一摘要追加到正文；空数组或缺失键不执行
-    检查；``api_config_service`` 不可用且 ``api_list`` 非空时抛
-    ``ScriptExecutionError``。
+    ``server_list`` 元素为业务名 (``business_name``),脚本通过 ``run_server_ops``
+    对每台服务器执行预存的 ``inspection_script`` 巡检；空数组或缺失键保持既有
+    摘要（无巡检）；``devops_server_service`` 不可用且 ``server_list`` 非空时
+    抛 ``ScriptExecutionError``。``api_list`` 元素为 API 节点 id 字符串,脚本通过
+    ``run_api_checks`` 执行接口健康检查（Mock 断言）并把统一摘要追加到正文；
+    空数组或缺失键不执行检查；``api_config_service`` 不可用且 ``api_list`` 非空
+    时抛 ``ScriptExecutionError``。
 
     参数:
         context: 脚本运行上下文,含 ``script_args`` / ``log_logger`` / ``started_at`` /
-            ``run_id`` / ``schedule_name`` / ``trigger_type`` / ``api_config_service``
-            等字段。
+            ``run_id`` / ``schedule_name`` / ``trigger_type`` / ``api_config_service`` /
+            ``devops_server_service`` 等字段。
 
     返回:
         str | tuple[str, list[str]]:
@@ -111,6 +118,7 @@ async def run(context: ScriptContext) -> str | tuple[str, list[str]]:
         ScriptExecutionError:
             * ``server_list`` 不是列表、元素不是非空字符串时抛出,错误消息包含
               ``server_list`` 字段名,便于调度器日志定位；
+            * ``server_list`` 非空且 ``devops_server_service`` 不可用时抛出；
             * ``api_list`` 不是列表、元素非法或 ``api_config_service`` 不可用时
               抛出,错误消息包含 ``api_list`` 字段名；
             * ``mode=error`` 或 ``mode`` 不合法时抛出,调度器会将其消息写入
@@ -120,6 +128,7 @@ async def run(context: ScriptContext) -> str | tuple[str, list[str]]:
     mode = script_args.get("mode", "text")
     content = script_args.get("content", "定时任务执行成功")
     server_list = _resolve_server_list(script_args)
+    server_ops_report = await run_server_ops(context)
     api_report = await run_api_checks(context)
 
     summary = (
@@ -128,6 +137,7 @@ async def run(context: ScriptContext) -> str | tuple[str, list[str]]:
         f"started_at={context.started_at.strftime('%Y-%m-%d %H:%M:%S')})"
     )
     summary = _append_server_list_to_summary(summary, server_list, context.log_logger)
+    summary = _append_server_ops_to_summary(summary, server_ops_report, context.log_logger)
     summary = _append_api_check_to_summary(summary, api_report, context.log_logger)
 
     context.log_logger.info("hello_script 开始执行，mode=%s", mode)
@@ -146,6 +156,8 @@ async def run(context: ScriptContext) -> str | tuple[str, list[str]]:
         path_txt = _make_attachment_path(context, "txt")
         path_md = _make_attachment_path(context, "md")
         md_content = f"## 附件二\n\n{summary}"
+        if server_ops_report.items:
+            md_content += f"\n\n## 服务器运维结果\n\n{server_ops_report.to_markdown()}"
         if api_report.items:
             md_content += f"\n\n## 接口健康检查\n\n{api_report.to_markdown()}"
         await _write_attachment(path_txt, f"附件一\n{summary}")
@@ -231,6 +243,38 @@ def _append_server_list_to_summary(
     suffix = " | server_list=" + ",".join(server_list)
     log_logger.info("server_list=%s", ",".join(server_list))
     return summary + suffix
+
+
+def _append_server_ops_to_summary(summary: str, server_ops_report, log_logger) -> str:
+    """把 ``server_list`` 巡检结果统一摘要追加到既有摘要末尾。
+
+    ``server_ops_report.items`` 为空（未声明 / 空数组 / 全部 skipped 等）时
+    原样返回 ``summary``；非空时追加 ``ServerOpsReport.summary_line()`` 并
+    通过 ``log_logger.info`` 记录逐服务器结果,便于运维回溯。
+
+    参数:
+        summary: 既有摘要文本。
+        server_ops_report: ``app.scripts.server_ops.ServerOpsReport`` 统一巡检结果。
+        log_logger: ``ScriptContext.log_logger`` 提供的日志记录器。
+
+    返回:
+        str: 追加 ``server_ops`` 摘要后的文本；无巡检项时返回原 ``summary``。
+    """
+    if not server_ops_report.items:
+        return summary
+
+    line = server_ops_report.summary_line()
+    log_logger.info("%s", line)
+    for item in server_ops_report.items:
+        log_logger.info(
+            "server_ops biz=%s success=%s exit=%s duration_ms=%s error=%s",
+            item.business_name,
+            item.success,
+            item.exit_code,
+            item.duration_ms,
+            item.error_message,
+        )
+    return summary + " | " + line
 
 
 def _append_api_check_to_summary(summary: str, api_report, log_logger) -> str:
