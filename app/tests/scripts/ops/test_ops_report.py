@@ -114,6 +114,12 @@ def test_compute_alerts_warn_crit_only():
     assert len(alerts.api_failed) == 1
     assert alerts.api_failed[0].business == "FAIL"
     assert alerts.api_failed[0].status == "FAIL"
+    # value 与 detail 现在包含 URL + 耗时,便于排障
+    assert "HTTP 500" in alerts.api_failed[0].value
+    assert "/x" in alerts.api_failed[0].value
+    assert "接口地址" in alerts.api_failed[0].detail
+    assert "/x" in alerts.api_failed[0].detail
+    assert "30ms" in alerts.api_failed[0].detail
     assert alerts.is_empty is False
 
 

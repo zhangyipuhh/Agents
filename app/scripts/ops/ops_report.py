@@ -211,13 +211,27 @@ def compute_ops_alerts(server_report, api_report) -> OpsAlerts:
     for it in api_report.items:
         if it.check_passed is not False:
             continue
+        detail_parts: List[str] = []
+        if it.path:
+            detail_parts.append(f"接口地址: {it.path}")
+        if it.duration_ms is not None:
+            detail_parts.append(f"耗时: {it.duration_ms}ms")
+        if it.error_message:
+            detail_parts.append(it.error_message)
+        detail_text = " | ".join(detail_parts) if detail_parts else ""
+
+        value_parts = [f"HTTP {it.http_status}"]
+        if it.path:
+            value_parts.append(it.path)
+        value_text = " ".join(value_parts)
+
         api_items.append(OpsAlertItem(
             business=it.name or f"接口 {it.node_id}",
             metric="HTTP 检查",
-            value=f"HTTP {it.http_status}",
+            value=value_text,
             threshold="-",
             status="FAIL",
-            detail=(it.error_message or ""),
+            detail=detail_text,
         ))
 
     return OpsAlerts(server_warn_crit=server_items, api_failed=api_items)
@@ -344,7 +358,7 @@ def build_ops_report_config(
 
     章节结构:
         0. 封面 (主标题「沈阳不动产运维报告」+ 时间 + 任务名)
-        0. 目录 (5 条 TocEntry,实际为 4 个一级标题)
+        0. 目录 (4 条 TocEntry,实际为 4 个一级标题)
         1. 一、综述 (分段叙事段落)
         2. 二、网络检查 (固定段落)
         3. 三、服务器基本情况 (按业务循环)

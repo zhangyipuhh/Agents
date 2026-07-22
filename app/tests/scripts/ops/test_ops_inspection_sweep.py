@@ -26,6 +26,7 @@ import importlib
 import inspect
 import logging
 import os
+import sys
 import typing
 from datetime import datetime
 from pathlib import Path
@@ -907,3 +908,146 @@ def test_run_docx_generation_failure_returns_body_only(monkeypatch):
     # fail-soft: body 字符串,无附件
     assert isinstance(result, str)
     assert "运维巡检" in result or "综述" in result or "巡检" in result
+
+
+# --------------------------------------------------------------------------
+# Phase E: 真实 docx 端到端集成测试
+#
+# 此前 ``test_run_returns_body_and_docx_path`` 使用 fake ``WordReportGenerator``
+# 仅证明 helper 调用了 ``Document()``,但并不证明真正的 python-docx 能渲染
+# 完整的 ops 报告。本测试通过 ``sys.modules`` 快照-恢复机制(unimport conftest 的
+# docx Mock, 重新导入真实 python-docx),调用 ``ops_inspection_sweep.run()`` 真实
+# 走完 ``build_ops_report_config → WordReportGenerator → Document().save()``
+# 全链路,验证产出 docx > 10KB 且含「沈阳不动产运维报告」标题。
+# --------------------------------------------------------------------------
+
+
+def _snapshot_docx_modules():
+    """快照所有 docx 相关 sys.modules 项,返回 {name: module} 字典。"""
+    return {
+        name: module
+        for name, module in sys.modules.items()
+        if name == "docx" or name.startswith("docx.")
+    }
+
+
+def _clear_docx_modules():
+    """从 sys.modules 移除所有 docx 相关项,让 ``import docx`` 走真实 python-docx。"""
+    for name in list(sys.modules):
+        if name == "docx" or name.startswith("docx."):
+            del sys.modules[name]
+
+
+def _restore_docx_modules(snapshot):
+    """恢复 docx Mock 状态,回到 conftest 安装的初始状态。"""
+    for name in list(sys.modules):
+        if name == "docx" or name.startswith("docx."):
+            del sys.modules[name]
+    sys.modules.update(snapshot)
+
+
+def test_run_real_docx_generation_end_to_end(tmp_path, monkeypatch):
+    """端到端验证: ``run()`` 真实生成 docx 文件(>10KB),含「沈阳不动产运维报告」。
+
+    与 ``test_run_returns_body_and_docx_path`` 的差异:后者通过 ``_FakeGenerator``
+    写出 PK zip 头占位,无法证明真实 docx 渲染工作。本测试通过 sys.modules 快照
+    -恢复机制(参照 ``app/tests/shared/utils/report/word/test_table_section.py``
+    ``test_render_table_section_produces_docx``),在测试内临时清除 conftest
+    安装的 docx Mock,重新导入真实 python-docx,让 ``WordReportGenerator`` 真正
+    走到 ``Document() → paragraph → save(path)`` 全链路。
+
+    参数:
+        tmp_path: pytest 临时目录,用于隔离真实 ``data/`` 写入。
+        monkeypatch: pytest monkeypatch fixture。
+
+    返回:
+        None。
+
+    异常:
+        AssertionError: 文件未生成 / < 10KB / 缺失预期标题。
+        ImportError: 真实 python-docx 未安装时由 ``pytest.importorskip`` 抛出。
+    """
+    pytest.importorskip("docx")
+
+    docx_snapshot = _snapshot_docx_modules()
+    generator_module_name = "app.shared.utils.report.word.generator"
+    sweep_module_name = "app.scripts.ops.ops_inspection_sweep"
+    original_generator = sys.modules.get(generator_module_name)
+    original_sweep = sys.modules.get(sweep_module_name)
+
+    try:
+        # 1. 清除 conftest 安装的 docx Mock,让真实 python-docx 生效
+        _clear_docx_modules()
+        sys.modules.pop(generator_module_name, None)
+        sys.modules.pop(sweep_module_name, None)
+
+        # 2. 重新 import 真实 docx 与 generator,sweep
+        from docx import Document as RealDocument  # noqa: F401  验证可导入
+
+        importlib.import_module(generator_module_name)
+        importlib.import_module(sweep_module_name)
+        sweep_mod = sys.modules[sweep_module_name]
+
+        # 3. 重定向附件路径到 tmp_path,避免污染 data/attachments/Task/
+        target_docx = tmp_path / "real_ops_report.docx"
+        monkeypatch.setattr(
+            sweep_mod, "_resolve_attachment_path",
+            lambda *_args, **_kwargs: target_docx,
+        )
+        # 4. 跳过 IP 反查(devops_server_service 不可用)
+        monkeypatch.setattr(
+            sweep_mod, "resolve_server_ip_map",
+            lambda *_args, **_kwargs: {},
+        )
+
+        # 5. 用空 server_list / api_list 跑真实 run(),让 docx 走到
+        #    ``build_ops_report_config → WordReportGenerator → Document.save()``
+        ctx = ScriptContext(
+            schedule_id=1,
+            run_id=999,
+            session_id="real-docx-test",
+            schedule_name="沈阳不动产运维报告-smoke",
+            script_args={"server_list": [], "api_list": []},
+            log_logger=logging.getLogger("test_real_docx"),
+            started_at=datetime(2026, 7, 23, 10, 0, 0),
+            trigger_type="manual",
+        )
+        result = asyncio.run(sweep_mod.run(ctx))
+
+        # 6. 断言:返回值是 (body, attachments) 元组,docx 真实落盘且 > 10KB
+        assert isinstance(result, tuple), f"run() should return tuple, got {type(result)}"
+        body, attachments = result
+        assert isinstance(body, str) and body
+        assert isinstance(attachments, list) and len(attachments) == 1
+        docx_path = Path(attachments[0])
+        assert docx_path.exists(), f"docx not written: {docx_path}"
+        size = docx_path.stat().st_size
+        assert size > 10000, f"docx too small ({size}B),< 10KB indicates fake stub"
+
+        # 7. 验证内容:含「沈阳不动产运维报告」标题(封面/正文至少一处)
+        doc = RealDocument(str(docx_path))
+        all_text = "\n".join(p.text for p in doc.paragraphs)
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    all_text += "\n" + cell.text
+        assert "沈阳不动产运维报告" in all_text, (
+            f"expected '沈阳不动产运维报告' in docx text, got first 200 chars: "
+            f"{all_text[:200]!r}"
+        )
+    finally:
+        # 8. 恢复:清掉真实 docx,恢复 conftest 安装的 Mock,让后续测试用例不受影响
+        _clear_docx_modules()
+        _restore_docx_modules(docx_snapshot)
+        sys.modules.pop(generator_module_name, None)
+        sys.modules.pop(sweep_module_name, None)
+        # 清空脚本注册表:本次测试 re-import 触发过 register_script,避免 finally
+        # 内部的 fallback 重新 import 时撞到同名
+        from app.scripts.registry import clear_registry
+        clear_registry()
+        if original_generator is not None:
+            sys.modules[generator_module_name] = original_generator
+        if original_sweep is not None:
+            sys.modules[sweep_module_name] = original_sweep
+        # else 分支无需立即 import:conftest 已恢复 docx Mock,
+        # 下次 ``from app.scripts.ops import ops_inspection_sweep`` 会自动重建
