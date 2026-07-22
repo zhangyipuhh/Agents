@@ -9,7 +9,7 @@
  * 绝不渲染 ip / port / username / password / blacklist / whitelist / 文件路径。
  * 扫描错误信息做脱敏处理：仅展示通用提示，不把后端 detail 透出到页面。
  */
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
   fetchAdminAgentList,
   fetchTaskSchedules,
@@ -42,7 +42,7 @@ const TAB_LABELS = [
 const schedules = ref([])
 const agents = ref([])
 const runs = ref([])
-const historyScheduleId = ref(null)
+const historySchedule = ref(null)
 const isLoadingRuns = ref(false)
 const historyErrorMessage = ref('')
 const selectedSchedule = ref(null)
@@ -717,27 +717,44 @@ async function loadInitialData() {
  */
 async function selectSchedule(schedule) {
   selectedSchedule.value = schedule
-  historyScheduleId.value = null
-  historyErrorMessage.value = ''
+  closeHistory()
   isCreating.value = false
   await fillForm(schedule)
   await loadRuns(schedule.id)
 }
 
 /**
- * 切换任务卡片内的执行历史展开状态。
+ * 打开指定任务的执行历史弹窗。
  * @param {Object} schedule - 定时任务记录
  * @returns {Promise<void>} 无返回值
  */
-async function toggleHistory(schedule) {
+async function openHistory(schedule) {
   if (!schedule || !schedule.id) return
-  if (historyScheduleId.value === schedule.id) {
-    historyScheduleId.value = null
-    return
-  }
-  historyScheduleId.value = schedule.id
+  historySchedule.value = schedule
+  runs.value = []
   historyErrorMessage.value = ''
   await loadRuns(schedule.id)
+}
+
+/**
+ * 关闭执行历史弹窗并清理临时数据。
+ * @returns {void} 无返回值
+ */
+function closeHistory() {
+  historySchedule.value = null
+  runs.value = []
+  historyErrorMessage.value = ''
+}
+
+/**
+ * 响应弹窗 Escape 关闭事件。
+ * @param {KeyboardEvent} event - 键盘事件
+ * @returns {void} 无返回值
+ */
+function handleHistoryKeydown(event) {
+  if (event.key === 'Escape' && historySchedule.value) {
+    closeHistory()
+  }
 }
 
 /**
@@ -1109,8 +1126,7 @@ function fillForm(schedule) {
 function startCreate() {
   bumpFillVersion()
   selectedSchedule.value = null
-  historyScheduleId.value = null
-  historyErrorMessage.value = ''
+  closeHistory()
   isCreating.value = true
   runs.value = []
   form.name = ''
@@ -1259,7 +1275,7 @@ async function runNow() {
   try {
     await triggerTaskSchedule(selectedSchedule.value.id)
     successMessage.value = '任务已提交运行'
-    if (historyScheduleId.value === selectedSchedule.value.id) {
+    if (historySchedule.value?.id === selectedSchedule.value.id) {
       await loadRuns(selectedSchedule.value.id)
     }
   } catch (error) {
@@ -1285,7 +1301,14 @@ async function removeTask() {
   }
 }
 
-onMounted(loadInitialData)
+onMounted(() => {
+  window.addEventListener('keydown', handleHistoryKeydown)
+  loadInitialData()
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleHistoryKeydown)
+})
 </script>
 
 <template>
@@ -1328,39 +1351,17 @@ onMounted(loadInitialData)
         <button
           class="task-history-btn"
           type="button"
-          :aria-label="historyScheduleId === schedule.id ? '收起执行历史' : '查看执行历史'"
-          :title="historyScheduleId === schedule.id ? '收起执行历史' : '查看执行历史'"
-          :aria-expanded="historyScheduleId === schedule.id ? 'true' : 'false'"
-          :aria-busy="isLoadingRuns && historyScheduleId === schedule.id ? 'true' : 'false'"
-          :disabled="isLoadingRuns && historyScheduleId === schedule.id"
-          @click.stop="toggleHistory(schedule)"
+          aria-label="查看执行历史"
+          title="查看执行历史"
+          aria-haspopup="dialog"
+          :aria-busy="isLoadingRuns && historySchedule?.id === schedule.id ? 'true' : 'false'"
+          :disabled="isLoadingRuns && historySchedule?.id === schedule.id"
+          @click.stop="openHistory(schedule)"
         >
           <svg class="task-history-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <path d="M12 7v5l3.5 2.1M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" />
           </svg>
         </button>
-        <section
-          v-if="historyScheduleId === schedule.id"
-          class="run-history"
-          data-testid="task-card-run-history"
-          aria-live="polite"
-        >
-          <h4>执行历史</h4>
-          <div v-if="isLoadingRuns" class="empty-state">正在加载执行历史...</div>
-          <div v-else-if="historyErrorMessage" class="alert error" data-testid="task-history-error">
-            {{ historyErrorMessage }}
-          </div>
-          <div v-else-if="!runs.length" class="empty-state">暂无执行记录</div>
-          <div v-else v-for="run in runs" :key="run.id" class="run-item">
-            <div class="run-main">
-              <strong>{{ run.status }}</strong>
-              <span>{{ run.trigger_type }}</span>
-              <span>{{ run.created_at || run.started_at }}</span>
-            </div>
-            <p v-if="run.output_text">{{ run.output_text }}</p>
-            <p v-if="run.error_message" class="run-error">{{ run.error_message }}</p>
-          </div>
-        </section>
       </article>
     </aside>
 
@@ -2013,6 +2014,56 @@ onMounted(loadInitialData)
       </section>
     </main>
   </section>
+
+  <Teleport to="body">
+    <Transition name="task-history-fade">
+      <div
+        v-if="historySchedule"
+        class="task-history-overlay"
+        @click.self.stop="closeHistory"
+      >
+        <div
+          class="task-history-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="task-history-dialog-title"
+          @click.stop
+        >
+          <header class="task-history-dialog-header">
+            <h3 id="task-history-dialog-title">执行历史 - {{ historySchedule.name }}</h3>
+            <button
+              class="task-history-close"
+              type="button"
+              aria-label="关闭执行历史"
+              @click="closeHistory"
+            >
+              <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <path d="M15 5 5 15M5 5l10 10" />
+              </svg>
+            </button>
+          </header>
+          <div class="task-history-dialog-body" aria-live="polite">
+            <section class="run-history">
+              <div v-if="isLoadingRuns" class="empty-state">正在加载执行历史...</div>
+              <div v-else-if="historyErrorMessage" class="alert error" data-testid="task-history-error">
+                {{ historyErrorMessage }}
+              </div>
+              <div v-else-if="!runs.length" class="empty-state">暂无执行记录</div>
+              <div v-else v-for="run in runs" :key="run.id" class="run-item">
+                <div class="run-main">
+                  <strong>{{ run.status }}</strong>
+                  <span>{{ run.trigger_type }}</span>
+                  <span>{{ run.created_at || run.started_at }}</span>
+                </div>
+                <p v-if="run.output_text">{{ run.output_text }}</p>
+                <p v-if="run.error_message" class="run-error">{{ run.error_message }}</p>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -2334,10 +2385,130 @@ input[type="number"] {
   text-align: center;
 }
 
+.task-history-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(4px);
+}
+
+.task-history-dialog {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 800px;
+  max-width: 90vw;
+  max-height: 80vh;
+  overflow: hidden;
+  background: #ffffff;
+  border-radius: 14px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+}
+
+.task-history-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e5e7eb;
+  flex-shrink: 0;
+}
+
+.task-history-dialog-header h3 {
+  margin: 0;
+  color: #111827;
+  font-size: 18px;
+}
+
+.task-history-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: #6b7280;
+  background: transparent;
+  cursor: pointer;
+}
+
+.task-history-close:hover {
+  color: #111827;
+  background: #f3f4f6;
+}
+
+.task-history-close:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.task-history-close:active {
+  transform: scale(0.96);
+}
+
+.task-history-close svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+
+.task-history-dialog-body {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.task-history-dialog-body .run-history {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.task-history-dialog-body .run-history .empty-state {
+  padding: 24px 16px;
+}
+
+.task-history-dialog-body .run-item {
+  background: #f9fafb;
+}
+
+.task-history-fade-enter-active,
+.task-history-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.task-history-fade-enter-active .task-history-dialog,
+.task-history-fade-leave-active .task-history-dialog {
+  transition: transform 0.2s ease;
+}
+
+.task-history-fade-enter-from,
+.task-history-fade-leave-to {
+  opacity: 0;
+}
+
+.task-history-fade-enter-from .task-history-dialog,
+.task-history-fade-leave-to .task-history-dialog {
+  transform: scale(0.96);
+}
+
 .run-history {
-  margin-top: 4px;
-  padding-top: 12px;
-  border-top: 1px solid #dbeafe;
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
 }
 
 .run-history h4 {

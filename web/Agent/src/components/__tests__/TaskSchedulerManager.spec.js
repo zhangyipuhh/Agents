@@ -200,10 +200,12 @@ describe('TaskSchedulerManager 组件', () => {
     expect(historyButton.text()).toBe('')
     expect(historyButton.attributes('aria-label')).toBe('查看执行历史')
     expect(historyButton.attributes('title')).toBe('查看执行历史')
-    expect(wrapper.find('.run-history').exists()).toBe(false)
+    expect(historyButton.attributes('aria-haspopup')).toBe('dialog')
+    expect(document.body.querySelector('.task-history-overlay')).toBeNull()
+    wrapper.unmount()
   })
 
-  it('test_history_button_expands_target_card_without_selecting_task 点击历史按钮只展开目标卡片', async () => {
+  it('test_history_button_opens_target_dialog_without_selecting_task 点击历史按钮打开目标任务弹窗', async () => {
     const secondSchedule = {
       ...mockSchedules[0],
       id: 2,
@@ -241,23 +243,48 @@ describe('TaskSchedulerManager 组件', () => {
     await historyButtons[1].trigger('click')
     await flushPromises()
 
+    const dialog = document.body.querySelector('[role="dialog"]')
     const runsForSecond = global.fetch.mock.calls.filter(([url]) =>
       typeof url === 'string' && url.includes('/api/admin/task-schedules/2/runs')
     ).length
     expect(runsForSecond).toBe(initialRunsForSecond + 1)
-    expect(wrapper.findAll('.run-history').length).toBe(1)
-    expect(wrapper.find('.run-history').text()).toContain('任务B执行完成')
+    expect(dialog).not.toBeNull()
+    expect(dialog.getAttribute('aria-modal')).toBe('true')
+    expect(dialog.getAttribute('aria-labelledby')).toBe('task-history-dialog-title')
+    expect(document.body.querySelector('#task-history-dialog-title').textContent).toContain('任务B')
+    expect(document.body.querySelector('.run-history').textContent).toContain('任务B执行完成')
     expect(wrapper.findAll('.task-item.active')[0].find('.task-name').text()).toBe('每日巡检')
 
-    await historyButtons[1].trigger('click')
+    document.body.querySelector('.task-history-close').dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await flushPromises()
-    expect(wrapper.find('.run-history').exists()).toBe(false)
-    expect(global.fetch.mock.calls.filter(([url]) =>
-      typeof url === 'string' && url.includes('/api/admin/task-schedules/2/runs')
-    ).length).toBe(runsForSecond)
+    expect(document.body.querySelector('.task-history-overlay')).toBeNull()
+    wrapper.unmount()
   })
 
-  it('test_history_button_failure_shows_local_error 执行历史加载失败显示局部错误', async () => {
+  it('test_history_dialog_closes_by_overlay_and_escape 遮罩与 Escape 可关闭执行历史弹窗', async () => {
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.find('.task-history-btn').trigger('click')
+    await flushPromises()
+
+    const dialog = document.body.querySelector('.task-history-dialog')
+    dialog.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+    expect(document.body.querySelector('.task-history-overlay')).not.toBeNull()
+
+    document.body.querySelector('.task-history-overlay').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+    expect(document.body.querySelector('.task-history-overlay')).toBeNull()
+
+    await wrapper.find('.task-history-btn').trigger('click')
+    await flushPromises()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+    expect(document.body.querySelector('.task-history-overlay')).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('test_history_button_failure_shows_dialog_error 执行历史加载失败显示弹窗错误', async () => {
     global.fetch = vi.fn(async (url, opts = {}) => {
       const method = (opts.method || 'GET').toUpperCase()
       const u = typeof url === 'string' ? url : url.url
@@ -273,7 +300,8 @@ describe('TaskSchedulerManager 组件', () => {
     await wrapper.find('.task-history-btn').trigger('click')
     await flushPromises()
 
-    expect(wrapper.find('[data-testid="task-history-error"]').text()).toContain('历史服务不可用')
+    expect(document.body.querySelector('[data-testid="task-history-error"]').textContent).toContain('历史服务不可用')
+    wrapper.unmount()
   })
 
   it('test_new_task_button_shows_form 点击新增任务显示表单', async () => {
@@ -437,10 +465,11 @@ describe('TaskSchedulerManager 组件', () => {
     await wrapper.find('.task-history-btn').trigger('click')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('success')
-    expect(wrapper.text()).toContain('failed')
-    expect(wrapper.text()).toContain('执行完成')
-    expect(wrapper.text()).toContain('boom')
+    expect(document.body.querySelector('.run-history').textContent).toContain('success')
+    expect(document.body.querySelector('.run-history').textContent).toContain('failed')
+    expect(document.body.querySelector('.run-history').textContent).toContain('执行完成')
+    expect(document.body.querySelector('.run-history').textContent).toContain('boom')
+    wrapper.unmount()
   })
 
   it('test_default_tab_is_edit_task 默认 Tab 是「编辑任务」', async () => {
