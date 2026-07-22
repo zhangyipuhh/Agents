@@ -134,9 +134,9 @@ agents 表 `agents_md_path` 字段存储**相对路径**（如 `agents/project/A
   - `web/Agent/src/components/__tests__/UserSettingsDialog.admin-profile-switch.spec.js` —— 2026-07-19 新增;端到端验证 admin 先点"管理后台"再切回"个人设置"时邮箱也能正确加载(锁定 switchTab profile 分支契约)
 - `web/Agent/src/components/__tests__/UserSettingsDialog.old-password.spec.js` —— 2026-07-19 新增;验证旧密码 input 为 type=text + .password-mask 类,空值时不显示 Chrome/Edge 默认占位圆点,同时 v-model 仍正确工作
 
-## 项目架构
+- `app/scripts/server_ops.py` 的 `ServerOpsItem` 在执行字段后追加 `inspection_parser`、`parsed_values`、`field_results`、`inspection_status`、`inspection_error`；SSH 执行成功后按 parser 解析 stdout、按 inspection_fields 评估，解析/评估失败为 `crit` 且不影响后续服务器，SSH 失败为 `crit`，KeyError/无脚本为 `skipped`。`ServerOpsReport` 保留执行计数并提供 `inspection_passed` / `inspection_warned` / `inspection_critical` / `inspection_unassessed` 四项巡检计数，摘要、Markdown、字典输出包含巡检状态与字段结果。
 
-```
+## 项目架构
 app/
 ├── core/                    # 核心模块
 │   ├── server.py           # FastAPI 应用配置（生命周期、中间件、CORS）
@@ -697,7 +697,7 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 - **参数读取**：`context.script_args` 中读取 `mode` / `content` / `server_list` / `api_list`；`server_list` / `api_list` 缺失时按空数组处理，非列表、包含非字符串或空字符串时抛 `ScriptExecutionError`；`api_list` 还会额外校验每个元素必须是整数形式的字符串 id。
 - **服务器参数语义**：`server_list` 元素为 `business_name`；样板只演示读取、校验、日志与摘要输出，不读取连接配置、不执行 SSH。
 - **接口参数语义（`api_list`）**：元素为「API接口配置」树中 api 节点 id 的字符串形式；样板通过 `await run_api_checks(context)` 逐 id 执行 `ApiConfigService.send_request`（httpx 代理发送 + Mock/expectations 断言校验 + 落库 `api_check_runs`）；单条失败不中断整体，缺失节点产生 `check_passed=None` 的 skipped 项，其他异常产生 `check_passed=False` 的 failed 项；返回统一 `ApiCheckReport` 结构，正文追加 `api_check=<P>/<N> passed | id=... OK/FAIL/MISSING` 摘要；`mode=multi` 时 `.md` 附件还会包含 `report.to_markdown()` 接口清单表格。
-- **服务器参数语义（`server_list`）**：元素为 `business_name`；样板通过 `await run_server_ops(context)` 对每台服务器读取解密后的连接配置（`DevOpsServerService.get_connection_config`），执行预存的 `inspection_script` 巡检脚本（命令来源是该字段，**不在脚本入参中指定**）；逐台结果封装为 `ServerOpsItem`（`business_name` / `success` / `exit_code` / `stdout` / `stderr` / `duration_ms` / `error_message` / `skipped`），`ServerOpsReport` 提供 `summary_line()` / `to_markdown()`；单台失败（鉴权 / 连接超时 / paramiko 异常 / 未配置 `inspection_script` 等）**不中断**整体；缺少 `inspection_script` 产生 skipped 项；正文追加 `server_ops=<P>/<N> passed | biz-A OK(0,42ms)` 摘要；`mode=multi` 时 `.md` 附件含运维结果表格；阻塞 SSH 调用经 `asyncio.to_thread` 包装避免阻塞事件循环（验证：心跳协程在执行期间可继续推进）。
+- **服务器参数语义（`server_list`）**：元素为 `business_name`；样板通过 `await run_server_ops(context)` 对每台服务器读取解密后的连接配置（`DevOpsServerService.get_connection_config`），执行预存的 `inspection_script` 巡检脚本（命令来源是该字段，**不在脚本入参中指定**）；逐台结果封装为 `ServerOpsItem`（含 SSH 执行字段 + 巡检字段 `inspection_parser` / `parsed_values` / `field_results` / `inspection_status` / `inspection_error`），`ServerOpsReport` 提供 `summary_line()` / `to_markdown()` / `to_dict()` 三种输出，并附 `inspection_passed/warned/critical/unassessed` 4 项巡检计数；单台失败（鉴权 / 连接超时 / paramiko 异常 / 未配置 `inspection_script` / 解析评估失败等）**不中断**整体；缺少 `inspection_script` 产生 skipped 项；正文追加 `server_ops=<P>/<N> passed | inspection=pass:N,warn:N,crit:N,unassessed:N | biz-A OK(0,42ms)/PASS` 摘要；`mode=multi` 时 `.md` 附件含 8 列运维结果表格；阻塞 SSH 调用经 `asyncio.to_thread` 包装避免阻塞事件循环（验证：心跳协程在执行期间可继续推进）。
 - **纯文本返回（`mode=text`）**：直接 `return summary`，无附件。
 - **单附件返回（`mode=single`）**：生成一个 `.txt` 附件，返回 `(summary, [attachment_path])`。
 - **多附件返回（`mode=multi`）**：生成 `.txt` 与 `.md` 两个附件，返回 `(summary, [path1, path2])`；当 `api_list` 非空时 `.md` 包含 `## 接口健康检查` 章节。
@@ -719,16 +719,40 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 - **调度器透传**：`TaskSchedulerService.__init__` 新增 `api_config_service: Optional[Any] = None` 入参；`execute_schedule` 的 script 分支构造 `ScriptContext` 时透传 `self._api_config_service`。
 - **lifespan 注入**：`app/core/server.py::lifespan` 构造 `TaskSchedulerService` 时 `api_config_service=getattr(app.state, "api_config_service", None)`；`ApiConfigService` 在前面「API接口配置」章节已固定为 lifespan 初始化块，顺序约束满足。
 
-**`app/scripts/server_ops.py` 标准化巡检执行器**（2026-07-22 新增）：与 `api_check.py` 完全对称，但面向**真实 SSH 巡检执行**而非 HTTP 健康检查。脚本声明 `server_list` 后，通过 `run_server_ops(context) -> ServerOpsReport` 获取统一执行结果结构。
+**`app/scripts/server_ops.py` 标准化巡检执行器**（2026-07-22 新增；Task 3 落地）：与 `api_check.py` 完全对称，但面向**真实 SSH 巡检执行**而非 HTTP 健康检查。脚本声明 `server_list` 后，通过 `run_server_ops(context) -> ServerOpsReport` 获取统一执行结果结构。
 
-- **数据类**：`ServerOpsItem`（frozen；`business_name` / `success` / `exit_code` / `stdout` / `stderr` / `duration_ms` / `error_message` / `skipped`），`ServerOpsReport`（`items` + 计数属性 `total` / `passed` / `failed` / `skipped` + 方法 `summary_line()` / `to_markdown()` / `to_dict()`）。
+- **数据类**：
+  - `ServerOpsItem`（frozen）字段：`business_name` / `success` / `exit_code` / `stdout` / `stderr` / `duration_ms` / `error_message` / `skipped` / `inspection_parser` / `parsed_values` / `field_results`（元素为 `InspectionFieldResult.vars()` 形式 dict：`key` / `name_zh` / `unit` / `value` / `status` / `message` / `warn` / `crit`）/ `inspection_status` / `inspection_error`。
+  - `ServerOpsReport`（`items` + 计数属性 `total` / `passed` / `failed` / `skipped` **+ 4 项巡检计数** `inspection_passed` / `inspection_warned` / `inspection_critical` / `inspection_unassessed`，**`skipped` 不计入 4 项巡检计数任何一项** + 方法 `summary_line()` / `to_markdown()` / `to_dict()`）。
 - **`resolve_server_list(script_args) -> list[str]`**：缺失/None/空数组 → `[]`；非 list / 含非字符串 / 含空字符串 → 抛 `ScriptExecutionError`，消息含 `server_list`。
-- **`run_server_ops(context, server_list=None, *, ssh_timeout=30) -> ServerOpsReport`**：`api_list` 缺省时从 `context.script_args.server_list` 调用 `resolve_server_list`；空 names → 返回 `items=[]`；非空但 `context.devops_server_service is None` → 抛错；其余沿 `service.get_connection_config(business_name)` 取解密配置（包含 `inspection_script` 字段），逐台执行预存的巡检脚本（`asyncio.to_thread(ssh.executor.execute_script, ...)` 包装避免阻塞事件循环）；`inspection_script` 为空/None/纯空白 → skipped 项；`KeyError`（业务名未注册）/ paramiko 异常 → `success=False` 项 + `error_message`，**不中断**整体循环；保留输入顺序。
+- **`run_server_ops(context, server_list=None, *, ssh_timeout=30) -> ServerOpsReport`**：`server_list` 缺省时从 `context.script_args.server_list` 调用 `resolve_server_list`；空 names → 返回 `items=[]`；非空但 `context.devops_server_service is None` → 抛错；其余沿 `service.get_connection_config(business_name)` 取解密配置（包含 `inspection_script` / `inspection_parser` / `inspection_fields`），逐台执行预存的巡检脚本（`asyncio.to_thread(ssh.executor.execute_script, ...)` 包装避免阻塞事件循环）；保留输入顺序；**单台任何阶段失败均不中断整体**。
+- **异常分级契约**（按 `_run_one` 分支）：
+  1. `get_connection_config` 抛 `KeyError`（业务名未注册） → `skipped=True` + `success=None` + `error_message` / `inspection_error` 含 KeyError 原文。
+  2. `inspection_script` 为空/None/纯空白 → `skipped=True` + `success=None` + `error_message="未配置巡检脚本（inspection_script 为空）"` + `inspection_error` 同上。
+  3. `get_connection_config` 抛其他异常（解密失败 / Fernet 错配） → `success=False` + `inspection_status="crit"` + `error_message="配置解析失败: Type: message"` + `inspection_error` 同上；**不**泄漏 `ip` / `password` / 整个 config。
+  4. `execute_script` 抛异常（paramiko `AuthenticationException` / `SSHException` 等） → `success=False` + `duration_ms` 非 None + `inspection_status="crit"` + `error_message` / `inspection_error` 含 `Type: message`，**不**泄漏 config。
+  5. `SSHExecResult.success=False` → `success=False` + `inspection_status="crit"`，**不**调用 `parse_inspection_output` / `evaluate_inspection_fields`；`stdout` / `stderr` / `exit_code` / `duration_ms` 保留；`error_message` / `inspection_error` 取 `stderr`（strip）或固定文案「远端巡检脚本执行失败」。
+  6. 解析 / 评估阶段异常（`InspectionParseError` / `ValueError` 等） → `success=False` + `inspection_status="crit"`；`stdout` / `stderr` / `exit_code` / `duration_ms` 保留；`error_message` / `inspection_error` 统一为「巡检解析评估失败: Type: message」，**不**泄漏 config（stdout 内的解析错误片段可保留）。
+  7. 评估成功但 `evaluation.status == "crit"`（raw+结构化规则 / 字段缺失 / 非数值 / 阈值严重命中） → `success=bool(result.success)` **不变**（即 SSH 退出码 0 仍为 `True`），仅 `inspection_status="crit"` + 字段级 message；评估 `evaluation.error_message` 透传到 `inspection_error`。
+- **`inspection_status` 取值**：`pass` / `warn` / `crit` / `unassessed` / `skipped`。`success` 与 `inspection_status` 解耦：SSH 退出码 0 + stderr 空 → `success=True`，但若评估命中 crit 仍可 `inspection_status="crit"`。
+- **summary_line 契约**：
+  - 旧契约保持：`server_ops=<P>/<executed> passed` + 可选 `, <skipped> skipped` + `; ` 分隔的 `biz-X OK(0,42ms)` / `biz-X FAIL(1,45ms)` / `biz-X SKIPPED`。
+  - 新增：` | inspection=pass:N,warn:N,crit:N,unassessed:N`（`skipped` 不计入）。
+  - 每项详情追加 `/PASS|WARN|CRIT|UNASSESSED|SKIPPED` 大写状态后缀。
+  - 示例：`server_ops=3/4 passed, 1 skipped | inspection=pass:1,warn:1,crit:1,unassessed:1 | biz-A OK(0,42ms)/PASS; biz-B OK(0,30ms)/WARN; biz-C FAIL(2,10ms)/CRIT; biz-E SKIPPED/SKIPPED`。
+- **to_markdown 契约**：列顺序固定 8 列：业务名 / 结果 / 退出码 / 耗时(ms) / stdout 摘要 / 错误 / **巡检状态** / **指标判定**。
+  - 状态中文映射：`pass → 通过` / `warn → 告警` / `crit → 严重` / `unassessed → 未评估` / `skipped → 未执行`。
+  - 指标判定格式（每字段）：`中文名 原值+单位 状态/消息 warn=<n> crit=<n>`，多字段以 `; ` 分隔；空 unit 不附加。
+  - stdout 截断到 4000 字符 + `...` 后缀（与 api_check_runs.response_body 一致）。
+  - 所有动态字段（业务名 / stdout / 错误 / 字段中文名 / 字段 message）的换行替换为空格、`|` 替换为 `\|`，避免 markdown 列解析错误。
+  - skipped 行指标判定列内容：`error_message or inspection_error or "未执行"`，整体过 ``_escape_cell`` 转义；不再硬编码「未配置巡检脚本」分支，KeyError / 巡检脚本未配置等 skipped 原因如实展示。
+- **to_dict 契约**：顶层 = `items` + `total` + `passed` + `failed` + `skipped` + **`inspection_passed`** + **`inspection_warned`** + **`inspection_critical`** + **`inspection_unassessed`**；每个 item = 老 8 字段 + **`inspection_parser`** + **`parsed_values`** + **`field_results`** + **`inspection_status`** + **`inspection_error`**；可直接 `json.dumps(..., ensure_ascii=False)`。
 - **命令来源**：`devops_servers.inspection_script TEXT` 字段（2026-07-22 已新增），不再由脚本入参指定，与 `api_list` 复用 `service.send_request` + Mock 的模式形成完全对称。
 - **扫描隔离**：`app/shared/utils/agent/script_discovery_service.py::_SKIP_FILENAMES` 追加 `server_ops.py`，避免被 `ScriptDiscoveryService` 误识别为脚本。
 - **`ScriptContext.devops_server_service`**：`app/scripts/base.py::ScriptContext` 新增 `devops_server_service: Any = None` 字段；与 `api_config_service` 并列。
 - **调度器透传**：`TaskSchedulerService.__init__` 新增 `devops_server_service: Optional[Any] = None` 入参；`execute_schedule` 构造 `ScriptContext` 时透传 `self._devops_server_service`。
 - **lifespan 注入**：`app/core/server.py::lifespan` 构造 `TaskSchedulerService` 时 `devops_server_service=getattr(app.state, "devops_server_service", None)`；`DevOpsServerService` 在 lifespan 第 357 行附近初始化，早于 `TaskSchedulerService`，顺序约束天然满足。
+- **测试**：`app/tests/scripts/test_server_ops.py` 共 47 用例（原 22 + Task 3 新增 20 + 审查加固 5）全绿；覆盖 4 项巡检计数（含 skipped 不计）、summary 追加 `inspection=...` 与每项状态后缀、to_markdown 8 列与中文渲染 + 管道换行转义、to_dict 4 项巡检计数 + item 新字段、JSON pass；解析 / 评估 / SSH 失败各级异常分级与 `success` 解耦；KV / CSV 数字字符串 pass；raw+规则 crit 但 success 仍 True；缺字段 / 非数值 crit；无规则 unassessed；非法 JSON 一台失败但下一台继续；SSH 失败直接 crit 且不调 parse_inspection_output；执行异常与 skipped 的 inspection_error；skipped 指标判定列如实展示 error_message / inspection_error 并转义（含 KeyError 路径、inspection_script 未配置路径、全部为空时回退「未执行」）；stdout 截断边界精确（4000 x 保留 / 4001 x 截断加 `...`）。
 
 **lifespan 初始化顺序**：
 1. `DatabasePool.initialize()` + `register_schemas()`（`init_*_schema` 自动建表，包含邮件 / 定时任务 / 脚本相关表）
@@ -2105,14 +2129,77 @@ system_prompt = (
 - **DB 落库**：`inspection_script TEXT NULL`（非加密、非敏感）+ `inspection_parser VARCHAR(16) DEFAULT 'json'` + `CHECK (inspection_parser IN ('json', 'kv', 'csv', 'raw'))`（DO $$ ... $$ 包裹，幂等）。
 - **服务层契约**：`_normalize_entry` / `_upsert_one_returning` / `preload_all` / `get_connection_config` 全链路同步；缓存 `rec["inspection_script"]` 与 `rec["inspection_parser"]` 透传。`preload_all` 中遇到非法 `inspection_parser`（NULL / 未知值）一律回退为 `'json'`，避免下游崩溃。
 - **公开白名单严格 4 字段**：`inspection_script` / `inspection_parser` 仅供 SSHTools 内部消费（`get_connection_config` 返回值），**永不进入** `GET /api/admin/devops-servers` 响应；admin router 的 `_PUBLIC_FIELDS` 防御性二次过滤保证即便 service 失误返回了脚本字段，响应也会被过滤。
-- **本轮不实现 tool**：`run_inspection_script` / `inspection_run` `@tool` 由后续 PR 处理；本轮仅完成「字段入库 + 缓存 + 内部消费通道」基础。
 - **覆盖范围**：`data/devops/servers.yaml` 的两个示例节点（Linux / Windows）均已携带 `inspection_script: |` + `inspection_parser: json` 示例，可作为运维模板参考。
 - **前端按需拉详情（2026-07-22）**：`web/Agent/src/components/TaskSchedulerManager.vue` 服务器列表新增「白名单」「巡检脚本」两列（每行两个查看按钮），点击列按钮通过 `web/Agent/src/utils/api.js::fetchDevOpsServerDetail(serverId)` → `GET /api/admin/devops-servers/{serverId}` 按需拉取详情，再以 `<Teleport>` 弹窗展示：
   - 白名单弹窗：以 `<table class="whitelist-table">` 逐行展示 `whitelist: string[]`（序号 + 命令），空列表显示「暂无白名单命令」空态。
   - 巡检脚本弹窗：以 `<pre class="script-content">` 等宽字体保留换行/缩进（`white-space: pre`）展示 `inspection_script`，未配置显示「未配置巡检脚本」空态，标题旁附解析器标签 `inspection_parser`。
   - 两个弹窗互斥（同一时刻仅一个 open），通过 `whitelistDialog.open` / `scriptDialog.open` 互斥切换。
   - 列表端点契约不变：仍只返回 4 字段，避免 1000 行脚本进入列表响应；详情按需拉是 `inspection_script` 唯一进入 DOM 的通道。
+- **当前行为**：`run_server_ops` 已按 `inspection_parser` 解析脚本输出，再按 `inspection_fields` 阈值规则评估生成报告（详见下一节），并非「只入库/后续 tool」。
+
+### 巡检字段规则列 `devops_servers.inspection_fields` JSONB（2026-07-22 落地）
+
+- **DB 列定义**：`inspection_fields JSONB DEFAULT '[]'::jsonb`，每行 `list[dict]`，dict 形如 `{key, name_zh, unit, direction, warn, crit}`；与 `inspection_script` / `inspection_parser` 同步三列齐备。`CREATE TABLE` 与 `ALTER TABLE ADD COLUMN IF NOT EXISTS` 双写，幂等。
+- **行规则**（元素 schema）：
+  - `key`：非空字符串，与脚本输出 JSON 字段名一一对应；同一节点内唯一；非空。
+  - `name_zh`：非空字符串，前端展示用。
+  - `unit`：字符串；缺省 / 缺失 = `""`；空单位时填 `""`，**不要写 null**。
+  - `direction`：`"high"` | `"low"` | `"ignore"` 三选一。
+  - `warn` / `crit`：`high` 时 `warn <= crit`，`low` 时 `warn >= crit`（边界包含）；`ignore` 时必须为 `None`。
+- **YAML 当前契约**（`data/devops/servers.yaml` + `servers.yaml.example`）：
+  - Linux 节点 4 条规则：`disk_used_pct / 磁盘使用率 / % / high / 80 / 90`、`mem_used_pct / 内存使用率 / % / high / 80 / 90`、`cpu_idle_pct / CPU 空闲率 / % / low / 20 / 10`、`load_1m / 1 分钟平均负载 / "" / high / 4.0 / 8.0`。
+  - Windows 节点 4 条规则：`disk_used_pct / C 盘使用率 / % / high / 80 / 90`、`mem_used_pct / 内存使用率 / % / high / 80 / 90`、`cpu_used_pct / CPU 使用率 / % / high / 80 / 95`、`uptime_hours / 系统运行时间 / 小时 / ignore / null / null`。
+  - 两节点 `key` 字段分别与 `inspection_script` 输出 JSON 的字段名一一对应（脚本使用 `printf '{"disk_used_pct":...}'` 形式），通过 `yaml.safe_load` 冒烟可校验。
+- **服务层全链路**（`app/shared/utils/devops_server_service.py`）：
+  - `_inspection_fields_to_list(value) -> List[Any]`：防御性还原（list / dict / str / None / 其它）。`None` / 缺失键 / 非法 JSON 字符串 / 解析为基本类型（数字 / bool / null）→ `[]`；合法 JSON list 字符串 / JSON dict 字符串 / list / dict → 还原 list。**不**把合法 list 字符串误判为 `[]`。
+  - `preload_all`：DB 行 `inspection_fields` 列先经 `_inspection_fields_to_list` 还原，再调 `normalize_inspection_fields`；`NULL` / 缺失键 / 非法结构（含合法 JSON 但元素不是 dict）→ 缓存 `[]` + warning log，不阻断；合法结果 → 缓存为强类型 `list[dict]`（`key` / `name_zh` / `unit` / `direction` / `warn` / `crit`）。
+  - `_normalize_entry`：YAML entry 先经 `_inspection_fields_to_list` 兼容（YAML 直接给 dict / 字符串等异常形态），再调 `normalize_inspection_fields`，非法规则（如 `direction` 非法 / `warn > crit` 在 high 时 / 重复 key）整条 `failed`。
+  - `_upsert_one_returning`：SQL 占位 `$9 inspection_script, $10 inspection_parser, $11::jsonb inspection_fields`，`json.dumps(..., ensure_ascii=False)` 入参；旧 `$9` / `$10` 断言保持不变。
+  - 缓存 / `get_connection_config` / `get_server_detail`：所有路径中 `inspection_fields` 始终是 JSON 可序列化的 `list[dict]`。
+  - `get_server_detail` 白名单 `_DETAIL_FIELDS` 包含 `inspection_fields`；仍**不外泄** `ip / port / username / password_encrypted / blacklist`。
+- **旧数据兜底**：升级前数据库已存在但 `inspection_fields` 为 `NULL` 的行，`preload_all` 一律还原为 `[]`；不修改历史行；新 `scan_and_upsert` 会以 `[]` 入库（YAML 节点缺省即 `[]`），不触发 upsert 失败。
+- **测试同步**（`app/tests/shared/test_devops_server_service.py`，共 80 个用例全绿）：
+  - 全链路新增 12 个用例：YAML → 规范化 → JSONB → cache / detail / connection_config；`preload` 兼容合法 list / 合法 JSON 字符串 / NULL / 缺失键 / 非法 JSON 字符串 / 合法 JSON 但元素非 dict；`scan_and_upsert` SQL `args[11]` 是 `json.dumps(..., ensure_ascii=False)` 且中文保持原字符；旧 `args[9]` / `args[10]` 断言继续通过；`get_server_detail` 含 `inspection_fields` 但仍不外泄 `ip / password / blacklist`。
+  - `parametrize` 化测试 `_inspection_fields_to_list`（NULL / 非法字符串 / 数字 / bool / 整数 / 浮点 / True 等非法输入 → `[]`；合法 list / JSON 字符串 / 空 `[]` 等 → 正确还原）。
 - **pydantic-settings v2 嵌套 BaseSettings 不递归读 .env（2026-07-15 已修复）**：`Settings.devops: DevOpsSettings = Field(default_factory=DevOpsSettings)` 这种嵌套写法，顶层 `.env` 的扁平 key `DEVOPS_CREDENTIAL_KEY` 默认不会穿透到 `settings.devops.credential_key`（其他子 settings 如 `LLMSettings.model_name` 因为字段名直接对应环境变量名而能正常加载；`FeishuSettings.feishu_app_id` / `SandboxSettings.sandbox_docker_mode` 因字段名自带前缀而能正常加载；唯独 `DevOpsSettings.credential_key` 字段名不带 `devops_` 前缀但 env 名带 `DEVOPS_` 前缀，导致不匹配）。**修复方案**：在 `DevOpsSettings.model_config` 声明 `env_prefix="DEVOPS_"`，使字段 `credential_key` 匹配 env `DEVOPS_CREDENTIAL_KEY`。诊断函数 `diagnose_credential_key()` 的 `settings_unread` 分支保留为防御性诊断，hint 文本已更新为「理论上不应触发，可能是 settings 单例被显式传入空值覆盖或 .env 文件路径/编码异常」。回归测试：`app/tests/core/test_devops_diagnostics.py::test_devops_settings_reads_env_via_prefix`。
+
+### 巡检字段规则解析与阈值评估模块 `app/shared/utils/inspection/parser.py`
+
+- **职责**：纯函数式模块；只负责把运维在 YAML / 表单中声明的字段规则 (dict) 规范化为强类型 `InspectionFieldRule`、按 `inspection_parser` 类型解析 SSH 输出为 `parsed_values`、对 `parsed_values` 做阈值评估产出每字段 `InspectionFieldResult` 与聚合 `InspectionEvaluation`。**不**连接 SSH、**不**读写数据库、**不**写日志、**不**做副作用；上层 (DevOps 工具 / 服务) 自由组装。
+- **公开 API**（`app/shared/utils/inspection/__init__.py` 同步导出）：
+  - 异常：`InspectionParseError(ValueError)` —— 解析失败时抛出，消息尽量包含原始文本片段。
+  - `@dataclass(frozen=True) InspectionFieldRule(key: str, name_zh: str, unit: str, direction: str, warn: Optional[float], crit: Optional[float])`
+  - `@dataclass(frozen=True) InspectionFieldResult(key, name_zh, unit, value: Any, status: str, message: str, warn, crit)`
+  - `@dataclass(frozen=True) InspectionEvaluation(parsed_values: Any, fields: Tuple[InspectionFieldResult, ...], status: str, error_message: str = "")`
+  - `normalize_inspection_fields(raw) -> list[InspectionFieldRule]`：规则规范化。
+  - `parse_inspection_output(parser, stdout) -> Any`：按解析器类型解析 stdout。
+  - `evaluate_inspection_fields(parsed_values, rules, parser) -> InspectionEvaluation`：阈值评估。
+- **`normalize_inspection_fields` 校验规则**：
+  - `raw is None` → `[]`；非 `list` → `ValueError`。
+  - 元素必须为 `dict`；`key` / `name_zh` 必须为非空字符串；`unit` 必须为 `str`，缺省默认 `""`。
+  - `direction` 仅接受 `"high"` / `"low"` / `"ignore"`；`key` 在同一列表内必须唯一。
+  - `high` / `low` 的 `warn` / `crit` 必须为有限数字 (`bool` / 字符串 / `NaN` / `Infinity` 全部拒绝；`bool` 在 Python 中是 `int` 子类，此处用 `isinstance(value, bool)` 提前拦截)。
+  - `high` 要求 `warn <= crit`，`low` 要求 `warn >= crit`（边界包含：`warn == crit` 合法）。
+  - `ignore` 的 `warn` / `crit` 必须缺省或显式 `None`，否则 `ValueError`。
+  - 所有非法情形抛 `ValueError`，消息包含 `<key=xxx>` 或 `<index=N>` 上下文，便于定位。
+- **`parse_inspection_output` 行为**：
+  - `parser` 大小写不敏感；接受 `json` / `kv` / `csv` / `raw`，未知类型抛 `InspectionParseError`。
+  - `json`：取最后一行非空文本，用 `json.loads` 解析为对象或数组并保留原值；字符串 / 数字 / `null` / 布尔等顶层标量视为非法。
+  - `kv`：每个非空行按第一个 `=` 切分为 `key=value`（`value` 保留原样字符串，`value` 中后续 `=` 不再切分）；无有效键值对抛 `InspectionParseError`。
+  - `csv`：第一行表头 + 第一条数据行，使用标准库 `csv`；空表头 / 无数据行 / 表头无可用键视为非法。
+  - `raw`：原样返回 `stdout`（允许空字符串 / `None` 透传）。
+  - `json` / `kv` / `csv` 的空 / 全空白 / 非法输入一律抛 `InspectionParseError`（继承 `ValueError`）。
+- **`evaluate_inspection_fields` 行为**：
+  - 无规则 → `status="unassessed"`，`error_message=""`。
+  - 全部 `ignore` → 总 `unassessed`，各字段 `status="unassessed"`，但 `value` 保留原始值以供前端展示。
+  - 含 `high` / `low` 规则但 `parser == "raw"` → 总 `status="crit"`，`error_message="raw 解析器不支持结构化阈值评估, 请改用 json / kv / csv 解析器"`；字段列表仍输出 (`status="unassessed"` + `value=None`) 以便前端展示字段元数据。
+  - 声明字段缺失 / 非数值 (`bool` 也不算) → 字段 `status="crit"`，`value` 保留 (`None` 或原值)，`message` 写明原因；规则配置的 `warn` / `crit` 仍严格拒绝字符串，但 KV / CSV 解析值中的完整有限数字字符串（含前后空白、科学计数法）可转换后参与阈值评估，空串、`NaN` / `Infinity` 字符串及非数字继续为 `crit`，JSON 字符串不转换。
+  - 顶层 JSON 数组或直接传入的其它非 `Mapping` 值在有声明字段时按字段缺失评估为 `crit`，`InspectionEvaluation.parsed_values` 始终保留原始非 `Mapping` 值，不替换为 `{}`。
+  - `high` 方向：`value >= crit` ⇒ `crit`，`value >= warn` ⇒ `warn`，否则 `pass`（边界包含）。
+  - `low` 方向：`value <= crit` ⇒ `crit`，`value <= warn` ⇒ `warn`，否则 `pass`（边界包含）。
+  - 总状态优先级：`crit` > `warn` > `pass` > `unassessed`（`unassessed` 不下拉其它字段的严重度）。
+  - `parsed_values` 中的未声明字段被忽略；声明字段缺失 → 该字段 `crit`，总状态被下拉到 `crit`。
+- **使用边界**：本模块**仅**做解析与评估，不负责 `inspection_script` 实际执行、SSH 连接、结果持久化、消息推送；后续 PR 接 `run_inspection_script` / `inspection_run` `@tool` 时应消费本模块三个公开 API。
 
 ### 强白名单契约（2026-07-15 落地）
 

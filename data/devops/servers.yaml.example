@@ -30,13 +30,29 @@
 #                                 - kv  ：key=value 行列表（如 key1=val1\nkey2=val2）。
 #                                 - csv ：CSV 行（首行表头）。
 #                                 - raw ：明文回显，不解析。
+#   * inspection_fields (list[dict])：巡检字段规则（2026-07-22 新增），每个 dict 形如：
+#                                 {
+#                                   key: str 必填,英文键,必须与脚本输出 JSON 的字段名一致,
+#                                              且在同一节点内唯一;
+#                                   name_zh: str 必填,中文展示名;
+#                                   unit: str 可选,缺省 "";空单位时填 "" 不要写 null;
+#                                   direction: "high" | "low" | "ignore" 必填;
+#                                              high 时值越大越坏 (value >= warn/crit 命中等级);
+#                                              low  时值越小越坏 (value <= warn/crit 命中等级);
+#                                              ignore 只展示,不参与阈值评估,warn/crit 必须为 null;
+#                                   warn: number 可选,high 时 warn <= crit,low 时 warn >= crit;
+#                                   crit: number 可选,必须 >=0;ignore 方向时必须填 null。
+#                                 }
+#                                 字段顺序决定评估顺序;同一节点 key 重复会被规范化拒绝,该条记 failed。
+#                                 缺省 / 非法结构 (NULL / 字符串 / 数字) 时按 [] 处理,不阻断整体扫描。
 #
 # 触发方式：
 #   * 在「定时任务管理」->「服务器扫描入库」Tab 点击「立即扫描」；
 #   * 或调用 POST /api/admin/devops-servers/scan（admin 鉴权）。
 #
 # 巡检脚本说明：
-#   * 本字段只入库；不自动触发执行。后续由 run_inspection_script / inspection_run tool 消费。
+#   * 巡检脚本由后端 run_server_ops 按 parser 解析（json / kv / csv / raw），
+#     再按 inspection_fields 阈值规则（high / low / ignore）评估生成报告。
 #   * 脚本通过 SSHTools 投递到目标机器，按 server_type 自动选择 bash -c 或 powershell -Command。
 #   * 黑/白名单不约束 inspection_script（运维巡检脚本需要执行多种命令）；
 #     如需约束，由 tool 内部按 parser 校验输出格式。
@@ -79,6 +95,12 @@ servers:
         "$DISK" "$MEM" "$CPU_IDLE" "$LOAD"
     # 解析器：json（脚本最后一行必须是合法 JSON 对象 / 数组）
     inspection_parser: json
+    # 巡检字段规则（2026-07-22 新增）：key 与脚本输出的 JSON 字段一一对应。
+    inspection_fields:
+      - {key: disk_used_pct, name_zh: 磁盘使用率, unit: '%', direction: high, warn: 80, crit: 90}
+      - {key: mem_used_pct, name_zh: 内存使用率, unit: '%', direction: high, warn: 80, crit: 90}
+      - {key: cpu_idle_pct, name_zh: CPU 空闲率, unit: '%', direction: low, warn: 20, crit: 10}
+      - {key: load_1m, name_zh: 1 分钟平均负载, unit: '', direction: high, warn: 4.0, crit: 8.0}
 
   # ===== Windows 巡检服务器示例 =====
   - business_name: dev-windows-01
@@ -106,3 +128,9 @@ servers:
          uptime_hours = [math]::Round($uptime.TotalHours, 1) } | ConvertTo-Json -Compress
     # 解析器：json（管道 ConvertTo-Json -Compress 输出单行 JSON）
     inspection_parser: json
+    # 巡检字段规则（2026-07-22 新增）：Windows 磁盘仅采 C 盘，CPU 改用使用率，uptime 仅展示。
+    inspection_fields:
+      - {key: disk_used_pct, name_zh: C 盘使用率, unit: '%', direction: high, warn: 80, crit: 90}
+      - {key: mem_used_pct, name_zh: 内存使用率, unit: '%', direction: high, warn: 80, crit: 90}
+      - {key: cpu_used_pct, name_zh: CPU 使用率, unit: '%', direction: high, warn: 80, crit: 95}
+      - {key: uptime_hours, name_zh: 系统运行时间, unit: 小时, direction: ignore, warn: null, crit: null}

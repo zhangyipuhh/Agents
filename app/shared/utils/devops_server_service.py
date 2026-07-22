@@ -35,6 +35,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 from cryptography.fernet import Fernet, InvalidToken
 
+from app.shared.utils.inspection.parser import normalize_inspection_fields
+
 
 def _ensure_list(value: Any) -> List[Any]:
     """防御性还原 JSONB 列值。
@@ -53,6 +55,46 @@ def _ensure_list(value: Any) -> List[Any]:
     Returns:
         List[Any]: 始终返回 list 类型
     """
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        if isinstance(parsed, list):
+            return parsed
+        if isinstance(parsed, dict):
+            return [parsed]
+        return []
+    return []
+
+
+def _inspection_fields_to_list(value: Any) -> List[Any]:
+    """把 DB 行里的 ``inspection_fields`` 字段稳健还原为 list[dict]。
+
+    asyncpg jsonb codec 在某些配置下会返回原始 JSON 字符串,
+    上层 ``normalize_inspection_fields`` 又只接受 ``Sequence[Any]``,
+    因此在调用前做一次兼容还原：
+      - None / 缺失（``KeyError`` / 不存在属性） → ``[]``，不抛异常。
+      - list → 原样返回（递归规范化前交给 normalize）。
+      - dict → ``[dict]`` 单元素 list。
+      - str → ``json.loads`` 还原；JSON 解析结果为 list/dict/其它分别处理。
+      - 其它类型 → ``[]``（兜底，warn 后由上层继续）。
+      - 空字符串 / 非法 JSON / 解析为基本类型 → ``[]``，**不**误判合法 list 字符串。
+        判定合法 list 字符串：``json.loads`` 成功 + 解析结果为 list 且非空。
+
+    Args:
+        value: DB 行的 ``inspection_fields`` 列值
+
+    Returns:
+        List[Any]: 始终返回 list；上层会进一步通过
+        :func:`normalize_inspection_fields` 强类型化。
+    """
+    if value is None:
+        return []
     if isinstance(value, list):
         return value
     if isinstance(value, dict):
@@ -180,7 +222,7 @@ class DevOpsServerService:
         rows = await self.db.fetch(
             "SELECT id, business_name, ip, port, username, password_encrypted, "
             "server_type, blacklist, whitelist, "
-            "inspection_script, inspection_parser, "  # 2026-07-22 新增
+            "inspection_script, inspection_parser, inspection_fields, "  # 2026-07-22 新增
             "created_at, updated_at "
             "FROM devops_servers ORDER BY id"
         )
@@ -209,6 +251,29 @@ class DevOpsServerService:
             if parser_v not in ("json", "kv", "csv", "raw"):
                 parser_v = "json"
             data["inspection_parser"] = parser_v
+            # inspection_fields 兼容 asyncpg jsonb codec 失效:先还原 list,
+            # 再调 normalize;NULL/缺失/非法结构一律回退 [] 并 warning,不阻断。
+            raw_fields = _inspection_fields_to_list(data.get("inspection_fields"))
+            try:
+                rules = normalize_inspection_fields(raw_fields)
+            except ValueError as exc:
+                logger.warning(
+                    "[devops_server_service] invalid inspection_fields for %s: %s; fallback to empty",
+                    business_name,
+                    exc,
+                )
+                rules = []
+            data["inspection_fields"] = [
+                {
+                    "key": r.key,
+                    "name_zh": r.name_zh,
+                    "unit": r.unit,
+                    "direction": r.direction,
+                    "warn": r.warn,
+                    "crit": r.crit,
+                }
+                for r in rules
+            ]
             new_cache[business_name] = data
         # Bug-6 修复:cache 替换原子化,读路径快照一致
         async with self._write_lock:
@@ -246,6 +311,7 @@ class DevOpsServerService:
         "whitelist",
         "inspection_script",
         "inspection_parser",
+        "inspection_fields",  # 2026-07-22 新增：与 inspection_script / parser 一并返回
     )
 
     def get_server_detail(self, server_id: int) -> Optional[Dict[str, Any]]:
@@ -314,6 +380,11 @@ class DevOpsServerService:
             # 2026-07-22 新增:巡检脚本与解析器（仅供 SSHTools 内部消费,不入公开列表）
             "inspection_script": rec.get("inspection_script"),
             "inspection_parser": rec.get("inspection_parser") or "json",
+            "inspection_fields": [
+                {"key": r.key, "name_zh": r.name_zh, "unit": r.unit,
+                 "direction": r.direction, "warn": r.warn, "crit": r.crit}
+                for r in normalize_inspection_fields(rec.get("inspection_fields") or [])
+            ],
         }
 
     # ------------------------------------------------------------------
@@ -416,6 +487,7 @@ class DevOpsServerService:
                     "whitelist": normalized["whitelist"],
                     "inspection_script": normalized["inspection_script"],  # 2026-07-22 新增
                     "inspection_parser": normalized["inspection_parser"],  # 2026-07-22 新增
+                    "inspection_fields": normalized["inspection_fields"],
                     "created_at": row_data.get("created_at"),
                     "updated_at": row_data.get("updated_at"),
                 }
@@ -521,6 +593,23 @@ class DevOpsServerService:
         if not inspection_parser:
             inspection_parser = "json"
 
+        # inspection_fields：严格校验并转换为 JSON 可序列化字典列表
+        # 先用 _inspection_fields_to_list 兼容 yaml 直接传入字符串/null/字典等异常形态
+        # (正常 YAML list 也会被原样返回);再调 normalize_inspection_fields 强类型化。
+        raw_fields = _inspection_fields_to_list(entry.get("inspection_fields", []))
+        rules = normalize_inspection_fields(raw_fields)
+        inspection_fields = [
+            {
+                "key": r.key,
+                "name_zh": r.name_zh,
+                "unit": r.unit,
+                "direction": r.direction,
+                "warn": r.warn,
+                "crit": r.crit,
+            }
+            for r in rules
+        ]
+
         return {
             "business_name": business_name,
             "ip": ip,
@@ -532,6 +621,7 @@ class DevOpsServerService:
             "whitelist": [str(x) for x in whitelist],
             "inspection_script": inspection_script,
             "inspection_parser": inspection_parser,
+            "inspection_fields": inspection_fields,
         }
 
     async def _upsert_one_returning(
@@ -564,10 +654,10 @@ class DevOpsServerService:
             "INSERT INTO devops_servers "
             "(business_name, ip, port, username, password_encrypted, "
             " server_type, blacklist, whitelist, "
-            " inspection_script, inspection_parser, "  # 2026-07-22 新增
+            " inspection_script, inspection_parser, inspection_fields, "
             " created_at, updated_at) "
             "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, "
-            "        $9, $10, "  # 2026-07-22 新增: inspection_script / parser
+            "        $9, $10, $11::jsonb, "
             "        NOW(), NOW()) "
             "ON CONFLICT (business_name) DO UPDATE SET "
             "ip = EXCLUDED.ip, port = EXCLUDED.port, username = EXCLUDED.username, "
@@ -575,6 +665,7 @@ class DevOpsServerService:
             "blacklist = EXCLUDED.blacklist, whitelist = EXCLUDED.whitelist, "
             "inspection_script = EXCLUDED.inspection_script, "  # 2026-07-22 新增
             "inspection_parser = EXCLUDED.inspection_parser, "  # 2026-07-22 新增
+            "inspection_fields = EXCLUDED.inspection_fields, "
             "updated_at = NOW() "
             "RETURNING *, (xmax = 0) AS inserted",
             business_name,
@@ -587,6 +678,7 @@ class DevOpsServerService:
             json.dumps(normalized["whitelist"]),
             normalized["inspection_script"],  # 2026-07-22 新增
             normalized["inspection_parser"],  # 2026-07-22 新增
+            json.dumps(normalized["inspection_fields"], ensure_ascii=False),
         )
         inserted = bool(row and row.get("inserted"))
         return inserted, row

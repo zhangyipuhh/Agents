@@ -2729,6 +2729,14 @@ CREATE TABLE IF NOT EXISTS devops_servers (
     whitelist          JSONB        DEFAULT '[]'::jsonb,
     created_at         TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
     updated_at         TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+    -- 2026-07-22 新增：巡检脚本 / 解析器 / 字段规则列。
+    -- inspection_fields JSONB 元素定义为 list[dict]，每个 dict 形如：
+    --   {key, name_zh, unit, direction, warn, crit}
+    -- 详细字段契约见 app/shared/utils/inspection/parser.py::normalize_inspection_fields
+    -- 与 data/devops/servers.yaml.example 注释。
+    inspection_script TEXT NULL,
+    inspection_parser VARCHAR(16) DEFAULT 'json',
+    inspection_fields JSONB DEFAULT '[]'::jsonb,
     CONSTRAINT devops_servers_server_type_chk CHECK (server_type IN ('linux', 'windows')),
     CONSTRAINT devops_servers_port_range_chk  CHECK (port BETWEEN 1 AND 65535)
 );
@@ -2746,8 +2754,13 @@ ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS updated_at         TIMESTAMP
 -- 18.2 巡检脚本（2026-07-22 新增）
 -- inspection_script TEXT: 固定巡检脚本(bash / powershell，YAML | 字面块)
 -- inspection_parser VARCHAR(16): 解析器类型，默认 'json'；可选 'kv' | 'csv' | 'raw'
+-- inspection_fields JSONB: list[dict]，每条规则 schema：
+--   {key, name_zh, unit, direction, warn, crit}
+-- 契约详见 app/shared/utils/inspection/parser.py::normalize_inspection_fields。
+-- ALTER TABLE ADD COLUMN IF NOT EXISTS 全部使用，可重复执行（幂等）。
 ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS inspection_script TEXT DEFAULT NULL;
 ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS inspection_parser VARCHAR(16) DEFAULT 'json';
+ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS inspection_fields JSONB DEFAULT '[]'::jsonb;
 -- CHECK 约束：单独 ALTER，避免与已有数据冲突；IF NOT EXISTS 兼容老 PG
 DO $$
 BEGIN

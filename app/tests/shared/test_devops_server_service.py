@@ -20,7 +20,8 @@ DevOpsServerService 单元测试（2026-07-15 新增）
 """
 from __future__ import annotations
 
-import os
+import os
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1210,9 +1211,43 @@ def test_server_exists_cache_miss_consults_db(tmp_yaml):
     assert asyncio.run(svc.server_exists(43)) is False
 
 
-# ----------------------------------------------------------------------
-# 11. 巡检脚本字段 inspection_script / inspection_parser（2026-07-22 新增）
-# ----------------------------------------------------------------------
+## ----------------------------------------------------------------------
+# 12. inspection_fields 全链路
+# ----------------------------------------------------------------------
+
+
+def _inspection_entry():
+    return {"business_name": "alpha", "ip": "10.0.0.1", "username": "root", "password": "x", "server_type": "linux", "inspection_fields": [{"key": "disk_used_pct", "name_zh": "磁盘使用率", "unit": "%", "direction": "high", "warn": 80, "crit": 90}]}
+
+
+def test_normalize_inspection_fields_returns_json_safe_dicts(tmp_yaml):
+    from app.shared.utils.devops_server_service import DevOpsServerService
+    svc = DevOpsServerService(_make_db(), str(tmp_yaml), VALID_FERNET_KEY)
+    result = svc._normalize_entry(_inspection_entry())
+    assert result["inspection_fields"] == [{"key": "disk_used_pct", "name_zh": "磁盘使用率", "unit": "%", "direction": "high", "warn": 80.0, "crit": 90.0}]
+    assert json.dumps(result["inspection_fields"], ensure_ascii=False)
+
+
+@pytest.mark.parametrize("bad", [
+    [{"key": "x", "name_zh": "X", "direction": "bad", "warn": 1, "crit": 2}],
+    [{"key": "x", "name_zh": "X", "direction": "high", "warn": 2, "crit": 1}],
+    [{"key": "x", "name_zh": "X", "direction": "high", "warn": "1", "crit": 2}],
+    [{"key": "x", "name_zh": "X", "direction": "high", "warn": True, "crit": 2}],
+    [{"key": "x", "name_zh": "X", "direction": "high", "warn": 1, "crit": 2}, {"key": "x", "name_zh": "Y", "direction": "high", "warn": 1, "crit": 2}],
+])
+def test_normalize_inspection_fields_rejects_invalid_rules(tmp_yaml, bad):
+    from app.shared.utils.devops_server_service import DevOpsServerService
+    svc = DevOpsServerService(_make_db(), str(tmp_yaml), VALID_FERNET_KEY)
+    entry = _inspection_entry(); entry["inspection_fields"] = bad
+    with pytest.raises(ValueError):
+        svc._normalize_entry(entry)
+
+
+def test_normalize_inspection_fields_defaults_empty(tmp_yaml):
+    from app.shared.utils.devops_server_service import DevOpsServerService
+    svc = DevOpsServerService(_make_db(), str(tmp_yaml), VALID_FERNET_KEY)
+    entry = _inspection_entry(); entry.pop("inspection_fields")
+    assert svc._normalize_entry(entry)["inspection_fields"] == []
 
 
 def test_normalize_accepts_inspection_script_str(tmp_yaml):
@@ -1621,3 +1656,511 @@ def test_get_server_detail_missing_returns_none():
     )
     svc._cache = {}
     assert svc.get_server_detail(9999) is None
+
+
+# ----------------------------------------------------------------------
+# 13. inspection_fields 全链路（2026-07-22 新增）
+#     YAML → 规范化 → JSONB → cache → internal config/detail
+# ----------------------------------------------------------------------
+
+
+def _stub_returning_row(name="alpha", fields=None, parser="json", script="echo hi"):
+    """构造一个 upsert ``RETURNING`` 行 stub，包含 inspection_* 列。"""
+    from cryptography.fernet import Fernet
+    encrypted = Fernet(VALID_FERNET_KEY.encode("ascii")).encrypt(b"p")
+    row = {
+        "id": 1,
+        "business_name": name,
+        "ip": "10.0.0.1",
+        "port": 22,
+        "username": "root",
+        "password_encrypted": encrypted,
+        "server_type": "linux",
+        "blacklist": [],
+        "whitelist": [],
+        "inspection_script": script,
+        "inspection_parser": parser,
+        "inspection_fields": json.dumps(fields if fields is not None else [], ensure_ascii=False),
+        "created_at": None,
+        "updated_at": "2026-07-22",
+        "inserted": True,
+    }
+    return row
+
+
+def test_normalize_inspection_fields_full_linux_windows_payload(tmp_yaml):
+    """Linux + Windows 完整 inspection_fields payload 都能被 normalize 接受。
+
+    验证 YAML 当前契约（4 条规则 / 节点）的最终 JSON 可序列化结构。
+
+    Args:
+        tmp_yaml: 临时 yaml 路径
+
+    Returns:
+        None
+    """
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    svc = DevOpsServerService(_make_db(), str(tmp_yaml), VALID_FERNET_KEY)
+    linux = [
+        {"key": "disk_used_pct", "name_zh": "磁盘使用率", "unit": "%", "direction": "high", "warn": 80, "crit": 90},
+        {"key": "mem_used_pct", "name_zh": "内存使用率", "unit": "%", "direction": "high", "warn": 80, "crit": 90},
+        {"key": "cpu_idle_pct", "name_zh": "CPU 空闲率", "unit": "%", "direction": "low", "warn": 20, "crit": 10},
+        {"key": "load_1m", "name_zh": "1 分钟平均负载", "unit": "", "direction": "high", "warn": 4.0, "crit": 8.0},
+    ]
+    windows = [
+        {"key": "disk_used_pct", "name_zh": "C 盘使用率", "unit": "%", "direction": "high", "warn": 80, "crit": 90},
+        {"key": "mem_used_pct", "name_zh": "内存使用率", "unit": "%", "direction": "high", "warn": 80, "crit": 90},
+        {"key": "cpu_used_pct", "name_zh": "CPU 使用率", "unit": "%", "direction": "high", "warn": 80, "crit": 95},
+        {"key": "uptime_hours", "name_zh": "系统运行时间", "unit": "小时", "direction": "ignore", "warn": None, "crit": None},
+    ]
+    for payload in (linux, windows):
+        entry = _inspection_entry()
+        entry["inspection_fields"] = payload
+        result = svc._normalize_entry(entry)["inspection_fields"]
+        assert len(result) == 4
+        keys = [r["key"] for r in result]
+        assert keys == [p["key"] for p in payload]
+        # JSON 可序列化（ensure_ascii=False）
+        encoded = json.dumps(result, ensure_ascii=False)
+        assert "磁盘使用率" in encoded or "C 盘使用率" in encoded
+
+
+def test_normalize_inspection_fields_empty_when_missing(tmp_yaml):
+    """inspection_fields 缺失时归一化为空列表，不抛异常。"""
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    svc = DevOpsServerService(_make_db(), str(tmp_yaml), VALID_FERNET_KEY)
+    entry = _inspection_entry()
+    entry.pop("inspection_fields", None)
+    assert svc._normalize_entry(entry)["inspection_fields"] == []
+
+
+@pytest.mark.parametrize("bad", [
+    None,  # NULL
+    "not-json",  # 非法字符串
+    "{not valid}",  # 非法 JSON
+    "42",  # 合法 JSON 但解析为数字
+    "true",  # 合法 JSON 但解析为 bool
+    12345,  # 非 list/dict/str
+    0.5,
+    True,
+])
+def test_inspection_fields_to_list_invalid_returns_empty(bad):
+    """``_inspection_fields_to_list`` 收到 NULL / 缺失 / 非法结构时返回 ``[]``，不抛异常。"""
+    from app.shared.utils.devops_server_service import _inspection_fields_to_list
+    assert _inspection_fields_to_list(bad) == []
+
+
+@pytest.mark.parametrize("good", [
+    [{"key": "k", "name_zh": "n", "unit": "", "direction": "ignore", "warn": None, "crit": None}],
+    '[{"key":"k","name_zh":"n","unit":"","direction":"ignore","warn":null,"crit":null}]',
+    '{"key":"k","name_zh":"n","unit":"","direction":"ignore","warn":null,"crit":null}',
+    [],  # 空 list（合法）
+    "[]",  # 空 JSON list（合法）
+])
+def test_inspection_fields_to_list_legal_returns_list(good):
+    """``_inspection_fields_to_list`` 收到合法 list / JSON list 字符串 / JSON dict 字符串时正确还原。"""
+    from app.shared.utils.devops_server_service import _inspection_fields_to_list
+    out = _inspection_fields_to_list(good)
+    assert isinstance(out, list)
+    if isinstance(good, list):
+        # 入参本身就是 list（list/dict/空 list），应原样返回
+        assert out == good
+    elif good.startswith("[") and good != "[]":
+        # 非空 JSON list 字符串 → 解析为单元素 list
+        assert len(out) == 1
+    elif good == "[]":
+        # 空 JSON list 字符串 → 空 list
+        assert out == []
+    else:
+        # JSON dict 字符串 → 单元素 list[dict]
+        assert len(out) == 1
+        assert isinstance(out[0], dict)
+
+
+def test_inspection_fields_to_list_does_not_misclassify_legit_list_string():
+    """``_inspection_fields_to_list`` 收到合法 list 字符串时不能误回退为 ``[]``。"""
+    from app.shared.utils.devops_server_service import _inspection_fields_to_list
+    legal = '[{"key": "x", "direction": "ignore", "warn": null, "crit": null}]'
+    out = _inspection_fields_to_list(legal)
+    assert len(out) == 1
+    assert out[0]["key"] == "x"
+
+
+def test_preload_all_inspection_fields_as_list(tmp_yaml):
+    """``preload_all``: inspection_fields 是合法 list（asyncpg jsonb codec 正常）时缓存里存的是强类型 list[dict]。"""
+    import asyncio
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    db = _make_db()
+    db.fetch.return_value = [
+        {
+            "id": 1,
+            "business_name": "alpha",
+            "ip": "10.0.0.1",
+            "port": 22,
+            "username": "root",
+            "password_encrypted": b"x",
+            "server_type": "linux",
+            "blacklist": [],
+            "whitelist": [],
+            "inspection_script": "echo probe",
+            "inspection_parser": "json",
+            "inspection_fields": [
+                {"key": "disk_used_pct", "name_zh": "磁盘使用率", "unit": "%",
+                 "direction": "high", "warn": 80, "crit": 90},
+            ],
+            "created_at": None,
+            "updated_at": None,
+        }
+    ]
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    asyncio.run(svc.preload_all())
+    rules = svc._cache["alpha"]["inspection_fields"]
+    assert isinstance(rules, list)
+    assert len(rules) == 1
+    assert rules[0]["key"] == "disk_used_pct"
+    assert rules[0]["warn"] == 80.0
+    assert rules[0]["crit"] == 90.0
+
+
+def test_preload_all_inspection_fields_as_json_string(tmp_yaml):
+    """``preload_all``: inspection_fields 是 JSON 字符串（codec 失效）时还原为 list[dict]。"""
+    import asyncio
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    db = _make_db()
+    db.fetch.return_value = [
+        {
+            "id": 1,
+            "business_name": "alpha",
+            "ip": "10.0.0.1",
+            "port": 22,
+            "username": "root",
+            "password_encrypted": b"x",
+            "server_type": "linux",
+            "blacklist": [],
+            "whitelist": [],
+            "inspection_script": "echo probe",
+            "inspection_parser": "json",
+            "inspection_fields": json.dumps(
+                [
+                    {"key": "mem_used_pct", "name_zh": "内存使用率", "unit": "%",
+                     "direction": "high", "warn": 80, "crit": 90},
+                ],
+                ensure_ascii=False,
+            ),
+            "created_at": None,
+            "updated_at": None,
+        }
+    ]
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    asyncio.run(svc.preload_all())
+    rules = svc._cache["alpha"]["inspection_fields"]
+    assert len(rules) == 1
+    assert rules[0]["key"] == "mem_used_pct"
+
+
+def test_preload_all_inspection_fields_null_falls_back_to_empty(tmp_yaml):
+    """``preload_all``: inspection_fields 为 NULL 时缓存里是空 list，不抛异常。"""
+    import asyncio
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    db = _make_db()
+    db.fetch.return_value = [
+        {
+            "id": 1,
+            "business_name": "alpha",
+            "ip": "10.0.0.1",
+            "port": 22,
+            "username": "root",
+            "password_encrypted": b"x",
+            "server_type": "linux",
+            "blacklist": [],
+            "whitelist": [],
+            "inspection_script": "echo probe",
+            "inspection_parser": "json",
+            "inspection_fields": None,
+            "created_at": None,
+            "updated_at": None,
+        }
+    ]
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    asyncio.run(svc.preload_all())
+    assert svc._cache["alpha"]["inspection_fields"] == []
+
+
+def test_preload_all_inspection_fields_invalid_json_falls_back_to_empty(tmp_yaml):
+    """``preload_all``: inspection_fields 是非法 JSON 字符串时回退 ``[]`` 并 warning，不阻断。"""
+    import asyncio
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    db = _make_db()
+    db.fetch.return_value = [
+        {
+            "id": 1,
+            "business_name": "alpha",
+            "ip": "10.0.0.1",
+            "port": 22,
+            "username": "root",
+            "password_encrypted": b"x",
+            "server_type": "linux",
+            "blacklist": [],
+            "whitelist": [],
+            "inspection_script": "echo probe",
+            "inspection_parser": "json",
+            "inspection_fields": "{invalid json}",
+            "created_at": None,
+            "updated_at": None,
+        }
+    ]
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    asyncio.run(svc.preload_all())
+    assert svc._cache["alpha"]["inspection_fields"] == []
+
+
+def test_preload_all_inspection_fields_missing_key_falls_back_to_empty(tmp_yaml):
+    """``preload_all``: DB 行 inspection_fields 列缺失时回退 ``[]``（按缺失处理）。"""
+    import asyncio
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    db = _make_db()
+    db.fetch.return_value = [
+        {
+            "id": 1,
+            "business_name": "alpha",
+            "ip": "10.0.0.1",
+            "port": 22,
+            "username": "root",
+            "password_encrypted": b"x",
+            "server_type": "linux",
+            "blacklist": [],
+            "whitelist": [],
+            "inspection_script": "echo probe",
+            "inspection_parser": "json",
+            "created_at": None,
+            "updated_at": None,
+            # 注意:没有 inspection_fields 键
+        }
+    ]
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    asyncio.run(svc.preload_all())
+    assert svc._cache["alpha"]["inspection_fields"] == []
+
+
+def test_preload_all_inspection_fields_invalid_structure_falls_back_to_empty(tmp_yaml):
+    """``preload_all``: inspection_fields 是合法 JSON 但每条 element 不是 dict 时回退 ``[]``。"""
+    import asyncio
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    db = _make_db()
+    db.fetch.return_value = [
+        {
+            "id": 1,
+            "business_name": "alpha",
+            "ip": "10.0.0.1",
+            "port": 22,
+            "username": "root",
+            "password_encrypted": b"x",
+            "server_type": "linux",
+            "blacklist": [],
+            "whitelist": [],
+            "inspection_script": "echo probe",
+            "inspection_parser": "json",
+            "inspection_fields": ["not-a-dict"],
+            "created_at": None,
+            "updated_at": None,
+        }
+    ]
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    asyncio.run(svc.preload_all())
+    assert svc._cache["alpha"]["inspection_fields"] == []
+
+
+def test_scan_and_upsert_inspection_fields_serialized_as_jsonb(tmp_yaml):
+    """``scan_and_upsert`` SQL args[11] 是 ``json.dumps(inspection_fields, ensure_ascii=False)``。"""
+    import asyncio
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    db = _make_db()
+    db.fetchrow.side_effect = [_stub_returning_row(
+        fields=[
+            {"key": "disk_used_pct", "name_zh": "磁盘使用率", "unit": "%",
+             "direction": "high", "warn": 80, "crit": 90},
+            {"key": "mem_used_pct", "name_zh": "内存使用率", "unit": "%",
+             "direction": "high", "warn": 80, "crit": 90},
+            {"key": "cpu_idle_pct", "name_zh": "CPU 空闲率", "unit": "%",
+             "direction": "low", "warn": 20, "crit": 10},
+            {"key": "load_1m", "name_zh": "1 分钟平均负载", "unit": "",
+             "direction": "high", "warn": 4.0, "crit": 8.0},
+        ],
+    )]
+    tmp_yaml.parent.mkdir(parents=True, exist_ok=True)
+    tmp_yaml.write_text(
+        "servers:\n"
+        "  - business_name: alpha\n"
+        "    ip: 10.0.0.1\n"
+        "    port: 22\n"
+        "    username: root\n"
+        "    password: p\n"
+        "    server_type: linux\n"
+        "    inspection_fields:\n"
+        "      - {key: disk_used_pct, name_zh: 磁盘使用率, unit: '%', direction: high, warn: 80, crit: 90}\n"
+        "      - {key: mem_used_pct, name_zh: 内存使用率, unit: '%', direction: high, warn: 80, crit: 90}\n"
+        "      - {key: cpu_idle_pct, name_zh: CPU 空闲率, unit: '%', direction: low, warn: 20, crit: 10}\n"
+        "      - {key: load_1m, name_zh: 1 分钟平均负载, unit: '', direction: high, warn: 4.0, crit: 8.0}\n",
+        encoding="utf-8",
+    )
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    stats = asyncio.run(svc.scan_and_upsert())
+    assert stats["inserted"] == 1
+
+    # 第 11 个参数是 JSON 字符串
+    args = db.fetchrow.await_args.args
+    assert isinstance(args[11], str)
+    parsed = json.loads(args[11])
+    assert isinstance(parsed, list)
+    assert len(parsed) == 4
+    keys = [r["key"] for r in parsed]
+    assert keys == ["disk_used_pct", "mem_used_pct", "cpu_idle_pct", "load_1m"]
+    # ensure_ascii=False 时中文应保持原字符
+    assert "磁盘使用率" in args[11]
+
+
+def test_scan_and_upsert_old_args9_and_args10_unchanged(tmp_yaml):
+    """旧 args[9] (inspection_script) / args[10] (inspection_parser) 断言继续通过。"""
+    import asyncio
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    db = _make_db()
+    db.fetchrow.side_effect = [_stub_returning_row(script="echo probe", parser="json", fields=[])]
+    tmp_yaml.parent.mkdir(parents=True, exist_ok=True)
+    tmp_yaml.write_text(
+        "servers:\n"
+        "  - business_name: alpha\n"
+        "    ip: 10.0.0.1\n"
+        "    port: 22\n"
+        "    username: root\n"
+        "    password: p\n"
+        "    server_type: linux\n"
+        "    inspection_script: |\n"
+        "      echo probe\n"
+        "    inspection_parser: json\n",
+        encoding="utf-8",
+    )
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    asyncio.run(svc.scan_and_upsert())
+    args = db.fetchrow.await_args.args
+    assert args[9] == "echo probe"
+    assert args[10] == "json"
+
+
+def test_cache_after_scan_and_upsert_contains_inspection_fields(tmp_yaml):
+    """``scan_and_upsert`` 后缓存里存的是强类型 list[dict]（来自 normalized 入参）。"""
+    import asyncio
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    db = _make_db()
+    db.fetchrow.side_effect = [_stub_returning_row(fields=[
+        {"key": "k1", "name_zh": "项1", "unit": "%", "direction": "high", "warn": 80, "crit": 90},
+        {"key": "k2", "name_zh": "项2", "unit": "", "direction": "ignore", "warn": None, "crit": None},
+    ])]
+    tmp_yaml.parent.mkdir(parents=True, exist_ok=True)
+    tmp_yaml.write_text(
+        "- business_name: alpha\n"
+        "  ip: 10.0.0.1\n"
+        "  port: 22\n"
+        "  username: root\n"
+        "  password: p\n"
+        "  server_type: linux\n"
+        "  inspection_fields:\n"
+        "    - {key: k1, name_zh: 项1, unit: '%', direction: high, warn: 80, crit: 90}\n"
+        "    - {key: k2, name_zh: 项2, unit: '', direction: ignore, warn: null, crit: null}\n",
+        encoding="utf-8",
+    )
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    asyncio.run(svc.scan_and_upsert())
+    cached = svc._cache["alpha"]["inspection_fields"]
+    assert isinstance(cached, list)
+    assert len(cached) == 2
+    assert cached[0]["key"] == "k1"
+    assert cached[1]["direction"] == "ignore"
+    # JSON 可序列化
+    json.dumps(cached, ensure_ascii=False)
+
+
+def test_get_connection_config_returns_normalized_inspection_fields(tmp_yaml):
+    """``get_connection_config`` 返回值里 ``inspection_fields`` 是 list[dict]，与 ``cache`` 一致。"""
+    import asyncio
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    db = _make_db()
+    db.fetch.return_value = [
+        {
+            "id": 1,
+            "business_name": "alpha",
+            "ip": "10.0.0.1",
+            "port": 22,
+            "username": "root",
+            "password_encrypted": Fernet(VALID_FERNET_KEY.encode("ascii")).encrypt(b"p"),
+            "server_type": "linux",
+            "blacklist": [],
+            "whitelist": [],
+            "inspection_script": "echo a",
+            "inspection_parser": "json",
+            "inspection_fields": [
+                {"key": "disk_used_pct", "name_zh": "磁盘使用率", "unit": "%",
+                 "direction": "high", "warn": 80, "crit": 90},
+            ],
+            "created_at": None,
+            "updated_at": None,
+        }
+    ]
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    asyncio.run(svc.preload_all())
+    cfg = svc.get_connection_config("alpha")
+    fields = cfg["inspection_fields"]
+    assert isinstance(fields, list)
+    assert len(fields) == 1
+    assert fields[0]["key"] == "disk_used_pct"
+    # JSON 可序列化
+    json.dumps(fields, ensure_ascii=False)
+
+
+def test_get_server_detail_includes_inspection_fields():
+    """``get_server_detail`` 返回值白名单包含 ``inspection_fields``（与 ``inspection_script`` / ``inspection_parser`` 并列）。"""
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    db = _make_db()
+    svc = DevOpsServerService(
+        db=db, config_path="unused.yaml", credential_key=VALID_FERNET_KEY
+    )
+    svc._cache = {
+        "alpha": {
+            "id": 11,
+            "business_name": "alpha",
+            "server_type": "linux",
+            "updated_at": "2026-07-22",
+            "whitelist": ["ls"],
+            "inspection_script": "echo a",
+            "inspection_parser": "json",
+            "inspection_fields": [
+                {"key": "disk_used_pct", "name_zh": "磁盘使用率", "unit": "%",
+                 "direction": "high", "warn": 80.0, "crit": 90.0},
+            ],
+            "ip": "10.0.0.99",
+            "port": 22,
+            "username": "root",
+            "password_encrypted": b"x",
+            "blacklist": ["rm"],
+        }
+    }
+    detail = svc.get_server_detail(11)
+    assert detail is not None
+    assert "inspection_fields" in detail
+    assert detail["inspection_fields"][0]["key"] == "disk_used_pct"
+    # 仍然不外泄 ip / password / blacklist
+    assert "ip" not in detail
+    assert "password_encrypted" not in detail
+    assert "blacklist" not in detail

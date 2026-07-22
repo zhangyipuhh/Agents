@@ -4,12 +4,15 @@
 
 覆盖点：
     * ``ServerOpsItem`` / ``ServerOpsReport`` dataclass 字段与 summary / markdown /
-      dict 输出契约；
+      dict 输出契约（含 4 项巡检计数 + 巡检状态 / 指标判定双尾列）；
     * ``resolve_server_list`` 缺失 / 空 / None / 字符串 / 含数字 / 含 null /
       含空字符串各种边界的解析与抛错；
     * ``run_server_ops`` 对 devops_server_service None、空 server_list 短路、
       全通过、单条失败不中断（含 paramiko.AuthenticationException 与未配置
-      ``inspection_script`` skipped）以及异步并发行为。
+      ``inspection_script`` skipped）以及异步并发行为；
+    * 解析 / 评估阶段异常分级与字段透传契约（success=False 不解析 stdout；
+      配置 / execute_script 异常走 crit；解析评估异常透传 stdout + exit /
+      stderr / duration；评估 crit 不改 success 执行语义）。
 """
 import asyncio
 import time
@@ -226,7 +229,7 @@ async def test_run_server_ops_all_pass(monkeypatch):
     }
 
     def fake_execute_script(cfg, script, timeout):
-        return SSHExecResult(success=True, stdout=script.strip() + " -> ok", stderr="", exit_code=0)
+        return SSHExecResult(success=True, stdout='{"ok": true}', stderr="", exit_code=0)
 
     monkeypatch.setattr("app.scripts.server_ops.execute_script", fake_execute_script)
 
@@ -251,7 +254,7 @@ async def test_run_server_ops_missing_inspection_script_marks_skipped(monkeypatc
 
     def fake_execute_script(cfg, script, timeout):
         execute_script_calls.append(cfg.get("ip", ""))
-        return SSHExecResult(success=True, stdout="ok", stderr="", exit_code=0)
+        return SSHExecResult(success=True, stdout='{"ok": true}', stderr="", exit_code=0)
 
     monkeypatch.setattr("app.scripts.server_ops.execute_script", fake_execute_script)
 
@@ -290,7 +293,7 @@ async def test_run_server_ops_preserves_input_order():
     """``items`` 顺序与 ``server_list`` 输入顺序一致（与 api_check 对仗的契约）。"""
     # execute_script 用 IP 前缀判断：A/B/C/D 全部返回 success
     def fake_execute_script(cfg, script, timeout):
-        return SSHExecResult(success=True, stdout="ok", stderr="", exit_code=0)
+        return SSHExecResult(success=True, stdout='{"ok": true}', stderr="", exit_code=0)
 
     import app.scripts.server_ops as server_ops_module
     original = server_ops_module.execute_script
@@ -314,6 +317,23 @@ async def test_run_server_ops_preserves_input_order():
 
 
 @pytest.mark.asyncio
+async def test_run_server_ops_parses_json_inspection_and_counts_status(monkeypatch):
+    """JSON 输出应解析字段并汇总巡检状态。"""
+    monkeypatch.setattr(
+        "app.scripts.server_ops.execute_script",
+        lambda *_: SSHExecResult(True, '{"cpu": 20}', "", 0),
+    )
+    service = _StubDevOpsService({"biz-A": {
+        "inspection_script": "echo json", "inspection_parser": "json",
+        "inspection_fields": [{"key": "cpu", "name_zh": "CPU", "unit": "%", "direction": "high", "warn": 50, "crit": 80}],
+    }})
+    report = await run_server_ops(_make_context_with_service(service, {"server_list": ["biz-A"]}))
+    assert report.items[0].inspection_status == "pass"
+    assert report.items[0].parsed_values == {"cpu": 20}
+    assert report.inspection_passed == 1
+
+
+@pytest.mark.asyncio
 async def test_run_server_ops_does_not_block_event_loop(monkeypatch):
     """``execute_script`` 是同步阻塞调用，必须经 ``asyncio.to_thread`` 包装以让出事件循环。"""
     # 1) 用一个从外部线程记录"事件循环是否被阻塞"的同步函数验证；
@@ -322,7 +342,7 @@ async def test_run_server_ops_does_not_block_event_loop(monkeypatch):
 
     def slow_execute_script(cfg, script, timeout):
         time.sleep(0.2)
-        return SSHExecResult(success=True, stdout="ok", stderr="", exit_code=0)
+        return SSHExecResult(success=True, stdout='{"ok": true}', stderr="", exit_code=0)
 
     original = server_ops_module.execute_script
     server_ops_module.execute_script = slow_execute_script
@@ -368,7 +388,7 @@ async def test_run_server_ops_does_not_block_event_loop(monkeypatch):
 @pytest.mark.asyncio
 async def test_run_server_ops_keyerror_skips_missing_business(monkeypatch):
     """``get_connection_config`` KeyError 时项标记 skipped。"""
-    monkeypatch.setattr("app.scripts.server_ops.execute_script", lambda *_: SSHExecResult(True, "", "", 0))
+    monkeypatch.setattr("app.scripts.server_ops.execute_script", lambda *_: SSHExecResult(True, '{"ok": true}', "", 0))
     service = _StubDevOpsService(
         configs={"biz-A": {"ip": "x", "port": 22, "username": "u", "password": "p", "server_type": "linux",
                             "inspection_script": "echo", "inspection_parser": "json"}},
@@ -387,7 +407,7 @@ async def test_run_server_ops_paramiko_exception_marks_failed_not_interrupt(monk
     def fake_execute_script(cfg, script, timeout):
         if "biz-B" in cfg["ip"]:
             raise RuntimeError("SSHException: connection refused")
-        return SSHExecResult(success=True, stdout="ok", stderr="", exit_code=0)
+        return SSHExecResult(success=True, stdout='{"ok": true}', stderr="", exit_code=0)
     monkeypatch.setattr("app.scripts.server_ops.execute_script", fake_execute_script)
 
     configs = {
@@ -407,3 +427,856 @@ async def test_run_server_ops_paramiko_exception_marks_failed_not_interrupt(monk
     assert failed.success is False
     assert "RuntimeError" in failed.error_message or "SSHException" in failed.error_message
     assert failed.duration_ms is not None
+
+
+# ===========================================================================
+# Task 3: 巡检状态 / 解析评估分支扩展测试
+# ===========================================================================
+
+
+def _inspection_pass_item(name: str = "biz-A") -> ServerOpsItem:
+    """构造一个 inspection_status=pass 的典型 item。"""
+    return ServerOpsItem(
+        business_name=name,
+        success=True,
+        exit_code=0,
+        stdout='{"cpu": 20}',
+        stderr="",
+        duration_ms=42,
+        error_message="",
+        inspection_parser="json",
+        parsed_values={"cpu": 20},
+        field_results=[
+            {
+                "key": "cpu",
+                "name_zh": "CPU 使用率",
+                "unit": "%",
+                "value": 20,
+                "status": "pass",
+                "message": "",
+                "warn": 80.0,
+                "crit": 95.0,
+            }
+        ],
+        inspection_status="pass",
+        inspection_error="",
+    )
+
+
+def test_report_summary_line_includes_inspection_counts():
+    """summary_line 应包含 4 项巡检计数（pass/warn/crit/unassessed），skipped 不计在内。"""
+    items = [
+        _inspection_pass_item("biz-A"),
+        ServerOpsItem(
+            business_name="biz-B",
+            success=True,
+            exit_code=0,
+            stdout='{"cpu": 85}',
+            stderr="",
+            duration_ms=30,
+            inspection_status="warn",
+            inspection_error="",
+            field_results=[{"key": "cpu", "name_zh": "CPU 使用率", "unit": "%",
+                            "value": 85, "status": "warn", "message": "",
+                            "warn": 80.0, "crit": 95.0}],
+        ),
+        ServerOpsItem(
+            business_name="biz-C",
+            success=False,
+            exit_code=2,
+            stdout="boom",
+            stderr="boom",
+            duration_ms=10,
+            error_message="boom",
+            inspection_status="crit",
+            inspection_error="远端巡检脚本执行失败",
+        ),
+        ServerOpsItem(
+            business_name="biz-D",
+            success=True,
+            exit_code=0,
+            stdout='{"cpu": 50}',
+            stderr="",
+            duration_ms=20,
+            inspection_status="unassessed",
+            inspection_error="",
+        ),
+        ServerOpsItem(
+            business_name="biz-E",
+            skipped=True,
+            error_message="未配置巡检脚本（inspection_script 为空）",
+            inspection_status="skipped",
+        ),
+    ]
+    r = ServerOpsReport(items=items)
+    out = r.summary_line()
+    # 旧契约保持（A/B/D 成功 3 台 + 1 skipped，executed=4）
+    assert "server_ops=3/4 passed" in out
+    assert ", 1 skipped" in out
+    assert "biz-A OK(0,42ms)" in out
+    assert "biz-B OK(0,30ms)" in out
+    assert "biz-C FAIL(2,10ms)" in out
+    assert "biz-E SKIPPED" in out
+    # 新增 4 项巡检计数
+    assert "inspection=pass:1,warn:1,crit:1,unassessed:1" in out
+    # 每项巡检状态后缀
+    assert "biz-A OK(0,42ms)/PASS" in out
+    assert "biz-B OK(0,30ms)/WARN" in out
+    assert "biz-C FAIL(2,10ms)/CRIT" in out
+    assert "biz-D OK(0,20ms)/UNASSESSED" in out
+    assert "biz-E SKIPPED/SKIPPED" in out
+
+
+def test_report_summary_line_skipped_not_in_inspection_counts():
+    """skipped 项不计入 inspection 4 项计数（pass/warn/crit/unassessed）。"""
+    items = [
+        _inspection_pass_item("biz-A"),
+        ServerOpsItem(
+            business_name="biz-SKIP",
+            skipped=True,
+            error_message="未配置巡检脚本（inspection_script 为空）",
+            inspection_status="skipped",
+        ),
+    ]
+    r = ServerOpsReport(items=items)
+    out = r.summary_line()
+    # 1 通过 + 1 skipped => 4 项计数都只看 pass
+    assert "inspection=pass:1,warn:0,crit:0,unassessed:0" in out
+    # 旧的 1/1 passed 计数仍然正确
+    assert "server_ops=1/1 passed" in out
+
+
+def test_report_to_dict_includes_inspection_fields_and_counters():
+    """to_dict 顶层增加 4 项巡检计数；item 增加 inspection 字段。"""
+    items = [
+        _inspection_pass_item("biz-A"),
+        ServerOpsItem(
+            business_name="biz-B",
+            success=False,
+            exit_code=2,
+            stdout="x",
+            stderr="x",
+            duration_ms=5,
+            error_message="x",
+            inspection_status="crit",
+            inspection_error="x",
+        ),
+    ]
+    r = ServerOpsReport(items=items)
+    d = r.to_dict()
+    # 顶层新增计数
+    assert d["inspection_passed"] == 1
+    assert d["inspection_warned"] == 0
+    assert d["inspection_critical"] == 1
+    assert d["inspection_unassessed"] == 0
+    # item 字段
+    item_a = d["items"][0]
+    assert item_a["inspection_parser"] == "json"
+    assert item_a["parsed_values"] == {"cpu": 20}
+    assert item_a["field_results"] == items[0].field_results
+    assert item_a["inspection_status"] == "pass"
+    assert item_a["inspection_error"] == ""
+    # item 字段存在性（JSON pass）
+    for key in (
+        "inspection_parser",
+        "parsed_values",
+        "field_results",
+        "inspection_status",
+        "inspection_error",
+    ):
+        assert key in item_a
+    # JSON pass（顶层 dict 含 4 个新键 + items + 老键）
+    import json as _json
+    encoded = _json.dumps(d, ensure_ascii=False, default=str)
+    decoded = _json.loads(encoded)
+    assert decoded["inspection_passed"] == 1
+    assert decoded["items"][0]["inspection_status"] == "pass"
+
+
+def test_report_to_markdown_appends_inspection_columns():
+    """to_markdown 在原 6 列后追加「巡检状态 | 指标判定」两列；status 与 message/阈值中文渲染。"""
+    items = [
+        ServerOpsItem(
+            business_name="biz-A",
+            success=True,
+            exit_code=0,
+            stdout='{"cpu": 20}',
+            stderr="",
+            duration_ms=42,
+            inspection_status="pass",
+            inspection_parser="json",
+            field_results=[
+                {"key": "cpu", "name_zh": "CPU 使用率", "unit": "%",
+                 "value": 20, "status": "pass", "message": "",
+                 "warn": 80.0, "crit": 95.0},
+            ],
+        ),
+        ServerOpsItem(
+            business_name="biz-B",
+            success=True,
+            exit_code=0,
+            stdout="mem_used_pct=85",
+            stderr="",
+            duration_ms=10,
+            inspection_status="warn",
+            inspection_parser="kv",
+            field_results=[
+                {"key": "mem_used_pct", "name_zh": "内存使用率", "unit": "%",
+                 "value": "85", "status": "warn", "message": "",
+                 "warn": 80.0, "crit": 90.0},
+            ],
+        ),
+        ServerOpsItem(
+            business_name="biz-C",
+            success=True,
+            exit_code=0,
+            stdout='{"cpu": 50}',
+            stderr="",
+            duration_ms=15,
+            inspection_status="unassessed",
+            inspection_parser="json",
+            field_results=[],
+        ),
+        ServerOpsItem(
+            business_name="biz-D",
+            skipped=True,
+            error_message="未配置巡检脚本（inspection_script 为空）",
+            inspection_status="skipped",
+        ),
+    ]
+    r = ServerOpsReport(items=items)
+    md = r.to_markdown()
+    lines = md.splitlines()
+    # 表头 6+2 = 8 列
+    assert lines[0].count("|") == 9  # 8 列 + 两侧管道
+    assert "巡检状态" in lines[0]
+    assert "指标判定" in lines[0]
+    # 状态中文化
+    biz_a_row = next(line for line in lines if line.startswith("| biz-A"))
+    # 巡检状态列必须出现「通过」（pass），不能出现英文 PASS
+    cols_a = biz_a_row.split("|")
+    # 巡检状态列在第 7 个位置（索引 7）
+    status_col = cols_a[7]
+    assert "通过" in status_col
+    assert "PASS" not in status_col
+    # 指标判定列（第 8 个位置）含 CPU 使用率 / 20% / warn=80 / crit=95
+    fields_col = cols_a[8]
+    assert "CPU 使用率" in fields_col
+    assert "20%" in fields_col
+    assert "warn=80" in fields_col
+    assert "crit=95" in fields_col
+
+    biz_b_row = next(line for line in lines if line.startswith("| biz-B"))
+    assert "告警" in biz_b_row  # warn 中文
+    assert "内存使用率" in biz_b_row
+    assert "85%" in biz_b_row
+
+    biz_c_row = next(line for line in lines if line.startswith("| biz-C"))
+    assert "未评估" in biz_c_row
+
+    biz_d_row = next(line for line in lines if line.startswith("| biz-D"))
+    assert "未执行" in biz_d_row  # skipped 中文
+
+    # 旧断言适配：原 6 列信息必须以子串形式存在（允许末尾追加）
+    assert "| biz-A | 通过 | 0 | 42 | " in md
+
+
+def test_report_to_markdown_escapes_pipe_and_newlines_in_dynamic_fields():
+    """business_name / stdout / 错误 / 字段 message 中的 | 与换行必须精确转义为 \\| 与空格。"""
+    items = [
+        ServerOpsItem(
+            business_name="biz|A\nEvil",
+            success=True,
+            exit_code=0,
+            stdout="raw | with | pipes\nand newline",
+            stderr="",
+            duration_ms=5,
+            inspection_status="warn",
+            inspection_parser="json",
+            field_results=[
+                {"key": "x", "name_zh": "指标|带|管道\n换行", "unit": "%",
+                 "value": 91, "status": "warn",
+                 "message": "warn|msg\nmore", "warn": 80.0, "crit": 90.0},
+            ],
+        ),
+    ]
+    r = ServerOpsReport(items=items)
+    md = r.to_markdown()
+    lines = md.splitlines()
+    row = next(line for line in lines if line.startswith("| biz"))
+    # 精确断言：原 ``|`` 必须呈现为 ``\|``，原 ``\n`` 必须呈现为单空格
+    assert "biz\\|A Evil" in row
+    assert "raw \\| with \\| pipes and newline" in row
+    assert "warn\\|msg more" in row
+    # 行内不应残留任何未转义的 ``|``（业务名 / stdout / 字段 message 部分）
+    assert row.count("\\|") >= 6  # biz|A(1) + raw | with |(2) + 指标|带|(2) + warn|(1)
+    # 行内不应残留任何换行字符
+    assert "\n" not in row
+
+
+def test_report_to_markdown_skipped_keyerror_shows_error_in_indicator_column():
+    """skipped (KeyError / 业务名未注册) 时指标判定列必须显示 error_message / inspection_error
+    真实内容（含中文与原值），并经 ``_escape_cell`` 转义；不再硬编码 ``未配置巡检脚本``。"""
+    items = [
+        ServerOpsItem(
+            business_name="biz|GHOST",
+            skipped=True,
+            success=None,
+            error_message="unknown business_name: biz|GHOST",
+            inspection_status="skipped",
+            inspection_error="unknown business_name: biz|GHOST",
+        ),
+    ]
+    r = ServerOpsReport(items=items)
+    md = r.to_markdown()
+    lines = md.splitlines()
+    row = next(line for line in lines if line.startswith("| biz"))
+    # 业务名转义为 \\|GHOST
+    assert "biz\\|GHOST" in row
+    # 指标判定列必须包含原始错误文本（不再是硬编码「未配置巡检脚本」）
+    assert "unknown business_name: biz|GHOST" not in row  # 原始未转义不应出现
+    assert "unknown business_name: biz\\|GHOST" in row    # 转义后真实呈现
+    # 旧硬编码提示语不应再出现
+    assert "未配置巡检脚本" not in row
+    # 巡检状态列仍为「未执行」（中文）
+    assert "未执行" in row
+
+
+def test_report_to_markdown_skipped_no_inspection_script_shows_error_message():
+    """skipped (inspection_script 未配置) 时指标判定列应原样展示 error_message（无 | 的情况下
+    等价于硬编码文本），并经 ``_escape_cell`` 转义；不再用 if 分叉。"""
+    items = [
+        ServerOpsItem(
+            business_name="biz-NOSCRIPT",
+            skipped=True,
+            success=None,
+            error_message="未配置巡检脚本（inspection_script 为空）",
+            inspection_status="skipped",
+        ),
+    ]
+    r = ServerOpsReport(items=items)
+    md = r.to_markdown()
+    lines = md.splitlines()
+    row = next(line for line in lines if line.startswith("| biz"))
+    # error_message 内容必须原样保留（无 | 或 \n 时 _escape_cell 是恒等映射）
+    assert "未配置巡检脚本（inspection_script 为空）" in row
+
+
+def test_report_to_markdown_skipped_uses_inspection_error_when_error_message_empty():
+    """skipped 且 error_message 为空、inspection_error 非空时，指标判定列应回退到 inspection_error。"""
+    items = [
+        ServerOpsItem(
+            business_name="biz-EMPTY",
+            skipped=True,
+            success=None,
+            error_message="",
+            inspection_status="skipped",
+            inspection_error="fallback inspection error text",
+        ),
+    ]
+    r = ServerOpsReport(items=items)
+    md = r.to_markdown()
+    lines = md.splitlines()
+    row = next(line for line in lines if line.startswith("| biz"))
+    assert "fallback inspection error text" in row
+
+
+def test_report_to_markdown_skipped_defaults_to_unexecuted_text():
+    """skipped 且 error_message 与 inspection_error 都为空时，指标判定列回退到「未执行」。"""
+    items = [
+        ServerOpsItem(
+            business_name="biz-NOTHING",
+            skipped=True,
+            success=None,
+            error_message="",
+            inspection_status="skipped",
+            inspection_error="",
+        ),
+    ]
+    r = ServerOpsReport(items=items)
+    md = r.to_markdown()
+    lines = md.splitlines()
+    row = next(line for line in lines if line.startswith("| biz"))
+    assert "未执行" in row
+
+
+def test_report_to_markdown_stdout_truncation_preserved():
+    """stdout 超过 4000 字符必须截断到 4000 且 ... 后缀；尾部两列追加后仍受同一截断约束。"""
+    long_stdout = "x" * 5000 + "\nline2"
+    items = [
+        ServerOpsItem(
+            business_name="biz-LONG",
+            success=True,
+            exit_code=0,
+            stdout=long_stdout,
+            stderr="",
+            duration_ms=5,
+            inspection_status="pass",
+            inspection_parser="json",
+        ),
+    ]
+    r = ServerOpsReport(items=items)
+    md = r.to_markdown()
+    row = next(line for line in md.splitlines() if line.startswith("| biz-LONG"))
+    assert "..." in row
+    # 4000 个 x + ... + 后缀字段，控制上限在合理范围
+    assert len(row) < 4500 + 200
+
+
+def test_report_to_markdown_stdout_truncation_boundary_exact():
+    """stdout 截断边界精确：4000 个 x 全保留，4001 个 x 必被截断且出现 ``...``。"""
+    # 边界 1：4000 个 x 完整保留
+    items_4000 = [
+        ServerOpsItem(
+            business_name="biz-BOUND-4000",
+            success=True,
+            exit_code=0,
+            stdout="x" * 4000,
+            stderr="",
+            duration_ms=5,
+            inspection_status="pass",
+            inspection_parser="json",
+        ),
+    ]
+    r = ServerOpsReport(items=items_4000)
+    row_4000 = next(line for line in r.to_markdown().splitlines() if line.startswith("| biz-BOUND-4000"))
+    # 4000 个连续 x 必须原样保留
+    assert ("x" * 4000) in row_4000
+    # 不应出现 ``...``（因为 stdout 长度等于阈值，无需追加）
+    assert "..." not in row_4000
+    # 4001 个连续 x 不应原样出现
+    assert ("x" * 4001) not in row_4000
+
+    # 边界 2：4001 个 x 必被截断到 4000，且出现 ``...``
+    items_4001 = [
+        ServerOpsItem(
+            business_name="biz-BOUND-4001",
+            success=True,
+            exit_code=0,
+            stdout="x" * 4001,
+            stderr="",
+            duration_ms=5,
+            inspection_status="pass",
+            inspection_parser="json",
+        ),
+    ]
+    r = ServerOpsReport(items=items_4001)
+    row_4001 = next(line for line in r.to_markdown().splitlines() if line.startswith("| biz-BOUND-4001"))
+    # stdout 列必须以 ``...`` 结尾，紧跟 ``| {error_text} | {inspection_text} | {fields_text} |``
+    # （error_text / fields_text 为空时，相邻 ``|`` 间留有两个空格：`` |  |``）
+    assert "... |  | 通过 |  |" in row_4001
+    # 截断：4000 个连续 x 必须出现，4001 个连续 x 不能出现
+    assert ("x" * 4000) in row_4001
+    assert ("x" * 4001) not in row_4001
+
+
+# ---------- 解析 / 评估 / SSH 失败契约 ----------
+
+
+@pytest.mark.asyncio
+async def test_ssh_exec_failure_does_not_parse_stdout(monkeypatch):
+    """SSHExecResult.success=False 时不应调用 parse_inspection_output；返回 success=False + inspection crit。"""
+    from app.scripts import server_ops as server_ops_module
+    parse_calls = []
+
+    real_parse = server_ops_module.parse_inspection_output
+    real_eval = server_ops_module.evaluate_inspection_fields
+
+    def tracking_parse(parser, stdout):
+        parse_calls.append((parser, stdout))
+        return real_parse(parser, stdout)
+
+    def tracking_eval(parsed_values, rules, parser):
+        return real_eval(parsed_values, rules, parser)
+
+    monkeypatch.setattr(server_ops_module, "parse_inspection_output", tracking_parse)
+    monkeypatch.setattr(server_ops_module, "evaluate_inspection_fields", tracking_eval)
+    monkeypatch.setattr(
+        server_ops_module,
+        "execute_script",
+        lambda *_: SSHExecResult(False, "{not-json}", "boom script", 1),
+    )
+
+    service = _StubDevOpsService({"biz-A": {
+        "inspection_script": "echo fail", "inspection_parser": "json",
+        "inspection_fields": [{"key": "cpu", "name_zh": "CPU 使用率", "unit": "%",
+                              "direction": "high", "warn": 80, "crit": 95}],
+    }})
+    report = await run_server_ops(_make_context_with_service(service, {"server_list": ["biz-A"]}))
+    item = report.items[0]
+    # 关键断言：parse_inspection_output 不应被调用
+    assert parse_calls == [], f"parse_inspection_output 仍被调用: {parse_calls}"
+    assert item.success is False
+    assert item.exit_code == 1
+    assert item.stdout == "{not-json}"
+    assert item.stderr == "boom script"
+    assert item.duration_ms is not None
+    assert item.inspection_status == "crit"
+    # inspection_error / error_message 取 stderr
+    assert item.inspection_error == "boom script"
+    assert item.error_message == "boom script"
+
+
+@pytest.mark.asyncio
+async def test_ssh_exec_failure_default_error_when_stderr_empty(monkeypatch):
+    """SSHExecResult.success=False 且 stderr 为空时 inspection_error 用「远端巡检脚本执行失败」。"""
+    from app.scripts import server_ops as server_ops_module
+    monkeypatch.setattr(
+        server_ops_module,
+        "execute_script",
+        lambda *_: SSHExecResult(False, "{}", "", 1),
+    )
+    service = _StubDevOpsService({"biz-A": {
+        "inspection_script": "echo fail", "inspection_parser": "json",
+    }})
+    report = await run_server_ops(_make_context_with_service(service, {"server_list": ["biz-A"]}))
+    item = report.items[0]
+    assert item.success is False
+    assert item.inspection_status == "crit"
+    assert item.inspection_error == "远端巡检脚本执行失败"
+    assert item.error_message == "远端巡检脚本执行失败"
+
+
+@pytest.mark.asyncio
+async def test_config_exception_inspection_error_message(monkeypatch):
+    """get_connection_config 抛非 KeyError 异常应记 crit，且 inspection_error 也有错误说明。"""
+    def boom(_):
+        raise RuntimeError("解密失败")
+
+    service = _StubDevOpsService(
+        configs={},
+        raised_by_name={"biz-A": RuntimeError("解密失败")},
+    )
+    # 同时确保 execute_script 不被调用
+    from app.scripts import server_ops as server_ops_module
+    called = {"n": 0}
+
+    def fake_execute_script(*args, **kwargs):
+        called["n"] += 1
+        return SSHExecResult(True, "{}", "", 0)
+
+    monkeypatch.setattr(server_ops_module, "execute_script", fake_execute_script)
+    ctx = _make_context_with_service(service, {"server_list": ["biz-A"]})
+    report = await run_server_ops(ctx)
+    item = report.items[0]
+    assert called["n"] == 0
+    assert item.success is False
+    assert item.inspection_status == "crit"
+    assert item.inspection_error  # 非空
+    assert "RuntimeError" in item.inspection_error or "解密失败" in item.inspection_error
+    assert "RuntimeError" in item.error_message or "解密失败" in item.error_message
+    # 不要泄漏整个 config
+    assert "ip" not in item.error_message
+    assert "password" not in item.error_message
+
+
+@pytest.mark.asyncio
+async def test_execute_script_exception_inspection_error_message(monkeypatch):
+    """execute_script 抛异常应记 crit 且 inspection_error 也有错误说明；不泄漏 config。"""
+    def fake_execute_script(cfg, script, timeout):
+        raise RuntimeError("SSHException: connection refused")
+
+    from app.scripts import server_ops as server_ops_module
+    monkeypatch.setattr(server_ops_module, "execute_script", fake_execute_script)
+
+    service = _StubDevOpsService({"biz-A": {
+        "ip": "10.0.0.1", "port": 22, "username": "u", "password": "secret",
+        "server_type": "linux",
+        "inspection_script": "echo ok", "inspection_parser": "json",
+    }})
+    report = await run_server_ops(_make_context_with_service(service, {"server_list": ["biz-A"]}))
+    item = report.items[0]
+    assert item.success is False
+    assert item.inspection_status == "crit"
+    assert item.inspection_error  # 非空
+    assert "RuntimeError" in item.inspection_error or "SSHException" in item.inspection_error
+    assert item.duration_ms is not None
+    assert "secret" not in item.error_message
+    assert "10.0.0.1" not in item.error_message
+
+
+@pytest.mark.asyncio
+async def test_keyerror_skipped_inspection_error(monkeypatch):
+    """KeyError (业务名未注册) → skipped 且 inspection_error 有错误说明。"""
+    from app.scripts import server_ops as server_ops_module
+    called = {"n": 0}
+
+    def fake_execute_script(*args, **kwargs):
+        called["n"] += 1
+        return SSHExecResult(True, "{}", "", 0)
+
+    monkeypatch.setattr(server_ops_module, "execute_script", fake_execute_script)
+    service = _StubDevOpsService(
+        configs={},
+        raised_by_name={"biz-GHOST": KeyError("unknown business_name: biz-GHOST")},
+    )
+    report = await run_server_ops(_make_context_with_service(service, {"server_list": ["biz-GHOST"]}))
+    item = report.items[0]
+    assert called["n"] == 0
+    assert item.skipped is True
+    assert item.success is None
+    assert item.inspection_status == "skipped"
+    assert item.inspection_error  # 非空
+    assert "biz-GHOST" in item.inspection_error or "unknown" in item.inspection_error
+
+
+@pytest.mark.asyncio
+async def test_parse_or_eval_exception_keeps_stdout_and_marks_crit(monkeypatch):
+    """解析或评估阶段抛异常应保留 stdout / stderr / exit / duration，success=False，两处错误都形如
+    「巡检解析评估失败: Type: message」；不允许泄漏 config。"""
+    from app.scripts import server_ops as server_ops_module
+
+    def boom_parse(*args, **kwargs):
+        raise ValueError("bad json")
+
+    monkeypatch.setattr(server_ops_module, "parse_inspection_output", boom_parse)
+    monkeypatch.setattr(
+        server_ops_module,
+        "execute_script",
+        lambda *_: SSHExecResult(True, "{garbage", "warn", 0),
+    )
+    service = _StubDevOpsService({"biz-A": {
+        "ip": "10.0.0.1", "port": 22, "username": "u", "password": "secret",
+        "server_type": "linux",
+        "inspection_script": "echo", "inspection_parser": "json",
+    }})
+    report = await run_server_ops(_make_context_with_service(service, {"server_list": ["biz-A"]}))
+    item = report.items[0]
+    assert item.success is False
+    assert item.stdout == "{garbage"
+    assert item.stderr == "warn"
+    assert item.exit_code == 0
+    assert item.duration_ms is not None
+    assert item.inspection_status == "crit"
+    # error_message 与 inspection_error 都是 「巡检解析评估失败: Type: message」 形态
+    assert item.error_message.startswith("巡检解析评估失败:")
+    assert "ValueError" in item.error_message
+    assert item.inspection_error.startswith("巡检解析评估失败:")
+    assert "ValueError" in item.inspection_error
+    # 不泄漏 config
+    assert "secret" not in item.error_message
+    assert "10.0.0.1" not in item.error_message
+
+
+@pytest.mark.asyncio
+async def test_evaluation_crit_does_not_change_success(monkeypatch):
+    """评估阶段得到 crit（规则严重命中 / 缺字段 / 非数值）不应改变 success 执行语义：success 仍为
+    bool(result.success)=True。"""
+    from app.scripts import server_ops as server_ops_module
+    monkeypatch.setattr(
+        server_ops_module,
+        "execute_script",
+        lambda *_: SSHExecResult(True, '{"cpu": 99}', "", 0),
+    )
+    service = _StubDevOpsService({"biz-A": {
+        "inspection_script": "echo", "inspection_parser": "json",
+        "inspection_fields": [{"key": "cpu", "name_zh": "CPU 使用率", "unit": "%",
+                              "direction": "high", "warn": 80, "crit": 95}],
+    }})
+    report = await run_server_ops(_make_context_with_service(service, {"server_list": ["biz-A"]}))
+    item = report.items[0]
+    assert item.success is True
+    assert item.exit_code == 0
+    assert item.inspection_status == "crit"
+    assert report.inspection_critical == 1
+    assert report.passed == 1
+    # summary 同时含 OK(...)/CRIT
+    assert "biz-A OK(0," in report.summary_line()
+    assert "/CRIT" in report.summary_line()
+
+
+@pytest.mark.asyncio
+async def test_evaluation_missing_field_and_non_numeric_both_crit(monkeypatch):
+    """声明字段缺失 / 非数值都是 crit，且 success 保持 True。"""
+    from app.scripts import server_ops as server_ops_module
+    # missing key + non-numeric value
+    monkeypatch.setattr(
+        server_ops_module,
+        "execute_script",
+        lambda *_: SSHExecResult(True, '{"present": "abc"}', "", 0),
+    )
+    service = _StubDevOpsService({"biz-A": {
+        "inspection_script": "echo", "inspection_parser": "json",
+        "inspection_fields": [
+            {"key": "present", "name_zh": "存在字段", "unit": "%",
+             "direction": "high", "warn": 50, "crit": 80},
+            {"key": "missing", "name_zh": "缺失字段", "unit": "%",
+             "direction": "high", "warn": 50, "crit": 80},
+        ],
+    }})
+    report = await run_server_ops(_make_context_with_service(service, {"server_list": ["biz-A"]}))
+    item = report.items[0]
+    assert item.success is True
+    assert item.inspection_status == "crit"
+    crit_msgs = [f.get("message", "") for f in item.field_results]
+    assert any("missing" in m for m in crit_msgs)
+    assert any("不是有限数字" in m or "abc" in m for m in crit_msgs)
+
+
+@pytest.mark.asyncio
+async def test_evaluation_raw_parser_with_structured_rules_is_crit_but_success_true(monkeypatch):
+    """raw 解析器 + 含 high/low 规则：总状态 crit 但 success 仍 True。"""
+    from app.scripts import server_ops as server_ops_module
+    monkeypatch.setattr(
+        server_ops_module,
+        "execute_script",
+        lambda *_: SSHExecResult(True, "anything", "", 0),
+    )
+    service = _StubDevOpsService({"biz-A": {
+        "inspection_script": "echo", "inspection_parser": "raw",
+        "inspection_fields": [{"key": "cpu", "name_zh": "CPU 使用率", "unit": "%",
+                              "direction": "high", "warn": 80, "crit": 95}],
+    }})
+    report = await run_server_ops(_make_context_with_service(service, {"server_list": ["biz-A"]}))
+    item = report.items[0]
+    assert item.success is True
+    assert item.inspection_status == "crit"
+    assert item.inspection_error  # raw 评估错误会写入
+    assert "raw 解析器" in item.inspection_error
+
+
+@pytest.mark.asyncio
+async def test_evaluation_no_rules_unassessed(monkeypatch):
+    """无规则 → unassessed；success 不受影响。"""
+    from app.scripts import server_ops as server_ops_module
+    monkeypatch.setattr(
+        server_ops_module,
+        "execute_script",
+        lambda *_: SSHExecResult(True, '{"cpu": 20}', "", 0),
+    )
+    service = _StubDevOpsService({"biz-A": {
+        "inspection_script": "echo", "inspection_parser": "json",
+        "inspection_fields": None,
+    }})
+    report = await run_server_ops(_make_context_with_service(service, {"server_list": ["biz-A"]}))
+    item = report.items[0]
+    assert item.success is True
+    assert item.inspection_status == "unassessed"
+    assert item.field_results == []
+
+
+@pytest.mark.asyncio
+async def test_one_bad_json_does_not_block_next_server(monkeypatch):
+    """一台非法 JSON 解析失败（crit）但下一台继续执行，整体不中断。"""
+    from app.scripts import server_ops as server_ops_module
+
+    def fake_execute_script(cfg, script, timeout):
+        ip = cfg.get("ip", "")
+        if "1.1.1.1" in ip:
+            return SSHExecResult(True, "not-json", "", 0)
+        return SSHExecResult(True, '{"cpu": 30}', "", 0)
+
+    monkeypatch.setattr(server_ops_module, "execute_script", fake_execute_script)
+    service = _StubDevOpsService({
+        "biz-BAD": {
+            "ip": "1.1.1.1", "port": 22, "username": "u", "password": "p",
+            "server_type": "linux",
+            "inspection_script": "echo", "inspection_parser": "json",
+            "inspection_fields": [{"key": "cpu", "name_zh": "CPU", "unit": "%",
+                                   "direction": "high", "warn": 80, "crit": 95}],
+        },
+        "biz-OK": {
+            "ip": "2.2.2.2", "port": 22, "username": "u", "password": "p",
+            "server_type": "linux",
+            "inspection_script": "echo", "inspection_parser": "json",
+            "inspection_fields": [{"key": "cpu", "name_zh": "CPU", "unit": "%",
+                                   "direction": "high", "warn": 80, "crit": 95}],
+        },
+    })
+    report = await run_server_ops(_make_context_with_service(service,
+                                                             {"server_list": ["biz-BAD", "biz-OK"]}))
+    by_name = {item.business_name: item for item in report.items}
+    assert by_name["biz-BAD"].success is False
+    assert by_name["biz-BAD"].inspection_status == "crit"
+    assert by_name["biz-OK"].success is True
+    assert by_name["biz-OK"].inspection_status == "pass"
+    # 总计数 OK
+    assert report.passed == 1
+    assert report.inspection_critical == 1
+    assert report.inspection_passed == 1
+
+
+@pytest.mark.asyncio
+async def test_kv_parser_with_numeric_string_passes(monkeypatch):
+    """KV 解析：数字字符串应能转换参与阈值评估（pass）。"""
+    from app.scripts import server_ops as server_ops_module
+    monkeypatch.setattr(
+        server_ops_module,
+        "execute_script",
+        lambda *_: SSHExecResult(True, "mem_used_pct=70\ndisk_used_pct=40\n", "", 0),
+    )
+    service = _StubDevOpsService({"biz-A": {
+        "inspection_script": "echo", "inspection_parser": "kv",
+        "inspection_fields": [
+            {"key": "mem_used_pct", "name_zh": "内存使用率", "unit": "%",
+             "direction": "high", "warn": 80, "crit": 90},
+            {"key": "disk_used_pct", "name_zh": "磁盘使用率", "unit": "%",
+             "direction": "high", "warn": 80, "crit": 90},
+        ],
+    }})
+    report = await run_server_ops(_make_context_with_service(service, {"server_list": ["biz-A"]}))
+    item = report.items[0]
+    assert item.success is True
+    assert item.inspection_status == "pass"
+    assert item.parsed_values == {"mem_used_pct": "70", "disk_used_pct": "40"}
+
+
+@pytest.mark.asyncio
+async def test_csv_parser_with_numeric_string_passes(monkeypatch):
+    """CSV 解析：数字字符串应能转换参与阈值评估（pass）。"""
+    from app.scripts import server_ops as server_ops_module
+    monkeypatch.setattr(
+        server_ops_module,
+        "execute_script",
+        lambda *_: SSHExecResult(True, "cpu,mem\n65,75\n", "", 0),
+    )
+    service = _StubDevOpsService({"biz-A": {
+        "inspection_script": "echo", "inspection_parser": "csv",
+        "inspection_fields": [
+            {"key": "cpu", "name_zh": "CPU", "unit": "%",
+             "direction": "high", "warn": 80, "crit": 95},
+            {"key": "mem", "name_zh": "MEM", "unit": "%",
+             "direction": "high", "warn": 80, "crit": 95},
+        ],
+    }})
+    report = await run_server_ops(_make_context_with_service(service, {"server_list": ["biz-A"]}))
+    item = report.items[0]
+    assert item.success is True
+    assert item.inspection_status == "pass"
+
+
+@pytest.mark.asyncio
+async def test_high_warn_low_crit_pass_combined(monkeypatch):
+    """high 字段在 warn 区间 → warn；low 字段在 crit 区间 → crit；总状态 crit；success 仍 True。
+
+    注意：``inspection_warned`` / ``inspection_critical`` 是**服务器级**计数（按
+    ``inspection_status`` 聚合），单台服务器即便同时有 warn + crit 字段，
+    ``inspection_status`` 仍是 crit，不计 warn。本测试断言字段级 ``status``
+    列表与服务器级 ``inspection_status=crit``。
+    """
+    from app.scripts import server_ops as server_ops_module
+    monkeypatch.setattr(
+        server_ops_module,
+        "execute_script",
+        lambda *_: SSHExecResult(True, '{"cpu": 85, "load": 5}', "", 0),
+    )
+    service = _StubDevOpsService({"biz-A": {
+        "inspection_script": "echo", "inspection_parser": "json",
+        "inspection_fields": [
+            {"key": "cpu", "name_zh": "CPU", "unit": "%",
+             "direction": "high", "warn": 80, "crit": 95},
+            {"key": "load", "name_zh": "负载", "unit": "",
+             "direction": "low", "warn": 10, "crit": 6},
+        ],
+    }})
+    report = await run_server_ops(_make_context_with_service(service, {"server_list": ["biz-A"]}))
+    item = report.items[0]
+    assert item.success is True
+    statuses = [f["status"] for f in item.field_results]
+    assert "warn" in statuses
+    assert "crit" in statuses
+    assert item.inspection_status == "crit"
+    # 服务器级聚合：crit 压制 warn，因此 inspection_critical=1, inspection_warned=0
+    assert report.inspection_critical == 1
+    assert report.inspection_warned == 0
+    assert report.inspection_passed == 0
