@@ -564,6 +564,49 @@ class ParagraphStyleConfig:
 
 
 @dataclass
+class TableSectionConfig:
+    """
+    表格段落配置类
+
+    定义报告内表格的样式与内容，仅在 :class:`SectionConfig.section_type` 为
+    ``"table"`` 时生效。渲染逻辑由 ``generator.py`` 中的表格渲染实现负责。
+
+    Attributes:
+        headers: 表头文本列表。
+        rows: 表格行列表，每行为字符串列表。
+        column_widths: 列宽列表（cm），None 时均匀分配。
+        header_fill: 表头底色（HEX 字符串，如 ``"D9E1F2"``）。
+        cell_align: 单元格对齐方式，``"left"`` 或 ``"center"``。
+        status_column: 状态列索引；非 None 时按单元格值映射着色。
+
+    Example:
+        >>> table = TableSectionConfig(
+        ...     headers=["指标", "当前值"],
+        ...     rows=[["CPU 使用率", "75%"]],
+        ...     status_column=1,
+        ... )
+    """
+
+    headers: list[str] = field(default_factory=list)
+    """表头文本列表。"""
+
+    rows: list[list[str]] = field(default_factory=list)
+    """表格行列表，每行为字符串列表。"""
+
+    column_widths: list[float] | None = None
+    """列宽列表（cm），None 时均匀分配。"""
+
+    header_fill: str | None = "D9E1F2"
+    """表头底色（HEX 字符串，如 ``"D9E1F2"``），None 时不填色。"""
+
+    cell_align: str = "left"
+    """单元格对齐方式，``"left"`` 或 ``"center"``，默认 ``"left"``。"""
+
+    status_column: int | None = None
+    """状态列索引；非 None 时按单元格值映射着色，默认 None。"""
+
+
+@dataclass
 class SectionConfig:
     """
     段落配置类（核心类）
@@ -616,12 +659,13 @@ class SectionConfig:
         ... )
     """
 
-    section_type: Literal["heading", "paragraph", "page_break"]
+    section_type: Literal["heading", "paragraph", "page_break", "table"]
     """
     段落类型，使用Literal类型约束取值范围：
     - "heading": 标题段落，支持多级标题样式
     - "paragraph": 正文段落，默认首行缩进
     - "page_break": 分页符，content字段无效
+    - "table": 表格段落，使用table字段携带 TableSectionConfig
     """
 
     content: str | Callable = ""
@@ -678,6 +722,9 @@ class SectionConfig:
 
     in_toc: bool = True
     """是否将标题加入目录并生成书签，默认True。设为False时该标题不会生成目录页码引用书签"""
+
+    table: TableSectionConfig | None = None
+    """表格配置，仅 ``section_type="table"`` 时生效。"""
 
 
 @dataclass
