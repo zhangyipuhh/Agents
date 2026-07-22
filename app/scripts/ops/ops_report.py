@@ -2,12 +2,9 @@
 """
 沈阳不动产运维巡检报告专用模块。
 
-包含:
-    * ``OpsSummary`` —— 综述段落统计口径
-    * ``OpsAlerts`` / ``OpsAlertItem`` —— 关键告警条目
-    * ``compute_ops_summary`` / ``compute_ops_alerts`` —— 摘要/告警统计
-    * ``build_ops_report_config`` —— 构建 :class:`ReportConfig`
-    * ``build_ops_email_body`` —— 构建邮件正文文本
+定义综述统计口径与告警条目数据类:
+    * ``OpsSummary`` —— 综述段落统计口径(总项/成功/有问题/分项计数)
+    * ``OpsAlerts`` / ``OpsAlertItem`` —— 关键告警条目集合
 
 报告路径: ``<项目根>/data/attachments/Task/{slug}/{ts}_{run_id}.docx``
 参见 :func:`app.core.config.paths.resolve_task_attachment_path`。
@@ -15,11 +12,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Dict, List, Mapping, Optional
+from typing import List
 
 
-# 综述段落使用的状态中文映射(与 server_ops._INSPECTION_STATUS_ZH 对齐)。
+# 综述段落使用的状态中文映射(从 server_ops._INSPECTION_STATUS_ZH 同步;
+# ops_inspection_sweep.py 也有同样的私有副本)。
 _INSPECTION_STATUS_ZH = {
     "pass": "通过",
     "warn": "告警",
