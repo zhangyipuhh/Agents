@@ -1,28 +1,50 @@
 # -*- coding:utf-8 -*-
-# DevOps SSH 服务器配置模板（2026-07-15 新增）
+# DevOps SSH 服务器配置模板
 #
 # 作用：
-#   * 由后端 DevOpsServerService.scan_and_upsert() 扫描并加密入库；
+#   * 由后端 DevOpsServerService.scan_and_upsert() 扫描并加密入库到 devops_servers 表；
 #   * 前端 /api/admin/devops-servers 接口只回显脱敏字段（id / business_name /
-#     server_type / updated_at），不会返回本文件中的 IP、用户名、密码、黑白名单。
+#     server_type / updated_at），不会返回本文件中的 IP、用户名、密码、黑白名单、巡检脚本。
+#   * 实际配置应复制本文件为 servers.yaml（git-ignored），不要把生产凭据提交到仓库。
 #
-# 必填：
-#   * business_name：业务唯一标识，重复视为 failed 不入库。
-#   * ip / port / username / password / server_type（windows | linux）。
+# 必填字段：
+#   * business_name：业务唯一标识，全局唯一；同一文件重复出现 → 该条目记 failed 不入库。
+#   * ip           ：目标主机 IP（也兼容旧字段名 host）。
+#   * port         ：SSH 端口（1-65535，默认 22）。
+#   * username     ：登录用户名。
+#   * password     ：明文密码；scan_and_upsert 时由 DEVOPS_CREDENTIAL_KEY（Fernet 密钥）
+#                    加密后落库为 BYTEA；明文密码仅在内存中存在，绝不写入日志 / HTTP 响应。
+#   * server_type  ：'linux' 或 'windows'（其他值记 failed）。
 #
-# 可选：
-#   * blacklist（list[str]）：黑名单，优先级最高；命中即拒绝。
-#   * whitelist（list[str]）：强白名单；空白名单时所有非空命令被拒绝。
-#   * 模式：精确匹配 / 以空格结尾的前缀匹配 / 以 ^ 开头的正则匹配。
-#
-# 占位说明：
-#   * password 仅可填占位或实际凭据；占位示例是文档保留 IP 与示例账号，不要把生产
-#     凭据直接提交到仓库；通过 DEVOPS_CREDENTIAL_KEY（Fernet 密钥）加密落库。
-#   * host 是 ip 的旧字段别名；扫描时同时兼容 host / ip。
+# 可选字段：
+#   * blacklist       (list[str])：黑名单，优先级最高；命中即拒绝。
+#   * whitelist       (list[str])：强白名单；空白名单时所有非黑名单命令被拒绝。
+#                                 匹配模式：精确匹配 / 以空格结尾的前缀匹配 / 以 ^ 开头的正则匹配。
+#   * inspection_script (str)   ：固定巡检脚本（2026-07-22 新增）。
+#                                 推荐使用 YAML `|` 字面块保留换行；空字符串 / 纯空白 → NULL（不巡检）。
+#                                 bash / powershell 均可；末尾多余换行会被自动 rstrip。
+#                                 非 str 值会被强制 str()；序列化失败则该条目记 failed。
+#   * inspection_parser (str)   ：解析器类型（2026-07-22 新增）；取值 json / kv / csv / raw（默认 json）。
+#                                 大小写不敏感；非法值 → 该条目记 failed 不入库。
+#                                 - json：脚本最后一行输出 JSON 对象 / 数组，程序按 json.loads 解析。
+#                                 - kv  ：key=value 行列表（如 key1=val1\nkey2=val2）。
+#                                 - csv ：CSV 行（首行表头）。
+#                                 - raw ：明文回显，不解析。
 #
 # 触发方式：
 #   * 在「定时任务管理」->「服务器扫描入库」Tab 点击「立即扫描」；
 #   * 或调用 POST /api/admin/devops-servers/scan（admin 鉴权）。
+#
+# 巡检脚本说明：
+#   * 本字段只入库；不自动触发执行。后续由 run_inspection_script / inspection_run tool 消费。
+#   * 脚本通过 SSHTools 投递到目标机器，按 server_type 自动选择 bash -c 或 powershell -Command。
+#   * 黑/白名单不约束 inspection_script（运维巡检脚本需要执行多种命令）；
+#     如需约束，由 tool 内部按 parser 校验输出格式。
+#   * 建议输出格式：JSON 一行（如 {"disk_used_pct":42,...}），便于下游 json.loads 解析。
+#
+# 字段别名（兼容老 YAML）：
+#   * business_name ↔ name
+#   * ip ↔ host
 
 servers:
   # ===== Linux 巡检服务器示例 =====
@@ -33,12 +55,30 @@ servers:
     password: "REPLACE_ME"
     server_type: linux
     blacklist:
-      - "rm -rf "
-      - "shutdown "
+      - "rm -rf "         # 前缀匹配：拦截所有 rm -rf 开头的命令
+      - "shutdown "       # 前缀匹配：拦截 shutdown / shutdown -h / shutdown -r 等
     whitelist:
-      - "systemctl status "
-      - "df -h"
-      - "tail "
+      - "systemctl status "  # 前缀匹配：允许 systemctl status xxx
+      - "df -h"              # 精确匹配：仅允许 df -h（不允许 df -i / df -T 等变体）
+      - "tail "              # 前缀匹配：允许 tail -n 100 /var/log/syslog 等
+    # 固定巡检脚本：bash 收集磁盘 / 内存 / CPU / 1 分钟负载，输出 JSON 方便程序解析。
+    # YAML `|` 字面块保留换行；末尾多余换行会被自动 rstrip。
+    inspection_script: |
+      #!/bin/bash
+      set -u
+      # 1) 根分区已用百分比（去百分号）
+      DISK=$(df -P / | tail -1 | awk '{print $5}' | tr -d '%')
+      # 2) 内存已用百分比
+      MEM=$(free | awk '/Mem:/ {printf "%.0f", $3/$2 * 100}')
+      # 3) CPU 空闲百分比（采样 1s）
+      CPU_IDLE=$(top -bn1 | grep "Cpu(s)" | awk -F',' '{print $4}' | awk '{print $1}')
+      # 4) 1 分钟平均负载
+      LOAD=$(cat /proc/loadavg | awk '{print $1}')
+      # 最后一行输出 JSON 对象，工具按 parser=json 解析
+      printf '{"disk_used_pct":%s,"mem_used_pct":%s,"cpu_idle_pct":%s,"load_1m":%s}\n' \
+        "$DISK" "$MEM" "$CPU_IDLE" "$LOAD"
+    # 解析器：json（脚本最后一行必须是合法 JSON 对象 / 数组）
+    inspection_parser: json
 
   # ===== Windows 巡检服务器示例 =====
   - business_name: dev-windows-01
@@ -48,8 +88,21 @@ servers:
     password: "REPLACE_ME"
     server_type: windows
     blacklist:
-      - "Remove-Item "
-      - "Stop-Service "
+      - "Remove-Item "    # 前缀匹配：拦截所有 Remove-Item 开头的命令（含 -Recurse / -Force）
+      - "Stop-Service "   # 前缀匹配：拦截 Stop-Service xxx
     whitelist:
-      - "Get-Service"
-      - "Get-WinEvent "
+      - "Get-Service"     # 精确匹配：仅允许 Get-Service（不允许 Get-Service | Format-List 等组合）
+      - "Get-WinEvent "   # 前缀匹配：允许 Get-WinEvent -LogName System -MaxEvents 100 等
+    # 固定巡检脚本：PowerShell 收集磁盘 / 内存 / CPU / 运行时间，输出 JSON 便于解析。
+    inspection_script: |
+      $disk = ((Get-PSDrive C).Used / ((Get-PSDrive C).Used + (Get-PSDrive C).Free)) * 100
+      $os   = Get-CimInstance Win32_OperatingSystem
+      $mem  = (($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100
+      $cpu  = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
+      $uptime = (Get-Date) - $os.LastBootUpTime
+      @{ disk_used_pct = [math]::Round($disk, 1)
+         mem_used_pct = [math]::Round($mem, 1)
+         cpu_used_pct = [int]$cpu
+         uptime_hours = [math]::Round($uptime.TotalHours, 1) } | ConvertTo-Json -Compress
+    # 解析器：json（管道 ConvertTo-Json -Compress 输出单行 JSON）
+    inspection_parser: json
