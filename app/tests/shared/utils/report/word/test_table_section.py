@@ -59,8 +59,6 @@ def test_render_table_section_produces_docx(tmp_path: Path):
     original_generator_module = sys.modules[generator_module_name]
     word_package = sys.modules[word_package_name]
     original_package_generator = word_package.generator
-    original_logger_info = original_generator_module.logger.info
-    original_logger_debug = original_generator_module.logger.debug
 
     try:
         for module_name in list(sys.modules):
@@ -68,7 +66,6 @@ def test_render_table_section_produces_docx(tmp_path: Path):
                 del sys.modules[module_name]
         sys.modules.pop(generator_module_name, None)
 
-        pytest.importorskip("docx")
         from docx import Document
 
         importlib.import_module(generator_module_name)
@@ -109,8 +106,6 @@ def test_render_table_section_produces_docx(tmp_path: Path):
         sys.modules.pop(generator_module_name, None)
         sys.modules[generator_module_name] = original_generator_module
         word_package.generator = original_package_generator
-        original_generator_module.logger.info = original_logger_info
-        original_generator_module.logger.debug = original_logger_debug
         for module_name in list(sys.modules):
             if module_name == "docx" or module_name.startswith("docx."):
                 del sys.modules[module_name]
