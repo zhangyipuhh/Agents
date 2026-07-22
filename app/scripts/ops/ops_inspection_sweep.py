@@ -43,13 +43,24 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
+from pathlib import Path
 from typing import Any, Dict, List
 
+from app.core.config.paths import resolve_task_attachment_path
 from app.scripts.api_check import run_api_checks
 from app.scripts.base import ScriptContext
+from app.scripts.ops.ops_report import (
+    build_ops_email_body,
+    build_ops_report_config,
+    compute_ops_alerts,
+    compute_ops_summary,
+    resolve_server_ip_map,
+)
 from app.scripts.registry import register_script
 from app.scripts.server_ops import run_server_ops
+from app.shared.utils.report.word.generator import WordReportGenerator
 
 
 # 服务器级巡检状态中文映射(与 server_ops._INSPECTION_STATUS_ZH 对齐)。
@@ -432,3 +443,41 @@ def _safe_json_dumps(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, default=str)
     except (TypeError, ValueError):
         return repr(value)
+
+
+# --------------------------------------------------------------------------
+# Phase D docx 报告 helper(Task D1 新增;D2 在 run() 中串联)
+# --------------------------------------------------------------------------
+
+
+def _resolve_attachment_path(schedule_name: str, run_id: int, started_at: datetime) -> Path:
+    """解析运维报告 docx 附件路径。
+
+    参数:
+        schedule_name: 任务名,会经过 :func:`slugify_task_name` 安全化。
+        run_id: 执行记录 ID。
+        started_at: 执行开始时间。
+
+    返回:
+        Path: docx 绝对路径(父目录尚未创建)。
+    """
+    return resolve_task_attachment_path(schedule_name, run_id, started_at)
+
+
+def _generate_docx_report(report_config, output_path: Path) -> None:
+    """同步生成 docx 文件(阻塞调用,需在线程中执行)。
+
+    参数:
+        report_config: ``ReportConfig`` 实例。
+        output_path: 输出 docx 绝对路径。
+
+    返回:
+        None。
+
+    异常:
+        OSError: 父目录创建失败或文件写入失败时由 ``python-docx`` 抛出。
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    generator = WordReportGenerator(report_config)
+    generator.generate()
+    generator.save(str(output_path))

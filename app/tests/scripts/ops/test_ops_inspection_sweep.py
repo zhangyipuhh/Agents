@@ -26,6 +26,7 @@ import inspect
 import logging
 import typing
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pytest
@@ -705,3 +706,88 @@ def test_format_assertion_log_without_detail():
     assert "type=json_field" in text
     assert "passed=False" in text
     assert "detail" not in text
+
+
+# ===== 8) docx 附件路径解析与生成 helper (Phase D Task D1) =====
+
+
+def test_resolve_attachment_path_returns_docx():
+    """``_resolve_attachment_path`` 返回 ``.docx`` 后缀,且文件名遵循
+    ``{YYYYMMDD_HHMMSS}_{run_id}.docx`` 模板,与
+    :func:`app.core.config.paths.resolve_task_attachment_path` 对齐。"""
+    from app.scripts.ops.ops_inspection_sweep import _resolve_attachment_path
+
+    p = _resolve_attachment_path("运维巡检任务", 42, datetime(2026, 7, 22, 15, 30))
+    assert p.suffix == ".docx"
+    assert p.name == "20260722_153000_42.docx"
+
+
+def test_generate_docx_report_produces_docx(tmp_path, monkeypatch):
+    """``_generate_docx_report`` 同步生成有效 docx 文件(大小 > 1000 字节),
+    且父目录自动创建,产出文件位于 ``output_path``。
+
+    通过 monkeypatch 替换 :class:`WordReportGenerator`,断言 helper 内部按
+    ``构造 → generate() → save(path)`` 顺序调用,把内容写出到 ``output_path``。
+    ``app/tests/conftest.py`` 在全局 mock 了 ``docx`` 模块,故此处使用 fake
+    生成器而非真实 ``python-docx``;fake 在 ``save()`` 中写出 ``> 1000`` 字节
+    的占位 zip 头,验证文件确实落盘且大小满足契约。
+    """
+    from app.scripts.ops.ops_inspection_sweep import _generate_docx_report
+    from app.scripts.ops.ops_report import (
+        build_ops_report_config,
+        compute_ops_alerts,
+        compute_ops_summary,
+        resolve_server_ip_map,
+    )
+
+    captured: Dict[str, Any] = {
+        "instantiated_with_cfg": None,
+        "generated": False,
+        "saved_to": None,
+    }
+
+    class _FakeGenerator:
+        def __init__(self, cfg):
+            captured["instantiated_with_cfg"] = cfg
+
+        def generate(self) -> None:
+            captured["generated"] = True
+
+        def save(self, path) -> None:
+            captured["saved_to"] = path
+            Path(path).write_bytes(b"PK\x03\x04" + b"\x00" * 1500)
+
+    monkeypatch.setattr(
+        "app.scripts.ops.ops_inspection_sweep.WordReportGenerator",
+        _FakeGenerator,
+    )
+
+    srv = ServerOpsReport(items=[
+        ServerOpsItem(
+            business_name="A",
+            success=True,
+            inspection_status="pass",
+        ),
+    ])
+    api = ApiCheckReport(items=[
+        ApiCheckItem(node_id=1, name="X", path="/x", check_passed=True),
+    ])
+    summary = compute_ops_summary(srv, api)
+    alerts = compute_ops_alerts(srv, api)
+    cfg = build_ops_report_config(
+        summary=summary,
+        alerts=alerts,
+        server_report=srv,
+        api_report=api,
+        ip_map=resolve_server_ip_map(None, srv),
+        schedule_name="x",
+        started_at=datetime(2026, 7, 22, 15, 0, 0),
+    )
+    output = tmp_path / "report.docx"
+    _generate_docx_report(cfg, output)
+    assert output.exists()
+    assert output.stat().st_size > 1000
+    # helper 必须按 WordReportGenerator API 顺序调用:构造 → generate → save(path)
+    assert captured["instantiated_with_cfg"] is cfg
+    assert captured["generated"] is True
+    assert captured["saved_to"] == str(output)
