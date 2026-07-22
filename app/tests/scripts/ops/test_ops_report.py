@@ -1,6 +1,7 @@
 # -*- coding:utf-8 -*-
 """``app.scripts.ops.ops_report`` 单元测试。"""
 from app.scripts.ops.ops_report import OpsSummary, OpsAlerts, OpsAlertItem, compute_ops_summary
+from app.scripts.ops.ops_report import compute_ops_alerts
 from app.scripts.api_check import ApiCheckItem, ApiCheckReport
 from app.scripts.server_ops import ServerOpsItem, ServerOpsReport
 
@@ -68,3 +69,55 @@ def test_compute_summary_with_failures():
 def test_compute_summary_empty():
     s = compute_ops_summary(ServerOpsReport(), ApiCheckReport())
     assert s.total == 0 and s.passed == 0 and s.problem == 0
+
+
+def test_compute_alerts_warn_crit_only():
+    srv = ServerOpsReport(items=[
+        ServerOpsItem(
+            business_name="A", success=True, inspection_status="pass",
+            field_results=[
+                {"key": "cpu", "name_zh": "CPU 使用率", "unit": "%",
+                 "value": 75.2, "warn": 80, "crit": 90,
+                 "status": "warn", "message": ""},
+                {"key": "disk", "name_zh": "磁盘使用率", "unit": "%",
+                 "value": 92.0, "warn": 80, "crit": 90,
+                 "status": "crit", "message": "磁盘 /data"},
+            ],
+        ),
+        ServerOpsItem(
+            business_name="B", success=True, inspection_status="pass",
+            field_results=[
+                {"key": "cpu", "name_zh": "CPU 使用率", "unit": "%",
+                 "value": 30.0, "warn": 80, "crit": 90,
+                 "status": "pass", "message": ""},
+            ],
+        ),
+    ])
+    api = ApiCheckReport(items=[
+        ApiCheckItem(node_id="1", name="OK", path="/ok", check_passed=True),
+        ApiCheckItem(node_id="2", name="FAIL", path="/x", check_passed=False,
+                     http_status=500, duration_ms=30),
+    ])
+    alerts = compute_ops_alerts(srv, api)
+    assert len(alerts.server_warn_crit) == 2
+    assert alerts.server_warn_crit[0].business == "A"
+    assert alerts.server_warn_crit[0].status == "WARN"
+    assert alerts.server_warn_crit[1].status == "CRIT"
+    assert len(alerts.api_failed) == 1
+    assert alerts.api_failed[0].business == "FAIL"
+    assert alerts.api_failed[0].status == "FAIL"
+    assert alerts.is_empty is False
+
+
+def test_compute_alerts_excludes_skipped_and_missing():
+    srv = ServerOpsReport(items=[
+        ServerOpsItem(business_name="A", success=False, skipped=True,
+                      inspection_status="skipped"),
+    ])
+    api = ApiCheckReport(items=[
+        ApiCheckItem(node_id="1", name="M", path="/x", check_passed=None),
+    ])
+    alerts = compute_ops_alerts(srv, api)
+    assert alerts.server_warn_crit == []
+    assert alerts.api_failed == []
+    assert alerts.is_empty is True

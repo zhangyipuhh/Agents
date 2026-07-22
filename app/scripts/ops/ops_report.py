@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import Any, Dict, List, Mapping, Optional
 
 
 # 综述段落使用的状态中文映射(从 server_ops._INSPECTION_STATUS_ZH 同步;
@@ -147,3 +147,71 @@ def compute_ops_summary(server_report, api_report) -> OpsSummary:
         api_passed=api_passed,
         api_problem=api_problem,
     )
+
+
+def _format_field_value(field: Mapping[str, Any]) -> str:
+    """把字段评估结果格式化为「值 + 单位」文本;None 渲染为「无值」。"""
+    value = field.get("value")
+    unit = field.get("unit") or ""
+    if value is None:
+        return "无值"
+    return f"{value}{unit}" if unit else str(value)
+
+
+def _format_field_threshold(field: Mapping[str, Any]) -> str:
+    """把字段阈值格式化为「warn=X, crit=Y」文本;None 渲染为「-」。"""
+    warn = field.get("warn")
+    crit = field.get("crit")
+    warn_text = "-" if warn is None else str(warn)
+    crit_text = "-" if crit is None else str(crit)
+    return f"warn={warn_text}, crit={crit_text}"
+
+
+def compute_ops_alerts(server_report, api_report) -> OpsAlerts:
+    """计算关键告警条目。
+
+    服务器告警: 仅 ``field_results`` 中 ``status in {warn, crit}`` 的字段;
+    接口告警: 仅 ``check_passed is False`` 的接口。
+    执行失败/跳过的服务器与缺失接口不进入告警列表,仅在 Word 报告中展示。
+
+    参数:
+        server_report: :class:`ServerOpsReport`。
+        api_report: :class:`ApiCheckReport`。
+
+    返回:
+        OpsAlerts: 关键告警集合。
+    """
+    server_items: List[OpsAlertItem] = []
+    for srv in server_report.items:
+        if srv.success is not True or srv.skipped:
+            continue
+        for field in srv.field_results or []:
+            status = field.get("status")
+            if status not in {"warn", "crit"}:
+                continue
+            name_zh = field.get("name_zh") or field.get("key") or ""
+            message = field.get("message") or ""
+            metric = f"{name_zh}（{message}）" if message else name_zh
+            server_items.append(OpsAlertItem(
+                business=srv.business_name,
+                metric=metric,
+                value=_format_field_value(field),
+                threshold=_format_field_threshold(field),
+                status="WARN" if status == "warn" else "CRIT",
+                detail=message,
+            ))
+
+    api_items: List[OpsAlertItem] = []
+    for it in api_report.items:
+        if it.check_passed is not False:
+            continue
+        api_items.append(OpsAlertItem(
+            business=it.name or f"接口 {it.node_id}",
+            metric="HTTP 检查",
+            value=f"HTTP {it.http_status}",
+            threshold="-",
+            status="FAIL",
+            detail=(it.error_message or ""),
+        ))
+
+    return OpsAlerts(server_warn_crit=server_items, api_failed=api_items)
