@@ -2743,6 +2743,23 @@ ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS blacklist          JSONB DEF
 ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS whitelist          JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
 ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS updated_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+-- 18.2 巡检脚本（2026-07-22 新增）
+-- inspection_script TEXT: 固定巡检脚本(bash / powershell，YAML | 字面块)
+-- inspection_parser VARCHAR(16): 解析器类型，默认 'json'；可选 'kv' | 'csv' | 'raw'
+ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS inspection_script TEXT DEFAULT NULL;
+ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS inspection_parser VARCHAR(16) DEFAULT 'json';
+-- CHECK 约束：单独 ALTER，避免与已有数据冲突；IF NOT EXISTS 兼容老 PG
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'devops_servers_inspection_parser_chk'
+    ) THEN
+        ALTER TABLE devops_servers
+            ADD CONSTRAINT devops_servers_inspection_parser_chk
+            CHECK (inspection_parser IN ('json', 'kv', 'csv', 'raw'));
+    END IF;
+END$$;
 -- 索引：按 server_type 过滤 / 按 updated_at 排序
 CREATE INDEX IF NOT EXISTS idx_devops_servers_server_type ON devops_servers(server_type);
 CREATE INDEX IF NOT EXISTS idx_devops_servers_updated_at  ON devops_servers(updated_at DESC);

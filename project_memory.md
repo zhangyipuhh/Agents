@@ -2071,8 +2071,8 @@ system_prompt = (
 
 ### 数据库表 `devops_servers`（2026-07-15 新增）
 
-- 列：`id` / `business_name UNIQUE` / `ip` / `port` / `username` / `password_encrypted BYTEA` / `server_type` / `blacklist JSONB` / `whitelist JSONB` / `created_at` / `updated_at`
-- CHECK：`server_type IN ('linux', 'windows')`、`port BETWEEN 1 AND 65535`
+- 列：`id` / `business_name UNIQUE` / `ip` / `port` / `username` / `password_encrypted BYTEA` / `server_type` / `blacklist JSONB` / `whitelist JSONB` / `inspection_script TEXT` / `inspection_parser VARCHAR(16)` / `created_at` / `updated_at`
+- CHECK：`server_type IN ('linux', 'windows')`、`port BETWEEN 1 AND 65535`、`inspection_parser IN ('json', 'kv', 'csv', 'raw')`
 - 索引：`idx_devops_servers_server_type`、`idx_devops_servers_updated_at DESC`
 - 工具元数据：在 `app/migrations/init_all_tables.sql` 的 `tools` 表中登记了 `execute_command` / `execute_batch_commands` / `get_system_logs` 三个工具（`module_path=app.shared.tools.skills.devops.SSHTools` / `file_path=app/shared/tools/skills/devops/SSHTools.py`；`args_schema` 显式不含 `runtime`；`business_name` 为必填字段，`args_schema` 标记 `required` 且工具入口验空）。
 
@@ -2083,6 +2083,16 @@ system_prompt = (
 - `app/routers/devops_server_admin_router.py`：router 级 `require_admin`；服务未初始化返回 500 + `detail=<lifespan 写入的 hint>`（无 hint 时退回 `"DevOpsServerService not initialized"`）；`GET` 严格只返回 `{id, business_name, server_type, updated_at}`；`POST /scan` 严格只返回 `{scanned, inserted, updated, failed}`；扫描异常时不回显原始 `detail` / 路径 / IP / 密码 / 名单。`DELETE /api/admin/devops-servers/{server_id}` 返 `204 No Content`：先 `server_exists` 探测（不存在 → 404 + `"服务器不存在"`），再 `delete_server`（service 持 `_write_lock` 同步删 `_cache` + `db.execute("DELETE FROM devops_servers WHERE id = $1", server_id)`）；DB 异常 → 500 + `"删除服务器失败"`，不回显 SQL / 原 detail。
 - **不再为 DevOps 工具创建 Agent**——工具通过 ToolRegistryService 扫描 `app/shared/tools/skills/devops/SSHTools.py` 自动发现，admin 界面按元数据展示。
 - **运行时必备配置**：`settings.devops.credential_key` 必须由 `Fernet.generate_key()` 生成（44 字节 base64），非法格式会在 `diagnose_credential_key()` 走 `invalid_fernet` 分支，效果同上。`data/devops/servers.yaml` 由 `.gitignore` 排除（`servers.yaml.example` 是公开模板），缺失时 `scan_and_upsert` 安全返回 0 但列表为空，不报错。
+
+### 巡检脚本字段 `inspection_script` / `inspection_parser`（2026-07-22 新增）
+
+- **字段定义**：每个 devops_servers 节点可携带「固定巡检脚本」（bash / powershell，YAML `|` 字面块多行字符串）与「解析器类型」（`json` / `kv` / `csv` / `raw`，默认 `json`）。
+- **YAML 形态**：`inspection_script: |` 块字符串保留换行；末尾多余换行会被 `_normalize_entry` 自动 `rstrip("\n")`。空字符串 / 纯空白 → `NULL`。`inspection_parser` 大小写不敏感；非法值 → 该条目 `failed`，不阻断其他记录。
+- **DB 落库**：`inspection_script TEXT NULL`（非加密、非敏感）+ `inspection_parser VARCHAR(16) DEFAULT 'json'` + `CHECK (inspection_parser IN ('json', 'kv', 'csv', 'raw'))`（DO $$ ... $$ 包裹，幂等）。
+- **服务层契约**：`_normalize_entry` / `_upsert_one_returning` / `preload_all` / `get_connection_config` 全链路同步；缓存 `rec["inspection_script"]` 与 `rec["inspection_parser"]` 透传。`preload_all` 中遇到非法 `inspection_parser`（NULL / 未知值）一律回退为 `'json'`，避免下游崩溃。
+- **公开白名单严格 4 字段**：`inspection_script` / `inspection_parser` 仅供 SSHTools 内部消费（`get_connection_config` 返回值），**永不进入** `GET /api/admin/devops-servers` 响应；admin router 的 `_PUBLIC_FIELDS` 防御性二次过滤保证即便 service 失误返回了脚本字段，响应也会被过滤。
+- **本轮不实现 tool**：`run_inspection_script` / `inspection_run` `@tool` 由后续 PR 处理；本轮仅完成「字段入库 + 缓存 + 内部消费通道」基础。
+- **覆盖范围**：`data/devops/servers.yaml` 的两个示例节点（Linux / Windows）均已携带 `inspection_script: |` + `inspection_parser: json` 示例，可作为运维模板参考。
 - **pydantic-settings v2 嵌套 BaseSettings 不递归读 .env（2026-07-15 已修复）**：`Settings.devops: DevOpsSettings = Field(default_factory=DevOpsSettings)` 这种嵌套写法，顶层 `.env` 的扁平 key `DEVOPS_CREDENTIAL_KEY` 默认不会穿透到 `settings.devops.credential_key`（其他子 settings 如 `LLMSettings.model_name` 因为字段名直接对应环境变量名而能正常加载；`FeishuSettings.feishu_app_id` / `SandboxSettings.sandbox_docker_mode` 因字段名自带前缀而能正常加载；唯独 `DevOpsSettings.credential_key` 字段名不带 `devops_` 前缀但 env 名带 `DEVOPS_` 前缀，导致不匹配）。**修复方案**：在 `DevOpsSettings.model_config` 声明 `env_prefix="DEVOPS_"`，使字段 `credential_key` 匹配 env `DEVOPS_CREDENTIAL_KEY`。诊断函数 `diagnose_credential_key()` 的 `settings_unread` 分支保留为防御性诊断，hint 文本已更新为「理论上不应触发，可能是 settings 单例被显式传入空值覆盖或 .env 文件路径/编码异常」。回归测试：`app/tests/core/test_devops_diagnostics.py::test_devops_settings_reads_env_via_prefix`。
 
 ### 强白名单契约（2026-07-15 落地）
@@ -2146,12 +2156,12 @@ system_prompt = (
 
 ### 测试覆盖
 
-- `app/tests/shared/test_devops_server_service.py` —— 31 个用例（含 2026-07-22 增补 `delete_server` / `server_exists` 4 个用例）：Fernet 校验、Singleton、preload、扫描别名/字段/统计 / `servers:` 顶层 dict / 重复拒绝 / 缓存 RETURNING 同步 / 路径 resolver / 默认路径来自 paths / `_ensure_list` 防御性 JSONB 反序列化（9 个用例覆盖 list 透传 / JSON 字符串还原 / dict 包装 / 非法 JSON 兜底 / None 与基本类型兜底 / `preload_all` 与 `get_connection_config` 端到端字符串还原）。
+- `app/tests/shared/test_devops_server_service.py` —— 44 个用例（含 2026-07-22 增补 `delete_server` / `server_exists` 4 个用例 + 巡检脚本字段 9 个用例）：Fernet 校验、Singleton、preload、扫描别名/字段/统计 / `servers:` 顶层 dict / 重复拒绝 / 缓存 RETURNING 同步 / 路径 resolver / 默认路径来自 paths / `_ensure_list` 防御性 JSONB 反序列化（9 个用例覆盖 list 透传 / JSON 字符串还原 / dict 包装 / 非法 JSON 兜底 / None 与基本类型兜底 / `preload_all` 与 `get_connection_config` 端到端字符串还原）/ **巡检脚本字段 9 个用例**（`_normalize_entry` str / literal block / 空 → None / 非法 parser → failed、`scan_and_upsert` 写缓存 + SQL 含新列 + 字面块换行保留、`preload_all` 加载 + 默认值回落、`get_connection_config` 暴露字段）。
 - `app/tests/shared/utils/test_devops_server_service.py` —— 10 个用例（2026-07-15 新增）：单例生命周期、`credential_key` 校验（空/非法）、`_write_lock` 类型校验（Bug-6）、`preload_all` 与 `scan_and_upsert` 写路径持锁观测、并发 `scan_and_upsert` 序列化、`_ensure_list` 防御性还原（list / dict / str-JSON / None / 非 JSON / 数字）、`list_public_servers` 严格白名单字段不外泄、`get_connection_config` 未注册业务名抛 KeyError。
 - `app/tests/shared/tools/skills/devops/test_command_interceptor.py` —— 31 个用例（2026-07-15 扩展）：原 23 + Bug-1/Bug-2 回归 8 个（`normalize_segment` 去除前导 `|`/`;`、精确白名单 `system.service` / `100%` 按字面量匹配、`^` 前缀仍走正则、`\d` 转义序列仍走正则、管道后续子段精确白名单命中、子段未列入拒绝）。
 - `app/tests/shared/tools/skills/devops/test_ssh_tools.py` —— 27 个用例（2026-07-15 扩展）：原 17 + Bug-3/4/5/7 回归 10 个（Fernet ValueError 通用化、业务名 MagicMock 兜底、`_open_client` 传 timeout / auth_timeout / banner_timeout、`_clamp_timeout` 钳制边界、`execute_batch_commands` 拒绝 None / 空列表）。
 - `app/tests/core/test_devops_server_lifespan.py` —— 4 个用例：DB 池就绪、空池降级、空 key 跳过、单例 reset。
-- `app/tests/routers/test_devops_server_admin_router.py` —— 14 个用例（含 2026-07-22 增补 DELETE 5 个用例）：路由注册（含 DELETE）、白名单二次过滤、扫描 4 数字、异常不外泄、service 缺失返 500、DELETE 路由注册 / 204 / 404 / service 缺失 500 / DB 失败 500 不外泄。
+- `app/tests/routers/test_devops_server_admin_router.py` —— 15 个用例（含 2026-07-22 增补 DELETE 5 个用例 + 巡检脚本不外泄 1 个用例）：路由注册（含 DELETE）、白名单二次过滤、扫描 4 数字、异常不外泄、service 缺失返 500、DELETE 路由注册 / 204 / 404 / service 缺失 500 / DB 失败 500 不外泄 / **`inspection_script` / `inspection_parser` 永不进入 GET 响应**（service 失误返回含脚本字段时 router 二次白名单过滤）。
 - `app/tests/core/test_devops_diagnostics.py` —— 8 个用例（2026-07-15 新增）：`missing` / `misspelled` / `settings_unread` / `invalid_fernet` 4 类分支、首尾空白忽略、`frozen=True` 不变性、通过路径不打印完整密钥。
 - `web/Agent/src/components/__tests__/TaskSchedulerManager.spec.js` —— 65 个用例（2026-07-22 增补 4 个删除按钮用例）：任务列表与调度表单、目标类型显隐、服务器/脚本扫描与强制刷新、白名单脱敏、防重复请求与失败重试、`server_list` schema 参数添加/搜索/多选/回显/失效项/旧参数兼容、并发加载、脚本切换隔离、首次加载与强制刷新失败后的脱敏重试、「保存任务」按钮位于 detail-header 顶部 actions 行（新建模式仅保存、编辑模式追加启停/运行/删除）、服务器行删除按钮（每行渲染 / confirm 取消 / confirm 确认后本地移除 / 网络错误脱敏文案）。
 

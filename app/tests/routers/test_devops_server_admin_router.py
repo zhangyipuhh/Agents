@@ -307,3 +307,40 @@ def test_delete_db_failure_returns_500_without_leak(client, devops_router_setup,
     body_text = resp.text
     assert "__LEAKED_pwd_hunter2__" not in body_text
     assert "asyncpg" not in body_text
+
+
+# ----------------------------------------------------------------------
+# 5. 巡检脚本字段不外泄（2026-07-22 新增）
+# ----------------------------------------------------------------------
+
+
+def test_list_endpoint_does_not_leak_inspection_script(client, devops_router_setup, admin_headers, monkeypatch):
+    """GET 响应不应包含 inspection_script / inspection_parser（公开白名单严格 4 字段）。
+
+    即使 service 失误返回了含脚本字段的 raw 数据,router 也必须做白名单过滤,
+    防止脚本字符串泄漏到 admin API 响应中。
+    """
+    raw_with_script = [
+        {
+            "id": 7,
+            "business_name": "alpha",
+            "server_type": "linux",
+            "updated_at": "2026-07-22",
+            "inspection_script": "echo LEAKED_SCRIPT_TOKEN_xyz",
+            "inspection_parser": "json",
+        }
+    ]
+    svc = devops_router_setup.state.devops_server_service
+    # 模拟 service 失误: 返回包含 inspection_script 的原始数据
+    monkeypatch.setattr(svc, "list_public_servers", lambda: raw_with_script)
+
+    resp = client.get("/api/admin/devops-servers", headers=admin_headers)
+    assert resp.status_code == 200
+    body_text = resp.text
+    # 关键断言: 脚本字符串与解析器字段名都不应出现在响应体中
+    assert "LEAKED_SCRIPT_TOKEN_xyz" not in body_text
+    assert "inspection_script" not in body_text
+    assert "inspection_parser" not in body_text
+    # 仍为 4 字段白名单
+    item = resp.json()[0]
+    assert set(item.keys()) == {"id", "business_name", "server_type", "updated_at"}

@@ -179,7 +179,9 @@ class DevOpsServerService:
         # asyncpg JSONB 由 codec 自动反序列化为 Python 对象（list/dict）
         rows = await self.db.fetch(
             "SELECT id, business_name, ip, port, username, password_encrypted, "
-            "server_type, blacklist, whitelist, created_at, updated_at "
+            "server_type, blacklist, whitelist, "
+            "inspection_script, inspection_parser, "  # 2026-07-22 新增
+            "created_at, updated_at "
             "FROM devops_servers ORDER BY id"
         )
         new_cache: Dict[str, Dict[str, Any]] = {}
@@ -199,6 +201,14 @@ class DevOpsServerService:
             # 避免下游 ``list(str)`` 把字符串拆成字符数组的灾难性 bug。
             data["blacklist"] = _ensure_list(data.get("blacklist"))
             data["whitelist"] = _ensure_list(data.get("whitelist"))
+            # 2026-07-22 新增:巡检脚本字段直接透传,None 视为未配置
+            if not isinstance(data.get("inspection_script"), (str, type(None))):
+                data["inspection_script"] = None
+            # inspection_parser 缺失 / 非法值一律回退为 'json'
+            parser_v = data.get("inspection_parser")
+            if parser_v not in ("json", "kv", "csv", "raw"):
+                parser_v = "json"
+            data["inspection_parser"] = parser_v
             new_cache[business_name] = data
         # Bug-6 修复:cache 替换原子化,读路径快照一致
         async with self._write_lock:
@@ -265,6 +275,9 @@ class DevOpsServerService:
             "server_type": rec.get("server_type"),
             "blacklist": list(rec.get("blacklist") or []),
             "whitelist": list(rec.get("whitelist") or []),
+            # 2026-07-22 新增:巡检脚本与解析器（仅供 SSHTools 内部消费,不入公开列表）
+            "inspection_script": rec.get("inspection_script"),
+            "inspection_parser": rec.get("inspection_parser") or "json",
         }
 
     # ------------------------------------------------------------------
@@ -365,6 +378,8 @@ class DevOpsServerService:
                     "server_type": normalized["server_type"],
                     "blacklist": normalized["blacklist"],
                     "whitelist": normalized["whitelist"],
+                    "inspection_script": normalized["inspection_script"],  # 2026-07-22 新增
+                    "inspection_parser": normalized["inspection_parser"],  # 2026-07-22 新增
                     "created_at": row_data.get("created_at"),
                     "updated_at": row_data.get("updated_at"),
                 }
@@ -441,6 +456,35 @@ class DevOpsServerService:
         if not isinstance(blacklist, list) or not isinstance(whitelist, list):
             raise ValueError("blacklist/whitelist must be list")
 
+        # inspection_script（2026-07-22 新增）：YAML 中通常为 | 字面块（str）；
+        # 也允许 None / int / bool 等；非 str 一律 str()；空字符串 / 纯空白视为 None
+        inspection_script_raw = entry.get("inspection_script")
+        if inspection_script_raw is None:
+            inspection_script: Optional[str] = None
+        else:
+            try:
+                inspection_script = str(inspection_script_raw)
+            except Exception as e:
+                raise ValueError(f"inspection_script 不可序列化: {e}") from e
+            if not inspection_script or not inspection_script.strip():
+                inspection_script = None
+            else:
+                # 去掉末尾多余换行（YAML 字面块常以 \n 结尾），保持 shell 输入干净
+                inspection_script = inspection_script.rstrip("\n")
+
+        # inspection_parser（2026-07-22 新增）：枚举 [json, kv, csv, raw]，默认 json
+        parser_raw = entry.get("inspection_parser", "json")
+        if not isinstance(parser_raw, str):
+            raise ValueError("inspection_parser must be string")
+        inspection_parser = parser_raw.strip().lower()
+        if inspection_parser not in ("json", "kv", "csv", "raw"):
+            raise ValueError(
+                f"invalid inspection_parser: {parser_raw!r} "
+                "(must be one of json / kv / csv / raw)"
+            )
+        if not inspection_parser:
+            inspection_parser = "json"
+
         return {
             "business_name": business_name,
             "ip": ip,
@@ -450,6 +494,8 @@ class DevOpsServerService:
             "server_type": server_type,
             "blacklist": [str(x) for x in blacklist],
             "whitelist": [str(x) for x in whitelist],
+            "inspection_script": inspection_script,
+            "inspection_parser": inspection_parser,
         }
 
     async def _upsert_one_returning(
@@ -481,12 +527,18 @@ class DevOpsServerService:
         row = await self.db.fetchrow(
             "INSERT INTO devops_servers "
             "(business_name, ip, port, username, password_encrypted, "
-            " server_type, blacklist, whitelist, created_at, updated_at) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, NOW(), NOW()) "
+            " server_type, blacklist, whitelist, "
+            " inspection_script, inspection_parser, "  # 2026-07-22 新增
+            " created_at, updated_at) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, "
+            "        $9, $10, "  # 2026-07-22 新增: inspection_script / parser
+            "        NOW(), NOW()) "
             "ON CONFLICT (business_name) DO UPDATE SET "
             "ip = EXCLUDED.ip, port = EXCLUDED.port, username = EXCLUDED.username, "
             "password_encrypted = EXCLUDED.password_encrypted, server_type = EXCLUDED.server_type, "
             "blacklist = EXCLUDED.blacklist, whitelist = EXCLUDED.whitelist, "
+            "inspection_script = EXCLUDED.inspection_script, "  # 2026-07-22 新增
+            "inspection_parser = EXCLUDED.inspection_parser, "  # 2026-07-22 新增
             "updated_at = NOW() "
             "RETURNING *, (xmax = 0) AS inserted",
             business_name,
@@ -497,6 +549,8 @@ class DevOpsServerService:
             normalized["server_type"],
             json.dumps(normalized["blacklist"]),
             json.dumps(normalized["whitelist"]),
+            normalized["inspection_script"],  # 2026-07-22 新增
+            normalized["inspection_parser"],  # 2026-07-22 新增
         )
         inserted = bool(row and row.get("inserted"))
         return inserted, row

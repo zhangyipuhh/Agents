@@ -1208,3 +1208,359 @@ def test_server_exists_cache_miss_consults_db(tmp_yaml):
     # cache 未命中 DB 也不存在
     db.fetchrow = AsyncMock(return_value=None)
     assert asyncio.run(svc.server_exists(43)) is False
+
+
+# ----------------------------------------------------------------------
+# 11. 巡检脚本字段 inspection_script / inspection_parser（2026-07-22 新增）
+# ----------------------------------------------------------------------
+
+
+def test_normalize_accepts_inspection_script_str(tmp_yaml):
+    """_normalize_entry 接受字符串形式的 inspection_script 并保留内容。"""
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    db = _make_db()
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    entry = {
+        "business_name": "alpha",
+        "ip": "10.0.0.1",
+        "port": 22,
+        "username": "root",
+        "password": "x",
+        "server_type": "linux",
+        "inspection_script": "echo hello\n",
+    }
+    norm = svc._normalize_entry(entry)
+    assert norm["inspection_script"] == "echo hello"
+    assert norm["inspection_parser"] == "json"
+
+
+def test_normalize_accepts_inspection_script_literal_block(tmp_yaml):
+    """_normalize_entry 接受 YAML 字面块（多行字符串），保留 \\n。
+
+    Args:
+        tmp_yaml: 临时 yaml 路径
+
+    Returns:
+        None
+    """
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    db = _make_db()
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    multiline = "#!/bin/bash\nDISK=$(df /)\nprintf '{disk:%s}\\n' \"$DISK\"\n"
+    entry = {
+        "business_name": "alpha",
+        "ip": "10.0.0.1",
+        "port": 22,
+        "username": "root",
+        "password": "x",
+        "server_type": "linux",
+        "inspection_script": multiline,
+        "inspection_parser": "JSON",  # 大写应被规范化
+    }
+    norm = svc._normalize_entry(entry)
+    # 字面块末尾 \n 被 rstrip 去掉
+    assert norm["inspection_script"].endswith("\"$DISK\"")
+    assert "\n" in norm["inspection_script"]
+    # 大写解析器被小写化
+    assert norm["inspection_parser"] == "json"
+
+
+def test_normalize_empty_script_becomes_none(tmp_yaml):
+    """_normalize_entry 收到空字符串 / 纯空白 inspection_script 时返回 None。"""
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    db = _make_db()
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    for empty in ["", "   ", "\n\n  \n"]:
+        norm = svc._normalize_entry({
+            "business_name": "a",
+            "ip": "1.1.1.1",
+            "port": 22,
+            "username": "u",
+            "password": "p",
+            "server_type": "linux",
+            "inspection_script": empty,
+        })
+        assert norm["inspection_script"] is None
+        assert norm["inspection_parser"] == "json"
+
+
+def test_normalize_invalid_parser_records_failed(tmp_yaml):
+    """inspection_parser 非法值时该条记 failed，不阻断其他记录。"""
+    import asyncio
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    db = _make_db()
+    fernet = Fernet(VALID_FERNET_KEY.encode("ascii"))
+    encrypted = fernet.encrypt(b"p")
+    db.fetchrow.side_effect = [
+        {
+            "id": 1,
+            "business_name": "ok",
+            "ip": "10.0.0.3",
+            "port": 22,
+            "username": "root",
+            "password_encrypted": encrypted,
+            "server_type": "linux",
+            "blacklist": [],
+            "whitelist": [],
+            "inspection_script": None,
+            "inspection_parser": "json",
+            "created_at": None,
+            "updated_at": "2026-07-22",
+            "inserted": True,
+        }
+    ]
+    tmp_yaml.parent.mkdir(parents=True, exist_ok=True)
+    tmp_yaml.write_text(
+        "- business_name: bad_parser\n"
+        "  ip: 10.0.0.1\n"
+        "  port: 22\n"
+        "  username: u\n"
+        "  password: p\n"
+        "  server_type: linux\n"
+        "  inspection_parser: xml\n"
+        "- business_name: ok\n"
+        "  ip: 10.0.0.3\n"
+        "  port: 22\n"
+        "  username: u\n"
+        "  password: p\n"
+        "  server_type: linux\n",
+        encoding="utf-8",
+    )
+
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    stats = asyncio.run(svc.scan_and_upsert())
+    assert stats["scanned"] == 2
+    assert stats["failed"] == 1
+    assert stats["inserted"] == 1
+    assert "bad_parser" not in svc._cache
+    assert "ok" in svc._cache
+
+
+def test_scan_and_upsert_writes_inspection_script_and_parser(tmp_yaml):
+    """scan_and_upsert 写入缓存时携带 inspection_script 与 inspection_parser。"""
+    import asyncio
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    db = _make_db()
+    encrypted = Fernet(VALID_FERNET_KEY.encode("ascii")).encrypt(b"p")
+    db.fetchrow.side_effect = [
+        {
+            "id": 33,
+            "business_name": "alpha",
+            "ip": "10.0.0.1",
+            "port": 22,
+            "username": "root",
+            "password_encrypted": encrypted,
+            "server_type": "linux",
+            "blacklist": [],
+            "whitelist": [],
+            "inspection_script": "echo hello\n",
+            "inspection_parser": "json",
+            "created_at": None,
+            "updated_at": "2026-07-22",
+            "inserted": True,
+        }
+    ]
+    tmp_yaml.parent.mkdir(parents=True, exist_ok=True)
+    tmp_yaml.write_text(
+        "servers:\n"
+        "  - business_name: alpha\n"
+        "    ip: 10.0.0.1\n"
+        "    port: 22\n"
+        "    username: root\n"
+        "    password: p\n"
+        "    server_type: linux\n"
+        "    inspection_script: |\n"
+        "      echo hello\n"
+        "    inspection_parser: json\n",
+        encoding="utf-8",
+    )
+
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    stats = asyncio.run(svc.scan_and_upsert())
+    assert stats["inserted"] == 1
+
+    rec = svc._cache["alpha"]
+    assert rec["inspection_script"] == "echo hello"
+    assert rec["inspection_parser"] == "json"
+
+    # 检查传入 db 的 SQL 也包含新列
+    sql = db.fetchrow.await_args.args[0]
+    assert "inspection_script" in sql
+    assert "inspection_parser" in sql
+    # 第 9 / 10 参数就是脚本与解析器
+    args = db.fetchrow.await_args.args
+    assert args[9] == "echo hello"
+    assert args[10] == "json"
+
+
+def test_scan_and_upsert_literal_block_yaml_preserves_newlines(tmp_yaml):
+    """YAML | 字面块的多行脚本在缓存里保留 \\n。
+
+    Args:
+        tmp_yaml: 临时 yaml 路径
+
+    Returns:
+        None
+    """
+    import asyncio
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    db = _make_db()
+    encrypted = Fernet(VALID_FERNET_KEY.encode("ascii")).encrypt(b"p")
+    db.fetchrow.side_effect = [
+        {
+            "id": 1,
+            "business_name": "alpha",
+            "ip": "10.0.0.1",
+            "port": 22,
+            "username": "root",
+            "password_encrypted": encrypted,
+            "server_type": "linux",
+            "blacklist": [],
+            "whitelist": [],
+            "inspection_script": None,
+            "inspection_parser": "json",
+            "created_at": None,
+            "updated_at": "2026-07-22",
+            "inserted": True,
+        }
+    ]
+    tmp_yaml.parent.mkdir(parents=True, exist_ok=True)
+    tmp_yaml.write_text(
+        "- business_name: alpha\n"
+        "  ip: 10.0.0.1\n"
+        "  port: 22\n"
+        "  username: root\n"
+        "  password: p\n"
+        "  server_type: linux\n"
+        "  inspection_script: |\n"
+        "    #!/bin/bash\n"
+        "    set -u\n"
+        "    printf '%s\\n' hello\n",
+        encoding="utf-8",
+    )
+
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    asyncio.run(svc.scan_and_upsert())
+
+    cached = svc._cache["alpha"]["inspection_script"]
+    assert isinstance(cached, str)
+    # 4 行字面块 → 至少 2 个换行
+    assert cached.count("\n") >= 2
+    assert "#!/bin/bash" in cached
+    assert "set -u" in cached
+
+
+def test_preload_loads_inspection_script_and_parser_defaults(tmp_yaml):
+    """preload_all 加载 DB 行时正确写入 inspection_script 与 inspection_parser。"""
+    import asyncio
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    db = _make_db()
+    db.fetch.return_value = [
+        {
+            "id": 1,
+            "business_name": "alpha",
+            "ip": "10.0.0.1",
+            "port": 22,
+            "username": "root",
+            "password_encrypted": b"enc",
+            "server_type": "linux",
+            "blacklist": [],
+            "whitelist": [],
+            "inspection_script": "echo probe",
+            "inspection_parser": "csv",
+            "created_at": None,
+            "updated_at": None,
+        },
+        {
+            "id": 2,
+            "business_name": "beta",
+            "ip": "10.0.0.2",
+            "port": 22,
+            "username": "root",
+            "password_encrypted": b"enc",
+            "server_type": "linux",
+            "blacklist": [],
+            "whitelist": [],
+            "inspection_script": None,
+            "inspection_parser": None,  # 缺失 → 默认 json
+            "created_at": None,
+            "updated_at": None,
+        },
+    ]
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    asyncio.run(svc.preload_all())
+    assert svc._cache["alpha"]["inspection_script"] == "echo probe"
+    assert svc._cache["alpha"]["inspection_parser"] == "csv"
+    assert svc._cache["beta"]["inspection_script"] is None
+    assert svc._cache["beta"]["inspection_parser"] == "json"
+
+
+def test_get_connection_config_exposes_inspection_fields(tmp_yaml):
+    """get_connection_config 返回值含 inspection_script / inspection_parser。"""
+    import asyncio
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    db = _make_db()
+    fernet = Fernet(VALID_FERNET_KEY.encode("ascii"))
+    encrypted_pw = fernet.encrypt(b"plaintext-secret")
+    db.fetch.return_value = [
+        {
+            "id": 1,
+            "business_name": "alpha",
+            "ip": "10.0.0.1",
+            "port": 22,
+            "username": "root",
+            "password_encrypted": encrypted_pw,
+            "server_type": "linux",
+            "blacklist": [],
+            "whitelist": [],
+            "inspection_script": "echo a",
+            "inspection_parser": "raw",
+            "created_at": None,
+            "updated_at": None,
+        }
+    ]
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    asyncio.run(svc.preload_all())
+    cfg = svc.get_connection_config("alpha")
+    assert cfg["inspection_script"] == "echo a"
+    assert cfg["inspection_parser"] == "raw"
+
+
+def test_get_connection_config_defaults_parser_to_json(tmp_yaml):
+    """get_connection_config: inspection_parser 缺失时回退 json。"""
+    import asyncio
+    from app.shared.utils.devops_server_service import DevOpsServerService
+
+    db = _make_db()
+    fernet = Fernet(VALID_FERNET_KEY.encode("ascii"))
+    encrypted_pw = fernet.encrypt(b"x")
+    db.fetch.return_value = [
+        {
+            "id": 1,
+            "business_name": "alpha",
+            "ip": "10.0.0.1",
+            "port": 22,
+            "username": "root",
+            "password_encrypted": encrypted_pw,
+            "server_type": "linux",
+            "blacklist": [],
+            "whitelist": [],
+            "inspection_script": None,
+            "inspection_parser": None,
+            "created_at": None,
+            "updated_at": None,
+        }
+    ]
+    svc = DevOpsServerService(db=db, config_path=str(tmp_yaml), credential_key=VALID_FERNET_KEY)
+    asyncio.run(svc.preload_all())
+    cfg = svc.get_connection_config("alpha")
+    assert cfg["inspection_script"] is None
+    assert cfg["inspection_parser"] == "json"
