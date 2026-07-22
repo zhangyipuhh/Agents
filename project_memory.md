@@ -10,7 +10,7 @@ Agent User Management 是一个基于 FastAPI 的 AI Agent 管理平台，提供
 - **数据库**: PostgreSQL（通过 asyncpg），支持 Memory 模式降级
 - **认证**: JWT（双 Token 体系：Access Token + Refresh Token）
 - **AI**: LangGraph + LangChain，支持多种 LLM 模型（版本详见下方 "AI 依赖版本与文档约定"）
-- **工具**: MCP（Model Context Protocol）工具集成
+- **SSH 执行分层**：`app/shared/tools/skills/devops/SSHTools.py` 保留大模型 LangChain 工具路径，继续负责 CommandInterceptor 黑白名单、ToolMessage 封装和业务配置解析；`app/shared/utils/ssh/` 提供与 LangChain 解耦的传统脚本 SSH 执行 helper，接收已解析连接配置和脚本内容，执行后只返回原始 stdout/stderr/exit_code/success，不读取 DevOpsServerService、不处理 inspection_parser、不经过通用命令拦截器。
 
 ### AI 依赖版本与文档约定
 
