@@ -76,6 +76,78 @@ When querying the database, use this MCP to inspect table schemas and row data.
 ## Debug rules 
 1. When troubleshooting any issues, first use PostgreSQL MCP to verify whether the error originates from database problems before investigating other causes.
 
+## ⚠️ HARD RULE: 调试元认知规则(方法论级)
+
+> 这些规则**不绑定具体领域**(SSH / 数据库 / 前端 / 业务逻辑),适用于一切故障排查。
+> 它们解决的是「如何想」,不是「想什么」。
+
+### 反模式警示(2026-07-22 真实案例)
+
+看到 `TimeoutError` + `duration=31087ms` → 立刻锁定 "PowerShell 启动失败 → 命令包装错误" → 改了 4 个文件 / 写了 4 个新测试 → **完全没碰到真正根因**(paramiko `stdin` 没关闭)。事后复盘 30 秒就能定位,事前投入数小时走偏。
+
+### 元认知规则
+
+**R1. 不要过早锁定单一假设(Anti-Anchoring)**
+- 看到任何异常/超时/失败,**先列出 ≥3 个可能根因**,再决定调查方向
+- 用 5-Why 反向追问:「如果不是这个原因,我应该看到什么反例证据?」
+- 反例证据未排除前,**禁止**修改任何代码
+- 警示信号:同一方向连续改了 3 次仍无效果 → 立刻停止,重新列假设(参见 CSS 调试原则 R5)
+
+**R2. 优先 trace 源头,不要在症状点修复(Root Cause Tracing)**
+- 异常发生在 A,但 A 可能是 B/C/D 传递的症状
+- 永远从表象往源头追,不在表象打补丁
+- 数据流追源:`最终失败调用 → 上游调用 → ... → 输入源头`
+- 例:`SSHExecResult.success=False` 是症状,真正根因可能在 `service.get_connection_config` / `wrap_script_for_platform` / `paramiko.exec_command` / OpenSSH server 端,不在 SSH executor 自己
+
+**R3. 反向证据法(Reverse Evidence Testing)**
+- 提出假设 H 后,**必须**找出 "如果 H 错,应该看到 X" 的可观测信号,并主动验证
+- 例:假设 "PowerShell 包装错误" → 反向证据:在同一脚本加 `stdin.close()` 看是否仍超时
+- 若反向证据支持反假设,**立即放弃 H**,不要"再加一个 flag 试试"
+
+**R4. 区分信号与噪音(Signal vs Noise)**
+- 故障现场往往有多条信号同时出现(异常字符串、stderr 内容、duration 数字、退出码)
+- **不要**挑最显眼的那个归因,要挑**最具区分性**的那个
+- 例:`error=TimeoutError` 很显眼,但 `duration=31087ms`(与配置超时精确一致)才是关键信号 —— 它指向 paramiko timeout 配置,而不是"命令内容"
+- 多信号共存时,用「最小信息集」原则:哪个信号最少出现、最独特、最能排除其他假设?
+
+**R5. 真实环境 > 理论推理(Reality Over Reasoning)**
+- 涉及平台差异 / 版本差异 / 环境差异的 corner case,**必须**真实环境测试
+- 推理得出的「修复」往往是空中楼阁 —— 没有真实环境,推理无法验证
+- 例:Windows PowerShell 5.1 在非控制台宿主下 `Out-Default` 会按 80 列硬换行 —— 推理想不到,只有真实 SSH 测试才能发现
+- 替代指标:能否用真实环境的最小化测试(mock server / 真机 / 容器)复现问题?
+
+**R6. 修复的"广度-深度"平衡(Breadth Before Depth)**
+- 在不熟悉领域排查时,**先广撒网列出假设**,不要直接深挖"最可能的 1 个"
+- 同一假设连续 ≥3 次修改无效果,立即停止深挖,转向其他假设(参见 CSS 调试原则 R5)
+- 修复代码量与方向正确性成反比:方向错了改得越多越糟;方向对了 3 行就能定位
+
+**R7. 假设的"否定证据"比"肯定证据"更可靠**
+- "我加了 A,B 好了" 不能证明 A 是根因(可能 A+B 共同作用,或 B 是安慰剂)
+- "我不加 A,B 也好" 才是 A 无关的强证据
+- 永远设计"撤销 X 后现象是否依旧"的反向实验
+
+**R8. 多轮修改失败后,真实环境测试是继续修改的强制前置(Real Environment Precondition)**
+- **触发条件**:**累计 ≥3 次代码修改未解决问题**(与 R6 联动),或**问题与平台/版本/环境差异强相关**(与 R5 联动)
+- **强制动作**:**在继续任何修改前,必须在真实环境中复现问题**(非推理 / 非测试 stub / 非 client 日志反推)
+  - 真机 SSH / 远程连接到目标环境,跑一遍目标命令
+  - 搭建最小化 mock server / 容器 / 真机,Docker 起一个最小复现环境
+  - 跑被怀疑的链路而不修改 production 代码,只观察真实行为
+- **不达标 A**:复现不成功 → 是"假设可能根本不对"的强证据,直接回到 R1 重新列根因
+- **不达标 B**:复现成功 → 在真实环境验证修复(不能只靠 unit test / mock)
+- **反模式**:在第 5/7/10 次修改时仍只是"再加一个 log 看看" / "再改一个配置试试" / "在测试里 mock 一下复现"
+- **禁止跨过**:即便有充分理论推理,**R5 要求真实环境的场景**(平台/版本/环境差异),未经真实环境复现,**禁止**写代码"修复"
+
+### 通用审计清单(任何调试场景通用)
+
+- [ ] 我列出了 ≥3 个可能根因吗?(R1)
+- [ ] 我有没有在症状点打补丁,而非追溯源头?(R2)
+- [ ] 对当前假设 H,我有没有找 "H 错时应该看到什么" 的反向证据?(R3)
+- [ ] 我有没有挑最显眼的信号归因,而忽略了更具区分性的信号?(R4)
+- [ ] 涉及平台/版本差异,有没有真实环境测试?还是仅理论推理?(R5)
+- [ ] 当前调查方向累计修改了几次?是否 ≥3 次仍无果?该转向了?(R6)
+- [ ] 我的"修复验证"是 "加了 A 好了",还是 "不加 A 也好" 的强证据?(R7)
+- [ ] 累计 ≥3 次修改未果或问题与平台/版本差异相关 → 我是否在真实环境中复现了问题?未经复现的"修复"是否被禁止?(R8)
+
 ## CSS Debugging Principles
 
 1. **Prioritize Anomalous Data** — When any computed/live value clearly violates expectations (e.g., a button is 1528px inside a 60px container), immediately stop the current direction and explain this contradiction first.
