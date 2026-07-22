@@ -45,6 +45,91 @@ def test_lifespan_initializes_email_before_task_scheduler():
     )
 
 
+def test_lifespan_initializes_devops_server_before_task_scheduler():
+    """测试 lifespan 源码顺序: DevOpsServerService 必须在 TaskSchedulerService 之前初始化。
+
+    触发原因（2026-07-22 实测）：
+
+    在 ops_inspection_sweep 触发定时任务 #4 时, ``task_scheduler_service.execute_schedule``
+    抛出 ``ScriptExecutionError: devops_server_service 不可用``。根因是 lifespan 源码中
+    ``DevOpsServerService`` 的初始化块（第 339-388 行附近）**晚于**
+    ``TaskSchedulerService`` 构造（第 270-315 行附近）。TaskSchedulerService 在构造时
+    通过 ``getattr(app.state, 'devops_server_service', None)`` 读取服务, 此时尚未初始化,
+    拿到 ``None`` 并永久缓存到 ``self._devops_server_service``, 后续脚本执行时
+    ``context.devops_server_service`` 一直是 ``None``, 调用 ``run_server_ops`` 触发
+    显式校验抛错。
+
+    修复策略: 将 DevOpsServerService 初始化块前移到 TaskSchedulerService 构造之前。
+
+    生产对等初始化点: ``app/core/server.py`` lifespan 中
+    ``TaskSchedulerService(..., devops_server_service=getattr(app.state, 'devops_server_service', None))``
+    与 ``DevOpsServerService.set_instance(svc)`` + ``app.state.devops_server_service = svc``。
+
+    参数:
+        无。
+
+    返回值:
+        None。
+
+    异常:
+        AssertionError: 顺序错误时抛出。
+    """
+    from app.core.server import lifespan
+
+    source = inspect.getsource(lifespan)
+    devops_init_index = source.index("app.state.devops_server_service = svc")
+    scheduler_init_index = source.index(
+        "app.state.task_scheduler_service = TaskSchedulerService("
+    )
+
+    assert devops_init_index < scheduler_init_index, (
+        "lifespan 中 DevOpsServerService 初始化（app.state.devops_server_service = svc）"
+        "必须在 TaskSchedulerService 之前完成, 否则 run_server_ops 在脚本执行时拿到 None, "
+        "导致 server_list 巡检失败（ScriptExecutionError: devops_server_service 不可用）。"
+    )
+    assert "devops_server_service=getattr(" in source, (
+        "lifespan 中必须通过 devops_server_service=getattr(app.state, ...) "
+        "将已初始化的 DevOpsServerService 注入 TaskSchedulerService。"
+    )
+
+
+def test_lifespan_initializes_api_config_before_task_scheduler():
+    """测试 lifespan 源码顺序: ApiConfigService 必须在 TaskSchedulerService 之前初始化。
+
+    与 ``test_lifespan_initializes_devops_server_before_task_scheduler`` 同源问题:
+    ApiConfigService 初始化块（第 397 行附近）也晚于 TaskSchedulerService, 导致
+    ``self._api_config_service is None``。当前因 hello_script / ops_inspection_sweep 默认
+    ``api_list=[]`` 走 ``run_api_checks`` 空数组短路未暴露, 但只要用户配置了 ``api_list``
+    即触发 ``ScriptExecutionError: api_config_service 不可用``。
+
+    参数:
+        无。
+
+    返回值:
+        None。
+
+    异常:
+        AssertionError: 顺序错误时抛出。
+    """
+    from app.core.server import lifespan
+
+    source = inspect.getsource(lifespan)
+    api_cfg_init_index = source.index("app.state.api_config_service = ApiConfigService(")
+    scheduler_init_index = source.index(
+        "app.state.task_scheduler_service = TaskSchedulerService("
+    )
+
+    assert api_cfg_init_index < scheduler_init_index, (
+        "lifespan 中 ApiConfigService 初始化（app.state.api_config_service = ApiConfigService(...)）"
+        "必须在 TaskSchedulerService 之前完成, 否则 run_api_checks 在脚本执行时拿到 None, "
+        "导致 api_list 健康检查失败（ScriptExecutionError: api_config_service 不可用）。"
+    )
+    assert "api_config_service=getattr(" in source, (
+        "lifespan 中必须通过 api_config_service=getattr(app.state, ...) "
+        "将已初始化的 ApiConfigService 注入 TaskSchedulerService。"
+    )
+
+
 def test_lifespan_initializes_task_scheduler_after_agent_preload():
     """测试 lifespan 在 AgentConfigService 预加载后初始化 TaskSchedulerService。
 

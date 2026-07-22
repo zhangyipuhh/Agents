@@ -6,7 +6,10 @@ SSHTools - SSH 远程命令执行工具集（2026-07-15 重写）
 职责：
     - 通过 ``DevOpsServerService`` 单例获取目标服务器的配置（IP/端口/用户名/密码/类型/名单）
     - 使用 Paramiko 在目标机器执行 SSH 命令
-    - 平台派生：Linux → ``/bin/bash -c '...'``；Windows → ``powershell.exe -Command "..."``
+    - 平台派生：Linux → ``/bin/bash -c '...'``；Windows → ``powershell.exe -NoProfile
+      -NonInteractive -ExecutionPolicy Bypass -EncodedCommand <Base64>``(UTF-16 LE),
+      与 ``app.shared.utils.ssh.executor.execute_script`` 共享同一 ``wrap_script_for_platform``
+      实现,避免双份 naive 包装漂移
     - 决策顺序：黑名单优先（拒绝执行）→ 白名单 allowlist（仅当服务显式配置时启用）
     - 命令批量：任一条命中黑名单 → 整批拒绝（不调用 paramiko）
     - 工具结果不含连接配置（password / ip / username 永不出现在 ToolMessage）
@@ -70,6 +73,7 @@ from app.shared.tools.skills.devops.CommandInterceptor import (
     CommandInterceptor,
 )
 from app.shared.utils.devops_server_service import DevOpsServerService
+from app.shared.utils.ssh.platform_shell import wrap_script_for_platform
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +152,9 @@ def _wrap_for_platform(server_type: str, command: str) -> str:
     """按平台派生真正的 shell 调用命令前缀。
 
     - ``server_type.lower() == "windows"`` →
-      ``powershell.exe -Command "<escaped>"``
+      ``powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass
+      -EncodedCommand <Base64>``(UTF-16 LE),由 ``app.shared.utils.ssh.platform_shell
+      .wrap_script_for_platform`` 统一派生
     - 其他（含 ``linux``） → ``/bin/bash -c '<escaped>'``
 
     Args:
@@ -158,11 +164,7 @@ def _wrap_for_platform(server_type: str, command: str) -> str:
     Returns:
         str: 已包裹的 shell 调用
     """
-    if (server_type or "").lower() == "windows":
-        escaped = command.replace('"', '\\"')
-        return f'powershell.exe -Command "{escaped}"'
-    escaped = command.replace("'", "'\\''")
-    return f"/bin/bash -c '{escaped}'"
+    return wrap_script_for_platform(server_type, command)
 
 
 def _clamp_timeout(timeout: Any, default: int = 30, lo: int = 1, hi: int = 120) -> int:

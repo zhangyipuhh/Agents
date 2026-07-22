@@ -432,10 +432,18 @@ def test_get_system_logs_windows_uses_get_winevent(monkeypatch):
     payload = json.loads(msgs[0].content)
     assert payload.get("success") is True
     args, _ = fake_client.exec_command.call_args
-    # Windows 路径必须走 PowerShell + Get-WinEvent，不应再使用 tail
+    # Windows 路径必须走 PowerShell + EncodedCommand（2026-07-22 修复:不再使用
+    # naive 的 -Command "..." 包装,改为 Microsoft 官方推荐的 Base64 编码路径,
+    # 避开多行 + 特殊字符在 Windows OpenSSH 默认 PATH / ExecutionPolicy 下的稳定性问题）
     assert "powershell.exe" in args[0]
-    assert "Get-WinEvent" in args[0]
-    assert "tail" not in args[0]
+    assert "-EncodedCommand" in args[0]
+    assert "-ExecutionPolicy Bypass" in args[0]
+    assert "Get-WinEvent" not in args[0]  # 明文不再出现,必须 Base64 解码后才能看到
+    # Base64 解码后必须能看到 Get-WinEvent
+    import base64 as _b64
+    parts = args[0].split("-EncodedCommand", 1)
+    decoded = _b64.b64decode(parts[1].strip()).decode("utf-16-le")
+    assert "Get-WinEvent" in decoded
 
 
 def test_batch_any_block_rejects_entire_batch(monkeypatch):

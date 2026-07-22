@@ -265,8 +265,92 @@ async def lifespan(app: FastAPI):
             await app.state.agent_config_service.preload_all()
             await app.state.mcp_config_service.preload_all()
 
+            # 2026-07-22 修复:在 TaskSchedulerService 构造之前初始化 DevOpsServerService。
+            # 此前 DevOpsServerService 在 lifespan 末段(约 L339-388)初始化,晚于
+            # TaskSchedulerService 在 L270-315 通过 ``getattr(app.state, 'devops_server_service', None)``
+            # 读取服务,导致 ``self._devops_server_service`` 永久为 None,后续脚本任务执行
+            # ``run_server_ops`` 抛出 ``ScriptExecutionError: devops_server_service 不可用``。
+            # 修复触发:ops_inspection_sweep 触发定时任务 #4 报该错(2026-07-22)。
+            # 顺序约束:DB 池就绪后;密钥诊断 + config_path 解析与旧实现完全一致。
+            if DatabasePool.is_enabled() and DatabasePool._pool is not None:
+                try:
+                    from app.core.config.devops_diagnostics import diagnose_credential_key
+                    from app.core.config.paths import resolve_devops_server_config_path
+                    from app.shared.utils.devops_server_service import DevOpsServerService
+
+                    diag = diagnose_credential_key()
+                    if not diag.ok:
+                        # 不挂载 app.state；router 会以 diag.hint 作为 500 detail 返回
+                        # 把 hint 缓存到 app.state，供 router 读取
+                        app.state.devops_server_service = None
+                        app.state.devops_server_service_hint = diag.hint
+                        logging.warning(
+                            "[lifespan] DevOpsServerService skipped: %s | %s",
+                            diag.reason,
+                            diag.hint,
+                        )
+                    else:
+                        cfg_path = resolve_devops_server_config_path(
+                            settings.devops.servers_config_path
+                        )
+                        svc = DevOpsServerService(
+                            db=DatabasePool._pool,
+                            config_path=str(cfg_path),
+                            credential_key=settings.devops.credential_key,
+                        )
+                        try:
+                            await svc.preload_all()
+                        except Exception as preload_exc:
+                            logging.warning(
+                                "[lifespan] DevOpsServerService preload failed: %s",
+                                type(preload_exc).__name__,
+                            )
+                        DevOpsServerService.set_instance(svc)
+                        app.state.devops_server_service = svc
+                        # 诊断通过,清理 hint
+                        app.state.devops_server_service_hint = None
+                        logging.info(
+                            "[lifespan] DevOpsServerService initialized: %d server(s)",
+                            len(svc._cache),
+                        )
+                except Exception as devops_exc:
+                    logging.warning(
+                        "[lifespan] Failed to initialize DevOpsServerService: %s",
+                        type(devops_exc).__name__,
+                    )
+            else:
+                logging.warning(
+                    "[lifespan] Database pool not available, DevOpsServerService not initialized"
+                )
+
+            # 2026-07-22 修复:在 TaskSchedulerService 构造之前初始化 ApiConfigService。
+            # 与 DevOpsServerService 同源顺序 bug;此前在 lifespan 末段(约 L393-408)初始化,
+            # 导致 ``self._api_config_service`` 永久为 None。当前 ops_inspection_sweep /
+            # hello_script 默认 api_list=[] 走空数组短路未暴露,但只要用户配置 api_list 即报错。
+            # 顺序约束:DB 池就绪后;仅依赖连接池,无其他 service 依赖。
+            if DatabasePool.is_enabled() and DatabasePool._pool is not None:
+                try:
+                    from app.shared.utils.api_config_service import ApiConfigService
+
+                    app.state.api_config_service = ApiConfigService(db=DatabasePool._pool)
+                    await app.state.api_config_service.preload_all()
+                    logging.info("[lifespan] ApiConfigService initialized")
+                except Exception as api_cfg_exc:
+                    logging.warning(
+                        "[lifespan] Failed to initialize ApiConfigService: %s",
+                        type(api_cfg_exc).__name__,
+                    )
+            else:
+                logging.warning(
+                    "[lifespan] Database pool not available, ApiConfigService not initialized"
+                )
+
             # 初始化智能体定时任务服务：数据库为任务定义真相源，应用内调度器负责触发。
             # 顺序要求：必须晚于 AgentConfigService 依赖注入与缓存预加载，确保执行时可复用 build_agent_instance。
+            # 2026-07-22 强化:同时必须晚于 DevOpsServerService 与 ApiConfigService 初始化,否则
+            # ``getattr(app.state, 'devops_server_service'/'api_config_service', None)`` 拿到
+            # None 并永久缓存到 self._xxx_service,脚本任务执行时触发
+            # ``ScriptExecutionError: xxx_service 不可用``。
             if settings.task_scheduler_enabled and db_pool:
                 try:
                     # 先初始化脚本发现服务（独立于 TaskSchedulerService，但会被注入）
@@ -329,82 +413,6 @@ async def lifespan(app: FastAPI):
         logging.info(
             "SkillsService initialized with %d global skill(s)",
             len(SkillsService.get_instance().all()),
-        )
-
-    # 2026-07-15：在 DB 池就绪后初始化 DevOpsServerService
-    # 密钥诊断统一走 devops_diagnostics.diagnose_credential_key()，区分
-    # missing / misspelled / invalid_fernet 三类失败原因。空 key 跳过但 API
-    # 仍会 500；path 解析统一走 ``paths.resolve_devops_server_config_path``；
-    # preload / 初始化异常仅记 warning（异常类型），不泄漏敏感细节。
-    if DatabasePool.is_enabled() and DatabasePool._pool is not None:
-        try:
-            from app.core.config.devops_diagnostics import diagnose_credential_key
-            from app.core.config.paths import resolve_devops_server_config_path
-            from app.shared.utils.devops_server_service import DevOpsServerService
-
-            diag = diagnose_credential_key()
-            if not diag.ok:
-                # 不挂载 app.state；router 会以 diag.hint 作为 500 detail 返回
-                # 把 hint 缓存到 app.state，供 router 读取
-                app.state.devops_server_service = None
-                app.state.devops_server_service_hint = diag.hint
-                logging.warning(
-                    "[lifespan] DevOpsServerService skipped: %s | %s",
-                    diag.reason,
-                    diag.hint,
-                )
-            else:
-                cfg_path = resolve_devops_server_config_path(
-                    settings.devops.servers_config_path
-                )
-                svc = DevOpsServerService(
-                    db=DatabasePool._pool,
-                    config_path=str(cfg_path),
-                    credential_key=settings.devops.credential_key,
-                )
-                try:
-                    await svc.preload_all()
-                except Exception as preload_exc:
-                    logging.warning(
-                        "[lifespan] DevOpsServerService preload failed: %s",
-                        type(preload_exc).__name__,
-                    )
-                DevOpsServerService.set_instance(svc)
-                app.state.devops_server_service = svc
-                # 诊断通过,清理 hint
-                app.state.devops_server_service_hint = None
-                logging.info(
-                    "[lifespan] DevOpsServerService initialized: %d server(s)",
-                    len(svc._cache),
-                )
-        except Exception as devops_exc:
-            logging.warning(
-                "[lifespan] Failed to initialize DevOpsServerService: %s",
-                type(devops_exc).__name__,
-            )
-    else:
-        logging.warning(
-            "[lifespan] Database pool not available, DevOpsServerService not initialized"
-        )
-
-    # 初始化 ApiConfigService（API 接口配置管理，数据库为节点与配置真相源）
-    # 顺序约束：必须在 DB 池就绪之后；仅依赖连接池，无其他 service 依赖。
-    # DB 不可用时不挂载 app.state，路由层 _get_service 会返回 500。
-    if DatabasePool.is_enabled() and DatabasePool._pool is not None:
-        try:
-            from app.shared.utils.api_config_service import ApiConfigService
-
-            app.state.api_config_service = ApiConfigService(db=DatabasePool._pool)
-            await app.state.api_config_service.preload_all()
-            logging.info("[lifespan] ApiConfigService initialized")
-        except Exception as api_cfg_exc:
-            logging.warning(
-                "[lifespan] Failed to initialize ApiConfigService: %s",
-                type(api_cfg_exc).__name__,
-            )
-    else:
-        logging.warning(
-            "[lifespan] Database pool not available, ApiConfigService not initialized"
         )
 
     # 2026-07-19 新增：注册多渠道消费者（飞书 / 未来钉钉 / 企微 / Slack 等）
