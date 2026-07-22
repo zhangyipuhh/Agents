@@ -234,6 +234,42 @@ class DevOpsServerService:
         return result
 
     # ------------------------------------------------------------------
+    # Detail (whitelist + inspection_script by server_id, admin 专用)
+    # ------------------------------------------------------------------
+
+    # 详情字段白名单：允许在详情端点返回的非敏感字段
+    _DETAIL_FIELDS = (
+        "id",
+        "business_name",
+        "server_type",
+        "updated_at",
+        "whitelist",
+        "inspection_script",
+        "inspection_parser",
+    )
+
+    def get_server_detail(self, server_id: int) -> Optional[Dict[str, Any]]:
+        """按 ``server_id`` 取详情（白名单 + 巡检脚本 + 解析器）。
+
+        命中：从 ``self._cache`` 返回仅含 ``_DETAIL_FIELDS`` 字段的字典；
+        未命中：返回 ``None``（HTTP 404 由 router 决定，service 不抛异常）。
+
+        安全边界：绝不返回 ``ip / port / username / password_encrypted /
+        blacklist``；这些字段只通过 ``get_connection_config`` 解密后供内部消费。
+
+        Args:
+            server_id: devops_servers 主键 id
+
+        Returns:
+            Optional[Dict[str, Any]]: 命中时含 ``_DETAIL_FIELDS`` 全字段的字典；
+            未命中时 ``None``
+        """
+        for rec in self._cache.values():
+            if rec.get("id") == server_id:
+                return {k: rec.get(k) for k in self._DETAIL_FIELDS}
+        return None
+
+    # ------------------------------------------------------------------
     # Connection config (decrypted password, internal use only)
     # ------------------------------------------------------------------
 
