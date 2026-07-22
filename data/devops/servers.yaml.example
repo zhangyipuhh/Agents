@@ -118,15 +118,19 @@ servers:
     # 固定巡检脚本：PowerShell 收集磁盘 / 内存 / CPU / 运行时间，输出 JSON 便于解析。
     inspection_script: |
       $disk = ((Get-PSDrive C).Used / ((Get-PSDrive C).Used + (Get-PSDrive C).Free)) * 100
-      $os   = Get-CimInstance Win32_OperatingSystem
+      $os   = Get-WmiObject Win32_OperatingSystem
       $mem  = (($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100
-      $cpu  = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
-      $uptime = (Get-Date) - $os.LastBootUpTime
-      @{ disk_used_pct = [math]::Round($disk, 1)
-         mem_used_pct = [math]::Round($mem, 1)
-         cpu_used_pct = [int]$cpu
-         uptime_hours = [math]::Round($uptime.TotalHours, 1) } | ConvertTo-Json -Compress
-    # 解析器：json（管道 ConvertTo-Json -Compress 输出单行 JSON）
+      $cpu  = (Get-WmiObject Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
+      $bootTime = $os.ConvertToDateTime($os.LastBootUpTime)
+      $uptime = (Get-Date) - $bootTime
+      $result = @{ disk_used_pct = [math]::Round($disk, 1)
+                   mem_used_pct = [math]::Round($mem, 1)
+                   cpu_used_pct = [int]$cpu
+                   uptime_hours = [math]::Round($uptime.TotalHours, 1) }
+      Add-Type -AssemblyName System.Web.Extensions
+      $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+      $serializer.Serialize($result)
+      # 解析器：json（JavaScriptSerializer 输出单行 JSON）
     inspection_parser: json
     # 巡检字段规则（2026-07-22 新增）：Windows 磁盘仅采 C 盘，CPU 改用使用率，uptime 仅展示。
     inspection_fields:

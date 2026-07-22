@@ -59,7 +59,6 @@ from app.scripts.base import ScriptContext, ScriptExecutionError
 from app.shared.utils.ssh.executor import SSHExecResult, execute_script
 from app.shared.utils.inspection.parser import (
     evaluate_inspection_fields,
-    normalize_inspection_fields,
     parse_inspection_output,
 )
 
@@ -592,7 +591,13 @@ async def _run_one(
     # 5) 解析 + 评估阶段：成功执行才进入
     try:
         parsed_values = parse_inspection_output(parser, result.stdout or "")
-        rules = normalize_inspection_fields(config.get("inspection_fields"))
+        # ``inspection_fields`` 由 ``DevOpsServerService.get_connection_config``
+        # 负责归一化为 ``list[InspectionFieldRule]``（含 ``key`` / ``name_zh`` /
+        # ``unit`` / ``direction`` / ``warn`` / ``crit`` 属性）；本模块**不**
+        # 调用 ``normalize_inspection_fields``，service 是序列化/结构化的唯一
+        # 真相源。下方仅做防御性类型断言应对老 cache / 测试 stub 输入。
+        raw_rules = config.get("inspection_fields")
+        rules = raw_rules if isinstance(raw_rules, list) else []
         evaluation = evaluate_inspection_fields(parsed_values, rules, parser)
     except Exception as exc:  # noqa: BLE001 - 解析评估失败保留 stdout / stderr / exit
         msg = f"{type(exc).__name__}: {exc}"

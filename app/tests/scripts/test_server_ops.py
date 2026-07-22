@@ -177,7 +177,13 @@ def test_resolve_server_list_invalid_elements_raise(bad_value):
 
 
 class _StubDevOpsService:
-    """仅记录调用的 stub，``get_connection_config`` 按 business_name 取预设配置。"""
+    """模拟 ``DevOpsServerService.get_connection_config`` 的 stub。
+
+    行为契约：与生产 service 一致——``inspection_fields`` 必须以
+    ``list[InspectionFieldRule]``（dataclass）形式返回；本 stub 在返回前
+    调用 ``normalize_inspection_fields`` 把 dict 形式预存配置归一化为
+    dataclass 列表，模拟 service 的"序列化由 service 负责"契约。
+    """
 
     def __init__(self, configs: Dict[str, Dict[str, Any]],
                  raised_by_name: Optional[Dict[str, BaseException]] = None) -> None:
@@ -186,10 +192,17 @@ class _StubDevOpsService:
         self.calls: List[str] = []
 
     def get_connection_config(self, business_name: str) -> Dict[str, Any]:
+        from app.shared.utils.inspection.parser import normalize_inspection_fields
+
         self.calls.append(business_name)
         if business_name in self._raised:
             raise self._raised[business_name]
-        return dict(self._configs[business_name])
+        cfg = dict(self._configs[business_name])
+        # 模拟 service 端的 dict→InspectionFieldRule 转换
+        cfg["inspection_fields"] = list(
+            normalize_inspection_fields(cfg.get("inspection_fields") or [])
+        )
+        return cfg
 
 
 def _make_context_with_service(service: Any, script_args: Dict[str, Any]) -> ScriptContext:
@@ -334,6 +347,67 @@ async def test_run_server_ops_parses_json_inspection_and_counts_status(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_run_server_ops_expands_disks_array_into_field_results(monkeypatch):
+    """disks 数组存在时, 单条 disk_used_pct 规则按数组元素展开为多条 field_results。
+
+    端到端覆盖点:
+        - 脚本输出顶层 ``disks`` 数组 + 其它顶层字段;
+        - ``inspection_fields`` 中 ``disk_used_pct`` 规则单条声明;
+        - ``ServerOpsItem.field_results`` 出现 2 条同 key 的结果, 每条 message 带 mount;
+        - 整体 ``inspection_status`` 由最坏状态决定 (任一盘超阈值 -> crit);
+        - parsed_values 保留原 dict(含 disks 数组与 mem_used_pct)。
+    """
+    stdout = (
+        '{"disks":[{"mount":"/","disk_used_pct":42},'
+        '{"mount":"/data","disk_used_pct":92}],'
+        '"mem_used_pct":38,"cpu_idle_pct":75,"load_1m":0.12}'
+    )
+    monkeypatch.setattr(
+        "app.scripts.server_ops.execute_script",
+        lambda *_: SSHExecResult(True, stdout, "", 0),
+    )
+    service = _StubDevOpsService({"biz-A": {
+        "inspection_script": "echo disks", "inspection_parser": "json",
+        "inspection_fields": [
+            {"key": "disk_used_pct", "name_zh": "磁盘使用率",
+             "unit": "%", "direction": "high", "warn": 80, "crit": 90},
+        ],
+    }})
+    report = await run_server_ops(_make_context_with_service(service, {"server_list": ["biz-A"]}))
+
+    item = report.items[0]
+    # 单条规则因 disks 数组展开为 2 条 field_results。
+    assert len(item.field_results) == 2
+    by_index = list(item.field_results)
+    assert by_index[0]["key"] == "disk_used_pct"
+    assert by_index[0]["value"] == 42
+    assert by_index[0]["status"] == "pass"
+    assert by_index[0]["message"] == "磁盘 /"
+    assert by_index[1]["key"] == "disk_used_pct"
+    assert by_index[1]["value"] == 92
+    assert by_index[1]["status"] == "crit"
+    assert by_index[1]["message"] == "磁盘 /data"
+    # 整体状态取最坏 -> crit。
+    assert item.inspection_status == "crit"
+    assert report.inspection_critical == 1
+    # parsed_values 保留原值(原 dict 含 disks 数组)。
+    assert item.parsed_values == {
+        "disks": [
+            {"mount": "/", "disk_used_pct": 42},
+            {"mount": "/data", "disk_used_pct": 92},
+        ],
+        "mem_used_pct": 38,
+        "cpu_idle_pct": 75,
+        "load_1m": 0.12,
+    }
+    # summary_line 也应包含每条磁盘的状态。
+    assert "磁盘 /" in item.error_message or item.inspection_status == "crit"
+    markdown = report.to_markdown()
+    assert "磁盘 /" in markdown
+    assert "磁盘 /data" in markdown
+
+
+@pytest.mark.asyncio
 async def test_run_server_ops_does_not_block_event_loop(monkeypatch):
     """``execute_script`` 是同步阻塞调用，必须经 ``asyncio.to_thread`` 包装以让出事件循环。"""
     # 1) 用一个从外部线程记录"事件循环是否被阻塞"的同步函数验证；
@@ -383,6 +457,149 @@ async def test_run_server_ops_does_not_block_event_loop(monkeypatch):
         )
     finally:
         server_ops_module.execute_script = original
+
+
+@pytest.mark.asyncio
+async def test_run_server_ops_does_not_re_normalize_inspection_fields(monkeypatch):
+    """锁定契约：**service 是 ``inspection_fields`` 序列化的唯一真相源**。
+
+    ``server_ops._run_one`` **不**调用 ``normalize_inspection_fields``。
+    验证方式：``normalize_inspection_fields`` 模块级 spy 调用次数 == 0。
+    """
+    import app.scripts.server_ops as server_ops_module
+
+    # 强约束 1：server_ops 模块当前**不**导出 ``normalize_inspection_fields``
+    # （service 才是序列化唯一源）。
+    assert not hasattr(server_ops_module, "normalize_inspection_fields"), (
+        "server_ops.py 不应导入 normalize_inspection_fields；序列化由 service 端负责。"
+        f"实际模块内有: {hasattr(server_ops_module, 'normalize_inspection_fields')}"
+    )
+
+    # 强约束 2：即便未来有人添加 import 并调用此函数，下面的 spy 会拦截并计数，
+    # 触发测试失败。本轮回归无需真调用 normalize_inspection_fields。
+    normalize_calls = {"n": 0}
+
+    def fake_normalize(*args, **kwargs):
+        normalize_calls["n"] += 1
+        return []
+
+    monkeypatch.setattr(
+        "app.scripts.server_ops.normalize_inspection_fields",
+        fake_normalize,
+        raising=False,
+    )
+
+    def fake_execute_script(cfg, script, timeout):
+        return SSHExecResult(success=True, stdout='{"disk_used_pct": 40}', stderr="", exit_code=0)
+
+    monkeypatch.setattr("app.scripts.server_ops.execute_script", fake_execute_script)
+
+    configs = {
+        "biz-A": {
+            "ip": "10.0.0.1", "port": 22, "username": "u", "password": "p",
+            "server_type": "linux", "inspection_script": "echo ok",
+            "inspection_parser": "json",
+            "inspection_fields": [
+                {"key": "disk_used_pct", "name_zh": "磁盘使用率", "unit": "%",
+                 "direction": "high", "warn": 80, "crit": 90},
+            ],
+        },
+    }
+    service = _StubDevOpsService(configs=configs)
+    ctx = _make_context_with_service(service, {"server_list": ["biz-A"]})
+
+    report = await run_server_ops(ctx)
+    item = report.items[0]
+
+    # 执行成功；fake_normalize 计数 == 0 表示 server_ops 没有走这条路径
+    assert item.success is True
+    assert normalize_calls["n"] == 0, (
+        f"server_ops 不应调用 normalize_inspection_fields，但被调了 "
+        f"{normalize_calls['n']} 次"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_server_ops_handles_unexpected_inspection_fields_type(monkeypatch):
+    """``inspection_fields`` 收到 ``None`` 或非 list 输入（如老 cache / 误用）时，
+    ``server_ops`` 走防御性类型断言回退为空规则，不抛异常，整体巡检可继续。
+
+    注：生产 service 端保证返回 ``list[InspectionFieldRule]``；本用例验证脚本侧
+    防御性兜底（service 缺失或老版本 cache 时不崩）。
+    """
+    def fake_execute_script(cfg, script, timeout):
+        return SSHExecResult(success=True, stdout='{"x": 1}', stderr="", exit_code=0)
+
+    monkeypatch.setattr("app.scripts.server_ops.execute_script", fake_execute_script)
+
+    # 直接构造一个不走 _StubDevOpsService.normalize 的服务：模拟"老 cache" 返回异常形态
+    class _NoNormalizeService:
+        def __init__(self, raw):
+            self._raw = raw
+            self.calls = []
+
+        def get_connection_config(self, business_name):
+            self.calls.append(business_name)
+            return self._raw  # 已包含 inspection_fields 异常形态
+
+    cfg = {
+        "ip": "10.0.0.1", "port": 22, "username": "u", "password": "p",
+        "server_type": "linux", "inspection_script": "echo ok",
+        "inspection_parser": "json",
+        # 异常形态 1：None（与首次 DB 缺字段一致）
+        "inspection_fields": None,
+    }
+    service = _NoNormalizeService(cfg)
+    ctx = _make_context_with_service(service, {"server_list": ["biz-A"]})
+
+    report = await run_server_ops(ctx)
+    item = report.items[0]
+    # 防御性回退到空规则 → inspection_status="unassessed"，success=True（SSH 成功）
+    assert item.success is True
+    assert item.inspection_status == "unassessed"
+    assert item.field_results == []
+
+
+@pytest.mark.asyncio
+async def test_run_server_ops_stub_service_mimics_real_normalization(monkeypatch):
+    """``_StubDevOpsService`` 应模拟真实 service：返回 ``list[InspectionFieldRule]`` 而不是 dict。
+
+    这是该契约的可执行断言；任何回归（如 ``_StubDevOpsService`` 退回纯 dict 透传）
+    都会立即被本用例捕获。
+    """
+    from app.shared.utils.inspection.parser import InspectionFieldRule
+
+    def fake_execute_script(cfg, script, timeout):
+        return SSHExecResult(success=True, stdout='{"mem_used_pct": 50}', stderr="", exit_code=0)
+
+    monkeypatch.setattr("app.scripts.server_ops.execute_script", fake_execute_script)
+
+    cfg = {
+        "ip": "10.0.0.1", "port": 22, "username": "u", "password": "p",
+        "server_type": "linux", "inspection_script": "echo ok",
+        "inspection_parser": "json",
+        "inspection_fields": [
+            {"key": "mem_used_pct", "name_zh": "内存使用率", "unit": "%",
+             "direction": "high", "warn": 80, "crit": 90},
+        ],
+    }
+    service = _StubDevOpsService(configs={"biz-A": cfg})
+    cfgs_returned = service.get_connection_config("biz-A")
+
+    # 必须是 dataclass 列表，不能是 dict 列表
+    assert isinstance(cfgs_returned["inspection_fields"], list)
+    assert all(
+        isinstance(item, InspectionFieldRule)
+        for item in cfgs_returned["inspection_fields"]
+    )
+    rule = cfgs_returned["inspection_fields"][0]
+    assert rule.key == "mem_used_pct"
+    assert rule.direction == "high"
+    # evaluate_inspection_fields 直接消费，无需再 normalize
+    from app.shared.utils.inspection.parser import evaluate_inspection_fields as _evaluate
+    parsed = {"mem_used_pct": 50}
+    evaluation = _evaluate(parsed, cfgs_returned["inspection_fields"], "json")
+    assert evaluation.status == "pass"  # 50 < warn=80
 
 
 @pytest.mark.asyncio

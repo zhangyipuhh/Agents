@@ -510,6 +510,12 @@ def parse_inspection_output(
 
 _STATUS_PRIORITY = {"pass": 0, "unassessed": 1, "warn": 2, "crit": 3}
 
+# 巡检脚本输出 JSON 顶层声明「按数组展开」的特殊键名。
+# 适用场景：脚本把每个磁盘 / 接口 / 分区输出一条结构化记录,顶层用
+# ``{"disks":[{...},{...}]}`` 形式承载;评估器对声明的字段(如
+# ``disk_used_pct``)在顶层缺失时,会读取该数组并对每个元素重复评估同一条规则。
+_DISKS_ARRAY_KEY = "disks"
+
 
 def _promote(current: str, candidate: str) -> str:
     """按 ``pass < unassessed < warn < crit`` 优先级取更高严重度。"""
@@ -534,6 +540,83 @@ def _evaluate_low(value_num: float, warn: float, crit: float) -> str:
     if value_num <= warn:
         return "warn"
     return "pass"
+
+
+def _classify_single_value(
+    rule: "InspectionFieldRule",
+    raw_value: Any,
+    *,
+    allow_string: bool,
+) -> str:
+    """按规则方向与阈值, 把单个 ``raw_value`` 归一化为 ``pass`` / ``warn`` / ``crit``。
+
+    Args:
+        rule: 已规范化的字段规则, ``direction`` 必为 ``"high"`` 或 ``"low"``,
+            ``warn`` / ``crit`` 已保证非 None。
+        raw_value: 来自 ``parsed_values`` 或 ``disks`` 数组元素的原始值。
+        allow_string: 是否允许完整有限数字字符串(同 :func:`_coerce_parsed_number`)。
+
+    Returns:
+        str: ``"pass"`` / ``"warn"`` / ``"crit"`` 之一, 非数值固定 ``"crit"``。
+    """
+    value_num = _coerce_parsed_number(raw_value, allow_string=allow_string)
+    if value_num is None:
+        return "crit"
+    assert rule.warn is not None and rule.crit is not None
+    if rule.direction == "high":
+        return _evaluate_high(value_num, rule.warn, rule.crit)
+    return _evaluate_low(value_num, rule.warn, rule.crit)
+
+
+def _expand_disks_array(
+    rule: "InspectionFieldRule",
+    disks: List[Any],
+    *,
+    allow_string: bool,
+) -> Tuple[Tuple["InspectionFieldResult", ...], str]:
+    """把单条 ``high`` / ``low`` 规则应用到 ``disks`` 数组的每个元素。
+
+    Args:
+        rule: 已规范化的字段规则; 调用方须保证 ``direction in ("high","low")``。
+        disks: 来自 ``parsed_values[_DISKS_ARRAY_KEY]`` 的数组。
+        allow_string: 是否允许字符串形式的有限数字(同 :func:`_coerce_parsed_number`)。
+
+    Returns:
+        Tuple[Tuple[InspectionFieldResult, ...], str]: ``(字段结果元组, 最高状态)``。
+        数组为空时返回 ``((), "crit")``, 供调用方决定是否要降级为单条
+        ``crit`` 占位。
+    """
+    results: List[InspectionFieldResult] = []
+    worst = "pass"
+    for entry in disks:
+        if not isinstance(entry, Mapping):
+            # 非 Mapping 元素 (例如脚本误输出字符串 / 数字) 跳过,
+            # 不污染整体结果; 不计入 worst。
+            continue
+        if rule.key not in entry:
+            # 单个元素缺少目标字段, 也跳过(局部噪音);
+            # 调用方负责处理「整列都没值」的最坏情况。
+            continue
+        raw_value = entry[rule.key]
+        status = _classify_single_value(rule, raw_value, allow_string=allow_string)
+        mount = entry.get("mount")
+        message = ""
+        if isinstance(mount, str) and mount:
+            message = f"磁盘 {mount}"
+        results.append(
+            InspectionFieldResult(
+                key=rule.key,
+                name_zh=rule.name_zh,
+                unit=rule.unit,
+                value=raw_value,
+                status=status,
+                message=message,
+                warn=rule.warn,
+                crit=rule.crit,
+            )
+        )
+        worst = _promote(worst, status)
+    return tuple(results), worst
 
 
 def evaluate_inspection_fields(
@@ -570,6 +653,14 @@ def evaluate_inspection_fields(
           否则 pass。
         - 总状态优先级: crit > warn > pass; ``unassessed`` 不下拉其它字段
           的严重度。
+        - **disks 数组展开**：当声明的 ``high`` / ``low`` 字段在顶层缺失,
+          但存在 ``disks`` 数组(``parsed_values["disks"]`` 是 ``list``)
+          时, 对每个元素重复运行该规则; ``field_results`` 顺序与数组顺序
+          一致, ``message`` 携带 ``"磁盘 <mount>"`` 上下文; 数组元素非
+          ``Mapping`` 或缺字段的元素跳过(不污染整体结果); 数组为空或
+          所有元素都缺字段 → 该字段 ``crit`` + message 含
+          ``"disks 数组为空"``。仅作用于 ``disk_used_pct`` 类顶层缺失
+          场景, 不影响其它字段的原有路径。
     """
     rules_list = list(rules)
     normalized_parser = (parser or "").strip().lower()
@@ -661,6 +752,39 @@ def evaluate_inspection_fields(
             continue
 
         if r.key not in structured_values:
+            # 顶层字段缺失时, 检查是否存在 ``disks`` 数组, 若有则按数组
+            # 展开评估; 没有再按「字段缺失」返回 crit。
+            disks_value = structured_values.get(_DISKS_ARRAY_KEY)
+            if isinstance(disks_value, list):
+                expanded, worst_status = _expand_disks_array(
+                    r,
+                    disks_value,
+                    allow_string=normalized_parser in ("kv", "csv"),
+                )
+                if expanded:
+                    fields.extend(expanded)
+                    overall = _promote(overall, worst_status)
+                    continue
+                # 数组为空或所有元素均缺字段 -> 降级为单条 crit 占位,
+                # 与「字段在解析结果中缺失」语义对齐。
+                fields.append(
+                    InspectionFieldResult(
+                        key=r.key,
+                        name_zh=r.name_zh,
+                        unit=r.unit,
+                        value=None,
+                        status="crit",
+                        message=(
+                            f"字段 {r.key} 在解析结果中缺失(disks 数组"
+                            f"为空或所有元素均不含 {r.key})"
+                        ),
+                        warn=r.warn,
+                        crit=r.crit,
+                    )
+                )
+                overall = _promote(overall, "crit")
+                continue
+
             fields.append(
                 InspectionFieldResult(
                     key=r.key,

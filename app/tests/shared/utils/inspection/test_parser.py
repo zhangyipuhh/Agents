@@ -21,6 +21,7 @@
 15. evaluate_inspection_fields: 字段缺失 / 非数值（bool 也不算）-> 对应 crit
 16. evaluate_inspection_fields: high 使用 >=crit/ >=warn，low 使用 <=crit/ <=warn，critical 优先
 17. evaluate_inspection_fields: 保留原始 value
+18. evaluate_inspection_fields: disks 数组展开（顶层缺字段时按数组重复评估）
 
 测试风格遵循 `app/tests/shared/utils/` 既有约定：纯内存，无外部依赖。
 """
@@ -626,3 +627,263 @@ def test_evaluate_mixed_ignore_and_structured_rules_returns_structured_status():
     by_key = {f.key: f for f in evaluation.fields}
     assert by_key["host"].status == "unassessed"
     assert by_key["cpu"].status == "pass"
+
+
+# ---------------------------------------------------------------------------
+# 18. disks 数组展开（顶层缺字段时按数组重复评估同一条规则）
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_inspection_fields_disks_array_expands_rule():
+    """disks 数组存在且顶层缺 disk_used_pct 时, 对每个元素重复评估同一条规则。
+
+    断言:
+        - field_results 顺序与 disks 数组顺序一致, 长度等于 disks 元素数。
+        - 每条结果 value 为对应元素的 disk_used_pct 原值。
+        - 每条结果 message 携带该元素的 mount 上下文。
+        - status 与单条 high 阈值规则一致 (pass / crit)。
+    """
+    rules = normalize_inspection_fields([
+        {
+            "key": "disk_used_pct",
+            "name_zh": "磁盘使用率",
+            "unit": "%",
+            "direction": "high",
+            "warn": 80,
+            "crit": 90,
+        }
+    ])
+    parsed_values = {
+        "disks": [
+            {"mount": "/", "disk_used_pct": 42},
+            {"mount": "/data", "disk_used_pct": 92},
+        ],
+        "mem_used_pct": 38,
+    }
+
+    evaluation = evaluate_inspection_fields(parsed_values, rules, parser="json")
+
+    assert evaluation.status == "crit"
+    assert len(evaluation.fields) == 2
+    by_index = list(evaluation.fields)
+    assert by_index[0].key == "disk_used_pct"
+    assert by_index[0].value == 42
+    assert by_index[0].status == "pass"
+    assert by_index[0].message == "磁盘 /"
+    assert by_index[1].key == "disk_used_pct"
+    assert by_index[1].value == 92
+    assert by_index[1].status == "crit"
+    assert by_index[1].message == "磁盘 /data"
+    # parsed_values 保留原值, 不被替换为 {} 或被改写。
+    assert evaluation.parsed_values is parsed_values
+
+
+def test_evaluate_inspection_fields_disks_array_empty_marks_crit():
+    """disks 数组为空时, 字段以单条 crit 占位, message 含「disks 数组为空」。
+
+    断言:
+        - field_results 长度为 1, status == "crit"。
+        - message 包含「disks 数组为空」字样, 便于排查脚本侧输出缺失。
+        - 整体 status 也是 crit。
+    """
+    rules = normalize_inspection_fields([
+        {
+            "key": "disk_used_pct",
+            "name_zh": "磁盘使用率",
+            "unit": "%",
+            "direction": "high",
+            "warn": 80,
+            "crit": 90,
+        }
+    ])
+    parsed_values = {"disks": []}
+
+    evaluation = evaluate_inspection_fields(parsed_values, rules, parser="json")
+
+    assert evaluation.status == "crit"
+    assert len(evaluation.fields) == 1
+    field_result = evaluation.fields[0]
+    assert field_result.key == "disk_used_pct"
+    assert field_result.status == "crit"
+    assert field_result.value is None
+    assert "disks 数组为空" in field_result.message
+
+
+def test_evaluate_inspection_fields_disks_array_partial_missing_or_bad_values():
+    """disks 数组里某个元素值非法时, 单元素判 crit, 其它元素按规则正常评估。
+
+    覆盖三种局部异常:
+        - mount 缺失 -> message 不带磁盘前缀, 但仍可评估。
+        - disk_used_pct 是非数字字符串 (JSON) -> 该元素 crit。
+        - 元素是非 Mapping (脚本误输出) -> 跳过, 不污染整体结果。
+    """
+    rules = normalize_inspection_fields([
+        {
+            "key": "disk_used_pct",
+            "name_zh": "磁盘使用率",
+            "unit": "%",
+            "direction": "high",
+            "warn": 80,
+            "crit": 90,
+        }
+    ])
+    parsed_values = {
+        "disks": [
+            {"disk_used_pct": 40},  # 无 mount, pass
+            {"mount": "/data", "disk_used_pct": "bad"},  # 非数值, crit
+            "not-a-mapping",  # 跳过
+            {"mount": "/var", "disk_used_pct": 95},  # crit
+        ]
+    }
+
+    evaluation = evaluate_inspection_fields(parsed_values, rules, parser="json")
+
+    # 整体由最坏状态决定 -> crit。
+    assert evaluation.status == "crit"
+    # 跳过非 Mapping 元素, 实际产出 3 条结果。
+    assert len(evaluation.fields) == 3
+    statuses = [f.status for f in evaluation.fields]
+    assert statuses == ["pass", "crit", "crit"]
+    # 第一条无 mount, message 为空。
+    assert evaluation.fields[0].message == ""
+    # 第二条带 mount 但值非数值, message 仍带 mount, value 保留原字符串。
+    assert evaluation.fields[1].message == "磁盘 /data"
+    assert evaluation.fields[1].value == "bad"
+    # 第三条 mount=/var, value=95 -> crit (>= 90)。
+    assert evaluation.fields[2].message == "磁盘 /var"
+    assert evaluation.fields[2].value == 95
+
+
+def test_evaluate_inspection_fields_no_disks_key_still_crit():
+    """顶层既无 disk_used_pct 也无 disks 数组时, 字段按「缺失」判 crit, 行为不变。"""
+    rules = normalize_inspection_fields([
+        {
+            "key": "disk_used_pct",
+            "name_zh": "磁盘使用率",
+            "unit": "%",
+            "direction": "high",
+            "warn": 80,
+            "crit": 90,
+        }
+    ])
+    parsed_values = {"mem_used_pct": 40}
+
+    evaluation = evaluate_inspection_fields(parsed_values, rules, parser="json")
+
+    assert evaluation.status == "crit"
+    assert len(evaluation.fields) == 1
+    field_result = evaluation.fields[0]
+    assert field_result.key == "disk_used_pct"
+    assert field_result.status == "crit"
+    assert field_result.value is None
+    # 没有 disks 数组时, 走原「字段在解析结果中缺失」路径。
+    assert "disks 数组为空" not in field_result.message
+    assert "在解析结果中缺失" in field_result.message
+
+
+def test_parse_disks_array_regression_bug_user_reported():
+    """回归测试: 用户报告的真实坏输出 (缺逗号 + cpu_idle_pct 带 %id 后缀)。
+
+    断言: JSON 解析失败抛 ``InspectionParseError``, 消息含原始出错行片段,
+    便于运维侧排查脚本输出格式问题。这是契约的"反面"用例, 防止将来
+    评估器对坏 JSON 静默放行。
+    """
+    broken_stdout = (
+        '{"disks":[{"mount":"/","disk_used_pct":28}'
+        '{"mount":"/boot/efi","disk_used_pct":1}'
+        '{"mount":"/oradb","disk_used_pct":6}'
+        '{"mount":"/oragrid","disk_used_pct":48}],'
+        '"mem_used_pct":80,"cpu_idle_pct":92.5%id,"load_1m":2.77}'
+    )
+    with pytest.raises(InspectionParseError) as exc_info:
+        parse_inspection_output("json", broken_stdout)
+    # 错误消息应包含原始行片段, 便于定位。
+    assert "not valid JSON" in str(exc_info.value)
+
+
+def test_evaluate_disks_array_matches_user_real_linux_output():
+    """真实 Linux 输出 (修复后): 4 盘 disks 数组 + mem_used_pct=80 (warn) 触发告警。
+
+    锁定修复后的契约:
+        - 4 个 disk_used_pct 字段结果, message 带对应 mount;
+        - mem_used_pct=80 (== warn 阈值) → 该字段 warn (边界包含);
+        - cpu_idle_pct=92.5 (>= warn=20) → 该字段 pass (low 方向);
+        - load_1m=2.77 (< warn=4.0) → 该字段 pass;
+        - 整体 status 由最坏状态决定 (mem_used_pct 唯一 warn) → warn。
+    """
+    rules = normalize_inspection_fields([
+        {"key": "disk_used_pct", "name_zh": "磁盘使用率", "unit": "%",
+         "direction": "high", "warn": 80, "crit": 90},
+        {"key": "mem_used_pct", "name_zh": "内存使用率", "unit": "%",
+         "direction": "high", "warn": 80, "crit": 90},
+        {"key": "cpu_idle_pct", "name_zh": "CPU 空闲率", "unit": "%",
+         "direction": "low", "warn": 20, "crit": 10},
+        {"key": "load_1m", "name_zh": "1 分钟平均负载", "unit": "",
+         "direction": "high", "warn": 4.0, "crit": 8.0},
+    ])
+    parsed_values = parse_inspection_output("json", (
+        '{"disks":[{"mount":"/","disk_used_pct":28},'
+        '{"mount":"/boot/efi","disk_used_pct":1},'
+        '{"mount":"/oradb","disk_used_pct":6},'
+        '{"mount":"/oragrid","disk_used_pct":48}],'
+        '"mem_used_pct":80,"cpu_idle_pct":92.5,"load_1m":2.77}'
+    ))
+
+    evaluation = evaluate_inspection_fields(parsed_values, rules, parser="json")
+
+    assert evaluation.status == "warn"
+    # 4 盘 → 4 条 disk_used_pct, 按 mount 顺序。
+    disk_results = [f for f in evaluation.fields if f.key == "disk_used_pct"]
+    assert len(disk_results) == 4
+    assert [r.message for r in disk_results] == [
+        "磁盘 /", "磁盘 /boot/efi", "磁盘 /oradb", "磁盘 /oragrid",
+    ]
+    assert [r.value for r in disk_results] == [28, 1, 6, 48]
+    # 其它顶层字段正常评估。
+    by_key = {f.key: f for f in evaluation.fields if f.key != "disk_used_pct"}
+    assert by_key["mem_used_pct"].status == "warn"   # 80 == warn 边界包含
+    assert by_key["cpu_idle_pct"].status == "pass"   # 92.5 >= 20
+    assert by_key["load_1m"].status == "pass"        # 2.77 < 4.0
+
+
+def test_parse_windows_powershell_disks_array_with_escaped_backslashes():
+    """Windows PowerShell 输出: mount 含 ``\\`` 转义, 解析后应保留为 ``\\``。
+
+    锁定修复后的契约 (避免双引号字符串转义陷阱):
+        - PowerShell 手工拼接 JSON 时 ``C:\\`` 应被序列化为 ``C:\\\\``;
+        - Python ``json.loads`` 反序列化后 mount 仍是 ``C:\\``;
+        - disks 数组展开为 2 条 disk_used_pct, message 含 ``磁盘 C:\\``;
+        - uptime_hours 是 ignore → unassessed, 其它字段 pass。
+    """
+    stdout = (
+        '{"disks":['
+        '{"mount":"C:\\\\","disk_used_pct":45.5},'
+        '{"mount":"D:\\\\","disk_used_pct":22.0}],'
+        '"mem_used_pct":45.3,"cpu_used_pct":12,"uptime_hours":142.5}'
+    )
+    parsed = parse_inspection_output("json", stdout)
+
+    assert parsed["disks"][0]["mount"] == "C:\\"
+    assert parsed["disks"][1]["mount"] == "D:\\"
+
+    rules = normalize_inspection_fields([
+        {"key": "disk_used_pct", "name_zh": "磁盘使用率", "unit": "%",
+         "direction": "high", "warn": 80, "crit": 90},
+        {"key": "mem_used_pct", "name_zh": "内存使用率", "unit": "%",
+         "direction": "high", "warn": 80, "crit": 90},
+        {"key": "cpu_used_pct", "name_zh": "CPU 使用率", "unit": "%",
+         "direction": "high", "warn": 80, "crit": 95},
+        {"key": "uptime_hours", "name_zh": "系统运行时间", "unit": "小时",
+         "direction": "ignore", "warn": None, "crit": None},
+    ])
+    evaluation = evaluate_inspection_fields(parsed, rules, parser="json")
+
+    assert evaluation.status == "pass"
+    disk_results = [f for f in evaluation.fields if f.key == "disk_used_pct"]
+    assert len(disk_results) == 2
+    assert disk_results[0].message == "磁盘 C:\\"
+    assert disk_results[1].message == "磁盘 D:\\"
+    # ignore 字段 → unassessed, 保留 value。
+    by_key = {f.key: f for f in evaluation.fields if f.key != "disk_used_pct"}
+    assert by_key["uptime_hours"].status == "unassessed"
+    assert by_key["uptime_hours"].value == 142.5

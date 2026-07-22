@@ -2123,9 +2123,19 @@ def test_get_connection_config_returns_normalized_inspection_fields(tmp_yaml):
     fields = cfg["inspection_fields"]
     assert isinstance(fields, list)
     assert len(fields) == 1
-    assert fields[0]["key"] == "disk_used_pct"
-    # JSON 可序列化
-    json.dumps(fields, ensure_ascii=False)
+    # 注入到脚本侧的契约：``list[InspectionFieldRule]``（dataclass 形式），
+    # service 才是序列化/结构化的唯一真相源，调用方**不**再调用
+    # ``normalize_inspection_fields``。
+    from app.shared.utils.inspection.parser import InspectionFieldRule
+    assert isinstance(fields[0], InspectionFieldRule), (
+        f"get_connection_config 返回的 inspection_fields 元素必须是 "
+        f"InspectionFieldRule，实际为 {type(fields[0]).__name__}"
+    )
+    assert fields[0].key == "disk_used_pct"
+    assert fields[0].name_zh == "磁盘使用率"
+    assert fields[0].direction == "high"
+    assert fields[0].warn == 80
+    assert fields[0].crit == 90
 
 
 def test_get_server_detail_includes_inspection_fields():

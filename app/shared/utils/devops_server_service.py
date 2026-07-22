@@ -274,6 +274,9 @@ class DevOpsServerService:
                 }
                 for r in rules
             ]
+            # 注：``_cache`` 中保留 list[dict]，与 ``_normalize_entry`` / DB 形态
+            # 一致；dict→InspectionFieldRule 转换在 ``get_connection_config``
+            # 一次性完成，是 service 序列化/结构化的唯一真相源，调用方不再重复。
             new_cache[business_name] = data
         # Bug-6 修复:cache 替换原子化,读路径快照一致
         async with self._write_lock:
@@ -377,14 +380,16 @@ class DevOpsServerService:
             "server_type": rec.get("server_type"),
             "blacklist": list(rec.get("blacklist") or []),
             "whitelist": list(rec.get("whitelist") or []),
-            # 2026-07-22 新增:巡检脚本与解析器（仅供 SSHTools 内部消费,不入公开列表）
+            # 2026-07-22 新增:巡检脚本与解析器（仅供 SSHTools / 脚本内部消费,不入公开列表）
+            # ``inspection_fields`` 由 ``_cache`` 以 ``list[dict]`` 形式持有（与
+            # DB / YAML 形态一致），此处**只此一处**调用 ``normalize_inspection_fields``
+            # 转换为 ``list[InspectionFieldRule]``；service 是序列化/结构化的唯一
+            # 真相源，调用方（脚本侧）**不**重复归一化。
             "inspection_script": rec.get("inspection_script"),
             "inspection_parser": rec.get("inspection_parser") or "json",
-            "inspection_fields": [
-                {"key": r.key, "name_zh": r.name_zh, "unit": r.unit,
-                 "direction": r.direction, "warn": r.warn, "crit": r.crit}
-                for r in normalize_inspection_fields(rec.get("inspection_fields") or [])
-            ],
+            "inspection_fields": list(
+                normalize_inspection_fields(rec.get("inspection_fields") or [])
+            ),
         }
 
     # ------------------------------------------------------------------
