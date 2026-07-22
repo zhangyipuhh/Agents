@@ -350,3 +350,178 @@ async def test_hello_script_invalid_server_list_raises(
     )
     with pytest.raises(ScriptExecutionError, match="server_list"):
         await hello_script.run(context)
+
+
+# ----------------------------------------------------------------------------
+# 脚本样板的 api_list 参数契约（schema + 行为）
+# ----------------------------------------------------------------------------
+
+
+def test_hello_script_params_schema_declares_api_list():
+    """``params_schema`` 应声明 ``api_list`` 字段，类型与 UI 扩展精确匹配。
+
+    契约：
+        x-control=api-multiselect / x-source=api-configs / x-value-field=id；
+        元素类型为字符串；uniqueItems=True；默认空数组。
+    """
+    from app.scripts.examples import hello_script  # noqa: F401
+    importlib.reload(hello_script)
+
+    s = get_registered_script("hello_script")
+    assert s is not None, "hello_script 应已注册到 registry"
+
+    schema = s.params_schema
+    properties = schema.get("properties", {})
+    assert "api_list" in properties, "params_schema.properties 必须包含 api_list"
+
+    api_list = properties["api_list"]
+    assert api_list["type"] == "array"
+    assert api_list["items"]["type"] == "string"
+    assert api_list["uniqueItems"] is True
+    assert api_list["default"] == []
+    assert api_list["x-control"] == "api-multiselect"
+    assert api_list["x-source"] == "api-configs"
+    assert api_list["x-value-field"] == "id"
+
+
+@pytest.mark.asyncio
+async def test_hello_script_api_list_present_appends_check_summary(monkeypatch, tmp_path):
+    """``api_list`` 非空时正文摘要应追加 ``api_check=...`` 行（来自 ``run_api_checks`` stub）。"""
+    from app.scripts.examples import hello_script
+
+    # 用 stub 替换 run_api_checks，断言 hello_script 真的在 run 内调用并把 summary 拼到正文
+    captured_ctx: dict = {}
+    async def stub_run_api_checks(context):
+        captured_ctx["args"] = dict(context.script_args)
+        from app.scripts.api_check import ApiCheckItem, ApiCheckReport
+        report = ApiCheckReport(items=[
+            ApiCheckItem(node_id=10, name="查询接口", path="业务系统",
+                         check_passed=True, http_status=200, duration_ms=12),
+            ApiCheckItem(node_id=11, name="上报接口", path="",
+                         check_passed=False, http_status=500, duration_ms=8,
+                         error_message="服务端错误"),
+        ])
+        return report
+    monkeypatch.setattr(hello_script, "run_api_checks", stub_run_api_checks)
+
+    context = _make_context(
+        monkeypatch,
+        tmp_path,
+        script_args={"mode": "text", "api_list": ["10", "11"]},
+    )
+    result = await hello_script.run(context)
+
+    assert captured_ctx["args"]["api_list"] == ["10", "11"]
+    assert isinstance(result, str)
+    assert "api_check=1/2 passed" in result
+    assert "id=10 OK 200/12ms" in result
+    assert "id=11 FAIL 500/8ms" in result
+
+
+@pytest.mark.asyncio
+async def test_hello_script_api_list_empty_keeps_default_summary(monkeypatch, tmp_path):
+    """``api_list`` 缺失 / 空数组时与原默认摘要完全一致。
+
+    ``run_api_checks`` 仍会被调用一次（脚本入口固定调用），其内部对空 ids
+    短路返回空 report；因此两次执行结果完全相等，且均不含 ``api_check=`` 行。
+    """
+    from app.scripts.examples import hello_script
+    from app.scripts.api_check import ApiCheckReport
+
+    calls: list = []
+    async def stub_empty_report(context):
+        calls.append(list(context.script_args.get("api_list") or []))
+        return ApiCheckReport(items=[])
+    monkeypatch.setattr(hello_script, "run_api_checks", stub_empty_report)
+
+    ctx_missing = _make_context(monkeypatch, tmp_path, script_args={})
+    out_missing = await hello_script.run(ctx_missing)
+    ctx_empty = _make_context(monkeypatch, tmp_path, script_args={"api_list": []})
+    out_empty = await hello_script.run(ctx_empty)
+
+    assert out_missing == out_empty
+    assert "api_check=" not in out_missing
+    assert calls == [[], []], "两次 run 都会调用 run_api_checks，传入空数组"
+
+
+@pytest.mark.asyncio
+async def test_hello_script_api_list_md_attachment_includes_table(monkeypatch, tmp_path):
+    """``mode=multi`` + ``api_list`` 非空时，``.md`` 附件应包含接口健康检查表格。"""
+    from app.scripts.examples import hello_script
+    from app.scripts.api_check import ApiCheckItem, ApiCheckReport
+
+    async def stub(context):
+        return ApiCheckReport(items=[
+            ApiCheckItem(node_id=10, name="查询接口", path="业务系统",
+                         check_passed=True, http_status=200, duration_ms=15),
+        ])
+
+    monkeypatch.setattr(hello_script, "run_api_checks", stub)
+
+    context = _make_context(
+        monkeypatch,
+        tmp_path,
+        script_args={"mode": "multi", "content": "Demo", "api_list": ["10"]},
+    )
+    result = await hello_script.run(context)
+    assert isinstance(result, tuple) and len(result) == 2
+    _, attachments = result
+    md_path = next(p for p in attachments if p.endswith(".md"))
+    md_text = Path(md_path).read_text(encoding="utf-8")
+    assert "## 接口健康检查" in md_text
+    assert "| 查询接口 | 业务系统 | 200 | 15 | 通过 |" in md_text
+
+
+@pytest.mark.parametrize(
+    "bad_api_list",
+    [
+        "10",  # 字符串而非数组
+        ["10", 123],  # 含数字
+        ["10", None],  # 含 null
+        ["10", ""],  # 含空字符串
+    ],
+    ids=["string", "with-int", "with-null", "with-empty-string"],
+)
+@pytest.mark.asyncio
+async def test_hello_script_invalid_api_list_raises(
+    monkeypatch, tmp_path, bad_api_list
+):
+    """``api_list`` 不合法（字符串 / 含数字 / 含 null / 含空字符串）时应抛 ``ScriptExecutionError``。
+
+    api_config_service 在脚本内被 run_api_checks 解析；api_list 非空时先校验。
+    本测试不预装 service，因此一旦校验通过才会去取 service；这里直接覆盖校验阶段。
+    """
+    from app.scripts.examples import hello_script
+
+    context = _make_context(
+        monkeypatch,
+        tmp_path,
+        script_args={"mode": "text", "api_list": bad_api_list},
+    )
+    with pytest.raises(ScriptExecutionError, match="api_list"):
+        await hello_script.run(context)
+
+
+@pytest.mark.asyncio
+async def test_hello_script_api_list_non_integer_id_raises_when_service_called(
+    monkeypatch, tmp_path
+):
+    """``api_list`` 含非整数字符串时，``run_api_checks`` -> ``resolve_api_list`` 抛错。
+
+    为触发 ``service.send_request`` 之前的 ``resolve_api_list`` 分支，需先把 service 注入；
+    本用例直接构造 stub service 并预置 args，确认脚本侧确实抛 ScriptExecutionError。
+    """
+    from app.scripts.examples import hello_script
+
+    class _S:
+        async def get_tree(self): return []
+        async def send_request(self, _id):  # 不应到达
+            raise AssertionError("send_request 不应在解析阶段之前被调用")
+
+    ctx = _make_context(
+        monkeypatch, tmp_path,
+        script_args={"mode": "text", "api_list": ["bad"]},
+    )
+    ctx.api_config_service = _S()
+    with pytest.raises(ScriptExecutionError, match="api_list"):
+        await hello_script.run(ctx)

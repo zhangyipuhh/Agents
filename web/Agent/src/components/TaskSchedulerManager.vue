@@ -24,6 +24,7 @@ import {
   fetchScripts,
   scanScripts,
   fetchEmailPolicies,
+  fetchApiConfigTree,
 } from '../utils/api.js'
 import ApiConfigManager from './ApiConfigManager.vue'
 
@@ -79,11 +80,23 @@ const hasLoadedScripts = ref(false)
 // scriptParamValues：当前已添加、可编辑的受支持参数值（例如 { server_list: ['业务A'] }）。
 // legacyScriptArgs：旧任务中未在 schema 中声明或当前 UI 暂不支持的参数键值；只做无损保留，不通过 UI 编辑。
 // serverKeyword：服务器列表搜索词。
+// apiKeyword：API 候选列表搜索词。
 // 使用 ref({}) 而非 reactive({}) 是因为 Vue 3 在 reactive object 上动态添加 key 时，
 // 由 hasOwnProperty 检查构成的 computed 依赖不会被自动追踪；ref 整体替换值时会强制触发依赖更新。
 const scriptParamValues = ref({})
 const legacyScriptArgs = ref({})
 const serverKeyword = ref('')
+const apiKeyword = ref('')
+
+// API 接口配置节点状态（api_list 控件候选源），复用 GET /api/admin/api-configs/tree。
+// apiNodes 白名单字段：id / parent_id / node_type / name / sort_order。
+// hasLoadedApis / isLoadingApis / apiLoadPromise 复刻服务器缓存的契约。
+const apiNodes = ref([])
+const hasLoadedApis = ref(false)
+const isLoadingApis = ref(false)
+const apiListErrorMessage = ref('')
+let apiLoadPromise = null
+const API_NODE_WHITELIST = ['id', 'parent_id', 'node_type', 'name', 'sort_order'] // API节点白名单字段
 
 // 邮件策略状态（仅 script 任务启用邮件通知时按需加载）
 const emailPolicies = ref([])
@@ -124,14 +137,35 @@ function isServerListParamDefinition(key, def) {
 }
 
 /**
+ * 判断一个 schema 属性定义是否为前端受支持的「API 接口多选」参数。
+ * 仅当 key 精确等于 `api_list` 且所有 5 个 schema 约束均满足时返回 true：
+ * type=array、items.type=string、x-control=api-multiselect、
+ * x-source=api-configs、x-value-field=id。
+ * @param {string} key - schema 属性名
+ * @param {unknown} def - schema 中的单个属性定义
+ * @returns {boolean} 是否为受支持的 api_list 参数
+ */
+function isApiListParamDefinition(key, def) {
+  if (key !== 'api_list') return false
+  if (!def || typeof def !== 'object') return false
+  if (def.type !== 'array') return false
+  const items = def.items
+  if (!items || items.type !== 'string') return false
+  return def['x-control'] === 'api-multiselect'
+    && def['x-source'] === 'api-configs'
+    && def['x-value-field'] === 'id'
+}
+
+/**
  * 把任意值规整为「非空字符串、按首次出现顺序去重」的列表。
- * 仅在白名单 server_list 边界使用：去掉非字符串 / null / 空串 / 重复项，
- * 避免下游 `Set`、`Array.includes`、JSON 序列化出现 [object Object] / null 等脏数据。
- * 不接受空参数（返回空数组），不复制原始数组（已构造新数组）。
+ * 供 server_list 与 api_list 等字符串数组参数共用：去掉非字符串 / null / 空串 /
+ * 重复项，避免下游 `Set`、`Array.includes`、JSON 序列化出现 [object Object] /
+ * null 等脏数据。
+ * 不接受非数组输入（返回空数组），不复制原始数组（已构造新数组）。
  * @param {unknown} value - 原始输入（数组 / 其他类型）
  * @returns {string[]} 规范化后的字符串数组（保持首次出现顺序）
  */
-function normalizeServerList(value) {
+function normalizeStringList(value) {
   if (!Array.isArray(value)) return []
   const out = []
   const seen = new Set()
@@ -143,6 +177,12 @@ function normalizeServerList(value) {
   }
   return out
 }
+
+/**
+ * ``normalizeServerList`` 的兼容别名。
+ * 历史测试与代码可能直接引用该名；保留以避免破坏调用方契约。
+ */
+const normalizeServerList = normalizeStringList
 
 /**
  * 按 schema default 构造参数初值；非数组默认值被回退为对应默认值或 []。
@@ -334,7 +374,8 @@ function readScriptParamValues() {
 }
 
 /**
- * 当前脚本 params_schema 中所有受支持（目前只识别 server_list）的参数定义。
+ * 当前脚本 params_schema 中所有受支持的参数定义。
+ * 同时识别 server_list 与 api_list 两种受支持控件（新增控件需在此显式枚举）。
  * @returns {Array<{key: string, def: Object}>} 受支持参数定义数组。
  */
 const supportedScriptParamDefinitions = computed(() => {
@@ -345,7 +386,7 @@ const supportedScriptParamDefinitions = computed(() => {
   const out = []
   for (const key of Object.keys(properties)) {
     const def = properties[key]
-    if (isServerListParamDefinition(key, def)) {
+    if (isServerListParamDefinition(key, def) || isApiListParamDefinition(key, def)) {
       out.push({ key, def })
     }
   }
@@ -445,6 +486,7 @@ function clearScriptParamState() {
   scriptParamValues.value = {}
   legacyScriptArgs.value = {}
   serverKeyword.value = ''
+  apiKeyword.value = ''
 }
 
 /**
@@ -457,11 +499,12 @@ function writeScriptParamValues(obj) {
 
 /**
  * 编辑已有任务或 hydrate 回调：根据当前脚本 schema 把已存参数分配到 scriptParamValues。
- * - 已声明且受支持的参数（目前只有 server_list）→ 进入 scriptParamValues，
- *   经过 normalizeServerList 规范化（非空字符串 + 去重）；
+ * - 已声明且受支持的参数（当前识别 server_list 与 api_list）→ 进入 scriptParamValues，
+ *   经过 normalizeStringList 规范化（非空字符串 + 去重）；
  * - 其他键值（含 mode/content 等 schema 声明但 UI 暂不支持的参数，
  *   以及完全未在 schema 中的键）→ 进入 legacyScriptArgs 无损保留。
- * - 一旦检测到 server_list，按需触发 loadDevopsServers()（复用 in-flight，不重复 GET）。
+ * - 一旦检测到 server_list 按需触发 loadDevopsServers()；检测到 api_list
+ *   按需触发 loadApiConfigTree()。两者复用各自 in-flight 请求，不重复 GET。
  * @param {string} scriptName - 脚本名（与 scripts.value 中 name 对应）
  * @param {Object} rawArgs - 后端存储的原始 script_args
  */
@@ -477,8 +520,8 @@ function hydrateScriptArgs(scriptName, rawArgs) {
   for (const key of Object.keys(args)) {
     const def = supportedDefs ? supportedDefs[key] : null
     const value = args[key]
-    if (isServerListParamDefinition(key, def)) {
-      params[key] = normalizeServerList(value)
+    if (isServerListParamDefinition(key, def) || isApiListParamDefinition(key, def)) {
+      params[key] = normalizeStringList(value)
     } else {
       // schema 未声明或 schema 声明但 UI 暂不支持的字段，均进入 legacy 无损保留
       legacy[key] = value
@@ -486,17 +529,20 @@ function hydrateScriptArgs(scriptName, rawArgs) {
   }
   writeScriptParamValues(params)
   legacyScriptArgs.value = legacy
-  if (Object.prototype.hasOwnProperty.call(params, 'server_list')) {
-    if (!hasLoaded.value) {
-      loadDevopsServers()
-    }
+  if (Object.prototype.hasOwnProperty.call(params, 'server_list') && !hasLoaded.value) {
+    loadDevopsServers()
+  }
+  if (Object.prototype.hasOwnProperty.call(params, 'api_list') && !hasLoadedApis.value) {
+    loadApiConfigTree()
   }
 }
 
 /**
- * 新增一个受支持参数：按 schema default 初始化数组值，并在首次添加 server_list 时加载服务器列表。
- * 仅支持当前 isServerListParamDefinition 白名单内的 key（实质上只有 server_list）。
- * server_list 的初值经 normalizeServerList 规范化，避免 default 中混入非字符串 / 重复项。
+ * 新增一个受支持参数：按 schema default 初始化数组值，并在首次添加 server_list
+ * / api_list 时按需加载对应候选列表。
+ * 仅支持当前识别函数（isServerListParamDefinition / isApiListParamDefinition）
+ * 白名单内的 key；初值均经 normalizeStringList 规范化，避免 default 中混入
+ * 非字符串 / 重复项。
  * @param {string} key - 参数键名（必须已在 supportedScriptParamDefinitions 中）
  */
 function addScriptParam(key) {
@@ -506,10 +552,14 @@ function addScriptParam(key) {
   const current = { ...readScriptParamValues() }
   if (Object.prototype.hasOwnProperty.call(current, key)) return
   const fallback = cloneParamDefault(defRecord.def) ?? []
-  current[key] = key === 'server_list' ? normalizeServerList(fallback) : fallback
+  current[key] = (key === 'server_list' || key === 'api_list')
+    ? normalizeStringList(fallback)
+    : fallback
   writeScriptParamValues(current)
   if (key === 'server_list' && !hasLoaded.value) {
     loadDevopsServers()
+  } else if (key === 'api_list' && !hasLoadedApis.value) {
+    loadApiConfigTree()
   }
 }
 
@@ -528,10 +578,11 @@ function removeScriptParam(key) {
 
 /**
  * 把 legacyScriptArgs 与 scriptParamValues 合并为最终提交 payload。
- * - server_list 在合并时统一经 normalizeServerList 规范化（非空字符串 + 去重），
- *   即便上游 hydrate / add / set / toggle 路径漏掉了过滤，仍能在提交边界兜底。
+ * - server_list / api_list 在合并时统一经 normalizeStringList 规范化
+ *   （非空字符串 + 去重），即便上游 hydrate / add / set / toggle 路径漏掉
+ *   过滤，仍能在提交边界兜底。
  * - 其他数组值统一复制为新数组，避免外部修改响应式源对象。
- * - legacyScriptArgs 的内容保持原样：非 server_list 的未知数组透传，不污染。
+ * - legacyScriptArgs 的内容保持原样：非白名单参数的未知数组透传，不污染。
  * @returns {Object} 合并后的 script_args 对象
  */
 function buildScriptArgs() {
@@ -542,8 +593,8 @@ function buildScriptArgs() {
   const values = readScriptParamValues()
   for (const key of Object.keys(values)) {
     const v = values[key]
-    if (key === 'server_list') {
-      out[key] = normalizeServerList(v)
+    if (key === 'server_list' || key === 'api_list') {
+      out[key] = normalizeStringList(v)
     } else if (Array.isArray(v)) {
       out[key] = v.slice()
     } else {
@@ -672,6 +723,248 @@ function maskServers(rows) {
       // business_name 必须是字符串且非空，否则视为幽灵行从候选中剔除
       return typeof row.business_name === 'string' && row.business_name.length > 0
     })
+}
+
+/**
+ * 脱敏后的 API 配置节点列表：仅保留白名单字段 + id 有限 + node_type 与 name 合法。
+ * api_list 控件只需 (id, parent_id, node_type, name) 这 4 个字段来：
+ *   * 过滤 node_type==='api' 作为候选；
+ *   * 沿 parent_id 链拼父路径用于展示；
+ *   * id 字符串化后作为唯一标识。
+ * 节点层级可能存在多层文件夹；候选按 id 升序避免 parent 在 child 之后被选中。
+ * @param {Array} rows - 后端 /api/admin/api-configs/tree 返回的原始节点
+ * @returns {Array} 脱敏后的节点数组（仅含白名单字段 + 合法行）
+ */
+function maskApiNodes(rows) {
+  if (!Array.isArray(rows)) return []
+  return rows
+    .map((row) => {
+      if (!row || typeof row !== 'object') return null
+      const safe = {}
+      for (const key of API_NODE_WHITELIST) {
+        if (Object.prototype.hasOwnProperty.call(row, key)) {
+          safe[key] = row[key]
+        }
+      }
+      const id = Number(safe.id)
+      if (!Number.isFinite(id) || id <= 0) return null
+      if (safe.node_type !== 'folder' && safe.node_type !== 'api') return null
+      if (typeof safe.name !== 'string' || !safe.name) return null
+      safe.id = id
+      safe.parent_id = safe.parent_id == null ? null : Number(safe.parent_id)
+      safe.sort_order = Number(safe.sort_order) || 0
+      return safe
+    })
+    .filter((row) => row !== null)
+}
+
+/**
+ * 加载并脱敏 API 配置节点树，供 api_list 控件候选列表使用。
+ * 与 ``loadDevopsServers`` 同语义：hasLoadedApis 短路复用，in-flight Promise
+ * 复用，force 时先 await 旧请求再发起新请求；失败时统一脱敏文案，不外泄后端
+ * detail；强制刷新失败且有缓存时保留旧候选，否则清空。
+ * @param {Object} [opts] - 选项
+ * @param {boolean} [opts.force=false] - 强制刷新
+ * @returns {Promise<void>}
+ */
+async function loadApiConfigTree(opts = {}) {
+  const force = opts && opts.force === true
+  if (!force && hasLoadedApis.value) return
+  if (!force && apiLoadPromise) return apiLoadPromise
+  if (force && apiLoadPromise) {
+    try { await apiLoadPromise } catch { /* 旧失败已被原 caller 记录 */ }
+  }
+  const promise = (async () => {
+    isLoadingApis.value = true
+    apiListErrorMessage.value = ''
+    try {
+      const payload = await fetchApiConfigTree()
+      const rows = payload && Array.isArray(payload.nodes) ? payload.nodes : []
+      apiNodes.value = maskApiNodes(rows)
+      hasLoadedApis.value = true
+    } catch {
+      apiListErrorMessage.value = '接口列表加载失败'
+      const hasCached = force && Array.isArray(apiNodes.value) && apiNodes.value.length > 0
+      if (!hasCached) {
+        apiNodes.value = []
+        hasLoadedApis.value = false
+      }
+    } finally {
+      isLoadingApis.value = false
+    }
+  })()
+  const tracked = promise.finally(() => {
+    if (apiLoadPromise === tracked) apiLoadPromise = null
+  })
+  apiLoadPromise = tracked
+  return tracked
+}
+
+/**
+ * 把 ``apiNodes`` 中的 api 节点规整为带有父路径的候选数组。
+ * 父路径沿 ``parent_id`` 链向上拼文件夹名（不含 api 节点自身）；若有祖先缺失则
+ * 截断到已找到的层级；hops 上限防御环状数据（最多遍历 ``apiNodes.length`` 次）。
+ * @returns {Array<{id: number, name: string, path: string}>} 候选数组
+ */
+const apiCandidates = computed(() => {
+  const nodes = Array.isArray(apiNodes.value) ? apiNodes.value : []
+  const byId = new Map()
+  for (const node of nodes) {
+    if (node && Number.isFinite(node.id)) byId.set(node.id, node)
+  }
+  const out = []
+  const limit = byId.size + 1
+  for (const node of nodes) {
+    if (!node || node.node_type !== 'api') continue
+    const segments = []
+    let cursor = node.parent_id
+    let hops = 0
+    while (cursor != null && hops < limit) {
+      const parent = byId.get(cursor)
+      if (!parent) break
+      segments.push(parent.name)
+      cursor = parent.parent_id
+      hops += 1
+    }
+    segments.reverse()
+    out.push({ id: node.id, name: node.name, path: segments.join('/') })
+  }
+  out.sort((a, b) => a.id - b.id)
+  return out
+})
+
+/**
+ * 按关键词过滤后的 API 候选列表（对 name + path 做大小写不敏感包含匹配）。
+ * @returns {Array<{id: number, name: string, path: string}>}
+ */
+const filteredApiCandidates = computed(() => {
+  const kw = apiKeyword.value.trim().toLowerCase()
+  const list = apiCandidates.value
+  if (!kw) return list
+  return list.filter((row) => {
+    if (!row) return false
+    return (
+      String(row.name || '').toLowerCase().includes(kw)
+      || String(row.path || '').toLowerCase().includes(kw)
+    )
+  })
+})
+
+/**
+ * 当前已在 scriptParamValues.api_list 中、且仍能在 apiCandidates 匹配到的接口。
+ * 元素为 ``{row, id}``，``id`` 为字符串形式以与 schema / payload 对齐。
+ * @returns {Array<{row: Object, id: string}>}
+ */
+const selectedValidApiRows = computed(() => {
+  const selected = readScriptParamValues().api_list
+  if (!Array.isArray(selected)) return []
+  const out = []
+  for (const raw of selected) {
+    if (typeof raw !== 'string' || !raw) continue
+    const idNum = Number(raw)
+    if (!Number.isFinite(idNum)) continue
+    const row = apiCandidates.value.find((r) => r && r.id === idNum)
+    if (row) out.push({ row, id: raw })
+  }
+  return out
+})
+
+/**
+ * 当前已在 api_list 中、但 apiCandidates 已不再提供的失效 id 列表（按顺序保留）。
+ * @returns {string[]}
+ */
+const selectedInvalidApiIds = computed(() => {
+  const selected = readScriptParamValues().api_list
+  if (!Array.isArray(selected)) return []
+  return selected.filter((raw) => {
+    if (typeof raw !== 'string' || !raw) return false
+    const idNum = Number(raw)
+    if (!Number.isFinite(idNum)) return false
+    return !apiCandidates.value.some((r) => r && r.id === idNum)
+  })
+})
+
+/**
+ * 已选 API 总数（有效 + 失效）。
+ * @returns {number}
+ */
+const selectedApiCount = computed(() => {
+  const selected = readScriptParamValues().api_list
+  return Array.isArray(selected) ? selected.length : 0
+})
+
+/**
+ * 把 api_list 替换为给定数组（经 ``normalizeStringList`` 规范化）。
+ * @param {Array<string>} list - 新 id 列表
+ */
+function setApiList(list) {
+  const values = { ...readScriptParamValues() }
+  values.api_list = normalizeStringList(list)
+  writeScriptParamValues(values)
+}
+
+/**
+ * 全选当前过滤结果中、且不在已选 api_list 中的接口。
+ */
+function selectAllVisibleApis() {
+  const current = normalizeStringList(readScriptParamValues().api_list)
+  const set = new Set(current)
+  for (const row of filteredApiCandidates.value) {
+    if (!row || !Number.isFinite(row.id)) continue
+    const sid = String(row.id)
+    if (set.has(sid)) continue
+    current.push(sid)
+    set.add(sid)
+  }
+  setApiList(current)
+}
+
+/**
+ * 清空当前已选 api_list。
+ */
+function clearAllSelectedApis() {
+  setApiList([])
+}
+
+/**
+ * 单个 API checkbox 切换。
+ * @param {{id: number}} row - 候选对象
+ * @param {boolean} checked - 勾选状态
+ */
+function toggleApiSelection(row, checked) {
+  if (!row || !Number.isFinite(row.id)) return
+  const sid = String(row.id)
+  const current = normalizeStringList(readScriptParamValues().api_list)
+  const set = new Set(current)
+  if (checked) {
+    if (!set.has(sid)) current.push(sid)
+  } else {
+    setApiList(current.filter((x) => x !== sid))
+    return
+  }
+  setApiList(current)
+}
+
+/**
+ * 按 id（字符串形式）从 api_list 中移除。
+ * @param {string} id - 已选 id 字符串
+ */
+function removeSelectedApiById(id) {
+  if (typeof id !== 'string' || !id) return
+  const current = normalizeStringList(readScriptParamValues().api_list)
+  setApiList(current.filter((x) => x !== id))
+}
+
+/**
+ * 检查某 id 是否已在 api_list 中。
+ * @param {string|number} id
+ * @returns {boolean}
+ */
+function isApiSelected(id) {
+  if (id === null || id === undefined) return false
+  const sid = String(id)
+  const list = readScriptParamValues().api_list
+  return Array.isArray(list) && list.includes(sid)
 }
 
 /**
@@ -1736,11 +2029,185 @@ onBeforeUnmount(() => {
                     </div>
                   </section>
                 </template>
+                <template v-else-if="paramKey === 'api_list'">
+                  <!-- api_list 多选控件（系统级标准参数：候选来自「API接口配置」树） -->
+                  <section class="server-list-panel api-list-panel" data-testid="schedule-param-api-list" :aria-label="`参数 ${paramKey}`">
+                    <header class="script-param-item__head">
+                      <div>
+                        <strong>{{ supportedScriptParamDefinitions.find((d) => d.key === paramKey)?.def.title || paramKey }}</strong>
+                        <span class="script-param-item__key">{{ paramKey }}</span>
+                      </div>
+                      <button
+                        type="button"
+                        class="link-btn"
+                        :data-testid="`schedule-remove-param-${paramKey}`"
+                        :aria-label="`移除参数 ${paramKey}`"
+                        @click="removeScriptParam(paramKey)"
+                      >
+                        移除参数
+                      </button>
+                    </header>
+                    <p
+                      v-if="supportedScriptParamDefinitions.find((d) => d.key === paramKey)?.def.description"
+                      class="script-param-item__desc"
+                    >
+                      {{ supportedScriptParamDefinitions.find((d) => d.key === paramKey).def.description }}
+                    </p>
+
+                    <div class="server-list-panel__toolbar">
+                      <input
+                        v-model="apiKeyword"
+                        type="search"
+                        class="server-search"
+                        placeholder="搜索接口名或路径..."
+                        aria-label="搜索接口"
+                        data-testid="schedule-api-search"
+                      />
+                      <div class="server-list-panel__actions">
+                        <button
+                          type="button"
+                          class="link-btn"
+                          :disabled="!filteredApiCandidates.length"
+                          aria-label="全选当前过滤接口"
+                          @click="selectAllVisibleApis"
+                        >
+                          全选
+                        </button>
+                        <span class="divider" aria-hidden="true"></span>
+                        <button
+                          type="button"
+                          class="link-btn"
+                          :disabled="selectedApiCount === 0"
+                          aria-label="清空已选接口"
+                          @click="clearAllSelectedApis"
+                        >
+                          清空
+                        </button>
+                      </div>
+                      <span
+                        class="server-counter"
+                        :class="{ active: selectedApiCount > 0 }"
+                        aria-label="已选接口计数"
+                      >
+                        已选 <strong>{{ selectedApiCount }}</strong> /
+                        {{ filteredApiCandidates.length }}
+                      </span>
+                    </div>
+
+                    <div
+                      v-if="isLoadingApis && !hasLoadedApis"
+                      class="empty-state"
+                      data-testid="schedule-api-list-loading"
+                    >
+                      正在加载接口列表...
+                    </div>
+                    <div
+                      v-else-if="apiListErrorMessage && !isLoadingApis"
+                      class="alert error"
+                      role="alert"
+                      data-testid="schedule-api-list-error"
+                    >
+                      <span>{{ apiListErrorMessage }}</span>
+                      <button
+                        type="button"
+                        class="link-btn"
+                        :data-testid="'schedule-api-list-retry'"
+                        aria-label="重新加载接口"
+                        @click="loadApiConfigTree({ force: true })"
+                      >
+                        重新加载接口
+                      </button>
+                    </div>
+                    <div
+                      v-else-if="hasLoadedApis && !apiCandidates.length"
+                      class="empty-state"
+                      data-testid="schedule-api-list-empty"
+                    >
+                      暂无已配置的接口，请先在「API接口配置」中创建。
+                    </div>
+
+                    <ul
+                      v-if="filteredApiCandidates.length"
+                      class="server-options"
+                      role="listbox"
+                      aria-multiselectable="true"
+                      aria-label="已配置 API 接口候选列表"
+                      data-testid="schedule-api-options"
+                    >
+                      <li
+                        v-for="row in filteredApiCandidates"
+                        :key="row.id"
+                        class="server-option"
+                        :class="{ selected: isApiSelected(row.id) }"
+                      >
+                        <label class="server-option__label">
+                          <input
+                            type="checkbox"
+                            :checked="isApiSelected(row.id)"
+                            :data-testid="`schedule-api-option-${row.id}`"
+                            @change="toggleApiSelection(row, $event.target.checked)"
+                          />
+                          <span class="server-option__main">{{ row.name }}</span>
+                          <span class="server-option__meta">{{ row.path || '根目录' }}</span>
+                        </label>
+                      </li>
+                    </ul>
+                    <div
+                      v-if="!filteredApiCandidates.length && apiKeyword.trim() && apiCandidates.length"
+                      class="empty-state"
+                      data-testid="schedule-api-list-no-match"
+                    >
+                      没有匹配「{{ apiKeyword }}」的接口
+                    </div>
+
+                    <div
+                      v-if="selectedValidApiRows.length || selectedInvalidApiIds.length"
+                      class="selected-server-chips"
+                      aria-label="已选接口列表"
+                      data-testid="schedule-selected-api-list"
+                    >
+                      <span
+                        v-for="entry in selectedValidApiRows"
+                        :key="`valid-${entry.row.id}-${entry.id}`"
+                        class="chip selected-server-chip"
+                        :data-testid="`schedule-selected-api-chip-${entry.row.id}`"
+                      >
+                        <span>{{ entry.row.name }}</span>
+                        <button
+                          type="button"
+                          class="chip-remove"
+                          :aria-label="`移除已选接口 ${entry.row.name}`"
+                          @click="removeSelectedApiById(entry.id)"
+                        >
+                          ×
+                        </button>
+                      </span>
+                      <span
+                        v-for="rawId in selectedInvalidApiIds"
+                        :key="`invalid-${rawId}`"
+                        class="chip selected-server-chip invalid"
+                        data-testid="schedule-selected-api-invalid-chip"
+                      >
+                        <span class="invalid-name">{{ rawId }}</span>
+                        <span class="invalid-tag" aria-label="已失效">已失效</span>
+                        <button
+                          type="button"
+                          class="chip-remove"
+                          :aria-label="`移除已选接口 ${rawId}`"
+                          @click="removeSelectedApiById(rawId)"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    </div>
+                  </section>
+                </template>
                 <!--
-                  注意：故意不提供 v-else 分支。当前 isServerListParamDefinition 仅识别
-                  server_list；任何被识别进入 addedScriptParamKeys 的 key 必然命中上面
-                  的 v-if 分支并渲染 server_list 控件。若未来新增受支持控件，
-                  必须在 isServerListParamDefinition 中显式枚举并在模板中加入对应分支。
+                  注意：故意不提供 v-else 分支。当前 supportedScriptParamDefinitions
+                  显式枚举 server_list 与 api_list 两种控件；任何被识别进入
+                  addedScriptParamKeys 的 key 必然命中上面 v-if / v-else-if 分支并
+                  渲染对应控件。若未来新增受支持控件，必须同步在识别函数中显式
+                  枚举并在模板中加入对应分支。
                 -->
               </div>
             </div>

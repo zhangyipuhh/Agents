@@ -688,20 +688,33 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 
 **脚本参数表单元数据契约**：`params_schema.properties.server_list` 仅在同时满足 `type=array`、`items.type=string`、`x-control=server-multiselect`、`x-source=devops-servers`、`x-value-field=business_name` 时由前端识别；`uniqueItems=true`，默认值为 `[]`。`server_list` 的持久化类型固定为 `list[str]`，元素为 `devops_servers.business_name`。`script_args` 继续使用开放字典与 JSONB 存储，schema 未声明或前端暂不支持的旧参数在编辑、保存时原样保留。
 
-**hello_script 脚本开发样板**：`app/scripts/examples/hello_script.py` 注册名为 `hello_script` / 展示名 `脚本开发样板`，是后续脚本开发的复制模板。参数 `mode`（默认 `text`）控制运行模式，`content`（默认 `定时任务执行成功`）控制输出正文，`server_list`（默认 `[]`）提供目标服务器业务名数组。签名严格为 `async def run(context: ScriptContext) -> str | tuple[str, list[str]]`。
+**`api_list` 系统级标准参数**（2026-07-22 新增）：`params_schema.properties.api_list` 仅在 `type=array`、`items.type=string`、`x-control=api-multiselect`、`x-source=api-configs`、`x-value-field=id` 时由前端识别；与 `server_list` 并列接入同一「添加参数」下拉与 `scriptParamValues` 容器；元素为 API 节点 id 字符串（如 `"12"`）。脚本侧统一通过 `app.scripts.api_check.run_api_checks(context)` 获取 `ApiCheckReport`（`items` / `total` / `passed` / `failed` / `skipped` + `summary_line()` / `to_markdown()` / `to_dict()`），适用于报告、附件、邮件正文。前端控件候选复用 `GET /api/admin/api-configs/tree`，按 `node_type==='api'` + 白名单 id/parent_id/node_type/name/sort_order 过滤，沿父文件夹链拼 path 用于展示；失效 id 显示「已失效」chip 与 server_list 一致。
 
-- **参数读取**：`context.script_args` 中读取 `mode` / `content` / `server_list`；`server_list` 缺失时按空数组处理，非列表、包含非字符串或空字符串时抛 `ScriptExecutionError`。
+**hello_script 脚本开发样板**：`app/scripts/examples/hello_script.py` 注册名为 `hello_script` / 展示名 `脚本开发样板`，是后续脚本开发的复制模板。参数 `mode`（默认 `text`）控制运行模式，`content`（默认 `定时任务执行成功`）控制输出正文，`server_list`（默认 `[]`）提供目标服务器业务名数组，`api_list`（默认 `[]`）提供 API 节点 id 数组。签名严格为 `async def run(context: ScriptContext) -> str | tuple[str, list[str]]`。
+
+- **参数读取**：`context.script_args` 中读取 `mode` / `content` / `server_list` / `api_list`；`server_list` / `api_list` 缺失时按空数组处理，非列表、包含非字符串或空字符串时抛 `ScriptExecutionError`；`api_list` 还会额外校验每个元素必须是整数形式的字符串 id。
 - **服务器参数语义**：`server_list` 元素为 `business_name`；样板只演示读取、校验、日志与摘要输出，不读取连接配置、不执行 SSH。
+- **接口参数语义（`api_list`）**：元素为「API接口配置」树中 api 节点 id 的字符串形式；样板通过 `await run_api_checks(context)` 逐 id 执行 `ApiConfigService.send_request`（httpx 代理发送 + Mock/expectations 断言校验 + 落库 `api_check_runs`）；单条失败不中断整体，缺失节点产生 `check_passed=None` 的 skipped 项，其他异常产生 `check_passed=False` 的 failed 项；返回统一 `ApiCheckReport` 结构，正文追加 `api_check=<P>/<N> passed | id=... OK/FAIL/MISSING` 摘要；`mode=multi` 时 `.md` 附件还会包含 `report.to_markdown()` 接口清单表格。
 - **纯文本返回（`mode=text`）**：直接 `return summary`，无附件。
 - **单附件返回（`mode=single`）**：生成一个 `.txt` 附件，返回 `(summary, [attachment_path])`。
-- **多附件返回（`mode=multi`）**：生成 `.txt` 与 `.md` 两个附件，返回 `(summary, [path1, path2])`。
+- **多附件返回（`mode=multi`）**：生成 `.txt` 与 `.md` 两个附件，返回 `(summary, [path1, path2])`；当 `api_list` 非空时 `.md` 包含 `## 接口健康检查` 章节。
 - **异常演示（`mode=error`）**：抛出 `ScriptExecutionError`，由调度器标记 run 为 `failed`。
-- **正文摘要**：基础格式为 `f"{content} | schedule={schedule_name} (run_id={run_id}, trigger={trigger_type}, started_at=...)"`；`server_list` 非空时在末尾追加 ` | server_list=<business_name,...>`，空数组时保持基础摘要不变。
+- **正文摘要**：基础格式为 `f"{content} | schedule={schedule_name} (run_id={run_id}, trigger={trigger_type}, started_at=...)"`；`server_list` 非空时在末尾追加 ` | server_list=<business_name,...>`；`api_list` 非空时再追加 ` | api_check=<...>`，两者均为空数组时保持基础摘要不变。
 - **附件路径约定**：`TASK_ATTACHMENT_DIR/{slugify_task_name(schedule_name)}/{started_at.strftime("%Y%m%d_%H%M%S")}_{run_id}.{ext}`
 - **异步 IO**：附件写入通过 `await asyncio.to_thread(path.write_text, ...)` 执行，不阻塞调度器事件循环。
-- **异常语义**：参数非法或 `mode=error` 时抛 `ScriptExecutionError`；IO 异常向上透出，由 `TaskSchedulerService.execute_schedule()` 标记 run 为 `failed`。
+- **异常语义**：参数非法或 `mode=error` 时抛 `ScriptExecutionError`；`api_list` 非空且 `context.api_config_service is None` 时同步抛错；IO 异常向上透出，由 `TaskSchedulerService.execute_schedule()` 标记 run 为 `failed`。
 
-**依赖**：`app.core.config.paths`（`TASK_ATTACHMENT_DIR` / `slugify_task_name`） + `app.scripts.base.ScriptContext` / `ScriptExecutionError` + `app.scripts.registry.register_script`。**不依赖** `ToolRuntime` / 地图 store / `ProjectSiteSelectionCollection` / `WordReportGenerator`。
+**依赖**：`app.core.config.paths`（`TASK_ATTACHMENT_DIR` / `slugify_task_name`） + `app.scripts.base.ScriptContext` / `ScriptExecutionError` + `app.scripts.registry.register_script` + `app.scripts.api_check.run_api_checks`。**不依赖** `ToolRuntime` / 地图 store / `ProjectSiteSelectionCollection` / `WordReportGenerator`。
+
+**`app/scripts/api_check.py` 标准化检查器**（2026-07-22 新增）：系统级标准 `api_list` 的统一入口。所有声明 `api_list` 的脚本都通过 `run_api_checks(context) -> ApiCheckReport` 获取一致的检查结果结构，避免各自手写循环。
+
+- **数据类**：`ApiCheckItem`（frozen；`node_id` / `name` / `path` / `check_passed` / `http_status` / `duration_ms` / `error_message` / `run_id` / `assertion_results`），`ApiCheckReport`（`items` + 计数属性 `total` / `passed` / `failed` / `skipped` + 方法 `summary_line()` / `to_markdown()` / `to_dict()`）。
+- **`resolve_api_list(script_args) -> list[int]`**：缺失/None/空数组 → `[]`；非列表 / 含非字符串 / 含空字符串 / 含非整数串 → 抛 `ScriptExecutionError`，消息含 `api_list`，便于调度器日志定位。
+- **`run_api_checks(context, api_list=None) -> ApiCheckReport`**：`api_list` 参数缺省时从 `context.script_args.api_list` 调用 `resolve_api_list`；空 ids → 返回 `items=[]`；非空但 `context.api_config_service is None` → 抛错；其余沿 `service.get_tree()` 构建 `id → {name, path, node_type}` 映射（含多级文件夹父路径），逐 id 调用 `service.send_request`，捕获 `ApiConfigNotFoundError` → skipped，其他异常 → failed，**不中断**整体循环。
+- **扫描隔离**：`app/shared/utils/agent/script_discovery_service.py::_SKIP_FILENAMES` 追加 `api_check.py`，避免被 ScriptDiscoveryService 误识别为脚本（标准库上下文里无 `@register_script`，双重加载会产生双模块身份）。
+- **`ScriptContext.api_config_service`**：`app/scripts/base.py::ScriptContext` 新增 `api_config_service: Any = None` 字段；`arbitrary_types_allowed=True` 已开启，无需额外 Pydantic 配置。
+- **调度器透传**：`TaskSchedulerService.__init__` 新增 `api_config_service: Optional[Any] = None` 入参；`execute_schedule` 的 script 分支构造 `ScriptContext` 时透传 `self._api_config_service`。
+- **lifespan 注入**：`app/core/server.py::lifespan` 构造 `TaskSchedulerService` 时 `api_config_service=getattr(app.state, "api_config_service", None)`；`ApiConfigService` 在前面「API接口配置」章节已固定为 lifespan 初始化块，顺序约束满足。
 
 **lifespan 初始化顺序**：
 1. `DatabasePool.initialize()` + `register_schemas()`（`init_*_schema` 自动建表，包含邮件 / 定时任务 / 脚本相关表）

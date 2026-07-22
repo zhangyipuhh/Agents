@@ -297,6 +297,9 @@ async def lifespan(app: FastAPI):
                         email_config_service=getattr(
                             app.state, "email_config_service", None
                         ),
+                        api_config_service=getattr(
+                            app.state, "api_config_service", None
+                        ),
                     )
                     await app.state.task_scheduler_service.preload_all()
                     await app.state.task_scheduler_service.start()

@@ -49,6 +49,9 @@ class ScriptContext(BaseModel):
             日志文件。脚本可通过 ``context.log_logger.info(...)`` 追加执行日志。
         started_at: 本次执行开始时间。
         trigger_type: 触发方式，``scheduled`` 或 ``manual``。
+        api_config_service: 可选 ApiConfigService 实例，由调度器注入；脚本声明
+            ``api_list`` 参数时通过 ``app.scripts.api_check.run_api_checks`` 消费，
+            执行接口健康检查（Mock 断言）。DB 未就绪或未注入时为 ``None``。
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -65,6 +68,9 @@ class ScriptContext(BaseModel):
     )
     started_at: datetime = Field(..., description="本次执行开始时间")
     trigger_type: str = Field(..., description="触发方式：scheduled / manual")
+    api_config_service: Any = Field(
+        default=None, description="可选 ApiConfigService 实例，由调度器注入"
+    )
 
 
 # 脚本返回值类型：str（向后兼容）或 (body, attachments) 元组。

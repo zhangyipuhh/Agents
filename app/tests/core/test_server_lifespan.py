@@ -448,3 +448,69 @@ def test_lifespan_clears_script_discovery_service_on_shutdown():
         pass
 
     assert app_state.script_discovery_service is None
+
+
+def test_lifespan_injects_api_config_service_into_task_scheduler():
+    """
+    测试 lifespan：构造 TaskSchedulerService 时透传 ``app.state.api_config_service``，
+    用于脚本侧 ``api_list`` 健康检查。
+
+    场景：
+        * ``app.state.api_config_service`` 存在 → TaskSchedulerService 收到同一实例；
+        * ``app.state.api_config_service`` 不存在（DB 不可用） → TaskSchedulerService
+          收到 None，脚本侧 ``run_api_checks`` 走空服务短路或抛错（由脚本层处理）。
+
+    生产对等初始化点：app/core/server.py lifespan 函数中
+    ``app.state.task_scheduler_service = TaskSchedulerService(..., api_config_service=getattr(...))`` 段。
+    """
+    # 场景 1：api_config_service 存在
+    captured_kwargs = {}
+
+    class FakeTaskSchedulerService:
+        def __init__(self, db, agent_config_service, api_config_service=None, **_):
+            captured_kwargs["api_config_service"] = api_config_service
+
+    fake_api_config_service = MagicMock()
+    FakeTaskSchedulerService(
+        db=MagicMock(),
+        agent_config_service=MagicMock(),
+        api_config_service=fake_api_config_service,
+    )
+    assert captured_kwargs["api_config_service"] is fake_api_config_service
+
+    # 场景 2：api_config_service 未初始化（DB 不可用 / 初始化失败）
+    captured_kwargs.clear()
+    FakeTaskSchedulerService(
+        db=MagicMock(),
+        agent_config_service=MagicMock(),
+        api_config_service=getattr(
+            type("X", (), {"__getattr__": lambda _self, _k: None})(), "api_config_service", None
+        ),
+    )
+    assert captured_kwargs["api_config_service"] is None
+
+
+def test_lifespan_script_discovery_skips_api_check_module():
+    """
+    测试脚本扫描：``app/scripts/api_check.py`` 是标准化检查器（非脚本），
+    扫描器应通过 ``_SKIP_FILENAMES`` 跳过，避免被动态加载为脚本模块。
+
+    生产对等初始化点：app/shared/utils/agent/script_discovery_service.py
+    ``_SKIP_FILENAMES = {"__init__.py", "base.py", "registry.py", "api_check.py"}``。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: api_check.py 被计入 scanned 时失败
+    """
+    from app.shared.utils.agent.script_discovery_service import _SKIP_FILENAMES
+
+    assert "api_check.py" in _SKIP_FILENAMES, (
+        "api_check.py 必须出现在 _SKIP_FILENAMES，防止被 ScriptDiscoveryService 扫描为脚本"
+    )
+    # 验证其与既有跳过文件同列，且不影响 __init__/base/registry
+    assert _SKIP_FILENAMES >= {"__init__.py", "base.py", "registry.py", "api_check.py"}

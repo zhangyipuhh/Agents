@@ -732,6 +732,70 @@ def test_execute_schedule_script_branch_calls_func(monkeypatch, tmp_path):
     assert "script_name: hello_script" in content
 
 
+def test_execute_schedule_script_branch_injects_api_config_service(monkeypatch, tmp_path):
+    """测试 execute_schedule 在 target_type='script' 时把构造函数传入的
+    ``api_config_service`` 透传到 ``ScriptContext.api_config_service`` 字段，
+    供脚本侧 ``app.scripts.api_check.run_api_checks`` 消费。
+
+    验证：
+        * 构造函数 ``api_config_service=stub`` 后，``ScriptContext.api_config_service`` 为同一实例；
+        * 未注入时（默认 None），``ScriptContext.api_config_service`` 为 None。
+
+    生产对等初始化点：
+        * ``TaskSchedulerService.__init__`` 新增 ``api_config_service`` 入参；
+        * ``TaskSchedulerService.execute_schedule`` 构造 ``ScriptContext`` 时透传。
+    """
+    from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+
+    monkeypatch.setattr(
+        "app.core.config.paths.TASK_LOG_DIR", str(tmp_path), raising=False
+    )
+
+    fake_registered = SimpleNamespace(
+        name="hello_script",
+        display_name="示例脚本",
+        description="",
+        func=AsyncMock(return_value="ok"),
+        params_schema=None,
+        module_path="app.scripts.examples.hello_script",
+    )
+    fake_script_service = MagicMock()
+    fake_script_service.get_script = MagicMock(return_value=fake_registered)
+
+    # 场景 1：注入 api_config_service
+    fake_api_config_service = MagicMock(name="api_config_service")
+    db1 = FakeDb()
+    service1 = TaskSchedulerService(
+        db=db1,
+        agent_config_service=MagicMock(),
+        scheduler=FakeScheduler(),
+        script_discovery_service=fake_script_service,
+        api_config_service=fake_api_config_service,
+    )
+    payload = make_payload(target_type="script", script_name="hello_script", script_args={})
+    payload.pop("agent_name", None)
+    payload.pop("prompt", None)
+    row = asyncio.run(service1.create_schedule(payload, created_by_user_id=1))
+    asyncio.run(service1.execute_schedule(row["id"], trigger_type="manual"))
+
+    ctx = fake_registered.func.await_args.args[0]
+    assert ctx.api_config_service is fake_api_config_service
+
+    # 场景 2：未注入时为 None（与 email_config_service 同模式回退）
+    fake_registered.func.reset_mock()
+    db2 = FakeDb()
+    service2 = TaskSchedulerService(
+        db=db2,
+        agent_config_service=MagicMock(),
+        scheduler=FakeScheduler(),
+        script_discovery_service=fake_script_service,
+    )
+    row2 = asyncio.run(service2.create_schedule(payload, created_by_user_id=1))
+    asyncio.run(service2.execute_schedule(row2["id"], trigger_type="manual"))
+    ctx2 = fake_registered.func.await_args.args[0]
+    assert ctx2.api_config_service is None
+
+
 def test_execute_schedule_script_branch_handles_missing_script(monkeypatch, tmp_path):
     """测试 target_type='script' 但 script 未注册时写 failed run。
 

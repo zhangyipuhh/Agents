@@ -44,13 +44,14 @@ const mockRuns = [
 ]
 
 /**
- * hello_script 的 params_schema：测试驱动 UI 应识别 x-control=server-multiselect。
- * 完整字段与计划 §2.1 一致，用于触发「脚本参数」面板出现 server_list 控件。
+ * hello_script 的 params_schema：测试驱动 UI 应识别 x-control=server-multiselect
+ * 与 x-control=api-multiselect 两种受支持控件。
  *
  * 字段说明：
  *   - mode / content：schema 已声明（用于未来 UI 扩展），但本轮 TaskSchedulerManager 还不支持，
- *     故添加参数下拉中不应出现它们，只支持 server_list。
- *   - server_list：当前唯一支持的参数（x-control=server-multiselect）。
+ *     故添加参数下拉中不应出现它们，只支持 server_list 与 api_list。
+ *   - server_list：服务器多选（x-control=server-multiselect），候选来自 devops-servers。
+ *   - api_list：API 接口多选（x-control=api-multiselect），候选来自 API 配置树。
  */
 const helloScriptParamsSchema = {
   type: 'object',
@@ -67,6 +68,17 @@ const helloScriptParamsSchema = {
       'x-control': 'server-multiselect',
       'x-source': 'devops-servers',
       'x-value-field': 'business_name',
+    },
+    api_list: {
+      type: 'array',
+      title: '接口列表',
+      description: '选择本次任务需要健康检查的已配置接口（Mock 断言由接口配置决定）',
+      items: { type: 'string' },
+      uniqueItems: true,
+      default: [],
+      'x-control': 'api-multiselect',
+      'x-source': 'api-configs',
+      'x-value-field': 'id',
     },
   },
 }
@@ -2239,6 +2251,305 @@ describe('TaskSchedulerManager 组件', () => {
     )
     expect(devopsGetCalls).toHaveLength(2)
     expect(devopsGetCount).toBe(2)
+  })
+
+  // ===== 脚本参数 api_list（schema 驱动 api-multiselect）行为测试 =====
+
+  /**
+   * 模拟后端 GET /api/admin/api-configs/tree 返回：包含 1 个文件夹「业务系统」
+   * 与 2 个 api 节点（id=10「查询接口」父=id=1，id=11「上报接口」父=null），
+   * 还有一个幽灵/非法节点用于验证白名单过滤。
+   */
+  const rawApiConfigTree = {
+    nodes: [
+      { id: 1, parent_id: null, node_type: 'folder', name: '业务系统', sort_order: 0 },
+      { id: 10, parent_id: 1, node_type: 'api', name: '查询接口', sort_order: 0 },
+      { id: 11, parent_id: null, node_type: 'api', name: '上报接口', sort_order: 1 },
+      // 幽灵节点：白名单 maskApiNodes 应剔除
+      { id: 'bad', parent_id: null, node_type: 'api', name: '无效ID' },
+      { id: 12, parent_id: null, node_type: 'unknown_type', name: '非法类型' },
+      { id: 13, parent_id: null, node_type: 'api', name: '' },
+    ],
+  }
+
+  /**
+   * 含真实 api-configs/tree 节点的 fetch mock 工厂。
+   * 其它路由保持 setupFetchMock 默认行为（task-schedules / agents / devops-servers / scripts）。
+   */
+  function setupFetchMockWithApiTree(apiTree) {
+    const original = setupFetchMock
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const method = (opts.method || 'GET').toUpperCase()
+      const u = typeof url === 'string' ? url : url.url
+      if (u === '/api/admin/api-configs/tree' && method === 'GET') return jsonResponse(apiTree)
+      // 退化到默认实现
+      if (u === '/api/admin/task-schedules' && method === 'GET') return jsonResponse(mockSchedules)
+      if (u === '/api/admin/task-schedules' && method === 'POST') return jsonResponse({ id: 2, ...JSON.parse(opts.body) }, 201)
+      if (u === '/api/admin/agents' && method === 'GET') return jsonResponse(mockAgents)
+      if (u === '/api/admin/scripts' && method === 'GET') return jsonResponse(mockScripts)
+      if (u === '/api/admin/devops-servers' && method === 'GET') return jsonResponse(rawDevopsServers)
+      return jsonResponse({})
+    })
+  }
+
+  it('test_api_list_dropdown_appears_for_supported_definition 添加参数下拉出现「接口列表」与「服务器列表」', async () => {
+    /**
+     * schema 同时声明 server_list 与 api_list 时，「添加参数」下拉应同时出现两个
+     * option；而 mode / content 等暂不支持字段不出现。
+     */
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
+    await flushPromises()
+    await switchToScriptAndSelectHello(wrapper)
+
+    const addSelectOptions = wrapper
+      .find('[data-testid="schedule-add-script-param"]')
+      .findAll('option')
+      .map((o) => o.element.value)
+
+    expect(addSelectOptions).toContain('server_list')
+    expect(addSelectOptions).toContain('api_list')
+    expect(addSelectOptions).not.toContain('mode')
+    expect(addSelectOptions).not.toContain('content')
+  })
+
+  it('test_adding_api_list_triggers_single_api_tree_request 添加 api_list 才请求 api-configs/tree，且 in-flight 不重复', async () => {
+    /**
+     * 计划：首次添加或编辑已有 api_list 时才请求 /api/admin/api-configs/tree；
+     * 添加完后已加载的缓存复用，再次调用同一添加器不重复 GET。
+     */
+    setupFetchMockWithApiTree(rawApiConfigTree)
+    const apiGetSpy = global.fetch.mock.calls
+    const initialCount = apiGetSpy.filter(
+      ([u, opts]) => u === '/api/admin/api-configs/tree' && (opts?.method || 'GET') === 'GET'
+    ).length
+
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
+    await flushPromises()
+    await switchToScriptAndSelectHello(wrapper)
+
+    // 选择 api_list 之前不应触发 api-configs/tree 请求
+    const beforeAddCount = global.fetch.mock.calls.filter(
+      ([u, opts]) => u === '/api/admin/api-configs/tree' && (opts?.method || 'GET') === 'GET'
+    ).length
+    expect(beforeAddCount).toBe(initialCount)
+
+    await wrapper.find('[data-testid="schedule-add-script-param"]').setValue('api_list')
+    await flushPromises()
+
+    // 添加后应恰好触发一次 GET
+    const afterAddCount = global.fetch.mock.calls.filter(
+      ([u, opts]) => u === '/api/admin/api-configs/tree' && (opts?.method || 'GET') === 'GET'
+    ).length
+    expect(afterAddCount - initialCount).toBe(1)
+
+    // 候选列表应只包含合法 api 节点 (id=10,11) 并按 id 升序；幽灵行被剔除
+    const opts = wrapper.findAll('[data-testid^="schedule-api-option-"]')
+      .map((el) => el.attributes('data-testid'))
+    expect(opts).toEqual(['schedule-api-option-10', 'schedule-api-option-11'])
+
+    // 再次选择 api_list（已存在于 scriptParamValues，添加器 noop）；不应发出第二次 GET
+    await wrapper.find('[data-testid="schedule-add-script-param"]').setValue('api_list')
+    await flushPromises()
+    const finalCount = global.fetch.mock.calls.filter(
+      ([u, opts]) => u === '/api/admin/api-configs/tree' && (opts?.method || 'GET') === 'GET'
+    ).length
+    expect(finalCount).toBe(afterAddCount)
+  })
+
+  it('test_api_list_submission_preserves_string_ids 提交 api_list 时元素保持为字符串 id 数组', async () => {
+    /**
+     * 契约：script_args.api_list 元素为「字符串 id」（如 ["10","11"]），与 schema
+     * items.type=string 严格一致；不允许 int 化或漏斗到 Number。
+     */
+    setupFetchMockWithApiTree(rawApiConfigTree)
+    let capturedBody = null
+    const origFetch = global.fetch
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const method = (opts.method || 'GET').toUpperCase()
+      const u = typeof url === 'string' ? url : url.url
+      if (u === '/api/admin/task-schedules' && method === 'POST' && opts.body) {
+        capturedBody = JSON.parse(opts.body)
+        return jsonResponse({ id: 99, ...capturedBody }, 201)
+      }
+      // 复用其它路由
+      return origFetch(url, opts)
+    })
+
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
+    await flushPromises()
+    await switchToScriptAndSelectHello(wrapper)
+    await findTaskNameInput(wrapper).setValue('api_list 提交测试')
+
+    // 添加并勾选两个接口
+    await wrapper.find('[data-testid="schedule-add-script-param"]').setValue('api_list')
+    await flushPromises()
+    await wrapper.find('[data-testid="schedule-api-option-10"]').setValue(true)
+    await wrapper.find('[data-testid="schedule-api-option-11"]').setValue(true)
+
+    // 触发保存（与已有用例一致：通过 form submit 触发，避免依赖 HTML5 form= 属性）
+    await wrapper.find('form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(capturedBody).not.toBeNull()
+    expect(capturedBody.target_type).toBe('script')
+    expect(capturedBody.script_args.api_list).toEqual(['10', '11'])
+    // 没有混入 server_list 等其他受支持 key
+    expect(capturedBody.script_args).not.toHaveProperty('server_list')
+  })
+
+  it('test_edit_existing_task_echoes_api_list 编辑已有 script 任务回显 api_list', async () => {
+    /**
+     * 旧任务 script_args 含 api_list=['10','11'] 时，hydrate 应进入
+     * scriptParamValues，自动按需请求 api-configs/tree，并勾选两个 checkbox。
+     */
+    setupFetchMockWithApiTree(rawApiConfigTree)
+
+    const enrichedSchedules = [
+      {
+        ...mockSchedules[0],
+        target_type: 'script',
+        script_name: 'hello_script',
+        script_args: { api_list: ['10', '11'] },
+      },
+    ]
+    const origFetch = global.fetch
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const method = (opts.method || 'GET').toUpperCase()
+      const u = typeof url === 'string' ? url : url.url
+      if (u === '/api/admin/task-schedules' && method === 'GET') return jsonResponse(enrichedSchedules)
+      return origFetch(url, opts)
+    })
+
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="schedule-param-api-list"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="schedule-api-option-10"]').element.checked).toBe(true)
+    expect(wrapper.find('[data-testid="schedule-api-option-11"]').element.checked).toBe(true)
+    const validChips = wrapper.findAll('[data-testid^="schedule-selected-api-chip-"]')
+    expect(validChips.map((c) => c.attributes('data-testid'))).toEqual([
+      'schedule-selected-api-chip-10',
+      'schedule-selected-api-chip-11',
+    ])
+  })
+
+  it('test_api_list_invalid_id_marked_as_stale 已失效的接口 id 显示为「已失效」chip', async () => {
+    /**
+     * 旧任务 api_list 含 id=99（已下线），候选中不存在 → 失效 chip 显示原值。
+     */
+    setupFetchMockWithApiTree(rawApiConfigTree)
+    const enrichedSchedules = [
+      {
+        ...mockSchedules[0],
+        target_type: 'script',
+        script_name: 'hello_script',
+        script_args: { api_list: ['10', '99'] },
+      },
+    ]
+    const origFetch = global.fetch
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const method = (opts.method || 'GET').toUpperCase()
+      const u = typeof url === 'string' ? url : url.url
+      if (u === '/api/admin/task-schedules' && method === 'GET') return jsonResponse(enrichedSchedules)
+      return origFetch(url, opts)
+    })
+
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="schedule-api-option-10"]').element.checked).toBe(true)
+    expect(wrapper.find('[data-testid="schedule-api-option-99"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="schedule-selected-api-chip-10"]').exists()).toBe(true)
+    const invalidChips = wrapper.findAll('[data-testid="schedule-selected-api-invalid-chip"]')
+    expect(invalidChips).toHaveLength(1)
+    expect(invalidChips[0].text()).toContain('99')
+    expect(invalidChips[0].text()).toContain('已失效')
+  })
+
+  it('test_unknown_legacy_args_merge_with_api_list 未知旧参数与 api_list 合并提交时原样保留', async () => {
+    /**
+     * 同时含 custom_param 与 api_list 时，custom_param 不被识别为受支持控件，
+     * 进入 legacy 原样提交；api_list 进入 params 区。
+     */
+    setupFetchMockWithApiTree(rawApiConfigTree)
+    let capturedBody = null
+    const origFetch = global.fetch
+    const enrichedSchedules = [
+      {
+        ...mockSchedules[0],
+        target_type: 'script',
+        script_name: 'hello_script',
+        script_args: { api_list: ['10'], custom_param: 'keep-me' },
+      },
+    ]
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const method = (opts.method || 'GET').toUpperCase()
+      const u = typeof url === 'string' ? url : url.url
+      if (u === '/api/admin/task-schedules' && method === 'GET') return jsonResponse(enrichedSchedules)
+      if (u === '/api/admin/task-schedules/1' && method === 'PUT' && opts.body) {
+        capturedBody = JSON.parse(opts.body)
+        return jsonResponse({ ...mockSchedules[0], ...capturedBody })
+      }
+      return origFetch(url, opts)
+    })
+
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+
+    // 触发保存
+    await wrapper.find('form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(capturedBody).not.toBeNull()
+    expect(capturedBody.script_args.api_list).toEqual(['10'])
+    expect(capturedBody.script_args.custom_param).toBe('keep-me')
+  })
+
+  it('test_api_list_invalid_string_normalized 编辑含非数字 / 重复项的 api_list 时仅保留合法去重 id', async () => {
+    /**
+     * 前端契约：api_list 仅做字符串层规范化（去空 / 去非字符串 / 去重）。
+     * 非数字 id 字符串（如 'bad'）保留在 payload 中——脚本运行时由
+     * `app.scripts.api_check.resolve_api_list` 抛 `ScriptExecutionError` 校验。
+     * 本测试仅验证前端规范化边界：123(整型) / null / '' / 对象被剔除，
+     * 'bad' 与 '10' 字符串保留且去重后仅剩 ['10','bad']。
+     */
+    setupFetchMockWithApiTree(rawApiConfigTree)
+    let capturedBody = null
+    const origFetch = global.fetch
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const method = (opts.method || 'GET').toUpperCase()
+      const u = typeof url === 'string' ? url : url.url
+      if (u === '/api/admin/task-schedules' && method === 'GET') {
+        return jsonResponse([
+          {
+            ...mockSchedules[0],
+            target_type: 'script',
+            script_name: 'hello_script',
+            script_args: { api_list: ['10', 123, null, '', '10', 'bad', { id: 11 }] },
+          },
+        ])
+      }
+      if (u === '/api/admin/task-schedules/1' && method === 'PUT' && opts.body) {
+        capturedBody = JSON.parse(opts.body)
+        return jsonResponse({ ...mockSchedules[0], ...capturedBody })
+      }
+      return origFetch(url, opts)
+    })
+
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.find('form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(capturedBody).not.toBeNull()
+    // 前端 dedup 后保留 ['10','bad']；非法数字校验由脚本侧 resolve_api_list 处理
+    expect(capturedBody.script_args.api_list).toEqual(['10', 'bad'])
   })
 })
 
