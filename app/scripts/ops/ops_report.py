@@ -94,3 +94,56 @@ class OpsAlerts:
             bool: 是否无任何告警。
         """
         return not self.server_warn_crit and not self.api_failed
+
+
+def compute_ops_summary(server_report, api_report) -> OpsSummary:
+    """计算综述统计口径。
+
+    参数:
+        server_report: :class:`ServerOpsReport`,服务器巡检结果聚合。
+        api_report: :class:`ApiCheckReport`,接口检查结果聚合。
+
+    返回:
+        OpsSummary: 综述统计结果。
+    """
+    server_total = len(server_report.items)
+    server_passed = sum(
+        1 for it in server_report.items
+        if it.success is True and it.inspection_status == "pass" and not it.skipped
+    )
+    server_failed_count = sum(
+        1 for it in server_report.items if it.skipped or it.success is False
+    )
+    server_warn_count = sum(
+        1 for it in server_report.items if it.inspection_status == "warn"
+    )
+    server_crit_count = sum(
+        1 for it in server_report.items if it.inspection_status == "crit"
+    )
+    server_problem = server_total - server_passed
+
+    api_total = len(api_report.items)
+    api_passed = sum(1 for it in api_report.items if it.check_passed is True)
+    api_problem = sum(
+        1 for it in api_report.items
+        if it.check_passed is False or it.check_passed is None
+    )
+
+    total = server_total + api_total
+    passed = server_passed + api_passed
+    problem = server_problem + api_problem
+
+    return OpsSummary(
+        total=total,
+        passed=passed,
+        problem=problem,
+        server_total=server_total,
+        server_passed=server_passed,
+        server_problem=server_problem,
+        server_failed_count=server_failed_count,
+        server_warn_count=server_warn_count,
+        server_crit_count=server_crit_count,
+        api_total=api_total,
+        api_passed=api_passed,
+        api_problem=api_problem,
+    )
