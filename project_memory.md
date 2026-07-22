@@ -709,6 +709,30 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 
 **依赖**：`app.core.config.paths`（`TASK_ATTACHMENT_DIR` / `slugify_task_name`） + `app.scripts.base.ScriptContext` / `ScriptExecutionError` + `app.scripts.registry.register_script` + `app.scripts.api_check.run_api_checks` + `app.scripts.server_ops.run_server_ops`。**不依赖** `ToolRuntime` / 地图 store / `ProjectSiteSelectionCollection` / `WordReportGenerator`。
 
+**`ops_inspection_sweep` 运维巡检扫描正式脚本**（2026-07-22 新增；`app/scripts/ops/ops_inspection_sweep.py`）：与 `hello_script`（开发样板，演示 4 种 mode 与附件生成）**职责正交**——`hello_script` 是「全契约演示 + 多模式附件生成」，`ops_inspection_sweep` 是「生产巡检细节日志输出 + 纯文本摘要」。两者签名与参数契约完全一致（`server_list` + `api_list`），可在同一台调度器上并存。
+
+- **注册信息**：`@register_script(name="ops_inspection_sweep", display_name="运维巡检扫描", ...)`；模块路径 `app.scripts.ops.ops_inspection_sweep`，由 `ScriptDiscoveryService.rglob("*.py")` 自动发现并加载到注册表，无需手动 `import`。
+- **包结构**：`app/scripts/ops/__init__.py` 为包标识；脚本与测试分别为 `app/scripts/ops/ops_inspection_sweep.py` 与 `app/tests/scripts/ops/test_ops_inspection_sweep.py`。
+- **签名**：`async def run(context: ScriptContext) -> str`（**固定返回纯文本摘要，无附件、无 mode 切换**），与 `hello_script` 的 `str | tuple[str, list[str]]` 不同。
+- **复用契约（关键设计）**：脚本层**不重写** SSH 循环与 HTTP 检查循环，直接复用 `app.scripts.server_ops.run_server_ops(context)` + `app.scripts.api_check.run_api_checks(context)` 的全量报告结构，确保 SSH 失败 / 解析失败 / 评估失败 / 节点缺失等异常分级与全项目保持一致；脚本层只做「日志渲染 + 摘要汇总」两层职责，符合「高内聚低耦合 + 统一入口」原则。
+- **参数 schema**：`params_schema.properties` 同时声明 `server_list`（`x-control=server-multiselect` / `x-source=devops-servers` / `x-value-field=business_name`）与 `api_list`（`x-control=api-multiselect` / `x-source=api-configs` / `x-value-field=id`），与 `hello_script` 完全一致；二者均默认 `[]`、元素为非空字符串、`uniqueItems=true`。
+- **逐字段日志输出（与 `hello_script` 的差异核心）**：
+  - **服务器巡检**：对 `ServerOpsReport.items` 每台服务器——
+    - skipped 项只打印「`server biz=<name> SKIPPED reason=<reason>`」一行，**不**打印 `parsed_values` / `field_results`。
+    - SSH 失败项只打印「`FAIL exit=<code> duration=<ms>ms parser=<parser> error=<err> inspection=<状态>`」+ 「`inspection_error=<err>`」（如有），**不**打印字段明细，避免误导。
+    - SSH 成功项打印「`OK exit=0 duration=<ms>ms parser=<parser> inspection=<pass|warn|crit|unassessed> fields=<N>`」 + 「`parsed_values=<JSON>`（`ensure_ascii=False`，不可序列化时降级为 `repr`）」 + 每条 `field_results` 元素的「`field[<i>] key=<k> name=<zh> unit=<u> value=<v|none> direction=<d> warn=<n> crit=<n> -> <PASS|WARN|CRIT|未评估> [msg=<...>]`」。
+    - `field_results=[]`（即 `inspection_status="unassessed"`）时打印「无可评估字段」一行。
+  - **接口健康检查**：对 `ApiCheckReport.items` 每个接口——
+    - 节点缺失（`check_passed=None`）只打印「`api id=<n> name=<name> MISSING reason=<reason>`」。
+    - 其余打印「`api id=<n> name=<name> path=<p> http=<code|null> duration=<ms|null> passed=<bool>`」 + （如有错误）「`error=<msg>`」 + 每条 `assertion_results` 的「`assertion[<i>] type=<t> passed=<bool> [detail=<...>]`」。
+- **返回值（纯文本摘要）**：
+  - 基础段：`f"ops_inspection_sweep | schedule=<name> (run_id=<n>, trigger=<type>, started_at=<%Y-%m-%d %H:%M:%S>)"`。
+  - `server_list` 非空时追加 ` | server_ops=<summary_line()>`；`api_list` 非空时再追加 ` | api_check=<summary_line()>`；两者均空数组或缺失键时**仅返回基础段**，行为与 `hello_script` 对齐。
+- **异常透传**：`server_list` 非空且 `devops_server_service is None` / `api_list` 非空且 `api_config_service is None` 时，由 `run_server_ops` / `run_api_checks` 直接抛 `ScriptExecutionError`，脚本不捕获；参数非法由 `resolve_server_list` / `resolve_api_list` 抛错。
+- **日志写入位置**：所有细节日志通过 `context.log_logger.info(...)` 写入 `data/logs/Task/{slugify_task_name(schedule_name)}/{started_at:%Y%m%d_%H%M%S}_{run_id}.log`，与 `hello_script` 共享同一 run-level logger 注入点（`TaskSchedulerService._install_run_logger`）。
+- **依赖**：`app.scripts.base.ScriptContext` / `register_script` / `run_server_ops` / `run_api_checks` + `app.scripts.server_ops.ServerOpsReport` / `app.scripts.api_check.ApiCheckReport`。**不依赖** `TASK_ATTACHMENT_DIR`（无附件生成）、`asyncio.to_thread`（阻塞 SSH 调用已在 `server_ops` 层包装）、`WordReportGenerator`。
+- **测试**：`app/tests/scripts/ops/test_ops_inspection_sweep.py`（21 用例）—— P0：模块可导入、注册到 registry、`async def run(context: ScriptContext) -> str` 签名、params_schema 同时声明 `server_list` + `api_list` 且 UI 扩展契约正确；P1：空入参仅返回基础段 + 日志输出「无巡检项」/「无检查项」/「执行完成」；P1 server 路径：逐字段日志含 `parsed_values` + 每条规则 `key/name_zh/value/warn/crit -> 状态`、skipped 项不打印字段明细、SSH 失败项只打印错误摘要、`field_results=[]` 输出「无可评估字段」；P1 api 路径：逐接口日志含 `http/duration/passed` + 每条断言 `type/passed/detail`、节点缺失只打印 `MISSING + 原因`；P1 异常路径：`server_list` + service 不可用 / `api_list` + service 不可用均向上抛 `ScriptExecutionError`；P1 组合：`server_list` 与 `api_list` 同时非空时摘要同时追加两段（`server_ops` 在 `api_check` 前）；P2 工具函数：`_format_field_log`（pass / 缺失值 + message）/ `_format_assertion_log`（含 detail / 无 detail）/ `_safe_json_dumps`（dict / 不可序列化对象降级 `repr`）。回归保护：autouse fixture `_isolate_script_registry` 在每个用例前后清空 `_SCRIPT_REGISTRY`，避免 `hello_script` / `ops_inspection_sweep` 测试相互污染；`_attach_capture` / `_detach_capture` 自定义日志 capture handler 临时把 logger 级别降为 `DEBUG` 并卸载，避免默认 WARNING 级别吞掉 INFO 记录。
+
 **`app/scripts/api_check.py` 标准化检查器**（2026-07-22 新增）：系统级标准 `api_list` 的统一入口。所有声明 `api_list` 的脚本都通过 `run_api_checks(context) -> ApiCheckReport` 获取一致的检查结果结构，避免各自手写循环。
 
 - **数据类**：`ApiCheckItem`（frozen；`node_id` / `name` / `path` / `check_passed` / `http_status` / `duration_ms` / `error_message` / `run_id` / `assertion_results`），`ApiCheckReport`（`items` + 计数属性 `total` / `passed` / `failed` / `skipped` + 方法 `summary_line()` / `to_markdown()` / `to_dict()`）。
