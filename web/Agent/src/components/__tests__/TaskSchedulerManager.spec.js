@@ -162,6 +162,29 @@ function setupFetchMock() {
     }
     // 2026-07-22 新增：DELETE 单台服务器（204 No Content，无 body）
     if (u === '/api/admin/devops-servers/1' && method === 'DELETE') return emptyResponse(204)
+    // 2026-07-22 新增：GET 详情端点（白名单 + 巡检脚本 + 解析器）
+    if (u === '/api/admin/devops-servers/1' && method === 'GET') {
+      return jsonResponse({
+        id: 1,
+        business_name: '业务A-生产',
+        server_type: 'production',
+        updated_at: '2026-07-15T09:00:00',
+        whitelist: ['ls -la', 'df -h', 'uptime'],
+        inspection_script: 'echo __LEAKED_SCRIPT_TOKEN_xyz__\nls -la /tmp',
+        inspection_parser: 'json',
+      })
+    }
+    if (u === '/api/admin/devops-servers/2' && method === 'GET') {
+      return jsonResponse({
+        id: 2,
+        business_name: '业务B-测试',
+        server_type: 'staging',
+        updated_at: '2026-07-15T10:00:00',
+        whitelist: [],
+        inspection_script: null,
+        inspection_parser: 'json',
+      })
+    }
     if (u === '/api/admin/api-configs/tree' && method === 'GET') return jsonResponse({ nodes: [] })
     return jsonResponse({})
   })
@@ -591,6 +614,145 @@ describe('TaskSchedulerManager 组件', () => {
     expect(html).not.toMatch(/>\s*用户名\s*</)
     expect(html).not.toMatch(/>\s*密码\s*</)
     expect(html).not.toMatch(/>\s*文件路径\s*</)
+  })
+
+  it('test_server_table_renders_whitelist_and_script_columns 表格渲染白名单/巡检脚本两列', async () => {
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+
+    const headers = wrapper.findAll('table.server-table thead th')
+    const headerTexts = headers.map((h) => h.text())
+    expect(headerTexts).toContain('白名单')
+    expect(headerTexts).toContain('巡检脚本')
+
+    const whitelistBtns = wrapper.findAll('[data-testid^="server-whitelist-btn-"]')
+    const scriptBtns = wrapper.findAll('[data-testid^="server-script-btn-"]')
+    expect(whitelistBtns.length).toBe(2)
+    expect(scriptBtns.length).toBe(2)
+    wrapper.unmount()
+  })
+
+  it('test_whitelist_button_opens_dialog_with_command_table 点击白名单按钮打开命令表格弹窗', async () => {
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="server-whitelist-btn-1"]').trigger('click')
+    await flushPromises()
+
+    const dialog = document.body.querySelector('[data-testid="whitelist-dialog"]')
+    expect(dialog).not.toBeNull()
+
+    const rows = dialog.querySelectorAll('table.whitelist-table tbody tr')
+    expect(rows.length).toBe(3)
+    expect(rows[0].textContent).toContain('ls -la')
+    expect(rows[1].textContent).toContain('df -h')
+    expect(rows[2].textContent).toContain('uptime')
+    wrapper.unmount()
+  })
+
+  it('test_whitelist_empty_state_renders_correctly 白名单为空时显示暂无提示', async () => {
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="server-whitelist-btn-2"]').trigger('click')
+    await flushPromises()
+
+    const dialog = document.body.querySelector('[data-testid="whitelist-dialog"]')
+    expect(dialog).not.toBeNull()
+    const empty = dialog.querySelector('[data-testid="whitelist-dialog-empty"]')
+    expect(empty).not.toBeNull()
+    expect(empty.textContent).toContain('暂无')
+    expect(dialog.querySelector('table.whitelist-table')).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('test_script_button_opens_dialog_with_preserved_format 点击脚本按钮打开保留格式的 pre 面板', async () => {
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="server-script-btn-1"]').trigger('click')
+    await flushPromises()
+
+    const dialog = document.body.querySelector('[data-testid="script-dialog"]')
+    expect(dialog).not.toBeNull()
+
+    const pre = dialog.querySelector('pre.script-content[data-testid="script-content"]')
+    expect(pre).not.toBeNull()
+    expect(pre.textContent).toBe('echo __LEAKED_SCRIPT_TOKEN_xyz__\nls -la /tmp')
+    const tag = dialog.querySelector('[data-testid="script-parser-tag"]')
+    expect(tag).not.toBeNull()
+    expect(tag.textContent).toContain('json')
+    wrapper.unmount()
+  })
+
+  it('test_script_empty_state_renders_correctly 脚本未配置时显示未配置提示', async () => {
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="server-script-btn-2"]').trigger('click')
+    await flushPromises()
+
+    const dialog = document.body.querySelector('[data-testid="script-dialog"]')
+    expect(dialog).not.toBeNull()
+    const empty = dialog.querySelector('[data-testid="script-dialog-empty"]')
+    expect(empty).not.toBeNull()
+    expect(empty.textContent).toContain('未配置')
+    wrapper.unmount()
+  })
+
+  it('test_detail_dialogs_does_not_leak_sensitive_fields 弹窗内不外泄 ip/password/username/file_path', async () => {
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="server-whitelist-btn-1"]').trigger('click')
+    await flushPromises()
+    let dialogHtml = document.body.querySelector('[data-testid="whitelist-dialog"]').outerHTML
+    expect(dialogHtml).not.toContain('__LEAKED_IP_a1b2c3d4__')
+    expect(dialogHtml).not.toContain('__LEAKED_PASSWORD_8e7f3a2b__')
+    expect(dialogHtml).not.toContain('__LEAKED_USER_rootX9f__')
+    expect(dialogHtml).not.toContain('__LEAKED_FP_host_7h8i9j0k__')
+
+    document.body.querySelector('[data-testid="whitelist-dialog-close"]').click()
+    await flushPromises()
+
+    await wrapper.find('[data-testid="server-script-btn-1"]').trigger('click')
+    await flushPromises()
+    dialogHtml = document.body.querySelector('[data-testid="script-dialog"]').outerHTML
+    expect(dialogHtml).not.toContain('__LEAKED_IP_a1b2c3d4__')
+    expect(dialogHtml).not.toContain('__LEAKED_PASSWORD_8e7f3a2b__')
+    expect(dialogHtml).not.toContain('__LEAKED_USER_rootX9f__')
+    expect(dialogHtml).not.toContain('__LEAKED_FP_host_7h8i9j0k__')
+    wrapper.unmount()
+  })
+
+  it('test_detail_dialogs_are_mutually_exclusive 同一时刻仅一个详情弹窗 open', async () => {
+    const wrapper = mount(TaskSchedulerManager)
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="server-whitelist-btn-1"]').trigger('click')
+    await flushPromises()
+    expect(document.body.querySelector('[data-testid="whitelist-dialog"]')).not.toBeNull()
+    expect(document.body.querySelector('[data-testid="script-dialog"]')).toBeNull()
+
+    await wrapper.find('[data-testid="server-script-btn-1"]').trigger('click')
+    await flushPromises()
+    expect(document.body.querySelector('[data-testid="script-dialog"]')).not.toBeNull()
+    expect(document.body.querySelector('[data-testid="whitelist-dialog"]')).toBeNull()
+    wrapper.unmount()
   })
 
   it('test_scan_button_prevents_duplicate_submit 扫描按钮防重复提交', async () => {
