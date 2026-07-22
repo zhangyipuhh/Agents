@@ -215,3 +215,37 @@ def compute_ops_alerts(server_report, api_report) -> OpsAlerts:
         ))
 
     return OpsAlerts(server_warn_crit=server_items, api_failed=api_items)
+
+
+def resolve_server_ip_map(
+    devops_server_service,
+    server_report,
+) -> Dict[str, Optional[str]]:
+    """从 :class:`DevOpsServerService` 反查每台服务器的 IP。
+
+    反查失败的项(服务不可用 / KeyError / 异常)统一返回 ``None``,
+    由调用方在报告中渲染为 ``-``,不中断整体流程。
+
+    参数:
+        devops_server_service: 调度器注入的 ``DevOpsServerService`` 实例;可能为 ``None``。
+        server_report: :class:`ServerOpsReport`。
+
+    返回:
+        Dict[str, Optional[str]]: ``business_name -> host`` 映射;IP 缺失为 ``None``。
+    """
+    result: Dict[str, Optional[str]] = {}
+    if devops_server_service is None:
+        for srv in server_report.items:
+            result[srv.business_name] = None
+        return result
+
+    for srv in server_report.items:
+        try:
+            config = devops_server_service.get_connection_config(srv.business_name)
+            host = getattr(config, "host", None) if config is not None else None
+            if host is None and isinstance(config, dict):
+                host = config.get("host")
+            result[srv.business_name] = host
+        except Exception:
+            result[srv.business_name] = None
+    return result

@@ -2,6 +2,7 @@
 """``app.scripts.ops.ops_report`` 单元测试。"""
 from app.scripts.ops.ops_report import OpsSummary, OpsAlerts, OpsAlertItem, compute_ops_summary
 from app.scripts.ops.ops_report import compute_ops_alerts
+from app.scripts.ops.ops_report import resolve_server_ip_map
 from app.scripts.api_check import ApiCheckItem, ApiCheckReport
 from app.scripts.server_ops import ServerOpsItem, ServerOpsReport
 
@@ -121,3 +122,51 @@ def test_compute_alerts_excludes_skipped_and_missing():
     assert alerts.server_warn_crit == []
     assert alerts.api_failed == []
     assert alerts.is_empty is True
+
+
+# --------------------------------------------------------------------------
+# resolve_server_ip_map 反查 IP
+# --------------------------------------------------------------------------
+
+class _FakeService:
+    """最小桩:模拟 DevOpsServerService.get_connection_config。"""
+
+    def __init__(self, mapping):
+        self._mapping = mapping
+
+    def get_connection_config(self, biz):
+        if biz in self._mapping:
+            return {"host": self._mapping[biz]}
+        raise KeyError(biz)
+
+
+def test_resolve_ip_map_returns_hosts():
+    srv = ServerOpsReport(items=[
+        ServerOpsItem(business_name="A"),
+        ServerOpsItem(business_name="B"),
+    ])
+    svc = _FakeService({"A": "10.0.0.1", "B": "10.0.0.2"})
+    m = resolve_server_ip_map(svc, srv)
+    assert m == {"A": "10.0.0.1", "B": "10.0.0.2"}
+
+
+def test_resolve_ip_map_handles_missing_service():
+    srv = ServerOpsReport(items=[ServerOpsItem(business_name="A")])
+    m = resolve_server_ip_map(None, srv)
+    assert m == {"A": None}
+
+
+def test_resolve_ip_map_handles_key_error():
+    srv = ServerOpsReport(items=[ServerOpsItem(business_name="X")])
+    svc = _FakeService({})
+    m = resolve_server_ip_map(svc, srv)
+    assert m == {"X": None}
+
+
+def test_resolve_ip_map_handles_exception():
+    class _Boom:
+        def get_connection_config(self, biz):
+            raise RuntimeError("boom")
+    srv = ServerOpsReport(items=[ServerOpsItem(business_name="X")])
+    m = resolve_server_ip_map(_Boom(), srv)
+    assert m == {"X": None}
