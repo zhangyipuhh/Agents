@@ -22,6 +22,7 @@ import {
   fetchDevOpsServers,
   scanDevOpsServers,
   deleteDevOpsServer,
+  fetchDevOpsServerDetail,  // 2026-07-22 新增：服务器详情（白名单 + 巡检脚本）
   fetchScripts,
   scanScripts,
   fetchEmailPolicies,
@@ -69,6 +70,71 @@ const scanSummary = ref(null)
 const hasLoaded = ref(false)
 // 删除状态：当前正在删除的行 id（防重复点击）
 const isDeletingRowId = ref(null)
+
+// 详情弹窗状态：白名单 / 巡检脚本
+// 单 ref 同时持有 row 与 detail，避免多个 ref 同步问题
+const whitelistDialog = ref({ open: false, row: null, detail: null, loading: false, error: '' })
+const scriptDialog = ref({ open: false, row: null, detail: null, loading: false, error: '' })
+
+/**
+ * 打开白名单详情弹窗：
+ * 1) ref 重置（保留 row 用于标题与取消重入）；
+ * 2) 调 fetchDevOpsServerDetail 拉详情；
+ * 3) 成功写入 detail；失败写入 error（脱敏文案）。
+ * 同一时刻仅一个弹窗 open（互斥关闭另一个）。
+ * @param {Object} row - 服务器列表行（脱敏 4 字段）
+ * @returns {Promise<void>}
+ */
+async function openWhitelistDialog(row) {
+  if (!row || row.id == null) return
+  whitelistDialog.value = { open: true, row, detail: null, loading: true, error: '' }
+  scriptDialog.value.open = false
+  try {
+    const detail = await fetchDevOpsServerDetail(row.id)
+    whitelistDialog.value = { open: true, row, detail, loading: false, error: '' }
+  } catch {
+    whitelistDialog.value = {
+      open: true, row, detail: null, loading: false,
+      error: '白名单加载失败，请稍后重试',
+    }
+  }
+}
+
+/**
+ * 打开巡检脚本详情弹窗（保留格式纯文本展示）。
+ * @param {Object} row - 服务器列表行（脱敏 4 字段）
+ * @returns {Promise<void>}
+ */
+async function openScriptDialog(row) {
+  if (!row || row.id == null) return
+  scriptDialog.value = { open: true, row, detail: null, loading: true, error: '' }
+  whitelistDialog.value.open = false
+  try {
+    const detail = await fetchDevOpsServerDetail(row.id)
+    scriptDialog.value = { open: true, row, detail, loading: false, error: '' }
+  } catch {
+    scriptDialog.value = {
+      open: true, row, detail: null, loading: false,
+      error: '脚本加载失败，请稍后重试',
+    }
+  }
+}
+
+/**
+ * 关闭白名单弹窗。
+ * @returns {void}
+ */
+function closeWhitelistDialog() {
+  whitelistDialog.value = { ...whitelistDialog.value, open: false }
+}
+
+/**
+ * 关闭脚本弹窗。
+ * @returns {void}
+ */
+function closeScriptDialog() {
+  scriptDialog.value = { ...scriptDialog.value, open: false }
+}
 
 // 脚本扫描状态
 const scripts = ref([])
@@ -2414,6 +2480,8 @@ onBeforeUnmount(() => {
               <th scope="col">业务名</th>
               <th scope="col">系统类型</th>
               <th scope="col">最近同步</th>
+              <th scope="col">白名单</th>
+              <th scope="col">巡检脚本</th>
               <th scope="col">操作</th>
             </tr>
           </thead>
@@ -2426,6 +2494,28 @@ onBeforeUnmount(() => {
               <td>{{ row.business_name }}</td>
               <td>{{ row.server_type }}</td>
               <td>{{ row.updated_at }}</td>
+              <td class="server-action-cell">
+                <button
+                  type="button"
+                  class="server-detail-btn"
+                  :data-testid="`server-whitelist-btn-${row.id}`"
+                  :aria-label="`查看 ${row.business_name} 的白名单命令`"
+                  @click="openWhitelistDialog(row)"
+                >
+                  查看白名单
+                </button>
+              </td>
+              <td class="server-action-cell">
+                <button
+                  type="button"
+                  class="server-detail-btn"
+                  :data-testid="`server-script-btn-${row.id}`"
+                  :aria-label="`查看 ${row.business_name} 的巡检脚本`"
+                  @click="openScriptDialog(row)"
+                >
+                  查看脚本
+                </button>
+              </td>
               <td class="server-action-cell">
                 <button
                   type="button"
@@ -2576,6 +2666,145 @@ onBeforeUnmount(() => {
                 <p v-if="run.error_message" class="run-error">{{ run.error_message }}</p>
               </div>
             </section>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
+  <!-- 白名单弹窗（2026-07-22 新增） -->
+  <Teleport to="body">
+    <Transition name="task-history-fade">
+      <div
+        v-if="whitelistDialog.open"
+        class="task-history-overlay"
+        data-testid="whitelist-dialog"
+        @click.self.stop="closeWhitelistDialog"
+      >
+        <div
+          class="task-history-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="whitelist-dialog-title"
+          @click.stop
+        >
+          <header class="task-history-dialog-header">
+            <h3 id="whitelist-dialog-title">
+              白名单 - {{ whitelistDialog.row?.business_name || '' }}
+            </h3>
+            <button
+              class="task-history-close"
+              type="button"
+              aria-label="关闭白名单"
+              data-testid="whitelist-dialog-close"
+              @click="closeWhitelistDialog"
+            >
+              <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <path d="M15 5 5 15M5 5l10 10" />
+              </svg>
+            </button>
+          </header>
+          <div class="task-history-dialog-body">
+            <div v-if="whitelistDialog.loading" class="empty-state" data-testid="whitelist-dialog-loading">
+              正在加载白名单...
+            </div>
+            <div v-else-if="whitelistDialog.error" class="alert error" data-testid="whitelist-dialog-error">
+              {{ whitelistDialog.error }}
+            </div>
+            <div
+              v-else-if="!whitelistDialog.detail?.whitelist?.length"
+              class="empty-state"
+              data-testid="whitelist-dialog-empty"
+            >
+              暂无白名单命令
+            </div>
+            <table
+              v-else
+              class="whitelist-table"
+              data-testid="whitelist-table"
+            >
+              <thead>
+                <tr>
+                  <th scope="col" style="width: 64px">序号</th>
+                  <th scope="col">命令</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="(cmd, idx) in whitelistDialog.detail.whitelist"
+                  :key="`${whitelistDialog.row.id}-${idx}`"
+                  :data-testid="`whitelist-row-${idx}`"
+                >
+                  <td>{{ idx + 1 }}</td>
+                  <td><code class="whitelist-cmd">{{ cmd }}</code></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
+  <!-- 巡检脚本弹窗（2026-07-22 新增） -->
+  <Teleport to="body">
+    <Transition name="task-history-fade">
+      <div
+        v-if="scriptDialog.open"
+        class="task-history-overlay"
+        data-testid="script-dialog"
+        @click.self.stop="closeScriptDialog"
+      >
+        <div
+          class="task-history-dialog task-history-dialog-wide"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="script-dialog-title"
+          @click.stop
+        >
+          <header class="task-history-dialog-header">
+            <h3 id="script-dialog-title">
+              巡检脚本 - {{ scriptDialog.row?.business_name || '' }}
+              <small
+                v-if="scriptDialog.detail?.inspection_parser"
+                class="script-parser-tag"
+                data-testid="script-parser-tag"
+              >
+                解析器: {{ scriptDialog.detail.inspection_parser }}
+              </small>
+            </h3>
+            <button
+              class="task-history-close"
+              type="button"
+              aria-label="关闭巡检脚本"
+              data-testid="script-dialog-close"
+              @click="closeScriptDialog"
+            >
+              <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <path d="M15 5 5 15M5 5l10 10" />
+              </svg>
+            </button>
+          </header>
+          <div class="task-history-dialog-body">
+            <div v-if="scriptDialog.loading" class="empty-state" data-testid="script-dialog-loading">
+              正在加载脚本...
+            </div>
+            <div v-else-if="scriptDialog.error" class="alert error" data-testid="script-dialog-error">
+              {{ scriptDialog.error }}
+            </div>
+            <div
+              v-else-if="!scriptDialog.detail?.inspection_script"
+              class="empty-state"
+              data-testid="script-dialog-empty"
+            >
+              未配置巡检脚本
+            </div>
+            <pre
+              v-else
+              class="script-content"
+              data-testid="script-content"
+              :aria-label="`${scriptDialog.row?.business_name || ''} 巡检脚本原文`"
+            >{{ scriptDialog.detail.inspection_script }}</pre>
           </div>
         </div>
       </div>
@@ -3148,6 +3377,84 @@ input[type="number"] {
   background: #f3f4f6;
   color: #6b7280;
   border-color: #d1d5db;
+}
+
+/* 详情列按钮（白名单 / 巡检脚本）—— 与删除按钮风格统一，按需复用 */
+.server-detail-btn {
+  border: 1px solid #2563eb;
+  background: #ffffff;
+  color: #2563eb;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.server-detail-btn:hover {
+  background: #dbeafe;
+  border-color: #1d4ed8;
+  color: #1d4ed8;
+}
+
+/* 宽弹窗（脚本） */
+.task-history-dialog-wide {
+  max-width: 960px;
+  width: min(960px, 92vw);
+}
+
+/* 白名单命令表格 */
+.whitelist-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  color: #111827;
+}
+
+.whitelist-table th,
+.whitelist-table td {
+  border-bottom: 1px solid #e5e7eb;
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.whitelist-table th {
+  background: #f9fafb;
+  color: #374151;
+  font-weight: 600;
+}
+
+.whitelist-cmd {
+  font-family: 'Menlo', 'Consolas', 'Monaco', monospace;
+  font-size: 12px;
+  color: #1f2937;
+  word-break: break-all;
+}
+
+/* 巡检脚本原文：保留换行/缩进/等宽字体 */
+.script-content {
+  margin: 0;
+  padding: 16px;
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 8px;
+  font-family: 'Menlo', 'Consolas', 'Monaco', monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;        /* 保留所有空白与换行 */
+  overflow: auto;
+  max-height: 60vh;        /* 弹窗内可滚动，避免过长撑爆视口 */
+  tab-size: 4;
+}
+
+.script-parser-tag {
+  margin-left: 12px;
+  padding: 2px 8px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .badge {
