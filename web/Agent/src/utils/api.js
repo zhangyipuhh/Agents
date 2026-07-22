@@ -2438,6 +2438,28 @@ export async function deleteDevOpsServer(serverId) {
   }
 }
 
+/**
+ * 获取单台 DevOps 服务器详情（白名单命令 + 巡检脚本）
+ * 调用 GET /api/admin/devops-servers/{serverId}。
+ * 注意：列表端点 GET /api/admin/devops-servers 严格只含 4 字段，
+ * 详情端点才返回 whitelist / inspection_script / inspection_parser。
+ * @param {number|string} serverId - devops_servers 主键 id
+ * @returns {Promise<{id: number|string, business_name: string, server_type: string, updated_at: string, whitelist: string[], inspection_script: string|null, inspection_parser: string}>}
+ *          详情对象；inspection_script 可能为 null（未配置）
+ * @throws {Error} 请求失败时抛出错误（含后端 detail / HTTP 状态信息）
+ */
+export async function fetchDevOpsServerDetail(serverId) {
+  const response = await fetchWithAuth(
+    `/api/admin/devops-servers/${encodeURIComponent(serverId)}`,
+    { method: 'GET' }
+  )
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取 DevOps 服务器详情失败: ${response.status}`)
+  }
+  return response.json()
+}
+
 // ============================================================
 // 脚本管理 API（2026-07-16 新增）
 // 对应后端 script_admin_router 的 GET /api/admin/scripts 与 POST /api/admin/scripts/scan
