@@ -271,15 +271,49 @@ describe('UserSettingsDialog 普通用户不再触发 admin-only 请求', () => 
     wrapper.unmount()
   })
 
-  it('test_user_role_click_task_scheduler_subtab_no_admin_call 普通用户被授权 task-scheduler 后，点击运维任务 → 服务器扫描入库子 tab 不应触发 admin-only 请求', async () => {
-    // 2026-07-23 修复回归测试：
-    // TaskSchedulerManager 内的 4 个子 tab（编辑任务/服务器扫描入库/脚本扫描入库/API接口配置）
-    // 都依赖 admin-only 数据源（/api/admin/task-schedules、/api/admin/devops-servers 等）。
-    // 即便父组件已挂载 TaskSchedulerManager（因为顶级 tab 被授权），
-    // 普通用户点击 admin-only 数据子 tab 也必须被 fail-safe 拦住。
-    //
-    // 之前的 fail-safe 只在 onMounted 里，未覆盖 switchTab/watch 触发的入口，
-    // 导致普通用户点击「服务器扫描入库」子 tab 触发 /api/admin/devops-servers → 403 → 红色 banner。
+  it('test_user_role_no_acl_no_admin_call 普通用户无任何 task-scheduler 子 tab 授权时，完全不触发 admin API', async () => {
+    // 2026-07-23 ACL 双重门场景 1：ACL 完全空（或仅父级无子菜单授权），
+    // TaskSchedulerManager 看到 availableTabs=[] / hasAnyAccess=false，
+    // onMounted 直接 return，不触发任何 admin API（避免 403 → 红色 banner）。
+    const wrapper = mount(UserSettingsDialog, {
+      props: {
+        visible: true,
+        role: 'user',
+        userId: 2,
+        username: 'ZYP',
+        // 只有 task-scheduler 父级但没任何子 tab 授权
+        visibleMenus: ['profile', 'task-scheduler'],
+      },
+    })
+    await flushPromises()
+
+    // 点击「运维任务」顶级 tab → 触发 TaskSchedulerManager 挂载
+    const navNodes = Array.from(document.body.querySelectorAll('.nav-item'))
+    const taskNav = navNodes.find((n) => (n.textContent || '').includes('运维任务'))
+    expect(taskNav).toBeTruthy()
+    taskNav.click()
+    await flushPromises()
+    await new Promise((r) => setTimeout(r, 50))
+    await flushPromises()
+
+    // 断言：onMounted 完全跳过 → 0 admin-only 调用
+    const adminCalls = fetchMock.calls.filter((c) =>
+      c.url.startsWith('/api/admin/') ||
+      c.url === '/api/users' ||
+      c.url === '/api/users/online'
+    )
+    console.log('[user+task-scheduler-empty-acl] admin calls:', adminCalls.map((c) => c.url))
+    console.log('[user+task-scheduler-empty-acl] all calls:', fetchMock.calls.map((c) => c.url))
+    expect(adminCalls).toHaveLength(0)
+    // 同时应显示「权限不足」占位
+    expect(document.body.querySelector('[data-testid="task-scheduler-no-permission"]')).toBeTruthy()
+    wrapper.unmount()
+  })
+
+  it('test_user_role_granted_scheduled_can_load_tasks 普通用户被授权 task-scheduler.scheduled 后可加载任务列表', async () => {
+    // 2026-07-23 ACL 双重门场景 2：ACL 含 task-scheduler.scheduled 子菜单授权 →
+    // 后端 require_admin_or_menu_acl('task-scheduler.scheduled') 放行，
+    // /api/admin/task-schedules 是预期被调用的（这是 ACL 双重门的本意）。
     const wrapper = mount(UserSettingsDialog, {
       props: {
         visible: true,
@@ -291,33 +325,24 @@ describe('UserSettingsDialog 普通用户不再触发 admin-only 请求', () => 
     })
     await flushPromises()
 
-    // 点击「运维任务」顶级 tab
     const navNodes = Array.from(document.body.querySelectorAll('.nav-item'))
     const taskNav = navNodes.find((n) => (n.textContent || '').includes('运维任务'))
-    expect(taskNav).toBeTruthy()
     taskNav.click()
     await flushPromises()
-    await new Promise((r) => setTimeout(r, 50))
+    await new Promise((r) => setTimeout(r, 100))
     await flushPromises()
 
-    // 进入运维任务 dialog 后，点击「服务器扫描入库」子 tab
-    const scanTabBtn = document.body.querySelector('[data-testid="tab-scan"]') ||
-                        Array.from(document.body.querySelectorAll('button')).find((b) => (b.textContent || '').includes('服务器扫描入库'))
-    if (scanTabBtn) {
-      scanTabBtn.click()
-      await flushPromises()
-      await new Promise((r) => setTimeout(r, 50))
-      await flushPromises()
-    }
-
-    // 断言：用户身份打开 dialog 后点击所有能点的子 tab，全程无 admin-only 请求
-    const adminCalls = fetchMock.calls.filter((c) =>
-      c.url.startsWith('/api/admin/') ||
-      c.url === '/api/users' ||
-      c.url === '/api/users/online'
+    // 期望：调用 /api/admin/task-schedules（ACL 双重门通过）
+    const scheduleCalls = fetchMock.calls.filter((c) =>
+      c.url.startsWith('/api/admin/task-schedules')
     )
-    console.log('[user+task-scheduler] admin calls:', adminCalls.map((c) => c.url))
-    expect(adminCalls).toHaveLength(0)
+    expect(scheduleCalls.length).toBeGreaterThan(0)
+
+    // 但没被授权的 .script-scan 子 tab 对应的 /api/admin/devops-servers 不应该被调
+    const devopsCalls = fetchMock.calls.filter((c) =>
+      c.url.startsWith('/api/admin/devops-servers')
+    )
+    expect(devopsCalls).toHaveLength(0)
     wrapper.unmount()
   })
 
