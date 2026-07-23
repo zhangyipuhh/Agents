@@ -16,6 +16,20 @@ import {
   fetchUserList
 } from '../utils/api.js'
 
+/**
+ * 2026-07-23 新增：组件 props。
+ * - isAdmin：父组件传入的角色标记。
+ *   用途：onMounted 内做 fail-safe 兜底 —— 即便父组件忘了用 v-if 隔离，
+ *   非 admin 用户也不会触发 /api/admin/permissions/menu-catalog 与 /api/users
+ *   两个 admin-only 请求，避免被后端 403 拒绝。
+ */
+const props = defineProps({
+  isAdmin: {
+    type: Boolean,
+    default: false
+  }
+})
+
 const catalog = ref([])        // 全量 MenuItem（含 enabled=False）
 const users = ref([])          // 人员列表
 const selectedUserId = ref(null)
@@ -27,6 +41,13 @@ const saveSuccess = ref('')
 const loading = ref(false)
 
 onMounted(async () => {
+  // 2026-07-23 修复：fail-safe 兜底。
+  // 即便父组件 UserSettingsDialog 漏挂了 v-if，本组件也不会触发 admin-only 请求，
+  // 避免普通用户被后端 403 拒绝导致「会话无效，请重试」红 banner。
+  if (!props.isAdmin) {
+    console.warn('[MenuPermissionManager] 非 admin 用户挂载本组件，已跳过数据加载（防御性兜底）')
+    return
+  }
   loading.value = true
   try {
     const [cat, ulist] = await Promise.all([

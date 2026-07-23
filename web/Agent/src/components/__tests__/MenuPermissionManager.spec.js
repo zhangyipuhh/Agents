@@ -72,20 +72,20 @@ describe('MenuPermissionManager', () => {
   })
 
   it('test_renders_user_list_and_menu_tree 渲染左侧人员列表 + 右侧菜单树', async () => {
-    const wrapper = mount(MenuPermissionManager)
+    const wrapper = mount(MenuPermissionManager, { props: { isAdmin: true } })
     await flushPromises()
     expect(wrapper.find('[data-testid="user-list"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="menu-tree"]').exists()).toBe(true)
   })
 
   it('test_disabled_menu_not_rendered enabled=False 的菜单不渲染', async () => {
-    const wrapper = mount(MenuPermissionManager)
+    const wrapper = mount(MenuPermissionManager, { props: { isAdmin: true } })
     await flushPromises()
     expect(wrapper.find('[data-testid="menu-checkbox-disabled-menu"]').exists()).toBe(false)
   })
 
   it('test_profile_checkbox_always_checked_and_disabled profile 永远 checked+disabled', async () => {
-    const wrapper = mount(MenuPermissionManager)
+    const wrapper = mount(MenuPermissionManager, { props: { isAdmin: true } })
     await flushPromises()
     const profileCb = wrapper.find('[data-testid="menu-checkbox-profile"]')
     expect(profileCb.element.checked).toBe(true)
@@ -94,7 +94,7 @@ describe('MenuPermissionManager', () => {
 
   it('test_loads_user_grants_on_user_select 切换人员自动加载 grants', async () => {
     setupFetchMock({ grantsByUser: { 2: ['profile', 'user-management.users'] } })
-    const wrapper = mount(MenuPermissionManager)
+    const wrapper = mount(MenuPermissionManager, { props: { isAdmin: true } })
     await flushPromises()
     // 选中 zhangsan (id=2)
     const items = wrapper.findAll('[data-testid="user-list-item"]')
@@ -108,7 +108,7 @@ describe('MenuPermissionManager', () => {
 
   it('test_parent_checkbox_indeterminate_when_partial 父级半选态', async () => {
     setupFetchMock({ grantsByUser: { 2: ['profile', 'user-management.users'] } })
-    const wrapper = mount(MenuPermissionManager)
+    const wrapper = mount(MenuPermissionManager, { props: { isAdmin: true } })
     await flushPromises()
     const items = wrapper.findAll('[data-testid="user-list-item"]')
     await items[1].trigger('click')
@@ -120,7 +120,7 @@ describe('MenuPermissionManager', () => {
   })
 
   it('test_save_calls_put 保存触发 PUT', async () => {
-    const wrapper = mount(MenuPermissionManager)
+    const wrapper = mount(MenuPermissionManager, { props: { isAdmin: true } })
     await flushPromises()
     const items = wrapper.findAll('[data-testid="user-list-item"]')
     await items[1].trigger('click') // 选 zhangsan
@@ -133,7 +133,7 @@ describe('MenuPermissionManager', () => {
   })
 
   it('test_search_filters_user_list 搜索过滤人员', async () => {
-    const wrapper = mount(MenuPermissionManager)
+    const wrapper = mount(MenuPermissionManager, { props: { isAdmin: true } })
     await flushPromises()
     const searchInput = wrapper.find('[data-testid="user-search"]')
     await searchInput.setValue('zhang')
@@ -147,7 +147,7 @@ describe('MenuPermissionManager', () => {
   // - task-scheduler.email-settings 应作为一级 checkbox 渲染
   // - 不应再作为 task-scheduler 的 children checkbox 出现
   it('test_email_settings_is_level1_not_under_task_scheduler 邮件设置是一级菜单而非运维任务子级', async () => {
-    const wrapper = mount(MenuPermissionManager)
+    const wrapper = mount(MenuPermissionManager, { props: { isAdmin: true } })
     await flushPromises()
     // 一级：存在 menu-checkbox-task-scheduler.email-settings
     const l1 = wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings"]')

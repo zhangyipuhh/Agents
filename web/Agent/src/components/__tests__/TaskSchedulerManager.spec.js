@@ -219,8 +219,24 @@ describe('TaskSchedulerManager 组件', () => {
     expect(TaskSchedulerManager).toBeDefined()
   })
 
+  it('test_non_admin_sees_no_permission_placeholder 非 admin 渲染「权限不足」占位（2026-07-23 修复）', async () => {
+    // 2026-07-23：TaskSchedulerManager 整体依赖 admin-only 数据源。
+    // 普通用户被授权顶级 tab 后打开 dialog，直接看「权限不足」占位，
+    // 不会看到会触发 403 的子 tab 与「加载失败」红色 banner。
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: false } })
+    await flushPromises()
+
+    const placeholder = wrapper.find('[data-testid="task-scheduler-no-permission"]')
+    expect(placeholder.exists()).toBe(true)
+    expect(placeholder.text()).toContain('仅对管理员开放')
+
+    // 主体内容（aside 任务侧栏）不应渲染
+    expect(wrapper.find('.task-scheduler-manager').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('test_renders_schedule_list 渲染定时任务列表', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     expect(wrapper.text()).toContain('每日巡检')
@@ -229,7 +245,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_schedule_card_history_button_icon_only 卡片显示仅图标执行历史按钮', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     const historyButton = wrapper.find('.task-history-btn')
@@ -269,7 +285,7 @@ describe('TaskSchedulerManager 组件', () => {
       return jsonResponse({})
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     const historyButtons = wrapper.findAll('.task-history-btn')
     expect(historyButtons.length).toBe(2)
@@ -299,7 +315,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_history_dialog_closes_by_overlay_and_escape 遮罩与 Escape 可关闭执行历史弹窗', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.find('.task-history-btn').trigger('click')
     await flushPromises()
@@ -332,7 +348,7 @@ describe('TaskSchedulerManager 组件', () => {
       return jsonResponse({})
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.find('.task-history-btn').trigger('click')
     await flushPromises()
@@ -342,7 +358,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_new_task_button_shows_form 点击新增任务显示表单', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     const button = wrapper.findAll('button').find((b) => b.text().includes('新增任务'))
 
@@ -358,7 +374,7 @@ describe('TaskSchedulerManager 组件', () => {
      * 计划：把「保存任务」按钮从 form 底部移到 detail-header 顶部 actions 行；
      * 新建模式（isCreating=true）下也需显示「保存任务」，但不显示其他三个编辑按钮。
      */
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
     await flushPromises()
@@ -384,7 +400,7 @@ describe('TaskSchedulerManager 组件', () => {
      * 计划：编辑模式（isCreating=false）下，「保存任务」与「停用任务」「立即运行」「删除任务」
      * 都在 detail-header 顶部 .actions 内渲染。
      */
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     const headerActions = wrapper.find('.detail-header .actions')
@@ -409,7 +425,7 @@ describe('TaskSchedulerManager 组件', () => {
      *  2. 验证通过 form 的 submit 事件能正常走通 saveTask（与原 form 底部 submit 等价）
      *  3. 验证按钮 type="submit"，浏览器在生产环境会触发原生 submit
      */
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
     await flushPromises()
@@ -442,7 +458,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_save_new_task_posts_payload 保存新任务调用 POST', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
     await flushPromises()
@@ -476,7 +492,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_toggle_task_calls_enabled_api 启停任务调用 enabled API', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('停用任务')).trigger('click')
     await flushPromises()
@@ -487,7 +503,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_trigger_task_calls_trigger_api 立即运行调用 trigger API', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('立即运行')).trigger('click')
     await flushPromises()
@@ -497,7 +513,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_runs_render_success_and_failed_status 渲染执行历史状态', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.find('.task-history-btn').trigger('click')
     await flushPromises()
@@ -510,7 +526,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_default_tab_is_edit_task 默认 Tab 是「编辑任务」', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     const tablist = wrapper.find('[role="tablist"]')
@@ -569,7 +585,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_switch_tab_loads_servers_on_demand 切换 Tab 按需加载服务器列表', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     const tabs = wrapper.findAll('[role="tab"]')
@@ -589,7 +605,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_server_list_keeps_only_whitelisted_fields 列表仅保留脱敏白名单字段', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     const tabs = wrapper.findAll('[role="tab"]')
     await tabs[1].trigger('click')
@@ -617,7 +633,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_server_table_renders_whitelist_and_script_columns 表格渲染白名单/巡检脚本两列', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('[role="tab"]')[1].trigger('click')
     await flushPromises()
@@ -635,7 +651,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_whitelist_button_opens_dialog_with_command_table 点击白名单按钮打开命令表格弹窗', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('[role="tab"]')[1].trigger('click')
     await flushPromises()
@@ -655,7 +671,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_whitelist_empty_state_renders_correctly 白名单为空时显示暂无提示', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('[role="tab"]')[1].trigger('click')
     await flushPromises()
@@ -673,7 +689,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_script_button_opens_dialog_with_preserved_format 点击脚本按钮打开保留格式的 pre 面板', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('[role="tab"]')[1].trigger('click')
     await flushPromises()
@@ -694,7 +710,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_script_empty_state_renders_correctly 脚本未配置时显示未配置提示', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('[role="tab"]')[1].trigger('click')
     await flushPromises()
@@ -711,7 +727,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_detail_dialogs_does_not_leak_sensitive_fields 弹窗内不外泄 ip/password/username/file_path', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('[role="tab"]')[1].trigger('click')
     await flushPromises()
@@ -738,7 +754,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_detail_dialogs_are_mutually_exclusive 同一时刻仅一个详情弹窗 open', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('[role="tab"]')[1].trigger('click')
     await flushPromises()
@@ -756,7 +772,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_scan_button_prevents_duplicate_submit 扫描按钮防重复提交', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     // 准备：让扫描接口延迟返回，验证防重复
@@ -811,7 +827,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_scan_success_shows_summary_and_refreshes_list 扫描成功显示统计并刷新列表', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     // 切到扫描 Tab 并加载初始列表
@@ -854,7 +870,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_scan_error_does_not_leak_backend_details 错误不泄露后端敏感信息', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     // 让扫描接口返回错误，并把"敏感 detail"放到响应体
@@ -895,7 +911,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_scan_empty_state 扫描结果空时显示空态', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     // 第一次获取列表返回空
@@ -931,7 +947,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_switch_back_to_task_tab_no_devops_request 切回任务 Tab 不再触发 devops 请求', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     // 切到扫描 Tab
@@ -957,7 +973,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_scan_post_has_no_content_type_header_and_no_body', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     await wrapper.findAll('[role="tab"]')[1].trigger('click')
@@ -980,7 +996,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_server_table_does_not_render_id_column', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('[role="tab"]')[1].trigger('click')
     await flushPromises()
@@ -1014,7 +1030,7 @@ describe('TaskSchedulerManager 组件', () => {
       return jsonResponse({})
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('[role="tab"]')[1].trigger('click')
     await flushPromises()
@@ -1053,7 +1069,7 @@ describe('TaskSchedulerManager 组件', () => {
       return jsonResponse({})
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('[role="tab"]')[1].trigger('click')
     await flushPromises()
@@ -1086,7 +1102,7 @@ describe('TaskSchedulerManager 组件', () => {
       return jsonResponse({})
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('[role="tab"]')[1].trigger('click')
     await flushPromises()
@@ -1107,7 +1123,7 @@ describe('TaskSchedulerManager 组件', () => {
 
   it('test_second_visit_to_scan_tab_does_not_re_fetch_servers', async () => {
     // 第一次进入扫描 Tab 后置 hasLoaded；再次切到扫描 Tab 不再重复 GET
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     await wrapper.findAll('[role="tab"]')[1].trigger('click')
@@ -1131,7 +1147,7 @@ describe('TaskSchedulerManager 组件', () => {
   // ===== 预设调度 UI 测试 =====
 
   it('test_layout_agent_select_appears_before_schedule_type 目标智能体 select 在执行频率 select 之前', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     const agentSelect = wrapper.find('[data-testid="schedule-agent"]')
@@ -1145,7 +1161,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_default_schedule_config_is_daily_9am 新增任务时默认每天 09:00', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
     await flushPromises()
@@ -1156,7 +1172,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_weekly_mode_generates_correct_cron 每周三 14:30 生成 30 14 * * 3', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
     await flushPromises()
@@ -1185,7 +1201,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_monthly_mode_generates_correct_cron 每月 15 日 08:00 生成 0 8 15 * *', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
     await flushPromises()
@@ -1214,7 +1230,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_yearly_mode_generates_correct_cron 每年 3 月 1 日 09:00 生成 0 9 1 3 *', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
     await flushPromises()
@@ -1245,7 +1261,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_interval_minutes_mode_generates_correct_cron 每隔 5 分钟生成 */5 * * * *', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
     await flushPromises()
@@ -1271,7 +1287,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_interval_hours_mode_generates_correct_cron 每隔 3 小时生成 0 */3 * * *', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
     await flushPromises()
@@ -1297,7 +1313,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_edit_existing_task_fills_schedule_config 编辑 daily 任务时 UI 回显每天 09:00', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     // mockSchedules[0] cron_expression='0 9 * * *'，默认选中
@@ -1320,7 +1336,7 @@ describe('TaskSchedulerManager 组件', () => {
       return jsonResponse({})
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     expect(wrapper.find('[data-testid="schedule-type"]').element.value).toBe('weekly')
@@ -1342,7 +1358,7 @@ describe('TaskSchedulerManager 组件', () => {
       return jsonResponse({})
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     expect(wrapper.find('[data-testid="schedule-type"]').element.value).toBe('interval_minutes')
@@ -1362,7 +1378,7 @@ describe('TaskSchedulerManager 组件', () => {
       return jsonResponse({})
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     expect(wrapper.find('[data-testid="schedule-type"]').element.value).toBe('daily')
@@ -1373,7 +1389,7 @@ describe('TaskSchedulerManager 组件', () => {
   // ===== 「执行时间」字段条件渲染（interval 模式隐藏） =====
 
   it('test_daily_shows_time_field daily 模式展示「执行时间」字段', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
     await flushPromises()
@@ -1386,7 +1402,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_interval_minutes_hides_time_field interval_minutes 模式隐藏「执行时间」字段', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
     await flushPromises()
@@ -1411,7 +1427,7 @@ describe('TaskSchedulerManager 组件', () => {
   })
 
   it('test_interval_hours_hides_time_field interval_hours 模式隐藏「执行时间」字段', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
     await flushPromises()
@@ -1435,7 +1451,7 @@ describe('TaskSchedulerManager 组件', () => {
      *  - form 渲染任务提示词 textarea 与 context_overrides JSON 字段
      *  - 不渲染「脚本参数 (JSON)」textarea
      */
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     // 默认 target_type='agent'，应存在 schedule-agent select、schedule-target-type select
@@ -1455,7 +1471,7 @@ describe('TaskSchedulerManager 组件', () => {
      *  - 渲染「脚本参数 (JSON)」textarea，不渲染「任务提示词」与 context_overrides JSON
      *  - 切换回 agent 后，context_overrides 重新可见
      */
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     const targetSelect = wrapper.find('[data-testid="schedule-target-type"]')
@@ -1486,7 +1502,7 @@ describe('TaskSchedulerManager 组件', () => {
      * - 选择“启用”后显示同一容器内的策略下拉，并触发策略列表加载；
      * - 保存时 notify_enabled 仍为 boolean true，而不是字符串。
      */
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
     await flushPromises()
@@ -1565,7 +1581,7 @@ describe('TaskSchedulerManager 组件', () => {
      * 容器根元素不再是 TEXTAREA，并且全文不再存在 textarea[data-testid="schedule-script-args"]。
      * 当前生产代码仍把 schedule-script-args 直接挂在 textarea 上，因此本测试在生产实现完成前必须红灯。
      */
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     await switchToScriptAndSelectHello(wrapper)
@@ -1586,7 +1602,7 @@ describe('TaskSchedulerManager 组件', () => {
      * - 默认不应因参数区额外请求 /api/admin/devops-servers
      * - 选择 schedule-add-script-param=server_list 后第一次 GET 且不重复
      */
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     // 初始默认不请求服务器列表（与现有 test_default_tab_is_edit_task 一致）
@@ -1629,7 +1645,7 @@ describe('TaskSchedulerManager 组件', () => {
     /**
      * 计划 §2.1 / §3：POST body.script_args 精确为 {server_list: ['业务A-生产','业务B-测试']}。
      */
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
     await flushPromises()
@@ -1683,7 +1699,7 @@ describe('TaskSchedulerManager 组件', () => {
       return jsonResponse({})
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     // 编辑任务已自动 hydrate：参数区应出现 server_list 控件并勾选两个 checkbox
@@ -1728,7 +1744,7 @@ describe('TaskSchedulerManager 组件', () => {
       return jsonResponse({})
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     // 失效 chip 应包含业务名 + 「已失效」文本标识（避免被同名有效业务掩盖）
@@ -1805,7 +1821,7 @@ describe('TaskSchedulerManager 组件', () => {
       return jsonResponse({})
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     // 添加参数下拉不应出现 UI 暂不支持的 mode/content；已有 server_list 仍显示为已选参数，因此下拉不应再次提供
@@ -1843,7 +1859,7 @@ describe('TaskSchedulerManager 组件', () => {
     /**
      * 计划 §2.2 removeScriptParam / §2.3：参数选择器不允许重复添加同一 key。
      */
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
     await flushPromises()
@@ -1895,7 +1911,7 @@ describe('TaskSchedulerManager 组件', () => {
     /**
      * 计划 §1.1 / 全局约束：参数面板 DOM 不得渲染 ip / port / username / password / blacklist / whitelist / file_path。
      */
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await switchToScriptAndSelectHello(wrapper)
     await wrapper.find('[data-testid="schedule-add-script-param"]').setValue('server_list')
@@ -1985,7 +2001,7 @@ describe('TaskSchedulerManager 组件', () => {
       return jsonResponse({})
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
     await flushPromises()
@@ -2036,7 +2052,7 @@ describe('TaskSchedulerManager 组件', () => {
       return jsonResponse({})
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     await wrapper.find('form').trigger('submit.prevent')
@@ -2088,7 +2104,7 @@ describe('TaskSchedulerManager 组件', () => {
       return jsonResponse({})
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     // 清理后再保存：触发一次 PUT，让 buildScriptArgs 在保存路径上做类型/dedup 规范化
@@ -2135,7 +2151,7 @@ describe('TaskSchedulerManager 组件', () => {
       return jsonResponse({})
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
     await flushPromises()
@@ -2209,7 +2225,7 @@ describe('TaskSchedulerManager 组件', () => {
       return jsonResponse({})
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     await wrapper.find('[data-testid="tab-script"]').trigger('click')
@@ -2251,7 +2267,7 @@ describe('TaskSchedulerManager 组件', () => {
       return jsonResponse({})
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     // 触发一次失败的脚本加载（初始预加载已经是第一次，必要时再按 Tab 触发）
@@ -2312,7 +2328,7 @@ describe('TaskSchedulerManager 组件', () => {
       return jsonResponse({})
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     // 先点中第一个脚本任务，再立即点中第二个
@@ -2359,7 +2375,7 @@ describe('TaskSchedulerManager 组件', () => {
       return jsonResponse({})
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
     await flushPromises()
@@ -2432,7 +2448,7 @@ describe('TaskSchedulerManager 组件', () => {
       return jsonResponse({})
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((button) => button.text().includes('新增任务')).trigger('click')
     await flushPromises()
@@ -2463,7 +2479,7 @@ describe('TaskSchedulerManager 组件', () => {
   // ===== 服务器行删除按钮（2026-07-22 新增） =====
 
   it('test_server_table_renders_delete_button_per_row 表格每行渲染删除按钮', async () => {
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     // 切到服务器扫描 Tab
     await wrapper.findAll('[role="tab"]')[1].trigger('click')
@@ -2483,7 +2499,7 @@ describe('TaskSchedulerManager 组件', () => {
 
   it('test_delete_button_confirm_cancel_keeps_row confirm 取消时不发请求且行保留', async () => {
     global.confirm = vi.fn(() => false)
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('[role="tab"]')[1].trigger('click')
     await flushPromises()
@@ -2505,7 +2521,7 @@ describe('TaskSchedulerManager 组件', () => {
 
   it('test_delete_button_confirm_ok_removes_row_locally confirm 确认后调用 DELETE 并从本地列表移除该行', async () => {
     global.confirm = vi.fn(() => true)
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('[role="tab"]')[1].trigger('click')
     await flushPromises()
@@ -2551,7 +2567,7 @@ describe('TaskSchedulerManager 组件', () => {
       return jsonResponse({})
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('[role="tab"]')[1].trigger('click')
     await flushPromises()
@@ -2618,7 +2634,7 @@ describe('TaskSchedulerManager 组件', () => {
      * schema 同时声明 server_list 与 api_list 时，「添加参数」下拉应同时出现两个
      * option；而 mode / content 等暂不支持字段不出现。
      */
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
     await flushPromises()
@@ -2646,7 +2662,7 @@ describe('TaskSchedulerManager 组件', () => {
       ([u, opts]) => u === '/api/admin/api-configs/tree' && (opts?.method || 'GET') === 'GET'
     ).length
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
     await flushPromises()
@@ -2700,7 +2716,7 @@ describe('TaskSchedulerManager 组件', () => {
       return origFetch(url, opts)
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
     await flushPromises()
@@ -2747,7 +2763,7 @@ describe('TaskSchedulerManager 组件', () => {
       return origFetch(url, opts)
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     expect(wrapper.find('[data-testid="schedule-param-api-list"]').exists()).toBe(true)
@@ -2781,7 +2797,7 @@ describe('TaskSchedulerManager 组件', () => {
       return origFetch(url, opts)
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     expect(wrapper.find('[data-testid="schedule-api-option-10"]').element.checked).toBe(true)
@@ -2820,7 +2836,7 @@ describe('TaskSchedulerManager 组件', () => {
       return origFetch(url, opts)
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
 
     // 触发保存
@@ -2863,7 +2879,7 @@ describe('TaskSchedulerManager 组件', () => {
       return origFetch(url, opts)
     })
 
-    const wrapper = mount(TaskSchedulerManager)
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.find('form').trigger('submit.prevent')
     await flushPromises()

@@ -132,7 +132,7 @@ describe('AgentManager 组件', () => {
   })
 
   it('test_renders_agent_list 渲染后展示智能体列表', async () => {
-    const wrapper = mount(AgentManager)
+    const wrapper = mount(AgentManager, { props: { isAdmin: true } })
     await flushPromises()
     const items = wrapper.findAll('.agent-item')
     expect(items.length).toBe(2)
@@ -141,7 +141,7 @@ describe('AgentManager 组件', () => {
   })
 
   it('test_new_agent_button_opens_dialog 点击新增按钮弹出表单', async () => {
-    const wrapper = mount(AgentManager)
+    const wrapper = mount(AgentManager, { props: { isAdmin: true } })
     await flushPromises()
     const newBtn = wrapper.findAll('button').find(b => b.text().includes('新增智能体'))
     expect(newBtn).toBeTruthy()
@@ -152,7 +152,7 @@ describe('AgentManager 组件', () => {
   })
 
   it('test_select_agent_displays_fields 点击列表项后显示配置项', async () => {
-    const wrapper = mount(AgentManager)
+    const wrapper = mount(AgentManager, { props: { isAdmin: true } })
     await flushPromises()
     const firstItem = wrapper.find('.agent-item')
     await firstItem.trigger('click')
@@ -166,13 +166,13 @@ describe('AgentManager 组件', () => {
   })
 
   it('test_disabled_agent_shows_badge 已禁用智能体显示「已禁用」徽章', async () => {
-    const wrapper = mount(AgentManager)
+    const wrapper = mount(AgentManager, { props: { isAdmin: true } })
     await flushPromises()
     expect(wrapper.text()).toContain('已禁用')
   })
 
   it('test_has_section_titles 渲染后包含至少一个 section 标题', async () => {
-    const wrapper = mount(AgentManager)
+    const wrapper = mount(AgentManager, { props: { isAdmin: true } })
     await flushPromises()
     const firstItem = wrapper.find('.agent-item')
     await firstItem.trigger('click')
@@ -185,14 +185,14 @@ describe('AgentManager 组件', () => {
   })
 
   it('test_skill_tab_renders_button 渲染后 Tab 栏包含「Skill 绑定」按钮', async () => {
-    const wrapper = mount(AgentManager)
+    const wrapper = mount(AgentManager, { props: { isAdmin: true } })
     await flushPromises()
     const skillTabBtn = wrapper.findAll('.tab-btn').find(b => b.text().includes('Skill 绑定'))
     expect(skillTabBtn).toBeTruthy()
   })
 
   it('test_skill_tab_loads_and_groups 切换到 Skill 绑定 Tab 加载并按 category 分组', async () => {
-    const wrapper = mount(AgentManager)
+    const wrapper = mount(AgentManager, { props: { isAdmin: true } })
     await flushPromises()
     const firstItem = wrapper.find('.agent-item')
     await firstItem.trigger('click')
@@ -210,7 +210,7 @@ describe('AgentManager 组件', () => {
   })
 
   it('test_skill_tab_save_calls_api 保存 skill 绑定调用 updateAgentSkillBindings', async () => {
-    const wrapper = mount(AgentManager)
+    const wrapper = mount(AgentManager, { props: { isAdmin: true } })
     await flushPromises()
     const firstItem = wrapper.find('.agent-item')
     await firstItem.trigger('click')

@@ -158,6 +158,22 @@ const activeUserMgmtTab = ref('users')
 const isAdmin = computed(() => props.role === 'admin')
 
 /**
+ * 2026-07-23 新增：判断某个顶级 tab 是否应挂载其内容组件。
+ * - admin：所有顶级 tab 都可见
+ * - 普通用户：仅 `visibleMenus` 中包含的顶级 tab 才挂载（其余 v-if 阻止，避免 onMounted 触发 admin-only 请求导致 403）
+ *
+ * @param {string} tabId 顶级 tab id
+ * @returns {boolean} true = 渲染该 tab 内容；false = 不挂载子组件
+ */
+function isVisibleTab(tabId) {
+  if (isAdmin.value) return true
+  if (!Array.isArray(props.visibleMenus) || props.visibleMenus.length === 0) return false
+  if (props.visibleMenus.includes(tabId)) return true
+  // 二级菜单可见时也允许挂载对应一级 tab（如 task-scheduler.* → task-scheduler）
+  return props.visibleMenus.some(m => typeof m === 'string' && m.startsWith(tabId + '.'))
+}
+
+/**
  * 一级菜单元数据（id → label + icon）。
  * 2026-07-23 改造：navItems 不再用 isAdmin 硬编码，改从 props.visibleMenus 派生。
  * 菜单 id / label / icon 是前端 UI 元数据，不在 MENU_CATALOG 注册表（注册表是后端权限真相源）。
@@ -1367,7 +1383,8 @@ watch(() => props.visible, (newVal) => {
               </div>
 
               <!-- 用户管理（admin） -->
-              <div v-show="activeTab === 'user-management'">
+              <!-- 2026-07-23 修复：用 v-if 替代 v-show，避免普通用户打开 dialog 时无差别挂载 user-management 子组件触发 /api/users 等 admin-only 请求导致 403 -->
+              <div v-if="isVisibleTab('user-management') && activeTab === 'user-management'">
                 <!-- 子 tab 切换器：用户列表 / 在线监控 / 会话查询 -->
                 <div class="sub-tabs">
                   <button class="sub-tab" :class="{ active: activeUserMgmtTab === 'users' }" @click="switchUserMgmtTab('users')">用户列表</button>
@@ -1553,38 +1570,45 @@ watch(() => props.visible, (newVal) => {
               </div>
 
               <!-- MCP 管理（admin） -->
-              <div v-show="activeTab === 'mcp-management'">
-                <McpServerManager />
+              <!-- 2026-07-23 修复：用 v-if 替代 v-show，避免普通用户打开 dialog 时无差别挂载 McpServerManager 触发 /api/admin/mcp/servers 请求导致 403 -->
+              <div v-if="isVisibleTab('mcp-management') && activeTab === 'mcp-management'">
+                <McpServerManager :is-admin="isAdmin" />
               </div>
 
               <!-- 智能体管理（admin） -->
-              <div v-show="activeTab === 'agent-management'">
-                <AgentManager />
+              <!-- 2026-07-23 修复：用 v-if 替代 v-show，避免普通用户打开 dialog 时无差别挂载 AgentManager 触发 /api/admin/agents 请求导致 403 -->
+              <div v-if="isVisibleTab('agent-management') && activeTab === 'agent-management'">
+                <AgentManager :is-admin="isAdmin" />
               </div>
 
               <!-- 工具管理（admin） -->
-              <div v-show="activeTab === 'tool-management'">
-                <ToolManager />
+              <!-- 2026-07-23 修复：用 v-if 替代 v-show，避免普通用户打开 dialog 时无差别挂载 ToolManager 触发 /api/admin/tools 请求导致 403 -->
+              <div v-if="isVisibleTab('tool-management') && activeTab === 'tool-management'">
+                <ToolManager :is-admin="isAdmin" />
               </div>
 
               <!-- Skill 管理（admin） -->
-              <div v-show="activeTab === 'skill-management'">
-                <SkillManager />
+              <!-- 2026-07-23 修复：用 v-if 替代 v-show，避免普通用户打开 dialog 时无差别挂载 SkillManager 触发 /api/admin/skills 请求导致 403 -->
+              <div v-if="isVisibleTab('skill-management') && activeTab === 'skill-management'">
+                <SkillManager :is-admin="isAdmin" />
               </div>
 
               <!-- 定时任务（admin） -->
-              <div v-show="activeTab === 'task-scheduler'" class="tab-fill-wrapper">
-                <TaskSchedulerManager />
+              <!-- 2026-07-23 修复：用 v-if 替代 v-show，避免普通用户打开 dialog 时无差别挂载 TaskSchedulerManager 触发 admin-only 请求导致 403 -->
+              <div v-if="isVisibleTab('task-scheduler') && activeTab === 'task-scheduler'" class="tab-fill-wrapper">
+                <TaskSchedulerManager :is-admin="isAdmin" />
               </div>
 
               <!-- 邮件设置（admin） -->
-              <div v-show="activeTab === 'task-scheduler.email-settings'" class="tab-fill-wrapper">
-                <EmailSettingsManager />
+              <!-- 2026-07-23 修复：用 v-if 替代 v-show，避免普通用户打开 dialog 时无差别挂载 EmailSettingsManager 触发 /api/admin/email/* 请求导致 403 -->
+              <div v-if="isVisibleTab('task-scheduler.email-settings') && activeTab === 'task-scheduler.email-settings'" class="tab-fill-wrapper">
+                <EmailSettingsManager :is-admin="isAdmin" />
               </div>
 
               <!-- 权限管理（admin，2026-07-23 新增） -->
-              <div v-show="activeTab === 'permission-management'" class="tab-fill-wrapper">
-                <MenuPermissionManager />
+              <!-- 2026-07-23 修复：用 v-if 替代 v-show，避免普通用户打开 dialog 时无差别挂载 MenuPermissionManager 触发 /api/admin/permissions/menu-catalog 与 /api/users 请求导致 403 -->
+              <div v-if="isVisibleTab('permission-management') && activeTab === 'permission-management'" class="tab-fill-wrapper">
+                <MenuPermissionManager :is-admin="isAdmin" />
               </div>
             </div>
           </div>

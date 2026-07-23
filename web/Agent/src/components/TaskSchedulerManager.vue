@@ -838,6 +838,9 @@ function maskApiNodes(rows) {
  */
 async function loadApiConfigTree(opts = {}) {
   const force = opts && opts.force === true
+  // 2026-07-23 修复：fail-safe 兜底（不仅 onMounted，switchTab/watch 触发也要拦）。
+  // 否则普通用户点击「API接口配置」子 tab 仍会触发 /api/admin/api-config/* → 403。
+  if (!props.isAdmin) return
   if (!force && hasLoadedApis.value) return
   if (!force && apiLoadPromise) return apiLoadPromise
   if (force && apiLoadPromise) {
@@ -1189,6 +1192,10 @@ function bumpFillVersion() {
  */
 async function loadDevopsServers(opts = {}) {
   const force = opts && opts.force === true
+  // 2026-07-23 修复：fail-safe 兜底（不仅 onMounted，switchTab/watch 触发的也要拦）。
+  // 否则普通用户被授权 task-scheduler 顶级 tab 后，点击「服务器扫描入库」子 tab
+  // 仍会触发 /api/admin/devops-servers → 403 → 红色 banner「服务器列表加载失败」。
+  if (!props.isAdmin) return
   if (!force && hasLoaded.value) return
   if (!force && devopsLoadPromise) return devopsLoadPromise
   if (force && devopsLoadPromise) {
@@ -1319,6 +1326,9 @@ let scriptsLoadPromise = null
  */
 async function loadScripts(opts = {}) {
   const force = opts && opts.force === true
+  // 2026-07-23 修复：fail-safe 兜底（不仅 onMounted，switchTab/watch 触发也要拦）。
+  // 否则普通用户点击「脚本扫描入库」子 tab 仍会触发 /api/admin/scripts/* → 403。
+  if (!props.isAdmin) return
   if (!force && hasLoadedScripts.value) return
   if (!force && scriptsLoadPromise) return scriptsLoadPromise
   if (force && scriptsLoadPromise) {
@@ -1696,8 +1706,31 @@ async function removeTask() {
   }
 }
 
+// === Props ===
+/**
+ * 2026-07-23 新增：组件 props。
+ * - isAdmin：父组件传入的角色标记。onMounted 内做 fail-safe 兜底，
+ *   非 admin 用户不会触发 /api/admin/agents 等 admin-only 请求。
+ */
+const props = defineProps({
+  isAdmin: {
+    type: Boolean,
+    default: false
+  }
+})
+
+// 模板用 computed 引用，避免在 template 中反复访问 props.isAdmin。
+const isAdmin = computed(() => props.isAdmin)
+
 onMounted(() => {
   window.addEventListener('keydown', handleHistoryKeydown)
+  // 2026-07-23 修复：fail-safe 兜底。
+  // 即便父组件 UserSettingsDialog 漏挂了 v-if，本组件也不会触发 /api/admin/agents
+  // 等 admin-only 请求，避免普通用户被 403 拒绝导致「会话无效，请重试」红 banner。
+  if (!props.isAdmin) {
+    console.warn('[TaskSchedulerManager] 非 admin 用户挂载本组件，已跳过数据加载（防御性兜底）')
+    return
+  }
   loadInitialData()
 })
 
@@ -1707,7 +1740,16 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="task-scheduler-manager">
+  <!-- 2026-07-23 新增：非 admin 用户访问提示。TaskSchedulerManager 整体依赖 admin-only
+       数据源（/api/admin/task-schedules、/api/admin/devops-servers 等）。
+       即便父组件按顶级 tab 授权策略挂载了本组件，普通用户也只看到「权限不足」占位，
+       不会看到会触发 403 的子 tab 按钮和「加载失败」红色 banner。
+       fail-safe（onMounted + loadDevopsServers/loadScripts/loadApiConfigTree + switchTab）
+       作为最终防御层。-->
+  <div v-if="!isAdmin" class="empty-state" data-testid="task-scheduler-no-permission">
+    此功能仅对管理员开放。如需使用请联系管理员调整菜单权限。
+  </div>
+  <section v-else class="task-scheduler-manager">
     <aside class="task-sidebar">
       <div class="panel-header">
         <div>

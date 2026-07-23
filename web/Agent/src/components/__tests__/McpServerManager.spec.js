@@ -57,7 +57,7 @@ describe('McpServerManager 组件', () => {
       ok: true,
       json: async () => mockServers,
     })
-    const wrapper = mount(McpServerManager)
+    const wrapper = mount(McpServerManager, { props: { isAdmin: true } })
     await flushPromises()
     expect(wrapper.text()).toContain('高德地图')
     expect(wrapper.text()).toContain('计数工具')
@@ -68,7 +68,7 @@ describe('McpServerManager 组件', () => {
       ok: true,
       json: async () => mockServers,
     })
-    const wrapper = mount(McpServerManager)
+    const wrapper = mount(McpServerManager, { props: { isAdmin: true } })
     await flushPromises()
     const items = wrapper.findAll('.server-item')
     expect(items.length).toBeGreaterThanOrEqual(1)
@@ -81,7 +81,7 @@ describe('McpServerManager 组件', () => {
       ok: true,
       json: async () => [],
     })
-    const wrapper = mount(McpServerManager)
+    const wrapper = mount(McpServerManager, { props: { isAdmin: true } })
     await flushPromises()
     const newBtn = wrapper.find('.new-server-btn')
     expect(newBtn.exists()).toBe(true)
@@ -99,7 +99,7 @@ describe('McpServerManager 组件', () => {
       ok: true,
       json: async () => [],
     })
-    const wrapper = mount(McpServerManager)
+    const wrapper = mount(McpServerManager, { props: { isAdmin: true } })
     await flushPromises()
     const items = wrapper.findAll('.server-item')
     expect(items.length).toBeGreaterThanOrEqual(1)
@@ -112,7 +112,7 @@ describe('McpServerManager 组件', () => {
       ok: true,
       json: async () => [],
     })
-    const wrapper = mount(McpServerManager)
+    const wrapper = mount(McpServerManager, { props: { isAdmin: true } })
     await flushPromises()
     expect(wrapper.text()).toContain('暂无')
   })
@@ -128,7 +128,7 @@ describe('McpServerManager 组件', () => {
       ok: true,
       json: async () => ({}),
     })
-    const wrapper = mount(McpServerManager)
+    const wrapper = mount(McpServerManager, { props: { isAdmin: true } })
     await flushPromises()
     const items = wrapper.findAll('.server-item')
     expect(items.length).toBeGreaterThanOrEqual(1)
@@ -162,7 +162,7 @@ describe('McpServerManager 组件', () => {
         tool_config: { enable_injection: true, default_param_keys: [], hidden_param_keys: [], unwrap_result: false },
       }],
     })
-    const wrapper = mount(McpServerManager)
+    const wrapper = mount(McpServerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.find('.new-server-btn').trigger('click')
     await wrapper.find('.save-btn').trigger('click')
@@ -193,7 +193,7 @@ describe('McpServerManager 组件', () => {
       ok: true,
       json: async () => [],
     })
-    const wrapper = mount(McpServerManager)
+    const wrapper = mount(McpServerManager, { props: { isAdmin: true } })
     await flushPromises()
     const items = wrapper.findAll('.server-item')
     await items[0].trigger('click')
@@ -215,7 +215,7 @@ describe('McpServerManager 组件', () => {
       ok: true,
       json: async () => [],
     })
-    const wrapper = mount(McpServerManager)
+    const wrapper = mount(McpServerManager, { props: { isAdmin: true } })
     await flushPromises()
     const items = wrapper.findAll('.server-item')
     await items[0].trigger('click')
@@ -245,7 +245,7 @@ describe('McpServerManager 组件', () => {
       ok: true,
       json: async () => ({}),
     })
-    const wrapper = mount(McpServerManager)
+    const wrapper = mount(McpServerManager, { props: { isAdmin: true } })
     await flushPromises()
     const items = wrapper.findAll('.server-item')
     await items[0].trigger('click')
@@ -279,7 +279,7 @@ describe('McpServerManager 组件', () => {
       ok: true,
       json: async () => [{ method_name: 'search', enabled: true }],
     })
-    const wrapper = mount(McpServerManager)
+    const wrapper = mount(McpServerManager, { props: { isAdmin: true } })
     await flushPromises()
     const items = wrapper.findAll('.server-item')
     await items[0].trigger('click')
@@ -296,7 +296,7 @@ describe('McpServerManager 组件', () => {
       ok: true,
       json: async () => [],
     })
-    const wrapper = mount(McpServerManager)
+    const wrapper = mount(McpServerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.find('.new-server-btn').trigger('click')
     const labels = wrapper.findAll('.form-row label')
@@ -309,7 +309,7 @@ describe('McpServerManager 组件', () => {
       ok: true,
       json: async () => [],
     })
-    const wrapper = mount(McpServerManager)
+    const wrapper = mount(McpServerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.find('.new-server-btn').trigger('click')
     const labels = wrapper.findAll('.form-row label')
@@ -326,7 +326,7 @@ describe('McpServerManager 组件', () => {
       ok: true,
       json: async () => [],
     })
-    const wrapper = mount(McpServerManager)
+    const wrapper = mount(McpServerManager, { props: { isAdmin: true } })
     await flushPromises()
     const items = wrapper.findAll('.server-item')
     await items[0].trigger('click')
@@ -356,7 +356,7 @@ describe('McpServerManager 组件', () => {
         tool_config: { enable_injection: false, default_param_keys: ['k'], hidden_param_keys: [], unwrap_result: true },
       }],
     })
-    const wrapper = mount(McpServerManager)
+    const wrapper = mount(McpServerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.find('.new-server-btn').trigger('click')
     // 修改 connect_timeout
@@ -386,7 +386,7 @@ describe('McpServerManager 组件', () => {
       ok: true,
       json: async () => [],
     })
-    const wrapper = mount(McpServerManager)
+    const wrapper = mount(McpServerManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.find('.new-server-btn').trigger('click')
     const textareas = wrapper.findAll('textarea')

@@ -1006,8 +1006,26 @@ watch(
   { immediate: true }
 )
 
+// === Props ===
+/**
+ * 2026-07-23 新增：组件 props。
+ * - isAdmin：父组件传入的角色标记。onMounted 内做 fail-safe 兜底，
+ *   非 admin 用户不会触发 /api/admin/agents 等 admin-only 请求。
+ */
+const props = defineProps({
+  isAdmin: {
+    type: Boolean,
+    default: false
+  }
+})
+
 // === 生命周期 ===
 onMounted(async () => {
+  // 2026-07-23 修复：fail-safe 兜底，避免普通用户触发 admin-only 请求导致 403。
+  if (!props.isAdmin) {
+    console.warn('[AgentManager] 非 admin 用户挂载本组件，已跳过数据加载（防御性兜底）')
+    return
+  }
   await loadFieldTemplates()
   await loadAgentList()
 })

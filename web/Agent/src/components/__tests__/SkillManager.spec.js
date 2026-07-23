@@ -91,7 +91,7 @@ describe('SkillManager 组件', () => {
       ok: true,
       json: async () => mockSkills,
     })
-    const wrapper = mount(SkillManager)
+    const wrapper = mount(SkillManager, { props: { isAdmin: true } })
     await flushPromises()
     expect(wrapper.text()).toContain('代码审查')
     expect(wrapper.text()).toContain('数据分析')
@@ -103,7 +103,7 @@ describe('SkillManager 组件', () => {
       ok: true,
       json: async () => mockSkills,
     })
-    const wrapper = mount(SkillManager)
+    const wrapper = mount(SkillManager, { props: { isAdmin: true } })
     await flushPromises()
     const categoryHeaders = wrapper.findAll('.category-name')
     const categoryNames = categoryHeaders.map(h => h.text())
@@ -116,7 +116,7 @@ describe('SkillManager 组件', () => {
       ok: true,
       json: async () => mockSkills,
     })
-    const wrapper = mount(SkillManager)
+    const wrapper = mount(SkillManager, { props: { isAdmin: true } })
     await flushPromises()
     const items = wrapper.findAll('.skill-item')
     expect(items.length).toBeGreaterThanOrEqual(1)
@@ -129,7 +129,7 @@ describe('SkillManager 组件', () => {
       ok: true,
       json: async () => [],
     })
-    const wrapper = mount(SkillManager)
+    const wrapper = mount(SkillManager, { props: { isAdmin: true } })
     await flushPromises()
     expect(wrapper.text()).toContain('暂无')
   })
@@ -143,7 +143,7 @@ describe('SkillManager 组件', () => {
       ok: true,
       json: async () => mockUnregisteredSkills,
     })
-    const wrapper = mount(SkillManager)
+    const wrapper = mount(SkillManager, { props: { isAdmin: true } })
     await flushPromises()
     const scanBtn = wrapper.find('.btn-scan')
     expect(scanBtn.exists()).toBe(true)
@@ -162,7 +162,7 @@ describe('SkillManager 组件', () => {
       ok: true,
       json: async () => { return { ...mockSkills[0], enabled: false } },
     })
-    const wrapper = mount(SkillManager)
+    const wrapper = mount(SkillManager, { props: { isAdmin: true } })
     await flushPromises()
     const toggles = wrapper.findAll('.skill-toggle')
     expect(toggles.length).toBeGreaterThanOrEqual(1)
@@ -184,7 +184,7 @@ describe('SkillManager 组件', () => {
       ok: true,
       json: async () => [],
     })
-    const wrapper = mount(SkillManager)
+    const wrapper = mount(SkillManager, { props: { isAdmin: true } })
     await flushPromises()
     const items = wrapper.findAll('.skill-item')
     expect(items.length).toBeGreaterThanOrEqual(1)
@@ -203,7 +203,7 @@ describe('SkillManager 组件', () => {
       ok: true,
       json: async () => mockSkills,
     })
-    const wrapper = mount(SkillManager)
+    const wrapper = mount(SkillManager, { props: { isAdmin: true } })
     await flushPromises()
     const scanBtn = wrapper.find('.btn-scan')
     expect(scanBtn.text()).toContain('扫描未注册 skill')
@@ -214,7 +214,7 @@ describe('SkillManager 组件', () => {
       ok: true,
       json: async () => mockSkills,
     })
-    const wrapper = mount(SkillManager)
+    const wrapper = mount(SkillManager, { props: { isAdmin: true } })
     await flushPromises()
     const refreshBtn = wrapper.find('.btn-refresh')
     expect(refreshBtn.text()).toContain('刷新')
@@ -225,7 +225,7 @@ describe('SkillManager 组件', () => {
       ok: true,
       json: async () => mockSkills,
     })
-    const wrapper = mount(SkillManager)
+    const wrapper = mount(SkillManager, { props: { isAdmin: true } })
     await flushPromises()
     expect(wrapper.text()).toContain('已禁用')
   })
@@ -239,7 +239,7 @@ describe('SkillManager 组件', () => {
       ok: true,
       json: async () => [],
     })
-    const wrapper = mount(SkillManager)
+    const wrapper = mount(SkillManager, { props: { isAdmin: true } })
     await flushPromises()
     const scanBtn = wrapper.find('.btn-scan')
     await scanBtn.trigger('click')

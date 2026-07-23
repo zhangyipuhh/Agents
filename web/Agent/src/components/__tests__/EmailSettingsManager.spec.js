@@ -72,7 +72,7 @@ describe('EmailSettingsManager 收件人策略', () => {
 
   it('test_create_policy_does_not_log_recipient_keyword_error 点击新建策略不产生 recipientKeyword 异常', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const wrapper = mount(EmailSettingsManager)
+    const wrapper = mount(EmailSettingsManager, { props: { isAdmin: true } })
     await flushPromises()
 
     await openPolicyEditor(wrapper)
@@ -83,7 +83,7 @@ describe('EmailSettingsManager 收件人策略', () => {
   })
 
   it('test_create_policy_resets_recipient_keyword 新建策略时清空收件人搜索关键字', async () => {
-    const wrapper = mount(EmailSettingsManager)
+    const wrapper = mount(EmailSettingsManager, { props: { isAdmin: true } })
     await flushPromises()
     await openPolicyEditor(wrapper)
 
@@ -99,7 +99,7 @@ describe('EmailSettingsManager 收件人策略', () => {
   })
 
   it('test_policy_name_and_description_use_full_rows 策略名称和描述各占满一行', async () => {
-    const wrapper = mount(EmailSettingsManager)
+    const wrapper = mount(EmailSettingsManager, { props: { isAdmin: true } })
     await flushPromises()
     await openPolicyEditor(wrapper)
 
@@ -113,7 +113,7 @@ describe('EmailSettingsManager 收件人策略', () => {
   })
 
   it('test_recipient_keyword_filters_users 收件人搜索只展示匹配用户', async () => {
-    const wrapper = mount(EmailSettingsManager)
+    const wrapper = mount(EmailSettingsManager, { props: { isAdmin: true } })
     await flushPromises()
     await openPolicyEditor(wrapper)
 
@@ -125,7 +125,7 @@ describe('EmailSettingsManager 收件人策略', () => {
   })
 
   it('test_select_and_cancel_policy_reset_recipient_keyword 编辑和取消策略时清空收件人搜索关键字', async () => {
-    const wrapper = mount(EmailSettingsManager)
+    const wrapper = mount(EmailSettingsManager, { props: { isAdmin: true } })
     await flushPromises()
     await wrapper.find('[data-testid="email-tab-policies"]').trigger('click')
     await flushPromises()
