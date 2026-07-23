@@ -45,6 +45,8 @@ import ToolCallCard from './ToolCallCard.vue'
 import SubAgentCard from './SubAgentCard.vue'
 // 2026-07-02 新增：历史弹窗内就地显示子智能体抽屉（Teleport 到 .history-dialog-card 容器内）
 import SubAgentDrawer from './SubAgentDrawer.vue'
+// 2026-07-23 新增：菜单权限管理（admin 在「权限管理」入口下使用）
+import MenuPermissionManager from './MenuPermissionManager.vue'
 
 /**
  * 组件属性定义
@@ -79,6 +81,10 @@ const props = defineProps({
   sidebarCollapsed: {
     type: Boolean,
     default: false
+  },
+  visibleMenus: {
+    type: Array,
+    default: () => []
   }
 })
 
@@ -147,24 +153,74 @@ const activeTab = ref('profile')
  */
 const activeUserMgmtTab = ref('users')
 
-/** @type {import('vue').Ref<boolean>} 是否管理员角色 */
+/** @type {import('vue').Ref<boolean>} 是否管理员角色（保留兼容，navItems 已不再依赖） */
 const isAdmin = computed(() => props.role === 'admin')
 
-/** 导航项列表 */
-const navItems = computed(() => {
-  const items = [{ id: 'profile', label: '个人设置', icon: 'M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z' }]
-  if (isAdmin.value) {
-    items.push(
-      { id: 'user-management', label: '用户管理', icon: 'M9 6a3 3 0 11-6 0 3 3 0 016 0zM17 6a3 3 0 11-6 0 3 3 0 016 0zM12.93 17c.046-.327.07-.66.07-1a6.97 6.97 0 00-1.5-4.33A5 5 0 0119 16v1h-6.07zM6 11a5 5 0 015 5v1H1v-1a5 5 0 015-5z' },
-      { id: 'agent-management', label: '智能体管理', viewBox: '0 0 16 16', icon: 'M6 12.5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 0 1h-3a.5.5 0 0 1-.5-.5M3 8.062C3 6.76 4.235 5.765 5.53 5.886a26.6 26.6 0 0 0 4.94 0C11.765 5.765 13 6.76 13 8.062v1.157a.93.93 0 0 1-.765.935c-.845.147-2.34.346-4.235.346s-3.39-.2-4.235-.346A.93.93 0 0 1 3 9.219zm4.542-.827a.25.25 0 0 0-.217.068l-.92.9a25 25 0 0 1-1.871-.183.25.25 0 0 0-.068.495c.55.076 1.232.149 2.02.193a.25.25 0 0 0 .189-.071l.754-.736.847 1.71a.25.25 0 0 0 .404.062l.932-.97a25 25 0 0 0 1.922-.188.25.25 0 0 0-.068-.495c-.538.074-1.207.145-1.98.189a.25.25 0 0 0-.166.076l-.754.785-.842-1.7a.25.25 0 0 0-.182-.135M8.5 1.866a1 1 0 1 0-1 0V3h-2A4.5 4.5 0 0 0 1 7.5V8a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1v1a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-1a1 1 0 0 0 1-1V9a1 1 0 0 0-1-1v-.5A4.5 4.5 0 0 0 10.5 3h-2zM14 7.5V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V7.5A3.5 3.5 0 0 1 5.5 4h5A3.5 3.5 0 0 1 14 7.5' },
-      { id: 'mcp-management', label: 'MCP 管理', icon: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z' },
-      { id: 'tool-management', label: '工具管理', icon: 'M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z' },
-      { id: 'skill-management', label: 'Skill 管理', icon: 'M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z' },
-      { id: 'task-scheduler', label: '运维任务', viewBox: '0 0 24 24', icon: 'M22 5.72l-4.6-3.33-1.29 1.78 4.6 3.33L22 5.72zM7.88 3.39L6.6 1.61 2 5.72l1.29 1.78 4.59-3.11zM12.5 8H11v6l4.75 2.85.75-1.23-4-2.37V8zM12 4c-4.97 0-9 4.03-9 9s4.02 9 9 9 9-4.03 9-9-4.03-9-9-9zm0 16c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z' },
-      { id: 'email-settings', label: '邮件设置', icon: 'M2.5 6.5l7.5 5 7.5-5M3 5h14a1 1 0 011 1v10a1 1 0 01-1 1H3a1 1 0 01-1-1V6a1 1 0 011-1z' }
-    )
+/**
+ * 一级菜单元数据（id → label + icon）。
+ * 2026-07-23 改造：navItems 不再用 isAdmin 硬编码，改从 props.visibleMenus 派生。
+ * 菜单 id / label / icon 是前端 UI 元数据，不在 MENU_CATALOG 注册表（注册表是后端权限真相源）。
+ */
+const NAV_MENU_METADATA = {
+  'profile': { id: 'profile', label: '个人设置', icon: 'M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z' },
+  'user-management': { id: 'user-management', label: '用户管理', icon: 'M9 6a3 3 0 11-6 0 3 3 0 016 0zM17 6a3 3 0 11-6 0 3 3 0 016 0zM12.93 17c.046-.327.07-.66.07-1a6.97 6.97 0 00-1.5-4.33A5 5 0 0119 16v1h-6.07zM6 11a5 5 0 015 5v1H1v-1a5 5 0 015-5z' },
+  'agent-management': { id: 'agent-management', label: '智能体管理', viewBox: '0 0 16 16', icon: 'M6 12.5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 0 1h-3a.5.5 0 0 1-.5-.5M3 8.062C3 6.76 4.235 5.765 5.53 5.886a26.6 26.6 0 0 0 4.94 0C11.765 5.765 13 6.76 13 8.062v1.157a.93.93 0 0 1-.765.935c-.845.147-2.34.346-4.235.346s-3.39-.2-4.235-.346A.93.93 0 0 1 3 9.219zm4.542-.827a.25.25 0 0 0-.217.068l-.92.9a25 25 0 0 1-1.871-.183.25.25 0 0 0-.068.495c.55.076 1.232.149 2.02.193a.25.25 0 0 0 .189-.071l.754-.736.847 1.71a.25.25 0 0 0 .404.062l.932-.97a25 25 0 0 0 1.922-.188.25.25 0 0 0-.068-.495c-.538.074-1.207.145-1.98.189a.25.25 0 0 0-.166.076l-.754.785-.842-1.7a.25.25 0 0 0-.182-.135M8.5 1.866a1 1 0 1 0-1 0V3h-2A4.5 4.5 0 0 0 1 7.5V8a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1v1a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-1a1 1 0 0 0 1-1V9a1 1 0 0 0-1-1v-.5A4.5 4.5 0 0 0 10.5 3h-2zM14 7.5V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V7.5A3.5 3.5 0 0 1 5.5 4h5A3.5 3.5 0 0 1 14 7.5' },
+  'mcp-management': { id: 'mcp-management', label: 'MCP 管理', icon: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z' },
+  'tool-management': { id: 'tool-management', label: '工具管理', icon: 'M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z' },
+  'skill-management': { id: 'skill-management', label: 'Skill 管理', icon: 'M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z' },
+  'task-scheduler': { id: 'task-scheduler', label: '运维任务', viewBox: '0 0 24 24', icon: 'M22 5.72l-4.6-3.33-1.29 1.78 4.6 3.33L22 5.72zM7.88 3.39L6.6 1.61 2 5.72l1.29 1.78 4.59-3.11zM12.5 8H11v6l4.75 2.85.75-1.23-4-2.37V8zM12 4c-4.97 0-9 4.03-9 9s4.02 9 9 9 9-4.03 9-9-4.03-9-9-9zm0 16c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z' },
+  'email-settings': { id: 'email-settings', label: '消息设置', icon: 'M2.5 6.5l7.5 5 7.5-5M3 5h14a1 1 0 011 1v10a1 1 0 01-1 1H3a1 1 0 01-1-1V6a1 1 0 011-1z' },
+  'permission-management': { id: 'permission-management', label: '权限管理', icon: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z' }
+}
+
+/**
+ * 兼容映射：一级菜单 id → 对应后端注册表二级菜单 id 前缀
+ * 用于：前端顶级 tab 与后端二级注册项不在同一命名空间的情况（如 email-settings）。
+ */
+const MENU_CHILD_PREFIX = {
+  'email-settings': 'task-scheduler.email-settings'
+}
+
+/**
+ * 判断 visibleMenus 是否包含「某一级菜单项可见」
+ *
+ * 规则：
+ * - 一级菜单自身在 visibleMenus → 可见
+ * - 该一级菜单的任一二级子菜单（id 前缀 `${parent}.`）在 visibleMenus → 可见
+ * - 通过 MENU_CHILD_PREFIX 兼容跨命名空间的二级映射（如 email-settings）
+ * - profile 永远可见（service 已保证）
+ *
+ * @param {string} menuId 一级菜单 id
+ * @param {string[]} visibleMenus
+ * @returns {boolean}
+ */
+function isMenuVisible(menuId, visibleMenus) {
+  if (!Array.isArray(visibleMenus) || visibleMenus.length === 0) {
+    // 兼容：visibleMenus 为空时退化为"只有 profile 可见"（与 fail-secure 一致）
+    return menuId === 'profile'
   }
-  return items
+  if (visibleMenus.includes(menuId)) return true
+  // 标准前缀匹配
+  if (visibleMenus.some(m => typeof m === 'string' && m.startsWith(menuId + '.'))) return true
+  // 兼容映射
+  const childPrefix = MENU_CHILD_PREFIX[menuId]
+  if (childPrefix && visibleMenus.includes(childPrefix)) return true
+  return false
+}
+
+/** 导航项列表（从 visibleMenus 派生，不再硬编码 isAdmin） */
+const navItems = computed(() => {
+  // 2026-07-23 兼容性 fallback：
+  // props.visibleMenus 为空数组时（旧测试 / 父组件未传），用 isAdmin 兜底
+  // 保留旧行为（admin 看全部 / 普通用户仅看 profile），避免破坏现有测试。
+  // 新代码路径：父组件（App.vue / Sidebar.vue）必须传 visibleMenus，否则视为 fail-secure 仅 ['profile']。
+  let effective = props.visibleMenus
+  if (!Array.isArray(effective) || effective.length === 0) {
+    effective = isAdmin.value
+      ? Object.keys(NAV_MENU_METADATA)
+      : ['profile']
+  }
+  return Object.values(NAV_MENU_METADATA).filter(meta => isMenuVisible(meta.id, effective))
 })
 
 /* ---- 修改密码相关状态 ---- */
@@ -1533,6 +1589,11 @@ watch(() => props.visible, (newVal) => {
               <!-- 邮件设置（admin） -->
               <div v-show="activeTab === 'email-settings'" class="tab-fill-wrapper">
                 <EmailSettingsManager />
+              </div>
+
+              <!-- 权限管理（admin，2026-07-23 新增） -->
+              <div v-show="activeTab === 'permission-management'" class="tab-fill-wrapper">
+                <MenuPermissionManager />
               </div>
             </div>
           </div>

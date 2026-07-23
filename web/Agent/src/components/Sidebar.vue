@@ -23,6 +23,11 @@ const props = defineProps({
   currentSessionId: {
     type: String,
     default: ''
+  },
+  // 2026-07-23 新增：当前用户可见菜单 id 列表（来自 auth 响应 visible_menus）
+  visibleMenus: {
+    type: Array,
+    default: () => []
   }
 })
 
@@ -859,6 +864,7 @@ onUnmounted(() => {
       :username="username"
       :initial-tab="settingsInitialTab"
       :sidebar-collapsed="isSidebarCollapsed"
+      :visible-menus="visibleMenus"
       @username-updated="handleUsernameUpdated"
     />
     <!--

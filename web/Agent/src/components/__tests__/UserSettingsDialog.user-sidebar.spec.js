@@ -157,7 +157,7 @@ describe('UserSettingsDialog 普通用户左侧导航栏', () => {
     wrapper.unmount()
   })
 
-  it('test_admin_regression_admin 仍显示完整 8 项导航 + 标题为「用户设置与管理」', async () => {
+  it('test_admin_regression_admin 仍显示完整 9 项导航 + 标题为「用户设置与管理」', async () => {
     const wrapper = mount(UserSettingsDialog, {
       props: {
         visible: true,
@@ -168,15 +168,19 @@ describe('UserSettingsDialog 普通用户左侧导航栏', () => {
     })
     await flushPromises()
     const navTexts = getNavItemTexts()
-    expect(navTexts.length).toBe(8)
+    // 2026-07-23：新增「权限管理」一级菜单（admin-only）后，admin 共可见 9 项
+    // (个人设置 + 8 个管理类: 用户/智能体/MCP/工具/Skill/运维任务/消息设置/权限管理)
+    expect(navTexts.length).toBe(9)
     expect(navTexts).toContain('个人设置')
     expect(navTexts).toContain('用户管理')
     expect(navTexts).toContain('智能体管理')
+    expect(navTexts).toContain('权限管理')
     expect(navTexts).toContain('MCP 管理')
     expect(navTexts).toContain('工具管理')
     expect(navTexts).toContain('Skill 管理')
     expect(navTexts).toContain('运维任务')
-    expect(navTexts).toContain('邮件设置')
+    // 2026-07-23：email-settings 改名为「消息设置」（与后端注册表 label 对齐）
+    expect(navTexts).toContain('消息设置')
 
     const title = document.body.querySelector('.dialog-title')
     expect((title.textContent || '').trim()).toBe('用户设置与管理')

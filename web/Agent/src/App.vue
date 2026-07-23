@@ -53,6 +53,8 @@ const authReady = ref(false)
 const currentUser = ref({ username: '', role: '', userId: null })
 // 2026-07-01 新增：当前用户允许使用的智能体名称列表
 const allowedAgents = ref([])
+// 2026-07-23 新增：当前用户可见菜单 id 列表（来自 /api/auth/validate 响应）
+const visibleMenus = ref([])
 
 const messages = reactive([])
 const sessionId = reactive({ value: '' })
@@ -272,6 +274,8 @@ function applyUserData(data) {
     userId: data.user_id || null
   }
   allowedAgents.value = data.allowed_agents || []
+  // 2026-07-23 新增：visible_menus 透传给 UserSettingsDialog 的 navItems
+  visibleMenus.value = data.visible_menus || []
   isLoggedIn.value = true
 }
 
@@ -1345,6 +1349,7 @@ async function handleSessionSwitch(targetSessionId) {
       :user-role="currentUser.role"
       :user-id="currentUser.userId"
       :current-session-id="sessionId.value"
+      :visible-menus="visibleMenus"
       @new-chat="newSession"
       @page-change="handlePageChange"
       @logout="handleLogout"
