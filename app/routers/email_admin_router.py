@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
 
-from app.shared.utils.auth.Safety import require_admin
+from app.shared.utils.auth.Safety import require_admin, require_admin_or_menu_acl
 from app.shared.utils.email.email_config_service import (
     EmailConfigError,
     EmailConfigNotFoundError,
@@ -39,10 +39,16 @@ from app.shared.utils.email.email_service import EmailSendError, EmailService
 logger = logging.getLogger(__name__)
 
 
+# 2026-07-23 ACL 双重门：移除全局 require_admin，逐 endpoint 改用
+# require_admin_or_menu_acl(menu_id) 替代 — admin 直通（不读 ACL），
+# 普通用户需 ACL 含 menu_id 才能调端点。
+# - server-config / server-config/test → email-settings.server
+# - emailable-users → email-settings 父级（policies 收件人选 sender 的辅助数据）
+# - policies → email-settings.policies
+# - test / send-by-policy → email-settings.test
 router = APIRouter(
     prefix="/api/admin/email",
     tags=["Email Admin"],
-    dependencies=[Depends(require_admin)],
 )
 
 
@@ -212,7 +218,8 @@ def _handle_config_error(exc: Exception) -> None:
 # SMTP Server Config Endpoints
 # =============================================================================
 
-@router.get("/server-config", response_model=Optional[Dict[str, Any]])
+@router.get("/server-config", response_model=Optional[Dict[str, Any]],
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.email-settings.server'))])
 async def get_server_config(request: Request) -> Optional[Dict[str, Any]]:
     """获取当前启用的 SMTP 配置（密码字段返回空字符串，不外泄）。
 
@@ -226,7 +233,8 @@ async def get_server_config(request: Request) -> Optional[Dict[str, Any]]:
     return await service.get_server_config_public()
 
 
-@router.put("/server-config", response_model=Dict[str, Any])
+@router.put("/server-config", response_model=Dict[str, Any],
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.email-settings.server'))])
 async def update_server_config(
     request: Request,
     body: UpdateServerConfigRequest,
@@ -263,7 +271,8 @@ async def update_server_config(
         raise
 
 
-@router.post("/server-config/test", response_model=Dict[str, Any])
+@router.post("/server-config/test", response_model=Dict[str, Any],
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.email-settings.server'))])
 async def test_server_config(
     request: Request,
     body: TestConnectionRequest,
@@ -306,7 +315,8 @@ async def test_server_config(
 # Emailable Users Endpoint
 # =============================================================================
 
-@router.get("/emailable-users", response_model=List[Dict[str, Any]])
+@router.get("/emailable-users", response_model=List[Dict[str, Any]],
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.email-settings'))])
 async def list_emailable_users(request: Request) -> List[Dict[str, Any]]:
     """列出已注册且邮箱非空的用户（供前端挑选收件人）。
 
@@ -324,7 +334,8 @@ async def list_emailable_users(request: Request) -> List[Dict[str, Any]]:
 # Policy CRUD Endpoints
 # =============================================================================
 
-@router.get("/policies", response_model=List[Dict[str, Any]])
+@router.get("/policies", response_model=List[Dict[str, Any]],
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.email-settings.policies'))])
 async def list_policies(request: Request) -> List[Dict[str, Any]]:
     """列出所有邮件发送策略。
 
@@ -341,6 +352,7 @@ async def list_policies(request: Request) -> List[Dict[str, Any]]:
 @router.post(
     "/policies",
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.email-settings.policies'))],
     response_model=Dict[str, Any],
 )
 async def create_policy(
@@ -371,7 +383,8 @@ async def create_policy(
         raise
 
 
-@router.put("/policies/{policy_id}", response_model=Dict[str, Any])
+@router.put("/policies/{policy_id}", response_model=Dict[str, Any],
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.email-settings.policies'))])
 async def update_policy(
     request: Request,
     policy_id: int,
@@ -402,7 +415,8 @@ async def update_policy(
         raise
 
 
-@router.delete("/policies/{policy_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/policies/{policy_id}", status_code=status.HTTP_204_NO_CONTENT,
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.email-settings.policies'))])
 async def delete_policy(request: Request, policy_id: int) -> None:
     """删除策略（关联表通过 ON DELETE CASCADE 自动清理）。
 
@@ -425,7 +439,8 @@ async def delete_policy(request: Request, policy_id: int) -> None:
 # Email Sending Endpoints
 # =============================================================================
 
-@router.post("/test", response_model=Dict[str, Any])
+@router.post("/test", response_model=Dict[str, Any],
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.email-settings.test'))])
 async def send_test_email(
     request: Request,
     to: str = Form(..., description="收件人邮箱（多个用逗号分隔）"),
@@ -493,6 +508,7 @@ async def send_test_email(
 @router.post(
     "/send-by-policy/{policy_id}",
     response_model=Dict[str, Any],
+    dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.email-settings.test'))],
 )
 async def send_by_policy(
     request: Request,

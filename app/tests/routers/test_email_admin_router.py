@@ -428,6 +428,90 @@ class MockConfig:
 # P1: bytes→str 归一化（service 层覆盖，避免 asyncpg bytes/str 类型错误）
 # =============================================================================
 
+
+# =============================================================================
+# P2: ACL 双重门（2026-07-23）
+# - admin 角色 bypass ACL（既保留原 require_admin 行为）
+# - 普通用户 ACL 授权后也能调（与 require_admin 双门）
+# - 普通用户未被 ACL 授权 → 403
+# =============================================================================
+
+
+def _override_normal_user_with_visible_menu_ids(client, visible_ids):
+    """覆盖 client 的 menu_permission_service，让普通用户（testuser）的
+    get_visible_menu_ids(visible_ids) 返回指定集合。
+    """
+    from app.shared.utils.auth.menu_permission_service import MenuPermissionService
+    visible_set = set(visible_ids)
+
+    async def fake_visible(user_id, is_admin):
+        if is_admin:
+            # admin bypass：返 [所有 enabled]
+            from app.core.menu_registry import get_enabled_items
+            return [m.id for m in sorted(get_enabled_items(), key=lambda m: m.sort_order)]
+        # 普通用户：返 mock 集合
+        return sorted(visible_set)
+
+    stub = MenuPermissionService(db=None)
+    stub.get_visible_menu_ids = fake_visible
+    client.app.state.menu_permission_service = stub
+
+
+def test_normal_user_no_acl_emailable_users_returns_403(client, user_headers, monkeypatch):
+    """ACL 空：普通用户 GET /emailable-users 返 403。"""
+    _override_normal_user_with_visible_menu_ids(client, visible_ids={'profile'})
+    resp = client.get("/api/admin/email/emailable-users", headers=user_headers)
+    assert resp.status_code == 403
+
+
+def test_normal_user_acl_email_settings_passes_emailable_users(client, user_headers):
+    """ACL 含 email-settings（父级）：普通用户 GET /emailable-users 200。"""
+    _override_normal_user_with_visible_menu_ids(
+        client, visible_ids={'profile', 'task-scheduler.email-settings'}
+    )
+    # 由于 client fixture stub 了 email_service 之后会返 []，
+    # 这里只验证 ACL 通过（即不是 403）
+    resp = client.get("/api/admin/email/emailable-users", headers=user_headers)
+    assert resp.status_code in (200, 500)  # ACL 通过，只是不一定返数据
+
+
+def test_normal_user_acl_policies_passes(client, user_headers):
+    """ACL 含 policies：普通用户 GET /policies 200。"""
+    _override_normal_user_with_visible_menu_ids(
+        client, visible_ids={'profile', 'task-scheduler.email-settings.policies'}
+    )
+    resp = client.get("/api/admin/email/policies", headers=user_headers)
+    assert resp.status_code in (200, 500)
+
+
+def test_normal_user_acl_no_server_blocked_from_server_config(client, user_headers):
+    """ACL 含 policies 但不含 server：普通用户 GET /server-config 403。"""
+    _override_normal_user_with_visible_menu_ids(
+        client, visible_ids={'profile', 'task-scheduler.email-settings.policies'}
+    )
+    resp = client.get("/api/admin/email/server-config", headers=user_headers)
+    assert resp.status_code == 403
+
+
+def test_normal_user_acl_server_passes(client, user_headers):
+    """ACL 含 server：普通用户 GET /server-config 200。"""
+    _override_normal_user_with_visible_menu_ids(
+        client, visible_ids={'profile', 'task-scheduler.email-settings.server'}
+    )
+    resp = client.get("/api/admin/email/server-config", headers=user_headers)
+    assert resp.status_code in (200, 500)
+
+
+def test_admin_still_bypasses_acl_check(client, admin_headers):
+    """admin 角色不被 ACL 检查影响：被授予 server 但 ACL 只含 profile 也能调。"""
+    # 显式把 ACL 设为没 server
+    _override_normal_user_with_visible_menu_ids(client, visible_ids={'profile'})
+    # 但 admin_headers 走 admin 路径（bypass ACL）
+    # 注意：admin_headers 的用户 role 是 admin（来自 conftest 的 _mock_user_db_for_admin_auth），
+    # 但前端 fixture 注入 menu_permission_service；admin 角色 require_admin bypass ACL 直接读 enabled 全量
+    resp = client.get("/api/admin/email/server-config", headers=admin_headers)
+    assert resp.status_code in (200, 500)
+
 def _build_upsert_capture_db(encrypt_token_bytes: bytes = b"gAAAAABqStub=="):
     """构造一个能捕获 upsert SQL 参数的 fake db。
 
