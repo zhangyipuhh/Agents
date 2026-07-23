@@ -2,8 +2,9 @@
 /**
  * UserSettingsDialog - 用户设置对话框组件
  * 支持分层面板导航：
- * - 普通用户（role='user'）：仅显示个人设置
- * - 管理员（role='admin'）：显示个人设置、用户管理、在线监控、会话查询
+ * - 所有角色：左侧导航栏始终显示
+ * - 普通用户（role='user'）：仅显示个人设置一项
+ * - 管理员（role='admin'）：显示个人设置、用户管理、智能体管理、MCP 管理、工具管理、Skill 管理、运维任务、邮件设置
  */
 
 import { ref, watch, computed, nextTick } from 'vue'
@@ -1116,7 +1117,7 @@ watch(() => props.visible, (newVal) => {
         <div class="dialog-card" @click.stop>
           <!-- 对话框头部 -->
           <div class="dialog-header">
-            <h2 class="dialog-title">{{ isAdmin ? '用户设置与管理' : '用户设置' }}</h2>
+            <h2 class="dialog-title">用户设置与管理</h2>
             <button class="dialog-close" @click="closeDialog" aria-label="关闭">
               <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
                 <path d="M15 5L5 15M5 5l10 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
@@ -1125,9 +1126,9 @@ watch(() => props.visible, (newVal) => {
           </div>
 
           <!-- 对话框内容 -->
-          <div class="dialog-body" :class="{ 'dialog-body-horizontal': isAdmin }">
-            <!-- 左侧导航（admin 显示） -->
-            <div v-if="isAdmin" class="dialog-nav">
+          <div class="dialog-body dialog-body-horizontal">
+            <!-- 左侧导航（所有用户均显示） -->
+            <div class="dialog-nav">
               <button
                 v-for="item in navItems"
                 :key="item.id"

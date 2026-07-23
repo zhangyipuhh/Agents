@@ -4341,6 +4341,30 @@ web/Agent/src/components/
 - 测试策略：mock `global.fetch` 与 `global.localStorage`；因 `UserSettingsDialog` 使用 `<Teleport to="body">`，nav-item 与 tab 内容渲染到 `document.body`，需通过 `document.body.querySelectorAll` / `document.body.querySelector` 查询元素（`wrapper.findAll` / `wrapper.find` 无法穿透 Teleport）
 - 覆盖：admin 角色显示 MCP 管理 Tab / 普通用户不显示 MCP 管理 Tab / 点击 MCP Tab 后渲染 `.mcp-server-manager` 组件
 
+## 前端 UserSettingsDialog 普通用户显示左侧导航栏
+
+`UserSettingsDialog` 不再根据 `role` 条件渲染 `.dialog-nav`，所有角色都使用水平布局（`dialog-body-horizontal`），左侧导航栏始终可见；普通用户仅展示「个人设置」一项，admin 维持原有 8 项不变。标题文案统一为「用户设置与管理」。
+
+### 修改要点
+
+- **template（dialog-title）**：去掉 `isAdmin` 三元表达式，统一为静态文本 `用户设置与管理`
+- **template（dialog-body）**：`:class="{ 'dialog-body-horizontal': isAdmin }"` → 静态 `class="dialog-body dialog-body-horizontal"`，所有角色均使用水平布局
+- **template（dialog-nav）**：`v-if="isAdmin"` 移除，左侧导航栏对所有用户可见
+- **navItems 计算属性**：保持原状——普通用户天然只返回 `[{ id: 'profile', label: '个人设置', ... }]`，admin 在此基础上追加 7 项
+- **isAdmin 计算属性**：保留（组件内部仍依赖其判断 admin 专属 tab 的 `v-show` 与数据加载）
+
+### 视觉与行为契约
+
+- 普通用户打开「设置」后：左侧出现 200px 宽导航栏，仅显示「个人设置」一项且默认 active；右侧内容区域为个人资料表单
+- 单项导航栏下方空白由 `.dialog-nav` 的 `flex-direction: column` 自然处理，菜单项贴顶部对齐
+- 原有 admin 多 Tab 工作流（用户管理 / 智能体管理 / MCP / 工具 / Skill / 运维 / 邮件）不受影响
+
+### 测试
+
+- 路径：`web/Agent/src/components/__tests__/UserSettingsDialog.user-sidebar.spec.js`（6 用例）
+- 测试策略：与 mcp.spec.js 一致，依赖 `document.body.querySelectorAll` 穿透 `<Teleport to="body">`
+- 覆盖：普通用户能看到 `.dialog-nav` / 普通用户只显示「个人设置」一项 / 普通用户 dialog-body 含 `dialog-body-horizontal` 类 / 普通用户标题统一为「用户设置与管理」 / 普通用户进入 dialog 时「个人设置」默认 active / admin 回归 8 项导航 + 标题不变
+
 ## 前端斜杠命令注册表
 
 新建 `web/Agent/src/utils/commandRegistry.js` 作为前端斜杠命令的统一注册表与分发器。`InputBox.vue` 检测到 `/` 开头输入时调用 `handleCommand`。
