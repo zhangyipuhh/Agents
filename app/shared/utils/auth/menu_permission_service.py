@@ -52,18 +52,26 @@ class MenuPermissionService:
     async def get_visible_menu_ids(self, user_id: int, is_admin: bool) -> List[str]:
         """返回该用户可见菜单的 id 列表（按 sort_order 升序）。
 
-        - admin：直接返 get_enabled_items() 全量 id，忽略缓存
-        - 普通用户：返 cache[user_id] ∩ enabled，末尾强制追加 'profile'
+        - admin：直接返 get_enabled_items() 全量 id，忽略 ACL（admin 绕过权限）
+        - 普通用户：
+          - 排除 `required_role="admin"` 的菜单（admin-only 菜单不能通过 ACL 授权给普通用户，
+            这是 2026-07-23 修复——之前普通用户被授权 admin-only 菜单会导致组件挂载后
+            onMounted/switchTab 触发 admin-only 请求，被后端 require_admin 拒绝）
+          - 在剩下的非 admin-only 菜单里取 ACL ∩ enabled
+          - 末尾强制追加 'profile'（最低可用性保证）
         - db=None：同上语义（fail-secure）
         """
         enabled = get_enabled_items()
         if is_admin:
             return [m.id for m in sorted(enabled, key=lambda m: m.sort_order)]
+        # 普通用户：admin-only 菜单（required_role='admin'）从可见集合中排除
+        # —— 不论 ACL 是否被错误地写入了这类菜单，都不会出现在 visible_menus 里
+        non_admin_only = [m for m in enabled if m.required_role != "admin"]
         granted = self._cache.get(user_id, set())
-        visible_ids = {m.id for m in enabled if m.id in granted}
+        visible_ids = {m.id for m in non_admin_only if m.id in granted}
         # 强制保留个人设置（最低可用性保证）
         visible_ids.add("profile")
-        visible = [m for m in enabled if m.id in visible_ids]
+        visible = [m for m in non_admin_only if m.id in visible_ids]
         return [m.id for m in sorted(visible, key=lambda m: m.sort_order)]
 
     async def get_user_grants(self, user_id: int) -> Set[str]:

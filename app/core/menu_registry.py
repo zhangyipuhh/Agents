@@ -112,13 +112,21 @@ def get_visible_for_user(
 
     Returns:
         按 sort_order 排序后的 MenuItem 列表
+
+    权限规则（2026-07-23 修复）：
+    - admin：返全量 enabled（绕过 ACL）
+    - 普通用户：排除 `required_role='admin'` 的菜单（admin-only 菜单不能通过 ACL
+      授权给普通用户，避免组件挂载后触发 admin-only 数据请求被后端 403 拒绝）。
+      ACL 中已错误写入的 admin-only 菜单也会被忽略。
     """
     enabled = get_enabled_items()
     if is_admin:
         return sorted(enabled, key=lambda m: m.sort_order)
     granted = granted_menu_ids or set()
-    visible_ids = {m.id for m in enabled if m.id in granted}
+    # 普通用户：先按 required_role 过滤，再与 ACL 取交集
+    non_admin_only = [m for m in enabled if m.required_role != "admin"]
+    visible_ids = {m.id for m in non_admin_only if m.id in granted}
     # 强制保留"个人设置"（最低可用性保证）
     visible_ids.add("profile")
-    visible = [m for m in enabled if m.id in visible_ids]
+    visible = [m for m in non_admin_only if m.id in visible_ids]
     return sorted(visible, key=lambda m: m.sort_order)

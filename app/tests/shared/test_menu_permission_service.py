@@ -103,14 +103,19 @@ def test_get_visible_menu_ids_admin_ignores_cache():
 
 
 def test_get_visible_menu_ids_normal_returns_granted_intersect_enabled():
-    """普通用户返 granted ∩ enabled。"""
+    """普通用户返 granted ∩ enabled ∩ 非 admin-only（2026-07-23 修复）。
+
+    admin-only 菜单（如 user-management、agent-management）required_role='admin'，
+    普通用户即便 ACL 授权了也不出现在 visible_menus 里。
+    """
     svc = MenuPermissionService(db=None)
     svc._cache[5] = {"profile", "user-management", "user-management.users", "agent-management"}
     visible = _run(svc.get_visible_menu_ids(user_id=5, is_admin=False))
     assert "profile" in visible
-    assert "user-management" in visible
-    assert "user-management.users" in visible
-    assert "agent-management" in visible
+    # 2026-07-23 修复：admin-only 菜单（user-management / agent-management）不可被 ACL 授权给普通用户
+    assert "user-management" not in visible
+    assert "user-management.users" not in visible
+    assert "agent-management" not in visible
     assert "task-scheduler" not in visible
 
 
@@ -158,6 +163,38 @@ def test_get_visible_menu_ids_sorted_by_sort_order():
         key=lambda mid: next(m.sort_order for m in MENU_CATALOG if m.id == mid)
     )
     assert visible == expected
+
+
+def test_get_visible_menu_ids_normal_excludes_admin_only_even_if_granted():
+    """2026-07-23 修复：普通用户 ACL 中被错误授权的 admin-only 菜单不会出现在 visible_menus 里。
+
+    即便 user_menu_acl 表里写了 `task-scheduler` 给普通用户，
+    service 层也会按 required_role 过滤掉，避免组件挂载后触发 admin-only 请求导致 403。
+    """
+    svc = MenuPermissionService(db=None)
+    svc._cache[2] = {
+        "profile", "task-scheduler", "task-scheduler.scheduled",
+        "task-scheduler.script-scan", "task-scheduler.api-config",
+        "task-scheduler.email-settings", "task-scheduler.email-settings.policies",
+    }
+    visible = _run(svc.get_visible_menu_ids(user_id=2, is_admin=False))
+    assert "profile" in visible
+    # admin-only 菜单全部被过滤掉
+    assert "task-scheduler" not in visible
+    assert "task-scheduler.scheduled" not in visible
+    assert "task-scheduler.script-scan" not in visible
+    assert "task-scheduler.api-config" not in visible
+    assert "task-scheduler.email-settings" not in visible
+    assert "task-scheduler.email-settings.policies" not in visible
+
+
+def test_get_visible_menu_ids_admin_still_returns_admin_only():
+    """admin 仍能看到全部 enabled 菜单（绕过 ACL 和 required_role 检查）。"""
+    svc = MenuPermissionService(db=None)
+    visible = _run(svc.get_visible_menu_ids(user_id=1, is_admin=True))
+    assert "task-scheduler" in visible
+    assert "task-scheduler.email-settings" in visible
+    assert "permission-management" in visible
 
 
 # ============ get_user_grants ============
