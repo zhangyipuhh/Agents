@@ -112,10 +112,11 @@ def test_get_visible_menu_ids_normal_returns_granted_intersect_enabled():
     svc._cache[5] = {"profile", "user-management", "user-management.users", "agent-management"}
     visible = _run(svc.get_visible_menu_ids(user_id=5, is_admin=False))
     assert "profile" in visible
-    # 2026-07-23 修复：admin-only 菜单（user-management / agent-management）不可被 ACL 授权给普通用户
-    assert "user-management" not in visible
-    assert "user-management.users" not in visible
-    assert "agent-management" not in visible
+    # 2026-07-23 修复后：ACL 是唯一可见性控制，admin-only 菜单（user-management 等）授权后也应可见
+    assert "user-management" in visible
+    assert "user-management.users" in visible
+    assert "agent-management" in visible
+    # 未授权的菜单仍不会凭空出现
     assert "task-scheduler" not in visible
 
 
@@ -165,27 +166,40 @@ def test_get_visible_menu_ids_sorted_by_sort_order():
     assert visible == expected
 
 
-def test_get_visible_menu_ids_normal_excludes_admin_only_even_if_granted():
-    """2026-07-23 修复：普通用户 ACL 中被错误授权的 admin-only 菜单不会出现在 visible_menus 里。
+def test_normal_user_can_see_granted_admin_only_menu():
+    """2026-07-23 最终设计：普通用户 ACL 授权包含 admin-only 菜单时**可见**。
 
-    即便 user_menu_acl 表里写了 `task-scheduler` 给普通用户，
-    service 层也会按 required_role 过滤掉，避免组件挂载后触发 admin-only 请求导致 403。
+    早期版本曾过滤掉 admin-only 菜单（认为是设计 bug），现已修复：
+    admin 决定**谁**能看到菜单，由 ACL 控制；按钮调用交给后端 require_admin 守护。
+    本测试就是回归保护，确保不再回到过激过滤的旧行为。
     """
     svc = MenuPermissionService(db=None)
     svc._cache[2] = {
-        "profile", "task-scheduler", "task-scheduler.scheduled",
-        "task-scheduler.script-scan", "task-scheduler.api-config",
-        "task-scheduler.email-settings", "task-scheduler.email-settings.policies",
+        "profile",
+        "task-scheduler",
+        "task-scheduler.scheduled",
+        "task-scheduler.script-scan",
+        "task-scheduler.api-config",
+        "task-scheduler.email-settings",
+        "task-scheduler.email-settings.server",
+        "task-scheduler.email-settings.policies",
+        "task-scheduler.email-settings.test",
+        # 一个不存在的 id：测试 enabled=False 或注册表无此 id 都被过滤掉
+        "non-existent-menu-id",
     }
     visible = _run(svc.get_visible_menu_ids(user_id=2, is_admin=False))
     assert "profile" in visible
-    # admin-only 菜单全部被过滤掉
-    assert "task-scheduler" not in visible
-    assert "task-scheduler.scheduled" not in visible
-    assert "task-scheduler.script-scan" not in visible
-    assert "task-scheduler.api-config" not in visible
-    assert "task-scheduler.email-settings" not in visible
-    assert "task-scheduler.email-settings.policies" not in visible
+    # ACL 授权的所有 admin-only 菜单都应可见（2026-07-23 修复后的设计：ACL 是唯一可见性控制）
+    assert "task-scheduler" in visible
+    assert "task-scheduler.scheduled" in visible
+    assert "task-scheduler.script-scan" in visible
+    assert "task-scheduler.api-config" in visible
+    assert "task-scheduler.email-settings" in visible
+    assert "task-scheduler.email-settings.server" in visible
+    assert "task-scheduler.email-settings.policies" in visible
+    assert "task-scheduler.email-settings.test" in visible
+    # 注册表里没有的菜单不应出现
+    assert "non-existent-menu-id" not in visible
 
 
 def test_get_visible_menu_ids_admin_still_returns_admin_only():

@@ -115,18 +115,22 @@ def get_visible_for_user(
 
     权限规则（2026-07-23 修复）：
     - admin：返全量 enabled（绕过 ACL）
-    - 普通用户：排除 `required_role='admin'` 的菜单（admin-only 菜单不能通过 ACL
-      授权给普通用户，避免组件挂载后触发 admin-only 数据请求被后端 403 拒绝）。
-      ACL 中已错误写入的 admin-only 菜单也会被忽略。
+    - 普通用户：cache[user_id] ∩ enabled（ACL 是唯一可见性控制）
+      - 末尾强制追加 'profile'（最低可用性保证）
+    - 实际按钮调用由后端 require_admin 守护（与菜单可见性正交）：
+      普通用户即便 ACL 授权了 admin-only 菜单，看到菜单但功能调用被后端拒绝
+
+    历史说明：早期版本曾在普通用户路径上过滤掉 required_role='admin' 的菜单
+    （认为该类菜单不能给普通用户授权），但这与产品需求"普通用户通过 ACL 获得
+    菜单可见性"矛盾——admin 应该独立决定**谁**能看到该菜单，菜单背后的功能
+    访问控制交给路由层的 require_admin 守护即可。已修复。
     """
     enabled = get_enabled_items()
     if is_admin:
         return sorted(enabled, key=lambda m: m.sort_order)
     granted = granted_menu_ids or set()
-    # 普通用户：先按 required_role 过滤，再与 ACL 取交集
-    non_admin_only = [m for m in enabled if m.required_role != "admin"]
-    visible_ids = {m.id for m in non_admin_only if m.id in granted}
-    # 强制保留"个人设置"（最低可用性保证）
+    # 普通用户：ACL ∩ enabled，末尾追加 profile（最低可用性）
+    visible_ids = {m.id for m in enabled if m.id in granted}
     visible_ids.add("profile")
-    visible = [m for m in non_admin_only if m.id in visible_ids]
+    visible = [m for m in enabled if m.id in visible_ids]
     return sorted(visible, key=lambda m: m.sort_order)
