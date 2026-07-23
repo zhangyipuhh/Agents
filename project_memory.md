@@ -4527,3 +4527,84 @@ web/Agent/src/utils/
 | `app/tests/routers/test_skill_admin_router.py` | 1 | 1（新建，模块可导入）|
 | `app/tests/scripts/test_seed_tools_from_source.py` | 13 | 13（新建）|
 | **合计** | **154** | **+1** |
+
+
+## 用户菜单权限管理（2026-07-23 新增）
+
+### 核心契约
+- 方案：菜单静态化（代码注册表）+ `user_menu_acl` 表
+- 授权粒度：一级 + 二级菜单都支持
+- admin 行为：完全绕过 ACL，看到全量菜单
+- 菜单注册机制：`app/core/menu_registry.py` 显式注册，启动时载入内存
+- 菜单 id 稳定性：**id 终身不变**（硬规则）
+- 未授权用户：强制保留「个人设置」可见（最低可用性）
+- 「权限管理」菜单本身：admin-only
+- 菜单下架：`enabled=False`（ACL 记录保留，不清空授权历史）
+
+### MenuItem 字段
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | str | 稳定 key，永不改 |
+| `level` | int | 1 = 一级, 2 = 二级 |
+| `parent_id` | Optional[str] | 二级菜单指向一级菜单 id |
+| `label` | str | 显示名（可改） |
+| `icon_key` | str | 图标 key（前端映射） |
+| `sort_order` | int | 排序（可改） |
+| `required_role` | Optional[str] | 'admin' / None |
+| `enabled` | bool | False 时菜单管理 UI 隐藏但 ACL 保留 |
+
+完整定义见 `app/core/menu_registry.py`。
+
+### 数据模型 `user_menu_acl`
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | SERIAL PK | 自增 |
+| `user_id` | INT FK→users CASCADE | 授权目标用户 |
+| `menu_id` | VARCHAR(64) | 菜单注册表里的 id |
+| `created_at` | TIMESTAMP | DEFAULT NOW() |
+| `created_by_user_id` | INT FK→users SET NULL | 授权人（删除授权人不影响授权） |
+
+- UNIQUE `(user_id, menu_id)` 防止重复授权
+- 索引：`(user_id)` / `(menu_id)`
+
+### 服务层 MenuPermissionService
+- 位置：`app/shared/utils/auth/menu_permission_service.py`
+- 6 个接口：`preload_all` / `get_visible_menu_ids` / `get_user_grants` / `grant` / `revoke` / `replace`
+- 内存缓存：`Dict[int, Set[menu_id]]`
+- DB 双写：`grant` / `revoke` / `replace` 都同步
+- 降级：db=None 时 admin 全量，普通用户仅 `['profile']`（fail-secure）
+
+### API 端点
+- `GET  /api/admin/permissions/menu-catalog` —— 全量注册表
+- `GET  /api/admin/permissions/users/{id}/grants` —— 查用户授权
+- `PUT  /api/admin/permissions/users/{id}/grants` —— 全量覆盖保存
+- `/api/auth/login` + `/api/auth/validate` 响应新增 `visible_menus` 字段
+
+全部受 `require_admin` 守护（除 `/api/auth/*`）。
+
+### 前端组件
+- `UserSettingsDialog.vue`：`navItems` 由 `visibleMenus` prop 驱动（不再硬编码 `isAdmin`）
+- `MenuPermissionManager.vue`：左侧人员选择 + 右侧树形 checkbox（先选人再选菜单）
+- `App.vue` / `Sidebar.vue`：透传 `visible_menus`
+
+### 菜单修改示例：邮件设置 → 消息设置 + 一级变二级
+
+保持 id 不变（`task-scheduler.email-settings`），只改 `level` / `parent_id` / `label`：
+
+```python
+# 改之前
+MenuItem(id="task-scheduler.email-settings", level=1, parent_id=None,
+         label="邮件设置", icon_key="mail", sort_order=8, required_role="admin"),
+
+# 改之后
+MenuItem(id="task-scheduler.email-settings", level=2,
+         parent_id="task-scheduler",
+         label="消息设置", icon_key="mail", sort_order=4, required_role="admin"),
+```
+
+前端模板同步：把 `<div v-show="activeTab === 'task-scheduler.email-settings'" class="tab-fill-wrapper">` 块挪到 `task-scheduler` 的子 tab 渲染区。
+
+授权数据全自动保留（因 id 不变）。
+
