@@ -2895,3 +2895,63 @@ export async function fetchApiConfigRuns(nodeId, limit = 20) {
   }
   return response.json()
 }
+
+// ============================================================================
+// 菜单权限管理 API（2026-07-23 新增）
+// ============================================================================
+
+/**
+ * 获取全量菜单注册表
+ * 调用 GET /api/admin/permissions/menu-catalog
+ * @returns {Promise<{items: Array<MenuItem>>>} 全量 MenuItem 列表
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function fetchMenuCatalog() {
+  const response = await fetchWithAuth('/api/admin/permissions/menu-catalog', {
+    method: 'GET'
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取菜单目录失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 获取某用户的菜单授权
+ * 调用 GET /api/admin/permissions/users/{userId}/grants
+ * @param {number|string} userId - 用户 ID
+ * @returns {Promise<{menu_ids: string[]}>} 已授权菜单 id 列表
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function fetchUserMenuGrants(userId) {
+  const response = await fetchWithAuth(`/api/admin/permissions/users/${encodeURIComponent(userId)}/grants`, {
+    method: 'GET'
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取用户菜单授权失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 全量覆盖保存某用户的菜单授权
+ * 调用 PUT /api/admin/permissions/users/{userId}/grants
+ * @param {number|string} userId - 用户 ID
+ * @param {string[]} menuIds - 菜单 id 数组
+ * @returns {Promise<{menu_ids: string[]}>} 保存后的 menu_ids
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function saveUserMenuGrants(userId, menuIds) {
+  const response = await fetchWithAuth(`/api/admin/permissions/users/${encodeURIComponent(userId)}/grants`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ menu_ids: menuIds })
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `保存菜单授权失败: ${response.status}`)
+  }
+  return response.json()
+}
