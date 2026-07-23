@@ -436,6 +436,22 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 - `app/tests/routers/test_api_config_router.py`（路由契约；`app/tests/routers/conftest.py` 新增 autouse fixture 注入**真实** `ApiConfigService(db=None)`，生产对应点为 lifespan）
 - `web/Agent/src/components/__tests__/ApiConfigManager.spec.js`（树交互/子tab/Body切换/Mock规则/发送结果；锁定新建触发器的 SVG、viewBox、`aria-hidden` 与按钮 `aria-label` 结构契约）；`TaskSchedulerManager.spec.js` tab 顺序断言更新为 4 tab
 
+### 网络代理陷阱（2026-07-23 排查记录）
+
+`ApiConfigService.send_request()` 使用 `httpx.AsyncClient(timeout=15)` 代理发送 HTTP 请求。**httpx 默认读系统代理**（`HTTP_PROXY` / `HTTPS_PROXY` 环境变量 + Windows 注册表 `Internet Settings\ProxyServer`），所以**本机或运行环境中只要误开了 HTTP 代理（例如 `127.0.0.1:10808` 这类本地代理 / 调试代理 / 科学上网代理），所有「发送接口」请求都会被强制转发到该代理**，而代理本身可能不通或挂死，最终命中 15s 超时，表现与「目标接口异常」完全一致。
+
+而 **apifox 这类 Electron 桌面应用不受 Windows 系统代理影响**，它的 Chromium 内核走自己的 `net` 模块，默认 `direct` 直连，所以同样一台机器上 apifox 63ms 通、后端代理 15s 超时，**用户体感是「接口实际通的，但本系统发不出去」**。
+
+受影响范围：所有走 `httpx` / `requests` / `urllib3` / `axios`(Node) / WinINet(WPS/PowerShell `Invoke-WebRequest`) 的代码路径都吃这个坑；不影响 WinHTTP、独立 C 客户端、Electron 默认直连。
+
+排查要点（再次遇到「curl/Postman 通，本系统 15s 超时」时按此清单定位）：
+1. `[System.Net.WebProxy]::GetDefaultProxy().Address` 看本机默认代理；或 `netsh winhttp show proxy` 看 WinHTTP 代理
+2. `Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'.ProxyServer` 看 IE/系统代理
+3. 环境变量 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `http_proxy`
+4. 若任一项非空，让用户关闭或为该进程显式设 `trust_env=False`(httpx) / `--noproxy`(curl) / 关闭科学上网工具，再回归测试
+
+代码侧故意**不**加 `trust_env=False`：保留「直连目标不通时自动走系统代理」的灵活性，运维/调试场景有真实需求；唯一兜底是 `ApiConfigService.send_request` 的 `timeout=15` 给前端可观测的「超时」信号，便于对照用户场景。
+
 ## Agent 统一构造入口（2026-06-29 新增）
 
 ### `AgentConfigService.build_agent_instance()`
