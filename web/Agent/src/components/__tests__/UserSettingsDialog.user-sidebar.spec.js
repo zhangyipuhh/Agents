@@ -168,8 +168,9 @@ describe('UserSettingsDialog 普通用户左侧导航栏', () => {
     })
     await flushPromises()
     const navTexts = getNavItemTexts()
-    // 2026-07-23：新增「权限管理」一级菜单（admin-only）后，admin 共可见 9 项
-    // (个人设置 + 8 个管理类: 用户/智能体/MCP/工具/Skill/运维任务/邮件设置/权限管理)
+    // 2026-07-23：admin 共可见 9 项（个人设置 + 8 个管理类）
+    // 顺序：个人设置 / 用户管理 / 权限管理 / 智能体管理 / MCP 管理 / 工具管理 / Skill 管理 / 运维任务 / 邮件设置
+    // （邮件设置升级为一级菜单，排在一级序列末尾 sort_order=9）
     expect(navTexts.length).toBe(9)
     expect(navTexts).toContain('个人设置')
     expect(navTexts).toContain('用户管理')
@@ -179,8 +180,10 @@ describe('UserSettingsDialog 普通用户左侧导航栏', () => {
     expect(navTexts).toContain('工具管理')
     expect(navTexts).toContain('Skill 管理')
     expect(navTexts).toContain('运维任务')
-    // 2026-07-23：email-settings 使用「邮件设置」显示名（与后端注册表 label 对齐）
     expect(navTexts).toContain('邮件设置')
+
+    // 2026-07-23：「邮件设置」作为一级菜单应排在「运维任务」之后
+    expect(navTexts.indexOf('运维任务')).toBeLessThan(navTexts.indexOf('邮件设置'))
 
     const title = document.body.querySelector('.dialog-title')
     expect((title.textContent || '').trim()).toBe('用户设置与管理')

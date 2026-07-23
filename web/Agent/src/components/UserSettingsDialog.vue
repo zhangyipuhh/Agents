@@ -5,6 +5,7 @@
  * - 所有角色：左侧导航栏始终显示
  * - 普通用户（role='user'）：仅显示个人设置一项
  * - 管理员（role='admin'）：显示个人设置、用户管理、智能体管理、MCP 管理、工具管理、Skill 管理、运维任务、邮件设置
+ *   （2026-07-23：邮件设置升级为一级菜单，id=task-scheduler.email-settings）
  */
 
 import { ref, watch, computed, nextTick } from 'vue'
@@ -171,15 +172,8 @@ const NAV_MENU_METADATA = {
   'tool-management': { id: 'tool-management', label: '工具管理', icon: 'M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z' },
   'skill-management': { id: 'skill-management', label: 'Skill 管理', icon: 'M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z' },
   'task-scheduler': { id: 'task-scheduler', label: '运维任务', viewBox: '0 0 24 24', icon: 'M22 5.72l-4.6-3.33-1.29 1.78 4.6 3.33L22 5.72zM7.88 3.39L6.6 1.61 2 5.72l1.29 1.78 4.59-3.11zM12.5 8H11v6l4.75 2.85.75-1.23-4-2.37V8zM12 4c-4.97 0-9 4.03-9 9s4.02 9 9 9 9-4.03 9-9-4.03-9-9-9zm0 16c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z' },
-  'email-settings': { id: 'email-settings', label: '邮件设置', icon: 'M2.5 6.5l7.5 5 7.5-5M3 5h14a1 1 0 011 1v10a1 1 0 01-1 1H3a1 1 0 01-1-1V6a1 1 0 011-1z' }
-}
-
-/**
- * 兼容映射：一级菜单 id → 对应后端注册表二级菜单 id 前缀
- * 用于：前端顶级 tab 与后端二级注册项不在同一命名空间的情况（如 email-settings）。
- */
-const MENU_CHILD_PREFIX = {
-  'email-settings': 'task-scheduler.email-settings'
+  // 2026-07-23 调整：「邮件设置」升级为一级菜单，key 与后端注册表 id 对齐（id 终身不变硬规则）。
+  'task-scheduler.email-settings': { id: 'task-scheduler.email-settings', label: '邮件设置', icon: 'M2.5 6.5l7.5 5 7.5-5M3 5h14a1 1 0 011 1v10a1 1 0 01-1 1H3a1 1 0 01-1-1V6a1 1 0 011-1z' }
 }
 
 /**
@@ -188,7 +182,6 @@ const MENU_CHILD_PREFIX = {
  * 规则：
  * - 一级菜单自身在 visibleMenus → 可见
  * - 该一级菜单的任一二级子菜单（id 前缀 `${parent}.`）在 visibleMenus → 可见
- * - 通过 MENU_CHILD_PREFIX 兼容跨命名空间的二级映射（如 email-settings）
  * - profile 永远可见（service 已保证）
  *
  * @param {string} menuId 一级菜单 id
@@ -203,9 +196,6 @@ function isMenuVisible(menuId, visibleMenus) {
   if (visibleMenus.includes(menuId)) return true
   // 标准前缀匹配
   if (visibleMenus.some(m => typeof m === 'string' && m.startsWith(menuId + '.'))) return true
-  // 兼容映射
-  const childPrefix = MENU_CHILD_PREFIX[menuId]
-  if (childPrefix && visibleMenus.includes(childPrefix)) return true
   return false
 }
 
@@ -1588,7 +1578,7 @@ watch(() => props.visible, (newVal) => {
               </div>
 
               <!-- 邮件设置（admin） -->
-              <div v-show="activeTab === 'email-settings'" class="tab-fill-wrapper">
+              <div v-show="activeTab === 'task-scheduler.email-settings'" class="tab-fill-wrapper">
                 <EmailSettingsManager />
               </div>
 

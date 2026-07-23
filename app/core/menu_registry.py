@@ -69,6 +69,19 @@ MENU_CATALOG: List[MenuItem] = [
              label="脚本扫描", icon_key="scan", sort_order=2, required_role="admin"),
     MenuItem(id="task-scheduler.api-config", level=2, parent_id="task-scheduler",
              label="API接口配置", icon_key="api", sort_order=3, required_role="admin"),
+    # 2026-07-23 新增：「邮件设置」的三个内部 Tab 注册为可独立授权的二级菜单
+    # - id 前缀与一级菜单保持一致：task-scheduler.email-settings.*
+    # - 与 EmailSettingsManager.vue::TAB_LABELS 一一对应（server / policies / test）
+    # - MenuPermissionManager.vue 已按 level=2 + parent_id 自动渲染，无需前端改动
+    MenuItem(id="task-scheduler.email-settings.server", level=2,
+             parent_id="task-scheduler.email-settings",
+             label="服务器配置", icon_key="server", sort_order=1, required_role="admin"),
+    MenuItem(id="task-scheduler.email-settings.policies", level=2,
+             parent_id="task-scheduler.email-settings",
+             label="发送策略", icon_key="list", sort_order=2, required_role="admin"),
+    MenuItem(id="task-scheduler.email-settings.test", level=2,
+             parent_id="task-scheduler.email-settings",
+             label="测试发送", icon_key="send", sort_order=3, required_role="admin"),
     MenuItem(id="permission-management.menu", level=2, parent_id="permission-management",
              label="菜单管理", icon_key="menu", sort_order=1, required_role="admin"),
 ]

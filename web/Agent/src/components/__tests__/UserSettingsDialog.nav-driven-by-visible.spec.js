@@ -134,6 +134,35 @@ describe('UserSettingsDialog navItems 数据驱动', () => {
         userId: 5,
         username: 'zhangsan',
         initialTab: 'profile',
+        // 2026-07-23：task-scheduler.email-settings 已升级为一级菜单，不再挂在 task-scheduler 下。
+        // 这里改用真实的二级场景（task-scheduler.scheduled）做"二级 → 父级可见"的回归。
+        visibleMenus: ['profile', 'task-scheduler.scheduled']
+      },
+      global: {
+        stubs: {
+          teleport: true,
+          transition: true
+        }
+      }
+    })
+    await flushPromises()
+    const ids = wrapper.vm.navItems.map(i => i.id)
+    // 二级 'task-scheduler.scheduled' 应让父级 'task-scheduler' 可见
+    expect(ids).toContain('task-scheduler')
+    // 旧 'email-settings' 顶级壳已不存在（与后端注册表对齐）
+    expect(ids).not.toContain('email-settings')
+  })
+
+  // 2026-07-23：「邮件设置」升级为一级菜单的回归保护：
+  // visibleMenus 含 'task-scheduler.email-settings' 时，navItems 自身就应出现
+  it('test_email_settings_l1_self_visible 邮件设置是一级菜单，自身授权即自身可见', async () => {
+    const wrapper = mount(UserSettingsDialog, {
+      props: {
+        visible: true,
+        role: 'user',
+        userId: 5,
+        username: 'zhangsan',
+        initialTab: 'profile',
         visibleMenus: ['profile', 'task-scheduler.email-settings']
       },
       global: {
@@ -145,9 +174,8 @@ describe('UserSettingsDialog navItems 数据驱动', () => {
     })
     await flushPromises()
     const ids = wrapper.vm.navItems.map(i => i.id)
-    // 二级 'task-scheduler.email-settings' 应让父级 'task-scheduler' 可见
-    expect(ids).toContain('task-scheduler')
-    // email-settings 顶级项也应可见（兼容旧顶级 tab 渲染）
-    expect(ids).toContain('email-settings')
+    expect(ids).toContain('task-scheduler.email-settings')
+    // 旧顶级壳 'email-settings' 已废弃
+    expect(ids).not.toContain('email-settings')
   })
 })

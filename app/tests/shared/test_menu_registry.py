@@ -98,6 +98,25 @@ def test_get_visible_for_user_normal_empty_granted_still_has_profile():
     assert visible[0].id == "profile"
 
 
+# 2026-07-23 回归保护：「邮件设置」升级为一级菜单
+def test_email_settings_promoted_to_level1():
+    """task-scheduler.email-settings 升级为一级菜单（level=1, parent_id=None, sort_order=9）。"""
+    item = next(m for m in MENU_CATALOG if m.id == "task-scheduler.email-settings")
+    assert item.level == 1
+    assert item.parent_id is None
+    assert item.sort_order == 9
+    assert item.required_role == "admin"
+
+
+def test_task_scheduler_children_no_longer_include_email_settings():
+    """task-scheduler 的二级子菜单集合不应再包含 email-settings。"""
+    children = [m for m in MENU_CATALOG if m.level == 2 and m.parent_id == "task-scheduler"]
+    child_ids = {m.id for m in children}
+    assert "task-scheduler.email-settings" not in child_ids
+    # task-scheduler 仍应有 3 个二级菜单
+    assert len(children) == 3
+
+
 def test_get_visible_for_user_normal_none_granted_same_as_empty():
     """granted=None 与 granted=set() 行为一致。"""
     v_none = get_visible_for_user(4, is_admin=False, granted_menu_ids=None)
@@ -141,3 +160,45 @@ def test_menu_item_default_enabled_true():
     """MenuItem.enabled 默认 True。"""
     m = MenuItem(id="z", level=1, label="Z", icon_key="z", sort_order=1)
     assert m.enabled is True
+
+
+# 2026-07-23 回归保护：「邮件设置」的三个内部 Tab 注册为可独立授权的二级菜单
+def test_email_settings_submenu_tabs_registered():
+    """
+    EmailSettingsManager.vue 内部的三个 Tab 必须注册为二级菜单，
+    否则 MenuPermissionManager.vue::getChildren 返回空数组，
+    权限管理 UI 看不到子 Tab，无法按 Tab 粒度授权。
+    """
+    ids = {m.id for m in get_full_catalog()}
+    assert "task-scheduler.email-settings.server" in ids
+    assert "task-scheduler.email-settings.policies" in ids
+    assert "task-scheduler.email-settings.test" in ids
+
+    # 父级必须是一级菜单（level=1，parent_id=None）
+    parent = next(m for m in MENU_CATALOG if m.id == "task-scheduler.email-settings")
+    assert parent.level == 1
+    assert parent.parent_id is None
+
+    # 子级必须 level=2 且 parent_id 指向「邮件设置」一级菜单
+    for child_id in [
+        "task-scheduler.email-settings.server",
+        "task-scheduler.email-settings.policies",
+        "task-scheduler.email-settings.test",
+    ]:
+        c = next(m for m in MENU_CATALOG if m.id == child_id)
+        assert c.level == 2
+        assert c.parent_id == "task-scheduler.email-settings"
+        assert c.required_role == "admin"
+        assert c.enabled is True
+
+
+def test_email_settings_submenu_tabs_sort_order():
+    """三个子 Tab 的 sort_order 升序：server(1) < policies(2) < test(3)。"""
+    children = [
+        next(m for m in MENU_CATALOG if m.id == "task-scheduler.email-settings.server"),
+        next(m for m in MENU_CATALOG if m.id == "task-scheduler.email-settings.policies"),
+        next(m for m in MENU_CATALOG if m.id == "task-scheduler.email-settings.test"),
+    ]
+    orders = [c.sort_order for c in children]
+    assert orders == sorted(orders)
+    assert len(set(orders)) == 3  # 三者各不相同

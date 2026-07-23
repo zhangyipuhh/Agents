@@ -20,8 +20,9 @@ const mockCatalog = {
     { id: 'user-management', level: 1, parent_id: null, label: '用户管理', icon_key: 'users', sort_order: 2, required_role: 'admin', enabled: true },
     { id: 'user-management.users', level: 2, parent_id: 'user-management', label: '用户列表', icon_key: 'list', sort_order: 1, required_role: 'admin', enabled: true },
     { id: 'user-management.online-monitor', level: 2, parent_id: 'user-management', label: '在线监控', icon_key: 'eye', sort_order: 2, required_role: 'admin', enabled: true },
-    { id: 'task-scheduler', level: 1, parent_id: null, label: '运维任务', icon_key: 'clock', sort_order: 7, required_role: 'admin', enabled: true },
-    { id: 'task-scheduler.email-settings', level: 2, parent_id: 'task-scheduler', label: '邮件设置', icon_key: 'mail', sort_order: 4, required_role: 'admin', enabled: true },
+    { id: 'task-scheduler', level: 1, parent_id: null, label: '运维任务', icon_key: 'clock', sort_order: 8, required_role: 'admin', enabled: true },
+    // 2026-07-23：「邮件设置」升级为一级菜单，id 保持 task-scheduler.email-settings，sort_order=9
+    { id: 'task-scheduler.email-settings', level: 1, parent_id: null, label: '邮件设置', icon_key: 'mail', sort_order: 9, required_role: 'admin', enabled: true },
     { id: 'disabled-menu', level: 1, parent_id: null, label: '已禁用菜单', icon_key: 'x', sort_order: 99, required_role: 'admin', enabled: false }
   ]
 }
@@ -140,5 +141,24 @@ describe('MenuPermissionManager', () => {
     const visibleItems = wrapper.findAll('[data-testid="user-list-item"]')
     // 只剩 zhangsan 匹配
     expect(visibleItems.length).toBe(1)
+  })
+
+  // 2026-07-23：「邮件设置」升级为一级菜单，回归保护：
+  // - task-scheduler.email-settings 应作为一级 checkbox 渲染
+  // - 不应再作为 task-scheduler 的 children checkbox 出现
+  it('test_email_settings_is_level1_not_under_task_scheduler 邮件设置是一级菜单而非运维任务子级', async () => {
+    const wrapper = mount(MenuPermissionManager)
+    await flushPromises()
+    // 一级：存在 menu-checkbox-task-scheduler.email-settings
+    const l1 = wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings"]')
+    expect(l1.exists()).toBe(true)
+    // 选 zhangsan
+    const items = wrapper.findAll('[data-testid="user-list-item"]')
+    await items[1].trigger('click')
+    await flushPromises()
+    // 切到任务调度父级，不应半选（子集为空）
+    const parent = wrapper.find('[data-testid="menu-checkbox-task-scheduler"]')
+    expect(parent.exists()).toBe(true)
+    expect(parent.element.indeterminate).toBe(false)
   })
 })
