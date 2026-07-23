@@ -332,3 +332,28 @@ app/{module}/bar/baz.py      →  app/tests/{module}/bar/test_baz.py
   2. 命中失败再降级 WebSearch + 官方文档站（`https://python.langchain.com/`、`https://langchain-ai.github.io/langgraph/`）
 - 版本兼容注意：项目使用 **LangChain 1.x + LangGraph 1.x**（旧版 0.x 的 `create_react_agent`、`AgentExecutor`、`LLMChain` 等签名已变更，迁移文档参考 context7 `/langchain-ai/langchain` 的 v1 migration guide）
 - 更新 `app/requirements.txt` 时，必须同步更新本表版本号，避免文档查错版本
+
+## 菜单管理规则（2026-07-23 新增）
+
+本节给出菜单的"操作规则"。具体设计（字段定义、注册表位置、API 契约、ACL 表结构等）
+见 `project_memory.md` "用户菜单权限管理" 章节。
+
+### 新增菜单
+1. 在 `app/core/menu_registry.py::MENU_CATALOG` 追加一条 `MenuItem` 注册项
+2. 在 `web/Agent/src/components/UserSettingsDialog.vue` 的 `NAV_MENU_METADATA` 加对应元数据（label + icon）
+3. 如需独立 tab 渲染区，在 `UserSettingsDialog.vue` 模板加 `<div v-show="activeTab === '<id>'">` 块
+4. 完成——菜单管理 UI 自动出现该项，admin 可在「权限管理 → 菜单管理」勾选授权
+
+### 修改菜单（重命名 / 移动层级 / 改图标 / 改排序）
+- 可改：`label` / `icon_key` / `sort_order` / `level` / `parent_id` / `required_role` / `enabled`
+- **id 永不改**（id 是身份，改 id = 删菜单 + 建菜单，老 ACL 全部失效）
+- 授权数据全自动保留，无需任何迁移脚本
+
+### 下架菜单
+将 `MenuItem.enabled` 置为 `False`——菜单管理 UI 隐藏，老授权记录保留不删
+
+### 禁止事项
+- ❌ 在 `UserSettingsDialog.vue` 硬编码菜单列表（必须从 `visibleMenus` prop 派生）
+- ❌ 私自改动 `MENU_CATALOG` 中现有条目的 `id`
+- ❌ 绕过 `MenuPermissionService` 直接读写 `user_menu_acl` 表
+- ❌ 在前端维护菜单 icon/svg path 副本（统一用 `icon_key`，在前端图标组件里映射）
