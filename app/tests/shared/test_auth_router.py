@@ -180,6 +180,102 @@ def test_validate_token(client, admin_headers):
     assert isinstance(data["allowed_agents"], list)
 
 
+def test_validate_response_includes_visible_menus_for_admin(client, admin_headers, monkeypatch):
+    """admin validate 响应含 visible_menus（全量 enabled 项 id）。
+
+    shared/test_auth_router.py 用的 client 是 test_auth_router.py 自己的 fixture
+    （create_app() + include_router(auth_router)），不会自动注入 menu_permission_service。
+    此处 monkeypatch 把真实 MenuPermissionService(db=None) 挂到 client.app.state，
+    并 mock UserDB.get_user_by_username 让 username='admin' 返 role='admin'。
+    """
+    from app.core.menu_registry import get_enabled_items
+    from app.shared.utils.auth.menu_permission_service import MenuPermissionService
+
+    monkeypatch.setattr(
+        client.app.state, "menu_permission_service",
+        MenuPermissionService(db=None), raising=False,
+    )
+
+    async def fake_get_user(username):
+        if username == "admin":
+            return {"id": 1, "username": "admin", "role": "admin", "allowed_agents": []}
+        return None
+    monkeypatch.setattr(
+        "app.shared.utils.auth.user_db.UserDB.get_user_by_username",
+        fake_get_user,
+    )
+
+    response = client.get("/api/auth/validate", headers=admin_headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert "visible_menus" in data
+    expected = sorted(
+        [m.id for m in get_enabled_items()],
+        key=lambda mid: next(m.sort_order for m in get_enabled_items() if m.id == mid),
+    )
+    assert data["visible_menus"] == expected
+
+
+def test_validate_response_includes_visible_menus_for_normal_user(client, user_headers, monkeypatch):
+    """普通用户 validate 响应含 visible_menus（service 过滤后；空 ACL 仅 ['profile']）。
+
+    与上面同理 monkeypatch 注入 MenuPermissionService(db=None) 并 mock UserDB
+    让 username='testuser' 返 role='user'，普通用户空 ACL 走 fail-secure 仅 ['profile']。
+    """
+    from app.shared.utils.auth.menu_permission_service import MenuPermissionService
+
+    monkeypatch.setattr(
+        client.app.state, "menu_permission_service",
+        MenuPermissionService(db=None), raising=False,
+    )
+
+    async def fake_get_user(username):
+        if username == "testuser":
+            return {"id": 2, "username": "testuser", "role": "user", "allowed_agents": []}
+        return None
+    monkeypatch.setattr(
+        "app.shared.utils.auth.user_db.UserDB.get_user_by_username",
+        fake_get_user,
+    )
+
+    response = client.get("/api/auth/validate", headers=user_headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert "visible_menus" in data
+    assert data["visible_menus"] == ["profile"]
+
+
+def test_login_response_includes_visible_menus(client, monkeypatch):
+    """POST /api/auth/login-api 响应含 visible_menus（admin 登录后看到所有菜单）。"""
+    from app.shared.utils.auth.menu_permission_service import MenuPermissionService
+
+    monkeypatch.setattr(
+        client.app.state, "menu_permission_service",
+        MenuPermissionService(db=None), raising=False,
+    )
+
+    async def fake_get_user(username):
+        if username == "admin":
+            return {"id": 1, "username": "admin", "role": "admin", "allowed_agents": []}
+        return None
+    monkeypatch.setattr(
+        "app.shared.utils.auth.user_db.UserDB.get_user_by_username",
+        fake_get_user,
+    )
+
+    response = client.post(
+        "/api/auth/login-api",
+        json={"username": "admin", "password": "123456"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "visible_menus" in data
+    assert len(data["visible_menus"]) > 0
+    assert "profile" in data["visible_menus"]
+    # admin 应能看到权限管理
+    assert "permission-management" in data["visible_menus"]
+
+
 def test_logout(client, admin_headers):
     """
     测试 POST /api/auth/logout 登出成功

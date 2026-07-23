@@ -18,7 +18,7 @@ Author: 张镒谱
 import secrets
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel
-from typing import Optional
+from typing import List, Optional
 from datetime import datetime, timedelta
 from app.shared.utils.auth.Safety import jwt_auth
 from app.core.config.settings import settings
@@ -92,6 +92,10 @@ class LoginResponse(BaseModel):
         role (str): 用户角色
         username (str): 用户名
         user_id (Optional[int]): 用户ID
+        visible_menus (List[str]): 2026-07-23 新增：该用户可见的菜单 id 列表
+            - admin：所有 enabled 项的 id（按 sort_order 升序）
+            - 普通用户：menu_permission_service 计算结果（含强制 profile）
+            - 前端一次拿，无需单独请求菜单接口
     """
     access_token: str
     token_type: str
@@ -99,6 +103,34 @@ class LoginResponse(BaseModel):
     role: str
     username: str
     user_id: Optional[int] = None
+    visible_menus: List[str] = []
+
+
+async def _compute_visible_menus(req: Request, user_id: Optional[int], role: str) -> List[str]:
+    """计算该用户的 visible_menus 列表。
+
+    - admin：所有 enabled 项的 id（按 sort_order 升序）
+    - 普通用户：通过 menu_permission_service 计算（含强制 profile）
+    - menu_permission_service 不可用（lifespan 未初始化）：普通用户 fail-secure 仅 ['profile']
+
+    Args:
+        req: FastAPI Request 对象（用于取 app.state.menu_permission_service）
+        user_id: 用户 ID；admin 也接受 None
+        role: 用户角色
+
+    Returns:
+        List[str]: 可见菜单 id 列表
+    """
+    from app.core.menu_registry import get_enabled_items
+
+    if role == "admin":
+        return [m.id for m in sorted(get_enabled_items(), key=lambda m: m.sort_order)]
+    svc = getattr(req.app.state, "menu_permission_service", None)
+    if svc is None:
+        # fail-secure：service 不可用时仅 ['profile']
+        return ["profile"]
+    uid = user_id if user_id is not None else 0
+    return await svc.get_visible_menu_ids(user_id=uid, is_admin=False)
 
 
 class CaptchaResponse(BaseModel):
@@ -359,13 +391,16 @@ async def login(request: LoginRequest, req: Request, response: Response):
         ip_address=client_ip
     )
 
+    visible_menus = await _compute_visible_menus(req, user_id, role)
+
     return LoginResponse(
         access_token=access_token,
         token_type="Bearer",
         expires_in=30,
         role=role,
         username=request.username,
-        user_id=user_id
+        user_id=user_id,
+        visible_menus=visible_menus,
     )
 
 
@@ -452,13 +487,16 @@ async def login_api(request: ApiLoginRequest, req: Request, response: Response):
         ip_address=client_ip
     )
 
+    visible_menus = await _compute_visible_menus(req, user_id, role)
+
     return LoginResponse(
         access_token=access_token,
         token_type="Bearer",
         expires_in=30,
         role=role,
         username=request.username,
-        user_id=user_id
+        user_id=user_id,
+        visible_menus=visible_menus,
     )
 
 
@@ -639,11 +677,14 @@ async def validate_token(request: Request):
     role = user.get('role', 'user') if user else 'user'
     user_id = user.get('id') if user else None
 
+    visible_menus = await _compute_visible_menus(request, user_id, role)
+
     return {
         "username": payload["username"],
         "role": role,
         "user_id": user.get('id') if user else None,
-        "allowed_agents": user.get('allowed_agents', []) if user else []
+        "allowed_agents": user.get('allowed_agents', []) if user else [],
+        "visible_menus": visible_menus,
     }
 
 
