@@ -2910,6 +2910,22 @@ CREATE TABLE IF NOT EXISTS api_check_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_api_check_runs_config ON api_check_runs(config_id, created_at DESC);
 
+-- ========== 22. user_menu_acl（用户-菜单授权，2026-07-23 新增）==========
+-- 按用户粒度控制可见菜单（一级 + 二级）。
+--   * user_id + menu_id 联合唯一，防止重复授权
+--   * created_by_user_id 记录授权人，删除授权人不影响授权
+--   * 应用启动时由 MenuPermissionService.preload_all() 全量加载到内存
+CREATE TABLE IF NOT EXISTS user_menu_acl (
+    id                  SERIAL PRIMARY KEY,
+    user_id             INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    menu_id             VARCHAR(64) NOT NULL,
+    created_at          TIMESTAMP DEFAULT NOW(),
+    created_by_user_id  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    UNIQUE (user_id, menu_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_menu_acl_user_id ON user_menu_acl(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_menu_acl_menu_id ON user_menu_acl(menu_id);
+
 COMMIT;
 
 -- =============================================
@@ -2929,7 +2945,8 @@ WHERE table_schema = 'public'
     'agent_task_schedules', 'agent_task_runs',
     'devops_servers',
     'email_server_configs', 'email_policies', 'email_policy_recipients',
-    'api_config_nodes', 'api_configs', 'api_check_runs'
+    'api_config_nodes', 'api_configs', 'api_check_runs',
+    'user_menu_acl'
   )
 ORDER BY table_name;
 
