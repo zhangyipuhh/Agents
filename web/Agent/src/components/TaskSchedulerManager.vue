@@ -3053,10 +3053,11 @@ input[type="number"] {
   display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
 }
 
 .time-input select {
-  width: auto;
+  flex: 1 1 0;
   min-width: 70px;
 }
 
