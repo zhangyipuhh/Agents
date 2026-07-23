@@ -1,0 +1,105 @@
+# -*- coding: utf-8 -*-
+"""
+菜单注册表（单一代码真相源）。
+
+新加菜单 / 修改菜单 / 下架菜单都通过修改本文件的 MENU_CATALOG 实现。
+详见 docs/superpowers/specs/2026-07-23-menu-permission-design.md § 3.1
+以及 AGENTS.md "菜单管理规则" 章节。
+
+硬规则：
+- id 终身不变（改 id = 删菜单 + 建菜单，老 ACL 全部失效）
+- 可改字段：label / icon_key / sort_order / level / parent_id / required_role / enabled
+"""
+
+from typing import List, Optional, Set
+
+from pydantic import BaseModel
+
+
+class MenuItem(BaseModel):
+    """菜单注册项。"""
+
+    id: str                       # 稳定 key，永不改
+    level: int                    # 1 = 一级, 2 = 二级
+    parent_id: Optional[str] = None  # 二级菜单指向一级菜单 id
+    label: str                    # 显示名（可改）
+    icon_key: str                 # 图标 key（前端映射）
+    sort_order: int               # 排序（可改）
+    required_role: Optional[str] = None  # 'admin' / None（None = 所有登录用户可看）
+    enabled: bool = True          # False 时菜单管理 UI 隐藏但 ACL 保留
+
+
+# === 一级菜单 ===
+MENU_CATALOG: List[MenuItem] = [
+    MenuItem(id="profile", level=1, label="个人设置", icon_key="user",
+             sort_order=1, required_role=None),
+    MenuItem(id="user-management", level=1, label="用户管理", icon_key="users",
+             sort_order=2, required_role="admin"),
+    MenuItem(id="agent-management", level=1, label="智能体管理", icon_key="robot",
+             sort_order=3, required_role="admin"),
+    MenuItem(id="mcp-management", level=1, label="MCP 管理", icon_key="server",
+             sort_order=4, required_role="admin"),
+    MenuItem(id="tool-management", level=1, label="工具管理", icon_key="wrench",
+             sort_order=5, required_role="admin"),
+    MenuItem(id="skill-management", level=1, label="Skill 管理", icon_key="book",
+             sort_order=6, required_role="admin"),
+    MenuItem(id="task-scheduler", level=1, label="运维任务", icon_key="clock",
+             sort_order=7, required_role="admin"),
+    MenuItem(id="permission-management", level=1, label="权限管理", icon_key="shield",
+             sort_order=8, required_role="admin"),
+
+    # === 二级菜单（tab）===
+    MenuItem(id="user-management.users", level=2, parent_id="user-management",
+             label="用户列表", icon_key="list", sort_order=1, required_role="admin"),
+    MenuItem(id="user-management.online-monitor", level=2, parent_id="user-management",
+             label="在线监控", icon_key="eye", sort_order=2, required_role="admin"),
+    MenuItem(id="user-management.session-query", level=2, parent_id="user-management",
+             label="会话查询", icon_key="search", sort_order=3, required_role="admin"),
+    MenuItem(id="task-scheduler.scheduled", level=2, parent_id="task-scheduler",
+             label="定时任务", icon_key="cron", sort_order=1, required_role="admin"),
+    MenuItem(id="task-scheduler.script-scan", level=2, parent_id="task-scheduler",
+             label="脚本扫描", icon_key="scan", sort_order=2, required_role="admin"),
+    MenuItem(id="task-scheduler.api-config", level=2, parent_id="task-scheduler",
+             label="API接口配置", icon_key="api", sort_order=3, required_role="admin"),
+    MenuItem(id="task-scheduler.email-settings", level=2, parent_id="task-scheduler",
+             label="消息设置", icon_key="mail", sort_order=4, required_role="admin"),
+    MenuItem(id="permission-management.menu", level=2, parent_id="permission-management",
+             label="菜单管理", icon_key="menu", sort_order=1, required_role="admin"),
+]
+
+
+def get_full_catalog() -> List[MenuItem]:
+    """返回注册表全量（含 enabled=False 项，admin 配权限时用）。"""
+    return list(MENU_CATALOG)
+
+
+def get_enabled_items() -> List[MenuItem]:
+    """返回 enabled=True 的项（运行时过滤用）。"""
+    return [m for m in MENU_CATALOG if m.enabled]
+
+
+def get_visible_for_user(
+    user_id: int,
+    is_admin: bool,
+    granted_menu_ids: Optional[Set[str]] = None,
+) -> List[MenuItem]:
+    """
+    合并 ACL + 角色，返回该用户可见的菜单项列表。
+
+    Args:
+        user_id: 用户 ID
+        is_admin: 是否管理员角色
+        granted_menu_ids: 该用户在 user_menu_acl 表里的 menu_id 集合；admin 角色忽略此参数
+
+    Returns:
+        按 sort_order 排序后的 MenuItem 列表
+    """
+    enabled = get_enabled_items()
+    if is_admin:
+        return sorted(enabled, key=lambda m: m.sort_order)
+    granted = granted_menu_ids or set()
+    visible_ids = {m.id for m in enabled if m.id in granted}
+    # 强制保留"个人设置"（最低可用性保证）
+    visible_ids.add("profile")
+    visible = [m for m in enabled if m.id in visible_ids]
+    return sorted(visible, key=lambda m: m.sort_order)
