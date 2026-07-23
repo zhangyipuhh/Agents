@@ -28,10 +28,18 @@ const TAB_SERVER = 'server'
 const TAB_POLICIES = 'policies'
 const TAB_TEST = 'test'
 
-const TAB_LABELS = [
-  { id: TAB_SERVER, label: '服务器配置' },
-  { id: TAB_POLICIES, label: '发送策略' },
-  { id: TAB_TEST, label: '测试发送' },
+// 2026-07-23 ACL 双重门：tab 与后端 MENU_CATALOG 的子菜单 id 对齐
+const TAB_MENU_IDS = {
+  [TAB_SERVER]: 'task-scheduler.email-settings.server',
+  [TAB_POLICIES]: 'task-scheduler.email-settings.policies',
+  [TAB_TEST]: 'task-scheduler.email-settings.test',
+}
+
+// 全部 tab 元数据（label 由父组件 props.visibleMenus 过滤后渲染）
+const ALL_TABS = [
+  { id: TAB_SERVER, label: '服务器配置', menuId: TAB_MENU_IDS[TAB_SERVER] },
+  { id: TAB_POLICIES, label: '发送策略', menuId: TAB_MENU_IDS[TAB_POLICIES] },
+  { id: TAB_TEST, label: '测试发送', menuId: TAB_MENU_IDS[TAB_TEST] },
 ]
 
 const activeTab = ref(TAB_SERVER)
@@ -414,40 +422,89 @@ async function sendTest() {
 
 // === Props ===
 /**
- * 2026-07-23 新增：组件 props。
- * - isAdmin：父组件传入的角色标记。onMounted 内做 fail-safe 兜底，
- *   非 admin 用户不会触发 /api/admin/email/* 等 admin-only 请求。
+ * 2026-07-23 改造：组件 props。
+ * - visibleMenus（ACL）：父组件传入当前用户的可见菜单列表。子 tab 按 ACL 过滤。
+ * - isAdmin：兼容 hint，admin 直通；保留供旧测试。
  */
 const props = defineProps({
+  visibleMenus: {
+    type: Array,
+    default: () => []
+  },
   isAdmin: {
     type: Boolean,
     default: false
   }
 })
 
+const visibleSet = computed(() => new Set(props.visibleMenus || []))
+
+/**
+ * 计算可用的子 tab：admin 全量；普通用户按 ACL 过滤
+ */
+const availableTabs = computed(() => {
+  if (props.isAdmin) return ALL_TABS
+  return ALL_TABS.filter(t => visibleSet.value.has(t.menuId))
+})
+
+/** 是否有任何 tab 可访问 */
+const hasAnyAccess = computed(() => props.isAdmin || availableTabs.value.length > 0)
+
 onMounted(async () => {
-  // 2026-07-23 修复：fail-safe 兜底，避免普通用户触发 admin-only 请求导致 403。
-  if (!props.isAdmin) {
-    console.warn('[EmailSettingsManager] 非 admin 用户挂载本组件，已跳过数据加载（防御性兜底）')
+  // 2026-07-23 修复：fail-safe 兜底，但只对没有任何 tab 授权的情况 skip
+  if (!hasAnyAccess.value) {
+    console.warn('[EmailSettingsManager] 用户未被授权任何 email-settings 子 tab，已跳过数据加载')
     return
   }
-  await Promise.all([
-    loadServerConfig(),
-    loadEmailableUsers(),
-    loadPolicies(),
-  ])
+  // activeTab 默认值：第一个被授权的 tab（避免默认 'server' 但没授权）
+  if (availableTabs.value.length > 0 && !availableTabs.value.find(t => t.id === activeTab.value)) {
+    activeTab.value = availableTabs.value[0].id
+  }
+  // 按 tab 授权加载数据：只调被授权对应 backend 的 fetch
+  // - server tab (server-config + emailable-users) 只在授权 server 时加载
+  // - policies tab (policies + emailable-users) 只在授权 policies 时加载
+  // - emailable-users 是 server 与 policies 共用的辅助数据，跟着任一授权走即可
+  const tasks = []
+  const hasServer = visibleSet.value.has(TAB_MENU_IDS[TAB_SERVER])
+  const hasPolicies = visibleSet.value.has(TAB_MENU_IDS[TAB_POLICIES])
+  // 服务端 isAdmin：visibleSet 里没有 menu_id 时，仍按 isAdmin 决定
+  const canServer = props.isAdmin || hasServer
+  const canPolicies = props.isAdmin || hasPolicies
+
+  if (canServer || canPolicies) {
+    tasks.push(loadEmailableUsers())
+  }
+  if (canServer) {
+    tasks.push(loadServerConfig())
+  }
+  if (canPolicies) {
+    tasks.push(loadPolicies())
+  }
+  if (tasks.length === 0) {
+    return
+  }
+  await Promise.all(tasks)
 })
 </script>
 
 <template>
-  <section class="email-settings-manager">
+  <!-- 2026-07-23 ACL 双重门：用户未被授权任何 tab 时显示提示 -->
+  <div
+    v-if="!hasAnyAccess"
+    class="email-settings-empty"
+    data-testid="email-settings-no-permission"
+  >
+    此功能对您未开放。如需使用请联系系统管理员调整菜单权限。
+  </div>
+
+  <section v-else class="email-settings-manager">
     <div
       class="tablist"
       role="tablist"
       aria-label="邮件设置管理"
     >
       <button
-        v-for="tab in TAB_LABELS"
+        v-for="tab in availableTabs"
         :key="tab.id"
         type="button"
         role="tab"
