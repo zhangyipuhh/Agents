@@ -1064,13 +1064,19 @@ async function loadInitialData() {
   isLoading.value = true
   errorMessage.value = ''
   try {
-    // 三路并行：task / agent 失败会被外层 catch 接住；
-    // loadScripts 内部已吞错不会 reject，等同于「失败不阻断任务列表加载」
+    // 2026-07-23 ACL 双重门：
+    // fetchAdminAgentList 是 admin-only（无 menu_id 对应），普通用户即使被授权
+    // task-scheduler.scheduled 也无权调，必须被 fail-safe 吞掉避免红色 banner。
+    // safeFetch 把核心（task-schedules）与辅助（agents）错误隔离：
+    // - core 失败 → 写到 errorMessage 显示 banner（合理）
+    // - aux 失败 → console.warn，UI 静默（空下拉框 / 默认占位）
     const [taskRows, agentRows] = await Promise.all([
-      fetchTaskSchedules(),
-      fetchAdminAgentList(),
-      loadScripts(),
+      safeFetch(fetchTaskSchedules, [], 'task-schedules'),
+      safeFetch(fetchAdminAgentList, [], 'admin-agents'),
     ])
+    // loadScripts 内部已吞错（共享 in-flight Promise），不会 reject
+    await loadScripts()
+
     schedules.value = taskRows || []
     agents.value = agentRows || []
     if (schedules.value.length > 0) {
@@ -1082,6 +1088,33 @@ async function loadInitialData() {
     errorMessage.value = error.message || '加载定时任务失败'
   } finally {
     isLoading.value = false
+  }
+}
+
+/**
+ * 2026-07-23 ACL 双重门 fail-safe：单点 fetch swallow 失败，避免整个 Promise.all reject。
+ *
+ * - core（task-schedules）：失败写到 errorMessage 触发红色 banner（核心数据缺失）
+ * - aux（admin-agents / scripts）：失败仅 console.warn，UI 静默（空下拉框）
+ *
+ * @param {() => Promise<any>} fetcher - fetch 函数
+ * @param {any} fallback - 失败时的 fallback 值（默认 []）
+ * @param {string} name - 用于日志的标识符（'task-schedules' / 'admin-agents' 等）
+ * @returns {Promise<any>} 成功返 fetcher() 结果，失败返 fallback
+ */
+async function safeFetch(fetcher, fallback = [], name = '') {
+  try {
+    return await fetcher()
+  } catch (err) {
+    if (name === 'task-schedules') {
+      errorMessage.value = err.message || '加载定时任务失败'
+    } else {
+      console.warn(
+        `[TaskSchedulerManager] ${name || 'fetch'} failed（已静默 swallow）:`,
+        err.message
+      )
+    }
+    return fallback
   }
 }
 

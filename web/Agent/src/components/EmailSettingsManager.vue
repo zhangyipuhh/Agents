@@ -196,11 +196,22 @@ async function testConnection() {
 /**
  * 加载已注册且邮箱非空的用户列表。
  */
+// 2026-07-23 ACL 双重门：emailable-users 失败错误隔离。
+// 原实现：catch 写到 policyError（污染 policies tab 的错误状态），导致 fetchEmailableUsers
+// 失败时整个「发送策略」面板显示红色 403 banner，即便 policies 本身加载成功。
+// 新实现：写独立 ref emailableUsersError，仅 console.warn + 局部小警示，不抢主线。
+const emailableUsersError = ref('')
+
 async function loadEmailableUsers() {
+  emailableUsersError.value = ''
   try {
     emailableUsers.value = await fetchEmailableUsers()
   } catch (err) {
-    policyError.value = err.message
+    console.warn(
+      '[EmailSettingsManager] 加载收件人列表失败（已隔离到 emailableUsersError，不污染 policyError）:',
+      err.message
+    )
+    emailableUsersError.value = err.message
   }
 }
 
@@ -628,6 +639,14 @@ onMounted(async () => {
       data-testid="email-panel-policies"
     >
       <div v-if="policyError" class="alert error">{{ policyError }}</div>
+      <!-- 2026-07-23 ACL 双重门：emailable-users 失败警示（非阻塞，仅 console.warn 后小提示） -->
+      <div
+        v-if="emailableUsersError"
+        class="alert warn"
+        data-testid="emailable-users-warning"
+      >
+        收件人列表加载失败（{{ emailableUsersError }}），可在创建策略时手动输入用户 ID
+      </div>
       <div v-if="policyMessage" class="alert success">{{ policyMessage }}</div>
 
       <header class="detail-header">
