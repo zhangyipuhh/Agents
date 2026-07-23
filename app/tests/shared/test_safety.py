@@ -22,6 +22,9 @@ from app.shared.utils.auth.Safety import (
     SESSION_WHITELIST_PREFIXES,
     jwt_auth,
     auth_middleware,
+    require_admin,
+    require_menu_acl,
+    require_admin_or_menu_acl,
 )
 
 
@@ -187,3 +190,144 @@ def test_upload_file_is_not_in_session_whitelist():
     assert not any(
         p == "/api/core" for p in SESSION_WHITELIST_PREFIXES
     ), "/api/core 不能整段放行（会误伤 uploadfile / merge-chunks 等写接口）"
+
+
+# ============================================================================
+# 2026-07-23 新增：菜单 ACL 守卫（双重门改造）
+# ============================================================================
+
+
+class _StubState:
+    """最小 state 模拟，role/user_id 字段可设。"""
+
+    def __init__(self, role='user', user_id=None):
+        self.role = role
+        self.user_id = user_id
+
+
+class _StubRequest:
+    """最小 FastAPI Request 模拟，state + app.state 字段可设。"""
+
+    def __init__(self, role='user', user_id=None, menu_service=None):
+        self.state = _StubState(role=role, user_id=user_id)
+
+        class _App:
+            def __init__(self, svc):
+                self.state = type('S', (), {'menu_permission_service': svc})()
+
+        self.app = _App(menu_service)
+
+
+class _StubMenuService:
+    """最小 MenuPermissionService stub，仅实现 get_visible_menu_ids。"""
+
+    def __init__(self, visible_ids=None, fail=False):
+        self._visible = set(visible_ids or [])
+        self._fail = fail
+
+    async def get_visible_menu_ids(self, user_id, is_admin):
+        if self._fail:
+            raise RuntimeError('db error')
+        return sorted(self._visible)
+
+
+def _run(coro):
+    """asyncio.run 包装（与现有 _run_async 等价命名）。"""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+def test_require_admin_admin_role_passes():
+    """admin role 通过 require_admin。"""
+    req = _StubRequest(role='admin')
+    assert _run(require_admin(req)) is True
+
+
+def test_require_admin_normal_user_403():
+    """普通用户被 require_admin 拦截（403）。"""
+    from fastapi import HTTPException
+    req = _StubRequest(role='user', user_id=5)
+    with pytest.raises(HTTPException) as exc:
+        _run(require_admin(req))
+    assert exc.value.status_code == 403
+
+
+def test_require_menu_acl_admin_bypass():
+    """admin 角色绕过 ACL 直接通过（不读 menu_permission_service）。"""
+    req = _StubRequest(role='admin', user_id=1, menu_service=None)
+    # 即使 menu_service 为 None，admin 不查 ACL
+    assert _run(require_menu_acl(req, 'any-menu-id')) is None
+
+
+def test_require_menu_acl_normal_user_granted():
+    """普通用户被 ACL 授权时通过。"""
+    svc = _StubMenuService(visible_ids={'task-scheduler', 'task-scheduler.email-settings'})
+    req = _StubRequest(role='user', user_id=5, menu_service=svc)
+    assert _run(require_menu_acl(req, 'task-scheduler')) is None
+
+
+def test_require_menu_acl_normal_user_not_granted_403():
+    """普通用户没被 ACL 授权时返 403。"""
+    from fastapi import HTTPException
+    svc = _StubMenuService(visible_ids={'profile'})
+    req = _StubRequest(role='user', user_id=5, menu_service=svc)
+    with pytest.raises(HTTPException) as exc:
+        _run(require_menu_acl(req, 'task-scheduler'))
+    assert exc.value.status_code == 403
+    assert 'task-scheduler' in exc.value.detail
+
+
+def test_require_menu_acl_user_id_missing_401():
+    """user_id 缺失（auth_middleware 未注入）时返 401。"""
+    from fastapi import HTTPException
+    svc = _StubMenuService(visible_ids={'task-scheduler'})
+    req = _StubRequest(role='user', user_id=None, menu_service=svc)
+    with pytest.raises(HTTPException) as exc:
+        _run(require_menu_acl(req, 'task-scheduler'))
+    assert exc.value.status_code == 401
+
+
+def test_require_menu_acl_service_unavailable_503():
+    """menu_permission_service 未初始化（lifespan 失败）时返 503。"""
+    from fastapi import HTTPException
+    req = _StubRequest(role='user', user_id=5, menu_service=None)
+    with pytest.raises(HTTPException) as exc:
+        _run(require_menu_acl(req, 'task-scheduler'))
+    assert exc.value.status_code == 503
+
+
+def test_require_admin_or_menu_acl_factory_returns_dep():
+    """require_admin_or_menu_acl 工厂返回可调用的 dependency。"""
+    dep = require_admin_or_menu_acl('task-scheduler.email-settings.server')
+    assert callable(dep)
+
+
+def test_require_admin_or_menu_acl_admin_passes():
+    """admin 通过组合守卫（不查 ACL）。"""
+    req = _StubRequest(role='admin', user_id=1, menu_service=None)
+    dep = require_admin_or_menu_acl('task-scheduler.email-settings.server')
+    assert _run(dep(req)) is None
+
+
+def test_require_admin_or_menu_acl_normal_user_passes():
+    """普通用户被 ACL 授权时通过组合守卫。"""
+    svc = _StubMenuService(
+        visible_ids={'task-scheduler.email-settings', 'task-scheduler.email-settings.server'}
+    )
+    req = _StubRequest(role='user', user_id=5, menu_service=svc)
+    dep = require_admin_or_menu_acl('task-scheduler.email-settings.server')
+    assert _run(dep(req)) is None
+
+
+def test_require_admin_or_menu_acl_normal_user_denied():
+    """普通用户未被 ACL 授权时返 403。"""
+    from fastapi import HTTPException
+    svc = _StubMenuService(visible_ids={'profile'})
+    req = _StubRequest(role='user', user_id=5, menu_service=svc)
+    dep = require_admin_or_menu_acl('task-scheduler.email-settings.server')
+    with pytest.raises(HTTPException) as exc:
+        _run(dep(req))
+    assert exc.value.status_code == 403

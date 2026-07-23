@@ -265,6 +265,93 @@ async def require_admin(request: Request):
     return True
 
 
+async def require_menu_acl(request: Request, menu_id: str):
+    """
+    要求当前用户的 visible_menus 包含 ``menu_id``（admin role 直接 bypass）。
+
+    该函数作为 FastAPI 依赖使用。机制：
+
+    - role='admin'：直接通过（admin 绕过 ACL）
+    - 普通用户：从 ``request.app.state.menu_permission_service`` 调
+      ``get_visible_menu_ids(user_id=uid, is_admin=False)``，检查返回值含 ``menu_id``
+    - service 不可用（lifespan 未初始化）：raise 503
+    - user_id 缺失：raise 401（auth_middleware 应先写入，未写入属配置错误）
+
+    用法（工厂）::
+
+        @router.get('/foo', dependencies=[Depends(require_admin_or_menu_acl('xxx'))])
+
+    Args:
+        request: FastAPI Request 对象（依赖注入）
+        menu_id: 用户菜单注册表里的 menu_id（一级或二级均可）
+
+    Returns:
+        None: 校验通过
+
+    Raises:
+        HTTPException 401: 用户身份未识别
+        HTTPException 403: 普通用户 ACL 未授权 menu_id
+        HTTPException 503: menu_permission_service 不可用（lifespan 未启动）
+
+    Date: 2026-07-23 (ACL 双重门改造)
+    """
+    role = getattr(request.state, 'role', 'user')
+    if role == 'admin':
+        return
+
+    user_id = getattr(request.state, 'user_id', None)
+    if user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="用户身份未识别",
+        )
+
+    svc = getattr(request.app.state, 'menu_permission_service', None)
+    if svc is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="menu_permission_service 未初始化（lifespan 未启动）",
+        )
+
+    visible = await svc.get_visible_menu_ids(user_id=user_id, is_admin=False)
+    if menu_id not in visible:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"权限不足，需要菜单 {menu_id} 授权",
+        )
+
+
+def require_admin_or_menu_acl(menu_id: str):
+    """
+    组合 FastAPI 依赖：admin 角色直接放行；其他用户要求 ACL 含 ``menu_id``。
+
+    这是双重门：原 ``require_admin`` 行为不变（admin 不写 ACL 也能调），同时
+    普通用户 ACL 授权后也能调。
+
+    用于后端 API 端点（如 task-schedules、email server-config）实现：
+    - admin：原硬守卫不修改，全功能可用
+    - 普通用户：ACL 授权 → 该菜单的 API 端点可访问
+    - 普通用户未授权：被 ``require_menu_acl`` 拦截 → 403
+
+    用法::
+
+        from app.shared.utils.auth.Safety import require_admin_or_menu_acl
+
+        @router.get('/foo', dependencies=[Depends(require_admin_or_menu_acl('foo'))])
+        async def foo(): ...
+
+    Args:
+        menu_id: 菜单 id（与 MENU_CATALOG 注册表 / user_menu_acl.menu_id 对齐）
+
+    Returns:
+        FastAPI Depends 工厂函数
+    """
+    async def _dep(request: Request):
+        await require_menu_acl(request, menu_id)
+
+    return _dep
+
+
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
     print(f"[诊断-auth_middleware] 进入, path={path}")
