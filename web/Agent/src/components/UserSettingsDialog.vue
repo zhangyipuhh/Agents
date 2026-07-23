@@ -1595,14 +1595,16 @@ watch(() => props.visible, (newVal) => {
 
               <!-- 定时任务（admin） -->
               <!-- 2026-07-23 修复：用 v-if 替代 v-show，避免普通用户打开 dialog 时无差别挂载 TaskSchedulerManager 触发 admin-only 请求导致 403 -->
+              <!-- 2026-07-23 ACL 双重门：传递 visibleMenus 给子组件做子 tab 过滤；保留 isAdmin 作为兼容 hint -->
               <div v-if="isVisibleTab('task-scheduler') && activeTab === 'task-scheduler'" class="tab-fill-wrapper">
-                <TaskSchedulerManager :is-admin="isAdmin" />
+                <TaskSchedulerManager :visible-menus="visibleMenus" :is-admin="isAdmin" />
               </div>
 
               <!-- 邮件设置（admin） -->
               <!-- 2026-07-23 修复：用 v-if 替代 v-show，避免普通用户打开 dialog 时无差别挂载 EmailSettingsManager 触发 /api/admin/email/* 请求导致 403 -->
+              <!-- 2026-07-23 ACL 双重门：传递 visibleMenus 让组件按 ACL 过滤子 tab -->
               <div v-if="isVisibleTab('task-scheduler.email-settings') && activeTab === 'task-scheduler.email-settings'" class="tab-fill-wrapper">
-                <EmailSettingsManager :is-admin="isAdmin" />
+                <EmailSettingsManager :visible-menus="visibleMenus" :is-admin="isAdmin" />
               </div>
 
               <!-- 权限管理（admin，2026-07-23 新增） -->
