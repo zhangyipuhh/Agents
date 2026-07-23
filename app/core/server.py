@@ -145,6 +145,34 @@ async def lifespan(app: FastAPI):
             "EmailConfigService not initialized"
         )
 
+    # 2026-07-23：初始化 MenuPermissionService（菜单权限管理服务）。
+    # 与 EmailConfigService 同级，作为"权限显示"基础设施。
+    # 降级策略：DB 不可用时仍然初始化（db=None），auth/login 响应里普通用户
+    # 仅能看到 ['profile']，admin 仍看到全量（不依赖缓存）。
+    try:
+        from app.shared.utils.auth.menu_permission_service import (
+            MenuPermissionService,
+            init_user_menu_acl_schema,
+        )
+
+        if DatabasePool.is_enabled() and DatabasePool._pool is not None:
+            await init_user_menu_acl_schema()  # 建表（幂等）
+            app.state.menu_permission_service = MenuPermissionService(db=DatabasePool._pool)
+            await app.state.menu_permission_service.preload_all()
+            logging.info("[lifespan] MenuPermissionService initialized")
+        else:
+            app.state.menu_permission_service = MenuPermissionService(db=None)
+            logging.warning(
+                "[lifespan] Database pool not available, MenuPermissionService "
+                "initialized with db=None (fail-secure)"
+            )
+    except Exception as menu_exc:
+        logging.warning(
+            "[lifespan] Failed to initialize MenuPermissionService: %s",
+            type(menu_exc).__name__,
+        )
+        app.state.menu_permission_service = MenuPermissionService(db=None)
+
     if db_pool:
         try:
             from app.shared.utils.agent.agent_config_service import AgentConfigService
