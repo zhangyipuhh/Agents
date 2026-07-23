@@ -4556,6 +4556,24 @@ web/Agent/src/utils/
 
 完整定义见 `app/core/menu_registry.py`。
 
+### 一级菜单顺序（最终态，2026-07-23）
+
+`MENU_CATALOG` 一级菜单按 `sort_order` 升序排列如下：
+
+| sort_order | id | label | required_role |
+|---|---|---|---|
+| 1 | profile | 个人设置 | None |
+| 2 | user-management | 用户管理 | admin |
+| 3 | permission-management | 权限管理 | admin |
+| 4 | agent-management | 智能体管理 | admin |
+| 5 | mcp-management | MCP 管理 | admin |
+| 6 | tool-management | 工具管理 | admin |
+| 7 | skill-management | Skill 管理 | admin |
+| 8 | task-scheduler | 运维任务 | admin |
+
+前端 `web/Agent/src/components/UserSettingsDialog.vue` 的 `NAV_MENU_METADATA` 对象
+key 声明顺序与上表一致（除 `email-settings` 一级壳 + 前端内部兼容映射外）。
+
 ### 数据模型 `user_menu_acl`
 
 | 字段 | 类型 | 说明 |
@@ -4589,22 +4607,17 @@ web/Agent/src/utils/
 - `MenuPermissionManager.vue`：左侧人员选择 + 右侧树形 checkbox（先选人再选菜单）
 - `App.vue` / `Sidebar.vue`：透传 `visible_menus`
 
-### 菜单修改示例：邮件设置 → 消息设置 + 一级变二级
+### 菜单修改示例：邮件设置
 
-保持 id 不变（`task-scheduler.email-settings`），只改 `level` / `parent_id` / `label`：
+菜单 id 保持稳定（`task-scheduler.email-settings`），当前为运维任务下的二级菜单，显示名为“邮件设置”：
 
 ```python
-# 改之前
-MenuItem(id="task-scheduler.email-settings", level=1, parent_id=None,
-         label="邮件设置", icon_key="mail", sort_order=8, required_role="admin"),
-
-# 改之后
 MenuItem(id="task-scheduler.email-settings", level=2,
          parent_id="task-scheduler",
-         label="消息设置", icon_key="mail", sort_order=4, required_role="admin"),
+         label="邮件设置", icon_key="mail", sort_order=4, required_role="admin"),
 ```
 
-前端模板同步：把 `<div v-show="activeTab === 'task-scheduler.email-settings'" class="tab-fill-wrapper">` 块挪到 `task-scheduler` 的子 tab 渲染区。
+前端模板同步：`email-settings` 作为 `task-scheduler` 的子 tab 渲染邮件设置组件。
 
 授权数据全自动保留（因 id 不变）。
 

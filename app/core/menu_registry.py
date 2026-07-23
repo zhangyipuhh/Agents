@@ -35,18 +35,26 @@ MENU_CATALOG: List[MenuItem] = [
              sort_order=1, required_role=None),
     MenuItem(id="user-management", level=1, label="用户管理", icon_key="users",
              sort_order=2, required_role="admin"),
-    MenuItem(id="agent-management", level=1, label="智能体管理", icon_key="robot",
-             sort_order=3, required_role="admin"),
-    MenuItem(id="mcp-management", level=1, label="MCP 管理", icon_key="server",
-             sort_order=4, required_role="admin"),
-    MenuItem(id="tool-management", level=1, label="工具管理", icon_key="wrench",
-             sort_order=5, required_role="admin"),
-    MenuItem(id="skill-management", level=1, label="Skill 管理", icon_key="book",
-             sort_order=6, required_role="admin"),
-    MenuItem(id="task-scheduler", level=1, label="运维任务", icon_key="clock",
-             sort_order=7, required_role="admin"),
+    # 2026-07-23 调整：将「权限管理」从末尾（sort_order=8）上移到「用户管理」正下方（sort_order=3），
+    # 后续一级菜单 sort_order 顺次 +1。id 保持不变，ACL 自动保留。
     MenuItem(id="permission-management", level=1, label="权限管理", icon_key="shield",
+             sort_order=3, required_role="admin"),
+    MenuItem(id="agent-management", level=1, label="智能体管理", icon_key="robot",
+             sort_order=4, required_role="admin"),
+    MenuItem(id="mcp-management", level=1, label="MCP 管理", icon_key="server",
+             sort_order=5, required_role="admin"),
+    MenuItem(id="tool-management", level=1, label="工具管理", icon_key="wrench",
+             sort_order=6, required_role="admin"),
+    MenuItem(id="skill-management", level=1, label="Skill 管理", icon_key="book",
+             sort_order=7, required_role="admin"),
+    MenuItem(id="task-scheduler", level=1, label="运维任务", icon_key="clock",
              sort_order=8, required_role="admin"),
+    # 2026-07-23 调整：「邮件设置」从「运维任务」下的二级菜单升级为独立一级菜单。
+    # - id 保持 `task-scheduler.email-settings` 不变（id 终身不变硬规则，老 ACL 自动保留）
+    # - level 2 → 1，parent_id None
+    # - sort_order 4 → 9（排在一级菜单末尾）
+    MenuItem(id="task-scheduler.email-settings", level=1, parent_id=None,
+             label="邮件设置", icon_key="mail", sort_order=9, required_role="admin"),
 
     # === 二级菜单（tab）===
     MenuItem(id="user-management.users", level=2, parent_id="user-management",
@@ -61,8 +69,6 @@ MENU_CATALOG: List[MenuItem] = [
              label="脚本扫描", icon_key="scan", sort_order=2, required_role="admin"),
     MenuItem(id="task-scheduler.api-config", level=2, parent_id="task-scheduler",
              label="API接口配置", icon_key="api", sort_order=3, required_role="admin"),
-    MenuItem(id="task-scheduler.email-settings", level=2, parent_id="task-scheduler",
-             label="消息设置", icon_key="mail", sort_order=4, required_role="admin"),
     MenuItem(id="permission-management.menu", level=2, parent_id="permission-management",
              label="菜单管理", icon_key="menu", sort_order=1, required_role="admin"),
 ]

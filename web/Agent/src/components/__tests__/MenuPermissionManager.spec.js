@@ -21,7 +21,7 @@ const mockCatalog = {
     { id: 'user-management.users', level: 2, parent_id: 'user-management', label: '用户列表', icon_key: 'list', sort_order: 1, required_role: 'admin', enabled: true },
     { id: 'user-management.online-monitor', level: 2, parent_id: 'user-management', label: '在线监控', icon_key: 'eye', sort_order: 2, required_role: 'admin', enabled: true },
     { id: 'task-scheduler', level: 1, parent_id: null, label: '运维任务', icon_key: 'clock', sort_order: 7, required_role: 'admin', enabled: true },
-    { id: 'task-scheduler.email-settings', level: 2, parent_id: 'task-scheduler', label: '消息设置', icon_key: 'mail', sort_order: 4, required_role: 'admin', enabled: true },
+    { id: 'task-scheduler.email-settings', level: 2, parent_id: 'task-scheduler', label: '邮件设置', icon_key: 'mail', sort_order: 4, required_role: 'admin', enabled: true },
     { id: 'disabled-menu', level: 1, parent_id: null, label: '已禁用菜单', icon_key: 'x', sort_order: 99, required_role: 'admin', enabled: false }
   ]
 }
