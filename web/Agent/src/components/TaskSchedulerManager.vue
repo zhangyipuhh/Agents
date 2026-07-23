@@ -35,6 +35,18 @@ const TAB_SCAN = 'scan'
 const TAB_SCRIPT = 'script'
 const TAB_API = 'api'
 
+// 2026-07-23 ACL 双重门：tab 与后端 MENU_CATALOG 的子菜单 id 对齐映射
+// - task-scheduler.scheduled → TAB_TASK（编辑任务）
+// - task-scheduler.script-scan → TAB_SCAN（服务器扫描入库）
+// - task-scheduler.api-config → TAB_API（API接口配置）
+// - TAB_SCRIPT（脚本扫描入库）无对应 menu_id，admin-only 默认可见
+const TAB_MENU_IDS = {
+  [TAB_TASK]: 'task-scheduler.scheduled',
+  [TAB_SCAN]: 'task-scheduler.script-scan',
+  [TAB_API]: 'task-scheduler.api-config',
+  // TAB_SCRIPT 没有对应 menu_id，admin 默认可见
+}
+
 const TAB_LABELS = [
   { id: TAB_TASK, label: '编辑任务' },
   { id: TAB_SCAN, label: '服务器扫描入库' },
@@ -56,7 +68,7 @@ const successMessage = ref('')
 const isCreating = ref(false)
 const contextJson = ref('{}')
 
-// Tab 状态
+// Tab 状态 - 2026-07-23 ACL 双重门：默认值改为第一个被 ACL 授权的子 tab
 const activeTab = ref(TAB_TASK)
 
 // 服务器扫描状态
@@ -1708,11 +1720,16 @@ async function removeTask() {
 
 // === Props ===
 /**
- * 2026-07-23 新增：组件 props。
- * - isAdmin：父组件传入的角色标记。onMounted 内做 fail-safe 兜底，
- *   非 admin 用户不会触发 /api/admin/agents 等 admin-only 请求。
+ * 2026-07-23 改造：组件 props。
+ * - visibleMenus（ACL）：父组件传入当前用户的可见菜单列表（含一级 + 二级）。
+ *   用于子 tab 过滤：只有 ACL 含对应 menu_id 的子 tab 才渲染。
+ * - isAdmin：兼容 hint，admin 直通 bails ACL；保留供旧测试与 admin 默认全量场景。
  */
 const props = defineProps({
+  visibleMenus: {
+    type: Array,
+    default: () => []
+  },
   isAdmin: {
     type: Boolean,
     default: false
@@ -1721,14 +1738,40 @@ const props = defineProps({
 
 // 模板用 computed 引用，避免在 template 中反复访问 props.isAdmin。
 const isAdmin = computed(() => props.isAdmin)
+// 2026-07-23 ACL 双重门：visible_menus 集合（contains 查找 O(1)）
+const visibleSet = computed(() => new Set(props.visibleMenus || []))
+
+/**
+ * 计算可用的子 tab 列表：按 ACL 过滤。
+ * - admin：返全量
+ * - 普通用户：仅保留 TAB_MENU_IDS[tab] ∈ visible_menus 的项
+ *   TAB_SCRIPT（无对应 menu_id）仅 admin 可见
+ */
+const availableTabs = computed(() => {
+  if (props.isAdmin) return TAB_LABELS
+  return TAB_LABELS.filter(t => {
+    const menuId = TAB_MENU_IDS[t.id]
+    // TAB_SCRIPT 无 menuId → admin-only，普通用户不可见
+    if (!menuId) return false
+    return visibleSet.value.has(menuId)
+  })
+})
+
+/**
+ * 是否有访问本组件的权限（被授权任何子 tab 或 admin）。
+ */
+const hasAnyAccess = computed(() => props.isAdmin || availableTabs.value.length > 0)
 
 onMounted(() => {
   window.addEventListener('keydown', handleHistoryKeydown)
-  // 2026-07-23 修复：fail-safe 兜底。
-  // 即便父组件 UserSettingsDialog 漏挂了 v-if，本组件也不会触发 /api/admin/agents
-  // 等 admin-only 请求，避免普通用户被 403 拒绝导致「会话无效，请重试」红 banner。
-  if (!props.isAdmin) {
-    console.warn('[TaskSchedulerManager] 非 admin 用户挂载本组件，已跳过数据加载（防御性兜底）')
+  // 2026-07-23 ACL 双重门：activeTab 默认值改为第一个被授权的子 tab
+  // （原来硬编码 TAB_TASK，但普通用户可能没被授 .scheduled）
+  if (availableTabs.value.length > 0 && !availableTabs.value.find(t => t.id === activeTab.value)) {
+    activeTab.value = availableTabs.value[0].id
+  }
+  // fail-safe 兜底：admin OR 有任何子 tab 授权才加载数据
+  if (!hasAnyAccess.value) {
+    console.warn('[TaskSchedulerManager] 用户未被授权任何 task-scheduler 子 tab，已跳过数据加载')
     return
   }
   loadInitialData()
@@ -1740,13 +1783,10 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <!-- 2026-07-23 新增：非 admin 用户访问提示。TaskSchedulerManager 整体依赖 admin-only
-       数据源（/api/admin/task-schedules、/api/admin/devops-servers 等）。
-       即便父组件按顶级 tab 授权策略挂载了本组件，普通用户也只看到「权限不足」占位，
-       不会看到会触发 403 的子 tab 按钮和「加载失败」红色 banner。
-       fail-safe（onMounted + loadDevopsServers/loadScripts/loadApiConfigTree + switchTab）
-       作为最终防御层。-->
-  <div v-if="!isAdmin" class="empty-state" data-testid="task-scheduler-no-permission">
+  <!-- 2026-07-23 ACL 双重门：替换原 isAdmin 顶层拦截为「无任何子 tab 授权」拦截。
+       admin role → 全量直通；普通用户按 visibleMenus 子菜单过滤。
+       没有被授权任何 task-scheduler 子 tab 时显示占位提示。-->
+  <div v-if="!hasAnyAccess" class="empty-state" data-testid="task-scheduler-no-permission">
     此功能仅对管理员开放。如需使用请联系管理员调整菜单权限。
   </div>
   <section v-else class="task-scheduler-manager">
@@ -1810,7 +1850,7 @@ onBeforeUnmount(() => {
         data-testid="tablist"
       >
         <button
-          v-for="tab in TAB_LABELS"
+          v-for="tab in availableTabs"
           :key="tab.id"
           type="button"
           role="tab"
