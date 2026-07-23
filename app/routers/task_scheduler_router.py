@@ -18,13 +18,15 @@ from app.shared.utils.agent.task_scheduler_service import (
     TaskScheduleValidationError,
     TaskSchedulerService,
 )
-from app.shared.utils.auth.Safety import require_admin
+from app.shared.utils.auth.Safety import require_admin, require_admin_or_menu_acl
 
 
+# 2026-07-23 ACL 双重门：移除全局 require_admin，逐 endpoint 改用
+# require_admin_or_menu_acl('task-scheduler.scheduled')
+# （脚本扫描 / API接口配置 是前端 only tab，没有专用后端 endpoint）
 router = APIRouter(
     prefix="/api/admin/task-schedules",
     tags=["Task Scheduler Admin"],
-    dependencies=[Depends(require_admin)],
 )
 
 
@@ -227,7 +229,8 @@ def _handle_service_error(exc: Exception) -> None:
     raise exc
 
 
-@router.get("", response_model=List[Dict[str, Any]])
+@router.get("", response_model=List[Dict[str, Any]],
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.scheduled'))])
 async def list_task_schedules(request: Request) -> List[Dict[str, Any]]:
     """列出所有智能体定时任务。
 
@@ -241,7 +244,8 @@ async def list_task_schedules(request: Request) -> List[Dict[str, Any]]:
     return await service.list_schedules()
 
 
-@router.get("/{schedule_id}", response_model=Dict[str, Any])
+@router.get("/{schedule_id}", response_model=Dict[str, Any],
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.scheduled'))])
 async def get_task_schedule(request: Request, schedule_id: int) -> Dict[str, Any]:
     """获取单个智能体定时任务。
 
@@ -260,7 +264,8 @@ async def get_task_schedule(request: Request, schedule_id: int) -> Dict[str, Any
         raise
 
 
-@router.post("", status_code=status.HTTP_201_CREATED, response_model=Dict[str, Any])
+@router.post("", status_code=status.HTTP_201_CREATED, response_model=Dict[str, Any],
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.scheduled'))])
 async def create_task_schedule(
     request: Request,
     body: CreateTaskScheduleRequest,
@@ -285,7 +290,8 @@ async def create_task_schedule(
         raise
 
 
-@router.put("/{schedule_id}", response_model=Dict[str, Any])
+@router.put("/{schedule_id}", response_model=Dict[str, Any],
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.scheduled'))])
 async def update_task_schedule(
     request: Request,
     schedule_id: int,
@@ -312,7 +318,8 @@ async def update_task_schedule(
         raise
 
 
-@router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT,
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.scheduled'))])
 async def delete_task_schedule(request: Request, schedule_id: int) -> None:
     """删除智能体定时任务。
 
@@ -331,7 +338,8 @@ async def delete_task_schedule(request: Request, schedule_id: int) -> None:
         raise
 
 
-@router.put("/{schedule_id}/enabled", response_model=Dict[str, Any])
+@router.put("/{schedule_id}/enabled", response_model=Dict[str, Any],
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.scheduled'))])
 async def set_task_schedule_enabled(
     request: Request,
     schedule_id: int,
@@ -355,7 +363,8 @@ async def set_task_schedule_enabled(
         raise
 
 
-@router.post("/{schedule_id}/trigger", status_code=status.HTTP_202_ACCEPTED, response_model=Dict[str, Any])
+@router.post("/{schedule_id}/trigger", status_code=status.HTTP_202_ACCEPTED, response_model=Dict[str, Any],
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.scheduled'))])
 async def trigger_task_schedule(request: Request, schedule_id: int) -> Dict[str, Any]:
     """手动立即运行一次智能体定时任务。
 
@@ -374,7 +383,8 @@ async def trigger_task_schedule(request: Request, schedule_id: int) -> Dict[str,
         raise
 
 
-@router.get("/{schedule_id}/runs", response_model=List[Dict[str, Any]])
+@router.get("/{schedule_id}/runs", response_model=List[Dict[str, Any]],
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.scheduled'))])
 async def list_task_runs(
     request: Request,
     schedule_id: int,

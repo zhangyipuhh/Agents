@@ -33,6 +33,85 @@ def test_task_scheduler_endpoints_registered(client):
 
 
 # =============================================================================
+# P2: ACL 双重门（2026-07-23）
+# - admin role bypass ACL 直通
+# - 普通用户 ACL 授权（task-scheduler.scheduled）后能调
+# - 普通用户未授权 → 403
+# =============================================================================
+
+
+def _override_task_scheduler_visible_menu(client, visible_ids):
+    """覆盖 task-scheduler_router 调用期间 menu_permission_service 的返回值。"""
+    from app.shared.utils.auth.menu_permission_service import MenuPermissionService
+    visible_set = set(visible_ids)
+
+    async def fake_visible(user_id, is_admin):
+        if is_admin:
+            from app.core.menu_registry import get_enabled_items
+            return [m.id for m in sorted(get_enabled_items(), key=lambda m: m.sort_order)]
+        return sorted(visible_set)
+
+    stub = MenuPermissionService(db=None)
+    stub.get_visible_menu_ids = fake_visible
+    client.app.state.menu_permission_service = stub
+
+
+def _stub_list_schedules(client):
+    """stub task_scheduler_service.list_schedules 避免 db.fetch。"""
+    svc = getattr(client.app.state, "task_scheduler_service", None)
+    if svc is None:
+        from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+        from app.shared.utils.agent.agent_config_service import AgentConfigService
+        svc = TaskSchedulerService(
+            db=None,
+            agent_config_service=AgentConfigService(db=None),
+            email_config_service=None,
+        )
+        client.app.state.task_scheduler_service = svc
+    svc.list_schedules = AsyncMock(return_value=[])
+    svc.get_schedule = AsyncMock(return_value=None)
+    svc.get_schedule_runs = AsyncMock(return_value=[])
+
+
+def test_normal_user_no_acl_list_task_schedules_403(client, user_headers):
+    """ACL 空：普通用户 GET /task-schedules 返 403（守卫拦截）。"""
+    _override_task_scheduler_visible_menu(client, visible_ids={'profile'})
+    resp = client.get("/api/admin/task-schedules", headers=user_headers)
+    assert resp.status_code == 403
+
+
+def test_normal_user_acl_scheduled_passes_list(client, user_headers):
+    """ACL 含 task-scheduler.scheduled：普通用户 GET /task-schedules 通过（200 / 业务异常 500 都算 ACL 通过）。"""
+    _override_task_scheduler_visible_menu(
+        client, visible_ids={'profile', 'task-scheduler.scheduled'}
+    )
+    _stub_list_schedules(client)
+    resp = client.get("/api/admin/task-schedules", headers=user_headers)
+    # 关键：不是 403（ACL 通过），可以是 200 或 500（业务异常）
+    assert resp.status_code != 403
+    assert resp.status_code in (200, 500)
+
+
+def test_normal_user_acl_no_scheduled_still_blocked(client, user_headers):
+    """普通用户 ACL 含 task-scheduler 父级但缺 .scheduled 子菜单 → 仍 403。"""
+    _override_task_scheduler_visible_menu(
+        client, visible_ids={'profile', 'task-scheduler'}  # 仅父级
+    )
+    resp = client.get("/api/admin/task-schedules", headers=user_headers)
+    assert resp.status_code == 403
+
+
+def test_admin_still_bypasses_acl_for_task_schedules(client, admin_headers):
+    """admin 角色 bypass ACL：ACL 空也能调（守卫不查 ACL）。"""
+    _override_task_scheduler_visible_menu(client, visible_ids={'profile'})
+    _stub_list_schedules(client)
+    resp = client.get("/api/admin/task-schedules", headers=admin_headers)
+    # 关键：不是 403（ACL bypass）
+    assert resp.status_code != 403
+    assert resp.status_code in (200, 500)
+
+
+# =============================================================================
 # P1: 成功路径
 # =============================================================================
 
