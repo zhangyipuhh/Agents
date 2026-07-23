@@ -76,6 +76,9 @@ from app.routers.script_admin_router import (
 from app.routers.api_config_router import (
     router as api_config_router,  # API 接口配置管理
 )
+from app.routers.menu_permission_router import (
+    router as menu_permission_router,  # 2026-07-23 新增：菜单权限管理
+)
 
 
 app = create_app()
@@ -109,6 +112,7 @@ def register_routers(target_app=None):
     _app.include_router(email_admin_router)
     _app.include_router(script_admin_router)
     _app.include_router(api_config_router)
+    _app.include_router(menu_permission_router)  # 2026-07-23 新增：菜单权限管理
 
 
 register_routers()

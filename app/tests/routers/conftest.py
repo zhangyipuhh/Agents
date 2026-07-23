@@ -214,6 +214,23 @@ def _init_api_config_service(app):
 
 
 @pytest.fixture(autouse=True)
+def _init_menu_permission_service(app):
+    """初始化 app.state.menu_permission_service 供 menu_permission_router 使用。
+
+    生产对应初始化点：``app/core/server.py::lifespan`` 中
+    ``MenuPermissionService(db=DatabasePool._pool)`` 创建并挂到
+    ``app.state.menu_permission_service``，随后 ``preload_all()`` 加载 ACL 缓存。
+
+    测试环境注入真实 MenuPermissionService 实例，db=None 是合法 stub（service
+    层对 db=None 优雅降级：admin 全量、普通用户仅 ['profile']）；单测通过
+    monkeypatch 替换 service 方法或按需注入 fake db 验证行为。禁止注入
+    ``app.state.db = MagicMock()`` 这类生产不存在的对象。
+    """
+    from app.shared.utils.auth.menu_permission_service import MenuPermissionService
+    app.state.menu_permission_service = MenuPermissionService(db=None)
+
+
+@pytest.fixture(autouse=True)
 def _mock_user_db_for_admin_auth(monkeypatch):
     """Mock UserDB.get_user_by_username 根据 username 返回对应 role 用户。
 
