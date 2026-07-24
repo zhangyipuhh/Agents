@@ -38,13 +38,13 @@ const TAB_API = 'api'
 // 2026-07-23 ACL 双重门：tab 与后端 MENU_CATALOG 的子菜单 id 对齐映射
 // - task-scheduler.scheduled → TAB_TASK（编辑任务）
 // - task-scheduler.script-scan → TAB_SCAN（服务器扫描入库）
+// - task-scheduler.script-inventory → TAB_SCRIPT（脚本扫描入库）
 // - task-scheduler.api-config → TAB_API（API接口配置）
-// - TAB_SCRIPT（脚本扫描入库）无对应 menu_id，admin-only 默认可见
 const TAB_MENU_IDS = {
   [TAB_TASK]: 'task-scheduler.scheduled',
   [TAB_SCAN]: 'task-scheduler.script-scan',
+  [TAB_SCRIPT]: 'task-scheduler.script-inventory',
   [TAB_API]: 'task-scheduler.api-config',
-  // TAB_SCRIPT 没有对应 menu_id，admin 默认可见
 }
 
 const TAB_LABELS = [
@@ -1785,13 +1785,11 @@ const visibleSet = computed(() => new Set(props.visibleMenus || []))
  * 计算可用的子 tab 列表：按 ACL 过滤。
  * - admin：返全量
  * - 普通用户：仅保留 TAB_MENU_IDS[tab] ∈ visible_menus 的项
- *   TAB_SCRIPT（无对应 menu_id）仅 admin 可见
  */
 const availableTabs = computed(() => {
   if (props.isAdmin) return TAB_LABELS
   return TAB_LABELS.filter(t => {
     const menuId = TAB_MENU_IDS[t.id]
-    // TAB_SCRIPT 无 menuId → admin-only，普通用户不可见
     if (!menuId) return false
     return visibleSet.value.has(menuId)
   })

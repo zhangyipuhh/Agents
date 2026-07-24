@@ -2,10 +2,11 @@
  * TaskSchedulerManager 子 tab ACL 过滤测试（2026-07-23）
  *
  * 覆盖：
- * - admin 全量显示 3 个 tab（含脚本扫描）
+ * - admin 全量显示 4 个 tab（含脚本扫描入库）
  * - 普通用户只显示被 visibleMenus 授权的 tab
  * - 顶层 isAdmin 拦截已替换为 hasAnyAccess 拦截
  * - 多个子 tab 授权都可见
+ * - 脚本扫描入库 tab（task-scheduler.script-inventory）需独立授权才显示
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -43,7 +44,7 @@ describe('TaskSchedulerManager 子 tab ACL 过滤', () => {
     vi.clearAllMocks()
   })
 
-  it('test_admin_shows_all_three_tabs admin 看 3 个 task tab（不含脚本，因为脚本是 admin-only）', async () => {
+  it('test_admin_shows_all_three_tabs admin 看 4 个 task tab（含脚本扫描入库）', async () => {
     const wrapper = mount(TaskSchedulerManager, {
       props: { isAdmin: true }
     })
@@ -99,7 +100,26 @@ describe('TaskSchedulerManager 子 tab ACL 过滤', () => {
     expect(tabTexts).toContain('编辑任务')
     expect(tabTexts).toContain('服务器扫描入库')
     expect(tabTexts).toContain('API接口配置')
-    expect(tabTexts).not.toContain('脚本扫描入库')  // TAB_SCRIPT 无对应 menu_id，普通用户看不到
+    expect(tabTexts).not.toContain('脚本扫描入库')  // 未授 task-scheduler.script-inventory
+  })
+
+  it('test_normal_user_granted_script_inventory_sees_script_tab 普通用户授权 .script-inventory 后可见"脚本扫描入库"', async () => {
+    const wrapper = mount(TaskSchedulerManager, {
+      props: {
+        visibleMenus: [
+          'profile', 'task-scheduler',
+          'task-scheduler.script-inventory'
+        ]
+      }
+    })
+    await flushPromises()
+    const tabs = wrapper.findAll('[role="tab"]')
+    const tabTexts = tabs.map(t => t.text().trim())
+    expect(tabTexts).toContain('脚本扫描入库')
+    // 其他未授权 tab 不应出现
+    expect(tabTexts).not.toContain('编辑任务')
+    expect(tabTexts).not.toContain('服务器扫描入库')
+    expect(tabTexts).not.toContain('API接口配置')
   })
 
   it('test_normal_user_no_subtabs_shows_placeholder 普通用户无任何 task-scheduler 授权时显示占位', async () => {

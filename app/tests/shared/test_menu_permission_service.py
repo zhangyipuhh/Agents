@@ -179,6 +179,7 @@ def test_normal_user_can_see_granted_admin_only_menu():
         "task-scheduler",
         "task-scheduler.scheduled",
         "task-scheduler.script-scan",
+        "task-scheduler.script-inventory",
         "task-scheduler.api-config",
         "task-scheduler.email-settings",
         "task-scheduler.email-settings.server",
@@ -193,6 +194,7 @@ def test_normal_user_can_see_granted_admin_only_menu():
     assert "task-scheduler" in visible
     assert "task-scheduler.scheduled" in visible
     assert "task-scheduler.script-scan" in visible
+    assert "task-scheduler.script-inventory" in visible
     assert "task-scheduler.api-config" in visible
     assert "task-scheduler.email-settings" in visible
     assert "task-scheduler.email-settings.server" in visible
@@ -200,6 +202,40 @@ def test_normal_user_can_see_granted_admin_only_menu():
     assert "task-scheduler.email-settings.test" in visible
     # 注册表里没有的菜单不应出现
     assert "non-existent-menu-id" not in visible
+
+
+def test_get_visible_menu_ids_includes_script_inventory_for_admin():
+    """admin 可见集合含 task-scheduler.script-inventory。
+
+    回归保护：
+    - TaskSchedulerManager.vue 有 4 个 Tab（编辑任务 / 服务器扫描入库 /
+      脚本扫描入库 / API接口配置），但历史版本 MENU_CATALOG 仅注册 3 个，
+      导致 admin 在「权限管理 → 菜单管理」无法勾选「脚本扫描入库」，
+      且普通用户被 ACL 授权后也无法在前端看到对应 tab。
+    本测试断言 admin 可见集合包含 task-scheduler.script-inventory。
+    """
+    svc = MenuPermissionService(db=None)
+    visible = _run(svc.get_visible_menu_ids(user_id=1, is_admin=True))
+    assert "task-scheduler.script-inventory" in visible
+
+
+def test_script_inventory_registered_under_task_scheduler_parent():
+    """task-scheduler.script-inventory 注册表元数据正确：父级 / 排序 / 角色。
+
+    约束：
+    - parent_id == 'task-scheduler'（属于运维任务二级菜单）
+    - sort_order == 3（与 TaskSchedulerManager.vue::TAB_LABELS 顺序一致）
+    - required_role == 'admin'（与兄弟菜单对齐）
+    """
+    from app.core.menu_registry import MENU_CATALOG
+
+    item = next((m for m in MENU_CATALOG if m.id == "task-scheduler.script-inventory"), None)
+    assert item is not None, "task-scheduler.script-inventory 未注册"
+    assert item.parent_id == "task-scheduler"
+    assert item.sort_order == 3
+    assert item.required_role == "admin"
+    assert item.label == "脚本扫描入库"
+    assert item.enabled is True
 
 
 def test_get_visible_menu_ids_admin_still_returns_admin_only():
