@@ -2225,7 +2225,7 @@ system_prompt = (
 | `app/shared/utils/devops_server_service.py` | `DevOpsServerService(db, config_path, credential_key)` 单例；`preload_all` / `scan_and_upsert` / `list_public_servers` / `get_server_detail` / `get_connection_config` / `server_exists` / `delete_server` |
 | `app/shared/tools/skills/devops/CommandInterceptor.py` | 命令策略过滤器，黑名单优先 + 白名单 allowlist + 精确/前缀/正则三模式 |
 | `app/shared/tools/skills/devops/SSHTools.py` | 3 个 `@tool(description=...)`：execute_command / execute_batch_commands / get_system_logs |
-| `app/routers/devops_server_admin_router.py` | `GET /api/admin/devops-servers` + `GET /api/admin/devops-servers/{server_id}`（详情；返 `{id, business_name, server_type, updated_at, whitelist, inspection_script, inspection_parser}`）+ `POST /api/admin/devops-servers/scan` + `DELETE /api/admin/devops-servers/{server_id}`（返 `204 No Content`），`router=APIRouter(... dependencies=[Depends(require_admin)])` |
+| `app/routers/devops_server_admin_router.py` | `GET /api/admin/devops-servers`（列表端点 `Depends(require_admin_or_menu_acl("task-scheduler.server-management"))`）+ `GET /api/admin/devops-servers/{server_id}`（详情；仅 admin；返 `{id, business_name, server_type, updated_at, whitelist, inspection_script, inspection_parser}`）+ `POST /api/admin/devops-servers/scan`（仅 admin）+ `DELETE /api/admin/devops-servers/{server_id}`（仅 admin；返 `204 No Content`），router 自身不再有 `dependencies=[Depends(require_admin)]`，每个端点显式声明权限 |
 
 ### 配置 / 路径常量（2026-07-15）
 
@@ -2244,7 +2244,7 @@ system_prompt = (
 
 - `app/core/server.py::lifespan`：数据库池建立后调用 `app.core.config.devops_diagnostics.diagnose_credential_key()` 校验密钥；通过则构造 `DevOpsServerService` 并 `set_instance(svc)` + 挂 `app.state.devops_server_service`；yield 后 `reset()` 单例并清理 `app.state.devops_server_service`。失败时把诊断 hint 写入 `app.state.devops_server_service_hint`，router 会读取并放入 500 detail。
 - `app/core/config/devops_diagnostics.py`（2026-07-15 新增）：从 `settings.devops.credential_key` 读取，分 4 类返回诊断结果：`missing`（完全没配）/ `misspelled`（env 里有相近键）/ `settings_unread`（env 里有精确键名但 settings 读不到）/ `invalid_fernet`（值非空但 Fernet 校验失败）。hint 不打印完整密钥，只显示长度+前 4 字符指纹。
-- `app/routers/devops_server_admin_router.py`：router 级 `require_admin`；服务未初始化返回 500 + `detail=<lifespan 写入的 hint>`（无 hint 时退回 `"DevOpsServerService not initialized"`）；`GET` 严格只返回 `{id, business_name, server_type, updated_at}`；`POST /scan` 严格只返回 `{scanned, inserted, updated, failed}`；扫描异常时不回显原始 `detail` / 路径 / IP / 密码 / 名单。`GET /api/admin/devops-servers/{server_id}`（2026-07-22 新增）按需返回详情：仅含 `_DETAIL_FIELDS = {id, business_name, server_type, updated_at, whitelist, inspection_script, inspection_parser}`，命中失败 → 404 + `"服务器不存在"`（不回显 server_id），router 防御性二次过滤保证即便 service 失误返回了 ip/port/username/password 也会被白名单过滤。`DELETE /api/admin/devops-servers/{server_id}` 返 `204 No Content`：先 `server_exists` 探测（不存在 → 404 + `"服务器不存在"`），再 `delete_server`（service 持 `_write_lock` 同步删 `_cache` + `db.execute("DELETE FROM devops_servers WHERE id = $1", server_id)`）；DB 异常 → 500 + `"删除服务器失败"`，不回显 SQL / 原 detail。
+- `app/routers/devops_server_admin_router.py`：移除 router 级 `dependencies=[Depends(require_admin)]`，改为每个端点显式声明权限；`GET /api/admin/devops-servers` 列表端点使用 `Depends(require_admin_or_menu_acl("task-scheduler.server-management"))`（admin 直 bypass，普通用户需 `task-scheduler.server-management` 菜单 ACL）；`POST /scan` / `GET /{server_id}` / `DELETE /{server_id}` 均保留 `Depends(require_admin)`（admin-only）。服务未初始化返回 500 + `detail=<lifespan 写入的 hint>`（无 hint 时退回 `"DevOpsServerService not initialized"`）；`GET` 列表严格只返回 `{id, business_name, server_type, updated_at}`；`POST /scan` 严格只返回 `{scanned, inserted, updated, failed}`；扫描异常时不回显原始 `detail` / 路径 / IP / 密码 / 名单。`GET /api/admin/devops-servers/{server_id}`（2026-07-22 新增）按需返回详情：仅含 `_DETAIL_FIELDS = {id, business_name, server_type, updated_at, whitelist, inspection_script, inspection_parser}`，命中失败 → 404 + `"服务器不存在"`（不回显 server_id），router 防御性二次过滤保证即便 service 失误返回了 ip/port/username/password 也会被白名单过滤。`DELETE /api/admin/devops-servers/{server_id}` 返 `204 No Content`：先 `server_exists` 探测（不存在 → 404 + `"服务器不存在"`），再 `delete_server`（service 持 `_write_lock` 同步删 `_cache` + `db.execute("DELETE FROM devops_servers WHERE id = $1", server_id)`）；DB 异常 → 500 + `"删除服务器失败"`，不回显 SQL / 原 detail。
 - **不再为 DevOps 工具创建 Agent**——工具通过 ToolRegistryService 扫描 `app/shared/tools/skills/devops/SSHTools.py` 自动发现，admin 界面按元数据展示。
 - **运行时必备配置**：`settings.devops.credential_key` 必须由 `Fernet.generate_key()` 生成（44 字节 base64），非法格式会在 `diagnose_credential_key()` 走 `invalid_fernet` 分支，效果同上。`data/devops/servers.yaml` 由 `.gitignore` 排除（`servers.yaml.example` 是公开模板），缺失时 `scan_and_upsert` 安全返回 0 但列表为空，不报错。
 
@@ -2408,7 +2408,7 @@ system_prompt = (
 - `app/tests/shared/tools/skills/devops/test_command_interceptor.py` —— 31 个用例（2026-07-15 扩展）：原 23 + Bug-1/Bug-2 回归 8 个（`normalize_segment` 去除前导 `|`/`;`、精确白名单 `system.service` / `100%` 按字面量匹配、`^` 前缀仍走正则、`\d` 转义序列仍走正则、管道后续子段精确白名单命中、子段未列入拒绝）。
 - `app/tests/shared/tools/skills/devops/test_ssh_tools.py` —— 27 个用例（2026-07-15 扩展）：原 17 + Bug-3/4/5/7 回归 10 个（Fernet ValueError 通用化、业务名 MagicMock 兜底、`_open_client` 传 timeout / auth_timeout / banner_timeout、`_clamp_timeout` 钳制边界、`execute_batch_commands` 拒绝 None / 空列表）。
 - `app/tests/core/test_devops_server_lifespan.py` —— 4 个用例：DB 池就绪、空池降级、空 key 跳过、单例 reset。
-- `app/tests/routers/test_devops_server_admin_router.py` —— 15 个用例（含 2026-07-22 增补 DELETE 5 个用例 + 巡检脚本不外泄 1 个用例）：路由注册（含 DELETE）、白名单二次过滤、扫描 4 数字、异常不外泄、service 缺失返 500、DELETE 路由注册 / 204 / 404 / service 缺失 500 / DB 失败 500 不外泄 / **`inspection_script` / `inspection_parser` 永不进入 GET 响应**（service 失误返回含脚本字段时 router 二次白名单过滤）。
+- `app/tests/routers/test_devops_server_admin_router.py` —— 26 个用例（原 20 + 2026-07-24 增补 ACL 双重门 6 个用例）：路由注册（含 DELETE）、白名单二次过滤、扫描 4 数字、异常不外泄、service 缺失返 500、DELETE 路由注册 / 204 / 404 / service 缺失 500 / DB 失败 500 不外泄 / **`inspection_script` / `inspection_parser` 永不进入 GET 响应**（service 失误返回含脚本字段时 router 二次白名单过滤） / **GET 列表三重 ACL 矩阵**（admin 直 bypass / 普通用户 + `task-scheduler.server-management` ACL 通过 / 无 ACL 403 + service 未被调用） / **其他 admin-only 端点回归保护**（拥有 ACL 的普通用户调 `/scan` / `/{id}` / `DELETE /{id}` 仍返 403）。新增测试通过 `_stub_menu_visible` 仅替换 `MenuPermissionService.get_visible_menu_ids` 方法（复用 conftest autouse fixture 注入的真实 `MenuPermissionService(db=None)`），符合「禁止在测试中虚构生产不存在的依赖」硬约束。
 - `app/tests/core/test_devops_diagnostics.py` —— 8 个用例（2026-07-15 新增）：`missing` / `misspelled` / `settings_unread` / `invalid_fernet` 4 类分支、首尾空白忽略、`frozen=True` 不变性、通过路径不打印完整密钥。
 - `web/Agent/src/components/__tests__/TaskSchedulerManager.spec.js` —— 65 个用例（2026-07-22 增补 4 个删除按钮用例）：任务列表与调度表单、目标类型显隐、服务器/脚本扫描与强制刷新、白名单脱敏、防重复请求与失败重试、`server_list` schema 参数添加/搜索/多选/回显/失效项/旧参数兼容、并发加载、脚本切换隔离、首次加载与强制刷新失败后的脱敏重试、「保存任务」按钮位于 detail-header 顶部 actions 行（新建模式仅保存、编辑模式追加启停/运行/删除）、服务器行删除按钮（每行渲染 / confirm 取消 / confirm 确认后本地移除 / 网络错误脱敏文案）。
 
@@ -4821,13 +4821,35 @@ admin 角色绕过 ACL 直接放行；普通用户未授权 → 403
 - `UserSettingsDialog.user-role-no-403.spec.js`：普通用户打开 dialog 不发起 admin-only 请求；admin 逐个点击 8 个顶级 tab 后**所有 7 个 admin-only 数据 URL 都被调用**（回归保护 prop 漏传 bug）
 - 各 admin-only 子组件 spec 已统一传 `isAdmin: true` 测试 fixture（防御性契约）
 
-### 按 required_role 过滤菜单可见性（2026-07-23 第三轮修复）
+### 按 required_role 过滤菜单可见性（2026-07-23 第三轮修复，2026-07-24 收口）
 
-**问题**：用户反馈「按权限显示菜单，admin 绕过权限」——即 admin-only 菜单（`required_role='admin'`）不应通过 ACL 授权给普通用户。即便是 admin 错误地把 `task-scheduler` 加进 ZYP 的 `user_menu_acl`，前端也应当看不到。
+**最终契约（2026-07-24 统一）**：
 
-**根因**：之前 `MenuPermissionService.get_visible_menu_ids` 对普通用户仅做 `cache ∩ enabled` 交集，**没有按 `required_role` 过滤**。`core.menu_registry.get_visible_for_user` 也有同样问题。
+`required_role` 与 `user_menu_acl` 的职责边界如下，二者不是冲突而是正交：
 
-**修复**（后端权威过滤）：
+- `required_role`（registry 元数据）：菜单的**声明式意图**——标记菜单"业务语义上是 admin 范畴"，用于：
+  1. `MenuPermissionService.get_visible_menu_ids` 在普通用户路径上**过滤可见性**（即便 ACL 误授权也不可见）；
+  2. 前端 `UserSettingsDialog.navItems` 派生 tab 渲染。
+- `user_menu_acl`（数据库 ACL）：菜单的**端点访问授权**——通过 `require_admin_or_menu_acl(...)` 守卫路由端点，决定"已可见菜单下哪些端点允许调用"。
+
+**最终统一行为**：
+
+| 角色 | 可见性（菜单树） | `GET /api/admin/devops-servers` | `scan/detail/delete` |
+|---|---|---|---|
+| admin | 全量 enabled | ✅ 通过（bypass ACL） | ✅ 通过 |
+| 普通用户 + `task-scheduler.server-management` ACL | 不可见（required_role=admin 过滤） | ✅ 通过（ACL 端点授权） | ❌ 403 |
+| 普通用户无 ACL | 不可见 | ❌ 403 | ❌ 403 |
+
+**核心规则**：
+- 菜单 ACL 控制**可见性**（`required_role != "admin"` 才允许授权给普通用户）与**ACL 端点访问**（被授权后即可调用）。
+- `required_role='admin'` 菜单的普通用户可见性**始终为空**；但**该菜单下若有端点声明** `require_admin_or_menu_acl(<menu_id>)` **的非 admin-only 端点**（例如 `GET /api/admin/devops-servers`），admin 仍可显式授权给普通用户调用，前端通过 `visible_menus` 派生链路默默拦截 tab 渲染，但不影响端点访问——这是 admin 主动赋能场景的合法路径。
+- `scan_and_upsert` / `get_server_detail` / `delete_server` 仍只挂 `Depends(require_admin)`，与可见性无关。
+
+**反模式警示**：不能简单地把后端改为「让 admin 看到所有菜单后用前端 ACL 渲染」——ACL 是 fine-grained 权限，required_role 是 coarse-grained 角色权限，二者职责不同。混用会导致：
+1. 误授权 admin-only 菜单给普通用户 → 组件挂载后触发 admin-only 请求 → 403
+2. 前端需要单独维护「哪些菜单 admin 才能看见」的清单（散落多处难一致）
+
+**修复**：
 - `MenuPermissionService.get_visible_menu_ids`：普通用户路径增加 `non_admin_only = [m for m in enabled if m.required_role != "admin"]` 过滤层，再与 ACL 取交集。即便 ACL 里错误地写入了 admin-only 菜单，service 也会过滤掉。
 - `core.menu_registry.get_visible_for_user`：同样的修复。
 
@@ -4836,10 +4858,6 @@ admin 角色绕过 ACL 直接放行；普通用户未授权 → 403
 - 普通用户：仅可见 `required_role != "admin"` 且 ACL 授权且 enabled 的菜单
 - 前端 `UserSettingsDialog.navItems` 跟着 visible_menus 自然不渲染 admin-only 顶级 tab
 - 前端 `UserSettingsDialog.isVisibleTab` 仍是双层兜底（基于 props.visibleMenus）
-
-**反模式警示**：不能简单地把后端改为「让 admin 看到所有菜单后用前端 ACL 渲染」——ACL 是 fine-grained 权限，required_role 是 coarse-grained 角色权限，二者职责不同。混用会导致：
-1. 误授权 admin-only 菜单给普通用户 → 组件挂载后触发 admin-only 请求 → 403
-2. 前端需要单独维护「哪些菜单 admin 才能看见」的清单（散落多处难一致）
 
 **测试**：
 - `test_get_visible_menu_ids_normal_excludes_admin_only_even_if_granted`：ZYP（普通用户）ACL 里授权了 task-scheduler 等 admin-only 菜单 → service 返回的 visible_menus 不包含这些菜单
@@ -4927,6 +4945,21 @@ user_server_nodes (node_type='server' 的行，每个用户导入时生成一行
 ### 菜单 id
 
 `task-scheduler.server-management`（level=2, parent_id=task-scheduler, sort_order=5, required_role=admin），id 终身不变。
+
+### 端点 ACL 矩阵（2026-07-24 收口）
+
+`app/routers/devops_server_admin_router.py` 最终授权契约：
+
+| 端点 | 守卫 | admin | 普通用户 + `task-scheduler.server-management` ACL |
+|---|---|---|---|
+| `GET /api/admin/devops-servers` | `require_admin_or_menu_acl('task-scheduler.server-management')` | ✅ | ✅ |
+| `POST /api/admin/devops-servers/scan` | `require_admin` | ✅ | ❌ 403 |
+| `GET /api/admin/devops-servers/{server_id}` | `require_admin` | ✅ | ❌ 403 |
+| `DELETE /api/admin/devops-servers/{server_id}` | `require_admin` | ✅ | ❌ 403 |
+
+`app/routers/user_server_router.py` 全部 6 个端点（`GET /tree` / `POST /nodes` / `PUT /nodes/{id}` / `DELETE /nodes/{id}` / `GET /nodes/{id}/config` / `POST /import`）均使用 `Depends(require_admin_or_menu_acl('task-scheduler.server-management'))`，与 devops_server_admin_router GET 列表端点一致——被授权 ACL 的普通用户可正常使用。
+
+**为什么 GET 列表端点放开**：admin 通过「用户服务器配置管理」授权该 ACL 后，授权用户需读取 devops_servers 库（脱敏列表）来填充 ImportServerDialog 的可选项；放开 GET 列表端点是该 UX 闭环的必备前提。scan / detail / delete 保持 admin-only，避免普通用户误删或误改共享资源。
 
 ### 与「服务器扫描入库」tab（`task-scheduler.script-scan`）的差异
 

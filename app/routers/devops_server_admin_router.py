@@ -23,7 +23,13 @@ DevOps Server Admin Router（2026-07-15 新增）
       生产对等初始化点：``app/core/server.py::lifespan`` 数据库池建立后
       ``app.state.devops_server_service = DevOpsServerService(...)``。
     - service 方法依赖：``list_public_servers`` / ``scan_and_upsert`` /
-      ``server_exists`` / ``delete_server``
+      ``server_exists`` / ``delete_server`` / ``get_server_detail``
+
+权限矩阵：
+    - GET    /api/admin/devops-servers        → admin OR ``task-scheduler.server-management`` ACL
+    - POST   /api/admin/devops-servers/scan   → admin only
+    - GET    /api/admin/devops-servers/{id}    → admin only
+    - DELETE /api/admin/devops-servers/{id}    → admin only
 """
 from __future__ import annotations
 
@@ -32,7 +38,10 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
-from app.shared.utils.auth.Safety import require_admin
+from app.shared.utils.auth.Safety import (
+    require_admin,
+    require_admin_or_menu_acl,
+)
 from app.shared.utils.devops_server_service import DevOpsServerService
 
 
@@ -58,7 +67,6 @@ _DETAIL_FIELDS = (
 router = APIRouter(
     prefix="/api/admin/devops-servers",
     tags=["DevOps Server Admin"],
-    dependencies=[Depends(require_admin)],
 )
 
 
@@ -88,7 +96,13 @@ def _get_service(request: Request) -> DevOpsServerService:
     return svc
 
 
-@router.get("", response_model=List[Dict[str, Any]])
+@router.get(
+    "",
+    response_model=List[Dict[str, Any]],
+    dependencies=[
+        Depends(require_admin_or_menu_acl("task-scheduler.server-management"))
+    ],
+)
 async def list_devops_servers(request: Request) -> List[Dict[str, Any]]:
     """列出已配置的服务器，严格只返回白名单字段。
 
@@ -110,7 +124,11 @@ async def list_devops_servers(request: Request) -> List[Dict[str, Any]]:
     return safe
 
 
-@router.post("/scan", response_model=Dict[str, int])
+@router.post(
+    "/scan",
+    response_model=Dict[str, int],
+    dependencies=[Depends(require_admin)],
+)
 async def scan_devops_servers(request: Request) -> Dict[str, int]:
     """触发一次 YAML → DB → cache 的扫描与 upsert。
 
@@ -145,6 +163,7 @@ async def scan_devops_servers(request: Request) -> Dict[str, int]:
 @router.get(
     "/{server_id}",
     response_model=Dict[str, Any],
+    dependencies=[Depends(require_admin)],
 )
 async def get_devops_server(request: Request, server_id: int) -> Dict[str, Any]:
     """按 ``server_id`` 取服务器详情（白名单 + 巡检脚本）。
@@ -184,6 +203,7 @@ async def get_devops_server(request: Request, server_id: int) -> Dict[str, Any]:
     "/{server_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
+    dependencies=[Depends(require_admin)],
 )
 async def delete_devops_server(request: Request, server_id: int) -> Response:
     """按 ``server_id`` 删除一行 devops_servers。
