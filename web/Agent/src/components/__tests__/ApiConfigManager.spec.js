@@ -386,6 +386,24 @@ describe('ApiConfigManager 组件', () => {
     // 发送历史刷新
     expect(wrapper.find('[data-testid="runs-list"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="run-5"]').exists()).toBe(true)
+    // 时间格式化为 年-月-日 时:分:秒
+    const runRow = wrapper.find('[data-testid="run-5"]')
+    expect(runRow.text()).toContain('2026-07-20')
+    expect(runRow.text()).toContain('10:00:00')
+    expect(runRow.text()).not.toContain('T')
+  })
+
+  it('test_run_time_format_iso_string 把 ISO 时间渲染为 年-月-日 时:分:秒', async () => {
+    const wrapper = await mountManager()
+    await wrapper.find('[data-testid="tree-node-2"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="api-send-btn"]').trigger('click')
+    await flushPromises()
+    const cell = wrapper.find('[data-testid="run-5"] td')
+    const text = cell.text()
+    expect(text).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+    expect(text).not.toContain('T')
+    expect(text).not.toContain('Z')
   })
 
   it('test_send_network_error_shows_message 发送网络错误展示 error_message', async () => {

@@ -20,6 +20,20 @@ import {
   fetchApiConfigRuns,
 } from '../utils/api.js'
 
+// 将 API 执行记录时间（ISO 字符串）格式化为 年-月-日 时:分:秒（YYYY-MM-DD HH:mm:ss）。
+// 入参为后端返回的 ISO 时间字符串（如 2026-07-23T01:37:42.783088Z）；
+// 无法解析时返回原字符串，避免显示空值或抛错；空值返回空串。
+// 使用本地时区以匹配用户（Asia/Shanghai）的直觉展示。
+// @param {string} value ISO 时间字符串
+// @returns {string} 格式化时间或原值
+function formatRunTime(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
 // ---------- 子 Tab 常量 ----------
 const SUB_TAB_PARAMS = 'params'
 const SUB_TAB_BODY = 'body'
@@ -1068,7 +1082,7 @@ onBeforeUnmount(() => {
                 </thead>
                 <tbody>
                   <tr v-for="run in runs" :key="run.id" :data-testid="`run-${run.id}`">
-                    <td>{{ run.created_at }}</td>
+                    <td>{{ formatRunTime(run.created_at) }}</td>
                     <td>{{ run.http_status ?? '-' }}</td>
                     <td>{{ run.duration_ms != null ? `${run.duration_ms} ms` : '-' }}</td>
                     <td>
