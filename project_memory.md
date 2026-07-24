@@ -283,6 +283,7 @@ app/
 - 新增 `ApiConfigService.get_node_internal(node_id)` —— 内存缓存轻量查询，不做归属校验，供 `TaskSchedulerService._assert_api_list_access` 系统内部使用
 - `app/scripts/api_check.py::run_api_checks` —— 运行时改用 `OwnershipScope.system_scope()` 调用 `get_tree` / `send_request`，绕过隔离（配置期校验已确保 `api_list` 归属）
 - `app/routers/api_config_router.py`：所有 8 个端点构造 `OwnershipScope.from_request(request)` 透传 service
+- `init_all_tables.sql` 21.1 归属迁移段：位于主事务 COMMIT 之后的独立 `BEGIN/COMMIT`，纯 SQL 顺序语句（`ADD COLUMN IF NOT EXISTS ... REFERENCES users(id)` → `UPDATE` 回填首个 admin（兜底首个用户，仅处理存量 NULL）→ `ALTER COLUMN SET NOT NULL` → `CREATE INDEX idx_api_config_nodes_created_by_user_id`）；全脚本约定不使用 dollar-quoting DO 块 / SAVEPOINT / psql 元命令（如 `\i`），兼容 psql + Navicat / pgAdmin / DBeaver
 
 ### 落地三：智能体定时任务（agent_task_schedules，2026-07-24）
 
@@ -2251,7 +2252,7 @@ system_prompt = (
 
 - **字段定义**：每个 devops_servers 节点可携带「固定巡检脚本」（bash / powershell，YAML `|` 字面块多行字符串）与「解析器类型」（`json` / `kv` / `csv` / `raw`，默认 `json`）。
 - **YAML 形态**：`inspection_script: |` 块字符串保留换行；末尾多余换行会被 `_normalize_entry` 自动 `rstrip("\n")`。空字符串 / 纯空白 → `NULL`。`inspection_parser` 大小写不敏感；非法值 → 该条目 `failed`，不阻断其他记录。
-- **DB 落库**：`inspection_script TEXT NULL`（非加密、非敏感）+ `inspection_parser VARCHAR(16) DEFAULT 'json'` + `CHECK (inspection_parser IN ('json', 'kv', 'csv', 'raw'))`（DO $$ ... $$ 包裹，幂等）。
+- **DB 落库**：`inspection_script TEXT NULL`（非加密、非敏感）+ `inspection_parser VARCHAR(16) DEFAULT 'json'` + `CHECK (inspection_parser IN ('json', 'kv', 'csv', 'raw'))`（`DROP CONSTRAINT IF EXISTS` + `ADD CONSTRAINT` 实现幂等；不使用 DO 块，兼容 Navicat 等 GUI）。
 - **服务层契约**：`_normalize_entry` / `_upsert_one_returning` / `preload_all` / `get_connection_config` 全链路同步；缓存 `rec["inspection_script"]` 与 `rec["inspection_parser"]` 透传。`preload_all` 中遇到非法 `inspection_parser`（NULL / 未知值）一律回退为 `'json'`，避免下游崩溃。
 - **公开白名单严格 4 字段**：`inspection_script` / `inspection_parser` 仅供 SSHTools 内部消费（`get_connection_config` 返回值），**永不进入** `GET /api/admin/devops-servers` 响应；admin router 的 `_PUBLIC_FIELDS` 防御性二次过滤保证即便 service 失误返回了脚本字段，响应也会被过滤。
 - **覆盖范围**：`data/devops/servers.yaml` 的两个示例节点（Linux / Windows）均已携带 `inspection_script: |` + `inspection_parser: json` 示例，可作为运维模板参考。
