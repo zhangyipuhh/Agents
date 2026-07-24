@@ -173,6 +173,39 @@ async def lifespan(app: FastAPI):
         )
         app.state.menu_permission_service = MenuPermissionService(db=None)
 
+    # 2026-07-24：初始化 AgentPermissionService（智能体访问权限服务）。
+    # 完全 mirror MenuPermissionService 模式；启动时从 users.allowed_agents (JSONB)
+    # 幂等迁移到 user_agent_acl 表（重复调用 ON CONFLICT DO NOTHING）。
+    try:
+        from app.shared.utils.auth.agent_permission_service import (
+            AgentPermissionService,
+            init_user_agent_acl_schema,
+            migrate_from_users_allowed_agents,
+        )
+
+        if DatabasePool.is_enabled() and DatabasePool._pool is not None:
+            await init_user_agent_acl_schema()  # 建表（幂等）
+            # 数据迁移：user_agent_acl 为空时，从 users.allowed_agents 复制
+            migrated = await migrate_from_users_allowed_agents(DatabasePool._pool)
+            app.state.agent_permission_service = AgentPermissionService(db=DatabasePool._pool)
+            await app.state.agent_permission_service.preload_all()
+            logging.info(
+                "[lifespan] AgentPermissionService initialized (migrated %s rows)",
+                migrated,
+            )
+        else:
+            app.state.agent_permission_service = AgentPermissionService(db=None)
+            logging.warning(
+                "[lifespan] Database pool not available, AgentPermissionService "
+                "initialized with db=None (fail-secure)"
+            )
+    except Exception as agent_exc:
+        logging.warning(
+            "[lifespan] Failed to initialize AgentPermissionService: %s",
+            type(agent_exc).__name__,
+        )
+        app.state.agent_permission_service = AgentPermissionService(db=None)
+
     if db_pool:
         try:
             from app.shared.utils.agent.agent_config_service import AgentConfigService

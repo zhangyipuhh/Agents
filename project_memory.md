@@ -4846,3 +4846,51 @@ admin 角色绕过 ACL 直接放行；普通用户未授权 → 403
 - `test_get_visible_menu_ids_admin_still_returns_admin_only`：admin 仍能看到全部
 - 更新 `test_get_visible_menu_ids_normal_returns_granted_intersect_enabled`：反映新语义（admin-only 不出现在结果里）
 
+### 智能体访问权限（2026-07-24 新增，B 方案）
+
+`permission-management` 一级菜单下新增二级 Tab `permission-management.agent-access`，
+数据源从 `users.allowed_agents` JSONB 字段切换到独立的 `user_agent_acl` 表，
+完全 mirror `user_menu_acl` 模式。
+
+| 表 / 服务 | 字段 / 方法 | 说明 |
+|---|---|---|
+| `user_agent_acl` | user_id, agent_name, created_at, created_by_user_id | UNIQUE (user_id, agent_name)，索引 user_id / agent_name |
+| `AgentPermissionService` | preload_all / get_user_agent_grants / get_user_agent_grants_sync / get_visible_agents / grant / revoke / replace | in-memory cache + DB 双写（fail-secure：db=None 时 admin 旁路，普通用户返 []） |
+| `app/routers/agent_permission_router.py` | GET /api/admin/permissions/agents/catalog, GET /api/admin/permissions/agents/users/{id}/grants, PUT /api/admin/permissions/agents/users/{id}/grants | 全部 require_admin 守护 |
+| `app/migrations/init_all_tables.sql` § 23 | user_agent_acl DDL | 一次性建表 + 启动时迁移 |
+
+启动迁移（lifespan 阶段）：
+```sql
+INSERT INTO user_agent_acl (user_id, agent_name)
+SELECT u.id, a.agent_name
+FROM users u, jsonb_array_elements_text(COALESCE(u.allowed_agents, '[]'::jsonb)) AS a(agent_name)
+ON CONFLICT (user_id, agent_name) DO NOTHING;
+```
+幂等（ON CONFLICT DO NOTHING），被显式删除的字段不会回流。
+
+前端聊天组件（按角色分流）：
+- `app/shared/routers/auth_router.py::_compute_allowed_agents`：
+  - admin：返回 `[]`（前端 InputBox 与 isAdmin 旁路配合，全量可见）
+  - 普通用户：从 `agent_permission_service.get_user_agent_grants_sync(user_id)` 读 ACL
+  - service 不可用或 ACL 为空：fallback 到 `users.allowed_agents` 字段（迁移兜底）
+- `App.vue` 透传 `:is-admin="currentUser.role === 'admin'"` 给 InputBox
+- `InputBox.vue` 加 `isAdmin` prop + `filteredAgents` / `suggestionAgents` 按角色分流：
+  - admin：全量智能体（绕过 ACL）
+  - 普通用户：按 `allowedAgents` 过滤（来自后端 user_agent_acl）
+
+前端菜单管理 UI：
+- `UserSettingsDialog.vue` `permission-management` 一级 Tab 加 sub-tabs 切换：
+  - 菜单管理（保留 MenuPermissionManager）
+  - 智能体访问（新增 AgentAccessManager）
+- `AgentAccessManager.vue`：左选人 → 右勾选智能体，debounce 300ms 自动保存
+- 「用户管理 → 编辑用户」表单「可选智能体」复选块整体移除；提交 payload 不再带 `allowed_agents`
+
+`users.allowed_agents` 字段保留（被动字段，迁移兼容），前端不再写入；服务优先读 `user_agent_acl`。
+
+测试覆盖：
+- 后端 `app/tests/routers/test_agent_permission_router.py`：11 个 P0/P1 测试覆盖 admin-only 守卫、catalog / grants 读写、PUT 失败 500
+- 后端 `app/tests/shared/utils/auth/test_agent_permission_service.py`：22 个 P0/P1 测试覆盖 db=None 降级 / preload / grant / revoke / replace / 迁移函数
+- 前端 `web/Agent/.../AgentAccessManager.spec.js`：8 个测试覆盖 catalog / users / 选人 / 勾选 / debounce / 全选 / 清空 / 搜索
+- 前端 `web/Agent/.../UserSettingsDialog.user-form-no-agents.spec.js`：3 个防回归测试，验证表单中无 agent-checkbox-list 元素 + permission-management 两子 Tab 切换
+- 前端 `web/Agent/.../InputBox.command.spec.js`：新增 2 个 isAdmin 兼容测试，验证 admin 走全量 / 普通用户 fail-secure 返 []
+

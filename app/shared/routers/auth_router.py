@@ -133,6 +133,47 @@ async def _compute_visible_menus(req: Request, user_id: Optional[int], role: str
     return await svc.get_visible_menu_ids(user_id=uid, is_admin=False)
 
 
+async def _compute_allowed_agents(
+    req: Request,
+    user_id: Optional[int],
+    role: str,
+    fallback: Optional[List[str]] = None,
+) -> List[str]:
+    """计算该用户的 allowed_agents 列表。
+
+    2026-07-24 改造：数据源从 users.allowed_agents (JSONB) 切换到 user_agent_acl 表。
+    - admin：返 []（前端 InputBox 与 isAdmin 旁路配合，全量可见）
+    - 普通用户：通过 agent_permission_service 读 ACL
+    - service 不可用：返 fallback（兼容极端情况：DB 还没迁完时的最后一道防线）
+    - db=None / preload_all 失败：fail-secure 返 []
+
+    Args:
+        req: FastAPI Request 对象
+        user_id: 用户 ID
+        role: 用户角色
+        fallback: service 不可用时的兜底（一般是 users.allowed_agents 字段）
+
+    Returns:
+        List[str]: 已授权 agent_name 列表
+    """
+    if role == "admin":
+        # admin 不受 ACL 限制；前端 InputBox 通过 isAdmin 旁路显示全量，
+        # 直接返 [] 让前端代码走 isAdmin 分支。
+        return []
+    if user_id is None:
+        return []
+    svc = getattr(req.app.state, "agent_permission_service", None)
+    if svc is None:
+        # service 不可用（lifespan 未初始化或初始化失败）：fallback 到 users.allowed_agents
+        return list(fallback) if fallback else []
+    granted = svc.get_user_agent_grants_sync(user_id)
+    if not granted and fallback:
+        # 极端情况：DB 迁移未完成 / preload 异常，回退到旧字段
+        # 防止新用户第一次登录时 authorized 列表突然变空
+        return list(fallback)
+    return sorted(granted)
+
+
 class CaptchaResponse(BaseModel):
     """
     验证码响应模型
@@ -679,11 +720,20 @@ async def validate_token(request: Request):
 
     visible_menus = await _compute_visible_menus(request, user_id, role)
 
+    # 2026-07-24：allowed_agents 改读 user_agent_acl（通过 agent_permission_service），
+    # fallback 到 users.allowed_agents 字段（迁移兼容）。
+    allowed_agents = await _compute_allowed_agents(
+        request,
+        user_id,
+        role,
+        fallback=user.get('allowed_agents', []) if user else [],
+    )
+
     return {
         "username": payload["username"],
         "role": role,
         "user_id": user.get('id') if user else None,
-        "allowed_agents": user.get('allowed_agents', []) if user else [],
+        "allowed_agents": allowed_agents,
         "visible_menus": visible_menus,
     }
 

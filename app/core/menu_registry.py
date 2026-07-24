@@ -86,6 +86,13 @@ MENU_CATALOG: List[MenuItem] = [
              label="测试发送", icon_key="send", sort_order=3, required_role="admin"),
     MenuItem(id="permission-management.menu", level=2, parent_id="permission-management",
              label="菜单管理", icon_key="menu", sort_order=1, required_role="admin"),
+    # 2026-07-24 新增：智能体访问权限子 Tab
+    # - 数据源：user_agent_acl 表（mirror user_menu_acl）
+    # - admin 在「权限管理」下可按"用户 × 智能体"粒度授权
+    # - id 终身不变，老 ACL 自动保留
+    MenuItem(id="permission-management.agent-access", level=2,
+             parent_id="permission-management",
+             label="智能体访问", icon_key="robot", sort_order=2, required_role="admin"),
 ]
 
 

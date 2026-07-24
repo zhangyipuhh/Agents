@@ -43,6 +43,13 @@ const props = defineProps({
     type: Array,
     default: () => []
   },
+  // 2026-07-24 新增：当前用户是否为 admin 角色。
+  // 用途：admin 走全量智能体（绕过 allowedAgents 过滤，配合 _compute_allowed_agents 服务端旁路）。
+  // 普通用户按 allowedAgents 过滤，受 user_agent_acl ACL 控制。
+  isAdmin: {
+    type: Boolean,
+    default: false
+  },
   // 2026-07-06 新增：停止按钮是否处于「中断待生效」状态。
   // 当用户在工具/子智能体执行期间点击停止按钮后置 true，
   // 期间按钮保持 stop-mode 样式 + 右上角旋转 badge + disabled 拦截重复点击，
@@ -178,12 +185,17 @@ onMounted(() => {
 
 /**
  * 过滤后的智能体列表（当输入 "/" 后，可继续输入字符进行过滤）
- * 额外按当前用户 allowedAgents 做权限过滤，空列表时返回 []
+ * 2026-07-24 改造：按角色分流
+ * - admin：全量智能体（绕过 allowedAgents 过滤）
+ * - 普通用户：按 allowedAgents（来自后端 user_agent_acl）过滤
  */
 const filteredAgents = computed(() => {
-  const allowedList = props.allowedAgents || []
-  if (!allowedList.length) return []
-  const allowedSet = new Set(allowedList)
+  // admin 走全量；普通用户按 allowedAgents 过滤
+  const sourceNames = props.isAdmin
+    ? agentList.value.map((a) => a.name)
+    : (props.allowedAgents || [])
+  if (!sourceNames.length) return []
+  const allowedSet = new Set(sourceNames)
   const allowedOnly = agentList.value.filter((a) => allowedSet.has(a.name))
 
   const trimmed = inputValue.value.trim()
@@ -201,10 +213,13 @@ const filteredAgents = computed(() => {
 // 与 filteredAgents 不同，它不依赖 trim 后的输入字符，
 // 仅受 allowedAgents 与 agentList 加载状态约束。
 // 父组件 ProjectDropdown 同级，在 !projectLocked 时挂载 SubAgentSuggestionStrip 消费。
+// 2026-07-24 改造：admin 走全量。
 const suggestionAgents = computed(() => {
-  const allowedList = props.allowedAgents || []
-  if (!allowedList.length) return []
-  const allowedSet = new Set(allowedList)
+  const sourceNames = props.isAdmin
+    ? agentList.value.map((a) => a.name)
+    : (props.allowedAgents || [])
+  if (!sourceNames.length) return []
+  const allowedSet = new Set(sourceNames)
   return agentList.value.filter((a) => allowedSet.has(a.name))
 })
 

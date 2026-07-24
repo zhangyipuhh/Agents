@@ -312,4 +312,73 @@ describe('InputBox 命令检测', () => {
     expect(wrapper.find('.agent-dropdown-item').exists()).toBe(false)
     expect(wrapper.text()).toContain('暂无可用智能体')
   })
+
+  // 2026-07-24 新增：isAdmin 旁路测试
+  // admin + 空 allowedAgents 时仍能选到所有智能体（绕过 ACL）
+  it('test_admin_with_empty_allowed_agents_sees_all_agents admin + 空 allowedAgents 仍可见全部智能体', async () => {
+    global.fetch = vi.fn((url) => {
+      if (url === '/api/auth/refresh') {
+        return Promise.resolve({ ok: true, json: async () => ({ access_token: 'new-fake-token' }) })
+      }
+      if (url === '/api/agent/list') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => [
+            { name: 'map_agent', display_name: '地图' },
+            { name: 'audit_agent', display_name: '审计' }
+          ]
+        })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    })
+
+    const wrapper = mount(InputBox, {
+      props: {
+        sessionId: 'sid_1',
+        isStreaming: false,
+        allowedAgents: [],
+        isAdmin: true
+      }
+    })
+    const textarea = wrapper.find('textarea')
+    await textarea.setValue('/')
+    await flushPromises()
+
+    // admin 绕过 ACL：所有智能体都应可见
+    expect(wrapper.text()).toContain('地图')
+    expect(wrapper.text()).toContain('审计')
+  })
+
+  // 普通用户 + 空 allowedAgents 时仍显示「暂无可用智能体」（这是 fail-secure）
+  it('test_normal_user_with_empty_allowed_agents_sees_none 普通用户 + 空 allowedAgents 仍无可见智能体', async () => {
+    global.fetch = vi.fn((url) => {
+      if (url === '/api/auth/refresh') {
+        return Promise.resolve({ ok: true, json: async () => ({ access_token: 'new-fake-token' }) })
+      }
+      if (url === '/api/agent/list') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => [
+            { name: 'map_agent', display_name: '地图' },
+            { name: 'audit_agent', display_name: '审计' }
+          ]
+        })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    })
+
+    const wrapper = mount(InputBox, {
+      props: {
+        sessionId: 'sid_1',
+        isStreaming: false,
+        allowedAgents: [],
+        isAdmin: false
+      }
+    })
+    const textarea = wrapper.find('textarea')
+    await textarea.setValue('/')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('暂无可用智能体')
+  })
 })

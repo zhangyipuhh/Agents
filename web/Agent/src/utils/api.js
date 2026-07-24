@@ -2955,3 +2955,56 @@ export async function saveUserMenuGrants(userId, menuIds) {
   }
   return response.json()
 }
+
+/**
+ * 获取智能体访问权限目录（所有可选智能体，2026-07-24 新增）
+ * @returns {Promise<{items: Array<{name: string, display_name: string}>}>} 智能体目录
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function fetchAgentPermissionCatalog() {
+  const response = await fetchWithAuth('/api/admin/permissions/agents/catalog', {
+    method: 'GET'
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取智能体目录失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 查询某用户已授权智能体（2026-07-24 新增）
+ * @param {number} userId - 用户 ID
+ * @returns {Promise<{agent_names: string[]}>} 该用户已授权 agent_name 列表
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function fetchUserAgentGrants(userId) {
+  const response = await fetchWithAuth(`/api/admin/permissions/agents/users/${encodeURIComponent(userId)}/grants`, {
+    method: 'GET'
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取用户智能体授权失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 全量覆盖保存某用户的智能体授权（2026-07-24 新增）
+ * @param {number} userId - 用户 ID
+ * @param {string[]} agentNames - 智能体 name 列表
+ * @returns {Promise<{agent_names: string[]}>} 保存后的 agent_names
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function replaceUserAgentGrants(userId, agentNames) {
+  const response = await fetchWithAuth(`/api/admin/permissions/agents/users/${encodeURIComponent(userId)}/grants`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agent_names: agentNames })
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `保存智能体授权失败: ${response.status}`)
+  }
+  return response.json()
+}

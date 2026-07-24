@@ -2947,6 +2947,23 @@ CREATE TABLE IF NOT EXISTS user_menu_acl (
 CREATE INDEX IF NOT EXISTS idx_user_menu_acl_user_id ON user_menu_acl(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_menu_acl_menu_id ON user_menu_acl(menu_id);
 
+-- ========== 23. user_agent_acl（用户-智能体授权，2026-07-24 新增）==========
+-- 按用户粒度控制可访问的智能体（地图智能体 / 运维项目智能体 / 一点通规则库 等）。
+--   * user_id + agent_name 联合唯一，防止重复授权
+--   * 启动时由 AgentPermissionService.preload_all() 全量加载到内存
+--   * 迁移脚本：app/core/server.py lifespan 阶段从 users.allowed_agents (JSONB) 拷贝
+--     到本表（幂等，ON CONFLICT DO NOTHING；被显式删除的字段不会回流）
+CREATE TABLE IF NOT EXISTS user_agent_acl (
+    id                  SERIAL PRIMARY KEY,
+    user_id             INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    agent_name          VARCHAR(128) NOT NULL,
+    created_at          TIMESTAMP DEFAULT NOW(),
+    created_by_user_id  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    UNIQUE (user_id, agent_name)
+);
+CREATE INDEX IF NOT EXISTS idx_user_agent_acl_user_id ON user_agent_acl(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_agent_acl_agent_name ON user_agent_acl(agent_name);
+
 COMMIT;
 
 -- =============================================
@@ -2967,7 +2984,8 @@ WHERE table_schema = 'public'
     'devops_servers',
     'email_server_configs', 'email_policies', 'email_policy_recipients',
     'api_config_nodes', 'api_configs', 'api_check_runs',
-    'user_menu_acl'
+    'user_menu_acl',
+    'user_agent_acl'
   )
 ORDER BY table_name;
 

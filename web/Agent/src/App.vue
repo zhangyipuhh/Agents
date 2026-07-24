@@ -1398,6 +1398,7 @@ async function handleSessionSwitch(targetSessionId) {
           :current-project="currentProject"
           :project-locked="!canEditProject"
           :allowed-agents="allowedAgents"
+          :is-admin="currentUser.role === 'admin'"
           :ensure-session="ensureSessionForFirstOp"
           @send="handleSendMessage"
           @tool-action="handleToolAction"

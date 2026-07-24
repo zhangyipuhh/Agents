@@ -15,7 +15,6 @@ import {
   fetchUserProfile,
   updateUserProfile,
   fetchUserList,
-  fetchAdminAgentList,
   deleteUser,
   kickUser,
   createUser,
@@ -48,6 +47,8 @@ import SubAgentCard from './SubAgentCard.vue'
 import SubAgentDrawer from './SubAgentDrawer.vue'
 // 2026-07-23 新增：菜单权限管理（admin 在「权限管理」入口下使用）
 import MenuPermissionManager from './MenuPermissionManager.vue'
+// 2026-07-24 新增：智能体访问权限管理（「权限管理」下的第二个子 Tab）
+import AgentAccessManager from './AgentAccessManager.vue'
 
 /**
  * 组件属性定义
@@ -153,6 +154,14 @@ const activeTab = ref('profile')
  * @type {import('vue').Ref<'users' | 'online-monitor' | 'session-query'>}
  */
 const activeUserMgmtTab = ref('users')
+
+/**
+ * 2026-07-24 新增：权限管理内容区子 tab 标识
+ * - 'menu'：菜单管理（MenuPermissionManager）
+ * - 'agent-access'：智能体访问（AgentAccessManager）
+ * @type {import('vue').Ref<'menu' | 'agent-access'>}
+ */
+const activePermissionTab = ref('menu')
 
 /** @type {import('vue').Ref<boolean>} 是否管理员角色（保留兼容，navItems 已不再依赖） */
 const isAdmin = computed(() => props.role === 'admin')
@@ -310,14 +319,10 @@ const formPhone = ref('')
 const formEmail = ref('')
 const formDepartment = ref('')
 const formPosition = ref('')
-const formAllowedAgents = ref([])
+// 2026-07-24 移除：formAllowedAgents 可选智能体已迁移到「权限管理 → 智能体访问」子 Tab
 const formError = ref('')
 const formSuccess = ref('')
 const isSubmitting = ref(false)
-
-// 2026-07-01 新增：所有可用智能体列表（用于用户表单中的权限配置）
-const allAgents = ref([])
-const isLoadingAgents = ref(false)
 
 /** 过滤后的人员列表（前端实时过滤） */
 const filteredPersonnelList = computed(() => {
@@ -352,6 +357,20 @@ function switchTab(tabId) {
   // 无需在此处显式触发；组件通过 v-show 始终挂载，切换 Tab 时仅 display 切换。
   // MCP 管理 Tab（mcp-management）由 McpServerManager 组件自管理数据加载（onMounted 触发 listMcpServers），
   // 无需在此处显式触发；组件通过 v-show 始终挂载，切换 Tab 时仅 display 切换。
+  // 权限管理 Tab（permission-management）：默认子 tab = 'menu'，
+  // 2026-07-24 起支持两个子 Tab（菜单管理 / 智能体访问）；子组件自管理数据加载。
+  if (tabId === 'permission-management') {
+    activePermissionTab.value = 'menu'
+  }
+}
+
+/**
+ * 2026-07-24 新增：切换权限管理内容区的子 tab
+ * @param {'menu' | 'agent-access'} tabId - 子 tab ID
+ * @returns {void}
+ */
+function switchPermissionTab(tabId) {
+  activePermissionTab.value = tabId
 }
 
 /**
@@ -433,11 +452,9 @@ function openAddUser() {
   formEmail.value = ''
   formDepartment.value = ''
   formPosition.value = ''
-  formAllowedAgents.value = []
   formError.value = ''
   formSuccess.value = ''
   showUserForm.value = true
-  loadAllAgents()
 }
 
 /**
@@ -454,11 +471,9 @@ function openEditUser(user) {
   formEmail.value = user.email || ''
   formDepartment.value = user.department || ''
   formPosition.value = user.position || ''
-  formAllowedAgents.value = user.allowed_agents || []
   formError.value = ''
   formSuccess.value = ''
   showUserForm.value = true
-  loadAllAgents()
 }
 
 /**
@@ -475,7 +490,6 @@ function closeUserForm() {
   formEmail.value = ''
   formDepartment.value = ''
   formPosition.value = ''
-  formAllowedAgents.value = []
   formError.value = ''
   formSuccess.value = ''
 }
@@ -533,8 +547,8 @@ async function handleSubmitUser() {
         email: formEmail.value.trim(),
         department: formDepartment.value.trim(),
         position: formPosition.value.trim(),
-        role: formRole.value,
-        allowed_agents: formAllowedAgents.value
+        role: formRole.value
+        // 2026-07-24 移除：allowed_agents 由「权限管理 → 智能体访问」Tab 维护
       }
       await updateUser(editingUser.value.id, payload)
       formSuccess.value = '用户更新成功'
@@ -552,8 +566,8 @@ async function handleSubmitUser() {
         phone: formPhone.value.trim(),
         email: formEmail.value.trim(),
         department: formDepartment.value.trim(),
-        position: formPosition.value.trim(),
-        allowed_agents: formAllowedAgents.value
+        position: formPosition.value.trim()
+        // 2026-07-24 移除：allowed_agents 由「权限管理 → 智能体访问」Tab 维护
       }
       await createUser(payload)
       formSuccess.value = '用户创建成功'
@@ -761,22 +775,8 @@ async function handleSave() {
 
 /* ---- Admin 用户管理逻辑 ---- */
 
-/**
- * 加载所有可用智能体列表（用于用户权限配置）
- */
-async function loadAllAgents() {
-  if (allAgents.value.length > 0 || isLoadingAgents.value) return
-  isLoadingAgents.value = true
-  try {
-    const agents = await fetchAdminAgentList()
-    allAgents.value = agents || []
-  } catch (err) {
-    console.error('加载智能体列表失败:', err)
-    allAgents.value = []
-  } finally {
-    isLoadingAgents.value = false
-  }
-}
+// 2026-07-24 移除：loadAllAgents 已迁移到 AgentAccessManager 组件
+// （「权限管理 → 智能体访问」子 Tab）
 
 async function loadUserList() {
   loading.value = true
@@ -1607,10 +1607,30 @@ watch(() => props.visible, (newVal) => {
                 <EmailSettingsManager :visible-menus="visibleMenus" :is-admin="isAdmin" />
               </div>
 
-              <!-- 权限管理（admin，2026-07-23 新增） -->
+              <!-- 权限管理（admin，2026-07-23 新增，2026-07-24 改造为子 Tab 切换） -->
               <!-- 2026-07-23 修复：用 v-if 替代 v-show，避免普通用户打开 dialog 时无差别挂载 MenuPermissionManager 触发 /api/admin/permissions/menu-catalog 与 /api/users 请求导致 403 -->
+              <!-- 2026-07-24 扩展：增加「智能体访问」子 Tab，由 AgentAccessManager 渲染并触发 /api/admin/permissions/agents/* 请求 -->
               <div v-if="isVisibleTab('permission-management') && activeTab === 'permission-management'" class="tab-fill-wrapper">
-                <MenuPermissionManager :is-admin="isAdmin" />
+                <div class="sub-tabs">
+                  <button
+                    class="sub-tab"
+                    :class="{ active: activePermissionTab === 'menu' }"
+                    data-testid="permission-tab-menu"
+                    @click="switchPermissionTab('menu')"
+                  >菜单管理</button>
+                  <button
+                    class="sub-tab"
+                    :class="{ active: activePermissionTab === 'agent-access' }"
+                    data-testid="permission-tab-agent-access"
+                    @click="switchPermissionTab('agent-access')"
+                  >智能体访问</button>
+                </div>
+                <div v-show="activePermissionTab === 'menu'" class="tab-fill-wrapper">
+                  <MenuPermissionManager :is-admin="isAdmin" />
+                </div>
+                <div v-show="activePermissionTab === 'agent-access'" class="tab-fill-wrapper">
+                  <AgentAccessManager :is-admin="isAdmin" />
+                </div>
               </div>
             </div>
           </div>
@@ -1719,41 +1739,7 @@ watch(() => props.visible, (newVal) => {
                     </div>
                   </div>
 
-                  <!-- 2026-07-01 新增：可选智能体权限配置 -->
-                  <div class="form-group">
-                    <label class="form-label">可选智能体</label>
-                    <div v-if="isLoadingAgents" class="agent-loading">加载中...</div>
-                    <div v-else-if="allAgents.length === 0" class="agent-empty">暂无可配置智能体</div>
-                    <div v-else class="agent-checkbox-list">
-                      <div class="agent-checkbox-actions">
-                        <button
-                          type="button"
-                          class="table-btn btn-edit"
-                          :disabled="isSubmitting"
-                          @click="formAllowedAgents = allAgents.map(a => a.name)"
-                        >全选</button>
-                        <button
-                          type="button"
-                          class="table-btn btn-back"
-                          :disabled="isSubmitting"
-                          @click="formAllowedAgents = []"
-                        >清空</button>
-                      </div>
-                      <label
-                        v-for="agent in allAgents"
-                        :key="agent.name"
-                        class="agent-checkbox-item"
-                      >
-                        <input
-                          v-model="formAllowedAgents"
-                          type="checkbox"
-                          :value="agent.name"
-                          :disabled="isSubmitting"
-                        />
-                        <span class="agent-checkbox-name">{{ agent.display_name || agent.name }}</span>
-                      </label>
-                    </div>
-                  </div>
+                  <!-- 2026-07-24 移除：可选智能体配置已迁移到「权限管理 → 智能体访问」子 Tab -->
 
                   <div v-if="formError" class="error-message">{{ formError }}</div>
                   <div v-if="formSuccess" class="success-message">{{ formSuccess }}</div>
@@ -2582,55 +2568,9 @@ watch(() => props.visible, (newVal) => {
   opacity: var(--opacity-disabled);
 }
 
-/* 2026-07-01 新增：用户表单中智能体权限配置复选框列表 */
-.agent-checkbox-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
-  max-height: 200px;
-  overflow-y: auto;
-  padding: var(--space-base);
-  background-color: var(--color-bg-secondary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-}
-
-.agent-checkbox-actions {
-  display: flex;
-  gap: var(--space-sm);
-  margin-bottom: var(--space-sm);
-}
-
-.agent-checkbox-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  padding: 4px 0;
-  cursor: pointer;
-  font-size: var(--font-size-sm);
-  color: var(--color-text-primary);
-}
-
-.agent-checkbox-item input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
-.agent-checkbox-name {
-  line-height: 1.4;
-}
-
-.agent-loading,
-.agent-empty {
-  padding: var(--space-base);
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
-  background-color: var(--color-bg-secondary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-}
+/* 2026-07-24 迁移：智能体权限配置相关的复选框样式（agent-checkbox-list / agent-checkbox-actions /
+ * agent-checkbox-item / agent-checkbox-name / agent-loading / agent-empty）已迁移到
+ * AgentAccessManager.vue（「权限管理 → 智能体访问」子 Tab）。UserSettingsDialog 不再需要。 */
 
 /* 历史会话详情弹窗 */
 .history-dialog-card {
