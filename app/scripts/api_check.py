@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional
 
 from app.scripts.base import ScriptContext, ScriptExecutionError
 from app.shared.utils.api_config_service import ApiConfigNotFoundError
+from app.shared.utils.auth.ownership_scope import OwnershipScope
 
 
 @dataclass(frozen=True)
@@ -316,7 +317,7 @@ async def run_api_checks(
             "（数据库未就绪或调度器未注入该服务）"
         )
 
-    nodes = await service.get_tree()
+    nodes = await service.get_tree(OwnershipScope.system_scope())
     lookup = _build_node_lookup(nodes)
 
     items: List[ApiCheckItem] = []
@@ -333,7 +334,7 @@ async def run_api_checks(
             continue
 
         try:
-            result = await service.send_request(node_id)
+            result = await service.send_request(node_id, OwnershipScope.system_scope())
         except ApiConfigNotFoundError as exc:
             items.append(
                 ApiCheckItem(

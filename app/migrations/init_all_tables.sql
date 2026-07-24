@@ -2641,6 +2641,8 @@ CREATE TABLE IF NOT EXISTS agent_task_schedules (
 CREATE INDEX IF NOT EXISTS idx_agent_task_schedules_agent_name  ON agent_task_schedules(agent_name);
 CREATE INDEX IF NOT EXISTS idx_agent_task_schedules_enabled     ON agent_task_schedules(enabled);
 CREATE INDEX IF NOT EXISTS idx_agent_task_schedules_next_run_at ON agent_task_schedules(next_run_at);
+CREATE INDEX IF NOT EXISTS idx_agent_task_schedules_created_by_user_id
+    ON agent_task_schedules(created_by_user_id);
 
 CREATE TABLE IF NOT EXISTS agent_task_runs (
     id               SERIAL PRIMARY KEY,
@@ -2878,16 +2880,24 @@ ALTER TABLE email_policies
 -- ========== 21. api_config_nodes / api_configs / api_check_runs（API接口配置）==========
 -- 树形节点（folder / api）+ 每个 api 节点的请求配置 + 调用历史。
 -- 所有 DDL 使用 IF NOT EXISTS，幂等可重复执行。
+-- 归属隔离（2026-07-24 起）：
+--   * created_by_user_id 作为归属字段，遵循 OwnershipScope 通用方案
+--   * admin 可见全部节点；普通用户仅可见自己创建的节点（父节点不可见时提升为根）
+--   * 创建/移动节点的父节点必须是 admin 或本人拥有的 folder
+--   * 存量节点回填到首个 admin（兜底首个用户），避免迁移期间 NULL 阻塞隔离
 CREATE TABLE IF NOT EXISTS api_config_nodes (
-    id          SERIAL PRIMARY KEY,
-    parent_id   INTEGER NULL REFERENCES api_config_nodes(id) ON DELETE CASCADE,
-    node_type   VARCHAR(16) NOT NULL CHECK (node_type IN ('folder', 'api')),
-    name        VARCHAR(255) NOT NULL,
-    sort_order  INTEGER NOT NULL DEFAULT 0,
-    created_at  TIMESTAMPTZ DEFAULT NOW(),
-    updated_at  TIMESTAMPTZ DEFAULT NOW()
+    id                  SERIAL PRIMARY KEY,
+    parent_id           INTEGER NULL REFERENCES api_config_nodes(id) ON DELETE CASCADE,
+    node_type           VARCHAR(16) NOT NULL CHECK (node_type IN ('folder', 'api')),
+    name                VARCHAR(255) NOT NULL,
+    sort_order          INTEGER NOT NULL DEFAULT 0,
+    created_by_user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at          TIMESTAMPTZ DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_api_config_nodes_parent ON api_config_nodes(parent_id);
+-- 21.1 块之后才追加 idx_api_config_nodes_created_by_user_id（依赖 21.1 段落的 ADD COLUMN，
+-- 在存量库上必须先加列再建索引，否则 CREATE INDEX 报「字段不存在」）
 
 CREATE TABLE IF NOT EXISTS api_configs (
     id            SERIAL PRIMARY KEY,
@@ -2916,6 +2926,23 @@ CREATE TABLE IF NOT EXISTS api_check_runs (
     created_at       TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_api_check_runs_config ON api_check_runs(config_id, created_at DESC);
+
+-- 21.1 扩展：api_config_nodes 归属字段（2026-07-24 新增）
+-- 已运行过旧版 init_all_tables.sql 的部署需要补加该列：
+--   * 列为可空 + FK → 回填到首个 admin（兜底首个用户） → SET NOT NULL
+--   * 整段使用 IF NOT EXISTS，幂等可重复执行；新装 DB 在 CREATE TABLE 已直接定义 NOT NULL
+--   * 回填失败（无任何用户）会令 SET NOT NULL 报错，需在运维前确保至少存在一名用户
+ALTER TABLE api_config_nodes
+    ADD COLUMN IF NOT EXISTS created_by_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
+UPDATE api_config_nodes
+SET created_by_user_id = COALESCE(
+    (SELECT id FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1),
+    (SELECT id FROM users ORDER BY id ASC LIMIT 1)
+)
+WHERE created_by_user_id IS NULL;
+ALTER TABLE api_config_nodes ALTER COLUMN created_by_user_id SET NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_api_config_nodes_created_by_user_id
+    ON api_config_nodes(created_by_user_id);
 
 -- ========== 22. user_menu_acl（用户-菜单授权，2026-07-23 新增）==========
 -- 按用户粒度控制可见菜单（一级 + 二级）。

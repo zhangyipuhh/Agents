@@ -11,6 +11,14 @@ from datetime import datetime
 
 import pytest
 
+from app.shared.utils.auth.ownership_scope import OwnershipScope
+
+
+# 全部用例使用 admin scope（user_id=1, is_admin=True），保持与原行为一致
+# （历史用例假定 service 调用不带权限语义）。按用户隔离的行为在
+# test_api_config_service_scope.py 中专项验证。
+ADMIN_SCOPE = OwnershipScope.for_user(1, is_admin=True)
+
 
 class FakeDb:
     """测试用异步 DB，按 SQL 关键字模拟 api_config_* 三表行为。"""
@@ -44,6 +52,7 @@ class FakeDb:
                 "node_type": args[1],
                 "name": args[2],
                 "sort_order": args[3],
+                "created_by_user_id": args[4],
                 "created_at": datetime(2026, 7, 20, 10, 0, 0),
                 "updated_at": datetime(2026, 7, 20, 10, 0, 0),
             }
@@ -210,20 +219,21 @@ def test_create_folder_node_at_root():
     """测试在根节点下创建文件夹节点，写入内存与 DB。"""
     service = _make_service()
 
-    node = asyncio.run(service.create_node(None, "folder", "支付网关"))
+    node = asyncio.run(service.create_node(None, "folder", "支付网关", ADMIN_SCOPE))
 
     assert node["id"] == 1
     assert node["parent_id"] is None
     assert node["node_type"] == "folder"
     assert service._nodes[1]["name"] == "支付网关"
+    assert service._nodes[1]["created_by_user_id"] == 1
 
 
 def test_create_api_node_auto_creates_default_config():
     """测试创建 api 类型节点时自动创建默认 api_configs 行。"""
     service = _make_service()
 
-    folder = asyncio.run(service.create_node(None, "folder", "分组"))
-    node = asyncio.run(service.create_node(folder["id"], "api", "查询接口"))
+    folder = asyncio.run(service.create_node(None, "folder", "分组", ADMIN_SCOPE))
+    node = asyncio.run(service.create_node(folder["id"], "api", "查询接口", ADMIN_SCOPE))
 
     assert node["node_type"] == "api"
     config = service._configs[node["id"]]
@@ -234,21 +244,25 @@ def test_create_api_node_auto_creates_default_config():
 
 
 def test_create_node_with_missing_parent_raises_value_error():
-    """测试 parent_id 指向不存在节点时抛 ValueError。"""
+    """测试 parent_id 指向不存在节点时抛 ValueError("父节点不存在")。
+
+    与「越权访问父节点」统一为相同错误（ValueError），避免泄露节点是否
+    对他用户存在；路由层映射 HTTP 400。
+    """
     service = _make_service()
 
-    with pytest.raises(ValueError):
-        asyncio.run(service.create_node(999, "folder", "孤儿"))
+    with pytest.raises(ValueError, match="父节点不存在"):
+        asyncio.run(service.create_node(999, "folder", "孤儿", ADMIN_SCOPE))
 
 
 def test_create_node_under_api_parent_raises_value_error():
     """测试父节点不是 folder 时抛 ValueError。"""
     service = _make_service()
-    folder = asyncio.run(service.create_node(None, "folder", "分组"))
-    api_node = asyncio.run(service.create_node(folder["id"], "api", "接口"))
+    folder = asyncio.run(service.create_node(None, "folder", "分组", ADMIN_SCOPE))
+    api_node = asyncio.run(service.create_node(folder["id"], "api", "接口", ADMIN_SCOPE))
 
     with pytest.raises(ValueError):
-        asyncio.run(service.create_node(api_node["id"], "api", "子接口"))
+        asyncio.run(service.create_node(api_node["id"], "api", "子接口", ADMIN_SCOPE))
 
 
 def test_create_node_invalid_type_raises_value_error():
@@ -256,7 +270,7 @@ def test_create_node_invalid_type_raises_value_error():
     service = _make_service()
 
     with pytest.raises(ValueError):
-        asyncio.run(service.create_node(None, "link", "坏节点"))
+        asyncio.run(service.create_node(None, "link", "坏节点", ADMIN_SCOPE))
 
 
 # =============================================================================
@@ -266,9 +280,9 @@ def test_create_node_invalid_type_raises_value_error():
 def test_update_node_rename():
     """测试 update_node 修改名称并同步内存与 DB。"""
     service = _make_service()
-    folder = asyncio.run(service.create_node(None, "folder", "旧名"))
+    folder = asyncio.run(service.create_node(None, "folder", "旧名", ADMIN_SCOPE))
 
-    updated = asyncio.run(service.update_node(folder["id"], name="新名"))
+    updated = asyncio.run(service.update_node(folder["id"], ADMIN_SCOPE, name="新名"))
 
     assert updated["name"] == "新名"
     assert service._nodes[folder["id"]]["name"] == "新名"
@@ -277,21 +291,21 @@ def test_update_node_rename():
 def test_update_node_move_into_own_descendant_raises_value_error():
     """测试把文件夹移动到自己的后代下形成环时抛 ValueError。"""
     service = _make_service()
-    root = asyncio.run(service.create_node(None, "folder", "根"))
-    child = asyncio.run(service.create_node(root["id"], "folder", "子"))
-    grandchild = asyncio.run(service.create_node(child["id"], "folder", "孙"))
+    root = asyncio.run(service.create_node(None, "folder", "根", ADMIN_SCOPE))
+    child = asyncio.run(service.create_node(root["id"], "folder", "子", ADMIN_SCOPE))
+    grandchild = asyncio.run(service.create_node(child["id"], "folder", "孙", ADMIN_SCOPE))
 
     with pytest.raises(ValueError):
-        asyncio.run(service.update_node(root["id"], parent_id=grandchild["id"]))
+        asyncio.run(service.update_node(root["id"], ADMIN_SCOPE, parent_id=grandchild["id"]))
 
 
 def test_update_node_move_to_self_raises_value_error():
     """测试把节点移动到自己下面时抛 ValueError。"""
     service = _make_service()
-    folder = asyncio.run(service.create_node(None, "folder", "根"))
+    folder = asyncio.run(service.create_node(None, "folder", "根", ADMIN_SCOPE))
 
     with pytest.raises(ValueError):
-        asyncio.run(service.update_node(folder["id"], parent_id=folder["id"]))
+        asyncio.run(service.update_node(folder["id"], ADMIN_SCOPE, parent_id=folder["id"]))
 
 
 def test_update_node_missing_raises_not_found():
@@ -301,7 +315,7 @@ def test_update_node_missing_raises_not_found():
     service = _make_service()
 
     with pytest.raises(ApiConfigNotFoundError):
-        asyncio.run(service.update_node(999, name="不存在"))
+        asyncio.run(service.update_node(999, ADMIN_SCOPE, name="不存在"))
 
 
 # =============================================================================
@@ -311,20 +325,20 @@ def test_update_node_missing_raises_not_found():
 def test_delete_non_empty_folder_raises_value_error():
     """测试删除非空文件夹抛 ValueError('文件夹非空，拒绝删除')。"""
     service = _make_service()
-    folder = asyncio.run(service.create_node(None, "folder", "分组"))
-    asyncio.run(service.create_node(folder["id"], "api", "接口"))
+    folder = asyncio.run(service.create_node(None, "folder", "分组", ADMIN_SCOPE))
+    asyncio.run(service.create_node(folder["id"], "api", "接口", ADMIN_SCOPE))
 
     with pytest.raises(ValueError, match="文件夹非空"):
-        asyncio.run(service.delete_node(folder["id"]))
+        asyncio.run(service.delete_node(folder["id"], ADMIN_SCOPE))
 
 
 def test_delete_api_node_cascades_config():
     """测试删除 api 节点时内存中的配置一并删除。"""
     service = _make_service()
-    folder = asyncio.run(service.create_node(None, "folder", "分组"))
-    api_node = asyncio.run(service.create_node(folder["id"], "api", "接口"))
+    folder = asyncio.run(service.create_node(None, "folder", "分组", ADMIN_SCOPE))
+    api_node = asyncio.run(service.create_node(folder["id"], "api", "接口", ADMIN_SCOPE))
 
-    asyncio.run(service.delete_node(api_node["id"]))
+    asyncio.run(service.delete_node(api_node["id"], ADMIN_SCOPE))
 
     assert api_node["id"] not in service._nodes
     assert api_node["id"] not in service._configs
@@ -337,7 +351,7 @@ def test_delete_missing_node_raises_not_found():
     service = _make_service()
 
     with pytest.raises(ApiConfigNotFoundError):
-        asyncio.run(service.delete_node(999))
+        asyncio.run(service.delete_node(999, ADMIN_SCOPE))
 
 
 # =============================================================================
@@ -347,12 +361,13 @@ def test_delete_missing_node_raises_not_found():
 def test_upsert_config_success():
     """测试合法配置 upsert 成功并同步内存。"""
     service = _make_service()
-    folder = asyncio.run(service.create_node(None, "folder", "分组"))
-    api_node = asyncio.run(service.create_node(folder["id"], "api", "接口"))
+    folder = asyncio.run(service.create_node(None, "folder", "分组", ADMIN_SCOPE))
+    api_node = asyncio.run(service.create_node(folder["id"], "api", "接口", ADMIN_SCOPE))
 
     config = asyncio.run(
         service.upsert_config(
             api_node["id"],
+            ADMIN_SCOPE,
             method="PUT",
             url="https://example.com/api",
             params=[{"name": "a", "value": "1", "description": ""}],
@@ -372,13 +387,14 @@ def test_upsert_config_success():
 def test_upsert_config_invalid_method_raises_value_error():
     """测试非法 method 抛 ValueError。"""
     service = _make_service()
-    folder = asyncio.run(service.create_node(None, "folder", "分组"))
-    api_node = asyncio.run(service.create_node(folder["id"], "api", "接口"))
+    folder = asyncio.run(service.create_node(None, "folder", "分组", ADMIN_SCOPE))
+    api_node = asyncio.run(service.create_node(folder["id"], "api", "接口", ADMIN_SCOPE))
 
     with pytest.raises(ValueError):
         asyncio.run(
             service.upsert_config(
                 api_node["id"],
+                ADMIN_SCOPE,
                 method="GET",
                 url="https://example.com",
                 params=[],
@@ -394,13 +410,14 @@ def test_upsert_config_invalid_method_raises_value_error():
 def test_upsert_config_invalid_body_type_raises_value_error():
     """测试非法 body_type 抛 ValueError。"""
     service = _make_service()
-    folder = asyncio.run(service.create_node(None, "folder", "分组"))
-    api_node = asyncio.run(service.create_node(folder["id"], "api", "接口"))
+    folder = asyncio.run(service.create_node(None, "folder", "分组", ADMIN_SCOPE))
+    api_node = asyncio.run(service.create_node(folder["id"], "api", "接口", ADMIN_SCOPE))
 
     with pytest.raises(ValueError):
         asyncio.run(
             service.upsert_config(
                 api_node["id"],
+                ADMIN_SCOPE,
                 method="POST",
                 url="https://example.com",
                 params=[],
@@ -416,13 +433,14 @@ def test_upsert_config_invalid_body_type_raises_value_error():
 def test_upsert_config_invalid_expectation_type_raises_value_error():
     """测试 expectations 中含非法 type 时抛 ValueError。"""
     service = _make_service()
-    folder = asyncio.run(service.create_node(None, "folder", "分组"))
-    api_node = asyncio.run(service.create_node(folder["id"], "api", "接口"))
+    folder = asyncio.run(service.create_node(None, "folder", "分组", ADMIN_SCOPE))
+    api_node = asyncio.run(service.create_node(folder["id"], "api", "接口", ADMIN_SCOPE))
 
     with pytest.raises(ValueError):
         asyncio.run(
             service.upsert_config(
                 api_node["id"],
+                ADMIN_SCOPE,
                 method="POST",
                 url="https://example.com",
                 params=[],
@@ -436,12 +454,12 @@ def test_upsert_config_invalid_expectation_type_raises_value_error():
 
 
 def test_get_config_on_folder_raises_value_error():
-    """测试对 folder 节点调用 get_config 抛 ValueError。"""
+    """测试对 folder 节点调用 get_config 抛 ValueError（不是 api 类型）。"""
     service = _make_service()
-    folder = asyncio.run(service.create_node(None, "folder", "分组"))
+    folder = asyncio.run(service.create_node(None, "folder", "分组", ADMIN_SCOPE))
 
     with pytest.raises(ValueError):
-        asyncio.run(service.get_config(folder["id"]))
+        asyncio.run(service.get_config(folder["id"], ADMIN_SCOPE))
 
 
 # =============================================================================
@@ -506,11 +524,12 @@ def test_send_request_success(patched_httpx):
     """测试 send_request 成功路径：断言通过、响应截断、运行记录落库。"""
     patched_httpx.response = FakeResponse(status_code=200, text="x" * 5000)
     service = _make_service()
-    folder = asyncio.run(service.create_node(None, "folder", "分组"))
-    api_node = asyncio.run(service.create_node(folder["id"], "api", "接口"))
+    folder = asyncio.run(service.create_node(None, "folder", "分组", ADMIN_SCOPE))
+    api_node = asyncio.run(service.create_node(folder["id"], "api", "接口", ADMIN_SCOPE))
     asyncio.run(
         service.upsert_config(
             api_node["id"],
+            ADMIN_SCOPE,
             method="POST",
             url="https://example.com/api",
             params=[{"name": "a", "value": "1", "description": ""}],
@@ -522,7 +541,7 @@ def test_send_request_success(patched_httpx):
         )
     )
 
-    result = asyncio.run(service.send_request(api_node["id"]))
+    result = asyncio.run(service.send_request(api_node["id"], ADMIN_SCOPE))
 
     assert result["http_status"] == 200
     assert result["check_passed"] is True
@@ -542,11 +561,12 @@ def test_send_request_json_fallback_to_raw_text(patched_httpx):
     """测试 body_type=json 但 body_content 非法 JSON 时按 raw text 发送。"""
     patched_httpx.response = FakeResponse(status_code=200, text="ok")
     service = _make_service()
-    folder = asyncio.run(service.create_node(None, "folder", "分组"))
-    api_node = asyncio.run(service.create_node(folder["id"], "api", "接口"))
+    folder = asyncio.run(service.create_node(None, "folder", "分组", ADMIN_SCOPE))
+    api_node = asyncio.run(service.create_node(folder["id"], "api", "接口", ADMIN_SCOPE))
     asyncio.run(
         service.upsert_config(
             api_node["id"],
+            ADMIN_SCOPE,
             method="POST",
             url="https://example.com/api",
             params=[],
@@ -558,7 +578,7 @@ def test_send_request_json_fallback_to_raw_text(patched_httpx):
         )
     )
 
-    asyncio.run(service.send_request(api_node["id"]))
+    asyncio.run(service.send_request(api_node["id"], ADMIN_SCOPE))
 
     req = patched_httpx.last_request
     assert req["kwargs"]["content"] == "{bad json"
@@ -569,10 +589,10 @@ def test_send_request_network_error_records_run(patched_httpx):
     """测试网络异常时 http_status=None、check_passed=False 且记录落库。"""
     patched_httpx.raise_error = RuntimeError("connection refused")
     service = _make_service()
-    folder = asyncio.run(service.create_node(None, "folder", "分组"))
-    api_node = asyncio.run(service.create_node(folder["id"], "api", "接口"))
+    folder = asyncio.run(service.create_node(None, "folder", "分组", ADMIN_SCOPE))
+    api_node = asyncio.run(service.create_node(folder["id"], "api", "接口", ADMIN_SCOPE))
 
-    result = asyncio.run(service.send_request(api_node["id"]))
+    result = asyncio.run(service.send_request(api_node["id"], ADMIN_SCOPE))
 
     assert result["http_status"] is None
     assert result["check_passed"] is False
@@ -586,12 +606,12 @@ def test_list_runs_returns_history(patched_httpx):
     """测试 list_runs 返回调用历史并按时间倒序。"""
     patched_httpx.response = FakeResponse(status_code=200, text="ok")
     service = _make_service()
-    folder = asyncio.run(service.create_node(None, "folder", "分组"))
-    api_node = asyncio.run(service.create_node(folder["id"], "api", "接口"))
+    folder = asyncio.run(service.create_node(None, "folder", "分组", ADMIN_SCOPE))
+    api_node = asyncio.run(service.create_node(folder["id"], "api", "接口", ADMIN_SCOPE))
 
-    asyncio.run(service.send_request(api_node["id"]))
-    asyncio.run(service.send_request(api_node["id"]))
-    runs = asyncio.run(service.list_runs(api_node["id"]))
+    asyncio.run(service.send_request(api_node["id"], ADMIN_SCOPE))
+    asyncio.run(service.send_request(api_node["id"], ADMIN_SCOPE))
+    runs = asyncio.run(service.list_runs(api_node["id"], ADMIN_SCOPE))
 
     assert len(runs) == 2
     assert runs[0]["id"] > runs[1]["id"]
@@ -604,8 +624,8 @@ def test_list_runs_returns_history(patched_httpx):
 def test_preload_all_loads_nodes_and_configs():
     """测试 preload_all 把 DB 中的节点与配置载入内存。"""
     service = _make_service()
-    folder = asyncio.run(service.create_node(None, "folder", "分组"))
-    asyncio.run(service.create_node(folder["id"], "api", "接口"))
+    folder = asyncio.run(service.create_node(None, "folder", "分组", ADMIN_SCOPE))
+    asyncio.run(service.create_node(folder["id"], "api", "接口", ADMIN_SCOPE))
 
     fresh = _make_service(db=service._db)
     fresh._nodes.clear()
@@ -623,6 +643,6 @@ def test_db_none_graceful_degradation():
     service = ApiConfigService(db=None)
 
     asyncio.run(service.preload_all())
-    assert asyncio.run(service.get_tree()) == []
+    assert asyncio.run(service.get_tree(ADMIN_SCOPE)) == []
     with pytest.raises(RuntimeError):
-        asyncio.run(service.create_node(None, "folder", "分组"))
+        asyncio.run(service.create_node(None, "folder", "分组", ADMIN_SCOPE))

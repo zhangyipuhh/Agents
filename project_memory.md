@@ -253,7 +253,7 @@ app/
 
 ## 通用配置归属隔离（OwnershipScope，2026-07-24 新增）
 
-邮件设置中的发送策略需要按创建者做可见性隔离：admin 见全部策略；普通用户仅见自己创建的策略。由于项目内还有 API 配置等同类"配置类"数据将陆续接入相同诉求，故建立通用 `OwnershipScope` 抽象供各 service 复用，避免每个业务表各自实现一套权限过滤。
+邮件设置中的发送策略需要按创建者做可见性隔离：admin 见全部策略；普通用户仅见自己创建的策略。同一诉求也落地到「API 接口配置」与「智能体定时任务」，故建立通用 `OwnershipScope` 抽象供各 service 复用，避免每个业务表各自实现一套权限过滤。
 
 ### 通用模块
 
@@ -263,11 +263,11 @@ app/
   - `system_scope()`：系统内部调用入口（定时任务运行时等绕过隔离场景）
   - `can_access(owner_id) -> bool`：判定当前 scope 是否可访问 `owner_id` 创建的记录（system / admin / owner 三类通过）
   - `sql_filter(column, param_index)` -> `(SQL片段, 参数列表)`：把 scope 翻译为 SQL WHERE 子句（admin / system → `"TRUE"`；普通用户 → `"{column} = $N"`）
-- **约定字段命名**：凡需隔离的配置表统一加 `created_by_user_id INTEGER NOT NULL REFERENCES users(id)`，与已有 `email_policies` 列名一致；新表（如未来 `api_configs`）也沿用，避免命名分叉
-- **越权访问语义**：service 层越权返回 `None`（不区分"不存在"与"无权限"，避免泄露记录是否存在）；路由层映射 HTTP 404（与 `ProjectDB.get_project_by_id(..., user_id=...)` 的 404 语义一致）
+- **约定字段命名**：凡需隔离的配置表统一加 `created_by_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE`，与已有 `email_policies` / `api_config_nodes` 列名一致；新表也沿用，避免命名分叉
+- **越权访问语义**：service 层缺失与越权统一抛 `*NotFoundError`（不区分"不存在"与"无权限"，避免泄露记录是否存在）；路由层映射 HTTP 404。**例外**：父节点校验（`create_node` / `update_node` 的 parent）翻译为 `ValueError("父节点不存在: <id>")` → HTTP 400，保留前端"父节点不存在"的用户反馈
 - **正交关系**：菜单 ACL（`require_admin_or_menu_acl`）仍是入口门（控制"能否调端点"），OwnershipScope 是其之上的数据层过滤（控制"能看到哪些数据"），两者各司其职
 
-### 首次落地：邮件发送策略
+### 落地一：邮件发送策略
 
 - `EmailConfigService.list_policies(scope)` / `get_policy(policy_id, scope)` / `update_policy(policy_id, scope, ...)` / `delete_policy(policy_id, scope)` 全部接收 `scope` 参数；返回项附加 `created_by_user_id` 字段供前端 admin 视图展示归属
 - 新增 `EmailConfigService.get_policy_internal(policy_id)` —— 系统内部入口，使用 system scope 绕过隔离，供 `TaskSchedulerService._dispatch_script_email` 按 `notify_policy_id` 直查（运行时信任配置期校验）
@@ -275,16 +275,27 @@ app/
 - `EmailPolicy` Pydantic 模型新增 `created_by_user_id: Optional[int]` 字段
 - `init_all_tables.sql`：`email_policies.created_by_user_id` 加索引 `idx_email_policies_created_by_user_id`（list 按用户隔离时高频 WHERE 该列）
 
-### 定时任务归属校验（notify_policy_id）
+### 落地二：API 接口配置（api_config_nodes，2026-07-24）
 
-`agent_task_schedules.notify_policy_id` 引用 `email_policies.id` 发送通知邮件，隔离后需校验：策略必须属于 schedule 创建人（或调用方为 admin）。
+- `ApiConfigService.get_tree(scope)` —— admin / system 透传全量；普通用户按 `created_by_user_id` 过滤，**父节点不可见的节点 `parent_id` 重写为 `None` 提升为根**，便于前端组树且不泄露隐藏父节点的存在
+- `create_node(parent_id, node_type, name, scope)` —— `created_by_user_id = scope.user_id`（缺失抛 `ValueError`）；非 admin 父节点必须是 `scope.can_access(parent)` 通过的 folder，不可见父节点报 `ValueError("父节点不存在")`（400）；api 节点自动建默认 `api_configs` 行
+- `update_node(node_id, scope, ...)` / `delete_node(node_id, scope)` / `get_config(node_id, scope)` / `upsert_config(node_id, scope, ...)` / `send_request(node_id, scope)` / `list_runs(node_id, scope, ...)` —— 缺失/越权统一抛 `ApiConfigNotFoundError`（404）；folder 类型不匹配仍 `ValueError`（400）；非空文件夹删除统计**全部**子节点（含他人隐藏子节点）防误删
+- 新增 `ApiConfigService.get_node_internal(node_id)` —— 内存缓存轻量查询，不做归属校验，供 `TaskSchedulerService._assert_api_list_access` 系统内部使用
+- `app/scripts/api_check.py::run_api_checks` —— 运行时改用 `OwnershipScope.system_scope()` 调用 `get_tree` / `send_request`，绕过隔离（配置期校验已确保 `api_list` 归属）
+- `app/routers/api_config_router.py`：所有 8 个端点构造 `OwnershipScope.from_request(request)` 透传 service
 
-- `TaskSchedulerService._assert_notify_policy_access(notify_policy_id, schedule_owner_user_id, is_admin)` 新增 helper：
-  - `notify_policy_id=None` 跳过；`email_config_service` 未注入（lifespan 未初始化 / Memory 模式）跳过（不阻断任务创建，运行时会跳过发邮件）
-  - 普通用户跨用户引用抛 `TaskScheduleValidationError`；策略不存在同样抛（不区分）
-- `TaskSchedulerService.create_schedule` / `update_schedule` 新增 `is_admin` 参数；创建/更新 schedule 时校验 `notify_policy_id` 归属；update 时使用现有 schedule 的 owner（合并后的 merged.created_by_user_id）
-- `app/routers/task_scheduler_router.py` 新增 `_request_is_admin(request)` helper，把当前用户 role 透传给 service
-- 运行时 `_dispatch_script_email` 改用 `get_policy_internal`（system scope）—— 策略的归属校验已在 schedule 创建/更新时完成，运行时信任该约束
+### 落地三：智能体定时任务（agent_task_schedules，2026-07-24）
+
+`agent_task_schedules.created_by_user_id` 字段已存在但此前无数据层过滤；本次补充：
+
+- `TaskSchedulerService.list_schedules(scope)` —— `scope.sql_filter("created_by_user_id", 1)` 拼 WHERE；admin 全量；普通用户仅自己创建
+- `get_schedule(schedule_id, scope)` —— 缺失/越权抛 `TaskScheduleNotFoundError`（404）；新增私有 `get_schedule_internal(schedule_id)`（原 `get_schedule` 主体）供 `execute_schedule` / `update_schedule` / `set_schedule_enabled` / `trigger_schedule` / `_mark_schedule_run_completed` 内部使用
+- `update_schedule(schedule_id, payload, scope)` —— 签名增加 `scope` 参数（替换原 `is_admin`）；内部 `get_schedule_internal` + `scope.can_access(owner)` 校验，越权抛 `TaskScheduleNotFoundError`；notify / api 校验沿用现有 schedule owner
+- `set_schedule_enabled(schedule_id, enabled, scope)` / `delete_schedule(schedule_id, scope)` / `trigger_schedule(schedule_id, scope)` / `list_runs(schedule_id, scope, limit)` —— 全部加 scope；list_runs 行为由「缺失返回空列表」改为「缺失/越权抛 NotFound」（404）
+- `create_schedule(payload, created_by_user_id, is_admin)` —— 签名**不变**（对齐 `EmailConfigService.create_policy` 先例）；新增 `_assert_api_list_access(script_args, schedule_owner_user_id, is_admin)` 校验 `script_args["api_list"]` 每个 id 的归属
+- `_assert_api_list_access` —— 镜像 `_assert_notify_policy_access` 模式：缺失/非 list / 非整数字符串 → `TaskScheduleValidationError`；逐 id `api_config_service.get_node_internal` 查节点，不存在/非 api 类型/非 admin 跨用户 → `TaskScheduleValidationError`；`api_config_service` 未注入时 warning 跳过（与 notify_policy 兜底一致）
+- `app/routers/task_scheduler_router.py` —— 所有端点构造 `OwnershipScope.from_request(request)` 透传；create 端点从 scope 提取 `scope.user_id or 0` / `scope.is_admin` 显式传入（保留 create 签名不变）；删除 `_request_user_id` / `_request_is_admin` helper
+- `init_all_tables.sql`：补 `idx_agent_task_schedules_created_by_user_id` 索引（list 过滤 WHERE 该列）
 
 ### 测试
 
@@ -292,7 +303,10 @@ app/
 - `app/tests/shared/utils/email/test_email_config_service_scope.py` —— 16 用例覆盖 list / get / update / delete 在 admin / user / system scope 下的可见性
 - `app/tests/routers/test_email_admin_router_scope.py` —— 13 用例覆盖路由层 404 契约（越权 update / delete / send-by-policy）+ scope 透传
 - `app/tests/shared/utils/agent/test_task_scheduler_notify_policy_scope.py` —— 9 用例覆盖 `_assert_notify_policy_access` 判定 + `create_schedule` 跨用户拒绝
-- 回归保护：现有 `app/tests/shared/utils/email/test_email_config_service.py`（30 例）+ `app/tests/shared/utils/agent/test_task_scheduler_service.py`（30 例）+ `app/tests/routers/test_email_admin_router.py`（30 例）全部通过；原 `fake_email_config_service.get_policy` mock 改为 `get_policy_internal`（dispatch 路径已切换到 system scope）
+- `app/tests/shared/utils/test_api_config_service_scope.py`（2026-07-24 新增）—— 18 用例覆盖 get_tree 过滤/提升、create 父节点归属校验、update/delete/config/send/runs 越权 NotFound、get_node_internal 直查
+- `app/tests/routers/test_api_config_router_scope.py`（2026-07-24 新增）—— 11 用例覆盖 scope 透传断言 + 越权 404 契约 + 父节点越权 400 契约
+- `app/tests/shared/utils/agent/test_task_scheduler_schedule_scope.py`（2026-07-24 新增）—— 23 用例覆盖 list 过滤、get/update/delete/enable/trigger/runs 越权 NotFound、`_assert_api_list_access` 完整判定矩阵（含 admin bypass / missing node / folder type / invalid element）+ create/update 集成
+- 回归保护：现有 `app/tests/shared/utils/email/test_email_config_service.py`（30 例）+ `app/tests/shared/utils/agent/test_task_scheduler_service.py`（30 例）+ `app/tests/routers/test_email_admin_router.py`（30 例）全部通过；原 `fake_email_config_service.get_policy` mock 改为 `get_policy_internal`（dispatch 路径已切换到 system scope）；`ApiConfigService` 既有 28 例 service 单测补 scope 参数；`TaskSchedulerService` set_enabled/trigger 2 例补 scope；api_check + hello_script 的 stub 服务补 `scope=None` 默认参数
 
 ## 邮件系统
 
@@ -462,9 +476,10 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 
 ### 后端
 
-- `app/shared/utils/api_config_service.py::ApiConfigService`：构造注入 db（`db=None` 优雅降级：preload no-op、读返回空、写抛 RuntimeError）；内存+DB 双写；`preload_all()` / `get_tree()` / `create_node()`（api 节点自动建默认配置行；父节点必须是 folder）/ `update_node()`（防环校验）/ `delete_node()`（**非空文件夹抛 ValueError 拒绝删除**）/ `get_config()` / `upsert_config()`（枚举与 expectations 结构校验）/ `send_request()`（httpx.AsyncClient timeout=15 代理发送 + 断言校验 + 落库，网络异常也落库）/ `list_runs()`
+- `app/shared/utils/api_config_service.py::ApiConfigService`：构造注入 db（`db=None` 优雅降级：preload no-op、读返回空、写抛 RuntimeError）；内存+DB 双写；所有写/读方法接收 `scope: OwnershipScope` 参数做用户归属隔离（2026-07-24 起，详见「通用配置归属隔离」落地二）；`preload_all()` / `get_tree(scope)` / `create_node(parent_id, node_type, name, scope)`（api 节点自动建默认配置行；非 admin 父节点必须可见且 folder）/ `update_node(node_id, scope, ...)`（防环 + 父节点归属校验）/ `delete_node(node_id, scope)`（**非空文件夹抛 ValueError 拒绝删除，统计全部子节点防误删**）/ `get_config(node_id, scope)` / `upsert_config(node_id, scope, ...)`（枚举与 expectations 结构校验）/ `send_request(node_id, scope)`（httpx.AsyncClient timeout=15 代理发送 + 断言校验 + 落库，网络异常也落库）/ `list_runs(node_id, scope, ...)`；新增 `get_node_internal(node_id)` 内存缓存轻量查询供调度器内部使用
 - 断言类型（`_evaluate_expectations`）：`status_code`(eq) / `body_contains`(子串) / `json_field`(点号 path 下钻，`exists|eq`)
-- `app/routers/api_config_router.py`：`/api/admin/api-configs`（全部 `require_admin`）：`GET /tree`、`POST /nodes`、`PUT /nodes/{id}`、`DELETE /nodes/{id}`（非空文件夹 400）、`GET|PUT /nodes/{id}/config`、`POST /nodes/{id}/send`、`GET /nodes/{id}/runs?limit=20`
+- 缺失/越权语义：`get_config / upsert_config / send_request / list_runs / update_node / delete_node` 对缺失节点或非 admin 越权统一抛 `ApiConfigNotFoundError`（路由映射 404）；`create_node` / `update_node` 对父节点不可见抛 `ValueError("父节点不存在")`（路由映射 400，保留前端 UX）；folder 类型不匹配仍 `ValueError`（400）
+- `app/routers/api_config_router.py`：`/api/admin/api-configs`（全部 `require_admin_or_menu_acl('task-scheduler.api-config')`）：`GET /tree`、`POST /nodes`、`PUT /nodes/{id}`、`DELETE /nodes/{id}`（非空文件夹 400）、`GET|PUT /nodes/{id}/config`、`POST /nodes/{id}/send`、`GET /nodes/{id}/runs?limit=20`；每个端点构造 `OwnershipScope.from_request(request)` 透传 service
 - 注册：`app/main.py::register_routers`；lifespan 初始化在 `app/core/server.py`（DB 池就绪后，`app.state.api_config_service`），DB 不可用时不挂载，路由 `_get_service` 返回 500
 
 ### 前端（`web/Agent/`）
@@ -734,7 +749,7 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 | error_message | TEXT | 失败或跳过原因 |
 | created_at | TIMESTAMP | 记录创建时间 |
 
-**接口**：`app/routers/task_scheduler_router.py`，前缀 `/api/admin/task-schedules`，全部受 `require_admin` 保护；提供列表、详情、新建、更新、删除、启停、立即运行与执行历史查询。`CreateTaskScheduleRequest` / `UpdateTaskScheduleRequest` 通过 Pydantic `model_validator(mode="after")` 跨字段校验 `target_type` 与 `agent_name`/`prompt`/`script_name` 一致性。
+**接口**：`app/routers/task_scheduler_router.py`，前缀 `/api/admin/task-schedules`，全部受 `require_admin_or_menu_acl('task-scheduler.scheduled')` 保护；提供列表、详情、新建、更新、删除、启停、立即运行与执行历史查询。`CreateTaskScheduleRequest` / `UpdateTaskScheduleRequest` 通过 Pydantic `model_validator(mode="after")` 跨字段校验 `target_type` 与 `agent_name`/`prompt`/`script_name` 一致性。每个端点构造 `OwnershipScope.from_request(request)` 透传 service；普通用户（含被授权 ACL 的非 admin）仅见/管自己创建的 schedule（2026-07-24 起，详见「通用配置归属隔离」落地三），越权/缺失统一 404。
 
 **服务**：`app/shared/utils/agent/task_scheduler_service.py::TaskSchedulerService`，由 lifespan 真实初始化到 `app.state.task_scheduler_service`；测试中只能注入真实 service 实例，不允许通过 `app.state.db = MagicMock()` 虚构生产不存在的依赖。`execute_schedule` 根据 `target_type` 分支：`agent` 复用 `build_agent_instance + agent.invoke`；`script` 通过 `script_discovery_service.get_script()` 取 `RegisteredScript`，构造 `ScriptContext` 调用 `registered.func(context)`，把返回值用 `normalize_script_result` 拆为 `(body, attachments)` 后写入 `output_text`。当 `notify_enabled=True` 且 `notify_policy_id` 非空时，调用 `_dispatch_script_email` 按策略模板渲染并通过 `EmailService.send_email` 发邮件（fail-soft：邮件失败仅记 warning，不污染 run 状态）。`TaskSchedulerService.__init__` 新增 `email_config_service` 入参（可选），由 `app/core/server.py::lifespan` 在初始化时透传 `app.state.email_config_service`。
 

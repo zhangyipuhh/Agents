@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.shared.utils.auth.ownership_scope import OwnershipScope
+
 
 class FakeScheduler:
     """测试用调度器，记录 add/remove/start/shutdown 调用。"""
@@ -232,7 +234,11 @@ def test_set_schedule_disabled_removes_scheduler_job():
     service = TaskSchedulerService(db=db, agent_config_service=MagicMock(), scheduler=scheduler)
     row = asyncio.run(service.create_schedule(make_payload(), created_by_user_id=1))
 
-    updated = asyncio.run(service.set_schedule_enabled(row["id"], False))
+    updated = asyncio.run(
+        service.set_schedule_enabled(
+            row["id"], False, OwnershipScope.for_user(1, is_admin=True),
+        )
+    )
 
     assert updated["enabled"] is False
     assert "agent-task-schedule-1" not in scheduler.jobs
@@ -247,7 +253,9 @@ def test_trigger_schedule_returns_run_id_and_dispatches_background_task(monkeypa
     row = asyncio.run(service.create_schedule(make_payload(), created_by_user_id=1))
     service.execute_schedule = AsyncMock()
 
-    result = asyncio.run(service.trigger_schedule(row["id"]))
+    result = asyncio.run(
+        service.trigger_schedule(row["id"], OwnershipScope.for_user(1, is_admin=True))
+    )
 
     assert result["id"] == 1
     assert result["status"] == "pending"

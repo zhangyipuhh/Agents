@@ -19,6 +19,7 @@ from app.shared.utils.agent.task_scheduler_service import (
     TaskSchedulerService,
 )
 from app.shared.utils.auth.Safety import require_admin, require_admin_or_menu_acl
+from app.shared.utils.auth.ownership_scope import OwnershipScope
 
 
 # 2026-07-23 ACL 双重门：移除全局 require_admin，逐 endpoint 改用
@@ -192,35 +193,6 @@ def _get_service(request: Request) -> TaskSchedulerService:
     return service
 
 
-def _request_user_id(request: Request) -> int:
-    """从 request.state 获取当前用户 ID。
-
-    参数:
-        request: FastAPI Request 对象。
-
-    返回:
-        int: 用户 ID，缺失时返回 0。
-    """
-    return int(getattr(request.state, "user_id", 0) or 0)
-
-
-def _request_is_admin(request: Request) -> bool:
-    """从 request.state 判断当前调用方是否为 admin 角色。
-
-    由 ``auth_middleware`` 在 JWT 校验通过后将 ``role`` 写入
-    ``request.state``。本函数用于把当前用户角色传递给 service 层做
-    ``notify_policy_id`` 归属校验：admin 可关联任何用户的策略，普通
-    用户只能关联自己创建的策略。
-
-    参数:
-        request: FastAPI Request 对象。
-
-    返回:
-        bool: 当前用户是否为 admin；默认 ``False``。
-    """
-    return getattr(request.state, "role", "user") == "admin"
-
-
 def _handle_service_error(exc: Exception) -> None:
     """将 service 异常转换为 HTTPException。
 
@@ -249,7 +221,7 @@ def _handle_service_error(exc: Exception) -> None:
 @router.get("", response_model=List[Dict[str, Any]],
             dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.scheduled'))])
 async def list_task_schedules(request: Request) -> List[Dict[str, Any]]:
-    """列出所有智能体定时任务。
+    """列出智能体定时任务（按当前用户归属过滤）。
 
     参数:
         request: FastAPI Request 对象。
@@ -258,7 +230,8 @@ async def list_task_schedules(request: Request) -> List[Dict[str, Any]]:
         List[Dict[str, Any]]: 定时任务列表。
     """
     service = _get_service(request)
-    return await service.list_schedules()
+    scope = OwnershipScope.from_request(request)
+    return await service.list_schedules(scope)
 
 
 @router.get("/{schedule_id}", response_model=Dict[str, Any],
@@ -274,15 +247,16 @@ async def get_task_schedule(request: Request, schedule_id: int) -> Dict[str, Any
         Dict[str, Any]: 定时任务记录。
     """
     service = _get_service(request)
+    scope = OwnershipScope.from_request(request)
     try:
-        return await service.get_schedule(schedule_id)
+        return await service.get_schedule(schedule_id, scope)
     except Exception as exc:
         _handle_service_error(exc)
         raise
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=Dict[str, Any],
-            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.scheduled'))])
+             dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.scheduled'))])
 async def create_task_schedule(
     request: Request,
     body: CreateTaskScheduleRequest,
@@ -297,11 +271,12 @@ async def create_task_schedule(
         Dict[str, Any]: 新建任务记录。
     """
     service = _get_service(request)
+    scope = OwnershipScope.from_request(request)
     try:
         return await service.create_schedule(
             body.model_dump(),
-            created_by_user_id=_request_user_id(request),
-            is_admin=_request_is_admin(request),
+            created_by_user_id=scope.user_id or 0,
+            is_admin=scope.is_admin,
         )
     except Exception as exc:
         _handle_service_error(exc)
@@ -326,11 +301,12 @@ async def update_task_schedule(
         Dict[str, Any]: 更新后的任务记录。
     """
     service = _get_service(request)
+    scope = OwnershipScope.from_request(request)
     try:
         return await service.update_schedule(
             schedule_id,
             body.model_dump(exclude_unset=True),
-            is_admin=_request_is_admin(request),
+            scope,
         )
     except Exception as exc:
         _handle_service_error(exc)
@@ -350,8 +326,9 @@ async def delete_task_schedule(request: Request, schedule_id: int) -> None:
         None。
     """
     service = _get_service(request)
+    scope = OwnershipScope.from_request(request)
     try:
-        await service.delete_schedule(schedule_id)
+        await service.delete_schedule(schedule_id, scope)
     except Exception as exc:
         _handle_service_error(exc)
         raise
@@ -375,15 +352,16 @@ async def set_task_schedule_enabled(
         Dict[str, Any]: 更新后的任务记录。
     """
     service = _get_service(request)
+    scope = OwnershipScope.from_request(request)
     try:
-        return await service.set_schedule_enabled(schedule_id, body.enabled)
+        return await service.set_schedule_enabled(schedule_id, body.enabled, scope)
     except Exception as exc:
         _handle_service_error(exc)
         raise
 
 
 @router.post("/{schedule_id}/trigger", status_code=status.HTTP_202_ACCEPTED, response_model=Dict[str, Any],
-            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.scheduled'))])
+             dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.scheduled'))])
 async def trigger_task_schedule(request: Request, schedule_id: int) -> Dict[str, Any]:
     """手动立即运行一次智能体定时任务。
 
@@ -395,8 +373,9 @@ async def trigger_task_schedule(request: Request, schedule_id: int) -> Dict[str,
         Dict[str, Any]: pending 状态的执行记录。
     """
     service = _get_service(request)
+    scope = OwnershipScope.from_request(request)
     try:
-        return await service.trigger_schedule(schedule_id)
+        return await service.trigger_schedule(schedule_id, scope)
     except Exception as exc:
         _handle_service_error(exc)
         raise
@@ -420,4 +399,5 @@ async def list_task_runs(
         List[Dict[str, Any]]: 执行历史列表。
     """
     service = _get_service(request)
-    return await service.list_runs(schedule_id, limit=limit)
+    scope = OwnershipScope.from_request(request)
+    return await service.list_runs(schedule_id, scope, limit=limit)

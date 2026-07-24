@@ -23,6 +23,7 @@ from app.core.agent.AgentConfig import ExecuteConfig
 from app.core.config.paths import resolve_task_log_path
 from app.core.config.settings import settings
 from app.scripts.base import ScriptContext, normalize_script_result
+from app.shared.utils.auth.ownership_scope import OwnershipScope
 from app.shared.utils.auth.session_db import SessionDB
 from app.shared.utils.email import EmailTemplateRenderer
 from app.shared.utils.email.template_renderer import build_render_context
@@ -248,22 +249,65 @@ class TaskSchedulerService:
             if schedule:
                 await self._sync_scheduler_job(schedule)
 
-    async def list_schedules(self) -> List[Dict[str, Any]]:
-        """列出所有定时任务。
+    async def list_schedules(self, scope: OwnershipScope) -> List[Dict[str, Any]]:
+        """列出定时任务，按 ``scope`` 过滤可见性。
+
+        admin / system 返回全部；普通用户仅返回 ``created_by_user_id ==
+        scope.user_id`` 的任务。返回项保留 ``created_by_user_id`` 字段供
+        前端 admin 视图展示归属。
+
+        参数:
+            scope: 调用方归属上下文。
 
         返回:
-            List[Dict[str, Any]]: 定时任务列表。
+            List[Dict[str, Any]]: 定时任务列表，按 created_at DESC。
         """
+        where_sql, where_params = scope.sql_filter(
+            "created_by_user_id", param_index=1,
+        )
         rows = await self._db.fetch(
-            """
+            f"""
             SELECT * FROM agent_task_schedules
+            WHERE {where_sql}
             ORDER BY created_at DESC, id DESC
-            """
+            """,
+            *where_params,
         )
         return [self._decode_schedule_row(row) for row in rows]
 
-    async def get_schedule(self, schedule_id: int) -> Dict[str, Any]:
-        """获取单个定时任务。
+    async def get_schedule(
+        self,
+        schedule_id: int,
+        scope: OwnershipScope,
+    ) -> Dict[str, Any]:
+        """获取单个定时任务，按 ``scope`` 校验可见性。
+
+        缺失与越权统一抛 ``TaskScheduleNotFoundError``（路由层映射 404），
+        避免泄露记录是否存在。
+
+        参数:
+            schedule_id: 定时任务 ID。
+            scope: 调用方归属上下文。
+
+        返回:
+            Dict[str, Any]: 定时任务记录。
+
+        异常:
+            TaskScheduleNotFoundError: 任务不存在或当前 scope 无权访问时抛出。
+        """
+        schedule = await self.get_schedule_internal(schedule_id)
+        if not scope.can_access(schedule.get("created_by_user_id")):
+            raise TaskScheduleNotFoundError(
+                f"Task schedule {schedule_id} not found"
+            )
+        return schedule
+
+    async def get_schedule_internal(self, schedule_id: int) -> Dict[str, Any]:
+        """系统内部获取定时任务（绕过归属隔离）。
+
+        仅供 ``execute_schedule`` / ``update_schedule`` / ``set_schedule_enabled``
+        / ``trigger_schedule`` / ``_mark_schedule_run_completed`` 等内部场景
+        使用；HTTP 路由层禁止调用本方法（应使用 ``get_schedule(schedule_id, scope)``）。
 
         参数:
             schedule_id: 定时任务 ID。
@@ -295,13 +339,15 @@ class TaskSchedulerService:
             payload: 定时任务字段。
             created_by_user_id: 创建人用户 ID。
             is_admin: 当前调用方是否为 admin；admin 可关联任何用户的
-                ``notify_policy_id``；普通用户只能关联自己创建的策略。
+                ``notify_policy_id`` / ``api_list``；普通用户只能关联自己
+                创建的策略 / API 节点。
 
         返回:
             Dict[str, Any]: 新建任务记录。
 
         异常:
-            TaskScheduleValidationError: 参数非法时抛出。
+            TaskScheduleValidationError: 参数非法或 notify_policy_id /
+                api_list 归属校验失败时抛出。
         """
         self._validate_payload(payload, partial=False)
         target_type = payload.get("target_type") or "agent"
@@ -310,6 +356,10 @@ class TaskSchedulerService:
         notify_policy_id = payload.get("notify_policy_id") or None
         await self._assert_notify_policy_access(
             notify_policy_id, created_by_user_id, is_admin,
+        )
+        # api_list 归属校验（与 notify_policy 同源，仅校验存在的 api_list）
+        await self._assert_api_list_access(
+            payload.get("script_args") or {}, created_by_user_id, is_admin,
         )
         # 根据目标类型确定 agent_name / prompt / script_name / script_args
         if target_type == "agent":
@@ -373,23 +423,32 @@ class TaskSchedulerService:
         self,
         schedule_id: int,
         payload: Dict[str, Any],
-        is_admin: bool = False,
+        scope: OwnershipScope,
     ) -> Dict[str, Any]:
         """更新定时任务并同步调度器。
+
+        当前任务不可见（缺失 / 越权）一律抛 ``TaskScheduleNotFoundError``
+        映射 HTTP 404。notify_policy_id 与 api_list 校验沿用现有 schedule
+        的 owner（更新不换 owner）。
 
         参数:
             schedule_id: 定时任务 ID。
             payload: 需要更新的字段。
-            is_admin: 当前调用方是否为 admin。
+            scope: 调用方归属上下文；同时提供 user_id（权限）与 is_admin
+                （跨用户校验）。
 
         返回:
             Dict[str, Any]: 更新后的任务记录。
 
         异常:
-            TaskScheduleNotFoundError: 任务不存在时抛出。
+            TaskScheduleNotFoundError: 任务不存在或当前 scope 无权访问时抛出。
             TaskScheduleValidationError: 参数非法时抛出。
         """
-        current = await self.get_schedule(schedule_id)
+        current = await self.get_schedule_internal(schedule_id)
+        if not scope.can_access(current.get("created_by_user_id")):
+            raise TaskScheduleNotFoundError(
+                f"Task schedule {schedule_id} not found"
+            )
         merged = {**current, **{k: v for k, v in payload.items() if v is not None}}
         self._validate_payload(merged, partial=False)
         # notify_policy_id 归属校验：使用现有 schedule 的 owner（更新时
@@ -398,8 +457,13 @@ class TaskSchedulerService:
         schedule_owner_user_id = int(
             merged.get("created_by_user_id") or current.get("created_by_user_id") or 0
         )
+        is_admin = scope.is_admin
         await self._assert_notify_policy_access(
             notify_policy_id, schedule_owner_user_id, is_admin,
+        )
+        # api_list 归属校验（与 notify_policy 同源，使用 merged.script_args）
+        await self._assert_api_list_access(
+            merged.get("script_args") or {}, schedule_owner_user_id, is_admin,
         )
         next_run_at = self._calculate_next_run_at(merged)
         target_type = merged.get("target_type") or "agent"
@@ -466,20 +530,26 @@ class TaskSchedulerService:
         self,
         schedule_id: int,
         enabled: bool,
+        scope: OwnershipScope,
     ) -> Dict[str, Any]:
         """启用或禁用定时任务。
 
         参数:
             schedule_id: 定时任务 ID。
             enabled: True 启用，False 禁用。
+            scope: 调用方归属上下文。
 
         返回:
             Dict[str, Any]: 更新后的任务记录。
 
         异常:
-            TaskScheduleNotFoundError: 任务不存在时抛出。
+            TaskScheduleNotFoundError: 任务不存在或当前 scope 无权访问时抛出。
         """
-        schedule = await self.get_schedule(schedule_id)
+        schedule = await self.get_schedule_internal(schedule_id)
+        if not scope.can_access(schedule.get("created_by_user_id")):
+            raise TaskScheduleNotFoundError(
+                f"Task schedule {schedule_id} not found"
+            )
         schedule["enabled"] = enabled
         next_run_at = self._calculate_next_run_at(schedule) if enabled else None
         row = await self._db.fetchrow(
@@ -500,40 +570,54 @@ class TaskSchedulerService:
             self._remove_scheduler_job(schedule_id)
         return updated
 
-    async def delete_schedule(self, schedule_id: int) -> None:
+    async def delete_schedule(self, schedule_id: int, scope: OwnershipScope) -> None:
         """删除定时任务并移除调度器 job。
 
         参数:
             schedule_id: 定时任务 ID。
+            scope: 调用方归属上下文。
 
         返回:
             None。
 
         异常:
-            TaskScheduleNotFoundError: 任务不存在时抛出。
+            TaskScheduleNotFoundError: 任务不存在或当前 scope 无权访问时抛出。
         """
-        result = await self._db.execute(
+        current = await self.get_schedule_internal(schedule_id)
+        if not scope.can_access(current.get("created_by_user_id")):
+            raise TaskScheduleNotFoundError(
+                f"Task schedule {schedule_id} not found"
+            )
+        await self._db.execute(
             "DELETE FROM agent_task_schedules WHERE id = $1",
             schedule_id,
         )
         self._remove_scheduler_job(schedule_id)
-        if isinstance(result, str) and result.endswith("0"):
-            raise TaskScheduleNotFoundError(f"Task schedule {schedule_id} not found")
 
     async def list_runs(
         self,
         schedule_id: int,
+        scope: OwnershipScope,
         limit: int = 50,
     ) -> List[Dict[str, Any]]:
         """列出任务执行历史。
 
         参数:
             schedule_id: 定时任务 ID。
-            limit: 最大返回条数。
+            scope: 调用方归属上下文。
+            limit: 最大返回条数，默认 50。
 
         返回:
             List[Dict[str, Any]]: 执行历史列表。
+
+        异常:
+            TaskScheduleNotFoundError: 任务不存在或当前 scope 无权访问时抛出。
         """
+        current = await self.get_schedule_internal(schedule_id)
+        if not scope.can_access(current.get("created_by_user_id")):
+            raise TaskScheduleNotFoundError(
+                f"Task schedule {schedule_id} not found"
+            )
         rows = await self._db.fetch(
             """
             SELECT * FROM agent_task_runs
@@ -546,19 +630,28 @@ class TaskSchedulerService:
         )
         return [self._decode_run_row(row) for row in rows]
 
-    async def trigger_schedule(self, schedule_id: int) -> Dict[str, Any]:
+    async def trigger_schedule(
+        self,
+        schedule_id: int,
+        scope: OwnershipScope,
+    ) -> Dict[str, Any]:
         """手动触发定时任务。
 
         参数:
             schedule_id: 定时任务 ID。
+            scope: 调用方归属上下文。
 
         返回:
             Dict[str, Any]: pending 状态的执行记录。
 
         异常:
-            TaskScheduleNotFoundError: 任务不存在时抛出。
+            TaskScheduleNotFoundError: 任务不存在或当前 scope 无权访问时抛出。
         """
-        schedule = await self.get_schedule(schedule_id)
+        schedule = await self.get_schedule_internal(schedule_id)
+        if not scope.can_access(schedule.get("created_by_user_id")):
+            raise TaskScheduleNotFoundError(
+                f"Task schedule {schedule_id} not found"
+            )
         run = await self._create_run(schedule, "manual", None, status="pending")
         asyncio.create_task(
             self.execute_schedule(
@@ -589,7 +682,7 @@ class TaskSchedulerService:
             None。
         """
         async with self._run_semaphore:
-            schedule = await self.get_schedule(schedule_id)
+            schedule = await self.get_schedule_internal(schedule_id)
             if not schedule.get("enabled") and trigger_type == "scheduled":
                 if run_id is None:
                     await self._create_run(schedule, trigger_type, scheduled_at, status="skipped")
@@ -801,6 +894,76 @@ class TaskSchedulerService:
                 raise TaskScheduleValidationError(
                     f"notify_policy_id={notify_policy_id} 不属于当前用户，无法关联"
                 )
+
+    async def _assert_api_list_access(
+        self,
+        script_args: Dict[str, Any],
+        schedule_owner_user_id: int,
+        is_admin: bool,
+    ) -> None:
+        """校验 ``script_args["api_list"]`` 中每个接口节点的归属可访问性。
+
+        ``api_config_nodes`` 按创建者做归属隔离：admin 见全部节点，
+        普通用户仅见自己创建的。当定时任务（script 类型）携带 ``api_list``
+        时，关联的接口节点必须属于任务创建人（或当前调用方为 admin）。
+
+        校验失败抛 ``TaskScheduleValidationError``；节点不存在或类型非
+        api 时同样视为校验失败（不区分"不存在"与"无权限"，避免泄露
+        节点是否对他用户可见）。
+
+        参数:
+            script_args: 脚本参数字典；仅当包含 ``api_list`` 时校验。
+            schedule_owner_user_id: 定时任务创建人用户 ID。
+            is_admin: 当前调用方（创建/更新任务的用户）是否为 admin。
+
+        返回:
+            None。
+
+        异常:
+            TaskScheduleValidationError: ``api_list`` 非法、节点不存在 /
+                类型不符 / 归属不通过时抛出。
+        """
+        if "api_list" not in script_args:
+            return
+        if self._api_config_service is None:
+            # api_config_service 未注入（lifespan 未初始化 / Memory 模式）：
+            # 保留引用不阻断，运行时 ``run_api_checks`` 会跳过执行。
+            logger.warning(
+                "TaskSchedulerService._assert_api_list_access: "
+                "api_config_service 未注入，跳过 api_list 归属校验"
+            )
+            return
+        raw_value = script_args.get("api_list")
+        if raw_value is None:
+            return
+        if not isinstance(raw_value, list):
+            raise TaskScheduleValidationError(
+                "api_list 必须为字符串数组（API 节点 id 列表）"
+            )
+        validated_ids: List[int] = []
+        for index, item in enumerate(raw_value):
+            if not isinstance(item, str) or not item:
+                raise TaskScheduleValidationError(
+                    f"api_list[{index}] 必须为非空字符串形式的 API 节点 id"
+                )
+            try:
+                validated_ids.append(int(item))
+            except ValueError as exc:
+                raise TaskScheduleValidationError(
+                    f"api_list[{index}] 必须为整数形式的 API 节点 id: {item!r}"
+                ) from exc
+        for node_id in validated_ids:
+            node = self._api_config_service.get_node_internal(node_id)
+            if node is None or node.get("node_type") != "api":
+                raise TaskScheduleValidationError(
+                    f"api_list 引用了不存在的接口节点: id={node_id}"
+                )
+            if not is_admin:
+                owner_id = node.get("created_by_user_id")
+                if owner_id is None or int(owner_id) != int(schedule_owner_user_id):
+                    raise TaskScheduleValidationError(
+                        f"api_list 引用了不属于当前用户的接口节点: id={node_id}"
+                    )
 
     def _validate_payload(self, payload: Dict[str, Any], partial: bool) -> None:
         """校验任务 payload。
@@ -1068,7 +1231,7 @@ class TaskSchedulerService:
         返回:
             None。
         """
-        schedule = await self.get_schedule(schedule_id)
+        schedule = await self.get_schedule_internal(schedule_id)
         next_run_at = self._calculate_next_run_at(schedule)
         await self._db.execute(
             """

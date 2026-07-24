@@ -22,6 +22,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from app.shared.utils.auth.ownership_scope import OwnershipScope
+
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +74,45 @@ class ApiConfigService:
         """
         if self._db is None:
             raise RuntimeError("数据库未启用")
+
+    @staticmethod
+    def _assert_node_access(node: Optional[Dict[str, Any]], scope: OwnershipScope) -> Dict[str, Any]:
+        """校验调用方对节点的可见性，越权或缺失一律抛 ``ApiConfigNotFoundError``。
+
+        缺失与越权不区分是为了防止通过状态码差异探测节点是否存在（与
+        ``OwnershipScope`` 文档约定一致：service 层越权返回 None / NotFound，
+        路由层映射 HTTP 404）。
+
+        参数:
+            node: 节点 dict（来自内存缓存）；``None`` 表示节点不存在。
+            scope: 调用方归属上下文。
+
+        返回:
+            Dict[str, Any]: 节点 dict（便于链式调用）。
+
+        异常:
+            ApiConfigNotFoundError: 节点不存在或当前 scope 无权访问时抛出。
+        """
+        if node is None:
+            raise ApiConfigNotFoundError("节点不存在")
+        if not scope.can_access(node.get("created_by_user_id")):
+            raise ApiConfigNotFoundError("节点不存在")
+        return node
+
+    def get_node_internal(self, node_id: int) -> Optional[Dict[str, Any]]:
+        """系统内部获取节点（绕过归属隔离）。
+
+        仅供调度器等已校验过归属的内部场景使用；HTTP 路由层禁止调用。
+        数据来源于 ``preload_all`` 建立的内存缓存，db 为 None 时返回空缓存，
+        调度器走 lifespan 注入路径，db 必为真。
+
+        参数:
+            node_id: 节点 ID。
+
+        返回:
+            Optional[Dict[str, Any]]: 节点字典；不存在时返回 ``None``。
+        """
+        return self._nodes.get(node_id)
 
     @staticmethod
     def _decode_jsonb(value: Any, default: Any) -> Any:
@@ -155,57 +196,92 @@ class ApiConfigService:
                 "[api_config_service] preload failed: %s", exc, exc_info=True
             )
 
-    async def get_tree(self) -> List[Dict[str, Any]]:
-        """返回全部节点平铺列表，前端自行组树。
+    async def get_tree(self, scope: OwnershipScope) -> List[Dict[str, Any]]:
+        """返回节点平铺列表，按 ``scope`` 过滤可见性。
+
+        admin / system 透传全量；普通用户仅返回自己创建的节点。若过滤后某
+        节点的 ``parent_id`` 不在可见集合内，则将其 ``parent_id`` 重写为
+        ``None``（提升为根）以便前端组树时仍能渲染——同时不会泄露隐藏父
+        节点的存在。
+
+        参数:
+            scope: 调用方归属上下文；通常由 ``OwnershipScope.from_request(request)``
+                或 ``OwnershipScope.system_scope()`` 构造。
 
         返回:
-            List[Dict[str, Any]]: 节点列表，含 id / parent_id / node_type /
-                name / sort_order，按 id 升序。
+            List[Dict[str, Any]]: 节点列表，按 id 升序。
         """
-        return sorted(self._nodes.values(), key=lambda n: n["id"])
+        all_nodes = sorted(self._nodes.values(), key=lambda n: n["id"])
+        if scope.system or scope.is_admin:
+            return all_nodes
+        visible_ids = {
+            n["id"] for n in all_nodes
+            if scope.can_access(n.get("created_by_user_id"))
+        }
+        result: List[Dict[str, Any]] = []
+        for node in all_nodes:
+            if node["id"] not in visible_ids:
+                continue
+            copied = dict(node)
+            parent_id = copied.get("parent_id")
+            if parent_id is not None and parent_id not in visible_ids:
+                copied["parent_id"] = None
+            result.append(copied)
+        return result
 
     async def create_node(
         self,
         parent_id: Optional[int],
         node_type: str,
         name: str,
+        scope: OwnershipScope,
     ) -> Dict[str, Any]:
         """创建节点；node_type='api' 时自动创建默认 api_configs 行。
+
+        非 admin 创建节点的归属为 ``scope.user_id``，父节点必须是 ``None``
+        或当前用户可见（且为 folder）的节点；不可见的父节点一律报「父节点
+        不存在」，不泄露他人节点的存在。
 
         参数:
             parent_id: 父节点 ID；None 表示根节点。
             node_type: 节点类型，'folder' 或 'api'。
             name: 节点名称。
+            scope: 调用方归属上下文。
 
         返回:
             Dict[str, Any]: 新建节点字典。
 
         异常:
-            ValueError: node_type 非法、name 为空、父节点不存在或父节点
-                不是 folder 时抛出。
+            ValueError: node_type 非法、name 为空、``scope.user_id`` 缺失、
+                父节点不存在或父节点不是 folder 时抛出。
             RuntimeError: 数据库未启用时抛出。
         """
         self._require_db()
+        if scope.user_id is None:
+            raise ValueError("无法确定创建人用户，请通过 HTTP 路由调用")
         if node_type not in NODE_TYPES:
             raise ValueError(f"node_type 必须是 {NODE_TYPES} 之一，当前为: {node_type!r}")
         if not str(name or "").strip():
             raise ValueError("节点名称不能为空")
         if parent_id is not None:
-            parent = self._nodes.get(parent_id)
-            if parent is None:
-                raise ValueError(f"父节点不存在: {parent_id}")
+            try:
+                parent = self._assert_node_access(self._nodes.get(parent_id), scope)
+            except ApiConfigNotFoundError:
+                # 缺失与越权统一报「父节点不存在」，不泄露他人节点的存在性
+                raise ValueError(f"父节点不存在: {parent_id}") from None
             if parent.get("node_type") != "folder":
                 raise ValueError(f"父节点必须是 folder 类型: {parent_id}")
         row = await self._db.fetchrow(
             """
-            INSERT INTO api_config_nodes (parent_id, node_type, name, sort_order)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO api_config_nodes (parent_id, node_type, name, sort_order, created_by_user_id)
+            VALUES ($1, $2, $3, $4, $5)
             RETURNING *
             """,
             parent_id,
             node_type,
             name,
             0,
+            scope.user_id,
         )
         node = self._decode_node_row(row)
         self._nodes[node["id"]] = node
@@ -220,23 +296,25 @@ class ApiConfigService:
                 self._configs[node["id"]] = config
         return node
 
-    def _assert_valid_parent(self, node_id: int, parent_id: int) -> None:
-        """校验 parent_id 可作为 node_id 的新父节点（存在、folder、无环）。
+    def _assert_valid_parent(self, node_id: int, parent_id: int, scope: OwnershipScope) -> None:
+        """校验 parent_id 可作为 node_id 的新父节点（可见、folder、无环）。
 
         参数:
             node_id: 待移动节点 ID。
             parent_id: 目标父节点 ID。
+            scope: 调用方归属上下文；不可见父节点一律报「不存在」。
 
         返回:
             None。
 
         异常:
-            ValueError: 目标父节点不存在、不是 folder、是节点自身或节点的
-                后代（形成环）时抛出。
+            ValueError: 目标父节点不可见 / 不是 folder / 是节点自身或节点
+                的后代（形成环）时抛出。
         """
-        parent = self._nodes.get(parent_id)
-        if parent is None:
-            raise ValueError(f"父节点不存在: {parent_id}")
+        try:
+            parent = self._assert_node_access(self._nodes.get(parent_id), scope)
+        except ApiConfigNotFoundError:
+            raise ValueError(f"父节点不存在: {parent_id}") from None
         if parent.get("node_type") != "folder":
             raise ValueError(f"父节点必须是 folder 类型: {parent_id}")
         # 沿祖先链向上走，若遇到 node_id 说明目标父节点是自身或后代（成环）
@@ -249,6 +327,7 @@ class ApiConfigService:
     async def update_node(
         self,
         node_id: int,
+        scope: OwnershipScope,
         name: Optional[str] = None,
         parent_id: Optional[int] = None,
         sort_order: Optional[int] = None,
@@ -257,6 +336,7 @@ class ApiConfigService:
 
         参数:
             node_id: 节点 ID。
+            scope: 调用方归属上下文。
             name: 新名称；None 表示不修改。
             parent_id: 新父节点 ID；None 表示不修改。
             sort_order: 新排序权重；None 表示不修改。
@@ -265,18 +345,17 @@ class ApiConfigService:
             Dict[str, Any]: 更新后的节点字典。
 
         异常:
-            ApiConfigNotFoundError: 节点不存在时抛出。
-            ValueError: name 为空串、父节点校验失败（不存在 / 非 folder /
+            ApiConfigNotFoundError: 节点不存在或当前 scope 无权访问时抛出。
+            ValueError: name 为空串、父节点校验失败（不可见 / 非 folder /
                 成环）时抛出。
             RuntimeError: 数据库未启用时抛出。
         """
         self._require_db()
-        if node_id not in self._nodes:
-            raise ApiConfigNotFoundError(f"节点不存在: {node_id}")
+        self._assert_node_access(self._nodes.get(node_id), scope)
         if name is not None and not str(name).strip():
             raise ValueError("节点名称不能为空")
         if parent_id is not None:
-            self._assert_valid_parent(node_id, parent_id)
+            self._assert_valid_parent(node_id, parent_id, scope)
         row = await self._db.fetchrow(
             """
             UPDATE api_config_nodes
@@ -298,24 +377,27 @@ class ApiConfigService:
         self._nodes[node_id] = node
         return node
 
-    async def delete_node(self, node_id: int) -> None:
+    async def delete_node(self, node_id: int, scope: OwnershipScope) -> None:
         """删除节点；api 节点级联删除配置与调用历史。
+
+        非空判定统计**全部**子节点（包括当前用户不可见的他人节点），
+        防止误删隐藏内容；满足「不泄露他人节点存在」与「安全删除」两个
+        约束。
 
         参数:
             node_id: 节点 ID。
+            scope: 调用方归属上下文。
 
         返回:
             None。
 
         异常:
-            ApiConfigNotFoundError: 节点不存在时抛出。
+            ApiConfigNotFoundError: 节点不存在或当前 scope 无权访问时抛出。
             ValueError: 文件夹非空（仍有子节点）时抛出。
             RuntimeError: 数据库未启用时抛出。
         """
         self._require_db()
-        node = self._nodes.get(node_id)
-        if node is None:
-            raise ApiConfigNotFoundError(f"节点不存在: {node_id}")
+        node = self._assert_node_access(self._nodes.get(node_id), scope)
         children = [n for n in self._nodes.values() if n.get("parent_id") == node_id]
         if children:
             raise ValueError("文件夹非空，拒绝删除")
@@ -359,21 +441,21 @@ class ApiConfigService:
                     f"expectations 元素的 type 必须是 {EXPECTATION_TYPES} 之一"
                 )
 
-    async def get_config(self, node_id: int) -> Dict[str, Any]:
+    async def get_config(self, node_id: int, scope: OwnershipScope) -> Dict[str, Any]:
         """获取 api 节点的请求配置。
 
         参数:
             node_id: 节点 ID。
+            scope: 调用方归属上下文。
 
         返回:
             Dict[str, Any]: 配置字典。
 
         异常:
-            ValueError: 节点不存在、不是 api 节点或配置缺失时抛出。
+            ApiConfigNotFoundError: 节点不存在或当前 scope 无权访问时抛出。
+            ValueError: 节点存在但不是 api 类型 / 配置缺失时抛出。
         """
-        node = self._nodes.get(node_id)
-        if node is None:
-            raise ValueError(f"节点不存在: {node_id}")
+        node = self._assert_node_access(self._nodes.get(node_id), scope)
         if node.get("node_type") != "api":
             raise ValueError(f"节点不是 api 类型: {node_id}")
         config = self._configs.get(node_id)
@@ -384,6 +466,7 @@ class ApiConfigService:
     async def upsert_config(
         self,
         node_id: int,
+        scope: OwnershipScope,
         *,
         method: str,
         url: str,
@@ -398,6 +481,7 @@ class ApiConfigService:
 
         参数:
             node_id: 节点 ID（必须为已存在的 api 节点）。
+            scope: 调用方归属上下文。
             method: HTTP 方法，POST 或 PUT。
             url: 请求 URL。
             params: query 参数列表 [{name, value, description}]。
@@ -411,12 +495,13 @@ class ApiConfigService:
             Dict[str, Any]: upsert 后的配置字典。
 
         异常:
-            ValueError: 节点不存在 / 非 api 节点 / 枚举非法 / expectations
-                结构非法时抛出。
+            ApiConfigNotFoundError: 节点不存在或当前 scope 无权访问时抛出。
+            ValueError: 节点不是 api 节点 / 枚举非法 / expectations 结构
+                非法时抛出。
             RuntimeError: 数据库未启用时抛出。
         """
         self._require_db()
-        await self.get_config(node_id)
+        await self.get_config(node_id, scope)
         self._validate_config_payload(method, body_type, expectations)
         row = await self._db.fetchrow(
             """
@@ -598,11 +683,13 @@ class ApiConfigService:
             results.append({"rule": rule, "passed": passed, "detail": detail})
         return results
 
-    async def send_request(self, node_id: int) -> Dict[str, Any]:
+    async def send_request(self, node_id: int, scope: OwnershipScope) -> Dict[str, Any]:
         """按节点配置代理发送 HTTP 请求并校验预期结果、落库调用历史。
 
         参数:
             node_id: api 节点 ID。
+            scope: 调用方归属上下文；脚本运行时使用 ``OwnershipScope.system_scope()``
+                绕过隔离（配置期校验已确保 ``api_list`` 归属）。
 
         返回:
             Dict[str, Any]: 调用结果，含 run_id / http_status / duration_ms /
@@ -610,11 +697,12 @@ class ApiConfigService:
                 assertion_results[{rule, passed, detail}] / error_message。
 
         异常:
-            ValueError: 节点不存在 / 非 api 节点 / 配置缺失时抛出。
+            ApiConfigNotFoundError: 节点不存在或当前 scope 无权访问时抛出。
+            ValueError: 节点不是 api 节点 / 配置缺失时抛出。
             RuntimeError: 数据库未启用时抛出。
         """
         self._require_db()
-        config = await self.get_config(node_id)
+        config = await self.get_config(node_id, scope)
         kwargs = self._build_request_kwargs(config)
         started = time.perf_counter()
         http_status: Optional[int] = None
@@ -664,22 +752,29 @@ class ApiConfigService:
             "error_message": error_message,
         }
 
-    async def list_runs(self, node_id: int, limit: int = 20) -> List[Dict[str, Any]]:
+    async def list_runs(
+        self,
+        node_id: int,
+        scope: OwnershipScope,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
         """查询 api 节点的调用历史。
 
         参数:
             node_id: api 节点 ID。
+            scope: 调用方归属上下文。
             limit: 最大返回条数，默认 20。
 
         返回:
             List[Dict[str, Any]]: 调用历史列表，按创建时间倒序。
 
         异常:
-            ValueError: 节点不存在 / 非 api 节点 / 配置缺失时抛出。
+            ApiConfigNotFoundError: 节点不存在或当前 scope 无权访问时抛出。
+            ValueError: 节点不是 api 节点 / 配置缺失时抛出。
         """
         if self._db is None:
             return []
-        config = await self.get_config(node_id)
+        config = await self.get_config(node_id, scope)
         rows = await self._db.fetch(
             """
             SELECT * FROM api_check_runs

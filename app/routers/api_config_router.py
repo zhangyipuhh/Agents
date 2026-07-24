@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from app.shared.utils.api_config_service import ApiConfigService
 from app.shared.utils.auth.Safety import require_admin_or_menu_acl
+from app.shared.utils.auth.ownership_scope import OwnershipScope
 
 
 # 2026-07-24 ACL 双重门:移除 Router 级 require_admin,
@@ -136,7 +137,7 @@ def _handle_service_error(exc: Exception) -> None:
 @router.get("/tree", response_model=Dict[str, Any],
             dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.api-config'))])
 async def get_tree(request: Request) -> Dict[str, Any]:
-    """获取节点树平铺列表。
+    """获取节点树平铺列表（按当前用户归属过滤）。
 
     参数:
         request: FastAPI Request 对象。
@@ -145,7 +146,8 @@ async def get_tree(request: Request) -> Dict[str, Any]:
         Dict[str, Any]: {"nodes": [...]}，前端自行组树。
     """
     service = _get_service(request)
-    nodes = await service.get_tree()
+    scope = OwnershipScope.from_request(request)
+    nodes = await service.get_tree(scope)
     return {"nodes": nodes}
 
 
@@ -162,8 +164,9 @@ async def create_node(request: Request, body: CreateNodeRequest) -> Dict[str, An
         Dict[str, Any]: 新建节点对象。
     """
     service = _get_service(request)
+    scope = OwnershipScope.from_request(request)
     try:
-        return await service.create_node(body.parent_id, body.node_type, body.name)
+        return await service.create_node(body.parent_id, body.node_type, body.name, scope)
     except Exception as exc:
         _handle_service_error(exc)
         raise
@@ -187,9 +190,11 @@ async def update_node(
         Dict[str, Any]: 更新后的节点对象。
     """
     service = _get_service(request)
+    scope = OwnershipScope.from_request(request)
     try:
         return await service.update_node(
             node_id,
+            scope,
             name=body.name,
             parent_id=body.parent_id,
             sort_order=body.sort_order,
@@ -212,8 +217,9 @@ async def delete_node(request: Request, node_id: int) -> Dict[str, Any]:
         Dict[str, Any]: {"ok": true}。
     """
     service = _get_service(request)
+    scope = OwnershipScope.from_request(request)
     try:
-        await service.delete_node(node_id)
+        await service.delete_node(node_id, scope)
         return {"ok": True}
     except Exception as exc:
         _handle_service_error(exc)
@@ -233,8 +239,9 @@ async def get_config(request: Request, node_id: int) -> Dict[str, Any]:
         Dict[str, Any]: 配置对象。
     """
     service = _get_service(request)
+    scope = OwnershipScope.from_request(request)
     try:
-        return await service.get_config(node_id)
+        return await service.get_config(node_id, scope)
     except Exception as exc:
         _handle_service_error(exc)
         raise
@@ -258,9 +265,11 @@ async def upsert_config(
         Dict[str, Any]: upsert 后的配置对象。
     """
     service = _get_service(request)
+    scope = OwnershipScope.from_request(request)
     try:
         return await service.upsert_config(
             node_id,
+            scope,
             method=body.method,
             url=body.url,
             params=[item.model_dump() for item in body.params],
@@ -289,8 +298,9 @@ async def send_request(request: Request, node_id: int) -> Dict[str, Any]:
             response_body / check_passed / assertion_results / error_message）。
     """
     service = _get_service(request)
+    scope = OwnershipScope.from_request(request)
     try:
-        return await service.send_request(node_id)
+        return await service.send_request(node_id, scope)
     except Exception as exc:
         _handle_service_error(exc)
         raise
@@ -314,8 +324,9 @@ async def list_runs(
         Dict[str, Any]: {"runs": [...]}。
     """
     service = _get_service(request)
+    scope = OwnershipScope.from_request(request)
     try:
-        runs = await service.list_runs(node_id, limit=limit)
+        runs = await service.list_runs(node_id, scope, limit=limit)
         return {"runs": runs}
     except Exception as exc:
         _handle_service_error(exc)

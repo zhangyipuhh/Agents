@@ -173,11 +173,11 @@ class _StubApiConfigService:
         self.get_tree_calls = 0
         self.send_request_calls: List[int] = []
 
-    async def get_tree(self) -> List[Dict[str, Any]]:
+    async def get_tree(self, scope: Any = None) -> List[Dict[str, Any]]:
         self.get_tree_calls += 1
         return self._nodes
 
-    async def send_request(self, node_id: int) -> Dict[str, Any]:
+    async def send_request(self, node_id: int, scope: Any = None) -> Dict[str, Any]:
         self.send_request_calls.append(node_id)
         if node_id in self._raised:
             raise self._raised[node_id]

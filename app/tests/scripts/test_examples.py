@@ -521,8 +521,8 @@ async def test_hello_script_api_list_non_integer_id_raises_when_service_called(
     from app.scripts.examples import hello_script
 
     class _S:
-        async def get_tree(self): return []
-        async def send_request(self, _id):  # 不应到达
+        async def get_tree(self, scope=None): return []
+        async def send_request(self, _id, scope=None):  # 不应到达
             raise AssertionError("send_request 不应在解析阶段之前被调用")
 
     ctx = _make_context(
