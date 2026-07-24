@@ -2844,6 +2844,10 @@ ALTER TABLE email_server_configs
 -- ========== 20. email_policies / email_policy_recipients（邮件发送策略）==========
 -- 策略仅包含收件人集合（用户确认）；策略与 users 多对多关系
 -- 调用方（脚本/定时任务/手动）通过 policy_id 调用 EmailService 发送邮件
+-- 归属隔离（2026-07-24 起）：
+--   * created_by_user_id 作为归属字段，遵循 OwnershipScope 通用方案
+--   * admin 可见全部策略；普通用户仅可见自己创建的策略
+--   * 定时任务通过 notify_policy_id 关联策略，校验策略归属 task 创建人
 CREATE TABLE IF NOT EXISTS email_policies (
     id                SERIAL PRIMARY KEY,
     name              VARCHAR(200) NOT NULL,
@@ -2852,6 +2856,9 @@ CREATE TABLE IF NOT EXISTS email_policies (
     created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+-- 归属字段索引：按用户隔离 list 时频繁 WHERE created_by_user_id = $1
+CREATE INDEX IF NOT EXISTS idx_email_policies_created_by_user_id
+    ON email_policies(created_by_user_id);
 
 CREATE TABLE IF NOT EXISTS email_policy_recipients (
     policy_id   INTEGER NOT NULL REFERENCES email_policies(id) ON DELETE CASCADE,

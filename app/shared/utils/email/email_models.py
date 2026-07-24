@@ -66,6 +66,8 @@ class EmailPolicy(BaseModel):
         body_template: 邮件正文模板，含 ``{{var}}`` 占位符；空字符串表示直接使用
             脚本返回值作为正文。可用变量由 ``EmailTemplateRenderer.SUPPORTED_VARS``
             定义，并支持 ``{{timestamp|FORMAT}}`` 内联时间格式。
+        created_by_user_id: 创建者用户 ID（策略归属字段）；用于按创建者做
+            可见性隔离（admin 见全部，普通用户仅见自己创建）。新建时为 None。
         created_at: 创建时间；新建时为 None。
         updated_at: 更新时间；新建时为 None。
     """
@@ -84,6 +86,9 @@ class EmailPolicy(BaseModel):
     body_template: str = Field(
         default="",
         description="正文模板（{{var}} 占位符，留空使用脚本返回 body）",
+    )
+    created_by_user_id: Optional[int] = Field(
+        default=None, description="创建者用户 ID（归属字段，用于按用户隔离）"
     )
     created_at: Optional[datetime] = Field(default=None, description="创建时间")
     updated_at: Optional[datetime] = Field(default=None, description="更新时间")

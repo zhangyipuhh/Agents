@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
 
+from app.shared.utils.auth.ownership_scope import OwnershipScope
 from app.shared.utils.auth.Safety import require_admin, require_admin_or_menu_acl
 from app.shared.utils.email.email_config_service import (
     EmailConfigError,
@@ -337,16 +338,17 @@ async def list_emailable_users(request: Request) -> List[Dict[str, Any]]:
 @router.get("/policies", response_model=List[Dict[str, Any]],
             dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.email-settings.policies'))])
 async def list_policies(request: Request) -> List[Dict[str, Any]]:
-    """列出所有邮件发送策略。
+    """列出邮件发送策略（按当前用户归属过滤：admin 见全部；普通用户仅见自己创建）。
 
     参数:
         request: FastAPI Request 对象。
 
     返回:
-        List[Dict[str, Any]]: 策略列表。
+        List[Dict[str, Any]]: 策略列表，每项含 ``created_by_user_id``。
     """
     service = _get_config_service(request)
-    return await service.list_policies()
+    scope = OwnershipScope.from_request(request)
+    return await service.list_policies(scope)
 
 
 @router.post(
@@ -392,6 +394,8 @@ async def update_policy(
 ) -> Dict[str, Any]:
     """更新策略字段（未传字段保持原值）。
 
+    越权（策略不存在或非当前用户创建）返回 404，避免泄露记录是否存在。
+
     参数:
         request: FastAPI Request 对象。
         policy_id: 策略 ID。
@@ -401,9 +405,11 @@ async def update_policy(
         Dict[str, Any]: 更新后的策略详情。
     """
     service = _get_config_service(request)
+    scope = OwnershipScope.from_request(request)
     try:
-        return await service.update_policy(
+        result = await service.update_policy(
             policy_id=policy_id,
+            scope=scope,
             name=body.name,
             description=body.description,
             recipient_user_ids=body.recipient_user_ids,
@@ -413,12 +419,20 @@ async def update_policy(
     except Exception as exc:
         _handle_config_error(exc)
         raise
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"策略不存在或无权访问: {policy_id}",
+        )
+    return result
 
 
 @router.delete("/policies/{policy_id}", status_code=status.HTTP_204_NO_CONTENT,
             dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.email-settings.policies'))])
 async def delete_policy(request: Request, policy_id: int) -> None:
     """删除策略（关联表通过 ON DELETE CASCADE 自动清理）。
+
+    越权（策略不存在或非当前用户创建）返回 404，避免泄露记录是否存在。
 
     参数:
         request: FastAPI Request 对象。
@@ -428,11 +442,17 @@ async def delete_policy(request: Request, policy_id: int) -> None:
         None。
     """
     service = _get_config_service(request)
+    scope = OwnershipScope.from_request(request)
     try:
-        await service.delete_policy(policy_id)
+        deleted = await service.delete_policy(policy_id, scope)
     except Exception as exc:
         _handle_config_error(exc)
         raise
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"策略不存在或无权访问: {policy_id}",
+        )
 
 
 # =============================================================================
@@ -539,11 +559,17 @@ async def send_by_policy(
         )
 
     try:
-        policy = await config_service.get_policy(policy_id)
+        scope = OwnershipScope.from_request(request)
+        policy = await config_service.get_policy(policy_id, scope)
     except EmailConfigNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
+    if policy is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"策略不存在或无权访问: {policy_id}",
+        )
 
     recipients = policy.get("recipients", [])
     to_list = [r["email"] for r in recipients if r.get("email")]

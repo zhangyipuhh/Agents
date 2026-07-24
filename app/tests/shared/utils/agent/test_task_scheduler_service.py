@@ -1011,7 +1011,7 @@ def test_dispatch_script_email_renders_template_and_sends():
     )
 
     fake_email_config_service = MagicMock()
-    fake_email_config_service.get_policy = AsyncMock(
+    fake_email_config_service.get_policy_internal = AsyncMock(
         return_value={
             "id": 7,
             "name": "运维告警",
@@ -1091,7 +1091,7 @@ def test_dispatch_script_email_uses_policy_name_when_no_subject_template():
     )
 
     fake_email_config_service = MagicMock()
-    fake_email_config_service.get_policy = AsyncMock(
+    fake_email_config_service.get_policy_internal = AsyncMock(
         return_value={
             "id": 7,
             "name": "默认主题策略",
@@ -1190,7 +1190,7 @@ def test_dispatch_script_email_skips_when_no_recipients():
     from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
 
     fake_email_config_service = MagicMock()
-    fake_email_config_service.get_policy = AsyncMock(
+    fake_email_config_service.get_policy_internal = AsyncMock(
         return_value={
             "id": 7,
             "name": "空策略",
@@ -1237,7 +1237,7 @@ def test_dispatch_script_email_skips_when_smtp_not_configured():
     from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
 
     fake_email_config_service = MagicMock()
-    fake_email_config_service.get_policy = AsyncMock(
+    fake_email_config_service.get_policy_internal = AsyncMock(
         return_value={
             "id": 7,
             "name": "策略",
@@ -1298,7 +1298,7 @@ def test_dispatch_script_email_send_failure_does_not_raise():
     )
 
     fake_email_config_service = MagicMock()
-    fake_email_config_service.get_policy = AsyncMock(
+    fake_email_config_service.get_policy_internal = AsyncMock(
         return_value={
             "id": 7,
             "name": "策略",

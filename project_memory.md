@@ -251,6 +251,49 @@ app/
 └── main.py               # 应用入口
 ```
 
+## 通用配置归属隔离（OwnershipScope，2026-07-24 新增）
+
+邮件设置中的发送策略需要按创建者做可见性隔离：admin 见全部策略；普通用户仅见自己创建的策略。由于项目内还有 API 配置等同类"配置类"数据将陆续接入相同诉求，故建立通用 `OwnershipScope` 抽象供各 service 复用，避免每个业务表各自实现一套权限过滤。
+
+### 通用模块
+
+- `app/shared/utils/auth/ownership_scope.py::OwnershipScope` —— frozen dataclass，含 `user_id / is_admin / system` 三字段；提供：
+  - `from_request(request)`：从 `request.state.user_id / role` 构造（由 `auth_middleware` 写入）
+  - `for_user(user_id, is_admin=False)`：已知用户场景（脚本调用）
+  - `system_scope()`：系统内部调用入口（定时任务运行时等绕过隔离场景）
+  - `can_access(owner_id) -> bool`：判定当前 scope 是否可访问 `owner_id` 创建的记录（system / admin / owner 三类通过）
+  - `sql_filter(column, param_index)` -> `(SQL片段, 参数列表)`：把 scope 翻译为 SQL WHERE 子句（admin / system → `"TRUE"`；普通用户 → `"{column} = $N"`）
+- **约定字段命名**：凡需隔离的配置表统一加 `created_by_user_id INTEGER NOT NULL REFERENCES users(id)`，与已有 `email_policies` 列名一致；新表（如未来 `api_configs`）也沿用，避免命名分叉
+- **越权访问语义**：service 层越权返回 `None`（不区分"不存在"与"无权限"，避免泄露记录是否存在）；路由层映射 HTTP 404（与 `ProjectDB.get_project_by_id(..., user_id=...)` 的 404 语义一致）
+- **正交关系**：菜单 ACL（`require_admin_or_menu_acl`）仍是入口门（控制"能否调端点"），OwnershipScope 是其之上的数据层过滤（控制"能看到哪些数据"），两者各司其职
+
+### 首次落地：邮件发送策略
+
+- `EmailConfigService.list_policies(scope)` / `get_policy(policy_id, scope)` / `update_policy(policy_id, scope, ...)` / `delete_policy(policy_id, scope)` 全部接收 `scope` 参数；返回项附加 `created_by_user_id` 字段供前端 admin 视图展示归属
+- 新增 `EmailConfigService.get_policy_internal(policy_id)` —— 系统内部入口，使用 system scope 绕过隔离，供 `TaskSchedulerService._dispatch_script_email` 按 `notify_policy_id` 直查（运行时信任配置期校验）
+- `app/routers/email_admin_router.py`：所有 `/policies` 与 `/send-by-policy/{id}` 端点通过 `OwnershipScope.from_request(request)` 构造 scope 传入 service；service 返回 `None` / `delete=False` 时路由返回 404
+- `EmailPolicy` Pydantic 模型新增 `created_by_user_id: Optional[int]` 字段
+- `init_all_tables.sql`：`email_policies.created_by_user_id` 加索引 `idx_email_policies_created_by_user_id`（list 按用户隔离时高频 WHERE 该列）
+
+### 定时任务归属校验（notify_policy_id）
+
+`agent_task_schedules.notify_policy_id` 引用 `email_policies.id` 发送通知邮件，隔离后需校验：策略必须属于 schedule 创建人（或调用方为 admin）。
+
+- `TaskSchedulerService._assert_notify_policy_access(notify_policy_id, schedule_owner_user_id, is_admin)` 新增 helper：
+  - `notify_policy_id=None` 跳过；`email_config_service` 未注入（lifespan 未初始化 / Memory 模式）跳过（不阻断任务创建，运行时会跳过发邮件）
+  - 普通用户跨用户引用抛 `TaskScheduleValidationError`；策略不存在同样抛（不区分）
+- `TaskSchedulerService.create_schedule` / `update_schedule` 新增 `is_admin` 参数；创建/更新 schedule 时校验 `notify_policy_id` 归属；update 时使用现有 schedule 的 owner（合并后的 merged.created_by_user_id）
+- `app/routers/task_scheduler_router.py` 新增 `_request_is_admin(request)` helper，把当前用户 role 透传给 service
+- 运行时 `_dispatch_script_email` 改用 `get_policy_internal`（system scope）—— 策略的归属校验已在 schedule 创建/更新时完成，运行时信任该约束
+
+### 测试
+
+- `app/tests/shared/utils/auth/test_ownership_scope.py` —— 22 用例覆盖 `from_request / for_user / system_scope` 工厂 + `can_access` 判定矩阵（含 admin / system / owner / 越权 / 缺失字段）+ `sql_filter` 透传
+- `app/tests/shared/utils/email/test_email_config_service_scope.py` —— 16 用例覆盖 list / get / update / delete 在 admin / user / system scope 下的可见性
+- `app/tests/routers/test_email_admin_router_scope.py` —— 13 用例覆盖路由层 404 契约（越权 update / delete / send-by-policy）+ scope 透传
+- `app/tests/shared/utils/agent/test_task_scheduler_notify_policy_scope.py` —— 9 用例覆盖 `_assert_notify_policy_access` 判定 + `create_schedule` 跨用户拒绝
+- 回归保护：现有 `app/tests/shared/utils/email/test_email_config_service.py`（30 例）+ `app/tests/shared/utils/agent/test_task_scheduler_service.py`（30 例）+ `app/tests/routers/test_email_admin_router.py`（30 例）全部通过；原 `fake_email_config_service.get_policy` mock 改为 `get_policy_internal`（dispatch 路径已切换到 system scope）
+
 ## 邮件系统
 
 ### 核心设计
@@ -335,13 +378,13 @@ asyncio.run(EmailService(config).send_email(
 | PUT | `/server-config` | 保存 SMTP 配置（密码为空字符串时保留原密码） |
 | POST | `/server-config/test` | 测试 SMTP 连接（不发送邮件） |
 | GET | `/emailable-users` | 列出已注册且邮箱非空用户（供前端挑选收件人） |
-| GET | `/policies` | 策略列表 |
-| POST | `/policies` | 新建策略 |
-| GET | `/policies/{id}` | 策略详情 |
-| PUT | `/policies/{id}` | 更新策略 |
-| DELETE | `/policies/{id}` | 删除策略 |
+| GET | `/policies` | 策略列表（按 OwnershipScope 过滤：admin 见全部；普通用户仅见自己创建） |
+| POST | `/policies` | 新建策略（`created_by_user_id = request.state.user_id`） |
+| GET | `/policies/{id}` | 策略详情（越权 404） |
+| PUT | `/policies/{id}` | 更新策略（越权 404） |
+| DELETE | `/policies/{id}` | 删除策略（越权 404） |
 | POST | `/test` | 发送测试邮件（multipart/form-data，支持本地附件上传） |
-| POST | `/send-by-policy/{policy_id}` | 按策略发送邮件（JSON body：subject / body / attachment_paths） |
+| POST | `/send-by-policy/{policy_id}` | 按策略发送邮件（越权 404；JSON body：subject / body / attachment_paths） |
 
 ### 配置项
 

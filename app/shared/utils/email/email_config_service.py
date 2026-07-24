@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from app.shared.utils.auth.ownership_scope import OwnershipScope
 from app.shared.utils.email.email_models import EmailServerConfig
 
 
@@ -466,21 +467,31 @@ class EmailConfigService:
     # Policy CRUD
     # ------------------------------------------------------------------
 
-    async def list_policies(self) -> List[Dict[str, Any]]:
-        """列出所有邮件发送策略（含收件人列表与模板字段）。
+    async def list_policies(self, scope: OwnershipScope) -> List[Dict[str, Any]]:
+        """列出邮件发送策略（含收件人列表与模板字段），按 ``scope`` 过滤可见性。
+
+        可见性规则：``scope.system=True`` 或 ``scope.is_admin=True`` 时返回全部；
+        普通用户仅返回 ``created_by_user_id == scope.user_id`` 的策略。
+        返回项附加 ``created_by_user_id`` 字段供前端展示归属（admin 视图）。
+
+        参数:
+            scope: 调用方归属上下文；通常由 ``OwnershipScope.from_request(request)``
+                或 ``OwnershipScope.system_scope()`` 构造。
 
         返回:
             List[Dict[str, Any]]: 策略列表，每项含
             ``id`` / ``name`` / ``description`` / ``recipient_user_ids`` /
             ``recipients`` (含 email) / ``subject_template`` / ``body_template`` /
-            ``created_at`` / ``updated_at``。
+            ``created_by_user_id`` / ``created_at`` / ``updated_at``。
         """
         if self._db is None:
             return []
+        # scope.sql_filter 返回 ("TRUE", []) 或 ("created_by_user_id = $N", [user_id])
+        where_sql, where_params = scope.sql_filter("created_by_user_id", param_index=1)
         rows = await self._db.fetch(
-            """
+            f"""
             SELECT p.id, p.name, p.description, p.subject_template,
-                   p.body_template, p.created_at, p.updated_at,
+                   p.body_template, p.created_by_user_id, p.created_at, p.updated_at,
                    COALESCE(
                        json_agg(
                            json_build_object(
@@ -494,10 +505,12 @@ class EmailConfigService:
             FROM email_policies p
             LEFT JOIN email_policy_recipients r ON r.policy_id = p.id
             LEFT JOIN users u ON u.id = r.user_id
+            WHERE {where_sql}
             GROUP BY p.id, p.name, p.description, p.subject_template,
-                     p.body_template, p.created_at, p.updated_at
+                     p.body_template, p.created_by_user_id, p.created_at, p.updated_at
             ORDER BY p.id DESC
-            """
+            """,
+            *where_params,
         )
         result: List[Dict[str, Any]] = []
         for row in rows:
@@ -513,29 +526,32 @@ class EmailConfigService:
                 "recipients": recipients,
                 "subject_template": row.get("subject_template", "") or "",
                 "body_template": row.get("body_template", "") or "",
+                "created_by_user_id": row.get("created_by_user_id"),
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
             })
         return result
 
-    async def get_policy(self, policy_id: int) -> Dict[str, Any]:
-        """获取单个策略详情。
+    async def get_policy(self, policy_id: int, scope: OwnershipScope) -> Optional[Dict[str, Any]]:
+        """获取单个策略详情，按 ``scope`` 做归属校验。
+
+        策略不存在 **或** 当前 scope 无权访问时均返回 ``None``（不区分两种
+        情况，避免泄露记录是否存在 — 与 ``ProjectDB.get_project_by_id``
+        的 404 语义一致）。
 
         参数:
             policy_id: 策略 ID。
+            scope: 调用方归属上下文。
 
         返回:
-            Dict[str, Any]: 策略详情。
-
-        异常:
-            EmailConfigNotFoundError: 策略不存在时抛出。
+            Optional[Dict[str, Any]]: 策略详情；不可见返回 ``None``。
         """
         if self._db is None:
-            raise EmailConfigNotFoundError("数据库未初始化")
+            return None
         row = await self._db.fetchrow(
             """
             SELECT p.id, p.name, p.description, p.subject_template,
-                   p.body_template, p.created_at, p.updated_at,
+                   p.body_template, p.created_by_user_id, p.created_at, p.updated_at,
                    COALESCE(
                        json_agg(
                            json_build_object(
@@ -551,12 +567,14 @@ class EmailConfigService:
             LEFT JOIN users u ON u.id = r.user_id
             WHERE p.id = $1
             GROUP BY p.id, p.name, p.description, p.subject_template,
-                     p.body_template, p.created_at, p.updated_at
+                     p.body_template, p.created_by_user_id, p.created_at, p.updated_at
             """,
             policy_id,
         )
         if row is None:
-            raise EmailConfigNotFoundError(f"策略不存在: {policy_id}")
+            return None
+        if not scope.can_access(row.get("created_by_user_id")):
+            return None
         recipients = row.get("recipients") or []
         if isinstance(recipients, str):
             import json
@@ -569,9 +587,29 @@ class EmailConfigService:
             "recipients": recipients,
             "subject_template": row.get("subject_template", "") or "",
             "body_template": row.get("body_template", "") or "",
+            "created_by_user_id": row.get("created_by_user_id"),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
+
+    async def get_policy_internal(self, policy_id: int) -> Optional[Dict[str, Any]]:
+        """系统内部获取策略（绕过归属隔离）。
+
+        用于定时任务运行时按 ``notify_policy_id`` 取策略发送邮件 ——
+        策略的归属校验已在 ``TaskSchedulerService._validate_payload``
+        创建/更新调度时完成（policy 须归属 schedule 创建人），运行时
+        信任该约束直接按 id 查询。
+
+        调用方契约：仅 ``TaskSchedulerService._dispatch_script_email``
+        等内部场景使用；HTTP 路由层禁止调用本方法。
+
+        参数:
+            policy_id: 策略 ID。
+
+        返回:
+            Optional[Dict[str, Any]]: 策略详情；不存在返回 ``None``。
+        """
+        return await self.get_policy(policy_id, OwnershipScope.system_scope())
 
     async def create_policy(
         self,
@@ -631,21 +669,24 @@ class EmailConfigService:
                         [(policy_id, uid) for uid in unique_ids],
                     )
 
-        return await self.get_policy(policy_id)
+        return await self.get_policy(policy_id, OwnershipScope.system_scope())
 
     async def update_policy(
         self,
         policy_id: int,
+        scope: OwnershipScope,
         name: Optional[str] = None,
         description: Optional[str] = None,
         recipient_user_ids: Optional[List[int]] = None,
         subject_template: Optional[str] = None,
         body_template: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """更新策略字段（未传入的字段保持原值）。
+    ) -> Optional[Dict[str, Any]]:
+        """更新策略字段（未传入的字段保持原值），按 ``scope`` 做归属校验。
 
         参数:
             policy_id: 策略 ID。
+            scope: 调用方归属上下文；admin / system 通过；普通用户需
+                ``policy.created_by_user_id == scope.user_id``。
             name: 新名称；None 表示不修改。
             description: 新描述；None 表示不修改。
             recipient_user_ids: 新收件人列表；None 表示不修改。
@@ -653,10 +694,11 @@ class EmailConfigService:
             body_template: 新正文模板；None 表示不修改。
 
         返回:
-            Dict[str, Any]: 更新后的策略详情。
+            Optional[Dict[str, Any]]: 更新后的策略详情；策略不存在或
+            当前 scope 无权访问时返回 ``None``（HTTP 层映射 404）。
 
         异常:
-            EmailConfigNotFoundError: 策略不存在时抛出。
+            EmailConfigError: 数据库未初始化。
             EmailConfigValidationError: 名称或收件人列表为空时抛出。
         """
         if self._db is None:
@@ -665,11 +707,13 @@ class EmailConfigService:
         async with self._db.acquire() as conn:
             async with conn.transaction():
                 existing = await conn.fetchrow(
-                    "SELECT id FROM email_policies WHERE id = $1",
+                    "SELECT id, created_by_user_id FROM email_policies WHERE id = $1",
                     policy_id,
                 )
                 if existing is None:
-                    raise EmailConfigNotFoundError(f"策略不存在: {policy_id}")
+                    return None
+                if not scope.can_access(existing.get("created_by_user_id")):
+                    return None
 
                 if name is not None:
                     if not name or not name.strip():
@@ -712,18 +756,29 @@ class EmailConfigService:
                             [(policy_id, uid) for uid in unique_ids],
                         )
 
-        return await self.get_policy(policy_id)
+        return await self.get_policy(policy_id, scope)
 
-    async def delete_policy(self, policy_id: int) -> bool:
-        """删除策略（关联表通过 ON DELETE CASCADE 自动清理）。
+    async def delete_policy(self, policy_id: int, scope: OwnershipScope) -> bool:
+        """删除策略（关联表通过 ON DELETE CASCADE 自动清理），按 ``scope`` 做归属校验。
 
         参数:
             policy_id: 策略 ID。
+            scope: 调用方归属上下文。
 
         返回:
-            bool: 删除成功返回 True；不存在返回 False。
+            bool: 删除成功返回 True；策略不存在或当前 scope 无权访问时
+            返回 False（HTTP 层映射 404）。
         """
         if self._db is None:
+            return False
+        # 先取 owner 再决定是否删除，避免泄露记录是否存在（统一返回 404）
+        owner_row = await self._db.fetchrow(
+            "SELECT created_by_user_id FROM email_policies WHERE id = $1",
+            policy_id,
+        )
+        if owner_row is None:
+            return False
+        if not scope.can_access(owner_row.get("created_by_user_id")):
             return False
         result = await self._db.execute(
             "DELETE FROM email_policies WHERE id = $1",
@@ -803,6 +858,13 @@ def _register_email_schema() -> None:
                 created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+            """
+        )
+        # 2026-07-24 新增：归属字段索引，按 created_by_user_id 隔离 list 时加速
+        await DatabasePool.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_email_policies_created_by_user_id
+                ON email_policies(created_by_user_id)
             """
         )
         # 策略-收件人多对多关联表

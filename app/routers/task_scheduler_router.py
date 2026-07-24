@@ -204,6 +204,23 @@ def _request_user_id(request: Request) -> int:
     return int(getattr(request.state, "user_id", 0) or 0)
 
 
+def _request_is_admin(request: Request) -> bool:
+    """从 request.state 判断当前调用方是否为 admin 角色。
+
+    由 ``auth_middleware`` 在 JWT 校验通过后将 ``role`` 写入
+    ``request.state``。本函数用于把当前用户角色传递给 service 层做
+    ``notify_policy_id`` 归属校验：admin 可关联任何用户的策略，普通
+    用户只能关联自己创建的策略。
+
+    参数:
+        request: FastAPI Request 对象。
+
+    返回:
+        bool: 当前用户是否为 admin；默认 ``False``。
+    """
+    return getattr(request.state, "role", "user") == "admin"
+
+
 def _handle_service_error(exc: Exception) -> None:
     """将 service 异常转换为 HTTPException。
 
@@ -284,6 +301,7 @@ async def create_task_schedule(
         return await service.create_schedule(
             body.model_dump(),
             created_by_user_id=_request_user_id(request),
+            is_admin=_request_is_admin(request),
         )
     except Exception as exc:
         _handle_service_error(exc)
@@ -312,6 +330,7 @@ async def update_task_schedule(
         return await service.update_schedule(
             schedule_id,
             body.model_dump(exclude_unset=True),
+            is_admin=_request_is_admin(request),
         )
     except Exception as exc:
         _handle_service_error(exc)

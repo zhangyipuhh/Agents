@@ -287,12 +287,15 @@ class TaskSchedulerService:
         self,
         payload: Dict[str, Any],
         created_by_user_id: int,
+        is_admin: bool = False,
     ) -> Dict[str, Any]:
         """创建定时任务并同步调度器。
 
         参数:
             payload: 定时任务字段。
             created_by_user_id: 创建人用户 ID。
+            is_admin: 当前调用方是否为 admin；admin 可关联任何用户的
+                ``notify_policy_id``；普通用户只能关联自己创建的策略。
 
         返回:
             Dict[str, Any]: 新建任务记录。
@@ -302,6 +305,12 @@ class TaskSchedulerService:
         """
         self._validate_payload(payload, partial=False)
         target_type = payload.get("target_type") or "agent"
+        # notify_policy_id 归属校验（仅 script 任务可能用到，但任意
+        # target_type 都接受 notify_policy_id 字段，故统一校验）
+        notify_policy_id = payload.get("notify_policy_id") or None
+        await self._assert_notify_policy_access(
+            notify_policy_id, created_by_user_id, is_admin,
+        )
         # 根据目标类型确定 agent_name / prompt / script_name / script_args
         if target_type == "agent":
             agent_name = payload["agent_name"]
@@ -364,12 +373,14 @@ class TaskSchedulerService:
         self,
         schedule_id: int,
         payload: Dict[str, Any],
+        is_admin: bool = False,
     ) -> Dict[str, Any]:
         """更新定时任务并同步调度器。
 
         参数:
             schedule_id: 定时任务 ID。
             payload: 需要更新的字段。
+            is_admin: 当前调用方是否为 admin。
 
         返回:
             Dict[str, Any]: 更新后的任务记录。
@@ -381,6 +392,15 @@ class TaskSchedulerService:
         current = await self.get_schedule(schedule_id)
         merged = {**current, **{k: v for k, v in payload.items() if v is not None}}
         self._validate_payload(merged, partial=False)
+        # notify_policy_id 归属校验：使用现有 schedule 的 owner（更新时
+        # 通常不换 owner；如 payload 含 created_by_user_id 则按新值校验）
+        notify_policy_id = merged.get("notify_policy_id") or None
+        schedule_owner_user_id = int(
+            merged.get("created_by_user_id") or current.get("created_by_user_id") or 0
+        )
+        await self._assert_notify_policy_access(
+            notify_policy_id, schedule_owner_user_id, is_admin,
+        )
         next_run_at = self._calculate_next_run_at(merged)
         target_type = merged.get("target_type") or "agent"
         # 根据目标类型确定 agent_name / prompt / script_name / script_args
@@ -726,6 +746,61 @@ class TaskSchedulerService:
                 )
             finally:
                 self._uninstall_run_logger(run_id, run_logger)
+
+    async def _assert_notify_policy_access(
+        self,
+        notify_policy_id: Optional[int],
+        schedule_owner_user_id: int,
+        is_admin: bool,
+    ) -> None:
+        """校验 ``notify_policy_id`` 的归属可访问性。
+
+        策略表 ``email_policies`` 按创建者做归属隔离：admin 见全部，普通
+        用户仅见自己创建的。当定时任务启用邮件通知时，关联的策略必须
+        属于任务创建人（或当前调用方为 admin）。
+
+        校验失败抛 ``TaskScheduleValidationError``；策略不存在时同样视为
+        校验失败（不区分"不存在"与"无权限"，避免泄露策略是否对他用户
+        可见）。
+
+        参数:
+            notify_policy_id: 邮件策略 ID；``None`` 时跳过校验。
+            schedule_owner_user_id: 定时任务创建人用户 ID。
+            is_admin: 当前调用方（创建/更新任务的用户）是否为 admin。
+
+        返回:
+            None。
+
+        异常:
+            TaskScheduleValidationError: 策略不存在或当前用户无权访问。
+        """
+        if notify_policy_id is None:
+            return
+        if self._email_config_service is None:
+            # email_config_service 未注入（lifespan 未初始化 / Memory 模式
+            # 退化）：为不破坏既有部署，保留策略引用不阻断（运行时
+            # ``_dispatch_script_email`` 也会跳过发邮件）。但日志提示
+            # 运维层注意。
+            logger.warning(
+                "TaskSchedulerService._assert_notify_policy_access: "
+                "email_config_service 未注入，跳过 notify_policy_id=%s 归属校验",
+                notify_policy_id,
+            )
+            return
+        # system scope 读 owner，绕过 service 自身的归属过滤（service
+        # 在归属隔离模式下 get_policy 只对 admin / owner 返回结果，system
+        # 语义用于内部校验）
+        policy = await self._email_config_service.get_policy_internal(int(notify_policy_id))
+        if policy is None:
+            raise TaskScheduleValidationError(
+                f"notify_policy_id={notify_policy_id} 不存在"
+            )
+        if not is_admin:
+            owner_id = policy.get("created_by_user_id")
+            if owner_id is None or int(owner_id) != int(schedule_owner_user_id):
+                raise TaskScheduleValidationError(
+                    f"notify_policy_id={notify_policy_id} 不属于当前用户，无法关联"
+                )
 
     def _validate_payload(self, payload: Dict[str, Any], partial: bool) -> None:
         """校验任务 payload。
@@ -1185,7 +1260,7 @@ class TaskSchedulerService:
                 run_logger.warning("notify_policy_id 缺失，跳过发邮件")
                 return
 
-            policy = await self._email_config_service.get_policy(int(policy_id))
+            policy = await self._email_config_service.get_policy_internal(int(policy_id))
             recipients = policy.get("recipients") or []
             to_list = [
                 str(r.get("email") or "")
