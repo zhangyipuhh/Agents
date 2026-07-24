@@ -2929,9 +2929,13 @@ CREATE INDEX IF NOT EXISTS idx_api_check_runs_config ON api_check_runs(config_id
 
 -- 21.1 扩展：api_config_nodes 归属字段（2026-07-24 新增）
 -- 已运行过旧版 init_all_tables.sql 的部署需要补加该列：
---   * 列为可空 + FK → 回填到首个 admin（兜底首个用户） → SET NOT NULL
---   * 整段使用 IF NOT EXISTS，幂等可重复执行；新装 DB 在 CREATE TABLE 已直接定义 NOT NULL
---   * 回填失败（无任何用户）会令 SET NOT NULL 报错，需在运维前确保至少存在一名用户
+--   * ADD COLUMN IF NOT EXISTS + FK；新装 DB 在 CREATE TABLE 已直接定义 NOT NULL，本段 ALTER no-op
+--   * UPDATE 回填到首个 admin（兜底首个用户），仅处理存量 NULL 行（依赖 users 已有数据）
+--   * SET NOT NULL：纯 SQL 写法，要求 users 表至少有 1 行（生产必满足）；极端场景
+--     「users 表为空」会让 SET NOT NULL 抛错中断事务——此为已知 trade-off，
+--     运维前确保至少存在一名用户即可（见项目记忆 init 注释）
+--   * CREATE INDEX 在 ADD COLUMN 之后建（依赖 created_by_user_id 已存在）
+--   * 整段使用 IF NOT EXISTS，幂等可重复执行
 ALTER TABLE api_config_nodes
     ADD COLUMN IF NOT EXISTS created_by_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
 UPDATE api_config_nodes
@@ -2939,7 +2943,8 @@ SET created_by_user_id = COALESCE(
     (SELECT id FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1),
     (SELECT id FROM users ORDER BY id ASC LIMIT 1)
 )
-WHERE created_by_user_id IS NULL;
+WHERE created_by_user_id IS NULL
+  AND EXISTS (SELECT 1 FROM users LIMIT 1);
 ALTER TABLE api_config_nodes ALTER COLUMN created_by_user_id SET NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_api_config_nodes_created_by_user_id
     ON api_config_nodes(created_by_user_id);
