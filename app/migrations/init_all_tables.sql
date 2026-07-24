@@ -2981,7 +2981,7 @@ WHERE name = 'map_agent';
 
 -- =============================================
 -- 21.1 扩展：api_config_nodes 归属字段（2026-07-24 新增）
--- 移到主事务（COMMIT 之后）执行，独立 BEGIN/COMMIT 包裹，SAVEPOINT 隔离失败：
+-- 在主事务 COMMIT 之后执行，独立 BEGIN/COMMIT 包裹，SAVEPOINT 隔离失败：
 --   * ADD COLUMN IF NOT EXISTS + FK；新装 DB 在 CREATE TABLE 已直接定义 NOT NULL，本段 ALTER no-op
 --   * UPDATE 回填到首个 admin（兜底首个用户），仅处理存量 NULL 行（依赖 users 已有数据）
 --   * SET NOT NULL：要求 users 表至少有 1 行（生产必满足）；若有 NULL 残留，内层

@@ -308,6 +308,15 @@ app/
 - `app/tests/shared/utils/agent/test_task_scheduler_schedule_scope.py`（2026-07-24 新增）—— 23 用例覆盖 list 过滤、get/update/delete/enable/trigger/runs 越权 NotFound、`_assert_api_list_access` 完整判定矩阵（含 admin bypass / missing node / folder type / invalid element）+ create/update 集成
 - 回归保护：现有 `app/tests/shared/utils/email/test_email_config_service.py`（30 例）+ `app/tests/shared/utils/agent/test_task_scheduler_service.py`（30 例）+ `app/tests/routers/test_email_admin_router.py`（30 例）全部通过；原 `fake_email_config_service.get_policy` mock 改为 `get_policy_internal`（dispatch 路径已切换到 system scope）；`ApiConfigService` 既有 28 例 service 单测补 scope 参数；`TaskSchedulerService` set_enabled/trigger 2 例补 scope；api_check + hello_script 的 stub 服务补 `scope=None` 默认参数
 
+#### 执行历史弹窗（TaskSchedulerManager.vue `.task-history-dialog`）
+
+- 数据源：`GET /api/admin/task-schedules/{id}/runs?limit=50`（`web/Agent/src/utils/api.js::fetchTaskRuns`）
+- 字段显示：`<span>` 渲染经 `formatRunTime(value)` 本地化
+- 时间格式：**绝对时间 `YYYY-MM-DD HH:MM:SS`（24h，零填充，本地时区）**
+- 兜底：`null` / 空字符串 / 非法日期 → `-`
+- 渲染优先级：`run.created_at` → `run.started_at`
+- 不使用 dayjs / date-fns / moment；不依赖后端时间格式调整
+
 ## 邮件系统
 
 ### 核心设计
