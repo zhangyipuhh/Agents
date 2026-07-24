@@ -263,6 +263,7 @@ app/
   - `system_scope()`：系统内部调用入口（定时任务运行时等绕过隔离场景）
   - `can_access(owner_id) -> bool`：判定当前 scope 是否可访问 `owner_id` 创建的记录（system / admin / owner 三类通过）
   - `sql_filter(column, param_index)` -> `(SQL片段, 参数列表)`：把 scope 翻译为 SQL WHERE 子句（admin / system → `"TRUE"`；普通用户 → `"{column} = $N"`）
+- **类型契约**：`can_access(owner_id)` 内部使用 `==` 直接比较，**不做 `int()` 强转**；调用方必须保证 `owner_id` 已是 `int`（或 `None`），非 int 输入（`str` / `float` / `bool` 等）一律返回 `False`。该设计避免 `int("5") == int(5)` 这类类型归一绕过导致的越权风险；DB 字段 `created_by_user_id` 是 `INTEGER`，asyncpg 取出即 `int`，不存在转换需要
 - **约定字段命名**：凡需隔离的配置表统一加 `created_by_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE`，与已有 `email_policies` / `api_config_nodes` 列名一致；新表也沿用，避免命名分叉
 - **越权访问语义**：service 层缺失与越权统一抛 `*NotFoundError`（不区分"不存在"与"无权限"，避免泄露记录是否存在）；路由层映射 HTTP 404。**例外**：父节点校验（`create_node` / `update_node` 的 parent）翻译为 `ValueError("父节点不存在: <id>")` → HTTP 400，保留前端"父节点不存在"的用户反馈
 - **正交关系**：菜单 ACL（`require_admin_or_menu_acl`）仍是入口门（控制"能否调端点"），OwnershipScope 是其之上的数据层过滤（控制"能看到哪些数据"），两者各司其职

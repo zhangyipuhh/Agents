@@ -124,10 +124,16 @@ class OwnershipScope:
         1. ``system=True``：永真。
         2. ``is_admin=True``：永真（admin 可见全部）。
         3. ``owner_id == self.user_id`` 且 ``user_id`` 非 ``None``：真。
+           严格使用 ``==``（**不做** ``int()`` 强转）：调用方应保证
+           ``owner_id`` 已是 ``int``；非 int 类型的对象（``str`` /
+           ``float`` / ``bool`` 等）将由 Python 的 ``==`` 直接返回
+           ``False``，避免类型归一绕过导致的越权风险。
         4. 其他：假。
 
         参数:
             owner_id: 记录创建者用户 ID；可能为 ``None``（旧数据 / 系统种子）。
+                调用方必须保证传入 ``int``（或 ``None``），DB ``INTEGER``
+                字段经 asyncpg 取出即 ``int``，无需额外转换。
 
         返回:
             bool: 是否允许访问。
@@ -138,7 +144,7 @@ class OwnershipScope:
             return True
         if owner_id is None or self.user_id is None:
             return False
-        return int(owner_id) == int(self.user_id)
+        return owner_id == self.user_id
 
     # ------------------------------------------------------------------
     # SQL 过滤辅助

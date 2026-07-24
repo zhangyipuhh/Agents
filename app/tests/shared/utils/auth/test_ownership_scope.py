@@ -90,6 +90,23 @@ def test_for_user_constructs_user_scope():
     assert scope.system is False
 
 
+def test_for_user_with_admin_true_constructs_admin_scope():
+    """``for_user(user_id, is_admin=True)`` 构造 admin scope。
+
+    补全 ``is_admin=True`` 分支的工厂测试。该入口在脚本调度、定时任务触发等
+    admin 路径中频繁使用（见 ``task_scheduler_service`` / ``api_config_service``
+    单测中的 10+ 次调用），不应零覆盖。
+    """
+    scope = OwnershipScope.for_user(user_id=1, is_admin=True)
+    assert scope.user_id == 1
+    assert scope.is_admin is True
+    assert scope.system is False
+    # 进一步锁定：admin scope 的 can_access 不受 owner_id 类型影响（短路通过）
+    assert scope.can_access(99) is True
+    assert scope.can_access(None) is True
+    assert scope.can_access("not_an_int") is True
+
+
 # =============================================================================
 # P1: can_access 判定矩阵
 # =============================================================================
@@ -111,6 +128,8 @@ def test_for_user_constructs_user_scope():
         (OwnershipScope(user_id=5, is_admin=False), None, False),
         # 普通用户自身 user_id=None：拒绝（兜底）
         (OwnershipScope(user_id=None, is_admin=False), 5, False),
+        # 普通用户 owner_id 字符串"5"：不归一为 int，必须拒绝（类型不匹配兜底）
+        (OwnershipScope(user_id=5, is_admin=False), "5", False),
     ],
 )
 def test_can_access_returns_correct_value(scope, owner_id, expected):
@@ -118,22 +137,30 @@ def test_can_access_returns_correct_value(scope, owner_id, expected):
     assert scope.can_access(owner_id) is expected
 
 
-def test_can_access_with_non_int_owner_raises():
-    """``owner_id`` 为非数字类型（无 ``__int__``）时，``int(...)`` 强转抛
-    ``TypeError``，``can_access`` 不应静默吞掉。
+@pytest.mark.parametrize(
+    "non_int_owner",
+    [
+        "5",          # string：旧 int('5')==int(5)→True 的越权路径，必须返回 False
+        True,         # bool：int(True)==int(1)→True 的越权路径
+        [5],          # list：与 int 不相等
+        {"id": 5},    # dict：与 int 不相等
+        (5,),         # tuple：与 int 不相等
+        object(),     # 任意对象：与 int 不相等
+    ],
+    ids=["str", "bool_true", "list", "dict", "tuple", "object"],
+)
+def test_can_access_rejects_non_int_owner(non_int_owner):
+    """``can_access`` 不做 ``int()`` 强转；非 int 类型的 ``owner_id`` 必须返回 ``False``。
 
-    使用一个不含 ``__int__`` 的自定义类作为 owner_id。``MagicMock`` 不
-    适用：它会自动生成 ``__int__`` 并返回整数（mock 默认行为），无法触
-    发 TypeError。
+    锁定「类型不匹配 → 拒绝」契约，杜绝旧 ``int(owner_id) == int(self.user_id)``
+    把 ``"5" / True`` 归一为相等导致的越权风险。调用方必须保证传 int（或 None）。
+
+    说明：``5.0 == 5`` 在 Python 语义层为 ``True``，与 ``int()`` 强转无关；DB
+    INTEGER 字段经 asyncpg 取出即 ``int``，不会出现 float 输入，因此该边界
+    不在 ``OwnershipScope`` 的防御范围内。
     """
-    class _NoInt:
-        """不实现 ``__int__`` 的简单类 — 用于锁定 ``can_access`` 强转行为。"""
-
-        pass
-
     scope = OwnershipScope(user_id=5, is_admin=False)
-    with pytest.raises(TypeError):
-        scope.can_access(_NoInt())
+    assert scope.can_access(non_int_owner) is False
 
 
 # =============================================================================
