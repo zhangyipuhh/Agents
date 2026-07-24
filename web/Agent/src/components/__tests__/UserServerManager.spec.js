@@ -15,6 +15,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import UserServerManager from '../UserServerManager.vue'
+import userServerSource from '../UserServerManager.vue?raw'
 
 // mockImportDialog 必须在 import UserServerManager 前设置，避免子组件缺失导致 mount 失败
 // 用 stub 替换 ImportServerDialog 行为（仅保留 props 接口）
@@ -266,5 +267,38 @@ describe('UserServerManager 组件', () => {
     const errorArea = wrapper.find('[data-testid="usm-tree-error"]')
     expect(errorArea.exists()).toBe(true)
     expect(errorArea.text()).toContain('文件夹非空')
+  })
+})
+
+/**
+ * 宽度布局契约（源码静态断言，jsdom 不计算 <style scoped> 布局）
+ *
+ * 背景：.usm-layout 是 tab-fill-wrapper 的子节点，仅当自身声明 `flex: 1`
+ * + `min-width: 0` 时才会沿父级 flex 链撑满剩余宽度；.usm-detail 同理需
+ * 要 `min-width: 0` 才能在固定宽度 sidebar 旁正确收缩。否则右侧详情面板
+ * 不会铺满父级剩余空间，且 flex 子项可能因内容溢出被撑大。
+ */
+describe('UserServerManager 宽度布局契约', () => {
+  /**
+   * 从 SFC 源码提取指定选择器的样式块内容。
+   * @param {string} selector - CSS 选择器（正则安全转义由调用方保证）
+   * @returns {string} 样式块声明内容
+   */
+  function styleBlock(selector) {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const match = userServerSource.match(new RegExp(escaped + '\\s*\\{([^}]*)\\}'))
+    expect(match, `${selector} 样式块必须存在`).not.toBeNull()
+    return match[1]
+  }
+
+  it('test_usm_layout_fills_remaining_width 根布局声明 flex: 1 与 min-width: 0', () => {
+    const body = styleBlock('.usm-layout')
+    expect(body).toMatch(/flex\s*:\s*1/)
+    expect(body).toMatch(/min-width\s*:\s*0/)
+  })
+
+  it('test_usm_detail_allows_flex_shrink 详情区声明 min-width: 0', () => {
+    const body = styleBlock('.usm-detail')
+    expect(body).toMatch(/min-width\s*:\s*0/)
   })
 })

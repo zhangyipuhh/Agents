@@ -722,6 +722,8 @@ watch(selectedNodeId, async (newId) => {
 <style scoped>
 .usm-layout {
   display: flex;
+  flex: 1;
+  min-width: 0;
   height: 100%;
   min-height: 480px;
   border: 1px solid #e5e7eb;
@@ -929,6 +931,7 @@ watch(selectedNodeId, async (newId) => {
 }
 .usm-detail {
   flex: 1;
+  min-width: 0;
   padding: 16px 20px;
   overflow-y: auto;
 }

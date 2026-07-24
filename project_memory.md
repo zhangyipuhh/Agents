@@ -4918,6 +4918,8 @@ user_server_nodes (node_type='server' 的行，每个用户导入时生成一行
   - 「+ 新建」菜单三项：新建文件夹（可用）/ 新建服务器配置（**disabled** + 提示「该功能暂未开放」——按需求预留）/ 导入已有配置（弹出 ImportServerDialog）
   - server 节点详情只展示 7 字段白名单（无 ip/port/账号/密码），与「服务器扫描入库」详情契约一致
   - 提供 `isAdmin` prop 接收父组件的 admin 状态
+  - 布局契约：根容器通过 `flex: 1; min-width: 0` 填满「服务器管理」Tab，左侧 tree 保持 320px，右侧详情占据剩余宽度并在自身内部滚动。
+  - 布局回归测试：`UserServerManager.spec.js` 通过 SFC 样式契约断言根容器必须填满父级剩余宽度，详情区必须允许 flex 收缩。
 - `web/Agent/src/components/ImportServerDialog.vue`：导入弹窗（顶部搜索 + label 卡片网格 + 全选/确认/取消）
   - 复用现有 `fetchDevOpsServers()` 拉取 devops_servers 脱敏列表
   - 调用 `importDevopsServers(parentId, businessNames)` 批量创建
