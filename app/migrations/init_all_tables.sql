@@ -24,6 +24,13 @@
 --   * 删除独立的 app/migrations/seed_project_skills.sql（已废弃）
 --   * 应用启动时仍由 app/migrations/seed_project_agent.py::seed_project_skills 自动写入，
 --     本脚本内联部分只是把"手动初始化数据库、不启动应用"场景的依赖折叠进来
+-- v5 变更（2026-07-24）:
+--   * 移除全部 DO 块（dollar-quoting 函数体）与 SAVEPOINT（Navicat 等 GUI 不识别 dollar-quoting，
+--     会把块内 ; 当语句结束符切分出残缺语句，报语法错误并终止整个 BEGIN 事务，
+--     后续语句全部报"当前事务被终止,事务块结束之前的查询被忽略"）
+--   * devops_servers CHECK 约束改为 DROP CONSTRAINT IF EXISTS + ADD CONSTRAINT（幂等）
+--   * 21.1 api_config_nodes 归属迁移改为纯 SQL 顺序语句（语义不变，仍为独立事务）
+--   * 全脚本不再含任何 dollar-quoted 块，兼容 psql + pgAdmin / Navicat / DBeaver
 -- =============================================
 
 BEGIN;
@@ -2763,18 +2770,13 @@ ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS updated_at         TIMESTAMP
 ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS inspection_script TEXT DEFAULT NULL;
 ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS inspection_parser VARCHAR(16) DEFAULT 'json';
 ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS inspection_fields JSONB DEFAULT '[]'::jsonb;
--- CHECK 约束：单独 ALTER，避免与已有数据冲突；IF NOT EXISTS 兼容老 PG
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'devops_servers_inspection_parser_chk'
-    ) THEN
-        ALTER TABLE devops_servers
-            ADD CONSTRAINT devops_servers_inspection_parser_chk
-            CHECK (inspection_parser IN ('json', 'kv', 'csv', 'raw'));
-    END IF;
-END$$;
+-- CHECK 约束：单独 ALTER，避免与已有数据冲突
+-- 不使用 DO 块（Navicat 等 GUI 不识别 dollar-quoting，会把块内 ; 当语句结束
+-- 切分出残缺语句导致整个事务失败），改用 DROP IF EXISTS + ADD 实现幂等
+ALTER TABLE devops_servers DROP CONSTRAINT IF EXISTS devops_servers_inspection_parser_chk;
+ALTER TABLE devops_servers
+    ADD CONSTRAINT devops_servers_inspection_parser_chk
+    CHECK (inspection_parser IN ('json', 'kv', 'csv', 'raw'));
 -- 索引：按 server_type 过滤 / 按 updated_at 排序
 CREATE INDEX IF NOT EXISTS idx_devops_servers_server_type ON devops_servers(server_type);
 CREATE INDEX IF NOT EXISTS idx_devops_servers_updated_at  ON devops_servers(updated_at DESC);
@@ -2981,37 +2983,26 @@ WHERE name = 'map_agent';
 
 -- =============================================
 -- 21.1 扩展：api_config_nodes 归属字段（2026-07-24 新增）
--- 在主事务 COMMIT 之后执行，独立 BEGIN/COMMIT 包裹，SAVEPOINT 隔离失败：
+-- 在主事务 COMMIT 之后执行，独立 BEGIN/COMMIT 包裹，与主事务隔离失败影响：
 --   * ADD COLUMN IF NOT EXISTS + FK；新装 DB 在 CREATE TABLE 已直接定义 NOT NULL，本段 ALTER no-op
 --   * UPDATE 回填到首个 admin（兜底首个用户），仅处理存量 NULL 行（依赖 users 已有数据）
---   * SET NOT NULL：要求 users 表至少有 1 行（生产必满足）；若有 NULL 残留，内层
---     EXCEPTION 捕获并 RAISE NOTICE 跳过；外层 EXCEPTION 兜底 ROLLBACK 整段
+--   * SET NOT NULL：要求 users 表至少有 1 行（生产必满足）；新装 DB 表为空必然成功
 --   * CREATE INDEX 在 ADD COLUMN 之后建（依赖 created_by_user_id 已存在）
 --   * 整段使用 IF NOT EXISTS，幂等可重复执行；21.1 失败不会影响主事务已 commit 的内容
+-- 不使用 SAVEPOINT / DO 块：Navicat 等 GUI 不识别 dollar-quoting，
+-- 会把块内 ; 当语句结束符切分出残缺语句，导致语法错误并终止事务
 -- =============================================
 BEGIN;
-SAVEPOINT api_config_nodes_ownership_migration;
-DO $$
-BEGIN
-    ALTER TABLE api_config_nodes
-        ADD COLUMN IF NOT EXISTS created_by_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
-    UPDATE api_config_nodes
-    SET created_by_user_id = COALESCE(
-        (SELECT id FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1),
-        (SELECT id FROM users ORDER BY id ASC LIMIT 1)
-    )
-    WHERE created_by_user_id IS NULL
-      AND EXISTS (SELECT 1 FROM users LIMIT 1);
-    BEGIN
-        ALTER TABLE api_config_nodes ALTER COLUMN created_by_user_id SET NOT NULL;
-    EXCEPTION WHEN OTHERS THEN
-        RAISE NOTICE 'api_config_nodes.created_by_user_id SET NOT NULL 跳过（仍有 NULL）: %', SQLERRM;
-    END;
-    CREATE INDEX IF NOT EXISTS idx_api_config_nodes_created_by_user_id
-        ON api_config_nodes(created_by_user_id);
-EXCEPTION WHEN OTHERS THEN
-    ROLLBACK TO SAVEPOINT api_config_nodes_ownership_migration;
-    RAISE NOTICE '21.1 块整体失败已回滚到 SAVEPOINT：%', SQLERRM;
-END $$;
-RELEASE SAVEPOINT api_config_nodes_ownership_migration;
+ALTER TABLE api_config_nodes
+    ADD COLUMN IF NOT EXISTS created_by_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
+UPDATE api_config_nodes
+SET created_by_user_id = COALESCE(
+    (SELECT id FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1),
+    (SELECT id FROM users ORDER BY id ASC LIMIT 1)
+)
+WHERE created_by_user_id IS NULL
+  AND EXISTS (SELECT 1 FROM users LIMIT 1);
+ALTER TABLE api_config_nodes ALTER COLUMN created_by_user_id SET NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_api_config_nodes_created_by_user_id
+    ON api_config_nodes(created_by_user_id);
 COMMIT;
