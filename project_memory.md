@@ -4846,6 +4846,92 @@ admin 角色绕过 ACL 直接放行；普通用户未授权 → 403
 - `test_get_visible_menu_ids_admin_still_returns_admin_only`：admin 仍能看到全部
 - 更新 `test_get_visible_menu_ids_normal_returns_granted_intersect_enabled`：反映新语义（admin-only 不出现在结果里）
 
+## 用户服务器配置管理（2026-07-24 新增）
+
+「运维任务」一级菜单下新增第 5 个子 tab —— **「服务器管理」**（id=`task-scheduler.server-management`，admin only）。每个登录用户维护一个**自己的私有**服务器配置 tree，可组织"关心的服务器"。
+
+### 数据模型：user_server_nodes / user_server_configs
+
+数据库表结构（`app/migrations/init_all_tables.sql` 第 22 段）：
+
+- `user_server_nodes`：
+  - `id` / `parent_id`（多级 folder）/ `node_type`（`folder` / `server`，CHECK 约束）
+  - `name` / `sort_order`（同级排序）
+  - `source_devops_server_id`（**server 节点必须**指向 `devops_servers.id`；folder 必须为 NULL；CHECK 约束）
+  - `created_by_user_id`（**归属字段**）
+  - `created_at` / `updated_at`
+  - 索引：`idx_user_server_nodes_parent` / `idx_user_server_nodes_created_by_user_id` / `idx_user_server_nodes_source_devops_server_id`
+- `user_server_configs`：
+  - `node_id`（FK，UNIQUE）/ `notes`（预留字段，第一版不写入）
+  - 第一版仅做占位表，详情完全从 `devops_servers` JOIN 读取
+
+### 多对多关系实现
+
+底层 `devops_servers` 共享（admin 通过「服务器扫描入库」维护），用户私有层 `user_server_nodes` 通过 `source_devops_server_id` 共享引用：
+
+```
+devops_servers (admin 管理的共享资源)
+       ▲
+       │ source_devops_server_id (FK ON DELETE CASCADE)
+       │
+user_server_nodes (node_type='server' 的行，每个用户导入时生成一行)
+       ▲
+       │ created_by_user_id 区分归属 → 多对多：用户 × devops_servers
+```
+
+实际行为：两个用户可"添加"同一台 devops_servers；用户 A 看到的 server 节点和用户 B 看到的 server 节点是独立的 user_server_nodes 行（同 source_devops_server_id），但 server 详情（business_name / server_type / whitelist / inspection_script 等）通过 JOIN 实时从 devops_servers 读，**共享引用不复制内容**。
+
+### 共享引用 + OwnershipScope 策略
+
+- **共享引用**：server 节点**不存**任何业务字段（ip / port / 账号 / 密码 / 白名单 / 巡检脚本），全部从 `devops_servers` JOIN 读
+  - 删除 devops_servers 一行时通过 `ON DELETE CASCADE` 自动清理所有引用它的 user_server_nodes 行
+  - devops_servers 的任何修改（重新扫描、白名单调整）实时反映到所有用户的详情
+- **OwnershipScope**：`admin` 透传全量；`普通用户` 仅看 `created_by_user_id == self.user_id` 的节点；父节点不可见时**提升为根**（`parent_id` 重写为 None），不泄露隐藏父节点的存在
+
+### 后端 service：`app/shared/utils/user_server_service.py`
+
+类 `UserServerService(db, devops_server_service=None)`，结构对标 `ApiConfigService`：
+
+- `preload_all()`：启动时把全部节点载入内存缓存
+- `list_nodes(scope)`：返回扁平节点列表，按 scope 过滤；不可见父节点时 parent_id 提升为 None
+- `create_node(parent_id, node_type, name, scope, source_devops_server_id=None)`：folder 必须 source_id=None；server 必须 source_id 指向已存在的 devops_servers；父节点必须可见且为 folder 类型
+- `update_node(node_id, scope, name=None, parent_id=None, sort_order=None)`：含父节点成环检测
+- `delete_node(node_id, scope)`：folder 非空时抛 `UserServerNodeNotEmptyError`（路由层映射 400）
+- `get_node_config(node_id, scope)`：folder 节点返元数据；server 节点 JOIN devops_servers 取 7 字段白名单（business_name / server_type / updated_at / whitelist / inspection_script / inspection_parser / inspection_fields）；**绝不含** ip / port / 账号 / password
+- `import_from_devops_servers(parent_id, business_names, scope)`：批量把 devops_servers 导入到用户 tree；按 business_name 匹配 devops_servers；同用户同 parent 下 dedup（计入 skipped）
+
+### 后端 router：`app/routers/user_server_router.py`
+
+- 前缀：`/api/admin/user-servers`（与 `devops_server_admin_router` 同级 admin 路径）
+- 全部使用 `Depends(require_admin_or_menu_acl('task-scheduler.server-management'))`
+- 端点：
+  - `GET /tree` → `{"nodes": [...]}`
+  - `POST /nodes`（创建 folder / server）→ 201
+  - `PUT /nodes/{id}`（重命名 / 移动 / sort_order）
+  - `DELETE /nodes/{id}`（folder 非空 → 400）
+  - `GET /nodes/{id}/config`（节点详情）
+  - `POST /import`（批量导入 devops_servers）→ `{imported, skipped, failed, node_ids}`
+
+### 前端组件
+
+- `web/Agent/src/components/UserServerManager.vue`：左右布局（左侧 tree + 搜索 + 「+ 新建」下拉按钮 + inline 重命名/删除；右侧只读详情）
+  - 「+ 新建」菜单三项：新建文件夹（可用）/ 新建服务器配置（**disabled** + 提示「该功能暂未开放」——按需求预留）/ 导入已有配置（弹出 ImportServerDialog）
+  - server 节点详情只展示 7 字段白名单（无 ip/port/账号/密码），与「服务器扫描入库」详情契约一致
+  - 提供 `isAdmin` prop 接收父组件的 admin 状态
+- `web/Agent/src/components/ImportServerDialog.vue`：导入弹窗（顶部搜索 + label 卡片网格 + 全选/确认/取消）
+  - 复用现有 `fetchDevOpsServers()` 拉取 devops_servers 脱敏列表
+  - 调用 `importDevopsServers(parentId, businessNames)` 批量创建
+
+### 菜单 id
+
+`task-scheduler.server-management`（level=2, parent_id=task-scheduler, sort_order=5, required_role=admin），id 终身不变。
+
+### 与「服务器扫描入库」tab（`task-scheduler.script-scan`）的差异
+
+- 「服务器扫描入库」：admin 全局管理 `devops_servers` 行（扫 YAML 入库 / 删除），全表
+- 「服务器管理」：每个用户私有视图（`user_server_nodes` tree），按 created_by_user_id 隔离；server 节点共享引用底层 devops_servers
+- 前者负责"哪些服务器存在"；后者负责"我关心哪些服务器、怎么组织"
+
 ### 智能体访问权限（2026-07-24 新增，B 方案）
 
 `permission-management` 一级菜单下新增二级 Tab `permission-management.agent-access`，

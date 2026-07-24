@@ -214,6 +214,23 @@ def _init_api_config_service(app):
 
 
 @pytest.fixture(autouse=True)
+def _init_user_server_service(app):
+    """初始化 app.state.user_server_service 供 user_server_router 使用。
+
+    生产对应初始化点：``app/core/server.py::lifespan`` 中
+    ``UserServerService(db=DatabasePool._pool, devops_server_service=...)``
+    创建并挂到 ``app.state.user_server_service``，随后 ``preload_all()``
+    预加载节点缓存。
+
+    测试环境注入真实 UserServerService 实例，db=None 是合法 stub（service
+    层对 db=None 优雅降级：preload no-op、读返回空、写抛 RuntimeError）。
+    禁止注入 ``app.state.db = MagicMock()`` 这类生产不存在的对象。
+    """
+    from app.shared.utils.user_server_service import UserServerService
+    app.state.user_server_service = UserServerService(db=None, devops_server_service=None)
+
+
+@pytest.fixture(autouse=True)
 def _init_menu_permission_service(app):
     """初始化 app.state.menu_permission_service 供 menu_permission_router 使用。
 

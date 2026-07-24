@@ -406,6 +406,31 @@ async def lifespan(app: FastAPI):
                     "[lifespan] Database pool not available, ApiConfigService not initialized"
                 )
 
+            # 2026-07-24 新增：初始化 UserServerService（用户服务器配置管理）
+            # 依赖：DB 池；devops_server_service（用于 server 节点详情 JOIN）
+            # 顺序约束：在 TaskSchedulerService 之前（与 ApiConfigService 同级）
+            if DatabasePool.is_enabled() and DatabasePool._pool is not None:
+                try:
+                    from app.shared.utils.user_server_service import UserServerService
+
+                    app.state.user_server_service = UserServerService(
+                        db=DatabasePool._pool,
+                        devops_server_service=getattr(
+                            app.state, "devops_server_service", None
+                        ),
+                    )
+                    await app.state.user_server_service.preload_all()
+                    logging.info("[lifespan] UserServerService initialized")
+                except Exception as user_server_exc:
+                    logging.warning(
+                        "[lifespan] Failed to initialize UserServerService: %s",
+                        type(user_server_exc).__name__,
+                    )
+            else:
+                logging.warning(
+                    "[lifespan] Database pool not available, UserServerService not initialized"
+                )
+
             # 初始化智能体定时任务服务：数据库为任务定义真相源，应用内调度器负责触发。
             # 顺序要求：必须晚于 AgentConfigService 依赖注入与缓存预加载，确保执行时可复用 build_agent_instance。
             # 2026-07-22 强化:同时必须晚于 DevOpsServerService 与 ApiConfigService 初始化,否则

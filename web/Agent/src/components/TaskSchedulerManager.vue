@@ -29,22 +29,27 @@ import {
   fetchApiConfigTree,
 } from '../utils/api.js'
 import ApiConfigManager from './ApiConfigManager.vue'
+import UserServerManager from './UserServerManager.vue'  // 2026-07-24 新增：用户服务器配置
 
 const TAB_TASK = 'task'
 const TAB_SCAN = 'scan'
 const TAB_SCRIPT = 'script'
 const TAB_API = 'api'
+// 2026-07-24 新增：用户服务器管理 tab
+const TAB_SERVERS = 'servers'
 
 // 2026-07-23 ACL 双重门：tab 与后端 MENU_CATALOG 的子菜单 id 对齐映射
 // - task-scheduler.scheduled → TAB_TASK（编辑任务）
 // - task-scheduler.script-scan → TAB_SCAN（服务器扫描入库）
 // - task-scheduler.script-inventory → TAB_SCRIPT（脚本扫描入库）
 // - task-scheduler.api-config → TAB_API（API接口配置）
+// - task-scheduler.server-management → TAB_SERVERS（服务器管理）
 const TAB_MENU_IDS = {
   [TAB_TASK]: 'task-scheduler.scheduled',
   [TAB_SCAN]: 'task-scheduler.script-scan',
   [TAB_SCRIPT]: 'task-scheduler.script-inventory',
   [TAB_API]: 'task-scheduler.api-config',
+  [TAB_SERVERS]: 'task-scheduler.server-management',
 }
 
 const TAB_LABELS = [
@@ -52,6 +57,8 @@ const TAB_LABELS = [
   { id: TAB_SCAN, label: '服务器扫描入库' },
   { id: TAB_SCRIPT, label: '脚本扫描入库' },
   { id: TAB_API, label: 'API接口配置' },
+  // 2026-07-24 新增：用户私有服务器配置（folder / server 节点 tree + 共享引用详情）
+  { id: TAB_SERVERS, label: '服务器管理' },
 ]
 
 const schedules = ref([])
@@ -2634,7 +2641,7 @@ onBeforeUnmount(() => {
             >
               <td>{{ row.business_name }}</td>
               <td>{{ row.server_type }}</td>
-              <td>{{ row.updated_at }}</td>
+              <td>{{ formatRunTime(row.updated_at) }}</td>
               <td class="server-action-cell">
                 <button
                   type="button"
@@ -2759,6 +2766,18 @@ onBeforeUnmount(() => {
         class="task-panel-api"
       >
         <ApiConfigManager />
+      </section>
+
+      <!-- 服务器管理 Tab —— 2026-07-24 新增：用户私有服务器配置 tree -->
+      <section
+        v-else-if="activeTab === TAB_SERVERS"
+        :id="`panel-${TAB_SERVERS}`"
+        role="tabpanel"
+        aria-labelledby="tab-servers"
+        data-testid="panel-servers"
+        class="task-panel-servers"
+      >
+        <UserServerManager />
       </section>
     </main>
   </section>
@@ -2986,7 +3005,7 @@ onBeforeUnmount(() => {
 /* 业务面板（编辑任务 / 服务器扫描 / 脚本扫描）：
    .task-detail 高度被高度链固定，面板必须收缩并在内部滚动，
    否则长表单内容会溢出卡片边界（API 面板由子组件自滚动，见下） */
-.task-detail > section[role="tabpanel"]:not(.task-panel-api) {
+.task-detail > section[role="tabpanel"]:not(.task-panel-api):not(.task-panel-servers) {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -2997,6 +3016,14 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   /* 子组件（ApiConfigManager）已负责内部滚动，这里裁剪防止内容外溢 */
+  overflow: hidden;
+}
+
+.task-detail > .task-panel-servers {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  /* 子组件（UserServerManager）已负责内部滚动，这里裁剪防止内容外溢 */
   overflow: hidden;
 }
 

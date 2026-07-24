@@ -3024,3 +3024,48 @@ ALTER TABLE api_config_nodes ALTER COLUMN created_by_user_id SET NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_api_config_nodes_created_by_user_id
     ON api_config_nodes(created_by_user_id);
 COMMIT;
+
+-- =============================================
+-- 22. user_server_nodes / user_server_configs（2026-07-24 新增）
+-- 目的：每个用户可在自己的私有 tree 中组织"关心的服务器"
+-- 节点类型：
+--   - folder：多级文件夹（仅组织用，无详情）
+--   - server：引用 devops_servers 一行（共享引用，不复制内容）
+-- 归属隔离：
+--   * created_by_user_id 是归属字段；admin 可见全部，普通用户仅见自己创建的节点
+--   * 父节点不可见时，service 层把节点提升为根（与 api_config_nodes 策略一致）
+--   * devops_servers 行被删除时，user_server_nodes 通过 ON DELETE CASCADE 自动清理
+-- 幂等：所有 DDL / CHECK / INDEX 使用 IF NOT EXISTS，可重复执行
+-- =============================================
+CREATE TABLE IF NOT EXISTS user_server_nodes (
+    id                       SERIAL PRIMARY KEY,
+    parent_id                INTEGER NULL REFERENCES user_server_nodes(id) ON DELETE CASCADE,
+    node_type                VARCHAR(16) NOT NULL CHECK (node_type IN ('folder', 'server')),
+    name                     VARCHAR(255) NOT NULL,
+    sort_order               INTEGER NOT NULL DEFAULT 0,
+    source_devops_server_id  INTEGER NULL REFERENCES devops_servers(id) ON DELETE CASCADE,
+    created_by_user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at               TIMESTAMPTZ DEFAULT NOW(),
+    updated_at               TIMESTAMPTZ DEFAULT NOW(),
+    -- node_type='server' 必须 source_devops_server_id NOT NULL；folder 必须为 NULL
+    -- 用单独 CHECK 表达（Navicat 兼容），不依赖 DO 块
+    CONSTRAINT user_server_nodes_type_chk CHECK (
+        (node_type = 'folder' AND source_devops_server_id IS NULL) OR
+        (node_type = 'server' AND source_devops_server_id IS NOT NULL)
+    )
+);
+CREATE INDEX IF NOT EXISTS idx_user_server_nodes_parent
+    ON user_server_nodes(parent_id);
+CREATE INDEX IF NOT EXISTS idx_user_server_nodes_created_by_user_id
+    ON user_server_nodes(created_by_user_id);
+CREATE INDEX IF NOT EXISTS idx_user_server_nodes_source_devops_server_id
+    ON user_server_nodes(source_devops_server_id);
+
+-- user_server_configs：folder / server 节点的可选附加配置
+-- 第一版仅做占位（详情只读），预留未来"用户自定义字段覆盖 devops_servers 共享值"的能力
+CREATE TABLE IF NOT EXISTS user_server_configs (
+    node_id      INTEGER NOT NULL UNIQUE REFERENCES user_server_nodes(id) ON DELETE CASCADE,
+    notes        TEXT NOT NULL DEFAULT '',
+    created_at   TIMESTAMPTZ DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ DEFAULT NOW()
+);

@@ -71,6 +71,12 @@ MENU_CATALOG: List[MenuItem] = [
              label="脚本扫描入库", icon_key="code", sort_order=3, required_role="admin"),
     MenuItem(id="task-scheduler.api-config", level=2, parent_id="task-scheduler",
              label="API接口配置", icon_key="api", sort_order=4, required_role="admin"),
+    # 2026-07-24 新增：「服务器管理」Tab —— 每个用户维护自己的服务器配置 tree
+    # - 节点类型 folder / server（server 节点引用 devops_servers，共享不复制）
+    # - admin 可见全部；普通用户仅看自己 created_by_user_id 的节点
+    MenuItem(id="task-scheduler.server-management", level=2,
+             parent_id="task-scheduler",
+             label="服务器管理", icon_key="server", sort_order=5, required_role="admin"),
     # 2026-07-23 新增：「邮件设置」的三个内部 Tab 注册为可独立授权的二级菜单
     # - id 前缀与一级菜单保持一致：task-scheduler.email-settings.*
     # - 与 EmailSettingsManager.vue::TAB_LABELS 一一对应（server / policies / test）

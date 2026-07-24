@@ -3008,3 +3008,145 @@ export async function replaceUserAgentGrants(userId, agentNames) {
   }
   return response.json()
 }
+
+// ============================================================
+// 用户服务器管理 API（2026-07-24 新增）
+// 对应后端 /api/admin/user-servers 管理接口
+// 用于 UserServerManager 的私有服务器配置 tree：
+//   - folder / server 两类节点
+//   - server 节点共享引用 devops_servers（admin 之前扫描的成果）
+//   - admin 看全；普通用户仅看自己 created_by_user_id 的节点
+// ============================================================
+
+/**
+ * 获取用户服务器节点 tree（平铺结构，前端自行组树）
+ * 调用 GET /api/admin/user-servers/tree
+ * @returns {Promise<{nodes: Array<{id: number, parent_id: number|null, node_type: 'folder'|'server', name: string, sort_order: number, source_devops_server_id: number|null, created_by_user_id: number}>}>}
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function fetchUserServerTree() {
+  const response = await fetchWithAuth('/api/admin/user-servers/tree', { method: 'GET' })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取用户服务器 tree 失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 新建用户服务器节点（folder 或 server）
+ * 调用 POST /api/admin/user-servers/nodes
+ * @param {number|null} parentId - 父 folder ID；根节点传 null
+ * @param {'folder'|'server'} nodeType - 节点类型
+ * @param {string} name - 节点名称
+ * @param {number|null} sourceDevopsServerId - server 节点引用的 devops_servers.id；folder 必须 null
+ * @returns {Promise<Object>} 新建节点对象
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function createUserServerNode(parentId, nodeType, name, sourceDevopsServerId = null) {
+  const response = await fetchWithAuth('/api/admin/user-servers/nodes', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      parent_id: parentId,
+      node_type: nodeType,
+      name,
+      source_devops_server_id: sourceDevopsServerId
+    })
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `新建用户服务器节点失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 更新用户服务器节点（重命名 / 移动 / 调整 sort_order）
+ * 调用 PUT /api/admin/user-servers/nodes/{id}
+ * @param {number|string} id - 节点 ID
+ * @param {{name?: string, parent_id?: number|null, sort_order?: number}} payload - 需要更新的字段
+ * @returns {Promise<Object>} 更新后的节点对象
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function updateUserServerNode(id, payload) {
+  const response = await fetchWithAuth(
+    `/api/admin/user-servers/nodes/${encodeURIComponent(id)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }
+  )
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `更新用户服务器节点失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 删除用户服务器节点（非空 folder 后端返回 400）
+ * 调用 DELETE /api/admin/user-servers/nodes/{id}
+ * @param {number|string} id - 节点 ID
+ * @returns {Promise<{ok: boolean}>}
+ * @throws {Error} 请求失败时抛出错误（非空 folder 时 message 含后端提示）
+ */
+export async function deleteUserServerNode(id) {
+  const response = await fetchWithAuth(
+    `/api/admin/user-servers/nodes/${encodeURIComponent(id)}`,
+    { method: 'DELETE' }
+  )
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `删除用户服务器节点失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 获取用户服务器节点详情
+ * folder 节点：仅返回元数据
+ * server 节点：返回 user_server_nodes 行 + JOIN devops_servers 的白名单字段
+ *   （business_name / server_type / updated_at / whitelist / inspection_*），
+ *   绝不含 ip / port / username / password
+ * 调用 GET /api/admin/user-servers/nodes/{id}/config
+ * @param {number|string} nodeId - 节点 ID
+ * @returns {Promise<Object>} 详情对象
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function fetchUserServerConfig(nodeId) {
+  const response = await fetchWithAuth(
+    `/api/admin/user-servers/nodes/${encodeURIComponent(nodeId)}/config`,
+    { method: 'GET' }
+  )
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取用户服务器节点详情失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 批量把 devops_servers 导入到用户的 tree
+ * 调用 POST /api/admin/user-servers/import
+ * @param {number|null} parentId - 父 folder ID；根节点传 null
+ * @param {string[]} businessNames - 要导入的 devops_servers.business_name 列表
+ * @returns {Promise<{imported: number, skipped: number, failed: number, node_ids: number[]}>}
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function importDevopsServers(parentId, businessNames) {
+  const response = await fetchWithAuth('/api/admin/user-servers/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      parent_id: parentId,
+      business_names: businessNames
+    })
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `导入 devops_servers 失败: ${response.status}`)
+  }
+  return response.json()
+}
