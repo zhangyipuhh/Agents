@@ -4894,3 +4894,21 @@ ON CONFLICT (user_id, agent_name) DO NOTHING;
 - 前端 `web/Agent/.../UserSettingsDialog.user-form-no-agents.spec.js`：3 个防回归测试，验证表单中无 agent-checkbox-list 元素 + permission-management 两子 Tab 切换
 - 前端 `web/Agent/.../InputBox.command.spec.js`：新增 2 个 isAdmin 兼容测试，验证 admin 走全量 / 普通用户 fail-secure 返 []
 
+### zyp 用户越权修复（2026-07-24）
+
+现象：zyp 用户（id=2，role=user）在「智能体访问」Tab 授权为空、`user_agent_acl` 无记录、`users.allowed_agents` 残留 `["project"]`，但登录后仍可使用 `project` 智能体。
+
+根因（auth_middleware 链路）：`Safety.py::JWTAuth.authenticate()` 在注入 `request.state.allowed_agents` 时，**直接读 `users.allowed_agents` JSONB 旧字段**，从未走 `user_agent_acl`。`agent_router.list_agents` 与 `agent_router.chat` 又以 `request.state.allowed_agents` 为权威，导致整个新 ACL 系统形同虚设：admin 在「智能体访问」Tab 写 `user_agent_acl`，但生产链路不读。
+
+修复：
+| 文件 | 变更 |
+|---|---|
+| `app/shared/utils/auth/Safety.py` | `authenticate()` 中 `request.state.allowed_agents` 数据源从 `users.allowed_agents` JSONB 字段切换到 `agent_permission_service.get_user_agent_grants_sync(user_id)`；admin 返 `[]` 走 bypass；service 不可用时返 `[]`（fail-secure，不再 fallback 到旧字段） |
+| `app/routers/agent_router.py` | `chat` 与 `list_agents` 加 `role == 'admin'` bypass，避免 admin 被踢出 |
+| `app/shared/routers/auth_router.py` | `LoginResponse` 加 `allowed_agents` 字段；`login` / `login_api` 透传 |
+| `app/migrations/2026_07_24_clear_users_allowed_agents_for_non_admin.sql` | 数据修复：`UPDATE users SET allowed_agents = '[]' WHERE role != 'admin'`，清掉历史 JSONB 残留 |
+| `app/tests/shared/test_safety.py` | `test_authenticate_sets_allowed_agents` 改造为 mock agent_permission_service；新增 `test_authenticate_admin_role_empty_allowed_agents` 与 `test_authenticate_service_unavailable_fail_secure` |
+| `app/tests/routers/test_agent_router.py` | `test_list_agents_empty_allowed_returns_empty` / `test_list_agents_filters_by_allowed_agents` / `test_chat_forbidden_agent_returns_403` 改用 testuser；新增 `test_list_agents_admin_role_returns_all` / `test_chat_admin_role_bypasses_allowed_agents` / `test_chat_normal_user_empty_allowed_agents_returns_403` |
+
+执行时机：P0 代码修复完成后立即执行清空 SQL；admin 用户 bypass 设计确保清空操作不影响 admin。
+

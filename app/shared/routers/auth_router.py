@@ -96,6 +96,10 @@ class LoginResponse(BaseModel):
             - admin：所有 enabled 项的 id（按 sort_order 升序）
             - 普通用户：menu_permission_service 计算结果（含强制 profile）
             - 前端一次拿，无需单独请求菜单接口
+        allowed_agents (List[str]): 2026-07-24 新增：该用户授权的 agent_name 列表
+            - admin：返 []（前端 InputBox 通过 isAdmin prop 走全量旁路）
+            - 普通用户：agent_permission_service 缓存值；service 不可用时
+              fallback 到 users.allowed_agents 旧字段（迁移兼容）
     """
     access_token: str
     token_type: str
@@ -104,6 +108,11 @@ class LoginResponse(BaseModel):
     username: str
     user_id: Optional[int] = None
     visible_menus: List[str] = []
+    # 2026-07-24 新增：当前用户授权的 agent_name 列表（来自 user_agent_acl）。
+    # admin 返 []（前端 InputBox 通过 isAdmin prop 走全量旁路）。
+    # 普通用户返 agent_permission_service.get_user_agent_grants_sync(user_id) 缓存值；
+    # service 不可用时 fallback 到 users.allowed_agents 旧字段（迁移兼容）。
+    allowed_agents: List[str] = []
 
 
 async def _compute_visible_menus(req: Request, user_id: Optional[int], role: str) -> List[str]:
@@ -433,6 +442,14 @@ async def login(request: LoginRequest, req: Request, response: Response):
     )
 
     visible_menus = await _compute_visible_menus(req, user_id, role)
+    # 2026-07-24 新增：把 allowed_agents 也透传到 LoginResponse，
+    # 前端 App.vue::applyUserData 直接从 data.allowed_agents 取值（无需额外请求）。
+    allowed_agents = await _compute_allowed_agents(
+        req,
+        user_id,
+        role,
+        fallback=user.get('allowed_agents', []) if user else [],
+    )
 
     return LoginResponse(
         access_token=access_token,
@@ -442,6 +459,7 @@ async def login(request: LoginRequest, req: Request, response: Response):
         username=request.username,
         user_id=user_id,
         visible_menus=visible_menus,
+        allowed_agents=allowed_agents,
     )
 
 
@@ -529,6 +547,13 @@ async def login_api(request: ApiLoginRequest, req: Request, response: Response):
     )
 
     visible_menus = await _compute_visible_menus(req, user_id, role)
+    # 2026-07-24 新增：把 allowed_agents 也透传到 LoginResponse
+    allowed_agents = await _compute_allowed_agents(
+        req,
+        user_id,
+        role,
+        fallback=user.get('allowed_agents', []) if user else [],
+    )
 
     return LoginResponse(
         access_token=access_token,
@@ -538,6 +563,7 @@ async def login_api(request: ApiLoginRequest, req: Request, response: Response):
         username=request.username,
         user_id=user_id,
         visible_menus=visible_menus,
+        allowed_agents=allowed_agents,
     )
 
 

@@ -231,7 +231,26 @@ class JWTAuth:
         if user:
             request.state.role = user.get('role', 'user')
             request.state.user_id = user.get('id')
-            request.state.allowed_agents = user.get('allowed_agents', [])
+            # 2026-07-24：allowed_agents 数据源从 users.allowed_agents (JSONB 旧字段)
+            # 切换到 user_agent_acl (新表，由「智能体访问」Tab 维护)。
+            # admin 不受 ACL 限制，返 [] 让上游 agent_router 走 admin bypass；
+            # 普通用户从 agent_permission_service 缓存读 ACL；
+            # service 不可用时（lifespan 初始化失败 / db=None）返 [] 走 fail-secure，
+            # 不再 fallback 到旧 JSONB 字段（避免历史授权残留导致越权）。
+            from app.shared.utils.auth.agent_permission_service import (
+                AgentPermissionService,
+            )
+            role = request.state.role
+            if role == 'admin':
+                request.state.allowed_agents = []
+            else:
+                svc = getattr(request.app.state, "agent_permission_service", None)
+                if svc is not None:
+                    request.state.allowed_agents = sorted(
+                        svc.get_user_agent_grants_sync(user.get('id'))
+                    )
+                else:
+                    request.state.allowed_agents = []
         else:
             request.state.role = 'user'
             request.state.user_id = None

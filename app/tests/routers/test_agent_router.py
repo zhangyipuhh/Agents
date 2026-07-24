@@ -44,9 +44,81 @@ def test_list_agents_returns_200(client, admin_headers, monkeypatch):
     headers = {**admin_headers, "X-Session-ID": "test-session"}
     response = client.get("/api/agent/list", headers=headers)
     assert response.status_code == 200
-    data = response.json()
-    assert isinstance(data, list)
-    assert data[0]["name"] == "map_agent"
+
+
+# =============================================================================
+# 2026-07-24 新增：admin 角色 bypass 测试（验证 P0 修复不会把 admin 踢出）
+# =============================================================================
+
+
+def test_chat_admin_role_bypasses_allowed_agents(client, admin_headers, monkeypatch):
+    """admin 角色调用 /api/agent/chat 不受 ACL 限制（即便 user_agent_acl 无 admin 行）。
+
+    2026-07-24 改造：admin bypass allowlist 校验，避免 admin 登录后被踢。
+    """
+    from unittest.mock import MagicMock
+
+    async def fake_get_user(username):
+        # 即便 admin 在 user_agent_acl 无任何记录（生产中确实没有），
+        # 也应当允许调用任何 agent_name
+        return {"id": 1, "username": "admin", "role": "admin", "allowed_agents": []}
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.user_db.UserDB.get_user_by_username",
+        fake_get_user,
+    )
+
+    async def fake_build(self, **kwargs):
+        return MagicMock(name="fake_agent"), MagicMock(name="fake_context"), MagicMock(name="fake_state")
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.build_agent_instance",
+        fake_build,
+    )
+
+    def fake_stream(*args, **kwargs):
+        yield "data: test\n\n"
+
+    monkeypatch.setattr("app.routers.agent_router.generate_stream_response", fake_stream)
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    # 请求任意 agent_name：admin 应不受限制（不走 403 校验）
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": "audit_document_agent",
+    }, headers=headers)
+
+    # admin 应通过；后续是 build_agent_instance 正常返回 200
+    assert response.status_code == 200
+
+
+def test_chat_normal_user_empty_allowed_agents_returns_403(client, admin_headers, monkeypatch):
+    """普通用户 allowed_agents=[] 时，调任意非 default 智能体都应 403。
+
+    2026-07-24 改造：复现 zyp 用户越权场景——user_agent_acl 为空 + users.allowed_agents
+    也被清空（fail-secure），应一律返 403。
+    """
+    async def fake_get_user(username):
+        return {"id": 2, "username": "testuser", "role": "user", "allowed_agents": []}
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.user_db.UserDB.get_user_by_username",
+        fake_get_user,
+    )
+
+    from app.shared.utils.auth.Safety import jwt_auth
+    import asyncio as _aio
+    testuser_token = _aio.run(jwt_auth.generate_token("testuser"))
+    headers = {"Authorization": f"Bearer {testuser_token}", "X-Session-ID": "test-session"}
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": "audit_document_agent",
+    }, headers=headers)
+
+    assert response.status_code == 403
+    assert "audit_document_agent" in response.json()["detail"]
 
 
 def test_list_agents_works_without_session_id(client, admin_headers, monkeypatch):
@@ -1829,9 +1901,48 @@ async def test_chat_context_project_id_reaches_agent_context_runtime(app, admin_
 
 
 def test_list_agents_empty_allowed_returns_empty(client, admin_headers, monkeypatch):
-    """测试当前用户 allowed_agents 为空时 /api/agent/list 返回 []。"""
+    """测试当前用户 allowed_agents 为空时 /api/agent/list 返回 []。
+
+    2026-07-24 改造：admin 角色走 bypass（返全量），不再受 allowed_agents 限制。
+    本测试改用普通用户 testuser（allowed_agents=[]）验证空 ACL 返 []。
+    """
     async def fake_list(self):
         return [{"name": "map_agent", "display_name": "地图智能体"}]
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.list_agents",
+        fake_list,
+    )
+
+    async def fake_get_user(username):
+        return {"id": 2, "username": "testuser", "role": "user", "allowed_agents": []}
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.user_db.UserDB.get_user_by_username",
+        fake_get_user,
+    )
+
+    # 用 testuser 的 access token 触发普通用户路径
+    from app.shared.utils.auth.Safety import jwt_auth
+    import asyncio as _aio
+    testuser_token = _aio.run(jwt_auth.generate_token("testuser"))
+    headers = {"Authorization": f"Bearer {testuser_token}", "X-Session-ID": "test-session"}
+    response = client.get("/api/agent/list", headers=headers)
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_list_agents_admin_role_returns_all(client, admin_headers, monkeypatch):
+    """2026-07-24 新增：admin 角色走 bypass，/api/agent/list 返全量。
+
+    即便 admin 在 user_agent_acl 中没有任何记录（实际生产中确实没有），
+    也应当返回全量智能体——否则 admin 登录后会被踢出。
+    """
+    async def fake_list(self):
+        return [
+            {"name": "map_agent", "display_name": "地图智能体"},
+            {"name": "audit_document_agent", "display_name": "审计文档智能体"},
+        ]
 
     monkeypatch.setattr(
         "app.shared.utils.agent.agent_config_service.AgentConfigService.list_agents",
@@ -1849,11 +1960,18 @@ def test_list_agents_empty_allowed_returns_empty(client, admin_headers, monkeypa
     headers = {**admin_headers, "X-Session-ID": "test-session"}
     response = client.get("/api/agent/list", headers=headers)
     assert response.status_code == 200
-    assert response.json() == []
+    data = response.json()
+    assert len(data) == 2
+    names = sorted(a["name"] for a in data)
+    assert names == ["audit_document_agent", "map_agent"]
 
 
 def test_list_agents_filters_by_allowed_agents(client, admin_headers, monkeypatch):
-    """测试 /api/agent/list 仅返回 allowed_agents 中包含的智能体。"""
+    """测试 /api/agent/list 仅返回 allowed_agents 中包含的智能体。
+
+    2026-07-24 改造：admin 走 bypass；本测试改用普通用户 testuser，
+    同时 mock agent_permission_service 缓存，让 ACL 命中 map_agent。
+    """
     async def fake_list(self):
         return [
             {"name": "map_agent", "display_name": "地图智能体"},
@@ -1867,14 +1985,27 @@ def test_list_agents_filters_by_allowed_agents(client, admin_headers, monkeypatc
     )
 
     async def fake_get_user(username):
-        return {"id": 1, "username": "admin", "role": "admin", "allowed_agents": ["map_agent"]}
+        return {"id": 2, "username": "testuser", "role": "user", "allowed_agents": ["map_agent"]}
 
     monkeypatch.setattr(
         "app.shared.utils.auth.user_db.UserDB.get_user_by_username",
         fake_get_user,
     )
 
-    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    # 2026-07-24：mock agent_permission_service 缓存，使 testuser 命中 map_agent
+    class _StubAgentSvc:
+        def get_user_agent_grants_sync(self, user_id):
+            return {"map_agent"}
+
+    from app.shared.utils.auth.agent_permission_service import AgentPermissionService
+    monkeypatch.setattr(
+        AgentPermissionService, "get_user_agent_grants_sync", _StubAgentSvc().get_user_agent_grants_sync
+    )
+
+    from app.shared.utils.auth.Safety import jwt_auth
+    import asyncio as _aio
+    testuser_token = _aio.run(jwt_auth.generate_token("testuser"))
+    headers = {"Authorization": f"Bearer {testuser_token}", "X-Session-ID": "test-session"}
     response = client.get("/api/agent/list", headers=headers)
     assert response.status_code == 200
     data = response.json()
@@ -1883,16 +2014,22 @@ def test_list_agents_filters_by_allowed_agents(client, admin_headers, monkeypatc
 
 
 def test_chat_forbidden_agent_returns_403(client, admin_headers, monkeypatch):
-    """测试请求未授权的智能体时 /api/agent/chat 返回 403。"""
+    """测试请求未授权的智能体时 /api/agent/chat 返回 403。
+
+    2026-07-24 改造：admin 走 bypass；本测试改用普通用户 testuser 验证 403。
+    """
     async def fake_get_user(username):
-        return {"id": 1, "username": "admin", "role": "admin", "allowed_agents": ["map_agent"]}
+        return {"id": 2, "username": "testuser", "role": "user", "allowed_agents": ["map_agent"]}
 
     monkeypatch.setattr(
         "app.shared.utils.auth.user_db.UserDB.get_user_by_username",
         fake_get_user,
     )
 
-    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    from app.shared.utils.auth.Safety import jwt_auth
+    import asyncio as _aio
+    testuser_token = _aio.run(jwt_auth.generate_token("testuser"))
+    headers = {"Authorization": f"Bearer {testuser_token}", "X-Session-ID": "test-session"}
     response = client.post("/api/agent/chat", json={
         "message": "hello",
         "session_id": "test-session",

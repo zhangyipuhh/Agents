@@ -136,6 +136,11 @@ def test_authenticate_sets_allowed_agents(jwt_auth, monkeypatch):
     """
     测试 JWTAuth.authenticate 将 allowed_agents 写入 request.state。
 
+    2026-07-24 改造：allowed_agents 数据源从 users.allowed_agents (JSONB 旧字段)
+    切换到 user_agent_acl (新表，由 agent_permission_service 缓存读)。
+    - 普通用户：request.state.allowed_agents 应等于 agent_permission_service 缓存里的授权
+    - admin：返 []（让上游 agent_router 走 admin bypass）
+
     Args:
         jwt_auth: JWTAuth 实例（来自 conftest）
         monkeypatch: pytest monkeypatch fixture
@@ -150,7 +155,44 @@ def test_authenticate_sets_allowed_agents(jwt_auth, monkeypatch):
             "id": 2,
             "username": "testuser",
             "role": "user",
+            # 即便 user.allowed_agents 还有历史值，也不应再被读到
             "allowed_agents": ["map_agent"],
+        }
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.user_db.UserDB.get_user_by_username",
+        fake_get_user,
+    )
+
+    # 模拟 agent_permission_service 缓存：授权 map_agent / project
+    class _StubAgentSvc:
+        def get_user_agent_grants_sync(self, user_id):
+            return {"map_agent", "project"}
+
+    stub_app_state = type("S", (), {"agent_permission_service": _StubAgentSvc()})()
+    request = MagicMock(spec=Request)
+    request.headers.get.return_value = f"Bearer {access_token}"
+    request.app.state = stub_app_state
+
+    payload = _run_async(jwt_auth.authenticate(request))
+    assert payload is not None
+    # 普通用户从 agent_permission_service 读 ACL，按字母序排序
+    assert request.state.allowed_agents == ["map_agent", "project"]
+
+
+def test_authenticate_admin_role_empty_allowed_agents(jwt_auth, monkeypatch):
+    """admin 角色 request.state.allowed_agents 应为 []，由上游 bypass。
+
+    2026-07-24 新增：避免 admin 用户因 user_agent_acl 无记录而被踢出。
+    """
+    access_token = _run_async(jwt_auth.generate_token("admin"))
+
+    async def fake_get_user(username):
+        return {
+            "id": 1,
+            "username": "admin",
+            "role": "admin",
+            "allowed_agents": ["map_agent", "project"],
         }
 
     monkeypatch.setattr(
@@ -163,7 +205,39 @@ def test_authenticate_sets_allowed_agents(jwt_auth, monkeypatch):
 
     payload = _run_async(jwt_auth.authenticate(request))
     assert payload is not None
-    assert request.state.allowed_agents == ["map_agent"]
+    assert request.state.role == "admin"
+    assert request.state.allowed_agents == []
+
+
+def test_authenticate_service_unavailable_fail_secure(jwt_auth, monkeypatch):
+    """agent_permission_service 不可用时返 []（fail-secure，不再 fallback 到旧字段）。
+
+    2026-07-24 新增：避免历史 users.allowed_agents 残留导致越权。
+    """
+    access_token = _run_async(jwt_auth.generate_token("testuser"))
+
+    async def fake_get_user(username):
+        return {
+            "id": 2,
+            "username": "testuser",
+            "role": "user",
+            "allowed_agents": ["map_agent"],  # 旧字段有值，但不应再生效
+        }
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.user_db.UserDB.get_user_by_username",
+        fake_get_user,
+    )
+
+    # service 不可用
+    stub_app_state = type("S", (), {"agent_permission_service": None})()
+    request = MagicMock(spec=Request)
+    request.headers.get.return_value = f"Bearer {access_token}"
+    request.app.state = stub_app_state
+
+    payload = _run_async(jwt_auth.authenticate(request))
+    assert payload is not None
+    assert request.state.allowed_agents == []
 
 
 def test_upload_config_is_in_session_whitelist():

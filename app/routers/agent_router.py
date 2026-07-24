@@ -102,7 +102,9 @@ async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse
     agent_name = chat_request.agent_name
 
     # 按用户 allowed_agents 校验目标智能体访问权限
-    if agent_name and agent_name != "default":
+    # 2026-07-24：admin 角色不受 ACL 限制（user_agent_acl 无 admin 行）
+    role = getattr(request.state, 'role', 'user')
+    if role != 'admin' and agent_name and agent_name != "default":
         allowed_agents = getattr(request.state, 'allowed_agents', [])
         if agent_name not in allowed_agents:
             raise HTTPException(
@@ -188,6 +190,11 @@ async def list_agents(request: Request) -> List[Dict[str, Any]]:
     """
     service = _get_service(request)
     agents = await service.list_agents()
+    # 2026-07-24：admin 角色不受 ACL 限制（user_agent_acl 无 admin 行），
+    # 直接返全量智能体；普通用户按 request.state.allowed_agents 过滤。
+    role = getattr(request.state, 'role', 'user')
+    if role == 'admin':
+        return agents
     allowed_agents = getattr(request.state, 'allowed_agents', [])
     if not allowed_agents:
         return []
