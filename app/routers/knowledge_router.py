@@ -615,10 +615,14 @@ async def knowledge_chat(
 
     # 构造上下文（知识库专用系统提示词；知识库根目录由 KNOWLEDGE_DIR 常量管理）
     # 过滤保留字段，避免与显式传入的 session_id 等关键字参数冲突
+    # 2026-07-24 新增：dynamic_context_suffix 注入 <attachments> / <servers> 动态节点，
+    # 以 attachments 表为事实源按 session_id 每轮实时拼接（与 /api/agent/chat 行为一致）。
+    from app.shared.utils.prompt.dynamic_context import build_dynamic_system_suffix
     safe_overrides = {
         k: v for k, v in {
             "system_prompt": KNOWLEDGE_SYSTEM_PROMPT,
             "geometry_data": geometry_data,
+            "dynamic_context_suffix": await build_dynamic_system_suffix(session_id),
         }.items() if k not in RESERVED_CONTEXT_FIELDS
     }
     context_instance = config.context_class(

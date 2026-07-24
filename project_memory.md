@@ -2185,6 +2185,45 @@ system_prompt = (
 - 第二层各 Agent 独立维护，互不影响
 - 第三层随工具功能迭代同步更新 docstring，确保模型获取最新工具描述
 
+## 动态上下文注入（attachments / servers 节点，2026-07-24 落地）
+
+在提示词三层架构之外，系统提示词**末尾**还会追加一段"动态上下文后缀"，把会话的运行时状态（用户上传附件列表、可用服务器列表）以 XML 节点形式注入，抑制模型对附件的幻觉。
+
+### 核心模块
+
+- **文件位置**：`app/shared/utils/prompt/dynamic_context.py`
+- **关键函数**：
+  - `build_dynamic_system_suffix(session_id)`：以后端 `attachments` 表为唯一事实源，按 session_id 实时查询并组装后缀（静态规则文本 + XML 节点）；查询异常 / Memory 模式降级为空附件列表，仍输出显式空节点
+  - `build_dynamic_context_xml(attachments, servers=None)`：生成 `<attachments>` / `<servers>` 节点；空状态显式化（输出 `<attachments></attachments>` 而非省略节点）；`servers` 参数为后期扩展预留（当前注入空节点 + 说明文字）
+  - `normalize_attachment_path(stored_path)`：路径规范化为 POSIX 风格并剥离 Windows 盘符（`E:\a\b.md` / `c:/a.md` → `/a/b.md`）
+  - `resolve_prompt_path(prompt_path)`：与 normalize 互逆，Windows 下为无盘符 `/` 开头路径补项目根所在盘符，供读文件工具解析
+
+### 注入链路
+
+```
+chat 路由（每轮）                AgentContext              agent.py::_llm_call
+build_dynamic_system_suffix  →   dynamic_context_suffix  →  SkillsAwarePrompt(...).build()
+(session_id 查 attachments 表)   (context_overrides 注入)    + "\n\n" + 动态后缀（末尾）
+```
+
+- **两个 chat 入口均已接入**：`/api/agent/chat`（agent_router.py，经 `build_agent_instance` 的 context_overrides）与 `/api/knowledge-chat`（knowledge_router.py，手动构造 context 的 safe_overrides）
+- `AgentContext` 基类声明 `dynamic_context_suffix: str = ""`，`dynamic_schema._BASE_CONTEXT_DEFAULTS` 同步兜底
+- 累积语义由 attachments 表 INSERT 天然保证（多次上传累加，不覆盖）；上传/删除后下一轮对话自动同步
+- `ChatRequest.attachments` 字段仅用于前端消息展示与历史记录渲染，**不参与**提示词拼接
+- 前端历史会话附件列表链路本已完整（`GET /api/session/{id}/detail` 返回 attachments，App.vue 切换会话时恢复 `currentAttachments`），无需改动
+
+### 工具侧兜底
+
+`app/shared/tools/middleware/filesystem_encoding_fix.py::_patched_read`：
+
+- 优先识别 `<attachments>` 节点中的规范化绝对路径：经 `resolve_prompt_path` 解析命中真实文件时直接读取（stored_path 本身即 .md 缓存，跳过 cwd → data/tmp 映射）；未命中回退原虚拟路径逻辑
+- 文件不存在时返回明确错误并指引模型使用 `<attachments>` 节点中的 path，支持自我纠正
+
+### 测试
+
+- `app/tests/shared/utils/prompt/test_dynamic_context.py`：路径规范化（Win/Linux 三态）、反向解析、XML 构建与转义、空状态显式化、suffix 组装与异常降级、AgentContext 契约一致性
+- 运行命令：`pytest app/tests/shared/utils/prompt/ -v`
+
 ## HITL 流程
 
 **工具**：`app/core/tools/HumanInTheLoopTools.py` 中的 `ask_user_question`（替代旧的 `request_human_approval`）

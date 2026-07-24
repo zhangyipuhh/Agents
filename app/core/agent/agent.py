@@ -316,6 +316,12 @@ class Agent:
             agent_name=agent_name,
             enabled_skill_names=enabled_skill_names,
         ).build()
+        # 2026-07-24 新增：追加动态上下文后缀（<attachments> / <servers> 节点）。
+        # 由 chat 路由经 context_overrides["dynamic_context_suffix"] 每轮实时注入，
+        # 放在系统提示词末尾以利用近因效应；空字符串时不追加。
+        dynamic_suffix = context.get("dynamic_context_suffix") or ""
+        if dynamic_suffix:
+            system_prompt = system_prompt + "\n\n" + dynamic_suffix
         #logging.info(f"system_prompt: {system_prompt}")
         #logging.info(f"system_prompt: {system_prompt}")
         # 从状态中获取图片路径列表,如果传入了需要处理图片,则从状态中获取图片路径列表

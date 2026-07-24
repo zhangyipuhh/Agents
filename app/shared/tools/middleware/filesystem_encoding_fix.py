@@ -30,6 +30,7 @@ from deepagents.backends.protocol import FileData, ReadResult, WriteResult
 
 from app.core.config.paths import resolve_tmp_mirror_path
 from app.shared.utils.files import session_path_manager as spm
+from app.shared.utils.prompt.dynamic_context import resolve_prompt_path
 
 logger = logging.getLogger(__name__)
 
@@ -148,8 +149,26 @@ def _patched_read(
     original_cwd = self.cwd
     original_ext = Path(file_path).suffix.lower()
 
+    # 2026-07-24 新增：优先识别系统提示词 <attachments> 节点中的规范化绝对路径
+    # （POSIX 风格、Windows 下已剥离盘符，如 "/laboratory/.../data/tmp/upload/.../x.md"）。
+    # 命中真实文件时直接读取（stored_path 本身即 .md 文本缓存，无需 cwd → data/tmp 映射）；
+    # 未命中则回退到原有虚拟路径逻辑，不影响子智能体工作空间内的相对路径读取。
+    prompt_abs_target = None
+    if str(file_path).startswith("/"):
+        try:
+            _candidate = resolve_prompt_path(file_path)
+            if _candidate.exists() and _candidate.is_file():
+                prompt_abs_target = _candidate
+        except (ValueError, OSError, RuntimeError):
+            prompt_abs_target = None
+
     try:
-        if original_ext in _DOC_ONLY_EXTENSIONS:
+        if prompt_abs_target is not None:
+            # <attachments> 节点路径：stored_path 指向的已是 .md 文本缓存，直接按 utf-8 读取
+            with open(prompt_abs_target, "r", encoding="utf-8") as f:
+                content = f.read()
+            file_encoding = "utf-8"
+        elif original_ext in _DOC_ONLY_EXTENSIONS:
             # 文档类：临时把 self.cwd 从 data/... 映射到 data/tmp/...
             project_root = spm._get_project_root().resolve()
             data_root = (project_root / "data").resolve()
@@ -173,7 +192,14 @@ def _patched_read(
             abs_target = abs_target.with_suffix(".md")
 
             if not abs_target.exists() or not abs_target.is_file():
-                return ReadResult(error=f"File '{file_path}' not found")
+                return ReadResult(
+                    error=(
+                        f"File '{file_path}' not found. "
+                        "If the user refers to an uploaded attachment, use the exact path "
+                        "listed in the <attachments> node of the system prompt; "
+                        "if that node is empty, tell the user the attachment does not exist."
+                    )
+                )
 
             # 读取 .md 文件
             with open(abs_target, "r", encoding="utf-8") as f:
@@ -195,7 +221,14 @@ def _patched_read(
                 return ReadResult(error=f"Error reading file '{file_path}': {e}")
 
             if not abs_target.exists() or not abs_target.is_file():
-                return ReadResult(error=f"File '{file_path}' not found")
+                return ReadResult(
+                    error=(
+                        f"File '{file_path}' not found. "
+                        "If the user refers to an uploaded attachment, use the exact path "
+                        "listed in the <attachments> node of the system prompt; "
+                        "if that node is empty, tell the user the attachment does not exist."
+                    )
+                )
 
             with open(abs_target, "r", encoding="utf-8") as f:
                 content = f.read()

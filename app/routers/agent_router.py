@@ -24,6 +24,7 @@ from app.shared.utils.agent.agent_config_service import (
 )
 from app.routers._stream_helper import generate_stream_response
 from app.core.tools._stop_signal import trigger_abort
+from app.shared.utils.prompt.dynamic_context import build_dynamic_system_suffix
 
 
 logger = logging.getLogger(__name__)
@@ -34,13 +35,13 @@ router = APIRouter(prefix="/api/agent", tags=["Agent"])
 class ChatRequest(BaseModel):
     """统一聊天请求体。
 
-    注意：attachments 字段暂未实现，预留供后续版本使用。
-
     Attributes:
         message: 用户输入文本
         session_id: 会话 ID（缺省时使用 "default"）
         agent_name: 目标智能体名称（默认 map_agent）
-        attachments: 附件列表（暂未实现，预留字段）
+        attachments: 附件列表（仅用于前端消息展示与历史记录渲染；
+            系统提示词中的 <attachments> 节点不依赖本字段，
+            由后端以 attachments 表为事实源按 session_id 实时拼接）
         resume: HITL 恢复参数（从中断处恢复执行时传入）
         context_overrides: 上下文字段覆盖；作为通用通道注入到目标 agent 的
             ``context_class(**overrides)``，供任意子智能体的 context 扩展字段使用
@@ -139,6 +140,11 @@ async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse
             k: v for k, v in (chat_request.context_overrides or {}).items()
             if v not in _EMPTY_VALUES
         }
+
+        # 2026-07-24 新增：注入动态上下文后缀（<attachments> / <servers> 节点）。
+        # 以 attachments 表为唯一事实源，按 session_id 每轮实时拼接，
+        # 上传/删除附件后下一轮自动同步；agent._llm_call 负责把它追加到系统提示词末尾。
+        merged_overrides["dynamic_context_suffix"] = await build_dynamic_system_suffix(session_id)
 
         agent, context_instance, input_state = await service.build_agent_instance(
             agent_name=agent_name,

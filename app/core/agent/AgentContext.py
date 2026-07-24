@@ -48,3 +48,6 @@ class AgentContext(TypedDict):
     """主机会话 ID，用于多智能体协作时数据隔离，默认 None"""
     process_data: dict = {}
     """过程数据字典，用于存储业务逻辑中的临时过程值，默认空字典"""
+    dynamic_context_suffix: str = ""
+    """动态上下文后缀（附件 <attachments> / 服务器 <servers> 节点），
+    由 chat 路由经 context_overrides 注入，agent._llm_call 追加到系统提示词末尾，默认空字符串"""
