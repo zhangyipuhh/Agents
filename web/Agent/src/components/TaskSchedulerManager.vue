@@ -1197,6 +1197,28 @@ async function loadRuns(scheduleId) {
 }
 
 /**
+ * 将 ISO 时间字符串格式化为本地化绝对时间 "YYYY-MM-DD HH:MM:SS"。
+ * - 入参为 null / undefined / 空字符串 / 无法解析的字符串 → 返回 "-"
+ * - 入参合法 → 返回本地时区下的年-月-日 时:分:秒（24 小时制，零填充）
+ * @param {string | null | undefined} value - 后端 ISO 8601 时间字符串
+ * @returns {string} 格式化结果；无效输入返回 "-"
+ */
+function formatRunTime(value) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  const pad = (n) => String(n).padStart(2, '0')
+  return (
+    date.getFullYear() +
+    '-' + pad(date.getMonth() + 1) +
+    '-' + pad(date.getDate()) +
+    ' ' + pad(date.getHours()) +
+    ':' + pad(date.getMinutes()) +
+    ':' + pad(date.getSeconds())
+  )
+}
+
+/**
  * 切换 Tab。切到扫描 Tab 时按需加载服务器列表，并仅保留白名单字段。
  * 切到脚本 Tab 时按需加载脚本列表。
  * 切回任务 Tab 时不再触发任何 devops / scripts 请求。
@@ -2779,7 +2801,7 @@ onBeforeUnmount(() => {
                 <div class="run-main">
                   <strong>{{ run.status }}</strong>
                   <span>{{ run.trigger_type }}</span>
-                  <span>{{ run.created_at || run.started_at }}</span>
+                  <span>{{ formatRunTime(run.created_at || run.started_at) }}</span>
                 </div>
                 <p v-if="run.output_text">{{ run.output_text }}</p>
                 <p v-if="run.error_message" class="run-error">{{ run.error_message }}</p>

@@ -525,6 +525,141 @@ describe('TaskSchedulerManager 组件', () => {
     wrapper.unmount()
   })
 
+  it('test_run_time_format_iso_to_YYYY_MM_DD_HH_MM_SS 主路径：ISO 时间格式化为 YYYY-MM-DD HH:MM:SS', async () => {
+    // 给 runs 端点打 patch，让 1/runs 返回带具体微秒的 ISO 字符串（项目内真实样例）
+    const fixedRuns = [
+      {
+        id: 100,
+        status: 'success',
+        trigger_type: 'manual',
+        created_at: '2026-07-23T09:33:00.113477',
+        started_at: null,
+      },
+    ]
+    const originalFetch = global.fetch
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const u = typeof url === 'string' ? url : url.url
+      if (u.includes('/api/admin/task-schedules/1/runs')) return jsonResponse(fixedRuns)
+      return originalFetch(url, opts)
+    })
+
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+    await flushPromises()
+    await wrapper.find('.task-history-btn').trigger('click')
+    await flushPromises()
+
+    const runItems = document.body.querySelectorAll('.run-item')
+    expect(runItems.length).toBe(1)
+    // 形状断言：形如 YYYY-MM-DD HH:MM:SS；不锁死小时，避免不同时区下 flaky
+    const timeText = runItems[0].querySelectorAll('span')[1].textContent.trim()
+    expect(timeText).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+    // 反向断言：原始 ISO 字符串中独有的字符（T、点号）不应再出现
+    expect(timeText).not.toContain('T')
+    expect(timeText).not.toContain('.')
+    // 锁死日期部分（UTC 与本地时区均命中 2026-07-23，因为微秒是 UTC 上午，跨时区仍是 23 号）
+    expect(timeText.startsWith('2026-07-23')).toBe(true)
+
+    wrapper.unmount()
+    global.fetch = originalFetch
+  })
+
+  it('test_run_time_falls_back_to_started_at_when_created_at_null created_at 为空时回退到 started_at', async () => {
+    const fixedRuns = [
+      {
+        id: 101,
+        status: 'failed',
+        trigger_type: 'scheduled',
+        created_at: null,
+        started_at: '2026-07-23T10:00:00+00:00',
+      },
+    ]
+    const originalFetch = global.fetch
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const u = typeof url === 'string' ? url : url.url
+      if (u.includes('/api/admin/task-schedules/1/runs')) return jsonResponse(fixedRuns)
+      return originalFetch(url, opts)
+    })
+
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+    await flushPromises()
+    await wrapper.find('.task-history-btn').trigger('click')
+    await flushPromises()
+
+    const runItems = document.body.querySelectorAll('.run-item')
+    expect(runItems.length).toBe(1)
+    const timeText = runItems[0].querySelectorAll('span')[1].textContent.trim()
+    expect(timeText).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+    expect(timeText.startsWith('2026-07-23')).toBe(true)
+
+    wrapper.unmount()
+    global.fetch = originalFetch
+  })
+
+  it('test_run_time_placeholder_when_both_timestamps_null 两个时间字段都为空时显示占位 -', async () => {
+    const fixedRuns = [
+      {
+        id: 102,
+        status: 'success',
+        trigger_type: 'manual',
+        created_at: null,
+        started_at: null,
+      },
+    ]
+    const originalFetch = global.fetch
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const u = typeof url === 'string' ? url : url.url
+      if (u.includes('/api/admin/task-schedules/1/runs')) return jsonResponse(fixedRuns)
+      return originalFetch(url, opts)
+    })
+
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+    await flushPromises()
+    await wrapper.find('.task-history-btn').trigger('click')
+    await flushPromises()
+
+    const runItems = document.body.querySelectorAll('.run-item')
+    expect(runItems.length).toBe(1)
+    // 第 2 个 span（trigger_type 之后）是时间 span
+    const spans = runItems[0].querySelectorAll('span')
+    const timeText = spans[spans.length - 1].textContent.trim()
+    expect(timeText).toBe('-')
+
+    wrapper.unmount()
+    global.fetch = originalFetch
+  })
+
+  it('test_run_time_placeholder_when_invalid_iso 非法时间字符串显示占位 -', async () => {
+    const fixedRuns = [
+      {
+        id: 103,
+        status: 'failed',
+        trigger_type: 'manual',
+        created_at: 'not-a-date',
+        started_at: null,
+      },
+    ]
+    const originalFetch = global.fetch
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const u = typeof url === 'string' ? url : url.url
+      if (u.includes('/api/admin/task-schedules/1/runs')) return jsonResponse(fixedRuns)
+      return originalFetch(url, opts)
+    })
+
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+    await flushPromises()
+    await wrapper.find('.task-history-btn').trigger('click')
+    await flushPromises()
+
+    const runItems = document.body.querySelectorAll('.run-item')
+    expect(runItems.length).toBe(1)
+    const spans = runItems[0].querySelectorAll('span')
+    const timeText = spans[spans.length - 1].textContent.trim()
+    expect(timeText).toBe('-')
+
+    wrapper.unmount()
+    global.fetch = originalFetch
+  })
+
   it('test_default_tab_is_edit_task 默认 Tab 是「编辑任务」', async () => {
     const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
