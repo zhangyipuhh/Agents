@@ -271,11 +271,95 @@ def test_upsert_config_invalid_enum_returns_400(client, admin_headers):
     assert response.status_code == 400
 
 
-def test_user_cannot_access_api_configs(client, user_headers):
-    """测试普通用户访问 API 接口配置管理接口返回 403。"""
+# =============================================================================
+# P2: ACL 双重门（2026-07-24）
+# - admin role bypass ACL 直通
+# - 普通用户 ACL 授权（task-scheduler.api-config）后能调
+# - 普通用户未授权 → 403
+# =============================================================================
+
+
+def _override_api_config_visible_menu(client, visible_ids):
+    """覆盖 api_config_router 调用期间 menu_permission_service 的返回值。"""
+    from app.shared.utils.auth.menu_permission_service import MenuPermissionService
+    visible_set = set(visible_ids)
+
+    async def fake_visible(user_id, is_admin):
+        if is_admin:
+            from app.core.menu_registry import get_enabled_items
+            return [m.id for m in sorted(get_enabled_items(), key=lambda m: m.sort_order)]
+        return sorted(visible_set)
+
+    stub = MenuPermissionService(db=None)
+    stub.get_visible_menu_ids = fake_visible
+    client.app.state.menu_permission_service = stub
+
+
+def test_normal_user_no_acl_get_tree_403(client, user_headers):
+    """ACL 空：普通用户 GET /tree 返 403（守卫拦截）。"""
+    _override_api_config_visible_menu(client, visible_ids={'profile'})
     response = client.get(f"{BASE}/tree", headers=user_headers)
 
     assert response.status_code == 403
+    assert "task-scheduler.api-config" in response.json()["detail"]
+
+
+def test_normal_user_acl_api_config_passes_get_tree(client, user_headers):
+    """ACL 含 task-scheduler.api-config：普通用户 GET /tree 通过（200）。"""
+    _override_api_config_visible_menu(
+        client, visible_ids={'profile', 'task-scheduler.api-config'}
+    )
+    service = client.app.state.api_config_service
+    service.get_tree = AsyncMock(return_value=[])
+
+    response = client.get(f"{BASE}/tree", headers=user_headers)
+
+    # 关键：不是 403（ACL 通过）
+    assert response.status_code != 403
+    assert response.status_code == 200
+
+
+def test_normal_user_acl_parent_only_still_blocked(client, user_headers):
+    """普通用户 ACL 含 task-scheduler 父级但缺 .api-config 子菜单 → 仍 403。"""
+    _override_api_config_visible_menu(
+        client, visible_ids={'profile', 'task-scheduler'}
+    )
+
+    response = client.get(f"{BASE}/tree", headers=user_headers)
+
+    assert response.status_code == 403
+
+
+def test_admin_bypasses_acl_for_api_config(client, admin_headers):
+    """admin 角色 bypass ACL：ACL 空也能调（守卫不查 ACL）。"""
+    _override_api_config_visible_menu(client, visible_ids={'profile'})
+    service = client.app.state.api_config_service
+    service.get_tree = AsyncMock(return_value=[])
+
+    response = client.get(f"{BASE}/tree", headers=admin_headers)
+
+    # 关键：不是 403（ACL bypass）
+    assert response.status_code != 403
+    assert response.status_code == 200
+
+
+def test_normal_user_acl_can_send_request(client, user_headers):
+    """ACL 授权的普通用户可调用 /nodes/{id}/send（写操作也受 ACL 控制）。"""
+    _override_api_config_visible_menu(
+        client, visible_ids={'profile', 'task-scheduler.api-config'}
+    )
+    service = client.app.state.api_config_service
+    service.send_request = AsyncMock(return_value={
+        "run_id": 1, "http_status": 200, "duration_ms": 10,
+        "response_body": "ok", "check_passed": True,
+        "assertion_results": [], "error_message": "",
+    })
+
+    response = client.post(f"{BASE}/nodes/1/send", headers=user_headers)
+
+    # 关键：不是 403（ACL 通过）
+    assert response.status_code != 403
+    assert response.status_code == 200
 
 
 def test_api_config_service_missing_returns_500(client, admin_headers):

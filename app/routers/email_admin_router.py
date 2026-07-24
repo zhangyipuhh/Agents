@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 # require_admin_or_menu_acl(menu_id) 替代 — admin 直通（不读 ACL），
 # 普通用户需 ACL 含 menu_id 才能调端点。
 # - server-config / server-config/test → email-settings.server
-# - emailable-users → email-settings 父级（policies 收件人选 sender 的辅助数据）
+# - emailable-users → email-settings.policies（policies tab 选收件人辅助数据，与 tab ACL 对齐）
 # - policies → email-settings.policies
 # - test / send-by-policy → email-settings.test
 router = APIRouter(
@@ -316,7 +316,7 @@ async def test_server_config(
 # =============================================================================
 
 @router.get("/emailable-users", response_model=List[Dict[str, Any]],
-            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.email-settings'))])
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.email-settings.policies'))])
 async def list_emailable_users(request: Request) -> List[Dict[str, Any]]:
     """列出已注册且邮箱非空的用户（供前端挑选收件人）。
 

@@ -464,15 +464,32 @@ def test_normal_user_no_acl_emailable_users_returns_403(client, user_headers, mo
     assert resp.status_code == 403
 
 
-def test_normal_user_acl_email_settings_passes_emailable_users(client, user_headers):
-    """ACL 含 email-settings（父级）：普通用户 GET /emailable-users 200。"""
+def test_normal_user_acl_policies_passes_emailable_users(client, user_headers):
+    """ACL 含 email-settings.policies（子菜单）：普通用户 GET /emailable-users 200。
+
+    2026-07-24 修复：emailable-users 端点 ACL 要求改为子菜单 policies，
+    与 zyp 等普通用户 ACL 授权一致（端点 ACL 粒度与所服务的 tab 对齐）。
+    """
     _override_normal_user_with_visible_menu_ids(
-        client, visible_ids={'profile', 'task-scheduler.email-settings'}
+        client, visible_ids={'profile', 'task-scheduler.email-settings.policies'}
     )
     # 由于 client fixture stub 了 email_service 之后会返 []，
     # 这里只验证 ACL 通过（即不是 403）
     resp = client.get("/api/admin/email/emailable-users", headers=user_headers)
     assert resp.status_code in (200, 500)  # ACL 通过，只是不一定返数据
+
+
+def test_normal_user_acl_parent_only_not_enough_for_emailable_users(client, user_headers):
+    """ACL 仅含父菜单 email-settings（无 policies 子菜单）：emailable-users 仍 403。
+
+    2026-07-24 新增回归测试：验证端点 ACL 粒度已从父菜单下沉到子菜单，
+    防止后续误把 ACL 改回父菜单而无人察觉。
+    """
+    _override_normal_user_with_visible_menu_ids(
+        client, visible_ids={'profile', 'task-scheduler.email-settings'}
+    )
+    resp = client.get("/api/admin/email/emailable-users", headers=user_headers)
+    assert resp.status_code == 403
 
 
 def test_normal_user_acl_policies_passes(client, user_headers):

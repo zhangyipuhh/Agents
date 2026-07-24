@@ -5,8 +5,8 @@ API 接口配置 Admin Router 模块。
 
 提供 /api/admin/api-configs 下的节点树 CRUD、请求配置 upsert、
 代理发送请求与调用历史查询接口。
-所有接口均要求 admin 权限，服务实例由 app/core/server.py lifespan
-初始化到 app.state.api_config_service。
+所有接口均要求 admin 角色或 task-scheduler.api-config 菜单 ACL 授权，
+服务实例由 app/core/server.py lifespan 初始化到 app.state.api_config_service。
 """
 
 from typing import Any, Dict, List, Literal, Optional
@@ -15,13 +15,15 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from app.shared.utils.api_config_service import ApiConfigService
-from app.shared.utils.auth.Safety import require_admin
+from app.shared.utils.auth.Safety import require_admin_or_menu_acl
 
 
+# 2026-07-24 ACL 双重门:移除 Router 级 require_admin,
+# 逐 endpoint 改用 require_admin_or_menu_acl('task-scheduler.api-config')。
+# 被授予 task-scheduler.api-config 菜单 ACL 的普通用户也能完整访问。
 router = APIRouter(
     prefix="/api/admin/api-configs",
     tags=["API Config Admin"],
-    dependencies=[Depends(require_admin)],
 )
 
 
@@ -131,7 +133,8 @@ def _handle_service_error(exc: Exception) -> None:
     raise exc
 
 
-@router.get("/tree", response_model=Dict[str, Any])
+@router.get("/tree", response_model=Dict[str, Any],
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.api-config'))])
 async def get_tree(request: Request) -> Dict[str, Any]:
     """获取节点树平铺列表。
 
@@ -146,7 +149,8 @@ async def get_tree(request: Request) -> Dict[str, Any]:
     return {"nodes": nodes}
 
 
-@router.post("/nodes", status_code=status.HTTP_201_CREATED, response_model=Dict[str, Any])
+@router.post("/nodes", status_code=status.HTTP_201_CREATED, response_model=Dict[str, Any],
+             dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.api-config'))])
 async def create_node(request: Request, body: CreateNodeRequest) -> Dict[str, Any]:
     """创建节点；node_type='api' 时自动创建默认配置。
 
@@ -165,7 +169,8 @@ async def create_node(request: Request, body: CreateNodeRequest) -> Dict[str, An
         raise
 
 
-@router.put("/nodes/{node_id}", response_model=Dict[str, Any])
+@router.put("/nodes/{node_id}", response_model=Dict[str, Any],
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.api-config'))])
 async def update_node(
     request: Request,
     node_id: int,
@@ -194,7 +199,8 @@ async def update_node(
         raise
 
 
-@router.delete("/nodes/{node_id}", response_model=Dict[str, Any])
+@router.delete("/nodes/{node_id}", response_model=Dict[str, Any],
+               dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.api-config'))])
 async def delete_node(request: Request, node_id: int) -> Dict[str, Any]:
     """删除节点；api 节点级联删除配置与调用历史。
 
@@ -214,7 +220,8 @@ async def delete_node(request: Request, node_id: int) -> Dict[str, Any]:
         raise
 
 
-@router.get("/nodes/{node_id}/config", response_model=Dict[str, Any])
+@router.get("/nodes/{node_id}/config", response_model=Dict[str, Any],
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.api-config'))])
 async def get_config(request: Request, node_id: int) -> Dict[str, Any]:
     """获取 api 节点的请求配置。
 
@@ -233,7 +240,8 @@ async def get_config(request: Request, node_id: int) -> Dict[str, Any]:
         raise
 
 
-@router.put("/nodes/{node_id}/config", response_model=Dict[str, Any])
+@router.put("/nodes/{node_id}/config", response_model=Dict[str, Any],
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.api-config'))])
 async def upsert_config(
     request: Request,
     node_id: int,
@@ -267,7 +275,8 @@ async def upsert_config(
         raise
 
 
-@router.post("/nodes/{node_id}/send", response_model=Dict[str, Any])
+@router.post("/nodes/{node_id}/send", response_model=Dict[str, Any],
+             dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.api-config'))])
 async def send_request(request: Request, node_id: int) -> Dict[str, Any]:
     """按节点配置代理发送 HTTP 请求并校验预期结果。
 
@@ -287,7 +296,8 @@ async def send_request(request: Request, node_id: int) -> Dict[str, Any]:
         raise
 
 
-@router.get("/nodes/{node_id}/runs", response_model=Dict[str, Any])
+@router.get("/nodes/{node_id}/runs", response_model=Dict[str, Any],
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.api-config'))])
 async def list_runs(
     request: Request,
     node_id: int,
