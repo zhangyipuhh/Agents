@@ -1067,22 +1067,28 @@ async function loadInitialData() {
     // 2026-07-23 ACL 双重门：
     // fetchAdminAgentList 是 admin-only（无 menu_id 对应），普通用户即使被授权
     // task-scheduler.scheduled 也无权调，必须被 fail-safe 吞掉避免红色 banner。
-    // safeFetch 把核心（task-schedules）与辅助（agents）错误隔离：
-    // - core 失败 → 写到 errorMessage 显示 banner（合理）
-    // - aux 失败 → console.warn，UI 静默（空下拉框 / 默认占位）
-    const [taskRows, agentRows] = await Promise.all([
+    // safeFetch 返结构化 { ok, value/error }，避免在 Promise.all 进行中写 errorMessage
+    // 与开头的 errorMessage.value = '' 产生 race condition。
+    const [taskRes, agentRes] = await Promise.all([
       safeFetch(fetchTaskSchedules, [], 'task-schedules'),
       safeFetch(fetchAdminAgentList, [], 'admin-agents'),
     ])
     // loadScripts 内部已吞错（共享 in-flight Promise），不会 reject
     await loadScripts()
 
-    schedules.value = taskRows || []
-    agents.value = agentRows || []
+    // 辅助失败 → 仅 console.warn（safeFetch 内部已记录），UI 静默
+
+    schedules.value = taskRes.ok ? (taskRes.value || []) : []
+    agents.value = agentRes.ok ? (agentRes.value || []) : []
     if (schedules.value.length > 0) {
       await selectSchedule(schedules.value[0])
     } else {
       startCreate()
+    }
+    // 2026-07-23 修复 race：startCreate() 内部 errorMessage.value = '' 会清掉加载错误。
+    // 把 errorMessage 写入移到 startCreate / selectSchedule 之后，确保 banner 能正确显示。
+    if (!taskRes.ok) {
+      errorMessage.value = taskRes.error.message || '加载定时任务失败'
     }
   } catch (error) {
     errorMessage.value = error.message || '加载定时任务失败'
@@ -1092,29 +1098,30 @@ async function loadInitialData() {
 }
 
 /**
- * 2026-07-23 ACL 双重门 fail-safe：单点 fetch swallow 失败，避免整个 Promise.all reject。
+ * 2026-07-23 ACL 双重门 fail-safe：单点 fetch swallow 失败。
  *
- * - core（task-schedules）：失败写到 errorMessage 触发红色 banner（核心数据缺失）
- * - aux（admin-agents / scripts）：失败仅 console.warn，UI 静默（空下拉框）
+ * 返结构化结果（不抛错），让 caller 在 await Promise.all 后决定如何处理：
+ * - { ok: true, value: <data> } — 成功
+ * - { ok: false, error: <Error>, name: <name> } — 失败（已 console.warn）
+ *
+ * 这样避免 race：call site 可以统一在 errorMessage.value = '' 之后
+ * 再根据 taskRes.ok 决定写不写。
  *
  * @param {() => Promise<any>} fetcher - fetch 函数
  * @param {any} fallback - 失败时的 fallback 值（默认 []）
- * @param {string} name - 用于日志的标识符（'task-schedules' / 'admin-agents' 等）
- * @returns {Promise<any>} 成功返 fetcher() 结果，失败返 fallback
+ * @param {string} name - 日志标识符
+ * @returns {Promise<{ok: boolean, value?: any, error?: Error, name: string}>}
  */
 async function safeFetch(fetcher, fallback = [], name = '') {
   try {
-    return await fetcher()
+    const value = await fetcher()
+    return { ok: true, value, name }
   } catch (err) {
-    if (name === 'task-schedules') {
-      errorMessage.value = err.message || '加载定时任务失败'
-    } else {
-      console.warn(
-        `[TaskSchedulerManager] ${name || 'fetch'} failed（已静默 swallow）:`,
-        err.message
-      )
-    }
-    return fallback
+    console.warn(
+      `[TaskSchedulerManager] ${name || 'fetch'} failed（已 swallow）:`,
+      err.message
+    )
+    return { ok: false, error: err, name, value: fallback }
   }
 }
 
