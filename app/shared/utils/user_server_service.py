@@ -172,6 +172,14 @@ class UserServerService:
         为 ``None``（提升为根）以便前端组树时仍能渲染——同时不会泄露
         隐藏父节点的存在。
 
+        对 ``node_type='server'`` 的节点附带 ``business_name`` / ``server_type``
+        （2026-07-26 新增）：由 ``source_devops_server_id`` 关联到
+        ``devops_servers`` 内存缓存（``list_public_servers`` 已是脱敏 4
+        字段白名单，零 DB 开销），供「编辑任务」表单的 server_list 候选
+        直接复用。源行已被删除（外键 CASCADE 正常会清掉引用节点，但保留
+        防御）时 ``business_name`` / ``server_type`` 留 ``None``，由前端
+        maskServers 过滤掉。
+
         参数:
             scope: 调用方归属上下文。
 
@@ -179,8 +187,10 @@ class UserServerService:
             List[Dict[str, Any]]: 节点列表，按 id 升序。
         """
         all_nodes = sorted(self._nodes.values(), key=lambda n: n["id"])
+        # 2026-07-26：devops_servers 脱敏列表用于 server 节点附加字段
+        devops_index = self._build_devops_index()
         if scope.system or scope.is_admin:
-            return [dict(n) for n in all_nodes]
+            return [self._attach_devops_fields(dict(n), devops_index) for n in all_nodes]
         visible_ids: Set[int] = {
             n["id"] for n in all_nodes
             if scope.can_access(n.get("created_by_user_id"))
@@ -193,8 +203,45 @@ class UserServerService:
             parent_id = copied.get("parent_id")
             if parent_id is not None and parent_id not in visible_ids:
                 copied["parent_id"] = None
-            result.append(copied)
+            result.append(self._attach_devops_fields(copied, devops_index))
         return result
+
+    def _build_devops_index(self) -> Dict[int, Dict[str, Any]]:
+        """拉取 devops_servers 脱敏列表并构造成 id → row 索引。
+
+        返回:
+            Dict[int, Dict[str, Any]]: devops_servers 行索引，键为 id。
+            devops_server_service 未注入时返回空字典。
+        """
+        if self._devops_server_service is None:
+            return {}
+        rows = self._devops_server_service.list_public_servers() or []
+        return {row.get("id"): row for row in rows if row.get("id") is not None}
+
+    @staticmethod
+    def _attach_devops_fields(
+        node: Dict[str, Any], devops_index: Dict[int, Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """对 server 节点附加 ``business_name`` / ``server_type``。
+
+        参数:
+            node: 节点 dict（已被复制）。
+            devops_index: devops_servers 行索引。
+
+        返回:
+            Dict[str, Any]: 节点 dict（server 节点附带 2 个字段）。
+        """
+        if node.get("node_type") != "server":
+            return node
+        source_id = node.get("source_devops_server_id")
+        if source_id is None:
+            return node
+        devops_row = devops_index.get(source_id)
+        if devops_row is None:
+            return node
+        node["business_name"] = devops_row.get("business_name")
+        node["server_type"] = devops_row.get("server_type")
+        return node
 
     # ------------------------------------------------------------------
     # Create / update / delete

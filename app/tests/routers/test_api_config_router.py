@@ -272,10 +272,11 @@ def test_upsert_config_invalid_enum_returns_400(client, admin_headers):
 
 
 # =============================================================================
-# P2: ACL 双重门（2026-07-24）
+# P2: ACL 双重门（2026-07-24 + 2026-07-26 调整）
 # - admin role bypass ACL 直通
-# - 普通用户 ACL 授权（task-scheduler.api-config）后能调
-# - 普通用户未授权 → 403
+# - 普通用户 GET /tree：登录态即可（OwnershipScope 隔离），不再查 ACL
+# - 普通用户写端点（POST/PUT/DELETE/Send/Runs）：仍要 task-scheduler.api-config
+# - 普通用户未授权写端点 → 403
 # =============================================================================
 
 
@@ -295,17 +296,28 @@ def _override_api_config_visible_menu(client, visible_ids):
     client.app.state.menu_permission_service = stub
 
 
-def test_normal_user_no_acl_get_tree_403(client, user_headers):
-    """ACL 空：普通用户 GET /tree 返 403（守卫拦截）。"""
+def test_normal_user_no_acl_get_tree_passes(client, user_headers):
+    """2026-07-26 调整：GET /tree 放宽为登录态。普通用户无任何 ACL 也能调（200）。
+
+    委托 OwnershipScope 按 created_by_user_id 过滤，普通用户仅见自己
+    创建的接口节点。ACL 守卫已被移除（跟随 GET /api/admin/scripts 先例）。
+    """
     _override_api_config_visible_menu(client, visible_ids={'profile'})
+    service = client.app.state.api_config_service
+    service.get_tree = AsyncMock(return_value=[])
+
     response = client.get(f"{BASE}/tree", headers=user_headers)
 
-    assert response.status_code == 403
-    assert "task-scheduler.api-config" in response.json()["detail"]
+    # 关键：不是 403（GET /tree 不再查 ACL）
+    assert response.status_code != 403
+    assert response.status_code == 200
 
 
 def test_normal_user_acl_api_config_passes_get_tree(client, user_headers):
-    """ACL 含 task-scheduler.api-config：普通用户 GET /tree 通过（200）。"""
+    """ACL 含 task-scheduler.api-config：普通用户 GET /tree 通过（200）。
+
+    GET /tree 已放宽为登录态，但保留此用例以锁住历史 ACL 路径不再被引入。
+    """
     _override_api_config_visible_menu(
         client, visible_ids={'profile', 'task-scheduler.api-config'}
     )
@@ -319,15 +331,21 @@ def test_normal_user_acl_api_config_passes_get_tree(client, user_headers):
     assert response.status_code == 200
 
 
-def test_normal_user_acl_parent_only_still_blocked(client, user_headers):
-    """普通用户 ACL 含 task-scheduler 父级但缺 .api-config 子菜单 → 仍 403。"""
+def test_normal_user_acl_parent_only_still_passes_get_tree(client, user_headers):
+    """2026-07-26 调整：GET /tree 不再细粒度按子菜单判定 ACL。
+
+    即使普通用户只有 task-scheduler 父级 ACL、没有 task-scheduler.api-config
+    子菜单，GET /tree 也能通过（仍 200）。前提：登录态存在。
+    """
     _override_api_config_visible_menu(
         client, visible_ids={'profile', 'task-scheduler'}
     )
+    service = client.app.state.api_config_service
+    service.get_tree = AsyncMock(return_value=[])
 
     response = client.get(f"{BASE}/tree", headers=user_headers)
 
-    assert response.status_code == 403
+    assert response.status_code == 200
 
 
 def test_admin_bypasses_acl_for_api_config(client, admin_headers):
@@ -341,6 +359,20 @@ def test_admin_bypasses_acl_for_api_config(client, admin_headers):
     # 关键：不是 403（ACL bypass）
     assert response.status_code != 403
     assert response.status_code == 200
+
+
+def test_normal_user_no_acl_send_request_still_403(client, user_headers):
+    """2026-07-26 调整：写端点（POST /nodes/{id}/send）仍要求 ACL。
+
+    虽然 GET /tree 放宽为登录态，但写端点（POST/PUT/DELETE/Send/Runs）
+    仍保留 require_admin_or_menu_acl('task-scheduler.api-config') 守护。
+    普通用户无对应 ACL 时调 /nodes/{id}/send 仍 403。
+    """
+    _override_api_config_visible_menu(client, visible_ids={'profile'})
+    response = client.post(f"{BASE}/nodes/1/send", headers=user_headers)
+
+    assert response.status_code == 403
+    assert "task-scheduler.api-config" in response.json()["detail"]
 
 
 def test_normal_user_acl_can_send_request(client, user_headers):

@@ -1,9 +1,18 @@
 <script setup>
 /**
- * TaskSchedulerManager - 智能体定时任务管理组件（admin）
+ * TaskSchedulerManager - 智能体定时任务管理组件
  *
  * 提供定时任务列表、任务表单、启停、立即运行和执行历史查看能力；
- * 以及「服务器扫描入库」Tab，在该 Tab 中按需拉取 DevOps 服务器脱敏列表并触发扫描。
+ * 以及「服务器扫描入库」「脚本扫描入库」「API接口配置」「服务器管理」Tab。
+ *
+ * 数据源分流（2026-07-26 起）：
+ * - admin：服务器候选来自 ``fetchDevOpsServers``（全量共享 devops_servers），
+ *   用于「服务器扫描入库」Tab 与 server_list 编辑控件；
+ * - 普通用户：服务器候选来自 ``fetchUserServerTree``（自己添加的服务器
+ *   节点，后端 UserServerService.list_nodes 按归属过滤并附带
+ *   business_name / server_type），仅用于「编辑任务」server_list 控件。
+ * - 接口候选两端都走 ``fetchApiConfigTree``（后端按 OwnershipScope 过滤，
+ *   普通用户天然只看到自己的接口节点）。
  *
  * 安全设计：服务器列表只展示白名单字段（id / business_name / server_type / updated_at），
  * 绝不渲染 ip / port / username / password / blacklist / whitelist / 文件路径。
@@ -28,6 +37,7 @@ import {
   scanScripts,
   fetchEmailPolicies,
   fetchApiConfigTree,
+  fetchUserServerTree,  // 2026-07-26 新增：普通用户从「服务器管理」中自己添加的服务器列表
 } from '../utils/api.js'
 import ApiConfigManager from './ApiConfigManager.vue'
 import UserServerManager from './UserServerManager.vue'  // 2026-07-24 新增：用户服务器配置
@@ -852,15 +862,18 @@ function maskApiNodes(rows) {
  * 与 ``loadDevopsServers`` 同语义：hasLoadedApis 短路复用，in-flight Promise
  * 复用，force 时先 await 旧请求再发起新请求；失败时统一脱敏文案，不外泄后端
  * detail；强制刷新失败且有缓存时保留旧候选，否则清空。
+ *
+ * 2026-07-26 改动：移除 ``if (!props.isAdmin) return`` 拦截。后端 GET /tree
+ * 已放宽为登录态可读（与 ``GET /api/admin/scripts`` 先例一致），后端
+ * OwnershipScope 按 ``created_by_user_id`` 过滤，普通用户天然只拿到自己
+ * 添加的接口节点。
+ *
  * @param {Object} [opts] - 选项
  * @param {boolean} [opts.force=false] - 强制刷新
  * @returns {Promise<void>}
  */
 async function loadApiConfigTree(opts = {}) {
   const force = opts && opts.force === true
-  // 2026-07-23 修复：fail-safe 兜底（不仅 onMounted，switchTab/watch 触发也要拦）。
-  // 否则普通用户点击「API接口配置」子 tab 仍会触发 /api/admin/api-config/* → 403。
-  if (!props.isAdmin) return
   if (!force && hasLoadedApis.value) return
   if (!force && apiLoadPromise) return apiLoadPromise
   if (force && apiLoadPromise) {
@@ -1268,6 +1281,29 @@ function bumpFillVersion() {
 }
 
 /**
+ * 把 user_server tree 的 server 节点映射为 server_list 候选行。
+ * 还原为 ``{business_name, server_type}`` 形态，与 ``fetchDevOpsServers``
+ * 返回的 4 字段白名单行同口径，喂入 ``maskServers`` 后的下游筛选 /
+ * 失效项检测逻辑。
+ * 节点缺少 ``business_name``（源行被 CASCADE 清理或 devops_server_service
+ * 未注入）时被剔除，与 ``maskServers`` 对 ghost 行的过滤口径一致。
+ * 普通用户编辑任务时只看到自己导入的服务器，业务名取自 devops_servers
+ * canonical 字段（用户重命名节点不影响 server_list 值正确性）。
+ * @param {Array} nodes - fetchUserServerTree 返回的节点列表
+ * @returns {Array<{id: number, business_name: string, server_type: string}>}
+ */
+function mapUserServerNodesToCandidates(nodes) {
+  if (!Array.isArray(nodes)) return []
+  return nodes
+    .filter((node) => node && node.node_type === 'server')
+    .map((node) => ({
+      id: Number(node.source_devops_server_id),
+      business_name: node.business_name,
+      server_type: node.server_type,
+    }))
+}
+
+/**
  * 加载并脱敏 DevOps 服务器列表。
  * - 普通调用：已成功加载过（hasLoaded=true）或已有 pending 请求时直接复用，不重复 GET。
  * - 失败时保持 hasLoaded=false 并允许下次重试（不固化缓存）。
@@ -1277,16 +1313,22 @@ function bumpFillVersion() {
  *   无论是否首次加载或强制刷新，只要失败就设置 listErrorMessage。
  * - 失败时仅在 force 且存在非空缓存时保留 devopsServers 与加载状态；
  *   其余失败均清空列表并显式设置 hasLoaded=false，包括普通失败时旧状态异常为 true 的情况。
+ *
+ * 2026-07-26 改动：按 ``props.isAdmin`` 分流数据源——
+ * - admin 仍走 ``fetchDevOpsServers`` 获取全量共享 devops_servers（用于
+ *   「服务器扫描入库」Tab 与服务器列表编辑）；
+ * - 普通用户走 ``fetchUserServerTree`` 获取自己添加的服务器（后端
+ *   ``UserServerService.list_nodes`` 按 ``OwnershipScope`` 过滤，并对
+ *   server 节点附带 ``business_name`` / ``server_type``，zero DB IO）。
+ * 两个分支结果都映射成 ``{id, business_name, server_type}`` 候选喂入
+ * ``maskServers`` 与既有筛选 / 失效项检测逻辑。
+ *
  * @param {Object} [opts] - 选项
  * @param {boolean} [opts.force=false] - 强制刷新，跳过已加载短路
  * @returns {Promise<void>} 无返回值
  */
 async function loadDevopsServers(opts = {}) {
   const force = opts && opts.force === true
-  // 2026-07-23 修复：fail-safe 兜底（不仅 onMounted，switchTab/watch 触发的也要拦）。
-  // 否则普通用户被授权 task-scheduler 顶级 tab 后，点击「服务器扫描入库」子 tab
-  // 仍会触发 /api/admin/devops-servers → 403 → 红色 banner「服务器列表加载失败」。
-  if (!props.isAdmin) return
   if (!force && hasLoaded.value) return
   if (!force && devopsLoadPromise) return devopsLoadPromise
   if (force && devopsLoadPromise) {
@@ -1301,7 +1343,11 @@ async function loadDevopsServers(opts = {}) {
     isLoadingServers.value = true
     listErrorMessage.value = ''
     try {
-      const rows = await fetchDevOpsServers()
+      const rows = props.isAdmin
+        ? await fetchDevOpsServers()
+        : mapUserServerNodesToCandidates(
+            (await fetchUserServerTree()).nodes
+          )
       devopsServers.value = maskServers(rows)
       hasLoaded.value = true
     } catch {

@@ -17,7 +17,10 @@
 - `app/shared/utils/api_config_service.py::ApiConfigService`：构造注入 db（`db=None` 优雅降级：preload no-op、读返回空、写抛 RuntimeError）；内存+DB 双写；所有写/读方法接收 `scope: OwnershipScope` 参数做用户归属隔离（2026-07-24 起，详见「通用配置归属隔离」落地二）；`preload_all()` / `get_tree(scope)` / `create_node(parent_id, node_type, name, scope)`（api 节点自动建默认配置行；非 admin 父节点必须可见且 folder）/ `update_node(node_id, scope, ...)`（防环 + 父节点归属校验）/ `delete_node(node_id, scope)`（**非空文件夹抛 ValueError 拒绝删除，统计全部子节点防误删**）/ `get_config(node_id, scope)` / `upsert_config(node_id, scope, ...)`（枚举与 expectations 结构校验）/ `send_request(node_id, scope)`（httpx.AsyncClient timeout=15 代理发送 + 断言校验 + 落库，网络异常也落库）/ `list_runs(node_id, scope, ...)`；新增 `get_node_internal(node_id)` 内存缓存轻量查询供调度器内部使用
 - 断言类型（`_evaluate_expectations`）：`status_code`(eq) / `body_contains`(子串) / `json_field`(点号 path 下钻，`exists|eq`)
 - 缺失/越权语义：`get_config / upsert_config / send_request / list_runs / update_node / delete_node` 对缺失节点或非 admin 越权统一抛 `ApiConfigNotFoundError`（路由映射 404）；`create_node` / `update_node` 对父节点不可见抛 `ValueError("父节点不存在")`（路由映射 400，保留前端 UX）；folder 类型不匹配仍 `ValueError`（400）
-- `app/routers/api_config_router.py`：`/api/admin/api-configs`（全部 `require_admin_or_menu_acl('task-scheduler.api-config')`）：`GET /tree`、`POST /nodes`、`PUT /nodes/{id}`、`DELETE /nodes/{id}`（非空文件夹 400）、`GET|PUT /nodes/{id}/config`、`POST /nodes/{id}/send`、`GET /nodes/{id}/runs?limit=20`；每个端点构造 `OwnershipScope.from_request(request)` 透传 service
+- `app/routers/api_config_router.py`：`/api/admin/api-configs` 端点授权契约（2026-07-26 调整）：
+  - 只读 `GET /tree`：JWT-only（登录态即可，OwnershipScope 按归属过滤；普通用户仅见自己的接口节点）；
+  - 写端点：`POST /nodes`、`PUT /nodes/{id}`、`DELETE /nodes/{id}`（非空文件夹 400）、`GET|PUT /nodes/{id}/config`、`POST /nodes/{id}/send`、`GET /nodes/{id}/runs?limit=20` 均 `require_admin_or_menu_acl('task-scheduler.api-config')`；
+  - 每个端点构造 `OwnershipScope.from_request(request)` 透传 service
 - 注册：`app/main.py::register_routers`；lifespan 初始化在 `app/core/server.py`（DB 池就绪后，`app.state.api_config_service`），DB 不可用时不挂载，路由 `_get_service` 返回 500
 
 ### 前端（`web/Agent/`）

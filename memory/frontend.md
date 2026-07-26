@@ -600,6 +600,11 @@ web/Agent/src/utils/
    - 普通用户 → `fetchAgentList`（`GET /api/agent/list`，后端按 `user_agent_acl` 过滤、仅启用项）
 2. **`loadScripts` 移除 `if (!props.isAdmin) return` 拦截**：后端已把 `GET /api/admin/scripts` 改为 JWT-only，所有登录用户都能拉脚本列表
 3. **`fetchAgentList` 已存在于 `web/Agent/src/utils/api.js:1721-1733`**，无需新增
+4. **`loadDevopsServers` 按 `props.isAdmin` 分流**（2026-07-26 新增）：
+   - admin → `fetchDevOpsServers`（`GET /api/admin/devops-servers`，全量共享）
+   - 普通用户 → `fetchUserServerTree`（`GET /api/admin/user-servers/tree`，后端按 `OwnershipScope` 过滤、对 server 节点附带 `business_name` / `server_type`）
+   - 新增 helper `mapUserServerNodesToCandidates(nodes)`：过滤 `node_type='server'` 节点，映射为 `{id, business_name, server_type}`，喂入既有 `maskServers` 与候选/失效项检测逻辑
+5. **`loadApiConfigTree` 移除 `if (!props.isAdmin) return` 拦截**（2026-07-26 新增）：后端 `GET /api/admin/api-configs/tree` 已改为 JWT-only，按 `OwnershipScope` 过滤，普通用户天然只看到自己添加的接口节点；api_list 控件按需加载触发（添加 api_list 参数 / 切换到 API Tab）
 
 **与 ACL 双重门的协同**：
 
@@ -607,7 +612,9 @@ web/Agent/src/utils/
 - 普通用户被授权该菜单后，进入「编辑任务」面板时：
   - 「目标智能体」下拉只列其已授权智能体（来自 `user_agent_acl`）
   - 「目标脚本」下拉列全部已注册脚本（白名单字段，不暴露源码）
-- 「脚本扫描入库」子 tab（`task-scheduler.script-inventory`）仍需独立授权，普通用户点了扫描按钮会被后端 `Depends(require_admin)` 拦下
+  - 「目标服务器列表」候选只列该用户自己添加的服务器（来自 `user_server_nodes`）
+  - 「目标接口列表」候选只列该用户自己添加的接口（来自 `api_config_nodes`）
+- 「脚本扫描入库」子 tab（`task-scheduler.script-inventory`）与「服务器管理」子 tab（`task-scheduler.server-management`）仍需独立授权；普通用户未授权时子 tab 不显示，写端点被后端 `Depends(require_admin_or_menu_acl(...))` 拦下
 
 **失效授权处理**：
 
@@ -617,12 +624,20 @@ web/Agent/src/utils/
 
 **测试**（`web/Agent/src/components/__tests__/TaskSchedulerManager.spec.js`）：
 
-- `setupFetchMock` 改造支持 `agentListResponse` 参数与 `/api/agent/list` mock 分发
-- 新增 describe 块「TaskSchedulerManager 普通用户数据源分流（2026-07-26 新增）」4 用例：
+- `setupFetchMock` 改造支持 `agentListResponse` / `userServerTreeResponse` 参数与 `/api/agent/list` / `/api/admin/user-servers/tree` mock 分发
+- `mockUserServerNodes` 提供 2 个 server 节点 + 1 个 folder 节点
+- 新增 describe 块「TaskSchedulerManager 普通用户数据源分流（2026-07-26 新增）」8 用例：
   - `test_non_admin_uses_agent_list_endpoint`：普通用户拉智能体走 `/api/agent/list` 而非 `/api/admin/agents`，不再显示「权限不足」占位
   - `test_non_admin_loads_scripts`：普通用户也能拉脚本列表（不再被 isAdmin 短路）
   - `test_admin_still_uses_admin_agents_endpoint`：admin 仍走 `/api/admin/agents`（向后兼容）
   - `test_non_admin_agent_dropdown_renders_filtered_options`：智能体下拉来自已授权列表（`mockAgents` 启用项），不含 `disabled_agent`
+  - `test_non_admin_servers_loads_from_user_server_tree`：普通用户 server_list 候选走 `/api/admin/user-servers/tree` 而非 `/api/admin/devops-servers`（通过切 script + 添加 server_list 触发）
+  - `test_admin_still_uses_devops_servers`：admin server_list 候选仍走 `/api/admin/devops-servers`（向后兼容）
+  - `test_non_admin_server_candidates_rendered`：普通用户 server_list 候选仅含 mockUserServerNodes 的 server 节点（folder 被过滤）
+  - `test_non_admin_api_list_loads`：普通用户 api_list 候选可加载 `/api/admin/api-configs/tree`（不再被 isAdmin 短路）
 
-**关联改动**：后端 `app/routers/script_admin_router.py` 移除 router 级 `require_admin`（GET 登录态、POST /scan admin-only），详见 [api-routes.md § 脚本管理接口权限拆分（2026-07-26 新增）](api-routes.md)。
+**关联改动**：
+- 后端 `app/routers/script_admin_router.py` 移除 router 级 `require_admin`（GET 登录态、POST /scan admin-only），详见 [api-routes.md § 脚本管理接口权限拆分（2026-07-26 新增）](api-routes.md)
+- 后端 `app/routers/user_server_router.py` 与 `app/routers/api_config_router.py` 仅 `GET /tree` 端点改为 JWT-only（写端点 ACL 不变），详见 [menu-acl.md § 用户服务器配置管理](menu-acl.md)
+- 后端 `app/shared/utils/user_server_service.py::list_nodes` 对 server 节点附加 `business_name` / `server_type`（通过 `_build_devops_index` 内存 join 零 DB IO）
 

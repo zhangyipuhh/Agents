@@ -362,9 +362,22 @@ user_server_nodes (node_type='server' 的行，每个用户导入时生成一行
 | `GET /api/admin/devops-servers/{server_id}` | `require_admin` | ✅ | ❌ 403 |
 | `DELETE /api/admin/devops-servers/{server_id}` | `require_admin` | ✅ | ❌ 403 |
 
-`app/routers/user_server_router.py` 全部 6 个端点（`GET /tree` / `POST /nodes` / `PUT /nodes/{id}` / `DELETE /nodes/{id}` / `GET /nodes/{id}/config` / `POST /import`）均使用 `Depends(require_admin_or_menu_acl('task-scheduler.server-management'))`，与 devops_server_admin_router GET 列表端点一致——被授权 ACL 的普通用户可正常使用。
+`app/routers/user_server_router.py` 端点授权契约（2026-07-26 调整）：
+
+| 端点 | 守卫 | admin | 普通用户 + `task-scheduler.server-management` ACL | 普通用户 + 仅 `task-scheduler.scheduled` |
+|---|---|---|---|---|
+| `GET /api/admin/user-servers/tree` | JWT-only（仅读） | ✅ | ✅ | ✅ |
+| `POST /api/admin/user-servers/nodes` | `require_admin_or_menu_acl('task-scheduler.server-management')` | ✅ | ✅ | ❌ 403 |
+| `PUT /api/admin/user-servers/nodes/{id}` | `require_admin_or_menu_acl('task-scheduler.server-management')` | ✅ | ✅ | ❌ 403 |
+| `DELETE /api/admin/user-servers/nodes/{id}` | `require_admin_or_menu_acl('task-scheduler.server-management')` | ✅ | ✅ | ❌ 403 |
+| `GET /api/admin/user-servers/nodes/{id}/config` | `require_admin_or_menu_acl('task-scheduler.server-management')` | ✅ | ✅ | ❌ 403 |
+| `POST /api/admin/user-servers/import` | `require_admin_or_menu_acl('task-scheduler.server-management')` | ✅ | ✅ | ❌ 403 |
+
+**2026-07-26 GET /tree 放宽为登录态**：跟随 2026-07-26 `GET /api/admin/scripts` 先例。`UserServerService.list_nodes` 已按 `OwnershipScope` 过滤，普通用户仅见自己的节点；server 节点附带 `business_name` / `server_type`（由 `source_devops_server_id` 关联 devops_servers，内存 join 零 DB IO），供「编辑任务」表单 server_list 候选直接复用——无需前端再 join 公开 devops 列表。写端点 ACL 不变，避免普通用户误删或误改共享资源。
 
 **为什么 GET 列表端点放开**：admin 通过「用户服务器配置管理」授权该 ACL 后，授权用户需读取 devops_servers 库（脱敏列表）来填充 ImportServerDialog 的可选项；放开 GET 列表端点是该 UX 闭环的必备前提。scan / detail / delete 保持 admin-only，避免普通用户误删或误改共享资源。
+
+**GET /tree 放宽为登录态的另一动机（2026-07-26）**：普通用户编辑定时任务时，server_list 控件候选需从 user-server tree 拉取；若端点强制要求 `task-scheduler.server-management` ACL，编辑任务链路需要 admin 同时授权两个菜单才能使用。放宽为登录态后，OwnershipScope 保证普通用户只看自己的节点，UX 闭环。
 
 ### 与「服务器扫描入库」tab（`task-scheduler.script-scan`）的差异
 

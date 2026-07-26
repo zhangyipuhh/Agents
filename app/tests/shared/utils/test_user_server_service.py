@@ -178,6 +178,96 @@ def test_list_nodes_invisible_parent_promotes_to_root():
     assert nodes[0]["parent_id"] is None
 
 
+def test_list_nodes_server_attach_business_and_type_admin():
+    """2026-07-26：admin list_nodes 对 server 节点附带 business_name / server_type。
+
+    字段来自 devops_server_service.list_public_servers() 内存 join。"""
+    db = FakeDb()
+    devops = FakeDevopsService(public_servers=[
+        {"id": 100, "business_name": "服务器A", "server_type": "linux", "updated_at": "2026-07-26"},
+        {"id": 101, "business_name": "服务器B", "server_type": "windows", "updated_at": "2026-07-26"},
+    ])
+    service = _make_service(db=db, devops=devops)
+    service._nodes = {
+        1: {"id": 1, "parent_id": None, "node_type": "folder", "name": "分组",
+            "created_by_user_id": 1, "sort_order": 0, "source_devops_server_id": None},
+        2: {"id": 2, "parent_id": 1, "node_type": "server", "name": "本地别名",
+            "created_by_user_id": 1, "sort_order": 0, "source_devops_server_id": 100},
+        3: {"id": 3, "parent_id": None, "node_type": "server", "name": "服务器B",
+            "created_by_user_id": 1, "sort_order": 0, "source_devops_server_id": 101},
+    }
+    nodes = service.list_nodes(_admin_scope())
+    # 找到 server 节点
+    s2 = next(n for n in nodes if n["id"] == 2)
+    s3 = next(n for n in nodes if n["id"] == 3)
+    folder = next(n for n in nodes if n["id"] == 1)
+    # server 节点附带 canonical 字段（来源 devops_servers，与节点 name 无关）
+    assert s2["business_name"] == "服务器A"
+    assert s2["server_type"] == "linux"
+    assert s3["business_name"] == "服务器B"
+    assert s3["server_type"] == "windows"
+    # folder 节点不附带
+    assert "business_name" not in folder
+    assert "server_type" not in folder
+
+
+def test_list_nodes_server_attach_user_scope():
+    """2026-07-26：普通用户 list_nodes 同样对 server 节点附带 canonical 字段。"""
+    db = FakeDb()
+    devops = FakeDevopsService(public_servers=[
+        {"id": 100, "business_name": "服务器A", "server_type": "linux", "updated_at": "2026-07-26"},
+    ])
+    service = _make_service(db=db, devops=devops)
+    service._nodes = {
+        1: {"id": 1, "parent_id": None, "node_type": "server", "name": "本地别名",
+            "created_by_user_id": 10, "sort_order": 0, "source_devops_server_id": 100},
+        2: {"id": 2, "parent_id": None, "node_type": "server", "name": "他人服务器",
+            "created_by_user_id": 20, "sort_order": 0, "source_devops_server_id": 101},
+    }
+    nodes = service.list_nodes(_user_scope(uid=10))
+    # 仅自己节点 1 可见
+    assert len(nodes) == 1
+    assert nodes[0]["id"] == 1
+    assert nodes[0]["business_name"] == "服务器A"
+    assert nodes[0]["server_type"] == "linux"
+
+
+def test_list_nodes_server_devops_deleted_leaves_fields_absent():
+    """2026-07-26：server 节点引用的 devops_servers 不存在时，附加字段保持缺失。
+
+    外键 CASCADE 通常会先删除引用节点，但保留防御：缺源时跳过附加，
+    节点 dict 不含 business_name / server_type。前端 maskServers
+    按"无 business_name 一律剔除"的口径过滤掉。"""
+    db = FakeDb()
+    devops = FakeDevopsService(public_servers=[])  # 空，源行已被删
+    service = _make_service(db=db, devops=devops)
+    service._nodes = {
+        1: {"id": 1, "parent_id": None, "node_type": "server", "name": "幽灵",
+            "created_by_user_id": 1, "sort_order": 0, "source_devops_server_id": 999},
+    }
+    nodes = service.list_nodes(_admin_scope())
+    assert len(nodes) == 1
+    # 字段缺失（不是 None）—— 与未注入 devops_server_service 的行为一致
+    assert "business_name" not in nodes[0]
+    assert "server_type" not in nodes[0]
+
+
+def test_list_nodes_server_no_devops_service_leaves_fields_absent():
+    """2026-07-26：devops_server_service 未注入时 server 节点不附加字段。
+
+    devops_index 为空 → 跳过附加，保持列表节点原状（无 business_name / server_type）。"""
+    db = FakeDb()
+    service = _make_service(db=db, devops=None)
+    service._nodes = {
+        1: {"id": 1, "parent_id": None, "node_type": "server", "name": "服务器A",
+            "created_by_user_id": 1, "sort_order": 0, "source_devops_server_id": 100},
+    }
+    nodes = service.list_nodes(_admin_scope())
+    assert len(nodes) == 1
+    assert "business_name" not in nodes[0]
+    assert "server_type" not in nodes[0]
+
+
 # ==== P1: create_node ======================================================
 
 

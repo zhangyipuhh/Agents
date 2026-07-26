@@ -241,3 +241,97 @@ def test_get_tree_service_unavailable_returns_500(client, admin_headers):
 
     assert response.status_code == 500
     assert "not initialized" in response.json()["detail"]
+
+
+# =============================================================================
+# P2: ACL 边界（2026-07-26）
+# - GET /tree 放宽为登录态（跟随 GET /api/admin/scripts 先例）：
+#   普通用户无任何 ACL 也能调（OwnershipScope 隔离）
+# - 写端点（POST / PUT / DELETE / config / import）仍要求
+#   task-scheduler.server-management ACL，无授权仍 403
+# =============================================================================
+
+
+def _override_user_server_visible_menu(client, visible_ids):
+    """覆盖 user_server_router 调用期间 menu_permission_service 的返回值。"""
+    from app.shared.utils.auth.menu_permission_service import MenuPermissionService
+    visible_set = set(visible_ids)
+
+    async def fake_visible(user_id, is_admin):
+        if is_admin:
+            from app.core.menu_registry import get_enabled_items
+            return [m.id for m in sorted(get_enabled_items(), key=lambda m: m.sort_order)]
+        return sorted(visible_set)
+
+    stub = MenuPermissionService(db=None)
+    stub.get_visible_menu_ids = fake_visible
+    client.app.state.menu_permission_service = stub
+
+
+def test_normal_user_no_acl_get_tree_passes(client, user_headers):
+    """2026-07-26：GET /tree 放宽为登录态。普通用户无任何 ACL 也能调（200）。
+
+    委托 OwnershipScope 按 created_by_user_id 过滤，普通用户仅见自己
+    添加的服务器节点（含 business_name / server_type 附加字段）。"""
+    _override_user_server_visible_menu(client, visible_ids={'profile'})
+    service = client.app.state.user_server_service
+    service.list_nodes = lambda scope: []
+
+    response = client.get(f"{BASE}/tree", headers=user_headers)
+
+    assert response.status_code != 403
+    assert response.status_code == 200
+
+
+def test_normal_user_no_acl_import_still_403(client, user_headers):
+    """2026-07-26：写端点（POST /import）仍要求 ACL。
+
+    GET /tree 放宽为登录态，但写端点仍保留
+    require_admin_or_menu_acl('task-scheduler.server-management') 守护。
+    普通用户无对应 ACL 时调 /import 仍 403。"""
+    _override_user_server_visible_menu(client, visible_ids={'profile'})
+
+    response = client.post(
+        f"{BASE}/import",
+        headers=user_headers,
+        json={"parent_id": None, "business_names": ["A"]},
+    )
+
+    assert response.status_code == 403
+    assert "task-scheduler.server-management" in response.json()["detail"]
+
+
+def test_normal_user_acl_server_management_passes_import(client, user_headers):
+    """ACL 含 task-scheduler.server-management：普通用户 POST /import 通过（200）。"""
+    _override_user_server_visible_menu(
+        client, visible_ids={'profile', 'task-scheduler.server-management'}
+    )
+    service = client.app.state.user_server_service
+    service.import_from_devops_servers = AsyncMock(
+        return_value={"imported": 1, "skipped": 0, "failed": 0, "node_ids": [1]}
+    )
+
+    response = client.post(
+        f"{BASE}/import",
+        headers=user_headers,
+        json={"parent_id": None, "business_names": ["A"]},
+    )
+
+    assert response.status_code != 403
+    assert response.status_code == 200
+
+
+def test_normal_user_acl_parent_only_still_passes_get_tree(client, user_headers):
+    """2026-07-26：GET /tree 不再细粒度按子菜单判定 ACL。
+
+    即使普通用户只有 task-scheduler 父级 ACL、没有 .server-management
+    子菜单，GET /tree 仍能通过（200）。"""
+    _override_user_server_visible_menu(
+        client, visible_ids={'profile', 'task-scheduler'}
+    )
+    service = client.app.state.user_server_service
+    service.list_nodes = lambda scope: []
+
+    response = client.get(f"{BASE}/tree", headers=user_headers)
+
+    assert response.status_code == 200

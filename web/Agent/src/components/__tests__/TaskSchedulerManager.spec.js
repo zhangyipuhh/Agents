@@ -143,6 +143,46 @@ function emptyResponse(status = 204) {
   return { ok: true, status, json: async () => ({}) }
 }
 
+/**
+ * 2026-07-26 新增：mock 普通用户视角下 fetchUserServerTree 命中的 /api/admin/user-servers/tree 端点。
+ * 后端 OwnershipScope 已经按用户过滤，service 已在 setupFetchMock 之外把"自己添加的服务器"
+ * 节点返回——前缀以示区别，默认接入的是普通用户视角（不含 server_type 匹配）。
+ * 通过 overrides.userServerTree 在用例级定制。
+ */
+const mockUserServerNodes = [
+  {
+    id: 10,
+    parent_id: null,
+    node_type: 'server',
+    name: '业务A-生产',
+    sort_order: 0,
+    source_devops_server_id: 1,
+    created_by_user_id: 10,
+    business_name: '业务A-生产',
+    server_type: 'production',
+  },
+  {
+    id: 11,
+    parent_id: null,
+    node_type: 'server',
+    name: '业务B-测试',
+    sort_order: 1,
+    source_devops_server_id: 2,
+    created_by_user_id: 10,
+    business_name: '业务B-测试',
+    server_type: 'staging',
+  },
+  {
+    id: 12,
+    parent_id: null,
+    node_type: 'folder',
+    name: '分组',
+    sort_order: 0,
+    source_devops_server_id: null,
+    created_by_user_id: 10,
+  },
+]
+
 function setupFetchMock({
   /**
    * 2026-07-26 新增：mock 普通用户视角下 fetchAgentList 命中的 /api/agent/list 端点。
@@ -151,6 +191,12 @@ function setupFetchMock({
    * 形成对比）。可通过 overrides.agentList 在用例级定制。
    */
   agentListResponse = mockAgents.filter((a) => a.enabled !== false),
+  /**
+   * 2026-07-26 新增：mock 用户服务器 tree 端点（GET /api/admin/user-servers/tree），
+   * 后端按归属过滤；默认返回 mockUserServerNodes（自己添加的服务器 + 1 个 folder）。
+   * 可通过 overrides.userServerTree 在用例级定制。
+   */
+  userServerTreeResponse = { nodes: mockUserServerNodes },
 } = {}) {
   global.fetch = vi.fn(async (url, opts = {}) => {
     const method = (opts.method || 'GET').toUpperCase()
@@ -195,6 +241,8 @@ function setupFetchMock({
         inspection_parser: 'json',
       })
     }
+    // 2026-07-26 新增：用户服务器 tree（普通用户走此处拿 server_list 候选）
+    if (u === '/api/admin/user-servers/tree' && method === 'GET') return jsonResponse(userServerTreeResponse)
     if (u === '/api/admin/api-configs/tree' && method === 'GET') return jsonResponse({ nodes: [] })
     return jsonResponse({})
   })
@@ -3239,6 +3287,143 @@ describe('TaskSchedulerManager 普通用户数据源分流（2026-07-26 新增�
       expect(names).toContain('map_agent')
       expect(names).not.toContain('disabled_agent')
     }
+    wrapper.unmount()
+  })
+
+  it('test_non_admin_servers_loads_from_user_server_tree 2026-07-26 普通用户服务器列表从 user-servers/tree 加载', async () => {
+    /**
+     * 验证 loadDevopsServers 按 props.isAdmin 分流：
+     * - 普通用户 → fetchUserServerTree (GET /api/admin/user-servers/tree)
+     * - 不再调 fetchDevOpsServers (/api/admin/devops-servers)
+     *
+     * 触发条件：编辑任务 → 切到 script 目标 → 选 hello_script → 添加
+     * server_list 参数 → loadDevopsServers 被首次触发。
+     */
+    setupFetchMock()
+    const wrapper = mount(TaskSchedulerManager, {
+      props: {
+        isAdmin: false,
+        visibleMenus: ['profile', 'task-scheduler', 'task-scheduler.scheduled'],
+      },
+    })
+    await flushPromises()
+    const targetSelect = wrapper.find('[data-testid="schedule-target-type"]')
+    await targetSelect.setValue('script')
+    await flushPromises()
+    const scriptSelect = wrapper.find('[data-testid="schedule-script"]')
+    await scriptSelect.setValue('hello_script')
+    await flushPromises()
+    const addParam = wrapper.find('[data-testid="schedule-add-script-param"]')
+    expect(addParam.exists()).toBe(true)
+    await addParam.setValue('server_list')
+    await flushPromises()
+
+    const urls = global.fetch.mock.calls.map((c) => (typeof c[0] === 'string' ? c[0] : c[0].url))
+    expect(urls).toContain('/api/admin/user-servers/tree')
+    // 普通用户不应再拉全量 devops-servers
+    expect(urls).not.toContain('/api/admin/devops-servers')
+
+    wrapper.unmount()
+  })
+
+  it('test_admin_still_uses_devops_servers 2026-07-26 admin 仍走 /api/admin/devops-servers', async () => {
+    /**
+     * 反向校验：admin 路径不受本次分流改动影响。
+     * 触发：编辑任务 → 切 script 目标 → 选 hello_script → 添加 server_list。
+     */
+    setupFetchMock()
+    const wrapper = mount(TaskSchedulerManager, {
+      props: {
+        isAdmin: true,
+        visibleMenus: [],
+      },
+    })
+    await flushPromises()
+    const targetSelect = wrapper.find('[data-testid="schedule-target-type"]')
+    await targetSelect.setValue('script')
+    await flushPromises()
+    const scriptSelect = wrapper.find('[data-testid="schedule-script"]')
+    await scriptSelect.setValue('hello_script')
+    await flushPromises()
+    const addParam = wrapper.find('[data-testid="schedule-add-script-param"]')
+    expect(addParam.exists()).toBe(true)
+    await addParam.setValue('server_list')
+    await flushPromises()
+
+    const urls = global.fetch.mock.calls.map((c) => (typeof c[0] === 'string' ? c[0] : c[0].url))
+    // admin 仍走 devops-servers
+    expect(urls).toContain('/api/admin/devops-servers')
+    // admin 不走 user-servers/tree（继承 Script/Agent 的 single-source 原则）
+    expect(urls).not.toContain('/api/admin/user-servers/tree')
+
+    wrapper.unmount()
+  })
+
+  it('test_non_admin_server_candidates_rendered 2026-07-26 普通用户 server_list 候选仅有自己添加的服务器', async () => {
+    /**
+     * 验证 server_list 候选来自 user-server tree 的 server 节点（business_name / server_type）。
+     * mockUserServerNodes 包含 2 个 server + 1 个 folder，folder 不应进入候选。
+     *
+     * 触发：编辑任务 → 切 script 目标 → 选 hello_script → 添加 server_list；
+     * 添加后通过组件 vm 内部状态断言 devopsServers 已被填充为 server 节点
+     * （filter folder → map {id, business_name, server_type}）。
+     */
+    setupFetchMock()
+    const wrapper = mount(TaskSchedulerManager, {
+      props: {
+        isAdmin: false,
+        visibleMenus: ['profile', 'task-scheduler', 'task-scheduler.scheduled'],
+      },
+    })
+    await flushPromises()
+    const targetSelect = wrapper.find('[data-testid="schedule-target-type"]')
+    await targetSelect.setValue('script')
+    await flushPromises()
+    const scriptSelect = wrapper.find('[data-testid="schedule-script"]')
+    await scriptSelect.setValue('hello_script')
+    await flushPromises()
+    const addParam = wrapper.find('[data-testid="schedule-add-script-param"]')
+    await addParam.setValue('server_list')
+    await flushPromises()
+
+    const vm = wrapper.vm
+    const servers = vm.devopsServers || []
+    const serverNames = servers.map((s) => s && s.business_name).filter(Boolean)
+    expect(serverNames).toContain('业务A-生产')
+    expect(serverNames).toContain('业务B-测试')
+    // folder 节点不应作为 server 候选
+    expect(serverNames).not.toContain('分组')
+
+    wrapper.unmount()
+  })
+
+  it('test_non_admin_api_list_loads 2026-07-26 普通用户接口候选可加载（不再被 isAdmin 短路）', async () => {
+    /**
+     * 验证 loadApiConfigTree 移除 isAdmin 拦截：
+     * 普通用户添加 api_list 参数时 loadApiConfigTree 真实发起
+     * /api/admin/api-configs/tree，后端 OwnershipScope 按归属过滤。
+     */
+    setupFetchMock()
+    const wrapper = mount(TaskSchedulerManager, {
+      props: {
+        isAdmin: false,
+        visibleMenus: ['profile', 'task-scheduler', 'task-scheduler.scheduled'],
+      },
+    })
+    await flushPromises()
+    const targetSelect = wrapper.find('[data-testid="schedule-target-type"]')
+    await targetSelect.setValue('script')
+    await flushPromises()
+    const scriptSelect = wrapper.find('[data-testid="schedule-script"]')
+    await scriptSelect.setValue('hello_script')
+    await flushPromises()
+    const addParam = wrapper.find('[data-testid="schedule-add-script-param"]')
+    await addParam.setValue('api_list')
+    await flushPromises()
+
+    const urls = global.fetch.mock.calls.map((c) => (typeof c[0] === 'string' ? c[0] : c[0].url))
+    expect(urls).toContain('/api/admin/api-configs/tree')
+
     wrapper.unmount()
   })
 })

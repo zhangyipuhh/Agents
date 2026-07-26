@@ -5,7 +5,10 @@ API 接口配置 Admin Router 模块。
 
 提供 /api/admin/api-configs 下的节点树 CRUD、请求配置 upsert、
 代理发送请求与调用历史查询接口。
-所有接口均要求 admin 角色或 task-scheduler.api-config 菜单 ACL 授权，
+写端点（POST / PUT / DELETE / send / runs）要求 admin 角色或
+task-scheduler.api-config 菜单 ACL 授权；只读 ``GET /tree`` 端点
+放宽为登录态可读（2026-07-26 起跟随 ``GET /api/admin/scripts`` 先例，
+OwnershipScope 已按归属过滤，保证普通用户只能看到自己的接口节点）。
 服务实例由 app/core/server.py lifespan 初始化到 app.state.api_config_service。
 """
 
@@ -19,9 +22,10 @@ from app.shared.utils.auth.Safety import require_admin_or_menu_acl
 from app.shared.utils.auth.ownership_scope import OwnershipScope
 
 
-# 2026-07-24 ACL 双重门:移除 Router 级 require_admin,
-# 逐 endpoint 改用 require_admin_or_menu_acl('task-scheduler.api-config')。
+# 2026-07-24 ACL 双重门:逐写 endpoint 改用
+# require_admin_or_menu_acl('task-scheduler.api-config')，
 # 被授予 task-scheduler.api-config 菜单 ACL 的普通用户也能完整访问。
+# 2026-07-26 GET /tree 放宽为登录态（仅读，OwnershipScope 隔离）。
 router = APIRouter(
     prefix="/api/admin/api-configs",
     tags=["API Config Admin"],
@@ -134,10 +138,13 @@ def _handle_service_error(exc: Exception) -> None:
     raise exc
 
 
-@router.get("/tree", response_model=Dict[str, Any],
-            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.api-config'))])
+@router.get("/tree", response_model=Dict[str, Any])
 async def get_tree(request: Request) -> Dict[str, Any]:
     """获取节点树平铺列表（按当前用户归属过滤）。
+
+    跟随 2026-07-26 的 `GET /api/admin/scripts` 先例：放宽为登录态可读。
+    后端 ``OwnershipScope`` 仍按 ``created_by_user_id`` 过滤，普通用户仅见
+    自己的接口节点。供「编辑任务」表单的 api_list 候选直接复用。
 
     参数:
         request: FastAPI Request 对象。
