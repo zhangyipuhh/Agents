@@ -756,7 +756,7 @@ const handleSend = async () => {
   const selectedServers = selectedTriggers.value['server'] || []
   if (selectedServers.length > 0) {
     const names = selectedServers.map((s) => s.business_name).join('、')
-    finalText = `引用服务器：${names}\n${text}`
+    finalText = `⟦引用服务器：${names}⟧\n${text}`
   }
 
   emit('send', finalText, uploadedFiles, extras)
@@ -764,8 +764,9 @@ const handleSend = async () => {
   inputValue.value = ''
   selectedFiles.value = []
   selectedAgent.value = null
-  // 2026-07-26 调整：不再清空 trigger 选择，保持当前 session 的引用持久化，
-  // 下次输入新问题时自动携带。
+  // 2026-07-26 调整：每轮发送后清空 trigger 选择，避免服务器引用长期驻留输入框，
+  // 下轮提问需重新选择。
+  setCurrentSessionTriggers({})
 
   nextTick(() => {
     autoResize()

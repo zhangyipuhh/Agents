@@ -168,14 +168,14 @@ describe('InputBox 「#」触发器集成（2026-07-26 新增）', () => {
     expect(sends).toBeTruthy()
     const last = sends[sends.length - 1]
     // signature: send(text, files, extras)
-    expect(last[0]).toBe('引用服务器：prod-api、win-01\n请巡检')
+    expect(last[0]).toBe('⟦引用服务器：prod-api、win-01⟧\n请巡检')
     expect(last[2].referenced_servers).toEqual([
       { name: 'prod-api', server_type: 'linux' },
       { name: 'win-01', server_type: 'windows' },
     ])
   })
 
-  it('test_send_keeps_trigger_chips 发送成功后保留 trigger chips', async () => {
+  it('test_send_clears_trigger_chips 发送成功后清空 trigger chips', async () => {
     const wrapper = mountInputBox()
     await flushPromises()
     await setTextareaValue(wrapper, '#', 1)
@@ -187,7 +187,7 @@ describe('InputBox 「#」触发器集成（2026-07-26 新增）', () => {
     await wrapper.find('textarea').setValue('hi')
     await wrapper.find('.send-btn').trigger('click')
     await flushPromises()
-    expect(wrapper.find('[data-testid="selected-trigger-chip-server-prod-api"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="selected-trigger-chip-server-prod-api"]').exists()).toBe(false)
   })
 
   it('test_send_appends_server_prefix_to_text 发送文本前附加服务器引用前缀', async () => {
@@ -204,7 +204,7 @@ describe('InputBox 「#」触发器集成（2026-07-26 新增）', () => {
     const sends = wrapper.emitted('send')
     expect(sends).toBeTruthy()
     const last = sends[sends.length - 1]
-    expect(last[0]).toBe('引用服务器：prod-api\n请检查磁盘')
+    expect(last[0]).toBe('⟦引用服务器：prod-api⟧\n请检查磁盘')
   })
 
   it('test_session_change_clears_for_new_session 切换到新 session 时 trigger chips 为空', async () => {
