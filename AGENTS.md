@@ -59,7 +59,9 @@
 - When using `<style scoped>` in Vue 3 SFC, scoped CSS only applies to elements rendered by template syntax; elements created via `defineComponent` + `h()` render function within the `<script>` block will not automatically receive the `data-v-xxx` scopeId, causing all scoped CSS selectors to silently fail to match, resulting in completely ineffective layouts/styles with no error messages. Prioritize using standalone .vue files with `<template>` syntax.
 
 ## use subagents
-Use as many subagents  as possible to speed up
+- 派 explore/coder subagent 前，必须先查 `project_memory.md` 索引与相关分片；索引/分片已收录的事实（路由位置、组件结构、权限装饰器、表结构）直接引用，禁止重复探索
+- 仅当探索目标未收录于项目记忆、且预估需要 >3 次搜索时才派 subagent；已知路径的读取与小范围搜索由主 agent 直接完成
+- subagent 的 prompt 必须携带已知线索（文件路径、行号区间），禁止从零泛搜
 ## use skills rule
 - Use as many skills and agents as possible to implement features
 

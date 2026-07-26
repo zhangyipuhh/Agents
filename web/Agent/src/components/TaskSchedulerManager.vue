@@ -11,7 +11,8 @@
  */
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
-  fetchAdminAgentList,
+  fetchAdminAgentList,  // admin 全量（含 enabled / config_schema）
+  fetchAgentList,  // 2026-07-26 新增：普通用户走 JWT-only，按 user_agent_acl 过滤的启用智能体
   fetchTaskSchedules,
   createTaskSchedule,
   updateTaskSchedule,
@@ -1074,11 +1075,20 @@ async function loadInitialData() {
     // 2026-07-23 ACL 双重门：
     // fetchAdminAgentList 是 admin-only（无 menu_id 对应），普通用户即使被授权
     // task-scheduler.scheduled 也无权调，必须被 fail-safe 吞掉避免红色 banner。
+    //
+    // 2026-07-26 智能体数据源分流：
+    // - admin 仍走 fetchAdminAgentList（GET /api/admin/agents，全量含禁用/排序）
+    // - 普通用户改走 fetchAgentList（GET /api/agent/list，JWT-only，
+    //   内部已按 user_agent_acl 过滤仅启用项），不需要菜单 ACL。
+    // 安全模型：编辑老任务时若 admin 收回某 agent 授权，下拉不含该 option，
+    // form.agent_name 自动变空（前端 select v-model 自然归零），用户必须
+    // 重选才能保存（schedule-agent select 已带 required）。
     // safeFetch 返结构化 { ok, value/error }，避免在 Promise.all 进行中写 errorMessage
     // 与开头的 errorMessage.value = '' 产生 race condition。
+    const agentFetcher = props.isAdmin ? fetchAdminAgentList : fetchAgentList
     const [taskRes, agentRes] = await Promise.all([
       safeFetch(fetchTaskSchedules, [], 'task-schedules'),
-      safeFetch(fetchAdminAgentList, [], 'admin-agents'),
+      safeFetch(agentFetcher, [], 'agents'),
     ])
     // loadScripts 内部已吞错（共享 in-flight Promise），不会 reject
     await loadScripts()
@@ -1407,9 +1417,12 @@ let scriptsLoadPromise = null
  */
 async function loadScripts(opts = {}) {
   const force = opts && opts.force === true
-  // 2026-07-23 修复：fail-safe 兜底（不仅 onMounted，switchTab/watch 触发也要拦）。
-  // 否则普通用户点击「脚本扫描入库」子 tab 仍会触发 /api/admin/scripts/* → 403。
-  if (!props.isAdmin) return
+  // 2026-07-26：移除 ``if (!props.isAdmin) return`` 拦截。后端把 GET /api/admin/scripts
+  // 改为 JWT-only（任何登录用户可读），普通用户在「目标脚本」下拉中应能看到全部
+  // 已注册脚本（白名单字段）。triggerScriptScan 仍要求 admin，由后端
+  // POST /api/admin/scripts/scan 的 ``Depends(require_admin)`` 守住，普通用户
+  // scanScripts() 调过去会被 403，triggerScriptScan 内部 catch 后提示权限不足，
+  // 不会触达磁盘扫描逻辑。
   if (!force && hasLoadedScripts.value) return
   if (!force && scriptsLoadPromise) return scriptsLoadPromise
   if (force && scriptsLoadPromise) {

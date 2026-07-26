@@ -4,8 +4,20 @@
 脚本管理 Admin Router 模块。
 
 提供 /api/admin/scripts 下的脚本列表与扫描接口。
-所有接口要求 admin 权限，服务实例由 app/core/server.py lifespan
-初始化到 app.state.script_discovery_service。
+
+权限模型：
+- GET  /api/admin/scripts    —— 仅需 JWT 认证（任何登录用户可读），供普通用户在
+                                  「定时任务 → 目标脚本」下拉中列出全部已注册脚本
+                                  （白名单字段：name / display_name / description /
+                                  params_schema / module_path，不暴露脚本源码）。
+- POST /api/admin/scripts/scan —— 保留 ``Depends(require_admin)``，防普通用户
+                                  触发磁盘扫描。
+
+历史：早期两个端点都挂 router 级 ``Depends(require_admin)``，导致普通用户即便
+获得 ``task-scheduler.scheduled`` 菜单授权也无法在「定时任务」表单选择已注册
+脚本（前端 fetchScripts 被 403 吞掉后下拉为空）。2026-07-26 拆分为上述模型。
+
+服务实例由 app/core/server.py lifespan 初始化到 ``app.state.script_discovery_service``。
 """
 
 from typing import Any, Dict, List
@@ -16,10 +28,11 @@ from pydantic import BaseModel
 from app.shared.utils.auth.Safety import require_admin
 
 
+# 2026-07-26：移除 router 级 require_admin。GET 走 JWT-only 端点（auth_middleware
+# 已注入 request.state.user_id / role），POST /scan 单独 Depends(require_admin)。
 router = APIRouter(
     prefix="/api/admin/scripts",
     tags=["Script Admin"],
-    dependencies=[Depends(require_admin)],
 )
 
 
@@ -79,9 +92,9 @@ async def list_scripts(request: Request) -> List[Dict[str, Any]]:
     return [{k: item.get(k) for k in _PUBLIC_FIELDS} for item in raw]
 
 
-@router.post("/scan", response_model=ScanSummary)
+@router.post("/scan", response_model=ScanSummary, dependencies=[Depends(require_admin)])
 async def scan_scripts(request: Request) -> ScanSummary:
-    """触发脚本目录扫描。
+    """触发脚本目录扫描。仅 admin 可调用（防普通用户触发磁盘扫描）。
 
     参数:
         request: FastAPI Request 对象。

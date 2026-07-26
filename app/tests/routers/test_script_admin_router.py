@@ -7,7 +7,8 @@ Script Admin Router 测试模块。
 - 白名单字段过滤
 - 扫描接口返回 ScanSummary
 - 服务未初始化时返回 500
-- 普通用户访问返回 403
+- 2026-07-26 拆分权限：GET 仅需 JWT；POST /scan 仍仅 admin
+- 普通用户可读 GET（200）；普通用户 POST scan 被拒（403）
 
 生产对等初始化点：app/core/server.py lifespan 中
 ``ScriptDiscoveryService(SCRIPTS_DIR)`` 创建并挂到
@@ -159,7 +160,11 @@ def test_script_admin_service_missing_returns_500(client, admin_headers):
 
 
 def test_user_cannot_access_script_admin(client, user_headers):
-    """测试普通用户访问脚本管理接口返回 403。
+    """测试普通用户调脚本扫描接口被拒（403，admin-only）。
+
+    2026-07-26 拆分权限：GET 端点对登录用户开放，供普通用户在「定时任务 →
+    目标脚本」下拉列出已注册脚本；POST /scan 仍仅 admin，防普通用户触发
+    磁盘扫描。本用例锁定 POST 路径的 admin-only 契约。
 
     参数:
         client: TestClient fixture。
@@ -171,6 +176,74 @@ def test_user_cannot_access_script_admin(client, user_headers):
     异常:
         AssertionError: 状态码非 403 时失败
     """
-    response = client.get("/api/admin/scripts", headers=user_headers)
+    response = client.post("/api/admin/scripts/scan", headers=user_headers)
 
     assert response.status_code == 403
+
+
+def test_user_can_list_scripts(client, user_headers):
+    """测试普通用户可调 GET 列出已注册脚本（JWT-only，无需 admin）。
+
+    2026-07-26 拆分权限：移除 router 级 ``Depends(require_admin)``，GET 端点
+    仅依赖 auth_middleware 注入的 JWT。供普通用户在「定时任务 → 目标脚本」
+    下拉列出全部脚本（白名单字段，不暴露源码）。
+
+    参数:
+        client: TestClient fixture。
+        user_headers: 普通用户身份头 fixture。
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 状态码非 200 或返回字段不在白名单时失败
+    """
+    service = MagicMock()
+    service.list_scripts = MagicMock(
+        return_value=[
+            {
+                "name": "hello_script",
+                "display_name": "示例脚本",
+                "description": "演示",
+                "params_schema": {"type": "object", "properties": {}},
+                "module_path": "app.scripts.examples.hello_script",
+            }
+        ]
+    )
+    client.app.state.script_discovery_service = service
+
+    response = client.get("/api/admin/scripts", headers=user_headers)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["name"] == "hello_script"
+    # 白名单字段：不应包含 func 等内部字段
+    assert "func" not in data[0]
+
+
+def test_admin_scan_scripts_still_allowed(client, admin_headers):
+    """测试 admin 调脚本扫描仍允许（200，保留 ``Depends(require_admin)``）。
+
+    与 ``test_user_cannot_access_script_admin`` 形成正反两侧契约。
+
+    参数:
+        client: TestClient fixture。
+        admin_headers: admin 身份头 fixture。
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 状态码非 200 时失败
+    """
+    service = MagicMock()
+    service.scan = AsyncMock(
+        return_value={"scanned": 1, "registered": 1, "failed": 0}
+    )
+    client.app.state.script_discovery_service = service
+
+    response = client.post("/api/admin/scripts/scan", headers=admin_headers)
+
+    assert response.status_code == 200
+    service.scan.assert_awaited_once()

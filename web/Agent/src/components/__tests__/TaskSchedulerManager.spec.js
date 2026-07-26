@@ -143,13 +143,23 @@ function emptyResponse(status = 204) {
   return { ok: true, status, json: async () => ({}) }
 }
 
-function setupFetchMock() {
+function setupFetchMock({
+  /**
+   * 2026-07-26 新增：mock 普通用户视角下 fetchAgentList 命中的 /api/agent/list 端点。
+   * 默认返回 mockAgents（已授权 + 仅启用，由后端按 user_agent_acl 过滤；此处
+   * 测试断言前端拿到的是这个数组，与 admin 全量 mockAgents（含 disabled_agent）
+   * 形成对比）。可通过 overrides.agentList 在用例级定制。
+   */
+  agentListResponse = mockAgents.filter((a) => a.enabled !== false),
+} = {}) {
   global.fetch = vi.fn(async (url, opts = {}) => {
     const method = (opts.method || 'GET').toUpperCase()
     const u = typeof url === 'string' ? url : url.url
     if (u === '/api/admin/task-schedules' && method === 'GET') return jsonResponse(mockSchedules)
     if (u === '/api/admin/task-schedules' && method === 'POST') return jsonResponse({ id: 2, ...JSON.parse(opts.body) }, 201)
     if (u === '/api/admin/agents' && method === 'GET') return jsonResponse(mockAgents)
+    // 2026-07-26 新增：普通用户走 /api/agent/list（JWT-only，按 user_agent_acl 过滤）
+    if (u === '/api/agent/list' && method === 'GET') return jsonResponse(agentListResponse)
     if (u === '/api/admin/scripts' && method === 'GET') return jsonResponse(mockScripts)
     if (u.includes('/api/admin/task-schedules/1/runs')) return jsonResponse(mockRuns)
     if (u === '/api/admin/task-schedules/1/enabled' && method === 'PUT') return jsonResponse({ ...mockSchedules[0], enabled: false })
@@ -3096,5 +3106,139 @@ describe('TaskSchedulerManager 内部滚动契约（防溢出）', () => {
 
   it('test_servers_panel_clips_overflow 服务器管理面板裁剪防外溢（2026-07-24 新增）', () => {
     expect(styleBlock('.task-detail > .task-panel-servers')).toMatch(/overflow\s*:\s*hidden/)
+  })
+})
+
+/**
+ * 普通用户路径（2026-07-26 新增）。
+ *
+ * 覆盖：
+ * - 普通用户被授权 task-scheduler.scheduled 后能进入「编辑任务」面板
+ *   （不再显示「仅对管理员开放」占位），智能体数据源走 /api/agent/list
+ *   （按 user_agent_acl 过滤、仅启用项）
+ * - 脚本数据源不再被 isAdmin 拦截，普通用户可拉 /api/admin/scripts
+ *   （GET 已开放给所有登录用户）
+ * - admin 仍走 /api/admin/agents（向后兼容）
+ */
+describe('TaskSchedulerManager 普通用户数据源分流（2026-07-26 新增）', () => {
+  let originalFetch
+  let originalLocalStorage
+  let originalConfirm
+
+  beforeEach(() => {
+    originalFetch = global.fetch
+    originalLocalStorage = global.localStorage
+    originalConfirm = global.confirm
+    global.localStorage = {
+      getItem: vi.fn(() => 'fake-token'),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+      clear: vi.fn(),
+    }
+    global.confirm = vi.fn(() => true)
+  })
+
+  afterEach(() => {
+    global.fetch = originalFetch
+    global.localStorage = originalLocalStorage
+    global.confirm = originalConfirm
+  })
+
+  it('test_non_admin_uses_agent_list_endpoint 普通用户拉智能体走 /api/agent/list 而非 /api/admin/agents', async () => {
+    /**
+     * 验证 loadInitialData 的智能体数据源按 props.isAdmin 分流：
+     * - isAdmin=false → fetchAgentList (GET /api/agent/list)
+     * - isAdmin=true  → fetchAdminAgentList (GET /api/admin/agents)
+     * 后者由同一 beforeEach + 同文件 admin 测试已覆盖；本用例锁普通用户路径。
+     */
+    setupFetchMock()
+    const wrapper = mount(TaskSchedulerManager, {
+      props: {
+        isAdmin: false,
+        visibleMenus: ['profile', 'task-scheduler', 'task-scheduler.scheduled'],
+      },
+    })
+    await flushPromises()
+
+    // 不再显示「仅对管理员开放」占位
+    expect(wrapper.find('[data-testid="task-scheduler-no-permission"]').exists()).toBe(false)
+    expect(wrapper.find('.task-scheduler-manager').exists()).toBe(true)
+
+    // fetch 列表里有 /api/agent/list 但没有 /api/admin/agents
+    const urls = global.fetch.mock.calls.map((c) => (typeof c[0] === 'string' ? c[0] : c[0].url))
+    expect(urls).toContain('/api/agent/list')
+    expect(urls).not.toContain('/api/admin/agents')
+
+    wrapper.unmount()
+  })
+
+  it('test_non_admin_loads_scripts 普通用户也能拉脚本列表（不再被 isAdmin 短路）', async () => {
+    /**
+     * 验证 loadScripts 的 ``if (!props.isAdmin) return`` 拦截已移除。
+     * 普通用户进入「编辑任务」面板时 loadInitialData 内部 await loadScripts()，
+     * 应真实发起到 /api/admin/scripts 的 GET 请求（后端已改为 JWT-only）。
+     */
+    setupFetchMock()
+    const wrapper = mount(TaskSchedulerManager, {
+      props: {
+        isAdmin: false,
+        visibleMenus: ['profile', 'task-scheduler', 'task-scheduler.scheduled'],
+      },
+    })
+    await flushPromises()
+
+    const urls = global.fetch.mock.calls.map((c) => (typeof c[0] === 'string' ? c[0] : c[0].url))
+    expect(urls).toContain('/api/admin/scripts')
+
+    wrapper.unmount()
+  })
+
+  it('test_admin_still_uses_admin_agents_endpoint admin 仍走 /api/admin/agents（向后兼容）', async () => {
+    /**
+     * 反向校验：admin 路径不受本次分流改动影响。
+     */
+    setupFetchMock()
+    const wrapper = mount(TaskSchedulerManager, {
+      props: {
+        isAdmin: true,
+        visibleMenus: [],
+      },
+    })
+    await flushPromises()
+
+    const urls = global.fetch.mock.calls.map((c) => (typeof c[0] === 'string' ? c[0] : c[0].url))
+    expect(urls).toContain('/api/admin/agents')
+    // admin 不应走 /api/agent/list（保留单一数据源）
+    expect(urls).not.toContain('/api/agent/list')
+
+    wrapper.unmount()
+  })
+
+  it('test_non_admin_agent_dropdown_renders_filtered_options 普通用户智能体下拉来自已授权列表', async () => {
+    /**
+     * 验证 enabledAgents computed 在普通用户场景下能拿到 mockAgents 的已启用项。
+     * enabled filter 在 fetchAdminAgentList 路径下排除 disabled_agent；
+     * fetchAgentList 路径下后端已只返回启用项，前端冗余过滤也保持兼容。
+     */
+    setupFetchMock()
+    const wrapper = mount(TaskSchedulerManager, {
+      props: {
+        isAdmin: false,
+        visibleMenus: ['profile', 'task-scheduler', 'task-scheduler.scheduled'],
+      },
+    })
+    await flushPromises()
+
+    // 打开新建表单（mockSchedules 有一条任务，loadInitialData 会自动选中第一条）
+    // 这里直接看「目标智能体」select 的 options
+    const select = wrapper.find('[data-testid="schedule-agent"]')
+    if (select.exists()) {
+      const options = select.findAll('option')
+      const names = options.map((o) => o.element.value).filter(Boolean)
+      // 应包含 map_agent（来自 mockAgents 启用项），不应包含 disabled_agent
+      expect(names).toContain('map_agent')
+      expect(names).not.toContain('disabled_agent')
+    }
+    wrapper.unmount()
   })
 })
