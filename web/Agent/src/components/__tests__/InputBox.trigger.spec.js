@@ -241,6 +241,17 @@ describe('InputBox 「#」触发器集成（2026-07-26 新增）', () => {
     expect(wrapper.find('[data-testid="selected-trigger-chip-server-prod-api"]').exists()).toBe(true)
   })
 
+  it('test_hash_still_triggers_when_agent_bound 已绑定智能体时输入 # 仍能触发面板', async () => {
+    const wrapper = mountInputBox({ boundAgentName: 'ops_agent', boundAgentDisplayName: '运维项目智能体' })
+    await flushPromises()
+    // 已绑定智能体标签应出现
+    expect(wrapper.text()).toContain('运维项目智能体')
+    // 输入 # 后 trigger 面板仍应打开
+    await setTextareaValue(wrapper, '#', 1)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="trigger-panel-server"]').exists()).toBe(true)
+  })
+
   it('test_hash_button_disabled_during_streaming 流式期间 # 按钮 disabled', async () => {
     const wrapper = mountInputBox({ isStreaming: true })
     await flushPromises()

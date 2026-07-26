@@ -530,27 +530,30 @@ watch(
 const handleInput = (event) => {
   inputValue.value = event.target.value
   autoResize()
-  // 若当前 session 已绑定非 default 智能体，禁止唤起 /command 下拉菜单
+
+  const trimmed = inputValue.value.trim()
+
+  // 若当前 session 已绑定非 default 智能体，禁止唤起 /command 下拉菜单，
+  // 但不应阻止 # 等 trigger 面板的正常触发。
   if (props.boundAgentName && props.boundAgentName !== 'default') {
     showAgentDropdown.value = false
     activeAgentIndex.value = -1
-    activeTriggerId.value = null
-    return
-  }
-  // 仅输入 "/" 时加载智能体列表并显示下拉菜单
-  const trimmed = inputValue.value.trim()
-  if (trimmed === '/') {
-    showAgentDropdown.value = true
-    activeAgentIndex.value = -1
-    loadAgents()
-  } else if (!trimmed.startsWith('/')) {
-    showAgentDropdown.value = false
-    activeAgentIndex.value = -1
   } else {
-    // 输入 "/xxx" 时继续显示下拉菜单（过滤模式）
-    showAgentDropdown.value = true
-    activeAgentIndex.value = -1
+    // 仅输入 "/" 时加载智能体列表并显示下拉菜单
+    if (trimmed === '/') {
+      showAgentDropdown.value = true
+      activeAgentIndex.value = -1
+      loadAgents()
+    } else if (!trimmed.startsWith('/')) {
+      showAgentDropdown.value = false
+      activeAgentIndex.value = -1
+    } else {
+      // 输入 "/xxx" 时继续显示下拉菜单（过滤模式）
+      showAgentDropdown.value = true
+      activeAgentIndex.value = -1
+    }
   }
+
   // 2026-07-26 新增：trigger 字符检测（与 "/" 智能体下拉平级）
   const caret = event.target.selectionStart ?? inputValue.value.length
   const detected = detectTriggerAtCaret(inputValue.value, caret)
