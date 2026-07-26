@@ -3,6 +3,7 @@ import { ref, computed, reactive, watch, nextTick } from 'vue'
 import { marked } from 'marked'
 import { formatFileSize, getFileExtension, getAuthHeaders } from '../utils/api.js'
 import { isSubAgentTool } from '../utils/sseParser.js'
+import { renderTriggerMentions } from '../utils/triggerRegistry.js'
 import SubAgentCard from './SubAgentCard.vue'
 // 2026-06-15 新增：普通工具调用卡片（与 SubAgentCard 视觉对齐、不触发抽屉）
 import ToolCallCard from './ToolCallCard.vue'
@@ -79,7 +80,20 @@ const hasAttachments = computed(() => props.attachments && props.attachments.len
 const hasThinking = computed(() => props.thinking && props.thinking.length > 0)
 const hasTools = computed(() => props.tools && props.tools.length > 0)
 const hasText = computed(() => props.text && props.text.length > 0)
+const hasContent = computed(() => props.content && String(props.content).length > 0)
 const hasError = computed(() => props.error && props.error.length > 0)
+
+/**
+ * 用户消息内容经 trigger mention 渲染后的 HTML。
+ * 2026-07-26 新增：将 ⟦引用服务器：...⟧ 标记统一渲染为样式化 chip，
+ * 同时覆盖实时会话与历史会话弹窗（两者均复用 MessageBubble）。
+ *
+ * 使用 escapeHtml: true 对用户输入做 HTML 转义，避免 v-html 引入注入风险。
+ */
+const renderedContent = computed(() => {
+  if (!hasContent.value) return ''
+  return renderTriggerMentions(String(props.content), { escapeHtml: true })
+})
 const isStreaming = computed(() => !props.ended && !hasError.value && hasThinking.value)
 const hasDownloadInfo = computed(() => {
   const hasInfo = props.downloadInfo && props.downloadInfo.downloadUrl
@@ -360,9 +374,14 @@ const formattedThinking = computed(() => {
 const renderedText = computed(() => {
   if (!hasText.value) return ''
   try {
-    return marked.parse(props.text)
+    // 2026-07-26 新增：先统一渲染 trigger mention 标记，再交给 marked 解析 markdown。
+    return marked.parse(renderTriggerMentions(props.text))
   } catch {
-    return props.text.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br/>').replace(/^/, '<p>').replace(/$/, '</p>')
+    return renderTriggerMentions(props.text, { escapeHtml: true })
+      .replace(/\n\n/g, '</p><p>')
+      .replace(/\n/g, '<br/>')
+      .replace(/^/, '<p>')
+      .replace(/$/, '</p>')
   }
 })
 
@@ -491,9 +510,16 @@ function formatToolItem(item) {
 function renderMarkdown(text) {
   if (!text) return ''
   try {
-    return marked.parse(text)
+    // 2026-07-26 新增：先统一渲染 trigger mention 标记，再交给 marked 解析 markdown。
+    // renderTriggerMentions 会将 ⟦引用服务器：...⟧ 替换为内联 HTML chip，
+    // 服务器名已做 HTML 转义，marked 会保留这些内联标签。
+    return marked.parse(renderTriggerMentions(text))
   } catch {
-    return text.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br/>').replace(/^/, '<p>').replace(/$/, '</p>')
+    return renderTriggerMentions(text, { escapeHtml: true })
+      .replace(/\n\n/g, '</p><p>')
+      .replace(/\n/g, '<br/>')
+      .replace(/^/, '<p>')
+      .replace(/$/, '</p>')
   }
 }
 
@@ -660,7 +686,7 @@ const getFileIconColor = (filename) => {
             <span v-if="att.file_size || att.size" class="att-size">{{ formatFileSize(att.file_size || att.size) }}</span>
           </div>
         </div>
-        <div v-if="content" class="bubble-text">{{ content }}</div>
+        <div v-if="content" class="bubble-text" v-html="renderedContent"></div>
       </div>
     </div>
 
@@ -1597,5 +1623,54 @@ const getFileIconColor = (filename) => {
 .toast-leave-to {
   opacity: 0;
   transform: translateX(-50%) translateY(-10px);
+}
+
+/* 2026-07-26 新增：trigger mention 统一渲染样式
+   使用 :deep() 是因为 mention HTML 通过 v-html/marked.parse 注入，元素本身不携带 scoped 属性 */
+:deep(.mention-block) {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
+:deep(.mention-chip) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background-color: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  border-radius: 4px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: var(--font-weight-medium);
+  line-height: 1.4;
+}
+
+:deep(.mention-char) {
+  color: var(--color-accent);
+  font-weight: var(--font-weight-bold);
+}
+
+:deep(.mention-value) {
+  color: var(--color-text-secondary);
+}
+
+/* 用户消息蓝色背景上的适配：使用半透明白色，保证对比度 */
+.user-message :deep(.mention-chip) {
+  background-color: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.user-message :deep(.mention-char) {
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.user-message :deep(.mention-value) {
+  color: rgba(255, 255, 255, 0.95);
 }
 </style>

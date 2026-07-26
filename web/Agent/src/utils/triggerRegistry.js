@@ -71,6 +71,8 @@ export const TRIGGER_REGISTRY = [
     id: 'server',
     char: '#',
     title: '引用服务器',
+    mentionLabel: '引用服务器',
+    mentionClass: 'mention-server',
     fetchItems: async () => dedupByBusinessName(await fetchServerItems()),
     searchKeys: ['business_name', 'server_type'],
     itemKey: (item) => item?.business_name,
@@ -117,4 +119,107 @@ export function buildOverridesFor(triggerId, items) {
   const trigger = searchTriggerById(triggerId)
   if (!trigger || !Array.isArray(items) || items.length === 0) return {}
   return trigger.buildOverrides(items) || {}
+}
+
+/**
+ * 转义 HTML 特殊字符，防止用户输入破坏页面结构。
+ *
+ * @param {string} str - 原始字符串
+ * @returns {string} 转义后的字符串
+ */
+function escapeHtml(str) {
+  if (typeof str !== 'string') return String(str)
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+/**
+ * 为正则字面量转义特殊字符。
+ *
+ * @param {string} str - 原始字符串
+ * @returns {string} 转义后的字符串
+ */
+function escapeRegExp(str) {
+  if (typeof str !== 'string') return String(str)
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * 将文本中的 trigger mention 标记统一渲染为样式化 HTML。
+ *
+ * 匹配格式：⟦{mentionLabel}：value1、value2⟧
+ * 每个 value 渲染为一个 .mention-chip；整个标记包裹在 .mention-block 中。
+ * 未来新增 trigger 时，只要补充 mentionLabel/mentionClass 即可自动获得渲染。
+ *
+ * @param {string} text - 原始文本
+ * @param {Object} options - 配置项
+ * @param {boolean} [options.escapeHtml=false] - 是否对非标记文本做 HTML 转义（用户消息建议 true）
+ * @returns {string} 渲染后的 HTML 字符串；无标记时原样返回文本
+ */
+export function renderTriggerMentions(text, options = {}) {
+  const { escapeHtml: shouldEscape = false } = options
+  if (!text) return ''
+
+  // 收集所有可能匹配 mention 的 trigger（要求定义了 mentionLabel）
+  const triggers = TRIGGER_REGISTRY.filter((t) => t.mentionLabel)
+  if (triggers.length === 0) return text
+
+  // 收集所有匹配位置，并按起始索引排序
+  const matches = []
+  for (const trigger of triggers) {
+    const regex = new RegExp(
+      `⟦${escapeRegExp(trigger.mentionLabel)}：([^⟧]+)⟧`,
+      'g'
+    )
+    let match
+    while ((match = regex.exec(text)) !== null) {
+      matches.push({
+        index: match.index,
+        end: match.index + match[0].length,
+        values: match[1],
+        trigger,
+      })
+    }
+  }
+
+  // 按位置排序；重叠时保留先出现者
+  matches.sort((a, b) => a.index - b.index)
+
+  const fragments = []
+  let lastIndex = 0
+  for (const m of matches) {
+    if (m.index < lastIndex) continue
+    // 非标记文本
+    if (m.index > lastIndex) {
+      const raw = text.slice(lastIndex, m.index)
+      fragments.push(shouldEscape ? escapeHtml(raw) : raw)
+    }
+    // mention 块：按 、拆分多个值
+    const values = m.values
+      .split(/、/)
+      .map((v) => v.trim())
+      .filter(Boolean)
+    const chips = values
+      .map((v) => {
+        const safeValue = escapeHtml(v)
+        return `<span class="mention-chip ${m.trigger.mentionClass}"><span class="mention-char">${m.trigger.char}</span><span class="mention-value">${safeValue}</span></span>`
+      })
+      .join('')
+    fragments.push(
+      `<span class="mention-block ${m.trigger.mentionClass}" title="${escapeHtml(m.trigger.title)}">${chips}</span>`
+    )
+    lastIndex = m.end
+  }
+
+  // 尾部非标记文本
+  if (lastIndex < text.length) {
+    const raw = text.slice(lastIndex)
+    fragments.push(shouldEscape ? escapeHtml(raw) : raw)
+  }
+
+  return fragments.join('')
 }

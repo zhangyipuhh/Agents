@@ -1047,3 +1047,73 @@ describe('MessageBubble SubAgentCard 事件透传（2026-06-17 toggle 抽屉回�
   })
 })
 
+// ========== 2026-07-26 新增：消息中服务器引用标记统一渲染 ==========
+
+describe('MessageBubble 服务器引用标记渲染', () => {
+  it('用户消息含引用服务器标记时渲染为 chip', () => {
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'user',
+        content: '⟦引用服务器：测试服务器56⟧\n你好'
+      }
+    })
+    const block = wrapper.find('.bubble-text .mention-block')
+    expect(block.exists()).toBe(true)
+    expect(block.classes()).toContain('mention-server')
+    const chip = wrapper.find('.bubble-text .mention-chip')
+    expect(chip.exists()).toBe(true)
+    expect(chip.text()).toContain('#')
+    expect(chip.text()).toContain('测试服务器56')
+  })
+
+  it('AI 消息文本含引用服务器标记时渲染为 chip', () => {
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'ai',
+        ended: true,
+        text: '⟦引用服务器：测试服务器56⟧\n我来处理'
+      }
+    })
+    const block = wrapper.find('.markdown-body .mention-block')
+    expect(block.exists()).toBe(true)
+    expect(block.classes()).toContain('mention-server')
+    expect(wrapper.find('.markdown-body .mention-value').text()).toBe('测试服务器56')
+  })
+
+  it('多个服务器名渲染为多个 chip', () => {
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'user',
+        content: '⟦引用服务器：prod-api、win-01⟧请巡检'
+      }
+    })
+    const chips = wrapper.findAll('.bubble-text .mention-chip')
+    expect(chips).toHaveLength(2)
+    expect(chips[0].text()).toContain('prod-api')
+    expect(chips[1].text()).toContain('win-01')
+  })
+
+  it('不含引用标记的消息保持原有渲染', () => {
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'user',
+        content: '你好，请检查磁盘空间'
+      }
+    })
+    expect(wrapper.find('.bubble-text .mention-block').exists()).toBe(false)
+    expect(wrapper.find('.bubble-text').text()).toBe('你好，请检查磁盘空间')
+  })
+
+  it('用户消息中的 HTML 特殊字符被正确转义', () => {
+    const wrapper = mount(MessageBubble, {
+      props: {
+        type: 'user',
+        content: '⟦引用服务器：<x>⟧<b>test</b>'
+      }
+    })
+    const html = wrapper.find('.bubble-text').html()
+    expect(html).toContain('&lt;x&gt;')
+    expect(html).toContain('&lt;b&gt;test&lt;/b&gt;')
+  })
+})
+

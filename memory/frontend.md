@@ -622,6 +622,16 @@ web/Agent/src/
 - **双通道携带**：发送时一方面把选中服务器经 `buildOverridesFor` 转成 `extras.referenced_servers` 透传给后端系统提示词；另一方面在用户消息文本前附加前缀 `⟦引用服务器：name1、name2⟧\n<原文>`，使问题文本本身也显式包含引用
 - **可扩展边界**：未来新增 `@` 知识库等只需在前端 `TRIGGER_REGISTRY` 追加条目 + 后端 `dynamic_context.DYNAMIC_NODE_REGISTRY` 追加一条 `DynamicNodeSpec`；`chatStream` 签名 / `build_dynamic_system_suffix` 签名 / InputBox 组件均零改动
 
+### MessageBubble 统一渲染 mention 标记（2026-07-26 新增）
+
+`triggerRegistry.js` 新增导出 `renderTriggerMentions(text, options)`，将文本中的 `⟦{mentionLabel}：value1、value2⟧` 统一渲染为样式化 HTML chip。`MessageBubble.vue` 在用户消息与 AI 消息文本的两条渲染路径均调用该函数，因此实时会话与历史会话弹窗同步生效。
+
+- **注册表驱动**：`TRIGGER_REGISTRY` 条目新增 `mentionLabel`（匹配文本标签）与 `mentionClass`（CSS 类名）。当前 `server` 条目为 `mentionLabel: '引用服务器'`、`mentionClass: 'mention-server'`；未来新增 trigger 时无需改动 `MessageBubble.vue`。
+- **渲染产物**：每个服务器名渲染为一个 `.mention-chip`，含 `#` 前缀字符与服务器名；整组 chip 包裹在 `.mention-block` 中。
+- **安全**：`renderTriggerMentions({ escapeHtml: true })` 对用户消息非标记文本做 HTML 转义；服务器名始终 HTML 转义，避免 `v-html` 引入注入风险。
+- **AI 消息**：`renderedText` / `renderMarkdown` 先调用 `renderTriggerMentions` 替换 mention 标记为内联 HTML，再交给 `marked.parse` 处理 markdown。
+- **样式**：`.mention-chip` 与输入区 `.selected-trigger-chip` 视觉对齐；因 mention HTML 通过 `v-html` / `marked.parse` 注入，scoped CSS 使用 `:deep(.mention-chip)` 命中。`.user-message :deep(.mention-chip)` 在用户消息蓝色背景上使用半透明白色系，保证可读性。
+
 ### InputBox 集成
 
 `InputBox.vue` 工具栏附件按钮后新增 `#` 按钮（由 `TRIGGER_REGISTRY` 驱动渲染）；输入 `#` 时唤起 `TriggerPanel`，选中服务器后以可移除 chips 显示在 textarea 上方。发送时：chips 经 `buildOverridesFor('server', items)` 转成 `{ referenced_servers: [{name, server_type}] }`，作为 `emit('send', text, files, extras)` 第 3 参数；同时在用户消息文本前附加 `⟦引用服务器：name1、name2⟧\n` 前缀，使问题文本本身也显式携带引用。当前 session 内每次发送后清空 chips，切换 / 新建 session 时按 session 隔离。
@@ -645,9 +655,10 @@ web/Agent/src/
 
 **测试**：
 
-- `web/Agent/src/utils/__tests__/triggerRegistry.test.js`（12 用例）：注册项契约 / searchTriggerByChar / searchTriggerById / fetchServerItems 过滤 / dedup / buildOverrides / 空 items / 未注册 trigger id
+- `web/Agent/src/utils/__tests__/triggerRegistry.test.js`（18 用例）：注册项契约 / searchTriggerByChar / searchTriggerById / fetchServerItems 过滤 / dedup / buildOverrides / 空 items / 未注册 trigger id / `renderTriggerMentions` 单服务器 / 多服务器 / 无标记 / HTML 转义
 - `web/Agent/src/components/__tests__/TriggerPanel.spec.js`（12 用例）：基础渲染 / loading / error / 空态 / 搜索过滤（OR + case-insensitive）/ ArrowDown / ArrowUp 环绕 / Enter 选中 / Escape 选 null / 点击 select / mouseenter 更新 activeIndex
 - `web/Agent/src/components/__tests__/InputBox.trigger.spec.js`（11 用例）：#按钮渲染 / 输入 # 触发面板 / C# 不触发 / 空白后 # 触发 / 工具栏按钮插入字符 + 面板 / chips 渲染与移除 / 发送携带 extras.referenced_servers 且文本含前缀 / 发送清空 chips / 发送文本前附加服务器前缀 / 切换到新 session 初始无 chips / 切回原 session 恢复 chips / 流式期间 # 按钮 disabled
+- `web/Agent/src/components/__tests__/MessageBubble.spec.js`（新增 5 用例）：用户消息 / AI 消息 / 多服务器 / 无标记回归 / HTML 特殊字符转义
 
 ### App.vue 透传 extras
 

@@ -173,3 +173,57 @@ describe('triggerRegistry 触发器注册表', () => {
     expect(buildOverridesFor('nonexistent', [{ x: 1 }])).toEqual({})
   })
 })
+
+// ============== renderTriggerMentions ==============
+
+describe('triggerRegistry mention 统一渲染', () => {
+  it('test_render_trigger_mentions_importable renderTriggerMentions 可导入', async () => {
+    const { renderTriggerMentions } = await import('../triggerRegistry.js')
+    expect(typeof renderTriggerMentions).toBe('function')
+  })
+
+  it('test_render_single_server_mention 单服务器引用渲染为 chip', async () => {
+    const { renderTriggerMentions } = await import('../triggerRegistry.js')
+    const html = renderTriggerMentions('⟦引用服务器：测试服务器56⟧\n你好')
+    expect(html).toContain('class="mention-block mention-server"')
+    expect(html).toContain('class="mention-chip mention-server"')
+    expect(html).toContain('<span class="mention-char">#</span>')
+    expect(html).toContain('<span class="mention-value">测试服务器56</span>')
+  })
+
+  it('test_render_multiple_server_mentions 多服务器引用渲染为多个 chip', async () => {
+    const { renderTriggerMentions } = await import('../triggerRegistry.js')
+    const html = renderTriggerMentions('⟦引用服务器：prod-api、win-01⟧请巡检')
+    const chips = html.match(/class="mention-chip mention-server"/g)
+    expect(chips).toHaveLength(2)
+    expect(html).toContain('>prod-api<')
+    expect(html).toContain('>win-01<')
+  })
+
+  it('test_render_no_mention_returns_original_text 无标记时原样返回文本', async () => {
+    const { renderTriggerMentions } = await import('../triggerRegistry.js')
+    const text = '你好，请检查磁盘空间'
+    expect(renderTriggerMentions(text)).toBe(text)
+  })
+
+  it('test_render_escape_html_option 转义用户输入中的 HTML 特殊字符', async () => {
+    const { renderTriggerMentions } = await import('../triggerRegistry.js')
+    const text = '⟦引用服务器：<script>⟧<b> bold'
+    const html = renderTriggerMentions(text, { escapeHtml: true })
+    expect(html).toContain('&lt;script&gt;')
+    expect(html).toContain('&lt;b&gt;')
+    expect(html).not.toContain('<script>')
+  })
+
+  it('test_render_mention_values_always_escaped 服务器名始终 HTML 转义', async () => {
+    const { renderTriggerMentions } = await import('../triggerRegistry.js')
+    const html = renderTriggerMentions('⟦引用服务器：<x>⟧')
+    expect(html).toContain('&lt;x&gt;')
+  })
+
+  it('test_render_only_text_after_mention 标记后文本保留', async () => {
+    const { renderTriggerMentions } = await import('../triggerRegistry.js')
+    const html = renderTriggerMentions('⟦引用服务器：srv⟧请重启服务')
+    expect(html).toContain('请重启服务')
+  })
+})
