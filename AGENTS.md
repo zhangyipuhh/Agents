@@ -142,16 +142,23 @@ When querying the database, use this MCP to inspect table schemas and row data.
 4. **Trace the `width: 100%` Reference Chain** — `100%` is relative to the containing block, not the parent flex container. Check whether every ancestor in the chain has width constraints.
 5. **Chase One Hypothesis at Most 3 Steps** — If the phenomenon remains unchanged after 3 modifications, change direction. If multiple consecutive modifications to the same property are ineffective, the root cause is not in that property.
 
-## ⚠️ HARD RULE: project_memory.md Synchronization Protocol
+## ⚠️ HARD RULE: 项目记忆分级读取与同步协议
 
-**READ Phase**: Before executing any `Edit`/`Write` operation, you must first call `Read('project_memory.md')` to load the project memory.
+**记忆结构**: `project_memory.md` 是**索引**（≤ 200 行），正文拆分为 `memory/` 目录下的主题分片（architecture / database / api-routes / auth / agents-skills / mcp / frontend / menu-acl / devops-sandbox / misc）。历史全文归档在 `memory/_archive/project_memory_full.md`，仅兜底使用，正常禁止读取。
 
-**WRITE Phase**: After each `Edit`/`Write` operation, evaluate whether the change affects any chapter in `project_memory.md`:
+**READ Phase（分级读取，禁止全量复读）**:
 
-- Yes → Immediately call `Edit('project_memory.md', ...)` to synchronize.
+- L0：会话内首次涉及修改 → 只读 `project_memory.md`（索引）
+- L1：按任务关键词在索引中定位 1~2 个相关分片 → 只读相关分片
+- L2：分片内查找 → 优先 Grep 分片文件，再按行号区间 Read，禁止顺序翻页读取整个分片
+- 会话内已读过的分片不重复读；会话内自己写入的内容视为已知最新，不复读
+
+**WRITE Phase**: After each `Edit`/`Write` operation, evaluate whether the change affects any chapter:
+
+- Yes → 只 Edit 对应分片（`memory/<shard>.md`），并更新索引 `project_memory.md` 中对应行的「更新时间」列；新增章节时若无合适分片，在 `memory/` 新建分片并在索引登记一行
 - No → Explicitly state at the end of the response: "No sync needed."
 
-**What to Record**: Only record the **final/current state** in `project_memory.md`. Do **not** record the change process, decision history, or iterative steps. For example, if an API endpoint changes, document only its final signature and behavior. Retrieve historical process via `git log` if needed.
+**What to Record**: Only record the **final/current state**. Do **not** record the change process, decision history, or iterative steps. For example, if an API endpoint changes, document only its final signature and behavior. Retrieve historical process via `git log` if needed.
 
 **Trigger List** (synchronization is required if any of the following occurs):
 
@@ -165,16 +172,16 @@ When querying the database, use this MCP to inspect table schemas and row data.
 
 **Mandatory Constraints**:
 
-- **Do not use `Glob` to probe `project_memory.md`** (the Glob tool index is incomplete in this environment and returns 0 hits for root-directory files, which may mislead the AI into thinking the file does not exist).
-- You must use the `Read` tool to read it directly.
+- **Do not use `Glob` to probe `project_memory.md` or `memory/` shards** (the Glob tool index is incomplete in this environment and may return 0 hits, which may mislead the AI into thinking files do not exist).
+- You must use the `Read` tool to read the index and shards directly.
 - Project memory synchronization must be completed within the main task response. **Do not start a separate conversation to handle it.**
 - At the end of the response, output the checklist: `[✓ project_memory.md synchronized]` or `[✗ No project_memory.md sync needed: <reason>]`.
 
 ## Project Memory
 
-- Read project key information through project_memory.md before modification, including project architecture, functional modules, database design, etc.
-- When modifying code, make changes based on the information in project_memory.md to ensure modifications do not affect the normal operation of the project.
-- After modifying code, update the information in project_memory.md to ensure it remains consistent with the actual project status.
+- 修改前通过 `project_memory.md` 索引定位并读取相关 `memory/` 分片，获取项目架构、功能模块、数据库设计等关键信息（分级读取规则见上方 HARD RULE）
+- When modifying code, make changes based on the information in project memory to ensure modifications do not affect the normal operation of the project.
+- After modifying code, update the corresponding memory shard to ensure it remains consistent with the actual project status.
 - After modifying code, test the project functionality to ensure modifications do not affect the normal operation of the project.
 
 ---
@@ -299,7 +306,7 @@ app/{module}/bar/baz.py      →  app/tests/{module}/bar/test_baz.py
 
 ## Skill 系统使用规范（2026-06-21 落地，v2）
 
-> **详情**：路径约定、frontmatter 格式、模块位置、与 opencode 差异、API 列表等完整信息见 [`project_memory.md` "Skill 系统" 章节](file:///e:/laboratory/AI/Agents/feature-agent-core/project_memory.md)。本节只列**操作硬约束**。
+> **详情**：路径约定、frontmatter 格式、模块位置、与 opencode 差异、API 列表等完整信息见 `memory/agents-skills.md` 的 "Skill 系统" 章节。本节只列**操作硬约束**。
 
 - **硬约束**：**禁止** 使用 `<system-reminder>` 标签包装 skill 内容（项目 `BASE_SYSTEM_PROMPT:54` 已声明其为 LangChain 运行时系统提醒专用，不能用作业务包装层）。
 - **硬约束**：bootstrap 优先级链（从高到低）**禁止** 任意颠倒：
@@ -322,7 +329,7 @@ app/{module}/bar/baz.py      →  app/tests/{module}/bar/test_baz.py
 ## 菜单管理规则（2026-07-23 新增）
 
 本节给出菜单的"操作规则"。具体设计（字段定义、注册表位置、API 契约、ACL 表结构等）
-见 `project_memory.md` "用户菜单权限管理" 章节。
+见 `memory/menu-acl.md` 的 "用户菜单权限管理" 章节。
 
 ### 新增菜单
 1. 在 `app/core/menu_registry.py::MENU_CATALOG` 追加一条 `MenuItem` 注册项
