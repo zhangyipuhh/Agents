@@ -572,6 +572,90 @@ web/Agent/src/utils/
 - 测试策略：mount InputBox + mock `global.fetch`（按 URL 分发 `/api/auth/refresh` 与 `/api/agent/list`）+ mock `global.localStorage`
 - 覆盖：普通文本触发 send 且不触发 agent-switched / `/` 开头显示命令提示 / `/agent map_agent` 命令触发 agent-switched 事件 / 未知命令显示未知命令提示 / `/agent non_exist` 不触发切换且 send 含「不存在」 / `/api/agent/list` 返回非 ok 时 send 含「命令执行失败」 / `/agents` 命令 send 含智能体列表 / 输入 `/` 显示智能体下拉菜单 / 点击下拉菜单项选中后显示标签并清空输入框 / 选中智能体后发送触发 agent-switched 与 send / 移除按钮可清空已选智能体标签
 
+## 前端触发器注册表（2026-07-26 新增，「#」服务器引用）
+
+与 `commandRegistry` 平级的另一种「输入触发」体系：以单字符为锚（`#`），在 textarea 中输入触发字符唤起通用面板（搜索 + 平铺 + 键盘导航），选中项以可移除 chips 显示在输入区上方，发送时由 trigger 的 `buildOverrides` 转成 `context_overrides` 片段经 `chatStream` 透传给后端，由后端 `DYNAMIC_NODE_REGISTRY` 镜像渲染进系统提示词末尾的 XML 节点。**两侧 registry 镜像对称，未来新增触发类型只需各注册一条（前端 trigger + 后端 DynamicNodeSpec），签名不变**。
+
+### 模块位置
+
+```
+web/Agent/src/
+├── utils/
+│   ├── triggerRegistry.js             # 触发器注册表 + searchTriggerByChar / buildOverridesFor
+│   └── __tests__/
+│       └── triggerRegistry.test.js    # 12 用例：契约/搜索/buildOverrides/数据源拍平/去重
+├── components/
+│   └── TriggerPanel.vue               # 通用触发面板（搜索 + 列表 + 键盘导航）
+└── components/__tests__/
+    ├── TriggerPanel.spec.js           # 12 用例
+    └── InputBox.trigger.spec.js       # 10 用例（#触发/词边界/按钮/chips/发送/会话切换）
+```
+
+### TRIGGER_REGISTRY 条目契约
+
+| 字段 | 类型 | 含义 |
+|---|---|---|
+| `id` | string | 唯一标识；与后端 `DYNAMIC_NODE_REGISTRY` 条目 `overrides_key` 语义对应 |
+| `char` | string (1字符) | 触发字符（如 `#`） |
+| `title` | string | 工具栏按钮 tooltip / 面板标题 |
+| `fetchItems` | async () => Array | 异步拉取候选项（本期 = `fetchUserServerTree` 拍平 + `node_type==='server'` 过滤 + business_name 去重） |
+| `searchKeys` | string[] | 面板搜索 OR 匹配的字段集合 |
+| `itemKey` | (item) => any | 去重键（chips 渲染 key + 去重判定） |
+| `chipLabel` | (item) => string | chip 显示文本 |
+| `buildOverrides` | (items) => object | 选中项 → context_overrides 片段；与后端 `DYNAMIC_NODE_REGISTRY.overrides_key` 镜像 |
+
+### 导出 API
+
+| 导出 | 作用 |
+|---|---|
+| `TRIGGER_REGISTRY` | 注册条目数组 |
+| `searchTriggerByChar(char)` | 按触发字符查找条目 |
+| `searchTriggerById(id)` | 按 id 查找条目 |
+| `buildOverridesFor(triggerId, items)` | 选中项 → context_overrides 片段；空数组/未注册 id 返回 `{}` |
+
+### 设计要点
+
+- **前后端镜像**：前端 `buildOverrides` 输出键（如 `referenced_servers`）= 后端 `DynamicNodeSpec.overrides_key`，两侧键名一致
+- **数据源已是用户权限范围**：前端 `fetchUserServerTree` 已按 `OwnershipScope` 过滤，后端 `sanitize_dynamic_nodes` 仅做白名单字段清洗（name/server_type 两键、长度/条数上限），不做归属校验
+- **词边界触发**：trigger 字符须位于行首或前一个字符为空白，避免 `C#` / `#` 作为普通文本误触
+- **per-message 携带**：选中项仅存前端 `selectedTriggers`，发送时通过 emit 第 3 参数 `extras` 经 `chatStream(..., extras)` → `context_overrides.referenced_servers` 透传；发送成功 / 新建会话 / 切换会话自动清空（watch `props.sessionId`）
+- **可扩展边界**：未来新增 `@` 知识库等只需在前端 `TRIGGER_REGISTRY` 追加条目 + 后端 `dynamic_context.DYNAMIC_NODE_REGISTRY` 追加一条 `DynamicNodeSpec`；`chatStream` 签名 / `build_dynamic_system_suffix` 签名 / InputBox 组件均零改动
+
+### InputBox 集成
+
+`InputBox.vue` 工具栏附件按钮后新增 `#` 按钮（由 `TRIGGER_REGISTRY` 驱动渲染）；输入 `#` 时唤起 `TriggerPanel`，选中服务器后以可移除 chips 显示在 textarea 上方。发送时 chips 经 `buildOverridesFor('server', items)` 转成 `{ referenced_servers: [{name, server_type}] }`，作为 `emit('send', text, files, extras)` 第 3 参数。
+
+**改动点**：
+
+1. **import**：`TRIGGER_REGISTRY` / `searchTriggerByChar` / `buildOverridesFor` / `TriggerPanel`
+2. **响应式状态**：`selectedTriggers`（id → items）、`activeTriggerId` / `triggerPanelSearch` / `activeTriggerIndex` / `triggerItemsCache` / `triggerItemsLoading` / `triggerItemsError`
+3. **detectTriggerAtCaret**：检测光标处是否在词边界命中已注册 trigger 字符
+4. **loadTriggerItems**：拉取 trigger 数据，含缓存与错误处理
+5. **onTriggerPanelSelect**：面板选中回调，去重写入 `selectedTriggers`，从 textarea 移除触发字符串
+6. **onTriggerButtonClick**：工具栏按钮点击 → 光标处插入字符 + 聚焦 + 派发 input 事件（与键入同路径）
+7. **removeTriggerItem**：chips 移除按钮回调
+8. **handleInput 扩展**：末尾追加 trigger 检测分支（仅在词边界 + 已注册字符时激活面板，触发字符串被删/移出词边界时关闭面板）
+9. **handleKeydown 扩展**：面板打开时 Enter 由面板内部处理（不穿透到 handleSend）
+10. **handleSend 扩展**：遍历 `TRIGGER_REGISTRY` 经 `buildOverridesFor` 合并 extras，emit 第 3 参数；发送成功后清空 `selectedTriggers`
+11. **executeCommand finally**：命令执行后也清空 `selectedTriggers`
+12. **watch sessionId**：会话切换/新建会话清空 trigger 状态
+13. **template**：工具栏 `#` 按钮（registry 驱动）+ textarea 上方 chips 区 + TriggerPanel 挂在与 agent-dropdown 平级位置
+14. **CSS**：`.selected-trigger-chip`（灰底边框 chip）/ `.trigger-chip-remove-btn` / `.trigger-tool-btn` / `.tool-char`
+
+**测试**：
+
+- `web/Agent/src/utils/__tests__/triggerRegistry.test.js`（12 用例）：注册项契约 / searchTriggerByChar / searchTriggerById / fetchServerItems 过滤 / dedup / buildOverrides / 空 items / 未注册 trigger id
+- `web/Agent/src/components/__tests__/TriggerPanel.spec.js`（12 用例）：基础渲染 / loading / error / 空态 / 搜索过滤（OR + case-insensitive）/ ArrowDown / ArrowUp 环绕 / Enter 选中 / Escape 选 null / 点击 select / mouseenter 更新 activeIndex
+- `web/Agent/src/components/__tests__/InputBox.trigger.spec.js`（10 用例）：#按钮渲染 / 输入 # 触发面板 / C# 不触发 / 空白后 # 触发 / 工具栏按钮插入字符 + 面板 / chips 渲染与移除 / 发送携带 extras.referenced_servers / 发送清空 chips / sessionId 变化清空 chips / 流式期间 # 按钮 disabled
+
+### App.vue 透传 extras
+
+`App.vue::handleSendMessage(message, attachments, extras)` 新增第 3 参数 `extras`，透传到 `chatStream` 第 7 参数。原历史会话重发调用 `handleSendMessage(userMsg.content, userMsg.attachments || [])` 保持兼容（extras 缺省为 null）。
+
+### api.js chatStream 第 7 参数
+
+`chatStream(sessionId, message, attachments, resume, agentName, projectId, extras)` 新增第 7 参数 `extras`，非空对象时通过 `context_overrides` 通道传给后端。null / 空对象时不写入 `context_overrides`。
+
 ### App.vue agentName 状态管理
 
 `App.vue` 新增 `agentName` 响应式状态，承接 InputBox 的 `agent-switched` 事件，并将当前激活智能体名称透传到 `chatStream` 调用。

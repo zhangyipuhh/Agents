@@ -24,7 +24,10 @@ from app.shared.utils.agent.agent_config_service import (
 )
 from app.routers._stream_helper import generate_stream_response
 from app.core.tools._stop_signal import trigger_abort
-from app.shared.utils.prompt.dynamic_context import build_dynamic_system_suffix
+from app.shared.utils.prompt.dynamic_context import (
+    build_dynamic_system_suffix,
+    sanitize_dynamic_nodes,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -141,10 +144,22 @@ async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse
             if v not in _EMPTY_VALUES
         }
 
+        # 2026-07-26 新增：从 merged_overrides 中按 DYNAMIC_NODE_REGISTRY 抽取并清洗
+        # 动态节点数据（白名单字段 + 长度/条数上限 + 非法项静默丢弃）。
+        # 结果同时驱动两路：
+        #   1) 作为 dynamic_nodes 传入 build_dynamic_system_suffix → 渲染 <servers> XML
+        #   2) 原键（referenced_servers 等）继续保留在 merged_overrides 中，
+        #      随 context_class(**overrides) 注入 AgentContext 作为结构化字段，
+        #      供未来工具经 runtime.context.get("referenced_servers") 读取。
+        sanitized_dynamic_nodes = sanitize_dynamic_nodes(merged_overrides)
+
         # 2026-07-24 新增：注入动态上下文后缀（<attachments> / <servers> 节点）。
         # 以 attachments 表为唯一事实源，按 session_id 每轮实时拼接，
         # 上传/删除附件后下一轮自动同步；agent._llm_call 负责把它追加到系统提示词末尾。
-        merged_overrides["dynamic_context_suffix"] = await build_dynamic_system_suffix(session_id)
+        merged_overrides["dynamic_context_suffix"] = await build_dynamic_system_suffix(
+            session_id,
+            dynamic_nodes=sanitized_dynamic_nodes,
+        )
 
         agent, context_instance, input_state = await service.build_agent_instance(
             agent_name=agent_name,

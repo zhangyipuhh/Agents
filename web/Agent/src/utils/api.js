@@ -780,25 +780,37 @@ export async function renameProject(projectId, newName) {
 }
 
 /**
- * 统一 chat 流式接口
+ * 与后端 /api/agent/chat 建立 SSE 连接。
  *
  * 2026-07-01 新增：把 project_id 与 geometry_data 一并通过 context_overrides 通道传入
  *   - project_id：会话当前绑定的项目 ID；非 null 时注入 context_overrides.project_id，
- *     agent_router 合并逻辑（agent_router.py:122-124）让前端值优先于 middleware 注入；
- *     null 时不传该键，由 middleware 注入兜底（与 sessions.project_id 保持一致）。
+ *     与 sessions.project_id 隐式链路解耦；null 时由 chatStream 内部不写入该键，
+ *     由 session_auth_middleware 兜底从 request.state.project_id 注入。
  *   - geometry_data：从 body 顶层硬编码字段迁移到 context_overrides.geometry_data，
- *     统一通过通用 context 通道，避免散落在 body 顶层造成维护混乱。
+ *     任意子智能体的 context 扩展字段都能走 context_overrides 通用通道注入。
  *
- * @param {string} sessionId - 会话 ID
- * @param {string} message - 用户消息文本
- * @param {Array} [attachments=[]] - 附件列表
+ * 2026-07-26 新增：第七个参数 extras（object）。由 InputBox 经 buildOverrides 生成，
+ *   经 context_overrides 通道传给后端。典型内容：
+ *     - referenced_servers：用户通过 `#` 触发的服务器引用数组
+ *       （[{name: business_name, server_type}]）。
+ *     null / 空对象 / 所有键值都是空值时自动不写入 context_overrides，避免覆盖默认。
+ *
+ * @param {string} sessionId - 会话 ID（自动从 localStorage 兜底）
+ * @param {string} message - 用户输入文本（HITL 恢复时可为空串）
+ * @param {Array} [attachments=[]] - 附件上传后返回的元数据列表
  * @param {Object|null} [resume=null] - HITL 恢复参数
  * @param {string|null} [agentName=null] - 目标智能体名称
  * @param {number|null} [projectId=null] - 当前会话绑定的项目 ID；null 时不写入 context_overrides
+ * @param {Object} [extras=null] - 触发器选中项经 buildOverrides 转出的 context_overrides 片段
  * @returns {Promise<ReadableStream>} SSE 响应 body 流
  */
-export async function chatStream(sessionId, message, attachments = [], resume = null, agentName = null, projectId = null) {
+export async function chatStream(sessionId, message, attachments = [], resume = null, agentName = null, projectId = null, extras = null) {
   const sid = sessionId || localStorage.getItem('session_id') || ''
+  const context_overrides = {
+    geometry_data: {},
+    ...(projectId != null ? { project_id: projectId } : {}),
+    ...(extras && typeof extras === 'object' ? extras : {}),
+  }
   const response = await fetchWithAuth('/api/agent/chat', {
     method: 'POST',
     headers: {
@@ -807,14 +819,11 @@ export async function chatStream(sessionId, message, attachments = [], resume = 
       'Cache-Control': 'no-cache',
       'X-Session-ID': sid
     },
-    body: JSON.stringify({
+body: JSON.stringify({
       message: resume ? '' : message,
       session_id: sid,
       attachments,
-      context_overrides: {
-        geometry_data: {},
-        ...(projectId != null ? { project_id: projectId } : {})
-      },
+      context_overrides,
       ...(resume ? { resume } : {}),
       ...(agentName ? { agent_name: agentName } : {})
     })

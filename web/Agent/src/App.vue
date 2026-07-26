@@ -596,7 +596,7 @@ function extractApprovalData(interruptArray) {
   return { questions }
 }
 
-async function handleSendMessage(message, attachments = []) {
+async function handleSendMessage(message, attachments = [], extras = null) {
   if (!message.trim() && attachments.length === 0) return
   if (isStreaming.value) return
 
@@ -628,7 +628,7 @@ async function handleSendMessage(message, attachments = []) {
     // 复用 createNewSession 自带的防重复锁，并发场景下仅发一次 /api/session/create。
     await ensureSessionForFirstOp(projectIdForChat)
 
-    const stream = await chatStream(sessionId.value, message, attachments, null, agentName.value, projectIdForChat)
+    const stream = await chatStream(sessionId.value, message, attachments, null, agentName.value, projectIdForChat, extras)
     currentStreamReader = stream.getReader()
     // 拿到 SSE reader 后再置位 isStreaming，避免排队/握手阶段状态长期悬空无法复位
     isStreaming.value = true

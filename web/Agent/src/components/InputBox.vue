@@ -1,10 +1,14 @@
 <script setup>
-import { ref, computed, nextTick, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted, watch } from 'vue'
 import { uploadFileInChunks, formatFileSize, getFileExtension, refreshToken, fetchAgentList, deleteAttachments, fetchUploadConfig } from '../utils/api.js'
 import ProjectDropdown from './ProjectDropdown.vue'
 // 2026-07-14 新增：子智能体快选条组件（常驻在 InputBox 下方）
 import SubAgentSuggestionStrip from './SubAgentSuggestionStrip.vue'
 import { handleCommand, COMMAND_REGISTRY } from '../utils/commandRegistry.js'
+// 2026-07-26 新增：触发器注册表（按字符触发的引用面板；未来加 `@` / `$` 等只需注册条目）
+import { TRIGGER_REGISTRY, searchTriggerByChar, buildOverridesFor } from '../utils/triggerRegistry.js'
+// 2026-07-26 新增：通用触发面板组件（搜索 + 平铺 + 键盘导航）
+import TriggerPanel from './TriggerPanel.vue'
 
 const SUPPORTED_EXTENSIONS = ['pdf', 'doc', 'docx', 'txt', 'md', 'csv', 'json']
 // 2026-07-13 修改：原硬编码 50MB 改为由后端 /api/core/upload-config 动态下发，默认 3MB
@@ -87,6 +91,109 @@ const selectedAgent = ref(null)
 const showAgentDropdown = ref(false)
 const activeAgentIndex = ref(-1)
 const agentDropdownRef = ref(null)
+
+// 2026-07-26 新增：触发器状态机（以单字符触发的引用面板，与 "/" 智能体下拉平级）。
+// 设计为可扩展：未来加 "@知识库" / "$变量" 等只需在 TRIGGER_REGISTRY 追加条目，
+// InputBox 本组件零改动。
+//
+// selectedTriggers: { [triggerId]: Array<item> } —— 已选中项（以 trigger.id 为键）
+// activeTriggerId: 当前打开面板的 trigger id（null = 未打开）
+// triggerPanelSearch: 面板搜索词（绑定到 TriggerPanel 输入框）
+// activeTriggerIndex: TriggerPanel 当前高亮行索引
+// triggerItemsCache: { [triggerId]: Array<item> } —— 各 trigger 数据缓存
+// triggerItemsLoading: { [triggerId]: boolean }
+// triggerItemsError: { [triggerId]: string }
+const selectedTriggers = ref({})
+const activeTriggerId = ref(null)
+const triggerPanelSearch = ref('')
+const activeTriggerIndex = ref(0)
+const triggerItemsCache = ref({})
+const triggerItemsLoading = ref({})
+const triggerItemsError = ref({})
+
+/**
+ * 当前激活 trigger 的注册条目（计算属性）
+ * @returns {Object|undefined} activeTriggerId 对应的 TRIGGER_REGISTRY 条目；无激活时 undefined
+ */
+const activeTriggerDef = computed(() =>
+  activeTriggerId.value ? TRIGGER_REGISTRY.find((t) => t.id === activeTriggerId.value) : undefined
+)
+
+/**
+ * 当前激活 trigger 的候选列表（已加载）
+ * @returns {Array} 候选项数组；无激活时返回空数组
+ */
+const activeTriggerItems = computed(() => {
+  const id = activeTriggerId.value
+  if (!id) return []
+  return triggerItemsCache.value[id] || []
+})
+
+/**
+ * 当前激活 trigger 的加载状态
+ * @returns {boolean} 是否正在加载
+ */
+const activeTriggerLoading = computed(() =>
+  activeTriggerId.value ? !!triggerItemsLoading.value[activeTriggerId.value] : false
+)
+
+/**
+ * 当前激活 trigger 的错误状态
+ * @returns {string} 错误文本；无错误返回空串
+ */
+const activeTriggerError = computed(() =>
+  activeTriggerId.value ? triggerItemsError.value[activeTriggerId.value] || '' : ''
+)
+
+/**
+ * 当前激活 trigger 的搜索键集合
+ * @returns {Array<string>} 搜索字段名
+ */
+const activeTriggerSearchKeys = computed(() => activeTriggerDef.value?.searchKeys || [])
+
+/**
+ * 当前激活 trigger 的 getItemKey 函数（用于列表渲染 key）
+ * @returns {Function} 取 item 唯一键的函数
+ */
+const activeTriggerGetItemKey = computed(() => activeTriggerDef.value?.itemKey || ((item) => item))
+
+/**
+ * 当前激活 trigger 的 getItemLabel 函数
+ * @returns {Function} 取 item 显示文本的函数
+ */
+const activeTriggerGetItemLabel = computed(() => activeTriggerDef.value?.chipLabel || ((item) => String(item)))
+
+/**
+ * TriggerPanel 的副标签函数（显示 server_type 等附加信息）
+ * @returns {Function} 取 item 副标签的函数；无则返回空函数
+ */
+const activeTriggerGetItemSubLabel = computed(() => {
+  const def = activeTriggerDef.value
+  if (!def) return () => ''
+  if (def.id === 'server') {
+    return (item) => item?.server_type ? `[${item.server_type}]` : ''
+  }
+  return () => ''
+})
+
+/**
+ * 平铺的已选 trigger 项（含 trigger id 信息，供 chips 渲染与 buildOverrides 使用）
+ * @returns {Array<{trigger: Object, item: Object, key: any}>}
+ */
+const selectedTriggerChips = computed(() => {
+  const result = []
+  for (const trigger of TRIGGER_REGISTRY) {
+    const items = selectedTriggers.value[trigger.id] || []
+    for (const item of items) {
+      result.push({
+        trigger,
+        item,
+        key: trigger.itemKey(item),
+      })
+    }
+  }
+  return result
+})
 
 const canSend = computed(() => {
   if (props.isStreaming) return false
@@ -223,6 +330,163 @@ const suggestionAgents = computed(() => {
   return agentList.value.filter((a) => allowedSet.has(a.name))
 })
 
+/**
+ * 2026-07-26 新增：加载指定 trigger 的候选列表（含缓存）
+ *
+ * @param {string} triggerId - 注册 id
+ * @returns {Promise<void>}
+ */
+async function loadTriggerItems(triggerId) {
+  const def = TRIGGER_REGISTRY.find((t) => t.id === triggerId)
+  if (!def) return
+  if (triggerItemsCache.value[triggerId]) return
+  if (triggerItemsLoading.value[triggerId]) return
+  triggerItemsLoading.value = { ...triggerItemsLoading.value, [triggerId]: true }
+  triggerItemsError.value = { ...triggerItemsError.value, [triggerId]: '' }
+  try {
+    const items = await def.fetchItems()
+    triggerItemsCache.value = { ...triggerItemsCache.value, [triggerId]: items || [] }
+  } catch (err) {
+    console.error(`[InputBox] 加载 trigger[${triggerId}] 候选项失败:`, err)
+    triggerItemsError.value = {
+      ...triggerItemsError.value,
+      [triggerId]: err?.message || '加载失败',
+    }
+  } finally {
+    triggerItemsLoading.value = { ...triggerItemsLoading.value, [triggerId]: false }
+  }
+}
+
+/**
+ * 2026-07-26 新增：检测光标处的触发字符 + 激活对应面板
+ *
+ * 词边界规则：触发字符位于行首或前一个字符为空白，避免 C# / 注释符误触发。
+ *
+ * @param {string} text - 当前 textarea 完整文本
+ * @param {number} caret - 当前光标位置（基于 event.target.selectionStart）
+ * @returns {Object|undefined} { trigger, query, charIdx } 或 undefined
+ */
+function detectTriggerAtCaret(text, caret) {
+  const c = text.charAt(caret - 1)
+  if (!c || !searchTriggerByChar(c)) return undefined
+  // 词边界：行首或前一个字符为空格/换行/标点
+  const prev = text.charAt(caret - 2)
+  if (prev && !/\s/.test(prev)) return undefined
+  const trigger = searchTriggerByChar(c)
+  const query = text.slice(caret)
+  return { trigger, query, charIdx: caret - 1 }
+}
+
+/**
+ * 2026-07-26 新增：从选中 trigger 项列表移除指定 key 的项
+ * @param {string} triggerId - trigger id
+ * @param {any} key - 唯一键（trigger.itemKey(item)）
+ */
+function removeTriggerItem(triggerId, key) {
+  const def = TRIGGER_REGISTRY.find((t) => t.id === triggerId)
+  if (!def) return
+  const list = selectedTriggers.value[triggerId] || []
+  selectedTriggers.value = {
+    ...selectedTriggers.value,
+    [triggerId]: list.filter((item) => def.itemKey(item) !== key),
+  }
+}
+
+/**
+ * 2026-07-26 新增：面板选中项（去重）回调
+ * @param {Object|null} item - TriggerPanel 选中项；null 表示 Esc 取消
+ */
+function onTriggerPanelSelect(item) {
+  const def = activeTriggerDef.value
+  if (!def) {
+    activeTriggerId.value = null
+    return
+  }
+  if (item) {
+    const list = selectedTriggers.value[def.id] || []
+    const exists = list.some((i) => def.itemKey(i) === def.itemKey(item))
+    if (!exists) {
+      selectedTriggers.value = {
+        ...selectedTriggers.value,
+        [def.id]: [...list, item],
+      }
+    }
+    // 选中后关闭面板并清空触发字符串（保留 # 让用户继续添加/不删除）
+    activeTriggerId.value = null
+    triggerPanelSearch.value = ''
+    // 从输入框移除触发字符串及其后的搜索词
+    const text = inputValue.value
+    const caret = textareaRef.value?.selectionStart ?? text.length
+    const detected = detectTriggerAtCaret(text, caret)
+    if (detected) {
+      const next = text.slice(0, detected.charIdx) + text.slice(caret)
+      inputValue.value = next
+      nextTick(() => {
+        if (textareaRef.value) {
+          textareaRef.value.selectionStart = detected.charIdx
+          textareaRef.value.selectionEnd = detected.charIdx
+          autoResize()
+        }
+      })
+    }
+    return
+  }
+  // null = Esc / 外部取消：关闭面板同时清掉触发字符串
+  const text = inputValue.value
+  const caret = textareaRef.value?.selectionStart ?? text.length
+  const detected = detectTriggerAtCaret(text, caret)
+  if (detected) {
+    const next = text.slice(0, detected.charIdx) + text.slice(caret)
+    inputValue.value = next
+    nextTick(() => {
+      if (textareaRef.value) {
+        textareaRef.value.selectionStart = detected.charIdx
+        textareaRef.value.selectionEnd = detected.charIdx
+      }
+    })
+  }
+  activeTriggerId.value = null
+  triggerPanelSearch.value = ''
+}
+
+/**
+ * 2026-07-26 新增：处理工具栏 trigger 按钮点击 —— 在光标处插入字符 + 聚焦
+ * （与键入同路径：触发 input 事件走 handleInput 统一检测）
+ * @param {string} char - trigger 字符
+ */
+function onTriggerButtonClick(char) {
+  const textarea = textareaRef.value
+  if (!textarea) return
+  const start = textarea.selectionStart ?? inputValue.value.length
+  const end = textarea.selectionEnd ?? inputValue.value.length
+  const before = inputValue.value.slice(0, start)
+  const after = inputValue.value.slice(end)
+  // 确保插入位置前是词边界
+  const needsSpace = before.length > 0 && !/\s/.test(before.charAt(before.length - 1))
+  const insert = (needsSpace ? ' ' : '') + char
+  inputValue.value = before + insert + after
+  const newCaret = (before + insert).length
+  nextTick(() => {
+    textarea.focus()
+    textarea.selectionStart = newCaret
+    textarea.selectionEnd = newCaret
+    // 手动派发 input 事件走 handleInput 统一逻辑
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+}
+
+/**
+ * 2026-07-26 新增：监听 sessionId 变化，会话切换 / 新建会话时清空所有 trigger 选择
+ */
+watch(
+  () => props.sessionId,
+  () => {
+    selectedTriggers.value = {}
+    activeTriggerId.value = null
+    triggerPanelSearch.value = ''
+  }
+)
+
 const handleInput = (event) => {
   inputValue.value = event.target.value
   autoResize()
@@ -230,6 +494,7 @@ const handleInput = (event) => {
   if (props.boundAgentName && props.boundAgentName !== 'default') {
     showAgentDropdown.value = false
     activeAgentIndex.value = -1
+    activeTriggerId.value = null
     return
   }
   // 仅输入 "/" 时加载智能体列表并显示下拉菜单
@@ -245,6 +510,21 @@ const handleInput = (event) => {
     // 输入 "/xxx" 时继续显示下拉菜单（过滤模式）
     showAgentDropdown.value = true
     activeAgentIndex.value = -1
+  }
+  // 2026-07-26 新增：trigger 字符检测（与 "/" 智能体下拉平级）
+  const caret = event.target.selectionStart ?? inputValue.value.length
+  const detected = detectTriggerAtCaret(inputValue.value, caret)
+  if (detected) {
+    if (activeTriggerId.value !== detected.trigger.id) {
+      activeTriggerId.value = detected.trigger.id
+      activeTriggerIndex.value = 0
+      loadTriggerItems(detected.trigger.id)
+    }
+    triggerPanelSearch.value = detected.query
+  } else if (activeTriggerId.value) {
+    // 触发字符被删掉或失去词边界 → 关闭面板
+    activeTriggerId.value = null
+    triggerPanelSearch.value = ''
   }
 }
 
@@ -275,6 +555,14 @@ function removeSelectedAgent() {
 }
 
 const handleKeydown = (event) => {
+  // 2026-07-26 新增：trigger 面板打开时由 TriggerPanel 自身处理键盘（input 内联），
+  // 这里只需拦截 Enter 防止穿透触发 handleSend。
+  if (activeTriggerId.value) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      // TriggerPanel 内联 onKeydown 已处理 Enter → selectItem；不调 handleSend
+      return
+    }
+  }
   // 下拉菜单打开时，支持键盘导航
   if (showAgentDropdown.value && filteredAgents.value.length > 0) {
     if (event.key === 'ArrowDown') {
@@ -334,6 +622,8 @@ const executeCommand = async (text) => {
   } finally {
     isExecutingCommand.value = false
     inputValue.value = ''
+    // 2026-07-26 新增：命令执行后也清空 trigger 选择（命令结果作为新消息发出）
+    selectedTriggers.value = {}
     nextTick(() => {
       autoResize()
     })
@@ -409,11 +699,21 @@ const handleSend = async () => {
     })
   }
 
-  emit('send', text, uploadedFiles)
+  // 2026-07-26 新增：把已选 trigger 项经 buildOverrides 转成 context_overrides 片段，
+  // 作为第 3 个 emit 参数（extras）传给 App.vue → chatStream。
+  const extras = {}
+  for (const trigger of TRIGGER_REGISTRY) {
+    const items = selectedTriggers.value[trigger.id] || []
+    Object.assign(extras, buildOverridesFor(trigger.id, items))
+  }
+
+  emit('send', text, uploadedFiles, extras)
 
   inputValue.value = ''
   selectedFiles.value = []
   selectedAgent.value = null
+  // 2026-07-26 新增：清空所有 trigger 选择（per-message 携带，发送后即清空）
+  selectedTriggers.value = {}
 
   nextTick(() => {
     autoResize()
@@ -771,6 +1071,27 @@ const emit = defineEmits([
           </div>
         </div>
 
+        <!-- 2026-07-26 新增：trigger 触发面板（与 agent-dropdown 平级）。
+             当用户在 textarea 中输入触发字符（如 #）时显示，
+             由通用 TriggerPanel 组件渲染（搜索 + 列表 + 键盘导航）。
+             data-testid 用于测试断言。 -->
+        <TriggerPanel
+          v-if="activeTriggerId"
+          :trigger-id="activeTriggerId"
+          :items="activeTriggerItems"
+          :search-keys="activeTriggerSearchKeys"
+          :active-index="activeTriggerIndex"
+          :loading="activeTriggerLoading"
+          :error="activeTriggerError"
+          empty-hint="暂无可引用项"
+          :search-placeholder="`搜索 ${activeTriggerDef?.title || ''}...`"
+          :get-item-key="activeTriggerGetItemKey"
+          :get-item-label="activeTriggerGetItemLabel"
+          :get-item-sub-label="activeTriggerGetItemSubLabel"
+          @select="onTriggerPanelSelect"
+          @update:active-index="(v) => (activeTriggerIndex = v)"
+        />
+
         <!-- 新增：输入区域包裹层，将标签与 textarea 并排 -->
         <div class="text-input-area">
           <!-- 2026-06-24 新增：已选智能体标签（可移除） -->
@@ -788,6 +1109,23 @@ const emit = defineEmits([
           <div v-if="boundAgentName && boundAgentName !== 'default'" class="selected-agent-tag bound-agent-tag">
             <span class="agent-slash">/</span>
             <span class="agent-name">{{ boundAgentDisplayName || boundAgentName }}</span>
+          </div>
+
+          <!-- 2026-07-26 新增：trigger 引用 chips（与 selected-agent-tag 平级，可移除）。
+               由 TRIGGER_REGISTRY 驱动渲染；每条 chip 显示 trigger.char 前缀 + item.chipLabel。 -->
+          <div
+            v-for="chip in selectedTriggerChips"
+            :key="`${chip.trigger.id}:${chip.key}`"
+            class="selected-trigger-chip"
+            :data-testid="`selected-trigger-chip-${chip.trigger.id}-${chip.key}`"
+          >
+            <span class="trigger-char">{{ chip.trigger.char }}</span>
+            <span class="trigger-chip-label">{{ chip.trigger.chipLabel(chip.item) }}</span>
+            <button
+              class="trigger-chip-remove-btn"
+              :title="`移除 ${chip.trigger.chipLabel(chip.item)}`"
+              @click="removeTriggerItem(chip.trigger.id, chip.key)"
+            >×</button>
           </div>
 
           <textarea
@@ -817,6 +1155,20 @@ const emit = defineEmits([
               <svg viewBox="0 0 20 20" fill="currentColor" class="tool-icon">
                 <path fill-rule="evenodd" d="M8 4a3 3 0 00-3 3v4a5 5 0 0010 0V7a1 1 0 112 0v4a7 7 0 11-14 0V7a5 5 0 0110 0v4a3 3 0 11-6 0V7a1 1 0 012 0v4a1 1 0 102 0V7a3 3 0 00-3-3z" clip-rule="evenodd"/>
               </svg>
+            </button>
+            <!-- 2026-07-26 新增：trigger 按钮由 TRIGGER_REGISTRY 驱动渲染；
+                 未来新增触发类型只需注册条目，按钮自动出现。
+                 点击 = 在光标处插入字符 + 聚焦（与键入同路径走 handleInput）。 -->
+            <button
+              v-for="trigger in TRIGGER_REGISTRY"
+              :key="trigger.id"
+              class="tool-btn trigger-tool-btn"
+              :title="trigger.title"
+              :disabled="props.isStreaming"
+              :data-testid="`trigger-btn-${trigger.id}`"
+              @click="onTriggerButtonClick(trigger.char)"
+            >
+              <span class="tool-char">{{ trigger.char }}</span>
             </button>
           </div>
 
@@ -1423,6 +1775,65 @@ const emit = defineEmits([
 .bound-agent-tag {
   background-color: var(--color-bg-tertiary);
   border-color: var(--color-border);
+  color: var(--color-text-secondary);
+}
+
+/* 2026-07-26 新增：trigger 引用 chips（与 selected-agent-tag 平级，可移除） */
+.selected-trigger-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background-color: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  margin-top: 4px;
+  flex-shrink: 0;
+}
+
+.trigger-char {
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-accent);
+}
+
+.trigger-chip-label {
+  line-height: 1.4;
+}
+
+.trigger-chip-remove-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+  margin-left: 4px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-sm);
+  font-size: 16px;
+  line-height: 1;
+  transition: var(--transition-colors);
+
+  &:hover {
+    background-color: rgba(0, 0, 0, 0.08);
+    color: #b91c1c;
+  }
+}
+
+/* 2026-07-26 新增：trigger 按钮工具栏样式（registry 驱动，未来多按钮自动适应） */
+.trigger-tool-btn {
+  font-size: 14px;
+  font-weight: var(--font-weight-bold);
+}
+
+.tool-char {
+  font-size: 14px;
+  font-weight: var(--font-weight-bold);
   color: var(--color-text-secondary);
 }
 

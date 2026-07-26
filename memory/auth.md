@@ -413,44 +413,71 @@ system_prompt = (
 - 第二层各 Agent 独立维护，互不影响
 - 第三层随工具功能迭代同步更新 docstring，确保模型获取最新工具描述
 
-## 动态上下文注入（attachments / servers 节点，2026-07-24 落地）
+## 动态上下文注入（attachments / 动态节点，2026-07-24 落地，2026-07-26 注册表化重构）
 
-在提示词三层架构之外，系统提示词**末尾**还会追加一段"动态上下文后缀"，把会话的运行时状态（用户上传附件列表、可用服务器列表）以 XML 节点形式注入，抑制模型对附件的幻觉。
+在提示词三层架构之外，系统提示词**末尾**还会追加一段"动态上下文后缀"，把会话的运行时状态（用户上传附件列表、用户通过前端 trigger 引用的引用项）以 XML 节点形式注入，抑制模型对附件的幻觉。
 
 ### 核心模块
 
 - **文件位置**：`app/shared/utils/prompt/dynamic_context.py`
-- **关键函数**：
-  - `build_dynamic_system_suffix(session_id)`：以后端 `attachments` 表为唯一事实源，按 session_id 实时查询并组装后缀（静态规则文本 + XML 节点）；查询异常 / Memory 模式降级为空附件列表，仍输出显式空节点
-  - `build_dynamic_context_xml(attachments, servers=None)`：生成 `<attachments>` / `<servers>` 节点；空状态显式化（输出 `<attachments></attachments>` 而非省略节点）；`servers` 参数为后期扩展预留（当前注入空节点 + 说明文字）
-  - `normalize_attachment_path(stored_path)`：路径规范化为 POSIX 风格并剥离 Windows 盘符（`E:\a\b.md` / `c:/a.md` → `/a/b.md`）
-  - `resolve_prompt_path(prompt_path)`：与 normalize 互逆，Windows 下为无盘符 `/` 开头路径补项目根所在盘符，供读文件工具解析
+- **关键函数 / 数据结构**：
+  - `DynamicNodeSpec`（frozen dataclass）：单节点契约（`overrides_key` / `xml_parent_tag` / `xml_item_tag` / `allowed_fields` / `max_items=50` / `max_field_len=128`）
+  - `DYNAMIC_NODE_REGISTRY`：动态节点注册表元组；本期内置 `referenced_servers` 一条（对应前端 `#` trigger）
+  - `sanitize_dynamic_nodes(overrides)`：按 registry 从 `context_overrides` 提取并清洗（白名单字段 / 长度/条数上限 / 非法项静默丢弃）；未注册键自动忽略
+  - `build_dynamic_system_suffix(session_id, dynamic_nodes=None)`：以 attachments 表为唯一事实源，按 session_id 实时查询并组装后缀（静态规则文本 + XML 节点）；查询异常 / Memory 模式降级为空附件列表，仍输出显式空节点；`dynamic_nodes` 由 router 传入
+  - `build_dynamic_context_xml(attachments, dynamic_nodes=None)`：遍历 registry 渲染 `<attachments>` + 每个注册节点；空状态显式化（注册表中所有节点即便为空也输出空成对节点）
+  - `normalize_attachment_path(stored_path)`：路径规范化为 POSIX 风格并剥离 Windows 盘符
+  - `resolve_prompt_path(prompt_path)`：与 normalize 互逆，Windows 下为无盘符 `/` 开头路径补项目根所在盘符
+- **静态规则文本** `DYNAMIC_CONTEXT_RULES`：随动态节点一起注入，含 `<attachments>` 与 `<servers>` 使用说明
 
 ### 注入链路
 
 ```
 chat 路由（每轮）                AgentContext              agent.py::_llm_call
-build_dynamic_system_suffix  →   dynamic_context_suffix  →  SkillsAwarePrompt(...).build()
-(session_id 查 attachments 表)   (context_overrides 注入)    + "\n\n" + 动态后缀（末尾）
+sanitize_dynamic_nodes      →    dynamic_context_suffix  →  SkillsAwarePrompt(...).build()
+build_dynamic_system_suffix  →   (context_overrides 注入)    + "\n\n" + 动态后缀（末尾）
+(session_id 查 attachments 表)   (并保留原键供工具读取)
 ```
 
-- **两个 chat 入口均已接入**：`/api/agent/chat`（agent_router.py，经 `build_agent_instance` 的 context_overrides）与 `/api/knowledge-chat`（knowledge_router.py，手动构造 context 的 safe_overrides）
-- `AgentContext` 基类声明 `dynamic_context_suffix: str = ""`，`dynamic_schema._BASE_CONTEXT_DEFAULTS` 同步兜底
+- **两个 chat 入口均已接入**：`/api/agent/chat`（agent_router.py）+ `/api/knowledge-chat`（knowledge_router.py，未注入 referenced_servers，行为不变）
+- **保留键**：router **不 pop** `referenced_servers`，让该键继续随 `merged_overrides` 注入 `AgentContext`（作为一等 context 字段），工具可经 `runtime.context.get("referenced_servers")` 读取结构化数据；XML 渲染与一等 context 字段同源，均来自同一份 sanitize 结果
+- `AgentContext` 基类声明 `dynamic_context_suffix: str = ""` + `referenced_servers: list = []`（2026-07-26 新增）；`dynamic_schema._BASE_CONTEXT_DEFAULTS` 同步兜底
 - 累积语义由 attachments 表 INSERT 天然保证（多次上传累加，不覆盖）；上传/删除后下一轮对话自动同步
 - `ChatRequest.attachments` 字段仅用于前端消息展示与历史记录渲染，**不参与**提示词拼接
 - 前端历史会话附件列表链路本已完整（`GET /api/session/{id}/detail` 返回 attachments，App.vue 切换会话时恢复 `currentAttachments`），无需改动
+
+### 可扩展性设计
+
+- 前端 `triggerRegistry.TRIGGER_REGISTRY` ↔ 后端 `DYNAMIC_NODE_REGISTRY` 镜像对称
+- 未来新增触发类型（如 `@` 知识库）：前端注册 1 条 trigger + 后端注册 1 条 `DynamicNodeSpec`，`chatStream` 签名 / `build_dynamic_system_suffix` 签名 / router 全部零改动
+- `sanitize_dynamic_nodes` 是「通用清洗器」，不针对任何具体字段硬编码（仅依赖 registry）
 
 ### 工具侧兜底
 
 `app/shared/tools/middleware/filesystem_encoding_fix.py::_patched_read`：
 
-- 优先识别 `<attachments>` 节点中的规范化绝对路径：经 `resolve_prompt_path` 解析命中真实文件时直接读取（stored_path 本身即 .md 缓存，跳过 cwd → data/tmp 映射）；未命中回退原虚拟路径逻辑
+- 优先识别 `<attachments>` 节点中的规范化绝对路径：经 `resolve_prompt_path` 解析命中真实文件时直接读取；未命中回退原虚拟路径逻辑
 - 文件不存在时返回明确错误并指引模型使用 `<attachments>` 节点中的 path，支持自我纠正
 
 ### 测试
 
-- `app/tests/shared/utils/prompt/test_dynamic_context.py`：路径规范化（Win/Linux 三态）、反向解析、XML 构建与转义、空状态显式化、suffix 组装与异常降级、AgentContext 契约一致性
+- `app/tests/shared/utils/prompt/test_dynamic_context.py`：路径规范化（Win/Linux 三态）、反向解析、`sanitize_dynamic_nodes` 7 用例（白名单/缺 name/条数截断/长度截断/非 dict 丢弃/未注册键/空与缺失）、`build_dynamic_context_xml`（attachments + dynamic_nodes + server_type 属性 + 空态显式化 + 属性转义）、`build_dynamic_system_suffix`（dynamic_nodes 端到端 + 无 dynamic_nodes 时显式空节点 + 异常降级）、`AgentContext` 契约一致性（`dynamic_context_suffix` + `referenced_servers` 双字段）
 - 运行命令：`pytest app/tests/shared/utils/prompt/ -v`
+
+### 「#」服务器引用触发链路（2026-07-26 端到端）
+
+```
+InputBox 输入 # 词边界 → TriggerPanel 显示 fetchUserServerTree 拍平数据
+  → 选中服务器 → selectedTriggers['server']
+  → handleSend 经 buildOverridesFor → emit('send', text, files, {referenced_servers:[...]} )
+  → App.vue::handleSendMessage 透传 extras → chatStream(..., extras)
+  → context_overrides.referenced_servers 写入 body
+  → agent_router 调 sanitize_dynamic_nodes(...) 提取 + 清洗
+  → build_dynamic_system_suffix(session_id, dynamic_nodes={referenced_servers:[...]})
+  → XML <server name="..." server_type="..." /> 渲染进 dynamic_context_suffix
+  → 注入 AgentContext.dynamic_context_suffix（与 referenced_servers 并存）
+  → agent.py::_llm_call 拼到 system_prompt 末尾
+```
 
 ## HITL 流程
 

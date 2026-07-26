@@ -1283,7 +1283,9 @@ def test_chat_calls_service_build_agent_instance(client, admin_headers, monkeypa
     assert call["agent_name"] == "map_agent"
     assert call["session_id"] == "test-session"
     assert call["message"] == "hello"
-    assert call["context_overrides"] == {"foo": "bar"}
+    # 用户键 foo 透传，router 额外注入 dynamic_context_suffix
+    assert call["context_overrides"]["foo"] == "bar"
+    assert "dynamic_context_suffix" in call["context_overrides"]
     assert call["resume"] is None
 
 
@@ -1525,8 +1527,12 @@ def test_chat_filters_none_value_from_context_overrides(
 
     assert response.status_code == 200
     assert len(captured) == 1
-    # 核心断言：所有 None 值已被过滤
-    assert captured[0]["context_overrides"] == {}
+    # 核心断言：所有 None 值已被过滤（仅 router 自动注入的 dynamic_context_suffix 保留）
+    overrides = captured[0]["context_overrides"]
+    assert "dynamic_context_suffix" in overrides
+    # 用户传入的键全部被过滤
+    user_keys = {k for k in overrides if k != "dynamic_context_suffix"}
+    assert user_keys == set()
 
 
 def test_chat_filters_empty_string_and_empty_list_from_context_overrides(
@@ -1555,8 +1561,11 @@ def test_chat_filters_empty_string_and_empty_list_from_context_overrides(
 
     assert response.status_code == 200
     assert len(captured) == 1
-    # 核心断言：所有空值已被过滤
-    assert captured[0]["context_overrides"] == {}
+    # 核心断言：所有空值已被过滤（仅 router 自动注入的 dynamic_context_suffix 保留）
+    overrides = captured[0]["context_overrides"]
+    assert "dynamic_context_suffix" in overrides
+    user_keys = {k for k in overrides if k != "dynamic_context_suffix"}
+    assert user_keys == set()
 
 
 def test_chat_passes_non_empty_geometry_data_to_context_overrides(
@@ -1591,8 +1600,10 @@ def test_chat_passes_non_empty_geometry_data_to_context_overrides(
 
     assert response.status_code == 200
     assert len(captured) == 1
-    # 核心断言：非空 geometry_data 完整透传
-    assert captured[0]["context_overrides"] == {"geometry_data": geometry}
+    # 核心断言：非空 geometry_data 完整透传（router 还会自动注入 dynamic_context_suffix）
+    overrides = captured[0]["context_overrides"]
+    assert overrides["geometry_data"] == geometry
+    assert "dynamic_context_suffix" in overrides
 
 
 def test_chat_arbitrary_context_overrides_pass_through(
@@ -1631,7 +1642,8 @@ def test_chat_arbitrary_context_overrides_pass_through(
 
     assert response.status_code == 200
     assert len(captured) == 1
-    expected = {
+    overrides = captured[0]["context_overrides"]
+    expected_user_keys = {
         "geometry_data": {"point": [{"lat": 1, "lng": 2}]},
         "audit_root": "/tmp/audit",
         "map_center": {"lat": 41.0, "lng": 123.0},
@@ -1639,7 +1651,208 @@ def test_chat_arbitrary_context_overrides_pass_through(
         "priority": 0,                    # 保留
         "tags": ["urgent"],               # 保留
     }
-    assert captured[0]["context_overrides"] == expected
+    # 用户键全部透传，router 额外注入 dynamic_context_suffix
+    for k, v in expected_user_keys.items():
+        assert overrides[k] == v
+    assert "dynamic_context_suffix" in overrides
+
+
+# =============================================================================
+# 2026-07-26 新增：referenced_servers 透传到 context + 渲染到 dynamic_context_suffix
+# 验证：用户通过 `#` 引用的服务器列表走 context_overrides.referenced_servers，
+# ① 整体结构（清洗后）继续作为一等 context 字段供工具读取；
+# ② 同步被渲染进 dynamic_context_suffix 的 <servers> XML 节点。
+# =============================================================================
+
+
+def test_chat_referenced_servers_passes_through_to_context_overrides(
+    client, admin_headers, monkeypatch
+):
+    """测试 referenced_servers 作为一等 context 字段继续透传（供工具读取结构化数据）。
+
+    参数:
+        client: pytest client fixture（来自 conftest.py）
+        admin_headers: admin 鉴权头 fixture
+        monkeypatch: pytest monkeypatch fixture
+
+    返回:
+        无（断言失败时抛出 AssertionError）
+    """
+    captured = []
+    _setup_chat_capture_for_context_overrides(monkeypatch, captured)
+
+    def fake_stream(*args, **kwargs):
+        yield "data: test\n\n"
+
+    monkeypatch.setattr("app.routers.agent_router.generate_stream_response", fake_stream)
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": "test_agent",
+        "context_overrides": {
+            "referenced_servers": [
+                {"name": "prod-api", "server_type": "linux"},
+                {"name": "win-01", "server_type": "windows"},
+            ],
+        },
+    }, headers=headers)
+
+    assert response.status_code == 200
+    assert len(captured) == 1
+    # 核心断言：referenced_servers 完整透传到 build_agent_instance.context_overrides
+    assert captured[0]["context_overrides"]["referenced_servers"] == [
+        {"name": "prod-api", "server_type": "linux"},
+        {"name": "win-01", "server_type": "windows"},
+    ]
+
+
+def test_chat_referenced_servers_rendered_in_dynamic_context_suffix(
+    client, admin_headers, monkeypatch
+):
+    """测试 referenced_servers 列表被 sanitize 后渲染进 dynamic_context_suffix 的 <servers> 节点。
+
+    参数:
+        client: pytest client fixture
+        admin_headers: admin 鉴权头 fixture
+        monkeypatch: pytest monkeypatch fixture
+
+    返回:
+        无（断言失败时抛出 AssertionError）
+    """
+    from app.shared.utils.files.attachment_db import AttachmentDB
+
+    async def fake_get(session_id):
+        return []
+
+    monkeypatch.setattr(AttachmentDB, "get_session_attachments", staticmethod(fake_get))
+
+    captured = []
+    _setup_chat_capture_for_context_overrides(monkeypatch, captured)
+
+    def fake_stream(*args, **kwargs):
+        yield "data: test\n\n"
+
+    monkeypatch.setattr("app.routers.agent_router.generate_stream_response", fake_stream)
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": "test_agent",
+        "context_overrides": {
+            "referenced_servers": [
+                {"name": "prod-api", "server_type": "linux"},
+                {"name": "win-01", "server_type": "windows"},
+            ],
+        },
+    }, headers=headers)
+
+    assert response.status_code == 200
+    suffix = captured[0]["context_overrides"]["dynamic_context_suffix"]
+    assert '<server name="prod-api" server_type="linux" />' in suffix
+    assert '<server name="win-01" server_type="windows" />' in suffix
+
+
+def test_chat_referenced_servers_sanitized_in_suffix(
+    client, admin_headers, monkeypatch
+):
+    """测试 referenced_servers 在 suffix 渲染前经 sanitize 清洗（白名单 + 丢弃）。
+
+    参数:
+        client: pytest client fixture
+        admin_headers: admin 鉴权头 fixture
+        monkeypatch: pytest monkeypatch fixture
+
+    返回:
+        无（断言失败时抛出 AssertionError）
+    """
+    from app.shared.utils.files.attachment_db import AttachmentDB
+
+    async def fake_get(session_id):
+        return []
+
+    monkeypatch.setattr(AttachmentDB, "get_session_attachments", staticmethod(fake_get))
+
+    captured = []
+    _setup_chat_capture_for_context_overrides(monkeypatch, captured)
+
+    def fake_stream(*args, **kwargs):
+        yield "data: test\n\n"
+
+    monkeypatch.setattr("app.routers.agent_router.generate_stream_response", fake_stream)
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": "test_agent",
+        "context_overrides": {
+            "referenced_servers": [
+                # 合法：name + server_type
+                {"name": "prod-api", "server_type": "linux"},
+                # 非法：缺 name，sanitize 丢弃（suffix 中不应出现）
+                {"server_type": "linux"},
+                # 非法：含 ip/password 等不在白名单的字段，仅保留 name/server_type
+                {"name": "win-01", "server_type": "windows", "ip": "1.2.3.4", "password": "x"},
+            ],
+        },
+    }, headers=headers)
+
+    assert response.status_code == 200
+    suffix = captured[0]["context_overrides"]["dynamic_context_suffix"]
+    # 仅白名单字段出现在 XML 中
+    assert '<server name="prod-api" server_type="linux" />' in suffix
+    assert '<server name="win-01" server_type="windows" />' in suffix
+    # 缺 name 的条目已丢弃：suffix 中不应出现单独的 server_type="linux"
+    assert 'server_type="linux" />\n</servers>' not in suffix
+    # ip/password 不应泄漏进 suffix（出现在 attributes 中即代表泄漏）
+    assert "ip=" not in suffix.split("<servers>", 1)[-1]
+    assert "password=" not in suffix.split("<servers>", 1)[-1]
+
+
+def test_chat_empty_referenced_servers_renders_explicit_empty_node(
+    client, admin_headers, monkeypatch
+):
+    """测试 referenced_servers 为空列表时 suffix 仍输出显式 <servers></servers> 空节点。
+
+    参数:
+        client: pytest client fixture
+        admin_headers: admin 鉴权头 fixture
+        monkeypatch: pytest monkeypatch fixture
+
+    返回:
+        无（断言失败时抛出 AssertionError）
+    """
+    from app.shared.utils.files.attachment_db import AttachmentDB
+
+    async def fake_get(session_id):
+        return []
+
+    monkeypatch.setattr(AttachmentDB, "get_session_attachments", staticmethod(fake_get))
+
+    captured = []
+    _setup_chat_capture_for_context_overrides(monkeypatch, captured)
+
+    def fake_stream(*args, **kwargs):
+        yield "data: test\n\n"
+
+    monkeypatch.setattr("app.routers.agent_router.generate_stream_response", fake_stream)
+
+    headers = {**admin_headers, "X-Session-ID": "test-session"}
+    response = client.post("/api/agent/chat", json={
+        "message": "hello",
+        "session_id": "test-session",
+        "agent_name": "test_agent",
+        "context_overrides": {
+            "referenced_servers": [],
+        },
+    }, headers=headers)
+
+    assert response.status_code == 200
+    suffix = captured[0]["context_overrides"]["dynamic_context_suffix"]
+    assert "<servers>\n</servers>" in suffix
 
 
 # =============================================================================

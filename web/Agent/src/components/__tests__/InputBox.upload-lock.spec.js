@@ -30,7 +30,11 @@ vi.mock('../../utils/api.js', () => ({
   }),
   refreshToken: vi.fn(() => Promise.resolve('fake-token')),
   fetchAgentList: vi.fn(() => Promise.resolve([])),
-  deleteAttachments: vi.fn(() => Promise.resolve())
+  deleteAttachments: vi.fn(() => Promise.resolve()),
+  // 2026-07-26 新增：InputBox.onMounted 调用 fetchUploadConfig；测试用 default 3MB 兜底
+  fetchUploadConfig: vi.fn(() => Promise.resolve({ max_file_size_mb: 3 })),
+  // 2026-07-26 新增：triggerRegistry 间接依赖；测试无需真实数据
+  fetchUserServerTree: vi.fn(() => Promise.resolve([]))
 }))
 
 describe('InputBox 文件上传与项目锁定（2026-07-07 改造）', () => {

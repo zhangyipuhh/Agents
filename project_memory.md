@@ -9,10 +9,10 @@
 | [架构与目录](memory/architecture.md) | 项目概述、技术栈、数据目录约定、项目架构、配置归属隔离、项目文件夹方案、环境变量 | 架构、技术栈、目录、路径、环境变量、OwnershipScope | 2026-07-26 |
 | [数据库设计](memory/database.md) | 全部表结构、字段、索引、迁移约定 | 表、字段、索引、迁移、init_all_tables、SQL | 2026-07-26 |
 | [API 与核心工具](memory/api-routes.md) | API 接口配置、API 路由汇总（路由→文件→权限）、核心工具清单 | /api/、路由、端点、require_admin、Core Tools | 2026-07-26 |
-| [认证与会话控制](memory/auth.md) | 双 Token 认证、聊天并发控制、HITL、提示词三层架构、动态上下文注入、State/Context 构建器 | 认证、Token、并发、HITL、提示词、上下文注入 | 2026-07-26 |
+| [认证与会话控制](memory/auth.md) | 双 Token 认证、聊天并发控制、HITL、提示词三层架构、动态上下文注入（DYNAMIC_NODE_REGISTRY）、State/Context 构建器、referenced_servers 一等 context 字段 | 认证、Token、并发、HITL、提示词、上下文注入、registry、referenced_servers | 2026-07-26 |
 | [Agent 与 Skill 体系](memory/agents-skills.md) | Agent 统一构造入口、Skill 系统、AGENTS.md 加载器、配置加载服务、工具注册中心、缓存、工具绑定双轨制、记忆存储、scripts/ | Agent、Skill、bootstrap、工具注册、缓存、记忆存储 | 2026-07-26 |
 | [MCP 体系](memory/mcp.md) | MCP 配置 CRUD、MCP/Tool/Skill Admin Router、统一 Agent Router、MCPToolsRegistry | MCP、服务器、工具注册、Admin Router | 2026-07-26 |
-| [前端架构](memory/frontend.md) | web/Agent 前端架构、MCP 管理组件、UserSettingsDialog 系列、斜杠命令注册表 | 前端、Vue、组件、UserSettingsDialog、斜杠命令 | 2026-07-26 |
+| [前端架构](memory/frontend.md) | web/Agent 前端架构、MCP 管理组件、UserSettingsDialog 系列、斜杠命令注册表、触发器注册表（# 引用）、TriggerPanel | 前端、Vue、组件、UserSettingsDialog、斜杠命令、triggerRegistry、TriggerPanel | 2026-07-26 |
 | [菜单权限与用户配置](memory/menu-acl.md) | 用户菜单权限管理（MENU_CATALOG/ACL）、用户服务器配置管理 | 菜单、权限、ACL、allowed_agents、服务器配置 | 2026-07-26 |
 | [DevOps 与沙箱](memory/devops-sandbox.md) | SSH 远程服务器管理、沙箱 Agent 架构、SubAgent 事件协议 | DevOps、SSH、沙箱、SubAgent、事件协议 | 2026-07-26 |
 | [其他子系统](memory/misc.md) | 邮件系统、飞书工具、CI 测试 | 邮件、飞书、CI、GitHub Actions | 2026-07-26 |
@@ -60,7 +60,8 @@
 | 入口 | PortalApp.vue（portal.html） | public/app-config.json（运行时配置）、/api/auth/* |
 | 入口 | views/LoginView.vue / RegisterView.vue（login.html） | /api/auth/captcha、login、register |
 | 聊天 | ChatArea.vue / MessageBubble.vue / TopBar.vue | 展示层（App.vue 注入） |
-| 聊天 | InputBox.vue | /api/agent/list、/api/core/upload*、/api/core/upload-config、DELETE /api/core/attachments |
+| 聊天 | TriggerPanel.vue | 通用触发器面板（搜索 + 平铺 + 键盘导航；由 InputBox 注入 items/searchKeys） |
+| 聊天 | InputBox.vue | /api/agent/list、/api/core/upload*、/api/core/upload-config、DELETE /api/core/attachments、/api/admin/user-servers/tree（# 触发器数据源） |
 | 聊天 | KnowledgeChat.vue / ProfileInputBox.vue | /api/map/knowledge-chat（SSE）、/api/core/upload* |
 | 聊天 | HumanApprovalBox.vue | HITL resume（经 chatStream 透传） |
 | 聊天 | QueueStatusBanner.vue | SSE queue 事件 / HTTP 429 |

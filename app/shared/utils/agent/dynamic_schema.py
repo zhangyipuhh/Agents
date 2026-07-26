@@ -117,6 +117,7 @@ _BASE_CONTEXT_DEFAULTS: dict = {
     "process_data": {},
     "project_id": None,  # 2026-06-30 新增：会话关联的项目 ID 兜底默认 None
     "dynamic_context_suffix": "",  # 2026-07-24 新增：动态上下文后缀（附件/服务器节点）兜底默认空串
+    "referenced_servers": [],  # 2026-07-26 新增：用户通过 `#` 引用的服务器列表（结构化数据）兜底默认空列表
 }
 """AgentContext 基类保留字段的运行时默认值，作为 build_agent_context 的兜底。"""
 

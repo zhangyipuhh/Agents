@@ -51,3 +51,9 @@ class AgentContext(TypedDict):
     dynamic_context_suffix: str = ""
     """动态上下文后缀（附件 <attachments> / 服务器 <servers> 节点），
     由 chat 路由经 context_overrides 注入，agent._llm_call 追加到系统提示词末尾，默认空字符串"""
+    referenced_servers: list = []
+    """2026-07-26 新增：用户通过 `#` 触发的引用项（结构化数据，name/business_name + server_type）。
+    与 dynamic_context_suffix 中的 <servers> XML 节点同源；工具可经
+    runtime.context.get("referenced_servers") 读取该列表做参数补全，避免解析 XML。
+    由 chat 路由经 context_overrides.referenced_servers 注入，frontend 数据源已是
+    用户权限范围内的 server 列表，无需后端再校验归属。默认空列表。"""

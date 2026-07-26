@@ -147,4 +147,46 @@ describe('chatStream 统一接口', () => {
     expect(body.context_overrides).toBeDefined()
     expect('project_id' in body.context_overrides).toBe(false)
   })
+
+  // 2026-07-26 新增：extras（trigger 选中项经 buildOverrides 转出的 context_overrides 片段）
+  it('test_chat_stream_with_extras_writes_referenced_servers extras 携带 referenced_servers 时写入 context_overrides', async () => {
+    const { chatStream } = await import('../api.js')
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      body: { getReader: () => ({ read: async () => ({ done: true }) }) },
+    })
+    await chatStream('sess-001', 'hello', [], null, null, null, {
+      referenced_servers: [
+        { name: 'prod-api', server_type: 'linux' },
+        { name: 'win-01', server_type: 'windows' },
+      ],
+    })
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body)
+    expect(body.context_overrides.referenced_servers).toEqual([
+      { name: 'prod-api', server_type: 'linux' },
+      { name: 'win-01', server_type: 'windows' },
+    ])
+  })
+
+  it('test_chat_stream_without_extras_does_not_set_referenced_servers 不传 extras 时 context_overrides 不含 referenced_servers 键', async () => {
+    const { chatStream } = await import('../api.js')
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      body: { getReader: () => ({ read: async () => ({ done: true }) }) },
+    })
+    await chatStream('sess-001', 'hello')
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body)
+    expect('referenced_servers' in body.context_overrides).toBe(false)
+  })
+
+  it('test_chat_stream_with_empty_extras_does_not_set_keys extras 为空对象时 context_overrides 不新增键', async () => {
+    const { chatStream } = await import('../api.js')
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      body: { getReader: () => ({ read: async () => ({ done: true }) }) },
+    })
+    await chatStream('sess-001', 'hello', [], null, null, null, {})
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body)
+    expect(Object.keys(body.context_overrides)).toEqual(['geometry_data'])
+  })
 })
