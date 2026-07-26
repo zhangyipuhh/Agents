@@ -18,15 +18,18 @@ import { fetchUserServerTree } from './api.js'
 
 /**
  * 拉取「服务器」触发器所需的候选项：
- * 调 GET /api/admin/user-servers/tree → 拍平 nodes → 仅保留 node_type='server'。
+ * 调 GET /api/admin/user-servers/tree → 取 resp.nodes → 仅保留 node_type='server'。
+ * 后端返回 { nodes: [...] }；若旧接口直接返回数组也做兼容兜底。
  *
  * @returns {Promise<Array<{business_name: string, server_type: string, ...}>>}
  *          服务端用户权限内的服务器节点列表
  */
 async function fetchServerItems() {
-  const tree = await fetchUserServerTree()
-  if (!Array.isArray(tree)) return []
-  return tree.filter((n) => n && n.node_type === 'server')
+  const resp = await fetchUserServerTree()
+  // 后端 GET /api/admin/user-servers/tree 返回 { nodes: [...] }
+  const nodes = resp?.nodes ?? resp
+  if (!Array.isArray(nodes)) return []
+  return nodes.filter((n) => n && n.node_type === 'server')
 }
 
 /**

@@ -29,12 +29,14 @@ vi.mock('../../utils/api.js', () => ({
   fetchAgentList: vi.fn(() => Promise.resolve([])),
   deleteAttachments: vi.fn(() => Promise.resolve()),
   fetchUploadConfig: vi.fn(() => Promise.resolve({ max_file_size_mb: 3 })),
-  // 2026-07-26 新增：triggerRegistry 数据源 mock
-  fetchUserServerTree: vi.fn(() => Promise.resolve([
-    { id: 1, node_type: 'folder', name: '生产' },
-    { id: 2, node_type: 'server', business_name: 'prod-api', server_type: 'linux' },
-    { id: 3, node_type: 'server', business_name: 'win-01', server_type: 'windows' },
-  ])),
+  // 2026-07-26 新增：triggerRegistry 数据源 mock（后端返回 { nodes: [...] }）
+  fetchUserServerTree: vi.fn(() => Promise.resolve({
+    nodes: [
+      { id: 1, node_type: 'folder', name: '生产' },
+      { id: 2, node_type: 'server', business_name: 'prod-api', server_type: 'linux' },
+      { id: 3, node_type: 'server', business_name: 'win-01', server_type: 'windows' },
+    ],
+  })),
 }))
 
 beforeAll(() => {

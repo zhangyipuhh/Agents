@@ -74,11 +74,13 @@ describe('triggerRegistry 触发器注册表', () => {
   // ============== fetchServerItems ==============
 
   it('test_fetch_server_items_filters_non_server_nodes 仅保留 node_type=server 的节点', async () => {
-    mockFetchUserServerTree.mockResolvedValueOnce([
-      { id: 1, node_type: 'folder', name: '生产' },
-      { id: 2, node_type: 'server', business_name: 'prod-api', server_type: 'linux' },
-      { id: 3, node_type: 'folder', name: '测试' },
-    ])
+    mockFetchUserServerTree.mockResolvedValueOnce({
+      nodes: [
+        { id: 1, node_type: 'folder', name: '生产' },
+        { id: 2, node_type: 'server', business_name: 'prod-api', server_type: 'linux' },
+        { id: 3, node_type: 'folder', name: '测试' },
+      ],
+    })
     const { TRIGGER_REGISTRY } = await import('../triggerRegistry.js')
     const server = TRIGGER_REGISTRY.find((t) => t.id === 'server')
     const items = await server.fetchItems()
@@ -87,11 +89,13 @@ describe('triggerRegistry 触发器注册表', () => {
   })
 
   it('test_fetch_server_items_dedupes_by_business_name 重复 business_name 去重（保留首次出现）', async () => {
-    mockFetchUserServerTree.mockResolvedValueOnce([
-      { id: 1, node_type: 'server', business_name: 'prod-api', server_type: 'linux' },
-      { id: 2, node_type: 'server', business_name: 'prod-api', server_type: 'linux' },
-      { id: 3, node_type: 'server', business_name: 'win-01', server_type: 'windows' },
-    ])
+    mockFetchUserServerTree.mockResolvedValueOnce({
+      nodes: [
+        { id: 1, node_type: 'server', business_name: 'prod-api', server_type: 'linux' },
+        { id: 2, node_type: 'server', business_name: 'prod-api', server_type: 'linux' },
+        { id: 3, node_type: 'server', business_name: 'win-01', server_type: 'windows' },
+      ],
+    })
     const { TRIGGER_REGISTRY } = await import('../triggerRegistry.js')
     const server = TRIGGER_REGISTRY.find((t) => t.id === 'server')
     const items = await server.fetchItems()
@@ -100,27 +104,41 @@ describe('triggerRegistry 触发器注册表', () => {
   })
 
   it('test_fetch_server_items_handles_empty_tree tree 为空时返回空数组', async () => {
-    mockFetchUserServerTree.mockResolvedValueOnce([])
+    mockFetchUserServerTree.mockResolvedValueOnce({ nodes: [] })
     const { TRIGGER_REGISTRY } = await import('../triggerRegistry.js')
     const server = TRIGGER_REGISTRY.find((t) => t.id === 'server')
     const items = await server.fetchItems()
     expect(items).toEqual([])
   })
 
-  it('test_fetch_server_items_handles_non_array_response tree 非数组时安全降级', async () => {
-    mockFetchUserServerTree.mockResolvedValueOnce(null)
+  it('test_fetch_server_items_handles_non_array_response nodes 非数组时安全降级', async () => {
+    mockFetchUserServerTree.mockResolvedValueOnce({ nodes: null })
     const { TRIGGER_REGISTRY } = await import('../triggerRegistry.js')
     const server = TRIGGER_REGISTRY.find((t) => t.id === 'server')
     const items = await server.fetchItems()
     expect(items).toEqual([])
+  })
+
+  it('test_fetch_server_items_handles_plain_array_response 直接返回数组时兼容兜底', async () => {
+    mockFetchUserServerTree.mockResolvedValueOnce([
+      { id: 1, node_type: 'folder', name: '生产' },
+      { id: 2, node_type: 'server', business_name: 'prod-api', server_type: 'linux' },
+    ])
+    const { TRIGGER_REGISTRY } = await import('../triggerRegistry.js')
+    const server = TRIGGER_REGISTRY.find((t) => t.id === 'server')
+    const items = await server.fetchItems()
+    expect(items).toHaveLength(1)
+    expect(items[0].business_name).toBe('prod-api')
   })
 
   it('test_fetch_server_items_skips_entries_without_business_name 缺 business_name 的 server 节点被跳过', async () => {
-    mockFetchUserServerTree.mockResolvedValueOnce([
-      { id: 1, node_type: 'server', business_name: '', server_type: 'linux' },
-      { id: 2, node_type: 'server', server_type: 'linux' }, // 缺 business_name
-      { id: 3, node_type: 'server', business_name: 'prod-api', server_type: 'linux' },
-    ])
+    mockFetchUserServerTree.mockResolvedValueOnce({
+      nodes: [
+        { id: 1, node_type: 'server', business_name: '', server_type: 'linux' },
+        { id: 2, node_type: 'server', server_type: 'linux' }, // 缺 business_name
+        { id: 3, node_type: 'server', business_name: 'prod-api', server_type: 'linux' },
+      ],
+    })
     const { TRIGGER_REGISTRY } = await import('../triggerRegistry.js')
     const server = TRIGGER_REGISTRY.find((t) => t.id === 'server')
     const items = await server.fetchItems()
