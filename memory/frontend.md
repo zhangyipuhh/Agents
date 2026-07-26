@@ -618,27 +618,28 @@ web/Agent/src/
 - **前后端镜像**：前端 `buildOverrides` 输出键（如 `referenced_servers`）= 后端 `DynamicNodeSpec.overrides_key`，两侧键名一致
 - **数据源已是用户权限范围**：前端 `fetchUserServerTree` 已按 `OwnershipScope` 过滤，后端 `sanitize_dynamic_nodes` 仅做白名单字段清洗（name/server_type 两键、长度/条数上限），不做归属校验
 - **词边界触发**：trigger 字符须位于行首或前一个字符为空白，避免 `C#` / `#` 作为普通文本误触
-- **per-message 携带**：选中项仅存前端 `selectedTriggers`，发送时通过 emit 第 3 参数 `extras` 经 `chatStream(..., extras)` → `context_overrides.referenced_servers` 透传；发送成功 / 新建会话 / 切换会话自动清空（watch `props.sessionId`）
+- **session 级持久携带**：选中项按 `sessionId` 缓存在前端 `triggerSelectionsBySession`，当前 session 内发送消息后不清空，下次输入自动继续携带；切换 / 新建 session 时自动隔离（新 session 初始为空，切回原 session 时恢复其选择）
+- **双通道携带**：发送时一方面把选中服务器经 `buildOverridesFor` 转成 `extras.referenced_servers` 透传给后端系统提示词；另一方面在用户消息文本前附加前缀 `引用服务器：name1、name2\n<原文>`，使问题文本本身也显式包含引用
 - **可扩展边界**：未来新增 `@` 知识库等只需在前端 `TRIGGER_REGISTRY` 追加条目 + 后端 `dynamic_context.DYNAMIC_NODE_REGISTRY` 追加一条 `DynamicNodeSpec`；`chatStream` 签名 / `build_dynamic_system_suffix` 签名 / InputBox 组件均零改动
 
 ### InputBox 集成
 
-`InputBox.vue` 工具栏附件按钮后新增 `#` 按钮（由 `TRIGGER_REGISTRY` 驱动渲染）；输入 `#` 时唤起 `TriggerPanel`，选中服务器后以可移除 chips 显示在 textarea 上方。发送时 chips 经 `buildOverridesFor('server', items)` 转成 `{ referenced_servers: [{name, server_type}] }`，作为 `emit('send', text, files, extras)` 第 3 参数。
+`InputBox.vue` 工具栏附件按钮后新增 `#` 按钮（由 `TRIGGER_REGISTRY` 驱动渲染）；输入 `#` 时唤起 `TriggerPanel`，选中服务器后以可移除 chips 显示在 textarea 上方。发送时：chips 经 `buildOverridesFor('server', items)` 转成 `{ referenced_servers: [{name, server_type}] }`，作为 `emit('send', text, files, extras)` 第 3 参数；同时在用户消息文本前附加 `引用服务器：name1、name2\n` 前缀，使问题文本本身也显式携带引用。当前 session 内发送后不清空 chips，切换 / 新建 session 时按 session 隔离。
 
 **改动点**：
 
 1. **import**：`TRIGGER_REGISTRY` / `searchTriggerByChar` / `buildOverridesFor` / `TriggerPanel`
-2. **响应式状态**：`selectedTriggers`（id → items）、`activeTriggerId` / `triggerPanelSearch` / `activeTriggerIndex` / `triggerItemsCache` / `triggerItemsLoading` / `triggerItemsError`
+2. **响应式状态**：新增 `triggerSelectionsBySession`（按 sessionId 缓存选择）；`selectedTriggers` 改为 computed，取当前 session 的选择对象；其余 `activeTriggerId` / `triggerPanelSearch` / `activeTriggerIndex` / `triggerItemsCache` / `triggerItemsLoading` / `triggerItemsError` 不变
 3. **detectTriggerAtCaret**：检测光标处是否在词边界命中已注册 trigger 字符
 4. **loadTriggerItems**：拉取 trigger 数据，含缓存与错误处理
-5. **onTriggerPanelSelect**：面板选中回调，去重写入 `selectedTriggers`，从 textarea 移除触发字符串
+5. **onTriggerPanelSelect**：面板选中回调，去重写入当前 session 的 `selectedTriggers`，从 textarea 移除触发字符串
 6. **onTriggerButtonClick**：工具栏按钮点击 → 光标处插入字符 + 聚焦 + 派发 input 事件（与键入同路径）
 7. **removeTriggerItem**：chips 移除按钮回调
 8. **handleInput 扩展**：末尾追加 trigger 检测分支（仅在词边界 + 已注册字符时激活面板，触发字符串被删/移出词边界时关闭面板）
 9. **handleKeydown 扩展**：面板打开时 Enter 由面板内部处理（不穿透到 handleSend）
-10. **handleSend 扩展**：遍历 `TRIGGER_REGISTRY` 经 `buildOverridesFor` 合并 extras，emit 第 3 参数；发送成功后清空 `selectedTriggers`
-11. **executeCommand finally**：命令执行后也清空 `selectedTriggers`
-12. **watch sessionId**：会话切换/新建会话清空 trigger 状态
+10. **handleSend 扩展**：遍历 `TRIGGER_REGISTRY` 经 `buildOverridesFor` 合并 extras，emit 第 3 参数；在文本前附加 `引用服务器：name1、name2\n` 前缀；当前 session 内发送后**不清空** `selectedTriggers`
+11. **executeCommand finally**：命令执行后清空当前 session 的 `selectedTriggers`
+12. **watch sessionId**：会话切换/新建会话时按 session 隔离（新 session 初始为空，切回原 session 恢复其选择）
 13. **template**：工具栏 `#` 按钮（registry 驱动）+ textarea 上方 chips 区 + TriggerPanel 挂在与 agent-dropdown 平级位置
 14. **CSS**：`.selected-trigger-chip`（灰底边框 chip）/ `.trigger-chip-remove-btn` / `.trigger-tool-btn` / `.tool-char`
 
@@ -646,7 +647,7 @@ web/Agent/src/
 
 - `web/Agent/src/utils/__tests__/triggerRegistry.test.js`（12 用例）：注册项契约 / searchTriggerByChar / searchTriggerById / fetchServerItems 过滤 / dedup / buildOverrides / 空 items / 未注册 trigger id
 - `web/Agent/src/components/__tests__/TriggerPanel.spec.js`（12 用例）：基础渲染 / loading / error / 空态 / 搜索过滤（OR + case-insensitive）/ ArrowDown / ArrowUp 环绕 / Enter 选中 / Escape 选 null / 点击 select / mouseenter 更新 activeIndex
-- `web/Agent/src/components/__tests__/InputBox.trigger.spec.js`（10 用例）：#按钮渲染 / 输入 # 触发面板 / C# 不触发 / 空白后 # 触发 / 工具栏按钮插入字符 + 面板 / chips 渲染与移除 / 发送携带 extras.referenced_servers / 发送清空 chips / sessionId 变化清空 chips / 流式期间 # 按钮 disabled
+- `web/Agent/src/components/__tests__/InputBox.trigger.spec.js`（11 用例）：#按钮渲染 / 输入 # 触发面板 / C# 不触发 / 空白后 # 触发 / 工具栏按钮插入字符 + 面板 / chips 渲染与移除 / 发送携带 extras.referenced_servers 且文本含前缀 / 发送保留 chips / 发送文本前附加服务器前缀 / 切换到新 session 初始无 chips / 切回原 session 恢复 chips / 流式期间 # 按钮 disabled
 
 ### App.vue 透传 extras
 

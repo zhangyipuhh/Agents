@@ -96,20 +96,49 @@ const agentDropdownRef = ref(null)
 // 设计为可扩展：未来加 "@知识库" / "$变量" 等只需在 TRIGGER_REGISTRY 追加条目，
 // InputBox 本组件零改动。
 //
-// selectedTriggers: { [triggerId]: Array<item> } —— 已选中项（以 trigger.id 为键）
+// triggerSelectionsBySession: { [sessionId]: { [triggerId]: Array<item> } }
+// 按会话持久化 trigger 选择，切换/新建 session 时自动隔离。
+// selectedTriggers: 当前 session 的已选中项（以 trigger.id 为键）
 // activeTriggerId: 当前打开面板的 trigger id（null = 未打开）
 // triggerPanelSearch: 面板搜索词（绑定到 TriggerPanel 输入框）
 // activeTriggerIndex: TriggerPanel 当前高亮行索引
 // triggerItemsCache: { [triggerId]: Array<item> } —— 各 trigger 数据缓存
 // triggerItemsLoading: { [triggerId]: boolean }
 // triggerItemsError: { [triggerId]: string }
-const selectedTriggers = ref({})
+const triggerSelectionsBySession = ref({})
 const activeTriggerId = ref(null)
 const triggerPanelSearch = ref('')
 const activeTriggerIndex = ref(0)
 const triggerItemsCache = ref({})
 const triggerItemsLoading = ref({})
 const triggerItemsError = ref({})
+
+/**
+ * 当前 sessionId（空字符串兜底为 _default，避免 key 为空）
+ * @returns {string}
+ */
+const currentTriggerSessionId = computed(() => props.sessionId || '_default')
+
+/**
+ * 当前 session 的 trigger 选择对象
+ * @returns {Object} { [triggerId]: Array<item> }
+ */
+const selectedTriggers = computed(() =>
+  triggerSelectionsBySession.value[currentTriggerSessionId.value] || {}
+)
+
+/**
+ * 设置当前 session 的 trigger 选择对象
+ * @param {Object|Function} next - 新值或接收旧值的函数
+ */
+function setCurrentSessionTriggers(next) {
+  const sid = currentTriggerSessionId.value
+  const prev = triggerSelectionsBySession.value[sid] || {}
+  triggerSelectionsBySession.value = {
+    ...triggerSelectionsBySession.value,
+    [sid]: typeof next === 'function' ? next(prev) : next,
+  }
+}
 
 /**
  * 当前激活 trigger 的注册条目（计算属性）
@@ -385,11 +414,13 @@ function detectTriggerAtCaret(text, caret) {
 function removeTriggerItem(triggerId, key) {
   const def = TRIGGER_REGISTRY.find((t) => t.id === triggerId)
   if (!def) return
-  const list = selectedTriggers.value[triggerId] || []
-  selectedTriggers.value = {
-    ...selectedTriggers.value,
-    [triggerId]: list.filter((item) => def.itemKey(item) !== key),
-  }
+  setCurrentSessionTriggers((prev) => {
+    const list = prev[triggerId] || []
+    return {
+      ...prev,
+      [triggerId]: list.filter((item) => def.itemKey(item) !== key),
+    }
+  })
 }
 
 /**
@@ -403,14 +434,15 @@ function onTriggerPanelSelect(item) {
     return
   }
   if (item) {
-    const list = selectedTriggers.value[def.id] || []
-    const exists = list.some((i) => def.itemKey(i) === def.itemKey(item))
-    if (!exists) {
-      selectedTriggers.value = {
-        ...selectedTriggers.value,
+    setCurrentSessionTriggers((prev) => {
+      const list = prev[def.id] || []
+      const exists = list.some((i) => def.itemKey(i) === def.itemKey(item))
+      if (exists) return prev
+      return {
+        ...prev,
         [def.id]: [...list, item],
       }
-    }
+    })
     // 选中后关闭面板并清空触发字符串（保留 # 让用户继续添加/不删除）
     activeTriggerId.value = null
     triggerPanelSearch.value = ''
@@ -476,15 +508,23 @@ function onTriggerButtonClick(char) {
 }
 
 /**
- * 2026-07-26 新增：监听 sessionId 变化，会话切换 / 新建会话时清空所有 trigger 选择
+ * 2026-07-26 新增：监听 sessionId 变化，按 session 隔离 trigger 选择。
+ * 新 session 无记录时自动初始化为空对象；切回旧 session 时恢复其选择。
  */
 watch(
   () => props.sessionId,
-  () => {
-    selectedTriggers.value = {}
+  (newSid, oldSid) => {
+    const sid = newSid || '_default'
+    if (!triggerSelectionsBySession.value[sid]) {
+      triggerSelectionsBySession.value = {
+        ...triggerSelectionsBySession.value,
+        [sid]: {},
+      }
+    }
     activeTriggerId.value = null
     triggerPanelSearch.value = ''
-  }
+  },
+  { immediate: true }
 )
 
 const handleInput = (event) => {
@@ -622,8 +662,8 @@ const executeCommand = async (text) => {
   } finally {
     isExecutingCommand.value = false
     inputValue.value = ''
-    // 2026-07-26 新增：命令执行后也清空 trigger 选择（命令结果作为新消息发出）
-    selectedTriggers.value = {}
+    // 2026-07-26 新增：命令执行后也清空当前 session 的 trigger 选择（命令结果作为新消息发出）
+    setCurrentSessionTriggers({})
     nextTick(() => {
       autoResize()
     })
@@ -707,13 +747,22 @@ const handleSend = async () => {
     Object.assign(extras, buildOverridesFor(trigger.id, items))
   }
 
-  emit('send', text, uploadedFiles, extras)
+  // 2026-07-26 新增：若当前 session 已选服务器，则在用户消息文本前附加服务器列表，
+  // 使问题文本本身也携带引用信息，而不是仅依赖系统提示词。
+  let finalText = text
+  const selectedServers = selectedTriggers.value['server'] || []
+  if (selectedServers.length > 0) {
+    const names = selectedServers.map((s) => s.business_name).join('、')
+    finalText = `引用服务器：${names}\n${text}`
+  }
+
+  emit('send', finalText, uploadedFiles, extras)
 
   inputValue.value = ''
   selectedFiles.value = []
   selectedAgent.value = null
-  // 2026-07-26 新增：清空所有 trigger 选择（per-message 携带，发送后即清空）
-  selectedTriggers.value = {}
+  // 2026-07-26 调整：不再清空 trigger 选择，保持当前 session 的引用持久化，
+  // 下次输入新问题时自动携带。
 
   nextTick(() => {
     autoResize()

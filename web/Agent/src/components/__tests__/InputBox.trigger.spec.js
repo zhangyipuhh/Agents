@@ -143,7 +143,7 @@ describe('InputBox 「#」触发器集成（2026-07-26 新增）', () => {
     expect(wrapper.find('[data-testid="selected-trigger-chip-server-prod-api"]').exists()).toBe(false)
   })
 
-  it('test_send_carries_referenced_servers_in_extras 发送时 emit send 携带 extras.referenced_servers', async () => {
+  it('test_send_carries_referenced_servers_in_extras 发送时 emit send 携带 extras.referenced_servers 且文本含前缀', async () => {
     const wrapper = mountInputBox()
     await flushPromises()
     // 选两项：先 # → 选 prod-api
@@ -166,14 +166,14 @@ describe('InputBox 「#」触发器集成（2026-07-26 新增）', () => {
     expect(sends).toBeTruthy()
     const last = sends[sends.length - 1]
     // signature: send(text, files, extras)
-    expect(last[0]).toBe('请巡检')
+    expect(last[0]).toBe('引用服务器：prod-api、win-01\n请巡检')
     expect(last[2].referenced_servers).toEqual([
       { name: 'prod-api', server_type: 'linux' },
       { name: 'win-01', server_type: 'windows' },
     ])
   })
 
-  it('test_send_clears_trigger_chips 发送成功后清空 trigger chips', async () => {
+  it('test_send_keeps_trigger_chips 发送成功后保留 trigger chips', async () => {
     const wrapper = mountInputBox()
     await flushPromises()
     await setTextareaValue(wrapper, '#', 1)
@@ -185,10 +185,27 @@ describe('InputBox 「#」触发器集成（2026-07-26 新增）', () => {
     await wrapper.find('textarea').setValue('hi')
     await wrapper.find('.send-btn').trigger('click')
     await flushPromises()
-    expect(wrapper.find('[data-testid="selected-trigger-chip-server-prod-api"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="selected-trigger-chip-server-prod-api"]').exists()).toBe(true)
   })
 
-  it('test_session_change_clears_trigger_chips sessionId 变化时清空 trigger chips', async () => {
+  it('test_send_appends_server_prefix_to_text 发送文本前附加服务器引用前缀', async () => {
+    const wrapper = mountInputBox()
+    await flushPromises()
+    await setTextareaValue(wrapper, '#', 1)
+    await flushPromises()
+    const items = wrapper.findAll('[data-testid^="trigger-panel-item-server-"]')
+    await items[0].trigger('mousedown')
+    await flushPromises()
+    await wrapper.find('textarea').setValue('请检查磁盘')
+    await wrapper.find('.send-btn').trigger('click')
+    await flushPromises()
+    const sends = wrapper.emitted('send')
+    expect(sends).toBeTruthy()
+    const last = sends[sends.length - 1]
+    expect(last[0]).toBe('引用服务器：prod-api\n请检查磁盘')
+  })
+
+  it('test_session_change_clears_for_new_session 切换到新 session 时 trigger chips 为空', async () => {
     const wrapper = mountInputBox()
     await flushPromises()
     await setTextareaValue(wrapper, '#', 1)
@@ -197,10 +214,29 @@ describe('InputBox 「#」触发器集成（2026-07-26 新增）', () => {
     await items[0].trigger('mousedown')
     await flushPromises()
     expect(wrapper.find('[data-testid="selected-trigger-chip-server-prod-api"]').exists()).toBe(true)
-    // 模拟切换 session
+    // 模拟切换到新 session
     await wrapper.setProps({ sessionId: 'sid-002' })
     await flushPromises()
     expect(wrapper.find('[data-testid="selected-trigger-chip-server-prod-api"]').exists()).toBe(false)
+  })
+
+  it('test_session_change_keeps_trigger_chips_for_previous_session 切回原 session 时恢复 trigger chips', async () => {
+    const wrapper = mountInputBox({ sessionId: 'sid-001' })
+    await flushPromises()
+    await setTextareaValue(wrapper, '#', 1)
+    await flushPromises()
+    const items = wrapper.findAll('[data-testid^="trigger-panel-item-server-"]')
+    await items[0].trigger('mousedown')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="selected-trigger-chip-server-prod-api"]').exists()).toBe(true)
+    // 切换到新 session 后 chips 消失
+    await wrapper.setProps({ sessionId: 'sid-002' })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="selected-trigger-chip-server-prod-api"]').exists()).toBe(false)
+    // 切回原 session 后 chips 恢复
+    await wrapper.setProps({ sessionId: 'sid-001' })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="selected-trigger-chip-server-prod-api"]').exists()).toBe(true)
   })
 
   it('test_hash_button_disabled_during_streaming 流式期间 # 按钮 disabled', async () => {
