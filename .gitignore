@@ -6,6 +6,13 @@
 !readme.md
 !.env.example
 !.gitignore
+# 包含项目记忆协议（索引 + 分片；_archive 兜底保留不跟踪）
+!project_memory.md
+!memory/
+!memory/**
+# 历史归档全量兜底文件不入库
+memory/_archive/
+memory/_archive/**
 # 包含 app 目录
 !app/
 # 包含 app 目录下的所有文件
