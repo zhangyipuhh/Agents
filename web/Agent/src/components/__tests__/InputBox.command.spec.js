@@ -1,4 +1,4 @@
-/**
+﻿/**
  * InputBox 命令检测测试（2026-06-23 新增，Task 17）
  *
  * 覆盖：输入 / 开头时识别为命令、/agent 命令触发 agent-switched 事件、
@@ -58,8 +58,10 @@ describe('InputBox 命令检测', () => {
     const wrapper = mount(InputBox, {
       props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] },
     })
-    const textarea = wrapper.find('textarea')
-    await textarea.setValue('hello world')
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    editor.element.replaceChildren(document.createTextNode('hello world'));
+    await editor.trigger('input')
+    await flushPromises()
     const sendBtn = wrapper.find('.send-btn')
     await sendBtn.trigger('click')
     await flushPromises()
@@ -73,8 +75,10 @@ describe('InputBox 命令检测', () => {
     const wrapper = mount(InputBox, {
       props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] },
     })
-    const textarea = wrapper.find('textarea')
-    await textarea.setValue('/agent map_agent')
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    editor.element.replaceChildren(document.createTextNode('/agent map_agent'));
+    await editor.trigger('input')
+    await flushPromises()
     // 命令模式下应显示命令提示（.command-hint 元素存在且文本含「命令」）
     expect(wrapper.find('.command-hint').exists()).toBe(true)
     expect(wrapper.text()).toContain('命令')
@@ -84,8 +88,10 @@ describe('InputBox 命令检测', () => {
     const wrapper = mount(InputBox, {
       props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] },
     })
-    const textarea = wrapper.find('textarea')
-    await textarea.setValue('/agent map_agent')
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    editor.element.replaceChildren(document.createTextNode('/agent map_agent'));
+    await editor.trigger('input')
+    await flushPromises()
     const sendBtn = wrapper.find('.send-btn')
     await sendBtn.trigger('click')
     await flushPromises()
@@ -101,8 +107,10 @@ describe('InputBox 命令检测', () => {
     const wrapper = mount(InputBox, {
       props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] },
     })
-    const textarea = wrapper.find('textarea')
-    await textarea.setValue('/foo bar')
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    editor.element.replaceChildren(document.createTextNode('/foo bar'));
+    await editor.trigger('input')
+    await flushPromises()
     // 未知命令应在 commandHint 中显示「未知命令：/foo」
     expect(wrapper.text()).toContain('未知命令：/foo')
   })
@@ -115,8 +123,10 @@ describe('InputBox 命令检测', () => {
     const wrapper = mount(InputBox, {
       props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] },
     })
-    const textarea = wrapper.find('textarea')
-    await textarea.setValue('/agent non_exist')
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    editor.element.replaceChildren(document.createTextNode('/agent non_exist'));
+    await editor.trigger('input')
+    await flushPromises()
     const sendBtn = wrapper.find('.send-btn')
     await sendBtn.trigger('click')
     await flushPromises()
@@ -137,8 +147,10 @@ describe('InputBox 命令检测', () => {
     const wrapper = mount(InputBox, {
       props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] },
     })
-    const textarea = wrapper.find('textarea')
-    await textarea.setValue('/agent map_agent')
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    editor.element.replaceChildren(document.createTextNode('/agent map_agent'));
+    await editor.trigger('input')
+    await flushPromises()
     const sendBtn = wrapper.find('.send-btn')
     await sendBtn.trigger('click')
     await flushPromises()
@@ -155,8 +167,10 @@ describe('InputBox 命令检测', () => {
     const wrapper = mount(InputBox, {
       props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] },
     })
-    const textarea = wrapper.find('textarea')
-    await textarea.setValue('/agents')
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    editor.element.replaceChildren(document.createTextNode('/agents'));
+    await editor.trigger('input')
+    await flushPromises()
     const sendBtn = wrapper.find('.send-btn')
     await sendBtn.trigger('click')
     await flushPromises()
@@ -170,8 +184,9 @@ describe('InputBox 命令检测', () => {
     const wrapper = mount(InputBox, {
       props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] },
     })
-    const textarea = wrapper.find('textarea')
-    await textarea.setValue('/')
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    editor.element.replaceChildren(document.createTextNode('/'));
+    await editor.trigger('input')
     await flushPromises()
     // 下拉菜单应存在
     expect(wrapper.find('.agent-dropdown').exists()).toBe(true)
@@ -184,8 +199,9 @@ describe('InputBox 命令检测', () => {
     const wrapper = mount(InputBox, {
       props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] },
     })
-    const textarea = wrapper.find('textarea')
-    await textarea.setValue('/')
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    editor.element.replaceChildren(document.createTextNode('/'));
+    await editor.trigger('input')
     await flushPromises()
     // 点击第一个智能体项
     const firstItem = wrapper.find('.agent-dropdown-item')
@@ -195,22 +211,25 @@ describe('InputBox 命令检测', () => {
     expect(wrapper.find('.selected-agent-tag').exists()).toBe(true)
     expect(wrapper.text()).toContain('地图')
     // 输入框应被清空
-    expect(textarea.element.value).toBe('')
+    expect(wrapper.find('[data-testid="input-editor"]').text()).toBe('')
   })
 
   it('test_selected_agent_emits_switch_on_send 选中智能体后发送触发 agent-switched', async () => {
     const wrapper = mount(InputBox, {
       props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] },
     })
-    const textarea = wrapper.find('textarea')
-    await textarea.setValue('/')
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    editor.element.replaceChildren(document.createTextNode('/'));
+    await editor.trigger('input')
     await flushPromises()
     // 选中智能体
     const firstItem = wrapper.find('.agent-dropdown-item')
     await firstItem.trigger('mousedown')
     await flushPromises()
     // 输入消息并发送
-    await textarea.setValue('hello')
+    editor.element.replaceChildren(document.createTextNode('hello'));
+    await editor.trigger('input')
+    await flushPromises()
     const sendBtn = wrapper.find('.send-btn')
     await sendBtn.trigger('click')
     await flushPromises()
@@ -226,8 +245,9 @@ describe('InputBox 命令检测', () => {
     const wrapper = mount(InputBox, {
       props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] },
     })
-    const textarea = wrapper.find('textarea')
-    await textarea.setValue('/')
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    editor.element.replaceChildren(document.createTextNode('/'));
+    await editor.trigger('input')
     await flushPromises()
     // 选中智能体
     const firstItem = wrapper.find('.agent-dropdown-item')
@@ -251,8 +271,9 @@ describe('InputBox 命令检测', () => {
     // 下拉菜单未显示，但 agentList 应在挂载时已填充
     expect(wrapper.find('.agent-dropdown').exists()).toBe(false)
     // 输入 / 后应直接展示已加载的列表（无加载中状态）
-    const textarea = wrapper.find('textarea')
-    await textarea.setValue('/')
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    editor.element.replaceChildren(document.createTextNode('/'));
+    await editor.trigger('input')
     await flushPromises()
     expect(wrapper.find('.agent-dropdown-item').exists()).toBe(true)
     expect(wrapper.text()).toContain('地图')
@@ -279,8 +300,9 @@ describe('InputBox 命令检测', () => {
     const wrapper = mount(InputBox, {
       props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: ['map_agent'] }
     })
-    const textarea = wrapper.find('textarea')
-    await textarea.setValue('/')
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    editor.element.replaceChildren(document.createTextNode('/'));
+    await editor.trigger('input')
     await flushPromises()
 
     expect(wrapper.find('.agent-dropdown-item').exists()).toBe(true)
@@ -305,8 +327,9 @@ describe('InputBox 命令检测', () => {
     const wrapper = mount(InputBox, {
       props: { sessionId: 'sid_1', isStreaming: false, allowedAgents: [] }
     })
-    const textarea = wrapper.find('textarea')
-    await textarea.setValue('/')
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    editor.element.replaceChildren(document.createTextNode('/'));
+    await editor.trigger('input')
     await flushPromises()
 
     expect(wrapper.find('.agent-dropdown-item').exists()).toBe(false)
@@ -340,8 +363,9 @@ describe('InputBox 命令检测', () => {
         isAdmin: true
       }
     })
-    const textarea = wrapper.find('textarea')
-    await textarea.setValue('/')
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    editor.element.replaceChildren(document.createTextNode('/'));
+    await editor.trigger('input')
     await flushPromises()
 
     // admin 绕过 ACL：所有智能体都应可见
@@ -375,8 +399,9 @@ describe('InputBox 命令检测', () => {
         isAdmin: false
       }
     })
-    const textarea = wrapper.find('textarea')
-    await textarea.setValue('/')
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    editor.element.replaceChildren(document.createTextNode('/'));
+    await editor.trigger('input')
     await flushPromises()
 
     expect(wrapper.text()).toContain('暂无可用智能体')

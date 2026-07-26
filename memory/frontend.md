@@ -572,23 +572,25 @@ web/Agent/src/utils/
 - 测试策略：mount InputBox + mock `global.fetch`（按 URL 分发 `/api/auth/refresh` 与 `/api/agent/list`）+ mock `global.localStorage`
 - 覆盖：普通文本触发 send 且不触发 agent-switched / `/` 开头显示命令提示 / `/agent map_agent` 命令触发 agent-switched 事件 / 未知命令显示未知命令提示 / `/agent non_exist` 不触发切换且 send 含「不存在」 / `/api/agent/list` 返回非 ok 时 send 含「命令执行失败」 / `/agents` 命令 send 含智能体列表 / 输入 `/` 显示智能体下拉菜单 / 点击下拉菜单项选中后显示标签并清空输入框 / 选中智能体后发送触发 agent-switched 与 send / 移除按钮可清空已选智能体标签
 
-## 前端触发器注册表（2026-07-26 新增，「#」服务器引用）
+## 前端触发器注册表（「#」服务器引用）
 
-与 `commandRegistry` 平级的另一种「输入触发」体系：以单字符为锚（`#`），在 textarea 中输入触发字符唤起通用面板（搜索 + 平铺 + 键盘导航），选中项以可移除 chips 显示在输入区上方，发送时由 trigger 的 `buildOverrides` 转成 `context_overrides` 片段经 `chatStream` 透传给后端，由后端 `DYNAMIC_NODE_REGISTRY` 镜像渲染进系统提示词末尾的 XML 节点。**两侧 registry 镜像对称，未来新增触发类型只需各注册一条（前端 trigger + 后端 DynamicNodeSpec），签名不变**。
+与 `commandRegistry` 平级的另一种「输入触发」体系：以单字符为锚（`#`），在可编辑正文中输入触发字符唤起通用面板（搜索 + 平铺 + 键盘导航），选中项以**不可编辑的灰色 Chip** 直接渲染在原 `#查询词` 位置（与正文混排）。发送时由 trigger 的 `buildOverrides` 转成 `context_overrides` 片段经 `chatStream` 透传给后端，由后端 `DYNAMIC_NODE_REGISTRY` 镜像渲染进系统提示词末尾的 XML 节点；同时把正文中每个 Chip 在其 DOM 位置序列化为 `⟦{mentionLabel}：{chipLabel}⟧` 一并写入消息文本，使问题文本本身也显式携带引用（与历史协议保持兼容）。**两侧 registry 镜像对称，未来新增触发类型只需各注册一条（前端 trigger + 后端 DynamicNodeSpec），签名不变**。
 
 ### 模块位置
 
 ```
 web/Agent/src/
 ├── utils/
-│   ├── triggerRegistry.js             # 触发器注册表 + searchTriggerByChar / buildOverridesFor
+│   ├── triggerRegistry.js             # 触发器注册表 + searchTriggerByChar / buildOverridesFor / renderTriggerMentions
+│   ├── inputEditor.js                 # contenteditable 编辑器 DOM 工具：serializeEditor / getTextBeforeCaret / replaceTriggerRangeWithServerChip / setCaretAfter
 │   └── __tests__/
-│       └── triggerRegistry.test.js    # 12 用例：契约/搜索/buildOverrides/数据源拍平/去重
+│       ├── triggerRegistry.test.js    # 18 用例：契约 / 搜索 / buildOverrides / 数据源拍平 / 去重 / renderTriggerMentions
+│       └── inputEditor.test.js        # 3 用例：序列化、光标前文本、触发范围替换
 ├── components/
 │   └── TriggerPanel.vue               # 通用触发面板（搜索 + 列表 + 键盘导航）
 └── components/__tests__/
     ├── TriggerPanel.spec.js           # 12 用例
-    └── InputBox.trigger.spec.js       # 10 用例（#触发/词边界/按钮/chips/发送/会话切换）
+    └── InputBox.trigger.spec.js       # 15 用例：#触发 / 词边界 / 工具栏按钮 / 行内 Chip 渲染与原位插入 / 多位置 Chip 顺序 / 精确替换触发串 / 发送原位序列化 + extras / chip 移除同步 / 删除后发送不再携带 / 发送清空编辑器 / 会话切换 / 流式禁用 / 已绑定智能体
 ```
 
 ### TRIGGER_REGISTRY 条目契约
@@ -618,9 +620,11 @@ web/Agent/src/
 - **前后端镜像**：前端 `buildOverrides` 输出键（如 `referenced_servers`）= 后端 `DynamicNodeSpec.overrides_key`，两侧键名一致
 - **数据源已是用户权限范围**：前端 `fetchUserServerTree` 已按 `OwnershipScope` 过滤，后端 `sanitize_dynamic_nodes` 仅做白名单字段清洗（name/server_type 两键、长度/条数上限），不做归属校验
 - **词边界触发**：trigger 字符须位于行首或前一个字符为空白，避免 `C#` / `#` 作为普通文本误触
-- **按 session 隔离，每轮发送后清空**：选中项按 `sessionId` 缓存在前端 `triggerSelectionsBySession`，切换 / 新建 session 时自动隔离（新 session 初始为空，切回原 session 时恢复其选择）；同一 session 内每次发送消息后清空 `selectedTriggers`，下轮提问需重新选择
-- **双通道携带**：发送时一方面把选中服务器经 `buildOverridesFor` 转成 `extras.referenced_servers` 透传给后端系统提示词；另一方面在用户消息文本前附加前缀 `⟦引用服务器：name1、name2⟧\n<原文>`，使问题文本本身也显式包含引用
-- **可扩展边界**：未来新增 `@` 知识库等只需在前端 `TRIGGER_REGISTRY` 追加条目 + 后端 `dynamic_context.DYNAMIC_NODE_REGISTRY` 追加一条 `DynamicNodeSpec`；`chatStream` 签名 / `build_dynamic_system_suffix` 签名 / InputBox 组件均零改动
+- **行内原子 Chip**：选中服务器后通过 `replaceTriggerRangeWithServerChip` 在原 `#查询词` 位置替换为 `contenteditable="false"` 的 `<span class="selected-trigger-chip inline-trigger-chip">`，与正文文本节点混排；用户可在 Chip 前后继续输入，Backspace/Delete 紧邻 Chip 时整块删除
+- **DOM 是发送期间的引用源**：`extras.referenced_servers` 直接由正文中实际存在的 Chip 派生并按 name 去重，不再依赖 `selectedTriggers` 缓存；`buildOverridesFor('server', items)` 仍作为唯一 contract 出口
+- **按 session 隔离**：编辑器 DOM 快照与触发器选择都按 `sessionId` 缓存；切换 session 时保存当前 DOM 快照并恢复目标 session 的快照（无快照则为空白）；每轮发送后清空编辑器与选择
+- **内部 mention 协议序列化**：发送文本中按 Chip DOM 位置生成 `⟦{mentionLabel}：{chipLabel}⟧`；该文本仅在发送和历史消息渲染时出现，输入框内不显示
+- **可扩展边界**：未来新增 `@` 知识库等只需在前端 `TRIGGER_REGISTRY` 追加条目 + 后端 `dynamic_context.DYNAMIC_NODE_REGISTRY` 追加一条 `DynamicNodeSpec`；`chatStream` 签名 / `build_dynamic_system_suffix` 签名 / MessageBubble 渲染路径零改动（仍通过 `renderTriggerMentions` 解析 mention 标记）
 
 ### MessageBubble 统一渲染 mention 标记（2026-07-26 新增）
 
@@ -634,31 +638,34 @@ web/Agent/src/
 
 ### InputBox 集成
 
-`InputBox.vue` 工具栏附件按钮后新增 `#` 按钮（由 `TRIGGER_REGISTRY` 驱动渲染）；输入 `#` 时唤起 `TriggerPanel`，选中服务器后以可移除 chips 显示在 textarea 上方。发送时：chips 经 `buildOverridesFor('server', items)` 转成 `{ referenced_servers: [{name, server_type}] }`，作为 `emit('send', text, files, extras)` 第 3 参数；同时在用户消息文本前附加 `⟦引用服务器：name1、name2⟧\n` 前缀，使问题文本本身也显式携带引用。当前 session 内每次发送后清空 chips，切换 / 新建 session 时按 session 隔离。
+`InputBox.vue` 工具栏附件按钮后新增 `#` 按钮（由 `TRIGGER_REGISTRY` 驱动渲染）；正文输入区为 `contenteditable` 编辑器，输入 `#` 时唤起 `TriggerPanel`，选中服务器后由 `replaceTriggerRangeWithServerChip` 在原 `#查询词` 位置插入不可编辑的灰色 Chip（与文本混排）。发送时 `serializeEditor` 把 DOM 序列化为「文本 + 内部 mention 标记」并由正文中实际存在的 Chip 派生 `extras.referenced_servers`（按 name 去重），经 `buildOverridesFor('server', items)` 统一出口。当前 session 内每次发送后清空编辑器与触发器选择；切换 / 新建 session 时按 session 隔离 DOM 快照与触发器选择。
 
 **改动点**：
 
-1. **import**：`TRIGGER_REGISTRY` / `searchTriggerByChar` / `buildOverridesFor` / `TriggerPanel`
-2. **响应式状态**：新增 `triggerSelectionsBySession`（按 sessionId 缓存选择）；`selectedTriggers` 改为 computed，取当前 session 的选择对象；其余 `activeTriggerId` / `triggerPanelSearch` / `activeTriggerIndex` / `triggerItemsCache` / `triggerItemsLoading` / `triggerItemsError` 不变
-3. **detectTriggerAtCaret**：检测光标处是否在词边界命中已注册 trigger 字符
-4. **loadTriggerItems**：拉取 trigger 数据，含缓存与错误处理
-5. **onTriggerPanelSelect**：面板选中回调，去重写入当前 session 的 `selectedTriggers`，从 textarea 移除触发字符串
-6. **onTriggerButtonClick**：工具栏按钮点击 → 光标处插入字符 + 聚焦 + 派发 input 事件（与键入同路径）
-7. **removeTriggerItem**：chips 移除按钮回调
-8. **handleInput 扩展**：末尾追加 trigger 检测分支（仅在词边界 + 已注册字符时激活面板，触发字符串被删/移出词边界时关闭面板）
-9. **handleKeydown 扩展**：面板打开时 Enter 由面板内部处理（不穿透到 handleSend）
-10. **handleSend 扩展**：遍历 `TRIGGER_REGISTRY` 经 `buildOverridesFor` 合并 extras，emit 第 3 参数；在文本前附加 `⟦引用服务器：name1、name2⟧\n` 前缀；当前 session 内每次发送后**清空** `selectedTriggers`
-11. **executeCommand finally**：命令执行后清空当前 session 的 `selectedTriggers`
-12. **watch sessionId**：会话切换/新建会话时按 session 隔离（新 session 初始为空，切回原 session 恢复其选择）
-13. **template**：工具栏 `#` 按钮（registry 驱动）+ textarea 上方 chips 区 + TriggerPanel 挂在与 agent-dropdown 平级位置
-14. **CSS**：`.selected-trigger-chip`（灰底边框 chip）/ `.trigger-chip-remove-btn` / `.trigger-tool-btn` / `.tool-char`
+1. **import**：`TRIGGER_REGISTRY` / `searchTriggerByChar` / `buildOverridesFor` / `TriggerPanel` / `serializeEditor` / `getTextBeforeCaret` / `replaceTriggerRangeWithServerChip` / `setCaretAfter`
+2. **响应式状态**：新增 `editorRef` / `editorSnapshotsBySession`（按 session 缓存 DOM）；`inputValue` 改为只读派生，由 `syncEditorState()` 从 DOM 序列化得到；`triggerSelectionsBySession` 保留以兼容非服务器类 trigger 的 `buildOverrides` 调用
+3. **编辑器 DOM 工具**（`inputEditor.js`）：`serializeEditor` / `getTextBeforeCaret` / `replaceTriggerRangeWithServerChip` / `setCaretAfter`，不管理 Vue 状态、不直接读取 `triggerRegistry`
+4. **detectEditorTriggerAtCaret**：从 Selection 与 DOM 读取光标前文本，搜索词自动 trim 尾随空白（避免用户在搜索串后再输入其他字符时把空白一并吞掉）；命中后保存 `Range` 用于原位替换
+5. **createServerChip**：DOM 工厂创建 `<span class="selected-trigger-chip inline-trigger-chip" contenteditable="false">`，含 `data-trigger-id` / `data-business-name` / `data-server-type` / `data-testid` 与「#」前缀、名称 label、移除按钮（移除按钮 `mousedown` preventDefault）
+6. **removeInlineChip**：直接 DOM 操作删除 Chip，并同步 `inputValue` 与光标位置
+7. **onTriggerPanelSelect**：选中时调用 `replaceTriggerRangeWithServerChip` 原位替换触发串；取消（null）时删除触发串不插入 Chip
+8. **onTriggerButtonClick**：基于当前 Selection/Range 在光标处插入触发字符并补前导空格，遵循词边界规则
+9. **handleEditorInput**（替代原 `handleInput`）：先 `syncEditorState()` 同步 `inputValue`，再走命令下拉分支与 trigger 检测分支
+10. **handleEditorKeydown**（替代原 `handleKeydown`）：Backspace/Delete 紧邻行内 Chip 时整块删除（`handleAdjacentChipDelete`），避免光标进入 Chip 内部
+11. **handleEditorPaste**：仅接受 `text/plain`，`\n` 转为 `<br>`，禁止粘入任意 HTML
+12. **handleSend**：调用 `serializeEditor` 得到 `{ text, referencedServers }`，基于 `referencedServers` 重建 `business_name/server_type` 项后交给 `buildOverridesFor('server', items)`，按 DOM 原位置序列化文本；发送后清空编辑器与触发器选择
+13. **executeCommand finally**：命令执行后清空编辑器
+14. **watch sessionId**：切换时先保存当前 session 的编辑器快照，再为目标 session 初始化空快照并恢复（无快照即空白）
+15. **template**：textarea 替换为 `<div contenteditable data-testid="input-editor">`，移除原 textarea 上方集中 chip 渲染区；`#` 工具栏按钮 + TriggerPanel 位置不变
+16. **CSS**：`.message-editor`（contenteditable 容器：min/max-height / 滚动 / placeholder via `:empty::before` / `white-space: pre-wrap` / `caret-color`）；`.selected-trigger-chip.inline-trigger-chip`（行内 `vertical-align: baseline` / `white-space: nowrap` / `margin: 0 2px` / `user-select: none`）
 
 **测试**：
 
 - `web/Agent/src/utils/__tests__/triggerRegistry.test.js`（18 用例）：注册项契约 / searchTriggerByChar / searchTriggerById / fetchServerItems 过滤 / dedup / buildOverrides / 空 items / 未注册 trigger id / `renderTriggerMentions` 单服务器 / 多服务器 / 无标记 / HTML 转义
+- `web/Agent/src/utils/__tests__/inputEditor.test.js`（3 用例）：序列化按 DOM 顺序并按 name 去重服务器；Chip 作为可搜索占位节点参与光标前文本读取；触发范围替换原子插入 chip 并保留前后文本
 - `web/Agent/src/components/__tests__/TriggerPanel.spec.js`（12 用例）：基础渲染 / loading / error / 空态 / 搜索过滤（OR + case-insensitive）/ ArrowDown / ArrowUp 环绕 / Enter 选中 / Escape 选 null / 点击 select / mouseenter 更新 activeIndex
-- `web/Agent/src/components/__tests__/InputBox.trigger.spec.js`（11 用例）：#按钮渲染 / 输入 # 触发面板 / C# 不触发 / 空白后 # 触发 / 工具栏按钮插入字符 + 面板 / chips 渲染与移除 / 发送携带 extras.referenced_servers 且文本含前缀 / 发送清空 chips / 发送文本前附加服务器前缀 / 切换到新 session 初始无 chips / 切回原 session 恢复 chips / 流式期间 # 按钮 disabled
-- `web/Agent/src/components/__tests__/MessageBubble.spec.js`（新增 5 用例）：用户消息 / AI 消息 / 多服务器 / 无标记回归 / HTML 特殊字符转义
+- `web/Agent/src/components/__tests__/InputBox.trigger.spec.js`（15 用例）：工具栏 `#` 按钮 / 输入 `#` 触发面板 / `C#` 不触发 / 空白后 `#` 触发 / 工具栏按钮在光标处插入字符并触发面板 / 选择服务器在原位置渲染灰色 Chip + 不显示内部 mention / 精确替换 `#查询串` 保留周围文本 / 多位置 Chip 保持 DOM 顺序 / 发送按原位置序列化并携带 extras / 点击 Chip 移除按钮保留周围文本 / 删除 Chip 后发送不携带服务器 / 发送后清空编辑器 / 新 session 清空编辑器 / 已绑定智能体时 `#` 仍能触发 / 流式期间 `#` 按钮 disabled
+- `web/Agent/src/components/__tests__/MessageBubble.spec.js`（5 用例）：用户消息 / AI 消息 / 多服务器 / 无标记回归 / HTML 特殊字符转义
 
 ### App.vue 透传 extras
 

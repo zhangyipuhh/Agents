@@ -71,8 +71,9 @@ describe('InputBox 中断待生效 stop-pending-mode（2026-07-06 新增）', ()
     const wrapper = mount(InputBox, {
       props: { sessionId: 'sid_1', isStreaming: false, isStopPending: true }
     })
-    const textarea = wrapper.find('textarea.text-input')
-    await textarea.setValue('hello')
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    editor.element.replaceChildren(document.createTextNode('hello'))
+    await editor.trigger('input')
     await wrapper.vm.$nextTick()
 
     // canSend 计算属性应为 false（被 isStopPending 短路）
@@ -89,7 +90,9 @@ describe('InputBox 中断待生效 stop-pending-mode（2026-07-06 新增）', ()
       props: { sessionId: 'sid_1', isStreaming: false, isStopPending: true }
     })
     // 注入输入让 canSend 在非 stop-pending 时会通过 → 验证 stop-pending 确实拦截
-    await wrapper.find('textarea.text-input').setValue('hello')
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    editor.element.replaceChildren(document.createTextNode('hello'))
+    await editor.trigger('input')
     const btn = wrapper.find('.send-btn')
     // 强制触发 click（即使按钮 disabled，handler 也应拦截）
     await btn.trigger('click')
@@ -112,7 +115,9 @@ describe('InputBox 中断待生效 stop-pending-mode（2026-07-06 新增）', ()
     const wrapper = mount(InputBox, {
       props: { sessionId: 'sid_1', isStreaming: false, isStopPending: false }
     })
-    await wrapper.find('textarea.text-input').setValue('hello')
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    editor.element.replaceChildren(document.createTextNode('hello'))
+    await editor.trigger('input')
     await wrapper.vm.$nextTick()
     expect(wrapper.vm.canSend).toBe(true)
     const btn = wrapper.find('.send-btn')

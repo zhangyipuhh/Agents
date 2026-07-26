@@ -98,7 +98,9 @@ describe('InputBox 文件上传与项目锁定（2026-07-07 改造）', () => {
 
     const file = new File(['content'], 'test.txt', { type: 'text/plain' })
     wrapper.vm.addFiles([file])
-    wrapper.vm.inputValue = '测试发送'
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    editor.element.replaceChildren(document.createTextNode('测试发送'))
+    await editor.trigger('input')
     await flushPromises()
 
     wrapper.vm.handleSend()
@@ -126,7 +128,9 @@ describe('InputBox 文件上传与项目锁定（2026-07-07 改造）', () => {
 
     const file = new File(['content'], 'test.txt', { type: 'text/plain' })
     wrapper.vm.addFiles([file])
-    wrapper.vm.inputValue = '带项目发送'
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    editor.element.replaceChildren(document.createTextNode('带项目发送'))
+    await editor.trigger('input')
     await flushPromises()
 
     wrapper.vm.handleSend()

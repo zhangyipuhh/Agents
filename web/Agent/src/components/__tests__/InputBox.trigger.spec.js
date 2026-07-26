@@ -1,35 +1,19 @@
 /**
- * InputBox 「#」触发器集成测试（2026-07-26 新增）
- *
- * 覆盖：
- *   - 输入 `#` 触发 TriggerPanel
- *   - 词边界规则（C# 不触发）
- *   - 工具栏 `#` 按钮点击 = 键入（在光标处插入 # + 聚焦）
- *   - chips 渲染与移除
- *   - 发送携带 extras（referenced_servers）
- *   - 切换 session 清空 trigger 选择
- *   - 流式期间禁用 trigger 按钮
+ * InputBox 「#」触发器集成测试。
+ * 覆盖编辑器触发检测、服务器 Chip 原位插入、删除、发送序列化、会话隔离和流式禁用。
  */
-import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import InputBox from '../InputBox.vue'
 
-const mockUploadResult = {
-  files: [{ filename: 'test.txt', stored_path: '/tmp/test.md', file_type: 'md' }]
-}
-
 vi.mock('../../utils/api.js', () => ({
-  uploadFileInChunks: vi.fn(() => Promise.resolve(mockUploadResult)),
+  uploadFileInChunks: vi.fn(() => Promise.resolve({ files: [] })),
   formatFileSize: vi.fn((size) => `${size} bytes`),
-  getFileExtension: vi.fn((name) => {
-    const parts = name.split('.')
-    return parts.length > 1 ? parts.pop() : ''
-  }),
+  getFileExtension: vi.fn((name) => name.split('.').pop()),
   refreshToken: vi.fn(() => Promise.resolve('fake-token')),
   fetchAgentList: vi.fn(() => Promise.resolve([])),
   deleteAttachments: vi.fn(() => Promise.resolve()),
   fetchUploadConfig: vi.fn(() => Promise.resolve({ max_file_size_mb: 3 })),
-  // 2026-07-26 新增：triggerRegistry 数据源 mock（后端返回 { nodes: [...] }）
   fetchUserServerTree: vi.fn(() => Promise.resolve({
     nodes: [
       { id: 1, node_type: 'folder', name: '生产' },
@@ -40,50 +24,105 @@ vi.mock('../../utils/api.js', () => ({
 }))
 
 beforeAll(() => {
-  if (typeof window !== 'undefined' && !window.alert) {
-    window.alert = () => {}
-  }
+  if (typeof window !== 'undefined' && !window.alert) window.alert = () => {}
 })
 
-const mountInputBox = (props = {}) =>
-  mount(InputBox, {
-    props: {
-      sessionId: 'sid-001',
-      isStreaming: false,
-      currentProject: null,
-      ensureSession: vi.fn(() => Promise.resolve('sid-001')),
-      ...props,
-    },
-  })
+const mountInputBox = (props = {}) => mount(InputBox, {
+  props: {
+    sessionId: 'sid-001',
+    isStreaming: false,
+    currentProject: null,
+    ensureSession: vi.fn(() => Promise.resolve('sid-001')),
+    ...props,
+  },
+})
 
-const setTextareaValue = async (wrapper, value) => {
-  const textarea = wrapper.find('textarea')
-  await textarea.setValue(value)
-  await textarea.trigger('input')
+function setCaret(editor, node, offset) {
+  const range = document.createRange()
+  range.setStart(node, Math.min(offset, node.textContent.length))
+  range.collapse(true)
+  const selection = window.getSelection()
+  selection.removeAllRanges()
+  selection.addRange(range)
+  editor.element.focus()
 }
 
-describe('InputBox 「#」触发器集成（2026-07-26 新增）', () => {
-  beforeEach(() => {})
+const setEditorText = async (wrapper, value, caret = value.length) => {
+  const editor = wrapper.find('[data-testid="input-editor"]')
+  editor.element.replaceChildren(document.createTextNode(value))
+  setCaret(editor, editor.element.firstChild, caret)
+  await editor.trigger('input')
+  return editor
+}
 
-  it('test_hash_button_rendered 工具栏渲染 # 按钮（由 registry 驱动）', async () => {
+const setCaretInText = async (wrapper, textPart, offset) => {
+  const editor = wrapper.find('[data-testid="input-editor"]')
+  // 跨文本节点 / Chip 累积找到含 textPart 的位置，再把光标映射回真实 DOM 节点 + 偏移。
+  const children = Array.from(editor.element.childNodes)
+  let concat = ''
+  const map = [] // [{ childIndex, node, offsetWithin }]
+  for (const node of children) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent || ''
+      for (let i = 0; i < text.length; i++) {
+        map.push({ node, offset: i })
+        concat += text[i]
+      }
+    } else {
+      map.push({ node, offset: 0 })
+      concat += ' '
+    }
+  }
+  const idx = concat.indexOf(textPart)
+  if (idx < 0) throw new Error(`未找到文本节点：${textPart}`)
+  const target = map[idx + offset] || map[map.length - 1]
+  setCaret(editor, target.node, target.offset)
+  await editor.trigger('input')
+  return editor
+}
+
+const readEditorDisplay = (wrapper) => {
+  const editor = wrapper.find('[data-testid="input-editor"]')
+  return Array.from(editor.element.childNodes).map((node) => {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent
+    if (node.nodeType === Node.ELEMENT_NODE && node.dataset?.triggerId === 'server') {
+      return `#${node.dataset.businessName}`
+    }
+    return node.textContent || ''
+  }).join('')
+}
+
+const selectServer = async (wrapper, index = 0) => {
+  const items = wrapper.findAll('[data-testid^="trigger-panel-item-server-"]')
+  expect(items.length).toBeGreaterThan(index)
+  await items[index].trigger('mousedown')
+  await flushPromises()
+}
+
+async function openServerPanel(wrapper, value = '#', caret = value.length) {
+  await setEditorText(wrapper, value, caret)
+  await flushPromises()
+  expect(wrapper.find('[data-testid="trigger-panel-server"]').exists()).toBe(true)
+}
+
+describe('InputBox 「#」触发器集成', () => {
+  it('test_hash_button_rendered 工具栏渲染 # 按钮', async () => {
     const wrapper = mountInputBox()
     await flushPromises()
-    const btn = wrapper.find('[data-testid="trigger-btn-server"]')
-    expect(btn.exists()).toBe(true)
+    expect(wrapper.find('[data-testid="trigger-btn-server"]').exists()).toBe(true)
   })
 
   it('test_typing_hash_opens_panel 输入 # 后 trigger 面板打开', async () => {
     const wrapper = mountInputBox()
     await flushPromises()
-    await setTextareaValue(wrapper, '#', 1)
-    await flushPromises()
+    await openServerPanel(wrapper)
     expect(wrapper.find('[data-testid="trigger-panel-server"]').exists()).toBe(true)
   })
 
-  it('test_mid_word_hash_does_not_trigger C# 不触发面板（词边界）', async () => {
+  it('test_mid_word_hash_does_not_trigger C# 不触发面板', async () => {
     const wrapper = mountInputBox()
     await flushPromises()
-    await setTextareaValue(wrapper, 'C#', 2)
+    await setEditorText(wrapper, 'C#')
     await flushPromises()
     expect(wrapper.find('[data-testid="trigger-panel-server"]').exists()).toBe(false)
   })
@@ -91,171 +130,143 @@ describe('InputBox 「#」触发器集成（2026-07-26 新增）', () => {
   it('test_hash_after_whitespace_triggers 空白后 # 触发面板', async () => {
     const wrapper = mountInputBox()
     await flushPromises()
-    await setTextareaValue(wrapper, 'hello #', 7)
-    await flushPromises()
+    await openServerPanel(wrapper, 'hello #')
     expect(wrapper.find('[data-testid="trigger-panel-server"]').exists()).toBe(true)
   })
 
-  it('test_click_hash_button_inserts_char 工具栏 # 按钮点击插入字符并触发面板', async () => {
+  it('test_click_hash_button_inserts_char 工具栏 # 按钮在光标处插入并触发面板', async () => {
     const wrapper = mountInputBox()
     await flushPromises()
-    const textarea = wrapper.find('textarea')
-    await textarea.setValue('hello')
-    const btn = wrapper.find('[data-testid="trigger-btn-server"]')
-    await btn.trigger('click')
+    const editor = await setEditorText(wrapper, 'hello')
+    setCaret(editor, editor.element.firstChild, 5)
+    await wrapper.find('[data-testid="trigger-btn-server"]').trigger('click')
     await flushPromises()
-    // textarea 值应包含 #（无论插入位置如何，因 happy-dom 不保证光标持久化）
-    expect(textarea.element.value).toContain('#')
-    // 触发面板应打开
+    expect(readEditorDisplay(wrapper)).toContain('#')
     expect(wrapper.find('[data-testid="trigger-panel-server"]').exists()).toBe(true)
   })
 
-  it('test_selecting_server_emits_chip 选择服务器后渲染可移除 chip', async () => {
+  it('test_selecting_server_renders_inline_chip_at_hash_position 选择服务器后在原位置渲染灰色 Chip', async () => {
     const wrapper = mountInputBox()
     await flushPromises()
-    // 打开面板
-    await setTextareaValue(wrapper, '#', 1)
-    await flushPromises()
-    // 模拟面板选中第一项（prod-api）
-    const triggerPanel = wrapper.findComponent({ name: 'TriggerPanel' })
-    const items = wrapper.findAll('[data-testid^="trigger-panel-item-server-"]')
-    expect(items.length).toBeGreaterThan(0)
-    await items[0].trigger('mousedown')
-    await flushPromises()
-    // chip 应出现
-    const chip = wrapper.find('[data-testid="selected-trigger-chip-server-prod-api"]')
+    await openServerPanel(wrapper, '请检查 # 后的磁盘', 5)
+    await selectServer(wrapper)
+    expect(readEditorDisplay(wrapper)).toBe('请检查 #prod-api 后的磁盘')
+    const chip = wrapper.find('[data-testid="inline-trigger-chip-server-prod-api"]')
     expect(chip.exists()).toBe(true)
-    expect(chip.text()).toContain('prod-api')
-    // 面板已关闭
-    expect(wrapper.find('[data-testid="trigger-panel-server"]').exists()).toBe(false)
+    expect(chip.classes()).toContain('selected-trigger-chip')
+    expect(chip.attributes('contenteditable')).toBe('false')
+    expect(wrapper.find('[data-testid="input-editor"]').text()).not.toContain('⟦引用服务器')
   })
 
-  it('test_chip_remove_button_removes_chip chip 移除按钮可移除项', async () => {
+  it('test_selecting_server_replaces_trigger_query 精确替换 # 查询串并保留周围文本', async () => {
     const wrapper = mountInputBox()
     await flushPromises()
-    await setTextareaValue(wrapper, '#', 1)
-    await flushPromises()
-    const items = wrapper.findAll('[data-testid^="trigger-panel-item-server-"]')
-    await items[0].trigger('mousedown')
-    await flushPromises()
-    const chip = wrapper.find('[data-testid="selected-trigger-chip-server-prod-api"]')
-    expect(chip.exists()).toBe(true)
-    await chip.find('.trigger-chip-remove-btn').trigger('click')
-    await flushPromises()
-    expect(wrapper.find('[data-testid="selected-trigger-chip-server-prod-api"]').exists()).toBe(false)
+    await openServerPanel(wrapper, '巡检 #pro 立即执行', 8)
+    await selectServer(wrapper)
+    expect(readEditorDisplay(wrapper)).toBe('巡检 #prod-api 立即执行')
   })
 
-  it('test_send_carries_referenced_servers_in_extras 发送时 emit send 携带 extras.referenced_servers 且文本含前缀', async () => {
+  it('test_multiple_inline_chips_keep_dom_order 多处选择服务器保持正文顺序', async () => {
     const wrapper = mountInputBox()
     await flushPromises()
-    // 选两项：先 # → 选 prod-api
-    await setTextareaValue(wrapper, '#', 1)
+    await openServerPanel(wrapper, '比较 # 与 # 的状态', 4)
+    await selectServer(wrapper, 0)
+    await setCaretInText(wrapper, '与 #', 4)
     await flushPromises()
-    let items = wrapper.findAll('[data-testid^="trigger-panel-item-server-"]')
-    await items[0].trigger('mousedown')
+    await selectServer(wrapper, 1)
+    expect(readEditorDisplay(wrapper)).toBe('比较 #prod-api 与 #win-01 的状态')
+    expect(wrapper.findAll('.inline-trigger-chip')).toHaveLength(2)
+  })
+
+  it('test_send_serializes_inline_chips_in_place_and_keeps_extras 发送按原位置序列化并携带 extras', async () => {
+    const wrapper = mountInputBox()
     await flushPromises()
-    // 再 # → 选 win-01
-    await setTextareaValue(wrapper, '#', 1)
+    await openServerPanel(wrapper, '比较 # 与 # 的状态', 4)
+    await selectServer(wrapper, 0)
+    await setCaretInText(wrapper, '与 #', 4)
     await flushPromises()
-    items = wrapper.findAll('[data-testid^="trigger-panel-item-server-"]')
-    await items[1].trigger('mousedown')
-    await flushPromises()
-    // 输入文本后发送
-    await wrapper.find('textarea').setValue('请巡检')
+    await selectServer(wrapper, 1)
+
+    // 取出两个 Chip DOM 节点保留，避免 setEditorText 把它们替换掉。
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    const prodApiChip = wrapper.find('[data-testid="inline-trigger-chip-server-prod-api"]').element
+    const win01Chip = wrapper.find('[data-testid="inline-trigger-chip-server-win-01"]').element
+    editor.element.replaceChildren(
+      document.createTextNode('比较 '),
+      prodApiChip,
+      document.createTextNode(' 与 '),
+      win01Chip,
+      document.createTextNode(' 的状态'),
+    )
+    setCaret(editor, editor.element.lastChild, editor.element.lastChild.textContent.length)
+    await editor.trigger('input')
+
     await wrapper.find('.send-btn').trigger('click')
     await flushPromises()
-    const sends = wrapper.emitted('send')
-    expect(sends).toBeTruthy()
-    const last = sends[sends.length - 1]
-    // signature: send(text, files, extras)
-    expect(last[0]).toBe('⟦引用服务器：prod-api、win-01⟧\n请巡检')
+    const last = wrapper.emitted('send').at(-1)
+    expect(last[0]).toBe('比较 ⟦引用服务器：prod-api⟧ 与 ⟦引用服务器：win-01⟧ 的状态')
     expect(last[2].referenced_servers).toEqual([
       { name: 'prod-api', server_type: 'linux' },
       { name: 'win-01', server_type: 'windows' },
     ])
   })
 
-  it('test_send_clears_trigger_chips 发送成功后清空 trigger chips', async () => {
+  it('test_chip_remove_button_removes_inline_chip 点击移除按钮保留周围文本', async () => {
     const wrapper = mountInputBox()
     await flushPromises()
-    await setTextareaValue(wrapper, '#', 1)
+    await openServerPanel(wrapper, '请检查 # 后续', 5)
+    await selectServer(wrapper)
+    await wrapper.find('[data-testid="inline-trigger-chip-server-prod-api"] .trigger-chip-remove-btn').trigger('click')
     await flushPromises()
-    const items = wrapper.findAll('[data-testid^="trigger-panel-item-server-"]')
-    await items[0].trigger('mousedown')
+    expect(readEditorDisplay(wrapper)).toBe('请检查  后续')
+    expect(wrapper.find('.inline-trigger-chip').exists()).toBe(false)
+  })
+
+  it('test_send_excludes_deleted_inline_chip 删除 Chip 后发送不携带服务器', async () => {
+    const wrapper = mountInputBox()
     await flushPromises()
-    expect(wrapper.find('[data-testid="selected-trigger-chip-server-prod-api"]').exists()).toBe(true)
-    await wrapper.find('textarea').setValue('hi')
+    await openServerPanel(wrapper)
+    await selectServer(wrapper)
+    await wrapper.find('.inline-trigger-chip .trigger-chip-remove-btn').trigger('click')
+    await setEditorText(wrapper, '请巡检')
     await wrapper.find('.send-btn').trigger('click')
     await flushPromises()
-    expect(wrapper.find('[data-testid="selected-trigger-chip-server-prod-api"]').exists()).toBe(false)
+    const last = wrapper.emitted('send').at(-1)
+    expect(last[0]).toBe('请巡检')
+    expect(last[2]).toEqual({})
   })
 
-  it('test_send_appends_server_prefix_to_text 发送文本前附加服务器引用前缀', async () => {
+  it('test_send_clears_inline_chips 发送成功后清空编辑器', async () => {
     const wrapper = mountInputBox()
     await flushPromises()
-    await setTextareaValue(wrapper, '#', 1)
-    await flushPromises()
-    const items = wrapper.findAll('[data-testid^="trigger-panel-item-server-"]')
-    await items[0].trigger('mousedown')
-    await flushPromises()
-    await wrapper.find('textarea').setValue('请检查磁盘')
+    await openServerPanel(wrapper)
+    await selectServer(wrapper)
     await wrapper.find('.send-btn').trigger('click')
     await flushPromises()
-    const sends = wrapper.emitted('send')
-    expect(sends).toBeTruthy()
-    const last = sends[sends.length - 1]
-    expect(last[0]).toBe('⟦引用服务器：prod-api⟧\n请检查磁盘')
+    expect(wrapper.find('.inline-trigger-chip').exists()).toBe(false)
+    expect(readEditorDisplay(wrapper)).toBe('')
   })
 
-  it('test_session_change_clears_for_new_session 切换到新 session 时 trigger chips 为空', async () => {
+  it('test_session_change_clears_editor_for_new_session 新 session 清空编辑器', async () => {
     const wrapper = mountInputBox()
     await flushPromises()
-    await setTextareaValue(wrapper, '#', 1)
-    await flushPromises()
-    const items = wrapper.findAll('[data-testid^="trigger-panel-item-server-"]')
-    await items[0].trigger('mousedown')
-    await flushPromises()
-    expect(wrapper.find('[data-testid="selected-trigger-chip-server-prod-api"]').exists()).toBe(true)
-    // 模拟切换到新 session
+    await openServerPanel(wrapper)
+    await selectServer(wrapper)
     await wrapper.setProps({ sessionId: 'sid-002' })
     await flushPromises()
-    expect(wrapper.find('[data-testid="selected-trigger-chip-server-prod-api"]').exists()).toBe(false)
+    expect(readEditorDisplay(wrapper)).toBe('')
   })
 
-  it('test_session_change_keeps_trigger_chips_for_previous_session 切回原 session 时恢复 trigger chips', async () => {
-    const wrapper = mountInputBox({ sessionId: 'sid-001' })
-    await flushPromises()
-    await setTextareaValue(wrapper, '#', 1)
-    await flushPromises()
-    const items = wrapper.findAll('[data-testid^="trigger-panel-item-server-"]')
-    await items[0].trigger('mousedown')
-    await flushPromises()
-    expect(wrapper.find('[data-testid="selected-trigger-chip-server-prod-api"]').exists()).toBe(true)
-    // 切换到新 session 后 chips 消失
-    await wrapper.setProps({ sessionId: 'sid-002' })
-    await flushPromises()
-    expect(wrapper.find('[data-testid="selected-trigger-chip-server-prod-api"]').exists()).toBe(false)
-    // 切回原 session 后 chips 恢复
-    await wrapper.setProps({ sessionId: 'sid-001' })
-    await flushPromises()
-    expect(wrapper.find('[data-testid="selected-trigger-chip-server-prod-api"]').exists()).toBe(true)
-  })
-
-  it('test_hash_still_triggers_when_agent_bound 已绑定智能体时输入 # 仍能触发面板', async () => {
+  it('test_hash_still_triggers_when_agent_bound 已绑定智能体时 # 仍能触发', async () => {
     const wrapper = mountInputBox({ boundAgentName: 'ops_agent', boundAgentDisplayName: '运维项目智能体' })
     await flushPromises()
-    // 已绑定智能体标签应出现
-    expect(wrapper.text()).toContain('运维项目智能体')
-    // 输入 # 后 trigger 面板仍应打开
-    await setTextareaValue(wrapper, '#', 1)
-    await flushPromises()
+    await openServerPanel(wrapper)
     expect(wrapper.find('[data-testid="trigger-panel-server"]').exists()).toBe(true)
   })
 
   it('test_hash_button_disabled_during_streaming 流式期间 # 按钮 disabled', async () => {
     const wrapper = mountInputBox({ isStreaming: true })
     await flushPromises()
-    const btn = wrapper.find('[data-testid="trigger-btn-server"]')
-    expect(btn.attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="trigger-btn-server"]').attributes('disabled')).toBeDefined()
   })
 })

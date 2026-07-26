@@ -9,6 +9,13 @@ import { handleCommand, COMMAND_REGISTRY } from '../utils/commandRegistry.js'
 import { TRIGGER_REGISTRY, searchTriggerByChar, buildOverridesFor } from '../utils/triggerRegistry.js'
 // 2026-07-26 新增：通用触发面板组件（搜索 + 平铺 + 键盘导航）
 import TriggerPanel from './TriggerPanel.vue'
+// 2026-07-27 新增：contenteditable 编辑器 DOM 工具（序列化服务器 mention、定位光标、替换触发串）
+import {
+  serializeEditor,
+  getTextBeforeCaret,
+  replaceTriggerRangeWithServerChip,
+  setCaretAfter,
+} from '../utils/inputEditor.js'
 
 const SUPPORTED_EXTENSIONS = ['pdf', 'doc', 'docx', 'txt', 'md', 'csv', 'json']
 // 2026-07-13 修改：原硬编码 50MB 改为由后端 /api/core/upload-config 动态下发，默认 3MB
@@ -72,8 +79,11 @@ const props = defineProps({
   }
 })
 
+// 2026-07-27 改造：输入区由 textarea 切换为 contenteditable，正文可与原子服务器 Chip 混排。
+// inputValue 改为只读派生，从 editorRef 序列化得到，避免双向数据流与 DOM 状态脱节。
 const inputValue = ref('')
-const textareaRef = ref(null)
+const editorRef = ref(null)
+const editorSnapshotsBySession = ref({})
 const fileInputRef = ref(null)
 const isFocused = ref(false)
 const isDragging = ref(false)
@@ -112,6 +122,7 @@ const activeTriggerIndex = ref(0)
 const triggerItemsCache = ref({})
 const triggerItemsLoading = ref({})
 const triggerItemsError = ref({})
+const triggerRange = ref(null)
 
 /**
  * 当前 sessionId（空字符串兜底为 _default，避免 key 为空）
@@ -206,23 +217,9 @@ const activeTriggerGetItemSubLabel = computed(() => {
 })
 
 /**
- * 平铺的已选 trigger 项（含 trigger id 信息，供 chips 渲染与 buildOverrides 使用）
- * @returns {Array<{trigger: Object, item: Object, key: any}>}
+ * 2026-07-27 改造：上方集中 chip 渲染区已移除，触发器选择只通过编辑器 DOM 维护。
+ * 保留 selectedTriggers（按 session 隔离）以兼容非服务器类 trigger 的 buildOverrides 调用。
  */
-const selectedTriggerChips = computed(() => {
-  const result = []
-  for (const trigger of TRIGGER_REGISTRY) {
-    const items = selectedTriggers.value[trigger.id] || []
-    for (const item of items) {
-      result.push({
-        trigger,
-        item,
-        key: trigger.itemKey(item),
-      })
-    }
-  }
-  return result
-})
 
 const canSend = computed(() => {
   if (props.isStreaming) return false
@@ -277,12 +274,21 @@ const commandHint = computed(() => {
   return reg ? `命令：${reg.description}（用法：${reg.usage}）` : `未知命令：/${parsed.cmd}`
 })
 
+/**
+ * 同步 inputValue 为编辑器当前 DOM 的纯文本。
+ * 用于 canSend / 命令分支 / 触发检测等读取文本的派生逻辑。
+ */
+function syncEditorState() {
+  const { text } = serializeEditor(editorRef.value)
+  inputValue.value = text
+}
+
 const autoResize = () => {
-  const textarea = textareaRef.value
-  if (textarea) {
-    textarea.style.height = 'auto'
-    const newHeight = Math.max(80, Math.min(textarea.scrollHeight, 200))
-    textarea.style.height = newHeight + 'px'
+  const editor = editorRef.value
+  if (editor) {
+    editor.style.height = 'auto'
+    const newHeight = Math.max(80, Math.min(editor.scrollHeight, 200))
+    editor.style.height = newHeight + 'px'
   }
 }
 
@@ -386,30 +392,31 @@ async function loadTriggerItems(triggerId) {
   }
 }
 
-/**
- * 2026-07-26 新增：检测光标处的触发字符 + 激活对应面板
- *
- * 词边界规则：触发字符位于行首或前一个字符为空白，避免 C# / 注释符误触发。
- *
- * @param {string} text - 当前 textarea 完整文本
- * @param {number} caret - 当前光标位置（基于 event.target.selectionStart）
- * @returns {Object|undefined} { trigger, query, charIdx } 或 undefined
- */
-function detectTriggerAtCaret(text, caret) {
-  const c = text.charAt(caret - 1)
-  if (!c || !searchTriggerByChar(c)) return undefined
-  // 词边界：行首或前一个字符为空格/换行/标点
-  const prev = text.charAt(caret - 2)
+function detectEditorTriggerAtCaret() {
+  const root = editorRef.value
+  const selection = window.getSelection()
+  const before = getTextBeforeCaret(root, selection)
+  if (!before) return undefined
+  const node = before.range.startContainer
+  if (node.nodeType !== Node.TEXT_NODE) return undefined
+  const prefix = node.textContent.slice(0, before.range.startOffset)
+  const charIdx = prefix.lastIndexOf('#')
+  if (charIdx < 0) return undefined
+  const prev = prefix.charAt(charIdx - 1)
   if (prev && !/\s/.test(prev)) return undefined
-  const trigger = searchTriggerByChar(c)
-  const query = text.slice(caret)
-  return { trigger, query, charIdx: caret - 1 }
+  const trigger = searchTriggerByChar('#')
+  if (!trigger) return undefined
+  // 搜索词边界：到第一个空白为止，避免用户在搜索串后又输入其他字符时把空白一并吞掉。
+  const query = prefix.slice(charIdx + 1).replace(/\s+$/, '')
+  const range = document.createRange()
+  range.setStart(node, charIdx)
+  range.setEnd(node, charIdx + 1 + query.length)
+  return { trigger, query, range }
 }
 
 /**
- * 2026-07-26 新增：从选中 trigger 项列表移除指定 key 的项
- * @param {string} triggerId - trigger id
- * @param {any} key - 唯一键（trigger.itemKey(item)）
+ * 2026-07-27 改造：行内 chip 通过 removeInlineChip 直接操作 DOM；不再需要独立 removeTriggerItem。
+ * 保留函数便于兼容旧的 selectedTriggerChips 调用点（已删除模板引用）。
  */
 function removeTriggerItem(triggerId, key) {
   const def = TRIGGER_REGISTRY.find((t) => t.id === triggerId)
@@ -423,112 +430,210 @@ function removeTriggerItem(triggerId, key) {
   })
 }
 
-/**
- * 2026-07-26 新增：面板选中项（去重）回调
- * @param {Object|null} item - TriggerPanel 选中项；null 表示 Esc 取消
- */
-function onTriggerPanelSelect(item) {
-  const def = activeTriggerDef.value
-  if (!def) {
-    activeTriggerId.value = null
-    return
-  }
-  if (item) {
-    setCurrentSessionTriggers((prev) => {
-      const list = prev[def.id] || []
-      const exists = list.some((i) => def.itemKey(i) === def.itemKey(item))
-      if (exists) return prev
-      return {
-        ...prev,
-        [def.id]: [...list, item],
-      }
-    })
-    // 选中后关闭面板并清空触发字符串（保留 # 让用户继续添加/不删除）
-    activeTriggerId.value = null
-    triggerPanelSearch.value = ''
-    // 从输入框移除触发字符串及其后的搜索词
-    const text = inputValue.value
-    const caret = textareaRef.value?.selectionStart ?? text.length
-    const detected = detectTriggerAtCaret(text, caret)
-    if (detected) {
-      const next = text.slice(0, detected.charIdx) + text.slice(caret)
-      inputValue.value = next
-      nextTick(() => {
-        if (textareaRef.value) {
-          textareaRef.value.selectionStart = detected.charIdx
-          textareaRef.value.selectionEnd = detected.charIdx
-          autoResize()
-        }
-      })
-    }
-    return
-  }
-  // null = Esc / 外部取消：关闭面板同时清掉触发字符串
-  const text = inputValue.value
-  const caret = textareaRef.value?.selectionStart ?? text.length
-  const detected = detectTriggerAtCaret(text, caret)
-  if (detected) {
-    const next = text.slice(0, detected.charIdx) + text.slice(caret)
-    inputValue.value = next
-    nextTick(() => {
-      if (textareaRef.value) {
-        textareaRef.value.selectionStart = detected.charIdx
-        textareaRef.value.selectionEnd = detected.charIdx
-      }
-    })
-  }
-  activeTriggerId.value = null
-  triggerPanelSearch.value = ''
+function createServerChip(item) {
+  const chip = document.createElement('span')
+  chip.className = 'selected-trigger-chip inline-trigger-chip'
+  chip.contentEditable = 'false'
+  chip.dataset.triggerId = 'server'
+  chip.dataset.businessName = item?.business_name || ''
+  chip.dataset.serverType = item?.server_type || ''
+  chip.setAttribute('data-testid', `inline-trigger-chip-server-${item?.business_name || ''}`)
+
+  const char = document.createElement('span')
+  char.className = 'trigger-char'
+  char.textContent = '#'
+  const label = document.createElement('span')
+  label.className = 'trigger-chip-label'
+  label.textContent = item?.business_name || ''
+  const removeButton = document.createElement('button')
+  removeButton.className = 'trigger-chip-remove-btn'
+  removeButton.type = 'button'
+  removeButton.title = `移除 ${item?.business_name || ''}`
+  removeButton.textContent = '×'
+  removeButton.addEventListener('mousedown', (event) => event.preventDefault())
+  removeButton.addEventListener('click', (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+    removeInlineChip(chip)
+  })
+  chip.append(char, label, removeButton)
+  return chip
 }
 
 /**
- * 2026-07-26 新增：处理工具栏 trigger 按钮点击 —— 在光标处插入字符 + 聚焦
- * （与键入同路径：触发 input 事件走 handleInput 统一检测）
- * @param {string} char - trigger 字符
+ * 删除正文中的服务器 Chip，并同步输入状态。
+ * @param {HTMLElement} chip - 要删除的服务器 Chip
+ * @returns {void}
  */
-function onTriggerButtonClick(char) {
-  const textarea = textareaRef.value
-  if (!textarea) return
-  const start = textarea.selectionStart ?? inputValue.value.length
-  const end = textarea.selectionEnd ?? inputValue.value.length
-  const before = inputValue.value.slice(0, start)
-  const after = inputValue.value.slice(end)
-  // 确保插入位置前是词边界
-  const needsSpace = before.length > 0 && !/\s/.test(before.charAt(before.length - 1))
-  const insert = (needsSpace ? ' ' : '') + char
-  inputValue.value = before + insert + after
-  const newCaret = (before + insert).length
+function removeInlineChip(chip) {
+  const parent = chip?.parentNode
+  if (!parent) return
+  const offset = Array.prototype.indexOf.call(parent.childNodes, chip)
+  parent.removeChild(chip)
+  const range = document.createRange()
+  range.setStart(parent, Math.max(0, offset))
+  range.collapse(true)
+  const selection = window.getSelection()
+  selection.removeAllRanges()
+  selection.addRange(range)
+  syncEditorState()
+  editorRef.value?.focus()
+}
+
+function onTriggerPanelSelect(item) {
+  const def = activeTriggerDef.value
+  const root = editorRef.value
+  if (!def || !root) {
+    activeTriggerId.value = null
+    return
+  }
+  if (item && def.id === 'server' && triggerRange.value) {
+    replaceTriggerRangeWithServerChip({
+      root,
+      range: triggerRange.value,
+      charIndex: triggerRange.value.startOffset,
+      server: item,
+      createChip: createServerChip,
+    })
+    syncEditorState()
+  } else if (!item && triggerRange.value) {
+    const range = triggerRange.value
+    range.deleteContents()
+    setCaretAfter(range.startContainer)
+    syncEditorState()
+  }
+  triggerRange.value = null
+  activeTriggerId.value = null
+  triggerPanelSearch.value = ''
   nextTick(() => {
-    textarea.focus()
-    textarea.selectionStart = newCaret
-    textarea.selectionEnd = newCaret
-    // 手动派发 input 事件走 handleInput 统一逻辑
-    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    editorRef.value?.focus()
+    autoResize()
   })
 }
 
 /**
- * 2026-07-26 新增：监听 sessionId 变化，按 session 隔离 trigger 选择。
- * 新 session 无记录时自动初始化为空对象；切回旧 session 时恢复其选择。
+ * 在当前选区插入触发字符并重新触发面板检测。
+ * @param {string} char - 触发字符
+ * @returns {void}
  */
+function onTriggerButtonClick(char) {
+  const root = editorRef.value
+  if (!root) return
+  const selection = window.getSelection()
+  const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+  const targetRange = range && root.contains(range.startContainer) ? range.cloneRange() : document.createRange()
+  if (!range || !root.contains(range.startContainer)) {
+    targetRange.selectNodeContents(root)
+    targetRange.collapse(false)
+  }
+  const beforeText = targetRange.startContainer.nodeType === Node.TEXT_NODE
+    ? targetRange.startContainer.textContent.slice(0, targetRange.startOffset)
+    : ''
+  const needsSpace = beforeText && !/\s/.test(beforeText.slice(-1))
+  targetRange.deleteContents()
+  const textNode = document.createTextNode((needsSpace ? ' ' : '') + char)
+  targetRange.insertNode(textNode)
+  const caretRange = document.createRange()
+  caretRange.setStart(textNode, textNode.textContent.length)
+  caretRange.collapse(true)
+  selection.removeAllRanges()
+  selection.addRange(caretRange)
+  root.focus()
+  root.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
+
+/**
+ * 2026-07-27 改造：监听 sessionId 变化时，按 session 隔离触发器选择并保存 / 恢复编辑器快照。
+ * 新 session 无记录时初始化为空对象与空快照；切回旧 session 时恢复其编辑器 DOM。
+ */
+function snapshotEditorForSession(sid) {
+  const root = editorRef.value
+  if (!root) return
+  editorSnapshotsBySession.value = {
+    ...editorSnapshotsBySession.value,
+    [sid || '_default']: root.innerHTML,
+  }
+}
+
+function restoreEditorForSession(sid) {
+  const root = editorRef.value
+  if (!root) return
+  const snapshot = editorSnapshotsBySession.value[sid]
+  const html = typeof snapshot === 'string' ? snapshot : ''
+  // 只允许恢复由本组件生成的白名单 DOM；过滤任意 HTML 输入以防 XSS。
+  root.innerHTML = sanitizeEditorHtml(html)
+  triggerRange.value = null
+  activeTriggerId.value = null
+  triggerPanelSearch.value = ''
+  syncEditorState()
+  nextTick(() => autoResize())
+}
+
+function sanitizeEditorHtml(html) {
+  if (!html) return ''
+  const template = document.createElement('template')
+  template.innerHTML = html
+  const allowedTags = new Set(['SPAN', 'BR', 'BUTTON'])
+  const walk = (node) => {
+    const children = Array.from(node.childNodes)
+    for (const child of children) {
+      if (child.nodeType === Node.TEXT_NODE) continue
+      if (child.nodeType !== Node.ELEMENT_NODE) {
+        child.remove()
+        continue
+      }
+      const tag = child.tagName
+      const isServerChip = tag === 'SPAN' && child.dataset?.triggerId === 'server'
+      const isAllowed = allowedTags.has(tag) || isServerChip
+      if (!isAllowed) {
+        // 不在白名单：剥掉外壳，保留其内部文本
+        const fragment = document.createDocumentFragment()
+        while (child.firstChild) fragment.appendChild(child.firstChild)
+        child.replaceWith(fragment)
+        continue
+      }
+      walk(child)
+    }
+  }
+  walk(template.content)
+  return template.innerHTML
+}
+
 watch(
   () => props.sessionId,
   (newSid, oldSid) => {
+    const oldSidKey = oldSid || '_default'
     const sid = newSid || '_default'
+    snapshotEditorForSession(oldSidKey)
     if (!triggerSelectionsBySession.value[sid]) {
       triggerSelectionsBySession.value = {
         ...triggerSelectionsBySession.value,
         [sid]: {},
       }
     }
-    activeTriggerId.value = null
-    triggerPanelSearch.value = ''
+    if (sid !== oldSidKey && !(sid in editorSnapshotsBySession.value)) {
+      editorSnapshotsBySession.value = {
+        ...editorSnapshotsBySession.value,
+        [sid]: '',
+      }
+    }
+    // 保持既有的“切回原 session 恢复 chips”语义：
+    // - 旧 session 有快照时加载快照；
+    // - 旧 session 无快照时（新 session，从未编辑过）保持当前 DOM 不变（即清空）。
+    const snapshot = editorSnapshotsBySession.value[sid]
+    if (typeof snapshot === 'string') {
+      restoreEditorForSession(sid)
+    } else {
+      // 第一次进入该 session，无快照：保留 watch immediate 阶段已恢复的空 DOM 即可。
+      restoreEditorForSession(sid)
+    }
   },
   { immediate: true }
 )
 
-const handleInput = (event) => {
-  inputValue.value = event.target.value
+const handleInput = () => {
+  syncEditorState()
   autoResize()
 
   const trimmed = inputValue.value.trim()
@@ -554,21 +659,113 @@ const handleInput = (event) => {
     }
   }
 
-  // 2026-07-26 新增：trigger 字符检测（与 "/" 智能体下拉平级）
-  const caret = event.target.selectionStart ?? inputValue.value.length
-  const detected = detectTriggerAtCaret(inputValue.value, caret)
+  // 2026-07-27 改造：trigger 字符检测改为基于 contenteditable DOM 与 Selection；
+  // 检测到触发串时保存 Range（用于 onTriggerPanelSelect 替换原位）。
+  const detected = detectEditorTriggerAtCaret()
   if (detected) {
+    triggerRange.value = detected.range
     if (activeTriggerId.value !== detected.trigger.id) {
       activeTriggerId.value = detected.trigger.id
       activeTriggerIndex.value = 0
       loadTriggerItems(detected.trigger.id)
     }
     triggerPanelSearch.value = detected.query
-  } else if (activeTriggerId.value) {
-    // 触发字符被删掉或失去词边界 → 关闭面板
-    activeTriggerId.value = null
-    triggerPanelSearch.value = ''
+  } else {
+    triggerRange.value = null
+    if (activeTriggerId.value) {
+      // 触发字符被删掉或失去词边界 → 关闭面板
+      activeTriggerId.value = null
+      triggerPanelSearch.value = ''
+    }
   }
+}
+
+/**
+ * 粘贴处理：仅接受纯文本，避免破坏受控 Chip DOM 与引入 XSS。
+ * @param {ClipboardEvent} event - 原生粘贴事件
+ */
+/**
+ * 删除紧邻光标的服务器 Chip。仅处理光标紧贴 Chip 的方向，返回 true 表示已处理。
+ */
+function handleAdjacentChipDelete(event, root) {
+  const selection = window.getSelection()
+  if (!selection || selection.rangeCount === 0) return false
+  const range = selection.getRangeAt(0)
+  if (!range.collapsed || !root.contains(range.startContainer)) return false
+  const node = range.startContainer
+  const offset = range.startOffset
+  const isBackspace = event.key === 'Backspace'
+  // 找到光标所在文本节点的父容器，再向兄弟节点方向寻找 Chip
+  let container = node.nodeType === Node.ELEMENT_NODE ? node : node.parentNode
+  if (!container) return false
+  const ownerRoot = container.nodeType === Node.ELEMENT_NODE ? container : root
+  const children = ownerRoot.childNodes
+  let textIndex = -1
+  if (node.nodeType === Node.TEXT_NODE) {
+    for (let i = 0; i < children.length; i++) {
+      if (children[i] === node || children[i].contains?.(node)) {
+        textIndex = i
+        break
+      }
+    }
+  } else {
+    // 光标直接定位在 element 级 children[i]，offset 即索引
+    textIndex = offset
+  }
+  if (textIndex < 0) return false
+  const targetIndex = isBackspace ? textIndex - 1 : textIndex + 1
+  const target = children[targetIndex]
+  if (target && target.nodeType === Node.ELEMENT_NODE && target.dataset?.triggerId === 'server') {
+    event.preventDefault()
+    const nextSibling = isBackspace ? target : target.nextSibling
+    ownerRoot.removeChild(target)
+    const newRange = document.createRange()
+    if (nextSibling) {
+      newRange.setStartBefore(nextSibling)
+    } else {
+      newRange.setStart(ownerRoot, Math.max(0, targetIndex))
+    }
+    newRange.collapse(true)
+    selection.removeAllRanges()
+    selection.addRange(newRange)
+    syncEditorState()
+    return true
+  }
+  return false
+}
+
+function handleEditorPaste(event) {
+  event.preventDefault()
+  const text = (event.clipboardData || window.clipboardData)?.getData?.('text/plain') || ''
+  if (!text) return
+  const root = editorRef.value
+  if (!root) return
+  const selection = window.getSelection()
+  if (!selection || selection.rangeCount === 0) return
+  const range = selection.getRangeAt(0)
+  if (!root.contains(range.startContainer)) return
+  // 把 \n 转为 <br>，其余字符作为文本节点插入
+  const parts = text.split('\n')
+  range.deleteContents()
+  const fragment = document.createDocumentFragment()
+  parts.forEach((part, index) => {
+    if (part) fragment.appendChild(document.createTextNode(part))
+    if (index < parts.length - 1) fragment.appendChild(document.createElement('br'))
+  })
+  range.insertNode(fragment)
+  // 把光标移动到插入末尾
+  const newRange = document.createRange()
+  const lastNode = fragment.lastChild
+  if (lastNode && lastNode.nodeType === Node.TEXT_NODE) {
+    newRange.setStart(lastNode, lastNode.textContent.length)
+  } else {
+    newRange.setStartAfter(lastNode || range.endContainer)
+  }
+  newRange.collapse(true)
+  selection.removeAllRanges()
+  selection.addRange(newRange)
+  syncEditorState()
+  autoResize()
 }
 
 /**
@@ -577,12 +774,13 @@ const handleInput = (event) => {
  */
 function selectAgent(agent) {
   selectedAgent.value = agent
+  if (editorRef.value) editorRef.value.replaceChildren()
   inputValue.value = ''
   showAgentDropdown.value = false
   activeAgentIndex.value = -1
   nextTick(() => {
     autoResize()
-    textareaRef.value?.focus()
+    editorRef.value?.focus()
   })
 }
 
@@ -593,11 +791,19 @@ function removeSelectedAgent() {
   selectedAgent.value = null
   emit('agent-switched', null)
   nextTick(() => {
-    textareaRef.value?.focus()
+    editorRef.value?.focus()
   })
 }
 
 const handleKeydown = (event) => {
+  // 2026-07-27 改造：Backspace/Delete 紧邻行内服务器 Chip 时整块删除，
+  // 避免光标进入 Chip 内部把原子节点拆散。
+  if (event.key === 'Backspace' || event.key === 'Delete') {
+    const root = editorRef.value
+    if (root && handleAdjacentChipDelete(event, root)) {
+      return
+    }
+  }
   // 2026-07-26 新增：trigger 面板打开时由 TriggerPanel 自身处理键盘（input 内联），
   // 这里只需拦截 Enter 防止穿透触发 handleSend。
   if (activeTriggerId.value) {
@@ -664,6 +870,7 @@ const executeCommand = async (text) => {
     emit('send', `命令执行失败：${err.message}`, [])
   } finally {
     isExecutingCommand.value = false
+    if (editorRef.value) editorRef.value.replaceChildren()
     inputValue.value = ''
     // 2026-07-26 新增：命令执行后也清空当前 session 的 trigger 选择（命令结果作为新消息发出）
     setCurrentSessionTriggers({})
@@ -742,25 +949,29 @@ const handleSend = async () => {
     })
   }
 
-  // 2026-07-26 新增：把已选 trigger 项经 buildOverrides 转成 context_overrides 片段，
-  // 作为第 3 个 emit 参数（extras）传给 App.vue → chatStream。
+  // 2026-07-27 改造：发送时直接从编辑器 DOM 序列化。
+  // - 文本按 DOM 顺序保留用户输入，服务器 mention 按行内 Chip 位置序列化为内部标记，
+  //   不再统一追加到消息最前面。
+  // - extras 基于正文中实际存在的服务器 Chip 派生并去重，与后端 DYNAMIC_NODE_REGISTRY 镜像。
+  const { text: serializedText, referencedServers } = serializeEditor(editorRef.value)
+  const trimmedText = serializedText.trim()
+  if (!trimmedText) return
   const extras = {}
   for (const trigger of TRIGGER_REGISTRY) {
-    const items = selectedTriggers.value[trigger.id] || []
-    Object.assign(extras, buildOverridesFor(trigger.id, items))
+    if (trigger.id === 'server') {
+      Object.assign(extras, buildOverridesFor('server', referencedServers.map((s) => ({
+        business_name: s.name,
+        server_type: s.server_type,
+      }))))
+    } else {
+      const items = selectedTriggers.value[trigger.id] || []
+      Object.assign(extras, buildOverridesFor(trigger.id, items))
+    }
   }
 
-  // 2026-07-26 新增：若当前 session 已选服务器，则在用户消息文本前附加服务器列表，
-  // 使问题文本本身也携带引用信息，而不是仅依赖系统提示词。
-  let finalText = text
-  const selectedServers = selectedTriggers.value['server'] || []
-  if (selectedServers.length > 0) {
-    const names = selectedServers.map((s) => s.business_name).join('、')
-    finalText = `⟦引用服务器：${names}⟧\n${text}`
-  }
+  emit('send', trimmedText, uploadedFiles, extras)
 
-  emit('send', finalText, uploadedFiles, extras)
-
+  if (editorRef.value) editorRef.value.replaceChildren()
   inputValue.value = ''
   selectedFiles.value = []
   selectedAgent.value = null
@@ -1164,34 +1375,24 @@ const emit = defineEmits([
             <span class="agent-name">{{ boundAgentDisplayName || boundAgentName }}</span>
           </div>
 
-          <!-- 2026-07-26 新增：trigger 引用 chips（与 selected-agent-tag 平级，可移除）。
-               由 TRIGGER_REGISTRY 驱动渲染；每条 chip 显示 trigger.char 前缀 + item.chipLabel。 -->
+          <!-- 2026-07-27 改造：服务器引用以行内原子 Chip 形式直接渲染在输入正文中，
+               与文本混排；不再使用 textarea 也不在文本框上方集中展示 chip。
+               chip 由 onTriggerPanelSelect 通过 createServerChip 写入 DOM。 -->
           <div
-            v-for="chip in selectedTriggerChips"
-            :key="`${chip.trigger.id}:${chip.key}`"
-            class="selected-trigger-chip"
-            :data-testid="`selected-trigger-chip-${chip.trigger.id}-${chip.key}`"
-          >
-            <span class="trigger-char">{{ chip.trigger.char }}</span>
-            <span class="trigger-chip-label">{{ chip.trigger.chipLabel(chip.item) }}</span>
-            <button
-              class="trigger-chip-remove-btn"
-              :title="`移除 ${chip.trigger.chipLabel(chip.item)}`"
-              @click="removeTriggerItem(chip.trigger.id, chip.key)"
-            >×</button>
-          </div>
-
-          <textarea
-            ref="textareaRef"
-            v-model="inputValue"
-            class="text-input"
-            :placeholder="selectedAgent ? '请输入消息，按「Enter」发送' : (boundAgentName ? `当前智能体：${boundAgentDisplayName || boundAgentName}` : '输入 / 快速使用智能体')"
-            rows="3"
+            ref="editorRef"
+            class="text-input message-editor"
+            data-testid="input-editor"
+            role="textbox"
+            aria-multiline="true"
+            :data-placeholder="selectedAgent ? '请输入消息，按「Enter」发送' : (boundAgentName ? `当前智能体：${boundAgentDisplayName || boundAgentName}` : '输入 / 快速使用智能体')"
+            contenteditable="true"
+            spellcheck="false"
             @input="handleInput"
             @keydown="handleKeydown"
             @focus="handleFocus"
             @blur="handleBlur"
-          ></textarea>
+            @paste="handleEditorPaste"
+          ></div>
         </div>
 
         <div v-if="isCommand && inputValue.trim() !== '/'" class="command-hint">
@@ -1562,19 +1763,32 @@ const emit = defineEmits([
   flex: 1;
   min-width: 0;
   width: 100%;
-  height: 80px;
-  min-height: 80px;
-  max-height: 200px;
-  padding: 8px 0;
   font-size: var(--font-size-base);
   line-height: var(--line-height-normal);
   color: var(--color-text-primary);
   background-color: transparent;
-  resize: none;
-  overflow-y: auto;
+  outline: none;
+}
 
-  &::placeholder {
+/* 2026-07-27 改造：输入区由 textarea 切换为 contenteditable，保留行高与滚动规则。 */
+.message-editor {
+  min-height: 80px;
+  max-height: 200px;
+  padding: 8px 0;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  caret-color: var(--color-accent);
+
+  &:empty::before {
+    content: attr(data-placeholder);
     color: var(--color-text-muted);
+    pointer-events: none;
+  }
+
+  &:focus {
+    outline: none;
+    box-shadow: none;
   }
 
   &::-webkit-scrollbar {
@@ -1588,11 +1802,6 @@ const emit = defineEmits([
   &::-webkit-scrollbar-thumb {
     background-color: var(--color-border);
     border-radius: var(--radius-full);
-  }
-
-  &:focus {
-    outline: none;
-    box-shadow: none;
   }
 }
 
@@ -1831,7 +2040,8 @@ const emit = defineEmits([
   color: var(--color-text-secondary);
 }
 
-/* 2026-07-26 新增：trigger 引用 chips（与 selected-agent-tag 平级，可移除） */
+/* 2026-07-27 改造：trigger 引用 chip 既作为独立标签（已不再使用）
+   也作为行内原子 chip 显示在输入框正文中。行内样式由 .inline-trigger-chip 修饰。 */
 .selected-trigger-chip {
   display: inline-flex;
   align-items: center;
@@ -1843,8 +2053,14 @@ const emit = defineEmits([
   color: var(--color-text-secondary);
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-medium);
-  margin-top: 4px;
   flex-shrink: 0;
+  user-select: none;
+}
+
+.selected-trigger-chip.inline-trigger-chip {
+  margin: 0 2px;
+  vertical-align: baseline;
+  white-space: nowrap;
 }
 
 .trigger-char {

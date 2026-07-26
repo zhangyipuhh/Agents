@@ -76,9 +76,9 @@ describe('InputBox 停止按钮二态切换（2026-06-15 新增）', () => {
       props: { sessionId: 'sid_1', isStreaming: false }
     })
     // 注入文字触发 canSend
-    await wrapper.setData({ inputValue: 'hello world' })
-    const textarea = wrapper.find('textarea.text-input')
-    await textarea.setValue('hello world')
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    editor.element.replaceChildren(document.createTextNode('hello world'))
+    await editor.trigger('input')
     const btn = wrapper.find('.send-btn')
     expect(btn.exists()).toBe(true)
     // 点击会先调 refreshToken 失败 → alert → return；不会 emit('send') 也不会 emit('stop')
