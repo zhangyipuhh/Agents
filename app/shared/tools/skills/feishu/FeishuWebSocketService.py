@@ -226,27 +226,79 @@ class FeishuWebSocketService:
     def _fetch_bot_open_id(self) -> Optional[str]:
         """从飞书 Open API 获取机器人的 open_id（一次性缓存）。
 
-        Returns:
-            str: 机器人的 open_id；获取失败或 SDK 未提供 bot 模块时返回 None。
+        通过 ``lark_oapi.core.model.BaseRequest`` 原始 HTTP 路径调用
+        ``GET /open-apis/bot/v3/info``，tenant_access_token 鉴权；只从
+        ``response.raw.content`` 解析 JSON（bytes 用 utf-8 解码），不读取
+        ``response.data``。
 
-        Raises:
-            RuntimeError: 当 lark SDK 返回失败响应时
+        Returns:
+            str: 机器人的 open_id；获取失败、SDK 未提供核心枚举/模型、API 返回
+            非零 code、JSON 非法、payload 缺 open_id 时均返回 None。绝不会回退到
+            ``app_id``。
         """
         try:
-            from lark_oapi.api.bot.v1 import GetBotRequest
-        except ImportError:
-            # 2026-07-16:当前 lark-oapi 版本未提供 bot/v1 子模块;
-            # 群聊@机器人检测降级到 'in' content 策略。
+            from lark_oapi.core.enum import AccessTokenType, HttpMethod
+            from lark_oapi.core.model import BaseRequest, RequestOption
+        except ImportError as e:  # noqa: BLE001
+            logger.warning("飞书 SDK 缺少 core.enum/core.model，降级群聊@检测: %s", e)
             return None
+
         try:
-            req = GetBotRequest.builder().build()
-            resp = self._lark_client.bot.v1.bot.get(req)
-        except (ImportError, AttributeError):
-            return None
-        if resp.success() and resp.data and resp.data.bot:
-            return getattr(resp.data.bot, "open_id", None) or getattr(
-                resp.data.bot, "app_id", None
+            request = (
+                BaseRequest.builder()
+                .http_method(HttpMethod.GET)
+                .uri("/open-apis/bot/v3/info")
+                .token_types({AccessTokenType.TENANT})
+                .build()
             )
+            response = self._lark_client.request(
+                request, RequestOption.builder().build()
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("飞书 bot/v3/info 请求异常，降级群聊@检测: %s", e)
+            return None
+
+        if response is None:
+            return None
+
+        raw = getattr(response, "raw", None)
+        content = getattr(raw, "content", None) if raw is not None else None
+        try:
+            if isinstance(content, bytes):
+                content = content.decode("utf-8")
+            if not content:
+                logger.warning("飞书 bot/v3/info 响应体为空")
+                return None
+            payload = json.loads(content)
+        except (ValueError, UnicodeDecodeError) as e:  # noqa: BLE001
+            logger.warning("飞书 bot/v3/info 响应解析失败: %s", e)
+            return None
+
+        if not isinstance(payload, dict):
+            logger.warning("飞书 bot/v3/info payload 非 dict 类型")
+            return None
+
+        code = payload.get("code")
+        if code is None:
+            code = getattr(response, "code", None)
+        if code != 0:
+            logger.warning(
+                "飞书 bot/v3/info 返回非零 code=%s msg=%s",
+                code, payload.get("msg"),
+            )
+            return None
+
+        bot_info = payload.get("bot")
+        if not isinstance(bot_info, dict):
+            data_section = payload.get("data")
+            if isinstance(data_section, dict):
+                bot_info = data_section.get("bot")
+        if not isinstance(bot_info, dict):
+            return None
+
+        open_id = bot_info.get("open_id")
+        if isinstance(open_id, str) and open_id:
+            return open_id
         return None
 
     def _resolve_lark_log_level(self) -> int:
@@ -898,7 +950,9 @@ class FeishuWebSocketService:
     def _is_bot_mentioned(self, data: P2ImMessageReceiveV1) -> bool:
         """判断群聊消息中是否 @机器人。
 
-        优先精确匹配 mentions 中的 bot open_id；获取失败时降级使用 '@' in content。
+        仅在 ``self._bot_open_id`` 已知时遍历 mentions 做精确匹配（命中即返回
+        True，未命中则不再降级）；若 ``self._bot_open_id`` 为空（如
+        ``_fetch_bot_open_id`` 失败），降级读取 ``msg.content`` 检查是否含 ``@``。
 
         Args:
             data: 飞书消息事件对象
@@ -908,14 +962,15 @@ class FeishuWebSocketService:
         """
         event = getattr(data, "event", None)
         msg = getattr(event, "message", None) if event else None
-        mentions = getattr(msg, "mentions", None) if msg else None
-        if mentions and self._bot_open_id:
-            for m in mentions:
+        if self._bot_open_id:
+            mentions = getattr(msg, "mentions", None) if msg else None
+            for m in mentions or []:
                 m_id = getattr(m, "id", None)
                 m_open_id = getattr(m_id, "open_id", None) if m_id else None
                 if m_open_id and m_open_id == self._bot_open_id:
                     return True
-        # 降级：content_raw 中含 '@'
+            return False
+        # bot_open_id 未知：降级到 content 中是否含 '@'
         content_raw = getattr(msg, "content", None) if msg else None
         if content_raw and "@" in content_raw:
             return True

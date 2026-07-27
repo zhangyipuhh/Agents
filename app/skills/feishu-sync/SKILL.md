@@ -30,6 +30,7 @@ description: "封装飞书 Open API 主动推送消息、文档或卡片；并�
 - `FeishuWebSocketService`：随 FastAPI lifespan 启停
 - 订阅 `im.message.receive_v1` 事件（私聊全部回复，群聊仅响应 @机器人）
 - 订阅 `card.action.trigger` 事件（HITL 按钮点击回调）
+- 群聊 @机器人 检测：服务启动时通过 `lark.Client.request(BaseRequest)` 调用 `GET /open-apis/bot/v3/info` 并缓存机器人 `open_id`；获取成功时仅按 `mentions[].id.open_id` 精确匹配；获取失败时降级为检查原始消息中的 `@`。
 - 接收消息类型路由：
   - 文本消息 → 直接转交 `settings.feishu.feishu_ws_agent_name` 指定的智能体处理
   - `msg_type=file`，后缀在白名单 `docx / pdf / xlsx / md / txt` 内 → 走下载→解析→注入 user text 路径（见下），再转交 agent

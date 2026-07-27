@@ -14,6 +14,7 @@ FeishuWebSocketService 单元测试
 """
 import asyncio
 import json
+import logging
 import tempfile
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -227,6 +228,224 @@ def test_FeishuWebSocketService_init():
     assert svc._ws_client is None
     assert svc._bot_open_id is None
     assert svc._loop is None
+
+
+# ---------------------------------------------------------------------------
+# P1 _fetch_bot_open_id（2026-07-27 新增，对齐 lark-oapi 1.7.1 原始 HTTP 路径）
+# ---------------------------------------------------------------------------
+def _make_response_for_bot(raw_json_str=None, *, code=0, msg=""):
+    """构造一个飞书 bot info 响应对象（仅暴露 BaseResponse 关键字段）。
+
+    真实 lark-oapi ``BaseResponse`` 关键字段：
+        - raw: 原始 HTTP 响应包装（含 ``raw.content`` JSON 字符串）
+        - code: 业务码（0 = 成功）
+        - msg: 业务消息
+        - data: 由 SDK 反序列化后的结构体（HTTP 路径下可能为 None，需读 raw.content）
+
+    本 helper **不**为 ``resp.data`` 注入结构体数据；测试应仅基于
+    ``raw.content`` 验证业务结果（这是 BaseRequest 原始 HTTP 路径的关键差异）。
+
+    Args:
+        raw_json_str: 响应体 JSON 字符串（None 则用空 dict）
+        code: API 业务码（默认 0 = 成功）
+        msg: API 业务消息
+
+    Returns:
+        MagicMock: 形如 ``lark_oapi.core.model.BaseResponse`` 的 mock
+    """
+    resp = MagicMock(name="lark.BaseResponse")
+    resp.code = code
+    resp.msg = msg
+    # 成功/失败标志：生产代码可用 ``resp.success()`` 也可用 ``resp.code``
+    resp.success = MagicMock(return_value=(code == 0))
+    if raw_json_str is not None:
+        resp.raw = MagicMock(name="response.raw")
+        resp.raw.content = raw_json_str
+    else:
+        resp.raw = MagicMock(name="response.raw")
+        resp.raw.content = "{}"
+    return resp
+
+
+def test_fetch_bot_open_id_top_level_bot_returns_open_id(caplog):
+    """P1：raw.content 顶层含 ``bot.open_id`` → 返回该 open_id，并断言 GET URI / TENANT token。
+
+    旧生产实现 ``from lark_oapi.api.bot.v1 import GetBotRequest`` 在 lark-oapi 1.7.1
+    中不存在；本测试期望新实现走 ``BaseRequest`` 原始 HTTP 路径（``client.request``），
+    response body 顶层含 ``bot.open_id``，并能正确断言：
+
+        - ``http_method == HttpMethod.GET``
+        - ``uri == /open-apis/bot/v3/info``
+        - ``token_types == {AccessTokenType.TENANT}``
+        - ``client.request`` 被调用 1 次，且第二参数为 RequestOption 实例
+    """
+    svc = _make_service()
+
+    raw_body = json.dumps({"code": 0, "msg": "ok", "bot": {"open_id": "ou_bot_top_001"}})
+    resp = _make_response_for_bot(raw_body)
+
+    svc._lark_client.request = MagicMock(return_value=resp)
+
+    from app.tests.shared.tools.skills.feishu.conftest import _BaseRequest
+    _BaseRequest.instances.clear()
+
+    open_id = svc._fetch_bot_open_id()
+
+    assert open_id == "ou_bot_top_001"
+    # 关键：BaseRequest 至少被构造一次
+    assert _BaseRequest.instances, "未构造 BaseRequest：实现未走原始 HTTP 路径"
+    last = _BaseRequest.instances[-1]
+    # 严格断言：精确 http_method / uri / token_types
+    from lark_oapi.core.enum import HttpMethod, AccessTokenType
+    assert last.http_method == HttpMethod.GET, (
+        f"http_method 应为 HttpMethod.GET，实际 {last.http_method!r}"
+    )
+    assert last.uri == "/open-apis/bot/v3/info", (
+        f"uri 应为 /open-apis/bot/v3/info，实际 {last.uri!r}"
+    )
+    assert set(last.token_types) == {AccessTokenType.TENANT}, (
+        f"token_types 应为 {{TENANT}}，实际 {last.token_types!r}"
+    )
+    # 关键：client.request 被调用 1 次，且第二参数为 RequestOption 实例
+    assert svc._lark_client.request.call_count == 1
+    args = svc._lark_client.request.call_args[0]
+    assert len(args) >= 2, "client.request 应至少接收 (request, request_option) 两参数"
+    from app.tests.shared.tools.skills.feishu.conftest import _RequestOption
+    assert isinstance(args[1], _RequestOption), (
+        f"client.request 第二参数应为 RequestOption 实例，实际 {type(args[1]).__name__}"
+    )
+
+
+def test_fetch_bot_open_id_nested_data_bot_returns_open_id(caplog):
+    """P1：raw.content 嵌套 ``data.bot.open_id`` → 返回该 open_id。
+
+    覆盖某些 SDK 版本把 ``bot`` 字段挂在 ``data.bot`` 而非顶层 ``bot`` 的情形；
+    raw_body 必须真实包含 ``{"code":0,"data":{"bot":{"open_id":...}}}``。
+    """
+    svc = _make_service()
+
+    raw_body = json.dumps(
+        {"code": 0, "msg": "ok",
+         "data": {"bot": {"open_id": "ou_bot_nested_002",
+                          "app_id": "cli_bot_nested"}}}
+    )
+    resp = _make_response_for_bot(raw_body)
+
+    svc._lark_client.request = MagicMock(return_value=resp)
+
+    from app.tests.shared.tools.skills.feishu.conftest import _BaseRequest
+    _BaseRequest.instances.clear()
+
+    open_id = svc._fetch_bot_open_id()
+
+    assert open_id == "ou_bot_nested_002", (
+        "新实现必须支持 raw.content 含 data.bot.open_id 的嵌套结构"
+    )
+
+
+def test_fetch_bot_open_id_api_error_returns_none(caplog):
+    """P1：API 返回非零 code → 返回 None 并产生 WARNING 日志。"""
+    svc = _make_service()
+
+    raw_body = json.dumps({"code": 999, "msg": "permission denied"})
+    resp = _make_response_for_bot(raw_body, code=999, msg="permission denied")
+
+    svc._lark_client.request = MagicMock(return_value=resp)
+
+    with caplog.at_level(logging.WARNING, logger="app.shared.tools.skills.feishu.FeishuWebSocketService"):
+        open_id = svc._fetch_bot_open_id()
+
+    assert open_id is None
+    assert any(record.levelno == logging.WARNING for record in caplog.records), (
+        "API 错误应产生 WARNING 日志"
+    )
+
+
+def test_fetch_bot_open_id_request_exception_returns_none(caplog):
+    """P1：``client.request`` 抛异常 → 返回 None 并产生 WARNING 日志（不应抛给上层）。"""
+    svc = _make_service()
+
+    svc._lark_client.request = MagicMock(side_effect=RuntimeError("network broken"))
+
+    with caplog.at_level(logging.WARNING, logger="app.shared.tools.skills.feishu.FeishuWebSocketService"):
+        open_id = svc._fetch_bot_open_id()
+
+    assert open_id is None
+    assert any(record.levelno == logging.WARNING for record in caplog.records), (
+        "request 异常应产生 WARNING 日志"
+    )
+
+
+def test_fetch_bot_open_id_invalid_json_returns_none(caplog):
+    """P1：response.raw.content 非法 JSON → 返回 None 并产生 WARNING 日志。"""
+    svc = _make_service()
+
+    resp = _make_response_for_bot("{not-json")
+
+    svc._lark_client.request = MagicMock(return_value=resp)
+
+    with caplog.at_level(logging.WARNING, logger="app.shared.tools.skills.feishu.FeishuWebSocketService"):
+        open_id = svc._fetch_bot_open_id()
+
+    assert open_id is None
+    assert any(record.levelno == logging.WARNING for record in caplog.records), (
+        "非法 JSON 应产生 WARNING 日志"
+    )
+
+
+def test_fetch_bot_open_id_missing_open_id_returns_none():
+    """P1：response 仅含 app_id 不含 open_id → 不得回退到 app_id（保持 open_id 严格）。"""
+    svc = _make_service()
+
+    raw_body = json.dumps({"code": 0, "msg": "ok", "bot": {"app_id": "cli_bot_only"}})
+    resp = _make_response_for_bot(raw_body)
+
+    svc._lark_client.request = MagicMock(return_value=resp)
+
+    open_id = svc._fetch_bot_open_id()
+
+    # 旧生产实现会回退到 app_id；新实现严格只接受 open_id
+    assert open_id is None, (
+        "仅含 app_id 时不应回退；旧实现用 getattr(resp.data.bot, 'app_id', None) 回退是 bug"
+    )
+
+
+def test_fetch_bot_open_id_empty_raw_content_returns_none():
+    """P1：response.raw.content 是空 JSON '{}' → 返回 None（无 open_id）。"""
+    svc = _make_service()
+
+    resp = _make_response_for_bot("{}")
+
+    svc._lark_client.request = MagicMock(return_value=resp)
+
+    open_id = svc._fetch_bot_open_id()
+
+    assert open_id is None, "空 body 不应返回有效 open_id"
+
+
+# ---------------------------------------------------------------------------
+# P1 _is_bot_mentioned：mention 只含其他用户 + content 含 '@' → 期望 False
+# ---------------------------------------------------------------------------
+def test_is_bot_mentioned_other_user_with_at_symbol_returns_false():
+    """P2：bot_open_id 已知、mentions 仅其他用户、content 含 '@' → 期望 False。
+
+    旧生产实现无条件降级到 'in' content：只要 content 含 '@' 就认为 @机器人。
+    本测试断言新实现严格按 mentions 匹配：未列 bot_open_id 即视为未 @ 机器人。
+    """
+    svc = _make_service(bot_open_id="ou_bot_xxx")
+
+    mention = MagicMock()
+    mention.id.open_id = "ou_other_user"
+    msg = MagicMock()
+    msg.mentions = [mention]
+    # content 含 '@'（理论上@其他用户），但 mentions 不含 bot_open_id
+    msg.content = "@其他人 你好"
+    event = MagicMock()
+    event.message = msg
+    data = MagicMock()
+    data.event = event
+
+    assert svc._is_bot_mentioned(data) is False
 
 
 # ---------------------------------------------------------------------------

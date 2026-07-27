@@ -8,6 +8,8 @@ mock 范围：
     - lark_oapi.Client.builder() 链式调用（app_id / app_secret / log_level / build）
     - lark_oapi.LogLevel 枚举（DEBUG / INFO / WARNING / ERROR，使用真实整数值以支持 _resolve_log_level 测试）
     - lark_oapi.api.im.v1.CreateMessageRequest / CreateMessageRequestBody builder 链
+    - lark_oapi.core.enum.HttpMethod / AccessTokenType（仅提供 GET / TENANT 真实使用项）
+    - lark_oapi.core.model.BaseRequest / RequestOption（builder 链式构造 + 类级实例追踪，便于断言 http_method / uri / token_types）
 
 注意：生产环境中 lark_oapi 是真实依赖（见 app/requirements.txt），
 此处 mock 仅用于沙箱/CI 环境无该包时的单元测试运行。
@@ -247,31 +249,161 @@ _lark.api = _lark_api
 
 
 # ---------------------------------------------------------------------------
-# 构造 lark_oapi.api.bot.v1 子模块（供 FeishuWebSocketService 获取机器人 open_id）
+# 构造 lark_oapi.core 及其子模块（enum / model），对等真实 lark-oapi 1.7.1
 # ---------------------------------------------------------------------------
-_lark_api_bot = types.ModuleType("lark_oapi.api.bot")
-_lark_api_bot.__path__ = []
-_lark_api_bot_v1 = types.ModuleType("lark_oapi.api.bot.v1")
+# 真实 lark-oapi 1.7.1 在 core/model.py 提供 BaseRequest 与 RequestOption；
+# core/enum.py 提供 HttpMethod、AccessTokenType 等枚举。
+# FeishuWebSocketService._fetch_bot_open_id 应改走 BaseRequest 原始 HTTP 路径：
+#     from lark_oapi.core.enum import HttpMethod, AccessTokenType
+#     from lark_oapi.core.model import BaseRequest, RequestOption
+#     req = (BaseRequest.builder()
+#            .http_method(HttpMethod.GET)
+#            .uri("/open-apis/bot/v3/info")
+#            .token_types([AccessTokenType.TENANT])
+#            .build())
+#     resp = client.request(req, RequestOption.builder().build())
+#
+# 这里挂载的 mock 必须真实可被 import 且行为接近真实 SDK，使测试断言
+# ``http_method`` / ``uri`` / ``token_types`` 时拿到的字段名与生产一致。
+
+# --- lark_oapi.core.enum ---------------------------------------------------
+_lark_core_enum = types.ModuleType("lark_oapi.core.enum")
+
+# 真实 lark-oapi 1.7.1 中 HttpMethod / AccessTokenType 是整型枚举；本 mock 仅
+# 提供真实使用到的 token（GET、TENANT、USER、APP 等），其余值未在本测试触发
+# 路径中用到，不预先给出具体数值，避免错误假设 SDK 真实值。
+class _HttpMethod:
+    """模拟 lark_oapi.core.enum.HttpMethod（仅暴露本测试用到的 GET）。"""
+
+    GET = "GET"
 
 
-class _GetBotRequestBuilder:
-    """模拟 GetBotRequest.builder()。"""
+class _AccessTokenType:
+    """模拟 lark_oapi.core.enum.AccessTokenType（仅暴露本测试用到的 TENANT）。"""
+
+    TENANT = "tenant"
+
+
+_lark_core_enum.HttpMethod = _HttpMethod
+_lark_core_enum.AccessTokenType = _AccessTokenType
+
+# --- lark_oapi.core.model ---------------------------------------------------
+# 真实 lark-oapi 1.7.1 暴露 ``BaseRequest.builder().http_method(...).uri(...).token_types(...).build()``
+# 链式构造器；测试断言构造后 ``request.http_method / uri / token_types`` 字段名与
+# 生产代码一致。本 mock 严格按 builder 链实现，避免与生产代码契约错位。
+_lark_core_model = types.ModuleType("lark_oapi.core.model")
+
+
+class _RequestOptionBuilder:
+    """模拟 RequestOption.builder() 链（透传配置即可）。"""
+
+    def __init__(self):
+        self._opts: dict = {}
+
+    def type(self, t):
+        self._opts["type"] = t
+        return self
 
     def build(self):
-        return MagicMock(name="GetBotRequest")
+        """构造 RequestOption 实例（透传所有 builder 配置）。"""
+        return _RequestOption(**self._opts)
 
 
-class _GetBotRequest:
-    """模拟 lark_oapi.api.bot.v1.GetBotRequest。"""
+class _RequestOption:
+    """模拟 lark_oapi.core.model.RequestOption。
+
+    真实 SDK 契约：``RequestOption.builder().build()`` 返回一个
+    ``RequestOption`` 实例（用于带外传入 lark Client 的 request 调用）。
+    本 mock 暴露静态 ``builder()`` 让 ``RequestOption.builder().build()`` 可运行。
+    """
+
+    def __init__(self, **kwargs):
+        self._kwargs = kwargs
 
     @staticmethod
     def builder():
-        return _GetBotRequestBuilder()
+        """返回 builder，以便 ``RequestOption.builder().build()`` 链式构造。"""
+        return _RequestOptionBuilder()
 
 
-_lark_api_bot_v1.GetBotRequest = _GetBotRequest
-_lark_api_bot.v1 = _lark_api_bot_v1
-_lark_api.bot = _lark_api_bot
+class _BaseRequestBuilder:
+    """模拟 BaseRequest.builder() 链式构造器。
+
+    真实 lark-oapi 1.7.1 原生 HTTP 路径的 SDK 写法：
+        req = BaseRequest.builder() \\
+            .http_method(HttpMethod.GET) \\
+            .uri("/open-apis/bot/v3/info") \\
+            .token_types([AccessTokenType.TENANT]) \\
+            .build()
+        resp = client.request(req, RequestOption.builder().build())
+
+    本 mock 严格实现该 builder 链：每个 setter 返回 ``self`` 便于链式调用，
+    ``build()`` 构造一个 ``BaseRequest`` 实例并记录到 ``_BaseRequest.instances``。
+    """
+
+    def __init__(self):
+        self._http_method = None
+        self._uri = None
+        self._token_types = None
+
+    def http_method(self, value):
+        self._http_method = value
+        return self
+
+    def uri(self, value):
+        self._uri = value
+        return self
+
+    def token_types(self, value):
+        self._token_types = value
+        return self
+
+    def build(self):
+        """构造 BaseRequest 实例，复制 builder 字段并记录到类级 instances。"""
+        req = _BaseRequest(
+            http_method=self._http_method,
+            uri=self._uri,
+            token_types=self._token_types,
+        )
+        return req
+
+
+class _BaseRequest:
+    """模拟 lark_oapi.core.model.BaseRequest（builder 构造，字段可断言）。
+
+    字段：
+        http_method: HTTP 方法（HttpMethod 枚举值）
+        uri: 资源路径（str）
+        token_types: token 类型列表（list[AccessTokenType]）
+
+    Attributes:
+        instances: 类级列表，记录所有 ``build()`` 完成的实例（用于测试断言）。
+    """
+
+    instances: list = []
+
+    def __init__(self, *, http_method, uri, token_types):
+        self.http_method = http_method
+        self.uri = uri
+        self.token_types = token_types
+        _BaseRequest.instances.append(self)
+
+    @staticmethod
+    def builder():
+        """返回 ``_BaseRequestBuilder`` 以支持 ``BaseRequest.builder().http_method(...)...build()`` 链。"""
+        return _BaseRequestBuilder()
+
+
+_lark_core_model.BaseRequest = _BaseRequest
+_lark_core_model.RequestOption = _RequestOption
+
+
+# --- lark_oapi.core 包级导入 -----------------------------------------------------
+_lark_core = types.ModuleType("lark_oapi.core")
+_lark_core.__path__ = []  # 标记为 package，使 ``lark_oapi.core.enum`` / ``.model`` 可被导入
+_lark_core.enum = _lark_core_enum
+_lark_core.model = _lark_core_model
+_lark.core = _lark_core
 
 
 # ---------------------------------------------------------------------------
@@ -724,8 +856,9 @@ sys.modules["lark_oapi"] = _lark
 sys.modules["lark_oapi.api"] = _lark_api
 sys.modules["lark_oapi.api.im"] = _lark_api_im
 sys.modules["lark_oapi.api.im.v1"] = _lark_api_im_v1
-sys.modules["lark_oapi.api.bot"] = _lark_api_bot
-sys.modules["lark_oapi.api.bot.v1"] = _lark_api_bot_v1
 sys.modules["lark_oapi.api.cardkit"] = _lark_api_cardkit
 sys.modules["lark_oapi.api.cardkit.v1"] = _lark_api_cardkit_v1
 sys.modules["lark_oapi.ws"] = _ws_module
+sys.modules["lark_oapi.core"] = _lark_core
+sys.modules["lark_oapi.core.enum"] = _lark_core_enum
+sys.modules["lark_oapi.core.model"] = _lark_core_model
