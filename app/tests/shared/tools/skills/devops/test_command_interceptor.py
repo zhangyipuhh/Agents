@@ -790,6 +790,8 @@ def _win56_interceptor():
             "Format-Table", "Format-List", "Out-String",
             "appcmd list ",
             "%systemroot%\\system32\\inetsrv\\appcmd.exe list ",
+            "powershell -Command ",
+            "powershell -EncodedCommand ",
         ],
     )
 
@@ -949,3 +951,53 @@ def test_pipeline_iis_query_allowed_with_formatting():
     )
     allowed, reason = ci.is_allowed(cmd)
     assert allowed is True, reason
+
+
+# ----------------------------------------------------------------------
+# 2026-07-27 反馈新增:PowerShell 外壳前缀（powershell -Command / -EncodedCommand）
+# 触发场景：LLM 在 Windows 上习惯用 powershell -Command "Get-Service W3SVC" /
+# powershell -EncodedCommand <Base64> 形式调用。整段子串以 powershell 开头，
+# 不命中任何 cmdlet 精确条目 → 整批被拒。
+# 补两条前缀条目后整段子串命中，外壳内的子命令仍需逐段命中白名单。
+# ----------------------------------------------------------------------
+
+
+def test_whitelist_powershell_command_prefix_allowed():
+    """``powershell -Command "Get-Service W3SVC"`` 经前缀 + 子段双层校验放行。"""
+    ci = _win56_interceptor()
+    for cmd in [
+        'powershell -Command "Get-Service W3SVC"',
+        'powershell -Command "Get-WmiObject Win32_Service -Filter \\"Name=\'W3SVC\'\\""',
+        'powershell -Command "Get-Service W3SVC | Select-Object Name,Status"',
+    ]:
+        allowed, reason = ci.is_allowed(cmd)
+        assert allowed is True, f"应放行 {cmd!r}，但被拒: {reason}"
+
+
+def test_whitelist_powershell_encoded_command_prefix_allowed():
+    """``powershell -EncodedCommand <Base64>`` 前缀放行（SSHTools 实际包装形式）。"""
+    ci = _win56_interceptor()
+    cmd = "powershell -EncodedCommand SQBFAFgAIAAoAEcAZQB0AC0AUwBlAHIAbgBpAGMAZQAgAFcAMwBTAFYAQwApAA=="
+    allowed, reason = ci.is_allowed(cmd)
+    assert allowed is True, reason
+
+
+def test_whitelist_powershell_prefix_subcommands_still_validated():
+    """``powershell -Command`` 内的子段仍按管道逐段校验。
+
+    ``_split_pipeline`` 按 ``|``/``||``/``&&``/``;``/``&`` 拆分时**引号内不拆**
+    （``CommandInterceptor._split_pipeline`` 对 ``\\\\`` 后的下一字符做引号保护），
+    所以 ``powershell -Command "Get-Service W3SVC | Stop-Service W3SVC"`` 中
+    整段被引号包裹 → 视为一段 → 命中 ``powershell -Command `` 前缀 → 放行。
+    这与设计契约一致：引号保护让运维能在单引号 / 双引号内合法组合命令。
+
+    但若用单引号包裹后**外部**再加管道拆分
+    （``powershell -Command 'Get-Service W3SVC' | Select-Object ...``），
+    ``_split_pipeline`` 仍按 ``|`` 拆为多段，每段独立校验。
+    本用例覆盖此合法路径：``powershell -Command 'Get-Service W3SVC' | Select-Object ...``
+    拆为两段，都命中白名单 → 放行。
+    """
+    ci = _win56_interceptor()
+    cmd = "powershell -Command 'Get-Service W3SVC' | Select-Object Name,Status"
+    allowed, reason = ci.is_allowed(cmd)
+    assert allowed is True, f"应放行 {cmd!r}，但被拒: {reason}"

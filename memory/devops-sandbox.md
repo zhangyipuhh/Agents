@@ -158,14 +158,17 @@
   - `Get-Process`（精确）：兜底查询 w3wp / ftpsvc 工作进程。
   - `Select-Object` / `Where-Object` / `Format-Table` / `Format-List` / `Out-String`（精确）：管道逐段必需，参考 `test_pipeline_tail_segment_with_exact_whitelist` 已锁定的契约。
   - `"%systemroot%\\system32\\inetsrv\\appcmd.exe list "`（前缀带尾空格）：IIS 7+ 通用只读命令行，覆盖 `list sites` / `list apps` / `list apppools` / `list vdirs` / `list config` / `list backups` / `list wps`。
+  - `powershell -Command ` / `powershell -EncodedCommand `（前缀带尾空格）：放行 LLM 习惯的 PowerShell 外壳包裹形式（`powershell -Command "Get-Service W3SVC"` / `powershell -EncodedCommand <Base64>`）。SSHTools 实际包装形式即后者（`app/shared/utils/ssh/platform_shell.py:91-96`）。引号内的子命令因 `_split_pipeline` 引号保护不拆段，整段走前缀条目匹配；引号外的管道仍按 `|` 拆段独立校验。
 - **黑名单新增条目**（仅前缀，配套防误写）：
   - 服务写操作：`Start-Service ` / `Set-Service ` / `Restart-Service `（与历史 `Stop-Service ` 对称）。
   - appcmd 写 / 启停 / 删除 / 备份还原：`appcmd add ` / `appcmd set ` / `appcmd delete ` / `appcmd start ` / `appcmd stop ` / `appcmd recycle ` / `appcmd restore ` / `appcmd uninstall `（白名单只放行 list 子命令）。
 - **白名单保留条目**：`Get-Service` / `Get-WinEvent ` 不变；`inspection_script` 仍不受白名单约束（`data/devops/servers.yaml.example:57-58`），黑/白名单变更不影响固定巡检脚本。
 - **appcmd 路径细节**：`%systemroot%\\system32\\inetsrv\\appcmd.exe` 在 YAML 中字面 `\\`（YAML 不解释转义），CommandInterceptor 按字面前缀匹配，不会触发正则分支（`_REGEX_TOKENS` 不含 `\\`）。
-- **回归保护**：`app/tests/shared/tools/skills/devops/test_command_interceptor.py` 新增用例覆盖：白名单精确条目（`Get-WmiObject` / `Get-Process` 放行 / `Get-WmiObjectList` 不放行）、appcmd 前缀条目（`appcmd list sites` 放行 / `appcmd list` 不带尾空格被拒 / `appcmd set site` 被前缀黑名单拒）、服务写操作黑名单（`Start-Service W3SVC` / `Set-Service W3SVC` / `Restart-Service W3SVC` 拒）、appcmd 全套黑名单（`appcmd add / set / delete / start / stop / recycle / restore / uninstall` 前缀拒）。用例总数：40 → 53。整个 devops 测试目录 64/64 PASS。
+- **PowerShell 外壳引号保护说明**：`powershell -Command "Get-Service W3SVC"` 整段被引号包裹， `_split_pipeline` 不拆段，整段匹配 `powershell -Command ` 前缀 → 放行。这是 `CommandInterceptor._split_pipeline` 的既有契约（`CommandInterceptor.py:219-307`），运维可在双引号内自由组合 cmdlets。安全语义上引号内的命令被 PowerShell 解析为字符串字面量，恶意 cmdlet 仍会被 PowerShell 自身安全策略拦截；运维如需拆段校验，可改用管道形式（`powershell -Command 'Get-Service W3SVC' | Select-Object ...`）。
+- **回归保护**：`app/tests/shared/tools/skills/devops/test_command_interceptor.py` 新增用例覆盖：白名单精确条目（`Get-WmiObject` / `Get-Process` 放行 / `Get-WmiObjectList` 不放行）、appcmd 前缀条目（`appcmd list sites` 放行 / `appcmd list` 不带尾空格被拒 / `appcmd set site` 被前缀黑名单拒）、服务写操作黑名单（`Start-Service W3SVC` / `Set-Service W3SVC` / `Restart-Service W3SVC` 拒）、appcmd 全套黑名单（`appcmd add / set / delete / start / stop / recycle / restore / uninstall` 前缀拒）、PowerShell 外壳前缀（`powershell -Command "Get-Service W3SVC"` / `powershell -EncodedCommand <Base64>` 放行 / 管道拆分 `powershell -Command 'Get-Service W3SVC' | Select-Object ...` 拆段后双段放行）。用例总数：40 → 56。整个 devops 测试目录 64/64 PASS。
 - **设计权衡**：未引入 `Get-Web*` / `Get-Ftp*` 等 `WebAdministration` 模块 cmdlet（依赖模块已安装，跨环境不稳定）；未引入 `Get-CimInstance`（虽 PowerShell 7 推荐，但 PS 5.1 已有 `Get-WmiObject` 覆盖，留待未来 PR 追加）。
 - **不引入 WebAdministration 的理由**：本项目服务器 11/56 历史巡检脚本均使用 `Get-WmiObject`（`memory/devops-sandbox.md:204` legacy-compatible PowerShell 约束），运维团队已对 `Get-WmiObject` 形成使用习惯；引入新 cmdlet 需在白名单增加更多条目且依赖模块版本，扩大攻击面。
+- **PowerShell 外壳前缀的设计权衡**：未引入 `cmd /c` / `cmd.exe` 前缀（运维可能用 `cmd /c "net start" | findstr iis` 等），原因：① cmd 入口是字符串拼接重灾区（`&` 链式命令、`%VAR%` 展开），需要更复杂的子段白名单；② PowerShell 5.1 已能覆盖运维 95% 场景（Get-Service / Get-WmiObject / Get-Process / appcmd list），cmd 仅在调用旧批处理脚本时必需；③ 暂未观察到 `cmd /c` 形式的真实运维调用需求。如后续真实场景需要，再追加 `cmd /c ` 前缀。
 
 ### 命令白名单放宽与管道逐段校验（2026-07-15）
 

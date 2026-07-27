@@ -137,6 +137,9 @@ servers:
       - "Out-String"      # 精确匹配
       - "appcmd list "    # 前缀匹配：IIS 7+ list 子命令
       - "%systemroot%\\system32\\inetsrv\\appcmd.exe list "  # 前缀匹配：兼容完整路径调用
+      # 2026-07-27 反馈新增：放行 PowerShell 外壳前缀（运维 LLM 习惯用 powershell -Command 形式）
+      - "powershell -Command "  # 前缀匹配
+      - "powershell -EncodedCommand "  # 前缀匹配（SSHTools 实际包装形式）
     # 固定巡检脚本：PowerShell 收集磁盘 / 内存 / CPU / 运行时间，输出 JSON 便于解析。
     inspection_script: |
       $disk = ((Get-PSDrive C).Used / ((Get-PSDrive C).Used + (Get-PSDrive C).Free)) * 100
