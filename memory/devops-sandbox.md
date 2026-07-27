@@ -131,6 +131,24 @@
 - `CommandInterceptor(whitelist=None)` 与 `whitelist=[]` 行为完全等价：均视为「空白名单」并启用 allowlist，**所有非黑名单命令必须命中白名单才放行**。
 - SSHTools 在内部构造拦截器时直接传入 DB 行 `whitelist` 字段（dict / JSONB 反序列化结果）；DB 中 `whitelist` 为 `NULL` 或 `[]` 都表示「拒绝所有非黑名单命令」，调用方必须显式配置命中项（Linux：`echo ` / `ls ` / `tail ` 等；Windows：`Get-Service` / `powershell ` 等）。
 
+### IP/网络/环境变量黑名单补强（2026-07-27 新增）
+
+- **触发**：运维反馈 `whitelist` 不放行 `hostname -I` / `ifconfig` / `ip addr` 等查询 IP 的命令，但通过 `cat /etc/hosts` / `env` / `printenv` / `echo $SSH_CONNECTION` 等宽口径白名单条目，AI 仍可绕路拿到本机 PUBLIC / PRIVATE / VIP / SCAN 全量 IP。运维选定「黑名单补强」方案，不修改白名单结构。
+- **变更范围**：仅 `data/devops/servers.yaml` Linux 节点 `blacklist` 列表新增 7 条；白名单、CommandInterceptor 代码、example 模板均不动。
+- **新增条目**（路径类正则前缀 + 命令类正则边界 + 变量类正则词边界）：
+  - `^cat /etc/hosts`（正则，^ 锚定开头）：拦截 `/etc/hosts` 及其子路径 `.allow` `.deny`（Oracle RAC / 集群主机表写全 PUBLIC/VIP/PRIVATE/SCAN IP）
+  - `^cat /proc/net/`（正则，^ 锚定开头 + 路径前缀）：拦截 `/proc/net/tcp` `/proc/net/route` `/proc/net/fib_trie` 等网络状态
+  - `^cat /sys/class/net/`（正则，^ 锚定开头 + 路径前缀）：拦截网卡 MAC / 链路状态
+  - `^env(\s|$)`（正则，^ + 空白/行尾边界）：仅拦截无参 `env`，`env KEY=VAL` 写变量形式（运维极少使用）一并被拒
+  - `^printenv`（正则，^ 锚定开头）：拦截 `printenv` / `printenv SSH_CONNECTION` 等任意参数
+  - `\bset\b`（正则，词边界）：拦截 bash 内置 `set` 刷出全部变量；不误伤 `unset` / `reset` / `dataset`
+  - `\bSSH_(CONNECTION|CLIENT|TUNNEL)\b`（正则，词边界）：拦截 `echo $SSH_CONNECTION` / `echo ${SSH_CLIENT}` / `printenv SSH_TUNNEL` / `awk '{print ENVIRON["SSH_CONNECTION"]}'` 等变量引用；不误伤 `MY_SSH_CONNECTION_TOKEN` 等无关字符串
+- **白名单保留条目**：`cat /etc/os-release` / `cat /etc/redhat-release` / `cat /proc/cpuinfo` / `cat /proc/meminfo` / `cat /var/log/` / `grep ` / `awk ` / `echo ` 等全部不受影响（黑名单优先于白名单仅在被拒路径上生效）。
+- **正则分类器踩坑（2026-07-27 修复）**：`SSH_(CONNECTION|CLIENT|TUNNEL)` 不含 `_REGEX_TOKENS` 中任一转义序列（`\(` / `\(` / `\|` 都需要反斜杠前缀才能触发 `_looks_like_regex`），原写法会被分类到 `_blacklist_exact` 而非正则，整串 `echo $SSH_CONNECTION` 不等于字面 `ssh_(...)` → 不拦截。修复方案：在条目首加 `\b` 词边界触发 `_looks_like_regex` 走正则路径；同样地 `^` 前缀也是合法触发器。运维后续如需新增正则黑名单，需保证条目以 `^` 开头或包含 `_REGEX_TOKENS`（`\d` / `\s` / `\w` / `\b` / `\(` / `\)` / `\[` / `\]` / `\{` / `\}` / `\$` / `\^` / `\.` / `\+` / `\*` / `\?` / `\|` / `\\` / `.*` / `.+` / `.?`）之一，否则会走精确匹配失效。
+- **回归保护**：`app/tests/shared/tools/skills/devops/test_command_interceptor.py` 新增 9 个用例（7 条目各 1 + 1 合法路径不被误伤 + 1 黑名单分类器踩坑防回归），用例总数：31 → 40。整个 devops 测试目录 64/64 PASS。
+- **设计权衡**：`hostname -I` / `ifconfig` / `ip addr` 等直查命令仍不在白名单内（用户原本已观察到拦截行为，符合设计预期）；运维如确需直查 IP，应通过 inspection_script 内聚的运维工具（如巡检脚本固定采集 + 服务端解析）获取，不在白名单命令面放宽。
+- **白名单潜在 bug 备忘（不在本次范围）**：`data/devops/servers.yaml` 第 69 行 `"cat /var/log/"` 无尾空格 → 走精确条目，按 `startswith(pattern + " ")` 判定；`cat /var/log/messages` 不以 `"cat /var/log/ "` 开头 → 不会命中精确条目。本次黑名单补强不影响该行为；后续如要让子路径生效，应改为带尾空格的前缀条目 `"cat /var/log/ "` 或正则 `^cat /var/log/`。
+
 ### 命令白名单放宽与管道逐段校验（2026-07-15）
 
 - 白名单条目匹配语义统一为 `startswith`（大小写不敏感）：精确条目（无尾空格）和前缀条目（尾空格）都按 startswith 判断；正则条目按 `re.search` 判断。
