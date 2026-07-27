@@ -713,43 +713,54 @@ function handleAdjacentChipDelete(event, root) {
   const node = range.startContainer
   const offset = range.startOffset
   const isBackspace = event.key === 'Backspace'
-  // 找到光标所在文本节点的父容器，再向兄弟节点方向寻找 Chip
+
+  // 2026-07-27 修复：先按光标在文本节点内的 offset 判定是否真的"贴边"，
+  // 避免在 chip 之后的文本节点中删字时误删 chip。
+  // - Backspace：offset===0 时前一个兄弟可能是 chip；offset>0 时光标前是文本字符，不拦截。
+  // - Delete    ：offset===textLength 时后一个兄弟可能是 chip；offset<textLength 时不拦截。
+  if (node.nodeType === Node.TEXT_NODE) {
+    const textLen = (node.textContent || '').length
+    if (isBackspace && offset > 0) return false
+    if (!isBackspace && offset < textLen) return false
+  } else if (node.nodeType !== Node.ELEMENT_NODE) {
+    return false
+  }
+
+  // 找到光标所在容器的 children
   let container = node.nodeType === Node.ELEMENT_NODE ? node : node.parentNode
   if (!container) return false
   const ownerRoot = container.nodeType === Node.ELEMENT_NODE ? container : root
   const children = ownerRoot.childNodes
-  let textIndex = -1
+  let edgeIndex = -1
   if (node.nodeType === Node.TEXT_NODE) {
     for (let i = 0; i < children.length; i++) {
       if (children[i] === node || children[i].contains?.(node)) {
-        textIndex = i
+        edgeIndex = i
         break
       }
     }
   } else {
     // 光标直接定位在 element 级 children[i]，offset 即索引
-    textIndex = offset
+    edgeIndex = offset
   }
-  if (textIndex < 0) return false
-  const targetIndex = isBackspace ? textIndex - 1 : textIndex + 1
+  if (edgeIndex < 0) return false
+  const targetIndex = isBackspace ? edgeIndex - 1 : edgeIndex + 1
   const target = children[targetIndex]
-  if (target && target.nodeType === Node.ELEMENT_NODE && target.dataset?.triggerId === 'server') {
-    event.preventDefault()
-    const nextSibling = isBackspace ? target : target.nextSibling
-    ownerRoot.removeChild(target)
-    const newRange = document.createRange()
-    if (nextSibling) {
-      newRange.setStartBefore(nextSibling)
-    } else {
-      newRange.setStart(ownerRoot, Math.max(0, targetIndex))
-    }
-    newRange.collapse(true)
-    selection.removeAllRanges()
-    selection.addRange(newRange)
-    syncEditorState()
-    return true
+  if (!target || target.nodeType !== Node.ELEMENT_NODE || target.dataset?.triggerId !== 'server') {
+    return false
   }
-  return false
+  // 仅当"贴边 + 邻接兄弟是 chip"时整块删除 chip
+  event.preventDefault()
+  ownerRoot.removeChild(target)
+  // 删除 chip 后光标定位于原 chip 所在位置（ownerRoot.childNodes 中的 targetIndex）。
+  // 不论 Backspace/Delete，光标位置都是「原 chip 占的槽位」，原 chip 之后的兄弟自然前移。
+  const newRange = document.createRange()
+  newRange.setStart(ownerRoot, Math.max(0, Math.min(targetIndex, ownerRoot.childNodes.length)))
+  newRange.collapse(true)
+  selection.removeAllRanges()
+  selection.addRange(newRange)
+  syncEditorState()
+  return true
 }
 
 function handleEditorPaste(event) {

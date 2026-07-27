@@ -651,7 +651,7 @@ web/Agent/src/
 7. **onTriggerPanelSelect**：选中时调用 `replaceTriggerRangeWithServerChip` 原位替换触发串；取消（null）时删除触发串不插入 Chip
 8. **onTriggerButtonClick**：基于当前 Selection/Range 在光标处插入触发字符并补前导空格，遵循词边界规则
 9. **handleEditorInput**（替代原 `handleInput`）：先 `syncEditorState()` 同步 `inputValue`，再走命令下拉分支与 trigger 检测分支
-10. **handleEditorKeydown**（替代原 `handleKeydown`）：Backspace/Delete 紧邻行内 Chip 时整块删除（`handleAdjacentChipDelete`），避免光标进入 Chip 内部
+10. **handleEditorKeydown**（替代原 `handleKeydown`）：Backspace/Delete 紧邻行内 Chip 时整块删除（`handleAdjacentChipDelete`），避免光标进入 Chip 内部；**判定条件必须按光标在文本节点内的 offset 校验"贴边"**：Backspace 仅在 offset===0 时整块删 chip（offset>0 让原生退格删字）；Delete 仅在 offset===textLength 时整块删 chip；否则不拦截，避免在 chip 旁文本节点中删字时误删 chip
 11. **handleEditorPaste**：仅接受 `text/plain`，`\n` 转为 `<br>`，禁止粘入任意 HTML
 12. **handleSend**：调用 `serializeEditor` 得到 `{ text, referencedServers }`，基于 `referencedServers` 重建 `business_name/server_type` 项后交给 `buildOverridesFor('server', items)`，按 DOM 原位置序列化文本；发送后清空编辑器与触发器选择
 13. **executeCommand finally**：命令执行后清空编辑器

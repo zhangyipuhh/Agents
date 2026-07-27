@@ -269,4 +269,91 @@ describe('InputBox 「#」触发器集成', () => {
     await flushPromises()
     expect(wrapper.find('[data-testid="trigger-btn-server"]').attributes('disabled')).toBeDefined()
   })
+
+  // 2026-07-27 新增：行内 Chip 紧邻删除回归测试（覆盖用户截图场景）
+  // 复现步骤：选中服务器 → 在 chip 后输入「对方」→ Backspace 想删「方」字
+  // 期望：函数判定不拦截，原生退格正常删「方」字，chip 保留
+  it('test_backspace_inside_text_after_chip_does_not_remove_chip chip 后文本内退格不删 chip', async () => {
+    const wrapper = mountInputBox()
+    await flushPromises()
+    // 选中服务器：DOM = [Chip(prod-api), TextNode("对方")]
+    await openServerPanel(wrapper)
+    await selectServer(wrapper)
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    const chip = wrapper.find('[data-testid="inline-trigger-chip-server-prod-api"]').element
+    const textNode = document.createTextNode('对方')
+    editor.element.replaceChildren(chip, textNode)
+    // 光标放在「方」字后 → textNode offset=1（非贴边）
+    setCaret(editor, textNode, 1)
+    await editor.trigger('keydown', { key: 'Backspace' })
+    await flushPromises()
+    // 核心断言：函数未拦截，chip 不被破坏
+    expect(wrapper.find('[data-testid="inline-trigger-chip-server-prod-api"]').exists()).toBe(true)
+    // 我们的代码未触碰文本节点（happy-dom 不模拟原生删除，所以文本节点保持原值）
+    expect(textNode.textContent).toBe('对方')
+    // 编辑器 DOM 仍包含 chip
+    expect(readEditorDisplay(wrapper)).toBe('#prod-api对方')
+  })
+
+  // 验证贴边场景仍能整块删除 chip（不被新逻辑误伤）
+  it('test_backspace_at_text_start_after_chip_removes_whole_chip chip 后文本起点退格整块删 chip', async () => {
+    const wrapper = mountInputBox()
+    await flushPromises()
+    await openServerPanel(wrapper)
+    await selectServer(wrapper)
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    const chip = wrapper.find('[data-testid="inline-trigger-chip-server-prod-api"]').element
+    const textNode = document.createTextNode('对方')
+    editor.element.replaceChildren(chip, textNode)
+    // 光标放在「对方」文本起点 → textNode offset=0，贴边 chip
+    setCaret(editor, textNode, 0)
+    await editor.trigger('keydown', { key: 'Backspace' })
+    await flushPromises()
+    // chip 已被整块删除
+    expect(wrapper.find('[data-testid="inline-trigger-chip-server-prod-api"]').exists()).toBe(false)
+    // 文本节点保留「对方」
+    expect(readEditorDisplay(wrapper)).toBe('对方')
+  })
+
+  // Delete 紧贴 chip 左侧（光标在 chip 前文本末尾）：整块删除 chip
+  it('test_delete_at_text_end_before_chip_removes_whole_chip chip 前文本末尾 Delete 整块删 chip', async () => {
+    const wrapper = mountInputBox()
+    await flushPromises()
+    await openServerPanel(wrapper)
+    await selectServer(wrapper)
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    const chip = wrapper.find('[data-testid="inline-trigger-chip-server-prod-api"]').element
+    const textNode = document.createTextNode('巡检')
+    editor.element.replaceChildren(textNode, chip)
+    // 光标放在「巡检」文本末尾 → textNode offset=2，贴边 chip
+    setCaret(editor, textNode, textNode.textContent.length)
+    await editor.trigger('keydown', { key: 'Delete' })
+    await flushPromises()
+    // chip 已被整块删除
+    expect(wrapper.find('[data-testid="inline-trigger-chip-server-prod-api"]').exists()).toBe(false)
+    // 文本节点保留「巡检」
+    expect(readEditorDisplay(wrapper)).toBe('巡检')
+  })
+
+  // Delete 在 chip 前文本节点内（非贴边）：只删字不删 chip
+  it('test_delete_inside_text_before_chip_does_not_remove_chip chip 前文本内 Delete 不删 chip', async () => {
+    const wrapper = mountInputBox()
+    await flushPromises()
+    await openServerPanel(wrapper)
+    await selectServer(wrapper)
+    const editor = wrapper.find('[data-testid="input-editor"]')
+    const chip = wrapper.find('[data-testid="inline-trigger-chip-server-prod-api"]').element
+    const textNode = document.createTextNode('巡检')
+    editor.element.replaceChildren(textNode, chip)
+    // 光标放在「巡」与「检」之间 → textNode offset=1（非贴边）
+    setCaret(editor, textNode, 1)
+    await editor.trigger('keydown', { key: 'Delete' })
+    await flushPromises()
+    // 核心断言：函数未拦截，chip 保留
+    expect(wrapper.find('[data-testid="inline-trigger-chip-server-prod-api"]').exists()).toBe(true)
+    // 我们的代码未触碰文本节点（happy-dom 不模拟原生删除，文本节点保持原值）
+    expect(textNode.textContent).toBe('巡检')
+    // 编辑器 DOM 仍包含 chip
+    expect(readEditorDisplay(wrapper)).toBe('巡检#prod-api')
+  })
 })
