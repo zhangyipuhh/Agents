@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, nextTick, onMounted, watch } from 'vue'
+import { ref, computed, nextTick, onMounted, watch, getCurrentInstance } from 'vue'
 import { uploadFileInChunks, formatFileSize, getFileExtension, refreshToken, fetchAgentList, deleteAttachments, fetchUploadConfig } from '../utils/api.js'
 import ProjectDropdown from './ProjectDropdown.vue'
 // 2026-07-14 新增：子智能体快选条组件（常驻在 InputBox 下方）
@@ -430,6 +430,16 @@ function removeTriggerItem(triggerId, key) {
   })
 }
 
+/**
+ * 当前组件 SFC scoped CSS 的 scopeId（形如 data-v-xxxxxxxx）。
+ * 通过 document.createElement 直接创建的子节点不会自动带 scopeId，
+ * 会导致 scoped 选择器全部不匹配；这里在节点创建时显式注入。
+ */
+const chipScopeId = (() => {
+  const scopeId = getCurrentInstance()?.vnode?.scopeId
+  return scopeId || ''
+})()
+
 function createServerChip(item) {
   const chip = document.createElement('span')
   chip.className = 'selected-trigger-chip inline-trigger-chip'
@@ -438,6 +448,8 @@ function createServerChip(item) {
   chip.dataset.businessName = item?.business_name || ''
   chip.dataset.serverType = item?.server_type || ''
   chip.setAttribute('data-testid', `inline-trigger-chip-server-${item?.business_name || ''}`)
+  // 注入 scoped CSS scopeId，让 .inline-trigger-chip 等样式命中 DOM 创建的节点
+  if (chipScopeId) chip.setAttribute(chipScopeId, '')
 
   const char = document.createElement('span')
   char.className = 'trigger-char'
@@ -450,6 +462,12 @@ function createServerChip(item) {
   removeButton.type = 'button'
   removeButton.title = `移除 ${item?.business_name || ''}`
   removeButton.textContent = '×'
+  // 同样的 scopeId 注入，避免 chip 内部子元素无法命中样式
+  if (chipScopeId) {
+    char.setAttribute(chipScopeId, '')
+    label.setAttribute(chipScopeId, '')
+    removeButton.setAttribute(chipScopeId, '')
+  }
   removeButton.addEventListener('mousedown', (event) => event.preventDefault())
   removeButton.addEventListener('click', (event) => {
     event.preventDefault()
@@ -2045,28 +2063,51 @@ const emit = defineEmits([
 .selected-trigger-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
+  gap: 3px;
+  padding: 2px 6px;
   background-color: var(--color-bg-tertiary);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-full);
   color: var(--color-text-secondary);
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-medium);
   flex-shrink: 0;
   user-select: none;
+  transition: var(--transition-colors), box-shadow 0.15s ease;
 }
 
+/* 行内原子 chip：与正文文本基线对齐、与文本水平间距 2px、避免被空格截断 */
 .selected-trigger-chip.inline-trigger-chip {
   margin: 0 2px;
+  padding: 1px 4px 1px 6px;
   vertical-align: baseline;
   white-space: nowrap;
+  background-color: rgba(99, 102, 241, 0.08);
+  border-color: rgba(99, 102, 241, 0.35);
+  color: var(--color-accent);
+  line-height: 1.6;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+
+  &:hover {
+    background-color: rgba(99, 102, 241, 0.14);
+    border-color: rgba(99, 102, 241, 0.55);
+  }
 }
 
+/* `#` 前缀：单独胶囊化、加底色，让 chip 与纯文本区分明显 */
 .trigger-char {
-  font-size: var(--font-size-base);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  font-size: 11px;
   font-weight: var(--font-weight-bold);
-  color: var(--color-accent);
+  color: #ffffff;
+  background-color: var(--color-accent);
+  border-radius: var(--radius-full);
+  line-height: 1;
 }
 
 .trigger-chip-label {
@@ -2077,19 +2118,21 @@ const emit = defineEmits([
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0 4px;
-  margin-left: 4px;
+  width: 16px;
+  height: 16px;
+  margin-left: 2px;
+  padding: 0;
   background: transparent;
   border: none;
   cursor: pointer;
-  color: var(--color-text-secondary);
-  border-radius: var(--radius-sm);
-  font-size: 16px;
+  color: rgba(15, 23, 42, 0.45);
+  border-radius: var(--radius-full);
+  font-size: 14px;
   line-height: 1;
   transition: var(--transition-colors);
 
   &:hover {
-    background-color: rgba(0, 0, 0, 0.08);
+    background-color: rgba(239, 68, 68, 0.12);
     color: #b91c1c;
   }
 }
