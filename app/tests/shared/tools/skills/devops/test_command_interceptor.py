@@ -759,3 +759,193 @@ def test_whitelist_legitimate_paths_still_allowed_after_ip_blacklist():
     # 模拟运维常见的 'cat 一切' 行为，确保黑名单补强不引入新拦截。
     # 真实运维服务器 11 的白名单是 "cat "（前缀带空格），所有 cat 命令均放行，
     # 仅被本次新增的 7 条黑名单精准拦截 IP/网络/环境变量读取路径。
+
+
+# ----------------------------------------------------------------------
+# 2026-07-27 新增:Windows IIS/FTP 查看命令白名单 + appcmd 写操作黑名单
+# 触发场景：服务器 56（Windows, 6.69.18.56:9984）的 whitelist 之前只有
+# Get-Service / Get-WinEvent，无法支持 IIS/FTP 状态查询。
+# 运维确认采用「扩展 whitelist + 配套加 appcmd 写操作 blacklist」方案。
+# 黑/白名单契约：CommandInterceptor.py 强白名单（whitelist=None / [] 等价）
+# + 精确条目（无尾空格）按 startswith(pattern + " ") 匹配
+# + 前缀条目（带尾空格）按 startswith 匹配。
+# ----------------------------------------------------------------------
+
+
+def _win56_interceptor():
+    """构造服务器 56 的真实黑/白名单（与 data/devops/servers.yaml Windows 节点一致）。"""
+    from app.shared.tools.skills.devops.CommandInterceptor import CommandInterceptor
+    return CommandInterceptor(
+        blacklist=[
+            "Remove-Item ", "Stop-Service ",
+            "Start-Service ", "Set-Service ", "Restart-Service ",
+            "appcmd add ", "appcmd set ", "appcmd delete ",
+            "appcmd start ", "appcmd stop ", "appcmd recycle ",
+            "appcmd restore ", "appcmd uninstall ",
+        ],
+        whitelist=[
+            "Get-Service", "Get-WinEvent ",
+            "Get-WmiObject", "Get-Process",
+            "Select-Object", "Where-Object",
+            "Format-Table", "Format-List", "Out-String",
+            "appcmd list ",
+            "%systemroot%\\system32\\inetsrv\\appcmd.exe list ",
+        ],
+    )
+
+
+def test_whitelist_get_wmiobject_exact_allowed():
+    """白名单精确条目 ``Get-WmiObject`` 放行 IIS/FTP WMI 查询。"""
+    ci = _win56_interceptor()
+    for cmd in [
+        "Get-WmiObject",
+        "Get-WmiObject Win32_Service",
+        "Get-WmiObject -Class Win32_Service -Filter \"Name='W3SVC'\"",
+        "Get-WmiObject -Query \"SELECT Name,State FROM Win32_Service WHERE Name='MSFTPSVC'\"",
+        "Get-WmiObject -Class Win32_PerfRawData_W3SVC_WebService",
+    ]:
+        allowed, reason = ci.is_allowed(cmd)
+        assert allowed is True, f"应放行 {cmd!r}，但被拒: {reason}"
+    # 精确条目防误伤：Get-WmiObjectList 不会被放行
+    allowed, _ = ci.is_allowed("Get-WmiObjectList")
+    assert allowed is False
+
+
+def test_whitelist_get_process_exact_allowed():
+    """白名单精确条目 ``Get-Process`` 放行 w3wp / ftpsvc 工作进程查询。"""
+    ci = _win56_interceptor()
+    for cmd in [
+        "Get-Process",
+        "Get-Process w3wp",
+        "Get-Process -Name ftpsvc",
+    ]:
+        allowed, reason = ci.is_allowed(cmd)
+        assert allowed is True, f"应放行 {cmd!r}，但被拒: {reason}"
+    # 精确条目防误伤
+    allowed, _ = ci.is_allowed("Get-ProcessList")
+    assert allowed is False
+
+
+def test_whitelist_appcmd_list_prefix_allowed():
+    """白名单前缀条目 ``appcmd list ``（带尾空格）放行所有 list 子命令。
+
+    同时覆盖短名 ``appcmd list sites`` 与完整路径
+    ``%systemroot%\\system32\\inetsrv\\appcmd.exe list sites``。
+    """
+    ci = _win56_interceptor()
+    for cmd in [
+        "appcmd list sites",
+        "appcmd list apps",
+        "appcmd list apppools",
+        "appcmd list vdirs",
+        "appcmd list config",
+        "appcmd list backups",
+        "appcmd list wps",
+        "%systemroot%\\system32\\inetsrv\\appcmd.exe list sites",
+        "%systemroot%\\system32\\inetsrv\\appcmd.exe list apppools",
+    ]:
+        allowed, reason = ci.is_allowed(cmd)
+        assert allowed is True, f"应放行 {cmd!r}，但被拒: {reason}"
+    # 防误伤："appcmd list" 整串会命中前缀条目（带尾空格模式）
+    # 因为 CommandInterceptor 前缀匹配按 startswith 判定。
+    # "appcmd list" 不以 "appcmd list " 开头（无尾空格）→ 仍按 startswith 拒
+    allowed, _ = ci.is_allowed("appcmd list")
+    assert allowed is False
+    # 完全不同名的命令仍被拒
+    allowed, _ = ci.is_allowed("appcmd badlist")
+    assert allowed is False
+
+
+def test_whitelist_select_object_for_pipeline_iis():
+    """管道精确条目组合:``Get-WmiObject`` -> ``Select-Object`` 放行。"""
+    ci = _win56_interceptor()
+    cmd = "Get-WmiObject Win32_Service -Filter \"Name='W3SVC'\" | Select-Object Name,State"
+    allowed, reason = ci.is_allowed(cmd)
+    assert allowed is True, reason
+
+
+def test_whitelist_where_object_for_pipeline():
+    """管道精确条目组合:``Get-Service`` -> ``Where-Object`` -> ``Select-Object`` 放行。"""
+    ci = _win56_interceptor()
+    cmd = "Get-Service W3SVC | Where-Object {$_.Status -eq 'Running'} | Select-Object Name"
+    allowed, reason = ci.is_allowed(cmd)
+    assert allowed is True, reason
+
+
+def test_blacklist_start_service_blocked():
+    """``Start-Service `` 前缀黑名单拦截所有 Start-Service 调用。"""
+    ci = _win56_interceptor()
+    allowed, reason = ci.is_allowed("Start-Service W3SVC")
+    assert allowed is False
+    assert "黑名单" in reason
+    # CommandInterceptor 前缀匹配按 lower 归一化，reason 中会显示小写条目
+    assert "start-service" in reason
+
+
+def test_blacklist_set_service_blocked():
+    """``Set-Service `` 前缀黑名单拦截所有 Set-Service 调用。"""
+    ci = _win56_interceptor()
+    allowed, reason = ci.is_allowed("Set-Service W3SVC -StartupType Automatic")
+    assert allowed is False
+    assert "黑名单" in reason
+    assert "set-service" in reason
+
+
+def test_blacklist_restart_service_blocked():
+    """``Restart-Service `` 前缀黑名单拦截所有 Restart-Service 调用。"""
+    ci = _win56_interceptor()
+    allowed, reason = ci.is_allowed("Restart-Service W3SVC")
+    assert allowed is False
+    assert "黑名单" in reason
+    assert "restart-service" in reason
+
+
+def test_blacklist_appcmd_set_blocked():
+    """``appcmd set `` 前缀黑名单拦截所有 appcmd set 调用。"""
+    ci = _win56_interceptor()
+    cmd = 'appcmd set site "Default Web Site" /bindings:http/*:8080:*'
+    allowed, reason = ci.is_allowed(cmd)
+    assert allowed is False
+    assert "黑名单" in reason
+    # CommandInterceptor 前缀匹配按 lower 归一化
+    assert "appcmd set" in reason
+
+
+def test_blacklist_appcmd_start_blocked():
+    """``appcmd start `` 前缀黑名单拦截所有 appcmd start 调用。"""
+    ci = _win56_interceptor()
+    allowed, reason = ci.is_allowed('appcmd start site "Default Web Site"')
+    assert allowed is False
+    assert "黑名单" in reason
+    assert "appcmd start" in reason
+
+
+def test_blacklist_appcmd_delete_blocked():
+    """``appcmd delete `` 前缀黑名单拦截所有 appcmd delete 调用。"""
+    ci = _win56_interceptor()
+    allowed, reason = ci.is_allowed('appcmd delete site "Default Web Site"')
+    assert allowed is False
+    assert "黑名单" in reason
+    assert "appcmd delete" in reason
+
+
+def test_blacklist_appcmd_recycle_blocked():
+    """``appcmd recycle `` 前缀黑名单拦截所有 appcmd recycle 调用。"""
+    ci = _win56_interceptor()
+    allowed, reason = ci.is_allowed('appcmd recycle apppool "DefaultAppPool"')
+    assert allowed is False
+    assert "黑名单" in reason
+    assert "appcmd recycle" in reason
+
+
+def test_pipeline_iis_query_allowed_with_formatting():
+    """5 段 IIS 查询管道全放行（Get-WmiObject | Select-Object | Format-Table | Out-String）。"""
+    ci = _win56_interceptor()
+    cmd = (
+        "Get-WmiObject Win32_Service -Filter \"Name='W3SVC'\" | "
+        "Select-Object Name,StartMode,State | "
+        "Format-Table -AutoSize | "
+        "Out-String"
+    )
+    allowed, reason = ci.is_allowed(cmd)
+    assert allowed is True, reason

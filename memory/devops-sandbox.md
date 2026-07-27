@@ -149,6 +149,24 @@
 - **设计权衡**：`hostname -I` / `ifconfig` / `ip addr` 等直查命令仍不在白名单内（用户原本已观察到拦截行为，符合设计预期）；运维如确需直查 IP，应通过 inspection_script 内聚的运维工具（如巡检脚本固定采集 + 服务端解析）获取，不在白名单命令面放宽。
 - **白名单潜在 bug 备忘（不在本次范围）**：`data/devops/servers.yaml` 第 69 行 `"cat /var/log/"` 无尾空格 → 走精确条目，按 `startswith(pattern + " ")` 判定；`cat /var/log/messages` 不以 `"cat /var/log/ "` 开头 → 不会命中精确条目。本次黑名单补强不影响该行为；后续如要让子路径生效，应改为带尾空格的前缀条目 `"cat /var/log/ "` 或正则 `^cat /var/log/`。
 
+### Windows IIS/FTP 查看命令白名单与 appcmd 写操作黑名单（2026-07-27 新增）
+
+- **触发**：服务器 56（Windows，`6.69.18.56:9984`）的 `whitelist` 不放行 IIS/FTP 查看命令，但运维场景下需支持 `Get-WmiObject Win32_Service` / `Get-Service W3SVC` / `appcmd list sites` 等只读命令查询 IIS 应用池、FTP 站点、当前连接数。运维选定"扩展 whitelist + 配套加 appcmd 写操作 blacklist"方案，不动 `inspection_script`。
+- **变更范围**：仅 `data/devops/servers.yaml` + `data/devops/servers.yaml.example` Windows 节点 `blacklist` / `whitelist` 列表；CommandInterceptor / SSHTools / 服务层 / 路由 / 前端均不动。
+- **白名单新增条目**（仅精确 / 前缀，无正则）：
+  - `Get-WmiObject`（精确）：PowerShell 5.1 默认可用，覆盖 `Win32_Service` / `Win32_PerfRawData_W3SVC_WebService` / `Win32_PerfRawData_FtpService` / `Win32_PerfRawData_MSFTPSVC_FTPService` 等 WMI 类查询。
+  - `Get-Process`（精确）：兜底查询 w3wp / ftpsvc 工作进程。
+  - `Select-Object` / `Where-Object` / `Format-Table` / `Format-List` / `Out-String`（精确）：管道逐段必需，参考 `test_pipeline_tail_segment_with_exact_whitelist` 已锁定的契约。
+  - `"%systemroot%\\system32\\inetsrv\\appcmd.exe list "`（前缀带尾空格）：IIS 7+ 通用只读命令行，覆盖 `list sites` / `list apps` / `list apppools` / `list vdirs` / `list config` / `list backups` / `list wps`。
+- **黑名单新增条目**（仅前缀，配套防误写）：
+  - 服务写操作：`Start-Service ` / `Set-Service ` / `Restart-Service `（与历史 `Stop-Service ` 对称）。
+  - appcmd 写 / 启停 / 删除 / 备份还原：`appcmd add ` / `appcmd set ` / `appcmd delete ` / `appcmd start ` / `appcmd stop ` / `appcmd recycle ` / `appcmd restore ` / `appcmd uninstall `（白名单只放行 list 子命令）。
+- **白名单保留条目**：`Get-Service` / `Get-WinEvent ` 不变；`inspection_script` 仍不受白名单约束（`data/devops/servers.yaml.example:57-58`），黑/白名单变更不影响固定巡检脚本。
+- **appcmd 路径细节**：`%systemroot%\\system32\\inetsrv\\appcmd.exe` 在 YAML 中字面 `\\`（YAML 不解释转义），CommandInterceptor 按字面前缀匹配，不会触发正则分支（`_REGEX_TOKENS` 不含 `\\`）。
+- **回归保护**：`app/tests/shared/tools/skills/devops/test_command_interceptor.py` 新增用例覆盖：白名单精确条目（`Get-WmiObject` / `Get-Process` 放行 / `Get-WmiObjectList` 不放行）、appcmd 前缀条目（`appcmd list sites` 放行 / `appcmd list` 不带尾空格被拒 / `appcmd set site` 被前缀黑名单拒）、服务写操作黑名单（`Start-Service W3SVC` / `Set-Service W3SVC` / `Restart-Service W3SVC` 拒）、appcmd 全套黑名单（`appcmd add / set / delete / start / stop / recycle / restore / uninstall` 前缀拒）。用例总数：40 → 53。整个 devops 测试目录 64/64 PASS。
+- **设计权衡**：未引入 `Get-Web*` / `Get-Ftp*` 等 `WebAdministration` 模块 cmdlet（依赖模块已安装，跨环境不稳定）；未引入 `Get-CimInstance`（虽 PowerShell 7 推荐，但 PS 5.1 已有 `Get-WmiObject` 覆盖，留待未来 PR 追加）。
+- **不引入 WebAdministration 的理由**：本项目服务器 11/56 历史巡检脚本均使用 `Get-WmiObject`（`memory/devops-sandbox.md:204` legacy-compatible PowerShell 约束），运维团队已对 `Get-WmiObject` 形成使用习惯；引入新 cmdlet 需在白名单增加更多条目且依赖模块版本，扩大攻击面。
+
 ### 命令白名单放宽与管道逐段校验（2026-07-15）
 
 - 白名单条目匹配语义统一为 `startswith`（大小写不敏感）：精确条目（无尾空格）和前缀条目（尾空格）都按 startswith 判断；正则条目按 `re.search` 判断。

@@ -112,9 +112,31 @@ servers:
     blacklist:
       - "Remove-Item "    # 前缀匹配：拦截所有 Remove-Item 开头的命令（含 -Recurse / -Force）
       - "Stop-Service "   # 前缀匹配：拦截 Stop-Service xxx
+      - "Start-Service "  # 前缀匹配：禁止通过白名单外启停服务
+      - "Set-Service "    # 前缀匹配：禁止改服务配置
+      - "Restart-Service " # 前缀匹配：禁止重启服务
+      # IIS appcmd.exe 写 / 启停 / 删除 / 备份还原子命令（白名单只放行 list 子命令）
+      - "appcmd add "     # 拦截 appcmd add site / add apppool / add app / add vdir
+      - "appcmd set "     # 拦截 appcmd set site / set config / set apppool
+      - "appcmd delete "  # 拦截 appcmd delete site / delete apppool
+      - "appcmd start "   # 拦截 appcmd start site / apppool
+      - "appcmd stop "    # 拦截 appcmd stop site / apppool
+      - "appcmd recycle " # 拦截 appcmd recycle apppool
+      - "appcmd restore " # 拦截 appcmd restore backup（避免回滚覆盖）
+      - "appcmd uninstall " # 拦截 appcmd uninstall（移除组件）
     whitelist:
       - "Get-Service"     # 精确匹配：仅允许 Get-Service（不允许 Get-Service | Format-List 等组合）
       - "Get-WinEvent "   # 前缀匹配：允许 Get-WinEvent -LogName System -MaxEvents 100 等
+      # 2026-07-27 新增：IIS / FTP 旧版通用只读命令（兼容 PowerShell 5.1，避免依赖 WebAdministration 模块）
+      - "Get-WmiObject"   # 精确匹配：Win32_Service / Win32_PerfRawData_W3SVC_WebService / Win32_PerfRawData_FtpService
+      - "Get-Process"     # 精确匹配：兜底查询 w3wp / ftpsvc 工作进程
+      - "Select-Object"   # 精确匹配：管道字段选择
+      - "Where-Object"    # 精确匹配：管道过滤
+      - "Format-Table"    # 精确匹配
+      - "Format-List"     # 精确匹配
+      - "Out-String"      # 精确匹配
+      - "appcmd list "    # 前缀匹配：IIS 7+ list 子命令
+      - "%systemroot%\\system32\\inetsrv\\appcmd.exe list "  # 前缀匹配：兼容完整路径调用
     # 固定巡检脚本：PowerShell 收集磁盘 / 内存 / CPU / 运行时间，输出 JSON 便于解析。
     inspection_script: |
       $disk = ((Get-PSDrive C).Used / ((Get-PSDrive C).Used + (Get-PSDrive C).Free)) * 100
