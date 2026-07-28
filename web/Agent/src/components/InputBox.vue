@@ -623,6 +623,19 @@ watch(
   (newSid, oldSid) => {
     const oldSidKey = oldSid || '_default'
     const sid = newSid || '_default'
+
+    // 2026-07-28 修复：session 切换时清空"待发送的本地态"，
+    // 避免前一会话的 selectedAgent / selectedFiles / 下拉菜单残留到新会话输入框，
+    // 导致与新会话的 boundAgent 标签同时出现（重复智能体标签）。
+    // immediate 阶段 sid === oldSidKey（都为空），不会触发误清空。
+    if (sid !== oldSidKey) {
+      selectedAgent.value = null
+      selectedFiles.value = []
+      showAgentDropdown.value = false
+      activeAgentIndex.value = -1
+      isExecutingCommand.value = false
+    }
+
     snapshotEditorForSession(oldSidKey)
     if (!triggerSelectionsBySession.value[sid]) {
       triggerSelectionsBySession.value = {

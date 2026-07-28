@@ -572,6 +572,18 @@ web/Agent/src/utils/
 - 测试策略：mount InputBox + mock `global.fetch`（按 URL 分发 `/api/auth/refresh` 与 `/api/agent/list`）+ mock `global.localStorage`
 - 覆盖：普通文本触发 send 且不触发 agent-switched / `/` 开头显示命令提示 / `/agent map_agent` 命令触发 agent-switched 事件 / 未知命令显示未知命令提示 / `/agent non_exist` 不触发切换且 send 含「不存在」 / `/api/agent/list` 返回非 ok 时 send 含「命令执行失败」 / `/agents` 命令 send 含智能体列表 / 输入 `/` 显示智能体下拉菜单 / 点击下拉菜单项选中后显示标签并清空输入框 / 选中智能体后发送触发 agent-switched 与 send / 移除按钮可清空已选智能体标签
 
+### InputBox 会话切换清理本地态（2026-07-28 新增）
+
+**问题**：用户在新建会话输入 `/` → 选中智能体 → 不发送即切换历史会话，输入框同时显示"已选智能体标签"与历史会话绑定的"bound-agent-tag"，出现两个同名智能体标签。
+
+**修复点**：`InputBox.vue` 的 `watch(() => props.sessionId, ...)` 回调内，在 `sid !== oldSidKey` 时清空与"待发送的本地态"相关的 ref：`selectedAgent` / `selectedFiles` / `showAgentDropdown` / `activeAgentIndex` / `isExecutingCommand`。`immediate: true` 阶段 `sid === oldSidKey`（均空），不会误清初始态；`projectLockedByUpload` 仍由父组件 App.vue 维护，InputBox 只清本地态。
+
+**语义边界**：`selectedAgent` 是"本会话待发送的临时态"，跨会话应清空；与既有按 session 隔离的 `triggerSelectionsBySession` / `editorSnapshotsBySession` 不同，本地态不需要按 session 缓存。
+
+**测试**：
+- 路径：`web/Agent/src/components/__tests__/InputBox.session-switch.spec.js`（5 用例）
+- 覆盖：已选智能体 + 切 session 后 selectedAgent 被清空（只剩 bound-agent-tag）/ 下拉菜单收起 / 编辑器 DOM 清空 / immediate 阶段不清空初始态
+
 ## 前端触发器注册表（「#」服务器引用）
 
 与 `commandRegistry` 平级的另一种「输入触发」体系：以单字符为锚（`#`），在可编辑正文中输入触发字符唤起通用面板（搜索 + 平铺 + 键盘导航），选中项以**不可编辑的灰色 Chip** 直接渲染在原 `#查询词` 位置（与正文混排）。发送时由 trigger 的 `buildOverrides` 转成 `context_overrides` 片段经 `chatStream` 透传给后端，由后端 `DYNAMIC_NODE_REGISTRY` 镜像渲染进系统提示词末尾的 XML 节点；同时把正文中每个 Chip 在其 DOM 位置序列化为 `⟦{mentionLabel}：{chipLabel}⟧` 一并写入消息文本，使问题文本本身也显式携带引用（与历史协议保持兼容）。**两侧 registry 镜像对称，未来新增触发类型只需各注册一条（前端 trigger + 后端 DynamicNodeSpec），签名不变**。
