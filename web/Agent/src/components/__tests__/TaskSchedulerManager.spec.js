@@ -1671,7 +1671,7 @@ describe('TaskSchedulerManager 组件', () => {
   it('test_target_type_agent_shows_prompt_and_context_overrides_only 智能体目标显示提示词与 context_overrides，不显示脚本参数', async () => {
     /**
      * 验证在默认 target_type='agent' 下：
-     *  - form 渲染任务提示词 textarea 与 context_overrides JSON 字段
+     *  - form 渲染任务提示词 textarea 与 context_overrides 参数化编辑器
      *  - 不渲染「脚本参数 (JSON)」textarea
      */
     const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
@@ -1684,14 +1684,16 @@ describe('TaskSchedulerManager 组件', () => {
     // 不应渲染脚本参数 textarea
     expect(wrapper.find('[data-testid="schedule-script-args"]').exists()).toBe(false)
 
-    // context_overrides JSON 标签应可见
-    expect(wrapper.text()).toContain('context_overrides JSON')
+    // 2026-07-29：context_overrides 改为参数化编辑器。
+    // 验证「上下文参数」标题与「添加参数」下拉存在（旧的 context_overrides JSON textarea 已弃用）。
+    expect(wrapper.find('[data-testid="schedule-context-params"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="schedule-context-add-select"]').exists()).toBe(true)
   })
 
   it('test_target_type_script_shows_script_args_only_and_hides_context_overrides 脚本目标显示脚本参数，不显示提示词与 context_overrides', async () => {
     /**
      * 切换目标类型为 script：
-     *  - 渲染「脚本参数 (JSON)」textarea，不渲染「任务提示词」与 context_overrides JSON
+     *  - 渲染「脚本参数 (JSON)」textarea，不渲染「任务提示词」与 context_overrides 参数化编辑器
      *  - 切换回 agent 后，context_overrides 重新可见
      */
     const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
@@ -1704,8 +1706,8 @@ describe('TaskSchedulerManager 组件', () => {
     // script 类型应渲染 script-args
     expect(wrapper.find('[data-testid="schedule-script-args"]').exists()).toBe(true)
 
-    // script 类型不应显示 context_overrides JSON 标签
-    expect(wrapper.text()).not.toContain('context_overrides JSON')
+    // 2026-07-29：script 类型不应显示 context_overrides 参数化编辑器
+    expect(wrapper.find('[data-testid="schedule-context-params"]').exists()).toBe(false)
 
     // script 类型不应显示「任务提示词」标签（标签内文字逐字匹配）
     expect(wrapper.text()).not.toContain('任务提示词 *')
@@ -1714,7 +1716,7 @@ describe('TaskSchedulerManager 组件', () => {
     await targetSelect.setValue('agent')
     await flushPromises()
     expect(wrapper.find('[data-testid="schedule-script-args"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('context_overrides JSON')
+    expect(wrapper.find('[data-testid="schedule-context-params"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('任务提示词 *')
   })
 
@@ -3110,6 +3112,267 @@ describe('TaskSchedulerManager 组件', () => {
     expect(capturedBody).not.toBeNull()
     // 前端 dedup 后保留 ['10','bad']；非法数字校验由脚本侧 resolve_api_list 处理
     expect(capturedBody.script_args.api_list).toEqual(['10', 'bad'])
+  })
+
+  // ===== context_overrides 参数化编辑器（2026-07-29 新增） =====
+
+  /**
+   * 从 fetch 拦截中捕获最近一次 PUT/POST 的请求体（context_overrides 编辑器专用）。
+   * 默认 mock 不返回 captured body，这里在用例内替换 fetch。
+   * 覆盖三种端点：
+   *   - PUT  /api/admin/task-schedules/<id>  编辑已有任务
+   *   - POST /api/admin/task-schedules       新建任务
+   */
+  function setupContextOverridesCapture() {
+    let captured = null
+    const orig = global.fetch
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const method = (opts.method || 'GET').toUpperCase()
+      const u = typeof url === 'string' ? url : url.url
+      if ((u === '/api/admin/task-schedules/1' || u === '/api/admin/task-schedules')
+          && (method === 'PUT' || method === 'POST')
+          && opts.body) {
+        captured = JSON.parse(opts.body)
+        return jsonResponse({ ...mockSchedules[0], ...captured }, method === 'POST' ? 201 : 200)
+      }
+      return orig(url, opts)
+    })
+    return {
+      getBody: () => captured,
+      restore: () => { global.fetch = orig },
+    }
+  }
+
+  it('test_context_overrides_editor_visible_for_agent 智能体任务渲染 context_overrides 编辑器（添加参数下拉、JSON 预览）', async () => {
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="schedule-context-params"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="schedule-context-add-select"]').exists()).toBe(true)
+    // 「引用服务器」必须出现在添加参数下拉
+    const addSelect = wrapper.find('[data-testid="schedule-context-add-select"]')
+    const optionValues = addSelect.findAll('option').map((o) => o.element.value)
+    expect(optionValues).toContain('reference_server')
+    expect(optionValues).toContain('max_tokens')
+    expect(optionValues).toContain('note')
+  })
+
+  it('test_context_overrides_add_param_then_remove 智能体任务添加/移除普通参数行（name + type + value）', async () => {
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+    await flushPromises()
+
+    const addSelect = wrapper.find('[data-testid="schedule-context-add-select"]')
+    await addSelect.setValue('max_tokens')
+    await flushPromises()
+
+    // 出现 max_tokens 行
+    const row = wrapper.find('[data-testid="schedule-context-param-max_tokens"]')
+    expect(row.exists()).toBe(true)
+    // 移除按钮可用
+    const removeBtn = wrapper.find('[data-testid="schedule-context-remove-max_tokens"]')
+    expect(removeBtn.exists()).toBe(true)
+    await removeBtn.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="schedule-context-param-max_tokens"]').exists()).toBe(false)
+  })
+
+  it('test_context_overrides_scalar_value_round_trip 普通参数（int）值正确序列化提交', async () => {
+    const capture = setupContextOverridesCapture()
+    try {
+      const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+      await flushPromises()
+      await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
+      await flushPromises()
+
+      // 添加 max_tokens（int）参数
+      const addSelect = wrapper.find('[data-testid="schedule-context-add-select"]')
+      await addSelect.setValue('max_tokens')
+      await flushPromises()
+
+      // 改值（input[type=number]）
+      const valueInput = wrapper.find('[data-testid="schedule-context-value-0"]')
+      expect(valueInput.exists()).toBe(true)
+      await valueInput.setValue(2048)
+      await flushPromises()
+
+      // 提交
+      await findTaskNameInput(wrapper).setValue('上下文参数测试')
+      await wrapper.find('form').trigger('submit.prevent')
+      await flushPromises()
+
+      const body = capture.getBody()
+      expect(body).not.toBeNull()
+      expect(body.context_overrides.max_tokens).toBe(2048)
+      // reference_server 行不存在时不能写入 referenced_servers
+      expect(body.context_overrides.referenced_servers).toBeUndefined()
+    } finally {
+      capture.restore()
+    }
+  })
+
+  it('test_context_overrides_reference_server_add_then_submit reference_server 行多选后序列化为 referenced_servers', async () => {
+    const capture = setupContextOverridesCapture()
+    try {
+      const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+      await flushPromises()
+      await wrapper.findAll('button').find((b) => b.text().includes('新增任务')).trigger('click')
+      await flushPromises()
+
+      // 添加 reference_server 参数
+      const addSelect = wrapper.find('[data-testid="schedule-context-add-select"]')
+      await addSelect.setValue('reference_server')
+      await flushPromises()
+
+      // 候选列表：mockDevopsServers 两条；勾选 1 与 2
+      const option1 = wrapper.find('[data-testid="schedule-ref-server-option-1"]')
+      const option2 = wrapper.find('[data-testid="schedule-ref-server-option-2"]')
+      expect(option1.exists()).toBe(true)
+      expect(option2.exists()).toBe(true)
+      await option1.setValue(true)
+      await option2.setValue(true)
+      await flushPromises()
+
+      // chip 渲染
+      const chip1 = wrapper.find('[data-testid="schedule-ref-server-chip-业务A-生产"]')
+      const chip2 = wrapper.find('[data-testid="schedule-ref-server-chip-业务B-测试"]')
+      expect(chip1.exists()).toBe(true)
+      expect(chip2.exists()).toBe(true)
+
+      // 提交
+      await findTaskNameInput(wrapper).setValue('引用服务器测试')
+      await wrapper.find('form').trigger('submit.prevent')
+      await flushPromises()
+
+      const body = capture.getBody()
+      expect(body).not.toBeNull()
+      expect(Array.isArray(body.context_overrides.referenced_servers)).toBe(true)
+      const names = body.context_overrides.referenced_servers.map((it) => it.name).sort()
+      expect(names).toEqual(['业务A-生产', '业务B-测试'])
+      // 每个元素必须有 server_type（与 devops_servers 同步）
+      for (const it of body.context_overrides.referenced_servers) {
+        expect(typeof it.name).toBe('string')
+        expect(it.name).toBeTruthy()
+        expect(typeof it.server_type).toBe('string')
+      }
+    } finally {
+      capture.restore()
+    }
+  })
+
+  it('test_context_overrides_reference_server_invalid_kept_and_removed 失效服务器仍回显并可显式移除', async () => {
+    // 任务已存 referenced_servers 含「旧业务X」和「业务A-生产」；devopsServers 仅含业务A
+    const rawSchedules = [
+      {
+        ...mockSchedules[0],
+        context_overrides: {
+          referenced_servers: [
+            { name: '业务A-生产', server_type: 'production' },
+            { name: '旧业务X', server_type: 'staging' },
+          ],
+        },
+      },
+    ]
+    const origFetch = global.fetch
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const method = (opts.method || 'GET').toUpperCase()
+      const u = typeof url === 'string' ? url : url.url
+      if (u === '/api/admin/task-schedules' && method === 'GET') return jsonResponse(rawSchedules)
+      if (u === '/api/admin/task-schedules' && method === 'PUT' && opts.body) {
+        return jsonResponse({ ...rawSchedules[0], ...JSON.parse(opts.body) })
+      }
+      if (u === '/api/admin/agents' && method === 'GET') return jsonResponse(mockAgents)
+      if (u === '/api/admin/scripts' && method === 'GET') return jsonResponse(mockScripts)
+      if (u === '/api/admin/devops-servers' && method === 'GET') return jsonResponse(rawDevopsServers)
+      if (u === '/api/admin/user-servers/tree' && method === 'GET') return jsonResponse({ nodes: mockUserServerNodes })
+      if (u === '/api/admin/api-configs/tree' && method === 'GET') return jsonResponse({ nodes: [] })
+      return jsonResponse({})
+    })
+
+    try {
+      const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+      await flushPromises()
+
+      // 点击任务以进入编辑
+      await wrapper.find('.task-select-btn').trigger('click')
+      await flushPromises()
+
+      // 失效 chip 应存在
+      const invalidChip = wrapper.find('[data-testid="schedule-ref-server-chip-invalid"]')
+      expect(invalidChip.exists()).toBe(true)
+      expect(invalidChip.text()).toContain('旧业务X')
+      // 有效 chip 仍存在
+      const validChip = wrapper.find('[data-testid="schedule-ref-server-chip-业务A-生产"]')
+      expect(validChip.exists()).toBe(true)
+
+      // 移除失效项
+      await invalidChip.find('.chip-remove').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="schedule-ref-server-chip-invalid"]').exists()).toBe(false)
+      // 业务A chip 仍在
+      expect(wrapper.find('[data-testid="schedule-ref-server-chip-业务A-生产"]').exists()).toBe(true)
+    } finally {
+      global.fetch = origFetch
+    }
+  })
+
+  it('test_context_overrides_unknown_field_preserved_round_trip 未知字段经过编辑仍保留', async () => {
+    // 旧任务含一个「legacy_marker」字段（既不是 reference_server 也不是模板内的标量）
+    const rawSchedules = [
+      {
+        ...mockSchedules[0],
+        context_overrides: {
+          legacy_marker: 'keep-me',
+          temperature: 0.5,
+        },
+      },
+    ]
+    let captured = null
+    const origFetch = global.fetch
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const method = (opts.method || 'GET').toUpperCase()
+      const u = typeof url === 'string' ? url : url.url
+      if (u === '/api/admin/task-schedules' && method === 'GET') return jsonResponse(rawSchedules)
+      if (u === '/api/admin/task-schedules/1' && method === 'PUT' && opts.body) {
+        captured = JSON.parse(opts.body)
+        return jsonResponse({ ...rawSchedules[0], ...captured })
+      }
+      if (u === '/api/admin/agents' && method === 'GET') return jsonResponse(mockAgents)
+      if (u === '/api/admin/scripts' && method === 'GET') return jsonResponse(mockScripts)
+      if (u === '/api/admin/devops-servers' && method === 'GET') return jsonResponse(rawDevopsServers)
+      if (u === '/api/admin/user-servers/tree' && method === 'GET') return jsonResponse({ nodes: mockUserServerNodes })
+      if (u === '/api/admin/api-configs/tree' && method === 'GET') return jsonResponse({ nodes: [] })
+      return jsonResponse({})
+    })
+    try {
+      const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+      await flushPromises()
+      await wrapper.find('.task-select-btn').trigger('click')
+      await flushPromises()
+
+      // temperature 行存在
+      expect(wrapper.find('[data-testid="schedule-context-param-temperature"]').exists()).toBe(true)
+      // legacy_marker 字符串标量也作为参数行出现（用户可继续编辑）
+      const legacyRow = wrapper.find('[data-testid="schedule-context-param-legacy_marker"]')
+      expect(legacyRow.exists()).toBe(true)
+
+      // 提交
+      await wrapper.find('form').trigger('submit.prevent')
+      await flushPromises()
+
+      expect(captured).not.toBeNull()
+      expect(captured.context_overrides.temperature).toBe(0.5)
+      expect(captured.context_overrides.legacy_marker).toBe('keep-me')
+    } finally {
+      global.fetch = origFetch
+    }
+  })
+
+  it('test_context_overrides_no_old_textarea 旧的「context_overrides JSON」textarea 不再渲染', async () => {
+    // 旧 label 字符串已弃用；同时 4 个 textarea 是 prompt / schedule-time / notify 区域 / JSON 预览等
+    // 但「context_overrides JSON」字面字符串应已不存在。
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('context_overrides JSON')
   })
 })
 

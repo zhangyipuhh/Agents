@@ -18,7 +18,7 @@
  * 绝不渲染 ip / port / username / password / blacklist / whitelist / 文件路径。
  * 扫描错误信息做脱敏处理：仅展示通用提示，不把后端 detail 透出到页面。
  */
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   fetchAdminAgentList,  // admin 全量（含 enabled / config_schema）
   fetchAgentList,  // 2026-07-26 新增：普通用户走 JWT-only，按 user_agent_acl 过滤的启用智能体
@@ -41,6 +41,14 @@ import {
 } from '../utils/api.js'
 import ApiConfigManager from './ApiConfigManager.vue'
 import UserServerManager from './UserServerManager.vue'  // 2026-07-24 新增：用户服务器配置
+// 2026-07-29 新增：context_overrides 参数编辑器工具（parse / serialize 转换、reference_server 特殊处理）
+import {
+  parseContextOverrides,
+  serializeContextOverrides,
+  listContextParameterTemplates,
+  coerceValueByType,
+  inferValueType,
+} from '../utils/contextOverrides.js'
 
 const TAB_TASK = 'task'
 const TAB_SCAN = 'scan'
@@ -85,6 +93,17 @@ const errorMessage = ref('')
 const successMessage = ref('')
 const isCreating = ref(false)
 const contextJson = ref('{}')
+// 2026-07-29 新增：context_overrides 参数化编辑器状态。
+// contextParameterRows 是当前已添加参数行；contextUnknownOverrides 保留
+// 解析时无法纳入参数行的旧字段，序列化时合并回结果，避免 UI 改造丢数据。
+const contextParameterRows = ref([])
+const contextUnknownOverrides = ref({})
+// 2026-07-29 新增：contextParameterRows 中 reference_server 专用 UI 状态。
+// referenceServerKeyword / selectedReferenceServerItems 与 server_list 控件共用
+// 同一组 devopsServers 候选，但仅作用于 agent 任务 context_overrides。
+const referenceServerKeyword = ref('')
+// 已选服务器（reference_server 行）的瞬时计数（直接由 rows 派生也可，此处 ref
+// 仅用于不引入额外 computed 依赖的便捷读取）。
 
 // Tab 状态 - 2026-07-23 ACL 双重门：默认值改为第一个被 ACL 授权的子 tab
 const activeTab = ref(TAB_TASK)
@@ -586,6 +605,350 @@ function clearScriptParamState() {
   legacyScriptArgs.value = {}
   serverKeyword.value = ''
   apiKeyword.value = ''
+}
+
+/**
+ * 清空 agent 任务 context_overrides 参数化状态。
+ * 编辑 / 新建 / 切换任务前调用，避免旧任务的 reference_server / 旧参数
+ * 串到新任务上。
+ */
+function clearContextOverridesState() {
+  contextParameterRows.value = []
+  contextUnknownOverrides.value = {}
+  referenceServerKeyword.value = ''
+}
+
+/**
+ * 把后端 ``context_overrides`` 字典 hydrate 到参数行 + 未知字段。
+ * 内部调用 ``parseContextOverrides`` 做转换；同时检测到 reference_server
+ * 行时按需触发 ``loadDevopsServers()`` 拉取候选。
+ * @param {unknown} raw - 来自 schedule.context_overrides 的原始对象
+ */
+function hydrateContextOverrides(raw) {
+  clearContextOverridesState()
+  const parsed = parseContextOverrides(raw)
+  contextParameterRows.value = parsed.parameterRows.map((row) => ({ ...row }))
+  contextUnknownOverrides.value = { ...parsed.unknownOverrides }
+  const hasRefServer = parsed.parameterRows.some((r) => r && r.source === 'reference_server')
+  if (hasRefServer && !hasLoaded.value) {
+    loadDevopsServers()
+  }
+}
+
+/**
+ * 把当前参数行 + 未知字段序列化回 ``context_overrides`` 字典。
+ * 用于 buildPayload；保持与 parseContextOverrides 严格互逆（除旧字段原始保留）。
+ * @returns {Object} 后端 context_overrides 字典
+ */
+function buildContextOverrides() {
+  return serializeContextOverrides(contextParameterRows.value, contextUnknownOverrides.value)
+}
+
+/**
+ * context_overrides 「添加参数」可选项：模板与 reference_server 特殊标记。
+ */
+const contextParameterTemplates = computed(() => listContextParameterTemplates())
+
+/**
+ * 尚未添加的 context_overrides 参数模板。
+ */
+const availableContextParameterTemplates = computed(() => {
+  const has = Object.prototype.hasOwnProperty
+  const names = new Set(contextParameterRows.value.map((r) => r && r.name).filter(Boolean))
+  return contextParameterTemplates.value.filter((t) => !names.has(t.name))
+})
+
+/**
+ * 添加一个 context_overrides 参数行（不重复添加）。
+ * reference_server 行初值为空数组，需要服务器数据时由 hydrate 阶段触发 loadDevopsServers。
+ * @param {string} name - 模板中声明的参数名
+ */
+function addContextParameter(name) {
+  if (!name) return
+  const template = contextParameterTemplates.value.find((t) => t.name === name)
+  if (!template) return
+  if (contextParameterRows.value.some((r) => r && r.name === name)) return
+  const initialValue = template.type === 'list' ? [] : (template.type === 'dict' ? {} : '')
+  const row = {
+    name,
+    type: template.type,
+    value: coerceValueByType(initialValue, template.type),
+    source: template.isServerRef ? 'reference_server' : 'user',
+  }
+  contextParameterRows.value = [...contextParameterRows.value, row]
+  if (template.isServerRef && !hasLoaded.value) {
+    loadDevopsServers()
+  }
+}
+
+/**
+ * 移除一个 context_overrides 参数行。
+ * @param {string} name - 参数名
+ */
+function removeContextParameter(name) {
+  if (!name) return
+  contextParameterRows.value = contextParameterRows.value.filter((r) => !(r && r.name === name))
+}
+
+/**
+ * 把 contextParameterRows 中 type 改为新类型，value 走 coerceValueByType 兜底。
+ * 防止 type 从 str 切到 list 时残留旧字符串。
+ * @param {number} index - 行索引
+ * @param {string} newType - 目标类型
+ */
+function changeContextParameterType(index, newType) {
+  const row = contextParameterRows.value[index]
+  if (!row) return
+  const next = { ...row, type: newType, value: coerceValueByType(row.value, newType) }
+  const arr = contextParameterRows.value.slice()
+  arr[index] = next
+  contextParameterRows.value = arr
+}
+
+/**
+ * 把 contextParameterRows 中 name 改为新名称。
+ * reference_server 是保留名，不允许重命名；重名时直接拦截。
+ * @param {number} index - 行索引
+ * @param {string} newName - 新参数名
+ */
+function changeContextParameterName(index, newName) {
+  const row = contextParameterRows.value[index]
+  if (!row) return
+  const trimmed = typeof newName === 'string' ? newName.trim() : ''
+  if (!trimmed) return
+  if (row.source === 'reference_server' && trimmed !== 'reference_server') return
+  const arr = contextParameterRows.value.slice()
+  arr[index] = { ...row, name: trimmed }
+  contextParameterRows.value = arr
+}
+
+/**
+ * 把 contextParameterRows 中 value 改为新值。
+ * 仅用于标量 / 数组（dict 用文本编辑），不做类型转换（避免破坏用户输入）。
+ * @param {number} index - 行索引
+ * @param {unknown} newValue - 新值
+ */
+function changeContextParameterValue(index, newValue) {
+  const row = contextParameterRows.value[index]
+  if (!row) return
+  if (row.source === 'reference_server') return
+  const arr = contextParameterRows.value.slice()
+  arr[index] = { ...row, value: newValue }
+  contextParameterRows.value = arr
+}
+
+/**
+ * 把 contextParameterRows 中 list 类型的 value 字符串（JSON）解析回数组。
+ * 解析失败时回退为空数组，UI 上同步报错。
+ * @param {number} index - 行索引
+ * @param {string} text - 文本输入
+ * @returns {boolean} 是否解析成功
+ */
+function setContextParameterListFromText(index, text) {
+  const row = contextParameterRows.value[index]
+  if (!row || row.type !== 'list') return false
+  let parsed = []
+  const trimmed = typeof text === 'string' ? text.trim() : ''
+  if (trimmed) {
+    try {
+      const candidate = JSON.parse(trimmed)
+      if (Array.isArray(candidate)) {
+        parsed = candidate
+      } else {
+        return false
+      }
+    } catch {
+      return false
+    }
+  }
+  const arr = contextParameterRows.value.slice()
+  arr[index] = { ...row, value: parsed }
+  contextParameterRows.value = arr
+  return true
+}
+
+/**
+ * 把 contextParameterRows 中 dict 类型的 value 字符串（JSON）解析回对象。
+ * 解析失败时回退为空对象，UI 上同步报错。
+ * @param {number} index - 行索引
+ * @param {string} text - 文本输入
+ * @returns {boolean} 是否解析成功
+ */
+function setContextParameterDictFromText(index, text) {
+  const row = contextParameterRows.value[index]
+  if (!row || row.type !== 'dict') return false
+  let parsed = {}
+  const trimmed = typeof text === 'string' ? text.trim() : ''
+  if (trimmed) {
+    try {
+      const candidate = JSON.parse(trimmed)
+      if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
+        parsed = candidate
+      } else {
+        return false
+      }
+    } catch {
+      return false
+    }
+  }
+  const arr = contextParameterRows.value.slice()
+  arr[index] = { ...row, value: parsed }
+  contextParameterRows.value = arr
+  return true
+}
+
+/**
+ * 取 reference_server 行（不区分是否已添加，单一存在）。
+ * @returns {{name: string, type: string, value: Array, source: string} | null}
+ */
+const referenceServerRow = computed(() =>
+  contextParameterRows.value.find((r) => r && r.source === 'reference_server') || null
+)
+
+/**
+ * reference_server 行的当前值（统一为数组，便于多选 UI 与序列化）。
+ */
+const referenceServerItems = computed(() => {
+  const row = referenceServerRow.value
+  if (!row) return []
+  return Array.isArray(row.value) ? row.value : []
+})
+
+/**
+ * reference_server 行已选业务名集合。
+ */
+const referenceServerSelectedNames = computed(() => {
+  const set = new Set()
+  for (const item of referenceServerItems.value) {
+    if (item && typeof item.name === 'string' && item.name) {
+      set.add(item.name)
+    }
+  }
+  return set
+})
+
+/**
+ * reference_server 行的有效服务器（含 type 信息的对象，便于多选 UI 渲染）。
+ */
+const referenceServerValidRows = computed(() => {
+  const selected = referenceServerItems.value
+  const out = []
+  for (const item of selected) {
+    if (!item || typeof item.name !== 'string' || !item.name) continue
+    const row = devopsServers.value.find((r) => r && r.business_name === item.name)
+    if (row) {
+      out.push({ row, name: item.name, server_type: row.server_type || '' })
+    }
+  }
+  return out
+})
+
+/**
+ * reference_server 行的失效服务器（数据库已无对应行）：保留 name 与原 server_type
+ * 用于 chip 展示，避免误丢。
+ */
+const referenceServerInvalidItems = computed(() => {
+  const selected = referenceServerItems.value
+  const out = []
+  for (const item of selected) {
+    if (!item || typeof item.name !== 'string' || !item.name) continue
+    const row = devopsServers.value.find((r) => r && r.business_name === item.name)
+    if (!row) {
+      out.push({ name: item.name, server_type: item.server_type || '' })
+    }
+  }
+  return out
+})
+
+/**
+ * reference_server 行已选 + 失效总数。
+ */
+const referenceServerSelectedCount = computed(() => referenceServerItems.value.length)
+
+/**
+ * 按关键词过滤后的服务器候选（与 server_list 控件共用 devopsServers）。
+ */
+const filteredReferenceServers = computed(() => {
+  const kw = referenceServerKeyword.value.trim().toLowerCase()
+  const list = Array.isArray(devopsServers.value) ? devopsServers.value : []
+  if (!kw) return list
+  return list.filter((row) => {
+    if (!row) return false
+    const name = String(row.business_name || '').toLowerCase()
+    const type = String(row.server_type || '').toLowerCase()
+    return name.includes(kw) || type.includes(kw)
+  })
+})
+
+/**
+ * 把 reference_server 行的 value 替换为新的 items 数组。
+ * @param {Array<{name: string, server_type: string}>} items
+ */
+function setReferenceServerItems(items) {
+  const row = referenceServerRow.value
+  if (!row) return
+  const cleaned = []
+  const seen = new Set()
+  for (const it of items || []) {
+    if (!it || typeof it.name !== 'string' || !it.name.trim()) continue
+    if (seen.has(it.name)) continue
+    seen.add(it.name)
+    cleaned.push({ name: it.name.trim(), server_type: typeof it.server_type === 'string' ? it.server_type : '' })
+  }
+  const arr = contextParameterRows.value.map((r) => (r && r.source === 'reference_server' ? { ...r, value: cleaned } : r))
+  contextParameterRows.value = arr
+}
+
+/**
+ * 单个 reference_server 候选切换。
+ * @param {Object} row - 候选服务器（{id, business_name, server_type}）
+ * @param {boolean} checked - 勾选状态
+ */
+function toggleReferenceServer(row, checked) {
+  if (!row || typeof row.business_name !== 'string' || !row.business_name) return
+  const current = referenceServerItems.value.slice()
+  const set = new Set(current.map((it) => it.name))
+  if (checked) {
+    if (!set.has(row.business_name)) {
+      current.push({ name: row.business_name, server_type: row.server_type || '' })
+    }
+  } else {
+    const next = current.filter((it) => it.name !== row.business_name)
+    setReferenceServerItems(next)
+    return
+  }
+  setReferenceServerItems(current)
+}
+
+/**
+ * 把已选服务器全部清空。
+ */
+function clearReferenceServerSelection() {
+  setReferenceServerItems([])
+}
+
+/**
+ * 全选当前过滤后的服务器候选。
+ */
+function selectAllVisibleReferenceServers() {
+  const current = referenceServerItems.value.slice()
+  const set = new Set(current.map((it) => it.name))
+  for (const row of filteredReferenceServers.value) {
+    if (!row || typeof row.business_name !== 'string' || !row.business_name) continue
+    if (set.has(row.business_name)) continue
+    current.push({ name: row.business_name, server_type: row.server_type || '' })
+    set.add(row.business_name)
+  }
+  setReferenceServerItems(current)
+}
+
+/**
+ * 把 reference_server 行中已失效的服务器移除。
+ */
+function pruneReferenceServerInvalid() {
+  const current = referenceServerItems.value.slice()
+  const names = new Set(devopsServers.value.map((r) => r && r.business_name).filter(Boolean))
+  setReferenceServerItems(current.filter((it) => names.has(it.name)))
 }
 
 /**
@@ -1640,7 +2003,11 @@ function fillForm(schedule) {
   form.max_concurrent_runs = schedule.max_concurrent_runs || 1
   form.notify_enabled = schedule.notify_enabled === true
   form.notify_policy_id = schedule.notify_policy_id || null
+  // 2026-07-29：contextJson 仅作为 JSON 预览（不影响提交），实际提交使用
+  // contextParameterRows + contextUnknownOverrides 序列化。
   contextJson.value = JSON.stringify(form.context_overrides, null, 2)
+  // 2026-07-29：把已存 context_overrides hydrate 到参数行 / 未知字段。
+  hydrateContextOverrides(form.context_overrides)
   // 根据当前脚本 schema 把已存参数分配到 scriptParamValues 或 legacyScriptArgs
   if (form.target_type === 'script') {
     if (!hasLoadedScripts.value && scripts.value.length === 0) {
@@ -1698,6 +2065,8 @@ function startCreate() {
   form.notify_policy_id = null
   contextJson.value = '{}'
   clearScriptParamState()
+  // 2026-07-29：同步重置 context_overrides 参数化状态
+  clearContextOverridesState()
   errorMessage.value = ''
   successMessage.value = ''
 }
@@ -1716,12 +2085,9 @@ function buildPayload() {
   if (!trimmedName) {
     throw new Error('任务名称不能为空')
   }
-  let contextOverrides = {}
-  try {
-    contextOverrides = contextJson.value.trim() ? JSON.parse(contextJson.value) : {}
-  } catch {
-    throw new Error('上下文 JSON 格式不正确')
-  }
+  // 2026-07-29：context_overrides 由参数行 + 未知字段序列化得到；textarea 仅
+  // 作为 JSON 预览，不再走 JSON.parse，避免新旧状态双源歧义。
+  const contextOverrides = buildContextOverrides()
   const payload = {
     name: trimmedName,
     description: form.description.trim(),
@@ -1887,6 +2253,17 @@ const availableTabs = computed(() => {
  * 是否有访问本组件的权限（被授权任何子 tab 或 admin）。
  */
 const hasAnyAccess = computed(() => props.isAdmin || availableTabs.value.length > 0)
+
+// 2026-07-29：把 contextParameterRows / contextUnknownOverrides 变化同步到 JSON
+// 预览 textarea，让「JSON 预览」始终反映 buildContextOverrides() 的输出。
+const _contextJsonSync = watch(
+  [contextParameterRows, contextUnknownOverrides],
+  () => {
+    if (form.target_type !== 'agent') return
+    contextJson.value = JSON.stringify(buildContextOverrides(), null, 2)
+  },
+  { deep: true }
+)
 
 onMounted(() => {
   window.addEventListener('keydown', handleHistoryKeydown)
@@ -2590,10 +2967,340 @@ onBeforeUnmount(() => {
             <span>描述</span>
             <input v-model="form.description" type="text" placeholder="可选：说明该任务的用途" />
           </label>
-          <label v-if="form.target_type === 'agent'" class="form-field full">
-            <span>context_overrides JSON</span>
-            <textarea v-model="contextJson" rows="4" placeholder='{}'></textarea>
-          </label>
+          <!--
+            2026-07-29：context_overrides 参数化编辑器（智能体任务专属）。
+            形态参考智能体管理的「配置字段」编辑器：
+            - 顶部提供「添加参数」下拉，模板含 reference_server / 标量 / 列表 / 字典；
+            - reference_server 特殊参数用服务器多选（与 server_list 控件共用 devopsServers 候选）；
+            - 标量行提供 name / type / value 三段编辑；
+            - 底部保留 contextJson textarea 作为「只读 JSON 预览」，便于核对最终 payload。
+          -->
+          <div v-if="form.target_type === 'agent'" class="form-field full context-params" data-testid="schedule-context-params" role="group" aria-label="上下文参数">
+            <header class="context-params__head">
+              <span class="context-params__title">上下文参数（可选）</span>
+              <p class="context-params__hint">
+                参考智能体管理的参数配置。可选择「引用服务器」带入本任务会话，或自定义标量 / 列表 / 字典。
+                未在 UI 中显示的旧字段会自动保留。
+              </p>
+            </header>
+
+            <!-- 已添加参数列表 -->
+            <div
+              v-if="contextParameterRows.length"
+              class="context-param-list"
+              aria-label="已添加上下文参数"
+            >
+              <div
+                v-for="(row, index) in contextParameterRows"
+                :key="`ctx-row-${index}-${row.name}`"
+                class="context-param-item"
+                :data-testid="`schedule-context-param-${row.name}`"
+              >
+                <header class="context-param-item__head">
+                  <div class="context-param-item__title">
+                    <span v-if="row.source === 'reference_server'" class="badge badge-ref-server" data-testid="schedule-context-param-ref-server-badge">引用服务器</span>
+                    <strong v-if="row.source !== 'reference_server'">{{ row.name || '未命名参数' }}</strong>
+                    <span v-if="row.source === 'reference_server'" class="context-param-item__key">reference_server</span>
+                  </div>
+                  <button
+                    type="button"
+                    class="link-btn"
+                    :data-testid="`schedule-context-remove-${row.name}`"
+                    :aria-label="`移除参数 ${row.name}`"
+                    @click="removeContextParameter(row.name)"
+                  >
+                    移除参数
+                  </button>
+                </header>
+
+                <!-- reference_server 行：服务器多选 -->
+                <template v-if="row.source === 'reference_server'">
+                  <p class="context-param-item__desc">
+                    选择后会以 <code>referenced_servers</code> 注入本次任务会话，作为运行时服务器引用。
+                  </p>
+                  <div class="server-list-panel__toolbar">
+                    <input
+                      v-model="referenceServerKeyword"
+                      type="search"
+                      class="server-search"
+                      placeholder="搜索业务名或系统类型..."
+                      aria-label="搜索服务器"
+                      data-testid="schedule-ref-server-search"
+                    />
+                    <div class="server-list-panel__actions">
+                      <button
+                        type="button"
+                        class="link-btn"
+                        :disabled="!filteredReferenceServers.length"
+                        aria-label="全选当前过滤服务器"
+                        data-testid="schedule-ref-server-select-all"
+                        @click="selectAllVisibleReferenceServers"
+                      >
+                        全选
+                      </button>
+                      <span class="divider" aria-hidden="true"></span>
+                      <button
+                        type="button"
+                        class="link-btn"
+                        :disabled="referenceServerSelectedCount === 0"
+                        aria-label="清空已选服务器"
+                        data-testid="schedule-ref-server-clear"
+                        @click="clearReferenceServerSelection"
+                      >
+                        清空
+                      </button>
+                    </div>
+                    <span
+                      class="server-counter"
+                      :class="{ active: referenceServerSelectedCount > 0 }"
+                      aria-label="已选服务器计数"
+                    >
+                      已选 <strong>{{ referenceServerSelectedCount }}</strong>
+                      / {{ filteredReferenceServers.length }}
+                    </span>
+                  </div>
+
+                  <div
+                    v-if="isLoadingServers && !hasLoaded"
+                    class="empty-state"
+                    data-testid="schedule-ref-server-loading"
+                  >
+                    正在加载服务器列表...
+                  </div>
+                  <div
+                    v-else-if="listErrorMessage && !isLoadingServers"
+                    class="alert error"
+                    role="alert"
+                    data-testid="schedule-ref-server-error"
+                  >
+                    <span>{{ listErrorMessage }}</span>
+                    <button
+                      type="button"
+                      class="link-btn"
+                      data-testid="schedule-ref-server-retry"
+                      aria-label="重新加载服务器"
+                      @click="loadDevopsServers({ force: true })"
+                    >
+                      重新加载服务器
+                    </button>
+                  </div>
+                  <div
+                    v-else-if="hasLoaded && !devopsServers.length"
+                    class="empty-state"
+                    data-testid="schedule-ref-server-empty"
+                  >
+                    暂无已扫描入库的服务器，请先在「服务器扫描入库」中扫描。
+                  </div>
+
+                  <ul
+                    v-if="filteredReferenceServers.length"
+                    class="server-options"
+                    role="listbox"
+                    aria-multiselectable="true"
+                    aria-label="已扫描服务器候选列表"
+                    data-testid="schedule-ref-server-options"
+                  >
+                    <li
+                      v-for="candidate in filteredReferenceServers"
+                      :key="candidate.id"
+                      class="server-option"
+                      :class="{ selected: referenceServerSelectedNames.has(candidate.business_name) }"
+                    >
+                      <label class="server-option__label">
+                        <input
+                          type="checkbox"
+                          :checked="referenceServerSelectedNames.has(candidate.business_name)"
+                          :data-testid="`schedule-ref-server-option-${candidate.id}`"
+                          @change="toggleReferenceServer(candidate, $event.target.checked)"
+                        />
+                        <span class="server-option__main">{{ candidate.business_name }}</span>
+                        <span class="server-option__meta">{{ candidate.server_type }}</span>
+                      </label>
+                    </li>
+                  </ul>
+                  <div
+                    v-if="!filteredReferenceServers.length && referenceServerKeyword.trim() && devopsServers.length"
+                    class="empty-state"
+                    data-testid="schedule-ref-server-no-match"
+                  >
+                    没有匹配「{{ referenceServerKeyword }}」的服务器
+                  </div>
+
+                  <div
+                    v-if="referenceServerValidRows.length || referenceServerInvalidItems.length"
+                    class="selected-server-chips"
+                    aria-label="已选引用服务器列表"
+                    data-testid="schedule-ref-server-chips"
+                  >
+                    <span
+                      v-for="entry in referenceServerValidRows"
+                      :key="`valid-${entry.name}`"
+                      class="chip selected-server-chip"
+                      :data-testid="`schedule-ref-server-chip-${entry.name}`"
+                    >
+                      <span>{{ entry.name }}</span>
+                      <button
+                        type="button"
+                        class="chip-remove"
+                        :aria-label="`移除已选服务器 ${entry.name}`"
+                        @click="toggleReferenceServer(entry.row, false)"
+                      >
+                        ×
+                      </button>
+                    </span>
+                    <span
+                      v-for="entry in referenceServerInvalidItems"
+                      :key="`invalid-${entry.name}`"
+                      class="chip selected-server-chip invalid"
+                      data-testid="schedule-ref-server-chip-invalid"
+                    >
+                      <span class="invalid-name">{{ entry.name }}</span>
+                      <span class="invalid-tag" aria-label="已失效">已失效</span>
+                      <button
+                        type="button"
+                        class="chip-remove"
+                        :aria-label="`移除已选服务器 ${entry.name}`"
+                        @click="toggleReferenceServer({ business_name: entry.name }, false)"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  </div>
+                </template>
+
+                <!-- 普通参数行：name / type / value -->
+                <template v-else>
+                  <div class="context-param-item__grid">
+                    <label class="form-field">
+                      <span>参数名 *</span>
+                      <input
+                        type="text"
+                        :value="row.name"
+                        :data-testid="`schedule-context-name-${index}`"
+                        @change="changeContextParameterName(index, $event.target.value)"
+                      />
+                    </label>
+                    <label class="form-field">
+                      <span>类型 *</span>
+                      <select
+                        :value="row.type"
+                        :data-testid="`schedule-context-type-${index}`"
+                        @change="changeContextParameterType(index, $event.target.value)"
+                      >
+                        <option value="str">str</option>
+                        <option value="int">int</option>
+                        <option value="float">float</option>
+                        <option value="bool">bool</option>
+                        <option value="list">list</option>
+                        <option value="dict">dict</option>
+                      </select>
+                    </label>
+                    <label v-if="row.type === 'str'" class="form-field">
+                      <span>值</span>
+                      <input
+                        type="text"
+                        :value="row.value"
+                        :data-testid="`schedule-context-value-${index}`"
+                        @change="changeContextParameterValue(index, $event.target.value)"
+                      />
+                    </label>
+                    <label v-else-if="row.type === 'int'" class="form-field">
+                      <span>值</span>
+                      <input
+                        type="number"
+                        step="1"
+                        :value="row.value"
+                        :data-testid="`schedule-context-value-${index}`"
+                        @change="changeContextParameterValue(index, Number($event.target.value))"
+                      />
+                    </label>
+                    <label v-else-if="row.type === 'float'" class="form-field">
+                      <span>值</span>
+                      <input
+                        type="number"
+                        step="0.01"
+                        :value="row.value"
+                        :data-testid="`schedule-context-value-${index}`"
+                        @change="changeContextParameterValue(index, Number($event.target.value))"
+                      />
+                    </label>
+                    <label v-else-if="row.type === 'bool'" class="form-field">
+                      <span>值</span>
+                      <select
+                        :value="String(row.value)"
+                        :data-testid="`schedule-context-value-${index}`"
+                        @change="changeContextParameterValue(index, $event.target.value === 'true')"
+                      >
+                        <option value="true">true</option>
+                        <option value="false">false</option>
+                      </select>
+                    </label>
+                    <label v-else-if="row.type === 'list'" class="form-field context-param-item__json-field">
+                      <span>值（JSON 数组）</span>
+                      <textarea
+                        :value="JSON.stringify(row.value || [], null, 2)"
+                        rows="3"
+                        :data-testid="`schedule-context-value-${index}`"
+                        @change="(e) => { if (!setContextParameterListFromText(index, e.target.value)) errorMessage.value = '列表 JSON 不合法' }"
+                      ></textarea>
+                    </label>
+                    <label v-else-if="row.type === 'dict'" class="form-field context-param-item__json-field">
+                      <span>值（JSON 对象）</span>
+                      <textarea
+                        :value="JSON.stringify(row.value || {}, null, 2)"
+                        rows="3"
+                        :data-testid="`schedule-context-value-${index}`"
+                        @change="(e) => { if (!setContextParameterDictFromText(index, e.target.value)) errorMessage.value = '对象 JSON 不合法' }"
+                      ></textarea>
+                    </label>
+                  </div>
+                </template>
+              </div>
+            </div>
+
+            <!-- 添加参数下拉 -->
+            <div class="add-context-param" data-testid="schedule-context-add">
+              <label class="add-context-param__label">
+                <span>添加参数</span>
+                <span
+                  v-if="!availableContextParameterTemplates.length"
+                  class="add-context-param__hint"
+                  data-testid="schedule-context-add-empty"
+                >
+                  已添加所有可选模板。
+                </span>
+                <select
+                  class="add-context-param__select"
+                  data-testid="schedule-context-add-select"
+                  :value="''"
+                  aria-label="添加上下文参数"
+                  :disabled="!availableContextParameterTemplates.length"
+                  @change="addContextParameter($event.target.value); $event.target.value = ''"
+                >
+                  <option value="" disabled selected>请选择要添加的参数</option>
+                  <option
+                    v-for="t in availableContextParameterTemplates"
+                    :key="t.name"
+                    :value="t.name"
+                  >
+                    {{ t.label }}（{{ t.type }}）
+                  </option>
+                </select>
+              </label>
+            </div>
+
+            <!-- JSON 预览（只读） -->
+            <details class="context-params__preview" data-testid="schedule-context-preview">
+              <summary>JSON 预览</summary>
+              <textarea
+                v-model="contextJson"
+                rows="4"
+                readonly
+                aria-label="context_overrides JSON 预览"
+                data-testid="schedule-context-preview-area"
+              ></textarea>
+            </details>
+          </div>
           <label class="inline-field">
             <input v-model="form.enabled" type="checkbox" />
             <span>保存后启用任务</span>
@@ -4015,5 +4722,159 @@ input[type="number"] {
 .add-script-param__hint {
   color: #6b7280;
   font-size: 12px;
+}
+
+/* ===== 智能体任务 context_overrides 参数化面板样式 ===== */
+.context-params {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.context-params__head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.context-params__title {
+  font-weight: 600;
+  color: #111827;
+  font-size: 14px;
+}
+
+.context-params__hint {
+  margin: 0;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.context-param-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.context-param-item {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.context-param-item__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.context-param-item__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: #111827;
+}
+
+.context-param-item__key {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #6b7280;
+  background: #f3f4f6;
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.context-param-item__desc {
+  margin: 0;
+  color: #4b5563;
+  font-size: 12px;
+}
+
+.context-param-item__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+}
+
+.context-param-item__json-field {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 720px) {
+  .context-param-item__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.badge-ref-server {
+  background: #ecfeff;
+  color: #0e7490;
+  border: 1px solid #a5f3fc;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 12px;
+}
+
+.add-context-param {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.add-context-param__label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+}
+
+.add-context-param__select {
+  width: 100%;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 14px;
+  color: #111827;
+  background: #ffffff;
+}
+
+.add-context-param__hint {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.context-params__preview {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: #4b5563;
+}
+
+.context-params__preview > summary {
+  cursor: pointer;
+  font-weight: 500;
+  color: #111827;
+}
+
+.context-params__preview > textarea {
+  width: 100%;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  background: #ffffff;
+  color: #111827;
+  margin-top: 6px;
+  resize: vertical;
+  min-height: 80px;
 }
 </style>
