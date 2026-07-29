@@ -98,6 +98,18 @@ const selectedFiles = ref([])
 const agentList = ref([])
 const isLoadingAgents = ref(false)
 const selectedAgent = ref(null)
+
+// 2026-07-29 新增：输入框 placeholder 文案统一在此生成。
+// 三档分支：已选智能体 / 已绑定智能体 / 空载；空载场景末尾追加 "# 快捷添加引用" 提示
+// 让用户在不点击工具栏按钮的情况下也能感知 "#" 可触发服务器引用面板。
+// 未来若新增触发字符（如 @知识库），只需在此处追加提示文案。
+const inputPlaceholder = computed(() => {
+  if (selectedAgent.value) return '请输入消息，按「Enter」发送'
+  if (props.boundAgentName) {
+    return `当前智能体：${props.boundAgentDisplayName || props.boundAgentName}`
+  }
+  return '输入 / 快速使用智能体 · 输入 # 快捷添加引用'
+})
 const showAgentDropdown = ref(false)
 const activeAgentIndex = ref(-1)
 const agentDropdownRef = ref(null)
@@ -1426,7 +1438,7 @@ const emit = defineEmits([
             data-testid="input-editor"
             role="textbox"
             aria-multiline="true"
-            :data-placeholder="selectedAgent ? '请输入消息，按「Enter」发送' : (boundAgentName ? `当前智能体：${boundAgentDisplayName || boundAgentName}` : '输入 / 快速使用智能体')"
+            :data-placeholder="inputPlaceholder"
             contenteditable="true"
             spellcheck="false"
             @input="handleInput"
