@@ -364,18 +364,68 @@ async def login(request: LoginRequest, req: Request, response: Response):
         HTTPException: 验证码错误、用户名或密码错误时抛出
     """
     from app.shared.utils.auth.captcha import captcha_manager
-    from app.shared.utils.auth.audit_log import AuditLog
+    from app.shared.utils.log_service import (
+        LogEvent,
+        LogLevel,
+        LogResult,
+        LogService,
+        LogType,
+        get_log_service,
+    )
 
-    # 获取客户端 IP
+    # 简易登录审计事件 emit（fail-soft，emit 失败不影响业务响应）。
+    # 迁移自历史审计写入：login_success/login_failure 统一为 action='login'，
+    # 通过 result（success/failure）与 level（info/warning）区分；source='auth_router'。
+    def _emit_login_event(
+        username: str,
+        result: LogResult,
+        level: LogLevel,
+        message: str,
+        user_id: Optional[int] = None,
+    ) -> None:
+        """统一 audit 'login' 事件（fail-soft，emit 失败仅 warning）。
+
+        参数:
+            username: 触发登录的用户名（失败时仍记录，便于定位爆破来源）。
+            result: success / failure。
+            level: info / warning。
+            message: 业务描述信息，将写入 ``LogEvent.message``。
+            user_id: 已知用户 ID（成功路径取得），失败时为 None。
+
+        返回:
+            None。
+        """
+        svc = get_log_service()
+        if svc is None:
+            return
+        event = LogEvent(
+            action="login",
+            log_type=LogType.AUTH,
+            result=result,
+            level=level,
+            source="auth_router",
+            username=username,
+            user_id=user_id,
+            ip_address=client_ip,
+            message=message,
+        )
+        try:
+            svc.emit(event)
+        except Exception as exc:  # pragma: no cover - 防御性 fail-soft
+            import logging
+            logging.getLogger(__name__).warning(
+                "[auth_router] emit login event failed: %s", type(exc).__name__
+            )
+
     client_ip = req.client.host if req.client else "unknown"
 
     # 校验验证码
     if not captcha_manager.verify(request.captcha_key, request.captcha_code):
-        await AuditLog.write_log(
-            action='login_failure',
+        _emit_login_event(
             username=request.username,
-            detail='验证码错误',
-            ip_address=client_ip
+            result=LogResult.FAILURE,
+            level=LogLevel.WARNING,
+            message='验证码错误',
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -390,11 +440,11 @@ async def login(request: LoginRequest, req: Request, response: Response):
         is_valid = await jwt_auth.verify_credentials(request.username, request.password)
 
     if not is_valid:
-        await AuditLog.write_log(
-            action='login_failure',
+        _emit_login_event(
             username=request.username,
-            detail='用户名或密码错误',
-            ip_address=client_ip
+            result=LogResult.FAILURE,
+            level=LogLevel.WARNING,
+            message='用户名或密码错误',
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -434,11 +484,12 @@ async def login(request: LoginRequest, req: Request, response: Response):
     )
 
     # 记录登录成功日志
-    await AuditLog.write_log(
-        action='login_success',
+    _emit_login_event(
         username=request.username,
+        result=LogResult.SUCCESS,
+        level=LogLevel.INFO,
+        message='login success',
         user_id=user_id,
-        ip_address=client_ip
     )
 
     visible_menus = await _compute_visible_menus(req, user_id, role)
@@ -482,9 +533,59 @@ async def login_api(request: ApiLoginRequest, req: Request, response: Response):
     Raises:
         HTTPException: 用户名或密码错误时抛出 401
     """
-    from app.shared.utils.auth.audit_log import AuditLog
+    from app.shared.utils.log_service import (
+        LogEvent,
+        LogLevel,
+        LogResult,
+        LogService,
+        LogType,
+        get_log_service,
+    )
 
-    # 获取客户端 IP
+    # 与 login 共用：login_success / login_failure 统一为 action='login'；
+    # fail-soft：emit 失败不影响业务 401 响应。
+    def _emit_login_api_event(
+        username: str,
+        result: LogResult,
+        level: LogLevel,
+        message: str,
+        user_id: Optional[int] = None,
+    ) -> None:
+        """程序化登录场景的审计事件 emit（fail-soft）。
+
+        参数:
+            username: 触发登录的用户名。
+            result: success / failure。
+            level: info / warning。
+            message: 业务描述。
+            user_id: 用户 ID（成功时为已知值，失败时 None）。
+
+        返回:
+            None。
+        """
+        svc = get_log_service()
+        if svc is None:
+            return
+        event = LogEvent(
+            action="login",
+            log_type=LogType.AUTH,
+            result=result,
+            level=level,
+            source="auth_router",
+            username=username,
+            user_id=user_id,
+            ip_address=client_ip,
+            message=message,
+        )
+        try:
+            svc.emit(event)
+        except Exception as exc:  # pragma: no cover - 防御性 fail-soft
+            import logging
+            logging.getLogger(__name__).warning(
+                "[auth_router.login_api] emit login event failed: %s",
+                type(exc).__name__,
+            )
+
     client_ip = req.client.host if req.client else "unknown"
 
     # 验证用户凭据
@@ -495,11 +596,11 @@ async def login_api(request: ApiLoginRequest, req: Request, response: Response):
         is_valid = await jwt_auth.verify_credentials(request.username, request.password)
 
     if not is_valid:
-        await AuditLog.write_log(
-            action='login_failure',
+        _emit_login_api_event(
             username=request.username,
-            detail='用户名或密码错误',
-            ip_address=client_ip
+            result=LogResult.FAILURE,
+            level=LogLevel.WARNING,
+            message='用户名或密码错误',
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -539,11 +640,12 @@ async def login_api(request: ApiLoginRequest, req: Request, response: Response):
     )
 
     # 记录登录成功日志
-    await AuditLog.write_log(
-        action='login_success',
+    _emit_login_api_event(
         username=request.username,
+        result=LogResult.SUCCESS,
+        level=LogLevel.INFO,
+        message='login success',
         user_id=user_id,
-        ip_address=client_ip
     )
 
     visible_menus = await _compute_visible_menus(req, user_id, role)
@@ -779,10 +881,17 @@ async def logout(req: Request, response: Response):
     Returns:
         dict: 登出结果
     """
-    from app.shared.utils.auth.audit_log import AuditLog
     from app.shared.utils.Session.SessionCache import session_cache
     from app.shared.utils.auth.refresh_token_db import RefreshTokenDB
     from app.shared.utils.auth.portal_refresh_token_db import PortalRefreshTokenDB
+    from app.shared.utils.log_service import (
+        LogEvent,
+        LogLevel,
+        LogResult,
+        LogService,
+        LogType,
+        get_log_service,
+    )
 
     username = getattr(req.state, 'username', None)
     user_id = getattr(req.state, 'user_id', None)
@@ -811,13 +920,32 @@ async def logout(req: Request, response: Response):
     if session_id:
         await session_cache.delete_session(session_id)
 
-    # 记录登出日志
+    # 记录登出日志（fail-soft，emit 失败不影响业务 200 响应）
     if username:
-        await AuditLog.write_log(
-            action='logout',
-            username=username,
-            detail=f'Session {session_id} 已销毁' if session_id else None,
-            ip_address=client_ip
-        )
+        svc = get_log_service()
+        if svc is not None:
+            event = LogEvent(
+                action="logout",
+                log_type=LogType.AUTH,
+                result=LogResult.SUCCESS,
+                level=LogLevel.INFO,
+                source="auth_router",
+                username=username,
+                user_id=user_id,
+                ip_address=client_ip,
+                session_id=session_id,
+                message=(
+                    f'Session {session_id} 已销毁'
+                    if session_id else 'logout'
+                ),
+            )
+            try:
+                svc.emit(event)
+            except Exception as exc:  # pragma: no cover - 防御性 fail-soft
+                import logging
+                logging.getLogger(__name__).warning(
+                    "[auth_router.logout] emit logout event failed: %s",
+                    type(exc).__name__,
+                )
 
     return {"message": "登出成功"}

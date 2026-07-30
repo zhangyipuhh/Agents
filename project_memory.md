@@ -13,6 +13,7 @@
 | [Agent 与 Skill 体系](memory/agents-skills.md) | Agent 统一构造入口、Skill 系统、AGENTS.md 加载器、配置加载服务、工具注册中心、缓存、工具绑定双轨制、记忆存储、scripts/ | Agent、Skill、bootstrap、工具注册、缓存、记忆存储 | 2026-07-26 |
 | [MCP 体系](memory/mcp.md) | MCP 配置 CRUD、MCP/Tool/Skill Admin Router、统一 Agent Router、MCPToolsRegistry | MCP、服务器、工具注册、Admin Router | 2026-07-26 |
 | [前端架构](memory/frontend.md) | web/Agent 前端架构、MCP 管理组件、UserSettingsDialog 系列、斜杠命令注册表、触发器注册表（# 行内服务器 Chip）、TriggerPanel、MessageBubble mention 统一渲染、contenteditable 编辑器 DOM 工具、InputBox 会话切换清理本地态、TaskSchedulerManager context_overrides 参数化编辑器（2026-07-29） | 前端、Vue、组件、UserSettingsDialog、斜杠命令、triggerRegistry、TriggerPanel、inputEditor、会话切换、context_overrides、reference_server | 2026-07-29 |
+| [统一审计日志（2026-07-29）](memory/architecture.md#统一审计日志2026-07-29) | 统一日志 `LogService` 唯一入口；SSH/devops 事件；可信身份；管理员查询信封 | LogService、审计日志、SSH、devops、可信身份、查询信封 | 2026-07-29 |
 | [菜单权限与用户配置](memory/menu-acl.md) | 用户菜单权限管理（MENU_CATALOG/ACL）、用户服务器配置管理 | 菜单、权限、ACL、allowed_agents、服务器配置 | 2026-07-26 |
 | [DevOps 与沙箱](memory/devops-sandbox.md) | SSH 远程服务器管理、沙箱 Agent 架构、SubAgent 事件协议 | DevOps、SSH、沙箱、SubAgent、事件协议 | 2026-07-27 |
 | [其他子系统](memory/misc.md) | 邮件系统、飞书工具、CI 测试 | 邮件、飞书、CI、GitHub Actions | 2026-07-27 |
@@ -89,3 +90,7 @@
 - 修改某主题 → 只 Edit 对应分片，并更新本索引对应行的「更新时间」。
 - 新增章节 → 写入对应分片；若无合适分片，在 memory/ 新建分片并在本索引登记一行。
 - 只记录最终/当前状态，变更历史查 git log。
+
+## 变更日志
+
+- **2026-07-29**：统一日志 `LogService` + 迁移 auth/user/session/SSH + admin 查询 API + 可信身份双层 + 命令/凭据脱敏 + 队列预留 + 197 测试 GREEN。

@@ -48,6 +48,30 @@ async def lifespan(app: FastAPI):
         # 注册并初始化所有 Schema
         await DatabasePool.register_schemas()
 
+    # 2026-07-29：启动统一日志服务（LogService）。
+    # DB schema 已就绪（audit_logs 表扩展列已建），直接挂到 app.state。
+    # memory / postgres 两种模式都支持：postgres 模式走 executemany 批量参数化，
+    # memory 模式走进程内列表（fail-soft 兜底）。
+    try:
+        from app.shared.utils.log_service import (
+            LogService,
+            set_log_service,
+        )
+
+        log_service = LogService(db_pool=DatabasePool._pool)
+        await log_service.start()
+        set_log_service(log_service)
+        app.state.log_service = log_service
+        logging.info(
+            "[lifespan] LogService initialized (%s mode)",
+            "memory" if log_service._memory_only else "postgres",
+        )
+    except Exception as log_init_exc:
+        logging.warning(
+            "[lifespan] Failed to initialize LogService: %s",
+            type(log_init_exc).__name__,
+        )
+
     # 启动时加载 Session 到内存缓存
     from app.shared.utils.auth.session_db import SessionDB
     await SessionDB.initialize()
@@ -636,6 +660,24 @@ async def lifespan(app: FastAPI):
     # 关闭 Skill 系统单例
     SkillsService.reset()
     logging.info("SkillsService singleton cleared")
+
+    # 2026-07-29：关闭统一日志服务（在 DatabasePool.close 之前，确保队列残留被 flush）
+    try:
+        from app.shared.utils.log_service import (
+            get_log_service,
+            reset_log_service,
+        )
+
+        svc = get_log_service()
+        if svc is not None:
+            await svc.stop()
+        reset_log_service()
+        app.state.log_service = None
+        logging.info("[lifespan] LogService stopped and references cleared")
+    except Exception as log_exc:
+        logging.warning(
+            "[lifespan] Failed to stop LogService: %s", type(log_exc).__name__
+        )
 
     # 关闭数据库连接池
     if DatabasePool.is_enabled():

@@ -595,7 +595,13 @@ async def _delete_session_core(session_id: str, admin_username: str = "unknown",
     Returns:
         bool: 文件目录删除是否成功（会话是否存在）
     """
-    from app.shared.utils.auth.audit_log import AuditLog
+    from app.shared.utils.log_service import (
+        LogEvent,
+        LogLevel,
+        LogResult,
+        LogType,
+        get_log_service,
+    )
 
     # 删除关联的对话记录
     await ConversationDB.delete_session_records(session_id)
@@ -633,13 +639,32 @@ async def _delete_session_core(session_id: str, admin_username: str = "unknown",
     # 从缓存中删除 session_id
     await session_cache.delete_session(session_id)
 
-    # 记录审计日志
-    await AuditLog.write_log(
-        action='admin_delete_session',
-        username=admin_username,
-        detail=f'Admin 删除会话 {session_id}',
-        ip_address=client_ip
-    )
+    # 记录审计日志（fail-soft，emit 失败不影响业务 200 响应）
+    svc = get_log_service()
+    if svc is not None:
+        event = LogEvent(
+            action="admin_delete_session",
+            log_type=LogType.SESSION,
+            result=LogResult.SUCCESS,
+            level=LogLevel.WARNING,
+            source="session_router",
+            username=admin_username,
+            user_id=None,
+            ip_address=client_ip,
+            session_id=session_id,
+            target_type="session",
+            target_id=session_id,
+            target_name=session_id,
+            message=f'Admin 删除会话 {session_id}',
+        )
+        try:
+            svc.emit(event)
+        except Exception as exc:  # pragma: no cover
+            import logging
+            logging.getLogger(__name__).warning(
+                "[session_router._delete_session_core] emit event failed: %s",
+                type(exc).__name__,
+            )
 
     return success
 

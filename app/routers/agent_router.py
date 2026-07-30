@@ -161,6 +161,21 @@ async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse
             dynamic_nodes=sanitized_dynamic_nodes,
         )
 
+        # 2026-07-29 新增：强制覆盖审计身份字段（log_user_id / log_username）。
+        # 客户端可通过 context_overrides 任意注入身份信息，但审计日志必须以
+        # 服务端鉴权结果（request.state.user_id / username）为准，覆盖后
+        # 不再受客户端伪造影响。task_scheduler 路径同样注入 creator 身份，
+        # 链路层层覆盖，最终在 LogService 处持久化可信任的 user 身份。
+        canonical_user_id = getattr(request.state, "user_id", None)
+        canonical_username = getattr(request.state, "username", None)
+        # 仅在服务端鉴权身份可用时注入（避免 None 污染 context_overrides，
+        # 让仅依赖 None 过滤的测试例如
+        # ``test_chat_filters_none_value_from_context_overrides`` 保持原有契约）。
+        if canonical_user_id is not None:
+            merged_overrides["log_user_id"] = canonical_user_id
+        if canonical_username is not None:
+            merged_overrides["log_username"] = canonical_username
+
         agent, context_instance, input_state = await service.build_agent_instance(
             agent_name=agent_name,
             session_id=session_id,

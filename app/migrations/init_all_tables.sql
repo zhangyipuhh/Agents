@@ -162,23 +162,94 @@ ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id     ON refresh_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires_at  ON refresh_tokens(expires_at);
 
--- ========== 6. audit_logs（审计日志）==========
+-- ========== 6. audit_logs（审计日志 / 统一日志服务载体）==========
+-- 2026-07-29 扩展：新增列以承载统一日志服务（LogService / LogEvent）。
+-- 历史 action 仅：admin_delete_session / login_success / logout / login_failure /
+-- admin_kick_user / admin_update_user，新代码一律通过 app.shared.utils.log_service
+-- 的 LogEvent.action 写入（log_type/result/level/source 标准化）。
+-- 不修改 created_at 类型（避免 timestamp with time zone 迁移歧义），
+-- 应用层统一按 UTC naive 写入，API 输出明确追加 UTC 标记。
 CREATE TABLE IF NOT EXISTS audit_logs (
     id              SERIAL PRIMARY KEY,
     user_id         INTEGER,
     username        VARCHAR(100),
-    action          VARCHAR(50) NOT NULL,
+    action          VARCHAR(100) NOT NULL,
     detail          TEXT,
     ip_address      VARCHAR(50),
+    log_type        VARCHAR(32) NOT NULL DEFAULT 'system',
+    result          VARCHAR(32) NOT NULL DEFAULT 'success',
+    level           VARCHAR(16) NOT NULL DEFAULT 'info',
+    source          VARCHAR(64) NOT NULL DEFAULT 'app',
+    message         TEXT NOT NULL DEFAULT '',
+    session_id      VARCHAR(100),
+    request_id      VARCHAR(100),
+    tool_call_id    VARCHAR(100),
+    correlation_id  VARCHAR(100),
+    target_type     VARCHAR(64),
+    target_id       VARCHAR(100),
+    target_name     VARCHAR(200),
+    metadata        JSONB DEFAULT '{}'::jsonb,
     created_at      TIMESTAMP DEFAULT NOW()
 );
--- 防御性补齐
-ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS user_id    INTEGER;
-ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS username  VARCHAR(100);
-ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS action    VARCHAR(50);
-ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS detail    TEXT;
-ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ip_address VARCHAR(50);
-ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
+-- 防御性补齐（含新增列）
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS user_id        INTEGER;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS username      VARCHAR(100);
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS action        VARCHAR(100);
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS detail        TEXT;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ip_address    VARCHAR(50);
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS log_type      VARCHAR(32) DEFAULT 'system';
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS result        VARCHAR(32) DEFAULT 'success';
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS level         VARCHAR(16) DEFAULT 'info';
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS source        VARCHAR(64) DEFAULT 'app';
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS message       TEXT DEFAULT '';
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS session_id    VARCHAR(100);
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS request_id    VARCHAR(100);
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS tool_call_id  VARCHAR(100);
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS correlation_id VARCHAR(100);
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS target_type   VARCHAR(64);
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS target_id     VARCHAR(100);
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS target_name   VARCHAR(200);
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS metadata      JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS created_at    TIMESTAMP DEFAULT NOW();
+ALTER TABLE audit_logs ALTER COLUMN action TYPE VARCHAR(100);
+ALTER TABLE audit_logs ALTER COLUMN ip_address TYPE VARCHAR(50);
+-- 历史六类 action 规范化字段；仅迁移历史未知 action 归为 system
+UPDATE audit_logs
+   SET log_type = CASE
+       WHEN action IN ('login_success', 'login_failure', 'logout') THEN 'auth'
+       WHEN action IN ('admin_update_user', 'admin_kick_user') THEN 'user'
+       WHEN action = 'admin_delete_session' THEN 'session'
+       ELSE 'system'
+   END,
+       result = CASE WHEN action = 'login_failure' THEN 'failure' ELSE 'success' END,
+       level = CASE WHEN action IN ('login_failure', 'admin_kick_user', 'admin_delete_session') THEN 'warning' ELSE 'info' END,
+       source = 'audit_log',
+       message = COALESCE(NULLIF(message, ''), detail, action)
+ WHERE message IS NULL OR message = '';
+ALTER TABLE audit_logs ALTER COLUMN log_type SET DEFAULT 'system';
+ALTER TABLE audit_logs ALTER COLUMN result SET DEFAULT 'success';
+ALTER TABLE audit_logs ALTER COLUMN level SET DEFAULT 'info';
+ALTER TABLE audit_logs ALTER COLUMN source SET DEFAULT 'app';
+ALTER TABLE audit_logs ALTER COLUMN message SET DEFAULT '';
+ALTER TABLE audit_logs ALTER COLUMN log_type SET NOT NULL;
+ALTER TABLE audit_logs ALTER COLUMN result SET NOT NULL;
+ALTER TABLE audit_logs ALTER COLUMN level SET NOT NULL;
+ALTER TABLE audit_logs ALTER COLUMN source SET NOT NULL;
+ALTER TABLE audit_logs ALTER COLUMN message SET NOT NULL;
+ALTER TABLE audit_logs DROP CONSTRAINT IF EXISTS chk_audit_logs_log_type;
+ALTER TABLE audit_logs ADD CONSTRAINT chk_audit_logs_log_type CHECK (log_type IN ('auth', 'user', 'session', 'ssh', 'system'));
+ALTER TABLE audit_logs DROP CONSTRAINT IF EXISTS chk_audit_logs_result;
+ALTER TABLE audit_logs ADD CONSTRAINT chk_audit_logs_result CHECK (result IN ('success', 'failure', 'blocked', 'pending', 'skipped'));
+ALTER TABLE audit_logs DROP CONSTRAINT IF EXISTS chk_audit_logs_level;
+ALTER TABLE audit_logs ADD CONSTRAINT chk_audit_logs_level CHECK (level IN ('info', 'warning', 'error'));
+-- 索引（批准的高频查询维度）
+CREATE INDEX IF NOT EXISTS idx_audit_logs_username      ON audit_logs(username);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_action        ON audit_logs(action);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at    ON audit_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_session_id    ON audit_logs(session_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_correlation_id ON audit_logs(correlation_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_log_type      ON audit_logs(log_type);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_level         ON audit_logs(level);
 
 -- ========== 7. portal_refresh_tokens（门户子 RefreshToken）==========
 CREATE TABLE IF NOT EXISTS portal_refresh_tokens (

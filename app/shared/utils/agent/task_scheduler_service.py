@@ -793,11 +793,20 @@ class TaskSchedulerService:
                         schedule["agent_name"],
                         getattr(agent_preview, "display_name", schedule["agent_name"]),
                     )
+                    # 2026-07-29：复制一份 context_overrides 并强制覆盖
+                    # log_user_id / log_username 为任务创建者真实身份。
+                    # 数据库的 context_overrides 字段由 schedule 创建者写入，
+                    # 但允许手动编辑；为防止伪造身份在调度执行链路上生效，
+                    # 链路末端（此处）始终以 schedule.created_by_user_id 为准。
+                    # 同时 agent_router 也再做一次覆盖（请求路径），双层防御。
+                    overrides = dict(schedule.get("context_overrides") or {})
+                    overrides["log_user_id"] = user.get("id")
+                    overrides["log_username"] = user.get("username")
                     agent, context_instance, input_state = await self._agent_config_service.build_agent_instance(
                         agent_name=schedule["agent_name"],
                         session_id=session_id,
                         message=schedule["prompt"],
-                        context_overrides=schedule.get("context_overrides") or {},
+                        context_overrides=overrides,
                     )
                     run_logger.info("Agent 实例构建完成，开始 invoke")
                     result = await agent.invoke(

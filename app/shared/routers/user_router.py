@@ -220,7 +220,13 @@ async def create_user_admin(request: UserCreateRequest, req: Request):
     """
     import re
     from app.shared.utils.auth.user_db import UserDB
-    from app.shared.utils.auth.audit_log import AuditLog
+    from app.shared.utils.log_service import (
+        LogEvent,
+        LogLevel,
+        LogResult,
+        LogType,
+        get_log_service,
+    )
 
     # 校验用户名长度
     if len(request.username) < 3:
@@ -272,15 +278,34 @@ async def create_user_admin(request: UserCreateRequest, req: Request):
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-    # 写入审计日志
+    # 写入审计日志（fail-soft，emit 失败不影响业务 200 响应）
     client_ip = req.client.host if req.client else "unknown"
     admin_username = getattr(req.state, 'username', 'unknown')
-    await AuditLog.write_log(
-        action='admin_create_user',
-        username=admin_username,
-        detail=f'Admin 创建用户 {request.username}，角色 {request.role}',
-        ip_address=client_ip
-    )
+    admin_user_id = getattr(req.state, 'user_id', None)
+    svc = get_log_service()
+    if svc is not None:
+        event = LogEvent(
+            action="admin_create_user",
+            log_type=LogType.USER,
+            result=LogResult.SUCCESS,
+            level=LogLevel.INFO,
+            source="user_router",
+            username=admin_username,
+            user_id=admin_user_id,
+            ip_address=client_ip,
+            target_type="user",
+            target_id=str(user_id) if user_id is not None else None,
+            target_name=request.username,
+            message=f'Admin 创建用户 {request.username}，角色 {request.role}',
+        )
+        try:
+            svc.emit(event)
+        except Exception as exc:  # pragma: no cover - 防御性 fail-soft
+            import logging
+            logging.getLogger(__name__).warning(
+                "[user_router.create_user_admin] emit event failed: %s",
+                type(exc).__name__,
+            )
 
     return {"message": "创建成功", "user_id": user_id}
 
@@ -360,7 +385,13 @@ async def update_user_admin(user_id: int, request: UserUpdateRequest, req: Reque
     """
     import re
     from app.shared.utils.auth.user_db import UserDB
-    from app.shared.utils.auth.audit_log import AuditLog
+    from app.shared.utils.log_service import (
+        LogEvent,
+        LogLevel,
+        LogResult,
+        LogType,
+        get_log_service,
+    )
 
     user = await UserDB.get_user_by_id(user_id)
     if not user:
@@ -400,15 +431,35 @@ async def update_user_admin(user_id: int, request: UserUpdateRequest, req: Reque
     if not success:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="更新失败")
 
-    # 写入审计日志
+    # 写入审计日志（fail-soft，emit 失败不影响业务 200 响应）
     client_ip = req.client.host if req.client else "unknown"
     admin_username = getattr(req.state, 'username', 'unknown')
-    await AuditLog.write_log(
-        action='admin_update_user',
-        username=admin_username,
-        detail=f'Admin 更新用户 {user["username"]}(ID:{user_id}) 资料',
-        ip_address=client_ip
-    )
+    admin_user_id = getattr(req.state, 'user_id', None)
+    target_username = user.get("username") or ""
+    svc = get_log_service()
+    if svc is not None:
+        event = LogEvent(
+            action="admin_update_user",
+            log_type=LogType.USER,
+            result=LogResult.SUCCESS,
+            level=LogLevel.INFO,
+            source="user_router",
+            username=admin_username,
+            user_id=admin_user_id,
+            ip_address=client_ip,
+            target_type="user",
+            target_id=str(user_id),
+            target_name=target_username,
+            message=f'Admin 更新用户 {target_username}(ID:{user_id}) 资料',
+        )
+        try:
+            svc.emit(event)
+        except Exception as exc:  # pragma: no cover
+            import logging
+            logging.getLogger(__name__).warning(
+                "[user_router.update_user_admin] emit event failed: %s",
+                type(exc).__name__,
+            )
 
     return {"message": "更新成功"}
 
@@ -451,8 +502,14 @@ async def kick_user(user_id: int, req: Request):
     """
     from app.shared.utils.auth.user_db import UserDB
     from app.shared.utils.auth.refresh_token_db import RefreshTokenDB
-    from app.shared.utils.auth.audit_log import AuditLog
     from app.shared.utils.Session.SessionCache import session_cache
+    from app.shared.utils.log_service import (
+        LogEvent,
+        LogLevel,
+        LogResult,
+        LogType,
+        get_log_service,
+    )
 
     user = await UserDB.get_user_by_id(user_id)
     if not user:
@@ -468,15 +525,40 @@ async def kick_user(user_id: int, req: Request):
     from app.shared.utils.auth.portal_refresh_token_db import PortalRefreshTokenDB
     deleted_portal_tokens = await PortalRefreshTokenDB.delete_user_tokens(user_id)
 
-    # 记录审计日志
+    # 记录审计日志（fail-soft，emit 失败不影响业务 200 响应）
     client_ip = req.client.host if req.client else "unknown"
     admin_username = getattr(req.state, 'username', 'unknown')
-    await AuditLog.write_log(
-        action='admin_kick_user',
-        username=admin_username,
-        detail=f'强制用户 {user["username"]}(ID:{user_id}) 下线，清除 {deleted_count} 个 Refresh Token，删除 {deleted_portal_tokens} 个 Portal Token，标记 {kicked_sessions} 个 Session 为 kicked',
-        ip_address=client_ip
-    )
+    admin_user_id = getattr(req.state, 'user_id', None)
+    target_username = user.get("username") or ""
+    svc = get_log_service()
+    if svc is not None:
+        event = LogEvent(
+            action="admin_kick_user",
+            log_type=LogType.USER,
+            result=LogResult.SUCCESS,
+            level=LogLevel.WARNING,
+            source="user_router",
+            username=admin_username,
+            user_id=admin_user_id,
+            ip_address=client_ip,
+            target_type="user",
+            target_id=str(user_id),
+            target_name=target_username,
+            message=(
+                f'强制用户 {target_username}(ID:{user_id}) 下线，'
+                f'清除 {deleted_count} 个 Refresh Token，'
+                f'删除 {deleted_portal_tokens} 个 Portal Token，'
+                f'标记 {kicked_sessions} 个 Session 为 kicked'
+            ),
+        )
+        try:
+            svc.emit(event)
+        except Exception as exc:  # pragma: no cover
+            import logging
+            logging.getLogger(__name__).warning(
+                "[user_router.kick_user] emit event failed: %s",
+                type(exc).__name__,
+            )
 
     return {
         "message": f"用户 {user['username']} 已被强制下线",

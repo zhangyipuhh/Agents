@@ -145,6 +145,22 @@ agents 表 `agents_md_path` 字段存储**相对路径**（如 `agents/project/A
 - `app/shared/utils/report/word/generator.py` —— 2026-07-22 扩展；`_render_section` 分发表格渲染（`section_type="table"` → `_render_table`），按 `status_column` 映射 PASS/WARN/CRIT/未评估 单元格底色（`00B050` / `FFC000` / `C00000` / `808080`），单元格文本加粗
 - IP 脱敏边界 —— 2026-07-22 确认；ops Word 报告是唯一展示真实服务器 IP 的场景（IP 仅出现在 docx 附件中），邮件正文、API 列表（`DevOpsServerService.list_public_servers` 走 `_PUBLIC_FIELDS = ("id", "business_name", "server_type", "updated_at")` 白名单）、前端 DevOps 服务器列表（基于上述 API）、日志均不带 IP；`resolve_server_ip_map` 反查失败时报告渲染为 `-`，不中断整体流程
 
+## 统一审计日志（2026-07-29）
+
+统一审计日志由 `app.shared.utils.log_service.LogService.emit(event) -> bool` 作为唯一写入口，覆盖认证、用户、会话、SSH 与系统事件，并通过可信身份覆盖与命令/凭据脱敏保证审计数据安全。
+
+### 日志契约
+
+- **唯一写入口**：`app.shared.utils.log_service.LogService.emit(event) -> bool`。
+- **枚举**：`LogType ∈ {auth,user,session,ssh,system}`；`LogResult ∈ {success,failure,blocked,pending,skipped}`；`LogLevel ∈ {info,warning,error}`。
+- **线程模型**：`start()` 保存当前事件循环；`emit` 跨线程通过 `loop.call_soon_threadsafe` 调度入队；调度前 `_reserve_lock` 做容量预留，超容立即返回 `False`；`put_nowait` 失败时在 `finally` 中释放预留。
+- **脱敏**：`redact_metadata` 使用 `_NORMALIZED_SENSITIVE_KEYS`（`password/token/api_key/secret/api-key/access_key/private_key/mysql_pwd/redis_pwd/cookie/authorization`）；命令键（`command/intercept_reason/decision/intercept_code`）走 `redact_command`。`redact_command` 必须覆盖 `KEY=v`、`KEY="v"`、`KEY='v'`、`KEY: v`、`--key v`、`--key="v"`、`--key='v'`、`-kv`、`-k v`、`Authorization: Bearer` 与 `scheme://user:pass@host`。
+- **可信身份**：`AgentContext.log_user_id / log_username` 由 `app.routers.agent_router.py`（`request.state`）与 `app.shared.utils.agent.task_scheduler_service.py`（`schedule.created_by_user_id`）双层覆盖客户端/计划 `context_overrides` 的伪造值；命令、Bearer、URL userinfo 凭据禁止在响应与日志中回显。
+- **查询 API**：`GET /api/admin/logs` 严格返回 `{items,total,limit,offset}` 信封，仅 admin 可访问，filter 同时走 `query_logs + count_logs`；`GET /api/admin/logs/{log_id}` 返回单条记录及通过 `correlation_id` 关联的 `related_logs`；`log_service` 缺失时返回 503。
+- **SSH 拦截类目化**：`CommandInterceptor` 拒绝原因仅以固定类别码 `command_blacklisted` / `command_not_whitelisted` 持久化；原命令仅进入 `command_redacted` 与 `command_hash`；stdout/stderr 仅记录字节数；终态以 `exit_code == 0` 判定。
+- **批量执行**：`execute_batch_commands` 必须产生 1 条汇总 + N 条成员，共享同一 UUID `correlation_id`；输入为空或 `None` 时仅产生 1 条 `failure(error_code=invalid_commands)`。
+- **DB 模式**：`init_all_tables.sql` 的扩展列、CHECK 约束、索引与 `LogService.init_audit_log_schema` 一致；`memory_only` 模式使用 `LogService._memory_records`；`stop()` flush 残余并 cancel 消费协程。
+
 ## 项目架构
 app/
 ├── core/                    # 核心模块

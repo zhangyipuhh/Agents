@@ -1530,8 +1530,13 @@ def test_chat_filters_none_value_from_context_overrides(
     # 核心断言：所有 None 值已被过滤（仅 router 自动注入的 dynamic_context_suffix 保留）
     overrides = captured[0]["context_overrides"]
     assert "dynamic_context_suffix" in overrides
-    # 用户传入的键全部被过滤
-    user_keys = {k for k in overrides if k != "dynamic_context_suffix"}
+    # 用户传入的 None 键全部被过滤
+    # 2026-07-29 扩展：还允许 log_user_id / log_username（router 强制覆盖的
+    # 服务端鉴权身份字段），客户端伪造身份也不会胜出。
+    user_keys = {
+        k for k in overrides
+        if k not in {"dynamic_context_suffix", "log_user_id", "log_username"}
+    }
     assert user_keys == set()
 
 
@@ -1564,7 +1569,12 @@ def test_chat_filters_empty_string_and_empty_list_from_context_overrides(
     # 核心断言：所有空值已被过滤（仅 router 自动注入的 dynamic_context_suffix 保留）
     overrides = captured[0]["context_overrides"]
     assert "dynamic_context_suffix" in overrides
-    user_keys = {k for k in overrides if k != "dynamic_context_suffix"}
+    # 2026-07-29 扩展：还允许 log_user_id / log_username（router 强制覆盖的
+    # 服务端鉴权身份字段），客户端伪造身份也不会胜出。
+    user_keys = {
+        k for k in overrides
+        if k not in {"dynamic_context_suffix", "log_user_id", "log_username"}
+    }
     assert user_keys == set()
 
 
