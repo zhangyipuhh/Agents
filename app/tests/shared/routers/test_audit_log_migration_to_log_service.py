@@ -928,3 +928,113 @@ def test_agent_context_has_log_user_id_and_log_username_fields():
         keyword in src for keyword in ["审计", "日志", "创建者", "请求方", "覆盖"]
     )
     assert has_cn, "AgentContext 模块须有中文注释解释 log_user_id / log_username 用途"
+
+
+# =============================================================================
+# 11. AgentContext 含 log_ip 字段（2026-07-30 新增,与 log_user_id / log_username 同款）
+# =============================================================================
+
+
+def test_agent_context_has_log_ip_field():
+    """AgentContext TypedDict 必须含 Optional log_ip 字段及中文注释。
+
+    业务语义(2026-07-30 新增):写入 ``audit_logs.ip_address`` 的真值来源,
+    禁止信任客户端。``agent_router`` 用 ``request.client.host`` 强制覆盖后
+    注入到 ``runtime.context['log_ip']``,SSH 工具读取后写入 LogEvent.ip_address。
+    """
+    from app.core.agent.AgentContext import AgentContext
+
+    annotations = AgentContext.__annotations__ if hasattr(AgentContext, "__annotations__") else {}
+    assert "log_ip" in annotations, (
+        "AgentContext 必须声明 log_ip 字段，类型 Optional[str]，默认 None"
+    )
+    # 模块 docstring 必须包含中文注释说明 log_ip 字段的用途
+    from app.core.agent import AgentContext as ctx_module
+
+    src = inspect.getsource(ctx_module)
+    assert "log_ip" in src
+    # 验证中文注释存在
+    has_cn = any(
+        keyword in src for keyword in ["审计", "日志", "客户端", "覆盖"]
+    )
+    assert has_cn, "AgentContext 模块须有中文注释解释 log_ip 用途"
+
+
+# =============================================================================
+# 12. agent_router 强制覆盖 log_ip（2026-07-30 新增,与 log_user_id 同款）
+# =============================================================================
+
+
+def test_agent_router_overrides_client_supplied_log_ip(monkeypatch):
+    """客户端在 context_overrides.log_ip 伪造 IP 时,
+    agent_router 必须在 build_agent_instance 之前强制覆盖为 request.client.host 真值。
+
+    业务语义(2026-07-30 新增):与 log_user_id / log_username 同款防伪机制,
+    防止客户端通过 context_overrides 写入伪造 IP 污染审计日志。
+    """
+    from fastapi import Request
+
+    captured = {}
+    real_client_host = "198.51.100.7"
+
+    async def fake_build(**kwargs):
+        captured.update(kwargs.get("context_overrides") or {})
+        return MagicMock(name="agent"), MagicMock(name="ctx"), MagicMock(name="state")
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.build_agent_instance",
+        AsyncMock(side_effect=fake_build),
+    )
+
+    async def fake_get(name):
+        from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+        return UnifiedAgentConfig(
+            name=name,
+            display_name="x",
+            description="",
+            system_prompt="",
+            state_class=MagicMock(return_value={"messages": []}),
+            context_class=MagicMock(return_value={"session_id": "s"}),
+        )
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.AgentConfigService.get_agent_config",
+        AsyncMock(side_effect=fake_get),
+    )
+
+    fake_request = MagicMock(spec=Request)
+    fake_request.headers = {"X-Session-ID": "s"}
+    fake_request.state.user_id = 42
+    fake_request.state.username = "real_admin"
+    fake_request.state.role = "admin"
+    fake_request.state.allowed_agents = []
+    # 服务端真实连接 IP（auth_middleware 注入后由 request.client.host 提供）
+    fake_request.client = SimpleNamespace(host=real_client_host)
+    fake_service = MagicMock()
+    fake_service.build_agent_instance = AsyncMock(side_effect=fake_build)
+    fake_request.app.state.agent_config_service = fake_service
+    fake_service.get_agent_config = AsyncMock(side_effect=fake_get)
+
+    monkeypatch.setattr(
+        "app.routers.agent_router.generate_stream_response",
+        lambda *a, **k: iter(["data: test\n\n"]),
+    )
+
+    from app.routers.agent_router import chat, ChatRequest
+
+    # 客户端伪造 IP：log_ip=9.9.9.9
+    chat_request = ChatRequest(
+        message="hi",
+        session_id="s",
+        agent_name="default",
+        context_overrides={"log_ip": "9.9.9.9"},
+    )
+
+    captured.clear()
+    asyncio.run(chat(fake_request, chat_request))
+
+    # 核心断言：客户端伪造的 log_ip 被强制覆盖为服务端真值
+    assert captured.get("log_ip") == real_client_host, (
+        f"客户端伪造 log_ip='9.9.9.9' 必须被覆盖为服务端鉴权结果 {real_client_host!r}, "
+        f"实际收到 {captured.get('log_ip')!r}"
+    )

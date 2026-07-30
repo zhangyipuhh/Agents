@@ -176,6 +176,15 @@ async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse
         if canonical_username is not None:
             merged_overrides["log_username"] = canonical_username
 
+        # 2026-07-30 新增：强制覆盖审计 IP 字段（log_ip）。
+        # 与 log_user_id / log_username 同款:客户端可通过 context_overrides 伪造,
+        # 但审计日志必须以服务端拿到的真实连接 IP(request.client.host)为准。
+        # 与 auth_router / user_router / session_router 取值方式保持一致,
+        # 统一不解析 X-Forwarded-For,代理链路 IP 由 auth_middleware 统一处理。
+        canonical_client_ip = request.client.host if request.client else None
+        if canonical_client_ip is not None:
+            merged_overrides["log_ip"] = canonical_client_ip
+
         agent, context_instance, input_state = await service.build_agent_instance(
             agent_name=agent_name,
             session_id=session_id,

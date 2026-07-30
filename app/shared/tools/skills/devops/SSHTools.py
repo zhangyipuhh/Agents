@@ -161,6 +161,27 @@ def _runtime_session_id(runtime: Any) -> Optional[str]:
     return None
 
 
+def _runtime_ip(runtime: Any) -> Optional[str]:
+    """从 ``runtime.context`` 取 ``log_ip``，非 str 或全空白时返回 ``None``。
+
+    业务语义（2026-07-30 新增）：与 ``_runtime_identity`` / ``_runtime_session_id``
+    同款，从 ``AgentContext.log_ip`` 读取客户端 IP 写入 ``LogEvent.ip_address``。
+    来源：``agent_router.chat`` 用 ``request.client.host`` 强制覆盖后的真值，
+    禁止信任客户端 context_overrides 提供的 log_ip（已由 router 兜底）。
+
+    Args:
+        runtime: LangChain ToolRuntime 实例。
+
+    Returns:
+        Optional[str]: 客户端 IP（v4 / v6 文本，已 strip），缺失或非法时为 ``None``。
+    """
+    ctx = _runtime_context(runtime)
+    raw = ctx.get("log_ip")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
 def _intercept_category(error: CommandBlockedError) -> str:
     """把策略异常归一化为固定拦截类别代码。
 
@@ -325,6 +346,9 @@ def _emit_log(
         tool_call_id = _runtime_tool_call_id(runtime)
         user_id, username = _runtime_identity(runtime)
         session_id = _runtime_session_id(runtime)
+        # 2026-07-30 新增：审计日志 IP 字段（与 log_user_id / log_username 同款，
+        # 由 agent_router 用 request.client.host 强制覆盖）。
+        client_ip = _runtime_ip(runtime)
         evt = LogEvent(
             action=action,
             log_type=LogType.SSH,
@@ -339,6 +363,7 @@ def _emit_log(
             target_name=business_name,
             user_id=user_id,
             username=username,
+            ip_address=client_ip,
             metadata=metadata,
         )
         # service.emit 内部已含 redact_metadata 递归脱敏；本函数不重复。

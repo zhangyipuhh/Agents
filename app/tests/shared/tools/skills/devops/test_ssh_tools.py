@@ -1209,6 +1209,142 @@ def test_execute_command_log_event_uses_runtime_identity(monkeypatch):
     assert evt.username == "alice-real"
 
 
+def test_execute_command_log_event_carries_ip_address_from_runtime_context(monkeypatch):
+    """execute_command 的 LogEvent 必须从 ``runtime.context['log_ip']`` 读客户端 IP。
+
+    业务语义(2026-07-30 新增):SSH 工具审计日志的 ``ip_address`` 字段必须非空,
+    写入 ``audit_logs.ip_address`` 用于追踪真正触发命令的客户端。
+    来源:``agent_router.chat`` 用 ``request.client.host`` 强制覆盖后注入。
+    """
+    _, captured = _install_capturing_log_service(monkeypatch)
+    cfg = {
+        "ip": "10.0.0.59",
+        "port": 22,
+        "username": "u",
+        "password": "p",
+        "server_type": "linux",
+        "blacklist": [],
+        "whitelist": ["echo "],
+    }
+    _patch_service(monkeypatch, cfg)
+    _patch_paramiko(monkeypatch, stdout_text="ok\n", exit_code=0)
+    runtime = MagicMock(name="ToolRuntime")
+    runtime.tool_call_id = "call-ipv4"
+    runtime.context = {
+        "business_name": "zeta",
+        "session_id": "sess-zeta-001",
+        "log_user_id": 42,
+        "log_username": "alice-real",
+        "log_ip": "203.0.113.5",
+    }
+
+    from app.shared.tools.skills.devops.SSHTools import execute_command
+
+    execute_command(command="echo hi", business_name="zeta", runtime=runtime)
+
+    evt = captured[-1]
+    assert evt.ip_address == "203.0.113.5"
+
+
+def test_execute_command_log_event_ip_address_none_when_missing(monkeypatch):
+    """execute_command 的 LogEvent 在 ``runtime.context`` 缺 ``log_ip`` 时, ``ip_address`` 应为 ``None``。
+
+    行为契约:不抛异常,允许 Lifespan 异常 / 离线脚本 / 测试桩场景写入 ``NULL``。
+    """
+    _, captured = _install_capturing_log_service(monkeypatch)
+    cfg = {
+        "ip": "10.0.0.59",
+        "port": 22,
+        "username": "u",
+        "password": "p",
+        "server_type": "linux",
+        "blacklist": [],
+        "whitelist": ["echo "],
+    }
+    _patch_service(monkeypatch, cfg)
+    _patch_paramiko(monkeypatch, stdout_text="ok\n", exit_code=0)
+    runtime = MagicMock(name="ToolRuntime")
+    runtime.tool_call_id = "call-noip"
+    # 注意:不设置 log_ip —— 模拟"未注入"场景。
+    runtime.context = {
+        "business_name": "zeta",
+        "session_id": "sess-zeta-001",
+        "log_user_id": 42,
+        "log_username": "alice-real",
+    }
+
+    from app.shared.tools.skills.devops.SSHTools import execute_command
+
+    execute_command(command="echo hi", business_name="zeta", runtime=runtime)
+
+    evt = captured[-1]
+    assert evt.ip_address is None
+
+
+def test_execute_command_log_event_ip_address_ignores_non_str_type(monkeypatch):
+    """execute_command 的 LogEvent 在 ``runtime.context['log_ip']`` 非 str 时, ``ip_address`` 应为 ``None``。
+
+    防御性:防止客户端(虽然 router 已覆盖)伪造非 str 值,例如 ``int`` / ``list`` /
+    ``dict`` 绕过类型校验写脏数据。
+    """
+    _, captured = _install_capturing_log_service(monkeypatch)
+    cfg = {
+        "ip": "10.0.0.59",
+        "port": 22,
+        "username": "u",
+        "password": "p",
+        "server_type": "linux",
+        "blacklist": [],
+        "whitelist": ["echo "],
+    }
+    _patch_service(monkeypatch, cfg)
+    _patch_paramiko(monkeypatch, stdout_text="ok\n", exit_code=0)
+    runtime = MagicMock(name="ToolRuntime")
+    runtime.tool_call_id = "call-bad-ip"
+    runtime.context = {
+        "business_name": "zeta",
+        "session_id": "sess-zeta-001",
+        "log_ip": 12345,  # 非 str —— 应被忽略
+    }
+
+    from app.shared.tools.skills.devops.SSHTools import execute_command
+
+    execute_command(command="echo hi", business_name="zeta", runtime=runtime)
+
+    evt = captured[-1]
+    assert evt.ip_address is None
+
+
+def test_execute_command_log_event_ip_address_strips_whitespace(monkeypatch):
+    """execute_command 的 LogEvent 应 ``strip`` 掉 ``log_ip`` 前后空白,避免脏数据。"""
+    _, captured = _install_capturing_log_service(monkeypatch)
+    cfg = {
+        "ip": "10.0.0.59",
+        "port": 22,
+        "username": "u",
+        "password": "p",
+        "server_type": "linux",
+        "blacklist": [],
+        "whitelist": ["echo "],
+    }
+    _patch_service(monkeypatch, cfg)
+    _patch_paramiko(monkeypatch, stdout_text="ok\n", exit_code=0)
+    runtime = MagicMock(name="ToolRuntime")
+    runtime.tool_call_id = "call-ws-ip"
+    runtime.context = {
+        "business_name": "zeta",
+        "session_id": "sess-zeta-001",
+        "log_ip": "  203.0.113.5\n",
+    }
+
+    from app.shared.tools.skills.devops.SSHTools import execute_command
+
+    execute_command(command="echo hi", business_name="zeta", runtime=runtime)
+
+    evt = captured[-1]
+    assert evt.ip_address == "203.0.113.5"
+
+
 def test_execute_command_metadata_never_leaks_original_command(monkeypatch):
     """``command_redacted`` 字段不得保留原始命令中含密码的片段(由 ``redact_command`` 统一处理)。"""
     _, captured = _install_capturing_log_service(monkeypatch)

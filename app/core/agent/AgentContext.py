@@ -72,3 +72,12 @@ class AgentContext(TypedDict):
     流程：request.state.username / schedule owner.username 强制覆盖；
     工具侧推荐 ``runtime.context.get("log_username")`` 取值。
     默认 None。"""
+    # 2026-07-30 新增：审计日志 IP 字段
+    log_ip: Optional[str] = None
+    """审计日志客户端 IP（Optional[str]）。
+    业务语义：写入 ``audit_logs.ip_address`` 的真值来源，**禁止信任客户端**。
+    - 请求路径（agent_router）由 ``request.client.host`` 强制覆盖；
+    - 调度路径（task_scheduler_service）保持 None（定时任务无远程客户端）；
+    - 工具如需发起新审计事件，应优先读取 ``runtime.context.get("log_ip")``，
+      避免与 request.state 解耦的间接上下文。
+    默认 None 表示身份未被注入（lifespan 异常 / 离线脚本 / 测试桩场景）。"""
