@@ -898,6 +898,10 @@ onMounted(async () => {
   border: 1px solid #e5e7eb;
   border-radius: 14px;
   padding: 18px;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
 }
 
 .tablist {

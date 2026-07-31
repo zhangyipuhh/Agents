@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import EmailSettingsManager from '../EmailSettingsManager.vue'
+import EmailSettingsManagerSource from '../EmailSettingsManager.vue?raw'
 
 const emailableUsers = [
   { id: 1, username: 'alice', real_name: 'Alice', email: 'alice@example.com' },
@@ -96,6 +97,16 @@ describe('EmailSettingsManager 收件人策略', () => {
     await flushPromises()
 
     expect(wrapper.find('input[aria-label="搜索收件人"]').element.value).toBe('')
+  })
+
+  it('test_email_settings_section_fills_available_height 邮件设置根 section 铺满可用高度', () => {
+    const styleBlock = EmailSettingsManagerSource.match(/\.email-settings-manager\s*\{([^}]*)\}/s)
+
+    expect(styleBlock).not.toBeNull()
+    expect(styleBlock[1]).toMatch(/display\s*:\s*flex/)
+    expect(styleBlock[1]).toMatch(/flex-direction\s*:\s*column/)
+    expect(styleBlock[1]).toMatch(/flex\s*:\s*1/)
+    expect(styleBlock[1]).toMatch(/min-height\s*:\s*0/)
   })
 
   it('test_policy_name_and_description_use_full_rows 策略名称和描述各占满一行', async () => {

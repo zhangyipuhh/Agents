@@ -16,7 +16,7 @@
 | [统一审计日志（2026-07-29）](memory/architecture.md#统一审计日志2026-07-29) | 统一日志 `LogService` 唯一入口；SSH/devops 事件；可信身份 + 可信 IP；管理员查询信封 | LogService、审计日志、SSH、devops、可信身份、可信 IP、log_ip、查询信封 | 2026-07-30 |
 | [菜单权限与用户配置](memory/menu-acl.md) | 用户菜单权限管理（MENU_CATALOG/ACL）、用户服务器配置管理 | 菜单、权限、ACL、allowed_agents、服务器配置 | 2026-07-31 |
 | [DevOps 与沙箱](memory/devops-sandbox.md) | SSH 远程服务器管理、沙箱 Agent 架构、SubAgent 事件协议 | DevOps、SSH、沙箱、SubAgent、事件协议 | 2026-07-27 |
-| [其他子系统](memory/misc.md) | 邮件系统、飞书工具、CI 测试 | 邮件、飞书、CI、GitHub Actions | 2026-07-27 |
+| [其他子系统](memory/misc.md) | 邮件系统、飞书工具、CI 测试 | 邮件、飞书、CI、GitHub Actions | 2026-07-31 |
 
 ## API 路由速查表
 
