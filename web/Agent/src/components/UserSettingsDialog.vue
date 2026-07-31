@@ -2705,7 +2705,7 @@ watch(() => props.visible, (newVal) => {
 
 .sub-tab {
   padding: 8px 16px;
-  font-size: var(--font-size-sm);
+  font-size: var(--font-size-base);
   font-weight: var(--font-weight-medium);
   color: var(--color-text-secondary);
   background-color: transparent;

@@ -927,7 +927,7 @@ onMounted(async () => {
   padding: 8px 14px;
   cursor: pointer;
   color: #6b7280;
-  font-size: 14px;
+  font-size: var(--font-size-base);
   border-bottom: 2px solid transparent;
   border-radius: 0;
 }
