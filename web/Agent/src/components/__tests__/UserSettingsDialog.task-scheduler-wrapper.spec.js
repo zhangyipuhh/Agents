@@ -69,7 +69,8 @@ describe('UserSettingsDialog 定时任务 Tab wrapper 高度链', () => {
     wrapper.unmount()
   })
 
-  it('test_email_settings_wrapper_has_tab_fill_wrapper_class 邮件设置 wrapper 同步应用 .tab-fill-wrapper', async () => {
+  it('test_messaging_wrapper_has_tab_fill_wrapper_class 消息设置 wrapper 同步应用 .tab-fill-wrapper', async () => {
+    // 2026-07-31 调整：原邮件设置 tab 现已统一为「消息设置」(messaging) 一级 tab
     const wrapper = mount(UserSettingsDialog, {
       props: { visible: true, role: 'admin', userId: 1, username: 'admin' },
       attachTo: document.body,
@@ -77,13 +78,13 @@ describe('UserSettingsDialog 定时任务 Tab wrapper 高度链', () => {
     await flushPromises()
 
     const navNodes = document.body.querySelectorAll('.nav-item')
-    const emailNav = Array.from(navNodes).find((node) => (node.textContent || '').includes('邮件'))
-    if (!emailNav) {
-      // 当前项目若 admin 邮件 Tab 隐藏则直接跳过此断言，仅作 best-effort
+    const messagingNav = Array.from(navNodes).find((node) => (node.textContent || '').includes('消息设置'))
+    if (!messagingNav) {
+      // 当前项目若 admin 消息设置 Tab 隐藏则直接跳过此断言，仅作 best-effort
       wrapper.unmount()
       return
     }
-    emailNav.click()
+    messagingNav.click()
     await flushPromises()
     await wrapper.vm.$nextTick()
 
@@ -96,7 +97,7 @@ describe('UserSettingsDialog 定时任务 Tab wrapper 高度链', () => {
   it('test_dialog_content_is_flex_column_container .dialog-content 必须是 flex 列容器（高度链前提）', () => {
     // jsdom 不计算 <style scoped> 布局，故对 SFC 源码做静态契约断言：
     // .tab-fill-wrapper 的 flex:1 只有在父级 .dialog-content 是 flex 容器时才生效，
-    // 否则 wrapper 高度退化为内容高度，定时任务/邮件设置面板下方出现大片留白。
+    // 否则 wrapper 高度退化为内容高度，定时任务/消息设置面板下方出现大片留白。
     const blockMatch = sourceCode.match(/\.dialog-content\s*\{([^}]*)\}/)
     expect(blockMatch, '.dialog-content 样式块必须存在').not.toBeNull()
     const body = blockMatch[1]

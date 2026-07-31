@@ -153,9 +153,8 @@ describe('UserSettingsDialog navItems 数据驱动', () => {
     expect(ids).not.toContain('email-settings')
   })
 
-  // 2026-07-23：「邮件设置」升级为一级菜单的回归保护：
-  // visibleMenus 含 'task-scheduler.email-settings' 时，navItems 自身就应出现
-  it('test_email_settings_l1_self_visible 邮件设置是一级菜单，自身授权即自身可见', async () => {
+  // 2026-07-31：「消息设置」是 messaging 父级，子菜单授权通过 PARENT_TO_CHILDREN_ALIAS 推父级可见
+  it('test_messaging_l1_self_visible 消息设置父级自身授权即自身可见', async () => {
     const wrapper = mount(UserSettingsDialog, {
       props: {
         visible: true,
@@ -163,6 +162,35 @@ describe('UserSettingsDialog navItems 数据驱动', () => {
         userId: 5,
         username: 'zhangsan',
         initialTab: 'profile',
+        visibleMenus: ['profile', 'messaging']
+      },
+      global: {
+        stubs: {
+          teleport: true,
+          transition: true
+        }
+      }
+    })
+    await flushPromises()
+    const ids = wrapper.vm.navItems.map(i => i.id)
+    expect(ids).toContain('messaging')
+    // 旧顶级壳 'email-settings' / 'task-scheduler.email-settings' 不再作为一级菜单可见
+    expect(ids).not.toContain('email-settings')
+    expect(ids).not.toContain('task-scheduler.email-settings')
+  })
+
+  // 2026-07-31：父菜单「消息设置」(messaging) 与子菜单 id 前缀不匹配
+  // 需要通过 PARENT_TO_CHILDREN_ALIAS 让子菜单授权时父级也可见
+  it('test_messaging_visible_when_email_settings_subtab_authorized 消息设置父级通过 alias 在子菜单授权时可见', async () => {
+    const wrapper = mount(UserSettingsDialog, {
+      props: {
+        visible: true,
+        role: 'user',
+        userId: 6,
+        username: 'lisi',
+        initialTab: 'profile',
+        // 普通用户只授权了一个子菜单（task-scheduler.email-settings），
+        // 没有显式授权父级 messaging —— 此时父级仍应可见（alias 推导）
         visibleMenus: ['profile', 'task-scheduler.email-settings']
       },
       global: {
@@ -174,8 +202,30 @@ describe('UserSettingsDialog navItems 数据驱动', () => {
     })
     await flushPromises()
     const ids = wrapper.vm.navItems.map(i => i.id)
-    expect(ids).toContain('task-scheduler.email-settings')
-    // 旧顶级壳 'email-settings' 已废弃
-    expect(ids).not.toContain('email-settings')
+    expect(ids).toContain('messaging')
+  })
+
+  // 2026-07-31：父菜单「消息设置」下三个子 Tab 授权时父级仍可见
+  it('test_messaging_visible_when_email_tab_authorized 消息设置父级在子 Tab 授权时也可见', async () => {
+    const wrapper = mount(UserSettingsDialog, {
+      props: {
+        visible: true,
+        role: 'user',
+        userId: 7,
+        username: 'wangwu',
+        initialTab: 'profile',
+        visibleMenus: ['profile', 'task-scheduler.email-settings.policies']
+      },
+      global: {
+        stubs: {
+          teleport: true,
+          transition: true
+        }
+      }
+    })
+    await flushPromises()
+    const ids = wrapper.vm.navItems.map(i => i.id)
+    // 父级 messaging 可见（子 Tab 授权 → 父级 alias）
+    expect(ids).toContain('messaging')
   })
 })

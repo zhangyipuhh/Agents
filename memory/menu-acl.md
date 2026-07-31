@@ -29,7 +29,7 @@
 
 完整定义见 `app/core/menu_registry.py`。
 
-### 一级菜单顺序（最终态，2026-07-23）
+### 一级菜单顺序（最终态，2026-07-31）
 
 `MENU_CATALOG` 一级菜单按 `sort_order` 升序排列如下：
 
@@ -43,7 +43,8 @@
 | 6 | tool-management | 工具管理 | admin |
 | 7 | skill-management | Skill 管理 | admin |
 | 8 | task-scheduler | 运维任务 | admin |
-| 9 | task-scheduler.email-settings | 邮件设置 | admin |
+| 9 | （已降级，见消息设置父菜单章节） | — | — |
+| 10 | messaging | 消息设置 | admin |
 
 前端 `web/Agent/src/components/UserSettingsDialog.vue` 的 `NAV_MENU_METADATA` 对象
 key 声明顺序与上表一致；2026-07-23 调整后，`email-settings` 不再是前端一级壳，
@@ -96,6 +97,41 @@ MenuItem(id="task-scheduler.email-settings", level=1,
 前端模板同步：`task-scheduler.email-settings` 作为独立顶级 tab 渲染邮件设置组件，不再挂在「运维任务」下。
 
 授权数据全自动保留（因 id 不变）。
+
+### 消息设置父菜单（2026-07-31 新增）
+
+为支持未来新增钉钉/飞书/企业微信等多通道消息管理，引入新一级菜单 `messaging`（「消息设置」）。原一级菜单「邮件设置」(`task-scheduler.email-settings`) 降级为 messaging 下的二级菜单。
+
+**结构**：
+
+```
+messaging (level=1, sort_order=10, icon_key='message')
+  ├── task-scheduler.email-settings (level=2, sort_order=1, label='邮件设置')
+  ├── task-scheduler.email-settings.server (level=2, sort_order=2)
+  ├── task-scheduler.email-settings.policies (level=2, sort_order=3)
+  └── task-scheduler.email-settings.test (level=2, sort_order=4)
+```
+
+**关键设计**：
+
+- id 全程未改：`task-scheduler.email-settings.*` 四个 id 全部保持稳定，老 ACL 自动保留
+- 三个 Tab 的 `parent_id` 从 `task-scheduler.email-settings` 改为 `messaging`（因数据模型仅支持两级菜单，不能形成 3 级结构）
+- 端点 ACL 契约不变：后端 router 仍以 `task-scheduler.email-settings.{server,policies,test}` 作为 `require_admin_or_menu_acl` key，零改动
+- `task-scheduler.email-settings` 自身在菜单树中保留为可见的二级项（admin 在「权限管理 → 菜单管理」可独立授权它）
+
+**前端 `isMenuVisible` alias 映射**（`UserSettingsDialog.vue::PARENT_TO_CHILDREN_ALIAS`）：
+
+- 历史约定：子菜单 id 形如 `${parent}.xxx`，前缀匹配天然让父级可见
+- 2026-07-31 例外：`messaging` 父级与子菜单 id 前缀不匹配（子菜单 id 是 `task-scheduler.email-settings.*`，不以 `messaging.` 开头）
+- 解决方案：在 `isMenuVisible` 增加 alias 映射 `messaging → ['task-scheduler.email-settings']`
+  - 普通用户授权子菜单 `task-scheduler.email-settings` 时，父级 `messaging` 仍可见
+  - 未来添加新通道（如 `messaging.dingtalk`），子菜单 id 推荐用 `messaging.<channel>.xxx` 形式，可继续走前缀匹配
+
+**前端 template 渲染**：
+
+- 顶部 tab 挂载点从 `v-if="isVisibleTab('task-scheduler.email-settings') ..."` 改为 `v-if="isVisibleTab('messaging') ..."`
+- 内部仍渲染 `<EmailSettingsManager>` 组件（管理 server/policies/test 三个内部 tab）
+- `EmailSettingsManager.vue` 内部「邮件」字面量保留（组件功能是 SMTP 邮件发送，描述的是真实职责）
 
 ### 邮件设置二级菜单（2026-07-23 新增）
 

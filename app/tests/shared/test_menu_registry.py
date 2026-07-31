@@ -99,22 +99,99 @@ def test_get_visible_for_user_normal_empty_granted_still_has_profile():
 
 
 # 2026-07-23 回归保护：「邮件设置」升级为一级菜单
+# 2026-07-31 调整：再降级为「消息设置」(messaging) 下的二级菜单
 def test_email_settings_promoted_to_level1():
-    """task-scheduler.email-settings 升级为一级菜单（level=1, parent_id=None, sort_order=9）。"""
+    """task-scheduler.email-settings 当前是 messaging 下的二级菜单（level=2, parent_id='messaging'）。
+
+    历史说明：
+    - 2026-07-23 曾升级为一级菜单（level=1, sort_order=9）
+    - 2026-07-31 起降级为 messaging 下的二级菜单（level=2, sort_order=1, parent_id='messaging'）
+    - id 永不改（硬规则），老 ACL 自动保留
+    """
     item = next(m for m in MENU_CATALOG if m.id == "task-scheduler.email-settings")
-    assert item.level == 1
-    assert item.parent_id is None
-    assert item.sort_order == 9
+    assert item.level == 2
+    assert item.parent_id == "messaging"
+    assert item.sort_order == 1
     assert item.required_role == "admin"
 
 
 def test_task_scheduler_children_no_longer_include_email_settings():
-    """task-scheduler 的二级子菜单集合不应再包含 email-settings。"""
+    """task-scheduler 的二级子菜单集合不应再包含 email-settings。
+
+    2026-07-31 调整：email-settings 当前是 messaging 的子菜单，不是 task-scheduler 的子菜单。
+    """
     children = [m for m in MENU_CATALOG if m.level == 2 and m.parent_id == "task-scheduler"]
     child_ids = {m.id for m in children}
     assert "task-scheduler.email-settings" not in child_ids
-    # task-scheduler 仍应有 3 个二级菜单
-    assert len(children) == 3
+    # task-scheduler 仍应有 5 个二级菜单（定时任务/脚本扫描/脚本扫描入库/API接口配置/服务器管理）
+    assert len(children) == 5
+
+
+# 2026-07-31 新增：「消息设置」一级菜单注册回归保护
+def test_messaging_is_new_level1_parent():
+    """messaging 是新增的一级菜单（level=1, parent_id=None, sort_order=10）。"""
+    item = next(m for m in MENU_CATALOG if m.id == "messaging")
+    assert item.level == 1
+    assert item.parent_id is None
+    assert item.label == "消息设置"
+    assert item.icon_key == "message"
+    assert item.sort_order == 10
+    assert item.required_role == "admin"
+    assert item.enabled is True
+
+
+def test_email_settings_now_under_messaging_not_task_scheduler():
+    """task-scheduler.email-settings 是 messaging 的子菜单，不是 task-scheduler 的子菜单。"""
+    # 验证 email-settings 在 messaging 下
+    children = [m for m in MENU_CATALOG if m.level == 2 and m.parent_id == "messaging"]
+    child_ids = {m.id for m in children}
+    assert "task-scheduler.email-settings" in child_ids
+    # 验证 email-settings 不在 task-scheduler 下
+    ts_children = [m for m in MENU_CATALOG if m.level == 2 and m.parent_id == "task-scheduler"]
+    ts_child_ids = {m.id for m in ts_children}
+    assert "task-scheduler.email-settings" not in ts_child_ids
+
+
+def test_get_visible_for_user_admin_includes_messaging():
+    """admin 可见 messaging 一级菜单（按 sort_order 排在末尾）。"""
+    visible = get_visible_for_user(user_id=1, is_admin=True, granted_menu_ids=None)
+    visible_ids = {m.id for m in visible}
+    assert "messaging" in visible_ids
+    assert "task-scheduler.email-settings" in visible_ids
+
+
+def test_get_visible_for_user_normal_grant_email_settings_subtab_does_not_auto_show_messaging():
+    """普通用户授权子菜单 `task-scheduler.email-settings` 后,父级 `messaging` 不会自动出现在 visible_menus。
+
+    后端 get_visible_for_user 严格按 ACL 交集；父级 `messaging` 的可见性由前端
+    isMenuVisible 的 PARENT_TO_CHILDREN_ALIAS 派生（不依赖后端推导）。
+    """
+    # 普通用户被授予 task-scheduler.email-settings 自身（不是子 tab）
+    visible = get_visible_for_user(
+        user_id=2, is_admin=False,
+        granted_menu_ids={"task-scheduler.email-settings"},
+    )
+    visible_ids = {m.id for m in visible}
+    # 后端 visible_menus 严格按 ACL 交集
+    assert "task-scheduler.email-settings" in visible_ids
+    # 父级 messaging 不会自动出现在 visible_menus（前端 isMenuVisible 用 alias 补齐）
+    assert "messaging" not in visible_ids
+
+
+def test_get_visible_for_user_normal_grant_messaging_directly_shows_both():
+    """普通用户显式授权父菜单 `messaging` 时,父级和子级都在 visible_menus 里。
+
+    这是最直接的 ACL 路径：admin 在「权限管理 → 菜单管理」勾选 messaging 父级授权给用户。
+    """
+    visible = get_visible_for_user(
+        user_id=3, is_admin=False,
+        granted_menu_ids={"messaging"},
+    )
+    visible_ids = {m.id for m in visible}
+    assert "messaging" in visible_ids
+    # task-scheduler.email-settings 不会因父级授权自动出现（子菜单独立授权粒度）
+    # 这是保留「子 Tab 独立授权」契约 —— admin 仍可按 Tab 粒度细分
+    assert "task-scheduler.email-settings" not in visible_ids
 
 
 def test_get_visible_for_user_normal_none_granted_same_as_empty():
@@ -174,12 +251,12 @@ def test_email_settings_submenu_tabs_registered():
     assert "task-scheduler.email-settings.policies" in ids
     assert "task-scheduler.email-settings.test" in ids
 
-    # 父级必须是一级菜单（level=1，parent_id=None）
+    # 父级必须是 messaging 下的二级菜单（level=2，parent_id='messaging'）
     parent = next(m for m in MENU_CATALOG if m.id == "task-scheduler.email-settings")
-    assert parent.level == 1
-    assert parent.parent_id is None
+    assert parent.level == 2
+    assert parent.parent_id == "messaging"
 
-    # 子级必须 level=2 且 parent_id 指向「邮件设置」一级菜单
+    # 子级必须 level=2 且 parent_id 指向「消息设置」一级菜单（2026-07-31 调整：父级从 email-settings 改为 messaging）
     for child_id in [
         "task-scheduler.email-settings.server",
         "task-scheduler.email-settings.policies",
@@ -187,7 +264,7 @@ def test_email_settings_submenu_tabs_registered():
     ]:
         c = next(m for m in MENU_CATALOG if m.id == child_id)
         assert c.level == 2
-        assert c.parent_id == "task-scheduler.email-settings"
+        assert c.parent_id == "messaging"
         assert c.required_role == "admin"
         assert c.enabled is True
 

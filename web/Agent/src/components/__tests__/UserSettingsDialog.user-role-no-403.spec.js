@@ -236,7 +236,7 @@ describe('UserSettingsDialog 普通用户不再触发 admin-only 请求', () => 
     // 找到 admin 顶级 tab（按 label 文本）
     const adminTabLabels = [
       '用户管理', '权限管理', 'MCP 管理', '智能体管理', '工具管理',
-      'Skill 管理', '运维任务', '邮件设置',
+      'Skill 管理', '运维任务', '消息设置',
     ]
 
     for (const label of adminTabLabels) {

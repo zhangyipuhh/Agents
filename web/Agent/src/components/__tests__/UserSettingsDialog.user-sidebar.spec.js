@@ -168,9 +168,9 @@ describe('UserSettingsDialog 普通用户左侧导航栏', () => {
     })
     await flushPromises()
     const navTexts = getNavItemTexts()
-    // 2026-07-23：admin 共可见 9 项（个人设置 + 8 个管理类）
-    // 顺序：个人设置 / 用户管理 / 权限管理 / 智能体管理 / MCP 管理 / 工具管理 / Skill 管理 / 运维任务 / 邮件设置
-    // （邮件设置升级为一级菜单，排在一级序列末尾 sort_order=9）
+    // 2026-07-31：admin 共可见 9 项（个人设置 + 8 个管理类）
+    // 顺序：个人设置 / 用户管理 / 权限管理 / 智能体管理 / MCP 管理 / 工具管理 / Skill 管理 / 运维任务 / 消息设置
+    // （消息设置 = 新一级菜单，原「邮件设置」降级为其下二级子菜单；sort_order=10 排在一级序列末尾）
     expect(navTexts.length).toBe(9)
     expect(navTexts).toContain('个人设置')
     expect(navTexts).toContain('用户管理')
@@ -180,10 +180,10 @@ describe('UserSettingsDialog 普通用户左侧导航栏', () => {
     expect(navTexts).toContain('工具管理')
     expect(navTexts).toContain('Skill 管理')
     expect(navTexts).toContain('运维任务')
-    expect(navTexts).toContain('邮件设置')
+    expect(navTexts).toContain('消息设置')
 
-    // 2026-07-23：「邮件设置」作为一级菜单应排在「运维任务」之后
-    expect(navTexts.indexOf('运维任务')).toBeLessThan(navTexts.indexOf('邮件设置'))
+    // 2026-07-31：「消息设置」作为一级菜单应排在「运维任务」之后
+    expect(navTexts.indexOf('运维任务')).toBeLessThan(navTexts.indexOf('消息设置'))
 
     const title = document.body.querySelector('.dialog-title')
     expect((title.textContent || '').trim()).toBe('用户设置与管理')

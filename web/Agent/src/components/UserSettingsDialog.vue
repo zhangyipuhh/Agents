@@ -4,8 +4,9 @@
  * 支持分层面板导航：
  * - 所有角色：左侧导航栏始终显示
  * - 普通用户（role='user'）：仅显示个人设置一项
- * - 管理员（role='admin'）：显示个人设置、用户管理、智能体管理、MCP 管理、工具管理、Skill 管理、运维任务、邮件设置
- *   （2026-07-23：邮件设置升级为一级菜单，id=task-scheduler.email-settings）
+ * - 管理员（role='admin'）：显示个人设置、用户管理、智能体管理、MCP 管理、工具管理、Skill 管理、运维任务、消息设置
+ *   （2026-07-23：邮件设置升级为一级菜单，id=task-scheduler.email-settings；
+ *    2026-07-31：邮件设置再次降级为「消息设置」(messaging) 下的二级菜单，邮件作为第一个子 Tab）
  */
 
 import { ref, watch, computed, nextTick } from 'vue'
@@ -197,9 +198,33 @@ const NAV_MENU_METADATA = {
   'tool-management': { id: 'tool-management', label: '工具管理', icon: 'M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z' },
   'skill-management': { id: 'skill-management', label: 'Skill 管理', icon: 'M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z' },
   'task-scheduler': { id: 'task-scheduler', label: '运维任务', viewBox: '0 0 24 24', icon: 'M22 5.72l-4.6-3.33-1.29 1.78 4.6 3.33L22 5.72zM7.88 3.39L6.6 1.61 2 5.72l1.29 1.78 4.59-3.11zM12.5 8H11v6l4.75 2.85.75-1.23-4-2.37V8zM12 4c-4.97 0-9 4.03-9 9s4.02 9 9 9 9-4.03 9-9-4.03-9-9-9zm0 16c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z' },
-  // 2026-07-23 调整：「邮件设置」升级为一级菜单，key 与后端注册表 id 对齐（id 终身不变硬规则）。
-  'task-scheduler.email-settings': { id: 'task-scheduler.email-settings', label: '邮件设置', icon: 'M2.5 6.5l7.5 5 7.5-5M3 5h14a1 1 0 011 1v10a1 1 0 01-1 1H3a1 1 0 01-1-1V6a1 1 0 011-1z' }
+  // 2026-07-31 调整：原「邮件设置」一级 tab 已被 messaging 父菜单吸收，
+  // NAV_MENU_METADATA 不再持有 'task-scheduler.email-settings' 键。
+  // 邮件设置组件内部仍由 messaging 一级 tab 渲染（见 template 注释）。
+  // 2026-07-31 新增：一级菜单「消息设置」（id=messaging），为邮件/钉钉/飞书/企业微信等多通道消息统一入口
+  // - 后端 MENU_CATALOG 注册为 level=1，icon_key='message'，sort_order=10
+  // - 内部挂着 task-scheduler.email-settings（保持原 id）+ 三个 Tab
+  'messaging': { id: 'messaging', label: '消息设置', icon: 'M2 10c0-3.771 3.708-7 8.5-7s8.5 3.229 8.5 7-3.708 7-8.5 7c-.463 0-.922-.03-1.37-.088L5 19l1.395-3.72C3.829 14.057 2 12.146 2 10Z' }
 }
+
+/**
+ * 父菜单 → 「子菜单授权时让父级可见」 的显式别名映射
+ *
+ * 历史约定（2026-07-23 起）：子菜单 id 形如 `${parent}.xxx`，前缀匹配天然让父级可见。
+ * 2026-07-31 调整：messaging 父级挂着 task-scheduler.email-settings 子菜单
+ * （及 server/policies/test），子菜单 id 不以 `messaging.` 开头 —— 需用 alias 显式补齐。
+ *
+ * 添加新通道（如 dingtalk/feishu）时：子菜单 id 推荐用 `messaging.<channel>.xxx` 形式，
+ * 可继续走前缀匹配，避免扩 alias 表。
+ */
+const PARENT_TO_CHILDREN_ALIAS = Object.freeze({
+  messaging: [
+    'task-scheduler.email-settings',
+    'task-scheduler.email-settings.server',
+    'task-scheduler.email-settings.policies',
+    'task-scheduler.email-settings.test',
+  ],
+})
 
 /**
  * 判断 visibleMenus 是否包含「某一级菜单项可见」
@@ -207,6 +232,7 @@ const NAV_MENU_METADATA = {
  * 规则：
  * - 一级菜单自身在 visibleMenus → 可见
  * - 该一级菜单的任一二级子菜单（id 前缀 `${parent}.`）在 visibleMenus → 可见
+ * - 该一级菜单的任一 alias 子菜单（PARENT_TO_CHILDREN_ALIAS 定义）在 visibleMenus → 可见
  * - profile 永远可见（service 已保证）
  *
  * @param {string} menuId 一级菜单 id
@@ -221,6 +247,9 @@ function isMenuVisible(menuId, visibleMenus) {
   if (visibleMenus.includes(menuId)) return true
   // 标准前缀匹配
   if (visibleMenus.some(m => typeof m === 'string' && m.startsWith(menuId + '.'))) return true
+  // alias 映射（用于父级 id 与子菜单 id 前缀不匹配的特殊情况，如 messaging ← task-scheduler.email-settings）
+  const aliases = PARENT_TO_CHILDREN_ALIAS[menuId]
+  if (aliases && visibleMenus.some(m => aliases.includes(m))) return true
   return false
 }
 
@@ -1600,10 +1629,13 @@ watch(() => props.visible, (newVal) => {
                 <TaskSchedulerManager :visible-menus="visibleMenus" :is-admin="isAdmin" />
               </div>
 
-              <!-- 邮件设置（admin） -->
+              <!-- 消息设置（admin，2026-07-31 新增） -->
+              <!-- 原「邮件设置」一级菜单降级为 messaging 下的二级菜单；这里渲染 messaging 一级 tab -->
+              <!-- EmailSettingsManager 内部仍管理 server/policies/test 三个子 tab（按 id 授权过滤） -->
               <!-- 2026-07-23 修复：用 v-if 替代 v-show，避免普通用户打开 dialog 时无差别挂载 EmailSettingsManager 触发 /api/admin/email/* 请求导致 403 -->
               <!-- 2026-07-23 ACL 双重门：传递 visibleMenus 让组件按 ACL 过滤子 tab -->
-              <div v-if="isVisibleTab('task-scheduler.email-settings') && activeTab === 'task-scheduler.email-settings'" class="tab-fill-wrapper">
+              <!-- 2026-07-31 调整：isMenuVisible 通过 PARENT_TO_CHILDREN_ALIAS 让 messaging 在子菜单授权时也可见 -->
+              <div v-if="isVisibleTab('messaging') && activeTab === 'messaging'" class="tab-fill-wrapper">
                 <EmailSettingsManager :visible-menus="visibleMenus" :is-admin="isAdmin" />
               </div>
 
@@ -1995,7 +2027,7 @@ watch(() => props.visible, (newVal) => {
 /* 右侧内容
    display:flex + flex-direction:column 是 .tab-fill-wrapper（flex:1）高度链生效的前提：
    父级不是 flex 容器时 wrapper 的 flex:1 惰性失效，高度退化为内容高度，
-   导致定时任务/邮件设置面板下方留白。 */
+   导致定时任务/消息设置面板下方留白。 */
 .dialog-content {
   flex: 1;
   padding: var(--space-xl);

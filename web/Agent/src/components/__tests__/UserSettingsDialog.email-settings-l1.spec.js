@@ -1,10 +1,15 @@
 /**
- * UserSettingsDialog 邮件设置升级为一级菜单 — 回归保护（2026-07-23）
+ * UserSettingsDialog 消息设置父菜单 — 回归保护（2026-07-31）
+ *
+ * 历史：
+ * - 2026-07-23：「邮件设置」升级为一级菜单（id=task-scheduler.email-settings）
+ * - 2026-07-31：「邮件设置」再次降级为「消息设置」(messaging) 下的二级菜单
  *
  * 覆盖：
- * - 顶部 tab 渲染分支使用 'task-scheduler.email-settings'（不再用旧 'email-settings'）
- * - visibleMenus 仅含自身 id 时，navItems 出现且不含旧顶级壳 'email-settings'
- * - NAV_MENU_METADATA 不再持有 'email-settings' key
+ * - 顶部 tab 渲染分支使用 'messaging'（不再用 'task-scheduler.email-settings' 作为一级 tab）
+ * - visibleMenus 含 'messaging' 时，navItems 出现且不含旧 'email-settings' / 'task-scheduler.email-settings' 一级壳
+ * - NAV_MENU_METADATA 持有 'messaging' 键
+ * - PARENT_TO_CHILDREN_ALIAS 让子菜单授权推父级可见
  */
 import { describe, it, expect, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
@@ -41,8 +46,8 @@ vi.mock('../TaskSchedulerManager.vue', () => ({ default: { template: '<div />' }
 vi.mock('../EmailSettingsManager.vue', () => ({ default: { template: '<div />' } }))
 vi.mock('../MenuPermissionManager.vue', () => ({ default: { template: '<div />' } }))
 
-describe('UserSettingsDialog 邮件设置升级为一级菜单', () => {
-  it('test_email_settings_tab_uses_new_id 模板顶部 tab 使用新 id', async () => {
+describe('UserSettingsDialog 消息设置父菜单（2026-07-31）', () => {
+  it('test_messaging_tab_uses_new_id 模板顶部 tab 使用 messaging id', async () => {
     const wrapper = mount(UserSettingsDialog, {
       props: {
         visible: true,
@@ -50,27 +55,26 @@ describe('UserSettingsDialog 邮件设置升级为一级菜单', () => {
         userId: 1,
         username: 'admin',
         initialTab: 'profile',
-        visibleMenus: ['profile', 'task-scheduler.email-settings']
+        visibleMenus: ['profile', 'messaging']
       },
       global: {
         stubs: { teleport: true, transition: true }
       }
     })
     await flushPromises()
-    // 切换到邮件设置 tab
-    wrapper.vm.activeTab = 'task-scheduler.email-settings'
+    // 切换到消息设置 tab
+    wrapper.vm.activeTab = 'messaging'
     await flushPromises()
-    // 旧顶级分支已删除：'email-settings' activeTab 不再触发 EmailSettingsManager 渲染
-    // 这里通过组件内部 activeTab 状态断言：activeTab 切换到 'email-settings'（旧值）应无效
-    wrapper.vm.activeTab = 'email-settings'
-    await flushPromises()
-    // 旧顶级壳 'email-settings' 不再是合法 activeTab——它不在 NAV_MENU_METADATA 里
     const ids = wrapper.vm.navItems.map(i => i.id)
+    // messaging 一级菜单可见
+    expect(ids).toContain('messaging')
+    // 旧顶级壳 'email-settings' 不再是合法 activeTab —— 它不在 NAV_MENU_METADATA 里
     expect(ids).not.toContain('email-settings')
-    expect(ids).toContain('task-scheduler.email-settings')
+    // task-scheduler.email-settings 也不再作为一级菜单可见（已降级为二级）
+    expect(ids).not.toContain('task-scheduler.email-settings')
   })
 
-  it('test_email_settings_l1_self_visible_no_parent_needed 邮件设置一级菜单自身授权即自身可见', async () => {
+  it('test_messaging_l1_self_visible 消息设置父级自身授权即自身可见', async () => {
     const wrapper = mount(UserSettingsDialog, {
       props: {
         visible: true,
@@ -78,7 +82,32 @@ describe('UserSettingsDialog 邮件设置升级为一级菜单', () => {
         userId: 5,
         username: 'zhangsan',
         initialTab: 'profile',
-        // 仅授权邮件设置自身，不授权运维任务
+        // 仅授权 messaging 自身
+        visibleMenus: ['profile', 'messaging']
+      },
+      global: {
+        stubs: { teleport: true, transition: true }
+      }
+    })
+    await flushPromises()
+    const ids = wrapper.vm.navItems.map(i => i.id)
+    // 一级菜单「消息设置」应出现
+    expect(ids).toContain('messaging')
+    // 旧顶级壳 'email-settings' / 'task-scheduler.email-settings' 已不存在
+    expect(ids).not.toContain('email-settings')
+    expect(ids).not.toContain('task-scheduler.email-settings')
+  })
+
+  it('test_messaging_l1_visible_via_alias 子菜单授权通过 PARENT_TO_CHILDREN_ALIAS 让父级可见', async () => {
+    // 这是新行为：messaging 父级与子菜单 id 前缀不匹配，需要 alias 显式补齐
+    const wrapper = mount(UserSettingsDialog, {
+      props: {
+        visible: true,
+        role: 'user',
+        userId: 6,
+        username: 'lisi',
+        initialTab: 'profile',
+        // 仅授权子菜单 task-scheduler.email-settings（不授权父级 messaging）
         visibleMenus: ['profile', 'task-scheduler.email-settings']
       },
       global: {
@@ -87,17 +116,12 @@ describe('UserSettingsDialog 邮件设置升级为一级菜单', () => {
     })
     await flushPromises()
     const ids = wrapper.vm.navItems.map(i => i.id)
-    // 一级菜单「邮件设置」应出现
-    expect(ids).toContain('task-scheduler.email-settings')
-    // 旧顶级壳 'email-settings' 已不存在
-    expect(ids).not.toContain('email-settings')
-    // 注:由于 id 字面仍带 'task-scheduler.' 前缀,isMenuVisible 的
-    // "标准前缀匹配"会顺带让 task-scheduler 可见 —— 这是既有前缀推断
-    // 机制的副作用,与本次升级无关,本用例不约束该行为。
+    // 父级 messaging 仍可见（alias 推导）
+    expect(ids).toContain('messaging')
   })
 
-  it('test_nav_metadata_no_legacy_email_settings_key NAV_MENU_METADATA 不再持有旧 email-settings key', async () => {
-    // 此用例保护源码契约：旧 'email-settings' key 必须从 NAV_MENU_METADATA 移除
+  it('test_nav_metadata_has_messaging_key NAV_MENU_METADATA 持有 messaging 键', async () => {
+    // 此用例保护源码契约：messaging 必须在 NAV_MENU_METADATA 里
     const wrapper = mount(UserSettingsDialog, {
       props: {
         visible: true,
@@ -105,15 +129,13 @@ describe('UserSettingsDialog 邮件设置升级为一级菜单', () => {
         userId: 1,
         username: 'admin',
         initialTab: 'profile',
-        visibleMenus: ['profile', 'task-scheduler.email-settings']
+        visibleMenus: ['profile', 'messaging']
       },
       global: { stubs: { teleport: true, transition: true } }
     })
     await flushPromises()
     const ids = wrapper.vm.navItems.map(i => i.id)
-    // 没有 'email-settings' 顶级壳
-    expect(ids.some(id => id === 'email-settings')).toBe(false)
-    // 新顶级壳 'task-scheduler.email-settings' 存在
-    expect(ids.some(id => id === 'task-scheduler.email-settings')).toBe(true)
+    // 新一级壳 'messaging' 存在
+    expect(ids.some(id => id === 'messaging')).toBe(true)
   })
 })

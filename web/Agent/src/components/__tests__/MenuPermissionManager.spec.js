@@ -21,8 +21,15 @@ const mockCatalog = {
     { id: 'user-management.users', level: 2, parent_id: 'user-management', label: '用户列表', icon_key: 'list', sort_order: 1, required_role: 'admin', enabled: true },
     { id: 'user-management.online-monitor', level: 2, parent_id: 'user-management', label: '在线监控', icon_key: 'eye', sort_order: 2, required_role: 'admin', enabled: true },
     { id: 'task-scheduler', level: 1, parent_id: null, label: '运维任务', icon_key: 'clock', sort_order: 8, required_role: 'admin', enabled: true },
-    // 2026-07-23：「邮件设置」升级为一级菜单，id 保持 task-scheduler.email-settings，sort_order=9
-    { id: 'task-scheduler.email-settings', level: 1, parent_id: null, label: '邮件设置', icon_key: 'mail', sort_order: 9, required_role: 'admin', enabled: true },
+    // 2026-07-31：邮件设置降级为「消息设置」(messaging) 下的二级菜单
+    // - email-settings 自身仍为 level=2（id 永不改，ACL 保持）
+    // - 新增一级菜单 messaging（sort_order=10）
+    // - 三个 Tab（server/policies/test）的 parent_id 改为 messaging
+    { id: 'messaging', level: 1, parent_id: null, label: '消息设置', icon_key: 'message', sort_order: 10, required_role: 'admin', enabled: true },
+    { id: 'task-scheduler.email-settings', level: 2, parent_id: 'messaging', label: '邮件设置', icon_key: 'mail', sort_order: 1, required_role: 'admin', enabled: true },
+    { id: 'task-scheduler.email-settings.server', level: 2, parent_id: 'messaging', label: '服务器配置', icon_key: 'server', sort_order: 2, required_role: 'admin', enabled: true },
+    { id: 'task-scheduler.email-settings.policies', level: 2, parent_id: 'messaging', label: '发送策略', icon_key: 'list', sort_order: 3, required_role: 'admin', enabled: true },
+    { id: 'task-scheduler.email-settings.test', level: 2, parent_id: 'messaging', label: '测试发送', icon_key: 'send', sort_order: 4, required_role: 'admin', enabled: true },
     { id: 'disabled-menu', level: 1, parent_id: null, label: '已禁用菜单', icon_key: 'x', sort_order: 99, required_role: 'admin', enabled: false }
   ]
 }
@@ -145,18 +152,23 @@ describe('MenuPermissionManager', () => {
 
   // 2026-07-23：「邮件设置」升级为一级菜单，回归保护：
   // - task-scheduler.email-settings 应作为一级 checkbox 渲染
-  // - 不应再作为 task-scheduler 的 children checkbox 出现
-  it('test_email_settings_is_level1_not_under_task_scheduler 邮件设置是一级菜单而非运维任务子级', async () => {
+  // 2026-07-31：邮件设置降级为 messaging 下的二级菜单
+  // - 一级：存在 menu-checkbox-messaging
+  // - 二级（messaging 下）：menu-checkbox-task-scheduler.email-settings / server / policies / test
+  it('test_messaging_is_level1_with_email_settings_as_child 消息设置是一级菜单，邮件设置是其下二级', async () => {
     const wrapper = mount(MenuPermissionManager, { props: { isAdmin: true } })
     await flushPromises()
-    // 一级：存在 menu-checkbox-task-scheduler.email-settings
-    const l1 = wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings"]')
+    // 一级：存在 messaging
+    const l1 = wrapper.find('[data-testid="menu-checkbox-messaging"]')
     expect(l1.exists()).toBe(true)
+    // 二级：邮件设置在 messaging 下，不再是顶级
+    const l2 = wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings"]')
+    expect(l2.exists()).toBe(true)
     // 选 zhangsan
     const items = wrapper.findAll('[data-testid="user-list-item"]')
     await items[1].trigger('click')
     await flushPromises()
-    // 切到任务调度父级，不应半选（子集为空）
+    // 切到任务调度父级，不应半选（邮件设置不在其下）
     const parent = wrapper.find('[data-testid="menu-checkbox-task-scheduler"]')
     expect(parent.exists()).toBe(true)
     expect(parent.element.indeterminate).toBe(false)
