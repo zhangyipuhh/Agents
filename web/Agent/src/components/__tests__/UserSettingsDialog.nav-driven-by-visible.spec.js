@@ -179,8 +179,9 @@ describe('UserSettingsDialog navItems 数据驱动', () => {
     expect(ids).not.toContain('task-scheduler.email-settings')
   })
 
-  // 2026-07-31：父菜单「消息设置」(messaging) 与子菜单 id 前缀不匹配
-  // 需要通过 PARENT_TO_CHILDREN_ALIAS 让子菜单授权时父级也可见
+  // 2026-07-31 二次调整：原中间层 task-scheduler.email-settings 已删除
+  // 父菜单「消息设置」(messaging) 与孙 tab id 前缀不匹配
+  // 需要通过 PARENT_TO_CHILDREN_ALIAS 让孙 tab 授权时父级也可见
   it('test_messaging_visible_when_email_settings_subtab_authorized 消息设置父级通过 alias 在子菜单授权时可见', async () => {
     const wrapper = mount(UserSettingsDialog, {
       props: {
@@ -189,9 +190,9 @@ describe('UserSettingsDialog navItems 数据驱动', () => {
         userId: 6,
         username: 'lisi',
         initialTab: 'profile',
-        // 普通用户只授权了一个子菜单（task-scheduler.email-settings），
-        // 没有显式授权父级 messaging —— 此时父级仍应可见（alias 推导）
-        visibleMenus: ['profile', 'task-scheduler.email-settings']
+        // 普通用户只授权了一个孙 tab（task-scheduler.email-settings.server），
+        // 没有显式授权 channel messaging.email 与父级 messaging —— 此时父级仍应可见（alias 推导）
+        visibleMenus: ['profile', 'task-scheduler.email-settings.server']
       },
       global: {
         stubs: {

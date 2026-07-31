@@ -99,7 +99,8 @@ describe('UserSettingsDialog 消息设置父菜单（2026-07-31）', () => {
   })
 
   it('test_messaging_l1_visible_via_alias 子菜单授权通过 PARENT_TO_CHILDREN_ALIAS 让父级可见', async () => {
-    // 这是新行为：messaging 父级与子菜单 id 前缀不匹配，需要 alias 显式补齐
+    // 这是新行为：messaging 父级与孙 tab id 前缀不匹配，需要 alias 显式补齐
+    // 2026-07-31 二次调整：原 task-scheduler.email-settings 中间层已删，alias 改为孙 tab 列表
     const wrapper = mount(UserSettingsDialog, {
       props: {
         visible: true,
@@ -107,8 +108,8 @@ describe('UserSettingsDialog 消息设置父菜单（2026-07-31）', () => {
         userId: 6,
         username: 'lisi',
         initialTab: 'profile',
-        // 仅授权子菜单 task-scheduler.email-settings（不授权父级 messaging）
-        visibleMenus: ['profile', 'task-scheduler.email-settings']
+        // 仅授权孙 tab task-scheduler.email-settings.server（不授权 channel messaging.email 与父级 messaging）
+        visibleMenus: ['profile', 'task-scheduler.email-settings.server']
       },
       global: {
         stubs: { teleport: true, transition: true }
@@ -116,8 +117,36 @@ describe('UserSettingsDialog 消息设置父菜单（2026-07-31）', () => {
     })
     await flushPromises()
     const ids = wrapper.vm.navItems.map(i => i.id)
-    // 父级 messaging 仍可见（alias 推导）
+    // 父级 messaging 仍可见（alias 推导：孙 tab id 在 messaging alias 列表中）
     expect(ids).toContain('messaging')
+  })
+
+  it('test_messaging_email_channel_visible_via_grandchild_alias 孙 tab 授权让 channel messaging.email 可见', async () => {
+    // 2026-07-31 二次调整：channel `messaging.email` 父级与孙 tab id 前缀不匹配（孙 tab id `task-scheduler.email-settings.*` 不以 `messaging.email.` 开头）
+    // alias 让孙 tab 授权时父级 channel 也可见
+    const wrapper = mount(UserSettingsDialog, {
+      props: {
+        visible: true,
+        role: 'user',
+        userId: 7,
+        username: 'wangwu',
+        initialTab: 'profile',
+        // 仅授权一个孙 tab policies（不授权 channel 不授权父级）
+        visibleMenus: ['profile', 'messaging', 'task-scheduler.email-settings.policies']
+      },
+      global: {
+        stubs: { teleport: true, transition: true }
+      }
+    })
+    await flushPromises()
+    // channel messaging.email 应可见（alias 推导）
+    // 注：UserSettingsDialog 的 navItems 是顶级 tab 列表，不含 channel 二级；channel 可见性体现在 messaging tab 内 sub-tab 渲染
+    // 但 channel 自身作为 navItem 不可见（仅顶级才进 navItems）
+    // 验证 messaging 顶级可见 + 切到 messaging tab 后 channel sub-tab 渲染
+    wrapper.vm.activeTab = 'messaging'
+    await flushPromises()
+    // channel sub-tab 按钮应可见
+    expect(wrapper.find('[data-testid="messaging-channel-email"]').exists()).toBe(true)
   })
 
   it('test_nav_metadata_has_messaging_key NAV_MENU_METADATA 持有 messaging 键', async () => {

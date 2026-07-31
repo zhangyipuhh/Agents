@@ -2,6 +2,11 @@
 /**
  * EmailSettingsManager - 邮件设置管理组件（admin）
  *
+ * 挂载位置（2026-07-31 二次调整）：本组件渲染在「消息设置」(messaging) 顶级 tab
+ * 下的 channel 子 tab 「邮件设置」(messaging.email) 内。
+ * 菜单注册链路：messaging → messaging.email → task-scheduler.email-settings.{server,policies,test}
+ * 端点 ACL key 仍为 task-scheduler.email-settings.*（id 永不改硬规则）。
+ *
  * 提供三个 Tab：
  * - 服务器配置（SMTP 主机 / 端口 / SSL / 账号 / 授权码 / 发件人显示名）
  * - 发送策略（从已注册且邮箱非空用户中挑选收件人，组成策略）

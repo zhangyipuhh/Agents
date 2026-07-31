@@ -102,19 +102,37 @@ watch(selectedUserId, async (uid) => {
 })
 
 // 父级 checkbox 状态：checked / indeterminate / unchecked
+// 2026-07-31 升级：通用化为任意级（递归统计"所有后代是否都被勾"）
 function parentState(parentId) {
   const children = getChildren(parentId)
   if (children.length === 0) {
     return { checked: grants.value.has(parentId), indeterminate: false }
   }
-  const grantedChildren = children.filter(c => grants.value.has(c.id)).length
-  if (grantedChildren === 0) {
+  // 父级是否勾：取决于"所有后代是否都被授权"（含孙级）
+  // 已授权的后代数 = 直接子中被勾 + 直接子下的孙级中被勾（去重）
+  const descendantIds = new Set()
+  for (const c of children) {
+    if (grants.value.has(c.id)) descendantIds.add(c.id)
+    for (const gc of getGrandchildren(c.id)) {
+      if (grants.value.has(gc.id)) descendantIds.add(gc.id)
+    }
+  }
+  const totalDescendants = children.length + children.reduce((acc, c) => acc + getGrandchildren(c.id).length, 0)
+  const grantedDescendants = descendantIds.size
+  if (grantedDescendants === 0) {
     return { checked: false, indeterminate: false }
   }
-  if (grantedChildren === children.length) {
+  if (grantedDescendants === totalDescendants) {
     return { checked: true, indeterminate: false }
   }
   return { checked: false, indeterminate: true }
+}
+
+// 取某个 channel / 子级下的孙级（孙级仍是 level=2，parent_id 指向 channel）
+function getGrandchildren(channelId) {
+  return catalog.value
+    .filter(m => m.level === 2 && m.parent_id === channelId)
+    .sort((a, b) => a.sort_order - b.sort_order)
 }
 
 function toggleParent(parentId, checked) {
@@ -129,6 +147,11 @@ function toggleParent(parentId, checked) {
     children.forEach(c => {
       if (checked) next.add(c.id)
       else next.delete(c.id)
+      // 联动孙级（如 messaging.email 下的三个 server/policies/test tab）
+      for (const gc of getGrandchildren(c.id)) {
+        if (checked) next.add(gc.id)
+        else next.delete(gc.id)
+      }
     })
     if (!checked) next.delete(parentId)
     else next.add(parentId)
@@ -140,12 +163,46 @@ function toggleChild(parentId, childId, checked) {
   const next = new Set(grants.value)
   if (checked) next.add(childId)
   else next.delete(childId)
+  // 联动孙级（channel 级 toggle 时，孙级同步）
+  for (const gc of getGrandchildren(childId)) {
+    if (checked) next.add(gc.id)
+    else next.delete(gc.id)
+  }
   // 同步父级：所有子级都勾 → 勾父；任一子级未勾 → 不勾父
   const children = getChildren(parentId)
   const allChecked = children.every(c => next.has(c.id))
   if (allChecked) next.add(parentId)
   else next.delete(parentId)
   grants.value = next
+}
+
+// 2026-07-31 新增：孙级 toggle，含 channel + 顶级父级链状态重算
+function toggleGrandchild(grandchildId, channelId, parentId, checked) {
+  const next = new Set(grants.value)
+  if (checked) next.add(grandchildId)
+  else next.delete(grandchildId)
+  // channel 级状态：所有孙级都勾 → 勾 channel
+  const gcSiblings = getGrandchildren(channelId)
+  const allGcChecked = gcSiblings.every(gc => next.has(gc.id))
+  if (allGcChecked) next.add(channelId)
+  else next.delete(channelId)
+  // 父级状态：所有子（channel）都勾 → 勾父
+  const channelSiblings = getChildren(parentId)
+  const allChChecked = channelSiblings.every(c => next.has(c.id))
+  if (allChChecked) next.add(parentId)
+  else next.delete(parentId)
+  grants.value = next
+}
+
+// 孙级 checkbox 状态：checked / indeterminate / unchecked
+// 取决于 channel 下所有孙级的授权情况
+function grandchildState(gcId, channelId) {
+  const gcSiblings = getGrandchildren(channelId)
+  const grantedCount = gcSiblings.filter(gc => grants.value.has(gc.id)).length
+  if (grantedCount === 0) return { checked: false, indeterminate: false }
+  if (grantedCount === gcSiblings.length) return { checked: true, indeterminate: false }
+  // 部分兄弟被勾：indeterminate（不论孙级自身是否被勾）
+  return { checked: false, indeterminate: true }
 }
 
 async function handleSave() {
@@ -225,19 +282,39 @@ async function handleSave() {
               <span class="menu-label">{{ parent.label }}</span>
             </label>
             <div v-if="getChildren(parent.id).length > 0" class="children">
-              <label
+              <div
                 v-for="child in getChildren(parent.id)"
                 :key="child.id"
-                class="menu-checkbox-row child"
+                class="menu-tree-row"
               >
-                <input
-                  type="checkbox"
-                  :data-testid="'menu-checkbox-' + child.id"
-                  :checked="grants.has(child.id)"
-                  @change="e => toggleChild(parent.id, child.id, e.target.checked)"
-                />
-                <span class="menu-label">{{ child.label }}</span>
-              </label>
+                <label class="menu-checkbox-row child">
+                  <input
+                    type="checkbox"
+                    :data-testid="'menu-checkbox-' + child.id"
+                    :checked="grants.has(child.id)"
+                    :indeterminate.prop="parentState(child.id).indeterminate"
+                    @change="e => toggleChild(parent.id, child.id, e.target.checked)"
+                  />
+                  <span class="menu-label">{{ child.label }}</span>
+                </label>
+                <!-- 2026-07-31 新增：孙级渲染（如 messaging.email 下的 server/policies/test tab） -->
+                <div v-if="getGrandchildren(child.id).length > 0" class="grandchildren">
+                  <label
+                    v-for="gc in getGrandchildren(child.id)"
+                    :key="gc.id"
+                    class="menu-checkbox-row grandchild"
+                  >
+                    <input
+                      type="checkbox"
+                      :data-testid="'menu-checkbox-' + gc.id"
+                      :checked="grants.has(gc.id)"
+                      :indeterminate.prop="grandchildState(gc.id, child.id).indeterminate"
+                      @change="e => toggleGrandchild(gc.id, child.id, parent.id, e.target.checked)"
+                    />
+                    <span class="menu-label">{{ gc.label }}</span>
+                  </label>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -369,8 +446,21 @@ async function handleSave() {
   color: var(--color-text-secondary);
 }
 
+/* 2026-07-31 新增：孙级缩进（messaging.email 下的 server/policies/test 等） */
+.menu-checkbox-row.grandchild {
+  padding-left: 48px;
+  font-size: var(--font-size-xs, 12px);
+  color: var(--color-text-muted);
+}
+
 .children {
   margin-left: 12px;
+}
+
+.grandchildren {
+  margin-left: 24px;
+  border-left: 2px dashed var(--color-border-light);
+  padding-left: 8px;
 }
 
 .menu-label {

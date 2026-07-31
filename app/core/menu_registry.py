@@ -49,20 +49,21 @@ MENU_CATALOG: List[MenuItem] = [
              sort_order=7, required_role="admin"),
     MenuItem(id="task-scheduler", level=1, label="运维任务", icon_key="clock",
              sort_order=8, required_role="admin"),
-    # 2026-07-23 调整：「邮件设置」从「运维任务」下的二级菜单升级为独立一级菜单。
-    # 2026-07-31 调整：再降级为新一级菜单「消息设置」(messaging) 下的二级菜单，
-    # 为未来新增钉钉/飞书/企业微信等消息通道子 Tab 预留扩展点。
-    # - id 保持 `task-scheduler.email-settings` 不变（id 终身不变硬规则，老 ACL 自动保留）
-    # - level 1 → 2，parent_id None → "messaging"
-    # - sort_order 9 → 1（作为 messaging 下的第一个子菜单）
-    MenuItem(id="task-scheduler.email-settings", level=2, parent_id="messaging",
-             label="邮件设置", icon_key="mail", sort_order=1, required_role="admin"),
     # 2026-07-31 新增：一级菜单「消息设置」——多通道消息管理的统一入口
     # - id `messaging` 全新注册（不与历史 `task-scheduler.email-settings` 共享，避免改 id 破坏老 ACL）
     # - 预留扩展点：未来可加 messaging.dingtalk / messaging.feishu / messaging.wechat-work 等子 Tab
-    # - 本轮只挂「邮件设置」一个子菜单
+    # 2026-07-31 二次调整：原中间层 `task-scheduler.email-settings` 删除，channel 级 id 改为 `messaging.email`
+    # - 删中间层原因：中间层在 UI 中"看不见"却参与 ACL，体验反直觉
+    # - 删除前已确认数据库 user_menu_acl 中 0 条 `task-scheduler.email-settings` 记录，安全
+    # - 端点 ACL key 仍为 `task-scheduler.email-settings.{server,policies,test}`，后端 router 零改动
     MenuItem(id="messaging", level=1, parent_id=None,
              label="消息设置", icon_key="message", sort_order=10, required_role="admin"),
+    # 2026-07-31 新增：channel 级「邮件设置」——messaging 下的第一个消息通道
+    # - 全新 id `messaging.email`，无历史 ACL
+    # - 作为 channel 入口权限：admin 默认可见；普通用户需被授权才能进入邮件设置页
+    # - 三个子 Tab（server/policies/test）的 parent_id 指向本 channel
+    MenuItem(id="messaging.email", level=2, parent_id="messaging",
+             label="邮件设置", icon_key="mail", sort_order=1, required_role="admin"),
 
     # === 二级菜单（tab）===
     MenuItem(id="user-management.users", level=2, parent_id="user-management",
@@ -86,18 +87,20 @@ MENU_CATALOG: List[MenuItem] = [
              parent_id="task-scheduler",
              label="服务器管理", icon_key="server", sort_order=5, required_role="admin"),
     # 2026-07-23 新增：「邮件设置」的三个内部 Tab 注册为可独立授权的二级菜单
-    # - id 前缀与一级菜单保持一致：task-scheduler.email-settings.*
+    # 2026-07-31 二次调整：parent_id 从 `task-scheduler.email-settings` 改为 `messaging.email`
+    # - id 永不改：仍为 task-scheduler.email-settings.{server,policies,test}
+    # - 端点 ACL key 不动（email_admin_router 全部用 task-scheduler.email-settings.*）
     # - 与 EmailSettingsManager.vue::TAB_LABELS 一一对应（server / policies / test）
-    # - MenuPermissionManager.vue 已按 level=2 + parent_id 自动渲染，无需前端改动
+    # - MenuPermissionManager.vue 已按 level=2 + parent_id 自动渲染，无需额外改动
     MenuItem(id="task-scheduler.email-settings.server", level=2,
-             parent_id="messaging",
-             label="服务器配置", icon_key="server", sort_order=2, required_role="admin"),
+             parent_id="messaging.email",
+             label="服务器配置", icon_key="server", sort_order=1, required_role="admin"),
     MenuItem(id="task-scheduler.email-settings.policies", level=2,
-             parent_id="messaging",
-             label="发送策略", icon_key="list", sort_order=3, required_role="admin"),
+             parent_id="messaging.email",
+             label="发送策略", icon_key="list", sort_order=2, required_role="admin"),
     MenuItem(id="task-scheduler.email-settings.test", level=2,
-             parent_id="messaging",
-             label="测试发送", icon_key="send", sort_order=4, required_role="admin"),
+             parent_id="messaging.email",
+             label="测试发送", icon_key="send", sort_order=3, required_role="admin"),
     MenuItem(id="permission-management.menu", level=2, parent_id="permission-management",
              label="菜单管理", icon_key="menu", sort_order=1, required_role="admin"),
     # 2026-07-24 新增：智能体访问权限子 Tab

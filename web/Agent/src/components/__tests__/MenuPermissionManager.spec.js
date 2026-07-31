@@ -22,14 +22,15 @@ const mockCatalog = {
     { id: 'user-management.online-monitor', level: 2, parent_id: 'user-management', label: '在线监控', icon_key: 'eye', sort_order: 2, required_role: 'admin', enabled: true },
     { id: 'task-scheduler', level: 1, parent_id: null, label: '运维任务', icon_key: 'clock', sort_order: 8, required_role: 'admin', enabled: true },
     // 2026-07-31：邮件设置降级为「消息设置」(messaging) 下的二级菜单
-    // - email-settings 自身仍为 level=2（id 永不改，ACL 保持）
-    // - 新增一级菜单 messaging（sort_order=10）
-    // - 三个 Tab（server/policies/test）的 parent_id 改为 messaging
+    // 2026-07-31 二次调整：删除 task-scheduler.email-settings 中间层，新增 channel 级 messaging.email
+    // - messaging 一级菜单（sort_order=10）
+    // - messaging.email channel（level=2, parent_id=messaging, sort_order=1）
+    // - 三个 Tab（server/policies/test）parent_id 改为 messaging.email
     { id: 'messaging', level: 1, parent_id: null, label: '消息设置', icon_key: 'message', sort_order: 10, required_role: 'admin', enabled: true },
-    { id: 'task-scheduler.email-settings', level: 2, parent_id: 'messaging', label: '邮件设置', icon_key: 'mail', sort_order: 1, required_role: 'admin', enabled: true },
-    { id: 'task-scheduler.email-settings.server', level: 2, parent_id: 'messaging', label: '服务器配置', icon_key: 'server', sort_order: 2, required_role: 'admin', enabled: true },
-    { id: 'task-scheduler.email-settings.policies', level: 2, parent_id: 'messaging', label: '发送策略', icon_key: 'list', sort_order: 3, required_role: 'admin', enabled: true },
-    { id: 'task-scheduler.email-settings.test', level: 2, parent_id: 'messaging', label: '测试发送', icon_key: 'send', sort_order: 4, required_role: 'admin', enabled: true },
+    { id: 'messaging.email', level: 2, parent_id: 'messaging', label: '邮件设置', icon_key: 'mail', sort_order: 1, required_role: 'admin', enabled: true },
+    { id: 'task-scheduler.email-settings.server', level: 2, parent_id: 'messaging.email', label: '服务器配置', icon_key: 'server', sort_order: 1, required_role: 'admin', enabled: true },
+    { id: 'task-scheduler.email-settings.policies', level: 2, parent_id: 'messaging.email', label: '发送策略', icon_key: 'list', sort_order: 2, required_role: 'admin', enabled: true },
+    { id: 'task-scheduler.email-settings.test', level: 2, parent_id: 'messaging.email', label: '测试发送', icon_key: 'send', sort_order: 3, required_role: 'admin', enabled: true },
     { id: 'disabled-menu', level: 1, parent_id: null, label: '已禁用菜单', icon_key: 'x', sort_order: 99, required_role: 'admin', enabled: false }
   ]
 }
@@ -156,14 +157,19 @@ describe('MenuPermissionManager', () => {
   // - 一级：存在 menu-checkbox-messaging
   // - 二级（messaging 下）：menu-checkbox-task-scheduler.email-settings / server / policies / test
   it('test_messaging_is_level1_with_email_settings_as_child 消息设置是一级菜单，邮件设置是其下二级', async () => {
+    // 2026-07-31 二次调整：原中间层 `task-scheduler.email-settings` 已删除
+    // 新结构：messaging 一级 → messaging.email channel → 三个孙 tab
     const wrapper = mount(MenuPermissionManager, { props: { isAdmin: true } })
     await flushPromises()
     // 一级：存在 messaging
     const l1 = wrapper.find('[data-testid="menu-checkbox-messaging"]')
     expect(l1.exists()).toBe(true)
-    // 二级：邮件设置在 messaging 下，不再是顶级
-    const l2 = wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings"]')
-    expect(l2.exists()).toBe(true)
+    // 二级（channel）：messaging.email 在 messaging 下
+    const channel = wrapper.find('[data-testid="menu-checkbox-messaging.email"]')
+    expect(channel.exists()).toBe(true)
+    // 旧中间层 task-scheduler.email-settings 已删除
+    const oldMid = wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings"]')
+    expect(oldMid.exists()).toBe(false)
     // 选 zhangsan
     const items = wrapper.findAll('[data-testid="user-list-item"]')
     await items[1].trigger('click')
@@ -172,5 +178,126 @@ describe('MenuPermissionManager', () => {
     const parent = wrapper.find('[data-testid="menu-checkbox-task-scheduler"]')
     expect(parent.exists()).toBe(true)
     expect(parent.element.indeterminate).toBe(false)
+  })
+})
+
+// 2026-07-31 二次调整：messaging → messaging.email(channel) → 三个孙 tab 三级结构测试
+describe('MenuPermissionManager 三级菜单结构（2026-07-31）', () => {
+  beforeEach(() => {
+    setupFetchMock()
+  })
+
+  it('test_messaging_email_channel_renders_as_child messaging 下渲染 messaging.email channel', async () => {
+    const wrapper = mount(MenuPermissionManager, { props: { isAdmin: true } })
+    await flushPromises()
+    // messaging 一级 + messaging.email channel 都在
+    expect(wrapper.find('[data-testid="menu-checkbox-messaging"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="menu-checkbox-messaging.email"]').exists()).toBe(true)
+    // 中间层 task-scheduler.email-settings 已删除
+    expect(wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings"]').exists()).toBe(false)
+    // 三个孙 tab 都在
+    expect(wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings.server"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings.policies"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings.test"]').exists()).toBe(true)
+  })
+
+  it('test_toggle_parent_messaging_auto_checks_all_descendants 勾 messaging 父级 → 自动勾 channel + 三个孙 tab', async () => {
+    const wrapper = mount(MenuPermissionManager, { props: { isAdmin: true } })
+    await flushPromises()
+    const items = wrapper.findAll('[data-testid="user-list-item"]')
+    await items[1].trigger('click') // 选 zhangsan
+    await flushPromises()
+
+    // 勾 messaging
+    const messagingCb = wrapper.find('[data-testid="menu-checkbox-messaging"]')
+    await messagingCb.setValue(true)
+    await flushPromises()
+
+    // channel + 三个孙 tab 都被勾
+    expect(wrapper.find('[data-testid="menu-checkbox-messaging.email"]').element.checked).toBe(true)
+    expect(wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings.server"]').element.checked).toBe(true)
+    expect(wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings.policies"]').element.checked).toBe(true)
+    expect(wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings.test"]').element.checked).toBe(true)
+  })
+
+  it('test_toggle_channel_messaging_email_auto_checks_grandchildren 勾 channel → 自动勾所有孙 tab', async () => {
+    const wrapper = mount(MenuPermissionManager, { props: { isAdmin: true } })
+    await flushPromises()
+    const items = wrapper.findAll('[data-testid="user-list-item"]')
+    await items[1].trigger('click')
+    await flushPromises()
+
+    const channelCb = wrapper.find('[data-testid="menu-checkbox-messaging.email"]')
+    await channelCb.setValue(true)
+    await flushPromises()
+
+    // 三个孙 tab 都被勾
+    expect(wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings.server"]').element.checked).toBe(true)
+    expect(wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings.policies"]').element.checked).toBe(true)
+    expect(wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings.test"]').element.checked).toBe(true)
+    // messaging 父级也变为 checked（所有子级都勾）
+    expect(wrapper.find('[data-testid="menu-checkbox-messaging"]').element.checked).toBe(true)
+  })
+
+  it('test_toggle_one_grandchild_channel_becomes_indeterminate 勾一个孙 tab → channel 半选', async () => {
+    const wrapper = mount(MenuPermissionManager, { props: { isAdmin: true } })
+    await flushPromises()
+    const items = wrapper.findAll('[data-testid="user-list-item"]')
+    await items[1].trigger('click')
+    await flushPromises()
+
+    // 只勾 server
+    const serverCb = wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings.server"]')
+    await serverCb.setValue(true)
+    await flushPromises()
+
+    // channel 半选
+    const channelCb = wrapper.find('[data-testid="menu-checkbox-messaging.email"]')
+    expect(channelCb.element.checked).toBe(false)
+    expect(channelCb.element.indeterminate).toBe(true)
+    // messaging 父级也半选
+    const messagingCb = wrapper.find('[data-testid="menu-checkbox-messaging"]')
+    expect(messagingCb.element.indeterminate).toBe(true)
+  })
+
+  it('test_toggle_all_grandchildren_channel_and_parent_become_checked 勾全部孙 tab → channel + parent 全勾', async () => {
+    const wrapper = mount(MenuPermissionManager, { props: { isAdmin: true } })
+    await flushPromises()
+    const items = wrapper.findAll('[data-testid="user-list-item"]')
+    await items[1].trigger('click')
+    await flushPromises()
+
+    // 勾全部孙 tab
+    await wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings.server"]').setValue(true)
+    await flushPromises()
+    await wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings.policies"]').setValue(true)
+    await flushPromises()
+    await wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings.test"]').setValue(true)
+    await flushPromises()
+
+    // channel 勾上
+    expect(wrapper.find('[data-testid="menu-checkbox-messaging.email"]').element.checked).toBe(true)
+    // messaging 父级也勾上
+    expect(wrapper.find('[data-testid="menu-checkbox-messaging"]').element.checked).toBe(true)
+  })
+
+  it('test_untoggle_parent_unchecks_all_descendants 取消 messaging → channel + 全部孙 tab 都取消', async () => {
+    const wrapper = mount(MenuPermissionManager, { props: { isAdmin: true } })
+    await flushPromises()
+    const items = wrapper.findAll('[data-testid="user-list-item"]')
+    await items[1].trigger('click')
+    await flushPromises()
+
+    // 先全部勾上
+    await wrapper.find('[data-testid="menu-checkbox-messaging"]').setValue(true)
+    await flushPromises()
+    // 再取消
+    await wrapper.find('[data-testid="menu-checkbox-messaging"]').setValue(false)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="menu-checkbox-messaging.email"]').element.checked).toBe(false)
+    expect(wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings.server"]').element.checked).toBe(false)
+    expect(wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings.policies"]').element.checked).toBe(false)
+    expect(wrapper.find('[data-testid="menu-checkbox-task-scheduler.email-settings.test"]').element.checked).toBe(false)
   })
 })

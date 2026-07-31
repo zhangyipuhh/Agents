@@ -43,7 +43,7 @@
 | 6 | tool-management | 工具管理 | admin |
 | 7 | skill-management | Skill 管理 | admin |
 | 8 | task-scheduler | 运维任务 | admin |
-| 9 | （已降级，见消息设置父菜单章节） | — | — |
+| 9 | （已删除，见消息设置父菜单章节；中间层 task-scheduler.email-settings 于 2026-07-31 二次调整删除） | — | — |
 | 10 | messaging | 消息设置 | admin |
 
 前端 `web/Agent/src/components/UserSettingsDialog.vue` 的 `NAV_MENU_METADATA` 对象
@@ -98,56 +98,95 @@ MenuItem(id="task-scheduler.email-settings", level=1,
 
 授权数据全自动保留（因 id 不变）。
 
-### 消息设置父菜单（2026-07-31 新增）
+### 消息设置父菜单（2026-07-31 新增，2026-07-31 二次调整为 channel 三级结构）
 
-为支持未来新增钉钉/飞书/企业微信等多通道消息管理，引入新一级菜单 `messaging`（「消息设置」）。原一级菜单「邮件设置」(`task-scheduler.email-settings`) 降级为 messaging 下的二级菜单。
+为支持未来新增钉钉/飞书/企业微信等多通道消息管理，引入新一级菜单 `messaging`（「消息设置」）。
 
-**结构**：
+**结构**（2026-07-31 二次调整后，最终态）：
 
 ```
 messaging (level=1, sort_order=10, icon_key='message')
-  ├── task-scheduler.email-settings (level=2, sort_order=1, label='邮件设置')
-  ├── task-scheduler.email-settings.server (level=2, sort_order=2)
-  ├── task-scheduler.email-settings.policies (level=2, sort_order=3)
-  └── task-scheduler.email-settings.test (level=2, sort_order=4)
+  └── messaging.email (level=2, sort_order=1, label='邮件设置', icon_key='mail')  ← channel 级
+        ├── task-scheduler.email-settings.server    (level=2, parent_id='messaging.email', sort_order=1)
+        ├── task-scheduler.email-settings.policies  (level=2, parent_id='messaging.email', sort_order=2)
+        └── task-scheduler.email-settings.test      (level=2, parent_id='messaging.email', sort_order=3)
 ```
 
-**关键设计**：
+**关键设计**（最终态）：
 
-- id 全程未改：`task-scheduler.email-settings.*` 四个 id 全部保持稳定，老 ACL 自动保留
-- 三个 Tab 的 `parent_id` 从 `task-scheduler.email-settings` 改为 `messaging`（因数据模型仅支持两级菜单，不能形成 3 级结构）
-- 端点 ACL 契约不变：后端 router 仍以 `task-scheduler.email-settings.{server,policies,test}` 作为 `require_admin_or_menu_acl` key，零改动
-- `task-scheduler.email-settings` 自身在菜单树中保留为可见的二级项（admin 在「权限管理 → 菜单管理」可独立授权它）
+- **id 全程未改**：`task-scheduler.email-settings.{server,policies,test}` 三个 id 全部保持稳定，老 ACL 全自动保留
+- **中间层删除**（2026-07-31 二次调整）：原 `task-scheduler.email-settings` 中间层在 UI 中"看不见"却参与 ACL，体验反直觉 → 删；新增 channel 级 id `messaging.email`
+- **三级结构**：messaging 顶级 → messaging.email channel → 三个孙 tab（孙 tab 仍为 level=2，靠 `parent_id` 指向 channel 区分层级；数据模型只支持 2 级 `level` 字段，但允许 channel 作为孙级的父级）
+- **端点 ACL 契约零变化**：后端 router 仍以 `task-scheduler.email-settings.{server,policies,test}` 作为 `require_admin_or_menu_acl` key，零改动
+- **channel `messaging.email` 自身可独立 ACL 授权**：admin 在「权限管理 → 菜单管理」可独立勾选它；隐藏邮件通道时只取消勾选 channel 即可
 
 **前端 `isMenuVisible` alias 映射**（`UserSettingsDialog.vue::PARENT_TO_CHILDREN_ALIAS`）：
 
 - 历史约定：子菜单 id 形如 `${parent}.xxx`，前缀匹配天然让父级可见
-- 2026-07-31 例外：`messaging` 父级与子菜单 id 前缀不匹配（子菜单 id 是 `task-scheduler.email-settings.*`，不以 `messaging.` 开头）
-- 解决方案：在 `isMenuVisible` 增加 alias 映射 `messaging → ['task-scheduler.email-settings']`
-  - 普通用户授权子菜单 `task-scheduler.email-settings` 时，父级 `messaging` 仍可见
-  - 未来添加新通道（如 `messaging.dingtalk`），子菜单 id 推荐用 `messaging.<channel>.xxx` 形式，可继续走前缀匹配
+- `messaging.email` 子菜单 id 以 `messaging.` 开头 → messaging 顶级的前缀匹配天然让父级可见，无需列在 alias
+- 但孙 tab id `task-scheduler.email-settings.*` 不以 `messaging.` 开头 → 必须显式列在 messaging 的 alias
+- 类似地，孙 tab id 不以 `messaging.email.` 开头 → 必须显式列在 messaging.email 的 alias
+- 解决方案：在 `isMenuVisible` 增加 alias 映射：
+  ```js
+  PARENT_TO_CHILDREN_ALIAS = {
+    messaging: [
+      'messaging.email',                                          // 冗余（messaging.email 已天然匹配），保留作显式声明
+      'task-scheduler.email-settings.server',
+      'task-scheduler.email-settings.policies',
+      'task-scheduler.email-settings.test',
+    ],
+    'messaging.email': [
+      'task-scheduler.email-settings.server',
+      'task-scheduler.email-settings.policies',
+      'task-scheduler.email-settings.test',
+    ],
+  }
+  ```
+- 未来添加新通道（如 `messaging.dingtalk`），子菜单 id 推荐用 `messaging.<channel>.xxx` 形式，可继续走前缀匹配
 
-**前端 template 渲染**：
+**前端 template 渲染**（messaging 顶级 tab）：
 
-- 顶部 tab 挂载点从 `v-if="isVisibleTab('task-scheduler.email-settings') ..."` 改为 `v-if="isVisibleTab('messaging') ..."`
-- 内部仍渲染 `<EmailSettingsManager>` 组件（管理 server/policies/test 三个内部 tab）
-- `EmailSettingsManager.vue` 内部「邮件」字面量保留（组件功能是 SMTP 邮件发送，描述的是真实职责）
+- 顶级 tab 挂载点：`v-if="isVisibleTab('messaging') && activeTab === 'messaging'"`
+- 内部加 `.sub-tabs` 容器（参考 `permission-management` 的 sub-tab 模式）：
+  ```html
+  <div class="sub-tabs" data-testid="messaging-sub-tabs">
+    <button class="sub-tab" :class="{ active: activeEmailChannel === 'messaging.email' }"
+            @click="switchEmailChannel('messaging.email')">邮件设置</button>
+  </div>
+  <div v-show="activeEmailChannel === 'messaging.email'" class="tab-fill-wrapper">
+    <EmailSettingsManager :visible-menus="visibleMenus" :is-admin="isAdmin" />
+  </div>
+  ```
+- 状态：`activeEmailChannel = ref('messaging.email')` + `switchEmailChannel(channelId)` 方法
+- 仅 1 个 channel 时仍保留 sub-tab 容器（视觉一致性 + 未来加 dingtalk/feishu 时零改动）
+- `EmailSettingsManager.vue` 内部仍管理 server/policies/test 三个内部 tab（按 id 授权过滤）
+- 组件内「邮件」字面量保留（功能是 SMTP 邮件发送，描述真实职责）
 
-### 邮件设置二级菜单（2026-07-23 新增）
+**`MenuPermissionManager.vue` 三级树形渲染支持**（2026-07-31 二次调整升级）：
+
+- 原 `getChildren(parentId)` 仅支持 2 级（`level=2 && parent_id`）
+- 升级：`parentState` / `toggleParent` / `toggleChild` 通用化为任意级（递归统计"所有后代"）
+- 新增 `getGrandchildren(channelId)` / `toggleGrandchild(grandchildId, channelId, parentId, checked)` / `grandchildState(gcId, channelId)`
+- 模板用 3 级 `v-for` 嵌套手写（不引入组件递归，避免过度工程化）
+- CSS：`.menu-checkbox-row.grandchild`（缩进 + 字号缩）+ `.grandchildren`（虚线左边框视觉分组）
+
+### 邮件设置二级菜单（2026-07-23 新增，2026-07-31 二次调整 parent_id）
 
 `EmailSettingsManager.vue` 内部三个 Tab 注册为可独立授权的二级菜单：
 
-| sort_order | id | label | parent_id |
+| sort_order | id | label | parent_id（最终态） |
 |---|---|---|---|
-| 1 | task-scheduler.email-settings.server | 服务器配置 | task-scheduler.email-settings |
-| 2 | task-scheduler.email-settings.policies | 发送策略 | task-scheduler.email-settings |
-| 3 | task-scheduler.email-settings.test | 测试发送 | task-scheduler.email-settings |
+| 1 | task-scheduler.email-settings.server | 服务器配置 | messaging.email |
+| 2 | task-scheduler.email-settings.policies | 发送策略 | messaging.email |
+| 3 | task-scheduler.email-settings.test | 测试发送 | messaging.email |
 
-注册后 `MenuPermissionManager.vue` 自动按 `level=2 && parent_id=...` 渲染子 checkbox，
-admin 可按 Tab 粒度授权（例如只授权「服务器配置」+「发送策略」）。
+**2026-07-31 二次调整**：`parent_id` 从 `task-scheduler.email-settings`（中间层）改为 `messaging.email`（channel 级）。id 全程未变，端点 ACL 契约零影响。
 
-- 父级勾选 → 自动勾选全部子级（沿用 `toggleParent` 既有行为）
-- 子级任一可见 → 父级 `task-scheduler.email-settings` 可见（`UserSettingsDialog.vue::isMenuVisible` 前缀匹配）
+注册后 `MenuPermissionManager.vue` 按三级树形渲染（见上节「消息设置父菜单」），admin 可按 Tab 粒度授权（例如只授权「服务器配置」+「发送策略」）。
+
+- 父级（messaging）勾选 → 自动勾选全部子级（沿用 `toggleParent` 既有行为，2026-07-31 升级支持三级联动）
+- 子级任一可见 → 父级 `messaging.email` 可见（`UserSettingsDialog.vue::isMenuVisible` alias 映射，孙 tab id 不以 `messaging.email.` 开头）
+- 孙级任一可见 → 父级 `messaging` 顶级可见（前缀匹配 + alias 映射）
 - 数据库无迁移；现有授权记录不受影响
 
 ### 运维任务二级菜单（最终态）

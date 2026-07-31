@@ -6,7 +6,8 @@
  * - 普通用户（role='user'）：仅显示个人设置一项
  * - 管理员（role='admin'）：显示个人设置、用户管理、智能体管理、MCP 管理、工具管理、Skill 管理、运维任务、消息设置
  *   （2026-07-23：邮件设置升级为一级菜单，id=task-scheduler.email-settings；
- *    2026-07-31：邮件设置再次降级为「消息设置」(messaging) 下的二级菜单，邮件作为第一个子 Tab）
+ *    2026-07-31：邮件设置再次降级为「消息设置」(messaging) 下的二级菜单，邮件作为第一个子 Tab；
+ *    2026-07-31 二次调整：原「邮件设置」中间层删除，新增 channel 级 id=messaging.email，渲染上 messaging 顶级 tab 内 sub-tab 容器按 channel 分发）
  */
 
 import { ref, watch, computed, nextTick } from 'vue'
@@ -164,6 +165,14 @@ const activeUserMgmtTab = ref('users')
  */
 const activePermissionTab = ref('menu')
 
+/**
+ * 2026-07-31 二次调整：消息设置（messaging）内容区 channel 标识
+ * - 当前仅一个 channel：'messaging.email'（邮件设置）
+ * - 未来扩展 dingtalk/feishu/wechat-work 时只需追加 channel id
+ * @type {import('vue').Ref<string>}
+ */
+const activeEmailChannel = ref('messaging.email')
+
 /** @type {import('vue').Ref<boolean>} 是否管理员角色（保留兼容，navItems 已不再依赖） */
 const isAdmin = computed(() => props.role === 'admin')
 
@@ -218,8 +227,19 @@ const NAV_MENU_METADATA = {
  * 可继续走前缀匹配，避免扩 alias 表。
  */
 const PARENT_TO_CHILDREN_ALIAS = Object.freeze({
+  // messaging 顶级菜单的 alias 映射
+  // - 子菜单 `messaging.email` id 以 `messaging.` 开头 → 前缀匹配天然让 messaging 父级可见，无需列在 alias
+  // - 但孙 tab id `task-scheduler.email-settings.*` 不以 `messaging.` 开头 → 必须显式列在 alias
   messaging: [
-    'task-scheduler.email-settings',
+    'messaging.email',
+    'task-scheduler.email-settings.server',
+    'task-scheduler.email-settings.policies',
+    'task-scheduler.email-settings.test',
+  ],
+  // 2026-07-31 二次调整：channel 级「邮件设置」(`messaging.email`) 的 alias 映射
+  // - 三个孙 tab id `task-scheduler.email-settings.*` 不以 `messaging.email.` 开头
+  // - 授权任一孙 tab → 父级 channel (`messaging.email`) 可见
+  'messaging.email': [
     'task-scheduler.email-settings.server',
     'task-scheduler.email-settings.policies',
     'task-scheduler.email-settings.test',
@@ -400,6 +420,16 @@ function switchTab(tabId) {
  */
 function switchPermissionTab(tabId) {
   activePermissionTab.value = tabId
+}
+
+/**
+ * 切换消息设置（messaging）内容区的 channel 子 tab。
+ * 2026-07-31 二次调整新增。预留 dingtalk/feishu 等扩展点。
+ * @param {string} channelId - channel id（当前仅 'messaging.email'）
+ * @returns {void}
+ */
+function switchEmailChannel(channelId) {
+  activeEmailChannel.value = channelId
 }
 
 /**
@@ -1629,14 +1659,26 @@ watch(() => props.visible, (newVal) => {
                 <TaskSchedulerManager :visible-menus="visibleMenus" :is-admin="isAdmin" />
               </div>
 
-              <!-- 消息设置（admin，2026-07-31 新增） -->
-              <!-- 原「邮件设置」一级菜单降级为 messaging 下的二级菜单；这里渲染 messaging 一级 tab -->
-              <!-- EmailSettingsManager 内部仍管理 server/policies/test 三个子 tab（按 id 授权过滤） -->
+              <!-- 消息设置（admin，2026-07-31 新增，2026-07-31 二次调整加 channel sub-tab） -->
+              <!-- 2026-07-31 二次调整：messaging 顶级 tab 内加 .sub-tabs 容器，按 channel 分发
+                   - 当前仅一个 channel：messaging.email（邮件设置）
+                   - EmailSettingsManager 在 sub-tab 容器下按 v-show 渲染（避免重复挂载）
+                   - 未来加 dingtalk/feishu 时只需新增 sub-tab 按钮 + 对应组件渲染分支 -->
               <!-- 2026-07-23 修复：用 v-if 替代 v-show，避免普通用户打开 dialog 时无差别挂载 EmailSettingsManager 触发 /api/admin/email/* 请求导致 403 -->
               <!-- 2026-07-23 ACL 双重门：传递 visibleMenus 让组件按 ACL 过滤子 tab -->
               <!-- 2026-07-31 调整：isMenuVisible 通过 PARENT_TO_CHILDREN_ALIAS 让 messaging 在子菜单授权时也可见 -->
               <div v-if="isVisibleTab('messaging') && activeTab === 'messaging'" class="tab-fill-wrapper">
-                <EmailSettingsManager :visible-menus="visibleMenus" :is-admin="isAdmin" />
+                <div class="sub-tabs" data-testid="messaging-sub-tabs">
+                  <button
+                    class="sub-tab"
+                    :class="{ active: activeEmailChannel === 'messaging.email' }"
+                    data-testid="messaging-channel-email"
+                    @click="switchEmailChannel('messaging.email')"
+                  >邮件设置</button>
+                </div>
+                <div v-show="activeEmailChannel === 'messaging.email'" class="tab-fill-wrapper" data-testid="messaging-channel-email-panel">
+                  <EmailSettingsManager :visible-menus="visibleMenus" :is-admin="isAdmin" />
+                </div>
               </div>
 
               <!-- 权限管理（admin，2026-07-23 新增，2026-07-24 改造为子 Tab 切换） -->
