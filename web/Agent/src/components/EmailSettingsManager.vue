@@ -904,6 +904,15 @@ onMounted(async () => {
   min-height: 0;
 }
 
+/* 2026-07-31 新增：让三个 tabpanel 沿根 section 的 flex 列铺满剩余高度，
+   外框始终贴满可视区，超长内容由 panel 内部自滚动（与 TaskSchedulerManager 同款契约） */
+.email-settings-manager > section[role="tabpanel"] {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .tablist {
   display: flex;
   gap: 8px;
@@ -935,6 +944,7 @@ onMounted(async () => {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 16px;
+  flex-shrink: 0; /* 2026-07-31 新增：防 tabpanel flex 链把头部压缩成 0 */
 }
 
 .detail-header h3 {
@@ -953,6 +963,9 @@ onMounted(async () => {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
+  flex: 1;          /* 2026-07-31 新增：吃光 tabpanel 高度（服务器配置/测试发送两个 Tab） */
+  min-height: 0;    /* 2026-07-31 新增：解封 flex 链断点 */
+  overflow-y: auto; /* 2026-07-31 新增：长表单（高级选项展开 / 多附件 / 长正文）内部自滚动 */
 }
 
 .form-field,
@@ -1075,12 +1088,16 @@ input[type="file"] {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
   gap: 16px;
+  flex: 1;          /* 2026-07-31 新增：吃光 tabpanel 高度 */
+  min-height: 0;    /* 2026-07-31 新增：解封 flex 链断点 */
 }
 
 .policies-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  overflow-y: auto; /* 2026-07-31 新增：长策略列表在左侧独立滚动 */
+  min-height: 0;    /* 2026-07-31 新增 */
 }
 
 .policy-item {
@@ -1152,6 +1169,9 @@ input[type="file"] {
   border: 1px solid #e5e7eb;
   border-radius: 10px;
   padding: 14px;
+  overflow-y: auto; /* 2026-07-31 新增：策略编辑表单超高时在右侧独立滚动 */
+  min-height: 0;    /* 2026-07-31 新增：解封 flex 链断点 */
+  flex: 1;          /* 2026-07-31 新增：吃光 grid 右侧列高度 */
 }
 
 .policy-editor h4 {
