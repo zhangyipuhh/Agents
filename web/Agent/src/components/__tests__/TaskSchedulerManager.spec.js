@@ -218,7 +218,7 @@ function setupFetchMock({
     }
     // 2026-07-22 新增：DELETE 单台服务器（204 No Content，无 body）
     if (u === '/api/admin/devops-servers/1' && method === 'DELETE') return emptyResponse(204)
-    // 2026-07-22 新增：GET 详情端点（白名单 + 巡检脚本 + 解析器）
+    // 2026-08-03 改造：GET 详情端点只返回白名单 + 巡检脚本元数据（不包含原文）
     if (u === '/api/admin/devops-servers/1' && method === 'GET') {
       return jsonResponse({
         id: 1,
@@ -226,8 +226,9 @@ function setupFetchMock({
         server_type: 'production',
         updated_at: '2026-07-15T09:00:00',
         whitelist: ['ls -la', 'df -h', 'uptime'],
-        inspection_script: 'echo __LEAKED_SCRIPT_TOKEN_xyz__\nls -la /tmp',
-        inspection_parser: 'json',
+        inspection_script_id: 42,
+        inspection_script_name: 'linux-bash',
+        inspection_script_display_name: 'Linux 基础巡检',
       })
     }
     if (u === '/api/admin/devops-servers/2' && method === 'GET') {
@@ -237,9 +238,37 @@ function setupFetchMock({
         server_type: 'staging',
         updated_at: '2026-07-15T10:00:00',
         whitelist: [],
-        inspection_script: null,
-        inspection_parser: 'json',
+        inspection_script_id: null,
+        inspection_script_name: null,
+        inspection_script_display_name: null,
       })
+    }
+    // 2026-08-03 新增：巡检脚本库端点 — admin 才能取详情
+    if (u === '/api/admin/inspection-scripts/42' && method === 'GET') {
+      return jsonResponse({
+        id: 42,
+        name: 'linux-bash',
+        display_name: 'Linux 基础巡检',
+        platform: 'linux',
+        version: '1.0.0',
+        inspection_parser: 'json',
+        inspection_script: 'echo __LEAKED_SCRIPT_TOKEN_xyz__\nls -la /tmp',
+        inspection_fields: [
+          { key: 'cpu_usage', name_zh: 'CPU 使用率', unit: '%', direction: 'lower', warn: 70, crit: 90 },
+        ],
+        created_at: '2026-08-01T00:00:00Z',
+        updated_at: '2026-08-01T00:00:00Z',
+      })
+    }
+    // 2026-08-03 新增：巡检脚本库列表（白名单字段，无原文）
+    if (u === '/api/admin/inspection-scripts' && method === 'GET') {
+      return jsonResponse([
+        { id: 42, name: 'linux-bash', display_name: 'Linux 基础巡检', platform: 'linux', version: '1.0.0', inspection_parser: 'json', updated_at: '2026-08-01T00:00:00Z' },
+      ])
+    }
+    // 2026-08-03 新增：触发扫描
+    if (u === '/api/admin/inspection-scripts/scan' && method === 'POST') {
+      return jsonResponse({ scanned: 5, inserted: 1, updated: 4, failed: 0 })
     }
     // 2026-07-26 新增：用户服务器 tree（普通用户走此处拿 server_list 候选）
     if (u === '/api/admin/user-servers/tree' && method === 'GET') return jsonResponse(userServerTreeResponse)
@@ -929,6 +958,11 @@ describe('TaskSchedulerManager 组件', () => {
     const tag = dialog.querySelector('[data-testid="script-parser-tag"]')
     expect(tag).not.toBeNull()
     expect(tag.textContent).toContain('json')
+    // 2026-08-03 改造：必须按需调用 inspection-scripts/{id} 取完整脚本
+    const inspectionFetchCalls = global.fetch.mock.calls.filter(
+      ([url]) => typeof url === 'string' && url === '/api/admin/inspection-scripts/42'
+    )
+    expect(inspectionFetchCalls.length).toBe(1)
     wrapper.unmount()
   })
 
@@ -3373,6 +3407,48 @@ describe('TaskSchedulerManager 组件', () => {
     const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     expect(wrapper.text()).not.toContain('context_overrides JSON')
+  })
+
+  // ===========================================================================
+  // 2026-08-03 新增：巡检脚本库（inspection_scripts）端到端契约
+  //   - 服务器详情不再含 inspection_script 原文，改由 inspection-scripts/{id} 提供
+  //   - admin 可在「服务器扫描入库」Tab 触发 scanInspectionScripts
+  // ===========================================================================
+
+  it('test_scan_tab_renders_inspection_script_scan_button 扫描 Tab 渲染巡检脚本扫描按钮（admin only）', async () => {
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+
+    // 2026-08-03 新增：服务器扫描 Tab 顶部增加「巡检脚本扫描」按钮
+    const inspectScanBtn = wrapper.find('[data-testid="scan-inspection-scripts-btn"]')
+    expect(inspectScanBtn.exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('test_scan_tab_inspection_script_button_triggers_scan 点击巡检脚本扫描按钮触发 POST scan（admin only）', async () => {
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+
+    const before = global.fetch.mock.calls.filter(
+      ([url, opts]) => typeof url === 'string' && url === '/api/admin/inspection-scripts/scan' && (opts?.method || 'GET').toUpperCase() === 'POST'
+    )
+    expect(before.length).toBe(0)
+
+    const btn = wrapper.find('[data-testid="scan-inspection-scripts-btn"]')
+    await btn.trigger('click')
+    await flushPromises()
+
+    const after = global.fetch.mock.calls.filter(
+      ([url, opts]) => typeof url === 'string' && url === '/api/admin/inspection-scripts/scan' && (opts?.method || 'GET').toUpperCase() === 'POST'
+    )
+    expect(after.length).toBe(1)
+    // 成功 summary 落到与扫描统计同一类容器；至少包含扫描数
+    expect(wrapper.text()).toContain('5')
+    wrapper.unmount()
   })
 })
 

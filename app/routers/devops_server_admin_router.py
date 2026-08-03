@@ -52,15 +52,20 @@ logger = logging.getLogger(__name__)
 _PUBLIC_FIELDS = ("id", "business_name", "server_type", "updated_at")
 # 扫描结果白名单（4 个数字）
 _SCAN_FIELDS = ("scanned", "inserted", "updated", "failed")
-# 详情字段白名单（与 list 端点不同：允许返回 whitelist + inspection_script）
+# 详情字段白名单（与 list 端点不同：允许返回 whitelist + 巡检脚本元数据）
+# 2026-08-03 改造：详情不再返回 inspection_script / inspection_parser /
+# inspection_fields 三列（脚本原文改走 /api/admin/inspection-scripts/{id}）；
+# 改为返回 inspection_script_id / inspection_script_name /
+# inspection_script_display_name 三键（service 层解析）。
 _DETAIL_FIELDS = (
     "id",
     "business_name",
     "server_type",
     "updated_at",
     "whitelist",
-    "inspection_script",
-    "inspection_parser",
+    "inspection_script_id",
+    "inspection_script_name",
+    "inspection_script_display_name",
 )
 
 

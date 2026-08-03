@@ -67,6 +67,13 @@ SCRIPTS_DIR = os.path.join(_PROJECT_ROOT, "app", "scripts")
 DEVOPS_SERVER_CONFIG_PATH = os.path.join(_PROJECT_ROOT, "data", "devops", "servers.yaml")
 # DevOps 服务器配置目录（用于存放扫描时找不到 config.yaml 的默认目录）
 DEVOPS_SERVER_CONFIG_DIR = os.path.join(_PROJECT_ROOT, "data", "devops")
+# DevOps 巡检脚本库配置文件路径（2026-08-03 新增）
+#   * 统一存放平台/版本维度的巡检脚本（bash / powershell），由
+#     InspectionScriptService.scan_and_upsert 扫描入库到 inspection_scripts 表。
+#   * 完整结构：<项目根>/data/devops/inspection_scripts.yaml
+DEVOPS_INSPECTION_SCRIPTS_CONFIG_PATH = os.path.join(
+    _PROJECT_ROOT, "data", "devops", "inspection_scripts.yaml"
+)
 
 from pathlib import Path
 import re as _re
@@ -252,3 +259,21 @@ def resolve_devops_server_config_path(path: str | Path) -> Path:
     if p.is_absolute():
         return p
     return Path(_PROJECT_ROOT) / p
+
+
+def resolve_devops_inspection_scripts_config_path(path: str | Path) -> Path:
+    """
+    将 DevOps inspection_scripts.yaml 路径解析为绝对路径（2026-08-03 新增）。
+
+    规则：与 :func:`resolve_devops_server_config_path` 一致；
+    - 已经是绝对路径 → 原样返回；
+    - 相对路径 → 相对项目根解析；
+    - 空字符串抛 ``ValueError``。
+
+    :param path: 配置路径（绝对 / 相对项目根）。
+    :type path: str | Path
+    :return: 解析后的绝对路径。
+    :rtype: Path
+    :raises ValueError: 当 ``path`` 为空字符串时抛出。
+    """
+    return resolve_devops_server_config_path(path)

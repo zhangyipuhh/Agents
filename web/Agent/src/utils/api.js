@@ -2509,6 +2509,76 @@ export async function scanScripts() {
 }
 
 // ============================================================
+// 巡检脚本库 API（2026-08-03 新增）
+// 对应后端 inspection_script_admin_router 的 /api/admin/inspection-scripts/* 端点
+// 列表端点严格白名单返回（不暴露脚本原文）；详情端点按需返回完整脚本内容
+// （含 inspection_script / inspection_fields）；扫描端点仅 admin 可触发。
+// 用于 TaskSchedulerManager 与 UserServerManager 的按需查看原文功能。
+// ============================================================
+
+/**
+ * 获取已注册的巡检脚本列表（白名单字段，无脚本原文）
+ * 调用 GET /api/admin/inspection-scripts。
+ * 权限：admin OR ``task-scheduler.server-management`` ACL（与列表页同口径）。
+ * @returns {Promise<Array<{id: number, name: string, display_name: string, platform: string, version: string, inspection_parser: string, updated_at: string}>>}
+ * @throws {Error} 请求失败时抛出错误（含后端 detail / HTTP 状态信息）
+ */
+export async function fetchInspectionScripts() {
+  const response = await fetchWithAuth('/api/admin/inspection-scripts', { method: 'GET' })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取巡检脚本列表失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 触发巡检脚本库扫描入库（POST /api/admin/inspection-scripts/scan）
+ * 权限：admin only。响应严格只含 scanned / inserted / updated / failed 4 个整数。
+ * @returns {Promise<{scanned: number, inserted: number, updated: number, failed: number}>}
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function scanInspectionScripts() {
+  const response = await fetchWithAuth('/api/admin/inspection-scripts/scan', {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `扫描巡检脚本失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 按 script_id 取巡检脚本完整详情（含 inspection_script 与 inspection_fields）
+ * 调用 GET /api/admin/inspection-scripts/{script_id}。
+ * 权限：admin only。
+ * @param {number|string} scriptId - inspection_scripts 主键 id
+ * @returns {Promise<{
+ *   id: number, name: string, display_name: string, platform: string, version: string,
+ *   inspection_parser: string,
+ *   inspection_script: string|null,
+ *   inspection_fields: Array<{key: string, name_zh: string, unit: string, direction: string, warn: number|null, crit: number|null}>|null,
+ *   created_at: string, updated_at: string
+ * }>}
+ * @throws {Error} 404 (脚本不存在) / 500 (服务未初始化) / 其他错误。错误 message 仅含后端 detail，不回显 script_id 等敏感信息
+ */
+export async function fetchInspectionScriptDetail(scriptId) {
+  if (scriptId == null) {
+    throw new Error('fetchInspectionScriptDetail: scriptId 不能为空')
+  }
+  const response = await fetchWithAuth(
+    `/api/admin/inspection-scripts/${encodeURIComponent(scriptId)}`,
+    { method: 'GET' }
+  )
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取巡检脚本详情失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+// ============================================================
 // 消息反馈 API（2026-07-02 新增）
 // 对应后端 message_feedback_router 的 POST /api/agent/message-feedback
 // 用于 AI 回复点赞 / 点踩（点踩时携带详细原因）

@@ -77,15 +77,21 @@ def test_lifespan_initializes_devops_server_before_task_scheduler():
     from app.core.server import lifespan
 
     source = inspect.getsource(lifespan)
-    devops_init_index = source.index("app.state.devops_server_service = svc")
+    # 2026-08-03 复审修复：DevOpsServerService 改由 ``_preload_and_publish_service``
+    # 统一发布；不再有 ``app.state.devops_server_service = svc`` 这种直接赋值。
+    # 此处用发布后产物 ``app.state.devops_server_service`` + 调度器注入处作为
+    # 顺序锚点（鲁棒于具体写法），并校验 ``devops_server_service=getattr(...)``
+    # 注入 TaskSchedulerService 的契约。
+    devops_publish_index = source.index('state_attribute="devops_server_service"')
     scheduler_init_index = source.index(
         "app.state.task_scheduler_service = TaskSchedulerService("
     )
 
-    assert devops_init_index < scheduler_init_index, (
-        "lifespan 中 DevOpsServerService 初始化（app.state.devops_server_service = svc）"
-        "必须在 TaskSchedulerService 之前完成, 否则 run_server_ops 在脚本执行时拿到 None, "
-        "导致 server_list 巡检失败（ScriptExecutionError: devops_server_service 不可用）。"
+    assert devops_publish_index < scheduler_init_index, (
+        "lifespan 中 DevOpsServerService 发布（_preload_and_publish_service, "
+        "state_attribute=devops_server_service）必须在 TaskSchedulerService 之前完成, "
+        "否则 run_server_ops 在脚本执行时拿到 None, 导致 server_list 巡检失败 "
+        "（ScriptExecutionError: devops_server_service 不可用）。"
     )
     assert "devops_server_service=getattr(" in source, (
         "lifespan 中必须通过 devops_server_service=getattr(app.state, ...) "

@@ -439,6 +439,22 @@ class DevOpsSettings(BaseSettings):
             "相对项目根解析；可通过环境变量 DEVOPS_SERVERS_CONFIG_PATH 覆盖"
         ),
     )
+
+    @staticmethod
+    def _default_inspection_scripts_config_path() -> str:
+        """默认 inspection_scripts.yaml 路径（2026-08-03 新增）。"""
+        # 延迟导入避免循环（settings → paths）
+        from app.core.config.paths import DEVOPS_INSPECTION_SCRIPTS_CONFIG_PATH
+
+        return str(DEVOPS_INSPECTION_SCRIPTS_CONFIG_PATH)
+
+    inspection_scripts_config_path: str = Field(
+        default_factory=_default_inspection_scripts_config_path,
+        description=(
+            "DevOps 巡检脚本库 YAML 文件路径（2026-08-03 新增）。"
+            "相对项目根解析；可通过环境变量 DEVOPS_INSPECTION_SCRIPTS_CONFIG_PATH 覆盖"
+        ),
+    )
     credential_key: str = Field(
         default="",
         description=(

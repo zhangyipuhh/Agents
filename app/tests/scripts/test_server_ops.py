@@ -228,6 +228,124 @@ async def test_run_server_ops_non_empty_raises_when_service_none():
 
 
 @pytest.mark.asyncio
+async def test_run_server_ops_get_connection_config_receives_full_inspection_script(monkeypatch):
+    """契约测试：``get_connection_config(business_name)`` 返回值必须含完整
+    ``inspection_script`` 文本（不是 None / 不是空字符串）。
+
+    触发场景：DevOps 半残场景下，cache 中 ``inspection_script_id`` 已映射，
+    但 ``InspectionScriptService.get_script_by_id`` 返回 None（脚本库缺失
+    或 cache miss），service 必须抛 ``ValueError``（不允许返回 ``inspection_script=None``
+    的半残 dict），让 server_ops 走 ``skipped / crit`` 分支。
+
+    生产对等初始化点：
+        - ``app.shared.utils.devops_server_service.DevOpsServerService.get_connection_config``
+          当 ``inspection_script_id`` 缺失 / ``InspectionScriptService`` 未注入 /
+          脚本库条目不存在时必须抛 ``ValueError``（2026-08-03 已加固）。
+        - ``app.scripts.server_ops._run_one`` 当 ``get_connection_config`` 返回
+          ``inspection_script`` 为空 / None 时，必须把 ServerOpsItem 标记为
+          ``skipped=True`` + ``inspection_status="skipped"``，不允许出现
+          ``success=True + inspection_status="unassessed"`` 的误导性响应。
+    """
+    from app.shared.utils.inspection.parser import InspectionFieldRule
+
+    class _HalfBrokenService:
+        """返回 inspection_script=None 的 stub，模拟 DevOps 半残场景。"""
+        def __init__(self):
+            self._configs = {
+                "biz-A": {
+                    "ip": "10.0.0.1", "port": 22, "username": "u", "password": "pw",
+                    "server_type": "linux",
+                    "inspection_script": None,  # 半残：缺失
+                    "inspection_parser": "json",
+                    "inspection_fields": [],
+                }
+            }
+            self.calls = []
+
+        def get_connection_config(self, business_name):
+            self.calls.append(business_name)
+            return dict(self._configs[business_name])
+
+    def fake_execute_script(cfg, script, timeout):
+        return SSHExecResult(success=True, stdout='{"ok": true}', stderr="", exit_code=0)
+
+    monkeypatch.setattr("app.scripts.server_ops.execute_script", fake_execute_script)
+
+    service = _HalfBrokenService()
+    ctx = _make_context_with_service(service, {"server_list": ["biz-A"]})
+    report = await run_server_ops(ctx)
+
+    item = report.items[0]
+    # 半残场景下，server_ops 必须识别 inspection_script 缺失并标 skipped。
+    assert item.skipped is True, (
+        f"半残 inspection_script=None 时，ServerOpsItem.skipped 必须为 True，"
+        f"实际 skipped={item.skipped!r}"
+    )
+    assert item.success is None, (
+        f"半残 inspection_script=None 时 success 必须为 None（未执行），"
+        f"实际 success={item.success!r}"
+    )
+    assert item.inspection_status == "skipped", (
+        f"半残 inspection_script=None 时 inspection_status 必须为 skipped，"
+        f"实际={item.inspection_status!r}"
+    )
+    assert "未配置巡检脚本" in item.error_message, (
+        f"半残 inspection_script=None 时 error_message 必须给诊断提示，实际={item.error_message!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_server_ops_stub_returns_inspection_script_string(monkeypatch):
+    """契约测试：``_StubDevOpsService.get_connection_config`` 返回的
+    ``inspection_script`` 字段必须是**非空字符串**（不是 None / 不是空）。
+
+    锁住测试 stub 的契约：stub 必须提供真实脚本文本，让 server_ops 能传给
+    execute_script；不允许 stub 退化为"半残 None"导致 ServerOpsItem.skipped 全开。
+
+    生产对等初始化点：
+        - ``app.shared.utils.devops_server_service.DevOpsServerService.get_connection_config``
+          一律返回真实脚本（script_rec.get("inspection_script")）。
+        - 测试 stub 必须模拟该契约。
+    """
+    cfg_text = "echo strict_contract_test"
+
+    captured_script = {}
+
+    def fake_execute_script(cfg, script, timeout):
+        # 关键断言：execute_script 必须收到 service 返回的 inspection_script 字符串（去尾换行）。
+        captured_script["script"] = script
+        return SSHExecResult(success=True, stdout='{"cpu": 30}', stderr="", exit_code=0)
+
+    monkeypatch.setattr("app.scripts.server_ops.execute_script", fake_execute_script)
+
+    service = _StubDevOpsService(configs={
+        "biz-A": {
+            "ip": "10.0.0.1", "port": 22, "username": "u", "password": "pw",
+            "server_type": "linux",
+            "inspection_script": cfg_text,
+            "inspection_parser": "json",
+            "inspection_fields": [],
+        }
+    })
+    ctx = _make_context_with_service(service, {"server_list": ["biz-A"]})
+    report = await run_server_ops(ctx)
+
+    assert report.passed == 1
+    # execute_script 必须收到 inspection_script 字符串（允许尾部 \n 剥离）
+    assert captured_script["script"] == cfg_text, (
+        f"execute_script 收到的 script 必须等于 service 返回的 inspection_script，"
+        f"实际={captured_script['script']!r}, expected={cfg_text!r}"
+    )
+    # stub 返回必须是字符串（不是 None）
+    returned_cfg = service.get_connection_config("biz-A")
+    assert isinstance(returned_cfg["inspection_script"], str), (
+        f"StubDevOpsService.get_connection_config 返回的 inspection_script 必须是 str，"
+        f"实际={type(returned_cfg['inspection_script']).__name__}"
+    )
+    assert returned_cfg["inspection_script"] == cfg_text
+
+
+@pytest.mark.asyncio
 async def test_run_server_ops_all_pass(monkeypatch):
     """所有 server 配齐 inspection_script 且 execute_script 返回 success=True，全部 passed。"""
     configs = {

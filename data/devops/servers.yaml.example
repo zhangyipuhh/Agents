@@ -20,43 +20,21 @@
 #   * blacklist       (list[str])：黑名单，优先级最高；命中即拒绝。
 #   * whitelist       (list[str])：强白名单；空白名单时所有非黑名单命令被拒绝。
 #                                 匹配模式：精确匹配 / 以空格结尾的前缀匹配 / 以 ^ 开头的正则匹配。
-#   * inspection_script (str)   ：固定巡检脚本（2026-07-22 新增）。
-#                                 推荐使用 YAML `|` 字面块保留换行；空字符串 / 纯空白 → NULL（不巡检）。
-#                                 bash / powershell 均可；末尾多余换行会被自动 rstrip。
-#                                 非 str 值会被强制 str()；序列化失败则该条目记 failed。
-#   * inspection_parser (str)   ：解析器类型（2026-07-22 新增）；取值 json / kv / csv / raw（默认 json）。
-#                                 大小写不敏感；非法值 → 该条目记 failed 不入库。
-#                                 - json：脚本最后一行输出 JSON 对象 / 数组，程序按 json.loads 解析。
-#                                 - kv  ：key=value 行列表（如 key1=val1\nkey2=val2）。
-#                                 - csv ：CSV 行（首行表头）。
-#                                 - raw ：明文回显，不解析。
-#   * inspection_fields (list[dict])：巡检字段规则（2026-07-22 新增），每个 dict 形如：
-#                                 {
-#                                   key: str 必填,英文键,必须与脚本输出 JSON 的字段名一致,
-#                                              且在同一节点内唯一;
-#                                   name_zh: str 必填,中文展示名;
-#                                   unit: str 可选,缺省 "";空单位时填 "" 不要写 null;
-#                                   direction: "high" | "low" | "ignore" 必填;
-#                                              high 时值越大越坏 (value >= warn/crit 命中等级);
-#                                              low  时值越小越坏 (value <= warn/crit 命中等级);
-#                                              ignore 只展示,不参与阈值评估,warn/crit 必须为 null;
-#                                   warn: number 可选,high 时 warn <= crit,low 时 warn >= crit;
-#                                   crit: number 可选,必须 >=0;ignore 方向时必须填 null。
-#                                 }
-#                                 字段顺序决定评估顺序;同一节点 key 重复会被规范化拒绝,该条记 failed。
-#                                 缺省 / 非法结构 (NULL / 字符串 / 数字) 时按 [] 处理,不阻断整体扫描。
+#   * inspection_script_name (str)：巡检脚本库引用（2026-08-03 新增）。
+#                                 引用 ``data/devops/inspection_scripts.yaml`` 中的
+#                                 条目 name（如 linux-bash / windows-ps-5.1 /
+#                                 windows-ps-7+）；省略时按 server_type 走默认匹配
+#                                 （linux → linux-bash，windows → windows-ps-5.1）。
+#                                 显式指定但脚本库中不存在 → 该条目记 failed 不入库。
+#
+# 2026-08-03 改造：原 inspection_script / inspection_parser / inspection_fields 三列
+# 已从 devops_servers 表移除，由 inspection_scripts 脚本库统一管理。服务器节点仅
+# 保留 inspection_script_id 外键。脚本原文 / 解析器 / 字段规则改走
+# POST /api/admin/inspection-scripts/scan 扫描入库。
 #
 # 触发方式：
 #   * 在「定时任务管理」->「服务器扫描入库」Tab 点击「立即扫描」；
 #   * 或调用 POST /api/admin/devops-servers/scan（admin 鉴权）。
-#
-# 巡检脚本说明：
-#   * 巡检脚本由后端 run_server_ops 按 parser 解析（json / kv / csv / raw），
-#     再按 inspection_fields 阈值规则（high / low / ignore）评估生成报告。
-#   * 脚本通过 SSHTools 投递到目标机器，按 server_type 自动选择 bash -c 或 powershell -Command。
-#   * 黑/白名单不约束 inspection_script（运维巡检脚本需要执行多种命令）；
-#     如需约束，由 tool 内部按 parser 校验输出格式。
-#   * 建议输出格式：JSON 一行（如 {"disk_used_pct":42,...}），便于下游 json.loads 解析。
 #
 # 字段别名（兼容老 YAML）：
 #   * business_name ↔ name
@@ -77,30 +55,10 @@ servers:
       - "systemctl status "  # 前缀匹配：允许 systemctl status xxx
       - "df -h"              # 精确匹配：仅允许 df -h（不允许 df -i / df -T 等变体）
       - "tail "              # 前缀匹配：允许 tail -n 100 /var/log/syslog 等
-    # 固定巡检脚本：bash 收集磁盘 / 内存 / CPU / 1 分钟负载，输出 JSON 方便程序解析。
-    # YAML `|` 字面块保留换行；末尾多余换行会被自动 rstrip。
-    inspection_script: |
-      #!/bin/bash
-      set -u
-      # 1) 根分区已用百分比（去百分号）
-      DISK=$(df -P / | tail -1 | awk '{print $5}' | tr -d '%')
-      # 2) 内存已用百分比
-      MEM=$(free | awk '/Mem:/ {printf "%.0f", $3/$2 * 100}')
-      # 3) CPU 空闲百分比（采样 1s）
-      CPU_IDLE=$(top -bn1 | grep "Cpu(s)" | awk -F',' '{print $4}' | awk '{print $1}')
-      # 4) 1 分钟平均负载
-      LOAD=$(cat /proc/loadavg | awk '{print $1}')
-      # 最后一行输出 JSON 对象，工具按 parser=json 解析
-      printf '{"disk_used_pct":%s,"mem_used_pct":%s,"cpu_idle_pct":%s,"load_1m":%s}\n' \
-        "$DISK" "$MEM" "$CPU_IDLE" "$LOAD"
-    # 解析器：json（脚本最后一行必须是合法 JSON 对象 / 数组）
-    inspection_parser: json
-    # 巡检字段规则（2026-07-22 新增）：key 与脚本输出的 JSON 字段一一对应。
-    inspection_fields:
-      - {key: disk_used_pct, name_zh: 磁盘使用率, unit: '%', direction: high, warn: 80, crit: 90}
-      - {key: mem_used_pct, name_zh: 内存使用率, unit: '%', direction: high, warn: 80, crit: 90}
-      - {key: cpu_idle_pct, name_zh: CPU 空闲率, unit: '%', direction: low, warn: 20, crit: 10}
-      - {key: load_1m, name_zh: 1 分钟平均负载, unit: '', direction: high, warn: 4.0, crit: 8.0}
+    # 固定巡检脚本（2026-08-03 改造）：服务器节点不再携带脚本原文，
+    # 改为通过 inspection_script_name 引用 ``data/devops/inspection_scripts.yaml`` 条目。
+    # 这里省略 → 按 server_type 走默认匹配（linux → linux-bash）。
+    inspection_script_name: linux-bash
 
   # ===== Windows 巡检服务器示例 =====
   - business_name: dev-windows-01
@@ -140,26 +98,7 @@ servers:
       # 2026-07-27 反馈新增：放行 PowerShell 外壳前缀（运维 LLM 习惯用 powershell -Command 形式）
       - "powershell -Command "  # 前缀匹配
       - "powershell -EncodedCommand "  # 前缀匹配（SSHTools 实际包装形式）
-    # 固定巡检脚本：PowerShell 收集磁盘 / 内存 / CPU / 运行时间，输出 JSON 便于解析。
-    inspection_script: |
-      $disk = ((Get-PSDrive C).Used / ((Get-PSDrive C).Used + (Get-PSDrive C).Free)) * 100
-      $os   = Get-WmiObject Win32_OperatingSystem
-      $mem  = (($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100
-      $cpu  = (Get-WmiObject Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
-      $bootTime = $os.ConvertToDateTime($os.LastBootUpTime)
-      $uptime = (Get-Date) - $bootTime
-      $result = @{ disk_used_pct = [math]::Round($disk, 1)
-                   mem_used_pct = [math]::Round($mem, 1)
-                   cpu_used_pct = [int]$cpu
-                   uptime_hours = [math]::Round($uptime.TotalHours, 1) }
-      Add-Type -AssemblyName System.Web.Extensions
-      $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-      $serializer.Serialize($result)
-      # 解析器：json（JavaScriptSerializer 输出单行 JSON）
-    inspection_parser: json
-    # 巡检字段规则（2026-07-22 新增）：Windows 磁盘仅采 C 盘，CPU 改用使用率，uptime 仅展示。
-    inspection_fields:
-      - {key: disk_used_pct, name_zh: C 盘使用率, unit: '%', direction: high, warn: 80, crit: 90}
-      - {key: mem_used_pct, name_zh: 内存使用率, unit: '%', direction: high, warn: 80, crit: 90}
-      - {key: cpu_used_pct, name_zh: CPU 使用率, unit: '%', direction: high, warn: 80, crit: 95}
-      - {key: uptime_hours, name_zh: 系统运行时间, unit: 小时, direction: ignore, warn: null, crit: null}
+    # 固定巡检脚本（2026-08-03 改造）：服务器节点不再携带脚本原文，
+    # 改为通过 inspection_script_name 引用 ``data/devops/inspection_scripts.yaml`` 条目。
+    # 这里省略 → 按 server_type 走默认匹配（windows → windows-ps-5.1）。
+    inspection_script_name: windows-ps-5.1

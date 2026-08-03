@@ -468,16 +468,21 @@ def test_detail_endpoint_registered(client, devops_router_setup):
     assert "/api/admin/devops-servers/{server_id}" in paths
 
 
-def test_detail_returns_whitelist_and_inspection_script(client, devops_router_setup, admin_headers, monkeypatch):
-    """详情端点成功：返回白名单命令与脚本原文。"""
+def test_detail_returns_whitelist_and_inspection_script_metadata(client, devops_router_setup, admin_headers, monkeypatch):
+    """详情端点成功：返回白名单命令与巡检脚本元数据（2026-08-03 改造）。
+
+    不再返回脚本原文（改走 /api/admin/inspection-scripts/{id}），仅返回
+    inspection_script_id / inspection_script_name / inspection_script_display_name。
+    """
     fake_detail = {
         "id": 7,
         "business_name": "alpha",
         "server_type": "linux",
-        "updated_at": "2026-07-22",
+        "updated_at": "2026-08-03",
         "whitelist": ["ls", "df -h"],
-        "inspection_script": "echo hi",
-        "inspection_parser": "json",
+        "inspection_script_id": 11,
+        "inspection_script_name": "linux-bash",
+        "inspection_script_display_name": "Linux Bash 巡检",
     }
     svc = devops_router_setup.state.devops_server_service
     monkeypatch.setattr(svc, "get_server_detail", lambda server_id: fake_detail)
@@ -487,9 +492,13 @@ def test_detail_returns_whitelist_and_inspection_script(client, devops_router_se
     body = resp.json()
     assert body["id"] == 7
     assert body["whitelist"] == ["ls", "df -h"]
-    assert body["inspection_script"] == "echo hi"
-    assert body["inspection_parser"] == "json"
-    # 安全边界：详情响应不应包含 ip / port / username / password
+    assert body["inspection_script_id"] == 11
+    assert body["inspection_script_name"] == "linux-bash"
+    assert body["inspection_script_display_name"] == "Linux Bash 巡检"
+    # 安全边界：详情响应不应包含脚本原文与敏感字段
+    assert "inspection_script" not in body
+    assert "inspection_parser" not in body
+    assert "inspection_fields" not in body
     for sensitive in ["ip", "port", "username", "password", "password_encrypted", "blacklist"]:
         assert sensitive not in body, f"leak: {sensitive}"
 
@@ -520,12 +529,17 @@ def test_detail_service_missing_returns_500(client, admin_headers):
 
 
 def test_detail_does_not_leak_password_or_sensitive(client, devops_router_setup, admin_headers, monkeypatch):
-    """即使 service 失误返回含敏感字段，router 也应过滤到详情白名单。"""
+    """即使 service 失误返回含敏感字段，router 也应过滤到详情白名单。
+
+    2026-08-03 改造：脚本原文不再属于详情白名单（仅 inspection_script_id /
+    inspection_script_name / inspection_script_display_name 三键），
+    即便 service 失误返回 inspection_script 原文，router 也必须过滤掉。
+    """
     leaked = {
         "id": 7,
         "business_name": "alpha",
         "server_type": "linux",
-        "updated_at": "2026-07-22",
+        "updated_at": "2026-08-03",
         "whitelist": ["ls"],
         "inspection_script": "echo LEAKED_SCRIPT_TOKEN_xyz",
         "inspection_parser": "json",
@@ -536,7 +550,7 @@ def test_detail_does_not_leak_password_or_sensitive(client, devops_router_setup,
         "blacklist": ["rm -rf /"],
     }
     svc = devops_router_setup.state.devops_server_service
-    # 模拟 service 失误：返回含敏感字段
+    # 模拟 service 失误：返回含敏感字段 + 脚本原文
     monkeypatch.setattr(svc, "get_server_detail", lambda server_id: leaked)
 
     resp = client.get("/api/admin/devops-servers/7", headers=admin_headers)
@@ -545,8 +559,9 @@ def test_detail_does_not_leak_password_or_sensitive(client, devops_router_setup,
     # 敏感值不应出现在响应体
     for sensitive in ["10.0.0.99", "supersecret-pwd-xyz", "rootuser", "rm -rf"]:
         assert sensitive not in body_text, f"leak: {sensitive}"
-    # 但允许白名单与脚本（脚本可读 = 业务要求）
-    assert "LEAKED_SCRIPT_TOKEN_xyz" in body_text
+    # 脚本原文也不应进入响应（改走 /api/admin/inspection-scripts/{id}）
+    assert "LEAKED_SCRIPT_TOKEN_xyz" not in body_text
+    # 白名单字段允许进入
     assert '"ls"' in body_text
 
 

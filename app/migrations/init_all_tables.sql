@@ -2787,6 +2787,29 @@ ALTER TABLE agent_task_runs DROP CONSTRAINT IF EXISTS agent_task_runs_target_typ
 ALTER TABLE agent_task_runs ADD CONSTRAINT agent_task_runs_target_type_chk
     CHECK (target_type IN ('agent', 'script'));
 
+-- ========== 17.5. inspection_scripts（DevOps 巡检脚本库，2026-08-03 新增）==========
+-- 统一巡检脚本库：原先 devops_servers.inspection_script / inspection_parser /
+-- inspection_fields 三列被抽离到独立表，devops_servers 仅保留 inspection_script_id 外键。
+-- 脚本按「平台 + 版本」命名（如 linux-bash / windows-ps-5.1 / windows-ps-7+），
+-- inspection_fields 完全跟随脚本库条目，服务器层不可覆盖。
+-- 由 InspectionScriptService.scan_and_upsert 读取 data/devops/inspection_scripts.yaml 写入。
+CREATE TABLE IF NOT EXISTS inspection_scripts (
+    id                SERIAL PRIMARY KEY,
+    name              VARCHAR(100) UNIQUE NOT NULL,
+    display_name      VARCHAR(200) NOT NULL,
+    platform          VARCHAR(32)  NOT NULL DEFAULT 'linux',
+    version           VARCHAR(32)  NOT NULL DEFAULT '',
+    inspection_parser VARCHAR(16)  NOT NULL DEFAULT 'json',
+    inspection_script TEXT         NULL,
+    inspection_fields JSONB        DEFAULT '[]'::jsonb,
+    created_at        TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+    updated_at        TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT inspection_scripts_parser_chk CHECK (inspection_parser IN ('json', 'kv', 'csv', 'raw'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_inspection_scripts_platform ON inspection_scripts(platform);
+CREATE INDEX IF NOT EXISTS idx_inspection_scripts_name ON inspection_scripts(name);
+
 -- ========== 18. devops_servers（DevOps SSH 服务器配置，2026-07-15 新增）==========
 -- DevOpsServerService 的运行时配置真实数据源：
 --   * business_name 唯一，作为 upsert 键（与 YAML 中的 name/host 别名规范化为统一字段）
@@ -2796,27 +2819,29 @@ ALTER TABLE agent_task_runs ADD CONSTRAINT agent_task_runs_target_type_chk
 --     精确 / 前缀 / 正则 三类分别编译
 --   * server_type 仅 'windows' / 'linux'，由 CHECK 约束兜底
 --   * 扫描时校验：port 1-65535；每服务器名单必须为 list；业务名唯一
+-- 2026-08-03 改造：删除 inspection_script / inspection_parser / inspection_fields 三列，
+-- 新增 inspection_script_id 外键引用 inspection_scripts(id)；YAML 中以
+-- inspection_script_name（字符串）关联脚本库条目。
 -- 幂等：所有 DDL / CHECK / INDEX 使用 IF NOT EXISTS，可重复执行
 CREATE TABLE IF NOT EXISTS devops_servers (
-    id                 SERIAL PRIMARY KEY,
-    business_name      VARCHAR(200) UNIQUE NOT NULL,
-    ip                 VARCHAR(64)  NOT NULL,
-    port               INTEGER      NOT NULL,
-    username           VARCHAR(100) NOT NULL,
-    password_encrypted BYTEA        NOT NULL,
-    server_type        VARCHAR(16)  NOT NULL DEFAULT 'linux',
-    blacklist          JSONB        DEFAULT '[]'::jsonb,
-    whitelist          JSONB        DEFAULT '[]'::jsonb,
-    created_at         TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
-    updated_at         TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
-    -- 2026-07-22 新增：巡检脚本 / 解析器 / 字段规则列。
-    -- inspection_fields JSONB 元素定义为 list[dict]，每个 dict 形如：
-    --   {key, name_zh, unit, direction, warn, crit}
-    -- 详细字段契约见 app/shared/utils/inspection/parser.py::normalize_inspection_fields
-    -- 与 data/devops/servers.yaml.example 注释。
-    inspection_script TEXT NULL,
-    inspection_parser VARCHAR(16) DEFAULT 'json',
-    inspection_fields JSONB DEFAULT '[]'::jsonb,
+    id                    SERIAL PRIMARY KEY,
+    business_name         VARCHAR(200) UNIQUE NOT NULL,
+    ip                    VARCHAR(64)  NOT NULL,
+    port                  INTEGER      NOT NULL,
+    username              VARCHAR(100) NOT NULL,
+    password_encrypted    BYTEA        NOT NULL,
+    server_type           VARCHAR(16)  NOT NULL DEFAULT 'linux',
+    blacklist             JSONB        DEFAULT '[]'::jsonb,
+    whitelist             JSONB        DEFAULT '[]'::jsonb,
+    -- 2026-08-03 改造：巡检脚本统一抽离到 inspection_scripts 表，devops_servers
+    -- 仅保留 inspection_script_id 外键引用脚本库条目。
+    -- 旧三列 inspection_script / inspection_parser / inspection_fields 在下方
+    -- 通过 ALTER TABLE DROP COLUMN IF EXISTS 强制移除（不做向前兼容）；
+    -- 若旧环境存在历史数据，必须先一次性迁移到 inspection_scripts 后再回填
+    -- 外键，最后删除旧列（plan 见 .trae/documents/devops-inspection-script-library-plan.md）。
+    inspection_script_id  INTEGER NULL REFERENCES inspection_scripts(id) ON DELETE SET NULL,
+    created_at            TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+    updated_at            TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT devops_servers_server_type_chk CHECK (server_type IN ('linux', 'windows')),
     CONSTRAINT devops_servers_port_range_chk  CHECK (port BETWEEN 1 AND 65535)
 );
@@ -2831,26 +2856,38 @@ ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS blacklist          JSONB DEF
 ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS whitelist          JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
 ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS updated_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
--- 18.2 巡检脚本（2026-07-22 新增）
--- inspection_script TEXT: 固定巡检脚本(bash / powershell，YAML | 字面块)
--- inspection_parser VARCHAR(16): 解析器类型，默认 'json'；可选 'kv' | 'csv' | 'raw'
--- inspection_fields JSONB: list[dict]，每条规则 schema：
---   {key, name_zh, unit, direction, warn, crit}
--- 契约详见 app/shared/utils/inspection/parser.py::normalize_inspection_fields。
--- ALTER TABLE ADD COLUMN IF NOT EXISTS 全部使用，可重复执行（幂等）。
-ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS inspection_script TEXT DEFAULT NULL;
-ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS inspection_parser VARCHAR(16) DEFAULT 'json';
-ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS inspection_fields JSONB DEFAULT '[]'::jsonb;
--- CHECK 约束：单独 ALTER，避免与已有数据冲突
--- 不使用 DO 块（Navicat 等 GUI 不识别 dollar-quoting，会把块内 ; 当语句结束
--- 切分出残缺语句导致整个事务失败），改用 DROP IF EXISTS + ADD 实现幂等
+-- 18.2 巡检脚本外键（2026-08-03 新增）
+-- 引用 inspection_scripts.id；脚本库条目删除时服务器端外键自动置 NULL（ON DELETE SET NULL）。
+ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS inspection_script_id INTEGER;
+-- 18.3 巡检脚本旧三列（2026-08-03 删除）
+-- ⚠️ 强警告：此 SQL 是「目标新 schema」，执行前必须由人工完成一次性迁移，否则会丢失旧巡检数据。
+--    现存库必须按以下顺序处理：
+--      1) 运行外部一次性迁移脚本：把 devops_servers 旧三列
+--         (inspection_script TEXT / inspection_parser VARCHAR / inspection_fields JSONB)
+--         的内容按 (server_type, 平台版本) 分类并插入 inspection_scripts 表
+--         （见 .trae/documents/devops-inspection-script-library-plan.md）。
+--      2) 回填 devops_servers.inspection_script_id = inspection_scripts.id（按 server_type 解析默认脚本）。
+--      3) 确认 devops_servers 中不再存在 "inspection_script_id IS NULL 且旧三列任一非空" 的行。
+--    只有在 1~3 全部完成后再执行本段（init_all_tables.sql 已确保 inspection_script_id 已加外键）。
+-- 注：原审查加固版本曾尝试在 SQL 内嵌辅助表 + CHECK 谓词做运行期校验，
+--     但 information_schema 谓词包裹的 SELECT 在 PostgreSQL 解析阶段仍会校验列名存在性，
+--     导致新装 DB（无旧列）即抛 "column does not exist"，无法兼容新旧 schema。
+--     改为人工迁移 + 回填契约，依赖 docs/计划文档约束执行者。
 ALTER TABLE devops_servers DROP CONSTRAINT IF EXISTS devops_servers_inspection_parser_chk;
+ALTER TABLE devops_servers DROP COLUMN IF EXISTS inspection_script;
+ALTER TABLE devops_servers DROP COLUMN IF EXISTS inspection_parser;
+ALTER TABLE devops_servers DROP COLUMN IF EXISTS inspection_fields;
+-- 外键约束（新增 inspection_script_id 后追加；用 IF NOT EXISTS 不可，改用
+-- DROP CONSTRAINT IF EXISTS + ADD CONSTRAINT 实现幂等）。Navicat 等 GUI 不识别
+-- DO 块，保持单一 ALTER 写法。
+ALTER TABLE devops_servers DROP CONSTRAINT IF EXISTS devops_servers_inspection_script_id_fk;
 ALTER TABLE devops_servers
-    ADD CONSTRAINT devops_servers_inspection_parser_chk
-    CHECK (inspection_parser IN ('json', 'kv', 'csv', 'raw'));
--- 索引：按 server_type 过滤 / 按 updated_at 排序
-CREATE INDEX IF NOT EXISTS idx_devops_servers_server_type ON devops_servers(server_type);
-CREATE INDEX IF NOT EXISTS idx_devops_servers_updated_at  ON devops_servers(updated_at DESC);
+    ADD CONSTRAINT devops_servers_inspection_script_id_fk
+    FOREIGN KEY (inspection_script_id) REFERENCES inspection_scripts(id) ON DELETE SET NULL;
+-- 索引：按 server_type 过滤 / 按 updated_at 排序 / 按 inspection_script_id JOIN
+CREATE INDEX IF NOT EXISTS idx_devops_servers_server_type          ON devops_servers(server_type);
+CREATE INDEX IF NOT EXISTS idx_devops_servers_updated_at           ON devops_servers(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_devops_servers_inspection_script_id ON devops_servers(inspection_script_id);
 
 -- 18.1 工具元数据：DevOpsServerService 的 3 个 @tool（execute_command / batch / logs）
 --     元数据由 ToolRegistryService 在启动时通过源码扫描发现；这里登记到 DB 便于

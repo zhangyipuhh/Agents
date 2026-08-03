@@ -53,9 +53,26 @@ const mockServerDetail = {
   server_type: 'linux',
   devops_updated_at: '2026-07-24T10:00:00Z',
   whitelist: ['ls', 'pwd'],
-  inspection_script: 'echo hello',
+  // 2026-08-03 改造：详情不再含脚本原文 / 解析器 / 字段规则，改返回 script_id + name + display_name
+  inspection_script_id: 42,
+  inspection_script_name: 'linux-bash',
+  inspection_script_display_name: 'Linux 基础巡检',
+}
+
+// 2026-08-03 新增：巡检脚本详情（独立的 inspection_scripts 端点）
+const mockInspectionScriptDetail = {
+  id: 42,
+  name: 'linux-bash',
+  display_name: 'Linux 基础巡检',
+  platform: 'linux',
+  version: '1.0.0',
   inspection_parser: 'json',
-  inspection_fields: [],
+  inspection_script: 'echo hello',
+  inspection_fields: [
+    { key: 'cpu_usage', name_zh: 'CPU 使用率', unit: '%', direction: 'lower', warn: 70, crit: 90 },
+  ],
+  created_at: '2026-08-01T00:00:00Z',
+  updated_at: '2026-08-01T00:00:00Z',
 }
 
 const mockFolderDetail = {
@@ -112,6 +129,10 @@ function setupFetchMock() {
         failed: 0,
         node_ids: [200, 201]
       })
+    }
+    // 2026-08-03 新增：inspection script 详情端点
+    if (u === '/api/admin/inspection-scripts/42' && method === 'GET') {
+      return jsonResponse(mockInspectionScriptDetail)
     }
     return jsonResponse({})
   })
@@ -267,6 +288,56 @@ describe('UserServerManager 组件', () => {
     const errorArea = wrapper.find('[data-testid="usm-tree-error"]')
     expect(errorArea.exists()).toBe(true)
     expect(errorArea.text()).toContain('文件夹非空')
+  })
+
+  it('test_server_detail_renders_inspection_script_meta_no_inline_source 详情仅展示脚本元数据，不出现原文（2026-08-03 巡检脚本库改造）', async () => {
+    const wrapper = await mountManager()
+    const serverNode = wrapper.find('[data-testid="usm-node-2"]')
+    await serverNode.find('.usm-tree-row').trigger('click')
+    await flushPromises()
+
+    const detail = wrapper.find('[data-testid="usm-server-detail"]')
+    expect(detail.exists()).toBe(true)
+    // 展示元数据 name / display_name
+    expect(detail.text()).toContain('linux-bash')
+    expect(detail.text()).toContain('Linux 基础巡检')
+    // 不得直接展示脚本原文「echo hello」（文案「echo hello」只能出现在点击查看后的弹窗中）
+    expect(detail.text()).not.toContain('echo hello')
+    // 也不应直接渲染 inspection_parser 标签 —— 该字段来源是 inspection script detail
+    expect(detail.find('[data-testid="usm-parser-tag"]').exists()).toBe(false)
+  })
+
+  it('test_inspection_script_button_lazy_fetches_detail 按需调用 inspection script detail 弹窗（2026-08-03 新增）', async () => {
+    const wrapper = await mountManager()
+    // 1) 选中 server 节点加载详情
+    const serverNode = wrapper.find('[data-testid="usm-node-2"]')
+    await serverNode.find('.usm-tree-row').trigger('click')
+    await flushPromises()
+    // 2) 此时未调用 inspection script detail
+    const beforeFetch = global.fetch.mock.calls.filter(
+      ([url]) => typeof url === 'string' && url.includes('/api/admin/inspection-scripts/42')
+    )
+    expect(beforeFetch.length).toBe(0)
+    // 3) 点击「查看巡检脚本」按钮（仅当 inspection_script_id 存在才显示）
+    const viewBtn = wrapper.find('[data-testid="usm-view-inspection-script-btn"]')
+    expect(viewBtn.exists()).toBe(true)
+    await viewBtn.trigger('click')
+    await flushPromises()
+    // 4) 之后请求了 inspection script detail
+    const afterFetch = global.fetch.mock.calls.filter(
+      ([url]) => typeof url === 'string' && url.includes('/api/admin/inspection-scripts/42')
+    )
+    expect(afterFetch.length).toBe(1)
+    // 5) 弹窗渲染（Teleport 投到 body）
+    const dialog = document.body.querySelector('[data-testid="usm-inspection-script-dialog"]')
+    expect(dialog).not.toBeNull()
+    // 6) 弹窗内显示脚本原文与字段表
+    expect(dialog.textContent).toContain('echo hello')
+    const fieldsTable = dialog.querySelector('[data-testid="usm-inspection-fields-table"]')
+    expect(fieldsTable).not.toBeNull()
+    expect(fieldsTable.textContent).toContain('cpu_usage')
+    expect(fieldsTable.textContent).toContain('CPU 使用率')
+    expect(fieldsTable.textContent).toContain('%')
   })
 })
 

@@ -139,6 +139,30 @@
 | ├ POST /review                     |                        | 评审开发者数据（非流式 JSON API）                                                                                                                                                     |
 | /api/admin/email                    | email_admin_router     | 邮件系统管理（详见「邮件系统」章节）：SMTP 配置 CRUD + 连接测试 + 策略 CRUD + 测试发送（multipart/form-data）+ 按策略发送                                                           |
 
+## DevOps 服务器与巡检脚本库管理（2026-07-15 新增；2026-08-03 改造）
+
+### `/api/admin/devops-servers`（`app/routers/devops_server_admin_router.py`）
+
+- `GET ""`：admin OR `task-scheduler.server-management` ACL；返回白名单 4 字段 `{id, business_name, server_type, updated_at}`（严格二次过滤；不暴露 ip / 端口 / 凭据 / 名单 / 脚本）
+- `POST /scan`：admin only；触发 `DevOpsServerService.scan_and_upsert()`；严格返回 `{scanned, inserted, updated, failed}` 4 整数；异常 → 500 + `"devops server scan failed"`
+- `GET /{server_id}`（2026-08-03 改造）：admin only；返回白名单 `_DETAIL_FIELDS = {id, business_name, server_type, updated_at, whitelist, inspection_script_id, inspection_script_name, inspection_script_display_name}`（**脚本原文不返回**，由 `/api/admin/inspection-scripts/{script_id}` 按需提供）；不存在 → 404 + `"服务器不存在"`（不回显 server_id）
+- `DELETE /{server_id}`：admin only；返 204 No Content；不存在 → 404 + `"服务器不存在"`；DB 异常 → 500 + `"删除服务器失败"`
+
+### `/api/admin/inspection-scripts`（`app/routers/inspection_script_admin_router.py`，2026-08-03 新增）
+
+> DevOps 巡检脚本库统一管理入口。脚本原文、解析器、字段规则从 `devops_servers` 三列抽离到 `inspection_scripts` 表后，devops 详情端点仅返元数据，**脚本原文改走本组端点按需加载**。
+
+- `GET ""`：admin OR `task-scheduler.server-management` ACL；返回白名单 7 字段 `{id, name, display_name, platform, version, inspection_parser, updated_at}`（**不**暴露 `inspection_script` / `inspection_fields`）
+- `POST /scan`：admin only；触发 `InspectionScriptService.scan_and_upsert()` 读取 `data/devops/inspection_scripts.yaml` → `INSERT ... ON CONFLICT (name) DO UPDATE ... RETURNING *, (xmax = 0) AS inserted`；严格返回 `{scanned, inserted, updated, failed}` 4 整数；异常 → 500 + `"inspection script scan failed"`（不回显路径 / 原始 detail）
+- `GET /{script_id}`：admin only；返回完整详情含 `inspection_script` 与 `inspection_fields`（`{id, name, display_name, platform, version, inspection_parser, inspection_script, inspection_fields, created_at, updated_at}`）；不存在 → 404 + `"脚本不存在"`（不回显 script_id）；服务未初始化 → 500 + `"InspectionScriptService not initialized"`
+- 服务实例从 `request.app.state.inspection_script_service` 获取；lifespan 强依赖顺序详见 [devops-sandbox.md § lifespan 强依赖顺序](devops-sandbox.md#lifespan-强依赖顺序2026-08-03-新增章节)
+
+### 前端 API 封装（`web/Agent/src/utils/api.js`，2026-08-03 新增）
+
+- `fetchInspectionScripts()` → `GET /api/admin/inspection-scripts`（admin OR `task-scheduler.server-management` ACL）
+- `scanInspectionScripts()` → `POST /api/admin/inspection-scripts/scan`（admin only）
+- `fetchInspectionScriptDetail(scriptId)` → `GET /api/admin/inspection-scripts/{scriptId}`（admin only）
+
 ## 核心工具 (Core Tools)
 
 ### Sandbox 工具

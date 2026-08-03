@@ -25,6 +25,43 @@ import pytest
 from cryptography.fernet import Fernet
 
 
+def _make_inspection_script_service():
+    """构造 InspectionScriptService 替身（含 linux-bash 默认条目）。
+
+    Returns:
+        MagicMock: 替身实例
+    """
+    svc = MagicMock(name="inspection_script_service_stub")
+    svc._cache = {
+        "linux-bash": {
+            "id": 1,
+            "name": "linux-bash",
+            "display_name": "Linux Bash 巡检",
+            "platform": "linux",
+            "version": "bash",
+            "inspection_parser": "json",
+            "inspection_script": "echo linux",
+            "inspection_fields": [],
+        },
+    }
+    svc._id_cache = {rec["id"]: rec for rec in svc._cache.values()}
+
+    def _resolve(server_type, script_name=None):
+        if script_name:
+            rec = svc._cache.get(script_name)
+            return rec["id"] if rec else None
+        defaults = {"linux": "linux-bash", "windows": "windows-ps-5.1"}
+        default_name = defaults.get((server_type or "").lower())
+        if default_name and default_name in svc._cache:
+            return svc._cache[default_name]["id"]
+        return None
+
+    svc.resolve_script_for_server.side_effect = _resolve
+    svc.get_script_by_id.side_effect = lambda _id: svc._id_cache.get(_id)
+    svc.get_script_by_name.side_effect = lambda _name: svc._cache.get(_name)
+    return svc
+
+
 def _make_service():
     """构造一个 DevOpsServerService 测试实例。
 
@@ -35,7 +72,12 @@ def _make_service():
 
     key = Fernet.generate_key().decode("ascii")
     db = MagicMock(name="db_pool_stub")
-    return DevOpsServerService(db=db, config_path="unused.yaml", credential_key=key)
+    return DevOpsServerService(
+        db=db,
+        config_path="unused.yaml",
+        credential_key=key,
+        inspection_script_service=_make_inspection_script_service(),
+    )
 
 
 # ----------------------------------------------------------------------

@@ -100,7 +100,36 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 
 **`api_list` 系统级标准参数**（2026-07-22 新增）：`params_schema.properties.api_list` 仅在 `type=array`、`items.type=string`、`x-control=api-multiselect`、`x-source=api-configs`、`x-value-field=id` 时由前端识别；与 `server_list` 并列接入同一「添加参数」下拉与 `scriptParamValues` 容器；元素为 API 节点 id 字符串（如 `"12"`）。脚本侧统一通过 `app.scripts.api_check.run_api_checks(context)` 获取 `ApiCheckReport`（`items` / `total` / `passed` / `failed` / `skipped` + `summary_line()` / `to_markdown()` / `to_dict()`），适用于报告、附件、邮件正文。前端控件候选复用 `GET /api/admin/api-configs/tree`，按 `node_type==='api'` + 白名单 id/parent_id/node_type/name/sort_order 过滤，沿父文件夹链拼 path 用于展示；失效 id 显示「已失效」chip 与 server_list 一致。
 
-**`server_list` 系统级标准参数**（2026-07-22 与 `api_list` 对齐补全）：`params_schema.properties.server_list` 仅在 `type=array`、`items.type=string`、`x-control=server-multiselect`、`x-source=devops-servers`、`x-value-field=business_name` 时由前端识别；元素为服务器业务名字符串（`devops_servers.business_name`）。脚本侧统一通过 `app.scripts.server_ops.run_server_ops(context)` 获取 `ServerOpsReport`（`items` / `total` / `passed` / `failed` / `skipped` + `summary_line()` / `to_markdown()` / `to_dict()`），命令来源是 `devops_servers.inspection_script` 字段（每台服务器预存的巡检脚本），不在脚本入参中重复指定；前端控件候选复用 `GET /api/admin/devops-servers`，脱敏白名单 `id` / `business_name` / `server_type` / `updated_at`，失效业务名显示「已失效」chip。
+**`server_list` 系统级标准参数**（2026-07-22 与 `api_list` 对齐补全）：`params_schema.properties.server_list` 仅在 `type=array`、`items.type=string`、`x-control=server-multiselect`、`x-source=devops-servers`、`x-value-field=business_name` 时由前端识别；元素为服务器业务名字符串（`devops_servers.business_name`）。脚本侧统一通过 `app.scripts.server_ops.run_server_ops(context)` 获取 `ServerOpsReport`（`items` / `total` / `passed` / `failed` / `skipped` + `summary_line()` / `to_markdown()` / `to_dict()`），命令来源是 `devops_servers.inspection_script_id` 外键引用 `inspection_scripts` 表的脚本原文（每台服务器关联一个巡检脚本条目），不在脚本入参中重复指定；前端控件候选复用 `GET /api/admin/devops-servers`，脱敏白名单 `id` / `business_name` / `server_type` / `updated_at`，失效业务名显示「已失效」chip。
+
+### `inspection_scripts` 巡检脚本库表（2026-08-03 新增）
+
+巡检脚本原文、解析器类型与字段规则从 `devops_servers` 三列内联存储抽离到独立 `inspection_scripts` 表；`devops_servers` 仅保留 `inspection_script_id` 外键引用。脚本按「平台 + 版本」命名（如 `linux-bash` / `windows-ps-5.1` / `windows-ps-7+`），`inspection_fields` 完全跟随脚本库条目，服务器层不可覆盖。详细字段级契约见 [devops-sandbox.md § 巡检脚本库 `inspection_scripts`](devops-sandbox.md#巡检脚本库-inspection_scripts)。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | SERIAL PRIMARY KEY | 主键 |
+| name | VARCHAR(100) UNIQUE NOT NULL | 脚本库条目唯一标识（如 `linux-bash` / `windows-ps-5.1`） |
+| display_name | VARCHAR(200) NOT NULL | 展示名称 |
+| platform | VARCHAR(32) NOT NULL DEFAULT 'linux' | `linux` / `windows` |
+| version | VARCHAR(32) NOT NULL DEFAULT '' | 版本字符串（`windows-ps-5.1` / `windows-ps-7+` 等） |
+| inspection_parser | VARCHAR(16) NOT NULL DEFAULT 'json' | 解析器类型：`json` / `kv` / `csv` / `raw`（CHECK `inspection_scripts_parser_chk`） |
+| inspection_script | TEXT NULL | bash / powershell 巡检脚本原文（多行） |
+| inspection_fields | JSONB DEFAULT '[]'::jsonb | 字段规则列表（dict 形如 `{key, name_zh, unit, direction, warn, crit}`） |
+| created_at | TIMESTAMP DEFAULT CURRENT_TIMESTAMP | 创建时间 |
+| updated_at | TIMESTAMP DEFAULT CURRENT_TIMESTAMP | 更新时间 |
+
+**索引**：`idx_inspection_scripts_platform(platform)` / `idx_inspection_scripts_name(name)`
+
+**数据源**：`InspectionScriptService.scan_and_upsert` 读取 `<项目根>/data/devops/inspection_scripts.yaml` → `INSERT ... ON CONFLICT (name) DO UPDATE ... RETURNING *, (xmax = 0) AS inserted`；同 name 重复直接拒绝（不覆盖）；`scanned / inserted / updated / failed` 4 字段整数返回。
+
+### `devops_servers` 巡检脚本外键改造（2026-08-03）
+
+- 旧三列 `inspection_script TEXT` / `inspection_parser VARCHAR(16)` / `inspection_fields JSONB`（含对应 CHECK 约束 `devops_servers_inspection_parser_chk`）已通过 `DROP COLUMN IF EXISTS` / `DROP CONSTRAINT IF EXISTS` 强制移除（不再保留旧三列向前兼容）
+- 新增 `inspection_script_id INTEGER NULL REFERENCES inspection_scripts(id) ON DELETE SET NULL`；索引 `idx_devops_servers_inspection_script_id`
+- 升级路径：按计划文档 `.trae/documents/devops-inspection-script-library-plan.md` 一次性迁移旧三列内容到 `inspection_scripts` → 回填 `devops_servers.inspection_script_id` → 再执行 `DROP COLUMN IF EXISTS`
+- 外键约束 `devops_servers_inspection_script_id_fk` 通过 `DROP CONSTRAINT IF EXISTS + ADD CONSTRAINT` 实现幂等
+- 详细字段级契约见 [devops-sandbox.md § 数据库表 `devops_servers`](devops-sandbox.md#数据库表-devops_servers2026-07-15-新增2026-08-03-改造)
 
 **hello_script 脚本开发样板**：`app/scripts/examples/hello_script.py` 注册名为 `hello_script` / 展示名 `脚本开发样板`，是后续脚本开发的复制模板。参数 `mode`（默认 `text`）控制运行模式，`content`（默认 `定时任务执行成功`）控制输出正文，`server_list`（默认 `[]`）提供目标服务器业务名数组，`api_list`（默认 `[]`）提供 API 节点 id 数组。签名严格为 `async def run(context: ScriptContext) -> str | tuple[str, list[str]]`。
 
@@ -190,7 +219,7 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
   - 所有动态字段（业务名 / stdout / 错误 / 字段中文名 / 字段 message）的换行替换为空格、`|` 替换为 `\|`，避免 markdown 列解析错误。
   - skipped 行指标判定列内容：`error_message or inspection_error or "未执行"`，整体过 ``_escape_cell`` 转义；不再硬编码「未配置巡检脚本」分支，KeyError / 巡检脚本未配置等 skipped 原因如实展示。
 - **to_dict 契约**：顶层 = `items` + `total` + `passed` + `failed` + `skipped` + **`inspection_passed`** + **`inspection_warned`** + **`inspection_critical`** + **`inspection_unassessed`**；每个 item = 老 8 字段 + **`inspection_parser`** + **`parsed_values`** + **`field_results`** + **`inspection_status`** + **`inspection_error`**；可直接 `json.dumps(..., ensure_ascii=False)`。
-- **命令来源**：`devops_servers.inspection_script TEXT` 字段（2026-07-22 已新增），不再由脚本入参指定，与 `api_list` 复用 `service.send_request` + Mock 的模式形成完全对称。
+- **命令来源**：`devops_servers.inspection_script_id` 外键引用 `inspection_scripts` 表（2026-08-03 抽离；旧 `devops_servers.inspection_script TEXT` 三列已移除），不再由脚本入参指定，与 `api_list` 复用 `service.send_request` + Mock 的模式形成完全对称。
 - **扫描隔离**：`app/shared/utils/agent/script_discovery_service.py::_SKIP_FILENAMES` 追加 `server_ops.py`，避免被 `ScriptDiscoveryService` 误识别为脚本。
 - **`ScriptContext.devops_server_service`**：`app/scripts/base.py::ScriptContext` 新增 `devops_server_service: Any = None` 字段；与 `api_config_service` 并列。
 - **调度器透传**：`TaskSchedulerService.__init__` 新增 `devops_server_service: Optional[Any] = None` 入参；`execute_schedule` 构造 `ScriptContext` 时透传 `self._devops_server_service`。

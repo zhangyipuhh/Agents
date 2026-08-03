@@ -15,6 +15,7 @@ Author: 张镒谱
 from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
+from typing import Any, Awaitable, Callable, Optional, Type
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -27,6 +28,63 @@ from app.shared.utils.auth.Safety import (
     auth_middleware,
     session_auth_middleware,
 )
+
+
+async def _preload_and_publish_service(
+    app: FastAPI,
+    service_class: Type[Any],
+    service_name: str,
+    state_attribute: str,
+    constructor_kwargs: Optional[dict] = None,
+) -> Optional[Any]:
+    """构造配置服务并预加载缓存；只有预加载成功才发布到 app.state 与单例。
+
+    任一阶段（构造 / preload）异常都吞掉并写入 ``app.state.<state_attribute> = None``，
+    不调用 ``service_class.set_instance``，避免半残实例被注入导致下游收到缺失字段的
+    元数据（DevOpsServerService 强依赖 InspectionScriptService 时尤其危险）。
+
+    Args:
+        app: FastAPI 应用实例，发布到 ``app.state``。
+        service_class: 待构造的服务类（需支持 ``set_instance`` 与协程 ``preload_all``）。
+        service_name: 用于日志的服务名（如 ``InspectionScriptService``）。
+        state_attribute: 挂到 ``app.state`` 上的属性名。
+        constructor_kwargs: 透传给 ``service_class`` 构造函数的命名参数。
+
+    Returns:
+        Optional[Any]: 成功时返回服务实例，失败返回 ``None``。
+    """
+    kwargs = constructor_kwargs or {}
+    try:
+        service = service_class(**kwargs)
+    except Exception as exc:
+        logging.warning(
+            "[lifespan] Failed to construct %s: %s",
+            service_name,
+            type(exc).__name__,
+        )
+        setattr(app.state, state_attribute, None)
+        return None
+
+    try:
+        preload_coro = getattr(service, "preload_all", None)
+        if callable(preload_coro):
+            result = preload_coro()
+            if isinstance(result, Awaitable):
+                await result
+    except Exception as preload_exc:
+        logging.warning(
+            "[lifespan] %s preload failed: %s",
+            service_name,
+            type(preload_exc).__name__,
+        )
+        setattr(app.state, state_attribute, None)
+        return None
+
+    set_instance = getattr(service_class, "set_instance", None)
+    if callable(set_instance):
+        set_instance(service)
+    setattr(app.state, state_attribute, service)
+    return service
 
 
 @asynccontextmanager
@@ -350,13 +408,53 @@ async def lifespan(app: FastAPI):
             await app.state.agent_config_service.preload_all()
             await app.state.mcp_config_service.preload_all()
 
+            # 2026-08-03 新增：在 DevOpsServerService 之前初始化 InspectionScriptService。
+            # 顺序约束：DevOpsServerService 的 _normalize_entry 通过
+            # ``inspection_script_service.resolve_script_for_server`` 解析
+            # ``inspection_script_name``，因此 InspectionScriptService 必须先完成 preload_all。
+            # 构造 / preload 任一异常都不会发布半残实例（仅写 None + 不 set_instance），
+            # DevOpsServerService 检测到 ``app.state.inspection_script_service is None``
+            # 时改为挂 hint 跳过构造（见下方 18.* 段）。
+            if DatabasePool.is_enabled() and DatabasePool._pool is not None:
+                from app.core.config.paths import resolve_devops_inspection_scripts_config_path
+                from app.shared.utils.inspection_script_service import InspectionScriptService
+
+                cfg_path = resolve_devops_inspection_scripts_config_path(
+                    settings.devops.inspection_scripts_config_path
+                )
+                iss_instance = await _preload_and_publish_service(
+                    app=app,
+                    service_class=InspectionScriptService,
+                    service_name="InspectionScriptService",
+                    state_attribute="inspection_script_service",
+                    constructor_kwargs={
+                        "db": DatabasePool._pool,
+                        "config_path": str(cfg_path),
+                    },
+                )
+                if iss_instance is not None:
+                    logging.info(
+                        "[lifespan] InspectionScriptService initialized: %d script(s)",
+                        len(iss_instance._cache),
+                    )
+            else:
+                logging.warning(
+                    "[lifespan] Database pool not available, InspectionScriptService not initialized"
+                )
+
             # 2026-07-22 修复:在 TaskSchedulerService 构造之前初始化 DevOpsServerService。
             # 此前 DevOpsServerService 在 lifespan 末段(约 L339-388)初始化,晚于
             # TaskSchedulerService 在 L270-315 通过 ``getattr(app.state, 'devops_server_service', None)``
             # 读取服务,导致 ``self._devops_server_service`` 永久为 None,后续脚本任务执行
             # ``run_server_ops`` 抛出 ``ScriptExecutionError: devops_server_service 不可用``。
             # 修复触发:ops_inspection_sweep 触发定时任务 #4 报该错(2026-07-22)。
+            # 2026-08-03 扩展:DevOpsServerService 必须晚于 InspectionScriptService 初始化，
+            # 因其依赖 InspectionScriptService 解析 inspection_script_name。
             # 顺序约束:DB 池就绪后;密钥诊断 + config_path 解析与旧实现完全一致。
+            # 2026-08-03 审查加固:InspectionScriptService 是 DevOpsServerService 的**强依赖**——
+            # 当 ``app.state.inspection_script_service`` 为 None / 缺失时，DevOpsServerService
+            # 构造会得到半残 None 元数据；为防止半残状态被注入 app.state，缺失时**不构造
+            # DevOpsServerService**，仅挂 ``devops_server_service_hint`` 维持 router 500 detail。
             if DatabasePool.is_enabled() and DatabasePool._pool is not None:
                 try:
                     from app.core.config.devops_diagnostics import diagnose_credential_key
@@ -374,30 +472,57 @@ async def lifespan(app: FastAPI):
                             diag.reason,
                             diag.hint,
                         )
+                    elif getattr(
+                        app.state, "inspection_script_service", None
+                    ) is None:
+                        # 2026-08-03 审查加固:InspectionScriptService 是 DevOpsServerService 的
+                        # 强依赖。脚本库缺失时，DevOpsServerService 必须**不被构造**——避免
+                        # 半残 None 元数据被注入到 app.state（get_connection_config 返回缺
+                        # inspection_script 字段的 dict / admin API 误导性响应）。
+                        # 挂 hint 让 router 给出可诊断 detail，不抛异常阻断服务整体启动。
+                        devops_required_skip_hint = (
+                            "InspectionScriptService 未初始化（缺失或构造失败），"
+                            "DevOpsServerService 作为其强依赖同样不构造。"
+                            "请检查 lifespan 中 InspectionScriptService 初始化段："
+                            "data/devops/inspection_scripts.yaml 是否存在 / "
+                            "inspection_scripts 表是否已建库 / DB 连接是否可用。"
+                            "admin /api/admin/devops-servers 将返回 500 + 本 hint。"
+                        )
+                        app.state.devops_server_service = None
+                        app.state.devops_server_service_hint = devops_required_skip_hint
+                        logging.warning(
+                            "[lifespan] DevOpsServerService skipped: %s",
+                            devops_required_skip_hint,
+                        )
                     else:
                         cfg_path = resolve_devops_server_config_path(
                             settings.devops.servers_config_path
                         )
-                        svc = DevOpsServerService(
-                            db=DatabasePool._pool,
-                            config_path=str(cfg_path),
-                            credential_key=settings.devops.credential_key,
+                        # 2026-08-03 审查加固：构造 / preload 异常均通过统一发布辅助
+                        # 处理——半残实例绝不挂入 app.state，也绝不调用 set_instance。
+                        # 缺失 devops 状态由 admin router 通过 devops_server_service_hint
+                        # 报 500 detail。
+                        svc = await _preload_and_publish_service(
+                            app=app,
+                            service_class=DevOpsServerService,
+                            service_name="DevOpsServerService",
+                            state_attribute="devops_server_service",
+                            constructor_kwargs={
+                                "db": DatabasePool._pool,
+                                "config_path": str(cfg_path),
+                                "credential_key": settings.devops.credential_key,
+                                "inspection_script_service": getattr(
+                                    app.state, "inspection_script_service", None
+                                ),
+                            },
                         )
-                        try:
-                            await svc.preload_all()
-                        except Exception as preload_exc:
-                            logging.warning(
-                                "[lifespan] DevOpsServerService preload failed: %s",
-                                type(preload_exc).__name__,
-                            )
-                        DevOpsServerService.set_instance(svc)
-                        app.state.devops_server_service = svc
                         # 诊断通过,清理 hint
                         app.state.devops_server_service_hint = None
-                        logging.info(
-                            "[lifespan] DevOpsServerService initialized: %d server(s)",
-                            len(svc._cache),
-                        )
+                        if svc is not None:
+                            logging.info(
+                                "[lifespan] DevOpsServerService initialized: %d server(s)",
+                                len(svc._cache),
+                            )
                 except Exception as devops_exc:
                     logging.warning(
                         "[lifespan] Failed to initialize DevOpsServerService: %s",
@@ -631,6 +756,20 @@ async def lifespan(app: FastAPI):
     except Exception as cleanup_exc:
         logging.warning(
             "[lifespan] Failed to cleanup DevOpsServerService: %s",
+            type(cleanup_exc).__name__,
+        )
+
+    # 2026-08-03 新增：清理 InspectionScriptService 单例
+    try:
+        from app.shared.utils.inspection_script_service import InspectionScriptService
+
+        InspectionScriptService.reset()
+        if hasattr(app.state, "inspection_script_service"):
+            app.state.inspection_script_service = None
+        logging.info("[lifespan] InspectionScriptService singleton cleared")
+    except Exception as cleanup_exc:
+        logging.warning(
+            "[lifespan] Failed to cleanup InspectionScriptService: %s",
             type(cleanup_exc).__name__,
         )
 

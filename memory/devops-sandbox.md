@@ -10,78 +10,126 @@
 
 | 路径 | 职责 |
 |---|---|
-| `app/shared/utils/devops_server_service.py` | `DevOpsServerService(db, config_path, credential_key)` 单例；`preload_all` / `scan_and_upsert` / `list_public_servers` / `get_server_detail` / `get_connection_config` / `server_exists` / `delete_server` |
+| `app/shared/utils/devops_server_service.py` | `DevOpsServerService(db, config_path, credential_key, inspection_script_service)` 单例；`preload_all` / `scan_and_upsert` / `list_public_servers` / `get_server_detail` / `get_connection_config` / `server_exists` / `delete_server`；详情仅返回 `_DETAIL_FIELDS` 含 `inspection_script_id` / `inspection_script_name` / `inspection_script_display_name` 三键（脚本原文由 `InspectionScriptService` 单独提供） |
+| `app/shared/utils/inspection_script_service.py` | 2026-08-03 新增：`InspectionScriptService(db, config_path)` 单例；YAML 配置入口 `<项目根>/data/devops/inspection_scripts.yaml`；`preload_all` / `scan_and_upsert` / `list_scripts`（白名单 7 字段）/ `get_script_detail(id)` / `get_script_by_id(id)` / `get_script_by_name(name)` / `resolve_script_for_server(server_type, script_name)`；写路径持 `self._write_lock` |
 | `app/shared/tools/skills/devops/CommandInterceptor.py` | 命令策略过滤器，黑名单优先 + 白名单 allowlist + 精确/前缀/正则三模式 |
 | `app/shared/tools/skills/devops/SSHTools.py` | 3 个 `@tool(description=...)`：execute_command / execute_batch_commands / get_system_logs |
-| `app/routers/devops_server_admin_router.py` | `GET /api/admin/devops-servers`（列表端点 `Depends(require_admin_or_menu_acl("task-scheduler.server-management"))`）+ `GET /api/admin/devops-servers/{server_id}`（详情；仅 admin；返 `{id, business_name, server_type, updated_at, whitelist, inspection_script, inspection_parser}`）+ `POST /api/admin/devops-servers/scan`（仅 admin）+ `DELETE /api/admin/devops-servers/{server_id}`（仅 admin；返 `204 No Content`），router 自身不再有 `dependencies=[Depends(require_admin)]`，每个端点显式声明权限 |
+| `app/routers/devops_server_admin_router.py` | `GET /api/admin/devops-servers`（列表端点 `Depends(require_admin_or_menu_acl("task-scheduler.server-management"))`）+ `GET /api/admin/devops-servers/{server_id}`（详情；仅 admin；返 `{id, business_name, server_type, updated_at, whitelist, inspection_script_id, inspection_script_name, inspection_script_display_name}`；脚本原文改走 `/api/admin/inspection-scripts/{id}`）+ `POST /api/admin/devops-servers/scan`（仅 admin）+ `DELETE /api/admin/devops-servers/{server_id}`（仅 admin；返 `204 No Content`），router 自身不再有 `dependencies=[Depends(require_admin)]`，每个端点显式声明权限 |
+| `app/routers/inspection_script_admin_router.py` | 2026-08-03 新增：`GET /api/admin/inspection-scripts`（列表 7 字段白名单：admin OR `task-scheduler.server-management` ACL）+ `POST /api/admin/inspection-scripts/scan`（admin only；返 `{scanned, inserted, updated, failed}` 4 整数）+ `GET /api/admin/inspection-scripts/{script_id}`（admin only；返完整详情含 `inspection_script` / `inspection_fields`；不存在 → 404 + 「脚本不存在」） |
 
-### 配置 / 路径常量（2026-07-15）
+### 配置 / 路径常量（2026-07-15；2026-08-03 扩展）
 
 - `app/core/config/paths.py::DEVOPS_SERVER_CONFIG_PATH` = `<项目根>/data/devops/servers.yaml`
 - `app/core/config/paths.py::DEVOPS_SERVER_CONFIG_DIR` = `<项目根>/data/devops`
-- `app/core/config/settings.py::DevOpsSettings`：字段 `servers_config_path`（env `DEVOPS_SERVERS_CONFIG_PATH`）、`credential_key`（env `DEVOPS_CREDENTIAL_KEY`，空字符串走「延期到初始化时严格校验」语义，不让 import 崩溃）。`model_config` 声明 `env_prefix="DEVOPS_"`（2026-07-15 修复），使字段 `credential_key` 匹配 env `DEVOPS_CREDENTIAL_KEY`、`servers_config_path` 匹配 env `DEVOPS_SERVERS_CONFIG_PATH`
+- `app/core/config/paths.py::DEVOPS_INSPECTION_SCRIPTS_CONFIG_PATH`（2026-08-03 新增）= `<项目根>/data/devops/inspection_scripts.yaml`
+- `app/core/config/paths.py::resolve_devops_inspection_scripts_config_path(path)`（2026-08-03 新增）：绝对路径原样返回 / 相对项目根解析 / 空字符串抛 `ValueError`；语义与 `resolve_devops_server_config_path` 对齐
+- `app/core/config/settings.py::DevOpsSettings`：字段 `servers_config_path`（env `DEVOPS_SERVERS_CONFIG_PATH`）、`credential_key`（env `DEVOPS_CREDENTIAL_KEY`，空字符串走「延期到初始化时严格校验」语义，不让 import 崩溃）、`inspection.scripts_config_path`（env `DEVOPS_INSPECTION_SCRIPTS_CONFIG_PATH`，2026-08-03 新增）。`model_config` 声明 `env_prefix="DEVOPS_"`（2026-07-15 修复），使字段 `credential_key` 匹配 env `DEVOPS_CREDENTIAL_KEY`、`servers_config_path` 匹配 env `DEVOPS_SERVERS_CONFIG_PATH`
 
-### 数据库表 `devops_servers`（2026-07-15 新增）
+### 数据库表 `devops_servers`（2026-07-15 新增；2026-08-03 改造）
 
-- 列：`id` / `business_name UNIQUE` / `ip` / `port` / `username` / `password_encrypted BYTEA` / `server_type` / `blacklist JSONB` / `whitelist JSONB` / `inspection_script TEXT` / `inspection_parser VARCHAR(16)` / `created_at` / `updated_at`
-- CHECK：`server_type IN ('linux', 'windows')`、`port BETWEEN 1 AND 65535`、`inspection_parser IN ('json', 'kv', 'csv', 'raw')`
-- 索引：`idx_devops_servers_server_type`、`idx_devops_servers_updated_at DESC`
+- 列：`id` / `business_name UNIQUE` / `ip` / `port` / `username` / `password_encrypted BYTEA` / `server_type` / `blacklist JSONB` / `whitelist JSONB` / **`inspection_script_id INTEGER NULL REFERENCES inspection_scripts(id) ON DELETE SET NULL`**（2026-08-03 新增；旧三列 `inspection_script` / `inspection_parser` / `inspection_fields` 已通过 `DROP COLUMN IF EXISTS` 移除）/ `created_at` / `updated_at`
+- CHECK：`server_type IN ('linux', 'windows')`、`port BETWEEN 1 AND 65535`
+- 索引：`idx_devops_servers_server_type` / `idx_devops_servers_updated_at DESC` / **`idx_devops_servers_inspection_script_id`**（2026-08-03 新增）
 - 工具元数据：在 `app/migrations/init_all_tables.sql` 的 `tools` 表中登记了 `execute_command` / `execute_batch_commands` / `get_system_logs` 三个工具（`module_path=app.shared.tools.skills.devops.SSHTools` / `file_path=app/shared/tools/skills/devops/SSHTools.py`；`args_schema` 显式不含 `runtime`；`business_name` 为必填字段，`args_schema` 标记 `required` 且工具入口验空）。
 
 ### 生命周期 / admin API
 
-- `app/core/server.py::lifespan`：数据库池建立后调用 `app.core.config.devops_diagnostics.diagnose_credential_key()` 校验密钥；通过则构造 `DevOpsServerService` 并 `set_instance(svc)` + 挂 `app.state.devops_server_service`；yield 后 `reset()` 单例并清理 `app.state.devops_server_service`。失败时把诊断 hint 写入 `app.state.devops_server_service_hint`，router 会读取并放入 500 detail。
+- `app/core/server.py::lifespan`：数据库池建立后，先初始化 `InspectionScriptService`（2026-08-03 新增），随后调用 `app.core.config.devops_diagnostics.diagnose_credential_key()` 校验密钥；通过且 `inspection_script_service` 已就绪时构造 `DevOpsServerService` 并 `set_instance(svc)` + 挂 `app.state.devops_server_service`；yield 后 `reset()` 单例并清理 `app.state.devops_server_service`。失败时把诊断 hint 写入 `app.state.devops_server_service_hint`，router 会读取并放入 500 detail。
 - `app/core/config/devops_diagnostics.py`（2026-07-15 新增）：从 `settings.devops.credential_key` 读取，分 4 类返回诊断结果：`missing`（完全没配）/ `misspelled`（env 里有相近键）/ `settings_unread`（env 里有精确键名但 settings 读不到）/ `invalid_fernet`（值非空但 Fernet 校验失败）。hint 不打印完整密钥，只显示长度+前 4 字符指纹。
-- `app/routers/devops_server_admin_router.py`：移除 router 级 `dependencies=[Depends(require_admin)]`，改为每个端点显式声明权限；`GET /api/admin/devops-servers` 列表端点使用 `Depends(require_admin_or_menu_acl("task-scheduler.server-management"))`（admin 直 bypass，普通用户需 `task-scheduler.server-management` 菜单 ACL）；`POST /scan` / `GET /{server_id}` / `DELETE /{server_id}` 均保留 `Depends(require_admin)`（admin-only）。服务未初始化返回 500 + `detail=<lifespan 写入的 hint>`（无 hint 时退回 `"DevOpsServerService not initialized"`）；`GET` 列表严格只返回 `{id, business_name, server_type, updated_at}`；`POST /scan` 严格只返回 `{scanned, inserted, updated, failed}`；扫描异常时不回显原始 `detail` / 路径 / IP / 密码 / 名单。`GET /api/admin/devops-servers/{server_id}`（2026-07-22 新增）按需返回详情：仅含 `_DETAIL_FIELDS = {id, business_name, server_type, updated_at, whitelist, inspection_script, inspection_parser}`，命中失败 → 404 + `"服务器不存在"`（不回显 server_id），router 防御性二次过滤保证即便 service 失误返回了 ip/port/username/password 也会被白名单过滤。`DELETE /api/admin/devops-servers/{server_id}` 返 `204 No Content`：先 `server_exists` 探测（不存在 → 404 + `"服务器不存在"`），再 `delete_server`（service 持 `_write_lock` 同步删 `_cache` + `db.execute("DELETE FROM devops_servers WHERE id = $1", server_id)`）；DB 异常 → 500 + `"删除服务器失败"`，不回显 SQL / 原 detail。
+- `app/routers/devops_server_admin_router.py`：移除 router 级 `dependencies=[Depends(require_admin)]`，改为每个端点显式声明权限；`GET /api/admin/devops-servers` 列表端点使用 `Depends(require_admin_or_menu_acl("task-scheduler.server-management"))`（admin 直 bypass，普通用户需 `task-scheduler.server-management` 菜单 ACL）；`POST /scan` / `GET /{server_id}` / `DELETE /{server_id}` 均保留 `Depends(require_admin)`（admin-only）。服务未初始化返回 500 + `detail=<lifespan 写入的 hint>`（无 hint 时退回 `"DevOpsServerService not initialized"`）；`GET` 列表严格只返回 `{id, business_name, server_type, updated_at}`；`POST /scan` 严格只返回 `{scanned, inserted, updated, failed}`；扫描异常时不回显原始 `detail` / 路径 / IP / 密码 / 名单。`GET /api/admin/devops-servers/{server_id}`（2026-08-03 改造）按需返回详情：仅含 `_DETAIL_FIELDS = {id, business_name, server_type, updated_at, whitelist, inspection_script_id, inspection_script_name, inspection_script_display_name}`，命中失败 → 404 + `"服务器不存在"`（不回显 server_id），router 防御性二次过滤保证即便 service 失误返回了 ip/port/username/password 也会被白名单过滤；脚本原文**不**进入此响应，改由 `GET /api/admin/inspection-scripts/{script_id}` 按需提供。`DELETE /api/admin/devops-servers/{server_id}` 返 `204 No Content`：先 `server_exists` 探测（不存在 → 404 + `"服务器不存在"`），再 `delete_server`（service 持 `_write_lock` 同步删 `_cache` + `db.execute("DELETE FROM devops_servers WHERE id = $1", server_id)`）；DB 异常 → 500 + `"删除服务器失败"`，不回显 SQL / 原 detail。
 - **不再为 DevOps 工具创建 Agent**——工具通过 ToolRegistryService 扫描 `app/shared/tools/skills/devops/SSHTools.py` 自动发现，admin 界面按元数据展示。
 - **运行时必备配置**：`settings.devops.credential_key` 必须由 `Fernet.generate_key()` 生成（44 字节 base64），非法格式会在 `diagnose_credential_key()` 走 `invalid_fernet` 分支，效果同上。`data/devops/servers.yaml` 由 `.gitignore` 排除（`servers.yaml.example` 是公开模板），缺失时 `scan_and_upsert` 安全返回 0 但列表为空，不报错。
 
-### 巡检脚本字段 `inspection_script` / `inspection_parser`（2026-07-22 新增）
+### 巡检脚本库 `inspection_scripts`（2026-08-03 抽离）
 
-- **字段定义**：每个 devops_servers 节点可携带「固定巡检脚本」（bash / powershell，YAML `|` 字面块多行字符串）与「解析器类型」（`json` / `kv` / `csv` / `raw`，默认 `json`）。
-- **YAML 形态**：`inspection_script: |` 块字符串保留换行；末尾多余换行会被 `_normalize_entry` 自动 `rstrip("\n")`。空字符串 / 纯空白 → `NULL`。`inspection_parser` 大小写不敏感；非法值 → 该条目 `failed`，不阻断其他记录。
-- **DB 落库**：`inspection_script TEXT NULL`（非加密、非敏感）+ `inspection_parser VARCHAR(16) DEFAULT 'json'` + `CHECK (inspection_parser IN ('json', 'kv', 'csv', 'raw'))`（`DROP CONSTRAINT IF EXISTS` + `ADD CONSTRAINT` 实现幂等；不使用 DO 块，兼容 Navicat 等 GUI）。
-- **服务层契约**：`_normalize_entry` / `_upsert_one_returning` / `preload_all` / `get_connection_config` 全链路同步；缓存 `rec["inspection_script"]` 与 `rec["inspection_parser"]` 透传。`preload_all` 中遇到非法 `inspection_parser`（NULL / 未知值）一律回退为 `'json'`，避免下游崩溃。
-- **公开白名单严格 4 字段**：`inspection_script` / `inspection_parser` 仅供 SSHTools 内部消费（`get_connection_config` 返回值），**永不进入** `GET /api/admin/devops-servers` 响应；admin router 的 `_PUBLIC_FIELDS` 防御性二次过滤保证即便 service 失误返回了脚本字段，响应也会被过滤。
-- **覆盖范围**：`data/devops/servers.yaml` 的两个示例节点（Linux / Windows）均已携带 `inspection_script: |` + `inspection_parser: json` 示例，可作为运维模板参考。
-- **前端按需拉详情（2026-07-22）**：`web/Agent/src/components/TaskSchedulerManager.vue` 服务器列表新增「白名单」「巡检脚本」两列（每行两个查看按钮），点击列按钮通过 `web/Agent/src/utils/api.js::fetchDevOpsServerDetail(serverId)` → `GET /api/admin/devops-servers/{serverId}` 按需拉取详情，再以 `<Teleport>` 弹窗展示：
-  - 白名单弹窗：以 `<table class="whitelist-table">` 逐行展示 `whitelist: string[]`（序号 + 命令），空列表显示「暂无白名单命令」空态。
-  - 巡检脚本弹窗：以 `<pre class="script-content">` 等宽字体保留换行/缩进（`white-space: pre`）展示 `inspection_script`，未配置显示「未配置巡检脚本」空态，标题旁附解析器标签 `inspection_parser`。
-  - 两个弹窗互斥（同一时刻仅一个 open），通过 `whitelistDialog.open` / `scriptDialog.open` 互斥切换。
-  - 列表端点契约不变：仍只返回 4 字段，避免 1000 行脚本进入列表响应；详情按需拉是 `inspection_script` 唯一进入 DOM 的通道。
-- **当前行为**：`run_server_ops` 已按 `inspection_parser` 解析脚本输出，再按 `inspection_fields` 阈值规则评估生成报告（详见下一节），并非「只入库/后续 tool」。
+> 巡检脚本原文、解析器类型与字段规则从 `devops_servers` 三列内联存储抽离到独立 `inspection_scripts` 表；`devops_servers` 仅保留 `inspection_script_id` 外键引用。脚本按「平台 + 版本」命名（如 `linux-bash` / `windows-ps-5.1` / `windows-ps-7+`），`inspection_fields` 完全跟随脚本库条目，服务器层不可覆盖。
 
-### 巡检字段规则列 `devops_servers.inspection_fields` JSONB（2026-07-22 落地）
+#### 数据库表 `inspection_scripts`
 
-- **DB 列定义**：`inspection_fields JSONB DEFAULT '[]'::jsonb`，每行 `list[dict]`，dict 形如 `{key, name_zh, unit, direction, warn, crit}`；与 `inspection_script` / `inspection_parser` 同步三列齐备。`CREATE TABLE` 与 `ALTER TABLE ADD COLUMN IF NOT EXISTS` 双写，幂等。
-- **行规则**（元素 schema）：
-  - `key`：非空字符串，与脚本输出 JSON 字段名一一对应；同一节点内唯一；非空。
-  - `name_zh`：非空字符串，前端展示用。
-  - `unit`：字符串；缺省 / 缺失 = `""`；空单位时填 `""`，**不要写 null**。
-  - `direction`：`"high"` | `"low"` | `"ignore"` 三选一。
-  - `warn` / `crit`：`high` 时 `warn <= crit`，`low` 时 `warn >= crit`（边界包含）；`ignore` 时必须为 `None`。
-- **YAML 当前契约**（`data/devops/servers.yaml` + `servers.yaml.example`）：
-  - Linux 节点 4 条规则：`disk_used_pct / 磁盘使用率 / % / high / 80 / 90`、`mem_used_pct / 内存使用率 / % / high / 80 / 90`、`cpu_idle_pct / CPU 空闲率 / % / low / 20 / 10`、`load_1m / 1 分钟平均负载 / "" / high / 4.0 / 8.0`。
-  - Windows 节点 4 条规则：`disk_used_pct / 磁盘使用率 / % / high / 80 / 90`、`mem_used_pct / 内存使用率 / % / high / 80 / 90`、`cpu_used_pct / CPU 使用率 / % / high / 80 / 95`、`uptime_hours / 系统运行时间 / 小时 / ignore / null / null`。
-  - Linux 节点 `inspection_script` 输出形如 `{"disks":[{"mount":"/","disk_used_pct":42},...],"mem_used_pct":...,"cpu_idle_pct":...,"load_1m":...}`；`disk_used_pct` 数值是**纯数字**（无 `%` 后缀，`%` 由 `unit` 字段承担）；脚本通过 `df -P` + awk 一次性构造 JSON 片段，**awk 内维护 `sep` 变量在每条 JSON 片段前加 `,`**（第一项 `sep=""`, 后续项 `sep=","`），`gsub(/%/, "", $5)` 去 `%`；过滤 `tmpfs/devtmpfs/overlay/squashfs/sysfs/proc/cgroup/...` 等虚拟文件系统；`cpu_idle_pct` 末尾追加 `tr -dc '0-9.'` 把 `%id` / `%ni` 后缀剥掉，输出纯数字 `92.5`。
-  - Windows 节点 `inspection_script` 用 PowerShell 遍历 `Get-PSDrive -PSProvider FileSystem`（过滤 `Used` / `Free` 都不为 null 且 `Used+Free > 0` 的盘），手工拼接 `disks` 数组 + `mem_used_pct` + `cpu_used_pct` + `uptime_hours` 为单行 JSON。**JSON 全部用单引号字符串拼接**（避免双引号字符串 `\"` 转义陷阱），`mount` 中 `\` 通过 `.Replace('\', '\\')` 双重化为 JSON 兼容的 `\\`；最终 `Write-Output` 单行 JSON。注意：本节点仍是 `Get-WmiObject` 系列（非 `Get-CimInstance`），保持对老版 PowerShell / WMI-only 环境的兼容。
-  - 两节点 `key` 字段分别与 `inspection_script` 输出 JSON 的字段名一一对应（脚本使用 `printf '{"...":...}'` 或 `Write-Output` 形式），通过 `yaml.safe_load` 冒烟可校验。
-- **运维踩坑（2026-07-22）**：
-  - Linux 输出 `{"disks":[{...}{...}]}` 缺逗号（导致 JSON 解析失败 `Expecting ',' delimiter`）+ `cpu_idle_pct=92.5%id`（`%id` 是 `top` 输出的列后缀）。两种 bug 都由 `parse_inspection_output` 抛 `InspectionParseError`（`InspectionParseError: inspection json output is not valid JSON: Expecting ',' delimiter`）便于运维侧定位。修复通过 `awk BEGIN { sep="" } ... sep=","` + `tr -dc '0-9.'` 完成。
-  - Windows 脚本曾因 `.Replace('\\','\\')` 在双引号字符串中被 PowerShell 误解析成反引号转义触发 `UnexpectedToken`;修复为单引号字符串 + `.Replace('\', '\\')` 双重化。
-  - 回归测试：`test_parse_disks_array_regression_bug_user_reported` + `test_evaluate_disks_array_matches_user_real_linux_output` 锁定 Linux 修复契约;`test_parse_windows_powershell_disks_array_with_escaped_backslashes` 锁定 Windows mount 转义契约。
-- **服务层全链路**（`app/shared/utils/devops_server_service.py`）：
-  - `_inspection_fields_to_list(value) -> List[Any]`：防御性还原（list / dict / str / None / 其它）。`None` / 缺失键 / 非法 JSON 字符串 / 解析为基本类型（数字 / bool / null）→ `[]`；合法 JSON list 字符串 / JSON dict 字符串 / list / dict → 还原 list。**不**把合法 list 字符串误判为 `[]`。
-  - `preload_all`：DB 行 `inspection_fields` 列先经 `_inspection_fields_to_list` 还原，再调 `normalize_inspection_fields`；`NULL` / 缺失键 / 非法结构（含合法 JSON 但元素不是 dict）→ 缓存 `[]` + warning log，不阻断；合法结果 → 缓存为强类型 `list[dict]`（`key` / `name_zh` / `unit` / `direction` / `warn` / `crit`）。
-  - `_normalize_entry`：YAML entry 先经 `_inspection_fields_to_list` 兼容（YAML 直接给 dict / 字符串等异常形态），再调 `normalize_inspection_fields`，非法规则（如 `direction` 非法 / `warn > crit` 在 high 时 / 重复 key）整条 `failed`。
-  - `_upsert_one_returning`：SQL 占位 `$9 inspection_script, $10 inspection_parser, $11::jsonb inspection_fields`，`json.dumps(..., ensure_ascii=False)` 入参；旧 `$9` / `$10` 断言保持不变。
-  - 缓存 / `get_connection_config` / `get_server_detail`：所有路径中 `inspection_fields` 始终是 JSON 可序列化的 `list[dict]`。
-  - `get_server_detail` 白名单 `_DETAIL_FIELDS` 包含 `inspection_fields`；仍**不外泄** `ip / port / username / password_encrypted / blacklist`。
-- **旧数据兜底**：升级前数据库已存在但 `inspection_fields` 为 `NULL` 的行，`preload_all` 一律还原为 `[]`；不修改历史行；新 `scan_and_upsert` 会以 `[]` 入库（YAML 节点缺省即 `[]`），不触发 upsert 失败。
-- **测试同步**（`app/tests/shared/test_devops_server_service.py`，共 80 个用例全绿）：
-  - 全链路新增 12 个用例：YAML → 规范化 → JSONB → cache / detail / connection_config；`preload` 兼容合法 list / 合法 JSON 字符串 / NULL / 缺失键 / 非法 JSON 字符串 / 合法 JSON 但元素非 dict；`scan_and_upsert` SQL `args[11]` 是 `json.dumps(..., ensure_ascii=False)` 且中文保持原字符；旧 `args[9]` / `args[10]` 断言继续通过；`get_server_detail` 含 `inspection_fields` 但仍不外泄 `ip / password / blacklist`。
-  - `parametrize` 化测试 `_inspection_fields_to_list`（NULL / 非法字符串 / 数字 / bool / 整数 / 浮点 / True 等非法输入 → `[]`；合法 list / JSON 字符串 / 空 `[]` 等 → 正确还原）。
-- **pydantic-settings v2 嵌套 BaseSettings 不递归读 .env（2026-07-15 已修复）**：`Settings.devops: DevOpsSettings = Field(default_factory=DevOpsSettings)` 这种嵌套写法，顶层 `.env` 的扁平 key `DEVOPS_CREDENTIAL_KEY` 默认不会穿透到 `settings.devops.credential_key`（其他子 settings 如 `LLMSettings.model_name` 因为字段名直接对应环境变量名而能正常加载；`FeishuSettings.feishu_app_id` / `SandboxSettings.sandbox_docker_mode` 因字段名自带前缀而能正常加载；唯独 `DevOpsSettings.credential_key` 字段名不带 `devops_` 前缀但 env 名带 `DEVOPS_` 前缀，导致不匹配）。**修复方案**：在 `DevOpsSettings.model_config` 声明 `env_prefix="DEVOPS_"`，使字段 `credential_key` 匹配 env `DEVOPS_CREDENTIAL_KEY`。诊断函数 `diagnose_credential_key()` 的 `settings_unread` 分支保留为防御性诊断，hint 文本已更新为「理论上不应触发，可能是 settings 单例被显式传入空值覆盖或 .env 文件路径/编码异常」。回归测试：`app/tests/core/test_devops_diagnostics.py::test_devops_settings_reads_env_via_prefix`。
+- 列：`id SERIAL PK` / `name VARCHAR(100) UNIQUE NOT NULL` / `display_name VARCHAR(200) NOT NULL` / `platform VARCHAR(32) NOT NULL DEFAULT 'linux'` / `version VARCHAR(32) NOT NULL DEFAULT ''` / `inspection_parser VARCHAR(16) NOT NULL DEFAULT 'json'` / `inspection_script TEXT NULL` / `inspection_fields JSONB DEFAULT '[]'::jsonb` / `created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP` / `updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`
+- CHECK：`inspection_parser IN ('json', 'kv', 'csv', 'raw')`（约束名 `inspection_scripts_parser_chk`）
+- 索引：`idx_inspection_scripts_platform(platform)` / `idx_inspection_scripts_name(name)`
+
+#### 服务 `InspectionScriptService`（`app/shared/utils/inspection_script_service.py`）
+
+- 单例 + `set_instance` / `get_instance` / `reset`；构造 `InspectionScriptService(db, config_path)`，YAML 默认 `<项目根>/data/devops/inspection_scripts.yaml`，路径解析走 `resolve_devops_inspection_scripts_config_path`
+- `preload_all()`：`SELECT id, name, display_name, platform, version, inspection_parser, inspection_script, inspection_fields, created_at, updated_at FROM inspection_scripts ORDER BY id` 全量加载；`inspection_fields` 兼容 str（`json.loads`）/ list / 其它 → 统一还原为 `list[dict]`，非 str/list 兜底为 `[]`；持 `self._write_lock` 原子替换 `_cache: Dict[name, rec]` + `_id_cache: Dict[id, rec]`
+- `scan_and_upsert()`：读取 YAML；顶层 `dict` 取 `inspection_scripts` 键，list 直接用，非 list → `failed+=1`；逐 entry 调 `_normalize_entry` 做必填校验（`name` / `display_name` 非空字符串、`platform ∈ {linux, windows}`、`version` 默认空串、`inspection_parser ∈ {json,kv,csv,raw}`、`inspection_script` 空 / 纯空白 → `None` 且 rstrip 末尾换行、`inspection_fields` 复用 `normalize_inspection_fields` 归一化为 `list[dict]`）；同 name 重复直接拒绝（`failed+=1`，**不覆盖**）；单条 upsert 用 `INSERT ... ON CONFLICT (name) DO UPDATE ... RETURNING *, (xmax = 0) AS inserted` 一次往返，缓存通过 RETURNING 行同步 `_cache` / `_id_cache`
+- 公开读 API：
+  - `list_scripts()`：返回白名单 7 字段 `id / name / display_name / platform / version / inspection_parser / updated_at`，**不**暴露 `inspection_script` / `inspection_fields`
+  - `get_script_detail(script_id)`：按 id 取完整详情（含 `inspection_script` + `inspection_fields`），未命中返回 `None`
+  - `get_script_by_id(script_id)` / `get_script_by_name(name)`：内部完整记录查询，供 `DevOpsServerService.get_connection_config` 注入解析
+  - `resolve_script_for_server(server_type, script_name=None)`：显式 `script_name` 命中 → 返回 id，未命中返回 `None`（不静默回退）；否则按 `_DEFAULT_SCRIPT_NAMES`（`linux → linux-bash` / `windows → windows-ps-5.1`）解析，未注册返回 `None`
+- 写路径（`preload_all` / `scan_and_upsert`）持 `self._write_lock`；读路径无锁
+- 字段规则强类型化：`inspection_fields` 在 `_normalize_entry` 中通过 `normalize_inspection_fields` 归一化为 `list[InspectionFieldRule]`，落库前再回退为 `list[dict]`（`json.dumps(..., ensure_ascii=False)` 入参）
+
+#### Admin 路由 `InspectionScriptAdminRouter`（`app/routers/inspection_script_admin_router.py`）
+
+- 前缀 `/api/admin/inspection-scripts`，tags=`['Inspection Script Admin']`
+- `GET ""`：`Depends(require_admin_or_menu_acl("task-scheduler.server-management"))`；调 `svc.list_scripts()` 后再 `_LIST_FIELDS = (id, name, display_name, platform, version, inspection_parser, updated_at)` 防御性二次白名单过滤，**不**返回脚本原文
+- `POST /scan`：`Depends(require_admin)`；调 `svc.scan_and_upsert()`；异常时 `logger.exception` 后返 500 + `"inspection script scan failed"`（不回显路径 / 原始 detail）；成功返 `{scanned, inserted, updated, failed}`（4 整数键白名单）
+- `GET /{script_id}`：`Depends(require_admin)`；调 `svc.get_script_detail(script_id)`；未命中 → 404 + `"脚本不存在"`（不回显 script_id）；成功返完整详情（含 `inspection_script` 与 `inspection_fields`）
+- 服务未初始化：所有端点统一返 500 + `"InspectionScriptService not initialized"`
+
+#### `DevOpsServerService` 与脚本库的协作契约
+
+- 构造入参新增 `inspection_script_service`；`get_connection_config(business_name)` 通过 `inspection_script_id` 调 `inspection_script_service.get_script_by_id(script_id)` 取脚本原文；`inspection_fields` **仅此一处**调用 `normalize_inspection_fields` 转 `list[InspectionFieldRule]`（service 是序列化/结构化的唯一真相源，脚本侧不再重复归一化）
+- 脚本未关联（`inspection_script_id IS NULL`）/ InspectionScriptService 未注入 / 脚本库条目不存在 → `get_connection_config` 抛 `ValueError`，不返回半残 dict
+- `_normalize_entry` 在 YAML 扫描阶段调 `inspection_script_service.resolve_script_for_server(server_type, inspection_script_name)`：未命中（无显式 name 且 server_type 默认脚本未注册 / 显式 name 未注册）→ 该条目记 `failed`，不阻断其他条目
+- `get_server_detail(server_id)` 走 `inspection_script_service.get_script_by_id(script_id)` 解析 `inspection_script_name` / `inspection_script_display_name`；返回字段仅含元数据（**不**返回脚本原文，原文改走 `/api/admin/inspection-scripts/{id}`）
+
+### 巡检脚本库 `inspection_scripts`（2026-08-03 新增；当前契约）
+
+> 本段是「巡检脚本库 `inspection_scripts`」章节的扩展段，记录 YAML 当前契约 / 脚本输出形态 / 运维踩坑回归保护等落地细节。前一段「服务 `InspectionScriptService`」是模块契约，本段是数据契约。
+
+#### 字段规则行规则（元素 schema）
+
+- `key`：非空字符串，与脚本输出 JSON 字段名一一对应；同一脚本库条目内唯一；非空。
+- `name_zh`：非空字符串，前端展示用。
+- `unit`：字符串；缺省 / 缺失 = `""`；空单位时填 `""`，**不要写 null**。
+- `direction`：`"high"` | `"low"` | `"ignore"` 三选一。
+- `warn` / `crit`：`high` 时 `warn <= crit`，`low` 时 `warn >= crit`（边界包含）；`ignore` 时必须为 `None`。
+
+#### YAML 当前契约（`data/devops/inspection_scripts.yaml`）
+
+- **`linux-bash`**（默认 linux 平台）：4 条规则——`disk_used_pct / 磁盘使用率 / % / high / 80 / 90`、`mem_used_pct / 内存使用率 / % / high / 80 / 90`、`cpu_idle_pct / CPU 空闲率 / % / low / 20 / 10`、`load_1m / 1 分钟平均负载 / "" / high / 4.0 / 8.0`
+- **`windows-ps-5.1`**（默认 windows 平台）：4 条规则——`disk_used_pct / 磁盘使用率 / % / high / 80 / 90`、`mem_used_pct / 内存使用率 / % / high / 80 / 90`、`cpu_used_pct / CPU 使用率 / % / high / 80 / 95`、`uptime_hours / 系统运行时间 / 小时 / ignore / null / null`
+
+#### 巡检脚本输出形态
+
+- **`linux-bash`**：脚本输出形如 `{"disks":[{"mount":"/","disk_used_pct":42},...],"mem_used_pct":...,"cpu_idle_pct":...,"load_1m":...}`；`disk_used_pct` 数值是**纯数字**（无 `%` 后缀，`%` 由 `unit` 字段承担）；脚本通过 `df -P` + awk 一次性构造 JSON 片段，**awk 内维护 `sep` 变量在每条 JSON 片段前加 `,`**（第一项 `sep=""`, 后续项 `sep=","`），`gsub(/%/, "", $5)` 去 `%`；过滤 `tmpfs/devtmpfs/overlay/squashfs/sysfs/proc/cgroup/...` 等虚拟文件系统；`cpu_idle_pct` 末尾追加 `tr -dc '0-9.'` 把 `%id` / `%ni` 后缀剥掉，输出纯数字 `92.5`
+- **`windows-ps-5.1`**：脚本用 PowerShell 遍历 `Get-PSDrive -PSProvider FileSystem`（过滤 `Used` / `Free` 都不为 null 且 `Used+Free > 0` 的盘），手工拼接 `disks` 数组 + `mem_used_pct` + `cpu_used_pct` + `uptime_hours` 为单行 JSON。**JSON 全部用单引号字符串拼接**（避免双引号字符串 `\"` 转义陷阱），`mount` 中 `\` 通过 `.Replace('\', '\\')` 双重化为 JSON 兼容的 `\\`；最终 `Write-Output` 单行 JSON。注意：本节点仍是 `Get-WmiObject` 系列（非 `Get-CimInstance`），保持对老版 PowerShell / WMI-only 环境的兼容
+
+#### 运维踩坑（2026-07-22 锁定；2026-08-03 迁移到脚本库后契约保留）
+
+- Linux 输出 `{"disks":[{...}{...}]}` 缺逗号（导致 JSON 解析失败 `Expecting ',' delimiter`）+ `cpu_idle_pct=92.5%id`（`%id` 是 `top` 输出的列后缀）。两种 bug 都由 `parse_inspection_output` 抛 `InspectionParseError`（`InspectionParseError: inspection json output is not valid JSON: Expecting ',' delimiter`）便于运维侧定位。修复通过 `awk BEGIN { sep="" } ... sep=","` + `tr -dc '0-9.'` 完成
+- Windows 脚本曾因 `.Replace('\\','\\')` 在双引号字符串中被 PowerShell 误解析成反引号转义触发 `UnexpectedToken`；修复为单引号字符串 + `.Replace('\', '\\')` 双重化
+- 回归测试（保留在 `app/tests/shared/utils/inspection/test_parser.py`）：`test_parse_disks_array_regression_bug_user_reported` + `test_evaluate_disks_array_matches_user_real_linux_output` 锁定 Linux 修复契约；`test_parse_windows_powershell_disks_array_with_escaped_backslashes` 锁定 Windows mount 转义契约
+
+#### 旧数据兜底
+
+- 升级前数据库已存在但旧三列（`inspection_script` / `inspection_parser` / `inspection_fields`）非空的 `devops_servers` 行：按计划文档 `.trae/documents/devops-inspection-script-library-plan.md` 一次性迁移到 `inspection_scripts` 表 + 回填 `devops_servers.inspection_script_id` 后，再执行 `DROP COLUMN IF EXISTS`；`preload_all` 阶段不主动兜底字段值，仅在缺失 `inspection_script_id` 时让 `get_connection_config` 抛 `ValueError`
+- `InspectionScriptService.scan_and_upsert` 不存在的 YAML 文件安全返回 `{scanned: 0, inserted: 0, updated: 0, failed: 0}`
+
+#### `pydantic-settings v2` 嵌套 BaseSettings 不递归读 `.env`（2026-07-15 已修复）
+
+- `Settings.devops: DevOpsSettings = Field(default_factory=DevOpsSettings)` 这种嵌套写法，顶层 `.env` 的扁平 key `DEVOPS_CREDENTIAL_KEY` 默认不会穿透到 `settings.devops.credential_key`（其他子 settings 如 `LLMSettings.model_name` 因为字段名直接对应环境变量名而能正常加载；`FeishuSettings.feishu_app_id` / `SandboxSettings.sandbox_docker_mode` 因字段名自带前缀而能正常加载；唯独 `DevOpsSettings.credential_key` 字段名不带 `devops_` 前缀但 env 名带 `DEVOPS_` 前缀，导致不匹配）
+- **修复方案**：在 `DevOpsSettings.model_config` 声明 `env_prefix="DEVOPS_"`，使字段 `credential_key` 匹配 env `DEVOPS_CREDENTIAL_KEY`；`inspection.scripts_config_path`（2026-08-03 新增）同样靠 `env_prefix="DEVOPS_"` 匹配 env `DEVOPS_INSPECTION_SCRIPTS_CONFIG_PATH`
+- 诊断函数 `diagnose_credential_key()` 的 `settings_unread` 分支保留为防御性诊断，hint 文本已更新为「理论上不应触发，可能是 settings 单例被显式传入空值覆盖或 .env 文件路径/编码异常」
+- 回归测试：`app/tests/core/test_devops_diagnostics.py::test_devops_settings_reads_env_via_prefix`
+
+### lifespan 强依赖顺序（2026-08-03 新增章节）
+
+> `DevOpsServerService` 是 `InspectionScriptService` 的**强依赖**：未注入 InspectionScriptService 时构造 DevOpsServerService 会得到半残元数据（`get_connection_config` 缺脚本字段 / admin 详情误返回 None 元数据）。lifespan 通过「前置初始化 + 缺失则跳过构造」的方式避免半残实例被注入到 `app.state`。
+
+- **强依赖链**：`EmailConfigService`（早于 TaskScheduler）→ `AgentConfigService` / `McpConfigService` / `ToolRegistryService` / `SkillRegistryService` → `MCPToolsRegistry` → **`InspectionScriptService`（2026-08-03 新增）** → **`DevOpsServerService`（依赖 InspectionScriptService）** → `ApiConfigService` → `UserServerService` → `ScriptDiscoveryService` → `TaskSchedulerService`
+- **2026-08-03 新增段 `InspectionScriptService` 初始化**：DB 池就绪后调用 `_preload_and_publish_service(app, InspectionScriptService, ..., constructor_kwargs={"db": db_pool, "config_path": str(resolve_devops_inspection_scripts_config_path(settings.devops.inspection.scripts_config_path))})`；构造 / preload 任一异常 → `app.state.inspection_script_service = None`，**不**调用 `set_instance`，避免半残实例被注入导致 DevOpsServerService 拿到缺失字段的元数据
+- **2026-08-03 改造段 `DevOpsServerService` 初始化**：密钥诊断通过 + `getattr(app.state, "inspection_script_service", None) is not None` → 调用 `_preload_and_publish_service(app, DevOpsServerService, ..., constructor_kwargs={"db": db_pool, "config_path": ..., "credential_key": ..., "inspection_script_service": getattr(app.state, "inspection_script_service", None)})`；密钥诊断失败 → 挂 `devops_server_service_hint = diag.hint`，admin router 500 + hint；**InspectionScriptService 缺失** → 挂 `devops_server_service_hint = "InspectionScriptService 未初始化（缺失或构造失败），DevOpsServerService 作为其强依赖同样不构造..."`，admin router 500 + hint，**不构造 DevOpsServerService**（防止半残 None 元数据被注入 app.state）；构造 / preload 异常同样经 `_preload_and_publish_service` 走 None 兜底 + hint 保留
+- **`_preload_and_publish_service` 统一发布辅助**（`app/core/server.py::lifespan` 顶部私有 helper）：构造 → preload 协程 → `set_instance`（成功才调用）→ 挂 `app.state.<state_attribute>`；任一阶段异常统一写 `app.state.<state_attribute> = None` + 不调用 `set_instance`，杜绝半残实例污染下游
+- **清理阶段顺序**（与启动顺序**相反**）：`TaskSchedulerService.shutdown()` → `MCPToolsRegistry.shutdown()` → `DevOpsServerService.reset()` + `app.state.devops_server_service = None` → **`InspectionScriptService.reset()` + `app.state.inspection_script_service = None`（2026-08-03 新增）** → `ScriptDiscoveryService` 引用置 None → `FeishuWebSocketService.stop()` → `SkillsService.reset()` → `LogService.stop()` → `DatabasePool.close()`
+- **历史修复回顾**：
+  - 2026-07-22 修复 `DevOpsServerService` / `ApiConfigService` 在 lifespan 晚于 `TaskSchedulerService` 初始化的顺序 bug（`ops_inspection_sweep` 触发任务 #4 暴露 `devops_server_service 不可用`）；保留与 2026-08-03 改造叠加
+  - 2026-08-03 进一步约束 `InspectionScriptService` 早于 `DevOpsServerService`；缺失时 DevOpsServerService 不构造而非保留半残实例
 
 ### 巡检字段规则解析与阈值评估模块 `app/shared/utils/inspection/parser.py`
 
@@ -209,6 +257,22 @@
 - 切换服务器 Tab 首次加载后置 `hasLoaded=true`，再次进入不重复 GET；服务器列表加载共享 in-flight Promise，参数面板与扫描 Tab 并发请求复用同一次 GET；扫描成功后强制刷新列表。
 - 脚本任务的 `server_list` 候选来自同一脱敏清单，提交值只包含 `business_name` 字符串数组；连接配置仍仅允许服务端通过 `DevOpsServerService.get_connection_config(business_name)` 获取，`ip` / `port` / `username` / `password` / `blacklist` / `whitelist` 不得写入 `script_args` 或前端 DOM。
 - 列表加载失败显示「服务器列表加载失败」，扫描失败显示「扫描失败，请稍后重试」，两者状态独立。
+
+### 前端按需脚本详情 / 扫描说明（2026-08-03 新增）
+
+- **详情按需两段式加载（2026-08-03 改造）**：`TaskSchedulerManager.vue::openScriptDialog(row)` 改为两段式——
+  1. 先 `fetchDevOpsServerDetail(row.id)` 调 `GET /api/admin/devops-servers/{id}` 取 `inspection_script_id` 等元数据
+  2. 若 `inspection_script_id == null` → 弹窗以 `{ ...devopsDetail, inspection_script: null }` 直接展示空态
+  3. 若非空，再 `fetchInspectionScriptDetail(scriptId)` 调 `GET /api/admin/inspection-scripts/{id}` 取完整脚本原文 + 字段规则；最终 `scriptDialog.value = { open: true, row, detail: { ...devopsDetail, ...scriptDetail }, loading: false, error: '' }`
+  4. 脚本详情失败 → 弹窗保留 devops meta 并显示「脚本原文加载失败，请稍后重试」（脱敏文案，不回显后端 detail）
+- **服务器详情元数据契约**：弹窗头部新增「平台 / 版本」展示（来自 `inspection_script_display_name` + `inspection_script_name`）；弹窗内容以 `<pre class="script-content">` 等宽字体保留换行/缩进（`white-space: pre`）展示 `inspection_script`，未配置显示「未配置巡检脚本」空态，标题旁附解析器标签 `inspection_parser`
+- **白名单弹窗契约不变**：与巡检脚本弹窗互斥（同一时刻仅一个 open），通过 `whitelistDialog.open` / `scriptDialog.open` 互斥切换；列表端点契约不变仍只返 4 字段
+- **巡检脚本库扫描面板（2026-08-03 新增）**：`TaskSchedulerManager.vue` 服务器 Tab 内独立 `<section class="inspection-script-scan" data-testid="inspection-script-scan-section">`，仅 admin 可见；含扫描按钮（`data-testid="scan-inspection-scripts-btn"`）+ 提示文案「从 `data/devops/inspection_scripts.yaml` 同步所有平台巡检脚本；仅展示扫描统计，不暴露脚本原文」+ 独立的扫描统计 / 错误区域（`inspectionScanSummary` / `inspectionScanErrorMessage` / `inspectionScanSuccessMessage`），不影响服务器扫描的提示
+- **触发函数 `triggerInspectionScriptsScan`**：admin only；带防重复提交（`isScanningInspectionScripts.value` 短路）；调 `scanInspectionScripts()` → `POST /api/admin/inspection-scripts/scan`；失败时使用脱敏文案「巡检脚本扫描失败，请稍后重试」，不回显后端 detail；成功解析 `{scanned, inserted, updated, failed}` 4 字段整数并写入 `inspectionScanSummary`，未知字段不进入 DOM
+- **API 封装（`web/Agent/src/utils/api.js`，2026-08-03 新增）**：
+  - `fetchInspectionScripts()` → `GET /api/admin/inspection-scripts`（admin OR `task-scheduler.server-management` ACL；返白名单 7 字段）
+  - `scanInspectionScripts()` → `POST /api/admin/inspection-scripts/scan`（admin only；返 `{scanned, inserted, updated, failed}`）
+  - `fetchInspectionScriptDetail(scriptId)` → `GET /api/admin/inspection-scripts/{scriptId}`（admin only；404 → Error「脚本不存在」，500 → Error 含后端 detail 不回显 script_id）
 
 ### 安全约束
 

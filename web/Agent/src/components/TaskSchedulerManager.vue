@@ -33,6 +33,8 @@ import {
   scanDevOpsServers,
   deleteDevOpsServer,
   fetchDevOpsServerDetail,  // 2026-07-22 新增：服务器详情（白名单 + 巡检脚本）
+  fetchInspectionScriptDetail,  // 2026-08-03 新增：按需取巡检脚本完整原文 + 字段规则
+  scanInspectionScripts,  // 2026-08-03 新增：触发巡检脚本库扫描入库
   fetchScripts,
   scanScripts,
   fetchEmailPolicies,
@@ -119,6 +121,11 @@ const scanSummary = ref(null)
 const hasLoaded = ref(false)
 // 删除状态：当前正在删除的行 id（防重复点击）
 const isDeletingRowId = ref(null)
+// 2026-08-03 新增：巡检脚本扫描状态（与服务器扫描共享 4 字段统计的 UI，但状态独立）
+const isScanningInspectionScripts = ref(false)
+const inspectionScanErrorMessage = ref('')
+const inspectionScanSuccessMessage = ref('')
+const inspectionScanSummary = ref(null)
 
 // 详情弹窗状态：白名单 / 巡检脚本
 // 单 ref 同时持有 row 与 detail，避免多个 ref 同步问题
@@ -150,7 +157,18 @@ async function openWhitelistDialog(row) {
 }
 
 /**
- * 打开巡检脚本详情弹窗（保留格式纯文本展示）。
+ * 打开巡检脚本详情弹窗（按需加载原文）。
+ *
+ * 2026-08-03 改造：巡检脚本原文不再经由 GET /api/admin/devops-servers/{id}
+ * 返回。该端点仅返回 inspection_script_id / inspection_script_name /
+ * inspection_script_display_name 元数据；脚本原文与字段规则改由
+ * GET /api/admin/inspection-scripts/{id} 提供。
+ *
+ * 因此本函数两段式加载：
+ *   1) 先调 devops-server detail 取 script_id（失败则整体失败）
+ *   2) 若 script_id 非空，再调 inspection-scripts/{id} 取完整内容
+ *      （失败 → 弹窗仍能展示 devops meta，并显示「脚本原文加载失败」提示）
+ *
  * @param {Object} row - 服务器列表行（脱敏 4 字段）
  * @returns {Promise<void>}
  */
@@ -159,8 +177,31 @@ async function openScriptDialog(row) {
   scriptDialog.value = { open: true, row, detail: null, loading: true, error: '' }
   whitelistDialog.value.open = false
   try {
-    const detail = await fetchDevOpsServerDetail(row.id)
-    scriptDialog.value = { open: true, row, detail, loading: false, error: '' }
+    const devopsDetail = await fetchDevOpsServerDetail(row.id)
+    const scriptId = devopsDetail?.inspection_script_id
+    if (scriptId == null) {
+      // devops_servers 行未关联巡检脚本：直接展示空态
+      scriptDialog.value = {
+        open: true, row, detail: { ...devopsDetail, inspection_script: null }, loading: false, error: '',
+      }
+      return
+    }
+    try {
+      const scriptDetail = await fetchInspectionScriptDetail(scriptId)
+      // 把 devops 元数据与 inspection script 内容合并到 detail，让模板一处取齐
+      scriptDialog.value = {
+        open: true, row,
+        detail: { ...devopsDetail, ...scriptDetail },
+        loading: false, error: '',
+      }
+    } catch {
+      // devops detail 已加载，脚本原文失败：弹窗仍能展示 inspection_script_name 等元数据
+      scriptDialog.value = {
+        open: true, row,
+        detail: { ...devopsDetail, inspection_script: null },
+        loading: false, error: '脚本原文加载失败，请稍后重试',
+      }
+    }
   } catch {
     scriptDialog.value = {
       open: true, row, detail: null, loading: false,
@@ -1776,6 +1817,29 @@ async function triggerServerScan() {
 }
 
 /**
+ * 2026-08-03 新增：触发巡检脚本库扫描入库（POST /api/admin/inspection-scripts/scan）。
+ * 仅 admin 可触发；带防重复提交；失败时使用脱敏文案，不回显后端 detail。
+ * 扫描结果展示到独立的 summary 区域（inspectionScanSummary），不影响服务器扫描的提示。
+ * @returns {Promise<void>} 无返回值
+ */
+async function triggerInspectionScriptsScan() {
+  if (isScanningInspectionScripts.value) return
+  isScanningInspectionScripts.value = true
+  inspectionScanErrorMessage.value = ''
+  inspectionScanSuccessMessage.value = ''
+  inspectionScanSummary.value = null
+  try {
+    const summary = await scanInspectionScripts()
+    inspectionScanSummary.value = sanitizeSummary(summary)
+    inspectionScanSuccessMessage.value = '巡检脚本扫描完成'
+  } catch {
+    inspectionScanErrorMessage.value = '巡检脚本扫描失败，请稍后重试'
+  } finally {
+    isScanningInspectionScripts.value = false
+  }
+}
+
+/**
  * 删除按钮的二次确认与异步调用：
  *   1. window.confirm 弹出用户确认；
  *   2. 通过后调用 api.deleteDevOpsServer(row.id)；
@@ -3336,6 +3400,57 @@ onBeforeUnmount(() => {
           </div>
         </header>
 
+        <!-- 2026-08-03 新增：巡检脚本库扫描入口（admin only）。与服务器扫描独立，
+             使用脱敏后端响应（4 字段整数），失败时仅显示脱敏文案。 -->
+        <section
+          class="inspection-script-scan"
+          data-testid="inspection-script-scan-section"
+        >
+          <header class="inspection-script-scan-header">
+            <div>
+              <h4>巡检脚本扫描入库</h4>
+              <p class="muted-hint">从 data/devops/inspection_scripts.yaml 同步所有平台巡检脚本；仅展示扫描统计，不暴露脚本原文。</p>
+            </div>
+            <button
+              type="button"
+              class="primary-btn"
+              data-testid="scan-inspection-scripts-btn"
+              :disabled="isScanningInspectionScripts"
+              :aria-busy="isScanningInspectionScripts ? 'true' : 'false'"
+              @click="triggerInspectionScriptsScan"
+            >
+              <span v-if="isScanningInspectionScripts" data-testid="scan-inspection-scripts-loading">扫描中...</span>
+              <span v-else>巡检脚本扫描</span>
+            </button>
+          </header>
+          <div
+            v-if="inspectionScanErrorMessage"
+            class="alert error"
+            role="alert"
+            data-testid="scan-inspection-scripts-error"
+          >
+            {{ inspectionScanErrorMessage }}
+          </div>
+          <div
+            v-if="inspectionScanSuccessMessage"
+            class="alert success"
+            role="status"
+            data-testid="scan-inspection-scripts-status"
+          >
+            {{ inspectionScanSuccessMessage }}
+          </div>
+          <div
+            v-if="inspectionScanSummary"
+            class="alert info summary"
+            data-testid="scan-inspection-scripts-summary"
+          >
+            <span>扫描 {{ inspectionScanSummary.scanned }}</span>
+            <span>新增 {{ inspectionScanSummary.inserted }}</span>
+            <span>更新 {{ inspectionScanSummary.updated }}</span>
+            <span>失败 {{ inspectionScanSummary.failed }}</span>
+          </div>
+        </section>
+
         <div
           v-if="scanErrorMessage"
           class="alert error"
@@ -3814,6 +3929,31 @@ onBeforeUnmount(() => {
   margin: 4px 0 0;
   color: #6b7280;
   font-size: 13px;
+}
+
+/* 2026-08-03 新增：巡检脚本扫描入口区块（与服务器扫描共享一个 Tab，独立 UI） */
+.inspection-script-scan {
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+.inspection-script-scan-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.inspection-script-scan-header h4 {
+  margin: 0;
+  font-size: 14px;
+  color: #111827;
+}
+.inspection-script-scan-header .muted-hint {
+  margin: 4px 0 0;
+  color: #6b7280;
+  font-size: 12px;
 }
 
 .task-item {

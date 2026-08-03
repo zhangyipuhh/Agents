@@ -67,6 +67,9 @@ from app.routers.task_scheduler_router import router as task_scheduler_router
 from app.routers.devops_server_admin_router import (
     router as devops_server_admin_router,  # 2026-07-15 新增：DevOps 服务器管理
 )
+from app.routers.inspection_script_admin_router import (
+    router as inspection_script_admin_router,  # 2026-08-03 新增：巡检脚本库管理
+)
 from app.routers.email_admin_router import (
     router as email_admin_router,  # 2026-07-16 新增：邮件系统管理
 )
@@ -118,6 +121,7 @@ def register_routers(target_app=None):
     _app.include_router(skill_admin_router)
     _app.include_router(task_scheduler_router)
     _app.include_router(devops_server_admin_router)
+    _app.include_router(inspection_script_admin_router)  # 2026-08-03 新增：巡检脚本库
     _app.include_router(email_admin_router)
     _app.include_router(script_admin_router)
     _app.include_router(api_config_router)

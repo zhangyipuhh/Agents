@@ -19,6 +19,7 @@ import {
   deleteUserServerNode,
   fetchUserServerConfig,
   importDevopsServers,
+  fetchInspectionScriptDetail,  // 2026-08-03 新增：按需查看巡检脚本原文与字段
 } from '../utils/api.js'
 import ImportServerDialog from './ImportServerDialog.vue'
 
@@ -55,6 +56,15 @@ const nodeDetail = ref(null)
 const isLoadingDetail = ref(false)
 const detailError = ref('')
 const detailMessage = ref('')
+
+// ---------- 巡检脚本弹窗（2026-08-03 新增；按需 fetchInspectionScriptDetail） ----------
+const scriptDialog = ref({
+  open: false,
+  node: null,        // 触发弹窗的 server 节点
+  detail: null,      // inspection script 详情（含 inspection_script / inspection_fields）
+  loading: false,
+  error: '',
+})
 
 // ---------- 导入弹窗 ----------
 const importDialogOpen = ref(false)
@@ -350,6 +360,49 @@ function toggleNewMenu() {
 }
 function closeNewMenu() {
   newMenuOpen.value = false
+}
+
+// ---------- 巡检脚本弹窗（2026-08-03 新增） ----------
+/**
+ * 打开巡检脚本弹窗：调 GET /api/admin/inspection-scripts/{id} 按需拉完整脚本。
+ * 设计要点：
+ *  - 仅在用户点击「查看巡检脚本」按钮时才发起请求，列表/详情接口绝不携带原文
+ *  - 旧契约 inspection_script / inspection_parser / inspection_fields 已从
+ *    server 节点详情中移除，改为外键 inspection_script_id
+ *  - admin 才能调此端点；非 admin 由后端 403 拦截
+ * @returns {Promise<void>} 无返回值
+ */
+async function openInspectionScriptDialog(node) {
+  if (!node) return
+  const scriptId = nodeDetail.value?.inspection_script_id
+  if (scriptId == null) return
+  scriptDialog.value = {
+    open: true,
+    node,
+    detail: null,
+    loading: true,
+    error: '',
+  }
+  try {
+    const detail = await fetchInspectionScriptDetail(scriptId)
+    scriptDialog.value = { open: true, node, detail, loading: false, error: '' }
+  } catch (err) {
+    scriptDialog.value = {
+      open: true,
+      node,
+      detail: null,
+      loading: false,
+      error: err.message || '加载巡检脚本失败',
+    }
+  }
+}
+
+/**
+ * 关闭巡检脚本弹窗。
+ * @returns {void}
+ */
+function closeInspectionScriptDialog() {
+  scriptDialog.value = { ...scriptDialog.value, open: false }
 }
 
 // 点击 toolbar 外部关闭新建菜单
@@ -667,41 +720,26 @@ watch(selectedNodeId, async (newId) => {
               </ul>
             </dd>
 
-            <dt>解析器</dt>
-            <dd>
-              <span class="usm-tag">{{ nodeDetail.inspection_parser || 'json' }}</span>
-            </dd>
-
+            <!-- 2026-08-03 改造：详情不再展示 inspection_script 原文 / inspection_parser /
+                 inspection_fields 三列。改为外键 inspection_script_id + 元数据 name /
+                 display_name；「查看巡检脚本」按钮按需调 fetchInspectionScriptDetail
+                 拉取完整原文与字段规则（仅 admin 可访问该端点） -->
             <dt>巡检脚本</dt>
             <dd>
-              <pre v-if="nodeDetail.inspection_script" class="usm-script">{{ nodeDetail.inspection_script }}</pre>
+              <div v-if="nodeDetail.inspection_script_id" class="usm-script-meta">
+                <span class="usm-tag">{{ nodeDetail.inspection_script_name || '未命名' }}</span>
+                <span class="usm-script-display">{{ nodeDetail.inspection_script_display_name || '' }}</span>
+                <button
+                  type="button"
+                  class="server-detail-btn usm-view-script-btn"
+                  data-testid="usm-view-inspection-script-btn"
+                  :aria-label="`查看 ${nodeDetail.inspection_script_name || '巡检脚本'} 原文与字段规则`"
+                  @click="openInspectionScriptDialog(selectedNode)"
+                >
+                  查看巡检脚本
+                </button>
+              </div>
               <span v-else class="muted">（未配置）</span>
-            </dd>
-
-            <dt v-if="nodeDetail.inspection_fields && nodeDetail.inspection_fields.length">巡检字段</dt>
-            <dd v-if="nodeDetail.inspection_fields && nodeDetail.inspection_fields.length">
-              <table class="usm-fields-table" data-testid="usm-fields-table">
-                <thead>
-                  <tr>
-                    <th>key</th>
-                    <th>中文名</th>
-                    <th>单位</th>
-                    <th>方向</th>
-                    <th>warn</th>
-                    <th>crit</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(f, idx) in nodeDetail.inspection_fields" :key="idx">
-                    <td>{{ f.key }}</td>
-                    <td>{{ f.name_zh || '' }}</td>
-                    <td>{{ f.unit || '' }}</td>
-                    <td>{{ f.direction || '' }}</td>
-                    <td>{{ f.warn ?? '' }}</td>
-                    <td>{{ f.crit ?? '' }}</td>
-                  </tr>
-                </tbody>
-              </table>
             </dd>
           </dl>
           <p class="usm-readonly-hint">只读视图，修改请前往「服务器扫描入库」。</p>
@@ -716,6 +754,100 @@ watch(selectedNodeId, async (newId) => {
       @close="importDialogOpen = false"
       @done="handleImportDone"
     />
+
+    <!-- 巡检脚本弹窗（2026-08-03 新增） -->
+    <Teleport to="body">
+      <Transition name="task-history-fade">
+        <div
+          v-if="scriptDialog.open"
+          class="task-history-overlay"
+          data-testid="usm-inspection-script-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="usm-inspection-script-dialog-title"
+          @click.self.stop="closeInspectionScriptDialog"
+        >
+          <div
+            class="task-history-dialog task-history-dialog-wide"
+            @click.stop
+          >
+            <header class="task-history-dialog-header">
+              <h3 id="usm-inspection-script-dialog-title">
+                巡检脚本 - {{ scriptDialog.node?.business_name || scriptDialog.node?.name || '' }}
+                <small
+                  v-if="scriptDialog.detail?.display_name"
+                  class="script-parser-tag"
+                  data-testid="usm-parser-tag"
+                >
+                  {{ scriptDialog.detail.display_name }}
+                </small>
+                <small
+                  v-if="scriptDialog.detail?.inspection_parser"
+                  class="script-parser-tag"
+                >
+                  解析器: {{ scriptDialog.detail.inspection_parser }}
+                </small>
+              </h3>
+              <button
+                class="task-history-close"
+                type="button"
+                aria-label="关闭巡检脚本"
+                data-testid="usm-inspection-script-dialog-close"
+                @click="closeInspectionScriptDialog"
+              >
+                <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                  <path d="M15 5 5 15M5 5l10 10" />
+                </svg>
+              </button>
+            </header>
+            <div class="task-history-dialog-body">
+              <div v-if="scriptDialog.loading" class="empty-state" data-testid="usm-inspection-script-loading">
+                正在加载脚本...
+              </div>
+              <div v-else-if="scriptDialog.error" class="alert error" data-testid="usm-inspection-script-error">
+                {{ scriptDialog.error }}
+              </div>
+              <div v-else-if="!scriptDialog.detail?.inspection_script" class="empty-state" data-testid="usm-inspection-script-empty">
+                脚本为空
+              </div>
+              <pre
+                v-else
+                class="script-content"
+                data-testid="usm-inspection-script-content"
+                :aria-label="`${scriptDialog.node?.business_name || ''} 巡检脚本原文`"
+              >{{ scriptDialog.detail.inspection_script }}</pre>
+
+              <!-- 字段规则表 -->
+              <template v-if="scriptDialog.detail && Array.isArray(scriptDialog.detail.inspection_fields) && scriptDialog.detail.inspection_fields.length">
+                <h4 class="usm-fields-title">字段规则</h4>
+                <table class="usm-fields-table" data-testid="usm-inspection-fields-table">
+                  <thead>
+                    <tr>
+                      <th>key</th>
+                      <th>中文名</th>
+                      <th>单位</th>
+                      <th>方向</th>
+                      <th>warn</th>
+                      <th>crit</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(f, idx) in scriptDialog.detail.inspection_fields" :key="idx">
+                      <td>{{ f.key }}</td>
+                      <td>{{ f.name_zh || '' }}</td>
+                      <td>{{ f.unit || '' }}</td>
+                      <td>{{ f.direction || '' }}</td>
+                      <td>{{ f.warn ?? '' }}</td>
+                      <td>{{ f.crit ?? '' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </template>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -997,6 +1129,37 @@ watch(selectedNodeId, async (newId) => {
   max-height: 200px;
   overflow-y: auto;
   margin: 0;
+}
+
+/* 2026-08-03 新增：脚本元数据行（name tag + display_name + 查看按钮） */
+.usm-script-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.usm-script-display {
+  font-size: 13px;
+  color: #1f2937;
+}
+.usm-view-script-btn {
+  margin-left: auto;
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 4px;
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+}
+.usm-view-script-btn:hover {
+  background: #1d4ed8;
+}
+.usm-fields-title {
+  margin: 16px 0 8px;
+  font-size: 13px;
+  color: #374151;
+  font-weight: 600;
 }
 .usm-fields-table {
   border-collapse: collapse;

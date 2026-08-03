@@ -38,15 +38,19 @@ logger = logging.getLogger(__name__)
 NODE_TYPES = ("folder", "server")
 
 # server 节点详情白名单（与「服务器扫描入库」详情端点同口径）
+# 2026-08-03 改造：devops_servers 表删除 inspection_script / inspection_parser /
+# inspection_fields 三列，仅保留 inspection_script_id 外键。
+# 因此 server 节点详情也改为返回 inspection_script_id / inspection_script_name /
+# inspection_script_display_name 三键（service 层通过 InspectionScriptService 解析）。
 _DETAIL_FIELDS = (
     "id",
     "business_name",
     "server_type",
     "updated_at",
     "whitelist",
-    "inspection_script",
-    "inspection_parser",
-    "inspection_fields",
+    "inspection_script_id",
+    "inspection_script_name",
+    "inspection_script_display_name",
 )
 
 
@@ -453,7 +457,8 @@ class UserServerService:
         folder 节点：返回 ``{"node_type": "folder", "name": ..., ...}``。
         server 节点：返回 user_server_nodes 行 + JOIN devops_servers 的白名单
         字段（business_name / server_type / updated_at / whitelist /
-        inspection_script / inspection_parser / inspection_fields）。
+        inspection_script_id / inspection_script_name /
+        inspection_script_display_name，2026-08-03 巡检脚本库改造后）。
 
         参数:
             node_id: 节点 ID。
@@ -501,14 +506,14 @@ class UserServerService:
             "created_by_user_id": node.get("created_by_user_id"),
             "created_at": node.get("created_at"),
             "updated_at": node.get("updated_at"),
-            # JOIN devops_servers 的白名单字段
+            # JOIN devops_servers 的白名单字段（2026-08-03 改造：返回脚本元数据而非原文）
             "business_name": devops_detail.get("business_name"),
             "server_type": devops_detail.get("server_type"),
             "devops_updated_at": devops_detail.get("updated_at"),
             "whitelist": list(devops_detail.get("whitelist") or []),
-            "inspection_script": devops_detail.get("inspection_script"),
-            "inspection_parser": devops_detail.get("inspection_parser") or "json",
-            "inspection_fields": list(devops_detail.get("inspection_fields") or []),
+            "inspection_script_id": devops_detail.get("inspection_script_id"),
+            "inspection_script_name": devops_detail.get("inspection_script_name"),
+            "inspection_script_display_name": devops_detail.get("inspection_script_display_name"),
         }
 
     # ------------------------------------------------------------------

@@ -476,16 +476,21 @@ def test_get_node_config_folder():
 
 
 def test_get_node_config_server_joins_devops():
-    """server 节点详情 = JOIN devops_servers 取白名单字段。"""
+    """server 节点详情 = JOIN devops_servers 取白名单字段（2026-08-03 改造）。
+
+    详情不再返回 inspection_script / inspection_parser / inspection_fields 三列原文，
+    改为返回 inspection_script_id / inspection_script_name /
+    inspection_script_display_name（service 层通过 InspectionScriptService 解析）。
+    """
     db = FakeDb()
     devops = FakeDevopsService(detail_map={
         100: {
             "id": 100, "business_name": "服务器A", "server_type": "linux",
-            "updated_at": "2026-07-24T11:00:00Z",
+            "updated_at": "2026-08-03T11:00:00Z",
             "whitelist": ["ls", "pwd"],
-            "inspection_script": "echo hello",
-            "inspection_parser": "json",
-            "inspection_fields": [],
+            "inspection_script_id": 11,
+            "inspection_script_name": "linux-bash",
+            "inspection_script_display_name": "Linux Bash 巡检",
         }
     })
     service = _make_service(db=db, devops=devops)
@@ -499,10 +504,14 @@ def test_get_node_config_server_joins_devops():
     assert detail["business_name"] == "服务器A"
     assert detail["server_type"] == "linux"
     assert detail["whitelist"] == ["ls", "pwd"]
-    assert detail["inspection_script"] == "echo hello"
-    assert detail["inspection_parser"] == "json"
-    # 关键：敏感字段（ip / port / password 等）绝不在返回中
-    for forbidden in ("ip", "port", "username", "password", "password_encrypted"):
+    assert detail["inspection_script_id"] == 11
+    assert detail["inspection_script_name"] == "linux-bash"
+    assert detail["inspection_script_display_name"] == "Linux Bash 巡检"
+    # 关键：脚本原文 / 解析器 / 字段规则不在详情中（改走 inspection_script_admin_router）
+    for forbidden in (
+        "inspection_script", "inspection_parser", "inspection_fields",
+        "ip", "port", "username", "password", "password_encrypted",
+    ):
         assert forbidden not in detail
 
 
