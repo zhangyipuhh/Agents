@@ -86,6 +86,14 @@ MENU_CATALOG: List[MenuItem] = [
     MenuItem(id="task-scheduler.server-management", level=2,
              parent_id="task-scheduler",
              label="服务器管理", icon_key="server", sort_order=5, required_role="admin"),
+    # 2026-08-04 新增：「巡检脚本库」Tab —— DevOps 巡检脚本库独立管理面板
+    # - 左侧节点列表 + 搜索 + 右侧可编辑详情 + 字段规则表 + 保存
+    # - admin 默认可见；普通用户需被显式授权
+    # - id 全新，老 ACL 不受影响
+    MenuItem(id="task-scheduler.inspection-script-library", level=2,
+             parent_id="task-scheduler",
+             label="巡检脚本库", icon_key="code", sort_order=6,
+             required_role="admin"),
     # 2026-07-23 新增：「邮件设置」的三个内部 Tab 注册为可独立授权的二级菜单
     # 2026-07-31 二次调整：parent_id 从 `task-scheduler.email-settings` 改为 `messaging.email`
     # - id 永不改：仍为 task-scheduler.email-settings.{server,policies,test}

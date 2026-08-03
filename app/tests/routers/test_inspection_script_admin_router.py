@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 
-SERVER_MANAGEMENT_MENU_ID = "task-scheduler.server-management"
+INSPECTION_SCRIPT_LIBRARY_MENU_ID = "task-scheduler.inspection-script-library"
 
 
 def _build_real_service():
@@ -53,7 +53,7 @@ def inspection_router_setup(app):
 
 @pytest.fixture
 def grant_server_management_acl(client, monkeypatch):
-    """给 testuser 授权 ``task-scheduler.server-management`` 菜单 ACL。"""
+    """给 testuser 授权 ``task-scheduler.inspection-script-library`` 菜单 ACL。"""
     from app.shared.utils.auth.menu_permission_service import MenuPermissionService
 
     svc = client.app.state.menu_permission_service
@@ -66,7 +66,7 @@ def grant_server_management_acl(client, monkeypatch):
             from app.core.menu_registry import get_enabled_items
 
             return [m.id for m in sorted(get_enabled_items(), key=lambda m: m.sort_order)]
-        return sorted({"profile", SERVER_MANAGEMENT_MENU_ID})
+        return sorted({"profile", INSPECTION_SCRIPT_LIBRARY_MENU_ID})
 
     monkeypatch.setattr(svc, "get_visible_menu_ids", fake_visible)
     yield
@@ -149,10 +149,10 @@ def test_list_service_missing_returns_500(client, admin_headers):
 
 
 def test_scan_returns_four_numbers(client, inspection_router_setup, admin_headers, monkeypatch):
-    """POST /scan 返回 4 个数字。"""
+    """POST /scan 返回 5 个数字（2026-08-04 编辑优先新增 skipped）。"""
 
     async def fake_scan():
-        return {"scanned": 2, "inserted": 1, "updated": 1, "failed": 0}
+        return {"scanned": 2, "inserted": 1, "updated": 1, "failed": 0, "skipped": 0}
 
     monkeypatch.setattr(
         inspection_router_setup.state.inspection_script_service,
@@ -162,8 +162,8 @@ def test_scan_returns_four_numbers(client, inspection_router_setup, admin_header
     resp = client.post("/api/admin/inspection-scripts/scan", headers=admin_headers)
     assert resp.status_code == 200
     body = resp.json()
-    assert set(body.keys()) == {"scanned", "inserted", "updated", "failed"}
-    assert body == {"scanned": 2, "inserted": 1, "updated": 1, "failed": 0}
+    assert set(body.keys()) == {"scanned", "inserted", "updated", "failed", "skipped"}
+    assert body == {"scanned": 2, "inserted": 1, "updated": 1, "failed": 0, "skipped": 0}
 
 
 # =============================================================================
@@ -224,6 +224,78 @@ def test_detail_service_missing_returns_500(client, admin_headers):
         assert resp.status_code == 500
     finally:
         app.state.inspection_script_service = saved
+
+
+# =============================================================================
+# P3.5: 更新端点（2026-08-04 新增）
+# =============================================================================
+
+
+def test_update_script_detail_returns_full_record(
+    client, inspection_router_setup, admin_headers, monkeypatch
+):
+    """PUT /{id} 返回完整详情（_DETAIL_FIELDS）。"""
+    detail = {
+        "id": 1, "name": "linux-bash", "display_name": "Linux Bash",
+        "platform": "linux", "version": "bash", "inspection_parser": "json",
+        "inspection_script": "echo manual", "inspection_fields": [],
+        "created_at": None, "updated_at": "2026-08-04",
+    }
+    monkeypatch.setattr(
+        inspection_router_setup.state.inspection_script_service,
+        "update_script_detail",
+        lambda _id, _payload: detail,
+    )
+    resp = client.put(
+        "/api/admin/inspection-scripts/1",
+        headers=admin_headers,
+        json={
+            "display_name": "Linux Bash",
+            "platform": "linux",
+            "version": "bash",
+            "inspection_parser": "json",
+            "inspection_script": "echo manual",
+            "inspection_fields": [],
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["name"] == "linux-bash"
+    assert body["inspection_script"] == "echo manual"
+
+
+def test_update_script_detail_missing_returns_404(
+    client, inspection_router_setup, admin_headers, monkeypatch
+):
+    """PUT /{id} 不存在 → 404，detail='脚本不存在'。"""
+    monkeypatch.setattr(
+        inspection_router_setup.state.inspection_script_service,
+        "update_script_detail",
+        lambda _id, _payload: None,
+    )
+    resp = client.put(
+        "/api/admin/inspection-scripts/9999",
+        headers=admin_headers,
+        json={
+            "display_name": "X", "platform": "linux",
+            "version": "", "inspection_parser": "json",
+            "inspection_script": None, "inspection_fields": [],
+        },
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "脚本不存在"
+
+
+def test_update_script_detail_requires_admin(
+    client, inspection_router_setup, user_headers
+):
+    """非 admin 调 PUT → 403。"""
+    resp = client.put(
+        "/api/admin/inspection-scripts/1",
+        headers=user_headers,
+        json={"display_name": "X"},
+    )
+    assert resp.status_code == 403
 
 
 # =============================================================================

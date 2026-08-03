@@ -206,28 +206,29 @@ class InspectionScriptService:
     # ------------------------------------------------------------------
 
     async def scan_and_upsert(self) -> Dict[str, int]:
-        """读取 YAML 脚本库配置，规范化后 INSERT...ON CONFLICT 写入 DB。
+        """读取 YAML 脚本库配置，规范化后 INSERT 写入 DB（编辑优先）。
 
         输入形态：
             - 顶层 ``{ "inspection_scripts": [ {...}, {...} ] }``（计划示例形式）；
             - 顶层直接 ``[ {...}, {...} ]``（YAML ``-`` 序列形式）；
             - 其它顶层结构 → failed=1（不抛异常）。
 
-        写入策略：以 ``name`` 为唯一键执行单条
-        ``INSERT ... ON CONFLICT (name) DO UPDATE ... RETURNING *,
-        (xmax = 0) AS inserted``；
-        - 计数：``scanned`` 是输入条目数；``inserted`` / ``updated`` 视
-          RETURNING 行 ``(xmax = 0)`` 标记而定；``failed`` 是校验失败 /
-          DB 写入异常 / 重复 name 的总数。
-        - **重复 name 直接拒绝并计入 failed**（不允许后者覆盖前者）。
-        - 失败条目不进入缓存；不抛异常上抛。
-        - 缓存与 DB 同步：upsert 成功后用 RETURNING 行更新
-          ``self._cache`` / ``self._id_cache``，避免再读一次 DB。
+        写入策略（2026-08-04 改造为「编辑优先」）：
+            - 计数：``scanned`` 是输入条目数；``inserted`` 是 DB 中首次出现的
+              name；``skipped`` 是与缓存中已有 name 重合的条目数（**不调用
+              DB upsert，保留人工编辑**）；``updated`` 保留为 0（编辑优先模式
+              下不触发 ON CONFLICT DO UPDATE）；``failed`` 是校验失败 / DB
+              写入异常 / 重复 name 的总数。
+            - **重复 name 直接拒绝并计入 failed**（同 YAML 内重复）。
+            - 失败条目不进入缓存；不抛异常上抛。
+            - 缓存与 DB 同步：insert 成功后用 RETURNING 行更新
+              ``self._cache`` / ``self._id_cache``，避免再读一次 DB。
 
         Returns:
-            Dict[str, int]: 严格只含 ``{"scanned": int, "inserted": int, "updated": int, "failed": int}``
+            Dict[str, int]: 严格只含
+            ``{"scanned": int, "inserted": int, "updated": int, "failed": int, "skipped": int}``
         """
-        stats = {"scanned": 0, "inserted": 0, "updated": 0, "failed": 0}
+        stats = {"scanned": 0, "inserted": 0, "updated": 0, "failed": 0, "skipped": 0}
         cfg_path = Path(self.config_path)
         if not cfg_path.exists():
             return stats
@@ -267,6 +268,10 @@ class InspectionScriptService:
             normalized_per_name[name] = normalized
 
         for name in order:
+            # 2026-08-04 改造：编辑优先——DB 中已存在 name 跳过更新，保留人工编辑
+            if name in self._cache:
+                stats["skipped"] += 1
+                continue
             normalized = normalized_per_name[name]
             try:
                 inserted, row = await self._upsert_one_returning(name, normalized)
@@ -300,6 +305,122 @@ class InspectionScriptService:
                 stats["updated"] += 1
 
         return stats
+
+    # ------------------------------------------------------------------
+    # Update script detail
+    # ------------------------------------------------------------------
+
+    async def update_script_detail(
+        self,
+        script_id: int,
+        payload: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """按 id 更新脚本详情（白名单字段 + 字段规则），同步缓存（2026-08-04 新增）。
+
+        Args:
+            script_id: ``inspection_scripts.id``
+            payload: 业务字段 dict，含 ``name``（仅用于缓存定位）/ ``display_name`` /
+                ``platform`` / ``version`` / ``inspection_parser`` /
+                ``inspection_script`` / ``inspection_fields``
+
+        Returns:
+            Optional[Dict[str, Any]]: 更新后的完整记录（_DETAIL_FIELDS 字段）；
+            script_id 缺失 / 入参非法 / DB 无返回行时返回 ``None``（不抛异常）
+        """
+        if script_id is None or not isinstance(script_id, int) or script_id <= 0:
+            return None
+        if not isinstance(payload, dict):
+            return None
+
+        # name 不参与请求体；写缓存时从 DB 返回行（record）回填
+        display_name = payload.get("display_name")
+        if not isinstance(display_name, str) or not display_name.strip():
+            return None
+        display_name = display_name.strip()
+
+        platform = (payload.get("platform") or "linux").strip().lower()
+        if platform not in ("linux", "windows"):
+            return None
+
+        version = payload.get("version")
+        version = version.strip() if isinstance(version, str) else ""
+
+        inspection_parser = (payload.get("inspection_parser") or "json").strip().lower()
+        if inspection_parser not in _VALID_PARSERS:
+            return None
+
+        script_raw = payload.get("inspection_script")
+        if script_raw is None:
+            inspection_script: Optional[str] = None
+        else:
+            try:
+                inspection_script = str(script_raw).rstrip("\n")
+            except Exception:
+                return None
+            if not inspection_script.strip():
+                inspection_script = None
+
+        raw_fields = payload.get("inspection_fields") or []
+        if not isinstance(raw_fields, list):
+            return None
+        try:
+            rules = normalize_inspection_fields(raw_fields)
+        except Exception:
+            return None
+        fields_payload = [
+            {
+                "key": r.key,
+                "name_zh": r.name_zh,
+                "unit": r.unit,
+                "direction": r.direction,
+                "warn": r.warn,
+                "crit": r.crit,
+            }
+            for r in rules
+        ]
+
+        try:
+            row = await self.db.fetchrow(
+                "UPDATE inspection_scripts SET "
+                "display_name = $2, platform = $3, version = $4, "
+                "inspection_parser = $5, inspection_script = $6, "
+                "inspection_fields = $7::jsonb, updated_at = NOW() "
+                "WHERE id = $1 "
+                "RETURNING id, name, display_name, platform, version, "
+                "inspection_parser, inspection_script, inspection_fields, "
+                "created_at, updated_at",
+                int(script_id),
+                display_name,
+                platform,
+                version,
+                inspection_parser,
+                inspection_script,
+                json.dumps(fields_payload, ensure_ascii=False),
+            )
+        except Exception:
+            logger.exception(
+                "[inspection_script_service] update_script_detail failed, id=%s",
+                script_id,
+            )
+            return None
+        if not row:
+            return None
+
+        record = dict(row)
+        if isinstance(record.get("inspection_fields"), str):
+            try:
+                record["inspection_fields"] = json.loads(record["inspection_fields"])
+            except (json.JSONDecodeError, TypeError):
+                record["inspection_fields"] = []
+        elif not isinstance(record.get("inspection_fields"), list):
+            record["inspection_fields"] = []
+
+        async with self._write_lock:
+            record_name = record.get("name")
+            if isinstance(record_name, str) and record_name.strip():
+                self._cache[record_name] = record
+            self._id_cache[int(script_id)] = record
+        return {k: record.get(k) for k in _DETAIL_FIELDS}
 
     # ------------------------------------------------------------------
     # Public read APIs

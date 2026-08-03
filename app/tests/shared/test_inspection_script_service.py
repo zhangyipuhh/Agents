@@ -393,7 +393,10 @@ def test_scan_and_upsert_yaml_missing_returns_zero(tmp_yaml):
 
     svc = InspectionScriptService(db=_make_db(), config_path=str(tmp_yaml))
     stats = asyncio.run(svc.scan_and_upsert())
-    assert stats == {"scanned": 0, "inserted": 0, "updated": 0, "failed": 0}
+    # 2026-08-04 编辑优先：返回 5 字段；skipped 增量 = 0
+    assert stats == {
+        "scanned": 0, "inserted": 0, "updated": 0, "failed": 0, "skipped": 0
+    }
 
 
 def test_scan_and_upsert_top_level_not_list_records_failed(tmp_yaml):
@@ -416,7 +419,10 @@ def test_scan_and_upsert_top_level_not_list_records_failed(tmp_yaml):
     )
     svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
     stats = asyncio.run(svc.scan_and_upsert())
-    assert stats == {"scanned": 0, "inserted": 0, "updated": 0, "failed": 1}
+    # 2026-08-04 编辑优先：返回 5 字段
+    assert stats == {
+        "scanned": 0, "inserted": 0, "updated": 0, "failed": 1, "skipped": 0
+    }
 
 
 def test_list_scripts_returns_whitelist_only(tmp_yaml):
@@ -680,7 +686,9 @@ def test_resolve_script_for_server_default_match(tmp_yaml):
 
 
 def test_scan_and_upsert_mixed_insert_update(tmp_yaml):
-    """同名条目再次扫描 → 第二次 scanned=1, updated=1。
+    """同名条目再次扫描（2026-08-04 改造为编辑优先）：
+    第一次 insert 成功 → cache 含 linux-bash；第二次同 name 命中 cache → skipped=1，
+    不调用 fetchrow，不再更新。保留对原契约的回归保护。
 
     Args:
         tmp_yaml: 临时 yaml 路径
@@ -692,7 +700,7 @@ def test_scan_and_upsert_mixed_insert_update(tmp_yaml):
     from app.shared.utils.inspection_script_service import InspectionScriptService
 
     db = _make_db()
-    # 第一次 insert, 第二次 update (inserted=False)
+    # 仅第一次返回 RETURNING 行（inserted=True）；第二次不应再调用 fetchrow
     db.fetchrow.side_effect = [
         {
             "id": 1,
@@ -707,19 +715,6 @@ def test_scan_and_upsert_mixed_insert_update(tmp_yaml):
             "updated_at": "2026-08-03",
             "inserted": True,
         },
-        {
-            "id": 1,
-            "name": "linux-bash",
-            "display_name": "Linux Bash",
-            "platform": "linux",
-            "version": "bash",
-            "inspection_parser": "json",
-            "inspection_script": None,
-            "inspection_fields": "[]",
-            "created_at": None,
-            "updated_at": "2026-08-03",
-            "inserted": False,
-        },
     ]
     tmp_yaml.parent.mkdir(parents=True, exist_ok=True)
     tmp_yaml.write_text(
@@ -733,6 +728,92 @@ def test_scan_and_upsert_mixed_insert_update(tmp_yaml):
     svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
     stats1 = asyncio.run(svc.scan_and_upsert())
     assert stats1["inserted"] == 1
+    assert stats1["skipped"] == 0
+    # 第二次扫描：cache 已有 linux-bash → skipped=1，不触发 fetchrow
+    fetch_call_count_before = db.fetchrow.await_count
     stats2 = asyncio.run(svc.scan_and_upsert())
-    assert stats2["updated"] == 1
+    assert stats2["skipped"] == 1
     assert stats2["inserted"] == 0
+    assert stats2["updated"] == 0
+    # 关键：编辑优先模式下不调用 DB
+    assert db.fetchrow.await_count == fetch_call_count_before
+
+
+def test_update_script_detail_updates_db_and_cache(tmp_yaml):
+    """update_script_detail 写入 DB 并同步 _cache / _id_cache（2026-08-04 新增）。"""
+    import asyncio
+    from app.shared.utils.inspection_script_service import InspectionScriptService
+
+    db = _make_db()
+    db.fetchrow.return_value = {
+        "id": 7,
+        "name": "linux-bash",
+        "display_name": "Linux Bash (人工编辑)",
+        "platform": "linux",
+        "version": "bash",
+        "inspection_parser": "json",
+        "inspection_script": "echo manual",
+        "inspection_fields": "[]",
+        "created_at": None,
+        "updated_at": "2026-08-04",
+    }
+    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    asyncio.run(svc.preload_all())
+    payload = {
+        "display_name": "Linux Bash (人工编辑)",
+        "platform": "linux",
+        "version": "bash",
+        "inspection_parser": "json",
+        "inspection_script": "echo manual",
+        "inspection_fields": [],
+    }
+    result = asyncio.run(svc.update_script_detail(7, payload))
+    assert result is not None
+    assert result["display_name"] == "Linux Bash (人工编辑)"
+    assert "linux-bash" in svc._cache
+    assert svc._cache["linux-bash"]["inspection_script"] == "echo manual"
+    # _id_cache 也同步
+    assert 7 in svc._id_cache
+
+
+def test_update_script_detail_invalid_returns_none(tmp_yaml):
+    """update_script_detail 收到非法入参 → 返回 None（不抛）。"""
+    import asyncio
+    from app.shared.utils.inspection_script_service import InspectionScriptService
+
+    db = _make_db()
+    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    # platform 非法
+    assert asyncio.run(svc.update_script_detail(1, {
+        "display_name": "X", "platform": "solaris", "version": "",
+        "inspection_parser": "json", "inspection_script": None,
+        "inspection_fields": [],
+    })) is None
+    # inspection_parser 非法
+    assert asyncio.run(svc.update_script_detail(1, {
+        "display_name": "X", "platform": "linux", "version": "",
+        "inspection_parser": "yaml", "inspection_script": None,
+        "inspection_fields": [],
+    })) is None
+    # display_name 空
+    assert asyncio.run(svc.update_script_detail(1, {
+        "display_name": "  ", "platform": "linux", "version": "",
+        "inspection_parser": "json", "inspection_script": None,
+        "inspection_fields": [],
+    })) is None
+
+
+def test_update_script_detail_missing_id_returns_none(tmp_yaml):
+    """script_id 不存在（DB 未返回行）→ 返回 None。"""
+    import asyncio
+    from app.shared.utils.inspection_script_service import InspectionScriptService
+
+    db = _make_db()
+    db.fetchrow.return_value = None
+    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    result = asyncio.run(svc.update_script_detail(9999, {
+        "display_name": "X", "platform": "linux", "version": "",
+        "inspection_parser": "json", "inspection_script": None,
+        "inspection_fields": [],
+    }))
+    assert result is None

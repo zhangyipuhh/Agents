@@ -30,9 +30,10 @@ InspectionScriptAdminRouter（2026-08-03 新增）
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, Field
 
 from app.shared.utils.auth.Safety import (
     require_admin,
@@ -53,8 +54,22 @@ _LIST_FIELDS = (
     "inspection_parser",
     "updated_at",
 )
-# 扫描结果白名单（4 个数字）
-_SCAN_FIELDS = ("scanned", "inserted", "updated", "failed")
+# 扫描结果白名单（5 个数字；2026-08-04 编辑优先新增 skipped）
+_SCAN_FIELDS = ("scanned", "inserted", "updated", "failed", "skipped")
+
+
+class UpdateInspectionScriptRequest(BaseModel):
+    """更新巡检脚本库条目请求体（2026-08-04 新增，admin only）。
+
+    name 字段不在请求体内（主键语义）；其余业务字段均与 _DETAIL_FIELDS 对齐。
+    """
+
+    display_name: str = Field(..., min_length=1, max_length=200)
+    platform: str = Field("linux", pattern="^(linux|windows)$")
+    version: str = Field("", max_length=32)
+    inspection_parser: str = Field("json", pattern="^(json|kv|csv|raw)$")
+    inspection_script: Optional[str] = None
+    inspection_fields: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 router = APIRouter(
@@ -88,7 +103,7 @@ def _get_service(request: Request):
     "",
     response_model=List[Dict[str, Any]],
     dependencies=[
-        Depends(require_admin_or_menu_acl("task-scheduler.server-management"))
+        Depends(require_admin_or_menu_acl("task-scheduler.inspection-script-library"))
     ],
 )
 async def list_inspection_scripts(request: Request) -> List[Dict[str, Any]]:
@@ -174,3 +189,42 @@ async def get_inspection_script(request: Request, script_id: int) -> Dict[str, A
             detail="脚本不存在",
         )
     return detail
+
+
+@router.put(
+    "/{script_id}",
+    response_model=Dict[str, Any],
+    dependencies=[Depends(require_admin)],
+)
+async def update_inspection_script(
+    request: Request,
+    script_id: int,
+    req: UpdateInspectionScriptRequest,
+) -> Dict[str, Any]:
+    """按 ``script_id`` 更新脚本详情（2026-08-04 新增，admin only）。
+
+    行为：
+        - 服务未初始化 → 500
+        - 请求体非法 → 422
+        - script_id 不存在 → 404 + 通用 detail「脚本不存在」（不回显 script_id）
+        - 成功 → 200 + 更新后的完整 JSON
+
+    Args:
+        request: FastAPI Request
+        script_id: inspection_scripts 主键 id（path int）
+        req: 更新请求体（Pydantic 校验）
+
+    Returns:
+        Dict[str, Any]: 更新后的完整记录（_DETAIL_FIELDS 字段）
+
+    Raises:
+        HTTPException: 404 / 422 / 500
+    """
+    svc = _get_service(request)
+    record = svc.update_script_detail(script_id, req.model_dump())
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="脚本不存在",
+        )
+    return record
