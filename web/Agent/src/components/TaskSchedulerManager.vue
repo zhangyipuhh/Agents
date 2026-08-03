@@ -43,6 +43,9 @@ import {
 } from '../utils/api.js'
 import ApiConfigManager from './ApiConfigManager.vue'
 import UserServerManager from './UserServerManager.vue'  // 2026-07-24 新增：用户服务器配置
+// 2026-08-04 新增：巡检脚本库独立 Tab —— 左侧节点列表 + 右侧可编辑详情
+import InspectionScriptLibraryPanel from './InspectionScriptLibraryPanel.vue'
+import InspectionScriptEditorPanel from './InspectionScriptEditorPanel.vue'
 // 2026-07-29 新增：context_overrides 参数编辑器工具（parse / serialize 转换、reference_server 特殊处理）
 import {
   parseContextOverrides,
@@ -58,6 +61,8 @@ const TAB_SCRIPT = 'script'
 const TAB_API = 'api'
 // 2026-07-24 新增：用户服务器管理 tab
 const TAB_SERVERS = 'servers'
+// 2026-08-04 新增：巡检脚本库独立 Tab（独立菜单权限）
+const TAB_LIBRARY = 'library'
 
 // 2026-07-23 ACL 双重门：tab 与后端 MENU_CATALOG 的子菜单 id 对齐映射
 // - task-scheduler.scheduled → TAB_TASK（编辑任务）
@@ -65,12 +70,14 @@ const TAB_SERVERS = 'servers'
 // - task-scheduler.script-inventory → TAB_SCRIPT（脚本扫描入库）
 // - task-scheduler.api-config → TAB_API（API接口配置）
 // - task-scheduler.server-management → TAB_SERVERS（服务器管理）
+// - task-scheduler.inspection-script-library → TAB_LIBRARY（2026-08-04 新增）
 const TAB_MENU_IDS = {
   [TAB_TASK]: 'task-scheduler.scheduled',
   [TAB_SCAN]: 'task-scheduler.script-scan',
   [TAB_SCRIPT]: 'task-scheduler.script-inventory',
   [TAB_API]: 'task-scheduler.api-config',
   [TAB_SERVERS]: 'task-scheduler.server-management',
+  [TAB_LIBRARY]: 'task-scheduler.inspection-script-library',
 }
 
 const TAB_LABELS = [
@@ -80,6 +87,8 @@ const TAB_LABELS = [
   { id: TAB_API, label: 'API接口配置' },
   // 2026-07-24 新增：用户私有服务器配置（folder / server 节点 tree + 共享引用详情）
   { id: TAB_SERVERS, label: '服务器管理' },
+  // 2026-08-04 新增：巡检脚本库独立 Tab（独立菜单权限 + 节点列表 + 编辑保存）
+  { id: TAB_LIBRARY, label: '巡检脚本库' },
 ]
 
 const schedules = ref([])
@@ -121,11 +130,14 @@ const scanSummary = ref(null)
 const hasLoaded = ref(false)
 // 删除状态：当前正在删除的行 id（防重复点击）
 const isDeletingRowId = ref(null)
-// 2026-08-03 新增：巡检脚本扫描状态（与服务器扫描共享 4 字段统计的 UI，但状态独立）
-const isScanningInspectionScripts = ref(false)
-const inspectionScanErrorMessage = ref('')
-const inspectionScanSuccessMessage = ref('')
-const inspectionScanSummary = ref(null)
+// 2026-08-04 改造：巡检脚本扫描状态移至「巡检脚本库」Tab
+// 扫描（5 字段：scanned/inserted/updated/skipped/failed）与 librarySelectedScriptId 状态独立
+const isLibraryScanning = ref(false)
+const libraryScanErrorMessage = ref('')
+const libraryScanSuccessMessage = ref('')
+const libraryScanSummary = ref(null)
+// 2026-08-04 新增：巡检脚本库 Tab 选中节点 + 保存结果
+const librarySelectedScriptId = ref(null)
 
 // 详情弹窗状态：白名单 / 巡检脚本
 // 单 ref 同时持有 row 与 detail，避免多个 ref 同步问题
@@ -1817,26 +1829,36 @@ async function triggerServerScan() {
 }
 
 /**
- * 2026-08-03 新增：触发巡检脚本库扫描入库（POST /api/admin/inspection-scripts/scan）。
+ * 2026-08-04 改造：触发「巡检脚本库」Tab 扫描入库（POST /api/admin/inspection-scripts/scan）。
  * 仅 admin 可触发；带防重复提交；失败时使用脱敏文案，不回显后端 detail。
- * 扫描结果展示到独立的 summary 区域（inspectionScanSummary），不影响服务器扫描的提示。
+ * 扫描结果展示到独立的 summary 区域（libraryScanSummary，5 字段），不影响服务器扫描的提示。
  * @returns {Promise<void>} 无返回值
  */
-async function triggerInspectionScriptsScan() {
-  if (isScanningInspectionScripts.value) return
-  isScanningInspectionScripts.value = true
-  inspectionScanErrorMessage.value = ''
-  inspectionScanSuccessMessage.value = ''
-  inspectionScanSummary.value = null
+async function triggerLibraryScan() {
+  if (isLibraryScanning.value) return
+  isLibraryScanning.value = true
+  libraryScanErrorMessage.value = ''
+  libraryScanSuccessMessage.value = ''
+  libraryScanSummary.value = null
   try {
     const summary = await scanInspectionScripts()
-    inspectionScanSummary.value = sanitizeSummary(summary)
-    inspectionScanSuccessMessage.value = '巡检脚本扫描完成'
+    libraryScanSummary.value = sanitizeSummary(summary)
+    libraryScanSuccessMessage.value = '巡检脚本扫描完成'
   } catch {
-    inspectionScanErrorMessage.value = '巡检脚本扫描失败，请稍后重试'
+    libraryScanErrorMessage.value = '巡检脚本扫描失败，请稍后重试'
   } finally {
-    isScanningInspectionScripts.value = false
+    isLibraryScanning.value = false
   }
+}
+
+/**
+ * 2026-08-04 新增：InspectionScriptEditorPanel 保存成功后的回调。
+ * 写入成功提示，并保留当前选中态；不在此处主动刷新列表，由组件内部 onMounted 缓存决定。
+ * @param {Object} detail - updateInspectionScript 返回的完整记录
+ */
+function onLibraryScriptSaved(detail) {
+  if (!detail) return
+  libraryScanSuccessMessage.value = `脚本「${detail.display_name || detail.name || ''}」保存成功`
 }
 
 /**
@@ -3400,56 +3422,8 @@ onBeforeUnmount(() => {
           </div>
         </header>
 
-        <!-- 2026-08-03 新增：巡检脚本库扫描入口（admin only）。与服务器扫描独立，
-             使用脱敏后端响应（4 字段整数），失败时仅显示脱敏文案。 -->
-        <section
-          class="inspection-script-scan"
-          data-testid="inspection-script-scan-section"
-        >
-          <header class="inspection-script-scan-header">
-            <div>
-              <h4>巡检脚本扫描入库</h4>
-              <p class="muted-hint">从 data/devops/inspection_scripts.yaml 同步所有平台巡检脚本；仅展示扫描统计，不暴露脚本原文。</p>
-            </div>
-            <button
-              type="button"
-              class="primary-btn"
-              data-testid="scan-inspection-scripts-btn"
-              :disabled="isScanningInspectionScripts"
-              :aria-busy="isScanningInspectionScripts ? 'true' : 'false'"
-              @click="triggerInspectionScriptsScan"
-            >
-              <span v-if="isScanningInspectionScripts" data-testid="scan-inspection-scripts-loading">扫描中...</span>
-              <span v-else>巡检脚本扫描</span>
-            </button>
-          </header>
-          <div
-            v-if="inspectionScanErrorMessage"
-            class="alert error"
-            role="alert"
-            data-testid="scan-inspection-scripts-error"
-          >
-            {{ inspectionScanErrorMessage }}
-          </div>
-          <div
-            v-if="inspectionScanSuccessMessage"
-            class="alert success"
-            role="status"
-            data-testid="scan-inspection-scripts-status"
-          >
-            {{ inspectionScanSuccessMessage }}
-          </div>
-          <div
-            v-if="inspectionScanSummary"
-            class="alert info summary"
-            data-testid="scan-inspection-scripts-summary"
-          >
-            <span>扫描 {{ inspectionScanSummary.scanned }}</span>
-            <span>新增 {{ inspectionScanSummary.inserted }}</span>
-            <span>更新 {{ inspectionScanSummary.updated }}</span>
-            <span>失败 {{ inspectionScanSummary.failed }}</span>
-          </div>
-        </section>
+        <!-- 2026-08-04 改造：巡检脚本库扫描入口已迁移至「巡检脚本库」Tab (data-testid="panel-library")。
+             服务器扫描 Tab 仅保留服务器相关 UI。-->
 
         <div
           v-if="scanErrorMessage"
@@ -3659,6 +3633,76 @@ onBeforeUnmount(() => {
         class="task-panel-servers"
       >
         <UserServerManager />
+      </section>
+
+      <!-- 巡检脚本库 Tab —— 2026-08-04 新增：独立菜单权限 + 左右分栏 + 编辑保存 -->
+      <section
+        v-else-if="activeTab === TAB_LIBRARY"
+        :id="`panel-${TAB_LIBRARY}`"
+        role="tabpanel"
+        aria-labelledby="tab-library"
+        data-testid="panel-library"
+        class="task-panel-library"
+      >
+        <header class="detail-header">
+          <div>
+            <h3>巡检脚本库</h3>
+            <p>左侧为脚本节点列表；右侧为可编辑详情。数据库内容优先，再次扫描不会覆盖已编辑条目。</p>
+          </div>
+          <div class="actions">
+            <button
+              type="button"
+              class="primary-btn"
+              data-testid="library-scan-btn"
+              :disabled="isLibraryScanning"
+              :aria-busy="isLibraryScanning ? 'true' : 'false'"
+              @click="triggerLibraryScan"
+            >
+              <span v-if="isLibraryScanning" data-testid="library-scan-loading">扫描中...</span>
+              <span v-else>巡检脚本扫描</span>
+            </button>
+          </div>
+        </header>
+        <div
+          v-if="libraryScanErrorMessage"
+          class="alert error"
+          data-testid="library-scan-error"
+          role="alert"
+        >
+          {{ libraryScanErrorMessage }}
+        </div>
+        <div
+          v-if="libraryScanSuccessMessage"
+          class="alert success"
+          data-testid="library-scan-status"
+          role="status"
+        >
+          {{ libraryScanSuccessMessage }}
+        </div>
+        <div
+          v-if="libraryScanSummary"
+          class="alert info summary"
+          data-testid="library-scan-summary"
+        >
+          <span>扫描 {{ libraryScanSummary.scanned }}</span>
+          <span>新增 {{ libraryScanSummary.inserted }}</span>
+          <span>更新 {{ libraryScanSummary.updated }}</span>
+          <span>跳过 {{ libraryScanSummary.skipped ?? 0 }}</span>
+          <span>失败 {{ libraryScanSummary.failed }}</span>
+        </div>
+        <div class="library-layout">
+          <aside class="library-aside" data-testid="library-aside">
+            <InspectionScriptLibraryPanel
+              @select="(id) => (librarySelectedScriptId = id)"
+            />
+          </aside>
+          <div class="library-main" data-testid="library-main">
+            <InspectionScriptEditorPanel
+              :script-id="librarySelectedScriptId"
+              @saved="onLibraryScriptSaved"
+            />
+          </div>
+        </div>
       </section>
     </main>
   </section>
@@ -3906,6 +3950,39 @@ onBeforeUnmount(() => {
   min-height: 0;
   /* 子组件（UserServerManager）已负责内部滚动，这里裁剪防止内容外溢 */
   overflow: hidden;
+}
+
+/* 2026-08-04 新增：巡检脚本库 Tab 布局 —— 左右分栏，flex 高度链撑满 */
+.task-detail > .task-panel-library {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.task-panel-library .library-layout {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  border-top: 1px solid #e5e7eb;
+}
+.task-panel-library .library-aside {
+  width: 320px;
+  min-width: 240px;
+  max-width: 360px;
+  border-right: 1px solid #e5e7eb;
+  background: #fafafa;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.task-panel-library .library-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #ffffff;
 }
 
 .panel-header,
