@@ -81,3 +81,31 @@ class AgentContext(TypedDict):
     - 工具如需发起新审计事件，应优先读取 ``runtime.context.get("log_ip")``，
       避免与 request.state 解耦的间接上下文。
     默认 None 表示身份未被注入（lifespan 异常 / 离线脚本 / 测试桩场景）。"""
+    # 2026-08-03 新增：第三方执行器开关与端点名（与 SSHTools.execute_command 配合）
+    use_third_party_executor: bool = False
+    """是否走第三方命令执行器（2026-08-03 新增，SSHTools.execute_command 专用）。
+
+    业务语义：
+    - ``True`` → ``SSHTools.execute_command`` 跳过本地 Paramiko，改为
+      通过 HTTPS 调用 ``runtime.context["third_party_endpoint_name"]`` 指向的
+      第三方端点（请求体经 RSA-OAEP + AES-256-GCM 加密）。
+    - ``False``（默认）→ 走本地 Paramiko SSH，行为完全向后兼容。
+
+    注意：
+    - 仅 ``SSHTools.execute_command`` 读取本字段；``execute_batch_commands`` /
+      ``get_system_logs`` 不受影响（按用户当前需求保持不变）。
+    - 加密契约详见 ``app/shared/utils/crypto/rsa_aes.py`` 与
+      ``app/shared/utils/executor/third_party_executor.py``。
+    - 业务方可在 ``AgentContext.context_overrides`` 中通过
+      ``{"use_third_party_executor": True}`` 注入。
+    """
+    third_party_endpoint_name: Optional[str] = None
+    """第三方执行器端点名（2026-08-03 新增，SSHTools.execute_command 专用）。
+
+    业务语义：
+    - 非空时直接使用；为空 / 缺失时回退到
+      ``settings.third_party_executor.default_endpoint``（默认 ``"primary"``）。
+    - 端点配置从 ``.env`` 的 ``THIRD_PARTY_EXECUTOR_ENDPOINTS`` JSON 加载，
+      由 ``app/shared/utils/executor/endpoints.ThirdPartyEndpointRegistry`` 管理。
+    - 仅在 ``use_third_party_executor=True`` 时生效。
+    """
