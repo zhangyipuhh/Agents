@@ -546,6 +546,45 @@ class FeishuSettings(BaseSettings):
 
 
 
+class ThirdPartyExecutorSettings(BaseSettings):
+    """
+    第三方命令执行器配置（2026-08-03 新增）。
+
+    用于 ``SSHTools.execute_command`` 走第三方分支时配置端点与密钥。
+    配置缺失时 ``endpoints_json`` 为空字符串，业务方走本地 Paramiko（默认行为不变）。
+
+    Attributes:
+        endpoints_json: 端点列表 JSON（数组），每项含 ``name`` / ``url`` /
+            ``public_key_pem`` / ``timeout_seconds`` / ``enabled``。
+            ``url`` 必须以 ``https://`` 开头（防中间人）。
+        default_endpoint: 默认端点名；``runtime.context["third_party_endpoint_name"]``
+            未提供时使用此值。
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_prefix="THIRD_PARTY_EXECUTOR_",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    endpoints_json: str = Field(
+        default="",
+        description=(
+            "第三方端点 JSON 配置；每项含 name / url / public_key_pem / "
+            "timeout_seconds / enabled。url 必须 https://。环境变量 "
+            "THIRD_PARTY_EXECUTOR_ENDPOINTS。"
+        ),
+    )
+    default_endpoint: str = Field(
+        default="primary",
+        description=(
+            "默认端点名；可由 THIRD_PARTY_EXECUTOR_DEFAULT_ENDPOINT 覆盖。"
+        ),
+    )
+
+
 class SkillsSettings(BaseSettings):
     """
     Skill 系统配置（2026-06-21 新增）
@@ -635,6 +674,9 @@ class Settings(BaseSettings):
     skills: SkillsSettings = Field(default_factory=SkillsSettings)
     devops: DevOpsSettings = Field(default_factory=DevOpsSettings)
     feishu: FeishuSettings = Field(default_factory=FeishuSettings)
+    third_party_executor: ThirdPartyExecutorSettings = Field(
+        default_factory=ThirdPartyExecutorSettings
+    )
     agent_chat_max_concurrency: int = Field(
         default=1,
         ge=1,

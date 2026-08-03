@@ -571,14 +571,21 @@ def execute_command(
     步骤：
       1) 通过 ``DevOpsServerService`` 取连接配置（**忽略调用方传入的 server_type**）
       2) ``CommandInterceptor`` 黑名单优先 → 白名单 allowlist
-      3) 平台派生并通过 paramiko.exec_command 执行
-      4) 把执行结果（无敏感字段）封装为 ``ToolMessage`` 返回 Command
+      3) 平台派生（Linux/bash 或 Windows/powershell）
+      4) **2026-08-03 新增**：根据 ``runtime.context["use_third_party_executor"]``
+         决定走第三方 HTTPS 调用（请求体加密，RSA-OAEP + AES-256-GCM），
+         还是走本地 paramiko.exec_command
+      5) 把执行结果（无敏感字段）封装为 ``ToolMessage`` 返回 Command
 
     Args:
         command: 待执行的命令字符串
         business_name: 业务名（必填，不可为空）
         timeout: 命令执行超时（秒）
-        runtime: LangChain ToolRuntime（langchain runtime 自动注入）
+        runtime: LangChain ToolRuntime（langchain runtime 自动注入）。
+            context 中支持：
+              - ``use_third_party_executor`` (bool): True → 走第三方 HTTPS 调用
+              - ``third_party_endpoint_name`` (str): 第三方端点名；缺省取
+                ``settings.third_party_executor.default_endpoint``
 
     Returns:
         Command: 包含 messages 的 LangChain 命令对象
@@ -689,6 +696,144 @@ def execute_command(
     wrapped = _wrap_for_platform(config["server_type"], command)
     # Bug-5 修复:LLM 端 timeout 钳制到 [1, 120]
     safe_timeout = _clamp_timeout(timeout, default=30, lo=1, hi=120)
+    # 2026-08-03 新增：通过 runtime.context 控制是否走第三方执行器（加密 body 调用 HTTPS）。
+    # 默认 False → 走本地 Paramiko（保持向后兼容）；True → 跳过本地 SSH，由第三方执行。
+    ctx = _runtime_context(runtime)
+    use_third_party = bool(ctx.get("use_third_party_executor"))
+
+    if use_third_party:
+        # ===== 第三方分支（2026-08-03 新增）=====
+        endpoint_name = ctx.get("third_party_endpoint_name")
+        if not isinstance(endpoint_name, str) or not endpoint_name.strip():
+            from app.core.config.settings import settings as _settings
+
+            endpoint_name = _settings.third_party_executor.default_endpoint
+        started = time.monotonic()
+        try:
+            import asyncio as _asyncio
+            from app.shared.utils.executor.third_party_executor import (
+                dispatch as _tp_dispatch,
+                normalize_response as _tp_normalize,
+            )
+
+            # execute_command 是同步函数,通过 asyncio.run 包装异步 dispatch。
+            # 若当前已处于事件循环（agent runtime 内），则改用 run_until_complete 走现有 loop
+            # （避免 RuntimeError: asyncio.run() cannot be called from a running event loop）。
+            try:
+                _loop = _asyncio.get_running_loop()
+                _in_loop = True
+            except RuntimeError:
+                _in_loop = False
+
+            if _in_loop:
+                # 当前已在一个 event loop 内,直接 await coro（LangChain agent runtime 同步
+                # 调用工具函数的场景不进入此分支；此处为 future-proof）
+                resp_coro = _tp_dispatch(
+                    endpoint_name=endpoint_name,
+                    command=command,
+                    wrapped_command=wrapped,
+                    business_name=business_name,
+                    timeout=safe_timeout,
+                    server_type=config.get("server_type"),
+                )
+                resp = _asyncio.run_coroutine_threadsafe(
+                    _asyncio.ensure_future(resp_coro), _loop
+                ).result()
+            else:
+                resp = _asyncio.run(
+                    _tp_dispatch(
+                        endpoint_name=endpoint_name,
+                        command=command,
+                        wrapped_command=wrapped,
+                        business_name=business_name,
+                        timeout=safe_timeout,
+                        server_type=config.get("server_type"),
+                    )
+                )
+            payload = _tp_normalize(resp)
+            duration_ms = int((time.monotonic() - started) * 1000)
+            success = bool(payload.get("success"))
+            output_text = payload.get("output") or ""
+            err_text = payload.get("error") or ""
+            stdout_size = len(output_text.encode("utf-8")) if output_text else 0
+            stderr_size = len(err_text.encode("utf-8")) if err_text else 0
+            _emit_log(
+                action="ssh_execute_command",
+                result="success" if success else "failure",
+                runtime=runtime,
+                business_name=business_name,
+                metadata={
+                    "event_type": "execute_command",
+                    "server_type": config.get("server_type"),
+                    "command_redacted": redact_command(command),
+                    "command_hash": hash_command(command),
+                    "decision": "executed",
+                    "intercept_reason": None,
+                    "exit_code": payload.get("exit_code"),
+                    "duration_ms": duration_ms,
+                    "stdout_size": stdout_size,
+                    "stderr_size": stderr_size,
+                    "error_code": None if success else "non_zero_exit",
+                    "executor_type": "third_party",
+                    "third_party_endpoint": endpoint_name,
+                },
+            )
+            return Command(
+                update={
+                    "messages": [
+                        _make_tool_message(tool_call_id, payload)
+                    ]
+                }
+            )
+        except Exception as tp_exc:  # noqa: BLE001 - 第三方调用失败统一降级
+            from app.shared.utils.executor.errors import (
+                ThirdPartyExecutorError,
+            )
+
+            duration_ms = int((time.monotonic() - started) * 1000)
+            if isinstance(tp_exc, ThirdPartyExecutorError):
+                error_code = tp_exc.error_code
+                intercept_reason = tp_exc.reason
+                user_message = tp_exc.user_message
+            else:
+                error_code = "third_party_unexpected_error"
+                intercept_reason = (
+                    f"{type(tp_exc).__name__}: {tp_exc}"
+                )
+                user_message = "第三方调用异常"
+            _emit_log(
+                action="ssh_execute_command",
+                result="failure",
+                runtime=runtime,
+                business_name=business_name,
+                metadata={
+                    "event_type": "execute_command",
+                    "server_type": config.get("server_type"),
+                    "command_redacted": redact_command(command),
+                    "command_hash": hash_command(command),
+                    "decision": "executed",
+                    "intercept_reason": intercept_reason,
+                    "exit_code": None,
+                    "duration_ms": duration_ms,
+                    "stdout_size": 0,
+                    "stderr_size": 0,
+                    "error_code": error_code,
+                    "executor_type": "third_party",
+                    "third_party_endpoint": endpoint_name,
+                },
+            )
+            return Command(
+                update={
+                    "messages": [
+                        _make_tool_message(
+                            tool_call_id,
+                            {"success": False, "error": user_message},
+                        )
+                    ]
+                }
+            )
+
+    # ===== 本地 Paramiko SSH 分支（原行为完全保留）=====
     client = None
     started = time.monotonic()
     try:
