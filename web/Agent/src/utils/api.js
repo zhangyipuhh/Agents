@@ -2578,6 +2578,42 @@ export async function fetchInspectionScriptDetail(scriptId) {
   return response.json()
 }
 
+/**
+ * 按 script_id 更新巡检脚本库条目（admin only，2026-08-04 新增）
+ * 调用 PUT /api/admin/inspection-scripts/{script_id}。
+ * 请求体包含 display_name / platform / version / inspection_parser /
+ * inspection_script / inspection_fields 6 个业务字段。
+ * @param {number|string} scriptId - inspection_scripts 主键 id
+ * @param {{
+ *   display_name: string,
+ *   platform: 'linux'|'windows',
+ *   version: string,
+ *   inspection_parser: 'json'|'kv'|'csv'|'raw',
+ *   inspection_script: string|null,
+ *   inspection_fields: Array<{key:string,name_zh:string,unit:string,direction:string,warn:number|null,crit:number|null}>
+ * }} payload - 业务字段
+ * @returns {Promise<Object>} 更新后的完整详情（_DETAIL_FIELDS 11 字段）
+ * @throws {Error} 404（脚本不存在）/ 422（参数非法）/ 500（服务未初始化）/ 其他错误
+ */
+export async function updateInspectionScript(scriptId, payload) {
+  if (scriptId == null) {
+    throw new Error('updateInspectionScript: scriptId 不能为空')
+  }
+  const response = await fetchWithAuth(
+    `/api/admin/inspection-scripts/${encodeURIComponent(scriptId)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    }
+  )
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `更新巡检脚本失败: ${response.status}`)
+  }
+  return response.json()
+}
+
 // ============================================================
 // 消息反馈 API（2026-07-02 新增）
 // 对应后端 message_feedback_router 的 POST /api/agent/message-feedback
