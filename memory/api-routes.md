@@ -148,20 +148,22 @@
 - `GET /{server_id}`（2026-08-03 改造）：admin only；返回白名单 `_DETAIL_FIELDS = {id, business_name, server_type, updated_at, whitelist, inspection_script_id, inspection_script_name, inspection_script_display_name}`（**脚本原文不返回**，由 `/api/admin/inspection-scripts/{script_id}` 按需提供）；不存在 → 404 + `"服务器不存在"`（不回显 server_id）
 - `DELETE /{server_id}`：admin only；返 204 No Content；不存在 → 404 + `"服务器不存在"`；DB 异常 → 500 + `"删除服务器失败"`
 
-### `/api/admin/inspection-scripts`（`app/routers/inspection_script_admin_router.py`，2026-08-03 新增）
+### `/api/admin/inspection-scripts`（`app/routers/inspection_script_admin_router.py`，2026-08-03 新增；2026-08-04 改造）
 
 > DevOps 巡检脚本库统一管理入口。脚本原文、解析器、字段规则从 `devops_servers` 三列抽离到 `inspection_scripts` 表后，devops 详情端点仅返元数据，**脚本原文改走本组端点按需加载**。
 
-- `GET ""`：admin OR `task-scheduler.server-management` ACL；返回白名单 7 字段 `{id, name, display_name, platform, version, inspection_parser, updated_at}`（**不**暴露 `inspection_script` / `inspection_fields`）
-- `POST /scan`：admin only；触发 `InspectionScriptService.scan_and_upsert()` 读取 `data/devops/inspection_scripts.yaml` → `INSERT ... ON CONFLICT (name) DO UPDATE ... RETURNING *, (xmax = 0) AS inserted`；严格返回 `{scanned, inserted, updated, failed}` 4 整数；异常 → 500 + `"inspection script scan failed"`（不回显路径 / 原始 detail）
+- `GET ""`：admin OR `task-scheduler.inspection-script-library` ACL（2026-08-04 从 `task-scheduler.server-management` 迁出为独立菜单权限）；返回白名单 7 字段 `{id, name, display_name, platform, version, inspection_parser, updated_at}`（**不**暴露 `inspection_script` / `inspection_fields`）
+- `POST /scan`：admin only；触发 `InspectionScriptService.scan_and_upsert()` 读取 `data/devops/inspection_scripts.yaml`；2026-08-04 改造为「编辑优先」——DB 中已有 `name` 跳过更新，**不**覆盖人工编辑；返回 5 整数 `{scanned, inserted, updated, failed, skipped}`；异常 → 500 + `"inspection script scan failed"`（不回显路径 / 原始 detail）
 - `GET /{script_id}`：admin only；返回完整详情含 `inspection_script` 与 `inspection_fields`（`{id, name, display_name, platform, version, inspection_parser, inspection_script, inspection_fields, created_at, updated_at}`）；不存在 → 404 + `"脚本不存在"`（不回显 script_id）；服务未初始化 → 500 + `"InspectionScriptService not initialized"`
+- `PUT /{script_id}`（2026-08-04 新增）：admin only；请求体 `UpdateInspectionScriptRequest{display_name, platform, version, inspection_parser, inspection_script, inspection_fields}`（Pydantic 校验 `platform ∈ {linux,windows}` / `inspection_parser ∈ {json,kv,csv,raw}` / `display_name 1-200` 字符）；调用 `InspectionScriptService.update_script_detail` 写 DB 并同步 `_cache` / `_id_cache`；返回更新后的完整记录（`_DETAIL_FIELDS` 11 字段）；script_id 不存在 → 404 + `"脚本不存在"`；非法入参（service 内部白名单校验失败）→ 404 + `"脚本不存在"`
 - 服务实例从 `request.app.state.inspection_script_service` 获取；lifespan 强依赖顺序详见 [devops-sandbox.md § lifespan 强依赖顺序](devops-sandbox.md#lifespan-强依赖顺序2026-08-03-新增章节)
 
-### 前端 API 封装（`web/Agent/src/utils/api.js`，2026-08-03 新增）
+### 前端 API 封装（`web/Agent/src/utils/api.js`，2026-08-03 新增；2026-08-04 扩展）
 
-- `fetchInspectionScripts()` → `GET /api/admin/inspection-scripts`（admin OR `task-scheduler.server-management` ACL）
+- `fetchInspectionScripts()` → `GET /api/admin/inspection-scripts`（admin OR `task-scheduler.inspection-script-library` ACL）
 - `scanInspectionScripts()` → `POST /api/admin/inspection-scripts/scan`（admin only）
 - `fetchInspectionScriptDetail(scriptId)` → `GET /api/admin/inspection-scripts/{scriptId}`（admin only）
+- `updateInspectionScript(scriptId, payload)` → `PUT /api/admin/inspection-scripts/{scriptId}`（admin only，2026-08-04 新增）
 
 ## 核心工具 (Core Tools)
 

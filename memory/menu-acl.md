@@ -320,6 +320,17 @@ admin 角色绕过 ACL 直接放行；普通用户未授权 → 403
 | 普通用户 + `task-scheduler.server-management` ACL | 不可见（required_role=admin 过滤） | ✅ 通过（ACL 端点授权） | ❌ 403 |
 | 普通用户无 ACL | 不可见 | ❌ 403 | ❌ 403 |
 
+**「巡检脚本库」Tab 权限矩阵（2026-08-04 新增）**：
+
+- 菜单 id：`task-scheduler.inspection-script-library`（从 `task-scheduler.server-management` 拆出，独立授权）
+- 端点 ACL：
+  - `GET /api/admin/inspection-scripts`：admin OR `task-scheduler.inspection-script-library` ACL
+  - `POST /api/admin/inspection-scripts/scan`：admin only（`Depends(require_admin)`）
+  - `GET /api/admin/inspection-scripts/{id}`：admin only
+  - `PUT /api/admin/inspection-scripts/{id}`：admin only（2026-08-04 新增，编辑保存）
+- 前端 `TaskSchedulerManager` 第 6 个 Tab（`TAB_LIBRARY = 'library'`），独立 `data-testid="panel-library"`，左右分栏：`InspectionScriptLibraryPanel`（节点列表 + 搜索）+ `InspectionScriptEditorPanel`（编辑表单 + 字段规则表 + 保存）
+- 扫描入口已从「服务器扫描入库」Tab 顶部迁出，统一在「巡检脚本库」Tab 顶部（`data-testid="library-scan-btn"`）
+
 **核心规则**：
 - 菜单 ACL 控制**可见性**（`required_role != "admin"` 才允许授权给普通用户）与**ACL 端点访问**（被授权后即可调用）。
 - `required_role='admin'` 菜单的普通用户可见性**始终为空**；但**该菜单下若有端点声明** `require_admin_or_menu_acl(<menu_id>)` **的非 admin-only 端点**（例如 `GET /api/admin/devops-servers`），admin 仍可显式授权给普通用户调用，前端通过 `visible_menus` 派生链路默默拦截 tab 渲染，但不影响端点访问——这是 admin 主动赋能场景的合法路径。

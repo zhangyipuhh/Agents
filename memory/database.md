@@ -121,7 +121,7 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 
 **索引**：`idx_inspection_scripts_platform(platform)` / `idx_inspection_scripts_name(name)`
 
-**数据源**：`InspectionScriptService.scan_and_upsert` 读取 `<项目根>/data/devops/inspection_scripts.yaml` → `INSERT ... ON CONFLICT (name) DO UPDATE ... RETURNING *, (xmax = 0) AS inserted`；同 name 重复直接拒绝（不覆盖）；`scanned / inserted / updated / failed` 4 字段整数返回。
+**数据源**：`InspectionScriptService.scan_and_upsert` 读取 `<项目根>/data/devops/inspection_scripts.yaml` → `INSERT ... ON CONFLICT (name) DO UPDATE ... RETURNING *, (xmax = 0) AS inserted`；2026-08-04 改造为「编辑优先」：DB 中已有 `name` 时**跳过**更新，保留人工编辑；同 name 重复（YAML 内）直接拒绝（不覆盖）；`scanned / inserted / updated / failed / skipped` 5 字段整数返回。
 
 ### `devops_servers` 巡检脚本外键改造（2026-08-03）
 

@@ -269,10 +269,20 @@
 - **白名单弹窗契约不变**：与巡检脚本弹窗互斥（同一时刻仅一个 open），通过 `whitelistDialog.open` / `scriptDialog.open` 互斥切换；列表端点契约不变仍只返 4 字段
 - **巡检脚本库扫描面板（2026-08-03 新增）**：`TaskSchedulerManager.vue` 服务器 Tab 内独立 `<section class="inspection-script-scan" data-testid="inspection-script-scan-section">`，仅 admin 可见；含扫描按钮（`data-testid="scan-inspection-scripts-btn"`）+ 提示文案「从 `data/devops/inspection_scripts.yaml` 同步所有平台巡检脚本；仅展示扫描统计，不暴露脚本原文」+ 独立的扫描统计 / 错误区域（`inspectionScanSummary` / `inspectionScanErrorMessage` / `inspectionScanSuccessMessage`），不影响服务器扫描的提示
 - **触发函数 `triggerInspectionScriptsScan`**：admin only；带防重复提交（`isScanningInspectionScripts.value` 短路）；调 `scanInspectionScripts()` → `POST /api/admin/inspection-scripts/scan`；失败时使用脱敏文案「巡检脚本扫描失败，请稍后重试」，不回显后端 detail；成功解析 `{scanned, inserted, updated, failed}` 4 字段整数并写入 `inspectionScanSummary`，未知字段不进入 DOM
-- **API 封装（`web/Agent/src/utils/api.js`，2026-08-03 新增）**：
-  - `fetchInspectionScripts()` → `GET /api/admin/inspection-scripts`（admin OR `task-scheduler.server-management` ACL；返白名单 7 字段）
-  - `scanInspectionScripts()` → `POST /api/admin/inspection-scripts/scan`（admin only；返 `{scanned, inserted, updated, failed}`）
+- **API 封装（`web/Agent/src/utils/api.js`，2026-08-03 新增；2026-08-04 扩展）**：
+  - `fetchInspectionScripts()` → `GET /api/admin/inspection-scripts`（admin OR `task-scheduler.inspection-script-library` ACL；返白名单 7 字段）
+  - `scanInspectionScripts()` → `POST /api/admin/inspection-scripts/scan`（admin only；返 `{scanned, inserted, updated, failed, skipped}` 5 字段）
   - `fetchInspectionScriptDetail(scriptId)` → `GET /api/admin/inspection-scripts/{scriptId}`（admin only；404 → Error「脚本不存在」，500 → Error 含后端 detail 不回显 script_id）
+  - `updateInspectionScript(scriptId, payload)` → `PUT /api/admin/inspection-scripts/{scriptId}`（admin only，2026-08-04 新增；编辑保存接口）
+
+### 巡检脚本库独立 Tab（2026-08-04 新增）
+
+- **菜单权限**：新二级菜单 `task-scheduler.inspection-script-library`（`level=2`，`parent_id='task-scheduler'`，`sort_order=6`，`required_role='admin'`，`icon_key='code'`），从 `task-scheduler.server-management` 拆出独立授权；端点 ACL key 同步替换（列表端点从 `server-management` 迁出为新菜单权限；scan / detail / update 仍 admin only）
+- **前端容器**：`TaskSchedulerManager.vue` 新增第 6 个子 Tab（`TAB_LIBRARY = 'library'`），`data-testid="panel-library"`。左右分栏：左侧 `InspectionScriptLibraryPanel`（搜索框 + 节点列表，按 `name / display_name / platform / version` 过滤），右侧 `InspectionScriptEditorPanel`（编辑表单：display_name / platform / version / inspection_parser / 脚本正文多行 textarea / 字段规则表格 + 新增 / 删除）
+- **扫描入口迁移**：2026-08-03 旧设计放在「服务器扫描入库」Tab 顶部（`inspection-script-scan-section`），2026-08-04 已迁出至「巡检脚本库」Tab 顶部（`library-scan-btn`）。5 字段扫描统计（`scanned/inserted/updated/skipped/failed`）写入 `libraryScanSummary`
+- **编辑优先扫描**：`InspectionScriptService.scan_and_upsert` 改造为「DB 中已有 `name` 跳过更新」——写循环前增加 `if name in self._cache: stats["skipped"] += 1; continue`，不再触发 `_upsert_one_returning`，人工编辑内容不被覆盖
+- **保存工作流**：选中节点 → 编辑器 watch 监听 `props.scriptId` 调 `fetchInspectionScriptDetail` 拉详情 → 用户改字段 → 点保存调 `updateInspectionScript(scriptId, payload)` → 成功后 `form` 同步为后端最新记录 + 顶部出现成功提示（`onLibraryScriptSaved` 回调写入 `libraryScanSuccessMessage`）
+- **服务新增 `update_script_detail`**：`UPDATE inspection_scripts SET ... WHERE id = $1 RETURNING ...` 单条往返；白名单校验 `platform ∈ {linux, windows}` / `inspection_parser ∈ _VALID_PARSERS` / `display_name` 非空；写后立即同步 `_cache[name]` / `_id_cache[script_id]`（持 `_write_lock`）；DB 写入异常 / 入参非法 / script_id 不存在均返回 `None`（不抛）
 
 ### 安全约束
 
