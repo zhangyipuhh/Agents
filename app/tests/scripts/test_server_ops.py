@@ -229,42 +229,41 @@ async def test_run_server_ops_non_empty_raises_when_service_none():
 
 @pytest.mark.asyncio
 async def test_run_server_ops_get_connection_config_receives_full_inspection_script(monkeypatch):
-    """契约测试：``get_connection_config(business_name)`` 返回值必须含完整
-    ``inspection_script`` 文本（不是 None / 不是空字符串）。
+    """契约测试：``get_connection_config(business_name)`` 在半残场景下必须抛
+    ``ValueError``，由 ``server_ops._run_one`` 归并到 ``skipped=True`` +
+    ``inspection_status="skipped"``，不允许出现
+    ``success=True + inspection_status="unassessed"`` 的误导性响应。
 
     触发场景：DevOps 半残场景下，cache 中 ``inspection_script_id`` 已映射，
     但 ``InspectionScriptService.get_script_by_id`` 返回 None（脚本库缺失
     或 cache miss），service 必须抛 ``ValueError``（不允许返回 ``inspection_script=None``
-    的半残 dict），让 server_ops 走 ``skipped / crit`` 分支。
+    的半残 dict），让 server_ops 走 ``skipped`` 分支。
 
     生产对等初始化点：
         - ``app.shared.utils.devops_server_service.DevOpsServerService.get_connection_config``
           当 ``inspection_script_id`` 缺失 / ``InspectionScriptService`` 未注入 /
           脚本库条目不存在时必须抛 ``ValueError``（2026-08-03 已加固）。
-        - ``app.scripts.server_ops._run_one`` 当 ``get_connection_config`` 返回
-          ``inspection_script`` 为空 / None 时，必须把 ServerOpsItem 标记为
-          ``skipped=True`` + ``inspection_status="skipped"``，不允许出现
-          ``success=True + inspection_status="unassessed"`` 的误导性响应。
+        - ``app.scripts.server_ops._run_one`` 收到 ``ValueError`` 后必须把
+          ``ServerOpsItem`` 标记为 ``skipped=True`` + ``inspection_status="skipped"``，
+          并透传 ``ValueError`` 原文到 ``error_message`` / ``inspection_error``。
     """
     from app.shared.utils.inspection.parser import InspectionFieldRule
 
     class _HalfBrokenService:
-        """返回 inspection_script=None 的 stub，模拟 DevOps 半残场景。"""
+        """半残 stub：直接抛 ValueError 模拟 service 端半残场景。
+
+        替代旧版"返回 inspection_script=None 的半残 dict"——2026-08-04 改造后
+        ``_run_one`` 不再做本地空值检查,完全依赖 service 主动抛 ValueError。
+        """
+
         def __init__(self):
-            self._configs = {
-                "biz-A": {
-                    "ip": "10.0.0.1", "port": 22, "username": "u", "password": "pw",
-                    "server_type": "linux",
-                    "inspection_script": None,  # 半残：缺失
-                    "inspection_parser": "json",
-                    "inspection_fields": [],
-                }
-            }
             self.calls = []
 
         def get_connection_config(self, business_name):
             self.calls.append(business_name)
-            return dict(self._configs[business_name])
+            raise ValueError(
+                "巡检脚本库条目不存在或已被删除: 99（server=biz-A）"
+            )
 
     def fake_execute_script(cfg, script, timeout):
         return SSHExecResult(success=True, stdout='{"ok": true}', stderr="", exit_code=0)
@@ -276,21 +275,22 @@ async def test_run_server_ops_get_connection_config_receives_full_inspection_scr
     report = await run_server_ops(ctx)
 
     item = report.items[0]
-    # 半残场景下，server_ops 必须识别 inspection_script 缺失并标 skipped。
+    # 半残场景下，server_ops 必须识别 service 抛出的 ValueError 并标 skipped。
     assert item.skipped is True, (
-        f"半残 inspection_script=None 时，ServerOpsItem.skipped 必须为 True，"
+        f"半残 ValueError 时，ServerOpsItem.skipped 必须为 True，"
         f"实际 skipped={item.skipped!r}"
     )
     assert item.success is None, (
-        f"半残 inspection_script=None 时 success 必须为 None（未执行），"
+        f"半残 ValueError 时 success 必须为 None（未执行），"
         f"实际 success={item.success!r}"
     )
     assert item.inspection_status == "skipped", (
-        f"半残 inspection_script=None 时 inspection_status 必须为 skipped，"
+        f"半残 ValueError 时 inspection_status 必须为 skipped，"
         f"实际={item.inspection_status!r}"
     )
-    assert "未配置巡检脚本" in item.error_message, (
-        f"半残 inspection_script=None 时 error_message 必须给诊断提示，实际={item.error_message!r}"
+    assert "巡检脚本库条目不存在" in item.error_message, (
+        f"半残 ValueError 时 error_message 必须透传原 ValueError 消息，"
+        f"实际={item.error_message!r}"
     )
 
 
@@ -378,9 +378,15 @@ async def test_run_server_ops_all_pass(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_run_server_ops_missing_inspection_script_marks_skipped(monkeypatch):
-    """inspection_script 为空（None / 空串）应产生 skipped item，不影响已配置项。"""
+    """脚本库缺失 / ``inspection_script_id`` 未关联 / ``InspectionScriptService``
+    未注入 → service 抛 ``ValueError`` → server_ops 归并为 skipped，不影响已配置项。
+
+    2026-08-04 改造后：旧版"半残 dict + inspection_script=None"路径由 service 主动
+    抛 ``ValueError`` 取代；``_run_one`` 不再做本地空值检查。
+    """
     # biz-A 配置齐全 → execute_script 应被调用并返回 success=True；
-    # biz-B / biz-C 配置 inspection_script 为空/None → run_server_ops 短路返回 skipped，不调 execute_script。
+    # biz-B / biz-C 触发 service ValueError（脚本库缺失 / 服务未注入）→ run_server_ops
+    # 短路返回 skipped，不调 execute_script。
     execute_script_calls: List[str] = []
 
     def fake_execute_script(cfg, script, timeout):
@@ -394,16 +400,26 @@ async def test_run_server_ops_missing_inspection_script_marks_skipped(monkeypatc
             "ip": "10.0.0.1", "port": 22, "username": "root", "password": "x",
             "server_type": "linux", "inspection_script": "echo ok\n", "inspection_parser": "json",
         },
-        "biz-B": {
-            "ip": "10.0.0.2", "port": 22, "username": "root", "password": "x",
-            "server_type": "linux", "inspection_script": None, "inspection_parser": "json",
-        },
-        "biz-C": {
-            "ip": "10.0.0.3", "port": 22, "username": "root", "password": "x",
-            "server_type": "linux", "inspection_script": "   \n", "inspection_parser": "json",
-        },
     }
-    service = _StubDevOpsService(configs=configs)
+
+    class _RaisingService:
+        """对 biz-B / biz-C 抛 ValueError，对 biz-A 走默认路径。"""
+
+        def __init__(self, base_configs: Dict[str, Dict[str, Any]]) -> None:
+            self._configs = base_configs
+
+        def get_connection_config(self, business_name: str) -> Dict[str, Any]:
+            if business_name == "biz-B":
+                raise ValueError(
+                    "巡检脚本库条目不存在或已被删除: 7（server=biz-B）"
+                )
+            if business_name == "biz-C":
+                raise ValueError(
+                    "InspectionScriptService 未注入，无法解析巡检脚本: biz-C"
+                )
+            return dict(self._configs[business_name])
+
+    service = _RaisingService(base_configs=configs)
     ctx = _make_context_with_service(service, {"server_list": ["biz-A", "biz-B", "biz-C"]})
 
     report = await run_server_ops(ctx)
@@ -414,7 +430,7 @@ async def test_run_server_ops_missing_inspection_script_marks_skipped(monkeypatc
     skipped_items = [item for item in report.items if item.skipped]
     assert {item.business_name for item in skipped_items} == {"biz-B", "biz-C"}
     for item in skipped_items:
-        assert "未配置" in item.error_message
+        assert "脚本" in item.error_message or "Service" in item.error_message
     # execute_script 只能为有 inspection_script 的项被调用
     assert execute_script_calls == ["10.0.0.1"]
 
@@ -1448,6 +1464,179 @@ async def test_parse_or_eval_exception_keeps_stdout_and_marks_crit(monkeypatch):
     # 不泄漏 config
     assert "secret" not in item.error_message
     assert "10.0.0.1" not in item.error_message
+
+
+# ===========================================================================
+# 2026-08-04 改造：get_connection_config 新增 4 个脚本库元数据键 + _run_one
+# 精细化 ValueError 分支（半残场景归并 skipped）。
+# ===========================================================================
+
+
+class _RichMetadataService:
+    """在 ``get_connection_config`` 返回值中携带 4 个脚本库元数据键的 stub。
+
+    与 ``_StubDevOpsService`` 等价但额外注入 ``inspection_script_name`` /
+    ``inspection_script_display_name`` / ``inspection_script_platform`` /
+    ``inspection_script_version`` 4 个键,用于验证 ``_run_one`` 透传契约。
+    """
+
+    def __init__(
+        self,
+        configs: Dict[str, Dict[str, Any]],
+        metadata_by_name: Optional[Dict[str, Dict[str, str]]] = None,
+    ) -> None:
+        self._configs = configs
+        self._meta = metadata_by_name or {}
+        self.calls: List[str] = []
+
+    def get_connection_config(self, business_name: str) -> Dict[str, Any]:
+        from app.shared.utils.inspection.parser import normalize_inspection_fields
+
+        self.calls.append(business_name)
+        cfg = dict(self._configs[business_name])
+        cfg["inspection_fields"] = list(
+            normalize_inspection_fields(cfg.get("inspection_fields") or [])
+        )
+        meta = self._meta.get(business_name, {})
+        cfg["inspection_script_name"] = meta.get("name")
+        cfg["inspection_script_display_name"] = meta.get("display_name")
+        cfg["inspection_script_platform"] = meta.get("platform")
+        cfg["inspection_script_version"] = meta.get("version")
+        return cfg
+
+
+@pytest.mark.asyncio
+async def test_run_server_ops_skipped_when_script_id_none(monkeypatch):
+    """``inspection_script_id`` 为空 → service 抛 ``ValueError`` →
+    ``ServerOpsItem.skipped=True`` 且 ``error_message`` / ``inspection_error``
+    含原 ``ValueError`` 消息。"""
+
+    class _RaisesValueErrorService:
+        def __init__(self, msg: str) -> None:
+            self._msg = msg
+
+        def get_connection_config(self, business_name: str) -> Dict[str, Any]:
+            raise ValueError(self._msg)
+
+    service = _RaisesValueErrorService(
+        "服务器未关联巡检脚本（inspection_script_id 为空）: biz-NO-SCRIPT-ID"
+    )
+    ctx = _make_context_with_service(service, {"server_list": ["biz-NO-SCRIPT-ID"]})
+    report = await run_server_ops(ctx)
+
+    item = report.items[0]
+    assert item.skipped is True
+    assert item.success is None
+    assert item.inspection_status == "skipped"
+    assert "服务器未关联巡检脚本" in item.error_message
+    assert "服务器未关联巡检脚本" in item.inspection_error
+    # error_message 与 inspection_error 一致
+    assert item.error_message == item.inspection_error
+    # 4 个新字段都是 None（skipped 路径不触发元数据回填）
+    assert item.inspection_script_name is None
+    assert item.inspection_script_display_name is None
+    assert item.inspection_script_platform is None
+    assert item.inspection_script_version is None
+
+
+@pytest.mark.asyncio
+async def test_run_server_ops_skipped_when_script_rec_missing(monkeypatch):
+    """脚本库条目不存在 → service 抛 ``ValueError`` → ``ServerOpsItem.skipped=True``。"""
+
+    class _RaisesValueErrorService:
+        def get_connection_config(self, business_name: str) -> Dict[str, Any]:
+            raise ValueError(
+                "巡检脚本库条目不存在或已被删除: 99（server=biz-GHOST-SCRIPT）"
+            )
+
+    service = _RaisesValueErrorService()
+    ctx = _make_context_with_service(service, {"server_list": ["biz-GHOST-SCRIPT"]})
+    report = await run_server_ops(ctx)
+
+    item = report.items[0]
+    assert item.skipped is True
+    assert item.inspection_status == "skipped"
+    assert "巡检脚本库条目不存在" in item.error_message
+    assert "biz-GHOST-SCRIPT" in item.error_message
+
+
+@pytest.mark.asyncio
+async def test_run_server_ops_skipped_when_inspection_service_unavailable(monkeypatch):
+    """``InspectionScriptService`` 未注入 → service 抛 ``ValueError`` →
+    ``ServerOpsItem.skipped=True``。"""
+
+    class _RaisesValueErrorService:
+        def get_connection_config(self, business_name: str) -> Dict[str, Any]:
+            raise ValueError(
+                "InspectionScriptService 未注入，无法解析巡检脚本: biz-NO-SVC"
+            )
+
+    service = _RaisesValueErrorService()
+    ctx = _make_context_with_service(service, {"server_list": ["biz-NO-SVC"]})
+    report = await run_server_ops(ctx)
+
+    item = report.items[0]
+    assert item.skipped is True
+    assert item.inspection_status == "skipped"
+    assert "InspectionScriptService 未注入" in item.error_message
+
+
+@pytest.mark.asyncio
+async def test_run_server_ops_inspection_script_metadata_in_item(monkeypatch):
+    """正常路径下 ``ServerOpsItem`` 透传 4 个脚本库元数据键（name /
+    display_name / platform / version）。"""
+    monkeypatch.setattr(
+        "app.scripts.server_ops.execute_script",
+        lambda *_: SSHExecResult(True, '{"cpu": 30}', "", 0),
+    )
+    service = _RichMetadataService(
+        configs={"biz-A": {
+            "ip": "10.0.0.1", "port": 22, "username": "u", "password": "p",
+            "server_type": "linux", "inspection_script": "echo", "inspection_parser": "json",
+            "inspection_fields": [],
+        }},
+        metadata_by_name={"biz-A": {
+            "name": "linux-bash",
+            "display_name": "Linux Bash 巡检",
+            "platform": "linux",
+            "version": "5.1",
+        }},
+    )
+    ctx = _make_context_with_service(service, {"server_list": ["biz-A"]})
+    report = await run_server_ops(ctx)
+
+    item = report.items[0]
+    assert item.success is True
+    assert item.inspection_script_name == "linux-bash"
+    assert item.inspection_script_display_name == "Linux Bash 巡检"
+    assert item.inspection_script_platform == "linux"
+    assert item.inspection_script_version == "5.1"
+
+
+def test_server_ops_report_to_dict_includes_inspection_script_metadata():
+    """``ServerOpsReport.to_dict()`` 每个 item 含 4 个脚本库元数据键。"""
+    item = ServerOpsItem(
+        business_name="biz-A",
+        success=True,
+        exit_code=0,
+        stdout="ok",
+        stderr="",
+        duration_ms=42,
+        inspection_parser="json",
+        parsed_values={"cpu": 20},
+        field_results=[],
+        inspection_status="pass",
+        inspection_script_name="linux-bash",
+        inspection_script_display_name="Linux Bash 巡检",
+        inspection_script_platform="linux",
+        inspection_script_version="5.1",
+    )
+    report = ServerOpsReport(items=[item])
+    d = report.to_dict()
+    assert d["items"][0]["inspection_script_name"] == "linux-bash"
+    assert d["items"][0]["inspection_script_display_name"] == "Linux Bash 巡检"
+    assert d["items"][0]["inspection_script_platform"] == "linux"
+    assert d["items"][0]["inspection_script_version"] == "5.1"
 
 
 @pytest.mark.asyncio

@@ -350,9 +350,9 @@ async def test_run_server_list_skipped_item_logs_reason_without_fields(monkeypat
         ServerOpsItem(
             business_name="biz-NO-SCRIPT",
             skipped=True,
-            error_message="未配置巡检脚本（inspection_script 为空）",
+            error_message="巡检脚本库条目不存在或已被删除: 99（server=biz-NO-SCRIPT）",
             inspection_status="skipped",
-            inspection_error="未配置巡检脚本（inspection_script 为空）",
+            inspection_error="巡检脚本库条目不存在或已被删除: 99（server=biz-NO-SCRIPT）",
         ),
     ])
 
@@ -450,6 +450,89 @@ async def test_run_server_list_no_fields_logs_unassessed(monkeypatch):
     texts = _records_text(handler)
     assert any("biz-NO-FIELDS" in t and "fields=0" in t for t in texts), texts
     assert any("无可评估字段" in t and "biz-NO-FIELDS" in t for t in texts), texts
+
+
+# ===== 3.5) 巡检脚本元数据 script= 片段(2026-08-04 新增) =====
+
+
+@pytest.mark.asyncio
+async def test_run_server_list_logs_inspection_script_metadata(monkeypatch):
+    """``ServerOpsItem.inspection_script_name`` 非空时,日志 OK / FAIL / SKIPPED
+    三行均应追加 ``script=<name>`` 片段,字段明细行不追加。"""
+    from app.scripts.ops import ops_inspection_sweep
+
+    report = ServerOpsReport(items=[
+        ServerOpsItem(
+            business_name="biz-LINUX",
+            success=True,
+            exit_code=0,
+            stdout='{"cpu": 20}',
+            stderr="",
+            duration_ms=10,
+            inspection_parser="json",
+            parsed_values={"cpu": 20},
+            field_results=[{
+                "key": "cpu", "name_zh": "CPU", "unit": "%",
+                "value": 20, "direction": "high", "warn": 80, "crit": 90,
+                "status": "pass", "message": "",
+            }],
+            inspection_status="pass",
+            inspection_error="",
+            inspection_script_name="linux-bash",
+            inspection_script_display_name="Linux Bash 巡检",
+            inspection_script_platform="linux",
+            inspection_script_version="5.1",
+        ),
+        ServerOpsItem(
+            business_name="biz-WIN",
+            success=False,
+            exit_code=2,
+            stdout="",
+            stderr="boom",
+            duration_ms=30,
+            error_message="boom",
+            inspection_parser="json",
+            inspection_status="crit",
+            inspection_error="boom",
+            inspection_script_name="windows-ps-5.1",
+            inspection_script_display_name="Windows PowerShell 5.1 巡检",
+            inspection_script_platform="windows",
+            inspection_script_version="5.1",
+        ),
+        ServerOpsItem(
+            business_name="biz-NOSCRIPT",
+            skipped=True,
+            error_message="服务器未关联巡检脚本（inspection_script_id 为空）",
+            inspection_status="skipped",
+            inspection_error="服务器未关联巡检脚本（inspection_script_id 为空）",
+        ),
+    ])
+
+    async def stub(context):
+        return report
+    monkeypatch.setattr(ops_inspection_sweep, "run_server_ops", stub)
+
+    context = _make_context(script_args={"server_list": ["biz-LINUX", "biz-WIN", "biz-NOSCRIPT"]})
+    handler = _attach_capture(context)
+    try:
+        await ops_inspection_sweep.run(context)
+    finally:
+        _detach_capture(context, handler)
+
+    texts = _records_text(handler)
+
+    # OK 行追加 script=linux-bash
+    ok_lines = [t for t in texts if "biz-LINUX" in t and "OK" in t]
+    assert any("script=linux-bash" in t for t in ok_lines), ok_lines
+    # FAIL 行追加 script=windows-ps-5.1
+    fail_lines = [t for t in texts if "biz-WIN" in t and "FAIL" in t]
+    assert any("script=windows-ps-5.1" in t for t in fail_lines), fail_lines
+    # SKIPPED 行无 script=（inspection_script_name 为 None 时 _script_suffix 返回空串）
+    skip_lines = [t for t in texts if "biz-NOSCRIPT" in t and "SKIPPED" in t]
+    assert any("script=" not in t for t in skip_lines), skip_lines
+    # 字段明细行不追加 script=（避免日志噪音）
+    field_lines = [t for t in texts if "biz-LINUX" in t and "field[" in t]
+    assert all("script=" not in t for t in field_lines), field_lines
 
 
 # ===== 4) api_list 路径 =====

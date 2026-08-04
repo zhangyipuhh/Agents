@@ -7,20 +7,25 @@
 ``x-value-field=business_name``）的脚本，都可通过本模块获得**完全一致**的巡检
 执行结果结构（业务名、成功/失败、退出码、stdout、stderr、耗时、错误、巡检状态、
 字段判定结果），供生成运行摘要、报告附件或邮件正文使用。命令来源是
-**``devops_servers.inspection_script`` 字段**（每台服务器预存的巡检脚本文本），
+``devops_servers.inspection_script_id`` 外键引用的 ``inspection_scripts`` 表条目，
+由 ``DevOpsServerService.get_connection_config`` 间接加载（service 通过
+``InspectionScriptService.get_script_by_id`` 取脚本原文/解析器/字段规则），
 不需要在脚本入参中重复指定。
 
 契约要点：
     * ``script_args["server_list"]`` 元素为目标服务器的 ``business_name`` 字符串。
     * 执行复用 ``DevOpsServerService.get_connection_config``（已解密，含
       ``ip`` / ``port`` / ``username`` / ``password`` / ``server_type`` /
-      ``inspection_script`` / ``inspection_parser`` / ``inspection_fields``）
+      ``inspection_script`` / ``inspection_parser`` / ``inspection_fields`` +
+      脚本库元数据 4 键 ``inspection_script_name`` /
+      ``inspection_script_display_name`` / ``inspection_script_platform`` /
+      ``inspection_script_version``）
       以及 ``app.shared.utils.ssh.executor.execute_script``（与 LangChain 解耦的
       阻塞 paramiko 执行器），本模块负责用 ``asyncio.to_thread`` 包装避免
       阻塞调度器事件循环。
-    * 单台服务器失败（鉴权失败 / 连接超时 / ``inspection_script`` 未配置 /
-      paramiko SSH 异常等）**不中断**整体巡检，失败原因记录到对应
-      ``ServerOpsItem``。
+    * 单台服务器失败（鉴权失败 / 连接超时 / ``inspection_script_id`` 未关联 /
+      脚本库条目缺失 / ``InspectionScriptService`` 未注入 / paramiko SSH 异常等）
+      **不中断**整体巡检，失败原因记录到对应 ``ServerOpsItem``。
     * ``server_list`` 为空时返回空 ``ServerOpsReport``，不要求服务可用。
 
 巡检状态分级（``inspection_status``）：
@@ -29,7 +34,10 @@
     * ``crit`` —— SSH 失败 / 解析失败 / 评估失败 / 规则阈值严重命中 / 字段缺失 /
       非数值 / raw 解析器与结构化规则同时存在等。
     * ``unassessed`` —— 巡检脚本执行成功，但无任何可评估规则。
-    * ``skipped`` —— 未执行（业务名未注册 / ``inspection_script`` 未配置）。
+    * ``skipped`` —— 未执行（业务名未注册 / ``inspection_script_id`` 未关联 /
+      脚本库条目不存在 / ``InspectionScriptService`` 未注入）。
+      这三类 skipped 由 ``get_connection_config`` 抛 ``ValueError`` 统一归并，
+      与 ``KeyError`` 同等语义。
 
 success 与 inspection_status 解耦：
     * ``success`` 反映「SSH 退出码为 0」的执行语义；stderr 非空**不**判失败，
@@ -153,8 +161,9 @@ class ServerOpsItem:
         duration_ms: 执行耗时毫秒；未执行时为 None。
         error_message: 错误描述（鉴权失败 / 连接超时 / 未配置巡检脚本 /
             解析评估失败等）；成功执行时为空字符串。
-        skipped: True 时表示本台服务器未执行（业务名无效、未配置
-            ``inspection_script`` 等）；同时 ``success`` 为 None。
+        skipped: True 时表示本台服务器未执行（业务名无效、
+            ``inspection_script_id`` 未关联 / 脚本库条目不存在 /
+            ``InspectionScriptService`` 未注入 等）；同时 ``success`` 为 None。
         inspection_parser: 实际生效的解析器（json / kv / csv / raw）；默认 ``json``。
         parsed_values: 解析得到的原始值字典或字符串（``raw`` 透传 stdout）；
             解析失败或未解析时为 None。
@@ -165,6 +174,11 @@ class ServerOpsItem:
         inspection_error: 巡检阶段的错误说明（解析异常 / raw 评估不支持 /
             SSH 执行失败原因等）；无错误时为空字符串。**不**写入整个
             ``config`` / ``ip`` / ``password`` 等敏感字段。
+        inspection_script_name: 关联的脚本库条目 ``name``（如 ``linux-bash``），
+            来自 ``inspection_scripts`` 表；缺失时为 None。
+        inspection_script_display_name: 脚本库条目展示名（如 ``Linux Bash``）。
+        inspection_script_platform: 脚本库条目平台（``linux`` / ``windows``）。
+        inspection_script_version: 脚本库条目版本字符串（如 ``5.1`` / ``7+``）。
     """
 
     business_name: str
@@ -180,6 +194,10 @@ class ServerOpsItem:
     field_results: List[Dict[str, Any]] = field(default_factory=list)
     inspection_status: str = "unassessed"
     inspection_error: str = ""
+    inspection_script_name: Optional[str] = None
+    inspection_script_display_name: Optional[str] = None
+    inspection_script_platform: Optional[str] = None
+    inspection_script_version: Optional[str] = None
 
 
 @dataclass
@@ -368,7 +386,11 @@ class ServerOpsReport:
         ``inspection_unassessed``。
 
         每个 item 额外包含 ``inspection_parser`` / ``parsed_values`` /
-        ``field_results`` / ``inspection_status`` / ``inspection_error``。
+        ``field_results`` / ``inspection_status`` / ``inspection_error`` +
+        巡检脚本元数据 4 键 ``inspection_script_name`` /
+        ``inspection_script_display_name`` / ``inspection_script_platform`` /
+        ``inspection_script_version``（来自 ``inspection_scripts`` 表，由
+        ``DevOpsServerService.get_connection_config`` 间接透传）。
 
         返回:
             Dict[str, Any]: 含上述字段的字典，可被 ``json.dumps`` 序列化。
@@ -389,6 +411,10 @@ class ServerOpsReport:
                     "field_results": list(item.field_results),
                     "inspection_status": item.inspection_status,
                     "inspection_error": item.inspection_error,
+                    "inspection_script_name": item.inspection_script_name,
+                    "inspection_script_display_name": item.inspection_script_display_name,
+                    "inspection_script_platform": item.inspection_script_platform,
+                    "inspection_script_version": item.inspection_script_version,
                 }
                 for item in self.items
             ],
@@ -451,15 +477,18 @@ async def run_server_ops(
     *,
     ssh_timeout: int = 30,
 ) -> ServerOpsReport:
-    """对 ``server_list`` 中的服务器逐个执行预存的 ``inspection_script`` 巡检脚本。
+    """对 ``server_list`` 中的服务器逐个执行巡检脚本。
 
-    每个接口通过 ``context.devops_server_service.get_connection_config(business_name)``
-    读取解密后的连接配置（含 ``inspection_script`` / ``inspection_parser`` /
-    ``inspection_fields``），再用
+    命令来源是 ``devops_servers.inspection_script_id`` 外键引用的
+    ``inspection_scripts`` 表条目；每个接口通过
+    ``context.devops_server_service.get_connection_config(business_name)`` 读取
+    解密后的连接配置（含 ``ip`` / ``port`` / ``username`` / ``password`` /
+    ``server_type`` / ``blacklist`` / ``whitelist`` + 脚本原文 ``inspection_script``
+    / ``inspection_parser`` / ``inspection_fields`` + 脚本库元数据 4 键），再用
     ``app.shared.utils.ssh.executor.execute_script`` 发起 SSH 执行（同步阻塞
     调用以 ``asyncio.to_thread`` 包装）。单台失败（鉴权失败 / 连接异常 /
-    业务名未注册 / ``inspection_script`` 未配置 / 解析评估失败等）
-    **不中断**整体巡检。
+    业务名未注册 / ``inspection_script_id`` 未关联 / 脚本库条目不存在 /
+    ``InspectionScriptService`` 未注入 / 解析评估失败等）**不中断**整体巡检。
 
     参数:
         context: 脚本运行上下文，需携带 ``devops_server_service`` 与 ``script_args``。
@@ -505,7 +534,10 @@ async def _run_one(
     异常分级：
         * ``KeyError`` (``get_connection_config`` 业务名未注册) → skipped，
           ``inspection_error`` 含原 KeyError 信息；
-        * 空 ``inspection_script``（None / 空串） → skipped；
+        * ``ValueError`` (``get_connection_config`` 因 ``inspection_script_id``
+          为空 / 脚本库条目不存在 / ``InspectionScriptService`` 未注入
+          三种 skipped 场景主动抛出） → skipped，``error_message`` /
+          ``inspection_error`` 直接透传原 ValueError 消息；
         * ``get_connection_config`` 抛其他异常（解密失败 / Fernet 错配等）
           → crit，``error_message`` / ``inspection_error`` 含「Type: message」
           但**不**泄漏整个 config（无 ip / password）；
@@ -522,6 +554,11 @@ async def _run_one(
           「巡检解析评估失败: Type: message」；**不**泄漏 config；
         * 评估本身得到 crit（raw+规则 / 缺字段 / 非数值 / 阈值严重命中）
           **不改变** SSH 执行语义，``success`` 仍为 ``bool(result.success)``。
+
+    巡检脚本元数据：从 ``config`` 透传 ``inspection_script_name`` /
+    ``inspection_script_display_name`` / ``inspection_script_platform`` /
+    ``inspection_script_version`` 4 键到 ``ServerOpsItem`` 同名字段，便于
+    ops 层日志 / docx / 邮件正文展示使用的脚本元信息。
     """
     # 1) 取连接配置
     try:
@@ -534,6 +571,18 @@ async def _run_one(
             inspection_status="skipped",
             inspection_error=str(exc) or "业务名未注册",
         )
+    except ValueError as exc:
+        # 2026-08-04 改造：``get_connection_config`` 在 ``inspection_script_id``
+        # 为空 / 脚本库条目不存在 / ``InspectionScriptService`` 未注入时主动
+        # 抛 ValueError；与 KeyError 同等 skipped 语义，透传 ValueError 原文。
+        msg = str(exc) or "巡检脚本库取值失败"
+        return ServerOpsItem(
+            business_name=business_name,
+            skipped=True,
+            error_message=msg,
+            inspection_status="skipped",
+            inspection_error=msg,
+        )
     except Exception as exc:  # noqa: BLE001 - 配置解析失败容错
         msg = f"{type(exc).__name__}: {exc}"
         return ServerOpsItem(
@@ -544,20 +593,19 @@ async def _run_one(
             inspection_error=f"{_CONFIG_RESOLVE_FAILURE_PREFIX}: {msg}",
         )
 
-    # 2) 校验 inspection_script 非空
+    # 2) 取脚本原文（service 已保证非空；空值场景已在 step 1 的 ValueError 分支处理）
     script_raw = config.get("inspection_script") if isinstance(config, dict) else None
-    script = (script_raw or "").strip() if isinstance(script_raw, str) else ""
-    if not script:
-        msg = "未配置巡检脚本（inspection_script 为空）"
-        return ServerOpsItem(
-            business_name=business_name,
-            skipped=True,
-            error_message=msg,
-            inspection_status="skipped",
-            inspection_error=msg,
-        )
+    script = script_raw if isinstance(script_raw, str) else ""
+    # 不再做"空就 skipped"分支：service 已在 step 1 抛 ValueError
 
-    # 3) 执行 SSH（同步阻塞通过 to_thread 包装）
+    # 3) 提取脚本库元数据 4 键（缺省为 None，由 Service 保证至少在
+    #    inspection_script 存在时也填齐）
+    script_name = config.get("inspection_script_name") if isinstance(config, dict) else None
+    script_display_name = config.get("inspection_script_display_name") if isinstance(config, dict) else None
+    script_platform = config.get("inspection_script_platform") if isinstance(config, dict) else None
+    script_version = config.get("inspection_script_version") if isinstance(config, dict) else None
+
+    # 4) 执行 SSH（同步阻塞通过 to_thread 包装）
     started = time.perf_counter()
     try:
         result: SSHExecResult = await asyncio.to_thread(
@@ -573,12 +621,16 @@ async def _run_one(
             error_message=msg,
             inspection_status="crit",
             inspection_error=msg,
+            inspection_script_name=script_name,
+            inspection_script_display_name=script_display_name,
+            inspection_script_platform=script_platform,
+            inspection_script_version=script_version,
         )
 
     duration_ms = int((time.perf_counter() - started) * 1000)
     parser = str(config.get("inspection_parser") or "json")
 
-    # 4) SSH 失败判定（以退出码为准）：退出码非 0 → 不解析 stdout，直接 crit；
+    # 5) SSH 失败判定（以退出码为准）：退出码非 0 → 不解析 stdout，直接 crit；
     #    退出码 0 但 stderr 非空（典型场景：远端 .bashrc / profile.d 等 shell
     #    启动文件的语法错误噪音混入 stderr）不视为失败，继续走解析评估，
     #    stderr 原样保留在 item.stderr 供报告「错误」列展示。
@@ -596,9 +648,13 @@ async def _run_one(
             inspection_parser=parser,
             inspection_status="crit",
             inspection_error=err,
+            inspection_script_name=script_name,
+            inspection_script_display_name=script_display_name,
+            inspection_script_platform=script_platform,
+            inspection_script_version=script_version,
         )
 
-    # 5) 解析 + 评估阶段：成功执行才进入
+    # 6) 解析 + 评估阶段：成功执行才进入
     try:
         parsed_values = parse_inspection_output(parser, result.stdout or "")
         # ``inspection_fields`` 由 ``DevOpsServerService.get_connection_config``
@@ -625,9 +681,13 @@ async def _run_one(
             field_results=[],
             inspection_status="crit",
             inspection_error=full_err,
+            inspection_script_name=script_name,
+            inspection_script_display_name=script_display_name,
+            inspection_script_platform=script_platform,
+            inspection_script_version=script_version,
         )
 
-    # 6) 评估成功：走到此处 exit_code 必为 0（非 0 已在步骤 4 返回），
+    # 7) 评估成功：走到此处 exit_code 必为 0（非 0 已在步骤 5 返回），
     #    success 取「退出码为 0」的执行语义；stderr 噪音（如 .bashrc 语法错误）
     #    仅保留在 item.stderr 供报告展示，不拉低执行与巡检判定。
     eval_error = evaluation.error_message or ""
@@ -644,6 +704,10 @@ async def _run_one(
         field_results=[vars(field_result) for field_result in evaluation.fields],
         inspection_status=evaluation.status,
         inspection_error=eval_error,
+        inspection_script_name=script_name,
+        inspection_script_display_name=script_display_name,
+        inspection_script_platform=script_platform,
+        inspection_script_version=script_version,
     )
 
 

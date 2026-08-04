@@ -22,7 +22,10 @@
       ``x-value-field=id`` 唯一约束选择。
 
 契约边界:
-    * 命令来源是 ``devops_servers.inspection_script`` 字段,不在脚本入参中重复指定;
+    * 命令来源是 ``devops_servers.inspection_script_id`` 外键引用的
+      ``inspection_scripts`` 表条目（由 ``DevOpsServerService.get_connection_config``
+      通过 ``InspectionScriptService.get_script_by_id`` 间接加载）,
+      不在脚本入参中重复指定;
     * ``server_list`` / ``api_list`` 空数组或缺失键时,对应模块不执行,日志仅输出
       已有摘要,行为与 ``hello_script`` 对齐;
     * ``server_list`` 非空但 ``devops_server_service`` 不可用时,或 ``api_list``
@@ -87,9 +90,10 @@ _FIELD_STATUS_ZH = {
     name="ops_inspection_sweep",
     display_name="运维巡检扫描",
     description=(
-        "对 server_list 中每台服务器执行预存的 inspection_script, 按 inspection_fields "
-        "逐字段打印解析值与阈值比对明细; 对 api_list 中每个接口执行健康检查并打印 "
-        "断言明细; 全量结果落到日志, 返回纯文本摘要。"
+        "对 server_list 中每台服务器执行 devops_servers.inspection_script_id 外键关联的 "
+        "inspection_scripts 表条目巡检脚本, 按 inspection_fields 逐字段打印解析值与阈值"
+        "比对明细; 对 api_list 中每个接口执行健康检查并打印断言明细; 全量结果落到日志, "
+        "返回纯文本摘要。"
     ),
     params_schema={
         "type": "object",
@@ -261,14 +265,16 @@ def _log_server_ops_detail(report, log_logger) -> None:
     """逐服务器打印 ``inspection_fields`` 逐字段比对明细。
 
     对 ``report.items`` 中的每台服务器,依次记录:
-        * 业务名 + IP/parser + inspection_fields 数量;
+        * 业务名 + IP/parser + inspection_fields 数量 + 关联的脚本库名 (``script=``);
         * 解析后的 ``parsed_values``(JSON 字符串);
         * 每条字段的 ``(key / name_zh / unit / value / direction / warn / crit /
           status / message)`` 比对结果(含 ``disks`` 数组展开后的逐条 ``mount``
           上下文);
         * 整台服务器的 ``inspection_status`` + SSH 执行 ``success/exit_code/duration_ms``。
 
-    skipped 项仅打印「业务名 + 跳过原因」,不打印字段明细。
+    skipped 项仅打印「业务名 + 脚本名 + 跳过原因」,不打印字段明细。
+    ``inspection_script_name`` 来自 ``inspection_scripts`` 表(由
+    ``DevOpsServerService.get_connection_config`` 透传),缺失时省略 ``script=`` 片段。
 
     参数:
         report: ``ServerOpsReport``。
@@ -286,8 +292,9 @@ def _log_server_ops_detail(report, log_logger) -> None:
     for item in report.items:
         if item.skipped:
             log_logger.info(
-                "server biz=%s SKIPPED reason=%s",
+                "server biz=%s SKIPPED%s reason=%s",
                 item.business_name,
+                _script_suffix(item),
                 item.error_message or item.inspection_error or "未配置巡检脚本",
             )
             continue
@@ -295,8 +302,9 @@ def _log_server_ops_detail(report, log_logger) -> None:
         # SSH 失败:打印错误摘要(不打印 parsed_values / field_results)
         if not item.success:
             log_logger.info(
-                "server biz=%s FAIL exit=%s duration=%sms parser=%s error=%s inspection=%s",
+                "server biz=%s FAIL%s exit=%s duration=%sms parser=%s error=%s inspection=%s",
                 item.business_name,
+                _script_suffix(item),
                 item.exit_code,
                 item.duration_ms,
                 item.inspection_parser,
@@ -313,8 +321,9 @@ def _log_server_ops_detail(report, log_logger) -> None:
 
         # SSH 成功 + 有/无字段规则:打印 parsed_values + 逐字段比对
         log_logger.info(
-            "server biz=%s OK exit=%s duration=%sms parser=%s inspection=%s fields=%d",
+            "server biz=%s OK%s exit=%s duration=%sms parser=%s inspection=%s fields=%d",
             item.business_name,
+            _script_suffix(item),
             item.exit_code,
             item.duration_ms,
             item.inspection_parser,
@@ -341,6 +350,24 @@ def _log_server_ops_detail(report, log_logger) -> None:
                 index,
                 _format_field_log(field_result),
             )
+
+
+def _script_suffix(item) -> str:
+    """生成 ``ServerOpsItem`` 日志中追加的 ``script=<name>`` 片段。
+
+    当 ``item.inspection_script_name`` 为 ``None``(脚本库元信息未注入 /
+    skipped 路径未触发元信息回填)时返回空串,避免日志噪音。
+
+    参数:
+        item: ``ServerOpsItem``。
+
+    返回:
+        str: 形如 `` script=linux-bash``(含前导空格)或空串。
+    """
+    name = getattr(item, "inspection_script_name", None)
+    if not name:
+        return ""
+    return f" script={name}"
 
 
 def _log_api_check_detail(report, log_logger) -> None:

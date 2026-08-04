@@ -831,7 +831,14 @@ def test_list_public_servers_returns_only_whitelisted_fields(tmp_yaml):
     public = svc.list_public_servers()
     assert len(public) == 1
     item = public[0]
-    assert set(item.keys()) == {"id", "business_name", "server_type", "updated_at"}
+    # 2026-08-04 改造：list_public_servers 返回 7 字段白名单（基础 4 + 巡检脚本
+    # binding 元数据 3：inspection_script_id / name / display_name）。
+    # platform / version 故意不暴露（避免增加前端字段映射成本，列表场景非必需）。
+    assert set(item.keys()) == {
+        "id", "business_name", "server_type", "updated_at",
+        "inspection_script_id", "inspection_script_name",
+        "inspection_script_display_name",
+    }
 
 
 def test_get_connection_config_decrypts_password(tmp_yaml):

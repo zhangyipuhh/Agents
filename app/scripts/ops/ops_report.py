@@ -6,6 +6,15 @@
     * ``OpsSummary`` —— 综述段落统计口径(总项/成功/有问题/分项计数)
     * ``OpsAlerts`` / ``OpsAlertItem`` —— 关键告警条目集合
 
+巡检脚本取值来源(2026-08-04 改造后):
+    * ``ServerOpsItem`` 通过 ``DevOpsServerService.get_connection_config``
+      间接消费 ``inspection_scripts`` 表条目(由 ``inspection_script_id`` 外键
+      解析而来),透传 ``inspection_script_name`` / ``inspection_script_display_name``
+      / ``inspection_script_platform`` / ``inspection_script_version`` 4 个
+      脚本库元数据键供报告 / 邮件正文 / 详细日志选择性展示。
+    * 本模块**不**直接读 ``inspection_scripts`` 表,所有数据经由
+      ``ServerOpsReport`` 中转。
+
 报告路径: ``<项目根>/data/attachments/Task/{slug}/{ts}_{run_id}.docx``
 参见 :func:`app.core.config.paths.resolve_task_attachment_path`。
 """

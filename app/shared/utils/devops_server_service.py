@@ -396,13 +396,22 @@ class DevOpsServerService:
           ``list[InspectionFieldRule]``，service 是序列化/结构化的唯一真相源，
           调用方（脚本侧）**不**重复归一化。
 
+        同时追加 4 个脚本库元数据键供脚本层透传（不暴露 ``id``，避免与 ``_cache``
+        内部 id 混淆；service 是解密层而非详情端点）：
+        - ``inspection_script_name`` —— 脚本库唯一标识（如 ``linux-bash``）
+        - ``inspection_script_display_name`` —— 脚本库展示名（如 ``Linux Bash``）
+        - ``inspection_script_platform`` —— 平台（``linux`` / ``windows``）
+        - ``inspection_script_version`` —— 版本字符串（如 ``5.1`` / ``7+``）
+
         Args:
             business_name: 业务名（唯一键）
 
         Returns:
             Dict[str, Any]: 包含 ``ip`` / ``port`` / ``username`` / ``password`` /
             ``server_type`` / ``blacklist`` / ``whitelist`` /
-            ``inspection_script`` / ``inspection_parser`` / ``inspection_fields``
+            ``inspection_script`` / ``inspection_parser`` / ``inspection_fields`` +
+            ``inspection_script_name`` / ``inspection_script_display_name`` /
+            ``inspection_script_platform`` / ``inspection_script_version`` 共 14 键
 
         Raises:
             KeyError: 业务名不存在时抛出
@@ -446,6 +455,13 @@ class DevOpsServerService:
         inspection_fields = list(
             normalize_inspection_fields(script_rec.get("inspection_fields") or [])
         )
+        # 脚本库元数据 4 键：name / display_name / platform / version 供
+        # ServerOpsItem 透传到脚本层日志/docx/邮件正文（不暴露 id，避免
+        # 与 _cache 内部 id 混淆）
+        inspection_script_name = script_rec.get("name")
+        inspection_script_display_name = script_rec.get("display_name")
+        inspection_script_platform = script_rec.get("platform")
+        inspection_script_version = script_rec.get("version")
 
         return {
             "ip": rec.get("ip"),
@@ -458,6 +474,10 @@ class DevOpsServerService:
             "inspection_script": inspection_script,
             "inspection_parser": inspection_parser,
             "inspection_fields": inspection_fields,
+            "inspection_script_name": inspection_script_name,
+            "inspection_script_display_name": inspection_script_display_name,
+            "inspection_script_platform": inspection_script_platform,
+            "inspection_script_version": inspection_script_version,
         }
 
     # ------------------------------------------------------------------

@@ -74,7 +74,8 @@
 #### `DevOpsServerService` 与脚本库的协作契约
 
 - 构造入参新增 `inspection_script_service`；`get_connection_config(business_name)` 通过 `inspection_script_id` 调 `inspection_script_service.get_script_by_id(script_id)` 取脚本原文；`inspection_fields` **仅此一处**调用 `normalize_inspection_fields` 转 `list[InspectionFieldRule]`（service 是序列化/结构化的唯一真相源，脚本侧不再重复归一化）
-- 脚本未关联（`inspection_script_id IS NULL`）/ InspectionScriptService 未注入 / 脚本库条目不存在 → `get_connection_config` 抛 `ValueError`，不返回半残 dict
+- **返回值结构（2026-08-04 扩展）**：`get_connection_config` 返 14 键 = 基础 7 键（`ip` / `port` / `username` / `password` / `server_type` / `blacklist` / `whitelist`）+ 脚本原文 3 键（`inspection_script` / `inspection_parser` / `inspection_fields`）+ 脚本库元数据 4 键（`inspection_script_name` / `inspection_script_display_name` / `inspection_script_platform` / `inspection_script_version`）。4 个元数据键供 `ServerOpsItem` 透传到脚本层日志 / docx / 邮件正文选择性展示（运维场景下显示"该服务器使用了 linux-bash"或"Windows PowerShell 5.1"），**不**包含 `inspection_script_id`（避免与 `_cache` 内部 id 混淆）
+- 脚本未关联（`inspection_script_id IS NULL`）/ InspectionScriptService 未注入 / 脚本库条目不存在 → `get_connection_config` 抛 `ValueError`（错误消息分别含「服务器未关联巡检脚本（inspection_script_id 为空）」/「巡检脚本库条目不存在或已被删除」/「InspectionScriptService 未注入」），由 `server_ops._run_one` 归并为 `skipped=True` 并透传 ValueError 原文到 `error_message` / `inspection_error`，不返回半残 dict
 - `_normalize_entry` 在 YAML 扫描阶段调 `inspection_script_service.resolve_script_for_server(server_type, inspection_script_name)`：未命中（无显式 name 且 server_type 默认脚本未注册 / 显式 name 未注册）→ 该条目记 `failed`，不阻断其他条目
 - `get_server_detail(server_id)` 走 `inspection_script_service.get_script_by_id(script_id)` 解析 `inspection_script_name` / `inspection_script_display_name`；返回字段仅含元数据（**不**返回脚本原文，原文改走 `/api/admin/inspection-scripts/{id}`）
 
