@@ -1,21 +1,28 @@
 <script setup>
 /**
- * InspectionScriptLibraryPanel - 巡检脚本库左侧节点列表（2026-08-04 新增）
+ * InspectionScriptLibraryPanel - 巡检脚本库左侧节点列表
  *
  * 顶部搜索框按 name / display_name / platform / version 过滤（不区分大小写）；
- * 点击节点通过 `select` 事件向父组件派发 script_id。
+ * 点击节点通过 `select` 事件向父组件派发 script_id（删除选中节点时传 null，
+ * 父组件据此清空 `librarySelectedScriptId`）。
+ * hover 行时尾部出现编辑 / 删除 icon-btn（复用 UserServerManager 风格）：
+ *   - ✎ 编辑按钮触发 `select` 事件（同点击行），让右侧编辑器拉详情；
+ *   - × 删除按钮触发二次 confirm → DELETE /api/admin/inspection-scripts/{id}。
  *
- * 设计：复用 UserServerManager 风格的 search + 节点列表 + 选中态；
  * data-testid 锁定结构契约，便于 TaskSchedulerManager.spec.js 端到端断言。
  */
 import { computed, onMounted, ref } from 'vue'
-import { fetchInspectionScripts } from '../utils/api.js'
+import {
+  deleteInspectionScript,
+  fetchInspectionScripts,
+} from '../utils/api.js'
 
 const scripts = ref([])
 const searchKeyword = ref('')
 const selectedId = ref(null)
 const isLoading = ref(false)
 const errorMessage = ref('')
+const isDeletingId = ref(null)
 
 const emit = defineEmits(['select'])
 
@@ -45,6 +52,40 @@ function onNodeClick(node) {
   selectedId.value = node.id
   emit('select', node.id)
 }
+
+function onEditClick(node, event) {
+  // 阻止冒泡，避免外层 li 处理两次
+  if (event && typeof event.stopPropagation === 'function') {
+    event.stopPropagation()
+  }
+  onNodeClick(node)
+}
+
+async function onDeleteClick(node, event) {
+  if (event && typeof event.stopPropagation === 'function') {
+    event.stopPropagation()
+  }
+  const label = node.display_name || node.name
+  const confirmed = typeof window !== 'undefined'
+    ? window.confirm(`确定删除巡检脚本「${label}」吗？删除后无法恢复。`)
+    : true
+  if (!confirmed) return
+
+  isDeletingId.value = node.id
+  errorMessage.value = ''
+  try {
+    await deleteInspectionScript(node.id)
+    scripts.value = scripts.value.filter((s) => s.id !== node.id)
+    if (selectedId.value === node.id) {
+      selectedId.value = null
+      emit('select', null)
+    }
+  } catch (err) {
+    errorMessage.value = '删除失败，请稍后重试'
+  } finally {
+    isDeletingId.value = null
+  }
+}
 </script>
 
 <template>
@@ -60,7 +101,12 @@ function onNodeClick(node) {
       />
     </div>
     <div v-if="isLoading" class="empty-state" data-testid="library-loading">正在加载...</div>
-    <div v-else-if="errorMessage" class="alert error" data-testid="library-error" role="alert">
+    <div
+      v-else-if="errorMessage"
+      class="alert error"
+      data-testid="library-error"
+      role="alert"
+    >
       {{ errorMessage }}
     </div>
     <div
@@ -80,11 +126,36 @@ function onNodeClick(node) {
         :data-node-id="node.id"
         @click="onNodeClick(node)"
       >
-        <div class="library-node-name">{{ node.display_name || node.name }}</div>
-        <div class="library-node-meta">
-          <span class="library-node-tag">{{ node.platform || '' }}</span>
-          <span class="library-node-version">{{ node.version || '' }}</span>
+        <div class="library-node-body">
+          <div class="library-node-name">{{ node.display_name || node.name }}</div>
+          <div class="library-node-meta">
+            <span class="library-node-tag">{{ node.platform || '' }}</span>
+            <span class="library-node-version">{{ node.version || '' }}</span>
+          </div>
         </div>
+        <span class="library-node-actions">
+          <button
+            type="button"
+            class="library-node-icon-btn"
+            :aria-label="`编辑 ${node.display_name || node.name}`"
+            data-testid="library-node-edit-btn"
+            :data-node-id="node.id"
+            @click.stop="onEditClick(node, $event)"
+          >
+            ✎
+          </button>
+          <button
+            type="button"
+            class="library-node-icon-btn danger"
+            :aria-label="`删除 ${node.display_name || node.name}`"
+            :disabled="isDeletingId === node.id"
+            data-testid="library-node-delete-btn"
+            :data-node-id="node.id"
+            @click.stop="onDeleteClick(node, $event)"
+          >
+            ×
+          </button>
+        </span>
       </li>
     </ul>
   </div>
@@ -118,6 +189,9 @@ function onNodeClick(node) {
   min-height: 0;
 }
 .library-node-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 10px 12px;
   border-bottom: 1px solid #f3f4f6;
   cursor: pointer;
@@ -129,9 +203,16 @@ function onNodeClick(node) {
   background: #eef2ff;
   border-left: 3px solid #6366f1;
 }
+.library-node-body {
+  flex: 1;
+  min-width: 0;
+}
 .library-node-name {
   font-weight: 500;
   color: #111827;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .library-node-meta {
   display: flex;
@@ -147,6 +228,36 @@ function onNodeClick(node) {
 }
 .library-node-version {
   color: #9ca3af;
+}
+/* 行尾操作区：默认隐藏，hover 行 / 选中行时显示 */
+.library-node-actions {
+  display: none;
+  flex-shrink: 0;
+  gap: 2px;
+}
+.library-node-item:hover .library-node-actions,
+.library-node-item.active .library-node-actions {
+  display: inline-flex;
+}
+/* 复用 UserServerManager 的 icon-btn 风格；按钮本身无 border / 透明背景 */
+.library-node-icon-btn {
+  background: none;
+  border: none;
+  font-size: 12px;
+  color: #4b5563;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 2px;
+}
+.library-node-icon-btn:hover:not(:disabled) {
+  background: #e5e7eb;
+}
+.library-node-icon-btn.danger {
+  color: #dc2626;
+}
+.library-node-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .empty-state {
   padding: 24px;

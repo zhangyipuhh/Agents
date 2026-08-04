@@ -12,10 +12,10 @@
 | [认证与会话控制](memory/auth.md) | 双 Token 认证、聊天并发控制、HITL、提示词三层架构、动态上下文注入（DYNAMIC_NODE_REGISTRY）、State/Context 构建器、referenced_servers 一等 context 字段 | 认证、Token、并发、HITL、提示词、上下文注入、registry、referenced_servers | 2026-07-26 |
 | [Agent 与 Skill 体系](memory/agents-skills.md) | Agent 统一构造入口、Skill 系统、AGENTS.md 加载器、配置加载服务、工具注册中心、缓存、工具绑定双轨制、记忆存储、scripts/ | Agent、Skill、bootstrap、工具注册、缓存、记忆存储 | 2026-07-26 |
 | [MCP 体系](memory/mcp.md) | MCP 配置 CRUD、MCP/Tool/Skill Admin Router、统一 Agent Router、MCPToolsRegistry | MCP、服务器、工具注册、Admin Router | 2026-07-26 |
-| [前端架构](memory/frontend.md) | web/Agent 前端架构、MCP 管理组件、UserSettingsDialog 系列、斜杠命令注册表、触发器注册表（# 行内服务器 Chip）、TriggerPanel、MessageBubble mention 统一渲染、contenteditable 编辑器 DOM 工具、InputBox 会话切换清理本地态、TaskSchedulerManager context_overrides 参数化编辑器（2026-07-29）、巡检脚本按需两段式加载 + 脚本库扫描面板（2026-08-03）、巡检脚本库独立 Tab + 节点列表 + 编辑保存面板（2026-08-04） | 前端、Vue、组件、UserSettingsDialog、斜杠命令、triggerRegistry、TriggerPanel、inputEditor、会话切换、context_overrides、reference_server、inspection-scripts、巡检脚本、inspection-script-library、InspectionScriptLibraryPanel、InspectionScriptEditorPanel | 2026-08-04 |
+| [前端架构](memory/frontend.md) | web/Agent 前端架构、MCP 管理组件、UserSettingsDialog 系列、斜杠命令注册表、触发器注册表（# 行内服务器 Chip）、TriggerPanel、MessageBubble mention 统一渲染、contenteditable 编辑器 DOM 工具、InputBox 会话切换清理本地态、TaskSchedulerManager context_overrides 参数化编辑器（2026-07-29）、巡检脚本按需两段式加载 + 脚本库扫描面板（2026-08-03）、巡检脚本库独立 Tab + 节点列表（含行尾删除按钮 + 二次 confirm + emit select null 反向同步）+ 编辑保存面板（2026-08-04） | 前端、Vue、组件、UserSettingsDialog、斜杠命令、triggerRegistry、TriggerPanel、inputEditor、会话切换、context_overrides、reference_server、inspection-scripts、巡检脚本、inspection-script-library、InspectionScriptLibraryPanel、InspectionScriptEditorPanel、删除按钮、行尾 delete | 2026-08-04 |
 | [统一审计日志（2026-07-29）](memory/architecture.md#统一审计日志2026-07-29) | 统一日志 `LogService` 唯一入口；SSH/devops 事件；可信身份 + 可信 IP；管理员查询信封 | LogService、审计日志、SSH、devops、可信身份、可信 IP、log_ip、查询信封 | 2026-07-30 |
 | [菜单权限与用户配置](memory/menu-acl.md) | 用户菜单权限管理（MENU_CATALOG/ACL，含 `task-scheduler.inspection-script-library` 巡检脚本库菜单）、用户服务器配置管理 | 菜单、权限、ACL、allowed_agents、服务器配置、inspection-script-library | 2026-08-04 |
-| [DevOps 与沙箱](memory/devops-sandbox.md) | SSH 远程服务器管理、巡检脚本库（inspection_scripts / InspectionScriptService，含 update_script_detail + 编辑优先扫描）、lifespan 强依赖顺序、沙箱 Agent 架构、SubAgent 事件协议 | DevOps、SSH、沙箱、SubAgent、事件协议、inspection_scripts、InspectionScriptService、update_script_detail、编辑优先 | 2026-08-04 |
+| [DevOps 与沙箱](memory/devops-sandbox.md) | SSH 远程服务器管理、巡检脚本库（inspection_scripts / InspectionScriptService，含 update_script_detail + delete_script + 编辑优先扫描 + ON DELETE SET NULL）、lifespan 强依赖顺序、沙箱 Agent 架构、SubAgent 事件协议 | DevOps、SSH、沙箱、SubAgent、事件协议、inspection_scripts、InspectionScriptService、update_script_detail、delete_script、编辑优先、ON DELETE SET NULL | 2026-08-04 |
 | [其他子系统](memory/misc.md) | 邮件系统、飞书工具、CI 测试 | 邮件、飞书、CI、GitHub Actions | 2026-07-31 |
 
 ## API 路由速查表
@@ -45,7 +45,7 @@
 | /api/admin/email | app/routers/email_admin_router.py | 逐端点 require_admin_or_menu_acl('task-scheduler.email-settings.*') |
 | /api/admin/api-configs | app/routers/api_config_router.py | 逐端点 require_admin_or_menu_acl('task-scheduler.api-config') |
 | /api/admin/devops-servers | app/routers/devops_server_admin_router.py | 列表端点 require_admin_or_menu_acl('task-scheduler.server-management')，其余 require_admin；详情端点 2026-08-03 改造为返回 inspection_script_id / inspection_script_name / inspection_script_display_name 元数据（脚本原文改走 /api/admin/inspection-scripts/{id}） |
-| /api/admin/inspection-scripts | app/routers/inspection_script_admin_router.py | 列表 require_admin_or_menu_acl('task-scheduler.server-management')；/scan 与 /{script_id} require_admin（router 级 2026-08-03 新增） |
+| /api/admin/inspection-scripts | app/routers/inspection_script_admin_router.py | 列表 require_admin_or_menu_acl('task-scheduler.server-management')；/scan / PUT / DELETE /{script_id} 仅 admin（PUT/DELETE 后续可基于 ACL 扩展） |
 | /api/admin/user-servers | app/routers/user_server_router.py | 逐端点 require_admin_or_menu_acl('task-scheduler.server-management') |
 | /api/admin/permissions | app/routers/menu_permission_router.py | require_admin（router 级） |
 | /api/admin/permissions/agents | app/routers/agent_permission_router.py | require_admin（router 级） |

@@ -156,6 +156,7 @@
 - `POST /scan`：admin only；触发 `InspectionScriptService.scan_and_upsert()` 读取 `data/devops/inspection_scripts.yaml`；2026-08-04 改造为「编辑优先」——DB 中已有 `name` 跳过更新，**不**覆盖人工编辑；返回 5 整数 `{scanned, inserted, updated, failed, skipped}`；异常 → 500 + `"inspection script scan failed"`（不回显路径 / 原始 detail）
 - `GET /{script_id}`：admin only；返回完整详情含 `inspection_script` 与 `inspection_fields`（`{id, name, display_name, platform, version, inspection_parser, inspection_script, inspection_fields, created_at, updated_at}`）；不存在 → 404 + `"脚本不存在"`（不回显 script_id）；服务未初始化 → 500 + `"InspectionScriptService not initialized"`
 - `PUT /{script_id}`（2026-08-04 新增）：admin only；请求体 `UpdateInspectionScriptRequest{display_name, platform, version, inspection_parser, inspection_script, inspection_fields}`（Pydantic 校验 `platform ∈ {linux,windows}` / `inspection_parser ∈ {json,kv,csv,raw}` / `display_name 1-200` 字符）；调用 `InspectionScriptService.update_script_detail` 写 DB 并同步 `_cache` / `_id_cache`；返回更新后的完整记录（`_DETAIL_FIELDS` 11 字段）；script_id 不存在 → 404 + `"脚本不存在"`；非法入参（service 内部白名单校验失败）→ 404 + `"脚本不存在"`
+- `DELETE /{script_id}`（2026-08-04 新增）：admin only；调用 `InspectionScriptService.delete_script(id)` 执行 `DELETE FROM inspection_scripts WHERE id = $1`；成功 → 204 No Content（无响应体）；service 返回 False（不存在 / 入参非法 / DB 异常）→ 404 + `"脚本不存在"`（不回显 script_id）；服务未初始化 → 500 + `"InspectionScriptService not initialized"`。**副作用**：`devops_servers.inspection_script_id` 外键定义为 `ON DELETE SET NULL`，引用本脚本的服务器行自动解绑，业务层无需手动清理
 - 服务实例从 `request.app.state.inspection_script_service` 获取；lifespan 强依赖顺序详见 [devops-sandbox.md § lifespan 强依赖顺序](devops-sandbox.md#lifespan-强依赖顺序2026-08-03-新增章节)
 
 ### 前端 API 封装（`web/Agent/src/utils/api.js`，2026-08-03 新增；2026-08-04 扩展）
@@ -163,7 +164,8 @@
 - `fetchInspectionScripts()` → `GET /api/admin/inspection-scripts`（admin OR `task-scheduler.inspection-script-library` ACL）
 - `scanInspectionScripts()` → `POST /api/admin/inspection-scripts/scan`（admin only）
 - `fetchInspectionScriptDetail(scriptId)` → `GET /api/admin/inspection-scripts/{scriptId}`（admin only）
-- `updateInspectionScript(scriptId, payload)` → `PUT /api/admin/inspection-scripts/{scriptId}`（admin only，2026-08-04 新增）
+- `updateInspectionScript(scriptId, payload)` → `PUT /api/admin/inspection-scripts/{scriptId}`（admin only）
+- `deleteInspectionScript(scriptId)` → `DELETE /api/admin/inspection-scripts/{scriptId}`（admin only；204 No Content）
 
 ## 核心工具 (Core Tools)
 

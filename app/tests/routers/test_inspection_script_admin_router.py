@@ -95,6 +95,23 @@ def test_endpoints_registered(client):
         assert path in routes, f"路由未注册: {path}"
 
 
+def test_delete_endpoint_registered(client):
+    """DELETE /api/admin/inspection-scripts/{script_id} 已注册（2026-08-04 新增）。
+
+    用 ``client.app.router.routes`` 查全部路径，校验 DELETE 方法也挂上了。
+    """
+    delete_paths = {
+        r.path
+        for r in client.app.routes
+        if getattr(r, "methods", None) and "DELETE" in r.methods
+    }
+    # FastAPI 把 path 与 full_path 一致挂在 route.path；按 pattern 精确匹配
+    target = "/api/admin/inspection-scripts/{script_id}"
+    assert target in delete_paths, (
+        f"DELETE 路由未注册: {target}（已注册: {sorted(delete_paths)[:10]}）"
+    )
+
+
 # =============================================================================
 # P1: 列表端点
 # =============================================================================
@@ -358,4 +375,80 @@ def test_detail_requires_admin(
         lambda _id: None,
     )
     resp = client.get("/api/admin/inspection-scripts/1", headers=user_headers)
+    assert resp.status_code == 403
+
+
+# =============================================================================
+# P4: DELETE 端点（2026-08-04 新增）
+# =============================================================================
+
+
+def test_delete_inspection_script_returns_204(
+    client, inspection_router_setup, admin_headers, monkeypatch
+):
+    """DELETE /{id} 命中时返回 204（无响应体）。"""
+    async def fake_delete(_id):
+        return True
+
+    monkeypatch.setattr(
+        inspection_router_setup.state.inspection_script_service,
+        "delete_script",
+        fake_delete,
+    )
+    resp = client.delete(
+        "/api/admin/inspection-scripts/11",
+        headers=admin_headers,
+    )
+    assert resp.status_code == 204
+    # 204 No Content：无响应体
+    assert resp.content == b""
+
+
+def test_delete_inspection_script_404_when_missing(
+    client, inspection_router_setup, admin_headers, monkeypatch
+):
+    """DELETE /{id} 不存在 → 404 + 「脚本不存在」，不回显 script_id。"""
+    async def fake_delete(_id):
+        return False
+
+    monkeypatch.setattr(
+        inspection_router_setup.state.inspection_script_service,
+        "delete_script",
+        fake_delete,
+    )
+    resp = client.delete(
+        "/api/admin/inspection-scripts/9999",
+        headers=admin_headers,
+    )
+    assert resp.status_code == 404
+    body = resp.json()
+    assert body["detail"] == "脚本不存在"
+    # 不回显 script_id
+    assert "9999" not in resp.text
+
+
+def test_delete_inspection_script_500_when_service_missing(client, admin_headers):
+    """DELETE /{id} 在 service 未初始化时 → 500。"""
+    from app.main import app
+
+    saved = getattr(app.state, "inspection_script_service", None)
+    app.state.inspection_script_service = None
+    try:
+        resp = client.delete(
+            "/api/admin/inspection-scripts/1",
+            headers=admin_headers,
+        )
+        assert resp.status_code == 500
+    finally:
+        app.state.inspection_script_service = saved
+
+
+def test_delete_inspection_script_requires_admin(
+    client, inspection_router_setup, user_headers, grant_server_management_acl
+):
+    """DELETE /{id} 仅 admin，普通用户即便有 ACL 仍 403。"""
+    resp = client.delete(
+        "/api/admin/inspection-scripts/1",
+        headers=user_headers,
+    )
     assert resp.status_code == 403

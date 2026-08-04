@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
 from app.shared.utils.auth.Safety import (
@@ -228,3 +228,41 @@ async def update_inspection_script(
             detail="脚本不存在",
         )
     return record
+
+
+@router.delete(
+    "/{script_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_admin)],
+)
+async def delete_inspection_script(request: Request, script_id: int) -> Response:
+    """按 ``script_id`` 删除脚本库条目（2026-08-04 新增，admin only）。
+
+    行为：
+        - 服务未初始化 → 500
+        - script_id 不存在 / service 返回 False → 404 + 通用 detail「脚本不存在」
+          （不回显 script_id）
+        - 成功 → 204 No Content（无响应体）
+
+    副作用：``devops_servers.inspection_script_id`` 外键定义为
+    ``ON DELETE SET NULL``，引用本脚本的服务器行会自动解绑（FK 行为不依赖
+    业务层手动清理）。
+
+    Args:
+        request: FastAPI Request
+        script_id: inspection_scripts 主键 id（path int）
+
+    Returns:
+        Response: 204 No Content
+
+    Raises:
+        HTTPException: 404 / 500
+    """
+    svc = _get_service(request)
+    deleted = await svc.delete_script(script_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="脚本不存在",
+        )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

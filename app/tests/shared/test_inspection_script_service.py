@@ -685,6 +685,115 @@ def test_resolve_script_for_server_default_match(tmp_yaml):
     assert svc.resolve_script_for_server("aix", None) is None
 
 
+# ----------------------------------------------------------------------
+# P4: delete_script（2026-08-04 新增）
+# ----------------------------------------------------------------------
+
+
+def test_delete_script_removes_from_caches(tmp_yaml):
+    """delete_script 命中 DB 时从 ``_cache`` / ``_id_cache`` 同步移除。
+
+    Args:
+        tmp_yaml: 临时 yaml 路径
+
+    Returns:
+        None
+    """
+    import asyncio
+    from app.shared.utils.inspection_script_service import InspectionScriptService
+
+    db = _make_db()
+    db.execute.return_value = "DELETE 1"
+    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    # 直接构造缓存，避免依赖 preload_all 的 DB fetch 桩
+    svc._cache["linux-bash"] = {"id": 11, "name": "linux-bash"}
+    svc._id_cache[11] = {"id": 11, "name": "linux-bash"}
+
+    ok = asyncio.run(svc.delete_script(11))
+    assert ok is True
+    # _id_cache / _cache 都被清除
+    assert 11 not in svc._id_cache
+    assert "linux-bash" not in svc._cache
+    # DELETE SQL 发送的 id 必须正确
+    db.execute.assert_awaited_once()
+    call_args = db.execute.await_args
+    sql = call_args.args[0] if call_args.args else call_args.kwargs.get("query")
+    assert "DELETE FROM inspection_scripts" in sql
+    assert call_args.args[1] == 11 or call_args.kwargs.get("id") == 11
+
+
+def test_delete_script_returns_false_when_no_row(tmp_yaml):
+    """DB 无匹配行（DELETE 0）→ 返回 False，缓存不动。
+
+    Args:
+        tmp_yaml: 临时 yaml 路径
+
+    Returns:
+        None
+    """
+    import asyncio
+    from app.shared.utils.inspection_script_service import InspectionScriptService
+
+    db = _make_db()
+    db.execute.return_value = "DELETE 0"
+    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    svc._cache["linux-bash"] = {"id": 11, "name": "linux-bash"}
+    svc._id_cache[11] = {"id": 11, "name": "linux-bash"}
+
+    ok = asyncio.run(svc.delete_script(11))
+    assert ok is False
+    # 缓存保持原样
+    assert 11 in svc._id_cache
+    assert "linux-bash" in svc._cache
+
+
+def test_delete_script_invalid_id_returns_false(tmp_yaml):
+    """入参非法（None / 非 int / <=0）→ 返回 False，不调 DB。
+
+    Args:
+        tmp_yaml: 临时 yaml 路径
+
+    Returns:
+        None
+    """
+    import asyncio
+    from app.shared.utils.inspection_script_service import InspectionScriptService
+
+    db = _make_db()
+    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+
+    assert asyncio.run(svc.delete_script(None)) is False
+    assert asyncio.run(svc.delete_script(0)) is False
+    assert asyncio.run(svc.delete_script(-1)) is False
+    # bool 是 int 的子类，单独验证应当走校验通过路径之外：仍被允许（仅校验 > 0）
+    # 这里只覆盖「必须被短路」的三种形态
+    db.execute.assert_not_called()
+
+
+def test_delete_script_db_exception_returns_false(tmp_yaml):
+    """DB execute 抛异常 → 返回 False（不抛），缓存不动。
+
+    Args:
+        tmp_yaml: 临时 yaml 路径
+
+    Returns:
+        None
+    """
+    import asyncio
+    from app.shared.utils.inspection_script_service import InspectionScriptService
+
+    db = _make_db()
+    db.execute.side_effect = RuntimeError("simulated DB failure")
+    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    svc._cache["linux-bash"] = {"id": 11, "name": "linux-bash"}
+    svc._id_cache[11] = {"id": 11, "name": "linux-bash"}
+
+    ok = asyncio.run(svc.delete_script(11))
+    assert ok is False
+    assert 11 in svc._id_cache
+    assert "linux-bash" in svc._cache
+
+
 def test_scan_and_upsert_mixed_insert_update(tmp_yaml):
     """同名条目再次扫描（2026-08-04 改造为编辑优先）：
     第一次 insert 成功 → cache 含 linux-bash；第二次同 name 命中 cache → skipped=1，

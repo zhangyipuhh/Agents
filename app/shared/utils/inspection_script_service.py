@@ -423,6 +423,76 @@ class InspectionScriptService:
         return {k: record.get(k) for k in _DETAIL_FIELDS}
 
     # ------------------------------------------------------------------
+    # Delete script
+    # ------------------------------------------------------------------
+
+    async def delete_script(self, script_id: int) -> bool:
+        """按 ``id`` 删除脚本库条目，同步清理内存缓存（2026-08-04 新增）。
+
+        行为：
+            - 入参非法（``None`` / 非 int / ``<=0``）→ 返回 ``False``（不抛）。
+            - DB 无匹配行（``DELETE 0``）→ 返回 ``False``，不动缓存。
+            - DB 异常（连接 / FK 等）→ ``logger.exception`` 后返回 ``False``。
+            - 删除成功 → 持 ``_write_lock`` 同时移除
+              ``_id_cache[script_id]`` 与 ``_cache[name]``，返回 ``True``。
+            - 由于 ``devops_servers.inspection_script_id`` 外键定义为
+              ``ON DELETE SET NULL``，删除脚本不会阻塞 / 级联删除服务器行，
+              而是自动解绑；本函数无需手动清理 devops_servers。
+
+        Args:
+            script_id: ``inspection_scripts.id``
+
+        Returns:
+            bool: 已删除返回 ``True``；不存在 / 入参非法 / DB 异常返回 ``False``
+        """
+        if script_id is None or not isinstance(script_id, int) or script_id <= 0:
+            return False
+
+        # 先读取当前 name，便于删除成功后同步 _cache；非锁定读，避免长时间持锁
+        cached = self._id_cache.get(int(script_id))
+        cached_name: Optional[str] = None
+        if isinstance(cached, dict):
+            name_val = cached.get("name")
+            if isinstance(name_val, str) and name_val.strip():
+                cached_name = name_val
+
+        try:
+            result = await self.db.execute(
+                "DELETE FROM inspection_scripts WHERE id = $1",
+                int(script_id),
+            )
+        except Exception:
+            logger.exception(
+                "[inspection_script_service] delete_script failed, id=%s",
+                script_id,
+            )
+            return False
+
+        # asyncpg 返回 "DELETE <n>" 形式的 status 字符串
+        if not isinstance(result, str) or not result.startswith("DELETE"):
+            logger.warning(
+                "[inspection_script_service] delete_script unexpected result=%r",
+                result,
+            )
+            return False
+
+        try:
+            affected = int(result.split()[1])
+        except (IndexError, ValueError):
+            affected = 0
+        if affected == 0:
+            return False
+
+        async with self._write_lock:
+            self._id_cache.pop(int(script_id), None)
+            if cached_name:
+                # 仅当 _cache 中该 name 对应同一 id 时才移除，避免误删
+                existing = self._cache.get(cached_name)
+                if isinstance(existing, dict) and existing.get("id") == int(script_id):
+                    self._cache.pop(cached_name, None)
+        return True
+
+    # ------------------------------------------------------------------
     # Public read APIs
     # ------------------------------------------------------------------
 

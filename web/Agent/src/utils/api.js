@@ -2579,6 +2579,32 @@ export async function fetchInspectionScriptDetail(scriptId) {
 }
 
 /**
+ * 按 script_id 删除巡检脚本库条目（2026-08-04 新增）
+ * 调用 DELETE /api/admin/inspection-scripts/{script_id}，admin only。
+ * 后端返回 204 No Content（无响应体），本函数不解析响应体。
+ * 失败时按 status 给出中文降级文案 + 后端 detail，避免上层 catch 显示
+ * `[object Object]`。
+ * @param {number|string} scriptId - inspection_scripts 主键 id
+ * @returns {Promise<void>} 无返回值
+ * @throws {Error} 404（脚本不存在）/ 500（服务未初始化）/ 其他错误。
+ *   错误 message 不回显 script_id 等敏感信息
+ */
+export async function deleteInspectionScript(scriptId) {
+  if (scriptId == null) {
+    throw new Error('deleteInspectionScript: scriptId 不能为空')
+  }
+  const response = await fetchWithAuth(
+    `/api/admin/inspection-scripts/${encodeURIComponent(scriptId)}`,
+    { method: 'DELETE' }
+  )
+  // 204 No Content 无响应体，不能调用 response.json()
+  if (!response.ok && response.status !== 204) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `删除巡检脚本失败: ${response.status}`)
+  }
+}
+
+/**
  * 按 script_id 更新巡检脚本库条目（admin only，2026-08-04 新增）
  * 调用 PUT /api/admin/inspection-scripts/{script_id}。
  * 请求体包含 display_name / platform / version / inspection_parser /

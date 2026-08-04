@@ -283,6 +283,7 @@
 - **编辑优先扫描**：`InspectionScriptService.scan_and_upsert` 改造为「DB 中已有 `name` 跳过更新」——写循环前增加 `if name in self._cache: stats["skipped"] += 1; continue`，不再触发 `_upsert_one_returning`，人工编辑内容不被覆盖
 - **保存工作流**：选中节点 → 编辑器 watch 监听 `props.scriptId` 调 `fetchInspectionScriptDetail` 拉详情 → 用户改字段 → 点保存调 `updateInspectionScript(scriptId, payload)` → 成功后 `form` 同步为后端最新记录 + 顶部出现成功提示（`onLibraryScriptSaved` 回调写入 `libraryScanSuccessMessage`）
 - **服务新增 `update_script_detail`**：`UPDATE inspection_scripts SET ... WHERE id = $1 RETURNING ...` 单条往返；白名单校验 `platform ∈ {linux, windows}` / `inspection_parser ∈ _VALID_PARSERS` / `display_name` 非空；写后立即同步 `_cache[name]` / `_id_cache[script_id]`（持 `_write_lock`）；DB 写入异常 / 入参非法 / script_id 不存在均返回 `None`（不抛）
+- **服务新增 `delete_script(id) -> bool`**：`DELETE FROM inspection_scripts WHERE id = $1` 单条往返；入参非法（`None` / 非 int / `<=0`）→ `False`；DB 返回非 `DELETE n` 格式或 `n=0`（无匹配行）→ `False`；DB 异常 → `logger.exception` 后 `False`；命中 `DELETE 1` → 持 `_write_lock` 同步移除 `_id_cache[script_id]` 与 `_cache[name]`（仅当 `_cache[name]['id'] == script_id` 才动 `_cache`），返回 `True`。`devops_servers.inspection_script_id` 外键为 `ON DELETE SET NULL`，无需手动清理服务器端缓存
 
 ### 安全约束
 
