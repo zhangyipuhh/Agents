@@ -86,7 +86,19 @@ logger = logging.getLogger(__name__)
 
 
 # 公开字段白名单（严格只含以下字段）
-_PUBLIC_FIELDS = ("id", "business_name", "server_type", "updated_at")
+# 2026-08-04 改造：列表端点新增三个 binding 元数据字段
+# （inspection_script_id / inspection_script_name / inspection_script_display_name），
+# 供服务器表格下拉即时保存回显与显示当前绑定名；脚本原文仍走详情端点
+# /api/admin/inspection-scripts/{id} 按需拉取。
+_PUBLIC_FIELDS = (
+    "id",
+    "business_name",
+    "server_type",
+    "updated_at",
+    "inspection_script_id",
+    "inspection_script_name",
+    "inspection_script_display_name",
+)
 
 
 class DevOpsServerService:
@@ -107,6 +119,31 @@ class DevOpsServerService:
     """
 
     _instance: Optional["DevOpsServerService"] = None
+
+    # 2026-08-04 新增：set_inspection_script 抛出的脚本不存在错误类型。
+    # 路由层通过 ``except DevOpsServerService.ScriptNotFoundError`` 捕获并映射到 404。
+    # 与 inspect 服务的实例无关——这是一个**类级异常类型**，便于上层单点
+    # 替换测试替身并断言不影响其它测试。
+    class ScriptNotFoundError(Exception):
+        """service.set_inspection_script 在 inspection_script_id 无效时抛出（2026-08-04 新增）。
+
+        被 admin router 捕获并映射为 404 + detail「巡检脚本不存在」。
+        不携带 server_id / script_id 等敏感字段，避免响应体泄漏。
+        """
+
+        pass
+
+    # 2026-08-04 新增：set_inspection_script 在 InspectionScriptService 未注入时
+    # 抛出的「服务未初始化」错误类型。路由层映射为脱敏 500（不视作脚本不存在 404）。
+    # 与 ScriptNotFoundError 区分，避免运维误判为「脚本 id 写错」。
+    class InspectionScriptServiceUnavailable(Exception):
+        """service.set_inspection_script 在 InspectionScriptService 未注入时抛出（2026-08-04 新增）。
+
+        被 admin router 捕获并映射为 500 + 脱敏 detail「更新巡检脚本失败」。
+        不携带 server_id / script_id 等敏感字段，避免响应体泄漏。
+        """
+
+        pass
 
     # ------------------------------------------------------------------
     # Singleton helpers
@@ -250,16 +287,39 @@ class DevOpsServerService:
     def list_public_servers(self) -> List[Dict[str, Any]]:
         """返回公开字段（严格白名单）。
 
-        返回字段固定为 ``id`` / ``business_name`` / ``server_type`` / ``updated_at``，
-        绝不包含 ip / port / username / password / blacklist / whitelist /
-        inspection_script_id 等。
+        返回字段固定为 ``id`` / ``business_name`` / ``server_type`` / ``updated_at`` /
+        ``inspection_script_id`` / ``inspection_script_name`` /
+        ``inspection_script_display_name``（7 字段白名单），绝不包含
+        ip / port / username / password / blacklist / whitelist /
+        inspection_script 原文 / inspection_fields。
+
+        巡检脚本元数据（name / display_name）通过
+        ``inspection_script_service.get_script_by_id`` 由缓存中 ``inspection_script_id``
+        解析；脚本库未注入或脚本被删除时三字段统一回退为 ``None``，避免响应里出现
+        半残数据。
 
         Returns:
             List[Dict[str, Any]]: 公开字段列表，每项仅含白名单键
         """
         result: List[Dict[str, Any]] = []
         for business_name, rec in self._cache.items():
-            result.append({k: rec.get(k) for k in _PUBLIC_FIELDS})
+            script_id = rec.get("inspection_script_id")
+            script_name: Optional[str] = None
+            script_display_name: Optional[str] = None
+            if script_id is not None and self.inspection_script_service is not None:
+                script_rec = self.inspection_script_service.get_script_by_id(script_id)
+                if script_rec is not None:
+                    script_name = script_rec.get("name")
+                    script_display_name = script_rec.get("display_name")
+            result.append({
+                "id": rec.get("id"),
+                "business_name": business_name,
+                "server_type": rec.get("server_type"),
+                "updated_at": rec.get("updated_at"),
+                "inspection_script_id": script_id,
+                "inspection_script_name": script_name,
+                "inspection_script_display_name": script_display_name,
+            })
         return result
 
     # ------------------------------------------------------------------
@@ -746,3 +806,130 @@ class DevOpsServerService:
                 "DELETE FROM devops_servers WHERE id = $1",
                 server_id,
             )
+
+    # ------------------------------------------------------------------
+    # Bind / unbind inspection script (admin only, 2026-08-04 新增)
+    # ------------------------------------------------------------------
+
+    async def set_inspection_script(
+        self,
+        server_id: int,
+        inspection_script_id: Optional[int],
+    ) -> Optional[Dict[str, Any]]:
+        """按 ``server_id`` 绑定 / 解绑巡检脚本，同步缓存（2026-08-04 新增，admin 专用）。
+
+        行为契约：
+            - 非空 ``inspection_script_id`` → 通过
+              ``self.inspection_script_service.get_script_by_id`` 校验该脚本在
+              脚本库中存在；不存在抛 ``ScriptNotFoundError``；
+            - ``None`` 表示解绑，跳过脚本校验；
+            - DB ``UPDATE devops_servers SET inspection_script_id = $1 WHERE id = $2``，
+              无返回行（``fetchrow is None``） → 服务层返回 ``None``
+              （admin router 据此映射为 404「服务器不存在」）；
+            - 成功后持 ``self._write_lock`` 把缓存对应 ``business_name``
+              的 ``inspection_script_id`` 字段更新；
+            - 返回白名单 + 巡检脚本元数据 dict（不含 ip / port / username /
+              password / blacklist / whitelist / inspection_script 原文）；
+
+        Args:
+            server_id: ``devops_servers.id`` 主键
+            inspection_script_id: ``inspection_scripts.id``；``None`` 表示解绑
+
+        Returns:
+            Optional[Dict[str, Any]]: 命中时返回含 ``id`` /
+            ``business_name`` / ``server_type`` / ``updated_at`` /
+            ``inspection_script_id`` / ``inspection_script_name`` /
+            ``inspection_script_display_name`` 字段的字典；未命中返回 ``None``
+
+        Raises:
+            ScriptNotFoundError: 传入的 ``inspection_script_id`` 在脚本库中不存在
+            Exception: DB 异常或写入失败时向上抛，由 admin router 统一脱敏
+        """
+        if not isinstance(server_id, int) or isinstance(server_id, bool):
+            return None
+
+        # 1) 非空脚本 id 时校验脚本存在性（解绑 None 不走校验）
+        script_name: Optional[str] = None
+        script_display_name: Optional[str] = None
+        if inspection_script_id is not None:
+            if (
+                not isinstance(inspection_script_id, int)
+                or isinstance(inspection_script_id, bool)
+                or inspection_script_id <= 0
+            ):
+                raise self.ScriptNotFoundError("invalid inspection_script_id")
+            inspection_svc = getattr(self, "inspection_script_service", None)
+            if inspection_svc is None:
+                # 2026-08-04 修复：与 ScriptNotFoundError 区分。
+                # InspectionScriptService 未注入是「服务依赖缺失」配置类问题，
+                # 不应被映射为 404「脚本不存在」（会误导运维去查脚本 id）。
+                # 抛 InspectionScriptServiceUnavailable，路由层映射为脱敏 500。
+                raise self.InspectionScriptServiceUnavailable(
+                    "InspectionScriptService 未注入，无法校验脚本"
+                )
+            script_rec = inspection_svc.get_script_by_id(inspection_script_id)
+            if script_rec is None:
+                raise self.ScriptNotFoundError("inspection script not found")
+            script_name = script_rec.get("name")
+            script_display_name = script_rec.get("display_name")
+
+        # 2) 持写锁执行 UPDATE，并同步缓存
+        async with self._write_lock:
+            try:
+                row = await self.db.fetchrow(
+                    "UPDATE devops_servers SET "
+                    "inspection_script_id = $1, "
+                    "updated_at = NOW() "
+                    "WHERE id = $2 "
+                    "RETURNING id, business_name, server_type, updated_at",
+                    inspection_script_id,
+                    server_id,
+                )
+            except Exception:
+                # DB 异常向上抛，由 admin router 统一脱敏为 500
+                logger.exception(
+                    "[devops_server_service] set_inspection_script DB UPDATE failed, "
+                    "server_id=%s",
+                    server_id,
+                )
+                raise
+
+            if row is None:
+                # WHERE 不命中：保持缓存不动，返回 None 让 router 抛 404
+                return None
+
+            row_data = dict(row)
+            business_name = row_data.get("business_name")
+            server_type = row_data.get("server_type")
+            updated_at = row_data.get("updated_at")
+            new_id = row_data.get("id")
+
+            # 同步缓存：仅修改目标 business_name 对应记录的 inspection_script_id
+            target_name: Optional[str] = None
+            if isinstance(business_name, str) and business_name in self._cache:
+                target_name = business_name
+            elif business_name is None:
+                # RETURNING 未返回 business_name，回退按 id 扫描一次
+                for name, rec in self._cache.items():
+                    if rec.get("id") == server_id:
+                        target_name = name
+                        break
+
+            if target_name is not None:
+                self._cache[target_name]["inspection_script_id"] = inspection_script_id
+                # 2026-08-04 修复：同步缓存 inspection_script_name / display_name
+                # 三个 binding 元数据必须同时更新，避免列表端点与缓存不一致。
+                self._cache[target_name]["inspection_script_name"] = script_name
+                self._cache[target_name][
+                    "inspection_script_display_name"
+                ] = script_display_name
+
+        return {
+            "id": new_id,
+            "business_name": business_name,
+            "server_type": server_type,
+            "updated_at": updated_at,
+            "inspection_script_id": inspection_script_id,
+            "inspection_script_name": script_name,
+            "inspection_script_display_name": script_display_name,
+        }

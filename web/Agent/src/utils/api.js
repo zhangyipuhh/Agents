@@ -2640,6 +2640,52 @@ export async function updateInspectionScript(scriptId, payload) {
   return response.json()
 }
 
+/**
+ * 绑定 / 解绑服务器的巡检脚本（admin only，2026-08-04 新增）
+ * 对应后端 PUT /api/admin/devops-servers/{server_id}/inspection-script。
+ * 用于「服务器扫描入库」表格的巡检脚本下拉即时保存：
+ *   - 选具体脚本 → request body ``{ inspection_script_id: <number> }``
+ *   - 选「未配置」 → request body ``{ inspection_script_id: null }``（解绑）
+ *
+ * 前端校验阻断空 serverId，避免无意义请求；其余错误回传后端 detail，
+ * 与现有失败处理保持一致（不显示 "[object Object]"）。
+ *
+ * @param {number|string|null|undefined} serverId - devops_servers 主键 id
+ * @param {number|null|undefined} inspectionScriptId - inspection_scripts.id；
+ *   ``null`` / ``undefined`` 表示解绑
+ * @returns {Promise<{
+ *   id: number,
+ *   business_name: string,
+ *   server_type: string,
+ *   updated_at: string,
+ *   inspection_script_id: number|null,
+ *   inspection_script_name: string|null,
+ *   inspection_script_display_name: string|null
+ * }>} 更新后的安全服务器记录
+ * @throws {Error} 404（服务器不存在 / 巡检脚本不存在）/
+ *   422（参数非法）/ 403（无权限）/ 500（服务未初始化）/ 其他错误
+ */
+export async function updateDevOpsServerInspectionScript(serverId, inspectionScriptId) {
+  if (serverId == null) {
+    // 错误信息只暴露属性名，不回显 serverId 等敏感值
+    throw new Error('updateDevOpsServerInspectionScript: serverId 不能为空')
+  }
+  const response = await fetchWithAuth(
+    `/api/admin/devops-servers/${encodeURIComponent(serverId)}/inspection-script`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      // ``?? null`` 兜底 undefined：以「解绑」语义提交，避免后端 422
+      body: JSON.stringify({ inspection_script_id: inspectionScriptId ?? null }),
+    }
+  )
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `更新巡检脚本失败: ${response.status}`)
+  }
+  return response.json()
+}
+
 // ============================================================
 // 消息反馈 API（2026-07-02 新增）
 // 对应后端 message_feedback_router 的 POST /api/agent/message-feedback

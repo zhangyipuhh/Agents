@@ -33,8 +33,10 @@ import {
   scanDevOpsServers,
   deleteDevOpsServer,
   fetchDevOpsServerDetail,  // 2026-07-22 新增：服务器详情（白名单 + 巡检脚本）
+  fetchInspectionScripts,  // 2026-08-04 新增：服务器表格下拉选项来源（白名单字段）
   fetchInspectionScriptDetail,  // 2026-08-03 新增：按需取巡检脚本完整原文 + 字段规则
   scanInspectionScripts,  // 2026-08-03 新增：触发巡检脚本库扫描入库
+  updateDevOpsServerInspectionScript,  // 2026-08-04 新增：服务器表格下拉即时保存
   fetchScripts,
   scanScripts,
   fetchEmailPolicies,
@@ -143,6 +145,17 @@ const librarySelectedScriptId = ref(null)
 // 单 ref 同时持有 row 与 detail，避免多个 ref 同步问题
 const whitelistDialog = ref({ open: false, row: null, detail: null, loading: false, error: '' })
 const scriptDialog = ref({ open: false, row: null, detail: null, loading: false, error: '' })
+
+// 2026-08-04 新增：「服务器扫描入库」表格下拉即时保存相关状态
+// inspectionScripts：服务器表格下拉选项来源（白名单字段，无脚本原文）。
+// isUpdatingServerScriptId：当前正在保存的服务器行 id（防重复提交；用于禁用对应行下拉）。
+// inspectionScriptsErrorMessage：选项加载错误文案（不阻塞「查看脚本」按钮）。
+// isLoadingInspectionScripts：选项首次加载期间下拉禁用，避免误解绑。
+const inspectionScripts = ref([])
+const isUpdatingServerScriptId = ref(null)
+const inspectionScriptsErrorMessage = ref('')
+const isLoadingInspectionScripts = ref(false)
+let inspectionScriptsLoadPromise = null
 
 /**
  * 打开白名单详情弹窗：
@@ -278,7 +291,20 @@ const isLoadingEmailPolicies = ref(false)
 const SUMMARY_FIELDS = ['scanned', 'inserted', 'updated', 'failed']
 
 // 服务器字段白名单：仅显示这些键，绝不显示敏感字段
-const SERVER_WHITELIST = ['id', 'business_name', 'server_type', 'updated_at']
+// 2026-08-04 改造：列表端点新返回三个 binding 元数据（inspection_script_id /
+// inspection_script_name / inspection_script_display_name），加入白名单以支持
+// 「服务器扫描入库」表格的巡检脚本下拉即时保存。
+// 注意：这些是「绑定元数据」，**不**包含脚本原文 / parser / fields，
+// 仍走 InspectionScriptService 详情端点按需拉取，避免脚本正文进入列表响应。
+const SERVER_WHITELIST = [
+  'id',
+  'business_name',
+  'server_type',
+  'updated_at',
+  'inspection_script_id',
+  'inspection_script_name',
+  'inspection_script_display_name',
+]
 
 // 脚本展示白名单字段：仅显示这些键，绝不显示 func 等内部对象。
 // params_schema 由后端返回，驱动前端 schema-aware 参数 UI；前端只识别 x-control=server-multiselect 的参数。
@@ -1677,6 +1703,9 @@ async function switchTab(tabId) {
   activeTab.value = tabId
   if (tabId === TAB_SCAN && !hasLoaded.value) {
     await loadDevopsServers()
+    // 2026-08-04 改造：服务器表格下拉选项与服务器列表并发加载；
+    // 不等待对方完成，避免串行拉长首屏
+    loadInspectionScripts()
   }
   if (tabId === TAB_SCRIPT && !hasLoadedScripts.value) {
     await loadScripts()
@@ -1785,6 +1814,149 @@ async function loadDevopsServers(opts = {}) {
   })
   devopsLoadPromise = tracked
   return tracked
+}
+
+/**
+ * 加载巡检脚本列表（白名单字段）作为服务器表格下拉选项。
+ *
+ * 2026-08-04 新增：与 fetchInspectionScripts 共享同一后端端点。
+ * - 防重复：模块级 ``inspectionScriptsLoadPromise`` 复用 in-flight 请求；
+ * - 失败时仅写错误文案到 ``inspectionScriptsErrorMessage``，
+ *   不清空 ``inspectionScripts``（已有选项可继续显示，已有绑定可继续查看）；
+ * - 仅按白名单字段写入前端 ref，绝不保存脚本原文 / inspection_fields。
+ * @returns {Promise<void>}
+ */
+async function loadInspectionScripts() {
+  if (inspectionScriptsLoadPromise) return inspectionScriptsLoadPromise
+  const promise = (async () => {
+    isLoadingInspectionScripts.value = true
+    try {
+      const list = await fetchInspectionScripts()
+      // 白名单防御：仅保留白名单字段
+      const safe = Array.isArray(list)
+        ? list.map((row) => ({
+            id: row && row.id,
+            name: row && row.name,
+            display_name: row && row.display_name,
+            platform: row && row.platform,
+            version: row && row.version,
+            inspection_parser: row && row.inspection_parser,
+            updated_at: row && row.updated_at,
+          }))
+        : []
+      inspectionScripts.value = safe
+      inspectionScriptsErrorMessage.value = ''
+    } catch (err) {
+      // 通用脱敏文案，不回显后端 detail；保留旧选项（如已有）
+      inspectionScriptsErrorMessage.value = '加载巡检脚本列表失败'
+    } finally {
+      isLoadingInspectionScripts.value = false
+    }
+  })()
+  const tracked = promise.finally(() => {
+    if (inspectionScriptsLoadPromise === tracked) {
+      inspectionScriptsLoadPromise = null
+    }
+  })
+  inspectionScriptsLoadPromise = tracked
+  return tracked
+}
+
+/**
+ * 服务器表格下拉即时保存处理器（2026-08-04 新增）。
+ *
+ * 数据流：
+ *   1) 取变化前 binding 三字段（oldScriptId / oldScriptName / oldDisplayName），
+ *      保存失败或响应缺失时用于完整恢复；
+ *   2) 立即禁用当前行下拉（``isUpdatingServerScriptId = row.id``）；
+ *   3) 调用 ``updateDevOpsServerInspectionScript`` 提交；
+ *   4) 成功：用响应中的 binding 元数据更新本地行（不重拉列表）；
+ *   5) 失败：恢复三字段全量回滚（不只是 id，避免仅恢复 id 导致 name/display_name
+ *      与 UI 仍展示「已绑定」字样），显示通用错误。
+ *   6) 成功响应缺失 ``inspection_script_id``（即后端未返回有效 id）→ 走失败回滚。
+ *
+ * @param {Object} row - 服务器行（含 id / business_name；含 binding 元数据）
+ * @param {Event} event - select change 事件；``event.target.value`` 为新值（数字字符串或 ''）
+ * @returns {Promise<void>}
+ */
+async function handleServerScriptChange(row, event) {
+  if (!row || row.id == null) return
+  const target = event && event.target ? event.target : null
+  // select 的 value 是字符串：空 → null；否则 Number 转回 id
+  const rawValue = target ? target.value : ''
+  const nextScriptId = rawValue === '' || rawValue == null ? null : Number(rawValue)
+  const oldScriptId = row.inspection_script_id == null ? null : row.inspection_script_id
+  const oldScriptName = row.inspection_script_name == null ? null : row.inspection_script_name
+  const oldDisplayName = row.inspection_script_display_name == null
+    ? null
+    : row.inspection_script_display_name
+  // 无变化时短路：避免无意义请求
+  if (nextScriptId === oldScriptId) {
+    if (target) target.value = oldScriptId == null ? '' : String(oldScriptId)
+    return
+  }
+  // 防重复点击：同一行正在保存，再次 change 静默忽略
+  if (isUpdatingServerScriptId.value === row.id) return
+
+  isUpdatingServerScriptId.value = row.id
+  listErrorMessage.value = ''
+  try {
+    const updated = await updateDevOpsServerInspectionScript(row.id, nextScriptId)
+    // 校验响应：必须含 inspection_script_id（绑定 / 解绑）才视为成功。
+    // 响应缺失（后端异常或字段丢失）→ 走失败回滚，避免 UI 与 DB 不一致。
+    const responseValid = updated
+      && Object.prototype.hasOwnProperty.call(updated, 'inspection_script_id')
+    if (!responseValid) {
+      throw new Error('response missing inspection_script_id')
+    }
+    const respScriptId = updated.inspection_script_id == null
+      ? null
+      : updated.inspection_script_id
+    const respScriptName = updated.inspection_script_name == null
+      ? null
+      : updated.inspection_script_name
+    const respDisplayName = updated.inspection_script_display_name == null
+      ? null
+      : updated.inspection_script_display_name
+    // 用响应中的 binding 元数据合并当前行（保持其它字段不变）
+    devopsServers.value = devopsServers.value.map((item) => {
+      if (!item || item.id !== row.id) return item
+      return {
+        ...item,
+        inspection_script_id: respScriptId,
+        inspection_script_name: respScriptName,
+        inspection_script_display_name: respDisplayName,
+        updated_at: updated.updated_at ? updated.updated_at : item.updated_at,
+      }
+    })
+    // 让 select value 与响应一致（防止浏览器维持旧 value）
+    if (target) {
+      const finalValue = respScriptId == null ? '' : String(respScriptId)
+      target.value = finalValue
+    }
+  } catch {
+    // 完整三字段回滚：不仅是 inspection_script_id，name / display_name
+    // 也要回到 oldScriptName / oldDisplayName，避免「已绑定的脚本名」与
+    // 已恢复的「未配置 id」状态不一致。
+    devopsServers.value = devopsServers.value.map((item) => {
+      if (!item || item.id !== row.id) return item
+      return {
+        ...item,
+        inspection_script_id: oldScriptId,
+        inspection_script_name: oldScriptName,
+        inspection_script_display_name: oldDisplayName,
+      }
+    })
+    if (target) {
+      target.value = oldScriptId == null ? '' : String(oldScriptId)
+    }
+    // 通用脱敏文案（不回显后端 detail；不发泄漏 serverId / scriptId）
+    listErrorMessage.value = '更新巡检脚本失败，请稍后重试'
+  } finally {
+    if (isUpdatingServerScriptId.value === row.id) {
+      isUpdatingServerScriptId.value = null
+    }
+  }
 }
 
 /**
@@ -3442,6 +3614,14 @@ onBeforeUnmount(() => {
           {{ listErrorMessage }}
         </div>
         <div
+          v-if="inspectionScriptsErrorMessage"
+          class="alert info"
+          role="status"
+          data-testid="inspection-scripts-load-error"
+        >
+          巡检脚本下拉选项加载失败：查看脚本按钮仍可使用
+        </div>
+        <div
           v-if="scanSuccessMessage"
           class="alert success"
           data-testid="scan-status"
@@ -3509,9 +3689,35 @@ onBeforeUnmount(() => {
                 </button>
               </td>
               <td class="server-action-cell">
+                <label class="server-script-select-wrap">
+                  <select
+                    class="server-script-select"
+                    :data-testid="`server-script-select-${row.id}`"
+                    :aria-label="`修改 ${row.business_name} 的巡检脚本绑定`"
+                    :disabled="isUpdatingServerScriptId === row.id || isLoadingInspectionScripts || inspectionScriptsErrorMessage !== ''"
+                    :value="row.inspection_script_id == null ? '' : row.inspection_script_id"
+                    @change="handleServerScriptChange(row, $event)"
+                  >
+                    <option value="">未配置</option>
+                    <option
+                      v-for="opt in inspectionScripts"
+                      :key="opt.id"
+                      :value="opt.id"
+                    >
+                      {{ opt.display_name || opt.name }}
+                    </option>
+                  </select>
+                  <span
+                    v-if="isUpdatingServerScriptId === row.id"
+                    class="server-script-loading"
+                    aria-hidden="true"
+                  >
+                    保存中…
+                  </span>
+                </label>
                 <button
                   type="button"
-                  class="server-detail-btn"
+                  class="server-detail-btn server-script-watch-btn"
                   :data-testid="`server-script-btn-${row.id}`"
                   :aria-label="`查看 ${row.business_name} 的巡检脚本`"
                   @click="openScriptDialog(row)"
@@ -4554,6 +4760,40 @@ input[type="number"] {
   background: #dbeafe;
   border-color: #1d4ed8;
   color: #1d4ed8;
+}
+
+/* 2026-08-04 新增：服务器表格巡检脚本下拉即时保存 */
+.server-script-select-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 6px;
+}
+
+.server-script-select {
+  max-width: 220px;
+  padding: 4px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #ffffff;
+  font-size: 13px;
+  color: #111827;
+}
+
+.server-script-select:disabled {
+  background: #f3f4f6;
+  color: #6b7280;
+  cursor: not-allowed;
+}
+
+.server-script-loading {
+  font-size: 12px;
+  color: #2563eb;
+  font-weight: 600;
+}
+
+.server-script-watch-btn {
+  white-space: nowrap;
 }
 
 /* 宽弹窗（脚本） */

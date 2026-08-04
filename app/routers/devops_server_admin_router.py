@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding:utf-8 -*-
 """
-DevOps Server Admin Router（2026-07-15 新增）
+DevOps Server Admin Router（2026-07-15 新增；2026-08-04 改造）
 
 职责：
     - 提供 DevOpsServerService 的管理接口（admin 权限）
@@ -10,33 +10,45 @@ DevOps Server Admin Router（2026-07-15 新增）
 
 端点：
     - GET    /api/admin/devops-servers
-          列出已配置服务器（严格只含 id / business_name / server_type / updated_at）
+          列出已配置服务器（严格只含 7 字段：id / business_name / server_type /
+          updated_at / inspection_script_id / inspection_script_name /
+          inspection_script_display_name；脚本原文改走 /api/admin/inspection-scripts/{id}）
     - POST   /api/admin/devops-servers/scan
           触发 ``DevOpsServerService.scan_and_upsert()``，
           响应严格只含 scanned / inserted / updated / failed 4 个数字
     - DELETE /api/admin/devops-servers/{server_id}
           按 server_id 删除一行；返 204 No Content；
           不存在 → 404 + "服务器不存在"；服务未初始化 → 500 + lifespan hint
+    - GET    /api/admin/devops-servers/{server_id}
+          详情（白名单 + 巡检脚本元数据三键）；不存在 → 404
+    - PUT    /api/admin/devops-servers/{server_id}/inspection-script
+          绑定 / 解绑巡检脚本（admin only）；
+          服务器不存在 → 404「服务器不存在」；
+          脚本不存在 → 404「巡检脚本不存在」；
+          InspectionScriptService 未注入 → 500 + 脱敏 hint（2026-08-04 改造）
 
 依赖：
     - service 实例从 ``request.app.state.devops_server_service`` 获取；
       生产对等初始化点：``app/core/server.py::lifespan`` 数据库池建立后
       ``app.state.devops_server_service = DevOpsServerService(...)``。
     - service 方法依赖：``list_public_servers`` / ``scan_and_upsert`` /
-      ``server_exists`` / ``delete_server`` / ``get_server_detail``
+      ``server_exists`` / ``delete_server`` / ``get_server_detail`` /
+      ``set_inspection_script``
 
 权限矩阵：
     - GET    /api/admin/devops-servers        → admin OR ``task-scheduler.server-management`` ACL
     - POST   /api/admin/devops-servers/scan   → admin only
     - GET    /api/admin/devops-servers/{id}    → admin only
     - DELETE /api/admin/devops-servers/{id}    → admin only
+    - PUT    /api/admin/devops-servers/{id}/inspection-script → admin only
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from pydantic import BaseModel, Field
 
 from app.shared.utils.auth.Safety import (
     require_admin,
@@ -48,11 +60,23 @@ from app.shared.utils.devops_server_service import DevOpsServerService
 logger = logging.getLogger(__name__)
 
 
-# 公开字段白名单（严格只含以下字段）
-_PUBLIC_FIELDS = ("id", "business_name", "server_type", "updated_at")
+# 公开字段白名单（7 字段白名单）
+# 2026-08-04 改造：列表端点新增三个 binding 元数据字段（inspection_script_id /
+# inspection_script_name / inspection_script_display_name），
+# 供服务器表格下拉即时保存回显与显示当前绑定名。不返回 ip / port / username /
+# password / blacklist / whitelist。
+_PUBLIC_FIELDS = (
+    "id",
+    "business_name",
+    "server_type",
+    "updated_at",
+    "inspection_script_id",
+    "inspection_script_name",
+    "inspection_script_display_name",
+)
 # 扫描结果白名单（4 个数字）
 _SCAN_FIELDS = ("scanned", "inserted", "updated", "failed")
-# 详情字段白名单（与 list 端点不同：允许返回 whitelist + 巡检脚本元数据）
+# 详情字段白名单（8 字段白名单，比 list 端点多 whitelist；不含脚本原文）
 # 2026-08-03 改造：详情不再返回 inspection_script / inspection_parser /
 # inspection_fields 三列（脚本原文改走 /api/admin/inspection-scripts/{id}）；
 # 改为返回 inspection_script_id / inspection_script_name /
@@ -251,3 +275,128 @@ async def delete_devops_server(request: Request, server_id: int) -> Response:
             detail="删除服务器失败",
         )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ----------------------------------------------------------------------
+# 9. PUT /api/admin/devops-servers/{server_id}/inspection-script（2026-08-04 新增）
+# ----------------------------------------------------------------------
+# 用于服务器表格下拉即时保存：
+# - admin only（与 scan / delete / detail 同口径）
+# - 请求体：{"inspection_script_id": int | null}，None 表示解绑
+# - 服务层 set_inspection_script 校验脚本存在 + 更新 DB + 同步缓存
+# - 行为：
+#   * 服务器不存在 → 404「服务器不存在」（不回显 server_id）
+#   * 脚本不存在 / ``DevOpsServerService.ScriptNotFoundError`` → 404「巡检脚本不存在」
+#   * 内部异常 → 500「更新巡检脚本失败」，不回显原始 detail
+# ----------------------------------------------------------------------
+
+
+class SetInspectionScriptRequest(BaseModel):
+    """绑定 / 解绑巡检脚本请求体（2026-08-04 新增，admin only）。
+
+    Attributes:
+        inspection_script_id: ``inspection_scripts.id``；正整数；``None`` 表示解绑
+    """
+
+    inspection_script_id: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="inspection_scripts.id；正整数；None 表示解绑",
+    )
+
+
+@router.put(
+    "/{server_id}/inspection-script",
+    response_model=Dict[str, Any],
+    dependencies=[Depends(require_admin)],
+)
+async def set_inspection_script_endpoint(
+    request: Request,
+    server_id: int,
+    req: SetInspectionScriptRequest,
+) -> Dict[str, Any]:
+    """绑定 / 解绑服务器的巡检脚本（admin only，2026-08-04 新增）。
+
+    行为：
+        - 服务未初始化 → 500 + lifespan hint（与 GET / DELETE 一致）
+        - ``server_id`` 在 DB 中不存在 → 404 + 通用 detail「服务器不存在」
+          （不回显 server_id）
+        - ``req.inspection_script_id`` 对应脚本不存在
+          → 404 + 通用 detail「巡检脚本不存在」（不回显 script_id）
+        - DB 执行异常 → 500 + 通用 detail「更新巡检脚本失败」
+          （不回显 SQL / 原 detail）
+        - 成功 → 200 + JSON（含 id / business_name / server_type / updated_at /
+          inspection_script_id / inspection_script_name / inspection_script_display_name
+          的安全记录，绝不含 ip / port / username / password / blacklist /
+          whitelist / 脚本原文）
+
+    Args:
+        request: FastAPI Request
+        server_id: devops_servers 主键 id（path int）
+        req: 请求体（Pydantic 校验；``inspection_script_id`` 可空正整数）
+
+    Returns:
+        Dict[str, Any]: 更新后的安全服务器记录
+
+    Raises:
+        HTTPException: 404（服务器不存在 / 巡检脚本不存在）/ 422（参数非法）/
+            500（服务缺失 / DB 异常）
+    """
+    svc = _get_service(request)
+    try:
+        record = await svc.set_inspection_script(server_id, req.inspection_script_id)
+    except DevOpsServerService.ScriptNotFoundError:
+        # 脚本不存在（含 inspection_script_id 无效 / 脚本库条目确实缺失）
+        # 2026-08-04 修复：InspectionScriptService 未注入已独立为
+        # InspectionScriptServiceUnavailable，不在此处一并映射为 404。
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="巡检脚本不存在",
+        )
+    except DevOpsServerService.InspectionScriptServiceUnavailable:
+        # 2026-08-04 修复：InspectionScriptService 未注入是服务依赖缺失，
+        # 不应误导为「脚本不存在」。映射为 500 + 脱敏 detail，提示运维排查
+        # lifespan 初始化顺序（devops_server_service_hint）。
+        logger.exception(
+            "[devops_server_admin_router] set_inspection_script(%s) - "
+            "InspectionScriptService unavailable",
+            server_id,
+        )
+        hint = getattr(request.app.state, "devops_server_service_hint", None)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=hint or "InspectionScriptService 未初始化，无法校验脚本",
+        )
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001 - 异常路径不暴露细节
+        logger.exception(
+            "[devops_server_admin_router] set_inspection_script(%s, %s) failed",
+            server_id,
+            req.inspection_script_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="更新巡检脚本失败",
+        )
+
+    if record is None:
+        # DB UPDATE WHERE id=$2 不命中：服务未命中行
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="服务器不存在",
+        )
+
+    # 二次过滤：service 失误返回多余字段时锁回白名单
+    return {
+        k: record.get(k)
+        for k in (
+            "id",
+            "business_name",
+            "server_type",
+            "updated_at",
+            "inspection_script_id",
+            "inspection_script_name",
+            "inspection_script_display_name",
+        )
+    }

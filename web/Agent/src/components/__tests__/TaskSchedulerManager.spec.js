@@ -112,6 +112,10 @@ const rawDevopsServers = [
     business_name: '业务A-生产',
     server_type: 'production',
     updated_at: '2026-07-15T09:00:00',
+    // 2026-08-04 新增：binding 元数据（来自后端白名单）
+    inspection_script_id: 42,
+    inspection_script_name: 'linux-bash',
+    inspection_script_display_name: 'Linux Bash 巡检',
     ip: '__LEAKED_IP_a1b2c3d4__',
     port: '__LEAKED_PORT_a9c8e7d6__',
     username: '__LEAKED_USER_rootX9f__',
@@ -125,6 +129,9 @@ const rawDevopsServers = [
     business_name: '业务B-测试',
     server_type: 'staging',
     updated_at: '2026-07-15T10:00:00',
+    inspection_script_id: null,
+    inspection_script_name: null,
+    inspection_script_display_name: null,
     ip: '__LEAKED_IP_e5f6g7h8__',
     port: '__LEAKED_PORT_f6e5d4c3__',
     username: '__LEAKED_USER_deployY2k__',
@@ -243,6 +250,57 @@ function setupFetchMock({
         inspection_script_display_name: null,
       })
     }
+    // 2026-08-04 新增：服务器巡检脚本绑定/解绑（admin only）
+    if (u === '/api/admin/devops-servers/1/inspection-script' && method === 'PUT') {
+      const body = opts && typeof opts.body === 'string' ? JSON.parse(opts.body) : {}
+      const scriptId = body && body.inspection_script_id
+      if (scriptId == null) {
+        return jsonResponse({
+          id: 1,
+          business_name: '业务A-生产',
+          server_type: 'production',
+          updated_at: '2026-08-04T12:00:00',
+          inspection_script_id: null,
+          inspection_script_name: null,
+          inspection_script_display_name: null,
+        })
+      }
+      if (scriptId === 42) {
+        return jsonResponse({
+          id: 1,
+          business_name: '业务A-生产',
+          server_type: 'production',
+          updated_at: '2026-08-04T12:00:00',
+          inspection_script_id: 42,
+          inspection_script_name: 'linux-bash',
+          inspection_script_display_name: 'Linux Bash 巡检',
+        })
+      }
+      if (scriptId === 43) {
+        return jsonResponse({
+          id: 1,
+          business_name: '业务A-生产',
+          server_type: 'production',
+          updated_at: '2026-08-04T12:00:00',
+          inspection_script_id: 43,
+          inspection_script_name: 'windows-ps-5.1',
+          inspection_script_display_name: 'Windows PowerShell 巡检',
+        })
+      }
+      return jsonResponse({ detail: '巡检脚本不存在' }, 404)
+    }
+    // 2026-08-04 新增：服务器巡检脚本绑定/解绑（id=2 失败用）
+    if (u === '/api/admin/devops-servers/2/inspection-script' && method === 'PUT') {
+      return jsonResponse({
+        id: 2,
+        business_name: '业务B-测试',
+        server_type: 'staging',
+        updated_at: '2026-08-04T12:00:00',
+        inspection_script_id: 42,
+        inspection_script_name: 'linux-bash',
+        inspection_script_display_name: 'Linux Bash 巡检',
+      })
+    }
     // 2026-08-03 新增：巡检脚本库端点 — admin 才能取详情
     if (u === '/api/admin/inspection-scripts/42' && method === 'GET') {
       return jsonResponse({
@@ -264,6 +322,7 @@ function setupFetchMock({
     if (u === '/api/admin/inspection-scripts' && method === 'GET') {
       return jsonResponse([
         { id: 42, name: 'linux-bash', display_name: 'Linux 基础巡检', platform: 'linux', version: '1.0.0', inspection_parser: 'json', updated_at: '2026-08-01T00:00:00Z' },
+        { id: 43, name: 'windows-ps-5.1', display_name: 'Windows PowerShell 巡检', platform: 'windows', version: '5.1', inspection_parser: 'json', updated_at: '2026-08-01T00:00:00Z' },
       ])
     }
     // 2026-08-04 改造：扫描响应新增 skipped 字段（编辑优先）
@@ -985,6 +1044,312 @@ describe('TaskSchedulerManager 组件', () => {
       ([url]) => typeof url === 'string' && url === '/api/admin/inspection-scripts/42'
     )
     expect(inspectionFetchCalls.length).toBe(1)
+    wrapper.unmount()
+  })
+
+  // 2026-08-04 新增：服务器巡检脚本下拉 + 即时保存行为契约
+  // 覆盖：
+  // - data-testid 渲染 + 默认值
+  // - 选项来源（脚本库列表）+ 标签格式
+  // - 选择非空立即发起 PUT
+  // - 选择「未配置」发送 null
+  // - 保存中仅禁用本行下拉
+  // - 失败恢复原值 + 显示通用错误
+  // - 查看脚本按钮继续存在并保留
+  it('test_server_table_renders_inspection_script_select_per_row 每行渲染巡检脚本下拉，默认值与 binding 一致', async () => {
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+
+    const select1 = wrapper.find('[data-testid="server-script-select-1"]')
+    const select2 = wrapper.find('[data-testid="server-script-select-2"]')
+    expect(select1.exists()).toBe(true)
+    expect(select2.exists()).toBe(true)
+
+    // 当前 binding 作为初始 value（id=42 行 → 42；id=2 行 → 空）
+    const value1 = select1.element.value
+    const value2 = select2.element.value
+    expect(String(value1) === '42' || Number(value1) === 42).toBe(true)
+    expect(value2).toBe('')
+  })
+
+  it('test_server_script_select_options_from_library 下拉选项来自脚本库列表，含「未配置」占位', async () => {
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+
+    const select = wrapper.find('[data-testid="server-script-select-1"]')
+    const optionTexts = select.findAll('option').map((opt) => opt.text())
+    // 「未配置」占位
+    expect(optionTexts.some((t) => t.includes('未配置'))).toBe(true)
+    // 来自 inspection-scripts 列表的两条
+    expect(optionTexts.some((t) => t.includes('Linux Bash 巡检')) || optionTexts.some((t) => t.includes('Linux 基础巡检'))).toBe(true)
+    expect(optionTexts.some((t) => t.includes('Windows PowerShell 巡检'))).toBe(true)
+  })
+
+  it('test_server_script_change_calls_bind_api 改选后立即调用 PUT 接口', async () => {
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+
+    const select = wrapper.find('[data-testid="server-script-select-1"]')
+    const initialCallCount = global.fetch.mock.calls.filter(
+      ([url, opts]) => typeof url === 'string'
+        && url === '/api/admin/devops-servers/1/inspection-script'
+        && (opts?.method || 'GET').toUpperCase() === 'PUT'
+    ).length
+
+    // 模拟 change 到 43 (windows-ps-5.1)
+    await select.setValue('43')
+    await flushPromises()
+
+    const putCalls = global.fetch.mock.calls.filter(
+      ([url, opts]) => typeof url === 'string'
+        && url === '/api/admin/devops-servers/1/inspection-script'
+        && (opts?.method || 'GET').toUpperCase() === 'PUT'
+    )
+    expect(putCalls.length).toBe(initialCallCount + 1)
+    // 请求体必须是 43（数字或字符串）
+    const body = typeof putCalls[putCalls.length - 1][1].body === 'string'
+      ? JSON.parse(putCalls[putCalls.length - 1][1].body)
+      : putCalls[putCalls.length - 1][1].body
+    expect(body.inspection_script_id).toBe(43)
+  })
+
+  it('test_server_script_change_to_empty_sends_null 选择空项发送 null 解绑', async () => {
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+
+    const select = wrapper.find('[data-testid="server-script-select-1"]')
+    await select.setValue('')
+    await flushPromises()
+
+    const putCalls = global.fetch.mock.calls.filter(
+      ([url, opts]) => typeof url === 'string'
+        && url === '/api/admin/devops-servers/1/inspection-script'
+        && (opts?.method || 'GET').toUpperCase() === 'PUT'
+    )
+    expect(putCalls.length).toBeGreaterThanOrEqual(1)
+    const body = typeof putCalls[putCalls.length - 1][1].body === 'string'
+      ? JSON.parse(putCalls[putCalls.length - 1][1].body)
+      : putCalls[putCalls.length - 1][1].body
+    expect(body.inspection_script_id).toBeNull()
+  })
+
+  it('test_server_script_failure_keeps_old_value_and_shows_error 失败时恢复原值并显示通用错误', async () => {
+    // 单独覆盖 PUT /api/admin/devops-servers/2/inspection-script 返回 500
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const method = (opts.method || 'GET').toUpperCase()
+      const u = typeof url === 'string' ? url : url.url
+      if (u === '/api/admin/task-schedules' && method === 'GET') return jsonResponse(mockSchedules)
+      if (u === '/api/admin/agents' && method === 'GET') return jsonResponse(mockAgents)
+      if (u === '/api/admin/scripts' && method === 'GET') return jsonResponse(mockScripts)
+      if (u === '/api/admin/devops-servers' && method === 'GET') {
+        // 业务B-测试 解绑前为 null，所以选择 42 才能进入 PUT
+        // 改为无效脚本触发 404，更能覆盖错误回滚路径
+        return jsonResponse([
+          { id: 1, business_name: '业务A-生产', server_type: 'production', updated_at: '2026-07-15T09:00:00', inspection_script_id: 42, inspection_script_name: 'linux-bash', inspection_script_display_name: 'Linux Bash 巡检' },
+          { id: 2, business_name: '业务B-测试', server_type: 'staging', updated_at: '2026-07-15T10:00:00', inspection_script_id: null, inspection_script_name: null, inspection_script_display_name: null },
+        ])
+      }
+      if (u === '/api/admin/devops-servers/1/inspection-script' && method === 'PUT') {
+        return jsonResponse({ detail: '更新巡检脚本失败' }, 500)
+      }
+      if (u === '/api/admin/inspection-scripts' && method === 'GET') {
+        return jsonResponse([
+          { id: 42, name: 'linux-bash', display_name: 'Linux Bash 巡检', platform: 'linux', version: '1.0.0', inspection_parser: 'json', updated_at: '2026-08-01T00:00:00Z' },
+        ])
+      }
+      return jsonResponse({})
+    })
+
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+
+    const select = wrapper.find('[data-testid="server-script-select-1"]')
+    // 业务A-生产 初始 binding=42；选择空（解绑），期望 PUT 失败 → 恢复 42
+    await select.setValue('')
+    await flushPromises()
+
+    // 失败后下拉值应恢复原 binding
+    const finalValue = select.element.value
+    expect(String(finalValue) === '42' || Number(finalValue) === 42).toBe(true)
+
+    // 通用错误展示（用 wrapper.find，因为 alert 在组件内部 DOM）
+    const alert = wrapper.find('[data-testid="list-error"]')
+    expect(alert.exists()).toBe(true)
+    expect(alert.text()).toContain('更新巡检脚本失败，请稍后重试')
+    wrapper.unmount()
+  })
+
+  it('test_server_script_button_still_present_for_watch 查看脚本按钮仍在原位', async () => {
+    // 回归：下拉改造不能删除「查看脚本」按钮
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="server-script-btn-1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="server-script-select-1"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('test_server_script_select_disabled_while_loading_inspection_scripts 脚本列表加载期间下拉禁用，避免误解绑', async () => {
+    // 2026-08-04 修复：loadInspectionScripts 是 in-flight Promise，
+    // 但首次挂载时 isLoadingInspectionScripts.value 应为 true 直到 GET 结束，
+    // 期间下拉禁用，避免用户在「未配置 / linux-bash」间误操作触发误解绑请求。
+    // 由于组件 mount 时 loadInspectionScripts 立即发起，断言我们看到的是禁用完成态：
+    // 通过检查 disabled 属性计算后的渲染结果（isLoadingInspectionScripts=false）。
+    // 这里断言：一旦 GET 完成，下拉恢复正常；并通过专门 mock 一个 in-flight Promise
+    // 的方式覆盖「加载期间禁用」契约。
+    let resolveScripts = null
+    const scriptsInFlight = new Promise((resolve) => { resolveScripts = resolve })
+
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const method = (opts.method || 'GET').toUpperCase()
+      const u = typeof url === 'string' ? url : url.url
+      if (u === '/api/admin/task-schedules' && method === 'GET') return jsonResponse(mockSchedules)
+      if (u === '/api/admin/agents' && method === 'GET') return jsonResponse(mockAgents)
+      if (u === '/api/admin/scripts' && method === 'GET') return jsonResponse(mockScripts)
+      if (u === '/api/admin/devops-servers' && method === 'GET') return jsonResponse([
+        { id: 1, business_name: '业务A', server_type: 'linux', updated_at: '2026-08-04T00:00:00', inspection_script_id: 42, inspection_script_name: 'linux-bash', inspection_script_display_name: 'Linux Bash 巡检' },
+      ])
+      if (u === '/api/admin/inspection-scripts' && method === 'GET') {
+        // 故意挂起，模拟「加载中」
+        await scriptsInFlight
+        return jsonResponse([
+          { id: 42, name: 'linux-bash', display_name: 'Linux Bash 巡检', platform: 'linux', version: '1.0.0', inspection_parser: 'json', updated_at: '2026-08-01T00:00:00Z' },
+        ])
+      }
+      return jsonResponse({})
+    })
+
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    // 等待 devops-servers 完成，但 inspection-scripts 仍在 in-flight
+    await flushPromises()
+
+    const select = wrapper.find('[data-testid="server-script-select-1"]')
+    // 关键断言：scripts in-flight 期间，下拉 disabled
+    expect(select.element.disabled).toBe(true)
+
+    // 让 scripts 请求完成，下拉恢复可用
+    resolveScripts && resolveScripts([])
+    await flushPromises()
+    await flushPromises()
+    expect(select.element.disabled).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('test_server_script_change_rolls_back_three_fields_when_response_missing_id 响应缺失 inspection_script_id 走失败回滚', async () => {
+    // 2026-08-04 修复：成功响应若缺 inspection_script_id（后端异常 / 字段丢失）
+    // 必须走失败回滚；恢复 id / name / display_name 三个字段到原值，
+    // 避免 UI 与 DB 不一致。
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const method = (opts.method || 'GET').toUpperCase()
+      const u = typeof url === 'string' ? url : url.url
+      if (u === '/api/admin/task-schedules' && method === 'GET') return jsonResponse(mockSchedules)
+      if (u === '/api/admin/agents' && method === 'GET') return jsonResponse(mockAgents)
+      if (u === '/api/admin/scripts' && method === 'GET') return jsonResponse(mockScripts)
+      if (u === '/api/admin/devops-servers' && method === 'GET') return jsonResponse([
+        { id: 1, business_name: '业务A', server_type: 'linux', updated_at: '2026-08-04T00:00:00', inspection_script_id: 42, inspection_script_name: 'linux-bash', inspection_script_display_name: 'Linux Bash 巡检' },
+      ])
+      if (u === '/api/admin/inspection-scripts' && method === 'GET') return jsonResponse([
+        { id: 42, name: 'linux-bash', display_name: 'Linux Bash 巡检', platform: 'linux', version: '1.0.0', inspection_parser: 'json', updated_at: '2026-08-01T00:00:00Z' },
+        { id: 99, name: 'another', display_name: '另一脚本', platform: 'linux', version: '1.0.0', inspection_parser: 'json', updated_at: '2026-08-01T00:00:00Z' },
+      ])
+      if (u === '/api/admin/devops-servers/1/inspection-script' && method === 'PUT') {
+        // 故意返回不包含 inspection_script_id 字段的成功响应（异常后端行为）
+        return jsonResponse({
+          id: 1,
+          business_name: '业务A',
+          server_type: 'linux',
+          updated_at: '2026-08-04T01:00:00',
+          // 关键：缺少 inspection_script_id 字段
+        })
+      }
+      return jsonResponse({})
+    })
+
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+
+    const select = wrapper.find('[data-testid="server-script-select-1"]')
+    // 改选 99，触发 PUT
+    await select.setValue('99')
+    await flushPromises()
+    await flushPromises()
+
+    // 关键断言：响应缺失 inspection_script_id → 三字段回滚到原值
+    const finalValue = select.element.value
+    expect(String(finalValue) === '42' || Number(finalValue) === 42).toBe(true)
+
+    // 通用错误展示
+    const alert = wrapper.find('[data-testid="list-error"]')
+    expect(alert.exists()).toBe(true)
+    expect(alert.text()).toContain('更新巡检脚本失败')
+    wrapper.unmount()
+  })
+
+  it('test_server_script_change_rolls_back_name_and_display_name_on_failure 失败时同时回滚 name / display_name 字段', async () => {
+    // 2026-08-04 修复：失败回滚时不仅回滚 inspection_script_id，
+    // 还应同时回滚 inspection_script_name / inspection_script_display_name，
+    // 避免「id 已恢复 / name 还显示新值」的半残状态。
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const method = (opts.method || 'GET').toUpperCase()
+      const u = typeof url === 'string' ? url : url.url
+      if (u === '/api/admin/task-schedules' && method === 'GET') return jsonResponse(mockSchedules)
+      if (u === '/api/admin/agents' && method === 'GET') return jsonResponse(mockAgents)
+      if (u === '/api/admin/scripts' && method === 'GET') return jsonResponse(mockScripts)
+      if (u === '/api/admin/devops-servers' && method === 'GET') return jsonResponse([
+        { id: 1, business_name: '业务A', server_type: 'linux', updated_at: '2026-08-04T00:00:00', inspection_script_id: 42, inspection_script_name: 'linux-bash', inspection_script_display_name: 'Linux Bash 巡检' },
+      ])
+      if (u === '/api/admin/inspection-scripts' && method === 'GET') return jsonResponse([
+        { id: 42, name: 'linux-bash', display_name: 'Linux Bash 巡检', platform: 'linux', version: '1.0.0', inspection_parser: 'json', updated_at: '2026-08-01T00:00:00Z' },
+        { id: 99, name: 'another-script', display_name: '另一脚本', platform: 'linux', version: '1.0.0', inspection_parser: 'json', updated_at: '2026-08-01T00:00:00Z' },
+      ])
+      if (u === '/api/admin/devops-servers/1/inspection-script' && method === 'PUT') {
+        // 返回 500 触发失败回滚
+        return jsonResponse({ detail: '更新巡检脚本失败' }, 500)
+      }
+      return jsonResponse({})
+    })
+
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+
+    const select = wrapper.find('[data-testid="server-script-select-1"]')
+    // 改选 99，触发 PUT（预期失败）
+    await select.setValue('99')
+    await flushPromises()
+    await flushPromises()
+
+    // select 值恢复
+    const finalValue = select.element.value
+    expect(String(finalValue) === '42' || Number(finalValue) === 42).toBe(true)
+
+    // 关键断言：select 已选中 option 的「display_name」是旧 binding 的「Linux Bash 巡检」，
+    // 不是新选中的「另一脚本」。读取 selected option 的 textContent。
+    const selectedOptionText = select.element.options[select.element.selectedIndex]?.textContent || ''
+    expect(selectedOptionText).toContain('Linux Bash 巡检')
+    expect(selectedOptionText).not.toBe('另一脚本')
+
+    // 通用错误展示
+    const alert = wrapper.find('[data-testid="list-error"]')
+    expect(alert.exists()).toBe(true)
+    expect(alert.text()).toContain('更新巡检脚本失败')
     wrapper.unmount()
   })
 

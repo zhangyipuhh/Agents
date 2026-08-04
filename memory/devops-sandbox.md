@@ -247,7 +247,7 @@
 - `DevOpsServerService.scan_and_upsert` 输入兼容两种顶层形态：`[ ... ]` 与 `{ "servers": [ ... ] }`；非 list 的 `servers` 字段记 `failed` 计数，不抛异常。
 - 写入采用单条 `INSERT ... ON CONFLICT (business_name) DO UPDATE ... RETURNING *, (xmax = 0) AS inserted`：缓存通过 RETURNING 行直接同步 `id` / `created_at` / `updated_at` / `password_encrypted`，不依赖再读 DB，扫描成功后 `get_connection_config(business_name)` 可立即解密。
 - 同一 `business_name` 重复出现 → 直接计入 `failed`（不允许后者覆盖前者），重复条目不进入缓存。
-- **写入路径持 `asyncio.Lock`（2026-07-15；2026-07-22 扩展到 `delete_server`）**：`DevOpsServerService._write_lock` 保护 `preload_all` / `scan_and_upsert` / `delete_server` 中的 `_cache` 与 DB 写入段；读路径（`get_connection_config` / `list_public_servers` / `server_exists` 的 cache 命中分支）无锁。多次并发操作（扫描 / 删除交叉）时缓存替换原子化，避免读路径拿到半新半旧快照或「cache 已删但 DB 未删」的幽灵行。
+- **写入路径持 `asyncio.Lock`（2026-07-15；2026-08-04 扩展到脚本绑定）**：`DevOpsServerService._write_lock` 保护 `preload_all` / `scan_and_upsert` / `delete_server` / `set_inspection_script` 中的 `_cache` 与 DB 写入段；读路径（`get_connection_config` / `list_public_servers` / `server_exists` 的 cache 命中分支）无锁。`set_inspection_script(server_id, inspection_script_id)` 支持绑定与传 `None` 解绑，成功后同步缓存的 `inspection_script_id` / `inspection_script_name` / `inspection_script_display_name` 三字段；脚本不存在与脚本服务不可用使用不同异常，路由分别映射为 404 与脱敏 500。
 
 ### 前端契约（2026-07-15；2026-07-22 新增删除按钮）
 

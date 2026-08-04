@@ -143,9 +143,10 @@
 
 ### `/api/admin/devops-servers`（`app/routers/devops_server_admin_router.py`）
 
-- `GET ""`：admin OR `task-scheduler.server-management` ACL；返回白名单 4 字段 `{id, business_name, server_type, updated_at}`（严格二次过滤；不暴露 ip / 端口 / 凭据 / 名单 / 脚本）
+- `GET ""`：admin OR `task-scheduler.server-management` ACL；返回白名单 7 字段 `{id, business_name, server_type, updated_at, inspection_script_id, inspection_script_name, inspection_script_display_name}`（严格二次过滤；不暴露 ip / 端口 / 凭据 / 名单 / 脚本原文）
 - `POST /scan`：admin only；触发 `DevOpsServerService.scan_and_upsert()`；严格返回 `{scanned, inserted, updated, failed}` 4 整数；异常 → 500 + `"devops server scan failed"`
 - `GET /{server_id}`（2026-08-03 改造）：admin only；返回白名单 `_DETAIL_FIELDS = {id, business_name, server_type, updated_at, whitelist, inspection_script_id, inspection_script_name, inspection_script_display_name}`（**脚本原文不返回**，由 `/api/admin/inspection-scripts/{script_id}` 按需提供）；不存在 → 404 + `"服务器不存在"`（不回显 server_id）
+- `PUT /{server_id}/inspection-script`：admin only；请求体 `{inspection_script_id: int | null}`，选择脚本或解绑后由 `DevOpsServerService.set_inspection_script` 同步 DB 与内存缓存；成功返回 7 字段安全记录；服务器不存在 → 404 + `"服务器不存在"`；脚本不存在 → 404 + `"巡检脚本不存在"`；服务缺失或内部异常 → 500 + 脱敏文案
 - `DELETE /{server_id}`：admin only；返 204 No Content；不存在 → 404 + `"服务器不存在"`；DB 异常 → 500 + `"删除服务器失败"`
 
 ### `/api/admin/inspection-scripts`（`app/routers/inspection_script_admin_router.py`，2026-08-03 新增；2026-08-04 改造）

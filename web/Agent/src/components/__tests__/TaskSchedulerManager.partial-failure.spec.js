@@ -11,6 +11,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 
 // 拦截 utils/api 让组件挂载时不拉真实数据
+// 2026-08-04 改造：partial-failure 测试套件原本只覆盖 19 个 API 导出，
+// 现在 TaskSchedulerManager.vue 多引入了 fetchInspectionScripts /
+// updateDevOpsServerInspectionScript / fetchInspectionScriptDetail /
+// scanInspectionScripts / fetchUserServerTree / deleteDevOpsServer /
+// fetchDevOpsServerDetail，不补齐会让 build 阶段触发
+// `[vitest] No "<name>" export is defined` 失败（import 找不到）。
+// 这些函数在本套件中不参与断言，单纯提供 stub。
 vi.mock('../../utils/api.js', () => ({
   fetchAdminAgentList: vi.fn(),
   fetchTaskSchedules: vi.fn(),
@@ -22,9 +29,18 @@ vi.mock('../../utils/api.js', () => ({
   setTaskScheduleEnabled: vi.fn(),
   triggerTaskSchedule: vi.fn(),
   fetchDevopsServers: vi.fn().mockResolvedValue([]),
+  // 2026-08-04 新增：服务器巡检脚本下拉即时保存所需 API stub
+  fetchInspectionScripts: vi.fn().mockResolvedValue([]),
+  fetchInspectionScriptDetail: vi.fn().mockResolvedValue(null),
+  scanInspectionScripts: vi.fn().mockResolvedValue({}),
+  updateDevOpsServerInspectionScript: vi.fn().mockResolvedValue({}),
+  deleteDevOpsServer: vi.fn().mockResolvedValue({}),
+  fetchDevOpsServerDetail: vi.fn().mockResolvedValue(null),
+  fetchUserServerTree: vi.fn().mockResolvedValue({ nodes: [] }),
   scanDevopsServers: vi.fn(),
   fetchAdminScripts: vi.fn().mockResolvedValue([]),
   scanScripts: vi.fn(),
+  fetchEmailPolicies: vi.fn().mockResolvedValue([]),
   fetchApiConfigTree: vi.fn().mockResolvedValue({ nodes: [] }),
   createApiConfigNode: vi.fn(),
   updateApiConfigNode: vi.fn(),

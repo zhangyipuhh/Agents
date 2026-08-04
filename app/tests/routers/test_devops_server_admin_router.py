@@ -214,12 +214,20 @@ def test_list_returns_whitelisted_fields(client, devops_router_setup, admin_head
     monkeypatch.setattr(svc, "list_public_servers", lambda: public_output)
 
     resp = client.get("/api/admin/devops-servers", headers=admin_headers)
-    assert resp.status_code == 200
-    body = resp.json()
-    assert isinstance(body, list)
-    assert len(body) == 1
-    item = body[0]
-    assert set(item.keys()) == {"id", "business_name", "server_type", "updated_at"}
+    assert resp.status_code == 200
+    body = resp.json()
+    assert isinstance(body, list)
+    assert len(body) == 1
+    item = body[0]
+    assert set(item.keys()) == {
+        "id",
+        "business_name",
+        "server_type",
+        "updated_at",
+        "inspection_script_id",
+        "inspection_script_name",
+        "inspection_script_display_name",
+    }
 
 
 def test_list_does_not_leak_sensitive_fields(client, devops_router_setup, admin_headers, monkeypatch):
@@ -420,36 +428,49 @@ def test_delete_db_failure_returns_500_without_leak(client, devops_router_setup,
 # ----------------------------------------------------------------------
 
 
-def test_list_endpoint_does_not_leak_inspection_script(client, devops_router_setup, admin_headers, monkeypatch):
-    """GET 响应不应包含 inspection_script / inspection_parser（公开白名单严格 4 字段）。
-
-    即使 service 失误返回了含脚本字段的 raw 数据,router 也必须做白名单过滤,
-    防止脚本字符串泄漏到 admin API 响应中。
-    """
-    raw_with_script = [
-        {
-            "id": 7,
-            "business_name": "alpha",
-            "server_type": "linux",
-            "updated_at": "2026-07-22",
-            "inspection_script": "echo LEAKED_SCRIPT_TOKEN_xyz",
-            "inspection_parser": "json",
-        }
-    ]
-    svc = devops_router_setup.state.devops_server_service
-    # 模拟 service 失误: 返回包含 inspection_script 的原始数据
-    monkeypatch.setattr(svc, "list_public_servers", lambda: raw_with_script)
-
-    resp = client.get("/api/admin/devops-servers", headers=admin_headers)
-    assert resp.status_code == 200
-    body_text = resp.text
-    # 关键断言: 脚本字符串与解析器字段名都不应出现在响应体中
-    assert "LEAKED_SCRIPT_TOKEN_xyz" not in body_text
-    assert "inspection_script" not in body_text
-    assert "inspection_parser" not in body_text
-    # 仍为 4 字段白名单
-    item = resp.json()[0]
-    assert set(item.keys()) == {"id", "business_name", "server_type", "updated_at"}
+def test_list_endpoint_does_not_leak_inspection_script(client, devops_router_setup, admin_headers, monkeypatch):
+    """GET 响应不应包含 inspection_script / inspection_parser 原文（公开白名单 + binding 元数据）。
+
+    即使 service 失误返回了含脚本字段的 raw 数据,router 也必须做白名单过滤,
+    防止脚本字符串泄漏到 admin API 响应中。
+    2026-08-04 改造：列表白名单新增 binding 元数据三个键，脚本原文仍排除。
+    """
+    raw_with_script = [
+        {
+            "id": 7,
+            "business_name": "alpha",
+            "server_type": "linux",
+            "updated_at": "2026-07-22",
+            "inspection_script_id": 42,
+            "inspection_script_name": "linux-bash",
+            "inspection_script_display_name": "Linux Bash 巡检",
+            "inspection_script": "echo LEAKED_SCRIPT_TOKEN_xyz",
+            "inspection_parser": "json",
+        }
+    ]
+    svc = devops_router_setup.state.devops_server_service
+    # 模拟 service 失误: 返回包含 inspection_script 的原始数据
+    monkeypatch.setattr(svc, "list_public_servers", lambda: raw_with_script)
+
+    resp = client.get("/api/admin/devops-servers", headers=admin_headers)
+    assert resp.status_code == 200
+    body_text = resp.text
+    # 关键断言: 脚本字符串与解析器字段名都不应出现在响应体中
+    assert "LEAKED_SCRIPT_TOKEN_xyz" not in body_text
+    assert "inspection_parser" not in body_text
+    # inspection_script_id/name/display_name 是合法的元数据键
+    assert "inspection_script_id" in body_text
+    # 仍为 7 字段白名单（4 基础 + 3 绑定元数据）
+    item = resp.json()[0]
+    assert set(item.keys()) == {
+        "id",
+        "business_name",
+        "server_type",
+        "updated_at",
+        "inspection_script_id",
+        "inspection_script_name",
+        "inspection_script_display_name",
+    }
 
 
 
@@ -605,7 +626,15 @@ def test_list_admin_passes_through_with_whitelist(
     resp = client.get("/api/admin/devops-servers", headers=admin_headers)
     assert resp.status_code == 200
     item = resp.json()[0]
-    assert set(item.keys()) == {"id", "business_name", "server_type", "updated_at"}
+    assert set(item.keys()) == {
+        "id",
+        "business_name",
+        "server_type",
+        "updated_at",
+        "inspection_script_id",
+        "inspection_script_name",
+        "inspection_script_display_name",
+    }
 
 
 def test_list_allows_user_with_server_management_acl(
@@ -644,6 +673,9 @@ def test_list_allows_user_with_server_management_acl(
         "business_name",
         "server_type",
         "updated_at",
+        "inspection_script_id",
+        "inspection_script_name",
+        "inspection_script_display_name",
     }
 
 
@@ -769,4 +801,313 @@ def test_delete_rejects_user_even_with_server_management_acl(
     assert resp.status_code == 403
     assert exists_called["count"] == 0
     assert delete_called["count"] == 0
+
+
+# ----------------------------------------------------------------------
+# 9. PUT /api/admin/devops-servers/{server_id}/inspection-script（2026-08-04 新增）
+# ----------------------------------------------------------------------
+# 目标：服务器表格下拉即时保存。
+# 行为契约：
+# - admin only（与 scan / delete / detail 同口径）
+# - 请求体：{"inspection_script_id": int | null}
+# - 200 + 更新后的服务器安全记录（白名单 + 巡检脚本元数据）
+# - 服务器不存在 → 404「服务器不存在」
+# - 脚本不存在 → 404「巡检脚本不存在」
+# - 内部异常 → 500「更新巡检脚本失败」，不回显原始 detail
+# - 列表端点应同步返回 binding 元数据字段（inspection_script_id /
+#   inspection_script_name / inspection_script_display_name）
+# ----------------------------------------------------------------------
+
+
+def test_list_includes_inspection_script_fields(client, devops_router_setup, admin_headers, monkeypatch):
+    """GET /api/admin/devops-servers 列表应包含三个 binding 元数据字段。
+
+    Args:
+        client: FastAPI TestClient
+        devops_router_setup: 注入 service 的 fixture
+        admin_headers: admin Bearer header
+        monkeypatch: pytest monkeypatch
+    """
+    public_output = [
+        {
+            "id": 7,
+            "business_name": "alpha",
+            "server_type": "linux",
+            "updated_at": "2026-08-04",
+            "inspection_script_id": 42,
+            "inspection_script_name": "linux-bash-alt",
+            "inspection_script_display_name": "Linux Bash 巡检（备用）",
+        }
+    ]
+    svc = devops_router_setup.state.devops_server_service
+    monkeypatch.setattr(svc, "list_public_servers", lambda: public_output)
+
+    resp = client.get("/api/admin/devops-servers", headers=admin_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    item = body[0]
+    assert "inspection_script_id" in item
+    assert "inspection_script_name" in item
+    assert "inspection_script_display_name" in item
+    assert item["inspection_script_id"] == 42
+    assert item["inspection_script_name"] == "linux-bash-alt"
+    assert item["inspection_script_display_name"] == "Linux Bash 巡检（备用）"
+
+
+def test_bind_endpoint_registered(client, devops_router_setup):
+    """PUT /{server_id}/inspection-script 路由已注册。"""
+    paths = [
+        r.path
+        for r in devops_router_setup.routes
+        if hasattr(r, "methods") and "PUT" in r.methods
+    ]
+    assert "/api/admin/devops-servers/{server_id}/inspection-script" in paths
+
+
+def test_bind_returns_200_with_safe_record(client, devops_router_setup, admin_headers, monkeypatch):
+    """PUT 绑定有效脚本 → 200 + 更新后的安全记录。
+
+    Args:
+        client: FastAPI TestClient
+        devops_router_setup: 注入 service 的 fixture
+        admin_headers: admin Bearer header
+        monkeypatch: pytest monkeypatch
+    """
+    fake_record = {
+        "id": 1,
+        "business_name": "alpha",
+        "server_type": "linux",
+        "updated_at": "2026-08-04T12:00:00",
+        "inspection_script_id": 42,
+        "inspection_script_name": "linux-bash-alt",
+        "inspection_script_display_name": "Linux Bash 巡检（备用）",
+    }
+
+    async def fake_set(server_id, script_id):
+        return fake_record
+
+    svc = devops_router_setup.state.devops_server_service
+    monkeypatch.setattr(svc, "set_inspection_script", fake_set)
+
+    resp = client.put(
+        "/api/admin/devops-servers/1/inspection-script",
+        json={"inspection_script_id": 42},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["id"] == 1
+    assert body["inspection_script_id"] == 42
+    assert body["inspection_script_name"] == "linux-bash-alt"
+    assert body["inspection_script_display_name"] == "Linux Bash 巡检（备用）"
+
+
+def test_bind_accepts_null_for_unbind(client, devops_router_setup, admin_headers, monkeypatch):
+    """PUT 绑定脚本传 null → 服务层收到 None；返回 200 + 解绑后的记录。
+
+    Args:
+        client: FastAPI TestClient
+        devops_router_setup: 注入 service 的 fixture
+        admin_headers: admin Bearer header
+        monkeypatch: pytest monkeypatch
+    """
+    captured = {"args": None}
+
+    async def fake_set(server_id, script_id):
+        captured["args"] = (server_id, script_id)
+        return {
+            "id": 1,
+            "business_name": "alpha",
+            "server_type": "linux",
+            "updated_at": "2026-08-04T12:00:00",
+            "inspection_script_id": None,
+            "inspection_script_name": None,
+            "inspection_script_display_name": None,
+        }
+
+    svc = devops_router_setup.state.devops_server_service
+    monkeypatch.setattr(svc, "set_inspection_script", fake_set)
+
+    resp = client.put(
+        "/api/admin/devops-servers/1/inspection-script",
+        json={"inspection_script_id": None},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200
+    assert captured["args"] == (1, None)
+    body = resp.json()
+    assert body["inspection_script_id"] is None
+
+
+def test_bind_unknown_server_returns_404(client, devops_router_setup, admin_headers, monkeypatch):
+    """PUT 绑定：service 返回 None → 404 + 通用 detail。
+
+    Args:
+        client: FastAPI TestClient
+        devops_router_setup: 注入 service 的 fixture
+        admin_headers: admin Bearer header
+        monkeypatch: pytest monkeypatch
+    """
+    async def fake_set(server_id, script_id):
+        return None
+
+    svc = devops_router_setup.state.devops_server_service
+    monkeypatch.setattr(svc, "set_inspection_script", fake_set)
+
+    resp = client.put(
+        "/api/admin/devops-servers/9999/inspection-script",
+        json={"inspection_script_id": 42},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 404
+    body = resp.json()
+    assert body["detail"] == "服务器不存在"
+    # 不回显 server_id
+    assert "9999" not in resp.text
+
+
+def test_bind_unknown_script_returns_404(client, devops_router_setup, admin_headers, monkeypatch):
+    """PUT 绑定：service 抛 ScriptNotFoundError → 404 + 通用 detail。
+
+    Args:
+        client: FastAPI TestClient
+        devops_router_setup: 注入 service 的 fixture
+        admin_headers: admin Bearer header
+        monkeypatch: pytest monkeypatch
+    """
+    svc = devops_router_setup.state.devops_server_service
+
+    async def fake_set(server_id, script_id):
+        raise svc.ScriptNotFoundError("inspection script not found")
+
+    monkeypatch.setattr(svc, "set_inspection_script", fake_set)
+
+    resp = client.put(
+        "/api/admin/devops-servers/1/inspection-script",
+        json={"inspection_script_id": 9999},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 404
+    body = resp.json()
+    assert body["detail"] == "巡检脚本不存在"
+    # 不回显 script_id
+    assert "9999" not in resp.text
+
+
+def test_bind_inspection_service_unavailable_returns_500(
+    client, devops_router_setup, admin_headers, monkeypatch
+):
+    """PUT 绑定：service 抛 InspectionScriptServiceUnavailable → 500 + 脱敏 detail（2026-08-04 新增）。
+
+    与 ScriptNotFoundError 区分：服务依赖缺失（配置类问题）应映射为 500 而不是 404，
+    避免误导运维去查脚本 id。detail 不回显 server_id / script_id。
+
+    Args:
+        client: FastAPI TestClient
+        devops_router_setup: 注入 service 的 fixture
+        admin_headers: admin Bearer header
+        monkeypatch: pytest monkeypatch
+    """
+    svc = devops_router_setup.state.devops_server_service
+
+    async def fake_set(server_id, script_id):
+        # 模拟 InspectionScriptService 不可用（强依赖缺失）
+        raise svc.InspectionScriptServiceUnavailable(
+            "InspectionScriptService 未注入，无法校验脚本"
+        )
+
+    monkeypatch.setattr(svc, "set_inspection_script", fake_set)
+
+    resp = client.put(
+        "/api/admin/devops-servers/1/inspection-script",
+        json={"inspection_script_id": 42},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 500
+    body = resp.json()
+    # 脱敏 detail，不应是 404「巡检脚本不存在」
+    assert body["detail"] != "巡检脚本不存在"
+    # 不回显 script_id / server_id
+    assert "42" not in resp.text
+    assert "1" not in body["detail"]
+
+
+def test_bind_rejects_user_even_with_server_management_acl(
+    client, devops_router_setup, user_headers, grant_server_management_acl, monkeypatch
+):
+    """拥有 server-management ACL 的普通用户调 PUT /inspection-script：403（admin-only）。
+
+    Args:
+        client: FastAPI TestClient
+        devops_router_setup: 注入 service 的 fixture
+        user_headers: testuser Bearer header
+        grant_server_management_acl: 已注入 ACL
+        monkeypatch: pytest monkeypatch
+    """
+    set_called = {"count": 0}
+
+    async def fake_set(server_id, script_id):
+        set_called["count"] += 1
+        return None
+
+    svc = devops_router_setup.state.devops_server_service
+    monkeypatch.setattr(svc, "set_inspection_script", fake_set)
+
+    resp = client.put(
+        "/api/admin/devops-servers/1/inspection-script",
+        json={"inspection_script_id": 42},
+        headers=user_headers,
+    )
+    assert resp.status_code == 403
+    assert set_called["count"] == 0
+
+
+def test_bind_service_missing_returns_500(client, admin_headers):
+    """服务未初始化 → 500（与 GET / DELETE 同口径）。"""
+    from app.main import app
+
+    saved = getattr(app.state, "devops_server_service", None)
+    app.state.devops_server_service = None
+    try:
+        resp = client.put(
+            "/api/admin/devops-servers/1/inspection-script",
+            json={"inspection_script_id": 42},
+            headers=admin_headers,
+        )
+        assert resp.status_code == 500
+    finally:
+        app.state.devops_server_service = saved
+
+
+def test_bind_db_failure_does_not_leak_internal_details(
+    client, devops_router_setup, admin_headers, monkeypatch
+):
+    """DB 异常被吃，detail 仅返回通用文案，不回显 SQL / 原异常。
+
+    Args:
+        client: FastAPI TestClient
+        devops_router_setup: 注入 service 的 fixture
+        admin_headers: admin Bearer header
+        monkeypatch: pytest monkeypatch
+    """
+    svc = devops_router_setup.state.devops_server_service
+
+    async def fake_set(server_id, script_id):
+        raise RuntimeError(
+            "asyncpg UPDATE failed on server_id=1 leaked_ip=__LEAKED_ip_xyz__ "
+            "with script_id=42"
+        )
+
+    monkeypatch.setattr(svc, "set_inspection_script", fake_set)
+
+    resp = client.put(
+        "/api/admin/devops-servers/1/inspection-script",
+        json={"inspection_script_id": 42},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 500
+    body_text = resp.text
+    for sensitive in ["__LEAKED_ip_xyz__", "asyncpg", "leaked_ip"]:
+        assert sensitive not in body_text, f"leak: {sensitive}"
 
