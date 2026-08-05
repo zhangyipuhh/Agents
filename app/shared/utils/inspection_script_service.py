@@ -459,44 +459,48 @@ class InspectionScriptService:
             return False
 
         # 1) 单事务内：锁脚本行 → 解绑服务器 → 删脚本行
+        # 注意：asyncpg 的事务 API 在 connection 上而非 pool 上；pool 本身
+        # 没有 .transaction()。先 acquire() 拿连接再开事务，事务结束自动
+        # 释放连接到池。测试桩需提供 db.acquire() 返回 connection 替身。
         name_to_clear: Optional[str] = None
-        async with self.db.transaction():
-            row = await self.db.fetchrow(
-                "SELECT name FROM inspection_scripts WHERE id = $1 FOR UPDATE",
-                int(script_id),
-            )
-            if row is None:
-                # DB 实际不存在该 id：不解绑服务器、不删脚本行
-                return False
-            row_data = dict(row) if not isinstance(row, dict) else row
-            name_val = row_data.get("name")
-            if isinstance(name_val, str) and name_val.strip():
-                name_to_clear = name_val.strip()
-
-            # 显式解绑 devops_servers 行（不依赖 FK ON DELETE SET NULL 兜底）
-            await self.db.execute(
-                "UPDATE devops_servers SET inspection_script_id = NULL "
-                "WHERE inspection_script_id = $1",
-                int(script_id),
-            )
-
-            # 真正删除脚本行
-            result = await self.db.execute(
-                "DELETE FROM inspection_scripts WHERE id = $1",
-                int(script_id),
-            )
-            if not isinstance(result, str) or not result.startswith("DELETE"):
-                logger.warning(
-                    "[inspection_script_service] delete_script unexpected result=%r",
-                    result,
+        async with self.db.acquire() as conn:  # type: ignore[attr-defined]
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT name FROM inspection_scripts WHERE id = $1 FOR UPDATE",
+                    int(script_id),
                 )
-                return False
-            try:
-                affected = int(result.split()[1])
-            except (IndexError, ValueError):
-                affected = 0
-            if affected == 0:
-                return False
+                if row is None:
+                    # DB 实际不存在该 id：不解绑服务器、不删脚本行
+                    return False
+                row_data = dict(row) if not isinstance(row, dict) else row
+                name_val = row_data.get("name")
+                if isinstance(name_val, str) and name_val.strip():
+                    name_to_clear = name_val.strip()
+
+                # 显式解绑 devops_servers 行（不依赖 FK ON DELETE SET NULL 兜底）
+                await conn.execute(
+                    "UPDATE devops_servers SET inspection_script_id = NULL "
+                    "WHERE inspection_script_id = $1",
+                    int(script_id),
+                )
+
+                # 真正删除脚本行
+                result = await conn.execute(
+                    "DELETE FROM inspection_scripts WHERE id = $1",
+                    int(script_id),
+                )
+                if not isinstance(result, str) or not result.startswith("DELETE"):
+                    logger.warning(
+                        "[inspection_script_service] delete_script unexpected result=%r",
+                        result,
+                    )
+                    return False
+                try:
+                    affected = int(result.split()[1])
+                except (IndexError, ValueError):
+                    affected = 0
+                if affected == 0:
+                    return False
 
         # 2) 事务成功提交后清理内存缓存（基于事务内读到的 name）
         async with self._write_lock:

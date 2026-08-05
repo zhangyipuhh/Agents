@@ -517,27 +517,43 @@ def test_delete_inspection_script_requires_admin(
 def test_delete_inspection_script_unbinds_dependent_servers_in_transaction(
     client, inspection_router_setup, admin_headers
 ):
-    """DELETE 路由端到端：单事务内同时解绑 devops_servers 与清理缓存。"""
-    import asyncio
+    """DELETE 路由端到端：单事务内同时解绑 devops_servers 与清理缓存。
+
+    2026-08-05 修复：mock 必须模拟 ``pool.acquire() → connection.transaction()``
+    真实 asyncpg 链路，规避 ``AttributeError: 'Pool' object has no attribute
+    'transaction'``。与项目 AGENTS.md「禁止在测试中虚构生产不存在的依赖」
+    同步。
+    """
     from contextlib import asynccontextmanager
     from unittest.mock import AsyncMock, MagicMock
     from app.shared.utils.inspection_script_service import (
         InspectionScriptService,
     )
 
-    # 1) 重新构造 service：db stub 支持 transaction() 异步上下文
-    db = MagicMock(name="tx_db_pool_stub")
-    db.fetch = AsyncMock(return_value=[])
-    db.fetchrow = AsyncMock(side_effect=[{"name": "linux-bash"}])
-    db.execute = AsyncMock(side_effect=["UPDATE 1", "DELETE 1"])
+    # 1) 重新构造 service：db stub 模拟 asyncpg.Pool 真实 API
+    db = MagicMock(name="asyncpg_pool_stub")
+
+    conn = MagicMock(name="asyncpg_connection_stub")
+    conn.fetchrow = AsyncMock(side_effect=[{"name": "linux-bash"}])
+    conn.execute = AsyncMock(side_effect=["UPDATE 1", "DELETE 1"])
 
     @asynccontextmanager
     async def _tx():
         yield None
 
-    db.transaction = MagicMock(
-        side_effect=lambda: _tx()
-    )
+    conn.transaction = MagicMock(side_effect=lambda: _tx())
+
+    class _CM:
+        def __init__(self, value):
+            self._value = value
+
+        async def __aenter__(self):
+            return self._value
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    db.acquire = MagicMock(side_effect=lambda: _CM(conn))
 
     svc = InspectionScriptService(
         db=db, config_path="unused.yaml"
@@ -564,12 +580,13 @@ def test_delete_inspection_script_unbinds_dependent_servers_in_transaction(
     assert resp.status_code == 204
     assert resp.content == b""
 
-    # 4) 事务被调用一次
-    assert db.transaction.call_count == 1
+    # 4) acquire + transaction 真实链路被使用
+    assert db.acquire.call_count == 1
+    assert conn.transaction.call_count == 1
     # 5) SQL 顺序：先 SELECT name FOR UPDATE，再 UPDATE servers，再 DELETE scripts
-    assert db.fetchrow.await_count == 1
-    assert db.execute.await_count == 2
-    executed_sqls = [c.args[0] for c in db.execute.await_args_list]
+    assert conn.fetchrow.await_count == 1
+    assert conn.execute.await_count == 2
+    executed_sqls = [c.args[0] for c in conn.execute.await_args_list]
     unbind_idx = next(
         i for i, sql in enumerate(executed_sqls)
         if "UPDATE devops_servers" in sql
