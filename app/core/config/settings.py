@@ -10,6 +10,7 @@ Date: 2026-04-07
 Author: 张镒谱
 """
 
+from pathlib import Path
 from typing import Dict, Literal, Optional
 
 from pydantic import AliasChoices, Field, field_validator
@@ -18,6 +19,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from mcpClient.shared.config_loader import load_mcp_config
 
 from app.core.skills.schemas import SkillsConfig  # noqa: F401  # 用于 SkillsSettings.to_skills_config() 的运行时引用
+
+# 项目根 .env 的绝对路径（2026-08-05 修复）。
+# 原 env_file=".env"（相对路径）依赖进程工作目录：当服务进程 CWD 非项目根
+# （IDE 调试 / 定时任务 / 运维脚本等入口）时整个 .env 加载失败，
+# 表现为 THIRD_PARTY_EXECUTOR_ENDPOINTS 等配置读不到、第三方端点报"未配置"。
+# 基于本文件位置推导（app/core/config/ -> 项目根），不依赖 CWD。
+_ENV_FILE_PATH = str(Path(__file__).resolve().parents[3] / ".env")
 
 
 class LLMSettings(BaseSettings):
@@ -28,7 +36,7 @@ class LLMSettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE_PATH,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -106,7 +114,7 @@ class VisionLLMSettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE_PATH,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -146,7 +154,7 @@ class MCPSettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE_PATH,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -174,7 +182,7 @@ class MCPSettings(BaseSettings):
 
 class FileParserSettings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE_PATH,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -231,7 +239,7 @@ class DatabaseSettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE_PATH,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -257,7 +265,7 @@ class PortalAuthSettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE_PATH,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -279,7 +287,7 @@ class DemonstrationSettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE_PATH,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -316,7 +324,7 @@ class SandboxSettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE_PATH,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -416,7 +424,7 @@ class DevOpsSettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE_PATH,
         env_file_encoding="utf-8",
         env_prefix="DEVOPS_",
         case_sensitive=False,
@@ -481,7 +489,7 @@ class FeishuSettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE_PATH,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -578,7 +586,7 @@ class ThirdPartyExecutorSettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE_PATH,
         env_file_encoding="utf-8",
         env_prefix="THIRD_PARTY_EXECUTOR_",
         case_sensitive=False,
@@ -639,7 +647,7 @@ class SkillsSettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE_PATH,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -699,7 +707,7 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", case_sensitive=False, extra="ignore"
+        env_file=_ENV_FILE_PATH, env_file_encoding="utf-8", case_sensitive=False, extra="ignore"
     )
 
     llm: LLMSettings = Field(default_factory=LLMSettings)

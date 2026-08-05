@@ -822,6 +822,16 @@ async def execute_command(
                 )
             except Exception:  # noqa: BLE001
                 _endpoints_summary = None
+            # 2026-08-05 诊断增强:控制台同步输出异常详情与注册表摘要,
+            # 区分「注册表为空(配置未加载)」vs「端点已加载但其他原因失败」。
+            logger.error(
+                "[SSHTools] 第三方执行失败 error_code=%s endpoint=%r exc=%r "
+                "loaded_endpoints=%r",
+                error_code,
+                endpoint_name,
+                tp_exc,
+                _endpoints_summary,
+            )
             await _emit_log(
                 action="ssh_execute_command",
                 result="failure",

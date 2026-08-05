@@ -33,6 +33,29 @@ from app.shared.utils.executor.errors import (
 logger = logging.getLogger(__name__)
 
 
+def _read_env_file_endpoints_fallback() -> str:
+    """兜底读取 ``.env`` 文件中的 ``THIRD_PARTY_EXECUTOR_ENDPOINTS`` 原始值。
+
+    2026-08-05 新增：pydantic-settings 的环境变量优先级高于 ``.env`` 文件，
+    当运行环境（IDE 调试配置 / shell profile / 编排平台）里存在**空值或脏值**
+    的 ``THIRD_PARTY_EXECUTOR_ENDPOINTS`` 时，``settings.endpoints_json`` 会
+    被覆盖为空，导致端点注册表加载 0 个端点、报 ``third_party endpoint 'X' 未配置``。
+    此函数直接从项目根 ``.env`` 文件读取原始值，作为全局懒加载路径的兜底。
+
+    Returns:
+        str: ``.env`` 中该键的原始值（去除首尾空白）；读取失败或无键时返回空串
+    """
+    try:
+        from dotenv import dotenv_values
+
+        from app.core.config.settings import _ENV_FILE_PATH
+
+        values = dotenv_values(_ENV_FILE_PATH)
+        return str(values.get("THIRD_PARTY_EXECUTOR_ENDPOINTS") or "").strip()
+    except Exception:  # noqa: BLE001 - 兜底失败不阻断主流程
+        return ""
+
+
 @dataclass(frozen=True)
 class ThirdPartyEndpoint:
     """第三方端点配置。
@@ -120,10 +143,41 @@ class ThirdPartyEndpointRegistry:
             allow_insecure = bool(getattr(cfg, "allow_insecure", False))
 
         raw = (cfg.endpoints_json or "").strip()
-        if not raw:
-            self._loaded = True
-            return
+        self._load_raw(raw, allow_insecure=allow_insecure)
+        # 2026-08-05 兜底（增强）：仅全局懒加载路径（settings 未注入）时，若
+        # settings 未解析出任何端点，则从项目根 .env 文件读取原始值重载。
+        # 触发场景：os.environ 存在污染值 THIRD_PARTY_EXECUTOR_ENDPOINTS
+        # （空串 / 空数组 [] / 非法 JSON / 无 primary 的配置），其优先级高于
+        # .env 文件（pydantic-settings env > dotenv），导致注册表空、报
+        # "third_party endpoint 'X' 未配置"。测试注入 settings 的场景不触发，
+        # 保持测试可控。
+        if not self._endpoints and settings is None:
+            fallback_raw = _read_env_file_endpoints_fallback()
+            if fallback_raw and fallback_raw != raw:
+                logger.warning(
+                    "[ThirdPartyEndpointRegistry] settings 未解析出端点且与 .env "
+                    "文件不一致（疑似 os.environ 污染），改用 .env 文件配置重载"
+                )
+                self._endpoints = {}
+                self._load_raw(fallback_raw, allow_insecure=allow_insecure)
+        self._loaded = True
+        logger.info(
+            "[ThirdPartyEndpointRegistry] loaded %d endpoint(s)",
+            len(self._endpoints),
+        )
 
+    def _load_raw(self, raw: str, *, allow_insecure: bool) -> None:
+        """解析 ``raw`` JSON 端点列表到 ``self._endpoints``（不重置 ``_loaded``）。
+
+        Args:
+            raw: 端点 JSON 数组字符串（可能为空）。
+            allow_insecure: 是否允许 http:// 端点，透传给 ``_parse_endpoint``。
+
+        Returns:
+            None：解析失败 / 非法输入时记 warning 并静默返回。
+        """
+        if not raw:
+            return
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -132,14 +186,12 @@ class ThirdPartyEndpointRegistry:
                 "JSON 解析失败: %s",
                 exc,
             )
-            self._loaded = True
             return
 
         if not isinstance(data, list):
             logger.warning(
                 "[ThirdPartyEndpointRegistry] 端点配置必须为 JSON 数组，忽略"
             )
-            self._loaded = True
             return
 
         for item in data:
@@ -155,11 +207,6 @@ class ThirdPartyEndpointRegistry:
                 )
                 continue
             self._endpoints[ep.name] = ep
-        self._loaded = True
-        logger.info(
-            "[ThirdPartyEndpointRegistry] loaded %d endpoint(s)",
-            len(self._endpoints),
-        )
 
     @staticmethod
     def _parse_endpoint(item: Dict, allow_insecure: bool = False) -> ThirdPartyEndpoint:

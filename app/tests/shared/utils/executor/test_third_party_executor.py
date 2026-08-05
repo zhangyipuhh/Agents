@@ -276,6 +276,71 @@ def test_endpoint_registry_get_unknown_name_raises(monkeypatch) -> None:
     assert ei.value.error_code == executor_errors.ERR_CONFIG_MISSING
 
 
+def test_registry_global_lazy_load_falls_back_to_env_file(monkeypatch) -> None:
+    """全局懒加载路径下，os.environ 空值污染 settings 时应从 .env 文件兜底加载端点。
+
+    2026-08-05 修复：pydantic-settings 环境变量优先级高于 .env 文件，运行环境
+    （IDE 调试 / shell profile）若存在空值 THIRD_PARTY_EXECUTOR_ENDPOINTS，
+    会导致 settings.endpoints_json 为空、注册表加载 0 端点、报"primary 未配置"。
+    本用例验证：settings 为空时，无参 load_from_settings（settings=None 路径）
+    兜底从项目根 .env 文件读取原始值，端点仍可加载。
+
+    Args:
+        monkeypatch: pytest fixture
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 若兜底未生效（依赖项目根 .env 中存在 primary 配置）
+    """
+    import importlib
+
+    settings_module = importlib.import_module("app.core.config.settings")
+    settings_obj = settings_module.settings
+    fake_cfg = MagicMock(
+        endpoints_json="", default_endpoint="primary", allow_insecure=True
+    )
+    monkeypatch.setattr(settings_obj, "third_party_executor", fake_cfg)
+    registry = ThirdPartyEndpointRegistry()
+    # 无参调用 -> settings=None -> 全局懒加载 + .env 兜底
+    registry.load_from_settings()
+    ep = registry.get("primary")
+    assert ep.enabled is True
+
+
+def test_registry_global_lazy_load_fallback_when_env_overridden_to_empty_array(
+    monkeypatch,
+) -> None:
+    """os.environ 污染为空数组 []（非空但 0 端点）时，全局懒加载应从 .env 文件兜底重载。
+
+    2026-08-05 兜底增强：首版兜底仅覆盖 endpoints_json 为空串的场景；实测用户环境
+    loaded_endpoints=[] 且无解析 warning，说明污染值是 `[]`（json 解析成功、0 端点），
+    首版兜底不触发。本用例验证：解析后 0 端点 + 全局懒加载路径 → 从 .env 文件重载。
+
+    Args:
+        monkeypatch: pytest fixture
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 若兜底重载未生效（依赖项目根 .env 中存在 primary 配置）
+    """
+    import importlib
+
+    settings_module = importlib.import_module("app.core.config.settings")
+    settings_obj = settings_module.settings
+    fake_cfg = MagicMock(
+        endpoints_json="[]", default_endpoint="primary", allow_insecure=True
+    )
+    monkeypatch.setattr(settings_obj, "third_party_executor", fake_cfg)
+    registry = ThirdPartyEndpointRegistry()
+    registry.load_from_settings()
+    ep = registry.get("primary")
+    assert ep.enabled is True
+
+
 def test_endpoint_registry_diagnostic_summary_omits_public_key_pem(
     monkeypatch, endpoint
 ) -> None:
