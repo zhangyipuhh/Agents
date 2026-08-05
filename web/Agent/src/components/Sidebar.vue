@@ -237,6 +237,19 @@ const handleMenuClick = (menuId) => {
       `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes,status=yes`
     )
   }
+  if (menuId === 'ops-console') {
+    // 在浏览器新窗口中打开运维控制台页面（路径风格与知识库一致）
+    const width = 1200
+    const height = 800
+    const left = (window.screen.width - width) / 2
+    const top = (window.screen.height - height) / 2
+    const windowName = 'opsConsoleWindow_' + Date.now()
+    window.open(
+      '/ops-console.html',
+      windowName,
+      `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes,status=yes`
+    )
+  }
 }
 
 const toggleSidebar = () => {
@@ -626,6 +639,18 @@ onUnmounted(() => {
         </svg>
         <span v-show="!isSidebarCollapsed" class="menu-text">新建任务</span>
         <kbd v-show="!isSidebarCollapsed" class="shortcut">Ctrl+K</kbd>
+      </button>
+      <!-- 运维控制台：在新窗口中打开 /ops-console.html（路径风格与知识库一致） -->
+      <button
+        class="menu-item menu-item-primary"
+        :class="{ active: activeMenu === 'ops-console' }"
+        data-tooltip="运维控制台"
+        @click="handleMenuClick('ops-console')"
+      >
+        <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M2 5a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm3.293 2.293a1 1 0 011.414 0L9 9.586l2.293-2.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414zM11 11a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd"/>
+        </svg>
+        <span v-show="!isSidebarCollapsed" class="menu-text">运维控制台</span>
       </button>
     </div>
 
