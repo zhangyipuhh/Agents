@@ -12,7 +12,7 @@ Author: 张镒谱
 
 from typing import Dict, Literal, Optional
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from mcpClient.shared.config_loader import load_mcp_config
@@ -587,6 +587,13 @@ class ThirdPartyExecutorSettings(BaseSettings):
 
     endpoints_json: str = Field(
         default="",
+        # 2026-08-05 修复：字段名 endpoints_json 默认 env 名是
+        # THIRD_PARTY_EXECUTOR_ENDPOINTS_JSON（env_prefix + 字段名），与
+        # .env / .env.example 设计契约 THIRD_PARTY_EXECUTOR_ENDPOINTS 不一致，
+        # 导致配置永远读不到。AliasChoices 同时保留字段名构造能力。
+        validation_alias=AliasChoices(
+            "endpoints_json", "THIRD_PARTY_EXECUTOR_ENDPOINTS"
+        ),
         description=(
             "第三方端点 JSON 配置；每项含 name / url / public_key_pem / "
             "timeout_seconds / enabled。url 必须 https://（除非 "
