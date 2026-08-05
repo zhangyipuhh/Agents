@@ -138,6 +138,7 @@ const isLibraryScanning = ref(false)
 const libraryScanErrorMessage = ref('')
 const libraryScanSuccessMessage = ref('')
 const libraryScanSummary = ref(null)
+const libraryListRefreshToken = ref(0)
 // 2026-08-04 新增：巡检脚本库 Tab 选中节点 + 保存结果
 const librarySelectedScriptId = ref(null)
 
@@ -2016,6 +2017,7 @@ async function triggerLibraryScan() {
     const summary = await scanInspectionScripts()
     libraryScanSummary.value = sanitizeSummary(summary)
     libraryScanSuccessMessage.value = '巡检脚本扫描完成'
+    libraryListRefreshToken.value += 1
   } catch {
     libraryScanErrorMessage.value = '巡检脚本扫描失败，请稍后重试'
   } finally {
@@ -3899,6 +3901,7 @@ onBeforeUnmount(() => {
         <div class="library-layout">
           <aside class="library-aside" data-testid="library-aside">
             <InspectionScriptLibraryPanel
+              :refresh-token="libraryListRefreshToken"
               @select="(id) => (librarySelectedScriptId = id)"
             />
           </aside>

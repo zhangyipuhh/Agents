@@ -11,11 +11,18 @@
  *
  * data-testid 锁定结构契约，便于 TaskSchedulerManager.spec.js 端到端断言。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import {
   deleteInspectionScript,
   fetchInspectionScripts,
 } from '../utils/api.js'
+
+const props = defineProps({
+  refreshToken: {
+    type: Number,
+    default: 0,
+  },
+})
 
 const scripts = ref([])
 const searchKeyword = ref('')
@@ -26,17 +33,31 @@ const isDeletingId = ref(null)
 
 const emit = defineEmits(['select'])
 
-onMounted(async () => {
+/**
+ * 重新加载巡检脚本列表，并在选中节点消失时同步清空父组件选中态。
+ * @returns {Promise<void>} 无返回值
+ * @throws {Error} 请求失败时由接口函数抛出，组件转换为错误提示
+ */
+async function loadScripts() {
   isLoading.value = true
   errorMessage.value = ''
   try {
-    scripts.value = await fetchInspectionScripts()
+    const nextScripts = await fetchInspectionScripts()
+    scripts.value = nextScripts
+    if (selectedId.value !== null && !nextScripts.some((item) => item.id === selectedId.value)) {
+      selectedId.value = null
+      emit('select', null)
+    }
   } catch (err) {
     errorMessage.value = err?.message || '加载巡检脚本列表失败'
   } finally {
     isLoading.value = false
   }
-})
+}
+
+onMounted(loadScripts)
+
+watch(() => props.refreshToken, loadScripts)
 
 const visibleNodes = computed(() => {
   const kw = searchKeyword.value.trim().toLowerCase()

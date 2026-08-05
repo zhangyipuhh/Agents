@@ -83,6 +83,58 @@ describe('InspectionScriptLibraryPanel', () => {
     expect(wrapper.text()).toContain('service down')
   })
 
+  it('test_refresh_token_reload_list 刷新信号变化后重新加载列表', async () => {
+    const m = await import('../InspectionScriptLibraryPanel.vue')
+    global.fetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [
+          { id: 1, name: 'linux-bash', display_name: 'Linux Bash', platform: 'linux' },
+        ],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [
+          { id: 1, name: 'linux-bash', display_name: 'Linux Bash', platform: 'linux' },
+          { id: 2, name: 'windows-ps', display_name: 'Windows PowerShell', platform: 'windows' },
+        ],
+      })
+    const wrapper = mount(m.default, { props: { refreshToken: 0 } })
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="library-node-item"]')).toHaveLength(1)
+
+    await wrapper.setProps({ refreshToken: 1 })
+    await flushPromises()
+
+    expect(global.fetch).toHaveBeenCalledTimes(2)
+    expect(wrapper.findAll('[data-testid="library-node-item"]')).toHaveLength(2)
+    expect(wrapper.text()).toContain('Windows PowerShell')
+  })
+
+  it('test_refresh_failure_shows_error 刷新失败后显示错误提示', async () => {
+    const m = await import('../InspectionScriptLibraryPanel.vue')
+    global.fetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [
+          { id: 1, name: 'linux-bash', display_name: 'Linux Bash', platform: 'linux' },
+        ],
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: async () => ({ detail: 'refresh failed' }),
+      })
+    const wrapper = mount(m.default, { props: { refreshToken: 0 } })
+    await flushPromises()
+
+    await wrapper.setProps({ refreshToken: 1 })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="library-error"]').text()).toContain('refresh failed')
+    expect(wrapper.vm.scripts).toHaveLength(1)
+  })
+
   it('test_delete_button_rendered_per_node', async () => {
     const m = await import('../InspectionScriptLibraryPanel.vue')
     global.fetch.mockResolvedValueOnce({
