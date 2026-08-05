@@ -1788,6 +1788,43 @@ describe('TaskSchedulerManager 组件', () => {
     expect(secondCount).toBe(firstCount)
   })
 
+  it('test_switch_to_scan_tab_always_refetches_inspection_scripts', async () => {
+    // 2026-08-05 修复：每次切到「服务器扫描入库」Tab 都重拉 inspection-scripts
+    // 列表，避免「巡检脚本库」Tab 删除/修改后下拉数据陈旧。
+    // 验证点：跨多个 Tab 切换后，inspection-scripts GET 次数持续增长；
+    // 同时 devops-servers 仍保持 hasLoaded 短路（与既有契约一致）。
+    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
+    await flushPromises()
+
+    // 第一次进入扫描 Tab
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+    const firstInspectionCount = global.fetch.mock.calls.filter(
+      ([url, opts]) => url === '/api/admin/inspection-scripts' && (opts?.method || 'GET') === 'GET'
+    ).length
+    const firstServersCount = global.fetch.mock.calls.filter(
+      ([url, opts]) => url === '/api/admin/devops-servers' && (opts?.method || 'GET') === 'GET'
+    ).length
+
+    // 切回任务 Tab 再切回扫描 Tab
+    await wrapper.findAll('[role="tab"]')[0].trigger('click')
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]')[1].trigger('click')
+    await flushPromises()
+
+    const secondInspectionCount = global.fetch.mock.calls.filter(
+      ([url, opts]) => url === '/api/admin/inspection-scripts' && (opts?.method || 'GET') === 'GET'
+    ).length
+    const secondServersCount = global.fetch.mock.calls.filter(
+      ([url, opts]) => url === '/api/admin/devops-servers' && (opts?.method || 'GET') === 'GET'
+    ).length
+
+    // 关键断言：inspection-scripts 强制重拉（数量 +1）
+    expect(secondInspectionCount).toBe(firstInspectionCount + 1)
+    // 同时 devops-servers 仍走 hasLoaded 短路（数量不变）
+    expect(secondServersCount).toBe(firstServersCount)
+  })
+
   // ===== 预设调度 UI 测试 =====
 
   it('test_layout_agent_select_appears_before_schedule_type 目标智能体 select 在执行频率 select 之前', async () => {

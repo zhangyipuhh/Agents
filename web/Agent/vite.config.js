@@ -24,6 +24,10 @@ export default defineConfig(({ mode }) => {
       rollupOptions: {
         input: {
           main: resolve(__dirname, 'index.html'),
+          // 2026-08-05 新增：运维控制台独立入口（/ops-console.html）
+          // - 对应 OpsConsoleApp 根组件 + 政务蓝 macOS 风格多窗口 UI
+          // - Sidebar.vue handleMenuClick 'ops-console' 通过 window.open('/ops-console.html') 跳转
+          opsConsole: resolve(__dirname, 'ops-console.html'),
           knowledge: resolve(__dirname, 'knowledge.html'),
           portal: resolve(__dirname, 'portal.html'),
           login: resolve(__dirname, 'login.html'),

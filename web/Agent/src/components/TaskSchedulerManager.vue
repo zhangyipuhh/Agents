@@ -1696,16 +1696,27 @@ function formatRunTime(value) {
  * 切到脚本 Tab 时按需加载脚本列表。
  * 切回任务 Tab 时不再触发任何 devops / scripts 请求。
  * 第一次加载完成后置 ``hasLoaded=true`` / ``hasLoadedScripts=true``，之后切回再进入不再重复 GET。
- * @param {string} tabId - TAB_TASK / TAB_SCAN / TAB_SCRIPT / TAB_API
+ *
+ * 2026-08-05 变更：剥离 ``inspectionScripts`` 加载的 ``hasLoaded`` 短路。
+ * 原因：「巡检脚本库」Tab 删除/修改脚本后，「服务器扫描入库」Tab 内服务器表格下拉仍显示
+ * 旧数据（两个独立 ref 不联动）。修复策略：每次切到 TAB_SCAN 都重拉
+ * inspection-scripts，devopsServers 仍保留 ``hasLoaded`` 短路以避免重复请求。
+ * ``loadInspectionScripts`` 内部 ``inspectionScriptsLoadPromise`` 复用 in-flight
+ * 请求，同一帧内多次切换不会触发 N 次 GET。
+ * @param {string} tabId - TAB_TASK / TAB_SCAN / TAB_SCRIPT / TAB_API / TAB_LIBRARY / TAB_SERVERS
  * @returns {Promise<void>} 无返回值
  */
 async function switchTab(tabId) {
   if (activeTab.value === tabId) return
   activeTab.value = tabId
-  if (tabId === TAB_SCAN && !hasLoaded.value) {
-    await loadDevopsServers()
-    // 2026-08-04 改造：服务器表格下拉选项与服务器列表并发加载；
-    // 不等待对方完成，避免串行拉长首屏
+  if (tabId === TAB_SCAN) {
+    if (!hasLoaded.value) {
+      await loadDevopsServers()
+    }
+    // 2026-08-05 修复：每次切到「服务器扫描入库」Tab 都重拉
+    // inspection-scripts 列表，避免「巡检脚本库」Tab 删除/修改后
+    // 下拉数据陈旧。devopsServers 仍保留 hasLoaded 短路，避免
+    // 重复请求。loadInspectionScripts 内部已有 in-flight Promise 复用。
     loadInspectionScripts()
   }
   if (tabId === TAB_SCRIPT && !hasLoadedScripts.value) {
@@ -1825,6 +1836,10 @@ async function loadDevopsServers(opts = {}) {
  * - 失败时仅写错误文案到 ``inspectionScriptsErrorMessage``，
  *   不清空 ``inspectionScripts``（已有选项可继续显示，已有绑定可继续查看）；
  * - 仅按白名单字段写入前端 ref，绝不保存脚本原文 / inspection_fields。
+ *
+ * 2026-08-05 变更：取消 ``switchTab`` 内的 ``hasLoaded`` 短路，
+ * 改为每次切到 TAB_SCAN 都调用本函数，确保「巡检脚本库」Tab 删除/修改
+ * 脚本后能即时反映到服务器表格下拉。
  * @returns {Promise<void>}
  */
 async function loadInspectionScripts() {
