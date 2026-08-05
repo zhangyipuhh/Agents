@@ -150,7 +150,7 @@ def test_endpoint_registry_load_valid_endpoint(monkeypatch, endpoint) -> None:
 
 
 def test_endpoint_registry_rejects_http(monkeypatch, rsa_keys) -> None:
-    """非 https URL 应被拒。"""
+    """非 https URL 应被拒（allow_insecure=False）。"""
     import importlib
 
     settings_module = importlib.import_module("app.core.config.settings")
@@ -168,6 +168,7 @@ def test_endpoint_registry_rejects_http(monkeypatch, rsa_keys) -> None:
             ]
         ),
         default_endpoint="bad",
+        allow_insecure=False,  # 2026-08-03 新增：默认强制 https
     )
     monkeypatch.setattr(settings_obj, "third_party_executor", fake_cfg)
     registry = ThirdPartyEndpointRegistry()
@@ -231,7 +232,36 @@ def test_endpoint_get_disabled_raises(monkeypatch, rsa_keys) -> None:
     assert ei.value.error_code == executor_errors.ERR_CONFIG_MISSING
 
 
-def test_endpoint_get_unknown_name_raises(monkeypatch) -> None:
+def test_endpoint_registry_loads_http_when_allow_insecure(monkeypatch, rsa_keys) -> None:
+    """``allow_insecure=True`` 时允许 http:// 端点加载（仅 dev / 测试 / 内网）。"""
+    import importlib
+
+    settings_module = importlib.import_module("app.core.config.settings")
+    settings_obj = settings_module.settings
+    fake_cfg = MagicMock(
+        endpoints_json=json.dumps(
+            [
+                {
+                    "name": "dev",
+                    "url": "http://internal.test/api",
+                    "public_key_pem": rsa_keys["public_key_pem"],
+                    "timeout_seconds": 10,
+                    "enabled": True,
+                }
+            ]
+        ),
+        default_endpoint="dev",
+        allow_insecure=True,  # 2026-08-03 新增
+    )
+    monkeypatch.setattr(settings_obj, "third_party_executor", fake_cfg)
+    registry = ThirdPartyEndpointRegistry()
+    registry.load_from_settings(settings=settings_obj)
+    ep = registry.get("dev")
+    assert ep.url == "http://internal.test/api"
+    assert ep.enabled is True
+
+
+def test_endpoint_registry_get_unknown_name_raises(monkeypatch) -> None:
     """未配置的端点名应抛 ``ERR_CONFIG_MISSING``。"""
     import importlib
 

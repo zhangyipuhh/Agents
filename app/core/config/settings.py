@@ -589,8 +589,8 @@ class ThirdPartyExecutorSettings(BaseSettings):
         default="",
         description=(
             "第三方端点 JSON 配置；每项含 name / url / public_key_pem / "
-            "timeout_seconds / enabled。url 必须 https://。环境变量 "
-            "THIRD_PARTY_EXECUTOR_ENDPOINTS。"
+            "timeout_seconds / enabled。url 必须 https://（除非 "
+            "allow_insecure=true）。环境变量 THIRD_PARTY_EXECUTOR_ENDPOINTS。"
         ),
     )
     default_endpoint: str = Field(
@@ -599,6 +599,23 @@ class ThirdPartyExecutorSettings(BaseSettings):
             "默认端点名；可由 THIRD_PARTY_EXECUTOR_DEFAULT_ENDPOINT 覆盖。"
         ),
     )
+    allow_insecure: bool = Field(
+        default=False,
+        description=(
+            "2026-08-03 新增：允许 http:// 端点（关闭 HTTPS 强制校验）。"
+            "**仅供开发 / 测试 / 内网环境使用**；生产环境务必保持 false，"
+            "否则请求体加密失去传输层保护。可由 "
+            "THIRD_PARTY_EXECUTOR_ALLOW_INSECURE=true 开启。"
+        ),
+    )
+
+    @field_validator("allow_insecure", mode="before")
+    @classmethod
+    def parse_allow_insecure(cls, v):
+        """将字符串转换为布尔值。"""
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes", "on")
+        return bool(v)
 
 
 class SkillsSettings(BaseSettings):

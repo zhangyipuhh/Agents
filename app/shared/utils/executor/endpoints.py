@@ -86,7 +86,7 @@ class ThirdPartyEndpointRegistry:
         global _instance
         _instance = None  # type: ignore[assignment]
 
-    def load_from_settings(self, settings: Optional[object] = None) -> None:
+    def load_from_settings(self, settings: Optional[object] = None, allow_insecure: Optional[bool] = None) -> None:
         """从全局 ``settings.third_party_executor`` 加载并校验端点。
 
         配置缺失时保持空注册表；解析失败 / 校验失败时记录 warning 并跳过该端点。
@@ -94,6 +94,8 @@ class ThirdPartyEndpointRegistry:
         Args:
             settings: 可选外部注入的 settings 对象；为 None 时从全局模块懒加载
                 （便于测试用 monkeypatch 注入，避免循环依赖）。
+            allow_insecure: 可选外部覆盖；为 None 时从 ``settings.third_party_executor
+                .allow_insecure`` 读取（默认 False → 强制 https）。
 
         Returns:
             None
@@ -111,6 +113,11 @@ class ThirdPartyEndpointRegistry:
         if cfg is None:
             self._loaded = True
             return
+        # 2026-08-03 新增：从 settings 读取 allow_insecure 透传给 _parse_endpoint，
+        # 用于 dev / 测试 / 内网环境下放行 http:// 端点。
+        # 优先级：函数参数 > settings.third_party_executor.allow_insecure > False
+        if allow_insecure is None:
+            allow_insecure = bool(getattr(cfg, "allow_insecure", False))
 
         raw = (cfg.endpoints_json or "").strip()
         if not raw:
@@ -137,7 +144,9 @@ class ThirdPartyEndpointRegistry:
 
         for item in data:
             try:
-                ep = self._parse_endpoint(item)
+                ep = self._parse_endpoint(
+                    item, allow_insecure=allow_insecure
+                )
             except (ValueError, Exception) as exc:  # noqa: BLE001
                 # 捕获 PEM 解析的 RSAEncryptError 等所有解析类错误
                 logger.warning(
@@ -153,11 +162,14 @@ class ThirdPartyEndpointRegistry:
         )
 
     @staticmethod
-    def _parse_endpoint(item: Dict) -> ThirdPartyEndpoint:
+    def _parse_endpoint(item: Dict, allow_insecure: bool = False) -> ThirdPartyEndpoint:
         """解析并校验单个端点配置。
 
         Args:
             item: 端点 dict
+            allow_insecure: 是否允许 http:// 端点（关闭 HTTPS 强制校验）；
+                默认 False（生产安全）。仅当 ``settings.third_party_executor.
+                allow_insecure=True`` 时透传为 True。
 
         Returns:
             ThirdPartyEndpoint: 校验通过的端点
@@ -175,7 +187,15 @@ class ThirdPartyEndpointRegistry:
         if not url:
             raise ValueError(f"{name}: url 必填")
         if not url.startswith("https://"):
-            raise ValueError(f"{name}: url 必须为 https:// （防中间人）")
+            if allow_insecure and url.startswith("http://"):
+                # 仅在显式开启 allow_insecure 时放行 http://（dev / 内网 / 测试）
+                logger.warning(
+                    "[ThirdPartyEndpointRegistry] 端点 %s 使用 http://（allow_insecure=True，"
+                    "请求体加密仍生效，但失去传输层保护）",
+                    name,
+                )
+            else:
+                raise ValueError(f"{name}: url 必须为 https:// （防中间人）")
         public_key_pem = str(item.get("public_key_pem") or "").strip()
         if not public_key_pem:
             raise ValueError(f"{name}: public_key_pem 必填")
