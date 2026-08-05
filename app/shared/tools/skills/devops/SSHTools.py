@@ -752,6 +752,17 @@ async def execute_command(
             err_text = payload.get("error") or ""
             stdout_size = len(output_text.encode("utf-8")) if output_text else 0
             stderr_size = len(err_text.encode("utf-8")) if err_text else 0
+            # 2026-08-05 可观测性补强:成功路径同样记录 loaded_endpoints,
+            # 运维排查"为什么用 default 而不是 prod"等场景时也能看到注册表。
+            try:
+                from app.shared.utils.executor.endpoints import (
+                    ThirdPartyEndpointRegistry,
+                )
+                _endpoints_summary = (
+                    ThirdPartyEndpointRegistry.get_instance().diagnostic_summary()
+                )
+            except Exception:  # noqa: BLE001
+                _endpoints_summary = None
             await _emit_log(
                 action="ssh_execute_command",
                 result="success" if success else "failure",
@@ -771,6 +782,10 @@ async def execute_command(
                     "error_code": None if success else "non_zero_exit",
                     "executor_type": "third_party",
                     "third_party_endpoint": endpoint_name,
+                    "loaded_endpoints": _endpoints_summary,
+                    "loaded_endpoint_count": (
+                        len(_endpoints_summary) if isinstance(_endpoints_summary, list) else None
+                    ),
                 },
             )
             return Command(
@@ -781,6 +796,7 @@ async def execute_command(
                 }
             )
         except Exception as tp_exc:  # noqa: BLE001 - 第三方调用失败统一降级
+            from app.shared.utils.executor.endpoints import ThirdPartyEndpointRegistry
             from app.shared.utils.executor.errors import (
                 ThirdPartyExecutorError,
             )
@@ -796,6 +812,16 @@ async def execute_command(
                     f"{type(tp_exc).__name__}: {tp_exc}"
                 )
                 user_message = "第三方调用异常"
+            # 2026-08-05 可观测性补强:第三方失败时,把注册表当前实际加载的端点摘要
+            # 写入 metadata,运维能从日志直接区分 6 类根因(name 拼错 / JSON 配错 /
+            # PEM 非法 / URL 非 https / enabled=False / 网络/HTTP 错)。registry 失败
+            # 时兜底为 None,不阻断主流程。
+            try:
+                _endpoints_summary = (
+                    ThirdPartyEndpointRegistry.get_instance().diagnostic_summary()
+                )
+            except Exception:  # noqa: BLE001
+                _endpoints_summary = None
             await _emit_log(
                 action="ssh_execute_command",
                 result="failure",
@@ -815,6 +841,12 @@ async def execute_command(
                     "error_code": error_code,
                     "executor_type": "third_party",
                     "third_party_endpoint": endpoint_name,
+                    # 2026-08-05 新增:第三方端点注册表摘要,运维排查
+                    # "明明配置了 endpoint 却报未配置"的根因。
+                    "loaded_endpoints": _endpoints_summary,
+                    "loaded_endpoint_count": (
+                        len(_endpoints_summary) if isinstance(_endpoints_summary, list) else None
+                    ),
                 },
             )
             return Command(

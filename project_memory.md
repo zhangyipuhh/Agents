@@ -95,5 +95,6 @@
 ## 变更日志
 
 - **2026-08-05**：SSHTools 三个 `@tool` 改 async def + asyncio.to_thread 包装 paramiko 同步阻塞点；第三方分支直接 `await dispatch(...)` 消除 `asyncio.run() / run_coroutine_threadsafe(...)` 在 LangGraph ToolNode in-flight loop 内的 RuntimeError / 死锁；`_emit_log` / `_emit_batch_failure_with_members` 同步改 async（顺带修潜在日志丢失 bug）；新增 3 个 in-flight loop 回归测试；devops 目录 64 → 123 全绿。
+- **2026-08-05**：第三方分支失败日志可观测性补强——`ThirdPartyEndpointRegistry.diagnostic_summary()` 公开 `[name, enabled, url]` 摘要 API，SSHTools 第三方路径（成功 + 失败）写入 `metadata.loaded_endpoints` + `loaded_endpoint_count`。运维看日志即可区分「name 拼错」「JSON/PEM/URL 配错（loaded_endpoints=[]）」「enabled=False（loaded_endpoints=[{enabled: False}]）」三类根因；摘要严格不含 `public_key_pem`。新增 6 个回归用例；devops 目录 123 → 127 全绿。
 - **2026-07-30**：审计日志新增可信 IP 字段（`AgentContext.log_ip` + `request.client.host` 强制覆盖 + `SSHTools._emit_log` 写入 `LogEvent.ip_address`），SSH 工具审计日志补全客户端 IP（修复前 6 行 `ssh_execute_command` 全部 NULL）。
 - **2026-07-29**：统一日志 `LogService` + 迁移 auth/user/session/SSH + admin 查询 API + 可信身份双层 + 命令/凭据脱敏 + 队列预留 + 197 测试 GREEN。

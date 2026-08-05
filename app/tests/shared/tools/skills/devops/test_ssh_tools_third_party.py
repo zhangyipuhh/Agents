@@ -25,7 +25,14 @@ import inspect
 import json
 from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
+
+# 2026-08-05:第三方分支日志可观测性回归测试需要构造 ThirdPartyExecutorError。
+from app.shared.utils.executor.errors import (
+    ERR_CONFIG_MISSING,
+    ThirdPartyExecutorError,
+)
 
 def _run(callable_or_coro):
     """统一包装工具调用:若是 coroutine 则 asyncio.run,否则直接返回结果。
@@ -414,3 +421,221 @@ def test_execute_command_third_party_inside_running_loop_no_runtime_error(monkey
     assert payload.get('success') is True
     assert payload.get('output') == 'tp-in-loop'
     fake_dispatch.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-05 新增:第三方分支审计日志可观测性回归保护。
+# 旧实现失败时只写 ``intercept_reason``(如 ``third_party endpoint 'primary' 未配置``),
+# 运维无法区分「name 拼错」「JSON 配错」「PEM 非法」「URL 非 https」「enabled=False」等根因。
+# 修复后第三方分支失败/成功都会把注册表实际加载的端点摘要写到 metadata.loaded_endpoints。
+# ---------------------------------------------------------------------------
+
+
+def test_execute_command_third_party_logs_loaded_endpoints_on_config_missing(monkeypatch):
+    """第三方配置缺失时,日志 metadata 必须含 loaded_endpoints 摘要,方便排查 name 拼错。
+
+    2026-08-05 新增: 修复前运维看日志只能看到 ``third_party endpoint 'X' 未配置``,
+    无法分辨「注册表根本没加载到这个 name」(JSON 配错 / PEM 非法 / URL 不合规)
+    vs「加载了其他 name」(name 拼错)。修复后 ``loaded_endpoints`` 字段暴露注册表实际状态。
+
+    Args:
+        monkeypatch: pytest monkeypatch
+    """
+    from app.shared.utils.executor.endpoints import (
+        ThirdPartyEndpointRegistry,
+    )
+
+    _, captured = _install_capturing_log_service(monkeypatch)
+    cfg = {'ip': '10.0.0.10', 'port': 22, 'username': 'u', 'password': 'p',
+           'server_type': 'linux', 'blacklist': [], 'whitelist': ['echo ']}
+    _patch_service(monkeypatch, cfg)
+
+    # 关键: stub 的 registry 实际加载了一个 name='other'(模拟 name 拼错场景)。
+    fake_registry = MagicMock(name='ThirdPartyEndpointRegistry')
+    fake_registry.diagnostic_summary = MagicMock(
+        return_value=[{'name': 'other', 'enabled': True, 'url': 'https://other.example.com'}]
+    )
+    monkeypatch.setattr(
+        ThirdPartyEndpointRegistry,
+        'get_instance',
+        classmethod(lambda cls: fake_registry),
+    )
+
+    # patch dispatch 让其抛 ThirdPartyExecutorError(模拟真实 ERR_CONFIG_MISSING 路径)
+    fake_dispatch = _patch_third_party_dispatch_with_error(
+        monkeypatch,
+        ThirdPartyExecutorError(
+            error_code=ERR_CONFIG_MISSING,
+            reason="third_party endpoint 'primary' 未配置",
+            user_message='第三方端点 primary 未配置',
+        ),
+    )
+
+    runtime = _build_runtime(
+        business_name='alpha',
+        extra_context={'use_third_party_executor': True, 'third_party_endpoint_name': 'primary'},
+    )
+
+    from app.shared.tools.skills.devops.SSHTools import execute_command
+    out = _run(execute_command(command='echo hi', business_name='alpha', runtime=runtime))
+    payload = json.loads(out.update['messages'][0].content)
+    assert payload.get('success') is False
+
+    evt = captured[-1]
+    # 核心断言:日志 metadata 暴露 loaded_endpoints + loaded_endpoint_count
+    assert evt.metadata['loaded_endpoints'] == [
+        {'name': 'other', 'enabled': True, 'url': 'https://other.example.com'}
+    ]
+    assert evt.metadata['loaded_endpoint_count'] == 1
+    assert evt.metadata['third_party_endpoint'] == 'primary'
+    assert evt.metadata['error_code'] == 'third_party_config_missing'
+    # diagnostic_summary 被调用过
+    fake_registry.diagnostic_summary.assert_called_once()
+
+
+def test_execute_command_third_party_logs_empty_loaded_endpoints_when_registry_invalid(monkeypatch):
+    """第三方注册表加载失败(JSON 错 / PEM 非法 / URL 不合规)时,loaded_endpoints=[]。
+
+    2026-08-05 新增: 当所有 endpoint 都因校验失败被 skip 时,运维看日志能看到
+    ``loaded_endpoint_count=0``,立即知道问题不是 name 拼错,而是 JSON / PEM / URL 配置。
+
+    Args:
+        monkeypatch: pytest monkeypatch
+    """
+    from app.shared.utils.executor.endpoints import (
+        ThirdPartyEndpointRegistry,
+    )
+
+    _, captured = _install_capturing_log_service(monkeypatch)
+    cfg = {'ip': '10.0.0.11', 'port': 22, 'username': 'u', 'password': 'p',
+           'server_type': 'linux', 'blacklist': [], 'whitelist': ['echo ']}
+    _patch_service(monkeypatch, cfg)
+
+    # 注册表为空(模拟 JSON/PEM/URL 全校验失败)
+    fake_registry = MagicMock(name='ThirdPartyEndpointRegistry')
+    fake_registry.diagnostic_summary = MagicMock(return_value=[])
+    monkeypatch.setattr(
+        ThirdPartyEndpointRegistry,
+        'get_instance',
+        classmethod(lambda cls: fake_registry),
+    )
+
+    _patch_third_party_dispatch_with_error(
+        monkeypatch,
+        ThirdPartyExecutorError(
+            error_code=ERR_CONFIG_MISSING,
+            reason="third_party endpoint 'primary' 未配置",
+            user_message='第三方端点 primary 未配置',
+        ),
+    )
+
+    runtime = _build_runtime(
+        business_name='alpha',
+        extra_context={'use_third_party_executor': True, 'third_party_endpoint_name': 'primary'},
+    )
+
+    from app.shared.tools.skills.devops.SSHTools import execute_command
+    out = _run(execute_command(command='echo hi', business_name='alpha', runtime=runtime))
+    payload = json.loads(out.update['messages'][0].content)
+    assert payload.get('success') is False
+
+    evt = captured[-1]
+    assert evt.metadata['loaded_endpoints'] == []
+    assert evt.metadata['loaded_endpoint_count'] == 0
+    assert evt.metadata['error_code'] == 'third_party_config_missing'
+
+
+def test_execute_command_third_party_logs_loaded_endpoints_on_success(monkeypatch):
+    """第三方成功路径也写 loaded_endpoints,运维查"为什么走 default 不是 prod"时能直接看到。
+
+    2026-08-05 新增。
+
+    Args:
+        monkeypatch: pytest monkeypatch
+    """
+    from app.shared.utils.executor.endpoints import (
+        ThirdPartyEndpointRegistry,
+    )
+
+    _, captured = _install_capturing_log_service(monkeypatch)
+    cfg = {'ip': '10.0.0.12', 'port': 22, 'username': 'u', 'password': 'p',
+           'server_type': 'linux', 'blacklist': [], 'whitelist': ['echo ']}
+    _patch_service(monkeypatch, cfg)
+
+    fake_registry = MagicMock(name='ThirdPartyEndpointRegistry')
+    fake_registry.diagnostic_summary = MagicMock(return_value=[
+        {'name': 'primary', 'enabled': True, 'url': 'https://primary.example.com'},
+        {'name': 'staging', 'enabled': False, 'url': 'https://staging.example.com'},
+    ])
+    monkeypatch.setattr(
+        ThirdPartyEndpointRegistry,
+        'get_instance',
+        classmethod(lambda cls: fake_registry),
+    )
+
+    _patch_third_party_dispatch(
+        monkeypatch, return_value={'success': True, 'output': 'ok', 'exit_code': 0},
+    )
+
+    runtime = _build_runtime(
+        business_name='alpha',
+        extra_context={'use_third_party_executor': True, 'third_party_endpoint_name': 'primary'},
+    )
+
+    from app.shared.tools.skills.devops.SSHTools import execute_command
+    _run(execute_command(command='echo hi', business_name='alpha', runtime=runtime))
+
+    evt = captured[-1]
+    assert evt.metadata['executor_type'] == 'third_party'
+    assert evt.metadata['loaded_endpoints'] == [
+        {'name': 'primary', 'enabled': True, 'url': 'https://primary.example.com'},
+        {'name': 'staging', 'enabled': False, 'url': 'https://staging.example.com'},
+    ]
+    assert evt.metadata['loaded_endpoint_count'] == 2
+
+
+def test_execute_command_third_party_logged_endpoints_summary_omits_public_key_pem(monkeypatch):
+    """loaded_endpoints 摘要必须**不**含 public_key_pem,避免敏感密钥泄漏到审计日志。
+
+    2026-08-05 新增。
+
+    Args:
+        monkeypatch: pytest monkeypatch
+    """
+    from app.shared.utils.executor.endpoints import (
+        ThirdPartyEndpointRegistry,
+    )
+
+    _, captured = _install_capturing_log_service(monkeypatch)
+    cfg = {'ip': '10.0.0.13', 'port': 22, 'username': 'u', 'password': 'p',
+           'server_type': 'linux', 'blacklist': [], 'whitelist': ['echo ']}
+    _patch_service(monkeypatch, cfg)
+
+    fake_registry = MagicMock(name='ThirdPartyEndpointRegistry')
+    fake_registry.diagnostic_summary = MagicMock(return_value=[
+        {'name': 'primary', 'enabled': True, 'url': 'https://primary.example.com'},
+    ])
+    monkeypatch.setattr(
+        ThirdPartyEndpointRegistry,
+        'get_instance',
+        classmethod(lambda cls: fake_registry),
+    )
+
+    _patch_third_party_dispatch(
+        monkeypatch, return_value={'success': True, 'output': 'ok', 'exit_code': 0},
+    )
+
+    runtime = _build_runtime(
+        business_name='alpha',
+        extra_context={'use_third_party_executor': True, 'third_party_endpoint_name': 'primary'},
+    )
+
+    from app.shared.tools.skills.devops.SSHTools import execute_command
+    _run(execute_command(command='echo hi', business_name='alpha', runtime=runtime))
+
+    evt = captured[-1]
+    # 直接 stringify 全 metadata 后 grep,确保 public_key_pem 不会以任何形式出现
+    blob = json.dumps(evt.metadata, ensure_ascii=False, default=str)
+    assert 'public_key_pem' not in blob
+    assert 'BEGIN PUBLIC KEY' not in blob
+    assert 'BEGIN PRIVATE KEY' not in blob

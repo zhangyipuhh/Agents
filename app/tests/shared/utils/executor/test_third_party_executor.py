@@ -276,6 +276,70 @@ def test_endpoint_registry_get_unknown_name_raises(monkeypatch) -> None:
     assert ei.value.error_code == executor_errors.ERR_CONFIG_MISSING
 
 
+def test_endpoint_registry_diagnostic_summary_omits_public_key_pem(
+    monkeypatch, endpoint
+) -> None:
+    """``diagnostic_summary`` 返回每个端点的 ``[name, enabled, url]``,**不**包含 public_key_pem。
+
+    2026-08-05 新增: 此方法供 SSHTools 第三方失败日志使用,避免敏感密钥泄漏到审计日志。
+
+    Args:
+        monkeypatch: pytest fixture
+        endpoint: 合法端点
+    """
+    import importlib
+
+    settings_module = importlib.import_module("app.core.config.settings")
+    settings_obj = settings_module.settings
+    fake_cfg = MagicMock(
+        endpoints_json=json.dumps(
+            [
+                {
+                    "name": endpoint.name,
+                    "url": endpoint.url,
+                    "public_key_pem": endpoint.public_key_pem,
+                    "timeout_seconds": 10,
+                    "enabled": True,
+                },
+                {
+                    "name": "staging",
+                    "url": endpoint.url,
+                    "public_key_pem": endpoint.public_key_pem,
+                    "timeout_seconds": 10,
+                    "enabled": False,  # 已禁用
+                },
+            ]
+        ),
+        default_endpoint="primary",
+    )
+    monkeypatch.setattr(settings_obj, "third_party_executor", fake_cfg)
+    registry = ThirdPartyEndpointRegistry()
+    registry.load_from_settings(settings=settings_obj)
+    summary = registry.diagnostic_summary()
+
+    assert summary == [
+        {"name": endpoint.name, "enabled": True, "url": endpoint.url},
+        {"name": "staging", "enabled": False, "url": endpoint.url},
+    ]
+    # 关键安全断言:密钥材料永不出现在摘要中
+    blob = json.dumps(summary)
+    assert "public_key_pem" not in blob
+    assert "BEGIN PUBLIC KEY" not in blob
+
+
+def test_endpoint_registry_diagnostic_summary_empty_when_no_endpoints(monkeypatch) -> None:
+    """``diagnostic_summary`` 在注册表为空时返回空列表(供日志 metadata 直接写)。"""
+    import importlib
+
+    settings_module = importlib.import_module("app.core.config.settings")
+    settings_obj = settings_module.settings
+    fake_cfg = MagicMock(endpoints_json="[]", default_endpoint="primary")
+    monkeypatch.setattr(settings_obj, "third_party_executor", fake_cfg)
+    registry = ThirdPartyEndpointRegistry()
+    registry.load_from_settings(settings=settings_obj)
+    assert registry.diagnostic_summary() == []
+
+
 # ---------------------------------------------------------------------------
 # 2. dispatch 成功路径
 # ---------------------------------------------------------------------------

@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from app.shared.utils.crypto.rsa_aes import _load_public_key
 from app.shared.utils.executor.errors import (
@@ -253,6 +253,24 @@ class ThirdPartyEndpointRegistry:
         if not self._loaded:
             self.load_from_settings()
         return list(self._endpoints.keys())
+
+    def diagnostic_summary(self) -> List[Dict[str, Any]]:
+        """返回每个已加载端点的 ``[{"name", "enabled", "url"}]`` 摘要,供 SSHTools 日志可观测性使用。
+
+        2026-08-05 新增:第三方调用失败时,SSHTools 把此摘要写入审计日志 metadata,
+        让运维能从日志直接区分「JSON 未加载(name/PEM/URL 校验失败导致整条 skip)」vs
+        「加载了但 name 拼错」vs「加载了但 enabled=False」。返回字段**不**包含
+        ``public_key_pem``(敏感密钥材料)。
+
+        Returns:
+            List[Dict[str, Any]]: 端点摘要列表。
+        """
+        if not self._loaded:
+            self.load_from_settings()
+        return [
+            {"name": ep.name, "enabled": ep.enabled, "url": ep.url}
+            for ep in self._endpoints.values()
+        ]
 
 
 # 模块级单例占位（首次访问时初始化）

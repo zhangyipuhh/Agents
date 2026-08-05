@@ -318,6 +318,12 @@
     - 错误响应：HTTP 4xx/5xx 仍尝试解析 body 的 `error` 字段写入审计日志 `intercept_reason`，但**不**回显到 `user_message`（避免向 LLM / 用户泄漏第三方内部细节）。
     - 审计：`metadata.executor_type="third_party"` / `metadata.third_party_endpoint=<name>` 区分本地 vs 第三方路径；`error_code` 取 `third_party_http_error` / `third_party_timeout` / `third_party_config_missing` / `third_party_crypto_error` / `third_party_invalid_response` / `third_party_unexpected_error` 之一。
     - **回归保护（2026-08-05 新增）：** `app/tests/shared/tools/skills/devops/test_ssh_tools.py` 新增 `test_execute_command_works_inside_running_event_loop` 与 `test_execute_command_third_party_inside_running_event_loop`，`test_ssh_tools_third_party.py` 新增 `test_execute_command_third_party_inside_running_loop_no_runtime_error`，均在 `asyncio.run` 启动的 event loop 内直接 `await execute_command(...)`，确保不再出现 `asyncio.run() cannot be called from a running event loop` 或死锁。devops 测试目录 64 → 123 全绿（含 3 个新增）。
+    - **第三方失败日志可观测性补强（2026-08-05 新增）：** 旧实现第三方分支失败时，审计日志只写 `intercept_reason="third_party endpoint 'X' 未配置"`，运维无法区分「name 拼错」vs「JSON 配错 / PEM 非法 / URL 非 https」vs「enabled=False」三类根因。修复后第三方分支（成功 + 失败路径）都通过 `ThirdPartyEndpointRegistry.diagnostic_summary()` 拿到 `[{name, enabled, url}, ...]`，写入 `metadata.loaded_endpoints` 与 `metadata.loaded_endpoint_count`。运维看日志即可区分：
+        - `loaded_endpoints=[{name: 'primary', enabled: False}]` → 端点已加载但被禁用
+        - `loaded_endpoints=[{name: 'default', enabled: True}]` 且请求 `primary` → 名字拼错
+        - `loaded_endpoints=[]` → JSON 整体配错 / 所有 PEM 非法 / URL 非 https（看 stderr 中 `endpoints.py` 的 `logger.warning`）
+      摘要方法严格不返回 `public_key_pem` 字段，避免密钥泄漏。`endpoints.py:diagnostic_summary` 公开 API 供外部调用。
+    - **回归保护（2026-08-05 新增）：** `test_ssh_tools_third_party.py` 新增 4 个回归用例 `test_execute_command_third_party_logs_loaded_endpoints_on_config_missing` / `..._when_registry_invalid` / `..._on_success` / `..._omits_public_key_pem`；`test_third_party_executor.py` 新增 2 个 `test_endpoint_registry_diagnostic_summary_omits_public_key_pem` / `..._empty_when_no_endpoints`。devops 目录 123 → 127 全绿。
 
 ### 测试覆盖
 
