@@ -420,6 +420,83 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 
 **迁移策略**：旧 `state_schema` + `context_schema` 数据保留（数据不丢失），由迁移 SQL 段 14.3/14.4 合并到 `config_schema.state_fields` / `context_fields`。后续版本稳定后可 `DROP COLUMN state_schema, context_schema`。
 
+### JSONB 写入契约（2026-08-05 新增）
+
+`app/core/database.py::_init_connection` 已注册 asyncpg jsonb codec：
+
+```python
+await conn.set_type_codec(
+    'jsonb',
+    encoder=json.dumps,    # Python 对象 → JSON 文本
+    decoder=json.loads,    # JSON 文本 → Python 对象
+    schema='pg_catalog',
+    format='text',         # 文本协议
+)
+```
+
+在 `format='text'` 协议下,asyncpg 写入行为：
+- 传 Python dict / list → codec encoder → JSON 文本 → PG 端按 JSONB 解析 → 存为 JSONB object/array
+- 传 Python string(已是 JSON 文本) → codec 不再 encode → PG 端按 JSONB 解析字符串字面量 → 存为 **JSONB string 类型**(双层编码:外层 `""` 包裹 dict/array 文本)
+
+**契约**：**应用层不应再 `json.dumps` JSONB 字段**。直接传 dict / list 即可,codec 会自动处理。
+
+**反模式示例（2026-08-05 已修复）**：`app/shared/utils/agent/agent_config_service.py` 早期版本的
+`update_agent_config_schema` / `create_agent` / `update_tool_bindings` / `update_skill_bindings`
+共 5 处写了 `json.dumps(...)`,导致 agents 表 JSONB 字段出现 string 类型(前端 GET 拿到 dict / list / string 混合形态,`jsonb_typeof` 永远是 `'string'`)。
+
+**正确写法**：
+
+```python
+# ✅ 正确:直接传 dict / list
+await db.execute(
+    "UPDATE agents SET config_schema = $2, ... WHERE name = $1",
+    name, config_schema,           # dict, 由 codec 自动 encode
+)
+await db.execute(
+    "UPDATE agents SET tool_bindings = $2, ... WHERE name = $1",
+    name, bindings,                # list, 由 codec 自动 encode
+)
+
+# ❌ 错误:先 json.dumps,产生 string JSONB
+await db.execute(
+    "UPDATE agents SET config_schema = $2, ... WHERE name = $1",
+    name, json.dumps(config_schema),  # 已经是 JSON 文本 → PG 存为 string 类型
+)
+```
+
+**回归保护**：
+- `app/tests/shared/utils/agent/test_agent_config_service.py` 4 个新用例
+  (`test_update_agent_config_schema_writes_dict_not_string_jsonb` /
+  `test_update_tool_bindings_writes_list_not_string_jsonb` /
+  `test_update_skill_bindings_writes_list_not_string_jsonb` /
+  `test_create_agent_writes_dict_not_string_jsonb`) 断言写入参数类型必须是 dict / list,
+  防止未来代码无意中重新引入 `json.dumps`。
+- `app/tests/migrations/test_init_all_tables_inspection_schema.py` 7 个新用例验证
+  `init_all_tables.sql` v6 章节(14.4 防御补丁 + 14.5 一次性修复段)存在。
+
+**数据修复**：运维智能体 (project) 的 `state_schema / context_schema / tool_bindings / skill_bindings`
+曾因 5 处冗余 `json.dumps` 被存为 string 类型 JSONB。`init_all_tables.sql` 14.5 节(2026-08-05 新增)
+提供幂等修复:
+```sql
+-- 14.5.1 示例:state_schema string → object
+UPDATE agents SET state_schema = CASE
+    WHEN jsonb_typeof(state_schema) = 'string'
+        THEN COALESCE(NULLIF((state_schema #>> '{}')::jsonb, 'null'::jsonb), '{}'::jsonb)
+    WHEN state_schema IS NULL THEN '{}'::jsonb
+    ELSE state_schema
+END, updated_at = CURRENT_TIMESTAMP
+WHERE jsonb_typeof(state_schema) = 'string' OR state_schema IS NULL;
+```
+- `(col #>> '{}')` 把 JSON string 提取为 text,再 `::jsonb` 重新解析为 object/array
+- `WHERE jsonb_typeof = 'string' OR IS NULL` 保证幂等:已修过的 object / array 不会被覆盖
+- 14.5.3 / 14.5.4 (tool_bindings / skill_bindings) 解析失败 fallback 到 `'[]'::jsonb`
+- 14.4 节 WHERE 也加 `jsonb_typeof = 'object'` 防御,避免 array 与 object `||` 合并产生 array 元素
+
+**未修复范围**：其他 service 里仍存在的 ~25 处 `json.dumps`(mcp_service / tool_service /
+task_scheduler_service / user_db / devops_server_service / inspection_script_service /
+api_config_service / conversation_db 等)与本 bug 同源,影响面更大,后续 PR 处理。
+判断标准:用户能直接在前端 UI 看到的错误字段——目前只有 agents 表这 5 个字段。
+
 ### agent_tool_bindings 表
 
 智能体与工具的绑定关系表，多对多映射。

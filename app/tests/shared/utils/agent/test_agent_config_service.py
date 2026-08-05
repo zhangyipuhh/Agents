@@ -2262,6 +2262,236 @@ def test_load_tools_calls_async_mcp_registry():
     mock_registry.get_tools_with_server.assert_not_called()
 
 
+# ============================================================================
+# 2026-08-05 回归保护:JSONB 写入契约 —— 应用层不应再 json.dumps
+# 背景:asyncpg jsonb codec (format='text' + encoder=json.dumps) 已自动处理
+# Python 对象 → JSON 文本。应用层再 json.dumps 会导致 string 类型 JSONB
+# (外层带 "" 的字符串包裹 dict/array 文本),后续 jsonb_typeof 永远是 'string',
+# 任何 dict 操作 (setdefault / get) 都会失败。
+# 验证:写入时 fetchrow 的 args 必须是 dict / list,不能是 str。
+# ============================================================================
+
+
+def test_update_agent_config_schema_writes_dict_not_string_jsonb():
+    """测试 update_agent_config_schema 写入时参数是 dict 而不是 json.dumps 后的 str。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 写入参数被错误地 json.dumps 成 str 时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value={
+        "name": "x",
+        "config_schema": {
+            "state_fields": {},
+            "context_fields": {},
+            "max_tokens": {"type": "int", "default": 4096},
+        },
+    })
+    service = AgentConfigService(db, MagicMock())
+    service._refresh_cache = AsyncMock()
+
+    new_schema = {
+        "max_tokens": {"type": "int", "default": 8192},
+        "state_fields": {},
+        "context_fields": {},
+    }
+    asyncio.run(service.update_agent_config_schema("x", new_schema))
+
+    # fetchrow 在 update_agent_config_schema 内被调用一次,
+    # 取最后一次调用 (UPDATE),断言参数为 dict/str 验证写入契约
+    update_call = db.fetchrow.call_args_list[-1]
+    # UPDATE 的参数:args[0]=SQL, args[1]=agent_name, args[2..4]=JSONB 字段
+    config_schema_arg = update_call.args[2]
+    legacy_state_arg = update_call.args[3]
+    legacy_context_arg = update_call.args[4]
+    assert isinstance(config_schema_arg, dict), (
+        f"config_schema 参数应为 dict(由 asyncpg codec 自动 encode),"
+        f"实际得到 {type(config_schema_arg).__name__}: {config_schema_arg!r}"
+    )
+    assert isinstance(legacy_state_arg, dict), (
+        f"state_schema 参数应为 dict,实际得到 {type(legacy_state_arg).__name__}"
+    )
+    assert isinstance(legacy_context_arg, dict), (
+        f"context_schema 参数应为 dict,实际得到 {type(legacy_context_arg).__name__}"
+    )
+    # 验证写入的 dict 内容正确(不是空 dict)
+    assert config_schema_arg["max_tokens"]["default"] == 8192
+
+
+def test_update_tool_bindings_writes_list_not_string_jsonb():
+    """测试 update_tool_bindings 写入时参数是 list 而不是 json.dumps 后的 str。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 写入参数被错误地 json.dumps 成 str 时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value={
+        "name": "x", "display_name": "X", "description": "",
+        "agents_md_path": "x.md", "state_schema": {}, "context_schema": {},
+        "config_schema": {}, "mcp_tags": [], "tool_bindings": [], "enabled": True,
+    })
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    loader.load = MagicMock(return_value="prompt")
+    service = AgentConfigService(db, loader)
+
+    bindings = [
+        {"tool_name": "tool_a", "tool_type": "builtin", "enabled": True, "sort_order": 0},
+        {"tool_name": "tool_b", "tool_type": "mcp", "enabled": True, "sort_order": 1},
+    ]
+    asyncio.run(service.update_tool_bindings("x", bindings))
+
+    # 找到 UPDATE 调用的参数
+    update_call = db.fetchrow.call_args_list[0]
+    assert "UPDATE agents" in update_call.args[0]
+    assert "tool_bindings" in update_call.args[0]
+    bindings_arg = update_call.args[2]
+    assert isinstance(bindings_arg, list), (
+        f"tool_bindings 参数应为 list,实际得到 {type(bindings_arg).__name__}: "
+        f"{bindings_arg!r}"
+    )
+    assert len(bindings_arg) == 2
+    assert bindings_arg[0]["tool_name"] == "tool_a"
+
+
+def test_update_skill_bindings_writes_list_not_string_jsonb():
+    """测试 update_skill_bindings 写入时参数是 list 而不是 json.dumps 后的 str。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 写入参数被错误地 json.dumps 成 str 时抛出
+    """
+    db = MagicMock()
+    db.fetchrow = AsyncMock(return_value={
+        "name": "x", "display_name": "X", "description": "",
+        "agents_md_path": "x.md", "state_schema": {}, "context_schema": {},
+        "config_schema": {}, "mcp_tags": [], "skill_bindings": [], "enabled": True,
+    })
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    loader.load = MagicMock(return_value="prompt")
+    service = AgentConfigService(db, loader)
+
+    bindings = [
+        {"skill_name": "skill_a", "enabled": True, "sort_order": 0},
+    ]
+    asyncio.run(service.update_skill_bindings("x", bindings))
+
+    update_call = db.fetchrow.call_args_list[0]
+    assert "UPDATE agents" in update_call.args[0]
+    assert "skill_bindings" in update_call.args[0]
+    bindings_arg = update_call.args[2]
+    assert isinstance(bindings_arg, list), (
+        f"skill_bindings 参数应为 list,实际得到 {type(bindings_arg).__name__}: "
+        f"{bindings_arg!r}"
+    )
+    assert len(bindings_arg) == 1
+    assert bindings_arg[0]["skill_name"] == "skill_a"
+
+
+def test_create_agent_writes_dict_not_string_jsonb():
+    """测试 create_agent 写入时参数是 dict 而不是 json.dumps 后的 str。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 写入参数被错误地 json.dumps 成 str 时抛出
+    """
+    import tempfile
+    import os
+
+    # 准备临时 AGENTS.md 文件(满足 is_file() 校验)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+        f.write("# Test Agent\n")
+        agents_md_path = f.name
+
+    try:
+        db = MagicMock()
+        # 第一次 fetchrow (检查是否已存在) 返回 None; 第二次 (INSERT) 返回新建记录
+        db.fetchrow = AsyncMock(side_effect=[
+            None,
+            {
+                "name": "new_agent",
+                "display_name": "新智能体",
+                "description": "",
+                "agents_md_path": agents_md_path,
+                "state_schema": {},
+                "context_schema": {},
+                "config_schema": {},
+                "mcp_tags": [],
+                "tool_bindings": [],
+                "skill_bindings": [],
+                "enabled": True,
+                "sort_order": 0,
+            },
+        ])
+        loader = MagicMock()
+        loader.load = MagicMock(return_value="")
+        service = AgentConfigService(db, loader)
+        service._refresh_cache = AsyncMock()
+
+        config = {
+            "name": "new_agent",
+            "display_name": "新智能体",
+            "description": "测试",
+            "agents_md_path": agents_md_path,
+            "config_schema": {
+                "state_fields": {},
+                "context_fields": {},
+                "max_tokens": {"type": "int", "default": 2048},
+            },
+            "mcp_tags": ["tag1"],
+            "enabled": True,
+            "sort_order": 0,
+        }
+        asyncio.run(service.create_agent(config))
+
+        # 第一次 fetchrow 是 SELECT (检查 name 是否已存在), 第二次是 INSERT
+        insert_call = db.fetchrow.call_args_list[1]
+        assert "INSERT INTO agents" in insert_call.args[0]
+        # args: 0=SQL, 1=name, 2=display_name, 3=description, 4=md_path,
+        #       5=state_schema, 6=context_schema, 7=config_schema,
+        #       8=mcp_tags, 9=enabled, 10=sort_order
+        config_schema_arg = insert_call.args[7]
+        legacy_state_arg = insert_call.args[5]
+        legacy_context_arg = insert_call.args[6]
+        mcp_tags_arg = insert_call.args[8]
+
+        assert isinstance(config_schema_arg, dict), (
+            f"config_schema 参数应为 dict,实际得到 {type(config_schema_arg).__name__}"
+        )
+        assert isinstance(legacy_state_arg, dict)
+        assert isinstance(legacy_context_arg, dict)
+        assert isinstance(mcp_tags_arg, list), (
+            f"mcp_tags 参数应为 list,实际得到 {type(mcp_tags_arg).__name__}"
+        )
+        assert config_schema_arg["max_tokens"]["default"] == 2048
+        assert mcp_tags_arg == ["tag1"]
+    finally:
+        os.unlink(agents_md_path)
+
+
 def test_load_tools_skips_disabled_mcp_server():
     """测试 _load_tools 在 MCP server 禁用时跳过该工具。
 

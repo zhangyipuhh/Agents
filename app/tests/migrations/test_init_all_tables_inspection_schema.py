@@ -103,6 +103,118 @@ def test_drop_comment_contains_external_migration_instructions():
     )
 
 
+# ============================================================================
+# 2026-08-05 静态契约:agents JSONB 字段双层编码脏数据修复段(14.5)
+# 验证 init_all_tables.sql 包含必要的修复 SQL + 防御补丁。
+# 端到端执行需要真实 DB(MCP 只读无法跑 UPDATE),但本测试只验证 SQL 文本契约。
+# ============================================================================
+
+
+def test_init_all_tables_has_jsonb_double_encode_repair_v6_comment():
+    """脚本头部必须包含 v6 变更说明,标注 14.5 修复段。
+
+    Returns:
+        None: 断言通过时无返回值。
+    """
+    sql = _load_init_sql()
+    # 文件开头 v5 注释段含 "v5 变更",v6 注释应紧跟其后
+    assert "v6 变更(2026-08-05)" in sql, (
+        "init_all_tables.sql 头部必须包含 v6 变更说明段,"
+        "让运维看到 14.5 修复的目的与触发日期"
+    )
+    assert "14.5" in sql, "v6 注释必须引用 14.5 节段号"
+    assert "双层编码" in sql or "json.dumps" in sql, (
+        "v6 注释必须说明根因(双层 json.dumps 与 asyncpg codec 冲突)"
+    )
+
+
+def test_init_all_tables_has_14_4_defensive_where_clause():
+    """14.4 节 WHERE 子句必须包含 jsonb_typeof(object) 防御。
+
+    Returns:
+        None: 断言通过时无返回值。
+    """
+    sql = _load_init_sql()
+    # 14.4 节原文:WHERE jsonb_typeof(config_schema) = 'object' AND ...
+    assert "WHERE jsonb_typeof(config_schema) = 'object'" in sql, (
+        "14.4 节 WHERE 必须加 jsonb_typeof='object' 防御,"
+        "避免 array/string 与 object 合并后产生 array 元素"
+    )
+
+
+def test_init_all_tables_has_14_5_state_schema_repair():
+    """14.5.1 节必须还原 state_schema 的 string 类型 JSONB。
+
+    Returns:
+        None: 断言通过时无返回值。
+    """
+    sql = _load_init_sql()
+    assert "14.5.1 state_schema" in sql, "14.5.1 注释段缺失"
+    assert "jsonb_typeof(state_schema) = 'string'" in sql, (
+        "14.5.1 SQL 必须检测 string 类型才能触发还原"
+    )
+    assert "(state_schema #>> '{}')::jsonb" in sql, (
+        "14.5.1 SQL 必须用 #>> 提取字符串字面量后再 cast jsonb 还原"
+    )
+
+
+def test_init_all_tables_has_14_5_context_schema_repair():
+    """14.5.2 节必须还原 context_schema 的 string 类型 JSONB。
+
+    Returns:
+        None: 断言通过时无返回值。
+    """
+    sql = _load_init_sql()
+    assert "14.5.2 context_schema" in sql, "14.5.2 注释段缺失"
+    assert "jsonb_typeof(context_schema) = 'string'" in sql
+    assert "(context_schema #>> '{}')::jsonb" in sql
+
+
+def test_init_all_tables_has_14_5_tool_bindings_repair():
+    """14.5.3 节必须还原 tool_bindings 的 string 类型 JSONB → array。
+
+    Returns:
+        None: 断言通过时无返回值。
+    """
+    sql = _load_init_sql()
+    assert "14.5.3 tool_bindings" in sql, "14.5.3 注释段缺失"
+    assert "jsonb_typeof(tool_bindings) = 'string'" in sql
+    # tool_bindings 还原必须 fallback 到 [] 而非 {}
+    assert "'[]'::jsonb" in sql, "tool_bindings 解析失败时应 fallback 到空 array"
+
+
+def test_init_all_tables_has_14_5_skill_bindings_repair():
+    """14.5.4 节必须还原 skill_bindings 的 string 类型 JSONB → array。
+
+    Returns:
+        None: 断言通过时无返回值。
+    """
+    sql = _load_init_sql()
+    assert "14.5.4 skill_bindings" in sql, "14.5.4 注释段缺失"
+    assert "jsonb_typeof(skill_bindings) = 'string'" in sql
+
+
+def test_init_all_tables_14_5_repair_is_idempotent():
+    """14.5 段 WHERE 子句保证幂等:已修过的 object/array 数据不会再次被覆盖。
+
+    Returns:
+        None: 断言通过时无返回值。
+    """
+    sql = _load_init_sql()
+    # 每段都以 "WHERE jsonb_typeof(...) = 'string' OR ... IS NULL" 结尾
+    # 这种条件下 object / array 类型不会被选中,实现幂等
+    assert sql.count("jsonb_typeof(state_schema) = 'string'") >= 1
+    assert sql.count("jsonb_typeof(context_schema) = 'string'") >= 1
+    assert sql.count("jsonb_typeof(tool_bindings) = 'string'") >= 1
+    assert sql.count("jsonb_typeof(skill_bindings) = 'string'") >= 1
+    # 关键:不要把 "UPDATE agents SET state_schema = " 这种 SQL 写成无 WHERE,
+    # 否则会无差别覆盖所有行(破坏幂等)
+    assert "UPDATE agents SET state_schema = state_schema" not in sql, (
+        "14.5.1 不应写成无差别的 SET state_schema = state_schema,"
+        "必须带 WHERE jsonb_typeof = 'string' 防御"
+    )
+
+
 def test_init_sql_does_not_use_unloadable_drop_gate_helper():
     """init_all_tables.sql 不应再引用无法兼容新旧 schema 的 _devops_drop_gate。
 

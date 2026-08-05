@@ -900,9 +900,12 @@ class AgentConfigService:
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 RETURNING *
                 """,
+                # 2026-08-05 修复：asyncpg jsonb codec (format='text' + encoder=json.dumps)
+                # 已自动处理 Python 对象 → JSON 文本，应用层不应再 json.dumps，
+                # 否则会被 PG 解析为 string 类型 JSONB（外层带 "" 的字符串包裹）。
                 config["name"], config["display_name"], config.get("description", ""),
-                config["agents_md_path"], json.dumps(legacy_state), json.dumps(legacy_context),
-                json.dumps(config_schema), json.dumps(config.get("mcp_tags", [])),
+                config["agents_md_path"], legacy_state, legacy_context,
+                config_schema, config.get("mcp_tags", []),
                 config.get("enabled", True), config.get("sort_order", 0),
             )
         except Exception as e:
@@ -1049,7 +1052,8 @@ class AgentConfigService:
             WHERE name = $1
             RETURNING *
             """,
-            agent_name, json.dumps(config_schema), json.dumps(legacy_state), json.dumps(legacy_context),
+            # 2026-08-05 修复：asyncpg jsonb codec 自动 encode，应用层不应再 json.dumps
+            agent_name, config_schema, legacy_state, legacy_context,
         )
         if not row:
             raise AgentNotFoundError(f"Agent {agent_name} not found")
@@ -1281,7 +1285,8 @@ class AgentConfigService:
         row = await self._db.fetchrow(
             "UPDATE agents SET tool_bindings = $2, updated_at = CURRENT_TIMESTAMP "
             "WHERE name = $1 RETURNING *",
-            agent_name, json.dumps(bindings),
+            # 2026-08-05 修复：asyncpg jsonb codec 自动 encode，应用层不应再 json.dumps
+            agent_name, bindings,
         )
         if not row:
             raise AgentNotFoundError(f"Agent {agent_name} not found")
@@ -1333,7 +1338,8 @@ class AgentConfigService:
         row = await self._db.fetchrow(
             "UPDATE agents SET skill_bindings = $2, updated_at = CURRENT_TIMESTAMP "
             "WHERE name = $1 RETURNING *",
-            agent_name, json.dumps(bindings),
+            # 2026-08-05 修复：asyncpg jsonb codec 自动 encode，应用层不应再 json.dumps
+            agent_name, bindings,
         )
         if not row:
             raise AgentNotFoundError(f"Agent {agent_name} not found")

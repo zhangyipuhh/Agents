@@ -7,7 +7,7 @@
 | 分片 | 内容 | 关键词 | 更新时间 |
 |---|---|---|---|
 | [架构与目录](memory/architecture.md) | 项目概述、技术栈、数据目录约定、项目架构、配置归属隔离、项目文件夹方案、环境变量 | 架构、技术栈、目录、路径、环境变量、OwnershipScope | 2026-07-26 |
-| [数据库设计](memory/database.md) | 全部表结构、字段、索引、迁移约定、inspection_scripts 巡检脚本库表、devops_servers 巡检脚本外键改造、巡检脚本库编辑优先写入策略、`get_connection_config` 返回 14 键（基础 7 + 脚本原文 3 + 脚本库元数据 4）+ `server_ops._run_one` ValueError 归并 skipped 契约 | 表、字段、索引、迁移、init_all_tables、SQL、inspection_scripts、编辑优先、update_script_detail、get_connection_config、14 键、ValueError、skipped | 2026-08-04 |
+| [数据库设计](memory/database.md) | 全部表结构、字段、索引、迁移约定、inspection_scripts 巡检脚本库表、devops_servers 巡检脚本外键改造、巡检脚本库编辑优先写入策略、`get_connection_config` 返回 14 键（基础 7 + 脚本原文 3 + 脚本库元数据 4）+ `server_ops._run_one` ValueError 归并 skipped 契约 + **JSONB 写入契约（asyncpg codec + 不要 json.dumps；agents JSONB 双层编码脏数据修复 14.5 节；2026-08-05）** | 表、字段、索引、迁移、init_all_tables、SQL、inspection_scripts、编辑优先、update_script_detail、get_connection_config、14 键、ValueError、skipped、jsonb、codec、双层编码、json.dumps | 2026-08-05 |
 | [API 与核心工具](memory/api-routes.md) | API 接口配置、API 路由汇总（路由→文件→权限）、核心工具清单、/api/admin/inspection-scripts 路由（PUT 更新 + 5 字段扫描响应 + DELETE 事务化） | /api/、路由、端点、require_admin、Core Tools、inspection-scripts、PUT、DELETE、事务 | 2026-08-05 |
 | [认证与会话控制](memory/auth.md) | 双 Token 认证、聊天并发控制、HITL、提示词三层架构、动态上下文注入（DYNAMIC_NODE_REGISTRY）、State/Context 构建器、referenced_servers 一等 context 字段 | 认证、Token、并发、HITL、提示词、上下文注入、registry、referenced_servers | 2026-07-26 |
 | [Agent 与 Skill 体系](memory/agents-skills.md) | Agent 统一构造入口、Skill 系统、AGENTS.md 加载器、配置加载服务、工具注册中心、缓存、工具绑定双轨制、记忆存储、scripts/ | Agent、Skill、bootstrap、工具注册、缓存、记忆存储 | 2026-07-26 |

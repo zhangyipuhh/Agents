@@ -31,6 +31,12 @@
 --   * devops_servers CHECK 约束改为 DROP CONSTRAINT IF EXISTS + ADD CONSTRAINT（幂等）
 --   * 21.1 api_config_nodes 归属迁移改为纯 SQL 顺序语句（语义不变，仍为独立事务）
 --   * 全脚本不再含任何 dollar-quoted 块，兼容 psql + pgAdmin / Navicat / DBeaver
+-- v6 变更(2026-08-05):
+--   * 14.4 加固:jsonb_typeof(config_schema)='object' 才合并,避免 array 元素累积
+--   * 14.5 新增:一次性修复 agents 表 JSONB 字段双层编码脏数据
+--     (state_schema / context_schema / tool_bindings / skill_bindings 还原 string → object/array)
+--   * 根因修复位于 app/shared/utils/agent/agent_config_service.py
+--     (移除 5 处冗余 json.dumps,与 asyncpg jsonb codec 配合)
 -- =============================================
 
 BEGIN;
@@ -444,13 +450,81 @@ SET config_schema = jsonb_build_object(
 WHERE config_schema = '{}'::jsonb OR config_schema IS NULL;
 
 -- 14.4 兜底：config_schema 已有数据但缺少 state_fields / context_fields 时补齐
+-- 2026-08-05 加固：仅对 object 形态的 config_schema 做合并；
+-- 非 object(数组 / 字符串 / null)由 14.5 一次性修复段处理,避免 || 合并产生 array 元素
 UPDATE agents
 SET config_schema = config_schema || jsonb_build_object(
         'state_fields',   COALESCE(config_schema->'state_fields',   '{}'::jsonb),
         'context_fields', COALESCE(config_schema->'context_fields', '{}'::jsonb)
     ),
     updated_at = CURRENT_TIMESTAMP
-WHERE NOT (config_schema ? 'state_fields') OR NOT (config_schema ? 'context_fields');
+WHERE jsonb_typeof(config_schema) = 'object'
+  AND (NOT (config_schema ? 'state_fields') OR NOT (config_schema ? 'context_fields'));
+
+-- ============================================================
+-- 2026-08-05 一次性修复 + 写入契约加固(agents JSONB 字段双层编码脏数据)
+-- 背景:AgentConfigService 写 JSONB 字段时多调用了一次 json.dumps,
+--       与 asyncpg jsonb codec (format='text' + encoder=json.dumps) 配合时产生
+--       string 类型 JSONB(外层带 "" 的字符串包裹 dict/array 文本)。
+-- 根因修复见 app/shared/utils/agent/agent_config_service.py
+--   (create_agent / update_agent_config_schema / update_tool_bindings / update_skill_bindings
+--    共 5 处移除冗余 json.dumps)。
+-- 本段负责把已存在的脏数据还原:
+--   * 任意 agents JSONB 字段(jsonb_typeof = 'string' 或 NULL)
+--     还原为正确类型
+--   * 14.4 节的合并操作已加 isinstance(object) 防御
+-- 幂等:每次跑都检测 string 类型才修复,已修过的不再触碰。
+-- ============================================================
+
+-- 14.5.1 state_schema:还原 string 类型 JSONB → object
+UPDATE agents
+SET state_schema = CASE
+        WHEN jsonb_typeof(state_schema) = 'string'
+            THEN COALESCE(NULLIF((state_schema #>> '{}')::jsonb, 'null'::jsonb), '{}'::jsonb)
+        WHEN state_schema IS NULL THEN '{}'::jsonb
+        ELSE state_schema
+    END,
+    updated_at = CURRENT_TIMESTAMP
+WHERE jsonb_typeof(state_schema) = 'string' OR state_schema IS NULL;
+
+-- 14.5.2 context_schema:同上
+UPDATE agents
+SET context_schema = CASE
+        WHEN jsonb_typeof(context_schema) = 'string'
+            THEN COALESCE(NULLIF((context_schema #>> '{}')::jsonb, 'null'::jsonb), '{}'::jsonb)
+        WHEN context_schema IS NULL THEN '{}'::jsonb
+        ELSE context_schema
+    END,
+    updated_at = CURRENT_TIMESTAMP
+WHERE jsonb_typeof(context_schema) = 'string' OR context_schema IS NULL;
+
+-- 14.5.3 tool_bindings:还原 string → array(若解析失败则置 [])
+UPDATE agents
+SET tool_bindings = CASE
+        WHEN jsonb_typeof(tool_bindings) = 'string' THEN
+            COALESCE(
+                NULLIF((tool_bindings #>> '{}')::jsonb, 'null'::jsonb),
+                '[]'::jsonb
+            )
+        WHEN tool_bindings IS NULL THEN '[]'::jsonb
+        ELSE tool_bindings
+    END,
+    updated_at = CURRENT_TIMESTAMP
+WHERE jsonb_typeof(tool_bindings) = 'string' OR tool_bindings IS NULL;
+
+-- 14.5.4 skill_bindings:同上
+UPDATE agents
+SET skill_bindings = CASE
+        WHEN jsonb_typeof(skill_bindings) = 'string' THEN
+            COALESCE(
+                NULLIF((skill_bindings #>> '{}')::jsonb, 'null'::jsonb),
+                '[]'::jsonb
+            )
+        WHEN skill_bindings IS NULL THEN '[]'::jsonb
+        ELSE skill_bindings
+    END,
+    updated_at = CURRENT_TIMESTAMP
+WHERE jsonb_typeof(skill_bindings) = 'string' OR skill_bindings IS NULL;
 
 -- =============================================
 -- 2026-06-24 mcp_server_configs 字段扩展（兼容已建库）
