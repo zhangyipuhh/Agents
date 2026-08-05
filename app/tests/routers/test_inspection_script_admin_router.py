@@ -261,7 +261,7 @@ def test_update_script_detail_returns_full_record(
     monkeypatch.setattr(
         inspection_router_setup.state.inspection_script_service,
         "update_script_detail",
-        lambda _id, _payload: detail,
+        AsyncMock(side_effect=lambda _id, _payload: detail),
     )
     resp = client.put(
         "/api/admin/inspection-scripts/1",
@@ -285,10 +285,12 @@ def test_update_script_detail_missing_returns_404(
     client, inspection_router_setup, admin_headers, monkeypatch
 ):
     """PUT /{id} 不存在 → 404，detail='脚本不存在'。"""
+    async def fake_update(_id, _payload):
+        return None
     monkeypatch.setattr(
         inspection_router_setup.state.inspection_script_service,
         "update_script_detail",
-        lambda _id, _payload: None,
+        AsyncMock(side_effect=fake_update),
     )
     resp = client.put(
         "/api/admin/inspection-scripts/9999",
@@ -313,6 +315,51 @@ def test_update_script_detail_requires_admin(
         json={"display_name": "X"},
     )
     assert resp.status_code == 403
+
+
+def test_update_script_detail_uses_real_async_path(
+    client, inspection_router_setup, admin_headers, monkeypatch
+):
+    """回归测试：模拟真实 async service，确保 router 会 await(2026-08-05 新增)。
+
+    旧实现漏 await 时，ResponseValidationError 会在序列化阶段触发 500。
+    用 AsyncMock 替换并保持函数为 async，验证端到端 200。
+    """
+    detail = {
+        "id": 1,
+        "name": "linux-bash",
+        "display_name": "Linux Bash",
+        "platform": "linux",
+        "version": "bash",
+        "inspection_parser": "json",
+        "inspection_script": "echo manual",
+        "inspection_fields": [],
+        "created_at": None,
+        "updated_at": "2026-08-04",
+    }
+
+    async def fake_update(_id, _payload):
+        return detail
+
+    monkeypatch.setattr(
+        inspection_router_setup.state.inspection_script_service,
+        "update_script_detail",
+        AsyncMock(side_effect=fake_update),
+    )
+    resp = client.put(
+        "/api/admin/inspection-scripts/1",
+        headers=admin_headers,
+        json={
+            "display_name": "Linux Bash",
+            "platform": "linux",
+            "version": "bash",
+            "inspection_parser": "json",
+            "inspection_script": "echo manual",
+            "inspection_fields": [],
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "linux-bash"
 
 
 # =============================================================================

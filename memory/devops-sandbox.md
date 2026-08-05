@@ -67,8 +67,10 @@
 
 - 前缀 `/api/admin/inspection-scripts`，tags=`['Inspection Script Admin']`
 - `GET ""`：`Depends(require_admin_or_menu_acl("task-scheduler.server-management"))`；调 `svc.list_scripts()` 后再 `_LIST_FIELDS = (id, name, display_name, platform, version, inspection_parser, updated_at)` 防御性二次白名单过滤，**不**返回脚本原文
-- `POST /scan`：`Depends(require_admin)`；调 `svc.scan_and_upsert()`；异常时 `logger.exception` 后返 500 + `"inspection script scan failed"`（不回显路径 / 原始 detail）；成功返 `{scanned, inserted, updated, failed}`（4 整数键白名单）
-- `GET /{script_id}`：`Depends(require_admin)`；调 `svc.get_script_detail(script_id)`；未命中 → 404 + `"脚本不存在"`（不回显 script_id）；成功返完整详情（含 `inspection_script` 与 `inspection_fields`）
+- `POST /scan`：`Depends(require_admin)`；`await svc.scan_and_upsert()`；异常时 `logger.exception` 后返 500 + `"inspection script scan failed"`（不回显路径 / 原始 detail）；成功返 `{scanned, inserted, updated, failed, skipped}`（5 整数键白名单，2026-08-04 扩展）
+- `GET /{script_id}`：`Depends(require_admin)`；`svc.get_script_detail(script_id)`（同步）；未命中 → 404 + `"脚本不存在"`（不回显 script_id）；成功返完整详情（含 `inspection_script` 与 `inspection_fields`）
+- `PUT /{script_id}`（2026-08-04 新增）：`Depends(require_admin)`；请求体 `UpdateInspectionScriptRequest`；**`await svc.update_script_detail(script_id, payload)`**（2026-08-05 修正——router 必须 await async service 方法，否则拿到 coroutine 触发 `ResponseValidationError`）；不存在 / 入参非法 → 404 + `"脚本不存在"`
+- `DELETE /{script_id}`（2026-08-04 新增）：`Depends(require_admin)`；`await svc.delete_script(script_id)`（同样必须 await）；成功 → 204 No Content；service 返回 False → 404 + `"脚本不存在"`
 - 服务未初始化：所有端点统一返 500 + `"InspectionScriptService not initialized"`
 
 #### `DevOpsServerService` 与脚本库的协作契约

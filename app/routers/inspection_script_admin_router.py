@@ -221,7 +221,7 @@ async def update_inspection_script(
         HTTPException: 404 / 422 / 500
     """
     svc = _get_service(request)
-    record = svc.update_script_detail(script_id, req.model_dump())
+    record = await svc.update_script_detail(script_id, req.model_dump())
     if record is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
