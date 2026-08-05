@@ -642,13 +642,13 @@ onUnmounted(() => {
       </button>
       <!-- 运维控制台：在新窗口中打开 /ops-console.html（路径风格与知识库一致） -->
       <button
-        class="menu-item menu-item-primary"
+        class="menu-item menu-item-secondary"
         :class="{ active: activeMenu === 'ops-console' }"
         data-tooltip="运维控制台"
         @click="handleMenuClick('ops-console')"
       >
         <svg class="menu-icon" viewBox="0 0 20 20" fill="currentColor">
-          <path fill-rule="evenodd" d="M2 5a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm3.293 2.293a1 1 0 011.414 0L9 9.586l2.293-2.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414zM11 11a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd"/>
+          <path d="M7 3a1 1 0 00-1 1v1H5a1 1 0 00-1 1v8a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 00-1-1h-1V4a1 1 0 10-2 0v1H8V4a1 1 0 00-1-1zM5 6h10v8H5V6zm2 2a1 1 0 011-1h1a1 1 0 010 2H8a1 1 0 01-1-1zm4 3a1 1 0 100 2h1a1 1 0 100-2h-1zm-3 0a1 1 0 011-1h1a1 1 0 110 2H8a1 1 0 01-1-1z"/>
         </svg>
         <span v-show="!isSidebarCollapsed" class="menu-text">运维控制台</span>
       </button>
@@ -1202,6 +1202,51 @@ onUnmounted(() => {
   }
 }
 
+/* 次级菜单按钮（与「项目」分组头同款视觉 token：边框 + 灰底 + 紧凑字号） */
+.menu-item-secondary {
+  margin-top: 8px;
+  padding: 8px 12px 6px;
+  background-color: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: 0.02em;
+  gap: 6px;
+
+  .menu-icon {
+    color: var(--color-text-secondary);
+    opacity: 1;
+  }
+
+  .menu-text {
+    font-weight: var(--font-weight-bold);
+  }
+
+  &:hover {
+    color: var(--color-text-primary);
+    background-color: var(--color-bg-hover);
+    border-color: var(--color-text-muted);
+
+    .menu-icon {
+      color: var(--color-text-primary);
+      opacity: 1;
+    }
+  }
+
+  &.active {
+    color: var(--color-text-primary);
+    background-color: var(--color-bg-hover);
+    border-color: var(--color-text-muted);
+
+    .menu-icon {
+      color: var(--color-text-primary);
+      opacity: 1;
+    }
+  }
+}
+
 .menu-icon {
   width: 20px;
   height: 20px;
@@ -1673,6 +1718,29 @@ onUnmounted(() => {
 .sidebar.collapsed .sidebar-nav .menu-item.menu-item-primary .menu-icon {
   color: white !important;
   opacity: 1 !important;
+}
+
+/* 折叠态次级按钮：与 .group-header 折叠态一致，去边框去背景，仅图标居中 */
+.sidebar.collapsed .sidebar-nav .menu-item.menu-item-secondary {
+  background-color: transparent !important;
+  border-color: transparent !important;
+  padding: 10px !important;
+  margin-top: 4px !important;
+}
+
+.sidebar.collapsed .sidebar-nav .menu-item.menu-item-secondary:hover {
+  background-color: var(--color-bg-hover) !important;
+  border-color: transparent !important;
+}
+
+.sidebar.collapsed .sidebar-nav .menu-item.menu-item-secondary .menu-icon {
+  color: var(--color-text-secondary) !important;
+  opacity: 1 !important;
+}
+
+.sidebar.collapsed .sidebar-nav .menu-item.menu-item-secondary:hover .menu-icon,
+.sidebar.collapsed .sidebar-nav .menu-item.menu-item-secondary.active .menu-icon {
+  color: var(--color-text-primary) !important;
 }
 
 /* 折叠状态下导航按钮 Tooltip 样式 */
