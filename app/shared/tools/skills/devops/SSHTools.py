@@ -25,6 +25,7 @@ SSHTools - SSH 远程命令执行工具集（2026-07-15 重写）
 """
 from __future__ import annotations
 
+import asyncio  # 2026-08-05 新增:三个 @tool 改为 async def,LangGraph in-flight loop 内可直接 await
 import json
 import logging
 import time
@@ -218,7 +219,7 @@ def _redact_intercept_reason(reason: Optional[str]) -> Optional[str]:
     return sanitized
 
 
-def _emit_batch_failure_with_members(
+async def _emit_batch_failure_with_members(
     *,
     runtime: Any,
     business_name: Optional[str],
@@ -255,7 +256,7 @@ def _emit_batch_failure_with_members(
     """
     # 1. 先发 N 条明细
     for cmd in commands:
-        _emit_log(
+        await _emit_log(
             action="ssh_execute_command",
             result="failure",
             runtime=runtime,
@@ -277,7 +278,7 @@ def _emit_batch_failure_with_members(
             correlation_id=batch_cid,
         )
     # 2. 再发 1 条汇总
-    _emit_log(
+    await _emit_log(
         action="ssh_execute_batch",
         result="failure",
         runtime=runtime,
@@ -301,7 +302,7 @@ def _emit_batch_failure_with_members(
     )
 
 
-def _emit_log(
+async def _emit_log(
     *,
     action: str,
     result: str,
@@ -367,7 +368,9 @@ def _emit_log(
             metadata=metadata,
         )
         # service.emit 内部已含 redact_metadata 递归脱敏；本函数不重复。
-        service.emit(evt)
+        # 2026-08-05:LogService.emit 是 async 函数,改为 async def 后必须 await,
+        # 否则返回的 coroutine 不被驱动会导致审计日志丢失(历史潜在 bug,本次顺带修复)。
+        await service.emit(evt)
     except Exception as exc:  # noqa: BLE001 - fail-soft：日志失败不阻断业务
         logger.warning(
             "[SSHTools] emit log failed (action=%s, result=%s): %s",
@@ -560,7 +563,7 @@ def _make_tool_message(
 
 
 @tool(description="在已配置的远程服务器上执行单条命令（Linux/bash 或 Windows/powershell）。")
-def execute_command(
+async def execute_command(
     command: str,
     business_name: str,
     timeout: int = 30,
@@ -576,6 +579,11 @@ def execute_command(
          决定走第三方 HTTPS 调用（请求体加密，RSA-OAEP + AES-256-GCM），
          还是走本地 paramiko.exec_command
       5) 把执行结果（无敏感字段）封装为 ``ToolMessage`` 返回 Command
+
+    **2026-08-05:** 改为 ``async def``。LangGraph ``ToolNode`` 在 in-flight asyncio
+    loop 内可直接 ``await tool.func(...)``；本地 paramiko 用 ``asyncio.to_thread``
+    切线程池,第三方 HTTPS 直接 ``await dispatch(...)``。LLM tool schema 不变
+    (LangChain 1.x ``@tool`` 只看参数名 + 类型注解,async/sync 等价)。
 
     Args:
         command: 待执行的命令字符串
@@ -593,7 +601,7 @@ def execute_command(
     tool_call_id = getattr(runtime, "tool_call_id", "unknown") if runtime else "unknown"
     err = _validate_business_name(business_name)
     if err:
-        _emit_log(
+        await _emit_log(
             action="ssh_execute_command",
             result="failure",
             runtime=runtime,
@@ -622,9 +630,11 @@ def execute_command(
             }
         )
     try:
-        config = _resolve_server_config(runtime, business_name)
+        # 2026-08-05:async def 下 _resolve_server_config 是 sync DB/cache 调用,走 to_thread
+        # 隔离阻塞,避免 paramiko 之外的额外同步 IO 卡住 event loop
+        config = await asyncio.to_thread(_resolve_server_config, runtime, business_name)
     except Exception:  # noqa: BLE001 - Bug-3 修复:覆盖 ValueError（Fernet 密钥错配）等所有异常,统一返回通用错误避免密钥错配细节泄漏
-        _emit_log(
+        await _emit_log(
             action="ssh_execute_command",
             result="failure",
             runtime=runtime,
@@ -658,7 +668,7 @@ def execute_command(
     try:
         interceptor.check_and_raise(command)
     except CommandBlockedError as e:
-        _emit_log(
+        await _emit_log(
             action="ssh_execute_command",
             result="blocked",
             runtime=runtime,
@@ -702,7 +712,7 @@ def execute_command(
     use_third_party = bool(ctx.get("use_third_party_executor"))
 
     if use_third_party:
-        # ===== 第三方分支（2026-08-03 新增）=====
+        # ===== 第三方分支（2026-08-03 新增;2026-08-05 改造为直接 await）=====
         endpoint_name = ctx.get("third_party_endpoint_name")
         if not isinstance(endpoint_name, str) or not endpoint_name.strip():
             from app.core.config.settings import settings as _settings
@@ -718,48 +728,23 @@ def execute_command(
         }
         started = time.monotonic()
         try:
-            import asyncio as _asyncio
+            # 2026-08-05 修复:execute_command 改为 async def 后,直接 await 异步 dispatch,
+            # 不再需要 asyncio.run / run_coroutine_threadsafe 包装——后者在 LangGraph
+            # ToolNode 的 in-flight asyncio loop 中会触发 RuntimeError 或死锁。
             from app.shared.utils.executor.third_party_executor import (
                 dispatch as _tp_dispatch,
                 normalize_response as _tp_normalize,
             )
 
-            # execute_command 是同步函数,通过 asyncio.run 包装异步 dispatch。
-            # 若当前已处于事件循环（agent runtime 内），则改用 run_until_complete 走现有 loop
-            # （避免 RuntimeError: asyncio.run() cannot be called from a running event loop）。
-            try:
-                _loop = _asyncio.get_running_loop()
-                _in_loop = True
-            except RuntimeError:
-                _in_loop = False
-
-            if _in_loop:
-                # 当前已在一个 event loop 内,直接 await coro（LangChain agent runtime 同步
-                # 调用工具函数的场景不进入此分支；此处为 future-proof）
-                resp_coro = _tp_dispatch(
-                    endpoint_name=endpoint_name,
-                    command=command,
-                    wrapped_command=wrapped,
-                    business_name=business_name,
-                    timeout=safe_timeout,
-                    server_type=config.get("server_type"),
-                    ssh_config=_ssh_config,
-                )
-                resp = _asyncio.run_coroutine_threadsafe(
-                    _asyncio.ensure_future(resp_coro), _loop
-                ).result()
-            else:
-                resp = _asyncio.run(
-                    _tp_dispatch(
-                        endpoint_name=endpoint_name,
-                        command=command,
-                        wrapped_command=wrapped,
-                        business_name=business_name,
-                        timeout=safe_timeout,
-                        server_type=config.get("server_type"),
-                        ssh_config=_ssh_config,
-                    )
-                )
+            resp = await _tp_dispatch(
+                endpoint_name=endpoint_name,
+                command=command,
+                wrapped_command=wrapped,
+                business_name=business_name,
+                timeout=safe_timeout,
+                server_type=config.get("server_type"),
+                ssh_config=_ssh_config,
+            )
             payload = _tp_normalize(resp)
             duration_ms = int((time.monotonic() - started) * 1000)
             success = bool(payload.get("success"))
@@ -767,7 +752,7 @@ def execute_command(
             err_text = payload.get("error") or ""
             stdout_size = len(output_text.encode("utf-8")) if output_text else 0
             stderr_size = len(err_text.encode("utf-8")) if err_text else 0
-            _emit_log(
+            await _emit_log(
                 action="ssh_execute_command",
                 result="success" if success else "failure",
                 runtime=runtime,
@@ -811,7 +796,7 @@ def execute_command(
                     f"{type(tp_exc).__name__}: {tp_exc}"
                 )
                 user_message = "第三方调用异常"
-            _emit_log(
+            await _emit_log(
                 action="ssh_execute_command",
                 result="failure",
                 runtime=runtime,
@@ -843,18 +828,32 @@ def execute_command(
                 }
             )
 
-    # ===== 本地 Paramiko SSH 分支（原行为完全保留）=====
+    # ===== 本地 Paramiko SSH 分支(2026-08-05:同步阻塞点用 asyncio.to_thread 切线程池)=====
     client = None
     started = time.monotonic()
     try:
-        client = _open_client(config)
-        stdin, stdout, stderr = client.exec_command(wrapped, timeout=safe_timeout)
-        # Windows OpenSSH 非 PTY 通道下远端 shell 会等待 stdin EOF 才退出,
-        # 不关闭写端 read() 将阻塞至超时;命令不读 stdin,关闭写端无副作用。
-        stdin.close()
-        output = stdout.read().decode("utf-8", errors="replace").strip()
-        err = stderr.read().decode("utf-8", errors="replace").strip()
-        exit_code = stdout.channel.recv_exit_status()
+        # 2026-08-05:连接 / exec / channel I/O 全是 paramiko sync API,扔到线程池执行,
+        # 不阻塞 asyncio event loop(允许多 SSH / 多 tool_calls 并发)。
+        client = await asyncio.to_thread(_open_client, config)
+
+        def _exec_and_read() -> tuple[str, str, int]:
+            """在 worker 线程里执行 exec_command + 顺序读 stdin/stdout/stderr/channel。
+
+            整个 channel I/O 必须顺序交互(read stdin → close → read stdout → read stderr
+            → recv_exit_status),不能拆多个 to_thread 并发调用同一 channel。
+            """
+            _stdin, _stdout, _stderr = client.exec_command(
+                wrapped, timeout=safe_timeout
+            )
+            # Windows OpenSSH 非 PTY 通道下远端 shell 会等待 stdin EOF 才退出,
+            # 不关闭写端 read() 将阻塞至超时;命令不读 stdin,关闭写端无副作用。
+            _stdin.close()
+            _output = _stdout.read().decode("utf-8", errors="replace").strip()
+            _err = _stderr.read().decode("utf-8", errors="replace").strip()
+            _exit_code = _stdout.channel.recv_exit_status()
+            return _output, _err, _exit_code
+
+        output, err, exit_code = await asyncio.to_thread(_exec_and_read)
         duration_ms = int((time.monotonic() - started) * 1000)
         # 2026-07-29 统一语义:成功 = exit_code == 0,stderr 不改变成功语义
         # (Linux /root/.bashrc 注释噪声或 cron stderr 警告都不应让 exit 0 命令被视为失败)。
@@ -868,7 +867,7 @@ def execute_command(
         }
         if err:
             payload["error"] = err
-        _emit_log(
+        await _emit_log(
             action="ssh_execute_command",
             result="success" if success else "failure",
             runtime=runtime,
@@ -893,7 +892,7 @@ def execute_command(
         )
     except paramiko.AuthenticationException:
         duration_ms = int((time.monotonic() - started) * 1000)
-        _emit_log(
+        await _emit_log(
             action="ssh_execute_command",
             result="failure",
             runtime=runtime,
@@ -924,7 +923,7 @@ def execute_command(
         )
     except paramiko.SSHException:
         duration_ms = int((time.monotonic() - started) * 1000)
-        _emit_log(
+        await _emit_log(
             action="ssh_execute_command",
             result="failure",
             runtime=runtime,
@@ -955,7 +954,7 @@ def execute_command(
         )
     except Exception:  # noqa: BLE001 - 捕获所有并以通用错误返回，避免泄漏 IP/凭据
         duration_ms = int((time.monotonic() - started) * 1000)
-        _emit_log(
+        await _emit_log(
             action="ssh_execute_command",
             result="failure",
             runtime=runtime,
@@ -986,9 +985,10 @@ def execute_command(
         )
     finally:
         if client is not None:
+            # 2026-08-05:paramiko close 也是 sync,扔到线程池;二次 close 可能抛异常要 catch。
             try:
-                client.close()
-            except Exception:
+                await asyncio.to_thread(client.close)
+            except Exception:  # noqa: BLE001
                 pass
 
 
@@ -998,7 +998,7 @@ def execute_command(
 
 
 @tool(description="在已配置的远程服务器上批量执行多条命令；任何一条被策略拦截即整批拒绝。")
-def execute_batch_commands(
+async def execute_batch_commands(
     commands: List[str],
     business_name: str,
     timeout: int = 30,
@@ -1009,6 +1009,9 @@ def execute_batch_commands(
     策略：
       - 任一命令被黑名单拦截 → 整个 batch 拒绝（不调 paramiko）
       - 全部通过 → 按顺序执行
+
+    **2026-08-05:** 改为 ``async def``;本地 paramiko 用 ``asyncio.to_thread`` 切线程池。
+    LLM tool schema 不变。
 
     Args:
         commands: 命令字符串列表
@@ -1023,7 +1026,7 @@ def execute_batch_commands(
     err = _validate_business_name(business_name)
     batch_cid = str(uuid.uuid4())
     if err:
-        _emit_log(
+        await _emit_log(
             action="ssh_execute_batch",
             result="failure",
             runtime=runtime,
@@ -1055,7 +1058,7 @@ def execute_batch_commands(
         )
     # Bug-7 修复:显式校验 commands 非空 list，防止 LLM 误传 None / []
     if not isinstance(commands, list) or not commands:
-        _emit_log(
+        await _emit_log(
             action="ssh_execute_batch",
             result="failure",
             runtime=runtime,
@@ -1087,9 +1090,10 @@ def execute_batch_commands(
             }
         )
     try:
-        config = _resolve_server_config(runtime, business_name)
+        # 2026-08-05:async def 下 _resolve_server_config 是 sync DB/cache,走 to_thread 隔离阻塞
+        config = await asyncio.to_thread(_resolve_server_config, runtime, business_name)
     except Exception:  # noqa: BLE001 - Bug-3 修复:统一吞掉异常,避免泄漏密钥错配等内部细节
-        _emit_batch_failure_with_members(
+        await _emit_batch_failure_with_members(
             runtime=runtime,
             business_name=business_name,
             commands=commands,
@@ -1128,7 +1132,7 @@ def execute_batch_commands(
         for idx, cmd in enumerate(commands):
             blocked_entry = next((b for b in blocked if b["index"] == idx), None)
             if blocked_entry is not None:
-                _emit_log(
+                await _emit_log(
                     action="ssh_execute_command",
                     result="blocked",
                     runtime=runtime,
@@ -1153,7 +1157,7 @@ def execute_batch_commands(
                     correlation_id=batch_cid,
                 )
             else:
-                _emit_log(
+                await _emit_log(
                     action="ssh_execute_command",
                     result="skipped",
                     runtime=runtime,
@@ -1173,7 +1177,7 @@ def execute_batch_commands(
                     },
                     correlation_id=batch_cid,
                 )
-        _emit_log(
+        await _emit_log(
             action="ssh_execute_batch",
             result="blocked",
             runtime=runtime,
@@ -1216,18 +1220,29 @@ def execute_batch_commands(
     client = None
     started = time.monotonic()
     try:
-        client = _open_client(config)
+        # 2026-08-05:async def 下 paramiko sync 阻塞点用 to_thread 切线程池
+        client = await asyncio.to_thread(_open_client, config)
         for cmd in allowed_cmds:
             wrapped = _wrap_for_platform(config["server_type"], cmd)
             member_started = time.monotonic()
-            try:
-                stdin, stdout, stderr = client.exec_command(wrapped, timeout=safe_timeout)
+
+            def _exec_and_read_member(
+                _c=cmd, _w=wrapped, _t=safe_timeout
+            ) -> tuple[str, str, int]:
+                """在 worker 线程里顺序执行 exec_command + channel I/O(同 channel 必须顺序)。"""
+                _stdin, _stdout, _stderr = client.exec_command(_w, timeout=_t)
                 # Windows OpenSSH 非 PTY 通道下需关闭 stdin 写端(发送 EOF),
                 # 否则远端 shell 等待输入导致 read() 阻塞至超时。
-                stdin.close()
-                output = stdout.read().decode("utf-8", errors="replace").strip()
-                err = stderr.read().decode("utf-8", errors="replace").strip()
-                exit_code = stdout.channel.recv_exit_status()
+                _stdin.close()
+                _output = _stdout.read().decode("utf-8", errors="replace").strip()
+                _err = _stderr.read().decode("utf-8", errors="replace").strip()
+                _exit_code = _stdout.channel.recv_exit_status()
+                return _output, _err, _exit_code
+
+            try:
+                output, err, exit_code = await asyncio.to_thread(
+                    _exec_and_read_member
+                )
                 # 2026-07-29 统一语义:success = exit_code == 0,stderr 不改变成功语义
                 success = exit_code == 0
                 item: Dict[str, Any] = {
@@ -1242,7 +1257,7 @@ def execute_batch_commands(
                 duration_ms = int((time.monotonic() - member_started) * 1000)
                 stdout_size = len(output.encode("utf-8")) if output else 0
                 stderr_size = len(err.encode("utf-8")) if err else 0
-                _emit_log(
+                await _emit_log(
                     action="ssh_execute_command",
                     result="success" if success else "failure",
                     runtime=runtime,
@@ -1267,7 +1282,7 @@ def execute_batch_commands(
                     {"command": cmd, "success": False, "error": "执行失败"}
                 )
                 duration_ms = int((time.monotonic() - member_started) * 1000)
-                _emit_log(
+                await _emit_log(
                     action="ssh_execute_command",
                     result="failure",
                     runtime=runtime,
@@ -1290,7 +1305,7 @@ def execute_batch_commands(
 
         duration_ms = int((time.monotonic() - started) * 1000)
         all_success = all(r.get("success") for r in results)
-        _emit_log(
+        await _emit_log(
             action="ssh_execute_batch",
             result="success" if all_success else "failure",
             runtime=runtime,
@@ -1329,7 +1344,7 @@ def execute_batch_commands(
         )
     except paramiko.AuthenticationException:
         duration_ms = int((time.monotonic() - started) * 1000)
-        _emit_batch_failure_with_members(
+        await _emit_batch_failure_with_members(
             runtime=runtime,
             business_name=business_name,
             commands=allowed_cmds,
@@ -1352,7 +1367,7 @@ def execute_batch_commands(
         )
     except paramiko.SSHException:
         duration_ms = int((time.monotonic() - started) * 1000)
-        _emit_batch_failure_with_members(
+        await _emit_batch_failure_with_members(
             runtime=runtime,
             business_name=business_name,
             commands=allowed_cmds,
@@ -1375,7 +1390,7 @@ def execute_batch_commands(
         )
     except Exception:  # noqa: BLE001 - 通用错误，避免泄漏 IP/凭据
         duration_ms = int((time.monotonic() - started) * 1000)
-        _emit_batch_failure_with_members(
+        await _emit_batch_failure_with_members(
             runtime=runtime,
             business_name=business_name,
             commands=allowed_cmds,
@@ -1399,8 +1414,8 @@ def execute_batch_commands(
     finally:
         if client is not None:
             try:
-                client.close()
-            except Exception:
+                await asyncio.to_thread(client.close)
+            except Exception:  # noqa: BLE001
                 pass
 
 
@@ -1410,7 +1425,7 @@ def execute_batch_commands(
 
 
 @tool(description="获取远程服务器系统日志（tail）。返回成功摘要，不含连接配置。")
-def get_system_logs(
+async def get_system_logs(
     business_name: str,
     log_type: str = "syslog",
     lines: int = 100,
@@ -1419,6 +1434,9 @@ def get_system_logs(
     """获取服务器系统日志。
 
     内部命令 ``tail -n <lines> <path>`` 同样走 ``CommandInterceptor`` 检查。
+
+    **2026-08-05:** 改为 ``async def``;本地 paramiko 用 ``asyncio.to_thread`` 切线程池。
+    LLM tool schema 不变。
 
     Args:
         business_name: 业务名（必填，不可为空）
@@ -1432,7 +1450,7 @@ def get_system_logs(
     tool_call_id = getattr(runtime, "tool_call_id", "unknown") if runtime else "unknown"
     err = _validate_business_name(business_name)
     if err:
-        _emit_log(
+        await _emit_log(
             action="ssh_get_system_logs",
             result="failure",
             runtime=runtime,
@@ -1461,9 +1479,10 @@ def get_system_logs(
             }
         )
     try:
-        config = _resolve_server_config(runtime, business_name)
+        # 2026-08-05:async def 下 _resolve_server_config 是 sync DB/cache,走 to_thread 隔离阻塞
+        config = await asyncio.to_thread(_resolve_server_config, runtime, business_name)
     except Exception:  # noqa: BLE001 - Bug-3 修复:统一吞掉异常,避免泄漏密钥错配等内部细节
-        _emit_log(
+        await _emit_log(
             action="ssh_get_system_logs",
             result="failure",
             runtime=runtime,
@@ -1527,7 +1546,7 @@ def get_system_logs(
     try:
         interceptor.check_and_raise(inner_cmd)
     except CommandBlockedError as e:
-        _emit_log(
+        await _emit_log(
             action="ssh_get_system_logs",
             result="blocked",
             runtime=runtime,
@@ -1564,23 +1583,30 @@ def get_system_logs(
     client = None
     started = time.monotonic()
     try:
-        client = _open_client(config)
+        # 2026-08-05:async def 下 paramiko sync 阻塞点用 to_thread 切线程池
+        client = await asyncio.to_thread(_open_client, config)
         wrapped = _wrap_for_platform(config["server_type"], inner_cmd)
         # Bug-5 修复:get_system_logs 内部命令固定 30s,这里用钳制函数统一约束
         safe_timeout = _clamp_timeout(30, default=30, lo=1, hi=120)
-        stdin, stdout, stderr = client.exec_command(wrapped, timeout=safe_timeout)
-        # Windows OpenSSH 非 PTY 通道下需关闭 stdin 写端(发送 EOF),
-        # 否则远端 shell 等待输入导致 read() 阻塞至超时。
-        stdin.close()
-        output = stdout.read().decode("utf-8", errors="replace").strip()
-        err = stderr.read().decode("utf-8", errors="replace").strip()
-        exit_code = stdout.channel.recv_exit_status()
+
+        def _exec_and_read_logs() -> tuple[str, str, int]:
+            """worker 线程内顺序执行 exec_command + channel I/O。"""
+            _stdin, _stdout, _stderr = client.exec_command(wrapped, timeout=safe_timeout)
+            # Windows OpenSSH 非 PTY 通道下需关闭 stdin 写端(发送 EOF),
+            # 否则远端 shell 等待输入导致 read() 阻塞至超时。
+            _stdin.close()
+            _output = _stdout.read().decode("utf-8", errors="replace").strip()
+            _err = _stderr.read().decode("utf-8", errors="replace").strip()
+            _exit_code = _stdout.channel.recv_exit_status()
+            return _output, _err, _exit_code
+
+        output, err, exit_code = await asyncio.to_thread(_exec_and_read_logs)
         duration_ms = int((time.monotonic() - started) * 1000)
         stdout_size = len(output.encode("utf-8")) if output else 0
         stderr_size = len(err.encode("utf-8")) if err else 0
         success = exit_code == 0
         if not success:
-            _emit_log(
+            await _emit_log(
                 action="ssh_get_system_logs",
                 result="failure",
                 runtime=runtime,
@@ -1615,7 +1641,7 @@ def get_system_logs(
         # 统计行数 & 返回摘要；不外泄连接配置
         log_lines = output.split("\n") if output else []
         total = len(log_lines)
-        _emit_log(
+        await _emit_log(
             action="ssh_get_system_logs",
             result="success" if success else "failure",
             runtime=runtime,
@@ -1652,7 +1678,7 @@ def get_system_logs(
         )
     except Exception:  # noqa: BLE001 - 通用错误，避免泄漏 IP/凭据
         duration_ms = int((time.monotonic() - started) * 1000)
-        _emit_log(
+        await _emit_log(
             action="ssh_get_system_logs",
             result="failure",
             runtime=runtime,
@@ -1684,6 +1710,6 @@ def get_system_logs(
     finally:
         if client is not None:
             try:
-                client.close()
-            except Exception:
+                await asyncio.to_thread(client.close)
+            except Exception:  # noqa: BLE001
                 pass
