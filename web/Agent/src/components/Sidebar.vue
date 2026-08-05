@@ -219,36 +219,25 @@ const cancelDeleteSession = () => {
 }
 
 const handleMenuClick = (menuId) => {
-  activeMenu.value = menuId
+  // 仅在真正切换主窗口页面（new-task）时保持 active 视觉；
+  // knowledge / ops-console 都是 window.open 在新 Tab 打开（等同 target="_blank"），
+  // 按下后应立即恢复、不留 active 视觉残留
+  if (menuId === 'new-task') {
+    activeMenu.value = menuId
+  }
   if (menuId === 'new-task') {
     emit('new-chat')
     emit('page-change', 'agent')
   }
   if (menuId === 'knowledge') {
-    // 在浏览器新窗口中打开知识库页面
-    const width = 1200
-    const height = 800
-    const left = (window.screen.width - width) / 2
-    const top = (window.screen.height - height) / 2
-    const windowName = 'knowledgeWindow_' + Date.now()
-    window.open(
-      '/knowledge.html',
-      windowName,
-      `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes,status=yes`
-    )
+    // 在浏览器新 Tab 中打开知识库页面（行为等同 <a target="_blank">）：
+    // - '_blank' 显式声明新上下文语义；不传 width/height 让浏览器走默认"新开 Tab 节点"行为，避免被识别为弹窗窗口
+    // - 'noopener' 切断 window.opener 引用，规避安全风险
+    window.open('/knowledge.html', '_blank', 'noopener')
   }
   if (menuId === 'ops-console') {
-    // 在浏览器新窗口中打开运维控制台页面（路径风格与知识库一致）
-    const width = 1200
-    const height = 800
-    const left = (window.screen.width - width) / 2
-    const top = (window.screen.height - height) / 2
-    const windowName = 'opsConsoleWindow_' + Date.now()
-    window.open(
-      '/ops-console.html',
-      windowName,
-      `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes,status=yes`
-    )
+    // 在浏览器新 Tab 中打开运维控制台页面（与知识库保持一致的「无 features 新 Tab」行为）
+    window.open('/ops-console.html', '_blank', 'noopener')
   }
 }
 
