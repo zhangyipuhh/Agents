@@ -1134,3 +1134,129 @@ def test_run_real_docx_generation_end_to_end(tmp_path, monkeypatch):
             sys.modules[sweep_module_name] = original_sweep
         # else 分支无需立即 import:conftest 已恢复 docx Mock,
         # 下次 ``from app.scripts.ops import ops_inspection_sweep`` 会自动重建
+
+
+# =============================================================================
+# 落库（server_inspection_record_service）注入（2026-08-05 新增）
+# =============================================================================
+
+
+class _FakeRecordService:
+    """最小化 ``ServerInspectionRecordService`` 替身，仅暴露 ``save_inspection_result``。
+
+    Attributes:
+        calls: 每次调用的 (report, schedule_id, run_id) 三元组列表。
+        raise_exc: 若非 None，下次调用 ``save_inspection_result`` 时抛出该异常。
+    """
+
+    def __init__(self) -> None:
+        self.calls: List[tuple] = []
+        self.raise_exc: Optional[BaseException] = None
+
+    async def save_inspection_result(self, report, *, schedule_id=None, run_id=None,
+                                     created_by_user_id=None):
+        if self.raise_exc is not None:
+            exc, self.raise_exc = self.raise_exc, None
+            raise exc
+        self.calls.append((report, schedule_id, run_id, created_by_user_id))
+        return len(getattr(report, "items", []) or [])
+
+
+@pytest.mark.asyncio
+async def test_run_calls_save_inspection_result_when_service_injected(monkeypatch):
+    """``server_inspection_record_service`` 已注入 → ``save_inspection_result`` 被调用，
+    参数透传 ``schedule_id`` / ``run_id``。
+    """
+    from app.scripts.ops import ops_inspection_sweep
+
+    report = ServerOpsReport(items=[
+        ServerOpsItem(business_name="biz-A", success=True, exit_code=0,
+                      duration_ms=20, inspection_status="pass",
+                      parsed_values={"mem_used_pct": 10},
+                      field_results=[]),
+    ])
+
+    async def stub_server_ops(context):
+        return report
+    monkeypatch.setattr(ops_inspection_sweep, "run_server_ops", stub_server_ops)
+
+    fake_service = _FakeRecordService()
+    context = _make_context(script_args={"server_list": ["biz-A"]})
+    # 注入 fake service（绕过 lifespan 注入链路）
+    context = context.model_copy(update={"server_inspection_record_service": fake_service})
+
+    handler = _attach_capture(context)
+    try:
+        await ops_inspection_sweep.run(context)
+    finally:
+        _detach_capture(context, handler)
+
+    assert len(fake_service.calls) == 1
+    saved_report, schedule_id, run_id, created_by_user_id = fake_service.calls[0]
+    assert saved_report is report
+    assert schedule_id == context.schedule_id
+    assert run_id == context.run_id
+    # 定时任务路径：created_by_user_id 应为 None（系统触发）
+    assert created_by_user_id is None
+
+
+@pytest.mark.asyncio
+async def test_run_skips_save_when_service_is_none(monkeypatch):
+    """``server_inspection_record_service`` 为 ``None`` → 跳过落库，无异常。"""
+    from app.scripts.ops import ops_inspection_sweep
+
+    report = ServerOpsReport(items=[
+        ServerOpsItem(business_name="biz-A", success=True, exit_code=0,
+                      duration_ms=10, inspection_status="pass",
+                      parsed_values={"mem_used_pct": 5}, field_results=[]),
+    ])
+
+    async def stub(context):
+        return report
+    monkeypatch.setattr(ops_inspection_sweep, "run_server_ops", stub)
+
+    # 默认 _make_context 未注入 record_service → 走 None 降级
+    context = _make_context(script_args={"server_list": ["biz-A"]})
+    assert getattr(context, "server_inspection_record_service", None) is None
+
+    handler = _attach_capture(context)
+    try:
+        # 不应抛异常
+        result = await ops_inspection_sweep.run(context)
+    finally:
+        _detach_capture(context, handler)
+    assert isinstance(result, str)
+
+
+@pytest.mark.asyncio
+async def test_run_swallows_save_inspection_result_failure(monkeypatch):
+    """``save_inspection_result`` 抛异常 → 仅记 log，不中断 docx / 邮件 / 摘要生成。"""
+    from app.scripts.ops import ops_inspection_sweep
+
+    report = ServerOpsReport(items=[
+        ServerOpsItem(business_name="biz-A", success=True, exit_code=0,
+                      duration_ms=10, inspection_status="pass",
+                      parsed_values={"mem_used_pct": 5}, field_results=[]),
+    ])
+
+    async def stub(context):
+        return report
+    monkeypatch.setattr(ops_inspection_sweep, "run_server_ops", stub)
+
+    fake_service = _FakeRecordService()
+    fake_service.raise_exc = RuntimeError("simulated db error")
+    context = _make_context(script_args={"server_list": ["biz-A"]})
+    context = context.model_copy(update={"server_inspection_record_service": fake_service})
+
+    handler = _attach_capture(context)
+    try:
+        # 不应向上抛 RuntimeError（fail-soft）
+        result = await ops_inspection_sweep.run(context)
+    finally:
+        _detach_capture(context, handler)
+    # 仍然产出文本摘要（含 server_ops 段）
+    assert isinstance(result, str)
+    assert "server_ops=1/1 passed" in result
+    # 日志包含「落库失败」字样
+    texts = _records_text(handler)
+    assert any("采集结果落库失败" in t for t in texts), texts

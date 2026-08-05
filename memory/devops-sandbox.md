@@ -273,6 +273,28 @@
 - **白名单弹窗契约不变**：与巡检脚本弹窗互斥（同一时刻仅一个 open），通过 `whitelistDialog.open` / `scriptDialog.open` 互斥切换；列表端点契约不变仍只返 4 字段
 - **巡检脚本库扫描面板（2026-08-03 新增）**：`TaskSchedulerManager.vue` 服务器 Tab 内独立 `<section class="inspection-script-scan" data-testid="inspection-script-scan-section">`，仅 admin 可见；含扫描按钮（`data-testid="scan-inspection-scripts-btn"`）+ 提示文案「从 `data/devops/inspection_scripts.yaml` 同步所有平台巡检脚本；仅展示扫描统计，不暴露脚本原文」+ 独立的扫描统计 / 错误区域（`inspectionScanSummary` / `inspectionScanErrorMessage` / `inspectionScanSuccessMessage`），不影响服务器扫描的提示
 - **触发函数 `triggerInspectionScriptsScan`**：admin only；带防重复提交（`isScanningInspectionScripts.value` 短路）；调 `scanInspectionScripts()` → `POST /api/admin/inspection-scripts/scan`；失败时使用脱敏文案「巡检脚本扫描失败，请稍后重试」，不回显后端 detail；成功解析 `{scanned, inserted, updated, failed}` 4 字段整数并写入 `inspectionScanSummary`，未知字段不进入 DOM
+### 服务器采集落库服务 `ServerInspectionRecordService`（2026-08-05 新增）
+
+- 位置：`app/shared/utils/server_inspection_record_service.py`
+- 构造：`ServerInspectionRecordService(db, *, devops_server_service=None, user_server_service=None, inspection_script_service=None)`；`db=None` 优雅降级（读返回 `[]` / 空历史，写抛 `RuntimeError("数据库未启用")`）；无内存缓存，save / read 均直查 DB。
+- 注入：`devops_server_service.list_public_servers()` 用于 `business_name → server_id` 映射（内存缓存，零 DB IO）；`user_server_service.list_nodes(scope)` 用于 `list_latest` 普通用户分支（按 OwnershipScope 过滤）；`inspection_script_service.get_script_by_name(name)` 用于 records 表 `inspection_script_id` 反查。
+- **唯一落库入口 `save_inspection_result(report, *, schedule_id=None, run_id=None, created_by_user_id=None)`**：单事务（`async with db.acquire() as conn: async with conn.transaction():`）批量 INSERT `server_inspection_records ... RETURNING id` + UPSERT `server_latest_snapshot ... ON CONFLICT (server_id) DO UPDATE`；`collected_at` Python 端一次生成同事务内所有行共用；JSONB 字段用 `json.dumps(..., ensure_ascii=False, default=str)`；未注册业务名记 warning + 跳过不中断整体。
+- **查询 `list_latest(scope)`**：admin 透传全量 `devops_servers` LEFT JOIN snapshot；普通用户按 `user_server_nodes`（`node_type='server'`）过滤、按 `server_id` 去重（取 `sort_order,node_id` 字典序最小节点的名）、按 `sort_order,node_id` 排序。派生 `status`（pass→ok / warn,crit,success=False→err / skipped,unassessed,success=None,无快照→unknown）与 `metrics.cpu/mem/disk`（linux `100-cpu_idle_pct` / windows `cpu_used_pct`；根盘优先取 `disks[].disk_used_pct`：`/` linux / `C:\\` windows 大小写不敏感，无则取第一块）；响应**不含 ip**。
+- **查询 `list_records(server_id, scope, *, start=None, end=None, limit=100)`**：admin 仅校验 server 存在；普通用户需在可见节点集内；越权 → `None`（路由层 404，不回显 id）；limit 范围 1~1000，越界 → `ValueError`（路由层 400）。
+- **`resolve_collect_targets(server_ids, scope)`**：手动采集入口可见性 + 存在性校验；缺失 → `ServerInspectionNotFoundError`（404）；普通用户越权 → `ServerInspectionPermissionError`（403）；admin 全量放行；`server_ids` 去重保序。
+
+### lifespan 顺序插入（2026-08-05 新增）
+
+`ServerInspectionRecordService` 紧跟 `UserServerService` 之后、`TaskSchedulerService` 之前初始化（与 `ApiConfigService` 同级；不在 lifespan 强依赖链 DevOpsServerService→InspectionScriptService 内，但调用 `devops_server_service` / `user_server_service` / `inspection_script_service` 因此放在三个 service 都构造完的位置）。构造异常 → `app.state.server_inspection_record_service = None`（不调用 `set_instance`，无单例），清理阶段置 None。`TaskSchedulerService.__init__` 新增同名入参 `server_inspection_record_service`，由 lifespan 透传 `getattr(app.state, 'server_inspection_record_service', None)`；`execute_schedule` script 分支构造 `ScriptContext` 时一并透传（新增 `ScriptContext.server_inspection_record_service` 可选字段，未注入时脚本侧按 None 降级 fail-soft 跳过落库）。
+
+**强依赖（2026-08-05 新增）**：`ops_inspection_sweep.run()` 在 `run_server_ops(context)` 返回后 fail-soft 调 `record_service.save_inspection_result(report, schedule_id=context.schedule_id, run_id=context.run_id)`；`try/except` 吞掉异常仅记 `log_logger.exception`，不影响 docx / 邮件 / 摘要生成。
+
+**手动链路**：`POST /api/admin/server-inspection/collect`（router 层组合）合成 ScriptContext（`schedule_id=0, run_id=0, session_id="manual-collect-{uuid8}", schedule_name="manual-collect", trigger_type="manual", log_logger=模块 logger, devops_server_service=app.state.*`）→ `await run_server_ops(context, server_list=business_names)` → `save_inspection_result(report, created_by_user_id=scope.user_id)`；返回逐台响应（`server_id / business_name / success / inspection_status / duration_ms / error_message / field_results`）供前端就地刷新 UI。
+
+**前端合约（2026-08-05 新增）**：见 [frontend.md § OpsConsoleApp 去 mock 化 + 智能检测接 collect](#)。
+
+### 前端按需脚本详情 / 扫描说明（2026-08-03 新增）
+
 - **API 封装（`web/Agent/src/utils/api.js`，2026-08-03 新增；2026-08-04 扩展）**：
   - `fetchInspectionScripts()` → `GET /api/admin/inspection-scripts`（admin OR `task-scheduler.inspection-script-library` ACL；返白名单 7 字段）
   - `scanInspectionScripts()` → `POST /api/admin/inspection-scripts/scan`（admin only；返 `{scanned, inserted, updated, failed, skipped}` 5 字段）

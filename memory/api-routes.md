@@ -168,6 +168,14 @@
 - `updateInspectionScript(scriptId, payload)` → `PUT /api/admin/inspection-scripts/{scriptId}`（admin only）
 - `deleteInspectionScript(scriptId)` → `DELETE /api/admin/inspection-scripts/{scriptId}`（admin only；204 No Content）
 
+### `/api/admin/server-inspection`（`app/routers/server_inspection_router.py`，2026-08-05 新增）
+
+运维控制台（ops-console.html）数据源。三端点全部 `require_admin_or_menu_acl('task-scheduler.server-management')` + OwnershipScope 数据层过滤：
+
+- `GET /latest` → `ServerInspectionRecordService.list_latest(scope)`；admin 透传全量 `devops_servers`，普通用户按 `user_server_nodes`（`node_type='server'`）过滤、按 `server_id` 去重、按 `sort_order,node_id` 排序；每行 `status` 派生（pass→ok / warn,crit,success=False→err / skipped,unassessed,无快照→unknown）与 `metrics.cpu/mem/disk`（linux `100-cpu_idle_pct`、windows `cpu_used_pct`；根盘优先取 `disks[].disk_used_pct`：`/`（linux）/ `C:\\`（windows，大小写不敏感），无则取第一块，仍无 → `null`）；响应**不含 ip**（遵循脱敏约定）。
+- `GET /records?server_id=&start=&end=&limit=` → `ServerInspectionRecordService.list_records(server_id, scope, ...)`；admin 仅校验 server 存在；普通用户需在可见节点集内；越权 → `None` → 404（不回显 id）；limit 范围 1~1000（FastAPI Query 校验）；service ValueError → 400。
+- `POST /collect` body `{server_ids: [int...]}`（1~50 项）→ `resolve_collect_targets` 校验（缺失 → 404、越权 → 403）→ 合成 ScriptContext（`schedule_id=0, run_id=0, schedule_name='manual-collect', trigger_type='manual', log_logger=模块 logger, devops_server_service=app.state.*`）→ `await run_server_ops(context, server_list=business_names)` → `save_inspection_result(report, created_by_user_id=scope.user_id)`；返回 `{collected, items: [{server_id, business_name, success, inspection_status, duration_ms, error_message, field_results}]}`，供前端就地刷新 UI。
+
 ## 核心工具 (Core Tools)
 
 ### Sandbox 工具

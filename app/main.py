@@ -91,6 +91,9 @@ from app.routers.agent_permission_router import (
 from app.routers.log_router import (
     router as log_router,  # 2026-07-29 新增：统一审计日志管理端查询
 )
+from app.routers.server_inspection_router import (
+    router as server_inspection_router,  # 2026-08-05 新增：服务器采集落库与运维看板
+)
 
 
 app = create_app()
@@ -126,6 +129,7 @@ def register_routers(target_app=None):
     _app.include_router(script_admin_router)
     _app.include_router(api_config_router)
     _app.include_router(user_server_router)  # 2026-07-24 新增：用户服务器配置管理
+    _app.include_router(server_inspection_router)  # 2026-08-05 新增：服务器采集落库与运维看板
     _app.include_router(menu_permission_router)  # 2026-07-23 新增：菜单权限管理
     _app.include_router(agent_permission_router)  # 2026-07-24 新增：智能体访问权限管理
     _app.include_router(log_router)  # 2026-07-29 新增：统一审计日志管理端查询

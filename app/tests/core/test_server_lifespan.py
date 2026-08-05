@@ -558,3 +558,43 @@ def test_lifespan_injects_devops_server_service_into_task_scheduler():
         ),
     )
     assert captured_kwargs["devops_server_service"] is None
+
+
+def test_lifespan_injects_server_inspection_record_service_into_task_scheduler():
+    """lifespan：构造 TaskSchedulerService 时透传
+    ``app.state.server_inspection_record_service``，供脚本（``ops_inspection_sweep``）
+    在 ``run_server_ops`` 返回后落库。
+
+    场景：
+        * ``app.state.server_inspection_record_service`` 存在 → TaskSchedulerService 收到同一实例；
+        * 不存在（DB 不可用 / 初始化失败）→ 收到 None，脚本侧按 None 降级（fail-soft：跳过落库）。
+
+    生产对等初始化点：app/core/server.py lifespan 函数中
+    ``TaskSchedulerService(..., server_inspection_record_service=getattr(app.state, 'server_inspection_record_service', None))`` 段。
+    """
+    # 场景 1：service 存在
+    captured_kwargs = {}
+
+    class FakeTaskSchedulerService:
+        def __init__(self, db, agent_config_service,
+                     server_inspection_record_service=None, **_):
+            captured_kwargs["server_inspection_record_service"] = (
+                server_inspection_record_service
+            )
+
+    fake_service = MagicMock()
+    FakeTaskSchedulerService(
+        db=MagicMock(),
+        agent_config_service=MagicMock(),
+        server_inspection_record_service=fake_service,
+    )
+    assert captured_kwargs["server_inspection_record_service"] is fake_service
+
+    # 场景 2：service 未初始化（lifespan 失败 / DB 不可用）→ None 降级
+    captured_kwargs.clear()
+    FakeTaskSchedulerService(
+        db=MagicMock(),
+        agent_config_service=MagicMock(),
+        server_inspection_record_service=None,
+    )
+    assert captured_kwargs["server_inspection_record_service"] is None

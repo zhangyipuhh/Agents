@@ -459,6 +459,14 @@ user_server_nodes (node_type='server' 的行，每个用户导入时生成一行
 | `GET /api/admin/user-servers/nodes/{id}/config` | `require_admin_or_menu_acl('task-scheduler.server-management')` | ✅ | ✅ | ❌ 403 |
 | `POST /api/admin/user-servers/import` | `require_admin_or_menu_acl('task-scheduler.server-management')` | ✅ | ✅ | ❌ 403 |
 
+`app/routers/server_inspection_router.py`（2026-08-05 新增）端点授权契约：三端点全部 `require_admin_or_menu_acl('task-scheduler.server-management')` + OwnershipScope 数据层过滤（admin 透传全量 `devops_servers`，普通用户按 `user_server_nodes` 可见集）。`POST /collect` 额外逐 `server_id` 校验归属，越权 403 / 不存在 404。复用现有菜单 id `task-scheduler.server-management`，**不**新增菜单项。
+
+| 端点 | 守卫 | admin | 普通用户 + `task-scheduler.server-management` ACL | 普通用户 + 仅 `task-scheduler.scheduled` |
+|---|---|---|---|---|
+| `GET /api/admin/server-inspection/latest` | `require_admin_or_menu_acl('task-scheduler.server-management')` | ✅ | ✅（仅见自己节点关联的服务器） | ❌ 403 |
+| `GET /api/admin/server-inspection/records` | `require_admin_or_menu_acl('task-scheduler.server-management')` | ✅ | ✅（server_id 需在可见节点集） | ❌ 403 |
+| `POST /api/admin/server-inspection/collect` | `require_admin_or_menu_acl('task-scheduler.server-management')` | ✅ | ✅（采集目标需在可见节点集） | ❌ 403 |
+
 **2026-07-26 GET /tree 放宽为登录态**：跟随 2026-07-26 `GET /api/admin/scripts` 先例。`UserServerService.list_nodes` 已按 `OwnershipScope` 过滤，普通用户仅见自己的节点；server 节点附带 `business_name` / `server_type`（由 `source_devops_server_id` 关联 devops_servers，内存 join 零 DB IO），供「编辑任务」表单 server_list 候选直接复用——无需前端再 join 公开 devops 列表。写端点 ACL 不变，避免普通用户误删或误改共享资源。
 
 **为什么 GET 列表端点放开**：admin 通过「用户服务器配置管理」授权该 ACL 后，授权用户需读取 devops_servers 库（脱敏列表）来填充 ImportServerDialog 的可选项；放开 GET 列表端点是该 UX 闭环的必备前提。scan / detail / delete 保持 admin-only，避免普通用户误删或误改共享资源。

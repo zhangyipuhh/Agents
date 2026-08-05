@@ -28,7 +28,8 @@ import OpsDetailWindow from './OpsDetailWindow.vue'
 import OpsLogManager from './OpsLogManager.vue'
 import OpsLogViewer from './OpsLogViewer.vue'
 import OpsDockBar from './OpsDockBar.vue'
-import { servers, logFolders } from '../../data/ops-console/mockData.js'
+import { logFolders } from '../../data/ops-console/mockData.js'
+import { fetchServerInspectionLatest } from '../../utils/api.js'
 
 const currentTime = ref('')
 const searchKey = ref('')
@@ -44,13 +45,74 @@ const activeFolder = ref(0)
 const logFile = ref(null)
 const detailRef = ref(null)
 
+// 2026-08-05：servers 由后端 /api/admin/server-inspection/latest 提供
+// （按当前用户 OwnershipScope 过滤），不再用 mockData。
+const servers = ref([])
+const serversLoadError = ref('')
+
+/**
+ * 把后端 ``/latest`` 响应映射为前端 ``ServerItem`` 形状：
+ *   - ``id = server_id``，``nodeId = node_id``
+ *   - ``name = node_name || business_name``
+ *   - ``status`` 直用后端三态（ok / err / unknown）
+ *   - ``cpu / mem / disk`` 取 ``metrics``；``null`` → 显示 ``-``
+ *   - ``disks`` 由 ``parsed_values.disks`` 映射（mount → name，disk_used_pct → used）
+ *   - ``os / cpuModel / memTotal / diskTotal / netIn`` 本期未采集 → ``-``
+ *   - ``ip`` 不返（遵循脱敏约定）→ ``-``
+ *
+ * @param {Object} item 后端返回的快照行
+ * @returns {Object} 前端 ServerItem
+ */
+function mapSnapshotToServer(item) {
+  const pv = (item && item.parsed_values) || {}
+  const disks = Array.isArray(pv.disks) ? pv.disks : []
+  return {
+    id: item.server_id,
+    nodeId: item.node_id,
+    name: item.node_name || item.business_name || '-',
+    ip: '-',                // 不返 ip（运维脱敏约定）
+    os: '-',                // 本期未采集
+    status: item.status || 'unknown',
+    cpu: item.metrics?.cpu ?? null,
+    mem: item.metrics?.mem ?? null,
+    disk: item.metrics?.disk ?? null,
+    cpuModel: '-',
+    memTotal: '-',
+    diskTotal: '-',
+    netIn: '-',
+    uptime: pv.uptime_hours != null ? `${pv.uptime_hours} 小时` : '-',
+    disks: disks.map(d => ({
+      name: d.mount || '-',
+      used: d.disk_used_pct ?? null,
+      total: '-',
+    })),
+    collectedAt: item.collected_at || null,
+    errorMessage: item.error_message || null,
+  }
+}
+
+/** 异步加载每服务器最新采集快照。失败时 ``serversLoadError`` 记录原因，servers 保持空数组。 */
+async function loadLatest() {
+  serversLoadError.value = ''
+  try {
+    const resp = await fetchServerInspectionLatest()
+    servers.value = (resp.items || []).map(mapSnapshotToServer)
+  } catch (err) {
+    serversLoadError.value = (err && err.message) || '加载失败'
+    servers.value = []
+  }
+}
+
 /** 正常运行的服务器数量（驱动 ServerWindow 状态显示） */
-const onlineCount = computed(() => servers.filter(s => s.status === 'ok').length)
+const onlineCount = computed(() => servers.value.filter(s => s.status === 'ok').length)
 /** 按 searchKey 过滤后的服务器列表（按名称 / IP 不区分大小写匹配） */
 const filteredServers = computed(() => {
   const k = searchKey.value.trim().toLowerCase()
-  if (!k) return servers
-  return servers.filter(s => s.name.toLowerCase().includes(k) || s.ip.includes(k))
+  if (!k) return servers.value
+  return servers.value.filter(s =>
+    (s.name || '').toLowerCase().includes(k) ||
+    (s.ip || '').includes(k)
+  )
 })
 
 /** 1s 定时器：刷新顶部菜单栏时间，格式 "YYYY年MM月DD日 HH:MM:SS" */
@@ -193,7 +255,11 @@ function genLogContent(name) {
   return rows
 }
 
-onMounted(() => { tick(); setInterval(tick, 1000) })
+onMounted(() => {
+  tick()
+  setInterval(tick, 1000)
+  loadLatest()
+})
 </script>
 
 <template>
@@ -214,7 +280,8 @@ onMounted(() => { tick(); setInterval(tick, 1000) })
     @close="detailServer = null"
     @max="toggleMax('detail')"
     @front="bringFront('detail')"
-    @drag="startDrag($event, 'detail')" />
+    @drag="startDrag($event, 'detail')"
+    @collected="loadLatest" />
 
   <OpsLogManager v-if="wins.logs.open"
     :win="wins.logs" :folders="logFolders"

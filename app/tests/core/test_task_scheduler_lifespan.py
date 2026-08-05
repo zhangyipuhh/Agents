@@ -45,6 +45,41 @@ def test_lifespan_initializes_email_before_task_scheduler():
     )
 
 
+def test_lifespan_initializes_server_inspection_record_before_task_scheduler():
+    """测试 lifespan 源码顺序：ServerInspectionRecordService 必须在 TaskSchedulerService
+    之前初始化（与 ApiConfigService / UserServerService 同级）。
+
+    原因（2026-08-05 新增）：脚本侧 ``ops_inspection_sweep`` 在 ``run_server_ops``
+    返回后调用 ``context.server_inspection_record_service.save_inspection_result`` 落库；
+    若 lifespan 中初始化顺序错误（晚于 TaskSchedulerService），TaskSchedulerService
+    构造时 ``getattr(app.state, 'server_inspection_record_service', None)`` 拿到 None
+    并永久缓存到 ``self._server_inspection_record_service``，脚本侧走 None 降级
+    跳过落库，看板数据永远停留在上次手动采集。
+    """
+    from app.core.server import lifespan
+
+    source = inspect.getsource(lifespan)
+    # ServerInspectionRecordService 初始化行（2026-08-05 新增）
+    sir_init_index = source.index(
+        "app.state.server_inspection_record_service = ServerInspectionRecordService("
+    )
+    scheduler_init_index = source.index(
+        "app.state.task_scheduler_service = TaskSchedulerService("
+    )
+
+    assert sir_init_index < scheduler_init_index, (
+        "lifespan 中 ServerInspectionRecordService 必须在 TaskSchedulerService 之前初始化，"
+        "否则脚本侧落库入口被永久缓存为 None。"
+    )
+    # 必须通过 getattr 注入到 TaskSchedulerService 构造参数
+    assert (
+        "server_inspection_record_service=getattr(" in source
+    ), (
+        "lifespan 中必须通过 server_inspection_record_service=getattr(app.state, ...) "
+        "将已初始化的 ServerInspectionRecordService 注入 TaskSchedulerService。"
+    )
+
+
 def test_lifespan_initializes_devops_server_before_task_scheduler():
     """测试 lifespan 源码顺序: DevOpsServerService 必须在 TaskSchedulerService 之前初始化。
 

@@ -265,6 +265,32 @@ def _init_agent_permission_service(app):
 
 
 @pytest.fixture(autouse=True)
+def _init_server_inspection_record_service(app):
+    """初始化 app.state.server_inspection_record_service 供 server_inspection_router 使用。
+
+    生产对应初始化点：``app/core/server.py::lifespan`` 中
+    ``ServerInspectionRecordService(db=DatabasePool._pool, devops_server_service=...,
+    user_server_service=..., inspection_script_service=...)`` 创建并挂到
+    ``app.state.server_inspection_record_service``。该 service 无内存缓存需求，
+    无 ``preload_all``。
+
+    测试环境注入真实 ServerInspectionRecordService 实例（db=None 是合法
+    stub：service 对 db=None 优雅降级，读返回空、写抛 RuntimeError）；
+    单测可通过 monkeypatch 或 instance 方法替换行为。禁止注入
+    ``app.state.db = MagicMock()`` 这类生产不存在的对象。
+    """
+    from app.shared.utils.server_inspection_record_service import (
+        ServerInspectionRecordService,
+    )
+    app.state.server_inspection_record_service = ServerInspectionRecordService(
+        db=None,
+        devops_server_service=None,
+        user_server_service=None,
+        inspection_script_service=None,
+    )
+
+
+@pytest.fixture(autouse=True)
 def _mock_user_db_for_admin_auth(monkeypatch):
     """Mock UserDB.get_user_by_username 根据 username 返回对应 role 用户。
 

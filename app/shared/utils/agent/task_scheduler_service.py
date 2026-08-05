@@ -56,6 +56,10 @@ class TaskSchedulerService:
         devops_server_service: 可选 DevOpsServerService 实例，注入 ``ScriptContext``
             供脚本通过 ``app.scripts.server_ops.run_server_ops`` 执行
             ``server_list`` 巡检。
+        server_inspection_record_service: 可选 ServerInspectionRecordService
+            实例，注入 ``ScriptContext`` 供脚本（尤其是 ``ops_inspection_sweep``）
+            在 ``run_server_ops`` 返回后调用 ``save_inspection_result`` 落库。
+            未注入时脚本侧按 ``None`` 降级（fail-soft：跳过落库，不影响报告生成）。
     """
 
     def __init__(
@@ -68,6 +72,7 @@ class TaskSchedulerService:
         email_config_service: Optional[Any] = None,
         api_config_service: Optional[Any] = None,
         devops_server_service: Optional[Any] = None,
+        server_inspection_record_service: Optional[Any] = None,
     ) -> None:
         """初始化定时任务服务。
 
@@ -95,6 +100,7 @@ class TaskSchedulerService:
         self._email_config_service = email_config_service
         self._api_config_service = api_config_service
         self._devops_server_service = devops_server_service
+        self._server_inspection_record_service = server_inspection_record_service
 
     @staticmethod
     def _job_id(schedule_id: int) -> str:
@@ -749,6 +755,7 @@ class TaskSchedulerService:
                         trigger_type=trigger_type,
                         api_config_service=self._api_config_service,
                         devops_server_service=self._devops_server_service,
+                        server_inspection_record_service=self._server_inspection_record_service,
                     )
                     script_output_raw = await registered.func(context)
                     # 把脚本返回值归一化为 (body, attachments_list)

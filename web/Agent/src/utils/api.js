@@ -3337,3 +3337,93 @@ export async function importDevopsServers(parentId, businessNames) {
   }
   return response.json()
 }
+
+
+// ============================================================================
+// 服务器采集落库与运维控制台（2026-08-05 新增）
+// 对应后端 /api/admin/server-inspection/* 端点
+// ============================================================================
+
+
+/**
+ * 获取运维控制台首页数据：每台可见服务器的最新采集快照（按 OwnershipScope 过滤）。
+ *
+ * 调用 GET /api/admin/server-inspection/latest。
+ *
+ * @returns {Promise<{items: Array<{
+ *   node_id: number|null, node_name: string,
+ *   server_id: number, business_name: string, server_type: string,
+ *   status: 'ok'|'err'|'unknown',
+ *   inspection_status: string|null,
+ *   collected_at: string|null, duration_ms: number|null,
+ *   metrics: {cpu: number|null, mem: number|null, disk: number|null},
+ *   disks: Array<{mount: string, disk_used_pct: number}>,
+ *   parsed_values: object, error_message: string|null
+ * }>}>}
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function fetchServerInspectionLatest() {
+  const response = await fetchWithAuth('/api/admin/server-inspection/latest', { method: 'GET' })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取服务器采集最新状态失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+
+/**
+ * 获取单台服务器的采集历史记录（按 collected_at DESC）。
+ *
+ * 调用 GET /api/admin/server-inspection/records。
+ *
+ * @param {number} serverId - devops_servers.id
+ * @param {Object} [options] - 查询参数
+ * @param {string} [options.start] - 起始时间 ISO 字符串（含）
+ * @param {string} [options.end] - 截止时间 ISO 字符串（含）
+ * @param {number} [options.limit] - 最大返回条数（1~1000，默认 100）
+ * @returns {Promise<{items: Array<object>}>}
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function fetchServerInspectionRecords(serverId, options = {}) {
+  const params = new URLSearchParams()
+  params.set('server_id', String(serverId))
+  if (options.start) params.set('start', options.start)
+  if (options.end) params.set('end', options.end)
+  if (options.limit) params.set('limit', String(options.limit))
+  const url = `/api/admin/server-inspection/records?${params.toString()}`
+  const response = await fetchWithAuth(url, { method: 'GET' })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取采集历史失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+
+/**
+ * 手动触发采集并落库（合成与定时任务同款 ScriptContext，复用 run_server_ops）。
+ *
+ * 调用 POST /api/admin/server-inspection/collect。
+ *
+ * @param {number[]} serverIds - 待采集的 devops_servers.id 列表（1~50 项）
+ * @returns {Promise<{collected: number, items: Array<{
+ *   server_id: number|null, business_name: string,
+ *   success: boolean|null, inspection_status: string,
+ *   duration_ms: number|null, error_message: string|null,
+ *   field_results: Array<object>
+ * }>}>}
+ * @throws {Error} 请求失败时抛出错误（404=目标不存在；403=归属越权）
+ */
+export async function collectServerInspection(serverIds) {
+  const response = await fetchWithAuth('/api/admin/server-inspection/collect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ server_ids: serverIds }),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `手动采集失败: ${response.status}`)
+  }
+  return response.json()
+}

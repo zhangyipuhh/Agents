@@ -166,6 +166,25 @@ async def run(context: ScriptContext) -> "ScriptResult":
     server_ops_report = await run_server_ops(context)
     _log_server_ops_detail(server_ops_report, context.log_logger)
 
+    # 落库采集结果（fail-soft：异常仅记日志，不影响后续 docx / 邮件生成）。
+    # ServerInspectionRecordService 由 lifespan 注入到 ScriptContext；
+    # 未注入（DB 未就绪 / 内存模式）→ 跳过落库，按 None 降级。
+    record_service = getattr(context, "server_inspection_record_service", None)
+    if record_service is not None and server_ops_report.items:
+        try:
+            saved = await record_service.save_inspection_result(
+                server_ops_report,
+                schedule_id=context.schedule_id,
+                run_id=context.run_id,
+            )
+            context.log_logger.info(
+                "server_ops: 落库采集记录 %d 条", saved,
+            )
+        except Exception as save_exc:  # pragma: no cover - fail-soft 边界
+            context.log_logger.exception(
+                "server_ops: 采集结果落库失败(不影响报告生成): %s", save_exc,
+            )
+
     api_report = await run_api_checks(context)
     _log_api_check_detail(api_report, context.log_logger)
 

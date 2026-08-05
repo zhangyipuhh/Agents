@@ -3251,3 +3251,55 @@ CREATE TABLE IF NOT EXISTS user_server_configs (
     created_at   TIMESTAMPTZ DEFAULT NOW(),
     updated_at   TIMESTAMPTZ DEFAULT NOW()
 );
+
+
+-- ========== 16. server_inspection_records / server_latest_snapshot（2026-08-05 新增：服务器采集落库）==========
+-- 描述：
+--   定时采集与手动采集落库（history + snapshot 双表同事务）。
+--   - server_inspection_records：append-only 历史表，按物理服务器维度追加；
+--   - server_latest_snapshot：每台服务器一行最新快照，供运维控制台看板查询；
+--   - devops_servers 删除时通过 ON DELETE CASCADE 自动清理（历史随物理资源走）；
+--   - 数据按物理服务器归属，多用户共享同一份采集数据（指标是服务器事实）。
+
+CREATE TABLE IF NOT EXISTS server_inspection_records (
+    id                   BIGSERIAL PRIMARY KEY,
+    server_id            INTEGER      NOT NULL REFERENCES devops_servers(id) ON DELETE CASCADE,
+    business_name        VARCHAR(200) NOT NULL,
+    collected_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    schedule_id          INTEGER      NULL REFERENCES agent_task_schedules(id) ON DELETE SET NULL,
+    run_id               INTEGER      NULL REFERENCES agent_task_runs(id)      ON DELETE SET NULL,
+    inspection_script_id INTEGER      NULL REFERENCES inspection_scripts(id)   ON DELETE SET NULL,
+    created_by_user_id   INTEGER      NULL REFERENCES users(id)                ON DELETE SET NULL,
+    success              BOOLEAN      NULL,
+    skipped              BOOLEAN      NOT NULL DEFAULT FALSE,
+    exit_code            INTEGER      NULL,
+    duration_ms          INTEGER      NULL,
+    inspection_status    VARCHAR(16)  NOT NULL DEFAULT 'unassessed',
+    error_message        TEXT         NULL,
+    inspection_error     TEXT         NULL,
+    parsed_values        JSONB        NULL,
+    field_results        JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    created_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    CONSTRAINT server_inspection_records_status_chk
+        CHECK (inspection_status IN ('pass','warn','crit','unassessed','skipped'))
+);
+CREATE INDEX IF NOT EXISTS idx_sir_server_time
+    ON server_inspection_records (server_id, collected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sir_collected_at
+    ON server_inspection_records (collected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sir_run_id
+    ON server_inspection_records (run_id);
+
+CREATE TABLE IF NOT EXISTS server_latest_snapshot (
+    server_id         INTEGER      PRIMARY KEY REFERENCES devops_servers(id) ON DELETE CASCADE,
+    record_id         BIGINT       NOT NULL REFERENCES server_inspection_records(id) ON DELETE CASCADE,
+    business_name     VARCHAR(200) NOT NULL,
+    collected_at      TIMESTAMPTZ  NOT NULL,
+    success           BOOLEAN      NULL,
+    inspection_status VARCHAR(16)  NOT NULL,
+    duration_ms       INTEGER      NULL,
+    error_message     TEXT         NULL,
+    parsed_values     JSONB        NULL,
+    field_results     JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    updated_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);

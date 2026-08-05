@@ -123,6 +123,29 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 
 **数据源**：`InspectionScriptService.scan_and_upsert` 读取 `<项目根>/data/devops/inspection_scripts.yaml` → `INSERT ... ON CONFLICT (name) DO UPDATE ... RETURNING *, (xmax = 0) AS inserted`；2026-08-04 改造为「编辑优先」：DB 中已有 `name` 时**跳过**更新，保留人工编辑；同 name 重复（YAML 内）直接拒绝（不覆盖）；`scanned / inserted / updated / failed / skipped` 5 字段整数返回。
 
+### 服务器采集落库表（2026-08-05 新增）
+
+`server_inspection_records`（append-only 历史表）+ `server_latest_snapshot`（每服务器一行快照，双表同事务双写）：
+
+| 表 | 列 / 类型 / 必填 / 说明 |
+|---|---|---|
+| `server_inspection_records` | `id BIGSERIAL PK` / `server_id INTEGER NOT NULL REFERENCES devops_servers(id) ON DELETE CASCADE` / `business_name VARCHAR(200) NOT NULL`（冗余快照） / `collected_at TIMESTAMPTZ NOT NULL DEFAULT now()` / `schedule_id INTEGER NULL REFERENCES agent_task_schedules(id) ON DELETE SET NULL` / `run_id INTEGER NULL REFERENCES agent_task_runs(id) ON DELETE SET NULL` / `inspection_script_id INTEGER NULL REFERENCES inspection_scripts(id) ON DELETE SET NULL` / `created_by_user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL`（手动采集审计） / `success BOOLEAN NULL` / `skipped BOOLEAN NOT NULL DEFAULT FALSE` / `exit_code INTEGER NULL` / `duration_ms INTEGER NULL` / `inspection_status VARCHAR(16) NOT NULL DEFAULT 'unassessed'`（CHECK：`pass / warn / crit / unassessed / skipped`） / `error_message TEXT NULL` / `inspection_error TEXT NULL` / `parsed_values JSONB NULL` / `field_results JSONB NOT NULL DEFAULT '[]'::jsonb` / `created_at TIMESTAMPTZ NOT NULL DEFAULT now()` |
+| `server_latest_snapshot` | `server_id INTEGER PK FK→devops_servers ON DELETE CASCADE` / `record_id BIGINT NOT NULL FK→server_inspection_records ON DELETE CASCADE` / `business_name / collected_at / success / inspection_status / duration_ms / error_message / parsed_values / field_results`（冗余列） / `updated_at TIMESTAMPTZ` |
+
+索引：`idx_sir_server_time(server_id, collected_at DESC)` / `idx_sir_collected_at(collected_at DESC)` / `idx_sir_run_id(run_id)`。
+
+**数据归属**：`server_id` 指向 `devops_servers.id`（按物理服务器）；多用户共享同一份采集数据（指标是服务器事实，不随用户变）；手动采集触发的写入 `created_by_user_id` 供审计，定时采集为 `NULL`。
+
+**双写契约（生产唯一落库入口）**：`app/shared/utils/server_inspection_record_service.py::ServerInspectionRecordService.save_inspection_result` 在单事务（`async with self._db.acquire() as conn: async with conn.transaction():`）内 `INSERT records ... RETURNING id` → `INSERT snapshot ... ON CONFLICT (server_id) DO UPDATE`（与 `InspectionScriptService.delete_script` 同款事务模式，杜绝历史与快照不一致）。
+
+**写入链路**：
+* 定时：`ops_inspection_sweep` 在 `run_server_ops(context)` 返回后 fail-soft 调 `save_inspection_result(report, schedule_id=..., run_id=...)`（异常仅记日志，不影响 docx/邮件）；
+* 手动：`POST /api/admin/server-inspection/collect`（路由层组合，合成 ScriptContext → `run_server_ops` → `save_inspection_result(report, created_by_user_id=scope.user_id)`）。
+
+**查询 API**：
+* `list_latest(scope)` — admin 透传全量 `devops_servers` LEFT JOIN snapshot；普通用户按 `user_server_nodes`（`node_type='server'`）过滤、按 `server_id` 去重、按 `sort_order,node_id` 排序；service 层派生 `status`（pass→ok / warn,crit,success=False→err / skipped,unassessed,无快照→unknown）与 `metrics.cpu/mem/disk`（linux `100-cpu_idle_pct`、windows `cpu_used_pct`；根盘优先取 `disks[].disk_used_pct`：`/`（linux）/ `C:\\`（windows，大小写不敏感），无则取第一块，仍无 → `null`）；响应**不含 ip**（遵循脱敏约定）。
+* `list_records(server_id, scope, start=None, end=None, limit=100)` — admin 仅校验 server 存在；普通用户需在可见节点集内；越权 → `None`（路由层 404，不回显 id）。
+
 ### `devops_servers` 巡检脚本外键改造（2026-08-03）
 
 - 旧三列 `inspection_script TEXT` / `inspection_parser VARCHAR(16)` / `inspection_fields JSONB`（含对应 CHECK 约束 `devops_servers_inspection_parser_chk`）已通过 `DROP COLUMN IF EXISTS` / `DROP CONSTRAINT IF EXISTS` 强制移除（不再保留旧三列向前兼容）

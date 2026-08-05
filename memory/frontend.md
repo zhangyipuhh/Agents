@@ -52,8 +52,8 @@
   - `OpsLogManager.vue`：日志管理窗口（左侧文件夹 + 右侧文件列表）
   - `OpsLogViewer.vue`：日志查看窗口（终端风格日志内容）
   - `OpsDockBar.vue`：底部 Dock 栏（毛玻璃 + 三个图标入口：服务器/日志/一键智能检测）
-  - `OpsServerIcon.vue`：公共服务器图标（被 ServerWindow / DetailWindow 共用）
-  - 数据：当前为 `src/data/ops-console/mockData.js` 静态 mock（6 台样例服务器 + 4 类日志文件夹），后续 PR 接入真实 `/api/admin/devops-servers` + 日志接口；**不**走 `src/utils/api.js`（独立桌面，不依赖主 Agent 业务）
+  - `OpsServerIcon.vue`：公共服务器图标（被 ServerWindow / DetailWindow 共用）；2026-08-05 新增 `unknown` 灰色 LED 态（从未采集 / 无快照 / 采集跳过），与 `ok` 绿、`err` 红共三态
+  - 数据：2026-08-05 起 `servers` 改为从 `GET /api/admin/server-inspection/latest` 拉取（按当前用户 `OwnershipScope` 过滤：admin 透传全量 `devops_servers`，普通用户按 `user_server_nodes` 可见集去重；响应**不含 ip**），`logFolders` 仍为 `src/data/ops-console/mockData.js` 静态 mock（日志接口未落地）；**不**走 `src/utils/api.js` 之外的 axios 封装（独立桌面，不依赖主 Agent 业务）
   - 跳转：Sidebar.vue `handleMenuClick('ops-console')` 通过 `window.open('/ops-console.html', '_blank', 'noopener')` 在浏览器新 Tab 节点打开（等同 `target="_blank"`，不走弹窗窗口；2026-08-05 改造）；不注册 menu（用户级入口，非管理 Tab）；知识库入口采用相同的「无 features 新 Tab」行为保持一致
 - **聊天**：`ChatArea.vue`、`InputBox.vue`、`MessageBubble.vue`、`SkillTags.vue`、`HumanApprovalBox.vue`、`TopBar.vue`
   - `ChatArea.vue`（2026-07-01 新增，2026-07-02 修正头部 sticky + 改为撑满主区宽度与贴顶，2026-07-02 二次修正 header 内部居中，2026-07-02 三次修复滚动按钮「跳一下又回到原位」竞态）：顶部显示会话名称（`sessionName`）与绿色文件夹图标按钮；头部使用 `position: sticky` 固定在聊天区域顶部，不随消息滚动；header **外层** `.chat-area-header` 撑满主区宽度（背景色铺满两侧），**内层** `.chat-area-header-inner` 与下方 `.messages-container` 一致采用 `max-width: 900px + margin: 0 auto + padding: 0 40px` 居中布局，实现"外层连接两侧 + 内容向中间靠拢与聊天区对齐"；紧贴主区顶部（去掉 chat-area 顶 padding、改为 header 外层 padding: 8px 0），与左侧 sidebar-logo 形成水平对齐节奏；点击图标 emit `open-session-file-drawer` 事件，由 `App.vue` 打开右侧会话文件抽屉
@@ -97,6 +97,13 @@
   - `fetchInspectionScripts()` / `scanInspectionScripts()` / `fetchInspectionScriptDetail(scriptId)`
   - `updateInspectionScript(scriptId, payload)` → `PUT /api/admin/inspection-scripts/{scriptId}`（admin only）
   - `deleteInspectionScript(scriptId)` → `DELETE /api/admin/inspection-scripts/{scriptId}`（admin only；204 No Content）
+- **运维控制台去 mock 化 + 智能检测接 collect（2026-08-05 新增）**：
+  - `OpsConsoleApp.vue`：`servers` 由 `src/data/ops-console/mockData.js` 静态 import 改为 `ref([])` + `onMounted` 调 `fetchServerInspectionLatest()` 加载；新增 `loadLatest()` 与 `mapSnapshotToServer()` 映射函数：后端 `node_name || business_name` → 前端 `name`；`metrics.cpu/mem/disk` 直传（`null` 显示 `-`）；`disks` 由 `parsed_values.disks` 映射（mount → name，disk_used_pct → used，total 留 `-`）；`os/cpuModel/memTotal/diskTotal/netIn` 本期未采集 → `-`；`ip` 不返 → `-`；`collectedAt` / `errorMessage` 透传。加载失败时 `serversLoadError` 记录原因，servers 保持空数组。
+  - `OpsDetailWindow.vue` `runDetect()`（2026-08-05 改造）：原 6 步假动画改为调 `collectServerInspection([server.id])` 触发真实采集+落库，面板输出真实结果（`success / inspection_status / duration_ms / error_message / 逐字段 field_results`），完成后 `emit('collected')`；`OpsConsoleApp` 监听 `collected` 重新调 `loadLatest` 刷新列表；metric 值 `null` 时显示 `-` + 进度条灰底。
+  - 前端 API 封装新增：
+    - `fetchServerInspectionLatest()` → `GET /api/admin/server-inspection/latest`（admin OR `task-scheduler.server-management` ACL；OwnershipScope 由后端按当前用户过滤）
+    - `fetchServerInspectionRecords(serverId, {start, end, limit})` → `GET /api/admin/server-inspection/records`
+    - `collectServerInspection(serverIds)` → `POST /api/admin/server-inspection/collect`（404=目标不存在；403=归属越权；response `{collected, items: [{server_id, business_name, success, inspection_status, duration_ms, error_message, field_results}]}`）
 - **Subagent 折叠与抽屉**：
   - `SubAgentCard.vue`：通用子智能体折叠卡片（含沙箱），挂在父 AI 气泡的 `timeline.tool` 块内（按 toolCallId 匹配，遵循事件流时序）；工具图标 + 父 prompt 预览 + 状态徽章 + 耗时 + 消息数 + "查看详情" 入口；点击 emit('click', subAgent)
   - `SubAgentDrawer.vue`：通用子智能体详情 Push Drawer；分层展示父 prompt / HumanMessage / AIMessage（含 tool_calls 决策区） / ToolMessage 三类消息 + 底部耗时/消息数/工具调用次数摘要；`renderMessageContent` 扩展支持 LangChain 0.3+ 多模态 ContentBlock（text / thinking / tool_use / tool_result）

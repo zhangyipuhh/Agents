@@ -580,6 +580,41 @@ async def lifespan(app: FastAPI):
                     "[lifespan] Database pool not available, UserServerService not initialized"
                 )
 
+            # 2026-08-05 新增：初始化 ServerInspectionRecordService（服务器采集落库服务）
+            # 依赖：DB 池；devops_server_service / inspection_script_service（写入时反查 id）；
+            #       user_server_service（list_latest 普通用户分支按 OwnershipScope 过滤）。
+            # 顺序约束：在 TaskSchedulerService 之前（同 ApiConfigService / UserServerService）。
+            # 无内存缓存需求：save / read 均直查 DB，构造后无需 preload。
+            if DatabasePool.is_enabled() and DatabasePool._pool is not None:
+                try:
+                    from app.shared.utils.server_inspection_record_service import (
+                        ServerInspectionRecordService,
+                    )
+
+                    app.state.server_inspection_record_service = ServerInspectionRecordService(
+                        db=DatabasePool._pool,
+                        devops_server_service=getattr(
+                            app.state, "devops_server_service", None
+                        ),
+                        user_server_service=getattr(
+                            app.state, "user_server_service", None
+                        ),
+                        inspection_script_service=getattr(
+                            app.state, "inspection_script_service", None
+                        ),
+                    )
+                    logging.info("[lifespan] ServerInspectionRecordService initialized")
+                except Exception as sir_exc:
+                    logging.warning(
+                        "[lifespan] Failed to initialize ServerInspectionRecordService: %s",
+                        type(sir_exc).__name__,
+                    )
+                    app.state.server_inspection_record_service = None
+            else:
+                logging.warning(
+                    "[lifespan] Database pool not available, ServerInspectionRecordService not initialized"
+                )
+
             # 初始化智能体定时任务服务：数据库为任务定义真相源，应用内调度器负责触发。
             # 顺序要求：必须晚于 AgentConfigService 依赖注入与缓存预加载，确保执行时可复用 build_agent_instance。
             # 2026-07-22 强化:同时必须晚于 DevOpsServerService 与 ApiConfigService 初始化,否则
@@ -621,6 +656,9 @@ async def lifespan(app: FastAPI):
                         ),
                         devops_server_service=getattr(
                             app.state, "devops_server_service", None
+                        ),
+                        server_inspection_record_service=getattr(
+                            app.state, "server_inspection_record_service", None
                         ),
                     )
                     await app.state.task_scheduler_service.preload_all()
@@ -781,6 +819,17 @@ async def lifespan(app: FastAPI):
     except Exception as cleanup_exc:
         logging.warning(
             "[lifespan] Failed to cleanup ScriptDiscoveryService: %s",
+            type(cleanup_exc).__name__,
+        )
+
+    # 2026-08-05 新增：清理 ServerInspectionRecordService 引用（无内存缓存，仅置空）
+    try:
+        if hasattr(app.state, "server_inspection_record_service"):
+            app.state.server_inspection_record_service = None
+        logging.info("[lifespan] ServerInspectionRecordService reference cleared")
+    except Exception as cleanup_exc:
+        logging.warning(
+            "[lifespan] Failed to cleanup ServerInspectionRecordService: %s",
             type(cleanup_exc).__name__,
         )
 

@@ -56,6 +56,12 @@ class ScriptContext(BaseModel):
             脚本声明 ``server_list`` 参数时通过 ``app.scripts.server_ops.run_server_ops``
             消费，对每台服务器执行预存的 ``inspection_script`` 巡检脚本。DB 未就绪
             或未注入时为 ``None``。
+        server_inspection_record_service: 可选 ServerInspectionRecordService
+            实例，由调度器注入；脚本在 ``run_server_ops`` 返回后可调用
+            ``save_inspection_result`` 把采集结果持久化到
+            ``server_inspection_records`` 历史表与 ``server_latest_snapshot``
+            快照表，供运维控制台（ops-console）展示。未注入时按 ``None`` 降级
+            处理（脚本侧 fail-soft：跳过落库，不影响其他输出）。
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -77,6 +83,10 @@ class ScriptContext(BaseModel):
     )
     devops_server_service: Any = Field(
         default=None, description="可选 DevOpsServerService 实例，由调度器注入"
+    )
+    server_inspection_record_service: Any = Field(
+        default=None,
+        description="可选 ServerInspectionRecordService 实例，由调度器注入；脚本侧调用 save_inspection_result 落库",
     )
 
 
