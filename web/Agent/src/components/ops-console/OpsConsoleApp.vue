@@ -110,6 +110,7 @@ function detectAll() {
 /**
  * 启动窗口拖拽：mousedown 记录偏移，mousemove 实时更新 x/y，mouseup 清理监听
  * - 最大化时禁止拖拽
+ * - 拖拽过程中限制窗口四边边界，防止标题栏被顶部菜单栏压盖或窗口完全滑出可视区域
  * @param {MouseEvent} e 鼠标按下事件
  * @param {string} name 窗口名
  * @returns {void}
@@ -117,8 +118,30 @@ function detectAll() {
 function startDrag(e, name) {
   const w = wins.value[name]
   if (w.max) return   // 最大化时禁止拖动
-  const sx = e.clientX - w.x, sy = e.clientY - w.y
-  const move = ev => { w.x = ev.clientX - sx; w.y = ev.clientY - sy }
+
+  // 通过标题栏找到对应窗口 DOM，动态获取当前窗口尺寸，避免硬编码各窗口 width/height
+  const el = e.currentTarget && e.currentTarget.closest('.win')
+  const rect = el ? el.getBoundingClientRect() : { width: 0, height: 0 }
+  const vw = document.documentElement.clientWidth
+  const vh = document.documentElement.clientHeight
+
+  // 顶部菜单栏高度，窗口顶部不得低于菜单栏底部，确保标题栏始终可见可拖
+  const MENU_BAR_HEIGHT = 28
+  // 窗口边缘至少保留多少像素可见，方便用户从边缘重新拖回
+  const MIN_VISIBLE = 60
+
+  const minX = MIN_VISIBLE - rect.width
+  const maxX = vw - MIN_VISIBLE
+  const minY = MENU_BAR_HEIGHT
+  const maxY = vh - MIN_VISIBLE
+
+  const sx = e.clientX - w.x
+  const sy = e.clientY - w.y
+
+  const move = ev => {
+    w.x = Math.min(Math.max(ev.clientX - sx, minX), maxX)
+    w.y = Math.min(Math.max(ev.clientY - sy, minY), maxY)
+  }
   const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
   window.addEventListener('mousemove', move)
   window.addEventListener('mouseup', up)

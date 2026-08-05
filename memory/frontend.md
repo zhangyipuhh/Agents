@@ -45,8 +45,8 @@
 - **根组件**：`App.vue`（主）、`KnowledgeApp.vue`（知识库）、`PortalApp.vue`（门户）、`KnowledgePage.vue`（旧版，被 `KnowledgeApp.vue` 替代，仍保留以兼容旧引用）
 - **登录入口**：`login.html` + `src/login-main.js`（独立 Vite 入口；承载 `LoginView`；由 `redirectToLogin()` 跳到 `/login?redirect=...` 统一访问）
 - **运维控制台（独立入口）**（2026-08-05 新增）：`ops-console.html` + `src/ops-console-main.js` 入口；`src/components/ops-console/` 下 7 个组件 + `src/data/ops-console/mockData.js` 静态样例数据 + `src/styles/ops-console.css` 政务蓝 macOS 风格独立样式。组件全部以 `Ops` 前缀命名（与主 Agent 业务命名空间隔离）：
-  - `OpsConsoleApp.vue`：根组件，7 个 ref 状态机（currentTime / searchKey / zTop / wins / detailServer / activeFolder / logFile）+ 10 个函数（tick / bringFront / openWin / toggleMax / closeWin / openDetail / openLog / detectAll / startDrag / genLogContent）；4 个窗口可独立 open/close/max/front/drag
-  - `OpsMenuBar.vue`：顶部菜单栏（毛玻璃 + 时间 + 标题「智能运维中心」）
+  - `OpsConsoleApp.vue`：根组件，7 个 ref 状态机（currentTime / searchKey / zTop / wins / detailServer / activeFolder / logFile）+ 10 个函数（tick / bringFront / openWin / toggleMax / closeWin / openDetail / openLog / detectAll / startDrag / genLogContent）；4 个窗口可独立 open/close/max/front/drag；`startDrag` 拖拽时限制窗口四边边界：顶部不低于菜单栏底部（`28px`），左右/底部至少保留 `60px` 可见区域，防止标题栏被顶部菜单栏压盖后无法再次拖动
+  - `OpsMenuBar.vue`：顶部菜单栏（毛玻璃 + 时间 + 标题「智能运维中心」，高度 `28px`）
   - `OpsServerWindow.vue`：服务器管理窗口（访达图标视图 + 搜索 + 状态点）
   - `OpsDetailWindow.vue`：服务器详情窗口（指标卡 + 智能检测动画 + 磁盘列表），暴露 `runDetect()` 方法供父组件调用
   - `OpsLogManager.vue`：日志管理窗口（左侧文件夹 + 右侧文件列表）
