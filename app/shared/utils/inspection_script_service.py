@@ -427,69 +427,95 @@ class InspectionScriptService:
     # ------------------------------------------------------------------
 
     async def delete_script(self, script_id: int) -> bool:
-        """按 ``id`` 删除脚本库条目，同步清理内存缓存（2026-08-04 新增）。
+        """按 ``id`` 单事务删除脚本库条目并清理缓存（2026-08-04 新增；2026-08-05 事务化）。
 
         行为：
-            - 入参非法（``None`` / 非 int / ``<=0``）→ 返回 ``False``（不抛）。
-            - DB 无匹配行（``DELETE 0``）→ 返回 ``False``，不动缓存。
-            - DB 异常（连接 / FK 等）→ ``logger.exception`` 后返回 ``False``。
-            - 删除成功 → 持 ``_write_lock`` 同时移除
-              ``_id_cache[script_id]`` 与 ``_cache[name]``，返回 ``True``。
-            - 由于 ``devops_servers.inspection_script_id`` 外键定义为
-              ``ON DELETE SET NULL``，删除脚本不会阻塞 / 级联删除服务器行，
-              而是自动解绑；本函数无需手动清理 devops_servers。
+            - 入参非法（``None`` / 非 int / ``<=0``）→ 返回 ``False``（不调 DB）。
+            - 单事务内依次执行：
+              1. ``SELECT name FROM inspection_scripts WHERE id=$1 FOR UPDATE``
+                 锁住脚本行，拿到权威 name（DB 真实事实，不依赖删除前的缓存）；
+              2. ``UPDATE devops_servers SET inspection_script_id=NULL
+                 WHERE inspection_script_id=$1``（业务层显式解绑服务器外键，
+                 不再完全依赖 ``ON DELETE SET NULL`` 兜底）；
+              3. ``DELETE FROM inspection_scripts WHERE id=$1`` 真正删除脚本行。
+            - DB 无匹配行（``SELECT`` 未命中 / ``DELETE 0``）→ 返回 ``False``，
+              缓存保持原样；服务器解绑 SQL 不执行（避免盲目 UPDATE）。
+            - DB 异常（连接 / FK / 其他 asyncpg 错误）→ 异常向上抛出，
+              由路由层映射为通用 500；缓存保持原样，运维可重试。
+            - 事务成功提交后持 ``_write_lock`` 清理缓存：
+              - 移除 ``_id_cache[script_id]``；
+              - 若 ``_cache[name]`` 仍指向该 id，移除 ``_cache[name]``；
+              - 若 ``_cache[name]`` 因漂移指向其它 id，扫描 ``_id_cache`` 中
+                所有同 name 的老索引并移除（避免残留指向幽灵脚本）。
 
         Args:
             script_id: ``inspection_scripts.id``
 
         Returns:
-            bool: 已删除返回 ``True``；不存在 / 入参非法 / DB 异常返回 ``False``
+            bool: 已删除返回 ``True``；不存在 / 入参非法返回 ``False``；
+            DB 异常向上抛出。
         """
         if script_id is None or not isinstance(script_id, int) or script_id <= 0:
             return False
 
-        # 先读取当前 name，便于删除成功后同步 _cache；非锁定读，避免长时间持锁
-        cached = self._id_cache.get(int(script_id))
-        cached_name: Optional[str] = None
-        if isinstance(cached, dict):
-            name_val = cached.get("name")
+        # 1) 单事务内：锁脚本行 → 解绑服务器 → 删脚本行
+        name_to_clear: Optional[str] = None
+        async with self.db.transaction():
+            row = await self.db.fetchrow(
+                "SELECT name FROM inspection_scripts WHERE id = $1 FOR UPDATE",
+                int(script_id),
+            )
+            if row is None:
+                # DB 实际不存在该 id：不解绑服务器、不删脚本行
+                return False
+            row_data = dict(row) if not isinstance(row, dict) else row
+            name_val = row_data.get("name")
             if isinstance(name_val, str) and name_val.strip():
-                cached_name = name_val
+                name_to_clear = name_val.strip()
 
-        try:
+            # 显式解绑 devops_servers 行（不依赖 FK ON DELETE SET NULL 兜底）
+            await self.db.execute(
+                "UPDATE devops_servers SET inspection_script_id = NULL "
+                "WHERE inspection_script_id = $1",
+                int(script_id),
+            )
+
+            # 真正删除脚本行
             result = await self.db.execute(
                 "DELETE FROM inspection_scripts WHERE id = $1",
                 int(script_id),
             )
-        except Exception:
-            logger.exception(
-                "[inspection_script_service] delete_script failed, id=%s",
-                script_id,
-            )
-            return False
+            if not isinstance(result, str) or not result.startswith("DELETE"):
+                logger.warning(
+                    "[inspection_script_service] delete_script unexpected result=%r",
+                    result,
+                )
+                return False
+            try:
+                affected = int(result.split()[1])
+            except (IndexError, ValueError):
+                affected = 0
+            if affected == 0:
+                return False
 
-        # asyncpg 返回 "DELETE <n>" 形式的 status 字符串
-        if not isinstance(result, str) or not result.startswith("DELETE"):
-            logger.warning(
-                "[inspection_script_service] delete_script unexpected result=%r",
-                result,
-            )
-            return False
-
-        try:
-            affected = int(result.split()[1])
-        except (IndexError, ValueError):
-            affected = 0
-        if affected == 0:
-            return False
-
+        # 2) 事务成功提交后清理内存缓存（基于事务内读到的 name）
         async with self._write_lock:
             self._id_cache.pop(int(script_id), None)
-            if cached_name:
-                # 仅当 _cache 中该 name 对应同一 id 时才移除，避免误删
-                existing = self._cache.get(cached_name)
+            if name_to_clear:
+                existing = self._cache.get(name_to_clear)
                 if isinstance(existing, dict) and existing.get("id") == int(script_id):
-                    self._cache.pop(cached_name, None)
+                    self._cache.pop(name_to_clear, None)
+                # 无论 _cache 是否被移除，都清扫 _id_cache 中同 name 的
+                # 所有其它 id 残留（DB 真实事实：name 对应唯一 id，凡是不等于
+                # 当前 script_id 的同 name 索引都是历史漂移，必须清掉）。
+                stale_ids = [
+                    k for k, v in self._id_cache.items()
+                    if isinstance(v, dict)
+                    and v.get("name") == name_to_clear
+                    and k != int(script_id)
+                ]
+                for sid in stale_ids:
+                    self._id_cache.pop(sid, None)
         return True
 
     # ------------------------------------------------------------------

@@ -691,7 +691,9 @@ def test_resolve_script_for_server_default_match(tmp_yaml):
 
 
 def test_delete_script_removes_from_caches(tmp_yaml):
-    """delete_script 命中 DB 时从 ``_cache`` / ``_id_cache`` 同步移除。
+    """delete_script 命中 DB 时从 ``_cache`` / ``_id_cache`` 同步移除（2026-08-05 事务化）。
+
+    单事务内：SELECT name FOR UPDATE → UPDATE devops_servers → DELETE inspection_scripts。
 
     Args:
         tmp_yaml: 临时 yaml 路径
@@ -702,8 +704,9 @@ def test_delete_script_removes_from_caches(tmp_yaml):
     import asyncio
     from app.shared.utils.inspection_script_service import InspectionScriptService
 
-    db = _make_db()
-    db.execute.return_value = "DELETE 1"
+    db = _build_tx_db()
+    db.fetchrow.side_effect = [{"name": "linux-bash"}]
+    db.execute.side_effect = ["UPDATE 1", "DELETE 1"]
     svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
     # 直接构造缓存，避免依赖 preload_all 的 DB fetch 桩
     svc._cache["linux-bash"] = {"id": 11, "name": "linux-bash"}
@@ -714,16 +717,28 @@ def test_delete_script_removes_from_caches(tmp_yaml):
     # _id_cache / _cache 都被清除
     assert 11 not in svc._id_cache
     assert "linux-bash" not in svc._cache
-    # DELETE SQL 发送的 id 必须正确
-    db.execute.assert_awaited_once()
-    call_args = db.execute.await_args
-    sql = call_args.args[0] if call_args.args else call_args.kwargs.get("query")
-    assert "DELETE FROM inspection_scripts" in sql
-    assert call_args.args[1] == 11 or call_args.kwargs.get("id") == 11
+    # 事务内 SQL 顺序：先 SELECT name FOR UPDATE，再 UPDATE servers，再 DELETE scripts
+    assert db.transaction.call_count == 1
+    assert db.fetchrow.await_count == 1
+    assert db.execute.await_count == 2
+    delete_sql = next(
+        c.args[0] for c in db.execute.await_args_list
+        if "DELETE FROM inspection_scripts" in c.args[0]
+    )
+    assert "DELETE FROM inspection_scripts" in delete_sql
+    # DELETE SQL 第二个参数是 11
+    delete_call = next(
+        c for c in db.execute.await_args_list
+        if "DELETE FROM inspection_scripts" in c.args[0]
+    )
+    assert delete_call.args[1] == 11
 
 
 def test_delete_script_returns_false_when_no_row(tmp_yaml):
-    """DB 无匹配行（DELETE 0）→ 返回 False，缓存不动。
+    """DB 实际无该脚本行（SELECT FOR UPDATE 未命中）→ 返回 False，缓存不动。
+
+    2026-08-05 事务化改造：DB 删行之前先用 SELECT FOR UPDATE 判定脚本是否存在；
+    不存在时不解绑服务器、不删脚本行、不动缓存。
 
     Args:
         tmp_yaml: 临时 yaml 路径
@@ -734,8 +749,9 @@ def test_delete_script_returns_false_when_no_row(tmp_yaml):
     import asyncio
     from app.shared.utils.inspection_script_service import InspectionScriptService
 
-    db = _make_db()
-    db.execute.return_value = "DELETE 0"
+    db = _build_tx_db()
+    db.fetchrow.side_effect = [None]  # SELECT name FOR UPDATE 未命中
+    db.execute.side_effect = []  # 不应触发 UPDATE / DELETE
     svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
     svc._cache["linux-bash"] = {"id": 11, "name": "linux-bash"}
     svc._id_cache[11] = {"id": 11, "name": "linux-bash"}
@@ -745,6 +761,8 @@ def test_delete_script_returns_false_when_no_row(tmp_yaml):
     # 缓存保持原样
     assert 11 in svc._id_cache
     assert "linux-bash" in svc._cache
+    # 关键：服务器解绑 SQL 不应被执行（脚本都不存在时不应盲目 UPDATE）
+    assert db.execute.await_count == 0
 
 
 def test_delete_script_invalid_id_returns_false(tmp_yaml):
@@ -770,27 +788,202 @@ def test_delete_script_invalid_id_returns_false(tmp_yaml):
     db.execute.assert_not_called()
 
 
-def test_delete_script_db_exception_returns_false(tmp_yaml):
-    """DB execute 抛异常 → 返回 False（不抛），缓存不动。
+def test_delete_script_db_exception_propagates(tmp_yaml):
+    """事务内 DB 异常向上抛出（2026-08-05 改造），缓存不被清。
 
-    Args:
-        tmp_yaml: 临时 yaml 路径
-
-    Returns:
-        None
+    业务语义：``delete_script`` 不吞 DB 异常，由上层路由映射为通用 500；
+    缓存保持原样，下次重试或运维排查时仍能命中现有数据。
     """
     import asyncio
+    import pytest
     from app.shared.utils.inspection_script_service import InspectionScriptService
 
-    db = _make_db()
-    db.execute.side_effect = RuntimeError("simulated DB failure")
+    db = _build_tx_db()
+    db.fetchrow.side_effect = RuntimeError("simulated DB failure")
     svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
     svc._cache["linux-bash"] = {"id": 11, "name": "linux-bash"}
     svc._id_cache[11] = {"id": 11, "name": "linux-bash"}
 
-    ok = asyncio.run(svc.delete_script(11))
-    assert ok is False
+    with pytest.raises(RuntimeError, match="simulated DB failure"):
+        asyncio.run(svc.delete_script(11))
+    # 缓存保持
     assert 11 in svc._id_cache
+    assert "linux-bash" in svc._cache
+
+
+# ----------------------------------------------------------------------
+# P5: delete_script 事务化 + 缓存自愈（2026-08-05 新增）
+# ----------------------------------------------------------------------
+# 触发原因：用户反馈「巡检脚本不存在」选项实际存在 → 定位到删除路径在某些
+# 漂移场景下只清理部分缓存 key。修复要求 delete_script 在单事务内：
+# 1) SELECT ... FOR UPDATE 锁住脚本行；
+# 2) UPDATE devops_servers SET inspection_script_id=NULL；
+# 3) DELETE FROM inspection_scripts WHERE id=$1；
+# 事务成功提交后，用本次事务内读到的 name 清空 _id_cache 与 _cache，并
+# 清理同 name 漂移到其它 id 的残留。
+# ----------------------------------------------------------------------
+
+
+class _FakeAsyncContextManager:
+    """提供 ``async with`` 协议的最小占位器。"""
+
+    def __init__(self, cm):
+        self._cm = cm
+
+    async def __aenter__(self):
+        return self._cm
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+def _build_tx_db():
+    """构造支持 ``db.transaction()`` 异步上下文管理器的 db stub。
+
+    Returns:
+        MagicMock: db 替身；``db.transaction()`` 返回可 await 的 CM，
+        ``db.fetchrow`` / ``db.execute`` 为 AsyncMock。
+    """
+    from contextlib import asynccontextmanager
+    db = MagicMock(name="db_pool_stub_tx")
+    db.fetch = AsyncMock(return_value=[])
+    db.fetchrow = AsyncMock(return_value=None)
+    db.execute = AsyncMock(return_value=None)
+
+    @asynccontextmanager
+    async def _tx():
+        yield None
+
+    db.transaction = MagicMock(side_effect=lambda: _FakeAsyncContextManager(_tx()))
+    return db
+
+
+def test_delete_script_uses_single_transaction(tmp_yaml):
+    """delete_script 必须调用 ``db.transaction()`` 且 SQL 顺序锁定。
+
+    验证：
+    - 事务上下文被使用一次；
+    - 事务内 SQL 顺序：SELECT name FOR UPDATE → UPDATE devops_servers → DELETE inspection_scripts；
+    - 事务提交后缓存才被清。
+    """
+    import asyncio
+    from app.shared.utils.inspection_script_service import InspectionScriptService
+
+    db = _build_tx_db()
+    db.fetchrow.side_effect = [
+        {"name": "linux-bash"},  # SELECT name FROM inspection_scripts ... FOR UPDATE
+    ]
+    db.execute.side_effect = [
+        "UPDATE 2",  # UPDATE devops_servers SET inspection_script_id = NULL
+        "DELETE 1",  # DELETE FROM inspection_scripts WHERE id = $1
+    ]
+    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    svc._cache["linux-bash"] = {"id": 7, "name": "linux-bash"}
+    svc._id_cache[7] = {"id": 7, "name": "linux-bash"}
+
+    ok = asyncio.run(svc.delete_script(7))
+    assert ok is True
+
+    # 1) 事务上下文被调用一次
+    assert db.transaction.call_count == 1
+    # 2) 全部 SQL 在事务内按序执行
+    assert db.fetchrow.await_count == 1
+    assert db.execute.await_count == 2
+
+    # 3) 缓存被清理
+    assert 7 not in svc._id_cache
+    assert "linux-bash" not in svc._cache
+
+    # 4) 事务内 SQL 顺序：先 UPDATE 服务器、再 DELETE 脚本
+    executed_sqls = [c.args[0] for c in db.execute.await_args_list]
+    assert any(
+        "UPDATE devops_servers SET inspection_script_id = NULL" in sql
+        and "WHERE inspection_script_id = $1" in sql
+        for sql in executed_sqls
+    ), f"未发现服务器解绑 SQL: {executed_sqls}"
+    delete_sql = next(
+        sql for sql in executed_sqls if "DELETE FROM inspection_scripts" in sql
+    )
+    assert delete_sql is not None
+    # 服务器解绑 SQL 必须先于脚本删除 SQL
+    unbind_idx = next(
+        i for i, sql in enumerate(executed_sqls)
+        if "UPDATE devops_servers" in sql
+    )
+    delete_idx = next(
+        i for i, sql in enumerate(executed_sqls)
+        if "DELETE FROM inspection_scripts" in sql
+    )
+    assert unbind_idx < delete_idx
+
+
+def test_delete_script_clears_drifted_same_name_id_cache(tmp_yaml):
+    """同 name 漂移到多条 _id_cache（人为制造漂移）时：
+    删除其中一条 id，事务内读到的 name 把另一条同 name 的 id 索引一并清理。
+    """
+    import asyncio
+    from app.shared.utils.inspection_script_service import InspectionScriptService
+
+    db = _build_tx_db()
+    # 真实 DB 中只有 id=7（linux-bash）；id=99 是历史漂移残留
+    db.fetchrow.side_effect = [{"name": "linux-bash"}]
+    db.execute.side_effect = ["UPDATE 1", "DELETE 1"]
+    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    # 漂移场景：_id_cache 同时含 7 与 99，都指向 linux-bash
+    svc._cache["linux-bash"] = {"id": 7, "name": "linux-bash"}
+    svc._id_cache[7] = {"id": 7, "name": "linux-bash"}
+    svc._id_cache[99] = {"id": 7, "name": "linux-bash"}  # 同 name 漂移到 99
+
+    ok = asyncio.run(svc.delete_script(7))
+    assert ok is True
+
+    # 7 与 99 都应被清；_cache["linux-bash"] 被清
+    assert 7 not in svc._id_cache
+    assert 99 not in svc._id_cache
+    assert "linux-bash" not in svc._cache
+
+
+def test_delete_script_returns_false_when_db_row_missing(tmp_yaml):
+    """事务内 SELECT 未命中（DB 实际无该 id）→ 返回 False，缓存不动。"""
+    import asyncio
+    from app.shared.utils.inspection_script_service import InspectionScriptService
+
+    db = _build_tx_db()
+    db.fetchrow.side_effect = [None]  # SELECT name FOR UPDATE 未命中
+    db.execute.side_effect = []  # 不应触发 UPDATE / DELETE
+    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    svc._cache["linux-bash"] = {"id": 7, "name": "linux-bash"}
+    svc._id_cache[7] = {"id": 7, "name": "linux-bash"}
+
+    ok = asyncio.run(svc.delete_script(7))
+    assert ok is False
+    # 缓存保持原样
+    assert 7 in svc._id_cache
+    assert "linux-bash" in svc._cache
+    # 关键：服务器解绑 SQL 不应被执行（脚本都不存在时不应盲目 UPDATE）
+    assert db.execute.await_count == 0
+
+
+def test_delete_script_db_failure_propagates_keeps_cache(tmp_yaml):
+    """事务内 DB 异常向上抛出，缓存不被清。
+
+    业务语义：``delete_script`` 不吞 DB 异常，由上层路由映射为通用 500；
+    缓存保持原样，下次重试或运维排查时仍能命中现有数据。
+    """
+    import asyncio
+    import pytest
+    from app.shared.utils.inspection_script_service import InspectionScriptService
+
+    db = _build_tx_db()
+    db.fetchrow.side_effect = RuntimeError("simulated asyncpg failure")
+    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    svc._cache["linux-bash"] = {"id": 7, "name": "linux-bash"}
+    svc._id_cache[7] = {"id": 7, "name": "linux-bash"}
+
+    with pytest.raises(RuntimeError, match="simulated asyncpg failure"):
+        asyncio.run(svc.delete_script(7))
+    # 缓存保持
+    assert 7 in svc._id_cache
     assert "linux-bash" in svc._cache
 
 

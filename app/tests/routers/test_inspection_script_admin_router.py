@@ -499,3 +499,91 @@ def test_delete_inspection_script_requires_admin(
         headers=user_headers,
     )
     assert resp.status_code == 403
+
+
+# =============================================================================
+# P5: DELETE 端点事务化 + devops_servers 解绑（2026-08-05 新增）
+# =============================================================================
+# 触发原因：用户报告「巡检脚本不存在」选项实际存在 → 定位到删除路径未在
+# 单事务内同时解绑 devops_servers.inspection_script_id 与清理 _id_cache。
+# 本测试用真实 InspectionScriptService（db=AsyncMock）端到端验证：
+# 1) 事务上下文被使用一次；
+# 2) 事务内 SQL 顺序：SELECT name FOR UPDATE → UPDATE devops_servers
+#    SET inspection_script_id=NULL → DELETE FROM inspection_scripts；
+# 3) HTTP 204 + 缓存双索引同步清理。
+# =============================================================================
+
+
+def test_delete_inspection_script_unbinds_dependent_servers_in_transaction(
+    client, inspection_router_setup, admin_headers
+):
+    """DELETE 路由端到端：单事务内同时解绑 devops_servers 与清理缓存。"""
+    import asyncio
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock, MagicMock
+    from app.shared.utils.inspection_script_service import (
+        InspectionScriptService,
+    )
+
+    # 1) 重新构造 service：db stub 支持 transaction() 异步上下文
+    db = MagicMock(name="tx_db_pool_stub")
+    db.fetch = AsyncMock(return_value=[])
+    db.fetchrow = AsyncMock(side_effect=[{"name": "linux-bash"}])
+    db.execute = AsyncMock(side_effect=["UPDATE 1", "DELETE 1"])
+
+    @asynccontextmanager
+    async def _tx():
+        yield None
+
+    db.transaction = MagicMock(
+        side_effect=lambda: _tx()
+    )
+
+    svc = InspectionScriptService(
+        db=db, config_path="unused.yaml"
+    )
+    svc._cache["linux-bash"] = {"id": 7, "name": "linux-bash"}
+    svc._id_cache[7] = {"id": 7, "name": "linux-bash"}
+    # 漂移残留
+    svc._id_cache[99] = {"id": 7, "name": "linux-bash"}
+
+    # 2) 替换 app.state 上的 service
+    inspection_router_setup.state.inspection_script_service = svc
+    InspectionScriptService.set_instance(svc)
+    try:
+        resp = client.delete(
+            "/api/admin/inspection-scripts/7",
+            headers=admin_headers,
+        )
+    finally:
+        # 清理单例，避免污染后续测试
+        InspectionScriptService.reset()
+        inspection_router_setup.state.inspection_script_service = None
+
+    # 3) HTTP 契约不变
+    assert resp.status_code == 204
+    assert resp.content == b""
+
+    # 4) 事务被调用一次
+    assert db.transaction.call_count == 1
+    # 5) SQL 顺序：先 SELECT name FOR UPDATE，再 UPDATE servers，再 DELETE scripts
+    assert db.fetchrow.await_count == 1
+    assert db.execute.await_count == 2
+    executed_sqls = [c.args[0] for c in db.execute.await_args_list]
+    unbind_idx = next(
+        i for i, sql in enumerate(executed_sqls)
+        if "UPDATE devops_servers" in sql
+    )
+    delete_idx = next(
+        i for i, sql in enumerate(executed_sqls)
+        if "DELETE FROM inspection_scripts" in sql
+    )
+    assert unbind_idx < delete_idx, (
+        f"事务内 SQL 顺序错误，unbind_idx={unbind_idx}, delete_idx={delete_idx}, "
+        f"sqls={executed_sqls}"
+    )
+
+    # 6) 缓存被清理（含漂移残留）
+    assert 7 not in svc._id_cache
+    assert 99 not in svc._id_cache
+    assert "linux-bash" not in svc._cache
