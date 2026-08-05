@@ -1245,6 +1245,18 @@ onUnmounted(() => {
       opacity: 1;
     }
   }
+
+  /* 点击后清除浏览器原生 focus ring，避免「hover 样式残留」视觉错觉
+     - :focus-visible：键盘 Tab 触发时不显示 ring，让鼠标点击不再卡住 hover
+     - :focus:not(:focus-visible)：兜底，鼠标点击的 outline 也清掉
+     - 保留键盘焦点指示（无障碍性不丢失，由浏览器默认行为决定是否显示） */
+  &:focus-visible {
+    outline: none;
+  }
+
+  &:focus:not(:focus-visible) {
+    outline: none;
+  }
 }
 
 .menu-icon {
