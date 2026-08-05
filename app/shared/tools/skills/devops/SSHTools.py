@@ -708,6 +708,14 @@ def execute_command(
             from app.core.config.settings import settings as _settings
 
             endpoint_name = _settings.third_party_executor.default_endpoint
+        # 按第三方契约：把 SSH 连接信息（ip/port/username/password）一并加密发送
+        # （来源 DevOpsServerService.get_connection_config；password 已在 service 内 Fernet 解密）
+        _ssh_config = {
+            "ip": config.get("ip"),
+            "port": config.get("port"),
+            "username": config.get("username"),
+            "password": config.get("password"),
+        }
         started = time.monotonic()
         try:
             import asyncio as _asyncio
@@ -735,6 +743,7 @@ def execute_command(
                     business_name=business_name,
                     timeout=safe_timeout,
                     server_type=config.get("server_type"),
+                    ssh_config=_ssh_config,
                 )
                 resp = _asyncio.run_coroutine_threadsafe(
                     _asyncio.ensure_future(resp_coro), _loop
@@ -748,6 +757,7 @@ def execute_command(
                         business_name=business_name,
                         timeout=safe_timeout,
                         server_type=config.get("server_type"),
+                        ssh_config=_ssh_config,
                     )
                 )
             payload = _tp_normalize(resp)

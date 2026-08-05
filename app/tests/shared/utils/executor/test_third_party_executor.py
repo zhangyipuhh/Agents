@@ -515,3 +515,240 @@ def test_normalize_response_invalid_exit_code_raises() -> None:
     with pytest.raises(ThirdPartyExecutorError) as ei:
         tp_module.normalize_response({"success": True, "exit_code": "abc"})
     assert ei.value.error_code == executor_errors.ERR_INVALID_RESPONSE
+
+
+# ---------------------------------------------------------------------------
+# 5. SSH 连接信息注入（按第三方契约 execute接口说明.md §4）
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_includes_ssh_config_in_body(monkeypatch, endpoint, rsa_keys):
+    """``ssh_config`` 应注入到加密 body（第三方按 ip+username 分流 SSH vs 本机）。"""
+    _patch_registry(monkeypatch, {endpoint.name: endpoint})
+
+    fake_response = _make_response(
+        status_code=200, json_data={"success": True, "output": "ok", "exit_code": 0}
+    )
+    captured: Dict[str, Any] = {}
+
+    async def _capture_post(url, json=None, headers=None):
+        captured["plaintext"] = decrypt_body(json, rsa_keys["private_key_pem"])
+        return fake_response
+
+    fake_client = MagicMock(name="httpx.AsyncClient")
+    fake_client.post = AsyncMock(side_effect=_capture_post)
+    fake_client.aclose = AsyncMock(return_value=None)
+
+    ssh_config = {
+        "ip": "10.0.0.5",
+        "port": 22,
+        "username": "root",
+        "password": "ssh-secret",
+    }
+
+    with patch.object(tp_module.httpx, "AsyncClient", return_value=fake_client):
+        asyncio.run(
+            tp_module.dispatch(
+                endpoint_name="primary",
+                command="ls",
+                wrapped_command="/bin/bash -c 'ls'",
+                business_name="alpha",
+                timeout=10,
+                server_type="linux",
+                ssh_config=ssh_config,
+            )
+        )
+
+    plaintext = captured["plaintext"]
+    assert plaintext["ip"] == "10.0.0.5"
+    assert plaintext["port"] == 22
+    assert plaintext["username"] == "root"
+    assert plaintext["password"] == "ssh-secret"
+
+
+def test_dispatch_omits_ssh_fields_when_config_empty(monkeypatch, endpoint, rsa_keys):
+    """``ssh_config`` 缺省 / 空 dict 时,body 中不出现 ip / port / username / password
+    (第三方走"本机执行"路径)。"""
+    _patch_registry(monkeypatch, {endpoint.name: endpoint})
+    fake_response = _make_response(
+        status_code=200, json_data={"success": True, "output": "ok", "exit_code": 0}
+    )
+    captured: Dict[str, Any] = {}
+
+    async def _capture_post(url, json=None, headers=None):
+        captured["plaintext"] = decrypt_body(json, rsa_keys["private_key_pem"])
+        return fake_response
+
+    fake_client = MagicMock(name="httpx.AsyncClient")
+    fake_client.post = AsyncMock(side_effect=_capture_post)
+    fake_client.aclose = AsyncMock(return_value=None)
+
+    with patch.object(tp_module.httpx, "AsyncClient", return_value=fake_client):
+        asyncio.run(
+            tp_module.dispatch(
+                endpoint_name="primary",
+                command="ls",
+                wrapped_command="/bin/bash -c 'ls'",
+                business_name="alpha",
+                timeout=10,
+                server_type="linux",
+            )
+        )
+
+    plaintext = captured["plaintext"]
+    for key in ("ip", "port", "username", "password"):
+        assert key not in plaintext
+
+
+def test_dispatch_omits_ssh_when_ip_or_username_missing(monkeypatch, endpoint, rsa_keys):
+    """``ssh_config`` 仅有 ip 无 username 时不注入（避免第三方走 SSH 但 password 缺失）。"""
+    _patch_registry(monkeypatch, {endpoint.name: endpoint})
+    fake_response = _make_response(
+        status_code=200, json_data={"success": True, "output": "ok", "exit_code": 0}
+    )
+    captured: Dict[str, Any] = {}
+
+    async def _capture_post(url, json=None, headers=None):
+        captured["plaintext"] = decrypt_body(json, rsa_keys["private_key_pem"])
+        return fake_response
+
+    fake_client = MagicMock(name="httpx.AsyncClient")
+    fake_client.post = AsyncMock(side_effect=_capture_post)
+    fake_client.aclose = AsyncMock(return_value=None)
+
+    with patch.object(tp_module.httpx, "AsyncClient", return_value=fake_client):
+        asyncio.run(
+            tp_module.dispatch(
+                endpoint_name="primary",
+                command="ls",
+                wrapped_command="/bin/bash -c 'ls'",
+                business_name="alpha",
+                timeout=10,
+                server_type="linux",
+                ssh_config={"ip": "10.0.0.5", "username": "", "password": "x"},
+            )
+        )
+
+    plaintext = captured["plaintext"]
+    for key in ("ip", "port", "username", "password"):
+        assert key not in plaintext
+
+
+def test_dispatch_default_ssh_port_when_missing(monkeypatch, endpoint, rsa_keys):
+    """ssh_config 未指定 port 时默认为 22。"""
+    _patch_registry(monkeypatch, {endpoint.name: endpoint})
+    fake_response = _make_response(
+        status_code=200, json_data={"success": True, "output": "ok", "exit_code": 0}
+    )
+    captured: Dict[str, Any] = {}
+
+    async def _capture_post(url, json=None, headers=None):
+        captured["plaintext"] = decrypt_body(json, rsa_keys["private_key_pem"])
+        return fake_response
+
+    fake_client = MagicMock(name="httpx.AsyncClient")
+    fake_client.post = AsyncMock(side_effect=_capture_post)
+    fake_client.aclose = AsyncMock(return_value=None)
+
+    with patch.object(tp_module.httpx, "AsyncClient", return_value=fake_client):
+        asyncio.run(
+            tp_module.dispatch(
+                endpoint_name="primary",
+                command="ls",
+                wrapped_command="/bin/bash -c 'ls'",
+                business_name="alpha",
+                timeout=10,
+                server_type="linux",
+                ssh_config={"ip": "10.0.0.5", "username": "u", "password": "p"},
+            )
+        )
+
+    assert captured["plaintext"]["port"] == 22
+
+
+# ---------------------------------------------------------------------------
+# 6. 错误响应解析（HTTP 4xx/5xx 也尝试提取 error 字段）
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_http_4xx_extracts_error_field(monkeypatch, endpoint):
+    """HTTP 4xx + body 含 error 字段 → reason 含 error,user_message 不泄漏 error。"""
+    _patch_registry(monkeypatch, {endpoint.name: endpoint})
+    fake_response = _make_response(
+        status_code=400,
+        json_data={"success": False, "error": "issued_at 超时", "exit_code": -1},
+    )
+    fake_client = MagicMock(name="httpx.AsyncClient")
+    fake_client.post = AsyncMock(return_value=fake_response)
+    fake_client.aclose = AsyncMock(return_value=None)
+
+    with patch.object(tp_module.httpx, "AsyncClient", return_value=fake_client):
+        with pytest.raises(ThirdPartyExecutorError) as ei:
+            asyncio.run(
+                tp_module.dispatch(
+                    endpoint_name="primary",
+                    command="ls",
+                    wrapped_command="/bin/bash -c 'ls'",
+                    business_name="alpha",
+                    timeout=10,
+                    server_type="linux",
+                )
+            )
+    assert ei.value.error_code == executor_errors.ERR_HTTP
+    # reason 含 error 字段值(供审计日志)
+    assert "issued_at 超时" in ei.value.reason
+    assert "400" in ei.value.user_message
+    # user_message 不泄漏具体 error（避免向 LLM / 用户暴露第三方内部）
+    assert "issued_at 超时" not in ei.value.user_message
+
+
+def test_dispatch_http_500_extracts_error_field(monkeypatch, endpoint):
+    """HTTP 500 同样提取 error。"""
+    _patch_registry(monkeypatch, {endpoint.name: endpoint})
+    fake_response = _make_response(
+        status_code=500,
+        json_data={"success": False, "error": "SSH 认证失败", "exit_code": -1},
+    )
+    fake_client = MagicMock(name="httpx.AsyncClient")
+    fake_client.post = AsyncMock(return_value=fake_response)
+    fake_client.aclose = AsyncMock(return_value=None)
+
+    with patch.object(tp_module.httpx, "AsyncClient", return_value=fake_client):
+        with pytest.raises(ThirdPartyExecutorError) as ei:
+            asyncio.run(
+                tp_module.dispatch(
+                    endpoint_name="primary",
+                    command="ls",
+                    wrapped_command="/bin/bash -c 'ls'",
+                    business_name="alpha",
+                    timeout=10,
+                    server_type="linux",
+                )
+            )
+    assert ei.value.error_code == executor_errors.ERR_HTTP
+    assert "SSH 认证失败" in ei.value.reason
+
+
+def test_dispatch_http_4xx_non_json_body_still_invalid_response(monkeypatch, endpoint):
+    """HTTP 4xx 但 body 非 JSON → 仍判 ERR_HTTP,不抛双错。"""
+    _patch_registry(monkeypatch, {endpoint.name: endpoint})
+    fake_response = MagicMock(name="Response")
+    fake_response.status_code = 400
+    fake_response.json = MagicMock(side_effect=Exception("not json"))
+    fake_client = MagicMock(name="httpx.AsyncClient")
+    fake_client.post = AsyncMock(return_value=fake_response)
+    fake_client.aclose = AsyncMock(return_value=None)
+
+    with patch.object(tp_module.httpx, "AsyncClient", return_value=fake_client):
+        with pytest.raises(ThirdPartyExecutorError) as ei:
+            asyncio.run(
+                tp_module.dispatch(
+                    endpoint_name="primary",
+                    command="ls",
+                    wrapped_command="/bin/bash -c 'ls'",
+                    business_name="alpha",
+                    timeout=10,
+                    server_type="linux",
+                )
+            )
+    assert ei.value.error_code == executor_errors.ERR_HTTP

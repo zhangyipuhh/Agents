@@ -49,6 +49,7 @@ def _build_request_body(
     business_name: str,
     timeout: int,
     server_type: Optional[str],
+    ssh_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """构造明文请求体。
 
@@ -58,14 +59,23 @@ def _build_request_body(
         business_name: 业务名
         timeout: 超时（秒）
         server_type: 平台类型（linux / windows）
+        ssh_config: 可选 SSH 连接配置（含 ip / port / username / password），
+            用于第三方接口按"ip+username 均非空 → 走 SSH 远程执行"分流。
+            不传或为空 dict 时，第三方走"本机执行"路径。
 
     Returns:
-        Dict[str, Any]: 明文请求体
+        Dict[str, Any]: 明文请求体（按第三方接口契约 v1）
+
+    Notes:
+        字段集严格遵循第三方契约 ``execute接口说明.md``：
+        - 必填: command / wrapped_command / issued_at
+        - 可选 SSH: ip / port / username / password（缺省时第三方本机执行）
+        - 元数据: business_name / timeout / platform / request_id
     """
     import uuid
     from datetime import datetime, timezone
 
-    return {
+    body: Dict[str, Any] = {
         "command": command,
         "wrapped_command": wrapped_command,
         "business_name": business_name,
@@ -74,6 +84,19 @@ def _build_request_body(
         "request_id": str(uuid.uuid4()),
         "issued_at": datetime.now(timezone.utc).isoformat(),
     }
+    # 注入 SSH 连接信息（按第三方契约：ip+username 均非空 → SSH 远程执行）
+    if ssh_config:
+        ip = ssh_config.get("ip")
+        port = ssh_config.get("port")
+        username = ssh_config.get("username")
+        password = ssh_config.get("password")
+        if ip and username:
+            body["ip"] = str(ip)
+            body["port"] = int(port) if port else 22
+            body["username"] = str(username)
+            # password 在 SSH 模式下必填；缺失时透传空串，由第三方判 400
+            body["password"] = password if password is not None else ""
+    return body
 
 
 async def dispatch(
@@ -84,6 +107,7 @@ async def dispatch(
     business_name: str,
     timeout: int,
     server_type: Optional[str],
+    ssh_config: Optional[Dict[str, Any]] = None,
     client: Optional[httpx.AsyncClient] = None,
 ) -> Dict[str, Any]:
     """向指定第三方端点发起加密命令执行请求并返回明文响应。
@@ -95,6 +119,8 @@ async def dispatch(
         business_name: 业务名
         timeout: 单条命令执行超时（秒），传给第三方
         server_type: 平台类型
+        ssh_config: 可选 SSH 连接配置（含 ip / port / username / password），
+            来源一般是 DevOpsServerService.get_connection_config 的返回值。
         client: 可选 httpx 客户端（测试注入使用）；None 时新建
 
     Returns:
@@ -114,6 +140,7 @@ async def dispatch(
         business_name=business_name,
         timeout=timeout,
         server_type=server_type,
+        ssh_config=ssh_config,
     )
 
     # 1. 加密请求体
@@ -166,27 +193,40 @@ async def dispatch(
                 user_message="第三方调用失败",
             ) from exc
 
-        # 3. HTTP 状态码校验
+        # 3. 响应体解析（无论 HTTP 状态码都尝试解析，第三方契约：
+        #    400/500 时 body 也是 {success:false, error:...} 结构）
+        try:
+            body = response.json()
+        except Exception:  # noqa: BLE001
+            body = None
+
+        if not isinstance(body, dict):
+            body = None
+
+        # 4. HTTP 状态码校验
         if response.status_code >= 400:
-            # 不在日志 / 异常中回显响应体，避免泄漏第三方错误细节
+            # 尝试从 body 提取 error 字段（第三方契约保证结构存在）
+            err_detail = ""
+            if isinstance(body, dict):
+                err_raw = body.get("error") or body.get("detail")
+                if err_raw:
+                    err_detail = str(err_raw)
+            reason = f"第三方返回 HTTP {response.status_code} (endpoint={endpoint_name})"
+            if err_detail:
+                reason += f" | error={err_detail}"
+            # 不在 user_message 中回显 err_detail（避免泄漏第三方内部细节）
             raise ThirdPartyExecutorError(
                 error_code=ERR_HTTP,
-                reason=(
-                    f"第三方返回 HTTP {response.status_code} "
-                    f"(endpoint={endpoint_name})"
-                ),
+                reason=reason,
                 user_message=f"第三方返回错误 ({response.status_code})",
             )
 
-        # 4. 响应解析
-        try:
-            body = response.json()
-        except Exception as exc:  # noqa: BLE001
+        if body is None:
             raise ThirdPartyExecutorError(
                 error_code=ERR_INVALID_RESPONSE,
-                reason=f"第三方响应非 JSON: {exc}",
+                reason="第三方响应非 JSON",
                 user_message="第三方响应格式错误",
-            ) from exc
+            )
 
         if not isinstance(body, dict):
             raise ThirdPartyExecutorError(
