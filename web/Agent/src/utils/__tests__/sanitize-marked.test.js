@@ -24,7 +24,6 @@ import { JSDOM } from 'jsdom'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 
-// 测试用 DOMPurify 实例(jsdom 后端)+ 安全属性注入(与生产 sanitize-marked.js 一致)
 let purify
 
 beforeAll(() => {
@@ -82,7 +81,6 @@ function injectSafeAttrs(html) {
   return result
 }
 
-/** 测试用 safeMarkdown(等价于生产实现,但用 jsdom 实例) */
 function safeMarkdown(text) {
   if (!text) return ''
   const raw = marked.parse(text, { async: false })

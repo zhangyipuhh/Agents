@@ -121,7 +121,8 @@ export function safeMarkdown(text) {
   let html = purify ? purify.sanitize(raw, {
     ALLOWED_TAGS,
     ALLOWED_ATTR,
-    // ALLOWED_URI_REGEXP 不显式传,使用 DOMPurify 默认
+    // ALLOWED_URI_REGEXP 不显式传,使用 DOMPurify 默认(支持 http/https/mailto/相对路径,
+    // 禁止 javascript:/data: 等);见 README 的 Security Goals 章节。
   }) : raw
   // 3. 字符串兜底:注入 <a>/<img> 安全属性 + 二次过滤 javascript:/data:
   html = injectSafeAttrs(html)

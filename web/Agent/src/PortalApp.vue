@@ -438,9 +438,6 @@ onUnmounted(() => {
         <iframe
           ref="iframeRef"
           :src="safeIframeUrl(getActiveItem().url)"
-          sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-          referrerpolicy="no-referrer"
-          loading="lazy"
           width="100%"
           height="100%"
           frameborder="0"

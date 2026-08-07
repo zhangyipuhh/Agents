@@ -259,6 +259,11 @@
 - **适用范围**：`MessageBubble.vue::renderedText`、`renderMarkdown`；`FilePreview.vue::renderedContent`。
 - **测试**：`src/utils/__tests__/sanitize-marked.test.js`，主动构造 `JSDOM + DOMPurify` 实例跑端到端验证；11 个用例全部通过。
 
+#### 1.1 iframe src 校验（`PortalApp.vue::safeIframeUrl`）
+
+- **2026-08-07 验证事件**：单独诊断时发现 `ProfileInputBox.vue` 缺 `import { onMounted }` 的 bug（**与本次加固无关**, 已存在），导致 `<KnowledgeApp>` 在 `showChat=false` 路径上渲染 setup 抛 `onMounted is not defined`，整个组件树渲染失败 → 用户看到的"规则库 iframe 空白"实际是 `<KnowledgeApp>` 没渲染完。修复后 iframe 正常显示。
+- **iframe 加固仅保留**：`:src="safeIframeUrl(getActiveItem().url)"` + 新增 `safeIframeUrl()` 函数拒绝 `javascript:` / `data:` / `vbscript:` / `file:` 协议；**不**额外加 `sandbox` / `referrerpolicy` / `loading="lazy"`（保守起见，dev 阶段 iframe 渲染已稳定后再考虑引入）。
+
 #### 2. `MessageBubble.vue` 改造
 
 - 替换 `import { marked } from 'marked'` → `import { safeMarkdown } from '../utils/sanitize-marked.js'`。
@@ -268,6 +273,14 @@
 #### 3. `FilePreview.vue` 改造
 
 - `renderedContent` computed 从 `marked.parse(props.content)` 改为 `safeMarkdown(props.content)`。
+
+#### 3.5 `ProfileInputBox.vue` 预存 bug 修复（与加固无关）
+
+- **症状**：在 PortalApp 规则库 iframe（指向 `/knowledge.html`）打开后，整个页面渲染失败 → 完全空白。
+- **根因**：`<script setup>` 中只 `import { ref, computed, nextTick } from 'vue'`，但第 131 行调用了 `onMounted(...)`。
+- **修复**：补 `onMounted` 到 import 语句。
+- **触发链路**：`KnowledgeApp.vue` 在 `welcome-section`（`v-if="!showChat"`）渲染 `<ProfileInputBox>` → setup 抛 `onMounted is not defined` → 整个组件树渲染异常 → `#app` 子节点为 0。
+- **影响范围**：`KnowledgeApp.vue` 进入页面的所有路径（不仅是规则库 iframe）。
 
 #### 4. `InputBox.vue` 改造
 
