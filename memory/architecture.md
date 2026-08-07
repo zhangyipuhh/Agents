@@ -581,3 +581,18 @@ return data/upload/yyyy/mm/dd/{session_id}/
   - `FILE_PARSER_MAX_FILE_SIZE` — 上传文件最大大小（**MB，整数**，下限 1），默认 `3`。2026-07-13 新增：前后端共用上传大小上限，原前端硬编码 50MB 已被替换为读取本配置；后端在 `/api/core/uploadfile` 与 `/api/core/merge-chunks` 内做 413 校验；前端通过 `GET /api/core/upload-config` 拉取后做客户端预校验
 - 其他 LLM API Key 等
 
+## 等保三级安全编码规范
+
+`AGENTS.md` 已纳入 GB/T 22239-2019 应用层面等保三级安全编码规范，作为项目级顶层设计约束。规范覆盖以下 8 个维度，详细规则见 [`AGENTS.md`](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/AGENTS.md) 末尾章节：
+
+1. **身份鉴别**：口令复杂度、登录失败锁定、会话超时、双因素认证、HTTPS 传输、用户唯一标识。
+2. **访问控制**：最小权限、权限分离、默认拒绝、敏感操作二次授权、`OwnershipScope` 数据层隔离、菜单 ACL 与端点粒度对齐。
+3. **安全审计**：统一 `LogService` 入口、审计字段完整、留存≥6 个月、防篡改、命令与凭据脱敏。
+4. **入侵防范**：输入白名单校验、XSS/CSP 防护、参数化查询、命令注入防护、文件上传安全、漏洞管理、统一错误响应。
+5. **恶意代码防范**：用户内容过滤、前端 SRI、依赖安全审计。
+6. **数据保密性**：全站 HTTPS/HSTS、敏感数据加密存储、密钥独立管理、Token 与 Cookie 安全。
+7. **剩余信息保护**：服务端会话失效、客户端缓存清理、内存敏感数据清理。
+8. **个人信息保护**：最小必要、授权同意、禁止对外提供、用户查询/更正/删除、日志脱敏。
+
+补充检查清单见根目录 [`等保要求.md`](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/等保要求.md)。
+
