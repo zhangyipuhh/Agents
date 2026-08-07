@@ -355,7 +355,7 @@ app/{module}/bar/baz.py      →  app/tests/{module}/bar/test_baz.py
 
 ## 等保三级安全编码规范
 
-> 本章节依据 GB/T 22239-2019 应用层面要求制定，所有代码变更必须满足。具体技术实现细节见 `memory/auth.md`、`memory/menu-acl.md`、`memory/architecture.md` 及 `等保要求.md`。
+> 本章节依据 GB/T 22239-2019 应用层面要求制定，是项目编码的**强制性安全约束**。所有后续代码变更、Agent 工具实现、路由/菜单/数据访问逻辑必须无条件遵守；任何与下述条款冲突的实现必须被拒绝并要求修正。具体技术实现细节见 `memory/auth.md`、`memory/menu-acl.md`、`memory/architecture.md`；完整合规检查清单见 `memory/security-compliance.md`。
 
 ### 身份鉴别
 

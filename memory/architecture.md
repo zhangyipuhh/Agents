@@ -594,5 +594,5 @@ return data/upload/yyyy/mm/dd/{session_id}/
 7. **剩余信息保护**：服务端会话失效、客户端缓存清理、内存敏感数据清理。
 8. **个人信息保护**：最小必要、授权同意、禁止对外提供、用户查询/更正/删除、日志脱敏。
 
-补充检查清单见根目录 [`等保要求.md`](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/等保要求.md)。
+补充检查清单见 [`memory/security-compliance.md`](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/memory/security-compliance.md)。
 
