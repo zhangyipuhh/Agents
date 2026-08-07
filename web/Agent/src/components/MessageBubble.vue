@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, reactive, watch, nextTick } from 'vue'
-import { marked } from 'marked'
+import { safeMarkdown } from '../utils/sanitize-marked.js'
 import { formatFileSize, getFileExtension, getAuthHeaders } from '../utils/api.js'
 import { isSubAgentTool } from '../utils/sseParser.js'
 import { renderTriggerMentions } from '../utils/triggerRegistry.js'
@@ -373,16 +373,9 @@ const formattedThinking = computed(() => {
 
 const renderedText = computed(() => {
   if (!hasText.value) return ''
-  try {
-    // 2026-07-26 新增：先统一渲染 trigger mention 标记，再交给 marked 解析 markdown。
-    return marked.parse(renderTriggerMentions(props.text))
-  } catch {
-    return renderTriggerMentions(props.text, { escapeHtml: true })
-      .replace(/\n\n/g, '</p><p>')
-      .replace(/\n/g, '<br/>')
-      .replace(/^/, '<p>')
-      .replace(/$/, '</p>')
-  }
+  // 2026-08-07 改造：AI 回复从 marked.parse 改为 safeMarkdown，自动走 DOMPurify 净化。
+  // 2026-07-26 新增：先统一渲染 trigger mention 标记，再交给 safeMarkdown 解析并 sanitize。
+  return safeMarkdown(renderTriggerMentions(props.text))
 })
 
 function isThinkingGroupActive(index) {
@@ -509,18 +502,11 @@ function formatToolItem(item) {
 
 function renderMarkdown(text) {
   if (!text) return ''
-  try {
-    // 2026-07-26 新增：先统一渲染 trigger mention 标记，再交给 marked 解析 markdown。
-    // renderTriggerMentions 会将 ⟦引用服务器：...⟧ 替换为内联 HTML chip，
-    // 服务器名已做 HTML 转义，marked 会保留这些内联标签。
-    return marked.parse(renderTriggerMentions(text))
-  } catch {
-    return renderTriggerMentions(text, { escapeHtml: true })
-      .replace(/\n\n/g, '</p><p>')
-      .replace(/\n/g, '<br/>')
-      .replace(/^/, '<p>')
-      .replace(/$/, '</p>')
-  }
+  // 2026-08-07 改造：从 marked.parse 改为 safeMarkdown，自动走 DOMPurify 净化。
+  // 2026-07-26 新增：先统一渲染 trigger mention 标记，再交给 safeMarkdown 解析并 sanitize。
+  // renderTriggerMentions 会将 ⟦引用服务器：...⟧ 替换为内联 HTML chip，
+  // 服务器名已做 HTML 转义，safeMarkdown 会保留这些内联标签。
+  return safeMarkdown(renderTriggerMentions(text))
 }
 
 function isThinkingGroupExpanded(index) {

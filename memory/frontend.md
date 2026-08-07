@@ -243,6 +243,69 @@
   - 响应头：删除 `content-length`、设置 `cache-control: no-cache`、`connection: keep-alive`、`x-accel-buffering: no`
 - **目的**：保证 LLM 流式输出不被 nginx/反代 buffer 截断
 
+### 前端 XSS 加固（2026-08-07 新增）
+
+- **目标**：消除 marked.parse + v-html、contenteditable、PortalApp iframe、HTTP 响应头缺失等 9 类 XSS 风险。
+- **覆盖范围**：`web/Agent/src/utils/sanitize-marked.js`（新建）+ `MessageBubble.vue` + `FilePreview.vue` + `InputBox.vue` + `PortalApp.vue` + `nginx.conf`。
+
+#### 1. 公共 Markdown 安全渲染工具 — `src/utils/sanitize-marked.js`
+
+- **职责**：marked 解析 + DOMPurify sanitize + 字符串兜底注入安全属性。
+- **关键设计**：
+  - 显式 `marked.parse(text, { async: false })` 强制同步返回 string（不受全局 `marked.use({ async: true })` 影响；T1 验证）。
+  - DOMPurify 默认 `ALLOWED_URI_REGEXP` 已支持 http/https/mailto/相对路径，禁止 `javascript:` / `data:` / `vbscript:` 等（T5 验证）。
+  - **双保险**：DOMPurify `afterSanitizeAttributes` hook（浏览器原生）+ 字符串 regex 兜底（happy-dom / jsdom 等 DOM 半残环境）注入 `<a target="_blank" rel="noopener noreferrer">` 与 `<img loading="lazy" style="max-width:100%;height:auto">`。
+  - happy-dom 下 DOMPurify hook `setAttribute` 写入后会被最终字符串化时丢失（验证见 `__tests__/sanitize-marked.test.js`），所以生产代码也保留字符串兜底逻辑。
+- **适用范围**：`MessageBubble.vue::renderedText`、`renderMarkdown`；`FilePreview.vue::renderedContent`。
+- **测试**：`src/utils/__tests__/sanitize-marked.test.js`，主动构造 `JSDOM + DOMPurify` 实例跑端到端验证；11 个用例全部通过。
+
+#### 2. `MessageBubble.vue` 改造
+
+- 替换 `import { marked } from 'marked'` → `import { safeMarkdown } from '../utils/sanitize-marked.js'`。
+- `renderedText` 与 `renderMarkdown` 函数体从 `marked.parse(renderTriggerMentions(text))` 改为 `safeMarkdown(renderTriggerMentions(text))`。
+- 用户消息已用 `renderTriggerMentions(..., { escapeHtml: true })` 渲染，本次未改 `renderedContent`。
+
+#### 3. `FilePreview.vue` 改造
+
+- `renderedContent` computed 从 `marked.parse(props.content)` 改为 `safeMarkdown(props.content)`。
+
+#### 4. `InputBox.vue` 改造
+
+- `sanitizeEditorHtml` 升级：
+  - 显式列出 `allowedAttrs`（仅保留 chip 必需属性：`data-trigger-id` / `data-business-name` / `data-server-type` / `data-mention-class` / `class` / `title` / `contenteditable`）。
+  - 黑名单属性：`/^(on\w+|formaction|srcdoc|action)$/i`，命中即 `removeAttribute`。
+  - 黑名单 URL 协议：`javascript: / data: / vbscript: / file:` 用于 `href` / `src`。
+- `handleEditorPaste` 注释更新为「仅取纯文本 + 现代 Range API」，已有实现本就如此，仅补注释说明。
+
+#### 5. `PortalApp.vue` 改造
+
+- `safeIframeUrl(url)` 函数：拒绝 `javascript: / data: / vbscript: / file:`，返回 `'about:blank'`。
+- `<iframe>` 元素：
+  - `:src="safeIframeUrl(getActiveItem().url)"`
+  - `sandbox="allow-scripts allow-same-origin allow-forms allow-popups"`
+  - `referrerpolicy="no-referrer"`
+  - `loading="lazy"`
+
+#### 6. `nginx.conf` 改造
+
+- `server { ... }` 顶部新增 4 个响应头（`always;` 持久化）：
+  - `Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self';`
+  - `X-Frame-Options: SAMEORIGIN`
+  - `X-Content-Type-Options: nosniff`
+  - `Referrer-Policy: strict-origin-when-cross-origin`
+- CSP 第一版保留 `unsafe-inline` / `unsafe-eval` 以兼容 Vite dev 模式；后续评估移除。
+
+#### 7. 依赖变更（package.json）
+
+- `dompurify: ^3.2.0`（新增，`dependencies`）。
+- `jsdom: ^x.x.x`（`devDependencies`，仅供 sanitize-marked 单测使用）。
+
+#### 8. 后续工单（不在本期范围）
+
+- **iframe sandbox 收紧**：本期保留 `allow-same-origin`，第三方 iframe 仍能访问 localStorage；后续应改 `postMessage` 父传子 + 关闭 `allow-same-origin`（`sandbox="allow-scripts allow-forms allow-popups"`）。
+- **frame-src 动态白名单**：当前 `frame-src 'self'` 与 PortalApp 跨域 URL（`http://10.20.8.178:7777/webgis/kjzr`）有冲突；阶段 1 已要求运维治理 app-config.json 维护规范，阶段 2 应在 Vite 构建期读取 navItems 生成白名单注入 nginx。
+- **localStorage token**：架构性风险，未改 HttpOnly Cookie（需后端 + 全链路）。
+
 ### 部署（Nginx + Docker）
 
 - **`Dockerfile`**：多阶段构建 — `node:20-alpine` 构建 → `nginx:alpine` 运行
@@ -253,6 +316,7 @@
   - **/api 反代**：`proxy_buffering off`、`proxy_cache off`、`chunked_transfer_encoding on`、支持 WebSocket Upgrade
   - **超时**：connect 60s、send/read 300s（支持长时 LLM 生成）
   - **健康检查**：`/health` 返回 `200 healthy\n`
+  - **2026-08-07 新增**：见「前端 XSS 加固」章节，新增 CSP + 三大响应头。
 
 ### Portal 运行时配置
 

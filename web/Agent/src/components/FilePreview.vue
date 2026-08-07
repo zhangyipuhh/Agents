@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { marked } from 'marked'
+import { safeMarkdown } from '../utils/sanitize-marked.js'
 import VueOfficePdf from '@vue-office/pdf'
 import VueOfficeDocx from '@vue-office/docx'
 import VueOfficeExcel from '@vue-office/excel'
@@ -274,11 +274,8 @@ onUnmounted(() => {
 const renderedContent = computed(() => {
   if (!props.content) return ''
   if (props.previewMode === 'markdown') {
-    try {
-      return marked.parse(props.content)
-    } catch {
-      return props.content.replace(/\n/g, '<br/>')
-    }
+    // 2026-08-07 改造：从 marked.parse 改为 safeMarkdown，自动走 DOMPurify 净化。
+    return safeMarkdown(props.content)
   }
   return ''
 })

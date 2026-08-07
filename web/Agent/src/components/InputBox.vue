@@ -605,6 +605,15 @@ function sanitizeEditorHtml(html) {
   const template = document.createElement('template')
   template.innerHTML = html
   const allowedTags = new Set(['SPAN', 'BR', 'BUTTON'])
+  const allowedAttrs = new Set([
+    'data-trigger-id', 'data-business-name', 'data-server-type',
+    'data-mention-class', 'class', 'title', 'contenteditable'
+  ])
+  // 危险属性黑名单:event handler / 表单行为 / srcdoc
+  const dangerousAttrs = /^(on\w+|formaction|srcdoc|action)$/i
+  // 危险 URL 协议(用于 href/src)
+  const dangerousUrl = /^\s*(javascript|data|vbscript|file):/i
+
   const walk = (node) => {
     const children = Array.from(node.childNodes)
     for (const child of children) {
@@ -622,6 +631,20 @@ function sanitizeEditorHtml(html) {
         while (child.firstChild) fragment.appendChild(child.firstChild)
         child.replaceWith(fragment)
         continue
+      }
+      // 2026-08-07 新增：过滤属性,防 onerror 等事件处理器 / javascript: URL 复活
+      for (const attr of Array.from(child.attributes)) {
+        if (dangerousAttrs.test(attr.name)) {
+          child.removeAttribute(attr.name)
+          continue
+        }
+        if ((attr.name === 'href' || attr.name === 'src') && dangerousUrl.test(attr.value)) {
+          child.removeAttribute(attr.name)
+          continue
+        }
+        if (!allowedAttrs.has(attr.name)) {
+          child.removeAttribute(attr.name)
+        }
       }
       walk(child)
     }
@@ -790,6 +813,9 @@ function handleAdjacentChipDelete(event, root) {
 
 function handleEditorPaste(event) {
   event.preventDefault()
+  // 2026-08-07 改造：仅取纯文本(text/plain),不解析 text/html,
+  // 避免复制富文本时携带 onerror / javascript: 等危险属性。
+  // 使用现代 Selection + Range API 实现,不再使用已被废弃的 document.execCommand('insertText')。
   const text = (event.clipboardData || window.clipboardData)?.getData?.('text/plain') || ''
   if (!text) return
   const root = editorRef.value

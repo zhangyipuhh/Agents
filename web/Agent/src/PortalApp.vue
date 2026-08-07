@@ -132,6 +132,20 @@ function getActiveItem() {
 }
 
 /**
+ * 校验 iframe URL 安全:拒绝 javascript: / data: / vbscript: / file: 等危险协议。
+ * 防止 app-config.json 被替换后通过 iframe src 注入攻击。
+ * @param {string} url - 原始 URL
+ * @returns {string} 通过校验的 URL;不通过返回 'about:blank'
+ */
+function safeIframeUrl(url) {
+  if (typeof url !== 'string') return 'about:blank'
+  const trimmed = url.trim()
+  if (!trimmed) return 'about:blank'
+  if (/^(javascript|data|vbscript|file):/i.test(trimmed)) return 'about:blank'
+  return trimmed
+}
+
+/**
  * 计算 postMessage 的 targetOrigin
  *
  * 优先使用 navItem 中显式配置的 targetOrigin；否则根据 url 推断：
@@ -423,7 +437,10 @@ onUnmounted(() => {
       <template v-if="getActiveItem() && getActiveItem().type === 'iframe'">
         <iframe
           ref="iframeRef"
-          :src="getActiveItem().url"
+          :src="safeIframeUrl(getActiveItem().url)"
+          sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+          referrerpolicy="no-referrer"
+          loading="lazy"
           width="100%"
           height="100%"
           frameborder="0"
