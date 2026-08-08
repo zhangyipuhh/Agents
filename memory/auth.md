@@ -37,6 +37,7 @@
 - 第一阶段通过密码与图形验证码后：已启用 MFA 的用户返回短期一次性 `mfa_required` challenge；未绑定且属于强制角色的用户返回 `mfa_enrollment_required` challenge；两种状态均不签发 Access/Refresh Token。
 - 公开 challenge 端点：`POST /api/auth/mfa/login/verify`、`POST /api/auth/mfa/login/enroll/start`、`POST /api/auth/mfa/login/enroll/confirm`。验证成功后才签发正式会话；恢复码为一次性凭据。
 - 已登录管理端点：`GET /api/auth/mfa/status`、`POST /api/auth/mfa/totp/enroll/start`、`POST /api/auth/mfa/totp/enroll/confirm`、`POST /api/auth/mfa/totp/disable`、`POST /api/auth/mfa/recovery-codes/regenerate`。管理员禁止禁用 MFA。
+- enroll/start 端点返回的 `qr_png_base64` 为完整 Data URI（`data:image/png;base64,…`），前端可直接写入 `<img src>` 渲染；`otpauth_uri` 为纯文本 URI，供手动录入。
 - TOTP issuer 默认值为 `AIOps`，可通过 `MFA_ISSUER` 环境变量覆盖；issuer 仅写入新生成的 `otpauth` URI，已绑定的认证器条目不会自动改名，需重新扫描二维码或重新绑定 MFA。
 - TOTP secret 使用独立 `MFA_SECRET_KEY` 的 Fernet 加密存储；恢复码保存 bcrypt 哈希；challenge 仅保存 SHA-256 哈希，支持过期、消费、防重放和失败锁定。
 - MFA 服务、密钥或数据库不可用时浏览器 `/login` fail-closed，不降级为单因素；`/api/auth/login-api` 保持原有程序化登录契约，不纳入浏览器 MFA 改造。
