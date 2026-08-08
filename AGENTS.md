@@ -303,8 +303,48 @@ app/{module}/bar/baz.py      →  app/tests/{module}/bar/test_baz.py
 
 - [ ] 每个 `autouse=True` fixture 是否有生产对等初始化点？（`Grep "app.state.<attr>" app/core/server.py app/main.py` 验证）
 - [ ] 是否有 `MagicMock()` 直接挂在 `app.state.*` 上？（如有不属于 stub service 的 → 删除或迁移到 service 层）
-- [ ] 测试失败时是否先问「这是生产 bug 还是测试 bug？」而不是「怎么 Mock 掉这个错？」
+- [ ] 测试失败时是否先问「这是生产 bug 还是测试 bug？」而不是「怎么 Mock 掉这个错？」？
 - [ ] 历史兼容 fixture 是否在 docstring 标注「仅历史兼容」+ 在 `project_memory.md` 写入待办？
+
+## ⚠️ HARD RULE：测试 fake 必须模拟依赖的完整语义
+
+**核心原则**：fake（手工构造的 `asyncpg.Connection` / `requests.Session` / 任何第三方客户端替身）**只模仿协议形状**（方法签名 + 返回值结构）是不够的——它还必须模仿**该依赖在真实运行时的约束与失败模式**。否则生产里"参数编码层 / TLS 校验 / 大小限制"等会抛错的环节，会被 fake 完全旁路，导致「**生产崩溃、测试全绿**」。
+
+**典型反模式（2026-08-08 MFA 绑定 401 案例）**：
+
+- 生产 `mfa_service.py::confirm_login_enrollment` 把 `datetime.now(timezone.utc)`（**aware**）直接写入 PG `user_mfa_totp.enabled_at`（**TIMESTAMP 朴素列**）
+- 测试 `_FakeConnection.execute()` 只调 `_dispatch_execute(sql, args)`，把 `args[1]` 原样塞进 `totp_row["enabled_at"]` 字典，**完全绕过** asyncpg 的 `_encode_bind_msg` 参数编码层
+- 后果：测试 100% 通过，但生产 asyncpg 抛 `DataError: invalid input for query argument $2: ... (can't subtract offset-naive and offset-aware datetimes)` → 被 `auth_middleware` 的 `try/except Exception` 吞掉 → 用户看到 `401 Unauthorized`
+- 根因：fake 模拟的是"**调用通过 + 数据落库**"这一**结果**，但没模拟"**编码/校验/约束**"这一**过程**
+
+**硬约束**：
+
+1. **fake 必须明确分类**：在 docstring / 类型注解里标注它模拟的是「形状层」还是「完整语义层」。形状层 fake 仅用于路由断言 / 数据结构校验；涉及**参数编码、类型校验、安全约束、协议版本**等场景，必须用「完整语义层」fake 或真依赖。
+
+2. **强制 hook 扩展点**：所有 fake 基类（如 `_FakeConnection` / `_FakeHttpClient`）必须预留 `_check_<依赖语义>` 类的方法（如 `_check_bind_args`），由子类按需 override。基类默认实现为 `pass`（保持向后兼容），但**涉及真实约束的 fake 子类必须 override**。禁止把所有约束都堆在 `_dispatch_execute` 里——那本质是「**只断言成功路径**」。
+
+3. **测试必须包含反向用例**：对每个受 fake 影响的"真实约束"（如 aware datetime → naive 列），必须有 `pytest.raises(...)` 反向测试证明 fake 能捕获该 bug。**仅正向断言 happy path = 100% 漏检真生产 bug**。
+
+4. **禁用"`happy path only`" fake 应付 SQL/调用顺序测试**：常见借口是"我只测 SQL 文本 + 字段名匹配"。这是上一条"测试全绿、生产崩溃"案例的精确根因。**只要生产代码把数据写入某列，fake 必须能识别"列类型 ↔ 参数类型"约束**。
+
+5. **发现"测试过、生产崩"反模式时**：先怀疑 fake 缺约束校验，再考虑"要不要补集成测试"。补 fake 的 hook 成本远低于"补集成测试 + 找真 PG 跑"。
+
+**反例 → 正例对照**：
+
+| 反例（fake 不模拟约束） | 正例（fake 模拟完整语义） |
+|---|---|
+| `_FakeConnection.execute(sql, args)` 直接调 `_dispatch_execute`，把 `args` 原样塞字典 | `_FakeConnection.execute` 先调 `_check_bind_args(sql, args)`，子类 override 检测 aware datetime 写入 naive 列时抛 `DataError` |
+| `_FakeHttpClient.get(url)` 返回固定 JSON，不校验 URL scheme / Host 头 | `_FakeHttpClient` override `_check_request`，对 `file://` 或恶意 host 抛异常 |
+| `_FakeRedis.set(key, value)` 直接塞 dict，不校验 value 序列化格式 | `_FakeRedis.set` 调 `_check_serialize`，对不可 pickle 的对象抛 `TypeError` |
+| 测试仅断言"传 naive datetime 能正常落库" | 测试同时断言"传 aware datetime 必抛 DataError"，证明 fake 真能捕获类型冲突 |
+
+**审计清单**（每次新增 fake / 修改 fake 子类后必查）：
+
+- [ ] fake 的 docstring 是否明确标注「形状层 / 完整语义层」？
+- [ ] 涉及真实约束的 fake 子类是否 override 了对应的 `_check_*` hook？
+- [ ] 该 fake 影响的关键生产 bug 是否有反向测试（`pytest.raises`）证明 fake 能捕获？
+- [ ] `args` / `params` / `headers` / `body` 等敏感输入是否在进入 fake 主路径前已经过类型 / 编码校验？
+- [ ] fake 的"成功路径"测试通过 ≠ fake 的"失败路径"也覆盖了吗？（happy path only = 反模式）
 
 ## Skill 系统使用规范（2026-06-21 落地，v2）
 
