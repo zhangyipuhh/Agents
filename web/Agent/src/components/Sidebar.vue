@@ -1,7 +1,12 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import UserSettingsDialog from './UserSettingsDialog.vue'
 import { fetchSessionList, deleteSession, fetchProjectList, updateSessionTitle, exportSessionMarkdown, deleteProject, renameProject } from '../utils/api.js'
+
+// 2026-08-XX 接入 vue-router：activeMenu 由路由 name 派生，去掉 :current-page prop
+const route = useRoute()
+const router = useRouter()
 
 const props = defineProps({
   currentPage: {
@@ -31,12 +36,11 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['toggle-sidebar', 'new-chat', 'page-change', 'logout', 'username-updated', 'session-switch'])
+const emit = defineEmits(['toggle-sidebar', 'new-chat', 'logout', 'username-updated', 'session-switch'])
 
 const isSidebarCollapsed = ref(false)
 const isHistoryCollapsed = ref(false)
 const isLabCollapsed = ref(false)
-const activeMenu = ref('new-task')
 const isUserMenuVisible = ref(false)
 const userMenuRef = ref(null)
 const menuPositionStyle = ref({})
@@ -219,28 +223,37 @@ const cancelDeleteSession = () => {
 }
 
 const handleMenuClick = (menuId) => {
-  // 仅在真正切换主窗口页面（new-task / ops-console）时保持 active 视觉；
-  // knowledge 仍是新 Tab 打开，按下后立即恢复、不留 active 视觉残留。
-  if (menuId === 'new-task' || menuId === 'ops-console') {
-    activeMenu.value = menuId
-  }
+  // 2026-08-XX 接入 vue-router：三个主导航项全部走路由切换
+  // - new-task：路由回 / + 触发「新建会话」语义（保留 emit new-chat）
+  // - knowledge：路由跳 /knowledge（SPA 内切换，不再 window.open 新 Tab）
+  // - ops-console：路由跳 /ops-console（SPA 内切换）
   if (menuId === 'new-task') {
     emit('new-chat')
-    emit('page-change', 'agent')
-  }
-  if (menuId === 'knowledge') {
-    // 在浏览器新 Tab 中打开知识库页面（行为等同 <a target="_blank">）：
-    // - '_blank' 显式声明新上下文语义；不传 width/height 让浏览器走默认"新开 Tab 节点"行为，避免被识别为弹窗窗口
-    // - 'noopener' 切断 window.opener 引用，规避安全风险
-    window.open('/knowledge.html', '_blank', 'noopener')
-  }
-  // 2026-08-08 等保三级改造：运维控制台由独立 /ops-console.html 入口改为
-  // App.vue::currentPage === 'ops-console' 内嵌子页面（复用主应用 HttpOnly
-  // Cookie + fetchWithAuth 鉴权链路），行为与 new-task 一致。
-  if (menuId === 'ops-console') {
-    emit('page-change', 'ops-console')
+    router.push('/')
+  } else if (menuId === 'knowledge') {
+    router.push('/knowledge')
+  } else if (menuId === 'ops-console') {
+    router.push('/ops-console')
   }
 }
+
+/**
+ * 路由 → Sidebar activeMenu 派生（与历史 activeMenu 语义对齐）
+ * - / → 'new-task'
+ * - /knowledge → 'knowledge'
+ * - /ops-console → 'ops-console'
+ */
+const activeMenu = computed(() => {
+  // 2026-08-08 修复：useRoute() 在没有 router 上下文（单测 mount、portal/knowledge
+  // 独立入口未挂 router 等场景）会返回 undefined，访问 .name 直接抛 TypeError。
+  // 加保护：route 不存在或无 name 时按 / 默认归 'new-task'。
+  // 触发场景：本测试环境 mount App.vue 但未挂 router；vue-router 4 inject 失败时
+  // useRoute 返回 undefined（不是空对象），需显式短路。
+  if (!route || !route.name) return 'new-task'
+  if (route.name === 'ops-console') return 'ops-console'
+  if (route.name === 'knowledge') return 'knowledge'
+  return 'new-task'
+})
 
 const toggleSidebar = () => {
   isSidebarCollapsed.value = !isSidebarCollapsed.value
@@ -631,11 +644,11 @@ onUnmounted(() => {
         <kbd v-show="!isSidebarCollapsed" class="shortcut">Ctrl+K</kbd>
       </button>
       <!--
-        2026-08-08 等保三级改造：运维控制台由独立 /ops-console.html 入口改为
-        App.vue 内嵌子页面（currentPage === 'ops-console'）。
-        行为与「新建任务」一致：点击切换主应用内嵌视图，复用主应用 HttpOnly
-        Cookie / fetchWithAuth 鉴权链路，避免独立子窗口 Cookie 失效导致
-        /api/admin/server-inspection/latest 等接口拉不到数据。
+        运维控制台入口
+        2026-08-08 等保三级改造：取消独立 /ops-console.html，改为 App.vue 内嵌子页面
+        2026-08-XX 接入 vue-router：进一步改为路由 /ops-console，SPA 内 router.push 切换
+        行为与「新建任务」一致：复用主应用 HttpOnly Cookie + fetchWithAuth 鉴权链路，
+        避免独立子窗口 Cookie 失效导致 /api/admin/server-inspection/latest 拉不到数据。
       -->
       <button
         class="menu-item menu-item-secondary"

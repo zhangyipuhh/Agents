@@ -598,3 +598,51 @@ return data/upload/yyyy/mm/dd/{session_id}/
 
 补充检查清单见 [`memory/security-compliance.md`](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/memory/security-compliance.md)。
 
+## 本地 HTTPS 测试（nginx/，2026-08-08 新增）
+
+> 无 Docker 场景下测试 HTTPS 传输 / HSTS / 等保三级 TLS 配置的本地入口。
+
+- **位置**：`nginx/`（Windows nginx 1.30.4 独立发行版，含 `nginx.exe` / `conf/` / `html/` / `logs/`）。
+- **入口**：`nginx/conf/nginx.conf`（覆盖默认配置；与 `web/Agent/nginx.conf` 同步 + HTTPS 扩展）。
+- **证书**：`nginx/conf/certs/localhost.pem` / `localhost-key.pem`，由 `nginx/mkcert.exe` 签发
+  - 主题：`O=mkcert development certificate`、`Issuer=mkcert development CA`
+  - 覆盖：`localhost` / `127.0.0.1` / `::1`，有效期 2 年（到 2028-11-08）
+  - mkcert 已注册到 Windows 受信根（`mkcert -install`），浏览器访问 https://localhost:8443 显示绿锁无警告
+- **端口**：HTTP `8080` → 301 跳转 HTTPS `8443`（避开 80/443 特权端口，本地非管理员即可启动）。
+- **同步 `web/Agent/nginx.conf` 内容**：CSP / X-Frame-Options / X-Content-Type-Options / Referrer-Policy / gzip / SPA 路由（`/`、`/knowledge`、`/ops-console`、`/portal`、`/login`）/ 静态资源 1y 缓存 / `/health`。
+- **/api 代理**：直接写死 `http://127.0.0.1:8001`（Windows 无 envsubst，与 Docker 模板 `${VITE_API_TARGET}` 解耦）；保留 SSE 流式（`proxy_buffering off`）+ WebSocket Upgrade + 300s 读超时。
+- **TLS 加固（等保三级）**：
+  - `ssl_protocols TLSv1.2 TLSv1.3`
+  - `ssl_ciphers HIGH:!aNULL:!MD5:!DES:!3DES:!RC4`
+  - `ssl_prefer_server_ciphers on`
+  - HSTS `max-age=31536000; includeSubDomains`（`always` 标记）
+- **Windows 差异（与 Docker 版 nginx.conf）**：移除 `resolver 127.0.0.11`（Docker DNS）；`root` 改用正斜杠绝对路径 `E:/laboratory/AI/Agents/feature-agent-core-ref/web/Agent/dist`（零拷贝，前端重新构建立即生效）；`ssl_certificate` 改用正斜杠绝对路径。
+- **不修改 `web/Agent/nginx.conf`**：Docker 版保持 HTTP；HTTPS 仅在本地测试场景。
+
+### 启动 / 停止 / 验证
+
+```powershell
+# 前置：mkcert CA 已安装（一次性）
+.\nginx\mkcert.exe -install
+
+# 启动（任意目录都可）
+Start-Process -FilePath ".\nginx\nginx.exe" `
+    -ArgumentList @("-p", "E:\laboratory\AI\Agents\feature-agent-core-ref\nginx", "-c", "conf\nginx.conf") `
+    -WindowStyle Hidden
+
+# 语法检查
+.\nginx\nginx.exe -t -p "E:\laboratory\AI\Agents\feature-agent-core-ref\nginx" -c "conf\nginx.conf"
+
+# 停止
+.\nginx\nginx.exe -s stop -p "E:\laboratory\AI\Agents\feature-agent-core-ref\nginx" -c "conf\nginx.conf"
+
+# 验证（监听 + HTTPS 绿锁）
+curl.exe -I -k https://localhost:8443/
+curl.exe -k https://localhost:8443/health
+```
+
+### 登录 Cookie 安全（推荐）
+
+- 默认 `AUTH_COOKIE_SECURE=false`，HTTPS 下 Cookie 不带 Secure 也能正常发送。
+- 本地 HTTPS 测试建议在 `.env` 设 `AUTH_COOKIE_SECURE=true`，让 Cookie 带 Secure 标记（更贴合等保三级数据保密性）。
+

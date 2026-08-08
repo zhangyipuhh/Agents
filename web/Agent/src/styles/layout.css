@@ -1,0 +1,53 @@
+/**
+ * 主应用 layout 样式（全局，跨组件共享）
+ *
+ * 历史：2026-08-XX 接入 vue-router 后，AgentWorkspace 子页面使用与 App.vue
+ * 相同的 layout class（.content-area / .welcome-title / .queue-banner-wrapper）。
+ * 原样式定义在 App.vue 的 <style scoped> 内，受 Vue scoped CSS 机制限制
+ * 不穿透到子组件根元素，导致接入后主聊天界面坍缩。
+ *
+ * 修复方案：把跨组件共享的 layout 样式抽出到本全局样式表，
+ * 由 main.js 在启动时 import 一次（与 styles/main.css 一起）。
+ * App.vue 自己的局部样式（.app-layout / .auth-loading-screen / spinner /
+ * keyframes）仍保留在 App.vue <style scoped> 内。
+ */
+
+/* ===== 内容区（AgentWorkspace 等子页面继承）===== */
+.content-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background-color: var(--color-bg-secondary);
+}
+
+.content-area.empty-layout {
+  justify-content: center;
+  align-items: center;
+}
+
+.content-area.empty-layout > * {
+  width: 100%;
+  max-width: 900px;
+}
+
+/* ===== 欢迎语（AgentWorkspace 空态显示）===== */
+.welcome-title {
+  font-size: 32px;
+  font-weight: var(--font-weight-bold);
+  /* 与登录页主色 #1E5AA8 保持一致 */
+  color: #1E5AA8;
+  margin-bottom: 32px;
+  text-align: center;
+}
+
+/* ===== 排队提示横幅 wrapper（与 InputBox 的 .input-box-container 横向边距对齐）===== */
+.queue-banner-wrapper {
+  padding: 0 40px;
+}
+
+/* empty-layout 下 content-area.empty-layout > * 已限制 max-width: 900px，
+   若保留 padding 会导致横幅被二次收缩，故在此场景下移除 padding */
+.content-area.empty-layout .queue-banner-wrapper {
+  padding: 0;
+}

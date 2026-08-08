@@ -6,7 +6,7 @@ import FilePreview from './FilePreview.vue'
 import KnowledgeChat from './KnowledgeChat.vue'
 
 // 2026-06-15 新增：open-subagent-drawer 透传事件，触发 App.vue 顶层 <SubAgentDrawer> 打开
-const emit = defineEmits(['new-chat', 'page-change', 'open-subagent-drawer'])
+const emit = defineEmits(['new-chat', 'open-subagent-drawer'])
 
 const isPreviewOpen = ref(false)
 const previewContent = ref('')

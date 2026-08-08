@@ -1,5 +1,5 @@
 <script setup>
-import { reactive, onMounted, onBeforeUnmount, computed, ref } from 'vue'
+import { reactive, onMounted, onBeforeUnmount, computed, ref, provide } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import ChatArea from './components/ChatArea.vue'
 import InputBox from './components/InputBox.vue'
@@ -49,7 +49,6 @@ import { redirectToLogin, tryRefreshOrRedirect } from './utils/auth.js'
 const agentName = ref(null)
 // 2026-06-26 新增：当前激活的智能体展示名称（中文）
 const agentDisplayName = ref('')
-const currentPage = ref('agent')
 const isLoggedIn = ref(false)
 // 认证状态检查是否就绪；用于在 checkAuth 完成前显示 loading 占位，
 // 避免因异步资源加载造成"页面内容闪烁两次"的视觉问题
@@ -1115,27 +1114,92 @@ function handleCloseFilePreview() {
   filePreviewOpen.value = false
 }
 
-function handlePageChange(page) {
-  currentPage.value = page
-  // 2026-08-08 等保三级改造：运维控制台样式按需引入（首次切到 ops-console 时挂载 CSS），
-  // 避免政务蓝样式在主应用默认加载污染其他页面。
-  if (page === 'ops-console') {
-    ensureOpsConsoleStyles()
-  }
-}
+/**
+ * 2026-08-XX 接入 vue-router：把 chat 业务状态 + 方法集中到一个对象，
+ * 通过 provide('chatWorkspace') 注入给 AgentWorkspace（views/AgentWorkspace.vue）。
+ *
+ * 设计要点：
+ * - 单一真相源：App.vue 仍持有所有 chat 业务的状态与方法（不复制、不下沉到 store）
+ * - 通过 reactive 包裹后，AgentWorkspace 可读 .value / 数组 / 计算属性；方法直接调用
+ * - future：若未来需要多 workspace 共享同一 chat 状态，再升级 Pinia
+ *
+ * 字段清单（与 views/AgentWorkspace.vue 模板引用一致）：
+ *   - 状态：messages / sessionId / isStreaming / toolStopPending / currentAttachments
+ *           approvalMode / approvalData / currentProject / agentName / agentDisplayName
+ *           allowedAgents / sessionTitle / queueStatus / isQueueBannerVisible
+ *           subAgentDrawerVisible / currentSubAgent / sessionFileDrawerVisible
+ *           sessionFileTree / sessionFileDrawerLoading / sessionFileDrawerError
+ *           filePreviewOpen / filePreviewData / dislikeDialog
+ *   - 派生：isAdmin（currentUser.role === 'admin'）、canEditProject
+ *   - 方法：newSession / handleSendMessage / handleStopMessage / handleApprovalSubmit
+ *           handleApprovalCancel / handleRegenerate / handleLike / handleDislike
+ *           handleCopy / handleOpenSessionFileDrawer / handleCloseFilePreview
+ *           handleAgentSwitched / handleProjectSelectNone / handleProjectPick
+ *           openCreateProjectDialog / openPickProjectDialog / handleProjectCreate
+ *           openSubAgentDrawer / closeSubAgentDrawer / handleTagSelect / handleToolAction
+ *           ensureSessionForFirstOp / handleDislikeSubmitted / setProjectLockedByUpload
+ */
+const chatWorkspace = reactive({
+  // 状态（2026-08-08 修复：必须用 reactive(...) 包裹，否则 AgentWorkspace 模板中
+  // ws.filePreviewOpen / ws.filePreviewData.* 等嵌套 ref 不会被自动解包，
+  // ref 对象传给子组件 Boolean/Object prop 后导致 FilePreviewModal 始终弹窗、
+  // content 为 undefined 等异常。详见 .trae/documents/file-preview-modal-auto-open-bug.md）
+  messages,
+  sessionId,
+  isStreaming,
+  toolStopPending,
+  currentAttachments,
+  approvalMode,
+  approvalData,
+  currentProject,
+  agentName,
+  agentDisplayName,
+  allowedAgents,
+  sessionTitle,
+  queueStatus,
+  isQueueBannerVisible,
+  subAgentDrawerVisible,
+  currentSubAgent,
+  sessionFileDrawerVisible,
+  sessionFileTree,
+  sessionFileDrawerLoading,
+  sessionFileDrawerError,
+  filePreviewOpen,
+  filePreviewData,
+  dislikeDialog,
+  // 派生（currentUser 与 canEditProject 都是 ref/computed，传引用保留响应式）
+  isAdmin: computed(() => currentUser.value.role === 'admin'),
+  canEditProject,
+  // 方法
+  newSession,
+  handleSendMessage,
+  handleStopMessage,
+  handleApprovalSubmit,
+  handleApprovalCancel,
+  handleRegenerate,
+  handleLike,
+  handleDislike,
+  handleCopy,
+  handleOpenSessionFileDrawer,
+  handleCloseFilePreview,
+  handleAgentSwitched,
+  handleProjectSelectNone,
+  handleProjectPick,
+  handleProjectCreate,
+  openCreateProjectDialog,
+  openPickProjectDialog,
+  openSubAgentDrawer,
+  closeSubAgentDrawer,
+  handleTagSelect,
+  handleToolAction,
+  ensureSessionForFirstOp,
+  handleDislikeSubmitted,
+  setProjectLockedByUpload(value) {
+    projectLockedByUpload.value = value
+  },
+})
 
-// 2026-08-08 等保三级改造：ops-console 样式 lazy load，单例守卫避免重复引入
-const _opsConsoleStylesLoaded = ref(false)
-async function ensureOpsConsoleStyles() {
-  if (_opsConsoleStylesLoaded.value) return
-  _opsConsoleStylesLoaded.value = true
-  try {
-    await import('./styles/ops-console.css')
-  } catch (err) {
-    console.error('[App] 加载运维控制台样式失败:', err)
-    _opsConsoleStylesLoaded.value = false
-  }
-}
+provide('chatWorkspace', chatWorkspace)
 
 /**
  * 切换到历史会话
@@ -1353,74 +1417,28 @@ async function handleSessionSwitch(targetSessionId) {
   <div v-else class="app-layout">
     <Sidebar
       ref="sidebarRef"
-      :current-page="currentPage"
       :username="currentUser.username"
       :user-role="currentUser.role"
       :user-id="currentUser.userId"
       :current-session-id="sessionId.value"
       :visible-menus="visibleMenus"
       @new-chat="newSession"
-      @page-change="handlePageChange"
       @logout="handleLogout"
       @username-updated="handleUsernameUpdated"
       @session-switch="handleSessionSwitch"
       @open-subagent-drawer="openSubAgentDrawer"
     />
 
-    <main v-if="currentPage === 'agent'" class="content-area" :class="{ 'empty-layout': isEmptyState }">
-      <ChatArea
-        v-if="!isEmptyState"
-        :messages="messages"
-        :is-streaming="isStreaming.value"
-        :session-name="sessionTitle"
-        @regenerate="handleRegenerate"
-        @like="handleLike"
-        @dislike="handleDislike"
-        @copy="handleCopy"
-        @open-subagent-drawer="openSubAgentDrawer"
-        @open-session-file-drawer="handleOpenSessionFileDrawer"
-      />
-
-      <div v-if="isEmptyState" class="welcome-title">Agent, 让你的运维工作更轻松</div>
-
-      <!-- 2026-06-15 新增：动态排队提示横幅，挂在 ChatArea 与 HumanApprovalBox/InputBox 之间 -->
-      <div class="queue-banner-wrapper">
-        <QueueStatusBanner
-          :queue-status="queueStatus"
-          :is-visible="isQueueBannerVisible"
-        />
-      </div>
-
-      <HumanApprovalBox
-        v-if="approvalMode"
-        :questions="approvalData.questions"
-        @submit="handleApprovalSubmit"
-        @cancel="handleApprovalCancel"
-      />
-      <template v-else>
-        <InputBox
-          :session-id="sessionId.value"
-          :is-streaming="isStreaming.value"
-          :is-stop-pending="toolStopPending.value"
-          :bound-agent-name="agentName || ''"
-          :bound-agent-display-name="agentDisplayName || ''"
-          :current-project="currentProject"
-          :project-locked="!canEditProject"
-          :allowed-agents="allowedAgents"
-          :is-admin="currentUser.role === 'admin'"
-          :ensure-session="ensureSessionForFirstOp"
-          @send="handleSendMessage"
-          @tool-action="handleToolAction"
-          @new-chat="newSession"
-          @stop="handleStopMessage"
-          @agent-switched="handleAgentSwitched"
-          @project-lock-change="projectLockedByUpload = $event"
-          @select-project="(p) => p === null ? handleProjectSelectNone() : handleProjectPick(p)"
-          @create-project="openCreateProjectDialog"
-          @pick-existing="openPickProjectDialog"
-        />
-      </template>
-    </main>
+    <!--
+      2026-08-XX 接入 vue-router：子页面（AgentWorkspace / KnowledgeWorkspace /
+      OpsConsoleWorkspace）由 router-view 渲染；App.vue 仅保留 layout、Sidebar、
+      全局浮层（ProjectDialog / SubAgentDrawer / SessionFileDrawer / FilePreviewModal /
+      DislikeDialog）。
+      - 业务状态通过 provide('chatWorkspace') 注入给 AgentWorkspace
+      - ops-console 样式按需加载已迁移到 OpsConsoleWorkspace 的 onMounted
+      - knowledge / ops-console 也不再直接 import App.vue 的子组件
+    -->
+    <router-view />
 
     <!-- 2026-06-30 新增：项目弹窗（双模式：create / pick） -->
     <ProjectDialog
@@ -1430,24 +1448,6 @@ async function handleSessionSwitch(targetSessionId) {
       @created="handleProjectCreate"
       @picked="handleProjectPick"
     />
-
-    <KnowledgePage
-      v-if="currentPage === 'knowledge'"
-      @new-chat="newSession"
-      @page-change="handlePageChange"
-      @open-subagent-drawer="openSubAgentDrawer"
-    />
-
-    <!--
-      2026-08-08 等保三级改造：运维控制台由独立 /ops-console.html 入口
-      改为 App.vue 内嵌条件渲染（currentPage === 'ops-console'）。
-      鉴权链路：复用主应用 HttpOnly Cookie + fetchWithAuth 自动注入
-      X-Requested-With / 401 refresh 重试，与主应用 /api/auth/validate
-      会话状态保持一致，避免「独立子窗口 Cookie 失效拉不到数据」的反模式。
-      样式表在 handlePageChange 首次切到 'ops-console' 时按需引入
-      （避免主应用默认加载政务蓝样式污染其他页面）。
-    -->
-    <OpsConsolePage v-if="currentPage === 'ops-console'" />
 
     <!--
       2026-06-14 改造：原 SandboxDrawer 已删除，沙箱执行详情统一由 SubAgentDrawer 展示。
@@ -1462,40 +1462,9 @@ async function handleSessionSwitch(targetSessionId) {
     <!--
       2026-07-01 新增：会话文件空间抽屉。
       Push Drawer 模式，与 SubAgentDrawer 同布局机制，放在 app-layout 内与 main 同级。
+      2026-08-XX 接入 vue-router 后，SessionFileDrawer、FilePreviewModal、DislikeDialog
+      均随 chat 业务迁移到 views/AgentWorkspace.vue 内部，仅在 / 路由下渲染。
     -->
-    <SessionFileDrawer
-      v-if="currentPage === 'agent'"
-      :visible="sessionFileDrawerVisible"
-      :file-tree="sessionFileTree"
-      :loading="sessionFileDrawerLoading"
-      :error="sessionFileDrawerError"
-      :session-id="sessionId.value"
-      @close="closeSessionFileDrawer"
-      @file-click="handleSessionFileClick"
-    />
-
-    <!-- 2026-07-01 新增：文件预览弹窗 -->
-    <FilePreviewModal
-      :is-open="filePreviewOpen"
-      :content="filePreviewData.content"
-      :file-type="filePreviewData.fileType"
-      :file-name="filePreviewData.fileName"
-      :loading="filePreviewData.loading"
-      :preview-mode="filePreviewData.previewMode"
-      :file-url="filePreviewData.fileUrl"
-      @close="handleCloseFilePreview"
-    />
-
-    <!-- 2026-07-02 新增：AI 回复点踩反馈弹窗 -->
-    <DislikeDialog
-      v-model:visible="dislikeDialog.visible"
-      :message-id="dislikeDialog.messageId"
-      :session-id="dislikeDialog.sessionId"
-      :message-content="dislikeDialog.messageContent"
-      :ai-reply="dislikeDialog.aiReply"
-      :agent-name="dislikeDialog.agentName"
-      @submitted="handleDislikeSubmitted"
-    />
   </div>
 </template>
 
@@ -1543,42 +1512,8 @@ async function handleSessionSwitch(targetSessionId) {
   overflow: hidden;
 }
 
-.content-area {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background-color: var(--color-bg-secondary);
-}
-
-.content-area.empty-layout {
-  justify-content: center;
-  align-items: center;
-}
-
-.content-area.empty-layout > * {
-  width: 100%;
-  max-width: 900px;
-}
-
-.welcome-title {
-  font-size: 32px;
-  font-weight: var(--font-weight-bold);
-  /* 与登录页主色 #1E5AA8 保持一致 */
-  color: #1E5AA8;
-  margin-bottom: 32px;
-  text-align: center;
-}
-
-/* 排队提示横幅 wrapper，与 InputBox 的 .input-box-container 横向边距对齐 */
-.queue-banner-wrapper {
-  padding: 0 40px;
-}
-
-/* empty-layout 下 content-area.empty-layout > * 已限制 max-width: 900px，
-   若保留 padding 会导致横幅被二次收缩，故在此场景下移除 padding */
-.content-area.empty-layout .queue-banner-wrapper {
-  padding: 0;
-}
+/* .content-area / .welcome-title / .queue-banner-wrapper 已迁移到全局
+   styles/layout.css（vue-router 接入后这些 class 被 AgentWorkspace 继承，
+   受 Vue scoped CSS 机制限制，父组件样式不穿透到子组件根元素）。*/
 
 </style>

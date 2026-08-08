@@ -20,13 +20,65 @@
 
 | 入口文件           | 挂载组件                                          | 部署路径       | 用途                                                                                                 |
 | ------------------ | ------------------------------------------------- | -------------- | ---------------------------------------------------------------------------------------------------- |
-| `index.html`     | `App.vue`（`src/main.js`）                    | `/`          | 主聊天界面 + 知识库 Tab（Sidebar 切换 currentPage）                                                  |
-| `ops-console.html` | `OpsConsoleApp.vue`（`src/ops-console-main.js`） | `/ops-console` | 运维控制台独立页（政务蓝 macOS 风格多窗口 + 服务器管理/详情/日志/智能检测，2026-08-05 由 `运维界面/app/` 迁移而来） |
-| `knowledge.html` | `KnowledgeApp.vue`（`src/knowledge-main.js`） | `/knowledge` | 知识库独立页（文件侧栏 + 聊天）                                                                      |
+| `index.html`     | `App.vue`（`src/main.js`）                    | `/`          | 主聊天界面 + router-view 承载三个一级路由（/、/knowledge、/ops-console）                                                  |
+| `knowledge.html` | `KnowledgeApp.vue`（`src/knowledge-main.js`） | `/knowledge` | 知识库独立页（文件侧栏 + 聊天；保留独立入口供 PortalApp iframe 嵌入）                                                                      |
 | `portal.html`    | `PortalApp.vue`（`src/portal-main.js`）       | `/portal`    | 门户导航（顶部蓝色导航栏 + iframe 嵌入 `/knowledge`）                                              |
 | `login.html`     | `LoginView`（`src/login-main.js`）            | `/login`     | 登录页统一入口（`App.vue` / `PortalApp.vue` 不再内联渲染 `LoginView`；由 `/login` 唯一承载） |
 
 三个入口共享 `src/components`、`src/utils`、`src/styles`，构建后产出三个独立的 JS Chunk。
+
+### vue-router 4 路由表（2026-08-XX 落地）
+
+主应用 `index.html` 入口通过 vue-router 4 管理 SPA 内子路由，运维控制台 / 知识库 / 主聊天均为标准路由；`/login` 不在路由表内，仍由独立 `login.html` 入口承载，避免「主应用挂载 → 渲染 LoginView → /login 独立挂载」的双 mount 与 captcha 双调用。
+
+#### 路由表（`src/router/index.js`）
+
+| 路径 | name | 组件 | meta.pageKey |
+|---|---|---|---|
+| `/` | `agent` | `views/AgentWorkspace.vue` | `'agent'` |
+| `/knowledge` | `knowledge` | `views/KnowledgeWorkspace.vue` | `'knowledge'` |
+| `/ops-console` | `ops-console` | `views/OpsConsoleWorkspace.vue` | `'ops-console'` |
+| `/:pathMatch(.*)*` | `not-found` | redirect → `/` | — |
+
+#### 全局守卫（`router.beforeEach`）
+
+- 当前落地：`requiresAuth` 路由 + 本地无 `username` 线索（`hasLocalAuthToken()`）→ 跳 `/login?redirect=<from>`（不 await `validateToken`，避免每次切路由阻塞；真正鉴权由 `fetchWithAuth` 自动 401 refresh 重试链路兜底）
+- meta 字段 schema 已建 9 个等保三级扩展位（本期不消费，下期工单接入）：
+  - `menuAcl: string | string[]` —— 后端 `require_admin_or_menu_acl` 同名，路由级 ACL 校验
+  - `requiredRole: 'admin' | 'user'` —— 角色校验
+  - `ownershipScope: boolean` —— 标记本路由需走 OwnershipScope 数据过滤
+  - `auditEvent: string` —— 路由切换时 LogService 写入事件名
+  - `auditFields: string[]` —— 审计白名单字段
+  - `redactFields: string[]` —— 前端展示脱敏字段
+  - `csrf: boolean` —— 标记非 GET 请求需 X-Requested-With 头
+  - `sessionTimeoutSec: number` —— 路由级 idle 超时（覆盖全局默认）
+  - `sensitiveOperation: boolean` —— 进入路由前需二次确认
+  - `logoutOnLeave: boolean` —— 离开路由时自动 clearAuth
+
+#### Workspace 组件（`src/views/`）
+
+- `AgentWorkspace.vue`：主聊天界面；通过 `inject('chatWorkspace')` 拿到 App.vue 提供的状态与方法（messages / sessionId / isStreaming / toolStopPending / approvalMode / approvalData / currentProject / agentName / agentDisplayName / allowedAgents / sessionTitle / queueStatus / subAgentDrawerVisible / currentSubAgent / sessionFileDrawerVisible / sessionFileTree / sessionFileDrawerLoading / sessionFileDrawerError / filePreviewOpen / filePreviewData / dislikeDialog / isAdmin / canEditProject），渲染 ChatArea + QueueStatusBanner + HumanApprovalBox + InputBox + SessionFileDrawer + FilePreviewModal + DislikeDialog
+- `KnowledgeWorkspace.vue`：包裹 KnowledgePage 透传 `new-chat` / `open-subagent-drawer` 事件
+- `OpsConsoleWorkspace.vue`：包裹 OpsConsoleApp；`onMounted` 调 `ensureOpsConsoleStyles()`（从 App.vue 抽到 `utils/ops-console-styles.js`，单例守卫）
+
+#### App.vue ↔ Workspace 通信
+
+- App.vue 在 setup 同步 `provide('chatWorkspace', reactive({ ...state..., ...methods..., isAdmin: computed(...), canEditProject }))`；AgentWorkspace 通过 `inject('chatWorkspace')` 拿到响应式引用
+  - **必须用 `reactive(...)` 包裹**：vue 3.4+ template compiler 对 reactive 属性访问递归 unref；若 chatWorkspace 是普通对象字面量，嵌套 ref（如 `ws.filePreviewOpen` / `ws.filePreviewData`）不会被自动解包，ref 对象传给子组件 Boolean/Object prop 后导致 `FilePreviewModal` 始终弹窗、`content` 为 undefined 等异常。详见 `.trae/documents/file-preview-modal-auto-open-bug.md`
+- SessionFileDrawer / FilePreviewModal / DislikeDialog 由原 App.vue 顶层迁移到 AgentWorkspace 内部（仅在 / 路由下渲染）
+- App.vue 移除 `currentPage` 字符串 ref + `handlePageChange` 函数 + `<main v-if="currentPage === 'agent'">` + `<KnowledgePage v-if="currentPage === 'knowledge'">` + `<OpsConsolePage v-if="currentPage === 'ops-console'">` 三段 v-if 渲染
+- Sidebar 移除 `currentPage` prop + `page-change` emit；改用 `useRouter()` 调 `router.push('/' | '/knowledge' | '/ops-console')`；activeMenu 由 `computed(() => route.name 映射)` 派生；computed 首行加 `if (!route || !route.name) return 'new-task'` 保护，应对单测 mount / PortalApp iframe 等无 router 上下文场景
+- KnowledgePage 移除 `page-change` emit（仅保留 `new-chat` / `open-subagent-drawer`）
+
+#### nginx.conf（`/ops-console` SPA fallback）
+
+`/ops-console` 与 `/` 同形态 `try_files $uri $uri/ /index.html`，由前端路由接管 `/ops-console/*` 路径。
+
+### vue-router 接入回归修复（2026-08-XX 同步）
+
+接入 vue-router 后 AgentWorkspace 子页面使用 `.content-area` / `.welcome-title` / `.queue-banner-wrapper` 三个 layout 类，原定义在 App.vue `<style scoped>` 内。**Vue scoped CSS 机制只匹配父组件自身根元素，不穿透到子组件根元素**，导致接入后 AgentWorkspace 主聊天界面坍缩（Sidebar 仍正常显示，因为 `.app-layout` 在 App.vue 自己根元素）。
+
+修复：把这三个 layout 类从 App.vue scoped CSS 抽出到全局 `src/styles/layout.css`，由 `main.js` 与 `styles/main.css` 一起 import。App.vue 自己的局部样式（`.app-layout` / `.auth-loading-screen` / spinner / keyframes）保留在 `<style scoped>` 内，不参与跨组件。
 
 ### Portal 入口 Tab 标题驱动（2026-06-30 落地）
 
