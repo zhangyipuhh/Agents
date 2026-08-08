@@ -66,6 +66,18 @@ import pytest
 from cryptography.fernet import Fernet
 
 
+class _FakeAsyncpgDataError(Exception):
+    """模拟 asyncpg.exceptions.DataError。
+
+    仅供 fake connection 在 ``_check_bind_args`` hook 内抛出，不与真实
+    asyncpg 耦合。原因：conftest 在模块加载早期把 ``asyncpg`` 整个换成
+    ``MagicMock``，在此环境下 ``from asyncpg.exceptions import DataError``
+    拿到的会是 Mock 实例，无法被 ``pytest.raises`` 捕获。
+    """
+
+    pass
+
+
 # ============================================================
 # 共用工具
 # ============================================================
@@ -136,6 +148,9 @@ class _FakeConnection:
 
     async def execute(self, sql: str, *args: Any, **kw: Any) -> str:
         self.add_exec(sql, args)
+        # 参数编码校验 hook：模拟 asyncpg `_encode_bind_msg` 的类型检查。
+        # 默认 no-op；需要严格参数类型校验的子 fake 必须 override。
+        self._check_bind_args(sql, args)
         return self._dispatch_execute(sql, args)
 
     def _dispatch_fetchrow(self, sql: str, args: Tuple[Any, ...]) -> Optional[_FakeRow]:
@@ -146,6 +161,10 @@ class _FakeConnection:
 
     def _dispatch_execute(self, sql: str, args: Tuple[Any, ...]) -> str:
         return "OK"
+
+    def _check_bind_args(self, sql: str, args: Tuple[Any, ...]) -> None:
+        """参数编码校验 hook 占位（默认 no-op）。子类 override 以模拟 asyncpg 编码层。"""
+        return None
 
     def transaction(self) -> "_FakeTransaction":
         return _FakeTransaction(self)
@@ -271,6 +290,23 @@ def _build_pg_enrollment_store(
             super().__init__(store)
             self.totp_row = store["user_mfa_totp"][0]
             self.chal = store["mfa_challenges"][0]
+
+        def _check_bind_args(self, sql, args):
+            # 模拟 asyncpg `_encode_bind_msg` 对 datetime 参数与 naive 列的
+            # 类型不匹配检查。本函数覆盖至少两类已知 bug：
+            # 1. 写入 naive TIMESTAMP 列（如 user_mfa_totp.enabled_at）时传入
+            #    offset-aware datetime → 抛 ``DataError: ... can't subtract
+            #    offset-naive and offset-aware datetimes``（2026-08-08 真生产 bug）。
+            # 后续如发现其他列的类型不匹配错误，在此扩展。
+            if "UPDATE user_mfa_totp" in sql and "enabled_at" in sql:
+                idx = 1  # $1 secret_cipher, $2 enabled_at
+                val = args[idx]
+                if isinstance(val, datetime) and val.tzinfo is not None:
+                    raise _FakeAsyncpgDataError(
+                        f"invalid input for query argument ${idx + 1}: "
+                        f"{val!r} (can't subtract offset-naive and "
+                        f"offset-aware datetimes)"
+                    )
 
         def _dispatch_fetchrow(self, sql, args):
             # SELECT challenge FOR UPDATE
@@ -536,6 +572,98 @@ def test_login_enroll_confirm_pg_enabled_at_must_be_naive_datetime(event_loop):
             f"实际 tzinfo={enabled_at_arg.tzinfo}。"
             "PG user_mfa_totp.enabled_at 是 TIMESTAMP（无时区），"
             "传 offset-aware datetime 会触发 asyncpg DataError。"
+        )
+
+    event_loop.run_until_complete(runner())
+
+
+def test_login_enroll_confirm_pg_enabled_at_aware_raises_dataerror(
+    event_loop, monkeypatch
+):
+    """反向回归测试（2026-08-08）：mock 体系必须能捕获"offset-aware datetime
+    写入 naive TIMESTAMP 列"这一族 bug。
+
+    本测试临时把 ``mfa_service`` 模块内的 ``datetime`` 类替换为 stub，
+    使 ``datetime.now(timezone.utc)`` 返回 **aware** 实例（模拟 2026-08-08
+    修复前的 bug 状态）。期望 fake connection 的 ``_check_bind_args`` hook
+    检测到该异常并抛 ``_FakeAsyncpgDataError``，整个 confirm 流程以异常
+    形式失败。
+
+    Args:
+        event_loop: pytest-asyncio 模块级事件循环 fixture。
+        monkeypatch: pytest 内置 monkeypatch fixture。
+    """
+    from app.shared.utils.auth import mfa_service
+    from app.shared.utils.auth.mfa_service import MfaService
+
+    settings = _make_settings()
+    svc = MfaService(db=None, settings=settings)
+
+    secret = pyotp.random_base32()
+    user_id = 992
+    enrollment_token = "aware-datetime-regression-token"
+    store, conn = _build_pg_enrollment_store(
+        svc=svc,
+        user_id=user_id,
+        pending_secret=secret,
+        enrollment_token=enrollment_token,
+    )
+    pool = _FakePool(store)
+    pool.connection = conn  # type: ignore[attr-defined]
+    svc._db = pool  # type: ignore[attr-defined]
+
+    # 用 stub datetime 替换 mfa_service 模块内 import 的 datetime 类。
+    # 关键：mfa_service 顶层已 ``from datetime import datetime, timezone``，
+    # 函数体直接引用模块级 datetime。monkeypatch 它即可让所有 ``datetime.now(...)``
+    # 调用走 stub；同时 stub 还要 override ``replace(tzinfo=None)`` 让其变 no-op，
+    # 否则生产代码里 ``.replace(tzinfo=None)`` 会把 aware 变 naive，hook 永远抓不到。
+    real_datetime = mfa_service.datetime  # type: ignore[attr-defined]
+
+    class _AwareDatetime(real_datetime):  # type: ignore[misc, valid-type]
+        """stub：保留 tzinfo；``replace(tzinfo=None)`` 变 no-op。
+
+        实现要点：``datetime`` 是 immutable builtin-style class，子类化后
+        必须显式 ``cls(year, month, ...)`` 构造才能让返回实例是 Stub 类型，
+        否则 ``real_datetime.now(tz)`` 直接返回父类实例，``replace`` override
+        失效。``fold`` 是 Python 3.6+ 的属性，必须透传。
+        """
+
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            base = real_datetime.now(tz)
+            return cls(
+                base.year, base.month, base.day,
+                base.hour, base.minute, base.second, base.microsecond,
+                tzinfo=base.tzinfo, fold=base.fold,
+            )
+
+        def replace(self, **kw):  # type: ignore[override]
+            # 屏蔽 ``.replace(tzinfo=None)`` —— 模拟修复前的 bug 状态
+            if set(kw.keys()) == {"tzinfo"} and kw["tzinfo"] is None:
+                return self
+            return super().replace(**kw)
+
+    monkeypatch.setattr(mfa_service, "datetime", _AwareDatetime)
+
+    async def runner():
+        code = pyotp.TOTP(secret).now()
+        # 期望抛 _FakeAsyncpgDataError（模拟真 asyncpg DataError）
+        with pytest.raises(_FakeAsyncpgDataError) as exc_info:
+            await svc.confirm_login_enrollment(
+                enrollment_token=enrollment_token, code=code
+            )
+        # 错误信息应明确指向 $2 / enabled_at / aware vs naive
+        msg = str(exc_info.value)
+        assert "$2" in msg, f"错误信息应指向参数 $2，实际：{msg}"
+        assert "offset-naive" in msg and "offset-aware" in msg, (
+            f"错误信息应说明 aware vs naive 类型冲突，实际：{msg}"
+        )
+
+        # 数据库应未被写入（事务整体回滚）
+        assert conn.totp_row["secret_cipher"] is None
+        assert conn.totp_row["enabled_at"] is None
+        assert conn.chal["consumed_at"] is None, (
+            "失败必须整体回滚，challenge 不能被消费"
         )
 
     event_loop.run_until_complete(runner())

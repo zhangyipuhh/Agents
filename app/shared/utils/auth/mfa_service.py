@@ -39,6 +39,7 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import bcrypt
@@ -153,7 +154,6 @@ def _make_qr_png_base64(otpauth_uri: str) -> str:
 
 def _to_utc_aware(dt: Any) -> Optional[Any]:
     """把任意 datetime 转换为 UTC-aware；naive 视为 UTC。"""
-    from datetime import datetime, timezone
 
     if dt is None:
         return None
@@ -628,8 +628,6 @@ class MfaService:
         Raises:
             MfaError: 校验失败或无 pending secret。
         """
-        from datetime import datetime, timezone
-
         if self._db is not None:
             entry = await self._db_get_totp_entry(user_id)
         else:
@@ -720,7 +718,6 @@ class MfaService:
             MfaError: challenge 不存在 / 已消费 / 已过期 / purpose 错误 /
                 无 pending_secret / TOTP 错误。
         """
-        from datetime import datetime, timezone
 
         token_hash = hash_challenge_token(enrollment_token)
         step = int(time.time() // 30)
@@ -846,12 +843,10 @@ class MfaService:
                 bcrypt.hashpw(c.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
                 for c in plain_codes
             ]
-            from datetime import datetime as _dt, timezone as _tz
-
             ent = self._memory_totp_entries.setdefault(user_id, {})
             ent["secret_cipher"] = ent.pop("pending_secret_cipher", ent.get("secret_cipher"))
             # 保持与 DB 模式（naive TIMESTAMP）语义一致，避免后续切换/读取时类型串扰
-            ent["enabled_at"] = _dt.now(_tz.utc).replace(tzinfo=None)
+            ent["enabled_at"] = datetime.now(timezone.utc).replace(tzinfo=None)
             ent["recovery_code_hashes"] = hashes
             ent["last_used_step"] = anti_replay_step
 
@@ -1303,7 +1298,6 @@ class MfaService:
         expires_at: float,
     ) -> None:
         """插入新 challenge，顺带参数化删除过期记录。"""
-        from datetime import datetime, timezone
 
         async with self._db.acquire() as conn:
             async with conn.transaction():

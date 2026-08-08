@@ -42,6 +42,7 @@
 - MFA 服务、密钥或数据库不可用时浏览器 `/login` fail-closed，不降级为单因素；`/api/auth/login-api` 保持原有程序化登录契约，不纳入浏览器 MFA 改造。
 - Access/Refresh Token 可携带 `amr`：MFA 登录为 `pwd + totp` 或 `pwd + recovery_code`；刷新时透传已有 `amr`。
 - `user_mfa_totp.enabled_at` 列类型为 `TIMESTAMP`（naive），服务层必须传 `datetime.now(timezone.utc).replace(tzinfo=None)`；2026-08-08 修复 offset-aware 误传导致 asyncpg `DataError: invalid input for query argument $2: ... (can't subtract offset-naive and offset-aware datetimes)` 的绑定失败 bug。
+- mock 测试体系说明（2026-08-08）：`_FakeConnection`（`test_mfa_hardening.py` / `test_mfa_hardening_followup.py`）默认对 SQL 参数不做类型编码校验，仅断言 SQL 文本与顺序；任何涉及 PG 写入的 fake 必须额外 override `_check_bind_args(sql, args)` hook，模拟 asyncpg `_encode_bind_msg` 的参数编码层（aware datetime → naive TIMESTAMP 等），否则**生产崩溃但测试全绿**的反模式会出现。
 
 ### API 请求 Token 过期处理
 

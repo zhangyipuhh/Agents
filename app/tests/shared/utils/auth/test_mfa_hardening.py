@@ -115,6 +115,12 @@ class _FakeConnection:
 
     async def execute(self, sql: str, *args: Any, **kw: Any) -> str:
         self.add_exec(sql, args)
+        # 参数编码校验 hook：模拟 asyncpg `_encode_bind_msg` 的类型检查。
+        # 默认实现为 no-op；需要严格参数类型校验的子 fake 必须 override。
+        # 之所以不能省略：fake 默认会把 ``args[1]`` 原样塞进字典，绕过真
+        # asyncpg 在编码阶段抛 ``DataError: can't subtract offset-naive and
+        # offset-aware datetimes`` 等类型不匹配错误，导致生产崩溃但测试全绿。
+        self._check_bind_args(sql, args)
         return self._dispatch_execute(sql, args)
 
     def _dispatch_fetchrow(self, sql: str, args: Tuple[Any, ...]) -> Optional[_FakeRow]:
@@ -125,6 +131,17 @@ class _FakeConnection:
 
     def _dispatch_execute(self, sql: str, args: Tuple[Any, ...]) -> str:
         return "OK"
+
+    def _check_bind_args(self, sql: str, args: Tuple[Any, ...]) -> None:
+        """参数编码校验 hook：子类可 override 以模拟 asyncpg 参数编码行为。
+
+        默认实现为空（保持向后兼容所有继承 _FakeConnection 的现有测试）。
+
+        Args:
+            sql: 即将被 ``dispatch_execute`` 处理的 SQL 字符串。
+            args: 该 SQL 的绑定参数元组（已由 ``add_exec`` 记录）。
+        """
+        return None
 
     # ---- transaction ----
     def transaction(self) -> "_FakeTransaction":
