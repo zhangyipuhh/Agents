@@ -405,3 +405,106 @@ def test_require_admin_or_menu_acl_normal_user_denied():
     with pytest.raises(HTTPException) as exc:
         _run(dep(req))
     assert exc.value.status_code == 403
+
+
+# ============================================================================
+# 2026-08-08 新增：HttpOnly Cookie 兜底 + CSRF 头校验（Task 2 of 13）
+# 设计：Bearer 优先 → Cookie 兜底 → 中间件对 Cookie 写请求校验 X-Requested-With
+# ============================================================================
+
+
+def test_authenticate_cookie_fallback(jwt_auth, monkeypatch):
+    """无 Authorization 头时回退读取 HttpOnly Cookie access_token。
+
+    浏览器主应用场景：Access Token 存 HttpOnly Cookie（JS 不可见），
+    只能通过 Cookie 自动随请求发送；authenticate 应能从 ``request.cookies``
+    读取 token 并标记 ``auth_via == 'cookie'``。
+
+    Args:
+        jwt_auth: JWTAuth 实例（来自 conftest）
+        monkeypatch: pytest monkeypatch fixture
+
+    Returns:
+        None
+    """
+    access_token = _run_async(jwt_auth.generate_token("admin"))
+
+    async def fake_get_user(username):
+        return {
+            "id": 1,
+            "username": "admin",
+            "role": "admin",
+            "allowed_agents": [],
+        }
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.user_db.UserDB.get_user_by_username",
+        fake_get_user,
+    )
+
+    request = MagicMock(spec=Request)
+    request.headers.get.return_value = None
+    request.cookies = {"access_token": access_token}
+
+    payload = _run_async(jwt_auth.authenticate(request))
+    assert payload is not None
+    assert request.state.auth_via == "cookie"
+
+
+def test_authenticate_bearer_precedence_over_cookie(jwt_auth, monkeypatch):
+    """Bearer 与 Cookie 同时存在时优先 Bearer（第三方/程序化客户端兼容）。
+
+    设计动机：第三方 API 客户端/CLI/Postman 通常用 Authorization Header，
+    同时浏览器开发者工具可能手动注入 Cookie。两个都存在时以 Bearer 为准，
+    避免 Cookie 携带过期/失效令牌意外劫持会话。
+
+    Args:
+        jwt_auth: JWTAuth 实例（来自 conftest）
+        monkeypatch: pytest monkeypatch fixture
+
+    Returns:
+        None
+    """
+    access_token = _run_async(jwt_auth.generate_token("admin"))
+
+    async def fake_get_user(username):
+        return {
+            "id": 1,
+            "username": "admin",
+            "role": "admin",
+            "allowed_agents": [],
+        }
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.user_db.UserDB.get_user_by_username",
+        fake_get_user,
+    )
+
+    # 故意把 Cookie 配成坏 token，但 Bearer 是好 token → 应走 Bearer 成功
+    request = MagicMock(spec=Request)
+    request.headers.get.return_value = f"Bearer {access_token}"
+    request.cookies = {"access_token": "bad-token"}
+
+    payload = _run_async(jwt_auth.authenticate(request))
+    assert payload is not None
+    assert request.state.auth_via == "bearer"
+
+
+def test_authenticate_no_header_no_cookie_raises_401(jwt_auth):
+    """既无 Bearer 又无 Cookie 时抛 401。
+
+    Args:
+        jwt_auth: JWTAuth 实例（来自 conftest）
+
+    Returns:
+        None
+    """
+    from fastapi import HTTPException
+
+    request = MagicMock(spec=Request)
+    request.headers.get.return_value = None
+    request.cookies = {}
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_async(jwt_auth.authenticate(request))
+    assert exc_info.value.status_code == 401

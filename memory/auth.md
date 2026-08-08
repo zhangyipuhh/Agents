@@ -97,6 +97,21 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 2. `session_auth_middleware`（先注册，内） — 验证 Session（需要 session 的路径）
 3. 路由处理器
 
+### Access Token 提取顺序（`JWTAuth.authenticate`）
+
+`auth_middleware` 调 `JWTAuth.authenticate(request)` 时按以下优先级提取 Access Token：
+
+1. **Authorization Header 优先**（`Authorization: Bearer <token>`）— 第三方/程序化客户端/CLI/Postman 走此通道；与 Cookie 共存时 Bearer 胜出，防止过期/失效 Cookie 意外劫持会话
+2. **HttpOnly Cookie 兜底**（Cookie 名取 `settings.auth_cookie.access_token_name`，默认 `access_token`）— 浏览器主应用场景下 JS 不可读，浏览器自动随请求发送；缺失 Header 时回退读 Cookie
+3. **都缺失** — 抛 `HTTPException(401, "缺少认证信息")`
+
+认证通过后向 `request.state.auth_via` 写入来源标记：
+
+- `'bearer'` — Header 通道
+- `'cookie'` — Cookie 通道（仅此场景触发 CSRF 二次校验）
+
+中间件在 `call_next(request)` 之前对 **Cookie 鉴权 + 写请求** 强制要求 `X-Requested-With: XMLHttpRequest` 自定义头；缺失返 `403 "缺少 CSRF 防护请求头"`（不是 401，避免被 `auth_middleware` 的 `try/except` 通用异常处理包装吞掉）。Bearer 鉴权天然免疫 CSRF（攻击者无法跨站读取/伪造 Header），豁免。`GET / HEAD / OPTIONS` 方法天然安全，豁免。
+
 ### 权限控制
 
 - **角色区分**：用户表 `role` 字段支持 `admin` / `user`，登录时返回
@@ -114,6 +129,7 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 - Refresh Token 通过 HttpOnly Cookie 传递，前端 JS 无法读取
 - Cookie 属性：`HttpOnly; SameSite=Strict; Secure; Path=/api/auth; Max-Age=86400`
 - Refresh Token 在服务端数据库存储哈希值，支持主动删除
+- **CSRF 二次防线**：`auth_middleware` 对 Cookie 鉴权的写请求校验 `X-Requested-With: XMLHttpRequest` 自定义头（跨站简单请求无法附加自定义头，被 CORS 预检拦截）；`SameSite=Strict` 为第一道防线，本校验为第二道防线
 - Admin 强制下线操作清除目标用户的所有 Refresh Token 与 Portal Refresh Token，保留 Session 记录以便审计查询
 - 登出时：删除数据库记录 + 清除 Cookie + 删除该用户所有 portal_refresh_tokens
 - 密码修改时：删除该用户所有 Refresh Token 记录并删除所有 Portal Refresh Token（强制所有设备重新登录）

@@ -234,6 +234,13 @@ class JWTAuth:
         """
         认证请求
 
+        令牌提取顺序：Authorization Header (Bearer) 优先 → HttpOnly Cookie 兜底。
+        浏览器主应用场景下 Access Token 存 HttpOnly Cookie，JS 不可见，
+        只能随请求自动发送；第三方/程序化客户端可通过 Authorization Header 传入。
+
+        提取成功后会将认证来源写入 ``request.state.auth_via``（``'bearer'`` / ``'cookie'``），
+        供下游中间件（如 CSRF 二次校验）按来源差异化处理。
+
         从请求中提取并验证JWT令牌，同时查询用户角色信息。
 
         Args:
@@ -247,20 +254,27 @@ class JWTAuth:
         """
         auth_header = request.headers.get("Authorization")
 
-        if not auth_header:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="缺少认证信息"
-            )
+        if auth_header:
+            if not auth_header.startswith("Bearer "):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="无效的认证格式"
+                )
+            token = auth_header.split(" ")[1]
+            auth_via = "bearer"
+        else:
+            # 浏览器主应用：HttpOnly Cookie 兜底（Access Token 对 JS 不可见）
+            from app.core.config.settings import settings as _settings
+            token = request.cookies.get(_settings.auth_cookie.access_token_name)
+            auth_via = "cookie"
+            if not token:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="缺少认证信息"
+                )
 
-        if not auth_header.startswith("Bearer "):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="无效的认证格式"
-            )
-
-        token = auth_header.split(" ")[1]
         payload = await self.verify_token(token)
+        request.state.auth_via = auth_via
 
         # 拒绝 Refresh Token 用于普通 API
         if payload.get("type") == "refresh":
@@ -446,6 +460,20 @@ async def auth_middleware(request: Request, call_next):
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={"detail": str(e)}
+        )
+
+    # CSRF 纵深防御：Cookie 鉴权的写请求必须携带 X-Requested-With 自定义头。
+    # 跨站表单/简单请求无法附加自定义头（受 CORS 非简单请求预检限制），
+    # 因此恶意站点无法伪造带 Cookie 的写请求；SameSite=Strict 为主防线，
+    # 此为二次防线。Bearer 鉴权天然免疫 CSRF（攻击者无法读取 Header），豁免。
+    if (
+        getattr(request.state, "auth_via", None) == "cookie"
+        and request.method not in ("GET", "HEAD", "OPTIONS")
+        and request.headers.get("X-Requested-With") != "XMLHttpRequest"
+    ):
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"detail": "缺少 CSRF 防护请求头"},
         )
 
     # 认证通过后，让路由自身的异常正常向上抛出，避免被包装为 401
