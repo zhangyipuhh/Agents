@@ -6,7 +6,8 @@
  * - 密码+图形验证码提交后，若响应 auth_stage=mfa_required/mfa_enrollment_required，
  *   组件不能写 localStorage（auth_token/user_role/username），不能 emit login-success。
  * - mfa_required 阶段：支持 TOTP / 恢复码切换；challenge_token 仅保留在组件 ref 内存；
- *   verify 成功后写 localStorage 并 emit login-success。
+ *   verify 成功后 emit login-success；Access Token 由后端 Set-Cookie 下发（HttpOnly, JS 不可读），
+ *   role / username / user_id 等展示态字段缓存到 localStorage，前端不再写 auth_token。
  * - mfa_enrollment_required 阶段：调 startLoginMfaEnrollment 获取二维码；
  *   组件显示二维码 + secret 输入；confirm 后走统一完成登录路径。
  * - 任一阶段错误/过期清理：mfa token / code / qr / recovery_codes 清空 + 刷新验证码。
@@ -84,14 +85,14 @@ describe('LoginView MFA 两阶段登录', () => {
     await wrapper.find('form.login-form').trigger('submit.prevent')
     await flushPromises()
 
-    // 普通成功路径必须 emit login-success 并写 localStorage
-    expect(localStorage.getItem('auth_token')).toBe('token-1')
+    // 普通成功路径必须 emit login-success 并写 localStorage（auth_token 由后端 Set-Cookie 下发，不入 localStorage）
+    expect(localStorage.getItem('auth_token')).toBeNull()
     expect(localStorage.getItem('user_role')).toBe('user')
     expect(localStorage.getItem('username')).toBe('alice')
     const events = wrapper.emitted('login-success')
     expect(events).toBeTruthy()
     expect(events.length).toBe(1)
-    expect(events[0][0].access_token).toBe('token-1')
+    expect(events[0][0].access_token).toBeUndefined() // access_token 由后端 Set-Cookie 下发（HttpOnly, JS 不可读），不再通过 emit 传递
   })
 
   it('test_mfa_required_response_does_not_emit_or_persist mfa_required 响应不写 token 也不 emit', async () => {
@@ -156,10 +157,11 @@ describe('LoginView MFA 两阶段登录', () => {
     await flushPromises()
 
     expect(apiMocks.loginMfaVerify).toHaveBeenCalledWith('challenge-xyz', '123456', 'totp')
-    expect(localStorage.getItem('auth_token')).toBe('token-2')
+    // auth_token 由后端 Set-Cookie 下发（HttpOnly, JS 不可读），前端不再写 localStorage
+    expect(localStorage.getItem('auth_token')).toBeNull()
     const events = wrapper.emitted('login-success')
     expect(events).toBeTruthy()
-    expect(events[0][0].access_token).toBe('token-2')
+    expect(events[0][0].access_token).toBeUndefined() // access_token 由后端 Set-Cookie 下发（HttpOnly, JS 不可读），不再通过 emit 传递
   })
 
   it('test_mfa_enrollment_displays_qr_then_confirm 强制绑定阶段显示二维码并完成确认', async () => {
@@ -237,11 +239,12 @@ describe('LoginView MFA 两阶段登录', () => {
     await ackBtn.trigger('click')
     await flushPromises()
 
-    expect(localStorage.getItem('auth_token')).toBe('token-3')
+    // auth_token 由后端 Set-Cookie 下发（HttpOnly, JS 不可读），前端不再写 localStorage
+    expect(localStorage.getItem('auth_token')).toBeNull()
     const events = wrapper.emitted('login-success')
     expect(events).toBeTruthy()
     expect(events.length).toBe(1)
-    expect(events[0][0].access_token).toBe('token-3')
+    expect(events[0][0].access_token).toBeUndefined() // access_token 由后端 Set-Cookie 下发（HttpOnly, JS 不可读），不再通过 emit 传递
   })
 
   it('test_mfa_enrollment_recovery_codes_not_flashed_before_acknowledge 恢复码不会在用户确认前触发 finalize', async () => {
@@ -346,16 +349,16 @@ describe('LoginView MFA 两阶段登录', () => {
     await ackBtn.trigger('click')
     await flushPromises()
 
-    // localStorage 应写入 4 个字段
-    expect(localStorage.getItem('auth_token')).toBe('token-ack')
+    // localStorage 应写入 3 个展示态字段；auth_token 由后端 Set-Cookie 下发（HttpOnly, JS 不可读）
+    expect(localStorage.getItem('auth_token')).toBeNull()
     expect(localStorage.getItem('user_role')).toBe('admin')
     expect(localStorage.getItem('username')).toBe('admin')
     expect(localStorage.getItem('user_id')).toBe('7')
-    // login-success 应 emit，且 payload 包含 access_token
+    // login-success 应 emit，且 payload 不再包含 access_token（改由后端 Set-Cookie HttpOnly 下发）
     const events = wrapper.emitted('login-success')
     expect(events).toBeTruthy()
     expect(events.length).toBe(1)
-    expect(events[0][0].access_token).toBe('token-ack')
+    expect(events[0][0].access_token).toBeUndefined() // access_token 由后端 Set-Cookie 下发（HttpOnly, JS 不可读），不再通过 emit 传递
     // 恢复码绝不能写入 localStorage / sessionStorage
     const storageDump = JSON.stringify({
       ls: { ...localStorage },
