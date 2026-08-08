@@ -1115,11 +1115,22 @@ async def logout(req: Request, response: Response):
         await PortalRefreshTokenDB.delete_user_tokens(user_id)
 
     # 清除 Refresh Token Cookie
+    cookie_cfg = settings.auth_cookie
     response.delete_cookie(
         key="refresh_token",
         path="/api/auth",
         httponly=True,
-        samesite="strict"
+        samesite="strict",
+        secure=cookie_cfg.secure,
+    )
+
+    # 清除 Access Token Cookie（HttpOnly，Path=/api）
+    response.delete_cookie(
+        key=cookie_cfg.access_token_name,
+        path=cookie_cfg.access_token_path,
+        httponly=True,
+        samesite=cookie_cfg.samesite,
+        secure=cookie_cfg.secure,
     )
 
     # 删除 Session

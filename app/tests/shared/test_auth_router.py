@@ -496,3 +496,73 @@ def test_validate_accepts_cookie_auth(client, admin_headers):
     response = client.get("/api/auth/validate")
     assert response.status_code == 200
     assert response.json()["username"] == "admin"
+
+
+def test_logout_deletes_access_token_cookie(client, admin_headers):
+    """
+    测试登出响应删除 access_token Cookie
+
+    Args:
+        client: FastAPI TestClient
+        admin_headers: admin 认证请求头
+
+    Returns:
+        None
+    """
+    response = client.post("/api/auth/logout", headers=admin_headers)
+    assert response.status_code == 200
+    cookies = response.headers.get_list("set-cookie")
+    deleted = [c for c in cookies if c.startswith("access_token=") and "Max-Age=0" in c]
+    assert len(deleted) == 1
+
+
+def test_logout_via_cookie_auth_with_csrf_header(client, admin_headers):
+    """
+    测试 Cookie 鉴权 + X-Requested-With 头的写请求放行
+
+    Args:
+        client: FastAPI TestClient
+        admin_headers: admin 认证请求头（用于取有效 token 字符串）
+
+    Returns:
+        None
+    """
+    token = admin_headers["Authorization"].split(" ", 1)[1]
+    client.cookies.set("access_token", token, path="/api")
+    response = client.post(
+        "/api/auth/logout",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert response.status_code == 200
+
+
+def test_cookie_auth_write_request_without_csrf_header_rejected(client, admin_headers):
+    """
+    测试 Cookie 鉴权写请求缺 X-Requested-With 头返回 403（CSRF 防线）
+
+    Args:
+        client: FastAPI TestClient
+        admin_headers: admin 认证请求头
+
+    Returns:
+        None
+    """
+    token = admin_headers["Authorization"].split(" ", 1)[1]
+    client.cookies.set("access_token", token, path="/api")
+    response = client.post("/api/auth/logout")
+    assert response.status_code == 403
+
+
+def test_bearer_auth_write_request_exempt_from_csrf(client, admin_headers):
+    """
+    测试 Bearer 鉴权写请求豁免 CSRF 头校验（既有行为回归）
+
+    Args:
+        client: FastAPI TestClient
+        admin_headers: admin 认证请求头
+
+    Returns:
+        None
+    """
+    response = client.post("/api/auth/logout", headers=admin_headers)
+    assert response.status_code == 200
