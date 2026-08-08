@@ -4,8 +4,9 @@
  * 解决以下场景：
  * 1. 用户从任意入口（/Agent/、/Agent/knowledge.html、/Agent/portal.html）跳到登录页时，
  *    登录成功后能自动回到原页面，而不是被统一重定向到 /Agent/。
- * 2. localStorage 中存在 auth_token 时，优先尝试 refresh_token 静默刷新；
- *    仅当 token 完全失效（refresh 也失败）时才跳登录页，避免无谓的"踢回登录页"。
+ * 2. localStorage auth_token 已废弃；浏览器端通过 HttpOnly Cookie 自动携带，
+ *    本文件以 validate/refresh 作为权威探测；仅当 refresh 也失败时才跳登录页，
+ *    避免无谓的"踢回登录页"。
  * 3. 提供 safeRedirectUrl 防御开放重定向漏洞（拒绝 javascript:、data: 等危险协议）。
  *
  * 注意：登录页入口为独立的 /login（由 login.html + login-main.js 承载 LoginView），
@@ -126,23 +127,13 @@ export function redirectToLogin(options = {}) {
 /**
  * 在 401 兜底时调用：先尝试 refresh_token，失败再跳登录页
  *
- * 替代 App.vue 中"捕获到错误信息含未登录/过期就置 isLoggedIn=false"的强退逻辑。
- *
- * 行为：
- * - 若 localStorage 中没有 auth_token：直接 redirectToLogin。
- * - 若有：调用 refreshToken()，成功则返回 true；失败则 redirectToLogin。
+ * Cookie 模式下不再预检 localStorage，直接尝试静默刷新：
+ * - 刷新成功（Cookie 有效）→ 返回 true，调用方重试原操作
+ * - 刷新失败 → redirectToLogin
  *
  * @returns {Promise<boolean>} true 表示刷新成功（可重试原请求），false 表示已跳转登录页
  */
 export async function tryRefreshOrRedirect() {
-  const token = (typeof window !== 'undefined') ? window.localStorage.getItem('auth_token') : null
-
-  // 本地无 token：直接跳登录页
-  if (!token) {
-    redirectToLogin({ reason: 'no_local_token' })
-    return false
-  }
-
   try {
     // 静态导入：auth.js 与 api.js 之间不存在循环依赖（api.js 不引用 auth.js）
     await refreshToken()
@@ -155,18 +146,17 @@ export async function tryRefreshOrRedirect() {
 }
 
 /**
- * 判断本地是否存在可用的 auth_token 缓存
+ * 判断本地是否存在登录态线索（非权威）
  *
- * 用于第三方/iframe 调用场景的快速判断：
- * - 有缓存 → 调用方可以直接发起请求，由 fetchWithAuth 内部处理 401。
- * - 无缓存 → 调用方应先引导用户登录。
+ * Cookie 模式下 Access Token 不在 JS 可读范围，本函数仅以 username 缓存
+ * 作为"可能已登录"的线索；真正的鉴权状态以服务端 validate/refresh 为准。
  *
- * @returns {boolean} 是否存在 auth_token 缓存
+ * @deprecated 新代码应直接调用 validateToken() / refreshToken() 探测
+ * @returns {boolean} 是否存在登录态线索
  */
 export function hasLocalAuthToken() {
   if (typeof window === 'undefined') return false
-  const token = window.localStorage.getItem('auth_token')
-  return Boolean(token && token !== 'undefined' && token !== 'null')
+  return Boolean(window.localStorage.getItem('username'))
 }
 
 /**
