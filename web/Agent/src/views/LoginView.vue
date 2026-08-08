@@ -99,6 +99,13 @@ const recoveryCodes = ref([])
 /** @type {import('vue').Ref<string>} enroll 阶段的成功提示文案 */
 const enrollSuccessMessage = ref('')
 
+/**
+ * 首次绑定成功后暂存 auth payload,等用户点击"我已抄写并继续"再 finalize。
+ * 仅在 mfa_recovery 阶段有值;绝不能写 localStorage / sessionStorage。
+ * @type {import('vue').Ref<Object|null>}
+ */
+const pendingLoginAuth = ref(null)
+
 /* ===== 通用 ===== */
 
 /**
@@ -185,6 +192,7 @@ function resetMfaState() {
   mfaMethodsAvailable.value = []
   recoveryCodes.value = []
   enrollSuccessMessage.value = ''
+  pendingLoginAuth.value = null
 }
 
 /**
@@ -319,7 +327,9 @@ function switchMfaMethod(method) {
 
 /**
  * 处理 enroll 阶段确认提交。
- * 成功 → finalize + 展示一次性恢复码。
+ * 成功 → 仅展示一次性恢复码 + 暂存 auth payload;不立刻 finalizeLogin,
+ * 等用户主动点击"我已抄写并继续"按钮后再完成登录(否则父级会立即 window.location.href 跳走,
+ * 导致恢复码列表"一闪而过",用户根本看不到)。
  * @returns {Promise<void>}
  */
 async function handleEnrollConfirm() {
@@ -336,13 +346,30 @@ async function handleEnrollConfirm() {
     )
     recoveryCodes.value = Array.isArray(result.recovery_codes) ? [...result.recovery_codes] : []
     enrollSuccessMessage.value = '绑定成功，请妥善保存以下恢复码：'
-    finalizeLogin(result.auth)
+    // 暂存 auth,等用户点击"我已抄写并继续"再走 finalizeLogin
+    pendingLoginAuth.value = result.auth
   } catch (err) {
     errorMessage.value = err.message || '确认 MFA 绑定失败'
     mfaEnrollCode.value = ''
   } finally {
     loading.value = false
   }
+}
+
+/**
+ * 用户确认已抄写恢复码后,推进到登录完成。
+ * 仅在 mfa_recovery 阶段有 pendingLoginAuth 时被触发;此处不可省略
+ * —— 否则恢复码列表"一闪而过",用户无法抄写保存。
+ * @returns {void}
+ */
+function handleAcknowledgeRecoveryCodes() {
+  if (!pendingLoginAuth.value) {
+    // 兜底:异常路径(组件被卸载、refresh 等);不抛错,直接 return
+    return
+  }
+  const auth = pendingLoginAuth.value
+  pendingLoginAuth.value = null
+  finalizeLogin(auth)
 }
 
 /**
@@ -633,6 +660,14 @@ onMounted(() => {
             <li v-for="code in recoveryCodes" :key="code">{{ code }}</li>
           </ul>
           <p class="form-hint warning">每个恢复码仅可使用一次，请立即抄写到安全位置。</p>
+          <button
+            type="button"
+            class="login-button"
+            data-testid="mfa-recovery-ack-btn"
+            @click="handleAcknowledgeRecoveryCodes"
+          >
+            我已抄写并继续
+          </button>
         </div>
       </div>
 

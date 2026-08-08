@@ -207,7 +207,8 @@
 - `password` 阶段调用 `/api/auth/login`，普通成功响应才写入 `localStorage.auth_token/user_role/username/user_id` 并触发 `login-success`。
 - `mfa_verify` 阶段仅在内存保存 challenge token，支持 TOTP 与一次性恢复码切换；调用 `/api/auth/mfa/login/verify` 成功后才进入统一登录完成路径。
 - `mfa_enroll` 阶段调用登录绑定 start 获取二维码/otpauth URI，再提交动态码确认；恢复码只在当前组件内存中一次性展示，不写 localStorage/sessionStorage。
-- challenge/验证码失败、过期或返回密码阶段时清理所有 MFA 临时状态并刷新图形验证码。
+- `mfa_enroll` 阶段绑定成功 → 暂存 `pendingLoginAuth` + 仅展示恢复码块（含"我已抄写并继续"按钮，data-testid=`mfa-recovery-ack-btn`），**不**立刻调用 `finalizeLogin`：父级 `login-main.js::handleLoginSuccess` 会 `window.location.href = '/Agent/'` 跳页，若同步 finalize 则恢复码"一闪而过"，用户根本看不到；用户点击 ack 按钮后才 `finalizeLogin(pendingLoginAuth)` 走统一完成登录路径。
+- challenge/验证码失败、过期或返回密码阶段时清理所有 MFA 临时状态并刷新图形验证码；`resetMfaState()` 同步清空 `pendingLoginAuth` 防内存泄漏。
 
 `UserSettingsDialog.vue` 的个人设置页包含 MFA 管理区域：普通用户可启用、轮换、禁用和重置恢复码；管理员显示强制状态并隐藏禁用操作。二维码、TOTP URI 和恢复码在对话框关闭时清理。
 

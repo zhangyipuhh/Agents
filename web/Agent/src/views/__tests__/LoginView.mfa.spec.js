@@ -212,10 +212,19 @@ describe('LoginView MFA 两阶段登录', () => {
     await flushPromises()
 
     expect(apiMocks.confirmLoginMfaEnrollment).toHaveBeenCalledWith('enroll-token-1', '654321')
-    // confirm 成功后恢复码必须只在内存中，且最终写 localStorage + emit
-    expect(localStorage.getItem('auth_token')).toBe('token-3')
-    const events = wrapper.emitted('login-success')
-    expect(events).toBeTruthy()
+    // 关键断言：confirm 成功后，组件必须停在"恢复码展示"阶段等用户点击"我已抄写并继续"
+    // 才能写 localStorage + emit login-success —— 否则父级 window.location.href 跳走,
+    // 恢复码"一闪而过",用户根本看不到。
+    expect(localStorage.getItem('auth_token')).toBeNull()
+    expect(wrapper.emitted('login-success')).toBeUndefined()
+    // 恢复码必须已经渲染到 DOM
+    const recoveryList = wrapper.find('[data-testid="mfa-recovery-codes-list"]')
+    expect(recoveryList.exists()).toBe(true)
+    expect(recoveryList.text()).toContain('AAAA-BBBB')
+    expect(recoveryList.text()).toContain('CCCC-DDDD')
+    // "我已抄写并继续"按钮必须渲染
+    const ackBtn = wrapper.find('[data-testid="mfa-recovery-ack-btn"]')
+    expect(ackBtn.exists()).toBe(true)
     // 恢复码不应写入 localStorage 或 sessionStorage
     const storageDump = JSON.stringify({
       ls: { ...localStorage },
@@ -223,6 +232,137 @@ describe('LoginView MFA 两阶段登录', () => {
     })
     expect(storageDump.includes('AAAA-BBBB')).toBe(false)
     expect(storageDump.includes('CCCC-DDDD')).toBe(false)
+
+    // 用户点击"我已抄写并继续"后才完成登录
+    await ackBtn.trigger('click')
+    await flushPromises()
+
+    expect(localStorage.getItem('auth_token')).toBe('token-3')
+    const events = wrapper.emitted('login-success')
+    expect(events).toBeTruthy()
+    expect(events.length).toBe(1)
+    expect(events[0][0].access_token).toBe('token-3')
+  })
+
+  it('test_mfa_enrollment_recovery_codes_not_flashed_before_acknowledge 恢复码不会在用户确认前触发 finalize', async () => {
+    // 2026-08-08 bug 复现测试：原 bug 是 confirm 成功后同步 finalizeLogin，
+    // 导致父级立刻 window.location.href 跳走，恢复码"一闪而过"。
+    // 本测试断言 confirm 成功后、用户未点 ack 按钮前，绝不能写 localStorage 或 emit。
+    apiMocks.login.mockResolvedValue({
+      auth_stage: 'mfa_enrollment_required',
+      challenge_token: 'enroll-challenge-flash',
+      challenge_expires_in: 300,
+      mfa_methods: [],
+      username: 'admin'
+    })
+    apiMocks.startLoginMfaEnrollment.mockResolvedValue({
+      enrollment_token: 'enroll-token-flash',
+      otpauth_uri: 'otpauth://totp/Test:admin?secret=CCC',
+      qr_png_base64: 'data:image/png;base64,DDDD',
+      expires_in: 300
+    })
+    apiMocks.confirmLoginMfaEnrollment.mockResolvedValue({
+      auth: {
+        access_token: 'token-flash',
+        token_type: 'Bearer',
+        expires_in: 30,
+        role: 'admin',
+        username: 'admin',
+        user_id: 1,
+        visible_menus: [],
+        allowed_agents: []
+      },
+      recovery_codes: ['RECO-A1', 'RECO-B2']
+    })
+
+    const wrapper = makeWrapper()
+    await flushPromises()
+
+    await wrapper.find('#login-username').setValue('admin')
+    await wrapper.find('#login-password').setValue('adminpw')
+    await wrapper.find('#login-captcha').setValue('abcd')
+    await wrapper.find('form.login-form').trigger('submit.prevent')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="mfa-enroll-code-input"]').setValue('123456')
+    await wrapper.find('[data-testid="mfa-enroll-form"]').trigger('submit.prevent')
+    await flushPromises()
+
+    // 核心断言：confirm 已成功，但未点 ack 前，绝不能写 token、绝不能 emit
+    expect(localStorage.getItem('auth_token')).toBeNull()
+    expect(localStorage.getItem('user_role')).toBeNull()
+    expect(wrapper.emitted('login-success')).toBeUndefined()
+    // 恢复码列表必须可见（不在 DOM 中就完全没有抄写机会）
+    expect(wrapper.find('[data-testid="mfa-recovery-codes-list"]').exists()).toBe(true)
+    // ack 按钮必须可见
+    expect(wrapper.find('[data-testid="mfa-recovery-ack-btn"]').exists()).toBe(true)
+  })
+
+  it('test_mfa_enrollment_acknowledge_emits_login_success 点击 ack 后才完成登录', async () => {
+    // 与上一条互补：覆盖 ack 路径 —— 点击后写 localStorage + emit login-success
+    apiMocks.login.mockResolvedValue({
+      auth_stage: 'mfa_enrollment_required',
+      challenge_token: 'enroll-challenge-ack',
+      challenge_expires_in: 300,
+      mfa_methods: [],
+      username: 'admin'
+    })
+    apiMocks.startLoginMfaEnrollment.mockResolvedValue({
+      enrollment_token: 'enroll-token-ack',
+      otpauth_uri: 'otpauth://totp/Test:admin?secret=EEE',
+      qr_png_base64: 'data:image/png;base64,FFFF',
+      expires_in: 300
+    })
+    apiMocks.confirmLoginMfaEnrollment.mockResolvedValue({
+      auth: {
+        access_token: 'token-ack',
+        token_type: 'Bearer',
+        expires_in: 30,
+        role: 'admin',
+        username: 'admin',
+        user_id: 7,
+        visible_menus: ['profile'],
+        allowed_agents: []
+      },
+      recovery_codes: ['ACK-AA11', 'ACK-BB22']
+    })
+
+    const wrapper = makeWrapper()
+    await flushPromises()
+
+    await wrapper.find('#login-username').setValue('admin')
+    await wrapper.find('#login-password').setValue('adminpw')
+    await wrapper.find('#login-captcha').setValue('abcd')
+    await wrapper.find('form.login-form').trigger('submit.prevent')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="mfa-enroll-code-input"]').setValue('111111')
+    await wrapper.find('[data-testid="mfa-enroll-form"]').trigger('submit.prevent')
+    await flushPromises()
+
+    const ackBtn = wrapper.find('[data-testid="mfa-recovery-ack-btn"]')
+    expect(ackBtn.exists()).toBe(true)
+    // 点击 ack 按钮
+    await ackBtn.trigger('click')
+    await flushPromises()
+
+    // localStorage 应写入 4 个字段
+    expect(localStorage.getItem('auth_token')).toBe('token-ack')
+    expect(localStorage.getItem('user_role')).toBe('admin')
+    expect(localStorage.getItem('username')).toBe('admin')
+    expect(localStorage.getItem('user_id')).toBe('7')
+    // login-success 应 emit，且 payload 包含 access_token
+    const events = wrapper.emitted('login-success')
+    expect(events).toBeTruthy()
+    expect(events.length).toBe(1)
+    expect(events[0][0].access_token).toBe('token-ack')
+    // 恢复码绝不能写入 localStorage / sessionStorage
+    const storageDump = JSON.stringify({
+      ls: { ...localStorage },
+      ss: { ...sessionStorage }
+    })
+    expect(storageDump.includes('ACK-AA11')).toBe(false)
+    expect(storageDump.includes('ACK-BB22')).toBe(false)
   })
 
   it('test_mfa_verify_error_clears_in_memory_state 错误时清空 mfa token/code 并刷新 captcha', async () => {
