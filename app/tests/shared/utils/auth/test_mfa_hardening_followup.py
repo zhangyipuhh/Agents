@@ -481,6 +481,66 @@ def test_login_enroll_confirm_pg_single_transaction(event_loop):
     event_loop.run_until_complete(runner())
 
 
+def test_login_enroll_confirm_pg_enabled_at_must_be_naive_datetime(event_loop):
+    """回归测试（2026-08-08）：confirm_login_enrollment 写入 user_mfa_totp.enabled_at
+    时必须传 naive datetime（user_mfa_totp.enabled_at 是 TIMESTAMP 字段，无时区）。
+
+    若误传 offset-aware datetime（datetime.now(timezone.utc)），asyncpg 会抛
+    ``TypeError: can't subtract offset-naive and offset-aware datetimes``
+    并最终以 ``asyncpg.exceptions.DataError: invalid input for query argument $2``
+    失败，导致 MFA 绑定崩溃（参见 Terminal#677-824 报错堆栈）。
+
+    Args:
+        event_loop: pytest-asyncio 模块级事件循环 fixture。
+    """
+    from app.shared.utils.auth.mfa_service import MfaService
+    from datetime import datetime
+
+    settings = _make_settings()
+    svc = MfaService(db=None, settings=settings)
+
+    secret = pyotp.random_base32()
+    user_id = 991
+    enrollment_token = "naive-datetime-regression-token"
+    store, conn = _build_pg_enrollment_store(
+        svc=svc,
+        user_id=user_id,
+        pending_secret=secret,
+        enrollment_token=enrollment_token,
+    )
+    pool = _FakePool(store)
+    pool.connection = conn  # type: ignore[attr-defined]
+    svc._db = pool  # type: ignore[attr-defined]
+
+    async def runner():
+        code = pyotp.TOTP(secret).now()
+        await svc.confirm_login_enrollment(
+            enrollment_token=enrollment_token, code=code
+        )
+
+        # 找到 UPDATE user_mfa_totp ... secret_cipher 的执行
+        write_calls = [
+            c
+            for c in conn.exec_calls
+            if "UPDATE user_mfa_totp" in c.sql
+            and "secret_cipher" in c.sql
+            and "recovery_code_hashes" in c.sql
+        ]
+        assert write_calls, "必须有一次 UPDATE user_mfa_totp 写入绑定信息"
+        enabled_at_arg = write_calls[0].params[1]
+        assert isinstance(enabled_at_arg, datetime), (
+            f"enabled_at 必须传 datetime 实例，实际 {type(enabled_at_arg).__name__}"
+        )
+        assert enabled_at_arg.tzinfo is None, (
+            "enabled_at 必须为 naive datetime（tzinfo=None）；"
+            f"实际 tzinfo={enabled_at_arg.tzinfo}。"
+            "PG user_mfa_totp.enabled_at 是 TIMESTAMP（无时区），"
+            "传 offset-aware datetime 会触发 asyncpg DataError。"
+        )
+
+    event_loop.run_until_complete(runner())
+
+
 def test_login_enroll_confirm_pg_wrong_purpose_fails_atomically(event_loop):
     """问题一：PG 模式 enrollment_token 的 purpose 不是 enroll_confirm 时，必须整体拒绝（不消费、不写）。"""
     from app.shared.utils.auth.mfa_service import MfaService, MfaError

@@ -651,7 +651,10 @@ class MfaService:
             bcrypt.hashpw(c.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
             for c in plain_codes
         ]
-        now = datetime.now(timezone.utc)
+        # 注意：user_mfa_totp.enabled_at 是 naive TIMESTAMP 列，
+        # 必须显式剥离 tzinfo 后再传入 asyncpg，否则触发
+        # "can't subtract offset-naive and offset-aware datetimes"。
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         # 防刚绑定码重放：把 last_used_step 设为 step - valid_window - 1（防刚绑定码被立刻重放，
         # 但用户下一次 verify_login 仍可使用同一时间步码以保证正常登录体验）。
@@ -772,7 +775,10 @@ class MfaService:
                         bcrypt.hashpw(c.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
                         for c in plain_codes
                     ]
-                    now = datetime.now(timezone.utc)
+                    # 注意：user_mfa_totp.enabled_at 是 naive TIMESTAMP 列，
+                    # 必须显式剥离 tzinfo 后再传入 asyncpg，否则触发
+                    # "can't subtract offset-naive and offset-aware datetimes"。
+                    now = datetime.now(timezone.utc).replace(tzinfo=None)
 
                     await conn.execute(
                         "UPDATE user_mfa_totp "
@@ -844,7 +850,8 @@ class MfaService:
 
             ent = self._memory_totp_entries.setdefault(user_id, {})
             ent["secret_cipher"] = ent.pop("pending_secret_cipher", ent.get("secret_cipher"))
-            ent["enabled_at"] = _dt.now(_tz.utc)
+            # 保持与 DB 模式（naive TIMESTAMP）语义一致，避免后续切换/读取时类型串扰
+            ent["enabled_at"] = _dt.now(_tz.utc).replace(tzinfo=None)
             ent["recovery_code_hashes"] = hashes
             ent["last_used_step"] = anti_replay_step
 

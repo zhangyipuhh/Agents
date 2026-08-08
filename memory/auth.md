@@ -41,6 +41,7 @@
 - TOTP secret 使用独立 `MFA_SECRET_KEY` 的 Fernet 加密存储；恢复码保存 bcrypt 哈希；challenge 仅保存 SHA-256 哈希，支持过期、消费、防重放和失败锁定。
 - MFA 服务、密钥或数据库不可用时浏览器 `/login` fail-closed，不降级为单因素；`/api/auth/login-api` 保持原有程序化登录契约，不纳入浏览器 MFA 改造。
 - Access/Refresh Token 可携带 `amr`：MFA 登录为 `pwd + totp` 或 `pwd + recovery_code`；刷新时透传已有 `amr`。
+- `user_mfa_totp.enabled_at` 列类型为 `TIMESTAMP`（naive），服务层必须传 `datetime.now(timezone.utc).replace(tzinfo=None)`；2026-08-08 修复 offset-aware 误传导致 asyncpg `DataError: invalid input for query argument $2: ... (can't subtract offset-naive and offset-aware datetimes)` 的绑定失败 bug。
 
 ### API 请求 Token 过期处理
 
