@@ -127,6 +127,7 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 - Refresh Token 不可用于普通 API（auth_middleware 拒绝 type=refresh）
 - Access Token 不可用于 refresh 接口（refresh 接口拒绝 type=access）
 - Refresh Token 通过 HttpOnly Cookie 传递，前端 JS 无法读取
+- **Access Token Cookie 轮换**：`POST /api/auth/refresh` 成功时同步下发新的 `access_token` HttpOnly Cookie；JSON body 仍返回 `access_token` 以兼容第三方 iframe。`GET /api/auth/validate` 按 Authorization Bearer 优先、HttpOnly Cookie 兜底提取 Access Token。
 - Cookie 属性：`HttpOnly; SameSite=Strict; Secure; Path=/api/auth; Max-Age=86400`
 - Refresh Token 在服务端数据库存储哈希值，支持主动删除
 - **CSRF 二次防线**：`auth_middleware` 对 Cookie 鉴权的写请求校验 `X-Requested-With: XMLHttpRequest` 自定义头（跨站简单请求无法附加自定义头，被 CORS 预检拦截）；`SameSite=Strict` 为第一道防线，本校验为第二道防线

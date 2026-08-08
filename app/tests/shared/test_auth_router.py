@@ -444,3 +444,43 @@ class TestIssuePortalRefreshToken:
         result = asyncio.run(issue_portal_refresh_token(mock_request))
 
         assert result.portal_refresh_token == 'portal_token_123'
+
+
+def test_refresh_sets_new_access_token_cookie(client):
+    """
+    测试刷新接口轮换 access_token Cookie，且 JSON body 保留（第三方 iframe 兼容）
+
+    Args:
+        client: FastAPI TestClient
+
+    Returns:
+        None
+    """
+    login_resp = client.post(
+        "/api/auth/login-api",
+        json={"username": "admin", "password": "123456"},
+    )
+    assert login_resp.status_code == 200
+    resp = client.post("/api/auth/refresh")
+    assert resp.status_code == 200
+    assert "access_token" in resp.json()
+    cookies = resp.headers.get_list("set-cookie")
+    assert any(c.startswith("access_token=") and "HttpOnly" in c for c in cookies)
+
+
+def test_validate_accepts_cookie_auth(client, admin_headers):
+    """
+    测试 validate 接口支持 Cookie 携带 access_token（无 Authorization 头）
+
+    Args:
+        client: FastAPI TestClient
+        admin_headers: admin 认证请求头（用于取有效 token 字符串）
+
+    Returns:
+        None
+    """
+    token = admin_headers["Authorization"].split(" ", 1)[1]
+    client.cookies.set("access_token", token, path="/api")
+    response = client.get("/api/auth/validate")
+    assert response.status_code == 200
+    assert response.json()["username"] == "admin"

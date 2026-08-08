@@ -863,7 +863,7 @@ async def login_api(request: ApiLoginRequest, req: Request, response: Response):
 
 
 @router.post('/refresh')
-async def refresh_token(request: Request):
+async def refresh_token(request: Request, response: Response):
     """
     刷新 Access Token 接口
 
@@ -932,6 +932,18 @@ async def refresh_token(request: Request):
     access_token = await jwt_auth.generate_token(
         username,
         auth_methods=amr if isinstance(amr, list) else None,
+    )
+
+    # 同步轮换 Access Token Cookie（浏览器主应用）；body 保留供第三方 iframe 使用
+    cookie_cfg = settings.auth_cookie
+    response.set_cookie(
+        key=cookie_cfg.access_token_name,
+        value=access_token,
+        httponly=True,
+        samesite=cookie_cfg.samesite,
+        secure=cookie_cfg.secure,
+        path=cookie_cfg.access_token_path,
+        max_age=cookie_cfg.access_token_max_age_seconds,
     )
 
     return {
@@ -1023,13 +1035,17 @@ async def validate_token(request: Request):
         HTTPException: Token 无效或过期时返回 401
     """
     auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+    else:
+        # 浏览器主应用：HttpOnly Cookie 兜底
+        token = request.cookies.get(settings.auth_cookie.access_token_name)
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="缺少有效的认证信息"
         )
 
-    token = auth_header.split(" ")[1]
     payload = await jwt_auth.verify_token(token)
 
     # 拒绝 Refresh Token
