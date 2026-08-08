@@ -200,6 +200,17 @@
 - **`sseParser.js`**：`isThinkingBlock` / `tryParsePythonLiteral` / `extractTextFromBlock` / `processContentBlocks` / `parseMessageContent` / `processSSEEvent` / `createAiMessage`；支持 Python 风格单引号字面量、JSON.parse、regex 回退三级解析
 - **`index.js`**：聚合导出
 
+### 浏览器登录 TOTP 两阶段流程
+
+`LoginView.vue` 使用 standalone template，登录状态分为 `password`、`mfa_verify`、`mfa_enroll` 三阶段：
+
+- `password` 阶段调用 `/api/auth/login`，普通成功响应才写入 `localStorage.auth_token/user_role/username/user_id` 并触发 `login-success`。
+- `mfa_verify` 阶段仅在内存保存 challenge token，支持 TOTP 与一次性恢复码切换；调用 `/api/auth/mfa/login/verify` 成功后才进入统一登录完成路径。
+- `mfa_enroll` 阶段调用登录绑定 start 获取二维码/otpauth URI，再提交动态码确认；恢复码只在当前组件内存中一次性展示，不写 localStorage/sessionStorage。
+- challenge/验证码失败、过期或返回密码阶段时清理所有 MFA 临时状态并刷新图形验证码。
+
+`UserSettingsDialog.vue` 的个人设置页包含 MFA 管理区域：普通用户可启用、轮换、禁用和重置恢复码；管理员显示强制状态并隐藏禁用操作。二维码、TOTP URI 和恢复码在对话框关闭时清理。
+
 ### 认证流（前端）
 
 - **三段式认证**（`App.vue:checkAuth` / `PortalApp.vue:checkAuth` / `KnowledgeApp.vue:onMounted`）：

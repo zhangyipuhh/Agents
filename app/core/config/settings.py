@@ -11,10 +11,10 @@ Author: 张镒谱
 """
 
 from pathlib import Path
-from typing import Dict, Literal, Optional
+from typing import Annotated, Dict, List, Literal, Optional
 
 from pydantic import AliasChoices, Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from mcpClient.shared.config_loader import load_mcp_config
 
@@ -253,6 +253,131 @@ class DatabaseSettings(BaseSettings):
         default="memory",
         description="认证存储模式：memory 或 postgres"
     )
+
+
+class MfaSettings(BaseSettings):
+    """MFA（双因素认证）配置（2026-08-07 新增）。
+
+    为浏览器 /login 引入 TOTP 双因素（RFC 6238）提供运行时配置。强制对
+    ``required_roles`` 列表中的角色启用，包括 admin（默认）。
+
+    Attributes:
+        secret_key: Fernet 对称密钥 base64（必须 >= 32 字节）；
+            缺失 / 非法会让 ``MfaService`` 在 lifespan 阶段直接 fail-closed，
+            不签发正式会话（管理员与已启用用户一律拒绝登录）。
+        issuer: TOTP 标签 issuer（otpauth URI 显示用）。
+        required_roles: 默认强制启用 MFA 的角色列表。默认包含 ``admin``。
+        challenge_ttl_seconds: challenge 一次性令牌有效期（秒）；默认 300。
+        max_attempts: 单次 challenge 允许的失败次数；超限触发用户锁定。
+        lockout_seconds: 用户锁定时长（秒）；失败累计达 ``max_attempts`` 后写入
+            ``users.locked_until``，期间禁止登录（同时覆盖密码与 MFA 失败路径）。
+        valid_window: TOTP 时间步漂移容忍（默认 ±1 步），同时也是重放窗口。
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=_ENV_FILE_PATH,
+        env_file_encoding="utf-8",
+        env_prefix="MFA_",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    secret_key: str = Field(
+        default="",
+        description=(
+            "Fernet 对称密钥 base64（>=32 字节）；缺失/非法时 MfaService 在 lifespan 阶段 fail-closed。"
+        ),
+    )
+    issuer: str = Field(
+        default="Feature Agent",
+        description="TOTP issuer（otpauth URI 显示）。",
+    )
+    required_roles: Annotated[List[str], NoDecode] = Field(
+        default_factory=lambda: ["admin"],
+        description="强制启用 MFA 的角色列表；默认包含 admin。",
+    )
+    challenge_ttl_seconds: int = Field(
+        default=300,
+        ge=60,
+        description="challenge 一次性令牌 TTL（秒），默认 300。",
+    )
+    max_attempts: int = Field(
+        default=5,
+        ge=1,
+        description="单 challenge 允许失败次数；超限触发用户锁定。",
+    )
+    lockout_seconds: int = Field(
+        default=1800,
+        ge=60,
+        description="用户锁定时长（秒），默认 1800。",
+    )
+    valid_window: int = Field(
+        default=1,
+        ge=0,
+        le=10,
+        description="TOTP 时间步漂移容忍（前/后各 N 步），默认 ±1。",
+    )
+
+    @field_validator("secret_key")
+    @classmethod
+    def validate_secret_key(cls, value: str) -> str:
+        """校验 Fernet 密钥：必须是合法 url-safe base64，解码后**恰好** 32 字节。
+
+        Args:
+            value: 配置字符串。
+
+        Returns:
+            str: 验证后的字符串（保持原样）。
+
+        Raises:
+            ValueError: 非法 Fernet 密钥。
+        """
+        import base64
+
+        if not value:
+            return value  # 留空（由 MfaService 在 lifespan 识别并 fail-closed）
+        try:
+            decoded = base64.urlsafe_b64decode(value.encode("ascii"))
+        except Exception as exc:
+            raise ValueError(
+                f"MFA_SECRET_KEY 不是合法 url-safe base64 字符串: {exc}"
+            )
+        if len(decoded) != 32:
+            raise ValueError(
+                "MFA_SECRET_KEY 解码后必须恰好 32 字节（Fernet 要求）"
+            )
+        return value
+
+    @field_validator("required_roles", mode="before")
+    @classmethod
+    def parse_required_roles(cls, value):
+        """解析 MFA_REQUIRED_ROLES 支持逗号分隔或 JSON 列表。
+
+        Args:
+            value: 字符串 / list / None。
+
+        Returns:
+            List[str]: 标准化后的角色列表。
+        """
+        if value is None or value == "":
+            return ["admin"]
+        if isinstance(value, str):
+            stripped = value.strip()
+            # JSON 数组支持（['admin','user']）
+            if stripped.startswith("["):
+                import json
+
+                try:
+                    parsed = json.loads(stripped)
+                    if isinstance(parsed, list):
+                        return [str(x) for x in parsed if x]
+                except json.JSONDecodeError:
+                    pass
+            # 逗号分隔
+            return [token.strip() for token in stripped.split(",") if token.strip()]
+        if isinstance(value, list):
+            return [str(x) for x in value if x]
+        return ["admin"]
 
 
 class PortalAuthSettings(BaseSettings):
@@ -725,6 +850,7 @@ class Settings(BaseSettings):
     third_party_executor: ThirdPartyExecutorSettings = Field(
         default_factory=ThirdPartyExecutorSettings
     )
+    mfa: MfaSettings = Field(default_factory=MfaSettings)
     agent_chat_max_concurrency: int = Field(
         default=1,
         ge=1,

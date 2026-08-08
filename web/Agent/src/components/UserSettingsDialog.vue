@@ -10,7 +10,7 @@
  *    2026-07-31 二次调整：原「邮件设置」中间层删除，新增 channel 级 id=messaging.email，渲染上 messaging 顶级 tab 内 sub-tab 容器按 channel 分发）
  */
 
-import { ref, watch, computed, nextTick } from 'vue'
+import { ref, watch, computed, nextTick, onMounted } from 'vue'
 import {
   updatePassword,
   updateUsername,
@@ -27,7 +27,13 @@ import {
   adminBatchDeleteSessions,
   adminExportSessionMarkdown,
   adminFetchSessionMessages,
-  searchSessionsByUsername
+  searchSessionsByUsername,
+  // 2026-08-07 新增：个人 MFA 管理 API
+  fetchMfaStatus,
+  startMfaEnrollment,
+  confirmMfaEnrollment,
+  disableMfa,
+  regenerateMfaRecoveryCodes
 } from '../utils/api.js'
 import {
   createAiMessage,
@@ -302,6 +308,46 @@ const newUsername = ref('')
 const usernameError = ref('')
 const usernameSuccess = ref('')
 
+/* ---- 2026-08-07 新增：个人 MFA 管理状态 ---- */
+
+/** @type {import('vue').Ref<null | {enabled: boolean, required: boolean, methods: string[], enabled_at: string|null, issuer: string}>} */
+const mfaStatus = ref(null)
+
+/** @type {import('vue').Ref<string>} MFA 模块错误信息 */
+const mfaError = ref('')
+
+/** @type {import('vue').Ref<string>} MFA 模块成功信息 */
+const mfaSuccess = ref('')
+
+/** @type {import('vue').Ref<boolean>} 是否正在提交 MFA 操作 */
+const mfaLoading = ref(false)
+
+// 启用向导临时态（仅内存）
+/** @type {import('vue').Ref<string>} 启用向导 enrollment_token（仅内存） */
+const mfaEnrollmentToken = ref('')
+
+/** @type {import('vue').Ref<string>} 启用向导 QR 二维码 dataURL（仅内存） */
+const mfaEnrollQr = ref('')
+
+/** @type {import('vue').Ref<string>} 启用向导 secret（仅内存，可选展示） */
+const mfaEnrollSecret = ref('')
+
+/** @type {import('vue').Ref<string>} 启用向导 otpauth URI（仅内存） */
+const mfaEnrollUri = ref('')
+
+/** @type {import('vue').Ref<string>} 启用向导当前密码输入值 */
+const mfaCurrentPassword = ref('')
+
+/** @type {import('vue').Ref<string>} 启用向导 / 验证 / 重置恢复码输入 6 位码 */
+const mfaActionCode = ref('')
+
+// 重置恢复码 / 禁用向导临时态（仅内存）
+/** @type {import('vue').Ref<'totp'|'recovery_code'>} 操作所选第二因素类型 */
+const mfaActionMethod = ref('totp')
+
+/** @type {import('vue').Ref<string[]>} 启用 / 重置成功后展示的恢复码（仅内存） */
+const mfaRecoveryCodes = ref([])
+
 /* ---- 个人资料相关状态 ---- */
 
 /** @type {import('vue').Ref<Object>} 用户完整资料 */
@@ -398,6 +444,8 @@ function switchTab(tabId) {
     // 导致 admin 场景下"管理后台"→"个人设置"切换时 loadUserProfile 永远不被调用,
     // 邮箱等字段保持初始空字符串,渲染时显示 placeholder。
     loadUserProfile()
+    // 2026-08-07 新增：切到个人设置时同步刷新 MFA 状态
+    loadMfaStatus()
   } else if (tabId === 'user-management') {
     // 进入用户管理主 tab 时，按当前子 tab 触发对应数据加载
     switchUserMgmtTab(activeUserMgmtTab.value)
@@ -494,6 +542,185 @@ function resetForms() {
   historyMessages.value = []
   historyLoading.value = false
   activeUserMgmtTab.value = 'users'
+  // 2026-08-07 新增：关闭 dialog 时清空 MFA 临时态（二维码 / 恢复码 / secret）
+  resetMfaState()
+}
+
+/**
+ * 2026-08-07 新增：清空 MFA 模块所有仅内存的临时态（二维码 / 恢复码 / enrollment token）。
+ * 仅清组件内存，绝不写入 localStorage / sessionStorage。
+ *
+ * @returns {void}
+ */
+function resetMfaState() {
+  mfaStatus.value = null
+  mfaError.value = ''
+  mfaSuccess.value = ''
+  mfaLoading.value = false
+  mfaEnrollmentToken.value = ''
+  mfaEnrollQr.value = ''
+  mfaEnrollSecret.value = ''
+  mfaEnrollUri.value = ''
+  mfaCurrentPassword.value = ''
+  mfaActionCode.value = ''
+  mfaActionMethod.value = 'totp'
+  mfaRecoveryCodes.value = []
+}
+
+/**
+ * 2026-08-07 新增：拉取当前用户 MFA 状态。
+ * 调用 fetchMfaStatus（GET /api/auth/mfa/status）。失败时仅写 mfaError，
+ * 不影响其他模块。
+ *
+ * @returns {Promise<void>}
+ */
+async function loadMfaStatus() {
+  try {
+    const status = await fetchMfaStatus()
+    mfaStatus.value = status
+  } catch (err) {
+    mfaStatus.value = null
+    mfaError.value = err.message || '获取 MFA 状态失败'
+  }
+}
+
+/**
+ * 2026-08-07 新增：启动 MFA 启用向导（已登录用户）。
+ * 调用 startMfaEnrollment（POST /api/auth/mfa/totp/enroll/start），
+ * 成功后把 enrollment_token / QR / secret 仅放在组件内存。
+ *
+ * @returns {Promise<void>}
+ */
+async function handleMfaStartEnroll() {
+  mfaError.value = ''
+  mfaSuccess.value = ''
+  if (!mfaCurrentPassword.value) {
+    mfaError.value = '请输入当前密码以开始绑定'
+    return
+  }
+  mfaLoading.value = true
+  try {
+    const enroll = await startMfaEnrollment(mfaCurrentPassword.value)
+    mfaEnrollmentToken.value = enroll.enrollment_token
+    mfaEnrollQr.value = enroll.qr_png_base64
+    mfaEnrollSecret.value = enroll.secret || ''
+    mfaEnrollUri.value = enroll.otpauth_uri || ''
+    mfaActionCode.value = ''
+  } catch (err) {
+    mfaError.value = err.message || '启动 MFA 绑定失败'
+  } finally {
+    mfaLoading.value = false
+  }
+}
+
+/**
+ * 2026-08-07 新增：确认启用 MFA。
+ * 调用 confirmMfaEnrollment（POST /api/auth/mfa/totp/enroll/confirm），
+ * 成功后一次性展示恢复码（仅内存），并刷新状态。
+ *
+ * @returns {Promise<void>}
+ */
+async function handleMfaConfirmEnroll() {
+  mfaError.value = ''
+  mfaSuccess.value = ''
+  if (!mfaActionCode.value.trim()) {
+    mfaError.value = '请输入 6 位动态码'
+    return
+  }
+  mfaLoading.value = true
+  try {
+    const result = await confirmMfaEnrollment(mfaEnrollmentToken.value, mfaActionCode.value.trim())
+    mfaRecoveryCodes.value = Array.isArray(result.recovery_codes) ? [...result.recovery_codes] : []
+    mfaSuccess.value = '已启用双因素认证'
+    mfaActionCode.value = ''
+    mfaCurrentPassword.value = ''
+    await loadMfaStatus()
+  } catch (err) {
+    mfaError.value = err.message || '确认 MFA 绑定失败'
+    mfaActionCode.value = ''
+  } finally {
+    mfaLoading.value = false
+  }
+}
+
+/**
+ * 2026-08-07 新增：禁用 MFA（仅普通用户，admin 后端返 403）。
+ * 调用 disableMfa（POST /api/auth/mfa/totp/disable）。
+ *
+ * @returns {Promise<void>}
+ */
+async function handleMfaDisable() {
+  mfaError.value = ''
+  mfaSuccess.value = ''
+  if (!mfaCurrentPassword.value) {
+    mfaError.value = '请输入当前密码'
+    return
+  }
+  if (!mfaActionCode.value.trim()) {
+    mfaError.value = '请输入验证码或恢复码'
+    return
+  }
+  mfaLoading.value = true
+  try {
+    await disableMfa(mfaCurrentPassword.value, mfaActionCode.value.trim(), mfaActionMethod.value)
+    mfaSuccess.value = '已禁用双因素认证'
+    mfaActionCode.value = ''
+    mfaCurrentPassword.value = ''
+    await loadMfaStatus()
+  } catch (err) {
+    mfaError.value = err.message || '禁用 MFA 失败'
+  } finally {
+    mfaLoading.value = false
+  }
+}
+
+/**
+ * 2026-08-07 新增：重新生成恢复码。
+ * 调用 regenerateMfaRecoveryCodes（POST /api/auth/mfa/recovery-codes/regenerate），
+ * 成功后一次性展示新恢复码（仅内存）。
+ *
+ * @returns {Promise<void>}
+ */
+async function handleMfaRegenRecovery() {
+  mfaError.value = ''
+  mfaSuccess.value = ''
+  if (!mfaCurrentPassword.value) {
+    mfaError.value = '请输入当前密码'
+    return
+  }
+  if (!mfaActionCode.value.trim()) {
+    mfaError.value = '请输入验证码或恢复码'
+    return
+  }
+  mfaLoading.value = true
+  try {
+    const result = await regenerateMfaRecoveryCodes(
+      mfaCurrentPassword.value,
+      mfaActionCode.value.trim(),
+      mfaActionMethod.value
+    )
+    mfaRecoveryCodes.value = Array.isArray(result.recovery_codes) ? [...result.recovery_codes] : []
+    mfaSuccess.value = '已重新生成恢复码，旧恢复码已失效'
+    mfaActionCode.value = ''
+    mfaCurrentPassword.value = ''
+    await loadMfaStatus()
+  } catch (err) {
+    mfaError.value = err.message || '重置恢复码失败'
+  } finally {
+    mfaLoading.value = false
+  }
+}
+
+/**
+ * 2026-08-07 新增：管理员账户是否允许禁用 MFA。
+ * 后端策略：admin 账户不允许禁用（required=true 时一定禁止）。
+ *
+ * @returns {boolean} 允许禁用返回 true
+ */
+function canDisableMfa() {
+  if (!mfaStatus.value) return false
+  if (mfaStatus.value.required) return false
+  return mfaStatus.value.enabled
 }
 
 /* ---- Admin 用户新增/编辑弹窗逻辑 ---- */
@@ -1221,6 +1448,8 @@ watch(() => props.visible, (newVal) => {
       activeTab.value = requested
       if (activeTab.value === 'profile') {
         loadUserProfile()
+        // 2026-08-07 新增：dialog 打开且定位到 profile tab 时同步拉取 MFA 状态
+        loadMfaStatus()
       } else if (activeTab.value === 'user-management') {
         // 按当前子 tab 触发对应数据加载
         switchUserMgmtTab(activeUserMgmtTab.value)
@@ -1228,6 +1457,16 @@ watch(() => props.visible, (newVal) => {
     }
     // 智能体管理 Tab 由 AgentManager 组件自管理加载（onMounted），无需在此处处理
     // MCP 管理 Tab 由 McpServerManager 组件自管理加载（onMounted），无需在此处处理
+  }
+})
+
+// 2026-08-07 新增：组件挂载时若 dialog 一开始就是可见的，watch 不会自动触发，
+// 因此用 onMounted 兜底拉取 MFA 状态，避免依赖外部「visible 先 false 后 true」的场景。
+// loadUserProfile 同样在此处补齐挂载即加载（与历史 watch 行为保持一致）。
+onMounted(() => {
+  if (props.visible) {
+    loadUserProfile()
+    loadMfaStatus()
   }
 })
 </script>
@@ -1408,6 +1647,189 @@ watch(() => props.visible, (newVal) => {
                     </div>
                     <div v-if="passwordError" class="error-message">{{ passwordError }}</div>
                     <div v-if="passwordSuccess" class="success-message">{{ passwordSuccess }}</div>
+                  </div>
+
+                  <div class="section-divider"></div>
+
+                  <!-- 2026-08-07 新增：MFA 双因素认证管理 -->
+                  <div class="settings-section" data-testid="mfa-section">
+                    <h3 class="section-title">双因素认证（MFA）</h3>
+                    <p class="section-desc">
+                      <span v-if="mfaStatus && mfaStatus.enabled">
+                        当前状态：<strong class="mfa-state enabled">已启用</strong>
+                        <span v-if="mfaStatus.enabled_at">（绑定于 {{ mfaStatus.enabled_at }}）</span>
+                      </span>
+                      <span v-else-if="mfaStatus && mfaStatus.required">
+                        当前状态：<strong class="mfa-state required">强制启用（管理员策略）</strong>
+                      </span>
+                      <span v-else>
+                        当前状态：<strong class="mfa-state disabled">未启用</strong>
+                      </span>
+                    </p>
+
+                    <!-- 未启用 + 非 required：显示启用入口 -->
+                    <div v-if="mfaStatus && !mfaStatus.enabled && !mfaStatus.required">
+                      <p class="section-desc">绑定后登录需在密码外额外输入 6 位动态码，可显著降低账号被盗风险。</p>
+                      <div v-if="!mfaEnrollQr">
+                        <div class="form-group">
+                          <label class="form-label" for="mfa-enroll-current-password">当前密码</label>
+                          <input
+                            id="mfa-enroll-current-password"
+                            v-model="mfaCurrentPassword"
+                            type="text"
+                            class="form-input password-mask"
+                            placeholder="请输入当前密码以开始绑定"
+                            autocomplete="current-password"
+                            data-testid="mfa-enroll-current-password"
+                            :disabled="mfaLoading"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          class="action-button-secondary"
+                          :disabled="mfaLoading"
+                          data-testid="mfa-enable-btn"
+                          @click="handleMfaStartEnroll"
+                        >
+                          <span v-if="mfaLoading">生成中...</span>
+                          <span v-else>生成二维码</span>
+                        </button>
+                      </div>
+                      <div v-else>
+                        <p class="section-desc">请用身份认证器（如 Google Authenticator）扫描下方二维码：</p>
+                        <div class="mfa-enroll-qr-wrap">
+                          <img
+                            :src="mfaEnrollQr"
+                            alt="MFA 二维码"
+                            class="mfa-enroll-qr"
+                            data-testid="mfa-enroll-qr"
+                          />
+                        </div>
+                        <p class="section-desc">
+                          无法扫描？将 otpauth URI 粘贴到认证器：
+                          <code class="mfa-enroll-uri">{{ mfaEnrollUri }}</code>
+                          <span v-if="mfaEnrollSecret">（secret：<code>{{ mfaEnrollSecret }}</code>）</span>
+                        </p>
+                        <div class="form-group">
+                          <label class="form-label" for="mfa-enroll-code">6 位动态码</label>
+                          <input
+                            id="mfa-enroll-code"
+                            v-model="mfaActionCode"
+                            type="text"
+                            inputmode="numeric"
+                            class="form-input"
+                            placeholder="请输入 6 位动态码"
+                            autocomplete="one-time-code"
+                            data-testid="mfa-enroll-code-input"
+                            :disabled="mfaLoading"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          class="action-button-secondary"
+                          :disabled="mfaLoading"
+                          data-testid="mfa-enroll-confirm-btn"
+                          @click="handleMfaConfirmEnroll"
+                        >
+                          确认绑定
+                        </button>
+                      </div>
+                    </div>
+
+                    <!-- 已启用：显示重置恢复码 + 可选禁用 -->
+                    <div v-if="mfaStatus && mfaStatus.enabled">
+                      <div class="mfa-action-block">
+                        <h4 class="mfa-action-title">重置恢复码</h4>
+                        <p class="section-desc">重置后旧恢复码全部失效，请妥善保存新码。</p>
+                        <div class="form-group">
+                          <label class="form-label" for="mfa-regen-password">当前密码</label>
+                          <input
+                            id="mfa-regen-password"
+                            v-model="mfaCurrentPassword"
+                            type="text"
+                            class="form-input password-mask"
+                            placeholder="请输入当前密码"
+                            autocomplete="current-password"
+                            :disabled="mfaLoading"
+                          />
+                        </div>
+                        <div class="form-group">
+                          <label class="form-label" for="mfa-regen-method">校验方式</label>
+                          <div class="mfa-method-tabs">
+                            <button
+                              type="button"
+                              class="mfa-method-tab"
+                              :class="{ active: mfaActionMethod === 'totp' }"
+                              :disabled="mfaLoading || !(mfaStatus.methods && mfaStatus.methods.includes('totp'))"
+                              @click="mfaActionMethod = 'totp'"
+                            >
+                              动态码
+                            </button>
+                            <button
+                              type="button"
+                              class="mfa-method-tab"
+                              :class="{ active: mfaActionMethod === 'recovery_code' }"
+                              :disabled="mfaLoading || !(mfaStatus.methods && mfaStatus.methods.includes('recovery_code'))"
+                              @click="mfaActionMethod = 'recovery_code'"
+                            >
+                              恢复码
+                            </button>
+                          </div>
+                        </div>
+                        <div class="form-group">
+                          <label class="form-label" for="mfa-regen-code">验证码</label>
+                          <input
+                            id="mfa-regen-code"
+                            v-model="mfaActionCode"
+                            type="text"
+                            class="form-input"
+                            placeholder="请输入 6 位动态码或恢复码"
+                            autocomplete="one-time-code"
+                            :disabled="mfaLoading"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          class="action-button-secondary"
+                          :disabled="mfaLoading"
+                          data-testid="mfa-regen-recovery-btn"
+                          @click="handleMfaRegenRecovery"
+                        >
+                          重置恢复码
+                        </button>
+                      </div>
+
+                      <!-- 禁用：仅普通用户可调用（admin required 时按钮隐藏） -->
+                      <div v-if="canDisableMfa()" class="mfa-action-block">
+                        <h4 class="mfa-action-title">禁用双因素认证</h4>
+                        <p class="section-desc warning">禁用后登录将不再要求第二因素，请谨慎操作。</p>
+                        <button
+                          type="button"
+                          class="action-button-danger"
+                          :disabled="mfaLoading"
+                          data-testid="mfa-disable-btn"
+                          @click="handleMfaDisable"
+                        >
+                          禁用 MFA
+                        </button>
+                      </div>
+                    </div>
+
+                    <!-- 恢复码展示（启用 / 重置成功后一次性展示，仅内存） -->
+                    <div
+                      v-if="mfaRecoveryCodes.length > 0"
+                      class="mfa-recovery-block"
+                      data-testid="mfa-recovery-codes-list"
+                    >
+                      <h4 class="mfa-action-title">新的恢复码（请立即抄写保存）</h4>
+                      <ul class="mfa-recovery-codes">
+                        <li v-for="code in mfaRecoveryCodes" :key="code">{{ code }}</li>
+                      </ul>
+                      <p class="section-desc warning">每个恢复码仅可使用一次；关闭本对话框后无法再次查看。</p>
+                    </div>
+
+                    <div v-if="mfaError" class="error-message">{{ mfaError }}</div>
+                    <div v-if="mfaSuccess" class="success-message">{{ mfaSuccess }}</div>
                   </div>
 
                   <div class="section-divider"></div>
@@ -2254,6 +2676,182 @@ watch(() => props.visible, (newVal) => {
 .action-button:disabled {
   opacity: var(--opacity-disabled);
   cursor: not-allowed;
+}
+
+/* 2026-08-07 新增：MFA 次级 / 危险按钮 */
+.action-button-secondary {
+  height: 40px;
+  padding: 0 var(--space-lg);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-accent);
+  background-color: transparent;
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: var(--transition-colors);
+  margin-top: var(--space-sm);
+}
+
+.action-button-secondary:hover:not(:disabled) {
+  background-color: rgba(30, 90, 168, 0.08);
+}
+
+.action-button-secondary:disabled {
+  opacity: var(--opacity-disabled);
+  cursor: not-allowed;
+}
+
+.action-button-danger {
+  height: 40px;
+  padding: 0 var(--space-lg);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: #ffffff;
+  background-color: #B91C1C;
+  border: 1px solid #B91C1C;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: var(--transition-colors);
+  margin-top: var(--space-sm);
+}
+
+.action-button-danger:hover:not(:disabled) {
+  background-color: #991B1B;
+}
+
+.action-button-danger:disabled {
+  opacity: var(--opacity-disabled);
+  cursor: not-allowed;
+}
+
+/* MFA 状态文案色 */
+.mfa-state.enabled {
+  color: #166534;
+}
+.mfa-state.required {
+  color: #B91C1C;
+}
+.mfa-state.disabled {
+  color: var(--color-text-secondary);
+}
+
+/* MFA action block（重置恢复码 / 禁用 MFA 独立块） */
+.mfa-action-block {
+  margin-top: var(--space-base);
+  padding: var(--space-base);
+  background-color: var(--color-bg-secondary);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+}
+
+.mfa-action-title {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+  margin: 0 0 var(--space-xs);
+}
+
+.section-desc.warning {
+  color: #92400E;
+}
+
+/* MFA enroll 二维码 */
+.mfa-enroll-qr-wrap {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: var(--space-base);
+  background-color: var(--color-bg-primary);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  margin-bottom: var(--space-base);
+}
+
+.mfa-enroll-qr {
+  width: 180px;
+  height: 180px;
+  object-fit: contain;
+  background-color: #ffffff;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+}
+
+.mfa-enroll-uri {
+  display: inline-block;
+  margin-top: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  background-color: var(--color-bg-tertiary);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* 恢复码展示块 */
+.mfa-recovery-block {
+  margin-top: var(--space-base);
+  padding: var(--space-base);
+  background-color: #F0FDF4;
+  border: 1px solid #86EFAC;
+  border-radius: var(--radius-md);
+}
+
+.mfa-recovery-codes {
+  list-style: none;
+  padding: 0;
+  margin: var(--space-sm) 0;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-sm);
+
+  li {
+    padding: var(--space-sm);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-semibold);
+    background-color: #ffffff;
+    border: 1px dashed #86EFAC;
+    border-radius: var(--radius-sm);
+    text-align: center;
+    color: #166534;
+  }
+}
+
+/* MFA method 切换 tab */
+.mfa-method-tabs {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+.mfa-method-tab {
+  flex: 1;
+  height: 36px;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-secondary);
+  background-color: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: var(--transition-colors);
+
+  &:hover:not(:disabled) {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+
+  &.active {
+    color: #ffffff;
+    background-color: var(--color-accent);
+    border-color: var(--color-accent);
+  }
+
+  &:disabled {
+    opacity: var(--opacity-disabled);
+    cursor: not-allowed;
+  }
 }
 
 .button-loading {

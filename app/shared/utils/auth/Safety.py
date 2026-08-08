@@ -92,32 +92,81 @@ class JWTAuth:
         else:
             return username == self.username and password == self.password
     
-    async def generate_token(self, username: str) -> str:
+    async def generate_token(self, username: str, auth_methods: Optional[List[str]] = None) -> str:
+        """生成 Access Token；可选携带 ``amr`` 字段（Authentication Methods Reference）。
+
+        Args:
+            username: 用户名（subject 字段）。
+            auth_methods: 认证方法标记（``["pwd","totp"]`` / ``["pwd","recovery_code"]``），
+                None/空 list 时不写入 ``amr`` 字段（保持旧行为）。
+
+        Returns:
+            str: JWT 字符串。
+
+        Raises:
+            TypeError: auth_methods 不是 list 时。
+            HTTPException: 生成失败时（500）。
+        """
         try:
             payload = {
                 "username": username,
                 "type": "access",
                 "exp": datetime.utcnow() + timedelta(minutes=30),
-                "iat": datetime.utcnow()
+                "iat": datetime.utcnow(),
             }
+            if auth_methods:
+                if not isinstance(auth_methods, list):
+                    raise TypeError(
+                        f"auth_methods must be list[str], got {type(auth_methods).__name__}"
+                    )
+                payload["amr"] = [str(x) for x in auth_methods if x]
             token = jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
             return token
+        except TypeError:
+            raise
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"生成令牌失败: {str(e)}"
             )
 
-    async def generate_refresh_token(self, username: str, expires_delta: Optional[timedelta] = None) -> str:
+    async def generate_refresh_token(
+        self,
+        username: str,
+        expires_delta: Optional[timedelta] = None,
+        auth_methods: Optional[List[str]] = None,
+    ) -> str:
+        """生成 Refresh Token；可选携带 ``amr`` 字段（被 /refresh 用于透传到新 Access Token）。
+
+        Args:
+            username: 用户名。
+            expires_delta: 可选 TTL（默认 24h）。
+            auth_methods: 认证方法标记；与 ``generate_token`` 行为一致。
+
+        Returns:
+            str: JWT 字符串。
+
+        Raises:
+            TypeError: auth_methods 不是 list 时。
+            HTTPException: 生成失败时（500）。
+        """
         try:
             payload = {
                 "username": username,
                 "type": "refresh",
                 "exp": datetime.utcnow() + (expires_delta or timedelta(hours=24)),
-                "iat": datetime.utcnow()
+                "iat": datetime.utcnow(),
             }
+            if auth_methods:
+                if not isinstance(auth_methods, list):
+                    raise TypeError(
+                        f"auth_methods must be list[str], got {type(auth_methods).__name__}"
+                    )
+                payload["amr"] = [str(x) for x in auth_methods if x]
             token = jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
             return token
+        except TypeError:
+            raise
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

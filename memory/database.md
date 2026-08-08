@@ -320,6 +320,26 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 | created_at     | TIMESTAMP                  | 创建时间           |
 | updated_at    | TIMESTAMP                  | 更新时间           |
 
+### MFA 认证表
+
+`users` 表增加登录失败控制字段：`failed_login_count INTEGER NOT NULL DEFAULT 0`、`locked_until TIMESTAMPTZ NULL`。登录失败达到配置阈值时锁定账号，正式登录成功后清零。
+
+`user_mfa_totp` 表保存用户 TOTP 状态：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| user_id | INTEGER PRIMARY KEY FK → users | 用户 ID |
+| secret_cipher | TEXT | Fernet 加密后的 TOTP secret |
+| pending_secret_cipher | TEXT | 绑定/轮换确认前的临时密钥 |
+| enabled_at | TIMESTAMPTZ | 启用时间；非空表示已启用 |
+| last_used_step | BIGINT | 最近成功使用的 TOTP 时间步，防重放 |
+| recovery_code_hashes | JSONB | bcrypt 恢复码哈希数组，一次性消费 |
+| updated_at | TIMESTAMPTZ | 更新时间 |
+
+`mfa_challenges` 表保存短期一次性 challenge：`token_hash CHAR(64)`、`user_id`、`purpose`（`login_verify` / `login_enroll` / `enroll_confirm`）、`expires_at`、`failed_attempts`、`consumed_at`、`created_at`。challenge 明文只在客户端内存和一次响应中存在，数据库只存 SHA-256 哈希；challenge 消费、TOTP 时间步更新和恢复码消费使用事务与行锁保证并发安全。
+
+MFA 绑定、禁用、恢复码重置会同时撤销 `refresh_tokens` 与 `portal_refresh_tokens`；`/api/auth/login-api` 不使用上述浏览器 MFA 流程。
+
 ### sessions 表
 
 | 字段           | 类型                | 说明           |

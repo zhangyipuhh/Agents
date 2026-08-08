@@ -15,7 +15,8 @@ Date: 2026/5/15
 import json
 import threading
 import bcrypt
-from typing import Optional, List, Dict
+import time
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from app.core.database import DatabasePool, register_schema
 
@@ -78,6 +79,9 @@ async def init_user_schema():
         ('department', 'VARCHAR(100) DEFAULT \'\''),
         ('position', 'VARCHAR(100) DEFAULT \'\''),
         ('allowed_agents', "JSONB DEFAULT '[]'"),
+        # 2026-08-07 新增：登录失败计数与锁定到期（MFATOTP 拒绝重放在 ``user_mfa_totp`` 内完成）
+        ('failed_login_count', 'INTEGER NOT NULL DEFAULT 0'),
+        ('locked_until', 'TIMESTAMP NULL'),
     ]:
         await DatabasePool.execute(
             f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {column} {col_type}"
@@ -96,7 +100,10 @@ class UserDB:
 
     # 内存存储（当 AUTH_STORAGE_MODE=memory 时使用）
     _memory_users: Dict[str, dict] = {}
+    # 2026-08-07 新增：登录锁定字段内存镜像（failed_login_count / locked_until）
+    # 持久化模式以 users.failed_login_count / users.locked_until 为单一真相源。
     _memory_id_counter: int = 0
+    _memory_login_lock: Dict[int, Dict[str, Any]] = {}
     _lock = threading.Lock()
 
     @classmethod
@@ -624,3 +631,126 @@ class UserDB:
         if not row:
             await cls.create_user('admin', 'admin123', role='admin')
             print("[初始化] 已创建默认管理员账户 (admin/admin123)")
+
+    # ----------------------------------------------------------------------
+    # 2026-08-07 新增：登录锁定相关方法（failed_login_count / locked_until）
+    # ----------------------------------------------------------------------
+    #
+    # 内存模式与 PostgreSQL 模式契约一致：
+    # - ``record_failed_login`` 累计失败次数，达到 ``max_attempts`` 时设置 locked_until
+    # - ``get_login_lock_state`` 返回当前失败计数与锁定到期时间戳
+    # - ``clear_login_lock`` 登录成功（含完成 MFA）后清零
+    # 与 ``/login-api`` 不冲突：login-api 不调用这些方法。
+
+    @classmethod
+    async def record_failed_login(
+        cls,
+        user_id: int,
+        max_attempts: int,
+        lockout_seconds: int,
+    ) -> int:
+        """累加用户登录失败计数；达到阈值时锁定用户 ``lockout_seconds`` 秒。
+
+        Args:
+            user_id: 用户 ID。
+            max_attempts: 失败次数上限，达到后启用锁定。
+            lockout_seconds: 锁定时长（秒）。
+
+        Returns:
+            int: 本次 ``record_failed_login`` 调用后的新失败计数。
+
+        Raises:
+            ValueError: ``max_attempts`` 或 ``lockout_seconds`` 为非法值时。
+        """
+        if max_attempts < 1 or lockout_seconds < 1:
+            raise ValueError("max_attempts 与 lockout_seconds 必须 >= 1")
+
+        if not cls.is_enabled():
+            with cls._lock:
+                state = cls._memory_login_lock.setdefault(
+                    user_id, {"failed_login_count": 0, "locked_until": None}
+                )
+                state["failed_login_count"] = int(state.get("failed_login_count", 0)) + 1
+                if state["failed_login_count"] >= max_attempts:
+                    state["locked_until"] = time.time() + lockout_seconds
+                return state["failed_login_count"]
+
+        # PostgreSQL 模式：原子 update + 阈值锁定计算（参数化 SQL）
+        new_count = await DatabasePool.fetchval(
+            """
+            UPDATE users
+            SET failed_login_count = COALESCE(failed_login_count, 0) + 1,
+                locked_until = CASE
+                    WHEN COALESCE(failed_login_count, 0) + 1 >= $2
+                        THEN TO_TIMESTAMP($3)::timestamptz
+                    ELSE locked_until
+                END,
+                updated_at = NOW()
+            WHERE id = $1
+            RETURNING failed_login_count
+            """,
+            user_id,
+            max_attempts,
+            time.time() + lockout_seconds,
+        )
+        return int(new_count or 0)
+
+    @classmethod
+    async def get_login_lock_state(cls, user_id: int) -> Dict[str, Any]:
+        """读取用户的登录锁定状态。
+
+        Args:
+            user_id: 用户 ID。
+
+        Returns:
+            Dict[str, Any]: ``{"failed_login_count": int, "locked_until": Optional[float]}``。
+            不存在的用户返默认值 (0, None)。
+        """
+        if not cls.is_enabled():
+            with cls._lock:
+                state = cls._memory_login_lock.get(
+                    user_id, {"failed_login_count": 0, "locked_until": None}
+                )
+                return {
+                    "failed_login_count": int(state.get("failed_login_count", 0)),
+                    "locked_until": state.get("locked_until"),
+                }
+
+        row = await DatabasePool.fetchrow(
+            "SELECT failed_login_count, locked_until FROM users WHERE id = $1",
+            user_id,
+        )
+        if row is None:
+            return {"failed_login_count": 0, "locked_until": None}
+        lu = row.get("locked_until")
+        lu_ts: Optional[float]
+        if lu is None:
+            lu_ts = None
+        else:
+            # PG 返回 timestamptz，asyncpg 会按 TZ-aware datetime
+            try:
+                lu_ts = lu.timestamp()
+            except (AttributeError, TypeError):
+                lu_ts = None
+        return {
+            "failed_login_count": int(row.get("failed_login_count") or 0),
+            "locked_until": lu_ts,
+        }
+
+    @classmethod
+    async def clear_login_lock(cls, user_id: int) -> None:
+        """登录成功后清零失败计数与锁定状态（覆盖密码 + MFA 两种完成路径）。
+
+        Args:
+            user_id: 用户 ID。
+        """
+        if not cls.is_enabled():
+            with cls._lock:
+                cls._memory_login_lock.pop(user_id, None)
+            return
+
+        await DatabasePool.execute(
+            "UPDATE users SET failed_login_count = 0, locked_until = NULL, updated_at = NOW() "
+            "WHERE id = $1",
+            user_id,
+        )

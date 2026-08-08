@@ -58,6 +58,9 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS email      VARCHAR(100) DEFAULT '';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS department VARCHAR(100) DEFAULT '';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS position   VARCHAR(100) DEFAULT '';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS allowed_agents JSONB DEFAULT '[]';
+-- 2026-08-07 新增：登录失败计数 + 锁定到期（MFA 强制体系启用）
+ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP NULL;
 
 -- ========== 1.5. projects（项目元数据，2026-06-30 新增）==========
 -- 项目文件夹方案：用户从聊天框下拉框选择"新建空白项目"或"使用现有文件夹"
@@ -3303,3 +3306,44 @@ CREATE TABLE IF NOT EXISTS server_latest_snapshot (
     field_results     JSONB        NOT NULL DEFAULT '[]'::jsonb,
     updated_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
+
+-- ============================================================
+-- 24. user_mfa_totp（2026-08-07 新增：用户 TOTP MFA 绑定）
+-- 单一用户一行；secret_cipher 由独立 Fernet 密钥（MFA_SECRET_KEY）加密；
+-- pending_secret_cipher 支持安全轮换（新码确认前不覆盖有效密钥）；
+-- recovery_code_hashes 元素为 bcrypt 哈希（不存明文，使用一次即弹出）。
+-- 状态唯一源：enabled_at IS NOT NULL ⇒ 已启用；NOT EXISTS 该行 ⇒ 未绑定。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS user_mfa_totp (
+    user_id                  INTEGER   PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    secret_cipher            TEXT,
+    pending_secret_cipher    TEXT,
+    enabled_at               TIMESTAMP,
+    last_used_step           BIGINT,
+    recovery_code_hashes     JSONB     NOT NULL DEFAULT '[]'::jsonb,
+    updated_at               TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- ============================================================
+-- 25. mfa_challenges（2026-08-07 新增：MFA 一次性 challenge Token）
+-- 数据库只存 token SHA-256 哈希；client 持有明文。
+-- purpose 三种：login_verify / login_enroll / enroll_confirm（CHECK 约束）。
+-- 一次性消费：consumed_at 被填即不可再用；过期由 challenge 创建时参数化删除。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS mfa_challenges (
+    token_hash       CHAR(64) PRIMARY KEY,
+    user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    purpose          VARCHAR(40) NOT NULL,
+    expires_at       TIMESTAMPTZ NOT NULL,
+    failed_attempts  INTEGER     NOT NULL DEFAULT 0,
+    consumed_at      TIMESTAMPTZ,
+    created_at       TIMESTAMP   NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_mfa_challenge_purpose CHECK (
+        purpose IN ('login_verify', 'login_enroll', 'enroll_confirm')
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_mfa_challenges_user_expiry
+    ON mfa_challenges(user_id, expires_at);
+CREATE INDEX IF NOT EXISTS idx_mfa_challenges_expires
+    ON mfa_challenges(expires_at);

@@ -94,6 +94,9 @@ from app.routers.log_router import (
 from app.routers.server_inspection_router import (
     router as server_inspection_router,  # 2026-08-05 新增：服务器采集落库与运维看板
 )
+from app.shared.routers.mfa_router import (
+    router as mfa_router,  # 2026-08-07 新增：MFA 双因素认证（TOTP）
+)
 
 
 app = create_app()
@@ -133,6 +136,7 @@ def register_routers(target_app=None):
     _app.include_router(menu_permission_router)  # 2026-07-23 新增：菜单权限管理
     _app.include_router(agent_permission_router)  # 2026-07-24 新增：智能体访问权限管理
     _app.include_router(log_router)  # 2026-07-29 新增：统一审计日志管理端查询
+    _app.include_router(mfa_router)  # 2026-08-07 新增：MFA 双因素认证（TOTP）
 
 
 register_routers()

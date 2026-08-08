@@ -298,6 +298,233 @@ export function clearAuth() {
   localStorage.removeItem('username')
 }
 
+/* ============================================
+   MFA / TOTP 相关 API（2026-08-07 落地）
+   说明：
+   - 登录阶段（MFA challenge）的 3 个端点**不**走 fetchWithAuth，
+     避免在登录前触发 access token 刷新逻辑；
+   - 已登录阶段（status / enroll / disable / recovery-codes）走
+     fetchWithAuth 自动注入 Bearer；
+   - 错误格式沿用现有 fetch/error 风格：抛 Error(message)，message
+     优先取后端 detail。
+   ============================================================ */
+
+/**
+ * 登录 MFA 校验（公开 challenge 端点，2026-08-07 新增）。
+ * 调用后端 POST /api/auth/mfa/login/verify，传 challenge_token + code + method，
+ * 成功后由后端签发正式会话（refresh_token cookie + 返回 LoginResponse）。
+ *
+ * @param {string} challengeToken - 第一阶段登录返回的 mfa_required challenge
+ * @param {string} code - 6 位 TOTP 码或恢复码
+ * @param {'totp'|'recovery_code'} method - 第二因素类型
+ * @returns {Promise<{
+>  access_token: string, token_type: string, expires_in: number,
+>  role: string, username: string, user_id: number,
+>  visible_menus: string[], allowed_agents: string[]
+>}>} 完整 LoginResponse。
+ * @throws {Error} 验证失败或 challenge 过期时抛出错误（含后端 detail）
+ */
+export async function loginMfaVerify(challengeToken, code, method) {
+  const response = await fetch('/api/auth/mfa/login/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({
+      challenge_token: challengeToken,
+      code,
+      method
+    })
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || 'MFA 校验失败')
+  }
+  return response.json()
+}
+
+/**
+ * 登录 MFA 启用向导开始（公开 challenge 端点，2026-08-07 新增）。
+ * 消费第一阶段 mfa_enrollment_required 返回的 challenge，生成待确认的
+ * TOTP secret 与新 enrollment_token，并返回二维码 PNG（base64）。
+ *
+ * @param {string} challengeToken - mfa_enrollment_required 阶段签发的 challenge
+ * @returns {Promise<{
+>  enrollment_token: string,
+>  otpauth_uri: string,
+>  qr_png_base64: string,
+>  expires_in: number
+>}>} 启用向导信息（secret 与 QR 仅内存，不落盘）
+ * @throws {Error} 失败时抛出错误（含后端 detail）
+ */
+export async function startLoginMfaEnrollment(challengeToken) {
+  const response = await fetch('/api/auth/mfa/login/enroll/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_token: challengeToken })
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '启动 MFA 绑定失败')
+  }
+  return response.json()
+}
+
+/**
+ * 登录 MFA 启用确认（公开 challenge 端点，2026-08-07 新增）。
+ * 校验 6 位 TOTP 码；成功后原子启用 TOTP、签发正式会话、一次性返回恢复码。
+ *
+ * @param {string} enrollmentToken - start 返回的 enrollment_token
+ * @param {string} code - 6 位 TOTP 码
+ * @returns {Promise<{
+>  auth: {access_token: string, token_type: string, expires_in: number,
+>         role: string, username: string, user_id: number,
+>         visible_menus: string[], allowed_agents: string[]},
+>  recovery_codes: string[]
+>}>} 登录会话 + 一次性恢复码列表
+ * @throws {Error} 失败时抛出错误（含后端 detail）
+ */
+export async function confirmLoginMfaEnrollment(enrollmentToken, code) {
+  const response = await fetch('/api/auth/mfa/login/enroll/confirm', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({
+      enrollment_token: enrollmentToken,
+      code
+    })
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '确认 MFA 绑定失败')
+  }
+  return response.json()
+}
+
+/**
+ * 获取当前用户的 MFA 状态（已登录，Bearer 鉴权）。
+ * 调用 GET /api/auth/mfa/status。
+ *
+ * @returns {Promise<{
+>  enabled: boolean, required: boolean,
+>  methods: string[], enabled_at: string|null, issuer: string
+>}>} MFA 状态 DTO
+ * @throws {Error} 请求失败时抛出错误（含后端 detail）
+ */
+export async function fetchMfaStatus() {
+  const response = await fetchWithAuth('/api/auth/mfa/status', {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '获取 MFA 状态失败')
+  }
+  return response.json()
+}
+
+/**
+ * 已登录用户启用 / 轮换 TOTP（Bearer 鉴权）。
+ * 调用 POST /api/auth/mfa/totp/enroll/start，传当前密码校验后返回待确认 secret。
+ *
+ * @param {string} currentPassword - 当前密码（必填，后端二次校验）
+ * @returns {Promise<{
+>  secret: string, enrollment_token: string,
+>  otpauth_uri: string, qr_png_base64: string, expires_in: number
+>}>} 启用向导信息（secret/QR 仅内存）
+ * @throws {Error} 当前密码错误或服务不可用时抛出错误（含后端 detail）
+ */
+export async function startMfaEnrollment(currentPassword) {
+  const response = await fetchWithAuth('/api/auth/mfa/totp/enroll/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ current_password: currentPassword })
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '启动 MFA 绑定失败')
+  }
+  return response.json()
+}
+
+/**
+ * 已登录用户确认启用 / 轮换 TOTP（Bearer 鉴权）。
+ * 调用 POST /api/auth/mfa/totp/enroll/confirm，成功后撤销旧 refresh。
+ *
+ * @param {string} enrollmentToken - start 返回的 enrollment_token
+ * @param {string} code - 6 位 TOTP 码
+ * @returns {Promise<{recovery_codes: string[]}>} 一次性恢复码列表
+ * @throws {Error} 失败时抛出错误（含后端 detail）
+ */
+export async function confirmMfaEnrollment(enrollmentToken, code) {
+  const response = await fetchWithAuth('/api/auth/mfa/totp/enroll/confirm', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      enrollment_token: enrollmentToken,
+      code
+    })
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '确认 MFA 绑定失败')
+  }
+  return response.json()
+}
+
+/**
+ * 禁用 TOTP（Bearer 鉴权，仅普通用户可调用，admin 返回 403）。
+ * 调用 POST /api/auth/mfa/totp/disable。
+ *
+ * @param {string} currentPassword - 当前密码
+ * @param {string} code - 6 位 TOTP 码或恢复码
+ * @param {'totp'|'recovery_code'} method - 第二因素类型
+ * @returns {Promise<{success: boolean}>} 禁用结果
+ * @throws {Error} 密码错 / 码错 / admin 禁用被拒时抛出错误（含后端 detail）
+ */
+export async function disableMfa(currentPassword, code, method) {
+  const response = await fetchWithAuth('/api/auth/mfa/totp/disable', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      current_password: currentPassword,
+      code,
+      method
+    })
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '禁用 MFA 失败')
+  }
+  return response.json()
+}
+
+/**
+ * 重新生成恢复码（Bearer 鉴权，旧码立即失效，撤销 refresh）。
+ * 调用 POST /api/auth/mfa/recovery-codes/regenerate。
+ *
+ * @param {string} currentPassword - 当前密码
+ * @param {string} code - 6 位 TOTP 码或恢复码
+ * @param {'totp'|'recovery_code'} method - 第二因素类型
+ * @returns {Promise<{recovery_codes: string[]}>} 新的恢复码列表（仅此一次返回）
+ * @throws {Error} 密码错 / 码错时抛出错误（含后端 detail）
+ */
+export async function regenerateMfaRecoveryCodes(currentPassword, code, method) {
+  const response = await fetchWithAuth('/api/auth/mfa/recovery-codes/regenerate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      current_password: currentPassword,
+      code,
+      method
+    })
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || '重置恢复码失败')
+  }
+  return response.json()
+}
+
 /**
  * 调用 /api/auth/refresh 刷新 Access Token
  * 浏览器自动携带 HttpOnly Cookie 中的 Refresh Token

@@ -579,6 +579,8 @@ return data/upload/yyyy/mm/dd/{session_id}/
   - `FILE_PARSER_POLL_INTERVAL` — 轮询间隔（秒），默认 2.0
   - `FILE_PARSER_TIMEOUT` — 请求超时时间（秒），默认 300
   - `FILE_PARSER_MAX_FILE_SIZE` — 上传文件最大大小（**MB，整数**，下限 1），默认 `3`。2026-07-13 新增：前后端共用上传大小上限，原前端硬编码 50MB 已被替换为读取本配置；后端在 `/api/core/uploadfile` 与 `/api/core/merge-chunks` 内做 413 校验；前端通过 `GET /api/core/upload-config` 拉取后做客户端预校验
+- **MFA 双因素认证（2026-08-08 新增）**：
+  - `MFA_SECRET_KEY` — 浏览器 `/login` TOTP 双因素认证 Fernet 对称密钥，须由 `Fernet.generate_key()` 生成（44 字节 url-safe base64）。缺失或非法时 `lifespan` 无法初始化 `MfaService`，登录 fail-closed 返回 503。
 - 其他 LLM API Key 等
 
 ## 等保三级安全编码规范

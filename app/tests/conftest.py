@@ -247,10 +247,19 @@ _docx_text.__path__ = []
 sys.modules["docx.text"] = _docx_text
 sys.modules["docx.text.run"] = types.ModuleType("docx.text.run")
 sys.modules["docx.text.run"].Run = Mock()
-sys.modules["PIL"] = Mock()
-sys.modules["PIL.Image"] = Mock()
-sys.modules["PIL.ImageDraw"] = Mock()
-sys.modules["PIL.ImageFont"] = Mock()
+# 2026-08-07：MFA QR 二维码生成依赖真实 PIL/qrcode；改为 import-time 选择性 mock：
+# - ``qrcode`` 与 ``PIL.Image`` 同时存在时使用真实库（qrcode 8.2 + Pillow 12.x 已安装）
+# - 若环境未安装 PIL，则回落到原 Mock 以维持旧测试行为
+try:
+    import PIL  # noqa: F401  真实可用
+    import PIL.Image  # noqa: F401
+    import qrcode  # noqa: F401
+    # 不 mock PIL / qrcode；qrcode 端点可以生成真实 PNG
+except ImportError:
+    sys.modules["PIL"] = Mock()
+    sys.modules["PIL.Image"] = Mock()
+    sys.modules["PIL.ImageDraw"] = Mock()
+    sys.modules["PIL.ImageFont"] = Mock()
 sys.modules["numpy"] = Mock()
 
 # deepagents 需要作为包支持子模块

@@ -142,6 +142,37 @@ async def lifespan(app: FastAPI):
     from app.shared.utils.auth.user_db import UserDB
     await UserDB.ensure_admin_exists()
 
+    # 2026-08-07 新增：初始化 MfaService（TOTP 双因素认证服务）。
+    # 顺序要求：在 ensure_admin_exists 之后（依赖用户存在）与所有需要该 service 的 router 加载之前。
+    # Fail-closed：MFA_SECRET_KEY 缺失或非法时，MfaService.__init__ 抛 MfaError，
+    # 此处吞掉异常并挂 None，保证 lifespan 不会因安全配置缺失而整体崩溃。
+    # 后续 /login 路由会因 MfaService 缺失而对 admin 用户拒绝登录（计划要求）。
+    # 注意：每次重新构造 MfaSettings，确保 lifespan 阶段读到的环境变量是最新的，
+    # 而非模块导入期缓存的旧值（生产环境两个值一致；测试需要 monkeypatch 后立即生效）。
+    try:
+        from app.shared.utils.auth.mfa_service import MfaService
+        from app.core.config.settings import MfaSettings as _MfaSettings
+
+        mfa_runtime_settings = _MfaSettings()
+        mfa_service = MfaService(
+            db=DatabasePool._pool,
+            settings=mfa_runtime_settings,
+        )
+        MfaService.set_instance(mfa_service)
+        app.state.mfa_service = mfa_service
+        logging.info(
+            "[lifespan] MfaService initialized (issuer=%s, required_roles=%s)",
+            mfa_runtime_settings.issuer,
+            mfa_runtime_settings.required_roles,
+        )
+    except Exception as mfa_init_exc:
+        MfaService.set_instance(None)  # type: ignore[arg-type]
+        app.state.mfa_service = None
+        logging.warning(
+            "[lifespan] Failed to initialize MfaService: %s",
+            type(mfa_init_exc).__name__,
+        )
+
     # 初始化 LangGraph Checkpointer（创建 checkpoints 表）
     if DatabasePool.is_enabled():
         from app.shared.utils.memory.checkpoint import get_async_checkpointer
@@ -164,6 +195,10 @@ async def lifespan(app: FastAPI):
     print("[DEBUG] 已添加 /api/auth/refresh 到白名单")
     jwt_auth.add_to_whitelist("/api/auth/validate")
     print("[DEBUG] 已添加 /api/auth/validate 到白名单")
+    # 2026-08-07 新增：MFA 公开 challenge 端点（仅这 3 个加入白名单，其余 MFA 端点必须 Bearer 认证）
+    jwt_auth.add_to_whitelist("/api/auth/mfa/login/verify")
+    jwt_auth.add_to_whitelist("/api/auth/mfa/login/enroll/start")
+    jwt_auth.add_to_whitelist("/api/auth/mfa/login/enroll/confirm")
     jwt_auth.add_to_whitelist("/docs")
     print("[DEBUG] 已添加 /docs 到白名单")
     jwt_auth.add_to_whitelist("/openapi.json")
@@ -848,6 +883,20 @@ async def lifespan(app: FastAPI):
     # 关闭 Skill 系统单例
     SkillsService.reset()
     logging.info("SkillsService singleton cleared")
+
+    # 2026-08-07 新增：清理 MfaService 单例
+    try:
+        from app.shared.utils.auth.mfa_service import MfaService
+
+        MfaService.reset()
+        if hasattr(app.state, "mfa_service"):
+            app.state.mfa_service = None
+        logging.info("[lifespan] MfaService singleton cleared")
+    except Exception as cleanup_exc:
+        logging.warning(
+            "[lifespan] Failed to cleanup MfaService: %s",
+            type(cleanup_exc).__name__,
+        )
 
     # 2026-07-29：关闭统一日志服务（在 DatabasePool.close 之前，确保队列残留被 flush）
     try:

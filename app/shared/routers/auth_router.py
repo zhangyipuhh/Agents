@@ -15,7 +15,9 @@
 Date: 2026/2/6
 Author: 张镒谱
 """
+import logging
 import secrets
+import time
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel
 from typing import List, Optional
@@ -23,6 +25,8 @@ from datetime import datetime, timedelta
 from app.shared.utils.auth.Safety import jwt_auth
 from app.core.config.settings import settings
 from app.core.database import DatabasePool
+
+logger = logging.getLogger(__name__)
 
 
 class LoginRequest(BaseModel):
@@ -113,6 +117,24 @@ class LoginResponse(BaseModel):
     # 普通用户返 agent_permission_service.get_user_agent_grants_sync(user_id) 缓存值；
     # service 不可用时 fallback 到 users.allowed_agents 旧字段（迁移兼容）。
     allowed_agents: List[str] = []
+
+
+class MfaChallengeResponse(BaseModel):
+    """2026-08-07 新增：MFA challenge 响应（仅 /login 用）。
+
+    与 ``LoginResponse`` 互斥：
+    - ``auth_stage == "mfa_required"``：已绑定 TOTP，等待 /api/auth/mfa/login/verify
+    - ``auth_stage == "mfa_enrollment_required"``：管理员首次绑定，等待 enroll/start + confirm
+
+    两阶段均**不**签发 access_token / refresh cookie；客户端拿到 challenge_token
+    单独走 MFA 流程。
+    """
+
+    auth_stage: str
+    challenge_token: str
+    challenge_expires_in: int = 300
+    mfa_methods: List[str] = []
+    username: str
 
 
 async def _compute_visible_menus(req: Request, user_id: Optional[int], role: str) -> List[str]:
@@ -257,6 +279,7 @@ async def register(request: RegisterRequest):
     import re
     from app.shared.utils.auth.user_db import UserDB
     from app.shared.utils.auth.captcha import captcha_manager
+    from app.shared.utils.auth.password_policy import validate_password
 
     # 校验验证码
     if not captcha_manager.verify(request.captcha_key, request.captcha_code):
@@ -272,31 +295,13 @@ async def register(request: RegisterRequest):
             detail="两次输入的密码不一致"
         )
 
-    # 校验密码复杂度：至少6位，包含大写、小写、数字、特殊字符
-    if len(request.password) < 6:
+    # 2026-08-07 改造：统一密码规则由 password_policy 提供（最小长度 8 + 大小写 + 数字 + 特殊字符）。
+    # 注：保留 import re 以兼容其他路由模块的副作用，但实际校验全部委托给 password_policy。
+    is_valid, err_msg = validate_password(request.password)
+    if not is_valid:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="密码长度不能少于6位"
-        )
-    if not re.search(r'[A-Z]', request.password):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="密码必须包含大写字母"
-        )
-    if not re.search(r'[a-z]', request.password):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="密码必须包含小写字母"
-        )
-    if not re.search(r'\d', request.password):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="密码必须包含数字"
-        )
-    if not re.search(r'[!@#$%^&*()_+\-=\[\]{}|;:,.<>?]', request.password):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="密码必须包含特殊字符"
+            detail=err_msg,
         )
 
     # 校验用户名长度
@@ -343,14 +348,22 @@ async def register(request: RegisterRequest):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
-@router.post('/login', response_model=LoginResponse)
+@router.post('/login')
 async def login(request: LoginRequest, req: Request, response: Response):
-    """
-    用户登录API端点
+    """浏览器登录（2026-08-07 改造：支持 MFA 两阶段）。
 
-    验证验证码、用户凭据，返回 Access Token（JSON body）
-    并通过 Set-Cookie 设置 Refresh Token（HttpOnly）。
-    登录成功/失败均记录审计日志。
+    响应类型：
+    - 成功（普通用户未启用 MFA）：``LoginResponse``
+    - MFA 已启用：``MfaChallengeResponse(auth_stage="mfa_required")``
+    - 管理员未绑定 MFA：``MfaChallengeResponse(auth_stage="mfa_enrollment_required")``
+
+    返回字典而非 Pydantic 实例以便 FastAPI 不强制按 LoginResponse 校验（不同阶段 schema 不同）。
+
+    验证流程（2026-08-07 改造）：
+    1. 校验图形验证码；
+    2. 验证用户凭据（失败累计登录锁定）；
+    3. 查询 MFA 状态：已绑定 → mfa_required；role=admin 未绑定 → mfa_enrollment_required；
+       否则直接签发正式会话（保持原 /login 行为）。
 
     Args:
         request (LoginRequest): 包含用户名、密码、验证码 key 和验证码的请求对象
@@ -358,10 +371,10 @@ async def login(request: LoginRequest, req: Request, response: Response):
         response (Response): FastAPI 响应对象，用于设置 Cookie
 
     Returns:
-        LoginResponse: 包含访问令牌、令牌类型、过期时间、角色和用户名的响应对象
+        dict: LoginResponse 或 MfaChallengeResponse（FastAPI 接受 dict 自动序列化）。
 
     Raises:
-        HTTPException: 验证码错误、用户名或密码错误时抛出
+        HTTPException: 验证码错误、用户名或密码错误、用户被锁定时抛出
     """
     from app.shared.utils.auth.captcha import captcha_manager
     from app.shared.utils.log_service import (
@@ -433,13 +446,93 @@ async def login(request: LoginRequest, req: Request, response: Response):
         )
 
     # 验证用户凭据
-    if DatabasePool.is_enabled():
-        from app.shared.utils.auth.user_db import UserDB
-        is_valid = await UserDB.verify_credentials(request.username, request.password)
-    else:
-        is_valid = await jwt_auth.verify_credentials(request.username, request.password)
+    # 2026-08-07 改造：统一通过 UserDB.verify_credentials 校验；memory 模式与 PG 模式一致。
+    # 旧实现依赖 jwt_auth.verify_credentials 的硬编码 admin/123456，仅适合开发态硬编码；
+    # 本计划要求"用户可任意创建并登录"，因此改走 UserDB（该方法内部已根据 is_enabled
+    # 自动适配 db / memory 路径）。
+    from app.shared.utils.auth.user_db import UserDB
+
+    is_valid = await UserDB.verify_credentials(request.username, request.password)
+
+    # 2026-08-07 改造：提前校验锁定状态。锁定期间即使密码正确也必须拒绝（fail-closed）。
+    # 仅在已知用户上读取 locked_until；不存在的用户名仍按"凭据错误"处理以避免账号枚举。
+    if is_valid:
+        existing = await UserDB.get_user_by_username(request.username)
+        if existing is not None:
+            lock_state = await UserDB.get_login_lock_state(int(existing.get("id")))
+            if lock_state.get("locked_until") is not None and lock_state["locked_until"] > time.time():
+                _emit_login_event(
+                    username=request.username,
+                    result=LogResult.FAILURE,
+                    level=LogLevel.WARNING,
+                    message='用户被锁定',
+                    user_id=existing.get("id"),
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="登录失败次数过多，账号已临时锁定",
+                )
+
+    # 2026-08-07 批次硬化：MFA 服务不可用时浏览器 /login 一律 fail-closed（503），
+    # 即使密码错误也直接 503，避免暴露账号是否存在（反枚举）。
+    # 仅在已知用户走 password-OK 路径时把 fail-closed 推到下面；这里在 password-FAIL 路径上
+    # 也保证 mfa_service 缺失时不会泄露"账号不存在"信息。
+    if not is_valid and getattr(req.app.state, "mfa_service", None) is None:
+        _emit_login_event(
+            username=request.username,
+            result=LogResult.FAILURE,
+            level=LogLevel.WARNING,
+            message="MFA 服务不可用，fail-closed 拒绝返回凭据错误",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="MFA 服务不可用，请联系管理员",
+        )
 
     if not is_valid:
+        # 2026-08-07 新增：累计失败计数（5 次后锁 30 分钟，由 ``UserDB.record_failed_login`` 内部处理）。
+        # 这里仅在已存在的 user 上累计；不区分 username 是否存在，避免暴露账号是否存在。
+        try:
+            from app.shared.utils.auth.user_db import UserDB as _UserDB
+
+            try:
+                _existing = await _UserDB.get_user_by_username(request.username)
+            except Exception:  # noqa: BLE001
+                _existing = None
+            if _existing is not None:
+                # 注意：max_attempts/lockout_seconds 与 mfa_service._settings 优先级一致
+                mfa_service_ref = getattr(req.app.state, "mfa_service", None)
+                lockout_seconds = (
+                    getattr(mfa_service_ref, "_settings", None)
+                    and mfa_service_ref._settings.lockout_seconds
+                ) or 1800
+                max_attempts = (
+                    getattr(mfa_service_ref, "_settings", None)
+                    and mfa_service_ref._settings.max_attempts
+                ) or 5
+                await _UserDB.record_failed_login(
+                    int(_existing.get("id")),
+                    max_attempts=max_attempts,
+                    lockout_seconds=lockout_seconds,
+                )
+                # 检查锁定
+                lock_state = await _UserDB.get_login_lock_state(int(_existing.get("id")))
+                if lock_state.get("locked_until") is not None:
+                    _emit_login_event(
+                        username=request.username,
+                        result=LogResult.FAILURE,
+                        level=LogLevel.WARNING,
+                        message='用户被锁定',
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="登录失败次数过多，账号已临时锁定",
+                    )
+        except HTTPException:
+            raise
+        except Exception:  # noqa: BLE001
+            pass
+
         _emit_login_event(
             username=request.username,
             result=LogResult.FAILURE,
@@ -463,24 +556,110 @@ async def login(request: LoginRequest, req: Request, response: Response):
     role = user.get('role', 'user') if user else 'user'
     user_id = user.get('id') if user else None
 
-    # 生成 Access Token（JSON body 返回）
-    access_token = await jwt_auth.generate_token(request.username)
+    # 2026-08-07 新增：MFA 两阶段分支。
+    # - 普通用户未启用 MFA → 直接签发会话
+    # - 普通用户已启用 / 管理员未绑定 → 返回 challenge，不签发 token / cookie
+    # - 管理员已绑定：与普通用户走同一 mfa_required 流程
+    # 2026-08-07 批次硬化：当 MfaService 不可用（None）或 get_status 抛异常时，
+    # 浏览器 /login 必须 fail-closed（503），绝不能签发 access / refresh。
+    # 这是普通用户无法判断自己是否"已启用 MFA"的安全门；admin 同样必须 503
+    # （强制策略不可被旁路）。
+    mfa_service = getattr(req.app.state, "mfa_service", None)
+    mfa_status = None
+    mfa_service_unavailable = False
+    if mfa_service is None:
+        mfa_service_unavailable = True
+    else:
+        try:
+            mfa_status = await mfa_service.get_status(user_id=int(user_id), role=role)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[auth_router.login] get_status 异常，按 fail-closed 处理: %s",
+                type(exc).__name__,
+            )
+            mfa_service_unavailable = True
 
-    # 生成 Refresh Token（HttpOnly Cookie 传递）
-    from app.shared.utils.auth.refresh_token_db import RefreshTokenDB
-    refresh_token = await jwt_auth.generate_refresh_token(request.username)
-    token_hash = RefreshTokenDB.hash_token(refresh_token)
-    expires_at = datetime.utcnow() + timedelta(hours=24)
-    await RefreshTokenDB.store_token(token_hash, user_id, expires_at)
+    if mfa_status is not None and mfa_status.enabled:
+        # 已绑定 → 验证阶段
+        try:
+            challenge_token, ttl = await mfa_service.create_login_challenge(
+                user_id=int(user_id), purpose="login_verify"
+            )
+        except Exception:  # noqa: BLE001
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="MFA 服务不可用，请联系管理员",
+            )
+        _emit_login_event(
+            username=request.username,
+            result=LogResult.SUCCESS,
+            level=LogLevel.INFO,
+            message="login mfa_required",
+            user_id=user_id,
+        )
+        return MfaChallengeResponse(
+            auth_stage="mfa_required",
+            challenge_token=challenge_token,
+            challenge_expires_in=ttl,
+            mfa_methods=list(mfa_status.methods),
+            username=request.username,
+        )
 
-    # 通过 Set-Cookie 设置 Refresh Token
-    response.set_cookie(
-        key="refresh_token",
-        value=refresh_token,
-        httponly=True,
-        samesite="strict",
-        path="/api/auth",
-        max_age=86400
+    # 已绑定路径不命中；若服务不可用则 fail-closed（避免给未启用用户签发 token）
+    if mfa_service_unavailable:
+        _emit_login_event(
+            username=request.username,
+            result=LogResult.FAILURE,
+            level=LogLevel.WARNING,
+            message="MFA 服务不可用，fail-closed 拒绝签发会话",
+            user_id=user_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="MFA 服务不可用，请联系管理员",
+        )
+
+    if mfa_status is not None and mfa_status.required:
+        # 管理员未绑定 → 强制绑定的 enrollment challenge
+        try:
+            challenge_token, ttl = await mfa_service.create_login_challenge(
+                user_id=int(user_id), purpose="login_enroll"
+            )
+        except Exception:  # noqa: BLE001
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="MFA 服务不可用，请联系管理员",
+            )
+        _emit_login_event(
+            username=request.username,
+            result=LogResult.SUCCESS,
+            level=LogLevel.INFO,
+            message="login mfa_enrollment_required",
+            user_id=user_id,
+        )
+        return MfaChallengeResponse(
+            auth_stage="mfa_enrollment_required",
+            challenge_token=challenge_token,
+            challenge_expires_in=ttl,
+            mfa_methods=[],
+            username=request.username,
+        )
+
+    # 成功登录：清零失败计数与锁定状态（覆盖密码路径的成功）
+    try:
+        await UserDB.clear_login_lock(int(user_id) if user_id else 0)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 通过 login_session_service 统一签发完整会话（含 amr）
+    from app.shared.utils.auth.login_session_service import issue_browser_login_session
+
+    login_response = await issue_browser_login_session(
+        request=req,
+        response=response,
+        user=user,
+        auth_methods=["pwd"],
+        app=req.app,
     )
 
     # 记录登录成功日志
@@ -492,26 +671,7 @@ async def login(request: LoginRequest, req: Request, response: Response):
         user_id=user_id,
     )
 
-    visible_menus = await _compute_visible_menus(req, user_id, role)
-    # 2026-07-24 新增：把 allowed_agents 也透传到 LoginResponse，
-    # 前端 App.vue::applyUserData 直接从 data.allowed_agents 取值（无需额外请求）。
-    allowed_agents = await _compute_allowed_agents(
-        req,
-        user_id,
-        role,
-        fallback=user.get('allowed_agents', []) if user else [],
-    )
-
-    return LoginResponse(
-        access_token=access_token,
-        token_type="Bearer",
-        expires_in=30,
-        role=role,
-        username=request.username,
-        user_id=user_id,
-        visible_menus=visible_menus,
-        allowed_agents=allowed_agents,
-    )
+    return login_response
 
 
 @router.post('/login-api', response_model=LoginResponse)
@@ -733,12 +893,18 @@ async def refresh_token(request: Request):
 
     # 生成新的 Access Token（从记录中取 username，优先于 JWT payload，确保与存储一致）
     username = record.get("username") or payload.get("username")
-    access_token = await jwt_auth.generate_token(username)
+    # 2026-08-07 新增：透传 amr。如果旧 refresh token 携带 amr（如 admin 完成 MFA 后签发），
+    # 新 access token 同样携带；旧 token 无 amr 时保持原行为（不写入 amr 字段）。
+    amr = payload.get("amr") if isinstance(payload, dict) else None
+    access_token = await jwt_auth.generate_token(
+        username,
+        auth_methods=amr if isinstance(amr, list) else None,
+    )
 
     return {
         "access_token": access_token,
         "token_type": "Bearer",
-        "expires_in": 30
+        "expires_in": 30,
     }
 
 

@@ -58,6 +58,15 @@
 | 前缀                                | 模块                   | 说明                                                                                                                                                                                  |
 | ----------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | /api/auth                           | auth_router            | 认证（验证码、注册、登录、刷新、验证、登出、门户子 refresh_token）                                                                                                                    |
+| /api/auth/mfa                    | mfa_router             | 登录 challenge 端点公开；状态、绑定、禁用、恢复码管理要求 Bearer 登录态 |
+| ├ POST /login/verify             |                       | 校验 TOTP/一次性恢复码后签发正式浏览器会话 |
+| ├ POST /login/enroll/start       |                       | 管理员首次绑定流程生成待确认密钥与二维码 |
+| ├ POST /login/enroll/confirm     |                       | 确认 TOTP，启用 MFA 并一次性返回恢复码 |
+| ├ GET  /status                   |                       | 返回当前用户 MFA 启用状态与强制策略 |
+| ├ POST /totp/enroll/start        |                       | 已登录用户启用或轮换 TOTP |
+| ├ POST /totp/enroll/confirm      |                       | 确认已登录用户 TOTP 绑定 |
+| ├ POST /totp/disable             |                       | 普通用户二次验证后禁用；管理员禁止禁用 |
+| └ POST /recovery-codes/regenerate|                       | 二次验证后生成新的一次性恢复码 |
 | /api/project                        | project_router         | 2026-06-30 新增：项目文件夹 CRUD + session 绑定/解绑；2026-07-06 新增删除/重命名端点                                                                                                  |
 | ├ POST /create                      |                        | 创建项目（body: {name, uuid}，uuid=创建时 session_id）                                                                                                                                |
 | ├ GET  /list                        |                        | 当前用户项目列表                                                                                                                                                                       |

@@ -235,11 +235,14 @@ async def create_user_admin(request: UserCreateRequest, req: Request):
             detail="用户名长度不能少于3位"
         )
 
-    # 校验密码长度
-    if len(request.password) < 6:
+    # 2026-08-07 改造：使用 password_policy 统一密码规则（长度 8 + 大小写 + 数字 + 特殊字符）。
+    from app.shared.utils.auth.password_policy import validate_password
+
+    is_valid, err_msg = validate_password(request.password)
+    if not is_valid:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="密码长度不能少于6位"
+            detail=err_msg,
         )
 
     # 校验手机号格式
@@ -612,8 +615,12 @@ async def update_password(user_id: int, request: PasswordUpdateRequest):
     if not UserDB.verify_password(request.old_password, user['password_hash']):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="旧密码错误")
 
-    if len(request.new_password) < 6:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="新密码长度不能少于6位")
+    # 2026-08-07 改造：使用 password_policy 统一密码规则。
+    from app.shared.utils.auth.password_policy import validate_password
+
+    is_valid, err_msg = validate_password(request.new_password)
+    if not is_valid:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err_msg)
 
     success = await UserDB.update_password(user_id, request.new_password)
     if not success:
