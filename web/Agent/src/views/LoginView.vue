@@ -12,7 +12,7 @@
  *   绝不能写 localStorage，绝不能 emit login-success；
  * - challenge_token / enrollment_token / 二维码 / 恢复码 仅存组件内存；
  * - 错误或过期清空 mfa token / code / qr / recovery，并刷新图形验证码；
- * - 三阶段全部成功才走统一完成登录逻辑（写 localStorage + emit login-success）。
+ * - 三阶段全部成功才走统一完成登录逻辑（登录后端 Set-Cookie 下发 Access Token，JS 不可读；role、username 缓存到 localStorage）。
  */
 
 import { ref, onMounted, computed } from 'vue'
@@ -153,21 +153,19 @@ function refreshCaptcha() {
 }
 
 /**
- * 完成登录：统一把 LoginResponse 写 localStorage 并 emit login-success。
+ * 完成登录：保存 role、username 等展示态字段到 localStorage，Access Token 由后端 Set-Cookie 下发，JS 不可读，并 emit login-success。
  * 不在此处清空错误信息——调用方已保证此时没有错误。
  *
  * @param {Object} data - LoginResponse
  * @returns {void}
  */
 function finalizeLogin(data) {
-  localStorage.setItem('auth_token', data.access_token)
   localStorage.setItem('user_role', data.role)
   localStorage.setItem('username', data.username)
   if (data.user_id !== undefined && data.user_id !== null) {
     localStorage.setItem('user_id', String(data.user_id))
   }
   emit('login-success', {
-    access_token: data.access_token,
     role: data.role,
     username: data.username,
     user_id: data.user_id

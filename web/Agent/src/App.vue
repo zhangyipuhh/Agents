@@ -280,7 +280,7 @@ function applyUserData(data) {
 }
 
 /**
- * 检查本地存储的登录状态
+ * 检查 Cookie 登录状态
  * 两段式验证：先 refreshToken（查服务端数据库，能实时感知 token 被删除/踢人），
  *            成功后再 validateToken 验证并应用用户数据。
  * 全部失败：调用 redirectToLogin() 携带当前 URL 作为 redirect 参数跳到 /login 入口，
@@ -290,31 +290,18 @@ function applyUserData(data) {
  *       让 redirectToLogin 触发的整页跳转（到 /login）期间不渲染任何额外内容。
  */
 async function checkAuth() {
-  const token = localStorage.getItem('auth_token')
-  if (!token) {
-    // 本地无 token：直接跳到 /login?redirect=/Agent/，由 /login 入口渲染 LoginView
-    // 不设置 authReady.value = true，避免在跳转前渲染 LoginView 造成"占位→LoginView"切换
-    redirectToLogin({ reason: 'checkAuth_no_token' })
-    // 清掉残留 user_role/username 等本地信息，确保状态完全干净
-    clearAuth()
-    return
-  }
   try {
     // 先尝试 refresh：refresh 会查服务端数据库，能实时感知 token 被删除/踢人
-    const newToken = await refreshToken()
-    localStorage.setItem('auth_token', newToken)
+    // Cookie 模式下 Access Token 由浏览器自动携带，无需本地预检
+    await refreshToken()
     const data = await validateToken()
     const savedUserId = localStorage.getItem('user_id')
     if (savedUserId && savedUserId !== 'null' && savedUserId !== 'undefined') {
       data.user_id = parseInt(savedUserId, 10)
     }
     applyUserData(data)
-    // 已登录：标记为就绪，Vue 将渲染主应用
     authReady.value = true
   } catch {
-    // refresh 或 validate 失败（典型场景：被 admin 强制下线后 refresh_token 已被服务端删除）
-    // 清除本地 token，跳到 /login?redirect=/Agent/，由 /login 入口渲染 LoginView
-    // 注意：失败路径**不**置 authReady.value = true，避免在跳转前渲染 LoginView
     clearAuth()
     redirectToLogin({ reason: 'checkAuth_refresh_failed' })
   }

@@ -25,7 +25,7 @@ import { safeRedirectUrl } from './utils/auth.js'
  * @returns {void}
  */
 function handleLoginSuccess(data) {
-  // 登录成功本身由 LoginView 内部将 token 写入 localStorage，这里只负责回跳
+  // 登录成功由后端 Set-Cookie 下发 Access Token，本端入口只负责回跳
   // 注：原 App.vue#handleLoginSuccess 还有 user_id 等兜底写入，本入口不重复 LoginView 已写过的字段
   const rawRedirect = new URLSearchParams(window.location.search).get('redirect')
   const redirect = safeRedirectUrl(rawRedirect)

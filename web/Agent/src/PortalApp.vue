@@ -90,25 +90,13 @@ function applyUserData(data) {
  *   - LoginView.onMounted 触发的 /api/auth/captcha 请求被取消（造成"captcha 调两次，第一次失败"）
  */
 async function checkAuth() {
-  const token = localStorage.getItem('auth_token')
-  if (!token) {
-    // 本地无 token：直接跳到 /Agent/?redirect=/portal，由登录页统一接管
-    // 不设置 authReady.value = true，避免渲染 LoginView 触发额外的 captcha 请求
-    redirectToLogin({ reason: 'portal_no_token' })
-    return
-  }
   try {
     // 先尝试 refresh：refresh 会查服务端数据库，能实时感知 token 被删除/踢人
-    const newToken = await refreshToken()
-    localStorage.setItem('auth_token', newToken)
+    await refreshToken()
     const data = await validateToken()
     applyUserData(data)
-    // 已登录：标记为就绪，Vue 将渲染门户导航栏与主内容区
     authReady.value = true
   } catch {
-    // refresh 或 validate 失败（典型场景：被 admin 强制下线后 refresh_token 已被服务端删除）
-    // 清除本地 token，跳登录页（带 redirect = 当前 portal URL）
-    // 注意：失败路径**不**置 authReady.value = true，避免在跳转前渲染 LoginView
     clearAuth()
     redirectToLogin({ reason: 'portal_auth_failed' })
   }

@@ -157,15 +157,13 @@ const subAgentDrawerVisible = ref(false)
 const currentSubAgent = ref(null)
 
 onMounted(async () => {
-  // 验证 token 有效性，失效则尝试静默刷新
-  // 全部失败：调用 redirectToLogin() 携带当前 /Agent/knowledge.html 作为 redirect，
-  // 登录成功后回到原页面（避免被强制跳到 /Agent/）。
+  // Cookie 模式：validate 失败则尝试静默刷新（refresh 会查服务端数据库，
+  // 能实时感知 token 被删除/踢人）；全部失败跳登录页并携带 redirect。
   try {
     await validateToken()
   } catch {
     try {
-      const newToken = await refreshToken()
-      localStorage.setItem('auth_token', newToken)
+      await refreshToken()
     } catch {
       redirectToLogin({ reason: 'knowledge_validate_failed' })
       return
