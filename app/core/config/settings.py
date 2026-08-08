@@ -289,7 +289,7 @@ class MfaSettings(BaseSettings):
         ),
     )
     issuer: str = Field(
-        default="Feature Agent",
+        default="AIOps",
         description="TOTP issuer（otpauth URI 显示）。",
     )
     required_roles: Annotated[List[str], NoDecode] = Field(

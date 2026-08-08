@@ -50,7 +50,7 @@ def test_mfa_settings_importable():
 def test_mfa_settings_defaults_match_plan(monkeypatch):
     """P1: 默认值满足计划契约。
 
-    - issuer = 'Feature Agent'
+    - issuer = 'AIOps'
     - required_roles = ['admin']
     - challenge_ttl_seconds = 300
     - max_attempts = 5
@@ -76,7 +76,7 @@ def test_mfa_settings_defaults_match_plan(monkeypatch):
         monkeypatch.delenv(env_name, raising=False)
 
     settings = MfaSettings()
-    assert settings.issuer == "Feature Agent"
+    assert settings.issuer == "AIOps"
     assert "admin" in settings.required_roles
     assert settings.challenge_ttl_seconds == 300
     assert settings.max_attempts == 5

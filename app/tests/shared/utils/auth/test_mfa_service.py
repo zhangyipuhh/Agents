@@ -20,6 +20,7 @@ Date: 2026-08-07
 
 import asyncio
 import base64
+from urllib.parse import parse_qs, urlparse
 
 import pyotp
 import pytest
@@ -110,6 +111,30 @@ def test_mfa_service_public_methods_exist():
 # ============================================================
 # P1: get_status 状态判定
 # ============================================================
+
+
+def test_start_enrollment_uses_aiops_as_default_issuer(event_loop):
+    """默认 enrollment URI 必须让认证器显示 AIOps issuer。
+
+    Args:
+        event_loop: 测试事件循环。
+
+    Returns:
+        None。
+    """
+    settings = _make_settings()
+    svc = MfaService(db=None, settings=settings)
+
+    async def runner():
+        result = await svc.start_enrollment(user_id=77, username="admin77")
+        parsed_uri = urlparse(result["otpauth_uri"])
+        query = parse_qs(parsed_uri.query)
+        assert parsed_uri.scheme == "otpauth"
+        assert parsed_uri.netloc == "totp"
+        assert parsed_uri.path.startswith("/AIOps:")
+        assert query["issuer"] == ["AIOps"]
+
+    event_loop.run_until_complete(runner())
 
 
 def test_get_status_not_enabled_when_user_has_no_totp(event_loop):
