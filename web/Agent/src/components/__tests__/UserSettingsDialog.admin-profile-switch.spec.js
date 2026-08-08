@@ -35,7 +35,6 @@ describe('admin 场景:管理后台→个人设置切换', () => {
     global.localStorage = {
       getItem: vi.fn((key) => {
         if (key === 'user_id') return '1'
-        if (key === 'auth_token') return 'fake-token'
         if (key === 'session_id') return 'fake-session'
         return null
       }),

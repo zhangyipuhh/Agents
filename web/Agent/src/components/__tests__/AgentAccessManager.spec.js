@@ -60,7 +60,6 @@ function setupFetchMock({ grantsByUser = {} } = {}) {
   })
   global.localStorage = {
     getItem: vi.fn((key) => {
-      if (key === 'auth_token') return 'fake-token'
       if (key === 'session_id') return 'fake-session'
       return null
     }),

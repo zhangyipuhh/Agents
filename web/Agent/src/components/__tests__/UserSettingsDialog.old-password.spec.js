@@ -31,7 +31,6 @@ describe('旧密码输入框视觉脱敏', () => {
     global.localStorage = {
       getItem: vi.fn((key) => {
         if (key === 'user_id') return '1'
-        if (key === 'auth_token') return 'fake-token'
         if (key === 'session_id') return 'fake-session'
         return null
       }),

@@ -44,7 +44,6 @@ describe('个人设置邮箱字段回归测试', () => {
     global.localStorage = {
       getItem: vi.fn((key) => {
         if (key === 'user_id') return '1'
-        if (key === 'auth_token') return 'fake-token'
         if (key === 'session_id') return 'fake-session'
         return null
       }),

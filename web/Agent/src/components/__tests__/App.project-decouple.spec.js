@@ -53,7 +53,6 @@ describe('App.vue 项目选择与 session 解耦（2026-07-06）', () => {
     originalLocalStorage = global.localStorage
     global.localStorage = {
       getItem: vi.fn((key) => {
-        if (key === 'auth_token') return 'fake-token'
         if (key === 'session_id') return ''
         return null
       }),

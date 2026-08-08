@@ -139,7 +139,6 @@ describe('UserSettingsDialog 历史会话弹窗 - 子智能体抽屉事件转发
     global.fetch = createMockFetch()
     global.localStorage = {
       getItem: vi.fn((key) => {
-        if (key === 'auth_token') return 'fake-token'
         if (key === 'user_id') return '1'
         return null
       }),

@@ -13,7 +13,6 @@ describe('chatStream 统一接口', () => {
     global.fetch = vi.fn()
     global.localStorage = {
       getItem: vi.fn((key) => {
-        if (key === 'auth_token') return 'fake-token'
         if (key === 'session_id') return 'fake-session'
         return null
       }),

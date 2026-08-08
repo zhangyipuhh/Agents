@@ -127,7 +127,6 @@ describe('UserSettingsDialog 会话查询 Tab', () => {
     global.fetch = createMockFetch()
     global.localStorage = {
       getItem: vi.fn((key) => {
-        if (key === 'auth_token') return 'fake-token'
         if (key === 'user_id') return '1'
         return null
       }),

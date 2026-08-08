@@ -14,10 +14,7 @@ describe('用户服务器管理 API', () => {
     originalLocalStorage = global.localStorage
     global.fetch = vi.fn()
     global.localStorage = {
-      getItem: vi.fn((key) => {
-        if (key === 'auth_token') return 'fake-token'
-        return null
-      }),
+      getItem: vi.fn(() => null),
       setItem: vi.fn(),
       removeItem: vi.fn(),
       clear: vi.fn(),

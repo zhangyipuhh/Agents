@@ -46,7 +46,6 @@ describe('App.vue 项目锁定 canEditProject（2026-07-01 新增）', () => {
     })
     global.localStorage = {
       getItem: vi.fn((key) => {
-        if (key === 'auth_token') return 'fake-token'
         if (key === 'session_id') return 'fake-session'
         return null
       }),

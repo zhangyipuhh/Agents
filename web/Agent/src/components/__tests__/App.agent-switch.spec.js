@@ -41,7 +41,6 @@ describe('App.vue agent 切换', () => {
     })
     global.localStorage = {
       getItem: vi.fn((key) => {
-        if (key === 'auth_token') return 'fake-token'
         if (key === 'session_id') return 'fake-session'
         return null
       }),

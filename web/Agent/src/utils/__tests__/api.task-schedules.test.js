@@ -15,7 +15,6 @@ describe('智能体定时任务 API', () => {
     global.fetch = vi.fn()
     global.localStorage = {
       getItem: vi.fn((key) => {
-        if (key === 'auth_token') return 'fake-token'
         if (key === 'session_id') return 'fake-session'
         return null
       }),

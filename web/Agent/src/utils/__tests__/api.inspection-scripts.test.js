@@ -16,7 +16,7 @@ describe('巡检脚本库 API', () => {
     originalLocalStorage = global.localStorage
     global.fetch = vi.fn()
     global.localStorage = {
-      getItem: vi.fn((key) => (key === 'auth_token' ? 'fake-token' : null)),
+      getItem: vi.fn(() => null),
       setItem: vi.fn(),
       removeItem: vi.fn(),
       clear: vi.fn(),
@@ -108,7 +108,7 @@ describe('服务器巡检脚本绑定 API', () => {
     originalLocalStorage = global.localStorage
     global.fetch = vi.fn()
     global.localStorage = {
-      getItem: vi.fn((key) => (key === 'auth_token' ? 'fake-token' : null)),
+      getItem: vi.fn(() => null),
       setItem: vi.fn(),
       removeItem: vi.fn(),
       clear: vi.fn(),

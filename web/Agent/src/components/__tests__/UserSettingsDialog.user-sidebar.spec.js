@@ -62,7 +62,6 @@ describe('UserSettingsDialog 普通用户左侧导航栏', () => {
     global.localStorage = {
       getItem: vi.fn((key) => {
         if (key === 'user_id') return '1'
-        if (key === 'auth_token') return 'fake-token'
         if (key === 'session_id') return 'fake-session'
         return null
       }),
