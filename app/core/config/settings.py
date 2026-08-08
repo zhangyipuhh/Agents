@@ -404,6 +404,61 @@ class PortalAuthSettings(BaseSettings):
     )
 
 
+class AuthCookieSettings(BaseSettings):
+    """
+    认证 Cookie 配置
+
+    管理 Access Token / Refresh Token 的 HttpOnly Cookie 属性。
+    生产环境（HTTPS）必须将 AUTH_COOKIE_SECURE 置为 true（等保三级数据保密性要求）。
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=_ENV_FILE_PATH,
+        env_file_encoding="utf-8",
+        env_prefix="AUTH_COOKIE_",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    secure: bool = Field(
+        default=False,
+        description="Cookie Secure 属性；生产 HTTPS 环境必须 true（AUTH_COOKIE_SECURE）",
+    )
+    samesite: str = Field(
+        default="strict",
+        description="Cookie SameSite 属性，默认 strict（AUTH_COOKIE_SAMESITE）",
+    )
+    access_token_name: str = Field(
+        default="access_token",
+        description="Access Token Cookie 名（AUTH_COOKIE_ACCESS_TOKEN_NAME）",
+    )
+    access_token_path: str = Field(
+        default="/api",
+        description="Access Token Cookie Path，仅随 /api 请求发送（AUTH_COOKIE_ACCESS_TOKEN_PATH）",
+    )
+    access_token_max_age_seconds: int = Field(
+        default=1800,
+        ge=60,
+        description="Access Token Cookie Max-Age（秒），与 JWT 30 分钟有效期对齐",
+    )
+
+    @field_validator("secure", mode="before")
+    @classmethod
+    def parse_bool(cls, v):
+        """
+        将字符串转换为布尔值
+
+        Args:
+            v: 输入值（字符串或布尔）
+
+        Returns:
+            bool: 转换后的布尔值
+        """
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes", "on")
+        return bool(v)
+
+
 class DemonstrationSettings(BaseSettings):
     """
     演示测试配置
@@ -843,6 +898,7 @@ class Settings(BaseSettings):
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     demonstration: DemonstrationSettings = Field(default_factory=DemonstrationSettings)
     portal_auth: PortalAuthSettings = Field(default_factory=PortalAuthSettings)
+    auth_cookie: AuthCookieSettings = Field(default_factory=AuthCookieSettings)
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     skills: SkillsSettings = Field(default_factory=SkillsSettings)
     devops: DevOpsSettings = Field(default_factory=DevOpsSettings)
