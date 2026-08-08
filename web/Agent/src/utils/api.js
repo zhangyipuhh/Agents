@@ -92,17 +92,19 @@ export async function getCaptcha() {
 
 /**
  * 用户登出
- * 清除本地存储的认证信息，调用后端登出接口删除 Session
+ * 调用后端登出接口清除服务端 Session（Cookie 由服务端失效），
+ * 再清理本地 localStorage 中的会话元数据。Cookie 模式下
+ * Access Token 不再需要 Authorization 头，由浏览器自动携带。
  * @throws {Error} 登出失败时抛出错误
  */
 export async function logout() {
   try {
-    const headers = { 'Content-Type': 'application/json' }
-    const token = localStorage.getItem('auth_token')
-    if (token) headers['Authorization'] = `Bearer ${token}`
     await fetch('/api/auth/logout', {
       method: 'POST',
-      headers,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest'
+      },
       credentials: 'include'
     })
   } catch {
@@ -266,24 +268,18 @@ function isKnowledgePage() {
 
 /**
  * 获取认证请求头
- * 从 localStorage 中读取 token 和 session_id 构建请求头
+ * Cookie 模式下 Access Token 由浏览器自动携带（HttpOnly，JS 不可读），
+ * 此处仅注入 X-Session-ID 与 CSRF 防护头。
  * 知识库页面自动使用 knowledge_session_id，与主应用隔离
- * @returns {Object} 包含 Authorization 和 X-Session-ID 的请求头对象
+ * @returns {Object} 包含 X-Requested-With 和 X-Session-ID 的请求头对象
  */
 export function getAuthHeaders() {
-  const headers = {}
-  const token = localStorage.getItem('auth_token')
+  const headers = { 'X-Requested-With': 'XMLHttpRequest' }
   const sessionKey = isKnowledgePage() ? 'knowledge_session_id' : 'session_id'
   const sessionId = localStorage.getItem(sessionKey)
-  console.log('[调试] getAuthHeaders - token:', token ? token.substring(0, 20) + '...' : null)
-  console.log('[调试] getAuthHeaders - sessionId:', sessionId)
-  if (token && token !== 'undefined') {
-    headers['Authorization'] = `Bearer ${token}`
-  }
   if (sessionId && sessionId !== 'undefined') {
     headers['X-Session-ID'] = sessionId
   }
-  console.log('[调试] getAuthHeaders - 返回的headers:', Object.keys(headers))
   return headers
 }
 
@@ -291,7 +287,6 @@ export function getAuthHeaders() {
  * 清除本地存储的认证信息
  */
 export function clearAuth() {
-  localStorage.removeItem('auth_token')
   localStorage.removeItem('session_id')
   localStorage.removeItem('knowledge_session_id')
   localStorage.removeItem('user_role')
@@ -546,15 +541,13 @@ async function refreshAccessToken() {
 
 /**
  * 验证 Access Token 有效性
- * 调用 /api/auth/validate 检查当前 Access Token 是否有效
+ * Cookie 由浏览器自动携带，无需 JS 读取
  * @returns {Promise<{username: string, role: string, allowed_agents: Array<string>}>}
  * @throws {Error} Token 无效或过期时抛出错误
  */
 export async function validateToken() {
-  const token = localStorage.getItem('auth_token')
-  if (!token) throw new Error('未登录')
   const response = await fetch('/api/auth/validate', {
-    headers: { 'Authorization': `Bearer ${token}` }
+    headers: { 'X-Requested-With': 'XMLHttpRequest' }
   })
   if (!response.ok) throw new Error('Token 已过期或无效')
   return response.json()
@@ -590,10 +583,11 @@ export async function issuePortalRefreshToken() {
 
 /**
  * 统一 API 请求包装器
- * 自动注入 Authorization 和 X-Session-ID 头
+ * 自动注入 X-Requested-With（CSRF 防护头）和 X-Session-ID
+ * Cookie 模式下 Access Token 由浏览器自动携带，无需 JS 注入 Authorization
  * 知识库页面自动使用 knowledge_session_id，与主应用隔离
  * 外部已传入的 X-Session-ID 不会被覆盖
- * 401 时静默调用 /api/auth/refresh 重试一次
+ * 401 时静默调用 /api/auth/refresh 让服务端轮换 Cookie 并重试一次
  * @param {string} url - 请求地址
  * @param {Object} options - fetch 选项
  * @param {boolean} _retried - 内部使用，标记是否已重试
@@ -602,11 +596,11 @@ export async function issuePortalRefreshToken() {
  */
 export async function fetchWithAuth(url, options = {}, _retried = false) {
   const headers = { ...(options.headers || {}) }
-  const token = localStorage.getItem('auth_token')
   const sessionKey = isKnowledgePage() ? 'knowledge_session_id' : 'session_id'
   const sessionId = localStorage.getItem(sessionKey)
-  if (token && token !== 'undefined') {
-    headers['Authorization'] = `Bearer ${token}`
+  // CSRF 防护头（Cookie 鉴权写请求的后端强制校验项）
+  if (!headers['X-Requested-With']) {
+    headers['X-Requested-With'] = 'XMLHttpRequest'
   }
   // 只有外部未显式传入 X-Session-ID 时，才从 localStorage 补充
   if (!headers['X-Session-ID'] && sessionId && sessionId !== 'undefined') {
@@ -614,15 +608,13 @@ export async function fetchWithAuth(url, options = {}, _retried = false) {
   }
   const response = await fetch(url, { ...options, headers })
   if (response.status === 401 && !_retried) {
-    let data
     try {
-      data = await refreshAccessToken()
+      // refresh 成功后新 Access Token Cookie 已由服务端 Set-Cookie 轮换
+      await refreshAccessToken()
     } catch {
       clearAuth()
       throw new Error('登录已过期，请重新登录')
     }
-    localStorage.setItem('auth_token', data.access_token)
-    headers['Authorization'] = `Bearer ${data.access_token}`
     const retryResponse = await fetch(url, { ...options, headers })
     if (retryResponse.status === 401) {
       localStorage.removeItem('session_id')
@@ -639,27 +631,24 @@ export async function fetchWithAuth(url, options = {}, _retried = false) {
 
 /**
  * 刷新 JWT 令牌
- * 使用当前存储的凭据重新获取 token
- * @returns {Promise<string>} 新的 JWT 令牌
+ * Cookie 模式下调用 /api/auth/refresh，服务端 Set-Cookie 轮换
+ * Access Token；本函数保留旧签名以兼容旧调用方，仅返回新 access_token。
+ * @returns {Promise<string>} 新的 access_token（同时已写入 Cookie）
  * @throws {Error} 刷新失败时抛出错误（通常需要重新登录）
  */
 export async function refreshToken() {
   const data = await refreshAccessToken()
-  localStorage.setItem('auth_token', data.access_token)
   return data.access_token
 }
 
 /**
- * 强制刷新认证信息
- * @returns {Promise<{token: string}>} 认证信息
- * @throws {Error} 认证失败时抛出错误
+ * 强制刷新认证信息（Cookie 模式）
+ * 调用 /api/auth/refresh 让服务端轮换 Access Token Cookie
+ * @returns {Promise<void>}
+ * @throws {Error} 刷新失败时抛出错误（通常需要重新登录）
  */
 export async function forceRefreshAuth() {
-  const token = localStorage.getItem('auth_token')
-  if (!token) {
-    throw new Error('未登录，请重新登录')
-  }
-  return { token }
+  await refreshAccessToken()
 }
 
 /* ============================================
