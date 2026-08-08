@@ -87,13 +87,29 @@ async def issue_browser_login_session(
         raise RuntimeError("refresh_tokens 表写入失败")
 
     # 3) Set-Cookie（HttpOnly + SameSite=Strict + Path=/api/auth）
+    from app.core.config.settings import settings
+
+    cookie_cfg = settings.auth_cookie
     response.set_cookie(
         key="refresh_token",
         value=refresh_token,
         httponly=True,
         samesite="strict",
+        secure=cookie_cfg.secure,
         path="/api/auth",
         max_age=86400,
+    )
+
+    # 同步下发 Access Token Cookie（HttpOnly，前端 JS 不可读）
+    # 程序化客户端仍可从 JSON body 取 access_token，二者并存。
+    response.set_cookie(
+        key=cookie_cfg.access_token_name,
+        value=access_token,
+        httponly=True,
+        samesite=cookie_cfg.samesite,
+        secure=cookie_cfg.secure,
+        path=cookie_cfg.access_token_path,
+        max_age=cookie_cfg.access_token_max_age_seconds,
     )
 
     # 4) visible_menus

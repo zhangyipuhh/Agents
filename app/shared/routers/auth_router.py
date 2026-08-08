@@ -810,13 +810,26 @@ async def login_api(request: ApiLoginRequest, req: Request, response: Response):
     await RefreshTokenDB.store_token(token_hash, user_id, expires_at)
 
     # 通过 Set-Cookie 设置 Refresh Token
+    cookie_cfg = settings.auth_cookie
     response.set_cookie(
         key="refresh_token",
         value=refresh_token,
         httponly=True,
         samesite="strict",
+        secure=cookie_cfg.secure,
         path="/api/auth",
         max_age=86400
+    )
+
+    # 通过 Set-Cookie 下发 Access Token（HttpOnly，前端 JS 不可读）
+    response.set_cookie(
+        key=cookie_cfg.access_token_name,
+        value=access_token,
+        httponly=True,
+        samesite=cookie_cfg.samesite,
+        secure=cookie_cfg.secure,
+        path=cookie_cfg.access_token_path,
+        max_age=cookie_cfg.access_token_max_age_seconds,
     )
 
     # 记录登录成功日志

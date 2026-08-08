@@ -292,6 +292,52 @@ def test_logout(client, admin_headers):
     assert response.json()["message"] == "登出成功"
 
 
+def test_login_api_sets_access_token_cookie(client):
+    """
+    测试登录响应同时下发 access_token HttpOnly Cookie
+
+    Args:
+        client: FastAPI TestClient
+
+    Returns:
+        None
+    """
+    response = client.post(
+        "/api/auth/login-api",
+        json={"username": "admin", "password": "123456"},
+    )
+    assert response.status_code == 200
+    # JSON body 保留 access_token（程序化客户端兼容）
+    assert "access_token" in response.json()
+    cookies = response.headers.get_list("set-cookie")
+    access = [c for c in cookies if c.startswith("access_token=")]
+    assert len(access) == 1
+    assert "HttpOnly" in access[0]
+    assert "Path=/api" in access[0]
+    assert "Max-Age=1800" in access[0]
+
+
+def test_login_api_refresh_cookie_has_samesite_strict(client):
+    """
+    测试 refresh_token Cookie 保持 HttpOnly + SameSite=Strict（回归）
+
+    Args:
+        client: FastAPI TestClient
+
+    Returns:
+        None
+    """
+    response = client.post(
+        "/api/auth/login-api",
+        json={"username": "admin", "password": "123456"},
+    )
+    cookies = response.headers.get_list("set-cookie")
+    refresh = [c for c in cookies if c.startswith("refresh_token=")]
+    assert len(refresh) == 1
+    assert "HttpOnly" in refresh[0]
+    assert "SameSite=strict" in refresh[0].lower() or "samesite=strict" in refresh[0].lower()
+
+
 class TestIssuePortalRefreshToken:
     """测试 issue-portal-refresh-token 接口"""
 
