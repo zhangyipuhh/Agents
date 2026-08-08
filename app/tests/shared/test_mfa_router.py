@@ -222,7 +222,7 @@ def test_login_enroll_start_returns_enrollment_token(client, mfa_service_instanc
     data = response.json()
     assert data["enrollment_token"]
     assert data["otpauth_uri"].startswith("otpauth://totp/")
-    assert data["qr_png_base64"]
+    assert data["qr_png_base64"].startswith("data:image/png;base64,")
     assert data["expires_in"] == 300
 
 

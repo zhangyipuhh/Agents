@@ -28,6 +28,7 @@ from app.shared.utils.auth.mfa_service import (
     MfaError,
     MfaService,
     MfaStatus,
+    _make_qr_png_base64,
 )
 
 
@@ -475,3 +476,18 @@ def test_start_login_enrollment_generation_failure_does_not_consume_challenge(
 
     from app.shared.utils.auth.mfa_service import hash_challenge_token
     event_loop.run_until_complete(runner())
+
+
+def test_make_qr_png_base64_returns_data_uri():
+    """_make_qr_png_base64 必须返回完整的 Data URI，可直接用于 <img src>。"""
+    uri = "otpauth://totp/TestUser?secret=JBSWY3DPEHPK3PXP&issuer=TestIssuer"
+    data_uri = _make_qr_png_base64(uri)
+
+    assert isinstance(data_uri, str)
+    assert data_uri.startswith("data:image/png;base64,")
+    # 前缀之后应有非空 base64 内容
+    b64_payload = data_uri[len("data:image/png;base64,"):]
+    assert b64_payload
+    # 验证 base64 可解码为 PNG 文件头
+    decoded = base64.b64decode(b64_payload)
+    assert decoded[:8] == b"\x89PNG\r\n\x1a\n"

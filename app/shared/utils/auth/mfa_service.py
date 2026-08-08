@@ -137,18 +137,18 @@ def _decrypt_secret(fernet: Fernet, ciphertext: str) -> str:
 
 
 def _make_qr_png_base64(otpauth_uri: str) -> str:
-    """将 otpauth URI 转换为 base64 PNG 字节。
+    """将 otpauth URI 转换为 base64 PNG Data URI。
 
     Args:
         otpauth_uri: 标准 TOTP URI (otpauth://totp/...)。
 
     Returns:
-        str: base64 编码 PNG。
+        str: 可直接用于 <img src="..."> 的 Data URI（含 data:image/png;base64, 前缀）。
     """
     img = qrcode.make(otpauth_uri)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
-    return base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
 
 
 def _to_utc_aware(dt: Any) -> Optional[Any]:
