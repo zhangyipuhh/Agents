@@ -329,7 +329,7 @@
 
 - **iframe sandbox 收紧**：本期保留 `allow-same-origin`，第三方 iframe 仍能访问 localStorage；后续应改 `postMessage` 父传子 + 关闭 `allow-same-origin`（`sandbox="allow-scripts allow-forms allow-popups"`）。
 - **frame-src 动态白名单**：当前 `frame-src 'self'` 与 PortalApp 跨域 URL（`http://10.20.8.178:7777/webgis/kjzr`）有冲突；阶段 1 已要求运维治理 app-config.json 维护规范，阶段 2 应在 Vite 构建期读取 navItems 生成白名单注入 nginx。
-- **localStorage token**：架构性风险，未改 HttpOnly Cookie（需后端 + 全链路）。
+- **localStorage token**：已落地 HttpOnly Cookie（2026-08-08 后端 + 2026-08-08 前端 api.js/auth.js + 4 入口组件切换；2026-08-08 完成 15 个存量 spec 适配清理）；后续工单仅剩"4 入口组件之外是否还有组件残留 auth_token 引用"的兜底审查（按需）。
 
 ### 部署（Nginx + Docker）
 
