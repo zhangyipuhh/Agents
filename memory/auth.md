@@ -45,6 +45,18 @@
 - `user_mfa_totp.enabled_at` 列类型为 `TIMESTAMP`（naive），服务层必须传 `datetime.now(timezone.utc).replace(tzinfo=None)`；2026-08-08 修复 offset-aware 误传导致 asyncpg `DataError: invalid input for query argument $2: ... (can't subtract offset-naive and offset-aware datetimes)` 的绑定失败 bug。
 - mock 测试体系说明（2026-08-08）：`_FakeConnection`（`test_mfa_hardening.py` / `test_mfa_hardening_followup.py`）默认对 SQL 参数不做类型编码校验，仅断言 SQL 文本与顺序；任何涉及 PG 写入的 fake 必须额外 override `_check_bind_args(sql, args)` hook，模拟 asyncpg `_encode_bind_msg` 的参数编码层（aware datetime → naive TIMESTAMP 等），否则**生产崩溃但测试全绿**的反模式会出现。
 
+### 登录失败计数与账号锁定
+
+- 累计失败后写入 `users.failed_login_count`，达到 `MfaSettings.max_attempts`（默认 5，env `MFA_MAX_ATTEMPTS`）时同时写 `users.locked_until = NOW() + lockout_seconds`（默认 1800 秒 = 30 分钟，env `MFA_LOCKOUT_SECONDS`）。锁定期间任何凭据错误或密码正确均拒绝（401 + "登录失败次数过多，账号已临时锁定"）。MFA challenge 验证失败同样累计，共用同一桶；登录 + MFA 全成功后调 `_clear_user_failure` 清零计数与锁定。
+- 字段：`users.failed_login_count INTEGER NOT NULL DEFAULT 0`、`users.locked_until TIMESTAMP NULL`（naive，参见初始化迁移 `app/migrations/init_all_tables.sql` L62-L63）。
+- 存储后端：PG 模式走 `users` 表原子 `UPDATE ... RETURNING`（CTE 同时返回 `failed_login_count` 与 `locked_until`），memory 模式走 `UserDB._memory_login_lock: Dict[int, Dict[str, Any]]` 进程内字典。**生产必须使用 postgres 模式**：memory 模式在 `--workers N>1` 或 `--reload` 时锁状态被替换进程清零。
+- 路由层（`app/shared/routers/auth_router.py::login`）采用双重保险：① `record_failed_login` SQL 内 `CASE WHEN ... >= $2` 写 `locked_until`；② 路由层基于 `record_failed_login` 返回的 `new_count` 主动校验 `new_count >= max_attempts` 抛 401。任一路径失效另一路径仍生效。
+- 2026-08-08 bug 历史：首次落地时调用 `DatabasePool.fetchval(...)`，但 `DatabasePool` 类实际未提供 `fetchval` 方法，导致 `AttributeError` 被路由层 `except Exception: pass` 静默吞掉——密码错误累计链路彻底静默失效（用户反馈"7 次没锁定"），`users.failed_login_count` 永远为 0。修复内容：
+  - [app/core/database.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/core/database.py) 新增 `DatabasePool.fetchval(...)`（封装 `conn.fetchval`）并通过 `test_database_pool_has_fetchval` 守住"再次回退"防回归；
+  - [app/shared/utils/auth/user_db.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/shared/utils/auth/user_db.py) `record_failed_login` 改为 CTE + `fetchrow`，同时返回 `new_count` 给路由层；新增行级兜底 UPDATE（`new_count >= max_attempts` 且 `locked_until IS NULL` 时再写一次）；
+  - [app/shared/routers/auth_router.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/shared/routers/auth_router.py) `except Exception: pass` 改为 `logger.exception`（保留 401 反枚举契约）；新增 `new_count >= max_attempts` 二次判定。
+- 测试：[app/tests/shared/test_user_db_login_lock.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/tests/shared/test_user_db_login_lock.py) 8 用例（4 memory 既有 + 4 PG fake 含 fetchval 存在性守卫 + fallback 路径断言 + 阈值下不触发 + 用户不存在分支）。
+
 ### API 请求 Token 过期处理
 
 - API 返回 401 → 自动调用 `/api/auth/refresh` 静默刷新

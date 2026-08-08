@@ -167,6 +167,38 @@ class DatabasePool:
             return await conn.execute(query, *args)
 
     @classmethod
+    async def fetchval(cls, query: str, *args):
+        """
+        执行 SQL 查询并返回首行首列标量值（封装 asyncpg ``Connection.fetchval``）。
+
+        兼容两类用法：
+        - ``SELECT col FROM ...``：返回首列值
+        - ``UPDATE/INSERT/DELETE ... RETURNING expr``：asyncpg 仍返回该值
+
+        用于在 ``UPDATE ... RETURNING`` 之后拿到插入/更新后的累计计数等场景，
+        例：`record_failed_login` 用其取出最新 ``failed_login_count``。
+
+        Args:
+            query: SQL 查询字符串。
+            *args: 查询参数。
+
+        Returns:
+            Any: 标量值（无结果时为 None）。
+
+        Raises:
+            RuntimeError: 连接池未初始化。
+        """
+        if not cls._pool:
+            current_mode = os.getenv("AUTH_STORAGE_MODE", "memory")
+            raise RuntimeError(
+                f"Database pool not initialized. "
+                f"Current AUTH_STORAGE_MODE='{current_mode}'. "
+                f"Call initialize() first or set AUTH_STORAGE_MODE=memory"
+            )
+        async with cls._pool.acquire() as conn:
+            return await conn.fetchval(query, *args)
+
+    @classmethod
     async def fetch(cls, query: str, *args):
         """
         执行 SQL 查询并返回所有结果

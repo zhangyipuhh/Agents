@@ -90,3 +90,152 @@ def test_login_lock_required_role_does_not_skip_others():
     asyncio.run(UserDB.record_failed_login(admin_id, max_attempts=1, lockout_seconds=60))
     state = asyncio.run(UserDB.get_login_lock_state(admin_id))
     assert state["locked_until"] is not None
+
+
+# --------------------------------------------------------------------------
+# PG 模式单元测试（通过 monkeypatch.mock ``DatabasePool``，无须真实 DB 连接）
+# 2026-08-08 新增：原代码使用 ``DatabasePool.fetchval``，但 ``DatabasePool``
+# 类实际未提供 ``fetchval`` 方法；抛 ``AttributeError`` 被 ``auth_router``
+# 的 ``except Exception: pass`` 吞掉，导致用户密码错 12 次后
+# ``users.failed_login_count`` 仍为 0。本批测试同时覆盖：
+# 1) ``DatabasePool.fetchval`` 现已存在（防止再次回退为该方法报错）；
+# 2) PG 模式下 fake ``fetchrow`` 返回 ``locked_until=None`` 时，函数内部
+#    兜底 UPDATE 会被调用并向 DB 写入 ``locked_until``；
+# 3) ``record_failed_login`` 返回 ``new_count`` ，且当 new_count >=
+#    max_attempts 时业务语义正确（路由层二次判定可据此拒绝）。
+# --------------------------------------------------------------------------
+
+
+def _patch_database_pool_postgres(monkeypatch):
+    """将 ``UserDB.is_enabled()`` 强制返回 True 以走 PG 分支，并提供 fake DatabasePool。
+
+    同时确保 ``app.core.database.DatabasePool.is_enabled`` 返回 True 以使
+    ``UserDB.is_enabled`` 走 PG 分支。
+    """
+
+    import app.core.database as db_mod
+    import app.shared.utils.auth.user_db as user_db_mod
+
+    async def _true_enabled() -> bool:
+        return True
+
+    monkeypatch.setattr(user_db_mod.UserDB, "is_enabled", classmethod(lambda cls: True))
+    monkeypatch.setattr(db_mod.DatabasePool, "is_enabled", classmethod(lambda cls: True))
+
+
+class _FakeDatabasePoolClass:
+    """替身 DatabasePool 类：所有方法都是 classmethod（async），记录调用供断言。
+
+    用法：``monkeypatch.setattr(user_db_mod, "DatabasePool", _FakeDatabasePoolClass)``
+    让 user_db 模块中 ``DatabasePool.fetchrow(...)`` 解析到本类的 classmethod。
+    """
+
+    fetchrow_calls: list = []
+    execute_calls: list = []
+    fetchrow_return: dict = {"failed_login_count": 0, "locked_until": None}
+
+    @classmethod
+    async def reset(cls) -> None:
+        cls.fetchrow_calls.clear()
+        cls.execute_calls.clear()
+        cls.fetchrow_return = {"failed_login_count": 0, "locked_until": None}
+
+    @classmethod
+    async def fetchrow(cls, sql, *args):
+        cls.fetchrow_calls.append((str(sql), args))
+        return cls.fetchrow_return
+
+    @classmethod
+    async def execute(cls, sql, *args):
+        cls.execute_calls.append((str(sql), args))
+        return None
+
+
+def test_database_pool_has_fetchval():
+    """``DatabasePool.fetchval`` 必须存在（2026-08-08 修复回归）。"""
+    from app.core.database import DatabasePool
+
+    assert hasattr(DatabasePool, "fetchval"), (
+        "DatabasePool.fetchval 缺失会导致 record_failed_login 抛 AttributeError 被外层吞掉"
+    )
+    assert callable(DatabasePool.fetchval)
+
+
+def test_record_failed_login_pg_returns_count_and_calls_fallback(monkeypatch):
+    """PG 路径：fake fetchrow 返回 locked_until=None 时，记录层 fallback UPDATE 必须被调用。
+
+    用于证明「即便 SQL CASE 漂移未触发 locked_until 写入，行级兜底也能让
+    锁定语义生效」。这是 2026-08-08 锁定机制静默失效回归的反向用例。
+    """
+    _patch_database_pool_postgres(monkeypatch)
+
+    # 同步先把 async reset 跑掉，避免上一测试遗留影响
+    asyncio.run(_FakeDatabasePoolClass.reset())
+    _FakeDatabasePoolClass.fetchrow_return = {
+        "failed_login_count": 5,
+        "locked_until": None,
+    }
+
+    import app.shared.utils.auth.user_db as user_db_mod
+    monkeypatch.setattr(user_db_mod, "DatabasePool", _FakeDatabasePoolClass)
+
+    new_count = asyncio.run(
+        user_db_mod.UserDB.record_failed_login(
+            user_id=2,
+            max_attempts=5,
+            lockout_seconds=1800,
+        )
+    )
+    assert new_count == 5
+    assert len(_FakeDatabasePoolClass.fetchrow_calls) == 1
+    # new_count >= max_attempts → fallback execute 必须被调用一次
+    assert len(_FakeDatabasePoolClass.execute_calls) == 1
+    fallback_sql = _FakeDatabasePoolClass.execute_calls[0][0]
+    assert isinstance(fallback_sql, str)
+    assert "UPDATE users SET locked_until" in fallback_sql
+    assert "locked_until IS NULL" in fallback_sql
+
+
+def test_record_failed_login_pg_no_fallback_when_below_threshold(monkeypatch):
+    """PG 路径：new_count < max_attempts 时不调 fallback execute。"""
+    _patch_database_pool_postgres(monkeypatch)
+    asyncio.run(_FakeDatabasePoolClass.reset())
+    _FakeDatabasePoolClass.fetchrow_return = {
+        "failed_login_count": 2,
+        "locked_until": None,
+    }
+
+    import app.shared.utils.auth.user_db as user_db_mod
+    monkeypatch.setattr(user_db_mod, "DatabasePool", _FakeDatabasePoolClass)
+
+    new_count = asyncio.run(
+        user_db_mod.UserDB.record_failed_login(
+            user_id=2,
+            max_attempts=5,
+            lockout_seconds=1800,
+        )
+    )
+    assert new_count == 2
+    # 未达到阈值，fallback execute 不应触发
+    assert _FakeDatabasePoolClass.execute_calls == []
+
+
+def test_record_failed_login_pg_user_not_found_returns_zero(monkeypatch):
+    """PG 路径：用户不存在（fetchrow 返回 None）时 new_count=0，不抛异常。"""
+    _patch_database_pool_postgres(monkeypatch)
+    asyncio.run(_FakeDatabasePoolClass.reset())
+    _FakeDatabasePoolClass.fetchrow_return = None  # type: ignore[assignment]
+
+    import app.shared.utils.auth.user_db as user_db_mod
+    monkeypatch.setattr(user_db_mod, "DatabasePool", _FakeDatabasePoolClass)
+
+    new_count = asyncio.run(
+        user_db_mod.UserDB.record_failed_login(
+            user_id=99999,
+            max_attempts=5,
+            lockout_seconds=1800,
+        )
+    )
+    assert new_count == 0
+    # fetchrow 返回 None → 跳过 fallback execute
+    assert _FakeDatabasePoolClass.execute_calls == []  # noqa: E501

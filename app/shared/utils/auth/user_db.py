@@ -675,24 +675,57 @@ class UserDB:
                     state["locked_until"] = time.time() + lockout_seconds
                 return state["failed_login_count"]
 
-        # PostgreSQL 模式：原子 update + 阈值锁定计算（参数化 SQL）
-        new_count = await DatabasePool.fetchval(
+        # PostgreSQL 模式：原子 update + 阈值锁定计算（参数化 SQL）。
+        # 使用 CTE 同时返回 ``failed_login_count`` 与 ``locked_until``，
+        # 既能让 ``DatabasePool.fetchrow`` 拿到旧/新行做精确判定，又避免
+        # ``UPDATE ... RETURNING`` 直接喂 ``fetchval`` 时部分 asyncpg 版本
+        # 行为不一致的历史坑（曾导致 ``AttributeError: fetchval`` 被外层
+        # ``except Exception: pass`` 吞掉 → 锁定机制整体静默失效）。
+        lock_until_target = time.time() + lockout_seconds
+        row = await DatabasePool.fetchrow(
             """
-            UPDATE users
-            SET failed_login_count = COALESCE(failed_login_count, 0) + 1,
-                locked_until = CASE
-                    WHEN COALESCE(failed_login_count, 0) + 1 >= $2
-                        THEN TO_TIMESTAMP($3)::timestamptz
-                    ELSE locked_until
-                END,
-                updated_at = NOW()
-            WHERE id = $1
-            RETURNING failed_login_count
+            WITH updated AS (
+                UPDATE users
+                SET failed_login_count = COALESCE(failed_login_count, 0) + 1,
+                    locked_until = CASE
+                        WHEN COALESCE(failed_login_count, 0) + 1 >= $2
+                            THEN TO_TIMESTAMP($3)
+                        ELSE locked_until
+                    END,
+                    updated_at = NOW()
+                WHERE id = $1
+                RETURNING failed_login_count, locked_until
+            )
+            SELECT failed_login_count, locked_until FROM updated
             """,
             user_id,
             max_attempts,
-            time.time() + lockout_seconds,
+            lock_until_target,
         )
+        if row is None:
+            # 用户记录不存在；视为失败但计数不动
+            new_count = 0
+        else:
+            new_count = int(row.get("failed_login_count") or 0)
+        # 行级锁定生效兜底：如 SQL CASE 未命中阈值（schema 漂移等情况），
+        # 在内存层基于 new_count 与 max_attempts 兜底再设一次 locked_until，
+        # 保证锁定语义与 max_attempts 阈值一致（路线 B：路由层再次校验）。
+        if new_count >= max_attempts:
+            try:
+                await DatabasePool.execute(
+                    "UPDATE users SET locked_until = TO_TIMESTAMP($1) WHERE id = $2 AND locked_until IS NULL",
+                    lock_until_target,
+                    user_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # 兜底只做 best-effort：主路径已通过 CASE WHEN 写库，
+                # 这里失败不致命；保留诊断日志便于追踪。
+                import logging
+                logging.getLogger(__name__).warning(
+                    "[UserDB.record_failed_login] fallback lock write failed: user_id=%s err=%s",
+                    user_id,
+                    type(exc).__name__,
+                )
         return int(new_count or 0)
 
     @classmethod

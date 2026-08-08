@@ -510,14 +510,28 @@ async def login(request: LoginRequest, req: Request, response: Response):
                     getattr(mfa_service_ref, "_settings", None)
                     and mfa_service_ref._settings.max_attempts
                 ) or 5
-                await _UserDB.record_failed_login(
+                # 2026-08-08 修复：早期版本使用 ``DatabasePool.fetchval`` 调用，
+                # 而 ``DatabasePool`` 没有 ``fetchval`` 方法导致 ``AttributeError`` 被
+                # 外层 ``except Exception: pass`` 静默吞掉，整条登录失败计数链路
+                # 静默失效（密码错 12 次后 ``users.failed_login_count`` 仍为 0），
+                # 用户表现"几次不锁定"。现改为 fetchrow + 兜底 + 路由层二次判定。
+                new_count = await _UserDB.record_failed_login(
                     int(_existing.get("id")),
                     max_attempts=max_attempts,
                     lockout_seconds=lockout_seconds,
                 )
-                # 检查锁定
+                # 兜底二次判定：即便 ``record_failed_login`` 主路径 SQL CASE 漂移
+                # 未触发 locked_until 写入，路由层仍基于 new_count 显式拒绝锁定。
+                # 同步检查 DB 状态以避免误报（用户已存在 locked_until > now 时
+                # 立即短路返回）。
                 lock_state = await _UserDB.get_login_lock_state(int(_existing.get("id")))
-                if lock_state.get("locked_until") is not None:
+                now_ts = time.time()
+                is_locked = (
+                    (lock_state.get("locked_until") is not None
+                     and lock_state["locked_until"] > now_ts)
+                    or new_count >= max_attempts
+                )
+                if is_locked:
                     _emit_login_event(
                         username=request.username,
                         result=LogResult.FAILURE,
@@ -530,8 +544,14 @@ async def login(request: LoginRequest, req: Request, response: Response):
                     )
         except HTTPException:
             raise
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # 2026-08-08 修复：原 ``except Exception: pass`` 完全吞掉失败
+            # 累计异常，已被验证导致登录锁定机制彻底静默失效。现改为
+            # ``logger.exception``：记录堆栈便于排障，但仍然不能让登录
+            # 接口因此返回 5xx（凭据错误本身仍返回 401，避免反枚举特性改变）。
+            logger.exception(
+                "[auth_router.login] record_failed_login raised: %s", exc
+            )
 
         _emit_login_event(
             username=request.username,
