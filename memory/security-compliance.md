@@ -69,6 +69,12 @@
 6. **受信任 CA 证书**：**🔒 是否使用受信任 CA 签发的证书？** 证书是否有效未过期？自签名证书测评可能不通过；需配置完整证书链。
 7. **敏感数据存储加密**：敏感数据在存储过程中是否加密（数据库、日志、备份）？如密码用 bcrypt/Argon2；身份证等用 AES 加密存储。
 8. **密钥安全存储**：加密密钥是否安全存储，与数据分离？密钥放 KMS/HSM，禁止硬编码在代码中。
+9. **Token 安全**：
+   - ✅ Access Token 已迁移 HttpOnly Cookie（2026-08-08）
+     - 落地位置：`app/core/config/settings.py::AuthCookieSettings` + `app/shared/routers/auth_router.py::login/login-api/refresh/logout`
+     - Refresh Token 原本即为 HttpOnly Cookie，本次一并补充 `Secure` 标志（`AUTH_COOKIE_SECURE` 环境变量控制）
+     - 测试：`app/tests/{core/config/test_auth_cookie_settings, shared/test_auth_router, shared/test_safety, integration/test_end_to_end_auth}.py` 共 52 用例 PASSED
+     - CSRF 纵深防御：`auth_middleware` 对 Cookie 鉴权写请求校验 `X-Requested-With: XMLHttpRequest` 自定义头，与 `SameSite=Strict` 互补
 
 ## 九、数据备份恢复
 

@@ -6,9 +6,9 @@
 
 ### Token 类型
 
-| Token         | 有效期  | Payload type        | 客户端存储                                         | 服务端存储                                  | 用途                                             |
-| ------------- | ------- | ------------------- | -------------------------------------------------- | ------------------------------------------- | ------------------------------------------------ |
-| Access Token  | 30 分钟 | `type: "access"`  | 前端内存（JS 变量）                                | 无（纯 JWT 无状态）                         | 所有 API 请求的 `Authorization: Bearer` 认证   |
+| Token         | 有效期  | Payload type        | 客户端存储                                       | 服务端存储                                  | 用途                                             |
+| ------------- | ------- | ------------------- | ------------------------------------------------ | ------------------------------------------- | ------------------------------------------------ |
+| Access Token  | 30 分钟 | `type: "access"`  | HttpOnly Cookie（SameSite=Strict, Path=/api, Max-Age=1800，JS 不可读） | 无（纯 JWT 无状态）                         | 所有 API 请求的认证（Cookie 自动携带；Bearer 通道保留供第三方 iframe / 程序化客户端） |
 | Refresh Token | 24 小时 | `type: "refresh"` | HttpOnly Cookie（SameSite=Strict, Path=/api/auth） | 数据库（refresh_tokens 表，存 SHA256 哈希） | 仅用于 `/api/auth/refresh` 换取新 Access Token |
 
 ### 认证流程
@@ -16,20 +16,16 @@
 ```
 页面加载
   │
-  ├─ 1. 检查内存中是否有 Access Token
-  │     ├─ 有 → 调用 /api/auth/validate 验证有效性
-  │     │        ├─ 有效 → 进入主界面
-  │     │        └─ 无效 → 进入步骤2
-  │     └─ 无 → 进入步骤2
-  │
-  ├─ 2. 调用 /api/auth/refresh（Cookie 自动携带 Refresh Token）
-  │     ├─ 成功 → 获取新 Access Token，进入主界面
+  ├─ 1. 调用 /api/auth/refresh（Cookie 自动携带 Refresh Token）
+  │     ├─ 成功 → 服务端签发新 Access Token 并经 HttpOnly Cookie 下发，进入主界面
   │     └─ 失败 → 跳转登录页
   │
-  └─ 3. 登录页 → /api/auth/login
-        ├─ 成功 → Access Token(内存) + Refresh Token(Cookie)
+  └─ 2. 登录页 → /api/auth/login
+        ├─ 成功 → Access Token + Refresh Token (HttpOnly Cookie)
         └─ 失败 → 提示错误
 ```
+
+> 缓存数据：浏览器不再持有任何 Token 副本。`/api/auth/refresh` 成功后服务端**原地更新** Cookie（Set-Cookie 覆盖），前端 JS 不可读、不可写入——所有鉴权状态由服务端 Cookie 持有。`fetch` 默认 `credentials: 'include'` / `axios` 默认 `withCredentials` 携带 Cookie。
 
 ### 浏览器登录 MFA（TOTP）
 
@@ -131,6 +127,7 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 - Cookie 属性：`HttpOnly; SameSite=Strict; Secure; Path=/api/auth; Max-Age=86400`
 - Refresh Token 在服务端数据库存储哈希值，支持主动删除
 - **CSRF 二次防线**：`auth_middleware` 对 Cookie 鉴权的写请求校验 `X-Requested-With: XMLHttpRequest` 自定义头（跨站简单请求无法附加自定义头，被 CORS 预检拦截）；`SameSite=Strict` 为第一道防线，本校验为第二道防线
+- Access Token 经 HttpOnly Cookie 传递，前端 JS 不可读；Cookie 鉴权写请求强制校验 `X-Requested-With: XMLHttpRequest` 自定义头（CSRF 纵深防御，与 SameSite=Strict 互补）；Bearer 通道保留供第三方 iframe（portal token 机制）与程序化客户端（contract_host_agent / AI_Coding_Check_agent client.py）。
 - Admin 强制下线操作清除目标用户的所有 Refresh Token 与 Portal Refresh Token，保留 Session 记录以便审计查询
 - 登出时：删除数据库记录 + 清除 Cookie + 删除该用户所有 portal_refresh_tokens
 - 密码修改时：删除该用户所有 Refresh Token 记录并删除所有 Portal Refresh Token（强制所有设备重新登录）
