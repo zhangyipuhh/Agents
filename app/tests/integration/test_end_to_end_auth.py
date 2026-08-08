@@ -108,3 +108,70 @@ def test_end_to_end_auth_flow(client):
     # ------------------------------------------------------------------
     unauthorized_resp = client.post("/api/session/create")
     assert unauthorized_resp.status_code == 401, "未携带 token 访问受保护路由应返回 401"
+
+
+# =============================================================================
+# Cookie 鉴权模式端到端集成测试（HttpOnly Cookie 迁移防线）
+# =============================================================================
+
+
+def test_cookie_auth_end_to_end(client):
+    """
+    Cookie 模式端到端：登录 Set-Cookie → Cookie 访问受保护路由 → 缺 CSRF 头 403 → 登出清 Cookie
+
+    Args:
+        client: FastAPI TestClient fixture（完整应用，Cookie Jar 自动携带）
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 任一阶段响应状态码或 Set-Cookie 属性不符合预期时抛出
+    """
+    from unittest.mock import patch
+
+    from app.shared.utils.auth.Safety import jwt_auth
+
+    # ------------------------------------------------------------------
+    # 步骤1：登录，验证 Set-Cookie 下发 access_token HttpOnly Cookie
+    # ------------------------------------------------------------------
+    with patch.object(jwt_auth, "verify_credentials", return_value=True):
+        login_resp = client.post(
+            "/api/auth/login-api",
+            json={"username": "test_e2e_user", "password": "Test123!"},
+        )
+    assert login_resp.status_code == 200, "登录应返回 200"
+
+    set_cookies = login_resp.headers.get_list("set-cookie")
+    assert any(
+        c.startswith("access_token=") and "HttpOnly" in c for c in set_cookies
+    ), "登录应下发 access_token HttpOnly Cookie"
+
+    # ------------------------------------------------------------------
+    # 步骤2：Cookie + CSRF 头访问受保护路由（Cookie Jar 自动携带 access_token）
+    # ------------------------------------------------------------------
+    session_resp = client.post(
+        "/api/session/create",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert session_resp.status_code == 200, "Cookie 鉴权 + CSRF 头应放行"
+
+    # ------------------------------------------------------------------
+    # 步骤3：缺 CSRF 头的 Cookie 写请求应被拒（403）
+    # ------------------------------------------------------------------
+    forbidden = client.post("/api/session/create")
+    assert forbidden.status_code == 403, "缺 CSRF 头应返回 403"
+
+    # ------------------------------------------------------------------
+    # 步骤4：登出，验证 access_token Cookie 被清除（Max-Age=0）
+    # ------------------------------------------------------------------
+    logout_resp = client.post(
+        "/api/auth/logout",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert logout_resp.status_code == 200, "登出应返回 200"
+
+    del_cookies = logout_resp.headers.get_list("set-cookie")
+    assert any(
+        c.startswith("access_token=") and "Max-Age=0" in c for c in del_cookies
+    ), "登出应删除 access_token Cookie"
