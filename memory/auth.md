@@ -116,6 +116,7 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 - **智能体选择权限**：`users.allowed_agents` 控制每个用户可在 `/command` 下拉中选择的智能体；空列表表示不可选择任何智能体；该限制对所有角色（含 admin）生效
   - 前端 `InputBox.vue` 的 `filteredAgents` 按 `allowedAgents` 过滤；后端 `/api/agent/list` 按 `request.state.allowed_agents` 过滤；`/api/agent/chat` 对非 `default` 的 `agent_name` 做 403 校验
   - 认证响应 `/api/auth/validate` 与 `JWTAuth.authenticate` 均透传 `allowed_agents`
+- **Admin 编辑用户不允许改密码**：`PUT /api/users/{user_id}`（admin 更新资料）**不接 password 入参**——`UserUpdateRequest` 模型不声明 password 字段；`UserDB.update_user_info` SQL 不更新 `password_hash`。密码修改走独立路由 `PUT /api/users/{user_id}/password`，要求调用方提供 `old_password`，**仅用户本人**能在「个人设置 → 修改密码」完成；项目当前没有 admin 无需旧密码直接重置密码的接口。前端 `UserSettingsDialog.vue::openEditUser` 弹窗虽保留密码输入框（label「密码（留空表示不修改）」）仅用于新增/编辑两分支 DOM 复用，编辑分支提交时不传 `formPassword`。设计依据：等保三级 §一身份鉴别（最小权限 / 敏感操作独立审计）、§三安全审计（admin 改密属敏感操作，必须独立审计事件）、§二访问控制（默认拒绝 / 权限分离）；避免把"资料编辑"和"凭据变更"两种语义严重不同的操作塞进同一表单，也避免 admin 在编辑弹窗随手"保存"就触发目标用户全设备强制下线。
 
 ### 安全措施
 
