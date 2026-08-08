@@ -219,10 +219,9 @@ const cancelDeleteSession = () => {
 }
 
 const handleMenuClick = (menuId) => {
-  // 仅在真正切换主窗口页面（new-task）时保持 active 视觉；
-  // knowledge / ops-console 都是 window.open 在新 Tab 打开（等同 target="_blank"），
-  // 按下后应立即恢复、不留 active 视觉残留
-  if (menuId === 'new-task') {
+  // 仅在真正切换主窗口页面（new-task / ops-console）时保持 active 视觉；
+  // knowledge 仍是新 Tab 打开，按下后立即恢复、不留 active 视觉残留。
+  if (menuId === 'new-task' || menuId === 'ops-console') {
     activeMenu.value = menuId
   }
   if (menuId === 'new-task') {
@@ -235,9 +234,11 @@ const handleMenuClick = (menuId) => {
     // - 'noopener' 切断 window.opener 引用，规避安全风险
     window.open('/knowledge.html', '_blank', 'noopener')
   }
+  // 2026-08-08 等保三级改造：运维控制台由独立 /ops-console.html 入口改为
+  // App.vue::currentPage === 'ops-console' 内嵌子页面（复用主应用 HttpOnly
+  // Cookie + fetchWithAuth 鉴权链路），行为与 new-task 一致。
   if (menuId === 'ops-console') {
-    // 在浏览器新 Tab 中打开运维控制台页面（与知识库保持一致的「无 features 新 Tab」行为）
-    window.open('/ops-console.html', '_blank', 'noopener')
+    emit('page-change', 'ops-console')
   }
 }
 
@@ -629,7 +630,13 @@ onUnmounted(() => {
         <span v-show="!isSidebarCollapsed" class="menu-text">新建任务</span>
         <kbd v-show="!isSidebarCollapsed" class="shortcut">Ctrl+K</kbd>
       </button>
-      <!-- 运维控制台：在新窗口中打开 /ops-console.html（路径风格与知识库一致） -->
+      <!--
+        2026-08-08 等保三级改造：运维控制台由独立 /ops-console.html 入口改为
+        App.vue 内嵌子页面（currentPage === 'ops-console'）。
+        行为与「新建任务」一致：点击切换主应用内嵌视图，复用主应用 HttpOnly
+        Cookie / fetchWithAuth 鉴权链路，避免独立子窗口 Cookie 失效导致
+        /api/admin/server-inspection/latest 等接口拉不到数据。
+      -->
       <button
         class="menu-item menu-item-secondary"
         :class="{ active: activeMenu === 'ops-console' }"

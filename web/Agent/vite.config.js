@@ -24,10 +24,10 @@ export default defineConfig(({ mode }) => {
       rollupOptions: {
         input: {
           main: resolve(__dirname, 'index.html'),
-          // 2026-08-05 新增：运维控制台独立入口（/ops-console.html）
-          // - 对应 OpsConsoleApp 根组件 + 政务蓝 macOS 风格多窗口 UI
-          // - Sidebar.vue handleMenuClick 'ops-console' 通过 window.open('/ops-console.html') 跳转
-          opsConsole: resolve(__dirname, 'ops-console.html'),
+          // 2026-08-08 改造：运维控制台由独立 /ops-console.html 入口删除，
+          // 改为 App.vue::currentPage === 'ops-console' 内嵌子页面（等保三级方案）。
+          // 复用主应用 HttpOnly Cookie + fetchWithAuth 鉴权链路，
+          // 详见 web/Agent/src/components/ops-console/OpsConsoleApp.vue 文件头注释。
           knowledge: resolve(__dirname, 'knowledge.html'),
           portal: resolve(__dirname, 'portal.html'),
           login: resolve(__dirname, 'login.html'),

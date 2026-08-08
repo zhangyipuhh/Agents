@@ -6,11 +6,18 @@
  *   - 组件可被 import；
  *   - 挂载时不抛异常（mock fetchWithAuth）；
  *   - 加载成功后 servers 列表渲染（映射函数 / loadLatest 链路）。
+ *
+ * 2026-08-08 等保三级改造更新：
+ *   - onMounted 增加 validateToken() 主动引导 refresh（防止父窗口超时后页面拉不到数据），
+ *     mock 中补 validateToken，否则测试会 await 一个未导出的 undefined；
+ *   - 组件从独立 HTML 入口根组件改为 App.vue 内嵌子页面，组件语义保持不变，
+ *     测试无需重构（仍以 mount(OpsConsoleApp) 验证根状态机即可）。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 
-// mock api.js：fetchServerInspectionLatest 返回 2 行（1 ok + 1 unknown）
+// mock api.js：fetchServerInspectionLatest 返回 2 行（1 ok + 1 unknown）；
+// 2026-08-08 等保三级改造：补 validateToken（onMounted 主动引导 refresh）
 vi.mock('../../utils/api.js', () => ({
   fetchServerInspectionLatest: vi.fn(async () => ({
     items: [
@@ -48,6 +55,7 @@ vi.mock('../../utils/api.js', () => ({
       },
     ],
   })),
+  validateToken: vi.fn(async () => ({ username: 'tester', role: 'admin', allowed_agents: [] })),
 }))
 
 import OpsConsoleApp from './OpsConsoleApp.vue'
@@ -107,6 +115,27 @@ describe('OpsConsoleApp 运维控制台根组件', () => {
     expect(servers[0].cpu).toBe(23.5)
     expect(servers[1].status).toBe('unknown')     // 无快照 → unknown
     expect(servers[1].cpu).toBeNull()
+    wrapper.unmount()
+  })
+
+  // 2026-08-08 等保三级改造：onMounted 应主动调 validateToken 引导 Cookie 鉴权链路
+  it('test_ops_console_app_on_mounted_calls_validate_token onMounted 主动引导 validateToken', async () => {
+    const wrapper = mount(OpsConsoleApp, {
+      global: {
+        stubs: {
+          OpsMenuBar: true,
+          OpsServerWindow: true,
+          OpsDetailWindow: true,
+          OpsLogManager: true,
+          OpsLogViewer: true,
+          OpsDockBar: true,
+        },
+      },
+    })
+    await flushPromises()
+    const api = await import('../../utils/api.js')
+    // validateToken 在 onMounted 中调一次（即使失败也吞掉，不阻断 loadLatest）
+    expect(api.validateToken).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
 })

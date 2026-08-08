@@ -5,6 +5,10 @@ import ChatArea from './components/ChatArea.vue'
 import InputBox from './components/InputBox.vue'
 import HumanApprovalBox from './components/HumanApprovalBox.vue'
 import KnowledgePage from './components/KnowledgePage.vue'
+// 2026-08-08 等保三级改造：ops-console 由独立 HTML 入口改为 App.vue 条件渲染子页面，
+// 复用主应用 HttpOnly Cookie + fetchWithAuth（X-Requested-With + 401 refresh）鉴权链路。
+// 样式表按需引入，避免政务蓝样式污染主应用其他页面。
+import OpsConsolePage from './components/ops-console/OpsConsoleApp.vue'
 import SubAgentDrawer from './components/SubAgentDrawer.vue'
 import QueueStatusBanner from './components/QueueStatusBanner.vue'
 // 2026-06-30 新增：项目弹窗
@@ -1113,6 +1117,24 @@ function handleCloseFilePreview() {
 
 function handlePageChange(page) {
   currentPage.value = page
+  // 2026-08-08 等保三级改造：运维控制台样式按需引入（首次切到 ops-console 时挂载 CSS），
+  // 避免政务蓝样式在主应用默认加载污染其他页面。
+  if (page === 'ops-console') {
+    ensureOpsConsoleStyles()
+  }
+}
+
+// 2026-08-08 等保三级改造：ops-console 样式 lazy load，单例守卫避免重复引入
+const _opsConsoleStylesLoaded = ref(false)
+async function ensureOpsConsoleStyles() {
+  if (_opsConsoleStylesLoaded.value) return
+  _opsConsoleStylesLoaded.value = true
+  try {
+    await import('./styles/ops-console.css')
+  } catch (err) {
+    console.error('[App] 加载运维控制台样式失败:', err)
+    _opsConsoleStylesLoaded.value = false
+  }
 }
 
 /**
@@ -1415,6 +1437,17 @@ async function handleSessionSwitch(targetSessionId) {
       @page-change="handlePageChange"
       @open-subagent-drawer="openSubAgentDrawer"
     />
+
+    <!--
+      2026-08-08 等保三级改造：运维控制台由独立 /ops-console.html 入口
+      改为 App.vue 内嵌条件渲染（currentPage === 'ops-console'）。
+      鉴权链路：复用主应用 HttpOnly Cookie + fetchWithAuth 自动注入
+      X-Requested-With / 401 refresh 重试，与主应用 /api/auth/validate
+      会话状态保持一致，避免「独立子窗口 Cookie 失效拉不到数据」的反模式。
+      样式表在 handlePageChange 首次切到 'ops-console' 时按需引入
+      （避免主应用默认加载政务蓝样式污染其他页面）。
+    -->
+    <OpsConsolePage v-if="currentPage === 'ops-console'" />
 
     <!--
       2026-06-14 改造：原 SandboxDrawer 已删除，沙箱执行详情统一由 SubAgentDrawer 展示。

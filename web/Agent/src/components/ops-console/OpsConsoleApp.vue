@@ -1,8 +1,18 @@
 <script setup>
 /**
- * 运维控制台 - 根组件（窗口管理 / 全局状态）
+ * 运维控制台 - 页面组件（窗口管理 / 全局状态）
  *
- * 2026-08-05 从 `运维界面/app/src/App.vue` 整段迁移。
+ * 历史：2026-08-05 从 `运维界面/app/src/App.vue` 整段迁移，最初作为
+ *       ``/ops-console.html`` 独立 Vite 入口的根组件挂载到独立 #app。
+ * 2026-08-08 改造为等保三级 §二访问控制方案：
+ *       1) 取消独立 HTML 入口，改为在主应用 ``App.vue::currentPage === 'ops-console'``
+ *          条件渲染的子页面；
+ *       2) 复用主应用的 HttpOnly Cookie / ``fetchWithAuth`` 自动注入
+ *          ``X-Requested-With`` + 401 refresh 重试链路，鉴权与主应用统一，
+ *          不再出现「独立子窗口 Cookie / refresh 失效导致接口拉不到」的反模式；
+ *       3) 模板外层新增 ``.ops-console-root`` 包裹，配合 ``ops-console.css``
+ *          改造为作用域前缀样式，避免政务蓝 ``* { margin: 0; padding: 0 }``
+ *          污染主应用其他页面。
  *
  * 状态机：
  *   - currentTime: string                  顶部菜单栏时间（1s 定时器）
@@ -29,7 +39,7 @@ import OpsLogManager from './OpsLogManager.vue'
 import OpsLogViewer from './OpsLogViewer.vue'
 import OpsDockBar from './OpsDockBar.vue'
 import { logFolders } from '../../data/ops-console/mockData.js'
-import { fetchServerInspectionLatest } from '../../utils/api.js'
+import { fetchServerInspectionLatest, validateToken } from '../../utils/api.js'
 
 const currentTime = ref('')
 const searchKey = ref('')
@@ -255,14 +265,30 @@ function genLogContent(name) {
   return rows
 }
 
-onMounted(() => {
+onMounted(async () => {
   tick()
   setInterval(tick, 1000)
+  // 2026-08-08 等保三级改造：主动调用 /api/auth/validate 触发 Cookie 鉴权链路，
+  // 若主应用 Access Token 过期，服务端会通过 HttpOnly Cookie 自动识别并
+  // 走 /api/auth/refresh 轮换（validateToken 内部已封装 401 自动 refresh + 重试）。
+  // 这步只解决「父窗口长期挂着、Cookie 已超时」场景的引导问题；常规场景下
+  // loadLatest() 的 401 也会触发 fetchWithAuth 内置 refresh 链路。
+  try {
+    await validateToken()
+  } catch (err) {
+    console.warn('[OpsConsolePage] 主动引导 validateToken 失败（将由 loadLatest 内置 refresh 兜底）:', err && err.message)
+  }
   loadLatest()
 })
 </script>
 
 <template>
+  <!--
+    2026-08-08 等保三级改造：外层 .ops-console-root 包裹，
+    配合 ops-console.css 改造为作用域前缀样式，避免污染主应用其他页面。
+    原独立 HTML 入口（/ops-console.html）的 #app 高度 = 100vh 已迁移到本容器。
+  -->
+  <div class="ops-console-root">
   <OpsMenuBar :time="currentTime" />
 
   <OpsServerWindow v-if="wins.servers.open"
@@ -301,4 +327,5 @@ onMounted(() => {
     @drag="startDrag($event, 'logview')" />
 
   <OpsDockBar :wins="wins" @open="openWin" @detect-all="detectAll" />
+  </div>
 </template>
