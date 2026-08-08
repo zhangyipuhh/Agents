@@ -609,7 +609,7 @@ return data/upload/yyyy/mm/dd/{session_id}/
   - 覆盖：`localhost` / `127.0.0.1` / `::1`，有效期 2 年（到 2028-11-08）
   - mkcert 已注册到 Windows 受信根（`mkcert -install`），浏览器访问 https://localhost:8443 显示绿锁无警告
 - **端口**：HTTP `8080` → 301 跳转 HTTPS `8443`（避开 80/443 特权端口，本地非管理员即可启动）。
-- **同步 `web/Agent/nginx.conf` 内容**：CSP / X-Frame-Options / X-Content-Type-Options / Referrer-Policy / gzip / SPA 路由（`/`、`/knowledge`、`/ops-console`、`/portal`、`/login`）/ 静态资源 1y 缓存 / `/health`。
+- **同步 `web/Agent/nginx.conf` 内容**：CSP / X-Frame-Options / X-Content-Type-Options / Referrer-Policy / gzip / SPA 路由（`/`、`/knowledge`、`/ops-console`、`/portal`、`/login`）/ **HTML 入口禁缓存（`location ~* \.html$`，`no-cache, no-store, must-revalidate`，块内需显式重复全部安全头；本地版不得保留 `location = /index.html` 精确匹配块——精确匹配优先级高于正则会绕过禁缓存）** / 静态资源 1y 缓存 / `/health`。
 - **/api 代理**：直接写死 `http://127.0.0.1:8001`（Windows 无 envsubst，与 Docker 模板 `${VITE_API_TARGET}` 解耦）；保留 SSE 流式（`proxy_buffering off`）+ WebSocket Upgrade + 300s 读超时。
 - **TLS 加固（等保三级）**：
   - `ssl_protocols TLSv1.2 TLSv1.3`
@@ -617,7 +617,7 @@ return data/upload/yyyy/mm/dd/{session_id}/
   - `ssl_prefer_server_ciphers on`
   - HSTS `max-age=31536000; includeSubDomains`（`always` 标记）
 - **Windows 差异（与 Docker 版 nginx.conf）**：移除 `resolver 127.0.0.11`（Docker DNS）；`root` 改用正斜杠绝对路径 `E:/laboratory/AI/Agents/feature-agent-core-ref/web/Agent/dist`（零拷贝，前端重新构建立即生效）；`ssl_certificate` 改用正斜杠绝对路径。
-- **不修改 `web/Agent/nginx.conf`**：Docker 版保持 HTTP；HTTPS 仅在本地测试场景。
+- **`web/Agent/nginx.conf` 保持 HTTP**（Docker 版不提供 TLS；HTTPS 仅在本地测试场景），但禁缓存 / CSP / SPA 路由等通用块两版保持同步。
 
 ### 启动 / 停止 / 验证
 

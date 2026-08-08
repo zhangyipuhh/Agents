@@ -42,7 +42,9 @@
 
 #### 全局守卫（`router.beforeEach`）
 
-- 当前落地：`requiresAuth` 路由 + 本地无 `username` 线索（`hasLocalAuthToken()`）→ 跳 `/login?redirect=<from>`（不 await `validateToken`，避免每次切路由阻塞；真正鉴权由 `fetchWithAuth` 自动 401 refresh 重试链路兜底）
+- 当前落地：守卫逻辑收敛在具名导出 `requiresAuthGuard(to)` 中（`router.beforeEach(requiresAuthGuard)`），测试直接调用真实守卫函数
+- `requiresAuth` 路由 + 本地无 `username` 线索（`hasLocalAuthToken()`）→ **`window.location.href = buildLoginUrl(to.fullPath)` 整页跳 `/login?redirect=<from>` 并 `return false`**（不 await `validateToken`，避免每次切路由阻塞；真正鉴权由 `fetchWithAuth` 自动 401 refresh 重试链路兜底）
+- **禁止**在守卫内 `return { path: '/login...' }` 应用内跳转：`/login` 不在路由表内，会命中 not-found 兜底 → 回 `/` → 再被守卫拦截 → 无限重定向循环，微任务链饿死 fetch 回调 → 页面白屏 + 主线程占满（外部调试器 evaluate 也会挂起）
 - meta 字段 schema 已建 9 个等保三级扩展位（本期不消费，下期工单接入）：
   - `menuAcl: string | string[]` —— 后端 `require_admin_or_menu_acl` 同名，路由级 ACL 校验
   - `requiredRole: 'admin' | 'user'` —— 角色校验

@@ -11,12 +11,15 @@
  *   本期仅消费 requiresAuth / pageKey / title；其余字段保留 key，value 留空
  *
  * 全局守卫：
- * - requiresAuth 路由 + 本地无 username 线索 → 跳 /login?redirect=<from>
+ * - requiresAuth 路由 + 本地无 username 线索 → **整页跳转** /login?redirect=<from>
+ *   （/login 是独立 HTML 入口，刻意不在本路由表内；应用内 return { path: '/login' }
+ *   会命中 not-found 兜底 → 回 / → 再被守卫拦截 → 无限重定向循环，微任务链饿死
+ *   fetch 回调导致白屏 + 主线程占满。必须 window.location.href 整页跳转）
  * - 不在守卫内 await validateToken，避免每次切路由阻塞；真正鉴权由 fetchWithAuth
  *   链路自动处理（401 → refresh → 重试），组件 onMounted 内做权威校验
  */
 import { createRouter, createWebHistory } from 'vue-router'
-import { hasLocalAuthToken } from '../utils/auth.js'
+import { hasLocalAuthToken, buildLoginUrl } from '../utils/auth.js'
 
 const routes = [
   {
@@ -93,11 +96,27 @@ const router = createRouter({
   routes,
 })
 
-router.beforeEach((to) => {
-  // [P0] 鉴权预检：未登录访问受保护路由 → 跳 /login?redirect=<from>
+/**
+ * 鉴权预检守卫：未登录访问受保护路由 → 整页跳转 /login 独立入口
+ *
+ * 为什么不能用 return { path: '/login?redirect=...' } 应用内跳转：
+ * /login 是独立 HTML 入口（login.html + login-main.js），刻意不在本路由表内；
+ * 应用内跳转会命中 not-found 兜底 → redirect '/' → 再次触发本守卫 → 无限重定向循环。
+ * 循环产生的微任务链会饿死 fetch 回调（macrotask），导致 App.vue checkAuth 的
+ * refresh/validate 永不返回，页面白屏且主线程占满，外部调试器 evaluate 也会挂起。
+ *
+ * 修复方式：window.location.href 整页跳转到 /login（由 nginx location /login →
+ * login.html 承载 LoginView），并 return false 终止本次应用内导航。
+ *
+ * @param {Object} to - vue-router 目标路由对象（需含 meta.requiresAuth / fullPath）
+ * @returns {boolean} true 放行；false 终止导航（已触发整页跳转 /login）
+ * @throws {Error} 不主动抛错；buildLoginUrl 对非法 redirect 已做安全过滤
+ */
+export function requiresAuthGuard(to) {
+  // [P0] 鉴权预检：未登录访问受保护路由 → 整页跳 /login?redirect=<from>
   if (to.meta.requiresAuth && !hasLocalAuthToken()) {
-    const redirect = encodeURIComponent(to.fullPath)
-    return { path: `/login?redirect=${redirect}` }
+    window.location.href = buildLoginUrl(to.fullPath)
+    return false
   }
 
   // [P1 待落地] 路由级 ACL（与后端 require_admin_or_menu_acl 对齐）
@@ -124,6 +143,8 @@ router.beforeEach((to) => {
   // }
 
   return true
-})
+}
+
+router.beforeEach(requiresAuthGuard)
 
 export default router
