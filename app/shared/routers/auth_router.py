@@ -1025,7 +1025,9 @@ async def validate_token(request: Request):
     """
     验证 Access Token 有效性接口
 
-    读取 Authorization 头中的 Access Token，验证签名和有效期。
+    提取顺序：Authorization Header (Bearer) 优先 → HttpOnly Cookie 兜底。
+    浏览器主应用场景 Access Token 存 HttpOnly Cookie（JS 不可见），
+    只能随请求自动发送，validate 必须支持 Cookie 鉴权。
     用于前端页面加载时检查当前 Token 是否有效。
 
     Returns:
@@ -1034,18 +1036,7 @@ async def validate_token(request: Request):
     Raises:
         HTTPException: Token 无效或过期时返回 401
     """
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header.split(" ")[1]
-    else:
-        # 浏览器主应用：HttpOnly Cookie 兜底
-        token = request.cookies.get(settings.auth_cookie.access_token_name)
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="缺少有效的认证信息"
-        )
-
+    token = jwt_auth.extract_access_token(request)
     payload = await jwt_auth.verify_token(token)
 
     # 拒绝 Refresh Token

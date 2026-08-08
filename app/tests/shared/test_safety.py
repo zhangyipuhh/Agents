@@ -508,3 +508,133 @@ def test_authenticate_no_header_no_cookie_raises_401(jwt_auth):
     with pytest.raises(HTTPException) as exc_info:
         _run_async(jwt_auth.authenticate(request))
     assert exc_info.value.status_code == 401
+
+
+# ============================================================================
+# 2026-08-08 新增：extract_access_token 共享 helper（Task 4 review 修复）
+# 设计：Bearer 优先 → Cookie 兜底 → Basic 等非 Bearer 一律 401（不静默回退）
+# ============================================================================
+
+
+def test_extract_access_token_returns_bearer(jwt_auth):
+    """Authorization: Bearer <token> 直接返回 token 字符串。
+
+    Args:
+        jwt_auth: JWTAuth 实例（来自 conftest）
+
+    Returns:
+        None
+    """
+    access_token = _run_async(jwt_auth.generate_token("admin"))
+
+    request = MagicMock(spec=Request)
+    request.headers.get.return_value = f"Bearer {access_token}"
+    request.cookies = {}
+
+    assert jwt_auth.extract_access_token(request) == access_token
+
+
+def test_extract_access_token_falls_back_to_cookie(jwt_auth):
+    """无 Authorization 头时回退读取 HttpOnly Cookie access_token。
+
+    Args:
+        jwt_auth: JWTAuth 实例（来自 conftest）
+
+    Returns:
+        None
+    """
+    access_token = _run_async(jwt_auth.generate_token("admin"))
+
+    request = MagicMock(spec=Request)
+    request.headers.get.return_value = None
+    request.cookies = {"access_token": access_token}
+
+    assert jwt_auth.extract_access_token(request) == access_token
+
+
+def test_extract_access_token_no_header_no_cookie_raises_401(jwt_auth):
+    """既无 Authorization 又无 Cookie 时抛 401。
+
+    Args:
+        jwt_auth: JWTAuth 实例（来自 conftest）
+
+    Returns:
+        None
+    """
+    from fastapi import HTTPException
+
+    request = MagicMock(spec=Request)
+    request.headers.get.return_value = None
+    request.cookies = {}
+
+    with pytest.raises(HTTPException) as exc_info:
+        jwt_auth.extract_access_token(request)
+    assert exc_info.value.status_code == 401
+
+
+def test_extract_access_token_rejects_basic_header_with_cookie(jwt_auth):
+    """Authorization: Basic 即使携带有效 Cookie 也必须 401，不静默回退。
+
+    设计动机：原 ``validate_token`` 实现的回退逻辑遇到 ``Basic xyz`` 头时
+    会静默跳过 Basic 走到 Cookie 鉴权（200 通过），与 ``authenticate()`` 的
+    401 行为不一致。helper 必须统一拒绝。
+
+    Args:
+        jwt_auth: JWTAuth 实例（来自 conftest）
+
+    Returns:
+        None
+    """
+    from fastapi import HTTPException
+
+    access_token = _run_async(jwt_auth.generate_token("admin"))
+
+    request = MagicMock(spec=Request)
+    request.headers.get.return_value = "Basic xyz"
+    request.cookies = {"access_token": access_token}
+
+    with pytest.raises(HTTPException) as exc_info:
+        jwt_auth.extract_access_token(request)
+    assert exc_info.value.status_code == 401
+    assert "无效的认证格式" in str(exc_info.value.detail)
+
+
+def test_extract_access_token_rejects_unknown_auth_scheme(jwt_auth):
+    """Authorization: Digest / Token / 自定义 scheme 一律 401。
+
+    Args:
+        jwt_auth: JWTAuth 实例（来自 conftest）
+
+    Returns:
+        None
+    """
+    from fastapi import HTTPException
+
+    access_token = _run_async(jwt_auth.generate_token("admin"))
+
+    for scheme in ("Digest foo", "Token abc", "Custom xyz"):
+        request = MagicMock(spec=Request)
+        request.headers.get.return_value = scheme
+        request.cookies = {"access_token": access_token}
+
+        with pytest.raises(HTTPException) as exc_info:
+            jwt_auth.extract_access_token(request)
+        assert exc_info.value.status_code == 401
+
+
+def test_extract_access_token_bearer_precedence_over_cookie(jwt_auth):
+    """Bearer 与 Cookie 同时存在时优先 Bearer。
+
+    Args:
+        jwt_auth: JWTAuth 实例（来自 conftest）
+
+    Returns:
+        None
+    """
+    bearer_token = _run_async(jwt_auth.generate_token("admin"))
+
+    request = MagicMock(spec=Request)
+    request.headers.get.return_value = f"Bearer {bearer_token}"
+    request.cookies = {"access_token": "another-token"}
+
+    assert jwt_auth.extract_access_token(request) == bearer_token

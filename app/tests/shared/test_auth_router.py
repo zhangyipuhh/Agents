@@ -448,7 +448,14 @@ class TestIssuePortalRefreshToken:
 
 def test_refresh_sets_new_access_token_cookie(client):
     """
-    测试刷新接口轮换 access_token Cookie，且 JSON body 保留（第三方 iframe 兼容）
+    测试刷新接口轮换 access_token Cookie
+
+    覆盖属性：
+    - Set-Cookie 中存在唯一一条 access_token=
+    - Cookie 值与响应体 access_token 一致（轮换）
+    - HttpOnly
+    - Path=/api
+    - Max-Age=1800
 
     Args:
         client: FastAPI TestClient
@@ -463,9 +470,14 @@ def test_refresh_sets_new_access_token_cookie(client):
     assert login_resp.status_code == 200
     resp = client.post("/api/auth/refresh")
     assert resp.status_code == 200
-    assert "access_token" in resp.json()
+    body_token = resp.json()["access_token"]
     cookies = resp.headers.get_list("set-cookie")
-    assert any(c.startswith("access_token=") and "HttpOnly" in c for c in cookies)
+    access = [c for c in cookies if c.startswith("access_token=")]
+    assert len(access) == 1
+    assert f"access_token={body_token}" in access[0]
+    assert "HttpOnly" in access[0]
+    assert "Path=/api" in access[0]
+    assert "Max-Age=1800" in access[0]
 
 
 def test_validate_accepts_cookie_auth(client, admin_headers):

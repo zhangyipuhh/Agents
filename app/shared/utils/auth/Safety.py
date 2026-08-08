@@ -230,6 +230,51 @@ class JWTAuth:
                 detail=f"验证令牌失败: {str(e)}"
             )
     
+    def extract_access_token(self, request: Request) -> str:
+        """
+        从请求中提取 Access Token 字符串（不验签）。
+
+        提取顺序与策略：
+
+        1. **Authorization Header (Bearer)** —— 优先；第三方 / 程序化客户端走此路径。
+        2. **HttpOnly Cookie 兜底** —— 浏览器主应用场景，Access Token 存 Cookie
+           （JS 不可见），只能随请求自动发送。
+
+        若请求携带 ``Authorization`` 头但不是 ``Bearer`` 格式（如 ``Basic``），
+        一律拒绝并抛 401，**不静默回退到 Cookie**——防止 Basic 凭据被误识别为有效会话。
+
+        这是 ``authenticate()`` 与 ``/validate`` 等其他需要 Access Token 的入口
+        的共享 helper，行为一致即可避免 Cookie 鉴权出现「Basic + Cookie 同时带」
+        时静默放行的差异。
+
+        Args:
+            request (Request): FastAPI 请求对象。
+
+        Returns:
+            str: 提取到的 Access Token 字符串（非空）。
+
+        Raises:
+            HTTPException 401: 无 Authorization 头且无 Cookie、或 Authorization 非 Bearer 格式。
+        """
+        auth_header = request.headers.get("Authorization")
+
+        if auth_header:
+            if not auth_header.startswith("Bearer "):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="无效的认证格式",
+                )
+            return auth_header.split(" ", 1)[1]
+
+        from app.core.config.settings import settings as _settings
+        token = request.cookies.get(_settings.auth_cookie.access_token_name)
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="缺少认证信息",
+            )
+        return token
+
     async def authenticate(self, request: Request) -> Optional[dict]:
         """
         认证请求
@@ -252,26 +297,8 @@ class JWTAuth:
         Raises:
             HTTPException: 当认证失败时抛出
         """
-        auth_header = request.headers.get("Authorization")
-
-        if auth_header:
-            if not auth_header.startswith("Bearer "):
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="无效的认证格式"
-                )
-            token = auth_header.split(" ")[1]
-            auth_via = "bearer"
-        else:
-            # 浏览器主应用：HttpOnly Cookie 兜底（Access Token 对 JS 不可见）
-            from app.core.config.settings import settings as _settings
-            token = request.cookies.get(_settings.auth_cookie.access_token_name)
-            auth_via = "cookie"
-            if not token:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="缺少认证信息"
-                )
+        token = self.extract_access_token(request)
+        auth_via = "bearer" if request.headers.get("Authorization") else "cookie"
 
         payload = await self.verify_token(token)
         request.state.auth_via = auth_via
