@@ -671,8 +671,16 @@ class UserDB:
                     user_id, {"failed_login_count": 0, "locked_until": None}
                 )
                 state["failed_login_count"] = int(state.get("failed_login_count", 0)) + 1
+                # 2026-08-08 修复：固定锁定窗口。仅在以下条件成立时才写入
+                # ``locked_until``：
+                # 1) 新失败计数达到 ``max_attempts``；
+                # 2) 当前 ``locked_until`` 为 None，或已不晚于当前时间（已过期）。
+                # 活动锁定（``locked_until`` 仍在未来）期间再次失败只能递增
+                # 计数，不能顺延截止时间，避免 ZYP 现象：30 分钟后仍被锁定。
                 if state["failed_login_count"] >= max_attempts:
-                    state["locked_until"] = time.time() + lockout_seconds
+                    current_lock = state.get("locked_until")
+                    if current_lock is None or current_lock <= time.time():
+                        state["locked_until"] = time.time() + lockout_seconds
                 return state["failed_login_count"]
 
         # PostgreSQL 模式：原子 update + 阈值锁定计算（参数化 SQL）。
@@ -681,6 +689,10 @@ class UserDB:
         # ``UPDATE ... RETURNING`` 直接喂 ``fetchval`` 时部分 asyncpg 版本
         # 行为不一致的历史坑（曾导致 ``AttributeError: fetchval`` 被外层
         # ``except Exception: pass`` 吞掉 → 锁定机制整体静默失效）。
+        # 2026-08-08 修复：固定锁定窗口。``CASE`` 增加守卫：只有
+        # ``locked_until`` 为 NULL 或已过期（<=CURRENT_TIMESTAMP）时才允许
+        # 写入新的 ``TO_TIMESTAMP($3)``；活动锁定（仍在未来）期间再次失败
+        # 只能递增计数，不能覆盖原截止时间。
         lock_until_target = time.time() + lockout_seconds
         row = await DatabasePool.fetchrow(
             """
@@ -689,6 +701,7 @@ class UserDB:
                 SET failed_login_count = COALESCE(failed_login_count, 0) + 1,
                     locked_until = CASE
                         WHEN COALESCE(failed_login_count, 0) + 1 >= $2
+                             AND (locked_until IS NULL OR locked_until <= CURRENT_TIMESTAMP)
                             THEN TO_TIMESTAMP($3)
                         ELSE locked_until
                     END,
@@ -710,10 +723,13 @@ class UserDB:
         # 行级锁定生效兜底：如 SQL CASE 未命中阈值（schema 漂移等情况），
         # 在内存层基于 new_count 与 max_attempts 兜底再设一次 locked_until，
         # 保证锁定语义与 max_attempts 阈值一致（路线 B：路由层再次校验）。
+        # 2026-08-08 修复：兜底条件扩展为 "IS NULL OR 已过期"，与主路径
+        # CASE 守卫保持一致，避免活动锁定被兜底分支顺延。
         if new_count >= max_attempts:
             try:
                 await DatabasePool.execute(
-                    "UPDATE users SET locked_until = TO_TIMESTAMP($1) WHERE id = $2 AND locked_until IS NULL",
+                    "UPDATE users SET locked_until = TO_TIMESTAMP($1) "
+                    "WHERE id = $2 AND (locked_until IS NULL OR locked_until <= CURRENT_TIMESTAMP)",
                     lock_until_target,
                     user_id,
                 )

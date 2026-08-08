@@ -322,7 +322,7 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 
 ### MFA 认证表
 
-`users` 表增加登录失败控制字段：`failed_login_count INTEGER NOT NULL DEFAULT 0`、`locked_until TIMESTAMPTZ NULL`。登录失败达到配置阈值时锁定账号，正式登录成功后清零。
+`users` 表增加登录失败控制字段：`failed_login_count INTEGER NOT NULL DEFAULT 0`、`locked_until TIMESTAMP NULL`（naive，迁移脚本 `app/migrations/init_all_tables.sql` L61-L63）。登录失败达到配置阈值时锁定账号，正式登录成功后清零。
 
 `user_mfa_totp` 表保存用户 TOTP 状态：
 
