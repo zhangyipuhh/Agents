@@ -5,12 +5,20 @@
  * 2026-08-05 从 `运维界面/app/src/components/MenuBar.vue` 整段迁移。
  * 展示运维监控图标（监视器 + 心跳脉冲 SVG）+ 标题「智能运维中心」+ 当前时间。
  *
+ * 2026-08-09：右侧加 mac 风格三色关闭点，仅红色 active
+ * 关闭整个运维控制台（emit('exit')）。黄/绿保留占位以备未来最小化/最大化。
+ *
  * Props:
  *   - time: string  当前时间字符串（由父组件 OpsConsoleApp 1s 定时器驱动）
+ *
+ * Emits:
+ *   - exit  点击红色关闭点，关闭整个运维控制台
  */
 defineProps({
   time: { type: String, default: '' },
 })
+
+const emit = defineEmits(['exit'])
 </script>
 
 <template>
@@ -28,5 +36,20 @@ defineProps({
     <span class="mi bold">智能运维中心</span>
     <div class="spacer"></div>
     <span class="mi">{{ time }}</span>
+    <!-- 2026-08-09：mac 风格三色关闭点（仅红色 active 关闭整个运维控制台）。
+         键盘可达：tabindex=0 + Enter/Space；aria-label 标注语义。 -->
+    <div class="menubar-traffic" role="group" aria-label="运维控制台操作">
+      <span
+        class="r"
+        role="button"
+        tabindex="0"
+        aria-label="关闭运维控制台"
+        @click.stop="emit('exit')"
+        @keydown.enter="emit('exit')"
+        @keydown.space.prevent="emit('exit')"
+      ></span>
+      <span class="y" aria-hidden="true"></span>
+      <span class="g" aria-hidden="true"></span>
+    </div>
   </div>
 </template>

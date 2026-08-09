@@ -1,5 +1,6 @@
 <script setup>
-import { reactive, onMounted, onBeforeUnmount, computed, ref, provide } from 'vue'
+import { reactive, onMounted, onBeforeUnmount, computed, ref, provide, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import Sidebar from './components/Sidebar.vue'
 import ChatArea from './components/ChatArea.vue'
 import InputBox from './components/InputBox.vue'
@@ -9,6 +10,7 @@ import KnowledgePage from './components/KnowledgePage.vue'
 // 复用主应用 HttpOnly Cookie + fetchWithAuth（X-Requested-With + 401 refresh）鉴权链路。
 // 样式表按需引入，避免政务蓝样式污染主应用其他页面。
 import OpsConsolePage from './components/ops-console/OpsConsoleApp.vue'
+import OpsConsoleWorkspace from './views/OpsConsoleWorkspace.vue'
 import SubAgentDrawer from './components/SubAgentDrawer.vue'
 import QueueStatusBanner from './components/QueueStatusBanner.vue'
 // 2026-06-30 新增：项目弹窗
@@ -58,6 +60,32 @@ const currentUser = ref({ username: '', role: '', userId: null })
 const allowedAgents = ref([])
 // 2026-07-23 新增：当前用户可见菜单 id 列表（来自 /api/auth/validate 响应）
 const visibleMenus = ref([])
+
+// 2026-08-09：路由级 layout 切换。
+// /ops-console 是完整的政务蓝运维桌面，由 <OpsConsoleWorkspace /> 独占 viewport，
+// 不挂主会话的 <Sidebar> / <ProjectDialog> / <SubAgentDrawer> / <UserSettingsDialog>。
+// 离开路由时该分支自动 unmount，恢复主会话 layout。
+// 兜底：vue-router 4 的 useRoute 在 vitest 4 happy-dom 下偶发 named export 解析失败，
+// 因此这里优先用 useRoute（生产），失败时降级为读 window.location.pathname。
+let _route = null
+try {
+  _route = useRoute()
+} catch (_) {
+  _route = null
+}
+const route = _route || reactive({ name: '', path: '', fullPath: '' })
+watch(
+  () => (typeof window !== 'undefined' ? window.location.pathname : ''),
+  (p) => { if (!_route) route.path = p || '' },
+  { immediate: true }
+)
+const isOpsConsoleRoute = computed(() => {
+  // 生产：依赖 vue-router 注入的 reactive route
+  if (_route && _route.name) return _route.name === 'ops-console'
+  // 兜底：单测 / 老浏览器从 URL 推断
+  const p = (typeof window !== 'undefined' ? window.location.pathname : '') || route.path || ''
+  return p.startsWith('/ops-console')
+})
 
 const messages = reactive([])
 const sessionId = reactive({ value: '' })
@@ -1414,6 +1442,12 @@ async function handleSessionSwitch(targetSessionId) {
   <!-- 已登录：显示主应用。
        未登录分支已移除：App.vue 不再渲染 LoginView / RegisterView；
        未登录时 checkAuth 会通过 redirectToLogin() 跳到 /login 入口，由 /login 渲染 LoginView。 -->
+  <!-- 2026-08-09 路由级 layout 切换：ops-console 路由下不挂主会话的侧栏/对话框/抽屉。
+       离开路由后该分支自动 unmount，主会话 layout 自动恢复。 -->
+  <div v-else-if="isOpsConsoleRoute" class="app-layout app-layout--ops">
+    <OpsConsoleWorkspace />
+  </div>
+
   <div v-else class="app-layout">
     <Sidebar
       ref="sidebarRef"

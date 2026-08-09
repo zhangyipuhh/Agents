@@ -55,6 +55,10 @@ const activeFolder = ref(0)
 const logFile = ref(null)
 const detailRef = ref(null)
 
+// 2026-08-09：新增「关闭整个运维控制台」事件，透传到父组件 OpsConsoleWorkspace。
+// 触发源：OpsMenuBar 顶部菜单栏右侧红色关闭点（mac 风格）。
+const emit = defineEmits(['exit'])
+
 // 2026-08-05：servers 由后端 /api/admin/server-inspection/latest 提供
 // （按当前用户 OwnershipScope 过滤），不再用 mockData。
 const servers = ref([])
@@ -289,7 +293,7 @@ onMounted(async () => {
     原独立 HTML 入口（/ops-console.html）的 #app 高度 = 100vh 已迁移到本容器。
   -->
   <div class="ops-console-root">
-  <OpsMenuBar :time="currentTime" />
+  <OpsMenuBar :time="currentTime" @exit="emit('exit')" />
 
   <OpsServerWindow v-if="wins.servers.open"
     :win="wins.servers" :servers="filteredServers"
