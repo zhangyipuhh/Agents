@@ -76,6 +76,14 @@
 
 `/ops-console` 与 `/` 同形态 `try_files $uri $uri/ /index.html`，由前端路由接管 `/ops-console/*` 路径。
 
+#### 路由级 layout 切换（2026-08-09 落地）
+
+`App.vue` 加 `useRoute()` + `isOpsConsoleRoute` computed；`/ops-console` 路由下走独立分支 `<div v-else-if="isOpsConsoleRoute" class="app-layout app-layout--ops"><OpsConsoleWorkspace /></div>`，**不挂**主会话的 `<Sidebar>` / `<ProjectDialog>` / `<SubAgentDrawer>` / `<UserSettingsDialog>`。离开路由时该分支自动 unmount，主会话 layout 自动恢复。`useRoute()` 在 vitest 4 happy-dom 下偶发 named export 解析失败，try/catch 兜底 + 读 `window.location.pathname` 推导；`useRouter().currentRoute.value.name` 失败时降级为 `path.startsWith('/ops-console')`。`Sidebar` 内部 `useRoute()` 调用仍依赖其 `if (!route || !route.name) return 'new-task'` 既有保护（`Sidebar.vue:230-237`），无破坏。`Sidebar.vue` 的 `currentPage` 历史死代码 prop **未动**（保持最小改动面）。
+
+#### 运维顶层关闭点（2026-08-09 落地）
+
+`OpsMenuBar.vue` 顶部菜单栏右侧 mac 风格三色点（红/黄/绿），仅红色 active 关闭整个运维控制台。事件链路：`OpsMenuBar.r @click.stop="emit('exit')"` → `OpsConsoleApp` 透传 `<OpsMenuBar :time="currentTime" @exit="emit('exit')" />` + `defineEmits(['exit'])` → `OpsConsoleWorkspace.handleExit` → 优先 `window.close()`（仅对被 `window.open` 打开的 Tab 有效；通过 `window.opener || window.history.length === 1` 判定），失败/无 opener 降级 `router.push('/')`。样式落在 `ops-console.css` 的 `.ops-console-root .menubar .menubar-traffic` 选择器下，保留政务蓝主题 + hover/focus 视觉反馈 + 键盘可达（tabindex=0 + Enter/Space）+ aria-label 完整。黄/绿保留占位以备未来最小化/最大化。
+
 ### vue-router 接入回归修复（2026-08-XX 同步）
 
 接入 vue-router 后 AgentWorkspace 子页面使用 `.content-area` / `.welcome-title` / `.queue-banner-wrapper` 三个 layout 类，原定义在 App.vue `<style scoped>` 内。**Vue scoped CSS 机制只匹配父组件自身根元素，不穿透到子组件根元素**，导致接入后 AgentWorkspace 主聊天界面坍缩（Sidebar 仍正常显示，因为 `.app-layout` 在 App.vue 自己根元素）。
