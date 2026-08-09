@@ -143,6 +143,24 @@ When querying the database, use this MCP to inspect table schemas and row data.
 - 「重启了服务」不等于「重启了目标进程」:端口被旧进程占用时新进程无法接管,必须以 PID 为准核实
 - 两个后端进程各自持有独立的内存态(如 MemorySaver checkpoint 单例),表现为「同一代码、一边有数据一边没有」,极易误判为配置或代码 bug
 
+**R11. 浏览器侧前端加载/渲染异常,第一步是 DevTools 取证,不是改服务器配置**
+- 前端异常(白屏 / 转圈 / 资源未加载)的根因大多在**浏览器安全策略**(CORS / CSP / Mixed Content / 模块加载 / HSTS / 证书链),curl / headless 模拟不还原这些策略
+- **标准取证动作(30 秒内完成,优先于任何改配置)**:
+  1. DevTools → **Console**:截图/拷贝所有红色错误。CORS 拒绝文案固定为 `Access to script at '…' from origin '…' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present.`,看到这条即可 100% 锁定 CORS 根因
+  2. DevTools → **Network**:列出缺失或红色状态码的请求(main bundle / chunk / 资源)。模块加载失败时,请求可能**根本不发起**(network 面板无对应行)而非 4xx/5xx
+  3. DevTools → **Application → Cookies**:确认关键 Cookie 是否被设置、Domain / Path / Secure / SameSite 是否匹配当前 origin
+- 拿到上述截图/错误文案后再行动;**禁止在没看过 Console 的情况下连续改服务器配置 3 次以上**(违反 R6「失败即转向」)
+- HTTP 与 HTTPS 的浏览器安全约束不同:同源 CORS 严格度、HSTS preload、Mixed Content、crossorigin module 加载要求 ACAO 等只对 HTTPS(或 HTTP→HTTPS 切换后)生效。Docker HTTP 下能跑不代表 HTTPS 下能跑(违反 R5「真实环境优先于理论推理」)
+
+**R12. 浏览器对失败的请求有 network-level negative cache,服务侧修复后必须让用户硬刷新**
+- CORS / CSP / Mixed Content / 证书错误 / 模块加载失败会被浏览器在 network 层记忆,后续 reload **不会重试**该资源;DevTools Network 也不显示新请求,表现为「我改了配置但用户还说没生效」
+- **标准动作(改完服务端配置后)**:
+  1. 服务端验证新响应头确实已下发(curl -I 看新 header,不要只看状态码)
+  2. 让用户在浏览器端做**硬刷新**(`Ctrl+Shift+R` / `Cmd+Shift+R`)
+  3. 若仍异常,DevTools → Network 勾选 **"Disable cache"** 后再刷新
+  4. 极端情况:让用户清站点数据(DevTools → Application → Clear storage),或用无痕窗口打开
+- **禁止在没让用户硬刷新的情况下,就判断「我的修改没生效」**(违反 R5 + R8「修复必须在同一真实环境验证」)
+
 ### 通用审计清单
 
 排查或修复任何问题时,自检:
@@ -157,6 +175,8 @@ When querying the database, use this MCP to inspect table schemas and row data.
 - [ ] 多次失败之后,是否先在真实环境复现再继续修改?(R8)
 - [ ] 调试工具在目标页面挂起时,是否把它当作「主线程被占满」的信号而不是工具故障?(R9)
 - [ ] 多入口行为不一致时,是否先 netstat 核对端口→PID→进程日志的映射,而非直接改代码?(R10)
+- [ ] 浏览器侧加载/渲染类异常,是否在第一次改配置前就让用户提供了 DevTools Console + Network 截图?(R11)
+- [ ] 修改涉及浏览器安全策略的配置后,是否要求用户硬刷新或在 DevTools 勾选 Disable cache?(R12)
 
 ## CSS Debugging Principles
 

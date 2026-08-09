@@ -646,6 +646,32 @@ curl.exe -k https://localhost:8443/health
 - 默认 `AUTH_COOKIE_SECURE=false`，HTTPS 下 Cookie 不带 Secure 也能正常发送。
 - 本地 HTTPS 测试建议在 `.env` 设 `AUTH_COOKIE_SECURE=true`，让 Cookie 带 Secure 标记（更贴合等保三级数据保密性）。
 
+### HTTPS 模块加载踩坑记录（2026-08-09）
+
+> **症状**：浏览器访问 `https://localhost:8443/` 一直转圈进不去；nginx access.log 只有 `GET /` + `GET /app-config.json` + `POST /api/auth/refresh`，**完全没有 `/assets/main-*.js` / `auth-*.js` 等静态资源请求，也没有 `/api/auth/validate`**。F12 → Network 显示 main bundle 行**根本不发起**（不是 200/404，是没出现）。F12 → Console 报 `Access to script at '…' from origin 'https://localhost:8443' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present.`。
+
+#### 根因
+
+Vite build 产物的 `index.html` 中所有模块脚本都带 `crossorigin=""` 属性：
+
+```html
+<script type="module" crossorigin src="/assets/main-*.js"></script>
+<link rel="modulepreload" crossorigin href="/assets/auth-*.js">
+```
+
+**Chromium 在 HTTPS 上下文下对带 `crossorigin` 的 module 强制 CORS 校验（即使同源也要 ACAO 响应头）**；HTTP 下才放宽。Docker 版 `web/Agent/nginx.conf` 走 80 端口 HTTP，所以历史一直没暴露。
+
+#### 修复契约
+
+1. **必须给所有 JS / CSS / 字体等静态资源显式下发 `Access-Control-Allow-Origin`**（HTTPS 测试场景用 `https://$host:$server_port`；生产环境走真实 origin）。仅 server 级 `add_header` 不够，**任何 `location` 内出现 `add_header` 都会清空父级所有 `add_header`** —— 必须把 ACAO / CSP / HSTS / X-Frame-Options / X-Content-Type-Options / Referrer-Policy **在该 location 内整块显式重复**（参见 `### HTML 入口禁缓存 / 静态资源 1y 缓存` 章节）。
+2. **修复后必须让用户硬刷新**（`Ctrl+Shift+R`）：Chromium 对 CORS 失败有 network-level negative cache，普通 reload 不会重试该资源，DevTools Network 也不显示新请求，表现为「我改了配置但用户还说没生效」。标准动作见 `AGENTS.md` R12。
+3. **HTTP 与 HTTPS 的浏览器安全约束不同**：CORS 同源严格度 / HSTS preload / Mixed Content / crossorigin module 加载要求 ACAO 等**只对 HTTPS 生效**。Docker HTTP 下能跑不代表 HTTPS 下能跑（违反调试元认知 R5）。新增 HTTPS / 跨协议入口时，**第一时间让用户开 DevTools 取证**而不是自己反复 reload nginx（违反 R11）。
+
+#### 诊断反向证据
+
+- 关键反向证据：`nginx/conf/nginx.conf` 在改 ACAO 之前对 `curl -I https://localhost:8443/assets/main-*.js` 返回 200（curl 不走 crossorigin 流程，看不到 CORS），但浏览器 DevTools Network 面板根本**没有这条请求**。**「curl 200 + 浏览器不发起请求」**就是 HTTPS 下 CORS 失败的反向信号。
+- 错误日志侧记：nginx `error.log` 不会记录 CORS 失败（这是浏览器侧拒绝，到不了 nginx），所以只看 nginx 日志看不到，必须看浏览器 Console。
+
 ### 本地进程拓扑与 checkpointer 行为契约
 
 - **端口配置点位清单**（三处必须协调一致，改任一处须同步核对）：① `nginx/conf/nginx.conf` → `location /api` 的 `proxy_pass http://127.0.0.1:8001`；② `web/Agent/vite.config.js` → `VITE_API_TARGET` 默认值 `http://localhost:8001`（可被环境变量覆盖）；③ 后端启动命令 `uvicorn app.main:app --port <port>`。另存在 `:9001` IDE debugpy `--reload` 调试实例。
