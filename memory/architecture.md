@@ -646,3 +646,11 @@ curl.exe -k https://localhost:8443/health
 - 默认 `AUTH_COOKIE_SECURE=false`，HTTPS 下 Cookie 不带 Secure 也能正常发送。
 - 本地 HTTPS 测试建议在 `.env` 设 `AUTH_COOKIE_SECURE=true`，让 Cookie 带 Secure 标记（更贴合等保三级数据保密性）。
 
+### 本地进程拓扑与 checkpointer 行为契约
+
+- **端口配置点位清单**（三处必须协调一致，改任一处须同步核对）：① `nginx/conf/nginx.conf` → `location /api` 的 `proxy_pass http://127.0.0.1:8001`；② `web/Agent/vite.config.js` → `VITE_API_TARGET` 默认值 `http://localhost:8001`（可被环境变量覆盖）；③ 后端启动命令 `uvicorn app.main:app --port <port>`。另存在 `:9001` IDE debugpy `--reload` 调试实例。
+- **双后端进程并存**：`:8001`（`--host 127.0.0.1`，手动启动，是 nginx HTTPS `/api` 与 vite dev 默认代理目标）与 `:9001`（`--host 0.0.0.0 --reload`，IDE debugpy 调试实例）。vite dev（`:5173`）代理目标由 `VITE_API_TARGET` 决定（`vite.config.js` 默认 `http://localhost:8001`）。两个入口行为不一致时，先 `netstat -ano | grep LISTENING` 确认各端口归属进程，再以各自日志中的请求记录判定请求实际命中哪个后端。
+- **重启后端前必须确认目标进程 PID**：仅重启其中一个进程不影响另一个；端口被旧进程占用时新进程无法接管。
+- **checkpointer 回退契约**（`app/shared/utils/memory/checkpoint.py::get_async_checkpointer`）：`DatabasePool.is_enabled()` 为 True 但 PG 初始化失败（连接超时 / 驱动缺失等）时**回退 MemorySaver**；内存模式下仅能读写当前进程生命周期内的 checkpoint——历史会话（PG 中）读不到、新建会话进程重启即丢。启动正常的标志是日志出现 `使用 PostgreSQL 持久化模式（AsyncPostgresSaver）`；出现 `回退到内存模式` 即处于降级状态。
+- **历史消息读取链路**：`GET /api/session/{id}/messages` 优先 `map_agent.graph.aget_state(thread_id=session_id)`，仅当抛异常时才回退 `checkpointer.aget`；`aget_state` 成功但 messages 为空时**不再回退**，直接返回空列表。
+

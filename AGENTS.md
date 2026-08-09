@@ -4,6 +4,7 @@
 - Design must prioritize asynchronous programming and performance optimization.
 - All code should follow clean code principles and maintain existing functionality
 - Comments need to be added after file generation. The comments should be in Chinese and need to include information about function parameters, return values, exceptions, etc.
+- 基础设施降级（checkpointer / 缓存 / 存储回退内存模式等）必须 fail-loud：初始化失败要重试 + 告警日志 + 健康检查暴露降级状态；禁止静默降级。
 
 ## ⚠️ HARD RULE：agents/AGENTS.md 与 app/skills/SKILL.md 文档契约边界
 
@@ -57,6 +58,15 @@
 ## Frontend Vue Rules
 - When developing frontend interfaces, prioritize using standalone template syntax first. This approach enhances maintainability and prevents syntax conflicts or rendering issues.
 - When using `<style scoped>` in Vue 3 SFC, scoped CSS only applies to elements rendered by template syntax; elements created via `defineComponent` + `h()` render function within the `<script>` block will not automatically receive the `data-v-xxx` scopeId, causing all scoped CSS selectors to silently fail to match, resulting in completely ineffective layouts/styles with no error messages. Prioritize using standalone .vue files with `<template>` syntax.
+- SPA 路由守卫中的重定向目标必须存在于路由表内；独立 HTML 入口（如 `/login`，刻意不进路由表）禁止用 `return { path }` 应用内跳转，只能用 `window.location.href` 整页跳转并 `return false` 终止导航（应用内跳转会被 catch-all 兜底弹回守卫，形成无限重定向循环：微任务链饿死 fetch 回调，页面白屏且主线程占满）。守卫逻辑应抽为具名导出函数（如 `requiresAuthGuard`）供测试直接调用真实实现。
+
+## Nginx 静态资源与缓存规则
+
+- 后端端口配置散布在多处且必须协调一致：`nginx/conf/nginx.conf` 的 `proxy_pass`、`web/Agent/vite.config.js` 的 `VITE_API_TARGET` 默认值、后端 `uvicorn --port` 启动参数；修改任一处必须同步核对其余点位，并确认对应进程真实重启（以 PID 为准）
+
+- hash 指纹资产（`expires 1y` + `immutable` 长缓存）必须与 HTML 入口禁缓存（`location ~* \.html$`，`no-cache, no-store, must-revalidate`）成对配置；HTML 被浏览器缓存会引用已删除的旧 hash 资产导致白屏
+- nginx location 优先级：精确匹配 `=` > 正则 `~*` > 前缀；新增正则缓存块后必须检查是否存在冲突的精确匹配块（如 `location = /index.html`）将其架空
+- location 内一旦出现任何 `add_header`，server 级 `add_header`（CSP / HSTS / X-Frame-Options / X-Content-Type-Options / Referrer-Policy 等）全部不再继承，必须在该 location 内整块显式重复
 
 ## use subagents
 - 派 explore/coder subagent 前，必须先查 `project_memory.md` 索引与相关分片；索引/分片已收录的事实（路由位置、组件结构、权限装饰器、表结构）直接引用，禁止重复探索
@@ -123,6 +133,16 @@ When querying the database, use this MCP to inspect table schemas and row data.
   - 复现失败 → 说明假设方向可能根本不对,回到 R1
   - 复现成功 → 修复也必须在同一真实环境中验证,不能只靠单元测试或 mock
 
+**R9. 调试工具挂起本身是高区分度信号**
+- evaluate / CDP / 截图等调试调用在目标页面上挂起,通常等价于「页面主线程被占满」(死循环 / 同步长任务),不要只当工具故障反复重试
+- 主线程占满的页面典型伴随特征:白屏但标题正常、网络请求发一半断流(如 refresh 已发出、后续 validate 永不发出)、外部调试器全部无响应
+- SPA 场景优先怀疑路由守卫无限重定向循环(守卫 redirect 目标不在路由表 → catch-all 兜底弹回 → 死循环)
+
+**R10. 多入口行为不一致时,先核对进程/端口映射再查代码**
+- 同一应用存在多个入口(如 nginx HTTPS / vite dev / IDE 调试实例)且行为不一致时,第一动作是确认各入口实际命中的后端进程:`netstat -ano | grep LISTENING` 查端口归属 PID,再用各进程日志中的请求记录验证请求落点
+- 「重启了服务」不等于「重启了目标进程」:端口被旧进程占用时新进程无法接管,必须以 PID 为准核实
+- 两个后端进程各自持有独立的内存态(如 MemorySaver checkpoint 单例),表现为「同一代码、一边有数据一边没有」,极易误判为配置或代码 bug
+
 ### 通用审计清单
 
 排查或修复任何问题时,自检:
@@ -135,6 +155,8 @@ When querying the database, use this MCP to inspect table schemas and row data.
 - [ ] 同一方向是否已连续多次修改无果?该转向了吗?(R6)
 - [ ] 验证用的是「撤销后是否复现」的强证据,还是「加上后刚好好了」的弱证据?(R7)
 - [ ] 多次失败之后,是否先在真实环境复现再继续修改?(R8)
+- [ ] 调试工具在目标页面挂起时,是否把它当作「主线程被占满」的信号而不是工具故障?(R9)
+- [ ] 多入口行为不一致时,是否先 netstat 核对端口→PID→进程日志的映射,而非直接改代码?(R10)
 
 ## CSS Debugging Principles
 
@@ -261,6 +283,7 @@ app/{module}/bar/baz.py      →  app/tests/{module}/bar/test_baz.py
 **强制约束**：
 
 - 测试同步必须在主任务回复中完成，**禁止在主任务之外另开新对话处理**
+- 禁止在测试中重新实现被测逻辑再断言（假测试）：测试必须调用真实实现；被测对象不便导入时，应将被测逻辑抽为具名导出函数/模块供测试直接调用
 - 生成测试后必须执行 `pytest app/tests/对应路径 -v` 验证通过
 - 若测试失败，需修复源码或测试直至通过
 - 最终回复必须包含 checklist：`[✓ 测试已同步生成并通过]` 或 `[✗ 本次修改无测试同步需要：<理由>]`
