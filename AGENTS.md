@@ -6,6 +6,13 @@
 - Comments need to be added after file generation. The comments should be in Chinese and need to include information about function parameters, return values, exceptions, etc.
 - 基础设施降级（checkpointer / 缓存 / 存储回退内存模式等）必须 fail-loud：初始化失败要重试 + 告警日志 + 健康检查暴露降级状态；禁止静默降级。
 
+## 配置变更提醒规则
+
+- 如果本次代码修改中包括对任何配置项的**新增、删除或修改**（包括但不限于：环境变量、配置文件字段、数据库配置、缓存配置、第三方服务密钥、路由/端口、功能开关、菜单/ACL 配置等），必须在最终总结中：
+  1. 以清单形式列出所有变更的配置项名称；
+  2. 说明每项变更的类型（新增 / 删除 / 修改）；
+  3. 明确提醒用户根据说明更新对应环境或配置文件。
+
 ## ⚠️ HARD RULE：agents/AGENTS.md 与 app/skills/SKILL.md 文档契约边界
 
 **适用范围**:
