@@ -25,8 +25,38 @@ vi.mock('../MenuPermissionManager.vue', () => ({ default: { template: '<div />' 
 vi.mock('../AgentAccessManager.vue', () => ({ default: { template: '<div />' } }))
 import UserSettingsDialog from '../UserSettingsDialog.vue'
 
-describe('UserSettingsDialog 修改密码复杂度', () => {
-  it('新密码 7 位被拦截', async () => {
+describe('UserSettingsDialog 密码复杂度', () => {
+  it('新用户密码 7 位被 validateUserForm 拦截', async () => {
+    const w = mount(UserSettingsDialog, {
+      props: { visible: true, role: 'admin', userId: 1, username: 'u', initialTab: 'users' }
+    })
+    await flushPromises()
+    w.vm.formUsername = 'new-user'
+    w.vm.formPassword = 'Aa1!aaa'
+    expect(w.vm.validateUserForm()).toBe(false)
+    expect(w.vm.formError).toMatch(/至少8位/)
+  })
+  it('新用户密码 8 位四类齐全通过 validateUserForm', async () => {
+    const w = mount(UserSettingsDialog, {
+      props: { visible: true, role: 'admin', userId: 1, username: 'u', initialTab: 'users' }
+    })
+    await flushPromises()
+    w.vm.formUsername = 'new-user'
+    w.vm.formPassword = 'Aa1!aaaa'
+    expect(w.vm.validateUserForm()).toBe(true)
+  })
+  it('修改密码缺数字时被表单校验拦截', async () => {
+    const w = mount(UserSettingsDialog, {
+      props: { visible: true, role: 'user', userId: 1, username: 'u', initialTab: 'profile' }
+    })
+    await flushPromises()
+    w.vm.oldPassword = 'P@ssword1!'
+    w.vm.newPassword = 'P@sworda@'
+    w.vm.confirmNewPassword = 'P@sworda@'
+    expect(w.vm.validatePasswordForm()).toBe(false)
+    expect(w.vm.passwordError).toMatch(/数字/)
+  })
+  it('修改密码 7 位被拦截', async () => {
     const w = mount(UserSettingsDialog, {
       props: { visible: true, role: 'user', userId: 1, username: 'u', initialTab: 'profile' }
     })
@@ -37,7 +67,7 @@ describe('UserSettingsDialog 修改密码复杂度', () => {
     expect(w.vm.validatePasswordForm()).toBe(false)
     expect(w.vm.passwordError).toMatch(/至少8位/)
   })
-  it('新密码 8 位四类齐全通过', async () => {
+  it('修改密码 8 位四类齐全通过', async () => {
     const w = mount(UserSettingsDialog, {
       props: { visible: true, role: 'user', userId: 1, username: 'u', initialTab: 'profile' }
     })

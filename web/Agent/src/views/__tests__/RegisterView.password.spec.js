@@ -38,6 +38,13 @@ describe('RegisterView 密码复杂度', () => {
     expect(w.vm.errorMessage).toMatch(/至少8位/)
     expect(w.vm.errorMessage).toMatch(/特殊字符/)
   })
+  it('缺特殊字符时被注册表单拦截', async () => {
+    const w = mount(RegisterView)
+    await flushPromises()
+    await fill(w, 'Pa1ssword')
+    await w.find('form').trigger('submit.prevent')
+    expect(w.vm.errorMessage).toMatch(/特殊字符/)
+  })
   it('8 位四类齐全通过', async () => {
     const api = await import('../../utils/api.js')
     api.register.mockResolvedValue({ message: 'ok' })
