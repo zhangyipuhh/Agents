@@ -168,7 +168,7 @@ def test_admin_create_user_rejects_7_chars(app_full, monkeypatch):
         r = client.post(
             "/api/users",
             json={
-                "username": "u1",
+                "username": "test_user",
                 "password": "Aa1!aaa",
                 "role": "user",
                 "real_name": "t",
