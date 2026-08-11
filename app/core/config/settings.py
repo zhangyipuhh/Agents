@@ -404,6 +404,100 @@ class PortalAuthSettings(BaseSettings):
     )
 
 
+class AuthBootstrapSettings(BaseSettings):
+    """默认管理员初始化 / 历史弱口令迁移配置（等保三级 Task 2，2026-08-09 新增）。
+
+    集中管理 lifespan 阶段根据环境变量创建/迁移默认管理员账号所需的所有参数：
+
+    - ``bootstrap_enabled=False`` 时，``UserDB.ensure_admin_exists`` 在缺失 admin
+      时 fail-loud（运维必须主动创建）；在 admin 哈希命中已知弱默认集时同样
+      拒绝启动（运维应通过 ``PUT /api/users/{id}/password`` 重置后再启）。
+    - ``bootstrap_enabled=True`` 时，``default_admin_password`` 必须通过
+      ``password_policy.validate_password``；lifespan 据此创建或轮换 admin。
+
+    Attributes:
+        bootstrap_enabled: 是否在 lifespan 阶段允许根据环境变量创建默认管理员。
+            环境变量 ``AUTH_BOOTSTRAP_ENABLED``。
+        default_admin_username: 创建/迁移管理员时使用的用户名；默认 ``admin``。
+            环境变量 ``AUTH_DEFAULT_ADMIN_USERNAME``。
+        default_admin_password: 创建/迁移管理员时使用的口令；bootstrap_enabled=True
+            时必须通过 ``password_policy.validate_password``；环境变量
+            ``AUTH_DEFAULT_ADMIN_PASSWORD``。
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=_ENV_FILE_PATH,
+        env_file_encoding="utf-8",
+        env_prefix="AUTH_",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    bootstrap_enabled: bool = Field(
+        default=False,
+        description=(
+            "是否启用默认管理员自动创建/迁移；环境变量 AUTH_BOOTSTRAP_ENABLED。"
+            "生产部署默认 false，避免历史 admin123/123456 被无意启用。"
+        ),
+    )
+    default_admin_username: str = Field(
+        default="admin",
+        description="默认管理员用户名；环境变量 AUTH_DEFAULT_ADMIN_USERNAME。",
+    )
+    default_admin_password: str = Field(
+        default="",
+        description=(
+            "默认管理员口令；bootstrap_enabled=True 时必须满足 length>=8 + "
+            "大写 + 小写 + 数字 + 特殊字符；环境变量 AUTH_DEFAULT_ADMIN_PASSWORD。"
+        ),
+    )
+
+    @field_validator("default_admin_password", mode="before")
+    @classmethod
+    def _strip(cls, value):
+        """去除首尾空白（兼容运维粘贴时附带的空格 / 换行）。
+
+        Args:
+            value: 来自环境变量的原始字符串或 None。
+
+        Returns:
+            str: 标准化后的字符串。
+        """
+        return value if value is None else str(value).strip()
+
+    @field_validator("default_admin_password")
+    @classmethod
+    def _validate_password_strength(cls, value, info):
+        """bootstrap_enabled=True 时校验 default_admin_password 强度。
+
+        Args:
+            value: 已 ``_strip`` 的密码字符串。
+            info: Pydantic 字段上下文，可读 ``bootstrap_enabled``。
+
+        Returns:
+            str: 验证通过的密码。
+
+        Raises:
+            ValueError: bootstrap_enabled=True 但密码为空或不满足强度。
+        """
+        bootstrap_enabled = bool(info.data.get("bootstrap_enabled", False))
+        if not bootstrap_enabled:
+            return value
+        if not value:
+            raise ValueError(
+                "AUTH_BOOTSTRAP_ENABLED=true 时必须设置 AUTH_DEFAULT_ADMIN_PASSWORD"
+            )
+        # 延迟导入避免 settings 模块导入期循环（password_policy 不依赖 settings）。
+        from app.shared.utils.auth.password_policy import validate_password
+
+        ok, err = validate_password(value)
+        if not ok:
+            raise ValueError(
+                f"AUTH_DEFAULT_ADMIN_PASSWORD 必须通过口令复杂度校验: {err}"
+            )
+        return value
+
+
 class AuthCookieSettings(BaseSettings):
     """
     认证 Cookie 配置
@@ -899,6 +993,8 @@ class Settings(BaseSettings):
     demonstration: DemonstrationSettings = Field(default_factory=DemonstrationSettings)
     portal_auth: PortalAuthSettings = Field(default_factory=PortalAuthSettings)
     auth_cookie: AuthCookieSettings = Field(default_factory=AuthCookieSettings)
+    # 2026-08-09 新增（等保三级 Task 2）：默认管理员初始化 / 历史弱口令迁移配置。
+    auth: AuthBootstrapSettings = Field(default_factory=AuthBootstrapSettings)
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     skills: SkillsSettings = Field(default_factory=SkillsSettings)
     devops: DevOpsSettings = Field(default_factory=DevOpsSettings)

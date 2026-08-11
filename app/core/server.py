@@ -140,7 +140,26 @@ async def lifespan(app: FastAPI):
 
     # 确保管理员账户存在
     from app.shared.utils.auth.user_db import UserDB
-    await UserDB.ensure_admin_exists()
+    # 2026-08-09 改造（等保三级 Task 2）：AuthBootstrapSettings 每次重新构造，确保
+    # lifespan 阶段读到的是当前环境变量（避免模块级缓存导致测试 monkeypatch 不生效）。
+    # 启动顺序：先 ensure_admin_exists(settings) → 再注入 jwt_auth.bootstrap_*。
+    # 颠倒会导致 memory 模式在弱口令存在 + AUTH_BOOTSTRAP_ENABLED=false 时被
+    # ``admin/123456`` 默认值先鉴权（fail-open）。
+    from app.core.config.settings import AuthBootstrapSettings
+
+    bootstrap_settings = AuthBootstrapSettings()
+    try:
+        await UserDB.ensure_admin_exists(bootstrap_settings)
+    except Exception as exc:
+        logging.error(
+            "[lifespan] ensure_admin_exists failed: %s", type(exc).__name__
+        )
+        raise
+
+    # 注入 JWTAuth bootstrap 凭据（memory 模式才会用到）。
+    # postgres 模式 verify_credentials 走 UserDB.verify_credentials，注入值无效。
+    jwt_auth.bootstrap_username = bootstrap_settings.default_admin_username
+    jwt_auth.bootstrap_password = bootstrap_settings.default_admin_password
 
     # 2026-08-07 新增：初始化 MfaService（TOTP 双因素认证服务）。
     # 顺序要求：在 ensure_admin_exists 之后（依赖用户存在）与所有需要该 service 的 router 加载之前。

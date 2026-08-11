@@ -86,20 +86,25 @@ def test_whitelist_add_and_check(jwt_auth):
     assert jwt_auth.is_whitelisted(path)
 
 
-def test_verify_credentials_memory_mode(jwt_auth):
+def test_verify_credentials_memory_mode():
     """
-    测试 memory 模式下 verify_credentials 验证硬编码凭据（admin/123456）
+    测试 memory 模式下 verify_credentials 验证注入凭据（admin/admin123）。
 
-    Args:
-        jwt_auth: JWTAuth 实例（来自 conftest）
+    2026-08-09 改造（等保三级 Task 2）：原测试使用硬编码 ``admin/123456``，
+    现已迁移为构造 ``JWTAuth(bootstrap_username, bootstrap_password)`` 并断言
+    注入值生效；旧硬编码值的 fail-loud 行为由
+    ``test_jwt_auth_verify_credentials_rejects_default_hardcoded`` 覆盖。
 
     Returns:
         None
     """
-    result = _run_async(jwt_auth.verify_credentials("admin", "123456"))
+    from app.shared.utils.auth.Safety import JWTAuth
+
+    auth = JWTAuth(bootstrap_username="admin", bootstrap_password="admin123")
+    result = _run_async(auth.verify_credentials("admin", "admin123"))
     assert result is True
 
-    result_wrong = _run_async(jwt_auth.verify_credentials("admin", "wrong_password"))
+    result_wrong = _run_async(auth.verify_credentials("admin", "wrong_password"))
     assert result_wrong is False
 
 
@@ -638,3 +643,37 @@ def test_extract_access_token_bearer_precedence_over_cookie(jwt_auth):
     request.cookies = {"access_token": "another-token"}
 
     assert jwt_auth.extract_access_token(request) == bearer_token
+
+
+# ============================================================================
+# 2026-08-09 新增：JWTAuth bootstrap 凭据注入（等保三级 Task 2）
+# 设计：取消硬编码 admin/123456，凭据必须从 lifespan 注入；memory 模式下
+# 注入缺失时直接 fail-loud（RuntimeError），禁止回退到任何默认值。
+# ============================================================================
+
+
+def test_jwt_auth_verify_credentials_uses_bootstrap_password(monkeypatch):
+    """注入 bootstrap_username/bootstrap_password 后，verify_credentials 走注入值。
+
+    等保三级 Task 2 要求取消硬编码 admin/123456，凭据由 lifespan 注入。
+    """
+    from app.shared.utils.auth.Safety import JWTAuth
+
+    auth = JWTAuth(bootstrap_username="ops", bootstrap_password="P@ssword1!")
+    assert _run_async(auth.verify_credentials("ops", "P@ssword1!")) is True
+    assert _run_async(auth.verify_credentials("admin", "123456")) is False
+
+
+def test_jwt_auth_verify_credentials_rejects_default_hardcoded(monkeypatch):
+    """无注入时不允许走硬编码 admin/123456（fail-loud）。
+
+    设计动机：旧实现 ``verify_credentials`` 在 memory 模式直接比较
+    ``username == "admin" and password == "123456"``，这是历史上 admin 默认
+    弱口令。等保三级要求移除硬编码凭据；未注入时必须 RuntimeError，
+    禁止回退到任何默认值。
+    """
+    from app.shared.utils.auth.Safety import JWTAuth
+
+    auth = JWTAuth()
+    with pytest.raises(RuntimeError):
+        _run_async(auth.verify_credentials("admin", "123456"))

@@ -13,12 +13,21 @@
 Date: 2026/5/15
 """
 import json
+import logging
 import threading
 import bcrypt
 import time
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from app.core.database import DatabasePool, register_schema
+
+logger = logging.getLogger(__name__)
+
+# 2026-08-09 新增（等保三级 Task 2）：历史 admin 默认弱口令集合。
+# 当 admin 账号密码哈希能匹配任一项时，bootstrap_enabled=True 会自动轮换；
+# bootstrap_enabled=False 时 fail-loud，要求运维主动通过 PUT /api/users/{id}/password 重置。
+# 集合只放在 user_db.py，不在 settings 暴露，避免历史弱口令被无意"白名单化"。
+_WEAK_DEFAULT_PASSWORDS = {"admin123", "123456"}
 
 
 def _coerce_allowed_agents(value):
@@ -606,31 +615,137 @@ class UserDB:
         return "UPDATE 1" in result
 
     @classmethod
-    async def ensure_admin_exists(cls):
-        """
-        确保系统中存在管理员账户
+    async def ensure_admin_exists(cls, settings=None):
+        """根据 settings 决定是否创建/迁移默认管理员账号（等保三级 Task 2，2026-08-09 改造）。
 
-        如果不存在 admin 角色的用户，则自动创建默认管理员账户。
-        默认用户名: admin，默认密码: admin123，角色: admin。
+        行为矩阵（rows × cols）：
+
+        - admin 不存在 + ``settings.bootstrap_enabled=False`` → logger.error + ``RuntimeError``
+          （fail-loud，要求运维先创建 admin）；
+        - admin 不存在 + ``bootstrap_enabled=True`` 且 ``default_admin_password`` 通过强校验
+          → 创建 admin（``default_admin_username`` / ``default_admin_password``）；
+        - admin 已存在 + 哈希命中已知弱默认集 + ``bootstrap_enabled=False`` → ``RuntimeError``
+          （fail-loud，要求运维通过 ``PUT /api/users/{id}/password`` 重置后再启）；
+        - admin 已存在 + 哈希命中已知弱默认集 + ``bootstrap_enabled=True`` 且强校验通过
+          → 用 ``default_admin_password`` 轮换 + 删除该用户所有 Refresh/Portal Refresh Token；
+        - admin 已存在 + 哈希不匹配弱默认集 → 静默返回。
+
+        Args:
+            settings: ``AuthBootstrapSettings`` 实例（可空，但空 + 无 admin → RuntimeError）。
+                兼容鸭子类型：仅访问 ``bootstrap_enabled`` / ``default_admin_username`` /
+                ``default_admin_password`` 三个属性。
+
+        Returns:
+            None。
+
+        Raises:
+            RuntimeError: 缺失 admin + bootstrap_enabled=False；或 admin 哈希命中弱默认
+                + bootstrap_enabled=False；或 bootstrap_enabled=True 但 default_admin_password
+                不满足强度。
         """
-        # 检查是否已存在 admin 角色用户
+        # 鸭子类型读取，避免依赖 pydantic-settings 导入链（settings 模块可空）
+        bootstrap_enabled = bool(getattr(settings, "bootstrap_enabled", False))
+        target_username = (
+            getattr(settings, "default_admin_username", "admin") or "admin"
+        ).strip() or "admin"
+        new_password = getattr(settings, "default_admin_password", "") or ""
+
+        admin_row = None
         if not cls.is_enabled():
+            # memory 模式：直接在内存字典中查找 role='admin' AND username=target_username
             with cls._lock:
                 for user in cls._memory_users.values():
-                    if user.get('role') == 'admin':
-                        return
-            # 不存在则创建
-            await cls.create_user('admin', 'admin123', role='admin')
-            print("[初始化] 已创建默认管理员账户 (admin/admin123)")
+                    if (
+                        user.get("role") == "admin"
+                        and user.get("username") == target_username
+                    ):
+                        admin_row = user
+                        break
+        else:
+            # postgres 模式：取 id + password_hash 用于轮换判断
+            row = await DatabasePool.fetchrow(
+                "SELECT id, password_hash FROM users "
+                "WHERE role = 'admin' AND username = $1 LIMIT 1",
+                target_username,
+            )
+            admin_row = row if row else None
+
+        # === 分支 1：已存在 admin → 判断是否需要轮换 ===
+        if admin_row is not None:
+            need_rotate = False
+            for weak in _WEAK_DEFAULT_PASSWORDS:
+                try:
+                    if cls.verify_password(weak, admin_row["password_hash"]):
+                        need_rotate = True
+                        break
+                except Exception:  # noqa: BLE001  # 容错：旧哈希格式异常时跳过
+                    continue
+            if not need_rotate:
+                # admin 哈希安全（非已知弱默认），静默返回
+                return
+
+            if not bootstrap_enabled:
+                logger.error(
+                    "[ensure_admin_exists] 检测到 admin 账号使用已知弱默认口令，但 "
+                    "AUTH_BOOTSTRAP_ENABLED=false，拒绝启动；"
+                    "请运维通过 PUT /api/users/{id}/password 重置后再启动。"
+                )
+                raise RuntimeError("admin account uses known weak default password")
+
+            # bootstrap_enabled=True → 用 default_admin_password 轮换
+            from .password_policy import validate_password
+
+            ok, err = validate_password(new_password)
+            if not ok:
+                logger.error(
+                    "[ensure_admin_exists] AUTH_DEFAULT_ADMIN_PASSWORD 不满足复杂度: %s", err
+                )
+                raise RuntimeError(err)
+
+            updated = await cls.update_password(admin_row["id"], new_password)
+            if not updated:
+                raise RuntimeError("failed to rotate weak admin password")
+
+            # 撤销该用户所有 Refresh Token / Portal Refresh Token（强制重新登录）
+            try:
+                from app.shared.utils.auth.refresh_token_db import RefreshTokenDB
+                from app.shared.utils.auth.portal_refresh_token_db import (
+                    PortalRefreshTokenDB,
+                )
+
+                await RefreshTokenDB.delete_user_tokens(admin_row["id"])
+                await PortalRefreshTokenDB.delete_user_tokens(admin_row["id"])
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[ensure_admin_exists] token cleanup failed: %s",
+                    type(exc).__name__,
+                )
+            logger.warning(
+                "[ensure_admin_exists] 已用 AUTH_DEFAULT_ADMIN_PASSWORD 轮换 admin 的弱默认口令并撤销所有 Token"
+            )
             return
 
-        # 数据库模式
-        row = await DatabasePool.fetchrow(
-            "SELECT id FROM users WHERE role = 'admin' LIMIT 1"
+        # === 分支 2：admin 不存在 ===
+        if not bootstrap_enabled:
+            logger.error(
+                "[ensure_admin_exists] 未找到 admin 账号且 AUTH_BOOTSTRAP_ENABLED=false；"
+                "请运维创建管理员或通过环境变量提供强口令。"
+            )
+            raise RuntimeError("admin account missing and bootstrap disabled")
+
+        from .password_policy import validate_password
+
+        ok, err = validate_password(new_password)
+        if not ok:
+            logger.error(
+                "[ensure_admin_exists] AUTH_DEFAULT_ADMIN_PASSWORD 不满足复杂度: %s", err
+            )
+            raise RuntimeError(err)
+        await cls.create_user(target_username, new_password, role="admin")
+        logger.warning(
+            "[ensure_admin_exists] 已通过 AUTH_DEFAULT_ADMIN_PASSWORD 创建默认 admin 账号 (username=%s)",
+            target_username,
         )
-        if not row:
-            await cls.create_user('admin', 'admin123', role='admin')
-            print("[初始化] 已创建默认管理员账户 (admin/admin123)")
 
     # ----------------------------------------------------------------------
     # 2026-08-07 新增：登录锁定相关方法（failed_login_count / locked_until）

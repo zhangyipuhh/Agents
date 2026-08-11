@@ -32,22 +32,35 @@ class JWTAuth:
     提供JWT令牌的生成、验证和中间件功能。
     后续将密钥写入环境变量 ，暂时明文
     """
-    
-    def __init__(self, secret_key: str = "zlnWZlEydbodC0D8oJ_9Pdw3C73rHU23k8PEJfaJlso", algorithm: str = "HS256"):
+
+    def __init__(
+        self,
+        secret_key: str = "zlnWZlEydbodC0D8oJ_9Pdw3C73rHU23k8PEJfaJlso",
+        algorithm: str = "HS256",
+        bootstrap_username: Optional[str] = None,
+        bootstrap_password: Optional[str] = None,
+    ):
         """
         初始化JWT认证工具
-        
+
         Args:
             secret_key (str): JWT密钥，用于签名和验证令牌
             algorithm (str): JWT算法，默认为HS256
+            bootstrap_username: lifespan 阶段注入的默认管理员用户名（memory 模式凭据）。
+                2026-08-09 起取代原硬编码 ``"admin"``。
+            bootstrap_password: lifespan 阶段注入的默认管理员口令（memory 模式凭据）。
+                2026-08-09 起取代原硬编码 ``"123456"``；缺失时 ``verify_credentials`` 在
+                memory 模式下抛 ``RuntimeError``（fail-loud，禁止回退）。
         """
         self.secret_key = secret_key
         self.algorithm = algorithm
         self.expiration_minutes = 240  # 4小时
         self.whitelist: List[str] = []
-        
-        self.username = "admin"
-        self.password = "123456"
+
+        # 2026-08-09 新增（等保三级 Task 2）：bootstrap 凭据由 lifespan 注入。
+        # 缺省值 None 表示"未配置"，verify_credentials 在 memory 模式 fail-loud。
+        self.bootstrap_username = bootstrap_username
+        self.bootstrap_password = bootstrap_password
     
     def add_to_whitelist(self, path: str):
         """
@@ -74,23 +87,40 @@ class JWTAuth:
         return path in self.whitelist
     
     async def verify_credentials(self, username: str, password: str) -> bool:
-        """
-        验证用户凭据
+        """验证用户凭据。
+
+        设计（等保三级 Task 2，2026-08-09 改造）：
+
+        - **postgres 模式**：始终走 ``UserDB.verify_credentials``，凭据真相源在 DB；
+          bootstrap 注入值不会被使用。
+        - **memory 模式**：使用 lifespan 注入的 ``bootstrap_username`` /
+          ``bootstrap_password``。两个参数都必填，缺失任一 → ``RuntimeError``
+          （fail-loud），禁止回退到任何硬编码默认值。
 
         Args:
-            username (str): 用户名
-            password (str): 密码
+            username: 用户名。
+            password: 明文密码。
 
         Returns:
-            bool: 验证成功返回True，否则返回False
+            bool: 验证成功返回 True，否则返回 False。
+
+        Raises:
+            RuntimeError: memory 模式且 bootstrap_username / bootstrap_password
+                任一未注入时。
         """
         from app.core.database import DatabasePool
 
         if DatabasePool.is_enabled():
             from app.shared.utils.auth.user_db import UserDB
             return await UserDB.verify_credentials(username, password)
-        else:
-            return username == self.username and password == self.password
+
+        # memory 模式：凭据来自 lifespan 注入，缺失必须 fail-loud
+        if self.bootstrap_username is None or self.bootstrap_password is None:
+            raise RuntimeError(
+                "JWTAuth bootstrap credentials not configured; "
+                "set AUTH_DEFAULT_ADMIN_USERNAME/AUTH_DEFAULT_ADMIN_PASSWORD"
+            )
+        return username == self.bootstrap_username and password == self.bootstrap_password
     
     async def generate_token(self, username: str, auth_methods: Optional[List[str]] = None) -> str:
         """生成 Access Token；可选携带 ``amr`` 字段（Authentication Methods Reference）。
