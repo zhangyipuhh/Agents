@@ -179,8 +179,18 @@ class UserDB:
             int: 新用户 ID
 
         Raises:
-            ValueError: 用户名已存在
+            ValueError: 用户名已存在；或密码不满足复杂度（长度 < 8 / 缺大小写 / 缺数字 /
+                缺特殊字符，由 ``password_policy.validate_password`` 给出原因文案）。
         """
+        # 2026-08-11 等保三级 Task 3 改造：边界强校验。
+        # 在 ``hash_password`` 之前调用 ``validate_password``，避免先把弱口令算哈希
+        # 再报错造成的算力浪费；同时保证任何路径（注册 / 管理员建用户 / memory 自动建号
+        # / 修改密码）即便绕过路由层校验也无法落地弱口令。
+        from .password_policy import validate_password
+
+        ok, err = validate_password(password)
+        if not ok:
+            raise ValueError(err)
         password_hash = cls.hash_password(password)
         allowed_agents = allowed_agents or []
 
@@ -458,7 +468,18 @@ class UserDB:
 
         Returns:
             bool: 更新成功返回 True
+
+        Raises:
+            ValueError: 新密码不满足复杂度（长度 < 8 / 缺大小写 / 缺数字 / 缺特殊字符，
+                由 ``password_policy.validate_password`` 给出原因文案）。
         """
+        # 2026-08-11 等保三级 Task 3 改造：边界强校验。与 ``create_user`` 对称，
+        # 在 ``hash_password`` 之前完成复杂度拦截，杜绝路由层被绕过时仍能写入弱口令。
+        from .password_policy import validate_password
+
+        ok, err = validate_password(new_password)
+        if not ok:
+            raise ValueError(err)
         password_hash = cls.hash_password(new_password)
 
         if not cls.is_enabled():

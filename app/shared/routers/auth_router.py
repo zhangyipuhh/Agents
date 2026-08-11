@@ -567,7 +567,20 @@ async def login(request: LoginRequest, req: Request, response: Response):
     # Memory 模式下自动创建用户记录
     if not DatabasePool.is_enabled():
         from app.shared.utils.auth.user_db import UserDB
-        if not await UserDB.get_user_by_username(request.username):
+        # 2026-08-11 等保三级 Task 3 改造：memory 自动建号分支强校验。
+        # 仅当请求方尝试首次创建弱密码用户（memory 模式无 admin 时）才会进入这条路径；
+        # 因此这里仅校验新创建用户的口令；已存在账号的口令不在复杂度拦截范围内，
+        # 避免历史账号被锁。
+        existing_user = await UserDB.get_user_by_username(request.username)
+        if existing_user is None:
+            from app.shared.utils.auth.password_policy import validate_password
+
+            ok, err = validate_password(request.password)
+            if not ok:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"自动登录失败：{err}",
+                )
             await UserDB.create_user(request.username, request.password)
 
     # 获取用户角色
@@ -790,7 +803,20 @@ async def login_api(request: ApiLoginRequest, req: Request, response: Response):
     # Memory 模式下自动创建用户记录
     if not DatabasePool.is_enabled():
         from app.shared.utils.auth.user_db import UserDB
-        if not await UserDB.get_user_by_username(request.username):
+        # 2026-08-11 等保三级 Task 3 改造：与 /login 对齐，memory 自动建号分支强校验。
+        # 仅当请求方尝试首次创建弱密码用户（memory 模式无 admin 时）才会进入这条路径；
+        # 因此这里仅校验新创建用户的口令；已存在账号的口令不在复杂度拦截范围内，
+        # 避免历史账号被锁。
+        existing_user = await UserDB.get_user_by_username(request.username)
+        if existing_user is None:
+            from app.shared.utils.auth.password_policy import validate_password
+
+            ok, err = validate_password(request.password)
+            if not ok:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"自动登录失败：{err}",
+                )
             await UserDB.create_user(request.username, request.password)
 
     # 获取用户角色

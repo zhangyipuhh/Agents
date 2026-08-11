@@ -108,3 +108,90 @@ def test_change_password_7chars_rejected_via_policy():
     from app.shared.utils.auth.password_policy import validate_password
 
     ok, _ = validate_password("P@sswor1")  # 8 但实际是 7 chars
+
+
+# ============================================================================
+# 2026-08-11 等保三级 Task 3：在末尾追加路由集成测试
+# ----------------------------------------------------------------------------
+# 验证 UserDB 边界强校验生效后：
+# - 管理员创建用户（POST /api/users）传入 7 位密码仍能被路由层 / 边界层 400 拒；
+# - 修改密码（PUT /api/users/{id}/password）传入 7 位密码仍能被路由层 / 边界层 400 拒。
+# 本组测试不替代 unit 边界测试，目的是覆盖路由 → service → UserDB 整条链路，
+# 防止有人"绕过路由层 400 后 UserDB 静默落库"。
+# ============================================================================
+
+
+STRONG = "P@ssword1!"
+
+
+def _admin_token():
+    import jwt
+    from app.shared.utils.auth.Safety import JWTAuth
+    from datetime import datetime, timedelta
+
+    payload = {
+        "username": "admin",
+        "type": "access",
+        "exp": datetime.utcnow() + timedelta(minutes=30),
+        "iat": datetime.utcnow(),
+    }
+    return jwt.encode(payload, JWTAuth().secret_key, algorithm="HS256")
+
+
+@pytest.fixture
+def app_full():
+    """构造带强口令 admin 的 FastAPI 应用（auth_router + user_router）。"""
+    from app.core.server import create_app
+    from app.shared.routers.auth_router import router as auth_router
+    from app.shared.routers.user_router import router as user_router
+
+    UserDB._memory_users.clear()
+    UserDB._memory_id_counter = 0
+    UserDB._memory_login_lock.clear()
+    asyncio.run(UserDB.create_user("admin", STRONG, role="admin"))
+    _app = create_app()
+    _app.include_router(auth_router)
+    _app.include_router(user_router)
+    return _app
+
+
+def test_admin_create_user_rejects_7_chars(app_full, monkeypatch):
+    """管理员创建用户：7 位密码必须被路由层 400 拒绝（链路：router→UserDB→policy）。"""
+    from app.shared.utils.auth.user_db import UserDB
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.captcha.captcha_manager.verify",
+        lambda key, code: True,
+    )
+    with TestClient(app_full) as client:
+        r = client.post(
+            "/api/users",
+            json={
+                "username": "u1",
+                "password": "Aa1!aaa",
+                "role": "user",
+                "real_name": "t",
+                "phone": "13800138000",
+                "email": "u@x.com",
+            },
+            headers={"Authorization": f"Bearer {_admin_token()}"},
+        )
+    assert r.status_code == 400
+    assert "8" in r.json()["detail"]
+    # 反向断言：弱口令一定不能落到内存里
+    assert asyncio.run(UserDB.get_user_by_username("u1")) is None
+
+
+def test_change_password_rejects_7_chars(app_full):
+    """修改密码：7 位密码必须被路由层 400 拒绝（链路：router→UserDB→policy）。"""
+    from app.shared.utils.auth.user_db import UserDB
+
+    admin = asyncio.run(UserDB.get_user_by_username("admin"))
+    with TestClient(app_full) as client:
+        r = client.put(
+            f"/api/users/{admin['id']}/password",
+            json={"old_password": STRONG, "new_password": "Aa1!aaa"},
+            headers={"Authorization": f"Bearer {_admin_token()}"},
+        )
+    assert r.status_code == 400
+    assert "8" in r.json()["detail"]
