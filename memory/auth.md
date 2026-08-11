@@ -110,6 +110,32 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 
 中间件在 `call_next(request)` 之前对 **Cookie 鉴权 + 写请求** 强制要求 `X-Requested-With: XMLHttpRequest` 自定义头；缺失返 `403 "缺少 CSRF 防护请求头"`（不是 401，避免被 `auth_middleware` 的 `try/except` 通用异常处理包装吞掉）。Bearer 鉴权天然免疫 CSRF（攻击者无法跨站读取/伪造 Header），豁免。`GET / HEAD / OPTIONS` 方法天然安全，豁免。
 
+### 口令策略强校验
+
+- **统一规则源**：`app/shared/utils/auth/password_policy.py::validate_password(password) -> (is_valid, error_message)`，规则：长度 ≥ 8 + ASCII 大写 + ASCII 小写 + 数字 + 特殊字符白名单 `!@#$%^&*()_+\-=\[\]{}|;:,.<>?`。
+- **调用方（路由层）**：
+  - `POST /api/auth/register`（`auth_router.py:300`）
+  - `POST /api/users`（`user_router.py:241`，需 `require_admin`）
+  - `PUT /api/users/{user_id}/password`（`user_router.py:621`，需本人 + old_password）
+  - `/login-api` 与 `/login` memory 自动建号（`auth_router.py:570/794`）：仅当目标用户记录缺失时校验新创建口令。
+- **调用方（持久化层）**：`UserDB.create_user` 与 `UserDB.update_password` 入口直接调用 `validate_password`，失败抛 `ValueError`；作为不可旁路的写入边界，覆盖所有未来新增调用方与历史 fixtures。
+- **JWTAuth 注入**：`JWTAuth(bootstrap_username, bootstrap_password)` 取代硬编码默认值；`verify_credentials` 在 memory 模式且注入缺失时抛 `RuntimeError`。
+- **登录接口不再执行复杂度校验**：复杂度仅约束"创建/修改口令"写入边界，历史账号不会被既有复杂度规则锁定。
+
+### AuthBootstrapSettings
+
+- **配置位置**：`Settings.auth`（`app/core/config/settings.py`），env 前缀 `AUTH_`。
+- **字段**：`bootstrap_enabled`（默认 `false`）、`default_admin_username`（默认 `admin`）、`default_admin_password`（必须通过 `validate_password`；`bootstrap_enabled=True` 时必填）。
+- **启动契约**（`UserDB.ensure_admin_exists(settings)`）：
+  1. 存在 admin 且哈希不属于 `{admin123, 123456}` → 静默返回。
+  2. 存在 admin 且哈希命中已知弱默认集：
+     - `bootstrap_enabled=True` 且默认口令通过 `validate_password` → 调 `update_password` 轮换，同时撤销该用户 Refresh Token 与 Portal Refresh Token。
+     - 否则 → `RuntimeError` 启动失败并 `logger.error`。
+  3. 不存在 admin：
+     - `bootstrap_enabled=True` → 用默认口令创建。
+     - 否则 → `RuntimeError` 启动失败并 `logger.error`。
+- **生产部署约束**：首次将历史部署升级至本版本时，需在 `.env` 设置 `AUTH_BOOTSTRAP_ENABLED=true` 与满足复杂度的 `AUTH_DEFAULT_ADMIN_PASSWORD`，完成一次弱口令轮换后再将 `AUTH_BOOTSTRAP_ENABLED` 置 `false`。
+
 ### 权限控制
 
 - **角色区分**：用户表 `role` 字段支持 `admin` / `user`，登录时返回

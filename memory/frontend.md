@@ -251,6 +251,13 @@
 - 「前端 `isStreaming` 状态同步」（并发排队修复）：保持 isStreaming 复位路径不变
 - 「ToolNode 错误处理（handle_tool_errors）」（LangGraph 推荐做法）：本节实现与该做法同源 —— 工具失败时主动 return ToolMessage 而非抛异常
 
+### 口令策略共享 util
+
+- 位置：`web/Agent/src/utils/passwordPolicy.js`
+- 暴露：`MIN_LENGTH` / `UPPER_RE` / `LOWER_RE` / `DIGIT_RE` / `SPECIAL_RE` / `validatePassword(value)` / `getPasswordHints(value)`
+- 接入：`views/RegisterView.vue`、`components/UserSettingsDialog.vue`（管理员新增 + 本人改密）
+- 与后端 `app/shared/utils/auth/password_policy.py` 保持完全同口径；如修改任一端需同步另一端并在 PR 描述中明确。
+
 ### 工具函数（src/utils）
 
 - **`api.js`**：登录/注册/验证码/登出/refresh/validate；会话创建/列表/删除/详情/标题/附件/消息/文件空间；文件上传（普通 + 分片 + base64）/下载/列表/删除；SSE `chatStream`（ 起改用 `/api/agent/chat`，新增 `agentName` 参数默认 `map_agent`）/ `knowledgeChatStream`（仍用 `/api/map/knowledge-chat`）；`X-Session-ID` 头注入；附件元数据组装

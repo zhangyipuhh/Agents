@@ -583,6 +583,12 @@ return data/upload/yyyy/mm/dd/{session_id}/
   - `MFA_SECRET_KEY` — 浏览器 `/login` TOTP 双因素认证 Fernet 对称密钥，须由 `Fernet.generate_key()` 生成（44 字节 url-safe base64）。缺失或非法时 `lifespan` 无法初始化 `MfaService`，登录 fail-closed 返回 503。
 - 其他 LLM API Key 等
 
+### AuthBootstrapSettings
+
+- 用途：lifespan 默认管理员创建与历史弱口令迁移。
+- 字段：`bootstrap_enabled` / `default_admin_username` / `default_admin_password`，env 前缀 `AUTH_`；详见 [`memory/auth.md`](auth.md) 的「AuthBootstrapSettings」段。
+- 行为：见 `UserDB.ensure_admin_exists` 启动契约；缺失或不合规会抛 `RuntimeError`（与「基础设施降级必须 fail-loud」一致）。
+
 ## 等保三级安全编码规范
 
 `AGENTS.md` 已纳入 GB/T 22239-2019 应用层面等保三级安全编码规范，作为项目级顶层设计约束。规范覆盖以下 8 个维度，详细规则见 [`AGENTS.md`](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/AGENTS.md) 末尾章节：

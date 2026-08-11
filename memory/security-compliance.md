@@ -7,7 +7,7 @@
 ## 一、身份鉴别
 
 1. **双因素认证**：是否采用口令+短信/令牌/指纹等管理用户登录？管理员/运维账号必须双因素；普通用户建议至少双因素或强口令+验证码。
-2. **口令复杂度**：口令复杂度策略是否生效（长度≥8位，含大小写+数字+特殊字符）？前端+后端同时校验，不能只靠前端。
+2. ✅ **口令复杂度**：前端 `web/Agent/src/utils/passwordPolicy.js` 复刻同口径常量，RegisterView / UserSettingsDialog 全部接入；后端 `password_policy.validate_password` 已被 `register` / 管理员创建 / 本人改密 / `/login-api` memory 自动建号 / `UserDB.create_user` + `UserDB.update_password` 强制调用，覆盖所有写入边界；默认管理员与历史 `admin/admin123` / `admin/123456` 通过 `AuthBootstrapSettings` + `UserDB.ensure_admin_exists` 一次性轮换并清除 Refresh / Portal Token；登录接口不重新执行复杂度校验，避免历史账号被锁。详见 [`memory/auth.md`](auth.md) 的「口令策略强校验」与「AuthBootstrapSettings」段。
 3. **定期更换口令**：是否强制定期更换口令（建议90天内）？系统层面强制，不能仅依赖提示。
 4. **登录失败处理**：连续失败≥5次后是否锁定账户（≥30分钟）？需同时防暴力破解和防枚举。
 5. **会话超时**：是否设置会话超时自动退出（建议≤30分钟无操作）？敏感系统建议≤15分钟。
