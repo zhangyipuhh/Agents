@@ -102,8 +102,13 @@ def test_bootstrap_rotates_known_weak_default():
     """已存在 admin 且哈希命中 admin123 → bootstrap_enabled=True 时轮换为强口令。"""
     from app.shared.utils.auth import user_db
 
-    # 先用一个历史弱默认创建 admin
-    asyncio.run(user_db.UserDB.create_user("admin", "admin123", role="admin"))
+    # 直接预制历史弱默认哈希，模拟已存在的 admin（绕过 create_user 的当前口令边界校验）
+    user_db.UserDB._memory_users["admin"] = {
+        "id": 1,
+        "username": "admin",
+        "password_hash": user_db.UserDB.hash_password("admin123"),
+        "role": "admin",
+    }
     settings = _Settings(
         bootstrap_enabled=True,
         default_admin_username="admin",
@@ -157,7 +162,13 @@ def test_bootstrap_existing_weak_admin_disabled_fails_loud():
     """已存在 admin 且哈希命中弱默认集，但 bootstrap_enabled=False → RuntimeError。"""
     from app.shared.utils.auth import user_db
 
-    asyncio.run(user_db.UserDB.create_user("admin", "123456", role="admin"))
+    # 直接预制历史弱默认哈希，模拟已存在的 admin（绕过 create_user 的当前口令边界校验）
+    user_db.UserDB._memory_users["admin"] = {
+        "id": 1,
+        "username": "admin",
+        "password_hash": user_db.UserDB.hash_password("123456"),
+        "role": "admin",
+    }
     settings = _Settings(
         bootstrap_enabled=False,
         default_admin_username="admin",
