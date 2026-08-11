@@ -167,3 +167,10 @@ aa03580 feat(auth): AUTH_ bootstrap 配置 + 启动弱口令轮换 + JWTAuth 解
 - **git diff --stat**：`app/tests/shared/test_user_router_password.py | 1 +`。
 
 Concerns：集成测试仍有一个现有断言数据问题（用户名 `u1`）。
+
+## Fix #2: username 太短
+
+- **修复内容**：将 `test_admin_create_user_rejects_7_chars` 中的用户名从 `u1` 改为合法的 `test_user`，使请求能够进入密码策略校验分支。
+- **commit SHA**：`745b656`。
+- **测试结果**：指定测试命令 12/12 PASS（5 warnings）。
+- **Concerns**：无。
