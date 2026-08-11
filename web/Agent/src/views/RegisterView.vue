@@ -7,6 +7,7 @@
 
 import { ref, computed, onMounted } from 'vue'
 import { register, getCaptcha } from '../utils/api.js'
+import { getPasswordHints, validatePassword } from '../utils/passwordPolicy.js'
 import { appConfig } from '../config/portal.js'
 
 /** @type {import('vue').Ref<string>} 用户名输入值 */
@@ -82,17 +83,12 @@ function refreshCaptcha() {
 
 /**
  * 校验密码复杂度
- * 必须同时包含大写字母、小写字母、数字、特殊字符，且长度至少6位
+ * 委托给共享工具 validatePassword，与后端 password_policy.py 规则完全一致。
  * @param {string} pwd - 密码
  * @returns {boolean} 校验通过返回 true
  */
 function validatePasswordComplexity(pwd) {
-  if (pwd.length < 6) return false
-  const hasUpper = /[A-Z]/.test(pwd)
-  const hasLower = /[a-z]/.test(pwd)
-  const hasDigit = /\d/.test(pwd)
-  const hasSpecial = /[!@#$%^&*()_+\-=\[\]{}|;:,.<>?]/.test(pwd)
-  return hasUpper && hasLower && hasDigit && hasSpecial
+  return validatePassword(pwd).ok
 }
 
 /**
@@ -101,20 +97,8 @@ function validatePasswordComplexity(pwd) {
  * @returns {{ minLength: boolean, hasUpper: boolean, hasLower: boolean, hasDigit: boolean, hasSpecial: boolean, isValid: boolean }}
  */
 const passwordValidation = computed(() => {
-  const pwd = password.value || ''
-  const minLength = pwd.length >= 6
-  const hasUpper = /[A-Z]/.test(pwd)
-  const hasLower = /[a-z]/.test(pwd)
-  const hasDigit = /\d/.test(pwd)
-  const hasSpecial = /[!@#$%^&*()_+\-=[\]{}|;:,.<>?]/.test(pwd)
-  return {
-    minLength,
-    hasUpper,
-    hasLower,
-    hasDigit,
-    hasSpecial,
-    isValid: minLength && hasUpper && hasLower && hasDigit && hasSpecial
-  }
+  const hints = getPasswordHints(password.value)
+  return { ...hints, isValid: Object.values(hints).every(Boolean) }
 })
 
 /**
@@ -140,7 +124,7 @@ async function handleRegister() {
     return
   }
   if (!validatePasswordComplexity(password.value)) {
-    errorMessage.value = '密码必须至少6位，且包含大写字母、小写字母、数字和特殊字符'
+    errorMessage.value = '密码必须至少8位，且包含大写字母、小写字母、数字和特殊字符'
     return
   }
   if (password.value !== confirmPassword.value) {
@@ -261,7 +245,7 @@ onMounted(() => {
             v-model="password"
             type="password"
             class="form-input"
-            placeholder="至少6位，含大小写字母、数字、特殊字符"
+            placeholder="至少8位，含大小写字母、数字、特殊字符"
             autocomplete="new-password"
             :disabled="loading"
           />
@@ -272,7 +256,7 @@ onMounted(() => {
                 :class="passwordValidation.minLength ? 'valid' : 'invalid'"
               >
                 <span class="hint-icon">{{ passwordValidation.minLength ? '✓' : '○' }}</span>
-                至少6位
+                至少8位
               </span>
               <span
                 class="password-hint-item"

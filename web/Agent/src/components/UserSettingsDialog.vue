@@ -11,6 +11,8 @@
  */
 
 import { ref, watch, computed, nextTick, onMounted } from 'vue'
+// 2026-08-09 新增：与后端 password_policy.py 同步的口令复杂度共享工具
+import { validatePassword, getPasswordHints } from '../utils/passwordPolicy.js'
 import {
   updatePassword,
   updateUsername,
@@ -797,8 +799,8 @@ function validateUserForm() {
     formError.value = '请输入密码'
     return false
   }
-  if (formPassword.value && formPassword.value.length < 6) {
-    formError.value = '密码至少6个字符'
+  if (formPassword.value && !validatePassword(formPassword.value).ok) {
+    formError.value = '密码必须至少8位，且包含大写字母、小写字母、数字和特殊字符'
     return false
   }
   const phone = formPhone.value.trim()
@@ -888,8 +890,8 @@ function validatePasswordForm() {
     passwordError.value = '请输入新密码'
     return false
   }
-  if (newPassword.value.length < 6) {
-    passwordError.value = '新密码至少6个字符'
+  if (!validatePassword(newPassword.value).ok) {
+    passwordError.value = '新密码必须至少8位，且包含大写字母、小写字母、数字和特殊字符'
     return false
   }
   if (newPassword.value !== confirmNewPassword.value) {
@@ -1628,7 +1630,7 @@ onMounted(() => {
                         v-model="newPassword"
                         type="password"
                         class="form-input"
-                        placeholder="请输入新密码（至少6个字符）"
+                        placeholder="请输入新密码（至少8位，含大小写字母、数字、特殊字符）"
                         autocomplete="new-password"
                         :disabled="isSaving"
                       />
@@ -2164,7 +2166,7 @@ onMounted(() => {
                       v-model="formPassword"
                       type="password"
                       class="form-input"
-                      :placeholder="editingUser ? '留空表示不修改' : '请输入密码（至少6个字符）'"
+                      :placeholder="editingUser ? '留空表示不修改' : '请输入密码（至少8位，含大小写字母、数字、特殊字符）'"
                       :disabled="isSubmitting"
                     />
                   </div>
