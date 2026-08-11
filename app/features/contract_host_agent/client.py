@@ -74,14 +74,22 @@ class APIClient:
     def refresh_token(self) -> Optional[str]:
         """
         重新登录获取新的 token
-        
+
+        凭据完全由环境变量 ``AUTH_DEFAULT_ADMIN_USERNAME`` /
+        ``AUTH_DEFAULT_ADMIN_PASSWORD`` 决定;缺失时直接返回 None
+        且不发请求(避免沿用历史 ``admin/123456`` 默认值)。
+
         Returns:
             新的 token，如果失败返回 None
         """
+        creds = self._bootstrap_creds()
+        if creds is None:
+            return None
+        username, password = creds
         try:
             login_result = requests.post(
                 f"{self.base_url}/api/auth/login",
-                json={"username": "admin", "password": "123456"}
+                json={"username": username, "password": password}
             )
             login_result.raise_for_status()
             token = login_result.json().get("access_token")
@@ -92,6 +100,23 @@ class APIClient:
         except Exception as e:
             logger.error(f"Token 刷新失败: {e}")
             return None
+
+    def _bootstrap_creds(self) -> Optional[tuple]:
+        """从环境变量读取默认管理员凭据。
+
+        Returns:
+            Optional[tuple]: (username, password) 元组；若任一变量缺失或为空,
+                返回 None,调用方应跳过登录并显式告警。
+        """
+        username = os.environ.get("AUTH_DEFAULT_ADMIN_USERNAME")
+        password = os.environ.get("AUTH_DEFAULT_ADMIN_PASSWORD")
+        if not username or not password:
+            logger.error(
+                "[APIClient] 缺少 AUTH_DEFAULT_ADMIN_USERNAME/"
+                "AUTH_DEFAULT_ADMIN_PASSWORD 环境变量,无法登录"
+            )
+            return None
+        return username, password
     
     def create_session(self) -> Optional[str]:
         """
@@ -1030,43 +1055,52 @@ class HTTestPage:
     def _initialize(self) -> bool:
         """
         初始化连接
-        
+
+        凭据完全由环境变量 ``AUTH_DEFAULT_ADMIN_USERNAME`` /
+        ``AUTH_DEFAULT_ADMIN_PASSWORD`` 决定;缺失时直接返回 False
+        且不发请求(避免沿用历史 ``admin/123456`` 默认值)。
+
         Returns:
             初始化是否成功
         """
         try:
             print("正在连接服务器...")
-            
+
+            creds = self.api_client._bootstrap_creds()
+            if creds is None:
+                return False
+            username, password = creds
+
             login_result = requests.post(
                 f"{self.api_client.base_url}/api/auth/login",
-                json={"username": "admin", "password": "123456"}
+                json={"username": username, "password": password}
             )
             login_result.raise_for_status()
             token = login_result.json().get("access_token")
-            
+
             if not token:
                 logger.error("登录失败：未获取到令牌")
                 return False
-            
+
             logger.info("登录成功")
-            
+
             session_result = requests.post(
                 f"{self.api_client.base_url}/api/session/create",
                 headers={"Authorization": f"Bearer {token}"}
             )
             session_result.raise_for_status()
             session_id = session_result.json().get("session_id")
-            
+
             if not session_id:
                 logger.error("创建会话失败：未获取到会话 ID")
                 return False
-            
+
             logger.info(f"会话创建成功: {session_id}")
-            
+
             self.api_client.set_auth(token, session_id)
-            
+
             return True
-            
+
         except Exception as e:
             logger.error(f"初始化失败: {e}")
             return False

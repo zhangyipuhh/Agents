@@ -25,11 +25,41 @@ class AICodingCheckClient:
         self.token: Optional[str] = None
         self.session_id: Optional[str] = None
 
+    def _bootstrap_creds(self) -> Optional[tuple]:
+        """从环境变量读取默认管理员凭据。
+
+        Returns:
+            Optional[tuple]: (username, password) 元组；若任一变量缺失或为空,
+                返回 None,调用方应跳过登录并显式告警。
+        """
+        username = os.environ.get("AUTH_DEFAULT_ADMIN_USERNAME")
+        password = os.environ.get("AUTH_DEFAULT_ADMIN_PASSWORD")
+        if not username or not password:
+            print(
+                "[AICodingCheckClient] 缺少 AUTH_DEFAULT_ADMIN_USERNAME/"
+                "AUTH_DEFAULT_ADMIN_PASSWORD 环境变量,跳过登录"
+            )
+            return None
+        return username, password
+
     def refresh_token(self) -> Optional[str]:
+        """登录后端获取 access_token。
+
+        凭据完全由环境变量 ``AUTH_DEFAULT_ADMIN_USERNAME`` /
+        ``AUTH_DEFAULT_ADMIN_PASSWORD`` 决定;缺失时直接返回 None
+        且不发请求(避免沿用历史 ``admin/123456`` 默认值)。
+
+        Returns:
+            Optional[str]: 新的 access_token,登录失败或凭据缺失时返回 None。
+        """
+        creds = self._bootstrap_creds()
+        if creds is None:
+            return None
+        username, password = creds
         try:
             response = requests.post(
                 f"{self.base_url}/api/auth/login",
-                json={"username": "admin", "password": "123456"},
+                json={"username": username, "password": password},
                 timeout=60
             )
             response.raise_for_status()
