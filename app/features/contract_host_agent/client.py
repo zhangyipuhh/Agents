@@ -1056,9 +1056,8 @@ class HTTestPage:
         """
         初始化连接
 
-        凭据完全由环境变量 ``AUTH_DEFAULT_ADMIN_USERNAME`` /
-        ``AUTH_DEFAULT_ADMIN_PASSWORD`` 决定;缺失时直接返回 False
-        且不发请求(避免沿用历史 ``admin/123456`` 默认值)。
+        登录由 ``APIClient.refresh_token`` 统一处理环境变量读取、请求异常与
+        token 写回;未获取到 token 时打印错误并返回 False。
 
         Returns:
             初始化是否成功
@@ -1066,20 +1065,9 @@ class HTTestPage:
         try:
             print("正在连接服务器...")
 
-            creds = self.api_client._bootstrap_creds()
-            if creds is None:
-                return False
-            username, password = creds
-
-            login_result = requests.post(
-                f"{self.api_client.base_url}/api/auth/login",
-                json={"username": username, "password": password}
-            )
-            login_result.raise_for_status()
-            token = login_result.json().get("access_token")
-
+            token = self.api_client.refresh_token()
             if not token:
-                logger.error("登录失败：未获取到令牌")
+                print("登录失败：未获取到令牌")
                 return False
 
             logger.info("登录成功")
