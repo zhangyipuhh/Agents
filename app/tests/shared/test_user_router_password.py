@@ -21,6 +21,7 @@ if "asyncpg" not in sys.modules:
 
 import pytest
 from fastapi.testclient import TestClient
+from app.shared.utils.auth.user_db import UserDB
 
 
 @pytest.fixture
