@@ -140,11 +140,17 @@ def _admin_token():
 
 
 @pytest.fixture
-def app_full():
+def app_full(monkeypatch):
     """构造带强口令 admin 的 FastAPI 应用（auth_router + user_router）。"""
     from app.core.server import create_app
     from app.shared.routers.auth_router import router as auth_router
     from app.shared.routers.user_router import router as user_router
+
+    # 注入 bootstrap 让 lifespan 的 ensure_admin_exists 走 bootstrap 路径
+    # 创建强口令 admin（绕开 conftest _mock_user_db 的 mock）。
+    monkeypatch.setenv("AUTH_BOOTSTRAP_ENABLED", "true")
+    monkeypatch.setenv("AUTH_DEFAULT_ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("AUTH_DEFAULT_ADMIN_PASSWORD", STRONG)
 
     UserDB._memory_users.clear()
     UserDB._memory_id_counter = 0
@@ -180,7 +186,7 @@ def test_admin_create_user_rejects_7_chars(app_full, monkeypatch):
     assert r.status_code == 400
     assert "8" in r.json()["detail"]
     # 反向断言：弱口令一定不能落到内存里
-    assert asyncio.run(UserDB.get_user_by_username("u1")) is None
+    assert asyncio.run(UserDB.get_user_by_username("test_user")) is None
 
 
 def test_change_password_rejects_7_chars(app_full):

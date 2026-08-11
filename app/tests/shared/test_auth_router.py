@@ -4,6 +4,7 @@
 
 测试 auth_router 提供的验证码、注册、登录、验证和登出接口。
 """
+import asyncio
 import sys
 from unittest.mock import MagicMock
 
@@ -137,21 +138,35 @@ def test_register_duplicate_username(client, monkeypatch):
     assert "用户名已存在" in response2.json()["detail"]
 
 
-def test_login_api_success(client):
+def test_login_api_success(client, monkeypatch):
     """
     测试 POST /api/auth/login-api 免验证码登录成功并返回 access_token
 
-    memory 模式下使用硬编码凭据 admin/123456 可直接登录。
+    memory 模式下使用环境注入的 bootstrap 凭据 admin/P@ssword1! 可直接登录。
 
     Args:
         client: FastAPI TestClient
+        monkeypatch: pytest monkeypatch fixture
 
     Returns:
         None
     """
+    monkeypatch.setenv("AUTH_DEFAULT_ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("AUTH_DEFAULT_ADMIN_PASSWORD", "P@ssword1!")
+
+    # 2026-08-11 等保三级 Task 5：client fixture 的 lifespan 在 setenv 之前已启动，
+    # 必须手动重新注入 jwt_auth.bootstrap_* 与预创建 admin 才能让
+    # login-api 真实路径走通（避免默认 "" 与 None 凭据 fail-loud）。
+    from app.shared.utils.auth.Safety import jwt_auth
+    from app.shared.utils.auth.user_db import UserDB
+    jwt_auth.bootstrap_username = "admin"
+    jwt_auth.bootstrap_password = "P@ssword1!"
+    if asyncio.run(UserDB.get_user_by_username("admin")) is None:
+        asyncio.run(UserDB.create_user("admin", "P@ssword1!", role="admin"))
+
     payload = {
         "username": "admin",
-        "password": "123456",
+        "password": "P@ssword1!",
     }
     response = client.post("/api/auth/login-api", json=payload)
     assert response.status_code == 200
@@ -249,6 +264,17 @@ def test_login_response_includes_visible_menus(client, monkeypatch):
     """POST /api/auth/login-api 响应含 visible_menus（admin 登录后看到所有菜单）。"""
     from app.shared.utils.auth.menu_permission_service import MenuPermissionService
 
+    monkeypatch.setenv("AUTH_DEFAULT_ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("AUTH_DEFAULT_ADMIN_PASSWORD", "P@ssword1!")
+
+    # 2026-08-11 等保三级 Task 5：lifespan 早于 setenv 触发，必须手动重注
+    from app.shared.utils.auth.Safety import jwt_auth
+    from app.shared.utils.auth.user_db import UserDB
+    jwt_auth.bootstrap_username = "admin"
+    jwt_auth.bootstrap_password = "P@ssword1!"
+    if asyncio.run(UserDB.get_user_by_username("admin")) is None:
+        asyncio.run(UserDB.create_user("admin", "P@ssword1!", role="admin"))
+
     monkeypatch.setattr(
         client.app.state, "menu_permission_service",
         MenuPermissionService(db=None), raising=False,
@@ -265,7 +291,7 @@ def test_login_response_includes_visible_menus(client, monkeypatch):
 
     response = client.post(
         "/api/auth/login-api",
-        json={"username": "admin", "password": "123456"},
+        json={"username": "admin", "password": "P@ssword1!"},
     )
     assert response.status_code == 200
     data = response.json()
@@ -292,19 +318,30 @@ def test_logout(client, admin_headers):
     assert response.json()["message"] == "登出成功"
 
 
-def test_login_api_sets_access_token_cookie(client):
+def test_login_api_sets_access_token_cookie(client, monkeypatch):
     """
     测试登录响应同时下发 access_token HttpOnly Cookie
 
     Args:
         client: FastAPI TestClient
+        monkeypatch: pytest monkeypatch fixture
 
     Returns:
         None
     """
+    monkeypatch.setenv("AUTH_DEFAULT_ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("AUTH_DEFAULT_ADMIN_PASSWORD", "P@ssword1!")
+    # 2026-08-11 Task 5：lifespan 早于 setenv 触发，必须手动重注
+    from app.shared.utils.auth.Safety import jwt_auth
+    from app.shared.utils.auth.user_db import UserDB
+    jwt_auth.bootstrap_username = "admin"
+    jwt_auth.bootstrap_password = "P@ssword1!"
+    if asyncio.run(UserDB.get_user_by_username("admin")) is None:
+        asyncio.run(UserDB.create_user("admin", "P@ssword1!", role="admin"))
+
     response = client.post(
         "/api/auth/login-api",
-        json={"username": "admin", "password": "123456"},
+        json={"username": "admin", "password": "P@ssword1!"},
     )
     assert response.status_code == 200
     # JSON body 保留 access_token（程序化客户端兼容）
@@ -317,19 +354,30 @@ def test_login_api_sets_access_token_cookie(client):
     assert "Max-Age=1800" in access[0]
 
 
-def test_login_api_refresh_cookie_has_samesite_strict(client):
+def test_login_api_refresh_cookie_has_samesite_strict(client, monkeypatch):
     """
     测试 refresh_token Cookie 保持 HttpOnly + SameSite=Strict（回归）
 
     Args:
         client: FastAPI TestClient
+        monkeypatch: pytest monkeypatch fixture
 
     Returns:
         None
     """
+    monkeypatch.setenv("AUTH_DEFAULT_ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("AUTH_DEFAULT_ADMIN_PASSWORD", "P@ssword1!")
+    # 2026-08-11 Task 5：lifespan 早于 setenv 触发，必须手动重注
+    from app.shared.utils.auth.Safety import jwt_auth
+    from app.shared.utils.auth.user_db import UserDB
+    jwt_auth.bootstrap_username = "admin"
+    jwt_auth.bootstrap_password = "P@ssword1!"
+    if asyncio.run(UserDB.get_user_by_username("admin")) is None:
+        asyncio.run(UserDB.create_user("admin", "P@ssword1!", role="admin"))
+
     response = client.post(
         "/api/auth/login-api",
-        json={"username": "admin", "password": "123456"},
+        json={"username": "admin", "password": "P@ssword1!"},
     )
     cookies = response.headers.get_list("set-cookie")
     refresh = [c for c in cookies if c.startswith("refresh_token=")]
@@ -446,7 +494,7 @@ class TestIssuePortalRefreshToken:
         assert result.portal_refresh_token == 'portal_token_123'
 
 
-def test_refresh_sets_new_access_token_cookie(client):
+def test_refresh_sets_new_access_token_cookie(client, monkeypatch):
     """
     测试刷新接口轮换 access_token Cookie
 
@@ -459,13 +507,24 @@ def test_refresh_sets_new_access_token_cookie(client):
 
     Args:
         client: FastAPI TestClient
+        monkeypatch: pytest monkeypatch fixture
 
     Returns:
         None
     """
+    monkeypatch.setenv("AUTH_DEFAULT_ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("AUTH_DEFAULT_ADMIN_PASSWORD", "P@ssword1!")
+    # 2026-08-11 Task 5：lifespan 早于 setenv 触发，必须手动重注
+    from app.shared.utils.auth.Safety import jwt_auth
+    from app.shared.utils.auth.user_db import UserDB
+    jwt_auth.bootstrap_username = "admin"
+    jwt_auth.bootstrap_password = "P@ssword1!"
+    if asyncio.run(UserDB.get_user_by_username("admin")) is None:
+        asyncio.run(UserDB.create_user("admin", "P@ssword1!", role="admin"))
+
     login_resp = client.post(
         "/api/auth/login-api",
-        json={"username": "admin", "password": "123456"},
+        json={"username": "admin", "password": "P@ssword1!"},
     )
     assert login_resp.status_code == 200
     resp = client.post("/api/auth/refresh")

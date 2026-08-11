@@ -292,15 +292,74 @@ def test_login_password_failure_increments_count(
 # ============================================================
 
 
-def test_login_api_unchanged_for_admin(monkeypatch):
-    """/login-api 路径：旧 admin/123456 直接返 LoginResponse（无 MFA 限制）。"""
+def test_login_api_uses_env_bootstrap_admin(monkeypatch):
+    """/login-api 路径：admin/P@ssword1!（注入 env）直接返 LoginResponse（无 MFA 限制）。
+
+    等保三级 Task 5：使用 ``AUTH_DEFAULT_ADMIN_USERNAME`` / ``AUTH_DEFAULT_ADMIN_PASSWORD``
+    注入强口令，并同步手动注入 ``jwt_auth.bootstrap_*`` + 预创建 admin（绕开 lifespan 缺失）。
+    """
     monkeypatch.setenv("AUTH_STORAGE_MODE", "memory")
+    monkeypatch.setenv("AUTH_DEFAULT_ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("AUTH_DEFAULT_ADMIN_PASSWORD", "P@ssword1!")
     from cryptography.fernet import Fernet
     monkeypatch.setenv("MFA_SECRET_KEY", Fernet.generate_key().decode("ascii"))
 
     from fastapi import FastAPI
 
     from app.shared.routers.auth_router import router as auth_router
+    from app.shared.utils.auth.Safety import jwt_auth
+    from app.shared.utils.auth.user_db import UserDB
+
+    # 手动注入 bootstrap + 预创建 admin（本测试不走 lifespan）
+    jwt_auth.bootstrap_username = "admin"
+    jwt_auth.bootstrap_password = "P@ssword1!"
+    if asyncio.run(UserDB.get_user_by_username("admin")) is None:
+        asyncio.run(UserDB.create_user("admin", "P@ssword1!", role="admin"))
+
+    _app = FastAPI()
+    _app.include_router(auth_router)
+
+    with TestClient(_app) as client:
+        response = client.post(
+            "/api/auth/login-api",
+            json={"username": "admin", "password": "P@ssword1!"},
+        )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["access_token"]
+    assert data["username"] == "admin"
+
+
+def test_login_api_rejects_weak_password_during_autocreate(monkeypatch):
+    """/login-api 路径：admin 不存在 + 弱口令尝试 autocreate 时必须被 400 拒。
+
+    验证：
+    - bootstrap_username=admin / bootstrap_password=123456 让 verify_credentials 通过
+      （这样能进入 autocreate 路径）
+    - admin 用户不存在 → 触发 memory 模式 autocreate 分支
+    - request.password="123456" → validate_password 拦截 → 400
+    """
+    monkeypatch.setenv("AUTH_STORAGE_MODE", "memory")
+    # 注意：本测试故意把 bootstrap 设为弱口令 123456，仅用于让 verify_credentials
+    # 通过进入 autocreate 分支。生产代码会通过 validate_password 在 autocreate 时
+    # 拦截，**不会**让弱口令落地（Task 3 强校验）。
+    monkeypatch.setenv("AUTH_DEFAULT_ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("AUTH_DEFAULT_ADMIN_PASSWORD", "123456")
+    from cryptography.fernet import Fernet
+    monkeypatch.setenv("MFA_SECRET_KEY", Fernet.generate_key().decode("ascii"))
+
+    from fastapi import FastAPI
+
+    from app.shared.routers.auth_router import router as auth_router
+    from app.shared.utils.auth.Safety import jwt_auth
+    from app.shared.utils.auth.user_db import UserDB
+
+    # bootstrap 注入为 "123456" 让 verify_credentials("admin", "123456") 通过
+    jwt_auth.bootstrap_username = "admin"
+    jwt_auth.bootstrap_password = "123456"
+    # admin 不存在 → 走 autocreate 路径 → validate_password 拦截 123456 → 400
+    for u in list(UserDB._memory_users.keys()):
+        del UserDB._memory_users[u]
 
     _app = FastAPI()
     _app.include_router(auth_router)
@@ -310,7 +369,12 @@ def test_login_api_unchanged_for_admin(monkeypatch):
             "/api/auth/login-api",
             json={"username": "admin", "password": "123456"},
         )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["access_token"]
-    assert data["username"] == "admin"
+    # autocreate admin 在内存模式下应被 8 位强口令策略拒绝
+    assert response.status_code == 400, response.text
+
+    # 2026-08-11 Task 5：本测试清空了 UserDB 并设了 jwt_auth.bootstrap_*，
+    # 必须恢复 admin + 还原 bootstrap_* 避免污染后续测试：
+    # lifespan 重新触发 ensure_admin_exists 时，找得到 admin 就不会 RuntimeError。
+    asyncio.run(UserDB.create_user("admin", "P@ssword1!", role="admin"))
+    jwt_auth.bootstrap_username = "admin"
+    jwt_auth.bootstrap_password = "P@ssword1!"

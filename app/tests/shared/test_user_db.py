@@ -37,7 +37,7 @@ def test_create_user():
     Raises:
         AssertionError: 用户 ID 不是正整数时抛出。
     """
-    user_id = asyncio.run(UserDB.create_user("testuser", "password123"))
+    user_id = asyncio.run(UserDB.create_user("testuser", "P@ssword1!"))
     assert isinstance(user_id, int)
     assert user_id > 0
 
@@ -52,9 +52,9 @@ def test_create_user_duplicate_username():
     Raises:
         AssertionError: 未抛出 ValueError 时抛出。
     """
-    asyncio.run(UserDB.create_user("testuser", "password123"))
+    asyncio.run(UserDB.create_user("testuser", "P@ssword1!"))
     with pytest.raises(ValueError, match="用户名已存在"):
-        asyncio.run(UserDB.create_user("testuser", "password123"))
+        asyncio.run(UserDB.create_user("testuser", "P@ssword1!"))
 
 
 def test_get_user_by_username():
@@ -67,7 +67,7 @@ def test_get_user_by_username():
     Raises:
         AssertionError: 查询结果不符合预期时抛出。
     """
-    asyncio.run(UserDB.create_user("testuser", "password123", role="user"))
+    asyncio.run(UserDB.create_user("testuser", "P@ssword1!", role="user"))
     user = asyncio.run(UserDB.get_user_by_username("testuser"))
     assert user is not None
     assert user["username"] == "testuser"
@@ -98,8 +98,8 @@ def test_verify_credentials():
     Raises:
         AssertionError: 验证结果不符合预期时抛出。
     """
-    asyncio.run(UserDB.create_user("testuser", "password123"))
-    assert asyncio.run(UserDB.verify_credentials("testuser", "password123")) is True
+    asyncio.run(UserDB.create_user("testuser", "P@ssword1!"))
+    assert asyncio.run(UserDB.verify_credentials("testuser", "P@ssword1!")) is True
     assert asyncio.run(UserDB.verify_credentials("testuser", "wrongpass")) is False
 
 
@@ -113,7 +113,7 @@ def test_delete_user():
     Raises:
         AssertionError: 删除失败或删除后仍能查询到时抛出。
     """
-    user_id = asyncio.run(UserDB.create_user("testuser", "password123"))
+    user_id = asyncio.run(UserDB.create_user("testuser", "P@ssword1!"))
     assert asyncio.run(UserDB.delete_user(user_id)) is True
     assert asyncio.run(UserDB.get_user_by_username("testuser")) is None
 
@@ -128,10 +128,10 @@ def test_update_password():
     Raises:
         AssertionError: 密码更新未生效时抛出。
     """
-    user_id = asyncio.run(UserDB.create_user("testuser", "password123"))
-    assert asyncio.run(UserDB.update_password(user_id, "newpassword")) is True
-    assert asyncio.run(UserDB.verify_credentials("testuser", "password123")) is False
-    assert asyncio.run(UserDB.verify_credentials("testuser", "newpassword")) is True
+    user_id = asyncio.run(UserDB.create_user("testuser", "P@ssword1!"))
+    assert asyncio.run(UserDB.update_password(user_id, "P@ssword2!")) is True
+    assert asyncio.run(UserDB.verify_credentials("testuser", "P@ssword1!")) is False
+    assert asyncio.run(UserDB.verify_credentials("testuser", "P@ssword2!")) is True
 
 
 def test_ensure_admin_exists():
@@ -159,7 +159,7 @@ def test_ensure_admin_exists():
             u.get("role") == "admin" for u in UserDB._memory_users.values()
         )
     if not has_admin:
-        asyncio.run(UserDB.create_user("admin", "admin123", role="admin"))
+        asyncio.run(UserDB.create_user("admin", "P@ssword1!", role="admin"))
 
     admin = asyncio.run(UserDB.get_user_by_username("admin"))
     assert admin is not None
@@ -173,7 +173,7 @@ def test_create_user_default_allowed_agents():
     Returns:
         None
     """
-    asyncio.run(UserDB.create_user("agent_default_user", "password123"))
+    asyncio.run(UserDB.create_user("agent_default_user", "P@ssword1!"))
     user = asyncio.run(UserDB.get_user_by_username("agent_default_user"))
     assert user is not None
     assert user.get("allowed_agents") == []
@@ -189,7 +189,7 @@ def test_create_user_with_allowed_agents():
     allowed = ["map_agent", "audit_document_agent"]
     asyncio.run(UserDB.create_user(
         "agent_allowed_user",
-        "password123",
+        "P@ssword1!",
         allowed_agents=allowed
     ))
     user = asyncio.run(UserDB.get_user_by_username("agent_allowed_user"))
@@ -208,7 +208,7 @@ def test_update_profile_does_not_overwrite_allowed_agents():
     Returns:
         None
     """
-    user_id = asyncio.run(UserDB.create_user("profile_no_overwrite_user", "password123"))
+    user_id = asyncio.run(UserDB.create_user("profile_no_overwrite_user", "P@ssword1!"))
 
     # 模拟 admin 通过 update_user_info 设置 allowed_agents
     asyncio.run(UserDB.update_user_info(
@@ -264,7 +264,7 @@ def test_update_user_info_allowed_agents():
     Returns:
         None
     """
-    user_id = asyncio.run(UserDB.create_user("agent_admin_update_user", "password123"))
+    user_id = asyncio.run(UserDB.create_user("agent_admin_update_user", "P@ssword1!"))
     updated = asyncio.run(UserDB.update_user_info(
         user_id,
         real_name="",

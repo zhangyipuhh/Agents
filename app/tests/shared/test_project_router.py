@@ -26,7 +26,7 @@ def reset_state():
     UserDB._memory_id_counter = 0
     SessionDB._memory_cache.clear()
     ProjectDB._memory_cache.clear()
-    asyncio.run(UserDB.create_user("admin", "admin123", role="admin"))
+    asyncio.run(UserDB.create_user("admin", "P@ssword1!", role="admin"))
     asyncio.run(SessionDB.add_session("sess-001", 1, "admin"))
     yield
     UserDB._memory_users.clear()

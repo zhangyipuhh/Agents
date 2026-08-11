@@ -88,7 +88,7 @@ def test_whitelist_add_and_check(jwt_auth):
 
 def test_verify_credentials_memory_mode():
     """
-    测试 memory 模式下 verify_credentials 验证注入凭据（admin/admin123）。
+    测试 memory 模式下 verify_credentials 验证注入凭据（admin/P@ssword1!）。
 
     2026-08-09 改造（等保三级 Task 2）：原测试使用硬编码 ``admin/123456``，
     现已迁移为构造 ``JWTAuth(bootstrap_username, bootstrap_password)`` 并断言
@@ -100,8 +100,8 @@ def test_verify_credentials_memory_mode():
     """
     from app.shared.utils.auth.Safety import JWTAuth
 
-    auth = JWTAuth(bootstrap_username="admin", bootstrap_password="admin123")
-    result = _run_async(auth.verify_credentials("admin", "admin123"))
+    auth = JWTAuth(bootstrap_username="admin", bootstrap_password="P@ssword1!")
+    result = _run_async(auth.verify_credentials("admin", "P@ssword1!"))
     assert result is True
 
     result_wrong = _run_async(auth.verify_credentials("admin", "wrong_password"))
