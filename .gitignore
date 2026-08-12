@@ -72,6 +72,17 @@ app/**/*.xlsx
 web/Agent/node_modules/
 web/Agent/dist/
 web/Agent/public/app-config.json
+# 2026-08-12 新增:Docker HTTPS 证书目录(mkcert 私钥,不入库)
+# 注意:web/Agent/certs/ 同时被 docker-compose.yml volume bind 挂载到容器 /etc/nginx/certs/,本地需保留
+# 重新签发流程(任何时候修改 SAN 都需重签,**不限于到期**):
+#   1. mkcert 签发到 web/Agent/certs/(Docker 主路径,容器内生效):
+#      .\nginx\mkcert.exe -cert-file .\web\Agent\certs\localhost.pem -key-file .\web\Agent\certs\localhost-key.pem localhost 127.0.0.1 ::1 10.20.8.73
+#   2. 手动同步到 nginx/conf/certs/(本地 nginx/ 测试入口 nginx/conf/nginx.conf 引用此路径):
+#      Copy-Item .\web\Agent\certs\* .\nginx\conf\certs\ -Force
+#   3. 重启本地 nginx 与 docker compose(让新证书生效)
+# 证书有效期 2 年(到 2028-11-08),到期后必须重新签发
+web/Agent/certs/
+web/Agent/certs/**
 # project_memory.md
 
 # 包含 GitHub Actions 工作流（必须放在 *.yml 规则之后）

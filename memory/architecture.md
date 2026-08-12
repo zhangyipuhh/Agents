@@ -613,7 +613,7 @@ return data/upload/yyyy/mm/dd/{session_id}/
 - **证书**：`nginx/conf/certs/localhost.pem` / `localhost-key.pem`，由 `nginx/mkcert.exe` 签发
   - 主题：`O=mkcert development certificate`、`Issuer=mkcert development CA`
   - SAN：`localhost` / `127.0.0.1` / `::1` / `10.20.8.73`（2026-08-12 新增 LAN IP，便于 Docker 容器通过 LAN IP `https://10.20.8.73:9001/` 访问），有效期 2 年（到 2028-11-08）
-  - 重新签发命令：`.\nginx\mkcert.exe -cert-file .\nginx\conf\certs\localhost.pem -key-file .\nginx\conf\certs\localhost-key.pem localhost 127.0.0.1 ::1 10.20.8.73`（**必须用 `-cert-file` / `-key-file` 覆盖默认文件名**，否则 mkcert 会生成 `localhost+4.pem` 导致 nginx / docker-compose 引用断裂）
+  - 重新签发命令：`.\nginx\mkcert.exe -cert-file .\web\Agent\certs\localhost.pem -key-file .\web\Agent\certs\localhost-key.pem localhost 127.0.0.1 ::1 10.20.8.73`（**必须用 `-cert-file` / `-key-file` 覆盖默认文件名**，否则 mkcert 会生成 `localhost+4.pem` 导致 nginx / docker-compose 引用断裂）；签发后需同步到 `.\nginx\conf\certs\`（供本地 nginx/ 测试入口使用）
   - mkcert 已注册到 Windows 受信根（`mkcert -install`），浏览器访问 `https://localhost:8443` / `https://10.20.8.73:8443` 显示绿锁无警告
   - **浏览器侧缓存提醒**：mkcert 证书更新后浏览器对旧证书可能有 network-level negative cache，用户首次访问需 `Ctrl+Shift+R` 硬刷新或 DevTools → Network → Disable cache 后刷新（AGENTS.md R12）
 - **端口**：HTTP `8080` → 301 跳转 HTTPS `8443`（避开 80/443 特权端口，本地非管理员即可启动）。
@@ -625,7 +625,7 @@ return data/upload/yyyy/mm/dd/{session_id}/
   - `ssl_prefer_server_ciphers on`
   - HSTS `max-age=31536000; includeSubDomains`（`always` 标记）
 - **Windows 差异（与 Docker 版 nginx.conf）**：移除 `resolver 127.0.0.11`（Docker DNS）；`root` 改用正斜杠绝对路径 `E:/laboratory/AI/Agents/feature-agent-core-ref/web/Agent/dist`（零拷贝，前端重新构建立即生效）；`ssl_certificate` 改用正斜杠绝对路径。
-- **`web/Agent/nginx.conf` 保持 HTTP**（Docker 版不提供 TLS；HTTPS 仅在本地测试场景），但禁缓存 / CSP / SPA 路由等通用块两版保持同步。
+- **`web/Agent/nginx.conf` 保持 HTTPS**（Docker 版 2026-08-12 起启用 TLS，listen 80 ssl + 复用 mkcert 证书 + 等保三级 HSTS/ACAO，与本地版同步），但禁缓存 / CSP / SPA 路由等通用块两版保持同步。
 
 ### 启动 / 停止 / 验证
 
@@ -682,7 +682,7 @@ Vite build 产物的 `index.html` 中所有模块脚本都带 `crossorigin=""` �
 
 ### 本地进程拓扑与 checkpointer 行为契约
 
-- **端口配置点位清单**（三处必须协调一致，改任一处须同步核对）：① `nginx/conf/nginx.conf` → `location /api` 的 `proxy_pass http://127.0.0.1:8001`；② `web/Agent/vite.config.js` → `VITE_API_TARGET` 默认值 `http://localhost:8001`（可被环境变量覆盖）；③ 后端启动命令 `uvicorn app.main:app --port <port>`。另存在 `:9001` IDE debugpy `--reload` 调试实例。
+- **端口配置点位清单**（三处必须协调一致，改任一处须同步核对）：① `nginx/conf/nginx.conf` → `location /api` 的 `proxy_pass http://127.0.0.1:8001`；② `web/Agent/vite.config.js` → `VITE_API_TARGET` 默认值 `http://localhost:8001`（可被环境变量覆盖）；③ 后端启动命令 `uvicorn app.main:app --port <port>`。**2026-08-12 新增 Docker HTTPS 入口**：④ `docker-compose.yml` web-agent 服务 `9001:80` 端口映射（容器内 80 端口 `listen 80 ssl` HTTPS 独占），访问入口 `https://localhost:9001/`；⑤ `web/Agent/nginx.conf` listen 80 ssl + `ssl_certificate /etc/nginx/certs/localhost.pem`（由 `./web/Agent/certs` volume 注入，**2026-08-12 调整**：证书源路径从 `./nginx/conf/certs` 移到 `./web/Agent/certs`，让前端 Docker 镜像 TLS 配置自包含，不依赖项目根 nginx 工具链；签发后需同步到 `./nginx/conf/certs/` 供本地 nginx/ 测试使用）。另存在 `:9001` IDE debugpy `--reload` 调试实例。
 - **双后端进程并存**：`:8001`（`--host 127.0.0.1`，手动启动，是 nginx HTTPS `/api` 与 vite dev 默认代理目标）与 `:9001`（`--host 0.0.0.0 --reload`，IDE debugpy 调试实例）。vite dev（`:5173`）代理目标由 `VITE_API_TARGET` 决定（`vite.config.js` 默认 `http://localhost:8001`）。两个入口行为不一致时，先 `netstat -ano | grep LISTENING` 确认各端口归属进程，再以各自日志中的请求记录判定请求实际命中哪个后端。
 - **重启后端前必须确认目标进程 PID**：仅重启其中一个进程不影响另一个；端口被旧进程占用时新进程无法接管。
 - **checkpointer 回退契约**（`app/shared/utils/memory/checkpoint.py::get_async_checkpointer`）：`DatabasePool.is_enabled()` 为 True 但 PG 初始化失败（连接超时 / 驱动缺失等）时**回退 MemorySaver**；内存模式下仅能读写当前进程生命周期内的 checkpoint——历史会话（PG 中）读不到、新建会话进程重启即丢。启动正常的标志是日志出现 `使用 PostgreSQL 持久化模式（AsyncPostgresSaver）`；出现 `回退到内存模式` 即处于降级状态。
