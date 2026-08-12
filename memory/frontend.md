@@ -115,7 +115,14 @@
   - `OpsLogViewer.vue`：日志查看窗口（终端风格日志内容）
   - `OpsDockBar.vue`：底部 Dock 栏（毛玻璃 + 三个图标入口：服务器/日志/一键智能检测）
   - `OpsServerIcon.vue`：公共服务器图标（被 ServerWindow / DetailWindow 共用）；2026-08-05 新增 `unknown` 灰色 LED 态（从未采集 / 无快照 / 采集跳过），与 `ok` 绿、`err` 红共三态
-  - 数据：2026-08-05 起 `servers` 改为从 `GET /api/admin/server-inspection/latest` 拉取（按当前用户 `OwnershipScope` 过滤：admin 透传全量 `devops_servers`，普通用户按 `user_server_nodes` 可见集去重；响应**不含 ip**），`logFolders` 仍为 `src/data/ops-console/mockData.js` 静态 mock（日志接口未落地）；**不**走 `src/utils/api.js` 之外的 axios 封装（独立桌面，不依赖主 Agent 业务）
+  - 数据：2026-08-05 起 `servers` 改为从 `GET /api/admin/server-inspection/latest` 拉取（按当前用户 `OwnershipScope` 过滤：admin 透传全量 `devops_servers`，普通用户按 `user_server_nodes` 可见集去重；响应**不含 ip**）；**2026-08-12 起** `logFolders` 改为本地 `ref([])`，等待后端 `GET /api/admin/log-folders` 落地（接口落地期间日志管理窗口显示空态，不再持有前端 mock 数据，避免被 Vite 打生产 bundle 污染 Docker 镜像）；原 mock 数据迁入 `src/components/ops-console/__tests__/fixtures/opsConsoleMockData.js` 仅供单测使用；**不**走 `src/utils/api.js` 之外的 axios 封装（独立桌面，不依赖主 Agent 业务）
+
+#### logFolders 去前端 mock（2026-08-12 落地）
+
+- **根因**：`src/data/ops-console/mockData.js` 此前被 `OpsConsoleApp.vue` 生产代码 `import { logFolders } from '../../data/ops-console/mockData.js'` 直接依赖，Vite 通过 `import graph` 把整个 mock 数据（4 个文件夹 / 10 个文件名 / 时间戳字符串）打入生产 bundle 污染 Docker 镜像
+- **修法**：mock 数据迁入 `src/components/ops-console/__tests__/fixtures/opsConsoleMockData.js`（路径已落在 Vitest 自动发现的 `__tests__/` 子树下，被 `include` 收集但不会进生产 bundle）；`OpsConsoleApp.vue` 改为 `const logFolders = ref([])` 等待后端接口落地
+- **接入点**：后端 `GET /api/admin/log-folders` 落地后，只需在 `OpsConsoleApp.vue::onMounted` 内新增 `loadLogFolders()` 调 `fetchWithAuth('/api/admin/log-folders')` 写入 `logFolders.value`，无需调整 `OpsLogManager.vue`（其 `folders` prop 本就要求 `Array`，空数组 + v-for 自然渲染空态）
+- **契约测试**：`src/components/ops-console/__tests__/logFoldersDataSource.spec.js`（P0 fixture 可导入 + 数据结构完整 + `OpsConsoleApp.vue` 源码不再含 `src/data` 路径字符串 + 不再含 `import { logFolders }` + 仍声明本地 `ref([])`），防止后续误回退到旧 mock 路径
   - 跳转：Sidebar.vue `handleMenuClick('ops-console')` 2026-08-08 等保三级改造：由 `window.open('/ops-console.html', '_blank', 'noopener')` 改为 `emit('page-change', 'ops-console')`，行为与「新建任务」一致（active 视觉保留）；不注册 menu（用户级入口，非管理 Tab）；知识库入口仍保留独立 `window.open('/knowledge.html')`（业务上需要在多 Tab 长期挂着的会话流，与运维控制台场景不同）
 - **聊天**：`ChatArea.vue`、`InputBox.vue`、`MessageBubble.vue`、`SkillTags.vue`、`HumanApprovalBox.vue`、`TopBar.vue`
   - `ChatArea.vue`（2026-07-01 新增，2026-07-02 修正头部 sticky + 改为撑满主区宽度与贴顶，2026-07-02 二次修正 header 内部居中，2026-07-02 三次修复滚动按钮「跳一下又回到原位」竞态）：顶部显示会话名称（`sessionName`）与绿色文件夹图标按钮；头部使用 `position: sticky` 固定在聊天区域顶部，不随消息滚动；header **外层** `.chat-area-header` 撑满主区宽度（背景色铺满两侧），**内层** `.chat-area-header-inner` 与下方 `.messages-container` 一致采用 `max-width: 900px + margin: 0 auto + padding: 0 40px` 居中布局，实现"外层连接两侧 + 内容向中间靠拢与聊天区对齐"；紧贴主区顶部（去掉 chat-area 顶 padding、改为 header 外层 padding: 8px 0），与左侧 sidebar-logo 形成水平对齐节奏；点击图标 emit `open-session-file-drawer` 事件，由 `App.vue` 打开右侧会话文件抽屉

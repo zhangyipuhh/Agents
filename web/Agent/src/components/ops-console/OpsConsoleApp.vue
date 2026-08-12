@@ -21,6 +21,10 @@
  *   - wins: { servers, detail, logs, logview } 各窗口的开关/位置/层级/最大化
  *   - detailServer: ServerItem | null      当前展示详情的服务器
  *   - activeFolder: number                 当前日志文件夹下标
+ *   - logFolders: Array<LogFolder>         日志文件夹列表（2026-08-12 起由
+ *                                          ``GET /api/admin/log-folders`` 填充；
+ *                                          接口未落地前保持空数组，前端不再持有
+ *                                          mock 数据，详见 __tests__/fixtures/）
  *   - logFile: { name, content } | null    当前查看的日志文件
  *   - detailRef: ref to OpsDetailWindow    用于触发 runDetect
  *
@@ -38,7 +42,6 @@ import OpsDetailWindow from './OpsDetailWindow.vue'
 import OpsLogManager from './OpsLogManager.vue'
 import OpsLogViewer from './OpsLogViewer.vue'
 import OpsDockBar from './OpsDockBar.vue'
-import { logFolders } from '../../data/ops-console/mockData.js'
 import { fetchServerInspectionLatest, validateToken } from '../../utils/api.js'
 
 const currentTime = ref('')
@@ -52,6 +55,10 @@ const wins = ref({
 })
 const detailServer = ref(null)
 const activeFolder = ref(0)
+// 2026-08-12：logFolders 由后端 /api/admin/log-folders 提供（待落地）；
+// 此前由 ``../../data/ops-console/mockData.js`` 兜底，2026-08-12 起移除
+// 前端 mock，接口未落地期间保持空数组（日志管理窗口打开后显示空态）。
+const logFolders = ref([])
 const logFile = ref(null)
 const detailRef = ref(null)
 
