@@ -9,7 +9,7 @@ FROM python:3.11-slim as builder
 
 WORKDIR /app
 
-RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true && \
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|http://|https://|g' /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true && \
     apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
@@ -33,7 +33,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true && \
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|http://|https://|g' /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true && \
     apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     ripgrep \
