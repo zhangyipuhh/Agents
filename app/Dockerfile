@@ -18,7 +18,7 @@ RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|http://|https://|g' /etc/ap
     build-essential && \
     rm -rf /var/lib/apt/lists/*
 
-RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple && \
+RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/ && \
     pip config set global.timeout 600 && \
     pip install --no-cache-dir --upgrade pip setuptools wheel
 
@@ -62,7 +62,7 @@ EXPOSE 8001
 
 ENV PYTHONPATH=/app \
     PYTHONUNBUFFERED=1 \
-    PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+    PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
     PIP_TIMEOUT=600 \
     OPENBLAS_NUM_THREADS=1 \
     OMP_NUM_THREADS=1 \
