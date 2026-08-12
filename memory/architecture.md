@@ -612,8 +612,10 @@ return data/upload/yyyy/mm/dd/{session_id}/
 - **入口**：`nginx/conf/nginx.conf`（覆盖默认配置；与 `web/Agent/nginx.conf` 同步 + HTTPS 扩展）。
 - **证书**：`nginx/conf/certs/localhost.pem` / `localhost-key.pem`，由 `nginx/mkcert.exe` 签发
   - 主题：`O=mkcert development certificate`、`Issuer=mkcert development CA`
-  - 覆盖：`localhost` / `127.0.0.1` / `::1`，有效期 2 年（到 2028-11-08）
-  - mkcert 已注册到 Windows 受信根（`mkcert -install`），浏览器访问 https://localhost:8443 显示绿锁无警告
+  - SAN：`localhost` / `127.0.0.1` / `::1` / `10.20.8.73`（2026-08-12 新增 LAN IP，便于 Docker 容器通过 LAN IP `https://10.20.8.73:9001/` 访问），有效期 2 年（到 2028-11-08）
+  - 重新签发命令：`.\nginx\mkcert.exe -cert-file .\nginx\conf\certs\localhost.pem -key-file .\nginx\conf\certs\localhost-key.pem localhost 127.0.0.1 ::1 10.20.8.73`（**必须用 `-cert-file` / `-key-file` 覆盖默认文件名**，否则 mkcert 会生成 `localhost+4.pem` 导致 nginx / docker-compose 引用断裂）
+  - mkcert 已注册到 Windows 受信根（`mkcert -install`），浏览器访问 `https://localhost:8443` / `https://10.20.8.73:8443` 显示绿锁无警告
+  - **浏览器侧缓存提醒**：mkcert 证书更新后浏览器对旧证书可能有 network-level negative cache，用户首次访问需 `Ctrl+Shift+R` 硬刷新或 DevTools → Network → Disable cache 后刷新（AGENTS.md R12）
 - **端口**：HTTP `8080` → 301 跳转 HTTPS `8443`（避开 80/443 特权端口，本地非管理员即可启动）。
 - **同步 `web/Agent/nginx.conf` 内容**：CSP / X-Frame-Options / X-Content-Type-Options / Referrer-Policy / gzip / SPA 路由（`/`、`/knowledge`、`/ops-console`、`/portal`、`/login`）/ **HTML 入口禁缓存（`location ~* \.html$`，`no-cache, no-store, must-revalidate`，块内需显式重复全部安全头；本地版不得保留 `location = /index.html` 精确匹配块——精确匹配优先级高于正则会绕过禁缓存）** / 静态资源 1y 缓存 / `/health`。
 - **/api 代理**：直接写死 `http://127.0.0.1:8001`（Windows 无 envsubst，与 Docker 模板 `${VITE_API_TARGET}` 解耦）；保留 SSE 流式（`proxy_buffering off`）+ WebSocket Upgrade + 300s 读超时。
