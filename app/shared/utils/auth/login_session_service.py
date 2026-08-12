@@ -72,16 +72,33 @@ async def issue_browser_login_session(
     role: str = user.get("role", "user")
     amr_list: List[str] = list(auth_methods) if auth_methods else []
 
-    # 1) 签发 Access Token（含 amr）
-    access_token = await jwt_auth.generate_token(username, auth_methods=amr_list or None)
-
-    # 2) 签发 Refresh Token（含 amr，供 /refresh 透传到新 access_token）
-    refresh_token = await jwt_auth.generate_refresh_token(
-        username, auth_methods=amr_list or None
+    # 1) 签发 Access Token（含 amr；2026-08-11 强化 payload 携带 user_id）
+    access_token = await jwt_auth.generate_token(
+        username, user_id=user_id, auth_methods=amr_list or None
     )
+
+    # 2) 签发 Refresh Token（含 amr，供 /refresh 透传到新 access_token；携带 user_id）
+    refresh_token = await jwt_auth.generate_refresh_token(
+        username, user_id=user_id, auth_methods=amr_list or None
+    )
+
+    # 2026-08-11 等保三级 §1.7：并发会话数量限制。
+    # 新登录前先踢出最旧会话，仅保留最近 N-1 条 Refresh Token + 新签发 1 条 = N 条。
+    from app.core.config.settings import settings as _settings
+    max_sessions = getattr(
+        _settings.auth, "max_concurrent_sessions", 5
+    ) if hasattr(_settings, "auth") else 5
+    if user_id is not None:
+        await RefreshTokenDB.delete_oldest_tokens(
+            int(user_id), keep_count=max(0, max_sessions - 1)
+        )
+
     token_hash = RefreshTokenDB.hash_token(refresh_token)
     expires_at = datetime.utcnow() + timedelta(hours=24)
-    stored = await RefreshTokenDB.store_token(token_hash, user_id, expires_at)
+    # 2026-08-11：store_token 接受 username 参数，便于 /refresh 路径重签发
+    stored = await RefreshTokenDB.store_token(
+        token_hash, user_id, expires_at, username=username
+    )
     if not stored:
         # store_token 已 fail-soft 但仍断言
         raise RuntimeError("refresh_tokens 表写入失败")

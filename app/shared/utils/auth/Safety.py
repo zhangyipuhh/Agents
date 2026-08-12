@@ -122,11 +122,21 @@ class JWTAuth:
             )
         return username == self.bootstrap_username and password == self.bootstrap_password
     
-    async def generate_token(self, username: str, auth_methods: Optional[List[str]] = None) -> str:
-        """生成 Access Token；可选携带 ``amr`` 字段（Authentication Methods Reference）。
+    async def generate_token(
+        self,
+        username: str,
+        user_id: Optional[int] = None,
+        auth_methods: Optional[List[str]] = None,
+    ) -> str:
+        """生成 Access Token；payload 显式携带 ``user_id`` 与可选 ``amr`` 字段。
+
+        2026-08-11 等保三级 §1.7 强化：payload 必须包含 ``user_id``，便于
+        ``authenticate`` 与审计日志在不依赖额外数据库查询的前提下识别用户唯一标识。
 
         Args:
             username: 用户名（subject 字段）。
+            user_id: 用户唯一 ID（数字主键）。``None`` 时不写入 ``user_id`` 字段（保留
+                旧 token 行为，便于过渡期兼容；新调用方必须显式传入）。
             auth_methods: 认证方法标记（``["pwd","totp"]`` / ``["pwd","recovery_code"]``），
                 None/空 list 时不写入 ``amr`` 字段（保持旧行为）。
 
@@ -144,6 +154,8 @@ class JWTAuth:
                 "exp": datetime.utcnow() + timedelta(minutes=30),
                 "iat": datetime.utcnow(),
             }
+            if user_id is not None:
+                payload["user_id"] = int(user_id)
             if auth_methods:
                 if not isinstance(auth_methods, list):
                     raise TypeError(
@@ -163,13 +175,19 @@ class JWTAuth:
     async def generate_refresh_token(
         self,
         username: str,
+        user_id: Optional[int] = None,
         expires_delta: Optional[timedelta] = None,
         auth_methods: Optional[List[str]] = None,
     ) -> str:
-        """生成 Refresh Token；可选携带 ``amr`` 字段（被 /refresh 用于透传到新 Access Token）。
+        """生成 Refresh Token；payload 显式携带 ``user_id`` 与可选 ``amr`` 字段。
+
+        2026-08-11 等保三级 §1.7 强化：``/refresh`` 路径必须能直接从 payload 读取
+        ``user_id`` 而无需按 username 再次查询数据库。
 
         Args:
             username: 用户名。
+            user_id: 用户唯一 ID（数字主键）。``None`` 时不写入 ``user_id`` 字段（保留
+                旧 token 行为，便于过渡期兼容；新调用方必须显式传入）。
             expires_delta: 可选 TTL（默认 24h）。
             auth_methods: 认证方法标记；与 ``generate_token`` 行为一致。
 
@@ -187,6 +205,8 @@ class JWTAuth:
                 "exp": datetime.utcnow() + (expires_delta or timedelta(hours=24)),
                 "iat": datetime.utcnow(),
             }
+            if user_id is not None:
+                payload["user_id"] = int(user_id)
             if auth_methods:
                 if not isinstance(auth_methods, list):
                     raise TypeError(
@@ -342,15 +362,20 @@ class JWTAuth:
 
         # 将用户信息存储到 request.state，方便后续使用
         username = payload.get("username")
+        # 2026-08-11 等保三级 §1.7：优先从 payload 取 user_id（避免每次请求额外查 DB）。
+        # 兼容历史 token：旧 token 无 user_id 时回退到按 username 查 DB。
+        user_id_from_payload = payload.get("user_id")
         request.state.username = username
         request.state.payload = payload
 
-        # 查询用户角色并存储到 request.state
+        # 查询用户角色与最终 user_id（user_id 必须以 DB 为准，避免 token 伪造的极端情况）
         from app.shared.utils.auth.user_db import UserDB
         user = await UserDB.get_user_by_username(username)
         if user:
             request.state.role = user.get('role', 'user')
-            request.state.user_id = user.get('id')
+            # 若 payload 中已有 user_id，保留它（性能更高），但与 DB 不一致时以 DB 为准
+            final_user_id = user.get('id')
+            request.state.user_id = final_user_id if final_user_id is not None else user_id_from_payload
             # 2026-07-24：allowed_agents 数据源从 users.allowed_agents (JSONB 旧字段)
             # 切换到 user_agent_acl (新表，由「智能体访问」Tab 维护)。
             # admin 不受 ACL 限制，返 [] 让上游 agent_router 走 admin bypass；
@@ -373,7 +398,7 @@ class JWTAuth:
                     request.state.allowed_agents = []
         else:
             request.state.role = 'user'
-            request.state.user_id = None
+            request.state.user_id = user_id_from_payload
             request.state.allowed_agents = []
 
         return payload

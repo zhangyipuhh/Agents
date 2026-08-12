@@ -677,3 +677,83 @@ def test_jwt_auth_verify_credentials_rejects_default_hardcoded(monkeypatch):
     auth = JWTAuth()
     with pytest.raises(RuntimeError):
         _run_async(auth.verify_credentials("admin", "123456"))
+
+
+# ============================================================
+# 2026-08-11 等保三级 §1.7：JWT payload 携带 user_id 测试
+# ============================================================
+
+
+def test_generate_token_payload_contains_user_id(jwt_auth):
+    """Access Token payload 必须包含 ``user_id`` 字段（等保三级 §1.7 强化）。
+
+    Args:
+        jwt_auth: JWTAuth 实例（来自 conftest）
+
+    Returns:
+        None
+    """
+    token = _run_async(jwt_auth.generate_token("alice", user_id=42))
+    payload = jwt.decode(
+        token, jwt_auth.secret_key, algorithms=[jwt_auth.algorithm]
+    )
+    assert payload["username"] == "alice"
+    assert payload["user_id"] == 42
+    assert payload["type"] == "access"
+
+
+def test_generate_refresh_token_payload_contains_user_id(jwt_auth):
+    """Refresh Token payload 必须包含 ``user_id`` 字段。
+
+    Args:
+        jwt_auth: JWTAuth 实例（来自 conftest）
+
+    Returns:
+        None
+    """
+    token = _run_async(
+        jwt_auth.generate_refresh_token("alice", user_id=42)
+    )
+    payload = jwt.decode(
+        token, jwt_auth.secret_key, algorithms=[jwt_auth.algorithm]
+    )
+    assert payload["username"] == "alice"
+    assert payload["user_id"] == 42
+    assert payload["type"] == "refresh"
+
+
+def test_generate_token_without_user_id_omits_field(jwt_auth):
+    """兼容旧调用：``user_id=None`` 时 payload 不写 ``user_id`` 字段。
+
+    Args:
+        jwt_auth: JWTAuth 实例（来自 conftest）
+
+    Returns:
+        None
+    """
+    token = _run_async(jwt_auth.generate_token("alice"))
+    payload = jwt.decode(
+        token, jwt_auth.secret_key, algorithms=[jwt_auth.algorithm]
+    )
+    assert "user_id" not in payload
+
+
+def test_generate_token_with_user_id_and_amr(jwt_auth):
+    """``user_id`` 与 ``amr`` 同时存在时互不干扰。
+
+    Args:
+        jwt_auth: JWTAuth 实例（来自 conftest）
+
+    Returns:
+        None
+    """
+    token = _run_async(
+        jwt_auth.generate_token(
+            "alice", user_id=42, auth_methods=["pwd", "totp"]
+        )
+    )
+    payload = jwt.decode(
+        token, jwt_auth.secret_key, algorithms=[jwt_auth.algorithm]
+    )
+    assert payload["user_id"] == 42
+    assert payload["amr"] == ["pwd", "totp"]

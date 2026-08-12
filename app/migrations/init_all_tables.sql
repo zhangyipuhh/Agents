@@ -159,12 +159,15 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
     id              SERIAL PRIMARY KEY,
     token_hash      VARCHAR(255) UNIQUE NOT NULL,
     user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    username        VARCHAR(100),
     expires_at      TIMESTAMP NOT NULL,
     created_at      TIMESTAMP DEFAULT NOW()
 );
 -- 防御性补齐
 ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS token_hash VARCHAR(255);
 ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS user_id    INTEGER;
+-- 2026-08-11 增强：username 列支持 /refresh 路径重签发新 Access Token
+ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS username  VARCHAR(100);
 ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP;
 ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
 -- 索引

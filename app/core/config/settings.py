@@ -451,6 +451,15 @@ class AuthBootstrapSettings(BaseSettings):
             "大写 + 小写 + 数字 + 特殊字符；环境变量 AUTH_DEFAULT_ADMIN_PASSWORD。"
         ),
     )
+    max_concurrent_sessions: int = Field(
+        default=5,
+        ge=1,
+        description=(
+            "同一账号最大并发会话数（按未过期 Refresh Token 计数）；"
+            "新登录会自动踢出最旧会话，仅保留最近 N-1 条 + 新签发 1 条。"
+            "环境变量 AUTH_MAX_CONCURRENT_SESSIONS。"
+        ),
+    )
 
     @field_validator("default_admin_password", mode="before")
     @classmethod

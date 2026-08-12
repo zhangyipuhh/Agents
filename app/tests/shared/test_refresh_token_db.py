@@ -63,6 +63,130 @@ def test_store_and_verify_token():
     assert result["user_id"] == 1
 
 
+def test_store_and_verify_token_with_username():
+    """2026-08-11 增强：store_token 接受 username 参数，verify_token 返回 username。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: username 未正确保存或返回时抛出。
+    """
+    token = "my-refresh-token-with-username"
+    token_hash = RefreshTokenDB.hash_token(token)
+    expires = datetime.utcnow() + timedelta(hours=1)
+    asyncio.run(
+        RefreshTokenDB.store_token(token_hash, 42, expires, username="alice")
+    )
+
+    result = asyncio.run(RefreshTokenDB.verify_token(token_hash))
+    assert result is not None
+    assert result["user_id"] == 42
+    assert result["username"] == "alice"
+
+
+def test_count_active_tokens_memory_mode():
+    """memory 模式下 count_active_tokens 正确返回未过期 token 数量。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 计数不正确时抛出。
+    """
+    now = datetime.utcnow()
+    # 2 个有效 + 1 个过期
+    asyncio.run(
+        RefreshTokenDB.store_token(
+            RefreshTokenDB.hash_token("t1"), 7, now + timedelta(hours=1)
+        )
+    )
+    asyncio.run(
+        RefreshTokenDB.store_token(
+            RefreshTokenDB.hash_token("t2"), 7, now + timedelta(hours=2)
+        )
+    )
+    asyncio.run(
+        RefreshTokenDB.store_token(
+            RefreshTokenDB.hash_token("t3-expired"),
+            7,
+            now - timedelta(hours=1),
+        )
+    )
+    # 另一用户的 token 不计入
+    asyncio.run(
+        RefreshTokenDB.store_token(
+            RefreshTokenDB.hash_token("t-other"), 8, now + timedelta(hours=1)
+        )
+    )
+
+    cnt = asyncio.run(RefreshTokenDB.count_active_tokens(7))
+    assert cnt == 2
+
+
+def test_delete_oldest_tokens_memory_mode_keeps_recent():
+    """memory 模式下 delete_oldest_tokens 删除最旧的，保留最新 N 条。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 保留数量不正确时抛出。
+    """
+    # 通过 created_at 自然递增，store_token 内部记录 utcnow
+    expires = datetime.utcnow() + timedelta(hours=10)
+    hashes = []
+    for i in range(5):
+        h = RefreshTokenDB.hash_token(f"token-{i}")
+        asyncio.run(RefreshTokenDB.store_token(h, 99, expires))
+        hashes.append(h)
+
+    # 保留最近 2 条，删除 3 条最旧
+    deleted = asyncio.run(RefreshTokenDB.delete_oldest_tokens(99, keep_count=2))
+    assert deleted == 3
+
+    remaining = asyncio.run(RefreshTokenDB.count_active_tokens(99))
+    assert remaining == 2
+
+    # 最新 2 条仍存在（token-3, token-4）
+    for h in hashes[3:]:
+        assert asyncio.run(RefreshTokenDB.verify_token(h)) is not None
+    for h in hashes[:3]:
+        assert asyncio.run(RefreshTokenDB.verify_token(h)) is None
+
+
+def test_delete_oldest_tokens_keep_zero_deletes_all():
+    """keep_count=0 应删除该用户全部活跃 token。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 删除数量不正确时抛出。
+    """
+    expires = datetime.utcnow() + timedelta(hours=10)
+    for i in range(3):
+        asyncio.run(
+            RefreshTokenDB.store_token(
+                RefreshTokenDB.hash_token(f"k0-{i}"), 100, expires
+            )
+        )
+    deleted = asyncio.run(RefreshTokenDB.delete_oldest_tokens(100, keep_count=0))
+    assert deleted == 3
+    assert asyncio.run(RefreshTokenDB.count_active_tokens(100)) == 0
+
+
+def test_delete_oldest_tokens_negative_raises():
+    """keep_count < 0 应抛 ValueError（防御性）。
+
+    Returns:
+        None
+    """
+    import pytest
+    with pytest.raises(ValueError):
+        asyncio.run(RefreshTokenDB.delete_oldest_tokens(1, keep_count=-1))
+
+
 def test_verify_expired_token():
     """
     测试已过期的 token 验证返回 None。

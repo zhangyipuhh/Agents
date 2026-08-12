@@ -125,7 +125,7 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 ### AuthBootstrapSettings
 
 - **配置位置**：`Settings.auth`（`app/core/config/settings.py`），env 前缀 `AUTH_`。
-- **字段**：`bootstrap_enabled`（默认 `false`）、`default_admin_username`（默认 `admin`）、`default_admin_password`（必须通过 `validate_password`；`bootstrap_enabled=True` 时必填）。
+- **字段**：`bootstrap_enabled`（默认 `false`）、`default_admin_username`（默认 `admin`）、`default_admin_password`（必须通过 `validate_password`；`bootstrap_enabled=True` 时必填）、`max_concurrent_sessions`（默认 `5`，env `AUTH_MAX_CONCURRENT_SESSIONS`，>=1）。
 - **启动契约**（`UserDB.ensure_admin_exists(settings)`）：
   1. 存在 admin 且哈希不属于 `{admin123, 123456}` → 静默返回。
   2. 存在 admin 且哈希命中已知弱默认集：
@@ -135,6 +135,22 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
      - `bootstrap_enabled=True` → 用默认口令创建。
      - 否则 → `RuntimeError` 启动失败并 `logger.error`。
 - **生产部署约束**：首次将历史部署升级至本版本时，需在 `.env` 设置 `AUTH_BOOTSTRAP_ENABLED=true` 与满足复杂度的 `AUTH_DEFAULT_ADMIN_PASSWORD`，完成一次弱口令轮换后再将 `AUTH_BOOTSTRAP_ENABLED` 置 `false`。
+
+### JWT payload 中的用户唯一标识（2026-08-11 增强）
+
+- Access Token 与 Refresh Token payload **显式**携带 `user_id` 字段，由签发路径 `JWTAuth.generate_token(username, user_id, ...)` / `generate_refresh_token(username, user_id, ...)` 显式传入。
+- `JWTAuth.authenticate` 优先从 payload 取 `user_id` 设置 `request.state.user_id`，再回退到 `UserDB.get_user_by_username` 取最新 `id`/role（DB 永远为准，保证伪造 token 不会绕过用户被删除/锁定状态）。
+- `/api/auth/validate` 同样优先 payload 中的 `user_id`，缺省时按 username 查询。
+- `/api/auth/refresh` 直接从 `refresh_tokens.username` 列读取 username 与 `user_id`，签发新 Access Token，不再依赖额外 DB 查询。
+- DB 迁移：`refresh_tokens` 表新增 `username VARCHAR(100)` 列；`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS username VARCHAR(100)`（幂等）。
+
+### 并发会话数量限制（2026-08-11 增强）
+
+- **配置**：`settings.auth.max_concurrent_sessions`（env `AUTH_MAX_CONCURRENT_SESSIONS`，默认 `5`，>=1）。
+- **签发入口**：`/login`、`/login-api`、`issue_browser_login_session` 在签发新 Refresh Token **之前**调用 `RefreshTokenDB.delete_oldest_tokens(user_id, keep_count=N-1)`，仅保留最近 N-1 条 + 新签发 1 条 = N 条。
+- **数据库方法**：`RefreshTokenDB.delete_oldest_tokens(user_id, keep_count)` 通过 `WITH ranked AS (ROW_NUMBER() OVER (ORDER BY created_at DESC, id DESC))` 删除排名靠后的旧记录；memory 模式按 `created_at` 升序切片删除。
+- **统计接口**：`RefreshTokenDB.count_active_tokens(user_id)` 返回当前未过期 Refresh Token 数量，供未来审计/监控使用。
+- **审计字段保留**：踢出旧会话不影响 `audit_logs` 表（历史记录不删），但被踢会话下次调 `/refresh` 时 `verify_token` 返回 None → 401。
 
 ### 权限控制
 

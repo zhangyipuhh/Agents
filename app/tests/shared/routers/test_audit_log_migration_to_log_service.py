@@ -177,7 +177,7 @@ def test_auth_router_login_success_emits_log_event(capturing_log_service, monkey
 
     from app.shared.utils.auth.refresh_token_db import RefreshTokenDB
 
-    async def fake_store_token(token_hash, user_id, expires_at):
+    async def fake_store_token(token_hash, user_id, expires_at, username=""):
         return True
 
     monkeykey = monkeypatch  # alias
@@ -547,7 +547,7 @@ def test_auth_router_login_succeeds_when_log_service_missing(monkeypatch):
         fake_get_user,
     )
 
-    async def fake_store_token(token_hash, user_id, expires_at):
+    async def fake_store_token(token_hash, user_id, expires_at, username=""):
         return True
 
     monkeypatch.setattr(
@@ -597,7 +597,7 @@ def test_auth_router_login_succeeds_when_emit_raises(monkeypatch):
         fake_get_user,
     )
 
-    async def fake_store_token(token_hash, user_id, expires_at):
+    async def fake_store_token(token_hash, user_id, expires_at, username=""):
         return True
 
     monkeypatch.setattr(

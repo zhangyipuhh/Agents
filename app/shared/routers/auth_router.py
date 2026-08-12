@@ -825,15 +825,31 @@ async def login_api(request: ApiLoginRequest, req: Request, response: Response):
     role = user.get('role', 'user') if user else 'user'
     user_id = user.get('id') if user else None
 
-    # 生成 Access Token（JSON body 返回）
-    access_token = await jwt_auth.generate_token(request.username)
+    # 生成 Access Token（JSON body 返回；2026-08-11 携带 user_id）
+    access_token = await jwt_auth.generate_token(request.username, user_id=user_id)
 
-    # 生成 Refresh Token（HttpOnly Cookie 传递）
+    # 生成 Refresh Token（HttpOnly Cookie 传递；携带 user_id）
     from app.shared.utils.auth.refresh_token_db import RefreshTokenDB
-    refresh_token = await jwt_auth.generate_refresh_token(request.username)
+    refresh_token = await jwt_auth.generate_refresh_token(
+        request.username, user_id=user_id
+    )
+
+    # 2026-08-11 等保三级 §1.7：并发会话数量限制——踢出最旧会话。
+    max_sessions = (
+        settings.auth.max_concurrent_sessions
+        if hasattr(settings, "auth") and hasattr(settings.auth, "max_concurrent_sessions")
+        else 5
+    )
+    if user_id is not None:
+        await RefreshTokenDB.delete_oldest_tokens(
+            int(user_id), keep_count=max(0, max_sessions - 1)
+        )
+
     token_hash = RefreshTokenDB.hash_token(refresh_token)
     expires_at = datetime.utcnow() + timedelta(hours=24)
-    await RefreshTokenDB.store_token(token_hash, user_id, expires_at)
+    await RefreshTokenDB.store_token(
+        token_hash, user_id, expires_at, username=request.username
+    )
 
     # 通过 Set-Cookie 设置 Refresh Token
     cookie_cfg = settings.auth_cookie
@@ -950,13 +966,16 @@ async def refresh_token(request: Request, response: Response):
             detail="Refresh Token 已失效，请重新登录"
         )
 
-    # 生成新的 Access Token（从记录中取 username，优先于 JWT payload，确保与存储一致）
+    # 生成新的 Access Token（从记录中取 username/user_id，优先于 JWT payload，确保与存储一致）
     username = record.get("username") or payload.get("username")
+    # 2026-08-11：user_id 优先从记录或 payload 取（减少额外 DB 查询）
+    user_id = record.get("user_id") or payload.get("user_id")
     # 2026-08-07 新增：透传 amr。如果旧 refresh token 携带 amr（如 admin 完成 MFA 后签发），
     # 新 access token 同样携带；旧 token 无 amr 时保持原行为（不写入 amr 字段）。
     amr = payload.get("amr") if isinstance(payload, dict) else None
     access_token = await jwt_auth.generate_token(
         username,
+        user_id=user_id,
         auth_methods=amr if isinstance(amr, list) else None,
     )
 
@@ -1022,10 +1041,11 @@ async def issue_portal_refresh_token(req: Request):
     # 先删除该用户所有旧的 portal refresh_token，确保一个用户只有一条记录
     await PortalRefreshTokenDB.delete_user_tokens(user_id)
 
-    # 生成门户子 refresh_token（与主 token 统一为 JWT 格式）
+    # 生成门户子 refresh_token（与主 token 统一为 JWT 格式；携带 user_id）
     ttl_seconds = settings.portal_auth.portal_refresh_token_ttl_seconds
     portal_refresh_token = await jwt_auth.generate_refresh_token(
         username,
+        user_id=user_id,
         expires_delta=timedelta(seconds=ttl_seconds)
     )
 
@@ -1073,10 +1093,15 @@ async def validate_token(request: Request):
         )
 
     # 查询角色和用户ID
+    # 2026-08-11 等保三级 §1.7：优先使用 payload 中的 user_id（避免额外 DB 查询）。
+    # payload 无 user_id（兼容旧 token）时回退到按 username 查询。
     from app.shared.utils.auth.user_db import UserDB
+    user_id_from_payload = payload.get("user_id")
     user = await UserDB.get_user_by_username(payload["username"])
     role = user.get('role', 'user') if user else 'user'
-    user_id = user.get('id') if user else None
+    # 优先以 DB 为准（保证角色与用户状态实时），user_id 缺失时回退 payload
+    db_user_id = user.get('id') if user else None
+    user_id = db_user_id if db_user_id is not None else user_id_from_payload
 
     visible_menus = await _compute_visible_menus(request, user_id, role)
 
