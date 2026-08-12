@@ -1,48 +1,5 @@
 <div align="center">
 
-# Agent Core
-
-**面向 LLM · RAG · Agent 场景的企业级智能体运行框架**
-
-<table align="center">
-  <thead>
-    <tr>
-      <th align="center">🧠 核心框架</th>
-      <th align="center">🤖 LLM Provider</th>
-      <th align="center">🛠️ 基础设施</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td align="center">
-        <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python"><br>
-        <img src="https://img.shields.io/badge/LangGraph-1.1.10-FF4D6D?style=flat-square" alt="LangGraph"><br>
-        <img src="https://img.shields.io/badge/LangChain-1.2.16-1C3C3C?style=flat-square" alt="LangChain"><br>
-        <img src="https://img.shields.io/badge/Pydantic-2.12.5-E92063?style=flat-square" alt="Pydantic"><br>
-        <img src="https://img.shields.io/badge/FastAPI-0.128.0-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI">
-      </td>
-      <td align="center">
-        <img src="https://img.shields.io/badge/OpenAI-2.14.0-412991?style=flat-square" alt="OpenAI"><br>
-        <img src="https://img.shields.io/badge/Anthropic-0.97.0-D4A574?style=flat-square" alt="Anthropic"><br>
-        <img src="https://img.shields.io/badge/DeepSeek-1.0.1-0066CC?style=flat-square" alt="DeepSeek"><br>
-        <img src="https://img.shields.io/badge/Ollama-0.6.1-000000?style=flat-square" alt="Ollama">
-      </td>
-      <td align="center">
-        <img src="https://img.shields.io/badge/asyncpg-0.31.0-FF6B6B?style=flat-square" alt="asyncpg"><br>
-        <img src="https://img.shields.io/badge/PostgreSQL-16-336791?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL"><br>
-        <img src="https://img.shields.io/badge/MCP-1.27.1-000000?style=flat-square" alt="MCP"><br>
-        <img src="https://img.shields.io/badge/Docker-7.1.0-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
-      </td>
-    </tr>
-  </tbody>
-</table>
-
-<p align="center">
-  🚀 基于 <b>LangGraph v1.0</b> + <b>LangChain</b> · 多 Provider LLM 工厂 · 三层提示词协议 · SSE 流式策略 · MCP 工具生态
-</p>
-
-</div>
-
 ---
 
 <details>
@@ -142,15 +99,16 @@
 
 `project` 智能体面向软件工程团队的两类核心痛点：
 
-| 业务线 | 解决什么问题 | 典型产物 |
-|---|---|---|
-| **项目文档工作流** | 策划表/需求规格/概要设计/详细设计/测试计划/测试报告/验收报告/实施部署/培训计划 等 10 类软件工程文档的查询、生成与更新；多项目管理框架（PMP / PRINCE2 / 信息系统项目管理师）支持 | 实施方案、需求规格书、概要/详细设计文档、测试报告、验收报告等 `.docx` 交付物 |
-| **项目运维管理** | 运维记录汇总（巡检结果/告警/人工处理）、飞书消息同步、需求/修改单插入、主动巡检 + 定时巡检（对接 `TaskSchedulerService` 5 段 crontab） | 运维日报/周报、飞书卡片、需求工单、修改单、巡检报告 |
+| 业务线                   | 解决什么问题                                                                                                                                                                    | 典型产物                                                                      |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| **项目文档工作流** | 策划表/需求规格/概要设计/详细设计/测试计划/测试报告/验收报告/实施部署/培训计划 等 10 类软件工程文档的查询、生成与更新；多项目管理框架（PMP / PRINCE2 / 信息系统项目管理师）支持 | 实施方案、需求规格书、概要/详细设计文档、测试报告、验收报告等`.docx` 交付物 |
+| **项目运维管理**   | 运维记录汇总（巡检结果/告警/人工处理）、飞书消息同步、需求/修改单插入、主动巡检 + 定时巡检（对接`TaskSchedulerService` 5 段 crontab）                                         | 运维日报/周报、飞书卡片、需求工单、修改单、巡检报告                           |
 
 ### 2. 已落地的能力 — 项目文档线
 
 - **入口契约**：[agents/project/AGENTS.md](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/agents/project/AGENTS.md) 明确智能体职责、工具清单与 skill 触发条件
 - **已实现的 7 个 skill**：
+
   - `project-doc-overview` — 套件总览与分流入口（模型自读入口文档）
   - `project-doc-hub` — 文档生成/查询/更新的统一调度入口
   - `project-doc-query` — 回答"项目里有什么 / 何时评审 / 谁负责"等事实性问题
@@ -175,8 +133,8 @@
   # 输出 Word 交付物
   generate_project_docx(content=doc_body, output_path="<项目根>/03_技术文档及评审/...")
   ```
-
 - **核心约束**（来自 AGENTS.md 硬规则）：
+
   - **统一澄清协议**：所有追问必须先调 `intent_clarification`，禁止 SKILL.md 内联提问
   - **严禁虚构**：人名/日期/数字/工具名/角色签字表/文档状态/框架标签必须来自项目材料或用户确认
   - **4 步流水线**：`query → outline → write → save-to-disk` + 变更记录追加
@@ -199,16 +157,16 @@
 
 `project` 智能体并不是孤立功能，而是**深度复用**了通用框架的每一层基础设施：
 
-| 框架底座能力 | `project` 智能体的复用点 |
-|---|---|
-| `Agent` 基类 + `AgentConfig` + `AgentContext` | 智能体的运行骨架与配置三件套 |
-| `ModelFactory` 多 LLM Provider | 文档生成时调用不同模型厂商 |
-| 三层提示词协议（基类 + 专有 + 上下文） | `project` 智能体注入专属业务角色提示词 |
-| `ToolNode` + `explore(...)` 子智能体 | 读取项目材料（策划表、需求、设计稿、邮件等） |
-| `SkillTools` 加载 skill | 调用 7 个 project-doc-* skill + intent-clarification |
-| 消息治理（trim / 多模态提取） | 长会话上下文裁剪与多模态附件处理 |
-| 文件分片上传 + 文档缓存镜像 | 项目根目录 `.md` 镜像 + 文档缓存读取 |
-| MCP 工具生态 | 可横向挂载文档解析/翻译/审稿等 MCP 工具 |
+| 框架底座能力                                        | `project` 智能体的复用点                           |
+| --------------------------------------------------- | ---------------------------------------------------- |
+| `Agent` 基类 + `AgentConfig` + `AgentContext` | 智能体的运行骨架与配置三件套                         |
+| `ModelFactory` 多 LLM Provider                    | 文档生成时调用不同模型厂商                           |
+| 三层提示词协议（基类 + 专有 + 上下文）              | `project` 智能体注入专属业务角色提示词             |
+| `ToolNode` + `explore(...)` 子智能体            | 读取项目材料（策划表、需求、设计稿、邮件等）         |
+| `SkillTools` 加载 skill                           | 调用 7 个 project-doc-* skill + intent-clarification |
+| 消息治理（trim / 多模态提取）                       | 长会话上下文裁剪与多模态附件处理                     |
+| 文件分片上传 + 文档缓存镜像                         | 项目根目录`.md` 镜像 + 文档缓存读取                |
+| MCP 工具生态                                        | 可横向挂载文档解析/翻译/审稿等 MCP 工具              |
 
 > 这正是"框架是基础、场景是落地"的具象体现 —— `project` 智能体**没有重新发明轮子**，而是在通用底座上组合出完整的业务价值。
 
@@ -289,9 +247,9 @@ ModelFactory.register_model_creator("custom", create_custom_model)
 
 | 节点           | 职责                                                                    |
 | -------------- | ----------------------------------------------------------------------- |
-| `hitl_check` | 检查 `pending_question`，调用 `interrupt()` 暂停图执行等待用户回答  |
+| `hitl_check` | 检查`pending_question`，调用 `interrupt()` 暂停图执行等待用户回答   |
 | `summarize`  | `SummarizationNode` 自动摘要旧消息，配合 `trim_messages` 控制 token |
-| `llm_call`   | 拼接三层提示词（基类 + 专有 + 上下文），调用预绑定的 `llm` 实例       |
+| `llm_call`   | 拼接三层提示词（基类 + 专有 + 上下文），调用预绑定的`llm` 实例        |
 | `tools`      | `ToolNode` 执行工具调用，结束后回到 `hitl_check` 继续处理           |
 
 **双调用入口**：
@@ -369,7 +327,7 @@ class StreamFormatStrategy(ABC):
 
 | 能力                  | 说明                                                                   |
 | --------------------- | ---------------------------------------------------------------------- |
-| 单例模式              | 全局共享同一 `AgentConcurrencyQueue` 实例                            |
+| 单例模式              | 全局共享同一`AgentConcurrencyQueue` 实例                             |
 | `asyncio.Semaphore` | 限制同时处理的 Agent 请求数                                            |
 | FIFO 等待             | 超限请求进入有序队列                                                   |
 | 位置查询              | `position()` 返回当前调用方在队列中的位置（1-based）                 |
@@ -385,10 +343,10 @@ class StreamFormatStrategy(ABC):
 | `HumanInTheLoopTools`        | `ask_user_question` — 触发 LangGraph `interrupt()` 暂停图执行                                                 |
 | `SandboxTools`               | 沙箱化执行环境，隔离工具副作用                                                                                     |
 | `FilesystemReadTools`        | 文件系统只读工具集                                                                                                 |
-| `mcp_wrapper`                | MCP 工具包装器 — 自动应用「双重输出策略」（大数据返回摘要，详细数据走 `get_stream_writer`）                     |
+| `mcp_wrapper`                | MCP 工具包装器 — 自动应用「双重输出策略」（大数据返回摘要，详细数据走`get_stream_writer`）                      |
 | `mcp_registry`               | MCP Servers 注册中心，启动时统一初始化                                                                             |
-| `subagent_registry`          | 子智能体注册表（基于 `BaseStore` 的命名空间隔离）                                                                |
-| `mcp_tool_adapter`           | MCP 工具 → LangChain `BaseTool` 适配器                                                                          |
+| `subagent_registry`          | 子智能体注册表（基于`BaseStore` 的命名空间隔离）                                                                 |
+| `mcp_tool_adapter`           | MCP 工具 → LangChain`BaseTool` 适配器                                                                           |
 | `subagent_message_extractor` | 子智能体消息流提取器                                                                                               |
 | `_stop_signal`               | 工具执行中断信号                                                                                                   |
 
@@ -439,15 +397,15 @@ class MCPToolWrapper(BaseTool):
 
 ### 🗂️ explore — 文件探索子智能体
 
-| 项              | 说明                                                                                                               |
-| --------------- | ------------------------------------------------------------------------------------------------------------------ |
-| 触发场景        | 复杂文件搜索 + 内容分析（多目录 / 多关键词 / 需读全文 / 跨文件交叉引用）                                           |
-| 子智能体能力    | `glob_search` · `grep_search` · `read_file` · `ls` · `write_todos`（任务规划）                       |
-| 挂载中间件      | `TodoListMiddleware` · `EncodingSafeFileSearchMiddleware`（编码安全）· `FilesystemMiddleware`              |
-| 工作空间        | `data/upload/{session_id}/`，**只读**，子智能体不可修改宿主文件                                            |
-| 并发模型        | 支持**单消息内并发启动多个** `explore` 实例，由父 LLM 触发后并行搜索不同子主题                             |
-| 会话恢复        | 每次调用返回 `task_id`，传入可恢复历史上下文（LangGraph Checkpoint 持久化）                                      |
-| 父 LLM 触发条件 | 任务匹配 `explore` 描述（文件搜索 / 内容提取 / 多文档分析）时**优先**调用，避免父 LLM 直接堆 `read_file` |
+| 项              | 说明                                                                                                              |
+| --------------- | ----------------------------------------------------------------------------------------------------------------- |
+| 触发场景        | 复杂文件搜索 + 内容分析（多目录 / 多关键词 / 需读全文 / 跨文件交叉引用）                                          |
+| 子智能体能力    | `glob_search` · `grep_search` · `read_file` · `ls` · `write_todos`（任务规划）                      |
+| 挂载中间件      | `TodoListMiddleware` · `EncodingSafeFileSearchMiddleware`（编码安全）· `FilesystemMiddleware`             |
+| 工作空间        | `data/upload/{session_id}/`，**只读**，子智能体不可修改宿主文件                                           |
+| 并发模型        | 支持**单消息内并发启动多个** `explore` 实例，由父 LLM 触发后并行搜索不同子主题                            |
+| 会话恢复        | 每次调用返回`task_id`，传入可恢复历史上下文（LangGraph Checkpoint 持久化）                                      |
+| 父 LLM 触发条件 | 任务匹配`explore` 描述（文件搜索 / 内容提取 / 多文档分析）时**优先**调用，避免父 LLM 直接堆 `read_file` |
 
 <p align="center">
   <img src="img/explore.png" width="100%" alt="explore 子智能体执行流程" />
@@ -475,9 +433,9 @@ async def explore(
 | 子智能体能力 | `ls` · `read_file` · `write_file` · `edit_file` · `glob` · `grep` · `execute`（Shell / Python）                      |
 | 挂载中间件   | `DockerSandboxMiddleware`（继承自 `FilesystemMiddleware`）                                                                           |
 | 工作空间     | `data/upload/{session_id}/sandbox/`，挂载到容器内的工作目录                                                                            |
-| 用户停止感知 | 每 5 个 chunk 检测 `request.is_disconnected()`，按下停止按钮后**立即**中断子智能体 + 清理容器                                    |
-| 流式事件     | 推 `tool_start` / `tool_progress` / `tool_stop` / `tool_error`，前端可实时展示 5 步进度条                                        |
-| 安全规则     | 容器默认无网络 · 禁止 `rm -rf /` / `mkfs` / `dd` 等破坏性命令 · 资源受限 · 60s 超时                                             |
+| 用户停止感知 | 每 5 个 chunk 检测`request.is_disconnected()`，按下停止按钮后**立即**中断子智能体 + 清理容器                                     |
+| 流式事件     | 推`tool_start` / `tool_progress` / `tool_stop` / `tool_error`，前端可实时展示 5 步进度条                                         |
+| 安全规则     | 容器默认无网络 · 禁止`rm -rf /` / `mkfs` / `dd` 等破坏性命令 · 资源受限 · 60s 超时                                              |
 
 <p align="center">
   <img src="img/sandbox.png" width="100%" alt="sandbox 子智能体沙箱执行流程" />
@@ -537,10 +495,10 @@ async def sandbox(
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | 工具运行时上下文 | `ToolRuntime[AgentContext]` — 自动注入 `context` / `store` / `tool_call_id`                                     |
 | 流式事件推送     | `get_stream_writer()` + `create_tool_event()` 推 `tool_start` / `tool_progress` / `tool_stop` / `tool_error` |
-| 中断恢复         | 父 LLM 收到 `ToolMessage` 后继续；子智能体本身可被 `Command(resume=...)` 恢复                                        |
-| 用户停止信号     | 通过 ContextVar 注入 FastAPI `Request`，工具内部 `is_disconnected()` 检测                                            |
+| 中断恢复         | 父 LLM 收到`ToolMessage` 后继续；子智能体本身可被 `Command(resume=...)` 恢复                                         |
+| 用户停止信号     | 通过 ContextVar 注入 FastAPI`Request`，工具内部 `is_disconnected()` 检测                                             |
 | 大数据返回       | `MCPToolWrapper` 自动应用双重输出策略（完整结果 → SSE 流 / 摘要 → 父 LLM）                                           |
-| 结构化输出       | 父 LLM 收到 `<task_result>{json}</task_result>` 格式，统一解析                                                         |
+| 结构化输出       | 父 LLM 收到`<task_result>{json}</task_result>` 格式，统一解析                                                          |
 
 **子智能体与父图的关系**：
 
@@ -680,7 +638,7 @@ docker-compose logs -f agents
 | Python     | 3.10 | 3.11（与 Dockerfile 一致）   |
 | 内存       | 4 GB | 8 GB（含 Sandbox 子容器）    |
 | 磁盘       | 5 GB | 20 GB（含模型缓存）          |
-| Docker     | 可选 | 启用 `sandbox` 工具时必装  |
+| Docker     | 可选 | 启用`sandbox` 工具时必装   |
 | PostgreSQL | 可选 | 启用 DB 持久化时必装（16.x） |
 
 > 💡 纯开发联调可只装 Python；不启用 DB 时框架自动降级到内存模式（`AUTH_STORAGE_MODE=memory`）。
@@ -879,12 +837,12 @@ docker push registry.example.com/feature-agent-core-frontend:1.0.0
 
 > 沙箱子智能体需要 Docker daemon。容器化部署时**默认 `local` 模式不可用**，必须显式配置。
 
-| 部署模式   | 适用场景                                    | 配置项                                                                                                                             |
-| ---------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `local`  | 应用直接跑在宿主机（无容器）                | 默认值                                                                                                                             |
-| `socket` | 应用容器挂载宿主机 `/var/run/docker.sock` | `SANDBOX_DOCKER_MODE=socket` + `SANDBOX_DOCKER_HOST=unix:///var/run/docker.sock` + `SANDBOX_HOST_WORKSPACE_PREFIX=/app/data` |
-| `dind`   | Docker-in-Docker（需 `--privileged`）     | `SANDBOX_DOCKER_MODE=dind`                                                                                                       |
-| `k8s`    | K8s API 创建 Pod（占位，未实现）            | —                                                                                                                                 |
+| 部署模式   | 适用场景                                   | 配置项                                                                                                                             |
+| ---------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `local`  | 应用直接跑在宿主机（无容器）               | 默认值                                                                                                                             |
+| `socket` | 应用容器挂载宿主机`/var/run/docker.sock` | `SANDBOX_DOCKER_MODE=socket` + `SANDBOX_DOCKER_HOST=unix:///var/run/docker.sock` + `SANDBOX_HOST_WORKSPACE_PREFIX=/app/data` |
+| `dind`   | Docker-in-Docker（需`--privileged`）     | `SANDBOX_DOCKER_MODE=dind`                                                                                                       |
+| `k8s`    | K8s API 创建 Pod（占位，未实现）           | —                                                                                                                                 |
 
 **socket 模式启动示例**（生产推荐）：
 
@@ -909,7 +867,7 @@ docker run -d \
 | 变量               | 说明                                                             |
 | ------------------ | ---------------------------------------------------------------- |
 | `MODEL_TYPE`     | 模型类型：`openai` / `deepseek` / `ollama` / `anthropic` |
-| `MODEL_NAME`     | 模型名称（如 `gpt-4`、`deepseek-chat`）                      |
+| `MODEL_NAME`     | 模型名称（如`gpt-4`、`deepseek-chat`）                       |
 | `MODEL_API_KEY`  | 模型 API 密钥                                                    |
 | `MODEL_API_BASE` | 模型 API 地址                                                    |
 
@@ -1003,15 +961,15 @@ healthcheck:
 
 ## 9️⃣ 常见部署问题
 
-| 症状                                          | 原因                                        | 解决                                                                                 |
-| --------------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------ |
-| 启动报 `ModuleNotFoundError: app`           | 未在项目根目录执行                          | `cd feature-agent-core && python -m app.main`                                      |
-| 启动报 `RuntimeError: event loop is closed` | 多进程下 asyncpg 句柄泄漏                   | 改用 `--workers 1` 或前置 nginx 负载均衡                                           |
-| 报 `connection refused` PostgreSQL          | `AUTH_STORAGE_MODE=postgres` 但 DB 未启动 | 切换为 `memory` 或启动 DB                                                          |
-| `sandbox` 工具调用失败                      | 容器内无 Docker daemon                      | 见[§ 4.3 沙箱模式选择](#43-沙箱模式选择生产重点)                                       |
-| 前端 `502 Bad Gateway`                      | `VITE_API_TARGET` 配置错位                | 容器化时改为 `http://backend:8001`                                                 |
-| 端口 `8001` 已被占用                        | 旧进程未清理                                | `lsof -i:8001` → `kill -9 <pid>`（Windows 用 `netstat -ano \| findstr :8001`） |
-| 启动时 OOM Killed                             | 子智能体 + Sandbox 同时跑                   | 内存升到 8 GB+，或调小 `AGENT_CHAT_MAX_CONCURRENCY=1`                              |
+| 症状                                         | 原因                                        | 解决                                                                                 |
+| -------------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------ |
+| 启动报`ModuleNotFoundError: app`           | 未在项目根目录执行                          | `cd feature-agent-core && python -m app.main`                                      |
+| 启动报`RuntimeError: event loop is closed` | 多进程下 asyncpg 句柄泄漏                   | 改用`--workers 1` 或前置 nginx 负载均衡                                            |
+| 报`connection refused` PostgreSQL          | `AUTH_STORAGE_MODE=postgres` 但 DB 未启动 | 切换为`memory` 或启动 DB                                                           |
+| `sandbox` 工具调用失败                     | 容器内无 Docker daemon                      | 见[§ 4.3 沙箱模式选择](#43-沙箱模式选择生产重点)                                     |
+| 前端`502 Bad Gateway`                      | `VITE_API_TARGET` 配置错位                | 容器化时改为`http://backend:8001`                                                  |
+| 端口`8001` 已被占用                        | 旧进程未清理                                | `lsof -i:8001` → `kill -9 <pid>`（Windows 用 `netstat -ano \| findstr :8001`） |
+| 启动时 OOM Killed                            | 子智能体 + Sandbox 同时跑                   | 内存升到 8 GB+，或调小`AGENT_CHAT_MAX_CONCURRENCY=1`                               |
 
 ## 🔟 反向代理（Nginx 模板）
 
@@ -1163,15 +1121,15 @@ server {
 
 `app/features/` 在 core/ Agent 基座上已经构建了多个**具体业务场景**实例：
 
-| 智能体 | 业务场景 | 入口 |
-|---|---|---|
-| **`project`**（**典型**） | 项目文档与运维双职责（文档生成 + 运维管理） | [agents/project/AGENTS.md](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/agents/project/AGENTS.md) |
-| `contract_*`（4 个） | 合同相关场景（审批 / 文档 / 主持） | `app/features/contract_*/` |
-| `audit_document` | 审计文档智能体 | `app/features/audit_document_agent/` |
-| `DevOps` | 已下线，SSH 工具集迁至 `app/shared/tools/skills/devops/` | `app/routers/devops_server_admin_router.py` |
-| `AI_Coding_Check` | AI 编程审查智能体 | `app/features/AI_Coding_Check_agent/` |
-| `Tagent` | 测试类智能体 | `app/features/Tagent/` |
-| `map_agent` | 地图相关业务 | `agents/map_agent/AGENTS.md` |
+| 智能体                                  | 业务场景                                                  | 入口                                                                                                       |
+| --------------------------------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| **`project`**（**典型**） | 项目文档与运维双职责（文档生成 + 运维管理）               | [agents/project/AGENTS.md](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/agents/project/AGENTS.md) |
+| `contract_*`（4 个）                  | 合同相关场景（审批 / 文档 / 主持）                        | `app/features/contract_*/`                                                                               |
+| `audit_document`                      | 审计文档智能体                                            | `app/features/audit_document_agent/`                                                                     |
+| `DevOps`                              | 已下线，SSH 工具集迁至`app/shared/tools/skills/devops/` | `app/routers/devops_server_admin_router.py`                                                              |
+| `AI_Coding_Check`                     | AI 编程审查智能体                                         | `app/features/AI_Coding_Check_agent/`                                                                    |
+| `Tagent`                              | 测试类智能体                                              | `app/features/Tagent/`                                                                                   |
+| `map_agent`                           | 地图相关业务                                              | `agents/map_agent/AGENTS.md`                                                                             |
 
 其中 **`project` 是业务价值最完整、双职责最典型的实例**——它完整回答了"框架底座如何在具体业务场景中落地"这一问题（详见 [🎯 典型业务场景：`project` 智能体](#-典型业务场景project-智能体) 章节）。
 
@@ -1181,14 +1139,14 @@ server {
 
 新增 Provider / 工具 / 业务智能体的扩展点：
 
-| 扩展目标        | 扩展点                         | 操作                                                                       |
-| --------------- | ------------------------------ | -------------------------------------------------------------------------- |
-| 新 LLM Provider | `app/core/llmcalls/`         | 实现 `create_model` → `ModelFactory.register_model_creator()`         |
-| 新流式策略      | `app/core/format/stream/`    | 继承 `StreamFormatStrategy` 实现 `format_content` 与 `provider_name` |
-| 新工具          | `app/core/tools/`            | 继承 `BaseTools` 或使用 `@tool` 装饰器                                 |
-| 新 MCP Server   | `mcp_registry`               | 在 `settings.mcp` 中追加配置                                             |
-| 新业务智能体    | `app/features/<your_agent>/` | 继承 `Agent` 基类 + 自定义 `AgentConfig` + `AgentContext`（参考 [`project` 智能体](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/agents/project/AGENTS.md) 的入口契约与 `ProjectTools.py` 实现） |
-| 新 Schema       | `database.py`                | `@register_schema` 装饰器声明初始化函数                                  |
+| 扩展目标        | 扩展点                         | 操作                                                                                                                                                                                                              |
+| --------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 新 LLM Provider | `app/core/llmcalls/`         | 实现`create_model` → `ModelFactory.register_model_creator()`                                                                                                                                                 |
+| 新流式策略      | `app/core/format/stream/`    | 继承`StreamFormatStrategy` 实现 `format_content` 与 `provider_name`                                                                                                                                         |
+| 新工具          | `app/core/tools/`            | 继承`BaseTools` 或使用 `@tool` 装饰器                                                                                                                                                                         |
+| 新 MCP Server   | `mcp_registry`               | 在`settings.mcp` 中追加配置                                                                                                                                                                                     |
+| 新业务智能体    | `app/features/<your_agent>/` | 继承`Agent` 基类 + 自定义 `AgentConfig` + `AgentContext`（参考 [`project` 智能体](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/agents/project/AGENTS.md) 的入口契约与 `ProjectTools.py` 实现） |
+| 新 Schema       | `database.py`                | `@register_schema` 装饰器声明初始化函数                                                                                                                                                                         |
 
 ---
 
@@ -1217,7 +1175,7 @@ server {
 | 项目   | 内容                                                                           |
 | ------ | ------------------------------------------------------------------------------ |
 | 姓名   | 张镒谱                                                                         |
-| Email  | [zhangyipu@foxmail.com.cn](mailto:zhangyipu@foxmail.com.cn)                       |
+| Email  | [zhangyipu@foxmail.com.cn](mailto:zhangyipu@foxmail.com.cn)                     |
 | 方向   | 大语言模型工程化 · Agent 框架 · 智能体基础设施                               |
 | 技术栈 | Python · FastAPI · LangGraph · LangChain · PostgreSQL · asyncpg · Docker |
 
