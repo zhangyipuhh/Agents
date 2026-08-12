@@ -129,6 +129,33 @@ async def issue_browser_login_session(
         max_age=cookie_cfg.access_token_max_age_seconds,
     )
 
+    # 2026-08-12 等保三级 §1.5：创建用户登录会话并下发 login_session_uuid Cookie
+    # 用于 IdleTimeoutMiddleware 校验 last_active_at（无操作自动退出）。
+    # 必须先签发 Refresh Token Cookie，再创建 user_login_sessions 记录，
+    # 这样中间件后续能正确读取 session_uuid Cookie。
+    from app.shared.utils.auth.user_login_session_service import (
+        user_login_session_service,
+    )
+    from app.shared.utils.auth.idle_timeout_middleware import (
+        LOGIN_SESSION_COOKIE_NAME,
+    )
+    if user_id is not None:
+        session_uuid = await user_login_session_service.create_login_session(
+            user_id=int(user_id),
+            username=username,
+            refresh_token_ttl_seconds=86400,
+            request=request,
+        )
+        response.set_cookie(
+            key=LOGIN_SESSION_COOKIE_NAME,
+            value=session_uuid,
+            httponly=True,
+            samesite="strict",
+            secure=cookie_cfg.secure,
+            path=cookie_cfg.access_token_path,
+            max_age=86400,
+        )
+
     # 4) visible_menus
     visible_menus = await _compute_visible_menus_for_session(app, user_id, role)
 

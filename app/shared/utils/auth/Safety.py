@@ -54,7 +54,6 @@ class JWTAuth:
         """
         self.secret_key = secret_key
         self.algorithm = algorithm
-        self.expiration_minutes = 240  # 4小时
         self.whitelist: List[str] = []
 
         # 2026-08-09 新增（等保三级 Task 2）：bootstrap 凭据由 lifespan 注入。

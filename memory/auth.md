@@ -152,6 +152,27 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 - **统计接口**：`RefreshTokenDB.count_active_tokens(user_id)` 返回当前未过期 Refresh Token 数量，供未来审计/监控使用。
 - **审计字段保留**：踢出旧会话不影响 `audit_logs` 表（历史记录不删），但被踢会话下次调 `/refresh` 时 `verify_token` 返回 None → 401。
 
+### 会话超时自动退出（等保三级 §1.5，2026-08-12 新增）
+
+区别于 JWT `exp` 绝对过期（30 分钟强制踢出），本节描述「**无操作 idle 自动退出**」机制：
+
+- **数据库表**：`user_login_sessions`（[init_all_tables.sql:177](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/migrations/init_all_tables.sql#L177)），字段：`session_uuid`（HttpOnly Cookie 标识）/ `user_id` / `username` / `login_at` / `last_active_at`（idle 依据）/ `expires_at`（与 Refresh Token 同步 24h）/ `ip_address` / `user_agent` / `revoked_at` / `revoke_reason`（logout / idle / admin_revoke / replaced）。
+- **配置**：`settings.auth_idle`（[settings.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/core/config/settings.py)，env 前缀 `AUTH_IDLE_`）：
+  - `timeout_seconds`（默认 `1800` = 30 分钟，与 `access_token_max_age_seconds` 对齐）
+  - `check_enabled`（默认 `True`；关闭时降级为仅 JWT exp 绝对过期）
+  - `check_exempt_paths`（默认 `["/api/auth/login", "/api/auth/refresh", "/api/health", "/health"]`，豁免路径不触发 idle 检测）
+  - `check_fail_loud`（默认 `True`；数据库失败时拒绝请求并报警，关闭则静默放行）
+- **Service**：`UserLoginSessionService`（[user_login_session_service.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/shared/utils/auth/user_login_session_service.py)），提供 `create_login_session` / `check_idle` / `touch_last_active` / `revoke_session` / `revoke_user_sessions`；写入 PG TIMESTAMP 朴素列必须用 `datetime.utcnow()`（**禁止** `datetime.now(timezone.utc)`，详见 2026-08-08 MFA bug 教训）。
+- **中间件**：`idle_timeout_middleware`（[idle_timeout_middleware.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/shared/utils/auth/idle_timeout_middleware.py)），注册顺序：`session_auth_middleware` → `idle_timeout_middleware` → `auth_middleware`（[server.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/core/server.py)）。Cookie 名：`login_session_uuid`，HttpOnly + Secure + SameSite=Strict + Path=/api + Max-Age=86400（与 Refresh Token 同寿命）。
+- **行为**：
+  - 登录：`issue_browser_login_session` 签发新 session_uuid Cookie + 写入 user_login_sessions 记录。
+  - 每次请求：中间件读取 Cookie → `check_idle` → 通过则 `asyncio.create_task` 异步刷新 last_active_at（fire-and-forget，不阻塞响应）。
+  - 超时：返回 401 `{"detail": "会话因长时间无操作已过期,请重新登录", "code": "idle_timeout"}`。
+  - 数据库失败 + `check_fail_loud=True`：返回 503 `{"code": "idle_check_unavailable"}`（fail-loud 防止静默放行）。
+  - `/api/auth/refresh`：刷新 last_active_at（视为活跃操作）。
+  - `/api/auth/logout`：撤销会话 + 清除 Cookie。
+- **测试**：3 个新文件 / 28 用例全绿（[test_user_login_session_service.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/tests/shared/utils/auth/test_user_login_session_service.py) / [test_idle_timeout_middleware.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/tests/shared/utils/auth/test_idle_timeout_middleware.py) / [test_auth_idle_settings.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/tests/core/config/test_auth_idle_settings.py)）；包含 fake 完整语义反向用例（aware datetime → naive TIMESTAMP 列必抛 RuntimeError）。
+
 ### 权限控制
 
 - **角色区分**：用户表 `role` 字段支持 `admin` / `user`，登录时返回

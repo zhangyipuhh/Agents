@@ -47,3 +47,19 @@ def test_settings_exposes_auth_cookie():
     s = Settings()
     assert hasattr(s, "auth_cookie")
     assert s.auth_cookie.access_token_name == "access_token"
+
+
+def test_settings_exposes_auth_idle_alongside_auth_cookie():
+    """
+    测试总配置 Settings 同时挂载 auth_cookie 与 auth_idle（2026-08-12 新增）。
+
+    Returns:
+        None
+    """
+    s = Settings()
+    # 既有 auth_cookie 仍可用
+    assert hasattr(s, "auth_cookie")
+    assert s.auth_cookie.access_token_name == "access_token"
+    # 新增 auth_idle（§1.5 idle 超时自动退出）
+    assert hasattr(s, "auth_idle")
+    assert s.auth_idle.timeout_seconds == 1800

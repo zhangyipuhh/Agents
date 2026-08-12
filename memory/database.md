@@ -363,6 +363,31 @@ MFA 绑定、禁用、恢复码重置会同时撤销 `refresh_tokens` 与 `porta
 - **状态恢复**：前端切换历史会话时，`App.vue::handleSessionSwitch` 从 `fetchSessionDetail` 响应中读取 `agent_type` 和 `agent_display_name`，恢复当前会话绑定的智能体状态，确保历史会话中继续沿用之前的智能体。
 - **向后兼容**：未绑定过智能体的历史会话 `agent_type` 默认为 `default`，行为与改造前一致。
 
+### `user_login_sessions` 用户登录会话表（2026-08-12 等保三级 §1.5 新增）
+
+> 与 `sessions` 表的区别：**`sessions.last_active_at` 承载「对话会话」维度（聊天路由）**；本表承载「用户登录会话」维度（idle 检测，自动退出）。
+> 两条维度独立，互不干扰。
+
+| 字段              | 类型                              | 说明                                                     |
+| ----------------- | --------------------------------- | -------------------------------------------------------- |
+| id                | SERIAL PK                         | 自增主键                                                 |
+| session_uuid      | VARCHAR(64) UNIQUE NOT NULL       | 随机 url-safe token（写入 `login_session_uuid` Cookie）  |
+| user_id           | INTEGER NOT NULL FK → users(id)   | 用户 ID（`ON DELETE CASCADE`）                            |
+| username          | VARCHAR(100) NOT NULL             | 用户名快照（审计用，不依赖 JOIN users）                   |
+| login_at          | TIMESTAMP NOT NULL DEFAULT NOW()  | 登录时间                                                 |
+| last_active_at    | TIMESTAMP NOT NULL DEFAULT NOW()  | 最后活跃时间（idle 检测依据）                             |
+| expires_at        | TIMESTAMP NOT NULL                | 绝对过期时间（与 Refresh Token 同步 24h）                |
+| ip_address        | VARCHAR(64)                       | 登录来源 IP（审计）                                       |
+| user_agent        | TEXT                              | 登录 UA（审计）                                           |
+| revoked_at        | TIMESTAMP                         | 主动撤销时间                                             |
+| revoke_reason     | VARCHAR(50)                       | 撤销原因：`logout` / `idle` / `admin_revoke` / `replaced` |
+
+索引：`idx_user_login_sessions_user_id`、`idx_user_login_sessions_last_active_at`、`idx_user_login_sessions_expires_at`、`idx_user_login_sessions_uuid`。
+
+迁移：`init_all_tables.sql` 第 177 行附近的 `CREATE TABLE IF NOT EXISTS user_login_sessions` + `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`（幂等）。
+
+写入约束（**2026-08-08 MFA bug 教训**）：`last_active_at` / `login_at` / `expires_at` 均为 PG TIMESTAMP **朴素列**，写入必须用 `datetime.utcnow()`（naive datetime）。**禁止** `datetime.now(timezone.utc)`（aware datetime）→ asyncpg 抛 `DataError: invalid input for query argument ... (can't subtract offset-naive and offset-aware datetimes)`。
+
 ### conversation_records 表
 
 | 字段         | 类型            | 说明            |

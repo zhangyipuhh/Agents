@@ -562,6 +562,63 @@ class AuthCookieSettings(BaseSettings):
         return bool(v)
 
 
+class AuthIdleSettings(BaseSettings):
+    """
+    等保三级 §1.5 idle 超时配置（2026-08-12 新增）
+
+    区别于 AuthCookieSettings.access_token_max_age_seconds（JWT 绝对过期）：
+    本配置承载"用户登录会话"维度的 idle 超时（无操作自动退出）。
+    实现路径：user_login_sessions.last_active_at + IdleTimeoutMiddleware。
+
+    - idle_timeout_seconds 默认 1800（30 分钟），与 access_token_max_age_seconds 对齐
+    - idle_check_enabled=True 时启用检测；关闭时降级为仅 JWT exp 绝对过期
+    - idle_check_fail_loud=True 时数据库失败会拒绝请求并报警（符合等保 §1.5）
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=_ENV_FILE_PATH,
+        env_file_encoding="utf-8",
+        env_prefix="AUTH_IDLE_",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    timeout_seconds: int = Field(
+        default=1800,
+        ge=60,
+        description="idle 超时阈值（秒）；距离 last_active_at 超过此值视为超时，401 强制登出。"
+                    "默认 1800 = 30 分钟（AUTH_IDLE_TIMEOUT_SECONDS）。",
+    )
+    check_enabled: bool = Field(
+        default=True,
+        description="idle 检测总开关；关闭时降级为仅 JWT exp 绝对过期（AUTH_IDLE_CHECK_ENABLED）。",
+    )
+    check_exempt_paths: List[str] = Field(
+        default_factory=lambda: [
+            "/api/auth/login",
+            "/api/auth/refresh",
+            "/api/health",
+            "/health",
+        ],
+        description="idle 检测豁免路径（白名单）；这些路径不会触发 last_active_at 更新"
+                    "（AUTH_IDLE_CHECK_EXEMPT_PATHS，JSON list）。",
+    )
+    check_fail_loud: bool = Field(
+        default=True,
+        description="idle 检测不可用时（数据库失败）是否 fail-loud；"
+                    "True = 拒绝请求并报警（推荐），False = 静默放行（不符合等保 §1.5）"
+                    "（AUTH_IDLE_CHECK_FAIL_LOUD）。",
+    )
+
+    @field_validator("check_enabled", "check_fail_loud", mode="before")
+    @classmethod
+    def parse_bool(cls, v):
+        """将字符串转换为布尔值（与 AuthCookieSettings.parse_bool 一致）"""
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes", "on")
+        return bool(v)
+
+
 class DemonstrationSettings(BaseSettings):
     """
     演示测试配置
@@ -1002,6 +1059,8 @@ class Settings(BaseSettings):
     demonstration: DemonstrationSettings = Field(default_factory=DemonstrationSettings)
     portal_auth: PortalAuthSettings = Field(default_factory=PortalAuthSettings)
     auth_cookie: AuthCookieSettings = Field(default_factory=AuthCookieSettings)
+    # 2026-08-12 新增（等保三级 §1.5）：idle 超时自动退出配置。
+    auth_idle: AuthIdleSettings = Field(default_factory=AuthIdleSettings)
     # 2026-08-09 新增（等保三级 Task 2）：默认管理员初始化 / 历史弱口令迁移配置。
     auth: AuthBootstrapSettings = Field(default_factory=AuthBootstrapSettings)
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)

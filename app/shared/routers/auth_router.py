@@ -991,6 +991,21 @@ async def refresh_token(request: Request, response: Response):
         max_age=cookie_cfg.access_token_max_age_seconds,
     )
 
+    # 2026-08-12 等保三级 §1.5：刷新 last_active_at（用户主动换 token 视为活跃操作）
+    from app.shared.utils.auth.idle_timeout_middleware import (
+        LOGIN_SESSION_COOKIE_NAME,
+    )
+    from app.shared.utils.auth.user_login_session_service import (
+        user_login_session_service,
+    )
+    login_session_uuid = request.cookies.get(LOGIN_SESSION_COOKIE_NAME)
+    if login_session_uuid:
+        try:
+            await user_login_session_service.touch_last_active(login_session_uuid)
+        except Exception:  # noqa: BLE001
+            # touch 失败不阻塞 /refresh 流程；中间件后续会重新校验 idle
+            pass
+
     return {
         "access_token": access_token,
         "token_type": "Bearer",
@@ -1183,6 +1198,30 @@ async def logout(req: Request, response: Response):
         samesite=cookie_cfg.samesite,
         secure=cookie_cfg.secure,
     )
+
+    # 2026-08-12 等保三级 §1.5：撤销用户登录会话 + 清除 login_session_uuid Cookie
+    from app.shared.utils.auth.idle_timeout_middleware import (
+        LOGIN_SESSION_COOKIE_NAME,
+    )
+    from app.shared.utils.auth.user_login_session_service import (
+        user_login_session_service,
+    )
+    login_session_uuid = req.cookies.get(LOGIN_SESSION_COOKIE_NAME)
+    if login_session_uuid:
+        try:
+            await user_login_session_service.revoke_session(
+                login_session_uuid, reason="logout"
+            )
+        except Exception:  # noqa: BLE001
+            # 撤销失败不阻塞 logout 流程；中间件会因 session 不存在返回 401
+            pass
+        response.delete_cookie(
+            key=LOGIN_SESSION_COOKIE_NAME,
+            path=cookie_cfg.access_token_path,
+            httponly=True,
+            samesite="strict",
+            secure=cookie_cfg.secure,
+        )
 
     # 删除 Session
     if session_id:

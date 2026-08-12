@@ -174,6 +174,42 @@ ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id     ON refresh_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires_at  ON refresh_tokens(expires_at);
 
+-- ========== 5.1 user_login_sessions（用户登录会话 / idle 超时检测）==========
+-- 2026-08-12 等保三级 §1.5 改造：
+--   * 区别于 conversations 表的 `sessions.last_active_at`(对话会话),
+--     本表承载"用户登录会话"维度的 last_active_at(idle 检测依据)
+--   * session_uuid 是 HttpOnly Cookie,与 Refresh Token 同寿命(默认 24h)
+--   * 支持主动撤销(revoked_at + revoke_reason),审计可追溯
+CREATE TABLE IF NOT EXISTS user_login_sessions (
+    id              SERIAL PRIMARY KEY,
+    session_uuid    VARCHAR(64) UNIQUE NOT NULL,                 -- 随机生成的会话标识(写入 Cookie)
+    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    username        VARCHAR(100) NOT NULL,
+    login_at        TIMESTAMP NOT NULL DEFAULT NOW(),            -- 登录时间
+    last_active_at  TIMESTAMP NOT NULL DEFAULT NOW(),            -- 最后活跃时间(idle 检测依据)
+    expires_at      TIMESTAMP NOT NULL,                          -- 绝对过期时间(与 Refresh Token 同步)
+    ip_address      VARCHAR(64),                                  -- 登录来源 IP(审计)
+    user_agent      TEXT,                                         -- 登录 UA(审计)
+    revoked_at      TIMESTAMP,                                    -- 主动登出/踢出时间
+    revoke_reason   VARCHAR(50)                                   -- logout / idle / admin_revoke / replaced
+);
+-- 防御性补齐(给历史库)
+ALTER TABLE user_login_sessions ADD COLUMN IF NOT EXISTS session_uuid   VARCHAR(64);
+ALTER TABLE user_login_sessions ADD COLUMN IF NOT EXISTS user_id        INTEGER;
+ALTER TABLE user_login_sessions ADD COLUMN IF NOT EXISTS username       VARCHAR(100);
+ALTER TABLE user_login_sessions ADD COLUMN IF NOT EXISTS login_at       TIMESTAMP DEFAULT NOW();
+ALTER TABLE user_login_sessions ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMP DEFAULT NOW();
+ALTER TABLE user_login_sessions ADD COLUMN IF NOT EXISTS expires_at     TIMESTAMP;
+ALTER TABLE user_login_sessions ADD COLUMN IF NOT EXISTS ip_address     VARCHAR(64);
+ALTER TABLE user_login_sessions ADD COLUMN IF NOT EXISTS user_agent     TEXT;
+ALTER TABLE user_login_sessions ADD COLUMN IF NOT EXISTS revoked_at     TIMESTAMP;
+ALTER TABLE user_login_sessions ADD COLUMN IF NOT EXISTS revoke_reason  VARCHAR(50);
+-- 索引
+CREATE INDEX IF NOT EXISTS idx_user_login_sessions_user_id        ON user_login_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_login_sessions_last_active_at ON user_login_sessions(last_active_at);
+CREATE INDEX IF NOT EXISTS idx_user_login_sessions_expires_at     ON user_login_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_user_login_sessions_uuid            ON user_login_sessions(session_uuid);
+
 -- ========== 6. audit_logs（审计日志 / 统一日志服务载体）==========
 -- 2026-07-29 扩展：新增列以承载统一日志服务（LogService / LogEvent）。
 -- 历史 action 仅：admin_delete_session / login_success / logout / login_failure /

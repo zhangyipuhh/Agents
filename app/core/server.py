@@ -28,6 +28,9 @@ from app.shared.utils.auth.Safety import (
     auth_middleware,
     session_auth_middleware,
 )
+from app.shared.utils.auth.idle_timeout_middleware import (
+    idle_timeout_middleware,
+)
 
 
 async def _preload_and_publish_service(
@@ -955,6 +958,8 @@ def setup_middleware(app: FastAPI):
         allow_headers=["*"],
     )
     app.middleware("http")(session_auth_middleware)
+    # 2026-08-12 等保三级 §1.5：idle 超时中间件，校验 last_active_at 无操作自动退出
+    app.middleware("http")(idle_timeout_middleware)
     app.middleware("http")(auth_middleware)
 
 
