@@ -1,5 +1,5 @@
 /* ============================================
-   运维控制台样式（政务蓝主题 · macOS 风格多窗口）
+   运维控制台样式（政务蓝主题 · GNOME / Ubuntu 风格）
    ============================================
    历史：
    - 2026-08-05 从 `运维界面/app/src/style.css` 整段迁移，最初作为
@@ -11,22 +11,38 @@
      2) 所有原全局选择器（`*` / `html, body` / `#app` / `:root`）改为
         `.ops-console-root` 作用域前缀，杜绝政务蓝 `* { margin: 0; padding: 0 }`
         污染主应用其他页面（ChatArea / KnowledgePage / LoginView）。
+   - 2026-08-13 调整为 GNOME / Ubuntu 风格：
+     1) 字体栈改 GNOME 系（system-ui / Ubuntu / Cantarell / Noto Sans CJK SC
+        / Microsoft YaHei）；
+     2) 窗口圆角 12px → 0px（GNOME Adwaita 直角）；
+     3) 毛玻璃 backdrop-filter 全部去除，改政务蓝实色 + 1px 边框替代投影；
+     4) 标题栏高度 40px → 38px（兼容 OpsServerWindow 内嵌搜索框）；
+     5) 三色 mac 交通灯 → 右侧两按钮（max + close）原生 <button> + SVG；
+     6) 顶部菜单栏 mac 风格 → GNOME top bar（实色、保留 SVG 图标 + 应用名
+        + 中文全局菜单占位 + ✕ Close 原生按钮）；
+     7) 底部 mac Dock（毛玻璃 + 弹跳）→ 底部 taskbar（政务蓝实色、固定底部
+        整宽 36px、三图标水平居中、无 hover 弹跳）；
+     8) .led 边框改政务蓝（rgba(0,58,140,.3)），更"机架 LED"；
+     9) @keyframes pop 缩放 .94→1 改 .98→1，时长 .2s 改 .15s（GNOME 克制）；
+     10) .win.maximized 高度 calc(100vh - 28px) 改 calc(100vh - 64px)（窗口
+        避让底部 36px taskbar）。
 
    作用域（与 OpsConsoleApp.vue 模板的 `<div class="ops-console-root">` 对齐）：
    - `.ops-console-root`           容器，100% 视口高度 + 政务蓝径向渐变背景
-   - `.ops-console-root` 内嵌的所有子组件 class（`.menubar` / `.win*` / `.dock*` /
-     `.srv-*` / `.detail-*` / `.logs-*` / `.logview-*` / `.disk-*` / `.metric*` /
+   - `.ops-console-root` 内嵌的所有子组件 class（`.menubar*` / `.win*` /
+     `.win-controls` / `.win-control*` / `.taskbar*` / `.srv-*` /
+     `.detail-*` / `.logs-*` / `.logview-*` / `.disk-*` / `.metric*` /
      `.detect-panel` / `.gov-btn` / `.led*` 等）继续保留，视觉完全等价。
 
    主要内容：
    - .ops-console-root 政务蓝 CSS 变量（--gov-blue / --gov-blue-deep / --gov-blue-light / --gov-text）
-   - .menubar 顶部菜单栏（毛玻璃 + 时间）
-   - .win 通用 macOS 窗口（圆角 + 毛玻璃 + 阴影 + 拖拽 + 最大化）
+   - .menubar 顶部菜单栏（政务蓝实色 + 时间 + ✕ Close）
+   - .win 通用 GNOME 窗口（直角 + 政务蓝实色 + 1px 边框）
    - .win-servers 服务器管理窗口（访达图标视图 + 搜索框 + 状态灯）
    - .win-detail 服务器详情窗口（指标卡 + 智能检测动画 + 磁盘列表）
    - .win-logs 日志管理窗口（左侧文件夹 + 右侧文件列表）
    - .win-logview 日志查看窗口（终端风格）
-   - .dock 底部 Dock 栏（毛玻璃 + 三个图标入口）
+   - .taskbar 底部任务栏（政务蓝实色 + 三图标入口）
    - .ops-console-root ::-webkit-scrollbar 政务蓝滚动条
    ============================================ */
 
@@ -45,7 +61,7 @@
   min-height: 100%;
   overflow: hidden;
   user-select: none;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+  font-family: system-ui, "Ubuntu", "Cantarell", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
 
   /* 政务蓝径向渐变背景（多焦点蓝色光晕） */
   background:
@@ -81,58 +97,91 @@
   padding: 0;
 }
 
-/* ===== 菜单栏 ===== */
+/* ===== 顶部菜单栏（GNOME top bar 风格）===== */
 .ops-console-root .menubar {
   position: fixed; top: 0; left: 0; right: 0; height: 28px; z-index: 999;
-  background: rgba(255, 255, 255, .55); backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
+  /* 政务蓝实色（去毛玻璃），半透明白叠加以保持与背景的层次 */
+  background: rgba(255, 255, 255, .85);
   display: flex; align-items: center; padding: 0 14px; gap: 18px;
-  font-size: 13px; color: var(--gov-text); border-bottom: 1px solid rgba(30, 106, 221, .15);
+  font-size: 13px; color: var(--gov-text);
+  border-bottom: 1px solid rgba(30, 106, 221, .25);
+  box-shadow: 0 1px 0 rgba(0, 58, 140, .18);
 }
 .ops-console-root .menubar .bold { font-weight: 700; color: var(--gov-blue-deep); }
 .ops-console-root .menubar .spacer { flex: 1; }
 .ops-console-root .menubar .mi { cursor: default; }
+.ops-console-root .menubar .menubar-app {
+  font-weight: 700; color: var(--gov-blue-deep); margin-left: 4px;
+}
+.ops-console-root .menubar .menubar-menu-item {
+  cursor: default; padding: 2px 8px; border-radius: 4px;
+  transition: background-color .12s;
+}
+.ops-console-root .menubar .menubar-menu-item:hover {
+  background: rgba(30, 106, 221, .08);
+}
 
-/* 2026-08-09：菜单栏 mac 风格三色关闭点（仅红色 active，黄/绿保留占位） */
-.ops-console-root .menubar .menubar-traffic {
-  display: flex; gap: 8px; margin-left: 12px; align-items: center;
+/* 2026-08-13 GNOME 风格：✕ Close 原生 button（替代 mac 三色交通灯）
+   全局唯一关闭入口（taskbar 不放关闭按钮，避免双入口）。
+   原生 button 自动支持 Enter/Space 键盘可达。 */
+.ops-console-root .menubar .close-all-btn {
+  appearance: none; -webkit-appearance: none;
+  border: none; background: transparent; cursor: pointer;
+  padding: 3px 10px; border-radius: 4px; font-size: 12px;
+  color: var(--gov-text); display: inline-flex; align-items: center; gap: 4px;
+  transition: background-color .12s;
 }
-.ops-console-root .menubar .menubar-traffic span {
-  width: 12px; height: 12px; border-radius: 50%;
-  box-shadow: inset 0 0 1px rgba(0, 0, 0, .3);
+.ops-console-root .menubar .close-all-btn:hover {
+  background: rgba(30, 106, 221, .12); color: var(--gov-blue-deep);
 }
-.ops-console-root .menubar .menubar-traffic .r { background: #ff5f57; cursor: pointer; }
-.ops-console-root .menubar .menubar-traffic .r:hover { filter: brightness(1.08); }
-.ops-console-root .menubar .menubar-traffic .r:focus {
-  outline: 2px solid rgba(30, 106, 221, .6); outline-offset: 2px;
+.ops-console-root .menubar .close-all-btn:focus {
+  outline: 2px solid rgba(30, 106, 221, .6); outline-offset: 1px;
 }
-.ops-console-root .menubar .menubar-traffic .y { background: #febc2e; }
-.ops-console-root .menubar .menubar-traffic .g { background: #28c840; }
+.ops-console-root .menubar .close-all-btn svg { width: 12px; height: 12px; }
 
-/* ===== 通用 mac 窗口 ===== */
+/* ===== 通用 GNOME 窗口 ===== */
 .ops-console-root .win {
-  position: fixed; border-radius: 12px; overflow: hidden;
-  background: rgba(250, 252, 255, .92); backdrop-filter: blur(40px) saturate(180%); -webkit-backdrop-filter: blur(40px) saturate(180%);
-  box-shadow: 0 30px 80px rgba(0, 40, 100, .35), 0 0 0 1px rgba(0, 58, 140, .12);
-  animation: pop .2s cubic-bezier(.3, 1.4, .6, 1);
+  position: fixed; border-radius: 0; overflow: hidden;
+  background: #fafcff;
+  box-shadow: 0 0 0 1px rgba(0, 58, 140, .45);
+  animation: pop .15s cubic-bezier(.3, 1.4, .6, 1);
 }
-@keyframes pop { from { transform: scale(.94); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-/* 最大化（绿灯）：窗口铺满屏幕（避开菜单栏） */
+@keyframes pop { from { transform: scale(.98); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+/* 最大化（▢ 按钮）：窗口铺满屏幕，避开顶部菜单栏(28) + 底部 taskbar(36)
+   64 = 28 menubar + 36 taskbar，窗口避让底部任务栏。 */
 .ops-console-root .win.maximized {
   left: 0 !important; top: 28px !important;
-  width: 100vw !important; height: calc(100vh - 28px) !important;
+  width: 100vw !important; height: calc(100vh - 64px) !important;
   border-radius: 0; animation: none;
   transition: all .18s ease;
 }
 
 .ops-console-root .win-bar {
-  height: 40px; display: flex; align-items: center; padding: 0 12px; gap: 10px;
-  background: linear-gradient(180deg, rgba(234, 242, 253, .9), rgba(214, 231, 252, .9));
-  border-bottom: 1px solid rgba(30, 106, 221, .15); cursor: grab;
+  height: 38px; display: flex; align-items: center; padding: 0 10px; gap: 10px;
+  background: linear-gradient(180deg, rgba(234, 242, 253, .95), rgba(214, 231, 252, .95));
+  border-bottom: 1px solid rgba(30, 106, 221, .18); cursor: move;
 }
 .ops-console-root .win-bar:active { cursor: grabbing; }
-.ops-console-root .traffic { display: flex; gap: 8px; flex-shrink: 0; }
-.ops-console-root .traffic span { width: 12px; height: 12px; border-radius: 50%; box-shadow: inset 0 0 1px rgba(0, 0, 0, .3); cursor: pointer; }
-.ops-console-root .traffic .r { background: #ff5f57; } .ops-console-root .traffic .y { background: #febc2e; } .ops-console-root .traffic .g { background: #28c840; }
+.ops-console-root .win-controls {
+  display: flex; gap: 2px; flex-shrink: 0;
+  margin-left: auto; align-items: center;
+}
+.ops-console-root .win-control {
+  appearance: none; -webkit-appearance: none;
+  border: none; background: transparent; cursor: pointer;
+  width: 28px; height: 22px; border-radius: 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--gov-text);
+  transition: background-color .12s;
+}
+.ops-console-root .win-control:focus {
+  outline: 2px solid rgba(30, 106, 221, .6); outline-offset: 1px;
+}
+.ops-console-root .win-control svg { width: 14px; height: 14px; }
+.ops-console-root .win-control--max:hover { background: rgba(30, 106, 221, .12); }
+.ops-console-root .win-control--close:hover { background: #ff453a; color: #fff; }
+.ops-console-root .win-control--close:hover svg { stroke: #fff; }
+
 .ops-console-root .win-title { font-size: 13px; font-weight: 600; color: var(--gov-blue-deep); }
 .ops-console-root .win-body { color: var(--gov-text); }
 
@@ -141,7 +190,7 @@
 .ops-console-root .srv-toolbar { display: flex; align-items: center; gap: 8px; flex: 1; justify-content: flex-end; }
 .ops-console-root .search-box {
   display: flex; align-items: center; gap: 6px; background: #fff;
-  border: 1px solid rgba(30, 106, 221, .3); border-radius: 8px; padding: 4px 10px; width: 220px;
+  border: 1px solid rgba(30, 106, 221, .3); border-radius: 6px; padding: 3px 10px; width: 220px;
 }
 .ops-console-root .search-box:focus-within { border-color: var(--gov-blue); box-shadow: 0 0 0 3px rgba(30, 106, 221, .15); }
 .ops-console-root .search-box input { border: none; outline: none; background: transparent; font-size: 13px; width: 100%; color: var(--gov-text); }
@@ -152,7 +201,7 @@
 }
 .ops-console-root .srv-item { display: flex; flex-direction: column; align-items: center; gap: 8px; cursor: pointer; }
 .ops-console-root .srv-item .icon-wrap {
-  width: 72px; height: 72px; border-radius: 16px; position: relative;
+  width: 72px; height: 72px; border-radius: 14px; position: relative;
   background: linear-gradient(150deg, #2b4a7c, #1a3054);
   border: 1px solid rgba(255, 255, 255, .45);
   box-shadow: 0 6px 16px rgba(0, 58, 140, .35), inset 0 1px 0 rgba(255, 255, 255, .35);
@@ -161,9 +210,10 @@
 }
 .ops-console-root .srv-item:hover .icon-wrap { transform: scale(1.08); }
 .ops-console-root .srv-item.selected .icon-wrap { outline: 3px solid rgba(30, 106, 221, .5); outline-offset: 2px; }
+/* 2026-08-13 GNOME 化：LED 边框改政务蓝（机架 LED 视觉），保留红/绿/灰三态颜色 */
 .ops-console-root .led {
   position: absolute; top: -5px; right: -5px; width: 15px; height: 15px; border-radius: 50%;
-  border: 2px solid #fff; box-shadow: 0 1px 5px rgba(0, 0, 0, .4);
+  border: 2px solid rgba(0, 58, 140, .3); box-shadow: 0 1px 5px rgba(0, 0, 0, .4);
 }
 .ops-console-root .led.green { background: #30d158; box-shadow: 0 0 8px rgba(48, 209, 88, .8), 0 1px 5px rgba(0, 0, 0, .4); }
 .ops-console-root .led.red { background: #ff453a; box-shadow: 0 0 8px rgba(255, 69, 58, .9), 0 1px 5px rgba(0, 0, 0, .4); animation: pulse 1.2s infinite; }
@@ -181,7 +231,7 @@
 .ops-console-root .detail-body { padding: 18px 22px 22px; }
 .ops-console-root .srv-head { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
 .ops-console-root .srv-head .big-icon {
-  width: 54px; height: 54px; border-radius: 13px; display: flex; align-items: center; justify-content: center;
+  width: 54px; height: 54px; border-radius: 12px; display: flex; align-items: center; justify-content: center;
   background: linear-gradient(150deg, #2b4a7c, #1a3054); box-shadow: 0 4px 12px rgba(0, 58, 140, .35); position: relative;
 }
 .ops-console-root .srv-head h3 { font-size: 17px; color: var(--gov-blue-deep); }
@@ -199,7 +249,7 @@
 .ops-console-root .kv div { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid rgba(30, 106, 221, .08); }
 .ops-console-root .kv .k { color: #7a8db3; }
 
-/* ===== macOS 磁盘列表 ===== */
+/* ===== 磁盘列表 ===== */
 .ops-console-root .disk-section { margin-bottom: 16px; }
 .ops-console-root .disk-title { font-size: 12px; font-weight: 600; color: #7a8db3; margin-bottom: 8px; }
 .ops-console-root .disk-row {
@@ -216,7 +266,7 @@
 
 .ops-console-root .gov-btn {
   display: inline-flex; align-items: center; gap: 7px; padding: 6px 16px;
-  font-size: 13px; font-weight: 500; color: #fff; border: none; border-radius: 7px; cursor: pointer;
+  font-size: 13px; font-weight: 500; color: #fff; border: none; border-radius: 6px; cursor: pointer;
   background: linear-gradient(180deg, #3d84e8, var(--gov-blue));
   box-shadow: 0 1px 3px rgba(0, 58, 140, .4), inset 0 1px 0 rgba(255, 255, 255, .25); transition: filter .12s;
 }
@@ -225,7 +275,7 @@
 .ops-console-root .gov-btn:disabled { opacity: .7; cursor: default; }
 .ops-console-root .gov-btn svg { width: 15px; height: 15px; }
 
-.ops-console-root .detect-panel { margin-top: 14px; background: #12233f; border-radius: 10px; padding: 14px 16px; font-family: "SF Mono", Menlo, monospace; font-size: 12px; color: #d5d9e0; max-height: 190px; overflow-y: auto; }
+.ops-console-root .detect-panel { margin-top: 14px; background: #12233f; border-radius: 10px; padding: 14px 16px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; color: #d5d9e0; max-height: 190px; overflow-y: auto; }
 .ops-console-root .detect-panel .line { margin: 4px 0; opacity: 0; animation: fadeIn .3s forwards; }
 @keyframes fadeIn { to { opacity: 1; } }
 .ops-console-root .detect-panel .ok { color: #30d158; } .ops-console-root .detect-panel .warn { color: #ffd60a; } .ops-console-root .detect-panel .err { color: #ff453a; } .ops-console-root .detect-panel .info { color: #64d2ff; }
@@ -256,25 +306,46 @@
 
 /* ===== 日志查看窗口 ===== */
 .ops-console-root .win-logview { width: 620px; }
-.ops-console-root .logview-body { background: #12233f; padding: 16px 18px; font-family: "SF Mono", Menlo, monospace; font-size: 12px; max-height: 320px; overflow-y: auto; color: #c8cdd5; }
+.ops-console-root .logview-body { background: #12233f; padding: 16px 18px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; max-height: 320px; overflow-y: auto; color: #c8cdd5; }
 .ops-console-root .logview-body .ll { margin: 3px 0; white-space: pre-wrap; }
 .ops-console-root .logview-body .t { color: #7f8a99; }
 .ops-console-root .logview-body .INFO { color: #30d158; } .ops-console-root .logview-body .WARN { color: #ffd60a; } .ops-console-root .logview-body .ERROR { color: #ff453a; } .ops-console-root .logview-body .DEBUG { color: #64d2ff; }
 
-/* ===== Dock ===== */
-.ops-console-root .dock-wrap { position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%); z-index: 999; }
-.ops-console-root .dock {
-  display: flex; align-items: flex-end; gap: 8px; padding: 8px 12px;
-  background: rgba(255, 255, 255, .45); backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
-  border-radius: 20px; border: 1px solid rgba(255, 255, 255, .6); box-shadow: 0 12px 32px rgba(0, 58, 140, .3);
+/* ===== 底部 taskbar（GNOME 风格，替代原 mac Dock）===== */
+.ops-console-root .taskbar-wrap {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 999;
+  height: 36px;
+  background: var(--gov-blue-deep);
+  display: flex; align-items: center; justify-content: center;
+  gap: 24px; padding: 0 16px;
+  border-top: 1px solid rgba(0, 58, 140, .6);
+  box-shadow: 0 -1px 0 rgba(0, 58, 140, .18);
 }
-.ops-console-root .dock-item { width: 52px; height: 52px; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: transform .18s cubic-bezier(.3, 1.5, .6, 1); position: relative; }
-.ops-console-root .dock-item:hover { transform: translateY(-12px) scale(1.18); }
-.ops-console-root .dock-item svg { width: 44px; height: 44px; }
-.ops-console-root .dock-item .tip { position: absolute; top: -32px; left: 50%; transform: translateX(-50%); background: rgba(0, 58, 140, .88); color: #fff; font-size: 11px; padding: 3px 10px; border-radius: 6px; white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity .15s; }
-.ops-console-root .dock-item:hover .tip { opacity: 1; }
-.ops-console-root .dock-item .run-dot { position: absolute; bottom: -5px; left: 50%; transform: translateX(-50%); width: 4px; height: 4px; border-radius: 50%; background: var(--gov-blue-deep); }
-.ops-console-root .dock-sep { width: 1px; height: 40px; background: rgba(0, 58, 140, .25); margin: 0 4px; }
+.ops-console-root .taskbar-item {
+  position: relative;
+  width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
+  cursor: pointer; border-radius: 6px;
+  transition: background-color .12s;
+}
+.ops-console-root .taskbar-item:hover { background: rgba(255, 255, 255, .1); }
+.ops-console-root .taskbar-item:focus {
+  outline: 2px solid rgba(255, 255, 255, .6); outline-offset: -2px;
+}
+.ops-console-root .taskbar-item svg { width: 24px; height: 24px; }
+.ops-console-root .taskbar-tip {
+  position: absolute; bottom: 42px; left: 50%; transform: translateX(-50%);
+  background: rgba(0, 58, 140, .92); color: #fff; font-size: 11px;
+  padding: 3px 10px; border-radius: 6px; white-space: nowrap;
+  opacity: 0; pointer-events: none; transition: opacity .12s;
+}
+.ops-console-root .taskbar-item:hover .taskbar-tip,
+.ops-console-root .taskbar-item:focus .taskbar-tip { opacity: 1; }
+/* 2026-08-13：run-dot 位置由 bottom:-5px 改 top:2px right:2px（taskbar 36px 栏内无底部空间） */
+.ops-console-root .taskbar-run-dot {
+  position: absolute; top: 2px; right: 2px;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #30d158; box-shadow: 0 0 4px rgba(48, 209, 88, .8);
+}
 
 /* ===== 政务蓝滚动条（作用域内）===== */
 .ops-console-root ::-webkit-scrollbar { width: 8px; height: 8px; }

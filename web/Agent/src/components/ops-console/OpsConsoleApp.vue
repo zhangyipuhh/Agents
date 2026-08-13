@@ -14,6 +14,16 @@
  *          改造为作用域前缀样式，避免政务蓝 ``* { margin: 0; padding: 0 }``
  *          污染主应用其他页面。
  *
+ * 2026-08-13 GNOME 风格化：
+ *       1) 顶部菜单栏 OpsMenuBar 改为 GNOME top bar（实色 + 中文全局菜单占位
+ *          + 右侧 ✕ Close 原生 button 替代原 mac 三色交通灯，emit('exit') 不变）；
+ *       2) 4 个窗口标题栏 mac 红/绿交通灯 → 右侧 max + close 两按钮（原生 button
+ *          + SVG），close / max 事件契约不变；
+ *       3) 底部 Dock 改造为底部 taskbar（政务蓝实色 36px 整宽，三图标入口）；
+ *       4) 本轮不实现 minimize（涉及最小化栈与状态保留，单独 PR 落地）；
+ *       5) 业务逻辑零改动（runDetect / loadLatest / detectAll / mapSnapshotToServer
+ *          / startDrag 等未触动）。
+ *
  * 状态机：
  *   - currentTime: string                  顶部菜单栏时间（1s 定时器）
  *   - searchKey: string                    服务器搜索关键词（v-model 双向）

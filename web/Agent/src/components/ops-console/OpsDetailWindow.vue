@@ -6,12 +6,18 @@
  * 2026-08-05 改造：``runDetect`` 改为调 ``POST /api/admin/server-inspection/collect``
  * 触发真实采集+落库，面板输出真实判定明细（替代原 6 步假动画）。
  *
+ * 2026-08-13 调整为 GNOME 风格：
+ *   1) 标题栏 mac 红/绿交通灯 → 右侧 max + close 两按钮（原生 <button> + SVG）；
+ *   2) 原生 button 自动支持 Enter/Space 键盘可达，无需手动 keydown 处理；
+ *   3) 本轮不实现 minimize（涉及最小化栈与状态保留，单独 PR 落地）。
+ *   close / max 事件契约不变（仍 emit 'close' / 'max'，父组件复用既有逻辑）。
+ *
  * Props:
  *   - win: { x, y, z, max }    窗口位置/层级/最大化状态
  *   - server: ServerItem       当前展示详情的服务器
  *
  * Emits:
- *   - close / max / front / drag  窗口控制
+ *   - close / max / front / drag  窗口控制（max/close 由原生 button 触发，事件契约不变）
  *   - collected                采集完成事件，父组件可刷新列表
  *
  * Expose:
@@ -130,10 +136,25 @@ defineExpose({ runDetect })
        :style="{ left: win.x + 'px', top: win.y + 'px', zIndex: win.z }"
        @mousedown="emit('front')">
     <div class="win-bar" @mousedown="emit('drag', $event)">
-      <div class="traffic">
-        <span class="r" @click.stop="emit('close')"></span><span class="g" @click.stop="emit('max')"></span>
-      </div>
       <span class="win-title">{{ server.name }} — 服务器详情</span>
+      <!-- 2026-08-13 GNOME 风格：右侧两按钮 max + close（左→右），原生 button + SVG -->
+      <div class="win-controls">
+        <button type="button" class="win-control win-control--max"
+                aria-label="最大化" title="最大化"
+                @click.stop="emit('max')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <rect x="5" y="5" width="14" height="14" rx="1.5"/>
+          </svg>
+        </button>
+        <button type="button" class="win-control win-control--close"
+                aria-label="关闭" title="关闭"
+                @click.stop="emit('close')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <line x1="6" y1="6" x2="18" y2="18"/>
+            <line x1="18" y1="6" x2="6" y2="18"/>
+          </svg>
+        </button>
+      </div>
     </div>
     <div class="win-body detail-body">
       <div class="srv-head">
