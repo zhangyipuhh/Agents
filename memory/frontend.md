@@ -80,9 +80,38 @@
 
 `App.vue` 加 `useRoute()` + `isOpsConsoleRoute` computed；`/ops-console` 路由下走独立分支 `<div v-else-if="isOpsConsoleRoute" class="app-layout app-layout--ops"><OpsConsoleWorkspace /></div>`，**不挂**主会话的 `<Sidebar>` / `<ProjectDialog>` / `<SubAgentDrawer>` / `<UserSettingsDialog>`。离开路由时该分支自动 unmount，主会话 layout 自动恢复。`useRoute()` 在 vitest 4 happy-dom 下偶发 named export 解析失败，try/catch 兜底 + 读 `window.location.pathname` 推导；`useRouter().currentRoute.value.name` 失败时降级为 `path.startsWith('/ops-console')`。`Sidebar` 内部 `useRoute()` 调用仍依赖其 `if (!route || !route.name) return 'new-task'` 既有保护（`Sidebar.vue:230-237`），无破坏。`Sidebar.vue` 的 `currentPage` 历史死代码 prop **未动**（保持最小改动面）。
 
-#### 运维顶层关闭点（2026-08-09 落地）
+#### 运维顶层关闭点（2026-08-09 落地，2026-08-13 GNOME 化）
 
-`OpsMenuBar.vue` 顶部菜单栏右侧 mac 风格三色点（红/黄/绿），仅红色 active 关闭整个运维控制台。事件链路：`OpsMenuBar.r @click.stop="emit('exit')"` → `OpsConsoleApp` 透传 `<OpsMenuBar :time="currentTime" @exit="emit('exit')" />` + `defineEmits(['exit'])` → `OpsConsoleWorkspace.handleExit` → 优先 `window.close()`（仅对被 `window.open` 打开的 Tab 有效；通过 `window.opener || window.history.length === 1` 判定），失败/无 opener 降级 `router.push('/')`。样式落在 `ops-console.css` 的 `.ops-console-root .menubar .menubar-traffic` 选择器下，保留政务蓝主题 + hover/focus 视觉反馈 + 键盘可达（tabindex=0 + Enter/Space）+ aria-label 完整。黄/绿保留占位以备未来最小化/最大化。
+`OpsMenuBar.vue` 顶部菜单栏右侧全局唯一关闭入口：**GNOME 风格原生 `<button class="close-all-btn">✕ Close`**（替代原 mac 红/黄/绿交通灯），aria-label="关闭运维控制台"，原生 button 自动支持 Enter/Space 键盘可达（替代原 tabindex=0 + 手动 keydown）。事件链路：`OpsMenuBar.close-all-btn @click.stop="emit('exit')"` → `OpsConsoleApp` 透传 `<OpsMenuBar :time="currentTime" @exit="emit('exit')" />` + `defineEmits(['exit'])` → `OpsConsoleWorkspace.handleExit` → 优先 `window.close()`（仅对被 `window.open` 打开的 Tab 有效；通过 `window.opener || window.history.length === 1` 判定），失败/无 opener 降级 `router.push('/')`。样式落在 `ops-console.css` 的 `.ops-console-root .menubar .close-all-btn` 选择器下，hover 政务蓝底，focus 政务蓝 outline。
+
+#### 运维控制台 GNOME / Ubuntu 风格化（2026-08-13）
+
+将整套运维控制台从 macOS 风格（圆角 + 毛玻璃 + 三色交通灯 + 底部 Dock 弹跳）调整为 GNOME / Ubuntu 风格（窗口直角 + 顶部全局菜单栏 + 标题栏右侧 max/close 两按钮 + 顶部菜单栏原生 ✕ Close + 底部 taskbar 替代底部 Dock）。详见 `.trae/documents/ops-console-gnome-style.md`。
+
+要点：
+- **字体栈**：`system-ui, "Ubuntu", "Cantarell", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif`（GNOME 系 + 中文回退兜底）
+- **窗口**：圆角 12px → 0px（GNOME Adwaita 直角）；毛玻璃 `backdrop-filter` 全部去除；投影 `box-shadow` → 1px 政务蓝边框 `0 0 0 1px rgba(0,58,140,.45)`；窗口背景 `#fafcff` 实色
+- **标题栏**：高度 40px → 38px（兼容 OpsServerWindow 内嵌搜索框）；`cursor: grab` → `cursor: move`（保留拖拽功能）；右侧 `.traffic` 圆点 → `.win-controls` 两按钮原生 `<button>`（maximize `▢` + close `✕`，**本轮不实现 minimize**）+ SVG icon；close hover 复用项目红 `#ff453a`（与 LED/badgen 同系），max hover 复用政务蓝 hover `rgba(30,106,221,.12)`
+- **顶部菜单栏**：毛玻璃 → 政务蓝系实色 `rgba(255,255,255,.85)`；应用名右侧新增中文全局菜单占位（文件 / 编辑 / 视图 / 帮助），hover 蓝底；SVG 监视器图标保留
+- **底部 Dock → 底部 taskbar**：OpsDockBar.vue 模板类名全量重命名 `dock-*` → `taskbar-*`（6 类）；样式从 `position: fixed; bottom: 10px; left: 50%` 居中胶囊 → `position: fixed; bottom: 0; left: 0; right: 0` 整宽政务蓝实色（`var(--gov-blue-deep)` = `#003a8c`）；高度 36px，三图标（服务器管理 / 日志管理 / 一键智能检测）水平居中，无 hover 弹跳；`.taskbar-run-dot` 位置由 `bottom:-5px` 改 `top:2px; right:2px`（栏内无底部空间）；**不新增** `close-all` emit（全局关闭入口唯一在 OpsMenuBar ✕ Close）
+- **`.win.maximized`**：`height: calc(100vh - 28px)` → `calc(100vh - 64px)`（窗口避让底部 36px taskbar）；CSS 注释明确 `64 = 28 menubar + 36 taskbar`
+- **LED**：`.led` 边框 `2px solid #fff` → `2px solid rgba(0,58,140,.3)`（政务蓝边框，更"机架 LED"）；颜色映射 `.green/.red/.gray` 不变（OpsServerIcon.spec.js 5 个用例零改动通过）
+- **动效**：`@keyframes pop` 缩放 `.94→1` 改 `.98→1`，时长 `.2s` 改 `.15s`（GNOME 克制）
+- **零业务逻辑改动**：OpsConsoleApp.vue / OpsServerIcon.vue 仅 docstring 追加，业务代码（`runDetect` / `loadLatest` / `detectAll` / `mapSnapshotToServer` / `startDrag` / 拖拽边界 28px menubar 高度）完全未触动
+
+测试同步（4 个 spec 共 17 用例全绿）：
+- `OpsServerIcon.spec.js`：5 用例零改动（LED class 映射未破坏）
+- `OpsConsoleApp.spec.js`：4 用例零改动（stub 子组件，不受模板变化影响）
+- `__tests__/logFoldersDataSource.spec.js`：契约测试零改动
+- `__tests__/OpsConsoleApp.exit.spec.js`：新增用例 `test_close_all_button_in_menu_bar_still_emits_exit`（真实 click `.close-all-btn` 触发 exit 透传，回归保护「移除 mac 红点后保证新按钮接管语义」）
+
+变更文件清单（按文件大小排序）：
+- `web/Agent/src/styles/ops-console.css`（主战场，政务蓝 + 全部重写）
+- `web/Agent/src/components/ops-console/OpsMenuBar.vue`（顶栏模板重写）
+- `web/Agent/src/components/ops-console/OpsDockBar.vue`（底部 Dock → 任务栏 + 类名重命名）
+- `web/Agent/src/components/ops-console/OpsServerWindow.vue` / `OpsDetailWindow.vue` / `OpsLogManager.vue` / `OpsLogViewer.vue`（4 窗口标题栏两按钮替换）
+- `web/Agent/src/components/ops-console/OpsConsoleApp.vue`（仅 docstring 追加）
+- `web/Agent/src/components/ops-console/__tests__/OpsConsoleApp.exit.spec.js`（新增 1 用例 + docstring 更新）
 
 ### vue-router 接入回归修复（2026-08-XX 同步）
 
@@ -108,12 +137,12 @@
 - **登录入口**：`login.html` + `src/login-main.js`（独立 Vite 入口；承载 `LoginView`；由 `redirectToLogin()` 跳到 `/login?redirect=...` 统一访问）
 - **运维控制台（App.vue 内嵌子页面，2026-08-08 等保三级改造）**（历史：2026-08-05 独立入口）：删除 `ops-console.html` + `src/ops-console-main.js`，取消 `vite.config.js` 的 `opsConsole` 入口；改为 `App.vue::currentPage === 'ops-console'` 条件渲染 `OpsConsolePage`（即 `OpsConsoleApp.vue`），复用主应用 `fetchWithAuth` + HttpOnly Cookie + `X-Requested-With` CSRF 头鉴权链路，解决「独立子窗口 Cookie 失效 → /api/admin/server-inspection/latest 拉不到数据」反模式；`src/styles/ops-console.css` 改为 `.ops-console-root` 作用域前缀（避免政务蓝 `* { margin: 0; padding: 0 }` 污染主应用），并通过 `App.vue::ensureOpsConsoleStyles()` 在首次切到 ops-console 时按需引入（单例守卫）；`src/components/ops-console/` 下 7 个组件 + `src/data/ops-console/mockData.js` 静态样例数据保留。组件全部以 `Ops` 前缀命名（与主 Agent 业务命名空间隔离）：
   - `OpsConsoleApp.vue`：根组件，7 个 ref 状态机（currentTime / searchKey / zTop / wins / detailServer / activeFolder / logFile）+ 10 个函数（tick / bringFront / openWin / toggleMax / closeWin / openDetail / openLog / detectAll / startDrag / genLogContent）；4 个窗口可独立 open/close/max/front/drag；`startDrag` 拖拽时限制窗口四边边界：顶部不低于菜单栏底部（`28px`），左右/底部至少保留 `60px` 可见区域，防止标题栏被顶部菜单栏压盖后无法再次拖动
-  - `OpsMenuBar.vue`：顶部菜单栏（毛玻璃 + 时间 + 标题「智能运维中心」，高度 `28px`）
-  - `OpsServerWindow.vue`：服务器管理窗口（访达图标视图 + 搜索 + 状态点）
-  - `OpsDetailWindow.vue`：服务器详情窗口（指标卡 + 智能检测动画 + 磁盘列表），暴露 `runDetect()` 方法供父组件调用
-  - `OpsLogManager.vue`：日志管理窗口（左侧文件夹 + 右侧文件列表）
-  - `OpsLogViewer.vue`：日志查看窗口（终端风格日志内容）
-  - `OpsDockBar.vue`：底部 Dock 栏（毛玻璃 + 三个图标入口：服务器/日志/一键智能检测）
+  - `OpsMenuBar.vue`：顶部菜单栏（GNOME top bar 实色 + 时间 + 标题「智能运维中心」+ 中文全局菜单占位 + ✕ Close 原生 button，高度 `28px`；2026-08-13 从 mac 毛玻璃 + 红/黄/绿交通灯改造）
+  - `OpsServerWindow.vue`：服务器管理窗口（GNOME 直角 + 标题栏 max/close 两按钮 + 访达图标视图 + 搜索 + 状态点）
+  - `OpsDetailWindow.vue`：服务器详情窗口（GNOME 直角 + 标题栏 max/close 两按钮 + 指标卡 + 智能检测动画 + 磁盘列表），暴露 `runDetect()` 方法供父组件调用
+  - `OpsLogManager.vue`：日志管理窗口（GNOME 直角 + 标题栏 max/close 两按钮 + 左侧文件夹 + 右侧文件列表）
+  - `OpsLogViewer.vue`：日志查看窗口（GNOME 直角 + 标题栏 max/close 两按钮 + 终端风格日志内容）
+  - `OpsDockBar.vue`：底部 taskbar 任务栏（政务蓝实色 `#003a8c` 整宽 36px + 三图标按钮：服务器/日志/一键智能检测；2026-08-13 从底部 mac Dock 改造，模板类名 `dock-*` → `taskbar-*`）
   - `OpsServerIcon.vue`：公共服务器图标（被 ServerWindow / DetailWindow 共用）；2026-08-05 新增 `unknown` 灰色 LED 态（从未采集 / 无快照 / 采集跳过），与 `ok` 绿、`err` 红共三态
   - 数据：2026-08-05 起 `servers` 改为从 `GET /api/admin/server-inspection/latest` 拉取（按当前用户 `OwnershipScope` 过滤：admin 透传全量 `devops_servers`，普通用户按 `user_server_nodes` 可见集去重；响应**不含 ip**）；**2026-08-12 起** `logFolders` 改为本地 `ref([])`，等待后端 `GET /api/admin/log-folders` 落地（接口落地期间日志管理窗口显示空态，不再持有前端 mock 数据，避免被 Vite 打生产 bundle 污染 Docker 镜像）；原 mock 数据迁入 `src/components/ops-console/__tests__/fixtures/opsConsoleMockData.js` 仅供单测使用；**不**走 `src/utils/api.js` 之外的 axios 封装（独立桌面，不依赖主 Agent 业务）
 
