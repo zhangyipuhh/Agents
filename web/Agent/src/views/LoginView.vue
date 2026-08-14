@@ -24,6 +24,7 @@ import {
   confirmLoginMfaEnrollment
 } from '../utils/api.js'
 import { appConfig, getCurrentLoginTheme } from '../config/portal.js'
+import PasswordInput from '../components/PasswordInput.vue'
 
 /* ===== 密码阶段 ===== */
 
@@ -122,7 +123,15 @@ const isRecoveryStage = computed(() => stage.value === 'mfa_enroll' && recoveryC
 const currentTheme = computed(() => getCurrentLoginTheme())
 
 /**
- * 检测大写锁定键状态
+ * 处理 PasswordInput 透传的大写锁定事件
+ * @param {boolean} on - 大写锁定键状态
+ */
+function handleCapsLock(on) {
+  capsLockOn.value = !!on
+}
+
+/**
+ * 直接绑定到非密码输入（如 MFA 验证码）的键盘事件：检测 CapsLock 状态
  * @param {KeyboardEvent} event - 键盘事件对象
  */
 function checkCapsLock(event) {
@@ -445,16 +454,13 @@ onMounted(() => {
         <!-- 密码 -->
         <div class="form-group">
           <label class="form-label" for="login-password">密码</label>
-          <input
-            id="login-password"
+          <PasswordInput
+            input-id="login-password"
             v-model="password"
-            type="password"
-            class="form-input"
             placeholder="请输入密码"
             autocomplete="current-password"
             :disabled="loading"
-            @keydown="checkCapsLock"
-            @keyup="checkCapsLock"
+            @caps-lock="handleCapsLock"
           />
           <div v-if="capsLockOn" class="caps-lock-hint">
             <span class="caps-lock-icon">⚠</span>

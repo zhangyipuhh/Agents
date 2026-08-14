@@ -142,6 +142,40 @@
 - `web/Agent/src/components/ops-console/OpsConsoleApp.spec.js`（删 `OpsDockBar: true` stub × 3；docstring 追加 2026-08-14 说明）
 - `web/Agent/src/components/ops-console/__tests__/OpsConsoleApp.exit.spec.js`（删 `OpsDockBar: true` stub × 3；describe 改名；新增 4 用例；docstring 头部 2026-08-14 段落）
 
+### 密码框显示/隐藏切换（2026-08-14，用户需求）
+
+用户反馈「登录页 `input` 显示密码的功能没了，需要恢复」。git 全仓 `-S showPassword / eye / show_password` 检索确认该功能不在历史 commit 中——属于**新增需求**。统一封装共享组件 `src/components/PasswordInput.vue`，登录 / 注册 / 个人设置三场景所有密码框统一接入。
+
+要点：
+- **共享组件 `PasswordInput.vue`**：props 含 `modelValue` / `inputId` / `inputClass` / `placeholder` / `autocomplete` / `disabled` / `usePasswordMask` / `inputTestId`；emits `update:modelValue` + `caps-lock`；内置 inline SVG 眼睛图标（heroicons 风格 24x24 stroke），`aria-label` + `aria-pressed` 完整。
+- **两种切换模式**：
+  - 默认（`usePasswordMask=false`）：点击眼睛切 `type=password ↔ type=text`，图标 eye ↔ eye-slash。
+  - 兼容模式（`usePasswordMask=true`，用于 UserSettingsDialog 旧密码 / MFA 当前密码）：**不切 type**（始终 `text`，避免触发浏览器密码管理器重置），改为 toggle `.password-mask` class——脱敏时加 class（`-webkit-text-security: disc` 圆点兜底），可见时移除 class（明文）。
+- **autocomplete 不破坏**：原 `current-password` / `new-password` 属性透传。
+- **capsLock 提示**：组件 keydown / keyup emit `caps-lock` 布尔值给父级，父级（原 LoginView / RegisterView）保留原 `caps-lock-hint` 提示块不变。
+- **零运行时依赖**：inline SVG 不引入图标库，与项目一贯"零额外依赖"基调一致。
+
+覆盖入口（共 9 处）：
+1. `LoginView.vue`：#login-password
+2. `RegisterView.vue`：#register-password + #register-confirm-password
+3. `UserSettingsDialog.vue`：
+   - 修改密码区：#settings-old-password（usePasswordMask=true）、#settings-new-password、#settings-confirm-new-password
+   - MFA 区：#mfa-enroll-current-password（usePasswordMask=true + inputTestId 透传保 0a5cf42 旧测试）、#mfa-regen-password（usePasswordMask=true）
+   - admin 创建/编辑用户：#form-password
+
+测试同步（4 个 spec 共 ~23 用例全绿）：
+- `components/__tests__/PasswordInput.spec.js`（新增）：10 用例覆盖导入 / 默认渲染 / type 切换 / v-model / caps-lock / usePasswordMask class 切换 / disabled / 透传属性
+- `views/__tests__/LoginView.show-password.spec.js`（新增）：4 用例覆盖默认 type / 切 text / 还原 / 提交不被破坏
+- `views/__tests__/RegisterView.show-password.spec.js`（新增）：5 用例覆盖默认 / 两个框独立切换 / 还原 / 复杂度提示仍工作
+- `components/__tests__/UserSettingsDialog.show-password.spec.js`（新增）：4 用例覆盖 profile 区三个框（含 oldPassword class 切换）+ admin users 区 #form-password
+
+变更文件清单：
+- `web/Agent/src/components/PasswordInput.vue`（新增）
+- `web/Agent/src/views/LoginView.vue`（替换 #login-password input；保留 `checkCapsLock` 函数供 MFA 阶段复用；新增 `handleCapsLock(on)` 桥接 PasswordInput emit）
+- `web/Agent/src/views/RegisterView.vue`（替换两个 input）
+- `web/Agent/src/components/UserSettingsDialog.vue`（替换 6 处 input；新增 PasswordInput import）
+- 上述 4 个 spec 文件（新增）
+
 ### vue-router 接入回归修复（2026-08-XX 同步）
 
 接入 vue-router 后 AgentWorkspace 子页面使用 `.content-area` / `.welcome-title` / `.queue-banner-wrapper` 三个 layout 类，原定义在 App.vue `<style scoped>` 内。**Vue scoped CSS 机制只匹配父组件自身根元素，不穿透到子组件根元素**，导致接入后 AgentWorkspace 主聊天界面坍缩（Sidebar 仍正常显示，因为 `.app-layout` 在 App.vue 自己根元素）。
@@ -167,7 +201,7 @@
 - **运维控制台（App.vue 内嵌子页面，2026-08-08 等保三级改造）**（历史：2026-08-05 独立入口）：删除 `ops-console.html` + `src/ops-console-main.js`，取消 `vite.config.js` 的 `opsConsole` 入口；改为 `App.vue::currentPage === 'ops-console'` 条件渲染 `OpsConsolePage`（即 `OpsConsoleApp.vue`），复用主应用 `fetchWithAuth` + HttpOnly Cookie + `X-Requested-With` CSRF 头鉴权链路，解决「独立子窗口 Cookie 失效 → /api/admin/server-inspection/latest 拉不到数据」反模式；`src/styles/ops-console.css` 改为 `.ops-console-root` 作用域前缀（避免政务蓝 `* { margin: 0; padding: 0 }` 污染主应用），并通过 `App.vue::ensureOpsConsoleStyles()` 在首次切到 ops-console 时按需引入（单例守卫）；`src/components/ops-console/` 下 7 个组件 + `src/data/ops-console/mockData.js` 静态样例数据保留。组件全部以 `Ops` 前缀命名（与主 Agent 业务命名空间隔离）：
   - `OpsConsoleApp.vue`：根组件，7 个 ref 状态机（currentTime / searchKey / zTop / wins / detailServer / activeFolder / logFile）+ 10 个函数（tick / bringFront / openWin / toggleMax / closeWin / openDetail / openLog / detectAll / startDrag / genLogContent）；4 个窗口可独立 open/close/max/front/drag；`startDrag` 拖拽时限制窗口四边边界：顶部不低于菜单栏底部（`28px`），左右/底部至少保留 `60px` 可见区域，防止标题栏被顶部菜单栏压盖后无法再次拖动
   - `OpsMenuBar.vue`：顶部菜单栏（GNOME top bar 实色 + 时间 + 标题「智能运维中心」+ 中文全局菜单占位 + ✕ Close 原生 button，高度 `28px`；2026-08-13 从 mac 毛玻璃 + 红/黄/绿交通灯改造）
-  - `OpsServerWindow.vue`：服务器管理窗口（GNOME 直角 + 标题栏 max/close 两按钮 + 访达图标视图 + 搜索 + 状态点）
+  - `OpsServerWindow.vue`：服务器管理窗口（GNOME 直角 + 标题栏 max/close 两按钮 + **两列横向长方形卡片**（每行 2 个；卡片含 OpsServerIcon 小号 + LED 红绿灯 + 服务器名称 + **CPU/内存/存储单行指标（竖线分隔，CSS ::before 生成 `|`，2026-08-14）**）+ 搜索 + 状态点；阈值与 `data/devops/inspection_scripts.yaml::warn` 对齐（CPU 80 / 内存 80 / 磁盘 80 → 红 #ff453a；null → 灰 #9aa3af）；存储行由具名导出函数 `pickDisplayDisk(disks)` 智能选盘：有 used ≥ 80 的盘取 used 最大者；无异常 Windows 取 C:（无 C: 取首块盘符）、Linux 取 `/`；单击卡片仍 `emit('open-detail', srv)` 打开 OpsDetailWindow，详情契约不变）
   - `OpsDetailWindow.vue`：服务器详情窗口（GNOME 直角 + 标题栏 max/close 两按钮 + 指标卡 + 智能检测动画 + 磁盘列表），暴露 `runDetect()` 方法供父组件调用
   - `OpsLogManager.vue`：日志管理窗口（GNOME 直角 + 标题栏 max/close 两按钮 + 左侧文件夹 + 右侧文件列表）
   - `OpsLogViewer.vue`：日志查看窗口（GNOME 直角 + 标题栏 max/close 两按钮 + 终端风格日志内容）

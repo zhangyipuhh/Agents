@@ -234,21 +234,54 @@
 .ops-console-root .search-box:focus-within { border-color: var(--gov-blue); box-shadow: 0 0 0 3px rgba(30, 106, 221, .15); }
 .ops-console-root .search-box input { border: none; outline: none; background: transparent; font-size: 13px; width: 100%; color: var(--gov-text); }
 .ops-console-root .search-box svg { width: 13px; height: 13px; flex-shrink: 0; opacity: .5; }
+/* 2026-08-14 卡片化：两列横向长方形，每张含 LED + 标题 + 单行指标（竖线分隔，CSS ::before） */
 .ops-console-root .srv-grid {
-  flex: 1; overflow-y: auto; padding: 24px 28px;
-  display: grid; grid-template-columns: repeat(auto-fill, 110px); gap: 26px 18px; align-content: start; justify-content: center;
+  flex: 1; overflow-y: auto; padding: 18px 22px;
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-content: start;
 }
-.ops-console-root .srv-item { display: flex; flex-direction: column; align-items: center; gap: 8px; cursor: pointer; }
-.ops-console-root .srv-item .icon-wrap {
-  width: 72px; height: 72px; border-radius: 14px; position: relative;
-  background: linear-gradient(150deg, #2b4a7c, #1a3054);
-  border: 1px solid rgba(255, 255, 255, .45);
-  box-shadow: 0 6px 16px rgba(0, 58, 140, .35), inset 0 1px 0 rgba(255, 255, 255, .35);
-  display: flex; align-items: center; justify-content: center;
-  transition: transform .15s;
+.ops-console-root .srv-card {
+  display: flex; flex-direction: column; gap: 8px;
+  background: linear-gradient(150deg, rgba(43, 74, 124, .12), rgba(26, 48, 84, .06));
+  border: 1px solid rgba(30, 106, 221, .18); border-radius: 10px;
+  padding: 10px 14px 12px;
+  cursor: pointer; min-width: 0;
+  transition: border-color .15s, box-shadow .15s, transform .15s;
 }
-.ops-console-root .srv-item:hover .icon-wrap { transform: scale(1.08); }
-.ops-console-root .srv-item.selected .icon-wrap { outline: 3px solid rgba(30, 106, 221, .5); outline-offset: 2px; }
+.ops-console-root .srv-card:hover {
+  border-color: rgba(30, 106, 221, .55);
+  box-shadow: 0 4px 12px rgba(0, 58, 140, .12);
+  transform: translateY(-1px);
+}
+.ops-console-root .srv-card.selected {
+  border-color: var(--gov-blue);
+  box-shadow: 0 0 0 2px rgba(30, 106, 221, .35);
+}
+.ops-console-root .srv-card-head {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+}
+.ops-console-root .srv-card-title {
+  font-size: 13px; font-weight: 600; color: var(--gov-blue-deep);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1;
+}
+.ops-console-root .srv-card-metrics {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px;
+  font-size: 12px; color: var(--gov-text);
+}
+.ops-console-root .srv-metric {
+  display: flex; align-items: baseline; gap: 8px; white-space: nowrap;
+}
+.ops-console-root .srv-metric + .srv-metric::before {
+  content: '|'; color: rgba(90, 111, 156, .4);
+}
+.ops-console-root .srv-metric-label {
+  color: #5a6f9c;
+}
+.ops-console-root .srv-metric-disk {
+  color: #5a6f9c;
+}
+.ops-console-root .srv-metric-value {
+  font-weight: 600; font-variant-numeric: tabular-nums;
+}
 /* 2026-08-13 GNOME 化：LED 边框改政务蓝（机架 LED 视觉），保留红/绿/灰三态颜色 */
 .ops-console-root .led {
   position: absolute; top: -5px; right: -5px; width: 15px; height: 15px; border-radius: 50%;
@@ -257,8 +290,6 @@
 .ops-console-root .led.green { background: #30d158; box-shadow: 0 0 8px rgba(48, 209, 88, .8), 0 1px 5px rgba(0, 0, 0, .4); }
 .ops-console-root .led.red { background: #ff453a; box-shadow: 0 0 8px rgba(255, 69, 58, .9), 0 1px 5px rgba(0, 0, 0, .4); animation: pulse 1.2s infinite; }
 @keyframes pulse { 50% { opacity: .55; } }
-.ops-console-root .srv-item .nm { font-size: 12px; color: var(--gov-text); text-align: center; max-width: 110px; line-height: 1.3; padding: 1px 6px; border-radius: 4px; }
-.ops-console-root .srv-item.selected .nm { background: var(--gov-blue); color: #fff; }
 .ops-console-root .no-result { grid-column: 1 / -1; text-align: center; color: #7a8db3; font-size: 13px; padding-top: 80px; }
 .ops-console-root .statusbar {
   height: 26px; display: flex; align-items: center; padding: 0 14px; font-size: 11px; color: #5a6f9c;

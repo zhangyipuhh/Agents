@@ -9,6 +9,7 @@ import { ref, computed, onMounted } from 'vue'
 import { register, getCaptcha } from '../utils/api.js'
 import { getPasswordHints, validatePassword } from '../utils/passwordPolicy.js'
 import { appConfig, getCurrentLoginTheme } from '../config/portal.js'
+import PasswordInput from '../components/PasswordInput.vue'
 
 /** @type {import('vue').Ref<string>} 用户名输入值 */
 const username = ref('')
@@ -246,11 +247,9 @@ onMounted(() => {
         <!-- 密码输入框 -->
         <div class="form-group">
           <label class="form-label required" for="register-password">密码</label>
-          <input
-            id="register-password"
+          <PasswordInput
+            input-id="register-password"
             v-model="password"
-            type="password"
-            class="form-input"
             placeholder="至少8位，含大小写字母、数字、特殊字符"
             autocomplete="new-password"
             :disabled="loading"
@@ -299,11 +298,9 @@ onMounted(() => {
         <!-- 确认密码输入框 -->
         <div class="form-group">
           <label class="form-label required" for="register-confirm-password">确认密码</label>
-          <input
-            id="register-confirm-password"
+          <PasswordInput
+            input-id="register-confirm-password"
             v-model="confirmPassword"
-            type="password"
-            class="form-input"
             placeholder="请再次输入密码"
             autocomplete="new-password"
             :disabled="loading"

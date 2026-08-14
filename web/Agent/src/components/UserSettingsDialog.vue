@@ -13,6 +13,8 @@
 import { ref, watch, computed, nextTick, onMounted } from 'vue'
 // 2026-08-09 新增：与后端 password_policy.py 同步的口令复杂度共享工具
 import { validatePassword, getPasswordHints } from '../utils/passwordPolicy.js'
+// 2026-08-14 新增：统一的密码输入 + 显示/隐藏切换复合组件
+import PasswordInput from './PasswordInput.vue'
 import {
   updatePassword,
   updateUsername,
@@ -1612,24 +1614,24 @@ onMounted(() => {
                            即使 value 为空也会渲染默认的 6 个占位圆点,造成"密码框已填"错觉。
                            改用 type=text + CSS -webkit-text-security / text-security,
                            让输入字符仍以圆点形式保护隐私,但空值时只显示 placeholder,
-                           与新密码/确认新密码视觉一致。 -->
-                      <input
-                        id="settings-old-password"
+                           与新密码/确认新密码视觉一致。
+                           2026-08-14:通过 PasswordInput 组件 usePasswordMask=true,
+                           切换时动态 toggle .password-mask class,避免改 type 触发密码管理器重置。 -->
+                      <PasswordInput
+                        input-id="settings-old-password"
                         v-model="oldPassword"
-                        type="text"
-                        class="form-input password-mask"
+                        input-class="form-input password-mask"
                         placeholder="请输入旧密码"
                         autocomplete="current-password"
                         :disabled="isSaving"
+                        :use-password-mask="true"
                       />
                     </div>
                     <div class="form-group">
                       <label class="form-label" for="settings-new-password">新密码</label>
-                      <input
-                        id="settings-new-password"
+                      <PasswordInput
+                        input-id="settings-new-password"
                         v-model="newPassword"
-                        type="password"
-                        class="form-input"
                         placeholder="请输入新密码（至少8位，含大小写字母、数字、特殊字符）"
                         autocomplete="new-password"
                         :disabled="isSaving"
@@ -1637,11 +1639,9 @@ onMounted(() => {
                     </div>
                     <div class="form-group">
                       <label class="form-label" for="settings-confirm-new-password">确认新密码</label>
-                      <input
-                        id="settings-confirm-new-password"
+                      <PasswordInput
+                        input-id="settings-confirm-new-password"
                         v-model="confirmNewPassword"
-                        type="password"
-                        class="form-input"
                         placeholder="请再次输入新密码"
                         autocomplete="new-password"
                         :disabled="isSaving"
@@ -1675,15 +1675,15 @@ onMounted(() => {
                       <div v-if="!mfaEnrollQr">
                         <div class="form-group">
                           <label class="form-label" for="mfa-enroll-current-password">当前密码</label>
-                          <input
-                            id="mfa-enroll-current-password"
+                          <PasswordInput
+                            input-id="mfa-enroll-current-password"
                             v-model="mfaCurrentPassword"
-                            type="text"
-                            class="form-input password-mask"
+                            input-class="form-input password-mask"
                             placeholder="请输入当前密码以开始绑定"
                             autocomplete="current-password"
-                            data-testid="mfa-enroll-current-password"
                             :disabled="mfaLoading"
+                            :use-password-mask="true"
+                            input-test-id="mfa-enroll-current-password"
                           />
                         </div>
                         <button
@@ -1745,14 +1745,14 @@ onMounted(() => {
                         <p class="section-desc">重置后旧恢复码全部失效，请妥善保存新码。</p>
                         <div class="form-group">
                           <label class="form-label" for="mfa-regen-password">当前密码</label>
-                          <input
-                            id="mfa-regen-password"
+                          <PasswordInput
+                            input-id="mfa-regen-password"
                             v-model="mfaCurrentPassword"
-                            type="text"
-                            class="form-input password-mask"
+                            input-class="form-input password-mask"
                             placeholder="请输入当前密码"
                             autocomplete="current-password"
                             :disabled="mfaLoading"
+                            :use-password-mask="true"
                           />
                         </div>
                         <div class="form-group">
@@ -2161,12 +2161,11 @@ onMounted(() => {
                     <label class="form-label" for="form-password">
                       {{ editingUser ? '密码（留空表示不修改）' : '密码' }}
                     </label>
-                    <input
-                      id="form-password"
+                    <PasswordInput
+                      input-id="form-password"
                       v-model="formPassword"
-                      type="password"
-                      class="form-input"
                       :placeholder="editingUser ? '留空表示不修改' : '请输入密码（至少8位，含大小写字母、数字、特殊字符）'"
+                      autocomplete="new-password"
                       :disabled="isSubmitting"
                     />
                   </div>
