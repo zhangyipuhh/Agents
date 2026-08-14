@@ -163,14 +163,50 @@ defineExpose({
 </template>
 
 <style scoped>
+/* 2026-08-14:wrapper 用 position: relative 容纳 absolute 定位的眼睛按钮，
+   按钮放在 input 框内部右侧（不挤压 input 视觉宽度）—— input 完整保留
+   .form-input 边框/背景/圆角/高度/focus 态，与用户名等输入框视觉一致。 */
 .password-input-wrapper {
   position: relative;
   width: 100%;
 }
 
-/* 让 input 的右侧 padding 给眼睛按钮留出空间 */
+/* 2026-08-14 关键修复：scoped CSS 不会从父组件（LoginView/RegisterView/UserSettingsDialog）
+   传到 PasswordInput 渲染的 input 元素——input 元素没有父组件的 data-v-hash 属性，
+   父组件的 .form-input[data-v-parent] 选不中。这里把 .form-input 同款样式复制一份给
+   PasswordInput 自己的 input，让边框/背景/高度/圆角/focus 态都跟用户名等输入框一致。
+   padding-right 增加到 44px 给眼睛按钮预留视觉空间，避免文字被遮挡。 */
 .password-input-wrapper :deep(.form-input) {
-  padding-right: 44px;
+  width: 100%;
+  height: 44px;
+  padding: 0 44px 0 var(--space-base);
+  font-size: var(--font-size-base);
+  color: var(--color-text-primary);
+  background-color: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  transition: var(--transition-colors), var(--transition-shadow);
+  box-sizing: border-box;
+}
+
+.password-input-wrapper :deep(.form-input:hover) {
+  border-color: var(--color-text-muted);
+}
+
+.password-input-wrapper :deep(.form-input:focus) {
+  border-color: #1E5AA8;
+  box-shadow: 0 0 0 3px rgba(30, 90, 168, 0.15);
+  background-color: var(--color-bg-primary);
+  outline: none;
+}
+
+.password-input-wrapper :deep(.form-input::placeholder) {
+  color: var(--color-text-muted);
+}
+
+.password-input-wrapper :deep(.form-input:disabled) {
+  opacity: var(--opacity-disabled);
+  cursor: not-allowed;
 }
 
 .password-toggle {

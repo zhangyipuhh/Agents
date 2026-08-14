@@ -244,8 +244,8 @@ onMounted(() => {
           />
         </div>
 
-        <!-- 密码输入框 -->
-        <div class="form-group">
+        <!-- 密码输入框（跨两列，避免眼睛按钮挤压 input 宽度） -->
+        <div class="form-group full-width">
           <label class="form-label required" for="register-password">密码</label>
           <PasswordInput
             input-id="register-password"
@@ -295,8 +295,8 @@ onMounted(() => {
           </div>
         </div>
 
-        <!-- 确认密码输入框 -->
-        <div class="form-group">
+        <!-- 确认密码输入框（跨两列） -->
+        <div class="form-group full-width">
           <label class="form-label required" for="register-confirm-password">确认密码</label>
           <PasswordInput
             input-id="register-confirm-password"

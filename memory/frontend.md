@@ -151,6 +151,7 @@
 - **两种切换模式**：
   - 默认（`usePasswordMask=false`）：点击眼睛切 `type=password ↔ type=text`，图标 eye ↔ eye-slash。
   - 兼容模式（`usePasswordMask=true`，用于 UserSettingsDialog 旧密码 / MFA 当前密码）：**不切 type**（始终 `text`，避免触发浏览器密码管理器重置），改为 toggle `.password-mask` class——脱敏时加 class（`-webkit-text-security: disc` 圆点兜底），可见时移除 class（明文）。
+- **按钮外置（2026-08-14 第二轮调整）**：wrapper 改为 `display: flex` 行布局（input + button 横向并排），按钮**外置**在 input 框右侧外，不再用 absolute 覆盖 input `padding-right`——保证 input 完整继承 `.form-input` 样式（高度 44px / 背景 / 边框 / 圆角 / focus 态），与其它输入框视觉一致。注册页（两列 grid 布局）密码框同步加 `full-width` 跨两列，避免眼睛按钮挤压 input 宽度。
 - **autocomplete 不破坏**：原 `current-password` / `new-password` 属性透传。
 - **capsLock 提示**：组件 keydown / keyup emit `caps-lock` 布尔值给父级，父级（原 LoginView / RegisterView）保留原 `caps-lock-hint` 提示块不变。
 - **零运行时依赖**：inline SVG 不引入图标库，与项目一贯"零额外依赖"基调一致。
