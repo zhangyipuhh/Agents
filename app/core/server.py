@@ -340,8 +340,11 @@ async def lifespan(app: FastAPI):
             )
     except Exception as agent_exc:
         logging.warning(
-            "[lifespan] Failed to initialize AgentPermissionService: %s",
+            "[lifespan] Failed to initialize AgentPermissionService (fallback to db=None): "
+            "type=%s, message=%r",
             type(agent_exc).__name__,
+            str(agent_exc),
+            exc_info=True,  # 完整堆栈：锁定 init_schema / migrate / preload_all 哪一步抛错
         )
         app.state.agent_permission_service = AgentPermissionService(db=None)
 
