@@ -313,3 +313,52 @@ async def test_migrate_returns_zero_on_unparseable_status():
     db.execute = AsyncMock(return_value="UNEXPECTED STATUS")
     result = await migrate_from_users_allowed_agents(db)
     assert result == 0
+
+
+# =============================================================================
+# P1: 2026-08-14 历史脏数据防御回归测试
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_migrate_sql_normalizes_non_array_allowed_agents():
+    """迁移 SQL 应包含 jsonb_typeof 防御逻辑，处理历史脏数据（string/object）。
+
+    背景（2026-08-14 bug）：ZYP 用户 (id=2) allowed_agents 存为 jsonb string '"[]"'，
+    jsonb_array_elements_text 抛 'cannot extract elements from a scalar'，
+    导致整个 lifespan 启动迁移失败、AgentPermissionService 被降级为 db=None。
+
+    本测试锁死生成的 SQL 文本包含 jsonb_typeof CASE 守卫，作为契约测试
+    防止后续维护者退化 SQL（去掉 CASE 会让脏数据再次中招 lifespan）。
+    """
+    from app.shared.utils.auth.agent_permission_service import migrate_from_users_allowed_agents
+
+    db = MagicMock()
+    db.execute = AsyncMock(return_value="INSERT 0 0")
+    await migrate_from_users_allowed_agents(db)
+    sql = db.execute.call_args[0][0]
+    # 防御：非 array 类型应归一化
+    assert "jsonb_typeof" in sql
+    assert "= 'array'" in sql
+    assert "ELSE '[]'::jsonb" in sql
+    # 同时不应再用 COALESCE 作为唯一兜底（CASE 是更严格的类型守卫）
+    assert "COALESCE(u.allowed_agents" not in sql
+
+
+@pytest.mark.asyncio
+async def test_migrate_docstring_documents_normalization_behavior():
+    """迁移函数 docstring 应明确非 array 数据的归一化行为。
+
+    防止后续维护者误以为 CASE 是冗余逻辑而删掉。
+    """
+    import inspect
+    from app.shared.utils.auth.agent_permission_service import (
+        migrate_from_users_allowed_agents,
+    )
+
+    doc = inspect.getdoc(migrate_from_users_allowed_agents) or ""
+    # 中文 docstring 应包含 array/归一化/防御 关键词
+    assert "array" in doc.lower()
+    assert "归一化" in doc or "防御" in doc or "normalize" in doc.lower()
+    # 应指明修复场景
+    assert "jsonb_array_elements_text" in doc or "string" in doc.lower()

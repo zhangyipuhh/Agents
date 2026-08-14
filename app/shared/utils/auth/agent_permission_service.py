@@ -202,6 +202,14 @@ async def migrate_from_users_allowed_agents(db: Any) -> int:
     仅迁移 users.allowed_agents 非空的用户；老 admin 全量授权过的话可能没存 JSONB，
     此时该 admin 走 ACL 旁路（is_admin=True），不受影响。
 
+    数据归一化（防御 2026-08-14 历史脏数据 bug）：
+        部分用户 allowed_agents 历史脏数据存为 JSONB string（如 '"[]"'）而非
+        JSONB array；jsonb_array_elements_text 仅接受 array，遇到 scalar 会抛
+        "cannot extract elements from a scalar"，导致整个 lifespan 迁移失败。
+        本函数通过 CASE + jsonb_typeof 把任何非 array 值归一化为 '[]'::jsonb，
+        防止再次出现时让启动失败。配套数据修复脚本：
+            app/migrations/2026_08_14_normalize_users_allowed_agents_to_array.sql
+
     参数:
         db: asyncpg 连接池（DatabasePool._pool）
 
@@ -211,12 +219,18 @@ async def migrate_from_users_allowed_agents(db: Any) -> int:
     # 一次性把 users.allowed_agents (JSONB) 解构并插入 user_agent_acl
     # jsonb_array_elements_text 把 JSONB 数组拆成 text 行
     # ON CONFLICT DO NOTHING 保证幂等
+    # CASE 守卫：历史脏数据若存为 jsonb string/object/number，归一化为 '[]'
     result = await db.execute(
         """
         INSERT INTO user_agent_acl (user_id, agent_name, created_by_user_id)
         SELECT u.id, a.agent_name, NULL
         FROM users u,
-             jsonb_array_elements_text(COALESCE(u.allowed_agents, '[]'::jsonb)) AS a(agent_name)
+             jsonb_array_elements_text(
+                 CASE
+                     WHEN jsonb_typeof(u.allowed_agents) = 'array' THEN u.allowed_agents
+                     ELSE '[]'::jsonb
+                 END
+             ) AS a(agent_name)
         ON CONFLICT (user_id, agent_name) DO NOTHING
         """
     )
