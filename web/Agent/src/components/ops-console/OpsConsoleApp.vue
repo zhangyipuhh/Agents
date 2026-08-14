@@ -24,6 +24,14 @@
  *       5) 业务逻辑零改动（runDetect / loadLatest / detectAll / mapSnapshotToServer
  *          / startDrag 等未触动）。
  *
+ * 2026-08-14 菜单栏重构（用户需求）：
+ *       1) 删除底部 taskbar（OpsDockBar 组件 + 模板引用 + .taskbar-* 样式全删）；
+ *       2) OpsMenuBar 顶部菜单栏新增「服务器管理 / 日志管理」两按钮，中部水平居中，
+ *          顶部菜单栏 emit('open', 'servers'|'logs') → 本组件透传给 openWin；
+ *       3) 彻底删除「一键智能检测」入口及 detectAll / detailRef / nextTick 链路
+ *          （死代码清理，避免后续误用）；
+ *       4) .win.maximized 高度回 calc(100vh - 28px)（不再避让底部 36px taskbar）。
+ *
  * 状态机：
  *   - currentTime: string                  顶部菜单栏时间（1s 定时器）
  *   - searchKey: string                    服务器搜索关键词（v-model 双向）
@@ -36,22 +44,19 @@
  *                                          接口未落地前保持空数组，前端不再持有
  *                                          mock 数据，详见 __tests__/fixtures/）
  *   - logFile: { name, content } | null    当前查看的日志文件
- *   - detailRef: ref to OpsDetailWindow    用于触发 runDetect
  *
  * 行为：
  *   - 1s 定时器刷新时间显示
  *   - 4 个窗口可独立 open/close/max/front/drag
  *   - 服务图标点击 → openDetail
  *   - 日志文件点击 → openLog（生成 14 行样例日志）
- *   - 一键智能检测 → 自动找 err 服务器 + 打开详情 + 触发 runDetect
  */
-import { ref, computed, nextTick, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import OpsMenuBar from './OpsMenuBar.vue'
 import OpsServerWindow from './OpsServerWindow.vue'
 import OpsDetailWindow from './OpsDetailWindow.vue'
 import OpsLogManager from './OpsLogManager.vue'
 import OpsLogViewer from './OpsLogViewer.vue'
-import OpsDockBar from './OpsDockBar.vue'
 import { fetchServerInspectionLatest, validateToken } from '../../utils/api.js'
 
 const currentTime = ref('')
@@ -70,10 +75,9 @@ const activeFolder = ref(0)
 // 前端 mock，接口未落地期间保持空数组（日志管理窗口打开后显示空态）。
 const logFolders = ref([])
 const logFile = ref(null)
-const detailRef = ref(null)
 
 // 2026-08-09：新增「关闭整个运维控制台」事件，透传到父组件 OpsConsoleWorkspace。
-// 触发源：OpsMenuBar 顶部菜单栏右侧红色关闭点（mac 风格）。
+// 触发源：OpsMenuBar 顶部菜单栏右侧 ✕ Close 原生 button（GNOME 风格）。
 const emit = defineEmits(['exit'])
 
 // 2026-08-05：servers 由后端 /api/admin/server-inspection/latest 提供
@@ -189,18 +193,6 @@ function openLog(f) {
 }
 
 /**
- * 一键智能检测：找第一个 err 状态的服务器（找不到取第一台），
- * 打开服务器窗口 + 打开详情 + 触发详情 runDetect()
- * @returns {void}
- */
-function detectAll() {
-  const target = servers.find(s => s.status === 'err') || servers[0]
-  openWin('servers')
-  openDetail(target)
-  nextTick(() => { if (detailRef.value) detailRef.value.runDetect() })
-}
-
-/**
  * 启动窗口拖拽：mousedown 记录偏移，mousemove 实时更新 x/y，mouseup 清理监听
  * - 最大化时禁止拖拽
  * - 拖拽过程中限制窗口四边边界，防止标题栏被顶部菜单栏压盖或窗口完全滑出可视区域
@@ -310,7 +302,9 @@ onMounted(async () => {
     原独立 HTML 入口（/ops-console.html）的 #app 高度 = 100vh 已迁移到本容器。
   -->
   <div class="ops-console-root">
-  <OpsMenuBar :time="currentTime" @exit="emit('exit')" />
+  <!-- 2026-08-14：OpsMenuBar emit('open', 'servers'|'logs') → 透传给 openWin。
+       OpsDockBar 已彻底删除，原任务栏两入口上移至此。 -->
+  <OpsMenuBar :time="currentTime" @open="openWin" @exit="emit('exit')" />
 
   <OpsServerWindow v-if="wins.servers.open"
     :win="wins.servers" :servers="filteredServers"
@@ -322,7 +316,7 @@ onMounted(async () => {
     @front="bringFront('servers')"
     @drag="startDrag($event, 'servers')" />
 
-  <OpsDetailWindow v-if="detailServer && wins.detail.open" ref="detailRef"
+  <OpsDetailWindow v-if="detailServer && wins.detail.open"
     :win="wins.detail" :server="detailServer"
     @close="detailServer = null"
     @max="toggleMax('detail')"
@@ -347,6 +341,5 @@ onMounted(async () => {
     @front="bringFront('logview')"
     @drag="startDrag($event, 'logview')" />
 
-  <OpsDockBar :wins="wins" @open="openWin" @detect-all="detectAll" />
   </div>
 </template>

@@ -12,6 +12,8 @@
  *     mock 中补 validateToken，否则测试会 await 一个未导出的 undefined；
  *   - 组件从独立 HTML 入口根组件改为 App.vue 内嵌子页面，组件语义保持不变，
  *     测试无需重构（仍以 mount(OpsConsoleApp) 验证根状态机即可）。
+ *
+ * 2026-08-14 菜单栏重构：移除 OpsDockBar stub（组件已彻底删除）。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
@@ -79,7 +81,6 @@ describe('OpsConsoleApp 运维控制台根组件', () => {
           OpsDetailWindow: true,
           OpsLogManager: true,
           OpsLogViewer: true,
-          OpsDockBar: true,
         },
       },
     })
@@ -100,7 +101,6 @@ describe('OpsConsoleApp 运维控制台根组件', () => {
           OpsDetailWindow: true,
           OpsLogManager: true,
           OpsLogViewer: true,
-          OpsDockBar: true,
         },
       },
     })

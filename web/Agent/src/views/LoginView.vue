@@ -23,7 +23,7 @@ import {
   startLoginMfaEnrollment,
   confirmLoginMfaEnrollment
 } from '../utils/api.js'
-import { appConfig } from '../config/portal.js'
+import { appConfig, getCurrentLoginTheme } from '../config/portal.js'
 
 /* ===== 密码阶段 ===== */
 
@@ -113,6 +113,13 @@ const pendingLoginAuth = ref(null)
  * @type {import('vue').ComputedRef<boolean>}
  */
 const isRecoveryStage = computed(() => stage.value === 'mfa_enroll' && recoveryCodes.value.length > 0)
+
+/**
+ * 当前登录主题（响应式：跟随 appConfig.currentThemeKey 与 loginThemes 变化自动更新）
+ * 模板中所有文案（品牌标题、副标题、卡片主/副标题、底部链接、版权）都从此处派生。
+ * @type {import('vue').ComputedRef<Object>}
+ */
+const currentTheme = computed(() => getCurrentLoginTheme())
 
 /**
  * 检测大写锁定键状态
@@ -392,24 +399,24 @@ async function refreshEnrollQr() {
 // 组件挂载时自动加载验证码
 onMounted(() => {
   loadCaptcha()
-  console.log('[LoginView] appConfig.brandTitle =', appConfig.brandTitle)
+  console.log('[LoginView] currentTheme =', currentTheme.value)
 })
 </script>
 
 <template>
   <div class="login-container">
     <div class="login-brand">
-      <div class="brand-title">{{ appConfig.brandTitle }}</div>
+      <div class="brand-title">{{ currentTheme.brandTitle }}</div>
       <div class="brand-divider"></div>
-      <p class="brand-desc">{{ appConfig.brandDesc }}</p>
+      <p class="brand-desc">{{ currentTheme.brandDesc }}</p>
     </div>
     <div class="login-card">
       <div class="login-header">
-        <div class="system-title">{{ appConfig.brandTitle }}</div>
+        <div class="system-title">{{ currentTheme.brandTitle }}</div>
         <div class="title-divider"></div>
-        <h1 class="login-title">欢迎登录</h1>
+        <h1 class="login-title">{{ currentTheme.loginTitle }}</h1>
         <p class="login-subtitle">
-          <span v-if="stage === 'password'">请输入您的账号信息</span>
+          <span v-if="stage === 'password'">{{ currentTheme.loginSubtitle }}</span>
           <span v-else-if="stage === 'mfa_verify'">用户 {{ mfaUsername }} 启用了双因素认证</span>
           <span v-else-if="stage === 'mfa_enroll'">首次登录，请绑定身份认证器</span>
         </p>
@@ -671,9 +678,12 @@ onMounted(() => {
 
       <!-- 底部注册链接（仅密码阶段展示） -->
       <div v-if="stage === 'password'" class="login-footer">
-        <span class="footer-text">没有账号？</span>
-        <a class="footer-link" @click="$emit('switch-to-register')">去注册</a>
+        <span class="footer-text">{{ currentTheme.footerText }}</span>
+        <a class="footer-link" @click="$emit('switch-to-register')">{{ currentTheme.footerLink }}</a>
       </div>
+
+      <!-- 版权行（仅当主题配置了非空 copyright 时渲染） -->
+      <div v-if="currentTheme.copyright" class="login-copyright">{{ currentTheme.copyright }}</div>
     </div>
   </div>
 </template>
@@ -1128,6 +1138,17 @@ onMounted(() => {
     color: #155A9E;
     text-decoration: underline;
   }
+}
+
+/* 登录卡片底部版权行（来自主题配置 copyright） */
+.login-copyright {
+  margin-top: var(--space-base);
+  padding-top: var(--space-base);
+  border-top: 1px solid var(--color-border);
+  text-align: center;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  line-height: var(--line-height-normal);
 }
 
 @keyframes spin {

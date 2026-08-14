@@ -1,7 +1,30 @@
 {
   "_comment": "门户前端运行时配置文件，部署时可将此文件复制为 app-config.json 并修改",
+  "_theme_comment": "loginThemes 为主题表，URL 用 ?theme=<key> 选择；缺省或非法时回退 default。default 主题与顶层 brandTitle/brandDesc 同步。",
   "brandTitle": "沈阳市自然资源和规划\"一点通\"",
   "brandDesc": "智慧政务服务平台",
+  "loginThemes": {
+    "default": {
+      "brandTitle": "沈阳市自然资源和规划\"一点通\"",
+      "brandDesc": "智慧政务服务平台",
+      "loginTitle": "欢迎登录",
+      "loginSubtitle": "请输入您的账号信息",
+      "registerSubtitle": "请填写以下信息完成注册",
+      "footerText": "没有账号？",
+      "footerLink": "去注册",
+      "copyright": ""
+    },
+    "xemployee": {
+      "brandTitle": "X员工",
+      "brandDesc": "内测",
+      "loginTitle": "内测登录",
+      "loginSubtitle": "仅供内测用户使用",
+      "registerSubtitle": "请填写以下信息完成注册",
+      "footerText": "暂无注册入口？",
+      "footerLink": "联系管理员",
+      "copyright": "© 2026 Internal Beta"
+    }
+  },
   "navItems": [
     { "key": "site-select", "label": "智能选址", "type": "placeholder" },
     { "key": "pre-check", "label": "智能预检", "type": "placeholder" },

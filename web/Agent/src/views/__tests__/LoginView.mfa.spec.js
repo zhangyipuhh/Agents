@@ -30,7 +30,33 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock('../../utils/api.js', () => apiMocks)
 
 vi.mock('../../config/portal.js', () => ({
-  appConfig: { brandTitle: 'Test Brand', brandDesc: 'Test Desc' }
+  appConfig: {
+    brandTitle: 'Test Brand',
+    brandDesc: 'Test Desc',
+    loginThemes: {
+      default: {
+        brandTitle: 'Test Brand',
+        brandDesc: 'Test Desc',
+        loginTitle: '欢迎登录',
+        loginSubtitle: '请输入您的账号信息',
+        registerSubtitle: '请填写以下信息完成注册',
+        footerText: '没有账号？',
+        footerLink: '去注册',
+        copyright: ''
+      }
+    },
+    currentThemeKey: 'default'
+  },
+  getCurrentLoginTheme: () => ({
+    brandTitle: 'Test Brand',
+    brandDesc: 'Test Desc',
+    loginTitle: '欢迎登录',
+    loginSubtitle: '请输入您的账号信息',
+    registerSubtitle: '请填写以下信息完成注册',
+    footerText: '没有账号？',
+    footerLink: '去注册',
+    copyright: ''
+  })
 }))
 
 function makeWrapper() {

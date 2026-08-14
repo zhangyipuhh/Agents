@@ -113,6 +113,35 @@
 - `web/Agent/src/components/ops-console/OpsConsoleApp.vue`（仅 docstring 追加）
 - `web/Agent/src/components/ops-console/__tests__/OpsConsoleApp.exit.spec.js`（新增 1 用例 + docstring 更新）
 
+#### 运维控制台菜单栏重构（2026-08-14，用户需求）
+
+应用户要求把顶部菜单栏的中文全局菜单占位移除、把原底部 taskbar 的两个入口上移至顶部菜单栏中部水平居中、彻底删除「一键智能检测」入口及底部 taskbar。
+
+要点：
+- **顶部菜单栏三段式布局**：左 = `.menubar-left`（应用图标 SVG + `智能运维中心` 应用名）；中 = `.menubar-center`（`flex: 1 + justify-content: center`）内嵌两个 `.menubar-nav-btn`（服务器管理 / 日志管理，含原 taskbar 同款 SVG 图标 + 中文标签）；右 = `.menubar-right`（时间 + ✕ Close 原生 button）。spacer 删除。
+- **新增 emit('open', name)**：OpsMenuBar 在点击两个 nav 按钮时 `@click="emit('open', 'servers'|'logs')"`；OpsConsoleApp 模板 `@open="openWin"` 透传给既有 `openWin(name)`（若关则打开 + bringFront）。**不引入新逻辑**，复用既有 4 窗口状态机。
+- **删除 OpsDockBar.vue 组件**：`bottom-taskbar` 已无意义（只剩空的政务蓝栏）；`OpsConsoleApp.vue` 同步移除 `import OpsDockBar`、`template` 中的 `<OpsDockBar>` 引用、`detectAll()` 函数、`detailRef`、`nextTick` 引用；`.taskbar-*` CSS（`.taskbar-wrap` / `.taskbar-item` / `.taskbar-tip` / `.taskbar-run-dot`）全套删除；`.win.maximized` 高度回 `calc(100vh - 28px)`（不再额外减 36px）。
+- **彻底删除 detectAll**：原「一键智能检测」链路（找 err 服务器 → 打开详情 → `nextTick` 触发 `runDetect`）连同 `detailRef` / `nextTick` import 一起删除，避免死代码。
+- **零业务逻辑改动**：服务器/详情/日志/日志查看 4 个窗口组件（OpsServerWindow / OpsDetailWindow / OpsLogManager / OpsLogViewer）完全未触碰；close / max / front / drag 事件契约不变；LED class 映射不变。
+
+测试同步（4 个 spec 共 21 用例全绿，17 → 21）：
+- `OpsServerIcon.spec.js`：6 用例零改动（LED class 映射未破坏）
+- `OpsConsoleApp.spec.js`：3 用例零改动（stub 子组件，不受模板变化影响），移除 `OpsDockBar: true` stub
+- `__tests__/logFoldersDataSource.spec.js`：4 用例零改动
+- `__tests__/OpsConsoleApp.exit.spec.js`：3 个旧用例零改动（移除 `OpsDockBar: true` stub）；新增 4 个用例：
+  - `test_menu_bar_nav_button_servers_opens_servers_window`：`vm.$emit('open', 'logs')` → `wins.logs.open` 变 true
+  - `test_menu_bar_nav_button_logs_opens_logs_window`：`vm.$emit('open', 'servers')` → `wins.servers.open` 仍 true（幂等）
+  - `test_menu_bar_renders_two_centered_nav_buttons`：DOM 端到端断言中部两个 `.menubar-nav-btn` + aria-label
+  - `test_menu_bar_no_longer_renders_global_menu_placeholders`：DOM 端到端断言 `.menubar-menu-item` 数量为 0（占位移除回归保护）
+
+变更文件清单：
+- `web/Agent/src/components/ops-console/OpsMenuBar.vue`（重写：删 文件/编辑/视图/帮助；新增两个 `.menubar-nav-btn`；emit `open`）
+- `web/Agent/src/components/ops-console/OpsConsoleApp.vue`（删 OpsDockBar import + template；删 detectAll / detailRef / nextTick；`<OpsMenuBar>` 加 `@open="openWin"`）
+- `web/Agent/src/components/ops-console/OpsDockBar.vue`（**删除**）
+- `web/Agent/src/styles/ops-console.css`（删 `.taskbar-*` 4 个块；`.win.maximized` 高度回 28px；新增 `.menubar-left/center/right/nav-btn` 4 个块；docstring 头部 2026-08-14 段落追加）
+- `web/Agent/src/components/ops-console/OpsConsoleApp.spec.js`（删 `OpsDockBar: true` stub × 3；docstring 追加 2026-08-14 说明）
+- `web/Agent/src/components/ops-console/__tests__/OpsConsoleApp.exit.spec.js`（删 `OpsDockBar: true` stub × 3；describe 改名；新增 4 用例；docstring 头部 2026-08-14 段落）
+
 ### vue-router 接入回归修复（2026-08-XX 同步）
 
 接入 vue-router 后 AgentWorkspace 子页面使用 `.content-area` / `.welcome-title` / `.queue-banner-wrapper` 三个 layout 类，原定义在 App.vue `<style scoped>` 内。**Vue scoped CSS 机制只匹配父组件自身根元素，不穿透到子组件根元素**，导致接入后 AgentWorkspace 主聊天界面坍缩（Sidebar 仍正常显示，因为 `.app-layout` 在 App.vue 自己根元素）。

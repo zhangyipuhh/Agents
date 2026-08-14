@@ -316,9 +316,17 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 | email         | VARCHAR(100) DEFAULT ''    | 邮箱               |
 | department    | VARCHAR(100) DEFAULT ''    | 部门               |
 | position       | VARCHAR(100) DEFAULT ''    | 职位               |
-| allowed_agents | JSONB DEFAULT '[]'         | 允许使用的智能体 name 列表 |
+| allowed_agents | JSONB DEFAULT '[]'         | 允许使用的智能体 name 列表（必须是 JSONB array，不能存 jsonb string/object；详见下文脏数据防御） |
 | created_at     | TIMESTAMP                  | 创建时间           |
 | updated_at    | TIMESTAMP                  | 更新时间           |
+
+**`users.allowed_agents` JSONB 脏数据防御（2026-08-14）**：早期代码 / 手动 UPDATE 曾把字符串 `'[]'` 直接写入 JSONB 列，PostgreSQL 静默存为 jsonb string（`'"[]"'`，`jsonb_typeof='string'`），合法但语义破坏。下游 `jsonb_array_elements_text()` 仅接受 JSONB array，遇到 scalar 会抛 `cannot extract elements from a scalar`，曾导致 lifespan 启动迁移 `migrate_from_users_allowed_agents` 整体失败、AgentPermissionService 被降级为 db=None。
+
+| 层 | 文件 | 防御机制 |
+|---|---|---|
+| 数据修复 | `app/migrations/2026_08_14_normalize_users_allowed_agents_to_array.sql` | `UPDATE users SET allowed_agents='[]'::jsonb WHERE jsonb_typeof(allowed_agents) <> 'array'`，幂等 |
+| 代码防御 | `app/shared/utils/auth/agent_permission_service.py::migrate_from_users_allowed_agents` | 用 `CASE WHEN jsonb_typeof(u.allowed_agents)='array' THEN u.allowed_agents ELSE '[]'::jsonb END` 替代裸 `COALESCE`，自动归一化历史脏数据 |
+| 测试 | `app/tests/shared/utils/auth/test_agent_permission_service.py` | `test_migrate_sql_normalizes_non_array_allowed_agents` + `test_migrate_docstring_documents_normalization_behavior`，契约测试锁死 SQL 文本 |
 
 ### MFA 认证表
 

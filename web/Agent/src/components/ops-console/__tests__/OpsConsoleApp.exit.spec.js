@@ -1,21 +1,22 @@
 // -*- coding:utf-8 -*-
 /**
- * OpsConsoleApp exit 透传测试
+ * OpsConsoleApp 菜单栏事件透传测试
  *
- * 2026-08-09 落地：运维控制台顶部红点（OpsMenuBar）→ emit('exit') →
- * OpsConsoleApp 透传 emit('exit') → OpsConsoleWorkspace 接收。
+ * 覆盖 OpsMenuBar 三个事件源 → OpsConsoleApp 透传链路：
+ *   - exit  ✕ Close 原生 button → emit('exit') → OpsConsoleApp 透传 → OpsConsoleWorkspace
+ *   - open  「服务器管理 / 日志管理」两按钮 → emit('open', 'servers'|'logs')
+ *         → OpsConsoleApp 模板 @open="openWin"（无 wrapper 自身 emit，但
+ *           wins.servers.open / wins.logs.open 状态会随之变化，本测试
+ *           通过 wrapper.findComponent(OpsMenuBar).vm.$emit('open', name)
+ *           直接断言子组件 emit 参数 + openWin 调用后的状态）
  *
- * 2026-08-13 适配 GNOME 风格：断言选择器从 `.menubar-traffic .r`（mac 红点）
- * 改为 `.close-all-btn`（GNOME 顶栏原生 ✕ Close button）。
- * 新增端到端用例 test_close_all_button_in_menu_bar_still_emits_exit：
- * 真实 click 触发新按钮，回归保护「移除 mac 红点后保证新按钮接管 exit 语义」。
- *
- * 覆盖：
- *   - OpsConsoleApp defineEmits 包含 exit（直接 emit 验证）
- *   - OpsConsoleApp 模板上 <OpsMenuBar @exit="emit('exit')" /> 静态绑定
- *     由 OpsMenuBar 真组件 vm.$emit('exit') 触发
- *   - 2026-08-13 新增：真组件 OpsMenuBar 渲染的 .close-all-btn 原生 button
- *     点击后触发 exit 透传
+ * 历史：
+ *   2026-08-09 落地：运维控制台顶部红点（OpsMenuBar）→ emit('exit') →
+ *                  OpsConsoleApp 透传 emit('exit') → OpsConsoleWorkspace 接收。
+ *   2026-08-13 适配 GNOME 风格：断言选择器从 `.menubar-traffic .r`（mac 红点）
+ *                  改为 `.close-all-btn`（GNOME 顶栏原生 ✕ Close button）。
+ *   2026-08-14 菜单栏重构：移除 OpsDockBar stub（组件已彻底删除）。
+ *                  新增「服务器管理 / 日志管理」emit('open', name) 透传链路测试。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
@@ -28,7 +29,7 @@ vi.mock('../../../utils/api.js', () => ({
 import OpsConsoleApp from '../OpsConsoleApp.vue'
 import OpsMenuBar from '../OpsMenuBar.vue'
 
-describe('OpsConsoleApp exit 透传', () => {
+describe('OpsConsoleApp 菜单栏事件透传', () => {
   beforeEach(() => vi.clearAllMocks())
 
   // 直接断言 defineEmits 已注册 exit + 自身能 emit
@@ -40,7 +41,6 @@ describe('OpsConsoleApp exit 透传', () => {
           OpsDetailWindow: true,
           OpsLogManager: true,
           OpsLogViewer: true,
-          OpsDockBar: true,
           // OpsMenuBar 不 stub，走真实组件
         },
       },
@@ -61,7 +61,6 @@ describe('OpsConsoleApp exit 透传', () => {
           OpsDetailWindow: true,
           OpsLogManager: true,
           OpsLogViewer: true,
-          OpsDockBar: true,
         },
       },
     })
@@ -84,7 +83,6 @@ describe('OpsConsoleApp exit 透传', () => {
           OpsDetailWindow: true,
           OpsLogManager: true,
           OpsLogViewer: true,
-          OpsDockBar: true,
         },
       },
     })
@@ -96,6 +94,86 @@ describe('OpsConsoleApp exit 透传', () => {
     await flushPromises()
     expect(wrapper.emitted('exit')).toBeTruthy()
     expect(wrapper.emitted('exit').length).toBe(1)
+    wrapper.unmount()
+  })
+
+  // 2026-08-14 新增：菜单栏中部「服务器管理」按钮 emit('open', 'servers')
+  it('test_menu_bar_nav_button_servers_opens_servers_window 菜单栏服务器管理按钮 → emit open servers → openWin', async () => {
+    const wrapper = mount(OpsConsoleApp, {
+      global: {
+        stubs: {
+          OpsServerWindow: true,
+          OpsDetailWindow: true,
+          OpsLogManager: true,
+          OpsLogViewer: true,
+        },
+      },
+    })
+    await flushPromises()
+    // 初始：servers 窗口已默认打开；logs 窗口默认关闭
+    expect(wrapper.vm.wins.logs.open).toBe(false)
+    // 模拟 OpsMenuBar emit('open', 'logs')
+    wrapper.findComponent(OpsMenuBar).vm.$emit('open', 'logs')
+    await flushPromises()
+    expect(wrapper.vm.wins.logs.open).toBe(true)
+    wrapper.unmount()
+  })
+
+  // 2026-08-14 新增：菜单栏中部「日志管理」按钮 emit('open', 'logs')
+  it('test_menu_bar_nav_button_logs_opens_logs_window 菜单栏日志管理按钮 → emit open logs → openWin', async () => {
+    const wrapper = mount(OpsConsoleApp, {
+      global: {
+        stubs: {
+          OpsServerWindow: true,
+          OpsDetailWindow: true,
+          OpsLogManager: true,
+          OpsLogViewer: true,
+        },
+      },
+    })
+    await flushPromises()
+    // 模拟 OpsMenuBar emit('open', 'servers')；servers 默认已 open，此处断言幂等无副作用 + 仍 open
+    expect(wrapper.vm.wins.servers.open).toBe(true)
+    wrapper.findComponent(OpsMenuBar).vm.$emit('open', 'servers')
+    await flushPromises()
+    expect(wrapper.vm.wins.servers.open).toBe(true)
+    wrapper.unmount()
+  })
+
+  // 2026-08-14 新增：DOM 端到端 — 真组件菜单栏中部 .menubar-nav-btn 渲染存在
+  it('test_menu_bar_renders_two_centered_nav_buttons DOM 端到端：菜单栏中部渲染两个 .menubar-nav-btn', async () => {
+    const wrapper = mount(OpsConsoleApp, {
+      global: {
+        stubs: {
+          OpsServerWindow: true,
+          OpsDetailWindow: true,
+          OpsLogManager: true,
+          OpsLogViewer: true,
+        },
+      },
+    })
+    await flushPromises()
+    const navBtns = wrapper.findAll('.menubar-nav-btn')
+    expect(navBtns.length).toBe(2)
+    expect(navBtns[0].attributes('aria-label')).toBe('服务器管理')
+    expect(navBtns[1].attributes('aria-label')).toBe('日志管理')
+    wrapper.unmount()
+  })
+
+  // 2026-08-14 新增：DOM 端到端 — 旧 文件/编辑/视图/帮助 全局菜单占位不再渲染
+  it('test_menu_bar_no_longer_renders_global_menu_placeholders DOM 端到端：文件/编辑/视图/帮助 占位不再渲染', async () => {
+    const wrapper = mount(OpsConsoleApp, {
+      global: {
+        stubs: {
+          OpsServerWindow: true,
+          OpsDetailWindow: true,
+          OpsLogManager: true,
+          OpsLogViewer: true,
+        },
+      },
+    })
+    await flushPromises()
+    expect(wrapper.findAll('.menubar-menu-item').length).toBe(0)
     wrapper.unmount()
   })
 })

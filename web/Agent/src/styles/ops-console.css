@@ -18,31 +18,35 @@
      3) 毛玻璃 backdrop-filter 全部去除，改政务蓝实色 + 1px 边框替代投影；
      4) 标题栏高度 40px → 38px（兼容 OpsServerWindow 内嵌搜索框）；
      5) 三色 mac 交通灯 → 右侧两按钮（max + close）原生 <button> + SVG；
-     6) 顶部菜单栏 mac 风格 → GNOME top bar（实色、保留 SVG 图标 + 应用名
-        + 中文全局菜单占位 + ✕ Close 原生按钮）；
-     7) 底部 mac Dock（毛玻璃 + 弹跳）→ 底部 taskbar（政务蓝实色、固定底部
-        整宽 36px、三图标水平居中、无 hover 弹跳）；
-     8) .led 边框改政务蓝（rgba(0,58,140,.3)），更"机架 LED"；
-     9) @keyframes pop 缩放 .94→1 改 .98→1，时长 .2s 改 .15s（GNOME 克制）；
-     10) .win.maximized 高度 calc(100vh - 28px) 改 calc(100vh - 64px)（窗口
-        避让底部 36px taskbar）。
+     6) 顶部菜单栏 mac 风格 → GNOME top bar；
+     7) 底部 mac Dock → 底部 taskbar（2026-08-14 已删除，见下条）；
+     8) .led 边框改政务蓝，更"机架 LED"；
+     9) @keyframes pop 缩放 .94→1 改 .98→1，时长 .2s 改 .15s；
+     10) .win.maximized 高度 calc(100vh - 64px)（2026-08-14 改回 28px）。
+   - 2026-08-14 菜单栏重构（用户需求）：
+     1) 顶部菜单栏三段式布局：左 = 应用图标 + 应用名；中 = 服务器管理 / 日志管理
+        两按钮（flex:1 + center 水平居中）；右 = 时间 + ✕ Close；
+     2) 移除 文件 / 编辑 / 视图 / 帮助 中文全局菜单占位（DOM 不再渲染）；
+     3) 删除底部 taskbar（.taskbar-wrap / .taskbar-item / .taskbar-tip /
+        .taskbar-run-dot 全套 CSS 删除，OpsDockBar.vue 组件也删除）；
+     4) .win.maximized 高度回 calc(100vh - 28px)（不再避让底部 taskbar）；
+     5) 「一键智能检测」入口彻底删除。
 
    作用域（与 OpsConsoleApp.vue 模板的 `<div class="ops-console-root">` 对齐）：
    - `.ops-console-root`           容器，100% 视口高度 + 政务蓝径向渐变背景
    - `.ops-console-root` 内嵌的所有子组件 class（`.menubar*` / `.win*` /
-     `.win-controls` / `.win-control*` / `.taskbar*` / `.srv-*` /
+     `.win-controls` / `.win-control*` / `.srv-*` /
      `.detail-*` / `.logs-*` / `.logview-*` / `.disk-*` / `.metric*` /
      `.detect-panel` / `.gov-btn` / `.led*` 等）继续保留，视觉完全等价。
 
    主要内容：
    - .ops-console-root 政务蓝 CSS 变量（--gov-blue / --gov-blue-deep / --gov-blue-light / --gov-text）
-   - .menubar 顶部菜单栏（政务蓝实色 + 时间 + ✕ Close）
+   - .menubar 顶部菜单栏（三段式：左应用名 + 中两按钮居中 + 右时间 + ✕ Close）
    - .win 通用 GNOME 窗口（直角 + 政务蓝实色 + 1px 边框）
    - .win-servers 服务器管理窗口（访达图标视图 + 搜索框 + 状态灯）
    - .win-detail 服务器详情窗口（指标卡 + 智能检测动画 + 磁盘列表）
    - .win-logs 日志管理窗口（左侧文件夹 + 右侧文件列表）
    - .win-logview 日志查看窗口（终端风格）
-   - .taskbar 底部任务栏（政务蓝实色 + 三图标入口）
    - .ops-console-root ::-webkit-scrollbar 政务蓝滚动条
    ============================================ */
 
@@ -98,6 +102,9 @@
 }
 
 /* ===== 顶部菜单栏（GNOME top bar 风格）===== */
+/* 2026-08-14 重构：菜单栏三段式布局（左 = 应用图标 + 应用名，flex:0；
+   中 = 服务器管理 / 日志管理 两按钮，flex:1 + center 水平居中；
+   右 = 时间 + ✕ Close，flex:0）。原 文件/编辑/视图/帮助 全局菜单占位移除。 */
 .ops-console-root .menubar {
   position: fixed; top: 0; left: 0; right: 0; height: 28px; z-index: 999;
   /* 政务蓝实色（去毛玻璃），半透明白叠加以保持与背景的层次 */
@@ -109,10 +116,41 @@
 }
 .ops-console-root .menubar .bold { font-weight: 700; color: var(--gov-blue-deep); }
 .ops-console-root .menubar .spacer { flex: 1; }
-.ops-console-root .menubar .mi { cursor: default; }
+.ops-console-root .menubar .mi { cursor: default; display: inline-flex; align-items: center; gap: 6px; }
+.ops-console-root .menubar .menubar-left {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px;
+}
 .ops-console-root .menubar .menubar-app {
   font-weight: 700; color: var(--gov-blue-deep); margin-left: 4px;
 }
+/* 2026-08-14：中部水平居中两按钮容器，flex:1 让其在剩余空间内 justify-content:center */
+.ops-console-root .menubar .menubar-center {
+  flex: 1 1 auto; display: flex; align-items: center; justify-content: center;
+  gap: 10px; min-width: 0;
+}
+.ops-console-root .menubar .menubar-right {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 10px;
+}
+.ops-console-root .menubar .menubar-time { color: var(--gov-text); }
+
+/* 2026-08-14：菜单栏中部导航按钮（服务器管理 / 日志管理）
+   原底部 taskbar 同款 SVG 上移至此；样式与 .close-all-btn 视觉对齐。 */
+.ops-console-root .menubar .menubar-nav-btn {
+  appearance: none; -webkit-appearance: none;
+  border: none; background: transparent; cursor: pointer;
+  padding: 2px 10px; border-radius: 4px; font-size: 12px;
+  color: var(--gov-text); display: inline-flex; align-items: center; gap: 6px;
+  transition: background-color .12s, color .12s;
+}
+.ops-console-root .menubar .menubar-nav-btn:hover {
+  background: rgba(30, 106, 221, .12); color: var(--gov-blue-deep);
+}
+.ops-console-root .menubar .menubar-nav-btn:focus {
+  outline: 2px solid rgba(30, 106, 221, .6); outline-offset: 1px;
+}
+.ops-console-root .menubar .menubar-nav-btn svg { width: 16px; height: 16px; }
+
+/* 兼容旧选择器（2026-08-14 移除 文件/编辑/视图/帮助 后保留 selector 占位以防外部引用） */
 .ops-console-root .menubar .menubar-menu-item {
   cursor: default; padding: 2px 8px; border-radius: 4px;
   transition: background-color .12s;
@@ -147,11 +185,12 @@
   animation: pop .15s cubic-bezier(.3, 1.4, .6, 1);
 }
 @keyframes pop { from { transform: scale(.98); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-/* 最大化（▢ 按钮）：窗口铺满屏幕，避开顶部菜单栏(28) + 底部 taskbar(36)
-   64 = 28 menubar + 36 taskbar，窗口避让底部任务栏。 */
+/* 最大化（▢ 按钮）：窗口铺满屏幕，避开顶部菜单栏 28px。
+   2026-08-14 菜单栏重构：底部 taskbar 已彻底删除，窗口高度不再额外减 36px，
+   改回 calc(100vh - 28px)（仅避让顶部 28px）。 */
 .ops-console-root .win.maximized {
   left: 0 !important; top: 28px !important;
-  width: 100vw !important; height: calc(100vh - 64px) !important;
+  width: 100vw !important; height: calc(100vh - 28px) !important;
   border-radius: 0; animation: none;
   transition: all .18s ease;
 }
@@ -310,42 +349,6 @@
 .ops-console-root .logview-body .ll { margin: 3px 0; white-space: pre-wrap; }
 .ops-console-root .logview-body .t { color: #7f8a99; }
 .ops-console-root .logview-body .INFO { color: #30d158; } .ops-console-root .logview-body .WARN { color: #ffd60a; } .ops-console-root .logview-body .ERROR { color: #ff453a; } .ops-console-root .logview-body .DEBUG { color: #64d2ff; }
-
-/* ===== 底部 taskbar（GNOME 风格，替代原 mac Dock）===== */
-.ops-console-root .taskbar-wrap {
-  position: fixed; bottom: 0; left: 0; right: 0; z-index: 999;
-  height: 36px;
-  background: var(--gov-blue-deep);
-  display: flex; align-items: center; justify-content: center;
-  gap: 24px; padding: 0 16px;
-  border-top: 1px solid rgba(0, 58, 140, .6);
-  box-shadow: 0 -1px 0 rgba(0, 58, 140, .18);
-}
-.ops-console-root .taskbar-item {
-  position: relative;
-  width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
-  cursor: pointer; border-radius: 6px;
-  transition: background-color .12s;
-}
-.ops-console-root .taskbar-item:hover { background: rgba(255, 255, 255, .1); }
-.ops-console-root .taskbar-item:focus {
-  outline: 2px solid rgba(255, 255, 255, .6); outline-offset: -2px;
-}
-.ops-console-root .taskbar-item svg { width: 24px; height: 24px; }
-.ops-console-root .taskbar-tip {
-  position: absolute; bottom: 42px; left: 50%; transform: translateX(-50%);
-  background: rgba(0, 58, 140, .92); color: #fff; font-size: 11px;
-  padding: 3px 10px; border-radius: 6px; white-space: nowrap;
-  opacity: 0; pointer-events: none; transition: opacity .12s;
-}
-.ops-console-root .taskbar-item:hover .taskbar-tip,
-.ops-console-root .taskbar-item:focus .taskbar-tip { opacity: 1; }
-/* 2026-08-13：run-dot 位置由 bottom:-5px 改 top:2px right:2px（taskbar 36px 栏内无底部空间） */
-.ops-console-root .taskbar-run-dot {
-  position: absolute; top: 2px; right: 2px;
-  width: 6px; height: 6px; border-radius: 50%;
-  background: #30d158; box-shadow: 0 0 4px rgba(48, 209, 88, .8);
-}
 
 /* ===== 政务蓝滚动条（作用域内）===== */
 .ops-console-root ::-webkit-scrollbar { width: 8px; height: 8px; }

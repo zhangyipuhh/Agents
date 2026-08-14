@@ -45,6 +45,8 @@ import {
 } from './utils/api.js'
 import { isThinkingBlock, tryParsePythonLiteral, extractTextFromBlock, processContentBlocks, parseMessageContent, processSSEEvent, createAiMessage, isSubAgentHistoryItem, convertSubAgentHistoryToAiSubAgent, isSubAgentTool } from './utils/sseParser.js'
 import { redirectToLogin, tryRefreshOrRedirect } from './utils/auth.js'
+import { appendQueryParam } from './utils/url.js'
+import { appConfig } from './config/portal.js'
 
 // 2026-06-23 新增：当前激活的智能体名称（与后端 agents 表 name 字段一致）。
 // 默认 null，未选择时由后端使用框架默认配置。
@@ -347,7 +349,11 @@ let authReadyFallbackTimer = null
 
 /**
  * 处理登出事件
- * 清除本地缓存并返回登录页
+ * 清除本地缓存并返回登录页。
+ *
+ * 主题透传策略（与 PortalApp.handleLogout 一致）：
+ * 把当前主题 key 写入 redirect query，避免 redirectToLogin 中间链路改动导致主题丢失；
+ * 已存在 theme query 时不覆盖（防止重复编码）。
  */
 async function handleLogout() {
   await apiLogout()
@@ -358,7 +364,14 @@ async function handleLogout() {
   localStorage.removeItem('knowledge_session_id')
   messages.splice(0, messages.length)
   sessionId.value = ''
-  redirectToLogin({ reason: 'user_logout' })
+
+  const themeKey = appConfig.currentThemeKey
+  const here = window.location.pathname + window.location.search + window.location.hash
+  const target = themeKey && themeKey !== 'default' && !/([?&])theme=/.test(here)
+    ? appendQueryParam(here, 'theme', themeKey)
+    : here
+
+  redirectToLogin({ redirect: target, reason: 'user_logout' })
 }
 
 /**

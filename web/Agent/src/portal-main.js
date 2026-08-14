@@ -1,14 +1,19 @@
 import { createApp } from 'vue'
 import './styles/main.css'
 import PortalApp from './PortalApp.vue'
-import { loadAppConfig, appConfig } from './config/portal.js'
+import { loadAppConfig, appConfig, resolveThemeFromUrl } from './config/portal.js'
 
 /**
  * 启动门户应用
- * 先异步加载运行时配置，再挂载 Vue 应用
+ *
+ * 1. 加载运行时配置（含 loginThemes 白名单）
+ * 2. 解析当前主题（URL ?theme= > localStorage 'login_theme' > default）
+ * 3. 同步 document.title 与 PortalApp 顶部品牌标题
+ * 4. 挂载 Vue 应用
  */
 async function bootstrap() {
   await loadAppConfig()
+  resolveThemeFromUrl()
   if (appConfig.brandTitle) {
     document.title = appConfig.brandTitle
   }

@@ -2,6 +2,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { validateToken, refreshToken, logout, clearAuth, issuePortalRefreshToken } from './utils/api.js'
 import { redirectToLogin } from './utils/auth.js'
+import { appendQueryParam } from './utils/url.js'
 import { getNavItems, appConfig, loadAppConfig } from './config/portal.js'
 
 /**
@@ -318,7 +319,13 @@ function handleKeydown(event) {
 
 /**
  * 处理退出登录
- * 调用 logout API，清除本地存储，最后刷新页面
+ * 调用 logout API，清除本地存储，最后跳到登录页。
+ *
+ * 主题透传策略：
+ * - 当前 URL 上的 theme 已是用户上次使用的主题（由 main 入口 resolveThemeFromUrl 处理过）
+ * - 但 redirectToLogin 内部仅取 pathname + search + hash，跳到 /login 时 theme 仍保留
+ * - 为防止用户在主题页意外丢失（中间件剥离 query 等），这里再次显式追加一次 theme
+ *   到 redirect 目标，避免后续任何 redirect 逻辑改动导致主题丢失。
  */
 async function handleLogout() {
   closeUserMenu()
@@ -326,7 +333,15 @@ async function handleLogout() {
   isLoggedIn.value = false
   currentUser.value = { username: '', role: '' }
   localStorage.removeItem('user_id')
-  redirectToLogin({ reason: 'user_logout' })
+
+  // 把当前主题写入 redirect query，保证退出登录后回到登录页仍是同一主题
+  const themeKey = appConfig.currentThemeKey
+  const here = window.location.pathname + window.location.search + window.location.hash
+  const target = themeKey && themeKey !== 'default' && !/([?&])theme=/.test(here)
+    ? appendQueryParam(here, 'theme', themeKey)
+    : here
+
+  redirectToLogin({ redirect: target, reason: 'user_logout' })
 }
 
 /**

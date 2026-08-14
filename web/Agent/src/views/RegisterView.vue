@@ -8,7 +8,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { register, getCaptcha } from '../utils/api.js'
 import { getPasswordHints, validatePassword } from '../utils/passwordPolicy.js'
-import { appConfig } from '../config/portal.js'
+import { appConfig, getCurrentLoginTheme } from '../config/portal.js'
 
 /** @type {import('vue').Ref<string>} 用户名输入值 */
 const username = ref('')
@@ -100,6 +100,12 @@ const passwordValidation = computed(() => {
   const hints = getPasswordHints(password.value)
   return { ...hints, isValid: Object.values(hints).every(Boolean) }
 })
+
+/**
+ * 当前登录主题（响应式）：注册页所有文案（品牌标题、副标题）从此处派生
+ * @type {import('vue').ComputedRef<Object>}
+ */
+const currentTheme = computed(() => getCurrentLoginTheme())
 
 /**
  * 处理注册表单提交
@@ -194,7 +200,7 @@ async function handleRegister() {
 // 组件挂载时自动加载验证码
 onMounted(() => {
   loadCaptcha()
-  console.log('[RegisterView] appConfig.brandTitle =', appConfig.brandTitle)
+  console.log('[RegisterView] currentTheme =', currentTheme.value)
 })
 </script>
 
@@ -202,10 +208,10 @@ onMounted(() => {
   <div class="register-container">
     <div class="register-card">
       <div class="register-header">
-        <div class="system-title">{{ appConfig.brandTitle }}</div>
+        <div class="system-title">{{ currentTheme.brandTitle }}</div>
         <div class="title-divider"></div>
         <h1 class="register-title">创建账号</h1>
-        <p class="register-subtitle">请填写以下信息完成注册</p>
+        <p class="register-subtitle">{{ currentTheme.registerSubtitle }}</p>
       </div>
 
       <form class="register-form" @submit.prevent="handleRegister">
