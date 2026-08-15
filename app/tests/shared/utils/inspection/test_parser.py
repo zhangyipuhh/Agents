@@ -118,6 +118,177 @@ def test_normalize_accepts_valid_high_low_ignore_rules():
     rules = normalize_inspection_fields(raw)
     assert len(rules) == 3
 
+
+# ---------------------------------------------------------------------------
+# 19. SSD/HDD 介质差异化阈值（2026-08-15 新增）
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_accepts_ssd_threshold_pair():
+    """high 规则携带成对 ssd_warn/ssd_crit 时通过校验并保留值。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: ssd 阈值对被丢弃或值错误时失败
+    """
+    rules = normalize_inspection_fields([
+        {"key": "io_await_ms", "name_zh": "IO 等待", "unit": "ms",
+         "direction": "high", "warn": 100, "crit": 200,
+         "ssd_warn": 20, "ssd_crit": 50},
+    ])
+    assert rules[0].warn == 100.0 and rules[0].crit == 200.0
+    assert rules[0].ssd_warn == 20.0 and rules[0].ssd_crit == 50.0
+
+
+def test_normalize_rejects_partial_ssd_pair():
+    """只给 ssd_warn 不给 ssd_crit(或反向)时抛 ValueError。
+
+    Returns:
+        None
+
+    Raises:
+        ValueError: 预期异常, 由 pytest.raises 捕获
+    """
+    with pytest.raises(ValueError, match="ssd_warn/ssd_crit"):
+        normalize_inspection_fields([
+            {"key": "k", "name_zh": "K", "unit": "",
+             "direction": "high", "warn": 1, "crit": 2, "ssd_warn": 20},
+        ])
+
+
+def test_normalize_rejects_ssd_pair_order_violation():
+    """high 方向 ssd_warn > ssd_crit / low 方向 ssd_warn < ssd_crit 时抛 ValueError。
+
+    Returns:
+        None
+
+    Raises:
+        ValueError: 预期异常, 由 pytest.raises 捕获
+    """
+    with pytest.raises(ValueError, match="ssd_warn <= ssd_crit"):
+        normalize_inspection_fields([
+            {"key": "k", "name_zh": "K", "unit": "",
+             "direction": "high", "warn": 1, "crit": 2,
+             "ssd_warn": 50, "ssd_crit": 20},
+        ])
+    with pytest.raises(ValueError, match="ssd_warn >= ssd_crit"):
+        normalize_inspection_fields([
+            {"key": "k", "name_zh": "K", "unit": "",
+             "direction": "low", "warn": 2, "crit": 1,
+             "ssd_warn": 20, "ssd_crit": 50},
+        ])
+
+
+def test_normalize_rejects_ssd_pair_on_ignore():
+    """ignore 规则携带 ssd_warn/ssd_crit 时抛 ValueError。
+
+    Returns:
+        None
+
+    Raises:
+        ValueError: 预期异常, 由 pytest.raises 捕获
+    """
+    with pytest.raises(ValueError, match="ignore"):
+        normalize_inspection_fields([
+            {"key": "k", "name_zh": "K", "unit": "", "direction": "ignore",
+             "warn": None, "crit": None, "ssd_warn": 20, "ssd_crit": 50},
+        ])
+
+
+def test_normalize_rejects_non_numeric_ssd_threshold():
+    """ssd_warn 为 bool / 字符串 / NaN 时抛 ValueError。
+
+    Returns:
+        None
+
+    Raises:
+        ValueError: 预期异常, 由 pytest.raises 捕获
+    """
+    for bad in (True, "20", float("nan")):
+        with pytest.raises(ValueError, match="ssd_warn"):
+            normalize_inspection_fields([
+                {"key": "k", "name_zh": "K", "unit": "",
+                 "direction": "high", "warn": 1, "crit": 2,
+                 "ssd_warn": bad, "ssd_crit": 50},
+            ])
+
+
+def test_expand_disks_uses_ssd_thresholds_for_ssd_elements():
+    """disk_type=='ssd' 且规则带 ssd 阈值时用 ssd 阈值分类; 有效阈值写入结果。
+
+    混合数组: hdd await=80 (base 100/200 -> pass),
+    ssd await=30 (ssd 20/50 -> warn), ssd await=60 (ssd 20/50 -> crit)。
+
+    Returns:
+        None
+    """
+    parsed = {"disks": [
+        {"mount": "sda[HDD]", "io_await_ms": 80, "disk_type": "hdd"},
+        {"mount": "nvme0n1[SSD]", "io_await_ms": 30, "disk_type": "ssd"},
+        {"mount": "nvme1n1[SSD]", "io_await_ms": 60, "disk_type": "ssd"},
+    ]}
+    rules = normalize_inspection_fields([
+        {"key": "io_await_ms", "name_zh": "IO 等待", "unit": "ms",
+         "direction": "high", "warn": 100, "crit": 200,
+         "ssd_warn": 20, "ssd_crit": 50},
+    ])
+    ev = evaluate_inspection_fields(parsed, rules, "json")
+    assert [f.status for f in ev.fields] == ["pass", "warn", "crit"]
+    assert ev.status == "crit"
+    assert ev.fields[0].warn == 100.0 and ev.fields[0].crit == 200.0
+    assert ev.fields[1].warn == 20.0 and ev.fields[1].crit == 50.0
+    assert ev.fields[2].warn == 20.0 and ev.fields[2].crit == 50.0
+
+
+def test_expand_disks_falls_back_to_base_thresholds():
+    """disk_type 缺失 / 'hdd' / 未知值时回退 base warn/crit。
+
+    Returns:
+        None
+    """
+    parsed = {"disks": [
+        {"mount": "sda", "io_await_ms": 80},
+        {"mount": "sdb[HDD]", "io_await_ms": 150, "disk_type": "hdd"},
+        {"mount": "sdc[?]", "io_await_ms": 30, "disk_type": "unknown"},
+    ]}
+    rules = normalize_inspection_fields([
+        {"key": "io_await_ms", "name_zh": "IO 等待", "unit": "ms",
+         "direction": "high", "warn": 100, "crit": 200,
+         "ssd_warn": 20, "ssd_crit": 50},
+    ])
+    ev = evaluate_inspection_fields(parsed, rules, "json")
+    assert [f.status for f in ev.fields] == ["pass", "warn", "pass"]
+    assert all(f.warn == 100.0 for f in ev.fields)
+
+
+def test_expand_disks_ssd_element_without_ssd_rule_uses_base():
+    """disk_type=='ssd' 但规则无 ssd 阈值时回退 base warn/crit。
+
+    Returns:
+        None
+    """
+    parsed = {"disks": [
+        {"mount": "nvme0n1[SSD]", "io_await_ms": 30, "disk_type": "ssd"},
+    ]}
+    rules = normalize_inspection_fields([
+        {"key": "io_await_ms", "name_zh": "IO 等待", "unit": "ms",
+         "direction": "high", "warn": 10, "crit": 20},
+    ])
+    ev = evaluate_inspection_fields(parsed, rules, "json")
+    assert ev.fields[0].status == "crit"
+    assert ev.fields[0].warn == 10.0 and ev.fields[0].crit == 20.0
+
+
+def test_normalize_accepts_valid_high_low_ignore_rules_continue():
+    """继续断言合法 high/low/ignore 规则的字段值（与上一用例函数配套）。"""
+    rules = normalize_inspection_fields([
+        {"key": "cpu", "name_zh": "CPU", "direction": "high", "warn": 80, "crit": 95},
+        {"key": "mem_free", "name_zh": "剩余内存", "unit": "MB", "direction": "low", "warn": 1024, "crit": 256},
+        {"key": "host", "name_zh": "主机名", "direction": "ignore"},
+    ])
+
     cpu = rules[0]
     assert isinstance(cpu, InspectionFieldRule)
     assert cpu.key == "cpu"

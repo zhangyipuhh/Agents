@@ -61,7 +61,7 @@
   - `get_script_by_id(script_id)` / `get_script_by_name(name)`：内部完整记录查询，供 `DevOpsServerService.get_connection_config` 注入解析
   - `resolve_script_for_server(server_type, script_name=None)`：显式 `script_name` 命中 → 返回 id，未命中返回 `None`（不静默回退）；否则按 `_DEFAULT_SCRIPT_NAMES`（`linux → linux-bash` / `windows → windows-ps-5.1`）解析，未注册返回 `None`
 - 写路径（`preload_all` / `scan_and_upsert`）持 `self._write_lock`；读路径无锁
-- 字段规则强类型化：`inspection_fields` 在 `_normalize_entry` 中通过 `normalize_inspection_fields` 归一化为 `list[InspectionFieldRule]`，落库前再回退为 `list[dict]`（`json.dumps(..., ensure_ascii=False)` 入参）
+- 字段规则强类型化：`inspection_fields` 在 `_normalize_entry` 中通过 `normalize_inspection_fields` 归一化为 `list[InspectionFieldRule]`，落库前再回退为 `list[dict]`（`json.dumps(..., ensure_ascii=False)` 入参）；2026-08-15 扩展 `ssd_warn/ssd_crit` 两键透传——`update_script_detail` 与 `_normalize_entry` 两处序列化白名单同步补键
 
 #### Admin 路由 `InspectionScriptAdminRouter`（`app/routers/inspection_script_admin_router.py`）
 
@@ -93,16 +93,19 @@
 - `unit`：字符串；缺省 / 缺失 = `""`；空单位时填 `""`，**不要写 null**。
 - `direction`：`"high"` | `"low"` | `"ignore"` 三选一。
 - `warn` / `crit`：`high` 时 `warn <= crit`，`low` 时 `warn >= crit`（边界包含）；`ignore` 时必须为 `None`。
+- `ssd_warn` / `ssd_crit`（2026-08-15 新增）：可选成对；缺省 `None`；必须同为有限数字（拒绝 `bool`/字符串/`NaN`）；`high` 时 `ssd_warn <= ssd_crit`，`low` 时 `ssd_warn >= ssd_crit`；`ignore` 规则禁止携带；用于 disks 数组元素级介质匹配——`disk_type=="ssd"` 元素走 SSD 阈值，其它（含缺失 / `"hdd"` / 未知）兜底 `warn`/`crit`。
 
 #### YAML 当前契约（`data/devops/inspection_scripts.yaml`）
 
-- **`linux-bash`**（默认 linux 平台）：4 条规则——`disk_used_pct / 磁盘使用率 / % / high / 80 / 90`、`mem_used_pct / 内存使用率 / % / high / 80 / 90`、`cpu_idle_pct / CPU 空闲率 / % / low / 20 / 10`、`load_1m / 1 分钟平均负载 / "" / high / 4.0 / 8.0`
-- **`windows-ps-5.1`**（默认 windows 平台）：4 条规则——`disk_used_pct / 磁盘使用率 / % / high / 80 / 90`、`mem_used_pct / 内存使用率 / % / high / 80 / 90`、`cpu_used_pct / CPU 使用率 / % / high / 80 / 95`、`uptime_hours / 系统运行时间 / 小时 / ignore / null / null`
+- **`linux-bash`**（默认 linux 平台，2026-08-15 扩展 IO）：6 条规则——`disk_used_pct / 磁盘使用率 / % / high / 80 / 90`、`mem_used_pct / 内存使用率 / % / high / 80 / 90`、`cpu_idle_pct / CPU 空闲率 / % / low / 20 / 10`、`load_1m / 1 分钟平均负载 / "" / high / 4.0 / 8.0`、`io_util_pct / 磁盘 IO 利用率 / % / high / 80 / 90`、`io_await_ms / 磁盘 IO 平均等待 / ms / high / 100 / 200 / ssd 20 / 50`
+- **`windows-ps-5.1`**（默认 windows 平台，2026-08-15 扩展 IO）：6 条规则——`disk_used_pct / 磁盘使用率 / % / high / 80 / 90`、`mem_used_pct / 内存使用率 / % / high / 80 / 90`、`cpu_used_pct / CPU 使用率 / % / high / 80 / 95`、`uptime_hours / 系统运行时间 / 小时 / ignore / null / null`、`io_util_pct / 磁盘 IO 利用率 / % / high / 80 / 90`、`io_await_ms / 磁盘 IO 平均等待 / ms / high / 100 / 200 / ssd 20 / 50`
 
 #### 巡检脚本输出形态
 
-- **`linux-bash`**：脚本输出形如 `{"disks":[{"mount":"/","disk_used_pct":42},...],"mem_used_pct":...,"cpu_idle_pct":...,"load_1m":...}`；`disk_used_pct` 数值是**纯数字**（无 `%` 后缀，`%` 由 `unit` 字段承担）；脚本通过 `df -P` + awk 一次性构造 JSON 片段，**awk 内维护 `sep` 变量在每条 JSON 片段前加 `,`**（第一项 `sep=""`, 后续项 `sep=","`），`gsub(/%/, "", $5)` 去 `%`；过滤 `tmpfs/devtmpfs/overlay/squashfs/sysfs/proc/cgroup/...` 等虚拟文件系统；`cpu_idle_pct` 末尾追加 `tr -dc '0-9.'` 把 `%id` / `%ni` 后缀剥掉，输出纯数字 `92.5`
+- **`linux-bash`**：脚本输出形如 `{"disks":[{"mount":"/","disk_used_pct":42},...],"mem_used_pct":...,"cpu_idle_pct":...,"load_1m":...}`；`disk_used_pct` 数值是**纯数字**（无 `%` 后缀，`%` 由 `unit` 字段承担）；脚本通过 `df -P` + awk 一次性构造 JSON 片段，**awk 内维护 `sep` 变量在每条 JSON 片段前加 `,`**（第一项 `sep=""`, 后续项 `sep=","`），`gsub(/%/, "", $5)` 去 `%`；过滤 `tmpfs/devtmpfs/overlay/squashfs/sysfs/proc/cgroup/...` 等虚拟文件系统；`cpu_idle_pct` 末尾追加 `tr -dc '0-9.'` 把 `%id` / `%ni` 后缀剥掉，输出纯数字 `92.5`。
+  - **2026-08-15 IO 扩展**：`inspection_script` 追加 IO 采集段——读 `/proc/diskstats` 两次（间隔 1s）计算 `io_util_pct`（`Δio_ms/10`，封顶 100）和 `io_await_ms`（`Δ读写ms / Δ读写次数`，无 IO 时 0），无需 `sysstat/iostat`；介质探测走 `/sys/block/<dev>/queue/rotational`（1=hdd, 0=ssd），读取失败兜底 hdd；正则匹配整盘 `sd|vd|xvd|nvme\d+n\d+|mmcblk\d+`；元素 JSON 含 `mount`（标签形如 `sda[HDD]` / `nvme0n1[SSD]`）、`io_util_pct`、`io_await_ms`、`disk_type`；输出顶层 `disks` 数组与 `disk_used_pct` 元素共存
 - **`windows-ps-5.1`**：脚本用 PowerShell 遍历 `Get-PSDrive -PSProvider FileSystem`（过滤 `Used` / `Free` 都不为 null 且 `Used+Free > 0` 的盘），手工拼接 `disks` 数组 + `mem_used_pct` + `cpu_used_pct` + `uptime_hours` 为单行 JSON。**JSON 全部用单引号字符串拼接**（避免双引号字符串 `\"` 转义陷阱），`mount` 中 `\` 通过 `.Replace('\', '\\')` 双重化为 JSON 兼容的 `\\`；最终 `Write-Output` 单行 JSON。注意：本节点仍是 `Get-WmiObject` 系列（非 `Get-CimInstance`），保持对老版 PowerShell / WMI-only 环境的兼容
+  - **2026-08-15 IO 扩展**：`$result` 新增 `disks = $ioList` 键；`$ioList` 通过 `Get-WmiObject Win32_PerfFormattedData_PerfDisk_PhysicalDisk | Where-Object Name -ne '_Total'` 取 `PercentDiskTime`（封顶 100）得 `io_util_pct`，`AvgDiskSecPerTransfer * 1000` 取 1 位小数得 `io_await_ms`；介质探测走 `Get-WmiObject -Namespace root\Microsoft\Windows\Storage -Class MSFT_PhysicalDisk`（`MediaType=4` → ssd，否则 hdd），try/catch 兜底 hdd；mount 标签拼为 `<instName>[SSD|HDD]`；序列化经 `Add-Type + JavaScriptSerializer`（保留嵌套 hashtable 数组为 JSON 数组）
 
 #### 运维踩坑（2026-07-22 锁定；2026-08-03 迁移到脚本库后契约保留）
 
@@ -177,6 +180,16 @@
   - 运维反馈 bug 后**追加**3 个回归用例：`test_parse_disks_array_regression_bug_user_reported`（用户报告坏输出 → `InspectionParseError`，消息含 `not valid JSON`）、`test_evaluate_disks_array_matches_user_real_linux_output`（真实 Linux 输出：4 盘 + mem=80 触发 warn，mount 顺序正确，cpu_idle/load_1m pass）、`test_parse_windows_powershell_disks_array_with_escaped_backslashes`（Windows PowerShell 输出含 `\\` 转义 mount，解析后仍是 `C:\` / `D:\`，disks 数组展开 2 条 + uptime_hours ignore → unassessed）。用例总数：65 → 68，全绿。
   - `app/tests/scripts/test_server_ops.py` 新增 1 个端到端用例：`test_run_server_ops_expands_disks_array_into_field_results`，覆盖脚本 stdout 含 `disks` 数组 + `inspection_fields` 单条 `disk_used_pct` 规则 → `ServerOpsItem.field_results` 出现 2 条同名 key、`inspection_status="crit"`、`parsed_values` 保留原 dict、`to_markdown()` 含 `磁盘 /` 与 `磁盘 /data`。用例总数：50 → 51，全绿。
 - **使用边界**：本模块**仅**做解析与评估，不负责 `inspection_script` 实际执行、SSH 连接、结果持久化、消息推送；后续 PR 接 `run_inspection_script` / `inspection_run` `@tool` 时应消费本模块三个公开 API。
+- **介质差异化评估（2026-08-15 新增）**：`InspectionFieldRule` 新增 `ssd_warn / ssd_crit` 两个可选成对字段，docstring 列出校验规则（成对 + 有限数字 + 方向序 + ignore 禁止）。`normalize_inspection_fields` 在 warn/crit 校验之后插入 ssd 阈值对校验，错误消息含 `ssd_warn/ssd_crit` / `ssd_warn <= ssd_crit` / `ignore` 上下文便于定位。`_classify_single_value(rule, raw_value, *, allow_string, warn=None, crit=None)` 增 `warn/crit` 关键字参数；`None` 时 fallback 到 `rule.warn/crit`，介质匹配场景下由 `_expand_disks_array` 注入有效阈值。`_expand_disks_array` docstring 追加介质匹配说明：元素 `disk_type` 字段（`"ssd"` / `"hdd"` / 其它） + 规则声明 `ssd_warn/ssd_crit` 时，`disk_type == "ssd"` 走 SSD 阈值、其它（含缺失 / 未知 / `"hdd"`）兜底 base；规则未声明 ssd 阈值时一律回退 base；`InspectionFieldResult.warn/crit` 始终写入「有效阈值」（供前端展示介质匹配后的实际生效值）。`disk_type` 大小写宽容（`strip().lower() == "ssd"`）。
+
+### ops_report docx 磁盘介质清单表（2026-08-15 新增）
+
+- **位置**：`app/scripts/ops/ops_report.py::_server_disk_inventory_rows(item) -> List[List[str]]`
+- **触发**：`build_ops_report_config` 内，元信息表 `sections.append(...)` 之后、`if item.skipped or item.success is False:` 之前；`inventory_rows` 非空时追加 5 列 table
+- **5 列**：`[设备/挂载点, 介质, 磁盘使用率, IO 利用率, IO 平均等待]`
+- **行为约定**：`parsed_values` 非 Mapping / 无 `disks` 键 / 数组为空时返回空列表 → 调用方跳过整表（优雅降级，兼容未输出 disks 的旧巡检脚本）；非 Mapping 元素（噪音字符串）跳过；mount 尾部 `[SSD]` / `[HDD]` 在「设备/挂载点」列剥离（介质列已承载）；介质映射 `ssd→SSD / hdd→HDD / 其它或缺失→'-'`；缺失字段（disk_used_pct/io_util_pct/io_await_ms）渲染 `'-'`，非缺失渲染 `f"{value}%"` 或 `f"{value} ms"`
+- **column_widths**：`[4.0, 2.0, 3.0, 3.0, 3.0]`，与 5 列对齐
+- **回归保护**：`app/tests/scripts/ops/test_ops_report.py` 新增 2 用例——`test_build_report_includes_disk_inventory_table`（异构 disks 数组 → 5 列表头 + 2 行，噪音字符串跳过，io 元素 mount 标签剥离）与 `test_build_report_skips_inventory_table_without_disks`（`parsed_values=None` / 无 `disks` 键时不生成清单表）
 
 ### 强白名单契约（2026-07-15 落地）
 

@@ -1133,3 +1133,104 @@ def test_update_script_detail_missing_id_returns_none(tmp_yaml):
         "inspection_fields": [],
     }))
     assert result is None
+
+
+def test_scan_and_upsert_preserves_ssd_thresholds(tmp_yaml):
+    """scan 入库时发往 DB 的 inspection_fields JSON 应保留 ssd_warn/ssd_crit。
+
+    Args:
+        tmp_yaml: 临时 yaml 路径
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 序列化白名单剥离 ssd 键时失败
+    """
+    import asyncio
+    from app.shared.utils.inspection_script_service import InspectionScriptService
+
+    db = _make_db()
+    db.fetchrow.return_value = {
+        "id": 1, "name": "linux-bash", "display_name": "X",
+        "platform": "linux", "version": "bash", "inspection_parser": "json",
+        "inspection_script": "echo a",
+        "inspection_fields": json.dumps(
+            [{"key": "io_await_ms", "name_zh": "IO等待", "unit": "ms",
+              "direction": "high", "warn": 100, "crit": 200,
+              "ssd_warn": 20, "ssd_crit": 50}],
+            ensure_ascii=False,
+        ),
+        "created_at": None, "updated_at": "2026-08-15", "inserted": True,
+    }
+    tmp_yaml.parent.mkdir(parents=True, exist_ok=True)
+    tmp_yaml.write_text(
+        "inspection_scripts:\n"
+        "  - name: linux-bash\n"
+        "    display_name: Linux Bash 巡检\n"
+        "    platform: linux\n"
+        "    version: bash\n"
+        "    inspection_parser: json\n"
+        "    inspection_script: |\n"
+        "      echo a\n"
+        "    inspection_fields:\n"
+        "      - {key: io_await_ms, name_zh: IO等待, unit: ms, direction: high,\n"
+        "         warn: 100, crit: 200, ssd_warn: 20, ssd_crit: 50}\n",
+        encoding="utf-8",
+    )
+    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    stats = asyncio.run(svc.scan_and_upsert())
+    assert stats["failed"] == 0
+    sent = None
+    for call in db.fetchrow.call_args_list:
+        for arg in call.args:
+            if isinstance(arg, str) and '"ssd_warn"' in arg:
+                sent = json.loads(arg)
+    assert sent is not None, "发往 DB 的 inspection_fields JSON 缺失 ssd_warn"
+    assert sent[0]["ssd_warn"] == 20 and sent[0]["ssd_crit"] == 50
+
+
+def test_update_script_detail_preserves_ssd_thresholds(tmp_yaml):
+    """update_script_detail 发往 DB 的 JSON 应保留 ssd_warn/ssd_crit(防前端往返丢键)。
+
+    Args:
+        tmp_yaml: 临时 yaml 路径
+
+    Returns:
+        None
+    """
+    import asyncio
+    from app.shared.utils.inspection_script_service import InspectionScriptService
+
+    db = _make_db()
+    db.fetchrow.return_value = {
+        "id": 7, "name": "linux-bash", "display_name": "X",
+        "platform": "linux", "version": "bash", "inspection_parser": "json",
+        "inspection_script": "echo a",
+        "inspection_fields": json.dumps(
+            [{"key": "io_await_ms", "name_zh": "IO等待", "unit": "ms",
+              "direction": "high", "warn": 100, "crit": 200,
+              "ssd_warn": 20, "ssd_crit": 50}],
+            ensure_ascii=False,
+        ),
+        "created_at": None, "updated_at": "2026-08-15",
+    }
+    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    asyncio.run(svc.preload_all())
+    result = asyncio.run(svc.update_script_detail(7, {
+        "display_name": "X", "platform": "linux", "version": "bash",
+        "inspection_parser": "json", "inspection_script": "echo a",
+        "inspection_fields": [
+            {"key": "io_await_ms", "name_zh": "IO等待", "unit": "ms",
+             "direction": "high", "warn": 100, "crit": 200,
+             "ssd_warn": 20, "ssd_crit": 50},
+        ],
+    }))
+    assert result is not None
+    sent = None
+    for call in db.fetchrow.call_args_list:
+        for arg in call.args:
+            if isinstance(arg, str) and '"ssd_warn"' in arg:
+                sent = json.loads(arg)
+    assert sent is not None, "update_script_detail 序列化剥离了 ssd 键"
+    assert sent[0]["ssd_warn"] == 20 and sent[0]["ssd_crit"] == 50

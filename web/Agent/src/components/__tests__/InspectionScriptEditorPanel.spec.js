@@ -128,4 +128,30 @@ describe('InspectionScriptEditorPanel（巡检脚本库右侧编辑）', () => {
     await wrapper.findAll('[data-testid="editor-remove-field-btn"]')[0].trigger('click')
     expect(wrapper.findAll('[data-testid="editor-field-row"]').length).toBe(1)
   })
+
+  it('test_save_payload_preserves_ssd_thresholds 保存 payload 保留 ssd_warn/ssd_crit', async () => {
+    const { default: Editor } = await import('../InspectionScriptEditorPanel.vue')
+    const detail = {
+      id: 1, name: 'linux-bash', display_name: 'X',
+      platform: 'linux', version: '', inspection_parser: 'json',
+      inspection_script: null,
+      inspection_fields: [
+        { key: 'io_await_ms', name_zh: 'IO等待', unit: 'ms', direction: 'high',
+          warn: 100, crit: 200, ssd_warn: 20, ssd_crit: 50 },
+      ],
+    }
+    global.fetch
+      .mockResolvedValueOnce({ ok: true, json: async () => detail })
+      .mockResolvedValueOnce({ ok: true, json: async () => detail })
+    const wrapper = mount(Editor, { props: { scriptId: 1 } })
+    await flushPromises()
+    await wrapper.find('[data-testid="editor-save-btn"]').trigger('click')
+    await wrapper.find('[data-testid="editor-form"]').trigger('submit.prevent')
+    await flushPromises()
+    const calls = global.fetch.mock.calls.filter(([, opts]) => opts?.method === 'PUT')
+    expect(calls.length).toBe(1)
+    const body = JSON.parse(calls[0][1].body)
+    expect(body.inspection_fields[0].ssd_warn).toBe(20)
+    expect(body.inspection_fields[0].ssd_crit).toBe(50)
+  })
 })

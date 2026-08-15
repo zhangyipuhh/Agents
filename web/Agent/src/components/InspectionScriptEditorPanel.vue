@@ -81,6 +81,8 @@ function addField() {
     direction: 'high',
     warn: null,
     crit: null,
+    ssd_warn: null,
+    ssd_crit: null,
   })
 }
 function removeField(idx) {
@@ -109,6 +111,8 @@ async function onSave() {
         direction: f.direction || 'high',
         warn: f.warn == null || f.warn === '' ? null : Number(f.warn),
         crit: f.crit == null || f.crit === '' ? null : Number(f.crit),
+        ssd_warn: f.ssd_warn == null || f.ssd_warn === '' ? null : Number(f.ssd_warn),
+        ssd_crit: f.ssd_crit == null || f.ssd_crit === '' ? null : Number(f.ssd_crit),
       })),
     }
     const updated = await updateInspectionScript(props.scriptId, payload)
@@ -215,6 +219,8 @@ async function onSave() {
               <th>方向</th>
               <th>警告</th>
               <th>严重</th>
+              <th>SSD 警告</th>
+              <th>SSD 严重</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -234,6 +240,8 @@ async function onSave() {
               </td>
               <td><input v-model.number="f.warn" type="number" step="any" aria-label="警告阈值" /></td>
               <td><input v-model.number="f.crit" type="number" step="any" aria-label="严重阈值" /></td>
+              <td><input v-model.number="f.ssd_warn" type="number" step="any" aria-label="SSD 警告阈值" /></td>
+              <td><input v-model.number="f.ssd_crit" type="number" step="any" aria-label="SSD 严重阈值" /></td>
               <td>
                 <button
                   type="button"

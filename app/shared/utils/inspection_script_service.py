@@ -375,6 +375,8 @@ class InspectionScriptService:
                 "direction": r.direction,
                 "warn": r.warn,
                 "crit": r.crit,
+                "ssd_warn": r.ssd_warn,
+                "ssd_crit": r.ssd_crit,
             }
             for r in rules
         ]
@@ -697,6 +699,8 @@ class InspectionScriptService:
                 "direction": r.direction,
                 "warn": r.warn,
                 "crit": r.crit,
+                "ssd_warn": r.ssd_warn,
+                "ssd_crit": r.ssd_crit,
             }
             for r in rules
         ]

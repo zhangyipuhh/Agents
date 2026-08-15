@@ -72,9 +72,12 @@ class InspectionFieldRule:
         name_zh: 字段中文名, 非空。
         unit: 单位字符串, 缺省 / 缺失默认为 ``""``。
         direction: 评估方向, ``"high"`` / ``"low"`` / ``"ignore"`` 之一。
-        warn: 警告阈值; ``ignore`` 时为 ``None``; ``high`` 时 ``warn <= crit``,
-            ``low`` 时 ``warn >= crit``。
-        crit: 严重阈值; ``ignore`` 时为 ``None``。
+        warn: 警告阈值 (HDD / 默认基准); ``ignore`` 时为 ``None``;
+            ``high`` 时 ``warn <= crit``, ``low`` 时 ``warn >= crit``。
+        crit: 严重阈值 (HDD / 默认基准); ``ignore`` 时为 ``None``。
+        ssd_warn: SSD 介质警告阈值, 可选且必须与 ``ssd_crit`` 成对出现;
+            仅当 disks 数组元素 ``disk_type == "ssd"`` 时覆盖 ``warn``。
+        ssd_crit: SSD 介质严重阈值, 成对约束同 ``ssd_warn``。
     """
 
     key: str
@@ -83,6 +86,8 @@ class InspectionFieldRule:
     direction: str
     warn: Optional[float]
     crit: Optional[float]
+    ssd_warn: Optional[float] = None
+    ssd_crit: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -243,6 +248,9 @@ def normalize_inspection_fields(
           (拒绝 ``bool`` / 字符串 / ``NaN`` / ``Infinity``); ``high`` 要求
           ``warn <= crit``, ``low`` 要求 ``warn >= crit`` (边界包含)。
         - ``ignore`` 的 ``warn`` / ``crit`` 必须缺省或显式 ``None``。
+        - ``ssd_warn`` / ``ssd_crit`` 可选成对; 必须同为 ``None`` 或同为有限数字
+          (拒绝 ``bool`` / 字符串 / ``NaN``); ``high`` 要求 ``ssd_warn <= ssd_crit``,
+          ``low`` 要求 ``ssd_warn >= ssd_crit`` (边界包含); ``ignore`` 规则禁止携带。
     """
     if raw is None:
         return []
@@ -299,11 +307,19 @@ def normalize_inspection_fields(
         # warn / crit
         warn_raw = item.get("warn")
         crit_raw = item.get("crit")
+        # ssd_warn / ssd_crit (可选, 必须成对)
+        ssd_warn_raw = item.get("ssd_warn")
+        ssd_crit_raw = item.get("ssd_crit")
 
         if direction == "ignore":
             if warn_raw is not None or crit_raw is not None:
                 raise ValueError(
                     f"inspection_fields[{idx}] ignore rule must not specify warn/crit {ctx}"
+                )
+            if ssd_warn_raw is not None or ssd_crit_raw is not None:
+                raise ValueError(
+                    f"inspection_fields[{idx}] ignore rule must not specify "
+                    f"ssd_warn/ssd_crit {ctx}"
                 )
             rules.append(
                 InspectionFieldRule(
@@ -342,6 +358,42 @@ def normalize_inspection_fields(
                     f"got warn={warn}, crit={crit} {ctx}"
                 )
 
+        # ssd 阈值对校验 (成对 + 有限数字 + 方向序)
+        ssd_warn: Optional[float] = None
+        ssd_crit: Optional[float] = None
+        if (ssd_warn_raw is None) != (ssd_crit_raw is None):
+            raise ValueError(
+                f"inspection_fields[{idx}] ssd_warn/ssd_crit must be specified "
+                f"together {ctx}"
+            )
+        if ssd_warn_raw is not None:
+            ssd_warn = _validate_threshold_number(ssd_warn_raw)
+            if ssd_warn is None:
+                raise ValueError(
+                    f"inspection_fields[{idx}].ssd_warn must be a finite number, "
+                    f"got {ssd_warn_raw!r} {ctx}"
+                )
+            ssd_crit = _validate_threshold_number(ssd_crit_raw)
+            if ssd_crit is None:
+                raise ValueError(
+                    f"inspection_fields[{idx}].ssd_crit must be a finite number, "
+                    f"got {ssd_crit_raw!r} {ctx}"
+                )
+            if direction == "high":
+                if not (ssd_warn <= ssd_crit):
+                    raise ValueError(
+                        f"inspection_fields[{idx}] high rule requires "
+                        f"ssd_warn <= ssd_crit, got ssd_warn={ssd_warn}, "
+                        f"ssd_crit={ssd_crit} {ctx}"
+                    )
+            else:  # low
+                if not (ssd_warn >= ssd_crit):
+                    raise ValueError(
+                        f"inspection_fields[{idx}] low rule requires "
+                        f"ssd_warn >= ssd_crit, got ssd_warn={ssd_warn}, "
+                        f"ssd_crit={ssd_crit} {ctx}"
+                    )
+
         rules.append(
             InspectionFieldRule(
                 key=key,
@@ -350,6 +402,8 @@ def normalize_inspection_fields(
                 direction=direction,
                 warn=warn,
                 crit=crit,
+                ssd_warn=ssd_warn,
+                ssd_crit=ssd_crit,
             )
         )
 
@@ -547,6 +601,8 @@ def _classify_single_value(
     raw_value: Any,
     *,
     allow_string: bool,
+    warn: Optional[float] = None,
+    crit: Optional[float] = None,
 ) -> str:
     """按规则方向与阈值, 把单个 ``raw_value`` 归一化为 ``pass`` / ``warn`` / ``crit``。
 
@@ -555,6 +611,8 @@ def _classify_single_value(
             ``warn`` / ``crit`` 已保证非 None。
         raw_value: 来自 ``parsed_values`` 或 ``disks`` 数组元素的原始值。
         allow_string: 是否允许完整有限数字字符串(同 :func:`_coerce_parsed_number`)。
+        warn: 有效警告阈值覆盖(如 SSD 介质匹配结果); ``None`` 时用 ``rule.warn``。
+        crit: 有效严重阈值覆盖; ``None`` 时用 ``rule.crit``。
 
     Returns:
         str: ``"pass"`` / ``"warn"`` / ``"crit"`` 之一, 非数值固定 ``"crit"``。
@@ -562,10 +620,12 @@ def _classify_single_value(
     value_num = _coerce_parsed_number(raw_value, allow_string=allow_string)
     if value_num is None:
         return "crit"
-    assert rule.warn is not None and rule.crit is not None
+    effective_warn = rule.warn if warn is None else warn
+    effective_crit = rule.crit if crit is None else crit
+    assert effective_warn is not None and effective_crit is not None
     if rule.direction == "high":
-        return _evaluate_high(value_num, rule.warn, rule.crit)
-    return _evaluate_low(value_num, rule.warn, rule.crit)
+        return _evaluate_high(value_num, effective_warn, effective_crit)
+    return _evaluate_low(value_num, effective_warn, effective_crit)
 
 
 def _expand_disks_array(
@@ -585,6 +645,13 @@ def _expand_disks_array(
         Tuple[Tuple[InspectionFieldResult, ...], str]: ``(字段结果元组, 最高状态)``。
         数组为空时返回 ``((), "crit")``, 供调用方决定是否要降级为单条
         ``crit`` 占位。
+
+    介质匹配:
+        元素携带 ``disk_type`` 字段(``"ssd"`` / ``"hdd"`` / 其它)且
+        规则声明 ``ssd_warn / ssd_crit`` 时: ``disk_type == "ssd"`` 走
+        SSD 阈值, 其它(含缺失 / 未知 / ``"hdd"``)兜底 base warn/crit;
+        规则未声明 ssd 阈值时一律回退 base。``InspectionFieldResult.warn``
+        / ``crit`` 始终写入「有效阈值」(供前端展示介质匹配后的实际生效值)。
     """
     results: List[InspectionFieldResult] = []
     worst = "pass"
@@ -598,7 +665,19 @@ def _expand_disks_array(
             # 调用方负责处理「整列都没值」的最坏情况。
             continue
         raw_value = entry[rule.key]
-        status = _classify_single_value(rule, raw_value, allow_string=allow_string)
+        disk_type = entry.get("disk_type")
+        use_ssd = (
+            isinstance(disk_type, str)
+            and disk_type.strip().lower() == "ssd"
+            and rule.ssd_warn is not None
+            and rule.ssd_crit is not None
+        )
+        effective_warn = rule.ssd_warn if use_ssd else rule.warn
+        effective_crit = rule.ssd_crit if use_ssd else rule.crit
+        status = _classify_single_value(
+            rule, raw_value, allow_string=allow_string,
+            warn=effective_warn, crit=effective_crit,
+        )
         mount = entry.get("mount")
         message = ""
         if isinstance(mount, str) and mount:
@@ -611,8 +690,8 @@ def _expand_disks_array(
                 value=raw_value,
                 status=status,
                 message=message,
-                warn=rule.warn,
-                crit=rule.crit,
+                warn=effective_warn,
+                crit=effective_crit,
             )
         )
         worst = _promote(worst, status)

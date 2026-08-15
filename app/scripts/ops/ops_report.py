@@ -292,6 +292,54 @@ def resolve_server_ip_map(
 # Word 报告配置构造(用于 docx 渲染层)
 # --------------------------------------------------------------------------
 
+def _server_disk_inventory_rows(item) -> List[List[str]]:
+    """从 ``parsed_values["disks"]`` 提取磁盘介质清单表行(5 列)。
+
+    仅渲染 Mapping 元素, 非 Mapping 噪音元素跳过; ``parsed_values`` 非 Mapping /
+    无 ``disks`` 键 / 数组为空时返回空列表, 由调用方跳过整表(优雅降级,
+    兼容未输出 disks 的旧巡检脚本)。
+
+    参数:
+        item: ``ServerOpsItem``。
+
+    返回:
+        List[List[str]]: 表行, 列为 ``[设备/挂载点, 介质, 磁盘使用率, IO 利用率,
+        IO 平均等待]``; 缺失值渲染为 ``-``; mount 尾部的 ``[SSD]`` / ``[HDD]``
+        标签在设备列剥离(介质列已承载该信息)。
+    """
+    rows: List[List[str]] = []
+    parsed = getattr(item, "parsed_values", None)
+    if not isinstance(parsed, Mapping):
+        return rows
+    disks = parsed.get("disks")
+    if not isinstance(disks, list):
+        return rows
+
+    def _fmt_pct(value) -> str:
+        return "-" if value is None else f"{value}%"
+
+    for entry in disks:
+        if not isinstance(entry, Mapping):
+            continue
+        mount = str(entry.get("mount") or "-")
+        if mount.endswith("]") and "[" in mount:
+            mount = mount.rsplit("[", 1)[0]
+        dtype_raw = entry.get("disk_type")
+        dtype = (
+            {"ssd": "SSD", "hdd": "HDD"}.get(str(dtype_raw).strip().lower(), "-")
+            if dtype_raw else "-"
+        )
+        await_v = entry.get("io_await_ms")
+        rows.append([
+            mount,
+            dtype,
+            _fmt_pct(entry.get("disk_used_pct")),
+            _fmt_pct(entry.get("io_util_pct")),
+            "-" if await_v is None else f"{await_v} ms",
+        ])
+    return rows
+
+
 def _server_meta_rows(item, host: Optional[str]) -> List[List[str]]:
     """构造单个业务的服务器元信息表行(2 列: 项目/值)。"""
     return [
@@ -438,6 +486,17 @@ def build_ops_report_config(
                 column_widths=[3.0, 12.0],
             ),
         ))
+        # 磁盘介质清单表（无 disks 数据时自动跳过, 兼容旧巡检脚本）
+        inventory_rows = _server_disk_inventory_rows(item)
+        if inventory_rows:
+            sections.append(SectionConfig(
+                section_type="table",
+                table=TableSectionConfig(
+                    headers=["设备/挂载点", "介质", "磁盘使用率", "IO 利用率", "IO 平均等待"],
+                    rows=inventory_rows,
+                    column_widths=[4.0, 2.0, 3.0, 3.0, 3.0],
+                ),
+            ))
         # SSH 失败/跳过: 不渲染字段明细表, 追加说明段
         if item.skipped or item.success is False:
             reason = item.error_message or item.inspection_error or "未执行"

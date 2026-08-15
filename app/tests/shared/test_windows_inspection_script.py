@@ -22,7 +22,10 @@ def test_windows_inspection_scripts_support_legacy_powershell():
     """公开配置中的 Windows 脚本应兼容旧版 PowerShell 并保持 JSON 字段契约。
 
     2026-08-03 改造：检查项从 servers.yaml 迁移到 inspection_scripts.yaml.example 的
-    windows-ps-5.1 条目；输出键集合仍与 ``inspection_fields`` 一致。
+    windows-ps-5.1 条目；2026-08-15 扩展：新增磁盘 IO 采集段
+    （Win32_PerfFormattedData_PerfDisk_PhysicalDisk 熟数据 + MSFT_PhysicalDisk
+    介质探测），仍保持 Get-WmiObject-only，不引入 Get-CimInstance /
+    Get-PhysicalDisk / ConvertTo-Json。
     """
     script_paths = [
         PROJECT_ROOT / "data" / "devops" / "inspection_scripts.yaml.example",
@@ -40,12 +43,26 @@ def test_windows_inspection_scripts_support_legacy_powershell():
             "mem_used_pct",
             "cpu_used_pct",
             "uptime_hours",
+            "io_util_pct",
+            "io_await_ms",
         }
         configured_keys = {field["key"] for field in windows["inspection_fields"]}
 
-        assert script.count("Get-WmiObject") == 2
+        assert script.count("Get-WmiObject") == 4
         assert "Get-CimInstance" not in script
+        assert "Get-PhysicalDisk" not in script
         assert "ConvertTo-Json" not in script
         assert "ConvertToDateTime" in script
         assert "JavaScriptSerializer" in script
+        # IO 采集段契约
+        assert "MSFT_PhysicalDisk" in script
+        assert "Win32_PerfFormattedData_PerfDisk_PhysicalDisk" in script
+        assert "PercentDiskTime" in script
+        assert "AvgDiskSecPerTransfer" in script
+        assert "disk_type" in script
         assert output_keys == configured_keys
+        await_rule = next(
+            f for f in windows["inspection_fields"] if f["key"] == "io_await_ms"
+        )
+        assert await_rule["warn"] == 100 and await_rule["crit"] == 200
+        assert await_rule["ssd_warn"] == 20 and await_rule["ssd_crit"] == 50

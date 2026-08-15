@@ -251,6 +251,62 @@ def test_build_report_config_structure():
     assert cfg.cover.title.text == "沈阳不动产运维报告"
 
 
+def test_build_report_includes_disk_inventory_table():
+    """parsed_values 含异构 disks 数组时生成磁盘介质清单表（5 列）。
+
+    df 元素（无 disk_type）介质列为 '-'；io 元素剥离 mount 尾部 [SSD] 标签、
+    介质列显示 SSD；非 Mapping 噪音元素跳过。
+
+    Returns:
+        None
+    """
+    item = ServerOpsItem(
+        business_name="A", success=True, inspection_status="pass",
+        parsed_values={"disks": [
+            {"mount": "/", "disk_used_pct": 42},
+            {"mount": "sda[SSD]", "io_util_pct": 12.3, "io_await_ms": 4.5,
+             "disk_type": "ssd"},
+            "noise",
+        ]},
+    )
+    config = build_ops_report_config(
+        summary=OpsSummary(), alerts=OpsAlerts(),
+        server_report=ServerOpsReport(items=[item]),
+        api_report=ApiCheckReport(),
+        ip_map={}, schedule_name="t", started_at=datetime(2026, 8, 15),
+    )
+    inventory = [
+        s.table for s in config.sections
+        if s.section_type == "table"
+        and s.table.headers == ["设备/挂载点", "介质", "磁盘使用率", "IO 利用率", "IO 平均等待"]
+    ]
+    assert len(inventory) == 1
+    rows = inventory[0].rows
+    assert len(rows) == 2
+    assert rows[0] == ["/", "-", "42%", "-", "-"]
+    assert rows[1] == ["sda", "SSD", "-", "12.3%", "4.5 ms"]
+
+
+def test_build_report_skips_inventory_table_without_disks():
+    """parsed_values 为 None / 无 disks 键时不生成清单表（优雅降级，兼容旧脚本）。
+
+    Returns:
+        None
+    """
+    item = _server("A")
+    config = build_ops_report_config(
+        summary=OpsSummary(), alerts=OpsAlerts(),
+        server_report=ServerOpsReport(items=[item]),
+        api_report=ApiCheckReport(),
+        ip_map={}, schedule_name="t", started_at=datetime(2026, 8, 15),
+    )
+    assert all(
+        not (s.section_type == "table" and s.table.headers
+             and s.table.headers[0] == "设备/挂载点")
+        for s in config.sections
+    )
+
+
 def test_build_report_config_table_section_headers():
     summary = _build_summary()
     alerts = compute_ops_alerts(ServerOpsReport(), ApiCheckReport())
