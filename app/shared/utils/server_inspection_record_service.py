@@ -319,7 +319,9 @@ class ServerInspectionRecordService:
         返回字段白名单（不含 ``ip`` / ``port`` / ``password`` 等敏感字段）：
             ``node_id / node_name / server_id / business_name / server_type /
             status / inspection_status / collected_at / duration_ms /
-            metrics / disks / parsed_values / error_message``
+            metrics / disks / parsed_values / field_results / error_message``
+            （2026-08-16 新增 ``field_results``：每字段评估结果数组，供前端
+            卡片智能选异常盘符；无快照时为空列表）
 
         参数:
             scope: 调用方归属上下文。
@@ -488,16 +490,18 @@ class ServerInspectionRecordService:
         server_type: str,
         parsed_values: Any,
     ) -> Dict[str, Optional[float]]:
-        """派生 cpu/mem/disk 三项百分比。
+        """派生 cpu/mem/disk/load 四项指标。
 
         参数:
             server_type: ``linux`` / ``windows`` / 其他。
             parsed_values: ``run_server_ops`` 解析得到的 dict（可能为 None）。
 
         返回:
-            Dict[str, Optional[float]]: ``{cpu, mem, disk}``，缺失字段为 None。
+            Dict[str, Optional[float]]: ``{cpu, mem, disk, load}``，缺失字段为 None。
+            ``load`` 仅 linux 取自 ``parsed_values.load_1m``（1 分钟平均负载，
+            非百分比），windows / 其他平台返回 ``None`` 让前端按需隐藏。
         """
-        empty = {"cpu": None, "mem": None, "disk": None}
+        empty = {"cpu": None, "mem": None, "disk": None, "load": None}
         if not isinstance(parsed_values, dict):
             return empty
         pv = parsed_values
@@ -506,7 +510,11 @@ class ServerInspectionRecordService:
         disk = ServerInspectionRecordService._pick_root_disk_pct(
             pv.get("disks") or [], server_type,
         )
-        return {"cpu": cpu, "mem": mem, "disk": disk}
+        # load 仅 linux 取值；windows 脚本无该字段，避免误读其他键名
+        load: Optional[float] = None
+        if str(server_type).lower() == "linux":
+            load = ServerInspectionRecordService._coerce_float(pv.get("load_1m"))
+        return {"cpu": cpu, "mem": mem, "disk": disk, "load": load}
 
     @staticmethod
     def _derive_cpu(server_type: str, pv: Dict[str, Any]) -> Optional[float]:
@@ -865,6 +873,10 @@ class ServerInspectionRecordService:
             "metrics": metrics,
             "disks": disks if isinstance(disks, list) else [],
             "parsed_values": parsed_values if parsed_values is not None else {},
+            # 2026-08-16 透出：每字段评估结果（由 inspection_scripts.yaml 中
+            # warn/crit 评估后的 pass/warn/crit/unassessed 状态），供前端卡片
+            # 智能选异常盘符。无快照时降级为空列表（避免前端访问 .length 报错）。
+            "field_results": field_results if snapshot_present else [],
             "error_message": row.get("error_message"),
         }
 
@@ -886,9 +898,10 @@ class ServerInspectionRecordService:
                 "inspection_status": None,
                 "collected_at": None,
                 "duration_ms": None,
-                "metrics": {"cpu": None, "mem": None, "disk": None},
+                "metrics": {"cpu": None, "mem": None, "disk": None, "load": None},
                 "disks": [],
                 "parsed_values": {},
+                "field_results": [],
                 "error_message": None,
             }
 
@@ -916,6 +929,8 @@ class ServerInspectionRecordService:
             "metrics": metrics,
             "disks": disks if isinstance(disks, list) else [],
             "parsed_values": parsed_values if parsed_values is not None else {},
+            # 2026-08-16 透出：每字段评估结果（与 admin 分支一致）。
+            "field_results": field_results,
             "error_message": snap.get("error_message"),
         }
 

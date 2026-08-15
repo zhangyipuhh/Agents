@@ -46,6 +46,173 @@ export function metricColor(v) {
   if (v >= WARN_PCT) return '#ff453a'
   return '#1d9a40'
 }
+
+/**
+ * Linux 1 分钟平均负载着色（独立阈值，与 CPU/Mem/Disk 的 80% 阈值不同）：
+ *   - null / 非数字 → 灰色（未采集）
+ *   - < LOAD_WARN → 绿
+ *   - ≥ LOAD_WARN → 红（与 inspection_scripts.yaml 中 warn=4.0 对齐）
+ *
+ * 阈值 4 来自 ``data/devops/inspection_scripts.yaml`` linux-bash 的
+ * ``load_1m`` 字段规则 warn=4.0（crit=8.0）。运维看卡片只需要二态即可。
+ *
+ * @param {number|null} v 负载数值（保留 2 位小数）
+ * @returns {string} 颜色字符串
+ */
+export const LOAD_WARN = 4
+export function loadColor(v) {
+  if (v == null) return '#9aa3af'
+  if (v >= LOAD_WARN) return '#ff453a'
+  return '#1d9a40'
+}
+
+/**
+ * 把 ISO 时间格式化为 ``YYYY-MM-DD HH:MM``（本地时区）。
+ * - null / undefined / 非字符串 / 解析失败 → ``'-'``（无快照兜底）
+ *
+ * @param {string|null|undefined} iso ISO 时间字符串（如 ``2026-08-16T00:46:35``）
+ * @returns {string} 格式化后的时间字符串；无效输入返回 ``'-'``
+ */
+export function formatCollectedAt(iso) {
+  if (typeof iso !== 'string' || !iso) return '-'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '-'
+  const p = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} `
+    + `${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+/**
+ * 判定是否显示「负载」指标项。仅 ``serverType === 'linux'``（不区分大小写）
+ * 返回 true；其他（windows / 空串 / 未知）一律 false —— 白名单策略避免未来
+ * 引入新 platform 时误显示。
+ *
+ * @param {string|undefined|null} serverType 后端返回的平台类型
+ * @returns {boolean} 是否渲染负载项
+ */
+export function isLinuxType(serverType) {
+  return typeof serverType === 'string' && serverType.toLowerCase() === 'linux'
+}
+
+/**
+ * 磁盘指标 key 集合（来自 inspection_scripts.yaml 中 disk_used_pct /
+ * io_util_pct / io_await_ms 三条规则的 key）。
+ */
+const DISK_METRIC_KEYS = ['disk_used_pct', 'io_util_pct', 'io_await_ms']
+
+/**
+ * 状态严重度（数值越大越严重），用于按 mount 分组后取最严重项 + 整体排序。
+ */
+const STATUS_SEVERITY = { pass: 0, unassessed: 1, warn: 2, crit: 3 }
+
+/**
+ * 从后端 ``field_results`` 中按 mount 聚合「异常」磁盘项：
+ *   - 只看 ``key ∈ {disk_used_pct, io_util_pct, io_await_ms}``;
+ *   - 只收 ``status ∈ {warn, crit}``（pass/unassessed 跳过）;
+ *   - 同一 mount 多条异常 → 合并到 ``items`` 数组；
+ *   - 整体排序：crit 优先，warn 次之；同状态按 mount 名升序。
+ *
+ * mount 提取优先级（与后端 ``_expand_disks_array`` 一致）：
+ *   1) ``field_result.message`` 形如 ``"磁盘 /data"`` → 取 ``/data``；
+ *   2) 兜底 ``disks[]`` 中 mount 与 key 匹配的项；
+ *   3) 仍无 mount → 退回空串（聚合用 '__anon__' 占位）。
+ *
+ * @param {Array} fieldResults 后端 ``ServerInspectionRecordService._row_to_view``
+ *                              返回的 ``field_results`` 数组
+ * @param {Array} disks         后端 ``parsed_values.disks`` 原始数组（用于兜底 mount 提取）
+ * @returns {Array<{mount:string, status:'warn'|'crit', items:Array}>}
+ *          按状态降序排好的异常盘符列表；无异常返回 ``[]``
+ */
+export function pickAnomalyDisks(fieldResults, disks) {
+  if (!Array.isArray(fieldResults) || fieldResults.length === 0) return []
+
+  const buckets = new Map()  // mount → {mount, status, items}
+
+  // 预先建 mount → disk 索引，方便兜底
+  const mountToDisk = new Map()
+  if (Array.isArray(disks)) {
+    for (const d of disks) {
+      if (d && typeof d.mount === 'string' && d.mount) {
+        mountToDisk.set(d.mount, d)
+      }
+    }
+  }
+
+  for (const fr of fieldResults) {
+    if (!fr || typeof fr !== 'object') continue
+    const key = fr.key
+    if (!DISK_METRIC_KEYS.includes(key)) continue
+    const status = fr.status
+    if (status !== 'warn' && status !== 'crit') continue
+
+    // 1) 优先从 message 解析 mount（后端约定："磁盘 {mount}"）
+    let mount = ''
+    const msg = typeof fr.message === 'string' ? fr.message : ''
+    if (msg.startsWith('磁盘 ')) {
+      mount = msg.slice(3).trim()
+    }
+    // 2) 兜底：disks[] 里 mount 在 message 里未匹配时，跳过
+    //    （保证前端不臆造 mount，避免误把 `/data` 与 `sda[HDD]` 混到一起）
+    if (!mount) {
+      // 第三层兜底：取对应 disks[] 中含该 key 的首项
+      for (const [, d] of mountToDisk) {
+        if (d && (d[key] !== undefined && d[key] !== null)) {
+          mount = d.mount
+          break
+        }
+      }
+    }
+    const bucketKey = mount || '__anon__'
+
+    let bucket = buckets.get(bucketKey)
+    if (!bucket) {
+      bucket = { mount, status, items: [] }
+      buckets.set(bucketKey, bucket)
+    }
+    // 升级桶状态（crit > warn）
+    if ((STATUS_SEVERITY[status] || 0) > (STATUS_SEVERITY[bucket.status] || 0)) {
+      bucket.status = status
+    }
+    bucket.items.push({
+      key,
+      name_zh: fr.name_zh || key,
+      unit: fr.unit || '',
+      value: fr.value ?? null,
+      status,
+    })
+  }
+
+  // 排序：crit 优先，warn 次之；同状态按 mount 升序
+  return Array.from(buckets.values()).sort((a, b) => {
+    const sd = (STATUS_SEVERITY[b.status] || 0) - (STATUS_SEVERITY[a.status] || 0)
+    if (sd !== 0) return sd
+    return (a.mount || '').localeCompare(b.mount || '')
+  })
+}
+
+/**
+ * 异常项 → 紧凑展示文本（用于卡片存储行的异常概要）。
+ *   - 单位 ``%`` → ``<name> <value>%``（如 "使用 92%"）
+ *   - 单位 ``ms`` → ``<name> <value>ms``（如 "等待 150ms"）
+ *   - 其他单位 → ``<name> <value><unit>``
+ *   - name 简写：磁盘使用率 → "使用"；磁盘 IO 利用率 → "IO"；磁盘 IO 平均等待 → "等待"
+ *
+ * @param {{key:string, name_zh:string, unit:string, value:any}} item
+ * @returns {string} 紧凑展示文本
+ */
+export function formatAnomalyItem(item) {
+  if (!item || item.value == null) return ''
+  const v = item.value
+  const NAME_MAP = {
+    disk_used_pct: '使用',
+    io_util_pct: 'IO',
+    io_await_ms: '等待',
+  }
+  const short = NAME_MAP[item.key] || item.name_zh || item.key
+  if (item.unit === '%') return `${short} ${v}%`
+  if (item.unit === 'ms') return `${short} ${v}ms`
+  return `${short} ${v}${item.unit || ''}`
+}
 </script>
 
 <script setup>
@@ -92,6 +259,30 @@ const errCount = computed(() => props.servers.filter(s => s.status === 'err').le
 /** 卡片使用的磁盘视图（具名函数，便于模板复用） */
 function displayDiskOf(srv) {
   return pickDisplayDisk(srv.disks)
+}
+
+/**
+ * 每张卡片的异常盘符列表（基于后端 ``field_results`` 聚合）。
+ * 缓存到 Map 避免模板中 ``v-for`` 重复调 ``pickAnomalyDisks``。
+ *
+ * 行为：
+ *   - ``srv.fieldResults`` 非空 → 按 mount 聚合异常项；
+ *   - 空 → 返回空数组（让模板退化到 ``displayDiskOf`` 老逻辑分支）;
+ *
+ * @type {ComputedRef<Map<string, Array>>} key = String(srv.id)
+ */
+const anomaliesById = computed(() => {
+  const m = new Map()
+  for (const srv of props.servers) {
+    const frs = Array.isArray(srv.fieldResults) ? srv.fieldResults : []
+    m.set(String(srv.id), frs.length === 0 ? [] : pickAnomalyDisks(frs, srv.disks))
+  }
+  return m
+})
+
+/** 模板 helper：按 server id 取异常列表 */
+function anomaliesOf(srv) {
+  return anomaliesById.value.get(String(srv.id)) || []
 }
 
 /** 把百分比格式化为字符串（null → '-'） */
@@ -141,6 +332,10 @@ function fmtPct(v) {
         <div class="srv-card-head">
           <OpsServerIcon :status="srv.status" :size="26" />
           <span class="srv-card-title" :title="srv.name">{{ srv.name }}</span>
+          <!-- 2026-08-16 新增：最后检测时间（来自 server_latest_snapshot.collected_at）；
+               无快照时显示 '-'。标题 flex:1 自动让位挤压，时间右贴保持省略号不变。
+               2026-08-16 追加：「最新检测时间:」前缀标签，让用户一眼看出语义。 -->
+          <span class="srv-card-time" :title="srv.collectedAt || ''">最新检测时间:{{ formatCollectedAt(srv.collectedAt) }}</span>
         </div>
         <div class="srv-card-metrics">
           <div class="srv-metric">
@@ -151,10 +346,38 @@ function fmtPct(v) {
             <span class="srv-metric-label">内存</span>
             <span class="srv-metric-value" :style="{ color: metricColor(srv.mem) }">{{ fmtPct(srv.mem) }}</span>
           </div>
-          <div class="srv-metric">
+          <!-- 2026-08-16 重构：磁盘行基于后端 ``field_results`` 智能选异常盘。
+               - 有异常：盘符 + 异常指标概要（IO 92% / 等待 150ms / 使用 95%），
+                 盘符与概要统一标红 #ff453a（与 LED 红同系），多个异常盘用逗号分隔；
+               - 无异常：显示 '-'（沿用 metricColor(null) 灰）；
+               - 兜底：fieldResults 为空（老数据 / 未落库）→ 退化到
+                 displayDiskOf 行为（保留 pickDisplayDisk 既有逻辑）。 -->
+          <div class="srv-metric srv-metric-storage">
             <span class="srv-metric-label">存储</span>
-            <span class="srv-metric-disk">{{ displayDiskOf(srv)?.name || '-' }}</span>
-            <span class="srv-metric-value" :style="{ color: metricColor(displayDiskOf(srv)?.used) }">{{ fmtPct(displayDiskOf(srv)?.used) }}</span>
+            <template v-if="anomaliesOf(srv).length">
+              <span v-for="(a, idx) in anomaliesOf(srv)" :key="(a.mount || 'anon') + '-' + idx"
+                    class="srv-metric-disk srv-metric-disk--problem">
+                <span class="srv-metric-disk-name">{{ a.mount || '匿名盘' }}</span>
+                <span v-for="(it, j) in a.items" :key="a.mount + '-' + it.key + '-' + j"
+                      class="srv-metric-anomaly">
+                  · {{ formatAnomalyItem(it) }}
+                </span>
+              </span>
+            </template>
+            <template v-else-if="srv.fieldResults && srv.fieldResults.length === 0 && displayDiskOf(srv)">
+              <!-- 老数据兜底：fieldResults 为空 + 仍能选盘 → 显示使用率（沿用旧 UI） -->
+              <span class="srv-metric-disk">{{ displayDiskOf(srv)?.name || '-' }}</span>
+              <span class="srv-metric-value" :style="{ color: metricColor(displayDiskOf(srv)?.used) }">{{ fmtPct(displayDiskOf(srv)?.used) }}</span>
+            </template>
+            <template v-else>
+              <span class="srv-metric-value" :style="{ color: metricColor(null) }">-</span>
+            </template>
+          </div>
+          <!-- 2026-08-16 改造：linux 负载 label 改为「服务器负载」（语义更明确）。
+               颜色阈值独立（loadColor: ≥4 红 / <4 绿 / null 灰），与百分比指标阈值 80 解耦。 -->
+          <div v-if="isLinuxType(srv.serverType)" class="srv-metric">
+            <span class="srv-metric-label">服务器负载</span>
+            <span class="srv-metric-value" :style="{ color: loadColor(srv.load) }">{{ fmtPct(srv.load) }}</span>
           </div>
         </div>
       </div>

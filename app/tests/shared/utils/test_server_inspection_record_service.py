@@ -530,6 +530,191 @@ def test_list_latest_does_not_return_ip_field():
             assert key not in it, f"list_latest 不应返回敏感字段 {key}"
 
 
+def test_derive_metrics_includes_load_linux():
+    """_derive_metrics: linux + parsed_values.load_1m → metrics.load 透传（保留小数）。"""
+    pv = {"cpu_idle_pct": 80.0, "mem_used_pct": 50.0,
+          "disks": [{"mount": "/", "disk_used_pct": 60}],
+          "load_1m": 2.34}
+    out = ServerInspectionRecordService._derive_metrics("linux", pv)
+    assert out["load"] == 2.34
+    assert out["cpu"] == 20.0
+    assert out["mem"] == 50.0
+    assert out["disk"] == 60.0
+
+
+def test_derive_metrics_load_is_none_for_windows():
+    """_derive_metrics: windows → metrics.load=None（脚本无该字段，避免误读其他键名）。"""
+    pv = {"cpu_used_pct": 30.0, "mem_used_pct": 50.0,
+          "disks": [{"mount": "C:\\", "disk_used_pct": 60}],
+          # 即便误填 load_1m，windows 也必须忽略
+          "load_1m": 99.9}
+    out = ServerInspectionRecordService._derive_metrics("windows", pv)
+    assert out["load"] is None
+    assert out["cpu"] == 30.0
+    assert out["mem"] == 50.0
+    assert out["disk"] == 60.0
+
+
+def test_list_latest_view_dict_metrics_contains_load_admin():
+    """list_latest admin 分支：视图 metrics 含 load 键（linux 有值、windows 为 None）。"""
+    db, conn, svc = _setup_list_env(
+        OwnershipScope.system_scope(),
+        devops_rows=[
+            {"id": 1, "business_name": "biz-A", "server_type": "linux"},
+            {"id": 2, "business_name": "biz-B", "server_type": "windows"},
+        ],
+    )
+    admin_rows = [
+        {
+            "node_id": None,
+            "node_name": "biz-A",
+            "server_id": 1,
+            "business_name": "biz-A",
+            "server_type": "linux",
+            "collected_at": datetime(2026, 8, 16, 0, 46, 0),
+            "success": True,
+            "inspection_status": "pass",
+            "duration_ms": 42,
+            "error_message": None,
+            "parsed_values": json.dumps({"disks": [{"mount": "/", "disk_used_pct": 58}],
+                                          "mem_used_pct": 45.0, "cpu_idle_pct": 76.5,
+                                          "load_1m": 1.23}),
+            "field_results": json.dumps([]),
+        },
+        {
+            "node_id": None,
+            "node_name": "biz-B",
+            "server_id": 2,
+            "business_name": "biz-B",
+            "server_type": "windows",
+            "collected_at": datetime(2026, 8, 16, 0, 46, 0),
+            "success": True,
+            "inspection_status": "pass",
+            "duration_ms": 35,
+            "error_message": None,
+            "parsed_values": json.dumps({"disks": [{"mount": "C:\\", "disk_used_pct": 40}],
+                                          "mem_used_pct": 60.0, "cpu_used_pct": 25.0}),
+            "field_results": json.dumps([]),
+        },
+    ]
+    db.fetch = AsyncMock(return_value=admin_rows)
+    items = asyncio.run(svc.list_latest(OwnershipScope.system_scope()))
+    biz_a = next(it for it in items if it["business_name"] == "biz-A")
+    biz_b = next(it for it in items if it["business_name"] == "biz-B")
+    assert biz_a["metrics"]["load"] == 1.23     # linux 取值
+    assert biz_b["metrics"]["load"] is None     # windows None
+    # 既有键仍然存在（向后兼容）
+    assert biz_a["metrics"]["cpu"] == 23.5
+    assert biz_a["metrics"]["mem"] == 45.0
+    assert biz_a["metrics"]["disk"] == 58.0
+
+
+def test_list_latest_view_dict_contains_field_results_admin():
+    """2026-08-16 list_latest admin 视图 dict 透出 field_results 数组（元素含 key/status/value/message）。
+
+    - 有快照分支：field_results 非空，元素来自 server_latest_snapshot.field_results 列；
+    - 无快照分支：field_results 为空列表（前端访问 .length 安全）。
+    """
+    db, conn, svc = _setup_list_env(
+        OwnershipScope.system_scope(),
+        devops_rows=[
+            {"id": 1, "business_name": "biz-A", "server_type": "linux"},
+            {"id": 2, "business_name": "biz-B", "server_type": "windows"},
+        ],
+    )
+    admin_rows = [
+        {
+            "node_id": None,
+            "node_name": "biz-A",
+            "server_id": 1,
+            "business_name": "biz-A",
+            "server_type": "linux",
+            "collected_at": datetime(2026, 8, 16, 0, 46, 0),
+            "success": True,
+            "inspection_status": "warn",
+            "duration_ms": 42,
+            "error_message": None,
+            "parsed_values": json.dumps({
+                "disks": [
+                    {"mount": "/", "disk_used_pct": 50},
+                    {"mount": "/data", "disk_used_pct": 80},
+                    {"mount": "sda[HDD]", "io_util_pct": 92.0, "io_await_ms": 12.5, "disk_type": "hdd"},
+                ],
+                "mem_used_pct": 60.0, "cpu_idle_pct": 80.0, "load_1m": 1.5,
+            }),
+            "field_results": json.dumps([
+                {"key": "disk_used_pct", "name_zh": "磁盘使用率", "unit": "%",
+                 "value": 80, "status": "warn", "message": "磁盘 /data", "warn": 80, "crit": 90},
+                {"key": "io_util_pct", "name_zh": "磁盘 IO 利用率", "unit": "%",
+                 "value": 92.0, "status": "crit", "message": "磁盘 sda[HDD]", "warn": 80, "crit": 90},
+            ]),
+        },
+        {
+            "node_id": None,
+            "node_name": "biz-B",
+            "server_id": 2,
+            "business_name": "biz-B",
+            "server_type": "windows",
+            "collected_at": None,    # 无快照
+            "success": None,
+            "inspection_status": None,
+            "duration_ms": None,
+            "error_message": None,
+            "parsed_values": None,
+            "field_results": None,
+        },
+    ]
+    db.fetch = AsyncMock(return_value=admin_rows)
+    items = asyncio.run(svc.list_latest(OwnershipScope.system_scope()))
+    biz_a = next(it for it in items if it["business_name"] == "biz-A")
+    biz_b = next(it for it in items if it["business_name"] == "biz-B")
+    # 有快照：field_results 透出（2 条）
+    assert isinstance(biz_a["field_results"], list)
+    assert len(biz_a["field_results"]) == 2
+    assert biz_a["field_results"][0]["key"] == "disk_used_pct"
+    assert biz_a["field_results"][0]["status"] == "warn"
+    assert biz_a["field_results"][0]["message"] == "磁盘 /data"
+    assert biz_a["field_results"][1]["key"] == "io_util_pct"
+    assert biz_a["field_results"][1]["status"] == "crit"
+    # 无快照：field_results 必须为空列表（前端 .length 安全）
+    assert biz_b["field_results"] == []
+
+
+def test_list_latest_user_view_dict_contains_field_results():
+    """2026-08-16 list_latest 普通用户分支：视图 dict 透出 field_results（与 admin 一致）。"""
+    db, conn, svc = _setup_list_env(
+        OwnershipScope.for_user(1, is_admin=False),
+        devops_rows=[{"id": 1, "business_name": "biz-A", "server_type": "linux"}],
+        snapshot_rows=[{
+            "server_id": 1,
+            "snapshot_business_name": "biz-A",
+            "collected_at": datetime(2026, 8, 16, 0, 46, 0),
+            "success": True,
+            "inspection_status": "warn",
+            "duration_ms": 10,
+            "error_message": None,
+            "parsed_values": json.dumps({"disks": [{"mount": "/data", "disk_used_pct": 85}],
+                                          "mem_used_pct": 40.0}),
+            "field_results": json.dumps([
+                {"key": "disk_used_pct", "name_zh": "磁盘使用率", "unit": "%",
+                 "value": 85, "status": "warn", "message": "磁盘 /data", "warn": 80, "crit": 90},
+            ]),
+        }],
+        user_svc=_StubUserServerService(nodes=[
+            {"id": 11, "node_type": "server", "name": "MyA",
+             "source_devops_server_id": 1, "created_by_user_id": 1,
+             "parent_id": None, "sort_order": 0,
+             "business_name": "biz-A", "server_type": "linux"},
+        ]),
+    )
+    items = asyncio.run(svc.list_latest(OwnershipScope.for_user(1, is_admin=False)))
+    assert len(items) == 1
+    assert len(items[0]["field_results"]) == 1
+    assert items[0]["field_results"][0]["key"] == "disk_used_pct"
+    assert items[0]["field_results"][0]["status"] == "warn"
+    assert items[0]["field_results"][0]["message"] == "磁盘 /data"
+
+
 # ============================================================================
 # list_records
 # ============================================================================

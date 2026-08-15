@@ -91,8 +91,11 @@ const serversLoadError = ref('')
  *   - ``name = node_name || business_name``
  *   - ``status`` 直用后端三态（ok / err / unknown）
  *   - ``cpu / mem / disk`` 取 ``metrics``；``null`` → 显示 ``-``
+ *   - ``os / cpu_model / uptime_hours`` 取 ``parsed_values``（2026-08-16 修复：
+ *     这三个展示字段之前硬编码为 ``-``，DB 已有数据但前端不消费，导致详情页
+ *     「操作系统 / CPU 型号 / 运行时长」三个 kv 始终为 ``-``）。
  *   - ``disks`` 由 ``parsed_values.disks`` 映射（mount → name，disk_used_pct → used）
- *   - ``os / cpuModel / memTotal / diskTotal / netIn`` 本期未采集 → ``-``
+ *   - ``memTotal / diskTotal / netIn`` 本期未采集 → ``-``（已按用户要求从详情页移除）
  *   - ``ip`` 不返（遵循脱敏约定）→ ``-``
  *
  * @param {Object} item 后端返回的快照行
@@ -106,21 +109,40 @@ function mapSnapshotToServer(item) {
     nodeId: item.node_id,
     name: item.node_name || item.business_name || '-',
     ip: '-',                // 不返 ip（运维脱敏约定）
-    os: '-',                // 本期未采集
+    // 2026-08-16：从 parsed_values 读取展示字段（之前硬编码 '-' 导致详情页
+    // 「操作系统 / CPU 型号」始终为占位符）。null / undefined / 空串 → '-'。
+    os: (typeof pv.os === 'string' && pv.os.trim()) ? pv.os : '-',
+    serverType: item.server_type || '',   // linux/windows，供卡片判定是否显示「负载」
     status: item.status || 'unknown',
     cpu: item.metrics?.cpu ?? null,
     mem: item.metrics?.mem ?? null,
     disk: item.metrics?.disk ?? null,
-    cpuModel: '-',
+    load: item.metrics?.load ?? null,      // linux 1 分钟负载；windows/null
+    // 2026-08-16：CPU 型号展示字段（之前硬编码 '-'）。windows 取自
+    // ``Get-WmiObject Win32_Processor``.Name；linux 取自 ``/proc/cpuinfo``
+    // ``model name``（老内核兜底 ``vendor_id @ MHz``）。DB 已落库。
+    cpuModel: (typeof pv.cpu_model === 'string' && pv.cpu_model.trim()) ? pv.cpu_model : '-',
     memTotal: '-',
     diskTotal: '-',
     netIn: '-',
+    // 2026-08-16：运行时长直接读 parsed_values.uptime_hours。windows 由脚本
+    // ``$bootTime`` → ``(Now - bootTime).TotalHours`` 计算；linux 暂无该字段
+    // （inspection_scripts.yaml::linux-bash 未输出），fallback '-'。
     uptime: pv.uptime_hours != null ? `${pv.uptime_hours} 小时` : '-',
     disks: disks.map(d => ({
+      // 2026-08-16：透传 mount（区分"系统盘 mount"/"设备名 mount"）+ IO 字段，
+      // 供 OpsServerWindow 卡片异常盘符智能选择。name 仍沿用 mount 兼容旧 UI。
       name: d.mount || '-',
+      mount: d.mount || '',
       used: d.disk_used_pct ?? null,
+      ioUtilPct: d.io_util_pct ?? null,
+      ioAwaitMs: d.io_await_ms ?? null,
+      diskType: d.disk_type || '',
       total: '-',
     })),
+    // 2026-08-16：透传后端每字段评估结果（由 inspection_scripts.yaml warn/crit
+    // 评估后的 pass/warn/crit/unassessed 状态数组），供卡片异常盘符判定。
+    fieldResults: Array.isArray(item.field_results) ? item.field_results : [],
     collectedAt: item.collected_at || null,
     errorMessage: item.error_message || null,
   }

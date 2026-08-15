@@ -263,6 +263,13 @@
   font-size: 13px; font-weight: 600; color: var(--gov-blue-deep);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1;
 }
+/* 2026-08-16 卡片头右贴：最后检测时间（绝对时间 YYYY-MM-DD HH:MM，无快照显示 '-'）。
+   与 srv-metric-label 同色阶，tabular-nums 防抖；标题 flex:1 让位挤压时省略号不变。
+   2026-08-16 改造：「最新检测时间:」前缀标签与时间数值用同色阶展示，无需额外标签样式。 */
+.ops-console-root .srv-card-time {
+  font-size: 11px; color: #5a6f9c; font-variant-numeric: tabular-nums;
+  white-space: nowrap; flex-shrink: 0;
+}
 .ops-console-root .srv-card-metrics {
   display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px;
   font-size: 12px; color: var(--gov-text);
@@ -278,6 +285,21 @@
 }
 .ops-console-root .srv-metric-disk {
   color: #5a6f9c;
+}
+/* 2026-08-16 异常盘：盘符 + 异常指标概要统一标红（与 LED 红同系）；
+   允许多盘符串联展示，使用「·」分隔，与 `.srv-card-metrics` 的 flex-wrap 自动换行。 */
+.ops-console-root .srv-metric-disk--problem {
+  color: #ff453a; font-weight: 600;
+}
+.ops-console-root .srv-metric-disk-name {
+  white-space: nowrap;
+}
+.ops-console-root .srv-metric-anomaly {
+  font-size: 11px; color: #ff453a; font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ops-console-root .srv-metric-storage {
+  flex-wrap: wrap;
 }
 .ops-console-root .srv-metric-value {
   font-weight: 600; font-variant-numeric: tabular-nums;
@@ -297,60 +319,89 @@
 }
 
 /* ===== 服务器详情窗口 ===== */
-.ops-console-root .win-detail { width: 500px; }
-.ops-console-root .detail-body { padding: 18px 22px 22px; }
-.ops-console-root .srv-head { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+/* 2026-08-16 用户需求改造：宽度 500 → 460（「四联的框需要缩小」）。
+   与外层卡片同款长方形 4 联指标条，缩窄窗口 + 视觉紧凑 = 「放大的感觉」。
+   .metrics / .metric / .bar 等老样式整段删除（智能检测按钮也一并清理）。 */
+.ops-console-root .win-detail { width: 460px; }
+.ops-console-root .detail-body { padding: 16px 20px 18px; }
+.ops-console-root .srv-head { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
 .ops-console-root .srv-head .big-icon {
   width: 54px; height: 54px; border-radius: 12px; display: flex; align-items: center; justify-content: center;
   background: linear-gradient(150deg, #2b4a7c, #1a3054); box-shadow: 0 4px 12px rgba(0, 58, 140, .35); position: relative;
 }
-.ops-console-root .srv-head h3 { font-size: 17px; color: var(--gov-blue-deep); }
-.ops-console-root .srv-head .sub { font-size: 12px; color: #7a8db3; margin-top: 2px; }
-.ops-console-root .badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-left: 8px; vertical-align: middle; }
+.ops-console-root .srv-head h3 { font-size: 16px; color: var(--gov-blue-deep); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ops-console-root .srv-head .sub { font-size: 12px; color: #5a6f9c; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.ops-console-root .badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 10px; vertical-align: middle; font-weight: 500; }
 .ops-console-root .badge.ok { background: rgba(48, 209, 88, .15); color: #1d9a40; }
 .ops-console-root .badge.err { background: rgba(255, 69, 58, .15); color: #d52c22; }
-.ops-console-root .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 14px; }
-.ops-console-root .metric { background: #fff; border: 1px solid rgba(30, 106, 221, .15); border-radius: 10px; padding: 12px; text-align: center; }
-.ops-console-root .metric .m-label { font-size: 11px; color: #7a8db3; margin-bottom: 6px; }
-.ops-console-root .metric .m-value { font-size: 20px; font-weight: 700; }
-.ops-console-root .bar { height: 6px; background: rgba(30, 106, 221, .1); border-radius: 3px; margin-top: 8px; overflow: hidden; }
-.ops-console-root .bar i { display: block; height: 100%; border-radius: 3px; transition: width .6s ease; }
-.ops-console-root .kv { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; font-size: 12.5px; margin-bottom: 16px; }
-.ops-console-root .kv div { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid rgba(30, 106, 221, .08); }
-.ops-console-root .kv .k { color: #7a8db3; }
+.ops-console-root .badge.unknown { background: rgba(154, 163, 175, .15); color: #7a8db3; }
 
-/* ===== 磁盘列表 ===== */
-.ops-console-root .disk-section { margin-bottom: 16px; }
+/* 2026-08-16 新增长方形 4 联指标条：与外层卡片 srv-card-metrics 同款视觉。
+   flex 横向 + 政务蓝渐变背景 + 1px 边框 + 圆角 10px。
+   item 间用 ::before '│' 分隔符（与卡片 srv-metric 一致）。 */
+.ops-console-root .detail-metric-bar {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 0;
+  padding: 10px 14px; margin-bottom: 14px;
+  background: linear-gradient(150deg, rgba(43, 74, 124, .12), rgba(26, 48, 84, .06));
+  border: 1px solid rgba(30, 106, 221, .18); border-radius: 10px;
+  font-size: 12px; color: var(--gov-text);
+}
+.ops-console-root .detail-metric-bar .dm-item {
+  display: flex; align-items: baseline; gap: 8px; white-space: nowrap;
+  padding: 0 12px;
+}
+.ops-console-root .detail-metric-bar .dm-item:first-child { padding-left: 0; }
+.ops-console-root .detail-metric-bar .dm-item + .dm-item {
+  border-left: 1px solid rgba(90, 111, 156, .3);
+}
+.ops-console-root .detail-metric-bar .dm-label { color: #5a6f9c; }
+.ops-console-root .detail-metric-bar .dm-value {
+  font-weight: 700; font-size: 15px; font-variant-numeric: tabular-nums;
+}
+
+.ops-console-root .kv { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 16px; font-size: 12.5px; margin-bottom: 14px; }
+.ops-console-root .kv div { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid rgba(30, 106, 221, .08); gap: 6px; min-width: 0; }
+.ops-console-root .kv div > span:last-child {
+  color: var(--gov-text); font-weight: 500;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+.ops-console-root .kv .k { color: #7a8db3; flex-shrink: 0; }
+
+/* ===== 磁盘多列网格（2026-08-16 新增，替代原 .disk-row 单列行 + 进度条）===== */
+.ops-console-root .disk-section { margin-bottom: 0; }
 .ops-console-root .disk-title { font-size: 12px; font-weight: 600; color: #7a8db3; margin-bottom: 8px; }
-.ops-console-root .disk-row {
-  display: flex; align-items: center; gap: 10px;
+.ops-console-root .disk-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(135px, 1fr));
+  gap: 10px;
+}
+.ops-console-root .disk-cell {
   background: #fff; border: 1px solid rgba(30, 106, 221, .15); border-radius: 10px;
-  padding: 10px 12px; margin-bottom: 8px;
+  padding: 10px 12px; min-width: 0;
 }
-.ops-console-root .disk-row svg { width: 30px; height: 30px; flex-shrink: 0; }
-.ops-console-root .disk-info { flex: 1; min-width: 0; }
-.ops-console-root .disk-name { font-size: 13px; font-weight: 600; color: var(--gov-text); display: flex; justify-content: space-between; }
-.ops-console-root .disk-name .du { font-weight: 400; font-size: 12px; color: #7a8db3; }
-.ops-console-root .disk-name .du b { color: var(--gov-text); font-weight: 600; }
-.ops-console-root .disk-row .bar { margin-top: 6px; }
-
-.ops-console-root .gov-btn {
-  display: inline-flex; align-items: center; gap: 7px; padding: 6px 16px;
-  font-size: 13px; font-weight: 500; color: #fff; border: none; border-radius: 6px; cursor: pointer;
-  background: linear-gradient(180deg, #3d84e8, var(--gov-blue));
-  box-shadow: 0 1px 3px rgba(0, 58, 140, .4), inset 0 1px 0 rgba(255, 255, 255, .25); transition: filter .12s;
+.ops-console-root .disk-cell .dc-head {
+  display: flex; align-items: center; gap: 6px;
+  padding-bottom: 6px; margin-bottom: 6px;
+  border-bottom: 1px solid rgba(30, 106, 221, .08);
 }
-.ops-console-root .gov-btn:hover { filter: brightness(1.08); }
-.ops-console-root .gov-btn:active { filter: brightness(.92); }
-.ops-console-root .gov-btn:disabled { opacity: .7; cursor: default; }
-.ops-console-root .gov-btn svg { width: 15px; height: 15px; }
-
-.ops-console-root .detect-panel { margin-top: 14px; background: #12233f; border-radius: 10px; padding: 14px 16px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; color: #d5d9e0; max-height: 190px; overflow-y: auto; }
-.ops-console-root .detect-panel .line { margin: 4px 0; opacity: 0; animation: fadeIn .3s forwards; }
-@keyframes fadeIn { to { opacity: 1; } }
-.ops-console-root .detect-panel .ok { color: #30d158; } .ops-console-root .detect-panel .warn { color: #ffd60a; } .ops-console-root .detect-panel .err { color: #ff453a; } .ops-console-root .detect-panel .info { color: #64d2ff; }
-.ops-console-root .cursor { display: inline-block; width: 7px; height: 13px; background: #30d158; animation: blink 1s steps(1) infinite; vertical-align: middle; }
-@keyframes blink { 50% { opacity: 0; } }
+.ops-console-root .disk-cell .dc-name {
+  font-size: 13px; font-weight: 600; color: var(--gov-blue-deep);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ops-console-root .disk-cell .dc-metrics {
+  display: flex; flex-direction: column; gap: 4px;
+}
+.ops-console-root .disk-cell .dc-m {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 6px;
+  font-size: 12px; min-width: 0;
+}
+.ops-console-root .disk-cell .dc-m-label { color: #7a8db3; flex-shrink: 0; }
+.ops-console-root .disk-cell .dc-m-value {
+  font-weight: 600; font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ops-console-root .disk-empty {
+  font-size: 12px; color: #7a8db3; padding: 8px 0;
+}
 
 /* ===== 日志管理窗口 ===== */
 .ops-console-root .win-logs { width: 700px; height: 460px; display: flex; flex-direction: column; }

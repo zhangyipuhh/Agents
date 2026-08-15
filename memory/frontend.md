@@ -202,7 +202,7 @@
 - **运维控制台（App.vue 内嵌子页面，2026-08-08 等保三级改造）**（历史：2026-08-05 独立入口）：删除 `ops-console.html` + `src/ops-console-main.js`，取消 `vite.config.js` 的 `opsConsole` 入口；改为 `App.vue::currentPage === 'ops-console'` 条件渲染 `OpsConsolePage`（即 `OpsConsoleApp.vue`），复用主应用 `fetchWithAuth` + HttpOnly Cookie + `X-Requested-With` CSRF 头鉴权链路，解决「独立子窗口 Cookie 失效 → /api/admin/server-inspection/latest 拉不到数据」反模式；`src/styles/ops-console.css` 改为 `.ops-console-root` 作用域前缀（避免政务蓝 `* { margin: 0; padding: 0 }` 污染主应用），并通过 `App.vue::ensureOpsConsoleStyles()` 在首次切到 ops-console 时按需引入（单例守卫）；`src/components/ops-console/` 下 7 个组件 + `src/data/ops-console/mockData.js` 静态样例数据保留。组件全部以 `Ops` 前缀命名（与主 Agent 业务命名空间隔离）：
   - `OpsConsoleApp.vue`：根组件，7 个 ref 状态机（currentTime / searchKey / zTop / wins / detailServer / activeFolder / logFile）+ 10 个函数（tick / bringFront / openWin / toggleMax / closeWin / openDetail / openLog / detectAll / startDrag / genLogContent）；4 个窗口可独立 open/close/max/front/drag；`startDrag` 拖拽时限制窗口四边边界：顶部不低于菜单栏底部（`28px`），左右/底部至少保留 `60px` 可见区域，防止标题栏被顶部菜单栏压盖后无法再次拖动
   - `OpsMenuBar.vue`：顶部菜单栏（GNOME top bar 实色 + 时间 + 标题「智能运维中心」+ 中文全局菜单占位 + ✕ Close 原生 button，高度 `28px`；2026-08-13 从 mac 毛玻璃 + 红/黄/绿交通灯改造）
-  - `OpsServerWindow.vue`：服务器管理窗口（GNOME 直角 + 标题栏 max/close 两按钮 + **两列横向长方形卡片**（每行 2 个；卡片含 OpsServerIcon 小号 + LED 红绿灯 + 服务器名称 + **CPU/内存/存储单行指标（竖线分隔，CSS ::before 生成 `|`，2026-08-14）**）+ 搜索 + 状态点；阈值与 `data/devops/inspection_scripts.yaml::warn` 对齐（CPU 80 / 内存 80 / 磁盘 80 → 红 #ff453a；null → 灰 #9aa3af）；存储行由具名导出函数 `pickDisplayDisk(disks)` 智能选盘：有 used ≥ 80 的盘取 used 最大者；无异常 Windows 取 C:（无 C: 取首块盘符）、Linux 取 `/`；单击卡片仍 `emit('open-detail', srv)` 打开 OpsDetailWindow，详情契约不变）
+  - `OpsServerWindow.vue`：服务器管理窗口（GNOME 直角 + 标题栏 max/close 两按钮 + **两列横向长方形卡片**（每行 2 个；卡片含 OpsServerIcon 小号 + LED 红绿灯 + 服务器名称 + **最后检测时间（绝对时间 `YYYY-MM-DD HH:MM`，显示为「最新检测时间:YYYY-MM-DD HH:MM」，无快照显示 `最新检测时间:-`，2026-08-16）** + **CPU/内存/存储/服务器负载单行指标（竖线分隔，CSS ::before 生成 `|`，2026-08-14；2026-08-16 负载 label 改为「服务器负载」）** + **Linux 限定「服务器负载」项（`serverType === 'linux'` 才渲染，2026-08-16）** + 搜索 + 状态点；阈值与 `data/devops/inspection_scripts.yaml::warn` 对齐（CPU 80 / 内存 80 / 磁盘 80 → 红 #ff453a；null → 灰 #9aa3af）；**负载阈值独立**为 `≥ 4 红 / < 4 绿 / null 灰`（`loadColor(v)` 具名函数），与百分比指标 80 解耦，对齐 `inspection_scripts.yaml::load_1m warn=4.0`；**存储行改造（2026-08-16）**基于后端 `field_results` 智能选异常盘（`pickAnomalyDisks(fieldResults, disks)` 具名函数）：任一 `disk_used_pct` / `io_util_pct` / `io_await_ms` 超 warn/crit 即把该盘符 + 异常指标概要标红（`#ff453a`），多盘符用逗号串联 + flex-wrap 换行；全 pass → 显示 `-`；`fieldResults` 为空（老数据 / 未落库）→ 兜底既有 `pickDisplayDisk` 行为；老数据兜底时仍按 `metricColor(displayDiskOf(srv)?.used)` 标色；单击卡片仍 `emit('open-detail', srv)` 打开 OpsDetailWindow，详情契约不变；新增 6 个具名导出函数 `formatCollectedAt(iso)` / `isLinuxType(serverType)` / `loadColor(v)` / `pickAnomalyDisks(fieldResults, disks)` / `formatAnomalyItem(item)` / `pickDisplayDisk(disks)` 供单测直接 import）
   - `OpsDetailWindow.vue`：服务器详情窗口（GNOME 直角 + 标题栏 max/close 两按钮 + 指标卡 + 智能检测动画 + 磁盘列表），暴露 `runDetect()` 方法供父组件调用
   - `OpsLogManager.vue`：日志管理窗口（GNOME 直角 + 标题栏 max/close 两按钮 + 左侧文件夹 + 右侧文件列表）
   - `OpsLogViewer.vue`：日志查看窗口（GNOME 直角 + 标题栏 max/close 两按钮 + 终端风格日志内容）
@@ -1044,4 +1044,105 @@ web/Agent/src/
 - 后端 `app/routers/script_admin_router.py` 移除 router 级 `require_admin`（GET 登录态、POST /scan admin-only），详见 [api-routes.md § 脚本管理接口权限拆分（2026-07-26 新增）](api-routes.md)
 - 后端 `app/routers/user_server_router.py` 与 `app/routers/api_config_router.py` 仅 `GET /tree` 端点改为 JWT-only（写端点 ACL 不变），详见 [menu-acl.md § 用户服务器配置管理](menu-acl.md)
 - 后端 `app/shared/utils/user_server_service.py::list_nodes` 对 server 节点附加 `business_name` / `server_type`（通过 `_build_devops_index` 内存 join 零 DB IO）
+
+#### 运维控制台 OpsServerWindow 卡片增强（2026-08-16，用户需求）
+
+应用户要求在「服务器管理」窗口的每张卡片补「最后检测时间」、保留并强化磁盘指标（默认显示磁盘利用率、有问题哪个有问题显示哪个并标红）、Linux 限定加 1 分钟负载。澄清后口径：保持单行指标布局（不拆行）；时间用绝对时间 `YYYY-MM-DD HH:MM`，放卡片头部右侧。
+
+要点：
+- **后端** `app/shared/utils/server_inspection_record_service.py::_derive_metrics`：返回值从 `{cpu, mem, disk}` 扩为 `{cpu, mem, disk, load}`。linux 取 `parsed_values.load_1m`（保留 2 位小数），windows / 其他平台返回 `None`（白名单策略，避免误读其他键名）。零迁移（`server_latest_snapshot` 表结构未变，仅 `metrics` 字典新增键）。
+- **前端映射** `web/Agent/src/components/ops-console/OpsConsoleApp.vue::mapSnapshotToServer`：追加 `serverType: item.server_type || ''` 与 `load: item.metrics?.load ?? null` 两个字段；其他字段（`name` / `ip` / `os` / `status` / `cpu` / `mem` / `disk` / `disks` / `collectedAt`）不变。
+- **前端渲染** `OpsServerWindow.vue`：
+  - 卡片头部 `srv-card-head` 在标题之后追加 `<span class="srv-card-time">`（`.srv-card-title` flex:1 自动让位挤压，省略号不变；`title` 属性附 ISO 原始串便于悬停校对）。
+  - 指标行在「存储」项之后追加 `<div v-if="isLinuxType(srv.serverType)" class="srv-metric">`（windows / 空 / 未知一律 false，避免未来新 platform 误显示）。
+  - 磁盘指标行为零改动：复用既有 `displayDiskOf(srv) = pickDisplayDisk(srv.disks)` + `metricColor(displayDiskOf(srv)?.used)`，已覆盖「默认显示利用率、有问题标红」需求。
+- **样式** `web/Agent/src/styles/ops-console.css`：追加 `.ops-console-root .srv-card-time { font-size: 11px; color: #5a6f9c; font-variant-numeric: tabular-nums; white-space: nowrap; flex-shrink: 0; }`；不修改 `.srv-card-head` 容器布局（已是 `display:flex; gap:8px`，标题 `flex:1` 自动让位）。
+- **新增具名导出函数**（参照 `pickDisplayDisk` / `metricColor` 模式，便于单测直接 import）：
+  - `formatCollectedAt(iso)`：ISO 字符串 → `YYYY-MM-DD HH:MM`（本地时区）；null / undefined / 非字符串 / 解析失败 → `'-'`。
+  - `isLinuxType(serverType)`：仅 `serverType.toLowerCase() === 'linux'` 返回 true（不区分大小写，白名单）。
+  - `loadColor(v)` + 常量 `LOAD_WARN = 4`：null 灰、`< 4` 绿、`≥ 4` 红；与 CPU/Mem/Disk 的 80% 阈值解耦，对齐 `inspection_scripts.yaml::load_1m warn=4.0`。
+
+测试同步：
+- 后端 `app/tests/shared/utils/test_server_inspection_record_service.py`：新增 3 个用例 — `test_derive_metrics_includes_load_linux`、`test_derive_metrics_load_is_none_for_windows`、`test_list_latest_view_dict_metrics_contains_load_admin`。57 → 57+3 全绿（其余 54 个用例零改动）。
+- 前端 `web/Agent/src/components/ops-console/__tests__/OpsServerWindow.card.spec.js`：新增 12 个用例（纯函数 9 + 组件 3）。ops-console 目录 5 个 spec 共 56 用例全绿。
+
+**不在范围内**：`pickDisplayDisk` 阈值不变（保持 80% 与 YAML 对齐）；`server_latest_snapshot` 表结构不变；OpsDetailWindow 详情页不变；顶部菜单栏 `tick` 时间格式不变。
+
+#### 运维控制台 OpsServerWindow 卡片磁盘异常指标（2026-08-16，用户需求）
+
+应用户要求把卡片存储行改造为「异常盘符智能展示」：linux 卡片负载 label 由「负载」改为「服务器负载」。
+
+要点：
+- **后端** `app/shared/utils/server_inspection_record_service.py::_row_to_view` 与 `_merge_user_view`：视图 dict 新增 `field_results` 字段（已在数据库 `server_latest_snapshot.field_results` JSONB 列落库；之前视图 dict 未透出，前端无法消费）。无快照分支兜底 `field_results = []`（前端访问 `.length` 安全）。view dict 白名单键追加 `field_results`，docstring 同步更新。
+- **前端映射** `web/Agent/src/components/ops-console/OpsConsoleApp.vue::mapSnapshotToServer`：追加 `fieldResults: item.field_results || []`；`disks[]` 元素追加 `mount` / `ioUtilPct` / `ioAwaitMs` / `diskType` 字段（用于 `pickAnomalyDisks` 兜底 mount 提取 + 后续可选详情展示）。
+- **前端渲染** `OpsServerWindow.vue`：
+  - 新增 2 个具名导出函数 `pickAnomalyDisks(fieldResults, disks)` / `formatAnomalyItem(item)`：从后端 `field_results` 过滤 `key ∈ {disk_used_pct, io_util_pct, io_await_ms}` 且 `status ∈ {warn, crit}` 的项，按 mount 分组聚合（mount 提取优先级：后端 `message` 字段「磁盘 {mount}」→ `disks[]` 兜底）；同 mount 多异常指标合并到 `items` 数组；整体排序 crit 优先、warn 次之、同状态按 mount 升序。
+  - 卡片「存储」模板由 `盘符 [使用率%]` 改为：① 有异常盘 → 盘符 + 异常概要（`使用 92%` / `IO 92%` / `等待 150ms` 简写）盘符与概要统一标红 `#ff453a`，多个异常盘用 flex-wrap 换行；② 全 pass → 显示 `-`（沿用 `metricColor(null)` 灰）；③ `fieldResults` 为空（老数据 / 未落库）→ 退化到既有 `pickDisplayDisk` 行为，保留旧 UI 不破坏。
+  - 卡片「负载」label 由「负载」改为「服务器负载」（`srv-metric-label` 字面值更新，`loadColor` 函数 / `LOAD_WARN=4` 阈值逻辑不变）。
+- **样式** `web/Agent/src/styles/ops-console.css`：新增 `.srv-metric-disk--problem`（盘符红色 `font-weight: 600`） / `.srv-metric-disk-name`（盘符子元素 `nowrap`） / `.srv-metric-anomaly`（异常概要红色 `font-size: 11px; tabular-nums; nowrap`） / `.srv-metric-storage`（`flex-wrap: wrap` 支持多盘符换行）；不修改 `.srv-card-metrics` 容器（既有 `flex-wrap: wrap` 已生效）。
+- **缓存优化** `anomaliesById` computed：把 `pickAnomalyDisks` 结果缓存到 `Map<id, list>`，避免模板 `v-for` 中重复调用；模板用 `anomaliesOf(srv)` 取值。
+
+测试同步：
+- 后端 `app/tests/shared/utils/test_server_inspection_record_service.py`：新增 2 个用例 — `test_list_latest_view_dict_contains_field_results_admin`（admin 分支有/无快照两种 field_results 透出 + 元素字段断言）+ `test_list_latest_user_view_dict_contains_field_results`（普通用户分支透出）。57 → 59 全绿（其余 57 个用例零改动）。
+- 前端 `web/Agent/src/components/ops-console/__tests__/OpsServerWindow.card.spec.js`：
+  - 新增 `pickAnomalyDisks` 纯函数 4 例（全 pass → [] / 有 warn → 返回 warn 项 / warn + crit → crit 优先 / 同一 mount 多异常聚合）；`formatAnomalyItem` 3 例（% / ms / IO 简写）；组件 3 例（异常盘符 + 标红 / 全 pass → '-' / 兜底老数据行为）。
+  - 更新 2 个旧用例：`test_load_metric_visible_only_for_linux` label 断言改为「服务器负载」；`test_storage_shows_dash_when_no_disks` 改为通过 `.srv-metric-value` 节点断言 '-'（模板重构后 `.srv-metric-disk` 节点不再渲染）。
+  - ops-console 目录 5 个 spec 共 66 用例全绿。
+
+**不在范围内**：`pickDisplayDisk` 阈值不变（保留作为 `fieldResults` 为空时的兜底）；`server_latest_snapshot` 表结构不变；OpsDetailWindow 详情页不变；前端不复算阈值（完全消费后端 `field_results`）。
+
+#### 运维控制台 OpsDetailWindow 详情页改造（2026-08-16，用户需求）
+
+应用户要求把详情页改造为只读、风格与外层卡片一致、长方形 4 联指标 + 多列磁盘网格。
+
+要点：
+- **`web/Agent/src/components/ops-console/OpsDetailWindow.vue` 重构**：
+  - **移除「智能检测」按钮 + detect-panel + runDetect() 整段逻辑**（用户要求「去掉智能检测按钮」）：删除 `import { collectServerInspection }`，删除 `detecting` / `detectLogs` ref / `resetDetect()` / `runDetect()` 函数 / `defineExpose({ runDetect })` / `watch(() => props.server.id, resetDetect)`。详情页只读，采集入口留给外层卡片右侧「重新采集」（后续单独工单）。
+  - **头部 sub 由 `ip · os` 改为「最新检测时间:YYYY-MM-DD HH:MM」绝对时间**（与外层卡片 `srv-card-time` 文案/格式完全一致）：复用 `OpsServerWindow.formatCollectedAt`；title 属性放 ISO 全文。无快照 → `最新检测时间:-`。
+  - **顶部 3 个圆角指标卡（含 .bar 进度条）整段删除**：旧的 `.metric` 块（CPU / 内存 / 存储 + 进度条）改造为与外层卡片同款长方形 4 联指标条 `.detail-metric-bar`：CPU 使用率 / 内存占用 / 存储使用 / 服务器负载（仅 linux 显示）。复用 `metricColor` / `loadColor` / `isLinuxType` 阈值口径；删除 `.bar` 进度条样式。
+  - **kv 表格精简**：移除「内存总量 / 存储总量 / 网络流入」3 项；保留「操作系统 / CPU 型号 / 运行时长」3 项；改 `.kv` 列数 `1fr 1fr` → `repeat(3, 1fr)`。
+  - **磁盘展示由单列行（盘符 + 已用% + 共 + 进度条）改造为多列网格**：`.disk-grid`（`grid-template-columns: repeat(auto-fill, minmax(135px, 1fr))`），每列 `.disk-cell`：头部 `OpsServerIcon` + 盘符，下方 3 项指标「使用率 / 排队(ms) / IO 利用率」，无进度条样式。`diskIconStatus(d)` 派生 LED 三态（任一指标 ≥80 → 红，都正常 → 绿，全 null → 灰）。
+  - **详情窗口宽度 500 → 460**：用户要求「四联的框需要缩小」。
+- **`web/Agent/src/styles/ops-console.css` 改造**：
+  - **删除死样式**：`.metrics` / `.metric*` / `.m-label` / `.m-value` / `.bar` / `.disk-row*` / `.disk-info` / `.disk-name*` / `.gov-btn*` / `.detect-panel*` / `.cursor` / `@keyframes fadeIn` / `@keyframes blink`（智能检测 + 老磁盘单列 + 老指标卡全删）。
+  - **新增样式**：
+    - `.detail-metric-bar`：flex 横向 + 政务蓝渐变 + 圆角 10px + 1px 边框；item 间 `border-left` 1px 分隔；`.dm-value` 15px bold tabular-nums。
+    - `.disk-grid`：`repeat(auto-fill, minmax(135px, 1fr))` 多列。
+    - `.disk-cell`：白底圆角 10px 1px 政务蓝边框；`.dc-head`（图标 + 盘符 + 下边框）/ `.dc-name`（政务蓝深 bold nowrap 省略号）/ `.dc-metrics`（纵向三行）/ `.dc-m`（label + value 横排）/ `.dc-m-label`（#7a8db3 11px）/ `.dc-m-value`（font-weight 600 tabular-nums）。
+    - `.disk-empty`：无磁盘数据时 fallback 文案样式。
+    - `.badge.unknown`：补齐 unknown 状态 badge（卡片未覆盖此态但详情页可能存在）。
+  - 调整 `.win-detail { width: 460px }`、`.detail-body` padding 缩窄、`.srv-head h3` 加 `flex` 支持 badge 同行、`.kv div > span:last-child` 加省略号避免长内容溢出。
+
+测试同步：
+- 新增 `web/Agent/src/components/ops-console/__tests__/OpsDetailWindow.redesign.spec.js`：19 个用例（导入存在 / 最新检测时间 + 无快照 dash / linux 4 联指标 + windows 3 联指标 + CPU/内存 ≥80 红 + <80 绿 + linux 负载 ≥4 红 / kv 精简 3 项 + 不含 3 项被删字段 / 磁盘每列 3 指标 + 数值格式 + 阈值标红 + null 全 '-' + 灰色 / 无进度条 / 无 gov-btn/无 detect-panel / 窗口类名）。
+- ops-console 目录 5 个 spec 文件共 **81 个用例全绿**（66 → 81，新增 19 + 老用例零回归）。
+
+**不在范围内**：详情页不重新提供「重新采集」入口（外层卡片按用户要求也是只读入口）；`OpsConsoleApp.mapSnapshotToServer` 形状不变（卡片契约保护）；后端 `ServerInspectionRecordService` 接口不变；运维控制台其他 3 个窗口（Servers / Logs / LogViewer）不动。
+
+#### 运维控制台 OpsDetailWindow 详情页 KV 字段从 DB 读取修复（2026-08-16，用户反馈）
+
+应用户反馈「这些数据没有从数据库中读取」—— `OpsConsoleApp.vue::mapSnapshotToServer` 硬编码 `os: '-'` / `cpuModel: '-'`，导致详情页 kv 表格「操作系统 / CPU 型号」始终显示 `-`，即使 DB `server_latest_snapshot.parsed_values` JSONB 已落库真实数据（windows-ps-5.1 脚本通过 `Get-WmiObject Win32_OperatingSystem.Caption` + `Get-WmiObject Win32_Processor.Name` 采集）。
+
+要点：
+- **`web/Agent/src/components/ops-console/OpsConsoleApp.vue::mapSnapshotToServer`**：
+  - 移除硬编码 `os: '-'` / `cpuModel: '-'`，改为从 `parsed_values.os` / `parsed_values.cpu_model` 读取；
+  - 新增 `fmtStr` 内联防御：null / undefined / 空串 / 纯空白 → '-'（trim 兜底，避免前端渲染空白格）；
+  - `uptime` 字段已正确读 `pv.uptime_hours`，文档注释同步说明来源（windows 由 `$bootTime → (Now-bootTime).TotalHours` 计算；linux `inspection_scripts.yaml::linux-bash` 当前未输出该字段，fallback `-`）。
+- **`web/Agent/src/components/ops-console/OpsDetailWindow.vue`**：
+  - 新增 `fmtStr(v)` 本地函数（与卡片映射同语义），kv 表格 `{{ server.os }}` / `{{ server.cpuModel }}` 改走 `fmtStr` 双保险（即使上游 `mapSnapshotToServer` 漏 trim 也能保持显示一致）。
+
+测试同步：
+- 新增 `OpsConsoleApp.spec.js` 3 个用例：
+  - `test_map_snapshot_reads_os_cpu_model_uptime`：验证 `parsed_values` 缺字段时降级 `-`，`uptime_hours=36` 渲染为「36 小时」。
+  - `test_map_snapshot_consumes_real_db_os_cpu_model`：mock 后端返回 `os: 'Microsoft Windows 11'` / `cpu_model: '13th Gen Intel(R) Core(TM) i7-13620H'` / `uptime_hours: 3.4`，验证前端映射后真实展示这 3 个字段（模拟用户实际 DB 数据形态）。
+  - `test_map_snapshot_dash_when_os_empty`：防御性兜底测试，`parsed_values.os=''` / `cpu_model='   '`（纯空白）→ 渲染为 `-`。
+- 新增 `OpsDetailWindow.redesign.spec.js` 4 个用例：
+  - `test_kv_os_displays_from_server_os`：验证 kv「操作系统」渲染 `server.os` 实际值。
+  - `test_kv_cpu_model_displays_from_server_cpu_model`：验证 kv「CPU 型号」渲染 `server.cpuModel` 实际值。
+  - `test_kv_uptime_displays_runtime`：验证 kv「运行时长」渲染 `server.uptime` 实际值。
+  - `test_kv_os_dash_when_empty_string`：`server.os` 为空串时降级为 `-`（双保险）。
+
+ops-console 目录 5 个 spec 文件共 **88 个用例全绿**（81 → 88，新增 4 详情页 + 3 映射 = 7 个，老用例零回归）。
+
+**不在范围内**：后端 `_row_to_view` / `_merge_user_view` 接口不变（已透出 `parsed_values` 字段）；`server_inspection_record_service` 不变；不修改 inspection_scripts.yaml（windows-ps-5.1 已输出 `os` / `cpu_model`，linux-bash 当前未输出 `uptime_hours` 由运维按需追加）。
 

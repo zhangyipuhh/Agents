@@ -118,6 +118,120 @@ describe('OpsConsoleApp 运维控制台根组件', () => {
     wrapper.unmount()
   })
 
+  // 2026-08-16 修复：之前硬编码 os/cpuModel='-'，导致详情页 kv 三项始终为占位符。
+  // 修复后 mapSnapshotToServer 必须从 parsed_values 读取 os/cpu_model/uptime_hours。
+  it('test_map_snapshot_reads_os_cpu_model_uptime mapping 从 parsed_values 读取 os / cpu_model / uptime_hours', async () => {
+    const wrapper = mount(OpsConsoleApp, {
+      global: {
+        stubs: {
+          OpsMenuBar: true,
+          OpsServerWindow: true,
+          OpsDetailWindow: true,
+          OpsLogManager: true,
+          OpsLogViewer: true,
+        },
+      },
+    })
+    await flushPromises()
+    const servers = wrapper.vm.servers
+    expect(servers[0].os).toBe('-')            // mock 中 parsed_values 没 os → 降级
+    expect(servers[0].cpuModel).toBe('-')      // mock 中 parsed_values 没 cpu_model → 降级
+    expect(servers[0].uptime).toBe('36 小时')  // mock 中 parsed_values.uptime_hours=36
+    wrapper.unmount()
+  })
+
+  // 2026-08-16：mock 增加 os / cpu_model 字段，验证前端能消费真实 DB 数据。
+  it('test_map_snapshot_consumes_real_db_os_cpu_model mapping 消费真实 DB 字段（os="Microsoft Windows 11"）', async () => {
+    // 重置 mock 让 fetchServerInspectionLatest 返回带 os/cpu_model 的数据
+    const api = await import('../../utils/api.js')
+    api.fetchServerInspectionLatest.mockResolvedValueOnce({
+      items: [
+        {
+          node_id: 11,
+          node_name: 'MyA',
+          server_id: 1,
+          business_name: 'biz-A',
+          server_type: 'windows',
+          status: 'ok',
+          inspection_status: 'pass',
+          collected_at: '2026-08-15T18:00:14.283Z',
+          duration_ms: 42,
+          metrics: { cpu: 10, mem: 38.1, disk: 78.1, load: null },
+          disks: [{ mount: 'C:\\', disk_used_pct: 78.1 }],
+          parsed_values: {
+            disks: [{ mount: 'C:\\', disk_used_pct: 78.1 }],
+            mem_used_pct: 38.1,
+            cpu_used_pct: 10,
+            uptime_hours: 3.4,
+            os: 'Microsoft Windows 11',
+            cpu_model: '13th Gen Intel(R) Core(TM) i7-13620H',
+          },
+          field_results: [],
+          error_message: null,
+        },
+      ],
+    })
+    const wrapper = mount(OpsConsoleApp, {
+      global: {
+        stubs: {
+          OpsMenuBar: true,
+          OpsServerWindow: true,
+          OpsDetailWindow: true,
+          OpsLogManager: true,
+          OpsLogViewer: true,
+        },
+      },
+    })
+    await flushPromises()
+    const servers = wrapper.vm.servers
+    expect(servers).toHaveLength(1)
+    expect(servers[0].os).toBe('Microsoft Windows 11')
+    expect(servers[0].cpuModel).toBe('13th Gen Intel(R) Core(TM) i7-13620H')
+    expect(servers[0].uptime).toBe('3.4 小时')
+    wrapper.unmount()
+  })
+
+  // 2026-08-16：DB 空字符串 fallback（防御性）
+  it('test_map_snapshot_dash_when_os_empty mapping 防御性兜底：os 空串 → '-'', async () => {
+    const api = await import('../../utils/api.js')
+    api.fetchServerInspectionLatest.mockResolvedValueOnce({
+      items: [
+        {
+          node_id: 11,
+          node_name: 'MyA',
+          server_id: 1,
+          business_name: 'biz-A',
+          server_type: 'linux',
+          status: 'ok',
+          inspection_status: 'pass',
+          collected_at: '2026-08-15T18:00:14.283Z',
+          duration_ms: 42,
+          metrics: { cpu: 10, mem: 38.1, disk: 50, load: 0.5 },
+          disks: [],
+          parsed_values: { os: '', cpu_model: '   ' },  // 空串 / 空白 → '-'
+          field_results: [],
+          error_message: null,
+        },
+      ],
+    })
+    const wrapper = mount(OpsConsoleApp, {
+      global: {
+        stubs: {
+          OpsMenuBar: true,
+          OpsServerWindow: true,
+          OpsDetailWindow: true,
+          OpsLogManager: true,
+          OpsLogViewer: true,
+        },
+      },
+    })
+    await flushPromises()
+    const servers = wrapper.vm.servers
+    expect(servers[0].os).toBe('-')         // 空串 → '-'
+    expect(servers[0].cpuModel).toBe('-')    // 纯空白 → '-'
+    wrapper.unmount()
+  })
+
   // 2026-08-08 等保三级改造：onMounted 应主动调 validateToken 引导 Cookie 鉴权链路
   it('test_ops_console_app_on_mounted_calls_validate_token onMounted 主动引导 validateToken', async () => {
     const wrapper = mount(OpsConsoleApp, {

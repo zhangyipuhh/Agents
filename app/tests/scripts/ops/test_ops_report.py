@@ -307,6 +307,168 @@ def test_build_report_skips_inventory_table_without_disks():
     )
 
 
+# --------------------------------------------------------------------------
+# 元信息表 OS / CPU 型号渲染(2026-08-16 新增)
+# --------------------------------------------------------------------------
+
+
+def _meta_rows_of(config, business_name):
+    """从 ReportConfig 中按业务名提取「项目/值」元信息表行。"""
+    titles = [s.content for s in config.sections if s.section_type == "heading"]
+    assert business_name in titles, f"业务名 {business_name} 未作为二级标题出现"
+    tables = [s.table for s in config.sections if s.section_type == "table"]
+    meta_table = next(
+        (t for t in tables if t.headers == ["项目", "值"]),
+        None,
+    )
+    assert meta_table is not None, "未找到元信息表(项目/值)"
+    return meta_table.rows
+
+
+def test_build_report_includes_os_and_cpu_in_meta_table():
+    """parsed_values 含 os / cpu_model 时, 元信息表末尾两行渲染具体值。
+
+    Returns:
+        None
+    """
+    item = ServerOpsItem(
+        business_name="A", success=True, inspection_status="pass",
+        parsed_values={
+            "disks": [{"mount": "/", "disk_used_pct": 42}],
+            "mem_used_pct": 50,
+            "cpu_idle_pct": 80,
+            "load_1m": 1.5,
+            "io_util_pct": 10,
+            "io_await_ms": 5,
+            "os": "Ubuntu 22.04.3 LTS",
+            "cpu_model": "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+        },
+    )
+    config = build_ops_report_config(
+        summary=OpsSummary(), alerts=OpsAlerts(),
+        server_report=ServerOpsReport(items=[item]),
+        api_report=ApiCheckReport(),
+        ip_map={"A": "10.0.0.1"},
+        schedule_name="t", started_at=datetime(2026, 8, 16),
+    )
+    rows = _meta_rows_of(config, "A")
+    assert ["业务名", "A"] in rows
+    assert ["服务器 IP", "10.0.0.1"] in rows
+    assert ["巡检状态", "通过"] in rows
+    assert ["操作系统", "Ubuntu 22.04.3 LTS"] in rows
+    assert ["CPU 型号", "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz"] in rows
+
+
+def test_build_report_meta_table_falls_back_when_os_cpu_missing():
+    """parsed_values 为 None / 不含 os-cpu_model 时, 两行渲染为 '-'（兼容历史）。
+
+    覆盖 3 类历史场景:
+        1. parsed_values = None（巡检未解析）
+        2. parsed_values 是 dict 但不含 os / cpu_model（旧版巡检脚本未升级）
+        3. parsed_values 含两键但值为空字符串（脚本误输出）
+
+    Returns:
+        None
+    """
+    scenarios = [
+        ("无 parsed_values", None),
+        ("parsed_values 无 OS/CPU 键", {"mem_used_pct": 50}),
+        ("OS/CPU 值为空字符串", {"os": "", "cpu_model": ""}),
+    ]
+    for label, parsed in scenarios:
+        item = ServerOpsItem(
+            business_name="A", success=True, inspection_status="pass",
+            parsed_values=parsed,
+        )
+        config = build_ops_report_config(
+            summary=OpsSummary(), alerts=OpsAlerts(),
+            server_report=ServerOpsReport(items=[item]),
+            api_report=ApiCheckReport(),
+            ip_map={"A": "10.0.0.1"},
+            schedule_name="t", started_at=datetime(2026, 8, 16),
+        )
+        rows = _meta_rows_of(config, "A")
+        assert ["操作系统", "-"] in rows, f"场景 {label}: OS 行应渲染 '-'"
+        assert ["CPU 型号", "-"] in rows, f"场景 {label}: CPU 行应渲染 '-'"
+
+
+def test_build_report_meta_table_falls_back_when_os_cpu_not_string():
+    """OS / CPU 值为非字符串类型（如 None / 数字）时, 渲染为 '-'。
+
+    Returns:
+        None
+    """
+    item = ServerOpsItem(
+        business_name="A", success=True, inspection_status="pass",
+        parsed_values={"os": None, "cpu_model": 12345},
+    )
+    config = build_ops_report_config(
+        summary=OpsSummary(), alerts=OpsAlerts(),
+        server_report=ServerOpsReport(items=[item]),
+        api_report=ApiCheckReport(),
+        ip_map={}, schedule_name="t", started_at=datetime(2026, 8, 16),
+    )
+    rows = _meta_rows_of(config, "A")
+    assert ["操作系统", "-"] in rows
+    assert ["CPU 型号", "-"] in rows
+
+
+def test_field_results_table_includes_ignored_os_cpu_fields():
+    """``field_results`` 含 direction=ignore 的 os / cpu_model 时,
+    字段明细表自动出现 2 行（验证 parser 自动行为）。
+
+    Returns:
+        None
+    """
+    item = ServerOpsItem(
+        business_name="A", success=True, inspection_status="pass",
+        parsed_values={
+            "mem_used_pct": 50,
+            "os": "Ubuntu 22.04.3 LTS",
+            "cpu_model": "Intel Xeon E5-2680 v4",
+        },
+        field_results=[
+            {"key": "mem_used_pct", "name_zh": "内存使用率", "unit": "%",
+             "value": 50.0, "warn": 80, "crit": 90,
+             "status": "pass", "message": ""},
+            {"key": "os", "name_zh": "操作系统", "unit": "",
+             "value": "Ubuntu 22.04.3 LTS",
+             "warn": None, "crit": None,
+             "status": "unassessed", "message": ""},
+            {"key": "cpu_model", "name_zh": "CPU 型号", "unit": "",
+             "value": "Intel Xeon E5-2680 v4",
+             "warn": None, "crit": None,
+             "status": "unassessed", "message": ""},
+        ],
+    )
+    config = build_ops_report_config(
+        summary=OpsSummary(), alerts=OpsAlerts(),
+        server_report=ServerOpsReport(items=[item]),
+        api_report=ApiCheckReport(),
+        ip_map={}, schedule_name="t", started_at=datetime(2026, 8, 16),
+    )
+    # 元信息表已含 OS/CPU 两行
+    meta_rows = _meta_rows_of(config, "A")
+    assert ["操作系统", "Ubuntu 22.04.3 LTS"] in meta_rows
+    assert ["CPU 型号", "Intel Xeon E5-2680 v4"] in meta_rows
+    # 字段明细表出现 ignore 字段(unassessed 渲染为「未评估」)
+    field_tables = [
+        s.table for s in config.sections
+        if s.section_type == "table" and s.table.headers == ["指标", "当前值", "阈值", "状态", "说明"]
+    ]
+    assert len(field_tables) == 1
+    field_rows = field_tables[0].rows
+    # 至少含 mem_used_pct + os + cpu_model 3 行
+    metric_names = [r[0] for r in field_rows]
+    assert any("内存使用率" in m for m in metric_names)
+    assert "操作系统" in metric_names
+    assert "CPU 型号" in metric_names
+    # OS / CPU 行「状态」列应为「未评估」(unassessed 中文)
+    os_row = next(r for r in field_rows if r[0] == "操作系统")
+    assert os_row[3] == "未评估"
+    assert os_row[1] == "Ubuntu 22.04.3 LTS"
+
+
 def test_build_report_config_table_section_headers():
     summary = _build_summary()
     alerts = compute_ops_alerts(ServerOpsReport(), ApiCheckReport())
