@@ -118,9 +118,9 @@ describe('OpsConsoleApp 运维控制台根组件', () => {
     wrapper.unmount()
   })
 
-  // 2026-08-16 修复：之前硬编码 os/cpuModel='-'，导致详情页 kv 三项始终为占位符。
-  // 修复后 mapSnapshotToServer 必须从 parsed_values 读取 os/cpu_model/uptime_hours。
-  it('test_map_snapshot_reads_os_cpu_model_uptime mapping 从 parsed_values 读取 os / cpu_model / uptime_hours', async () => {
+  // 2026-08-16 改造：详情页 OS 关键指标（iowait/swap/inode）从 parsed_values 映射；
+  // os/cpuModel/uptime 死字段已移除（详情页不再消费，「操作系统」改展示 server_type 原值）。
+  it('test_map_snapshot_reads_os_metrics mapping 从 parsed_values 读取 cpu_iowait_pct / swap_used_pct / inode_used_pct', async () => {
     const wrapper = mount(OpsConsoleApp, {
       global: {
         stubs: {
@@ -134,15 +134,18 @@ describe('OpsConsoleApp 运维控制台根组件', () => {
     })
     await flushPromises()
     const servers = wrapper.vm.servers
-    expect(servers[0].os).toBe('-')            // mock 中 parsed_values 没 os → 降级
-    expect(servers[0].cpuModel).toBe('-')      // mock 中 parsed_values 没 cpu_model → 降级
-    expect(servers[0].uptime).toBe('36 小时')  // mock 中 parsed_values.uptime_hours=36
+    expect(servers[0].iowait).toBeNull()   // 默认 mock 的 parsed_values 无三字段 → null
+    expect(servers[0].swap).toBeNull()
+    expect(servers[0].inode).toBeNull()
+    // 死字段已移除
+    expect(servers[0]).not.toHaveProperty('os')
+    expect(servers[0]).not.toHaveProperty('cpuModel')
+    expect(servers[0]).not.toHaveProperty('uptime')
     wrapper.unmount()
   })
 
-  // 2026-08-16：mock 增加 os / cpu_model 字段，验证前端能消费真实 DB 数据。
-  it('test_map_snapshot_consumes_real_db_os_cpu_model mapping 消费真实 DB 字段（os="Microsoft Windows 11"）', async () => {
-    // 重置 mock 让 fetchServerInspectionLatest 返回带 os/cpu_model 的数据
+  it('test_map_snapshot_consumes_real_db_os_metrics mapping 消费真实 DB 字段（linux 全指标形状）', async () => {
+    // 形状对齐 2026-08-16 server_latest_snapshot 真实行（server_id=100）
     const api = await import('../../utils/api.js')
     api.fetchServerInspectionLatest.mockResolvedValueOnce({
       items: [
@@ -151,20 +154,21 @@ describe('OpsConsoleApp 运维控制台根组件', () => {
           node_name: 'MyA',
           server_id: 1,
           business_name: 'biz-A',
-          server_type: 'windows',
+          server_type: 'linux',
           status: 'ok',
           inspection_status: 'pass',
-          collected_at: '2026-08-15T18:00:14.283Z',
+          collected_at: '2026-08-16T13:51:49.201Z',
           duration_ms: 42,
-          metrics: { cpu: 10, mem: 38.1, disk: 78.1, load: null },
-          disks: [{ mount: 'C:\\', disk_used_pct: 78.1 }],
+          metrics: { cpu: 4.6, mem: 79, disk: 28, load: 1.36 },
+          disks: [],
           parsed_values: {
-            disks: [{ mount: 'C:\\', disk_used_pct: 78.1 }],
-            mem_used_pct: 38.1,
-            cpu_used_pct: 10,
-            uptime_hours: 3.4,
-            os: 'Microsoft Windows 11',
-            cpu_model: '13th Gen Intel(R) Core(TM) i7-13620H',
+            disks: [],
+            mem_used_pct: 79,
+            cpu_idle_pct: 95.4,
+            cpu_iowait_pct: 0.1,
+            swap_used_pct: 0,
+            inode_used_pct: 1,
+            load_1m: 1.36,
           },
           field_results: [],
           error_message: null,
@@ -185,30 +189,30 @@ describe('OpsConsoleApp 运维控制台根组件', () => {
     await flushPromises()
     const servers = wrapper.vm.servers
     expect(servers).toHaveLength(1)
-    expect(servers[0].os).toBe('Microsoft Windows 11')
-    expect(servers[0].cpuModel).toBe('13th Gen Intel(R) Core(TM) i7-13620H')
-    expect(servers[0].uptime).toBe('3.4 小时')
+    expect(servers[0].serverType).toBe('linux')
+    expect(servers[0].iowait).toBe(0.1)
+    expect(servers[0].swap).toBe(0)
+    expect(servers[0].inode).toBe(1)
     wrapper.unmount()
   })
 
-  // 2026-08-16：DB 空字符串 fallback（防御性）
-  it('test_map_snapshot_dash_when_os_empty mapping 防御性兜底：os 空串 → '-'', async () => {
+  it('test_map_snapshot_os_metrics_null_when_missing mapping 防御性兜底：windows parsed_values 缺三字段 → null', async () => {
     const api = await import('../../utils/api.js')
     api.fetchServerInspectionLatest.mockResolvedValueOnce({
       items: [
         {
-          node_id: 11,
-          node_name: 'MyA',
-          server_id: 1,
-          business_name: 'biz-A',
-          server_type: 'linux',
+          node_id: 12,
+          node_name: 'MyW',
+          server_id: 3,
+          business_name: 'biz-W',
+          server_type: 'windows',
           status: 'ok',
           inspection_status: 'pass',
-          collected_at: '2026-08-15T18:00:14.283Z',
-          duration_ms: 42,
-          metrics: { cpu: 10, mem: 38.1, disk: 50, load: 0.5 },
+          collected_at: '2026-08-16T12:23:28.329Z',
+          duration_ms: 30,
+          metrics: { cpu: 83, mem: 45.4, disk: 77.9, load: null },
           disks: [],
-          parsed_values: { os: '', cpu_model: '   ' },  // 空串 / 空白 → '-'
+          parsed_values: { disks: [], mem_used_pct: 45.4, cpu_used_pct: 83 },
           field_results: [],
           error_message: null,
         },
@@ -227,8 +231,9 @@ describe('OpsConsoleApp 运维控制台根组件', () => {
     })
     await flushPromises()
     const servers = wrapper.vm.servers
-    expect(servers[0].os).toBe('-')         // 空串 → '-'
-    expect(servers[0].cpuModel).toBe('-')    // 纯空白 → '-'
+    expect(servers[0].iowait).toBeNull()
+    expect(servers[0].swap).toBeNull()
+    expect(servers[0].inode).toBeNull()
     wrapper.unmount()
   })
 

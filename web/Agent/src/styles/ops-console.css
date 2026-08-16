@@ -359,7 +359,8 @@
   font-weight: 700; font-size: 15px; font-variant-numeric: tabular-nums;
 }
 
-.ops-console-root .kv { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 16px; font-size: 12.5px; margin-bottom: 14px; }
+/* 改后（2026-08-16：kv 4 项改 2×2 排布，460px 窗宽下 4 列过挤） */
+.ops-console-root .kv { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 16px; font-size: 12.5px; margin-bottom: 14px; }
 .ops-console-root .kv div { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid rgba(30, 106, 221, .08); gap: 6px; min-width: 0; }
 .ops-console-root .kv div > span:last-child {
   color: var(--gov-text); font-weight: 500;
@@ -373,6 +374,9 @@
 .ops-console-root .disk-groups {
   display: flex; flex-direction: column; gap: 10px;
   min-width: 0;
+  /* 2026-08-16：磁盘组较多时区域内部滚动（实测 linux 服务器 30+ 块物理盘），
+     窗口头部/指标/kv 保持固定可见；滚动条复用 .ops-console-root ::-webkit-scrollbar 政务蓝样式 */
+  max-height: 320px; overflow-y: auto; padding-right: 4px;
 }
 .ops-console-root .disk-group {
   display: block; min-width: 0;

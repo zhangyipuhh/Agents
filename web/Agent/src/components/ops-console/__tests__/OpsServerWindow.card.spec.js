@@ -27,6 +27,7 @@ import OpsServerWindow, {
   isLinuxType,
   pickAnomalyDisks,
   formatAnomalyItem,
+  fmtNum,
 } from '../OpsServerWindow.vue'
 
 const baseWin = { x: 0, y: 0, z: 1, max: false }
@@ -290,6 +291,18 @@ describe('loadColor 负载着色', () => {
   })
 })
 
+describe('fmtNum 数值格式化（2026-08-16：负载等非百分比指标不带 %）', () => {
+  it('test_fmt_num_null_is_dash null/undefined → -', () => {
+    expect(fmtNum(null)).toBe('-')
+    expect(fmtNum(undefined)).toBe('-')
+  })
+
+  it('test_fmt_num_number_raw 数值原样输出不带 %', () => {
+    expect(fmtNum(1.36)).toBe('1.36')
+    expect(fmtNum(0)).toBe('0')
+  })
+})
+
 describe('formatCollectedAt 时间格式化', () => {
   it('test_format_collected_at_valid_iso 合法 ISO → YYYY-MM-DD HH:MM', () => {
     // 用 ISO 字符串 + toLocaleString 不依赖宿主时区，故直接断言字符串前缀
@@ -379,6 +392,26 @@ describe('OpsServerWindow 卡片头/负载渲染（2026-08-16 新增）', () => 
     const winLabels = win.findAll('.srv-metric-label').map(n => n.text())
     expect(winLabels).not.toContain('负载')
     expect(win.findAll('.srv-metric').length).toBe(3)
+  })
+
+  it('test_card_load_value_without_percent_sign 卡片负载显示原始数值不带 %', () => {
+    const wrapper = mount(OpsServerWindow, {
+      props: {
+        win: baseWin,
+        servers: [makeServer({
+          id: 1,
+          serverType: 'linux',
+          load: 1.23,
+          disks: [{ name: '/', used: 50 }],
+        })],
+      },
+    })
+    const loadMetric = wrapper.findAll('.srv-metric').find(n =>
+      n.find('.srv-metric-label').text() === '服务器负载')
+    expect(loadMetric).toBeTruthy()
+    const val = loadMetric.find('.srv-metric-value').text()
+    expect(val).toBe('1.23')
+    expect(val).not.toContain('%')
   })
 
   it('test_load_metric_red_when_above_threshold 负载 ≥ 4 时标红', () => {

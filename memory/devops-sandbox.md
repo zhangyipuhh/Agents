@@ -202,14 +202,26 @@
 - **触发链路**：`build_ops_report_config` 服务器循环内，字段明细表之后追加 OS 关键指标小节；SSH 失败 / skipped 项不进入字段明细表与小节渲染（保留原契约）。
 - **回归保护**：`app/tests/scripts/ops/test_ops_report.py` 更新 1 用例（`test_build_report_includes_disk_inventory_table` 由 5 列断言改为 6 列断言，fixture 补齐 `host_disk/disk_index`）；新增 5 用例（`test_inventory_rows_host_disk_with_disk_index` / `test_inventory_rows_host_disk_only_without_index` / `test_inventory_rows_fallback_to_partition_or_dash` / `test_compute_alerts_os_metric_keys_get_suffix` / `test_build_report_includes_os_metric_section_on_warn_crit` / `test_build_report_omits_os_metric_section_when_no_alerts`）。ops-report 测试目录 23 → 29 全绿（含原有 4 个 OS/CPU 展示用例）。
 
-### ops_report docx 磁盘介质清单表（2026-08-15 新增）
+### ops_report docx 磁盘介质清单表（2026-08-15 新增；2026-08-16 扩展为 6 列 + 按 host_disk 分组）
 
 - **位置**：`app/scripts/ops/ops_report.py::_server_disk_inventory_rows(item) -> List[List[str]]`
-- **触发**：`build_ops_report_config` 内，元信息表 `sections.append(...)` 之后、`if item.skipped or item.success is False:` 之前；`inventory_rows` 非空时追加 5 列 table
-- **5 列**：`[设备/挂载点, 介质, 磁盘使用率, IO 利用率, IO 平均等待]`
+- **触发**：`build_ops_report_config` 内，元信息表 `sections.append(...)` 之后、`if item.skipped or item.success is False:` 之前；`inventory_rows` 非空时追加 6 列 table
+- **6 列**：`[物理盘, 设备/挂载点, 介质, 磁盘使用率, IO 利用率, IO 平均等待]`——「物理盘」列承载 `host_disk[disk_index]`（由 `_format_host_disk(entry)` 渲染：`host_disk` 非空时 `host_disk` 自身，`disk_index > 0` 整数时附 `[disk_index]`；无 `host_disk` 但 `partition` 非空时仅渲染 `partition`；两者均空时渲染 `-`）
+- **按 host_disk 分组渲染（2026-08-16 改造）**：
+  - 元素含 `host_disk` 时按其分组；组内按 `(disk_index, mount)` 排序；组间按 `(min disk_index, host_disk)` 排序，`_orphan_` 虚拟组排最后
+  - 每组渲染 1 行 sub-header `[host_disk, 介质汇总, -, -, -, -]` + N 行 partition/IO 数据行
+  - 介质汇总：组内 `disk_type` 去重后用 `+` 拼接（保持出现顺序），单介质 → `"SSD"` / `"HDD"` / `"-"`；多介质 → `"SSD+HDD"`
+  - **全缺 host_disk 退化为平铺**（兼容 2026-08-15 旧契约 / 历史快照），不生成 sub-header，避免行数膨胀
+  - **部分缺 host_disk → `_orphan_` 虚拟组**，不与有 host_disk 元素混组
 - **行为约定**：`parsed_values` 非 Mapping / 无 `disks` 键 / 数组为空时返回空列表 → 调用方跳过整表（优雅降级，兼容未输出 disks 的旧巡检脚本）；非 Mapping 元素（噪音字符串）跳过；mount 尾部 `[SSD]` / `[HDD]` 在「设备/挂载点」列剥离（介质列已承载）；介质映射 `ssd→SSD / hdd→HDD / 其它或缺失→'-'`；缺失字段（disk_used_pct/io_util_pct/io_await_ms）渲染 `'-'`，非缺失渲染 `f"{value}%"` 或 `f"{value} ms"`
-- **column_widths**：`[4.0, 2.0, 3.0, 3.0, 3.0]`，与 5 列对齐
-- **回归保护**：`app/tests/scripts/ops/test_ops_report.py` 新增 2 用例——`test_build_report_includes_disk_inventory_table`（异构 disks 数组 → 5 列表头 + 2 行，噪音字符串跳过，io 元素 mount 标签剥离）与 `test_build_report_skips_inventory_table_without_disks`（`parsed_values=None` / 无 `disks` 键时不生成清单表）
+- **column_widths**：`[3.0, 3.0, 2.0, 3.0, 2.0, 2.0]`，与 6 列对齐
+- **回归保护**：`app/tests/scripts/ops/test_ops_report.py` 现有 5 个用例覆盖——
+  - `test_build_report_includes_disk_inventory_table`（按 host_disk 分组的 2 元素异构 disks 数组 → 2 sub-header + 2 数据行 = 4 行；噪音字符串跳过；io 元素 mount 标签剥离）
+  - `test_build_report_disk_inventory_groups_same_host_disk`（同 host_disk 多元素合并到一组；组内按 mount 字典序；sub-header 介质汇总 = `"SSD"`）
+  - `test_build_report_disk_inventory_groups_multiple_host_disks`（多 host_disk 组间按 disk_index 升序；`disk_index=1` 元素渲染 `host_disk[1]`）
+  - `test_build_report_disk_inventory_orphan_group_for_missing_host_disk`（部分缺 host_disk → `_orphan_` 虚拟组，排在最后；不与有 host_disk 元素混组）
+  - `test_build_report_disk_inventory_keeps_flat_when_all_missing_host_disk`（全缺 host_disk → 退化为平铺，无 sub-header）
+  - `test_build_report_skips_inventory_table_without_disks`（`parsed_values=None` / 无 `disks` 键时不生成清单表）
 
 ### 强白名单契约（2026-07-15 落地）
 

@@ -67,6 +67,18 @@ export function loadColor(v) {
 }
 
 /**
+ * 非百分比数值格式化（如 load_1m 平均负载）：null/undefined → '-'，其他原样输出。
+ * 负载是「1 分钟平均负载」原始数值而非百分比，不能追加 % 后缀。
+ *
+ * @param {number|null|undefined} v 数值
+ * @returns {string} 格式化字符串
+ */
+export function fmtNum(v) {
+  if (v == null) return '-'
+  return `${v}`
+}
+
+/**
  * 把 ISO 时间格式化为 ``YYYY-MM-DD HH:MM``（本地时区）。
  * - null / undefined / 非字符串 / 解析失败 → ``'-'``（无快照兜底）
  *
@@ -374,10 +386,11 @@ function fmtPct(v) {
             </template>
           </div>
           <!-- 2026-08-16 改造：linux 负载 label 改为「服务器负载」（语义更明确）。
-               颜色阈值独立（loadColor: ≥4 红 / <4 绿 / null 灰），与百分比指标阈值 80 解耦。 -->
+               颜色阈值独立（loadColor: ≥4 红 / <4 绿 / null 灰），与百分比指标阈值 80 解耦。
+               数值经 fmtNum 原样输出（load_1m 非百分比，2026-08-16 去 %）。 -->
           <div v-if="isLinuxType(srv.serverType)" class="srv-metric">
             <span class="srv-metric-label">服务器负载</span>
-            <span class="srv-metric-value" :style="{ color: loadColor(srv.load) }">{{ fmtPct(srv.load) }}</span>
+            <span class="srv-metric-value" :style="{ color: loadColor(srv.load) }">{{ fmtNum(srv.load) }}</span>
           </div>
         </div>
       </div>

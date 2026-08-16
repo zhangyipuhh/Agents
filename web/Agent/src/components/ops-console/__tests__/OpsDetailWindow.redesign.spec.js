@@ -6,13 +6,14 @@
  *   - 头部 sub 改为「最新检测时间:」+ 绝对时间（与卡片 srv-card-time 文案一致）；
  *   - 4 联指标条：linux 4 项 / windows 3 项（隐藏负载）；
  *   - 指标值 ≥ 阈值时标红（CPU/内存 ≥ 80 红 / 负载 ≥ 4 红）；
- *   - kv 表格精简：保留 OS/CPU型号/运行时长；删除 内存总量/存储总量/网络流入；
+ *   - 服务器负载显示原始数值不带 %（load_1m 非百分比指标）；
+ *   - kv 区 4 项：操作系统（serverType 原值 linux/windows）/ CPU IOWait /
+ *     Swap 使用率 / Inode 使用率；OS 三指标按 YAML warn 阈值标红（iowait 20
+ *     / swap 30 / inode 80），低于阈值标绿，null 标灰；
  *   - 物理磁盘纵向分组：每块物理盘一行；磁盘头只显示「排队 / IO 利用率」；
  *     分区卡只显示「使用率」；IO 整盘记录（含 mount="sda[SSD]"）不渲染为分区卡；
  *   - 未知归属（缺 host_disk）单独成组，红绿灰灯与 metricColor 80 规则保留；
  *   - 「智能检测」按钮已删除。
- *
- * 2026-08-16: 物理盘纵向分组 (Linux / Windows 双平台)。
  */
 import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
@@ -26,17 +27,14 @@ function makeServer(overrides = {}) {
     name: '本机',
     status: 'ok',
     ip: '-',
-    os: '-',
     serverType: '',
     cpu: 27,
     mem: 31.4,
     disk: 50,
     load: null,
-    cpuModel: '-',
-    memTotal: '-',
-    diskTotal: '-',
-    netIn: '-',
-    uptime: '0.7 小时',
+    iowait: null,
+    swap: null,
+    inode: null,
     disks: [],
     fieldResults: [],
     collectedAt: '2026-08-09T11:35:28.487343+00:00',
@@ -138,16 +136,33 @@ describe('OpsDetailWindow 详情页改造（2026-08-16）', () => {
     expect(values[3].attributes('style') || '').toContain('#ff453a')
   })
 
-  // -------- kv 表格精简 --------
-  it('test_kv_includes_runtime kv 含「运行时长」', () => {
+  it('test_load_value_without_percent_sign linux 负载显示原始数值不带 %', () => {
     const wrapper = mount(OpsDetailWindow, {
-      props: { win: baseWin, server: makeServer() },
+      props: {
+        win: baseWin,
+        server: makeServer({ serverType: 'linux', load: 1.36 }),
+      },
     })
-    const keys = wrapper.findAll('.kv .k').map(n => n.text())
-    expect(keys).toContain('运行时长')
+    const items = wrapper.findAll('.detail-metric-bar .dm-item')
+    const loadValue = items[items.length - 1].find('.dm-value')
+    expect(loadValue.text()).toBe('1.36')
+    expect(loadValue.text()).not.toContain('%')
   })
 
-  it('test_kv_no_mem_total_disk_total_net_in kv 不含「内存总量 / 存储总量 / 网络流入」', () => {
+  it('test_load_value_dash_when_null 负载为 null 显示 -', () => {
+    const wrapper = mount(OpsDetailWindow, {
+      props: {
+        win: baseWin,
+        server: makeServer({ serverType: 'linux', load: null }),
+      },
+    })
+    const items = wrapper.findAll('.detail-metric-bar .dm-item')
+    const loadValue = items[items.length - 1].find('.dm-value')
+    expect(loadValue.text()).toBe('-')
+  })
+
+  // -------- kv 区精简（2026-08-16 用户需求：4 项 OS 关键指标） --------
+  it('test_kv_no_legacy_fields kv 不含「内存总量 / 存储总量 / 网络流入 / CPU 型号 / 运行时长」', () => {
     const wrapper = mount(OpsDetailWindow, {
       props: { win: baseWin, server: makeServer() },
     })
@@ -155,13 +170,113 @@ describe('OpsDetailWindow 详情页改造（2026-08-16）', () => {
     expect(keys).not.toContain('内存总量')
     expect(keys).not.toContain('存储总量')
     expect(keys).not.toContain('网络流入')
+    expect(keys).not.toContain('CPU 型号')
+    expect(keys).not.toContain('运行时长')
   })
 
-  it('test_kv_three_items kv 仅 3 项（OS / CPU 型号 / 运行时长）', () => {
+  it('test_kv_four_items kv 仅 4 项（操作系统 / CPU IOWait / Swap 使用率 / Inode 使用率）', () => {
     const wrapper = mount(OpsDetailWindow, {
       props: { win: baseWin, server: makeServer() },
     })
-    expect(wrapper.findAll('.kv > div').length).toBe(3)
+    const keys = wrapper.findAll('.kv .k').map(n => n.text())
+    expect(keys).toEqual(['操作系统', 'CPU IOWait', 'Swap 使用率', 'Inode 使用率'])
+  })
+
+  it('test_kv_os_displays_server_type kv「操作系统」渲染 server.serverType 原值', () => {
+    const wrapper = mount(OpsDetailWindow, {
+      props: { win: baseWin, server: makeServer({ serverType: 'linux' }) },
+    })
+    const osRow = wrapper.findAll('.kv > div')[0]
+    expect(osRow.find('span:last-child').text()).toBe('linux')
+  })
+
+  it('test_kv_os_displays_windows_server_type kv「操作系统」windows 原值', () => {
+    const wrapper = mount(OpsDetailWindow, {
+      props: { win: baseWin, server: makeServer({ serverType: 'windows' }) },
+    })
+    const osRow = wrapper.findAll('.kv > div')[0]
+    expect(osRow.find('span:last-child').text()).toBe('windows')
+  })
+
+  it('test_kv_os_dash_when_server_type_empty serverType 为空串时操作系统降级为 -', () => {
+    const wrapper = mount(OpsDetailWindow, {
+      props: { win: baseWin, server: makeServer({ serverType: '' }) },
+    })
+    const osRow = wrapper.findAll('.kv > div')[0]
+    expect(osRow.find('span:last-child').text()).toBe('-')
+  })
+
+  it('test_kv_os_metrics_render_percent kv 三项 OS 指标渲染百分比', () => {
+    const wrapper = mount(OpsDetailWindow, {
+      props: {
+        win: baseWin,
+        server: makeServer({ serverType: 'linux', iowait: 12.5, swap: 21, inode: 1 }),
+      },
+    })
+    const rows = wrapper.findAll('.kv > div')
+    expect(rows[1].find('span:last-child').text()).toBe('12.5%')
+    expect(rows[2].find('span:last-child').text()).toBe('21%')
+    expect(rows[3].find('span:last-child').text()).toBe('1%')
+  })
+
+  it('test_kv_os_metrics_dash_when_null kv 三项 OS 指标 null 显示 - 且灰', () => {
+    const wrapper = mount(OpsDetailWindow, {
+      props: { win: baseWin, server: makeServer() },
+    })
+    const rows = wrapper.findAll('.kv > div')
+    for (const i of [1, 2, 3]) {
+      const val = rows[i].find('span:last-child')
+      expect(val.text()).toBe('-')
+      expect(val.attributes('style') || '').toContain('#9aa3af')
+    }
+  })
+
+  it('test_kv_iowait_red_at_yaml_warn_20 iowait ≥ 20 标红（对齐 YAML warn）', () => {
+    const wrapper = mount(OpsDetailWindow, {
+      props: { win: baseWin, server: makeServer({ iowait: 20 }) },
+    })
+    const val = wrapper.findAll('.kv > div')[1].find('span:last-child')
+    expect(val.attributes('style') || '').toContain('#ff453a')
+  })
+
+  it('test_kv_iowait_green_below_warn iowait < 20 标绿', () => {
+    const wrapper = mount(OpsDetailWindow, {
+      props: { win: baseWin, server: makeServer({ iowait: 19.9 }) },
+    })
+    const val = wrapper.findAll('.kv > div')[1].find('span:last-child')
+    expect(val.attributes('style') || '').toContain('#1d9a40')
+  })
+
+  it('test_kv_swap_red_at_yaml_warn_30 swap ≥ 30 标红（对齐 YAML warn）', () => {
+    const wrapper = mount(OpsDetailWindow, {
+      props: { win: baseWin, server: makeServer({ swap: 30 }) },
+    })
+    const val = wrapper.findAll('.kv > div')[2].find('span:last-child')
+    expect(val.attributes('style') || '').toContain('#ff453a')
+  })
+
+  it('test_kv_inode_red_at_yaml_warn_80 inode ≥ 80 标红（对齐 YAML warn）', () => {
+    const wrapper = mount(OpsDetailWindow, {
+      props: { win: baseWin, server: makeServer({ inode: 80 }) },
+    })
+    const val = wrapper.findAll('.kv > div')[3].find('span:last-child')
+    expect(val.attributes('style') || '').toContain('#ff453a')
+  })
+
+  it('test_kv_swap_green_below_warn swap < 30 标绿', () => {
+    const wrapper = mount(OpsDetailWindow, {
+      props: { win: baseWin, server: makeServer({ swap: 29 }) },
+    })
+    const val = wrapper.findAll('.kv > div')[2].find('span:last-child')
+    expect(val.attributes('style') || '').toContain('#1d9a40')
+  })
+
+  it('test_kv_inode_green_below_warn inode < 80 标绿', () => {
+    const wrapper = mount(OpsDetailWindow, {
+      props: { win: baseWin, server: makeServer({ inode: 79 }) },
+    })
+    const val = wrapper.findAll('.kv > div')[3].find('span:last-child')
+    expect(val.attributes('style') || '').toContain('#1d9a40')
   })
 
   // -------- 物理磁盘分组展示（2026-08-16 用户需求） --------
@@ -368,57 +483,5 @@ describe('OpsDetailWindow 详情页改造（2026-08-16）', () => {
     // .win-detail 类存在即可（具体宽度由 CSS 控制，本测试确保模板类名仍正确）
     expect(wrapper.find('.win-detail').exists()).toBe(true)
     expect(wrapper.find('.win.win-detail').exists()).toBe(true)
-  })
-
-  // -------- 展示字段从 DB 读取（2026-08-16 修复：之前硬编码 '-'） --------
-  it('test_kv_os_displays_from_server_os kv「操作系统」渲染 server.os（非 \'-\'）', () => {
-    // 模拟 OpsConsoleApp.mapSnapshotToServer 已从 parsed_values.os 读到值
-    const wrapper = mount(OpsDetailWindow, {
-      props: {
-        win: baseWin,
-        server: makeServer({ os: 'Microsoft Windows 11' }),
-      },
-    })
-    // kv 第 1 行（操作系统）的值 span
-    const osRow = wrapper.findAll('.kv > div')[0]
-    const val = osRow.find('span:last-child').text()
-    expect(val).toBe('Microsoft Windows 11')
-    expect(val).not.toBe('-')
-  })
-
-  it('test_kv_cpu_model_displays_from_server_cpu_model kv「CPU 型号」渲染 server.cpuModel', () => {
-    const wrapper = mount(OpsDetailWindow, {
-      props: {
-        win: baseWin,
-        server: makeServer({ cpuModel: '13th Gen Intel(R) Core(TM) i7-13620H' }),
-      },
-    })
-    const cpuRow = wrapper.findAll('.kv > div')[1]
-    const val = cpuRow.find('span:last-child').text()
-    expect(val).toBe('13th Gen Intel(R) Core(TM) i7-13620H')
-  })
-
-  it('test_kv_uptime_displays_runtime kv「运行时长」渲染 server.uptime', () => {
-    const wrapper = mount(OpsDetailWindow, {
-      props: {
-        win: baseWin,
-        server: makeServer({ uptime: '3.4 小时' }),
-      },
-    })
-    const upRow = wrapper.findAll('.kv > div')[2]
-    const val = upRow.find('span:last-child').text()
-    expect(val).toBe('3.4 小时')
-    expect(val).not.toBe('-')
-  })
-
-  it('test_kv_os_dash_when_empty_string server.os 为空串时降级为 -', () => {
-    const wrapper = mount(OpsDetailWindow, {
-      props: {
-        win: baseWin,
-        server: makeServer({ os: '' }),
-      },
-    })
-    const osRow = wrapper.findAll('.kv > div')[0]
-    expect(osRow.find('span:last-child').text()).toBe('-')
   })
 })

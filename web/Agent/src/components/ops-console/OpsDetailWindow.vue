@@ -84,7 +84,9 @@ export function groupDisksByPhysicalDisk(disks) {
  *
  * Props:
  *   - win: { x, y, z, max } 窗口位置/层级/最大化状态
- *   - server: ServerItem     当前展示详情的服务器
+ *   - server: ServerItem     当前展示详情的服务器；2026-08-16 改造后必含
+ *                            serverType / iowait / swap / inode 字段，
+ *                            旧版 os / cpuModel / uptime 已下线。
  *
  * Emits:
  *   - close / max / front / drag 窗口控制
@@ -96,6 +98,7 @@ import {
   loadColor,
   formatCollectedAt,
   isLinuxType,
+  fmtNum,
 } from './OpsServerWindow.vue'
 
 const props = defineProps({
@@ -122,6 +125,27 @@ function fmtStr(v) {
   if (typeof v !== 'string') return '-'
   const trimmed = v.trim()
   return trimmed || '-'
+}
+
+/**
+ * OS 关键指标 warn 阈值（对齐 data/devops/inspection_scripts.yaml::inspection_fields）：
+ * cpu_iowait_pct warn=20 / swap_used_pct warn=30 / inode_used_pct warn=80。
+ */
+const IOWAIT_WARN = 20
+const SWAP_WARN = 30
+const INODE_WARN = 80
+
+/**
+ * 按 warn 阈值取色（与 metricColor/loadColor 同色系）：
+ * null / 非数字 → 灰；≥ warn → 红；否则 → 绿。
+ *
+ * @param {number|null|undefined} v 指标值
+ * @param {number} warn 告警阈值（达到即标红）
+ * @returns {string} 颜色十六进制字符串
+ */
+function warnColor(v, warn) {
+  if (typeof v !== 'number' || Number.isNaN(v)) return '#9aa3af'
+  return v >= warn ? '#ff453a' : '#1d9a40'
 }
 
 /**
@@ -227,13 +251,14 @@ function peakIoUtil(group) {
         <div class="dm-item"><span class="dm-label">CPU 使用率</span><span class="dm-value" :style="{ color: metricColor(server.cpu) }">{{ fmtPct(server.cpu) }}</span></div>
         <div class="dm-item"><span class="dm-label">内存占用</span><span class="dm-value" :style="{ color: metricColor(server.mem) }">{{ fmtPct(server.mem) }}</span></div>
         <div class="dm-item"><span class="dm-label">存储使用</span><span class="dm-value" :style="{ color: metricColor(server.disk) }">{{ fmtPct(server.disk) }}</span></div>
-        <div v-if="isLinuxType(server.serverType)" class="dm-item"><span class="dm-label">服务器负载</span><span class="dm-value" :style="{ color: loadColor(server.load) }">{{ fmtPct(server.load) }}</span></div>
+        <div v-if="isLinuxType(server.serverType)" class="dm-item"><span class="dm-label">服务器负载</span><span class="dm-value" :style="{ color: loadColor(server.load) }">{{ fmtNum(server.load) }}</span></div>
       </div>
 
       <div class="kv">
-        <div><span class="k">操作系统</span><span>{{ fmtStr(server.os) }}</span></div>
-        <div><span class="k">CPU 型号</span><span>{{ fmtStr(server.cpuModel) }}</span></div>
-        <div><span class="k">运行时长</span><span>{{ server.uptime }}</span></div>
+        <div><span class="k">操作系统</span><span>{{ fmtStr(server.serverType) }}</span></div>
+        <div><span class="k">CPU IOWait</span><span :style="{ color: warnColor(server.iowait, IOWAIT_WARN) }">{{ fmtPct(server.iowait) }}</span></div>
+        <div><span class="k">Swap 使用率</span><span :style="{ color: warnColor(server.swap, SWAP_WARN) }">{{ fmtPct(server.swap) }}</span></div>
+        <div><span class="k">Inode 使用率</span><span :style="{ color: warnColor(server.inode, INODE_WARN) }">{{ fmtPct(server.inode) }}</span></div>
       </div>
 
       <div class="disk-section">

@@ -1187,3 +1187,37 @@ ops-console 目录 5 个 spec 文件共 **88 个用例全绿**（81 → 88，新
 
 **不在范围内**：后端 `_row_to_view` / `_merge_user_view` 接口不变（已透出 `parsed_values` 字段）；`server_inspection_record_service` 不变；不修改 inspection_scripts.yaml（windows-ps-5.1 已输出 `os` / `cpu_model`，linux-bash 当前未输出 `uptime_hours` 由运维按需追加）。
 
+#### 运维控制台 `mapSnapshotToServer` OS 关键指标输出 + 移除冗余展示字段（2026-08-16）
+
+`OpsConsoleApp.vue::mapSnapshotToServer` 输出形状当前契约：
+  - 移除 `os` / `cpuModel` / `uptime` / `memTotal` / `diskTotal` / `netIn`：详情页不再消费；「操作系统」改为展示 `serverType` 原值（`linux` / `windows`）；DB `parsed_values` 当前不含 `os` / `cpu_model` / `uptime_hours`，渲染端不再尝试取这些键。
+  - 新增 `iowait` / `swap` / `inode`：分别取 `parsed_values.cpu_iowait_pct` / `swap_used_pct` / `inode_used_pct`，linux/windows 双平台均采集，缺失 → `null`。每字段独立 `?? null` 兜底，不互相影响。
+  - 保留 `load`（linux 1 分钟平均负载原始数值，非百分比，windows → `null`）。
+  - 保留 `serverType: item.server_type || ''`：供 `OpsServerWindow` 卡片「负载」按平台显隐 + 详情页「操作系统」原值展示。
+  - 保留 `disks[]` 完整契约（`name` / `mount` / `used` / `ioUtilPct` / `ioAwaitMs` / `diskType` / `hostDisk` / `diskIndex` / `partition` / `total`）+ `fieldResults` + `collectedAt` + `errorMessage` + `ip: '-'`（脱敏约定）。
+
+测试同步：`OpsConsoleApp.spec.js` 6 → 9 用例全绿（新增 3 个：`iowait/swap/inode` 缺失 → `null` / 缺失 → 实值 / `not.toHaveProperty` 断言移除字段）。ops-console 目录 6 个 spec 共 **109 个用例全绿**（99 → 109，新增 3 + 老用例零回归）。
+
+**不在范围内**：后端 `_row_to_view` / `_merge_user_view` 接口不变（仍透出完整 `parsed_values` JSONB，调用方按需取键）；`server_inspection_record_service` 不变；不修改 inspection_scripts.yaml（linux-bash / windows-ps-5.1 当前已输出 `cpu_iowait_pct` / `swap_used_pct` / `inode_used_pct` 三键）。
+
+#### 运维控制台 OpsDetailWindow 详情页当前契约（2026-08-16 最终态）
+
+> 历史演进：初始改造（只读卡片 + 4 联指标 + 多列磁盘网格）见上一节；磁盘物理盘分组见 891-930；kv 字段从 DB 读取修复见 1163-1188；mapSnapshotToServer OS 关键指标输出见上节。本节汇总上述迭代后的 **当前契约**，作为后续维护的唯一基线。
+
+- **kv 区 4 项**（`OpsDetailWindow.vue` template 257-262）：
+  - 操作系统 / CPU IOWait / Swap 使用率 / Inode 使用率，每项 1 行
+  - 「操作系统」展示 `server.serverType` 原值（`linux` / `windows`），走 `fmtStr` 兜底空值 / 纯空白 → `-`
+  - OS 三指标按 YAML `warn` 阈值标红：模块级具名函数 `warnColor(v, warn)` + 常量 `IOWAIT_WARN = 20` / `SWAP_WARN = 30` / `INODE_WARN = 80`（对齐 `data/devops/inspection_scripts.yaml::cpu_iowait_pct / swap_used_pct / inode_used_pct` 的 `warn` 字段）
+  - 颜色：null → 灰 `#9aa3af`；< 阈值 → 绿 `#1d9a40`；≥ 阈值 → 红 `#ff453a`
+  - 展示：null → `-`；其他值 → `${v}%`（`fmtPct` 函数）
+  - **CPU 型号 / 运行时长已移除**（详情页不再消费 `server.cpuModel` / `server.uptime`，模板 kv 仅 4 项）
+
+- **服务器负载格式化**（`OpsServerWindow.vue` 模块级导出，卡片 + 详情页共用）：
+  - `fmtNum(v)`（`OpsServerWindow.vue:76-79`）：null → `-`；其他原样输出**不带 %** 后缀。负载是 1 分钟平均负载原始数值，非百分比。
+  - `fmtPct(v)` 仍用于百分比指标（CPU / 内存 / 存储 / IO 等）：null → `-`；其他值追加 `%` 后缀。
+  - 阈值：`loadColor(v)` + 模块级常量 `LOAD_WARN = 4`。null 灰 / < 4 绿 / ≥ 4 红，与 `metricColor` 的 80% 阈值解耦，对齐 `inspection_scripts.yaml::load_1m warn=4.0`。
+
+- **布局最终契约**（`web/Agent/src/styles/ops-console.css`）：
+  - `.kv` 2 列网格：`grid-template-columns: repeat(2, 1fr)`（460px 窗宽下 4 列过挤，改为 2×2 排布）
+  - `.disk-groups` 内部滚动：`max-height: 320px; overflow-y: auto; padding-right: 4px`（窗口头部 / 指标 / kv 保持固定可见；物理盘较多时区域内部滚动，滚动条复用 `.ops-console-root ::-webkit-scrollbar` 政务蓝样式）
+
