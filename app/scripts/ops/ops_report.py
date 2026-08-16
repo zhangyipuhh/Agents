@@ -336,11 +336,18 @@ def _format_host_disk(entry: Mapping[str, Any]) -> str:
 
 
 def _server_disk_inventory_rows(item) -> List[List[str]]:
-    """从 ``parsed_values["disks"]`` 提取磁盘介质清单表行(6 列)。
+    """从 ``parsed_values["disks"]`` 提取磁盘介质清单表行(6 列, 按 ``host_disk`` 分组)。
 
-    仅渲染 Mapping 元素, 非 Mapping 噪音元素跳过; ``parsed_values`` 非 Mapping /
-    无 ``disks`` 键 / 数组为空时返回空列表, 由调用方跳过整表(优雅降级,
-    兼容未输出 disks 的旧巡检脚本)。
+    渲染策略(2026-08-16 改造为按 ``host_disk`` 分组):
+        * 元素含 ``host_disk`` 时按其分组; 同组内按 ``(disk_index, mount)`` 排序;
+          组间按 ``(min disk_index, host_disk)`` 排序。每组渲染 1 行 sub-header
+          (列 1 = host_disk, 列 2 = 介质汇总, 后 4 列 = "-") + N 行 partition/IO 行。
+        * 全部元素都缺 ``host_disk`` (历史快照 / 旧巡检脚本) → 退化为平铺渲染,
+          保持向下兼容 (与 2026-08-15 旧版契约一致, 不影响既有报告)。
+        * 部分元素缺 ``host_disk`` → 缺失元素归入 ``_orphan_`` 虚拟组, 组内仍渲染。
+        * 仅渲染 Mapping 元素, 非 Mapping 噪音元素跳过; ``parsed_values`` 非 Mapping /
+          无 ``disks`` 键 / 数组为空时返回空列表, 由调用方跳过整表(优雅降级,
+          兼容未输出 disks 的旧巡检脚本)。
 
     参数:
         item: ``ServerOpsItem``。
@@ -349,7 +356,8 @@ def _server_disk_inventory_rows(item) -> List[List[str]]:
         List[List[str]]: 表行, 列为 ``[物理盘, 设备/挂载点, 介质, 磁盘使用率,
         IO 利用率, IO 平均等待]``; 缺失值渲染为 ``-``; mount 尾部的 ``[SSD]`` /
         ``[HDD]`` 标签在设备列剥离(介质列已承载该信息); 物理盘列承载
-        ``host_disk[disk_index]`` / ``partition`` 分组键。
+        ``host_disk[disk_index]`` / ``partition`` 分组键; sub-header 行首列承载
+        物理盘名 + 介质汇总。
     """
     rows: List[List[str]] = []
     parsed = getattr(item, "parsed_values", None)
@@ -362,26 +370,106 @@ def _server_disk_inventory_rows(item) -> List[List[str]]:
     def _fmt_pct(value) -> str:
         return "-" if value is None else f"{value}%"
 
-    for entry in disks:
-        if not isinstance(entry, Mapping):
-            continue
-        mount = str(entry.get("mount") or "-")
-        if mount.endswith("]") and "[" in mount:
-            mount = mount.rsplit("[", 1)[0]
-        dtype_raw = entry.get("disk_type")
-        dtype = (
-            {"ssd": "SSD", "hdd": "HDD"}.get(str(dtype_raw).strip().lower(), "-")
-            if dtype_raw else "-"
-        )
+    def _strip_media_tag(mount_text: str) -> str:
+        """剥离 mount 尾部 ``[SSD]`` / ``[HDD]`` 标签(介质列已承载)。"""
+        if mount_text.endswith("]") and "[" in mount_text:
+            return mount_text.rsplit("[", 1)[0]
+        return mount_text
+
+    def _format_dtype(dtype_raw) -> str:
+        """把 ``disk_type`` 字段规范化为 ``SSD`` / ``HDD`` / ``-``。"""
+        if not dtype_raw:
+            return "-"
+        return {"ssd": "SSD", "hdd": "HDD"}.get(str(dtype_raw).strip().lower(), "-")
+
+    def _entry_to_data_row(entry: Mapping[str, Any]) -> List[str]:
+        """把单条 Mapping 元素转为 6 列数据行(sub-header 之后)。"""
+        mount = _strip_media_tag(str(entry.get("mount") or "-"))
+        dtype = _format_dtype(entry.get("disk_type"))
         await_v = entry.get("io_await_ms")
-        rows.append([
+        return [
             _format_host_disk(entry),
             mount,
             dtype,
             _fmt_pct(entry.get("disk_used_pct")),
             _fmt_pct(entry.get("io_util_pct")),
             "-" if await_v is None else f"{await_v} ms",
-        ])
+        ]
+
+    # 1) 过滤 Mapping 元素; 同时判断是否含 host_disk
+    valid_entries: List[Mapping[str, Any]] = []
+    has_any_host_disk = False
+    for entry in disks:
+        if not isinstance(entry, Mapping):
+            continue
+        valid_entries.append(entry)
+        if entry.get("host_disk"):
+            has_any_host_disk = True
+
+    if not valid_entries:
+        return rows
+
+    # 2) 全部缺 host_disk → 平铺退化(2026-08-15 旧契约, 历史快照兼容)
+    if not has_any_host_disk:
+        return [_entry_to_data_row(e) for e in valid_entries]
+
+    # 3) 按 host_disk 分组; 缺 host_disk 元素归入 _orphan_ 虚拟组
+    groups: Dict[str, List[Mapping[str, Any]]] = {}
+    for entry in valid_entries:
+        host = entry.get("host_disk")
+        if not host:
+            group_key = "_orphan_"
+        else:
+            group_key = str(host)
+        groups.setdefault(group_key, []).append(entry)
+
+    # 4) 组内排序: (disk_index_int, mount_text); 缺 disk_index → 0
+    def _entry_sort_key(entry: Mapping[str, Any]) -> Tuple[int, str]:
+        idx_raw = entry.get("disk_index")
+        idx_int: int
+        if isinstance(idx_raw, bool):
+            idx_int = 0
+        elif isinstance(idx_raw, int):
+            idx_int = idx_raw
+        elif isinstance(idx_raw, float) and idx_raw.is_integer():
+            idx_int = int(idx_raw)
+        else:
+            idx_int = 0
+        mount_text = str(entry.get("mount") or "")
+        return (idx_int, mount_text)
+
+    # 5) 组间排序: (min disk_index, host_disk_str); _orphan_ 排最后
+    def _group_sort_key(group_key: str, items: List[Mapping[str, Any]]) -> Tuple[int, str]:
+        if group_key == "_orphan_":
+            return (10**9, group_key)
+        min_idx = min(
+            (_entry_sort_key(e)[0] for e in items),
+            default=0,
+        )
+        return (min_idx, group_key)
+
+    sorted_group_keys = sorted(
+        groups.keys(),
+        key=lambda k: _group_sort_key(k, groups[k]),
+    )
+
+    # 6) 渲染: sub-header + 数据行
+    for group_key in sorted_group_keys:
+        items = groups[group_key]
+        # 介质汇总: 组内 disk_type 去重后拼接 (保持出现顺序)
+        type_seen: set = set()
+        type_list: List[str] = []
+        for e in items:
+            t = _format_dtype(e.get("disk_type"))
+            if t != "-" and t not in type_seen:
+                type_seen.add(t)
+                type_list.append(t)
+        type_summary = "+".join(type_list) if type_list else "-"
+        # sub-header: 6 列 [group_key, 介质汇总, -, -, -, -]
+        rows.append([group_key, type_summary, "-", "-", "-", "-"])
+        # 数据行 (按 disk_index / mount 排序)
+        for entry in sorted(items, key=_entry_sort_key):
+            rows.append(_entry_to_data_row(entry))
     return rows
 
 
