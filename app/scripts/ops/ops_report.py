@@ -388,30 +388,28 @@ def _server_disk_inventory_rows(item) -> List[List[str]]:
 def _server_meta_rows(item, host: Optional[str]) -> List[List[str]]:
     """构造单个业务的服务器元信息表行(2 列: 项目/值)。
 
-    OS / CPU 型号两行来自 ``item.parsed_values`` 的 ``os`` / ``cpu_model`` 键
-    (展示型元数据, direction=ignore, 由巡检脚本注入)。旧记录 / skipped 项 /
-    脚本尚未升级时两键均缺失,统一降级渲染为 ``-``,**不**抛出异常,确保
-    历史数据兼容性。
+    列表项固定为 5 行:
+
+    | 项目 | 数据来源 |
+    | --- | --- |
+    | 业务名 | ``item.business_name`` |
+    | 服务器 IP | 由调用方从 :class:`DevOpsServerService` 反查 |
+    | SSH 退出码 | ``item.exit_code`` |
+    | 耗时 | ``item.duration_ms`` |
+    | 巡检状态 | ``item.inspection_status`` 中文映射 |
+
+    历史版本曾在此表末尾追加「操作系统」「CPU 型号」两行(读取
+    ``item.parsed_values`` 的 ``os`` / ``cpu_model`` 键,缺失降级 ``-``)。
+    2026-08-16 撤回:当前巡检脚本契约已移除这两个展示型字段的输出,
+    ``inspection_fields`` 也不再声明对应规则,继续渲染会恒为 ``-``
+    占位。历史 JSONB 中残留的两键仍可存在,但本函数不再消费,吞值不报错。
     """
-    parsed = getattr(item, "parsed_values", None)
-    parsed_map: Mapping[str, Any]
-    if isinstance(parsed, Mapping):
-        parsed_map = parsed
-    else:
-        parsed_map = {}
-
-    def _str_or_dash(key: str) -> str:
-        value = parsed_map.get(key)
-        return value if isinstance(value, str) and value else "-"
-
     return [
         ["业务名", item.business_name or "-"],
         ["服务器 IP", host or "-"],
         ["SSH 退出码", "-" if item.exit_code is None else str(item.exit_code)],
         ["耗时", "-" if item.duration_ms is None else f"{item.duration_ms} ms"],
         ["巡检状态", _INSPECTION_STATUS_ZH.get(item.inspection_status, item.inspection_status or "-")],
-        ["操作系统", _str_or_dash("os")],
-        ["CPU 型号", _str_or_dash("cpu_model")],
     ]
 
 

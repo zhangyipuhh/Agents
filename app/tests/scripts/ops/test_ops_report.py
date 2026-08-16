@@ -315,7 +315,8 @@ def test_build_report_skips_inventory_table_without_disks():
 
 
 # --------------------------------------------------------------------------
-# 元信息表 OS / CPU 型号渲染(2026-08-16 新增)
+# 元信息表渲染: 跟随 2026-08-16 脚本契约撤回 ``os`` / ``cpu_model`` 字段后,
+# 不再渲染「操作系统」「CPU 型号」两行, 元信息表固定 5 行。
 # --------------------------------------------------------------------------
 
 
@@ -332,55 +333,28 @@ def _meta_rows_of(config, business_name):
     return meta_table.rows
 
 
-def test_build_report_includes_os_and_cpu_in_meta_table():
-    """parsed_values 含 os / cpu_model 时, 元信息表末尾两行渲染具体值。
+def test_build_report_meta_table_omits_os_and_cpu_rows():
+    """2026-08-16 撤回: 脚本不再输出 ``os`` / ``cpu_model`` 后, 元信息表不再
+    渲染「操作系统」「CPU 型号」两行, 固定 5 行。
 
-    Returns:
-        None
-    """
-    item = ServerOpsItem(
-        business_name="A", success=True, inspection_status="pass",
-        parsed_values={
-            "disks": [{"mount": "/", "disk_used_pct": 42}],
-            "mem_used_pct": 50,
-            "cpu_idle_pct": 80,
-            "load_1m": 1.5,
-            "io_util_pct": 10,
-            "io_await_ms": 5,
-            "os": "Ubuntu 22.04.3 LTS",
-            "cpu_model": "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
-        },
-    )
-    config = build_ops_report_config(
-        summary=OpsSummary(), alerts=OpsAlerts(),
-        server_report=ServerOpsReport(items=[item]),
-        api_report=ApiCheckReport(),
-        ip_map={"A": "10.0.0.1"},
-        schedule_name="t", started_at=datetime(2026, 8, 16),
-    )
-    rows = _meta_rows_of(config, "A")
-    assert ["业务名", "A"] in rows
-    assert ["服务器 IP", "10.0.0.1"] in rows
-    assert ["巡检状态", "通过"] in rows
-    assert ["操作系统", "Ubuntu 22.04.3 LTS"] in rows
-    assert ["CPU 型号", "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz"] in rows
+    历史 JSONB 中残留的两键仍可存在, 但报告侧吞值不渲染, 不抛异常
+    (兼容旧记录)。
 
-
-def test_build_report_meta_table_falls_back_when_os_cpu_missing():
-    """parsed_values 为 None / 不含 os-cpu_model 时, 两行渲染为 '-'（兼容历史）。
-
-    覆盖 3 类历史场景:
-        1. parsed_values = None（巡检未解析）
-        2. parsed_values 是 dict 但不含 os / cpu_model（旧版巡检脚本未升级）
-        3. parsed_values 含两键但值为空字符串（脚本误输出）
+    验证 3 类场景:
+        1. ``parsed_values`` 完全不含 OS / CPU 键 → 不渲染；
+        2. ``parsed_values`` 含两键 + 字符串值 → 不渲染（吞值）；
+        3. ``parsed_values`` 含两键 + 字符串值且 IP 走真实反查 → 仍不渲染。
 
     Returns:
         None
     """
     scenarios = [
-        ("无 parsed_values", None),
-        ("parsed_values 无 OS/CPU 键", {"mem_used_pct": 50}),
-        ("OS/CPU 值为空字符串", {"os": "", "cpu_model": ""}),
+        ("不含 OS/CPU 键", {"mem_used_pct": 50, "load_1m": 0.5}),
+        ("含 OS/CPU 字符串值(吞值)",
+         {"mem_used_pct": 50, "os": "Ubuntu 22.04.3 LTS",
+          "cpu_model": "Intel Xeon E5-2680 v4"}),
+        ("OS 值为空字符串 + CPU 值为 None",
+         {"os": "", "cpu_model": None}),
     ]
     for label, parsed in scenarios:
         item = ServerOpsItem(
@@ -395,34 +369,32 @@ def test_build_report_meta_table_falls_back_when_os_cpu_missing():
             schedule_name="t", started_at=datetime(2026, 8, 16),
         )
         rows = _meta_rows_of(config, "A")
-        assert ["操作系统", "-"] in rows, f"场景 {label}: OS 行应渲染 '-'"
-        assert ["CPU 型号", "-"] in rows, f"场景 {label}: CPU 行应渲染 '-'"
+        # 元信息表固定 5 行
+        assert len(rows) == 5, (
+            f"场景 {label}: 元信息表应为 5 行, 实际 {len(rows)} 行 ({rows!r})"
+        )
+        # 各项数据来源
+        row_keys = {r[0] for r in rows}
+        assert row_keys == {"业务名", "服务器 IP", "SSH 退出码", "耗时", "巡检状态"}, (
+            f"场景 {label}: 行集合不符, 实际 {row_keys!r}"
+        )
+        assert ["业务名", "A"] in rows
+        assert ["服务器 IP", "10.0.0.1"] in rows
+        assert ["巡检状态", "通过"] in rows
+        # 不渲染 OS / CPU 行（无论是否含值）
+        assert not any(r[0] == "操作系统" for r in rows), (
+            f"场景 {label}: 应不渲染「操作系统」行"
+        )
+        assert not any(r[0] == "CPU 型号" for r in rows), (
+            f"场景 {label}: 应不渲染「CPU 型号」行"
+        )
 
 
-def test_build_report_meta_table_falls_back_when_os_cpu_not_string():
-    """OS / CPU 值为非字符串类型（如 None / 数字）时, 渲染为 '-'。
+def test_build_report_meta_table_does_not_render_os_cpu_with_real_values():
+    """``parsed_values`` 含真实 OS / CPU 字符串值时, 元信息表仍然不渲染这两行。
 
-    Returns:
-        None
-    """
-    item = ServerOpsItem(
-        business_name="A", success=True, inspection_status="pass",
-        parsed_values={"os": None, "cpu_model": 12345},
-    )
-    config = build_ops_report_config(
-        summary=OpsSummary(), alerts=OpsAlerts(),
-        server_report=ServerOpsReport(items=[item]),
-        api_report=ApiCheckReport(),
-        ip_map={}, schedule_name="t", started_at=datetime(2026, 8, 16),
-    )
-    rows = _meta_rows_of(config, "A")
-    assert ["操作系统", "-"] in rows
-    assert ["CPU 型号", "-"] in rows
-
-
-def test_field_results_table_includes_ignored_os_cpu_fields():
-    """``field_results`` 含 direction=ignore 的 os / cpu_model 时,
-    字段明细表自动出现 2 行（验证 parser 自动行为）。
+    单独提取一个用例防止 ``test_build_report_meta_table_omits_os_and_cpu_rows``
+    被框架 fixture 误用掩盖「字符串值触发渲染」的回归。
 
     Returns:
         None
@@ -431,49 +403,25 @@ def test_field_results_table_includes_ignored_os_cpu_fields():
         business_name="A", success=True, inspection_status="pass",
         parsed_values={
             "mem_used_pct": 50,
+            "cpu_idle_pct": 80,
+            "load_1m": 1.5,
             "os": "Ubuntu 22.04.3 LTS",
-            "cpu_model": "Intel Xeon E5-2680 v4",
+            "cpu_model": "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
         },
-        field_results=[
-            {"key": "mem_used_pct", "name_zh": "内存使用率", "unit": "%",
-             "value": 50.0, "warn": 80, "crit": 90,
-             "status": "pass", "message": ""},
-            {"key": "os", "name_zh": "操作系统", "unit": "",
-             "value": "Ubuntu 22.04.3 LTS",
-             "warn": None, "crit": None,
-             "status": "unassessed", "message": ""},
-            {"key": "cpu_model", "name_zh": "CPU 型号", "unit": "",
-             "value": "Intel Xeon E5-2680 v4",
-             "warn": None, "crit": None,
-             "status": "unassessed", "message": ""},
-        ],
     )
     config = build_ops_report_config(
         summary=OpsSummary(), alerts=OpsAlerts(),
         server_report=ServerOpsReport(items=[item]),
         api_report=ApiCheckReport(),
-        ip_map={}, schedule_name="t", started_at=datetime(2026, 8, 16),
+        ip_map={"A": "10.0.0.1"},
+        schedule_name="t", started_at=datetime(2026, 8, 16),
     )
-    # 元信息表已含 OS/CPU 两行
-    meta_rows = _meta_rows_of(config, "A")
-    assert ["操作系统", "Ubuntu 22.04.3 LTS"] in meta_rows
-    assert ["CPU 型号", "Intel Xeon E5-2680 v4"] in meta_rows
-    # 字段明细表出现 ignore 字段(unassessed 渲染为「未评估」)
-    field_tables = [
-        s.table for s in config.sections
-        if s.section_type == "table" and s.table.headers == ["指标", "当前值", "阈值", "状态", "说明"]
-    ]
-    assert len(field_tables) == 1
-    field_rows = field_tables[0].rows
-    # 至少含 mem_used_pct + os + cpu_model 3 行
-    metric_names = [r[0] for r in field_rows]
-    assert any("内存使用率" in m for m in metric_names)
-    assert "操作系统" in metric_names
-    assert "CPU 型号" in metric_names
-    # OS / CPU 行「状态」列应为「未评估」(unassessed 中文)
-    os_row = next(r for r in field_rows if r[0] == "操作系统")
-    assert os_row[3] == "未评估"
-    assert os_row[1] == "Ubuntu 22.04.3 LTS"
+    rows = _meta_rows_of(config, "A")
+    keys = {r[0] for r in rows}
+    assert "操作系统" not in keys
+    assert "CPU 型号" not in keys
+    # 业务名行不受影响, OS / CPU 字符串值被吞, 不进任何表行
+    assert len(rows) == 5
 
 
 def test_build_report_config_table_section_headers():

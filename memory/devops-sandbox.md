@@ -182,18 +182,13 @@
 - **使用边界**：本模块**仅**做解析与评估，不负责 `inspection_script` 实际执行、SSH 连接、结果持久化、消息推送；后续 PR 接 `run_inspection_script` / `inspection_run` `@tool` 时应消费本模块三个公开 API。
 - **介质差异化评估（2026-08-15 新增）**：`InspectionFieldRule` 新增 `ssd_warn / ssd_crit` 两个可选成对字段，docstring 列出校验规则（成对 + 有限数字 + 方向序 + ignore 禁止）。`normalize_inspection_fields` 在 warn/crit 校验之后插入 ssd 阈值对校验，错误消息含 `ssd_warn/ssd_crit` / `ssd_warn <= ssd_crit` / `ignore` 上下文便于定位。`_classify_single_value(rule, raw_value, *, allow_string, warn=None, crit=None)` 增 `warn/crit` 关键字参数；`None` 时 fallback 到 `rule.warn/crit`，介质匹配场景下由 `_expand_disks_array` 注入有效阈值。`_expand_disks_array` docstring 追加介质匹配说明：元素 `disk_type` 字段（`"ssd"` / `"hdd"` / 其它） + 规则声明 `ssd_warn/ssd_crit` 时，`disk_type == "ssd"` 走 SSD 阈值、其它（含缺失 / 未知 / `"hdd"`）兜底 base；规则未声明 ssd 阈值时一律回退 base；`InspectionFieldResult.warn/crit` 始终写入「有效阈值」（供前端展示介质匹配后的实际生效值）。`disk_type` 大小写宽容（`strip().lower() == "ssd"`）。
 
-### 巡检 OS / CPU 型号展示字段（2026-08-16 新增）
+### 巡检元信息表（2026-08-16 简化至 5 行）
 
-- **目的**：服务器巡检报告元信息表追加「操作系统」「CPU 型号」两行；展示型元数据，不参与阈值评估。
-- **YAML 字段规则**：`os` / `cpu_model` 两个 `direction=ignore` / `warn=null` / `crit=null` 字段（沿用 `uptime_hours` 模式）。`normalize_inspection_fields` / `evaluate_inspection_fields` 已完整支持 ignore 字段（status=unassessed、原始 value 保留），parser.py **零代码改动**。
-- **Linux 脚本 OS 取值链**（5 级兜底，按优先级择一）：① `/etc/os-release.PRETTY_NAME`（Ubuntu / Debian / CentOS 7+ / RHEL 7+ / Fedora）→ ② `lsb_release -d`（Debian/Ubuntu 老版）→ ③ `/etc/redhat-release`（RHEL 5/6 / CentOS 5/6 老内核）→ ④ `/etc/centos-release`（CentOS 专属兜底）→ ⑤ `uname -srm`（终极兜底，必有输出）。
-- **Linux 脚本 CPU 取值**：`grep -m1 '^model name' /proc/cpuinfo` 取第一条；老内核无 `model name` 字段时兜底 `vendor_id` + `cpu MHz` 拼成 `"<vendor> @ <MHz>MHz"`。
-- **Windows 脚本取值**：全程 `Get-WmiObject Win32_OperatingSystem` / `Win32_Processor`（**不**用 `Get-CimInstance`），保持与既有脚本风格一致，兼容老版 PowerShell 5.1（无 `Get-CimInstance` 习惯）。
-- **JSON 字符串最小转义**：Linux 用 `sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g'`；Windows 用 `-replace '\\','\\\\' -replace '"','\"'`。
-- **报告渲染位置**：`app/scripts/ops/ops_report.py::_server_meta_rows` 元信息表末尾追加「操作系统」「CPU 型号」两行（7 列 → 7 行 2 列）。`parsed_values` 不存在 / 不含两键 / 值为非字符串 / 值为空字符串均降级渲染为 `-`，**不**抛异常，兼容历史数据（既无 os 也无 cpu_model 的旧记录）。
-- **落库兼容**：`server_inspection_records.parsed_values` 与 `server_latest_snapshot.parsed_values` 是 JSONB 全量字段，新 key 自动随 `parsed_values` 写入，**无 migration**。旧记录（本次变更前采集的行）报告再生时两行渲染 `-`，不报错。
-- **前端**：未触碰；运维控制台智能检测已能通过 `parsed_values.get` 透传新字段。
-- **回归保护**：`app/tests/scripts/ops/test_ops_report.py` 新增 4 用例（`test_build_report_includes_os_and_cpu_in_meta_table` / `test_build_report_meta_table_falls_back_when_os_cpu_missing` / `test_build_report_meta_table_falls_back_when_os_cpu_not_string` / `test_field_results_table_includes_ignored_os_cpu_fields`）覆盖「含值正常渲染」「3 类历史缺失降级 -」「非字符串类型降级 -」「字段明细表自动含 ignore 字段」四个维度。ops-report 测试目录 19 → 23 全绿。
+- **当前形态**：`app/scripts/ops/ops_report.py::_server_meta_rows` 元信息表固定 5 行（`业务名 / 服务器 IP / SSH 退出码 / 耗时 / 巡检状态`），不再追加展示型 OS / CPU 型号行。
+- **数据来源**：仅消费 `item.business_name` / `item.exit_code` / `item.duration_ms` / `item.inspection_status`（中文映射）与调用方传入的 `host`（由 `resolve_server_ip_map` 反查），不读 `parsed_values`。
+- **`inspection_fields` 当前契约**：`disk_used_pct` / `mem_used_pct` / `cpu_idle_pct` / `cpu_iowait_pct` / `swap_used_pct` / `inode_used_pct` / `load_1m` / `io_util_pct` / `io_await_ms`（Linux 9 条）；Windows 8 条少 `cpu_idle_pct` 与 `load_1m` 多 `cpu_used_pct`。**不**含 `os` / `cpu_model` / `uptime_hours`——展示型元数据已从当前脚本契约移除。
+- **历史 JSONB 兼容**：旧采集记录的 `parsed_values` 可能仍含 `os` / `cpu_model` 键；当前 `_server_meta_rows` 不消费这些键，吞值不报错，docx 报告不受影响，数据库无需迁移。
+- **回归保护**：`app/tests/scripts/ops/test_ops_report.py` 用例 `test_build_report_meta_table_omits_os_and_cpu_rows`（3 场景断言元信息表固定 5 行且不含 OS / CPU 行）+ `test_build_report_meta_table_does_not_render_os_cpu_with_real_values`（断言带字符串值时不渲染，锁防回归）。
 
 ### 巡检 OS 关键指标告警归类与物理盘列（2026-08-16 新增）
 
