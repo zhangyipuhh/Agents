@@ -252,11 +252,16 @@ def test_build_report_config_structure():
 
 
 def test_build_report_includes_disk_inventory_table():
-    """parsed_values 含异构 disks 数组时生成磁盘介质清单表（6 列）。
+    """parsed_values 含异构 disks 数组时生成磁盘介质清单表（6 列, 按 host_disk 分组）。
 
-    df 元素（无 disk_type）介质列为 '-'；io 元素剥离 mount 尾部 [SSD] 标签、
-    介质列显示 SSD；非 Mapping 噪音元素跳过；新增「物理盘」列承载
-    ``host_disk[disk_index]`` / ``partition`` 分组键。
+    2026-08-16 改造: 按 ``host_disk`` 分组渲染, 每组 1 行 sub-header + N 行
+    partition/IO 数据。本用例覆盖:
+        * 4 元素分属 2 个 host_disk（vda / sda）→ 2 组, 共 2 sub-header + 4 数据行 = 6 行
+        * df 元素（无 disk_type）介质列 = '-'
+        * io 元素 mount 尾部 [SSD] 标签剥离, 介质列显示 SSD
+        * 非 Mapping 噪音元素跳过
+        * sub-header 行介质列: 单介质 → "SSD" / "-"; 介质汇总独立在 col 2
+        * sub-header 行 col 3~6 全为 "-"
 
     Returns:
         None
@@ -287,11 +292,201 @@ def test_build_report_includes_disk_inventory_table():
     ]
     assert len(inventory) == 1
     rows = inventory[0].rows
-    assert len(rows) == 2
-    # 第一行: df 元素无 disk_index > 0 → 仅渲染 host_disk
-    assert rows[0] == ["vda", "/", "-", "42%", "-", "-"]
-    # 第二行: io 元素 host_disk=sda disk_index=0 → 仅渲染 host_disk(不附 [0])
-    assert rows[1] == ["sda", "sda", "SSD", "-", "12.3%", "4.5 ms"]
+    # 2 组（vda / sda）→ 2 sub-header + 2 数据行 = 4 行
+    assert len(rows) == 4
+    # 第 1 组 vda: sub-header + 1 数据行
+    assert rows[0] == ["vda", "-", "-", "-", "-", "-"]   # sub-header
+    assert rows[1] == ["vda", "/", "-", "42%", "-", "-"]  # df 元素
+    # 第 2 组 sda: sub-header + 1 数据行
+    assert rows[2] == ["sda", "SSD", "-", "-", "-", "-"]  # sub-header (组内介质汇总)
+    assert rows[3] == ["sda", "sda", "SSD", "-", "12.3%", "4.5 ms"]  # io 元素
+
+
+def test_build_report_disk_inventory_groups_same_host_disk():
+    """同 host_disk 多元素（多 partition + IO）合并到同一组, sub-header 只出现一次。
+
+    验证分组语义核心: 同一 host_disk 下的 df / io 元素归到同一 sub-header 之下,
+    介质汇总 "SSD+HDD" 拼接两种介质（脚本未提供 HDD 场景, 改用仅一种介质验证单值）;
+    disk_index 升序: disk_index=0 排在 disk_index=2 之前。
+
+    Returns:
+        None
+    """
+    item = ServerOpsItem(
+        business_name="A", success=True, inspection_status="pass",
+        parsed_values={"disks": [
+            {"mount": "/", "disk_used_pct": 42, "host_disk": "sda",
+             "disk_index": 0, "partition": "sda1"},
+            {"mount": "/data", "disk_used_pct": 78, "host_disk": "sda",
+             "disk_index": 0, "partition": "sda2"},
+            {"mount": "sda[SSD]", "io_util_pct": 12.3, "io_await_ms": 4.5,
+             "disk_type": "ssd", "host_disk": "sda", "disk_index": 0,
+             "partition": ""},
+        ]},
+    )
+    config = build_ops_report_config(
+        summary=OpsSummary(), alerts=OpsAlerts(),
+        server_report=ServerOpsReport(items=[item]),
+        api_report=ApiCheckReport(),
+        ip_map={}, schedule_name="t", started_at=datetime(2026, 8, 16),
+    )
+    inventory = [
+        s.table for s in config.sections
+        if s.section_type == "table"
+        and s.table.headers == [
+            "物理盘", "设备/挂载点", "介质", "磁盘使用率", "IO 利用率", "IO 平均等待"
+        ]
+    ]
+    rows = inventory[0].rows
+    # 1 组 → 1 sub-header + 3 数据行 = 4 行
+    assert len(rows) == 4
+    # sub-header: 介质汇总 "SSD" (单介质)
+    assert rows[0] == ["sda", "SSD", "-", "-", "-", "-"]
+    # 数据行: mount 字典序? mount 升序; 但脚本按出现顺序保留; 同 disk_index=0 按 mount 字典序
+    # 排序键为 (0, "/"), (0, "/data"), (0, "sda[SSD]" 剥离后 "sda")
+    # 字典序: "/" < "/data" < "sda"
+    data_rows = rows[1:]
+    assert data_rows[0] == ["sda1", "/", "-", "42%", "-", "-"]
+    assert data_rows[1] == ["sda2", "/data", "-", "78%", "-", "-"]
+    assert data_rows[2] == ["sda", "sda", "SSD", "-", "12.3%", "4.5 ms"]
+
+
+def test_build_report_disk_inventory_groups_multiple_host_disks():
+    """多 host_disk 分组: 验证组间排序 (disk_index 升序) + 介质汇总。
+
+    2 个 host_disk（nvme0n1 排前, sda 排后; 都含 SSD 元素）→ 2 sub-header + 4 数据行 = 6 行;
+    sub-header 介质列单介质 → "SSD"; disk_index 验证组间排序。
+
+    Returns:
+        None
+    """
+    item = ServerOpsItem(
+        business_name="A", success=True, inspection_status="pass",
+        parsed_values={"disks": [
+            {"mount": "sda[SSD]", "io_util_pct": 12.3, "io_await_ms": 4.5,
+             "disk_type": "ssd", "host_disk": "sda", "disk_index": 1,
+             "partition": ""},
+            {"mount": "/", "disk_used_pct": 42, "host_disk": "sda",
+             "disk_index": 1, "partition": "sda1"},
+            {"mount": "nvme0n1[SSD]", "io_util_pct": 8.1, "io_await_ms": 2.3,
+             "disk_type": "ssd", "host_disk": "nvme0n1", "disk_index": 0,
+             "partition": ""},
+            {"mount": "/", "disk_used_pct": 30, "host_disk": "nvme0n1",
+             "disk_index": 0, "partition": "nvme0n1p1"},
+        ]},
+    )
+    config = build_ops_report_config(
+        summary=OpsSummary(), alerts=OpsAlerts(),
+        server_report=ServerOpsReport(items=[item]),
+        api_report=ApiCheckReport(),
+        ip_map={}, schedule_name="t", started_at=datetime(2026, 8, 16),
+    )
+    inventory = [
+        s.table for s in config.sections
+        if s.section_type == "table"
+        and s.table.headers == [
+            "物理盘", "设备/挂载点", "介质", "磁盘使用率", "IO 利用率", "IO 平均等待"
+        ]
+    ]
+    rows = inventory[0].rows
+    # 2 组 → 2 sub-header + 4 数据行 = 6 行
+    assert len(rows) == 6
+    # 组间按 disk_index 升序: nvme0n1 (idx=0) 在前, sda (idx=1) 在后
+    assert rows[0] == ["nvme0n1", "SSD", "-", "-", "-", "-"]  # sub-header
+    # nvme0n1 组数据行: disk_index=0 内 (0, "/"), (0, "nvme0n1[SSD]" 剥离后 "nvme0n1")
+    assert rows[1] == ["nvme0n1p1", "/", "-", "30%", "-", "-"]
+    assert rows[2] == ["nvme0n1", "nvme0n1", "SSD", "-", "8.1%", "2.3 ms"]
+    # sda 组
+    assert rows[3] == ["sda", "SSD", "-", "-", "-", "-"]  # sub-header
+    assert rows[4] == ["sda1", "/", "-", "42%", "-", "-"]
+    assert rows[5] == ["sda", "sda", "SSD", "-", "12.3%", "4.5 ms"]
+
+
+def test_build_report_disk_inventory_orphan_group_for_missing_host_disk():
+    """部分元素缺 host_disk → 归入 _orphan_ 虚拟组, 排在最后, 不与有 host_disk 元素混组。
+
+    Returns:
+        None
+    """
+    item = ServerOpsItem(
+        business_name="A", success=True, inspection_status="pass",
+        parsed_values={"disks": [
+            {"mount": "/", "disk_used_pct": 42, "host_disk": "sda",
+             "disk_index": 0, "partition": ""},
+            {"mount": "sda[SSD]", "io_util_pct": 12.3, "io_await_ms": 4.5,
+             "disk_type": "ssd", "host_disk": "sda", "disk_index": 0,
+             "partition": ""},
+            # 缺 host_disk 元素
+            {"mount": "/legacy", "disk_used_pct": 80},
+            {"mount": "loop0[HDD]", "io_util_pct": 5, "io_await_ms": 1,
+             "disk_type": "hdd"},
+        ]},
+    )
+    config = build_ops_report_config(
+        summary=OpsSummary(), alerts=OpsAlerts(),
+        server_report=ServerOpsReport(items=[item]),
+        api_report=ApiCheckReport(),
+        ip_map={}, schedule_name="t", started_at=datetime(2026, 8, 16),
+    )
+    inventory = [
+        s.table for s in config.sections
+        if s.section_type == "table"
+        and s.table.headers == [
+            "物理盘", "设备/挂载点", "介质", "磁盘使用率", "IO 利用率", "IO 平均等待"
+        ]
+    ]
+    rows = inventory[0].rows
+    # sda 组 (1 sub-header + 2 数据行) + _orphan_ 组 (1 sub-header + 2 数据行) = 6 行
+    assert len(rows) == 6
+    # sda 组在前 (disk_index=0)
+    assert rows[0] == ["sda", "SSD", "-", "-", "-", "-"]
+    assert rows[1] == ["sda", "/", "-", "42%", "-", "-"]
+    assert rows[2] == ["sda", "sda", "SSD", "-", "12.3%", "4.5 ms"]
+    # _orphan_ 组在后; 介质汇总 "HDD" (loop0 有 disk_type=hdd, /legacy 无)
+    assert rows[3] == ["_orphan_", "HDD", "-", "-", "-", "-"]
+    # /legacy 元素无 host_disk / partition → _format_host_disk 返回 "-"
+    assert rows[4] == ["-", "/legacy", "-", "80%", "-", "-"]
+    assert rows[5] == ["-", "loop0", "HDD", "-", "5%", "1 ms"]
+
+
+def test_build_report_disk_inventory_keeps_flat_when_all_missing_host_disk():
+    """全部元素都缺 host_disk → 退化为平铺渲染, 不生成 sub-header。
+
+    兼容 2026-08-15 旧契约: 历史快照 (disks 元素不含 host_disk) 的报告再生时
+    仍按平铺行为, 不引入额外 sub-header 行 (避免行数膨胀 + 视觉割裂)。
+
+    Returns:
+        None
+    """
+    item = ServerOpsItem(
+        business_name="A", success=True, inspection_status="pass",
+        parsed_values={"disks": [
+            {"mount": "/", "disk_used_pct": 42},
+            {"mount": "/data", "disk_used_pct": 78},
+            {"mount": "loop0[HDD]", "io_util_pct": 5, "io_await_ms": 1,
+             "disk_type": "hdd"},
+        ]},
+    )
+    config = build_ops_report_config(
+        summary=OpsSummary(), alerts=OpsAlerts(),
+        server_report=ServerOpsReport(items=[item]),
+        api_report=ApiCheckReport(),
+        ip_map={}, schedule_name="t", started_at=datetime(2026, 8, 16),
+    )
+    inventory = [
+        s.table for s in config.sections
+        if s.section_type == "table"
+        and s.table.headers == [
+            "物理盘", "设备/挂载点", "介质", "磁盘使用率", "IO 利用率", "IO 平均等待"
+        ]
+    ]
+    rows = inventory[0].rows
+    # 平铺: 3 元素 → 3 行, 无 sub-header
+    assert len(rows) == 3
+    # 无 host_disk → _format_host_disk 返回 "-" (partition 也空)
+    assert rows[0] == ["-", "/", "-", "42%", "-", "-"]
+    assert rows[1] == ["-", "/data", "-", "78%", "-", "-"]
+    assert rows[2] == ["-", "loop0", "HDD", "-", "5%", "1 ms"]
 
 
 def test_build_report_skips_inventory_table_without_disks():
