@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.shared.utils.ssh.executor import SSHExecResult, execute_script
+from app.shared.utils.ssh.executor import SSHExecResult, _decode_remote_bytes, execute_script
 
 
 @pytest.fixture
@@ -84,6 +84,34 @@ def test_execute_script_empty_script_does_not_connect(monkeypatch, ssh_config):
         execute_script(ssh_config, "\n")
 
     paramiko_mock.SSHClient.assert_not_called()
+
+
+def test_decode_remote_bytes_uses_utf8_for_clean_input():
+    """远端输出为合法 UTF-8 时,直接返回 UTF-8 解码结果。"""
+    raw = "OK\n".encode("utf-8")
+    assert _decode_remote_bytes(raw) == "OK"
+
+
+def test_decode_remote_bytes_falls_back_to_gbk_for_chinese_stderr():
+    """Windows 中文环境 stderr 默认 GBK 输出,>=3 个 U+FFFD 时 fallback GBK 还原中文。
+
+    2026-08-16 改造:原策略硬编码 UTF-8 + errors="replace",把中文 stderr 全部替换为
+    U+FFFD,日志中无法读出原文。本测试锁定 GBK fallback 行为。
+    """
+    # "参数太长" GBK 编码 = b2ce cafd ccab b3a4
+    raw = bytes([0xb2, 0xce, 0xca, 0xfd, 0xcc, 0xab, 0xb3, 0xa4])
+    decoded = _decode_remote_bytes(raw)
+    # GBK fallback 应能还原中文
+    assert "参" in decoded
+    assert "太" in decoded
+    assert "长" in decoded
+    # 不应再有 U+FFFD
+    assert "\ufffd" not in decoded
+
+
+def test_decode_remote_bytes_handles_empty_input():
+    """空字节流直接返回空字符串,不抛异常。"""
+    assert _decode_remote_bytes(b"") == ""
 
 
 def test_execute_script_closes_stdin_write_side(monkeypatch, ssh_config):

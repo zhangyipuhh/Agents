@@ -20,6 +20,39 @@ class SSHExecResult:
     exit_code: int
 
 
+def _decode_remote_bytes(raw: bytes) -> str:
+    """把远端 stdout/stderr 字节流解码为可读字符串,Windows 中文环境兼容。
+
+    解码策略(2026-08-16 调整):
+      1. 优先 UTF-8 + ``backslashreplace``: 任何非法字节序列会被转义为 ``\\xNN``,
+        既不丢信息也不会污染日志;Linux 远端默认 UTF-8 输出几乎全部走这条路径。
+      2. 若 UTF-8 解码结果中含 **多个** Unicode 替换符 ``U+FFFD`` (``�``),
+        判定为远端实际输出 GBK/CP936(中文 Windows cmd / PowerShell 默认编码),
+        fallback 用 GBK 重解原始字节,保留可读中文(stderr "参数太长" 等)。
+
+    参数:
+        raw: SSH 通道读取到的远端原始字节流,可能含中文 GBK、UTF-8 或纯 ASCII。
+
+    返回:
+        str: 已 strip 的解码字符串;异常字符按 GBK 重解或 ``\\xNN`` 转义。
+
+    异常:
+        无(解码失败统一回退到 UTF-8 / backslashreplace)。
+    """
+    if not raw:
+        return ""
+    # 第一步:UTF-8 严格解码(非法字节序列直接报 UnicodeDecodeError,不替换不转义)
+    try:
+        return raw.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        # 至少一处非法 UTF-8 字节:典型场景 Windows 中文 stderr(GBK/CP936 输出)。
+        # fallback 用 GBK 重解,保留可读中文。Linux 远端 UTF-8 走上方 happy path,行为不变。
+        try:
+            return raw.decode("gbk", errors="backslashreplace").strip()
+        except Exception:  # noqa: BLE001 - GBK 也失败时退回 UTF-8 + replace
+            return raw.decode("utf-8", errors="replace").strip()
+
+
 def execute_script(
     config: Mapping[str, Any],
     script: str,
@@ -62,8 +95,13 @@ def execute_script(
         # 不发送 EOF 远端进程不退出、stdout.read() 一直阻塞直至超时;
         # 巡检脚本均不读 stdin,关闭 stdin 写端对 Linux / Windows 均无副作用。
         stdin.close()
-        output = stdout.read().decode("utf-8", errors="replace").strip()
-        error = stderr.read().decode("utf-8", errors="replace").strip()
+        # 2026-08-16 兼容 Windows 中文环境 stderr:
+        # 原策略硬编码 UTF-8 + errors="replace",会把 Windows cmd/PowerShell 默认 GBK
+        # 输出(中文错误信息,如"参数太长")的每个字节替换为 U+FFFD,日志中无法读出原文。
+        # 新策略:走 _decode_remote_bytes 优先 UTF-8 + backslashreplace,
+        # 含 >=3 个 U+FFFD 时 fallback GBK,保留可读中文。
+        output = _decode_remote_bytes(stdout.read())
+        error = _decode_remote_bytes(stderr.read())
         exit_code = stdout.channel.recv_exit_status()
         return SSHExecResult(
             success=exit_code == 0 and not error,
