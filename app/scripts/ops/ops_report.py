@@ -41,6 +41,12 @@ _INSPECTION_STATUS_ZH = {
 }
 
 
+# OS 关键指标字段集合(2026-08-16 新增):yaml 巡检脚本新增的 3 个 high 方向规则,
+# 命中告警时在 metric 上追加「(OS 指标)」后缀,便于运维排障时区分「基础资源告警」
+# 与「OS 关键指标告警」两类语义;其余字段(unassessed / pass / 非命中)不受影响。
+_OS_METRIC_KEYS = frozenset({"cpu_iowait_pct", "swap_used_pct", "inode_used_pct"})
+
+
 @dataclass(frozen=True)
 class OpsSummary:
     """综述统计口径。
@@ -206,7 +212,14 @@ def compute_ops_alerts(server_report, api_report) -> OpsAlerts:
                 continue
             name_zh = field.get("name_zh") or field.get("key") or ""
             message = field.get("message") or ""
-            metric = f"{name_zh}（{message}）" if message else name_zh
+            field_key = field.get("key") or ""
+            base_metric = f"{name_zh}（{message}）" if message else name_zh
+            # OS 关键指标字段(cpu_iowait_pct / swap_used_pct / inode_used_pct)
+            # 在 metric 上追加「(OS 指标)」后缀;其余字段不受影响。
+            if field_key in _OS_METRIC_KEYS:
+                metric = f"{base_metric}（OS 指标）"
+            else:
+                metric = base_metric
             server_items.append(OpsAlertItem(
                 business=srv.business_name,
                 metric=metric,
@@ -292,8 +305,38 @@ def resolve_server_ip_map(
 # Word 报告配置构造(用于 docx 渲染层)
 # --------------------------------------------------------------------------
 
+def _format_host_disk(entry: Mapping[str, Any]) -> str:
+    """根据 ``entry`` 的 ``host_disk`` / ``disk_index`` / ``partition`` 三键渲染物理盘标签。
+
+    优先级:
+        1. ``host_disk`` 非空 → ``host_disk[disk_index]``（如 ``sda[0]`` /
+           ``PHYSICALDRIVE0[0]``）；``disk_index`` 为 0 / 缺失 / 非整数时仅渲染
+           ``host_disk``（如 ``sda`` / ``PHYSICALDRIVE0``）。
+        2. ``host_disk`` 空但 ``partition`` 非空 → 仅渲染 ``partition``（如
+           ``sda1`` / ``C:``）。
+        3. 两者均空 → ``-``。
+
+    参数:
+        entry: ``parsed_values["disks"]`` 单条元素, 期望为 Mapping。
+
+    返回:
+        str: 物理盘列的渲染文本。
+    """
+    host_disk = entry.get("host_disk")
+    if isinstance(host_disk, str) and host_disk.strip():
+        host_clean = host_disk.strip()
+        idx_raw = entry.get("disk_index")
+        if isinstance(idx_raw, int) and not isinstance(idx_raw, bool) and idx_raw > 0:
+            return f"{host_clean}[{idx_raw}]"
+        return host_clean
+    partition = entry.get("partition")
+    if isinstance(partition, str) and partition.strip():
+        return partition.strip()
+    return "-"
+
+
 def _server_disk_inventory_rows(item) -> List[List[str]]:
-    """从 ``parsed_values["disks"]`` 提取磁盘介质清单表行(5 列)。
+    """从 ``parsed_values["disks"]`` 提取磁盘介质清单表行(6 列)。
 
     仅渲染 Mapping 元素, 非 Mapping 噪音元素跳过; ``parsed_values`` 非 Mapping /
     无 ``disks`` 键 / 数组为空时返回空列表, 由调用方跳过整表(优雅降级,
@@ -303,9 +346,10 @@ def _server_disk_inventory_rows(item) -> List[List[str]]:
         item: ``ServerOpsItem``。
 
     返回:
-        List[List[str]]: 表行, 列为 ``[设备/挂载点, 介质, 磁盘使用率, IO 利用率,
-        IO 平均等待]``; 缺失值渲染为 ``-``; mount 尾部的 ``[SSD]`` / ``[HDD]``
-        标签在设备列剥离(介质列已承载该信息)。
+        List[List[str]]: 表行, 列为 ``[物理盘, 设备/挂载点, 介质, 磁盘使用率,
+        IO 利用率, IO 平均等待]``; 缺失值渲染为 ``-``; mount 尾部的 ``[SSD]`` /
+        ``[HDD]`` 标签在设备列剥离(介质列已承载该信息); 物理盘列承载
+        ``host_disk[disk_index]`` / ``partition`` 分组键。
     """
     rows: List[List[str]] = []
     parsed = getattr(item, "parsed_values", None)
@@ -331,6 +375,7 @@ def _server_disk_inventory_rows(item) -> List[List[str]]:
         )
         await_v = entry.get("io_await_ms")
         rows.append([
+            _format_host_disk(entry),
             mount,
             dtype,
             _fmt_pct(entry.get("disk_used_pct")),
@@ -375,6 +420,40 @@ def _server_field_rows(item) -> List[List[str]]:
     rows: List[List[str]] = []
     for fr in item.field_results or []:
         name_zh = fr.get("name_zh") or fr.get("key") or ""
+        message = fr.get("message") or ""
+        metric = f"{name_zh}（{message}）" if message else name_zh
+        rows.append([
+            metric,
+            _format_field_value(fr),
+            _format_field_threshold(fr),
+            _INSPECTION_STATUS_ZH.get(fr.get("status") or "unassessed", "未评估"),
+            message or "-",
+        ])
+    return rows
+
+
+def _server_os_metric_rows(item) -> List[List[str]]:
+    """构造单个业务的「OS 关键指标」小节行(5 列)。
+
+    仅渲染 :data:`_OS_METRIC_KEYS` 集合内 3 字段（``cpu_iowait_pct`` /
+    ``swap_used_pct`` / ``inode_used_pct``）中 ``status in {"warn", "crit"}``
+    的条目；其余字段（pass / unassessed / 非命中）一律跳过。返回空列表
+    时由调用方跳过整个 OS 关键指标小节（含标题与表格），避免空表噪音。
+
+    参数:
+        item: ``ServerOpsItem``。
+
+    返回:
+        List[List[str]]: 表行, 列为 ``[指标, 当前值, 阈值, 状态, 说明]``。
+    """
+    rows: List[List[str]] = []
+    for fr in item.field_results or []:
+        key = fr.get("key")
+        if key not in _OS_METRIC_KEYS:
+            continue
+        if fr.get("status") not in {"warn", "crit"}:
+            continue
+        name_zh = fr.get("name_zh") or key
         message = fr.get("message") or ""
         metric = f"{name_zh}（{message}）" if message else name_zh
         rows.append([
@@ -511,9 +590,9 @@ def build_ops_report_config(
             sections.append(SectionConfig(
                 section_type="table",
                 table=TableSectionConfig(
-                    headers=["设备/挂载点", "介质", "磁盘使用率", "IO 利用率", "IO 平均等待"],
+                    headers=["物理盘", "设备/挂载点", "介质", "磁盘使用率", "IO 利用率", "IO 平均等待"],
                     rows=inventory_rows,
-                    column_widths=[4.0, 2.0, 3.0, 3.0, 3.0],
+                    column_widths=[3.0, 3.0, 2.0, 3.0, 2.0, 2.0],
                 ),
             ))
         # SSH 失败/跳过: 不渲染字段明细表, 追加说明段
@@ -535,6 +614,26 @@ def build_ops_report_config(
                 status_column=3,
             ),
         ))
+        # OS 关键指标小节（2026-08-16 新增）：cpu_iowait_pct / swap_used_pct /
+        # inode_used_pct 三字段命中告警时单独呈现，便于运维快速定位 OS 层瓶颈。
+        # 仅在 field_results 含该 3 字段的 warn/crit 时插入；无触发不渲染
+        # （避免空表噪音，与字段明细表共存）。
+        os_rows = _server_os_metric_rows(item)
+        if os_rows:
+            sections.append(SectionConfig(
+                section_type="heading",
+                content=f"{item.business_name} · OS 关键指标",
+                level=3,
+            ))
+            sections.append(SectionConfig(
+                section_type="table",
+                table=TableSectionConfig(
+                    headers=["指标", "当前值", "阈值", "状态", "说明"],
+                    rows=os_rows,
+                    column_widths=[5.0, 3.0, 3.0, 2.0, 2.0],
+                    status_column=3,
+                ),
+            ))
 
     # 4. 接口
     sections.append(SectionConfig(section_type="heading", content="四、接口健康检查", level=1))

@@ -252,10 +252,11 @@ def test_build_report_config_structure():
 
 
 def test_build_report_includes_disk_inventory_table():
-    """parsed_values 含异构 disks 数组时生成磁盘介质清单表（5 列）。
+    """parsed_values 含异构 disks 数组时生成磁盘介质清单表（6 列）。
 
     df 元素（无 disk_type）介质列为 '-'；io 元素剥离 mount 尾部 [SSD] 标签、
-    介质列显示 SSD；非 Mapping 噪音元素跳过。
+    介质列显示 SSD；非 Mapping 噪音元素跳过；新增「物理盘」列承载
+    ``host_disk[disk_index]`` / ``partition`` 分组键。
 
     Returns:
         None
@@ -263,9 +264,11 @@ def test_build_report_includes_disk_inventory_table():
     item = ServerOpsItem(
         business_name="A", success=True, inspection_status="pass",
         parsed_values={"disks": [
-            {"mount": "/", "disk_used_pct": 42},
+            {"mount": "/", "disk_used_pct": 42, "host_disk": "vda",
+             "disk_index": 0, "partition": ""},
             {"mount": "sda[SSD]", "io_util_pct": 12.3, "io_await_ms": 4.5,
-             "disk_type": "ssd"},
+             "disk_type": "ssd", "host_disk": "sda", "disk_index": 0,
+             "partition": ""},
             "noise",
         ]},
     )
@@ -278,13 +281,17 @@ def test_build_report_includes_disk_inventory_table():
     inventory = [
         s.table for s in config.sections
         if s.section_type == "table"
-        and s.table.headers == ["设备/挂载点", "介质", "磁盘使用率", "IO 利用率", "IO 平均等待"]
+        and s.table.headers == [
+            "物理盘", "设备/挂载点", "介质", "磁盘使用率", "IO 利用率", "IO 平均等待"
+        ]
     ]
     assert len(inventory) == 1
     rows = inventory[0].rows
     assert len(rows) == 2
-    assert rows[0] == ["/", "-", "42%", "-", "-"]
-    assert rows[1] == ["sda", "SSD", "-", "12.3%", "4.5 ms"]
+    # 第一行: df 元素无 disk_index > 0 → 仅渲染 host_disk
+    assert rows[0] == ["vda", "/", "-", "42%", "-", "-"]
+    # 第二行: io 元素 host_disk=sda disk_index=0 → 仅渲染 host_disk(不附 [0])
+    assert rows[1] == ["sda", "sda", "SSD", "-", "12.3%", "4.5 ms"]
 
 
 def test_build_report_skips_inventory_table_without_disks():
@@ -534,3 +541,203 @@ def test_build_email_body_no_alerts_omits_section():
     assert "—— 综述 ——" in body
     assert "—— 关键告警 ——" not in body
     assert "—— 附件 ——" not in body
+
+
+# --------------------------------------------------------------------------
+# 2026-08-16 新增: 物理盘列渲染 3 场景 + OS 关键指标告警归类与报告小节
+# --------------------------------------------------------------------------
+
+
+def test_inventory_rows_host_disk_with_disk_index():
+    """``host_disk`` + ``disk_index > 0`` → ``host_disk[index]`` 拼接形式。
+
+    覆盖 ``_format_host_disk`` 的最高优先级分支;以 Linux 分区
+    ``sda`` + ``disk_index=1`` 为例,期望 ``sda[1]``;Windows
+    ``PHYSICALDRIVE0`` + ``disk_index=2`` → ``PHYSICALDRIVE0[2]``。
+
+    Returns:
+        None
+    """
+    from app.scripts.ops.ops_report import _format_host_disk
+
+    assert _format_host_disk({
+        "host_disk": "sda", "disk_index": 1, "partition": "sda1",
+    }) == "sda[1]"
+    assert _format_host_disk({
+        "host_disk": "PHYSICALDRIVE0", "disk_index": 2,
+        "partition": "D:",
+    }) == "PHYSICALDRIVE0[2]"
+    # disk_index=0 → 不拼接,仅 host_disk（避免「sda[0]」噪音）
+    assert _format_host_disk({
+        "host_disk": "sda", "disk_index": 0, "partition": "",
+    }) == "sda"
+
+
+def test_inventory_rows_host_disk_only_without_index():
+    """``host_disk`` 非空但 ``disk_index`` 缺失 / 非整数 → 仅渲染 ``host_disk``。"""
+    from app.scripts.ops.ops_report import _format_host_disk
+
+    # disk_index 缺失
+    assert _format_host_disk({"host_disk": "nvme0n1"}) == "nvme0n1"
+    # disk_index 为 None
+    assert _format_host_disk({
+        "host_disk": "sda", "disk_index": None,
+    }) == "sda"
+    # disk_index 为 bool（Python 中 int 子类,应被拦截）
+    assert _format_host_disk({
+        "host_disk": "sda", "disk_index": True,
+    }) == "sda"
+    # disk_index 为字符串（应被拒绝,退回 host_disk）
+    assert _format_host_disk({
+        "host_disk": "sda", "disk_index": "1",
+    }) == "sda"
+
+
+def test_inventory_rows_fallback_to_partition_or_dash():
+    """``host_disk`` 空时降级:有 ``partition`` → 仅 partition;均空 → ``-``。"""
+    from app.scripts.ops.ops_report import _format_host_disk
+
+    # 仅 partition(Windows 盘符场景)
+    assert _format_host_disk({"host_disk": "", "partition": "C:"}) == "C:"
+    assert _format_host_disk({"partition": "sda2"}) == "sda2"
+    # partition 含前后空白 → strip
+    assert _format_host_disk({"partition": "  D:  "}) == "D:"
+    # 两者均空 → '-'
+    assert _format_host_disk({}) == "-"
+    assert _format_host_disk({"host_disk": "", "partition": ""}) == "-"
+    # 非字符串类型 → '-'
+    assert _format_host_disk({"host_disk": None, "partition": 123}) == "-"
+
+
+def test_compute_alerts_os_metric_keys_get_suffix():
+    """``cpu_iowait_pct`` / ``swap_used_pct`` / ``inode_used_pct`` 命中告警时,
+    ``OpsAlertItem.metric`` 自动追加「(OS 指标)」后缀;其他字段不受影响。
+
+    Returns:
+        None
+    """
+    srv = ServerOpsReport(items=[
+        ServerOpsItem(
+            business_name="A", success=True, inspection_status="crit",
+            field_results=[
+                {"key": "cpu_iowait_pct", "name_zh": "CPU iowait 占比",
+                 "unit": "%", "value": 45.0, "direction": "high",
+                 "warn": 20.0, "crit": 40.0,
+                 "status": "crit", "message": ""},
+                {"key": "swap_used_pct", "name_zh": "交换分区使用率",
+                 "unit": "%", "value": 35.0, "direction": "high",
+                 "warn": 30.0, "crit": 60.0,
+                 "status": "warn", "message": ""},
+                {"key": "mem_used_pct", "name_zh": "内存使用率",
+                 "unit": "%", "value": 92.0, "direction": "high",
+                 "warn": 80.0, "crit": 90.0,
+                 "status": "crit", "message": ""},
+            ],
+        ),
+    ])
+    alerts = compute_ops_alerts(srv, ApiCheckReport())
+    assert len(alerts.server_warn_crit) == 3
+
+    metric_by_key = {item.metric: item for item in alerts.server_warn_crit}
+    # OS 指标 2 条：带「（OS 指标）」后缀(全角中文括号,与代码实现一致)
+    os_metric_keys = [m for m in metric_by_key if "（OS 指标）" in m]
+    assert len(os_metric_keys) == 2
+    assert "CPU iowait 占比（OS 指标）" in metric_by_key
+    assert "交换分区使用率（OS 指标）" in metric_by_key
+    # 内存使用率（非 OS 指标）不带后缀
+    assert "内存使用率" in metric_by_key
+    mem_alert = metric_by_key["内存使用率"]
+    assert "（OS 指标）" not in mem_alert.metric
+
+
+def test_build_report_includes_os_metric_section_on_warn_crit():
+    """``field_results`` 含新 3 字段 warn/crit → 报告追加「OS 关键指标」小节。
+
+    触发条件: ``key in {cpu_iowait_pct, swap_used_pct, inode_used_pct}``
+    且 ``status in {warn, crit}``。新增三级标题 + 5 列小表格。
+
+    Returns:
+        None
+    """
+    item = ServerOpsItem(
+        business_name="A", success=True, inspection_status="crit",
+        field_results=[
+            {"key": "mem_used_pct", "name_zh": "内存使用率", "unit": "%",
+             "value": 50.0, "warn": 80.0, "crit": 90.0,
+             "status": "pass", "message": ""},
+            {"key": "cpu_iowait_pct", "name_zh": "CPU iowait 占比",
+             "unit": "%", "value": 45.0, "warn": 20.0, "crit": 40.0,
+             "status": "crit", "message": ""},
+            {"key": "swap_used_pct", "name_zh": "交换分区使用率",
+             "unit": "%", "value": 35.0, "warn": 30.0, "crit": 60.0,
+             "status": "warn", "message": ""},
+        ],
+    )
+    config = build_ops_report_config(
+        summary=OpsSummary(), alerts=OpsAlerts(),
+        server_report=ServerOpsReport(items=[item]),
+        api_report=ApiCheckReport(),
+        ip_map={}, schedule_name="t", started_at=datetime(2026, 8, 16),
+    )
+    # 三级标题断言
+    headings = [s.content for s in config.sections if s.section_type == "heading"]
+    assert "A · OS 关键指标" in headings
+    # 5 列表格在 docs 中按出现顺序排列: 先字段明细表(3 行含 mem_used_pct)、
+    # 后 OS 关键指标表(2 行不含 mem_used_pct)。通过"不含 mem_used_pct"
+    # + "行数 == 2" 双重条件精确识别 OS 指标表。
+    five_col_tables = [
+        s.table for s in config.sections
+        if s.section_type == "table"
+        and s.table.headers == ["指标", "当前值", "阈值", "状态", "说明"]
+    ]
+    assert len(five_col_tables) == 2, f"应出现 2 个 5 列表格,实际 {len(five_col_tables)}"
+    os_table = next(
+        tbl for tbl in five_col_tables
+        if "内存使用率" not in [r[0] for r in tbl.rows]
+    )
+    assert len(os_table.rows) == 2
+    # 状态列中文
+    status_by_metric = {r[0]: r[3] for r in os_table.rows}
+    assert status_by_metric["CPU iowait 占比"] == "严重"
+    assert status_by_metric["交换分区使用率"] == "告警"
+
+
+def test_build_report_omits_os_metric_section_when_no_alerts():
+    """``field_results`` 中新 3 字段全部 pass / unassessed → 不渲染 OS 关键指标小节。
+
+    Returns:
+        None
+    """
+    item = ServerOpsItem(
+        business_name="A", success=True, inspection_status="pass",
+        field_results=[
+            {"key": "mem_used_pct", "name_zh": "内存使用率", "unit": "%",
+             "value": 50.0, "warn": 80.0, "crit": 90.0,
+             "status": "pass", "message": ""},
+            {"key": "cpu_iowait_pct", "name_zh": "CPU iowait 占比",
+             "unit": "%", "value": 5.0, "warn": 20.0, "crit": 40.0,
+             "status": "pass", "message": ""},
+            {"key": "swap_used_pct", "name_zh": "交换分区使用率",
+             "unit": "%", "value": 5.0, "warn": 30.0, "crit": 60.0,
+             "status": "pass", "message": ""},
+            {"key": "inode_used_pct", "name_zh": "inode 使用率",
+             "unit": "%", "value": 10.0, "warn": 80.0, "crit": 90.0,
+             "status": "pass", "message": ""},
+        ],
+    )
+    config = build_ops_report_config(
+        summary=OpsSummary(), alerts=OpsAlerts(),
+        server_report=ServerOpsReport(items=[item]),
+        api_report=ApiCheckReport(),
+        ip_map={}, schedule_name="t", started_at=datetime(2026, 8, 16),
+    )
+    # 三级标题断言:不应出现「OS 关键指标」
+    headings = [s.content for s in config.sections if s.section_type == "heading"]
+    assert not any("OS 关键指标" in h for h in headings)
+    # 5 列 OS 指标小表格不应存在（仅字段明细表含 5 列 4 行）
+    five_col_tables = [
+        s.table for s in config.sections
+        if s.section_type == "table"
+        and s.table.headers == ["指标", "当前值", "阈值", "状态", "说明"]
+    ]
+    assert len(five_col_tables) == 1  # 仅字段明细表

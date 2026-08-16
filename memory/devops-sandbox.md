@@ -195,6 +195,18 @@
 - **前端**：未触碰；运维控制台智能检测已能通过 `parsed_values.get` 透传新字段。
 - **回归保护**：`app/tests/scripts/ops/test_ops_report.py` 新增 4 用例（`test_build_report_includes_os_and_cpu_in_meta_table` / `test_build_report_meta_table_falls_back_when_os_cpu_missing` / `test_build_report_meta_table_falls_back_when_os_cpu_not_string` / `test_field_results_table_includes_ignored_os_cpu_fields`）覆盖「含值正常渲染」「3 类历史缺失降级 -」「非字符串类型降级 -」「字段明细表自动含 ignore 字段」四个维度。ops-report 测试目录 19 → 23 全绿。
 
+### 巡检 OS 关键指标告警归类与物理盘列（2026-08-16 新增）
+
+- **目的**：把 YAML 新增的 3 类契约在 docx 报告层完整呈现 ——「物理盘」列承载 `host_disk/disk_index/partition` 分组键；「OS 关键指标」小节单独呈现 `cpu_iowait_pct / swap_used_pct / inode_used_pct` 告警；告警列表给该 3 字段的 metric 加「（OS 指标）」业务语义后缀。
+- **报告层改动文件**：`app/scripts/ops/ops_report.py`（唯一）。
+- **解析/服务层零改动**：`parser.py` 已支持 `direction=ignore`（2026-07-22）/ `ssd_warn/ssd_crit`（2026-08-15）；`_expand_disks_array` 仅消费 `entry[rule.key]` 与 `entry["disk_type"]`，对 `host_disk/disk_index/partition/mount` 等冗余字段透明忽略（契约保留）。
+- **`_format_host_disk(entry)`**：根据 disks 元素 3 键按优先级渲染「物理盘」列：① `host_disk` 非空 → `host_disk[disk_index]`（如 `sda[1]` / `PHYSICALDRIVE0[2]`）；`disk_index=0` / 缺失 / 非整数仅渲染 `host_disk`；② `host_disk` 空但 `partition` 非空 → 仅渲染 `partition`；③ 两者均空 → `-`。`isinstance(idx_raw, int) and not isinstance(idx_raw, bool)` 显式拦截 Python `int` 子类 `bool`；字符串类型 `disk_index` 退回仅渲染 `host_disk`。
+- **`_server_disk_inventory_rows` 扩为 6 列**：`[物理盘, 设备/挂载点, 介质, 磁盘使用率, IO 利用率, IO 平均等待]`，`column_widths=[3.0, 3.0, 2.0, 3.0, 2.0, 2.0]`（总宽 15 字符，与历史 5 列布局对齐，docx 排版不变）。`_format_host_disk` 在 mount 列前追加；mount 列仍剥离尾部 `[SSD]` / `[HDD]` 标签。
+- **`compute_ops_alerts` 告警归类**：模块级常量 `_OS_METRIC_KEYS = frozenset({"cpu_iowait_pct", "swap_used_pct", "inode_used_pct"})`；命中该集合的 field 在 `OpsAlertItem.metric` 上追加「（OS 指标）」后缀（全角中文括号，与既有 `（message）` 风格一致）。其余字段（含 `mem_used_pct` / `load_1m` / `io_util_pct` 等基础资源）不受影响。
+- **「OS 关键指标」小节**：`_server_os_metric_rows(item)` 仅渲染 `_OS_METRIC_KEYS` 集合内 3 字段中 `status in {"warn", "crit"}` 的条目；返回空列表时调用方跳过整段（标题 + 表格均不渲染，避免空表噪音）。章节标题 `<业务名> · OS 关键指标`（level=3），表格沿用字段明细表 5 列表头（`[指标, 当前值, 阈值, 状态, 说明]`，column_widths 与字段明细表一致）。
+- **触发链路**：`build_ops_report_config` 服务器循环内，字段明细表之后追加 OS 关键指标小节；SSH 失败 / skipped 项不进入字段明细表与小节渲染（保留原契约）。
+- **回归保护**：`app/tests/scripts/ops/test_ops_report.py` 更新 1 用例（`test_build_report_includes_disk_inventory_table` 由 5 列断言改为 6 列断言，fixture 补齐 `host_disk/disk_index`）；新增 5 用例（`test_inventory_rows_host_disk_with_disk_index` / `test_inventory_rows_host_disk_only_without_index` / `test_inventory_rows_fallback_to_partition_or_dash` / `test_compute_alerts_os_metric_keys_get_suffix` / `test_build_report_includes_os_metric_section_on_warn_crit` / `test_build_report_omits_os_metric_section_when_no_alerts`）。ops-report 测试目录 23 → 29 全绿（含原有 4 个 OS/CPU 展示用例）。
+
 ### ops_report docx 磁盘介质清单表（2026-08-15 新增）
 
 - **位置**：`app/scripts/ops/ops_report.py::_server_disk_inventory_rows(item) -> List[List[str]]`
