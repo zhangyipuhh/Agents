@@ -14,6 +14,7 @@ from app.shared.utils.executor.endpoints import (
 )
 from app.shared.utils.executor.errors import ThirdPartyExecutorError
 from app.shared.utils.executor.third_party_executor import dispatch, normalize_response
+from app.shared.utils.executor.third_party_ssh import execute_third_party_script
 
 __all__ = [
     "ThirdPartyEndpoint",
@@ -21,4 +22,5 @@ __all__ = [
     "ThirdPartyExecutorError",
     "dispatch",
     "normalize_response",
+    "execute_third_party_script",
 ]

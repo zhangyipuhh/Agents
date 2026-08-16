@@ -98,6 +98,8 @@
 - 只记录最终/当前状态，变更历史查 git log。
 
 ## 变更日志
+- **2026-08-16**：scripts 脚本系统接入第三方 SSH：`ops_inspection_sweep.params_schema` 加 `use_third_party_executor` (bool) + `third_party_endpoint_name` (str) 两个键；`run_server_ops` / `_run_one` 加同款 keyword 参数；`execute_third_party_script` 同步薄壳复用 `third_party_executor.dispatch` + `normalize_response`，异常封进 `SSHExecResult` 不向上抛；前端 `TaskSchedulerManager.vue` 加 `isThirdPartySwitchParamDefinition` 识别 + 新模板分支 + `setScriptParamValue` helper，第三方失败按 crit **不**降级到本地 paramiko；3 个新测试文件 / 16 个新用例全绿。详见 [memory/devops-sandbox.md] 第 13 段。
+
 
 - **2026-08-05**：第三方端点兜底增强——首版兜底仅覆盖 `endpoints_json` 空串，实测用户环境 `loaded_endpoints=[]` 且无解析 warning，判定污染值为空数组 `[]`（json 解析成功 0 端点），首版兜底不触发。`ThirdPartyEndpointRegistry.load_from_settings` 重构：抽离 `_load_raw()` 解析器，全局懒加载路径（未注入 settings）在**解析后 0 端点**时从项目根 `.env` 文件读取原始值**重载**（覆盖空串 / `[]` / 非法 JSON / 无 primary 等全部污染形态）。新增 `test_registry_global_lazy_load_fallback_when_env_overridden_to_empty_array`；50 个相关测试全绿。
 - **2026-08-05**：修复第三方端点 `primary` 未配置第三层根因——**os.environ 空值污染**：pydantic-settings 环境变量优先级高于 `.env` 文件，运行环境（IDE 调试配置 / shell profile）存在空值 `THIRD_PARTY_EXECUTOR_ENDPOINTS` 时覆盖 `.env` 配置（实测 endpoints_json 变 0，allow_insecure 仍 True——解释"其他参数正常"）。`ThirdPartyEndpointRegistry.load_from_settings` 全局懒加载路径在 `endpoints_json` 为空时通过 `_read_env_file_endpoints_fallback()` 从项目根 `.env` 文件兜底读取。新增 `test_registry_global_lazy_load_falls_back_to_env_file` / `test_env_override_empty_empties_new_settings_instance` 2 用例；49 个相关测试全绿。

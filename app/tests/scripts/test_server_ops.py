@@ -1861,3 +1861,179 @@ async def test_high_warn_low_crit_pass_combined(monkeypatch):
     assert report.inspection_critical == 1
     assert report.inspection_warned == 0
     assert report.inspection_passed == 0
+
+
+# --------------------------------------------------------------------------
+# 第三方 SSH 执行器集成（2026-08-16 新增）：
+# `run_server_ops` 支持 `use_third_party` / `third_party_endpoint_name` 关键字。
+# 第三方调用由 `app.shared.utils.executor.third_party_ssh.execute_third_party_script`
+# 完成；本节验证两路分支与失败不降级的契约。
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_one_uses_local_paramiko_when_flag_false(monkeypatch):
+    """``use_third_party=False`` 时仍走本地 paramiko（保持向后兼容）。"""
+    from app.scripts import server_ops as server_ops_module
+    from app.shared.utils.executor import third_party_ssh as tp_module
+
+    calls = {"local": 0, "third": 0}
+
+    def fake_local(cfg, script, timeout):
+        calls["local"] += 1
+        return SSHExecResult(True, '{"ok":1}', "", 0)
+
+    def should_not_call(*args, **kwargs):
+        calls["third"] += 1
+        raise AssertionError("execute_third_party_script 不应在 flag=False 时被调用")
+
+    monkeypatch.setattr(server_ops_module, "execute_script", fake_local)
+    monkeypatch.setattr(tp_module, "execute_third_party_script", should_not_call)
+
+    service = _StubDevOpsService({"biz-A": {
+        "ip": "10.0.0.1", "port": 22, "username": "u", "password": "p",
+        "server_type": "linux",
+        "inspection_script": "echo ok", "inspection_parser": "json",
+        "inspection_fields": [],
+    }})
+    ctx = _make_context_with_service(service, {"server_list": ["biz-A"]})
+
+    # 显式传 use_third_party=False 验证「False 时绝不走第三方」的契约。
+    report = await run_server_ops(ctx, use_third_party=False)
+    assert calls["local"] == 1
+    assert calls["third"] == 0
+    assert report.passed == 1
+
+
+@pytest.mark.asyncio
+async def test_run_one_uses_third_party_when_flag_enabled(monkeypatch):
+    """``use_third_party=True`` 时改走第三方执行器,paramiko 不应被调用。"""
+    from app.scripts import server_ops as server_ops_module
+    from app.shared.utils.executor import third_party_ssh as tp_module
+
+    calls = {"local": 0, "third": 0}
+    captured_endpoint = {"value": None}
+
+    def fake_local(cfg, script, timeout):
+        calls["local"] += 1
+        raise AssertionError("execute_script 不应在 use_third_party=True 时被调用")
+
+    def fake_third(cfg, script, timeout, *, endpoint_name=None):
+        calls["third"] += 1
+        captured_endpoint["value"] = endpoint_name
+        # 业务名是否注入 config(供第三方分支 audit 用)无需断言,只验证返回值。
+        return SSHExecResult(True, '{"cpu_used_pct": 12.5}', "", 0)
+
+    monkeypatch.setattr(server_ops_module, "execute_script", fake_local)
+    monkeypatch.setattr(tp_module, "execute_third_party_script", fake_third)
+
+    service = _StubDevOpsService({"biz-A": {
+        "ip": "10.0.0.1", "port": 22, "username": "u", "password": "p",
+        "server_type": "linux",
+        "inspection_script": "echo hello", "inspection_parser": "json",
+        "inspection_fields": [],
+    }})
+    ctx = _make_context_with_service(service, {"server_list": ["biz-A"]})
+
+    report = await run_server_ops(
+        ctx, use_third_party=True, third_party_endpoint_name="primary",
+    )
+
+    assert calls["local"] == 0
+    assert calls["third"] == 1
+    assert captured_endpoint["value"] == "primary"
+    # 第三方调用产出正常 stdout,parse_inspection_output 应判定为 pass。
+    assert report.passed == 1
+    assert report.items[0].success is True
+
+
+@pytest.mark.asyncio
+async def test_third_party_failure_does_not_fall_back_to_local(monkeypatch):
+    """契约关键反向用例：第三方调用返回 success=False 时,不静默降级到 paramiko。
+
+    业务期望:整台 ServerOpsItem.success=False / inspection_status=crit,本地 paramiko
+    路径**不**被调用。这是用户拍板「不降级」策略的稳定基础。
+    """
+    from app.scripts import server_ops as server_ops_module
+    from app.shared.utils.executor import third_party_ssh as tp_module
+
+    calls = {"local": 0, "third": 0}
+
+    def fake_local(cfg, script, timeout):
+        # 反向断言：use_third_party=True 时绝对不应调用本地 path。
+        calls["local"] += 1
+        raise AssertionError("execute_script 在 use_third_party=True + 第三方失败时不应被调用")
+
+    def fake_third_fail(cfg, script, timeout, *, endpoint_name=None):
+        calls["third"] += 1
+        # 模拟「端点未配置」→ execute_third_party_script 已封装为 success=False
+        # (与 ThirdPartyExecutorError 路径对齐)。
+        return SSHExecResult(False, "", "third_party:third_party endpoint 'primary' 未配置", 1)
+
+    monkeypatch.setattr(server_ops_module, "execute_script", fake_local)
+    monkeypatch.setattr(tp_module, "execute_third_party_script", fake_third_fail)
+
+    service = _StubDevOpsService({"biz-A": {
+        "ip": "10.0.0.1", "port": 22, "username": "u", "password": "p",
+        "server_type": "linux",
+        "inspection_script": "echo hello", "inspection_parser": "json",
+        "inspection_fields": [],
+    }})
+    ctx = _make_context_with_service(service, {"server_list": ["biz-A"]})
+
+    report = await run_server_ops(
+        ctx, use_third_party=True, third_party_endpoint_name="primary",
+    )
+
+    # 反向断言 1：本地 paramiko 路径**不**被调用（非降级策略）。
+    assert calls["local"] == 0, (
+        f"use_third_party=True + 第三方失败时,execute_script 不应被调用;"
+        f"实际调用次数={calls['local']}"
+    )
+    # 第三方调用 1 次（按 server_list 元素数）。
+    assert calls["third"] == 1
+
+    # 反向断言 2:第三方失败必须被识别为 crit,且不进入 passed 计数。
+    item = report.items[0]
+    assert item.success is False
+    assert item.exit_code == 1
+    assert "third_party" in item.error_message
+    assert "未配置" in item.error_message
+    assert item.inspection_status == "crit"
+    # 顶层聚合:passed=0,failed=1。
+    assert report.passed == 0
+    assert report.failed == 1
+
+
+@pytest.mark.asyncio
+async def test_run_one_injects_business_name_into_config(monkeypatch):
+    """``_run_one`` 必须把 ``business_name`` 注入 config,供第三方分支使用。
+
+    验证 execute_third_party_script 收到的 config['business_name'] 等于 _run_one
+    入参的 business_name。
+    """
+    from app.scripts import server_ops as server_ops_module
+    from app.shared.utils.executor import third_party_ssh as tp_module
+
+    captured_config = {"value": None}
+
+    def fake_third(cfg, script, timeout, *, endpoint_name=None):
+        captured_config["value"] = dict(cfg)
+        return SSHExecResult(True, '{"x":1}', "", 0)
+
+    monkeypatch.setattr(server_ops_module, "execute_script", lambda *_: None)
+    monkeypatch.setattr(tp_module, "execute_third_party_script", fake_third)
+
+    service = _StubDevOpsService({"biz-X-生产": {
+        "ip": "10.0.0.5", "port": 22, "username": "u", "password": "p",
+        "server_type": "linux",
+        "inspection_script": "echo x", "inspection_parser": "json",
+        "inspection_fields": [],
+    }})
+    ctx = _make_context_with_service(service, {"server_list": ["biz-X-生产"]})
+
+    await run_server_ops(ctx, use_third_party=True, third_party_endpoint_name="primary")
+    assert captured_config["value"] is not None
+    assert captured_config["value"]["business_name"] == "biz-X-生产", (
+        f"_run_one 应把 business_name 注入 config; 实际={captured_config['value'].get('business_name')!r}"
+    )

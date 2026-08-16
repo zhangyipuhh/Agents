@@ -476,6 +476,8 @@ async def run_server_ops(
     server_list: Optional[List[str]] = None,
     *,
     ssh_timeout: int = 30,
+    use_third_party: bool = False,
+    third_party_endpoint_name: Optional[str] = None,
 ) -> ServerOpsReport:
     """对 ``server_list`` 中的服务器逐个执行巡检脚本。
 
@@ -484,17 +486,30 @@ async def run_server_ops(
     ``context.devops_server_service.get_connection_config(business_name)`` 读取
     解密后的连接配置（含 ``ip`` / ``port`` / ``username`` / ``password`` /
     ``server_type`` / ``blacklist`` / ``whitelist`` + 脚本原文 ``inspection_script``
-    / ``inspection_parser`` / ``inspection_fields`` + 脚本库元数据 4 键），再用
-    ``app.shared.utils.ssh.executor.execute_script`` 发起 SSH 执行（同步阻塞
-    调用以 ``asyncio.to_thread`` 包装）。单台失败（鉴权失败 / 连接异常 /
-    业务名未注册 / ``inspection_script_id`` 未关联 / 脚本库条目不存在 /
-    ``InspectionScriptService`` 未注入 / 解析评估失败等）**不中断**整体巡检。
+    / ``inspection_parser`` / ``inspection_fields`` + 脚本库元数据 4 键），再以
+    ``asyncio.to_thread`` 包装发起 SSH 执行（同步阻塞调用）。
+
+    执行后端:
+        * ``use_third_party=False`` —— 走本地 paramiko
+          （``app.shared.utils.ssh.executor.execute_script``）。
+        * ``use_third_party=True`` —— 走第三方 HTTPS 端点
+          （``app.shared.utils.executor.third_party_ssh.execute_third_party_script``），
+          端点由 ``third_party_endpoint_name`` 或 settings 默认解析。
+          第三方调用异常封进 ``SSHExecResult(success=False, exit_code=1,
+          stderr="third_party:<reason>")``，**不**静默回落本地 paramiko。
+
+    单台失败（鉴权失败 / 连接异常 / 业务名未注册 / ``inspection_script_id``
+    未关联 / 脚本库条目不存在 / ``InspectionScriptService`` 未注入 / 解析
+    评估失败 / 第三方调用失败 等）**不中断**整体巡检。
 
     参数:
         context: 脚本运行上下文，需携带 ``devops_server_service`` 与 ``script_args``。
         server_list: 可选的服务器业务名列表；为 ``None`` 时通过
             ``resolve_server_list(context.script_args)`` 统一解析。
         ssh_timeout: 单台 SSH 执行超时（秒），限制在 ``ssh.executor`` 的 1-120 范围内。
+        use_third_party: 是否切换到第三方 HTTPS 执行器；默认 ``False`` 保持本地路径。
+        third_party_endpoint_name: 第三方端点名；为空/``None`` 时退回到
+            ``settings.third_party_executor.default_endpoint``。
 
     返回:
         ServerOpsReport: 统一巡检结果；``server_list`` 为空时 ``items`` 为空列表。
@@ -517,7 +532,13 @@ async def run_server_ops(
 
     items: List[ServerOpsItem] = []
     for business_name in names:
-        item = await _run_one(business_name, service, ssh_timeout=ssh_timeout)
+        item = await _run_one(
+            business_name,
+            service,
+            ssh_timeout=ssh_timeout,
+            use_third_party=use_third_party,
+            third_party_endpoint_name=third_party_endpoint_name,
+        )
         items.append(item)
 
     return ServerOpsReport(items=items)
@@ -528,6 +549,8 @@ async def _run_one(
     service: Any,
     *,
     ssh_timeout: int,
+    use_third_party: bool = False,
+    third_party_endpoint_name: Optional[str] = None,
 ) -> ServerOpsItem:
     """对单台服务器执行巡检并产出 ``ServerOpsItem``。
 
@@ -598,6 +621,11 @@ async def _run_one(
     script = script_raw if isinstance(script_raw, str) else ""
     # 不再做"空就 skipped"分支：service 已在 step 1 抛 ValueError
 
+    # 2.1) 把 business_name 注入 config（仅供第三方分支的 audit/business_name 字段；
+    #      本地 paramiko 不读该键，多带一个无害）。
+    if isinstance(config, dict):
+        config["business_name"] = business_name
+
     # 3) 提取脚本库元数据 4 键（缺省为 None，由 Service 保证至少在
     #    inspection_script 存在时也填齐）
     script_name = config.get("inspection_script_name") if isinstance(config, dict) else None
@@ -608,9 +636,15 @@ async def _run_one(
     # 4) 执行 SSH（同步阻塞通过 to_thread 包装）
     started = time.perf_counter()
     try:
-        result: SSHExecResult = await asyncio.to_thread(
-            execute_script, dict(config), script, ssh_timeout
-        )
+        import asyncio as _asyncio
+        if use_third_party:
+            from app.shared.utils.executor.third_party_ssh import execute_third_party_script
+            result: SSHExecResult = await _asyncio.to_thread(
+                execute_third_party_script, dict(config), script, ssh_timeout,
+                endpoint_name=third_party_endpoint_name,
+            )
+        else:
+            result = await asyncio.to_thread(execute_script, dict(config), script, ssh_timeout)
     except Exception as exc:  # noqa: BLE001 - 单台失败不中断整体
         duration_ms = int((time.perf_counter() - started) * 1000)
         msg = f"{type(exc).__name__}: {exc}"

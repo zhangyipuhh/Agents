@@ -355,6 +355,25 @@ function isApiListParamDefinition(key, def) {
 }
 
 /**
+ * 判断一个 schema 属性定义是否为受支持的「第三方 SSH 开关」参数（2026-08-16 新增）。
+ * 仅当 key 属于白名单 { use_third_party_executor, third_party_endpoint_name } 时识别,
+ * 并校验 def.type 与 key 对得上(boolean / string)。
+ * 引入识别函数的目的:让「添加脚本参数」下拉出现这两个新键,并在 script-param-list
+ * 模板中渲染对应控件 —— 与 isServerListParamDefinition / isApiListParamDefinition
+ * 同款 (受支持键显式枚举)。
+ * @param {string} key - schema 属性名
+ * @param {unknown} def - schema 中的单个属性定义
+ * @returns {boolean} 是否为受支持的第三方 SSH 开关参数
+ */
+function isThirdPartySwitchParamDefinition(key, def) {
+  const SUPPORTED_KEYS = ['use_third_party_executor', 'third_party_endpoint_name']
+  if (!SUPPORTED_KEYS.includes(key)) return false
+  if (!def || typeof def !== 'object') return false
+  if (key === 'use_third_party_executor') return def.type === 'boolean'
+  return def.type === 'string'
+}
+
+/**
  * 把任意值规整为「非空字符串、按首次出现顺序去重」的列表。
  * 供 server_list 与 api_list 等字符串数组参数共用：去掉非字符串 / null / 空串 /
  * 重复项，避免下游 `Set`、`Array.includes`、JSON 序列化出现 [object Object] /
@@ -584,7 +603,9 @@ const supportedScriptParamDefinitions = computed(() => {
   const out = []
   for (const key of Object.keys(properties)) {
     const def = properties[key]
-    if (isServerListParamDefinition(key, def) || isApiListParamDefinition(key, def)) {
+    if (isServerListParamDefinition(key, def)
+        || isApiListParamDefinition(key, def)
+        || isThirdPartySwitchParamDefinition(key, def)) {
       out.push({ key, def })
     }
   }
@@ -1064,6 +1085,14 @@ function hydrateScriptArgs(scriptName, rawArgs) {
     const value = args[key]
     if (isServerListParamDefinition(key, def) || isApiListParamDefinition(key, def)) {
       params[key] = normalizeStringList(value)
+    } else if (isThirdPartySwitchParamDefinition(key, def)) {
+      // 2026-08-16 新增:把 boolean / string 规范化为标准形态,避免后端
+      // 收到 [object Object] / 数字 / null。
+      if (key === 'use_third_party_executor') {
+        params[key] = Boolean(value)
+      } else {
+        params[key] = typeof value === 'string' ? value : ''
+      }
     } else {
       // schema 未声明或 schema 声明但 UI 暂不支持的字段，均进入 legacy 无损保留
       legacy[key] = value
@@ -1097,12 +1126,42 @@ function addScriptParam(key) {
   current[key] = (key === 'server_list' || key === 'api_list')
     ? normalizeStringList(fallback)
     : fallback
+  // 2026-08-16 新增:第三方 SSH 开关初值规整。bool 用 schema default (false);
+  // string 用 schema default (''),避免落到组件里的 fallback `[]` 让用户困惑。
+  if (key === 'use_third_party_executor') {
+    current[key] = false
+  } else if (key === 'third_party_endpoint_name') {
+    current[key] = ''
+  }
   writeScriptParamValues(current)
   if (key === 'server_list' && !hasLoaded.value) {
     loadDevopsServers()
   } else if (key === 'api_list' && !hasLoadedApis.value) {
     loadApiConfigTree()
   }
+}
+
+/**
+ * 设置某个已添加参数的值（2026-08-16 新增）。
+ * 仅支持受支持参数键；非字符串 / 非布尔值会按各自归属 normalize。
+ * 目前只有 use_third_party_executor(boolean) 与 third_party_endpoint_name(string)
+ * 需要主动 setValue —— server_list / api_list 由各自控件维护。
+ * @param {string} key - 已添加参数 key
+ * @param {unknown} value - 新值
+ * @returns {void}
+ */
+function setScriptParamValue(key, value) {
+  if (!key) return
+  if (!Object.prototype.hasOwnProperty.call(readScriptParamValues(), key)) return
+  const current = { ...readScriptParamValues() }
+  if (key === 'use_third_party_executor') {
+    current[key] = Boolean(value)
+  } else if (key === 'third_party_endpoint_name') {
+    current[key] = typeof value === 'string' ? value : ''
+  } else {
+    return
+  }
+  writeScriptParamValues(current)
 }
 
 /**
@@ -3171,6 +3230,86 @@ onBeforeUnmount(() => {
                   渲染对应控件。若未来新增受支持控件，必须同步在识别函数中显式
                   枚举并在模板中加入对应分支。
                 -->
+                <!--
+                  2026-08-16 新增：use_third_party_executor / third_party_endpoint_name
+                  两个键的紧凑渲染。仅把 use_third_party_executor 渲染为单个 checkbox；
+                  third_party_endpoint_name 渲染为带 placeholder 的 text input。
+                -->
+                <template v-else-if="paramKey === 'use_third_party_executor'">
+                  <section
+                    class="script-param-item__body"
+                    data-testid="schedule-param-use-third-party-executor"
+                    :aria-label="`参数 ${paramKey}`"
+                  >
+                    <header class="script-param-item__head">
+                      <div>
+                        <strong>{{ supportedScriptParamDefinitions.find((d) => d.key === paramKey)?.def.title || paramKey }}</strong>
+                        <span class="script-param-item__key">{{ paramKey }}</span>
+                      </div>
+                      <button
+                        type="button"
+                        class="link-btn"
+                        :data-testid="`schedule-remove-param-${paramKey}`"
+                        :aria-label="`移除参数 ${paramKey}`"
+                        @click="removeScriptParam(paramKey)"
+                      >
+                        移除参数
+                      </button>
+                    </header>
+                    <p
+                      v-if="supportedScriptParamDefinitions.find((d) => d.key === paramKey)?.def.description"
+                      class="script-param-item__desc"
+                    >
+                      {{ supportedScriptParamDefinitions.find((d) => d.key === paramKey).def.description }}
+                    </p>
+                    <label class="script-param-item__checkbox-row">
+                      <input
+                        type="checkbox"
+                        :checked="Boolean(scriptParamValues[paramKey])"
+                        :data-testid="`schedule-param-${paramKey}-checkbox`"
+                        @change="setScriptParamValue(paramKey, $event.target.checked)"
+                      />
+                      <span>启用第三方 SSH 路由</span>
+                    </label>
+                  </section>
+                </template>
+                <template v-else-if="paramKey === 'third_party_endpoint_name'">
+                  <section
+                    class="script-param-item__body"
+                    data-testid="schedule-param-third-party-endpoint-name"
+                    :aria-label="`参数 ${paramKey}`"
+                  >
+                    <header class="script-param-item__head">
+                      <div>
+                        <strong>{{ supportedScriptParamDefinitions.find((d) => d.key === paramKey)?.def.title || paramKey }}</strong>
+                        <span class="script-param-item__key">{{ paramKey }}</span>
+                      </div>
+                      <button
+                        type="button"
+                        class="link-btn"
+                        :data-testid="`schedule-remove-param-${paramKey}`"
+                        :aria-label="`移除参数 ${paramKey}`"
+                        @click="removeScriptParam(paramKey)"
+                      >
+                        移除参数
+                      </button>
+                    </header>
+                    <p
+                      v-if="supportedScriptParamDefinitions.find((d) => d.key === paramKey)?.def.description"
+                      class="script-param-item__desc"
+                    >
+                      {{ supportedScriptParamDefinitions.find((d) => d.key === paramKey).def.description }}
+                    </p>
+                    <input
+                      type="text"
+                      class="script-param-item__input"
+                      :value="String(scriptParamValues[paramKey] ?? '')"
+                      :data-testid="`schedule-param-${paramKey}-input`"
+                      placeholder="留空时使用 .env 默认端点名"
+                      @input="setScriptParamValue(paramKey, $event.target.value)"
+                    />
+                  </section>
+                </template>
               </div>
             </div>
 

@@ -120,6 +120,30 @@ _FIELD_STATUS_ZH = {
                 "x-source": "api-configs",
                 "x-value-field": "id",
             },
+            # 2026-08-16 新增:使用第三方 SSH 执行器(脚本系统专用,与 SSHTools 工具
+            # 路径同源不同链路 —— 见 app.shared.utils.executor.third_party_ssh)。
+            # 开启后 server_list 巡检走 third_party_executor(HTTPS + RSA-OAEP +
+            # AES-256-GCM),失败按 crit,不静默降级到本地 paramiko。
+            "use_third_party_executor": {
+                "type": "boolean",
+                "title": "使用第三方 SSH 执行器",
+                "description": (
+                    "开启后,server_list 巡检走第三方 HTTPS 端点"
+                    "(请求体经 RSA-OAEP + AES-256-GCM 加密);失败按 crit,不静默降级到本地。"
+                    "端点名见 third_party_endpoint_name,空时用 .env 的 "
+                    "THIRD_PARTY_EXECUTOR_DEFAULT_ENDPOINT。"
+                ),
+                "default": False,
+            },
+            "third_party_endpoint_name": {
+                "type": "string",
+                "title": "第三方端点名",
+                "description": (
+                    "与 .env THIRD_PARTY_EXECUTOR_ENDPOINTS[].name 对应;"
+                    "为空时用 .env 的 THIRD_PARTY_EXECUTOR_DEFAULT_ENDPOINT。"
+                ),
+                "default": "",
+            },
         },
     },
 )
@@ -163,7 +187,16 @@ async def run(context: ScriptContext) -> "ScriptResult":
         script_args.get("server_list", []),
         script_args.get("api_list", []),
     )
-    server_ops_report = await run_server_ops(context)
+    # 2026-08-16 新增:解析「使用第三方 SSH 执行器」开关并透传给 run_server_ops。
+    # 缺省 / 非布尔 / 非字符串 全部按 False / 空字符串处理 —— 与 params_schema 的
+    # `default: False` / `default: ""` 语义对齐。
+    use_third_party = bool(script_args.get("use_third_party_executor"))
+    third_party_endpoint_name = script_args.get("third_party_endpoint_name") or None
+    server_ops_report = await run_server_ops(
+        context,
+        use_third_party=use_third_party,
+        third_party_endpoint_name=third_party_endpoint_name,
+    )
     _log_server_ops_detail(server_ops_report, context.log_logger)
 
     # 落库采集结果（fail-soft：异常仅记日志，不影响后续 docx / 邮件生成）。

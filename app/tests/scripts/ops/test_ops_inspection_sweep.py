@@ -216,7 +216,114 @@ def test_ops_inspection_sweep_params_schema_declares_server_and_api():
     assert api_list["x-value-field"] == "id"
 
 
+def test_params_schema_contains_third_party_keys():
+    """新增（2026-08-16）：params_schema 必须声明 use_third_party_executor 与
+    third_party_endpoint_name,让前端「添加脚本参数」下拉能识别并渲染。
+
+    验证字段类型 / 默认值 / title / description，确保后端契约与前端识别函数
+    （``isThirdPartySwitchParamDefinition``）同源。
+    """
+    from app.scripts.ops import ops_inspection_sweep  # noqa: F401
+    importlib.reload(ops_inspection_sweep)
+
+    s = get_registered_script("ops_inspection_sweep")
+    assert s is not None
+
+    schema = s.params_schema
+    properties = schema.get("properties", {})
+
+    # 1) use_third_party_executor: boolean,默认 False。
+    assert "use_third_party_executor" in properties, (
+        "params_schema 必须声明 use_third_party_executor;"
+        f"实际 keys={list(properties.keys())}"
+    )
+    flag = properties["use_third_party_executor"]
+    assert flag["type"] == "boolean"
+    assert flag["default"] is False
+    assert isinstance(flag.get("title"), str) and flag["title"]
+    assert isinstance(flag.get("description"), str) and flag["description"]
+
+    # 2) third_party_endpoint_name: string,默认空。
+    assert "third_party_endpoint_name" in properties
+    endpoint = properties["third_party_endpoint_name"]
+    assert endpoint["type"] == "string"
+    assert endpoint["default"] == ""
+    assert isinstance(endpoint.get("title"), str) and endpoint["title"]
+    assert isinstance(endpoint.get("description"), str) and endpoint["description"]
+
+
 # ===== 2) 空入参行为 =====
+
+
+@pytest.mark.asyncio
+async def test_run_passes_use_third_party_to_run_server_ops(monkeypatch):
+    """新增（2026-08-16）：``run()`` 必须把 script_args.use_third_party_executor 与
+    third_party_endpoint_name 透传给 run_server_ops。
+
+    实现:stub 替换 run_server_ops,捕获它收到的 keyword 参数。
+    """
+    from app.scripts.ops import ops_inspection_sweep
+    importlib.reload(ops_inspection_sweep)
+
+    captured = {"kw": None}
+
+    async def stub_run_server_ops(context, server_list=None, **kwargs):
+        captured["kw"] = kwargs
+        return ServerOpsReport(items=[])
+
+    monkeypatch.setattr(ops_inspection_sweep, "run_server_ops", stub_run_server_ops)
+    # api_list 走真实 run_api_checks 空入参短路,无需 stub
+    context = _make_context(
+        script_args={
+            "server_list": ["biz-A"],
+            "use_third_party_executor": True,
+            "third_party_endpoint_name": "primary",
+        },
+    )
+    handler = _attach_capture(context)
+    try:
+        await ops_inspection_sweep.run(context)
+    finally:
+        _detach_capture(context, handler)
+
+    assert captured["kw"] is not None, "run_server_ops 必须被调用"
+    assert captured["kw"].get("use_third_party") is True, (
+        f"use_third_party 必须从 script_args 透传为 True;实际={captured['kw']}"
+    )
+    assert captured["kw"].get("third_party_endpoint_name") == "primary", (
+        f"third_party_endpoint_name 必须从 script_args 透传为 'primary';实际={captured['kw']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_passes_defaults_when_third_party_keys_missing(monkeypatch):
+    """新增（2026-08-16）：script_args 缺少 use_third_party_executor / third_party_endpoint_name
+    时,run() 必须用 False / None 透传给 run_server_ops（与 schema 默认值一致）。
+
+    反向用例:防止有人误用 truthy 默认值（比如 True）。
+    """
+    from app.scripts.ops import ops_inspection_sweep
+    importlib.reload(ops_inspection_sweep)
+
+    captured = {"kw": None}
+
+    async def stub_run_server_ops(context, server_list=None, **kwargs):
+        captured["kw"] = kwargs
+        return ServerOpsReport(items=[])
+
+    monkeypatch.setattr(ops_inspection_sweep, "run_server_ops", stub_run_server_ops)
+    # 仅 server_list,不带任何第三方字段。
+    context = _make_context(script_args={"server_list": ["biz-A"]})
+
+    await ops_inspection_sweep.run(context)
+
+    assert captured["kw"] is not None
+    assert captured["kw"].get("use_third_party") is False, (
+        f"缺少 use_third_party_executor 时,run_server_ops 必须收到 False;实际={captured['kw']}"
+    )
+    assert captured["kw"].get("third_party_endpoint_name") is None, (
+        f"缺少 third_party_endpoint_name 时,run_server_ops 必须收到 None;实际={captured['kw']}"
+    )
 
 
 @pytest.mark.asyncio
@@ -310,7 +417,7 @@ async def test_run_server_list_per_field_logging(monkeypatch):
         ),
     ])
 
-    async def stub_server_ops(context):
+    async def stub_server_ops(context, **kwargs):
         return report
     monkeypatch.setattr(ops_inspection_sweep, "run_server_ops", stub_server_ops)
 
@@ -356,7 +463,7 @@ async def test_run_server_list_skipped_item_logs_reason_without_fields(monkeypat
         ),
     ])
 
-    async def stub(context):
+    async def stub(context, **kwargs):
         return report
     monkeypatch.setattr(ops_inspection_sweep, "run_server_ops", stub)
 
@@ -396,7 +503,7 @@ async def test_run_server_list_ssh_failure_logs_error(monkeypatch):
         ),
     ])
 
-    async def stub(context):
+    async def stub(context, **kwargs):
         return report
     monkeypatch.setattr(ops_inspection_sweep, "run_server_ops", stub)
 
@@ -436,7 +543,7 @@ async def test_run_server_list_no_fields_logs_unassessed(monkeypatch):
         ),
     ])
 
-    async def stub(context):
+    async def stub(context, **kwargs):
         return report
     monkeypatch.setattr(ops_inspection_sweep, "run_server_ops", stub)
 
@@ -508,7 +615,7 @@ async def test_run_server_list_logs_inspection_script_metadata(monkeypatch):
         ),
     ])
 
-    async def stub(context):
+    async def stub(context, **kwargs):
         return report
     monkeypatch.setattr(ops_inspection_sweep, "run_server_ops", stub)
 
@@ -558,7 +665,7 @@ async def test_run_api_list_per_assertion_logging(monkeypatch):
         ),
     ])
 
-    async def stub(context):
+    async def stub(context, **kwargs):
         return report
     monkeypatch.setattr(ops_inspection_sweep, "run_api_checks", stub)
 
@@ -599,7 +706,7 @@ async def test_run_api_list_missing_node_logs_only_reason(monkeypatch):
         ),
     ])
 
-    async def stub(context):
+    async def stub(context, **kwargs):
         return report
     monkeypatch.setattr(ops_inspection_sweep, "run_api_checks", stub)
 
@@ -628,7 +735,7 @@ async def test_run_server_service_unavailable_propagates(monkeypatch):
     """``server_list`` 非空且 ``devops_server_service`` 不可用时,异常向上透出。"""
     from app.scripts.ops import ops_inspection_sweep
 
-    async def fake_run_server_ops(context):
+    async def fake_run_server_ops(context, **kwargs):
         raise ScriptExecutionError(
             "devops_server_service 不可用，无法执行 server_list 巡检"
         )
@@ -696,7 +803,7 @@ async def test_run_combined_server_and_api_appends_both_summaries(monkeypatch):
         ),
     ])
 
-    async def stub_server(context):
+    async def stub_server(context, **kwargs):
         return server_report
     async def stub_api(context):
         return api_report
@@ -1176,7 +1283,7 @@ async def test_run_calls_save_inspection_result_when_service_injected(monkeypatc
                       field_results=[]),
     ])
 
-    async def stub_server_ops(context):
+    async def stub_server_ops(context, **kwargs):
         return report
     monkeypatch.setattr(ops_inspection_sweep, "run_server_ops", stub_server_ops)
 
@@ -1211,7 +1318,7 @@ async def test_run_skips_save_when_service_is_none(monkeypatch):
                       parsed_values={"mem_used_pct": 5}, field_results=[]),
     ])
 
-    async def stub(context):
+    async def stub(context, **kwargs):
         return report
     monkeypatch.setattr(ops_inspection_sweep, "run_server_ops", stub)
 
@@ -1239,7 +1346,7 @@ async def test_run_swallows_save_inspection_result_failure(monkeypatch):
                       parsed_values={"mem_used_pct": 5}, field_results=[]),
     ])
 
-    async def stub(context):
+    async def stub(context, **kwargs):
         return report
     monkeypatch.setattr(ops_inspection_sweep, "run_server_ops", stub)
 
