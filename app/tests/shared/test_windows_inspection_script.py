@@ -47,7 +47,9 @@ def test_windows_inspection_scripts_support_legacy_powershell():
             "disk_used_pct",
             "mem_used_pct",
             "cpu_used_pct",
-            "uptime_hours",
+            "cpu_iowait_pct",
+            "swap_used_pct",
+            "inode_used_pct",
             "io_util_pct",
             "io_await_ms",
         }
