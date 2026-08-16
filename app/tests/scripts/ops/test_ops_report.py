@@ -294,12 +294,14 @@ def test_build_report_includes_disk_inventory_table():
     rows = inventory[0].rows
     # 2 组（vda / sda）→ 2 sub-header + 2 数据行 = 4 行
     assert len(rows) == 4
-    # 第 1 组 vda: sub-header + 1 数据行
-    assert rows[0] == ["vda", "-", "-", "-", "-", "-"]   # sub-header
-    assert rows[1] == ["vda", "/", "-", "42%", "-", "-"]  # df 元素
-    # 第 2 组 sda: sub-header + 1 数据行
-    assert rows[2] == ["sda", "SSD", "-", "-", "-", "-"]  # sub-header (组内介质汇总)
-    assert rows[3] == ["sda", "sda", "SSD", "-", "12.3%", "4.5 ms"]  # io 元素
+    # 组间排序: vda (idx=0) 在前, sda (idx=0) 在后; 同 disk_index=0 按 host_disk 字典序
+    # "sda" < "vda" → 实际顺序 sda 在前, vda 在后
+    # 第 1 组 sda: sub-header + 1 数据行
+    assert rows[0] == ["sda", "SSD", "-", "-", "-", "-"]  # sub-header (组内介质汇总)
+    assert rows[1] == ["sda", "sda", "SSD", "-", "12.3%", "4.5 ms"]  # io 元素
+    # 第 2 组 vda: sub-header + 1 数据行
+    assert rows[2] == ["vda", "-", "-", "-", "-", "-"]   # sub-header (df 元素无 disk_type → "-")
+    assert rows[3] == ["vda", "/", "-", "42%", "-", "-"]  # df 元素
 
 
 def test_build_report_disk_inventory_groups_same_host_disk():
@@ -342,12 +344,12 @@ def test_build_report_disk_inventory_groups_same_host_disk():
     assert len(rows) == 4
     # sub-header: 介质汇总 "SSD" (单介质)
     assert rows[0] == ["sda", "SSD", "-", "-", "-", "-"]
-    # 数据行: mount 字典序? mount 升序; 但脚本按出现顺序保留; 同 disk_index=0 按 mount 字典序
-    # 排序键为 (0, "/"), (0, "/data"), (0, "sda[SSD]" 剥离后 "sda")
-    # 字典序: "/" < "/data" < "sda"
+    # 数据行: 排序键 (disk_index, mount); 全部 disk_index=0, 按 mount 字典序
+    # "/" < "/data" < "sda" (sda 来自 mount "sda[SSD]" 剥离后)
     data_rows = rows[1:]
-    assert data_rows[0] == ["sda1", "/", "-", "42%", "-", "-"]
-    assert data_rows[1] == ["sda2", "/data", "-", "78%", "-", "-"]
+    # _format_host_disk: 元素有 host_disk=sda + disk_index=0 → 渲染 "sda" (idx=0 不附 [0])
+    assert data_rows[0] == ["sda", "/", "-", "42%", "-", "-"]
+    assert data_rows[1] == ["sda", "/data", "-", "78%", "-", "-"]
     assert data_rows[2] == ["sda", "sda", "SSD", "-", "12.3%", "4.5 ms"]
 
 
@@ -393,13 +395,16 @@ def test_build_report_disk_inventory_groups_multiple_host_disks():
     assert len(rows) == 6
     # 组间按 disk_index 升序: nvme0n1 (idx=0) 在前, sda (idx=1) 在后
     assert rows[0] == ["nvme0n1", "SSD", "-", "-", "-", "-"]  # sub-header
-    # nvme0n1 组数据行: disk_index=0 内 (0, "/"), (0, "nvme0n1[SSD]" 剥离后 "nvme0n1")
-    assert rows[1] == ["nvme0n1p1", "/", "-", "30%", "-", "-"]
+    # nvme0n1 组数据行: disk_index=0 内 (0, "/"), (0, "nvme0n1")
+    # _format_host_disk: host_disk=nvme0n1 + disk_index=0 → "nvme0n1"
+    assert rows[1] == ["nvme0n1", "/", "-", "30%", "-", "-"]
     assert rows[2] == ["nvme0n1", "nvme0n1", "SSD", "-", "8.1%", "2.3 ms"]
-    # sda 组
+    # sda 组 (disk_index=1)
     assert rows[3] == ["sda", "SSD", "-", "-", "-", "-"]  # sub-header
-    assert rows[4] == ["sda1", "/", "-", "42%", "-", "-"]
-    assert rows[5] == ["sda", "sda", "SSD", "-", "12.3%", "4.5 ms"]
+    # _format_host_disk: host_disk=sda + disk_index=1 → "sda[1]" (idx>0 附 [idx])
+    assert rows[4] == ["sda[1]", "/", "-", "42%", "-", "-"]
+    # io 元素 host_disk=sda disk_index=1 → "sda[1]" (同上 idx>0 规则)
+    assert rows[5] == ["sda[1]", "sda", "SSD", "-", "12.3%", "4.5 ms"]
 
 
 def test_build_report_disk_inventory_orphan_group_for_missing_host_disk():
