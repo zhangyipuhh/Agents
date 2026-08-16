@@ -367,36 +367,60 @@
 }
 .ops-console-root .kv .k { color: #7a8db3; flex-shrink: 0; }
 
-/* ===== 磁盘多列网格（2026-08-16 新增，替代原 .disk-row 单列行 + 进度条）===== */
+/* ===== 磁盘物理盘分组（每行一个物理盘，分区卡片位于其下）===== */
 .ops-console-root .disk-section { margin-bottom: 0; }
 .ops-console-root .disk-title { font-size: 12px; font-weight: 600; color: #7a8db3; margin-bottom: 8px; }
-.ops-console-root .disk-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(135px, 1fr));
-  gap: 10px;
+.ops-console-root .disk-groups {
+  display: flex; flex-direction: column; gap: 10px;
+  min-width: 0;
 }
-.ops-console-root .disk-cell {
-  background: #fff; border: 1px solid rgba(30, 106, 221, .15); border-radius: 10px;
-  padding: 10px 12px; min-width: 0;
+.ops-console-root .disk-group {
+  display: block; min-width: 0;
+  background: rgba(255, 255, 255, .72);
+  border: 1px solid rgba(30, 106, 221, .15);
+  border-radius: 10px; padding: 10px 12px 12px;
 }
-.ops-console-root .disk-cell .dc-head {
-  display: flex; align-items: center; gap: 6px;
-  padding-bottom: 6px; margin-bottom: 6px;
-  border-bottom: 1px solid rgba(30, 106, 221, .08);
+.ops-console-root .disk-group-head {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  padding-bottom: 7px; margin-bottom: 8px;
+  border-bottom: 1px solid rgba(30, 106, 221, .1);
 }
-.ops-console-root .disk-cell .dc-name {
-  font-size: 13px; font-weight: 600; color: var(--gov-blue-deep);
+.ops-console-root .dgh-name {
+  font-size: 13px; font-weight: 700; color: var(--gov-blue-deep);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.ops-console-root .disk-cell .dc-metrics {
-  display: flex; flex-direction: column; gap: 4px;
+.ops-console-root .dgh-index,
+.ops-console-root .dgh-device {
+  color: #7a8db3; font-size: 11px; white-space: nowrap;
 }
-.ops-console-root .disk-cell .dc-m {
-  display: flex; align-items: baseline; justify-content: space-between; gap: 6px;
+.ops-console-root .dgh-metrics {
+  display: flex; align-items: center; gap: 12px; margin-left: auto;
   font-size: 12px; min-width: 0;
 }
-.ops-console-root .disk-cell .dc-m-label { color: #7a8db3; flex-shrink: 0; }
-.ops-console-root .disk-cell .dc-m-value {
+.ops-console-root .dg-m {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 6px;
+  min-width: 0;
+}
+.ops-console-root .dg-m-label { color: #7a8db3; flex-shrink: 0; }
+.ops-console-root .dg-m-value {
   font-weight: 600; font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ops-console-root .disk-group-partitions {
+  display: flex; flex-wrap: wrap; gap: 8px; min-width: 0;
+}
+.ops-console-root .disk-pcard {
+  flex: 1 1 112px; min-width: 0;
+  background: #fff; border: 1px solid rgba(30, 106, 221, .12);
+  border-radius: 8px; padding: 8px 9px;
+}
+.ops-console-root .dcp-header {
+  display: flex; align-items: center; gap: 5px; min-width: 0;
+  padding-bottom: 5px; margin-bottom: 5px;
+  border-bottom: 1px solid rgba(30, 106, 221, .08);
+}
+.ops-console-root .dcp-name {
+  font-size: 12px; font-weight: 600; color: var(--gov-blue-deep);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .ops-console-root .disk-empty {

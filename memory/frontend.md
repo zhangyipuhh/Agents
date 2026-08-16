@@ -880,13 +880,54 @@ web/Agent/src/utils/
 ### 模块位置
 
 ```
-web/Agent/src/
-├── utils/
-│   ├── triggerRegistry.js             # 触发器注册表 + searchTriggerByChar / buildOverridesFor / renderTriggerMentions
-│   ├── inputEditor.js                 # contenteditable 编辑器 DOM 工具：serializeEditor / getTextBeforeCaret / replaceTriggerRangeWithServerChip / setCaretAfter
-│   └── __tests__/
-│       ├── triggerRegistry.test.js    # 18 用例：契约 / 搜索 / buildOverrides / 数据源拍平 / 去重 / renderTriggerMentions
-│       └── inputEditor.test.js        # 3 用例：序列化、光标前文本、触发范围替换
+web/Agent/src/utils/
+├── triggerRegistry.js             # 触发器注册表 + searchTriggerByChar / buildOverridesFor / renderTriggerMentions
+├── inputEditor.js                 # contenteditable 编辑器 DOM 工具：serializeEditor / getTextBeforeCaret / replaceTriggerRangeWithServerChip / setCaretAfter
+└── __tests__/
+    ├── triggerRegistry.test.js    # 18 用例：契约 / 搜索 / buildOverrides / 数据源拍平 / 去重 / renderTriggerMentions
+    └── inputEditor.test.js        # 3 用例：序列化、光标前文本、触发范围替换
+```
+
+#### 运维控制台 OpsDetailWindow 磁盘物理盘纵向分组（2026-08-16，用户需求）
+
+应用户需求把详情页磁盘由「多列网格」改为「按物理盘纵向分组」：每块物理盘一行，磁盘头显示 `排队 / IO 利用率`，分区卡片只显示 `使用率`；物理盘分组同时覆盖 Linux 与 Windows。
+
+数据契约（`OpsConsoleApp.vue::mapSnapshotToServer`）：
+- `disks[].hostDisk` 物理盘标识（Linux `lsblk -o NAME,PKNAME` 推得；Windows `PHYSICALDRIVE{n}`；旧 snapshot 缺字段时留空串，前端按 mount 兜底不跨 mount 猜盘）。
+- `disks[].diskIndex` 物理盘稳定展示序号（Linux 按 `lsblk` 首次出现顺序自增；Windows `Win32_PerfFormattedData_PerfDisk_PhysicalDisk.Name` 前缀数字；缺失 null）。
+- `disks[].partition` 分区标识（Linux 分区记录的 NAME，如 `sda2`；Windows 盘符 `C:`；整盘 IO 记录留空串 `""`）。
+- `used` 字段：分区记录由 `disk_used_pct` 映射；整盘 IO 记录为 `null`（不进分区卡）。
+
+`OpsDetailWindow.vue::groupDisksByPhysicalDisk` 纯函数（`<script>` 段导出）：
+- 分组键优先级 `disk:${diskIndex}` > `host:${hostDisk}` > `legacy:${mount|name}`，确保分区记录与整盘 IO 记录必然归入同一物理盘（不会因 hostDisk 存在而拆成两个组）。
+- 兼容历史 Windows WMI mount 文案：`0 C: D:[SSD]`（旧 snapshot）→ 解析 C:/D: 映射到 PHYSICALDRIVE0。
+- `Intl.Collator` numeric 自然排序：`sda1 < sda2 < sda10`、`PHYSICALDRIVE0 < PHYSICALDRIVE1`。
+- 不修改输入数组（保持调用方原始顺序）。
+
+模板结构 `.disk-groups > .disk-group > .disk-group-head + .disk-group-partitions`：
+- `.disk-group-head`：左侧 LED + 标题「磁盘 N」+ `#N` + hostDisk 设备名；右侧 `.dgh-metrics` 两指标「排队 / IO 利用率」，同组多记录取 `Math.max`。
+- `.disk-group-partitions > .disk-pcard`：每张分区卡仅显示 `使用率`（partition 非空记录）。
+- LED 三态：磁盘头取组内 `ioUtilPct` / `ioAwaitMs` 任一 ≥80 红，都正常绿，全 null 灰；分区卡 `used ≥80` 红，否则绿，null 灰。
+- 分区卡渲染判定 `partition` 非空字符串 → 保证整盘 IO 记录（partition=""）不渲染为分区卡。
+
+`ops-console.css` 新样式：
+- `.disk-groups` flex column gap；
+- `.disk-group` 圆角 10px 1px 政务蓝边框白底；
+- `.disk-group-head` flex 横向 `space-between`，左 LED/标题/索引/设备名，右 `.dgh-metrics`；
+- `.disk-group-partitions` flex 横向 `flex-wrap`，`.disk-pcard` `flex: 1 1 112px` 自适应；
+- `.disk-pcard .dcp-header` LED + 盘符，`.dg-m` label + value。
+
+测试同步（`OpsDetailWindow.redesign.spec.js` 重写为 27 用例全绿）：
+- Linux 同盘多分区归一：`sda` 物理盘下 `/` + `/data` 两张分区卡 + 整盘 IO 记录 `sda[SSD]` 不渲染为分区卡；磁盘头按 IO 记录贡献的 5ms / 12% 显示。
+- Windows 多物理盘：`PHYSICALDRIVE0` 下 `C:\\` + `D:\\`，`PHYSICALDRIVE1` 下 `E:\\`，按 diskIndex 升序两组。
+- 磁盘头只显示 `排队 / IO 利用率`（不含使用率）。
+- 分区卡只显示 `使用率`，无 IO 指标。
+- 阈值标红：分区 used ≥80 → `#ff453a`；正常 → `#1d9a40`；null → `-` + 灰 `#9aa3af`。
+- IO 整盘记录（partition=""）不渲染为分区卡，反向测试：3 条记录（2 分区 + 1 IO）只渲染 2 张分区卡。
+- 未知归属（缺 host_disk）独立成组（旧 snapshot），不与已知组合并。
+- 旧 `.disk-grid` 类不再渲染。
+
+ops-console 目录 6 个 spec 文件共 **98 个用例全绿**（88 → 98，新增磁盘分组 12 + 老用例零回归）。
 ├── components/
 │   └── TriggerPanel.vue               # 通用触发面板（搜索 + 列表 + 键盘导航）
 └── components/__tests__/

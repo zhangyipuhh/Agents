@@ -7,9 +7,12 @@
  *   - 4 联指标条：linux 4 项 / windows 3 项（隐藏负载）；
  *   - 指标值 ≥ 阈值时标红（CPU/内存 ≥ 80 红 / 负载 ≥ 4 红）；
  *   - kv 表格精简：保留 OS/CPU型号/运行时长；删除 内存总量/存储总量/网络流入；
- *   - 磁盘多列网格：每列盘符 + 三指标（使用率/排队(ms)/IO利用率）；
- *   - 磁盘列无进度条样式；
+ *   - 物理磁盘纵向分组：每块物理盘一行；磁盘头只显示「排队 / IO 利用率」；
+ *     分区卡只显示「使用率」；IO 整盘记录（含 mount="sda[SSD]"）不渲染为分区卡；
+ *   - 未知归属（缺 host_disk）单独成组，红绿灰灯与 metricColor 80 规则保留；
  *   - 「智能检测」按钮已删除。
+ *
+ * 2026-08-16: 物理盘纵向分组 (Linux / Windows 双平台)。
  */
 import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
@@ -161,93 +164,191 @@ describe('OpsDetailWindow 详情页改造（2026-08-16）', () => {
     expect(wrapper.findAll('.kv > div').length).toBe(3)
   })
 
-  // -------- 磁盘多列网格 --------
-  it('test_disk_grid_renders_per_disk 每个 disk 一列', () => {
+  // -------- 物理磁盘分组展示（2026-08-16 用户需求） --------
+  it('test_disk_groups_rendered_per_physical_disk Linux sda 同盘多个分区归入一个节点', () => {
     const wrapper = mount(OpsDetailWindow, {
       props: {
         win: baseWin,
         server: makeServer({
           disks: [
-            { name: 'C:\\', mount: 'C:\\', used: 91.5, ioUtilPct: 30, ioAwaitMs: 5 },
-            { name: 'D:\\', mount: 'D:\\', used: 57.8, ioUtilPct: 20, ioAwaitMs: 8 },
-            { name: 'E:\\', mount: 'E:\\', used: 39.9, ioUtilPct: 10, ioAwaitMs: 4 },
+            { mount: '/', used: 78.1, hostDisk: 'sda', diskIndex: 0, partition: 'sda2' },
+            { mount: '/data', used: 54.1, hostDisk: 'sda', diskIndex: 0, partition: 'sda3' },
+            // 整盘 IO 记录: used=null, io 指标在磁盘头呈现, 不渲染为分区卡
+            { mount: 'sda[SSD]', used: null, ioUtilPct: 4, ioAwaitMs: 0, hostDisk: 'sda', diskIndex: 0, partition: '' },
           ],
         }),
       },
     })
-    const cells = wrapper.findAll('.disk-cell')
-    expect(cells.length).toBe(3)
+    const groups = wrapper.findAll('.disk-groups .disk-group')
+    expect(groups).toHaveLength(1)
+    expect(groups[0].text()).toContain('磁盘 0')
+    expect(groups[0].findAll('.disk-pcard')).toHaveLength(2)
   })
 
-  it('test_disk_cell_shows_three_metrics 每列展示使用率 / 排队 / IO 利用率', () => {
+  it('test_disk_groups_rendered_per_physical_disk_windows Windows C:/D: 归入 PHYSICALDRIVE0', () => {
     const wrapper = mount(OpsDetailWindow, {
       props: {
         win: baseWin,
         server: makeServer({
-          disks: [{ name: 'C:\\', mount: 'C:\\', used: 91.5, ioUtilPct: 30, ioAwaitMs: 5 }],
+          serverType: 'windows',
+          disks: [
+            { mount: 'C:\\', used: 71.4, hostDisk: 'PHYSICALDRIVE0', diskIndex: 0, partition: 'C:' },
+            { mount: 'D:\\', used: 64.9, hostDisk: 'PHYSICALDRIVE0', diskIndex: 0, partition: 'D:' },
+            { mount: 'E:\\', used: 91.5, hostDisk: 'PHYSICALDRIVE1', diskIndex: 1, partition: 'E:' },
+          ],
         }),
       },
     })
-    const labels = wrapper.findAll('.disk-cell .dc-m-label').map(n => n.text())
-    expect(labels).toEqual(['使用率', '排队', 'IO 利用率'])
-    const values = wrapper.findAll('.disk-cell .dc-m-value').map(n => n.text())
-    expect(values).toEqual(['91.5%', '5ms', '30%'])
+    const groups = wrapper.findAll('.disk-groups .disk-group')
+    expect(groups).toHaveLength(2)
+    // 按 diskIndex 升序, 第 1 行是 PHYSICALDRIVE0 (C:/D:), 第 2 行是 PHYSICALDRIVE1 (E:)
+    expect(groups[0].text()).toContain('磁盘 0')
+    expect(groups[0].findAll('.disk-pcard')).toHaveLength(2)
+    expect(groups[1].text()).toContain('磁盘 1')
+    expect(groups[1].findAll('.disk-pcard')).toHaveLength(1)
   })
 
-  it('test_disk_metric_red_when_above_threshold 单个磁盘指标 ≥ 80 时标红', () => {
+  it('test_disk_group_head_only_shows_queue_and_io_utilization 磁盘头只显示排队和 IO 利用率', () => {
     const wrapper = mount(OpsDetailWindow, {
       props: {
         win: baseWin,
         server: makeServer({
-          disks: [{ name: 'C:\\', mount: 'C:\\', used: 91.5, ioUtilPct: 30, ioAwaitMs: 5 }],
+          disks: [
+            { mount: '/', used: 50, hostDisk: 'sda', diskIndex: 0, partition: 'sda2' },
+            { mount: 'sda[SSD]', used: null, ioUtilPct: 12, ioAwaitMs: 5, hostDisk: 'sda', diskIndex: 0, partition: '' },
+          ],
         }),
       },
     })
-    // 第一列（使用率 91.5）应红色
-    const usedStyle = wrapper.findAll('.disk-cell .dc-m-value')[0].attributes('style') || ''
+    const head = wrapper.find('.disk-group-head')
+    expect(head.exists()).toBe(true)
+    expect(head.text()).toContain('sda')
+    expect(head.findAll('.dg-m-label').map(n => n.text())).toEqual(['排队', 'IO 利用率'])
+    expect(head.text()).not.toContain('使用率')
+  })
+
+  it('test_disk_partition_cards_only_show_usage 分区卡片只显示使用率', () => {
+    const wrapper = mount(OpsDetailWindow, {
+      props: {
+        win: baseWin,
+        server: makeServer({
+          disks: [{ mount: 'C:\\', used: 91.5, hostDisk: 'PHYSICALDRIVE0', diskIndex: 0, partition: 'C:' }],
+        }),
+      },
+    })
+    const labels = wrapper.findAll('.disk-pcard .dg-m-label').map(n => n.text())
+    expect(labels).toEqual(['使用率'])
+    const values = wrapper.findAll('.disk-pcard .dg-m-value').map(n => n.text())
+    expect(values).toEqual(['91.5%'])
+  })
+
+  it('test_disk_partition_metric_red_when_above_threshold 分区使用率 ≥ 80 时标红', () => {
+    const wrapper = mount(OpsDetailWindow, {
+      props: {
+        win: baseWin,
+        server: makeServer({
+          disks: [{ mount: 'C:\\', used: 91.5, hostDisk: 'PHYSICALDRIVE0', diskIndex: 0, partition: 'C:' }],
+        }),
+      },
+    })
+    const usedStyle = wrapper.find('.disk-pcard .dg-m-value').attributes('style') || ''
     expect(usedStyle).toContain('#ff453a')
-    // 第二列（排队 5）应绿色
-    const awaitStyle = wrapper.findAll('.disk-cell .dc-m-value')[1].attributes('style') || ''
-    expect(awaitStyle).toContain('#1d9a40')
   })
 
-  it('test_disk_metric_dash_when_null 磁盘字段为 null 时显示 -', () => {
+  it('test_disk_partition_metric_dash_when_null 缺失分区使用率显示 - 和灰灯', () => {
     const wrapper = mount(OpsDetailWindow, {
       props: {
         win: baseWin,
         server: makeServer({
-          disks: [{ name: '/', mount: '/', used: null, ioUtilPct: null, ioAwaitMs: null }],
+          disks: [{ mount: '/', used: null, hostDisk: 'sda', diskIndex: 0, partition: 'sda1' }],
         }),
       },
     })
-    const values = wrapper.findAll('.disk-cell .dc-m-value').map(n => n.text())
-    expect(values).toEqual(['-', '-', '-'])
-    // 颜色应都是灰色
-    const styles = wrapper.findAll('.disk-cell .dc-m-value').map(n => n.attributes('style') || '')
-    styles.forEach(s => expect(s).toContain('#9aa3af'))
+    // 分区记录 (partition="sda1") 渲染为分区卡; used=null 显示 "-", 灰灯
+    const value = wrapper.find('.disk-pcard .dg-m-value')
+    expect(value.text()).toBe('-')
+    expect(value.attributes('style') || '').toContain('#9aa3af')
   })
 
-  it('test_disk_cell_no_progress_bar 磁盘列无进度条样式', () => {
-    const wrapper = mount(OpsDetailWindow, {
-      props: {
-        win: baseWin,
-        server: makeServer({
-          disks: [{ name: 'C:\\', mount: 'C:\\', used: 50 }],
-        }),
-      },
-    })
-    // .disk-cell 内不能含 .bar
-    expect(wrapper.find('.disk-cell .bar').exists()).toBe(false)
-    // 整页也不能含老的 .bar 类（防止遗漏）
-    expect(wrapper.find('.bar').exists()).toBe(false)
-  })
-
-  it('test_disk_grid_empty_when_no_disks 无 disks 时显示空态文案', () => {
+  it('test_disk_groups_empty_when_no_disks 无 disks 时显示空态文案', () => {
     const wrapper = mount(OpsDetailWindow, {
       props: { win: baseWin, server: makeServer({ disks: [] }) },
     })
-    expect(wrapper.find('.disk-grid').exists()).toBe(false)
+    expect(wrapper.find('.disk-groups').exists()).toBe(false)
     expect(wrapper.find('.disk-empty').text()).toBe('无磁盘数据')
+  })
+
+  it('test_disk_group_preserves_party_colors_and_unknown_partitioning 保留红绿灰灯，未知归属单独成组', () => {
+    const wrapper = mount(OpsDetailWindow, {
+      props: {
+        win: baseWin,
+        server: makeServer({
+          disks: [
+            // 已知归属: sda 盘 (分区 + IO)
+            { mount: '/', used: 91, hostDisk: 'sda', diskIndex: 0, partition: 'sda1' },
+            { mount: 'sda[HDD]', used: null, ioUtilPct: 30, ioAwaitMs: 50, hostDisk: 'sda', diskIndex: 0, partition: '' },
+            // 未知归属: 旧 snapshot 缺 host_disk, 不能与 sda 合并
+            { mount: 'C:\\', used: null, hostDisk: '', diskIndex: null, partition: 'C:' },
+          ],
+        }),
+      },
+    })
+    const groups = wrapper.findAll('.disk-group')
+    // 2 个分组: sda / 未知(C:\\)
+    expect(groups.length).toBe(2)
+    // 已知分区使用率 91 → 红色
+    const usedStyle = wrapper.find('.disk-pcard .dg-m-value').attributes('style') || ''
+    expect(usedStyle).toContain('#ff453a')
+    // 旧 snapshot 缺 host_disk 但 partition="C:" 仍然渲染为分区卡; used=null → "-", 灰
+    const allUsedNodes = wrapper.findAll('.disk-pcard .dg-m-value')
+    const lastUsed = allUsedNodes[allUsedNodes.length - 1]
+    expect(lastUsed.text()).toBe('-')
+    expect(lastUsed.attributes('style') || '').toContain('#9aa3af')
+  })
+
+  it('test_disk_group_io_record_not_rendered_as_partition_card IO 整盘记录不渲染为分区卡', () => {
+    // 数据形状来自真实 inspection_scripts.yaml::linux-bash:
+    //   分区记录 (used != null) + 整盘 IO 记录 (used == null, mount 形如 "sda[SSD]")
+    // 应只渲染分区卡, IO 记录只在磁盘头参与排队/IO 利用率聚合。
+    const wrapper = mount(OpsDetailWindow, {
+      props: {
+        win: baseWin,
+        server: makeServer({
+          disks: [
+            { mount: '/', used: 50, hostDisk: 'sda', diskIndex: 0, partition: 'sda2' },
+            { mount: '/data', used: 80, hostDisk: 'sda', diskIndex: 0, partition: 'sda3' },
+            { mount: 'sda[SSD]', used: null, ioUtilPct: 12, ioAwaitMs: 5, hostDisk: 'sda', diskIndex: 0, partition: '' },
+          ],
+        }),
+      },
+    })
+    const partitions = wrapper.findAll('.disk-group-partitions .disk-pcard')
+    expect(partitions.length).toBe(2)
+    // 每个分区卡只显示使用率
+    for (const p of partitions) {
+      const labels = p.findAll('.dg-m-label').map(n => n.text())
+      expect(labels).toEqual(['使用率'])
+    }
+    // 磁盘头包含 IO 记录贡献的排队/IO 利用率
+    const head = wrapper.find('.disk-group-head')
+    const headValues = head.findAll('.dg-m-value').map(n => n.text())
+    expect(headValues).toEqual(['5ms', '12%'])
+  })
+
+  it('test_no_legacy_disk_grid_class 新模板不再渲染旧 .disk-grid', () => {
+    const wrapper = mount(OpsDetailWindow, {
+      props: {
+        win: baseWin,
+        server: makeServer({
+          disks: [
+            { mount: '/', used: 50, hostDisk: 'sda', diskIndex: 0, partition: 'sda1' },
+          ],
+        }),
+      },
+    })
+    expect(wrapper.find('.disk-grid').exists()).toBe(false)
+    expect(wrapper.find('.disk-section').exists()).toBe(true)
+    expect(wrapper.find('.disk-groups').exists()).toBe(true)
   })
 
   // -------- 智能检测按钮已删除 --------
@@ -270,7 +371,7 @@ describe('OpsDetailWindow 详情页改造（2026-08-16）', () => {
   })
 
   // -------- 展示字段从 DB 读取（2026-08-16 修复：之前硬编码 '-'） --------
-  it('test_kv_os_displays_from_server_os kv「操作系统」渲染 server.os（非 '-'）', () => {
+  it('test_kv_os_displays_from_server_os kv「操作系统」渲染 server.os（非 \'-\'）', () => {
     // 模拟 OpsConsoleApp.mapSnapshotToServer 已从 parsed_values.os 读到值
     const wrapper = mount(OpsDetailWindow, {
       props: {

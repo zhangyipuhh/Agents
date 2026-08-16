@@ -89,3 +89,55 @@ def test_linux_inspection_output_keys_match_fields():
     )
     assert await_rule["warn"] == 100 and await_rule["crit"] == 200
     assert await_rule["ssd_warn"] == 20 and await_rule["ssd_crit"] == 50
+
+
+def test_linux_inspection_disks_emit_host_disk_and_partition():
+    """linux-bash 脚本输出 disks[] 元素必须带 ``host_disk`` / ``disk_index`` / ``partition`` 字段。
+
+    物理磁盘分组依赖 ``host_disk``（整盘设备名，如 ``sda`` / ``nvme0n1`` / ``mmcblk0``），
+    ``disk_index``（设备序号 0/1/2...），以及 ``partition``（分区名，如 ``sda1`` / ``nvme0n1p1``，
+    整盘记录为空串）。
+
+    探测策略（按用户要求 2026-08-16）：
+      1) 优先调用 ``lsblk -n -o NAME,PKNAME`` 拿真实父子关系；
+      2) 允许 safe fallback（脚本读不到时不抛错，partition 留空串，前端按 mount 兜底）。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 脚本未使用 lsblk 或未输出 host_disk/disk_index/partition 任一时失败
+    """
+    entry = _load_linux_bash_entry()
+    script = entry["inspection_script"]
+    # 1) 必须优先使用 lsblk 探测父子关系
+    assert "lsblk" in script
+    assert "PKNAME" in script
+    # 2) 输出 JSON 元素必须包含 host_disk / disk_index / partition 字段名
+    assert "host_disk" in script
+    assert "disk_index" in script
+    assert "partition" in script
+    # 3) 兼容老 mount / disk_used_pct / io_util_pct / io_await_ms / disk_type 字段
+    assert "disk_used_pct" in script
+    assert "io_util_pct" in script
+    assert "io_await_ms" in script
+    assert "disk_type" in script
+
+
+def test_linux_inspection_disk_section_distinguishes_partition_vs_disk():
+    """linux-bash 脚本必须区分分区记录（``partition`` 非空）与整盘 IO 记录（``partition`` 空）。
+
+    验证策略：脚本必须包含读取 ``PKNAME``（由 ``lsblk -o NAME,PKNAME`` 给出）以决定
+    ``partition`` 字段的逻辑片段。``PKNAME`` 非空 → 该行是分区，``partition`` 取 NAME 末段；
+    ``PKNAME`` 为空 → 该行是整盘，``partition`` 留空串。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 缺少分区/整盘区分逻辑时失败
+    """
+    entry = _load_linux_bash_entry()
+    script = entry["inspection_script"]
+    # 必须从 lsblk 读取 PKNAME 字段，从而识别父子关系
+    assert "PKNAME" in script

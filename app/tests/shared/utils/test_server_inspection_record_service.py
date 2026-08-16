@@ -576,9 +576,10 @@ def test_list_latest_view_dict_metrics_contains_load_admin():
             "inspection_status": "pass",
             "duration_ms": 42,
             "error_message": None,
-            "parsed_values": json.dumps({"disks": [{"mount": "/", "disk_used_pct": 58}],
-                                          "mem_used_pct": 45.0, "cpu_idle_pct": 76.5,
-                                          "load_1m": 1.23}),
+            "parsed_values": json.dumps({"disks": [
+                {"mount": "/", "disk_used_pct": 58, "host_disk": "sda", "disk_index": 0, "partition": "sda2"},
+                {"mount": "sda[SSD]", "io_util_pct": 4, "io_await_ms": 0, "host_disk": "sda", "disk_index": 0, "disk_type": "ssd"},
+            ], "mem_used_pct": 45.0, "cpu_idle_pct": 76.5, "load_1m": 1.23}),
             "field_results": json.dumps([]),
         },
         {
@@ -1052,3 +1053,173 @@ def test_save_pydantic_item_compatibility():
     assert params[1] == "biz-A"
     assert params[10] == 10            # duration_ms
     assert params[11] == "pass"        # inspection_status
+
+
+# ============================================================================
+# 2026-08-16: 物理磁盘分组 - disks[] 元素必须透传 host_disk / disk_index / partition
+# ============================================================================
+
+
+def test_save_passes_host_disk_disk_index_partition_in_parsed_values():
+    """save 链路：parsed_values 内 disks[] 元素的 host_disk / disk_index / partition 字段必须原样落库（JSON 字符串透传）。
+
+    物理磁盘分组依赖前端能从 JSON 反序列化出 host_disk/disk_index/partition；
+    旧版 service 内部不阻断新字段（直接 json.dumps 整个 pv），但 rounds-trip 校验
+    反序列化后字段仍存在，避免脚本维护者误删 disk_type 字段。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 透传后字段缺失时失败
+    """
+    db, conn = _build_tx_db()
+    devops = _StubDevopsService([{"id": 1, "business_name": "biz-A", "server_type": "linux"}])
+    svc = ServerInspectionRecordService(db=db, devops_server_service=devops)
+    conn.fetchrow.return_value = {"id": 100}
+
+    pv_with_disk_meta = {
+        "disks": [
+            {
+                "mount": "/", "disk_used_pct": 50,
+                "host_disk": "sda", "disk_index": 0, "partition": "sda1",
+            },
+            {
+                "mount": "sda[HDD]", "io_util_pct": 12.0, "io_await_ms": 5.0,
+                "disk_type": "hdd",
+                "host_disk": "sda", "disk_index": 0, "partition": "",
+            },
+        ],
+        "mem_used_pct": 10.0,
+    }
+    asyncio.run(svc.save_inspection_result(_make_report([
+        _server_ops_item(parsed_values=pv_with_disk_meta),
+    ])))
+    # parsed_values 落库参数为 JSON 字符串
+    parsed_json = conn.fetchrow.await_args.args[1:][14]
+    parsed = json.loads(parsed_json)
+    assert parsed["disks"][0]["host_disk"] == "sda"
+    assert parsed["disks"][0]["disk_index"] == 0
+    assert parsed["disks"][0]["partition"] == "sda1"
+    assert parsed["disks"][1]["host_disk"] == "sda"
+    assert parsed["disks"][1]["disk_index"] == 0
+    assert parsed["disks"][1]["partition"] == ""
+    # 兼容老字段
+    assert parsed["disks"][0]["disk_used_pct"] == 50
+    assert parsed["disks"][1]["disk_type"] == "hdd"
+
+
+def test_list_latest_admin_preserves_host_disk_disk_index_partition_in_disk_records():
+    """list_latest admin 分支：反序列化 parsed_values.disks 后必须保留 host_disk / disk_index / partition。
+
+    物理盘分组依赖前端从 disks[] 拿 host_disk / disk_index 渲染 UI 分组头。
+    若 service 内部对 pv 做字段白名单裁剪 / 字段重命名，会导致前端无法分组。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 反序列化后字段缺失时失败
+    """
+    db, conn = _build_tx_db()
+    devops = _StubDevopsService([
+        {"id": 1, "business_name": "biz-A", "server_type": "linux"},
+    ])
+    svc = ServerInspectionRecordService(db=db, devops_server_service=devops)
+
+    db.fetch = AsyncMock(return_value=[{
+        "node_id": None,
+        "node_name": "biz-A",
+        "server_id": 1,
+        "business_name": "biz-A",
+        "server_type": "linux",
+        "collected_at": datetime(2026, 8, 16, 1, 0, 0),
+        "success": True,
+        "inspection_status": "pass",
+        "duration_ms": 10,
+        "error_message": None,
+        "parsed_values": json.dumps({
+            "disks": [
+                {"mount": "/", "disk_used_pct": 50,
+                 "host_disk": "sda", "disk_index": 0, "partition": "sda1"},
+                {"mount": "/data", "disk_used_pct": 80,
+                 "host_disk": "sdb", "disk_index": 1, "partition": "sdb1"},
+                {"mount": "sda[HDD]", "io_util_pct": 12.0, "io_await_ms": 5.0,
+                 "disk_type": "hdd",
+                 "host_disk": "sda", "disk_index": 0, "partition": ""},
+            ],
+            "mem_used_pct": 10.0,
+        }),
+        "field_results": json.dumps([]),
+    }])
+    items = asyncio.run(svc.list_latest(OwnershipScope.system_scope()))
+    assert len(items) == 1
+    disks = items[0]["disks"]
+    assert len(disks) == 3
+    # 所有 disk 元素都保留 host_disk / disk_index / partition 字段
+    for d in disks:
+        assert "host_disk" in d, f"disks[] 元素缺 host_disk: {d}"
+        assert "disk_index" in d, f"disks[] 元素缺 disk_index: {d}"
+        assert "partition" in d, f"disks[] 元素缺 partition: {d}"
+    # 抽样校验
+    assert disks[0]["host_disk"] == "sda"
+    assert disks[0]["disk_index"] == 0
+    assert disks[0]["partition"] == "sda1"
+    assert disks[1]["host_disk"] == "sdb"
+    assert disks[1]["disk_index"] == 1
+    assert disks[1]["partition"] == "sdb1"
+    # 整盘 IO 记录 partition 为空
+    assert disks[2]["partition"] == ""
+    assert disks[2]["host_disk"] == "sda"
+
+
+def test_list_latest_admin_preserves_legacy_disk_records_without_host_disk():
+    """list_latest admin 分支：旧 snapshot（无 host_disk / disk_index / partition）必须兼容。
+
+    2026-08-16 之前的历史 snapshot 可能没有 host_disk 字段；新 service 不能假定字段
+    必存在，缺失时前端按 mount 兜底分组（不在 disk_records 阶段抛错）。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 旧 snapshot 缺失字段时失败
+    """
+    db, conn = _build_tx_db()
+    devops = _StubDevopsService([
+        {"id": 1, "business_name": "biz-A", "server_type": "windows"},
+    ])
+    svc = ServerInspectionRecordService(db=db, devops_server_service=devops)
+
+    db.fetch = AsyncMock(return_value=[{
+        "node_id": None,
+        "node_name": "biz-A",
+        "server_id": 1,
+        "business_name": "biz-A",
+        "server_type": "windows",
+        "collected_at": datetime(2026, 8, 15, 0, 0, 0),
+        "success": True,
+        "inspection_status": "pass",
+        "duration_ms": 10,
+        "error_message": None,
+        # 旧 snapshot: 没 host_disk / partition / disk_index, 但 mount / disk_used_pct 仍在
+        "parsed_values": json.dumps({
+            "disks": [
+                {"mount": "C:\\", "disk_used_pct": 50},
+                {"mount": "0 C: D:[SSD]", "io_util_pct": 12.0, "io_await_ms": 5.0,
+                 "disk_type": "ssd"},
+            ],
+            "mem_used_pct": 25.0,
+        }),
+        "field_results": json.dumps([]),
+    }])
+    items = asyncio.run(svc.list_latest(OwnershipScope.system_scope()))
+    assert len(items) == 1
+    disks = items[0]["disks"]
+    assert len(disks) == 2
+    # 旧 snapshot 字段缺失：service 不报错, 元素仍是 dict 类型即可
+    for d in disks:
+        assert isinstance(d, dict)
+    # 旧字段保留
+    assert disks[0]["mount"] == "C:\\"
+    assert disks[0]["disk_used_pct"] == 50

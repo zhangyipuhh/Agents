@@ -130,7 +130,7 @@ function mapSnapshotToServer(item) {
     // （inspection_scripts.yaml::linux-bash 未输出），fallback '-'。
     uptime: pv.uptime_hours != null ? `${pv.uptime_hours} 小时` : '-',
     disks: disks.map(d => ({
-      // 2026-08-16：透传 mount（区分"系统盘 mount"/"设备名 mount"）+ IO 字段，
+      // 2026-08-16: 透传 mount（区分"系统盘 mount"/"设备名 mount"）+ IO 字段，
       // 供 OpsServerWindow 卡片异常盘符智能选择。name 仍沿用 mount 兼容旧 UI。
       name: d.mount || '-',
       mount: d.mount || '',
@@ -138,6 +138,11 @@ function mapSnapshotToServer(item) {
       ioUtilPct: d.io_util_pct ?? null,
       ioAwaitMs: d.io_await_ms ?? null,
       diskType: d.disk_type || '',
+      // 2026-08-16: 物理盘分组字段（Linux lsblk PKNAME / Windows Win32_DiskDrive 解析）。
+      // 缺失时留空串, 前端按 mount 兜底分组（不跨 mount 猜盘）。
+      hostDisk: d.host_disk || '',
+      diskIndex: typeof d.disk_index === 'number' ? d.disk_index : null,
+      partition: d.partition || '',
       total: '-',
     })),
     // 2026-08-16：透传后端每字段评估结果（由 inspection_scripts.yaml warn/crit

@@ -252,4 +252,115 @@ describe('OpsConsoleApp 运维控制台根组件', () => {
     expect(api.validateToken).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
+
+  // 2026-08-16: 物理盘分组 - 映射透传 host_disk / disk_index / partition
+  it('test_map_snapshot_passes_host_disk_disk_index_partition mapSnapshotToServer 透传 host_disk/disk_index/partition', async () => {
+    const api = await import('../../utils/api.js')
+    api.fetchServerInspectionLatest.mockResolvedValueOnce({
+      items: [
+        {
+          node_id: 11,
+          node_name: 'MyA',
+          server_id: 1,
+          business_name: 'biz-A',
+          server_type: 'linux',
+          status: 'ok',
+          inspection_status: 'pass',
+          collected_at: '2026-08-16T00:46:35',
+          duration_ms: 10,
+          metrics: { cpu: 10, mem: 38.1, disk: 50, load: 0.5 },
+          parsed_values: {
+            disks: [
+              { mount: '/', disk_used_pct: 50, host_disk: 'sda', disk_index: 0, partition: 'sda1' },
+              { mount: '/data', disk_used_pct: 80, host_disk: 'sdb', disk_index: 1, partition: 'sdb1' },
+              { mount: 'sda[HDD]', io_util_pct: 12.0, io_await_ms: 5.0, disk_type: 'hdd',
+                host_disk: 'sda', disk_index: 0, partition: '' },
+            ],
+          },
+          field_results: [],
+          error_message: null,
+        },
+      ],
+    })
+    const wrapper = mount(OpsConsoleApp, {
+      global: {
+        stubs: {
+          OpsMenuBar: true,
+          OpsServerWindow: true,
+          OpsDetailWindow: true,
+          OpsLogManager: true,
+          OpsLogViewer: true,
+        },
+      },
+    })
+    await flushPromises()
+    const servers = wrapper.vm.servers
+    expect(servers).toHaveLength(1)
+    expect(servers[0].disks).toHaveLength(3)
+    // 分区记录: host_disk / partition 透传
+    expect(servers[0].disks[0].hostDisk).toBe('sda')
+    expect(servers[0].disks[0].diskIndex).toBe(0)
+    expect(servers[0].disks[0].partition).toBe('sda1')
+    expect(servers[0].disks[1].hostDisk).toBe('sdb')
+    expect(servers[0].disks[1].diskIndex).toBe(1)
+    expect(servers[0].disks[1].partition).toBe('sdb1')
+    // 整盘 IO 记录: partition 空
+    expect(servers[0].disks[2].hostDisk).toBe('sda')
+    expect(servers[0].disks[2].diskIndex).toBe(0)
+    expect(servers[0].disks[2].partition).toBe('')
+    wrapper.unmount()
+  })
+
+  // 2026-08-16: 兼容老 snapshot - 缺 host_disk / disk_index 时前端字段降级为空
+  it('test_map_snapshot_falls_back_when_host_disk_missing 旧 snapshot 缺 host_disk 时前端降级为空', async () => {
+    const api = await import('../../utils/api.js')
+    api.fetchServerInspectionLatest.mockResolvedValueOnce({
+      items: [
+        {
+          node_id: 11,
+          node_name: 'MyA',
+          server_id: 1,
+          business_name: 'biz-A',
+          server_type: 'windows',
+          status: 'ok',
+          inspection_status: 'pass',
+          collected_at: '2026-08-15T18:00:14.283Z',
+          duration_ms: 10,
+          metrics: { cpu: 10, mem: 38.1, disk: 50, load: null },
+          // 旧 snapshot 缺 host_disk / disk_index / partition
+          parsed_values: {
+            disks: [
+              { mount: 'C:\\', disk_used_pct: 50 },
+              { mount: '0 C: D:[SSD]', io_util_pct: 12.0, io_await_ms: 5.0, disk_type: 'ssd' },
+            ],
+          },
+          field_results: [],
+          error_message: null,
+        },
+      ],
+    })
+    const wrapper = mount(OpsConsoleApp, {
+      global: {
+        stubs: {
+          OpsMenuBar: true,
+          OpsServerWindow: true,
+          OpsDetailWindow: true,
+          OpsLogManager: true,
+          OpsLogViewer: true,
+        },
+      },
+    })
+    await flushPromises()
+    const servers = wrapper.vm.servers
+    expect(servers).toHaveLength(1)
+    expect(servers[0].disks).toHaveLength(2)
+    // 旧 snapshot 缺字段: 前端降级为空串 / null, 不抛错
+    expect(servers[0].disks[0].hostDisk).toBe('')
+    expect(servers[0].disks[0].diskIndex).toBeNull()
+    expect(servers[0].disks[0].partition).toBe('')
+    expect(servers[0].disks[1].hostDisk).toBe('')
+    expect(servers[0].disks[1].diskIndex).toBeNull()
+    expect(servers[0].disks[1].partition).toBe('')
+    wrapper.unmount()
+  })
 })

@@ -1,38 +1,93 @@
+<script>
+/**
+ * 模块级纯函数：按真实物理磁盘字段把扁平磁盘记录归组。
+ *
+ * 宿主磁盘和 `disk_index` 是 Linux/Windows 巡检脚本显式输出的设备关系；
+ * 对旧 Windows 快照仍兼容解析 `0 C: D:[SSD]` 实例名。未知归属的记录按
+ * mount/name 独立成组，避免把不同物理盘臆测合并。
+ *
+ * @param {Array} disks 扁平磁盘记录数组
+ * @returns {Array<{key:string, hostDisk:string, diskIndex:number|null, records:Array}>}
+ *          排序后的物理磁盘组；组内保留原始记录顺序
+ */
+export function groupDisksByPhysicalDisk(disks) {
+  if (!Array.isArray(disks) || disks.length === 0) return []
+
+  const groups = new Map()
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
+  const legacyWindowsDriveToDisk = new Map()
+
+  // 兼容历史 Windows WMI mount 文案：先建立盘符到物理盘编号的映射。
+  // 例如 `0 C: D:[SSD]` 会把 C:、D: 都映射到磁盘 0。
+  for (const item of disks) {
+    if (!item || typeof item !== 'object') continue
+    const mount = typeof item.mount === 'string' ? item.mount.trim() : ''
+    const match = mount.match(/^(\d+)\s+(.+?)(?:\[[^\]]*\])?$/)
+    if (!match) continue
+    const diskIndex = Number(match[1])
+    if (!Number.isInteger(diskIndex) || diskIndex < 0) continue
+    const rest = match[2]
+    for (const part of rest.split(/\s+/)) {
+      const drive = part.match(/^([A-Za-z]:)/)
+      if (drive) legacyWindowsDriveToDisk.set(drive[1].toUpperCase(), diskIndex)
+    }
+  }
+
+  for (const d of disks) {
+    if (!d || typeof d !== 'object') continue
+
+    const mount = typeof d.mount === 'string' ? d.mount.trim() : ''
+    const rawHost = typeof d.hostDisk === 'string' ? d.hostDisk.trim() : ''
+    const rawIndex = Number.isFinite(d.diskIndex) ? d.diskIndex : null
+    const drive = mount.match(/^([A-Za-z]:)/)
+    const fallbackIndex = drive ? legacyWindowsDriveToDisk.get(drive[1].toUpperCase()) : null
+    const legacyIndexMatch = mount.match(/^(\d+)\s+/)
+    const legacyIndex = legacyIndexMatch ? Number(legacyIndexMatch[1]) : fallbackIndex
+    const diskIndex = rawIndex != null ? rawIndex : legacyIndex
+    const hostDisk = rawHost || (diskIndex != null ? `PHYSICALDRIVE${diskIndex}` : '')
+
+    // 分区记录与整盘 IO 记录都必须使用同一个 disk_index；不能因
+    // host_disk 字段存在而拆成两个组。没有真实设备关系时按显示标识独立成组。
+    const key = diskIndex != null
+      ? `disk:${diskIndex}`
+      : hostDisk
+        ? `host:${hostDisk}`
+        : `legacy:${mount || (typeof d.name === 'string' ? d.name.trim() : '') || '-'}`
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        hostDisk,
+        diskIndex,
+        records: [],
+      })
+    }
+    const group = groups.get(key)
+    if (group.diskIndex == null && diskIndex != null) group.diskIndex = diskIndex
+    group.records.push(d)
+  }
+
+  // 不在纯函数中修改输入数组，保持调用方传入记录的原始顺序。
+
+  return Array.from(groups.values()).sort((a, b) => {
+    if (a.diskIndex != null && b.diskIndex != null) return a.diskIndex - b.diskIndex
+    if (a.diskIndex != null) return -1
+    if (b.diskIndex != null) return 1
+    return collator.compare(a.hostDisk || a.key, b.hostDisk || b.key)
+  })
+}
+</script>
+
 <script setup>
 /**
- * 运维控制台 - 服务器详情窗口组件（只读卡片 + 多列磁盘）
- *
- * 2026-08-05 从 `运维界面/app/src/components/DetailWindow.vue` 整段迁移。
- * 2026-08-05 改造：`runDetect` 改为调 `POST /api/admin/server-inspection/collect`
- * 触发真实采集+落库，面板输出真实判定明细（替代原 6 步假动画）。
- *
- * 2026-08-13 调整为 GNOME 风格：
- *   1) 标题栏 mac 红/绿交通灯 → 右侧 max + close 两按钮（原生 <button> + SVG）；
- *   2) 原生 button 自动支持 Enter/Space 键盘可达，无需手动 keydown 处理；
- *   3) 本轮不实现 minimize（涉及最小化栈与状态保留，单独 PR 落地）。
- *
- * 2026-08-16 用户需求改造：
- *   1) 移除「智能检测」按钮 + detect-panel + runDetect 整段逻辑（详情页只读）；
- *   2) 头部 sub 由 `ip · os` 改为「最新检测时间:YYYY-MM-DD HH:MM」绝对时间
- *      （与外层卡片 srv-card-time 文案/格式完全一致，复用 formatCollectedAt）；
- *   3) 顶部 3 个圆角指标卡（含进度条 .bar） → 删除；
- *      改为与外层卡片同款长方形 4 联指标条（.detail-metric-bar）：
- *        CPU 使用率 / 内存占用 / 存储使用 / 服务器负载（仅 linux）；
- *      复用 OpsServerWindow 已具名导出的 metricColor / loadColor / isLinuxType，
- *      不复制阈值口径；删除进度条样式 .bar；
- *   4) kv 表格精简：移除「内存总量 / 存储总量 / 网络流入」3 项；
- *      保留「操作系统 / CPU 型号 / 运行时长」3 项；
- *   5) 磁盘展示由单列行（盘符 + 已用% + 共 + 进度条） → 多列网格（.disk-grid）：
- *        每列：盘符 + 三指标（使用率 / 排队 ms / IO 利用率）；
- *      完全去除磁盘进度条样式；
- *   6) 详情窗口宽度 500 → 460（用户要求「四联的框需要缩小」）。
+ * 运维控制台 - 服务器详情窗口组件（只读卡片 + 物理磁盘分组）
  *
  * Props:
- *   - win: { x, y, z, max }    窗口位置/层级/最大化状态
- *   - server: ServerItem       当前展示详情的服务器
+ *   - win: { x, y, z, max } 窗口位置/层级/最大化状态
+ *   - server: ServerItem     当前展示详情的服务器
  *
  * Emits:
- *   - close / max / front / drag  窗口控制（max/close 由原生 button 触发，事件契约不变）
+ *   - close / max / front / drag 窗口控制
  */
 import { computed } from 'vue'
 import OpsServerIcon from './OpsServerIcon.vue'
@@ -50,56 +105,97 @@ const props = defineProps({
 
 const emit = defineEmits(['close', 'max', 'front', 'drag'])
 
-/**
- * 数值展示：null/undefined → '-'；其他 → `${v}%`。
- * 与外层卡片 fmtPct 行为一致（卡片 helper 未导出，故本地复制实现）。
- */
+/** 百分比展示：null/undefined 返回 '- '，其他值保留原数值。 */
 function fmtPct(v) {
   if (v == null) return '-'
   return `${v}%`
 }
 
-/**
- * 毫秒展示：null/undefined → '-'；其他 → `${v}ms`。
- * 磁盘「排队」专用。
- */
+/** 毫秒展示：null/undefined 返回 '-'，其他值追加 ms。 */
 function fmtMs(v) {
   if (v == null) return '-'
   return `${v}ms`
 }
 
-/**
- * 字符串展示字段降级：null / undefined / 空串 / 纯空白 → '-'；
- * 其他 → 原字符串 trim。
- *
- * 2026-08-16：详情页 kv 表格「操作系统 / CPU 型号」值由
- * ``OpsConsoleApp.mapSnapshotToServer`` 从 ``parsed_values.os`` /
- * ``parsed_values.cpu_model`` 读取，已做防御性 trim 兜底；
- * 详情页这里再做一次防御是双保险（即使上游不传 '' 也不显示空白）。
- *
- * @param {string|null|undefined} v 原始字符串
- * @returns {string} 清洗后的字符串；空值返回 '-'
- */
+/** 字符串展示：空值或纯空白降级为 '-'，其余 trim。 */
 function fmtStr(v) {
   if (typeof v !== 'string') return '-'
-  const t = v.trim()
-  return t ? t : '-'
+  const trimmed = v.trim()
+  return trimmed || '-'
 }
 
 /**
- * 磁盘图标 LED 三态：任一指标超阈（≥80）→ 红；都正常 → 绿；都未采集 → 灰。
- * 与外层卡片 .led 红/绿/gray 同款映射（颜色由 OpsServerIcon 内部 class 决定）。
+ * 磁盘头 LED 三态：整盘 IO 指标任一值达到 80 为红，有值为绿，无值为灰。
+ *
+ * @param {{ioUtilPct?: number|null, ioAwaitMs?: number|null}} d 磁盘头指标
+ * @returns {'ok'|'err'|'unknown'} 磁盘状态
  */
-function diskIconStatus(d) {
-  const items = [d && d.used, d && d.ioUtilPct, d && d.ioAwaitMs]
-  const hasValue = items.some(v => v != null)
-  if (!hasValue) return 'unknown'
-  const overThreshold = items.some(v => typeof v === 'number' && v >= 80)
-  return overThreshold ? 'err' : 'ok'
+function ioAwaitValue(record) {
+  if (!record || typeof record !== 'object') return null
+  if (record.ioAwaitMs != null) return record.ioAwaitMs
+  if (record.ioawaitMs != null) return record.ioawaitMs
+  return null
 }
 
-/** 磁盘 list 是否存在（前端防御） */
+function diskIconStatus(d) {
+  const items = [d && d.ioUtilPct, ioAwaitValue(d)]
+  const hasValue = items.some(v => v != null)
+  if (!hasValue) return 'unknown'
+  return items.some(v => typeof v === 'number' && v >= 80) ? 'err' : 'ok'
+}
+
+/**
+ * 生成磁盘节点标题：显示用户可读的“磁盘 N”，并保留 host_disk 设备信息。
+ *
+ * @param {{diskIndex?: number|null, hostDisk?: string, records?: Array}} group 物理磁盘组
+ * @returns {string} 磁盘节点标题
+ */
+function diskGroupLabel(group) {
+  if (!group) return '未识别磁盘'
+  if (group.diskIndex != null) return `磁盘 ${group.diskIndex}`
+  if (group.hostDisk) return group.hostDisk
+  const diskRecord = group.records && group.records.find(record => record && (record.ioUtilPct != null || ioAwaitValue(record) != null))
+  if (diskRecord && typeof diskRecord.mount === 'string' && diskRecord.mount) return diskRecord.mount
+  return '未识别磁盘'
+}
+
+/**
+ * 分区卡片 LED 三态：使用率达到 80 为红，有值为绿，缺失为灰。
+ *
+ * @param {{used?: number|null}} d 分区使用率记录
+ * @returns {'ok'|'err'|'unknown'} 分区状态
+ */
+function partitionCardStatus(d) {
+  if (d == null || d.used == null) return 'unknown'
+  return d.used >= 80 ? 'err' : 'ok'
+}
+
 const hasDisks = computed(() => Array.isArray(props.server.disks) && props.server.disks.length > 0)
+
+/** 按真实 host_disk/disk_index 归组后的物理磁盘列表。 */
+const diskGroups = computed(() => groupDisksByPhysicalDisk(props.server.disks))
+
+/** 物理磁盘头状态只读取整盘 IO 指标，不受分区使用率值影响。 */
+function diskHeadStatus(group) {
+  if (!group || !Array.isArray(group.records)) return 'unknown'
+  const values = group.records.flatMap(r => [r && r.ioUtilPct, ioAwaitValue(r)]).filter(v => v != null)
+  if (values.length === 0) return 'unknown'
+  return values.some(v => v >= 80) ? 'err' : 'ok'
+}
+
+/** 整盘排队指标：同组多分区时显示最严重的 IO 等待值。 */
+function peakIoAwait(group) {
+  if (!group || !Array.isArray(group.records)) return null
+  const values = group.records.map(r => ioAwaitValue(r)).filter(v => v != null)
+  return values.length ? Math.max(...values) : null
+}
+
+/** 整盘 IO 利用率：同组多分区时显示最严重的 IO 利用率值。 */
+function peakIoUtil(group) {
+  if (!group || !Array.isArray(group.records)) return null
+  const values = group.records.map(r => r && r.ioUtilPct).filter(v => v != null)
+  return values.length ? Math.max(...values) : null
+}
 </script>
 
 <template>
@@ -108,97 +204,63 @@ const hasDisks = computed(() => Array.isArray(props.server.disks) && props.serve
        @mousedown="emit('front')">
     <div class="win-bar" @mousedown="emit('drag', $event)">
       <span class="win-title">{{ server.name }} — 服务器详情</span>
-      <!-- 2026-08-13 GNOME 风格：右侧两按钮 max + close（左→右），原生 button + SVG -->
       <div class="win-controls">
-        <button type="button" class="win-control win-control--max"
-                aria-label="最大化" title="最大化"
-                @click.stop="emit('max')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-            <rect x="5" y="5" width="14" height="14" rx="1.5"/>
-          </svg>
+        <button type="button" class="win-control win-control--max" aria-label="最大化" title="最大化" @click.stop="emit('max')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="1.5"/></svg>
         </button>
-        <button type="button" class="win-control win-control--close"
-                aria-label="关闭" title="关闭"
-                @click.stop="emit('close')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-            <line x1="6" y1="6" x2="18" y2="18"/>
-            <line x1="18" y1="6" x2="6" y2="18"/>
-          </svg>
+        <button type="button" class="win-control win-control--close" aria-label="关闭" title="关闭" @click.stop="emit('close')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
         </button>
       </div>
     </div>
 
     <div class="win-body detail-body">
-      <!-- 头部：大图标 + 名称 + 状态 badge + 最新检测时间（绝对时间） -->
       <div class="srv-head">
-        <div class="big-icon">
-          <OpsServerIcon :status="server.status" :size="36" />
-        </div>
+        <div class="big-icon"><OpsServerIcon :status="server.status" :size="36" /></div>
         <div>
-          <h3>{{ server.name }}<span class="badge" :class="server.status">{{
-            server.status === 'ok' ? '运行正常'
-              : server.status === 'err' ? '指标异常'
-              : '未采集'
-          }}</span></h3>
-          <!-- 2026-08-16：头部 sub 由 `ip · os` 改为「最新检测时间:」+ 绝对时间
-               （与外层卡片 srv-card-time 文案/格式完全一致）；title 放 ISO 全文 -->
-          <div class="sub" :title="server.collectedAt || ''">
-            最新检测时间:{{ formatCollectedAt(server.collectedAt) }}
-          </div>
+          <h3>{{ server.name }}<span class="badge" :class="server.status">{{ server.status === 'ok' ? '运行正常' : server.status === 'err' ? '指标异常' : '未采集' }}</span></h3>
+          <div class="sub" :title="server.collectedAt || ''">最新检测时间:{{ formatCollectedAt(server.collectedAt) }}</div>
         </div>
       </div>
 
-      <!-- 长方形 4 联指标条（与外层卡片同款视觉）：CPU / 内存 / 存储 / 负载（仅 linux）。
-           复用 OpsServerWindow 具名导出的 metricColor / loadColor / isLinuxType。 -->
       <div class="detail-metric-bar">
-        <div class="dm-item">
-          <span class="dm-label">CPU 使用率</span>
-          <span class="dm-value" :style="{ color: metricColor(server.cpu) }">{{ fmtPct(server.cpu) }}</span>
-        </div>
-        <div class="dm-item">
-          <span class="dm-label">内存占用</span>
-          <span class="dm-value" :style="{ color: metricColor(server.mem) }">{{ fmtPct(server.mem) }}</span>
-        </div>
-        <div class="dm-item">
-          <span class="dm-label">存储使用</span>
-          <span class="dm-value" :style="{ color: metricColor(server.disk) }">{{ fmtPct(server.disk) }}</span>
-        </div>
-        <div v-if="isLinuxType(server.serverType)" class="dm-item">
-          <span class="dm-label">服务器负载</span>
-          <span class="dm-value" :style="{ color: loadColor(server.load) }">{{ fmtPct(server.load) }}</span>
-        </div>
+        <div class="dm-item"><span class="dm-label">CPU 使用率</span><span class="dm-value" :style="{ color: metricColor(server.cpu) }">{{ fmtPct(server.cpu) }}</span></div>
+        <div class="dm-item"><span class="dm-label">内存占用</span><span class="dm-value" :style="{ color: metricColor(server.mem) }">{{ fmtPct(server.mem) }}</span></div>
+        <div class="dm-item"><span class="dm-label">存储使用</span><span class="dm-value" :style="{ color: metricColor(server.disk) }">{{ fmtPct(server.disk) }}</span></div>
+        <div v-if="isLinuxType(server.serverType)" class="dm-item"><span class="dm-label">服务器负载</span><span class="dm-value" :style="{ color: loadColor(server.load) }">{{ fmtPct(server.load) }}</span></div>
       </div>
 
-      <!-- 精简 kv：保留 OS / CPU 型号 / 运行时长；删除内存/存储总量 / 网络流入。
-           2026-08-16：os / cpuModel 通过 fmtStr 做防御性 trim 兜底（空串/空白 → '-'），
-           即使上游 mapSnapshotToServer 漏 trim 也能保持显示一致。 -->
       <div class="kv">
         <div><span class="k">操作系统</span><span>{{ fmtStr(server.os) }}</span></div>
         <div><span class="k">CPU 型号</span><span>{{ fmtStr(server.cpuModel) }}</span></div>
         <div><span class="k">运行时长</span><span>{{ server.uptime }}</span></div>
       </div>
 
-      <!-- 磁盘多列网格：每列盘符 + 三指标（使用率/排队/IO利用率），无进度条 -->
       <div class="disk-section">
         <div class="disk-title">磁盘</div>
-        <div v-if="hasDisks" class="disk-grid">
-          <div v-for="d in server.disks" :key="d.mount || d.name" class="disk-cell">
-            <div class="dc-head">
-              <OpsServerIcon :status="diskIconStatus(d)" :size="22" />
-              <span class="dc-name">{{ d.mount || d.name || '-' }}</span>
+        <div v-if="hasDisks" class="disk-groups">
+          <div v-for="group in diskGroups" :key="group.key" class="disk-group">
+            <div class="disk-group-head">
+              <OpsServerIcon :status="diskHeadStatus(group)" :size="22" />
+              <span class="dgh-name">{{ diskGroupLabel(group) }}</span>
+              <span v-if="group.diskIndex != null" class="dgh-index">#{{ group.diskIndex }}</span>
+              <span v-if="group.hostDisk" class="dgh-device">{{ group.hostDisk }}</span>
+              <div class="dgh-metrics">
+                <div class="dg-m"><span class="dg-m-label">排队</span><span class="dg-m-value" :style="{ color: metricColor(peakIoAwait(group)) }">{{ fmtMs(peakIoAwait(group)) }}</span></div>
+                <div class="dg-m"><span class="dg-m-label">IO 利用率</span><span class="dg-m-value" :style="{ color: metricColor(peakIoUtil(group)) }">{{ fmtPct(peakIoUtil(group)) }}</span></div>
+              </div>
             </div>
-            <div class="dc-metrics">
-              <div class="dc-m">
-                <span class="dc-m-label">使用率</span>
-                <span class="dc-m-value" :style="{ color: metricColor(d.used) }">{{ fmtPct(d.used) }}</span>
-              </div>
-              <div class="dc-m">
-                <span class="dc-m-label">排队</span>
-                <span class="dc-m-value" :style="{ color: metricColor(d.ioAwaitMs) }">{{ fmtMs(d.ioAwaitMs) }}</span>
-              </div>
-              <div class="dc-m">
-                <span class="dc-m-label">IO 利用率</span>
-                <span class="dc-m-value" :style="{ color: metricColor(d.ioUtilPct) }">{{ fmtPct(d.ioUtilPct) }}</span>
+            <div class="disk-group-partitions">
+              <!-- 分区卡只渲染分区记录 (partition 非空); IO 整盘记录 (partition="") 只在磁盘头聚合。-->
+              <div v-for="d in group.records.filter(record => typeof record.partition === 'string' && record.partition)" :key="(d.partition || d.mount || d.name) + '|' + (d.used ?? 'null')" class="disk-pcard">
+                <div class="dcp-header">
+                  <OpsServerIcon :status="partitionCardStatus(d)" :size="14" />
+                  <span class="dcp-name">{{ d.mount || d.partition || d.name || '-' }}</span>
+                </div>
+                <div class="dg-m">
+                  <span class="dg-m-label">使用率</span>
+                  <span class="dg-m-value" :style="{ color: metricColor(d.used) }">{{ fmtPct(d.used) }}</span>
+                </div>
               </div>
             </div>
           </div>

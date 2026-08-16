@@ -26,6 +26,11 @@ def test_windows_inspection_scripts_support_legacy_powershell():
     （Win32_PerfFormattedData_PerfDisk_PhysicalDisk 熟数据 + MSFT_PhysicalDisk
     介质探测），仍保持 Get-WmiObject-only，不引入 Get-CimInstance /
     Get-PhysicalDisk / ConvertTo-Json。
+
+    2026-08-16 扩展：单个磁盘 IO 段必须额外输出 ``host_disk`` / ``disk_index``
+    字段（按 Win32_DiskDrive.DeviceID 索引），兼容旧快照（缺字段时前端允许为空）。
+    分区记录（Get-PSDrive 的 mount 段）也带 ``host_disk`` / ``disk_index`` /
+    ``partition``，依据 WMI mount 关联（``0 C: D:[SSD]`` 文本解析）归入物理盘。
     """
     script_paths = [
         PROJECT_ROOT / "data" / "devops" / "inspection_scripts.yaml.example",
@@ -48,7 +53,10 @@ def test_windows_inspection_scripts_support_legacy_powershell():
         }
         configured_keys = {field["key"] for field in windows["inspection_fields"]}
 
-        assert script.count("Get-WmiObject") == 4
+        # Get-WmiObject 调用次数动态匹配：基线 4 个类（OS / Processor / PhysicalDisk /
+        # PerfDisk_PhysicalDisk）+ 2026-08-16 新增 Win32_DiskDrive（host_disk 索引），
+        # 不能再硬编码 = 4。
+        assert script.count("Get-WmiObject") >= 5
         assert "Get-CimInstance" not in script
         assert "Get-PhysicalDisk" not in script
         assert "ConvertTo-Json" not in script
@@ -60,6 +68,10 @@ def test_windows_inspection_scripts_support_legacy_powershell():
         assert "PercentDiskTime" in script
         assert "AvgDiskSecPerTransfer" in script
         assert "disk_type" in script
+        # 2026-08-16 物理磁盘关联：新增 Win32_DiskDrive 索引 + host_disk / disk_index 字段
+        assert "Win32_DiskDrive" in script
+        assert "host_disk" in script
+        assert "disk_index" in script
         assert output_keys == configured_keys
         await_rule = next(
             f for f in windows["inspection_fields"] if f["key"] == "io_await_ms"
