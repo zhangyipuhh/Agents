@@ -248,7 +248,8 @@ export function formatAnomalyItem(item) {
  *   2) 时间标签之后追加两个图标按钮：
  *      - 日志按钮（可用）→ emit('open-log', srv) 打开 OpsInspectionLogWindow，
  *        数据源 server_inspection_records；
- *      - 智能检测按钮（disabled 占位）→ 暂未开放，等待后续 PR 接入。
+ *      - 智能检测按钮（可用）→ emit('open-detect', srv) 打开 OpsDetectChatWindow，
+ *        SSE 流式调用 /api/agent/chat（agent=project）输出两段式巡检分析。
  *   3) 按钮 @click.stop 阻止冒泡到卡片整体的 open-detail。
  *
  * Props:
@@ -261,7 +262,7 @@ export function formatAnomalyItem(item) {
  *   - update:searchKey  v-model 搜索关键词
  *   - open-detail       点击服务器卡片非按钮区域，打开详情窗口
  *   - open-log          点击卡片头「日志」按钮，打开采集记录窗口（2026-08-17 新增）
- *   - open-detect       点击卡片头「智能检测」按钮；当前 disabled，emit 不会触发
+ *   - open-detect       点击卡片头「智能检测」按钮，打开智能检测聊天窗口（2026-08-17 新增）
  *   - close / max / front / drag  窗口控制
  */
 import { computed } from 'vue'
@@ -363,7 +364,7 @@ function fmtPct(v) {
           <span class="srv-card-time" :title="srv.collectedAt || ''">最新检测时间:{{ formatCollectedAt(srv.collectedAt) }}</span>
           <!-- 2026-08-17 新增：卡片头右侧两个图标按钮（详见顶部注释）。
                - 日志：可用 → emit('open-log', srv) 打开 OpsInspectionLogWindow；
-               - 智能检测：disabled 占位，后续 PR 接入，鼠标悬停 tooltip 提示「暂未开放」。 -->
+               - 智能检测：可用 → emit('open-detect', srv) 打开 OpsDetectChatWindow。 -->
           <button class="srv-card-btn" type="button" title="日志" aria-label="日志"
                   @click.stop="emit('open-log', srv)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -374,8 +375,9 @@ function fmtPct(v) {
               <line x1="8 8" x2="13 8"/>
             </svg>
           </button>
-          <button class="srv-card-btn srv-card-btn--disabled" type="button"
-                  title="智能检测(暂未开放)" aria-label="智能检测" disabled>
+          <button class="srv-card-btn" type="button"
+                  title="智能检测" aria-label="智能检测"
+                  @click.stop="emit('open-detect', srv)">
             <!-- 经典机器人 bot 图标：3 触角 + 圆角方形头部 + 两眼 + 梯形身体 -->
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                  stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

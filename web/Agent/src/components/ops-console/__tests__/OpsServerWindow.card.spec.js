@@ -605,10 +605,10 @@ describe('OpsServerWindow 卡片头操作按钮（2026-08-17 新增）', () => {
     expect(btns[0].attributes('aria-label')).toBe('日志')
     expect(btns[0].attributes('title')).toBe('日志')
     expect(btns[0].attributes('disabled')).toBeUndefined()
-    // 第二个 = 智能检测（disabled 占位）
+    // 第二个 = 智能检测（2026-08-17 起可用，无 disabled）
     expect(btns[1].attributes('aria-label')).toBe('智能检测')
-    expect(btns[1].attributes('title')).toBe('智能检测(暂未开放)')
-    expect(btns[1].attributes('disabled')).toBeDefined()
+    expect(btns[1].attributes('title')).toBe('智能检测')
+    expect(btns[1].attributes('disabled')).toBeUndefined()
   })
 
   it('test_log_button_emits_open_log 单击日志按钮 → emit open-log 携带 srv', async () => {
@@ -631,14 +631,23 @@ describe('OpsServerWindow 卡片头操作按钮（2026-08-17 新增）', () => {
     expect(wrapper.emitted('open-detail')).toBeUndefined()
   })
 
-  it('test_detect_button_disabled_does_not_emit 智能检测按钮 disabled → 点击不 emit 任何事件', async () => {
+  it('test_detect_button_emits_open_detect 单击智能检测按钮 → emit open-detect 携带 srv', async () => {
+    const srv = makeServer({ id: 9, name: '检测机' })
+    const wrapper = mount(OpsServerWindow, {
+      props: { win: baseWin, servers: [srv] },
+    })
+    const detectBtn = wrapper.findAll('.srv-card-btn')[1]
+    await detectBtn.trigger('click')
+    expect(wrapper.emitted('open-detect')).toBeTruthy()
+    expect(wrapper.emitted('open-detect').length).toBe(1)
+    expect(wrapper.emitted('open-detect')[0][0]).toEqual(srv)
+  })
+
+  it('test_detect_button_click_does_not_bubble 智能检测按钮点击不触发 open-detail（@click.stop）', async () => {
     const wrapper = mount(OpsServerWindow, {
       props: { win: baseWin, servers: [makeServer({ id: 1 })] },
     })
-    const detectBtn = wrapper.findAll('.srv-card-btn')[1]
-    // 即便尝试点击，emit 仍不会触发（原生 disabled 拦截）
-    await detectBtn.trigger('click')
-    expect(wrapper.emitted('open-detect')).toBeUndefined()
+    await wrapper.findAll('.srv-card-btn')[1].trigger('click')
     expect(wrapper.emitted('open-detail')).toBeUndefined()
   })
 
