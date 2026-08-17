@@ -591,3 +591,63 @@ describe('OpsServerWindow 存储行 field_results 渲染（2026-08-16 新增）'
     expect(val).toBe('80%')
   })
 })
+
+// 2026-08-17 新增：卡片头右侧两个图标按钮（日志、智能检测）
+
+describe('OpsServerWindow 卡片头操作按钮（2026-08-17 新增）', () => {
+  it('test_card_renders_two_action_buttons 卡片头渲染两个图标按钮（日志 + 智能检测）', () => {
+    const wrapper = mount(OpsServerWindow, {
+      props: { win: baseWin, servers: [makeServer({ id: 1 })] },
+    })
+    const btns = wrapper.findAll('.srv-card-btn')
+    expect(btns.length).toBe(2)
+    // 第一个 = 日志（可用，无 disabled）
+    expect(btns[0].attributes('aria-label')).toBe('日志')
+    expect(btns[0].attributes('title')).toBe('日志')
+    expect(btns[0].attributes('disabled')).toBeUndefined()
+    // 第二个 = 智能检测（disabled 占位）
+    expect(btns[1].attributes('aria-label')).toBe('智能检测')
+    expect(btns[1].attributes('title')).toBe('智能检测(暂未开放)')
+    expect(btns[1].attributes('disabled')).toBeDefined()
+  })
+
+  it('test_log_button_emits_open_log 单击日志按钮 → emit open-log 携带 srv', async () => {
+    const srv = makeServer({ id: 7, name: '日志机' })
+    const wrapper = mount(OpsServerWindow, {
+      props: { win: baseWin, servers: [srv] },
+    })
+    const logBtn = wrapper.findAll('.srv-card-btn')[0]
+    await logBtn.trigger('click')
+    expect(wrapper.emitted('open-log')).toBeTruthy()
+    expect(wrapper.emitted('open-log').length).toBe(1)
+    expect(wrapper.emitted('open-log')[0][0]).toEqual(srv)
+  })
+
+  it('test_log_button_click_does_not_bubble 日志按钮点击不触发 open-detail（@click.stop）', async () => {
+    const wrapper = mount(OpsServerWindow, {
+      props: { win: baseWin, servers: [makeServer({ id: 1 })] },
+    })
+    await wrapper.findAll('.srv-card-btn')[0].trigger('click')
+    expect(wrapper.emitted('open-detail')).toBeUndefined()
+  })
+
+  it('test_detect_button_disabled_does_not_emit 智能检测按钮 disabled → 点击不 emit 任何事件', async () => {
+    const wrapper = mount(OpsServerWindow, {
+      props: { win: baseWin, servers: [makeServer({ id: 1 })] },
+    })
+    const detectBtn = wrapper.findAll('.srv-card-btn')[1]
+    // 即便尝试点击，emit 仍不会触发（原生 disabled 拦截）
+    await detectBtn.trigger('click')
+    expect(wrapper.emitted('open-detect')).toBeUndefined()
+    expect(wrapper.emitted('open-detail')).toBeUndefined()
+  })
+
+  it('test_card_body_click_still_emits_open_detail 单击卡片非按钮区域仍触发 open-detail', async () => {
+    const wrapper = mount(OpsServerWindow, {
+      props: { win: baseWin, servers: [makeServer({ id: 1 })] },
+    })
+    await wrapper.find('.srv-card-metrics').trigger('click')
+    expect(wrapper.emitted('open-detail')).toBeTruthy()
+    expect(wrapper.emitted('open-detail').length).toBe(1)
+  })
+})

@@ -36,8 +36,11 @@
  *   - currentTime: string                  顶部菜单栏时间（1s 定时器）
  *   - searchKey: string                    服务器搜索关键词（v-model 双向）
  *   - zTop: number                         全局 z 序计数器
- *   - wins: { servers, detail, logs, logview } 各窗口的开关/位置/层级/最大化
+ *   - wins: { servers, detail, logs, logview, inspectionLog } 各窗口的开关/位置/层级/最大化
  *   - detailServer: ServerItem | null      当前展示详情的服务器
+ *   - inspectionLogServer: ServerItem      当前打开采集记录窗口的服务器（2026-08-17 新增）
+ *   - inspectionLogRecords: HistoryRecord[] 该服务器的历史采集记录数组（2026-08-17 新增）
+ *   - inspectionLogLoading: boolean        是否正在拉取采集记录（2026-08-17 新增）
  *   - activeFolder: number                 当前日志文件夹下标
  *   - logFolders: Array<LogFolder>         日志文件夹列表（2026-08-12 起由
  *                                          ``GET /api/admin/log-folders`` 填充；
@@ -57,18 +60,28 @@ import OpsServerWindow from './OpsServerWindow.vue'
 import OpsDetailWindow from './OpsDetailWindow.vue'
 import OpsLogManager from './OpsLogManager.vue'
 import OpsLogViewer from './OpsLogViewer.vue'
-import { fetchServerInspectionLatest, validateToken } from '../../utils/api.js'
+import OpsInspectionLogWindow from './OpsInspectionLogWindow.vue'
+import {
+  fetchServerInspectionLatest,
+  fetchServerInspectionRecords,
+  validateToken,
+} from '../../utils/api.js'
 
 const currentTime = ref('')
 const searchKey = ref('')
 const zTop = ref(10)
 const wins = ref({
-  servers: { open: true, max: true,  x: 90,  y: 60,  z: 3 },
-  detail:  { open: true, max: false, x: 300, y: 120, z: 2 },
-  logs:    { open: false, max: false, x: 160, y: 80,  z: 1 },
-  logview: { open: true, max: false, x: 380, y: 140, z: 1 },
+  servers:       { open: true,  max: true,  x: 90,  y: 60,  z: 3 },
+  detail:        { open: true,  max: false, x: 300, y: 120, z: 2 },
+  logs:          { open: false, max: false, x: 160, y: 80,  z: 1 },
+  logview:       { open: true,  max: false, x: 380, y: 140, z: 1 },
+  inspectionLog: { open: false, max: false, x: 220, y: 100, z: 1 },
 })
 const detailServer = ref(null)
+// 2026-08-17 新增：采集记录窗口状态
+const inspectionLogServer = ref(null)
+const inspectionLogRecords = ref([])
+const inspectionLogLoading = ref(false)
 const activeFolder = ref(0)
 // 2026-08-12：logFolders 由后端 /api/admin/log-folders 提供（待落地）；
 // 此前由 ``../../data/ops-console/mockData.js`` 兜底，2026-08-12 起移除
@@ -203,6 +216,56 @@ function openDetail(srv) {
   bringFront('detail')
 }
 
+/**
+ * 打开采集记录窗口（OpsInspectionLogWindow）。
+ *
+ * 流程：
+ *   1. 写入 inspectionLogServer，立即打开窗口（不带数据，避免空窗白屏等待）；
+ *   2. bringFront 置顶；
+ *   3. 异步拉取 server_inspection_records（limit=100），失败时回空列表（窗口内
+ *      显示「暂无采集记录」空态）。
+ *
+ * @param {ServerItem} srv 当前服务器卡片对象
+ * @returns {void}
+ */
+async function openInspectionLog(srv) {
+  if (!srv || srv.id == null) return
+  inspectionLogServer.value = srv
+  inspectionLogRecords.value = []
+  wins.value.inspectionLog.open = true
+  bringFront('inspectionLog')
+  inspectionLogLoading.value = true
+  try {
+    const resp = await fetchServerInspectionRecords(srv.id, { limit: 100 })
+    inspectionLogRecords.value = Array.isArray(resp && resp.items) ? resp.items : []
+  } catch (err) {
+    console.warn('[OpsConsoleApp] openInspectionLog 拉取采集记录失败:', err && err.message)
+    inspectionLogRecords.value = []
+  } finally {
+    inspectionLogLoading.value = false
+  }
+}
+
+/** 关闭采集记录窗口并清空状态。 */
+function closeInspectionLog() {
+  wins.value.inspectionLog.open = false
+  inspectionLogServer.value = null
+  inspectionLogRecords.value = []
+  inspectionLogLoading.value = false
+}
+
+/**
+ * 智能检测按钮事件兜底（2026-08-17 占位）。
+ *
+ * 卡片头智能检测按钮当前为 disabled 状态，正常情况下不会触发本函数；
+ * 这里保留一个空实现 + warn 日志，便于未来 PR 接入时定位入口。
+ *
+ * @returns {void}
+ */
+function onOpenDetect(_srv) {
+  console.warn('[OpsConsoleApp] onOpenDetect 智能检测入口暂未开放,等待后续 PR 接入')
+}
+
 /** 打开日志查看窗口（生成 14 行样例日志内容） */
 function openLog(f) {
   logFile.value = { ...f, content: genLogContent(f.name) }
@@ -329,6 +392,8 @@ onMounted(async () => {
     v-model:search-key="searchKey"
     :selected-id="detailServer ? detailServer.id : null"
     @open-detail="openDetail"
+    @open-log="openInspectionLog"
+    @open-detect="onOpenDetect"
     @close="closeWin('servers')"
     @max="toggleMax('servers')"
     @front="bringFront('servers')"
@@ -358,6 +423,17 @@ onMounted(async () => {
     @max="toggleMax('logview')"
     @front="bringFront('logview')"
     @drag="startDrag($event, 'logview')" />
+
+  <!-- 2026-08-17 新增：采集记录窗口（数据源 server_inspection_records）-->
+  <OpsInspectionLogWindow v-if="inspectionLogServer && wins.inspectionLog.open"
+    :win="wins.inspectionLog"
+    :server="inspectionLogServer"
+    :records="inspectionLogRecords"
+    :loading="inspectionLogLoading"
+    @close="closeInspectionLog"
+    @max="toggleMax('inspectionLog')"
+    @front="bringFront('inspectionLog')"
+    @drag="startDrag($event, 'inspectionLog')" />
 
   </div>
 </template>

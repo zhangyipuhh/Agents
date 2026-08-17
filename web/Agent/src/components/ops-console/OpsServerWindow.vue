@@ -240,7 +240,16 @@ export function formatAnomalyItem(item) {
  *   4) 存储行按 disks 列表智能选择：有使用率 ≥ 80 的盘 → 取最高的那块；
  *      否则 Windows 取 C: 盘符盘（无 C: 取首块盘符），Linux 取 mount === '/'；
  *      找不到 → 显示 '-'；
- *   5) 单击卡片仍 emit('open-detail', srv) 打开 OpsDetailWindow，详情页契约不变。
+ *   5) 单击卡片 emit('open-detail', srv) 打开 OpsDetailWindow，详情页契约不变。
+ *
+ * 2026-08-17 改造（卡片头操作按钮）：
+ *   1) 「最新检测时间」标签从「flex:1 标题之后、右贴」调整为「紧贴服务器名称右侧」，
+ *      仍然 flex-shrink:0 保证不被挤压；
+ *   2) 时间标签之后追加两个图标按钮：
+ *      - 日志按钮（可用）→ emit('open-log', srv) 打开 OpsInspectionLogWindow，
+ *        数据源 server_inspection_records；
+ *      - 智能检测按钮（disabled 占位）→ 暂未开放，等待后续 PR 接入。
+ *   3) 按钮 @click.stop 阻止冒泡到卡片整体的 open-detail。
  *
  * Props:
  *   - win: { x, y, z, max }    窗口位置/层级/最大化状态
@@ -250,7 +259,9 @@ export function formatAnomalyItem(item) {
  *
  * Emits:
  *   - update:searchKey  v-model 搜索关键词
- *   - open-detail       点击服务器卡片，打开详情窗口
+ *   - open-detail       点击服务器卡片非按钮区域，打开详情窗口
+ *   - open-log          点击卡片头「日志」按钮，打开采集记录窗口（2026-08-17 新增）
+ *   - open-detect       点击卡片头「智能检测」按钮；当前 disabled，emit 不会触发
  *   - close / max / front / drag  窗口控制
  */
 import { computed } from 'vue'
@@ -263,7 +274,7 @@ const props = defineProps({
   selectedId: { type: Number, default: null },
 })
 
-const emit = defineEmits(['update:searchKey', 'open-detail', 'close', 'max', 'front', 'drag'])
+const emit = defineEmits(['update:searchKey', 'open-detail', 'open-log', 'open-detect', 'close', 'max', 'front', 'drag'])
 
 /** 异常服务器数量（驱动 statusbar 显示） */
 const errCount = computed(() => props.servers.filter(s => s.status === 'err').length)
@@ -346,8 +357,31 @@ function fmtPct(v) {
           <span class="srv-card-title" :title="srv.name">{{ srv.name }}</span>
           <!-- 2026-08-16 新增：最后检测时间（来自 server_latest_snapshot.collected_at）；
                无快照时显示 '-'。标题 flex:1 自动让位挤压，时间右贴保持省略号不变。
-               2026-08-16 追加：「最新检测时间:」前缀标签，让用户一眼看出语义。 -->
+               2026-08-16 追加：「最新检测时间:」前缀标签，让用户一眼看出语义。
+               2026-08-17 调整：DOM 顺序紧贴服务器名称之后，与「日志」「智能检测」按钮同排；
+               flex-shrink:0 保证时间不被挤压成省略号。 -->
           <span class="srv-card-time" :title="srv.collectedAt || ''">最新检测时间:{{ formatCollectedAt(srv.collectedAt) }}</span>
+          <!-- 2026-08-17 新增：卡片头右侧两个图标按钮（详见顶部注释）。
+               - 日志：可用 → emit('open-log', srv) 打开 OpsInspectionLogWindow；
+               - 智能检测：disabled 占位，后续 PR 接入，鼠标悬停 tooltip 提示「暂未开放」。 -->
+          <button class="srv-card-btn" type="button" title="日志" aria-label="日志"
+                  @click.stop="emit('open-log', srv)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M5 4h11l3 3v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/>
+              <line x1="8 12" x2="16 12"/>
+              <line x1="8 16" x2="16 16"/>
+              <line x1="8 8" x2="13 8"/>
+            </svg>
+          </button>
+          <button class="srv-card-btn srv-card-btn--disabled" type="button"
+                  title="智能检测(暂未开放)" aria-label="智能检测" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M12 3v2M12 19v2M5 12H3M21 12h-2M6.34 6.34 4.93 4.93M19.07 19.07l-1.41-1.41M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+            </svg>
+          </button>
         </div>
         <div class="srv-card-metrics">
           <div class="srv-metric">

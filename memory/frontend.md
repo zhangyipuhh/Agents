@@ -202,10 +202,11 @@
 - **运维控制台（App.vue 内嵌子页面，2026-08-08 等保三级改造）**（历史：2026-08-05 独立入口）：删除 `ops-console.html` + `src/ops-console-main.js`，取消 `vite.config.js` 的 `opsConsole` 入口；改为 `App.vue::currentPage === 'ops-console'` 条件渲染 `OpsConsolePage`（即 `OpsConsoleApp.vue`），复用主应用 `fetchWithAuth` + HttpOnly Cookie + `X-Requested-With` CSRF 头鉴权链路，解决「独立子窗口 Cookie 失效 → /api/admin/server-inspection/latest 拉不到数据」反模式；`src/styles/ops-console.css` 改为 `.ops-console-root` 作用域前缀（避免政务蓝 `* { margin: 0; padding: 0 }` 污染主应用），并通过 `App.vue::ensureOpsConsoleStyles()` 在首次切到 ops-console 时按需引入（单例守卫）；`src/components/ops-console/` 下 7 个组件 + `src/data/ops-console/mockData.js` 静态样例数据保留。组件全部以 `Ops` 前缀命名（与主 Agent 业务命名空间隔离）：
   - `OpsConsoleApp.vue`：根组件，7 个 ref 状态机（currentTime / searchKey / zTop / wins / detailServer / activeFolder / logFile）+ 10 个函数（tick / bringFront / openWin / toggleMax / closeWin / openDetail / openLog / detectAll / startDrag / genLogContent）；4 个窗口可独立 open/close/max/front/drag；`startDrag` 拖拽时限制窗口四边边界：顶部不低于菜单栏底部（`28px`），左右/底部至少保留 `60px` 可见区域，防止标题栏被顶部菜单栏压盖后无法再次拖动
   - `OpsMenuBar.vue`：顶部菜单栏（GNOME top bar 实色 + 时间 + 标题「智能运维中心」+ 中文全局菜单占位 + ✕ Close 原生 button，高度 `28px`；2026-08-13 从 mac 毛玻璃 + 红/黄/绿交通灯改造）
-  - `OpsServerWindow.vue`：服务器管理窗口（GNOME 直角 + 标题栏 max/close 两按钮 + **两列横向长方形卡片**（每行 2 个；卡片含 OpsServerIcon 小号 + LED 红绿灯 + 服务器名称 + **最后检测时间（绝对时间 `YYYY-MM-DD HH:MM`，显示为「最新检测时间:YYYY-MM-DD HH:MM」，无快照显示 `最新检测时间:-`，2026-08-16）** + **CPU/内存/存储/服务器负载单行指标（竖线分隔，CSS ::before 生成 `|`，2026-08-14；2026-08-16 负载 label 改为「服务器负载」）** + **Linux 限定「服务器负载」项（`serverType === 'linux'` 才渲染，2026-08-16）** + 搜索 + 状态点；阈值与 `data/devops/inspection_scripts.yaml::warn` 对齐（CPU 80 / 内存 80 / 磁盘 80 → 红 #ff453a；null → 灰 #9aa3af）；**负载阈值独立**为 `≥ 4 红 / < 4 绿 / null 灰`（`loadColor(v)` 具名函数），与百分比指标 80 解耦，对齐 `inspection_scripts.yaml::load_1m warn=4.0`；**存储行改造（2026-08-16）**基于后端 `field_results` 智能选异常盘（`pickAnomalyDisks(fieldResults, disks)` 具名函数）：任一 `disk_used_pct` / `io_util_pct` / `io_await_ms` 超 warn/crit 即把该盘符 + 异常指标概要标红（`#ff453a`），多盘符用逗号串联 + flex-wrap 换行；全 pass → 显示 `-`；`fieldResults` 为空（老数据 / 未落库）→ 兜底既有 `pickDisplayDisk` 行为；老数据兜底时仍按 `metricColor(displayDiskOf(srv)?.used)` 标色；单击卡片仍 `emit('open-detail', srv)` 打开 OpsDetailWindow，详情契约不变；新增 6 个具名导出函数 `formatCollectedAt(iso)` / `isLinuxType(serverType)` / `loadColor(v)` / `pickAnomalyDisks(fieldResults, disks)` / `formatAnomalyItem(item)` / `pickDisplayDisk(disks)` 供单测直接 import）
-  - `OpsDetailWindow.vue`：服务器详情窗口（GNOME 直角 + 标题栏 max/close 两按钮 + 指标卡 + 智能检测动画 + 磁盘列表），暴露 `runDetect()` 方法供父组件调用
+  - `OpsServerWindow.vue`：服务器管理窗口（GNOME 直角 + 标题栏 max/close 两按钮 + **两列横向长方形卡片**（每行 2 个；卡片含 OpsServerIcon 小号 + LED 红绿灯 + 服务器名称 + **最后检测时间（绝对时间 `YYYY-MM-DD HH:MM`，显示为「最新检测时间:YYYY-MM-DD HH:MM」，无快照显示 `最新检测时间:-`，2026-08-16）** + **CPU/内存/存储/服务器负载单行指标（竖线分隔，CSS ::before 生成 `|`，2026-08-14；2026-08-16 负载 label 改为「服务器负载」）** + **Linux 限定「服务器负载」项（`serverType === 'linux'` 才渲染，2026-08-16）** + 搜索 + 状态点；阈值与 `data/devops/inspection_scripts.yaml::warn` 对齐（CPU 80 / 内存 80 / 磁盘 80 → 红 #ff453a；null → 灰 #9aa3af）；**负载阈值独立**为 `≥ 4 红 / < 4 绿 / null 灰`（`loadColor(v)` 具名函数），与百分比指标 80 解耦，对齐 `inspection_scripts.yaml::load_1m warn=4.0`；**存储行改造（2026-08-16）**基于后端 `field_results` 智能选异常盘（`pickAnomalyDisks(fieldResults, disks)` 具名函数）：任一 `disk_used_pct` / `io_util_pct` / `io_await_ms` 超 warn/crit 即把该盘符 + 异常指标概要标红（`#ff453a`），多盘符用逗号串联 + flex-wrap 换行；全 pass → 显示 `-`；`fieldResults` 为空（老数据 / 未落库）→ 兜底既有 `pickDisplayDisk` 行为；老数据兜底时仍按 `metricColor(displayDiskOf(srv)?.used)` 标色；单击卡片仍 `emit('open-detail', srv)` 打开 OpsDetailWindow，详情契约不变；新增 6 个具名导出函数 `formatCollectedAt(iso)` / `isLinuxType(serverType)` / `loadColor(v)` / `pickAnomalyDisks(fieldResults, disks)` / `formatAnomalyItem(item)` / `pickDisplayDisk(disks)` 供单测直接 import）；**2026-08-17 卡片头操作按钮**：时间标签 DOM 顺序紧贴服务器名称之后（顺序调整，`flex-shrink:0` 不变），同行追加两个 22×22 图标按钮「📄 日志」+「✦ 智能检测」；日志按钮 `emit('open-log', srv)`（父级 OpsConsoleApp 调 `openInspectionLog(srv)` 拉取 `server_inspection_records` 后挂载 OpsInspectionLogWindow）；智能检测按钮当前 disabled 占位 + `srv-card-btn--disabled` 灰显样式（`title="智能检测(暂未开放)"`），后续 PR 接入；按钮 `@click.stop` 阻止冒泡到卡片整体的 `open-detail`；新增 emit `open-log / open-detect` 两条契约
+  - `OpsDetailWindow.vue`：服务器详情窗口（GNOME 直角 + 标题栏 max/close 两按钮 + 指标卡 + 智能检测动画 + 磁盘列表），暴露 `runDetect()` 方法供父组件调用；2026-08-17 改造为双 script 块：`<script>` 模块导出纯函数 `fmtPct / fmtMs / fmtStr / warnColor / IOWAIT_WARN / SWAP_WARN / INODE_WARN / ioAwaitValue / diskGroupLabel / partitionCardStatus / diskHeadStatus / peakIoAwait / peakIoUtil / groupDisksByPhysicalDisk / statusLabel / formatDuration`，`<script setup>` 仅保留组件 setup 逻辑（props / emits / computed），与 OpsServerWindow.vue 双块结构一致；供 OpsInspectionLogWindow 直接 import 复用详情区渲染，避免嵌套窗口外壳造成双重标题栏
   - `OpsLogManager.vue`：日志管理窗口（GNOME 直角 + 标题栏 max/close 两按钮 + 左侧文件夹 + 右侧文件列表）
   - `OpsLogViewer.vue`：日志查看窗口（GNOME 直角 + 标题栏 max/close 两按钮 + 终端风格日志内容）
+  - `OpsInspectionLogWindow.vue`（2026-08-17 新增）：采集记录窗口（GNOME 直角 + 标题栏 max/close 两按钮 + **左 280px 列表 + 右自适应详情区**）。左栏：每条 `server_inspection_records` 行渲染「时间 + 状态徽章（pass/warn/crit/skipped/unassessed 五态色块）+ 耗时（formatDuration 友好展示）+ exit_code + 错误摘要（error_message 红字 + ellipsis）」；列表点击切换选中态，默认首条 active；右栏：复用 OpsDetailWindow 的指标卡 / kv / 物理磁盘分组样式（inline 渲染避免嵌套窗口外壳），数据通过 `mapRecordToServer(record, baseServer)` 纯函数把后端 `parsed_values / field_results` 归一化为 ServerItem 形状；loading=true → 显示「加载中…」；records=[] → 显示「暂无采集记录」空态。Props: `win / server / records / loading`；Emits: `close / max / front / drag`。触发源：OpsServerWindow 卡片头「日志」按钮（`emit('open-log', srv)`）→ OpsConsoleApp 调 `openInspectionLog(srv)` 拉取 `GET /api/admin/server-inspection/records?server_id=X&limit=100` → 写入 `inspectionLogRecords` 后挂载本窗口。
   - `OpsDockBar.vue`：底部 taskbar 任务栏（政务蓝实色 `#003a8c` 整宽 36px + 三图标按钮：服务器/日志/一键智能检测；2026-08-13 从底部 mac Dock 改造，模板类名 `dock-*` → `taskbar-*`）
   - `OpsServerIcon.vue`：公共服务器图标（被 ServerWindow / DetailWindow 共用）；2026-08-05 新增 `unknown` 灰色 LED 态（从未采集 / 无快照 / 采集跳过），与 `ok` 绿、`err` 红共三态
   - 数据：2026-08-05 起 `servers` 改为从 `GET /api/admin/server-inspection/latest` 拉取（按当前用户 `OwnershipScope` 过滤：admin 透传全量 `devops_servers`，普通用户按 `user_server_nodes` 可见集去重；响应**不含 ip**）；**2026-08-12 起** `logFolders` 改为本地 `ref([])`，等待后端 `GET /api/admin/log-folders` 落地（接口落地期间日志管理窗口显示空态，不再持有前端 mock 数据，避免被 Vite 打生产 bundle 污染 Docker 镜像）；原 mock 数据迁入 `src/components/ops-console/__tests__/fixtures/opsConsoleMockData.js` 仅供单测使用；**不**走 `src/utils/api.js` 之外的 axios 封装（独立桌面，不依赖主 Agent 业务）
@@ -1220,4 +1221,51 @@ ops-console 目录 5 个 spec 文件共 **88 个用例全绿**（81 → 88，新
 - **布局最终契约**（`web/Agent/src/styles/ops-console.css`）：
   - `.kv` 2 列网格：`grid-template-columns: repeat(2, 1fr)`（460px 窗宽下 4 列过挤，改为 2×2 排布）
   - `.disk-groups` 内部滚动：`max-height: 320px; overflow-y: auto; padding-right: 4px`（窗口头部 / 指标 / kv 保持固定可见；物理盘较多时区域内部滚动，滚动条复用 `.ops-console-root ::-webkit-scrollbar` 政务蓝样式）
+
+#### 运维控制台 OpsServerWindow 卡片头操作按钮 + OpsInspectionLogWindow 采集记录窗口（2026-08-17，用户需求）
+
+应用户要求把 `srv-card-time` 标签贴近服务器名称（DOM 顺序调整 + `flex-shrink:0`），同行追加两个 22×22 图标按钮「📄 日志」+「✦ 智能检测」；日志按钮打开新窗口 `OpsInspectionLogWindow`（左 280px 列表 + 右自适应详情，复用 `OpsDetailWindow` 同样式）。
+
+要点：
+- **卡片头 DOM 顺序**：`[LED] [服务器名] [最新检测时间] [日志] [智能检测]`。时间标签 `flex-shrink:0` 保证不被按钮挤压。CSS 不动（`.srv-card-time` 块注释追加「DOM 顺序调整」说明）。
+- **按钮样式 `.srv-card-btn`**（`web/Agent/src/styles/ops-console.css`，2026-08-17 新增）：22×22 紧凑尺寸；圆角 5px；白底 + 1px 政务蓝边框；hover 政务蓝半透明；disabled 状态 45% 不透明 + not-allowed 光标 + hover 不变色；SVG 13×13。
+- **按钮事件契约**：
+  - 日志：原生 `<button>`，无 `disabled`，`@click.stop="emit('open-log', srv)"` —— 父级 OpsConsoleApp 调 `openInspectionLog(srv)` 拉取 `server_inspection_records` 后挂载 OpsInspectionLogWindow。
+  - 智能检测：原生 `<button disabled>`，不 emit 任何事件（即使尝试 trigger 也被 disabled 拦截）。`title="智能检测(暂未开放)"` 鼠标悬停提示；父级仍注册 `@open-detect="onOpenDetect"` 占位回调（`console.warn` 警告），便于后续 PR 接入时定位入口。
+- **`@click.stop` 阻断冒泡**：按钮点击不会触发卡片整体的 `@click="emit('open-detail', srv)"`（即日志按钮不会顺带打开详情页）。
+- **新窗口 `OpsInspectionLogWindow.vue`**（GNOME 直角 + 标题栏 max/close 两按钮，760×460）：
+  - **左栏 `.inslog-list`**（280px 固定宽度 + 政务蓝半透明背景 + 右侧 1px 分割线 + overflow-y auto）：
+    - 每条记录行 `.inslog-item`：第一行 `formatCollectedAt(collected_at)` + `.inslog-badge` 状态徽章（pass/warn/crit/skipped/unassessed 五态色块，与运维 LED 同系配色）；第二行「耗时 `formatDuration(duration_ms)`」+「exit `exit_code`」+「成功 / 失败」；`error_message` 非空时红字 ellipsis 摘要（`title` 完整 hover 提示）。
+    - 默认选中首条（`active` 类：政务蓝 16% 底 + 3px 政务蓝左 border + `padding-left:9px` 补偿）；点击切换；`records` 切换时 `watch` 把选中态重置到第一条。
+    - 空态：records=[] → 「暂无采集记录」；loading=true → 「加载中…」。
+  - **右栏 `.inslog-detail .detail-body`**（flex:1 + 自适应宽度）：
+    - inline 渲染 OpsDetailWindow 的指标卡 / kv / 物理磁盘分组（避免嵌套窗口外壳造成双重标题栏）；
+    - 数据通过 `mapRecordToServer(record, baseServer)` 纯函数把后端 `parsed_values` 归一化为 ServerItem 形状（系统盘 mount 优先 + 兜底首块可用盘 + parsed_values JSON 字符串防御性 parse + field_results list 校验）。
+- **OpsDetailWindow 双 script 块改造**：原 `<script setup>` 内的纯函数（`fmtPct / fmtMs / fmtStr / warnColor / ioAwaitValue / diskGroupLabel / partitionCardStatus / diskHeadStatus / peakIoAwait / peakIoUtil / IOWAIT_WARN / SWAP_WARN / INODE_WARN` + 既有 `groupDisksByPhysicalDisk`）搬到 `<script>` 块并加 `export`，与 `OpsServerWindow.vue` 同款模式。`<script setup>` 仅保留 `props / emits / hasDisks / diskGroups` 4 个组件 setup 实体。新增具名导出 `statusLabel(inspection_status)`（pass/warn/crit/skipped/unassessed → 中文明文）与 `formatDuration(ms)`（<1000 显示 `ms`，≥1000 显示 `s`，与运维读卡器一致）。组件 setup 行为完全不变（DOM 渲染逻辑未动）。
+- **OpsConsoleApp 状态机新增 4 项**：
+  - `wins.inspectionLog: { open: false, max: false, x: 220, y: 100, z: 1 }`（默认关闭）
+  - `inspectionLogServer: ref(null)` —— 当前查看记录的服务器
+  - `inspectionLogRecords: ref([])` —— 历史采集记录数组
+  - `inspectionLogLoading: ref(false)` —— 拉取中标记
+  - 新增 `import { fetchServerInspectionRecords } from '../../utils/api.js'`
+  - 新增函数 `async openInspectionLog(srv)`：写入 server → 开窗 → bringFront → loading=true → 异步拉取 `GET /api/admin/server-inspection/records?server_id=X&limit=100` → 写入 records（失败回空列表 + warn 日志）；`closeInspectionLog()`：清空 4 个状态；`onOpenDetect(_srv)`：console.warn 占位。
+  - 模板 `<OpsServerWindow>` 加 `@open-log / @open-detect`；末尾挂载 `<OpsInspectionLogWindow>`（仅在 `inspectionLogServer && wins.inspectionLog.open` 时渲染）。
+- **完全复用现有后端**：`GET /api/admin/server-inspection/records`（`app/routers/server_inspection_router.py::get_records`）已存在 5 个月，无需任何后端改动；`server_inspection_records` 表 `parsed_values` / `field_results` JSONB 字段自 2026-08-05 起已落库。
+- **不引入新菜单 / ACL**：`OpsInspectionLogWindow` 仅在运维控制台内部由卡片头按钮触发，不进 `MENU_CATALOG`，不消耗单独权限；现有 `/api/admin/server-inspection/records` 复用 `task-scheduler.server-management` 菜单 ACL。
+- **零业务逻辑回退**：`OpsServerWindow` 单击卡片整体仍正常 emit `open-detail`（单元测试 `test_card_body_click_still_emits_open_detail` 覆盖）。
+
+测试同步：
+- `OpsServerWindow.card.spec.js` 新增 `describe('OpsServerWindow 卡片头操作按钮（2026-08-17 新增）')` 5 用例：`test_card_renders_two_action_buttons`（按钮数量 + aria-label + disabled 属性）/ `test_log_button_emits_open_log`（emit 载荷校验）/ `test_log_button_click_does_not_bubble`（@click.stop 不触发 open-detail）/ `test_detect_button_disabled_does_not_emit`（disabled 拦截）/ `test_card_body_click_still_emits_open_detail`（卡片非按钮区域点击回归保护）。老用例零回归。
+- `OpsInspectionLogWindow.spec.js` 新增 13 用例：组件可 import + `mapRecordToServer` 纯函数 6 用例（基础字段映射 / pass → ok / warn → err / success=false → err / 缺 parsed_values → null / null record → baseServer 兜底）+ 左栏列表 5 用例（records 渲染 + 默认选中首条 / 状态徽章颜色映射 / 点击切换 / 空态 / loading 态）+ 右栏指标渲染 + 错误摘要 + 窗口 max / close 事件 + 窗口标题包含服务器名。
+- `OpsConsoleApp.exit.spec.js` 老用例零回归（添加 `OpsInspectionLogWindow: true` stub 时未触及）。
+- `OpsDetailWindow.redesign.spec.js` 老用例零回归（双 script 改造未触动组件 setup 行为）。
+
+变更文件清单：
+- `web/Agent/src/components/ops-console/OpsServerWindow.vue`（卡片头新增两个按钮 + 注释 + emits 新增 `open-log / open-detect`）
+- `web/Agent/src/components/ops-console/OpsDetailWindow.vue`（纯函数从 `<script setup>` 搬到 `<script>` + 新增 `statusLabel / formatDuration`）
+- `web/Agent/src/components/ops-console/OpsInspectionLogWindow.vue`（**新增**，左 280 列表 + 右自适应详情）
+- `web/Agent/src/components/ops-console/OpsConsoleApp.vue`（状态机 + 3 个新函数 + 模板挂载新窗口 + `<OpsServerWindow>` 加 2 个事件监听）
+- `web/Agent/src/styles/ops-console.css`（`.srv-card-btn` 6 个块 + `.win-inspection-log / .inslog-body / .inslog-list / .inslog-item / .inslog-row1 / .inslog-row2 / .inslog-time / .inslog-badge / .inslog-meta / .inslog-err / .inslog-empty / .inslog-detail` 12 个新块）
+- `web/Agent/src/components/ops-console/__tests__/OpsServerWindow.card.spec.js`（新增 5 用例）
+- `web/Agent/src/components/ops-console/__tests__/OpsInspectionLogWindow.spec.js`（**新增**，13 用例）
 

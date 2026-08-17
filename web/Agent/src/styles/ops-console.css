@@ -265,10 +265,40 @@
 }
 /* 2026-08-16 卡片头右贴：最后检测时间（绝对时间 YYYY-MM-DD HH:MM，无快照显示 '-'）。
    与 srv-metric-label 同色阶，tabular-nums 防抖；标题 flex:1 让位挤压时省略号不变。
-   2026-08-16 改造：「最新检测时间:」前缀标签与时间数值用同色阶展示，无需额外标签样式。 */
+   2026-08-16 改造：「最新检测时间:」前缀标签与时间数值用同色阶展示，无需额外标签样式。
+   2026-08-17 调整：DOM 顺序紧贴服务器名称之后，「日志」「智能检测」两个图标按钮同排；
+   flex-shrink:0 保证时间不被按钮挤压成省略号。 */
 .ops-console-root .srv-card-time {
   font-size: 11px; color: #5a6f9c; font-variant-numeric: tabular-nums;
   white-space: nowrap; flex-shrink: 0;
+}
+/* 2026-08-17 新增：卡片头右侧两个图标按钮（与 .win-control 同款风格）：
+   - 日志按钮可用（白底 → hover 政务蓝半透明）；
+   - 智能检测按钮 disabled 占位（45% 不透明度 + not-allowed 光标）。
+   22×22 紧凑尺寸；flex-shrink:0 防止被挤压；圆角 5px；focus ring 走政务蓝。 */
+.ops-console-root .srv-card-btn {
+  appearance: none; -webkit-appearance: none;
+  border: 1px solid rgba(30, 106, 221, .25); background: rgba(255, 255, 255, .55);
+  cursor: pointer; width: 22px; height: 22px; border-radius: 5px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--gov-text); flex-shrink: 0;
+  transition: background-color .12s, border-color .12s, color .12s;
+}
+.ops-console-root .srv-card-btn:hover {
+  background: rgba(30, 106, 221, .15); border-color: rgba(30, 106, 221, .55);
+  color: var(--gov-blue-deep);
+}
+.ops-console-root .srv-card-btn:focus {
+  outline: 2px solid rgba(30, 106, 221, .6); outline-offset: 1px;
+}
+.ops-console-root .srv-card-btn svg { width: 13px; height: 13px; }
+.ops-console-root .srv-card-btn--disabled,
+.ops-console-root .srv-card-btn[disabled] {
+  opacity: .45; cursor: not-allowed;
+}
+.ops-console-root .srv-card-btn--disabled:hover,
+.ops-console-root .srv-card-btn[disabled]:hover {
+  background: rgba(255, 255, 255, .55); border-color: rgba(30, 106, 221, .25); color: var(--gov-text);
 }
 .ops-console-root .srv-card-metrics {
   display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px;
@@ -459,6 +489,59 @@
 .ops-console-root .logview-body .ll { margin: 3px 0; white-space: pre-wrap; }
 .ops-console-root .logview-body .t { color: #7f8a99; }
 .ops-console-root .logview-body .INFO { color: #30d158; } .ops-console-root .logview-body .WARN { color: #ffd60a; } .ops-console-root .logview-body .ERROR { color: #ff453a; } .ops-console-root .logview-body .DEBUG { color: #64d2ff; }
+
+/* ===== 采集记录窗口（2026-08-17 新增，OpsInspectionLogWindow）=====
+   布局：左 280px 列表 + 右自适应详情（复用 .detail-body 样式）。
+   列表项：时间 + 状态徽章 / 耗时 + exit / 错误摘要。 */
+.ops-console-root .win-inspection-log { width: 760px; height: 460px; display: flex; flex-direction: column; }
+.ops-console-root .inslog-body { flex: 1; display: flex; min-height: 0; }
+.ops-console-root .inslog-list {
+  width: 280px; flex-shrink: 0;
+  background: rgba(234, 242, 253, .6);
+  border-right: 1px solid rgba(30, 106, 221, .12);
+  overflow-y: auto; padding: 6px 0;
+}
+.ops-console-root .inslog-item {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 8px 12px; border-bottom: 1px solid rgba(30, 106, 221, .06);
+  cursor: pointer; transition: background-color .12s;
+}
+.ops-console-root .inslog-item:hover { background: rgba(30, 106, 221, .08); }
+.ops-console-root .inslog-item.active {
+  background: rgba(30, 106, 221, .16); border-left: 3px solid var(--gov-blue);
+  padding-left: 9px;
+}
+.ops-console-root .inslog-row1 {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+}
+.ops-console-root .inslog-time {
+  font-size: 12px; color: var(--gov-blue-deep); font-weight: 600;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.ops-console-root .inslog-badge {
+  display: inline-block; font-size: 10px; padding: 1px 7px; border-radius: 9px;
+  font-weight: 500; line-height: 1.5; flex-shrink: 0;
+}
+.ops-console-root .inslog-badge.pass      { background: rgba(48, 209, 88, .15);  color: #1d9a40; }
+.ops-console-root .inslog-badge.warn      { background: rgba(255, 214, 10, .18); color: #b07900; }
+.ops-console-root .inslog-badge.crit      { background: rgba(255, 69, 58, .15);  color: #d52c22; }
+.ops-console-root .inslog-badge.skipped   { background: rgba(154, 163, 175, .15); color: #7a8db3; }
+.ops-console-root .inslog-badge.unassessed { background: rgba(154, 163, 175, .15); color: #7a8db3; }
+.ops-console-root .inslog-row2 {
+  display: flex; align-items: center; gap: 10px; font-size: 11px; color: #7a8db3;
+}
+.ops-console-root .inslog-meta { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ops-console-root .inslog-err {
+  font-size: 11px; color: #d52c22;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ops-console-root .inslog-empty {
+  padding: 60px 16px; text-align: center; color: #7a8db3; font-size: 12px;
+}
+.ops-console-root .inslog-detail {
+  flex: 1; overflow-y: auto;
+  background: linear-gradient(150deg, rgba(234, 242, 253, .35), rgba(214, 231, 252, .15));
+}
 
 /* ===== 政务蓝滚动条（作用域内）===== */
 .ops-console-root ::-webkit-scrollbar { width: 8px; height: 8px; }

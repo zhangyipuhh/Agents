@@ -1,5 +1,13 @@
 <script>
 /**
+ * 模块导出（纯函数，供 OpsInspectionLogWindow 等复用，与 <script setup> 共存）。
+ * 2026-08-17 抽出：原 <script setup> 内的纯函数搬到这里暴露具名 export，
+ * 与 OpsServerWindow.vue 同款模式，便于其他组件直接 import 复用。
+ * 单一 <script> 块允许包含多个 export function（Vue 3 SFC 约束：
+ * 每个 *.vue 文件最多 1 个 <script> 块 + 可选 1 个 <script setup>）。
+ */
+
+/**
  * 模块级纯函数：按真实物理磁盘字段把扁平磁盘记录归组。
  *
  * 宿主磁盘和 `disk_index` 是 Linux/Windows 巡检脚本显式输出的设备关系；
@@ -76,6 +84,124 @@ export function groupDisksByPhysicalDisk(disks) {
     return collator.compare(a.hostDisk || a.key, b.hostDisk || b.key)
   })
 }
+
+/** 百分比展示：null/undefined 返回 '-'，其他值保留原数值。 */
+export function fmtPct(v) {
+  if (v == null) return '-'
+  return `${v}%`
+}
+
+/** 毫秒展示：null/undefined 返回 '-'，其他值追加 ms。 */
+export function fmtMs(v) {
+  if (v == null) return '-'
+  return `${v}ms`
+}
+
+/** 字符串展示：空值或纯空白降级为 '-'，其余 trim。 */
+export function fmtStr(v) {
+  if (typeof v !== 'string') return '-'
+  const trimmed = v.trim()
+  return trimmed || '-'
+}
+
+/**
+ * OS 关键指标 warn 阈值（对齐 data/devops/inspection_scripts.yaml::inspection_fields）：
+ * cpu_iowait_pct warn=20 / swap_used_pct warn=30 / inode_used_pct warn=80。
+ */
+export const IOWAIT_WARN = 20
+export const SWAP_WARN = 30
+export const INODE_WARN = 80
+
+/**
+ * 按 warn 阈值取色（与 metricColor/loadColor 同色系）：
+ * null / 非数字 → 灰；≥ warn → 红；否则 → 绿。
+ *
+ * @param {number|null|undefined} v 指标值
+ * @param {number} warn 告警阈值（达到即标红）
+ * @returns {string} 颜色十六进制字符串
+ */
+export function warnColor(v, warn) {
+  if (typeof v !== 'number' || Number.isNaN(v)) return '#9aa3af'
+  return v >= warn ? '#ff453a' : '#1d9a40'
+}
+
+/**
+ * 兼容历史字段名 ioAwaitMs / ioawaitMs 读取 IO 等待值（ms）。
+ *
+ * @param {object|null|undefined} record 磁盘记录
+ * @returns {number|null} IO 等待值（ms）；无值返回 null
+ */
+export function ioAwaitValue(record) {
+  if (!record || typeof record !== 'object') return null
+  if (record.ioAwaitMs != null) return record.ioAwaitMs
+  if (record.ioawaitMs != null) return record.ioawaitMs
+  return null
+}
+
+/**
+ * 生成磁盘节点标题：显示用户可读的"磁盘 N"，并保留 host_disk 设备信息。
+ *
+ * @param {{diskIndex?: number|null, hostDisk?: string, records?: Array}} group 物理磁盘组
+ * @returns {string} 磁盘节点标题
+ */
+export function diskGroupLabel(group) {
+  if (!group) return '未识别磁盘'
+  if (group.diskIndex != null) return `磁盘 ${group.diskIndex}`
+  if (group.hostDisk) return group.hostDisk
+  const diskRecord = group.records && group.records.find(record => record && (record.ioUtilPct != null || ioAwaitValue(record) != null))
+  if (diskRecord && typeof diskRecord.mount === 'string' && diskRecord.mount) return diskRecord.mount
+  return '未识别磁盘'
+}
+
+/**
+ * 分区卡片 LED 三态：使用率达到 80 为红，有值为绿，缺失为灰。
+ *
+ * @param {{used?: number|null}} d 分区使用率记录
+ * @returns {'ok'|'err'|'unknown'} 分区状态
+ */
+export function partitionCardStatus(d) {
+  if (d == null || d.used == null) return 'unknown'
+  return d.used >= 80 ? 'err' : 'ok'
+}
+
+/** 物理磁盘头状态只读取整盘 IO 指标，不受分区使用率值影响。 */
+export function diskHeadStatus(group) {
+  if (!group || !Array.isArray(group.records)) return 'unknown'
+  const values = group.records.flatMap(r => [r && r.ioUtilPct, ioAwaitValue(r)]).filter(v => v != null)
+  if (values.length === 0) return 'unknown'
+  return values.some(v => v >= 80) ? 'err' : 'ok'
+}
+
+/** 整盘排队指标：同组多分区时显示最严重的 IO 等待值。 */
+export function peakIoAwait(group) {
+  if (!group || !Array.isArray(group.records)) return null
+  const values = group.records.map(r => ioAwaitValue(r)).filter(v => v != null)
+  return values.length ? Math.max(...values) : null
+}
+
+/** 整盘 IO 利用率：同组多分区时显示最严重的 IO 利用率值。 */
+export function peakIoUtil(group) {
+  if (!group || !Array.isArray(group.records)) return null
+  const values = group.records.map(r => r && r.ioUtilPct).filter(v => v != null)
+  return values.length ? Math.max(...values) : null
+}
+
+/** 巡检状态 → 中文展示。 */
+export function statusLabel(s) {
+  if (s === 'pass') return '通过'
+  if (s === 'warn') return '告警'
+  if (s === 'crit') return '严重'
+  if (s === 'skipped') return '跳过'
+  if (s === 'unassessed') return '未评估'
+  return '-'
+}
+
+/** 毫秒数 → 友好耗时字符串（如 1234 → "1.23s"；125 → "125ms"）。 */
+export function formatDuration(ms) {
+  if (ms == null) return '-'
+  if (ms < 1000) return `${ms}ms`
+  return `${(ms / 1000).toFixed(2)}s`
+}
 </script>
 
 <script setup>
@@ -108,118 +234,10 @@ const props = defineProps({
 
 const emit = defineEmits(['close', 'max', 'front', 'drag'])
 
-/** 百分比展示：null/undefined 返回 '- '，其他值保留原数值。 */
-function fmtPct(v) {
-  if (v == null) return '-'
-  return `${v}%`
-}
-
-/** 毫秒展示：null/undefined 返回 '-'，其他值追加 ms。 */
-function fmtMs(v) {
-  if (v == null) return '-'
-  return `${v}ms`
-}
-
-/** 字符串展示：空值或纯空白降级为 '-'，其余 trim。 */
-function fmtStr(v) {
-  if (typeof v !== 'string') return '-'
-  const trimmed = v.trim()
-  return trimmed || '-'
-}
-
-/**
- * OS 关键指标 warn 阈值（对齐 data/devops/inspection_scripts.yaml::inspection_fields）：
- * cpu_iowait_pct warn=20 / swap_used_pct warn=30 / inode_used_pct warn=80。
- */
-const IOWAIT_WARN = 20
-const SWAP_WARN = 30
-const INODE_WARN = 80
-
-/**
- * 按 warn 阈值取色（与 metricColor/loadColor 同色系）：
- * null / 非数字 → 灰；≥ warn → 红；否则 → 绿。
- *
- * @param {number|null|undefined} v 指标值
- * @param {number} warn 告警阈值（达到即标红）
- * @returns {string} 颜色十六进制字符串
- */
-function warnColor(v, warn) {
-  if (typeof v !== 'number' || Number.isNaN(v)) return '#9aa3af'
-  return v >= warn ? '#ff453a' : '#1d9a40'
-}
-
-/**
- * 磁盘头 LED 三态：整盘 IO 指标任一值达到 80 为红，有值为绿，无值为灰。
- *
- * @param {{ioUtilPct?: number|null, ioAwaitMs?: number|null}} d 磁盘头指标
- * @returns {'ok'|'err'|'unknown'} 磁盘状态
- */
-function ioAwaitValue(record) {
-  if (!record || typeof record !== 'object') return null
-  if (record.ioAwaitMs != null) return record.ioAwaitMs
-  if (record.ioawaitMs != null) return record.ioawaitMs
-  return null
-}
-
-function diskIconStatus(d) {
-  const items = [d && d.ioUtilPct, ioAwaitValue(d)]
-  const hasValue = items.some(v => v != null)
-  if (!hasValue) return 'unknown'
-  return items.some(v => typeof v === 'number' && v >= 80) ? 'err' : 'ok'
-}
-
-/**
- * 生成磁盘节点标题：显示用户可读的“磁盘 N”，并保留 host_disk 设备信息。
- *
- * @param {{diskIndex?: number|null, hostDisk?: string, records?: Array}} group 物理磁盘组
- * @returns {string} 磁盘节点标题
- */
-function diskGroupLabel(group) {
-  if (!group) return '未识别磁盘'
-  if (group.diskIndex != null) return `磁盘 ${group.diskIndex}`
-  if (group.hostDisk) return group.hostDisk
-  const diskRecord = group.records && group.records.find(record => record && (record.ioUtilPct != null || ioAwaitValue(record) != null))
-  if (diskRecord && typeof diskRecord.mount === 'string' && diskRecord.mount) return diskRecord.mount
-  return '未识别磁盘'
-}
-
-/**
- * 分区卡片 LED 三态：使用率达到 80 为红，有值为绿，缺失为灰。
- *
- * @param {{used?: number|null}} d 分区使用率记录
- * @returns {'ok'|'err'|'unknown'} 分区状态
- */
-function partitionCardStatus(d) {
-  if (d == null || d.used == null) return 'unknown'
-  return d.used >= 80 ? 'err' : 'ok'
-}
-
 const hasDisks = computed(() => Array.isArray(props.server.disks) && props.server.disks.length > 0)
 
 /** 按真实 host_disk/disk_index 归组后的物理磁盘列表。 */
 const diskGroups = computed(() => groupDisksByPhysicalDisk(props.server.disks))
-
-/** 物理磁盘头状态只读取整盘 IO 指标，不受分区使用率值影响。 */
-function diskHeadStatus(group) {
-  if (!group || !Array.isArray(group.records)) return 'unknown'
-  const values = group.records.flatMap(r => [r && r.ioUtilPct, ioAwaitValue(r)]).filter(v => v != null)
-  if (values.length === 0) return 'unknown'
-  return values.some(v => v >= 80) ? 'err' : 'ok'
-}
-
-/** 整盘排队指标：同组多分区时显示最严重的 IO 等待值。 */
-function peakIoAwait(group) {
-  if (!group || !Array.isArray(group.records)) return null
-  const values = group.records.map(r => ioAwaitValue(r)).filter(v => v != null)
-  return values.length ? Math.max(...values) : null
-}
-
-/** 整盘 IO 利用率：同组多分区时显示最严重的 IO 利用率值。 */
-function peakIoUtil(group) {
-  if (!group || !Array.isArray(group.records)) return null
-  const values = group.records.map(r => r && r.ioUtilPct).filter(v => v != null)
-  return values.length ? Math.max(...values) : null
-}
 </script>
 
 <template>
