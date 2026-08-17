@@ -41,6 +41,7 @@
  *   - inspectionLogServer: ServerItem      当前打开采集记录窗口的服务器（2026-08-17 新增）
  *   - inspectionLogRecords: HistoryRecord[] 该服务器的历史采集记录数组（2026-08-17 新增）
  *   - inspectionLogLoading: boolean        是否正在拉取采集记录（2026-08-17 新增）
+ *   - detectServer: ServerItem | null      当前智能检测窗口的服务器（2026-08-17 新增）
  *   - activeFolder: number                 当前日志文件夹下标
  *   - logFolders: Array<LogFolder>         日志文件夹列表（2026-08-12 起由
  *                                          ``GET /api/admin/log-folders`` 填充；
@@ -61,6 +62,7 @@ import OpsDetailWindow from './OpsDetailWindow.vue'
 import OpsLogManager from './OpsLogManager.vue'
 import OpsLogViewer from './OpsLogViewer.vue'
 import OpsInspectionLogWindow from './OpsInspectionLogWindow.vue'
+import OpsDetectChatWindow from './OpsDetectChatWindow.vue'
 import {
   fetchServerInspectionLatest,
   fetchServerInspectionRecords,
@@ -76,12 +78,15 @@ const wins = ref({
   logs:          { open: false, max: false, x: 160, y: 80,  z: 1 },
   logview:       { open: true,  max: false, x: 380, y: 140, z: 1 },
   inspectionLog: { open: false, max: false, x: 220, y: 100, z: 1 },
+  detect:        { open: false, max: false, x: 260, y: 110, z: 1 },
 })
 const detailServer = ref(null)
 // 2026-08-17 新增：采集记录窗口状态
 const inspectionLogServer = ref(null)
 const inspectionLogRecords = ref([])
 const inspectionLogLoading = ref(false)
+// 2026-08-17 新增：智能检测窗口状态
+const detectServer = ref(null)
 const activeFolder = ref(0)
 // 2026-08-12：logFolders 由后端 /api/admin/log-folders 提供（待落地）；
 // 此前由 ``../../data/ops-console/mockData.js`` 兜底，2026-08-12 起移除
@@ -259,15 +264,26 @@ function closeInspectionLog() {
 }
 
 /**
- * 智能检测按钮事件兜底（2026-08-17 占位）。
+ * 打开智能检测聊天窗口（OpsDetectChatWindow）。
  *
- * 卡片头智能检测按钮当前为 disabled 状态，正常情况下不会触发本函数；
- * 这里保留一个空实现 + warn 日志，便于未来 PR 接入时定位入口。
+ * 流程：写入 detectServer → 打开窗口 → bringFront 置顶。
+ * 窗口 onMounted 自动发起一次 SSE 流式检测（agent=project，
+ * context_overrides.referenced_servers 注入 business_name）。
  *
+ * @param {ServerItem} srv 当前服务器卡片对象
  * @returns {void}
  */
-function onOpenDetect(_srv) {
-  console.warn('[OpsConsoleApp] onOpenDetect 智能检测入口暂未开放,等待后续 PR 接入')
+function onOpenDetect(srv) {
+  if (!srv || srv.id == null) return
+  detectServer.value = srv
+  wins.value.detect.open = true
+  bringFront('detect')
+}
+
+/** 关闭智能检测窗口并清空状态。 */
+function closeDetect() {
+  wins.value.detect.open = false
+  detectServer.value = null
 }
 
 /** 打开日志查看窗口（生成 14 行样例日志内容） */
@@ -438,6 +454,15 @@ onMounted(async () => {
     @max="toggleMax('inspectionLog')"
     @front="bringFront('inspectionLog')"
     @drag="startDrag($event, 'inspectionLog')" />
+
+  <!-- 2026-08-17 新增：智能检测聊天窗口（/api/agent/chat SSE，agent=project）-->
+  <OpsDetectChatWindow v-if="detectServer && wins.detect.open"
+    :win="wins.detect"
+    :server="detectServer"
+    @close="closeDetect"
+    @max="toggleMax('detect')"
+    @front="bringFront('detect')"
+    @drag="startDrag($event, 'detect')" />
 
   </div>
 </template>

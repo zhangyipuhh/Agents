@@ -391,4 +391,55 @@ describe('OpsConsoleApp 运维控制台根组件', () => {
     expect(servers[0].disks[1].partition).toBe('')
     wrapper.unmount()
   })
+
+  // 2026-08-17 新增：智能检测 chat 窗口接入契约
+  it('test_open_detect_opens_detect_window 智能检测事件打开 detect 窗口并携带 server', async () => {
+    const wrapper = mount(OpsConsoleApp, {
+      global: {
+        stubs: {
+          OpsMenuBar: true,
+          OpsDetailWindow: true,
+          OpsLogManager: true,
+          OpsLogViewer: true,
+          // OpsServerWindow 不 stub：需要真实组件触发 open-detect 事件
+          OpsInspectionLogWindow: true,
+          OpsDetectChatWindow: true,
+        },
+      },
+    })
+    await flushPromises()
+    const srv = wrapper.vm.servers[0]
+    // 通过 OpsServerWindow 组件 emit open-detect（与真实点击等价）
+    wrapper.findComponent({ name: 'OpsServerWindow' }).vm.$emit('open-detect', srv)
+    await flushPromises()
+    expect(wrapper.vm.detectServer).toEqual(srv)
+    expect(wrapper.vm.wins.detect.open).toBe(true)
+    const detectWin = wrapper.findComponent({ name: 'OpsDetectChatWindow' })
+    expect(detectWin.exists()).toBe(true)
+    expect(detectWin.props('server')).toEqual(srv)
+    wrapper.unmount()
+  })
+
+  it('test_close_detect_resets_state detect 窗口 close 后状态复位', async () => {
+    const wrapper = mount(OpsConsoleApp, {
+      global: {
+        stubs: {
+          OpsMenuBar: true,
+          OpsDetailWindow: true,
+          OpsLogManager: true,
+          OpsLogViewer: true,
+          OpsInspectionLogWindow: true,
+          OpsDetectChatWindow: true,
+        },
+      },
+    })
+    await flushPromises()
+    wrapper.findComponent({ name: 'OpsServerWindow' }).vm.$emit('open-detect', wrapper.vm.servers[0])
+    await flushPromises()
+    wrapper.findComponent({ name: 'OpsDetectChatWindow' }).vm.$emit('close')
+    await flushPromises()
+    expect(wrapper.vm.wins.detect.open).toBe(false)
+    expect(wrapper.vm.detectServer).toBeNull()
+    wrapper.unmount()
+  })
 })
