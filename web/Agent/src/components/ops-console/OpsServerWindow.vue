@@ -376,10 +376,16 @@ function fmtPct(v) {
           </button>
           <button class="srv-card-btn srv-card-btn--disabled" type="button"
                   title="智能检测(暂未开放)" aria-label="智能检测" disabled>
+            <!-- 经典机器人 bot 图标：3 触角 + 圆角方形头部 + 两眼 + 梯形身体 -->
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                  stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <circle cx="12" cy="12" r="3"/>
-              <path d="M12 3v2M12 19v2M5 12H3M21 12h-2M6.34 6.34 4.93 4.93M19.07 19.07l-1.41-1.41M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+              <path d="M12 4V2"/>
+              <path d="M8 4l-1-1"/>
+              <path d="M16 4l1-1"/>
+              <rect x="6" y="6" width="12" height="10" rx="2"/>
+              <circle cx="9" cy="11" r="1"/>
+              <circle cx="15" cy="11" r="1"/>
+              <path d="M8 16v3a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-3"/>
             </svg>
           </button>
         </div>
