@@ -10,14 +10,20 @@
 
   会话策略：
     - 合成 ops-detect:{server_id}:{ts} session_id，不调 createNewSession：
-      sessions 表无记录、不污染主侧边栏；每次点击全新上下文（一次性检测语义）。
+      后端 session_auth_middleware 在 /api/agent/ 前缀下对该前缀自动建行归属当前用户
+      （Safety.py::session_auth_middleware）；主侧边栏由 SessionDB.get_user_sessions 过滤
+      ops-detect: 前缀，不污染用户会话列表；每次点击全新上下文（一次性检测语义）。
 
   Props:
-    - win: { x, y, z, max }  窗口位置/层级/最大化状态
+    - win: { x, y, z }       窗口位置/层级（最大化由父级统一控制，本组件不开放）
     - server: ServerItem     当前服务器卡片对象（需含 id / name / businessName / serverType）
 
   Emits:
-    - close / max / front / drag  窗口控制（与 OpsInspectionLogWindow 契约一致）
+    - close / front / drag    窗口控制；本窗口不暴露最大化按钮
+
+  视觉：
+    - 标题栏仅保留关闭按钮（无最大化入口，固定窗口尺寸）；
+    - 窗口固定尺寸 640×520，回答区白底卡片 + 圆角阴影 + 政务蓝流式光标。
 -->
 <script>
 /**
@@ -33,7 +39,7 @@ export const DETECT_QUESTION = '按照两部分回答，1.根据最新服务器�
 export const DETECT_AGENT_NAME = 'project'
 
 /**
- * 构造本次检测的合成 session_id（不创建 sessions 表记录）。
+ * 构造本次检测的合成 session_id（由后端 session_auth_middleware 自动建行）。
  *
  * @param {Object} server 当前服务器 ServerItem
  * @param {number} [now=Date.now()] 毫秒时间戳（测试可注入）
@@ -73,7 +79,7 @@ const props = defineProps({
   win: { type: Object, required: true },
   server: { type: Object, required: true },
 })
-const emit = defineEmits(['close', 'max', 'front', 'drag'])
+const emit = defineEmits(['close', 'front', 'drag'])
 
 /** 本次检测的合成会话 ID（组件生命周期内固定） */
 const sessionId = buildDetectSessionId(props.server)
@@ -153,18 +159,13 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="win win-detect" :class="{ maximized: win.max }"
+  <div class="win win-detect"
        :style="{ left: win.x + 'px', top: win.y + 'px', zIndex: win.z }"
        @mousedown="emit('front')">
     <div class="win-bar" @mousedown="emit('drag', $event)">
+      <span class="win-bar-icon" aria-hidden="true">✦</span>
       <span class="win-title">{{ server.name }} — 智能检测</span>
       <div class="win-controls">
-        <button type="button" class="win-control win-control--max" aria-label="最大化" title="最大化"
-                @click.stop="emit('max')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-            <rect x="5" y="5" width="14" height="14" rx="1.5"/>
-          </svg>
-        </button>
         <button type="button" class="win-control win-control--close" aria-label="关闭" title="关闭"
                 @click.stop="emit('close')">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
@@ -176,13 +177,17 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="detect-body">
-      <!-- 固定问题（用户侧气泡） -->
-      <div class="detect-question">{{ DETECT_QUESTION }}</div>
-      <!-- 错误横幅（403 无 agent 权限 / 429 排队 / 网络错误） -->
+      <!-- 错误横幅（403 无 agent 权限 / 429 排队 / 网络错误）—— 优先级最高 -->
       <div v-if="errorMsg" class="detect-error">{{ errorMsg }}</div>
-      <!-- AI 流式回答（safeMarkdown 渲染） -->
-      <div class="detect-answer" v-html="renderedHtml"></div>
-      <span v-if="isStreaming" class="detect-cursor">▌</span>
+      <!-- 加载占位（心跳）：流式发起后、首段 SSE 到达前显示，复用 .detect-empty 政务蓝心跳视觉 -->
+      <div v-else-if="isStreaming && !aiMsg.text" class="detect-empty">
+        正在分析服务器巡检数据…
+      </div>
+      <!-- AI 流式回答（safeMarkdown 渲染）+ 流式光标 -->
+      <div v-else class="detect-answer-card">
+        <div class="detect-answer" v-html="renderedHtml"></div>
+        <span v-if="isStreaming" class="detect-cursor">▌</span>
+      </div>
     </div>
   </div>
 </template>

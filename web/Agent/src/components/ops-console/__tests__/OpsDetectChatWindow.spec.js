@@ -5,7 +5,8 @@
  * 覆盖：
  *   - 纯函数：buildDetectSessionId 格式 / buildDetectOverrides businessName 优先与兜底；
  *   - 组件：onMounted 自动调 chatStream（agent_name=project + 固定问题 + referenced_servers）、
- *     SSE 流式渲染、HTTP 403 错误横幅、unmount 时 triggerAbort + reader.cancel。
+ *     SSE 流式渲染、HTTP 403 错误横幅、unmount 时 triggerAbort + reader.cancel；
+ *   - UI 契约：不渲染用户问题气泡 / 不渲染最大化按钮。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
@@ -142,5 +143,72 @@ describe('OpsDetectChatWindow 组件', () => {
     expect(triggerAbortMock).toHaveBeenCalledTimes(1)
     expect(triggerAbortMock.mock.calls[0][0]).toMatch(/^ops-detect:1:/)
     expect(cancelMock).toHaveBeenCalled()
+  })
+
+  // -------- UI 契约（2026-08-17 新增） --------
+  it('test_no_question_bubble UI 不渲染用户问题气泡（只输出答案）', async () => {
+    const wrapper = mount(OpsDetectChatWindow, { props: { win: baseWin, server: srv } })
+    await flushPromises()
+    expect(wrapper.find('.detect-question').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('test_no_maximize_button UI 不渲染最大化按钮（仅关闭按钮）', async () => {
+    const wrapper = mount(OpsDetectChatWindow, { props: { win: baseWin, server: srv } })
+    await flushPromises()
+    expect(wrapper.find('.win-control--max').exists()).toBe(false)
+    expect(wrapper.find('.win-control--close').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  // -------- 加载占位（2026-08-17 新增） --------
+  it('test_loading_placeholder_during_streaming_before_first_event 流式挂起时显示心跳占位', async () => {
+    // reader.read 永不 resolve，模拟"流式发起但首段未到"
+    chatStreamMock.mockImplementation(async () => ({
+      getReader: () => ({
+        read: () => new Promise(() => {}),
+        cancel: cancelMock,
+      }),
+    }))
+    const wrapper = mount(OpsDetectChatWindow, { props: { win: baseWin, server: srv } })
+    await flushPromises()
+    // 心跳占位存在且文案正确
+    const empty = wrapper.find('.detect-empty')
+    expect(empty.exists()).toBe(true)
+    expect(empty.text()).toContain('正在分析服务器巡检数据')
+    // 真实回答卡片与错误横幅均不渲染（互斥）
+    expect(wrapper.find('.detect-answer-card').exists()).toBe(false)
+    expect(wrapper.find('.detect-error').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('test_placeholder_hides_after_first_sse_event 首段 SSE 到达后占位让位给回答卡片', async () => {
+    chatStreamMock.mockImplementation(async () => {
+      readQueue.push(
+        sse('data: {"type":"message","content":"hi"}\n\n'),
+        sse('data: {"type":"end"}\n\n'),
+      )
+      return fakeStream()
+    })
+    const wrapper = mount(OpsDetectChatWindow, { props: { win: baseWin, server: srv } })
+    await flushPromises()
+    expect(wrapper.find('.detect-empty').exists()).toBe(false)
+    expect(wrapper.find('.detect-answer-card').exists()).toBe(true)
+    expect(wrapper.find('.detect-answer').text()).toContain('hi')
+    wrapper.unmount()
+  })
+
+  it('test_error_banner_wins_over_placeholder 错误横幅优先级高于占位与答案', async () => {
+    const err = new Error('网络错误')
+    err.status = 500
+    err.detail = '后端超时'
+    chatStreamMock.mockRejectedValue(err)
+    const wrapper = mount(OpsDetectChatWindow, { props: { win: baseWin, server: srv } })
+    await flushPromises()
+    expect(wrapper.find('.detect-error').exists()).toBe(true)
+    expect(wrapper.find('.detect-error').text()).toContain('后端超时')
+    expect(wrapper.find('.detect-empty').exists()).toBe(false)
+    expect(wrapper.find('.detect-answer-card').exists()).toBe(false)
+    wrapper.unmount()
   })
 })

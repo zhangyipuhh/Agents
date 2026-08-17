@@ -460,7 +460,6 @@ onMounted(async () => {
     :win="wins.detect"
     :server="detectServer"
     @close="closeDetect"
-    @max="toggleMax('detect')"
     @front="bringFront('detect')"
     @drag="startDrag($event, 'detect')" />
 

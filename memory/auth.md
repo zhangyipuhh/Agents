@@ -110,6 +110,17 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 
 中间件在 `call_next(request)` 之前对 **Cookie 鉴权 + 写请求** 强制要求 `X-Requested-With: XMLHttpRequest` 自定义头；缺失返 `403 "缺少 CSRF 防护请求头"`（不是 401，避免被 `auth_middleware` 的 `try/except` 通用异常处理包装吞掉）。Bearer 鉴权天然免疫 CSRF（攻击者无法跨站读取/伪造 Header），豁免。`GET / HEAD / OPTIONS` 方法天然安全，豁免。
 
+### ops-detect 临时会话自动供给（`session_auth_middleware` 扩域，2026-08-17）
+
+运维控制台「智能检测」窗口（`OpsDetectChatWindow.vue`）每次点击合成 `ops-detect:{server_id}:{ts}` 作为 chat session_id；该 ID **不会**通过前端 `createNewSession` 进入 `sessions` 表。`session_auth_middleware` 在以下条件全成立时自动建行并归属当前请求用户后放行：
+
+- 路径命中 `/api/agent/` 前缀（chat / abort；其他 session-gated 路由如 `/api/core/uploadfile` 不在内，避免孤儿会话）
+- `verify_session` 返回 False
+- `X-Session-ID` 以 `ops-detect:` 开头
+- `request.state.username` 已由 `auth_middleware` 注入
+
+归属通过 `session_cache.add_session(session_id, username, request.state.user_id, project_id=None)`，等保隔离不破：他人猜中 ID 因 username 不匹配仍 401。`add_session` 抛异常时按 fail-loud 返回 401，绝不静默放行。配套 `SessionDB.get_user_sessions` 在 SQL（`NOT LIKE 'ops-detect:%'`）与 Memory 模式均过滤该前缀，主侧边栏不显示。已知遗留：每次点击在 `sessions` 表与 LangGraph checkpoints 表各产生一行/一个 thread，体积微小；后续可加定期清理（待办，未实现）。
+
 ### 口令策略强校验
 
 - **统一规则源**：`app/shared/utils/auth/password_policy.py::validate_password(password) -> (is_valid, error_message)`，规则：长度 ≥ 8 + ASCII 大写 + ASCII 小写 + 数字 + 特殊字符白名单 `!@#$%^&*()_+\-=\[\]{}|;:,.<>?`。

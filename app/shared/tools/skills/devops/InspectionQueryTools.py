@@ -551,7 +551,10 @@ def _filter_record_keys(row: Dict[str, Any]) -> Dict[str, Any]:
     "查询服务器巡检历史记录。"
     "支持按服务器业务名（business_name）过滤；返回结果不含服务器 IP。"
     "默认仅返回最新一条记录（latest_only=True），无需传时间范围。"
-    "如需历史区间，置 latest_only=False 并传入 ISO8601 格式的 start / end（如 '2026-08-01T00:00:00'）。"
+    "如需历史区间，置 latest_only=False；start / end 均为可选过滤（ISO8601，如 '2026-08-01T00:00:00'），"
+    "可单独或同时传入；缺省视为不限界，返回最近 limit 条（默认 100）。"
+    "如需精确区间（如「最近2天」），建议先调用 get_current_time 获取当前时间再构造绝对区间；"
+    "若 LLM 仅传 latest_only=False 而不传 start/end，工具将返回最近 limit 条而非报错，避免死循环。"
 ))
 async def query_inspection_records(
     business_name: str,
@@ -565,9 +568,11 @@ async def query_inspection_records(
 
     步骤：
       1) 校验 ``business_name`` 非空
-      2) 解析 ``start`` / ``end`` 为 ``datetime``（latest_only=False 时必填；
-         latest_only=True 时忽略）
-      3) latest_only=True → limit 强制为 1；latest_only=False → 钳制到 [1, 1000]
+      2) latest_only 模式分支：
+         - True → ``start`` / ``end`` 强制 ``None``；limit 强制为 1
+         - False → 解析显式传入的 ``start`` / ``end`` 为 ``datetime``；
+           缺省侧保持 ``None``（不限界）；仅当显式传入但 ISO8601 解析失败时报
+           ``invalid_time``；limit 钳制到 [1, 1000]
       4) 从 ``runtime.context["ownership_scope"]`` 取 ``OwnershipScope``
          （dict / 实例 / 缺失 → 三层兜底；缺失 → system_scope）
       5) 从类级单例 ``ServerInspectionRecordService.get_instance()`` 取服务实例
@@ -583,17 +588,26 @@ async def query_inspection_records(
     ``OwnershipScope`` 过滤）。越权 / 不可见时返回通用错误，不回显
     server_id。
 
-    **latest_only 语义**（2026-08-17 新增）：
+    **latest_only 语义**（2026-08-17 新增 / 同日收紧为可选）：
       - True（默认）→ ``limit=1``，**忽略** ``start`` / ``end``；返回
         ``server_inspection_records`` 中该服务器 ``collected_at`` 最新的
         一条。适合"查询最近一次巡检记录"自然语言问题，避免 LLM 必须
         先调 ``get_current_time`` 才能算时间范围。
-      - False → ``start`` / ``end`` 必填，按区间查（与历史契约一致）。
+      - False → ``start`` / ``end`` 改为**可选过滤**：缺省侧视为不限界
+        （透传 ``None`` 给 ``list_records``，服务层 ``None``=不限界），
+        双缺返回最近 ``limit`` 条（默认 100）。仅当显式传入但 ISO8601
+        解析失败时报 ``invalid_time``，**不引入 silent 兜底**。
+        审计 metadata 与 payload 同步输出 ``time_range_defaulted``
+        字段（双缺为 ``True``；latest_only=True 或已传 start/end 时
+        为 ``False``）。修复 2026-08-17 ops-detect 智能检测窗口死循环
+        （详见顶部 description 与本函数注释）。
 
     Args:
         business_name: 业务名（必填，不可为空）。
-        start: 起始时间（含），ISO8601 字符串；``latest_only=False`` 时必填。
-        end: 截止时间（含），ISO8601 字符串；``latest_only=False`` 时必填。
+        start: 起始时间（含），ISO8601 字符串；``latest_only=False`` 时可选，
+            缺省透传 ``None``（不限下界）。
+        end: 截止时间（含），ISO8601 字符串；``latest_only=False`` 时可选，
+            缺省透传 ``None``（不限上界）。
         latest_only: 是否仅返回最新一条记录（默认 True）。
         limit: 最大返回条数（1~1000，默认 100；``latest_only=True`` 时强制 1）。
         runtime: LangChain ``ToolRuntime``（langchain runtime 自动注入）。
@@ -638,97 +652,86 @@ async def query_inspection_records(
         start_dt: Optional[datetime] = None
         end_dt: Optional[datetime] = None
         safe_limit = 1
+        time_range_defaulted = False
     else:
-        # 区间模式：start / end 必填且必须可解析
-        if not start or not end:
-            await _emit_log(
-                action="inspection_query_records",
-                result="failure",
-                runtime=runtime,
-                business_name=business_name,
-                metadata={
-                    "event_type": "query_inspection_records",
-                    "error_code": "missing_time_range",
-                    "duration_ms": int((time.monotonic() - started) * 1000),
-                    "row_count": 0,
-                    "latest_only": False,
-                },
-            )
-            return Command(
-                update={
-                    "messages": [
-                        _make_tool_message(
-                            tool_call_id,
-                            {
-                                "success": False,
-                                "error": "latest_only=False 时 start 与 end 必填",
-                            },
-                        )
-                    ]
-                }
-            )
-        start_dt = _parse_iso_datetime(start, field_name="start")
-        if start_dt is None:
-            await _emit_log(
-                action="inspection_query_records",
-                result="failure",
-                runtime=runtime,
-                business_name=business_name,
-                metadata={
-                    "event_type": "query_inspection_records",
-                    "error_code": "invalid_time",
-                    "duration_ms": int((time.monotonic() - started) * 1000),
-                    "row_count": 0,
-                    "time_range_start_raw": str(start),
-                    "time_range_end_raw": str(end),
-                    "latest_only": False,
-                },
-            )
-            return Command(
-                update={
-                    "messages": [
-                        _make_tool_message(
-                            tool_call_id,
-                            {
-                                "success": False,
-                                "error": "起始时间格式错误，请使用 ISO8601（如 '2026-08-01T00:00:00'）",
-                            },
-                        )
-                    ]
-                }
-            )
-        end_dt = _parse_iso_datetime(end, field_name="end")
-        if end_dt is None:
-            await _emit_log(
-                action="inspection_query_records",
-                result="failure",
-                runtime=runtime,
-                business_name=business_name,
-                metadata={
-                    "event_type": "query_inspection_records",
-                    "error_code": "invalid_time",
-                    "duration_ms": int((time.monotonic() - started) * 1000),
-                    "row_count": 0,
-                    "time_range_start_raw": str(start),
-                    "time_range_end_raw": str(end),
-                    "latest_only": False,
-                },
-            )
-            return Command(
-                update={
-                    "messages": [
-                        _make_tool_message(
-                            tool_call_id,
-                            {
-                                "success": False,
-                                "error": "截止时间格式错误，请使用 ISO8601（如 '2026-08-02T00:00:00'）",
-                            },
-                        )
-                    ]
-                }
-            )
+        # 区间模式（latest_only=False）：start / end 改为**可选过滤**。
+        # 2026-08-17 根因修复（ops-detect 智能检测窗口死循环）：
+        #   原契约要求 start/end 必填，LLM 在「最近N天」相对时间面前常不传绝对区间，
+        #   收到死胡同错误「latest_only=False 时 start 与 end 必填」后原地重试，
+        #   直到 recursion_limit=100 才终止，表现为 agent 死循环。
+        #   新契约：缺省侧视为不限界（list_records 服务层 None=不限界），
+        #   返回最近 limit 条（默认 100）；仅当显式传入但 ISO8601 解析失败时报 invalid_time，
+        #   不引入 silent 兜底（避免 LLM 错传 ISO 字符串时静默通过）。
+        start_dt: Optional[datetime] = None
+        end_dt: Optional[datetime] = None
+        if start:
+            start_dt = _parse_iso_datetime(start, field_name="start")
+            if start_dt is None:
+                await _emit_log(
+                    action="inspection_query_records",
+                    result="failure",
+                    runtime=runtime,
+                    business_name=business_name,
+                    metadata={
+                        "event_type": "query_inspection_records",
+                        "error_code": "invalid_time",
+                        "duration_ms": int((time.monotonic() - started) * 1000),
+                        "row_count": 0,
+                        "time_range_start_raw": str(start),
+                        "time_range_end_raw": str(end) if end else None,
+                        "latest_only": False,
+                    },
+                )
+                return Command(
+                    update={
+                        "messages": [
+                            _make_tool_message(
+                                tool_call_id,
+                                {
+                                    "success": False,
+                                    "error": "起始时间格式错误，请使用 ISO8601（如 '2026-08-01T00:00:00'）",
+                                },
+                            )
+                        ]
+                    }
+                )
+        if end:
+            end_dt = _parse_iso_datetime(end, field_name="end")
+            if end_dt is None:
+                await _emit_log(
+                    action="inspection_query_records",
+                    result="failure",
+                    runtime=runtime,
+                    business_name=business_name,
+                    metadata={
+                        "event_type": "query_inspection_records",
+                        "error_code": "invalid_time",
+                        "duration_ms": int((time.monotonic() - started) * 1000),
+                        "row_count": 0,
+                        "time_range_start_raw": str(start) if start else None,
+                        "time_range_end_raw": str(end),
+                        "latest_only": False,
+                    },
+                )
+                return Command(
+                    update={
+                        "messages": [
+                            _make_tool_message(
+                                tool_call_id,
+                                {
+                                    "success": False,
+                                    "error": "截止时间格式错误，请使用 ISO8601（如 '2026-08-02T00:00:00'）",
+                                },
+                            )
+                        ]
+                    }
+                )
         # 区间模式 limit 钳制到 [1, 1000]
         safe_limit = _clamp_limit(limit, default=100, lo=1, hi=1000)
+        # 双侧均为 None 时视为「不限界」默认，按设计加 defaulted 标记；
+        # 单侧缺失虽不是 defaulted 场景，但 payload 端走「仅双侧都有 time_range」约定，
+        # 故此处统一 False（defaulted 严格表示「区间被默认放宽」）。
+        time_range_defaulted = (start_dt is None and end_dt is None)
 
     # 3) 取 OwnershipScope（dict / 实例 / 缺失 → 三层兜底）
     scope = _resolve_scope(runtime)
@@ -894,6 +897,7 @@ async def query_inspection_records(
         "row_count": len(cleaned_items),
         "latest_only": latest_only,
         "limit": safe_limit,
+        "time_range_defaulted": time_range_defaulted,
     }
     if start_dt is not None:
         metadata_success["time_range_start"] = start_dt.isoformat()
@@ -914,6 +918,7 @@ async def query_inspection_records(
         "server_id": server_id,
         "count": len(cleaned_items),
         "latest_only": latest_only,
+        "time_range_defaulted": time_range_defaulted,
         "items": cleaned_items,
     }
     if start_dt is not None and end_dt is not None:

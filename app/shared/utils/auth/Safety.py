@@ -616,10 +616,40 @@ async def session_auth_middleware(request: Request, call_next):
     is_valid = await session_cache.verify_session(session_id, username)
 
     if not is_valid:
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"detail": "无权访问该会话"}
-        )
+        # 2026-08-17 新增：运维控制台智能检测窗口的合成 session_id
+        # (ops-detect:{server_id}:{ts}) 由 OpsDetectChatWindow 实时生成，
+        # 不进入 sessions 表。verify 失败时若 session_id 以 ops-detect: 开头
+        # 且路径在 /api/agent/ 前缀下，自动建行并归属当前用户后放行：
+        #   - 等保隔离不破：行归属请求用户，他人猜中 ID 也因 username 不匹配仍 401；
+        #   - 不污染主侧边栏：SessionDB.get_user_sessions 过滤该前缀；
+        #   - 仅作用于 /api/agent/：避免文件路由自动建行产生孤儿会话。
+        if (
+            path.startswith("/api/agent/")
+            and session_id.startswith("ops-detect:")
+            and username
+        ):
+            user_id = getattr(request.state, "user_id", None) or 0
+            try:
+                await session_cache.add_session(
+                    session_id, username, user_id, project_id=None
+                )
+                logger.info(
+                    f"[session_auth_middleware] 自动供给 ops-detect 会话: "
+                    f"session_id={session_id}, username={username}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[session_auth_middleware] 自动供给 ops-detect 失败: {e}"
+                )
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    content={"detail": "无权访问该会话"}
+                )
+        else:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"detail": "无权访问该会话"}
+            )
 
     request.state.session_id = session_id
 

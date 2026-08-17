@@ -531,6 +531,7 @@ class SessionDB:
                 SELECT session_id, title, last_active_at, status, agent_type, agent_display_name, created_at, project_id
                 FROM sessions
                 WHERE user_id = $1
+                  AND session_id NOT LIKE 'ops-detect:%'
                 ORDER BY last_active_at DESC
                 """,
                 user_id
@@ -541,7 +542,8 @@ class SessionDB:
         with cls._lock:
             sessions = []
             for sid, s in cls._memory_cache.items():
-                if s.get('user_id') == user_id:
+                # 2026-08-17 新增：过滤 ops-detect: 前缀临时会话，避免污染主侧边栏
+                if s.get('user_id') == user_id and not sid.startswith('ops-detect:'):
                     sessions.append({
                         'session_id': sid,
                         'title': s.get('title', '新对话'),

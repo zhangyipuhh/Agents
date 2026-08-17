@@ -865,8 +865,15 @@ def test_query_latest_only_default_skips_time_range(monkeypatch):
     assert "time_range_end" not in evt.metadata
 
 
-def test_query_latest_only_false_requires_time_range(monkeypatch):
-    """latest_only=False 时，start / end 必填，缺一报错。
+def test_query_latest_only_false_without_time_range_returns_latest_limit(monkeypatch):
+    """latest_only=False 且 start/end 双缺 → 透传 None/None 给 list_records，返回最近 limit 条。
+
+    2026-08-17 根因修复（ops-detect 智能检测窗口死循环）：
+        原契约要求 start/end 必填，LLM 在「最近N天」相对时间面前常不传绝对区间，
+        收到死胡同错误后原地重试至 recursion_limit=100，表现为 agent 死循环。
+        新契约：缺省视为不限界（服务层 list_records 已支持 None=不限界），
+        审计 metadata 加 ``time_range_defaulted=True`` 标记，payload 中同步输出
+        ``time_range_defaulted`` 字段供 LLM 了解区间被默认放宽。
 
     Args:
         monkeypatch: pytest monkeypatch fixture。
@@ -877,14 +884,47 @@ def test_query_latest_only_false_requires_time_range(monkeypatch):
     _, captured = _install_capturing_log_service(monkeypatch)
     _patch_devops_server_service(
         monkeypatch,
-        public_servers=[{"id": 1, "business_name": "alpha", "server_type": "linux"}],
+        public_servers=[{"id": 7, "business_name": "alpha", "server_type": "linux"}],
     )
-    service = _make_record_service_stub(list_records_result=[])
+    mock_rows = [
+        {
+            "id": 901,
+            "server_id": 7,
+            "business_name": "alpha",
+            "collected_at": "2026-08-17T18:00:00+00:00",
+            "success": True,
+            "skipped": False,
+            "exit_code": 0,
+            "duration_ms": 100,
+            "inspection_status": "pass",
+            "error_message": None,
+            "inspection_error": None,
+            "parsed_values": {},
+            "field_results": [],
+            "created_at": "2026-08-17T18:00:01+00:00",
+        },
+        {
+            "id": 900,
+            "server_id": 7,
+            "business_name": "alpha",
+            "collected_at": "2026-08-17T09:00:00+00:00",
+            "success": True,
+            "skipped": False,
+            "exit_code": 0,
+            "duration_ms": 90,
+            "inspection_status": "pass",
+            "error_message": None,
+            "inspection_error": None,
+            "parsed_values": {},
+            "field_results": [],
+            "created_at": "2026-08-17T09:00:01+00:00",
+        },
+    ]
+    service = _make_record_service_stub(list_records_result=mock_rows)
     _install_record_service(monkeypatch, service)
 
     from app.shared.tools.skills.devops.InspectionQueryTools import query_inspection_records
 
-    # start / end 都缺失 → 拒绝
     runtime = _build_runtime()
     out = _run(
         query_inspection_records(
@@ -894,10 +934,97 @@ def test_query_latest_only_false_requires_time_range(monkeypatch):
         )
     )
     payload = json.loads(out.update["messages"][0].content)
-    assert payload["success"] is False
-    assert "start 与 end 必填" in payload["error"]
-    service.list_records.assert_not_awaited()
-    assert captured[-1].metadata["error_code"] == "missing_time_range"
+    assert payload["success"] is True
+    assert payload["count"] == 2
+    assert payload["latest_only"] is False
+    assert payload["time_range_defaulted"] is True
+    assert "time_range" not in payload  # 双缺视为不限界，不构造 time_range 字段
+    # list_records 接收 None/None
+    service.list_records.assert_awaited_once()
+    call_args = service.list_records.call_args
+    assert call_args.kwargs["start"] is None
+    assert call_args.kwargs["end"] is None
+    assert call_args.kwargs["limit"] == 100  # 默认上限
+    # 审计日志：time_range_defaulted=True + 不含具体 time_range_start/end
+    evt = captured[-1]
+    assert evt.result == "success"
+    assert evt.metadata["time_range_defaulted"] is True
+    assert "time_range_start" not in evt.metadata
+    assert "time_range_end" not in evt.metadata
+
+
+def test_query_latest_only_false_with_only_start_passes_end_as_none(monkeypatch):
+    """latest_only=False 只传 start → end 缺省透传 None；时间区间按 start ~ 至今。
+
+    Args:
+        monkeypatch: pytest monkeypatch fixture。
+
+    Returns:
+        None
+    """
+    _, captured = _install_capturing_log_service(monkeypatch)
+    _patch_devops_server_service(
+        monkeypatch,
+        public_servers=[{"id": 7, "business_name": "alpha", "server_type": "linux"}],
+    )
+    service = _make_record_service_stub(list_records_result=[])
+    _install_record_service(monkeypatch, service)
+
+    from app.shared.tools.skills.devops.InspectionQueryTools import query_inspection_records
+
+    runtime = _build_runtime()
+    _run(
+        query_inspection_records(
+            business_name="alpha",
+            start="2026-08-15T00:00:00",
+            latest_only=False,
+            runtime=runtime,
+        )
+    )
+    service.list_records.assert_awaited_once()
+    call_args = service.list_records.call_args
+    assert call_args.kwargs["start"].isoformat().startswith("2026-08-15")
+    assert call_args.kwargs["end"] is None
+    evt = captured[-1]
+    assert evt.metadata["time_range_defaulted"] is False
+    assert evt.metadata["time_range_start"].startswith("2026-08-15")
+
+
+def test_query_latest_only_false_with_only_end_passes_start_as_none(monkeypatch):
+    """latest_only=False 只传 end → start 缺省透传 None；时间区间按历史至 end。
+
+    Args:
+        monkeypatch: pytest monkeypatch fixture。
+
+    Returns:
+        None
+    """
+    _, captured = _install_capturing_log_service(monkeypatch)
+    _patch_devops_server_service(
+        monkeypatch,
+        public_servers=[{"id": 7, "business_name": "alpha", "server_type": "linux"}],
+    )
+    service = _make_record_service_stub(list_records_result=[])
+    _install_record_service(monkeypatch, service)
+
+    from app.shared.tools.skills.devops.InspectionQueryTools import query_inspection_records
+
+    runtime = _build_runtime()
+    _run(
+        query_inspection_records(
+            business_name="alpha",
+            end="2026-08-17T23:59:59",
+            latest_only=False,
+            runtime=runtime,
+        )
+    )
+    service.list_records.assert_awaited_once()
+    call_args = service.list_records.call_args
+    assert call_args.kwargs["start"] is None
+    assert call_args.kwargs["end"].isoformat().startswith("2026-08-17")
+    evt = captured[-1]
+    assert evt.metadata["time_range_defaulted"] is False
+    assert evt.metadata["time_range_end"].startswith("2026-08-17")
 
 
 def test_query_resolves_scope_from_dict_form(monkeypatch):
