@@ -138,6 +138,8 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 
 **双写契约（生产唯一落库入口）**：`app/shared/utils/server_inspection_record_service.py::ServerInspectionRecordService.save_inspection_result` 在单事务（`async with self._db.acquire() as conn: async with conn.transaction():`）内 `INSERT records ... RETURNING id` → `INSERT snapshot ... ON CONFLICT (server_id) DO UPDATE`（与 `InspectionScriptService.delete_script` 同款事务模式，杜绝历史与快照不一致）。
 
+**类级单例契约（2026-08-17 新增）**：`ServerInspectionRecordService` 暴露 `set_instance(instance)` / `get_instance()` / `reset()` 类方法（与 `DevOpsServerService` 同款）。lifespan 在 `app/core/server.py` 中实例化服务后立即 `set_instance(...)`，LangChain 工具（如 `InspectionQueryTools.query_inspection_records`）经 `get_instance()` 获取。**不**通过 `runtime.context` 注入服务实例（避免污染 `agent_router.chat` 通用通道）。
+
 **写入链路**：
 * 定时：`ops_inspection_sweep` 在 `run_server_ops(context)` 返回后 fail-soft 调 `save_inspection_result(report, schedule_id=..., run_id=...)`（异常仅记日志，不影响 docx/邮件）；
 * 手动：`POST /api/admin/server-inspection/collect`（路由层组合，合成 ScriptContext → `run_server_ops` → `save_inspection_result(report, created_by_user_id=scope.user_id)`）。

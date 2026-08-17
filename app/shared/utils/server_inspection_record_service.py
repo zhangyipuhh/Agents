@@ -111,7 +111,53 @@ class ServerInspectionRecordService:
             普通用户分支按 ``OwnershipScope`` 过滤依赖其内存缓存。
         inspection_script_service: 可选 ``InspectionScriptService`` 实例；
             写入阶段反查 ``inspection_script_id``，未注入时该列留 NULL。
+
+    单例契约（2026-08-17 新增）：
+        服务实例由 lifespan 在 ``app/core/server.py`` 通过 ``set_instance``
+        注入，LangChain 工具（如 ``InspectionQueryTools``）经
+        ``get_instance`` 获取。**不**通过 ``runtime.context`` 注入——
+        因为 ``agent_router.chat`` 是通用通道，注入服务实例会让所有 agent
+        的 context payload 携带数据库实例，污染通用接口。本服务也无内存
+        缓存需求（save / read 均直查 DB），lifespan 同步 ``set_instance``
+        与 ``app.state.server_inspection_record_service`` 共用同一实例。
     """
+
+    _instance: Optional["ServerInspectionRecordService"] = None
+
+    @classmethod
+    def set_instance(cls, instance: "ServerInspectionRecordService") -> None:
+        """设置全局单例（lifespan 入口）。
+
+        Args:
+            instance: ``ServerInspectionRecordService`` 实例。
+
+        Returns:
+            None
+        """
+        cls._instance = instance
+
+    @classmethod
+    def get_instance(cls) -> "ServerInspectionRecordService":
+        """获取全局单例。
+
+        Returns:
+            ServerInspectionRecordService: 单例实例。
+
+        Raises:
+            RuntimeError: 单例尚未初始化时抛出（DB 未启用 / lifespan 异常）。
+        """
+        if cls._instance is None:
+            raise RuntimeError("ServerInspectionRecordService singleton not initialized")
+        return cls._instance
+
+    @classmethod
+    def reset(cls) -> None:
+        """重置全局单例（主要用于测试）。
+
+        Returns:
+            None
+        """
+        cls._instance = None
 
     def __init__(
         self,

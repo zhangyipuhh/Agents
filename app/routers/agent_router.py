@@ -185,6 +185,26 @@ async def chat(request: Request, chat_request: ChatRequest) -> StreamingResponse
         if canonical_client_ip is not None:
             merged_overrides["log_ip"] = canonical_client_ip
 
+        # 2026-08-17 新增:注入 ``ownership_scope`` 字典字段,供数据层隔离类
+        # 工具(如 ``InspectionQueryTools.query_inspection_records``)按当前用户
+        # 角色过滤数据。与 ``log_user_id`` / ``log_username`` / ``log_ip`` 同款:
+        # 服务端鉴权结果强制覆盖,客户端无法伪造。字典形态而非 ``OwnershipScope``
+        # 实例,避免 TypedDict 上下文要求 ``OwnershipScope`` 类型;工具侧
+        # ``_resolve_scope_from_context`` 还原为 ``OwnershipScope`` 实例。
+        # 字段构成与 ``OwnershipScope`` dataclass 完全对齐(user_id / is_admin /
+        # system)。
+        try:
+            canonical_role = getattr(request.state, "role", "user")
+            merged_overrides["ownership_scope"] = {
+                "user_id": canonical_user_id,
+                "is_admin": canonical_role == "admin",
+                "system": False,
+            }
+        except Exception:
+            # request.state 缺失 role 时兜底为普通用户,工具侧 _resolve_scope
+            # 也会再兜底 system_scope(),双层防御。
+            pass
+
         agent, context_instance, input_state = await service.build_agent_instance(
             agent_name=agent_name,
             session_id=session_id,

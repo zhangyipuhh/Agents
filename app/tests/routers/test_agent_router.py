@@ -1534,9 +1534,17 @@ def test_chat_filters_none_value_from_context_overrides(
     # 2026-07-29 扩展:还允许 log_user_id / log_username(router 强制覆盖的
     # 服务端鉴权身份字段),客户端伪造身份也不会胜出。
     # 2026-07-30 扩展:还允许 log_ip(router 用 request.client.host 强制覆盖)。
+    # 2026-08-17 扩展:还允许 ownership_scope(router 用 request.state.user_id/role
+    # 强制覆盖,供数据层隔离工具按用户过滤)。
     user_keys = {
         k for k in overrides
-        if k not in {"dynamic_context_suffix", "log_user_id", "log_username", "log_ip"}
+        if k not in {
+            "dynamic_context_suffix",
+            "log_user_id",
+            "log_username",
+            "log_ip",
+            "ownership_scope",
+        }
     }
     assert user_keys == set()
 
@@ -1573,9 +1581,17 @@ def test_chat_filters_empty_string_and_empty_list_from_context_overrides(
     # 2026-07-29 扩展:还允许 log_user_id / log_username(router 强制覆盖的
     # 服务端鉴权身份字段),客户端伪造身份也不会胜出。
     # 2026-07-30 扩展:还允许 log_ip(router 用 request.client.host 强制覆盖)。
+    # 2026-08-17 扩展:还允许 ownership_scope(router 用 request.state.user_id/role
+    # 强制覆盖,供数据层隔离工具按用户过滤)。
     user_keys = {
         k for k in overrides
-        if k not in {"dynamic_context_suffix", "log_user_id", "log_username", "log_ip"}
+        if k not in {
+            "dynamic_context_suffix",
+            "log_user_id",
+            "log_username",
+            "log_ip",
+            "ownership_scope",
+        }
     }
     assert user_keys == set()
 

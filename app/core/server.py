@@ -663,6 +663,13 @@ async def lifespan(app: FastAPI):
                             app.state, "inspection_script_service", None
                         ),
                     )
+                    # 2026-08-17 新增:同时注册类级单例,供 LangChain 工具
+                    # ``InspectionQueryTools`` 通过 ``ServerInspectionRecordService
+                    # .get_instance()`` 获取(不依赖 runtime.context 注入,
+                    # 避免污染 ``agent_router.chat`` 通用通道)。
+                    ServerInspectionRecordService.set_instance(
+                        app.state.server_inspection_record_service,
+                    )
                     logging.info("[lifespan] ServerInspectionRecordService initialized")
                 except Exception as sir_exc:
                     logging.warning(
@@ -886,6 +893,15 @@ async def lifespan(app: FastAPI):
     try:
         if hasattr(app.state, "server_inspection_record_service"):
             app.state.server_inspection_record_service = None
+        # 2026-08-17 新增:同步清理类级单例,避免热重载 / 多 worker 启动场景下
+        # 残留旧实例。
+        try:
+            from app.shared.utils.server_inspection_record_service import (
+                ServerInspectionRecordService as _SirS,
+            )
+            _SirS.reset()
+        except Exception:
+            pass
         logging.info("[lifespan] ServerInspectionRecordService reference cleared")
     except Exception as cleanup_exc:
         logging.warning(
