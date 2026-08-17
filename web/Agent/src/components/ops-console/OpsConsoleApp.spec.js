@@ -118,6 +118,29 @@ describe('OpsConsoleApp 运维控制台根组件', () => {
     wrapper.unmount()
   })
 
+  // 2026-08-17 新增：智能检测 chat override 契约需要 business_name 精确反查
+  it('test_map_snapshot_passes_business_name mapSnapshotToServer 透传 businessName', async () => {
+    const wrapper = mount(OpsConsoleApp, {
+      global: {
+        stubs: {
+          OpsMenuBar: true,
+          OpsServerWindow: true,
+          OpsDetailWindow: true,
+          OpsLogManager: true,
+          OpsLogViewer: true,
+        },
+      },
+    })
+    await flushPromises()
+    const servers = wrapper.vm.servers
+    // 第一行 node_name='MyA' 与 business_name='biz-A' 不同：
+    // 卡片显示名 name='MyA'，但 query_inspection_records 必须按 business_name 精确反查
+    expect(servers[0].name).toBe('MyA')
+    expect(servers[0].businessName).toBe('biz-A')
+    expect(servers[1].businessName).toBe('biz-B')
+    wrapper.unmount()
+  })
+
   // 2026-08-16 改造：详情页 OS 关键指标（iowait/swap/inode）从 parsed_values 映射；
   // os/cpuModel/uptime 死字段已移除（详情页不再消费，「操作系统」改展示 server_type 原值）。
   it('test_map_snapshot_reads_os_metrics mapping 从 parsed_values 读取 cpu_iowait_pct / swap_used_pct / inode_used_pct', async () => {

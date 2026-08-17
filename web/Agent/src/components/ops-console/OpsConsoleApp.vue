@@ -121,6 +121,10 @@ function mapSnapshotToServer(item) {
     id: item.server_id,
     nodeId: item.node_id,
     name: item.node_name || item.business_name || '-',
+    // 2026-08-17：透传 business_name（智能检测 chat override 契约：
+    // query_inspection_records 按 business_name 精确反查 server_id，
+    // 与卡片显示名 node_name 可能不同，二者必须分别保留）。
+    businessName: item.business_name || '',
     ip: '-',                // 不返 ip（运维脱敏约定）
     serverType: item.server_type || '',   // linux/windows，详情页「操作系统」+ 卡片「负载」判定
     status: item.status || 'unknown',
