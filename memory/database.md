@@ -654,6 +654,28 @@ api_config_service / conversation_db 等)与本 bug 同源,影响面更大,后�
 
 **后端服务**：`app/shared/utils/agent/skill_service.py::SkillRegistryService` 提供 DB CRUD、内存缓存与未注册 skill 扫描能力。
 
+### init_all_tables.sql 章节顺序：email_policies 上移到第 16.5 节（2026-08-18）
+
+生产部署 `init_all_tables.sql` 报 `ERROR: relation "email_policies" does not exist`，根因是**章节顺序错误**：
+
+- 第 17.3 扩展（`agent_task_schedules.notify_policy_id` 外键）**先**引用 `email_policies(id)`
+- 第 20 节 `email_policies` CREATE TABLE **后**执行
+- 第 17 节执行到外键时 PG 抛错，后续章节全部跳过
+
+**修复**：把 `email_policies` / `email_policy_recipients` 建表块（含第 16.5.1 模板列扩展）整体从原第 20 位置上移到第 16 节之后、第 17 节之前，作为新的"第 16.5 节"，保证：
+
+```
+16. message_feedback
+16.5. email_policies / email_policy_recipients  ← 新位置（先于 notify_policy_id）
+17. agent_task_schedules（17.3 扩展 notify_policy_id FK）
+17.5. inspection_scripts
+18. devops_servers
+19. email_server_configs
+21. api_config_nodes / api_configs / api_check_runs
+```
+
+DDL 全部 `CREATE TABLE IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS`，幂等可重复执行；生产库 `email_policies` 当前不存在，重新跑脚本会自动建表 + 创建外键。
+
 ### tools 表种子数据（2026-06-25 新增）
 
 `app/migrations/init_all_tables.sql` 末尾追加 17 条 `INSERT INTO tools ... ON CONFLICT (name) DO NOTHING` 段落，作为内置工具元数据首装数据。
