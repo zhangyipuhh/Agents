@@ -59,12 +59,12 @@ services:
       # 原因:让前端 Docker 镜像的 TLS 配置自包含,不依赖项目根 nginx 工具链
       # 重新签发流程(任何时候修改 SAN 都需重签,**不限于到期**):
       #   1. mkcert 签发到 web/Agent/certs/(Docker 主路径,容器内生效):
-      #      .\nginx\mkcert.exe -cert-file .\web\Agent\certs\localhost.pem -key-file .\web\Agent\certs\localhost-key.pem localhost 127.0.0.1 ::1 10.20.8.73
+      #      .\nginx\mkcert.exe -cert-file .\web\Agent\certs\localhost.pem -key-file .\web\Agent\certs\localhost-key.pem localhost 127.0.0.1 ::1 10.20.8.73 172.26.160.50 124.95.179.91 10.1.114.190
       #   2. 手动同步到 nginx/conf/certs/(本地 nginx/ 测试入口 nginx/conf/nginx.conf 引用此路径):
       #      Copy-Item .\web\Agent\certs\* .\nginx\conf\certs\ -Force
       #   3. 重启本地 nginx 与 docker compose(让新证书生效)
-      # 证书有效期 2 年(到 2028-11-08),到期后必须重新签发
-      # mkcert SAN 含 localhost/127.0.0.1/::1/10.20.8.73,浏览器通过 https://localhost:9001 访问时绿锁无警告
+      # 证书有效期 2 年(到 2028-11-18),到期后必须重新签发
+      # mkcert SAN 含 localhost/127.0.0.1/::1/10.20.8.73/172.26.160.50/124.95.179.91/10.1.114.190,浏览器通过 https://localhost:9001 访问时绿锁无警告
       - ./web/Agent/certs:/etc/nginx/certs:ro
     healthcheck:
       # 校验证书存在,避免 ./nginx/conf/certs/ 缺失时 nginx 启动后才报错(容器会无限重启)
