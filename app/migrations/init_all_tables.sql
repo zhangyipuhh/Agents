@@ -2810,6 +2810,45 @@ CREATE INDEX IF NOT EXISTS idx_message_feedback_session_id  ON message_feedback(
 CREATE INDEX IF NOT EXISTS idx_message_feedback_type        ON message_feedback(feedback_type);
 CREATE INDEX IF NOT EXISTS idx_message_feedback_created_at  ON message_feedback(created_at DESC);
 
+-- ========== 16.5. email_policies / email_policy_recipients（邮件发送策略）==========
+-- 策略仅包含收件人集合（用户确认）；策略与 users 多对多关系
+-- 调用方（脚本/定时任务/手动）通过 policy_id 调用 EmailService 发送邮件
+-- 归属隔离（2026-07-24 起）：
+--   * created_by_user_id 作为归属字段，遵循 OwnershipScope 通用方案
+--   * admin 可见全部策略；普通用户仅可见自己创建的策略
+--   * 定时任务通过 notify_policy_id 关联策略，校验策略归属 task 创建人
+-- 章节顺序说明（2026-08-18 调整）：
+--   * 本节从原"20."位置上移到"16.5."，保证 email_policies 表先于
+--     agent_task_schedules.notify_policy_id 外键（第 17.3 扩展）创建，
+--     否则外键引用不存在的表会抛 "relation email_policies does not exist"。
+--   * 所有 DDL 使用 IF NOT EXISTS，幂等可重复执行。
+CREATE TABLE IF NOT EXISTS email_policies (
+    id                SERIAL PRIMARY KEY,
+    name              VARCHAR(200) NOT NULL,
+    description       TEXT DEFAULT '',
+    created_by_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+-- 归属字段索引：按用户隔离 list 时频繁 WHERE created_by_user_id = $1
+CREATE INDEX IF NOT EXISTS idx_email_policies_created_by_user_id
+    ON email_policies(created_by_user_id);
+
+CREATE TABLE IF NOT EXISTS email_policy_recipients (
+    policy_id   INTEGER NOT NULL REFERENCES email_policies(id) ON DELETE CASCADE,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (policy_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_email_policy_recipients_user_id ON email_policy_recipients(user_id);
+
+-- 16.5.1 扩展：邮件主题/正文模板（含 {{var}} 占位符）
+-- 定时任务执行完成后用模板渲染主题与正文，再通过 EmailService 发送。
+-- 留空字符串时：subject_template 用策略名；body_template 用脚本返回的 body。
+ALTER TABLE email_policies
+    ADD COLUMN IF NOT EXISTS subject_template VARCHAR(500) NOT NULL DEFAULT '';
+ALTER TABLE email_policies
+    ADD COLUMN IF NOT EXISTS body_template TEXT NOT NULL DEFAULT '';
+
 -- ========== 17. agent_task_schedules / agent_task_runs（智能体定时任务）==========
 -- 应用内调度器的任务定义与执行历史。数据库是任务定义真相源；服务启动时加载 enabled 任务。
 -- 所有 DDL 使用 IF NOT EXISTS / IF NOT EXISTS（索引），幂等可重复执行。
@@ -3069,41 +3108,9 @@ ALTER TABLE email_server_configs
 ALTER TABLE email_server_configs
     ADD COLUMN IF NOT EXISTS verify_ssl BOOLEAN NOT NULL DEFAULT TRUE;
 
--- ========== 20. email_policies / email_policy_recipients（邮件发送策略）==========
--- 策略仅包含收件人集合（用户确认）；策略与 users 多对多关系
--- 调用方（脚本/定时任务/手动）通过 policy_id 调用 EmailService 发送邮件
--- 归属隔离（2026-07-24 起）：
---   * created_by_user_id 作为归属字段，遵循 OwnershipScope 通用方案
---   * admin 可见全部策略；普通用户仅可见自己创建的策略
---   * 定时任务通过 notify_policy_id 关联策略，校验策略归属 task 创建人
-CREATE TABLE IF NOT EXISTS email_policies (
-    id                SERIAL PRIMARY KEY,
-    name              VARCHAR(200) NOT NULL,
-    description       TEXT DEFAULT '',
-    created_by_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
--- 归属字段索引：按用户隔离 list 时频繁 WHERE created_by_user_id = $1
-CREATE INDEX IF NOT EXISTS idx_email_policies_created_by_user_id
-    ON email_policies(created_by_user_id);
-
-CREATE TABLE IF NOT EXISTS email_policy_recipients (
-    policy_id   INTEGER NOT NULL REFERENCES email_policies(id) ON DELETE CASCADE,
-    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    PRIMARY KEY (policy_id, user_id)
-);
-CREATE INDEX IF NOT EXISTS idx_email_policy_recipients_user_id ON email_policy_recipients(user_id);
-
--- 20.1 扩展：邮件主题/正文模板（含 {{var}} 占位符）
--- 定时任务执行完成后用模板渲染主题与正文，再通过 EmailService 发送。
--- 留空字符串时：subject_template 用策略名；body_template 用脚本返回的 body。
-ALTER TABLE email_policies
-    ADD COLUMN IF NOT EXISTS subject_template VARCHAR(500) NOT NULL DEFAULT '';
-ALTER TABLE email_policies
-    ADD COLUMN IF NOT EXISTS body_template TEXT NOT NULL DEFAULT '';
-
 -- ========== 21. api_config_nodes / api_configs / api_check_runs（API接口配置）==========
+-- 注：原第 20 节 email_policies 已上移到第 16.5 节（2026-08-18 章节顺序调整）
+-- 确保 notify_policy_id 外键引用时 email_policies 表已存在，详见第 16.5 节注释。
 -- 树形节点（folder / api）+ 每个 api 节点的请求配置 + 调用历史。
 -- 所有 DDL 使用 IF NOT EXISTS，幂等可重复执行。
 -- 归属隔离（2026-07-24 起）：
