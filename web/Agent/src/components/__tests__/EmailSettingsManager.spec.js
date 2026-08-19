@@ -205,4 +205,14 @@ describe('内部滚动契约（防内容溢出）', () => {
     expect(m, '.detail-header 样式块必须存在').not.toBeNull()
     expect(m[1]).toMatch(/flex-shrink\s*:\s*0/)
   })
+
+  /* 2026-08-19 新增：邮件设置服务器配置 / 测试发送 Tab 表单行靠顶对齐契约。
+     .email-form 是 CSS Grid，tabpanel 在窗口拉高时高度变大；
+     默认 align-content: normal/stretch 会把多余高度均分到行间，导致行距被撑开。
+     必须显式 align-content: start 让行靠顶对齐，剩余空间留在表单底部（即卡片内边距下方）。 */
+  it('test_email_form_aligns_content_to_top 表单行靠顶对齐 防止父容器过高时被 stretch 撑开', () => {
+    const m = EmailSettingsManagerSource.match(/\.email-form\s*\{([^}]*)\}/s)
+    expect(m, '.email-form 样式块必须存在').not.toBeNull()
+    expect(m[1]).toMatch(/align-content\s*:\s*start/)
+  })
 })

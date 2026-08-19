@@ -963,9 +963,10 @@ onMounted(async () => {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
-  flex: 1;          /* 2026-07-31 新增：吃光 tabpanel 高度（服务器配置/测试发送两个 Tab） */
-  min-height: 0;    /* 2026-07-31 新增：解封 flex 链断点 */
-  overflow-y: auto; /* 2026-07-31 新增：长表单（高级选项展开 / 多附件 / 长正文）内部自滚动 */
+  flex: 1;             /* 2026-07-31 新增：吃光 tabpanel 高度（服务器配置/测试发送两个 Tab） */
+  min-height: 0;       /* 2026-07-31 新增：解封 flex 链断点 */
+  overflow-y: auto;    /* 2026-07-31 新增：长表单（高级选项展开 / 多附件 / 长正文）内部自滚动 */
+  align-content: start;/* 2026-08-19 新增：Grid 行靠顶对齐，避免外层 .tab-fill-wrapper 高度拉大时 Grid 默认 stretch 把行间空白撑开；多余空间留在卡片底部，符合"section 扩大到底"契约 */
 }
 
 .form-field,
