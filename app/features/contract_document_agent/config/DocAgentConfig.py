@@ -81,9 +81,16 @@ class DocAgentConfig(BaseAgentConfig):
         返回:
             tuple[list[str], ToolNode]: 工具名称列表和对应的 ToolNode 对象
         """
-
+        from app.core.tools.BaseTools import open_file_by_id, read_cached_chunk
 
         base_tools, base_tool_node = super().get_tools()
-        tools = list(base_tools) + [split_file, get_extraction_rule_id, get_extraction_rule_detail, save_extraction_result]
+        tools = list(base_tools) + [
+            split_file,
+            get_extraction_rule_id,
+            get_extraction_rule_detail,
+            save_extraction_result,
+            open_file_by_id,
+            read_cached_chunk,
+        ]
 
         return tools, ToolNode(tools)

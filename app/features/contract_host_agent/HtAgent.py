@@ -9,7 +9,7 @@ Date: 2026-03-17
 Author: 张镒谱
 """
 
-from typing import Optional, Any
+from typing import Optional, Any, List
 from app.core.agent.agent import get_agent
 from app.features.contract_host_agent.config.HtAgentConfig import (
     HtAgentConfig,
@@ -43,25 +43,42 @@ class HtAgent:
         store: BaseStore,
         store_id: Optional[str] = None,
         system_prompt: Optional[str] = None,
+        base_system_prompt: Optional[str] = None,
+        enabled_skill_names: Optional[List[str]] = None,
         max_tokens: int = 20000,
         max_tokens_before_summary: int = 16000,
         max_summary_tokens: int = 4000,
     ):
         """
         初始化 HtAgent 实例
-        
+
         Args:
             checkpointer: LangGraph 检查点保存器，用于持久化会话状态
             store: LangGraph 内存存储器，用于存储上下文信息
             system_prompt: 自定义系统提示词，默认使用合同审批专用提示词
+            base_system_prompt:
+                可选基类系统提示词，覆盖 app.core.prompts.BASE_SYSTEM_PROMPT。
+                详见 AgentConfig.base_system_prompt。三元语义：
+                - None（默认）：使用常量 BASE_SYSTEM_PROMPT（向后兼容）
+                - ""：跳过 base 段，整段 BASE_SYSTEM_PROMPT 不参与拼接
+                - 非空字符串：按 Agent 维度完全覆盖常量内容
+            enabled_skill_names:
+                该 Agent 启用的 skill 白名单；透传给 HtAgentConfig.enabled_skill_names，
+                供 SkillsAwarePrompt 在构造 system prompt 时过滤可用 skill。
+                - None（默认）：沿用 AgentConfig 基类默认（SkillsAwarePrompt 走 service.all()
+                  加载全部已注册 skill，向后兼容旧路径）
+                - []：显式空列表，过滤后 available_skills 段为空
+                - 非空列表：仅展示这些 skill（前提是它们在 DB skills 表已注册且 enabled=True）
             max_tokens: 最大 token 数，默认 20000
             max_tokens_before_summary: 触发摘要的 token 阈值，默认 16000
             max_summary_tokens: 摘要最大 token 数，默认 4000
         """
         self.checkpointer = checkpointer
         self.store = store
-        self.store_id = store_id        
+        self.store_id = store_id
         self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
+        self.base_system_prompt = base_system_prompt
+        self.enabled_skill_names = enabled_skill_names
         self.max_tokens = max_tokens
         self.max_tokens_before_summary = max_tokens_before_summary
         self.max_summary_tokens = max_summary_tokens
@@ -75,6 +92,8 @@ class HtAgent:
                 max_tokens_before_summary=self.max_tokens_before_summary,
                 max_summary_tokens=self.max_summary_tokens,
                 system_prompt=self.system_prompt,
+                base_system_prompt=self.base_system_prompt,
+                enabled_skill_names=self.enabled_skill_names,
                 checkpointer=self.checkpointer,
                 store=self.store,
             )

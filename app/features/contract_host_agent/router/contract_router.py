@@ -67,6 +67,10 @@ async def get_ht_agent() -> HtAgent:
     使用延迟初始化模式，确保在第一次请求时才创建 HtAgent 实例，
     这样可以正确获取异步初始化的 checkpointer。
 
+    关键：传 ``enabled_skill_names=[]``，避免 LLM 在合同审批场景误加载项目文档 / 地图 /
+    知识库 skill（合同审批业务不需要）。详见 plan：
+    ``.trae/documents/contract_host_agent_skill_loading.md``。
+
     Returns:
         HtAgent: 初始化完成的 HtAgent 实例
     """
@@ -77,6 +81,7 @@ async def get_ht_agent() -> HtAgent:
             checkpointer=checkpointer,
             store=store,
             store_id=store_id,
+            enabled_skill_names=[],
         )
     return _ht_agent
 
@@ -109,6 +114,9 @@ async def get_approval_agent() -> ApprovalAgent:
     使用延迟初始化模式，确保在第一次请求时才创建 ApprovalAgent 实例，
     这样可以正确获取异步初始化的 checkpointer。
 
+    2026-08-19：显式传 base_system_prompt="" 跳过 app.core.prompts.BASE_SYSTEM_PROMPT，
+    ApprovalAgent 自带 DEFAULT_SYSTEM_PROMPT 已足够约束角色风格。
+
     Returns:
         ApprovalAgent: 初始化完成的 ApprovalAgent 实例
     """
@@ -119,6 +127,7 @@ async def get_approval_agent() -> ApprovalAgent:
             checkpointer=checkpointer,
             store=store,
             store_id=store_id,
+            base_system_prompt=" ",
         )
     return _approval_agent
 

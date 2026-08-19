@@ -202,6 +202,49 @@ DB `skills.location` / `skills.base_dir` 字段存储**相对项目根的 POSIX 
 
 **用法**：子智能体已有完整 `system_prompt`（如 HtAgent/DocAgent/ApprovalAgent）又不需要通用基类规则时，在 `AgentConfig(..., base_system_prompt="")` 即可关闭。
 
+#### 包装类透传（2026-08-19 落地）
+
+`HtAgent` / `DocAgent` / `ApprovalAgent` 三个包装类的 `__init__` 已透传 `base_system_prompt: Optional[str] = None`：
+- 默认 `None` → 行为完全向后兼容（沿用 `AgentConfig.base_system_prompt` 默认值，最终走常量 `BASE_SYSTEM_PROMPT`）
+- 显式 `""` → 跳过 base 段
+- 非空字符串 → 按 Agent 维度覆盖
+
+`_ensure_agent` 构造 `*AgentConfig(...)` 时追加 `base_system_prompt=self.base_system_prompt` 键值，确保包装类字段与底层 config 同步。
+
+`DocClient._ensure_agent()` / `contract_router.get_*_agent()` 当前都不传 `base_system_prompt`，行为不变；需要在某个 agent 上跳过 BASE_SYSTEM_PROMPT 的调用方显式传入即可。
+
+#### 路由层默认跳过（2026-08-19 落地）
+
+[contract_router.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/features/contract_host_agent/router/contract_router.py) 中三个延迟初始化工厂 `get_ht_agent()` / `get_doc_agent()` / `get_approval_agent()` 已显式传 `base_system_prompt=""`：
+
+- `/api/contract/chat` → HtAgent 跳过 BASE_SYSTEM_PROMPT
+- `/api/contract/doc_chat` → DocAgent 跳过 BASE_SYSTEM_PROMPT
+- `/api/contract/approval_chat` → ApprovalAgent 跳过 BASE_SYSTEM_PROMPT
+
+理由：合同领域子智能体均有完整的 `DEFAULT_SYSTEM_PROMPT`（角色定义、回复风格、禁用术语、与通用基类的"keep responses short / 4 lines / ask_user_question 约束"有冲突），通用基类规则会污染特定场景。`DocClient` 命令行测试入口仍保留旧行为（默认 None → 用 BASE_SYSTEM_PROMPT），供调试用。
+
+#### `enabled_skill_names` 包装类透传（2026-08-19 落地）
+
+`HtAgent` 包装类的 `__init__` 已透传 `enabled_skill_names: Optional[List[str]] = None`：
+
+- 默认 `None` → 沿用 `AgentConfig.enabled_skill_names` 缺省值，`SkillsAwarePrompt` 走 `service.all()` 加载全部已注册 skill（向后兼容）
+- 显式 `[]` → 空过滤，`available_skills` 段为空
+- 非空列表 → 仅展示白名单内的 skill（前提是它们在 DB skills 表已注册且 `enabled=True`）
+
+`_ensure_agent` 构造 `HtAgentConfig(...)` 时追加 `enabled_skill_names=self.enabled_skill_names` 键值，确保包装类字段与底层 config 同步。
+
+#### 路由层默认关闭 skill 注入（2026-08-19 落地）
+
+`contract_router.py::get_ht_agent()` 实例化 `HtAgent(...)` 时显式传 `enabled_skill_names=[]`，关闭 contract_host_agent 的 skill 注入：
+
+- 根因：特性专属路由 `/api/contract/chat` 不经过 `AgentConfigService.build_agent_instance()`，原本 `enabled_skill_names` 默认 `None` 被 `SkillsAwarePrompt` 解读为「不过滤」，导致 LLM 系统提示词 `<available_skills>` 段列出 DB `skills` 表里**全部 11 条**已启用 skill（项目文档套件 / hgsc / knowledge_ydt 等），与 contract_host_agent 业务无关，容易诱导模型误调用 `load_skill`
+- 修复：在路由层显式传 `[]`，让 `<available_skills>` 段对 LLM 不可见，引导模型使用 `explore` / `sandbox` 等通用工具即可
+- `get_doc_agent()` / `get_approval_agent()` **未做**对应修改（DocAgent / ApprovalAgent 包装类暂未透传 `enabled_skill_names`，仍按缺省走 `service.all()`；如需同步关闭，由后续 PR 处理）
+
+#### contract_host_agent skill 注入方案 A 落地（2026-08-19）
+
+`HtAgent` 包装类与 `contract_router.get_ht_agent()` 配套修改落地后，`/api/contract/chat` 路径上 `<available_skills>` 段最终为空（或 "No skills are currently available."）。修复计划与候选方案见 [`.trae/documents/contract_host_agent_skill_loading.md](../.trae/documents/contract_host_agent_skill_loading.md)。
+
 ### Bootstrap 优先级链（4 级）
 
 1. **子智能体** `app/features/<agent>/config/bootstrap.md`（最高）

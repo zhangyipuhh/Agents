@@ -42,18 +42,25 @@ class ApprovalAgent:
         store: BaseStore,
         store_id: Optional[str] = None,
         system_prompt: Optional[str] = None,
+        base_system_prompt: Optional[str] = None,
         max_tokens: int = 20000,
         max_tokens_before_summary: int = 16000,
         max_summary_tokens: int = 4000,
     ):
         """
         初始化 ApprovalAgent 实例
-        
+
         Args:
             checkpointer: LangGraph 检查点保存器，用于持久化会话状态
             store: LangGraph 内存存储器，用于存储上下文信息
             store_id: 存储ID，用于标识存储上下文
             system_prompt: 自定义系统提示词，默认使用审批专用提示词
+            base_system_prompt:
+                可选基类系统提示词，覆盖 app.core.prompts.BASE_SYSTEM_PROMPT。
+                详见 AgentConfig.base_system_prompt。三元语义：
+                - None（默认）：使用常量 BASE_SYSTEM_PROMPT（向后兼容）
+                - ""：跳过 base 段，整段 BASE_SYSTEM_PROMPT 不参与拼接
+                - 非空字符串：按 Agent 维度完全覆盖常量内容
             max_tokens: 最大 token 数，默认 20000
             max_tokens_before_summary: 触发摘要的 token 阈值，默认 16000
             max_summary_tokens: 摘要最大 token 数，默认 4000
@@ -62,6 +69,7 @@ class ApprovalAgent:
         self.store = store
         self.store_id = store_id
         self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
+        self.base_system_prompt = base_system_prompt
         self.max_tokens = max_tokens
         self.max_tokens_before_summary = max_tokens_before_summary
         self.max_summary_tokens = max_summary_tokens
@@ -75,6 +83,7 @@ class ApprovalAgent:
                 max_tokens_before_summary=self.max_tokens_before_summary,
                 max_summary_tokens=self.max_summary_tokens,
                 system_prompt=self.system_prompt,
+                base_system_prompt=self.base_system_prompt,
                 checkpointer=self.checkpointer,
                 store=self.store,
             )
