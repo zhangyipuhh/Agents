@@ -65,8 +65,9 @@ class HtAgent:
             enabled_skill_names:
                 该 Agent 启用的 skill 白名单；透传给 HtAgentConfig.enabled_skill_names，
                 供 SkillsAwarePrompt 在构造 system prompt 时过滤可用 skill。
-                - None（默认）：沿用 AgentConfig 基类默认（SkillsAwarePrompt 走 service.all()
-                  加载全部已注册 skill，向后兼容旧路径）
+                - None（默认）：按"未绑定 = 不绑定"契约，SkillsAwarePrompt 不加载任何 skill
+                  （2026-08-19 改语义：原"加载全部 skill"已废弃，避免特性专属路由绕过
+                  AgentConfigService 后 LLM 误加载 skills 表全部条目）
                 - []：显式空列表，过滤后 available_skills 段为空
                 - 非空列表：仅展示这些 skill（前提是它们在 DB skills 表已注册且 enabled=True）
             max_tokens: 最大 token 数，默认 20000

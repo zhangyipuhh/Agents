@@ -47,10 +47,11 @@ class SkillsAwarePrompt:
             agent_specific: Agent 专属及运行时动态系统提示词，默认为空字符串。
             agent_name: 可选的 Agent 名称，用于定位 agent 专属 bootstrap.md。
             project_root: 项目根目录，用于解析 bootstrap 文件相对路径。
-            enabled_skill_names: 启用的 skill 名称列表；为 None 时使用全部已加载 skill，
-                                为列表时（即使为空）使用 service.available(name_filter=...)
-                                进行过滤。空列表会传给 available()，由 service 层决定
-                                返回结果（通常返回空）。
+            enabled_skill_names: 启用的 skill 名称列表；为 None 时**不加载**任何 skill
+                                （"未绑定 = 不绑定"契约，安全默认），为列表时（即使为空）
+                                使用 service.available(name_filter=...) 进行过滤。
+                                空列表会传给 available()，由 service 层决定返回结果
+                                （通常返回空）。
         """
         self.base = base
         self.agent_specific = agent_specific
@@ -68,7 +69,10 @@ class SkillsAwarePrompt:
             空部分会被自动过滤。
         """
         if self.enabled_skill_names is None:
-            skills = self._service.all()
+            # 2026-08-19 改语义：None 解读为「未配置 = 不加载」，对齐"未绑定 = 不绑定"
+            # 安全默认。原 self._service.all() 改为 []，避免特性专属路由绕过
+            # AgentConfigService 后 LLM 误加载 skills 表全部条目。
+            skills = []
         else:
             skills = self._service.available(name_filter=self.enabled_skill_names)
         skills_block = render_available_skills_block(skills)

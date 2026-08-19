@@ -256,7 +256,12 @@ class AgentConfig:
 
     由 AgentConfigService 从 agents.skill_bindings 解析并注入，
     供 SkillsAwarePrompt 在构造 system prompt 时过滤可用 skill。
-    None 表示未指定（向后兼容），此时 SkillsAwarePrompt 回退到加载全部 skill。
+    三元语义（2026-08-19 改 None 默认解读）：
+    - None：未指定，对应"未绑定 = 不绑定"契约，SkillsAwarePrompt 不加载任何 skill
+      （原"None → 加载全部"语义已废弃，避免特性专属路由绕过 AgentConfigService
+      后 LLM 误加载 skills 表全部条目）
+    - []：显式空列表，SkillsAwarePrompt 走 available(name_filter=[]) 过滤为空
+    - 非空列表：仅加载白名单内的 skill（前提是它们在 DB skills 表已注册且 enabled=True）
     """
 
     tools: Optional[List[Any]] = field(default=None)

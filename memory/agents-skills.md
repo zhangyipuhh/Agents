@@ -243,7 +243,25 @@ DB `skills.location` / `skills.base_dir` 字段存储**相对项目根的 POSIX 
 
 #### contract_host_agent skill 注入方案 A 落地（2026-08-19）
 
-`HtAgent` 包装类与 `contract_router.get_ht_agent()` 配套修改落地后，`/api/contract/chat` 路径上 `<available_skills>` 段最终为空（或 "No skills are currently available."）。修复计划与候选方案见 [`.trae/documents/contract_host_agent_skill_loading.md](../.trae/documents/contract_host_agent_skill_loading.md)。
+`HtAgent` 包装类与 `contract_router.get_ht_agent()` 配套修改落地后，`/api/contract/chat` 路径上 `<available_skills>` 段最终为空（或 "No skills are currently available."）。修复计划与候选方案见 [`.trae/documents/contract_host_agent_skill_loading.md`](../.trae/documents/contract_host_agent_skill_loading.md)。
+
+### `SkillsAwarePrompt` 改语义：None → 不加载（2026-08-19 落地）
+
+`SkillsAwarePrompt.build()` 对 `enabled_skill_names` 的解读：
+
+- **None（默认）** → `skills = []`，**不加载**任何 skill（2026-08-19 改语义，原"None → `service.all()` 加载全部"已废弃）。原因：未配置 = 不绑定符合"最小权限"原则，避免特性专属路由绕过 `AgentConfigService` 后 LLM 误加载 skills 表全部条目
+- `[]` → `available(name_filter=[])` 过滤为空
+- 非空列表 → `available(name_filter=...)` 过滤
+
+`SkillsService.available(name_filter=None)` 语义保留（→ 全部），与本改动解耦。
+
+**影响面**：
+
+- 走 `AgentConfigService` / `Knowledge_router` 的链路（`map_agent` / `knowledge_ydt` / `project`）行为不变，因为 `UnifiedAgentConfig.enabled_skill_names` 始终是 list（默认 `[]`），从不传 None
+- 裸用 `SkillsAwarePrompt(base, agent_specific, enabled_skill_names=None)` 的代码现在必须显式传 list 才会加载 skill
+- `contract_router.get_ht_agent()` 上一轮已传 `[]`，本轮不重复改
+
+**测试**：`app/tests/core/skills/test_message_transformer.py::test_build_default_uses_empty_skills_when_enabled_skill_names_none`（改）+ `test_build_default_none_and_empty_list_both_yield_empty_skills_block`（新增，反向锁定 None == []）。
 
 ### Bootstrap 优先级链（4 级）
 
