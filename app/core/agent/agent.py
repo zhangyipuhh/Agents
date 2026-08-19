@@ -310,8 +310,17 @@ class Agent:
         agent_specific = (self.system_prompt or "") + "\n\n" + (context.get("system_prompt") or "")
         agent_name = getattr(self, "agent_name", None)
         enabled_skill_names = getattr(self._config, "enabled_skill_names", None)
+        # 2026-08-19 新增：按 AgentConfig.base_system_prompt 控制 base 段。
+        # - None（未设置）→ 使用常量 BASE_SYSTEM_PROMPT（向后兼容默认行为）
+        # - ""（显式空串）→ 跳过 base 段，让 SkillsAwarePrompt.build() 过滤掉该段
+        # - 非空字符串 → 完全覆盖常量内容（按 Agent 维度定制通用规则）
+        config_base_prompt = getattr(self._config, "base_system_prompt", None)
+        if config_base_prompt is None:
+            base_prompt = BASE_SYSTEM_PROMPT
+        else:
+            base_prompt = config_base_prompt
         system_prompt = SkillsAwarePrompt(
-            base=BASE_SYSTEM_PROMPT,
+            base=base_prompt,
             agent_specific=agent_specific,
             agent_name=agent_name,
             enabled_skill_names=enabled_skill_names,

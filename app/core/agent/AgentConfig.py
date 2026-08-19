@@ -199,6 +199,18 @@ class AgentConfig:
     system_prompt: Optional[str] = field(default=None)
     """系统提示词，用于设置 AI 的行为角色、性格和约束条件，默认 None"""
 
+    base_system_prompt: Optional[str] = field(default=None)
+    """基类系统提示词（覆盖 app.core.prompts.BASE_SYSTEM_PROMPT）。
+
+    拼接顺序（SkillsAwarePrompt.build）：base → agent_specific → bootstrap → available_skills。
+    - 默认 None：使用常量 BASE_SYSTEM_PROMPT（保持向后兼容）。
+    - 显式传空串 ""：跳过 base 段，整段 BASE_SYSTEM_PROMPT 不参与拼接，
+      仅保留 agent_specific / bootstrap / available_skills。
+    - 传非空字符串：完全覆盖常量内容（用于按 Agent 维度定制通用规则）。
+
+    用途：子智能体已有专属 system_prompt 又不需要通用基类规则时，可在 AgentConfig
+    初始化处通过 ``base_system_prompt=""`` 关闭，避免通用基类规则污染特定场景。"""
+
     name: Optional[str] = field(default=None)
     """Agent 注册名（2026-06-21 新增，与 app/features/<dir>/ 目录名一致）。
 

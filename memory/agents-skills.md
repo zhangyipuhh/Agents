@@ -191,6 +191,17 @@ DB `skills.location` / `skills.base_dir` 字段存储**相对项目根的 POSIX 
 └─────────────────────────────────────────────┘
 ```
 
+### `BASE_SYSTEM_PROMPT` 可选跳过（2026-08-19 新增）
+
+`AgentConfig` 新增 `base_system_prompt: Optional[str] = field(default=None)` 字段，让上层可控制 base 段：
+- `None`（默认，向后兼容）→ 使用常量 `BASE_SYSTEM_PROMPT`
+- `""`（显式空串）→ 跳过 base 段；`SkillsAwarePrompt.build()` 的 `"\n\n".join(p for p in parts if p)` 自动过滤空串，整段 `BASE_SYSTEM_PROMPT` 不参与拼接
+- 非空字符串 → 完全覆盖常量内容（按 Agent 维度定制通用规则）
+
+`Agent._llm_call` 通过 `getattr(self._config, "base_system_prompt", None)` 读取，None 时回退到常量；显式空串/非空时直接透传给 `SkillsAwarePrompt(base=...)`。
+
+**用法**：子智能体已有完整 `system_prompt`（如 HtAgent/DocAgent/ApprovalAgent）又不需要通用基类规则时，在 `AgentConfig(..., base_system_prompt="")` 即可关闭。
+
 ### Bootstrap 优先级链（4 级）
 
 1. **子智能体** `app/features/<agent>/config/bootstrap.md`（最高）
