@@ -588,7 +588,9 @@ async def execute_command(
     Args:
         command: 待执行的命令字符串
         business_name: 业务名（必填，不可为空）
-        timeout: 命令执行超时（秒）
+        timeout: 命令执行超时（秒，**已废弃**）。2026-08-19 起：实际执行时长由
+            服务器节点 ``ssh_timeout`` 配置（YAML + DB）控制，默认 30s，
+            钳制到 ``[1, 120]``。LLM 传入的 timeout 值被忽略，运维可绕过 LLM。
         runtime: LangChain ToolRuntime（langchain runtime 自动注入）。
             context 中支持：
               - ``use_third_party_executor`` (bool): True → 走第三方 HTTPS 调用
@@ -704,8 +706,11 @@ async def execute_command(
 
     # 平台派生（service 决定 platform）
     wrapped = _wrap_for_platform(config["server_type"], command)
-    # Bug-5 修复:LLM 端 timeout 钳制到 [1, 120]
-    safe_timeout = _clamp_timeout(timeout, default=30, lo=1, hi=120)
+    # 2026-08-19 高内聚改造：执行时长由节点 ``config["ssh_timeout"]`` 决定（已由
+    # ``DevOpsServerService.resolve_ssh_timeout`` 钳制到 [1, 120]，默认 30），
+    # LLM 端 timeout 入参被忽略。运维可绕过 LLM。
+    # ``.get(..., 30)`` 兜底是给测试 fixture 容错（生产 service 必给此字段）。
+    safe_timeout = config.get("ssh_timeout") or 30
     # 2026-08-03 新增：通过 runtime.context 控制是否走第三方执行器（加密 body 调用 HTTPS）。
     # 默认 False → 走本地 Paramiko（保持向后兼容）；True → 跳过本地 SSH，由第三方执行。
     ctx = _runtime_context(runtime)
@@ -1058,7 +1063,9 @@ async def execute_batch_commands(
     Args:
         commands: 命令字符串列表
         business_name: 业务名（必填，不可为空）
-        timeout: 单条命令超时（秒）
+        timeout: 单条命令超时（秒，**已废弃**）。2026-08-19 起：实际执行时长由
+            服务器节点 ``ssh_timeout`` 配置（YAML + DB）控制，默认 30s，
+            钳制到 ``[1, 120]``。所有批量命令共享同一上限，LLM 不可覆盖。
         runtime: LangChain ToolRuntime
 
     Returns:
@@ -1257,8 +1264,10 @@ async def execute_batch_commands(
 
     # 全部通过；按顺序执行
     results: List[Dict[str, Any]] = []
-    # Bug-5 修复:批量同样钳制 timeout
-    safe_timeout = _clamp_timeout(timeout, default=30, lo=1, hi=120)
+    # 2026-08-19 高内聚改造：执行时长由节点 ``config["ssh_timeout"]`` 决定（每条命令共享
+    # 同一上限），LLM 端 timeout 入参被忽略。
+    # ``.get(..., 30)`` 兜底是给测试 fixture 容错（生产 service 必给此字段）。
+    safe_timeout = config.get("ssh_timeout") or 30
     client = None
     started = time.monotonic()
     try:
@@ -1480,6 +1489,9 @@ async def get_system_logs(
     **2026-08-05:** 改为 ``async def``;本地 paramiko 用 ``asyncio.to_thread`` 切线程池。
     LLM tool schema 不变。
 
+    **2026-08-19:** 执行时长由节点 ``config["ssh_timeout"]`` 决定（默认 30s，钳制
+    ``[1, 120]``），函数签名无 ``timeout`` 形参 —— 历史硬编码 30s 已被替换。
+
     Args:
         business_name: 业务名（必填，不可为空）
         log_type: 日志类型（syslog / auth / kern / 其他）
@@ -1628,8 +1640,10 @@ async def get_system_logs(
         # 2026-08-05:async def 下 paramiko sync 阻塞点用 to_thread 切线程池
         client = await asyncio.to_thread(_open_client, config)
         wrapped = _wrap_for_platform(config["server_type"], inner_cmd)
-        # Bug-5 修复:get_system_logs 内部命令固定 30s,这里用钳制函数统一约束
-        safe_timeout = _clamp_timeout(30, default=30, lo=1, hi=120)
+        # 2026-08-19 高内聚改造：执行时长由节点 ``config["ssh_timeout"]`` 决定
+        # （替换原硬编码 30s）。运维可绕过 LLM。
+        # ``.get(..., 30)`` 兜底是给测试 fixture 容错（生产 service 必给此字段）。
+        safe_timeout = config.get("ssh_timeout") or 30
 
         def _exec_and_read_logs() -> tuple[str, str, int]:
             """worker 线程内顺序执行 exec_command + channel I/O。"""

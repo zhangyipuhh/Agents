@@ -10,13 +10,18 @@ from app.shared.utils.ssh.executor import SSHExecResult, _decode_remote_bytes, e
 
 @pytest.fixture
 def ssh_config():
-    """返回不包含真实凭据的 SSH 测试配置。"""
+    """返回不包含真实凭据的 SSH 测试配置。
+
+    2026-08-19 新增 ``ssh_timeout`` 字段（service 高内聚解析后的已钳制值）；
+    ``execute_script`` 改为直接读取该字段，不再调 ``clamp_timeout``。
+    """
     return {
         "ip": "10.0.0.1",
         "port": 22,
         "username": "tester",
         "password": "secret",
         "server_type": "linux",
+        "ssh_timeout": 120,
     }
 
 
@@ -137,3 +142,41 @@ def test_execute_script_closes_stdin_write_side(monkeypatch, ssh_config):
 
     stdin = client.exec_command.return_value[0]
     stdin.close.assert_called_once()
+
+
+# ============================================================================
+# 2026-08-19 新增：execute_script 直接读 config["ssh_timeout"] 高内聚测试
+# ============================================================================
+
+
+def test_execute_script_uses_config_ssh_timeout_directly(monkeypatch, ssh_config):
+    """execute_script 直接读 config["ssh_timeout"]；timeout 形参被忽略。
+
+    ssh_config fixture 已含 ``ssh_timeout=120``；传入 timeout=999999 不应生效。
+    """
+    client = _patch_paramiko(monkeypatch, stdout_text="ok\n")
+
+    execute_script(ssh_config, "echo ok", timeout=999999)
+
+    _args, kwargs = client.exec_command.call_args
+    assert kwargs.get("timeout") == 120
+
+
+def test_execute_script_ssh_timeout_uses_config_only(monkeypatch):
+    """2026-08-19：execute_script 直接读 config["ssh_timeout"]，timeout 形参被忽略。
+
+    本测试只验证高内聚契约（config 值即 ssh_timeout 上限），不验证
+    clamp_timeout 是否被调用 —— 因为 ``ssh_connect_timeout`` 仍走 clamp_timeout
+    （不同语义），禁止全模块禁用。
+    """
+    cfg = {
+        "ip": "10.0.0.99", "port": 22, "username": "u", "password": "p",
+        "server_type": "linux",
+        "ssh_timeout": 30,
+    }
+    client = _patch_paramiko(monkeypatch, stdout_text="ok\n")
+
+    # 即使传 timeout=999999，paramiko.exec_command 收到的仍是 config.ssh_timeout=30
+    execute_script(cfg, "echo ok", timeout=999999)
+    _args, kwargs = client.exec_command.call_args
+    assert kwargs.get("timeout") == 30

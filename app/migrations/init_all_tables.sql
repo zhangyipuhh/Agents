@@ -3014,6 +3014,18 @@ ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS updated_at         TIMESTAMP
 -- 18.2 巡检脚本外键（2026-08-03 新增）
 -- 引用 inspection_scripts.id；脚本库条目删除时服务器端外键自动置 NULL（ON DELETE SET NULL）。
 ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS inspection_script_id INTEGER;
+-- 18.4 SSH 执行期 ssh_timeout（2026-08-19 新增）
+-- 单条命令 / 巡检脚本执行时长上限（秒），所有 SSH 执行链路（SSHTools /
+-- server_ops._run_one / execute_script / execute_third_party_script）
+-- 高内聚地从 get_connection_config 返回值读取；缺省回退 30s（与
+-- 原有 _clamp_timeout default=30 一致，避免默认值漂移）。
+-- LLM @tool timeout 入参与脚本 ssh_timeout 入参均被忽略，运维可绕过 LLM。
+-- YAML 节点 ssh_timeout: N（1 ≤ N ≤ 120），scan_and_upsert 写入 DB。
+ALTER TABLE devops_servers ADD COLUMN IF NOT EXISTS ssh_timeout INTEGER NOT NULL DEFAULT 30;
+ALTER TABLE devops_servers DROP CONSTRAINT IF EXISTS devops_servers_ssh_timeout_range_chk;
+ALTER TABLE devops_servers ADD CONSTRAINT devops_servers_ssh_timeout_range_chk
+    CHECK (ssh_timeout BETWEEN 1 AND 120);
+
 -- 18.3 巡检脚本旧三列（2026-08-03 删除）
 -- ⚠️ 强警告：此 SQL 是「目标新 schema」，执行前必须由人工完成一次性迁移，否则会丢失旧巡检数据。
 --    现存库必须按以下顺序处理：
@@ -3049,7 +3061,7 @@ CREATE INDEX IF NOT EXISTS idx_devops_servers_inspection_script_id ON devops_ser
 --     Tool Admin 界面展示（不创建任何 Agent / agent_tool_bindings / seed 脚本）。
 --     参数 schema 显式不含 runtime（LangChain ToolRuntime 由框架运行时自动注入）。
 INSERT INTO tools (name, display_name, category, description, module_path, file_path, args_schema, return_description, function_description, enabled, sort_order) VALUES
-  ('execute_command', 'Execute SSH Command', 'devops', '在已配置的远程服务器上执行单条命令（Linux/bash 或 Windows/powershell）。', 'app.shared.tools.skills.devops.SSHTools', 'app/shared/tools/skills/devops/SSHTools.py', '{"properties": {"command": {"type": "string"}, "business_name": {"type": "string"}, "timeout": {"type": "integer", "default": 30}}, "required": ["command", "business_name"]}', NULL, 'execute_command：在远程服务器执行单条命令。', TRUE, 0)
+  ('execute_command', 'Execute SSH Command', 'devops', '在已配置的远程服务器上执行单条命令（Linux/bash 或 Windows/powershell）。执行时长由服务器节点 ssh_timeout 配置控制（默认 30s，范围 [1, 120]），LLM 无法覆盖。', 'app.shared.tools.skills.devops.SSHTools', 'app/shared/tools/skills/devops/SSHTools.py', '{"properties": {"command": {"type": "string"}, "business_name": {"type": "string"}}, "required": ["command", "business_name"]}', NULL, 'execute_command：在远程服务器执行单条命令（执行时长由节点 ssh_timeout 配置控制）。', TRUE, 0)
 ON CONFLICT (name) DO UPDATE
 SET display_name = EXCLUDED.display_name,
     category = EXCLUDED.category,
@@ -3060,7 +3072,7 @@ SET display_name = EXCLUDED.display_name,
     updated_at = CURRENT_TIMESTAMP;
 
 INSERT INTO tools (name, display_name, category, description, module_path, file_path, args_schema, return_description, function_description, enabled, sort_order) VALUES
-  ('execute_batch_commands', 'Execute SSH Batch Commands', 'devops', '在已配置的远程服务器上批量执行多条命令；任一条被策略拦截即整批拒绝。', 'app.shared.tools.skills.devops.SSHTools', 'app/shared/tools/skills/devops/SSHTools.py', '{"properties": {"commands": {"type": "array", "items": {"type": "string"}}, "business_name": {"type": "string"}, "timeout": {"type": "integer", "default": 30}}, "required": ["commands", "business_name"]}', NULL, 'execute_batch_commands：批量 SSH 命令执行。', TRUE, 0)
+  ('execute_batch_commands', 'Execute SSH Batch Commands', 'devops', '在已配置的远程服务器上批量执行多条命令；任一条被策略拦截即整批拒绝；执行时长由服务器节点 ssh_timeout 配置控制（默认 30s）。', 'app.shared.tools.skills.devops.SSHTools', 'app/shared/tools/skills/devops/SSHTools.py', '{"properties": {"commands": {"type": "array", "items": {"type": "string"}}, "business_name": {"type": "string"}}, "required": ["commands", "business_name"]}', NULL, 'execute_batch_commands：批量 SSH 命令执行（执行时长由节点 ssh_timeout 配置控制）。', TRUE, 0)
 ON CONFLICT (name) DO UPDATE
 SET display_name = EXCLUDED.display_name,
     category = EXCLUDED.category,

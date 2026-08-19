@@ -25,6 +25,22 @@ import pytest
 from cryptography.fernet import Fernet
 
 
+# 2026-08-19 新增：本文件独立测试用 Fernet key（避免跨文件依赖顶层常量）
+_VALID_FERNET_KEY = Fernet.generate_key().decode("ascii")
+
+
+@pytest.fixture
+def tmp_yaml(tmp_path) -> "Path":
+    """2026-08-19 新增：扫描测试用的临时 YAML 路径 fixture（不预先建文件）。
+
+    Returns:
+        Path: servers.yaml 路径（不存在）。
+    """
+    from pathlib import Path
+
+    return Path(tmp_path) / "servers.yaml"
+
+
 def _make_inspection_script_service():
     """构造 InspectionScriptService 替身（含 linux-bash 默认条目）。
 
@@ -810,3 +826,309 @@ def test_list_public_servers_returns_seven_fields_with_binding_metadata():
     assert by_name["gamma"]["inspection_script_id"] is None
     assert by_name["gamma"]["inspection_script_name"] is None
     assert by_name["gamma"]["inspection_script_display_name"] is None
+
+
+# ----------------------------------------------------------------------
+# 2026-08-19 新增：ssh_timeout 高内聚方案测试
+# ----------------------------------------------------------------------
+
+
+def test_resolve_ssh_timeout_helper_returns_default_when_none():
+    """resolve_ssh_timeout(None) → 默认 30（与原 _clamp_timeout default=30 对齐）。"""
+    from app.shared.utils.devops_server_service import resolve_ssh_timeout
+
+    assert resolve_ssh_timeout(None) == 30
+
+
+def test_resolve_ssh_timeout_helper_passes_through_normal_value():
+    """resolve_ssh_timeout(60) → 60（正常范围透传）。"""
+    from app.shared.utils.devops_server_service import resolve_ssh_timeout
+
+    assert resolve_ssh_timeout(60) == 60
+
+
+def test_resolve_ssh_timeout_helper_clamps_lower_bound():
+    """resolve_ssh_timeout(0) → 钳到 1。"""
+    from app.shared.utils.devops_server_service import resolve_ssh_timeout
+
+    assert resolve_ssh_timeout(0) == 1
+
+
+def test_resolve_ssh_timeout_helper_clamps_upper_bound():
+    """resolve_ssh_timeout(200) → 钳到 120。"""
+    from app.shared.utils.devops_server_service import resolve_ssh_timeout
+
+    assert resolve_ssh_timeout(200) == 120
+
+
+def test_resolve_ssh_timeout_helper_falls_back_on_invalid_string():
+    """resolve_ssh_timeout('abc') → 默认 30（无法转换回退）。"""
+    from app.shared.utils.devops_server_service import resolve_ssh_timeout
+
+    assert resolve_ssh_timeout("abc") == 30
+
+
+def test_scan_and_upsert_normalizes_ssh_timeout(tmp_yaml, monkeypatch):
+    """YAML ssh_timeout=60 透传到缓存与 DB INSERT 第 10 个参数。"""
+    import asyncio
+
+    db = MagicMock()
+    fernet = Fernet(_VALID_FERNET_KEY.encode("ascii"))
+    encrypted = fernet.encrypt(b"x")
+    captured_args = {}
+
+    async def fake_fetchrow(sql, *args, **kwargs):
+        captured_args["args"] = args
+        return {
+            "id": 1,
+            "business_name": "biz",
+            "ip": "10.0.0.5",
+            "port": 22,
+            "username": "u",
+            "password_encrypted": encrypted,
+            "server_type": "linux",
+            "blacklist": "[]",
+            "whitelist": "[\"ls\"]",
+            "ssh_timeout": 60,            # 2026-08-19 新增
+            "created_at": None,
+            "updated_at": "2026-08-19",
+            "inserted": True,
+        }
+
+    db.fetchrow = fake_fetchrow
+    tmp_yaml.parent.mkdir(parents=True, exist_ok=True)
+    tmp_yaml.write_text(
+        "- business_name: biz\n"
+        "  ip: 10.0.0.5\n"
+        "  port: 22\n"
+        "  username: u\n"
+        "  password: x\n"
+        "  server_type: linux\n"
+        "  blacklist: []\n"
+        "  whitelist: ['ls']\n"
+        "  ssh_timeout: 60\n",
+        encoding="utf-8",
+    )
+
+    from app.shared.utils.devops_server_service import DevOpsServerService
+    svc = DevOpsServerService(
+        db=db, config_path=str(tmp_yaml),
+        credential_key=_VALID_FERNET_KEY,
+        inspection_script_service=_make_inspection_script_service(),
+    )
+    stats = asyncio.run(svc.scan_and_upsert())
+
+    assert stats == {"scanned": 1, "inserted": 1, "updated": 0, "failed": 0}
+    # DB INSERT 第 10 个参数是 ssh_timeout=60
+    assert captured_args["args"][9] == 60
+    # 缓存也透传
+    assert svc._cache["biz"]["ssh_timeout"] == 60
+
+
+def test_scan_and_upsert_ssh_timeout_default_when_missing(tmp_yaml):
+    """YAML 缺省 ssh_timeout → 默认 30 落库。"""
+    import asyncio
+    from cryptography.fernet import Fernet
+
+    db = MagicMock()
+    fernet = Fernet(_VALID_FERNET_KEY.encode("ascii"))
+    encrypted = fernet.encrypt(b"x")
+
+    async def fake_fetchrow(sql, *args, **kwargs):
+        return {
+            "id": 1,
+            "business_name": "biz",
+            "ip": "10.0.0.5",
+            "port": 22,
+            "username": "u",
+            "password_encrypted": encrypted,
+            "server_type": "linux",
+            "blacklist": "[]",
+            "whitelist": "[\"ls\"]",
+            "ssh_timeout": 30,
+            "created_at": None,
+            "updated_at": "2026-08-19",
+            "inserted": True,
+        }
+
+    db.fetchrow = fake_fetchrow
+    tmp_yaml.parent.mkdir(parents=True, exist_ok=True)
+    tmp_yaml.write_text(
+        "- business_name: biz\n"
+        "  ip: 10.0.0.5\n"
+        "  port: 22\n"
+        "  username: u\n"
+        "  password: x\n"
+        "  server_type: linux\n"
+        "  blacklist: []\n"
+        "  whitelist: ['ls']\n",
+        encoding="utf-8",
+    )
+
+    from app.shared.utils.devops_server_service import DevOpsServerService
+    svc = DevOpsServerService(
+        db=db, config_path=str(tmp_yaml),
+        credential_key=_VALID_FERNET_KEY,
+        inspection_script_service=_make_inspection_script_service(),
+    )
+    asyncio.run(svc.scan_and_upsert())
+    assert svc._cache["biz"]["ssh_timeout"] == 30
+
+
+def test_scan_and_upsert_ssh_timeout_clamps_out_of_range(tmp_yaml):
+    """YAML ssh_timeout=0 → 钳到 1；ssh_timeout=200 → 钳到 120（不报错）。"""
+    import asyncio
+    from cryptography.fernet import Fernet
+
+    db = MagicMock()
+    fernet = Fernet(_VALID_FERNET_KEY.encode("ascii"))
+    encrypted = fernet.encrypt(b"x")
+
+    captured = []
+
+    async def fake_fetchrow(sql, *args, **kwargs):
+        captured.append(args[9])  # ssh_timeout 是第 10 个参数
+        return {
+            "id": len(captured),
+            "business_name": args[0],
+            "ip": "10.0.0.5",
+            "port": 22,
+            "username": "u",
+            "password_encrypted": encrypted,
+            "server_type": "linux",
+            "blacklist": "[]",
+            "whitelist": "[\"ls\"]",
+            "ssh_timeout": args[9],
+            "created_at": None,
+            "updated_at": "2026-08-19",
+            "inserted": True,
+        }
+
+    db.fetchrow = fake_fetchrow
+    tmp_yaml.parent.mkdir(parents=True, exist_ok=True)
+    tmp_yaml.write_text(
+        "- business_name: a\n"
+        "  ip: 10.0.0.1\n"
+        "  port: 22\n"
+        "  username: u\n"
+        "  password: x\n"
+        "  server_type: linux\n"
+        "  blacklist: []\n"
+        "  whitelist: ['ls']\n"
+        "  ssh_timeout: 0\n"
+        "- business_name: b\n"
+        "  ip: 10.0.0.2\n"
+        "  port: 22\n"
+        "  username: u\n"
+        "  password: x\n"
+        "  server_type: linux\n"
+        "  blacklist: []\n"
+        "  whitelist: ['ls']\n"
+        "  ssh_timeout: 200\n",
+        encoding="utf-8",
+    )
+
+    from app.shared.utils.devops_server_service import DevOpsServerService
+    svc = DevOpsServerService(
+        db=db, config_path=str(tmp_yaml),
+        credential_key=_VALID_FERNET_KEY,
+        inspection_script_service=_make_inspection_script_service(),
+    )
+    stats = asyncio.run(svc.scan_and_upsert())
+    # 两个都成功入库存（不报错），分别被钳到 1 / 120
+    assert stats["failed"] == 0
+    assert captured == [1, 120]
+    assert svc._cache["a"]["ssh_timeout"] == 1
+    assert svc._cache["b"]["ssh_timeout"] == 120
+
+
+def test_preload_all_loads_ssh_timeout_column():
+    """preload_all 把 DB ssh_timeout 列加载到 _cache（int 类型）。"""
+    import asyncio
+
+    db = MagicMock()
+    db.fetch = AsyncMock(return_value=[
+        {
+            "id": 1,
+            "business_name": "alpha",
+            "ip": "10.0.0.1",
+            "port": 22,
+            "username": "u",
+            "password_encrypted": b"encrypted_bytes",
+            "server_type": "linux",
+            "blacklist": [],
+            "whitelist": ["ls"],
+            "inspection_script_id": 1,
+            "ssh_timeout": 45,           # 2026-08-19 新增
+            "created_at": None,
+            "updated_at": None,
+        }
+    ])
+    from app.shared.utils.devops_server_service import DevOpsServerService
+    svc = DevOpsServerService(
+        db=db, config_path="unused.yaml",
+        credential_key=_VALID_FERNET_KEY,
+        inspection_script_service=_make_inspection_script_service(),
+    )
+    asyncio.run(svc.preload_all())
+    assert svc._cache["alpha"]["ssh_timeout"] == 45
+    assert isinstance(svc._cache["alpha"]["ssh_timeout"], int)
+
+
+def test_preload_all_ssh_timeout_falls_back_to_default_when_missing():
+    """preload_all 在 DB 列缺失时（schema 未演进）回退默认 30。"""
+    import asyncio
+
+    db = MagicMock()
+    db.fetch = AsyncMock(return_value=[
+        {
+            "id": 1,
+            "business_name": "alpha",
+            "ip": "10.0.0.1",
+            "port": 22,
+            "username": "u",
+            "password_encrypted": b"encrypted_bytes",
+            "server_type": "linux",
+            "blacklist": [],
+            "whitelist": ["ls"],
+            "inspection_script_id": 1,
+            # ssh_timeout 缺失（旧库场景）
+            "created_at": None,
+            "updated_at": None,
+        }
+    ])
+    from app.shared.utils.devops_server_service import DevOpsServerService
+    svc = DevOpsServerService(
+        db=db, config_path="unused.yaml",
+        credential_key=_VALID_FERNET_KEY,
+        inspection_script_service=_make_inspection_script_service(),
+    )
+    asyncio.run(svc.preload_all())
+    assert svc._cache["alpha"]["ssh_timeout"] == 30
+
+
+def test_get_connection_config_includes_ssh_timeout_key():
+    """get_connection_config 返回字典包含 ssh_timeout 键（int 30）。"""
+    svc = _make_service()
+    encrypted = svc._fernet.encrypt(b"x")
+    svc._cache = {
+        "alpha": {
+            "id": 1,
+            "business_name": "alpha",
+            "ip": "10.0.0.1",
+            "port": 22,
+            "username": "u",
+            "password_encrypted": encrypted,
+            "server_type": "linux",
+            "blacklist": [],
+            "whitelist": ["ls"],
+            "inspection_script_id": 1,
+            "ssh_timeout": 60,
+            "created_at": None,
+            "updated_at": None,
+        }
+    }
+    cfg = svc.get_connection_config("alpha")
+    assert "ssh_timeout" in cfg
+    assert cfg["ssh_timeout"] == 60
+    assert isinstance(cfg["ssh_timeout"], int)

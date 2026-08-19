@@ -44,7 +44,7 @@ from app.shared.utils.ssh.executor import SSHExecResult
 def execute_third_party_script(
     config: Mapping[str, Any],
     script: str,
-    timeout: Any = 30,
+    timeout: Any = None,             # 2026-08-19：参数被忽略，统一走 config["ssh_timeout"]
     *,
     endpoint_name: Optional[str] = None,
 ) -> SSHExecResult:
@@ -52,12 +52,14 @@ def execute_third_party_script(
 
     参数:
         config: 与 ``execute_script`` 同形;至少含 ``ip`` / ``port`` / ``username``
-            / ``password`` / ``server_type``(其中 ``password`` 已在
-            ``DevOpsServerService.get_connection_config`` 内由 Fernet 解密)。
+            / ``password`` / ``server_type`` / ``ssh_timeout``(其中 ``password``
+            已在 ``DevOpsServerService.get_connection_config`` 内由 Fernet 解密；
+            ``ssh_timeout`` 已由 service 内 ``resolve_ssh_timeout`` 钳制到 ``[1, 120]``,
+            缺省 30)。
             允许携带额外键(如 ``business_name`` / 黑/白名单)被忽略。
         script: 远端执行的脚本原文(由 ``inspection_scripts`` 表透传)。
-        timeout: 单次执行超时(秒),限制在 ``[1, 120]`` 区间,传给第三方契约的
-            ``timeout`` 字段。
+        timeout: **已废弃**(2026-08-19),保留仅为向后兼容签名；运行时从
+            ``config["ssh_timeout"]`` 读取。LLM / 脚本层无法覆盖节点配置。
         endpoint_name: 第三方端点名;缺省或空字符串时使用
             ``settings.third_party_executor.default_endpoint``。
 
@@ -84,13 +86,11 @@ def execute_third_party_script(
         from app.core.config.settings import settings as _settings
         endpoint_name = _settings.third_party_executor.default_endpoint
 
-    # timeout 解析: 失败 / 越界 → 钳制到 [1, 120](与 ssh.executor.clamp_timeout 对齐)。
-    # timeout=0 也归入非法 → 被外层 max(1, ...) 钳到 1。
-    try:
-        raw_timeout = int(timeout)
-    except (TypeError, ValueError):
-        raw_timeout = 30
-    safe_timeout = max(1, min(raw_timeout, 120))
+    # 2026-08-19 高内聚：直接取 service 给的已钳制值；删手写的 max(1, min(...))
+    # 缺省回退 30 / 越界钳制 [1, 120] 已由 ``DevOpsServerService.resolve_ssh_timeout``
+    # 统一完成；本函数禁止二次 clamp。
+    # ``.get(..., 30)`` 兜底是给测试 fixture 容错（生产 service 必给此字段）。
+    safe_timeout = config.get("ssh_timeout") or 30
     business_name = str(config.get("business_name") or "")
     ssh_config = {
         "ip": config.get("ip"),

@@ -74,7 +74,11 @@ def _patch_settings(monkeypatch, default_endpoint: str = 'primary') -> MagicMock
 
 
 def _ssh_config(**overrides: Any) -> Dict[str, Any]:
-    """构造与 ``ssh.executor.execute_script`` 同形的 config。"""
+    """构造与 ``ssh.executor.execute_script`` 同形的 config。
+
+    2026-08-19 新增 ``ssh_timeout`` 字段（service 高内聚解析后的已钳制值）；
+    ``execute_third_party_script`` 改为直接读取该字段，不再做二次 clamp。
+    """
     base = {
         'ip': '10.0.0.10',
         'port': 22,
@@ -82,6 +86,7 @@ def _ssh_config(**overrides: Any) -> Dict[str, Any]:
         'password': 'secret-pwd',
         'server_type': 'linux',
         'business_name': '业务A-生产',
+        'ssh_timeout': 120,  # 2026-08-19 新增：service 解析后传入
     }
     base.update(overrides)
     return base
@@ -253,28 +258,61 @@ def test_unexpected_exception_returns_no_raise(monkeypatch) -> None:
 
 
 def test_timeout_is_clamped_to_valid_range(monkeypatch) -> None:
-    """timeout 会被钳制到 [1, 120],传给 dispatch。"""
+    """2026-08-19 改造：timeout 由 ``config["ssh_timeout"]`` 决定（service 高内聚解析）。
+
+    旧实现：executor 内部 ``max(1, min(timeout, 120))`` 钳制。
+    新实现：executor 直接读 config；timeout 形参被忽略。LLM / 脚本层无法覆盖节点配置。
+    """
     _patch_settings(monkeypatch, 'primary')
     captured = _patch_dispatch(
         monkeypatch,
         {'success': True, 'output': '', 'exit_code': 0},
     )
-    # 上界 9999 应被钳制到 120;下界 0 应被钳制到 1。
+    # 即使 timeout=9999 / timeout=0 传入，dispatch 收到的也是 config["ssh_timeout"]=120。
+    # 钳制在 service 内已完成，executor 不再做。
     execute_third_party_script(
         config=_ssh_config(),
         script='echo x',
-        timeout=9999,
+        timeout=9999,  # 入参被忽略
         endpoint_name='primary',
     )
     execute_third_party_script(
-        config=_ssh_config(),
+        config=_ssh_config(ssh_timeout=1),  # 边界下界 1
         script='echo x',
-        timeout=0,
+        timeout=0,  # 入参被忽略
         endpoint_name='primary',
     )
     assert captured.await_count == 2
     assert captured.await_args_list[0].kwargs['timeout'] == 120
     assert captured.await_args_list[1].kwargs['timeout'] == 1
+
+
+def test_execute_third_party_script_does_not_clamp_timeout_anymore(monkeypatch) -> None:
+    """2026-08-19 高内聚：execute_third_party_script 内部不再 max(1, min(...))。
+
+    钳制已迁移到 ``DevOpsServerService.resolve_ssh_timeout``，调用方直接拿已钳制值。
+    """
+    _patch_settings(monkeypatch, 'primary')
+    captured = _patch_dispatch(
+        monkeypatch,
+        {'success': True, 'output': '', 'exit_code': 0},
+    )
+    # 节点 ssh_timeout=55；即使传 timeout=999999 / timeout=0，dispatch 收到的也应是 55
+    execute_third_party_script(
+        config=_ssh_config(ssh_timeout=55),
+        script='echo x',
+        timeout=999999,   # LLM 端入参被忽略
+        endpoint_name='primary',
+    )
+    execute_third_party_script(
+        config=_ssh_config(ssh_timeout=55),
+        script='echo x',
+        timeout=0,         # LLM 端入参被忽略
+        endpoint_name='primary',
+    )
+    assert captured.await_count == 2
+    assert captured.await_args_list[0].kwargs['timeout'] == 55
+    assert captured.await_args_list[1].kwargs['timeout'] == 55
 
 
 def test_third_party_response_with_error_field_propagates_to_stderr(monkeypatch) -> None:

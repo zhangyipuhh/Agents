@@ -427,6 +427,35 @@
 - `app/tests/core/test_devops_diagnostics.py` —— 8 个用例（2026-07-15 新增）：`missing` / `misspelled` / `settings_unread` / `invalid_fernet` 4 类分支、首尾空白忽略、`frozen=True` 不变性、通过路径不打印完整密钥。
 - `web/Agent/src/components/__tests__/TaskSchedulerManager.spec.js` —— 65 个用例（2026-07-22 增补 4 个删除按钮用例）：任务列表与调度表单、目标类型显隐、服务器/脚本扫描与强制刷新、白名单脱敏、防重复请求与失败重试、`server_list` schema 参数添加/搜索/多选/回显/失效项/旧参数兼容、并发加载、脚本切换隔离、首次加载与强制刷新失败后的脱敏重试、「保存任务」按钮位于 detail-header 顶部 actions 行（新建模式仅保存、编辑模式追加启停/运行/删除）、服务器行删除按钮（每行渲染 / confirm 取消 / confirm 确认后本地移除 / 网络错误脱敏文案）。
 
+### SSH 执行期 timeout 高内聚方案（2026-08-19 新增）
+
+- **目的**：把 SSH 单条命令 / 巡检脚本执行时长上限从「LLM @tool timeout 入参 / 脚本 ssh_timeout 入参」上移到 `devops_servers` 节点配置，运维单一控制点。
+- **DB 列**：`devops_servers.ssh_timeout INTEGER NOT NULL DEFAULT 30`，CHECK `[1, 120]`（2026-08-19 新增，幂等 ALTER + DROP/ADD CONSTRAINT）；默认 ** 30（与原 `_clamp_timeout default=30` 对齐，避免默认值漂移）。
+- **YAML 字段**：`data/devops/servers.yaml` 节点 `ssh_timeout: N`；`scan_and_upsert` 由 `resolve_ssh_timeout` 自动钳制到 `[1, 120]`，越界不报错（友好）。
+- **高内聚核心（单一真相源）**：
+  - `DevOpsServerService.resolve_ssh_timeout(value) -> int` 模块级 helper（**唯一**解析点）；
+  - `_normalize_entry` / `preload_all` / `get_connection_config` 都调它；
+  - 返回 dict 含 `ssh_timeout: int`（已钳制好），所有调用方**直接取值**。
+- **6 个调用点改造**（全部改为 `safe_timeout = config.get("ssh_timeout") or 30`，**禁止**二次 clamp）：
+  1. `SSHTools.execute_command`（函数签名 `timeout` 保留向后兼容 LLM schema，运行时忽略）
+  2. `SSHTools.execute_batch_commands`（同上）
+  3. `SSHTools.get_system_logs`（删硬编码 `_clamp_timeout(30, ...)`）
+  4. `ssh.executor.execute_script`（删 `clamp_timeout(timeout)` 调用）
+  5. `third_party_ssh.execute_third_party_script`（删手写 `max(1, min(...))`）
+  6. `server_ops._run_one`（删 `safe_timeout` 中间变量；直接传 `dict(config)` 给 executor，删 `ssh_timeout` 形参）
+- **`run_server_ops.ssh_timeout` 形参保留**（向后兼容 caller），内部不再使用；`_run_one` 删 `ssh_timeout` 形参（仅内部 helper）。
+- **`ops_inspection_sweep`**：`params_schema` **不**加 `ssh_timeout`（脚本仅作接收器，运维通过节点 YAML 配置）。
+- **LLM / 脚本不可绕过**：LLM 误传 `timeout=999999` / 脚本传 `ssh_timeout=60` 均被忽略，统一走节点配置。
+- **与 `ssh_connect_timeout` 区别**：连接超时仍走 `clamp_timeout(config.get("ssh_connect_timeout"), default=10, lo=1, hi=60)`（保留在 `ssh.executor.execute_script`）；执行超时走 `config["ssh_timeout"]` 直接取值。两套语义，配置位置独立。
+- **回归保护**：
+  - `app/tests/shared/utils/test_devops_server_service.py` —— 9 个新用例：`resolve_ssh_timeout` 5 个边界 + `scan_and_upsert` 透传 1 个 + 越界钳制 1 个 + 缺省默认 1 个 + `preload_all` 1 个 + `get_connection_config` 1 个。
+  - `app/tests/shared/test_devops_server_service.py` —— 5 个新用例（透传 / 缺省 / 越界 / preload / get_connection_config）。
+  - `app/tests/shared/tools/skills/devops/test_ssh_tools.py` —— 4 个新用例（`execute_command` / `execute_batch_commands` / `get_system_logs` 直接读 config + LLM timeout 入参被忽略）。
+  - `app/tests/shared/utils/ssh/test_executor.py` —— 2 个新用例（直接读 config + 与 `clamp_timeout` 解耦验证）。
+  - `app/tests/shared/utils/executor/test_third_party_ssh.py` —— 1 个新用例（直接读 config，timeout=999999 / 0 都被忽略）。
+  - `app/tests/scripts/test_server_ops.py` —— 1 个新用例（`_run_one` 把 dict(config) 传给 executor，无 timeout 形参）。
+- **out of scope**：admin router 不暴露 `ssh_timeout`（运维靠 YAML / DB 直接修改）；前端服务器表无 UI（后续 PR 单独加表单）；lifespan / `_preload_and_publish_service` 无需改动。
+
 ## 沙箱 Agent 架构（Sandbox Agent）
 
 基于 LangChain `deepagents` 库实现，提供安全的代码执行与文件操作环境，通过 Docker 容器隔离保证安全性。

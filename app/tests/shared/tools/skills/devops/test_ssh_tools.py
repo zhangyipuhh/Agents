@@ -1223,6 +1223,94 @@ def test_get_system_logs_success_even_when_stderr_noisy(monkeypatch):
     assert evt.metadata['exit_code'] == 0
     assert evt.metadata['error_code'] is None
 
+
+# ============================================================================
+# 2026-08-19 新增：SSH 执行时长高内聚方案 —— 3 个 @tool 改读 config["ssh_timeout"]
+# ============================================================================
+
+
+def test_execute_command_ignores_llm_timeout_param(monkeypatch):
+    """LLM 误传 timeout=5，节点 ssh_timeout=120 → 实际取 120（LLM 不可覆盖）。"""
+    _patch_service(
+        monkeypatch,
+        {
+            'ip': '10.0.0.11', 'port': 22, 'username': 'u', 'password': 'p',
+            'server_type': 'linux', 'blacklist': [], 'whitelist': ['echo '],
+            'ssh_timeout': 120,
+        },
+    )
+    client = _patch_paramiko(monkeypatch, stdout_text='hi\n')
+    runtime = _build_runtime(business_name='beta')
+    from app.shared.tools.skills.devops.SSHTools import execute_command
+    _run(execute_command(command='echo hi', business_name='beta',
+                          timeout=5, runtime=runtime))
+    # paramiko.exec_command 实际收到 timeout=120（高内聚，直接读 config）
+    _args, kwargs = client.exec_command.call_args
+    assert kwargs.get('timeout') == 120
+
+
+def test_execute_command_uses_config_ssh_timeout_45(monkeypatch):
+    """execute_command 直接读 config["ssh_timeout"]，节点值 45 时实际取 45。"""
+    _, _ = _install_capturing_log_service(monkeypatch)
+    cfg = {
+        'ip': '10.0.0.10', 'port': 22, 'username': 'u', 'password': 'p',
+        'server_type': 'linux', 'blacklist': [], 'whitelist': ['echo '],
+        'ssh_timeout': 45,
+    }
+    _patch_service(monkeypatch, cfg)
+    client = _patch_paramiko(monkeypatch, stdout_text='hi\n')
+    runtime = _build_runtime(business_name='alpha')
+    from app.shared.tools.skills.devops.SSHTools import execute_command
+    # LLM 传 timeout=999999 应被忽略；实际取 config["ssh_timeout"]=45
+    _run(execute_command(command='echo hi', business_name='alpha',
+                          timeout=999999, runtime=runtime))
+    _args, kwargs = client.exec_command.call_args
+    assert kwargs.get('timeout') == 45
+
+
+def test_execute_batch_commands_uses_config_ssh_timeout_directly(monkeypatch):
+    """execute_batch_commands 每条命令共享 config["ssh_timeout"]。"""
+    _patch_service(
+        monkeypatch,
+        {
+            'ip': '10.0.0.12', 'port': 22, 'username': 'u', 'password': 'p',
+            'server_type': 'linux', 'blacklist': [],
+            'whitelist': ['echo ', 'whoami'],
+            'ssh_timeout': 60,
+        },
+    )
+    client = _patch_paramiko(monkeypatch, stdout_text='hi\n')
+    runtime = _build_runtime(business_name='gamma')
+    from app.shared.tools.skills.devops.SSHTools import execute_batch_commands
+    _run(execute_batch_commands(
+        commands=['echo hi', 'whoami'], business_name='gamma',
+        timeout=999999, runtime=runtime,
+    ))
+    # 每条命令的 paramiko.exec_command 都应收到 timeout=60
+    assert client.exec_command.call_count == 2
+    for _args, kwargs in client.exec_command.call_args_list:
+        assert kwargs.get('timeout') == 60
+
+
+def test_get_system_logs_uses_config_ssh_timeout_directly(monkeypatch):
+    """get_system_logs 直接读 config["ssh_timeout"]，替换原硬编码 30s。"""
+    _patch_service(
+        monkeypatch,
+        {
+            'ip': '10.0.0.13', 'port': 22, 'username': 'u', 'password': 'p',
+            'server_type': 'linux', 'blacklist': [],
+            'whitelist': ['tail '],
+            'ssh_timeout': 90,
+        },
+    )
+    client = _patch_paramiko(monkeypatch, stdout_text='log line\n')
+    runtime = _build_runtime(business_name='delta')
+    from app.shared.tools.skills.devops.SSHTools import get_system_logs
+    _run(get_system_logs(business_name='delta', log_type='syslog',
+                          lines=10, runtime=runtime))
+    _args, kwargs = client.exec_command.call_args
+    assert kwargs.get('timeout') == 90
+
 def test_blocked_sensitive_command_persists_redacted_via_real_log_service(monkeypatch):
     """真实 LogService(memory_only) 持久化敏感命令拦截日志。
 

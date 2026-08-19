@@ -475,7 +475,7 @@ async def run_server_ops(
     context: ScriptContext,
     server_list: Optional[List[str]] = None,
     *,
-    ssh_timeout: int = 30,
+    ssh_timeout: int = 30,           # 2026-08-19：保留签名兼容，运行时忽略
     use_third_party: bool = False,
     third_party_endpoint_name: Optional[str] = None,
 ) -> ServerOpsReport:
@@ -486,8 +486,9 @@ async def run_server_ops(
     ``context.devops_server_service.get_connection_config(business_name)`` 读取
     解密后的连接配置（含 ``ip`` / ``port`` / ``username`` / ``password`` /
     ``server_type`` / ``blacklist`` / ``whitelist`` + 脚本原文 ``inspection_script``
-    / ``inspection_parser`` / ``inspection_fields`` + 脚本库元数据 4 键），再以
-    ``asyncio.to_thread`` 包装发起 SSH 执行（同步阻塞调用）。
+    / ``inspection_parser`` / ``inspection_fields`` + 脚本库元数据 4 键 + 2026-08-19
+    新增的 ``ssh_timeout`` 高内聚键），再以 ``asyncio.to_thread`` 包装发起 SSH
+    执行（同步阻塞调用）。
 
     执行后端:
         * ``use_third_party=False`` —— 走本地 paramiko
@@ -506,7 +507,10 @@ async def run_server_ops(
         context: 脚本运行上下文，需携带 ``devops_server_service`` 与 ``script_args``。
         server_list: 可选的服务器业务名列表；为 ``None`` 时通过
             ``resolve_server_list(context.script_args)`` 统一解析。
-        ssh_timeout: 单台 SSH 执行超时（秒），限制在 ``ssh.executor`` 的 1-120 范围内。
+        ssh_timeout: 单台 SSH 执行超时（秒，**已废弃**）。2026-08-19 起：保留签名
+            仅用于向后兼容已有 caller，运行时由 executor 从
+            ``config["ssh_timeout"]`` 直接读取（默认 30s，钳制 ``[1, 120]``）。
+            脚本层无法覆盖节点配置。
         use_third_party: 是否切换到第三方 HTTPS 执行器；默认 ``False`` 保持本地路径。
         third_party_endpoint_name: 第三方端点名；为空/``None`` 时退回到
             ``settings.third_party_executor.default_endpoint``。
@@ -532,10 +536,12 @@ async def run_server_ops(
 
     items: List[ServerOpsItem] = []
     for business_name in names:
+        # 2026-08-19 高内聚：_run_one 不再接受 ssh_timeout 形参，由 executor 从
+        # config["ssh_timeout"] 直接读取；run_server_ops.ssh_timeout 形参保留仅
+        # 用于向后兼容 caller。
         item = await _run_one(
             business_name,
             service,
-            ssh_timeout=ssh_timeout,
             use_third_party=use_third_party,
             third_party_endpoint_name=third_party_endpoint_name,
         )
@@ -548,7 +554,6 @@ async def _run_one(
     business_name: str,
     service: Any,
     *,
-    ssh_timeout: int,
     use_third_party: bool = False,
     third_party_endpoint_name: Optional[str] = None,
 ) -> ServerOpsItem:
@@ -633,18 +638,19 @@ async def _run_one(
     script_platform = config.get("inspection_script_platform") if isinstance(config, dict) else None
     script_version = config.get("inspection_script_version") if isinstance(config, dict) else None
 
-    # 4) 执行 SSH（同步阻塞通过 to_thread 包装）
+    # 4) 执行 SSH（同步阻塞通过 to_thread 包装；2026-08-19 高内聚：timeout 由 executor
+    #    从 config["ssh_timeout"] 直接读取，_run_one 不再做中间变量计算）
     started = time.perf_counter()
     try:
         import asyncio as _asyncio
         if use_third_party:
             from app.shared.utils.executor.third_party_ssh import execute_third_party_script
             result: SSHExecResult = await _asyncio.to_thread(
-                execute_third_party_script, dict(config), script, ssh_timeout,
+                execute_third_party_script, dict(config), script,
                 endpoint_name=third_party_endpoint_name,
             )
         else:
-            result = await asyncio.to_thread(execute_script, dict(config), script, ssh_timeout)
+            result = await asyncio.to_thread(execute_script, dict(config), script)
     except Exception as exc:  # noqa: BLE001 - 单台失败不中断整体
         duration_ms = int((time.perf_counter() - started) * 1000)
         msg = f"{type(exc).__name__}: {exc}"

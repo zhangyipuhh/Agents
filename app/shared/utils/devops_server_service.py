@@ -48,6 +48,48 @@ from cryptography.fernet import Fernet, InvalidToken
 from app.shared.utils.inspection.parser import normalize_inspection_fields
 
 
+# 2026-08-19 新增：SSH 执行时长解析 helper（高内聚收口点）
+# 所有 SSH 执行链路（SSHTools 3 个 @tool / execute_script /
+# execute_third_party_script / server_ops._run_one）都通过
+# ``get_connection_config`` 返回的 ``ssh_timeout`` 字段读取已钳制好的整数值，
+# 不再做二次 clamp。这是 timeout 读取逻辑的**唯一**实现点。
+#
+# 契约：
+#   * value=None / 非 int → 30（与原 _clamp_timeout default=30 对齐）
+#   * value 越界 < 1 或 > 120 → 钳到 [1, 120]
+#   * 已钳制好返回 int
+#
+# 与 ``app.shared.utils.ssh.timeout_guard.clamp_timeout`` 语义一致，
+# 但**不**调它（避免 service → ssh 模块的反向依赖）；复用相同 default / lo / hi。
+_SSH_TIMEOUT_DEFAULT = 30
+_SSH_TIMEOUT_MIN = 1
+_SSH_TIMEOUT_MAX = 120
+
+
+def resolve_ssh_timeout(value: Any) -> int:
+    """把 YAML / DB 中的 ssh_timeout 原始值归一为 [1, 120] 区间内的 int。
+
+    这是 SSH 执行时长的**唯一**解析实现；其它模块直接读 ``config["ssh_timeout"]``
+    即可拿到已钳制好的整数值，**禁止**二次 clamp。
+
+    Args:
+        value: YAML 字段 / DB 列 / dict 取值的原始值（可能 None / str / int / 越界）
+
+    Returns:
+        int: 钳制到 [_SSH_TIMEOUT_MIN, _SSH_TIMEOUT_MAX] 的合法整数；
+             非法输入回退 _SSH_TIMEOUT_DEFAULT
+    """
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return _SSH_TIMEOUT_DEFAULT
+    if result < _SSH_TIMEOUT_MIN:
+        return _SSH_TIMEOUT_MIN
+    if result > _SSH_TIMEOUT_MAX:
+        return _SSH_TIMEOUT_MAX
+    return result
+
+
 def _ensure_list(value: Any) -> List[Any]:
     """防御性还原 JSONB 列值。
 
@@ -246,6 +288,7 @@ class DevOpsServerService:
             "SELECT id, business_name, ip, port, username, password_encrypted, "
             "server_type, blacklist, whitelist, "
             "inspection_script_id, "  # 2026-08-03 改造：旧三列移除，仅保留外键
+            "ssh_timeout, "           # 2026-08-19 新增：SSH 执行时长上限（秒）
             "created_at, updated_at "
             "FROM devops_servers ORDER BY id"
         )
@@ -274,6 +317,10 @@ class DevOpsServerService:
                 except (TypeError, ValueError):
                     sid = None
             data["inspection_script_id"] = sid
+            # 2026-08-19 高内聚：所有 SSH 链路后续直接读 config["ssh_timeout"]，
+            # 但 DB 行可能因 schema 演进（旧库）缺失该列；这里仍走 resolve_ssh_timeout
+            # 兜底钳制，保证缓存值永远是合法 int。
+            data["ssh_timeout"] = resolve_ssh_timeout(data.get("ssh_timeout"))
             new_cache[business_name] = data
         # Bug-6 修复:cache 替换原子化,读路径快照一致
         async with self._write_lock:
@@ -403,6 +450,12 @@ class DevOpsServerService:
         - ``inspection_script_platform`` —— 平台（``linux`` / ``windows``）
         - ``inspection_script_version`` —— 版本字符串（如 ``5.1`` / ``7+``）
 
+        2026-08-19 新增 1 个键供 SSH 执行链路高内聚读取：
+        - ``ssh_timeout`` —— SSH 单条命令执行时长上限（秒），已钳制到 ``[1, 120]``，
+          缺省 30。这是 SSH 执行时长的**唯一**读取点（所有 SSHTools @tool /
+          ``execute_script`` / ``execute_third_party_script`` / ``server_ops._run_one``
+          链路均直接取该值，禁止二次 clamp）。
+
         Args:
             business_name: 业务名（唯一键）
 
@@ -411,7 +464,8 @@ class DevOpsServerService:
             ``server_type`` / ``blacklist`` / ``whitelist`` /
             ``inspection_script`` / ``inspection_parser`` / ``inspection_fields`` +
             ``inspection_script_name`` / ``inspection_script_display_name`` /
-            ``inspection_script_platform`` / ``inspection_script_version`` 共 14 键
+            ``inspection_script_platform`` / ``inspection_script_version`` +
+            ``ssh_timeout`` 共 15 键
 
         Raises:
             KeyError: 业务名不存在时抛出
@@ -478,6 +532,8 @@ class DevOpsServerService:
             "inspection_script_display_name": inspection_script_display_name,
             "inspection_script_platform": inspection_script_platform,
             "inspection_script_version": inspection_script_version,
+            # 2026-08-19：高内聚——所有 SSH 执行链路直接取该值，禁止二次 clamp
+            "ssh_timeout": resolve_ssh_timeout(rec.get("ssh_timeout")),
         }
 
     # ------------------------------------------------------------------
@@ -583,6 +639,7 @@ class DevOpsServerService:
                     "blacklist": normalized["blacklist"],
                     "whitelist": normalized["whitelist"],
                     "inspection_script_id": normalized["inspection_script_id"],  # 2026-08-03 改造
+                    "ssh_timeout": normalized["ssh_timeout"],                     # 2026-08-19 新增
                     "created_at": row_data.get("created_at"),
                     "updated_at": row_data.get("updated_at"),
                 }
@@ -692,6 +749,10 @@ class DevOpsServerService:
                 "请先在 inspection_scripts.yaml 注册或在 InspectionScriptService 缓存中确认"
             )
 
+        # 2026-08-19 新增：ssh_timeout（单台服务器 SSH 执行时长上限，秒）
+        # 缺省 / 越界由 resolve_ssh_timeout 自动归一为 [1, 120]，无需手写校验。
+        ssh_timeout = resolve_ssh_timeout(entry.get("ssh_timeout"))
+
         return {
             "business_name": business_name,
             "ip": ip,
@@ -702,6 +763,7 @@ class DevOpsServerService:
             "blacklist": [str(x) for x in blacklist],
             "whitelist": [str(x) for x in whitelist],
             "inspection_script_id": script_id,
+            "ssh_timeout": ssh_timeout,
         }
 
     async def _upsert_one_returning(
@@ -738,15 +800,18 @@ class DevOpsServerService:
             "(business_name, ip, port, username, password_encrypted, "
             " server_type, blacklist, whitelist, "
             " inspection_script_id, "  # 2026-08-03 改造
+            " ssh_timeout, "           # 2026-08-19 新增
             " created_at, updated_at) "
             "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, "
             "        $9, "  # inspection_script_id
+            "        $10, "  # 2026-08-19：ssh_timeout（已 resolve_ssh_timeout 钳制）
             "        NOW(), NOW()) "
             "ON CONFLICT (business_name) DO UPDATE SET "
             "ip = EXCLUDED.ip, port = EXCLUDED.port, username = EXCLUDED.username, "
             "password_encrypted = EXCLUDED.password_encrypted, server_type = EXCLUDED.server_type, "
             "blacklist = EXCLUDED.blacklist, whitelist = EXCLUDED.whitelist, "
             "inspection_script_id = EXCLUDED.inspection_script_id, "  # 2026-08-03 改造
+            "ssh_timeout = EXCLUDED.ssh_timeout, "  # 2026-08-19 新增
             "updated_at = NOW() "
             "RETURNING *, (xmax = 0) AS inserted",
             business_name,
@@ -758,6 +823,7 @@ class DevOpsServerService:
             json.dumps(normalized["blacklist"]),
             json.dumps(normalized["whitelist"]),
             normalized["inspection_script_id"],  # 2026-08-03 改造
+            normalized["ssh_timeout"],          # 2026-08-19 新增
         )
         inserted = bool(row and row.get("inserted"))
         return inserted, row

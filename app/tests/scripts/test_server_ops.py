@@ -1,4 +1,4 @@
-# -*- coding:utf-8 -*-
+﻿# -*- coding:utf-8 -*-
 """
 ``app.scripts.server_ops`` 标准化巡检执行器测试。
 
@@ -265,7 +265,7 @@ async def test_run_server_ops_get_connection_config_receives_full_inspection_scr
                 "巡检脚本库条目不存在或已被删除: 99（server=biz-A）"
             )
 
-    def fake_execute_script(cfg, script, timeout):
+    def fake_execute_script(cfg, script, timeout=None):  # 2026-08-19：timeout 形参保留兼容，生产侧不再传
         return SSHExecResult(success=True, stdout='{"ok": true}', stderr="", exit_code=0)
 
     monkeypatch.setattr("app.scripts.server_ops.execute_script", fake_execute_script)
@@ -311,7 +311,7 @@ async def test_run_server_ops_stub_returns_inspection_script_string(monkeypatch)
 
     captured_script = {}
 
-    def fake_execute_script(cfg, script, timeout):
+    def fake_execute_script(cfg, script, timeout=None):  # 2026-08-19：timeout 形参保留兼容，生产侧不再传
         # 关键断言：execute_script 必须收到 service 返回的 inspection_script 字符串（去尾换行）。
         captured_script["script"] = script
         return SSHExecResult(success=True, stdout='{"cpu": 30}', stderr="", exit_code=0)
@@ -359,7 +359,7 @@ async def test_run_server_ops_all_pass(monkeypatch):
         },
     }
 
-    def fake_execute_script(cfg, script, timeout):
+    def fake_execute_script(cfg, script, timeout=None):  # 2026-08-19：timeout 形参保留兼容，生产侧不再传
         return SSHExecResult(success=True, stdout='{"ok": true}', stderr="", exit_code=0)
 
     monkeypatch.setattr("app.scripts.server_ops.execute_script", fake_execute_script)
@@ -389,7 +389,7 @@ async def test_run_server_ops_missing_inspection_script_marks_skipped(monkeypatc
     # 短路返回 skipped，不调 execute_script。
     execute_script_calls: List[str] = []
 
-    def fake_execute_script(cfg, script, timeout):
+    def fake_execute_script(cfg, script, timeout=None):  # 2026-08-19:timeout 形参保留兼容，生产侧不再传
         execute_script_calls.append(cfg.get("ip", ""))
         return SSHExecResult(success=True, stdout='{"ok": true}', stderr="", exit_code=0)
 
@@ -439,7 +439,7 @@ async def test_run_server_ops_missing_inspection_script_marks_skipped(monkeypatc
 async def test_run_server_ops_preserves_input_order():
     """``items`` 顺序与 ``server_list`` 输入顺序一致（与 api_check 对仗的契约）。"""
     # execute_script 用 IP 前缀判断：A/B/C/D 全部返回 success
-    def fake_execute_script(cfg, script, timeout):
+    def fake_execute_script(cfg, script, timeout=None):  # 2026-08-19:timeout 形参保留兼容，生产侧不再传
         return SSHExecResult(success=True, stdout='{"ok": true}', stderr="", exit_code=0)
 
     import app.scripts.server_ops as server_ops_module
@@ -548,7 +548,7 @@ async def test_run_server_ops_does_not_block_event_loop(monkeypatch):
     # 这里采用轻量间接验证：若未通过 to_thread 包装，事件循环在阻塞期间不能被同一 loop 内的其他协程推进。
     import app.scripts.server_ops as server_ops_module
 
-    def slow_execute_script(cfg, script, timeout):
+    def slow_execute_script(cfg, script, timeout=None):  # 2026-08-19
         time.sleep(0.2)
         return SSHExecResult(success=True, stdout='{"ok": true}', stderr="", exit_code=0)
 
@@ -623,7 +623,7 @@ async def test_run_server_ops_does_not_re_normalize_inspection_fields(monkeypatc
         raising=False,
     )
 
-    def fake_execute_script(cfg, script, timeout):
+    def fake_execute_script(cfg, script, timeout=None):  # 2026-08-19:timeout 形参保留兼容，生产侧不再传
         return SSHExecResult(success=True, stdout='{"disk_used_pct": 40}', stderr="", exit_code=0)
 
     monkeypatch.setattr("app.scripts.server_ops.execute_script", fake_execute_script)
@@ -661,7 +661,7 @@ async def test_run_server_ops_handles_unexpected_inspection_fields_type(monkeypa
     注：生产 service 端保证返回 ``list[InspectionFieldRule]``；本用例验证脚本侧
     防御性兜底（service 缺失或老版本 cache 时不崩）。
     """
-    def fake_execute_script(cfg, script, timeout):
+    def fake_execute_script(cfg, script, timeout=None):  # 2026-08-19:timeout 形参保留兼容，生产侧不再传
         return SSHExecResult(success=True, stdout='{"x": 1}', stderr="", exit_code=0)
 
     monkeypatch.setattr("app.scripts.server_ops.execute_script", fake_execute_script)
@@ -703,7 +703,7 @@ async def test_run_server_ops_stub_service_mimics_real_normalization(monkeypatch
     """
     from app.shared.utils.inspection.parser import InspectionFieldRule
 
-    def fake_execute_script(cfg, script, timeout):
+    def fake_execute_script(cfg, script, timeout=None):  # 2026-08-19:timeout 形参保留兼容，生产侧不再传
         return SSHExecResult(success=True, stdout='{"mem_used_pct": 50}', stderr="", exit_code=0)
 
     monkeypatch.setattr("app.scripts.server_ops.execute_script", fake_execute_script)
@@ -755,7 +755,7 @@ async def test_run_server_ops_keyerror_skips_missing_business(monkeypatch):
 @pytest.mark.asyncio
 async def test_run_server_ops_paramiko_exception_marks_failed_not_interrupt(monkeypatch):
     """execute_script 抛 paramiko 异常应标记 failed，不中断整体循环。"""
-    def fake_execute_script(cfg, script, timeout):
+    def fake_execute_script(cfg, script, timeout=None):  # 2026-08-19:timeout 形参保留兼容，生产侧不再传
         if "biz-B" in cfg["ip"]:
             raise RuntimeError("SSHException: connection refused")
         return SSHExecResult(success=True, stdout='{"ok": true}', stderr="", exit_code=0)
@@ -1381,7 +1381,7 @@ async def test_config_exception_inspection_error_message(monkeypatch):
 @pytest.mark.asyncio
 async def test_execute_script_exception_inspection_error_message(monkeypatch):
     """execute_script 抛异常应记 crit 且 inspection_error 也有错误说明；不泄漏 config。"""
-    def fake_execute_script(cfg, script, timeout):
+    def fake_execute_script(cfg, script, timeout=None):  # 2026-08-19:timeout 形参保留兼容，生产侧不再传
         raise RuntimeError("SSHException: connection refused")
 
     from app.scripts import server_ops as server_ops_module
@@ -1741,7 +1741,7 @@ async def test_one_bad_json_does_not_block_next_server(monkeypatch):
     """一台非法 JSON 解析失败（crit）但下一台继续执行，整体不中断。"""
     from app.scripts import server_ops as server_ops_module
 
-    def fake_execute_script(cfg, script, timeout):
+    def fake_execute_script(cfg, script, timeout=None):  # 2026-08-19:timeout 形参保留兼容，生产侧不再传
         ip = cfg.get("ip", "")
         if "1.1.1.1" in ip:
             return SSHExecResult(True, "not-json", "", 0)
@@ -1879,7 +1879,7 @@ async def test_run_one_uses_local_paramiko_when_flag_false(monkeypatch):
 
     calls = {"local": 0, "third": 0}
 
-    def fake_local(cfg, script, timeout):
+    def fake_local(cfg, script, timeout=None):  # 2026-08-19
         calls["local"] += 1
         return SSHExecResult(True, '{"ok":1}', "", 0)
 
@@ -1914,11 +1914,11 @@ async def test_run_one_uses_third_party_when_flag_enabled(monkeypatch):
     calls = {"local": 0, "third": 0}
     captured_endpoint = {"value": None}
 
-    def fake_local(cfg, script, timeout):
+    def fake_local(cfg, script, timeout=None):  # 2026-08-19
         calls["local"] += 1
         raise AssertionError("execute_script 不应在 use_third_party=True 时被调用")
 
-    def fake_third(cfg, script, timeout, *, endpoint_name=None):
+    def fake_third(cfg, script, timeout=None, *, endpoint_name=None):  # 2026-08-19
         calls["third"] += 1
         captured_endpoint["value"] = endpoint_name
         # 业务名是否注入 config(供第三方分支 audit 用)无需断言,只验证返回值。
@@ -1959,12 +1959,12 @@ async def test_third_party_failure_does_not_fall_back_to_local(monkeypatch):
 
     calls = {"local": 0, "third": 0}
 
-    def fake_local(cfg, script, timeout):
+    def fake_local(cfg, script, timeout=None):  # 2026-08-19
         # 反向断言：use_third_party=True 时绝对不应调用本地 path。
         calls["local"] += 1
         raise AssertionError("execute_script 在 use_third_party=True + 第三方失败时不应被调用")
 
-    def fake_third_fail(cfg, script, timeout, *, endpoint_name=None):
+    def fake_third_fail(cfg, script, timeout=None, *, endpoint_name=None):  # 2026-08-19
         calls["third"] += 1
         # 模拟「端点未配置」→ execute_third_party_script 已封装为 success=False
         # (与 ThirdPartyExecutorError 路径对齐)。
@@ -2017,7 +2017,7 @@ async def test_run_one_injects_business_name_into_config(monkeypatch):
 
     captured_config = {"value": None}
 
-    def fake_third(cfg, script, timeout, *, endpoint_name=None):
+    def fake_third(cfg, script, timeout=None, *, endpoint_name=None):  # 2026-08-19
         captured_config["value"] = dict(cfg)
         return SSHExecResult(True, '{"x":1}', "", 0)
 
@@ -2037,3 +2037,42 @@ async def test_run_one_injects_business_name_into_config(monkeypatch):
     assert captured_config["value"]["business_name"] == "biz-X-生产", (
         f"_run_one 应把 business_name 注入 config; 实际={captured_config['value'].get('business_name')!r}"
     )
+
+
+
+
+# ============================================================================
+# 2026-08-19 新增：run_server_ops 高内聚：直接传 dict(config) 给 executor，无 timeout 形参
+# ============================================================================
+
+
+def test_run_one_passes_config_without_timeout_kwarg(monkeypatch):
+    """2026-08-19 高内聚：_run_one 把 dict(config) 传给 execute_script，不带 timeout 形参。
+
+    timeout 由 executor 内部从 config["ssh_timeout"] 直接读取；_run_one 不再做中间变量计算。
+    """
+    captured_call = {"args": None}
+
+    def fake_execute_script(cfg, script, timeout=None):  # 2026-08-19：兼容
+        captured_call["args"] = (cfg, script)
+        return SSHExecResult(
+            success=True, stdout='{"mem": 40}', stderr="", exit_code=0
+        )
+
+    monkeypatch.setattr("app.scripts.server_ops.execute_script", fake_execute_script)
+
+    service = _StubDevOpsService({"biz-A": {
+        "ip": "10.0.0.1", "port": 22, "username": "u", "password": "p",
+        "server_type": "linux",
+        "inspection_script": 'printf \'{"mem":40}\'',
+        "inspection_parser": "json",
+        "inspection_fields": [],
+        "inspection_script_id": 1,
+        "ssh_timeout": 75,                # 2026-08-19 新增：service 解析后的已钳制值
+    }})
+
+    context = _make_context_with_service(service, {"server_list": ["biz-A"]})
+    asyncio.run(run_server_ops(context))
+    cfg, _script = captured_call["args"]
+    # 关键断言：cfg 必须含 ssh_timeout 键，且不被 _run_one 二次计算
+    assert cfg.get("ssh_timeout") == 75

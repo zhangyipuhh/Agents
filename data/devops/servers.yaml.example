@@ -26,6 +26,14 @@
 #                                 windows-ps-7+）；省略时按 server_type 走默认匹配
 #                                 （linux → linux-bash，windows → windows-ps-5.1）。
 #                                 显式指定但脚本库中不存在 → 该条目记 failed 不入库。
+#   * ssh_timeout       (int, 1-120, 默认 30)：SSH 单条命令 / 巡检脚本执行时长上限（秒）。
+#                                 2026-08-19 新增：覆盖 LLM @tool timeout 入参与脚本 ssh_timeout
+#                                 入参（均被忽略），由运维通过 YAML + DB 单一控制点管控。
+#                                 高内聚读取：所有 SSH 执行链路从
+#                                 DevOpsServerService.get_connection_config["ssh_timeout"]
+#                                 拿已钳制好的整数值，禁止在调用方再做二次 clamp。
+#                                 场景：拖慢服务器可调高，紧急任务可调低；范围 [1, 120]，
+#                                 越界由 service 自动钳制，扫描不会失败。
 #
 # 2026-08-03 改造：原 inspection_script / inspection_parser / inspection_fields 三列
 # 已从 devops_servers 表移除，由 inspection_scripts 脚本库统一管理。服务器节点仅
@@ -59,6 +67,8 @@ servers:
     # 改为通过 inspection_script_name 引用 ``data/devops/inspection_scripts.yaml`` 条目。
     # 这里省略 → 按 server_type 走默认匹配（linux → linux-bash）。
     inspection_script_name: linux-bash
+    # SSH 执行时长上限（2026-08-19 新增；默认 30，范围 [1, 120]）
+    ssh_timeout: 30
 
   # ===== Windows 巡检服务器示例 =====
   - business_name: dev-windows-01
@@ -102,3 +112,5 @@ servers:
     # 改为通过 inspection_script_name 引用 ``data/devops/inspection_scripts.yaml`` 条目。
     # 这里省略 → 按 server_type 走默认匹配（windows → windows-ps-5.1）。
     inspection_script_name: windows-ps-5.1
+    # SSH 执行时长上限（2026-08-19 新增；默认 30，范围 [1, 120]）
+    ssh_timeout: 30

@@ -56,14 +56,16 @@ def _decode_remote_bytes(raw: bytes) -> str:
 def execute_script(
     config: Mapping[str, Any],
     script: str,
-    timeout: Any = 30,
+    timeout: Any = None,             # 2026-08-19：参数被忽略，统一走 config["ssh_timeout"]
 ) -> SSHExecResult:
     """使用已解析的 SSH 配置执行指定脚本。
 
     Args:
-        config: 包含 ip、port、username、password、server_type 的连接配置。
+        config: 包含 ip/port/username/password/server_type 与 ssh_timeout 的连接配置。
+                ssh_timeout 由 ``DevOpsServerService.get_connection_config`` 高内聚解析，
+                默认 30，钳制 ``[1, 120]``。
         script: 需要在远端执行的完整脚本文本。
-        timeout: 远程命令执行超时时间，限制在 1 到 120 秒。
+        timeout: **已废弃**（2026-08-19），保留仅为向后兼容签名；运行时被忽略。
 
     Returns:
         SSHExecResult: 包含标准输出、标准错误、退出码和成功状态的结果。
@@ -74,7 +76,10 @@ def execute_script(
         paramiko.SSHException: SSH 连接或通道执行失败。
     """
     wrapped = wrap_script_for_platform(config.get("server_type", ""), script)
-    safe_timeout = clamp_timeout(timeout)
+    # 2026-08-19 高内聚：直接取 service 给的已钳制值；不再调 clamp_timeout。
+    # 缺省回退 30（与原 default=30 对齐）由 ``resolve_ssh_timeout`` 在 service 内完成。
+    # ``.get(..., 30)`` 兜底是给测试 fixture 容错（生产 service 必给此字段）。
+    safe_timeout = config.get("ssh_timeout") or 30
     connect_timeout = clamp_timeout(
         config.get("ssh_connect_timeout"), default=10, lo=1, hi=60
     )
