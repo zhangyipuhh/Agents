@@ -5,10 +5,10 @@ services:
       context: .
       dockerfile: app/Dockerfile
     image: agents/v1.0
-    container_name: preview-app
+    container_name: dev-app
     restart: always
     ports:
-      - "8001:8001"
+      - "8002:8001"
     environment:
       PYTHONUNBUFFERED: 1
       PYTHONPATH: /app
@@ -44,14 +44,14 @@ services:
       context: ./web/Agent
       dockerfile: Dockerfile
     image: web-agent/v1.0
-    container_name: preview-web
+    container_name: dev-web
     restart: always
     ports:
       # 2026-08-12 HTTPS 改造:9001:80 不变(端口号保留),但容器内 80 端口已 SSL 独占
-      # 浏览器访问入口:https://localhost:9001/(原 http://localhost:9001/ 不再可用)
-      - "9001:80"
+      # 浏览器访问入口:https://localhost:9000/(原 http://localhost:9000/ 不再可用)
+      - "9000:80"
     environment:
-      - VITE_API_TARGET=${VITE_API_TARGET:-http://preview-app:8001}
+      - VITE_API_TARGET=${VITE_API_TARGET:-http://dev-app:8002}
     volumes:
       # ===== 2026-08-12 新增:复用本地 mkcert 证书,容器内启用 HTTPS =====
       # 前提:宿主机已执行 .\nginx\mkcert.exe -install(一次性)
@@ -59,12 +59,12 @@ services:
       # 原因:让前端 Docker 镜像的 TLS 配置自包含,不依赖项目根 nginx 工具链
       # 重新签发流程(任何时候修改 SAN 都需重签,**不限于到期**):
       #   1. mkcert 签发到 web/Agent/certs/(Docker 主路径,容器内生效):
-      #      .\nginx\mkcert.exe -cert-file .\web\Agent\certs\localhost.pem -key-file .\web\Agent\certs\localhost-key.pem localhost 127.0.0.1 ::1 10.20.8.73 172.26.160.50 124.95.179.91 10.1.114.190
+      #      .\nginx\mkcert.exe -cert-file .\web\Agent\certs\localhost.pem -key-file .\web\Agent\certs\localhost-key.pem localhost 127.0.0.1 ::1 10.20.8.73
       #   2. 手动同步到 nginx/conf/certs/(本地 nginx/ 测试入口 nginx/conf/nginx.conf 引用此路径):
       #      Copy-Item .\web\Agent\certs\* .\nginx\conf\certs\ -Force
       #   3. 重启本地 nginx 与 docker compose(让新证书生效)
-      # 证书有效期 2 年(到 2028-11-18),到期后必须重新签发
-      # mkcert SAN 含 localhost/127.0.0.1/::1/10.20.8.73/172.26.160.50/124.95.179.91/10.1.114.190,浏览器通过 https://localhost:9001 访问时绿锁无警告
+      # 证书有效期 2 年(到 2028-11-08),到期后必须重新签发
+      # mkcert SAN 含 localhost/127.0.0.1/::1/10.20.8.73,浏览器通过 https://localhost:9001 访问时绿锁无警告
       - ./web/Agent/certs:/etc/nginx/certs:ro
     healthcheck:
       # 校验证书存在,避免 ./nginx/conf/certs/ 缺失时 nginx 启动后才报错(容器会无限重启)
