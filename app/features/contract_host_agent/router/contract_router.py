@@ -75,7 +75,11 @@ async def get_ht_agent() -> HtAgent:
     知识库 skill（合同审批业务不需要）。详见 plan：
     ``.trae/documents/contract_host_agent_skill_loading.md``。
 
-    2026-08-19 新增：注入合同专属 LLM 配置（contract_llm_config），与全局 LLM_CONFIG 解耦。
+    显式传 base_system_prompt=" "（单空格）触发三元语义「非空字符串覆盖」分支，
+    实际效果等同跳过 app.core.prompts.BASE_SYSTEM_PROMPT 通用基类规则，
+    避免通用基类规则污染合同审批业务专用场景。
+
+    注入合同专属 LLM 配置（contract_llm_config），与全局 LLM_CONFIG 解耦。
     缺失字段由 ContractLLMSettings.get_config() 自动回退全局。
 
     Returns:
@@ -88,6 +92,7 @@ async def get_ht_agent() -> HtAgent:
             checkpointer=checkpointer,
             store=store,
             store_id=store_id,
+            base_system_prompt=" ",
             enabled_skill_names=[],
             model_type=contract_llm_config["model_type"],
             model_name=contract_llm_config["model_name"],
@@ -105,7 +110,11 @@ async def get_doc_agent() -> DocAgent:
     使用延迟初始化模式，确保在第一次请求时才创建 DocAgent 实例，
     这样可以正确获取异步初始化的 checkpointer。
 
-    2026-08-19 新增：注入合同专属 LLM 配置（contract_llm_config），与全局 LLM_CONFIG 解耦。
+    显式传 base_system_prompt=" "（单空格）触发三元语义「非空字符串覆盖」分支，
+    实际效果等同跳过 app.core.prompts.BASE_SYSTEM_PROMPT 通用基类规则，
+    避免通用基类规则污染合同审批业务专用场景。
+
+    注入合同专属 LLM 配置（contract_llm_config），与全局 LLM_CONFIG 解耦。
     缺失字段由 ContractLLMSettings.get_config() 自动回退全局。
 
     Returns:
@@ -118,6 +127,7 @@ async def get_doc_agent() -> DocAgent:
             checkpointer=checkpointer,
             store=store,
             store_id=store_id,
+            base_system_prompt=" ",
             model_type=contract_llm_config["model_type"],
             model_name=contract_llm_config["model_name"],
             api_key=contract_llm_config["api_key"],
@@ -134,10 +144,11 @@ async def get_approval_agent() -> ApprovalAgent:
     使用延迟初始化模式，确保在第一次请求时才创建 ApprovalAgent 实例，
     这样可以正确获取异步初始化的 checkpointer。
 
-    2026-08-19：显式传 base_system_prompt="" 跳过 app.core.prompts.BASE_SYSTEM_PROMPT，
-    ApprovalAgent 自带 DEFAULT_SYSTEM_PROMPT 已足够约束角色风格。
+    显式传 base_system_prompt=" "（单空格）触发三元语义「非空字符串覆盖」分支，
+    实际效果等同跳过 app.core.prompts.BASE_SYSTEM_PROMPT 通用基类规则，
+    避免污染 ApprovalAgent 自带 DEFAULT_SYSTEM_PROMPT 已约束的角色风格。
 
-    2026-08-19 新增：注入合同专属 LLM 配置（contract_llm_config），与全局 LLM_CONFIG 解耦。
+    注入合同专属 LLM 配置（contract_llm_config），与全局 LLM_CONFIG 解耦。
     缺失字段由 ContractLLMSettings.get_config() 自动回退全局。
 
     Returns:
@@ -534,6 +545,3 @@ async def download_contract(
         logger.error(f"[ERROR] download_contract 异常: {e}")
         logger.error(f"[ERROR] 异常堆栈: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"下载合同失败：{str(e)}")
-
-
-

@@ -120,6 +120,60 @@ def test_ht_agent_constructor_accepts_base_system_prompt():
     assert captured["config"].system_prompt == "AGENT_SPECIFIC"
 
 
+def test_ht_agent_constructor_accepts_base_system_prompt_single_space():
+    """
+    测试 HtAgent 构造时透传 base_system_prompt=" "（单空格）原样透传（2026-08-20 回归）。
+
+    背景：contract_router.get_ht_agent() 显式传 base_system_prompt=" "（单空格），
+    触发三元语义「非空字符串覆盖」分支，等同跳过 BASE_SYSTEM_PROMPT 通用基类。
+    用例目的：确保调用方在 HtAgent(checkpointer, store, ..., base_system_prompt=" ") 时
+    1) 不抛错
+    2) 实例字段 self.base_system_prompt == " "
+    3) _ensure_agent 构造 HtAgentConfig 时把该值原样传给 config.base_system_prompt
+       （防「只存 self 而漏传给 AgentConfig」回归；同时防后续误改成 "" 或 None 静默失效）
+
+    与 test_ht_agent_constructor_accepts_base_system_prompt 的 "" 用例互为对照：
+    "" 用于校验「空串」分支，" " 用于校验「非空覆盖」分支。
+    """
+    from unittest.mock import patch
+    from langgraph.store.memory import InMemoryStore
+
+    import importlib
+    ht_module = importlib.import_module('app.features.contract_host_agent.HtAgent')
+    from app.features.contract_host_agent.HtAgent import HtAgent
+
+    store = InMemoryStore()
+    captured: dict = {}
+
+    async def _fake_get_agent(config):
+        captured["config"] = config
+        return None
+
+    with patch.object(ht_module, "get_agent", _fake_get_agent):
+        instance = HtAgent(
+            checkpointer=None,
+            store=store,
+            store_id="store_space",
+            system_prompt="AGENT_SPECIFIC",
+            base_system_prompt=" ",
+        )
+
+        # 字段原样保存
+        assert instance.base_system_prompt == " "
+        # system_prompt 仍走 "or DEFAULT_SYSTEM_PROMPT" 旧语义，本次未改
+        assert instance.system_prompt == "AGENT_SPECIFIC"
+
+        # 触发 _ensure_agent 让它构造 HtAgentConfig
+        asyncio.run(instance._ensure_agent())
+
+    assert "config" in captured, "get_agent 未被调用"
+    assert captured["config"].base_system_prompt == " ", (
+        "HtAgent 必须把 base_system_prompt=' ' 原样透传到 HtAgentConfig.base_system_prompt"
+    )
+    # 同时确认其它字段正确透传，防止后续重构误改
+    assert captured["config"].system_prompt == "AGENT_SPECIFIC"
+
+
 def test_ht_agent_constructor_accepts_enabled_skill_names():
     """
     测试 HtAgent 构造时透传 enabled_skill_names 到 HtAgentConfig（2026-08-19 透传回归）。

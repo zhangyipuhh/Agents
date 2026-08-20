@@ -896,4 +896,10 @@ from app.features.contract_host_agent.config.ContractLLMSettings import (
 
 `app/tests/features/contract_host_agent/config/test_contract_llm_settings.py`：18 个用例（P0 导入/存在性 + P1 默认值 + P1 回退策略 + P1 env 解析 + P1 env_prefix 隔离 + P1 路径独立 + P2 形状契约）。
 
+### 合同三智能体 `base_system_prompt` 单空格覆盖
+
+`app/features/contract_host_agent/router/contract_router.py` 中三个工厂函数 `get_ht_agent` / `get_doc_agent` / `get_approval_agent` 显式传 `base_system_prompt=" "`（单空格），覆盖 `app.core.prompts.BASE_SYSTEM_PROMPT` 通用基类规则。单空格触发三元语义「非空字符串覆盖」分支（`agent.py:317-321` 中 `config_base_prompt is None` 判断不命中常走 `else`），但内容仅为空格，LLM 实际看到的 system_prompt 不再含通用基类规则；`agent_specific` / `bootstrap` / `available_skills` 段正常拼接。`HtAgent` / `DocAgent` / `ApprovalAgent` 包装类 `__init__` 早已支持 `base_system_prompt` 形参透传，本轮在 router 层补齐调用，零修改 Agent 类。
+
+测试：`app/tests/features/contract_host_agent/test_ht_agent.py::test_ht_agent_constructor_accepts_base_system_prompt_single_space` / `app/tests/features/contract_document_agent/test_doc_agent.py::test_doc_agent_constructor_accepts_base_system_prompt_single_space` / `app/tests/features/contract_approval_agent/test_approval_agent.py::test_approval_agent_constructor_accepts_base_system_prompt_single_space` 三个回归用例验证 `" "` 原样透传到对应 `*Config.base_system_prompt`。
+
 
