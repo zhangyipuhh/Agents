@@ -299,3 +299,77 @@ def test_contract_router_get_ht_agent_passes_empty_enabled_skill_names(monkeypat
         "知识库 skill"
     )
     assert result is not None
+
+
+def test_ht_agent_constructor_accepts_parallel_tool_calls():
+    """
+    测试 HtAgent 构造时透传 parallel_tool_calls 到 HtAgentConfig（2026-08-20 透传回归）。
+
+    背景：合同段 ollama 场景下需要关闭并行工具调用以避免 LangGraph 多 tool 并行写
+    file_chunk_read_progress 触发 InvalidUpdateError。AgentConfig 基类新增
+    ``parallel_tool_calls`` 字段后，HtAgent 包装类必须能透传 None / True / False
+    三态语义到 HtAgentConfig.parallel_tool_calls，再由 Agent.__ainit__ 优先使用
+    该字段覆盖全局 LLM_CONFIG.parallel_tool_calls。
+
+    用例目的（参照 _accepts_base_system_prompt_single_space 模板）：
+    1) 默认 None 时字段原样保存
+    2) 显式传 False 时字段原样保存
+    3) _ensure_agent 构造 HtAgentConfig 时把该值传给 config.parallel_tool_calls
+       （防「只存 self 而漏传给 AgentConfig」回归）
+    """
+    import importlib
+    from unittest.mock import patch
+    from langgraph.store.memory import InMemoryStore
+
+    ht_module = importlib.import_module('app.features.contract_host_agent.HtAgent')
+    from app.features.contract_host_agent.HtAgent import HtAgent
+
+    store = InMemoryStore()
+    captured: dict = {}
+
+    async def _fake_get_agent(config):
+        captured["config"] = config
+        return None
+
+    # 场景 1：默认 None
+    with patch.object(ht_module, "get_agent", _fake_get_agent):
+        instance = HtAgent(
+            checkpointer=None,
+            store=store,
+            store_id="store_para_default",
+        )
+        assert instance.parallel_tool_calls is None
+        asyncio.run(instance._ensure_agent())
+    assert captured["config"].parallel_tool_calls is None, (
+        "默认 None 必须原样透传到 HtAgentConfig.parallel_tool_calls"
+    )
+
+    # 场景 2：显式传 False
+    captured.clear()
+    with patch.object(ht_module, "get_agent", _fake_get_agent):
+        instance = HtAgent(
+            checkpointer=None,
+            store=store,
+            store_id="store_para_false",
+            parallel_tool_calls=False,
+        )
+        assert instance.parallel_tool_calls is False
+        asyncio.run(instance._ensure_agent())
+    assert captured["config"].parallel_tool_calls is False, (
+        "HtAgent 必须把 parallel_tool_calls=False 原样透传到 HtAgentConfig.parallel_tool_calls"
+    )
+
+    # 场景 3：显式传 True
+    captured.clear()
+    with patch.object(ht_module, "get_agent", _fake_get_agent):
+        instance = HtAgent(
+            checkpointer=None,
+            store=store,
+            store_id="store_para_true",
+            parallel_tool_calls=True,
+        )
+        assert instance.parallel_tool_calls is True
+        asyncio.run(instance._ensure_agent())
+    assert captured["config"].parallel_tool_calls is True, (
+        "HtAgent 必须把 parallel_tool_calls=True 原样透传到 HtAgentConfig.parallel_tool_calls"
+    )

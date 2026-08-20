@@ -167,6 +167,7 @@ async def get_approval_agent() -> ApprovalAgent:
             api_key=contract_llm_config["api_key"],
             base_url=contract_llm_config["base_url"],
             temperature=contract_llm_config["temperature"],
+            parallel_tool_calls=contract_llm_config["parallel_tool_calls"],
         )
     return _approval_agent
 

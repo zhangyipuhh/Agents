@@ -132,7 +132,11 @@ class Agent:
         self.agent_name = config.name
         self._trim_tool_messages = config.trim_tool_messages
         self._keep_last_n_tools = config.keep_last_n_tools
-        self._ollama_reasoning =  LLM_CONFIG["ollama_reasoning"]
+        self._ollama_reasoning = LLM_CONFIG["ollama_reasoning"]
+        # 2026-08-20 新增：per-Agent 透传开关，用于子智能体（如合同三 Agent）独立控制
+        # bind_tools 的 parallel_tool_calls 参数，覆盖全局 LLM_CONFIG.parallel_tool_calls。
+        # None 表示使用全局兜底；True/False 表示显式覆盖。
+        self._parallel_tool_calls = getattr(config, "parallel_tool_calls", None)
     async def __ainit__(self):
         """异步初始化方法
 
@@ -167,8 +171,13 @@ class Agent:
         )
 
         # 构建工具绑定参数，根据配置决定是否传入 parallel_tool_calls
+        # 2026-08-20 改动：优先级 AgentConfig.parallel_tool_calls > LLM_CONFIG
+        # 子智能体（如合同三 Agent）可通过 AgentConfig 字段独立控制 bind_tools 行为，
+        # 不受全局 .env:16 parallel_tool_calls=none 影响。
         bind_kwargs = {"tools": self.tools}
-        parallel_tool_calls = LLM_CONFIG.get("parallel_tool_calls")
+        parallel_tool_calls = self._parallel_tool_calls
+        if parallel_tool_calls is None:
+            parallel_tool_calls = LLM_CONFIG.get("parallel_tool_calls")
         if parallel_tool_calls is not None:
             bind_kwargs["parallel_tool_calls"] = parallel_tool_calls
 

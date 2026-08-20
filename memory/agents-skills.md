@@ -906,7 +906,15 @@ from app.features.contract_host_agent.config.ContractLLMSettings import (
 - Ollama 默认行为是 **启用** 并行工具调用（同 superstep 内多个 tool_call 并发执行），与 anthropic / minimax 默认禁用并行不同
 - 全局 `LLM_CONFIG.parallel_tool_calls=none`（`.env:16`）只对未启用合同专属配置的路由生效；`ContractLLMSettings.model_name` 非空时整组/字段级回退策略会让 `parallel_tool_calls` 采用专属值（None 默认 → bind_tools 不传参 → Ollama 服务端默认 true）
 
-**运行时契约**（`.env`）：`.env:139` 显式 `CONTRACT_LLM_PARALLEL_TOOL_CALLS=false`，让 bind_tools 显式传 false 给 Ollama 服务端，关闭单 superstep 多 tool_call 行为，从根上避免对 `file_chunk_read_progress` channel 的并发写入。
+**运行时契约**（`.env` + 代码透传链路，2026-08-20 完整闭环）：`.env:139` 显式 `CONTRACT_LLM_PARALLEL_TOOL_CALLS=false`，让 `ContractLLMSettings.parallel_tool_calls` 解析为 `False`，`get_config()["parallel_tool_calls"]=False`。然后通过三段透传到 `bind_tools`：
+
+1. `AgentConfig` 基类新增 `parallel_tool_calls: Optional[bool] = None` 字段（`app/core/agent/AgentConfig.py`），三元语义 None=走全局兜底 / True=显式启用并行 / False=显式关闭并行
+2. 三个合同 Agent 包装类 `HtAgent/DocAgent/ApprovalAgent.__init__` 加 `parallel_tool_calls: Optional[bool] = None` 形参，存为 `self.parallel_tool_calls`，`_ensure_agent` 构造 `*Config(...)` 时透传
+3. `Agent.__ainit__::bind_kwargs` 优先级改为：`config.parallel_tool_calls` > 全局 `LLM_CONFIG["parallel_tool_calls"]`，None 时回退全局
+4. `contract_router.py` 三个工厂（`get_ht_agent / get_doc_agent / get_approval_agent`）显式 `parallel_tool_calls=contract_llm_config["parallel_tool_calls"]` 注入
+5. `contract_document_agent/client.py` DocAgent 实例化硬编码 `parallel_tool_calls=False`（client 走 ollama，同方向硬编码更直接）
+
+`AgentConfig.parallel_tool_calls=None`（默认）→ 走全局 `LLM_CONFIG`，对其它模块（Tagent / ProjectAgent 等）完全向后兼容。
 
 **为什么不在 `AgentState` 层加 `Annotated[int, LastValue]` reducer**：
 - LangGraph `LastValue` 仍只接受一次写入，**不会改变「单 superstep 多次写入抛 InvalidUpdateError」的行为**

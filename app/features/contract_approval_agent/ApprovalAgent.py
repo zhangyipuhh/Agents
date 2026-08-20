@@ -51,6 +51,7 @@ class ApprovalAgent:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         temperature: float = 0,
+        parallel_tool_calls: Optional[bool] = None,
     ):
         """
         初始化 ApprovalAgent 实例
@@ -74,6 +75,10 @@ class ApprovalAgent:
             api_key: API 密钥（2026-08-19 新增），用于访问远程模型服务；默认 None
             base_url: API 基础 URL（2026-08-19 新增），指定模型服务的地址；默认 None
             temperature: 模型温度参数（2026-08-19 新增），控制生成多样性；默认 0
+            parallel_tool_calls: 是否启用并行工具调用（2026-08-20 新增），透传给 AgentConfig.parallel_tool_calls；
+                三元语义 None/True/False 详见 AgentConfig.parallel_tool_calls 字段 docstring。
+                合同场景下通常从 ContractLLMSettings.get_config()['parallel_tool_calls'] 传入，
+                关闭 Ollama 默认并行避免 LangGraph 多 tool 并行写 file_chunk_read_progress 触发 InvalidUpdateError。
         """
         self.checkpointer = checkpointer
         self.store = store
@@ -88,6 +93,7 @@ class ApprovalAgent:
         self.api_key = api_key
         self.base_url = base_url
         self.temperature = temperature
+        self.parallel_tool_calls = parallel_tool_calls
         self._agent = None
 
     async def _ensure_agent(self):
@@ -106,6 +112,7 @@ class ApprovalAgent:
                 api_key=self.api_key,
                 base_url=self.base_url,
                 temperature=self.temperature,
+                parallel_tool_calls=self.parallel_tool_calls,
             )
             self._agent = await get_agent(config)
         return self._agent

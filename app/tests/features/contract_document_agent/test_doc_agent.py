@@ -162,3 +162,76 @@ def test_get_tools_includes_base_file_tools():
 
     # ToolNode 必须非 None（agent.py 依据 tool_node is None 决定是否加入 tools 节点）
     assert tool_node is not None
+
+
+def test_doc_agent_constructor_accepts_parallel_tool_calls():
+    """
+    测试 DocAgent 构造时透传 parallel_tool_calls 到 DocAgentConfig（2026-08-20 透传回归）。
+
+    背景：合同段 ollama 场景下需要关闭并行工具调用以避免 LangGraph 多 tool 并行写
+    file_chunk_read_progress 触发 InvalidUpdateError。AgentConfig 基类新增
+    ``parallel_tool_calls`` 字段后，DocAgent 包装类必须能透传 None / True / False
+    三态语义到 DocAgentConfig.parallel_tool_calls，再由 Agent.__ainit__ 优先使用
+    该字段覆盖全局 LLM_CONFIG.parallel_tool_calls。
+
+    用例目的：
+    1) 默认 None 时字段原样保存
+    2) 显式传 False 时字段原样保存
+    3) _ensure_agent 构造 DocAgentConfig 时把该值传给 config.parallel_tool_calls
+    """
+    from unittest.mock import patch
+    from langgraph.store.memory import InMemoryStore
+
+    import importlib
+    doc_module = importlib.import_module('app.features.contract_document_agent.DocAgent')
+    from app.features.contract_document_agent.DocAgent import DocAgent
+
+    store = InMemoryStore()
+    captured: dict = {}
+
+    async def _fake_get_agent(config):
+        captured["config"] = config
+        return None
+
+    # 场景 1：默认 None
+    with patch.object(doc_module, "get_agent", _fake_get_agent):
+        instance = DocAgent(
+            checkpointer=None,
+            store=store,
+            store_id="doc_para_default",
+        )
+        assert instance.parallel_tool_calls is None
+        asyncio.run(instance._ensure_agent())
+    assert captured["config"].parallel_tool_calls is None, (
+        "默认 None 必须原样透传到 DocAgentConfig.parallel_tool_calls"
+    )
+
+    # 场景 2：显式传 False
+    captured.clear()
+    with patch.object(doc_module, "get_agent", _fake_get_agent):
+        instance = DocAgent(
+            checkpointer=None,
+            store=store,
+            store_id="doc_para_false",
+            parallel_tool_calls=False,
+        )
+        assert instance.parallel_tool_calls is False
+        asyncio.run(instance._ensure_agent())
+    assert captured["config"].parallel_tool_calls is False, (
+        "DocAgent 必须把 parallel_tool_calls=False 原样透传到 DocAgentConfig.parallel_tool_calls"
+    )
+
+    # 场景 3：显式传 True
+    captured.clear()
+    with patch.object(doc_module, "get_agent", _fake_get_agent):
+        instance = DocAgent(
+            checkpointer=None,
+            store=store,
+            store_id="doc_para_true",
+            parallel_tool_calls=True,
+        )
+        assert instance.parallel_tool_calls is True
+        asyncio.run(instance._ensure_agent())
+    assert captured["config"].parallel_tool_calls is True, (
+        "DocAgent 必须把 parallel_tool_calls=True 原样透传到 DocAgentConfig.parallel_tool_calls"
+    )
