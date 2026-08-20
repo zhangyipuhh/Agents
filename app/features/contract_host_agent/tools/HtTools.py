@@ -215,9 +215,9 @@ def get_approval_result(runtime: ToolRuntime) -> Command:
     【获取审批结果】获取合同审批分析结果报告。
     
     调用时机：
-    - 用户说"审批完成"、"输出审批结果"、"查看审批结果"、"获取审批报告"时
+    - 审批流程已经启动，用户说"审批完成"、"输出审批结果"、"查看审批结果"、"获取审批报告"时
     - 用户询问"审批结果如何"、"审批怎么样"时
-    - 用户确认"可以"、"是的"、"开始吧"等表示同意审批时
+    - 禁止在尚未调用 validate_prerequisites 确认要件齐全前，因用户说"可以"、"是的"、"开始吧"、"开始审批"等而调用本工具
     
     Args:
         runtime: 工具运行时上下文
@@ -296,6 +296,8 @@ def validate_prerequisites(runtime: ToolRuntime) -> Command:
     调用时机：
     - 每次执行审批任务时必须首先调用此工具
     - 用户上传文件后，需要验证要件是否齐全时
+    - 在调用 check_approval、get_approval_result、warn_issue 等任何其他审批工具之前，必须先调用本工具并获取其结果
+    - 如果本工具尚未被调用，禁止调用任何其他审批工具
     
     Args:
         runtime: 工具运行时上下文
