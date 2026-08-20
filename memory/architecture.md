@@ -551,6 +551,32 @@ return data/upload/yyyy/mm/dd/{session_id}/
 2. 前端完全控制透传内容，后端不再做隐式合并/兜底，链路更清晰。
 3. 避免"基类字段 + 保留字段集合"双源同步维护的不一致风险（如本次 RESERVED_CONTEXT_FIELDS 与 AgentContext 的 project_id 不一致 bug）。
 
+## 合同路由 LLM 接入方式(2026-08-20)
+
+合同三 Agent(HtAgent / DocAgent / ApprovalAgent)的 LLM 接入走
+**Ollama OpenAI 兼容端点**(`/v1/chat/completions`),不再走原生 `/api/chat`。
+
+- `.env` 配置契约:`CONTRACT_LLM_MODEL_TYPE="openai"` +
+  `CONTRACT_LLM_MODEL_API_BASE="http://<host>:11434/v1"` +
+  `CONTRACT_LLM_MODEL_API_KEY="ollama"`(Ollama 要求非空,实际忽略)。
+- 客户端实现:`app/core/llmcalls/openai.py` 已支持自定义 `base_url`,
+  `ModelFactory` 把 `model_type="openai"` 路由到 `create_openai_model(...)`。
+- 切换动机:`langchain_ollama.ChatOllama._chat_params` 硬编码 `stream=True`,
+  原生 `/api/chat` 流式格式为 `application/x-ndjson`,`httpx.aiter_lines()` 在流中途
+  收到空帧(网络抖动/服务端重载/keepalive 超时)会抛 `JSONDecodeError` →
+  `ollama._types.ResponseError("unexpected end of JSON input", status_code=-1)` →
+  `app/core/agent/agent.py:394 self.llm.ainvoke(...)` 抛异常 → 500。
+  切到 OpenAI 兼容端点后:`ChatOpenAI._agenerate` 内部走
+  `self.async_client.with_raw_response.create(**payload)`,`payload["stream"]` 由
+  `self.streaming` 控制(默认 `False`),**默认非流式,根本不走 httpx SSE 流**;
+  即便 `streaming=True` 走 SSE,OpenAI Python SDK 生产级 SSE 解析器对中断/空行
+  容错好于 Ollama SDK 自己的 NDJSON 解析。
+- 前端兼容核实:`app/features/contract_host_agent/router/contract_router.py:324`
+  三个 chat 端点均为 `response_model=ChatResponse` 同步 JSON 响应,不依赖
+  token-by-token 流式回调,切非流式对前端无影响。
+- 回滚方法:`.env` 改回 `CONTRACT_LLM_MODEL_TYPE="ollama"` +
+  `CONTRACT_LLM_MODEL_API_BASE="http://<host>:11434"`(去 `/v1`)即可。
+
 ## 环境变量
 
 - `AUTH_STORAGE_MODE` — 存储模式（postgres/memory）
