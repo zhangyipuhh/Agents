@@ -910,18 +910,17 @@ from app.features.contract_host_agent.config.ContractLLMSettings import (
 
 1. `AgentConfig` 基类新增 `parallel_tool_calls: Optional[bool] = None` 字段（`app/core/agent/AgentConfig.py`），三元语义 None=走全局兜底 / True=显式启用并行 / False=显式关闭并行
 2. 三个合同 Agent 包装类 `HtAgent/DocAgent/ApprovalAgent.__init__` 加 `parallel_tool_calls: Optional[bool] = None` 形参，存为 `self.parallel_tool_calls`，`_ensure_agent` 构造 `*Config(...)` 时透传
-3. `Agent.__ainit__::bind_kwargs` 优先级改为：`config.parallel_tool_calls` > 全局 `LLM_CONFIG["parallel_tool_calls"]`，None 时回退全局
+3. `Agent.__ainit__::bind_kwargs` 优先级改为：`config.parallel_tool_calls` > 全局 `LLM_CONFIG["parallel_tool_calls"]`，None 时回退全局；**仅当 `model_type != "ollama"` 时才传**该字段（ollama-python AsyncClient.chat 不接受 parallel_tool_calls kwarg，传了会 TypeError）
 4. `contract_router.py` 三个工厂（`get_ht_agent / get_doc_agent / get_approval_agent`）显式 `parallel_tool_calls=contract_llm_config["parallel_tool_calls"]` 注入
 5. `contract_document_agent/client.py` DocAgent 实例化硬编码 `parallel_tool_calls=False`（client 走 ollama，同方向硬编码更直接）
 
 `AgentConfig.parallel_tool_calls=None`（默认）→ 走全局 `LLM_CONFIG`，对其它模块（Tagent / ProjectAgent 等）完全向后兼容。
 
-**为什么不在 `AgentState` 层加 `Annotated[int, LastValue]` reducer**：
-- LangGraph `LastValue` 仍只接受一次写入，**不会改变「单 superstep 多次写入抛 InvalidUpdateError」的行为**
-- 真正的结构性修复需要收敛写入方（只让 `read_cached_chunk` 一个工具写该字段），改动面较广
-- 当前合同 ollama 用户场景不需要并发调用工具，关闭并行是最小改动方案
+**注意 Ollama 客户端的特殊性**：ollama-python `AsyncClient.chat()` 不接受 `parallel_tool_calls` kwarg；即便 ollama 服务端不"显式启用"并行，**它在单次响应里仍可能输出多个 tool_call**，导致 LangGraph 同 superstep 内多个 ToolNode 写同一个 state 字段（如 `file_chunk_read_progress`）触发 `InvalidUpdateError`。
 
-**未来若新增 ollama 工具或 LLM 提供方启用并行**：必须复核本节契约，并考虑收敛写入方方案。
+**结构性修复（2026-08-20 真正生效）**：`app/core/tools/BaseTools.py` 的 `open_file` / `open_file_by_id` / `load_web_page` 三个工具**不再写 `file_chunk_read_progress`**，该字段由 `read_cached_chunk` 独占维护（表示"下次从哪块开始读"）。这样即便 ollama 在同一 superstep 并行调用 `open_file_by_id` + `read_cached_chunk` 也不会冲突。三个 open_* 工具本来就是「加载+缓存」语义，与顺序读进度无关。
+
+**未来若新增 ollama 工具**：必须复核是否在 Command.update 里写 LastValue channel 字段，避免重蹈覆辙。
 
 ### 合同三智能体 `base_system_prompt` 单空格覆盖
 

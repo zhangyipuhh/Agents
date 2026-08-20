@@ -174,12 +174,18 @@ class Agent:
         # 2026-08-20 改动：优先级 AgentConfig.parallel_tool_calls > LLM_CONFIG
         # 子智能体（如合同三 Agent）可通过 AgentConfig 字段独立控制 bind_tools 行为，
         # 不受全局 .env:16 parallel_tool_calls=none 影响。
+        #
+        # 注意：parallel_tool_calls 仅对支持它的 LLM provider 才有意义。
+        # Ollama 的 AsyncClient.chat() 不接受该参数（会抛 TypeError），且 Ollama
+        # 服务端本身串行执行工具调用，不需要也无法设置并行。Anthropic 也不支持。
+        # 因此当 model_type == "ollama" 时，**完全不传**该字段，避免 TypeError。
         bind_kwargs = {"tools": self.tools}
-        parallel_tool_calls = self._parallel_tool_calls
-        if parallel_tool_calls is None:
-            parallel_tool_calls = LLM_CONFIG.get("parallel_tool_calls")
-        if parallel_tool_calls is not None:
-            bind_kwargs["parallel_tool_calls"] = parallel_tool_calls
+        if self._model_type != "ollama":
+            parallel_tool_calls = self._parallel_tool_calls
+            if parallel_tool_calls is None:
+                parallel_tool_calls = LLM_CONFIG.get("parallel_tool_calls")
+            if parallel_tool_calls is not None:
+                bind_kwargs["parallel_tool_calls"] = parallel_tool_calls
 
         # 预绑定工具到模型，避免每次调用时重复绑定
         self.llm = self.model.bind_tools(**bind_kwargs)

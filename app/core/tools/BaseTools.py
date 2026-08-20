@@ -292,9 +292,10 @@ def open_file_by_id(
         )
 
     content = _load_and_cache_file(paths, session_id, store_id, runtime.store, runtime.tool_call_id)
+    # 2026-08-20 修复：不再写 file_chunk_read_progress（同 open_file；该字段由
+    # read_cached_chunk 独占维护，避免多工具同 superstep 并行写 LastValue channel 冲突）。
     return Command(
         update={
-            "file_chunk_read_progress": 1,
             "messages": [
                 ToolMessage(
                     content=content,
@@ -358,9 +359,10 @@ def load_web_page(
         full_content = "\n\n".join(all_contents)
         content = _cache_content(full_content, session_id, store_id, runtime.store)
         logging.info(f"load_web_page_content: {content}")
+        # 2026-08-20 修复：不再写 file_chunk_read_progress（同 open_file / open_file_by_id，
+        # 该字段由 read_cached_chunk 独占维护，避免多工具同 superstep 并行写 LastValue channel 冲突）。
         return Command(
             update={
-                "file_chunk_read_progress": 1,
                 "messages": [
                     ToolMessage(
                         content=content,
