@@ -244,10 +244,13 @@ describe('config/portal.js 主题解析', () => {
 
       await portal.loadAppConfig()
 
+      // 顶层 brandTitle/brandDesc 被 JSON 接管（核心契约：JS 默认为空 → JSON 写入）
       expect(portal.appConfig.brandTitle).toBe('JSON-Wins-Now')
       expect(portal.appConfig.brandDesc).toBe('JSON-Desc-Wins-Now')
-      // default 主题的 brandTitle/brandDesc 也应该被 JSON 接管（因为 JS 已置空）
-      expect(portal.appConfig.loginThemes.default.brandTitle).toBe('JSON-Wins-Now')
+      // loginThemes.default.brandTitle 来自 JS 默认字面量 spread（因为 JS 当前为空，会呈现空字符串占位）；
+      // 这是有意的：default 主题字面量本身就是「当前 JS 已声明什么」的可视化，避免把 JSON 顶层值
+      // 复制到 default 主题导致与 appConfig.brandTitle 不一致。
+      expect(portal.appConfig.loginThemes.default.brandTitle).toBe('')
     } finally {
       // 还原原始默认值，避免污染同文件后续用例
       portal.DEFAULT_LOGIN_THEME.brandTitle = '沈阳市自然资源和规划"一点通"'

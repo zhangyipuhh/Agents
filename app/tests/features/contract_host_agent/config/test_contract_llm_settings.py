@@ -207,6 +207,51 @@ def test_get_config_all_fields_effective_no_fallback(monkeypatch):
 
 
 # ============================================================
+# P1: 字段级回退不读全局 parallel_tool_calls（2026-08-20 回归用例）
+# ============================================================
+
+
+def test_contract_parallel_tool_calls_explicit_false_overrides_global_none(monkeypatch):
+    """
+    P1 反向用例（2026-08-20 新增）:
+
+        当 CONTRACT_LLM_MODEL_NAME 非空（触发字段级回退分支），
+        且 CONTRACT_LLM_PARALLEL_TOOL_CALLS 显式设为 false 时，
+        合同路由的 parallel_tool_calls 必须为 False，**不读**全局
+        ``parallel_tool_calls=none``（否则会得到 None，Ollama 默认启用
+        并行工具调用，触发 LangGraph 多 tool 同一 superstep 写
+        file_chunk_read_progress 字段的 InvalidUpdateError）。
+
+    场景:
+        - 全局 parallel_tool_calls = "none"（None）
+        - contract model_name = "qwen3-vl:30b"（非空 → 字段级回退）
+        - contract parallel_tool_calls = "false"（显式）
+
+    期望: cfg["parallel_tool_calls"] is False（不是 None）
+    """
+    from app.features.contract_host_agent.config.ContractLLMSettings import (
+        ContractLLMSettings,
+    )
+
+    # 模拟生产 .env 当前状态:全局 "none" + 合同 model_name 非空 + contract 显式 false
+    monkeypatch.setenv("parallel_tool_calls", "none")
+    monkeypatch.setenv("CONTRACT_LLM_MODEL_NAME", "qwen3-vl:30b")
+    monkeypatch.setenv("CONTRACT_LLM_MODEL_TYPE", "ollama")
+    monkeypatch.setenv("CONTRACT_LLM_PARALLEL_TOOL_CALLS", "false")
+
+    s = ContractLLMSettings(_env_file=None)
+    cfg = s.get_config()
+
+    # 字段级回退分支生效:model_name 非空,走 9 字段 dict,不走整组 LLM_CONFIG 兜底
+    assert cfg["model_name"] == "qwen3-vl:30b", "前提:字段级回退分支必须触发"
+    # 核心断言:contract 显式 false 不能被全局 "none" 覆盖
+    assert cfg["parallel_tool_calls"] is False, (
+        f"CONTRACT_LLM_PARALLEL_TOOL_CALLS=false 必须生效,实际为 "
+        f"{cfg['parallel_tool_calls']!r};若为 None 表示被全局 'none' 错误覆盖"
+    )
+
+
+# ============================================================
 # P1: env 解析(bool / "none" → None / float)
 # ============================================================
 
