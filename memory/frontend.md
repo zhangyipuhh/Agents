@@ -557,6 +557,21 @@
   }
   ```
 
+### 配置优先级契约「JS DEFAULT_LOGIN_THEME 全局优先」（2026-08-20 升级）
+
+`web/Agent/src/config/portal.js` 模块内的 `DEFAULT_LOGIN_THEME`（含 brandTitle / brandDesc / loginTitle / loginSubtitle / registerSubtitle / footerText / footerLink / copyright 八个 LoginTheme 字段）是**主配置源**；`app-config.json` 仅作为「JS 未声明字段」的兜底数据源。
+
+- **核心判据**：`isJsDeclared(key) === (typeof DEFAULT_LOGIN_THEME[key] === 'string' && DEFAULT_LOGIN_THEME[key].trim() !== '')`。返回 true → JSON 同名字段**不得写入** appConfig / `loginThemes.default`；返回 false（用户主动把 JS 改成空字符串占位） → JSON 接管。
+- **`loadAppConfig()` 写入规则**：
+  1. 顶层 `brandTitle` / `brandDesc` → 仅在 `isJsDeclared(...) === false` 时由 JSON 兜底写入
+  2. `loginThemes.default` → 走 `normalizeLoginTheme(raw, { allowJsOverride: false })`：JSON 同名字段被忽略；合并阶段 `{ ...themesMap, default: { ...DEFAULT_LOGIN_THEME } }` 强制以 JS 字面量为准
+  3. `loginThemes.<非 default>`（如 `xemployee` / `YDT`） → 完全由 JSON 控制，JS 不参与（`normalizeLoginTheme(raw)` 默认行为）
+  4. `navItems` → 维持旧行为：JSON 存在且合法则使用 JSON，否则回退 `DEFAULT_NAV_ITEMS`
+- **`syncBrandFields()` 反向保护**：仅当主题对象 `brandTitle` / `brandDesc` 是非空字符串时才同步到 `appConfig.brandTitle` / `brandDesc`——避免主题对象空字符串占位时擦掉 JSON 顶层刚写入的值。
+- **导出约定**：`DEFAULT_LOGIN_THEME` 同时 `export` 仅供测试用例等价比对字面量；**生产代码禁止依赖此 export**，应走 `appConfig` / `getCurrentLoginTheme`。
+- **对运维的副作用**：修改 JSON 中与 JS 同名的 default 主题字段**不再生效**（top-level brandTitle/brandDesc / `loginThemes.default.*` 字段都是）；用户若需 JSON 接管某个字段，需要把 JS `DEFAULT_LOGIN_THEME` 对应字段置空字符串占位。`public/app-config.json.example` 顶部 `_precedence_comment` 已声明此约束。
+- **测试**：`web/Agent/src/config/__tests__/portal.theme.spec.js` 15 用例覆盖「JS 优先 / JSON 接管 / YDT 等非 default 主题不受影响 / 大小写 key / 删除主题回退 default」。
+
 ### 设计系统（src/styles/variables.css）
 
 - **颜色 token**：`--color-bg-{primary,secondary,tertiary,hover,active}`、`--color-border`、`--color-border-light`、`--color-text-{primary,secondary,muted,inverse}`、`--color-accent` / `-hover` / `-light`、`--color-{success,warning,error,info}`
