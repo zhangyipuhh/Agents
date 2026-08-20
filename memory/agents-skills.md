@@ -940,4 +940,16 @@ from app.features.contract_host_agent.config.ContractLLMSettings import (
 
 **注册工具**：`DocAgentConfig.get_tools()` 将 4 个 `DocTools`（`split_file`、`get_extraction_rule_id`、`get_extraction_rule_detail`、`save_extraction_result`）与 `BaseTools` 的 `open_file_by_id`、`read_cached_chunk` 一并注册给 DocAgent。
 
+### HtTools `check_approval` 合并入 `validate_prerequisites`
+
+`app/features/contract_host_agent/tools/HtTools.py` 中 `check_approval` 工具已彻底删除，原「向 store 写入 `approval/ready/{sid}=ischeck`」副作用并入 `validate_prerequisites` 的 `status=success` 路径：
+
+- 触发条件：`validate_prerequisites` 读取 `approval/prereq/{sid}` 后，统计出至少一份要件时即视为审批就绪，自动 `runtime.store.put((store_id,), "approval/ready/{sid}", True)` 并在 `Command.update` 中同步写入 `HtAgentState.is_check=True`。
+- 其余 status（`no_documents` / `no_requirements` / `invalid_format` / `error`）不写 store，与原 `check_approval(ischeck=False)` 语义对齐（要件不全视为未就绪）。
+- 返回体新增 `approval_signal_written: true` 字段，方便审计与回归测试断言。
+- 工作流合并：合同主办 Agent 的 `prompts.py` 工作阶段由原来的「阶段一验证 → 阶段二询问 → 阶段三启动」三段收敛为「阶段一验证 → 阶段二审批中 → 阶段三完成通知 → 阶段四最终确认」，删除用户「同意启动」环节（要件齐全即自动启动）。
+- 工具注册：`HtAgentConfig.get_tools()` 移除 `check_approval`，其余 `warn_issue` / `validate_prerequisites` / `get_approval_result` / `get_contract_clause_content` 保留。
+
+测试：`app/tests/features/contract_host_agent/tools/test_ht_tools.py` 新增 8 个用例（导入 / 删除验证 / 成功路径 store 写入 + state 同步 / no_documents / no_requirements / invalid_format / 工具注册收敛）。
+
 

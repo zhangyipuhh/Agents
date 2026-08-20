@@ -7,10 +7,9 @@ HtTools - 合同审批Agent工具模块
 
 工具清单：
 1. warn_issue - 记录审批问题
-2. check_approval - 通知审批智能体开始审批
-3. get_contract_clause_content - 获取合同条款内容
-4. get_approval_result - 获取合同审批结果（重点工具）
-5. validate_prerequisites - 验证前置条件
+2. get_contract_clause_content - 获取合同条款内容
+3. get_approval_result - 获取合同审批结果（重点工具）
+4. validate_prerequisites - 验证前置条件（要件齐全时自动写入审批就绪信号）
 
 Date: 2026-03-17
 Author: 张镒谱
@@ -52,49 +51,6 @@ def warn_issue(issue_description: str, runtime: ToolRuntime) -> Command:
                     content=json.dumps({
                         "status": "warning_recorded",
                         "issue": issue_description
-                    }, ensure_ascii=False),
-                    tool_call_id=runtime.tool_call_id
-                )
-            ]
-        }
-    )
-
-
-@tool
-def check_approval(ischeck: bool, runtime: ToolRuntime) -> Command:
-    """
-    【启动审批流程】通知审批智能体开始审批流程。
-    
-    调用时机：
-    - 用户明确表示"开始审批"、"请审批"、"可以审批了"时
-    - 用户确认"可以"、"是的"、"开始吧"、"准备好了"等同意审批时
-    - 要件验证通过后，用户同意启动审批时
-    
-    Args:
-        ischeck: 审批就绪状态（true=就绪，false=未就绪）
-        runtime: 工具运行时上下文
-    
-    Returns:
-        Command: 包含ToolMessage和状态更新的命令对象
-            - status: "approval_notification_sent" - 通知已发送
-            - is_check: 审批就绪状态
-            - result: "已通知审批智能体"
-    
-    注意：此工具仅发送通知信号，实际审批由审批智能体独立完成。
-    """
-    store_id = runtime.context.get('store_id', 'default')
-    data_session_id = get_data_session_id(runtime)
-    namespace = (store_id,)
-    runtime.store.put(namespace, f"approval/ready/{data_session_id}", ischeck)
-    return Command(
-        update={
-            "is_check": ischeck,
-            "messages": [
-                ToolMessage(
-                    content=json.dumps({
-                        "status": "approval_notification_sent",
-                        "is_check": ischeck,
-                        "result": "已通知审批智能体"
                     }, ensure_ascii=False),
                     tool_call_id=runtime.tool_call_id
                 )
@@ -292,16 +248,16 @@ def get_approval_result(runtime: ToolRuntime) -> Command:
 def validate_prerequisites(runtime: ToolRuntime) -> Command:
     """
     【验证审批要件】获取已上传的审批要件清单，验证是否具备审批条件。
-    
+
     调用时机：
     - 每次执行审批任务时必须首先调用此工具
     - 用户上传文件后，需要验证要件是否齐全时
-    - 在调用 check_approval、get_approval_result、warn_issue 等任何其他审批工具之前，必须先调用本工具并获取其结果
+    - 在调用 get_approval_result、warn_issue 等任何其他审批工具之前，必须先调用本工具并获取其结果
     - 如果本工具尚未被调用，禁止调用任何其他审批工具
-    
+
     Args:
         runtime: 工具运行时上下文
-    
+
     Returns:
         Command: 包含已上传要件清单摘要的命令对象
             - status: 获取状态（success/no_documents/no_requirements/invalid_format/error）
@@ -309,13 +265,17 @@ def validate_prerequisites(runtime: ToolRuntime) -> Command:
             - uploaded_requirements: 已上传的要件类型列表
             - requirement_summary: 各类型要件数量统计
             - approval_ready: 是否具备审批条件（true/false）
+            - approval_signal_written: 是否已写入审批就绪信号（true/false）
             - message: 友好的提示信息
-    
+
     强制要求：
     - 必须同时满足以下两个条件才能审批：
         1. 供地合同已上传
         2. 至少1份参考文件已上传（成交确认书、会议纪要等）
-    
+    - 要件齐全（status=success）时，本工具会自动向 store 写入
+      approval/ready/{session_id}=True 并同步 HtAgentState.is_check=True，
+      无需额外调用任何"启动审批"工具；审批智能体据此开始工作。
+
     重要：这是审批流程的第一步，必须首先调用。
     """
     store_id = runtime.context.get('store_id', 'default')
@@ -395,8 +355,13 @@ def validate_prerequisites(runtime: ToolRuntime) -> Command:
         message_parts = [f"{name}({count}份)" for name, count in requirement_summary.items()]
         message = f"已获取要件清单，已上传: {', '.join(message_parts)}"
 
+        # 要件齐全时，自动向 store 写入审批就绪信号，审批智能体据此开始工作
+        approval_namespace = (store_id,)
+        runtime.store.put(approval_namespace, f"approval/ready/{data_session_id}", True)
+
         return Command(
             update={
+                "is_check": True,
                 "messages": [
                     ToolMessage(
                         content=json.dumps({
@@ -405,6 +370,7 @@ def validate_prerequisites(runtime: ToolRuntime) -> Command:
                             "uploaded_requirements": uploaded_requirements,
                             "requirement_summary": requirement_summary,
                             "approval_ready": True,
+                            "approval_signal_written": True,
                             "message": message
                         }, ensure_ascii=False),
                         tool_call_id=runtime.tool_call_id
