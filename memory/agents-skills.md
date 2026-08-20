@@ -896,6 +896,25 @@ from app.features.contract_host_agent.config.ContractLLMSettings import (
 
 `app/tests/features/contract_host_agent/config/test_contract_llm_settings.py`：18 个用例（P0 导入/存在性 + P1 默认值 + P1 回退策略 + P1 env 解析 + P1 env_prefix 隔离 + P1 路径独立 + P2 形状契约）。
 
+### 合同段 ollama 默认并行与 `file_chunk_read_progress` 写冲突（2026-08-20 落地）
+
+**现象**：合同段 model_name 切到 ollama（如 `CONTRACT_LLM_MODEL_NAME=qwen3-vl:30b`）后，`/api/contract/doc_chat` 偶发 500：`langgraph.errors.InvalidUpdateError: At key 'file_chunk_read_progress': Can receive only one value per step. Use an Annotated key to handle multiple values.`（[LangGraph 错误文档](https://docs.langchain.com/oss/python/langgraph/errors/INVALID_CONCURRENT_GRAPH_UPDATE)）。
+
+**根因**：
+- `AgentState.file_chunk_read_progress: int = 1` 在 LangGraph 默认注册为 `LastValueChannel`，单 superstep 只允许一次写入
+- 多个 BaseTools（`open_file` / `open_file_by_id` / `load_web_page` / `read_cached_chunk`）的 `Command(update={"file_chunk_read_progress": ...})` 会同时尝试写该 channel
+- Ollama 默认行为是 **启用** 并行工具调用（同 superstep 内多个 tool_call 并发执行），与 anthropic / minimax 默认禁用并行不同
+- 全局 `LLM_CONFIG.parallel_tool_calls=none`（`.env:16`）只对未启用合同专属配置的路由生效；`ContractLLMSettings.model_name` 非空时整组/字段级回退策略会让 `parallel_tool_calls` 采用专属值（None 默认 → bind_tools 不传参 → Ollama 服务端默认 true）
+
+**运行时契约**（`.env`）：`.env:139` 显式 `CONTRACT_LLM_PARALLEL_TOOL_CALLS=false`，让 bind_tools 显式传 false 给 Ollama 服务端，关闭单 superstep 多 tool_call 行为，从根上避免对 `file_chunk_read_progress` channel 的并发写入。
+
+**为什么不在 `AgentState` 层加 `Annotated[int, LastValue]` reducer**：
+- LangGraph `LastValue` 仍只接受一次写入，**不会改变「单 superstep 多次写入抛 InvalidUpdateError」的行为**
+- 真正的结构性修复需要收敛写入方（只让 `read_cached_chunk` 一个工具写该字段），改动面较广
+- 当前合同 ollama 用户场景不需要并发调用工具，关闭并行是最小改动方案
+
+**未来若新增 ollama 工具或 LLM 提供方启用并行**：必须复核本节契约，并考虑收敛写入方方案。
+
 ### 合同三智能体 `base_system_prompt` 单空格覆盖
 
 `app/features/contract_host_agent/router/contract_router.py` 中三个工厂函数 `get_ht_agent` / `get_doc_agent` / `get_approval_agent` 显式传 `base_system_prompt=" "`（单空格），覆盖 `app.core.prompts.BASE_SYSTEM_PROMPT` 通用基类规则。单空格触发三元语义「非空字符串覆盖」分支（`agent.py:317-321` 中 `config_base_prompt is None` 判断不命中常走 `else`），但内容仅为空格，LLM 实际看到的 system_prompt 不再含通用基类规则；`agent_specific` / `bootstrap` / `available_skills` 段正常拼接。`HtAgent` / `DocAgent` / `ApprovalAgent` 包装类 `__init__` 早已支持 `base_system_prompt` 形参透传，本轮在 router 层补齐调用，零修改 Agent 类。
