@@ -902,4 +902,16 @@ from app.features.contract_host_agent.config.ContractLLMSettings import (
 
 测试：`app/tests/features/contract_host_agent/test_ht_agent.py::test_ht_agent_constructor_accepts_base_system_prompt_single_space` / `app/tests/features/contract_document_agent/test_doc_agent.py::test_doc_agent_constructor_accepts_base_system_prompt_single_space` / `app/tests/features/contract_approval_agent/test_approval_agent.py::test_approval_agent_constructor_accepts_base_system_prompt_single_space` 三个回归用例验证 `" "` 原样透传到对应 `*Config.base_system_prompt`。
 
+### DocAgent 提示词约束
+
+**位置**：`app/features/contract_document_agent/config/prompts.py::DEFAULT_SYSTEM_PROMPT`
+
+**核心约束**：
+- 必须调用工具：处理文档内容问题前，必须依次调用 `open_file_by_id` / `split_file` / `get_extraction_rule_id` / `get_extraction_rule_detail` / `save_extraction_result`（用户直接提供文本时可跳过文件加载与切分）。
+- 禁止不调用工具直接回答，禁止凭空猜测或编造字段值。
+- `get_extraction_rule_detail` 的 `clause_numbers` 必须从用户问题中识别，禁止传入空列表。
+- 输出必须严格按 `answer_template` 替换 `{value}`，只输出有答案的条款，禁止输出空信息或重复用户输入。
+
+**注册工具**：`DocAgentConfig.get_tools()` 将 4 个 `DocTools`（`split_file`、`get_extraction_rule_id`、`get_extraction_rule_detail`、`save_extraction_result`）与 `BaseTools` 的 `open_file_by_id`、`read_cached_chunk` 一并注册给 DocAgent。
+
 
