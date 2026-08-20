@@ -11,6 +11,14 @@
   - image_paths: 存储图片唯一标识符与 base64 数据的映射，结构为 {image_id: base64_data, ...}
 - 聊天对话服务：与合同审批AI助手进行多轮对话
 
+Token 上下文上限（2026-08-20 硬编码）
+    三个 chat 端点（/chat、/doc_chat、/approval_chat）共享「模型最大上下文 64k」假设，
+    每个 Agent 的 max_tokens / max_tokens_before_summary / max_summary_tokens 三个
+    关键参数在文件顶部以常量形式集中声明，并在 get_ht_agent / get_doc_agent /
+    get_approval_agent 三个延迟初始化函数里显式注入 Agent 构造函数。设计动机：
+    避免走 .env / ContractLLMSettings / 数据库配置中心，降低配置漂移风险；上限值
+    与底层模型能力对齐，释放 64k 上下文窗口的可用空间（默认 20k 过于保守）。
+
 Date: 2026-03-18
 Author: 张镒谱
 """
@@ -40,6 +48,25 @@ from app.features.contract_host_agent.config.ContractLLMSettings import (
 
 store = InMemoryStore()
 store_id = "contract_audit_store"
+
+# === 合同审批三 chat 端点 Token 硬编码上限（2026-08-20 落地） ===
+# 设计依据：模型最大上下文 64k。三个 chat 端点（chat / doc_chat / approval_chat）
+# 各自独立硬编码常量，避免走 .env / 配置中心，降低配置漂移风险。
+# 触发摘要阈值（max_tokens_before_summary）取 max_tokens 的 ~78%，保留 ~14k 余量给
+# 当前轮 system + user + tools 输出，避免触发摘要时恰好超过 64k 触发模型报错；
+# 摘要本身限额（max_summary_tokens）取 4000，与 Agent 类默认值保持一致，避免
+# 摘要本身吃掉过多上下文窗口。
+HT_AGENT_MAX_TOKENS = 64000
+HT_AGENT_MAX_TOKENS_BEFORE_SUMMARY = 50000
+HT_AGENT_MAX_SUMMARY_TOKENS = 4000
+
+DOC_AGENT_MAX_TOKENS = 64000
+DOC_AGENT_MAX_TOKENS_BEFORE_SUMMARY = 50000
+DOC_AGENT_MAX_SUMMARY_TOKENS = 4000
+
+APPROVAL_AGENT_MAX_TOKENS = 64000
+APPROVAL_AGENT_MAX_TOKENS_BEFORE_SUMMARY = 50000
+APPROVAL_AGENT_MAX_SUMMARY_TOKENS = 4000
 
 file_upload_handler = FileUploadHandler()
 router = APIRouter(prefix='/api/contract', tags=['Contract Audit'])
@@ -94,6 +121,9 @@ async def get_ht_agent() -> HtAgent:
             store_id=store_id,
             base_system_prompt=" ",
             enabled_skill_names=[],
+            max_tokens=HT_AGENT_MAX_TOKENS,
+            max_tokens_before_summary=HT_AGENT_MAX_TOKENS_BEFORE_SUMMARY,
+            max_summary_tokens=HT_AGENT_MAX_SUMMARY_TOKENS,
             model_type=contract_llm_config["model_type"],
             model_name=contract_llm_config["model_name"],
             api_key=contract_llm_config["api_key"],
@@ -129,6 +159,9 @@ async def get_doc_agent() -> DocAgent:
             store=store,
             store_id=store_id,
             base_system_prompt=" ",
+            max_tokens=DOC_AGENT_MAX_TOKENS,
+            max_tokens_before_summary=DOC_AGENT_MAX_TOKENS_BEFORE_SUMMARY,
+            max_summary_tokens=DOC_AGENT_MAX_SUMMARY_TOKENS,
             model_type=contract_llm_config["model_type"],
             model_name=contract_llm_config["model_name"],
             api_key=contract_llm_config["api_key"],
@@ -164,6 +197,9 @@ async def get_approval_agent() -> ApprovalAgent:
             store=store,
             store_id=store_id,
             base_system_prompt=" ",
+            max_tokens=APPROVAL_AGENT_MAX_TOKENS,
+            max_tokens_before_summary=APPROVAL_AGENT_MAX_TOKENS_BEFORE_SUMMARY,
+            max_summary_tokens=APPROVAL_AGENT_MAX_SUMMARY_TOKENS,
             model_type=contract_llm_config["model_type"],
             model_name=contract_llm_config["model_name"],
             api_key=contract_llm_config["api_key"],
