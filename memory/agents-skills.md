@@ -829,4 +829,71 @@ Agent 运行时配置加载采用四层进程内缓存架构，由四个独立 s
 | `app/tests/scripts/test_seed_tools_from_source.py` | 13 | 13（新建）|
 | **合计** | **154** | **+1** |
 
+---
+
+## 合同子智能体维度专属 LLM 配置（2026-08-19 新增）
+
+### 设计动机
+
+合同审批子系统（contract_host_agent / contract_document_agent / contract_approval_agent）需要使用独立于全局 `LLM_CONFIG` 的专属模型配置。该配置按"子智能体维度隔离"原则放在合同 host 智能体的 `config/` 目录下，**不抽象到 `app/core/config/`**；当前仅一个 features 有此需求，未来若有第二个 features 需要专属 LLM 配置，再考虑上移。
+
+### `ContractLLMSettings` 配置类
+
+**位置**：`app/features/contract_host_agent/config/ContractLLMSettings.py`
+
+**职责**：从环境变量加载合同子智能体专属 LLM 配置（env 前缀 `CONTRACT_LLM_`）；通过 `get_config()` 返回带回退策略的扁平字典，供三个 Agent 工厂在构造时使用。
+
+**字段**（9 项，与全局 `LLMSettings` 一一对应）：
+
+| 字段 | 默认值 | env 名 |
+|---|---|---|
+| `model_type` | `""` | `CONTRACT_LLM_MODEL_TYPE` |
+| `model_name` | `""` | `CONTRACT_LLM_MODEL_NAME`（关键开关：非空时启用专属配置） |
+| `model_api_key` | `""` | `CONTRACT_LLM_MODEL_API_KEY` |
+| `model_api_base` | `""` | `CONTRACT_LLM_MODEL_API_BASE` |
+| `model_temperature` | `0.0` | `CONTRACT_LLM_MODEL_TEMPERATURE` |
+| `is_multimodal` | `False` | `CONTRACT_LLM_IS_MULTIMODAL` |
+| `parallel_tool_calls` | `None` | `CONTRACT_LLM_PARALLEL_TOOL_CALLS` |
+| `ollama_reasoning` | `True` | `CONTRACT_LLM_OLLAMA_REASONING` |
+| `ollama_timeout` | `120` | `CONTRACT_LLM_OLLAMA_TIMEOUT` |
+
+**关键约束**：
+- `env_prefix="CONTRACT_LLM_"`
+- `env_file` 路径独立推导：`Path(__file__).resolve().parents[4] / ".env"`，不引用 `app/core/config/settings.py::_ENV_FILE_PATH`
+- `field_validator`（`parse_bool / parse_parallel_tool_calls`）完全内联到本文件，不 import 任何核心代码
+
+### 回退策略（双层）
+
+`ContractLLMSettings.get_config()` 方法：
+- `model_name` 为空或仅空白 → **整组回退** `dict(LLM_CONFIG)`（向后兼容，默认行为）
+- `model_name` 非空且非纯空白 → **字段级回退**：凭据类（`model_type / api_key / base_url`）空字段回退 `LLM_CONFIG`，非空字段独立生效；行为类（`temperature / is_multimodal / parallel_tool_calls / ollama_reasoning / ollama_timeout`）不参与回退，直接采用 contract 专属值
+
+### 路由层注入
+
+**位置**：`app/features/contract_host_agent/router/contract_router.py`
+
+模块顶部新增 import 与实例化：
+```python
+from app.features.contract_host_agent.config.ContractLLMSettings import (
+    contract_llm_settings,
+    contract_llm_config,
+)
+```
+
+三个工厂函数 `get_ht_agent()` / `get_doc_agent()` / `get_approval_agent()` 在创建 Agent 实例时统一注入 5 个 model 参数（`model_type / model_name / api_key / base_url / temperature`）。
+
+### Agent 类改造
+
+- `HtAgent.__init__` 新增 5 个 model 参数（2026-08-19）
+- `ApprovalAgent.__init__` 新增 5 个 model 参数（2026-08-19）
+- `DocAgent.__init__` 此前已支持 5 个 model 参数，本次零修改
+
+### 严格边界（硬约束）
+
+本次改造 **完全在合同 features 三个目录内闭环**：`app/features/contract_host_agent/` + `app/features/contract_document_agent/` + `app/features/contract_approval_agent/`。`app/core/**` / `app/shared/**` / `app/routers/**` / `app/main.py` 全部零修改。
+
+### 测试覆盖
+
+`app/tests/features/contract_host_agent/config/test_contract_llm_settings.py`：18 个用例（P0 导入/存在性 + P1 默认值 + P1 回退策略 + P1 env 解析 + P1 env_prefix 隔离 + P1 路径独立 + P2 形状契约）。
+
 

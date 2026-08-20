@@ -32,6 +32,10 @@ from app.features.contract_document_agent.DocAgent import DocAgent
 from app.features.contract_approval_agent.ApprovalAgent import ApprovalAgent
 from app.core.concurrency import chat_concurrency_dependency
 from app.shared.utils.memory import get_async_checkpointer
+from app.features.contract_host_agent.config.ContractLLMSettings import (
+    contract_llm_settings,
+    contract_llm_config,
+)
 
 
 store = InMemoryStore()
@@ -71,6 +75,9 @@ async def get_ht_agent() -> HtAgent:
     知识库 skill（合同审批业务不需要）。详见 plan：
     ``.trae/documents/contract_host_agent_skill_loading.md``。
 
+    2026-08-19 新增：注入合同专属 LLM 配置（contract_llm_config），与全局 LLM_CONFIG 解耦。
+    缺失字段由 ContractLLMSettings.get_config() 自动回退全局。
+
     Returns:
         HtAgent: 初始化完成的 HtAgent 实例
     """
@@ -82,6 +89,11 @@ async def get_ht_agent() -> HtAgent:
             store=store,
             store_id=store_id,
             enabled_skill_names=[],
+            model_type=contract_llm_config["model_type"],
+            model_name=contract_llm_config["model_name"],
+            api_key=contract_llm_config["api_key"],
+            base_url=contract_llm_config["base_url"],
+            temperature=contract_llm_config["temperature"],
         )
     return _ht_agent
 
@@ -93,6 +105,9 @@ async def get_doc_agent() -> DocAgent:
     使用延迟初始化模式，确保在第一次请求时才创建 DocAgent 实例，
     这样可以正确获取异步初始化的 checkpointer。
 
+    2026-08-19 新增：注入合同专属 LLM 配置（contract_llm_config），与全局 LLM_CONFIG 解耦。
+    缺失字段由 ContractLLMSettings.get_config() 自动回退全局。
+
     Returns:
         DocAgent: 初始化完成的 DocAgent 实例
     """
@@ -103,6 +118,11 @@ async def get_doc_agent() -> DocAgent:
             checkpointer=checkpointer,
             store=store,
             store_id=store_id,
+            model_type=contract_llm_config["model_type"],
+            model_name=contract_llm_config["model_name"],
+            api_key=contract_llm_config["api_key"],
+            base_url=contract_llm_config["base_url"],
+            temperature=contract_llm_config["temperature"],
         )
     return _doc_agent
 
@@ -117,6 +137,9 @@ async def get_approval_agent() -> ApprovalAgent:
     2026-08-19：显式传 base_system_prompt="" 跳过 app.core.prompts.BASE_SYSTEM_PROMPT，
     ApprovalAgent 自带 DEFAULT_SYSTEM_PROMPT 已足够约束角色风格。
 
+    2026-08-19 新增：注入合同专属 LLM 配置（contract_llm_config），与全局 LLM_CONFIG 解耦。
+    缺失字段由 ContractLLMSettings.get_config() 自动回退全局。
+
     Returns:
         ApprovalAgent: 初始化完成的 ApprovalAgent 实例
     """
@@ -128,6 +151,11 @@ async def get_approval_agent() -> ApprovalAgent:
             store=store,
             store_id=store_id,
             base_system_prompt=" ",
+            model_type=contract_llm_config["model_type"],
+            model_name=contract_llm_config["model_name"],
+            api_key=contract_llm_config["api_key"],
+            base_url=contract_llm_config["base_url"],
+            temperature=contract_llm_config["temperature"],
         )
     return _approval_agent
 
