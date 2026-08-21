@@ -627,6 +627,15 @@ return data/upload/yyyy/mm/dd/{session_id}/
   - HSTS `max-age=31536000; includeSubDomains`（`always` 标记）
 - **Windows 差异（与 Docker 版 nginx.conf）**：移除 `resolver 127.0.0.11`（Docker DNS）；`root` 改用正斜杠绝对路径 `E:/laboratory/AI/Agents/feature-agent-core-ref/web/Agent/dist`（零拷贝，前端重新构建立即生效）；`ssl_certificate` 改用正斜杠绝对路径。
 - **`web/Agent/nginx.conf` 保持 HTTPS**（Docker 版 2026-08-12 起启用 TLS，listen 80 ssl + 复用 mkcert 证书 + 等保三级 HSTS/ACAO，与本地版同步），但禁缓存 / CSP / SPA 路由等通用块两版保持同步。
+- **2026-08-21 双入口改造（HTTPS / HTTP 并存）**：
+  - **`web/Agent/nginx.conf`** HTTPS server 块 `listen 80 ssl` → `listen 443 ssl`；文件末尾新增独立 80 端口 HTTP server 块（纯 HTTP，不发任何 `add_header`）
+  - **`docker-compose.yml`** `web-agent.ports` 由 `"9001:80"` 改为 `"9000:443"` + `"9001:80"`
+  - **对外入口**：`https://localhost:9000/`（HTTPS，安全入口）+ `http://localhost:9001/`（HTTP，调试 fallback）
+  - **HTTP 入口省略安全头（HSTS / ACAO / CSP / X-Frame-Options / X-Content-Type-Options / Referrer-Policy）**：HTTP 上下文下浏览器对这些头行为不一致（Mixed Content / 升级策略 / crossorigin module ACAO），下发反而引入新问题；HTTP 入口仅复用 HTTPS 块的 SPA fallback（`/`、`/knowledge`、`/ops-console`、`/portal`、`/login`）+ `/api` 代理 + `/health`
+  - **HTTP 入口不部署 HTML 禁缓存 / 静态资源 1y 缓存 `location` 块**：HTTPS 块这两个 `add_header` 强约束（必须整块重复安全头）会带来重复维护成本；HTTP 入口用户场景为调试，默认缓存即可；如未来需要，复制 HTTPS 块那两个 location 即可
+  - **不互跳转**：HTTP 入口不会自动 301 到 HTTPS；HTTPS 入口也不会回退 HTTP。如未来需强制 HTTPS，可把 HTTP 块首行改为 `return 301 https://$host:9000$request_uri;`
+  - **`web/Agent/Dockerfile` 不变**：`envsubst '${VITE_API_TARGET}' < default.conf.template > default.conf` 仅替换环境变量，对新增 443/80 双 listen 无影响
+  - **`.env` / `.env.example` 不变**：`VITE_API_TARGET=http://preview-app:8001` 同时被两 server 块的 `/api` `proxy_pass` 引用
 
 ### 启动 / 停止 / 验证
 
