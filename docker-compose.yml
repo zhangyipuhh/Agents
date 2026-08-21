@@ -8,7 +8,7 @@ services:
     container_name: dev-app
     restart: always
     ports:
-      - "8002:8001"
+      - "8001:8001"
     environment:
       PYTHONUNBUFFERED: 1
       PYTHONPATH: /app
@@ -43,15 +43,17 @@ services:
     build:
       context: ./web/Agent
       dockerfile: Dockerfile
-    image: web-agent/v1.0
-    container_name: dev-web
+    image: web-agent/v2.0
+    container_name: preview-web
     restart: always
     ports:
-      # 2026-08-12 HTTPS 改造:9001:80 不变(端口号保留),但容器内 80 端口已 SSL 独占
-      # 浏览器访问入口:https://localhost:9000/(原 http://localhost:9000/ 不再可用)
-      - "9000:80"
+      # 2026-08-21 双入口改造:HTTPS / HTTP 并存
+      # - 9000:443 → https://localhost:9000/  (容器内 listen 443 ssl,等保三级安全加固)
+      # - 9001:80  → http://localhost:9001/   (容器内 listen 80,纯 HTTP,与 HTTPS 块不互跳转)
+      - "9000:443"
+      - "9001:80"
     environment:
-      - VITE_API_TARGET=${VITE_API_TARGET:-http://dev-app:8002}
+      - VITE_API_TARGET=${VITE_API_TARGET:-http://preview-app:8001}
     volumes:
       # ===== 2026-08-12 新增:复用本地 mkcert 证书,容器内启用 HTTPS =====
       # 前提:宿主机已执行 .\nginx\mkcert.exe -install(一次性)
