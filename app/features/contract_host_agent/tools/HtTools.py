@@ -187,6 +187,7 @@ def get_approval_result(runtime: ToolRuntime) -> Command:
                 * 风险点列表
                 * 修改建议
                 * 审批结论
+            - 调用方在收到本工具返回后，必须在最终回复中完整展示 `approval_result` 的所有条目，禁止省略、折叠或以摘要代替。
     
     重要：这是获取审批结论的核心工具，当用户要求查看审批结果时必须调用此工具。
     """

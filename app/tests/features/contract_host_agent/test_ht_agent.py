@@ -373,3 +373,33 @@ def test_ht_agent_constructor_accepts_parallel_tool_calls():
     assert captured["config"].parallel_tool_calls is True, (
         "HtAgent 必须把 parallel_tool_calls=True 原样透传到 HtAgentConfig.parallel_tool_calls"
     )
+
+
+def test_prompt_requires_full_approval_result_display():
+    """
+    测试合同审批主智能体提示词要求完整展示审批结果。
+
+    背景：用户反馈 get_approval_result 返回 30 条明细时，模型回复会出现省略或折叠。
+    本用例作为防回归：DEFAULT_SYSTEM_PROMPT 必须包含“完整展示”“禁止省略/折叠”等约束。
+    """
+    from app.features.contract_host_agent.config import prompts
+
+    prompt = prompts.DEFAULT_SYSTEM_PROMPT
+    assert "必须完整展示" in prompt
+    assert "禁止" in prompt
+    assert "省略" in prompt or "折叠" in prompt
+    assert "有几条就展示几条" in prompt
+    assert "30 条必须展示 30 行" in prompt
+
+
+def test_get_approval_result_doc_requires_full_display():
+    """
+    测试 get_approval_result 工具描述包含完整展示约束。
+
+    目的：工具 schema 中的描述也会进入模型上下文，形成对“禁止省略/折叠”的二次提醒。
+    """
+    from app.features.contract_host_agent.tools.HtTools import get_approval_result
+
+    doc = get_approval_result.__doc__ or ""
+    assert "完整展示" in doc
+    assert "禁止省略" in doc or "禁止" in doc and "折叠" in doc
