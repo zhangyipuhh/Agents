@@ -281,11 +281,16 @@ def test_as_runnable_returns_runnable(fake_service, stub_bootstrap, stub_skills_
 # =============================================================================
 
 
-def test_build_default_uses_service_all_when_enabled_skill_names_none(
+def test_build_default_uses_empty_skills_when_enabled_skill_names_none(
     fake_service, stub_bootstrap, stub_skills_block
 ):
     """
-    enabled_skill_names 为 None（默认值）时，build() 应调用 self._service.all() 获取 skill。
+    enabled_skill_names 为 None（默认值）时，build() 必须**不加载**任何 skill。
+
+    2026-08-19 改语义：原"None → service.all() 加载全部"违反"未绑定 = 不绑定"
+    契约；改为"None → 空列表"。所有走 SkillsAwarePrompt 的入口必须显式传
+    enabled_skill_names 才能拿到 skill，否则 LLM 系统提示词不含 <available_skills>
+    段（由 render_available_skills_block([]) → "No skills are currently available."）。
 
     Args:
         fake_service: 伪造的 SkillsService 实例。
@@ -295,13 +300,14 @@ def test_build_default_uses_service_all_when_enabled_skill_names_none(
     Returns:
         None
     """
+    # 即使 fake_service.all() 假装有 skill，build() 也**不应**调用它
     fake_service.all.return_value = [
         SkillInfo(
-            name="data-skill",
-            description="a data skill",
-            location="/tmp/data/SKILL.md",
+            name="leaked-skill",
+            description="如果 build() 调了 .all() 就会泄露到 prompt",
+            location="/tmp/leaked/SKILL.md",
             content="body",
-            base_dir="/tmp/data",
+            base_dir="/tmp/leaked",
         )
     ]
 
@@ -312,10 +318,62 @@ def test_build_default_uses_service_all_when_enabled_skill_names_none(
     )
     result = prompt.build()
 
-    fake_service.all.assert_called_once_with()
+    # 关键反向断言：None 时不能调 service.all()，也不能以 None 作为 filter 调 available()
+    fake_service.all.assert_not_called()
     fake_service.available.assert_not_called()
     assert "BASE_PART" in result
     assert "AGENT_PART" in result
+    # leaked-skill 不应出现在 prompt（防 service.all() 被误调回归）
+    assert "leaked-skill" not in result
+
+
+def test_build_default_none_and_empty_list_both_yield_empty_skills_block(
+    fake_service, stub_bootstrap, stub_skills_block
+):
+    """
+    enabled_skill_names=None 与 [] 必须产生完全相同的 skills 块（都为空）。
+
+    防回归：未来若有人把 None → all() 改回去，本用例直接挂。
+
+    Args:
+        fake_service: 伪造的 SkillsService 实例。
+        stub_bootstrap: bootstrap 渲染存根 fixture。
+        stub_skills_block: skills 块渲染存根 fixture。
+
+    Returns:
+        None
+    """
+    fake_service.available.return_value = []
+    fake_service.all.return_value = [
+        SkillInfo(
+            name="leaked-skill",
+            description="如果 build() 调了 .all() 就会泄露到 prompt",
+            location="/x",
+            content="",
+            base_dir="/x",
+        )
+    ]
+
+    prompt_none = SkillsAwarePrompt(
+        base="B",
+        agent_specific="A",
+        enabled_skill_names=None,
+    )
+    prompt_empty = SkillsAwarePrompt(
+        base="B",
+        agent_specific="A",
+        enabled_skill_names=[],
+    )
+
+    r_none = prompt_none.build()
+    r_empty = prompt_empty.build()
+
+    # None 路径不该调 service.all()，更不该让 leaked-skill 出现
+    fake_service.all.assert_not_called()
+    assert "leaked-skill" not in r_none
+    assert "leaked-skill" not in r_empty
+    # None 与 [] 必须产生完全相同的 skills 段
+    assert r_none == r_empty
 
 
 def test_build_with_empty_enabled_skill_names_uses_available_with_empty_filter(

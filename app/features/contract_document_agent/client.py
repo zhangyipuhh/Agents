@@ -158,6 +158,9 @@ class DocClient:
                 checkpointer=self.checkpointer,
                 store=self.store,
                 store_id=self.store_id,
+                # 2026-08-20 新增：client.py 走 Ollama，关闭并行工具调用避免
+                # LangGraph 多 tool 并行写 file_chunk_read_progress 触发 InvalidUpdateError。
+                parallel_tool_calls=False,
             )
             logger.info("DocAgent 初始化完成")
         return self.doc_agent

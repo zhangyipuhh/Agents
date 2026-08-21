@@ -191,6 +191,78 @@ DB `skills.location` / `skills.base_dir` 字段存储**相对项目根的 POSIX 
 └─────────────────────────────────────────────┘
 ```
 
+### `BASE_SYSTEM_PROMPT` 可选跳过（2026-08-19 新增）
+
+`AgentConfig` 新增 `base_system_prompt: Optional[str] = field(default=None)` 字段，让上层可控制 base 段：
+- `None`（默认，向后兼容）→ 使用常量 `BASE_SYSTEM_PROMPT`
+- `""`（显式空串）→ 跳过 base 段；`SkillsAwarePrompt.build()` 的 `"\n\n".join(p for p in parts if p)` 自动过滤空串，整段 `BASE_SYSTEM_PROMPT` 不参与拼接
+- 非空字符串 → 完全覆盖常量内容（按 Agent 维度定制通用规则）
+
+`Agent._llm_call` 通过 `getattr(self._config, "base_system_prompt", None)` 读取，None 时回退到常量；显式空串/非空时直接透传给 `SkillsAwarePrompt(base=...)`。
+
+**用法**：子智能体已有完整 `system_prompt`（如 HtAgent/DocAgent/ApprovalAgent）又不需要通用基类规则时，在 `AgentConfig(..., base_system_prompt="")` 即可关闭。
+
+#### 包装类透传（2026-08-19 落地）
+
+`HtAgent` / `DocAgent` / `ApprovalAgent` 三个包装类的 `__init__` 已透传 `base_system_prompt: Optional[str] = None`：
+- 默认 `None` → 行为完全向后兼容（沿用 `AgentConfig.base_system_prompt` 默认值，最终走常量 `BASE_SYSTEM_PROMPT`）
+- 显式 `""` → 跳过 base 段
+- 非空字符串 → 按 Agent 维度覆盖
+
+`_ensure_agent` 构造 `*AgentConfig(...)` 时追加 `base_system_prompt=self.base_system_prompt` 键值，确保包装类字段与底层 config 同步。
+
+`DocClient._ensure_agent()` / `contract_router.get_*_agent()` 当前都不传 `base_system_prompt`，行为不变；需要在某个 agent 上跳过 BASE_SYSTEM_PROMPT 的调用方显式传入即可。
+
+#### 路由层默认跳过（2026-08-19 落地）
+
+[contract_router.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/features/contract_host_agent/router/contract_router.py) 中三个延迟初始化工厂 `get_ht_agent()` / `get_doc_agent()` / `get_approval_agent()` 已显式传 `base_system_prompt=""`：
+
+- `/api/contract/chat` → HtAgent 跳过 BASE_SYSTEM_PROMPT
+- `/api/contract/doc_chat` → DocAgent 跳过 BASE_SYSTEM_PROMPT
+- `/api/contract/approval_chat` → ApprovalAgent 跳过 BASE_SYSTEM_PROMPT
+
+理由：合同领域子智能体均有完整的 `DEFAULT_SYSTEM_PROMPT`（角色定义、回复风格、禁用术语、与通用基类的"keep responses short / 4 lines / ask_user_question 约束"有冲突），通用基类规则会污染特定场景。`DocClient` 命令行测试入口仍保留旧行为（默认 None → 用 BASE_SYSTEM_PROMPT），供调试用。
+
+#### `enabled_skill_names` 包装类透传（2026-08-19 落地）
+
+`HtAgent` 包装类的 `__init__` 已透传 `enabled_skill_names: Optional[List[str]] = None`：
+
+- 默认 `None` → 沿用 `AgentConfig.enabled_skill_names` 缺省值，`SkillsAwarePrompt` 走 `service.all()` 加载全部已注册 skill（向后兼容）
+- 显式 `[]` → 空过滤，`available_skills` 段为空
+- 非空列表 → 仅展示白名单内的 skill（前提是它们在 DB skills 表已注册且 `enabled=True`）
+
+`_ensure_agent` 构造 `HtAgentConfig(...)` 时追加 `enabled_skill_names=self.enabled_skill_names` 键值，确保包装类字段与底层 config 同步。
+
+#### 路由层默认关闭 skill 注入（2026-08-19 落地）
+
+`contract_router.py::get_ht_agent()` 实例化 `HtAgent(...)` 时显式传 `enabled_skill_names=[]`，关闭 contract_host_agent 的 skill 注入：
+
+- 根因：特性专属路由 `/api/contract/chat` 不经过 `AgentConfigService.build_agent_instance()`，原本 `enabled_skill_names` 默认 `None` 被 `SkillsAwarePrompt` 解读为「不过滤」，导致 LLM 系统提示词 `<available_skills>` 段列出 DB `skills` 表里**全部 11 条**已启用 skill（项目文档套件 / hgsc / knowledge_ydt 等），与 contract_host_agent 业务无关，容易诱导模型误调用 `load_skill`
+- 修复：在路由层显式传 `[]`，让 `<available_skills>` 段对 LLM 不可见，引导模型使用 `explore` / `sandbox` 等通用工具即可
+- `get_doc_agent()` / `get_approval_agent()` **未做**对应修改（DocAgent / ApprovalAgent 包装类暂未透传 `enabled_skill_names`，仍按缺省走 `service.all()`；如需同步关闭，由后续 PR 处理）
+
+#### contract_host_agent skill 注入方案 A 落地（2026-08-19）
+
+`HtAgent` 包装类与 `contract_router.get_ht_agent()` 配套修改落地后，`/api/contract/chat` 路径上 `<available_skills>` 段最终为空（或 "No skills are currently available."）。修复计划与候选方案见 [`.trae/documents/contract_host_agent_skill_loading.md`](../.trae/documents/contract_host_agent_skill_loading.md)。
+
+### `SkillsAwarePrompt` 改语义：None → 不加载（2026-08-19 落地）
+
+`SkillsAwarePrompt.build()` 对 `enabled_skill_names` 的解读：
+
+- **None（默认）** → `skills = []`，**不加载**任何 skill（2026-08-19 改语义，原"None → `service.all()` 加载全部"已废弃）。原因：未配置 = 不绑定符合"最小权限"原则，避免特性专属路由绕过 `AgentConfigService` 后 LLM 误加载 skills 表全部条目
+- `[]` → `available(name_filter=[])` 过滤为空
+- 非空列表 → `available(name_filter=...)` 过滤
+
+`SkillsService.available(name_filter=None)` 语义保留（→ 全部），与本改动解耦。
+
+**影响面**：
+
+- 走 `AgentConfigService` / `Knowledge_router` 的链路（`map_agent` / `knowledge_ydt` / `project`）行为不变，因为 `UnifiedAgentConfig.enabled_skill_names` 始终是 list（默认 `[]`），从不传 None
+- 裸用 `SkillsAwarePrompt(base, agent_specific, enabled_skill_names=None)` 的代码现在必须显式传 list 才会加载 skill
+- `contract_router.get_ht_agent()` 上一轮已传 `[]`，本轮不重复改
+
+**测试**：`app/tests/core/skills/test_message_transformer.py::test_build_default_uses_empty_skills_when_enabled_skill_names_none`（改）+ `test_build_default_none_and_empty_list_both_yield_empty_skills_block`（新增，反向锁定 None == []）。
+
 ### Bootstrap 优先级链（4 级）
 
 1. **子智能体** `app/features/<agent>/config/bootstrap.md`（最高）
@@ -756,5 +828,128 @@ Agent 运行时配置加载采用四层进程内缓存架构，由四个独立 s
 | `app/tests/routers/test_skill_admin_router.py` | 1 | 1（新建，模块可导入）|
 | `app/tests/scripts/test_seed_tools_from_source.py` | 13 | 13（新建）|
 | **合计** | **154** | **+1** |
+
+---
+
+## 合同子智能体维度专属 LLM 配置（2026-08-19 新增）
+
+### 设计动机
+
+合同审批子系统（contract_host_agent / contract_document_agent / contract_approval_agent）需要使用独立于全局 `LLM_CONFIG` 的专属模型配置。该配置按"子智能体维度隔离"原则放在合同 host 智能体的 `config/` 目录下，**不抽象到 `app/core/config/`**；当前仅一个 features 有此需求，未来若有第二个 features 需要专属 LLM 配置，再考虑上移。
+
+### `ContractLLMSettings` 配置类
+
+**位置**：`app/features/contract_host_agent/config/ContractLLMSettings.py`
+
+**职责**：从环境变量加载合同子智能体专属 LLM 配置（env 前缀 `CONTRACT_LLM_`）；通过 `get_config()` 返回带回退策略的扁平字典，供三个 Agent 工厂在构造时使用。
+
+**字段**（9 项，与全局 `LLMSettings` 一一对应）：
+
+| 字段 | 默认值 | env 名 |
+|---|---|---|
+| `model_type` | `""` | `CONTRACT_LLM_MODEL_TYPE` |
+| `model_name` | `""` | `CONTRACT_LLM_MODEL_NAME`（关键开关：非空时启用专属配置） |
+| `model_api_key` | `""` | `CONTRACT_LLM_MODEL_API_KEY` |
+| `model_api_base` | `""` | `CONTRACT_LLM_MODEL_API_BASE` |
+| `model_temperature` | `0.0` | `CONTRACT_LLM_MODEL_TEMPERATURE` |
+| `is_multimodal` | `False` | `CONTRACT_LLM_IS_MULTIMODAL` |
+| `parallel_tool_calls` | `None` | `CONTRACT_LLM_PARALLEL_TOOL_CALLS` |
+| `ollama_reasoning` | `True` | `CONTRACT_LLM_OLLAMA_REASONING` |
+| `ollama_timeout` | `120` | `CONTRACT_LLM_OLLAMA_TIMEOUT` |
+
+**关键约束**：
+- `env_prefix="CONTRACT_LLM_"`
+- `env_file` 路径独立推导：`Path(__file__).resolve().parents[4] / ".env"`，不引用 `app/core/config/settings.py::_ENV_FILE_PATH`
+- `field_validator`（`parse_bool / parse_parallel_tool_calls`）完全内联到本文件，不 import 任何核心代码
+
+### 回退策略（双层）
+
+`ContractLLMSettings.get_config()` 方法：
+- `model_name` 为空或仅空白 → **整组回退** `dict(LLM_CONFIG)`（向后兼容，默认行为）
+- `model_name` 非空且非纯空白 → **字段级回退**：凭据类（`model_type / api_key / base_url`）空字段回退 `LLM_CONFIG`，非空字段独立生效；行为类（`temperature / is_multimodal / parallel_tool_calls / ollama_reasoning / ollama_timeout`）不参与回退，直接采用 contract 专属值
+
+### 路由层注入
+
+**位置**：`app/features/contract_host_agent/router/contract_router.py`
+
+模块顶部新增 import 与实例化：
+```python
+from app.features.contract_host_agent.config.ContractLLMSettings import (
+    contract_llm_settings,
+    contract_llm_config,
+)
+```
+
+三个工厂函数 `get_ht_agent()` / `get_doc_agent()` / `get_approval_agent()` 在创建 Agent 实例时统一注入 5 个 model 参数（`model_type / model_name / api_key / base_url / temperature`）。
+
+### Agent 类改造
+
+- `HtAgent.__init__` 新增 5 个 model 参数（2026-08-19）
+- `ApprovalAgent.__init__` 新增 5 个 model 参数（2026-08-19）
+- `DocAgent.__init__` 此前已支持 5 个 model 参数，本次零修改
+
+### 严格边界（硬约束）
+
+本次改造 **完全在合同 features 三个目录内闭环**：`app/features/contract_host_agent/` + `app/features/contract_document_agent/` + `app/features/contract_approval_agent/`。`app/core/**` / `app/shared/**` / `app/routers/**` / `app/main.py` 全部零修改。
+
+### 测试覆盖
+
+`app/tests/features/contract_host_agent/config/test_contract_llm_settings.py`：18 个用例（P0 导入/存在性 + P1 默认值 + P1 回退策略 + P1 env 解析 + P1 env_prefix 隔离 + P1 路径独立 + P2 形状契约）。
+
+### 合同段 ollama 默认并行与 `file_chunk_read_progress` 写冲突（2026-08-20 落地）
+
+**现象**：合同段 model_name 切到 ollama（如 `CONTRACT_LLM_MODEL_NAME=qwen3-vl:30b`）后，`/api/contract/doc_chat` 偶发 500：`langgraph.errors.InvalidUpdateError: At key 'file_chunk_read_progress': Can receive only one value per step. Use an Annotated key to handle multiple values.`（[LangGraph 错误文档](https://docs.langchain.com/oss/python/langgraph/errors/INVALID_CONCURRENT_GRAPH_UPDATE)）。
+
+**根因**：
+- `AgentState.file_chunk_read_progress: int = 1` 在 LangGraph 默认注册为 `LastValueChannel`，单 superstep 只允许一次写入
+- 多个 BaseTools（`open_file` / `open_file_by_id` / `load_web_page` / `read_cached_chunk`）的 `Command(update={"file_chunk_read_progress": ...})` 会同时尝试写该 channel
+- Ollama 默认行为是 **启用** 并行工具调用（同 superstep 内多个 tool_call 并发执行），与 anthropic / minimax 默认禁用并行不同
+- 全局 `LLM_CONFIG.parallel_tool_calls=none`（`.env:16`）只对未启用合同专属配置的路由生效；`ContractLLMSettings.model_name` 非空时整组/字段级回退策略会让 `parallel_tool_calls` 采用专属值（None 默认 → bind_tools 不传参 → Ollama 服务端默认 true）
+
+**运行时契约**（`.env` + 代码透传链路，2026-08-20 完整闭环）：`.env:139` 显式 `CONTRACT_LLM_PARALLEL_TOOL_CALLS=false`，让 `ContractLLMSettings.parallel_tool_calls` 解析为 `False`，`get_config()["parallel_tool_calls"]=False`。然后通过三段透传到 `bind_tools`：
+
+1. `AgentConfig` 基类新增 `parallel_tool_calls: Optional[bool] = None` 字段（`app/core/agent/AgentConfig.py`），三元语义 None=走全局兜底 / True=显式启用并行 / False=显式关闭并行
+2. 三个合同 Agent 包装类 `HtAgent/DocAgent/ApprovalAgent.__init__` 加 `parallel_tool_calls: Optional[bool] = None` 形参，存为 `self.parallel_tool_calls`，`_ensure_agent` 构造 `*Config(...)` 时透传
+3. `Agent.__ainit__::bind_kwargs` 优先级改为：`config.parallel_tool_calls` > 全局 `LLM_CONFIG["parallel_tool_calls"]`，None 时回退全局；**仅当 `model_type != "ollama"` 时才传**该字段（ollama-python AsyncClient.chat 不接受 parallel_tool_calls kwarg，传了会 TypeError）
+4. `contract_router.py` 三个工厂（`get_ht_agent / get_doc_agent / get_approval_agent`）显式 `parallel_tool_calls=contract_llm_config["parallel_tool_calls"]` 注入
+5. `contract_document_agent/client.py` DocAgent 实例化硬编码 `parallel_tool_calls=False`（client 走 ollama，同方向硬编码更直接）
+
+`AgentConfig.parallel_tool_calls=None`（默认）→ 走全局 `LLM_CONFIG`，对其它模块（Tagent / ProjectAgent 等）完全向后兼容。
+
+**注意 Ollama 客户端的特殊性**：ollama-python `AsyncClient.chat()` 不接受 `parallel_tool_calls` kwarg；即便 ollama 服务端不"显式启用"并行，**它在单次响应里仍可能输出多个 tool_call**，导致 LangGraph 同 superstep 内多个 ToolNode 写同一个 state 字段（如 `file_chunk_read_progress`）触发 `InvalidUpdateError`。
+
+**结构性修复（2026-08-20 真正生效）**：`app/core/tools/BaseTools.py` 的 `open_file` / `open_file_by_id` / `load_web_page` 三个工具**不再写 `file_chunk_read_progress`**，该字段由 `read_cached_chunk` 独占维护（表示"下次从哪块开始读"）。这样即便 ollama 在同一 superstep 并行调用 `open_file_by_id` + `read_cached_chunk` 也不会冲突。三个 open_* 工具本来就是「加载+缓存」语义，与顺序读进度无关。
+
+**未来若新增 ollama 工具**：必须复核是否在 Command.update 里写 LastValue channel 字段，避免重蹈覆辙。
+
+### 合同三智能体 `base_system_prompt` 单空格覆盖
+
+`app/features/contract_host_agent/router/contract_router.py` 中三个工厂函数 `get_ht_agent` / `get_doc_agent` / `get_approval_agent` 显式传 `base_system_prompt=" "`（单空格），覆盖 `app.core.prompts.BASE_SYSTEM_PROMPT` 通用基类规则。单空格触发三元语义「非空字符串覆盖」分支（`agent.py:317-321` 中 `config_base_prompt is None` 判断不命中常走 `else`），但内容仅为空格，LLM 实际看到的 system_prompt 不再含通用基类规则；`agent_specific` / `bootstrap` / `available_skills` 段正常拼接。`HtAgent` / `DocAgent` / `ApprovalAgent` 包装类 `__init__` 早已支持 `base_system_prompt` 形参透传，本轮在 router 层补齐调用，零修改 Agent 类。
+
+测试：`app/tests/features/contract_host_agent/test_ht_agent.py::test_ht_agent_constructor_accepts_base_system_prompt_single_space` / `app/tests/features/contract_document_agent/test_doc_agent.py::test_doc_agent_constructor_accepts_base_system_prompt_single_space` / `app/tests/features/contract_approval_agent/test_approval_agent.py::test_approval_agent_constructor_accepts_base_system_prompt_single_space` 三个回归用例验证 `" "` 原样透传到对应 `*Config.base_system_prompt`。
+
+### DocAgent 提示词约束
+
+**位置**：`app/features/contract_document_agent/config/prompts.py::DEFAULT_SYSTEM_PROMPT`
+
+**核心约束**：
+- 必须调用工具：处理文档内容问题前，必须依次调用 `open_file_by_id` / `split_file` / `get_extraction_rule_id` / `get_extraction_rule_detail` / `save_extraction_result`（用户直接提供文本时可跳过文件加载与切分）。
+- 禁止不调用工具直接回答，禁止凭空猜测或编造字段值。
+- `get_extraction_rule_detail` 的 `clause_numbers` 必须从用户问题中识别，禁止传入空列表。
+- 输出必须严格按 `answer_template` 替换 `{value}`，只输出有答案的条款，禁止输出空信息或重复用户输入。
+
+**注册工具**：`DocAgentConfig.get_tools()` 将 4 个 `DocTools`（`split_file`、`get_extraction_rule_id`、`get_extraction_rule_detail`、`save_extraction_result`）与 `BaseTools` 的 `open_file_by_id`、`read_cached_chunk` 一并注册给 DocAgent。
+
+### HtTools `check_approval` 合并入 `validate_prerequisites`
+
+`app/features/contract_host_agent/tools/HtTools.py` 中 `check_approval` 工具已彻底删除，原「向 store 写入 `approval/ready/{sid}=ischeck`」副作用并入 `validate_prerequisites` 的 `status=success` 路径：
+
+- 触发条件：`validate_prerequisites` 读取 `approval/prereq/{sid}` 后，统计出至少一份要件时即视为审批就绪，自动 `runtime.store.put((store_id,), "approval/ready/{sid}", True)` 并在 `Command.update` 中同步写入 `HtAgentState.is_check=True`。
+- 其余 status（`no_documents` / `no_requirements` / `invalid_format` / `error`）不写 store，与原 `check_approval(ischeck=False)` 语义对齐（要件不全视为未就绪）。
+- 返回体新增 `approval_signal_written: true` 字段，方便审计与回归测试断言。
+- 工作流合并：合同主办 Agent 的 `prompts.py` 工作阶段由原来的「阶段一验证 → 阶段二询问 → 阶段三启动」三段收敛为「阶段一验证 → 阶段二审批中 → 阶段三完成通知 → 阶段四最终确认」，删除用户「同意启动」环节（要件齐全即自动启动）。
+- 工具注册：`HtAgentConfig.get_tools()` 移除 `check_approval`，其余 `warn_issue` / `validate_prerequisites` / `get_approval_result` / `get_contract_clause_content` 保留。
+
+测试：`app/tests/features/contract_host_agent/tools/test_ht_tools.py` 新增 8 个用例（导入 / 删除验证 / 成功路径 store 写入 + state 同步 / no_documents / no_requirements / invalid_format / 工具注册收敛）。
 
 

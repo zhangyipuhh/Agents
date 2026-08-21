@@ -127,6 +127,20 @@ class AgentConfig:
     
     temperature: float = field(default=0)
     """模型温度参数，控制生成多样性。取值范围 0-1，越高越随机，默认 0"""
+
+    parallel_tool_calls: Optional[bool] = field(default=None)
+    """bind_tools 时是否传 parallel_tool_calls 参数（2026-08-20 新增）。
+
+    三元语义（与 ContractLLMSettings._parse_parallel_tool_calls 一致）：
+    - None（默认）：从全局 LLM_CONFIG.parallel_tool_calls 读取，向后兼容；
+      全局也是 None 时 bind_tools 不传该字段，行为由 LLM 服务端默认决定
+    - True：bind_tools 显式传 True，强制 LLM 启用并行工具调用
+    - False：bind_tools 显式传 False，强制 LLM 关闭并行工具调用
+      （用于 Ollama 等默认启用并行的服务端，避免多 tool 并行写
+      file_chunk_read_progress 触发 LangGraph InvalidUpdateError）
+
+    优先级（Agent.__ainit__）：本字段 > 全局 LLM_CONFIG.parallel_tool_calls。
+    子智能体可通过该字段独立控制 bind_tools 行为，不受全局 .env:16 影响。"""
     
     api_key: Optional[str] = field(default=LLM_CONFIG["api_key"])
     """API 密钥，用于访问远程模型服务。如果为 None，则使用环境变量或本地模型"""
@@ -199,6 +213,18 @@ class AgentConfig:
     system_prompt: Optional[str] = field(default=None)
     """系统提示词，用于设置 AI 的行为角色、性格和约束条件，默认 None"""
 
+    base_system_prompt: Optional[str] = field(default=None)
+    """基类系统提示词（覆盖 app.core.prompts.BASE_SYSTEM_PROMPT）。
+
+    拼接顺序（SkillsAwarePrompt.build）：base → agent_specific → bootstrap → available_skills。
+    - 默认 None：使用常量 BASE_SYSTEM_PROMPT（保持向后兼容）。
+    - 显式传空串 ""：跳过 base 段，整段 BASE_SYSTEM_PROMPT 不参与拼接，
+      仅保留 agent_specific / bootstrap / available_skills。
+    - 传非空字符串：完全覆盖常量内容（用于按 Agent 维度定制通用规则）。
+
+    用途：子智能体已有专属 system_prompt 又不需要通用基类规则时，可在 AgentConfig
+    初始化处通过 ``base_system_prompt=""`` 关闭，避免通用基类规则污染特定场景。"""
+
     name: Optional[str] = field(default=None)
     """Agent 注册名（2026-06-21 新增，与 app/features/<dir>/ 目录名一致）。
 
@@ -244,7 +270,12 @@ class AgentConfig:
 
     由 AgentConfigService 从 agents.skill_bindings 解析并注入，
     供 SkillsAwarePrompt 在构造 system prompt 时过滤可用 skill。
-    None 表示未指定（向后兼容），此时 SkillsAwarePrompt 回退到加载全部 skill。
+    三元语义（2026-08-19 改 None 默认解读）：
+    - None：未指定，对应"未绑定 = 不绑定"契约，SkillsAwarePrompt 不加载任何 skill
+      （原"None → 加载全部"语义已废弃，避免特性专属路由绕过 AgentConfigService
+      后 LLM 误加载 skills 表全部条目）
+    - []：显式空列表，SkillsAwarePrompt 走 available(name_filter=[]) 过滤为空
+    - 非空列表：仅加载白名单内的 skill（前提是它们在 DB skills 表已注册且 enabled=True）
     """
 
     tools: Optional[List[Any]] = field(default=None)

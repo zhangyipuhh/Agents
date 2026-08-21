@@ -43,6 +43,7 @@ class DocAgent:
         store: BaseStore,
         store_id: Optional[str] = None,
         system_prompt: Optional[str] = None,
+        base_system_prompt: Optional[str] = None,
         max_tokens: int = 20000,
         max_tokens_before_summary: int = 16000,
         max_summary_tokens: int = 4000,
@@ -51,15 +52,22 @@ class DocAgent:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         temperature: float = 0,
+        parallel_tool_calls: Optional[bool] = None,
     ):
         """
         初始化 DocAgent 实例
-        
+
         Args:
             checkpointer: LangGraph 检查点保存器，用于持久化会话状态
             store: LangGraph 内存存储器，用于存储上下文信息
             store_id: 存储ID，用于区分不同用户的数据存储
             system_prompt: 自定义系统提示词，默认使用文档处理专用提示词
+            base_system_prompt:
+                可选基类系统提示词，覆盖 app.core.prompts.BASE_SYSTEM_PROMPT。
+                详见 AgentConfig.base_system_prompt。三元语义：
+                - None（默认）：使用常量 BASE_SYSTEM_PROMPT（向后兼容）
+                - ""：跳过 base 段，整段 BASE_SYSTEM_PROMPT 不参与拼接
+                - 非空字符串：按 Agent 维度完全覆盖常量内容
             max_tokens: 最大 token 数，默认 20000
             max_tokens_before_summary: 触发摘要的 token 阈值，默认 16000
             max_summary_tokens: 摘要最大 token 数，默认 4000
@@ -68,11 +76,16 @@ class DocAgent:
             api_key: API 密钥，用于访问远程模型服务，默认使用配置文件的值
             base_url: API 基础 URL，指定模型服务的地址，默认使用配置文件的值
             temperature: 模型温度参数，控制生成多样性，取值范围 0-1，默认 0
+            parallel_tool_calls: 是否启用并行工具调用（2026-08-20 新增），透传给 AgentConfig.parallel_tool_calls；
+                三元语义 None/True/False 详见 AgentConfig.parallel_tool_calls 字段 docstring。
+                合同场景下通常从 ContractLLMSettings.get_config()['parallel_tool_calls'] 传入，
+                关闭 Ollama 默认并行避免 LangGraph 多 tool 并行写 file_chunk_read_progress 触发 InvalidUpdateError。
         """
         self.checkpointer = checkpointer
-        self.store = store        
-        self.store_id = store_id        
+        self.store = store
+        self.store_id = store_id
         self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
+        self.base_system_prompt = base_system_prompt
         self.max_tokens = max_tokens
         self.max_tokens_before_summary = max_tokens_before_summary
         self.max_summary_tokens = max_summary_tokens
@@ -81,17 +94,19 @@ class DocAgent:
         self.api_key = api_key
         self.base_url = base_url
         self.temperature = temperature
+        self.parallel_tool_calls = parallel_tool_calls
         self._agent = None
 
     async def _ensure_agent(self):
         """确保 agent 已初始化"""
         if self._agent is None:
-            
+
             config = DocAgentConfig(
                 max_tokens=self.max_tokens,
                 max_tokens_before_summary=self.max_tokens_before_summary,
                 max_summary_tokens=self.max_summary_tokens,
                 system_prompt=self.system_prompt,
+                base_system_prompt=self.base_system_prompt,
                 checkpointer=self.checkpointer,
                 store=self.store,
                 model_type=self.model_type,
@@ -99,6 +114,7 @@ class DocAgent:
                 api_key=self.api_key,
                 base_url=self.base_url,
                 temperature=self.temperature,
+                parallel_tool_calls=self.parallel_tool_calls,
             )
             self._agent = await get_agent(config)
         return self._agent

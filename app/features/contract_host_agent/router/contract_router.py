@@ -11,6 +11,14 @@
   - image_paths: 存储图片唯一标识符与 base64 数据的映射，结构为 {image_id: base64_data, ...}
 - 聊天对话服务：与合同审批AI助手进行多轮对话
 
+Token 上下文上限（2026-08-20 硬编码）
+    三个 chat 端点（/chat、/doc_chat、/approval_chat）共享「模型最大上下文 64k」假设，
+    每个 Agent 的 max_tokens / max_tokens_before_summary / max_summary_tokens 三个
+    关键参数在文件顶部以常量形式集中声明，并在 get_ht_agent / get_doc_agent /
+    get_approval_agent 三个延迟初始化函数里显式注入 Agent 构造函数。设计动机：
+    避免走 .env / ContractLLMSettings / 数据库配置中心，降低配置漂移风险；上限值
+    与底层模型能力对齐，释放 64k 上下文窗口的可用空间（默认 20k 过于保守）。
+
 Date: 2026-03-18
 Author: 张镒谱
 """
@@ -32,10 +40,33 @@ from app.features.contract_document_agent.DocAgent import DocAgent
 from app.features.contract_approval_agent.ApprovalAgent import ApprovalAgent
 from app.core.concurrency import chat_concurrency_dependency
 from app.shared.utils.memory import get_async_checkpointer
+from app.features.contract_host_agent.config.ContractLLMSettings import (
+    contract_llm_settings,
+    contract_llm_config,
+)
 
 
 store = InMemoryStore()
 store_id = "contract_audit_store"
+
+# === 合同审批三 chat 端点 Token 硬编码上限（2026-08-20 落地） ===
+# 设计依据：模型最大上下文 64k。三个 chat 端点（chat / doc_chat / approval_chat）
+# 各自独立硬编码常量，避免走 .env / 配置中心，降低配置漂移风险。
+# 触发摘要阈值（max_tokens_before_summary）取 max_tokens 的 ~78%，保留 ~14k 余量给
+# 当前轮 system + user + tools 输出，避免触发摘要时恰好超过 64k 触发模型报错；
+# 摘要本身限额（max_summary_tokens）取 4000，与 Agent 类默认值保持一致，避免
+# 摘要本身吃掉过多上下文窗口。
+HT_AGENT_MAX_TOKENS = 64000
+HT_AGENT_MAX_TOKENS_BEFORE_SUMMARY = 50000
+HT_AGENT_MAX_SUMMARY_TOKENS = 4000
+
+DOC_AGENT_MAX_TOKENS = 64000
+DOC_AGENT_MAX_TOKENS_BEFORE_SUMMARY = 50000
+DOC_AGENT_MAX_SUMMARY_TOKENS = 4000
+
+APPROVAL_AGENT_MAX_TOKENS = 64000
+APPROVAL_AGENT_MAX_TOKENS_BEFORE_SUMMARY = 50000
+APPROVAL_AGENT_MAX_SUMMARY_TOKENS = 4000
 
 file_upload_handler = FileUploadHandler()
 router = APIRouter(prefix='/api/contract', tags=['Contract Audit'])
@@ -67,6 +98,17 @@ async def get_ht_agent() -> HtAgent:
     使用延迟初始化模式，确保在第一次请求时才创建 HtAgent 实例，
     这样可以正确获取异步初始化的 checkpointer。
 
+    关键：传 ``enabled_skill_names=[]``，避免 LLM 在合同审批场景误加载项目文档 / 地图 /
+    知识库 skill（合同审批业务不需要）。详见 plan：
+    ``.trae/documents/contract_host_agent_skill_loading.md``。
+
+    显式传 base_system_prompt=" "（单空格）触发三元语义「非空字符串覆盖」分支，
+    实际效果等同跳过 app.core.prompts.BASE_SYSTEM_PROMPT 通用基类规则，
+    避免通用基类规则污染合同审批业务专用场景。
+
+    注入合同专属 LLM 配置（contract_llm_config），与全局 LLM_CONFIG 解耦。
+    缺失字段由 ContractLLMSettings.get_config() 自动回退全局。
+
     Returns:
         HtAgent: 初始化完成的 HtAgent 实例
     """
@@ -77,6 +119,17 @@ async def get_ht_agent() -> HtAgent:
             checkpointer=checkpointer,
             store=store,
             store_id=store_id,
+            base_system_prompt=" ",
+            enabled_skill_names=[],
+            max_tokens=HT_AGENT_MAX_TOKENS,
+            max_tokens_before_summary=HT_AGENT_MAX_TOKENS_BEFORE_SUMMARY,
+            max_summary_tokens=HT_AGENT_MAX_SUMMARY_TOKENS,
+            model_type=contract_llm_config["model_type"],
+            model_name=contract_llm_config["model_name"],
+            api_key=contract_llm_config["api_key"],
+            base_url=contract_llm_config["base_url"],
+            temperature=contract_llm_config["temperature"],
+            parallel_tool_calls=contract_llm_config["parallel_tool_calls"],
         )
     return _ht_agent
 
@@ -88,6 +141,13 @@ async def get_doc_agent() -> DocAgent:
     使用延迟初始化模式，确保在第一次请求时才创建 DocAgent 实例，
     这样可以正确获取异步初始化的 checkpointer。
 
+    显式传 base_system_prompt=" "（单空格）触发三元语义「非空字符串覆盖」分支，
+    实际效果等同跳过 app.core.prompts.BASE_SYSTEM_PROMPT 通用基类规则，
+    避免通用基类规则污染合同审批业务专用场景。
+
+    注入合同专属 LLM 配置（contract_llm_config），与全局 LLM_CONFIG 解耦。
+    缺失字段由 ContractLLMSettings.get_config() 自动回退全局。
+
     Returns:
         DocAgent: 初始化完成的 DocAgent 实例
     """
@@ -98,6 +158,16 @@ async def get_doc_agent() -> DocAgent:
             checkpointer=checkpointer,
             store=store,
             store_id=store_id,
+            base_system_prompt=" ",
+            max_tokens=DOC_AGENT_MAX_TOKENS,
+            max_tokens_before_summary=DOC_AGENT_MAX_TOKENS_BEFORE_SUMMARY,
+            max_summary_tokens=DOC_AGENT_MAX_SUMMARY_TOKENS,
+            model_type=contract_llm_config["model_type"],
+            model_name=contract_llm_config["model_name"],
+            api_key=contract_llm_config["api_key"],
+            base_url=contract_llm_config["base_url"],
+            temperature=contract_llm_config["temperature"],
+            parallel_tool_calls=contract_llm_config["parallel_tool_calls"],
         )
     return _doc_agent
 
@@ -109,6 +179,13 @@ async def get_approval_agent() -> ApprovalAgent:
     使用延迟初始化模式，确保在第一次请求时才创建 ApprovalAgent 实例，
     这样可以正确获取异步初始化的 checkpointer。
 
+    显式传 base_system_prompt=" "（单空格）触发三元语义「非空字符串覆盖」分支，
+    实际效果等同跳过 app.core.prompts.BASE_SYSTEM_PROMPT 通用基类规则，
+    避免污染 ApprovalAgent 自带 DEFAULT_SYSTEM_PROMPT 已约束的角色风格。
+
+    注入合同专属 LLM 配置（contract_llm_config），与全局 LLM_CONFIG 解耦。
+    缺失字段由 ContractLLMSettings.get_config() 自动回退全局。
+
     Returns:
         ApprovalAgent: 初始化完成的 ApprovalAgent 实例
     """
@@ -119,6 +196,16 @@ async def get_approval_agent() -> ApprovalAgent:
             checkpointer=checkpointer,
             store=store,
             store_id=store_id,
+            base_system_prompt=" ",
+            max_tokens=APPROVAL_AGENT_MAX_TOKENS,
+            max_tokens_before_summary=APPROVAL_AGENT_MAX_TOKENS_BEFORE_SUMMARY,
+            max_summary_tokens=APPROVAL_AGENT_MAX_SUMMARY_TOKENS,
+            model_type=contract_llm_config["model_type"],
+            model_name=contract_llm_config["model_name"],
+            api_key=contract_llm_config["api_key"],
+            base_url=contract_llm_config["base_url"],
+            temperature=contract_llm_config["temperature"],
+            parallel_tool_calls=contract_llm_config["parallel_tool_calls"],
         )
     return _approval_agent
 
@@ -497,6 +584,3 @@ async def download_contract(
         logger.error(f"[ERROR] download_contract 异常: {e}")
         logger.error(f"[ERROR] 异常堆栈: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"下载合同失败：{str(e)}")
-
-
-
