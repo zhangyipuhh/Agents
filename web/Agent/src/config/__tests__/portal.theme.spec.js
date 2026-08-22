@@ -235,18 +235,12 @@ describe('config/portal.js 主题解析', () => {
       loginThemes: {},
       navItems: []
     }
-    globalThis.fetch = vi.fn(() => Promise.resolve({
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.resolve({
       ok: true,
       json: () => Promise.resolve(jsonData)
     }))
 
     await portal.loadAppConfig()
-
-    // DEBUG
-    console.log('DEBUG brandTitle=', portal.appConfig.brandTitle)
-    console.log('DEBUG brandDesc=', portal.appConfig.brandDesc)
-    console.log('DEBUG loginThemes.default.brandTitle=', portal.appConfig.loginThemes.default.brandTitle)
-    console.log('DEBUG fetch.mock.calls.length=', globalThis.fetch.mock && globalThis.fetch.mock.calls && globalThis.fetch.mock.calls.length)
 
     // 顶层 brandTitle/brandDesc 被 JSON 接管（2026-08-21 反转后无条件接管）
     expect(portal.appConfig.brandTitle).toBe('JSON-Wins-Now')
