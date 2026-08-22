@@ -2,6 +2,7 @@
   "_comment": "门户前端运行时配置文件，部署时可将此文件复制为 app-config.json 并修改",
   "_theme_comment": "loginThemes 为主题表，URL 用 ?theme=<key> 选择；缺省或非法时回退 default。",
   "_precedence_comment": "JS DEFAULT_LOGIN_THEME 全局优先（2026-08-20 契约）：顶层 brandTitle/brandDesc 与 loginThemes.default.* 字段最终以 src/config/portal.js 的 DEFAULT_LOGIN_THEME 字面量为准。本文件中与 JS 同名的 default 主题字段仅作为冗余/参考，运行时不会覆盖 JS（即使改了也不会生效）；loginThemes 里除 default 之外的主题 key（xemployee 等）仍由本文件全权控制。",
+  "_portal_redirect_comment": "portal 入口重定向权威（2026-08-21 契约）：当访问 /login?redirect=%2Fportal 时，若 URL 上没有 ?theme=<合法主题>，portal.js 会清空 localStorage 'login_theme' 并丢弃本文件中除 default 之外的主题 key，强制 DEFAULT_LOGIN_THEME 为唯一权威。URL ?theme=YDT 始终保留为最高优先级，不受此规则影响。",
   "brandTitle": "沈阳市自然资源和规划\"一点通\"",
   "brandDesc": "智慧政务服务平台",
   "loginThemes": {

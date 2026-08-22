@@ -16,7 +16,7 @@ import { createApp, h, ref } from 'vue'
 import './styles/main.css'
 import LoginView from './views/LoginView.vue'
 import RegisterView from './views/RegisterView.vue'
-import { loadAppConfig, appConfig, resolveThemeFromUrl } from './config/portal.js'
+import { loadAppConfig, appConfig, resolveThemeFromUrl, enforceJsAuthoritativeForPortal } from './config/portal.js'
 import { safeRedirectUrl } from './utils/auth.js'
 import { appendQueryParam } from './utils/url.js'
 
@@ -80,6 +80,8 @@ function hasQueryParam(url, key) {
 async function bootstrap() {
   await loadAppConfig()
   resolveThemeFromUrl()
+  // 当 redirect=/portal 且 URL 上无 ?theme= 时，让 JS DEFAULT_LOGIN_THEME 成为唯一权威
+  enforceJsAuthoritativeForPortal()
   const theme = appConfig.loginThemes[appConfig.currentThemeKey]
   if (theme && theme.brandTitle) {
     document.title = theme.brandTitle

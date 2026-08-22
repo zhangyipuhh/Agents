@@ -572,6 +572,23 @@
 - **对运维的副作用**：修改 JSON 中与 JS 同名的 default 主题字段**不再生效**（top-level brandTitle/brandDesc / `loginThemes.default.*` 字段都是）；用户若需 JSON 接管某个字段，需要把 JS `DEFAULT_LOGIN_THEME` 对应字段置空字符串占位。`public/app-config.json.example` 顶部 `_precedence_comment` 已声明此约束。
 - **测试**：`web/Agent/src/config/__tests__/portal.theme.spec.js` 15 用例覆盖「JS 优先 / JSON 接管 / YDT 等非 default 主题不受影响 / 大小写 key / 删除主题回退 default」。
 
+### portal 入口重定向权威「redirect=/portal 强制 JS 接管（保留 URL ?theme=）」（2026-08-21 补充）
+
+为解决"从 `/portal` 被踢回登录页时 localStorage `login_theme=YDT` 劫持 portal 主题"问题，新增模块级 `enforceJsAuthoritativeForPortal()`（位于 `web/Agent/src/config/portal.js`）。
+
+- **触发条件**：`window.location.search` 上的 `redirect` 参数解码后 pathname 为 `/portal` 或以 `/portal/` 开头（同源约束：绝对 URL 必须 `origin === window.location.origin`）。辅助函数 `isPortalRedirect()` 内部判断，未 export。
+- **行为优先级**：调用方必须按 `loadAppConfig()` → `resolveThemeFromUrl()` → `enforceJsAuthoritativeForPortal()` 三步顺序执行；后两者不可调换。
+- **执行逻辑**（仅当 URL `?theme=` **没有指定合法主题**时才进入）：
+  1. 丢弃 `appConfig.loginThemes` 中所有非 default key（保留 default 主题对象，因为 PortalApp 顶部导航依赖 `appConfig.brandTitle`）
+  2. 清空 `localStorage` 的 `LS_LOGIN_THEME_KEY`（`login_theme`）
+  3. `appConfig.currentThemeKey` 强制设为 `'default'`
+  4. 调 `syncBrandFields()`，把 brandTitle/brandDesc 同步为 JS 默认
+- **关键约束（用户诉求）**：URL `?theme=YDT` **优先级最高**，`enforceJsAuthoritativeForPortal()` 检测到合法 URL 主题时**早退不覆盖**；portal 入口仍可被 URL 临时切到 YDT 演示。
+- **非 portal redirect（`/Agent/`、`/knowledge` 等）的行为**：`isPortalRedirect()` 返回 false，函数完全早退，原 `URL > localStorage > default` 三层优先级 100% 保留。
+- **接入点**：`web/Agent/src/login-main.js::bootstrap` 与 `web/Agent/src/portal-main.js::bootstrap` 在 `resolveThemeFromUrl()` 之后**显式调用**一次；portal 直访时 redirect 通常为空，函数立即早退不生效（保留对称性）。
+- **测试**：`web/Agent/src/config/__tests__/portal.theme.spec.js` 新增 4 个用例：「portal redirect 且 URL 无 theme 时 JS 接管（丢弃 JSON + 清空 localStorage）」、「portal redirect 但 URL `?theme=YDT` 仍胜出（核心回归用例）」、「非 portal redirect 行为不变（JSON 全权）」、「portal redirect + 非法 URL theme 时 JS 接管」；总计 19 用例全绿。
+- **文档**：`public/app-config.json.example` 顶部新增 `_portal_redirect_comment` 字段声明此契约。
+
 ### 设计系统（src/styles/variables.css）
 
 - **颜色 token**：`--color-bg-{primary,secondary,tertiary,hover,active}`、`--color-border`、`--color-border-light`、`--color-text-{primary,secondary,muted,inverse}`、`--color-accent` / `-hover` / `-light`、`--color-{success,warning,error,info}`

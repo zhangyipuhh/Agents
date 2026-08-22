@@ -1,7 +1,7 @@
 import { createApp } from 'vue'
 import './styles/main.css'
 import PortalApp from './PortalApp.vue'
-import { loadAppConfig, appConfig, resolveThemeFromUrl } from './config/portal.js'
+import { loadAppConfig, appConfig, resolveThemeFromUrl, enforceJsAuthoritativeForPortal } from './config/portal.js'
 
 /**
  * 启动门户应用
@@ -14,6 +14,8 @@ import { loadAppConfig, appConfig, resolveThemeFromUrl } from './config/portal.j
 async function bootstrap() {
   await loadAppConfig()
   resolveThemeFromUrl()
+  // portal 直访时 redirect 通常为空 → 函数早退不生效；保留对称性以备未来场景
+  enforceJsAuthoritativeForPortal()
   if (appConfig.brandTitle) {
     document.title = appConfig.brandTitle
   }

@@ -17,7 +17,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 
 // 在 import portal.js 之前 stub window，避免 happy-dom 默认值影响测试
 const windowMock = {
-  location: { search: '' },
+  location: { search: '', origin: 'http://localhost' },
   localStorage: (() => {
     const store = new Map()
     return {
@@ -357,5 +357,131 @@ describe('config/portal.js 主题解析', () => {
     // 「JS DEFAULT_LOGIN_THEME 全局优先」(2026-08-20)：
     // 即使 JSON default 主题 brandTitle='Default'，只要 JS 已声明 → appConfig.brandTitle 仍为 JS 字面量
     expect(portal.appConfig.brandTitle).toBe(portal.DEFAULT_LOGIN_THEME.brandTitle)
+  })
+
+  // ===== 2026-08-21 新增：redirect=/portal 强制 JS 接管（保留 URL ?theme=）=====
+
+  it('test_portal_redirect_enforces_js_authoritative_when_no_url_theme redirect=/portal 且 URL 无 theme 时 JS 接管', async () => {
+    // 用户从 /portal 被踢回登录页，浏览器残留 localStorage login_theme=YDT
+    // 应丢弃 JSON 的非 default 主题、清空 localStorage、强制 default
+    windowMock.location.search = '?redirect=%2Fportal'
+    windowMock.localStorage.setItem('login_theme', 'YDT')
+
+    const jsonData = {
+      brandTitle: 'Should-Be-Ignored',
+      brandDesc: 'Should-Be-Ignored',
+      loginThemes: {
+        default: { brandTitle: 'Should-Be-Ignored', brandDesc: '', loginTitle: 'ignored', loginSubtitle: '', registerSubtitle: '', footerText: '', footerLink: '', copyright: '' },
+        YDT: { brandTitle: 'YDT', brandDesc: 'YDT desc', loginTitle: '', loginSubtitle: '', registerSubtitle: '', footerText: '', footerLink: '', copyright: '' },
+        shenyang: { brandTitle: '沈阳', brandDesc: '', loginTitle: '', loginSubtitle: '', registerSubtitle: '', footerText: '', footerLink: '', copyright: '' }
+      },
+      navItems: []
+    }
+    globalThis.fetch = vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve(jsonData) }))
+
+    const portal = await import('../portal.js')
+    await portal.loadAppConfig()
+    portal.resolveThemeFromUrl()
+    portal.enforceJsAuthoritativeForPortal()
+
+    // 强制 default
+    expect(portal.appConfig.currentThemeKey).toBe('default')
+    // 非 default 主题被丢弃
+    expect(portal.appConfig.loginThemes.YDT).toBeUndefined()
+    expect(portal.appConfig.loginThemes.shenyang).toBeUndefined()
+    // default 主题保留（PortalApp 顶部导航依赖 brandTitle）
+    expect(portal.appConfig.loginThemes.default).toBeTruthy()
+    // localStorage 被清空
+    expect(windowMock.localStorage.getItem('login_theme')).toBeNull()
+    // brandTitle 为 JS 默认
+    expect(portal.appConfig.brandTitle).toBe(portal.DEFAULT_LOGIN_THEME.brandTitle)
+  })
+
+  it('test_portal_redirect_preserves_url_theme URL ?theme=YDT 优先于 JS 接管（核心回归用例）', async () => {
+    // 用户反馈（2026-08-21）：之前的实现把 URL ?theme= 也吃掉了，需要保证 URL 仍胜出
+    windowMock.location.search = '?redirect=%2Fportal&theme=YDT'
+    windowMock.localStorage.setItem('login_theme', 'YDT')
+
+    const jsonData = {
+      brandTitle: 'Should-Be-Ignored',
+      brandDesc: '',
+      loginThemes: {
+        default: { brandTitle: 'Should-Be-Ignored', brandDesc: '', loginTitle: '', loginSubtitle: '', registerSubtitle: '', footerText: '', footerLink: '', copyright: '' },
+        YDT: { brandTitle: 'YDT', brandDesc: 'YDT desc', loginTitle: '', loginSubtitle: '', registerSubtitle: '', footerText: '', footerLink: '', copyright: '' }
+      },
+      navItems: []
+    }
+    globalThis.fetch = vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve(jsonData) }))
+
+    const portal = await import('../portal.js')
+    await portal.loadAppConfig()
+    portal.resolveThemeFromUrl()
+    portal.enforceJsAuthoritativeForPortal()
+
+    // URL ?theme=YDT 胜出：currentThemeKey 必须是 YDT，不被强制回 default
+    expect(portal.appConfig.currentThemeKey).toBe('YDT')
+    // YDT 主题保留
+    expect(portal.appConfig.loginThemes.YDT).toBeTruthy()
+    expect(portal.appConfig.loginThemes.YDT.brandTitle).toBe('YDT')
+    // brandTitle 是 YDT 文案
+    expect(portal.appConfig.brandTitle).toBe('YDT')
+  })
+
+  it('test_non_portal_redirect_keeps_json_full_control 非 portal redirect 时 JSON 完全控制', async () => {
+    // 场景：redirect=/Agent/ 时新函数必须早退，行为完全不变
+    windowMock.location.search = '?redirect=%2FAgent%2F'
+    windowMock.localStorage.setItem('login_theme', 'YDT')
+
+    const jsonData = {
+      brandTitle: '',
+      brandDesc: '',
+      loginThemes: {
+        default: { brandTitle: 'JS-Default', brandDesc: '', loginTitle: '', loginSubtitle: '', registerSubtitle: '', footerText: '', footerLink: '', copyright: '' },
+        YDT: { brandTitle: 'YDT', brandDesc: 'YDT desc', loginTitle: '', loginSubtitle: '', registerSubtitle: '', footerText: '', footerLink: '', copyright: '' }
+      },
+      navItems: []
+    }
+    globalThis.fetch = vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve(jsonData) }))
+
+    const portal = await import('../portal.js')
+    await portal.loadAppConfig()
+    portal.resolveThemeFromUrl()
+    portal.enforceJsAuthoritativeForPortal()
+
+    // localStorage 仍生效 → YDT
+    expect(portal.appConfig.currentThemeKey).toBe('YDT')
+    // YDT 主题保留（JSON 未被丢弃）
+    expect(portal.appConfig.loginThemes.YDT).toBeTruthy()
+    // localStorage 未被清空（非 portal redirect）
+    expect(windowMock.localStorage.getItem('login_theme')).toBe('YDT')
+  })
+
+  it('test_portal_redirect_invalid_url_theme_fallsback_to_js_url_theme 非法值不构成合法主题，应被接管', async () => {
+    // URL ?theme=NOT-EXIST 不在白名单 → resolveThemeFromUrl 会忽略，
+    // 此后 enforceJsAuthoritativeForPortal 应正常接管
+    windowMock.location.search = '?redirect=%2Fportal&theme=NOT-EXIST'
+    windowMock.localStorage.setItem('login_theme', 'YDT')
+
+    const jsonData = {
+      brandTitle: '',
+      brandDesc: '',
+      loginThemes: {
+        default: { brandTitle: 'JS-Default', brandDesc: '', loginTitle: '', loginSubtitle: '', registerSubtitle: '', footerText: '', footerLink: '', copyright: '' },
+        YDT: { brandTitle: 'YDT', brandDesc: '', loginTitle: '', loginSubtitle: '', registerSubtitle: '', footerText: '', footerLink: '', copyright: '' }
+      },
+      navItems: []
+    }
+    globalThis.fetch = vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve(jsonData) }))
+
+    const portal = await import('../portal.js')
+    await portal.loadAppConfig()
+    portal.resolveThemeFromUrl()
+    // URL theme=NOT-EXIST 不在白名单 → resolveThemeFromUrl 走 localStorage=YDT
+    expect(portal.appConfig.currentThemeKey).toBe('YDT')
+    portal.enforceJsAuthoritativeForPortal()
+
+    // URL theme 非法 → 不构成"URL 指定合法主题"条件 → JS 应接管
+    expect(portal.appConfig.currentThemeKey).toBe('default')
+    expect(portal.appConfig.loginThemes.YDT).toBeUndefined()
   })
 })

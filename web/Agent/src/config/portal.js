@@ -9,12 +9,16 @@ import { reactive } from 'vue'
  * - 解析失败或缺省时回退到内置默认值
  * - 提供登录主题（loginThemes）切换机制：URL ?theme=<key> > localStorage 'login_theme' > 内置 default
  *
- * 优先级契约（2026-08-20 升级）：
+ * 优先级契约（2026-08-20 升级，2026-08-21 补充）：
  * - DEFAULT_LOGIN_THEME 中「JS 显式声明的非空字段」对 JSON 同名字段形成硬覆盖
  *   (判定：typeof DEFAULT_LOGIN_THEME[k] === 'string' && DEFAULT_LOGIN_THEME[k].trim() !== '')
  * - JSON 顶层 brandTitle/brandDesc 仅在 JS 未声明时写入；loginThemes.default.* 同理
  * - loginThemes 里「非 default」的主题（如 xemployee / YDT）由 JSON 全权控制，JS 不参与
  * - 用户未来将 JS 默认改成空字符串占位时，可重新交由 JSON 兜底（不需要再改 portal.js）
+ * - redirect=/portal 且 URL 上无 ?theme= 时（2026-08-21）：
+ *   JS DEFAULT_LOGIN_THEME 取代 localStorage 与 JSON：丢弃 loginThemes 非 default key，
+ *   清空 localStorage 'login_theme'，并把 currentThemeKey 强制设为 default。
+ *   URL `?theme=` 始终保留为最高优先级——portal 入口仍可被 URL 临时切到 YDT 演示。
  *
  * 配置字段：
  * - brandTitle: string         品牌主标题（与 loginThemes.default.brandTitle 同步；以 JS 默认值优先）
@@ -240,6 +244,84 @@ export function setLoginTheme(key) {
   }
   syncBrandFields()
   return true
+}
+
+/**
+ * portal 入口标识：路径前缀。
+ * 当 redirect 解码后 pathname 以此字符串开头时，视为进入 portal 入口。
+ */
+const PORTAL_PATH_PREFIX = '/portal'
+
+/**
+ * 从原始 redirect 字符串判断是否指向 portal 入口（同源约束）。
+ *
+ * 判定规则：
+ * - 字符串解码后用 URL 解析（相对路径视为同源）；
+ * - pathname 必须以 '/portal' 开头（含 '/portal' 与 '/portal/' 与 '/portal/sub'）；
+ * - 绝对 URL 必须与当前 origin 匹配，避免被外部 host 上的 /portal 误判为 portal redirect。
+ *
+ * @param {string} redirectRaw - URLSearchParams.get('redirect') 的原始值
+ * @returns {boolean}
+ */
+function isPortalRedirect(redirectRaw) {
+  if (typeof redirectRaw !== 'string' || !redirectRaw.trim()) return false
+  try {
+    const u = new URL(redirectRaw, window.location.origin)
+    if (u.origin !== window.location.origin) return false
+    return u.pathname === '/portal' || u.pathname.startsWith('/portal/')
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 当 redirect 指向 portal 入口时，让 JS DEFAULT_LOGIN_THEME 成为唯一权威（2026-08-21）。
+ *
+ * 行为：
+ * 1. 调用方必须**先**执行 `resolveThemeFromUrl()`，保留 URL `?theme=` 优先级；
+ *    本函数只接管 URL 上**没有**主题的情况。
+ * 2. 当 URL 上没有 `?theme=` 时（即 resolveThemeFromUrl 已确认 currentThemeKey=default）：
+ *    - 清空 `appConfig.loginThemes` 中所有非 default key（保留 default 主题对象）；
+ *    - 清空 localStorage 的 `LS_LOGIN_THEME_KEY`，避免下次无 redirect 时被劫持；
+ *    - 调一次 `syncBrandFields()`，同步 brandTitle/brandDesc 为 JS 默认。
+ *
+ * 关键约束（用户诉求 2026-08-21 修正）：
+ * - URL `?theme=YDT` 仍然**有效**，本函数**不**丢弃 URL 上的主题；
+ *   仅当 URL 上未指定合法主题时才接管。
+ *
+ * @returns {void}
+ */
+export function enforceJsAuthoritativeForPortal() {
+  if (typeof window === 'undefined') return
+  const redirectRaw = new URLSearchParams(window.location.search).get('redirect')
+  if (!isPortalRedirect(redirectRaw)) return
+
+  // URL 上的 ?theme= 已被 resolveThemeFromUrl 处理；这里只接管 localStorage/JSON 残留
+  const urlTheme = new URLSearchParams(window.location.search).get('theme')
+  if (urlTheme && THEME_KEY_RE.test(urlTheme) && appConfig.loginThemes[urlTheme]) {
+    // URL 已经指定合法主题 → 不做任何事
+    return
+  }
+
+  // 丢弃 JSON 的非 default 主题（保留 default 主题对象）
+  for (const key of Object.keys(appConfig.loginThemes)) {
+    if (key !== 'default') {
+      delete appConfig.loginThemes[key]
+    }
+  }
+
+  // 清空 localStorage
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(LS_LOGIN_THEME_KEY)
+    }
+  } catch {
+    // localStorage 不可用（隐私模式）不影响内存态
+  }
+
+  // currentThemeKey 强制 default
+  appConfig.currentThemeKey = 'default'
+  syncBrandFields()
 }
 
 /**
