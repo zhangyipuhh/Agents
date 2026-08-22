@@ -9,16 +9,20 @@ import { reactive } from 'vue'
  * - 解析失败或缺省时回退到内置默认值
  * - 提供登录主题（loginThemes）切换机制：URL ?theme=<key> > localStorage 'login_theme' > 内置 default
  *
- * 优先级契约（2026-08-20 升级，2026-08-21 补充）：
- * - DEFAULT_LOGIN_THEME 中「JS 显式声明的非空字段」对 JSON 同名字段形成硬覆盖
- *   (判定：typeof DEFAULT_LOGIN_THEME[k] === 'string' && DEFAULT_LOGIN_THEME[k].trim() !== '')
- * - JSON 顶层 brandTitle/brandDesc 仅在 JS 未声明时写入；loginThemes.default.* 同理
- * - loginThemes 里「非 default」的主题（如 xemployee / YDT）由 JSON 全权控制，JS 不参与
- * - 用户未来将 JS 默认改成空字符串占位时，可重新交由 JSON 兜底（不需要再改 portal.js）
- * - redirect=/portal 且 URL 上无 ?theme= 时（2026-08-21）：
- *   JS DEFAULT_LOGIN_THEME 取代 localStorage 与 JSON：丢弃 loginThemes 非 default key，
- *   清空 localStorage 'login_theme'，并把 currentThemeKey 强制设为 default。
- *   URL `?theme=` 始终保留为最高优先级——portal 入口仍可被 URL 临时切到 YDT 演示。
+ * 优先级契约（2026-08-21 反转）：
+ * - **常规路径（`/login?redirect=` 不是 `/portal`）**：
+ *   - `app-config.json` 是主题配置的**主配置源**（顶层 brandTitle/brandDesc + loginThemes.* 8 字段均以 JSON 为准）
+ *   - JS `DEFAULT_LOGIN_THEME` 仅作为「JSON 未声明字段的兜底」（沿用旧 spread base 行为，避免字段缺失）
+ *   - 顶层 brandTitle/brandDesc 直接由 JSON 写入，不再做 `isJsDeclared` 守卫
+ *   - `loginThemes.default.*` 8 字段由 JSON 全权控制，不再被 JS 强制覆盖
+ *   - `loginThemes.<非 default>`（如 `YDT` / `xemployee`）原本就由 JSON 全权控制，保持不变
+ * - **portal 路径（`/login?redirect=%2Fportal` 且 URL 上无 `?theme=`）**（2026-08-21）：
+ *   JS `DEFAULT_LOGIN_THEME` 作为唯一权威：
+ *   - 丢弃 `loginThemes` 中所有非 default key（避免 YDT 等主题被切到 portal 入口）
+ *   - 把 `loginThemes.default` 8 字段**主动重置**为 JS 字面量
+ *   - 清空 `localStorage 'login_theme'`，避免下次被劫持
+ *   - `currentThemeKey` 强制 default
+ *   - URL `?theme=` 始终保留为最高优先级——portal 入口仍可被 URL 临时切到 YDT 演示
  *
  * 配置字段：
  * - brandTitle: string         品牌主标题（与 loginThemes.default.brandTitle 同步；以 JS 默认值优先）
@@ -153,39 +157,26 @@ function normalizeNavItem(raw, index) {
  * 校验并规整单个 LoginTheme
  *
  * - brandTitle 必填且为非空字符串；非法则丢弃该主题（不替换）
- * - 其他字段缺省时由内置 DEFAULT_LOGIN_THEME 对应字段兜底
+ * - 其他字段缺省时由内置 DEFAULT_LOGIN_THEME 对应字段兜底（仅作为 spread base，避免字段缺失）
  *
- * JS 全局优先选项（2026-08-20 升级）：
- * - allowJsOverride=false 时，对 default 主题启用：JSON 同名字段在 JS 已声明时**不再覆盖**
- *   例如 JSON loginThemes.default.brandTitle='X员工' + JS 已声明 brandTitle
- *   → 结果 brandTitle 仍为 JS 字面量（避免运维误改 JSON 后看到旧文案）
- * - allowJsOverride=true（默认）时维持旧行为：JSON 全权覆盖，主要供「非 default 主题」（如 xemployee / YDT）使用
+ * 2026-08-21 反转契约：JSON 是主配置源，所有主题（含 default）的 8 字段由 JSON 全权控制；
+ *   `allowJsOverride` 参数已废弃保留仅为兼容旧调用方，新代码无需传入。
  *
  * @param {Object} raw - 原始主题对象
- * @param {Object} [options]
- * @param {boolean} [options.allowJsOverride=true] - true 表示 JSON 字段可覆盖 JS 默认；false 表示 JS 已声明字段对 JSON 硬覆盖
  * @returns {Object|null} 合法则返回规范化主题；非法返回 null
  */
-function normalizeLoginTheme(raw, options = {}) {
+function normalizeLoginTheme(raw) {
   if (!raw || typeof raw !== 'object') return null
   const brandTitle = typeof raw.brandTitle === 'string' && raw.brandTitle.trim()
     ? raw.brandTitle.trim()
     : ''
   if (!brandTitle) return null
-  const allowJsOverride = options.allowJsOverride !== false
   const out = { brandTitle, ...DEFAULT_LOGIN_THEME }
   for (const k of Object.keys(DEFAULT_LOGIN_THEME)) {
     if (typeof raw[k] !== 'string') continue
-    if (!allowJsOverride && isJsDeclared(k)) continue
     out[k] = raw[k]
   }
-  // JS 全局优先时：即使 raw 给的 brandTitle 也要被 JS 字面量覆盖；
-  // 这样 normalize 出来的对象可直接作为最终主题，无需 loadAppConfig 再二次覆盖
-  if (!allowJsOverride && isJsDeclared('brandTitle')) {
-    out.brandTitle = DEFAULT_LOGIN_THEME.brandTitle
-  } else {
-    out.brandTitle = brandTitle
-  }
+  out.brandTitle = brandTitle
   return out
 }
 
@@ -194,27 +185,23 @@ function normalizeLoginTheme(raw, options = {}) {
  * 保留旧字段（PortalApp 顶部导航栏与 document.title 仍直接读 appConfig.brandTitle），
  * 这样老组件无需重写即可跟随主题切换。
  *
- * 「JS DEFAULT_LOGIN_THEME 全局优先」(2026-08-20)：
- * 当主题对象的 brandTitle/brandDesc 为空字符串（占位）时，syncBrandFields 不应覆盖
- * 已由 JSON 顶层 brandTitle/brandDesc 写入的非空值——避免 JSON 输入被擦除。
+ * 2026-08-21 反转契约：常规路径下主题对象与 JSON 顶层 brandTitle/brandDesc 完全一致；
+ *   portal 路径下 enforceJsAuthoritativeForPortal 会把 default 主题重置为 JS 字面量，
+ *   此时 syncBrandFields 把 appConfig.brandTitle/brandDesc 同步为 JS 默认文案。
  *
  * @returns {void}
  */
 function syncBrandFields() {
   const t = appConfig.loginThemes[appConfig.currentThemeKey]
   if (!t) return
-  // brandTitle：JS 全局优先契约下，主题对象 brandTitle 是非空字符串才覆盖。
-  // 空字符串视为「JSON 兜底 → JS 默认占位」的占位，不应被同步到 appConfig.brandTitle
-  // （会覆盖之前由 JSON 顶层 brandTitle 写入的非空值）。
   if (typeof t.brandTitle === 'string' && t.brandTitle.trim() !== '') {
     appConfig.brandTitle = t.brandTitle
+  } else {
+    appConfig.brandTitle = ''
   }
-  // brandDesc 同步策略与 brandTitle 对齐：仅在主题对象 brandDesc 是非空字符串时同步；
-  // 空字符串保留 appConfig.brandDesc 已写入的值（通常来自 JSON 顶层 brandDesc 写入）；
-  // 主题对象完全缺 brandDesc 时回退空字符串（与历史行为兼容）。
   if (typeof t.brandDesc === 'string' && t.brandDesc.trim() !== '') {
     appConfig.brandDesc = t.brandDesc
-  } else if (!('brandDesc' in t)) {
+  } else {
     appConfig.brandDesc = ''
   }
 }
@@ -280,10 +267,12 @@ function isPortalRedirect(redirectRaw) {
  * 行为：
  * 1. 调用方必须**先**执行 `resolveThemeFromUrl()`，保留 URL `?theme=` 优先级；
  *    本函数只接管 URL 上**没有**主题的情况。
- * 2. 当 URL 上没有 `?theme=` 时（即 resolveThemeFromUrl 已确认 currentThemeKey=default）：
- *    - 清空 `appConfig.loginThemes` 中所有非 default key（保留 default 主题对象）；
- *    - 清空 localStorage 的 `LS_LOGIN_THEME_KEY`，避免下次无 redirect 时被劫持；
- *    - 调一次 `syncBrandFields()`，同步 brandTitle/brandDesc 为 JS 默认。
+ * 2. 当 URL 上没有 `?theme=` 时（2026-08-21 反转契约后）：
+ *    - 丢弃 `appConfig.loginThemes` 中所有非 default key（保留 default 主题对象）
+ *    - **主动把 `loginThemes.default` 的 8 字段重置为 JS 字面量**（因为常规路径下 default 已由 JSON 全权控制）
+ *    - 清空 `appConfig.brandTitle` / `appConfig.brandDesc`（让 syncBrandFields 用 JS 字面量刷新）
+ *    - 清空 localStorage 的 `LS_LOGIN_THEME_KEY`，避免下次无 redirect 时被劫持
+ *    - 调一次 `syncBrandFields()`，同步 brandTitle/brandDesc 为 JS 默认
  *
  * 关键约束（用户诉求 2026-08-21 修正）：
  * - URL `?theme=YDT` 仍然**有效**，本函数**不**丢弃 URL 上的主题；
@@ -309,6 +298,13 @@ export function enforceJsAuthoritativeForPortal() {
       delete appConfig.loginThemes[key]
     }
   }
+
+  // 主动把 default 主题重置为 JS 字面量（2026-08-21 反转契约：常规路径下 default 由 JSON 全权控制）
+  appConfig.loginThemes.default = { ...DEFAULT_LOGIN_THEME }
+
+  // 清空 appConfig.brandTitle/brandDesc 顶层缓存，让 syncBrandFields 用 JS 字面量刷新
+  appConfig.brandTitle = ''
+  appConfig.brandDesc = ''
 
   // 清空 localStorage
   try {
@@ -401,16 +397,18 @@ export async function loadAppConfig() {
     }
     const data = await response.json()
 
-    // 顶层 brandTitle/brandDesc：JS 已声明字段对 JSON 形成硬覆盖；
-    // 仅在 JS DEFAULT_LOGIN_THEME 中相应字段为空占位时，才用 JSON 兜底写入。
-    if (!isJsDeclared('brandTitle') && typeof data.brandTitle === 'string' && data.brandTitle.trim()) {
+    // 顶层 brandTitle/brandDesc（2026-08-21 反转契约）：
+    // 常规路径下 JSON 是主配置源，直接写入；portal 路径下会被 enforceJsAuthoritativeForPortal 重置。
+    if (typeof data.brandTitle === 'string' && data.brandTitle.trim()) {
       appConfig.brandTitle = data.brandTitle
     }
-    if (!isJsDeclared('brandDesc') && typeof data.brandDesc === 'string' && data.brandDesc.trim()) {
+    if (typeof data.brandDesc === 'string' && data.brandDesc.trim()) {
       appConfig.brandDesc = data.brandDesc
     }
 
-    // 解析 loginThemes
+    // 解析 loginThemes（2026-08-21 反转契约）：
+    // 所有主题（含 default）一律由 JSON 全权控制；JS DEFAULT_LOGIN_THEME 仅作为 spread 兜底。
+    // portal 路径下 default 主题会被 enforceJsAuthoritativeForPortal 主动重置为 JS 字面量。
     const themesMap = {}
     if (data.loginThemes && typeof data.loginThemes === 'object') {
       for (const [key, raw] of Object.entries(data.loginThemes)) {
@@ -418,10 +416,7 @@ export async function loadAppConfig() {
           console.warn(`[portal-config] 主题 key "${key}" 非法（仅允许小写字母/数字/_/-，长度 1-32），已忽略`)
           continue
         }
-        // default 主题启用 JS 全局优先；其余主题维持旧行为（JSON 全权控制）
-        const t = key === 'default'
-          ? normalizeLoginTheme(raw, { allowJsOverride: false })
-          : normalizeLoginTheme(raw)
+        const t = normalizeLoginTheme(raw)
         if (t) {
           themesMap[key] = t
         } else {
@@ -430,17 +425,13 @@ export async function loadAppConfig() {
       }
     }
 
-    // 兜底：若 JSON 未提供 default 主题 → 直接用 JS DEFAULT_LOGIN_THEME 填入
-    // （不再读 JSON 顶层 brandTitle/brandDesc 合成，与「JS 全局优先」契约一致）
+    // 兜底：若 JSON 未提供 default 主题 → 用 JS DEFAULT_LOGIN_THEME 填入（保证 loginThemes.default 始终存在）
     if (!themesMap.default) {
       themesMap.default = { ...DEFAULT_LOGIN_THEME }
     }
 
-    // 合并 loginThemes：先把 JSON 给的所有主题铺平，再用 JS DEFAULT_LOGIN_THEME 强制覆盖 default 主题
-    // 非 default 主题（xemployee / YDT 等）完全由 JSON 控制；default 主题字段一律以 JS 字面量为最终值
-    const mergedThemes = { ...themesMap, default: { ...DEFAULT_LOGIN_THEME } }
     if (Object.keys(themesMap).length > 0) {
-      appConfig.loginThemes = mergedThemes
+      appConfig.loginThemes = themesMap
     } else {
       console.warn('[portal-config] loginThemes 全部校验失败，使用内置默认主题')
       appConfig.loginThemes = { default: { ...DEFAULT_LOGIN_THEME } }
