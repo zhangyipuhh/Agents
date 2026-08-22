@@ -158,7 +158,8 @@ describe('config/portal.js 主题解析', () => {
     expect(portal.appConfig.navItems.length).toBeGreaterThan(0)
   })
 
-  it('test_load_app_config_parses_login_themes loginThemes 解析为 map 且 JS default 优先', async () => {
+  it('test_load_app_config_parses_login_themes loginThemes 解析为 map 且 JSON 全权', async () => {
+    // 2026-08-21 反转契约：JSON 是主配置源，default 主题的 8 字段由 JSON 全权控制
     const newData = {
       brandTitle: 'Default',
       brandDesc: '',
@@ -176,25 +177,25 @@ describe('config/portal.js 主题解析', () => {
     const portal = await import('../portal.js')
     await portal.loadAppConfig()
 
-    // 非 default 主题仍然由 JSON 全权控制
+    // 非 default 主题由 JSON 全权控制
     expect(portal.appConfig.loginThemes.shenyang.brandTitle).toBe('沈阳')
     expect(Object.keys(portal.appConfig.loginThemes).length).toBe(2)
-    // default 主题的 brandTitle 在 JS 已声明时不得被 JSON 覆盖
-    expect(portal.appConfig.loginThemes.default.brandTitle).toBe(portal.DEFAULT_LOGIN_THEME.brandTitle)
+    // default 主题的 brandTitle 由 JSON 提供（不再被 JS 字面量覆盖）
+    expect(portal.appConfig.loginThemes.default.brandTitle).toBe('Default')
+    // 顶层 brandTitle 也由 JSON 提供
+    expect(portal.appConfig.brandTitle).toBe('Default')
   })
 
-  it('test_js_default_takes_precedence_over_json JS DEFAULT_LOGIN_THEME 全局优先于 JSON', async () => {
-    // 用户诉求（2026-08-20）：portal.js 的 DEFAULT_LOGIN_THEME 是主配置源，
-    // JSON 仅在 JS 未声明对应字段时才能兜底写入。
-    // 当前 DEFAULT_LOGIN_THEME.brandTitle 为「沈阳市自然资源和规划"一点通"」，
-    // JSON 提供另一个 brandTitle，期望 JS 胜出、JSON 被忽略。
+  it('test_json_takes_precedence_over_js_default 常规路径下 JSON 全权胜出', async () => {
+    // 2026-08-21 反转契约：常规路径（非 portal redirect）下 JSON 是主配置源；
+    // JSON 提供 brandTitle='X员工'，期望 X员工胜出，JS 字段不生效
     const jsonData = {
-      brandTitle: 'JSON-Should-Not-Win',
-      brandDesc: 'JSON-Should-Not-Win-Either',
+      brandTitle: 'X员工',
+      brandDesc: '内测',
       loginThemes: {
         default: {
-          brandTitle: 'JSON-Default-Should-Not-Win',
-          brandDesc: 'JSON-Desc-Should-Not-Win',
+          brandTitle: 'X员工',
+          brandDesc: '内测',
           loginTitle: 'JSON-LoginTitle',
           loginSubtitle: 'JSON-LoginSubtitle',
           registerSubtitle: 'JSON-RegisterSubtitle',
@@ -213,49 +214,39 @@ describe('config/portal.js 主题解析', () => {
     const portal = await import('../portal.js')
     await portal.loadAppConfig()
 
-    // 顶层 brandTitle/brandDesc 不应被 JSON 改写
-    expect(portal.appConfig.brandTitle).toBe(portal.DEFAULT_LOGIN_THEME.brandTitle)
-    expect(portal.appConfig.brandDesc).toBe(portal.DEFAULT_LOGIN_THEME.brandDesc)
-    // loginThemes.default 字段值应全部来自 JS 字面量
-    expect(portal.appConfig.loginThemes.default.brandTitle).toBe(portal.DEFAULT_LOGIN_THEME.brandTitle)
-    expect(portal.appConfig.loginThemes.default.brandDesc).toBe(portal.DEFAULT_LOGIN_THEME.brandDesc)
-    expect(portal.appConfig.loginThemes.default.loginTitle).toBe(portal.DEFAULT_LOGIN_THEME.loginTitle)
-    expect(portal.appConfig.loginThemes.default.loginSubtitle).toBe(portal.DEFAULT_LOGIN_THEME.loginSubtitle)
+    // 顶层 brandTitle/brandDesc 由 JSON 写入
+    expect(portal.appConfig.brandTitle).toBe('X员工')
+    expect(portal.appConfig.brandDesc).toBe('内测')
+    // loginThemes.default 字段全部来自 JSON
+    expect(portal.appConfig.loginThemes.default.brandTitle).toBe('X员工')
+    expect(portal.appConfig.loginThemes.default.brandDesc).toBe('内测')
+    expect(portal.appConfig.loginThemes.default.loginTitle).toBe('JSON-LoginTitle')
+    expect(portal.appConfig.loginThemes.default.loginSubtitle).toBe('JSON-LoginSubtitle')
+    expect(portal.appConfig.loginThemes.default.copyright).toBe('JSON-Copyright')
   })
 
-  it('test_js_empty_default_lets_json_take_over JS 默认为空占位时 JSON 接管', async () => {
-    // 验证契约的「可逆」性：未来用户主动把 JS 默认改成 '' 占位 → JSON 同名字段接管。
-    // 通过运行时修改 DEFAULT_LOGIN_THEME 的 brandTitle/brandDesc 为空后触发 loadAppConfig 验证。
+  it('test_js_empty_default_lets_json_take_over JS 默认为空占位时 JSON 接管（保留用例）', async () => {
+    // 2026-08-21 反转契约：即便 JS DEFAULT_LOGIN_THEME.brandTitle 为空占位，JSON 也能接管；
+    // 新契约下这条用例不再需要"JS 空才接管"的限制，但仍可作为回归保险保留
     const portal = await import('../portal.js')
-    // 直接读取原始对象并置空（同一引用，appConfig.loginThemes.default 也持有引用，因此需重新初始化）
-    portal.DEFAULT_LOGIN_THEME.brandTitle = ''
-    portal.DEFAULT_LOGIN_THEME.brandDesc = ''
-    try {
-      const jsonData = {
-        brandTitle: 'JSON-Wins-Now',
-        brandDesc: 'JSON-Desc-Wins-Now',
-        loginThemes: {},
-        navItems: []
-      }
-      globalThis.fetch = vi.fn(() => Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve(jsonData)
-      }))
-
-      await portal.loadAppConfig()
-
-      // 顶层 brandTitle/brandDesc 被 JSON 接管（核心契约：JS 默认为空 → JSON 写入）
-      expect(portal.appConfig.brandTitle).toBe('JSON-Wins-Now')
-      expect(portal.appConfig.brandDesc).toBe('JSON-Desc-Wins-Now')
-      // loginThemes.default.brandTitle 来自 JS 默认字面量 spread（因为 JS 当前为空，会呈现空字符串占位）；
-      // 这是有意的：default 主题字面量本身就是「当前 JS 已声明什么」的可视化，避免把 JSON 顶层值
-      // 复制到 default 主题导致与 appConfig.brandTitle 不一致。
-      expect(portal.appConfig.loginThemes.default.brandTitle).toBe('')
-    } finally {
-      // 还原原始默认值，避免污染同文件后续用例
-      portal.DEFAULT_LOGIN_THEME.brandTitle = '沈阳市自然资源和规划"一点通"'
-      portal.DEFAULT_LOGIN_THEME.brandDesc = '智慧政务服务平台'
+    const jsonData = {
+      brandTitle: 'JSON-Wins-Now',
+      brandDesc: 'JSON-Desc-Wins-Now',
+      loginThemes: {},
+      navItems: []
     }
+    globalThis.fetch = vi.fn(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(jsonData)
+    }))
+
+    await portal.loadAppConfig()
+
+    // 顶层 brandTitle/brandDesc 被 JSON 接管（2026-08-21 反转后无条件接管）
+    expect(portal.appConfig.brandTitle).toBe('JSON-Wins-Now')
+    expect(portal.appConfig.brandDesc).toBe('JSON-Desc-Wins-Now')
+    // loginThemes.default.brandTitle 来自 JS DEFAULT_LOGIN_THEME spread（兜底）
+    expect(portal.appConfig.loginThemes.default.brandTitle).toBe(portal.DEFAULT_LOGIN_THEME.brandTitle)
   })
 
   it('test_load_app_config_rejects_invalid_theme_key 非法 key 不入 map', async () => {
@@ -354,9 +345,9 @@ describe('config/portal.js 主题解析', () => {
 
     expect(portal.appConfig.currentThemeKey).toBe('default')
     expect(portal.appConfig.loginThemes.YDT).toBeUndefined()
-    // 「JS DEFAULT_LOGIN_THEME 全局优先」(2026-08-20)：
-    // 即使 JSON default 主题 brandTitle='Default'，只要 JS 已声明 → appConfig.brandTitle 仍为 JS 字面量
-    expect(portal.appConfig.brandTitle).toBe(portal.DEFAULT_LOGIN_THEME.brandTitle)
+    // 2026-08-21 反转契约：JSON 是主配置源，default.brandTitle 由 JSON 提供
+    expect(portal.appConfig.brandTitle).toBe('Default')
+    expect(portal.appConfig.loginThemes.default.brandTitle).toBe('Default')
   })
 
   // ===== 2026-08-21 新增：redirect=/portal 强制 JS 接管（保留 URL ?theme=）=====
