@@ -25,8 +25,10 @@ from app.core.agent.AgentContext import AgentContext
 from app.core.config.paths import _PROJECT_ROOT
 from app.shared.utils.agent.dynamic_schema import _BASE_CONTEXT_DEFAULTS
 from app.shared.utils.prompt.dynamic_context import (
+    ATTACHMENTS_RULES,
     DYNAMIC_CONTEXT_RULES,
     DYNAMIC_NODE_REGISTRY,
+    SERVERS_RULES,
     build_dynamic_context_xml,
     build_dynamic_system_suffix,
     normalize_attachment_path,
@@ -201,8 +203,8 @@ def test_format_uploaded_at_date_string():
 # ============================================================
 
 
-def test_build_xml_empty_state_explicit_nodes():
-    """空附件 / 空服务器时应输出显式空节点，而不是省略节点。
+def test_build_xml_empty_state_omits_nodes():
+    """空附件 / 空服务器时应返回空字符串，不输出任何节点标签（2026-08-23 契约）。
 
     参数:
         无
@@ -211,10 +213,11 @@ def test_build_xml_empty_state_explicit_nodes():
         无（断言失败时抛出 AssertionError）
     """
     xml = build_dynamic_context_xml([], None)
-    assert "<attachments>" in xml
-    assert "</attachments>" in xml
-    assert "<servers>" in xml
-    assert "</servers>" in xml
+    assert xml == ""
+    assert "<attachments>" not in xml
+    assert "</attachments>" not in xml
+    assert "<servers>" not in xml
+    assert "</servers>" not in xml
     assert "<file " not in xml
     assert "<server " not in xml
 
@@ -423,8 +426,11 @@ def test_dynamic_node_registry_contains_referenced_servers():
 # ============================================================
 
 
-def test_build_xml_empty_dynamic_nodes_still_explicit():
-    """未传 dynamic_nodes（None）时，注册表中所有节点仍输出显式空节点。
+def test_build_xml_empty_dynamic_nodes_omits_servers():
+    """未传 dynamic_nodes 但 attachments 非空时，只输出 attachments 节点（2026-08-23 契约）。
+
+    注册表节点（referenced_servers）为空 → 不输出对应标签。
+    attachments 与注册表节点独立判断，互不影响。
 
     参数:
         无
@@ -432,9 +438,14 @@ def test_build_xml_empty_dynamic_nodes_still_explicit():
     返回:
         无（断言失败时抛出 AssertionError）
     """
-    xml = build_dynamic_context_xml([], None)
-    assert "<servers>" in xml
-    assert "</servers>" in xml
+    attachments = [{"file_name": "x.md", "stored_path": "/a/x.md",
+                    "file_size": 1, "created_at": None}]
+    xml = build_dynamic_context_xml(attachments, None)
+    assert "<attachments>" in xml
+    assert "</attachments>" in xml
+    assert "<file " in xml
+    assert "<servers>" not in xml
+    assert "</servers>" not in xml
     assert "<server " not in xml
 
 
@@ -444,7 +455,7 @@ def test_build_xml_empty_dynamic_nodes_still_explicit():
 
 
 def test_build_suffix_includes_rules_and_xml(monkeypatch):
-    """后缀应包含静态规则文本与附件 XML 节点。
+    """后缀应包含静态规则文本与附件 XML 节点（两者都有时同时含两个 rules 段）。
 
     参数:
         monkeypatch: pytest monkeypatch fixture，用于替换 AttachmentDB 查询
@@ -466,15 +477,23 @@ def test_build_suffix_includes_rules_and_xml(monkeypatch):
 
     monkeypatch.setattr(AttachmentDB, "get_session_attachments", staticmethod(fake_get))
 
-    suffix = asyncio.run(build_dynamic_system_suffix("sid"))
-    assert DYNAMIC_CONTEXT_RULES in suffix
+    suffix = asyncio.run(build_dynamic_system_suffix(
+        "sid",
+        dynamic_nodes={"referenced_servers": [{"name": "prod-api", "server_type": "linux"}]},
+    ))
+    assert ATTACHMENTS_RULES in suffix
+    assert SERVERS_RULES in suffix
     assert 'name="季度财报.pdf"' in suffix
     assert 'path="/data/tmp/upload/2026/07/20/sid/report.md"' in suffix
-    assert "<servers>" in suffix
+    assert '<server name="prod-api" server_type="linux" />' in suffix
 
 
-def test_build_suffix_empty_attachments_explicit_empty_node(monkeypatch):
-    """无附件时后缀仍包含显式空 <attachments> 节点。
+def test_build_suffix_empty_attachments_only_servers(monkeypatch):
+    """无附件但 servers 非空时，后缀只含 SERVERS_RULES + servers 节点（2026-08-23 契约）。
+
+    attachments 空 → 不输出 <attachments> 标签 + 不输出 ATTACHMENTS_RULES。
+    servers 非空 → 独立渲染 SERVERS_RULES + <servers>...</servers>。
+    验证 attachments 与 servers 独立判断。
 
     参数:
         monkeypatch: pytest monkeypatch fixture
@@ -489,12 +508,23 @@ def test_build_suffix_empty_attachments_explicit_empty_node(monkeypatch):
 
     monkeypatch.setattr(AttachmentDB, "get_session_attachments", staticmethod(fake_get))
 
-    suffix = asyncio.run(build_dynamic_system_suffix("sid"))
-    assert "<attachments>\n</attachments>" in suffix
+    suffix = asyncio.run(build_dynamic_system_suffix(
+        "sid",
+        dynamic_nodes={"referenced_servers": [{"name": "prod", "server_type": "linux"}]},
+    ))
+    # 仅 SERVERS_RULES 输出，不含 ATTACHMENTS_RULES
+    assert ATTACHMENTS_RULES not in suffix
+    assert SERVERS_RULES in suffix
+    # 仅 servers 节点，不含 attachments
+    assert "<attachments>" not in suffix
+    assert "</attachments>" not in suffix
+    assert "<servers>" in suffix
+    assert "</servers>" in suffix
+    assert '<server name="prod" server_type="linux" />' in suffix
 
 
 def test_build_suffix_query_failure_degrades_to_empty(monkeypatch):
-    """附件查询异常时应降级为空列表，不向上抛异常。
+    """附件查询异常 + dynamic_nodes 空时，suffix 返回空字符串（2026-08-23 契约）。
 
     参数:
         monkeypatch: pytest monkeypatch fixture
@@ -510,7 +540,12 @@ def test_build_suffix_query_failure_degrades_to_empty(monkeypatch):
     monkeypatch.setattr(AttachmentDB, "get_session_attachments", staticmethod(fake_get))
 
     suffix = asyncio.run(build_dynamic_system_suffix("sid"))
-    assert "<attachments>\n</attachments>" in suffix
+    # 两者都空 → suffix 为空字符串（无静态规则、无空节点）
+    assert suffix == ""
+    assert ATTACHMENTS_RULES not in suffix
+    assert SERVERS_RULES not in suffix
+    assert "<attachments>" not in suffix
+    assert "<servers>" not in suffix
 
 
 # ============================================================
@@ -594,8 +629,83 @@ def test_build_suffix_renders_referenced_servers_xml(monkeypatch):
     assert '<server name="prod-api" server_type="linux" />' in suffix
 
 
-def test_build_suffix_without_dynamic_nodes_explicit_empty(monkeypatch):
-    """build_dynamic_system_suffix 不传 dynamic_nodes 时应输出显式空 servers 节点。
+def test_build_suffix_without_dynamic_nodes_only_attachments(monkeypatch):
+    """无 dynamic_nodes 但有附件时，后缀只含 ATTACHMENTS_RULES + attachments 节点（2026-08-23 契约）。
+
+    dynamic_nodes 空 → 不输出 <servers> 标签 + 不输出 SERVERS_RULES。
+    验证动态节点与 attachments 独立判断。
+
+    参数:
+        monkeypatch: pytest monkeypatch fixture
+
+    返回:
+        无（断言失败时抛出 AssertionError）
+    """
+    from app.shared.utils.files.attachment_db import AttachmentDB
+
+    async def fake_get(session_id):
+        return [
+            {
+                "file_name": "x.md",
+                "stored_path": "/a/x.md",
+                "file_size": 1,
+                "created_at": None,
+            }
+        ]
+
+    monkeypatch.setattr(AttachmentDB, "get_session_attachments", staticmethod(fake_get))
+
+    suffix = asyncio.run(build_dynamic_system_suffix("sid"))
+    # 仅 attachments 段
+    assert ATTACHMENTS_RULES in suffix
+    assert SERVERS_RULES not in suffix
+    assert "<attachments>" in suffix
+    assert "<servers>" not in suffix
+    assert "</servers>" not in suffix
+
+
+# ============================================================
+# 2026-08-23 新增：动态节点渲染通用契约的专项测试
+# 每个节点独立判断、互不影响；节点为空时不输出对应 XML 标签和静态规则。
+# ============================================================
+
+
+def test_build_xml_no_data_returns_empty_string():
+    """attachments=None / [] + dynamic_nodes=None / 空 dict → 返回空字符串。
+
+    参数:
+        无
+
+    返回:
+        无（断言失败时抛出 AssertionError）
+    """
+    assert build_dynamic_context_xml(None, None) == ""
+    assert build_dynamic_context_xml([], None) == ""
+    assert build_dynamic_context_xml(None, {}) == ""
+    assert build_dynamic_context_xml([], {}) == ""
+
+
+def test_build_xml_only_dynamic_nodes_omits_attachments():
+    """仅 dynamic_nodes 非空 + attachments 空 → 只输出 servers 节点。
+
+    参数:
+        无
+
+    返回:
+        无（断言失败时抛出 AssertionError）
+    """
+    xml = build_dynamic_context_xml(
+        None,
+        {"referenced_servers": [{"name": "prod", "server_type": "linux"}]},
+    )
+    assert "<attachments>" not in xml
+    assert "</attachments>" not in xml
+    assert "<servers>" in xml
+    assert '<server name="prod" server_type="linux" />' in xml
+
+
+def test_build_suffix_both_empty_returns_empty_string(monkeypatch):
+    """AttachmentDB 返回 [] + dynamic_nodes=None → suffix 为空字符串。
 
     参数:
         monkeypatch: pytest monkeypatch fixture
@@ -611,4 +721,105 @@ def test_build_suffix_without_dynamic_nodes_explicit_empty(monkeypatch):
     monkeypatch.setattr(AttachmentDB, "get_session_attachments", staticmethod(fake_get))
 
     suffix = asyncio.run(build_dynamic_system_suffix("sid"))
-    assert "<servers>\n</servers>" in suffix
+    assert suffix == ""
+
+
+def test_build_suffix_only_servers_omits_attachments_block(monkeypatch):
+    """仅 servers 非空 → suffix 不含 <attachments> 与 ATTACHMENTS_RULES。
+
+    参数:
+        monkeypatch: pytest monkeypatch fixture
+
+    返回:
+        无（断言失败时抛出 AssertionError）
+    """
+    from app.shared.utils.files.attachment_db import AttachmentDB
+
+    async def fake_get(session_id):
+        return []
+
+    monkeypatch.setattr(AttachmentDB, "get_session_attachments", staticmethod(fake_get))
+
+    suffix = asyncio.run(build_dynamic_system_suffix(
+        "sid",
+        dynamic_nodes={"referenced_servers": [{"name": "a", "server_type": "linux"}]},
+    ))
+    assert ATTACHMENTS_RULES not in suffix
+    assert "<attachments>" not in suffix
+    assert SERVERS_RULES in suffix
+    assert "<servers>" in suffix
+
+
+def test_dynamic_context_rules_backward_compat_alias():
+    """DYNAMIC_CONTEXT_RULES 是历史快照：等于 ATTACHMENTS_RULES + \\n\\n + SERVERS_RULES。
+
+    参数:
+        无
+
+    返回:
+        无（断言失败时抛出 AssertionError）
+    """
+    assert DYNAMIC_CONTEXT_RULES == f"{ATTACHMENTS_RULES}\n\n{SERVERS_RULES}"
+
+
+def test_independent_node_rendering():
+    """attachments 空不影响 servers 节点渲染决策（独立判断契约）。
+
+    参数:
+        无
+
+    返回:
+        无（断言失败时抛出 AssertionError）
+    """
+    # 场景 A：attachments 空 + servers 空 → 空字符串
+    xml_a = build_dynamic_context_xml([], None)
+    assert xml_a == ""
+
+    # 场景 B：attachments 空 + servers 非空 → 只输出 servers
+    xml_b = build_dynamic_context_xml([], {"referenced_servers": [{"name": "x", "server_type": "linux"}]})
+    assert "<servers>" in xml_b
+    assert "<attachments>" not in xml_b
+
+    # 场景 C：attachments 非空 + servers 空 → 只输出 attachments
+    xml_c = build_dynamic_context_xml(
+        [{"file_name": "f.md", "stored_path": "/a", "file_size": 1, "created_at": None}],
+        None,
+    )
+    assert "<attachments>" in xml_c
+    assert "<servers>" not in xml_c
+
+    # 场景 D：两者都非空 → 都输出（顺序：attachments 在前）
+    xml_d = build_dynamic_context_xml(
+        [{"file_name": "f.md", "stored_path": "/a", "file_size": 1, "created_at": None}],
+        {"referenced_servers": [{"name": "x", "server_type": "linux"}]},
+    )
+    assert "<attachments>" in xml_d
+    assert "<servers>" in xml_d
+    # 顺序：attachments 块在 servers 块之前
+    assert xml_d.index("<attachments>") < xml_d.index("<servers>")
+
+
+def test_servers_only_with_empty_attachments_xml_omits_file_block(monkeypatch):
+    """build_dynamic_system_suffix 在 attachments + servers 都为空时不再输出任何 XML 节点。
+
+    这是验证"通用契约"的反向用例：旧的"显式空节点"行为已被彻底替换。
+
+    参数:
+        monkeypatch: pytest monkeypatch fixture
+
+    返回:
+        无（断言失败时抛出 AssertionError）
+    """
+    from app.shared.utils.files.attachment_db import AttachmentDB
+
+    async def fake_get(session_id):
+        return []
+
+    monkeypatch.setattr(AttachmentDB, "get_session_attachments", staticmethod(fake_get))
+
+    suffix = asyncio.run(build_dynamic_system_suffix("sid"))
+    # 反向断言：旧的"显式空节点"行为不应再出现
+    assert "<attachments>\n</attachments>" not in suffix
+    assert "<servers>\n</servers>" not in suffix
+    # 新契约：两者都空时直接返回空字符串
+    assert suffix == ""

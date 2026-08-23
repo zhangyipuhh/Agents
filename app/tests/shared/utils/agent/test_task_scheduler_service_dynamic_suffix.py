@@ -77,13 +77,18 @@ def _patch_service_for_execute(monkeypatch, overrides=None):
     async def fake_prepare(ovrs, session_id):
         out = dict(ovrs or {})
         nodes = out.get("referenced_servers") or []
-        server_lines = "\n".join(
-            f'  <server name="{it["name"]}" server_type="{it["server_type"]}" />'
-            for it in nodes
-        )
-        out["dynamic_context_suffix"] = (
-            "<servers>\n" + server_lines + "\n</servers>"
-        )
+        # 2026-08-23 契约: dynamic_nodes 为空时整个 suffix 返回空字符串;
+        # 不再输出显式空 <servers></servers>。
+        if not nodes:
+            out["dynamic_context_suffix"] = ""
+        else:
+            server_lines = "\n".join(
+                f'  <server name="{it["name"]}" server_type="{it["server_type"]}" />'
+                for it in nodes
+            )
+            out["dynamic_context_suffix"] = (
+                "<servers>\n" + server_lines + "\n</servers>"
+            )
         return out
 
     agent_config_service.prepare_overrides_with_dynamic_suffix = fake_prepare
@@ -227,7 +232,11 @@ async def test_execute_schedule_agent_branch_preserves_log_user_identity(monkeyp
 
 @pytest.mark.asyncio
 async def test_execute_schedule_agent_branch_handles_empty_context_overrides(monkeypatch):
-    """空 context_overrides 仍生成显式空 <servers></servers>。"""
+    """空 context_overrides → dynamic_context_suffix 为空字符串（2026-08-23 契约）。
+
+    验证：动态节点渲染通用契约生效后，空 referenced_servers → suffix 为空。
+    log_user_id 等审计身份字段保留。
+    """
     schedule = _build_schedule()
     schedule["context_overrides"] = {}
     service, captured = _patch_service_for_execute(monkeypatch, overrides=schedule)
@@ -240,7 +249,9 @@ async def test_execute_schedule_agent_branch_handles_empty_context_overrides(mon
     )
 
     overrides = captured["overrides"]
+    # 新契约：suffix 为空字符串（无 <servers> 标签、无静态规则）
     assert "dynamic_context_suffix" in overrides
-    assert "<servers>" in overrides["dynamic_context_suffix"]
-    assert "</servers>" in overrides["dynamic_context_suffix"]
+    assert overrides["dynamic_context_suffix"] == ""
+    assert "<servers>" not in overrides["dynamic_context_suffix"]
+    assert "<attachments>" not in overrides["dynamic_context_suffix"]
     assert overrides["log_user_id"] == 99

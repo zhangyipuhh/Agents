@@ -541,11 +541,11 @@ system_prompt = (
   - `DynamicNodeSpec`（frozen dataclass）：单节点契约（`overrides_key` / `xml_parent_tag` / `xml_item_tag` / `allowed_fields` / `max_items=50` / `max_field_len=128`）
   - `DYNAMIC_NODE_REGISTRY`：动态节点注册表元组；本期内置 `referenced_servers` 一条（对应前端 `#` trigger）
   - `sanitize_dynamic_nodes(overrides)`：按 registry 从 `context_overrides` 提取并清洗（白名单字段 / 长度/条数上限 / 非法项静默丢弃）；未注册键自动忽略
-  - `build_dynamic_system_suffix(session_id, dynamic_nodes=None)`：以 attachments 表为唯一事实源，按 session_id 实时查询并组装后缀（静态规则文本 + XML 节点）；查询异常 / Memory 模式降级为空附件列表，仍输出显式空节点；`dynamic_nodes` 由 router 传入
-  - `build_dynamic_context_xml(attachments, dynamic_nodes=None)`：遍历 registry 渲染 `<attachments>` + 每个注册节点；空状态显式化（注册表中所有节点即便为空也输出空成对节点）
+  - `build_dynamic_system_suffix(session_id, dynamic_nodes=None)`：以 attachments 表为唯一事实源，按 session_id 实时查询并组装后缀（静态规则文本 + XML 节点）；查询异常 / Memory 模式降级为空附件列表；`dynamic_nodes` 由 router 传入。**节点为空时返回空字符串**（受"动态节点渲染通用契约"约束，2026-08-23）
+  - `build_dynamic_context_xml(attachments, dynamic_nodes=None)`：遍历 registry 渲染 `<attachments>` + 每个注册节点。**每个节点独立判断**：数据为空则不输出对应 XML 标签（受通用契约约束，2026-08-23）
   - `normalize_attachment_path(stored_path)`：路径规范化为 POSIX 风格并剥离 Windows 盘符
   - `resolve_prompt_path(prompt_path)`：与 normalize 互逆，Windows 下为无盘符 `/` 开头路径补项目根所在盘符
-- **静态规则文本** `DYNAMIC_CONTEXT_RULES`：随动态节点一起注入，含 `<attachments>` 与 `<servers>` 使用说明
+- **静态规则文本**（2026-08-23 拆分）：`ATTACHMENTS_RULES`（附件使用规则，仅 attachments 非空时注入）与 `SERVERS_RULES`（服务器使用规则，仅 servers 节点非空时注入）两个独立常量；`DYNAMIC_CONTEXT_RULES` 保留为两者拼接的历史快照，运行时不再使用
 
 ### 注入链路
 
@@ -568,6 +568,22 @@ build_dynamic_system_suffix  →   (context_overrides 注入)    + "\n\n" + 动�
 - 前端 `triggerRegistry.TRIGGER_REGISTRY` ↔ 后端 `DYNAMIC_NODE_REGISTRY` 镜像对称
 - 未来新增触发类型（如 `@` 知识库）：前端注册 1 条 trigger + 后端注册 1 条 `DynamicNodeSpec`，`chatStream` 签名 / `build_dynamic_system_suffix` 签名 / router 全部零改动
 - `sanitize_dynamic_nodes` 是「通用清洗器」，不针对任何具体字段硬编码（仅依赖 registry）
+
+### 动态节点渲染通用契约（2026-08-23 落地）
+
+本节是所有 `DynamicNodeSpec`（含当前 `<attachments>` / `<servers>` 以及未来 `@` 知识库、`#` 文件等扩展）**必须遵守**的契约级约定。任何在 `DYNAMIC_NODE_REGISTRY` 追加新节点类型的开发工作，都必须确认本契约仍然成立。
+
+- **节点数据为空时整段不拼接**：任何注册节点（含 `<attachments>` / `<servers>` / 未来 `@` 知识库等）当对应的 `overrides_key` 解析后为空列表 / 空数据时，**不输出**该节点的 XML 标签 + **不输出**配套的静态规则文本。`build_dynamic_system_suffix` 在所有节点都为空时直接返回 `""`。
+- **每个节点独立判断**：attachments 与注册表节点之间的渲染决策**互不影响**。attachments 空不会触发 servers 节点的"空判断"（反之亦然）；每个非空节点都自带配套的静态规则文本（`ATTACHMENTS_RULES` / `SERVERS_RULES` / 未来 `KB_RULES` 等）与 XML 块。
+- **反对理由**（已审查）：
+  - 用户场景：用户没传附件 / 没引用服务器时，LLM 看到"静态规则"在指代一个空 XML 节点会迷惑（2026-08-23 用户报告）
+  - 替代方案被否决：「显式空节点抑制模型幻觉」是 2026-07-26 的设计假设，未经验证；在 token 消耗 / LLM 阅读清晰度上，经验上前者收益不可见，后者更清晰
+- **新增 DynamicNodeSpec 时的 checklist**：
+  1. 在 `DYNAMIC_NODE_REGISTRY` 追加 `DynamicNodeSpec` 一条
+  2. 在 `dynamic_context.py` 顶部新增配套的 `XXX_RULES` 静态规则常量
+  3. 在 `build_dynamic_system_suffix` 的"按节点类型映射规则"分支里注册（当前仅 `servers` 类型，其他类型走兜底只输出 XML）
+  4. **不需要**修改 `build_dynamic_context_xml`（已统一按"节点空则不输出"渲染）
+- **适用范围**：本契约对**所有**动态节点类型通用，包括未来的 `@` 知识库、`#` 文件等。**禁止**在后续扩展中引入"显式空节点"行为来"抑制幻觉"——该假设已被审查否决。
 
 ### 工具侧兜底
 

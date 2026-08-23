@@ -391,8 +391,9 @@ class AgentConfigService:
             - 同时保留原键（如 ``referenced_servers`` 等一等 context 字段）与
               ``dynamic_context_suffix``，调用方后续可经
               ``runtime.context.get("referenced_servers")`` 或 XML 后缀两条路径读取；
-            - sanitize_dynamic_nodes 失败 / 缺数据时仍生成显式空 ``<servers></servers>``，
-              与 chat 路由历史行为一致（显式空节点抑制模型幻觉）；
+            - sanitize_dynamic_nodes 失败 / 缺数据时，``build_dynamic_system_suffix``
+              按"动态节点渲染通用契约"（详见 memory/auth.md）不输出任何节点 /
+              规则文本，最终 suffix 可能为空字符串；
             - 本方法不抛错：sanitize / build_dynamic_system_suffix 内部异常会被吞掉
               退化为空后缀（由底层封装保证）。
 

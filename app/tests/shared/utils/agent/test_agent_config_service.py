@@ -3064,25 +3064,30 @@ def test_prepare_overrides_with_dynamic_suffix_importable():
     assert callable(getattr(service, "prepare_overrides_with_dynamic_suffix"))
 
 
-def test_prepare_overrides_with_dynamic_suffix_empty_overrides_returns_empty_server_node(monkeypatch):
-    """空 overrides 仍生成显式空 <servers></servers> 节点。
+def test_prepare_overrides_with_dynamic_suffix_empty_overrides_returns_empty_string(monkeypatch):
+    """空 overrides 时 suffix 返回空字符串（动态节点渲染通用契约，2026-08-23）。
 
     验证：空 dict 输入时，输出 dict 含 dynamic_context_suffix 键，
-    且 suffix 中包含 "<servers></servers>" 或 "<servers>" 标识
-    （显式空列表比节点缺失更能抑制模型幻觉）。
+    但 suffix 字符串本身为空（注册表节点空 + 无 attachments →
+    按新契约不输出任何 XML 标签和静态规则）。
     """
     db = MagicMock()
     loader = MagicMock()
     service = AgentConfigService(db, loader)
 
     async def fake_build_suffix(session_id, dynamic_nodes=None):
-        # 模拟真实实现：注册表中所有节点都渲染，包括空 <servers>
-        return (
-            "用户上传的附件列在 <attachments> 节点中。\n"
-            "<servers> 节点列出用户通过 `#` 触发的引用项。\n\n"
-            "<attachments>\n</attachments>\n\n"
-            "<servers>\n</servers>"
-        )
+        # 模拟真实实现（新契约）：attachments + dynamic_nodes 都空时返回空字符串
+        # 仅在 attachments 或 dynamic_nodes 任一非空时才输出节点
+        nodes = (dynamic_nodes or {}).get("referenced_servers") or []
+        attachments = dynamic_nodes.get("__fake_attachments__") if dynamic_nodes else None
+        if not nodes and not attachments:
+            return ""
+        blocks = []
+        if attachments:
+            blocks.append("<attachments>\n</attachments>")
+        if nodes:
+            blocks.append("<servers>\n</servers>")
+        return "\n\n".join(blocks)
 
     monkeypatch.setattr(
         "app.shared.utils.agent.agent_config_service.build_dynamic_system_suffix",
@@ -3097,9 +3102,11 @@ def test_prepare_overrides_with_dynamic_suffix_empty_overrides_returns_empty_ser
         service.prepare_overrides_with_dynamic_suffix({}, "session-1")
     )
 
+    # suffix 键存在但值为空字符串（新契约：动态节点为空时不拼接）
     assert "dynamic_context_suffix" in result
-    assert "<servers>" in result["dynamic_context_suffix"]
-    assert "</servers>" in result["dynamic_context_suffix"]
+    assert result["dynamic_context_suffix"] == ""
+    assert "<servers>" not in result["dynamic_context_suffix"]
+    assert "<attachments>" not in result["dynamic_context_suffix"]
 
 
 def test_prepare_overrides_with_dynamic_suffix_with_referenced_servers_renders_items(monkeypatch):

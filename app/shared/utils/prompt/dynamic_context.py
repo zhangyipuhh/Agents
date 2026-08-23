@@ -11,8 +11,11 @@
     1. 以 attachments 表为唯一事实源，每轮对话实时查询拼接，
        上传/删除附件后下一轮自动同步，不依赖前端请求体中的附件数组。
     2. 动态节点（<attachments> / <servers> / ...）追加在系统提示词末尾，利用近因效应。
-    3. 空状态显式化：已注册的节点即便为空也输出显式空节点（如 ``<servers></servers>``），
-       显式空列表比节点缺失更能抑制模型幻觉。
+    3. **每个节点独立判断，节点数据为空则整段不输出**（2026-08-23 落地）：
+       attachments 与注册表节点（如 <servers>）的渲染决策互不影响，
+       数据为空 → 不输出该节点的 XML 标签 + 不输出配套的静态规则文本。
+       该规则对所有 DynamicNodeSpec（含未来 @ 知识库等）通用，详见
+       memory/auth.md "动态节点渲染通用契约" 章节。
     4. 路径跨平台：注入提示词的路径统一为 POSIX 风格且剥离 Windows 盘符
        （如 ``E:\\a\\b.md`` → ``/a/b.md``）；读取侧通过
        :func:`resolve_prompt_path` 反向解析回当前平台可访问的路径。
@@ -23,7 +26,7 @@
        :func:`build_dynamic_system_suffix` 与 :func:`build_dynamic_context_xml`
        签名不变。
 
-Date: 2026-07-24 / 2026-07-26
+Date: 2026-07-24 / 2026-07-26 / 2026-08-23
 Author: AI Assistant
 """
 
@@ -134,15 +137,25 @@ def sanitize_dynamic_nodes(
 # 静态规则文本
 # -----------------------------------------------------------------------------
 
-DYNAMIC_CONTEXT_RULES = (
+ATTACHMENTS_RULES = (
     "用户上传的附件列在 <attachments> 节点中。当用户询问附件内容时，"
     "必须使用该节点中列出的 path 调用 read_file 工具，禁止凭记忆或猜测编造文件名和内容。"
-    "若 <attachments> 为空或其中没有用户所指的文件，直接告知用户没有该附件，不要假装读取。\n"
+    "若 <attachments> 为空或其中没有用户所指的文件，直接告知用户没有该附件，不要假装读取。"
+)
+"""<attachments> 节点使用规则；仅在 attachments 非空时拼入后缀。"""
+
+SERVERS_RULES = (
     "<servers> 节点列出用户通过 `#` 触发的引用项；name 字段即 DevOpsServerService 的 "
     "business_name（也是 SSH / 巡检工具的入参）。当用户要求对其中服务器执行操作时，"
     "请优先使用该节点列出的 name 调用工具；若节点为空或不含对应服务器，明确告知用户未引用。"
 )
-"""<attachments> / <servers> 节点的静态使用规则，随动态节点一起注入系统提示词末尾。"""
+"""<servers> 节点使用规则；仅在 servers 非空时拼入后缀。"""
+
+# 2026-08-23 后，运行时仅使用 ATTACHMENTS_RULES / SERVERS_RULES。
+# DYNAMIC_CONTEXT_RULES 保留作为历史快照（两者拼接），仅供文档引用，
+# 不参与 build_dynamic_system_suffix 的实际注入。
+DYNAMIC_CONTEXT_RULES = f"{ATTACHMENTS_RULES}\n\n{SERVERS_RULES}"
+"""<attachments> / <servers> 节点的静态使用规则汇总（历史快照）；2026-08-23 后运行时不再使用。"""
 
 
 # -----------------------------------------------------------------------------
@@ -250,48 +263,64 @@ def build_dynamic_context_xml(
 ) -> str:
     """构建 <attachments> / 动态节点 XML 片段。
 
-    空状态显式化：attachments 为空时仍输出空成对节点；注册表中已声明的动态节点
-    即便为空也输出显式空节点（显式空列表是更强的负向信号，抑制模型脑补引用）。
+    行为（2026-08-23 调整）：每个节点独立判断是否渲染。
+    - attachments 非空 → 输出 ``<attachments>...</attachments>``；反之不输出。
+    - 注册表中每个 ``DynamicNodeSpec`` 独立判断：对应 ``overrides_key`` 解析后
+      非空 → 输出该节点的 XML 块；反之不输出。
+    - 所有节点都空时返回 ``""``。
+
+    该行为受 memory/auth.md "动态节点渲染通用契约" 约束，对所有 DynamicNodeSpec
+    （含未来 @ 知识库等）通用。
 
     参数:
         attachments: 附件记录列表（attachments 表行字典，需含
             file_name / stored_path / file_size / created_at 键）
-        dynamic_nodes: 已 sanitize 的动态节点字典，键为 ``overrides_key``，值为元素列表；
-            未注册键不会出现。未传或空字典时输出注册表中所有节点类型对应的空节点。
+        dynamic_nodes: 已 sanitize 的动态节点字典，键为 ``overrides_key``，
+            值为元素列表；未注册键不会出现。
 
     返回:
-        str: 形如::
+        str: 仅包含非空节点的 XML 片段，节点之间用 ``\\n`` 自然分隔；
+        所有节点都空时返回 ``""``。形如::
 
             <attachments>
               <file name="..." path="..." size="..." uploaded_at="..." />
             </attachments>
-
             <servers>
               <server name="prod-api" server_type="linux" />
             </servers>
     """
-    lines: List[str] = ["<attachments>"]
-    for att in attachments or []:
-        name = quoteattr(str(att.get("file_name") or ""))
-        path = quoteattr(normalize_attachment_path(att.get("stored_path") or ""))
-        size = quoteattr(_format_size(att.get("file_size")))
-        uploaded_at = quoteattr(_format_uploaded_at(att.get("created_at")))
-        lines.append(
-            f"  <file name={name} path={path} size={size} uploaded_at={uploaded_at} />"
-        )
-    lines.append("</attachments>")
-    lines.append("")
+    blocks: List[str] = []
+
+    # attachments 块：仅 attachments 非空时输出（独立判断）
+    if attachments:
+        att_lines: List[str] = ["<attachments>"]
+        for att in attachments:
+            name = quoteattr(str(att.get("file_name") or ""))
+            path = quoteattr(normalize_attachment_path(att.get("stored_path") or ""))
+            size = quoteattr(_format_size(att.get("file_size")))
+            uploaded_at = quoteattr(_format_uploaded_at(att.get("created_at")))
+            att_lines.append(
+                f"  <file name={name} path={path} size={size} uploaded_at={uploaded_at} />"
+            )
+        att_lines.append("</attachments>")
+        blocks.append("\n".join(att_lines))
+
+    # 注册表节点块：每个节点独立判断，非空才输出对应标签（互不影响）
     for spec in DYNAMIC_NODE_REGISTRY:
         nodes = (dynamic_nodes or {}).get(spec.overrides_key) or []
-        lines.append(f"<{spec.xml_parent_tag}>")
+        if not nodes:
+            continue  # 此节点空 → 不输出（不影响其它节点）
+        node_lines: List[str] = [f"<{spec.xml_parent_tag}>"]
         for item in nodes:
             attrs = " ".join(
                 f"{key}={quoteattr(str(item.get(key) or ''))}"
                 for key in spec.allowed_fields
             )
-            lines.append(f"  <{spec.xml_item_tag} {attrs} />")
-        lines.append(f"</{spec.xml_parent_tag}>")
-    return "\n".join(lines)
+            node_lines.append(f"  <{spec.xml_item_tag} {attrs} />")
+        node_lines.append(f"</{spec.xml_parent_tag}>")
+        blocks.append("\n".join(node_lines))
+
+    return "\n".join(blocks)
 
 
 async def build_dynamic_system_suffix(
@@ -300,26 +329,30 @@ async def build_dynamic_system_suffix(
 ) -> str:
     """构建追加到系统提示词末尾的动态上下文后缀（静态规则 + XML 节点）。
 
+    行为（2026-08-23 调整）：每个节点独立渲染，各带规则段。
+    - attachments 非空 → 输出 ``ATTACHMENTS_RULES + \\n\\n + attachments XML 块``
+    - 注册表节点非空 → 输出 ``SERVERS_RULES + \\n\\n + 该节点 XML 块``
+    - 两者都空 → 返回 ``""``。
+    - 两者都非空 → 两段独立拼接，各带规则段，前后排列（attachments 在前）。
+
     以 attachments 表为唯一事实源，按 session_id 实时查询附件列表；
-    数据库未启用（Memory 模式）或查询异常时降级为空附件列表，
-    仍输出显式空节点，保证提示词结构稳定。
+    数据库未启用（Memory 模式）或查询异常时降级为空附件列表。
 
     参数:
         session_id: 会话 ID
         dynamic_nodes: 已通过 :func:`sanitize_dynamic_nodes` 清洗过的动态节点字典；
-            未传时（默认）suffix 中注册表节点全部输出为空节点。
             传入空 dict 表示「无任何引用」。
 
     返回:
-        str: 完整后缀文本，结构::
+        str: 仅包含非空节点的规则段 + XML 片段；所有节点都空时返回 ``""``。
+        形如::
 
             用户上传的附件列在 <attachments> 节点中。...
-            <servers> 节点列出用户通过 `#` 触动的引用项；...
-
             <attachments>
-              ...
+              <file name="..." path="..." size="..." uploaded_at="..." />
             </attachments>
 
+            <servers> 节点列出用户通过 `#` 触动的引用项；...
             <servers>
               <server name="..." server_type="..." />
             </servers>
@@ -336,5 +369,54 @@ async def build_dynamic_system_suffix(
         )
         attachments = []
 
-    xml_block = build_dynamic_context_xml(attachments, dynamic_nodes)
-    return f"{DYNAMIC_CONTEXT_RULES}\n\n{xml_block}"
+    # 独立判断：attachments 与注册表节点的渲染决策互不影响
+    has_attachments = bool(attachments)
+    # 注册表节点逐个判断，任一非空 → 触发对应规则 + XML 输出
+    has_any_dynamic = any(
+        (dynamic_nodes or {}).get(spec.overrides_key)
+        for spec in DYNAMIC_NODE_REGISTRY
+    )
+
+    # 两者都空 → 返回空字符串，无任何拼接
+    if not has_attachments and not has_any_dynamic:
+        return ""
+
+    blocks: List[str] = []
+
+    # attachments 段：仅在 attachments 非空时独立拼接（自带规则）
+    if has_attachments:
+        att_xml_lines: List[str] = ["<attachments>"]
+        for att in attachments:
+            name = quoteattr(str(att.get("file_name") or ""))
+            path = quoteattr(normalize_attachment_path(att.get("stored_path") or ""))
+            size = quoteattr(_format_size(att.get("file_size")))
+            uploaded_at = quoteattr(_format_uploaded_at(att.get("created_at")))
+            att_xml_lines.append(
+                f"  <file name={name} path={path} size={size} uploaded_at={uploaded_at} />"
+            )
+        att_xml_lines.append("</attachments>")
+        blocks.append(f"{ATTACHMENTS_RULES}\n\n" + "\n".join(att_xml_lines))
+
+    # 注册表节点段：每个节点独立判断，非空才拼接（自带规则）
+    for spec in DYNAMIC_NODE_REGISTRY:
+        nodes = (dynamic_nodes or {}).get(spec.overrides_key) or []
+        if not nodes:
+            continue
+        node_xml_lines: List[str] = [f"<{spec.xml_parent_tag}>"]
+        for item in nodes:
+            attrs = " ".join(
+                f"{key}={quoteattr(str(item.get(key) or ''))}"
+                for key in spec.allowed_fields
+            )
+            node_xml_lines.append(f"  <{spec.xml_item_tag} {attrs} />")
+        node_xml_lines.append(f"</{spec.xml_parent_tag}>")
+        node_xml = "\n".join(node_xml_lines)
+        # 配套规则：当前仅 servers 类型
+        # 未来新增 DynamicNodeSpec 时，需在此分支注册对应的规则常量
+        if spec.xml_parent_tag == "servers":
+            blocks.append(f"{SERVERS_RULES}\n\n{node_xml}")
+        else:
+            # 兜底：未注册规则的节点只输出 XML，不附带规则文本
+            blocks.append(node_xml)
+
+    return "\n\n".join(blocks)

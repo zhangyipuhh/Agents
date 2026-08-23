@@ -1840,10 +1840,13 @@ def test_chat_referenced_servers_sanitized_in_suffix(
     assert "password=" not in suffix.split("<servers>", 1)[-1]
 
 
-def test_chat_empty_referenced_servers_renders_explicit_empty_node(
+def test_chat_empty_referenced_servers_omits_servers_node(
     client, admin_headers, monkeypatch
 ):
-    """测试 referenced_servers 为空列表时 suffix 仍输出显式 <servers></servers> 空节点。
+    """测试 referenced_servers 为空列表时 suffix 不再输出 <servers></servers> 空节点（2026-08-23 契约）。
+
+    动态节点渲染通用契约：节点数据为空 → 不输出对应 XML 标签和静态规则。
+    attachments 也为空 → suffix 为空字符串。
 
     参数:
         client: pytest client fixture
@@ -1880,7 +1883,10 @@ def test_chat_empty_referenced_servers_renders_explicit_empty_node(
 
     assert response.status_code == 200
     suffix = captured[0]["context_overrides"]["dynamic_context_suffix"]
-    assert "<servers>\n</servers>" in suffix
+    # 2026-08-23 契约：attachments + servers 都空 → suffix 为空字符串
+    assert suffix == ""
+    assert "<servers>" not in suffix
+    assert "<attachments>" not in suffix
 
 
 # =============================================================================
