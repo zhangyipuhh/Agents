@@ -55,6 +55,141 @@ _RE_BLOCKQUOTE = re.compile(r"(?m)^\s*>\s+\S")
 _RE_HR = re.compile(r"(?m)^\s*---\s*$")
 _RE_FENCE = re.compile(r"```")
 
+# Markdown 表格检测（2026-08-23 新增）。
+#
+# 触发条件：连续两行都「像表格行」——
+#   - 表格行：行首 `|` 或包含至少 2 个 `|`，典型 `| col | col |`
+#   - 分隔行：`| --- | --- |`（纯 `-` / `:---` / `:---:` 等对齐标识，列数等于表头列数）
+#
+# 注意：分隔行必须紧随表头行；否则不识别。下面两个正则分别匹配「表头/数据行」
+# 与「纯对齐分隔行」。
+_RE_TABLE_ROW = re.compile(r"^\s*\|.+\|\s*$")
+# 允许的单元格内容：飞书 markdown 元素不支持多行字符串，也不允许出现 `|`，
+# 但本正则仅做行级别判别；解析单元格交给下面的 `_parse_table_cells`。
+_RE_TABLE_SEP = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$")
+
+
+def _parse_table_row(line: str) -> List[str]:
+    """把 ``"| col1 | col2 | col3 |"`` 这种行切成单元格列表。
+
+    去除首尾的 ``|``、按 ``|`` 拆分、每格 ``strip``。空行会被丢弃。
+
+    Args:
+        line: 原始表格行
+
+    Returns:
+        list[str]: 单元格文本列表（不含空字符串）
+    """
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return [cell.strip() for cell in s.split("|")]
+
+
+def _looks_like_separator_row(line: str, header_cols: int) -> bool:
+    """判断当前行是否是「合法的表格分隔行」，且列数与表头一致。
+
+    飞书 v1/v2 schema 不强制要求 ``:---:`` 对齐语法，但很多 LLM 输出会带，
+    这里都接受。表格分隔行的所有单元格必须是 ``-`` / ``:---`` / ``---:`` /
+    ``:---:`` 这种纯对齐标记，不允许混杂其它字符。
+
+    Args:
+        line: 原始行
+        header_cols: 上一行表头的列数
+
+    Returns:
+        bool: 该行能作为表格分隔行返回 ``True``
+    """
+    s = line.strip()
+    # 必须形如 ``| ... |``，否则直接判否
+    if not _RE_TABLE_SEP.match(s):
+        return False
+    cells = _parse_table_row(line)
+    if len(cells) != header_cols:
+        return False
+    for c in cells:
+        cc = c.strip()
+        if not re.fullmatch(r":?-{2,}:?", cc):
+            return False
+    return True
+
+
+def _build_column_set_table(
+    header: List[str],
+    body_rows: List[List[str]],
+) -> List[Dict[str, Any]]:
+    """把表格数据转成飞书 ``column_set`` + ``column`` 多列布局列表。
+
+    飞书 v2.0 schema 没有原生的 ``<table>`` 元素；为了让 LLM 输出的
+    ``| 列 | 列 |`` 表格能在卡片里整齐展示，我们用一列一列的方式抽出
+    数据：第一个 ``column_set`` 是表头（加粗居中、灰色背景），后续每个
+    数据行再起一个 ``column_set``、背景 ``default`` 隔行错开。
+
+    列宽策略：固定 ``weight=1``，由飞书侧自动均分（避免 weight 必须 <= 5 的
+    硬限制）。如果列数 > 5，仍然输出（飞书会强制压缩列宽）。
+
+    Args:
+        header: 表头单元格列表
+        body_rows: 数据行列表（每行是单元格列表，长度可能不一致）
+
+    Returns:
+        list[dict]: 每个元素是一个 ``column_set``（表头 + 每行一个）
+    """
+    col_count = len(header)
+    if col_count == 0:
+        return [{"tag": "markdown", "content": ""}]
+
+    def _column(cell_text: str) -> Dict[str, Any]:
+        """构造单列内容：居中对齐（表头 / 数据共用，由调用方决定加粗）。"""
+        # 飞书 markdown 元素会保留 \n，但单格里换行不友好，去掉多余空格
+        text = re.sub(r"\s+", " ", cell_text or "").strip()
+        return {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "vertical_align": "top",
+            "elements": [
+                {"tag": "markdown", "content": text, "text_align": "center"}
+            ],
+        }
+
+    def _header_column(cell_text: str) -> Dict[str, Any]:
+        col = _column(cell_text)
+        # 表头元素再嵌一个加粗的 markdown
+        col["elements"][0]["content"] = f"**{col['elements'][0]['content'] or ''}**"
+        return col
+
+    header_columns = [_header_column(h) for h in header]
+    elements: List[Dict[str, Any]] = [
+        {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "background_style": "grey",
+            "horizontal_spacing": "default",
+            "columns": header_columns,
+        }
+    ]
+
+    for idx, row in enumerate(body_rows):
+        # 把单元格补齐到 col_count（短行补空、长行截断）
+        cells = list(row)[:col_count]
+        while len(cells) < col_count:
+            cells.append("")
+        columns = [_column(c) for c in cells]
+        elements.append(
+            {
+                "tag": "column_set",
+                "flex_mode": "none",
+                "background_style": "default",
+                "horizontal_spacing": "default",
+                "columns": columns,
+            }
+        )
+
+    return elements
+
 
 class MarkdownToCardConverter:
     """Markdown → 飞书卡片 JSON 转换器（无交互按钮，纯展示）。"""
@@ -102,6 +237,66 @@ class MarkdownToCardConverter:
         # 代码围栏：成对出现才算
         if _RE_FENCE.search(text) and len(_RE_FENCE.findall(text)) >= 2:
             return True
+        # Markdown 表格行：至少出现一对「表格行 + 分隔行」（2026-08-23 新增）
+        if MarkdownToCardConverter._looks_like_markdown_table(text):
+            return True
+        return False
+
+    # ------------------------------------------------------------------ #
+    # Markdown 表格检测（2026-08-23 新增）                                  #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _looks_like_markdown_table(text: str) -> bool:
+        """判断文本是否包含 markdown 表格。
+
+        触发条件：至少出现一对「表头行 + 分隔行」——
+          - 表头行：``| col1 | col2 |...``（前后带 ``|``，中间有 ``|``）
+          - 分隔行：``| --- | --- |...``（每个 cell 是 ``:---:`` / ``---`` 这种对齐标记）
+
+        仅一行 ``| col |`` 没有分隔行不算表格。
+
+        Args:
+            text: 待检测文本
+
+        Returns:
+            bool: 文本里是否含 markdown 表格
+        """
+        if not text:
+            return False
+        in_table = False
+        header_cols = 0
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line:
+                if in_table:
+                    # 表格块内的空行视作表格结束（除非接下来还有数据行，但
+                    # 标准 markdown 表格是连续成段）
+                    in_table = False
+                    header_cols = 0
+                continue
+            if _RE_TABLE_ROW.match(line):
+                cells = _parse_table_row(raw)
+                if in_table:
+                    # 在表内：先判定是否为「合法的分隔行」——分隔行也满足
+                    # ``|...|...|`` 形状，但单元格内容是 `---` / `:---:`。
+                    # 仅当分隔行的列数与表头一致，且每个单元格是合法对齐标记
+                    # 时，才算真正的表格分隔行。
+                    if _looks_like_separator_row(raw, header_cols):
+                        return True
+                    # 不是分隔行但又在表格区域里——若列数与表头一致，认为
+                    # 是「数据行」继续；否则视为表格假设失败，从候选表头行开始重试。
+                    if len(cells) != header_cols:
+                        in_table = False
+                        header_cols = 0
+                    continue
+                # 不在表内：把当前行当作候选表头，等待下一行验证分隔行
+                in_table = True
+                header_cols = len(cells)
+                continue
+            # 非表格行 → 重置表假设
+            in_table = False
+            header_cols = 0
         return False
 
     @staticmethod
@@ -317,6 +512,37 @@ class MarkdownToCardConverter:
                 elements.append({"tag": "hr"})
                 i += 1
                 continue
+
+            # Markdown 表格（2026-08-23 新增）：表头行 + 分隔行 + 0..N 数据行
+            # 使用与 _looks_like_markdown_table 同样的判定；解析失败回退为普通段落。
+            # 2026-08-23 增补：少列补空、多列截断（不再因列数不一致而 break）。
+            # LLM 偶发输出「少一格」的表格行，整体丢弃会丢内容，故统一交给
+            # _build_column_set_table 在 column_set 层做对齐。
+            if _RE_TABLE_ROW.match(stripped):
+                cells = _parse_table_row(line)
+                if (
+                    len(cells) >= 2
+                    and (i + 1) < n
+                    and _looks_like_separator_row(lines[i + 1], len(cells))
+                ):
+                    # 吃掉表头 + 分隔行；继续累积数据行直到非表格行
+                    header = cells
+                    i += 2
+                    body_rows: List[List[str]] = []
+                    while i < n and _RE_TABLE_ROW.match(lines[i].strip()):
+                        row = _parse_table_row(lines[i])
+                        # 单元格数与表头不一致时：少则补空、多则截断，保留整张表
+                        # （LLM 偶尔会漏一格；「补空」比「整行丢失」对用户更友好）
+                        if len(row) < len(header):
+                            row = row + [""] * (len(header) - len(row))
+                        elif len(row) > len(header):
+                            row = row[: len(header)]
+                        body_rows.append(row)
+                        i += 1
+                    elements.extend(
+                        _build_column_set_table(header, body_rows)
+                    )
+                    continue
 
             # 标题
             heading_match = re.match(r"^(#{1,6})\s+(.*)$", stripped)

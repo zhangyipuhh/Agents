@@ -584,3 +584,158 @@ def test_to_card_json_real_failing_case_schema_2_0():
     assert card["schema"] == "2.0"
     # config 字段保持简洁
     assert card["config"]["wide_screen_mode"] is True
+
+
+# ---------------------------------------------------------------------------
+# P1 Markdown 表格（2026-08-23 新增）
+# ---------------------------------------------------------------------------
+def test_looks_like_markdown_table_simple():
+    """检测到 ``| col1 | col2 |`` + ``|---|---|`` 时返回 True。"""
+    text = "| a | b |\n|---|---|\n| 1 | 2 |"
+    assert MarkdownToCardConverter.looks_like_markdown(text) is True
+
+
+def test_looks_like_markdown_table_with_alignment():
+    """对齐语法 ``:---:`` / ``:---`` / ``---:`` 都能识别。"""
+    text = "| a | b | c |\n|:---|:---:|---:|\n| 1 | 2 | 3 |"
+    assert MarkdownToCardConverter.looks_like_markdown(text) is True
+
+
+def test_looks_like_markdown_table_no_separator_returns_false():
+    """只有 ``| a | b |`` 没分隔行不算表格（避免误判含 `|` 的非表格文本）。"""
+    text = "这是一段含管道符的文本，没有分隔行：\n| a | b |\n没有任何内容"
+    assert MarkdownToCardConverter.looks_like_markdown(text) is False
+
+
+def test_looks_like_markdown_table_real_inspection_report():
+    """复现用户实际的巡检异常报告表格（含 ``:---:`` 对齐），looks_like 应识别。"""
+    text = (
+        "| 异常项 | 当前值 | 阈值 | 问题分析 | 修复建议 |\n"
+        "|:---|---:|:---|:---|:---|\n"
+        "| 磁盘 F:\\ 使用率 | 93.7% | >90% 严重 | F盘存储接近满载 | 立即清理F盘 |\n"
+    )
+    assert MarkdownToCardConverter.looks_like_markdown(text) is True
+
+
+def test_to_card_json_renders_table_as_column_set():
+    """表格渲染为 column_set + column；表头列宽均分、加粗居中、灰底。"""
+    md = (
+        "| col1 | col2 | col3 |\n"
+        "|---|---|---|\n"
+        "| A1 | A2 | A3 |\n"
+        "| B1 | B2 | B3 |\n"
+    )
+    card = MarkdownToCardConverter.to_card_json(md)
+    elements = card["body"]["elements"]
+    column_sets = [e for e in elements if e.get("tag") == "column_set"]
+    # 1 表头 + 2 数据行 = 3 个 column_set
+    assert len(column_sets) == 3
+    # 每个 column_set 都有 3 列
+    for cs in column_sets:
+        assert len(cs["columns"]) == 3
+        for col in cs["columns"]:
+            assert col["tag"] == "column"
+            assert col["width"] == "weighted"
+            assert col["weight"] == 1
+            assert len(col["elements"]) == 1
+            assert col["elements"][0]["tag"] == "markdown"
+            assert col["elements"][0]["text_align"] == "center"
+    # 表头列应加粗、灰底
+    header = column_sets[0]
+    assert header["background_style"] == "grey"
+    assert all(
+        c["elements"][0]["content"].startswith("**")
+        and c["elements"][0]["content"].endswith("**")
+        for c in header["columns"]
+    )
+    # 数据列默认底色 + 不加粗（保留单元格原文）
+    assert column_sets[1]["background_style"] == "default"
+    assert column_sets[1]["columns"][0]["elements"][0]["content"] == "A1"
+
+
+def test_to_card_json_table_5_columns_real_user_case():
+    """复现「不动产登记的意义」5 列宽表（含末尾加分隔行差异），产物含 1 表头 + N 数据行。"""
+    md = (
+        "| 异常项 | 当前值 | 阈值 | 问题分析 | 修复建议 |\n"
+        "|--------|--------|------|----------|----------|\n"
+        "| 磁盘 F:\\ 使用率 | 93.7% | >90% 严重 | F盘存储接近满载 | 立即清理F盘 |\n"
+        "| 磁盘 F:\\ IO利用率 | 100% | >90% 严重 | 满载读写 | 排查高IO进程 |\n"
+    )
+    card = MarkdownToCardConverter.to_card_json(md)
+    column_sets = [e for e in card["body"]["elements"] if e.get("tag") == "column_set"]
+    assert len(column_sets) == 3  # 表头 + 2 行
+    for cs in column_sets:
+        assert len(cs["columns"]) == 5
+    # 单元格内容含原始中文与数字
+    header_cells = [c["elements"][0]["content"] for c in column_sets[0]["columns"]]
+    assert header_cells == [
+        "**异常项**",
+        "**当前值**",
+        "**阈值**",
+        "**问题分析**",
+        "**修复建议**",
+    ]
+
+
+def test_to_card_json_table_short_row_padded_with_empty():
+    """数据行单元格数 < 表头时，自动补空字符串（避免 column_set 字段缺失报错）。"""
+    md = (
+        "| a | b | c |\n"
+        "|---|---|---|\n"
+        "| 1 | 2 |\n"  # 缺第三列
+    )
+    card = MarkdownToCardConverter.to_card_json(md)
+    column_sets = [e for e in card["body"]["elements"] if e.get("tag") == "column_set"]
+    # 表头 + 1 行
+    assert len(column_sets) == 2
+    # 第二行 3 列均存在，第三列补空字符串
+    cols_data = column_sets[1]["columns"]
+    assert len(cols_data) == 3
+    assert cols_data[0]["elements"][0]["content"] == "1"
+    assert cols_data[1]["elements"][0]["content"] == "2"
+    assert cols_data[2]["elements"][0]["content"] == ""
+
+
+def test_to_card_json_table_mismatched_row_padded_or_truncated():
+    """数据行单元格数与表头不一致时，少则补空、多则截断，不丢弃整行。
+
+    这条策略保证 LLM 偶发漏一格（或多一格）的表格不会被整体吞掉，依然能
+    渲染为对齐的 column_set 结构。
+    """
+    md = (
+        "| a | b |\n"
+        "|---|---|\n"
+        "| x | y |\n"
+        "| only_one |\n"  # 少一格
+    )
+    card = MarkdownToCardConverter.to_card_json(md)
+    elements = card["body"]["elements"]
+    column_sets = [e for e in elements if e.get("tag") == "column_set"]
+    # 表头 + 2 数据行 = 3 个 column_set
+    assert len(column_sets) == 3
+    # 缺列那行第一列填原文、第二列补空
+    last_data = column_sets[2]["columns"]
+    assert last_data[0]["elements"][0]["content"] == "only_one"
+    assert last_data[1]["elements"][0]["content"] == ""
+
+
+def test_to_card_json_table_text_mixed_with_paragraphs():
+    """表格前后接入普通段落，前后段落保留为独立 markdown 元素不被表格破坏。"""
+    md = (
+        "前置段落。\n"
+        "\n"
+        "| a | b |\n"
+        "|---|---|\n"
+        "| 1 | 2 |\n"
+        "\n"
+        "后置段落。\n"
+    )
+    card = MarkdownToCardConverter.to_card_json(md)
+    elements = card["body"]["elements"]
+    column_sets = [e for e in elements if e.get("tag") == "column_set"]
+    assert len(column_sets) == 2  # 表头 + 1 数据行
+    md_contents = [
+        e["content"] for e in elements if e.get("tag") == "markdown"
+    ]
+    assert any("前置段落" in c for c in md_contents)
+    assert any("后置段落" in c for c in md_contents)
