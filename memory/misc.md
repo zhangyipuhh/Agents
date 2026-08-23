@@ -167,7 +167,7 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 | 路径 | 职责 |
 |---|---|
 | `app/shared/tools/skills/feishu/FeishuClient.py` | `get_lark_client()` 公共工厂：从 `settings.feishu` 读取凭证，构造线程安全单例 `lark.Client`；`reset_lark_client()` 供测试重置缓存 |
-| `app/shared/tools/skills/feishu/FeishuMessageTools.py` | 1 个 `@tool(description=...)`：`send_feishu_message`（发送文本消息到群/用户） |
+| `app/shared/tools/skills/feishu/FeishuMessageTools.py` | 1 个 `@tool(description=...)`：`send_feishu_message`（自动 Markdown 检测 → text / interactive 卡片发送；2026-08-23 起：内容含 Markdown 特征时走 `msg_type="interactive"` + `MarkdownToCardConverter.to_card_json()` schema=2.0 卡片，保证飞书侧正确渲染；纯文本仍走 `msg_type="text"`） |
 
 ### 配置（FeishuSettings）
 
@@ -204,7 +204,7 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 ### 测试覆盖
 
 - `app/tests/shared/tools/skills/feishu/test_feishu_client.py` —— 9 个用例：导入存在性、凭证缺失抛 RuntimeError、单例缓存、reset 清空、日志级别映射
-- `app/tests/shared/tools/skills/feishu/test_feishu_message_tools.py` —— 7 个用例：导入存在性、receive_id 缺失、client 初始化失败、API 成功/失败/异常、显式参数覆盖默认配置
+- `app/tests/shared/tools/skills/feishu/test_feishu_message_tools.py` —— 10 个用例（原 7 个文本路径用例 + 2026-08-23 新增 3 个 Markdown 卡片路径用例：`test_send_feishu_message_renders_markdown_as_card` / `test_send_feishu_message_pure_text_keeps_text_type` / `test_send_feishu_message_card_json_contains_md_elements`）：导入存在性、receive_id 缺失、client 初始化失败、API 成功/失败/异常、显式参数覆盖默认配置、Markdown 触发 interactive 卡片 + schema=2.0、纯文本保持 text 类型、卡片 elements 含 markdown / code_block
 - `app/tests/shared/tools/skills/feishu/test_feishu_websocket_service.py` —— 101 个用例：模块导入存在性、消息字段提取（p2p / group / file）、session_id 构造、群聊 @机器人 检测（精确 + 仅 open_id 缺失时宽松降级）、消息分发到 agent、非文本消息跳过、回复发送（含截断）、单条消息异常隔离、agent.stream messages 模式 chunk 拼接、loop 注入、stop 标志、markdown 卡片路由、卡片 API 失败回退文本、HITL interrupt 检测（含 `__interrupt__` 多模式解析）、`_send_interrupt_card` 发送、`_on_card_action` 回调解析与 resume 投递、`_resume_agent` 续跑 + pending 清理、`p2_card_action_trigger` 事件注册、`_fetch_bot_open_id` 原始 HTTP 路径（顶层 bot / 嵌套 data.bot / 非零 code / 请求异常 / 非法 JSON / 缺 open_id / 缺 raw.content）、文件下载、session 记录与 receiver 缺省、URL 过滤、subagent 路由
 - `app/tests/shared/tools/skills/feishu/test_feishu_websocket_service.py::_fetch_bot_open_id` 子集 —— 7 个用例：覆盖 `lark.Client.request(BaseRequest)` 路径的成功 / 失败 / 异常 / 严格不返回 app_id / 缺 raw.content 等契约
 - `app/tests/shared/tools/skills/feishu/test_markdown_to_card_converter.py` —— 45 个用例：导入存在性、`looks_like_markdown` 触发（粗体 / 斜体 / 行内代码 / 标题 / 列表 / 有序列表(1./1) / 双位数字）/ 引用 / 分隔线 / 代码围栏）、`looks_like_markdown` 否定、`to_card_json` 基本结构、h1-h3 标题、hr、列表合并、有序列表 单层 / 含子项 / 用户复现 / 括号形式(1) / **行内多编号拆分（用户截图复现）/ CJK 终止符触发 / 括号形式行内 / 反例（数字不被误拆）/ 常规多行回归保护 2026-07-17 新增**、引用、代码块（带 / 不带语言）、纯文本段落、粗体保留、截断、Unicode / emoji

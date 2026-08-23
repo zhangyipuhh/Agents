@@ -33,8 +33,34 @@ except Exception:  # noqa: BLE001 - 测试环境被 conftest mock 时降级
 
 from app.core.config.settings import settings
 from app.shared.tools.skills.feishu.FeishuClient import get_lark_client
+from app.shared.tools.skills.feishu.MarkdownToCardConverter import (
+    MarkdownToCardConverter,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _build_content_payload(content: str) -> tuple:
+    """根据 content 是否含 Markdown 特征，决定走交互式卡片还是纯文本。
+
+    当 ``MarkdownToCardConverter.looks_like_markdown(content)`` 命中时，
+    返回 ``("interactive", <卡片 JSON 字符串>)``，否则保持现有 ``("text",
+    {"text": content} JSON 字符串)`` 行为。这样能保证被自动推送的 Markdown
+    内容在飞书侧被正确渲染为卡片（与 ``FeishuCardConsumer._send_card_reply``
+    复用同一转换器），同时对纯文本消息不强制加卡片头。
+
+    Args:
+        content: 工具调用方传入的原始文本
+
+    Returns:
+        tuple[str, str]: ``(msg_type, content_json_str)``
+            - ``msg_type``: ``"interactive"`` / ``"text"``
+            - ``content_json_str``: 已序列化的 JSON 字符串（ensure_ascii=False）
+    """
+    if MarkdownToCardConverter.looks_like_markdown(content or ""):
+        card = MarkdownToCardConverter.to_card_json(content or "")
+        return "interactive", json.dumps(card, ensure_ascii=False)
+    return "text", json.dumps({"text": content}, ensure_ascii=False)
 
 
 def _is_real_tool_message_class(cls) -> bool:
@@ -161,14 +187,17 @@ def send_feishu_message(
     # 构造请求（参考 exmple.py）
     from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
 
+    # Markdown 内容自动走交互式卡片（保证飞书侧正确渲染），纯文本仍走 msg_type=text。
+    msg_type, content_str = _build_content_payload(content)
+
     request = (
         CreateMessageRequest.builder()
         .receive_id_type(target_receive_id_type)
         .request_body(
             CreateMessageRequestBody.builder()
             .receive_id(target_receive_id)
-            .msg_type("text")
-            .content(json.dumps({"text": content}, ensure_ascii=False))
+            .msg_type(msg_type)
+            .content(content_str)
             .uuid(str(uuid.uuid4()))
             .build()
         )
