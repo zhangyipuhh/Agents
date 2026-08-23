@@ -3051,6 +3051,266 @@ def test_build_agent_instance_filters_disabled_skills(monkeypatch):
     assert captured_configs[0].enabled_skill_names == ["hgsc"]
 
 
+# ============================================================
+# 2026-08-23 新增：prepare_overrides_with_dynamic_suffix 测试
+# 验证 chat 路由 / 定时任务分支共用的 service 层公共方法。
+# ============================================================
+def test_prepare_overrides_with_dynamic_suffix_importable():
+    """测试 prepare_overrides_with_dynamic_suffix 方法可访问。"""
+    db = MagicMock()
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+    assert hasattr(service, "prepare_overrides_with_dynamic_suffix")
+    assert callable(getattr(service, "prepare_overrides_with_dynamic_suffix"))
+
+
+def test_prepare_overrides_with_dynamic_suffix_empty_overrides_returns_empty_server_node(monkeypatch):
+    """空 overrides 仍生成显式空 <servers></servers> 节点。
+
+    验证：空 dict 输入时，输出 dict 含 dynamic_context_suffix 键，
+    且 suffix 中包含 "<servers></servers>" 或 "<servers>" 标识
+    （显式空列表比节点缺失更能抑制模型幻觉）。
+    """
+    db = MagicMock()
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    async def fake_build_suffix(session_id, dynamic_nodes=None):
+        # 模拟真实实现：注册表中所有节点都渲染，包括空 <servers>
+        return (
+            "用户上传的附件列在 <attachments> 节点中。\n"
+            "<servers> 节点列出用户通过 `#` 触发的引用项。\n\n"
+            "<attachments>\n</attachments>\n\n"
+            "<servers>\n</servers>"
+        )
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.build_dynamic_system_suffix",
+        fake_build_suffix,
+    )
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.sanitize_dynamic_nodes",
+        lambda overrides: {},
+    )
+
+    result = asyncio.run(
+        service.prepare_overrides_with_dynamic_suffix({}, "session-1")
+    )
+
+    assert "dynamic_context_suffix" in result
+    assert "<servers>" in result["dynamic_context_suffix"]
+    assert "</servers>" in result["dynamic_context_suffix"]
+
+
+def test_prepare_overrides_with_dynamic_suffix_with_referenced_servers_renders_items(monkeypatch):
+    """referenced_servers 触发器引用项正确渲染到 <servers> XML。
+
+    验证：输入含 referenced_servers 时，sanitize_dynamic_nodes 抽取
+    元素并传给 build_dynamic_system_suffix，最终 suffix 中含
+    <server name="prod" server_type="linux" /> 节点。
+    """
+    db = MagicMock()
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    async def fake_build_suffix(session_id, dynamic_nodes=None):
+        nodes = (dynamic_nodes or {}).get("referenced_servers") or []
+        server_lines = "\n".join(
+            f'  <server name="{item["name"]}" server_type="{item["server_type"]}" />'
+            for item in nodes
+        )
+        return f"<servers>\n{server_lines}\n</servers>"
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.build_dynamic_system_suffix",
+        fake_build_suffix,
+    )
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.sanitize_dynamic_nodes",
+        lambda overrides: {
+            "referenced_servers": [
+                {"name": "prod-api", "server_type": "linux"},
+                {"name": "win-db", "server_type": "windows"},
+            ]
+        },
+    )
+
+    overrides_in = {
+        "referenced_servers": [
+            {"name": "prod-api", "server_type": "linux"},
+            {"name": "win-db", "server_type": "windows"},
+        ]
+    }
+    result = asyncio.run(
+        service.prepare_overrides_with_dynamic_suffix(overrides_in, "session-1")
+    )
+
+    assert "referenced_servers" in result
+    assert result["referenced_servers"] == overrides_in["referenced_servers"]
+    assert "dynamic_context_suffix" in result
+    assert '<server name="prod-api" server_type="linux" />' in result["dynamic_context_suffix"]
+    assert '<server name="win-db" server_type="windows" />' in result["dynamic_context_suffix"]
+
+
+def test_prepare_overrides_with_dynamic_suffix_does_not_mutate_input(monkeypatch):
+    """prepare_overrides_with_dynamic_suffix 不修改入参。
+
+    验证：调用后入参 dict 不出现 dynamic_context_suffix 键（避免污染
+    调用方数据；调用方依赖返回值灌入 build_agent_instance）。
+    """
+    db = MagicMock()
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    async def fake_build_suffix(session_id, dynamic_nodes=None):
+        return "<servers>\n</servers>"
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.build_dynamic_system_suffix",
+        fake_build_suffix,
+    )
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.sanitize_dynamic_nodes",
+        lambda overrides: {},
+    )
+
+    overrides_in = {
+        "log_user_id": 7,
+        "log_username": "alice",
+        "referenced_servers": [{"name": "prod", "server_type": "linux"}],
+    }
+    snapshot = {k: v for k, v in overrides_in.items()}
+
+    result = asyncio.run(
+        service.prepare_overrides_with_dynamic_suffix(overrides_in, "session-1")
+    )
+
+    # 入参不变
+    assert overrides_in == snapshot
+    assert "dynamic_context_suffix" not in overrides_in
+    # 返回值含 dynamic_context_suffix 与入参全部键
+    assert "dynamic_context_suffix" in result
+    assert result["log_user_id"] == 7
+    assert result["log_username"] == "alice"
+    assert result["referenced_servers"] == overrides_in["referenced_servers"]
+
+
+def test_prepare_overrides_with_dynamic_suffix_preserves_log_user_fields(monkeypatch):
+    """log_user_id / log_username 等一等 context 字段保留在结果中。
+
+    验证：定时任务路径会把 log_user_id / log_username 注入 overrides
+    后再调本方法；返回值必须保留这两个键，否则后续 build_agent_instance
+    拿不到审计身份。
+    """
+    db = MagicMock()
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    async def fake_build_suffix(session_id, dynamic_nodes=None):
+        return "<servers>\n</servers>"
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.build_dynamic_system_suffix",
+        fake_build_suffix,
+    )
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.sanitize_dynamic_nodes",
+        lambda overrides: {},
+    )
+
+    overrides_in = {"log_user_id": 42, "log_username": "creator"}
+    result = asyncio.run(
+        service.prepare_overrides_with_dynamic_suffix(overrides_in, "session-x")
+    )
+
+    assert result["log_user_id"] == 42
+    assert result["log_username"] == "creator"
+    assert "dynamic_context_suffix" in result
+
+
+def test_prepare_overrides_with_dynamic_suffix_sanitizes_empty_name(monkeypatch):
+    """反向测试：sanitize_dynamic_nodes 静默丢弃 name 为空的元素。
+
+    验证：输入 referenced_servers 含 {name:""} 时，sanitize 后被丢弃，
+    最终 suffix 中不含任何 <server> 节点（happy path only 的 fake 会漏检
+    这一边界条件，因此反向用例必须显式断言）。
+    """
+    db = MagicMock()
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    # 模拟真 sanitize_dynamic_nodes 行为：name 为空字符串的元素静默丢弃
+    def real_like_sanitize(overrides):
+        from app.shared.utils.prompt.dynamic_context import (
+            sanitize_dynamic_nodes as real_sanitize,
+        )
+        return real_sanitize(overrides)
+
+    async def fake_build_suffix(session_id, dynamic_nodes=None):
+        nodes = (dynamic_nodes or {}).get("referenced_servers") or []
+        server_lines = "\n".join(
+            f'  <server name="{item["name"]}" server_type="{item.get("server_type", "")}" />'
+            for item in nodes
+        )
+        return f"<servers>\n{server_lines}\n</servers>"
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.build_dynamic_system_suffix",
+        fake_build_suffix,
+    )
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.sanitize_dynamic_nodes",
+        real_like_sanitize,
+    )
+
+    overrides_in = {
+        "referenced_servers": [
+            {"name": "", "server_type": "linux"},  # 应被丢弃
+            {"name": "prod", "server_type": "linux"},  # 应保留
+        ]
+    }
+    result = asyncio.run(
+        service.prepare_overrides_with_dynamic_suffix(overrides_in, "session-1")
+    )
+
+    # 原始 overrides_in 不变（保留 name="" 元素供一等 context 字段读取）
+    assert len(result["referenced_servers"]) == 2
+    # suffix 中只渲染合法元素
+    assert '<server name="prod" server_type="linux" />' in result["dynamic_context_suffix"]
+    # 不渲染空 name（防止产生 <server name="" /> 畸形节点）
+    assert 'name=""' not in result["dynamic_context_suffix"]
+
+
+def test_prepare_overrides_with_dynamic_suffix_handles_none_input(monkeypatch):
+    """None 入参也返回含 dynamic_context_suffix 键的 dict。
+
+    验证：调用方可能传 None（见 chat 路由 merged_overrides 防御性写法），
+    本方法必须把 None 视为空 dict 处理，不能抛 TypeError。
+    """
+    db = MagicMock()
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    async def fake_build_suffix(session_id, dynamic_nodes=None):
+        return "<servers>\n</servers>"
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.build_dynamic_system_suffix",
+        fake_build_suffix,
+    )
+    monkeypatch.setattr(
+        "app.shared.utils.agent.agent_config_service.sanitize_dynamic_nodes",
+        lambda overrides: {},
+    )
+
+    result = asyncio.run(
+        service.prepare_overrides_with_dynamic_suffix(None, "session-1")
+    )
+
+    assert isinstance(result, dict)
+    assert "dynamic_context_suffix" in result
+
+
 def test_build_agent_instance_filters_unregistered_skills(monkeypatch):
     """测试 build_agent_instance 过滤 DB 中未注册的 skill。
 

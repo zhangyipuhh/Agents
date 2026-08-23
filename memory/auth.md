@@ -556,7 +556,7 @@ build_dynamic_system_suffix  →   (context_overrides 注入)    + "\n\n" + 动�
 (session_id 查 attachments 表)   (并保留原键供工具读取)
 ```
 
-- **两个 chat 入口均已接入**：`/api/agent/chat`（agent_router.py）+ `/api/knowledge-chat`（knowledge_router.py，未注入 referenced_servers，行为不变）
+- **两个 agent 调用入口均已接入**：`/api/agent/chat`（agent_router.py）+ 定时任务 agent 分支（task_scheduler_service.py），共调 `AgentConfigService.prepare_overrides_with_dynamic_suffix` 公共方法生成 `dynamic_context_suffix`；`/api/knowledge-chat`（knowledge_router.py）未注入 referenced_servers，行为不变
 - **保留键**：router **不 pop** `referenced_servers`，让该键继续随 `merged_overrides` 注入 `AgentContext`（作为一等 context 字段），工具可经 `runtime.context.get("referenced_servers")` 读取结构化数据；XML 渲染与一等 context 字段同源，均来自同一份 sanitize 结果
 - `AgentContext` 基类声明 `dynamic_context_suffix: str = ""` + `referenced_servers: list = []`（2026-07-26 新增）；`dynamic_schema._BASE_CONTEXT_DEFAULTS` 同步兜底
 - 累积语义由 attachments 表 INSERT 天然保证（多次上传累加，不覆盖）；上传/删除后下一轮对话自动同步

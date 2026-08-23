@@ -809,6 +809,16 @@ class TaskSchedulerService:
                     overrides = dict(schedule.get("context_overrides") or {})
                     overrides["log_user_id"] = user.get("id")
                     overrides["log_username"] = user.get("username")
+                    # 2026-08-23 修复：注入 dynamic_context_suffix（<servers> 等动态节点 XML 后缀），
+                    # 与 chat 路由共用 AgentConfigService.prepare_overrides_with_dynamic_suffix
+                    # 服务层公共方法，确保 referenced_servers 等触发器引用项同时进入
+                    # 系统提示词与 AgentContext 一等 context 字段。
+                    # 修复前：定时任务 agent 分支只透传 context_overrides，
+                    #   LLM 系统提示词中缺失 <servers> 节点，工具仅能经
+                    #   runtime.context.get("referenced_servers") 读到引用项。
+                    overrides = await self._agent_config_service.prepare_overrides_with_dynamic_suffix(
+                        overrides, session_id
+                    )
                     agent, context_instance, input_state = await self._agent_config_service.build_agent_instance(
                         agent_name=schedule["agent_name"],
                         session_id=session_id,

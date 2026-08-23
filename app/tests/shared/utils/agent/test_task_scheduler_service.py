@@ -275,6 +275,12 @@ def test_execute_schedule_success_writes_success_run(monkeypatch):
     fake_agent_config_service.build_agent_instance = AsyncMock(
         return_value=(FakeAgent(), SimpleNamespace(session_id="task-1"), {"messages": []})
     )
+    # 2026-08-23 同步: prepare_overrides_with_dynamic_suffix 是新增 service 层公共方法,
+    # task_scheduler 路径在 build_agent_instance 前调用它生成 <servers> XML 后缀。
+    # 此处 stub 为 passthrough(返回原 overrides), 仅确保 await 不抛错。
+    fake_agent_config_service.prepare_overrides_with_dynamic_suffix = AsyncMock(
+        side_effect=lambda ovrs, sid: ovrs or {}
+    )
     db = FakeDb()
     service = TaskSchedulerService(db=db, agent_config_service=fake_agent_config_service, scheduler=FakeScheduler())
     row = asyncio.run(service.create_schedule(make_payload(), created_by_user_id=1))
@@ -295,6 +301,11 @@ def test_execute_schedule_failure_writes_failed_run(monkeypatch):
     fake_agent_config_service = MagicMock()
     fake_agent_config_service.get_agent_config = AsyncMock(return_value=SimpleNamespace(display_name="地图智能体"))
     fake_agent_config_service.build_agent_instance = AsyncMock(side_effect=RuntimeError("boom"))
+    # 2026-08-23 同步: prepare_overrides_with_dynamic_suffix 是新增 service 层公共方法,
+    # 此处 stub 为 passthrough(返回原 overrides), 仅确保 await 不抛错。
+    fake_agent_config_service.prepare_overrides_with_dynamic_suffix = AsyncMock(
+        side_effect=lambda ovrs, sid: ovrs or {}
+    )
     db = FakeDb()
     service = TaskSchedulerService(db=db, agent_config_service=fake_agent_config_service, scheduler=FakeScheduler())
     row = asyncio.run(service.create_schedule(make_payload(), created_by_user_id=1))
@@ -430,6 +441,11 @@ def test_execute_schedule_writes_run_log_on_success(monkeypatch, tmp_path):
     fake_agent_config_service.build_agent_instance = AsyncMock(
         return_value=(FakeAgent(), SimpleNamespace(session_id="task-1"), {"messages": []})
     )
+    # 2026-08-23 同步: prepare_overrides_with_dynamic_suffix 是新增 service 层公共方法,
+    # 此处 stub 为 passthrough(返回原 overrides), 仅确保 await 不抛错。
+    fake_agent_config_service.prepare_overrides_with_dynamic_suffix = AsyncMock(
+        side_effect=lambda ovrs, sid: ovrs or {}
+    )
 
     db = FakeDb()
     service = TaskSchedulerService(db=db, agent_config_service=fake_agent_config_service, scheduler=FakeScheduler())
@@ -461,6 +477,11 @@ def test_execute_schedule_writes_run_log_on_failure(monkeypatch, tmp_path):
     fake_agent_config_service = MagicMock()
     fake_agent_config_service.get_agent_config = AsyncMock(return_value=SimpleNamespace(display_name="地图智能体"))
     fake_agent_config_service.build_agent_instance = AsyncMock(side_effect=RuntimeError("boom"))
+    # 2026-08-23 同步: prepare_overrides_with_dynamic_suffix 是新增 service 层公共方法,
+    # 此处 stub 为 passthrough(返回原 overrides), 仅确保 await 不抛错。
+    fake_agent_config_service.prepare_overrides_with_dynamic_suffix = AsyncMock(
+        side_effect=lambda ovrs, sid: ovrs or {}
+    )
 
     db = FakeDb()
     service = TaskSchedulerService(db=db, agent_config_service=fake_agent_config_service, scheduler=FakeScheduler())
@@ -501,6 +522,11 @@ def test_execute_schedule_run_logger_isolated_between_runs(monkeypatch, tmp_path
     fake_agent_config_service.get_agent_config = AsyncMock(return_value=SimpleNamespace(display_name="地图智能体"))
     fake_agent_config_service.build_agent_instance = AsyncMock(
         return_value=(FakeAgent(), SimpleNamespace(session_id="task-1"), {"messages": []})
+    )
+    # 2026-08-23 同步: prepare_overrides_with_dynamic_suffix 是新增 service 层公共方法,
+    # 此处 stub 为 passthrough(返回原 overrides), 仅确保 await 不抛错。
+    fake_agent_config_service.prepare_overrides_with_dynamic_suffix = AsyncMock(
+        side_effect=lambda ovrs, sid: ovrs or {}
     )
 
     db = FakeDb()

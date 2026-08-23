@@ -28,6 +28,10 @@ from app.shared.utils.agent.dynamic_schema import (
     RESERVED_CONFIG_FIELDS,
 )
 from app.shared.utils.agent.agents_md_loader import AgentsMdLoader
+from app.shared.utils.prompt.dynamic_context import (
+    build_dynamic_system_suffix,
+    sanitize_dynamic_nodes,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -364,7 +368,50 @@ class AgentConfigService:
 
     # ============================================================
     # 2026-06-29 新增：统一 Agent 构造入口 build_agent_instance()
+    # 2026-08-23 新增：prepare_overrides_with_dynamic_suffix() 把
+    #   <servers>/<attachments> 等动态节点 XML 后缀的派生从 router 层提到 service 层，
+    #   确保所有 agent 调用入口（chat 路由 / 定时任务分支）的 context_overrides 行为对称。
     # ============================================================
+    async def prepare_overrides_with_dynamic_suffix(
+        self,
+        context_overrides: Optional[Dict[str, Any]],
+        session_id: str,
+    ) -> Dict[str, Any]:
+        """根据 ``context_overrides`` 派生 ``dynamic_context_suffix`` 并写入 overrides 副本。
+
+        设计目的:
+            把"从 ``context_overrides`` 派生 ``<servers>`` / ``<attachments>`` 等动态节点
+            XML"的逻辑从 router 层提到 service 层。所有 agent 调用入口
+            （``/api/agent/chat`` 实时聊天、定时任务 agent 分支等）都应在传入
+            ``build_agent_instance`` 之前先调本方法，保证 ``<servers>`` 等动态节点
+            一致地进入系统提示词。
+
+        实现要点:
+            - 不修改入参 ``context_overrides``，返回新 dict；
+            - 同时保留原键（如 ``referenced_servers`` 等一等 context 字段）与
+              ``dynamic_context_suffix``，调用方后续可经
+              ``runtime.context.get("referenced_servers")`` 或 XML 后缀两条路径读取；
+            - sanitize_dynamic_nodes 失败 / 缺数据时仍生成显式空 ``<servers></servers>``，
+              与 chat 路由历史行为一致（显式空节点抑制模型幻觉）；
+            - 本方法不抛错：sanitize / build_dynamic_system_suffix 内部异常会被吞掉
+              退化为空后缀（由底层封装保证）。
+
+        参数:
+            context_overrides: 业务 overrides 字典（含 ``referenced_servers`` 等），
+                可为 ``None``
+            session_id: 会话 ID，用于动态上下文后缀中 ``<attachments>`` 的事实源查询
+
+        返回:
+            Dict[str, Any]: 新 dict，包含入参全部键 + ``dynamic_context_suffix``。
+                调用方应把返回值作为 ``context_overrides`` 灌入 ``build_agent_instance``。
+        """
+        overrides: Dict[str, Any] = dict(context_overrides or {})
+        sanitized_dynamic_nodes = sanitize_dynamic_nodes(overrides)
+        overrides["dynamic_context_suffix"] = await build_dynamic_system_suffix(
+            session_id, dynamic_nodes=sanitized_dynamic_nodes
+        )
+        return overrides
+
     async def build_agent_instance(
         self,
         agent_name: Optional[str],
