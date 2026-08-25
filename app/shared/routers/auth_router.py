@@ -1100,11 +1100,12 @@ async def validate_token(request: Request):
     token = jwt_auth.extract_access_token(request)
     payload = await jwt_auth.verify_token(token)
 
-    # 拒绝 Refresh Token
-    if payload.get("type") == "refresh":
+    # 2026-08-25 二次防线：verify_token 已强制 type=access；
+    # 此处仅作未来回退的安全网。正常情况下不会触发（HTTPException 在 verify_token 内部抛出）。
+    if payload.get("type") != "access":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="无效的令牌类型"
+            detail="无效的令牌类型",
         )
 
     # 查询角色和用户ID

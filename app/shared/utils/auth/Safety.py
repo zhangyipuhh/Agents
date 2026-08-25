@@ -244,31 +244,43 @@ class JWTAuth:
     
     async def verify_token(self, token: str) -> dict:
         """
-        验证JWT令牌
-        
+        验证 Access Token；强制 payload.type == "access"。
+
+        2026-08-25 修复：原先仅校验签名与过期，type 字段交由下游
+        ``authenticate`` / ``/validate`` 反向拒绝 ``type=="refresh"``，
+        存在 type 为 None / 空 / 未知值时静默放行的隐患——本方法与
+        ``verify_refresh_token`` 对称：明确 type=access 才放行，
+        缺失 / 非 access / refresh 一律 401（fail-secure）。
+
         Args:
-            token (str): JWT令牌
-            
+            token (str): 待校验的 JWT 字符串。
+
         Returns:
-            dict: 解码后的令牌payload
-            
+            dict: 解码后的 payload（含 type=access）。
+
         Raises:
-            HTTPException: 当令牌无效或过期时抛出
+            HTTPException 401: 令牌过期、签名无效或 type 字段非 access。
+            HTTPException 500: 其他未知异常。
         """
         try:
-            print(f"[诊断-verify_token] token前20字符: {token[:20]}...")
-            print(f"[诊断-verify_token] secret_key前20字符: {self.secret_key[:20]}...")
             payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
-            print(f"[诊断-verify_token] 解码成功, payload: {payload}")
+            # 对称 verify_refresh_token 的 type=refresh 强制校验；
+            # 缺失 type / 非 access 一律拒绝（fail-secure）。
+            if payload.get("type") != "access":
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="无效的令牌类型",
+                )
             return payload
         except jwt.ExpiredSignatureError:
-            print(f"[诊断-verify_token] 令牌已过期")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="令牌已过期"
             )
-        except jwt.InvalidTokenError as e:
-            print(f"[诊断-verify_token] 无效的令牌: {e}")
+        except HTTPException:
+            # 类型校验抛出的 HTTPException 透传，避免被下方 except Exception 包装为 500
+            raise
+        except jwt.InvalidTokenError:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="无效的令牌"
@@ -352,11 +364,12 @@ class JWTAuth:
         payload = await self.verify_token(token)
         request.state.auth_via = auth_via
 
-        # 拒绝 Refresh Token 用于普通 API
-        if payload.get("type") == "refresh":
+        # 2026-08-25 二次防线：verify_token 已强制 type=access；
+        # 此处仅作未来回退的安全网。正常情况下不会触发（HTTPException 在 verify_token 内部抛出）。
+        if payload.get("type") != "access":
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="无效的令牌类型"
+                detail="无效的令牌类型",
             )
 
         # 将用户信息存储到 request.state，方便后续使用

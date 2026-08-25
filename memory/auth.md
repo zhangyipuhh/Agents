@@ -197,8 +197,9 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 ### 安全措施
 
 - Access Token payload 包含 `type: "access"`，Refresh Token 包含 `type: "refresh"`
-- Refresh Token 不可用于普通 API（auth_middleware 拒绝 type=refresh）
-- Access Token 不可用于 refresh 接口（refresh 接口拒绝 type=access）
+- **2026-08-25 修复 verify_token 强制 type=access（与 verify_refresh_token 对称）**：`JWTAuth.verify_token` 在签名 + 过期校验通过后强制 `payload.get("type") == "access"`，缺失 / 非 access / refresh / 未知值一律 401；下游 `authenticate()` 与 `/api/auth/validate` 路由保留 `!= "access"` 二次校验作为未来回退安全网（fail-loud）。修复前 `verify_token` 仅查签名 + 过期，type 字段由下游反向 `== "refresh"` 兜底，存在 type 为 None / 未知值时静默放行的隐患，导致 refresh_token 可绕过反向拦截直接调 API（用户报告"两个 token 等效"）。修复后语义：`refresh_token` **只能**调 `/api/auth/refresh`，不能再调任何业务 API；`access_token` 不能再冒充 refresh 调 `/refresh`（该路由本就 `verify_refresh_token` 强制 type=refresh）。`verify_token` 内诊断 print 日志一并清理。
+- Refresh Token 不可用于普通 API（verify_token 强制 type=access 拒绝 refresh）
+- Access Token 不可用于 refresh 接口（refresh 接口 verify_refresh_token 强制 type=refresh 拒绝 access）
 - Refresh Token 通过 HttpOnly Cookie 传递，前端 JS 无法读取
 - **Access Token Cookie 轮换**：`POST /api/auth/refresh` 成功时同步下发新的 `access_token` HttpOnly Cookie；JSON body 仍返回 `access_token` 以兼容第三方 iframe。`GET /api/auth/validate` 按 Authorization Bearer 优先、HttpOnly Cookie 兜底提取 Access Token。
 - Cookie 属性：`HttpOnly; SameSite=Strict; Secure; Path=/api/auth; Max-Age=86400`

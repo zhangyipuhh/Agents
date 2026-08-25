@@ -757,3 +757,166 @@ def test_generate_token_with_user_id_and_amr(jwt_auth):
     )
     assert payload["user_id"] == 42
     assert payload["amr"] == ["pwd", "totp"]
+
+
+# ============================================================
+# 2026-08-25 等保三级：verify_token 强制 type=access
+# 设计：与 verify_refresh_token 对称——明确 type=access 才放行，
+# 缺失 / 非 access / refresh 一律 401（fail-secure）。
+# 用户诉求："两个 token 都能调用 API 与设计不符，refresh 不能调 API"。
+# ============================================================
+
+
+def _encode_jwt(jwt_auth, claims: dict) -> str:
+    """辅助函数：用 jwt_auth 的 secret/algorithm 编码 payload 用于测试。
+
+    Args:
+        jwt_auth: JWTAuth 实例。
+        claims: JWT payload 字段（必须包含 exp，否则 jwt.encode 会要求）。
+
+    Returns:
+        str: 编码后的 JWT 字符串。
+    """
+    from datetime import datetime, timedelta
+
+    base = {"exp": datetime.utcnow() + timedelta(minutes=30)}
+    base.update(claims)
+    return jwt.encode(base, jwt_auth.secret_key, algorithm=jwt_auth.algorithm)
+
+
+def test_verify_token_accepts_access_payload(jwt_auth):
+    """正向：type=access 的 payload 应被 verify_token 接受。
+
+    Args:
+        jwt_auth: JWTAuth 实例（来自 conftest）。
+
+    Returns:
+        None
+    """
+    token = _encode_jwt(jwt_auth, {"username": "u", "type": "access"})
+    payload = _run_async(jwt_auth.verify_token(token))
+    assert payload["type"] == "access"
+    assert payload["username"] == "u"
+
+
+def test_verify_token_rejects_refresh_payload(jwt_auth):
+    """反向：type=refresh 应被拒 401（修复用户报告"两个 token 等效"）。
+
+    Args:
+        jwt_auth: JWTAuth 实例（来自 conftest）。
+
+    Returns:
+        None
+    """
+    from fastapi import HTTPException
+
+    token = _encode_jwt(
+        jwt_auth, {"username": "u", "type": "refresh"}
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        _run_async(jwt_auth.verify_token(token))
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "无效的令牌类型"
+
+
+def test_verify_token_rejects_missing_type(jwt_auth):
+    """边界：无 type 字段应被拒（兼容旧 token 不能静默放行）。
+
+    Args:
+        jwt_auth: JWTAuth 实例（来自 conftest）。
+
+    Returns:
+        None
+    """
+    from fastapi import HTTPException
+
+    token = _encode_jwt(jwt_auth, {"username": "u"})
+    with pytest.raises(HTTPException) as exc_info:
+        _run_async(jwt_auth.verify_token(token))
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "无效的令牌类型"
+
+
+def test_verify_token_rejects_unknown_type(jwt_auth):
+    """边界：未知 type（如 portal/contract 等）应被拒。
+
+    Args:
+        jwt_auth: JWTAuth 实例（来自 conftest）。
+
+    Returns:
+        None
+    """
+    from fastapi import HTTPException
+
+    token = _encode_jwt(jwt_auth, {"username": "u", "type": "portal"})
+    with pytest.raises(HTTPException) as exc_info:
+        _run_async(jwt_auth.verify_token(token))
+    assert exc_info.value.status_code == 401
+
+
+def test_verify_token_rejects_expired_token(jwt_auth):
+    """反向：过期 access token 仍按过期处理（不应被 type 校验提前拦截）。
+
+    Args:
+        jwt_auth: JWTAuth 实例（来自 conftest）。
+
+    Returns:
+        None
+    """
+    from datetime import datetime, timedelta
+    from fastapi import HTTPException
+
+    token = jwt.encode(
+        {
+            "username": "u",
+            "type": "access",
+            "exp": datetime.utcnow() - timedelta(seconds=1),
+        },
+        jwt_auth.secret_key,
+        algorithm=jwt_auth.algorithm,
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        _run_async(jwt_auth.verify_token(token))
+    assert exc_info.value.status_code == 401
+    assert "过期" in exc_info.value.detail
+
+
+def test_verify_token_rejects_invalid_signature(jwt_auth):
+    """反向：签名错误的 token 应被拒 401（保留既有安全语义）。
+
+    Args:
+        jwt_auth: JWTAuth 实例（来自 conftest）。
+
+    Returns:
+        None
+    """
+    from fastapi import HTTPException
+
+    # 用不同的 secret 签发，模拟签名伪造
+    bad_token = jwt.encode(
+        {"username": "u", "type": "access", "exp": 9999999999},
+        "wrong-secret",
+        algorithm="HS256",
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        _run_async(jwt_auth.verify_token(bad_token))
+    assert exc_info.value.status_code == 401
+
+
+def test_verify_refresh_token_still_rejects_access_payload(jwt_auth):
+    """对称保证：verify_refresh_token 拒绝 type=access（不被本次改动回退）。
+
+    Args:
+        jwt_auth: JWTAuth 实例（来自 conftest）。
+
+    Returns:
+        None
+    """
+    from fastapi import HTTPException
+
+    token = _encode_jwt(jwt_auth, {"username": "u", "type": "access"})
+    with pytest.raises(HTTPException) as exc_info:
+        _run_async(jwt_auth.verify_refresh_token(token))
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "无效的令牌类型"
+
