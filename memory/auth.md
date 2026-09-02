@@ -196,6 +196,13 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
   - `/api/auth/logout`：撤销会话 + 清除 Cookie。
 - **测试**：3 个新文件 / 28 用例全绿（[test_user_login_session_service.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/tests/shared/utils/auth/test_user_login_session_service.py) / [test_idle_timeout_middleware.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/tests/shared/utils/auth/test_idle_timeout_middleware.py) / [test_auth_idle_settings.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/tests/core/config/test_auth_idle_settings.py)）；包含 fake 完整语义反向用例（aware datetime → naive TIMESTAMP 列必抛 RuntimeError）。
 
+### 注册 IP 白名单（等保三级 §7.1.3 a/e，2026-08-30 新增）
+
+- **配置**：`RegistrationSecuritySettings`（[settings.py:622](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/core/config/settings.py#L622)），env 前缀 `REGISTRATION_SECURITY_`，字段：`enabled`（总开关）/ `ip_whitelist`（CIDR 列表，精确 IP 也允许）/ `admin_notification_emails` / `feishu_notify_enabled`。
+- **中间件**：`ip_whitelist_middleware`（[ip_whitelist_middleware.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/shared/utils/auth/ip_whitelist_middleware.py)），仅拦截 `POST /api/auth/register`（含 `/api/auth/register/*` 子路径），其他路径完全放行。读 `X-Real-IP`（**不**读 `X-Forwarded-For`，后者可被客户端伪造）；缺失 → 403「无法识别客户端来源 IP」；格式非法 → 403「客户端 IP 格式非法」；不在白名单 → 403「当前网络不允许注册」并写审计日志 `register_ip_blocked`（`LogType.AUTH` / `LogResult.FAILURE` / `LogLevel.WARNING` / `source="ip_whitelist_middleware"` / `ip_address=client_ip`，fail-soft 写失败仅 WARNING 日志）；通过 → 注入 `request.state.client_ip` 供下游 register 路由使用。`enabled=False` 时中间件直通，行为退化。**fail-closed**：白名单为空时拒绝所有 IP。
+- **来源 IP 信任边界**：仅信任 nginx 反代写入的 `X-Real-IP`；直连 uvicorn 无该 header → 拒绝；要求运维在 nginx 配置 `proxy_set_header X-Real-IP $remote_addr;`。
+- **测试**：[test_ip_whitelist_middleware.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/tests/shared/utils/auth/test_ip_whitelist_middleware.py) 8 用例全绿：disabled 直通 / 非 register 路径直通 / 缺失 X-Real-IP 拦截 / 非法格式拦截 / 不在白名单拦截 + 审计日志 / 在白名单放行 / 空白名单拒绝所有 / CIDR 边界匹配。
+
 ### 权限控制
 
 - **角色区分**：用户表 `role` 字段支持 `admin` / `user`，登录时返回
