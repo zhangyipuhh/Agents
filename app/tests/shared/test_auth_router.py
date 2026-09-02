@@ -714,3 +714,140 @@ def test_register_message_changes_when_registration_security_enabled(client, mon
 
     assert response.status_code == 200
     assert "审批" in response.json()["message"]
+
+
+def test_login_pending_approval_user_blocked(monkeypatch, client):
+    """测试 status='pending_approval' 用户无法登录(login)。"""
+    import asyncio
+    from app.shared.utils.auth.user_db import UserDB
+    UserDB._memory_users.clear()
+    UserDB._memory_id_counter = 0
+    asyncio.run(
+        UserDB.create_user("penduser", "Test@123", status="pending_approval")
+    )
+    monkeypatch.setattr(
+        "app.shared.utils.auth.captcha.captcha_manager.verify",
+        lambda key, code: True,
+    )
+
+    response = client.post(
+        "/api/auth/login",
+        json={
+            "username": "penduser",
+            "password": "Test@123",
+            "captcha_key": "k",
+            "captcha_code": "ABCD",
+        },
+    )
+    assert response.status_code == 403
+    assert "待管理员审批" in response.json()["detail"]
+
+
+def test_login_rejected_user_blocked(monkeypatch, client):
+    """测试 status='rejected' 用户无法登录。"""
+    import asyncio
+    from app.shared.utils.auth.user_db import UserDB
+    UserDB._memory_users.clear()
+    UserDB._memory_id_counter = 0
+    asyncio.run(
+        UserDB.create_user("rejuser", "Test@123", status="rejected")
+    )
+    monkeypatch.setattr(
+        "app.shared.utils.auth.captcha.captcha_manager.verify",
+        lambda key, code: True,
+    )
+
+    response = client.post(
+        "/api/auth/login",
+        json={
+            "username": "rejuser",
+            "password": "Test@123",
+            "captcha_key": "k",
+            "captcha_code": "ABCD",
+        },
+    )
+    assert response.status_code == 403
+    assert "审批未通过" in response.json()["detail"]
+
+
+def test_login_api_pending_user_blocked(monkeypatch, client):
+    """测试 /login-api 对 pending_approval 用户返回 403。
+
+    2026-08-30 改造后,/login-api 在 memory 模式下默认走 ``jwt_auth.verify_credentials``
+    (bootstrap 凭据),与 UserDB 用户无关联;为了让 status check 拦截逻辑被实际跑到,
+    此处 monkeypatch 让 ``jwt_auth.verify_credentials`` 改走 ``UserDB.verify_credentials``
+    (等同 PG 模式路径)。生产中 PG 模式天然走 UserDB 路径,该 monkeypatch 不影响生产行为。
+    """
+    import asyncio
+    from app.shared.utils.auth.user_db import UserDB
+    from app.shared.routers import auth_router as _auth_router
+    UserDB._memory_users.clear()
+    UserDB._memory_id_counter = 0
+    asyncio.run(
+        UserDB.create_user("api_pending", "Test@123", status="pending_approval")
+    )
+
+    # monkeypatch:让 login-api 的密码校验改走 UserDB(等同 PG 模式),从而能
+    # 命中 status check 拦截逻辑。
+    async def _fake_verify_credentials(username, password):
+        return await UserDB.verify_credentials(username, password)
+    monkeypatch.setattr(
+        _auth_router.jwt_auth, "verify_credentials", _fake_verify_credentials
+    )
+
+    response = client.post(
+        "/api/auth/login-api",
+        json={"username": "api_pending", "password": "Test@123"},
+    )
+    assert response.status_code == 403
+    assert "待管理员审批" in response.json()["detail"]
+
+
+def test_refresh_pending_user_blocked(monkeypatch, client):
+    """测试 pending_approval 用户的 refresh_token 无法换新 access_token。
+
+    2026-08-30 改造后,/refresh 在拿到合法 record 之后会校验用户 status,
+    pending_approval 用户必须被拦截。
+
+    测试策略:
+    - 创建 pending 用户并预存到 refresh_tokens(memory)
+    - monkeypatch ``jwt_auth.verify_refresh_token`` 直接返回合法 payload,
+      跳过 JWT 签名验证(测试关注 status check,而非 JWT 链路)
+    - 调用 /refresh,断言 403 + "待管理员审批"
+    """
+    import asyncio
+    import datetime as _dt
+    from app.shared.utils.auth.user_db import UserDB
+    from app.shared.utils.auth.refresh_token_db import RefreshTokenDB
+    from app.shared.routers import auth_router as _auth_router
+    UserDB._memory_users.clear()
+    UserDB._memory_id_counter = 0
+    user_id = asyncio.run(
+        UserDB.create_user("refresh_pending", "Test@123", status="pending_approval")
+    )
+    fake_token = "fake-refresh-token"
+    asyncio.run(
+        RefreshTokenDB.store_token(
+            RefreshTokenDB.hash_token(fake_token),
+            user_id,
+            _dt.datetime.utcnow() + _dt.timedelta(hours=24),
+            username="refresh_pending",
+        )
+    )
+
+    async def _fake_verify_refresh_token(token):
+        return {
+            "username": "refresh_pending",
+            "user_id": user_id,
+            "type": "refresh",
+        }
+    monkeypatch.setattr(
+        _auth_router.jwt_auth, "verify_refresh_token", _fake_verify_refresh_token
+    )
+
+    response = client.post(
+        "/api/auth/refresh",
+        json={"refresh_token": fake_token},
+    )
+    assert response.status_code == 403
+    assert "待管理员审批" in response.json()["detail"]

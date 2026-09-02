@@ -648,6 +648,27 @@ async def login(request: LoginRequest, req: Request, response: Response):
     role = user.get('role', 'user') if user else 'user'
     user_id = user.get('id') if user else None
 
+    # 2026-08-30 改造：检查用户 status（注册审批场景下 pending_approval / rejected /
+    # disabled 用户不能登录）。仅在 user 存在时检查；不存在的用户继续走原有失败处理，
+    # 避免反枚举特性改变。
+    if user is not None:
+        _user_status = user.get('status', 'active')
+        if _user_status == 'pending_approval':
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="账号待管理员审批,请耐心等待审批结果",
+            )
+        if _user_status == 'rejected':
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="账号审批未通过",
+            )
+        if _user_status == 'disabled':
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="账号已禁用,请联系管理员",
+            )
+
     # 2026-08-07 新增：MFA 两阶段分支。
     # - 普通用户未启用 MFA → 直接签发会话
     # - 普通用户已启用 / 管理员未绑定 → 返回 challenge，不签发 token / cookie
@@ -884,6 +905,27 @@ async def login_api(request: ApiLoginRequest, req: Request, response: Response):
     role = user.get('role', 'user') if user else 'user'
     user_id = user.get('id') if user else None
 
+    # 2026-08-30 改造：检查用户 status（注册审批场景下 pending_approval / rejected /
+    # disabled 用户不能登录）。仅在 user 存在时检查；不存在的用户继续走原有失败处理，
+    # 避免反枚举特性改变。
+    if user is not None:
+        _user_status = user.get('status', 'active')
+        if _user_status == 'pending_approval':
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="账号待管理员审批,请耐心等待审批结果",
+            )
+        if _user_status == 'rejected':
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="账号审批未通过",
+            )
+        if _user_status == 'disabled':
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="账号已禁用,请联系管理员",
+            )
+
     # 生成 Access Token（JSON body 返回；2026-08-11 携带 user_id）
     access_token = await jwt_auth.generate_token(request.username, user_id=user_id)
 
@@ -1029,6 +1071,28 @@ async def refresh_token(request: Request, response: Response):
     username = record.get("username") or payload.get("username")
     # 2026-08-11：user_id 优先从记录或 payload 取（减少额外 DB 查询）
     user_id = record.get("user_id") or payload.get("user_id")
+
+    # 2026-08-30 改造：refresh 路径也检查用户 status，防止 pending / rejected /
+    # disabled 用户的历史 refresh_token 继续换新 access_token。
+    from app.shared.utils.auth.user_db import UserDB as _UserDB
+    _refresh_user = await _UserDB.get_user_by_username(username) if username else None
+    if _refresh_user is not None:
+        _refresh_status = _refresh_user.get('status', 'active')
+        if _refresh_status == 'pending_approval':
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="账号待管理员审批,请耐心等待",
+            )
+        if _refresh_status == 'rejected':
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="账号审批未通过",
+            )
+        if _refresh_status == 'disabled':
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="账号已禁用",
+            )
     # 2026-08-07 新增：透传 amr。如果旧 refresh token 携带 amr（如 admin 完成 MFA 后签发），
     # 新 access token 同样携带；旧 token 无 amr 时保持原行为（不写入 amr 字段）。
     amr = payload.get("amr") if isinstance(payload, dict) else None
