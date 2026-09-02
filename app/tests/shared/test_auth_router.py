@@ -635,6 +635,8 @@ def test_register_creates_pending_user_in_registration_security_enabled(client, 
 
     验证策略:
     - 通过 ``settings.registration_security.enabled = True`` 走审批路径
+    - 同时把 ``ip_whitelist`` 设为 ['127.0.0.1'] 让 ``ip_whitelist_middleware``
+      放行中间件(否则 fail-closed 返 403),请求带 X-Real-IP 命中白名单
     - mock 验证码通过
     - 断言响应 message 包含"审批"且落库 status='pending_approval'
     """
@@ -658,13 +660,20 @@ def test_register_creates_pending_user_in_registration_security_enabled(client, 
         "captcha_code": "ABCD",
     }
     _orig_enabled = _s.registration_security.enabled
+    _orig_ip_whitelist = list(_s.registration_security.ip_whitelist)
     _s.registration_security.enabled = True
+    _s.registration_security.ip_whitelist = ["127.0.0.1"]
     try:
-        response = client.post("/api/auth/register", json=payload)
+        response = client.post(
+            "/api/auth/register",
+            json=payload,
+            headers={"X-Real-IP": "127.0.0.1"},
+        )
     finally:
         _s.registration_security.enabled = _orig_enabled
+        _s.registration_security.ip_whitelist = _orig_ip_whitelist
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     msg = response.json()["message"]
     assert "审批" in msg
 
@@ -683,6 +692,8 @@ def test_register_message_changes_when_registration_security_enabled(client, mon
 
     验证策略:
     - 通过 ``settings.registration_security.enabled = True`` 走审批路径
+    - 同时把 ``ip_whitelist`` 设为 ['127.0.0.1'] 让 ``ip_whitelist_middleware``
+      放行中间件(否则 fail-closed 返 403),请求带 X-Real-IP 命中白名单
     - mock 验证码通过
     - 断言响应 message 包含"审批"
     """
@@ -706,13 +717,20 @@ def test_register_message_changes_when_registration_security_enabled(client, mon
         "captcha_code": "ABCD",
     }
     _orig_enabled = _s.registration_security.enabled
+    _orig_ip_whitelist = list(_s.registration_security.ip_whitelist)
     _s.registration_security.enabled = True
+    _s.registration_security.ip_whitelist = ["127.0.0.1"]
     try:
-        response = client.post("/api/auth/register", json=payload)
+        response = client.post(
+            "/api/auth/register",
+            json=payload,
+            headers={"X-Real-IP": "127.0.0.1"},
+        )
     finally:
         _s.registration_security.enabled = _orig_enabled
+        _s.registration_security.ip_whitelist = _orig_ip_whitelist
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     assert "审批" in response.json()["message"]
 
 
