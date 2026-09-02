@@ -4,6 +4,35 @@
 
 ## 数据库设计
 
+### users 表 + registration_approval_logs 表（2026-08-30 注册审批落地）
+
+`users` 表新增 4 列（迁移文件 `app/migrations/2026_08_30_add_user_registration_approval.sql` + `init_all_tables.sql` 幂等段同步落地）：
+
+| 列 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| status | VARCHAR(32) NOT NULL | `'active'` | `active` / `pending_approval` / `rejected` / `disabled`；CHECK 约束 `users_status_chk` |
+| status_reason | TEXT NULL | NULL | 拒绝 / 禁用原因 |
+| approved_by_user_id | INTEGER NULL FK→users(id) ON DELETE SET NULL | NULL | 审批人 |
+| approved_at | TIMESTAMP NULL | NULL | 审批时间（naive，与 `user_mfa_totp.enabled_at` 同款约束） |
+
+索引：`idx_users_status(status)`（待审批列表查询加速）。
+
+`registration_approval_logs` 表（审批操作独立审计，与 `audit_logs` 并存便于专项查询）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | SERIAL PRIMARY KEY | |
+| target_user_id | INTEGER NOT NULL FK→users(id) ON DELETE CASCADE | 被审批用户 |
+| target_username | VARCHAR(100) NOT NULL | 冗余快照（防用户名变更后审计断裂） |
+| target_register_ip | VARCHAR(64) NULL | 注册来源 IP（来自 `X-Real-IP`） |
+| action | VARCHAR(16) NOT NULL CHECK | `approve` / `reject` |
+| reason | TEXT NULL | 拒绝原因 |
+| operator_user_id | INTEGER NULL FK→users(id) ON DELETE SET NULL | 审批人 |
+| operator_username | VARCHAR(100) NOT NULL | 冗余快照 |
+| created_at | TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP | |
+
+索引：`idx_registration_approval_logs_target(target_user_id)` / `idx_registration_approval_logs_created_at(created_at DESC)`。
+
 ### message_feedback 表（2026-07-02 新增）
 
 AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保留一种反馈（赞/踩互斥），踩时可填写问题描述、问题类型、期望的样子，用于运营/算法团队分析质量问题。
