@@ -37,7 +37,11 @@ import {
   startMfaEnrollment,
   confirmMfaEnrollment,
   disableMfa,
-  regenerateMfaRecoveryCodes
+  regenerateMfaRecoveryCodes,
+  // 2026-08-30 新增：注册审批相关 API（admin 审批 pending_approval 用户）
+  fetchPendingUsers,
+  approveUser,
+  rejectUser
 } from '../utils/api.js'
 import {
   createAiMessage,
@@ -493,6 +497,8 @@ function switchUserMgmtTab(tabId) {
   activeUserMgmtTab.value = tabId
   if (tabId === 'users') {
     loadUserList()
+    // 2026-08-30 注册审批:同时加载待审批用户列表,便于 admin 顶部查看并审批
+    loadPendingUsers()
   } else if (tabId === 'online-monitor') {
     loadOnlineUsers()
   } else if (tabId === 'session-query') {
@@ -1103,6 +1109,103 @@ async function handleKickUser(userId, username) {
     }
   } catch (err) {
     alert(err.message || '强制下线失败')
+  }
+}
+
+/* ---- Admin 注册审批逻辑(2026-08-30 新增) ---- */
+
+/** 待审批用户列表(status='pending_approval') */
+const pendingUsers = ref([])
+
+/** 拒绝原因弹窗是否可见 */
+const showRejectDialog = ref(false)
+
+/** 当前正在拒绝的用户对象 */
+const rejectingUser = ref(null)
+
+/** 拒绝原因文本 */
+const rejectReason = ref('')
+
+/**
+ * 加载待审批用户列表。
+ * 切换到「用户管理 → 用户列表」子 tab 时触发,与 loadUserList 并行调用以同时刷新。
+ * @returns {Promise<void>}
+ */
+async function loadPendingUsers() {
+  try {
+    const list = await fetchPendingUsers()
+    pendingUsers.value = Array.isArray(list) ? list : []
+  } catch (err) {
+    console.error('[UserSettingsDialog] 加载待审批用户失败', err)
+    pendingUsers.value = []
+  }
+}
+
+/**
+ * 审批通过一个待审批用户。
+ * @param {Object} user - 用户对象,至少包含 id 与 username
+ * @returns {Promise<void>}
+ */
+async function handleApproveUser(user) {
+  if (!user || !user.id) return
+  if (!confirm(`确定批准用户 ${user.username} 的注册申请?`)) return
+  try {
+    await approveUser(user.id)
+    alert('已批准')
+    await loadPendingUsers()
+    if (typeof loadUserList === 'function') {
+      await loadUserList()
+    }
+  } catch (err) {
+    alert(`批准失败: ${err.message || err}`)
+  }
+}
+
+/**
+ * 打开拒绝原因弹窗,初始化目标用户与原因文本。
+ * @param {Object} user - 用户对象,至少包含 id 与 username
+ * @returns {void}
+ */
+function openRejectDialog(user) {
+  rejectingUser.value = user
+  rejectReason.value = ''
+  showRejectDialog.value = true
+}
+
+/**
+ * 关闭拒绝原因弹窗并清理内部状态。
+ * @returns {void}
+ */
+function closeRejectDialog() {
+  showRejectDialog.value = false
+  rejectingUser.value = null
+  rejectReason.value = ''
+}
+
+/**
+ * 确认拒绝:校验 reason 长度(≥5 字符),调用 rejectUser API,关闭弹窗并刷新两个列表。
+ * @returns {Promise<void>}
+ */
+async function confirmRejectUser() {
+  const reason = rejectReason.value.trim()
+  if (reason.length < 5) {
+    alert('拒绝原因至少 5 个字符')
+    return
+  }
+  if (!rejectingUser.value || !rejectingUser.value.id) {
+    closeRejectDialog()
+    return
+  }
+  try {
+    await rejectUser(rejectingUser.value.id, reason)
+    closeRejectDialog()
+    alert('已拒绝')
+    await loadPendingUsers()
+    if (typeof loadUserList === 'function') {
+      await loadUserList()
+    }
+  } catch (err) {
+    alert(`拒绝失败: ${err.message || err}`)
   }
 }
 
@@ -1877,6 +1980,39 @@ onMounted(() => {
 
                 <!-- 用户列表子 tab -->
                 <div v-show="activeUserMgmtTab === 'users'" class="admin-section">
+                  <!-- 待审批用户列表(2026-08-30 新增) -->
+                  <div v-if="pendingUsers.length > 0" class="pending-users-section">
+                    <h4 class="section-subtitle">待审批用户（{{ pendingUsers.length }}）</h4>
+                    <table class="admin-table">
+                      <thead>
+                        <tr>
+                          <th>用户名</th>
+                          <th>真实姓名</th>
+                          <th>邮箱</th>
+                          <th>注册 IP</th>
+                          <th>提交时间</th>
+                          <th>操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="user in pendingUsers" :key="user.id">
+                          <td>{{ user.username }}</td>
+                          <td>{{ user.real_name || '-' }}</td>
+                          <td>{{ user.email || '-' }}</td>
+                          <td>
+                            <span v-if="user.register_ip" class="ip-chip">{{ user.register_ip }}</span>
+                            <span v-else>-</span>
+                          </td>
+                          <td>{{ user.created_at }}</td>
+                          <td>
+                            <button class="table-btn btn-approve" @click="handleApproveUser(user)">通过</button>
+                            <button class="table-btn btn-reject" @click="openRejectDialog(user)">拒绝</button>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+
                   <div class="admin-header">
                     <h3 class="section-title">用户管理</h3>
                     <div class="admin-header-actions">
@@ -1959,6 +2095,24 @@ onMounted(() => {
 
                 <!-- 会话查询子 tab -->
                 <div v-show="activeUserMgmtTab === 'session-query'" class="admin-section">
+                  <!-- 拒绝原因弹窗(2026-08-30 新增) -->
+                  <div v-if="showRejectDialog" class="modal-backdrop" @click.self="closeRejectDialog">
+                    <div class="modal-dialog">
+                      <h3>拒绝注册申请</h3>
+                      <p>用户: {{ rejectingUser?.username }}</p>
+                      <label>拒绝原因(至少 5 个字符):</label>
+                      <textarea
+                        v-model="rejectReason"
+                        rows="4"
+                        class="reject-reason-input"
+                        placeholder="请说明拒绝原因"
+                      ></textarea>
+                      <div class="modal-actions">
+                        <button class="btn-cancel" @click="closeRejectDialog">取消</button>
+                        <button class="btn-confirm-reject" @click="confirmRejectUser">确认拒绝</button>
+                      </div>
+                    </div>
+                  </div>
                   <!-- 人员列表视图 -->
                   <template v-if="sessionQueryView === 'personnel-list'">
                     <div class="admin-header">
@@ -3088,6 +3242,98 @@ onMounted(() => {
 
 .btn-edit:hover {
   background-color: #BFDBFE;
+}
+
+/* 待审批用户 section(2026-08-30 新增) */
+.pending-users-section {
+  margin-bottom: 24px;
+  padding: 16px;
+  background: var(--bg-warning-soft, #fff8e1);
+  border-radius: 8px;
+  border: 1px solid var(--border-warning, #f0c674);
+}
+.section-subtitle {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-warning, #8a6d3b);
+}
+.ip-chip {
+  font-family: monospace;
+  font-size: 12px;
+  padding: 2px 6px;
+  background: var(--bg-chip, #eef2f7);
+  border-radius: 4px;
+}
+.btn-approve {
+  background: var(--color-success, #4caf50);
+  color: #fff;
+  border: none;
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-right: 4px;
+}
+.btn-approve:hover { opacity: 0.85; }
+.btn-reject {
+  background: var(--color-danger, #f44336);
+  color: #fff;
+  border: none;
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.btn-reject:hover { opacity: 0.85; }
+
+/* 拒绝原因弹窗 */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal-dialog {
+  background: var(--bg-white, #fff);
+  padding: 24px;
+  border-radius: 8px;
+  width: 480px;
+  max-width: 90vw;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+}
+.modal-dialog h3 { margin: 0 0 16px 0; }
+.modal-dialog label { display: block; margin-bottom: 8px; }
+.reject-reason-input {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--border-input, #ddd);
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 14px;
+  resize: vertical;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+.btn-cancel {
+  background: transparent;
+  border: 1px solid var(--border-input, #ddd);
+  padding: 6px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.btn-confirm-reject {
+  background: var(--color-danger, #f44336);
+  color: #fff;
+  border: none;
+  padding: 6px 16px;
+  border-radius: 4px;
+  cursor: pointer;
 }
 
 .user-form-overlay {
