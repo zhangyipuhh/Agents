@@ -261,7 +261,7 @@ async def get_captcha():
 
 
 @router.post('/register')
-async def register(request: RegisterRequest):
+async def register(request: RegisterRequest, req: Request):
     """
     用户注册API端点
 
@@ -269,6 +269,7 @@ async def register(request: RegisterRequest):
 
     Args:
         request: 包含用户名、密码、确认密码、真实姓名、手机号、邮箱、部门、职位和验证码的请求对象
+        req (Request): FastAPI 请求对象，用于取客户端 IP（等保三级 §7.1.3 注册审计）。
 
     Returns:
         dict: 注册结果
@@ -333,7 +334,22 @@ async def register(request: RegisterRequest):
         )
 
     try:
-        await UserDB.create_user(
+        # 2026-08-30 改造:注册审批场景下,新用户 status='pending_approval' 且记录 register_ip。
+        # admin 走 POST /api/users 创建用户保持 status='active'(不在本函数范围)。
+        from app.core.config.settings import settings as _global_settings
+        _reg_cfg = _global_settings.registration_security
+        if _reg_cfg.enabled:
+            _initial_status = "pending_approval"
+        else:
+            _initial_status = "active"
+
+        # register_ip 来自 ip_whitelist_middleware 注入(X-Real-IP),
+        # 若中间件未启用或未经过(直连测试),fallback 到 request.client.host。
+        _register_ip = getattr(req.state, "client_ip", None)
+        if not _register_ip and hasattr(req, "client") and req.client:
+            _register_ip = req.client.host
+
+        user_id = await UserDB.create_user(
             request.username,
             request.password,
             role='user',
@@ -341,8 +357,51 @@ async def register(request: RegisterRequest):
             phone=request.phone,
             email=request.email,
             department=request.department,
-            position=request.position
+            position=request.position,
+            status=_initial_status,
+            register_ip=_register_ip,
         )
+
+        if _reg_cfg.enabled:
+            # 异步发通知(fire-and-forget)
+            import asyncio
+            from app.shared.utils.auth.registration_approval_service import (
+                notify_admin_new_registration,
+            )
+            asyncio.create_task(
+                notify_admin_new_registration(
+                    username=request.username,
+                    real_name=request.real_name,
+                    email=request.email,
+                    register_ip=_register_ip or "unknown",
+                )
+            )
+            # 审计 register_pending(fail-soft)
+            from app.shared.utils.log_service import (
+                LogEvent, LogLevel, LogResult, LogType, get_log_service,
+            )
+            _svc = get_log_service()
+            if _svc is not None:
+                try:
+                    _svc.emit(LogEvent(
+                        action="register_pending",
+                        log_type=LogType.USER,
+                        result=LogResult.SUCCESS,
+                        level=LogLevel.INFO,
+                        source="auth_router",
+                        user_id=user_id,
+                        username=request.username,
+                        ip_address=_register_ip,
+                        target_type="user",
+                        target_id=str(user_id),
+                        target_name=request.username,
+                        message=f"用户 {request.username} 注册待审批",
+                    ))
+                except Exception:  # noqa: BLE001
+                    pass
+
+        if _reg_cfg.enabled:
+            return {"message": "注册申请已提交,请等待管理员审批。审批结果将通过邮件通知您。"}
         return {"message": "注册成功"}
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))

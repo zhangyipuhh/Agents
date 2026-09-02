@@ -625,3 +625,92 @@ def test_bearer_auth_write_request_exempt_from_csrf(client, admin_headers):
     """
     response = client.post("/api/auth/logout", headers=admin_headers)
     assert response.status_code == 200
+
+
+def test_register_creates_pending_user_in_registration_security_enabled(client, monkeypatch):
+    """测试 enabled=True 时,register 创建的账号状态为 pending_approval。
+
+    2026-08-30 等保三级 §7.1.3 a 改造：注册审批开启时,新用户落库 status='pending_approval',
+    admin 审批通过后变为 active。同时 register_ip 必须落库用于审计追溯。
+
+    验证策略:
+    - 通过 ``settings.registration_security.enabled = True`` 走审批路径
+    - mock 验证码通过
+    - 断言响应 message 包含"审批"且落库 status='pending_approval'
+    """
+    from app.core.config.settings import settings as _s
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.captcha.captcha_manager.verify",
+        lambda key, code: True,
+    )
+
+    payload = {
+        "username": "pendinguser",
+        "password": "Test@123",
+        "confirm_password": "Test@123",
+        "real_name": "待审批",
+        "phone": "13800138000",
+        "email": "pending@example.com",
+        "department": "测试部",
+        "position": "工程师",
+        "captcha_key": "mock_key",
+        "captcha_code": "ABCD",
+    }
+    _orig_enabled = _s.registration_security.enabled
+    _s.registration_security.enabled = True
+    try:
+        response = client.post("/api/auth/register", json=payload)
+    finally:
+        _s.registration_security.enabled = _orig_enabled
+
+    assert response.status_code == 200
+    msg = response.json()["message"]
+    assert "审批" in msg
+
+    # 验证落库状态
+    from app.shared.utils.auth.user_db import UserDB
+    user = asyncio.run(UserDB.get_user_by_username("pendinguser"))
+    assert user is not None
+    assert user["status"] == "pending_approval"
+
+
+def test_register_message_changes_when_registration_security_enabled(client, monkeypatch):
+    """测试 enabled=True 时,register 返回的 message 提示审批。
+
+    2026-08-30 等保三级 §7.1.3 a 改造：注册审批开启时,register 接口必须
+    返回"待审批"文案,而非"注册成功",让前端可即时给出用户预期。
+
+    验证策略:
+    - 通过 ``settings.registration_security.enabled = True`` 走审批路径
+    - mock 验证码通过
+    - 断言响应 message 包含"审批"
+    """
+    from app.core.config.settings import settings as _s
+
+    monkeypatch.setattr(
+        "app.shared.utils.auth.captcha.captcha_manager.verify",
+        lambda key, code: True,
+    )
+
+    payload = {
+        "username": "newuser_msg",
+        "password": "Test@123",
+        "confirm_password": "Test@123",
+        "real_name": "新用户",
+        "phone": "13900139001",
+        "email": "newmsg@example.com",
+        "department": "",
+        "position": "",
+        "captcha_key": "mock_key",
+        "captcha_code": "ABCD",
+    }
+    _orig_enabled = _s.registration_security.enabled
+    _s.registration_security.enabled = True
+    try:
+        response = client.post("/api/auth/register", json=payload)
+    finally:
+        _s.registration_security.enabled = _orig_enabled
+
+    assert response.status_code == 200
+    assert "审批" in response.json()["message"]
