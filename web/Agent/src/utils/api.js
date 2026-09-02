@@ -1432,6 +1432,63 @@ export async function kickUser(userId) {
 }
 
 /**
+ * 查询待审批用户列表（admin 专用，2026-08-30 新增）
+ * @returns {Promise<Array<Object>>} 待审批用户列表（含 status='pending_approval'）
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function fetchPendingUsers() {
+  const response = await fetchWithAuth('/api/users/pending', {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  if (!response.ok) throw new Error(`获取待审批用户列表失败: ${response.status}`)
+  return response.json()
+}
+
+/**
+ * 审批通过（admin 专用）
+ * @param {number} userId - 目标用户 ID
+ * @param {string} [reason] - 可选备注
+ * @returns {Promise<{message: string, user_id: number}>} 审批结果
+ * @throws {Error} 审批失败时抛出错误
+ */
+export async function approveUser(userId, reason = '') {
+  const response = await fetchWithAuth(`/api/users/${userId}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason })
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `审批通过失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 审批拒绝（admin 专用）
+ * @param {number} userId - 目标用户 ID
+ * @param {string} reason - 拒绝原因（≥1 字符）
+ * @returns {Promise<{message: string, user_id: number, reason: string}>} 审批结果
+ * @throws {Error} 审批失败时抛出错误
+ */
+export async function rejectUser(userId, reason) {
+  if (!reason || !reason.trim()) {
+    throw new Error('拒绝原因不能为空')
+  }
+  const response = await fetchWithAuth(`/api/users/${userId}/reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason: reason.trim() })
+  })
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    throw new Error(errorData.detail || `审批拒绝失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
  * 获取在线用户列表（admin 专用）
  * @returns {Promise<{online_users: Array}>} 在线用户列表
  * @throws {Error} 获取失败时抛出错误
