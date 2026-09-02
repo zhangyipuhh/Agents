@@ -62,6 +62,16 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS allowed_agents JSONB DEFAULT '[]';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP NULL;
 
+-- 2026-08-30 新增:注册审批(等保三级 §7.1.3 访问控制 a/e)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS status           VARCHAR(32)  NOT NULL DEFAULT 'active';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS status_reason    TEXT NULL;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS approved_by_user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS approved_at      TIMESTAMP NULL;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_status_chk;
+ALTER TABLE users ADD CONSTRAINT users_status_chk CHECK (status IN ('active','pending_approval','rejected','disabled'));
+CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+-- registration_approval_logs 表 DDL 见独立迁移 2026_08_30_add_user_registration_approval.sql
+
 -- ========== 1.5. projects（项目元数据，2026-06-30 新增）==========
 -- 项目文件夹方案：用户从聊天框下拉框选择"新建空白项目"或"使用现有文件夹"
 --   * uuid：项目的逻辑标识 = 创建时的 session_id（可保证全局唯一）
