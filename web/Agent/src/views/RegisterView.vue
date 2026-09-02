@@ -182,12 +182,23 @@ async function handleRegister() {
       captchaId.value,
       captchaCode.value.trim()
     )
-    successMessage.value = '注册成功！即将跳转到登录页...'
+    successMessage.value = '注册申请已提交，请等待管理员审批。审批结果将通过邮件通知您。'
 
-    // 注册成功后延迟跳转到登录页
+    // 2026-08-30 改造：注册审批场景下,不再自动跳转到登录页,
+    // 提示用户等待管理员审批。3 秒后清空表单(不跳转,让用户知道注册已成功提交)。
     setTimeout(() => {
-      emit('switch-to-login')
-    }, 1500)
+      username.value = ''
+      password.value = ''
+      confirmPassword.value = ''
+      realName.value = ''
+      phone.value = ''
+      email.value = ''
+      department.value = ''
+      position.value = ''
+      captchaCode.value = ''
+      successMessage.value = ''
+      loadCaptcha()
+    }, 3000)
   } catch (err) {
     errorMessage.value = err.message || '注册失败，请重试'
     // 注册失败后刷新验证码
