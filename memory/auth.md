@@ -213,6 +213,7 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 - **fail-soft 原则**：邮件 / 飞书 / 审计 emit 全部 try/except 包裹，失败仅 `logger.warning` 不抛业务异常；`approve_user` / `reject_user` 在调用 `_send_approval_email` 处再套一层防御性 try/except（防御 helper 内部异常逃逸到业务路径）。
 - **测试**：[test_registration_approval_service.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/tests/shared/utils/auth/test_registration_approval_service.py) 7 用例全绿：approve / reject 成功路径 + 邮件断言 + 审计 kwargs / approve 用户不存在抛 ValueError / reject 非 pending 返回 None / reject 空 reason 抛 ValueError / 邮件 helper raise 时 approve 仍返回 True / 通知 admin 群发邮件（monkeypatch `settings.registration_security`）。
 - **register 路由审批分支（2026-08-30 改造）**：`POST /api/auth/register` 在 `settings.registration_security.enabled=True` 时,新用户落库 `status='pending_approval'` + `register_ip`（优先读 `req.state.client_ip`,fallback `req.client.host`）;异步 `asyncio.create_task` 触发 `notify_admin_new_registration`(fire-and-forget 不 await);审计 `register_pending` 事件(`LogType.USER` / `LogResult.SUCCESS` / `LogLevel.INFO` / `source="auth_router"` / fail-soft)。响应文案:`enabled=True` → "注册申请已提交,请等待管理员审批。审批结果将通过邮件通知您。";`enabled=False` → 保持原 "注册成功"。
+- **login / login-api / refresh 路径 status 检查拦截(2026-08-30 改造)**:`auth_router.py` 三个端点在凭据校验通过之后、签发 token / 签发新 access_token 之前,基于 `UserDB.get_user_by_username` 拿到的用户 `status` 字段做拦截:`pending_approval` → 403「账号待管理员审批,请耐心等待审批结果」(refresh 文案略短:"账号待管理员审批,请耐心等待");`rejected` → 403「账号审批未通过」;`disabled` → 403「账号已禁用,请联系管理员」(refresh 文案:"账号已禁用")。守卫仅在 `user is not None` 时生效——不存在的用户名继续走原有 401「用户名或密码错误」失败处理,反枚举特性不变。
 
 ### 权限控制
 
