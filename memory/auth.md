@@ -147,6 +147,18 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
      - 否则 → `RuntimeError` 启动失败并 `logger.error`。
 - **生产部署约束**：首次将历史部署升级至本版本时，需在 `.env` 设置 `AUTH_BOOTSTRAP_ENABLED=true` 与满足复杂度的 `AUTH_DEFAULT_ADMIN_PASSWORD`，完成一次弱口令轮换后再将 `AUTH_BOOTSTRAP_ENABLED` 置 `false`。
 
+### RegistrationSecuritySettings（2026-08-30 新增）
+
+注册安全配置（等保三级 §7.1.3 访问控制 a/e 项），仅承载配置，不内置审批/白名单业务逻辑——业务侧按需消费。
+
+- **配置位置**：`Settings.registration_security`（[settings.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/core/config/settings.py)），env 前缀 `REGISTRATION_SECURITY_`。
+- **字段**：
+  - `enabled: bool`（默认 `False`，env `REGISTRATION_SECURITY_ENABLED`）——总开关；关闭时退化为无审批 / 无白名单约束（保留原行为）。
+  - `ip_whitelist: List[str]`（默认 `[]`，env `REGISTRATION_SECURITY_IP_WHITELIST`，JSON list）——注册请求源 IP 白名单（CIDR 或精确 IP）；启用时由业务侧校验。
+  - `admin_notification_emails: List[str]`（默认 `[]`，env `REGISTRATION_SECURITY_ADMIN_NOTIFICATION_EMAILS`，JSON list）——注册待审批通知邮箱列表。
+  - `feishu_notify_enabled: bool`（默认 `False`，env `REGISTRATION_SECURITY_FEISHU_NOTIFY_ENABLED`）——是否同步发送飞书审批通知；依赖 `FeishuSettings` 已配置。
+- **测试**：`app/tests/core/config/test_registration_security_settings.py` 7 用例（默认值 / 布尔字符串解析 / JSON list 解析 ×2 / Settings 挂载 / P0 导入存在性）。
+
 ### JWT payload 中的用户唯一标识（2026-08-11 增强）
 
 - Access Token 与 Refresh Token payload **显式**携带 `user_id` 字段，由签发路径 `JWTAuth.generate_token(username, user_id, ...)` / `generate_refresh_token(username, user_id, ...)` 显式传入。
