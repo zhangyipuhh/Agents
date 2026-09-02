@@ -790,3 +790,136 @@ async def update_user_profile(user_id: int, request: ProfileUpdateRequest, req: 
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="更新失败")
 
     return {"message": "资料更新成功"}
+
+
+# 2026-08-30 新增:注册审批 3 个端点(等保三级 §7.1.3 访问控制 a/e)。
+# 顺序:/pending 必须排在 /{user_id}/... 之前,避免 FastAPI 把 "pending" 解析成 user_id
+# 导致 405 Method Not Allowed(GET /api/users/pending 被 /{user_id} 路由以整数语义拦截)。
+@router.get('/pending', dependencies=[Depends(require_admin)])
+async def list_pending_users():
+    """
+    查询待审批用户列表（admin 专用）
+
+    Returns:
+        List[UserResponse]: status='pending_approval' 的用户列表（按 id 升序）
+    """
+    from app.shared.utils.auth.user_db import UserDB
+    users = await UserDB.list_pending_users()
+    return [
+        UserResponse(
+            id=u['id'],
+            username=u['username'],
+            real_name=u.get('real_name', ''),
+            role=u.get('role', 'user'),
+            allowed_agents=u.get('allowed_agents', []),
+            created_at=str(u['created_at']),
+            updated_at=str(u['updated_at']),
+            phone=u.get('phone', ''),
+            email=u.get('email', ''),
+            department=u.get('department', ''),
+            position=u.get('position', ''),
+        )
+        for u in users
+    ]
+
+
+@router.post('/{user_id}/approve', dependencies=[Depends(require_admin)])
+async def approve_pending_user(user_id: int, req: Request):
+    """
+    审批通过 pending_approval 用户为 active（admin 专用）
+
+    Args:
+        user_id: 目标用户 ID
+        req: FastAPI Request（取操作人 user_id / username）
+
+    Returns:
+        dict: 审批结果消息
+
+    Raises:
+        HTTPException: 401 未识别操作人 / 404 用户不存在 / 409 非 pending_approval
+    """
+    from app.shared.utils.auth.registration_approval_service import (
+        RegistrationApprovalService,
+    )
+
+    operator_user_id = getattr(req.state, 'user_id', None)
+    operator_username = getattr(req.state, 'username', 'unknown')
+    if operator_user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="未识别操作人",
+        )
+
+    try:
+        success = await RegistrationApprovalService.approve_user(
+            user_id=user_id,
+            operator_user_id=int(operator_user_id),
+            operator_username=operator_username,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        )
+
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="该用户当前不是待审批状态",
+        )
+    return {"message": "审批通过", "user_id": user_id}
+
+
+@router.post('/{user_id}/reject', dependencies=[Depends(require_admin)])
+async def reject_pending_user(user_id: int, request_body: dict, req: Request):
+    """
+    审批拒绝 pending_approval 用户为 rejected（admin 专用）
+
+    Args:
+        user_id: 目标用户 ID
+        request_body: 请求体，需含 reason（≥1 字符）
+        req: FastAPI Request（取操作人 user_id / username）
+
+    Returns:
+        dict: 审批结果消息（含写入的 reason）
+
+    Raises:
+        HTTPException: 400 reason 缺失 / 401 未识别操作人 / 404 用户不存在 /
+            409 非 pending_approval
+    """
+    from app.shared.utils.auth.registration_approval_service import (
+        RegistrationApprovalService,
+    )
+
+    reason = (request_body or {}).get('reason', '').strip()
+    if not reason:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="reason 必填且不可为空",
+        )
+
+    operator_user_id = getattr(req.state, 'user_id', None)
+    operator_username = getattr(req.state, 'username', 'unknown')
+    if operator_user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="未识别操作人",
+        )
+
+    try:
+        result = await RegistrationApprovalService.reject_user(
+            user_id=user_id,
+            reason=reason,
+            operator_user_id=int(operator_user_id),
+            operator_username=operator_username,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        )
+
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="该用户当前不是待审批状态",
+        )
+    return {"message": "已拒绝", "user_id": user_id, "reason": reason}
