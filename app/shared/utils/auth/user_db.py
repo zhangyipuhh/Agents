@@ -91,6 +91,12 @@ async def init_user_schema():
         # 2026-08-07 新增：登录失败计数与锁定到期（MFATOTP 拒绝重放在 ``user_mfa_totp`` 内完成）
         ('failed_login_count', 'INTEGER NOT NULL DEFAULT 0'),
         ('locked_until', 'TIMESTAMP NULL'),
+        # 2026-08-30 新增：注册审批字段（等保三级 §7.1.3 访问控制 a/e）
+        ('status', "VARCHAR(32) NOT NULL DEFAULT 'active'"),
+        ('status_reason', 'TEXT NULL'),
+        ('register_ip', 'VARCHAR(64) NULL'),
+        ('approved_by_user_id', 'INTEGER NULL'),
+        ('approved_at', 'TIMESTAMP NULL'),
     ]:
         await DatabasePool.execute(
             f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {column} {col_type}"
@@ -160,7 +166,9 @@ class UserDB:
     async def create_user(cls, username: str, password: str, role: str = 'user',
                           real_name: str = '', phone: str = '', email: str = '',
                           department: str = '', position: str = '',
-                          allowed_agents: Optional[List[str]] = None) -> int:
+                          allowed_agents: Optional[List[str]] = None,
+                          status: str = 'active',
+                          register_ip: Optional[str] = None) -> int:
         """
         创建新用户
 
@@ -174,14 +182,25 @@ class UserDB:
             department: 部门
             position: 职位
             allowed_agents: 允许使用的智能体名称列表，默认为空列表
+            status: 注册审批状态(active / pending_approval / rejected / disabled)，
+                默认为 ``active'；注册审批场景传 ``pending_approval'。
+            register_ip: 注册来源 IP，可空；与审计日志联动。
 
         Returns:
             int: 新用户 ID
 
         Raises:
             ValueError: 用户名已存在；或密码不满足复杂度（长度 < 8 / 缺大小写 / 缺数字 /
-                缺特殊字符，由 ``password_policy.validate_password`` 给出原因文案）。
+                缺特殊字符，由 ``password_policy.validate_password`` 给出原因文案）；
+                或 ``status`` 不在白名单。
         """
+        # 2026-08-30 注册审批场景：status 白名单校验。
+        # 必须在 password 校验之前完成，避免无效 status 与弱口令耦合。
+        if status not in ('active', 'pending_approval', 'rejected', 'disabled'):
+            raise ValueError(
+                f"status 必须是 active/pending_approval/rejected/disabled,得到 {status!r}"
+            )
+
         # 2026-08-11 等保三级 Task 3 改造：边界强校验。
         # 在 ``hash_password`` 之前调用 ``validate_password``，避免先把弱口令算哈希
         # 再报错造成的算力浪费；同时保证任何路径（注册 / 管理员建用户 / memory 自动建号
@@ -213,6 +232,11 @@ class UserDB:
                     'department': department,
                     'position': position,
                     'allowed_agents': allowed_agents,
+                    'status': status,
+                    'status_reason': None,
+                    'register_ip': register_ip,
+                    'approved_by_user_id': None,
+                    'approved_at': None,
                     'created_at': now,
                     'updated_at': now
                 }
@@ -223,8 +247,11 @@ class UserDB:
         try:
             row = await DatabasePool.fetchrow(
                 """
-                INSERT INTO users (username, password_hash, role, real_name, phone, email, department, position, allowed_agents)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+                INSERT INTO users (
+                    username, password_hash, role, real_name, phone, email,
+                    department, position, allowed_agents, status, register_ip
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11)
                 RETURNING id
                 """,
                 username,
@@ -235,7 +262,9 @@ class UserDB:
                 email,
                 department,
                 position,
-                json.dumps(allowed_agents)
+                json.dumps(allowed_agents),
+                status,
+                register_ip,
             )
             return row['id']
         except asyncpg.UniqueViolationError:
@@ -297,12 +326,20 @@ class UserDB:
                     'department': user.get('department', ''),
                     'position': user.get('position', ''),
                     'allowed_agents': user.get('allowed_agents', []),
+                    'status': user.get('status', 'active'),
+                    'status_reason': user.get('status_reason'),
+                    'register_ip': user.get('register_ip'),
+                    'approved_by_user_id': user.get('approved_by_user_id'),
+                    'approved_at': user.get('approved_at'),
                     'created_at': user['created_at'],
                     'updated_at': user['updated_at']
                 }
 
         record = await DatabasePool.fetchrow(
-            "SELECT id, username, password_hash, role, real_name, phone, email, department, position, allowed_agents, created_at, updated_at FROM users WHERE username = $1",
+            "SELECT id, username, password_hash, role, real_name, phone, email, "
+            "department, position, allowed_agents, status, status_reason, "
+            "register_ip, approved_by_user_id, approved_at, created_at, updated_at "
+            "FROM users WHERE username = $1",
             username
         )
         if record is None:
@@ -318,6 +355,11 @@ class UserDB:
             'department': record.get('department', ''),
             'position': record.get('position', ''),
             'allowed_agents': _coerce_allowed_agents(record.get('allowed_agents', [])),
+            'status': record.get('status', 'active'),
+            'status_reason': record.get('status_reason'),
+            'register_ip': record.get('register_ip'),
+            'approved_by_user_id': record.get('approved_by_user_id'),
+            'approved_at': record.get('approved_at'),
             'created_at': record['created_at'],
             'updated_at': record['updated_at'],
         }
@@ -348,13 +390,21 @@ class UserDB:
                             'department': user.get('department', ''),
                             'position': user.get('position', ''),
                             'allowed_agents': user.get('allowed_agents', []),
+                            'status': user.get('status', 'active'),
+                            'status_reason': user.get('status_reason'),
+                            'register_ip': user.get('register_ip'),
+                            'approved_by_user_id': user.get('approved_by_user_id'),
+                            'approved_at': user.get('approved_at'),
                             'created_at': user['created_at'],
                             'updated_at': user['updated_at']
                         }
                 return None
 
         record = await DatabasePool.fetchrow(
-            "SELECT id, username, password_hash, role, real_name, phone, email, department, position, allowed_agents, created_at, updated_at FROM users WHERE id = $1",
+            "SELECT id, username, password_hash, role, real_name, phone, email, "
+            "department, position, allowed_agents, status, status_reason, "
+            "register_ip, approved_by_user_id, approved_at, created_at, updated_at "
+            "FROM users WHERE id = $1",
             user_id
         )
         if record is None:
@@ -370,6 +420,11 @@ class UserDB:
             'department': record.get('department', ''),
             'position': record.get('position', ''),
             'allowed_agents': _coerce_allowed_agents(record.get('allowed_agents', [])),
+            'status': record.get('status', 'active'),
+            'status_reason': record.get('status_reason'),
+            'register_ip': record.get('register_ip'),
+            'approved_by_user_id': record.get('approved_by_user_id'),
+            'approved_at': record.get('approved_at'),
             'created_at': record['created_at'],
             'updated_at': record['updated_at'],
         }
@@ -402,6 +457,11 @@ class UserDB:
                         'department': user.get('department', ''),
                         'position': user.get('position', ''),
                         'allowed_agents': user.get('allowed_agents', []),
+                        'status': user.get('status', 'active'),
+                        'status_reason': user.get('status_reason'),
+                        'register_ip': user.get('register_ip'),
+                        'approved_by_user_id': user.get('approved_by_user_id'),
+                        'approved_at': user.get('approved_at'),
                         'created_at': user['created_at'],
                         'updated_at': user['updated_at']
                     }
@@ -409,7 +469,10 @@ class UserDB:
                 ]
 
         records = await DatabasePool.fetch(
-            "SELECT id, username, role, real_name, phone, email, department, position, allowed_agents, created_at, updated_at FROM users ORDER BY id LIMIT $1 OFFSET $2",
+            "SELECT id, username, role, real_name, phone, email, department, position, "
+            "allowed_agents, status, status_reason, register_ip, "
+            "approved_by_user_id, approved_at, created_at, updated_at "
+            "FROM users ORDER BY id LIMIT $1 OFFSET $2",
             limit,
             offset
         )
@@ -424,6 +487,11 @@ class UserDB:
                 'department': r.get('department', ''),
                 'position': r.get('position', ''),
                 'allowed_agents': _coerce_allowed_agents(r.get('allowed_agents', [])),
+                'status': r.get('status', 'active'),
+                'status_reason': r.get('status_reason'),
+                'register_ip': r.get('register_ip'),
+                'approved_by_user_id': r.get('approved_by_user_id'),
+                'approved_at': r.get('approved_at'),
                 'created_at': r['created_at'],
                 'updated_at': r['updated_at'],
             }
@@ -939,3 +1007,144 @@ class UserDB:
             "WHERE id = $1",
             user_id,
         )
+
+    # ----------------------------------------------------------------------
+    # 2026-08-30 新增：注册审批工作流方法（update_user_status / list_pending_users）
+    # ----------------------------------------------------------------------
+    #
+    # 业务背景：用户注册不再默认 active，必须经 admin 审批；
+    # pending_approval → active（通过）/ rejected（拒绝）/ disabled（禁用）。
+    # 并发守卫：update_user_status 仅允许修改 status='pending_approval' 的用户，
+    # 防止两个 admin 同时审批同一用户造成状态漂移。
+
+    @classmethod
+    async def update_user_status(
+        cls, user_id: int, status: str, reason: Optional[str],
+        operator_user_id: int
+    ) -> bool:
+        """
+        更新用户状态（admin 审批用），含并发守卫。
+
+        守卫语义：仅当 user 当前 status='pending_approval' 时才允许修改,
+        防止两个 admin 同时操作同一用户造成状态漂移。第二次操作返回 False。
+
+        Args:
+            user_id: 目标用户 ID。
+            status: 目标状态（active / rejected / disabled）。
+            reason: 拒绝/禁用原因（approve 时可为 None）。
+            operator_user_id: 操作人用户 ID（写入 approved_by_user_id 字段）。
+
+        Returns:
+            bool: 成功返回 True；用户不存在或非 pending_approval 状态返回 False。
+
+        Raises:
+            ValueError: status 非法值。
+        """
+        if status not in ('active', 'rejected', 'disabled'):
+            raise ValueError(
+                f"status 必须是 active/rejected/disabled,得到 {status!r}"
+            )
+
+        if not cls.is_enabled():
+            with cls._lock:
+                target = None
+                for u in cls._memory_users.values():
+                    if u['id'] == user_id:
+                        target = u
+                        break
+                if target is None:
+                    return False
+                if target.get('status') != 'pending_approval':
+                    return False
+                target['status'] = status
+                target['status_reason'] = reason
+                target['approved_by_user_id'] = operator_user_id
+                target['approved_at'] = datetime.utcnow()
+                target['updated_at'] = datetime.utcnow()
+                return True
+
+        row = await DatabasePool.fetchrow(
+            """
+            UPDATE users
+            SET status = $2,
+                status_reason = $3,
+                approved_by_user_id = $4,
+                approved_at = NOW(),
+                updated_at = NOW()
+            WHERE id = $1 AND status = 'pending_approval'
+            RETURNING id
+            """,
+            user_id, status, reason, operator_user_id
+        )
+        return row is not None
+
+    @classmethod
+    async def list_pending_users(cls, limit: int = 100, offset: int = 0) -> List[dict]:
+        """
+        查询待审批用户列表（status='pending_approval'）。
+
+        Args:
+            limit: 返回数量限制。
+            offset: 偏移量。
+
+        Returns:
+            List[dict]: 待审批用户列表（按 id 升序）。
+        """
+        if not cls.is_enabled():
+            with cls._lock:
+                pending = [
+                    u for u in cls._memory_users.values()
+                    if u.get('status') == 'pending_approval'
+                ]
+                pending.sort(key=lambda u: u['id'])
+                return [
+                    {
+                        'id': u['id'],
+                        'username': u['username'],
+                        'role': u.get('role', 'user'),
+                        'real_name': u.get('real_name', ''),
+                        'phone': u.get('phone', ''),
+                        'email': u.get('email', ''),
+                        'department': u.get('department', ''),
+                        'position': u.get('position', ''),
+                        'allowed_agents': u.get('allowed_agents', []),
+                        'status': u.get('status', 'active'),
+                        'status_reason': u.get('status_reason'),
+                        'register_ip': u.get('register_ip'),
+                        'approved_by_user_id': u.get('approved_by_user_id'),
+                        'approved_at': u.get('approved_at'),
+                        'created_at': u['created_at'],
+                        'updated_at': u['updated_at'],
+                    }
+                    for u in pending[offset:offset + limit]
+                ]
+
+        records = await DatabasePool.fetch(
+            "SELECT id, username, role, real_name, phone, email, department, position, "
+            "allowed_agents, status, status_reason, register_ip, "
+            "approved_by_user_id, approved_at, created_at, updated_at "
+            "FROM users WHERE status = 'pending_approval' "
+            "ORDER BY id LIMIT $1 OFFSET $2",
+            limit, offset
+        )
+        return [
+            {
+                'id': r['id'],
+                'username': r['username'],
+                'role': r['role'],
+                'real_name': r.get('real_name', ''),
+                'phone': r.get('phone', ''),
+                'email': r.get('email', ''),
+                'department': r.get('department', ''),
+                'position': r.get('position', ''),
+                'allowed_agents': _coerce_allowed_agents(r.get('allowed_agents', [])),
+                'status': r.get('status', 'active'),
+                'status_reason': r.get('status_reason'),
+                'register_ip': r.get('register_ip'),
+                'approved_by_user_id': r.get('approved_by_user_id'),
+                'approved_at': r.get('approved_at'),
+                'created_at': r['created_at'],
+                'updated_at': r['updated_at'],
+            }
+            for r in records
+        ]
