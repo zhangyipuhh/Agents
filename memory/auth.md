@@ -203,6 +203,16 @@ FastAPI 中间件为 LIFO 栈：后注册的中间件先执行（最外层包裹
 - **来源 IP 信任边界**：仅信任 nginx 反代写入的 `X-Real-IP`；直连 uvicorn 无该 header → 拒绝；要求运维在 nginx 配置 `proxy_set_header X-Real-IP $remote_addr;`。
 - **测试**：[test_ip_whitelist_middleware.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/tests/shared/utils/auth/test_ip_whitelist_middleware.py) 8 用例全绿：disabled 直通 / 非 register 路径直通 / 缺失 X-Real-IP 拦截 / 非法格式拦截 / 不在白名单拦截 + 审计日志 / 在白名单放行 / 空白名单拒绝所有 / CIDR 边界匹配。
 
+### RegistrationApprovalService（等保三级 §7.1.3 a，2026-08-30 新增）
+
+- **服务**：[registration_approval_service.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/shared/utils/auth/registration_approval_service.py)，`RegistrationApprovalService` 全部 `@staticmethod`，无内部状态；`notify_admin_new_registration` 为模块级 async 函数。
+- **接口契约**：
+  - `approve_user(user_id, operator_user_id, operator_username) -> bool`：用户不存在抛 `ValueError("用户不存在 user_id=...")`；非 `pending_approval`（守卫由 `UserDB.update_user_status` 实现）返回 `False`；成功 → 用户邮件通知 + 审计 `register_approved`（`LogLevel.INFO`）。
+  - `reject_user(user_id, reason, operator_user_id, operator_username) -> Optional[bool]`：`reason` 为空抛 `ValueError("拒绝时 reason 必填且不可为空")`；用户不存在抛 `ValueError`；非 `pending_approval` 返回 `None`（路由层映射 409 Conflict）；成功 → 用户邮件通知 + 审计 `register_rejected`（`LogLevel.WARNING` + `metadata.reason`）。
+  - `notify_admin_new_registration(username, real_name, email, register_ip)`：`admin_notification_emails` 非空 → 群发邮件；`feishu_notify_enabled=True` → 飞书默认 receive_id 发文本；两者皆空 → 直接 return。
+- **fail-soft 原则**：邮件 / 飞书 / 审计 emit 全部 try/except 包裹，失败仅 `logger.warning` 不抛业务异常；`approve_user` / `reject_user` 在调用 `_send_approval_email` 处再套一层防御性 try/except（防御 helper 内部异常逃逸到业务路径）。
+- **测试**：[test_registration_approval_service.py](file:///e:/laboratory/AI/Agents/feature-agent-core-ref/app/tests/shared/utils/auth/test_registration_approval_service.py) 7 用例全绿：approve / reject 成功路径 + 邮件断言 + 审计 kwargs / approve 用户不存在抛 ValueError / reject 非 pending 返回 None / reject 空 reason 抛 ValueError / 邮件 helper raise 时 approve 仍返回 True / 通知 admin 群发邮件（monkeypatch `settings.registration_security`）。
+
 ### 权限控制
 
 - **角色区分**：用户表 `role` 字段支持 `admin` / `user`，登录时返回
