@@ -979,6 +979,11 @@ def setup_middleware(app: FastAPI):
     app.middleware("http")(session_auth_middleware)
     # 2026-08-12 等保三级 §1.5：idle 超时中间件，校验 last_active_at 无操作自动退出
     app.middleware("http")(idle_timeout_middleware)
+    # 2026-08-30 等保三级 §7.1.3 a：注册路径 IP 白名单中间件
+    from app.shared.utils.auth.ip_whitelist_middleware import (
+        ip_whitelist_middleware,
+    )
+    app.middleware("http")(ip_whitelist_middleware)
     app.middleware("http")(auth_middleware)
 
 
