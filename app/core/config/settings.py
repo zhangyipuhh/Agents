@@ -619,6 +619,65 @@ class AuthIdleSettings(BaseSettings):
         return bool(v)
 
 
+class RegistrationSecuritySettings(BaseSettings):
+    """
+    注册安全配置（2026-08-30 新增）
+
+    承载等保三级 §7.1.3 访问控制 a/e 项要求：
+    - a) 对注册用户进行审批（人工/自动均可，由上层业务消费 `enabled` 后自行实现）
+    - e) 基于白名单的访问控制（IP 白名单）
+
+    字段说明：
+
+    - enabled: 总开关；关闭时，注册行为退化为无审批、无白名单约束（保留原行为）。
+        环境变量 REGISTRATION_SECURITY_ENABLED。
+    - ip_whitelist: IP 白名单（CIDR 或精确 IP）；启用 `enabled` 时，注册请求源 IP
+        必须在该列表内（业务侧校验）。JSON list 格式。
+        环境变量 REGISTRATION_SECURITY_IP_WHITELIST。
+    - admin_notification_emails: 注册审批通知邮箱列表；新注册待审批时抄送这些邮箱。
+        JSON list 格式。环境变量 REGISTRATION_SECURITY_ADMIN_NOTIFICATION_EMAILS。
+    - feishu_notify_enabled: 是否同步发送飞书审批通知（依赖 FeishuSettings 已配置）。
+        环境变量 REGISTRATION_SECURITY_FEISHU_NOTIFY_ENABLED。
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=_ENV_FILE_PATH,
+        env_file_encoding="utf-8",
+        env_prefix="REGISTRATION_SECURITY_",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    enabled: bool = Field(
+        default=False,
+        description="注册审批 + IP 白名单总开关；关闭时退化为无审批/无白名单"
+                    "（REGISTRATION_SECURITY_ENABLED）。",
+    )
+    ip_whitelist: List[str] = Field(
+        default_factory=list,
+        description="IP 白名单（CIDR 或精确 IP）；启用注册安全时，注册请求源 IP 必须在该列表内"
+                    "（REGISTRATION_SECURITY_IP_WHITELIST，JSON list）。",
+    )
+    admin_notification_emails: List[str] = Field(
+        default_factory=list,
+        description="注册审批通知邮箱列表；新注册待审批时抄送这些邮箱"
+                    "（REGISTRATION_SECURITY_ADMIN_NOTIFICATION_EMAILS，JSON list）。",
+    )
+    feishu_notify_enabled: bool = Field(
+        default=False,
+        description="是否同步发送飞书审批通知；依赖 FeishuSettings 已配置 webhook"
+                    "（REGISTRATION_SECURITY_FEISHU_NOTIFY_ENABLED）。",
+    )
+
+    @field_validator("enabled", "feishu_notify_enabled", mode="before")
+    @classmethod
+    def parse_bool(cls, v):
+        """将字符串转换为布尔值（与 AuthIdleSettings.parse_bool 一致）"""
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes", "on")
+        return bool(v)
+
+
 class DemonstrationSettings(BaseSettings):
     """
     演示测试配置
@@ -1063,6 +1122,10 @@ class Settings(BaseSettings):
     auth_idle: AuthIdleSettings = Field(default_factory=AuthIdleSettings)
     # 2026-08-09 新增（等保三级 Task 2）：默认管理员初始化 / 历史弱口令迁移配置。
     auth: AuthBootstrapSettings = Field(default_factory=AuthBootstrapSettings)
+    # 2026-08-30 新增（等保三级 §7.1.3 访问控制 a/e）：注册审批 + IP 白名单配置。
+    registration_security: RegistrationSecuritySettings = Field(
+        default_factory=RegistrationSecuritySettings
+    )
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     skills: SkillsSettings = Field(default_factory=SkillsSettings)
     devops: DevOpsSettings = Field(default_factory=DevOpsSettings)
