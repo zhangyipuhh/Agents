@@ -84,12 +84,29 @@ describe('HelpSidebar 组件', () => {
     expect(wrapper.emitted('select')[0]).toEqual(['overview'])
   })
 
-  it('HelpSidebarItem 独立单元：节点无 path 时点击不触发 select', async () => {
-    const node = { title: '分组标题' } // 无 path
+  it('HelpSidebarItem 独立单元：无 children 时渲染为叶子链接，点击触发 select', async () => {
+    // 无 children + 有 path → 叶子节点，渲染为可点击 button
+    const node = { title: '独立叶子', path: 'standalone' }
     const wrapper = mount(HelpSidebarItem, {
       props: { node, activePath: '' },
     })
-    expect(wrapper.find('.help-nav-link').exists()).toBe(false)
+    expect(wrapper.find('.help-nav-link').exists()).toBe(true)
+    expect(wrapper.find('.help-nav-group-label').exists()).toBe(false)
+
+    await wrapper.find('.help-nav-link').trigger('click')
+    expect(wrapper.emitted('select')[0]).toEqual(['standalone'])
+  })
+
+  it('HelpSidebarItem 独立单元：有 children 时渲染为分组', () => {
+    const node = {
+      title: '父分组',
+      children: [{ title: '子1', path: 'child1' }],
+    }
+    const wrapper = mount(HelpSidebarItem, {
+      props: { node, activePath: '' },
+    })
+    // 父分组渲染为 .help-nav-group-label，不渲染 .help-nav-link
+    expect(wrapper.find('.help-nav-group').exists()).toBe(true)
     expect(wrapper.find('.help-nav-group-label').exists()).toBe(true)
   })
 })

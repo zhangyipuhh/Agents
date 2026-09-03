@@ -38,6 +38,7 @@
 | `/` | `agent` | `views/AgentWorkspace.vue` | `'agent'` |
 | `/knowledge` | `knowledge` | `views/KnowledgeWorkspace.vue` | `'knowledge'` |
 | `/ops-console` | `ops-console` | `views/OpsConsoleWorkspace.vue` | `'ops-console'` |
+| `/help` | `help` | `views/HelpWorkspace.vue` | `'help'`（2026-09-03 新增帮助中心） |
 | `/:pathMatch(.*)*` | `not-found` | redirect → `/` | — |
 
 #### 全局守卫（`router.beforeEach`）
@@ -617,6 +618,52 @@
   - `SubAgentDrawer.spec.js`：独立 Push Drawer（**19** 用例）
   - `MessageBubble.spec.js`：timeline.tool 内按 toolCallId 渲染 SubAgentCard 等（5 用例）
   - `UserSettingsDialog.subagent.spec.js`（2026-07-02 新增）：历史会话详情弹窗居中 CSS 回归保护 + 子智能体事件冒泡链路（**5** 用例）
+  - `help-loader.spec.js`（2026-09-03 新增）：帮助文档加载器 `normalizePath` / `getDocUrl` / `loadIndex` / `loadDoc` / `extractHeadings` / `slugifyHeading` / 缓存 / 404 / `../` 防护（19 用例）
+  - `HelpLayout.spec.js`（2026-09-03 新增）：三栏 layout 加载流程 / 错误占位 / 重试 / toc 渲染（9 用例）
+  - `HelpSidebar.spec.js`（2026-09-03 新增）：递归渲染 / select emit / 激活态 / 分组与叶子（7 用例）
+  - `HelpToc.spec.js`（2026-09-03 新增）：headings 列表 / active 高亮 / jump emit / href 拼装（5 用例）
+  - `HelpWorkspace.spec.js`（2026-09-03 新增）：默认渲染 HelpLayout（2 用例）
+  - `help.spec.js`（2026-09-03 新增）：`help.css` 源码静态扫描关键类名 + 无裸全局选择器（9 用例）
+  - `Sidebar.help.spec.js`（2026-09-03 新增）：头像菜单「帮助」按钮存在 / 点击触发 window.open / admin 与普通用户均可见 / 浏览器拦截降级（4 用例）
+
+
+### 帮助中心（2026-09-03 新增）
+
+按 LangChain 中文文档站视觉风格新增 SPA 帮助中心，管理员与普通用户登录后均可访问（不需要任何菜单 ACL）。
+
+**入口**：Sidebar 头像菜单「管理后台」上方新增「帮助」按钮（`Sidebar.vue::handleHelp`），不区分 `userRole`；点击 `window.open('/help', '_blank', 'noopener,noreferrer')` 新 Tab 打开，主会话不受影响。浏览器拦截弹窗时降级为 `window.location.href = '/help'`（应用内跳转，替换主会话，仅拦截时退化）。
+
+**路由**：`/help` 一级路由（`router/index.js::routes` 新增 `name: 'help'` + `meta.requiresAuth: true` + `meta.pageKey: 'help'`），复用 `requiresAuthGuard` 全局守卫：未登录整页跳 `/login?redirect=%2Fhelp`。
+
+**App.vue 路由级 layout 分支**：新增 `isHelpRoute` computed（与 `isOpsConsoleRoute` 同模式，vue-router `useRoute` 优先 + `window.location.pathname` 兜底），模板新增 `<div v-else-if="isHelpRoute" class="app-layout app-layout--help"><router-view /></div>` 分支独占 viewport 不挂主会话 Sidebar / ProjectDialog / SubAgentDrawer。帮助页通常通过 `window.open` 新 Tab 打开，App.vue 实际不挂该分支；保留用于单测 + 兜底（同源直接访问 `/help` 时的 layout 隔离）。
+
+**组件分层**：
+
+```
+views/HelpWorkspace.vue
+  └─ components/help/HelpLayout.vue        # 三栏 layout 容器
+      ├─ HelpTopBar.vue                    # 顶部品牌栏（Logo + 帮助 + 主题/语言切换占位 + 关闭按钮）
+      ├─ HelpSidebar.vue                   # 左侧目录导航
+      │   └─ HelpSidebarItem.vue           # 单项（递归：分组 + 叶子链接）
+      ├─ HelpContent（inline article）      # 中部 markdown 渲染区（v-html + safeMarkdown）
+      └─ HelpToc.vue                       # 右侧「此页内容」anchor 索引
+```
+
+**文档加载器**：`utils/help-loader.js` 提供 `loadIndex()` + `loadDoc(path)` + `extractHeadings(md)` + `normalizePath(path)` + `clearHelpCache()`；模块级 `Map` 内存缓存避免重复请求；`normalizePath` 自动去除前导/尾部斜杠 + 防御 `../` 路径遍历（命中回退 `'overview'`）；`extractHeadings` 跳过 fenced code block 内的 `#` 行（防误识别为标题）。
+
+**文档源**：`public/help/index.json`（目录树）+ `public/help/*.md`（5 份示例文档：`overview.md` / `getting-started.md` / `features/chat.md` / `features/knowledge.md` / `features/ops-console.md` / `faq.md`）。Vite dev server 与 nginx `try_files $uri` 均可直接命中；目录树支持嵌套 `children`（分组）。
+
+**渲染管线**：`.md` → `safeMarkdown(md)`（`utils/sanitize-marked.js` 已有的 `marked + DOMPurify` 渲染管线，ALLOWED_TAGS 白白包含 table/thead/tbody/tr/td/th）→ `v-html` 注入 `<article class="help-article">`。
+
+**样式**：`styles/help.css` 全部类名 `.help-` 前缀作用域隔离（与 `ops-console.css` 模式一致）；白底 + 政务蓝强调色 `#1e5cff`；三栏布局（顶部 56px + 左侧 260px sticky 导航 + 中部 max-width 800px + 右侧 220px sticky toc）；响应式 `@media (max-width: 1024px)` 隐藏右侧 toc / `@media (max-width: 768px)` 折叠左侧导航与顶部菜单栏。
+
+**鉴权**：`requiresAuth: true` 复用全局守卫；**无需任何菜单 ACL**（admin 与普通用户同等可见）；**无后端 API**（静态资源，不经过 FastAPI）。
+
+**关闭按钮**：`HelpTopBar.vue::showClose` computed 由 `window.opener` 存在或 `window.history.length === 1` 判定（被 `window.open` 打开的新 Tab 显示）；点击触发 `emit('close')`，父组件 `handleClose` 调 `window.close()` 关闭 Tab。
+
+**Bug 修复**（2026-09-03 实施期发现）：`initIndex` 内 `activePath.value = first` 会触发 `watch(activePath)` 立即执行 `loadDocContent(first)`，导致同一文档被 fetch 两次（一次 initIndex 主动 + 一次 watch 触发）。修复：新增 `skipNextWatch` ref，initIndex 设置前置 `true`，watch 入口读 flag 跳过本次执行并清 flag。
+
+**测试**：73 用例全绿（8 个 spec 文件），覆盖 loader 工具 19 + HelpLayout 9 + HelpSidebar 7 + HelpToc 5 + HelpWorkspace 2 + help.css 9 + Sidebar.help 4 + router 18（既有 + 1 新增 `/help` 路由断言）。
 
 
 **背景**：上一节"停止按钮（中断 LLM 生成）"仅停止主智能体的 LangGraph astream，但子智能体（sandbox / explore）工具函数内的 `for chunk in child_agent.stream(...)` 是同步 for 循环，没有任何停止信号感知。子智能体会一直运行直到自然结束，消耗 LLM token、占用 Docker 容器，停止按钮无法真正中断。

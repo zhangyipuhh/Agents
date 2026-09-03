@@ -14,7 +14,7 @@
 -->
 <template>
   <div class="help-root">
-    <HelpTopBar :show-close="showClose" @close="handleClose" />
+    <HelpTopBar :show-close="showClose" :close-mode="closeMode" @close="handleClose" />
     <div class="help-body">
       <HelpSidebar
         v-if="navTree.length > 0"
@@ -50,11 +50,14 @@
 
 <script setup>
 import { ref, computed, onMounted, watch, nextTick, onBeforeUnmount } from 'vue'
+import { useRouter } from 'vue-router'
 import HelpTopBar from './HelpTopBar.vue'
 import HelpSidebar from './HelpSidebar.vue'
 import HelpToc from './HelpToc.vue'
 import { loadIndex, loadDoc, extractHeadings } from '../../utils/help-loader.js'
 import { safeMarkdown } from '../../utils/sanitize-marked.js'
+
+const router = useRouter()
 
 const navTree = ref([])
 const activePath = ref('')
@@ -65,16 +68,34 @@ const notFound = ref(false)
 const activeAnchorId = ref('')
 const contentRef = ref(null)
 
-/** 是否显示关闭按钮：被脚本 window.open 打开的新 Tab 显示 */
-const showClose = computed(() => {
+/**
+ * 是否可通过 window.close() 真正关闭 Tab
+ * 仅当 Tab 是脚本打开的（window.opener 存在）时返回 true
+ * @returns {boolean}
+ */
+function canWindowClose() {
   if (typeof window === 'undefined') return false
   try {
-    // window.opener 存在说明被 window.open 打开
-    return Boolean(window.opener) || (window.history && window.history.length === 1)
+    return Boolean(window.opener)
   } catch (_) {
     return false
   }
-})
+}
+
+/**
+ * 关闭模式：
+ * - 'close'：脚本 window.close() 真正关闭（仅对被脚本打开的 Tab 生效）
+ * - 'back'：window.close() 无效 → 降级为 router.push('/') 返回主会话
+ * 2026-09-03 修复：之前依赖 window.opener 判定"是否显示关闭按钮"，
+ * 但 Sidebar.vue 使用 `noopener,noreferrer` 打开新 Tab 后 window.opener 为 null，
+ * 导致关闭按钮不显示，用户反馈"帮助页面打开后关不上"。
+ * 现策略：始终显示关闭按钮；能否真的关闭由 canWindowClose 决定；
+ * 不能关闭时按钮文案变为"返回主页"并跳回主 Tab。
+ */
+const closeMode = computed(() => (canWindowClose() ? 'close' : 'back'))
+
+/** 给模板使用的别名 —— 始终为 true，永远显示关闭按钮 */
+const showClose = computed(() => true)
 
 /** 渲染后的 HTML（marked + DOMPurify） */
 const renderedContent = computed(() => {
@@ -96,6 +117,8 @@ async function initIndex() {
     // 默认选中第一个有 path 的节点
     const first = findFirstLeaf(navTree.value)
     if (first) {
+      // 先用 flag 抑制 watch 重复触发，再主动调用 loadDocContent（避免 initIndex 与 watch 双触发）
+      skipNextWatch.value = true
       activePath.value = first
       await loadDocContent(first)
     }
@@ -103,6 +126,9 @@ async function initIndex() {
     error.value = err?.message || '加载目录失败'
   }
 }
+
+/** watch(activePath) 抑制 flag（用于 initIndex 主动加载避免重复请求） */
+const skipNextWatch = ref(false)
 
 /**
  * 递归查找目录树第一个叶子节点 path
@@ -207,15 +233,28 @@ function handleInitialHash() {
 }
 
 /**
- * 处理关闭按钮（新 Tab 场景）
+ * 处理关闭按钮（关闭当前 Tab 或返回主页面）
+ * 优先级：
+ *   - 'close' 模式（被脚本 window.open 打开）：window.close() 真正关闭 Tab
+ *   - 'back' 模式（直接访问 /help）：router.push('/') 跳回主会话
  * @returns {void}
  */
 function handleClose() {
   if (typeof window === 'undefined') return
+  if (closeMode.value === 'close') {
+    try {
+      window.close()
+      return
+    } catch (_) {
+      // close 失败时降级到返回主页
+    }
+  }
+  // back 模式：路由跳回主页（兜底）
   try {
-    window.close()
+    router.push('/')
   } catch (_) {
-    // 兜底：某些浏览器不允许脚本关闭非脚本打开的 Tab，忽略
+    // 兜底：hash 路由降级
+    window.location.href = '/'
   }
 }
 
@@ -259,6 +298,11 @@ watch(headings, () => {
 })
 
 watch(activePath, (val) => {
+  // initIndex 主动加载时跳过（防止双触发重复请求）
+  if (skipNextWatch.value) {
+    skipNextWatch.value = false
+    return
+  }
   if (val) loadDocContent(val)
 })
 

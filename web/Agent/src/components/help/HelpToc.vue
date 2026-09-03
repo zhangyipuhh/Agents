@@ -26,8 +26,6 @@
 </template>
 
 <script setup>
-import { defineProps, defineEmits } from 'vue'
-
 defineProps({
   /** headings: Array<{level: 2|3, text: string, id: string}> */
   headings: {

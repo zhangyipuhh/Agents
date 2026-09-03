@@ -34,6 +34,20 @@ vi.mock('../../../utils/sanitize-marked.js', () => ({
   safeMarkdown: (md) => `<rendered>${md}</rendered>`,
 }))
 
+// mock vue-router useRouter（2026-09-03 新增：HelpLayout 引入 router 用于 back 模式跳转）
+// 用 vi.hoisted 让 routerPushMock 在 mock 中可访问
+const { routerPushMock } = vi.hoisted(() => ({
+  routerPushMock: vi.fn(),
+}))
+vi.mock('vue-router', () => ({
+  useRouter: () => ({
+    push: routerPushMock,
+    replace: vi.fn(),
+    currentRoute: { value: { name: 'help', path: '/help' } },
+  }),
+  useRoute: () => ({ name: 'help', path: '/help', fullPath: '/help' }),
+}))
+
 import HelpLayout from '../HelpLayout.vue'
 
 const fakeTree = [
@@ -165,7 +179,7 @@ describe('HelpLayout 组件', () => {
     expect(wrapper.find('.help-root').exists()).toBe(true)
   })
 
-  it('被脚本打开的 Tab（window.opener 存在）显示关闭按钮', async () => {
+  it('被脚本打开的 Tab（window.opener 存在）显示关闭按钮且 aria-label=关闭', async () => {
     // 模拟被脚本打开：window.opener 存在
     try {
       Object.defineProperty(window, 'opener', { value: {}, configurable: true })
@@ -178,6 +192,48 @@ describe('HelpLayout 组件', () => {
     await flushPromises()
     await nextTick()
 
-    expect(wrapper.find('.help-topbar-close').exists()).toBe(true)
+    const closeBtn = wrapper.find('.help-topbar-close')
+    expect(closeBtn.exists()).toBe(true)
+    expect(closeBtn.attributes('aria-label')).toBe('关闭')
+  })
+
+  it('直接访问 /help（无 window.opener）也始终显示按钮，文案变为「返回主页」', async () => {
+    // 模拟直接访问：window.opener 不存在（默认）
+    try {
+      Object.defineProperty(window, 'opener', { value: null, configurable: true })
+    } catch (_) { /* ignore */ }
+
+    loadIndexMock.mockResolvedValue({ title: '帮助中心', tree: fakeTree })
+    loadDocMock.mockResolvedValue('# test')
+
+    const wrapper = mount(HelpLayout)
+    await flushPromises()
+    await nextTick()
+
+    // 2026-09-03 修复：按钮始终显示，不再依赖 window.opener 判定可见性
+    const closeBtn = wrapper.find('.help-topbar-close')
+    expect(closeBtn.exists()).toBe(true)
+    // back 模式：aria-label 变为「返回主页」
+    expect(closeBtn.attributes('aria-label')).toBe('返回主页')
+  })
+
+  it('直接访问 /help 时点击关闭按钮触发 router.push("/") 跳回主会话', async () => {
+    // 模拟直接访问
+    try {
+      Object.defineProperty(window, 'opener', { value: null, configurable: true })
+    } catch (_) { /* ignore */ }
+
+    loadIndexMock.mockResolvedValue({ title: '帮助中心', tree: fakeTree })
+    loadDocMock.mockResolvedValue('# test')
+
+    const wrapper = mount(HelpLayout)
+    await flushPromises()
+    await nextTick()
+
+    // 点击关闭按钮：back 模式 → emit('close') → handleClose → router.push('/')
+    await wrapper.find('.help-topbar-close').trigger('click')
+    await nextTick()
+
+    expect(routerPushMock).toHaveBeenCalledWith('/')
   })
 })

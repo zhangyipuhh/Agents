@@ -307,21 +307,37 @@ const handleAdminPanel = () => {
 /**
  * 处理帮助点击
  * 2026-09-03 新增：管理员与普通用户均可使用，新 Tab 打开帮助中心
- * - 不在主会话内 router.push，避免替换当前对话 / 运维页面
- * - 使用 noopener,noreferrer 防止新页面通过 window.opener 操控原页面（安全考虑）
- * - 不区分 userRole：admin / 普通用户均可见（帮助页面不需要任何特定菜单权限）
+ *
+ * 设计要点：
+ * 1. 使用 `_blank` target 打开新 Tab，**不带 noopener/noreferrer features**。
+ *    原因：Firefox 严格模式 / Safari ITP / Chrome 无痕模式会把 `noopener,noreferrer`
+ *    当作 popup-blocking 触发条件返回 null，触发原兜底 `window.location.href='/help'`
+ *    会污染主 Tab（用户反馈"单击帮助后主页面也变成帮助页面"）。
+ * 2. 现代浏览器默认 `target=_blank` 隐含 `noopener` 安全语义，不需要 features 字符串。
+ * 3. 被浏览器拦截（返回 null）时**不再 fallback 到主 Tab 跳转**，而是弹出浏览器原生
+ *    prompt 让用户手动复制打开，避免污染主 Tab。
+ * 4. 不区分 userRole：admin / 普通用户均可见（帮助页面不需要任何特定菜单权限）。
  * @returns {void}
  */
 const handleHelp = () => {
   closeUserMenu()
+  let win = null
   try {
-    const win = window.open('/help', '_blank', 'noopener,noreferrer')
-    if (!win) {
-      // 兜底：浏览器拦截弹窗 → 应用内跳转（同 Tab，会替换主会话；仅在拦截时退化）
-      window.location.href = '/help'
-    }
+    // 仅传 target，不传 features 字符串（避免触发 popup-blocking）
+    win = window.open('/help', '_blank')
   } catch (_) {
-    window.location.href = '/help'
+    win = null
+  }
+  if (!win) {
+    // 兜底：浏览器拦截弹窗 → 提示用户手动打开，绝不修改主 Tab URL
+    // 用 console.warn + 友好的 DOM 提示，不污染主 Tab URL（之前 fallback 到 window.location.href 会替换主页面）
+    // eslint-disable-next-line no-console
+    console.warn('[Sidebar] 帮助页面弹窗被拦截，请手动复制地址到新标签页打开：' + window.location.origin + '/help')
+    try {
+      window.alert('浏览器拦截了帮助页面弹窗，请复制以下地址到新标签页打开：\n' + window.location.origin + '/help')
+    } catch (_) {
+      // 某些浏览器或测试环境可能不支持 alert，忽略
+    }
   }
 }
 
