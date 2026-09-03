@@ -37,20 +37,22 @@ describe('router 配置与守卫', () => {
   })
 
   describe('routes 表结构', () => {
-    it('含 /、/knowledge、/ops-console 三个一级路由 + not-found 兜底', async () => {
+    it('含 /、/knowledge、/ops-console、/help 四个一级路由 + not-found 兜底', async () => {
       const { default: router } = await import('../index.js')
       const names = router.getRoutes().map(r => r.name)
       expect(names).toContain('agent')
       expect(names).toContain('knowledge')
       expect(names).toContain('ops-console')
+      expect(names).toContain('help')
       expect(names).toContain('not-found')
     })
 
-    it('三个业务路由的 requiresAuth / pageKey / title 字段齐全', async () => {
+    it('四个业务路由的 requiresAuth / pageKey / title 字段齐全', async () => {
       const { default: router } = await import('../index.js')
       const agent = router.getRoutes().find(r => r.name === 'agent')
       const knowledge = router.getRoutes().find(r => r.name === 'knowledge')
       const opsConsole = router.getRoutes().find(r => r.name === 'ops-console')
+      const help = router.getRoutes().find(r => r.name === 'help')
 
       expect(agent.meta.requiresAuth).toBe(true)
       expect(agent.meta.pageKey).toBe('agent')
@@ -61,6 +63,10 @@ describe('router 配置与守卫', () => {
 
       expect(opsConsole.meta.requiresAuth).toBe(true)
       expect(opsConsole.meta.pageKey).toBe('ops-console')
+
+      expect(help.meta.requiresAuth).toBe(true)
+      expect(help.meta.pageKey).toBe('help')
+      expect(help.meta.title).toBe('帮助中心')
     })
 
     it('/login 不在路由表内（独立 HTML 入口），且 not-found 兜底重定向回 /', async () => {
@@ -104,6 +110,13 @@ describe('router 配置与守卫', () => {
       const result = requiresAuthGuard(to)
       expect(result).toBe(false)
       expect(mockLocation.href).toBe('http://localhost:3000/login?redirect=%2Fknowledge')
+    })
+
+    it('未登录访问 /help → 整页跳 /login?redirect=%2Fhelp 且 return false（2026-09-03 新增帮助路由）', () => {
+      const to = { fullPath: '/help', meta: { requiresAuth: true } }
+      const result = requiresAuthGuard(to)
+      expect(result).toBe(false)
+      expect(mockLocation.href).toBe('http://localhost:3000/login?redirect=%2Fhelp')
     })
 
     it('已登录（localStorage 有 username）→ return true 放行，不触发跳转', () => {

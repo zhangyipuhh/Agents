@@ -1,0 +1,16 @@
+{
+  "title": "帮助中心",
+  "tree": [
+    { "title": "概述", "path": "overview" },
+    { "title": "快速入门", "path": "getting-started" },
+    {
+      "title": "功能指南",
+      "children": [
+        { "title": "智能体对话", "path": "features/chat" },
+        { "title": "知识库", "path": "features/knowledge" },
+        { "title": "智能运维中心", "path": "features/ops-console" }
+      ]
+    },
+    { "title": "常见问题", "path": "faq" }
+  ]
+}

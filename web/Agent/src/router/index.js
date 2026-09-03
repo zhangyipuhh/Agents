@@ -84,6 +84,31 @@ const routes = [
     },
   },
   {
+    // 2026-09-03 新增：帮助中心路由（admin 与普通用户均可访问）
+    // - 入口在 Sidebar 头像菜单「帮助」按钮（新 Tab 打开 window.open）
+    // - 不挂主会话 Sidebar / 项目弹窗 / 子智能体抽屉，由 App.vue::isHelpRoute 分支独占 viewport
+    // - 鉴权复用 requiresAuthGuard：未登录整页跳 /login?redirect=%2Fhelp
+    // - 文档源：前端 public/help/index.json + public/help/*.md 静态托管
+    path: '/help',
+    name: 'help',
+    component: () => import('../views/HelpWorkspace.vue'),
+    meta: {
+      requiresAuth: true,
+      pageKey: 'help',
+      title: '帮助中心',
+      menuAcl: null,
+      requiredRole: null,
+      ownershipScope: false,
+      auditEvent: null,
+      auditFields: null,
+      redactFields: null,
+      csrf: false,
+      sessionTimeoutSec: null,
+      sensitiveOperation: false,
+      logoutOnLeave: false,
+    },
+  },
+  {
     // SPA 兜底：未知路径回退到 /，由 nginx.conf `try_files $uri $uri/ /index.html` 配合
     path: '/:pathMatch(.*)*',
     name: 'not-found',

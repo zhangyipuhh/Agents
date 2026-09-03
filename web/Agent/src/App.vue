@@ -89,6 +89,14 @@ const isOpsConsoleRoute = computed(() => {
   return p.startsWith('/ops-console')
 })
 
+// 2026-09-03 新增：帮助路由判断（HelpWorkspace 走独立 HTML 入口 /help.html 挂载，
+// 但保留 isHelpRoute 用于单测 + 兜底，模式与 isOpsConsoleRoute 一致）。
+const isHelpRoute = computed(() => {
+  if (_route && _route.name) return _route.name === 'help'
+  const p = (typeof window !== 'undefined' ? window.location.pathname : '') || route.path || ''
+  return p.startsWith('/help')
+})
+
 const messages = reactive([])
 const sessionId = reactive({ value: '' })
 const isStreaming = reactive({ value: false })
@@ -1459,6 +1467,13 @@ async function handleSessionSwitch(targetSessionId) {
        离开路由后该分支自动 unmount，主会话 layout 自动恢复。 -->
   <div v-else-if="isOpsConsoleRoute" class="app-layout app-layout--ops">
     <OpsConsoleWorkspace />
+  </div>
+
+  <!-- 2026-09-03 新增：help 路由分支（同 ops-console 模式，独占 viewport 不挂主会话）。
+       帮助页通常是 window.open 新 Tab 打开，但兜底保留分支用于直接访问 /help 时
+       不渲染主会话的 Sidebar / ProjectDialog / SubAgentDrawer。 -->
+  <div v-else-if="isHelpRoute" class="app-layout app-layout--help">
+    <router-view />
   </div>
 
   <div v-else class="app-layout">

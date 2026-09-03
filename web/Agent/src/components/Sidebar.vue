@@ -305,6 +305,27 @@ const handleAdminPanel = () => {
 }
 
 /**
+ * 处理帮助点击
+ * 2026-09-03 新增：管理员与普通用户均可使用，新 Tab 打开帮助中心
+ * - 不在主会话内 router.push，避免替换当前对话 / 运维页面
+ * - 使用 noopener,noreferrer 防止新页面通过 window.opener 操控原页面（安全考虑）
+ * - 不区分 userRole：admin / 普通用户均可见（帮助页面不需要任何特定菜单权限）
+ * @returns {void}
+ */
+const handleHelp = () => {
+  closeUserMenu()
+  try {
+    const win = window.open('/help', '_blank', 'noopener,noreferrer')
+    if (!win) {
+      // 兜底：浏览器拦截弹窗 → 应用内跳转（同 Tab，会替换主会话；仅在拦截时退化）
+      window.location.href = '/help'
+    }
+  } catch (_) {
+    window.location.href = '/help'
+  }
+}
+
+/**
  * 处理退出登录点击
  * 触发登出事件
  */
@@ -869,6 +890,13 @@ onUnmounted(() => {
     <!-- 用户菜单 - 使用 Teleport 移动到 body 层级，避免被父容器 overflow 裁剪 -->
     <Teleport to="body">
       <div v-show="isUserMenuVisible" class="user-menu" :class="{ 'is-collapsed': isSidebarCollapsed }" :style="menuPositionStyle">
+        <!-- 2026-09-03 新增：「帮助」按钮：位于「管理后台」上方，admin 与普通用户均可用 -->
+        <div class="user-menu-item" @click.stop="handleHelp">
+          <svg class="menu-item-icon" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 11-2 0 1 1 0 012 0zm-1 9a1 1 0 102 0v-5a1 1 0 10-2 0v5z" clip-rule="evenodd"/>
+          </svg>
+          <span>帮助</span>
+        </div>
         <div v-if="userRole === 'admin'" class="user-menu-item" @click.stop="handleAdminPanel">
           <svg class="menu-item-icon" viewBox="0 0 20 20" fill="currentColor">
             <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-6-3a2 2 0 11-4 0 2 2 0 014 0zm-2 4a5 5 0 00-4.546 2.916A5.986 5.986 0 0010 16a5.986 5.986 0 004.546-2.084A5 5 0 0010 11z" clip-rule="evenodd"/>
