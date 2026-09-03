@@ -14,7 +14,7 @@
 -->
 <template>
   <div class="help-root">
-    <HelpTopBar :show-close="showClose" :close-mode="closeMode" @close="handleClose" />
+    <HelpTopBar />
     <div class="help-body">
       <HelpSidebar
         v-if="navTree.length > 0"
@@ -50,14 +50,11 @@
 
 <script setup>
 import { ref, computed, onMounted, watch, nextTick, onBeforeUnmount } from 'vue'
-import { useRouter } from 'vue-router'
 import HelpTopBar from './HelpTopBar.vue'
 import HelpSidebar from './HelpSidebar.vue'
 import HelpToc from './HelpToc.vue'
 import { loadIndex, loadDoc, extractHeadings } from '../../utils/help-loader.js'
 import { safeMarkdown } from '../../utils/sanitize-marked.js'
-
-const router = useRouter()
 
 const navTree = ref([])
 const activePath = ref('')
@@ -68,34 +65,8 @@ const notFound = ref(false)
 const activeAnchorId = ref('')
 const contentRef = ref(null)
 
-/**
- * 是否可通过 window.close() 真正关闭 Tab
- * 仅当 Tab 是脚本打开的（window.opener 存在）时返回 true
- * @returns {boolean}
- */
-function canWindowClose() {
-  if (typeof window === 'undefined') return false
-  try {
-    return Boolean(window.opener)
-  } catch (_) {
-    return false
-  }
-}
-
-/**
- * 关闭模式：
- * - 'close'：脚本 window.close() 真正关闭（仅对被脚本打开的 Tab 生效）
- * - 'back'：window.close() 无效 → 降级为 router.push('/') 返回主会话
- * 2026-09-03 修复：之前依赖 window.opener 判定"是否显示关闭按钮"，
- * 但 Sidebar.vue 使用 `noopener,noreferrer` 打开新 Tab 后 window.opener 为 null，
- * 导致关闭按钮不显示，用户反馈"帮助页面打开后关不上"。
- * 现策略：始终显示关闭按钮；能否真的关闭由 canWindowClose 决定；
- * 不能关闭时按钮文案变为"返回主页"并跳回主 Tab。
- */
-const closeMode = computed(() => (canWindowClose() ? 'close' : 'back'))
-
-/** 给模板使用的别名 —— 始终为 true，永远显示关闭按钮 */
-const showClose = computed(() => true)
+// 2026-09-03 修复：用户反馈"不需要 ↩ 关闭/返回按钮"——彻底删除 closeMode / showClose / handleClose
+// 帮助页退出完全依赖浏览器 Tab 关闭按钮（被脚本打开场景）或地址栏导航（直接访问场景）。
 
 /** 渲染后的 HTML（marked + DOMPurify） */
 const renderedContent = computed(() => {
@@ -230,32 +201,6 @@ function handleInitialHash() {
       activeAnchorId.value = id
     }
   })
-}
-
-/**
- * 处理关闭按钮（关闭当前 Tab 或返回主页面）
- * 优先级：
- *   - 'close' 模式（被脚本 window.open 打开）：window.close() 真正关闭 Tab
- *   - 'back' 模式（直接访问 /help）：router.push('/') 跳回主会话
- * @returns {void}
- */
-function handleClose() {
-  if (typeof window === 'undefined') return
-  if (closeMode.value === 'close') {
-    try {
-      window.close()
-      return
-    } catch (_) {
-      // close 失败时降级到返回主页
-    }
-  }
-  // back 模式：路由跳回主页（兜底）
-  try {
-    router.push('/')
-  } catch (_) {
-    // 兜底：hash 路由降级
-    window.location.href = '/'
-  }
 }
 
 /** IntersectionObserver 实例，用于自动高亮当前 heading */

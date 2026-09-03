@@ -46,6 +46,22 @@ const userMenuRef = ref(null)
 const menuPositionStyle = ref({})
 const isSettingsDialogVisible = ref(false)
 const settingsInitialTab = ref('profile')
+// 2026-09-03 新增：帮助页面 inline 提示（替代 alert 避免阻塞主 Tab）
+// 浏览器弹窗拦截器拦截 window.open 后，alert() 也可能被禁用，
+// 导致整个 handleHelp 静默失败、用户视觉上"卡死"。
+// 新策略：在页面右下角显示非阻塞 toast，附带"在当前页打开"按钮供用户主动选择。
+const helpBlockedNotice = ref(false)
+let helpBlockedTimer = null
+
+/**
+ * 帮助页面完整 URL（用于 notice 内显示）
+ * 用 computed 避免模板中直接访问 window（Vue 模板编译器对 `window` 标识符处理有差异）
+ * @returns {string}
+ */
+const helpFullUrl = computed(() => {
+  if (typeof window === 'undefined') return '/help'
+  return `${window.location.origin}/help`
+})
 
 const historySessions = ref([])
 const isLoadingSessions = ref(false)
@@ -306,38 +322,105 @@ const handleAdminPanel = () => {
 
 /**
  * 处理帮助点击
- * 2026-09-03 新增：管理员与普通用户均可使用，新 Tab 打开帮助中心
+ * 2026-09-03 修复：用户反馈"单击帮助页面就卡死"——根因是浏览器弹窗拦截器
+ * 拦截 window.open 返回 null 后，alert() 也可能被禁用（无痕模式 / 严格策略），
+ * 导致整个 handleHelp 静默失败 + alert 阻塞主 Tab = 用户视觉"卡死"。
  *
- * 设计要点：
- * 1. 使用 `_blank` target 打开新 Tab，**不带 noopener/noreferrer features**。
- *    原因：Firefox 严格模式 / Safari ITP / Chrome 无痕模式会把 `noopener,noreferrer`
- *    当作 popup-blocking 触发条件返回 null，触发原兜底 `window.location.href='/help'`
- *    会污染主 Tab（用户反馈"单击帮助后主页面也变成帮助页面"）。
- * 2. 现代浏览器默认 `target=_blank` 隐含 `noopener` 安全语义，不需要 features 字符串。
- * 3. 被浏览器拦截（返回 null）时**不再 fallback 到主 Tab 跳转**，而是弹出浏览器原生
- *    prompt 让用户手动复制打开，避免污染主 Tab。
- * 4. 不区分 userRole：admin / 普通用户均可见（帮助页面不需要任何特定菜单权限）。
+ * 新策略：
+ * 1. 优先尝试 window.open 新 Tab（与之前相同）
+ * 2. 被拦截时**不再用阻塞 alert**，改用页面右下角非阻塞 notice（5 秒后自动消失）
+ * 3. notice 内提供两个按钮：
+ *    - "在当前页打开"：调 router.push('/help')（SPA 内跳转，替换主 Tab）
+ *    - "复制链接"：用 navigator.clipboard 复制 URL，失败则降级显示在 notice 内
+ * 4. console.warn 保留供开发者诊断
+ *
+ * 不区分 userRole：admin / 普通用户均可见（帮助页面不需要任何特定菜单权限）。
  * @returns {void}
  */
 const handleHelp = () => {
   closeUserMenu()
   let win = null
   try {
-    // 仅传 target，不传 features 字符串（避免触发 popup-blocking）
     win = window.open('/help', '_blank')
   } catch (_) {
     win = null
   }
   if (!win) {
-    // 兜底：浏览器拦截弹窗 → 提示用户手动打开，绝不修改主 Tab URL
-    // 用 console.warn + 友好的 DOM 提示，不污染主 Tab URL（之前 fallback 到 window.location.href 会替换主页面）
+    // 浏览器拦截弹窗 → 显示页面内非阻塞 notice（绝对不调 alert/confirm/prompt 等阻塞 API）
     // eslint-disable-next-line no-console
-    console.warn('[Sidebar] 帮助页面弹窗被拦截，请手动复制地址到新标签页打开：' + window.location.origin + '/help')
-    try {
-      window.alert('浏览器拦截了帮助页面弹窗，请复制以下地址到新标签页打开：\n' + window.location.origin + '/help')
-    } catch (_) {
-      // 某些浏览器或测试环境可能不支持 alert，忽略
+    console.warn('[Sidebar] 帮助页面弹窗被拦截，请使用页面内提示打开')
+    showHelpBlockedNotice()
+  }
+}
+
+/**
+ * 显示"帮助页面被拦截"非阻塞提示
+ * 5 秒后自动消失；同时支持用户点击"关闭"立即消失
+ * @returns {void}
+ */
+function showHelpBlockedNotice() {
+  helpBlockedNotice.value = true
+  if (helpBlockedTimer) clearTimeout(helpBlockedTimer)
+  helpBlockedTimer = setTimeout(() => {
+    helpBlockedNotice.value = false
+    helpBlockedTimer = null
+  }, 8000)
+}
+
+/**
+ * 关闭 helpBlockedNotice（用户点击"关闭"）
+ * @returns {void}
+ */
+function dismissHelpBlockedNotice() {
+  helpBlockedNotice.value = false
+  if (helpBlockedTimer) {
+    clearTimeout(helpBlockedTimer)
+    helpBlockedTimer = null
+  }
+}
+
+/**
+ * 帮助页面 inline 提示中的"复制链接"按钮
+ * 优先用 navigator.clipboard.writeText，失败则降级为选中 <textarea> 复制
+ * @returns {void}
+ */
+const copyHelpUrl = async () => {
+  const url = `${window.location.origin}/help`
+  let ok = false
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(url)
+      ok = true
+    } else {
+      // 兜底：传统 document.execCommand('copy')
+      const ta = document.createElement('textarea')
+      ta.value = url
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      ok = document.execCommand('copy')
+      document.body.removeChild(ta)
     }
+  } catch (_) {
+    ok = false
+  }
+  // eslint-disable-next-line no-console
+  console.log(ok ? `[Sidebar] 已复制帮助链接：${url}` : `[Sidebar] 复制失败，请手动复制：${url}`)
+}
+
+/**
+ * 帮助页面 inline 提示中的"在当前页打开"按钮
+ * 走 SPA 路由切换（router.push('/help')），替换当前 Tab 内容
+ * 注意：与原计划"新 Tab 打开"冲突，是用户被弹窗拦截后的兜底主动选择
+ * @returns {void}
+ */
+const openHelpInCurrentTab = () => {
+  dismissHelpBlockedNotice()
+  try {
+    router.push('/help')
+  } catch (_) {
+    window.location.href = '/help'
   }
 }
 
@@ -903,15 +986,41 @@ onUnmounted(() => {
       </div>
     </div>
 
+    <!-- 2026-09-03 新增：帮助页面被弹窗拦截时的非阻塞提示
+         - 用 Teleport 移动到 body，避免被 sidebar overflow:hidden 裁剪
+         - 不使用 alert() / confirm() 等阻塞 API，避免"卡死"假象
+         - 提供三个操作：在当前页打开（router.push）/ 复制链接 / 关闭 -->
+    <Teleport to="body">
+      <div v-if="helpBlockedNotice" class="help-blocked-notice" role="alert">
+        <div class="help-blocked-notice__icon" aria-hidden="true">⚠️</div>
+        <div class="help-blocked-notice__content">
+          <div class="help-blocked-notice__title">帮助页面被浏览器拦截</div>
+          <div class="help-blocked-notice__desc">点击下方按钮打开帮助，或手动复制地址到新标签页</div>
+          <div class="help-blocked-notice__url">{{ helpFullUrl }}</div>
+          <div class="help-blocked-notice__actions">
+            <button type="button" class="help-blocked-notice__btn help-blocked-notice__btn--primary" @click="openHelpInCurrentTab">
+              在当前页打开
+            </button>
+            <button type="button" class="help-blocked-notice__btn" @click="copyHelpUrl">
+              复制链接
+            </button>
+            <button type="button" class="help-blocked-notice__btn help-blocked-notice__btn--close" @click="dismissHelpBlockedNotice" aria-label="关闭">
+              ✕
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
     <!-- 用户菜单 - 使用 Teleport 移动到 body 层级，避免被父容器 overflow 裁剪 -->
     <Teleport to="body">
       <div v-show="isUserMenuVisible" class="user-menu" :class="{ 'is-collapsed': isSidebarCollapsed }" :style="menuPositionStyle">
-        <!-- 2026-09-03 新增：「帮助」按钮：位于「管理后台」上方，admin 与普通用户均可用 -->
-        <div class="user-menu-item" @click.stop="handleHelp">
+        <!-- 2026-09-03 新增：「帮助」按钮：位于「管理后台」上方，admin 与普通用户均可用
+             2026-09-03 简化：去掉文字，只保留图标（用户需求） -->
+        <div class="user-menu-item user-menu-item--icon-only" @click.stop="handleHelp" title="帮助">
           <svg class="menu-item-icon" viewBox="0 0 20 20" fill="currentColor">
             <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 11-2 0 1 1 0 012 0zm-1 9a1 1 0 102 0v-5a1 1 0 10-2 0v5z" clip-rule="evenodd"/>
           </svg>
-          <span>帮助</span>
         </div>
         <div v-if="userRole === 'admin'" class="user-menu-item" @click.stop="handleAdminPanel">
           <svg class="menu-item-icon" viewBox="0 0 20 20" fill="currentColor">
@@ -1670,6 +1779,113 @@ onUnmounted(() => {
   animation: menuFadeIn 0.2s ease;
 }
 
+/* ===== 2026-09-03 新增：帮助页面被拦截的非阻塞提示 ===== */
+.help-blocked-notice {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  width: 360px;
+  max-width: calc(100vw - 48px);
+  background: #ffffff;
+  border: 1px solid #fde68a;
+  border-left: 4px solid #f59e0b;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 16px;
+  z-index: 2000;
+  display: flex;
+  gap: 12px;
+  animation: helpNoticeSlideIn 0.25s ease-out;
+}
+
+@keyframes helpNoticeSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.help-blocked-notice__icon {
+  font-size: 22px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.help-blocked-notice__content {
+  flex: 1;
+  min-width: 0;
+}
+
+.help-blocked-notice__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #111827;
+  margin-bottom: 4px;
+}
+
+.help-blocked-notice__desc {
+  font-size: 12px;
+  color: #6b7280;
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+
+.help-blocked-notice__url {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-bottom: 10px;
+  color: #374151;
+  word-break: break-all;
+  user-select: all;
+}
+
+.help-blocked-notice__actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.help-blocked-notice__btn {
+  font-size: 12px;
+  padding: 6px 10px;
+  border: 1px solid #d1d5db;
+  background: #ffffff;
+  color: #374151;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+  font-family: inherit;
+}
+
+.help-blocked-notice__btn:hover {
+  background-color: #f3f4f6;
+}
+
+.help-blocked-notice__btn--primary {
+  background: #1e5cff;
+  color: #ffffff;
+  border-color: #1e5cff;
+}
+
+.help-blocked-notice__btn--primary:hover {
+  background: #1849c4;
+  border-color: #1849c4;
+}
+
+.help-blocked-notice__btn--close {
+  padding: 6px 8px;
+  font-size: 14px;
+  margin-left: auto;
+}
+
 @keyframes menuFadeIn {
   from {
     opacity: 0;
@@ -1700,6 +1916,12 @@ onUnmounted(() => {
 
 .user-menu-item:active {
   transform: scale(var(--scale-active));
+}
+
+/* 2026-09-03 新增：「帮助」按钮只图标样式（更紧凑） */
+.user-menu-item--icon-only {
+  justify-content: center;
+  padding: 10px 12px;
 }
 
 .menu-item-icon {
