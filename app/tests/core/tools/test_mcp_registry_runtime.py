@@ -337,3 +337,97 @@ def test_get_tools_skips_disabled_server():
     assert results == []
     # 验证 get_server_tools 未被调用（在 enabled 检查后就跳过了）
     mock_client.get_server_tools.assert_not_called()
+
+
+# =============================================================================
+# 版本契约回归保护（2026-09-07 新增）
+# 验证 MCPToolsRegistry 模块加载路径在当前 mcp 版本下不抛 ImportError。
+# 背景：mcp 2.1.1 把不完整的 experimental.tasks 子模块塞进 mcp.client.session
+# 的顶层 import，而 2.x 的 mcp.types 因 tasks 扩展（SEP-2663）未发布，
+# 不导出 TASK_STATUS_COMPLETED 等常量，导致即使项目代码不调用任何
+# experimental API，启动时仍会抛 ImportError。本用例守卫 mcp 库版本契约,
+# 确保 registry 模块加载路径不被 mcp 2.x 污染。
+# =============================================================================
+
+
+def test_registry_module_loads_without_import_error():
+    """验证 MCPToolsRegistry 模块加载（清场后首次）在当前 mcp 版本下不抛 ImportError。
+
+    核心契约：清空所有 mcp 相关缓存后,触发 ``import app.core.tools.mcp_registry``
+    必须成功(mcp 1.28+ 满足;mcp 2.x 因 experimental 半成品会抛 ImportError)。
+
+    注：mcp 1.x(包含 1.29.1) 的 ``mcp.client.session`` 确实会在模块顶层 import
+    ``mcp.client.experimental``,且 1.x 的 mcp.types 完整导出 ``TASK_STATUS_COMPLETED``,
+    所以该 import 链路可以走通。mcp 2.x 改变了 ``mcp.types`` 分层且
+    tasks 扩展(SEP-2663)未发布,导致这条链炸出 ``ImportError``。本用例的
+    真正意义是「**ImportError 检测**」,不是「experimental 不应被 import」。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        ImportError: 当 mcp 库 import 链失败时向上抛(测试失败)。
+    """
+    import importlib
+    import sys
+
+    # 清场:移除所有 mcp 相关 + registry 模块,确保本次 import 是「首次加载」
+    mods_to_drop = [
+        name
+        for name in list(sys.modules.keys())
+        if name == "mcp"
+        or name.startswith("mcp.")
+        or name == "app.core.tools.mcp_registry"
+    ]
+    for name in mods_to_drop:
+        del sys.modules[name]
+
+    # 触发 MCPToolsRegistry 模块加载(这是 app/main.py → server.py → lifespan
+    # 实际会执行的路径)。若 mcp 库 import 链不完整(如 mcp 2.1.1 因
+    # client.experimental 顶层 import 抛 ImportError),本步骤会失败。
+    importlib.import_module("app.core.tools.mcp_registry")
+
+
+def test_mcp_version_pinned_to_1x():
+    """验证当前安装的 mcp 包落在 1.x 区间。
+
+    防止 requirements.txt 写错或 pip 解析覆盖导致 mcp 2.x 被安装(2.x 与
+    langchain-mcp-adapters==0.2.1 不兼容)。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 当 mcp 版本 ≥ 2 或 < 1.28 时抛出。
+    """
+    # mcp 1.x 包本身不暴露 __version__ 属性,改用 importlib.metadata 查版本
+    from importlib import metadata
+
+    version_str = metadata.version("mcp")
+    parts = version_str.split(".")
+    try:
+        major = int(parts[0])
+    except (ValueError, IndexError):
+        pytest.fail(f"无法解析 mcp 版本字符串 = {version_str!r}")
+
+    assert major == 1, (
+        f"mcp 版本必须落在 1.x（实际 {version_str}）。"
+        "mcp 2.x 与 langchain-mcp-adapters==0.2.1 不兼容,"
+        "详见 memory/mcp.md「MCP 版本契约」章节"
+    )
+
+    # streamable_http_client 是 1.28.0 引入的,langchain-mcp-adapters==0.2.1 必需
+    try:
+        minor = int(parts[1])
+    except (ValueError, IndexError):
+        minor = 0
+    assert (major, minor) >= (1, 28), (
+        f"mcp 版本必须 ≥ 1.28（实际 {version_str}）,"
+        "否则 langchain-mcp-adapters==0.2.1 找不到 streamable_http_client"
+    )

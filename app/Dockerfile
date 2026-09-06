@@ -28,6 +28,10 @@ RUN pip install --no-cache-dir --prefix=/install /app/mcpClient
 COPY app/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir --prefix=/install -r /app/requirements.txt
 
+# 2026-09-07 防御：显式 --no-deps 锁定 mcp 版本，防止传递依赖跨约束升级到 mcp 2.x
+# （mcp 2.x 与 langchain-mcp-adapters==0.2.1 不兼容，详见 memory/mcp.md「MCP 版本契约」章节）
+RUN pip install --no-cache-dir --prefix=/install --no-deps "mcp>=1.28,<2"
+
 # 第二阶段：运行阶段
 FROM python:3.11-slim
 

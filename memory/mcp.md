@@ -2,6 +2,34 @@
 
 > 本文件是项目记忆分片，索引见根目录 project_memory.md。
 
+## MCP 版本契约（2026-09-07 锁定）
+
+**硬约束**：`mcp` 必须落在 **`>=1.28,<2`** 区间，`langchain-mcp-adapters` 必须落在 **`==0.2.1`**。
+
+**原因**：
+
+- `langchain-mcp-adapters==0.2.1` 依赖 `mcp<2` 的 `streamable_http_client` API（1.28 引入）
+- mcp 2.x 改写了 `mcp.types` 分层（`_types` 私有化、`mcp.types` 永久别名）+ 重命名 `FastMCP → MCPServer` + 删除 `streamable_http_client` + 4 MiB body limit + tasks 扩展（SEP-2663）未完成
+- mcp 2.x 的 `client.experimental` 子模块在 `mcp.client.session` 顶层 import 时，因 tasks API 半成品（不导出 `TASK_STATUS_COMPLETED` 等常量）而抛 `ImportError`，即使项目代码不调用任何 experimental API 也无法绕过（启动链 `app.main → server.py:25 → mcp_registry.py:16 → mcpClient.unified_mcp_client:21 → langchain_mcp_adapters.client → mcp.client.session`）
+
+**升级路径**（未来需要 mcp 2.x 时）：
+
+1. 同步升 `langchain-mcp-adapters` 到 `>=0.4.0`（适配 mcp v2 API，参见 PR #610）
+2. 重写 `mcpClient/core/unified_mcp_client.py` 中所有 MCP API 调用（httpx2 类型签名 / `FastMCP → MCPServer` / `session()` 上下文管理器语义变更）
+3. 评估 `mcp_client` 4 MiB body limit 是否影响本项目文件上传链路
+
+**回归保护**：`app/tests/core/tools/test_mcp_registry_runtime.py` 新增 2 条用例守卫契约：
+
+- `test_registry_module_loads_without_import_error`：清空所有 `mcp*` 与 `app.core.tools.mcp_registry` 后，`importlib.import_module("app.core.tools.mcp_registry")` 必须成功（不抛 ImportError）。mcp 1.x 满足；mcp 2.x 因 experimental 半成品会抛 `ImportError: cannot import name 'TASK_STATUS_COMPLETED'`。注：mcp 1.x 的 `mcp.client.session` 确实顶层 import experimental，只是 1.x 的 mcp.types 完整导出常量所以能走通——本用例的真正意义是"ImportError 检测"，不是"experimental 不应被 import"
+- `test_mcp_version_pinned_to_1x`：通过 `importlib.metadata.version("mcp")` 断言 `major == 1` 且 `>= 1.28`，防止 requirements.txt 写错或 pip 解析覆盖
+
+**requirements.txt 位置**：
+
+- `app/requirements.txt`（主项目）: `mcp>=1.28,<2`
+- `mcpClient/requirements.txt`（mcpClient 子目录独立 install）: `mcp>=1.28,<2`
+
+**Docker 镜像构建**：若 Dockerfile 用 `pip install -r requirements.txt`，且 `pip install mcp` 阶段命中了镜像源缓存，必须 `docker builder prune -af` 清空 build cache 后重建，否则镜像里仍是旧 mcp 2.1.1。
+
 ## MCP 配置 CRUD 服务
 
 提供 MCP server 配置的数据库 CRUD 操作，供 `mcp_admin_router`调用；启动时若 `mcp_server_configs` 表为空，从 YAML 种子文件导入（由 `server.py` lifespan 触发）。
