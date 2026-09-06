@@ -284,6 +284,45 @@ async def lifespan(app: FastAPI):
             "EmailConfigService not initialized"
         )
 
+    # 2026-09-03：初始化 NotificationConfigService（通知渠道通用表，飞书及未来钉钉/企微）。
+    # 设计原则详见 memory/misc.md 「通知渠道通用表设计原则」章节：
+    # 邮件老表 email_* 不动；新渠道统一走 notification_channels + notification_targets。
+    # 与 EmailConfigService 同款降级策略：DB 不可用 / Fernet 密钥非法 → 挂 None，
+    # 飞书相关 router / LLM 工具 / WS 多实例路径会因 service 缺失而 fail-fast。
+    if DatabasePool.is_enabled() and DatabasePool._pool is not None:
+        try:
+            from app.core.config.devops_diagnostics import diagnose_credential_key
+            from app.shared.utils.notification import NotificationConfigService
+
+            notif_diag = diagnose_credential_key()
+            if not notif_diag.ok:
+                app.state.notification_config_service = None
+                logging.warning(
+                    "[lifespan] NotificationConfigService skipped: %s | %s",
+                    notif_diag.reason, notif_diag.hint,
+                )
+            else:
+                app.state.notification_config_service = NotificationConfigService(
+                    db=DatabasePool._pool,
+                    credential_key=settings.devops.credential_key,
+                )
+                await app.state.notification_config_service.preload_all()
+                logging.info(
+                    "[lifespan] NotificationConfigService initialized"
+                )
+        except Exception as notif_exc:
+            logging.warning(
+                "[lifespan] Failed to initialize NotificationConfigService: %s",
+                type(notif_exc).__name__,
+            )
+            app.state.notification_config_service = None
+    else:
+        app.state.notification_config_service = None
+        logging.warning(
+            "[lifespan] Database pool not available, "
+            "NotificationConfigService not initialized"
+        )
+
     # 2026-07-23：初始化 MenuPermissionService（菜单权限管理服务）。
     # 与 EmailConfigService 同级，作为"权限显示"基础设施。
     # 降级策略：DB 不可用时仍然初始化（db=None），auth/login 响应里普通用户
@@ -778,67 +817,54 @@ async def lifespan(app: FastAPI):
             exc_info=True,
         )
 
-    # 2026-07-16 新增：飞书 WebSocket 长连接（订阅 im.message.receive_v1，被动接收消息）
-    # 受 settings.feishu.feishu_ws_enabled 控制；默认关闭，凭证就绪后开启
+    # 2026-09-03 改造：飞书 WebSocket 多实例编排器
+    # 设计：遍历 notification_channels WHERE enabled=TRUE AND channel_type='feishu'，
+    # 每条渠道启动独立 FeishuWebSocketService 实例(独立后台线程 / 独立 lark.Client /
+    # 独立 agent_name / 独立 receiver_username)。
+    # 用户硬约束：
+    #   * 零应用时 INFO log skip,**正常继续启动**(不 fail-loud)
+    #   * 多应用要监听多个 agent,不同应用接的是不一样智能体
+    # 不再读 settings.feishu 任何字段;完全删除原单实例 + .env fallback 逻辑。
     try:
-        from app.shared.tools.skills.feishu.FeishuClient import get_lark_client
-        if settings.feishu.feishu_ws_enabled:
-            if not hasattr(app.state, "agent_config_service") or app.state.agent_config_service is None:
-                logging.warning(
-                    "[lifespan] FeishuWebSocketService skipped: agent_config_service 未初始化"
-                )
-                app.state.feishu_ws_service = None
-            else:
-                from app.shared.tools.skills.feishu.FeishuWebSocketService import (
-                    FeishuWebSocketService,
-                )
-                # 2026-07-17 新增：解析飞书会话接收账号
-                #   飞书消息产生的 session（feishu:p2p:{open_id} / feishu:group:{chat_id}:{open_id}）
-                #   归属到 feishu_ws_receiver_username 指定的固定系统用户，便于前端会话列表可见。
-                #   该用户必须预先存在；缺失则 WS 服务不启动（与 EmailConfigService 失败策略一致）。
-                from app.shared.utils.auth.user_db import UserDB
-
-                receiver_username = settings.feishu.feishu_ws_receiver_username
-                receiver_user = await UserDB.get_user_by_username(receiver_username)
-                if receiver_user is None:
-                    logging.error(
-                        "[lifespan] FeishuWebSocketService skipped: 接收账号 %r 不存在,"
-                        "请先在系统中创建该用户或在 .env 调整 feishu_ws_receiver_username",
-                        receiver_username,
-                    )
-                    app.state.feishu_ws_service = None
-                else:
-                    ws_service = FeishuWebSocketService(
-                        lark_client=get_lark_client(),
-                        agent_config_service=app.state.agent_config_service,
-                        agent_name=settings.feishu.feishu_ws_agent_name,
-                        receiver_user_id=receiver_user["id"],
-                        receiver_username=receiver_username,
-                        log_level=settings.feishu.feishu_log_level,
-                    )
-                    # 注入主事件循环，供后台 SDK 回调投递协程
-                    import asyncio as _asyncio
-                    ws_service.set_event_loop(_asyncio.get_event_loop())
-                    await ws_service.start_async()
-                    app.state.feishu_ws_service = ws_service
-                    logging.info(
-                        "[lifespan] FeishuWebSocketService started "
-                        "(agent_name=%s, receiver=%s, receiver_user_id=%s)",
-                        settings.feishu.feishu_ws_agent_name,
-                        receiver_username,
-                        receiver_user["id"],
-                    )
-        else:
-            app.state.feishu_ws_service = None
+        notification_service = getattr(
+            app.state, "notification_config_service", None
+        )
+        if notification_service is None:
             logging.info(
-                "[lifespan] FeishuWebSocketService disabled (feishu_ws_enabled=false)"
+                "[lifespan] FeishuWebSocketManager skipped: notification_config_service 未初始化"
+            )
+            app.state.feishu_ws_manager = None
+        else:
+            from app.shared.tools.skills.feishu.FeishuWebSocketManager import (
+                FeishuWebSocketManager,
+            )
+            from app.shared.utils.auth.user_db import UserDB
+
+            ws_manager = FeishuWebSocketManager(notification_service)
+            started = await ws_manager.start_all(
+                agent_config_service=app.state.agent_config_service
+                if hasattr(app.state, "agent_config_service")
+                else None,
+                user_lookup=UserDB.get_user_by_username,
+            )
+            app.state.feishu_ws_manager = ws_manager
+            # 兼容旧字段名（个别测试 / 第三方代码可能访问 app.state.feishu_ws_service）
+            # 取第一实例作为 feishu_ws_service 暴露(若有)
+            if ws_manager.services:
+                first_svc = next(iter(ws_manager.services.values()))
+                app.state.feishu_ws_service = first_svc
+            else:
+                app.state.feishu_ws_service = None
+            logging.info(
+                "[lifespan] FeishuWebSocketManager started %d instance(s)", started
             )
     except Exception as ws_exc:
         logging.warning(
-            "[lifespan] FeishuWebSocketService start failed: %s",
+            "[lifespan] FeishuWebSocketManager start failed: %s",
             type(ws_exc).__name__,
             exc_info=True,
         )
+        app.state.feishu_ws_manager = None
         app.state.feishu_ws_service = None
 
     print("[DEBUG] lifespan yield 即将执行")
@@ -909,15 +935,24 @@ async def lifespan(app: FastAPI):
             type(cleanup_exc).__name__,
         )
 
-    # 2026-07-16 新增：清理飞书 WebSocket 服务
+    # 2026-09-03 改造：清理飞书 WebSocket 多实例（manager.stop_all）
     try:
-        if hasattr(app.state, "feishu_ws_service") and app.state.feishu_ws_service is not None:
+        if hasattr(app.state, "feishu_ws_manager") and app.state.feishu_ws_manager is not None:
+            await app.state.feishu_ws_manager.stop_all()
+            app.state.feishu_ws_manager = None
+            app.state.feishu_ws_service = None  # 兼容旧字段
+            logging.info("[lifespan] FeishuWebSocketManager stopped all instances")
+        elif (
+            hasattr(app.state, "feishu_ws_service")
+            and app.state.feishu_ws_service is not None
+        ):
+            # 兼容老路径(测试直接挂 feishu_ws_service 而非 manager)
             app.state.feishu_ws_service.stop()
             app.state.feishu_ws_service = None
-            logging.info("[lifespan] FeishuWebSocketService stopped")
+            logging.info("[lifespan] FeishuWebSocketService stopped (legacy)")
     except Exception as cleanup_exc:
         logging.warning(
-            "[lifespan] Failed to stop FeishuWebSocketService: %s",
+            "[lifespan] Failed to stop FeishuWebSocketManager: %s",
             type(cleanup_exc).__name__,
         )
 

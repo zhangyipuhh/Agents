@@ -73,6 +73,9 @@ from app.routers.inspection_script_admin_router import (
 from app.routers.email_admin_router import (
     router as email_admin_router,  # 2026-07-16 新增：邮件系统管理
 )
+from app.routers.notification_router import (
+    router as notification_router,  # 2026-09-03 新增：通知渠道通用管理（飞书及未来钉钉/企微）
+)
 from app.routers.script_admin_router import (
     router as script_admin_router,  # 2026-07-16 新增：脚本管理
 )
@@ -129,6 +132,7 @@ def register_routers(target_app=None):
     _app.include_router(devops_server_admin_router)
     _app.include_router(inspection_script_admin_router)  # 2026-08-03 新增：巡检脚本库
     _app.include_router(email_admin_router)
+    _app.include_router(notification_router)  # 2026-09-03 新增：通知渠道通用
     _app.include_router(script_admin_router)
     _app.include_router(api_config_router)
     _app.include_router(user_server_router)  # 2026-07-24 新增：用户服务器配置管理

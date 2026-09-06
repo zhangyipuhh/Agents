@@ -2860,6 +2860,75 @@ ALTER TABLE email_policies
 ALTER TABLE email_policies
     ADD COLUMN IF NOT EXISTS body_template TEXT NOT NULL DEFAULT '';
 
+-- ========== 16.6. notification_channels / notification_targets（通知渠道通用表）==========
+-- 设计原则（2026-09-03 落地，详见 memory/misc.md 「通知渠道通用表设计原则」）：
+--   * 所有新增渠道（飞书 / 钉钉 / 企微 / Slack）共用这两张表
+--   * 通过 channel_type / target_type 字段白名单 + CHECK 约束区分渠道
+--   * 凭证差异一律进 config JSONB；service 层按 channel_type 分发
+--   * 邮件老表（email_server_configs / email_policies / email_policy_recipients）不动
+-- 字段命名：
+--   * notification_channels：凭证通用表，config 含各渠道特有字段
+--   * notification_targets：「目标 + 绑智能体 + 模板」合并（1 个 target = 1 个发送目标 + 1 个 agent）
+--   * 归属字段 created_by_user_id 遵循 OwnershipScope 通用方案
+CREATE TABLE IF NOT EXISTS notification_channels (
+    id                  SERIAL PRIMARY KEY,
+    name                VARCHAR(100) NOT NULL,
+    display_name        VARCHAR(200) DEFAULT '',
+    channel_type        VARCHAR(30) NOT NULL DEFAULT 'feishu'
+                        CHECK (channel_type IN ('feishu')),
+    config              JSONB NOT NULL DEFAULT '{}'::jsonb,
+    enabled             BOOLEAN NOT NULL DEFAULT TRUE,
+    is_default          BOOLEAN NOT NULL DEFAULT FALSE,
+    created_by_user_id  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT notification_channels_name_type_uniq UNIQUE (name, channel_type)
+);
+-- config JSONB 守卫：必须是 object（防脏数据，与 users.allowed_agents 2026-08-14 同款修复）
+ALTER TABLE notification_channels
+    ADD CONSTRAINT notification_channels_config_object_chk
+    CHECK (config IS NULL OR jsonb_typeof(config) = 'object') NOT VALID;
+-- 同 channel_type 内 is_default 仅允许 1 行 TRUE
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_channels_default
+    ON notification_channels(channel_type) WHERE is_default = TRUE;
+-- 同 channel_type 内 enabled 仅允许 1 行 TRUE（与邮件同款语义）
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_channels_enabled
+    ON notification_channels(channel_type) WHERE enabled = TRUE;
+CREATE INDEX IF NOT EXISTS idx_notification_channels_channel_type
+    ON notification_channels(channel_type);
+CREATE INDEX IF NOT EXISTS idx_notification_channels_created_by_user_id
+    ON notification_channels(created_by_user_id);
+
+CREATE TABLE IF NOT EXISTS notification_targets (
+    id                  SERIAL PRIMARY KEY,
+    channel_id          INTEGER NOT NULL
+                        REFERENCES notification_channels(id) ON DELETE CASCADE,
+    target_type         VARCHAR(30) NOT NULL DEFAULT 'feishu.chat'
+                        CHECK (target_type IN ('feishu.chat', 'feishu.user')),
+    name                VARCHAR(200) NOT NULL,
+    config              JSONB NOT NULL DEFAULT '{}'::jsonb,
+    agent_name          VARCHAR(100) NOT NULL,
+    subject_template    VARCHAR(500) DEFAULT '',
+    body_template       TEXT DEFAULT '',
+    enabled             BOOLEAN NOT NULL DEFAULT TRUE,
+    created_by_user_id  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT notification_targets_unique UNIQUE (channel_id, target_type, name)
+);
+-- config JSONB 守卫
+ALTER TABLE notification_targets
+    ADD CONSTRAINT notification_targets_config_object_chk
+    CHECK (config IS NULL OR jsonb_typeof(config) = 'object') NOT VALID;
+CREATE INDEX IF NOT EXISTS idx_notification_targets_channel_id
+    ON notification_targets(channel_id);
+CREATE INDEX IF NOT EXISTS idx_notification_targets_target_type
+    ON notification_targets(target_type);
+CREATE INDEX IF NOT EXISTS idx_notification_targets_agent_name
+    ON notification_targets(agent_name);
+CREATE INDEX IF NOT EXISTS idx_notification_targets_created_by_user_id
+    ON notification_targets(created_by_user_id);
+
 -- ========== 17. agent_task_schedules / agent_task_runs（智能体定时任务）==========
 -- 应用内调度器的任务定义与执行历史。数据库是任务定义真相源；服务启动时加载 enabled 任务。
 -- 所有 DDL 使用 IF NOT EXISTS / IF NOT EXISTS（索引），幂等可重复执行。

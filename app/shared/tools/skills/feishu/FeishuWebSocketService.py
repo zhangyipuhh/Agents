@@ -88,6 +88,10 @@ class FeishuWebSocketService:
         self._receiver_user_id = receiver_user_id
         self._receiver_username = receiver_username
         self._log_level = log_level
+        # 2026-09-03 新增：FeishuWebSocketManager 多实例时注入的渠道 ID,
+        # 用于 session_id 命名空间前缀 (feishu:{channel_id}:p2p:... / feishu:{channel_id}:group:...)
+        # 让 sessions 表按 channel 隔离;None 表示单实例旧版(不推荐)
+        self._channel_id: Optional[int] = None
         self._ws_client: Optional[lark.ws.Client] = None
         self._should_run = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -985,6 +989,12 @@ class FeishuWebSocketService:
               各自维护独立会话上下文。这样能避免群里所有人的消息都堆到一个
               LangGraph checkpointer thread 中导致上下文无限膨胀、token 飙升。
 
+        2026-09-03 调整（WS 多实例命名空间）：
+            - 若本实例绑定了 ``channel_id``（由 ``FeishuWebSocketManager`` 注入），
+              session_id 前缀加 ``feishu:{channel_id}`` 段，让 sessions 表按 channel
+              隔离，避免不同应用的消息混淆到同一个 LangGraph thread。
+            - 单实例旧版（``_channel_id=None``）保持原格式（向后兼容）。
+
         Args:
             chat_type: p2p / group
             chat_id: 飞书 chat_id
@@ -993,9 +1003,12 @@ class FeishuWebSocketService:
         Returns:
             str: session_id
         """
+        prefix = "feishu"
+        if self._channel_id is not None:
+            prefix = f"feishu:{self._channel_id}"
         if chat_type == "group":
-            return f"feishu:group:{chat_id}:{open_id}"
-        return f"feishu:p2p:{open_id}"
+            return f"{prefix}:group:{chat_id}:{open_id}"
+        return f"{prefix}:p2p:{open_id}"
 
     def _dispatch_async(self, coro: Any) -> None:
         """把协程投递回主事件循环（在 SDK 同步回调中调用）。

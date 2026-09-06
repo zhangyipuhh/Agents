@@ -65,6 +65,13 @@ MENU_CATALOG: List[MenuItem] = [
     MenuItem(id="messaging.email", level=2, parent_id="messaging",
              label="邮件设置", icon_key="mail", sort_order=1, required_role="admin"),
 
+    # 2026-09-03 新增：channel 级「飞书设置」——messaging 下的第二个消息通道
+    # - 设计原则：通用表 + 字段区分渠道（详见 memory/misc.md 「通知渠道通用表设计原则」）
+    # - 端点 ACL key 用 messaging.feishu.{apps,policies,test}，与邮件孙 tab 风格一致
+    # - 三个子 Tab（apps/policies/test）的 parent_id 指向本 channel
+    MenuItem(id="messaging.feishu", level=2, parent_id="messaging",
+             label="飞书设置", icon_key="feishu", sort_order=2, required_role="admin"),
+
     # === 二级菜单（tab）===
     MenuItem(id="user-management.users", level=2, parent_id="user-management",
              label="用户列表", icon_key="list", sort_order=1, required_role="admin"),
@@ -109,6 +116,19 @@ MENU_CATALOG: List[MenuItem] = [
     MenuItem(id="task-scheduler.email-settings.test", level=2,
              parent_id="messaging.email",
              label="测试发送", icon_key="send", sort_order=3, required_role="admin"),
+    # 2026-09-03 新增：飞书设置的三个内部 Tab（与邮件子 Tab 风格一致）
+    # - 端点 ACL key 用 messaging.feishu.{apps,policies,test}
+    # - parent_id 指向 messaging.feishu（与邮件「parent_id 指向 messaging.email」对称）
+    # - id 不可改（与既有邮件子 Tab 一致，避免破坏历史 ACL）
+    MenuItem(id="messaging.feishu.apps", level=2,
+             parent_id="messaging.feishu",
+             label="应用设置", icon_key="app", sort_order=1, required_role="admin"),
+    MenuItem(id="messaging.feishu.policies", level=2,
+             parent_id="messaging.feishu",
+             label="发送策略", icon_key="list", sort_order=2, required_role="admin"),
+    MenuItem(id="messaging.feishu.test", level=2,
+             parent_id="messaging.feishu",
+             label="发送测试", icon_key="send", sort_order=3, required_role="admin"),
     MenuItem(id="permission-management.menu", level=2, parent_id="permission-management",
              label="菜单管理", icon_key="menu", sort_order=1, required_role="admin"),
     # 2026-07-24 新增：智能体访问权限子 Tab

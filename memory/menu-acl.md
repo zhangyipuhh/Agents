@@ -189,6 +189,33 @@ messaging (level=1, sort_order=10, icon_key='message')
 - 孙级任一可见 → 父级 `messaging` 顶级可见（前缀匹配 + alias 映射）
 - 数据库无迁移；现有授权记录不受影响
 
+### 「飞书设置」channel 与三个孙 tab（2026-09-03 落地）
+
+与邮件平级,作为「消息设置」下的第二个 channel：
+
+```
+messaging (level=1, label='消息设置')
+└── messaging.feishu (level=2, sort_order=2, label='飞书设置', icon_key='feishu')  ← channel 级
+    ├── messaging.feishu.apps     (level=2, parent_id='messaging.feishu', sort_order=1)  # 应用设置
+    ├── messaging.feishu.policies (level=2, parent_id='messaging.feishu', sort_order=2)  # 发送策略
+    └── messaging.feishu.test     (level=2, parent_id='messaging.feishu', sort_order=3)  # 发送测试
+```
+
+设计原则：与邮件完全对称,id 不以 `task-scheduler.*` 开头而以 `messaging.feishu.*` 开头,直接走前缀匹配,无需 PARENT_TO_CHILDREN_ALIAS 显式补齐(但 messaging 顶级 alias 仍包含飞书孙 tab 作为冗余防御)。
+
+端点 ACL key 与菜单 id 一一对应（`app.routers.notification_router` 通用 router,无 `/admin/` 段,`channel_type` 参数控制）：
+
+| sort_order | id | label | parent_id |
+|---|---|---|---|
+| 1 | messaging.feishu.apps | 应用设置 | messaging.feishu |
+| 2 | messaging.feishu.policies | 发送策略 | messaging.feishu |
+| 3 | messaging.feishu.test | 发送测试 | messaging.feishu |
+
+**设计原则**（与邮件不同）：
+- 飞书孙 tab id 直接用 `messaging.feishu.{apps,policies,test}`,不再沿用 `task-scheduler.email-settings.*` 命名（2026-07-31 邮件孙 tab id 因历史原因保留 `task-scheduler.*` 前缀,飞书孙 tab 无历史包袱,直接命名）
+- 「默认应用」逻辑在 `notification_channels.is_default` 列（部分唯一索引）而非菜单;UI 在「应用设置」Tab 通过 checkbox 让 admin 手动设置默认应用
+- 多应用下不同应用的 `agent_name` 与 `receiver_username` 在 `notification_channels.config` JSONB 内独立配置,WS 多实例自动按 channel_id 隔离（详见 [memory/misc.md] 「通知渠道通用表设计原则」+「WS 多实例架构规则」章节）
+
 ### 运维任务二级菜单（最终态）
 
 `TaskSchedulerManager.vue` 内部四个 Tab 注册为可独立授权的二级菜单，父级 `task-scheduler`（sort_order=8）：

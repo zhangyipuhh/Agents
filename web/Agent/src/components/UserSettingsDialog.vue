@@ -56,6 +56,8 @@ import ToolManager from './ToolManager.vue'
 import SkillManager from './SkillManager.vue'
 import TaskSchedulerManager from './TaskSchedulerManager.vue'
 import EmailSettingsManager from './EmailSettingsManager.vue'
+// 2026-09-03 新增:飞书设置管理(消息设置 → 飞书设置 channel)
+import FeishuSettingsManager from './FeishuSettingsManager.vue'
 import MessageBubble from './MessageBubble.vue'
 import ToolCallCard from './ToolCallCard.vue'
 import SubAgentCard from './SubAgentCard.vue'
@@ -242,10 +244,15 @@ const NAV_MENU_METADATA = {
  */
 const PARENT_TO_CHILDREN_ALIAS = Object.freeze({
   // messaging 顶级菜单的 alias 映射
-  // - 子菜单 `messaging.email` id 以 `messaging.` 开头 → 前缀匹配天然让 messaging 父级可见，无需列在 alias
-  // - 但孙 tab id `task-scheduler.email-settings.*` 不以 `messaging.` 开头 → 必须显式列在 alias
+  // - 子菜单 `messaging.email` / `messaging.feishu` id 以 `messaging.` 开头 → 前缀匹配天然让 messaging 父级可见，无需列在 alias
+  // - 但孙 tab id `task-scheduler.email-settings.*` / `messaging.feishu.*` 不以 `messaging.` 开头 → 必须显式列在 alias
+  // 2026-09-03 新增:飞书设置 channel + 3 个孙 tab
   messaging: [
     'messaging.email',
+    'messaging.feishu',
+    'messaging.feishu.apps',
+    'messaging.feishu.policies',
+    'messaging.feishu.test',
     'task-scheduler.email-settings.server',
     'task-scheduler.email-settings.policies',
     'task-scheduler.email-settings.test',
@@ -2253,9 +2260,19 @@ onMounted(() => {
                     data-testid="messaging-channel-email"
                     @click="switchEmailChannel('messaging.email')"
                   >邮件设置</button>
+                  <!-- 2026-09-03 新增:飞书设置 channel,与邮件设置平级 -->
+                  <button
+                    class="sub-tab"
+                    :class="{ active: activeEmailChannel === 'messaging.feishu' }"
+                    data-testid="messaging-channel-feishu"
+                    @click="switchEmailChannel('messaging.feishu')"
+                  >飞书设置</button>
                 </div>
                 <div v-show="activeEmailChannel === 'messaging.email'" class="tab-fill-wrapper" data-testid="messaging-channel-email-panel">
                   <EmailSettingsManager :visible-menus="visibleMenus" :is-admin="isAdmin" />
+                </div>
+                <div v-show="activeEmailChannel === 'messaging.feishu'" class="tab-fill-wrapper" data-testid="messaging-channel-feishu-panel">
+                  <FeishuSettingsManager :visible-menus="visibleMenus" :is-admin="isAdmin" />
                 </div>
               </div>
 

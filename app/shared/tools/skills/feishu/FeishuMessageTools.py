@@ -40,6 +40,54 @@ from app.shared.tools.skills.feishu.MarkdownToCardConverter import (
 logger = logging.getLogger(__name__)
 
 
+def _get_notification_service():
+    """从 ``app.state.notification_config_service`` 取服务实例。
+
+    与 ``FeishuClient._get_notification_service`` 同款实现；保留独立
+    避免跨模块依赖。
+
+    Returns:
+        Optional[NotificationConfigService]: 未初始化时返回 None。
+    """
+    try:
+        from app.main import app as _fastapi_app  # 延迟 import
+
+        return getattr(_fastapi_app.state, "notification_config_service", None)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _resolve_default_receive_via_db() -> tuple:
+    """从 DB 默认飞书渠道读取默认接收方（同步路径，走主 loop run_coroutine_threadsafe）。
+
+    Returns:
+        tuple[str, str, str]: (receive_id, receive_id_type, agent_name)。
+        任一字段缺失返回 ("", "", "")。
+    """
+    svc = _get_notification_service()
+    if svc is None:
+        return ("", "", "")
+    try:
+        import asyncio
+        import concurrent.futures
+
+        loop = asyncio.get_event_loop()
+        fut = asyncio.run_coroutine_threadsafe(
+            svc.resolve_default_channel("feishu"), loop
+        )
+        ch = fut.result(timeout=5.0)
+    except Exception:  # noqa: BLE001
+        return ("", "", "")
+    if ch is None:
+        return ("", "", "")
+    cfg = ch["config"]
+    return (
+        cfg.get("default_receive_id", "") or "",
+        cfg.get("default_receive_id_type", "chat_id") or "chat_id",
+        cfg.get("agent_name", "") or "",
+    )
+
+
 def _build_content_payload(content: str) -> tuple:
     """根据 content 是否含 Markdown 特征，决定走交互式卡片还是纯文本。
 
@@ -149,11 +197,14 @@ def send_feishu_message(
     """
     tool_call_id = getattr(runtime, "tool_call_id", "unknown") if runtime else "unknown"
 
-    # 解析接收方（参数优先，缺省回退到全局配置）
-    target_receive_id = receive_id or settings.feishu.feishu_default_receive_id
-    target_receive_id_type = (
-        receive_id_type or settings.feishu.feishu_default_receive_id_type
-    )
+    # 解析接收方（参数优先；缺省从 DB 默认飞书渠道解析，不再读 settings.feishu）
+    if receive_id:
+        target_receive_id = receive_id
+        target_receive_id_type = receive_id_type or "chat_id"
+    else:
+        db_default_id, db_default_type, _ = _resolve_default_receive_via_db()
+        target_receive_id = db_default_id
+        target_receive_id_type = receive_id_type or db_default_type or "chat_id"
     if not target_receive_id:
         return Command(
             update={
@@ -162,7 +213,7 @@ def send_feishu_message(
                         tool_call_id,
                         {
                             "success": False,
-                            "error": "receive_id 缺失：请传入参数或在 .env 配置 feishu_default_receive_id",
+                            "error": "receive_id 缺失:请传入参数或在「消息设置 → 飞书设置 → 应用设置」中配置默认飞书渠道的 default_receive_id",
                         },
                     )
                 ]

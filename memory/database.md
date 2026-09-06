@@ -61,6 +61,44 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 
 **降级**：内存模式（`AUTH_STORAGE_MODE=memory`）下后端返回 503，前端 catch 后 toast "反馈功能仅在数据库模式下可用"，不阻塞用户继续聊天。
 
+### notification_channels / notification_targets 表（2026-09-03 飞书设置落地）
+
+「通知渠道通用表设计原则」的两张通用表（详见 [memory/misc.md] 同章节）。飞书及未来钉钉/企微/Slack 等所有通知渠道共用这两张表，凭证差异进 `config` JSONB，service 层按 `channel_type` 分发。**邮件老表 `email_server_configs` / `email_policies` / `email_policy_recipients` 不动**。
+
+`notification_channels`（凭证通用表）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | SERIAL PRIMARY KEY | 自增主键 |
+| name | VARCHAR(100) NOT NULL | 渠道名；与 `channel_type` 联合唯一（UNIQUE 约束） |
+| display_name | VARCHAR(200) DEFAULT '' | 显示名（用于 UI 展示） |
+| channel_type | VARCHAR(30) NOT NULL DEFAULT 'feishu' CHECK (channel_type IN ('feishu')) | 渠道类型白名单（本期仅注册 `feishu`，未来扩展 `dingtalk` / `wecom` 等 ALTER 约束） |
+| config | JSONB NOT NULL DEFAULT '{}'::jsonb + `jsonb_typeof(config) = 'object'` 守卫 | 渠道差异凭证；飞书必填 `app_id_encrypted` / `app_secret_encrypted`（Fernet 加密 TEXT）/ `default_receive_id` / `default_receive_id_type`（chat_id/open_id/user_id/email）/ `log_level`（DEBUG/INFO/WARNING/ERROR）/ `agent_name` / `receiver_username` |
+| enabled | BOOLEAN NOT NULL DEFAULT TRUE | 是否启用；部分唯一索引 `WHERE enabled=TRUE`（仅同 channel_type 内 1 行 enabled） |
+| is_default | BOOLEAN NOT NULL DEFAULT FALSE | 是否默认渠道；部分唯一索引 `WHERE is_default=TRUE`（仅同 channel_type 内 1 行 is_default），WS 多实例只连默认应用 |
+| created_by_user_id | INTEGER REFERENCES users(id) ON DELETE SET NULL | 创建人 |
+| created_at / updated_at | TIMESTAMP DEFAULT CURRENT_TIMESTAMP | 标准时间戳 |
+
+`notification_targets`（目标 + 绑智能体 + 模板合并）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | SERIAL PRIMARY KEY | |
+| channel_id | INTEGER NOT NULL REFERENCES notification_channels(id) ON DELETE CASCADE | 关联渠道 |
+| target_type | VARCHAR(30) NOT NULL DEFAULT 'feishu.chat' CHECK (target_type IN ('feishu.chat', 'feishu.user')) | 目标类型白名单 |
+| name | VARCHAR(200) NOT NULL | 目标名（与 channel_id/target_type 联合 UNIQUE） |
+| config | JSONB NOT NULL DEFAULT '{}'::jsonb + `jsonb_typeof(config) = 'object'` 守卫 | 飞书必填 `chat_id` / `chat_type`（chat_id/open_id/user_id/email） |
+| agent_name | VARCHAR(100) NOT NULL | 绑定的智能体名 |
+| subject_template | VARCHAR(500) DEFAULT '' | 主题模板 |
+| body_template | TEXT DEFAULT '' | 正文模板 |
+| enabled | BOOLEAN NOT NULL DEFAULT TRUE | |
+| created_by_user_id | INTEGER REFERENCES users(id) ON DELETE SET NULL | |
+| created_at / updated_at | TIMESTAMP DEFAULT CURRENT_TIMESTAMP | |
+
+索引：`idx_notification_channels_default` (`channel_type` `WHERE is_default=TRUE`) / `idx_notification_channels_enabled` (`channel_type` `WHERE enabled=TRUE`) / `idx_notification_channels_channel_type` / `idx_notification_channels_created_by_user_id` / `idx_notification_targets_channel_id` / `idx_notification_targets_target_type` / `idx_notification_targets_agent_name` / `idx_notification_targets_created_by_user_id`。
+
+迁移文件：`app/migrations/init_all_tables.sql` 第 16.6 节；幂等 DDL（`CREATE TABLE IF NOT EXISTS` + `ADD CONSTRAINT ... NOT VALID`），可重复执行。零迁移脚本单独提供 `scripts/migrate_feishu_env_to_db.sql`（admin 手动运行，把 `.env` 中 8 个 `feishu_*` 凭证导入 DB；admin 替换占位符 `:admin_user_id` / `:app_name` / `:app_id` / `:app_secret` 等）。
+
 ### agent_task_schedules / agent_task_runs 表（2026-07-10 新增）
 
 智能体定时任务采用**应用内调度**，不为每条业务任务写入 Windows Task Scheduler 或 Linux cron/systemd timer；数据库是任务定义与执行历史的真相源。服务重启时由 `app/core/server.py::lifespan()` 初始化 `TaskSchedulerService`，从 `agent_task_schedules` 加载 `enabled=true` 的任务注册到 APScheduler；服务停机期间错过的触发不补跑，重启后按下一次计划时间执行。每次触发都会创建新的 `session_id`，并复用 `AgentConfigService.build_agent_instance()` 构造智能体，确保 AGENTS.md、Skill 绑定与工具绑定和聊天路径一致。

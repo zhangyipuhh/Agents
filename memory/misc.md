@@ -160,6 +160,106 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 16. **成功路径日志（2026-07-18 新增）**：`EmailService.send_email` 成功时 `logger.info` 记录 `message_id / from / to`（此前仅有失败日志），用于事后排查"显示成功但收不到"时确认信封信息。前端测试发送 Tab 同步追加说明文案：「发送成功」仅代表 SMTP 服务器已接收（250 OK）不代表对方已投递，跨域发送可能被对方反垃圾网关静默丢弃。
 17. **EHLO local_hostname=cfg.host 保留不改（2026-07-18 排查结论）**：曾怀疑从动态 IP 以 `EHLO smtp.qq.com` 声明是伪造特征导致对方网关静默丢弃，但第 13 条的最终实测证明：**同一份 EHLO 代码在重启后投递成功**，EHLO 从来不是拦截因素；且改动 `local_hostname` 会让已验证可用的路径承担回归风险，故保持现状。
 
+## 通知渠道通用表设计原则（2026-09-03 落地，硬约束）
+
+> 本节是后续加钉钉/企微/Slack 等所有通知渠道的硬约束；违反本规则走「为每渠道建 3 张表」老路 = 设计返工。
+
+### 1. 邮件老表保留
+
+- `email_server_configs` / `email_policies` / `email_policy_recipients` **永远不动**（历史数据 + 老 ACL + 既有外部脚本依赖）
+- 邮件路由仍走 `/api/admin/email/*`，`EmailConfigService` 保持独立
+- 后续渠道不与邮件共用表也不合并
+
+### 2. 新渠道统一规则（飞书/钉钉/企微/Slack）
+
+- **所有新增渠道共用 2 张通用表**：`notification_channels` + `notification_targets`
+- **禁止**为新渠道新建独立表（如 `feishu_apps` / `dingtalk_apps` / `wecom_apps` 等）
+- **禁止** `ALTER notification_channels / notification_targets` 加渠道专用列；渠道差异一律进 `config` JSONB
+- 渠道区分：`notification_channels.channel_type` 字段（白名单 + CHECK 约束）
+- 目标区分：`notification_targets.target_type` 字段（白名单 + CHECK 约束）
+- **service 层按 `channel_type` 分发**：`NotificationConfigService._validate_config(channel_type, config)` 内 `if channel_type == "feishu": ... elif ...:`；加新渠道只在该方法加分发分支
+
+### 3. 凭证存储约定
+
+- 加密字段写在 `config.app_id_encrypted` / `config.app_secret_encrypted`（飞书）/ `config.app_key_encrypted`（钉钉）等，**TEXT 形式**（Fernet encrypt → ascii decode），与邮件 `password_encrypted` 同款约定
+- 复用 `DEVOPS_CREDENTIAL_KEY`，**不**引入新密钥
+- 字段 type=JSONB + `jsonb_typeof(config) = 'object'` 守卫（防历史脏数据，与 `users.allowed_agents` 2026-08-14 同款修复）
+
+### 4. 菜单与路由命名（与「邮件平级」语义）
+
+- 渠道菜单统一挂 `messaging.<channel>` 二级下（如 `messaging.feishu`）
+- 渠道孙 tab id 用 `messaging.<channel>.<sub>`（如 `messaging.feishu.apps` / `messaging.feishu.policies` / `messaging.feishu.test`）
+- **路由通用化**：不按渠道分 router，所有通知渠道走同一 `/api/notification/*`（无 `/admin/` 段，用户硬约束）；`channel_type` 通过 query/body 参数传入，handler 内按 channel_type 分发；**禁止**新建 `/api/admin/feishu/*` / `/api/admin/dingtalk/*` 等按渠道命名的 router
+- 端点 ACL key 与菜单 id 对齐
+
+### 5. `.env` feishu_* 字段废弃规则
+
+- **生产代码不再读 `.env` 中任何 `feishu_*` 字段**（`feishu_app_id` / `feishu_app_secret` / `feishu_default_receive_id` / `feishu_default_receive_id_type` / `feishu_log_level` / `feishu_ws_enabled` / `feishu_ws_agent_name` / `feishu_ws_receiver_username`）；全部凭证 / 默认接收方 / 路由智能体 / 接收账号均从 `notification_channels` 表读
+- `Settings.feishu` 字段**保留**（标 deprecated），仅供测试 / 迁移工具使用；`.env` 文件**不删字段**（避免破坏部署文件），迁移完成后 admin 可手动清理
+- `feishu_ws_enabled` 字段废弃：WS 启停改为由 `notification_channels` 中 `enabled=TRUE AND channel_type='feishu'` 行数驱动（每条启用行 → 一个 WS 实例）
+- WS 启动逻辑完全删除 `.env fallback` 路径；DB 无启用渠道 → INFO log skip，**正常继续 lifespan，不 fail-loud**
+- `FeishuClient.get_lark_client()` 与 `FeishuMessageTools.send_feishu_message` 也全切 DB，无默认渠道 → 抛 RuntimeError（给 LLM 工具路径；WS 多实例路径不读此单例）
+- 迁移路径：admin 手动 UI 配置 + 提供一次性 SQL 脚本 `scripts/migrate_feishu_env_to_db.sql` 辅助
+
+### 6. WS 多实例架构规则
+
+- **多应用下 WS 必须支持监听多个 agent，不同应用接的是不一样智能体**（用户硬约束）
+- **禁止**回到 WS 单实例 + 多 channel 内部路由（SDK 多实例内部状态难控）
+- 编排器：`FeishuWebSocketManager` 维护 `Dict[channel_id, FeishuWebSocketService]`，每条 enabled 飞书渠道 → 独立后台线程 + 独立 `lark.Client` + 独立 `agent_name` + 独立 `receiver_username`
+- 实例完全隔离：一个应用断开/异常不影响其他应用
+- session_id 命名空间加 `channel_id`：`feishu:{channel_id}:p2p:{open_id}` / `feishu:{channel_id}:group:{chat_id}:{open_id}`
+- 每个应用的 `agent_name` 与 `receiver_username` 在 `notification_channels.config` JSONB 内独立配置（`config.agent_name` / `config.receiver_username`）
+- 零应用时 INFO skip，**不 fail-loud**
+
+## 飞书设置管理（2026-09-03 新增，「消息设置」Tab 下与邮件平级）
+
+### 入口契约
+
+- 一级菜单 `messaging`（已存在）→ 二级 channel `messaging.feishu`（新增）→ 三个孙 tab `messaging.feishu.{apps,policies,test}`（新增）
+- 前端路由：`/api/notification/*`（通用接口，`channel_type` 参数控制）
+- 端点 ACL：`require_admin_or_menu_acl('messaging.feishu.<sub>')`
+
+### 数据库表契约
+
+**`notification_channels`**（凭证通用表）：
+- `id` / `name (UNIQUE with channel_type)` / `display_name` / **`channel_type VARCHAR(30) NOT NULL CHECK (channel_type IN ('feishu'))`** / **`config JSONB NOT NULL` (jsonb_typeof='object')** / `enabled` / **`is_default`**（部分唯一索引 `WHERE is_default=TRUE`）/ `created_by_user_id` / `created_at` / `updated_at`
+- **飞书 config 必填 7 字段**：`app_id_encrypted` / `app_secret_encrypted` / `default_receive_id` / `default_receive_id_type`（chat_id/open_id/user_id/email） / `log_level`（DEBUG/INFO/WARNING/ERROR） / `agent_name` / `receiver_username`
+
+**`notification_targets`**（目标 + 绑智能体 + 模板合并）：
+- `id` / `channel_id (FK→notification_channels ON DELETE CASCADE)` / **`target_type VARCHAR(30) CHECK (IN 'feishu.chat','feishu.user'))`** / `name` / **`config JSONB NOT NULL`** / `agent_name (NOT NULL)` / `subject_template` / `body_template` / `enabled` / `UNIQUE(channel_id, target_type, name)`
+- **飞书 target config 必填**：`chat_id` / `chat_type`
+- **1 个 target = 1 个发送目标 + 1 个 agent**（无需第三张策略表）
+
+### 路由契约（12 个方法 + 7 个路径）
+
+- `GET /api/notification/channels` / `POST /api/notification/channels`
+- `GET/PUT/DELETE /api/notification/channels/{channel_id}`
+- `POST /api/notification/channels/{channel_id}/test-connection`
+- `GET/POST /api/notification/channels/{channel_id}/targets`
+- `PUT/DELETE /api/notification/targets/{target_id}`
+- `GET /api/notification/agents` / `POST /api/notification/send-test`
+
+### 服务入口
+
+- `app.shared.utils.notification.NotificationConfigService(db, credential_key)`
+- `app.shared.tools.skills.feishu.FeishuWebSocketManager(notification_service)` 多实例编排器
+- `app.routers.notification_router` 通用 router
+
+### 迁移步骤（admin 手动）
+
+1. 在「消息设置 → 飞书设置 → 应用设置」新建飞书应用 + 填凭证 + 勾「设为默认应用」
+2. 「发送策略」建目标：绑应用 + 加群 chat_id + 选智能体
+3. 「发送测试」发消息到飞书群
+4. （可选）运行 `scripts/migrate_feishu_env_to_db.sql` 把 .env 中的 `feishu_app_id/secret/default_receive_id` 一次性导入 DB（占位符替换为真实 admin user_id）
+
+### 配置文件变更（重要）
+
+- **`.env` 不修改**：8 个 `feishu_*` 字段保留不删，代码不再读
+- **`.env` 不新增字段**：用户硬约束
+- **新增数据库表**：`notification_channels` / `notification_targets`（详见 §2）
+- **新增 SQL 迁移**：`app/migrations/init_all_tables.sql` 第 16.6 节
+- **新增一次性脚本**：`scripts/migrate_feishu_env_to_db.sql`（admin 手动运行）
+
 ## 飞书工具（Feishu Tools）
 
 ### 核心模块

@@ -147,6 +147,40 @@
 | /api/ai-coding-check                | ai_coding_check_router | AI 代码检查 Agent                                                                                                                                                                     |
 | ├ POST /review                     |                        | 评审开发者数据（非流式 JSON API）                                                                                                                                                     |
 | /api/admin/email                    | email_admin_router     | 邮件系统管理（详见「邮件系统」章节）：SMTP 配置 CRUD + 连接测试 + 策略 CRUD + 测试发送（multipart/form-data）+ 按策略发送                                                           |
+| /api/notification                    | notification_router    | **通用通知渠道接口（2026-09-03 新增；无 /admin/ 段；`channel_type` 参数控制；本期仅暴露飞书，ACL 走 `messaging.feishu.{apps,policies,test}`；详见「通知渠道通用表设计原则」章节）** |
+
+## 通知渠道通用接口（2026-09-03 新增）
+
+`app/routers/notification_router.py` —— **通用 router**，覆盖所有通知渠道（飞书 / 未来钉钉 / 企微 / Slack）。`channel_type` 通过 query/body 参数传入，handler 内按 `channel_type` 分发。**禁止**为不同渠道新建独立 router。
+
+`prefix="/api/notification"`（**不加** `/admin/` 段，用户硬约束）。
+
+### `/api/notification/channels`（`notification_router`）
+
+| 方法 | 路径 | ACL key | 说明 |
+|---|---|---|---|
+| GET | `/api/notification/channels?channel_type=feishu` | `messaging.feishu.apps` | 列出渠道；query `channel_type` 过滤；config 中加密字段脱敏为空串 |
+| POST | `/api/notification/channels` | `messaging.feishu.apps` | 新建渠道；body 含 `channel_type` + `name` + `display_name` + `config`（明文 app_id/app_secret）+ `enabled` + `is_default`；router Fernet 加密后入库 |
+| GET | `/api/notification/channels/{channel_id}` | `messaging.feishu.apps` | 详情（密码脱敏） |
+| PUT | `/api/notification/channels/{channel_id}` | `messaging.feishu.apps` | 更新；`config` 中加密字段留空 → 不修改（`keep_existing_secret=True`） |
+| DELETE | `/api/notification/channels/{channel_id}` | `messaging.feishu.apps` | 删除（级联清理 targets） |
+| POST | `/api/notification/channels/{channel_id}/test-connection` | `messaging.feishu.apps` | 测试连接（按 channel_type 分发；飞书仅构造 lark.Client，不发消息） |
+
+### `/api/notification/channels/{channel_id}/targets` 与 `/api/notification/targets/{target_id}`（`notification_router`）
+
+| 方法 | 路径 | ACL key | 说明 |
+|---|---|---|---|
+| GET | `/api/notification/channels/{channel_id}/targets` | `messaging.feishu.policies` | 列出该渠道所有目标（含绑智能体 + 模板） |
+| POST | `/api/notification/channels/{channel_id}/targets` | `messaging.feishu.policies` | 新增目标；body 含 `target_type` + `name` + `config`（chat_id/chat_type）+ `agent_name` + 模板字段 |
+| PUT | `/api/notification/targets/{target_id}` | `messaging.feishu.policies` | 更新目标 |
+| DELETE | `/api/notification/targets/{target_id}` | `messaging.feishu.policies` | 删除目标 |
+
+### 其他（`notification_router`）
+
+| 方法 | 路径 | ACL key | 说明 |
+|---|---|---|---|
+| GET | `/api/notification/agents` | `messaging.feishu.policies` | 列出 enabled 智能体（target agent_name 下拉用） |
+| POST | `/api/notification/send-test` | `messaging.feishu.test` | 发送测试消息；body `{target_id, channel_type, content}`；按 channel_type 分发；飞书路径从 target.config.chat_id 构造临时 lark.Client 发到群 |
 
 ## DevOps 服务器与巡检脚本库管理（2026-07-15 新增；2026-08-03 改造）
 

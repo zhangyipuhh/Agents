@@ -874,17 +874,23 @@ class DevOpsSettings(BaseSettings):
 
 class FeishuSettings(BaseSettings):
     """
-    飞书 Open API 配置
+    飞书 Open API 配置（DEPRECATED，2026-09-03 落地）
 
-    管理飞书 SDK（lark-oapi）所需的应用凭证与默认接收方。
-    所有字段均可通过 .env 环境变量覆盖。
+    ⚠️ **本类已废弃**：生产代码不再读本类任何字段,凭证/默认接收方/路由智能体/
+    接收账号均从数据库 ``notification_channels`` 表读取(详见
+    ``app.shared.utils.notification.NotificationConfigService``)。
 
-    Attributes:
-        feishu_app_id: 飞书应用 App ID（必填，空字符串表示未配置）
-        feishu_app_secret: 飞书应用 App Secret（必填，空字符串表示未配置）
-        feishu_default_receive_id: 默认接收方 ID（如群 chat_id）；空字符串表示未配置
-        feishu_default_receive_id_type: 默认接收方类型，可选 chat_id / open_id / user_id / email
-        feishu_log_level: SDK 日志级别，DEBUG / INFO / WARNING / ERROR
+    保留原因:
+    - 兼容既有单测(``app/tests/shared/tools/skills/feishu/``)与迁移工具
+      (``scripts/migrate_feishu_env_to_db.sql`` 注释引用)
+    - ``.env`` 中现有 8 个 ``feishu_*`` 字段保留不删(避免破坏部署文件),仅生产路径不再读
+
+    原 Attributes(已废弃):
+        feishu_app_id: 飞书应用 App ID(必填,空字符串表示未配置)
+        feishu_app_secret: 飞书应用 App Secret(必填,空字符串表示未配置)
+        feishu_default_receive_id: 默认接收方 ID(如群 chat_id);空字符串表示未配置
+        feishu_default_receive_id_type: 默认接收方类型,可选 chat_id / open_id / user_id / email
+        feishu_log_level: SDK 日志级别,DEBUG / INFO / WARNING / ERROR
     """
 
     model_config = SettingsConfigDict(

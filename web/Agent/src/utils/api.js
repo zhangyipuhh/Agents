@@ -3203,6 +3203,210 @@ export async function sendEmailByPolicy(policyId, payload) {
   return response.json()
 }
 
+// =============================================================================
+// 通知渠道通用 API（2026-09-03 新增，飞书及未来钉钉/企微）
+// 设计原则（详见 memory/misc.md 「通知渠道通用表设计原则」）：
+// - 所有通知渠道走 /api/notification/*（不加 /admin/ 段）
+// - channel_type 通过 query/body 参数传入；handler 内按 channel_type 分发
+// =============================================================================
+
+/**
+ * 列出通知渠道
+ * @param {string} [channelType] - 可选，按 channel_type 过滤（如 'feishu'）
+ * @returns {Promise<Array>} 渠道列表（config 中加密字段已脱敏为空串）
+ */
+export async function fetchNotificationChannels(channelType = '') {
+  const qs = channelType ? `?channel_type=${encodeURIComponent(channelType)}` : ''
+  const response = await fetchWithAuth(`/api/notification/channels${qs}`)
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取通知渠道列表失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 读取单个通知渠道
+ * @param {number|string} channelId - 渠道 ID
+ * @returns {Promise<Object>} 渠道详情（密码脱敏）
+ */
+export async function fetchNotificationChannel(channelId) {
+  const response = await fetchWithAuth(`/api/notification/channels/${encodeURIComponent(channelId)}`)
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取通知渠道详情失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 新建通知渠道
+ * @param {Object} payload - { channel_type, name, display_name, config, enabled, is_default }
+ *   - config 含明文 app_id / app_secret（飞书），后端 Fernet 加密后入库
+ * @returns {Promise<{id: number, updated_at: string, created: boolean}>}
+ */
+export async function createNotificationChannel(payload) {
+  const response = await fetchWithAuth('/api/notification/channels', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `新建通知渠道失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 更新通知渠道
+ * @param {number|string} channelId - 渠道 ID
+ * @param {Object} payload - { display_name?, config?, enabled?, is_default?, keep_existing_secret? }
+ *   - 留空 config.app_id / config.app_secret 表示不修改原密钥
+ * @returns {Promise<{id: number, updated_at: string, created: boolean}>}
+ */
+export async function updateNotificationChannel(channelId, payload) {
+  const response = await fetchWithAuth(`/api/notification/channels/${encodeURIComponent(channelId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `更新通知渠道失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 删除通知渠道（级联清理 targets）
+ * @param {number|string} channelId - 渠道 ID
+ * @returns {Promise<void>}
+ */
+export async function deleteNotificationChannel(channelId) {
+  const response = await fetchWithAuth(`/api/notification/channels/${encodeURIComponent(channelId)}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok && response.status !== 404) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `删除通知渠道失败: ${response.status}`)
+  }
+}
+
+/**
+ * 测试通知渠道凭证（不发消息）
+ * @param {number|string} channelId - 渠道 ID
+ * @returns {Promise<{success: boolean, message: string}>}
+ */
+export async function testNotificationChannelConnection(channelId) {
+  const response = await fetchWithAuth(`/api/notification/channels/${encodeURIComponent(channelId)}/test-connection`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `测试通知渠道连接失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 列出某渠道下的所有目标（target = 群/用户 + 绑智能体）
+ * @param {number|string} channelId - 渠道 ID
+ * @returns {Promise<Array>} 目标列表
+ */
+export async function fetchNotificationTargets(channelId) {
+  const response = await fetchWithAuth(`/api/notification/channels/${encodeURIComponent(channelId)}/targets`)
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取通知目标列表失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 新建通知目标
+ * @param {number|string} channelId - 渠道 ID
+ * @param {Object} payload - { target_type, name, config, agent_name, subject_template, body_template, enabled }
+ * @returns {Promise<{id: number, updated_at: string, created: boolean}>}
+ */
+export async function createNotificationTarget(channelId, payload) {
+  const response = await fetchWithAuth(`/api/notification/channels/${encodeURIComponent(channelId)}/targets`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `新建通知目标失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 更新通知目标
+ * @param {number|string} targetId - 目标 ID
+ * @param {Object} payload - { target_type?, name?, config?, agent_name?, subject_template?, body_template?, enabled? }
+ * @returns {Promise<{id: number, updated_at: string, created: boolean}>}
+ */
+export async function updateNotificationTarget(targetId, payload) {
+  const response = await fetchWithAuth(`/api/notification/targets/${encodeURIComponent(targetId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `更新通知目标失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 删除通知目标
+ * @param {number|string} targetId - 目标 ID
+ * @returns {Promise<void>}
+ */
+export async function deleteNotificationTarget(targetId) {
+  const response = await fetchWithAuth(`/api/notification/targets/${encodeURIComponent(targetId)}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok && response.status !== 404) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `删除通知目标失败: ${response.status}`)
+  }
+}
+
+/**
+ * 列出 enabled 智能体（target agent_name 下拉用）
+ * @returns {Promise<Array<{name: string, display_name: string}>>}
+ */
+export async function fetchNotificationAgents() {
+  const response = await fetchWithAuth('/api/notification/agents')
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取通知智能体列表失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 发送测试消息
+ * @param {Object} payload - { target_id, channel_type, content }
+ * @returns {Promise<{success: boolean, message_id?: string, error?: string}>}
+ */
+export async function sendNotificationTest(payload) {
+  const response = await fetchWithAuth('/api/notification/send-test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `发送测试消息失败: ${response.status}`)
+  }
+  return response.json()
+}
+
 // ============================================================
 // API 接口配置 API
 // 对应后端 /api/admin/api-configs 管理接口
