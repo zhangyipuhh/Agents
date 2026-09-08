@@ -99,7 +99,7 @@ langchain-google-genai==4.2.2
 langchain-mcp-adapters==0.3.2
 langchain-ollama==1.0.1
 langchain-openai==1.1.6
-langchain-protocol==0.0.14
+langchain-protocol==0.0.18
 langchain-text-splitters==1.1.1
 langdetect==1.0.9
 langgraph==1.2.11
