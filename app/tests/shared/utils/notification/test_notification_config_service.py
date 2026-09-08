@@ -140,11 +140,8 @@ def test_feishu_config_missing_required_field_raises():
     config = {
         # 缺 app_id_encrypted
         "app_secret_encrypted": svc.encrypt_field("secret"),
-        "default_receive_id": "oc_xxx",
-        "default_receive_id_type": "chat_id",
         "log_level": "INFO",
         "agent_name": "project",
-        "receiver_username": "admin",
     }
     with pytest.raises(NotificationConfigValidationError) as exc_info:
         svc._validate_config("feishu", config)
@@ -157,14 +154,164 @@ def test_feishu_config_all_required_present_passes():
     config = {
         "app_id_encrypted": svc.encrypt_field("cli_xxx"),
         "app_secret_encrypted": svc.encrypt_field("secret"),
-        "default_receive_id": "oc_xxx",
-        "default_receive_id_type": "chat_id",
         "log_level": "INFO",
         "agent_name": "project",
-        "receiver_username": "admin",
     }
     # 不抛异常
     svc._validate_config("feishu", config)
+
+
+def test_feishu_channel_requires_agent_name():
+    """2026-09-07 第二轮：channel 必须包含 agent_name（应用绑智能体）。
+
+    - receiver_username / default_receive_id* 仍不在必填项
+    - agent_name 重新成为必填
+    """
+    from app.shared.utils.notification.notification_config_service import (
+        FEISHU_REQUIRED_CONFIG_KEYS,
+        FEISHU_LEGACY_CHANNEL_CONFIG_KEYS,
+    )
+    # agent_name 必须重新在必填项
+    assert "agent_name" in FEISHU_REQUIRED_CONFIG_KEYS
+    assert "receiver_username" not in FEISHU_REQUIRED_CONFIG_KEYS
+    assert "default_receive_id" not in FEISHU_REQUIRED_CONFIG_KEYS
+    assert "default_receive_id_type" not in FEISHU_REQUIRED_CONFIG_KEYS
+    # 必填项 = 凭证 + log_level + agent_name
+    assert set(FEISHU_REQUIRED_CONFIG_KEYS) == {
+        "app_id_encrypted", "app_secret_encrypted", "log_level", "agent_name",
+    }
+    # legacy 字段不含 agent_name（重新成为必填）
+    assert "agent_name" not in FEISHU_LEGACY_CHANNEL_CONFIG_KEYS
+    # legacy 仍剥除 receiver_username / default_receive_id*
+    assert set(FEISHU_LEGACY_CHANNEL_CONFIG_KEYS) >= {
+        "receiver_username", "default_receive_id", "default_receive_id_type",
+    }
+
+    # _validate_config 缺 agent_name 时抛错
+    svc = _make_service_with_valid_fernet()
+    bad_config = {
+        "app_id_encrypted": svc.encrypt_field("cli_xxx"),
+        "app_secret_encrypted": svc.encrypt_field("secret"),
+        "log_level": "INFO",
+        # 缺 agent_name
+    }
+    with pytest.raises(NotificationConfigValidationError) as exc_info:
+        svc._validate_config("feishu", bad_config)
+    assert "agent_name" in str(exc_info.value)
+
+    # 完整必填 → 校验通过
+    good_config = dict(bad_config)
+    good_config["agent_name"] = "project"
+    svc._validate_config("feishu", good_config)  # 不抛
+
+
+def test_upsert_channel_strips_legacy_fields():
+    """2026-09-07 第二轮：upsert_channel 写入前自动剥除 legacy 字段。
+
+    agent_name 不再属于 legacy（必填项保留）；其他 3 个 legacy 字段仍剥除。
+    """
+    svc, db = _make_service_with_mock_db()
+    # 不存在 → INSERT 路径
+    db.fetchrow = AsyncMock(side_effect=[
+        None,  # existing 查询 → None
+        {"id": 100, "updated_at": "2026-09-07"},  # INSERT RETURNING
+    ])
+    config = _valid_feishu_config(svc)
+    # agent_name 必填,这里显式传入;legacy 字段额外附加测剥除
+    config["agent_name"] = "project"
+    config["receiver_username"] = "admin"
+    config["default_receive_id"] = "oc_xxx"
+    config["default_receive_id_type"] = "chat_id"
+
+    asyncio.run(svc.upsert_channel(
+        channel_type="feishu",
+        name="ops-bot",
+        display_name="运维机器人",
+        config=config,
+        enabled=True,
+        is_default=False,
+        created_by_user_id=1,
+    ))
+    # INSERT 时传给 DB 的 config JSON 应不含 receiver_username / default_receive_id*
+    # agent_name 必须保留
+    insert_calls = [
+        c for c in db.fetchrow.call_args_list
+        if len(c.args) > 0 and "INSERT INTO notification_channels" in str(c.args[0])
+    ]
+    assert len(insert_calls) == 1, (
+        f"未找到 INSERT 调用: calls={[str(c)[:80] for c in db.fetchrow.call_args_list]}"
+    )
+    insert_call = insert_calls[0]
+    # service.upsert_channel INSERT 签名：
+    # fetchrow(sql, name, display_name, channel_type, config_json, enabled, is_default, created_by_user_id)
+    # → args[0]=sql, args[1]=name, args[2]=display_name, args[3]=channel_type, args[4]=config_json
+    config_json = insert_call.args[4]
+    cfg = json.loads(config_json)
+    # agent_name 保留
+    assert cfg.get("agent_name") == "project"
+    # legacy 字段被剥除
+    assert "receiver_username" not in cfg, f"残留字段: {list(cfg.keys())}"
+    assert "default_receive_id" not in cfg, f"残留字段: {list(cfg.keys())}"
+    assert "default_receive_id_type" not in cfg, f"残留字段: {list(cfg.keys())}"
+    # 必填字段保留
+    assert "app_id_encrypted" in cfg
+    assert "app_secret_encrypted" in cfg
+    assert cfg["log_level"] == "INFO"
+
+
+def test_target_read_agent_name_falls_back_to_channel():
+    """2026-09-07 第二轮：target.agent_name 读取时回退到 channel.agent_name。
+
+    智能体绑定收口在 channel 层；target 行可能存 NULL agent_name，读取时
+    必须回退到 channel.config.agent_name（兼容性向后）。
+    """
+    svc, db = _make_service_with_mock_db()
+    db.fetchrow = AsyncMock(return_value={
+        "id": 10,
+        "channel_id": 1,
+        "channel_type": "feishu",
+        "channel_name": "ops-bot",
+        # target 行 agent_name 为 NULL（旧数据 / 写入剥除）
+        "agent_name": "",
+        "target_type": "feishu.chat",
+        "name": "alert-group",
+        "config": json.dumps({"chat_id": "oc_xxx", "chat_type": "chat_id"}),
+        "subject_template": "",
+        "body_template": "",
+        "enabled": True,
+        "created_by_user_id": 1,
+        "created_at": None,
+        "updated_at": None,
+        # channel.config.agent_name JSON 提取
+        "channel_agent_name": "project",
+    })
+    result = asyncio.run(svc.get_target(10))
+    assert result is not None
+    assert result["agent_name"] == "project"
+
+
+def test_target_read_agent_name_prefers_target_row_over_channel_fallback():
+    """target.agent_name 非空时优先使用 target 行值，不回退 channel。"""
+    svc, db = _make_service_with_mock_db()
+    db.fetchrow = AsyncMock(return_value={
+        "id": 10,
+        "channel_id": 1,
+        "channel_type": "feishu",
+        "channel_name": "ops-bot",
+        "agent_name": "legacy-target-agent",  # 存量值（向后兼容读取）
+        "target_type": "feishu.chat",
+        "name": "alert-group",
+        "config": json.dumps({"chat_id": "oc_xxx", "chat_type": "chat_id"}),
+        "subject_template": "",
+        "body_template": "",
+        "enabled": True,
+        "created_by_user_id": 1,
+        "created_at": None,
+        "updated_at": None,
+        "channel_agent_name": "channel-agent",  # 即使有 channel agent,也不覆盖
+    })
+    result = asyncio.run(svc.get_target(10))
+    assert result["agent_name"] == "legacy-target-agent"
 
 
 def test_unsupported_channel_type_raises_in_upsert():
@@ -204,15 +351,19 @@ def _make_service_with_mock_db() -> tuple:
 
 
 def _valid_feishu_config(svc: NotificationConfigService) -> dict:
-    """构造完整飞书 config（含 Fernet 加密字段）。"""
+    """构造完整飞书 config（含 Fernet 加密字段）。
+
+    2026-09-07 第二轮：channel 必填 4 字段（凭证 + log_level + agent_name）；
+    legacy 字段（receiver_username / default_receive_id*）额外传入用于测剥除。
+    """
     return {
         "app_id_encrypted": svc.encrypt_field("cli_xxx"),
         "app_secret_encrypted": svc.encrypt_field("secret"),
-        "default_receive_id": "oc_xxx",
-        "default_receive_id_type": "chat_id",
         "log_level": "INFO",
-        "agent_name": "project",
-        "receiver_username": "admin",
+        "agent_name": "project",  # 2026-09-07 第二轮：channel 必填
+        "receiver_username": "admin",  # legacy（写入剥除）
+        "default_receive_id": "oc_xxx",  # legacy（写入剥除）
+        "default_receive_id_type": "chat_id",  # legacy（写入剥除）
     }
 
 

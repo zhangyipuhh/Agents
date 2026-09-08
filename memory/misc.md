@@ -205,11 +205,24 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 
 - **多应用下 WS 必须支持监听多个 agent，不同应用接的是不一样智能体**（用户硬约束）
 - **禁止**回到 WS 单实例 + 多 channel 内部路由（SDK 多实例内部状态难控）
-- 编排器：`FeishuWebSocketManager` 维护 `Dict[channel_id, FeishuWebSocketService]`，每条 enabled 飞书渠道 → 独立后台线程 + 独立 `lark.Client` + 独立 `agent_name` + 独立 `receiver_username`
+- 编排器：`FeishuWebSocketManager` 维护 `Dict[channel_id, FeishuWebSocketService]`，每条 enabled 飞书渠道 → 独立后台线程 + 独立 `lark.Client`
 - 实例完全隔离：一个应用断开/异常不影响其他应用
 - session_id 命名空间加 `channel_id`：`feishu:{channel_id}:p2p:{open_id}` / `feishu:{channel_id}:group:{chat_id}:{open_id}`
-- 每个应用的 `agent_name` 与 `receiver_username` 在 `notification_channels.config` JSONB 内独立配置（`config.agent_name` / `config.receiver_username`）
+- **2026-09-07 channel 与 agent 解耦收敛**：`agent_name` / `receiver_username` **不再**从 `notification_channels.config` 读取，改为从全局 `settings.feishu.feishu_ws_agent_name` / `settings.feishu.feishu_ws_receiver_username` 派生（默认 `project` / `feishu_bot`）；改 channel 凭证不需重启服务即可生效；接收账号与路由智能体作为全局策略，与具体 channel 解耦
 - 零应用时 INFO skip，**不 fail-loud**
+
+### 7. 飞书 channel 绑智能体 / target 绑群（2026-09-07 第二轮落地，硬约束）
+
+> 用户原话：「应用设置应该是应用绑定智能体，发送策略是绑定要通知的对象（比如某个群），发送测试就是测试向这个群发交互信息」。
+
+- **channel = 飞书应用凭证 + 该应用绑定的智能体**：`config` 必填 4 字段（`app_id_encrypted` / `app_secret_encrypted` / `log_level` / `agent_name`）；每个 channel 实例的 WS 路由智能体从 `channel.config.agent_name` 派生
+- **target = 接收方（群 / 用户）**：`config` 含 `chat_id` / `chat_type` / `chat_name`；老字段 `default_receive_id` 作为可空别名保留（迁移兼容：`upsert_target` 自动从 `default_receive_id` 迁移到 `chat_id`）
+- **target 不再含智能体**：写入时 `agent_name` 列不更新；读取时 `_target_to_public` 优先用 target 行值，为空时回退到 `channel.config.agent_name`（向后兼容存量 `target.agent_name`）
+- **发送测试**：`POST /api/notification/send-test` 单条精准（前端选 channel + target + content → 发送到对应群）；**不**随机组合（用户明确否定）
+- **legacy 字段写入剥除**：`receiver_username` / `default_receive_id` / `default_receive_id_type` 列入 `FEISHU_LEGACY_CHANNEL_CONFIG_KEYS`，`upsert_channel` 写入前自动 `pop`；`agent_name` **不**属于 legacy（必填项保留）
+- **service 校验**：`_validate_config("feishu", config)` 校验 4 个必填项
+- **target 校验**：`chat_type` 必须属于 `FEISHU_RECEIVE_ID_TYPES`（chat_id / open_id / user_id / email）
+- **WS 多实例**：`FeishuWebSocketManager` 启动时 `agent_name = cfg.get("agent_name", "")`；缺 agent_name 的 channel 跳过并 WARN，不 fail-loud
 
 ## 飞书设置管理（2026-09-03 新增，「消息设置」Tab 下与邮件平级）
 
@@ -221,16 +234,18 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 
 ### 数据库表契约
 
-**`notification_channels`**（凭证通用表）：
+**`notification_channels`**（凭证通用表 + 应用绑定智能体）：
 - `id` / `name (UNIQUE with channel_type)` / `display_name` / **`channel_type VARCHAR(30) NOT NULL CHECK (channel_type IN ('feishu'))`** / **`config JSONB NOT NULL` (jsonb_typeof='object')** / `enabled` / **`is_default`**（部分唯一索引 `WHERE is_default=TRUE`）/ `created_by_user_id` / `created_at` / `updated_at`
-- **飞书 config 必填 7 字段**：`app_id_encrypted` / `app_secret_encrypted` / `default_receive_id` / `default_receive_id_type`（chat_id/open_id/user_id/email） / `log_level`（DEBUG/INFO/WARNING/ERROR） / `agent_name` / `receiver_username`
+- **飞书 config 必填 4 字段（2026-09-07 第二轮）**：`app_id_encrypted` / `app_secret_encrypted` / `log_level`（DEBUG/INFO/WARNING/ERROR） / **`agent_name`**（应用绑定的目标智能体）
+- legacy 字段 `receiver_username` / `default_receive_id` / `default_receive_id_type` 写入时自动剥除；存量 DB 行如有残留值，下次 admin 编辑保存时会被清干净
 
-**`notification_targets`**（目标 + 绑智能体 + 模板合并）：
-- `id` / `channel_id (FK→notification_channels ON DELETE CASCADE)` / **`target_type VARCHAR(30) CHECK (IN 'feishu.chat','feishu.user'))`** / `name` / **`config JSONB NOT NULL`** / `agent_name (NOT NULL)` / `subject_template` / `body_template` / `enabled` / `UNIQUE(channel_id, target_type, name)`
-- **飞书 target config 必填**：`chat_id` / `chat_type`
-- **1 个 target = 1 个发送目标 + 1 个 agent**（无需第三张策略表）
+**`notification_targets`**（目标 + 接收方 + 模板）：
+- `id` / `channel_id (FK→notification_channels ON DELETE CASCADE)` / **`target_type VARCHAR(30) CHECK (IN 'feishu.chat','feishu.user'))`** / `name` / **`config JSONB NOT NULL`** / `agent_name`（保留列、写入不更新、读取时回退 channel） / `subject_template` / `body_template` / `enabled` / `UNIQUE(channel_id, target_type, name)`
+- **飞书 target config 必填**：`chat_id` / `chat_type`（chat_id/open_id/user_id/email）
+- **2026-09-07 第二轮** target 仅管接收方（群 / 用户）；`agent_name` 写入时不再更新，读取时优先 target 行值、为空时回退 `channel.config.agent_name`
+- **1 个 target = 1 个发送目标 + 继承所属 channel 的智能体**（无需第三张策略表）
 
-### 路由契约（12 个方法 + 7 个路径）
+### 路由契约（11 个方法 + 7 个路径）
 
 - `GET /api/notification/channels` / `POST /api/notification/channels`
 - `GET/PUT/DELETE /api/notification/channels/{channel_id}`

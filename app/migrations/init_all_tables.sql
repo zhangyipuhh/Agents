@@ -2861,14 +2861,18 @@ ALTER TABLE email_policies
     ADD COLUMN IF NOT EXISTS body_template TEXT NOT NULL DEFAULT '';
 
 -- ========== 16.6. notification_channels / notification_targets（通知渠道通用表）==========
--- 设计原则（2026-09-03 落地，详见 memory/misc.md 「通知渠道通用表设计原则」）：
+-- 设计原则（2026-09-03 落地，2026-09-07 收敛 channel 与智能体解耦，详见 memory/misc.md 「通知渠道通用表设计原则」）：
 --   * 所有新增渠道（飞书 / 钉钉 / 企微 / Slack）共用这两张表
 --   * 通过 channel_type / target_type 字段白名单 + CHECK 约束区分渠道
 --   * 凭证差异一律进 config JSONB；service 层按 channel_type 分发
 --   * 邮件老表（email_server_configs / email_policies / email_policy_recipients）不动
 -- 字段命名：
---   * notification_channels：凭证通用表，config 含各渠道特有字段
---   * notification_targets：「目标 + 绑智能体 + 模板」合并（1 个 target = 1 个发送目标 + 1 个 agent）
+--   * notification_channels：凭证通用表，仅含 app_id / app_secret / log_level（飞书）
+--     - 2026-09-07 收敛：agent_name / receiver_username / default_receive_id* 已迁出
+--     - 存量 DB 行如有遗留值，service 写入时会自动剥除
+--   * notification_targets：「目标 + 接收方 + 绑智能体 + 模板」合并
+--     - 2026-09-07 收敛：config 现统一含 chat_id / chat_type / chat_name
+--     - 兼容老数据：default_receive_id 作为可空别名保留
 --   * 归属字段 created_by_user_id 遵循 OwnershipScope 通用方案
 CREATE TABLE IF NOT EXISTS notification_channels (
     id                  SERIAL PRIMARY KEY,

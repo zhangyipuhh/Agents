@@ -59,20 +59,36 @@ SUPPORTED_TARGET_TYPES: Tuple[str, ...] = (
 )
 
 # 飞书 config 必填字段（写入 DB 前 fail-fast 校验）
+# 2026-09-07 第二轮落地：channel 重新绑智能体（应用绑智能体）
+# - agent_name 必填：每个飞书应用绑定一个目标智能体
+# - receiver_username / default_receive_id* 已迁出 channel（不在必填）
 FEISHU_REQUIRED_CONFIG_KEYS: Tuple[str, ...] = (
     "app_id_encrypted",      # Fernet 加密后的 app_id
     "app_secret_encrypted",  # Fernet 加密后的 app_secret
-    "default_receive_id",    # 默认接收方 ID（群 chat_id 或 open_id）
-    "default_receive_id_type",  # chat_id / open_id / user_id / email
     "log_level",             # SDK 日志级别 DEBUG / INFO / WARNING / ERROR
-    "agent_name",            # WS 实例绑定的目标 agent 名（如 "project"）
-    "receiver_username",     # 该应用 session 归属系统用户名
+    "agent_name",            # 飞书应用绑定的目标智能体名（如 "project"）
+)
+
+# 飞书 config 中已废弃但允许静默忽略的字段（写入前自动剥除，存量 DB 行不受影响）
+# 2026-09-07 第二轮：agent_name 移出 legacy（重新成为必填）
+FEISHU_LEGACY_CHANNEL_CONFIG_KEYS: Tuple[str, ...] = (
+    "receiver_username",
+    "default_receive_id",
+    "default_receive_id_type",
 )
 
 # 飞书 target config 必填字段
+# 2026-09-07 收敛：target 接管「接收方」语义——chat_id 与 chat_type 是必填
+# 兼容老数据：若 target.config 含 default_receive_id（无 chat_id），自动迁移
 FEISHU_TARGET_REQUIRED_CONFIG_KEYS: Tuple[str, ...] = (
-    "chat_id",     # 群 ID / 用户 open_id 等
+    "chat_id",     # 群 ID / 用户 open_id 等（迁移兼容：若缺则回退 default_receive_id）
     "chat_type",   # chat_id / open_id / user_id / email
+)
+
+# 飞书 target config 可选字段（保留为迁移兼容）
+FEISHU_TARGET_OPTIONAL_CONFIG_KEYS: Tuple[str, ...] = (
+    "chat_name",         # 群名 / 用户昵称（仅展示用）
+    "default_receive_id",  # 兼容 2026-09-03 旧版 channel 的字段
 )
 
 # 接收方类型白名单
@@ -340,13 +356,10 @@ class NotificationConfigService:
                 pass
             # log_level 默认值
             config_db.setdefault("log_level", "INFO")
-            # 校验 receive_id_type
-            recv_type = config_db.get("default_receive_id_type", "chat_id")
-            if recv_type not in FEISHU_RECEIVE_ID_TYPES:
-                raise NotificationConfigValidationError(
-                    f"default_receive_id_type 必须是 {FEISHU_RECEIVE_ID_TYPES} 之一，"
-                    f"实际为: {recv_type!r}"
-                )
+            # 2026-09-07 收敛：剥除已废弃的 channel 字段（agent / receiver / default_receive_id）
+            # 写入 DB 前显式删除，保证存量行迁移到此函数后这些键从 config 中消失
+            for k in FEISHU_LEGACY_CHANNEL_CONFIG_KEYS:
+                config_db.pop(k, None)
 
         config_json = json.dumps(config_db, ensure_ascii=False)
 
@@ -536,7 +549,8 @@ class NotificationConfigService:
             SELECT t.id, t.channel_id, t.target_type, t.name, t.config,
                    t.agent_name, t.subject_template, t.body_template,
                    t.enabled, t.created_by_user_id, t.created_at, t.updated_at,
-                   c.channel_type, c.name AS channel_name
+                   c.channel_type, c.name AS channel_name,
+                   c.config->>'agent_name' AS channel_agent_name
             FROM notification_targets t
             JOIN notification_channels c ON c.id = t.channel_id
             {where_sql}
@@ -554,7 +568,8 @@ class NotificationConfigService:
             SELECT t.id, t.channel_id, t.target_type, t.name, t.config,
                    t.agent_name, t.subject_template, t.body_template,
                    t.enabled, t.created_by_user_id, t.created_at, t.updated_at,
-                   c.channel_type, c.name AS channel_name
+                   c.channel_type, c.name AS channel_name,
+                   c.config->>'agent_name' AS channel_agent_name
             FROM notification_targets t
             JOIN notification_channels c ON c.id = t.channel_id
             WHERE t.id = $1
@@ -605,8 +620,8 @@ class NotificationConfigService:
             raise NotificationConfigError("数据库未初始化")
         if not name or not name.strip():
             raise NotificationConfigValidationError("name 不能为空")
-        if not agent_name or not agent_name.strip():
-            raise NotificationConfigValidationError("agent_name 不能为空")
+        # 2026-09-07 第二轮：target 不再绑智能体（智能体在 channel 层）
+        # agent_name 参数保留为可选；写入时剥除（旧调用方/迁移 SQL 可能仍传）
         if not isinstance(config, dict):
             raise NotificationConfigValidationError("config 必须是 dict 类型")
 
@@ -627,11 +642,21 @@ class NotificationConfigService:
             )
         # 飞书 target config 校验
         if channel_type == "feishu":
+            # 2026-09-07 兼容迁移：chat_id 缺省时回退 default_receive_id
+            if not config.get("chat_id") and config.get("default_receive_id"):
+                config["chat_id"] = config["default_receive_id"]
             for k in FEISHU_TARGET_REQUIRED_CONFIG_KEYS:
                 if not config.get(k):
                     raise NotificationConfigValidationError(
                         f"飞书 target config.{k} 必填"
                     )
+            # 校验 chat_type 白名单
+            chat_type = config.get("chat_type")
+            if chat_type not in FEISHU_RECEIVE_ID_TYPES:
+                raise NotificationConfigValidationError(
+                    f"飞书 target config.chat_type 必须是 {FEISHU_RECEIVE_ID_TYPES} 之一，"
+                    f"实际为: {chat_type!r}"
+                )
 
         config_json = json.dumps(config, ensure_ascii=False)
 
@@ -648,31 +673,35 @@ class NotificationConfigService:
                     raise NotificationConfigNotFoundError(
                         f"target_id={target_id} 不存在"
                     )
+                # 2026-09-07 第二轮：target 不再绑智能体，写入时不更新 agent_name 列
+                # （保持存量值不动，读取时 _target_to_public 回退到 channel.agent_name）
                 row = await self._db.fetchrow(
                     """
                     UPDATE notification_targets
                     SET target_type = $1, name = $2, config = $3::jsonb,
-                        agent_name = $4, subject_template = $5,
-                        body_template = $6, enabled = $7,
+                        subject_template = $4,
+                        body_template = $5, enabled = $6,
                         updated_at = CURRENT_TIMESTAMP
-                    WHERE id = $8
+                    WHERE id = $7
                     RETURNING id, updated_at
                     """,
-                    target_type, name, config_json, agent_name,
+                    target_type, name, config_json,
                     subject_template, body_template, enabled, target_id,
                 )
                 return {"id": row["id"], "updated_at": row["updated_at"], "created": False}
             else:
+                # 2026-09-07 第二轮：INSERT 不写 agent_name 列（NULL 落库，
+                # 读取时回退到 channel.agent_name）
                 row = await self._db.fetchrow(
                     """
                     INSERT INTO notification_targets
-                        (channel_id, target_type, name, config, agent_name,
+                        (channel_id, target_type, name, config,
                          subject_template, body_template, enabled,
                          created_by_user_id)
-                    VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9)
+                    VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
                     RETURNING id, updated_at
                     """,
-                    channel_id, target_type, name, config_json, agent_name,
+                    channel_id, target_type, name, config_json,
                     subject_template, body_template, enabled, created_by_user_id,
                 )
                 return {"id": row["id"], "updated_at": row["updated_at"], "created": True}
@@ -1031,7 +1060,11 @@ class NotificationConfigService:
 
     @staticmethod
     def _target_to_public(row: Any) -> Dict[str, Any]:
-        """target 行转对外 dict。"""
+        """target 行转对外 dict。
+
+        2026-09-07 第二轮：target.agent_name 读取时回退到 channel.agent_name
+        （智能体绑定收口在 channel 层；存量 target.agent_name 仍可读，向后兼容）
+        """
         config = row["config"]
         if isinstance(config, str):
             try:
@@ -1040,6 +1073,10 @@ class NotificationConfigService:
                 config = {}
         if not isinstance(config, dict):
             config = {}
+        # agent_name 回退:target 行优先,空时回退 channel.config.agent_name
+        target_agent = row.get("agent_name") or ""
+        if not target_agent:
+            target_agent = row.get("channel_agent_name") or ""
         return {
             "id": row["id"],
             "channel_id": row["channel_id"],
@@ -1048,7 +1085,7 @@ class NotificationConfigService:
             "target_type": row["target_type"],
             "name": row["name"],
             "config": config,
-            "agent_name": row["agent_name"],
+            "agent_name": target_agent,
             "subject_template": row.get("subject_template") or "",
             "body_template": row.get("body_template") or "",
             "enabled": row["enabled"],

@@ -2,22 +2,23 @@
 /**
  * FeishuSettingsManager - 飞书设置管理组件（admin）
  *
- * 挂载位置（2026-09-03 新增）：与 EmailSettingsManager 对称,渲染在
+ * 挂载位置（2026-09-03 新增，2026-09-07 第二轮修正）：与 EmailSettingsManager 对称,渲染在
  * 「消息设置」(messaging) 顶级 tab 下的 channel 子 tab 「飞书设置」(messaging.feishu) 内。
  * 菜单注册链路：messaging → messaging.feishu → messaging.feishu.{apps,policies,test}
  * 端点 ACL key 用 messaging.feishu.<sub>（详见 NotificationConfigService）
  *
  * 提供三个 Tab：
- * - 应用设置（apps）：飞书凭证组(多应用并存);每组含 app_id / app_secret /
- *   default_receive_id / default_receive_id_type / log_level / agent_name /
- *   receiver_username + 「设为默认应用」勾选
- * - 发送策略（policies）：从 channels 列表选择应用,加 target(群/用户) +
- *   选智能体(从 GET /api/notification/agents 下拉) + 模板字段
+ * - 应用设置（apps）：飞书凭证组(多应用并存);每组含 app_id / app_secret / log_level /
+ *   agent_name（应用绑定的智能体，必填）+ 「设为默认应用」勾选
+ * - 发送策略（policies）：从 channels 列表选择应用,加 target(群 chat_id / chat_type / chat_name)
+ *   + 模板字段（智能体由所属 channel 继承，不在 target 层重复设置）
  * - 发送测试（test）：选 channel → 选 target → 输入内容 → POST /api/notification/send-test
+ *   发送交互式卡片到目标群
  *
  * 安全设计：
  * - 凭证字段在 GET 接口中返回空字符串(脱敏),前端"密钥留空"表示不修改
  * - 飞书 WebSocket 多实例(session_id 加 channel_id 命名空间)在后台生效
+ * - 每个 channel 实例绑定的智能体从 channel.config.agent_name 派生
  */
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import {
@@ -56,6 +57,9 @@ const ALL_TABS = [
 const activeTab = ref(TAB_APPS)
 
 // === 应用设置 Tab ===
+// 2026-09-07 第二轮：channel = 飞书应用凭证 + 该应用绑定的智能体（agent_name 必填）
+// - default_receive_id / default_receive_id_type 已迁出 channel（由 target.config 接管）
+// - receiver_username 仍可在 channel 中配置（不强制，可由 settings.feishu_ws_receiver_username 兜底）
 const channels = ref([])
 const selectedChannel = ref(null)
 const isEditingChannel = ref(false)
@@ -68,16 +72,15 @@ const channelForm = reactive({
   display_name: '',
   app_id: '',       // 明文（前端用），后端 Fernet 加密
   app_secret: '',   // 明文（前端用），后端 Fernet 加密
-  default_receive_id: '',
-  default_receive_id_type: 'chat_id',
   log_level: 'INFO',
-  agent_name: '',
-  receiver_username: '',
+  agent_name: '',   // 2026-09-07 第二轮：飞书应用绑定的目标智能体（必填）
   enabled: true,
   is_default: false,
 })
 
 // === 发送策略 Tab ===
+// 2026-09-07 第二轮：target 仅管接收方（chat_id / chat_type / chat_name）；
+// agent_name 已迁出（智能体绑定收口在 channel 层）
 const targets = ref([])
 const selectedTarget = ref(null)
 const isEditingTarget = ref(false)
@@ -94,7 +97,6 @@ const targetForm = reactive({
     chat_type: 'chat_id',
     chat_name: '',
   },
-  agent_name: '',
   subject_template: '',
   body_template: '',
   enabled: true,
@@ -153,7 +155,7 @@ async function loadChannels() {
 }
 
 /**
- * 加载智能体列表（target agent_name 下拉用）。
+ * 加载智能体列表（channelForm.agent_name select 下拉用）。
  */
 async function loadAgents() {
   try {
@@ -190,11 +192,8 @@ function startCreateChannel() {
   channelForm.display_name = ''
   channelForm.app_id = ''
   channelForm.app_secret = ''
-  channelForm.default_receive_id = ''
-  channelForm.default_receive_id_type = 'chat_id'
   channelForm.log_level = 'INFO'
   channelForm.agent_name = ''
-  channelForm.receiver_username = ''
   channelForm.enabled = true
   channelForm.is_default = false
   channelMessage.value = ''
@@ -214,11 +213,9 @@ async function selectChannel(ch) {
     channelForm.display_name = detail.display_name || ''
     channelForm.app_id = ''  // 永远不显示已保存的密钥
     channelForm.app_secret = ''
-    channelForm.default_receive_id = detail.config?.default_receive_id || ''
-    channelForm.default_receive_id_type = detail.config?.default_receive_id_type || 'chat_id'
+    // 2026-09-07 第二轮：重新从 channel.config 读 agent_name
     channelForm.log_level = detail.config?.log_level || 'INFO'
     channelForm.agent_name = detail.config?.agent_name || ''
-    channelForm.receiver_username = detail.config?.receiver_username || ''
     channelForm.enabled = detail.enabled !== false
     channelForm.is_default = detail.is_default === true
   } catch (err) {
@@ -245,12 +242,9 @@ async function saveChannel() {
       return
     }
   }
+  // 2026-09-07 第二轮：channel 必填 agent_name（应用绑智能体）
   if (!channelForm.agent_name.trim()) {
-    channelError.value = 'agent_name 不能为空(WS 多实例需要)'
-    return
-  }
-  if (!channelForm.receiver_username.trim()) {
-    channelError.value = 'receiver_username 不能为空(WS 多实例需要)'
+    channelError.value = '路由 Agent 不能为空（应用必须绑定一个智能体）'
     return
   }
   isSavingChannel.value = true
@@ -262,11 +256,8 @@ async function saveChannel() {
         enabled: channelForm.enabled,
         is_default: channelForm.is_default,
         config: {
-          default_receive_id: channelForm.default_receive_id,
-          default_receive_id_type: channelForm.default_receive_id_type,
           log_level: channelForm.log_level,
           agent_name: channelForm.agent_name,
-          receiver_username: channelForm.receiver_username,
         },
         keep_existing_secret: true,
       }
@@ -286,11 +277,8 @@ async function saveChannel() {
         config: {
           app_id: channelForm.app_id,
           app_secret: channelForm.app_secret,
-          default_receive_id: channelForm.default_receive_id,
-          default_receive_id_type: channelForm.default_receive_id_type,
           log_level: channelForm.log_level,
           agent_name: channelForm.agent_name,
-          receiver_username: channelForm.receiver_username,
         },
       })
       channelMessage.value = '应用已创建'
@@ -368,7 +356,7 @@ function startCreateTarget() {
   targetForm.target_type = 'feishu.chat'
   targetForm.name = ''
   targetForm.config = { chat_id: '', chat_type: 'chat_id', chat_name: '' }
-  targetForm.agent_name = ''
+  // 2026-09-07 第二轮：target 不再绑 agent_name
   targetForm.subject_template = ''
   targetForm.body_template = ''
   targetForm.enabled = true
@@ -391,7 +379,7 @@ function selectTarget(t) {
     chat_type: t.config?.chat_type || 'chat_id',
     chat_name: t.config?.chat_name || '',
   }
-  targetForm.agent_name = t.agent_name
+  // 2026-09-07 第二轮：target 不再绑 agent_name（仍展示 channel 绑定的智能体）
   targetForm.subject_template = t.subject_template || ''
   targetForm.body_template = t.body_template || ''
   targetForm.enabled = t.enabled !== false
@@ -413,10 +401,6 @@ async function saveTarget() {
     targetError.value = '目标名称不能为空'
     return
   }
-  if (!targetForm.agent_name.trim()) {
-    targetError.value = 'agent_name 不能为空'
-    return
-  }
   if (!targetForm.config.chat_id.trim()) {
     targetError.value = 'chat_id 不能为空'
     return
@@ -428,7 +412,6 @@ async function saveTarget() {
         target_type: targetForm.target_type,
         name: targetForm.name,
         config: targetForm.config,
-        agent_name: targetForm.agent_name,
         subject_template: targetForm.subject_template,
         body_template: targetForm.body_template,
         enabled: targetForm.enabled,
@@ -439,7 +422,6 @@ async function saveTarget() {
         target_type: targetForm.target_type,
         name: targetForm.name,
         config: targetForm.config,
-        agent_name: targetForm.agent_name,
         subject_template: targetForm.subject_template,
         body_template: targetForm.body_template,
         enabled: targetForm.enabled,
@@ -561,15 +543,12 @@ watch(() => selectedChannel.value, (newCh, oldCh) => {
 </script>
 
 <template>
-  <div
-    v-if="!hasAnyAccess"
-    class="email-settings-empty"
-    data-testid="feishu-settings-no-permission"
-  >
-    此功能对您未开放。如需使用请联系系统管理员调整菜单权限。
-  </div>
+  <div class="feishu-settings-wrapper">
+    <section v-if="!hasAnyAccess" class="feishu-settings-empty" data-testid="feishu-settings-no-permission">
+      此功能对您未开放。如需使用请联系系统管理员调整菜单权限。
+    </section>
 
-  <section v-else class="email-settings-manager">
+    <section v-else class="feishu-settings-manager">
     <div
       class="tablist"
       role="tablist"
@@ -633,17 +612,16 @@ watch(() => selectedChannel.value, (newCh, oldCh) => {
             <span class="policy-meta">{{ c.name }}</span>
           </button>
           <button
-            class="primary-btn"
+            class="primary-btn create-channel-btn"
             type="button"
             data-testid="feishu-create-channel-btn"
             @click="startCreateChannel"
-            style="margin-top: 12px; width: 100%;"
           >+ 新建应用</button>
         </div>
 
         <div class="policy-editor" v-if="isEditingChannel">
           <h4>{{ selectedChannel ? '编辑应用' : '新建应用' }}</h4>
-          <form class="email-form form-grid" @submit.prevent="saveChannel">
+          <form class="feishu-form form-grid" @submit.prevent="saveChannel">
             <div class="field-row full">
               <label class="field-label" for="feishu-channel-name">应用名称 *</label>
               <div class="field-control">
@@ -676,26 +654,6 @@ watch(() => selectedChannel.value, (newCh, oldCh) => {
               </div>
             </div>
 
-            <div class="field-row full">
-              <label class="field-label" for="feishu-default-receive-id">默认接收方 ID</label>
-              <div class="field-control">
-                <input id="feishu-default-receive-id" v-model="channelForm.default_receive_id" type="text"
-                       placeholder="群 chat_id (oc_xxx) 或 用户 open_id (ou_xxx)" />
-              </div>
-            </div>
-
-            <div class="field-row">
-              <label class="field-label" for="feishu-default-receive-id-type">接收方类型</label>
-              <div class="field-control">
-                <select id="feishu-default-receive-id-type" v-model="channelForm.default_receive_id_type" class="form-input form-select">
-                  <option value="chat_id">chat_id</option>
-                  <option value="open_id">open_id</option>
-                  <option value="user_id">user_id</option>
-                  <option value="email">email</option>
-                </select>
-              </div>
-            </div>
-
             <div class="field-row">
               <label class="field-label" for="feishu-log-level">日志级别</label>
               <div class="field-control">
@@ -708,21 +666,15 @@ watch(() => selectedChannel.value, (newCh, oldCh) => {
               </div>
             </div>
 
+            <!-- 2026-09-07 第二轮：channel 重新绑智能体——每个飞书应用绑定一个目标智能体 -->
             <div class="field-row full">
-              <label class="field-label" for="feishu-agent-name">路由 Agent *</label>
+              <label class="field-label" for="feishu-channel-agent">路由 Agent *</label>
               <div class="field-control">
-                <select id="feishu-agent-name" v-model="channelForm.agent_name" class="form-input form-select">
+                <select id="feishu-channel-agent" v-model="channelForm.agent_name" class="form-input form-select"
+                        data-testid="feishu-channel-agent-select">
                   <option value="">-- 请选择智能体 --</option>
                   <option v-for="a in agents" :key="a.name" :value="a.name">{{ a.display_name }} ({{ a.name }})</option>
                 </select>
-              </div>
-            </div>
-
-            <div class="field-row full">
-              <label class="field-label" for="feishu-receiver-username">接收账号 username *</label>
-              <div class="field-control">
-                <input id="feishu-receiver-username" v-model="channelForm.receiver_username" type="text"
-                       placeholder="该应用产生的 session 归属到的系统用户名(如 admin)" />
               </div>
             </div>
 
@@ -744,7 +696,7 @@ watch(() => selectedChannel.value, (newCh, oldCh) => {
                 {{ isTestingChannel ? '测试中...' : '测试连接' }}
               </button>
               <button class="secondary-btn" type="button" @click="cancelEditChannel">取消</button>
-              <button v-if="selectedChannel" class="secondary-btn danger" type="button"
+              <button v-if="selectedChannel" class="danger-btn" type="button"
                       @click="removeChannel(selectedChannel)">删除应用</button>
             </div>
           </form>
@@ -800,7 +752,7 @@ watch(() => selectedChannel.value, (newCh, oldCh) => {
 
         <div class="policy-editor" v-if="isEditingTarget">
           <h4>{{ selectedTarget ? '编辑目标' : '新建目标' }}</h4>
-          <form class="email-form form-grid" @submit.prevent="saveTarget">
+          <form class="feishu-form form-grid" @submit.prevent="saveTarget">
             <div class="field-row full">
               <label class="field-label" for="feishu-target-name">目标名称 *</label>
               <div class="field-control">
@@ -847,16 +799,7 @@ watch(() => selectedChannel.value, (newCh, oldCh) => {
               </div>
             </div>
 
-            <div class="field-row full">
-              <label class="field-label" for="feishu-target-agent">绑定智能体 *</label>
-              <div class="field-control">
-                <select id="feishu-target-agent" v-model="targetForm.agent_name" class="form-input form-select">
-                  <option value="">-- 请选择智能体 --</option>
-                  <option v-for="a in agents" :key="a.name" :value="a.name">{{ a.display_name }} ({{ a.name }})</option>
-                </select>
-              </div>
-            </div>
-
+            <!-- 2026-09-07 第二轮：target 不再绑智能体；智能体在「应用设置」Tab 的 channel.config.agent_name -->
             <div class="field-row full">
               <label class="field-label" for="feishu-target-subject-template">主题模板</label>
               <div class="field-control">
@@ -883,7 +826,7 @@ watch(() => selectedChannel.value, (newCh, oldCh) => {
                 {{ isSavingTarget ? '保存中...' : '保存目标' }}
               </button>
               <button class="secondary-btn" type="button" @click="cancelEditTarget">取消</button>
-              <button v-if="selectedTarget" class="secondary-btn danger" type="button"
+              <button v-if="selectedTarget" class="danger-btn" type="button"
                       @click="removeTarget(selectedTarget)">删除目标</button>
             </div>
           </form>
@@ -909,39 +852,33 @@ watch(() => selectedChannel.value, (newCh, oldCh) => {
         </div>
       </header>
 
-      <form class="email-form form-grid" @submit.prevent="sendTest">
-        <div class="field-row">
-          <label class="field-label" for="feishu-test-channel">应用 *</label>
-          <div class="field-control">
-            <select id="feishu-test-channel" v-model="testForm.channel_id" class="form-input form-select"
-                    data-testid="feishu-test-channel-select" @change="loadTargets(testForm.channel_id)">
-              <option :value="null">-- 请选择应用 --</option>
-              <option v-for="c in channels" :key="c.id" :value="c.id">{{ c.display_name || c.name }}</option>
-            </select>
-          </div>
-        </div>
+      <form class="feishu-form" @submit.prevent="sendTest">
+        <label class="form-field full">
+          <span>应用 *</span>
+          <select id="feishu-test-channel" v-model="testForm.channel_id" class="form-input form-select"
+                  data-testid="feishu-test-channel-select" @change="loadTargets(testForm.channel_id)">
+            <option :value="null">-- 请选择应用 --</option>
+            <option v-for="c in channels" :key="c.id" :value="c.id">{{ c.display_name || c.name }}</option>
+          </select>
+        </label>
 
-        <div class="field-row">
-          <label class="field-label" for="feishu-test-target">目标 *</label>
-          <div class="field-control">
-            <select id="feishu-test-target" v-model="testForm.target_id" class="form-input form-select"
-                    data-testid="feishu-test-target-select" :disabled="!testForm.channel_id">
-              <option :value="null">-- 请选择目标 --</option>
-              <option v-for="t in filteredTestTargets" :key="t.id" :value="t.id">
-                {{ t.name }} ({{ t.target_type }})
-              </option>
-            </select>
-          </div>
-        </div>
+        <label class="form-field full">
+          <span>目标 *</span>
+          <select id="feishu-test-target" v-model="testForm.target_id" class="form-input form-select"
+                  data-testid="feishu-test-target-select" :disabled="!testForm.channel_id">
+            <option :value="null">-- 请选择目标 --</option>
+            <option v-for="t in filteredTestTargets" :key="t.id" :value="t.id">
+              {{ t.name }} ({{ t.target_type }})
+            </option>
+          </select>
+        </label>
 
-        <div class="field-row full">
-          <label class="field-label" for="feishu-test-content">消息内容 *</label>
-          <div class="field-control">
-            <textarea id="feishu-test-content" v-model="testForm.content" rows="6"
-                      placeholder="支持 Markdown(自动检测 → 飞书交互式卡片);普通文本走 msg_type=text"
-                      data-testid="feishu-test-content-textarea"></textarea>
-          </div>
-        </div>
+        <label class="form-field full">
+          <span>消息内容 *</span>
+          <textarea id="feishu-test-content" v-model="testForm.content" rows="6"
+                    placeholder="支持 Markdown(自动检测 → 飞书交互式卡片);普通文本走 msg_type=text"
+                    data-testid="feishu-test-content-textarea"></textarea>
+        </label>
 
         <div class="form-actions">
           <button class="primary-btn" type="submit" :disabled="isSendingTest" data-testid="feishu-send-test-btn">
@@ -950,5 +887,367 @@ watch(() => selectedChannel.value, (newCh, oldCh) => {
         </div>
       </form>
     </section>
-  </section>
+    </section>
+  </div>
 </template>
+
+<style scoped>
+/* FeishuSettingsManager 样式块（2026-09-07 新增）
+ *
+ * 历史：组件模板一直复用 EmailSettingsManager.vue 的 scoped 类名（email-form /
+ *   policies-layout / policy-editor / primary-btn 等），但 Vue scoped CSS 只对
+ *   带 data-v-xxx 属性选择器的元素生效——本组件元素没有邮件组件的 hash,
+ *   导致大量样式（tab 下划线/alert 配色/grid 布局/policy-item 选中态/badge/chip/
+ *   focus 光晕等）实际从未生效，仅靠浏览器默认样式呈现"看起来差不多"的假象。
+ *
+ * 修复：把飞书组件的根容器/表单/empty 状态重命名为 feishu-* 前缀（避免与邮件组件
+ *   scoped 样式名耦合），并为本组件添加自己的 <style scoped> 块逐字镜像
+ *   EmailSettingsManager 的视觉规格，确保两个管理面板风格完全一致。
+ *   通用类（tab/btn/alert/policies-layout 等）保持原名以便未来其他通知渠道复用。
+ */
+
+.feishu-settings-empty {
+  padding: 16px;
+  color: #6b7280;
+  text-align: center;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+}
+
+.feishu-settings-manager {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* tabpanel flex 链：让三个 tabpanel 沿根 section 的 flex 列铺满剩余高度，
+   外框始终贴满可视区，超长内容由 panel 内部自滚动 */
+.feishu-settings-manager > section[role="tabpanel"] {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tablist {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid #e5e7eb;
+  margin-bottom: 16px;
+  padding-bottom: 0;
+}
+
+.tab {
+  border: 0;
+  background: transparent;
+  padding: 8px 14px;
+  cursor: pointer;
+  color: #6b7280;
+  font-size: var(--font-size-base);
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+}
+
+.tab.active {
+  color: #2563eb;
+  border-bottom-color: #2563eb;
+  font-weight: 600;
+}
+
+.detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-shrink: 0; /* 防止 tabpanel flex 链把头部压缩成 0 */
+}
+
+.detail-header h3 {
+  margin: 0;
+  color: #111827;
+  font-size: 18px;
+}
+
+.detail-header p {
+  margin: 4px 0 0;
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.feishu-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  flex: 1;             /* 吃光 tabpanel 高度 */
+  min-height: 0;       /* 解封 flex 链断点 */
+  overflow-y: auto;    /* 长表单内部自滚动 */
+  align-content: start;/* Grid 行靠顶对齐，避免外层 .tab-fill-wrapper 高度拉大时 Grid 默认 stretch 把行间空白撑开 */
+}
+
+/* test tab 单栏（与邮件发送测试一致）：仅一列，避免 .form-grid 强制两栏 */
+.feishu-form:not(.form-grid) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.form-field,
+.inline-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #374151;
+  font-size: 13px;
+}
+
+.inline-field {
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  justify-self: start;
+}
+
+.inline-field input[type="checkbox"] {
+  width: auto;
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.inline-field span {
+  white-space: nowrap;
+}
+
+.form-field.full,
+.form-actions {
+  grid-column: 1 / -1;
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 14px;
+  color: #111827;
+  background: #ffffff;
+}
+
+textarea {
+  resize: vertical;
+}
+
+input[type="number"] {
+  width: auto;
+  min-width: 80px;
+}
+
+.actions,
+.form-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.primary-btn,
+.secondary-btn,
+.danger-btn {
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.primary-btn {
+  color: #ffffff;
+  background: #2563eb;
+}
+
+.primary-btn:disabled,
+.primary-btn[disabled] {
+  background: #93c5fd;
+  cursor: not-allowed;
+}
+
+.secondary-btn {
+  color: #1f2937;
+  background: #e5e7eb;
+}
+
+.secondary-btn:disabled,
+.secondary-btn[disabled] {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.danger-btn {
+  color: #ffffff;
+  background: #dc2626;
+}
+
+.alert {
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border-radius: 8px;
+}
+
+.alert.error {
+  color: #991b1b;
+  background: #fee2e2;
+}
+
+.alert.success {
+  color: #065f46;
+  background: #d1fae5;
+}
+
+.empty-state {
+  color: #6b7280;
+  padding: 16px;
+  text-align: center;
+}
+
+.policies-layout {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
+}
+
+.policies-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.policy-item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.policy-item.active {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.policy-name {
+  color: #111827;
+  font-weight: 600;
+}
+
+.policy-meta {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.policy-editor {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 14px;
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1;
+}
+
+.policy-editor h4 {
+  margin: 0 0 12px;
+  color: #111827;
+  font-size: 15px;
+}
+
+/* —— 策略编辑表单两栏（field-row + label + control） —— */
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 20px;
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+}
+
+.field-row.full {
+  grid-column: 1 / -1;
+}
+
+.field-label {
+  font-size: 13px;
+  color: #374151;
+  font-weight: 600;
+  line-height: 1.5;
+  padding-top: 10px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.field-control {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.form-actions-row {
+  margin-top: 4px;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+}
+
+/* —— 飞书独有：默认应用 / 禁用徽章 —— */
+.badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  vertical-align: middle;
+}
+
+.badge.default {
+  background: #dbeafe;
+  color: #1e40af;
+  border: 1px solid #bfdbfe;
+}
+
+.badge.disabled {
+  background: #f3f4f6;
+  color: #6b7280;
+  border: 1px solid #e5e7eb;
+}
+
+/* —— 飞书独有：左侧「新建应用」按钮占满宽度 —— */
+.create-channel-btn {
+  margin-top: 12px;
+  width: 100%;
+}
+</style>

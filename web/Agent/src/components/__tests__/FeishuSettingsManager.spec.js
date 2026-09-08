@@ -1,8 +1,8 @@
-// FeishuSettingsManager 单元测试(2026-09-03 新增)
+// FeishuSettingsManager 单元测试(2026-09-03 新增,2026-09-07 风格独立化改造)
 //
 // 测试策略:沿用 EmailSettingsManager.spec.js 的源码静态契约风格,
 // 验证 FeishuSettingsManager.vue 关键结构(data-testid / 内部 3 Tab /
-// ACL 双重门 / 高度链填满等),不在浏览器中挂载真组件(避免 mock
+// ACL 双重门 / 高度链填满 / 独立样式块等),不在浏览器中挂载真组件(避免 mock
 // fetchNotificationChannels / createNotificationChannel 等 11 个 API)。
 //
 // 源码静态契约(防回归):
@@ -15,8 +15,12 @@
 //   default_receive_id_type / log_level / agent_name / receiver_username / enabled / is_default
 // - 发送策略 Tab 有: target_type / chat_id / chat_type / chat_name / agent_name / 模板字段
 // - 发送测试 Tab 有: channel_id / target_id / content
-// - 高度链填满(.email-settings-manager 复用 EmailSettingsManager 的 CSS)
-// - 内部滚动契约:tabpanel flex 链 + .email-form 自滚动 + .policies-layout 解封
+// - 高度链填满: 独立的 .feishu-settings-manager scoped 样式(2026-09-07 起不再借用邮件 scoped)
+// - 内部滚动契约:tabpanel flex 链 + .feishu-form 自滚动 + .policies-layout 解封
+// - 2026-09-07: 模板移除 class="email-*",新增独立 .feishu-settings-manager / .feishu-form /
+//   .feishu-settings-empty 类;内联 style="margin-top: 12px; width: 100%;" 迁入 .create-channel-btn;
+//   "secondary-btn danger" 合并到 .danger-btn;test tab 表单 .field-row 改为 .form-field.full 单栏;
+//   新增 <style scoped> 块镜像邮件样式 + 飞书独有 .badge.default / .badge.disabled 样式
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
@@ -34,6 +38,11 @@ describe('FeishuSettingsManager - 文件存在 + 模块结构', () => {
     expect(source).toContain('</script>')
     expect(source).toContain('<template>')
     expect(source).toContain('</template>')
+  })
+
+  it('2026-09-07 起组件含独立 <style scoped> 块（不再借用邮件 scoped 样式）', () => {
+    expect(source).toContain('<style scoped>')
+    expect(source).toContain('</style>')
   })
 
   it('导出 const TAB_APPS / TAB_POLICIES / TAB_TEST 三常量', () => {
@@ -54,14 +63,19 @@ describe('FeishuSettingsManager - 文件存在 + 模块结构', () => {
     expect(source).toMatch(/defineProps\s*\(\s*\{/)
   })
 
-  it('模板根标签是 <section class="email-settings-manager">', () => {
-    expect(source).toContain('class="email-settings-manager"')
+  it('模板根标签是 <section class="feishu-settings-manager">（2026-09-07 重命名）', () => {
+    expect(source).toContain('class="feishu-settings-manager"')
   })
 
-  it('高度链填满契约(复用 EmailSettingsManager 样式)', () => {
-    expect(source).toContain('email-settings-manager')
+  it('2026-09-07 起模板不再出现 email-* 类名(空态 / 表单 / 根容器全部 feishu- 前缀)', () => {
+    expect(source).not.toMatch(/class="email-/)
+    expect(source).not.toMatch(/class="email-form/)
+  })
+
+  it('高度链填满契约(独立 scoped 样式,2026-09-07 起)', () => {
+    expect(source).toContain('feishu-settings-manager')
     expect(source).toContain('role="tabpanel"')
-    expect(source).toContain('email-form')
+    expect(source).toContain('feishu-form')
   })
 })
 
@@ -186,5 +200,53 @@ describe('FeishuSettingsManager - 安全设计契约', () => {
   it('agent_name / receiver_username 必填校验', () => {
     expect(source).toContain("agent_name 不能为空")
     expect(source).toContain("receiver_username 不能为空")
+  })
+})
+
+describe('FeishuSettingsManager - 风格独立化(2026-09-07 落地)', () => {
+  it('独立 <style scoped> 块存在 + 镜像邮件视觉规格的关键类名都在', () => {
+    expect(source).toContain('<style scoped>')
+    expect(source).toContain('.feishu-settings-manager')
+    expect(source).toContain('.feishu-settings-empty')
+    expect(source).toContain('.feishu-form')
+    // 通用类(tab/btn/alert/policies-layout 等)镜像邮件
+    expect(source).toContain('.tab.active')
+    expect(source).toContain('.primary-btn')
+    expect(source).toContain('.secondary-btn')
+    expect(source).toContain('.danger-btn')
+    expect(source).toContain('.alert.error')
+    expect(source).toContain('.alert.success')
+    expect(source).toContain('.policies-layout')
+    expect(source).toContain('.policy-item.active')
+    expect(source).toContain('.policy-editor')
+    expect(source).toContain('.form-grid')
+    expect(source).toContain('.field-row')
+    expect(source).toContain('box-shadow: 0 0 0 3px')
+  })
+
+  it('飞书独有样式: 默认 / 禁用徽章 + 新建应用按钮', () => {
+    expect(source).toContain('.badge')
+    expect(source).toContain('.badge.default')
+    expect(source).toContain('.badge.disabled')
+    expect(source).toContain('.create-channel-btn')
+  })
+
+  it('模板不再含内联 style="margin-top: 12px; width: 100%;"(已迁入 .create-channel-btn)', () => {
+    expect(source).not.toMatch(/style="margin-top:\s*12px;\s*width:\s*100%;/)
+    expect(source).toContain('create-channel-btn')
+  })
+
+  it('删除按钮从 "secondary-btn danger" 合并到 .danger-btn', () => {
+    expect(source).not.toContain('secondary-btn danger')
+    // 两个删除按钮(应用/目标)都使用 danger-btn
+    const dangerBtnCount = (source.match(/class="danger-btn"/g) || []).length
+    expect(dangerBtnCount).toBeGreaterThanOrEqual(2)
+  })
+
+  it('test tab 表单使用 .form-field.full 单栏结构(与邮件发送测试一致)', () => {
+    // 三个字段全部包在 form-field full label 中
+    expect(source).toMatch(/class="form-field full"[\s\S]*?feishu-test-channel/)
+    expect(source).toMatch(/class="form-field full"[\s\S]*?feishu-test-target/)
+    expect(source).toMatch(/class="form-field full"[\s\S]*?feishu-test-content/)
   })
 })

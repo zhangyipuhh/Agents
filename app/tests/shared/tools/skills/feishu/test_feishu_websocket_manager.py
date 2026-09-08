@@ -178,7 +178,10 @@ def test_start_all_skips_channel_when_credentials_empty():
 
 
 def test_start_all_skips_channel_when_agent_name_empty():
-    """agent_name 为空 → 跳过该 channel。"""
+    """agent_name 为空 → 跳过该 channel。
+
+    2026-09-07 第二轮：channel 重新绑智能体，agent_name 从 channel.config.agent_name 读。
+    """
     mod = _import_manager_module()
     channels_public = [
         {"id": 1, "name": "no-agent", "channel_type": "feishu", "enabled": True, "is_default": True,
@@ -189,7 +192,7 @@ def test_start_all_skips_channel_when_agent_name_empty():
     fake_service._get_channel_internal = AsyncMock(return_value={
         "id": 1, "name": "no-agent", "channel_type": "feishu",
         "config": {**_make_encrypted_config(), "agent_name": ""},
-        "enabled": True, "is_default": True, "created_by_user_id": None,
+        "enabled": True, "is_default": True, "created_by_user_user_id": None,
         "created_at": None, "updated_at": None, "display_name": "",
     })
     manager = mod.FeishuWebSocketManager(notification_service=fake_service)

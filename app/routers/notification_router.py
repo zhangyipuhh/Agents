@@ -476,8 +476,9 @@ async def list_agents(request: Request) -> List[Dict[str, Any]]:
 async def send_test(request: Request, body: SendTestRequest) -> Dict[str, Any]:
     """发送测试消息。
 
-    飞书路径：从 target 取 chat_id / chat_type，从 channel config 取凭证（Fernet
-    解密），构造临时 ``lark.Client``，调 ``client.im.v1.message.create`` 发到群。
+    飞书路径：从 target 取 chat_id / chat_type（agent_name 从 channel 回退），
+    从 channel config 取凭证（Fernet 解密），构造临时 ``lark.Client``，调
+    ``client.im.v1.message.create`` 发到群（Markdown 自动检测 → 交互卡片）。
     """
     service = _get_service(request)
     return await service.send_test_message(

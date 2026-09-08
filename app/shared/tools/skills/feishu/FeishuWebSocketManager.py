@@ -2,12 +2,15 @@
 """
 FeishuWebSocketManager - 飞书 WebSocket 多实例编排器
 
-设计目的（2026-09-03 落地）
+设计目的（2026-09-03 落地，2026-09-07 收敛）
 
 - 多应用下 WS 必须支持监听多个 agent,不同应用接的是不一样智能体
 - 遍历 ``notification_channels WHERE enabled=TRUE AND channel_type='feishu'``，
   每条渠道启动独立的 ``FeishuWebSocketService`` 实例(独立后台线程 / 独立
-  ``lark.Client`` / 独立 ``agent_name`` / 独立 ``receiver_username``)
+  ``lark.Client``)
+- 2026-09-07 收敛:channel 不再绑定 agent_name / receiver_username；WS 实例从
+  ``settings.feishu_ws_agent_name`` / ``settings.feishu_ws_receiver_username``
+  全局派生,保证改动 channel 凭证不需要重启服务即可生效（凭证变更才需重启）。
 - 零应用时 INFO log skip,**不 fail-loud**(用户硬约束「WS 启动无 DB 应用时
   跳过即可」)
 - 各实例**完全隔离**:一个应用断开 / 异常不影响其他应用
@@ -21,8 +24,9 @@ session_id 命名空间
 
 依赖
 
-- ``app.core.config.settings.settings`` 不再读 ``.env`` 飞书字段
-- ``app.shared.utils.notification.NotificationConfigService`` 提供凭证与默认应用解析
+- ``app.core.config.settings.settings.feishu_ws_agent_name`` / ``feishu_ws_receiver_username``
+  控制全局默认 agent + 接收账号
+- ``app.shared.utils.notification.NotificationConfigService`` 提供凭证解析
 - ``app.shared.tools.skills.feishu.FeishuWebSocketService.FeishuWebSocketService`` 每实例一个
 """
 from __future__ import annotations
@@ -33,6 +37,7 @@ from typing import Any, Dict, List, Optional
 
 import lark_oapi as lark
 
+from app.core.config.settings import settings as app_settings
 from app.shared.utils.notification import NotificationConfigService
 from app.shared.utils.notification.notification_config_service import (
     SUPPORTED_CHANNEL_TYPES,
@@ -145,8 +150,11 @@ class FeishuWebSocketManager:
                     )
                     continue
                 log_level_str = cfg.get("log_level", "INFO")
-                agent_name = cfg.get("agent_name", "")
-                receiver_username = cfg.get("receiver_username", "")
+                # 2026-09-07 第二轮：channel 重新绑智能体——从 channel.config.agent_name 读
+                # 接收账号从 channel.config.receiver_username 读，若为空兜底 settings.feishu_ws_receiver_username
+                agent_name = cfg.get("agent_name", "").strip()
+                receiver_username = cfg.get("receiver_username", "").strip() or \
+                    app_settings.feishu.feishu_ws_receiver_username
                 if not agent_name or not receiver_username:
                     logger.warning(
                         "[feishu_ws_manager] channel_id=%s 缺 agent_name 或 receiver_username,跳过",
