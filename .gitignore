@@ -94,6 +94,8 @@ web/Agent/certs/**
 # 包含根目录的 docker-compose
 !docker-compose.yml
 !docker-compose.yaml
+!docker-compose-arm64.yml
+!docker-compose-arm64.yaml
 !dockers/
 !dockers/**
 !AGENTS.md
