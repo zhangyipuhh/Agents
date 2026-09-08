@@ -4,8 +4,8 @@ services:
     build:
       context: .
       dockerfile: app/Dockerfile
-    image: agents/v1.0
-    container_name: dev-app
+    image: aiops:v0.5
+    container_name: aiops
     restart: always
     ports:
       - "8001:8001"
@@ -43,8 +43,8 @@ services:
     build:
       context: ./web/Agent
       dockerfile: Dockerfile
-    image: web-agent/v2.0
-    container_name: preview-web
+    image: web-agent:v0.5
+    container_name: web-aiops
     restart: always
     ports:
       # 2026-08-21 双入口改造:HTTPS / HTTP 并存
@@ -53,7 +53,7 @@ services:
       - "9000:443"
       - "9001:80"
     environment:
-      - VITE_API_TARGET=${VITE_API_TARGET:-http://preview-app:8001}
+      - VITE_API_TARGET=${VITE_API_TARGET:-http://aiops:8001}
     volumes:
       # ===== 2026-08-12 新增:复用本地 mkcert 证书,容器内启用 HTTPS =====
       # 前提:宿主机已执行 .\nginx\mkcert.exe -install(一次性)
