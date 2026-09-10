@@ -1,10 +1,12 @@
-﻿/**
+/**
  * Sidebar.vue 头像菜单「帮助」按钮测试（2026-09-03 新增）
  *
  * 覆盖：
  *   1. 头像菜单中存在「帮助」按钮
  *   2. 点击「帮助」触发 window.open('/help', '_blank', 'noopener,noreferrer')
  *   3. 「帮助」按钮对 admin 与普通用户均可见（不依赖 userRole）
+ *
+ * 2026-09-10 更新：帮助按钮恢复「帮助」二字，按 textContent 定位。
  *
  * 注意：用户菜单用 <Teleport to="body"> 渲染，测试需从 document.body 查询
  */
@@ -57,8 +59,8 @@ function findUserMenuItems() {
 
 /**
  * 触发指定文本或 selector 的菜单项
- * - 传 text 时按 textContent 匹配（管理后台/设置/退出登录 等文字菜单）
- * - 传 selector 时按 querySelector 匹配（图标菜单如"帮助"：'.user-menu-item--icon-only'）
+ * - 传 text 时按 textContent 匹配（管理后台/帮助/设置/退出登录 等文字菜单）
+ * - 传 selector 时按 querySelector 匹配（图标菜单的修饰类）
  * @param {string} target - 菜单项文本 或 CSS selector
  */
 function clickUserMenuItem(target) {
@@ -97,9 +99,8 @@ describe('Sidebar.vue 头像菜单「帮助」按钮', () => {
       await nextTick()
 
       const items = findUserMenuItems()
-      // 2026-09-03 简化：「帮助」按钮只剩图标（class="user-menu-item--icon-only"），
-      // 不再含文字 "帮助"。改用 class 选择器定位。
-      const helpItem = items.find((el) => el.classList.contains('user-menu-item--icon-only'))
+      // 2026-09-10 恢复文字：「帮助」按钮含文字 "帮助"，按 textContent 匹配。
+      const helpItem = items.find((el) => el.textContent.includes('帮助'))
       expect(helpItem).toBeTruthy()
       // 「帮助」应在「管理后台」之前出现
       const adminItem = items.find((el) => el.textContent.includes('管理后台'))
@@ -118,7 +119,7 @@ describe('Sidebar.vue 头像菜单「帮助」按钮', () => {
       await nextTick()
       await nextTick()
 
-      clickUserMenuItem('.user-menu-item--icon-only')
+      clickUserMenuItem('帮助')
 
       expect(window.open).toHaveBeenCalledTimes(1)
       // 2026-09-03 修复：仅传 target，不传 features 字符串
@@ -137,7 +138,7 @@ describe('Sidebar.vue 头像菜单「帮助」按钮', () => {
       await nextTick()
       await nextTick()
       const adminItems = findUserMenuItems()
-      const adminHasHelp = adminItems.some((el) => el.classList.contains('user-menu-item--icon-only'))
+      const adminHasHelp = adminItems.some((el) => el.textContent.includes('帮助'))
       expect(adminHasHelp).toBe(true)
     } finally {
       adminWrapper.unmount()
@@ -149,7 +150,7 @@ describe('Sidebar.vue 头像菜单「帮助」按钮', () => {
       await nextTick()
       await nextTick()
       const userItems = findUserMenuItems()
-      const userHasHelp = userItems.some((el) => el.classList.contains('user-menu-item--icon-only'))
+      const userHasHelp = userItems.some((el) => el.textContent.includes('帮助'))
       expect(userHasHelp).toBe(true)
     } finally {
       userWrapper.unmount()
@@ -173,7 +174,7 @@ describe('Sidebar.vue 头像菜单「帮助」按钮', () => {
       await nextTick()
       await nextTick()
 
-      clickUserMenuItem('.user-menu-item--icon-only')
+      clickUserMenuItem('帮助')
       // 多等一帧让 Teleport 渲染 + Vue 异步更新完成
       await nextTick()
       await nextTick()
@@ -203,7 +204,7 @@ describe('Sidebar.vue 头像菜单「帮助」按钮', () => {
       await wrapper.find('.sidebar-user').trigger('click')
       await nextTick()
       await nextTick()
-      clickUserMenuItem('.user-menu-item--icon-only')
+      clickUserMenuItem('帮助')
       await nextTick()
 
       const notice = document.body.querySelector('.help-blocked-notice')
@@ -227,7 +228,7 @@ describe('Sidebar.vue 头像菜单「帮助」按钮', () => {
       await wrapper.find('.sidebar-user').trigger('click')
       await nextTick()
       await nextTick()
-      clickUserMenuItem('.user-menu-item--icon-only')
+      clickUserMenuItem('帮助')
       await nextTick()
 
       const notice = document.body.querySelector('.help-blocked-notice')

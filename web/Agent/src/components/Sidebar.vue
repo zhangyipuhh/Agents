@@ -1015,12 +1015,13 @@ onUnmounted(() => {
     <!-- 用户菜单 - 使用 Teleport 移动到 body 层级，避免被父容器 overflow 裁剪 -->
     <Teleport to="body">
       <div v-show="isUserMenuVisible" class="user-menu" :class="{ 'is-collapsed': isSidebarCollapsed }" :style="menuPositionStyle">
-        <!-- 2026-09-03 新增：「帮助」按钮：位于「管理后台」上方，admin 与普通用户均可用
-             2026-09-03 简化：去掉文字，只保留图标（用户需求） -->
-        <div class="user-menu-item user-menu-item--icon-only" @click.stop="handleHelp" title="帮助">
+        <!-- 帮助按钮：位于「管理后台」上方，admin 与普通用户均可用
+             与「管理后台 / 设置 / 退出登录」三行视觉一致（左对齐 + 图标 + 文字） -->
+        <div class="user-menu-item" @click.stop="handleHelp" title="帮助">
           <svg class="menu-item-icon" viewBox="0 0 20 20" fill="currentColor">
             <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 11-2 0 1 1 0 012 0zm-1 9a1 1 0 102 0v-5a1 1 0 10-2 0v5z" clip-rule="evenodd"/>
           </svg>
+          <span>帮助</span>
         </div>
         <div v-if="userRole === 'admin'" class="user-menu-item" @click.stop="handleAdminPanel">
           <svg class="menu-item-icon" viewBox="0 0 20 20" fill="currentColor">

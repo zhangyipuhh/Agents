@@ -632,7 +632,7 @@
 
 按 LangChain 中文文档站视觉风格新增 SPA 帮助中心，管理员与普通用户登录后均可访问（不需要任何菜单 ACL）。
 
-**入口**：Sidebar 头像菜单「管理后台」上方新增「帮助」按钮（`Sidebar.vue::handleHelp`），不区分 `userRole`；点击 `window.open('/help', '_blank', 'noopener,noreferrer')` 新 Tab 打开，主会话不受影响。浏览器拦截弹窗时降级为 `window.location.href = '/help'`（应用内跳转，替换主会话，仅拦截时退化）。
+**入口**：Sidebar 头像菜单「管理后台」上方新增「帮助」按钮（图标 ⓘ + 文字「帮助」横排，与「管理后台 / 设置 / 退出登录」三行视觉一致），`Sidebar.vue::handleHelp` 不区分 `userRole`；点击 `window.open('/help', '_blank')` 新 Tab 打开，主会话不受影响。浏览器拦截弹窗时显示页面右下角非阻塞 `.help-blocked-notice`，提供「在当前页打开」（router.push）/「复制链接」/ ✕ 三个操作。
 
 **路由**：`/help` 一级路由（`router/index.js::routes` 新增 `name: 'help'` + `meta.requiresAuth: true` + `meta.pageKey: 'help'`），复用 `requiresAuthGuard` 全局守卫：未登录整页跳 `/login?redirect=%2Fhelp`。
 
