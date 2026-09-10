@@ -39,6 +39,15 @@
 --     (移除 5 处冗余 json.dumps,与 asyncpg jsonb codec 配合)
 -- =============================================
 
+-- 2026-09-10 fix:Navicat / pgAdmin 等 GUI 工具 autocommit off 模式下,
+-- 一旦前一次执行遇到 PG 报错(任意事务内 ERROR),整段事务会被标记为 aborted
+-- (SQLSTATE 25P02 "current transaction is aborted, commands ignored until
+-- end of transaction block"),即使后续 SQL 全部幂等也无法重跑。
+-- 显式 ROLLBACK 把会话事务重置到 idle 状态;若当前已经在 idle 状态,
+-- PG 会发出 WARNING "there is no transaction in progress" 但不影响执行。
+-- 这一行是 Navicat 用户反复触发 25P02 错误的唯一根治手段。
+ROLLBACK;
+
 BEGIN;
 
 -- ========== 1. users（auth 模块核心表）==========

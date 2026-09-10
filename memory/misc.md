@@ -212,6 +212,7 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 - 零应用时 INFO skip，**不 fail-loud**
 - **2026-09-10 fix**：删除 `idx_notification_channels_enabled` UNIQUE 索引。原索引误继承自 `email_server_configs` 单 SMTP 表（每 channel_type 仅 1 行 enabled），与"每 enabled 应用启动独立 WS 进程"的多实例架构冲突，**禁止**再加回来。新增 `notification_channels` 行无 DB 层 enabled 行数限制，由应用层 `_set_default_channel` 同款 `_write_lock` 原子切换管理（如未来需"每 channel_type 仅 1 行 enabled"应改应用层约束）。
 - **2026-09-10 fix**：§16.6 中 `notification_channels_config_object_chk` / `notification_targets_config_object_chk` 两个 JSONB CHECK 约束原写法无 `IF EXISTS`，重复执行 init_all_tables.sql 时 PG 报 `42710 duplicate_object` 并中断后续段（包括本节末尾的 `DROP INDEX`）。已改为 `DROP CONSTRAINT IF EXISTS + ADD CONSTRAINT` 模式（与 `devops_servers_inspection_script_id_fk` 3139 行同款）保证整段 SQL 幂等。
+- **2026-09-10 fix**：init_all_tables.sql 开头加 `ROLLBACK;` 行。Navicat / pgAdmin 等 GUI autocommit off 模式下，前一次执行遇错会把整段事务置为 aborted（PG `25P02 current transaction is aborted, commands ignored until end of transaction block`），后续所有幂等 SQL 也无法重跑。显式 `ROLLBACK` 重置到 idle（idle 状态下 PG 仅 WARNING "there is no transaction in progress"，不影响后续 BEGIN）。
 
 ### 7. 飞书 channel 绑智能体 / target 绑群（2026-09-07 第二轮落地，硬约束）
 
@@ -236,6 +237,8 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 - **覆盖路径**：`upsert_channel.select_existing` / `upsert_channel.unset_default` / `upsert_channel.update` / `upsert_channel.insert` / `upsert_target.select_channel` / `upsert_target.select_existing` / `upsert_target.update` / `upsert_target.insert`
 - **router 兜底**：`notification_router._handle_service_error` 对非 `NotificationConfigError` 系异常仍兜底映射 500 + `logger.exception`（防止 service 层未来漏捕获）
 - **禁止**：让 raw `asyncpg.PostgresError` 直接逃逸到 FastAPI 默认 handler（trace 截断 + 用户看不到 message）
+- **日志 ctx 携带现场**：`upsert_channel.insert` 异常的 ctx 含 `config_type`(Python type) + `config_json_type`(`_safe_json_type` 推断的 JSONB 顶层类型) + `config_preview`(前 200 字符)，下次同类 bug 一次定位
+- **防御序列化 fail-fast**：`upsert_channel` / `upsert_target` 在 `json.dumps(config_db)` 前后做 `json.loads(parsed)` 校验，顶层非 dict 立即抛 ValidationError(400) 而非走到 PG 23514
 
 ## 飞书设置管理（2026-09-03 新增，「消息设置」Tab 下与邮件平级）
 

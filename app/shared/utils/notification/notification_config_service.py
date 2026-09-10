@@ -423,7 +423,21 @@ class NotificationConfigService:
             for k in FEISHU_LEGACY_CHANNEL_CONFIG_KEYS:
                 config_db.pop(k, None)
 
-        config_json = json.dumps(config_db, ensure_ascii=False)
+        # 2026-09-10 防御:序列化后 parse 校验顶层必须是 object(JSONB CHECK 约束要求)
+        # 此前直接依赖 json.dumps 结果,若上游意外传入非 dict(被 monkey-patch /
+        # 第三方库序列化破坏)将触发 PG 23514 check_violation,日志暴露 constraint_name
+        # 但用户体验差;此处提前 fail-fast 抛出 ValidationError(400)避免走到 DB 层。
+        try:
+            config_json = json.dumps(config_db, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            raise NotificationConfigValidationError(
+                f"config 序列化失败: {exc}"
+            )
+        parsed = json.loads(config_json)
+        if not isinstance(parsed, dict):
+            raise NotificationConfigValidationError(
+                f"config 必须是 JSON object,实际顶层类型: {type(parsed).__name__}"
+            )
 
         # 检查是否已存在（同 channel_type + name）
         try:
@@ -500,7 +514,10 @@ class NotificationConfigService:
                         db_exc, op="upsert_channel.insert",
                         ctx={"name": name, "channel_type": channel_type,
                              "enabled": enabled, "is_default": is_default,
-                             "created_by_user_id": created_by_user_id},
+                             "created_by_user_id": created_by_user_id,
+                             "config_type": type(config_db).__name__,
+                             "config_json_type": _safe_json_type(config_json),
+                             "config_preview": config_json[:200]},
                     )
                 logger.info(
                     "[notification_config_service] upsert_channel inserted: "
@@ -1218,3 +1235,31 @@ class NotificationConfigService:
             "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
             "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
         }
+
+
+# =============================================================================
+# 模块级 helper（2026-09-10 新增）
+# =============================================================================
+
+
+def _safe_json_type(s: Any) -> str:
+    """解析 JSONB 字符串首个字符推断其顶层类型（object/array/string/number/bool/null）。
+
+    仅供 ``NotificationConfigService._log_and_raise_db_error`` 落 ERROR 日志携带类型线索，
+    解析失败返回 "unknown"，不抛异常。
+
+    2026-09-10 设计约束：必须放模块级（class 外），不能放 class 内——
+    否则会把 class body 截断（4 空格缩进 vs class method 缩进一致时，
+    Python 解释器会把缩进 4 空格的 def 当成 module-level 顶层函数，
+    导致后续 ``async def list_channels`` 等方法全部脱离 class）。
+    """
+    if not isinstance(s, str) or not s:
+        return f"<non-str:{type(s).__name__}>"
+    head = s.lstrip()
+    if not head:
+        return "empty"
+    ch = head[0]
+    return {
+        "{": "object", "[": "array", '"': "string",
+        "t": "bool(true)", "f": "bool(false)", "n": "null",
+    }.get(ch, f"unknown({ch!r})")
