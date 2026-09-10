@@ -210,6 +210,8 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 - session_id 命名空间加 `channel_id`：`feishu:{channel_id}:p2p:{open_id}` / `feishu:{channel_id}:group:{chat_id}:{open_id}`
 - **2026-09-07 channel 与 agent 解耦收敛**：`agent_name` / `receiver_username` **不再**从 `notification_channels.config` 读取，改为从全局 `settings.feishu.feishu_ws_agent_name` / `settings.feishu.feishu_ws_receiver_username` 派生（默认 `project` / `feishu_bot`）；改 channel 凭证不需重启服务即可生效；接收账号与路由智能体作为全局策略，与具体 channel 解耦
 - 零应用时 INFO skip，**不 fail-loud**
+- **2026-09-10 fix**：删除 `idx_notification_channels_enabled` UNIQUE 索引。原索引误继承自 `email_server_configs` 单 SMTP 表（每 channel_type 仅 1 行 enabled），与"每 enabled 应用启动独立 WS 进程"的多实例架构冲突，**禁止**再加回来。新增 `notification_channels` 行无 DB 层 enabled 行数限制，由应用层 `_set_default_channel` 同款 `_write_lock` 原子切换管理（如未来需"每 channel_type 仅 1 行 enabled"应改应用层约束）。
+- **2026-09-10 fix**：§16.6 中 `notification_channels_config_object_chk` / `notification_targets_config_object_chk` 两个 JSONB CHECK 约束原写法无 `IF EXISTS`，重复执行 init_all_tables.sql 时 PG 报 `42710 duplicate_object` 并中断后续段（包括本节末尾的 `DROP INDEX`）。已改为 `DROP CONSTRAINT IF EXISTS + ADD CONSTRAINT` 模式（与 `devops_servers_inspection_script_id_fk` 3139 行同款）保证整段 SQL 幂等。
 
 ### 7. 飞书 channel 绑智能体 / target 绑群（2026-09-07 第二轮落地，硬约束）
 
@@ -223,6 +225,17 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 - **service 校验**：`_validate_config("feishu", config)` 校验 4 个必填项
 - **target 校验**：`chat_type` 必须属于 `FEISHU_RECEIVE_ID_TYPES`（chat_id / open_id / user_id / email）
 - **WS 多实例**：`FeishuWebSocketManager` 启动时 `agent_name = cfg.get("agent_name", "")`；缺 agent_name 的 channel 跳过并 WARN，不 fail-loud
+
+### 8. DB 异常处理契约（2026-09-10 落地，硬约束）
+
+> 用户反馈原 bug：「建立飞书应用」500 错误，trace 在 asyncpg 内部 `_do_exec` 被截断，前端只看到 `500` 看不到真实错误。
+
+- **`_log_and_raise_db_error(exc, op, ctx)`**：service 层统一捕获 asyncpg / 其他 DB 异常，落 `logger.exception`（含 sqlstate / constraint_name / detail）+ 抛 `NotificationConfigError`(基类)
+- **`_extract_db_error_detail(exc)`**：从 asyncpg 异常提取 `sqlstate` / `constraint_name` / `table_name` / `detail` / `message` 用于日志
+- **异常消息格式**：`"<op> 失败: <message> | (constraint=<name>) | (sqlstate=<code>)"`，让前端一眼看懂根因
+- **覆盖路径**：`upsert_channel.select_existing` / `upsert_channel.unset_default` / `upsert_channel.update` / `upsert_channel.insert` / `upsert_target.select_channel` / `upsert_target.select_existing` / `upsert_target.update` / `upsert_target.insert`
+- **router 兜底**：`notification_router._handle_service_error` 对非 `NotificationConfigError` 系异常仍兜底映射 500 + `logger.exception`（防止 service 层未来漏捕获）
+- **禁止**：让 raw `asyncpg.PostgresError` 直接逃逸到 FastAPI 默认 handler（trace 截断 + 用户看不到 message）
 
 ## 飞书设置管理（2026-09-03 新增，「消息设置」Tab 下与邮件平级）
 

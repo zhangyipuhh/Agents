@@ -208,3 +208,87 @@ def test_create_target_request_required_fields():
     assert req.agent_name == "project"
     assert req.target_type == "feishu.chat"
     assert req.enabled is True
+
+
+# =============================================================================
+# 2026-09-10：_handle_service_error 兜底分支契约（asyncpg 异常不再 raw 逃逸）
+# =============================================================================
+
+
+def test_handle_service_error_wraps_non_notification_exception_as_500():
+    """_handle_service_error 兜底分支：非 NotificationConfigError 异常 → 500 + 含 exc 信息。
+
+    用户截图根因：原代码 ``raise exc`` 让 asyncpg.PostgresError 直接逃逸，
+    FastAPI 默认 handler 返回 500 但日志被 asyncpg 内部栈截断，message 完全丢失。
+    修复后：所有非 NotificationConfigError 异常统一抛 HTTPException(500, detail=...)，
+    前端能看到 exc message，且 logger.exception 落 ERROR 日志（含完整 stack）。
+    """
+    from fastapi import HTTPException
+
+    from app.routers.notification_router import _handle_service_error
+
+    # 模拟 asyncpg 抛出的 UniqueViolationError（普通 Exception 即可，无需真 asyncpg）
+    err = Exception("duplicate key value violates unique constraint")
+    with pytest.raises(HTTPException) as exc_info:
+        _handle_service_error(err)
+    assert exc_info.value.status_code == 500
+    # detail 必须含原始 exc message，前端可读
+    assert "duplicate key value" in exc_info.value.detail
+
+
+def test_handle_service_error_logs_unhandled_exception(caplog):
+    """_handle_service_error 兜底分支必须 logger.exception 落 ERROR 日志（含完整 stack）。"""
+    import logging
+
+    from fastapi import HTTPException
+
+    from app.routers.notification_router import _handle_service_error
+
+    err = RuntimeError("simulated asyncpg internal error")
+    with caplog.at_level(logging.ERROR, logger="app.routers.notification_router"):
+        with pytest.raises(HTTPException):
+            _handle_service_error(err)
+    # logger.exception 含 traceback；caplog.records 至少 1 条 ERROR
+    error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(error_records) >= 1, "兜底分支必须落 ERROR 日志（含完整 stack）"
+    assert any("simulated asyncpg internal error" in r.getMessage() for r in error_records)
+
+
+def test_handle_service_error_preserves_notification_config_error_500():
+    """回归：NotificationConfigError 基类仍映射 500（不被兜底分支劫持）。"""
+    from fastapi import HTTPException
+
+    from app.routers.notification_router import _handle_service_error
+    from app.shared.utils.notification import NotificationConfigError
+
+    err = NotificationConfigError("凭证无效")
+    with pytest.raises(HTTPException) as exc_info:
+        _handle_service_error(err)
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "凭证无效"
+
+
+def test_handle_service_error_preserves_validation_400():
+    """回归：NotificationConfigValidationError 仍映射 400。"""
+    from fastapi import HTTPException
+
+    from app.routers.notification_router import _handle_service_error
+    from app.shared.utils.notification import NotificationConfigValidationError
+
+    err = NotificationConfigValidationError("config.app_id_encrypted 必填")
+    with pytest.raises(HTTPException) as exc_info:
+        _handle_service_error(err)
+    assert exc_info.value.status_code == 400
+
+
+def test_handle_service_error_preserves_not_found_404():
+    """回归：NotificationConfigNotFoundError 仍映射 404。"""
+    from fastapi import HTTPException
+
+    from app.routers.notification_router import _handle_service_error
+    from app.shared.utils.notification import NotificationConfigNotFoundError
+
+    err = NotificationConfigNotFoundError("channel_id=999 不存在")
+    with pytest.raises(HTTPException) as exc_info:
+        _handle_service_error(err)
+    assert exc_info.value.status_code == 404

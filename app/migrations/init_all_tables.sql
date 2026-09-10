@@ -2889,6 +2889,10 @@ CREATE TABLE IF NOT EXISTS notification_channels (
     CONSTRAINT notification_channels_name_type_uniq UNIQUE (name, channel_type)
 );
 -- config JSONB 守卫：必须是 object（防脏数据，与 users.allowed_agents 2026-08-14 同款修复）
+-- 2026-09-10 fix：用 DROP CONSTRAINT IF EXISTS + ADD CONSTRAINT 模式实现幂等，
+-- 与 devops_servers_inspection_script_id_fk (3139 行) 同款。原写法没有 IF EXISTS，
+-- 重复执行 SQL 会中断后续段（如本文件 §16.6 末尾的 DROP INDEX）。
+ALTER TABLE notification_channels DROP CONSTRAINT IF EXISTS notification_channels_config_object_chk;
 ALTER TABLE notification_channels
     ADD CONSTRAINT notification_channels_config_object_chk
     CHECK (config IS NULL OR jsonb_typeof(config) = 'object') NOT VALID;
@@ -2896,8 +2900,13 @@ ALTER TABLE notification_channels
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_channels_default
     ON notification_channels(channel_type) WHERE is_default = TRUE;
 -- 同 channel_type 内 enabled 仅允许 1 行 TRUE（与邮件同款语义）
-CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_channels_enabled
-    ON notification_channels(channel_type) WHERE enabled = TRUE;
+-- 2026-09-10 fix: 删除此唯一索引。背景:该索引误继承自 email_server_configs
+-- 单 SMTP 表语义,与 WS 多实例架构(每 enabled 应用启动独立 WS 进程)
+-- 冲突。飞书/钉钉/企微等渠道均需多应用并存,不再限制同 channel_type 仅 1 行 enabled。
+-- 启用/禁用切换走应用层 service.set_default_channel(2026-09-07)同款
+-- _write_lock 原子切换语义。idx_notification_channels_default(默认应用唯一)
+-- 与 notification_channels_name_type_uniq(name 唯一)保留。
+DROP INDEX IF EXISTS idx_notification_channels_enabled;
 CREATE INDEX IF NOT EXISTS idx_notification_channels_channel_type
     ON notification_channels(channel_type);
 CREATE INDEX IF NOT EXISTS idx_notification_channels_created_by_user_id
@@ -2921,6 +2930,9 @@ CREATE TABLE IF NOT EXISTS notification_targets (
     CONSTRAINT notification_targets_unique UNIQUE (channel_id, target_type, name)
 );
 -- config JSONB 守卫
+-- 2026-09-10 fix：与 notification_channels_config_object_chk 同款幂等化修复，
+-- 防止重复执行 init_all_tables.sql 时被中断（PG 42710 duplicate_object）。
+ALTER TABLE notification_targets DROP CONSTRAINT IF EXISTS notification_targets_config_object_chk;
 ALTER TABLE notification_targets
     ADD CONSTRAINT notification_targets_config_object_chk
     CHECK (config IS NULL OR jsonb_typeof(config) = 'object') NOT VALID;

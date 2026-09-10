@@ -88,7 +88,17 @@ def _handle_service_error(exc: Exception) -> None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     if isinstance(exc, NotificationConfigError):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
-    raise exc
+    # 2026-09-10：兜底捕获非 NotificationConfigError 系异常（典型：asyncpg.PostgresError
+    # 在 service 层未被装饰器捕获时逃逸）。落 ERROR 日志 + 映射 500，避免 trace 被
+    # asyncpg 内部栈截断（用户 500 截图根因）。
+    logger.exception(
+        "[notification_router] unhandled exception in service: %s",
+        exc, exc_info=True,
+    )
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=f"internal error: {exc!s}",
+    )
 
 
 # =============================================================================

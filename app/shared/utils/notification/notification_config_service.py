@@ -24,6 +24,13 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from app.shared.utils.auth.ownership_scope import OwnershipScope
 
+# 2026-09-10：捕获 asyncpg 异常并映射为 NotificationConfigError，方便 router 层
+# 统一映射 HTTPException（500）。asyncpg 在测试环境可能未安装，故 try/except 软导入。
+try:
+    import asyncpg  # type: ignore
+except ImportError:  # pragma: no cover - 测试沙箱无 asyncpg
+    asyncpg = None  # type: ignore
+
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +190,61 @@ class NotificationConfigService:
             "[notification_config_service] preload_all called (db=%s)",
             "available" if self._db is not None else "unavailable",
         )
+
+    # ------------------------------------------------------------------
+    # DB 异常处理（2026-09-10 新增）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_db_error_detail(exc: Any) -> Dict[str, Any]:
+        """从 asyncpg 异常中提取关键字段（约束名 / sqlstate / 原 message）。
+
+        用于落 ERROR 日志时携带定位信息，方便排错。
+        测试环境无 asyncpg 时仅返回 exception 类型 + str(exc)，不抛异常。
+        """
+        base = {"exception_type": type(exc).__name__, "message": str(exc)}
+        if asyncpg is None:
+            return base
+        if not isinstance(exc, getattr(asyncpg, "PostgresError", ())):
+            return base
+        return {
+            **base,
+            "sqlstate": getattr(exc, "sqlstate", None),
+            "constraint_name": getattr(exc, "constraint_name", None),
+            "table_name": getattr(exc, "table_name", None),
+            "message": getattr(exc, "message", str(exc)),
+            "detail": getattr(exc, "detail", None),
+        }
+
+    def _log_and_raise_db_error(
+        self,
+        exc: Exception,
+        op: str,
+        ctx: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """统一处理 DB 异常：落 ERROR 日志 + 抛 NotificationConfigError。
+
+        2026-09-10 新增：原代码直接让 asyncpg 异常逃逸，触发默认 500 handler，
+        日志被 asyncpg 内部 trace 截断（用户截图为证）。改为：
+
+        1. 用 ``_extract_db_error_detail`` 提取 sqlstate / constraint_name / detail
+        2. logger.exception + 包含 op + ctx 的结构化 ERROR 日志
+        3. 抛 ``NotificationConfigError``(基类)，router 层 ``_handle_service_error``
+           即可映射 500 + 把 message 透给前端，避免用户看不到真实错误
+        """
+        detail = self._extract_db_error_detail(exc)
+        logger.exception(
+            "[notification_config_service] %s failed: %s | ctx=%s | db=%s",
+            op, detail.get("message", str(exc)),
+            ctx or {}, detail,
+        )
+        # 构造可读 message：包含约束名（如有）让前端一眼看懂
+        parts = [f"{op} 失败: {detail.get('message', str(exc))}"]
+        if detail.get("constraint_name"):
+            parts.append(f"(constraint={detail['constraint_name']})")
+        if detail.get("sqlstate"):
+            parts.append(f"(sqlstate={detail['sqlstate']})")
+        raise NotificationConfigError(" | ".join(parts))
 
     # ------------------------------------------------------------------
     # Channel CRUD（凭证通用表）
@@ -364,49 +426,86 @@ class NotificationConfigService:
         config_json = json.dumps(config_db, ensure_ascii=False)
 
         # 检查是否已存在（同 channel_type + name）
-        existing = await self._db.fetchrow(
-            """
-            SELECT id FROM notification_channels
-            WHERE name = $1 AND channel_type = $2
-            """,
-            name, channel_type,
-        )
+        try:
+            existing = await self._db.fetchrow(
+                """
+                SELECT id FROM notification_channels
+                WHERE name = $1 AND channel_type = $2
+                """,
+                name, channel_type,
+            )
+        except Exception as db_exc:
+            self._log_and_raise_db_error(
+                db_exc, op="upsert_channel.select_existing",
+                ctx={"name": name, "channel_type": channel_type},
+            )
 
         async with self._write_lock:
             # 若 is_default=True，先把同 channel_type 的其他行 is_default 置 False
             if is_default:
-                await self._db.execute(
-                    """
-                    UPDATE notification_channels
-                    SET is_default = FALSE
-                    WHERE channel_type = $1 AND (is_default = TRUE)
-                    """,
-                    channel_type,
-                )
+                try:
+                    await self._db.execute(
+                        """
+                        UPDATE notification_channels
+                        SET is_default = FALSE
+                        WHERE channel_type = $1 AND (is_default = TRUE)
+                        """,
+                        channel_type,
+                    )
+                except Exception as db_exc:
+                    self._log_and_raise_db_error(
+                        db_exc, op="upsert_channel.unset_default",
+                        ctx={"channel_type": channel_type, "name": name},
+                    )
 
             if existing is not None:
-                row = await self._db.fetchrow(
-                    """
-                    UPDATE notification_channels
-                    SET display_name = $1, config = $2::jsonb, enabled = $3,
-                        is_default = $4, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = $5
-                    RETURNING id, updated_at
-                    """,
-                    display_name, config_json, enabled, is_default, existing["id"],
+                try:
+                    row = await self._db.fetchrow(
+                        """
+                        UPDATE notification_channels
+                        SET display_name = $1, config = $2::jsonb, enabled = $3,
+                            is_default = $4, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = $5
+                        RETURNING id, updated_at
+                        """,
+                        display_name, config_json, enabled, is_default, existing["id"],
+                    )
+                except Exception as db_exc:
+                    self._log_and_raise_db_error(
+                        db_exc, op="upsert_channel.update",
+                        ctx={"channel_id": existing["id"], "name": name,
+                             "channel_type": channel_type},
+                    )
+                logger.info(
+                    "[notification_config_service] upsert_channel updated: "
+                    "id=%s name=%s channel_type=%s",
+                    row["id"], name, channel_type,
                 )
                 return {"id": row["id"], "updated_at": row["updated_at"], "created": False}
             else:
-                row = await self._db.fetchrow(
-                    """
-                    INSERT INTO notification_channels
-                        (name, display_name, channel_type, config, enabled,
-                         is_default, created_by_user_id)
-                    VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
-                    RETURNING id, updated_at
-                    """,
-                    name, display_name, channel_type, config_json, enabled,
-                    is_default, created_by_user_id,
+                try:
+                    row = await self._db.fetchrow(
+                        """
+                        INSERT INTO notification_channels
+                            (name, display_name, channel_type, config, enabled,
+                             is_default, created_by_user_id)
+                        VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
+                        RETURNING id, updated_at
+                        """,
+                        name, display_name, channel_type, config_json, enabled,
+                        is_default, created_by_user_id,
+                    )
+                except Exception as db_exc:
+                    self._log_and_raise_db_error(
+                        db_exc, op="upsert_channel.insert",
+                        ctx={"name": name, "channel_type": channel_type,
+                             "enabled": enabled, "is_default": is_default,
+                             "created_by_user_id": created_by_user_id},
+                    )
+                logger.info(
+                    "[notification_config_service] upsert_channel inserted: "
+                    "id=%s name=%s channel_type=%s enabled=%s is_default=%s",
+                    row["id"], name, channel_type, enabled, is_default,
                 )
                 return {"id": row["id"], "updated_at": row["updated_at"], "created": True}
 
@@ -626,10 +725,16 @@ class NotificationConfigService:
             raise NotificationConfigValidationError("config 必须是 dict 类型")
 
         # 校验 channel 存在 + channel_type 与 target_type 对应
-        ch_row = await self._db.fetchrow(
-            "SELECT channel_type FROM notification_channels WHERE id = $1",
-            channel_id,
-        )
+        try:
+            ch_row = await self._db.fetchrow(
+                "SELECT channel_type FROM notification_channels WHERE id = $1",
+                channel_id,
+            )
+        except Exception as db_exc:
+            self._log_and_raise_db_error(
+                db_exc, op="upsert_target.select_channel",
+                ctx={"channel_id": channel_id},
+            )
         if ch_row is None:
             raise NotificationConfigNotFoundError(
                 f"channel_id={channel_id} 不存在"
@@ -663,47 +768,67 @@ class NotificationConfigService:
         async with self._write_lock:
             if target_id is not None:
                 # 更新（先校验存在 + 归属）
-                existing = await self._db.fetchrow(
-                    """
-                    SELECT created_by_user_id FROM notification_targets WHERE id = $1
-                    """,
-                    target_id,
-                )
+                try:
+                    existing = await self._db.fetchrow(
+                        """
+                        SELECT created_by_user_id FROM notification_targets WHERE id = $1
+                        """,
+                        target_id,
+                    )
+                except Exception as db_exc:
+                    self._log_and_raise_db_error(
+                        db_exc, op="upsert_target.select_existing",
+                        ctx={"target_id": target_id, "channel_id": channel_id},
+                    )
                 if existing is None:
                     raise NotificationConfigNotFoundError(
                         f"target_id={target_id} 不存在"
                     )
                 # 2026-09-07 第二轮：target 不再绑智能体，写入时不更新 agent_name 列
                 # （保持存量值不动，读取时 _target_to_public 回退到 channel.agent_name）
-                row = await self._db.fetchrow(
-                    """
-                    UPDATE notification_targets
-                    SET target_type = $1, name = $2, config = $3::jsonb,
-                        subject_template = $4,
-                        body_template = $5, enabled = $6,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = $7
-                    RETURNING id, updated_at
-                    """,
-                    target_type, name, config_json,
-                    subject_template, body_template, enabled, target_id,
-                )
+                try:
+                    row = await self._db.fetchrow(
+                        """
+                        UPDATE notification_targets
+                        SET target_type = $1, name = $2, config = $3::jsonb,
+                            subject_template = $4,
+                            body_template = $5, enabled = $6,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = $7
+                        RETURNING id, updated_at
+                        """,
+                        target_type, name, config_json,
+                        subject_template, body_template, enabled, target_id,
+                    )
+                except Exception as db_exc:
+                    self._log_and_raise_db_error(
+                        db_exc, op="upsert_target.update",
+                        ctx={"target_id": target_id, "channel_id": channel_id,
+                             "name": name},
+                    )
                 return {"id": row["id"], "updated_at": row["updated_at"], "created": False}
             else:
                 # 2026-09-07 第二轮：INSERT 不写 agent_name 列（NULL 落库，
                 # 读取时回退到 channel.agent_name）
-                row = await self._db.fetchrow(
-                    """
-                    INSERT INTO notification_targets
-                        (channel_id, target_type, name, config,
-                         subject_template, body_template, enabled,
-                         created_by_user_id)
-                    VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
-                    RETURNING id, updated_at
-                    """,
-                    channel_id, target_type, name, config_json,
-                    subject_template, body_template, enabled, created_by_user_id,
-                )
+                try:
+                    row = await self._db.fetchrow(
+                        """
+                        INSERT INTO notification_targets
+                            (channel_id, target_type, name, config,
+                             subject_template, body_template, enabled,
+                             created_by_user_id)
+                        VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
+                        RETURNING id, updated_at
+                        """,
+                        channel_id, target_type, name, config_json,
+                        subject_template, body_template, enabled, created_by_user_id,
+                    )
+                except Exception as db_exc:
+                    self._log_and_raise_db_error(
+                        db_exc, op="upsert_target.insert",
+                        ctx={"channel_id": channel_id, "name": name,
+                             "target_type": target_type},
+                    )
                 return {"id": row["id"], "updated_at": row["updated_at"], "created": True}
 
     async def delete_target(self, target_id: int) -> bool:

@@ -750,3 +750,199 @@ def test_exception_hierarchy():
     """异常体系：NotFound/Validation 都是 Error 子类。"""
     assert issubclass(NotificationConfigNotFoundError, NotificationConfigError)
     assert issubclass(NotificationConfigValidationError, NotificationConfigError)
+
+
+# =============================================================================
+# 2026-09-10：asyncpg 异常映射 + DB 索引 regression（second enabled channel）
+# =============================================================================
+
+
+def test_db_exception_extracts_sqlstate_and_constraint():
+    """_extract_db_error_detail：从异常提取 sqlstate/constraint_name/message。
+
+    测试环境 asyncpg 是 Mock 对象，需要 patch 出真实的 PostgresError 基类让 isinstance 工作。
+    """
+    from app.shared.utils.notification import notification_config_service as svc_mod
+    from app.shared.utils.notification.notification_config_service import (
+        NotificationConfigService,
+    )
+
+    class FakePostgresErrorBase(Exception):
+        """模拟 asyncpg.PostgresError 基类。"""
+
+    class FakePostgresError(FakePostgresErrorBase):
+        sqlstate = "23505"
+        constraint_name = "idx_notification_channels_enabled"
+        table_name = "notification_channels"
+        detail = "Key (channel_type)=(feishu) already exists."
+
+    # 临时把 svc_mod.asyncpg 替换成含 PostgresError 真实类
+    original_asyncpg = svc_mod.asyncpg
+    svc_mod.asyncpg = type("FakeAsyncpgModule", (), {"PostgresError": FakePostgresErrorBase})
+    try:
+        err = FakePostgresError("duplicate key value violates unique constraint")
+        detail = NotificationConfigService._extract_db_error_detail(err)
+    finally:
+        svc_mod.asyncpg = original_asyncpg
+
+    assert detail["exception_type"] == "FakePostgresError"
+    assert detail["sqlstate"] == "23505"
+    assert detail["constraint_name"] == "idx_notification_channels_enabled"
+    assert detail["table_name"] == "notification_channels"
+    assert detail["detail"] == "Key (channel_type)=(feishu) already exists."
+    assert "duplicate key" in detail["message"]
+
+
+def test_db_exception_extract_handles_non_postgres_error():
+    """_extract_db_error_detail：非 asyncpg 异常只返回基础字段（type + str）。"""
+    from app.shared.utils.notification.notification_config_service import (
+        NotificationConfigService,
+    )
+
+    err = ValueError("普通 Python 异常")
+    detail = NotificationConfigService._extract_db_error_detail(err)
+    assert detail["exception_type"] == "ValueError"
+    assert detail["message"] == "普通 Python 异常"
+    # 非 PostgresError 不应有 sqlstate / constraint_name
+    assert "sqlstate" not in detail
+    assert "constraint_name" not in detail
+
+
+def test_log_and_raise_db_error_wraps_as_notification_config_error():
+    """_log_and_raise_db_error 把 DB 异常封装为 NotificationConfigError（含 sqlstate/constraint）。
+
+    关键契约：service 层不再让 raw asyncpg 异常逃逸，必须抛 NotificationConfigError
+    让 router 层 _handle_service_error 能映射 500 + 把可读 message 透给前端。
+    """
+    from app.shared.utils.notification import notification_config_service as svc_mod
+    from app.shared.utils.notification.notification_config_service import (
+        NotificationConfigService,
+    )
+
+    class FakePostgresErrorBase(Exception):
+        """模拟 asyncpg.PostgresError 基类。"""
+
+    class FakeUniqueViolation(FakePostgresErrorBase):
+        sqlstate = "23505"
+        constraint_name = "notification_channels_name_type_uniq"
+        table_name = "notification_channels"
+        detail = "Key (name, channel_type)=(运维通知, feishu) already exists."
+
+    original_asyncpg = svc_mod.asyncpg
+    svc_mod.asyncpg = type("FakeAsyncpgModule", (), {"PostgresError": FakePostgresErrorBase})
+    try:
+        svc = _make_service_with_valid_fernet()
+        with pytest.raises(NotificationConfigError) as exc_info:
+            svc._log_and_raise_db_error(
+                FakeUniqueViolation("duplicate key value violates unique constraint"),
+                op="upsert_channel.insert",
+                ctx={"name": "运维通知", "channel_type": "feishu"},
+            )
+    finally:
+        svc_mod.asyncpg = original_asyncpg
+
+    msg = str(exc_info.value)
+    assert "upsert_channel.insert 失败" in msg
+    assert "notification_channels_name_type_uniq" in msg, (
+        "message 必须含 constraint_name，便于前端一眼看懂"
+    )
+    assert "23505" in msg, "message 必须含 sqlstate"
+
+
+def test_upsert_channel_wraps_db_errors_as_notification_config_error():
+    """upsert_channel INSERT 抛 DB 异常 → NotificationConfigError（不再 raw asyncpg）。"""
+    from app.shared.utils.notification import notification_config_service as svc_mod
+
+    class FakePostgresErrorBase(Exception):
+        """模拟 asyncpg.PostgresError 基类。"""
+
+    class UniqueViolationFake(FakePostgresErrorBase):
+        sqlstate = "23505"
+        constraint_name = "notification_channels_name_type_uniq"
+        table_name = "notification_channels"
+        detail = "Key (name, channel_type)=(运维通知, feishu) already exists."
+
+    svc, db = _make_service_with_mock_db()
+    # mock fetchrow 调用顺序：existing=None → INSERT 抛 UniqueViolation
+    db.fetchrow = AsyncMock(side_effect=[
+        None,  # existing 查询 → None
+        UniqueViolationFake("duplicate key value"),  # INSERT 失败
+    ])
+    config = _valid_feishu_config(svc)
+
+    original_asyncpg = svc_mod.asyncpg
+    svc_mod.asyncpg = type("FakeAsyncpgModule", (), {"PostgresError": FakePostgresErrorBase})
+    try:
+        with pytest.raises(NotificationConfigError) as exc_info:
+            asyncio.run(svc.upsert_channel(
+                channel_type="feishu",
+                name="运维通知",
+                display_name="",
+                config=config,
+                enabled=True,
+                is_default=False,
+                created_by_user_id=1,
+            ))
+    finally:
+        svc_mod.asyncpg = original_asyncpg
+
+    msg = str(exc_info.value)
+    assert "upsert_channel.insert 失败" in msg
+    assert "notification_channels_name_type_uniq" in msg
+    assert "23505" in msg
+
+
+def test_upsert_channel_inserts_second_enabled_channel_same_channel_type():
+    """2026-09-10 regression: 同 channel_type 下插入第二条 enabled=TRUE 行不再 unique 冲突。
+
+    历史 bug: idx_notification_channels_enabled UNIQUE 索引误继承自 email 单 SMTP 表，
+    与 WS 多实例架构（每应用独立 WS）冲突。修复后此用例应通过。
+    本用例在 service 层 mock 模拟：用 existing=None + INSERT 不抛 unique violation 验证。
+    （真实 DB 层验证由 init_all_tables.sql DROP INDEX 段保证）
+    """
+    svc, db = _make_service_with_mock_db()
+    # mock execute（第一条 is_default=True 触发原子切换）
+    db.execute = AsyncMock(return_value="UPDATE 0")
+    # 模拟 INSERT 成功（不被 unique 索引阻挡）
+    db.fetchrow = AsyncMock(side_effect=[
+        None,  # existing 第一条
+        {"id": 1, "updated_at": "2026-09-10"},  # 第一条 INSERT
+    ])
+    config = _valid_feishu_config(svc)
+    result = asyncio.run(svc.upsert_channel(
+        channel_type="feishu",
+        name="app-1",
+        display_name="应用1",
+        config=config,
+        enabled=True,
+        is_default=True,
+        created_by_user_id=1,
+    ))
+    assert result["created"] is True
+    assert result["id"] == 1
+    # 关键断言：第二条 enabled=TRUE 行也允许插入
+    db.fetchrow = AsyncMock(side_effect=[
+        None,  # existing 第二条
+        {"id": 2, "updated_at": "2026-09-10"},  # 第二条 INSERT
+    ])
+    result2 = asyncio.run(svc.upsert_channel(
+        channel_type="feishu",
+        name="app-2",
+        display_name="应用2",
+        config=config,
+        enabled=True,
+        is_default=False,
+        created_by_user_id=1,
+    ))
+    assert result2["created"] is True
+    assert result2["id"] == 2
+
+
+# 内部 helper：模拟 asyncpg UniqueViolationError
+# （已迁移到各 test 函数内部定义，避免模块级类污染其他用例的 isinstance 路径）
+# class UniqueViolationFake(Exception):
+#     """模拟 asyncpg.UniqueViolationError，仅供测试。"""
+#     sqlstate = "23505"
+#     constraint_name = "notification_channels_name_type_uniq"
+#     table_name = "notification_channels"
+#     detail = "Key (name, channel_type)=(app-1, feishu) already exists."
