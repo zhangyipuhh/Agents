@@ -184,6 +184,7 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 - 加密字段写在 `config.app_id_encrypted` / `config.app_secret_encrypted`（飞书）/ `config.app_key_encrypted`（钉钉）等，**TEXT 形式**（Fernet encrypt → ascii decode），与邮件 `password_encrypted` 同款约定
 - 复用 `DEVOPS_CREDENTIAL_KEY`，**不**引入新密钥
 - 字段 type=JSONB + `jsonb_typeof(config) = 'object'` 守卫（防历史脏数据，与 `users.allowed_agents` 2026-08-14 同款修复）
+- **写入端契约（2026-09-10 生产 23514 修复）**：`upsert_channel` / `upsert_target` 的 `$n::jsonb` 参数必须传 **dict**，禁止传 `json.dumps` 后的 str——连接级 jsonb codec（`database.py::_init_connection`，`encoder=json.dumps`）对 str 会二次编码，落库成 JSONB string 被 CHECK 拒绝；详见 `memory/database.md`「JSONB 写入契约」
 
 ### 4. 菜单与路由命名（与「邮件平级」语义）
 

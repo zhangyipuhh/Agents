@@ -16,6 +16,7 @@ NotificationConfigService 单元测试(2026-09-03 新增)。
 """
 import asyncio
 import json
+import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -243,10 +244,16 @@ def test_upsert_channel_strips_legacy_fields():
     )
     insert_call = insert_calls[0]
     # service.upsert_channel INSERT 签名：
-    # fetchrow(sql, name, display_name, channel_type, config_json, enabled, is_default, created_by_user_id)
-    # → args[0]=sql, args[1]=name, args[2]=display_name, args[3]=channel_type, args[4]=config_json
-    config_json = insert_call.args[4]
-    cfg = json.loads(config_json)
+    # fetchrow(sql, name, display_name, channel_type, config, enabled, is_default, created_by_user_id)
+    # → args[0]=sql, args[1]=name, args[2]=display_name, args[3]=channel_type, args[4]=config
+    # 契约(2026-09-10 生产 23514 修复)：config 必须是 dict,由连接级 jsonb codec
+    # (database.py::_init_connection, encoder=json.dumps) 自动 encode;禁止传
+    # json.dumps 后的 str(codec 对 str 二次编码 → JSONB string → CHECK 拒绝)。
+    cfg = insert_call.args[4]
+    assert isinstance(cfg, dict), (
+        f"jsonb 参数必须传 dict(codec 自动 encode),实际 {type(cfg).__name__}: "
+        f"{str(cfg)[:120]}"
+    )
     # agent_name 保留
     assert cfg.get("agent_name") == "project"
     # legacy 字段被剥除
@@ -365,6 +372,65 @@ def _valid_feishu_config(svc: NotificationConfigService) -> dict:
         "default_receive_id": "oc_xxx",  # legacy（写入剥除）
         "default_receive_id_type": "chat_id",  # legacy（写入剥除）
     }
+
+
+def _simulate_pg_jsonb_object_write(value):
+    """模拟生产 jsonb 写入全链路（完整语义层 fake helper）。
+
+    复刻 ``app/core/database.py::_init_connection`` 注册的
+    ``set_type_codec('jsonb', encoder=json.dumps)`` 语义：codec 对绑定到
+    jsonb 的参数**无条件**调用 ``json.dumps``——
+
+    - 传 dict → ``'{"a": 1}'`` → PG 解析为 JSONB object ✓
+    - 传 str（应用层已 ``json.dumps``） → ``'"{\\"a\\": 1}"'`` → PG 解析为
+      JSONB **string** ✗ → 触发 ``notification_*_config_object_chk``
+      （sqlstate 23514，即 2026-09-10 生产 500 的根因）
+
+    参数:
+        value: service 层传给 ``$n::jsonb`` 位置的原始参数。
+
+    返回:
+        模拟落库后读取的 Python 形态（``json.loads(codec 输出)``）。
+
+    异常:
+        AssertionError: 落库形态非 dict（等价于生产 CHECK 约束拒绝）。
+    """
+    wire_text = json.dumps(value, ensure_ascii=False)  # codec encoder 无条件调用
+    stored = json.loads(wire_text)  # PG 端解析 JSONB 文本
+    if not isinstance(stored, dict):
+        raise AssertionError(
+            "模拟 notification_*_config_object_chk 拒绝(23514): "
+            f"落库 jsonb_typeof={type(stored).__name__} != object; "
+            "根因=jsonb 参数传了 str 被 codec 二次编码"
+        )
+    return stored
+
+
+def _assert_write_calls_jsonb_params_are_dicts(db: MagicMock) -> None:
+    """断言 mock db 所有写调用中 ``$n::jsonb`` 位置的参数均为 dict。
+
+    按 SQL 文本中的 ``$n::jsonb`` 标记定位参数下标,逐一断言类型并通过
+    ``_simulate_pg_jsonb_object_write`` 走完 codec + CHECK 模拟链路。
+
+    参数:
+        db: ``_make_service_with_mock_db`` 返回的 mock db。
+
+    异常:
+        AssertionError: 任一 jsonb 参数非 dict 或 codec 模拟后落库非 object。
+    """
+    for method_name in ("fetchrow", "execute"):
+        for call in getattr(db, method_name).call_args_list:
+            if not call.args:
+                continue
+            sql = str(call.args[0])
+            for match in re.finditer(r"\$(\d+)::jsonb", sql):
+                idx = int(match.group(1))  # $n 是 1-based,对应 args[n]
+                value = call.args[idx]
+                assert isinstance(value, dict), (
+                    f"{method_name} 的 ${idx}::jsonb 参数必须传 dict(codec 自动 "
+                    f"encode),实际 {type(value).__name__}: {str(value)[:120]}"
+                )
+                _simulate_pg_jsonb_object_write(value)
 
 
 def test_list_channels_with_db_none_returns_empty():
@@ -553,6 +619,74 @@ def test_delete_target_returns_true_on_existing():
     db.execute = AsyncMock(return_value="DELETE 1")
     result = asyncio.run(svc.delete_target(1))
     assert result is True
+
+
+# =============================================================================
+# P1: JSONB 传参契约回归（2026-09-10 生产 23514 CheckViolationError）
+# =============================================================================
+
+
+def test_upsert_channel_passes_dict_to_jsonb_param():
+    """回归：upsert_channel INSERT/UPDATE 的 config 参数必须传 dict 而非 str。
+
+    根因（2026-09-10 生产 500）：连接级 jsonb codec(encoder=json.dumps)对
+    str 参数二次编码 → 落库 JSONB string → notification_channels_config_object_chk
+    (jsonb_typeof='object') 拒绝。本用例锁定「传 dict」契约,防回退。
+    """
+    svc, db = _make_service_with_mock_db()
+    db.fetchrow = AsyncMock(side_effect=[
+        None,  # SELECT existing → None → INSERT
+        {"id": 10, "updated_at": "2026-09-10"},
+        {"id": 10},  # SELECT existing → 已存在 → UPDATE
+        {"id": 10, "updated_at": "2026-09-10"},
+    ])
+    config = _valid_feishu_config(svc)
+    asyncio.run(svc.upsert_channel(
+        channel_type="feishu", name="ops-bot", display_name="运维机器人",
+        config=config, enabled=True, is_default=False, created_by_user_id=1,
+    ))
+    asyncio.run(svc.upsert_channel(
+        channel_type="feishu", name="ops-bot", display_name="运维机器人",
+        config=config, enabled=True, is_default=False, created_by_user_id=1,
+    ))
+    _assert_write_calls_jsonb_params_are_dicts(db)
+
+
+def test_upsert_target_passes_dict_to_jsonb_param():
+    """回归：upsert_target INSERT/UPDATE 的 config 参数必须传 dict 而非 str。"""
+    svc, db = _make_service_with_mock_db()
+    db.fetchrow = AsyncMock(side_effect=[
+        {"channel_type": "feishu"},  # SELECT channel_type（channel 存在）
+        {"id": 20, "updated_at": "2026-09-10"},  # INSERT RETURNING
+        {"channel_type": "feishu"},  # SELECT channel_type（第二次调用）
+        {"created_by_user_id": 1},  # SELECT existing（UPDATE 路径）
+        {"id": 20, "updated_at": "2026-09-10"},  # UPDATE RETURNING
+    ])
+    config = {"chat_id": "oc_xxx", "chat_type": "chat_id"}
+    asyncio.run(svc.upsert_target(
+        channel_id=1, target_type="feishu.chat", name="alert-group",
+        config=dict(config), agent_name="project", subject_template="",
+        body_template="", enabled=True, created_by_user_id=1,
+    ))
+    asyncio.run(svc.upsert_target(
+        channel_id=1, target_type="feishu.chat", name="alert-group",
+        config=dict(config), agent_name="project", subject_template="",
+        body_template="", enabled=True, created_by_user_id=1, target_id=20,
+    ))
+    _assert_write_calls_jsonb_params_are_dicts(db)
+
+
+def test_jsonb_codec_guard_rejects_str_param():
+    """反向用例：证明 codec 模拟 guard 能捕获「传 str 给 jsonb 参数」回归。
+
+    若未来有人把 service 改回 json.dumps 传 str,guard 必须像生产 CHECK 一样
+    拒绝;仅正向断言 happy path = 100% 漏检该根因（本次生产事故的教训）。
+    """
+    # 旧反模式：应用层先 json.dumps → codec 二次编码 → JSONB string → 拒绝
+    with pytest.raises(AssertionError, match="二次编码"):
+        _simulate_pg_jsonb_object_write(json.dumps({"a": 1}, ensure_ascii=False))
+    # 正确契约：传 dict → codec 一次编码 → JSONB object → 通过
+    assert _simulate_pg_jsonb_object_write({"a": 1}) == {"a": 1}
 
 
 # =============================================================================
@@ -794,13 +928,31 @@ def test_db_exception_extracts_sqlstate_and_constraint():
 
 
 def test_db_exception_extract_handles_non_postgres_error():
-    """_extract_db_error_detail：非 asyncpg 异常只返回基础字段（type + str）。"""
+    """_extract_db_error_detail：非 asyncpg 异常只返回基础字段（type + str）。
+
+    注意：根 conftest 会话级把 ``sys.modules["asyncpg"]`` 替换为 ``Mock()``，
+    导致 service 模块级 ``asyncpg.PostgresError`` 不是 type（isinstance 会
+    TypeError）。仿照邻居用例，临时把 ``svc_mod.asyncpg`` 换成带真实异常
+    基类的 fake 模块。
+    """
+    from app.shared.utils.notification import notification_config_service as svc_mod
     from app.shared.utils.notification.notification_config_service import (
         NotificationConfigService,
     )
 
-    err = ValueError("普通 Python 异常")
-    detail = NotificationConfigService._extract_db_error_detail(err)
+    class FakePostgresErrorBase(Exception):
+        """模拟 asyncpg.PostgresError 基类。"""
+
+    original_asyncpg = svc_mod.asyncpg
+    svc_mod.asyncpg = type(
+        "FakeAsyncpgModule", (), {"PostgresError": FakePostgresErrorBase}
+    )
+    try:
+        err = ValueError("普通 Python 异常")
+        detail = NotificationConfigService._extract_db_error_detail(err)
+    finally:
+        svc_mod.asyncpg = original_asyncpg
+
     assert detail["exception_type"] == "ValueError"
     assert detail["message"] == "普通 Python 异常"
     # 非 PostgresError 不应有 sqlstate / constraint_name

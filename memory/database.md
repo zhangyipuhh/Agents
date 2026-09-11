@@ -581,7 +581,8 @@ await conn.set_type_codec(
 
 在 `format='text'` 协议下,asyncpg 写入行为：
 - 传 Python dict / list → codec encoder → JSON 文本 → PG 端按 JSONB 解析 → 存为 JSONB object/array
-- 传 Python string(已是 JSON 文本) → codec 不再 encode → PG 端按 JSONB 解析字符串字面量 → 存为 **JSONB string 类型**(双层编码:外层 `""` 包裹 dict/array 文本)
+- 传 Python string(已是 JSON 文本) → codec encoder 对 str **仍会调用 `json.dumps`**（二次编码，
+  产出带外层 `""` + 转义的 JSON 字符串字面量）→ PG 端解析为 **JSONB string 类型**
 
 **契约**：**应用层不应再 `json.dumps` JSONB 字段**。直接传 dict / list 即可,codec 会自动处理。
 
@@ -636,6 +637,22 @@ WHERE jsonb_typeof(state_schema) = 'string' OR state_schema IS NULL;
 - `WHERE jsonb_typeof = 'string' OR IS NULL` 保证幂等:已修过的 object / array 不会被覆盖
 - 14.5.3 / 14.5.4 (tool_bindings / skill_bindings) 解析失败 fallback 到 `'[]'::jsonb`
 - 14.4 节 WHERE 也加 `jsonb_typeof = 'object'` 防御,避免 array 与 object `||` 合并产生 array 元素
+
+**已知违反点修复与存量技术债（2026-09-10）**：
+
+- **已修复**：`notification_config_service.py::upsert_channel / upsert_target`（2026-09-03 新建时
+  回退到旧反模式，4 处 `json.dumps + ::jsonb`）。`notification_channels` / `notification_targets`
+  是首批带 `jsonb_typeof = 'object'` CHECK 的表，生产首次写入即被 23514 拦截（两张表此前从未
+  成功写入，无存量脏数据）。回归保护：`test_notification_config_service.py` 新增
+  `_simulate_pg_jsonb_object_write`（完整语义层 fake helper，复刻 codec 对 str 二次编码 +
+  CHECK 拒绝链路）+ `_assert_write_calls_jsonb_params_are_dicts` + 3 个用例
+  （channel/target 传 dict 断言 + guard 反向用例）。
+- **存量技术债**（相同反模式，但所在表无 CHECK 约束，靠读取端 `isinstance(str)` 二次解码
+  防御维持病态平衡，后续逐步迁移为传 dict/list）：`user_db.py`（allowed_agents ×2）、
+  `mfa_service.py`（recovery_code_hashes ×5）、`api_config_service.py`、`devops_server_service.py`、
+  `task_scheduler_service.py`、`log_service.py`、`inspection_script_service.py`、`mcp_service.py`、
+  `tool_service.py`、`conversation_db.py`。`users.allowed_agents` 的 JSONB string 历史脏数据
+  （2026-08-14 normalize 迁移）即此反模式的化石证据。
 
 **未修复范围**：其他 service 里仍存在的 ~25 处 `json.dumps`(mcp_service / tool_service /
 task_scheduler_service / user_db / devops_server_service / inspection_script_service /

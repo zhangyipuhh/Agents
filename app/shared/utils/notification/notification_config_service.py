@@ -427,6 +427,9 @@ class NotificationConfigService:
         # 此前直接依赖 json.dumps 结果,若上游意外传入非 dict(被 monkey-patch /
         # 第三方库序列化破坏)将触发 PG 23514 check_violation,日志暴露 constraint_name
         # 但用户体验差;此处提前 fail-fast 抛出 ValidationError(400)避免走到 DB 层。
+        # 传参契约:SQL $n::jsonb 参数必须传 dict(由 database.py jsonb codec 自动
+        # encode),禁止传 json.dumps 后的 str —— codec 对 str 会二次编码,
+        # 落库成 JSONB string 被 notification_channels_config_object_chk 拒绝。
         try:
             config_json = json.dumps(config_db, ensure_ascii=False)
         except (TypeError, ValueError) as exc:
@@ -482,7 +485,7 @@ class NotificationConfigService:
                         WHERE id = $5
                         RETURNING id, updated_at
                         """,
-                        display_name, config_json, enabled, is_default, existing["id"],
+                        display_name, config_db, enabled, is_default, existing["id"],
                     )
                 except Exception as db_exc:
                     self._log_and_raise_db_error(
@@ -506,7 +509,7 @@ class NotificationConfigService:
                         VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
                         RETURNING id, updated_at
                         """,
-                        name, display_name, channel_type, config_json, enabled,
+                        name, display_name, channel_type, config_db, enabled,
                         is_default, created_by_user_id,
                     )
                 except Exception as db_exc:
@@ -780,7 +783,8 @@ class NotificationConfigService:
                     f"实际为: {chat_type!r}"
                 )
 
-        config_json = json.dumps(config, ensure_ascii=False)
+        # 传参契约:config dict 直接传给 $n::jsonb(codec 自动 encode),禁止 json.dumps
+        # (codec 对 str 二次编码 → JSONB string → 触发 config_object_chk 23514)
 
         async with self._write_lock:
             if target_id is not None:
@@ -814,7 +818,7 @@ class NotificationConfigService:
                         WHERE id = $7
                         RETURNING id, updated_at
                         """,
-                        target_type, name, config_json,
+                        target_type, name, config,
                         subject_template, body_template, enabled, target_id,
                     )
                 except Exception as db_exc:
@@ -837,7 +841,7 @@ class NotificationConfigService:
                         VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
                         RETURNING id, updated_at
                         """,
-                        channel_id, target_type, name, config_json,
+                        channel_id, target_type, name, config,
                         subject_template, body_template, enabled, created_by_user_id,
                     )
                 except Exception as db_exc:
