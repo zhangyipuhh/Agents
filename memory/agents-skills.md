@@ -383,7 +383,7 @@ DB `skills.location` / `skills.base_dir` 字段存储**相对项目根的 POSIX 
 **设计要点**：
 
 1. **State 字段**：`app/core/agent/AgentConfig.py::AgentState` 新增 `agent_name: Optional[str] = None` 字段；工具通过 `runtime.state.get("agent_name")` 读取
-2. **注入位置**：包装类构造初始 state 时写入 `agent_name="<dir_name>"`（如 `app/features/map_agent/MapAgent.py::stream()` 中 `MapAgentState(..., agent_name="map_agent")`，与 `*AgentConfig.name` 默认值保持一致；map_agent 的 `agent_name` 通过 `UnifiedAgentConfig.name` 由 AgentConfigService 从数据库加载，`Agent.__init__` 透传到 `self.agent_name`）
+2. **注入位置**（2026-09-11 fix）：`AgentConfigService.build_agent_instance` 构造 `input_state = config.state_class(**state_kwargs)` 时，按优先级注入 `agent_name` —— 1) 调用方 `state_class_kwargs["agent_name"]`；2) `config.name`（由 AgentConfigService 从 DB `agents.name` 加载）。**历史 bug**：2026-09-11 之前该字段在所有子 Agent 的 state 构造里都未写入（如 `HtAgent.py:159` `HtAgentState(messages=...)` 不含 `agent_name`），导致 `runtime.state.agent_name` 永远是 None，依赖此字段的工具（feishu 按 agent 路由、SkillsService agent 维度实例）全部静默失效——SkillTools 退化到全局 SkillsService、feishu 报「未识别当前智能体」错误。
 3. **不修改**：`AgentContext`（用户明确要求保持不可变配置语义）；`SkillsService._scan` 覆盖策略；`SkillsAwarePrompt` 内部取值链路（已通过 `Agent.self.agent_name` 走通）
 
 **降级查找约定**（`app/core/tools/SkillTools.py` 新增 4 个辅助函数，原 `app/core/skills/tool.py` 已迁出）：

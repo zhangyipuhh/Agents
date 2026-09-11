@@ -2822,6 +2822,126 @@ def test_build_agent_instance_state_class_kwargs_passed_through(monkeypatch):
     assert len(captured_state_kwargs["messages"]) == 1
 
 
+def test_build_agent_instance_injects_agent_name_into_state(monkeypatch):
+    """测试 build_agent_instance 把 config.name 注入到 input_state.agent_name。
+
+    背景（2026-09-11）：feishu 按 agent 路由、SkillsService agent 维度实例等
+    工具通过 ``runtime.state.get("agent_name")`` 识别当前 agent 上下文。
+    历史实现未注入 agent_name 字段，导致 runtime.state.agent_name 永远为 None。
+    本用例验证修复后 input_state.agent_name 等于 config.name。
+    """
+    db = MagicMock()
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    captured_state_kwargs = {}
+
+    class CapturingState:
+        def __init__(self, **kwargs):
+            captured_state_kwargs.update(kwargs)
+
+    from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+    fake_config = UnifiedAgentConfig(
+        name="map_agent",
+        display_name="",
+        description="",
+        system_prompt="",
+        state_class=CapturingState,
+        context_class=MagicMock(return_value={"session_id": "test"}),
+    )
+
+    _patch_service_for_build(service, monkeypatch, fake_config=fake_config)
+
+    asyncio.run(
+        service.build_agent_instance(
+            agent_name="map_agent",
+            session_id="session-1",
+            message="hi",
+        )
+    )
+
+    # 核心断言：config.name 自动注入到 state 的 agent_name 字段
+    assert captured_state_kwargs.get("agent_name") == "map_agent"
+    # 断言：messages 字段被自动添加
+    assert "messages" in captured_state_kwargs
+
+
+def test_build_agent_instance_skips_agent_name_when_config_name_empty(monkeypatch):
+    """config.name 为空时不注入 agent_name 字段（避免污染 state）。"""
+    db = MagicMock()
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    captured_state_kwargs = {}
+
+    class CapturingState:
+        def __init__(self, **kwargs):
+            captured_state_kwargs.update(kwargs)
+
+    from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+    fake_config = UnifiedAgentConfig(
+        name="",  # 默认配置场景:name 为空
+        display_name="",
+        description="",
+        system_prompt="",
+        state_class=CapturingState,
+        context_class=MagicMock(return_value={"session_id": "test"}),
+    )
+
+    _patch_service_for_build(service, monkeypatch, fake_config=fake_config)
+
+    asyncio.run(
+        service.build_agent_instance(
+            agent_name="default",
+            session_id="session-1",
+            message="hi",
+        )
+    )
+
+    # config.name 为空时不注入 agent_name（保持默认 None）
+    assert "agent_name" not in captured_state_kwargs
+
+
+def test_build_agent_instance_state_class_kwargs_agent_name_overrides_config(monkeypatch):
+    """调用方通过 state_class_kwargs 显式传 agent_name 时,以调用方为准。"""
+    db = MagicMock()
+    db.fetch = AsyncMock(return_value=[])
+    loader = MagicMock()
+    service = AgentConfigService(db, loader)
+
+    captured_state_kwargs = {}
+
+    class CapturingState:
+        def __init__(self, **kwargs):
+            captured_state_kwargs.update(kwargs)
+
+    from app.shared.utils.agent.agent_config_service import UnifiedAgentConfig
+    fake_config = UnifiedAgentConfig(
+        name="map_agent",
+        display_name="",
+        description="",
+        system_prompt="",
+        state_class=CapturingState,
+        context_class=MagicMock(return_value={"session_id": "test"}),
+    )
+
+    _patch_service_for_build(service, monkeypatch, fake_config=fake_config)
+
+    asyncio.run(
+        service.build_agent_instance(
+            agent_name="map_agent",
+            session_id="session-1",
+            message="hi",
+            state_class_kwargs={"agent_name": "explicit_override"},
+        )
+    )
+
+    # 调用方显式传值优先
+    assert captured_state_kwargs.get("agent_name") == "explicit_override"
+
+
 def test_build_agent_instance_agent_not_found_raises(monkeypatch):
     """测试传入不存在的 agent_name 时抛 AgentNotFoundError。"""
     db = MagicMock()

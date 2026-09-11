@@ -481,6 +481,13 @@ class AgentConfigService:
         else:
             human_message = HumanMessage(content=message or "")
             state_kwargs: Dict[str, Any] = {"messages": [human_message]}
+            # 2026-09-11 fix：把 config.name 注入到 input_state 的 agent_name 字段，
+            # 工具通过 ``runtime.state.get("agent_name")`` 识别当前 agent 上下文
+            # （feishu 按 agent 路由、SkillsService agent 维度实例等）。
+            # 优先级：调用方 state_class_kwargs["agent_name"] > config.name
+            resolved_agent_name = (state_class_kwargs or {}).get("agent_name") or config.name
+            if resolved_agent_name:
+                state_kwargs["agent_name"] = resolved_agent_name
             if state_class_kwargs:
                 state_kwargs.update(state_class_kwargs)
             input_state = config.state_class(**state_kwargs)
