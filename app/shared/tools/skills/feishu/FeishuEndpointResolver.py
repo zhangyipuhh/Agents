@@ -183,7 +183,7 @@ async def resolve_current_endpoint(runtime: Any) -> Optional[Endpoint]:
     except (KeyError, TypeError) as exc:
         logger.warning(
             "[feishu_endpoint_resolver] service 返回字段缺失 agent=%s err=%s",
-            agent_name, exc,
+            agent_name, type(exc).__name__, exc_info=True,
         )
         return None
 

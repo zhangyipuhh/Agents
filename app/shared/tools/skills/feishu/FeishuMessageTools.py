@@ -20,9 +20,15 @@ FeishuMessageTools - 飞书消息发送工具集
     - 删除 receive_id / receive_id_type 参数（LLM 不显式传参，全部由后台解析）
     - 删除 _resolve_default_receive_via_db 旧逻辑（读 legacy default_receive_id）
     - 改走 FeishuEndpointResolver 按 agent 路由到 channel + target
+
+2026-09-11 重构：
+    - send_feishu_message 改 async 工具，直接 await service
+    - 阻塞型 lark SDK 调用经 asyncio.to_thread 卸载
+    - 杜绝旧同步桥接在 worker 线程无 event loop 的失败路径
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -131,7 +137,7 @@ def _make_tool_message(tool_call_id: str, content: Any):
 
 
 @tool(description="向当前智能体绑定的飞书群发送文本消息（Markdown 自动转交互式卡片）。无需指定接收方，后台按智能体自动路由。")
-def send_feishu_message(
+async def send_feishu_message(
     content: str,
     runtime: ToolRuntime = None,
 ) -> Command:
@@ -139,9 +145,9 @@ def send_feishu_message(
 
     步骤：
       1) 从 runtime.state.agent_name 拿当前智能体名（缺失返回错误）
-      2) 调 FeishuEndpointResolver.resolve_current_endpoint 解析 endpoint
+      2) await FeishuEndpointResolver.resolve_current_endpoint 解析 endpoint
       3) 用 build_lark_client 构造临时 lark.Client（按 channel 明文凭证）
-      4) 构造 CreateMessageRequest 发送到 endpoint.chat_id
+      4) 构造 CreateMessageRequest 发送到 endpoint.chat_id（经 asyncio.to_thread 卸载）
       5) 把发送结果封装为 ToolMessage 返回 Command
 
     Args:
@@ -174,7 +180,7 @@ def send_feishu_message(
         )
 
     # 2) 解析 endpoint（Resolver 内部已处理 service 未初始化 / channel 缺失 / target 缺失）
-    endpoint = resolve_current_endpoint(runtime)
+    endpoint = await resolve_current_endpoint(runtime)
     if endpoint is None:
         return Command(
             update={
@@ -228,7 +234,7 @@ def send_feishu_message(
     )
 
     try:
-        response = client.im.v1.message.create(request)
+        response = await asyncio.to_thread(client.im.v1.message.create, request)
         if not response.success():
             err_payload = {
                 "success": False,

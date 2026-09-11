@@ -189,8 +189,9 @@ def test_resolve_returns_none_and_logs_when_service_raises(monkeypatch, caplog):
     assert "resolve_agent_feishu_endpoint 失败" in caplog.text
 
 
-def test_resolve_returns_none_when_service_returns_partial_dict(monkeypatch):
+def test_resolve_returns_none_when_service_returns_partial_dict(monkeypatch, caplog):
     """service 返回 dict 但缺关键字段（KeyError）→ 返回 None + WARNING 日志。"""
+    import logging
     from app.shared.tools.skills.feishu import FeishuEndpointResolver as FER
 
     fake_svc = MagicMock()
@@ -201,9 +202,11 @@ def test_resolve_returns_none_when_service_returns_partial_dict(monkeypatch):
 
     monkeypatch.setattr(FER, "_get_notification_service", lambda: fake_svc)
 
-    ep = asyncio.run(resolve_current_endpoint(_make_runtime("project")))
+    with caplog.at_level(logging.WARNING):
+        ep = asyncio.run(resolve_current_endpoint(_make_runtime("project")))
 
     assert ep is None
+    assert "字段缺失" in caplog.text
 
 
 # -----------------------------------------------------------------------------

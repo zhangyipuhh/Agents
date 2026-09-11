@@ -10,6 +10,7 @@ FeishuMessageTools 单元测试（2026-09-11 重构：按 agent 路由）。
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import MagicMock
 
@@ -70,7 +71,7 @@ def test_send_feishu_message_signature_no_receive_id():
 
 def test_send_feishu_message_runtime_none_returns_error():
     """runtime=None → 返回「未识别当前智能体」错误。"""
-    result = send_feishu_message(content="hi", runtime=None)
+    result = asyncio.run(send_feishu_message(content="hi", runtime=None))
     payload = _parse_message_content(result)
     assert payload["success"] is False
     assert "未识别当前智能体" in payload["error"]
@@ -78,7 +79,7 @@ def test_send_feishu_message_runtime_none_returns_error():
 
 def test_send_feishu_message_missing_agent_name_returns_error():
     """runtime.state.agent_name 缺失 → 返回「未识别当前智能体」错误。"""
-    result = send_feishu_message(content="hello", runtime=_make_runtime(None))
+    result = asyncio.run(send_feishu_message(content="hello", runtime=_make_runtime(None)))
     payload = _parse_message_content(result)
     assert payload["success"] is False
     assert "未识别当前智能体" in payload["error"]
@@ -86,10 +87,12 @@ def test_send_feishu_message_missing_agent_name_returns_error():
 
 def test_send_feishu_message_no_endpoint_returns_config_hint(monkeypatch):
     """Resolver 返回 None → 返回「飞书设置」指引错误。"""
+    async def _fake_resolve_none(rt):
+        return None
     monkeypatch.setattr(
-        FeishuMessageTools, "resolve_current_endpoint", lambda rt: None
+        FeishuMessageTools, "resolve_current_endpoint", _fake_resolve_none
     )
-    result = send_feishu_message(content="hello", runtime=_make_runtime("ghost"))
+    result = asyncio.run(send_feishu_message(content="hello", runtime=_make_runtime("ghost")))
     payload = _parse_message_content(result)
     assert payload["success"] is False
     assert "飞书设置" in payload["error"]
@@ -105,15 +108,17 @@ def test_send_feishu_message_happy_path_text(monkeypatch):
     mock_client = MagicMock()
     mock_client.im.v1.message.create.return_value = mock_response
 
+    async def _fake_resolve(rt):
+        return _make_endpoint("oc_proj")
     monkeypatch.setattr(
         FeishuMessageTools, "resolve_current_endpoint",
-        lambda rt: _make_endpoint("oc_proj"),
+        _fake_resolve,
     )
     monkeypatch.setattr(
         FeishuMessageTools, "build_lark_client", lambda ep: mock_client
     )
 
-    result = send_feishu_message(content="hello", runtime=_make_runtime("project"))
+    result = asyncio.run(send_feishu_message(content="hello", runtime=_make_runtime("project")))
     payload = _parse_message_content(result)
     assert payload["success"] is True
     assert payload["message_id"] == "om_msg_001"
@@ -129,17 +134,19 @@ def test_send_feishu_message_happy_path_markdown_card(monkeypatch):
     mock_client = MagicMock()
     mock_client.im.v1.message.create.return_value = mock_response
 
+    async def _fake_resolve(rt):
+        return _make_endpoint()
     monkeypatch.setattr(
         FeishuMessageTools, "resolve_current_endpoint",
-        lambda rt: _make_endpoint(),
+        _fake_resolve,
     )
     monkeypatch.setattr(
         FeishuMessageTools, "build_lark_client", lambda ep: mock_client
     )
 
-    result = send_feishu_message(
+    result = asyncio.run(send_feishu_message(
         content="# 标题\n**粗体内容**", runtime=_make_runtime("project")
-    )
+    ))
     payload = _parse_message_content(result)
     assert payload["success"] is True
 
@@ -154,15 +161,17 @@ def test_send_feishu_message_api_failure_returns_error_payload(monkeypatch):
     mock_client = MagicMock()
     mock_client.im.v1.message.create.return_value = mock_response
 
+    async def _fake_resolve(rt):
+        return _make_endpoint()
     monkeypatch.setattr(
         FeishuMessageTools, "resolve_current_endpoint",
-        lambda rt: _make_endpoint(),
+        _fake_resolve,
     )
     monkeypatch.setattr(
         FeishuMessageTools, "build_lark_client", lambda ep: mock_client
     )
 
-    result = send_feishu_message(content="hi", runtime=_make_runtime("project"))
+    result = asyncio.run(send_feishu_message(content="hi", runtime=_make_runtime("project")))
     payload = _parse_message_content(result)
     assert payload["success"] is False
     assert payload["code"] == 230020
@@ -175,15 +184,17 @@ def test_send_feishu_message_api_exception_returns_error(monkeypatch):
     mock_client = MagicMock()
     mock_client.im.v1.message.create.side_effect = Exception("network down")
 
+    async def _fake_resolve(rt):
+        return _make_endpoint()
     monkeypatch.setattr(
         FeishuMessageTools, "resolve_current_endpoint",
-        lambda rt: _make_endpoint(),
+        _fake_resolve,
     )
     monkeypatch.setattr(
         FeishuMessageTools, "build_lark_client", lambda ep: mock_client
     )
 
-    result = send_feishu_message(content="hi", runtime=_make_runtime("project"))
+    result = asyncio.run(send_feishu_message(content="hi", runtime=_make_runtime("project")))
     payload = _parse_message_content(result)
     assert payload["success"] is False
     assert "飞书消息发送失败" in payload["error"]
@@ -194,15 +205,17 @@ def test_send_feishu_message_build_client_failure_returns_error(monkeypatch):
     """build_lark_client 抛异常 → 返回「客户端初始化失败」错误，不向上抛。"""
     def boom(ep):
         raise RuntimeError("lark sdk missing")
+    async def _fake_resolve(rt):
+        return _make_endpoint()
     monkeypatch.setattr(
         FeishuMessageTools, "resolve_current_endpoint",
-        lambda rt: _make_endpoint(),
+        _fake_resolve,
     )
     monkeypatch.setattr(
         FeishuMessageTools, "build_lark_client", boom
     )
 
-    result = send_feishu_message(content="hi", runtime=_make_runtime("project"))
+    result = asyncio.run(send_feishu_message(content="hi", runtime=_make_runtime("project")))
     payload = _parse_message_content(result)
     assert payload["success"] is False
     assert "飞书客户端初始化失败" in payload["error"]
@@ -217,18 +230,20 @@ def test_send_feishu_message_passes_tool_call_id(monkeypatch):
     mock_client = MagicMock()
     mock_client.im.v1.message.create.return_value = mock_response
 
+    async def _fake_resolve(rt):
+        return _make_endpoint()
     monkeypatch.setattr(
         FeishuMessageTools, "resolve_current_endpoint",
-        lambda rt: _make_endpoint(),
+        _fake_resolve,
     )
     monkeypatch.setattr(
         FeishuMessageTools, "build_lark_client", lambda ep: mock_client
     )
 
-    result = send_feishu_message(
+    result = asyncio.run(send_feishu_message(
         content="hi",
         runtime=_make_runtime("project", tool_call_id="call_xyz_789"),
-    )
+    ))
     assert result.update["messages"][0].tool_call_id == "call_xyz_789"
 
 
@@ -240,15 +255,58 @@ def test_send_feishu_message_returns_none_data_message_id_gracefully(monkeypatch
     mock_client = MagicMock()
     mock_client.im.v1.message.create.return_value = mock_response
 
+    async def _fake_resolve(rt):
+        return _make_endpoint()
     monkeypatch.setattr(
         FeishuMessageTools, "resolve_current_endpoint",
-        lambda rt: _make_endpoint(),
+        _fake_resolve,
     )
     monkeypatch.setattr(
         FeishuMessageTools, "build_lark_client", lambda ep: mock_client
     )
 
-    result = send_feishu_message(content="hi", runtime=_make_runtime("project"))
+    result = asyncio.run(send_feishu_message(content="hi", runtime=_make_runtime("project")))
     payload = _parse_message_content(result)
     assert payload["success"] is True
     assert payload["message_id"] is None
+
+
+def test_send_feishu_message_is_coroutine_function():
+    """send_feishu_message 必须是 async 工具（ToolNode await 调用，杜绝同步桥接回归）。"""
+    import inspect
+    target = getattr(send_feishu_message, "func", send_feishu_message)
+    if inspect.isfunction(target):
+        assert inspect.iscoroutinefunction(target)
+    else:
+        assert getattr(send_feishu_message, "coroutine", None) is not None
+
+
+def test_send_feishu_message_offloads_sdk_create_to_thread(monkeypatch):
+    """阻塞型 lark SDK 调用必须经 asyncio.to_thread 卸载，不占住主事件 loop。"""
+    calls = {"to_thread": 0}
+    real_to_thread = asyncio.to_thread
+
+    async def _spy_to_thread(func, *args, **kwargs):
+        calls["to_thread"] += 1
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", _spy_to_thread)
+
+    mock_response = MagicMock()
+    mock_response.success.return_value = True
+    mock_response.data.message_id = "om_msg_thread"
+    mock_client = MagicMock()
+    mock_client.im.v1.message.create.return_value = mock_response
+
+    async def _fake_resolve(rt):
+        return _make_endpoint("oc_proj")
+    monkeypatch.setattr(FeishuMessageTools, "resolve_current_endpoint", _fake_resolve)
+    monkeypatch.setattr(
+        FeishuMessageTools, "build_lark_client", lambda ep: mock_client
+    )
+
+    result = asyncio.run(send_feishu_message(content="hi", runtime=_make_runtime("project")))
+
+    payload = _parse_message_content(result)
+    assert payload["success"] is True
+    assert calls["to_thread"] == 1
