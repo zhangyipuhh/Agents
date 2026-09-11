@@ -4,23 +4,29 @@
 FeishuMessageTools - 飞书消息发送工具集
 
 职责：
-    - 通过 get_lark_client() 获取公共飞书客户端
-    - 调用 client.im.v1.message.create 发送文本消息
+    - 通过 FeishuEndpointResolver 按当前智能体（runtime.state.agent_name）解析
+      飞书 endpoint（channel + target + 明文凭证 + chat_id）
+    - 用 endpoint 的临时 lark.Client 发送文本 / Markdown 卡片
     - 错误以 ToolMessage 返回，不抛异常（遵循项目工具规范）
 
 工具清单：
-    - send_feishu_message  发送文本消息到指定群/用户
+    - send_feishu_message  发送文本消息到当前智能体绑定的飞书群
 
 注入与发现：
     - 仅使用 @tool(description=...) 装饰，不调用 register_tool
     - 工具元数据由 ToolRegistryService 通过源码扫描发现
+
+2026-09-11 重构（BREAKING）：
+    - 删除 receive_id / receive_id_type 参数（LLM 不显式传参，全部由后台解析）
+    - 删除 _resolve_default_receive_via_db 旧逻辑（读 legacy default_receive_id）
+    - 改走 FeishuEndpointResolver 按 agent 路由到 channel + target
 """
 from __future__ import annotations
 
 import json
 import logging
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 from langchain.tools import tool, ToolRuntime
 from langgraph.types import Command
@@ -31,61 +37,16 @@ try:
 except Exception:  # noqa: BLE001 - 测试环境被 conftest mock 时降级
     _RealToolMessage = None
 
-from app.core.config.settings import settings
-from app.shared.tools.skills.feishu.FeishuClient import get_lark_client
+from app.shared.tools.skills.feishu.FeishuEndpointResolver import (
+    ERROR_NO_AGENT_NAME,
+    build_lark_client,
+    resolve_current_endpoint,
+)
 from app.shared.tools.skills.feishu.MarkdownToCardConverter import (
     MarkdownToCardConverter,
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _get_notification_service():
-    """从 ``app.state.notification_config_service`` 取服务实例。
-
-    与 ``FeishuClient._get_notification_service`` 同款实现；保留独立
-    避免跨模块依赖。
-
-    Returns:
-        Optional[NotificationConfigService]: 未初始化时返回 None。
-    """
-    try:
-        from app.main import app as _fastapi_app  # 延迟 import
-
-        return getattr(_fastapi_app.state, "notification_config_service", None)
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _resolve_default_receive_via_db() -> tuple:
-    """从 DB 默认飞书渠道读取默认接收方（同步路径，走主 loop run_coroutine_threadsafe）。
-
-    Returns:
-        tuple[str, str, str]: (receive_id, receive_id_type, agent_name)。
-        任一字段缺失返回 ("", "", "")。
-    """
-    svc = _get_notification_service()
-    if svc is None:
-        return ("", "", "")
-    try:
-        import asyncio
-        import concurrent.futures
-
-        loop = asyncio.get_event_loop()
-        fut = asyncio.run_coroutine_threadsafe(
-            svc.resolve_default_channel("feishu"), loop
-        )
-        ch = fut.result(timeout=5.0)
-    except Exception:  # noqa: BLE001
-        return ("", "", "")
-    if ch is None:
-        return ("", "", "")
-    cfg = ch["config"]
-    return (
-        cfg.get("default_receive_id", "") or "",
-        cfg.get("default_receive_id_type", "chat_id") or "chat_id",
-        cfg.get("agent_name", "") or "",
-    )
 
 
 def _build_content_payload(content: str) -> tuple:
@@ -164,48 +125,57 @@ def _make_tool_message(tool_call_id: str, content: Any):
             self.tool_call_id = tool_call_id
 
         def __repr__(self) -> str:
-            return f"<_DuckMessage tool_call_id={self.tool_call_id!r} content={self.content[:80]!r}>"
+            return f"<_DuckMessage tool_call_id={tool_call_id!r} content={content[:80]!r}>"
 
     return _DuckMessage(text, tool_call_id)
 
 
-@tool(description="向飞书群或用户发送文本消息。需在 .env 中配置 feishu_app_id / feishu_app_secret。")
+@tool(description="向当前智能体绑定的飞书群发送文本消息（Markdown 自动转交互式卡片）。无需指定接收方，后台按智能体自动路由。")
 def send_feishu_message(
     content: str,
-    receive_id: Optional[str] = None,
-    receive_id_type: str = "",
     runtime: ToolRuntime = None,
 ) -> Command:
-    """发送飞书文本消息。
+    """发送飞书文本消息到当前智能体绑定的群。
 
     步骤：
-      1) 通过 get_lark_client() 取公共 client（凭证来自 settings.feishu）
-      2) 解析 receive_id / receive_id_type（缺省时回退到 settings.feishu 默认值）
-      3) 构造 CreateMessageRequest 并调用 client.im.v1.message.create
-      4) 把发送结果封装为 ToolMessage 返回 Command
+      1) 从 runtime.state.agent_name 拿当前智能体名（缺失返回错误）
+      2) 调 FeishuEndpointResolver.resolve_current_endpoint 解析 endpoint
+      3) 用 build_lark_client 构造临时 lark.Client（按 channel 明文凭证）
+      4) 构造 CreateMessageRequest 发送到 endpoint.chat_id
+      5) 把发送结果封装为 ToolMessage 返回 Command
 
     Args:
-        content: 文本消息内容
-        receive_id: 接收方 ID（群 chat_id / 用户 open_id 等）；
-            空则用 settings.feishu.feishu_default_receive_id
-        receive_id_type: 接收方类型（chat_id / open_id / user_id / email）；
-            空则用 settings.feishu.feishu_default_receive_id_type
-        runtime: LangChain ToolRuntime（自动注入）
+        content: 文本消息内容（Markdown 自动转交互式卡片）
+        runtime: LangChain ToolRuntime（自动注入，含 state.agent_name）
 
     Returns:
-        Command: 含 messages 的 LangChain 命令对象
+        Command: 含 messages 的 LangChain 命令对象；失败时 messages[0].content
+        为 ``{"success": False, "error": "..."}`` JSON。
     """
     tool_call_id = getattr(runtime, "tool_call_id", "unknown") if runtime else "unknown"
 
-    # 解析接收方（参数优先；缺省从 DB 默认飞书渠道解析，不再读 settings.feishu）
-    if receive_id:
-        target_receive_id = receive_id
-        target_receive_id_type = receive_id_type or "chat_id"
-    else:
-        db_default_id, db_default_type, _ = _resolve_default_receive_via_db()
-        target_receive_id = db_default_id
-        target_receive_id_type = receive_id_type or db_default_type or "chat_id"
-    if not target_receive_id:
+    # 1) agent_name 缺失
+    agent_name = None
+    try:
+        state = getattr(runtime, "state", None) if runtime else None
+        agent_name = state.get("agent_name") if state else None
+    except Exception:  # noqa: BLE001
+        agent_name = None
+    if not agent_name:
+        return Command(
+            update={
+                "messages": [
+                    _make_tool_message(
+                        tool_call_id,
+                        {"success": False, "error": ERROR_NO_AGENT_NAME},
+                    )
+                ]
+            }
+        )
+
+    # 2) 解析 endpoint（Resolver 内部已处理 service 未初始化 / channel 缺失 / target 缺失）
+    endpoint = resolve_current_endpoint(runtime)
+    if endpoint is None:
         return Command(
             update={
                 "messages": [
@@ -213,17 +183,20 @@ def send_feishu_message(
                         tool_call_id,
                         {
                             "success": False,
-                            "error": "receive_id 缺失:请传入参数或在「消息设置 → 飞书设置 → 应用设置」中配置默认飞书渠道的 default_receive_id",
+                            "error": (
+                                f"智能体 {agent_name!r} 飞书发送配置缺失，"
+                                "请到「消息设置 → 飞书设置」检查「应用设置」与「发送策略」"
+                            ),
                         },
                     )
                 ]
             }
         )
 
-    # 取 client
+    # 3) 构造 client
     try:
-        client = get_lark_client()
-    except RuntimeError as e:
+        client = build_lark_client(endpoint)
+    except Exception as e:  # noqa: BLE001
         return Command(
             update={
                 "messages": [
@@ -235,18 +208,17 @@ def send_feishu_message(
             }
         )
 
-    # 构造请求（参考 exmple.py）
+    # 4) 构造请求并发送
     from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
 
-    # Markdown 内容自动走交互式卡片（保证飞书侧正确渲染），纯文本仍走 msg_type=text。
     msg_type, content_str = _build_content_payload(content)
 
     request = (
         CreateMessageRequest.builder()
-        .receive_id_type(target_receive_id_type)
+        .receive_id_type(endpoint.chat_type)
         .request_body(
             CreateMessageRequestBody.builder()
-            .receive_id(target_receive_id)
+            .receive_id(endpoint.chat_id)
             .msg_type(msg_type)
             .content(content_str)
             .uuid(str(uuid.uuid4()))
@@ -267,7 +239,10 @@ def send_feishu_message(
             return Command(
                 update={"messages": [_make_tool_message(tool_call_id, err_payload)]}
             )
-
+        # 安全取 message_id（response.data 可能为 None）
+        msg_id = None
+        if response.data is not None:
+            msg_id = getattr(response.data, "message_id", None)
         return Command(
             update={
                 "messages": [
@@ -275,18 +250,17 @@ def send_feishu_message(
                         tool_call_id,
                         {
                             "success": True,
-                            "message_id": getattr(response.data, "message_id", None)
-                            if response.data
-                            else None,
-                            "receive_id": target_receive_id,
-                            "receive_id_type": target_receive_id_type,
+                            "message_id": msg_id,
+                            "chat_id": endpoint.chat_id,
+                            "chat_type": endpoint.chat_type,
+                            "agent_name": endpoint.agent_name,
                             "content": content,
                         },
                     )
                 ]
             }
         )
-    except Exception as e:  # noqa: BLE001 - 捕获所有并以通用错误返回
+    except Exception as e:  # noqa: BLE001
         return Command(
             update={
                 "messages": [
