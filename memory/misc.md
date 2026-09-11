@@ -215,6 +215,14 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 - **2026-09-10 fix**：§16.6 中 `notification_channels_config_object_chk` / `notification_targets_config_object_chk` 两个 JSONB CHECK 约束原写法无 `IF EXISTS`，重复执行 init_all_tables.sql 时 PG 报 `42710 duplicate_object` 并中断后续段（包括本节末尾的 `DROP INDEX`）。已改为 `DROP CONSTRAINT IF EXISTS + ADD CONSTRAINT` 模式（与 `devops_servers_inspection_script_id_fk` 3139 行同款）保证整段 SQL 幂等。
 - **2026-09-10 fix**：init_all_tables.sql 开头加 `ROLLBACK;` 行。Navicat / pgAdmin 等 GUI autocommit off 模式下，前一次执行遇错会把整段事务置为 aborted（PG `25P02 current transaction is aborted, commands ignored until end of transaction block`），后续所有幂等 SQL 也无法重跑。显式 `ROLLBACK` 重置到 idle（idle 状态下 PG 仅 WARNING "there is no transaction in progress"，不影响后续 BEGIN）。
 
+### 6.5 保存即生效（WS 热加载，2026-09-10 落地）
+
+- **触发链路**：`notification_router` 的 `create_channel` / `update_channel` / `delete_channel` 落库成功后调 `_apply_feishu_ws_change(request, channel_id)` → `FeishuWebSocketManager.apply_channel_change`（先 `shutdown()` 停旧实例 → 重读 DB 行 → enabled 则重启、禁用/删除则保持停止，返回是否运行态）；create/update 响应体附 `ws_applied: bool`。hook fail-soft：manager 未初始化或热加载异常仅 WARN，不影响已成功的 DB 响应
+- **`FeishuWebSocketService.shutdown(timeout=5)`**：置 `_should_run=False` → `run_coroutine_threadsafe(_ws_client._disconnect(), _thread_loop)` → `call_soon_threadsafe(loop.stop)` → `thread.join(timeout)`；全程异常容忍。`stop()` 保留旧语义（仅置标志，lifespan 关停用）
+- **`_run_ws_blocking` 不再调 SDK `start()`**：`_WS_START_LOCK`（threading.Lock）内 patch 模块级 `lark_oapi.ws.client.loop` + 首连 `_connect()`（失败按 SDK 语义 `_disconnect` + `_reconnect`，`ClientException` 不重连直抛），首连后 `create_task(_ping_loop)` + `run_forever()`（`_block_forever` 独立成方法供测试 monkeypatch）
+- **已知限制（存量竞态）**：SDK 模块级全局 `loop` 被多实例线程共享；热启动某渠道会重 patch 全局，其他运行中实例恰好在同一毫秒级窗口断线重连时可能受影响。`_WS_START_LOCK` 只压缩窗口不根治；彻底隔离需每渠道独立模块副本或进程级隔离，留作后续演进
+- `restart_channel` 由占位改为委托 `apply_channel_change`（async）；manager 新增 `_ops_lock`（asyncio.Lock）串行化热加载
+
 ### 7. 飞书 channel 绑智能体 / target 绑群（2026-09-07 第二轮落地，硬约束）
 
 > 用户原话：「应用设置应该是应用绑定智能体，发送策略是绑定要通知的对象（比如某个群），发送测试就是测试向这个群发交互信息」。
