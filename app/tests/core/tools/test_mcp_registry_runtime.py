@@ -418,16 +418,20 @@ def test_mcp_version_pinned_to_1x():
 
     assert major == 1, (
         f"mcp 版本必须落在 1.x（实际 {version_str}）。"
-        "mcp 2.x 与 langchain-mcp-adapters==0.2.1 不兼容,"
+        "mcp 2.x 与 langchain-mcp-adapters==0.3.2 不兼容,"
         "详见 memory/mcp.md「MCP 版本契约」章节"
     )
 
-    # streamable_http_client 是 1.28.0 引入的,langchain-mcp-adapters==0.2.1 必需
+    # 2026-09-11 校准：app/requirements.txt:124 当前锁 mcp==1.27.2（commit
+    # 7d461dd 2026-09-08 从 2.0.0 回退）；langchain-mcp-adapters==0.3.2 已不再
+    # 依赖 1.28.0 引入的 streamable_http_client。原断言 >=1.28 与 requirements
+    # 长期漂移，conda 同步后装出 1.27.2 即失败。下限放宽到 1.27 匹配 requirements。
     try:
         minor = int(parts[1])
     except (ValueError, IndexError):
         minor = 0
-    assert (major, minor) >= (1, 28), (
-        f"mcp 版本必须 ≥ 1.28（实际 {version_str}）,"
-        "否则 langchain-mcp-adapters==0.2.1 找不到 streamable_http_client"
+    assert (major, minor) >= (1, 27), (
+        f"mcp 版本必须 ≥ 1.27（实际 {version_str}）,"
+        "对齐 app/requirements.txt:124 的 mcp==1.27.2 锁定。"
+        "mcp 2.x 仍由 major==1 主断言拦截。"
     )
