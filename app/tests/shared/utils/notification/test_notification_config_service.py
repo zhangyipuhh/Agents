@@ -10,6 +10,7 @@ NotificationConfigService 单元测试(2026-09-03 新增)。
 - P1 target CRUD(target_type 必须以 channel_type 开头)
 - P1 list_enabled_agents
 - P1 resolve_default_channel(is_default 优先 → enabled 第一行)
+- P1 resolve_agent_feishu_endpoint(2026-09-11 新增：按 agent_name 一次返回 channel + target + 明文凭证)
 - P2 send_test_message 失败分支(channel_type 不一致/凭证空)
 
 不在本测试范围(由 router 测试覆盖):HTTP 路由 + ACL
@@ -1123,6 +1124,140 @@ def test_upsert_channel_wraps_db_errors_as_notification_config_error():
     assert "upsert_channel.insert 失败" in msg
     assert "notification_channels_name_type_uniq" in msg
     assert "23505" in msg
+
+
+# =============================================================================
+# P1: resolve_agent_feishu_endpoint（2026-09-11 新增，按 agent 路由）
+# =============================================================================
+
+
+def _fake_channel_row(config: dict, **overrides) -> dict:
+    """构造 _channel_to_internal 接受的完整 row dict（含全部 10 字段）。"""
+    row = {
+        "id": 11, "name": "feishu_proj", "display_name": "项目飞书",
+        "channel_type": "feishu", "config": config,
+        "enabled": True, "is_default": True,
+        "created_by_user_id": 1, "created_at": None, "updated_at": None,
+    }
+    row.update(overrides)
+    return row
+
+
+def _fake_target_row(**overrides) -> dict:
+    """构造 notification_targets 行（fetchrow 直接读字段，未走 _target_to_public）。"""
+    row = {
+        "id": 21, "channel_id": 11, "target_type": "feishu.chat",
+        "name": "项目群", "config": {"chat_id": "oc_proj", "chat_type": "chat_id"},
+        "enabled": True,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_resolve_agent_feishu_endpoint_happy_path(monkeypatch):
+    """按 agent_name 查到 channel + target + 明文凭证一次返回。"""
+    svc, db = _make_service_with_mock_db()
+    fake_enc_app_id = svc.encrypt_field("cli_real_app")
+    fake_enc_app_secret = svc.encrypt_field("real_secret")
+    ch_config = {
+        "app_id_encrypted": fake_enc_app_id,
+        "app_secret_encrypted": fake_enc_app_secret,
+        "log_level": "INFO",
+        "agent_name": "project",
+    }
+    db.fetchrow = AsyncMock(side_effect=[
+        _fake_channel_row(ch_config),
+        _fake_target_row(),
+    ])
+
+    result = asyncio.run(svc.resolve_agent_feishu_endpoint("project"))
+
+    assert result is not None
+    assert result["channel_id"] == 11
+    assert result["channel_name"] == "feishu_proj"
+    assert result["app_id"] == "cli_real_app"
+    assert result["app_secret"] == "real_secret"
+    assert result["log_level"] == "INFO"
+    assert result["target_id"] == 21
+    assert result["target_name"] == "项目群"
+    assert result["chat_id"] == "oc_proj"
+    assert result["chat_type"] == "chat_id"
+    assert result["agent_name"] == "project"
+
+
+def test_resolve_agent_feishu_endpoint_channel_not_found():
+    """agent_name 未匹配任何 enabled channel → 返回 None。"""
+    svc, db = _make_service_with_mock_db()
+    db.fetchrow = AsyncMock(return_value=None)
+    result = asyncio.run(svc.resolve_agent_feishu_endpoint("ghost_agent"))
+    assert result is None
+    # 仅调一次 fetchrow（channel 查询），target 查询不执行
+    assert db.fetchrow.call_count == 1
+
+
+def test_resolve_agent_feishu_endpoint_target_not_found():
+    """channel 存在但无 enabled target → 返回 None。"""
+    svc, db = _make_service_with_mock_db()
+    db.fetchrow = AsyncMock(side_effect=[
+        _fake_channel_row({"agent_name": "project"}),
+        None,  # target 查询无结果
+    ])
+    result = asyncio.run(svc.resolve_agent_feishu_endpoint("project"))
+    assert result is None
+
+
+def test_resolve_agent_feishu_endpoint_returns_none_when_db_disabled():
+    """svc._db is None → 返回 None（不抛异常）。"""
+    svc = NotificationConfigService(db=None, credential_key=VALID_FERNET_KEY)
+    result = asyncio.run(svc.resolve_agent_feishu_endpoint("project"))
+    assert result is None
+
+
+def test_resolve_agent_feishu_endpoint_empty_agent_name_returns_none():
+    """agent_name 空字符串 → 返回 None（防御性契约）。"""
+    svc, db = _make_service_with_mock_db()
+    db.fetchrow = AsyncMock()
+    result = asyncio.run(svc.resolve_agent_feishu_endpoint(""))
+    assert result is None
+    assert db.fetchrow.call_count == 0
+    result = asyncio.run(svc.resolve_agent_feishu_endpoint("   "))
+    assert result is None
+    assert db.fetchrow.call_count == 0
+
+
+def test_resolve_agent_feishu_endpoint_prefers_is_default_in_sql():
+    """channel 查询 SQL 含 is_default DESC + id ASC + LIMIT 1 防御脏数据。"""
+    svc, db = _make_service_with_mock_db()
+    db.fetchrow = AsyncMock(side_effect=[
+        _fake_channel_row({"agent_name": "project"}),
+        _fake_target_row(),
+    ])
+    asyncio.run(svc.resolve_agent_feishu_endpoint("project"))
+
+    ch_sql = db.fetchrow.call_args_list[0].args[0]
+    assert "config->>'agent_name' = $1" in ch_sql
+    assert "ORDER BY is_default DESC, id ASC" in ch_sql
+    assert "LIMIT 1" in ch_sql
+
+    tg_sql = db.fetchrow.call_args_list[1].args[0]
+    assert "FROM notification_targets" in tg_sql
+    assert "channel_id = $1" in tg_sql
+    assert "enabled = TRUE" in tg_sql
+    assert "ORDER BY id ASC" in tg_sql
+    assert "LIMIT 1" in tg_sql
+
+
+def test_resolve_agent_feishu_endpoint_missing_credentials_returns_empty_strings():
+    """config 缺 app_id/app_secret 加密字段 → 返回空字符串（不抛异常）。"""
+    svc, db = _make_service_with_mock_db()
+    db.fetchrow = AsyncMock(side_effect=[
+        _fake_channel_row({"agent_name": "project"}),  # 缺加密字段
+        _fake_target_row(),
+    ])
+    result = asyncio.run(svc.resolve_agent_feishu_endpoint("project"))
+    assert result is not None
+    assert result["app_id"] == ""
+    assert result["app_secret"] == ""
 
 
 def test_upsert_channel_inserts_second_enabled_channel_same_channel_type():

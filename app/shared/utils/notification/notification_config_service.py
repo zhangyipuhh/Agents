@@ -624,6 +624,100 @@ class NotificationConfigService:
             return None
         return self._channel_to_internal(row)
 
+    async def resolve_agent_feishu_endpoint(
+        self,
+        agent_name: str,
+    ) -> Optional[Dict[str, Any]]:
+        """按 agent_name 解析飞书发送端点（channel + target + 明文凭证）。
+
+        一对一契约：
+        - 一个 agent 对应一个飞书 channel（``config->>'agent_name' = agent_name``），
+          多条匹配时按 ``is_default DESC, id ASC LIMIT 1`` 取第一行。
+        - 一个 channel 对应一个 target，多条匹配时按 ``id ASC LIMIT 1`` 取第一个 enabled。
+
+        参数:
+            agent_name: 智能体名（如 ``"project"``）。
+
+        返回:
+            Optional[Dict[str, Any]]: 任一环节缺失返回 ``None``；成功时返回::
+
+                {
+                    "channel_id": int,
+                    "channel_name": str,
+                    "app_id": str,          # 明文（已 Fernet 解密）
+                    "app_secret": str,      # 明文（已 Fernet 解密）
+                    "log_level": str,
+                    "target_id": int,
+                    "target_name": str,
+                    "chat_id": str,
+                    "chat_type": str,
+                    "agent_name": str,
+                }
+        """
+        if self._db is None:
+            return None
+        if not agent_name or not agent_name.strip():
+            return None
+
+        # 1) 按 agent_name 查 channel（一对一：is_default 优先 → id ASC）
+        ch_row = await self._db.fetchrow(
+            """
+            SELECT id, name, display_name, channel_type, config, enabled,
+                   is_default, created_by_user_id, created_at, updated_at
+            FROM notification_channels
+            WHERE channel_type = 'feishu'
+              AND enabled = TRUE
+              AND config->>'agent_name' = $1
+            ORDER BY is_default DESC, id ASC
+            LIMIT 1
+            """,
+            agent_name,
+        )
+        if ch_row is None:
+            return None
+        ch = self._channel_to_internal(ch_row)
+
+        # 2) 查 channel 下第一个 enabled target（一对一防御脏数据）
+        tg_row = await self._db.fetchrow(
+            """
+            SELECT id, channel_id, target_type, name, config, enabled
+            FROM notification_targets
+            WHERE channel_id = $1 AND enabled = TRUE
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            ch["id"],
+        )
+        if tg_row is None:
+            return None
+
+        # 3) 解密凭证（缺字段返回空串，不抛异常）
+        cfg = ch["config"]
+        enc_app_id = cfg.get("app_id_encrypted") or ""
+        enc_app_secret = cfg.get("app_secret_encrypted") or ""
+        app_id = self.decrypt_field(enc_app_id) if enc_app_id else ""
+        app_secret = self.decrypt_field(enc_app_secret) if enc_app_secret else ""
+
+        tg_cfg = tg_row.get("config") or {}
+        if isinstance(tg_cfg, str):
+            try:
+                tg_cfg = json.loads(tg_cfg)
+            except json.JSONDecodeError:
+                tg_cfg = {}
+
+        return {
+            "channel_id": ch["id"],
+            "channel_name": ch["name"],
+            "app_id": app_id,
+            "app_secret": app_secret,
+            "log_level": cfg.get("log_level", "INFO") or "INFO",
+            "target_id": tg_row["id"],
+            "target_name": tg_row["name"],
+            "chat_id": tg_cfg.get("chat_id") or "",
+            "chat_type": tg_cfg.get("chat_type", "chat_id") or "chat_id",
+            "agent_name": agent_name,
+        }
+
     # ------------------------------------------------------------------
     # Target CRUD（目标 + 绑智能体 + 模板）
     # ------------------------------------------------------------------
