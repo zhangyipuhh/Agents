@@ -59,34 +59,135 @@ def _send_admin_email(to_list: list, subject: str, body: str) -> None:
         )
 
 
-def _send_feishu_to_admin(content: str) -> None:
-    """通过飞书发送通知给 admin(fail-soft,仅在 feishu_notify_enabled=True 时调用)。"""
+def _get_notification_service():
+    """从 ``app.state.notification_config_service`` 取服务实例（延迟 import）。
+
+    Returns:
+        Optional[NotificationConfigService]: 未初始化时返回 None。
+    """
     try:
-        from app.shared.tools.skills.feishu.FeishuClient import get_lark_client
+        from app.main import app as _fastapi_app
+
+        return getattr(_fastapi_app.state, "notification_config_service", None)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _build_admin_lark_client(channel: dict):
+    """用 channel 明文凭证构造临时 lark.Client（系统级通知用，不走全局单例）。
+
+    Args:
+        channel: ``resolve_default_channel("feishu")`` 返回的 channel dict，
+            ``config`` 中含 ``app_id_encrypted`` / ``app_secret_encrypted`` /
+            ``log_level``（密文）。
+
+    Returns:
+        lark.Client: 新实例。
+    """
+    import lark_oapi as lark
+
+    svc = _get_notification_service()
+    cfg = channel["config"]
+    app_id = svc.decrypt_field(cfg.get("app_id_encrypted") or "")
+    app_secret = svc.decrypt_field(cfg.get("app_secret_encrypted") or "")
+    log_level_str = cfg.get("log_level", "INFO") or "INFO"
+    log_level_map = {
+        "DEBUG": lark.LogLevel.DEBUG,
+        "INFO": lark.LogLevel.INFO,
+        "WARNING": lark.LogLevel.WARNING,
+        "ERROR": lark.LogLevel.ERROR,
+    }
+    return (
+        lark.Client.builder()
+        .app_id(app_id)
+        .app_secret(app_secret)
+        .log_level(log_level_map.get(log_level_str.upper(), lark.LogLevel.INFO))
+        .build()
+    )
+
+
+def _send_feishu_to_admin(content: str) -> None:
+    """通过飞书发送通知给 admin（fail-soft，仅在 feishu_notify_enabled=True 时调用）。
+
+    数据源（2026-09-11 切换）：
+        - 不再读 ``settings.feishu.feishu_default_receive_id``（.env 已废弃）
+        - 走 DB ``resolve_default_channel("feishu")`` 取全局默认渠道
+        - 该渠道下第一个 ``enabled=TRUE`` 的 target 作为接收方
+        - 用渠道明文凭证构造临时 ``lark.Client``（不走全局单例）
+    """
+    try:
+        svc = _get_notification_service()
+        if svc is None:
+            logger.warning(
+                "[registration_approval_service] notification_config_service 未初始化,跳过"
+            )
+            return
+
+        import asyncio
+
+        async def _resolve():
+            ch = await svc.resolve_default_channel("feishu")
+            if ch is None:
+                return None, None
+            targets = await svc.list_targets(channel_id=ch["id"])
+            enabled = [t for t in targets if t.get("enabled")]
+            return ch, (enabled[0] if enabled else None)
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                fut = asyncio.run_coroutine_threadsafe(_resolve(), loop)
+                ch, target = fut.result(timeout=5.0)
+            else:
+                ch, target = loop.run_until_complete(_resolve())
+        except RuntimeError:
+            # 测试环境 / 同步上下文无 loop:用 asyncio.run 一次性执行
+            try:
+                ch, target = asyncio.run(_resolve())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[registration_approval_service] 异步解析失败 err=%s",
+                    type(exc).__name__,
+                )
+                return
+
+        if ch is None:
+            logger.warning("[registration_approval_service] 无默认飞书渠道,跳过")
+            return
+        if target is None:
+            logger.warning(
+                "[registration_approval_service] 默认渠道 %s 无 enabled target,跳过",
+                ch.get("name"),
+            )
+            return
+
+        tg_cfg = target.get("config") or {}
+        chat_id = tg_cfg.get("chat_id")
+        chat_type = tg_cfg.get("chat_type", "chat_id") or "chat_id"
+        if not chat_id:
+            logger.warning(
+                "[registration_approval_service] target %s chat_id 为空,跳过",
+                target.get("id"),
+            )
+            return
+
+        client = _build_admin_lark_client(ch)
+
         from lark_oapi.api.im.v1 import (
             CreateMessageRequest,
             CreateMessageRequestBody,
         )
-
-        client = get_lark_client()
-        feishu_cfg = settings.feishu
-        receive_id = feishu_cfg.feishu_default_receive_id
-        receive_id_type = feishu_cfg.feishu_default_receive_id_type
-        if not receive_id:
-            logger.warning("[registration_approval_service] 飞书默认 receive_id 未配置,跳过")
-            return
-
         body = (
             CreateMessageRequestBody.builder()
+            .receive_id(chat_id)
             .msg_type("text")
             .content('{"text": "' + content.replace('"', '\\"').replace('\n', '\\n') + '"}')
+            .uuid(str(__import__("uuid").uuid4()))
             .build()
         )
         request = (
             CreateMessageRequest.builder()
-            .receive_id(receive_id)
-            .msg_type("text")
-            .receive_id_type(receive_id_type)
+            .receive_id_type(chat_type)
             .request_body(body)
             .build()
         )

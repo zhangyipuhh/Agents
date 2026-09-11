@@ -166,3 +166,184 @@ def test_notify_admin_new_registration(monkeypatch):
             )
         )
     mock_email.assert_called_once()
+
+
+# =============================================================================
+# _send_feishu_to_admin 走 DB（2026-09-11 改造）
+# =============================================================================
+
+
+class _FakeSvcForFeishuAdmin:
+    """模拟 NotificationConfigService,支持异步 list_targets 与 resolve_default_channel。"""
+
+    def __init__(self, channel, targets):
+        self._channel = channel
+        self._targets = targets
+
+    async def resolve_default_channel(self, channel_type):
+        return self._channel
+
+    async def list_targets(self, channel_id=None, **kw):
+        return self._targets
+
+    def decrypt_field(self, s):
+        """简单反转 fake prefix,让 fake 调用链路可识别明文。"""
+        if isinstance(s, str) and s.startswith("enc_"):
+            return s[len("enc_"):]
+        return s
+
+
+def test_send_feishu_to_admin_uses_db_default_channel_and_first_target():
+    """_send_feishu_to_admin 走 DB 默认渠道 + 该渠道下第一个 enabled target。
+
+    验证：
+    - 用 notification_config_service.resolve_default_channel("feishu") 解析 channel
+    - 用 list_targets 拿 channel 下 enabled=TRUE 的第一个 target 作为接收方
+    - 用 channel 明文凭证构造临时 lark.Client 发送
+    """
+    from app.shared.utils.auth import registration_approval_service as RAS
+
+    fake_channel = {
+        "id": 11, "name": "feishu_default",
+        "config": {
+            "app_id_encrypted": "enc_app_id_xxx",
+            "app_secret_encrypted": "enc_app_secret_yyy",
+            "log_level": "INFO",
+        },
+    }
+    fake_target = {
+        "id": 21, "channel_id": 11, "enabled": True,
+        "config": {"chat_id": "oc_admin_chat", "chat_type": "chat_id"},
+    }
+    fake_svc = _FakeSvcForFeishuAdmin(fake_channel, [fake_target])
+
+    captured = {}
+
+    class _FakeResp:
+        def success(self): return True
+        class data: message_id = "om_admin_001"
+
+    class _FakeMsgApi:
+        @staticmethod
+        def create(req):
+            captured["receive_id"] = req.request_body.receive_id
+            captured["receive_id_type"] = req.receive_id_type
+            return _FakeResp()
+
+    class _FakeImV1:
+        message = _FakeMsgApi()
+
+    class _FakeIm:
+        v1 = _FakeImV1()
+
+    class _FakeClient:
+        im = _FakeIm()
+
+    monkeypatch_client = _FakeClient()
+
+    with patch.object(RAS, "_get_notification_service", lambda: fake_svc), \
+         patch.object(RAS, "_build_admin_lark_client", lambda ch: monkeypatch_client):
+        RAS._send_feishu_to_admin("test content")
+
+    assert captured["receive_id"] == "oc_admin_chat"
+    assert captured["receive_id_type"] == "chat_id"
+
+
+def test_send_feishu_to_admin_skips_when_service_unavailable():
+    """notification_config_service 未初始化 → warning 日志 + 不抛异常。"""
+    from app.shared.utils.auth import registration_approval_service as RAS
+
+    with patch.object(RAS, "_get_notification_service", lambda: None):
+        # 不应抛异常
+        RAS._send_feishu_to_admin("test content")
+
+
+def test_send_feishu_to_admin_skips_when_no_default_channel():
+    """DB 无默认飞书渠道 → warning 日志 + 不抛异常。"""
+    from app.shared.utils.auth import registration_approval_service as RAS
+
+    fake_svc = _FakeSvcForFeishuAdmin(channel=None, targets=[])
+
+    with patch.object(RAS, "_get_notification_service", lambda: fake_svc):
+        # 不应抛异常
+        RAS._send_feishu_to_admin("test content")
+
+
+def test_send_feishu_to_admin_skips_when_no_enabled_target():
+    """channel 存在但无 enabled target → warning 日志 + 不抛异常。"""
+    from app.shared.utils.auth import registration_approval_service as RAS
+
+    fake_channel = {"id": 11, "name": "feishu_default", "config": {}}
+    fake_svc = _FakeSvcForFeishuAdmin(fake_channel, targets=[])
+
+    with patch.object(RAS, "_get_notification_service", lambda: fake_svc):
+        # 不应抛异常
+        RAS._send_feishu_to_admin("test content")
+
+
+def test_send_feishu_to_admin_skips_when_target_chat_id_empty():
+    """target.config.chat_id 为空 → warning 日志 + 不抛异常。"""
+    from app.shared.utils.auth import registration_approval_service as RAS
+
+    fake_channel = {"id": 11, "name": "feishu_default", "config": {}}
+    fake_target = {
+        "id": 21, "channel_id": 11, "enabled": True,
+        "config": {"chat_type": "chat_id"},  # 缺 chat_id
+    }
+    fake_svc = _FakeSvcForFeishuAdmin(fake_channel, [fake_target])
+
+    with patch.object(RAS, "_get_notification_service", lambda: fake_svc):
+        # 不应抛异常
+        RAS._send_feishu_to_admin("test content")
+
+
+def test_send_feishu_to_admin_swallow_send_exception():
+    """client.im.v1.message.create 抛异常 → warning 日志 + 不向上抛。"""
+    from app.shared.utils.auth import registration_approval_service as RAS
+
+    fake_channel = {"id": 11, "name": "feishu_default", "config": {}}
+    fake_target = {
+        "id": 21, "channel_id": 11, "enabled": True,
+        "config": {"chat_id": "oc_x", "chat_type": "chat_id"},
+    }
+    fake_svc = _FakeSvcForFeishuAdmin(fake_channel, [fake_target])
+
+    class _BoomClient:
+        class im:
+            class v1:
+                class message:
+                    @staticmethod
+                    def create(req):
+                        raise RuntimeError("network down")
+
+    with patch.object(RAS, "_get_notification_service", lambda: fake_svc), \
+         patch.object(RAS, "_build_admin_lark_client", lambda ch: _BoomClient()):
+        # 不应抛异常
+        RAS._send_feishu_to_admin("test content")
+
+
+def test_notify_admin_new_registration_calls_feishu_when_enabled(monkeypatch):
+    """notify_admin_new_registration 在 feishu_notify_enabled=True 时调 _send_feishu_to_admin。
+
+    验证集成路径：_send_feishu_to_admin 被 monkeypatch 拦截,验证调用发生。
+    """
+    from app.core.config.settings import RegistrationSecuritySettings
+    from app.shared.utils.auth import registration_approval_service as RAS_mod
+
+    cfg = RegistrationSecuritySettings(
+        enabled=True,
+        admin_notification_emails=[],
+        feishu_notify_enabled=True,
+    )
+    monkeypatch.setattr(RAS_mod.settings, "registration_security", cfg)
+    called = []
+    monkeypatch.setattr(
+        RAS_mod, "_send_feishu_to_admin", lambda content: called.append(content)
+    )
+    monkeypatch.setattr(RAS_mod, "_send_admin_email", lambda *a, **kw: None)
+
+    asyncio.run(RAS_mod.notify_admin_new_registration(
+        username="newuser", real_name="新人",
+        email="x@x.com", register_ip="10.0.0.1",
+    ))
+    assert len(called) == 1
