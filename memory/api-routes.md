@@ -160,7 +160,7 @@
 | 方法 | 路径 | ACL key | 说明 |
 |---|---|---|---|
 | GET | `/api/notification/channels?channel_type=feishu` | `messaging.feishu.apps` | 列出渠道；query `channel_type` 过滤；config 中加密字段脱敏为空串 |
-| POST | `/api/notification/channels` | `messaging.feishu.apps` | 新建渠道；body 含 `channel_type` + `name` + `display_name` + `config`（明文 app_id/app_secret）+ `enabled` + `is_default`；router Fernet 加密后入库 |
+| POST | `/api/notification/channels` | `messaging.feishu.apps` | 新建渠道；body 含 `channel_type` + `name` + `display_name` + `config`（明文 app_id/app_secret）+ `enabled`；router Fernet 加密后入库。**2026-09-11 移除 `is_default` 字段**（send_feishu_message 按 `config.agent_name` 自动路由，不需要「默认应用」概念） |
 | GET | `/api/notification/channels/{channel_id}` | `messaging.feishu.apps` | 详情（密码脱敏） |
 | PUT | `/api/notification/channels/{channel_id}` | `messaging.feishu.apps` | 更新；`config` 中加密字段留空 → 不修改（`keep_existing_secret=True`） |
 | DELETE | `/api/notification/channels/{channel_id}` | `messaging.feishu.apps` | 删除（级联清理 targets） |

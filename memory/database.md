@@ -74,8 +74,8 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 | display_name | VARCHAR(200) DEFAULT '' | 显示名（用于 UI 展示） |
 | channel_type | VARCHAR(30) NOT NULL DEFAULT 'feishu' CHECK (channel_type IN ('feishu')) | 渠道类型白名单（本期仅注册 `feishu`，未来扩展 `dingtalk` / `wecom` 等 ALTER 约束） |
 | config | JSONB NOT NULL DEFAULT '{}'::jsonb + `jsonb_typeof(config) = 'object'` 守卫 | 渠道差异凭证；飞书必填 `app_id_encrypted` / `app_secret_encrypted`（Fernet 加密 TEXT）/ `default_receive_id` / `default_receive_id_type`（chat_id/open_id/user_id/email）/ `log_level`（DEBUG/INFO/WARNING/ERROR）/ `agent_name` / `receiver_username` |
-| enabled | BOOLEAN NOT NULL DEFAULT TRUE | 是否启用；部分唯一索引 `WHERE enabled=TRUE`（仅同 channel_type 内 1 行 enabled） |
-| is_default | BOOLEAN NOT NULL DEFAULT FALSE | 是否默认渠道；部分唯一索引 `WHERE is_default=TRUE`（仅同 channel_type 内 1 行 is_default），WS 多实例只连默认应用 |
+| enabled | BOOLEAN NOT NULL DEFAULT TRUE | 是否启用；2026-09-10 删除原 `idx_notification_channels_enabled` UNIQUE 索引（多实例架构需多 enabled 行） |
+| ~~is_default~~ | ~~BOOLEAN NOT NULL DEFAULT FALSE~~ | **2026-09-11 已废弃**：列保留（兼容存量）但不写入；send_feishu_message 按 `config.agent_name` 自动路由。删除 `set_default_channel` / `unset_default_channel` service 方法与前端「设为默认应用」复选框。`resolve_default_channel` 重写为「取第一个 enabled 渠道」兜底 |
 | created_by_user_id | INTEGER REFERENCES users(id) ON DELETE SET NULL | 创建人 |
 | created_at / updated_at | TIMESTAMP DEFAULT CURRENT_TIMESTAMP | 标准时间戳 |
 
@@ -95,7 +95,7 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 | created_by_user_id | INTEGER REFERENCES users(id) ON DELETE SET NULL | |
 | created_at / updated_at | TIMESTAMP DEFAULT CURRENT_TIMESTAMP | |
 
-索引：`idx_notification_channels_default` (`channel_type` `WHERE is_default=TRUE`) / `idx_notification_channels_enabled` (`channel_type` `WHERE enabled=TRUE`) / `idx_notification_channels_channel_type` / `idx_notification_channels_created_by_user_id` / `idx_notification_targets_channel_id` / `idx_notification_targets_target_type` / `idx_notification_targets_agent_name` / `idx_notification_targets_created_by_user_id`。
+索引：`idx_notification_channels_default`（**2026-09-11 保留但停用**：`is_default` 已废弃，仅保护存量数据） / `idx_notification_channels_enabled`（**2026-09-10 已删除**，理由：见「通知渠道通用表设计原则」第 6 段） / `idx_notification_channels_channel_type` / `idx_notification_channels_created_by_user_id` / `idx_notification_targets_channel_id` / `idx_notification_targets_target_type` / `idx_notification_targets_agent_name` / `idx_notification_targets_created_by_user_id`。
 
 迁移文件：`app/migrations/init_all_tables.sql` 第 16.6 节；幂等 DDL（`CREATE TABLE IF NOT EXISTS` + `ADD CONSTRAINT ... NOT VALID`），可重复执行。零迁移脚本单独提供 `scripts/migrate_feishu_env_to_db.sql`（admin 手动运行，把 `.env` 中 8 个 `feishu_*` 凭证导入 DB；admin 替换占位符 `:admin_user_id` / `:app_name` / `:app_id` / `:app_secret` 等）。
 

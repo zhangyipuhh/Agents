@@ -198,7 +198,7 @@ def test_create_channel_request_required_fields():
     assert req.name == "test-bot"
     assert req.channel_type == "feishu"
     assert req.enabled is True
-    assert req.is_default is False
+    # 2026-09-11：移除 is_default 字段（按 channel.config.agent_name 自动路由）
 
 
 def test_create_target_request_required_fields():

@@ -355,12 +355,12 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 ### Agent 路由契约（2026-09-11 落地）
 
 - **一对一契约**：agent ↔ channel ↔ target 均为 1:1（同一智能体对应一个飞书应用，对应一个群）
-- 查询 SQL：`channel` 按 `config->>'agent_name'=$1 AND enabled=TRUE ORDER BY is_default DESC, id ASC LIMIT 1`；`target` 按 `channel_id=$1 AND enabled=TRUE ORDER BY id ASC LIMIT 1`
+- 查询 SQL：`channel` 按 `config->>'agent_name'=$1 AND enabled=TRUE ORDER BY id ASC LIMIT 1`（**2026-09-11 移除 `is_default DESC` 排序**：字段已废弃；channel.config.agent_name 一对一，无需默认应用优先级）；`target` 按 `channel_id=$1 AND enabled=TRUE ORDER BY id ASC LIMIT 1`
 - 服务方法：`NotificationConfigService.resolve_agent_feishu_endpoint(agent_name)` 一次性返回 `{channel_id, channel_name, app_id(明文), app_secret(明文), log_level, target_id, target_name, chat_id, chat_type, agent_name}` 或 `None`
 - 公共解析入口：`FeishuEndpointResolver.resolve_current_endpoint(runtime)` 从 `runtime.state.agent_name` 解析 → `Endpoint` dataclass；`build_lark_client(endpoint)` 用明文凭证构造临时 `lark.Client`（不走全局单例）
 - 统一错误文案：`ERROR_NO_AGENT_NAME` / `ERROR_NO_CHANNEL` / `ERROR_NO_TARGET` / `ERROR_DB_UNAVAILABLE`（定义于 `FeishuEndpointResolver.py`）
 - **`send_feishu_message` 签名变化（BREAKING）**：删除 `receive_id` / `receive_id_type` 参数，仅保留 `content` + `runtime`；LLM 不显式传参，全部由后台解析
-- **`registration_approval_service._send_feishu_to_admin`**：不再读 `settings.feishu.feishu_default_receive_id`（.env 已废弃），改走 DB `resolve_default_channel("feishu")` + `list_targets(channel_id=...)` 取第一个 enabled target；用渠道明文凭证构造临时 client
+- **`registration_approval_service._send_feishu_to_admin`**：不再读 `settings.feishu.feishu_default_receive_id`（.env 已废弃），改走 DB `resolve_default_channel("feishu")` + `list_targets(channel_id=...)` 取第一个 enabled target；用渠道明文凭证构造临时 client。**2026-09-11 升级**：`resolve_default_channel` 重写为「取第一个 enabled 渠道」（不再有 `is_default` 优先级，因为字段已废弃）
 - **`FeishuClient.get_lark_client()` 全局单例保留**：供 WebSocket 等系统级场景使用（与 Resolver 互补：全局单例拿默认渠道，Resolver 按 agent 路由）
 - **未来扩展**：新增飞书文档/文件/卡片工具时直接 `from app.shared.tools.skills.feishu.FeishuEndpointResolver import resolve_current_endpoint, build_lark_client`，无需重复实现 DB 查询与凭证解密
 - **测试新增**：`app/tests/shared/tools/skills/feishu/test_feishu_endpoint_resolver.py`（15 用例：Endpoint dataclass 契约 + resolve 成功路径 + agent_name 缺失/runtime=None/service 未初始化/DB 返回 None/同步桥接抛异常/缺字段 dict 6 类失败 + build_lark_client 凭证透传 + log_level 大小写 + 错误文案格式占位符）；`test_feishu_message_tools.py` 重写为 12 用例（删除显式 receive_id 用例，新增 agent 路由 happy path / 无 agent_name / 无 endpoint / Markdown 卡片 / API 失败/异常 / build_lark_client 失败 / tool_call_id 透传 / `response.data=None` 边界）；`test_registration_approval_service.py` 新增 6 用例（DB 默认渠道 + target happy path + service 未初始化降级 + 无默认渠道 + 无 enabled target + chat_id 空 + 发送异常 swallow + `notify_admin_new_registration` 集成调用）

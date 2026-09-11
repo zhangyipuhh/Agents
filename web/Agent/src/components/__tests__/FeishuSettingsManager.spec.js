@@ -11,8 +11,9 @@
 // - 3 个 ACL menuId: messaging.feishu.{apps,policies,test}
 // - props: visibleMenus (Array) + isAdmin (Boolean)
 // - data-testid: feishu-tab-{apps,policies,test} / feishu-panel-{...}
-// - 应用设置 Tab 有: name / app_id / app_secret / default_receive_id /
-//   default_receive_id_type / log_level / agent_name / receiver_username / enabled / is_default
+// - 应用设置 Tab 有: name / app_id / app_secret / log_level / agent_name / enabled
+// 2026-09-07：移除 default_receive_id / receiver_username / default_receive_id_type
+// 2026-09-11：移除 is_default 字段（按 channel.config.agent_name 自动路由）
 // - 发送策略 Tab 有: target_type / chat_id / chat_type / chat_name / agent_name / 模板字段
 // - 发送测试 Tab 有: channel_id / target_id / content
 // - 高度链填满: 独立的 .feishu-settings-manager scoped 样式(2026-09-07 起不再借用邮件 scoped)
@@ -84,20 +85,21 @@ describe('FeishuSettingsManager - 应用设置 Tab(apps)', () => {
     expect(source).toContain('feishu-panel-apps')
   })
 
-  it('应用设置表单字段:name / app_id / app_secret / default_receive_id', () => {
+  it('应用设置表单字段:name / app_id / app_secret / log_level / agent_name / enabled（2026-09-07 移除 default_receive_id* / receiver_username）', () => {
     expect(source).toContain('feishu-channel-name')
     expect(source).toContain('feishu-app-id')
     expect(source).toContain('feishu-app-secret')
-    expect(source).toContain('feishu-default-receive-id')
-    expect(source).toContain('feishu-default-receive-id-type')
     expect(source).toContain('feishu-log-level')
-    expect(source).toContain('feishu-agent-name')
-    expect(source).toContain('feishu-receiver-username')
+    expect(source).toContain('feishu-channel-agent')  // 实际 id（template 用 v-model="channelForm.agent_name"）
+    // 2026-09-07：channel 已废弃 default_receive_id / receiver_username / default_receive_id_type
+    expect(source).not.toContain('feishu-default-receive-id')
+    expect(source).not.toContain('feishu-receiver-username')
   })
 
-  it('包含 enabled / is_default 复选框', () => {
+  it('包含 enabled 复选框（2026-09-11 移除 is_default）', () => {
     expect(source).toContain('feishu-channel-enabled')
-    expect(source).toContain('feishu-channel-is-default')
+    // 2026-09-11：is_default 复选框已清理（按 channel.config.agent_name 自动路由）
+    expect(source).not.toContain('feishu-channel-is-default')
   })
 
   it('保存/测试连接/删除 按钮 data-testid 存在', () => {
@@ -112,16 +114,19 @@ describe('FeishuSettingsManager - 发送策略 Tab(policies)', () => {
     expect(source).toContain('feishu-panel-policies')
   })
 
-  it('target 表单字段:name / target_type / chat_id / chat_type / chat_name', () => {
+  it('target 表单字段:name / target_type / chat_id / chat_type / chat_name + 模板字段', () => {
+    // 2026-09-07 第二轮:target 不再绑 agent_name（前端 UI 仍保留 target_type 与模板字段;
+    // 后续需清理 target 模板字段,见项目记忆 TODO）
     expect(source).toContain('feishu-target-name')
     expect(source).toContain('feishu-target-type')
     expect(source).toContain('feishu-chat-id')
     expect(source).toContain('feishu-chat-type')
     expect(source).toContain('feishu-chat-name')
-    expect(source).toContain('feishu-target-agent')
     expect(source).toContain('feishu-target-subject-template')
     expect(source).toContain('feishu-target-body-template')
     expect(source).toContain('feishu-target-enabled')
+    // 2026-09-07 第二轮：target 不绑 agent_name
+    expect(source).not.toContain('feishu-target-agent')
   })
 
   it('target 保存按钮 + 应用切换器', () => {
@@ -197,9 +202,10 @@ describe('FeishuSettingsManager - 安全设计契约', () => {
     expect(source).toMatch(/if\s*\(channelForm\.app_secret\.trim\(\)\)\s*updatePayload\.config\.app_secret/)
   })
 
-  it('agent_name / receiver_username 必填校验', () => {
-    expect(source).toContain("agent_name 不能为空")
-    expect(source).toContain("receiver_username 不能为空")
+  it('agent_name 必填校验（2026-09-07 移除 receiver_username 必填）', () => {
+    // 实际文案：'路由 Agent 不能为空（应用必须绑定一个智能体）'
+    expect(source).toContain("路由 Agent 不能为空")
+    expect(source).not.toContain("receiver_username 不能为空")
   })
 })
 

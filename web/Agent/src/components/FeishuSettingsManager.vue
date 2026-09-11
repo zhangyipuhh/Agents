@@ -9,7 +9,8 @@
  *
  * 提供三个 Tab：
  * - 应用设置（apps）：飞书凭证组(多应用并存);每组含 app_id / app_secret / log_level /
- *   agent_name（应用绑定的智能体，必填）+ 「设为默认应用」勾选
+ *   agent_name（应用绑定的智能体，必填）。2026-09-11 移除「设为默认应用」勾选——
+ *   send_feishu_message 按 channel.config.agent_name 自动路由，不需要全局默认概念
  * - 发送策略（policies）：从 channels 列表选择应用,加 target(群 chat_id / chat_type / chat_name)
  *   + 模板字段（智能体由所属 channel 继承，不在 target 层重复设置）
  * - 发送测试（test）：选 channel → 选 target → 输入内容 → POST /api/notification/send-test
@@ -75,7 +76,8 @@ const channelForm = reactive({
   log_level: 'INFO',
   agent_name: '',   // 2026-09-07 第二轮：飞书应用绑定的目标智能体（必填）
   enabled: true,
-  is_default: false,
+  // 2026-09-11：移除 is_default 字段。send_feishu_message 按 channel.config.agent_name
+  // 自动路由（FeishuEndpointResolver），不再需要「设为默认应用」复选框，避免误导。
 })
 
 // === 发送策略 Tab ===
@@ -195,7 +197,6 @@ function startCreateChannel() {
   channelForm.log_level = 'INFO'
   channelForm.agent_name = ''
   channelForm.enabled = true
-  channelForm.is_default = false
   channelMessage.value = ''
   channelError.value = ''
 }
@@ -217,7 +218,6 @@ async function selectChannel(ch) {
     channelForm.log_level = detail.config?.log_level || 'INFO'
     channelForm.agent_name = detail.config?.agent_name || ''
     channelForm.enabled = detail.enabled !== false
-    channelForm.is_default = detail.is_default === true
   } catch (err) {
     channelError.value = err.message
   }
@@ -254,7 +254,6 @@ async function saveChannel() {
       const updatePayload = {
         display_name: channelForm.display_name,
         enabled: channelForm.enabled,
-        is_default: channelForm.is_default,
         config: {
           log_level: channelForm.log_level,
           agent_name: channelForm.agent_name,
@@ -273,7 +272,6 @@ async function saveChannel() {
         name: channelForm.name,
         display_name: channelForm.display_name,
         enabled: channelForm.enabled,
-        is_default: channelForm.is_default,
         config: {
           app_id: channelForm.app_id,
           app_secret: channelForm.app_secret,
@@ -606,7 +604,6 @@ watch(() => selectedChannel.value, (newCh, oldCh) => {
           >
             <span class="policy-name">
               {{ c.display_name || c.name }}
-              <span v-if="c.is_default" class="badge default">默认</span>
               <span v-if="!c.enabled" class="badge disabled">已禁用</span>
             </span>
             <span class="policy-meta">{{ c.name }}</span>
@@ -682,10 +679,7 @@ watch(() => selectedChannel.value, (newCh, oldCh) => {
               <input v-model="channelForm.enabled" type="checkbox" data-testid="feishu-channel-enabled" />
               <span>启用此应用(WS 多实例仅监听 enabled 的应用)</span>
             </label>
-            <label class="inline-field">
-              <input v-model="channelForm.is_default" type="checkbox" data-testid="feishu-channel-is-default" />
-              <span>设为默认应用(LLM 工具 send_feishu_message 使用)</span>
-            </label>
+            <!-- 2026-09-11：移除「设为默认应用」复选框。send_feishu_message 按 channel.config.agent_name 自动路由。 -->
 
             <div class="form-actions">
               <button class="primary-btn" type="submit" :disabled="isSavingChannel" data-testid="feishu-save-channel-btn">

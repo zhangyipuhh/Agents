@@ -264,7 +264,7 @@ class NotificationConfigService:
         返回:
             List[Dict[str, Any]]: 每项含 ``id`` / ``name`` / ``display_name`` /
             ``channel_type`` / ``config``（加密字段已脱敏为空串）/ ``enabled`` /
-            ``is_default`` / ``created_at`` / ``updated_at``。
+            ``created_at`` / ``updated_at``。
         """
         if self._db is None:
             return []
@@ -279,7 +279,7 @@ class NotificationConfigService:
         rows = await self._db.fetch(
             f"""
             SELECT id, name, display_name, channel_type, config, enabled,
-                   is_default, created_by_user_id, created_at, updated_at
+                   created_by_user_id, created_at, updated_at
             FROM notification_channels
             {where_sql}
             ORDER BY id ASC
@@ -299,7 +299,7 @@ class NotificationConfigService:
         row = await self._db.fetchrow(
             """
             SELECT id, name, display_name, channel_type, config, enabled,
-                   is_default, created_by_user_id, created_at, updated_at
+                   created_by_user_id, created_at, updated_at
             FROM notification_channels
             WHERE id = $1
             """,
@@ -316,7 +316,7 @@ class NotificationConfigService:
         row = await self._db.fetchrow(
             """
             SELECT id, name, display_name, channel_type, config, enabled,
-                   is_default, created_by_user_id, created_at, updated_at
+                   created_by_user_id, created_at, updated_at
             FROM notification_channels
             WHERE id = $1
             """,
@@ -337,7 +337,7 @@ class NotificationConfigService:
         row = await self._db.fetchrow(
             """
             SELECT id, name, display_name, channel_type, config, enabled,
-                   is_default, created_by_user_id, created_at, updated_at
+                   created_by_user_id, created_at, updated_at
             FROM notification_channels
             WHERE name = $1 AND channel_type = $2
             """,
@@ -355,7 +355,6 @@ class NotificationConfigService:
         display_name: str,
         config: Dict[str, Any],
         enabled: bool,
-        is_default: bool,
         created_by_user_id: Optional[int],
         keep_existing_secret: bool = False,
     ) -> Dict[str, Any]:
@@ -368,7 +367,6 @@ class NotificationConfigService:
             config: 渠道配置 dict（含加密字段明文，必填 ``app_id_encrypted`` /
                 ``app_secret_encrypted`` 等，service 会 Fernet 加密写入）。
             enabled: 是否启用。
-            is_default: 是否默认渠道（部分唯一索引约束每 channel_type 仅 1 行）。
             created_by_user_id: 创建者用户 ID；首次创建必填。
             keep_existing_secret: True 时保留原 config 中加密字段
                 （用于前端「密钥留空表示不修改」场景）。
@@ -380,6 +378,11 @@ class NotificationConfigService:
             NotificationConfigValidationError: channel_type 不在白名单、
                 config 缺必填字段、name 已存在但 channel_type 不同等。
             NotificationConfigError: Fernet 加密失败。
+
+        说明:
+            2026-09-11：移除 ``is_default`` 字段。send_feishu_message 按
+            channel.config.agent_name 自动路由（FeishuEndpointResolver），
+            不再需要「默认渠道」概念。
         """
         # channel_type 白名单校验提前(在 db 检查前),保证输入校验总在 IO 前
         if channel_type not in SUPPORTED_CHANNEL_TYPES:
@@ -458,34 +461,17 @@ class NotificationConfigService:
             )
 
         async with self._write_lock:
-            # 若 is_default=True，先把同 channel_type 的其他行 is_default 置 False
-            if is_default:
-                try:
-                    await self._db.execute(
-                        """
-                        UPDATE notification_channels
-                        SET is_default = FALSE
-                        WHERE channel_type = $1 AND (is_default = TRUE)
-                        """,
-                        channel_type,
-                    )
-                except Exception as db_exc:
-                    self._log_and_raise_db_error(
-                        db_exc, op="upsert_channel.unset_default",
-                        ctx={"channel_type": channel_type, "name": name},
-                    )
-
             if existing is not None:
                 try:
                     row = await self._db.fetchrow(
                         """
                         UPDATE notification_channels
                         SET display_name = $1, config = $2::jsonb, enabled = $3,
-                            is_default = $4, updated_at = CURRENT_TIMESTAMP
-                        WHERE id = $5
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = $4
                         RETURNING id, updated_at
                         """,
-                        display_name, config_db, enabled, is_default, existing["id"],
+                        display_name, config_db, enabled, existing["id"],
                     )
                 except Exception as db_exc:
                     self._log_and_raise_db_error(
@@ -505,18 +491,18 @@ class NotificationConfigService:
                         """
                         INSERT INTO notification_channels
                             (name, display_name, channel_type, config, enabled,
-                             is_default, created_by_user_id)
-                        VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
+                             created_by_user_id)
+                        VALUES ($1, $2, $3, $4::jsonb, $5, $6)
                         RETURNING id, updated_at
                         """,
                         name, display_name, channel_type, config_db, enabled,
-                        is_default, created_by_user_id,
+                        created_by_user_id,
                     )
                 except Exception as db_exc:
                     self._log_and_raise_db_error(
                         db_exc, op="upsert_channel.insert",
                         ctx={"name": name, "channel_type": channel_type,
-                             "enabled": enabled, "is_default": is_default,
+                             "enabled": enabled,
                              "created_by_user_id": created_by_user_id,
                              "config_type": type(config_db).__name__,
                              "config_json_type": _safe_json_type(config_json),
@@ -524,8 +510,8 @@ class NotificationConfigService:
                     )
                 logger.info(
                     "[notification_config_service] upsert_channel inserted: "
-                    "id=%s name=%s channel_type=%s enabled=%s is_default=%s",
-                    row["id"], name, channel_type, enabled, is_default,
+                    "id=%s name=%s channel_type=%s enabled=%s",
+                    row["id"], name, channel_type, enabled,
                 )
                 return {"id": row["id"], "updated_at": row["updated_at"], "created": True}
 
@@ -543,45 +529,10 @@ class NotificationConfigService:
         )
         return "DELETE 1" in str(result)
 
-    async def set_default_channel(
-        self,
-        channel_id: int,
-        channel_type: str,
-    ) -> bool:
-        """把指定渠道设为该 channel_type 的默认渠道。
-
-        实现方式：先 UPDATE 同 channel_type 所有行 is_default=FALSE，
-        再 UPDATE 目标行 is_default=TRUE。两次操作在 write_lock 内执行。
-
-        返回:
-            bool: 渠道存在并成功设为默认返回 True；不存在返回 False。
-        """
-        if self._db is None:
-            return False
-        exists = await self._db.fetchval(
-            "SELECT id FROM notification_channels WHERE id = $1 AND channel_type = $2",
-            channel_id, channel_type,
-        )
-        if exists is None:
-            return False
-        async with self._write_lock:
-            await self._db.execute(
-                """
-                UPDATE notification_channels
-                SET is_default = FALSE
-                WHERE channel_type = $1 AND is_default = TRUE
-                """,
-                channel_type,
-            )
-            await self._db.execute(
-                """
-                UPDATE notification_channels
-                SET is_default = TRUE, updated_at = CURRENT_TIMESTAMP
-                WHERE id = $1
-                """,
-                channel_id,
-            )
-        return True
+    # 2026-09-11：删除 set_default_channel / unset_default_channel 方法。
+    # 理由：send_feishu_message 不再读 is_default 字段（按 channel.config.agent_name
+    # 自动路由），前端「设为默认应用」复选框已清理，「默认渠道」概念无调用方。
+    # 若未来需要默认应用优先级（例如「管理员手动设置兜底渠道」），再补回即可。
 
     async def resolve_default_channel(
         self,
@@ -589,37 +540,29 @@ class NotificationConfigService:
     ) -> Optional[Dict[str, Any]]:
         """解析默认渠道（内部使用，含加密字段原文）。
 
-        顺序：``is_default=TRUE`` → 第一行 ``enabled=TRUE`` → None。
+        2026-09-11 改造：移除 ``is_default`` 优先级——该字段已废弃。
+        新逻辑：取该 ``channel_type`` 下第一个 ``enabled=TRUE`` 渠道。
+        保留方法签名仅为兼容现有调用方（``FeishuClient.get_lark_client()`` /
+        ``registration_approval_service._send_feishu_to_admin``）；后者均在
+        「无 agent_name 上下文」的全局场景使用此兜底。
 
         返回:
             Optional[Dict[str, Any]]: 含 ``config.app_id_encrypted`` /
-            ``config.app_secret_encrypted`` 等密文 + ``id`` 等;无默认返回 None。
+            ``config.app_secret_encrypted`` 等密文 + ``id`` 等;无匹配返回 None。
         """
         if self._db is None:
             return None
         row = await self._db.fetchrow(
             """
             SELECT id, name, display_name, channel_type, config, enabled,
-                   is_default, created_by_user_id, created_at, updated_at
+                   created_by_user_id, created_at, updated_at
             FROM notification_channels
-            WHERE channel_type = $1 AND is_default = TRUE
+            WHERE channel_type = $1 AND enabled = TRUE
             ORDER BY id ASC
             LIMIT 1
             """,
             channel_type,
         )
-        if row is None:
-            row = await self._db.fetchrow(
-                """
-                SELECT id, name, display_name, channel_type, config, enabled,
-                       is_default, created_by_user_id, created_at, updated_at
-                FROM notification_channels
-                WHERE channel_type = $1 AND enabled = TRUE
-                ORDER BY id ASC
-                LIMIT 1
-                """,
-                channel_type,
-            )
         if row is None:
             return None
         return self._channel_to_internal(row)
@@ -632,7 +575,7 @@ class NotificationConfigService:
 
         一对一契约：
         - 一个 agent 对应一个飞书 channel（``config->>'agent_name' = agent_name``），
-          多条匹配时按 ``is_default DESC, id ASC LIMIT 1`` 取第一行。
+          多条匹配时按 ``id ASC LIMIT 1`` 取第一行（防御脏数据）。
         - 一个 channel 对应一个 target，多条匹配时按 ``id ASC LIMIT 1`` 取第一个 enabled。
 
         参数:
@@ -659,16 +602,17 @@ class NotificationConfigService:
         if not agent_name or not agent_name.strip():
             return None
 
-        # 1) 按 agent_name 查 channel（一对一：is_default 优先 → id ASC）
+        # 1) 按 agent_name 查 channel（一对一：id ASC 防御脏数据）
+        # 2026-09-11：移除 is_default 排序（字段已废弃；channel.config.agent_name 唯一）
         ch_row = await self._db.fetchrow(
             """
             SELECT id, name, display_name, channel_type, config, enabled,
-                   is_default, created_by_user_id, created_at, updated_at
+                   created_by_user_id, created_at, updated_at
             FROM notification_channels
             WHERE channel_type = 'feishu'
               AND enabled = TRUE
               AND config->>'agent_name' = $1
-            ORDER BY is_default DESC, id ASC
+            ORDER BY id ASC
             LIMIT 1
             """,
             agent_name,
@@ -1268,7 +1212,6 @@ class NotificationConfigService:
             "channel_type": row["channel_type"],
             "config": config_public,
             "enabled": row["enabled"],
-            "is_default": row["is_default"],
             "created_by_user_id": row.get("created_by_user_id"),
             "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
             "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
@@ -1292,7 +1235,6 @@ class NotificationConfigService:
             "channel_type": row["channel_type"],
             "config": config,
             "enabled": row["enabled"],
-            "is_default": row["is_default"],
             "created_by_user_id": row.get("created_by_user_id"),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],

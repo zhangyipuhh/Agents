@@ -213,8 +213,8 @@ messaging (level=1, label='消息设置')
 
 **设计原则**（与邮件不同）：
 - 飞书孙 tab id 直接用 `messaging.feishu.{apps,policies,test}`,不再沿用 `task-scheduler.email-settings.*` 命名（2026-07-31 邮件孙 tab id 因历史原因保留 `task-scheduler.*` 前缀,飞书孙 tab 无历史包袱,直接命名）
-- 「默认应用」逻辑在 `notification_channels.is_default` 列（部分唯一索引）而非菜单;UI 在「应用设置」Tab 通过 checkbox 让 admin 手动设置默认应用
-- 多应用下不同应用的 `agent_name` 与 `receiver_username` 在 `notification_channels.config` JSONB 内独立配置,WS 多实例自动按 channel_id 隔离（详见 [memory/misc.md] 「通知渠道通用表设计原则」+「WS 多实例架构规则」章节）
+- ~~「默认应用」逻辑在 `notification_channels.is_default` 列~~：**2026-09-11 移除**：send_feishu_message 按 `config.agent_name` 自动路由（agent 维度一对一），不需要「默认应用」概念；前端复选框 / `set_default_channel` service 方法均已清理；DB `is_default` 列保留（兼容存量）但不写入
+- 多应用下不同应用的 `agent_name` 在 `notification_channels.config` JSONB 内独立配置,WS 多实例自动按 channel_id 隔离（详见 [memory/misc.md] 「通知渠道通用表设计原则」+「WS 多实例架构规则」章节）
 
 ### 运维任务二级菜单（最终态）
 

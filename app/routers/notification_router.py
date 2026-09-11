@@ -154,7 +154,6 @@ class CreateChannelRequest(BaseModel):
             default_receive_id_type / log_level / agent_name / receiver_username）；
             router 负责 Fernet 加密后写入 DB。
         enabled: 是否启用。
-        is_default: 是否默认渠道。
     """
 
     channel_type: str = Field(default="feishu")
@@ -162,7 +161,7 @@ class CreateChannelRequest(BaseModel):
     display_name: str = Field(default="", max_length=200)
     config: Dict[str, Any] = Field(default_factory=dict)
     enabled: bool = Field(default=True)
-    is_default: bool = Field(default=False)
+    # 2026-09-11：移除 is_default 字段，send_feishu_message 按 agent_name 自动路由。
 
 
 class UpdateChannelRequest(BaseModel):
@@ -172,7 +171,6 @@ class UpdateChannelRequest(BaseModel):
         display_name: 显示名；None 表示不修改。
         config: 渠道配置 dict；必填字段可省略（service 自动从原行补齐加密字段）。
         enabled: 是否启用；None 表示不修改。
-        is_default: 是否默认渠道；None 表示不修改。
         keep_existing_secret: True 时保留原 config 中加密字段（前端「密钥留空表示
             不修改」场景）；默认 True。
     """
@@ -180,7 +178,8 @@ class UpdateChannelRequest(BaseModel):
     display_name: Optional[str] = Field(default=None, max_length=200)
     config: Optional[Dict[str, Any]] = Field(default=None)
     enabled: Optional[bool] = Field(default=None)
-    is_default: Optional[bool] = Field(default=None)
+    # 2026-09-11：移除 is_default 字段。send_feishu_message 按 channel.config.agent_name
+    # 自动路由（FeishuEndpointResolver），不再需要"默认应用"概念。
     keep_existing_secret: bool = Field(default=True)
 
 
@@ -331,7 +330,6 @@ async def create_channel(
             display_name=body.display_name,
             config=config_db,
             enabled=body.enabled,
-            is_default=body.is_default,
             created_by_user_id=_request_user_id(request) or None,
             keep_existing_secret=False,
         )
@@ -405,7 +403,6 @@ async def update_channel(
             display_name=body.display_name if body.display_name is not None else existing_internal["display_name"],
             config=final_config,
             enabled=body.enabled if body.enabled is not None else existing_internal["enabled"],
-            is_default=body.is_default if body.is_default is not None else existing_internal["is_default"],
             created_by_user_id=existing_internal.get("created_by_user_id"),
             keep_existing_secret=True,
         )

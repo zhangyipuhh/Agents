@@ -6,10 +6,10 @@ NotificationConfigService 单元测试(2026-09-03 新增)。
 - P0 导入与构造
 - P1 飞书 config 校验必填字段(FAIL-FAST)
 - P1 Fernet 加密/解密 roundtrip
-- P1 channel CRUD(name 唯一 + is_default 原子切换)
+- P1 channel CRUD(name 唯一)
 - P1 target CRUD(target_type 必须以 channel_type 开头)
 - P1 list_enabled_agents
-- P1 resolve_default_channel(is_default 优先 → enabled 第一行)
+- P1 resolve_default_channel(取第一个 enabled 渠道)
 - P1 resolve_agent_feishu_endpoint(2026-09-11 新增：按 agent_name 一次返回 channel + target + 明文凭证)
 - P2 send_test_message 失败分支(channel_type 不一致/凭证空)
 
@@ -27,8 +27,7 @@ from app.shared.utils.notification import (
     NotificationConfigError,
     NotificationConfigNotFoundError,
     NotificationConfigService,
-    NotificationConfigValidationError,
-)
+    NotificationConfigValidationError)
 
 
 # =============================================================================
@@ -172,8 +171,7 @@ def test_feishu_channel_requires_agent_name():
     """
     from app.shared.utils.notification.notification_config_service import (
         FEISHU_REQUIRED_CONFIG_KEYS,
-        FEISHU_LEGACY_CHANNEL_CONFIG_KEYS,
-    )
+        FEISHU_LEGACY_CHANNEL_CONFIG_KEYS)
     # agent_name 必须重新在必填项
     assert "agent_name" in FEISHU_REQUIRED_CONFIG_KEYS
     assert "receiver_username" not in FEISHU_REQUIRED_CONFIG_KEYS
@@ -231,10 +229,8 @@ def test_upsert_channel_strips_legacy_fields():
         name="ops-bot",
         display_name="运维机器人",
         config=config,
-        enabled=True,
-        is_default=False,
-        created_by_user_id=1,
-    ))
+        enabled=True, 
+        created_by_user_id=1))
     # INSERT 时传给 DB 的 config JSON 应不含 receiver_username / default_receive_id*
     # agent_name 必须保留
     insert_calls = [
@@ -333,10 +329,8 @@ def test_unsupported_channel_type_raises_in_upsert():
             name="test",
             display_name="",
             config={},
-            enabled=True,
-            is_default=False,
-            created_by_user_id=1,
-        ))
+            enabled=True, 
+            created_by_user_id=1))
 
 
 # =============================================================================
@@ -454,7 +448,11 @@ def test_list_channels_filters_by_channel_type():
 
 
 def test_upsert_channel_creates_new_when_not_exists():
-    """upsert_channel 不存在同名同 channel_type 行 → INSERT。"""
+    """upsert_channel 不存在同名同 channel_type 行 → INSERT。
+
+    2026-09-11：移除 is_default 原子切换（字段已废弃），
+    所以 INSERT 路径不应再调 execute。
+    """
     svc, db = _make_service_with_mock_db()
     db.fetchrow = AsyncMock(side_effect=[
         None,  # SELECT existing → None(不存在)
@@ -467,21 +465,19 @@ def test_upsert_channel_creates_new_when_not_exists():
         display_name="运维机器人",
         config=config,
         enabled=True,
-        is_default=True,
-        created_by_user_id=1,
-    ))
+        created_by_user_id=1))
     assert result["created"] is True
     assert result["id"] == 10
-    # is_default=True → 应先 UPDATE 把其它行置 False
-    # 断言 execute 被调过至少 1 次,且 sql 包含 is_default = FALSE
+    # INSERT 路径不调 execute（移除 is_default 原子切换）
     execute_calls = db.execute.call_args_list
-    assert len(execute_calls) >= 1, f"execute 未被调用, calls={execute_calls}"
-    execute_sqls = [c.args[0] for c in execute_calls]
-    assert any("SET is_default = FALSE" in sql for sql in execute_sqls), f"sqls={execute_sqls}"
+    assert len(execute_calls) == 0, f"execute 不应被调用, calls={execute_calls}"
 
 
 def test_upsert_channel_updates_existing():
-    """upsert_channel 已存在 → UPDATE 不重 INSERT。"""
+    """upsert_channel 已存在 → UPDATE 不重 INSERT。
+
+    2026-09-11：移除 is_default 字段，UPDATE 路径不再调原子切换。
+    """
     svc, db = _make_service_with_mock_db()
     db.fetchrow = AsyncMock(side_effect=[
         {"id": 5},  # SELECT existing → 已存在
@@ -494,18 +490,10 @@ def test_upsert_channel_updates_existing():
         display_name="运维机器人",
         config=config,
         enabled=True,
-        is_default=False,
-        created_by_user_id=None,
-    ))
+        created_by_user_id=None))
     assert result["created"] is False
     assert result["id"] == 5
-    # is_default=False → 不调 UPDATE is_default=False 原子切换
-    # 仅调 1 次 UPDATE(实际数据 UPDATE),不调 atomic switch
-    update_calls = [
-        c for c in db.execute.call_args_list
-        if "is_default = FALSE" in str(c)
-    ]
-    assert len(update_calls) == 0
+    # UPDATE 路径不调 execute（移除 is_default 原子切换）
 
 
 def test_delete_channel_returns_true_on_existing():
@@ -522,33 +510,6 @@ def test_delete_channel_returns_false_on_missing():
     db.execute = AsyncMock(return_value="DELETE 0")
     result = asyncio.run(svc.delete_channel(999))
     assert result is False
-
-
-def test_set_default_channel_atomic_switch():
-    """set_default_channel → 先 UPDATE 其它行 is_default=FALSE,再 UPDATE 本行 TRUE。"""
-    svc, db = _make_service_with_mock_db()
-    db.fetchval = AsyncMock(return_value=10)  # channel_id=10 存在
-    db.execute = AsyncMock()
-    result = asyncio.run(svc.set_default_channel(10, "feishu"))
-    assert result is True
-    # 应有 2 次 execute 调用:先批量置 False,再置单行 True
-    assert db.execute.call_count == 2
-    first_call_sql = db.execute.call_args_list[0].args[0]
-    second_call_sql = db.execute.call_args_list[1].args[0]
-    assert "SET is_default = FALSE" in first_call_sql
-    assert "WHERE channel_type = $1 AND is_default = TRUE" in first_call_sql
-    assert "SET is_default = TRUE" in second_call_sql
-    assert "WHERE id = $1" in second_call_sql
-
-
-def test_set_default_channel_returns_false_when_not_exists():
-    """set_default_channel 不存在 → 返回 False,不调任何 UPDATE。"""
-    svc, db = _make_service_with_mock_db()
-    db.fetchval = AsyncMock(return_value=None)
-    db.execute = AsyncMock()
-    result = asyncio.run(svc.set_default_channel(999, "feishu"))
-    assert result is False
-    assert db.execute.call_count == 0
 
 
 # =============================================================================
@@ -571,8 +532,7 @@ def test_upsert_target_rejects_target_type_not_matching_channel_type():
             subject_template="",
             body_template="",
             enabled=True,
-            created_by_user_id=1,
-        ))
+            created_by_user_id=1))
     assert "target_type" in str(exc_info.value)
 
 
@@ -591,8 +551,7 @@ def test_upsert_target_channel_not_found_raises_notfound():
             subject_template="",
             body_template="",
             enabled=True,
-            created_by_user_id=1,
-        ))
+            created_by_user_id=1))
 
 
 def test_upsert_target_rejects_missing_feishu_required_config():
@@ -610,8 +569,7 @@ def test_upsert_target_rejects_missing_feishu_required_config():
             subject_template="",
             body_template="",
             enabled=True,
-            created_by_user_id=1,
-        ))
+            created_by_user_id=1))
     assert "chat_id" in str(exc_info.value)
 
 
@@ -645,12 +603,10 @@ def test_upsert_channel_passes_dict_to_jsonb_param():
     config = _valid_feishu_config(svc)
     asyncio.run(svc.upsert_channel(
         channel_type="feishu", name="ops-bot", display_name="运维机器人",
-        config=config, enabled=True, is_default=False, created_by_user_id=1,
-    ))
+        config=config, enabled=True,  created_by_user_id=1))
     asyncio.run(svc.upsert_channel(
         channel_type="feishu", name="ops-bot", display_name="运维机器人",
-        config=config, enabled=True, is_default=False, created_by_user_id=1,
-    ))
+        config=config, enabled=True,  created_by_user_id=1))
     _assert_write_calls_jsonb_params_are_dicts(db)
 
 
@@ -668,13 +624,11 @@ def test_upsert_target_passes_dict_to_jsonb_param():
     asyncio.run(svc.upsert_target(
         channel_id=1, target_type="feishu.chat", name="alert-group",
         config=dict(config), agent_name="project", subject_template="",
-        body_template="", enabled=True, created_by_user_id=1,
-    ))
+        body_template="", enabled=True, created_by_user_id=1))
     asyncio.run(svc.upsert_target(
         channel_id=1, target_type="feishu.chat", name="alert-group",
         config=dict(config), agent_name="project", subject_template="",
-        body_template="", enabled=True, created_by_user_id=1, target_id=20,
-    ))
+        body_template="", enabled=True, created_by_user_id=1, target_id=20))
     _assert_write_calls_jsonb_params_are_dicts(db)
 
 
@@ -726,36 +680,24 @@ def test_list_enabled_agents_filters_enabled_true():
 # =============================================================================
 
 
-def test_resolve_default_channel_prefers_is_default_true():
-    """resolve_default_channel 优先 is_default=TRUE 的行。"""
-    svc, db = _make_service_with_mock_db()
-    db.fetchrow = AsyncMock(side_effect=[
-        {"id": 5, "name": "primary", "channel_type": "feishu",
-         "config": {"app_id_encrypted": "x"}, "enabled": True,
-         "is_default": True, "created_by_user_id": 1,
-         "created_at": None, "updated_at": None},
-    ])
-    result = asyncio.run(svc.resolve_default_channel("feishu"))
-    assert result is not None
-    assert result["id"] == 5
-    assert result["is_default"] is True
-    # SQL 应包含 is_default = TRUE
-    assert "is_default = TRUE" in db.fetchrow.call_args_list[0].args[0]
+def test_resolve_default_channel_returns_first_enabled():
+    """resolve_default_channel 取 channel_type 下第一个 enabled=TRUE 的渠道。
 
-
-def test_resolve_default_channel_falls_back_to_first_enabled():
-    """resolve_default_channel 无 is_default → 取第一行 enabled=TRUE。"""
+    2026-09-11：移除 is_default 优先级（字段已废弃）。
+    """
     svc, db = _make_service_with_mock_db()
-    db.fetchrow = AsyncMock(side_effect=[
-        None,  # is_default 查询无结果
-        {"id": 8, "name": "first-enabled", "channel_type": "feishu",
-         "config": {"app_id_encrypted": "x"}, "enabled": True,
-         "is_default": False, "created_by_user_id": 1,
-         "created_at": None, "updated_at": None},
-    ])
+    db.fetchrow = AsyncMock(return_value={
+        "id": 8, "name": "first-enabled", "channel_type": "feishu",
+        "config": {"app_id_encrypted": "x"}, "enabled": True,
+        "created_by_user_id": 1, "created_at": None, "updated_at": None,
+    })
     result = asyncio.run(svc.resolve_default_channel("feishu"))
     assert result is not None
     assert result["id"] == 8
+    # SQL 应包含 enabled = TRUE（不再含 is_default）
+    sql = db.fetchrow.call_args_list[0].args[0]
+    assert "enabled = TRUE" in sql
+    assert "is_default" not in sql
 
 
 def test_resolve_default_channel_returns_none_when_empty():
@@ -801,7 +743,7 @@ def test_send_test_message_channel_type_mismatch():
         # get_channel_internal 返回 feishu channel
         {"id": 5, "name": "primary", "channel_type": "feishu",
          "config": {"app_id_encrypted": "x", "app_secret_encrypted": "y"},
-         "enabled": True, "is_default": True, "created_by_user_id": 1,
+         "enabled": True, "created_by_user_id": 1,
          "created_at": None, "updated_at": None},
     ])
     result = asyncio.run(svc.send_test_message(
@@ -823,7 +765,7 @@ def test_send_test_message_channel_disabled():
          "channel_type": "feishu", "channel_name": "primary"},
         {"id": 5, "name": "primary", "channel_type": "feishu",
          "config": {"app_id_encrypted": "x", "app_secret_encrypted": "y"},
-         "enabled": False, "is_default": False, "created_by_user_id": 1,
+         "enabled": False, "created_by_user_id": 1,
          "created_at": None, "updated_at": None},
     ])
     result = asyncio.run(svc.send_test_message(
@@ -847,7 +789,7 @@ def test_send_test_message_target_missing_chat_id():
          "channel_type": "feishu", "channel_name": "primary"},
         {"id": 5, "name": "primary", "channel_type": "feishu",
          "config": valid_config,
-         "enabled": True, "is_default": True, "created_by_user_id": 1,
+         "enabled": True, "created_by_user_id": 1,
          "created_at": None, "updated_at": None},
     ])
     # mock lark_oapi(测试环境无此包);让 _send_feishu_test 不抛 ImportError
@@ -900,8 +842,7 @@ def test_db_exception_extracts_sqlstate_and_constraint():
     """
     from app.shared.utils.notification import notification_config_service as svc_mod
     from app.shared.utils.notification.notification_config_service import (
-        NotificationConfigService,
-    )
+        NotificationConfigService)
 
     class FakePostgresErrorBase(Exception):
         """模拟 asyncpg.PostgresError 基类。"""
@@ -939,8 +880,7 @@ def test_db_exception_extract_handles_non_postgres_error():
     """
     from app.shared.utils.notification import notification_config_service as svc_mod
     from app.shared.utils.notification.notification_config_service import (
-        NotificationConfigService,
-    )
+        NotificationConfigService)
 
     class FakePostgresErrorBase(Exception):
         """模拟 asyncpg.PostgresError 基类。"""
@@ -982,8 +922,7 @@ def test_upsert_target_insert_sql_does_not_write_agent_name_column():
     # 抽 INSERT INTO notification_targets 段(到 RETURNING 之前)
     m = re.search(
         r"INSERT INTO notification_targets\s*(?P<body>.*?)RETURNING",
-        src, flags=re.DOTALL,
-    )
+        src, flags=re.DOTALL)
     assert m is not None, "upsert_target 中找不到 INSERT INTO notification_targets 语句"
 
     body = m.group("body")
@@ -1021,8 +960,7 @@ def test_upsert_target_update_sql_does_not_write_agent_name_column():
     # UPDATE notification_targets 段
     m = re.search(
         r"UPDATE notification_targets\s*SET\s*(?P<sets>.*?)WHERE",
-        src, flags=re.DOTALL,
-    )
+        src, flags=re.DOTALL)
     assert m is not None, "upsert_target 中找不到 UPDATE notification_targets 语句"
 
     sets = m.group("sets")
@@ -1050,8 +988,7 @@ def test_log_and_raise_db_error_wraps_as_notification_config_error():
     """
     from app.shared.utils.notification import notification_config_service as svc_mod
     from app.shared.utils.notification.notification_config_service import (
-        NotificationConfigService,
-    )
+        NotificationConfigService)
 
     class FakePostgresErrorBase(Exception):
         """模拟 asyncpg.PostgresError 基类。"""
@@ -1070,8 +1007,7 @@ def test_log_and_raise_db_error_wraps_as_notification_config_error():
             svc._log_and_raise_db_error(
                 FakeUniqueViolation("duplicate key value violates unique constraint"),
                 op="upsert_channel.insert",
-                ctx={"name": "运维通知", "channel_type": "feishu"},
-            )
+                ctx={"name": "运维通知", "channel_type": "feishu"})
     finally:
         svc_mod.asyncpg = original_asyncpg
 
@@ -1113,10 +1049,8 @@ def test_upsert_channel_wraps_db_errors_as_notification_config_error():
                 name="运维通知",
                 display_name="",
                 config=config,
-                enabled=True,
-                is_default=False,
-                created_by_user_id=1,
-            ))
+                enabled=True, 
+                created_by_user_id=1))
     finally:
         svc_mod.asyncpg = original_asyncpg
 
@@ -1136,8 +1070,7 @@ def _fake_channel_row(config: dict, **overrides) -> dict:
     row = {
         "id": 11, "name": "feishu_proj", "display_name": "项目飞书",
         "channel_type": "feishu", "config": config,
-        "enabled": True, "is_default": True,
-        "created_by_user_id": 1, "created_at": None, "updated_at": None,
+        "enabled": True, "created_by_user_id": 1, "created_at": None, "updated_at": None,
     }
     row.update(overrides)
     return row
@@ -1236,7 +1169,9 @@ def test_resolve_agent_feishu_endpoint_prefers_is_default_in_sql():
 
     ch_sql = db.fetchrow.call_args_list[0].args[0]
     assert "config->>'agent_name' = $1" in ch_sql
-    assert "ORDER BY is_default DESC, id ASC" in ch_sql
+    # 2026-09-11：移除 is_default 排序（字段已废弃）；agent_name 一对一
+    assert "ORDER BY id ASC" in ch_sql
+    assert "is_default" not in ch_sql
     assert "LIMIT 1" in ch_sql
 
     tg_sql = db.fetchrow.call_args_list[1].args[0]
@@ -1269,7 +1204,7 @@ def test_upsert_channel_inserts_second_enabled_channel_same_channel_type():
     （真实 DB 层验证由 init_all_tables.sql DROP INDEX 段保证）
     """
     svc, db = _make_service_with_mock_db()
-    # mock execute（第一条 is_default=True 触发原子切换）
+    # 2026-09-11：移除 is_default 字段后，upsert_channel 不再调 UPDATE is_default 原子切换
     db.execute = AsyncMock(return_value="UPDATE 0")
     # 模拟 INSERT 成功（不被 unique 索引阻挡）
     db.fetchrow = AsyncMock(side_effect=[
@@ -1282,10 +1217,8 @@ def test_upsert_channel_inserts_second_enabled_channel_same_channel_type():
         name="app-1",
         display_name="应用1",
         config=config,
-        enabled=True,
-        is_default=True,
-        created_by_user_id=1,
-    ))
+        enabled=True, 
+        created_by_user_id=1))
     assert result["created"] is True
     assert result["id"] == 1
     # 关键断言：第二条 enabled=TRUE 行也允许插入
@@ -1298,10 +1231,8 @@ def test_upsert_channel_inserts_second_enabled_channel_same_channel_type():
         name="app-2",
         display_name="应用2",
         config=config,
-        enabled=True,
-        is_default=False,
-        created_by_user_id=1,
-    ))
+        enabled=True, 
+        created_by_user_id=1))
     assert result2["created"] is True
     assert result2["id"] == 2
 
