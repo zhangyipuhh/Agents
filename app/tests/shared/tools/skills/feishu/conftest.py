@@ -470,8 +470,12 @@ _lark.EventDispatcherHandler = _EventDispatcherHandler
 
 # 为 _run_ws_blocking 提供的 ``import lark_oapi.ws.client`` 路径做兜底：
 # 真实 SDK 路径 ``lark_oapi.ws.client``；本模块只需含 ``loop`` 属性供 monkey patch。
+# 2026-09-11 改造后，本实例 WS 客户端从 ``self._ws_mod.Client`` 构造（详见
+# ``_load_isolated_ws_client_module``），因此把 ``_WsClient`` 也挂到本模拟模块上，
+# 让降级路径（mock 无 ``__file__``）下 ``_build_ws_client`` 仍能从副本取到 Client 类。
 _ws_client_mod = types.ModuleType("lark_oapi.ws.client")
 _ws_client_mod.loop = None
+_ws_client_mod.Client = _WsClient
 _ws_module.client = _ws_client_mod
 sys.modules["lark_oapi.ws.client"] = _ws_client_mod
 

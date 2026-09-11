@@ -219,8 +219,8 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 
 - **触发链路**：`notification_router` 的 `create_channel` / `update_channel` / `delete_channel` 落库成功后调 `_apply_feishu_ws_change(request, channel_id)` → `FeishuWebSocketManager.apply_channel_change`（先 `shutdown()` 停旧实例 → 重读 DB 行 → enabled 则重启、禁用/删除则保持停止，返回是否运行态）；create/update 响应体附 `ws_applied: bool`。hook fail-soft：manager 未初始化或热加载异常仅 WARN，不影响已成功的 DB 响应
 - **`FeishuWebSocketService.shutdown(timeout=5)`**：置 `_should_run=False` → `run_coroutine_threadsafe(_ws_client._disconnect(), _thread_loop)` → `call_soon_threadsafe(loop.stop)` → `thread.join(timeout)`；全程异常容忍。`stop()` 保留旧语义（仅置标志，lifespan 关停用）
-- **`_run_ws_blocking` 不再调 SDK `start()`**：`_WS_START_LOCK`（threading.Lock）内 patch 模块级 `lark_oapi.ws.client.loop` + 首连 `_connect()`（失败按 SDK 语义 `_disconnect` + `_reconnect`，`ClientException` 不重连直抛），首连后 `create_task(_ping_loop)` + `run_forever()`（`_block_forever` 独立成方法供测试 monkeypatch）
-- **已知限制（存量竞态）**：SDK 模块级全局 `loop` 被多实例线程共享；热启动某渠道会重 patch 全局，其他运行中实例恰好在同一毫秒级窗口断线重连时可能受影响。`_WS_START_LOCK` 只压缩窗口不根治；彻底隔离需每渠道独立模块副本或进程级隔离，留作后续演进
+- **`_run_ws_blocking` 不再调 SDK `start()`**：2026-09-11 落地模块副本隔离后，无需 `_WS_START_LOCK`；`_connect_first(new_loop)` 直接 patch 实例副本 `self._ws_mod.loop = new_loop`（实例私有） + 首连 `_connect()`（失败按 SDK 语义 `_disconnect` + `_reconnect`，`ClientException` 不重连直抛），首连后 `create_task(_ping_loop)` + `run_forever()`（`_block_forever` 独立成方法供测试 monkeypatch）
+- **模块副本隔离根治存量竞态（2026-09-11）**：每个 `FeishuWebSocketService` 实例在 `__init__` 通过 `_load_isolated_ws_client_module(id(self))` 用 `importlib.util.spec_from_file_location` 从 `lark_oapi.ws.client` 物理文件加载独立副本；副本内 `Client._connect():211` / `_receive_message_loop():223` 通过副本 `__globals__` 解析全局 `loop`，永久指向本实例 patch 的线程 loop，多实例线程间不再存在共享可变全局。降级 fail-loud：基模块无 `__file__`（mock/冻结）→ WARN 日志回退；`exec_module` 失败 → ERROR 日志（`exc_info`）回退
 - `restart_channel` 由占位改为委托 `apply_channel_change`（async）；manager 新增 `_ops_lock`（asyncio.Lock）串行化热加载
 
 ### 7. 飞书 channel 绑智能体 / target 绑群（2026-09-07 第二轮落地，硬约束）
@@ -393,8 +393,9 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 
 **线程模型**：
 - `lark.ws.Client.start()` 同步阻塞，用 `threading.Thread(daemon=True)` 包装到后台线程
-- **lark SDK 模块级 loop 陷阱**：`lark_oapi.ws.client` 在模块顶层执行 `loop = asyncio.get_event_loop()` 并把该 loop 缓存在模块级变量。FastAPI/uvicorn 主线程的 loop 在 lifespan 期间已运行，所以后台线程直接调用 `loop.run_until_complete(...)` 会触发 `RuntimeError: This event loop is already running`。
-  - 解决方案：在 `_run_ws_blocking` 入口创建独立的新 event loop，把它 `set_event_loop` 到当前线程，并通过 `_lark_ws_client_mod.loop = new_loop` 把 lark SDK 模块级 loop 指向新 loop。
+- **lark SDK 模块级 loop 陷阱（已根治）**：`lark_oapi.ws.client` 在模块顶层执行 `loop = asyncio.get_event_loop()` 并把该 loop 缓存在模块级变量。FastAPI/uvicorn 主线程的 loop 在 lifespan 期间已运行，所以后台线程直接调用 `loop.run_until_complete(...)` 会触发 `RuntimeError: This event loop is already running`。
+  - 解决方案（2026-09-11 之前：在 `_run_ws_blocking` 入口创建独立的新 event loop，把它 `set_event_loop` 到当前线程，并通过 `_lark_ws_client_mod.loop = new_loop` 把 lark SDK 模块级 loop 指向新 loop；多实例共享该全局，存量竞态）
+  - 最终方案（2026-09-11 落地模块副本隔离，见 §6.5）：每实例加载独立 `lark_oapi.ws.client` 模块副本，根本上消除跨实例共享；从代码结构上杜绝 SDK `_connect:211` / `_receive_message_loop:223` 读取他线程 loop 的可能
 - 事件回调（`_on_message` / `_on_card_action`）内通过 `asyncio.run_coroutine_threadsafe(coro, loop)` 把协程投递回主事件循环（用户消息处理需要 DB pool 与 agent stream）。
 - 主事件循环在 lifespan 启动时通过 `service.set_event_loop(asyncio.get_event_loop())` 注入。
 - 获取机器人 open_id（同步 HTTP）的 `_fetch_bot_open_id` 走 `asyncio.to_thread(...)` 包装，避免在主线程中阻塞 loop。

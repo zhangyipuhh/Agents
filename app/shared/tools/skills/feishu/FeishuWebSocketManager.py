@@ -18,13 +18,15 @@ FeishuWebSocketManager - 飞书 WebSocket 多实例编排器
   在渠道新增 / 更新 / 启停 / 删除后被 notification_router 调用,先停旧实例再按
   DB 最新状态决定是否重启,无需重启服务。
 
-已知限制（存量,2026-09-10 记录）
+已知限制
 
-- lark SDK 把 event loop 缓存在 ``lark_oapi.ws.client`` 模块级全局变量,多实例
-  线程共享该全局。热启动某渠道会重新 patch 全局,其他运行中实例恰好在同一
-  毫秒级窗口断线重连时可能受影响。``FeishuWebSocketService._WS_START_LOCK``
-  已把「patch → 首次 connect」窗口串行化压到最小;彻底隔离需每渠道独立模块
-  副本或进程级隔离,留作后续演进。
+- ~~lark SDK 把 event loop 缓存在 ``lark_oapi.ws.client`` 模块级全局变量,
+  多实例线程共享该全局。~~ **2026-09-11 已根治**：
+  ``FeishuWebSocketService`` 在 ``__init__`` 通过
+  ``_load_isolated_ws_client_module`` 为每实例加载独立模块副本,SDK 在
+  ``_connect():211`` / ``_receive_message_loop():223`` 读取的全局 loop 通过
+  副本 ``__globals__`` 解析,永远指向本实例 patch 的线程 loop。多实例热启动
+  跨线程操作他 loop 的存量竞态从代码结构上不复存在,``_WS_START_LOCK`` 已删除。
 
 session_id 命名空间
 

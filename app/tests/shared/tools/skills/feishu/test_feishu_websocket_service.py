@@ -23,6 +23,7 @@ import pytest
 
 from app.shared.tools.skills.feishu.FeishuWebSocketService import (
     FeishuWebSocketService,
+    _load_isolated_ws_client_module,
 )
 
 
@@ -1803,11 +1804,12 @@ def test_run_ws_blocking_logs_other_runtime_errors(caplog):
 
 
 def test_run_ws_blocking_success_path_connects_under_lock(monkeypatch):
-    """P1：首连成功路径——锁内 patch 模块 loop + _connect，随后 _block_forever 阻塞。
+    """P1：首连成功路径——_connect_first patch 实例副本 loop + _connect + _block_forever。
 
-    2026-09-10 热加载改造核心：不再调 SDK ``start()``，用
-    ``_connect_under_lock`` + ``_block_forever``（run_forever）替代，
-    使 ``loop.stop()`` 能干净打断阻塞。
+    2026-09-11 模块副本隔离改造后核心回归：首连仍把 ``self._ws_mod.loop`` 指向
+    线程 loop 并完成首次 _connect，但不再需要 ``_WS_START_LOCK`` 串行（实例副本
+    私有，无跨实例窗口）；``_block_forever``（run_forever）使 ``loop.stop()`` 能
+    干净打断阻塞。
     """
     import lark_oapi.ws.client as ws_client_mod
 
@@ -3048,3 +3050,208 @@ async def test_get_user_sessions_returns_feishu_sessions(reset_session_db_memory
     sids = {s["session_id"] for s in sessions}
     assert "feishu:p2p:ou_alice" in sids
     assert "feishu:group:oc_g:ou_bob" in sids
+
+
+# ---------------------------------------------------------------------------
+# P0/P1 模块副本隔离（2026-09-11 落地，根治 lark SDK 模块级 loop 全局共享竞态）
+# ---------------------------------------------------------------------------
+def test_load_isolated_ws_client_module_importable():
+    """P0：模块级加载函数存在且可调用。"""
+    assert callable(_load_isolated_ws_client_module)
+
+
+def test_load_isolated_ws_client_module_loads_independent_copy(tmp_path):
+    """P1：真实文件加载 → 副本 Client 类与 loop 互相独立（根治核心机制）。
+
+    注：conftest mock ``lark_oapi.ws.client`` 是 ``types.ModuleType``，无 ``__file__``，
+    本用例通过 ``object.__setattr__`` 临时注入 ``__file__`` 让 loader 走文件分支，
+    用例结束 finally 清理恢复原状，避免污染同会话后续用例。
+    """
+    import importlib
+
+    fake_src = tmp_path / "client.py"
+    fake_src.write_text("loop = None\nclass Client:\n    pass\n")
+    base = importlib.import_module("lark_oapi.ws.client")
+    object.__setattr__(base, "__file__", str(fake_src))
+    try:
+        mod1 = _load_isolated_ws_client_module("t1")
+        mod2 = _load_isolated_ws_client_module("t2")
+        # 两副本是不同的模块对象
+        assert mod1 is not mod2
+        # loop 互相独立：patch 一个不影响另一个
+        mod1.loop = "loop_for_instance_1"
+        assert mod2.loop is None
+        # Client 类互相独立（副本重新执行 class 定义语句）
+        assert mod1.Client is not mod2.Client
+        assert mod1.Client is not base.Client
+    finally:
+        object.__delattr__(base, "__file__")
+
+
+def test_load_isolated_ws_client_module_falls_back_without_file(caplog):
+    """P1：基模块无 ``__file__``（mock/冻结环境）→ WARN 日志 + 返回基模块。"""
+    import importlib
+
+    base = importlib.import_module("lark_oapi.ws.client")
+    # conftest 的 mock _ws_client_mod 无 __file__ 属性 → 触发降级分支
+    assert getattr(base, "__file__", None) is None
+
+    with caplog.at_level(
+        logging.WARNING,
+        logger="app.shared.tools.skills.feishu.FeishuWebSocketService",
+    ):
+        mod = _load_isolated_ws_client_module("fallback_tag")
+    assert mod is base
+    assert any(
+        "无 __file__" in r.message and r.levelno == logging.WARNING
+        for r in caplog.records
+    )
+
+
+def test_load_isolated_ws_client_module_falls_back_on_exec_error(tmp_path, caplog):
+    """P1：exec_module 失败（语法错误）→ ERROR 日志 + 返回基模块（fail-loud 降级）。"""
+    import importlib
+
+    bad_src = tmp_path / "client.py"
+    bad_src.write_text("this is !@# invalid python !!!")
+    base = importlib.import_module("lark_oapi.ws.client")
+    object.__setattr__(base, "__file__", str(bad_src))
+    try:
+        with caplog.at_level(
+            logging.ERROR,
+            logger="app.shared.tools.skills.feishu.FeishuWebSocketService",
+        ):
+            mod = _load_isolated_ws_client_module("bad_tag")
+        assert mod is base
+        # exc_info=True → 异常被 logger.exception 记录（ERROR 级且 exc_info）
+        assert any(
+            r.levelno == logging.ERROR and r.exc_info is not None
+            and "exec_module" in r.message
+            for r in caplog.records
+        )
+    finally:
+        object.__delattr__(base, "__file__")
+
+
+def test_service_init_loads_isolated_ws_module():
+    """P1：__init__ 阶段已加载实例副本（_ws_mod 非 None，含 loop 与 Client 属性）。"""
+    svc = _make_service()
+    assert svc._ws_mod is not None
+    assert hasattr(svc._ws_mod, "loop")
+    # conftest 补的 _WsClient 挂在 mock 的 .Client 上，验证 _build_ws_client 可用
+    assert hasattr(svc._ws_mod, "Client")
+
+
+def test_two_services_isolated_loop_regression(tmp_path):
+    """P1：本次存量竞态核心回归——两实例 patch 各自副本 loop 互不影响。
+
+    模拟真实文件环境（通过给 mock 注入 ``__file__`` 指向临时文件），构造两个
+    FeishuWebSocketService 实例，patch 各自 ``_ws_mod.loop``，互不污染。
+    """
+    import importlib
+
+    fake_src = tmp_path / "client.py"
+    fake_src.write_text("loop = None\nclass Client:\n    pass\n")
+    base = importlib.import_module("lark_oapi.ws.client")
+    object.__setattr__(base, "__file__", str(fake_src))
+    try:
+        svc1 = _make_service()
+        svc2 = _make_service()
+        # 两副本互相独立
+        assert svc1._ws_mod is not svc2._ws_mod
+        sentinel_a = object()
+        sentinel_b = object()
+        svc1._ws_mod.loop = sentinel_a
+        svc2._ws_mod.loop = sentinel_b
+        assert svc1._ws_mod.loop is sentinel_a
+        assert svc2._ws_mod.loop is sentinel_b
+        # 根治核心断言：基模块 loop 不被本测试的实例副本 patch 污染。
+        # 注：基模块 loop 可能被会话早期用例（``_run_ws_blocking`` 走 fallback
+        # 共享路径）修改为某线程 loop，但不可能 == 本测试独有的 sentinel 对象。
+        assert getattr(base, "loop", "untouched") is not sentinel_a
+        assert getattr(base, "loop", "untouched") is not sentinel_b
+    finally:
+        object.__delattr__(base, "__file__")
+
+
+def test_connect_first_patches_instance_module_only(tmp_path):
+    """P1：_connect_first 只 patch 实例副本 loop，不污染共享/基模块。"""
+    import importlib
+
+    fake_src = tmp_path / "client.py"
+    fake_src.write_text("loop = None\nclass Client:\n    pass\n")
+    base = importlib.import_module("lark_oapi.ws.client")
+    object.__setattr__(base, "__file__", str(fake_src))
+    try:
+        svc = _make_service()
+        svc._should_run = True
+        thread_loop = asyncio.new_event_loop()
+        svc._thread_loop = thread_loop
+        fake_ws = MagicMock()
+
+        async def _connect():
+            return None
+
+        fake_ws._connect = _connect
+        svc._ws_client = fake_ws
+
+        svc._connect_first(thread_loop)
+        assert svc._ws_mod.loop is thread_loop
+        # 隔离核心断言：基模块 loop 不被本测试的 _connect_first 污染。
+        # 注：基模块 loop 可能被会话早期用例修改，但不可能 == 本测试独有的 thread_loop。
+        assert getattr(base, "loop", "untouched") is not thread_loop
+        thread_loop.close()
+    finally:
+        object.__delattr__(base, "__file__")
+
+
+def test_connect_first_raises_client_exception_directly(tmp_path, monkeypatch):
+    """P1：_connect_first 收到 ``ClientException`` 时直抛，不触发 disconnect/reconnect。"""
+    import importlib
+    import sys
+    import types
+
+    fake_src = tmp_path / "client.py"
+    fake_src.write_text("loop = None\nclass Client:\n    pass\n")
+    base = importlib.import_module("lark_oapi.ws.client")
+    object.__setattr__(base, "__file__", str(fake_src))
+    try:
+        # mock 环境无 lark_oapi.ws.exception 子模块；本用例注入伪模块让
+        # ``_connect_first`` 内的 import 解析到我们的 _FakeClientException。
+        class _FakeClientException(Exception):
+            pass
+
+        fake_exc_mod = types.ModuleType("lark_oapi.ws.exception")
+        fake_exc_mod.ClientException = _FakeClientException
+        monkeypatch.setitem(sys.modules, "lark_oapi.ws.exception", fake_exc_mod)
+
+        svc = _make_service()
+        svc._should_run = True
+        thread_loop = asyncio.new_event_loop()
+        svc._thread_loop = thread_loop
+        fake_ws = MagicMock()
+
+        disconnect_called = {"v": False}
+        reconnect_called = {"v": False}
+
+        async def _connect():
+            raise _FakeClientException("auth failed")
+
+        async def _disconnect():
+            disconnect_called["v"] = True
+
+        async def _reconnect():
+            reconnect_called["v"] = True
+
+        fake_ws._connect = _connect
+        fake_ws._disconnect = _disconnect
+        fake_ws._reconnect = _reconnect
+        svc._ws_client = fake_ws
+
+        with pytest.raises(_FakeClientException):
+            svc._connect_first(thread_loop)
+        assert disconnect_called["v"] is False
+        assert reconnect_called["v"] is False
+        thread_loop.close()
+    finally:
+        object.__delattr__(base, "__file__")

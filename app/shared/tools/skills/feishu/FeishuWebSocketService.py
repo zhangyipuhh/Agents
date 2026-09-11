@@ -26,6 +26,8 @@ FeishuWebSocketService - 飞书 WebSocket 长连接服务
 from __future__ import annotations
 
 import asyncio
+import importlib
+import importlib.util
 import json
 import logging
 import threading
@@ -53,13 +55,67 @@ logger = logging.getLogger(__name__)
 _FEISHU_TEXT_MAX_LEN = 4000
 _TRUNCATE_HINT = "\n...(内容过长已截断)"
 
-# 2026-09-10 新增：lark SDK 模块级 ``loop`` 全局变量 patch 串行锁。
-# lark_oapi.ws.client 在模块导入时缓存 ``loop = asyncio.get_event_loop()``，
-# 多实例场景每个 WS 线程都需把该全局指向自己的线程 loop；patch → 首次 _connect
-# 窗口必须串行，否则后启动线程会覆盖先启动线程的全局 loop。
-# 已知限制（存量）：首连成功后 SDK 内部 _receive_message_loop / 重连路径仍读全局
-# loop，运行中实例恰好在他实例热启动瞬间断线重连时可能受影响（毫秒级窗口）。
-_WS_START_LOCK = threading.Lock()
+# 2026-09-11 改造：每实例独立加载 ``lark_oapi.ws.client`` 模块副本，从结构上
+# 消除 SDK 模块级 ``loop`` 全局被多实例线程共享的竞态。
+#
+# SDK 在 ``_connect():211`` / ``_receive_message_loop():223`` 读取模块全局 ``loop``
+# create_task（旧版 ``start():166-179`` 项目已不用）。每个 FeishuWebSocketService
+# 实例持有自己的模块副本：副本内函数的 ``__globals__`` 指向副本命名空间，对全局
+# ``loop`` 的读取永远解析到本实例 patch 的值，不存在跨实例窗口，
+# ``_WS_START_LOCK`` 已删除（锁不再有意义）。
+#
+# 降级（fail-loud，绝不静默）：
+#     - 基模块无 ``__file__``（mock/冻结环境）→ WARNING 日志 + 返回基模块
+#     - ``exec_module`` 失败（安装损坏/语法错误）→ ERROR 日志 + 返回基模块
+
+
+def _load_isolated_ws_client_module(tag: object) -> Any:
+    """加载 ``lark_oapi.ws.client`` 的实例级独立副本，根治模块级 ``loop`` 全局共享竞态。
+
+    副本内 ``Client`` 类方法的 ``__globals__`` 指向副本命名空间，对全局 ``loop``
+    的读取永久解析到本实例 patch 的 loop，不再受其他实例热启动重 patch 影响。
+
+    降级（fail-loud，绝不静默）：
+        - 基模块无 ``__file__``（mock/冻结环境）→ WARNING 日志 + 返回基模块。
+        - ``exec_module`` 失败（安装损坏/语法错误）→ ERROR 日志（``exception``）
+          + 返回基模块。
+
+    参数:
+        tag: 副本命名标识（用 ``id(实例)``），仅用于 ``__name__`` 可读性。
+
+    返回:
+        Any: 副本模块（生产路径）或基模块（降级路径），保证带 ``Client`` 类与
+        ``loop`` 属性。不向上抛异常。
+    """
+    base = importlib.import_module("lark_oapi.ws.client")
+    src_file = getattr(base, "__file__", None)
+    if not src_file:
+        logger.warning(
+            "飞书 WS 模块副本隔离降级：lark_oapi.ws.client 无 __file__"
+            "（mock/冻结环境），回退共享模块（保留跨实例竞态存量行为）；tag=%r",
+            tag,
+        )
+        return base
+    name = f"lark_oapi.ws.client__iso_{tag}"
+    try:
+        spec = importlib.util.spec_from_file_location(name, src_file)
+        if spec is None or spec.loader is None:
+            logger.error(
+                "飞书 WS 模块副本隔离降级：spec_from_file_location 失败，"
+                "回退共享模块；tag=%r src=%r",
+                tag, src_file,
+            )
+            return base
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception as exc:  # noqa: BLE001 - 降级路径，绝不向上抛
+        logger.exception(
+            "飞书 WS 模块副本隔离降级：exec_module 异常，回退共享模块；"
+            "tag=%r: %s",
+            tag, exc,
+        )
+        return base
 
 
 class FeishuWebSocketService:
@@ -120,6 +176,11 @@ class FeishuWebSocketService:
         # 用途：同一用户的连续多条消息串行化处理，避免并发读写同一个 LangGraph thread
         # 以及并发创建多个 CardKit 卡片导致窗口混乱。
         self._session_locks: Dict[str, asyncio.Lock] = {}
+        # 2026-09-11 新增：每实例独立加载的 lark_oapi.ws.client 模块副本，
+        # SDK 内部 ``loop`` 全局读取点（_connect:211 / _receive_message_loop:223）
+        # 通过副本 ``__globals__`` 解析，永远指向本实例 patch 的线程 loop，
+        # 从结构上消除跨实例跨线程的模块级全局共享竞态。
+        self._ws_mod: Any = _load_isolated_ws_client_module(id(self))
 
     # ------------------------------------------------------------------ #
     # Lifecycle                                                          #
@@ -168,19 +229,23 @@ class FeishuWebSocketService:
     def _run_ws_blocking(self) -> None:
         """后台线程入口：建立 WebSocket 并阻塞运行直到 shutdown。
 
-        关键约束（lark SDK 模块级 loop 陷阱）：
-            lark_oapi.ws.client 在模块导入时执行 ``loop = asyncio.get_event_loop()``，
-            并把该 loop 缓存在模块级变量。FastAPI/uvicorn 主线程的 loop 在 lifespan
-            期间已运行，导致线程中 ``loop.run_until_complete(...)`` 报
-            "This event loop is already running"。
+        关键约束（lark SDK 模块级 loop 陷阱 → 已根治）：
+            SDK 在 ``_connect():211`` / ``_receive_message_loop():223`` 读取模块
+            全局 ``loop``。本实例通过 ``__init__`` 加载独立模块副本
+            （``_load_isolated_ws_client_module``），副本内函数的 ``__globals__``
+            指向副本命名空间，对全局 ``loop`` 的读取永久解析到本实例 patch 的
+            loop——多实例线程间不再存在共享可变全局。
 
-        解决方案（2026-09-10 热加载改造）：
-            1. 在后台线程创建独立新 event loop 并 set_event_loop 到当前线程；
-            2. 在 ``_WS_START_LOCK`` 串行锁内把模块级 ``loop`` 指向新 loop 并完成
-               首次 ``_connect()``（SDK 的 ``_connect`` 内部用全局 loop create_task，
-               必须保证此刻全局是本线程 loop；多实例热启动时锁把窗口压到毫秒级）；
-            3. 首连后脱离锁，直接 ``create_task(_ping_loop)`` + ``run_forever()``
-               阻塞——**不调用 SDK 的 ``start()``**，避免其重读全局 loop 与
+        解决方案（2026-09-11 模块副本隔离）：
+            1. 在后台线程创建独立新 event loop 并 set_event_loop 到当前线程
+               （FastAPI/uvicorn 主线程的 loop 在 lifespan 期间已运行，线程中
+               ``loop.run_until_complete(...)`` 会报 "This event loop is
+               already running"，必须用线程私有 loop）；
+            2. ``_connect_first(new_loop)`` 把 ``self._ws_mod.loop`` 指向线程
+               loop 并完成首次 ``_connect()``（SDK ``_connect`` 内部用全局
+               loop create_task，副本隔离后该全局即本实例的 ``_ws_mod.loop``）；
+            3. 首连后 ``create_task(_ping_loop)`` + ``run_forever()`` 阻塞——
+               **不调用 SDK 的 ``start()``**，避免其重读全局 loop 与
                ``run_until_complete(_select())`` 无法被 ``loop.stop()`` 干净打断；
             4. 重连语义保留 SDK 原行为：首连失败 → ``_disconnect()`` + ``_reconnect()``
                （``ClientException`` 认证类失败不重连，直接抛出）。
@@ -193,8 +258,6 @@ class FeishuWebSocketService:
             - ``_should_run=False`` 下的其他异常同样降级为 INFO（热停止期间
               连接被 shutdown 主动断开属于正常路径，不刷 ERROR）。
         """
-        import lark_oapi.ws.client as _lark_ws_client_mod
-
         # 1. 关停期短路：lifespan 进程关停是先 stop() 再等后台线程死，期间
         #    _should_run=False 已经置上；此时再启动 SDK 等于浪费且必失败。
         if not self._should_run:
@@ -208,7 +271,7 @@ class FeishuWebSocketService:
         self._thread_loop = new_loop
         try:
             if self._ws_client is not None:
-                self._connect_under_lock(_lark_ws_client_mod, new_loop)
+                self._connect_first(new_loop)
                 # 首连成功：ping 任务 + 永久阻塞（run_forever 可被 loop.stop() 打断）
                 new_loop.create_task(self._ws_client._ping_loop())  # noqa: SLF001
                 self._block_forever(new_loop)
@@ -239,11 +302,15 @@ class FeishuWebSocketService:
             except Exception:  # noqa: BLE001
                 pass
 
-    def _connect_under_lock(self, ws_client_mod: Any, loop: asyncio.AbstractEventLoop) -> None:
-        """在 ``_WS_START_LOCK`` 串行锁内 patch 模块级 loop 并完成首次连接。
+    def _connect_first(self, loop: asyncio.AbstractEventLoop) -> None:
+        """在实例私有副本 ``self._ws_mod`` 上 patch loop 并完成首次连接。
+
+        模块副本隔离后无需 ``_WS_START_LOCK``：每个 FeishuWebSocketService 实例
+        持有独立的模块副本（``__init__`` 加载），``self._ws_mod.loop`` 仅本实例
+        读写，SDK 内部 ``_connect`` / ``_receive_message_loop`` 通过副本解析到
+        的 loop 永远是本实例 loop，不存在跨实例窗口。
 
         参数:
-            ws_client_mod: ``lark_oapi.ws.client`` 模块对象（测试环境为 mock 模块）。
             loop: 本线程新建的 event loop。
 
         异常:
@@ -258,18 +325,18 @@ class FeishuWebSocketService:
         except Exception:  # noqa: BLE001
             ClientException = ()  # type: ignore[assignment]
 
-        with _WS_START_LOCK:
-            # 把模块级 loop 指向本线程 loop（SDK _connect 内部用其 create_task）
-            ws_client_mod.loop = loop
-            try:
-                loop.run_until_complete(self._ws_client._connect())  # noqa: SLF001
-            except ClientException:
+        # 把副本的模块级 loop 指向本线程 loop（SDK _connect 内部用其 create_task）。
+        # 副本隔离：仅本实例的副本被修改，其他实例副本与基模块不受影响。
+        self._ws_mod.loop = loop
+        try:
+            loop.run_until_complete(self._ws_client._connect())  # noqa: SLF001
+        except ClientException:
+            raise
+        except Exception:
+            if not self._should_run:
                 raise
-            except Exception:
-                if not self._should_run:
-                    raise
-                loop.run_until_complete(self._ws_client._disconnect())  # noqa: SLF001
-                loop.run_until_complete(self._ws_client._reconnect())  # noqa: SLF001
+            loop.run_until_complete(self._ws_client._disconnect())  # noqa: SLF001
+            loop.run_until_complete(self._ws_client._reconnect())  # noqa: SLF001
 
     @staticmethod
     def _block_forever(loop: asyncio.AbstractEventLoop) -> None:
@@ -421,18 +488,23 @@ class FeishuWebSocketService:
         }
         return mapping.get((self._log_level or "").upper(), lark.LogLevel.INFO)
 
-    def _build_ws_client(self) -> lark.ws.Client:
-        """构造 lark.ws.Client 实例并注册消息事件处理器。
+    def _build_ws_client(self) -> Any:
+        """构造 WebSocket 客户端实例（基于本实例私有副本）并注册消息事件处理器。
 
         Returns:
-            lark.ws.Client: 配置完成的 WebSocket 客户端
+            Any: 配置完成的 WebSocket 客户端；类型注解为 ``Any`` 因为是从
+            ``self._ws_mod``（实例副本）构造，类身份与 ``lark.ws.Client`` 不同
+            但方法签名兼容。
 
         Raises:
-            RuntimeError: 当 lark 模块未提供 ws.Client / EventDispatcherHandler / 凭证缺失时
+            RuntimeError: 当副本未提供 ``Client`` / ``EventDispatcherHandler``
+            不可用 / 凭证缺失时。
         """
-        ws_module = getattr(lark, "ws", None)
+        ws_module = self._ws_mod
         if ws_module is None or not hasattr(ws_module, "Client"):
-            raise RuntimeError("lark.ws.Client 不可用（lark-oapi SDK 未正确安装或 mock 环境）")
+            raise RuntimeError(
+                "lark_oapi.ws.client.Client 不可用（lark-oapi SDK 未正确安装或 mock 环境）"
+            )
 
         ed_module = getattr(lark, "EventDispatcherHandler", None)
         if ed_module is None or not hasattr(ed_module, "builder"):
