@@ -139,7 +139,9 @@ def _send_feishu_to_admin(content: str) -> None:
                 fut = asyncio.run_coroutine_threadsafe(_resolve(), loop)
                 ch, target = fut.result(timeout=5.0)
             else:
-                ch, target = loop.run_until_complete(_resolve())
+                # 在测试环境 / 同步上下文里，pytest-asyncio 设置的 loop 可能被其他测试污染或已关闭；
+                # 直接 asyncio.run 创建全新独立 loop，避免依赖被污染的当前 loop 状态。
+                ch, target = asyncio.run(_resolve())
         except RuntimeError:
             # 测试环境 / 同步上下文无 loop:用 asyncio.run 一次性执行
             try:

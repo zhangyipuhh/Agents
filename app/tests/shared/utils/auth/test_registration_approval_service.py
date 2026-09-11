@@ -217,7 +217,32 @@ def test_send_feishu_to_admin_uses_db_default_channel_and_first_target():
     }
     fake_svc = _FakeSvcForFeishuAdmin(fake_channel, [fake_target])
 
+    # 完整 mock lark CreateMessageRequest/Body builder 链,存值字段,避免依赖
+    # feishu conftest 的 _MessageRequestBuilder（不存字段值）。
     captured = {}
+
+    class _FakeBody:
+        receive_id = None
+        msg_type = None
+        content = None
+        uuid = None
+
+    class _FakeReq:
+        receive_id_type = None
+        request_body = None
+
+    class _FakeReqBuilder:
+        def receive_id_type(self, x): captured["req_receive_id_type"] = x; return self
+        def request_body(self, x): self._body = x; return self
+        def build(self):
+            r = _FakeReq(); r.request_body = self._body; return r
+
+    class _FakeBodyBuilder:
+        def receive_id(self, x): captured["body_receive_id"] = x; return self
+        def msg_type(self, x): captured["body_msg_type"] = x; return self
+        def content(self, x): captured["body_content"] = x; return self
+        def uuid(self, x): captured["body_uuid"] = x; return self
+        def build(self): return _FakeBody()
 
     class _FakeResp:
         def success(self): return True
@@ -226,8 +251,7 @@ def test_send_feishu_to_admin_uses_db_default_channel_and_first_target():
     class _FakeMsgApi:
         @staticmethod
         def create(req):
-            captured["receive_id"] = req.request_body.receive_id
-            captured["receive_id_type"] = req.receive_id_type
+            captured["called"] = True
             return _FakeResp()
 
     class _FakeImV1:
@@ -237,16 +261,22 @@ def test_send_feishu_to_admin_uses_db_default_channel_and_first_target():
         v1 = _FakeImV1()
 
     class _FakeClient:
-        im = _FakeIm()
+        im = _FakeIm
 
-    monkeypatch_client = _FakeClient()
-
+    import lark_oapi.api.im.v1 as _im_v1_mod
     with patch.object(RAS, "_get_notification_service", lambda: fake_svc), \
-         patch.object(RAS, "_build_admin_lark_client", lambda ch: monkeypatch_client):
+         patch.object(RAS, "_build_admin_lark_client", lambda ch: _FakeClient()), \
+         patch.object(_im_v1_mod, "CreateMessageRequest") as _mock_req_cls, \
+         patch.object(_im_v1_mod, "CreateMessageRequestBody") as _mock_body_cls:
+        _mock_req_cls.builder = lambda: _FakeReqBuilder()
+        _mock_body_cls.builder = lambda: _FakeBodyBuilder()
         RAS._send_feishu_to_admin("test content")
 
-    assert captured["receive_id"] == "oc_admin_chat"
-    assert captured["receive_id_type"] == "chat_id"
+    # 验证 happy path 三个关键点
+    assert captured.get("called") is True, "client.im.v1.message.create 未被调用"
+    assert captured["body_receive_id"] == "oc_admin_chat", f"实际: {captured['body_receive_id']}"
+    assert captured["req_receive_id_type"] == "chat_id", f"实际: {captured['req_receive_id_type']}"
+    assert captured["body_msg_type"] == "text"
 
 
 def test_send_feishu_to_admin_skips_when_service_unavailable():
