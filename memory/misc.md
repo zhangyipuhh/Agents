@@ -307,7 +307,8 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 | 路径 | 职责 |
 |---|---|
 | `app/shared/tools/skills/feishu/FeishuClient.py` | `get_lark_client()` 公共工厂：从 `settings.feishu` 读取凭证，构造线程安全单例 `lark.Client`；`reset_lark_client()` 供测试重置缓存 |
-| `app/shared/tools/skills/feishu/FeishuMessageTools.py` | 1 个 `@tool(description=...)`：`send_feishu_message`（自动 Markdown 检测 → text / interactive 卡片发送；2026-08-23 起：内容含 Markdown 特征（粗体/标题/列表/代码块/引用/分隔线/**Markdown 表格**）时走 `msg_type="interactive"` + `MarkdownToCardConverter.to_card_json()` schema=2.0 卡片；表格自动转为飞书 v2.0 `column_set` + `column` 伪表格结构（无原生 `<table>` 元素，按 weight=1 等分布局；表头加粗居中、灰底，行多列少补空、超出截断）；纯文本仍走 `msg_type="text"`） |
+| `app/shared/tools/skills/feishu/FeishuEndpointResolver.py` | 按 agent 路由的公共 Endpoint 解析模块（2026-09-11 新增）：`Endpoint` dataclass + `resolve_current_endpoint(runtime)` + `build_lark_client(endpoint)` + 统一错误文案常量；供所有飞书工具复用 |
+| `app/shared/tools/skills/feishu/FeishuMessageTools.py` | 1 个 `@tool(description=...)`：`send_feishu_message(content, runtime)`（2026-09-11 重构：删除 `receive_id`/`receive_id_type` 参数，签名只保留 `content` + `runtime`；改走 FeishuEndpointResolver 按 `runtime.state.agent_name` 路由到对应 channel/target；凭证用 endpoint 明文 + 临时 client，不走全局单例；Markdown 检测 → text / interactive 卡片发送；2026-08-23 起：内容含 Markdown 特征（粗体/标题/列表/代码块/引用/分隔线/**Markdown 表格**）时走 `msg_type="interactive"` + `MarkdownToCardConverter.to_card_json()` schema=2.0 卡片；表格自动转为飞书 v2.0 `column_set` + `column` 伪表格结构（无原生 `<table>` 元素，按 weight=1 等分布局；表头加粗居中、灰底，行多列少补空、超出截断）；纯文本仍走 `msg_type="text"`） |
 
 ### 配置（FeishuSettings）
 
@@ -350,6 +351,19 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 - `app/tests/shared/tools/skills/feishu/test_markdown_to_card_converter.py` —— 54 个用例（原 45 个 + 2026-08-23 新增 9 个 Markdown 表格用例：`test_looks_like_markdown_table_simple` / `test_looks_like_markdown_table_with_alignment` / `test_looks_like_markdown_table_no_separator_returns_false` / `test_looks_like_markdown_table_real_inspection_report` / `test_to_card_json_renders_table_as_column_set` / `test_to_card_json_table_5_columns_real_user_case` / `test_to_card_json_table_short_row_padded_with_empty` / `test_to_card_json_table_mismatched_row_padded_or_truncated` / `test_to_card_json_table_text_mixed_with_paragraphs`）：导入存在性、`looks_like_markdown` 触发（粗体 / 斜体 / 行内代码 / 标题 / 列表 / 有序列表(1./1) / 双位数字 / **Markdown 表格 2026-08-23 新增**）/ 引用 / 分隔线 / 代码围栏）、`looks_like_markdown` 否定、`to_card_json` 基本结构、h1-h3 标题、hr、列表合并、有序列表 单层 / 含子项 / 用户复现 / 括号形式(1) / **行内多编号拆分（用户截图复现）/ CJK 终止符触发 / 括号形式行内 / 反例（数字不被误拆）/ 常规多行回归保护 2026-07-17 新增** / **Markdown 表格检测与 column_set 渲染（含 5 列宽表）2026-08-23 新增**、引用、代码块（带 / 不带语言）、纯文本段落、粗体保留、截断、Unicode / emoji
 - `app/tests/shared/tools/skills/feishu/test_interrupt_to_card_converter.py` —— 13 个用例：导入存在性、单题单选、多题、按钮 value 携带 session_id / chat_id、options=[] 退化、questions=[] 占位、None 请求占位、multiSelect 退化为单选、选项数超限截断、自定义 header_title、`parse_card_action_value` 解析 dict / JSON 字符串 / 失败
 - `app/tests/shared/tools/skills/feishu/conftest.py` —— 沙箱环境 mock lark_oapi SDK：Client.builder 链、LogLevel 枚举、CreateMessageRequest/Body builder 链、P2ImMessageReceiveV1 类型占位、GetMessageResourceRequest、cardkit.v1 Card/Create/Update、lark.ws.Client、lark.EventDispatcherHandler 注册 `p2_card_action_trigger`、lark_oapi.core 真实对等模型（HttpMethod / AccessTokenType / BaseRequest builder / RequestOption）
+
+### Agent 路由契约（2026-09-11 落地）
+
+- **一对一契约**：agent ↔ channel ↔ target 均为 1:1（同一智能体对应一个飞书应用，对应一个群）
+- 查询 SQL：`channel` 按 `config->>'agent_name'=$1 AND enabled=TRUE ORDER BY is_default DESC, id ASC LIMIT 1`；`target` 按 `channel_id=$1 AND enabled=TRUE ORDER BY id ASC LIMIT 1`
+- 服务方法：`NotificationConfigService.resolve_agent_feishu_endpoint(agent_name)` 一次性返回 `{channel_id, channel_name, app_id(明文), app_secret(明文), log_level, target_id, target_name, chat_id, chat_type, agent_name}` 或 `None`
+- 公共解析入口：`FeishuEndpointResolver.resolve_current_endpoint(runtime)` 从 `runtime.state.agent_name` 解析 → `Endpoint` dataclass；`build_lark_client(endpoint)` 用明文凭证构造临时 `lark.Client`（不走全局单例）
+- 统一错误文案：`ERROR_NO_AGENT_NAME` / `ERROR_NO_CHANNEL` / `ERROR_NO_TARGET` / `ERROR_DB_UNAVAILABLE`（定义于 `FeishuEndpointResolver.py`）
+- **`send_feishu_message` 签名变化（BREAKING）**：删除 `receive_id` / `receive_id_type` 参数，仅保留 `content` + `runtime`；LLM 不显式传参，全部由后台解析
+- **`registration_approval_service._send_feishu_to_admin`**：不再读 `settings.feishu.feishu_default_receive_id`（.env 已废弃），改走 DB `resolve_default_channel("feishu")` + `list_targets(channel_id=...)` 取第一个 enabled target；用渠道明文凭证构造临时 client
+- **`FeishuClient.get_lark_client()` 全局单例保留**：供 WebSocket 等系统级场景使用（与 Resolver 互补：全局单例拿默认渠道，Resolver 按 agent 路由）
+- **未来扩展**：新增飞书文档/文件/卡片工具时直接 `from app.shared.tools.skills.feishu.FeishuEndpointResolver import resolve_current_endpoint, build_lark_client`，无需重复实现 DB 查询与凭证解密
+- **测试新增**：`app/tests/shared/tools/skills/feishu/test_feishu_endpoint_resolver.py`（15 用例：Endpoint dataclass 契约 + resolve 成功路径 + agent_name 缺失/runtime=None/service 未初始化/DB 返回 None/同步桥接抛异常/缺字段 dict 6 类失败 + build_lark_client 凭证透传 + log_level 大小写 + 错误文案格式占位符）；`test_feishu_message_tools.py` 重写为 12 用例（删除显式 receive_id 用例，新增 agent 路由 happy path / 无 agent_name / 无 endpoint / Markdown 卡片 / API 失败/异常 / build_lark_client 失败 / tool_call_id 透传 / `response.data=None` 边界）；`test_registration_approval_service.py` 新增 6 用例（DB 默认渠道 + target happy path + service 未初始化降级 + 无默认渠道 + 无 enabled target + chat_id 空 + 发送异常 swallow + `notify_admin_new_registration` 集成调用）
 
 ### 飞书 WebSocket 长连接（被动接收）
 
