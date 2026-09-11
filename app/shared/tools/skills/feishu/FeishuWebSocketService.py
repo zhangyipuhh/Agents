@@ -53,6 +53,14 @@ logger = logging.getLogger(__name__)
 _FEISHU_TEXT_MAX_LEN = 4000
 _TRUNCATE_HINT = "\n...(内容过长已截断)"
 
+# 2026-09-10 新增：lark SDK 模块级 ``loop`` 全局变量 patch 串行锁。
+# lark_oapi.ws.client 在模块导入时缓存 ``loop = asyncio.get_event_loop()``，
+# 多实例场景每个 WS 线程都需把该全局指向自己的线程 loop；patch → 首次 _connect
+# 窗口必须串行，否则后启动线程会覆盖先启动线程的全局 loop。
+# 已知限制（存量）：首连成功后 SDK 内部 _receive_message_loop / 重连路径仍读全局
+# loop，运行中实例恰好在他实例热启动瞬间断线重连时可能受影响（毫秒级窗口）。
+_WS_START_LOCK = threading.Lock()
+
 
 class FeishuWebSocketService:
     """飞书 WebSocket 长连接服务管理器。
@@ -96,6 +104,9 @@ class FeishuWebSocketService:
         self._should_run = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
+        # 2026-09-10 新增：WS 后台线程自身的事件循环引用（线程入口赋值），
+        # 供 shutdown() 跨线程调度 _disconnect() / loop.stop() 实现热停止。
+        self._thread_loop: Optional[asyncio.AbstractEventLoop] = None
         self._bot_open_id: Optional[str] = None
         # HITL 状态：session_id → {"chat_id": ..., "request": ...}
         # 仅存内存，lifespan 重启后丢失；用户需重新提问。
@@ -155,7 +166,7 @@ class FeishuWebSocketService:
         logger.info("FeishuWebSocketService 已异步启动（agent_name=%s）", self._agent_name)
 
     def _run_ws_blocking(self) -> None:
-        """后台线程入口：阻塞运行 ws_client.start()。
+        """后台线程入口：建立 WebSocket 并阻塞运行直到 shutdown。
 
         关键约束（lark SDK 模块级 loop 陷阱）：
             lark_oapi.ws.client 在模块导入时执行 ``loop = asyncio.get_event_loop()``，
@@ -163,18 +174,24 @@ class FeishuWebSocketService:
             期间已运行，导致线程中 ``loop.run_until_complete(...)`` 报
             "This event loop is already running"。
 
-        解决方案：
-            在后台线程入口创建独立的新 event loop，把它 set_event_loop 到当前线程，
-            并 monkey-patch ``lark_oapi.ws.client.loop`` 指向新 loop。
-            同时把 ``client.bot.v1.bot.get`` 等外部读取也放在主线程（lifespan 阶段）
-            完成，线程只负责建立 WebSocket。
+        解决方案（2026-09-10 热加载改造）：
+            1. 在后台线程创建独立新 event loop 并 set_event_loop 到当前线程；
+            2. 在 ``_WS_START_LOCK`` 串行锁内把模块级 ``loop`` 指向新 loop 并完成
+               首次 ``_connect()``（SDK 的 ``_connect`` 内部用全局 loop create_task，
+               必须保证此刻全局是本线程 loop；多实例热启动时锁把窗口压到毫秒级）；
+            3. 首连后脱离锁，直接 ``create_task(_ping_loop)`` + ``run_forever()``
+               阻塞——**不调用 SDK 的 ``start()``**，避免其重读全局 loop 与
+               ``run_until_complete(_select())`` 无法被 ``loop.stop()`` 干净打断；
+            4. 重连语义保留 SDK 原行为：首连失败 → ``_disconnect()`` + ``_reconnect()``
+               （``ClientException`` 认证类失败不重连，直接抛出）。
 
-        重连处理：SDK 内部自动捕获断开并重连，循环直到 _should_run=False 或进程退出。
-
-        关停容忍（2026-07-17）：uWSGI / uvicorn / Ctrl-C 触发的进程关闭阶段，
-        lark SDK 重连线程仍可能尝试排新 future，本线程 catch ``RuntimeError("cannot
-        schedule new futures after interpreter shutdown")`` 时一律静默退出；
-        与此同时 ``_should_run`` 标志关闭后，本线程也直接绕过 ``start()``。
+        关停路径：
+            - ``shutdown()`` → ``_should_run=False`` + ``loop.stop()`` →
+              ``run_forever()`` 返回 → 线程正常退出；
+            - 进程关停期 SDK 抛 ``RuntimeError("interpreter shutdown" /
+              "cannot schedule new futures" / "Event loop is closed")`` → 静默退出；
+            - ``_should_run=False`` 下的其他异常同样降级为 INFO（热停止期间
+              连接被 shutdown 主动断开属于正常路径，不刷 ERROR）。
         """
         import lark_oapi.ws.client as _lark_ws_client_mod
 
@@ -188,17 +205,20 @@ class FeishuWebSocketService:
 
         new_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(new_loop)
-        # 把模块级 loop 指向新 loop（lark SDK 内部用此变量调用 run_until_complete）
-        _lark_ws_client_mod.loop = new_loop
+        self._thread_loop = new_loop
         try:
             if self._ws_client is not None:
-                self._ws_client.start()
+                self._connect_under_lock(_lark_ws_client_mod, new_loop)
+                # 首连成功：ping 任务 + 永久阻塞（run_forever 可被 loop.stop() 打断）
+                new_loop.create_task(self._ws_client._ping_loop())  # noqa: SLF001
+                self._block_forever(new_loop)
         except RuntimeError as e:  # noqa: BLE001
             # 关停期 SDK 重连失败不报错（典型：interpreter shutdown）。
             # 业务异常仍走下面 except 块打 ERROR 日志。
             msg = str(e) if e else ""
             if (
-                "interpreter shutdown" in msg
+                not self._should_run
+                or "interpreter shutdown" in msg
                 or "cannot schedule new futures" in msg
                 or "Event loop is closed" in msg
             ):
@@ -208,12 +228,98 @@ class FeishuWebSocketService:
             else:
                 logger.error("飞书 WebSocket 异常退出: %s", e, exc_info=True)
         except Exception as e:  # noqa: BLE001
-            logger.error("飞书 WebSocket 异常退出: %s", e, exc_info=True)
+            if not self._should_run:
+                logger.info("飞书 WebSocket 线程在停止标志下退出（%s）", e)
+            else:
+                logger.error("飞书 WebSocket 异常退出: %s", e, exc_info=True)
         finally:
+            self._thread_loop = None
             try:
                 new_loop.close()
             except Exception:  # noqa: BLE001
                 pass
+
+    def _connect_under_lock(self, ws_client_mod: Any, loop: asyncio.AbstractEventLoop) -> None:
+        """在 ``_WS_START_LOCK`` 串行锁内 patch 模块级 loop 并完成首次连接。
+
+        参数:
+            ws_client_mod: ``lark_oapi.ws.client`` 模块对象（测试环境为 mock 模块）。
+            loop: 本线程新建的 event loop。
+
+        异常:
+            ClientException: 认证/永久失败（SDK 语义不重连），原样抛出。
+            Exception: 首连失败且 ``_should_run=True`` → ``_disconnect()`` +
+                ``_reconnect()``（保持 SDK 自动重连语义）；重连异常原样抛出。
+        """
+        # mock 环境（测试 conftest）无 lark_oapi.ws.exception 子模块 → 降级为
+        # 永不匹配的空元组，保持 except 语法可用
+        try:
+            from lark_oapi.ws.exception import ClientException
+        except Exception:  # noqa: BLE001
+            ClientException = ()  # type: ignore[assignment]
+
+        with _WS_START_LOCK:
+            # 把模块级 loop 指向本线程 loop（SDK _connect 内部用其 create_task）
+            ws_client_mod.loop = loop
+            try:
+                loop.run_until_complete(self._ws_client._connect())  # noqa: SLF001
+            except ClientException:
+                raise
+            except Exception:
+                if not self._should_run:
+                    raise
+                loop.run_until_complete(self._ws_client._disconnect())  # noqa: SLF001
+                loop.run_until_complete(self._ws_client._reconnect())  # noqa: SLF001
+
+    @staticmethod
+    def _block_forever(loop: asyncio.AbstractEventLoop) -> None:
+        """阻塞运行事件循环直到 ``shutdown()`` 跨线程调用 ``loop.stop()``。
+
+        单独成方法便于测试 monkeypatch（避免测试线程真的永久阻塞）。
+
+        参数:
+            loop: 本线程的 event loop。
+        """
+        loop.run_forever()
+
+    def shutdown(self, timeout: float = 5.0) -> None:
+        """优雅停止本实例（热加载路径使用；区别于 stop() 仅置标志）。
+
+        步骤：置停止标志 → 跨线程调度 SDK ``_disconnect()`` 关闭连接 →
+        ``loop.stop()`` 打断 ``run_forever()`` 阻塞 → join 后台线程。
+        全程异常容忍（仅 WARN），绝不向上抛，保证热加载流程不被单个实例拖垮。
+
+        参数:
+            timeout: 等待断连与线程退出的最长秒数（默认 5s）。
+        """
+        self._should_run = False
+        thread = self._thread
+        thread_loop = self._thread_loop
+        try:
+            if (
+                self._ws_client is not None
+                and thread_loop is not None
+                and not thread_loop.is_closed()
+            ):
+                try:
+                    fut = asyncio.run_coroutine_threadsafe(
+                        self._ws_client._disconnect(), thread_loop  # noqa: SLF001
+                    )
+                    fut.result(timeout=timeout)
+                except Exception as e:  # noqa: BLE001 - 含 TimeoutError / loop 已停
+                    logger.warning("飞书 WS 热停止断连异常(忽略): %s", e)
+                try:
+                    thread_loop.call_soon_threadsafe(thread_loop.stop)
+                except Exception:  # noqa: BLE001
+                    pass
+        finally:
+            if (
+                thread is not None
+                and thread.is_alive()
+                and thread is not threading.current_thread()
+            ):
+                thread.join(timeout=timeout)
+            logger.info("FeishuWebSocketService shutdown 完成")
 
     def stop(self) -> None:
         """停止服务（lifespan 关闭时调用）。

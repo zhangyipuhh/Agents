@@ -171,7 +171,7 @@
 | 方法 | 路径 | ACL key | 说明 |
 |---|---|---|---|
 | GET | `/api/notification/channels/{channel_id}/targets` | `messaging.feishu.policies` | 列出该渠道所有目标（含绑智能体 + 模板） |
-| POST | `/api/notification/channels/{channel_id}/targets` | `messaging.feishu.policies` | 新增目标；body 含 `target_type` + `name` + `config`（chat_id/chat_type）+ `agent_name` + 模板字段 |
+| POST | `/api/notification/channels/{channel_id}/targets` | `messaging.feishu.policies` | 新增目标；body 含 `target_type` + `name` + `config`（chat_id/chat_type）+ 模板字段；`agent_name` 已废弃（2026-09-10 改为可选,前端新调用统一不传,值不再写入 DB,智能体绑定收口在 `channel.config.agent_name`） |
 | PUT | `/api/notification/targets/{target_id}` | `messaging.feishu.policies` | 更新目标 |
 | DELETE | `/api/notification/targets/{target_id}` | `messaging.feishu.policies` | 删除目标 |
 

@@ -15,6 +15,7 @@ NotificationConfigService 单元测试(2026-09-03 新增)。
 不在本测试范围(由 router 测试覆盖):HTTP 路由 + ACL
 """
 import asyncio
+import inspect
 import json
 import re
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -958,6 +959,86 @@ def test_db_exception_extract_handles_non_postgres_error():
     # 非 PostgresError 不应有 sqlstate / constraint_name
     assert "sqlstate" not in detail
     assert "constraint_name" not in detail
+
+
+def test_upsert_target_insert_sql_does_not_write_agent_name_column():
+    """upsert_target INSERT SQL 必须不写 agent_name 列(2026-09-10 回归保护)。
+
+    背景:第二轮契约 target 不绑智能体,agent_name 读取时回退 channel.config.agent_name;
+    notification_targets.agent_name 列 2026-09-10 落地为 NULLABLE,但 INSERT 必须仍然不写
+    该列,否则:
+    1) 前端不传 agent_name → service 写入 NULL → 仍依赖列 NULLABLE 才能成功
+       (单一真相源依赖变窄,任意一侧未来变更都可能回归)
+    2) INSERT 多写一列增加带宽 / 失去「target 仅管接收方」的语义清晰度
+
+    本测试直接对源码字符串做 grep-style 断言,捕获任何恢复写 agent_name 列的修改。
+    """
+    import re
+    from app.shared.utils.notification import notification_config_service as svc_mod
+
+    src = inspect.getsource(svc_mod.NotificationConfigService.upsert_target)
+
+    # 抽 INSERT INTO notification_targets 段(到 RETURNING 之前)
+    m = re.search(
+        r"INSERT INTO notification_targets\s*(?P<body>.*?)RETURNING",
+        src, flags=re.DOTALL,
+    )
+    assert m is not None, "upsert_target 中找不到 INSERT INTO notification_targets 语句"
+
+    body = m.group("body")
+    # 列名列表
+    cols_match = re.search(r"\((?P<cols>[^)]+)\)\s*VALUES", body)
+    assert cols_match is not None, "INSERT 无法解析列名列表"
+    cols_text = cols_match.group("cols")
+    cols = {c.strip() for c in cols_text.split(",")}
+
+    assert "agent_name" not in cols, (
+        f"upsert_target INSERT 必须不写 agent_name 列(读取回退 channel.config.agent_name);"
+        f"当前列列表={sorted(cols)}。"
+        "如果业务确实需要 target 重新绑智能体,请同时改 DB 列改回 NOT NULL + "
+        "调整 _target_to_public 回退逻辑,并删除本测试。"
+    )
+
+    # VALUES 占位符数量必须等于列数
+    placeholders = re.findall(r"\$\d+", body[body.index("VALUES"):])
+    assert len(placeholders) == len(cols), (
+        f"VALUES 占位符 {len(placeholders)} != 列数 {len(cols)}: cols={sorted(cols)}"
+    )
+
+
+def test_upsert_target_update_sql_does_not_write_agent_name_column():
+    """upsert_target UPDATE SQL 必须不更新 agent_name 列(2026-09-10 回归保护)。
+
+    背景:第二轮契约规定 target 不再绑智能体,UPDATE 必须不写 agent_name 列以
+    保留存量值(读取时回退 chain 优先 target 行值)。
+    """
+    import re
+    from app.shared.utils.notification import notification_config_service as svc_mod
+
+    src = inspect.getsource(svc_mod.NotificationConfigService.upsert_target)
+
+    # UPDATE notification_targets 段
+    m = re.search(
+        r"UPDATE notification_targets\s*SET\s*(?P<sets>.*?)WHERE",
+        src, flags=re.DOTALL,
+    )
+    assert m is not None, "upsert_target 中找不到 UPDATE notification_targets 语句"
+
+    sets = m.group("sets")
+    # 把 SET 子句拆成单条: column = $n (允许复杂赋值,但 target 这里都是简单赋值)
+    pairs = [p.strip() for p in sets.split(",")]
+    set_cols = []
+    for p in pairs:
+        # 形如 "name = $2" / "config = $3::jsonb"
+        col_match = re.match(r"(?P<col>\w+)\s*=", p)
+        if col_match:
+            set_cols.append(col_match.group("col"))
+
+    assert "agent_name" not in set_cols, (
+        f"upsert_target UPDATE 必须不更新 agent_name 列;"
+        f"当前 SET 子句列={set_cols}。"
+        "如果业务确实需要 target 重新绑智能体,请同步前端 / DB / 读取逻辑,并删除本测试。"
+    )
 
 
 def test_log_and_raise_db_error_wraps_as_notification_config_error():

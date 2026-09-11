@@ -76,6 +76,43 @@ def _request_user_id(request: Request) -> int:
     return int(getattr(request.state, "user_id", 0) or 0)
 
 
+async def _apply_feishu_ws_change(request: Request, channel_id: int) -> bool:
+    """渠道变更后热加载飞书 WS 实例（fail-soft，2026-09-10 新增）。
+
+    在渠道新增 / 更新 / 启停 / 删除成功后调用，让 ``FeishuWebSocketManager``
+    按 DB 最新状态热启动 / 热停止对应实例，实现「保存即生效」无需重启服务。
+
+    参数:
+        request: FastAPI Request 对象。
+        channel_id: 发生变更的渠道 ID。
+
+    返回:
+        bool: True=实例已按最新配置运行；False=WS 编排器未初始化 / 实例已停止 /
+            热加载失败。热加载失败仅记 WARN，不影响已成功的 DB 操作响应。
+    """
+    manager = getattr(request.app.state, "feishu_ws_manager", None)
+    if manager is None:
+        return False
+    try:
+        # 局部 import 避免循环依赖（与 lifespan 保持一致）
+        from app.shared.utils.auth.user_db import UserDB
+
+        agent_config_service = getattr(
+            request.app.state, "agent_config_service", None
+        )
+        return await manager.apply_channel_change(
+            channel_id,
+            agent_config_service=agent_config_service,
+            user_lookup=UserDB.get_user_by_username,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[notification_router] 飞书 WS 热加载失败 channel_id=%s: %s",
+            channel_id, exc,
+        )
+        return False
+
+
 def _handle_service_error(exc: Exception) -> None:
     """把 service 异常映射为 HTTPException。
 
@@ -148,13 +185,16 @@ class UpdateChannelRequest(BaseModel):
 
 
 class CreateTargetRequest(BaseModel):
-    """新建 / 更新目标请求体。
+    """新建目标请求体。
 
     Attributes:
-        target_type: 目标类型（白名单 'feishu.chat' / 'feishu.user'）。
+        target_type: 目标类型(白名单 'feishu.chat' / 'feishu.user')。
         name: 目标名。
-        config: 目标配置 dict（含 chat_id / chat_type）。
-        agent_name: 绑定的智能体名。
+        config: 目标配置 dict(含 chat_id / chat_type)。
+        agent_name: 已废弃。2026-09-07 第二轮后 target 不绑智能体,智能体绑定收口在
+            channel 层(``channel.config.agent_name``);保留字段仅为向后兼容旧调用方
+            / 迁移脚本,即便显式传入也不会被写入 DB(``upsert_target`` 的 INSERT /
+            UPDATE SQL 都不再写该列)。前端新调用统一不传该字段,默认 ``None``。
         subject_template: 主题模板。
         body_template: 正文模板。
         enabled: 是否启用。
@@ -163,14 +203,28 @@ class CreateTargetRequest(BaseModel):
     target_type: str = Field(default="feishu.chat")
     name: str = Field(..., min_length=1, max_length=200)
     config: Dict[str, Any] = Field(default_factory=dict)
-    agent_name: str = Field(..., min_length=1, max_length=100)
+    # 2026-09-10 修复 Pydantic 422:第二轮契约 target 不绑智能体,前端不传 agent_name,
+    # 但本模型仍将其标为必填,导致 POST /targets 返回 422 Unprocessable Entity。
+    # 改为 Optional,与 UpdateTargetRequest 对称;保留字段仅用于向后兼容。
+    agent_name: Optional[str] = Field(default=None, min_length=1, max_length=100)
     subject_template: str = Field(default="", max_length=500)
     body_template: str = Field(default="")
     enabled: bool = Field(default=True)
 
 
 class UpdateTargetRequest(BaseModel):
-    """更新目标请求体。"""
+    """更新目标请求体(部分字段更新)。
+
+    Attributes:
+        target_type: 目标类型;None 表示不修改。
+        name: 目标名;None 表示不修改。
+        config: 目标配置 dict;None 表示不修改。
+        agent_name: 已废弃(同 ``CreateTargetRequest``);保留仅为向后兼容,即便传入
+            也不会被写入 DB。None 表示不修改。
+        subject_template: 主题模板;None 表示不修改。
+        body_template: 正文模板;None 表示不修改。
+        enabled: 是否启用;None 表示不修改。
+    """
 
     target_type: Optional[str] = Field(default=None)
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
@@ -271,7 +325,7 @@ async def create_channel(
     service = _get_service(request)
     config_db = _encrypt_feishu_config(service, body.config) if body.channel_type == "feishu" else dict(body.config)
     try:
-        return await service.upsert_channel(
+        result = await service.upsert_channel(
             channel_type=body.channel_type,
             name=body.name,
             display_name=body.display_name,
@@ -284,6 +338,9 @@ async def create_channel(
     except Exception as exc:
         _handle_service_error(exc)
         raise
+    # 2026-09-10 保存即生效：渠道落库成功后热加载对应 WS 实例（fail-soft）
+    ws_applied = await _apply_feishu_ws_change(request, result["id"])
+    return {**result, "ws_applied": ws_applied}
 
 
 @router.get("/channels/{channel_id}", response_model=Dict[str, Any],
@@ -342,7 +399,7 @@ async def update_channel(
         final_config = existing_internal["config"]
 
     try:
-        return await service.upsert_channel(
+        result = await service.upsert_channel(
             channel_type=existing_internal["channel_type"],
             name=existing_internal["name"],
             display_name=body.display_name if body.display_name is not None else existing_internal["display_name"],
@@ -355,6 +412,9 @@ async def update_channel(
     except Exception as exc:
         _handle_service_error(exc)
         raise
+    # 2026-09-10 保存即生效：凭证 / agent_name / enabled 变更后热重启 WS 实例
+    ws_applied = await _apply_feishu_ws_change(request, channel_id)
+    return {**result, "ws_applied": ws_applied}
 
 
 @router.delete("/channels/{channel_id}", status_code=status.HTTP_204_NO_CONTENT,
@@ -368,6 +428,8 @@ async def delete_channel(request: Request, channel_id: int) -> None:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"channel_id={channel_id} 不存在",
         )
+    # 2026-09-10 保存即生效：渠道删除后热停止对应 WS 实例（fail-soft）
+    await _apply_feishu_ws_change(request, channel_id)
 
 
 @router.post("/channels/{channel_id}/test-connection", response_model=Dict[str, Any],
@@ -403,7 +465,12 @@ async def create_target(
     channel_id: int,
     body: CreateTargetRequest,
 ) -> Dict[str, Any]:
-    """新建目标（绑群 + 绑智能体）。"""
+    """新建目标。
+
+    2026-09-10 修复说明:第二轮契约 target 不绑智能体(智能体绑定收口在 channel 层),
+    ``body.agent_name`` 通常为 ``None``;此处归一化为空串传给 service,service 的
+    INSERT/UPDATE SQL 不写 agent_name 列,无需任何 DB 副作用。
+    """
     service = _get_service(request)
     try:
         return await service.upsert_target(
@@ -411,7 +478,7 @@ async def create_target(
             target_type=body.target_type,
             name=body.name,
             config=body.config,
-            agent_name=body.agent_name,
+            agent_name=body.agent_name or "",
             subject_template=body.subject_template,
             body_template=body.body_template,
             enabled=body.enabled,

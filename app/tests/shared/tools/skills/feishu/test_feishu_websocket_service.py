@@ -1696,7 +1696,7 @@ def test_stop_sets_flag():
 
 
 def test_run_ws_blocking_skips_start_when_should_run_false():
-    """P0：_should_run=False 时 _run_ws_blocking 直接 return，不调 ws_client.start()。
+    """P0：_should_run=False 时 _run_ws_blocking 直接 return，不触碰 ws_client。
 
     对应 lifespan stop → 关停期短路（防止 process shutdown 期间还尝试重连）。
     """
@@ -1704,9 +1704,45 @@ def test_run_ws_blocking_skips_start_when_should_run_false():
     svc._should_run = False
     fake_ws = MagicMock()
     svc._ws_client = fake_ws
-    # 不应触发 fake_ws.start() 调用，且不应阻塞在异常上
     svc._run_ws_blocking()
     assert not fake_ws.start.called
+    assert not fake_ws._connect.called
+
+
+def _make_fake_ws_for_run(connect_exc=None, reconnect_exc=None):
+    """构造热加载改造后 _run_ws_blocking 路径用的 fake ws client。
+
+    生产代码不再调 SDK ``start()``，而是 ``_connect()``（锁内）+
+    ``create_task(_ping_loop)`` + ``_block_forever(loop)``，因此 fake 提供
+    ``_connect / _disconnect / _reconnect / _ping_loop`` 协程方法。
+
+    Args:
+        connect_exc: ``_connect`` 抛出的异常（None=首连成功）。
+        reconnect_exc: ``_reconnect`` 抛出异常（None=重连成功）。
+    """
+    fake_ws = MagicMock()
+
+    async def _connect():
+        if connect_exc is not None:
+            raise connect_exc
+        return None
+
+    async def _disconnect():
+        return None
+
+    async def _reconnect():
+        if reconnect_exc is not None:
+            raise reconnect_exc
+        return None
+
+    async def _ping_loop():
+        return None
+
+    fake_ws._connect = _connect
+    fake_ws._disconnect = _disconnect
+    fake_ws._reconnect = _reconnect
+    fake_ws._ping_loop = _ping_loop
+    return fake_ws
 
 
 @pytest.mark.parametrize(
@@ -1717,32 +1753,191 @@ def test_run_ws_blocking_skips_start_when_should_run_false():
         "interpreter shutdown",
     ],
 )
-def test_run_ws_blocking_quietly_exits_on_shutdown_runtime_error(exc_msg):
+def test_run_ws_blocking_quietly_exits_on_shutdown_runtime_error(exc_msg, caplog):
     """P0：lark SDK 在进程关停期抛 RuntimeError 时静默退出（不 ERROR 日志）。
 
     真实线上场景 (2026-07-17)：uvicorn 关闭时 lark SDK 重连抛
     "cannot schedule new futures after interpreter shutdown"，
     此处不应刷 ERROR 日志让用户以为故障。
+    2026-09-10 热加载改造后路径：_connect 失败 → _reconnect 复抛 → 外层分类静默。
     """
     svc = _make_service()
     svc._should_run = True
-    fake_ws = MagicMock()
-    fake_ws.start.side_effect = RuntimeError(exc_msg)
+    fake_ws = _make_fake_ws_for_run(
+        connect_exc=RuntimeError(exc_msg),
+        reconnect_exc=RuntimeError(exc_msg),
+    )
     svc._ws_client = fake_ws
-    # 应正常返回，不抛
-    svc._run_ws_blocking()
-    assert fake_ws.start.called
+    with caplog.at_level(
+        logging.DEBUG,
+        logger="app.shared.tools.skills.feishu.FeishuWebSocketService",
+    ):
+        svc._run_ws_blocking()
+    # 应正常返回，不抛；且不出现 ERROR 级日志
+    assert not [
+        r for r in caplog.records
+        if r.levelno >= logging.ERROR
+        and r.name == "app.shared.tools.skills.feishu.FeishuWebSocketService"
+    ]
 
 
-def test_run_ws_blocking_logs_other_runtime_errors():
+def test_run_ws_blocking_logs_other_runtime_errors(caplog):
     """P2：与关停期无关的 RuntimeError 仍走 ERROR 日志，不静默吞掉。"""
     svc = _make_service()
     svc._should_run = True
-    fake_ws = MagicMock()
-    fake_ws.start.side_effect = RuntimeError("unrelated failure")
+    fake_ws = _make_fake_ws_for_run(
+        connect_exc=RuntimeError("unrelated failure"),
+        reconnect_exc=RuntimeError("unrelated failure"),
+    )
     svc._ws_client = fake_ws
-    svc._run_ws_blocking()  # 不抛即可
-    assert fake_ws.start.called
+    with caplog.at_level(
+        logging.DEBUG,
+        logger="app.shared.tools.skills.feishu.FeishuWebSocketService",
+    ):
+        svc._run_ws_blocking()  # 不抛即可
+    assert any(
+        r.levelno >= logging.ERROR
+        and r.name == "app.shared.tools.skills.feishu.FeishuWebSocketService"
+        for r in caplog.records
+    )
+
+
+def test_run_ws_blocking_success_path_connects_under_lock(monkeypatch):
+    """P1：首连成功路径——锁内 patch 模块 loop + _connect，随后 _block_forever 阻塞。
+
+    2026-09-10 热加载改造核心：不再调 SDK ``start()``，用
+    ``_connect_under_lock`` + ``_block_forever``（run_forever）替代，
+    使 ``loop.stop()`` 能干净打断阻塞。
+    """
+    import lark_oapi.ws.client as ws_client_mod
+
+    svc = _make_service()
+    svc._should_run = True
+    fake_ws = _make_fake_ws_for_run()
+    svc._ws_client = fake_ws
+
+    captured = {}
+
+    def _fake_block(loop):
+        captured["loop"] = loop
+
+    monkeypatch.setattr(
+        FeishuWebSocketService, "_block_forever", staticmethod(_fake_block)
+    )
+    svc._run_ws_blocking()
+    # 首连发生且读到的是线程 loop；退出后 _thread_loop 复位
+    assert captured.get("loop") is not None
+    assert captured["loop"].is_closed()
+    assert svc._thread_loop is None
+    assert ws_client_mod.loop is captured["loop"]
+
+
+def test_run_ws_blocking_skips_reconnect_when_should_run_false_midway(caplog):
+    """P2：首连失败且 _should_run 已为 False → 不触发 _reconnect，直接静默退出。"""
+    svc = _make_service()
+    svc._should_run = True
+    state = {"reconnect_called": False}
+
+    fake_ws = MagicMock()
+
+    async def _connect():
+        svc._should_run = False  # 模拟 connect 期间收到停止标志
+        raise ConnectionError("connect failed after stop")
+
+    async def _disconnect():
+        return None
+
+    async def _reconnect():
+        state["reconnect_called"] = True
+
+    fake_ws._connect = _connect
+    fake_ws._disconnect = _disconnect
+    fake_ws._reconnect = _reconnect
+    svc._ws_client = fake_ws
+    with caplog.at_level(
+        logging.DEBUG,
+        logger="app.shared.tools.skills.feishu.FeishuWebSocketService",
+    ):
+        svc._run_ws_blocking()
+    assert state["reconnect_called"] is False
+    # 停止标志下退出不刷 ERROR
+    assert not [
+        r for r in caplog.records
+        if r.levelno >= logging.ERROR
+        and r.name == "app.shared.tools.skills.feishu.FeishuWebSocketService"
+    ]
+
+
+# ---------------------------------------------------------------------------
+# P1 shutdown（2026-09-10 热加载新增）
+# ---------------------------------------------------------------------------
+def test_shutdown_tolerates_never_started():
+    """P1：未启动过的实例调 shutdown 不抛异常，仅置停止标志。"""
+    svc = _make_service()
+    svc.shutdown(timeout=0.05)
+    assert svc._should_run is False
+
+
+def test_shutdown_disconnects_and_stops_thread_loop():
+    """P1：shutdown 跨线程完成 SDK _disconnect + loop.stop + 线程退出。"""
+    import threading
+
+    svc = _make_service()
+    svc._should_run = True
+    loop = asyncio.new_event_loop()
+    svc._thread_loop = loop
+    state = {"disconnected": False}
+
+    async def _disconnect():
+        state["disconnected"] = True
+
+    fake_ws = MagicMock()
+    fake_ws._disconnect = _disconnect
+    svc._ws_client = fake_ws
+
+    def _run():
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    svc._thread = t
+
+    svc.shutdown(timeout=2.0)
+    assert svc._should_run is False
+    assert state["disconnected"] is True
+    assert not t.is_alive()
+    loop.close()
+
+
+def test_shutdown_tolerates_disconnect_exception():
+    """P2：SDK _disconnect 抛异常时 shutdown 仍完成 stop + join（fail-soft）。"""
+    import threading
+
+    svc = _make_service()
+    svc._should_run = True
+    loop = asyncio.new_event_loop()
+    svc._thread_loop = loop
+
+    async def _disconnect():
+        raise RuntimeError("disconnect boom")
+
+    fake_ws = MagicMock()
+    fake_ws._disconnect = _disconnect
+    svc._ws_client = fake_ws
+
+    def _run():
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    svc._thread = t
+
+    svc.shutdown(timeout=2.0)  # 不抛
+    assert svc._should_run is False
+    assert not t.is_alive()
+    loop.close()
 
 
 def test_dispatch_async_without_loop_no_op():

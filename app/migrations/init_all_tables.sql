@@ -2929,7 +2929,10 @@ CREATE TABLE IF NOT EXISTS notification_targets (
                         CHECK (target_type IN ('feishu.chat', 'feishu.user')),
     name                VARCHAR(200) NOT NULL,
     config              JSONB NOT NULL DEFAULT '{}'::jsonb,
-    agent_name          VARCHAR(100) NOT NULL,
+    -- 2026-09-10 fix：第二轮契约 "target 不绑智能体" 后 agent_name 允许 NULL。
+    -- service.upsert_target INSERT/UPDATE 不再写该列；读取时 _target_to_public
+    -- 回退到 channel.config.agent_name。表结构跟随放宽 NOT NULL。
+    agent_name          VARCHAR(100),
     subject_template    VARCHAR(500) DEFAULT '',
     body_template       TEXT DEFAULT '',
     enabled             BOOLEAN NOT NULL DEFAULT TRUE,
@@ -2938,6 +2941,10 @@ CREATE TABLE IF NOT EXISTS notification_targets (
     updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT notification_targets_unique UNIQUE (channel_id, target_type, name)
 );
+-- 2026-09-10 fix：对存量表，CREATE TABLE IF NOT EXISTS 不会改既有列属性，
+-- 必须显式 ALTER COLUMN 让 agent_name 变 NULLABLE。新建库 agent_name 已不带 NOT NULL，
+-- ALTER ... DROP NOT NULL 对其是无害 noop；幂等可重复执行。
+ALTER TABLE notification_targets ALTER COLUMN agent_name DROP NOT NULL;
 -- config JSONB 守卫
 -- 2026-09-10 fix：与 notification_channels_config_object_chk 同款幂等化修复，
 -- 防止重复执行 init_all_tables.sql 时被中断（PG 42710 duplicate_object）。
@@ -2949,8 +2956,10 @@ CREATE INDEX IF NOT EXISTS idx_notification_targets_channel_id
     ON notification_targets(channel_id);
 CREATE INDEX IF NOT EXISTS idx_notification_targets_target_type
     ON notification_targets(target_type);
-CREATE INDEX IF NOT EXISTS idx_notification_targets_agent_name
-    ON notification_targets(agent_name);
+-- 2026-09-10 fix：第二轮契约后 agent_name 列允许 NULL，且 target.agent_name 不再
+-- 是读取真相源（_target_to_public 走 JOIN notification_channels 回退 channel.config.agent_name），
+-- 该单列索引无意义，已 drop；幂等 DROP INDEX IF EXISTS 在 init_all_tables.sql 重跑时安全。
+DROP INDEX IF EXISTS idx_notification_targets_agent_name;
 CREATE INDEX IF NOT EXISTS idx_notification_targets_created_by_user_id
     ON notification_targets(created_by_user_id);
 

@@ -257,7 +257,7 @@ if DatabasePool.is_enabled() and DatabasePool._pool is not None and settings.ema
 - legacy 字段 `receiver_username` / `default_receive_id` / `default_receive_id_type` 写入时自动剥除；存量 DB 行如有残留值，下次 admin 编辑保存时会被清干净
 
 **`notification_targets`**（目标 + 接收方 + 模板）：
-- `id` / `channel_id (FK→notification_channels ON DELETE CASCADE)` / **`target_type VARCHAR(30) CHECK (IN 'feishu.chat','feishu.user'))`** / `name` / **`config JSONB NOT NULL`** / `agent_name`（保留列、写入不更新、读取时回退 channel） / `subject_template` / `body_template` / `enabled` / `UNIQUE(channel_id, target_type, name)`
+- `id` / `channel_id (FK→notification_channels ON DELETE CASCADE)` / **`target_type VARCHAR(30) CHECK (IN 'feishu.chat','feishu.user'))`** / `name` / **`config JSONB NOT NULL`** / `agent_name VARCHAR(100)` **NULLABLE**（2026-09-10 落地：第二轮契约 target 不绑智能体，service INSERT/UPDATE 不写该列，读取时回退 channel.config.agent_name；表结构跟随放宽 NOT NULL + drop idx_notification_targets_agent_name 单列索引） / `subject_template` / `body_template` / `enabled` / `UNIQUE(channel_id, target_type, name)`
 - **飞书 target config 必填**：`chat_id` / `chat_type`（chat_id/open_id/user_id/email）
 - **2026-09-07 第二轮** target 仅管接收方（群 / 用户）；`agent_name` 写入时不再更新，读取时优先 target 行值、为空时回退 `channel.config.agent_name`
 - **1 个 target = 1 个发送目标 + 继承所属 channel 的智能体**（无需第三张策略表）

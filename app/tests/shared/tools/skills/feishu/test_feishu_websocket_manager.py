@@ -298,11 +298,188 @@ def test_stop_all_continues_when_one_stop_raises():
     assert manager.services == {}
 
 
-def test_restart_channel_is_noop_for_now():
-    """restart_channel 本期未实现 → 返回 False。"""
+# =============================================================================
+# 保存即生效热加载测试（2026-09-10 新增）
+# =============================================================================
+
+
+def _make_enabled_internal_row(channel_id: int = 5, name: str = "ai") -> dict:
+    """构造 enabled 飞书渠道 internal 行（含加密 config 原文）。"""
+    return {
+        "id": channel_id,
+        "name": name,
+        "channel_type": "feishu",
+        "enabled": True,
+        "is_default": False,
+        "config": _make_encrypted_config(),
+        "display_name": name,
+    }
+
+
+def _patch_ws_start():
+    """返回 manager 启动路径所需的两个 patcher（WS 服务类 + lark builder）。
+
+    Returns:
+        tuple: (ws_patcher, builder_patcher)；WS 实例的 ``start_async`` 已 stub
+            为空协程，``shutdown`` 为 MagicMock。
+    """
+    ws_patcher = patch(
+        "app.shared.tools.skills.feishu.FeishuWebSocketService.FeishuWebSocketService"
+    )
+    builder_patcher = patch("lark_oapi.Client.builder")
+    return ws_patcher, builder_patcher
+
+
+def _stub_ws_class(MockWS, MockBuilder):
+    """配置 MockWS / MockBuilder 的默认返回值。"""
+    mock_client = MagicMock()
+    MockBuilder.return_value.app_id.return_value.app_secret.return_value.log_level.return_value.build.return_value = mock_client
+
+    async def _start_async_stub(*args, **kwargs):
+        return None
+
+    MockWS.return_value.start_async = _start_async_stub
+    MockWS.return_value.shutdown = MagicMock()
+    return mock_client
+
+
+def test_apply_channel_change_starts_new_instance_when_enabled():
+    """P1：渠道 enabled 且当前无实例 → 热启动新实例并返回 True。"""
     mod = _import_manager_module()
-    manager = mod.FeishuWebSocketManager(notification_service=MagicMock())
-    result = manager.restart_channel(channel_id=1)
+    fake_service = MagicMock()
+    fake_service._get_channel_internal = AsyncMock(
+        return_value=_make_enabled_internal_row(channel_id=5)
+    )
+    manager = mod.FeishuWebSocketManager(notification_service=fake_service)
+
+    ws_patcher, builder_patcher = _patch_ws_start()
+    with ws_patcher as MockWS, builder_patcher as MockBuilder:
+        _stub_ws_class(MockWS, MockBuilder)
+        user_lookup = AsyncMock(return_value={"id": 1, "username": "admin"})
+        result = asyncio.run(
+            manager.apply_channel_change(5, MagicMock(), user_lookup)
+        )
+
+    assert result is True
+    assert set(manager.services.keys()) == {5}
+
+
+def test_apply_channel_change_restarts_existing_instance():
+    """P1：渠道已运行 → 先 shutdown 旧实例，再按最新配置重启。"""
+    mod = _import_manager_module()
+    fake_service = MagicMock()
+    fake_service._get_channel_internal = AsyncMock(
+        return_value=_make_enabled_internal_row(channel_id=7)
+    )
+    manager = mod.FeishuWebSocketManager(notification_service=fake_service)
+
+    old_svc = MagicMock()
+    old_svc.shutdown = MagicMock()
+    manager.services[7] = old_svc
+
+    ws_patcher, builder_patcher = _patch_ws_start()
+    with ws_patcher as MockWS, builder_patcher as MockBuilder:
+        _stub_ws_class(MockWS, MockBuilder)
+        user_lookup = AsyncMock(return_value={"id": 1, "username": "admin"})
+        result = asyncio.run(
+            manager.apply_channel_change(7, MagicMock(), user_lookup)
+        )
+
+    assert result is True
+    old_svc.shutdown.assert_called_once()
+    # 新实例替换旧实例
+    assert manager.services[7] is not old_svc
+
+
+def test_apply_channel_change_stops_when_channel_disabled():
+    """P1：渠道已禁用 → 停旧实例、不重启，返回 False。"""
+    mod = _import_manager_module()
+    row = _make_enabled_internal_row(channel_id=8)
+    row["enabled"] = False
+    fake_service = MagicMock()
+    fake_service._get_channel_internal = AsyncMock(return_value=row)
+    manager = mod.FeishuWebSocketManager(notification_service=fake_service)
+
+    old_svc = MagicMock()
+    manager.services[8] = old_svc
+
+    result = asyncio.run(manager.apply_channel_change(8, MagicMock(), AsyncMock()))
+
+    assert result is False
+    old_svc.shutdown.assert_called_once()
+    assert manager.services == {}
+
+
+def test_apply_channel_change_stops_when_channel_deleted():
+    """P1：渠道已删除（DB 读不到行）→ 停旧实例，返回 False。"""
+    mod = _import_manager_module()
+    fake_service = MagicMock()
+    fake_service._get_channel_internal = AsyncMock(return_value=None)
+    manager = mod.FeishuWebSocketManager(notification_service=fake_service)
+
+    old_svc = MagicMock()
+    manager.services[9] = old_svc
+
+    result = asyncio.run(manager.apply_channel_change(9, MagicMock(), AsyncMock()))
+
+    assert result is False
+    old_svc.shutdown.assert_called_once()
+    assert manager.services == {}
+
+
+def test_apply_channel_change_returns_false_when_db_read_fails():
+    """P2：apply 读取 DB 异常 → 旧实例已停、返回 False、不抛异常。"""
+    mod = _import_manager_module()
+    fake_service = MagicMock()
+    fake_service._get_channel_internal = AsyncMock(
+        side_effect=RuntimeError("db down")
+    )
+    manager = mod.FeishuWebSocketManager(notification_service=fake_service)
+
+    old_svc = MagicMock()
+    manager.services[10] = old_svc
+
+    result = asyncio.run(manager.apply_channel_change(10, MagicMock(), AsyncMock()))
+
+    assert result is False
+    old_svc.shutdown.assert_called_once()
+    assert manager.services == {}
+
+
+def test_apply_channel_change_tolerates_old_shutdown_failure():
+    """P2：旧实例 shutdown 抛异常 → 仍继续读 DB 并按需重启（fail-soft）。"""
+    mod = _import_manager_module()
+    fake_service = MagicMock()
+    fake_service._get_channel_internal = AsyncMock(
+        return_value=_make_enabled_internal_row(channel_id=11)
+    )
+    manager = mod.FeishuWebSocketManager(notification_service=fake_service)
+
+    old_svc = MagicMock()
+    old_svc.shutdown = MagicMock(side_effect=RuntimeError("shutdown boom"))
+    manager.services[11] = old_svc
+
+    ws_patcher, builder_patcher = _patch_ws_start()
+    with ws_patcher as MockWS, builder_patcher as MockBuilder:
+        _stub_ws_class(MockWS, MockBuilder)
+        user_lookup = AsyncMock(return_value={"id": 1, "username": "admin"})
+        result = asyncio.run(
+            manager.apply_channel_change(11, MagicMock(), user_lookup)
+        )
+
+    assert result is True
+    assert 11 in manager.services
+
+
+def test_restart_channel_delegates_to_apply_channel_change():
+    """P1：restart_channel 委托 apply_channel_change（渠道禁用时返回 False）。"""
+    mod = _import_manager_module()
+    row = _make_enabled_internal_row(channel_id=1)
+    row["enabled"] = False
+    fake_service = MagicMock()
+    fake_service._get_channel_internal = AsyncMock(return_value=row)
+    manager = mod.FeishuWebSocketManager(notification_service=fake_service)
+    result = asyncio.run(manager.restart_channel(channel_id=1))
     assert result is False
 
 

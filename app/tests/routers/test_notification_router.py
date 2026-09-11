@@ -7,7 +7,13 @@ notification_router 路由注册与 ACL 字段契约测试(2026-09-03 新增)。
 - P1 11 个端点全部已注册(GET/POST/PUT/DELETE)
 - P1 端点 ACL key 全部使用 messaging.feishu.<sub>(本期 UI 仅暴露飞书)
 - P1 SendTestRequest body 含 target_id + channel_type + content 三字段
+- P1 飞书 WS 热加载 hook `_apply_feishu_ws_change`（2026-09-10 保存即生效）
 """
+import asyncio
+import logging
+import types
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 from fastapi import FastAPI
 
@@ -196,18 +202,33 @@ def test_create_channel_request_required_fields():
 
 
 def test_create_target_request_required_fields():
-    """CreateTargetRequest 必填字段:name + agent_name + config。"""
+    """CreateTargetRequest 必填字段:name + config(2026-09-10 第二轮契约后)。"""
     from app.routers.notification_router import CreateTargetRequest
 
     req = CreateTargetRequest(
         name="ops-group",
-        agent_name="project",
         config={"chat_id": "oc_xxx", "chat_type": "chat_id"},
     )
     assert req.name == "ops-group"
-    assert req.agent_name == "project"
+    # 2026-09-10 修复:target 不再绑智能体(第二轮契约),agent_name 改为可选默认 None
+    assert req.agent_name is None
     assert req.target_type == "feishu.chat"
     assert req.enabled is True
+
+
+def test_create_target_request_agent_name_still_accepted_for_backcompat():
+    """CreateTargetRequest.agent_name 仍接受显式传值,仅用于向后兼容旧调用方。
+
+    2026-09-10 落地:保留字段但不再写入 DB(``upsert_target`` SQL 已剥离该列)。
+    """
+    from app.routers.notification_router import CreateTargetRequest
+
+    req = CreateTargetRequest(
+        name="ops-group",
+        config={"chat_id": "oc_xxx", "chat_type": "chat_id"},
+        agent_name="project",
+    )
+    assert req.agent_name == "project"
 
 
 # =============================================================================
@@ -292,3 +313,64 @@ def test_handle_service_error_preserves_not_found_404():
     with pytest.raises(HTTPException) as exc_info:
         _handle_service_error(err)
     assert exc_info.value.status_code == 404
+
+
+# =============================================================================
+# P1: 飞书 WS 热加载 hook（2026-09-10 保存即生效）
+# =============================================================================
+
+
+def _make_request_with_manager(manager):
+    """构造挂载了 feishu_ws_manager 的轻量 fake Request。
+
+    参数:
+        manager: feishu_ws_manager 值（None / MagicMock）。
+
+    返回:
+        SimpleNamespace: 仅含 ``app.state`` 两层结构，满足
+        ``_apply_feishu_ws_change`` 的访问路径。
+    """
+    state = types.SimpleNamespace(
+        feishu_ws_manager=manager,
+        agent_config_service=MagicMock(),
+    )
+    return types.SimpleNamespace(app=types.SimpleNamespace(state=state))
+
+
+def test_apply_feishu_ws_change_returns_false_when_manager_none():
+    """P1：app.state.feishu_ws_manager 为 None（WS 未启用）→ 静默返回 False。"""
+    from app.routers.notification_router import _apply_feishu_ws_change
+
+    request = _make_request_with_manager(None)
+    result = asyncio.run(_apply_feishu_ws_change(request, 1))
+    assert result is False
+
+
+def test_apply_feishu_ws_change_delegates_to_manager():
+    """P1：manager 存在 → 委托 apply_channel_change 并透传 channel_id。"""
+    from app.routers.notification_router import _apply_feishu_ws_change
+
+    manager = MagicMock()
+    manager.apply_channel_change = AsyncMock(return_value=True)
+    request = _make_request_with_manager(manager)
+
+    result = asyncio.run(_apply_feishu_ws_change(request, 42))
+
+    assert result is True
+    manager.apply_channel_change.assert_awaited_once()
+    assert manager.apply_channel_change.await_args.args[0] == 42
+
+
+def test_apply_feishu_ws_change_fails_soft_on_manager_exception(caplog):
+    """P1：manager 热加载抛异常 → 仅 WARN 日志、返回 False，不向上抛。"""
+    from app.routers.notification_router import _apply_feishu_ws_change
+
+    manager = MagicMock()
+    manager.apply_channel_change = AsyncMock(side_effect=RuntimeError("hot reload boom"))
+    request = _make_request_with_manager(manager)
+
+    with caplog.at_level(logging.WARNING, logger="app.routers.notification_router"):
+        result = asyncio.run(_apply_feishu_ws_change(request, 3))
+
+    assert result is False
+    assert any("热加载失败" in r.message for r in caplog.records)
