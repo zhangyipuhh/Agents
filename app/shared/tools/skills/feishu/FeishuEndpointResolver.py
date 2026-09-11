@@ -14,8 +14,8 @@ FeishuEndpointResolver - 飞书工具公共 Endpoint 解析模块
     - **复用**：未来新增 ``send_feishu_document`` / ``send_feishu_image`` /
       ``upload_feishu_doc`` 等飞书工具时，只需 import 本模块，无需重复实现
       DB 查询 + 凭证解密 + client 构造逻辑。
-    - **同步桥接**：工具是同步函数，但 service 是 async，本模块内部用
-      ``asyncio.run_coroutine_threadsafe`` 投递到主 loop。
+    - **异步直达**：工具与 service 均为 async，直接 ``await`` 调用，
+      不做同步桥接。
 
 公共 API：
     - ``Endpoint`` : dataclass，封装一次解析的全部结果
@@ -25,7 +25,6 @@ FeishuEndpointResolver - 飞书工具公共 Endpoint 解析模块
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -126,42 +125,18 @@ def _get_agent_name_from_runtime(runtime: Any) -> Optional[str]:
         return None
 
 
-def _sync_resolve(service, agent_name: str) -> Optional[dict]:
-    """同步桥接 ``service.resolve_agent_feishu_endpoint``（5s 超时）。
-
-    Args:
-        service: NotificationConfigService 实例。
-        agent_name: 智能体名。
-
-    Returns:
-        Optional[dict]: service 返回的 dict；任何异常 / 超时返回 None。
-    """
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        return None
-    try:
-        fut = asyncio.run_coroutine_threadsafe(
-            service.resolve_agent_feishu_endpoint(agent_name),
-            loop,
-        )
-        return fut.result(timeout=5.0)
-    except Exception:  # noqa: BLE001
-        return None
-
-
 # =============================================================================
 # 公共 API
 # =============================================================================
 
 
-def resolve_current_endpoint(runtime: Any) -> Optional[Endpoint]:
+async def resolve_current_endpoint(runtime: Any) -> Optional[Endpoint]:
     """从 ``runtime.state.agent_name`` 解析当前智能体的飞书 endpoint。
 
     流程：
         1. 从 runtime 取 agent_name，缺失返回 None
-        2. 取 notification_config_service，未初始化返回 None
-        3. 同步桥接调 service.resolve_agent_feishu_endpoint
+        2. 取 notification_config_service，未初始化返回 None（WARNING 日志）
+        3. 直接 ``await service.resolve_agent_feishu_endpoint``，异常返回 None（WARNING 日志）
         4. dict → Endpoint dataclass
 
     Args:
@@ -176,8 +151,20 @@ def resolve_current_endpoint(runtime: Any) -> Optional[Endpoint]:
         return None
     service = _get_notification_service()
     if service is None:
+        logger.warning(
+            "[feishu_endpoint_resolver] notification_config_service 未初始化，"
+            "无法解析 agent=%s 的飞书端点",
+            agent_name,
+        )
         return None
-    raw = _sync_resolve(service, agent_name)
+    try:
+        raw = await service.resolve_agent_feishu_endpoint(agent_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[feishu_endpoint_resolver] resolve_agent_feishu_endpoint 失败 agent=%s err=%s",
+            agent_name, type(exc).__name__, exc_info=True,
+        )
+        return None
     if raw is None:
         return None
     try:

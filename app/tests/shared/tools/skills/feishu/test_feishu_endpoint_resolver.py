@@ -40,13 +40,6 @@ def _make_runtime(agent_name):
     return rt
 
 
-def _make_coro(value):
-    """把值包装成 coroutine 供 MagicMock 同步返回。"""
-    async def _c():
-        return value
-    return _c()
-
-
 def _make_endpoint_dict(**overrides):
     """构造 resolve_agent_feishu_endpoint 返回的完整 dict。"""
     d = {
@@ -104,14 +97,8 @@ def test_resolve_returns_endpoint_on_happy_path(monkeypatch):
     fake_svc.resolve_agent_feishu_endpoint = _fake_resolve
 
     monkeypatch.setattr(FER, "_get_notification_service", lambda: fake_svc)
-    # 测试环境下 asyncio.run_coroutine_threadsafe 投递到测试 loop 后
-    # fut.result() 在同步线程无法立即拿到 async 结果；直接 patch 成真正执行协程
-    monkeypatch.setattr(
-        FER, "_sync_resolve",
-        lambda service, agent_name: asyncio.run(service.resolve_agent_feishu_endpoint(agent_name)),
-    )
 
-    ep = resolve_current_endpoint(_make_runtime("project"))
+    ep = asyncio.run(resolve_current_endpoint(_make_runtime("project")))
 
     assert ep is not None
     assert isinstance(ep, Endpoint)
@@ -122,6 +109,13 @@ def test_resolve_returns_endpoint_on_happy_path(monkeypatch):
     assert ep.app_secret == "s"
 
 
+# 新增：async 契约断言
+def test_resolve_current_endpoint_is_coroutine_function():
+    """resolve_current_endpoint 必须是 async（生产由 ToolNode await 调用）。"""
+    import inspect
+    assert inspect.iscoroutinefunction(resolve_current_endpoint)
+
+
 # -----------------------------------------------------------------------------
 # P1: resolve_current_endpoint 失败路径
 # -----------------------------------------------------------------------------
@@ -129,30 +123,33 @@ def test_resolve_returns_endpoint_on_happy_path(monkeypatch):
 
 def test_resolve_returns_none_when_agent_name_missing():
     """runtime.state.agent_name 缺失 → 返回 None。"""
-    ep = resolve_current_endpoint(_make_runtime(None))
+    ep = asyncio.run(resolve_current_endpoint(_make_runtime(None)))
     assert ep is None
 
 
 def test_resolve_returns_none_when_state_empty():
     """runtime.state 不含 agent_name → 返回 None。"""
-    ep = resolve_current_endpoint(_make_runtime(""))
+    ep = asyncio.run(resolve_current_endpoint(_make_runtime("")))
     assert ep is None
 
 
 def test_resolve_returns_none_when_runtime_none():
     """runtime=None → 返回 None。"""
-    ep = resolve_current_endpoint(None)
+    ep = asyncio.run(resolve_current_endpoint(None))
     assert ep is None
 
 
-def test_resolve_returns_none_when_service_unavailable(monkeypatch):
-    """notification_config_service 未初始化 → 返回 None。"""
+def test_resolve_returns_none_when_service_unavailable(monkeypatch, caplog):
+    """notification_config_service 未初始化 → 返回 None + WARNING 日志。"""
+    import logging
     from app.shared.tools.skills.feishu import FeishuEndpointResolver as FER
     monkeypatch.setattr(FER, "_get_notification_service", lambda: None)
 
-    ep = resolve_current_endpoint(_make_runtime("project"))
+    with caplog.at_level(logging.WARNING):
+        ep = asyncio.run(resolve_current_endpoint(_make_runtime("project")))
 
     assert ep is None
+    assert "未初始化" in caplog.text
 
 
 def test_resolve_returns_none_when_db_returns_none(monkeypatch):
@@ -166,46 +163,30 @@ def test_resolve_returns_none_when_db_returns_none(monkeypatch):
     fake_svc.resolve_agent_feishu_endpoint = _fake_resolve
 
     monkeypatch.setattr(FER, "_get_notification_service", lambda: fake_svc)
-    monkeypatch.setattr(
-        FER, "_sync_resolve",
-        lambda service, agent_name: asyncio.run(service.resolve_agent_feishu_endpoint(agent_name)),
-    )
 
-    ep = resolve_current_endpoint(_make_runtime("ghost"))
+    ep = asyncio.run(resolve_current_endpoint(_make_runtime("ghost")))
 
     assert ep is None
 
 
-def test_resolve_returns_none_on_bridge_exception(monkeypatch):
-    """同步桥接抛异常（loop 问题 / 超时）→ 返回 None，不向上抛。
-
-    让 _sync_resolve 走原版逻辑（捕获异常返回 None），但保证 service 调协程真抛异常。
-    用 fake_loop 让 run_coroutine_threadsafe 真投到 fake loop；fake loop 的
-    call_soon 立即调度协程，协程中 await 我们的 mock 协程直接抛 RuntimeError。
-    """
+def test_resolve_returns_none_and_logs_when_service_raises(monkeypatch, caplog):
+    """service.resolve_agent_feishu_endpoint 抛异常 → 返回 None + WARNING 日志（fail-loud，不向上抛）。"""
+    import logging
     from app.shared.tools.skills.feishu import FeishuEndpointResolver as FER
 
     fake_svc = MagicMock()
 
     async def _boom(_agent_name):
-        raise RuntimeError("loop boom")
+        raise RuntimeError("db boom")
     fake_svc.resolve_agent_feishu_endpoint = _boom
 
     monkeypatch.setattr(FER, "_get_notification_service", lambda: fake_svc)
 
-    # 走原版 _sync_resolve（不 monkeypatch），它内部对 service 抛出的异常 try/except。
-    # 由于 service.resolve_agent_feishu_endpoint 是 async def，调用它返回未 await 的 coroutine；
-    # 原版 _sync_resolve 走 run_coroutine_threadsafe + fut.result() 在同步线程里抛。
-    # 这里我们直接对 _sync_resolve 做 monkeypatch 让它同步 await → 抛错 → 被外层 try 吞。
-    # 但 Resolver 的 try/except 是在 _sync_resolve 内部的，外层 resolve_current_endpoint 不重复包。
-    # 所以这个测试的本质是验证 _sync_resolve 的容错性：
-    async def _boom_async(_agent_name):
-        raise RuntimeError("loop boom")
+    with caplog.at_level(logging.WARNING):
+        ep = asyncio.run(resolve_current_endpoint(_make_runtime("project")))
 
-    # 直接调 _sync_resolve 验证它捕获 RuntimeError 返回 None
-    fake_svc.resolve_agent_feishu_endpoint = _boom_async
-    result = FER._sync_resolve(fake_svc, "project")
-    assert result is None
+    assert ep is None
+    assert "resolve_agent_feishu_endpoint 失败" in caplog.text
 
 
 def test_resolve_returns_none_when_service_returns_partial_dict(monkeypatch):
@@ -219,12 +200,8 @@ def test_resolve_returns_none_when_service_returns_partial_dict(monkeypatch):
     fake_svc.resolve_agent_feishu_endpoint = _fake_resolve
 
     monkeypatch.setattr(FER, "_get_notification_service", lambda: fake_svc)
-    monkeypatch.setattr(
-        FER, "_sync_resolve",
-        lambda service, agent_name: asyncio.run(service.resolve_agent_feishu_endpoint(agent_name)),
-    )
 
-    ep = resolve_current_endpoint(_make_runtime("project"))
+    ep = asyncio.run(resolve_current_endpoint(_make_runtime("project")))
 
     assert ep is None
 
