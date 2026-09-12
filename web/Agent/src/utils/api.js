@@ -3698,6 +3698,21 @@ export async function fetchUserServerTree() {
 }
 
 /**
+ * 获取当前用户可见服务器节点 tree（自助读端点，# 触发器专用）
+ * 调用 GET /api/user-servers/tree（2026-09-12 渗透整改：迁出 admin 命名空间）
+ * @returns {Promise<{nodes: Array}>}
+ * @throws {Error} 请求失败时抛出错误
+ */
+export async function fetchMyServerTree() {
+  const response = await fetchWithAuth('/api/user-servers/tree', { method: 'GET' })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取我的服务器 tree 失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
  * 新建用户服务器节点（folder 或 server）
  * 调用 POST /api/admin/user-servers/nodes
  * @param {number|null} parentId - 父 folder ID；根节点传 null

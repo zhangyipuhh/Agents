@@ -10,23 +10,23 @@
  *      去重键、chip 显示、context_overrides 构建函数；
  *   2. 可扩展：未来新增触发类型（如 "@" 知识库）只需在此追加一条 + 提供数据源，
  *      InputBox.vue / TriggerPanel.vue / api.js 无需改动；
- *   3. 前端数据源已是用户权限范围（fetchUserServerTree 已按 OwnershipScope 过滤），
+ *   3. 前端数据源已是用户权限范围（fetchMyServerTree 已按 OwnershipScope 过滤），
  *      后端 sanitize_dynamic_nodes 不做归属校验，仅做白名单字段过滤。
  */
 
-import { fetchUserServerTree } from './api.js'
+import { fetchMyServerTree } from './api.js'
 
 /**
  * 拉取「服务器」触发器所需的候选项：
- * 调 GET /api/admin/user-servers/tree → 取 resp.nodes → 仅保留 node_type='server'。
+ * 调 GET /api/user-servers/tree → 取 resp.nodes → 仅保留 node_type='server'。
  * 后端返回 { nodes: [...] }；若旧接口直接返回数组也做兼容兜底。
  *
  * @returns {Promise<Array<{business_name: string, server_type: string, ...}>>}
  *          服务端用户权限内的服务器节点列表
  */
 async function fetchServerItems() {
-  const resp = await fetchUserServerTree()
-  // 后端 GET /api/admin/user-servers/tree 返回 { nodes: [...] }
+  const resp = await fetchMyServerTree()
+  // 后端 GET /api/user-servers/tree 返回 { nodes: [...] }
   const nodes = resp?.nodes ?? resp
   if (!Array.isArray(nodes)) return []
   return nodes.filter((n) => n && n.node_type === 'server')

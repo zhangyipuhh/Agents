@@ -525,6 +525,53 @@ def require_admin_or_menu_acl(menu_id: str):
     async def _dep(request: Request):
         await require_menu_acl(request, menu_id)
 
+    _dep.__menu_acl_guard__ = True
+    return _dep
+
+
+def require_admin_or_any_menu_acl(*menu_ids: str):
+    """组合 FastAPI 依赖：admin 直接放行；普通用户 ACL 命中任一 menu_id 即放行。
+
+    用于一个只读端点同时服务多个菜单授权用户的场景（如
+    GET /api/admin/api-configs/tree 同时服务 task-scheduler.api-config
+    与 task-scheduler.scheduled 授权用户）。
+
+    参数:
+        *menu_ids: 至少一个菜单 id（与 MENU_CATALOG / user_menu_acl.menu_id 对齐）。
+
+    返回:
+        FastAPI Depends 工厂函数（带 __menu_acl_guard__ 标记，
+        供 test_admin_namespace_guard 识别）。
+
+    异常:
+        HTTPException 401: 用户身份未识别。
+        HTTPException 403: 普通用户 ACL 未命中任一 menu_id。
+        HTTPException 503: menu_permission_service 不可用。
+    """
+    async def _dep(request: Request):
+        role = getattr(request.state, 'role', 'user')
+        if role == 'admin':
+            return
+        user_id = getattr(request.state, 'user_id', None)
+        if user_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="用户身份未识别",
+            )
+        svc = getattr(request.app.state, 'menu_permission_service', None)
+        if svc is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="menu_permission_service 未初始化（lifespan 未启动）",
+            )
+        visible = await svc.get_visible_menu_ids(user_id=user_id, is_admin=False)
+        if not any(m in visible for m in menu_ids):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"权限不足，需要菜单 {' 或 '.join(menu_ids)} 授权",
+            )
+
+    _dep.__menu_acl_guard__ = True
     return _dep
 
 

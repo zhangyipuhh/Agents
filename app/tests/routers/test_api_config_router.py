@@ -296,11 +296,13 @@ def _override_api_config_visible_menu(client, visible_ids):
     client.app.state.menu_permission_service = stub
 
 
-def test_normal_user_no_acl_get_tree_passes(client, user_headers):
-    """2026-07-26 调整：GET /tree 放宽为登录态。普通用户无任何 ACL 也能调（200）。
+def test_normal_user_no_acl_get_tree_returns_403(client, user_headers):
+    """2026-09-12 渗透整改：普通用户无 ACL 调 GET /tree 返回 403。
 
-    委托 OwnershipScope 按 created_by_user_id 过滤，普通用户仅见自己
-    创建的接口节点。ACL 守卫已被移除（跟随 GET /api/admin/scripts 先例）。
+    此前 GET /tree 已放宽为登录态（2026-07-26），渗透报告判定为 BFLA。
+    现收紧为 require_admin_or_any_menu_acl('task-scheduler.api-config',
+    'task-scheduler.scheduled')：admin 直接放行，普通用户必须命中任一
+    子菜单 ACL，否则 403。
     """
     _override_api_config_visible_menu(client, visible_ids={'profile'})
     service = client.app.state.api_config_service
@@ -308,16 +310,11 @@ def test_normal_user_no_acl_get_tree_passes(client, user_headers):
 
     response = client.get(f"{BASE}/tree", headers=user_headers)
 
-    # 关键：不是 403（GET /tree 不再查 ACL）
-    assert response.status_code != 403
-    assert response.status_code == 200
+    assert response.status_code == 403
 
 
 def test_normal_user_acl_api_config_passes_get_tree(client, user_headers):
-    """ACL 含 task-scheduler.api-config：普通用户 GET /tree 通过（200）。
-
-    GET /tree 已放宽为登录态，但保留此用例以锁住历史 ACL 路径不再被引入。
-    """
+    """ACL 含 task-scheduler.api-config：普通用户 GET /tree 通过（200）。"""
     _override_api_config_visible_menu(
         client, visible_ids={'profile', 'task-scheduler.api-config'}
     )
@@ -326,19 +323,32 @@ def test_normal_user_acl_api_config_passes_get_tree(client, user_headers):
 
     response = client.get(f"{BASE}/tree", headers=user_headers)
 
-    # 关键：不是 403（ACL 通过）
-    assert response.status_code != 403
     assert response.status_code == 200
 
 
-def test_normal_user_acl_parent_only_still_passes_get_tree(client, user_headers):
-    """2026-07-26 调整：GET /tree 不再细粒度按子菜单判定 ACL。
+def test_normal_user_acl_parent_only_get_tree_returns_403(client, user_headers):
+    """2026-09-12 渗透整改：仅父级 task-scheduler ACL 不再足够 → 403。
 
-    即使普通用户只有 task-scheduler 父级 ACL、没有 task-scheduler.api-config
-    子菜单，GET /tree 也能通过（仍 200）。前提：登录态存在。
+    必须命中 task-scheduler.api-config 或 task-scheduler.scheduled 子菜单。
     """
     _override_api_config_visible_menu(
         client, visible_ids={'profile', 'task-scheduler'}
+    )
+    service = client.app.state.api_config_service
+    service.get_tree = AsyncMock(return_value=[])
+
+    response = client.get(f"{BASE}/tree", headers=user_headers)
+
+    assert response.status_code == 403
+
+
+def test_normal_user_acl_scheduled_passes_get_tree(client, user_headers):
+    """2026-09-12 渗透整改：ACL 含 task-scheduler.scheduled（无 api-config）：GET /tree 通过（200）。
+
+    定时任务表单 api_list 控件候选依赖本端点，授权用户必须能用。
+    """
+    _override_api_config_visible_menu(
+        client, visible_ids={'profile', 'task-scheduler.scheduled'}
     )
     service = client.app.state.api_config_service
     service.get_tree = AsyncMock(return_value=[])

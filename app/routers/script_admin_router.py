@@ -6,16 +6,13 @@
 提供 /api/admin/scripts 下的脚本列表与扫描接口。
 
 权限模型：
-- GET  /api/admin/scripts    —— 仅需 JWT 认证（任何登录用户可读），供普通用户在
-                                  「定时任务 → 目标脚本」下拉中列出全部已注册脚本
-                                  （白名单字段：name / display_name / description /
-                                  params_schema / module_path，不暴露脚本源码）。
+- GET  /api/admin/scripts    —— admin 直接放行；普通用户需持有
+                                  ``task-scheduler.scheduled`` 菜单 ACL（用于
+                                  「定时任务 → 目标脚本」下拉）。
+                                  白名单字段：name / display_name / description /
+                                  params_schema / module_path，不暴露脚本源码。
 - POST /api/admin/scripts/scan —— 保留 ``Depends(require_admin)``，防普通用户
                                   触发磁盘扫描。
-
-历史：早期两个端点都挂 router 级 ``Depends(require_admin)``，导致普通用户即便
-获得 ``task-scheduler.scheduled`` 菜单授权也无法在「定时任务」表单选择已注册
-脚本（前端 fetchScripts 被 403 吞掉后下拉为空）。2026-07-26 拆分为上述模型。
 
 服务实例由 app/core/server.py lifespan 初始化到 ``app.state.script_discovery_service``。
 """
@@ -25,11 +22,14 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
-from app.shared.utils.auth.Safety import require_admin
+from app.shared.utils.auth.Safety import (
+    require_admin,
+    require_admin_or_menu_acl,
+)
 
 
-# 2026-07-26：移除 router 级 require_admin。GET 走 JWT-only 端点（auth_middleware
-# 已注入 request.state.user_id / role），POST /scan 单独 Depends(require_admin)。
+# 2026-09-12 渗透整改：GET 收紧为 require_admin_or_menu_acl；
+# POST /scan 单独 Depends(require_admin)。
 router = APIRouter(
     prefix="/api/admin/scripts",
     tags=["Script Admin"],
@@ -76,7 +76,8 @@ class ScanSummary(BaseModel):
     failed: int
 
 
-@router.get("", response_model=List[Dict[str, Any]])
+@router.get("", response_model=List[Dict[str, Any]],
+            dependencies=[Depends(require_admin_or_menu_acl('task-scheduler.scheduled'))])
 async def list_scripts(request: Request) -> List[Dict[str, Any]]:
     """列出所有已注册脚本元数据。
 

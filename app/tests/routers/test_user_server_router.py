@@ -268,19 +268,21 @@ def _override_user_server_visible_menu(client, visible_ids):
     client.app.state.menu_permission_service = stub
 
 
-def test_normal_user_no_acl_get_tree_passes(client, user_headers):
-    """2026-07-26：GET /tree 放宽为登录态。普通用户无任何 ACL 也能调（200）。
+def test_normal_user_no_acl_get_tree_returns_403(client, user_headers):
+    """2026-09-12 渗透整改：普通用户无 ACL 调 GET /tree 返回 403。
 
-    委托 OwnershipScope 按 created_by_user_id 过滤，普通用户仅见自己
-    添加的服务器节点（含 business_name / server_type 附加字段）。"""
+    此前 GET /tree 已放宽为登录态（2026-07-26），渗透报告判定为 BFLA。
+    现收紧为 require_admin_or_any_menu_acl('task-scheduler.server-management',
+    'task-scheduler.scheduled')：admin 直接放行，普通用户必须命中任一
+    子菜单 ACL，否则 403。
+    """
     _override_user_server_visible_menu(client, visible_ids={'profile'})
     service = client.app.state.user_server_service
     service.list_nodes = lambda scope: []
 
     response = client.get(f"{BASE}/tree", headers=user_headers)
 
-    assert response.status_code != 403
-    assert response.status_code == 200
+    assert response.status_code == 403
 
 
 def test_normal_user_no_acl_import_still_403(client, user_headers):
@@ -321,13 +323,29 @@ def test_normal_user_acl_server_management_passes_import(client, user_headers):
     assert response.status_code == 200
 
 
-def test_normal_user_acl_parent_only_still_passes_get_tree(client, user_headers):
-    """2026-07-26：GET /tree 不再细粒度按子菜单判定 ACL。
+def test_normal_user_acl_parent_only_get_tree_returns_403(client, user_headers):
+    """2026-09-12 渗透整改：仅父级 task-scheduler ACL 不再足够 → 403。
 
-    即使普通用户只有 task-scheduler 父级 ACL、没有 .server-management
-    子菜单，GET /tree 仍能通过（200）。"""
+    必须命中 task-scheduler.server-management 或 task-scheduler.scheduled 子菜单。
+    """
     _override_user_server_visible_menu(
         client, visible_ids={'profile', 'task-scheduler'}
+    )
+    service = client.app.state.user_server_service
+    service.list_nodes = lambda scope: []
+
+    response = client.get(f"{BASE}/tree", headers=user_headers)
+
+    assert response.status_code == 403
+
+
+def test_normal_user_acl_scheduled_passes_get_tree(client, user_headers):
+    """2026-09-12 渗透整改：ACL 含 task-scheduler.scheduled（无 server-management）：GET /tree 通过（200）。
+
+    定时任务表单 server_list 控件候选依赖本端点，授权用户必须能用。
+    """
+    _override_user_server_visible_menu(
+        client, visible_ids={'profile', 'task-scheduler.scheduled'}
     )
     service = client.app.state.user_server_service
     service.list_nodes = lambda scope: []

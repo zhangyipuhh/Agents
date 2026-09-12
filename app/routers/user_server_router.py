@@ -6,8 +6,9 @@ UserServerRouter - 用户服务器配置管理 API（2026-07-24 新增）
 提供 /api/admin/user-servers 下的树节点 CRUD、节点详情、批量导入接口。
 写端点（POST / PUT / DELETE / config / import）要求 admin 角色或
 task-scheduler.server-management 菜单 ACL 授权；只读 ``GET /tree`` 端点
-放宽为登录态可读（2026-07-26 起跟随 ``GET /api/admin/scripts`` 先例，
-OwnershipScope 已按归属过滤）。服务实例由 app/core/server.py lifespan
+admin 直接放行，普通用户必须命中 task-scheduler.server-management 或
+task-scheduler.scheduled 任一子菜单 ACL（2026-09-12 渗透整改）。
+OwnershipScope 已按归属过滤。服务实例由 app/core/server.py lifespan
 初始化到 app.state.user_server_service。
 
 端点契约（与 api_config_router 同形）：
@@ -25,7 +26,10 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 
-from app.shared.utils.auth.Safety import require_admin_or_menu_acl
+from app.shared.utils.auth.Safety import (
+    require_admin_or_any_menu_acl,
+    require_admin_or_menu_acl,
+)
 from app.shared.utils.auth.ownership_scope import OwnershipScope
 from app.shared.utils.user_server_service import (
     UserServerNodeNotEmptyError,
@@ -157,12 +161,16 @@ def _handle_service_error(exc: Exception) -> None:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/tree", response_model=Dict[str, Any])
+@router.get("/tree", response_model=Dict[str, Any],
+            dependencies=[Depends(require_admin_or_any_menu_acl(
+                'task-scheduler.server-management', 'task-scheduler.scheduled'))])
 async def get_tree(request: Request) -> Dict[str, Any]:
     """获取节点树平铺列表（按当前用户归属过滤）。
 
-    跟随 2026-07-26 的 `GET /api/admin/scripts` 先例：放宽为登录态可读。
-    后端 ``OwnershipScope`` 仍按 ``created_by_user_id`` 过滤，普通用户仅见
+    2026-09-12 渗透整改：admin 直接放行；普通用户必须命中
+    task-scheduler.server-management 或 task-scheduler.scheduled 任一
+    子菜单 ACL。后端 ``OwnershipScope`` 仍按 ``created_by_user_id`` 过滤，
+    普通用户仅见
     自己的节点，admin 透传全量。``list_nodes`` 会对 server 节点附带
     ``business_name`` / ``server_type``（由 ``source_devops_server_id`` 关联
     到 devops_servers），供「编辑任务」表单的 server_list 候选直接复用。

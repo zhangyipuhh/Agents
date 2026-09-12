@@ -8,7 +8,9 @@ Script Admin Router 测试模块。
 - 扫描接口返回 ScanSummary
 - 服务未初始化时返回 500
 - 2026-07-26 拆分权限：GET 仅需 JWT；POST /scan 仍仅 admin
-- 普通用户可读 GET（200）；普通用户 POST scan 被拒（403）
+- 2026-09-12 渗透整改：GET 收紧为 require_admin_or_menu_acl('task-scheduler.scheduled')；
+  未授权用户 403；admin / 持 ACL 用户 200
+- 普通用户 POST scan 被拒（403）
 
 生产对等初始化点：app/core/server.py lifespan 中
 ``ScriptDiscoveryService(SCRIPTS_DIR)`` 创建并挂到
@@ -181,23 +183,32 @@ def test_user_cannot_access_script_admin(client, user_headers):
     assert response.status_code == 403
 
 
-def test_user_can_list_scripts(client, user_headers):
-    """测试普通用户可调 GET 列出已注册脚本（JWT-only，无需 admin）。
+def test_user_without_acl_cannot_list_scripts(client, user_headers):
+    """普通用户无 ACL 调 GET /api/admin/scripts 被拒 403（2026-09-12 渗透整改）。
 
-    2026-07-26 拆分权限：移除 router 级 ``Depends(require_admin)``，GET 端点
-    仅依赖 auth_middleware 注入的 JWT。供普通用户在「定时任务 → 目标脚本」
-    下拉列出全部脚本（白名单字段，不暴露源码）。
-
-    参数:
-        client: TestClient fixture。
-        user_headers: 普通用户身份头 fixture。
-
-    返回值:
-        None
-
-    异常:
-        AssertionError: 状态码非 200 或返回字段不在白名单时失败
+    此前该端点为 JWT-only（2026-07-26 拆分），渗透报告判定其泄露内部
+    module_path / params_schema 构成侦察面。现收紧为
+    require_admin_or_menu_acl('task-scheduler.scheduled')：获得定时任务
+    菜单授权的普通用户仍可用下拉，未授权用户 403。
     """
+    response = client.get("/api/admin/scripts", headers=user_headers)
+    assert response.status_code == 403
+
+
+def test_user_with_scheduled_acl_can_list_scripts(client, user_headers):
+    """普通用户持 task-scheduler.scheduled ACL 调 GET 通过（200）。"""
+    from app.shared.utils.auth.menu_permission_service import MenuPermissionService
+
+    async def fake_visible(user_id, is_admin):
+        if is_admin:
+            from app.core.menu_registry import get_enabled_items
+            return [m.id for m in get_enabled_items()]
+        return ["profile", "task-scheduler.scheduled"]
+
+    stub = MenuPermissionService(db=None)
+    stub.get_visible_menu_ids = fake_visible
+    client.app.state.menu_permission_service = stub
+
     service = MagicMock()
     service.list_scripts = MagicMock(
         return_value=[
@@ -216,9 +227,7 @@ def test_user_can_list_scripts(client, user_headers):
 
     assert response.status_code == 200
     data = response.json()
-    assert len(data) == 1
     assert data[0]["name"] == "hello_script"
-    # 白名单字段：不应包含 func 等内部字段
     assert "func" not in data[0]
 
 
