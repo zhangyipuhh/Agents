@@ -187,6 +187,13 @@ async def upload_files(
 
             content = await file.read()
 
+            # 2026-09-12 渗透整改：扩展名白名单 + 魔数嗅探（/api/core 上传入口）
+            try:
+                from app.shared.utils.files.upload_validation import validate_upload_content
+                validate_upload_content(file.filename, content)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+
             # 2026-07-13 新增：统一大小校验（与 file_parser_enabled 无关）
             if len(content) > MAX_FILE_SIZE_BYTES:
                 raise HTTPException(
@@ -385,6 +392,16 @@ async def merge_chunks(request: Request, merge_request: MergeChunksRequest):
                         await out_f.write(content)
 
             shutil.rmtree(chunk_dir, ignore_errors=True)
+
+            # 2026-09-12 渗透整改：合并分片后做扩展名 + 魔数校验
+            try:
+                from app.shared.utils.files.upload_validation import validate_upload_content
+                with open(merged_path, "rb") as _f:
+                    _merged_bytes = _f.read()
+                validate_upload_content(merge_request.filename, _merged_bytes)
+            except ValueError as e:
+                merged_path.unlink(missing_ok=True)
+                raise HTTPException(status_code=400, detail=str(e))
 
             # 2026-07-13 新增：合并分片后立即校验总大小（与 file_parser_enabled 无关）
             if merged_path.stat().st_size > MAX_FILE_SIZE_BYTES:

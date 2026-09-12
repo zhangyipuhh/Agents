@@ -117,8 +117,11 @@ class TestUploadFiles:
 
     @pytest.mark.asyncio
     async def test_upload_files_remote_returns_md(self, mock_request, tmp_path):
-        """远程解析模式下应返回解析服务生成的 md 路径。"""
-        content = b"fake pdf content"
+        """远程解析模式下应返回解析服务生成的 md 路径。
+
+        2026-09-12 渗透整改：上传内容必须含真实 PDF 魔数。
+        """
+        content = b"%PDF-1.7\nfake pdf body"
         upload_file = UploadFile(filename="report.pdf", file=BytesIO(content))
 
         today = date.today()
@@ -409,8 +412,11 @@ class TestPassthroughSuffixes:
 
     @pytest.mark.asyncio
     async def test_upload_files_remote_still_routes_pdf(self, mock_request, tmp_path):
-        """parser_enabled=true 时上传 .pdf 应仍走 FileParserClient.parse。"""
-        content = b"fake pdf content"
+        """parser_enabled=true 时上传 .pdf 应仍走 FileParserClient.parse。
+
+        2026-09-12 渗透整改：上传内容必须含真实 PDF 魔数通过校验。
+        """
+        content = b"%PDF-1.7\nfake pdf body"
         upload_file = UploadFile(filename="report.pdf", file=BytesIO(content))
 
         today = date.today()
@@ -514,13 +520,17 @@ class TestUploadSizeLimit:
         assert resp.files[0].filename == "ok.txt"
 
     def test_merge_chunks_rejects_oversize_total(self, mock_request, tmp_path):
-        """合并分片后总大小 > MAX_FILE_SIZE_BYTES 应返回 413。"""
+        """合并分片后总大小 > MAX_FILE_SIZE_BYTES 应返回 413。
+
+        2026-09-12 渗透整改：合并分片先做魔数校验,本测试以 .pdf 为载体,
+        首块写入 PDF 魔数以通过校验,再触发大小超限。
+        """
         file_id = "chunk-big-001"
         chunks_dir = tmp_path / "upload_chunks"
         chunk_dir = chunks_dir / file_id
         chunk_dir.mkdir(parents=True)
         chunk_size = 2 * 1024 * 1024
-        (chunk_dir / "chunk_0").write_bytes(b"a" * chunk_size)
+        (chunk_dir / "chunk_0").write_bytes(b"%PDF-1.7\n" + b"a" * (chunk_size - 8))
         (chunk_dir / "chunk_1").write_bytes(b"b" * chunk_size)
 
         merge_request = MergeChunksRequest(

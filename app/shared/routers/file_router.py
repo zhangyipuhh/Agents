@@ -196,6 +196,14 @@ async def upload_files(request: Request, files: List[UploadFile] = File(...)):
         HTTPException: 当上传过程中发生错误时抛出500错误
     """
     try:
+        # 2026-09-12 渗透整改：扩展名白名单（agent 传输场景,魔数由 /api/core 链路承担）
+        from app.shared.utils.files.upload_validation import validate_upload_extension
+        for f in files:
+            try:
+                validate_upload_extension(f.filename)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+
         session_id = getattr(request.state, "session_id", "default")
         uploaded_files = await file_transfer.upload_files(files, session_id)
         return FileUploadResponse(
