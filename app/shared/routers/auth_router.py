@@ -516,22 +516,22 @@ async def login(request: LoginRequest, req: Request, response: Response):
 
     # 2026-08-07 改造：提前校验锁定状态。锁定期间即使密码正确也必须拒绝（fail-closed）。
     # 仅在已知用户上读取 locked_until；不存在的用户名仍按"凭据错误"处理以避免账号枚举。
+    # 2026-09-12 渗透整改：委托 login_lockout.check_login_lock 助手，与 /login-api 共用。
     if is_valid:
-        existing = await UserDB.get_user_by_username(request.username)
-        if existing is not None:
-            lock_state = await UserDB.get_login_lock_state(int(existing.get("id")))
-            if lock_state.get("locked_until") is not None and lock_state["locked_until"] > time.time():
-                _emit_login_event(
-                    username=request.username,
-                    result=LogResult.FAILURE,
-                    level=LogLevel.WARNING,
-                    message='用户被锁定',
-                    user_id=existing.get("id"),
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="登录失败次数过多，账号已临时锁定",
-                )
+        from app.shared.utils.auth.login_lockout import check_login_lock
+        lock = await check_login_lock(request.username)
+        if lock is not None:
+            _emit_login_event(
+                username=request.username,
+                result=LogResult.FAILURE,
+                level=LogLevel.WARNING,
+                message='用户被锁定',
+                user_id=lock["user_id"],
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="登录失败次数过多，账号已临时锁定",
+            )
 
     # 2026-08-07 批次硬化：MFA 服务不可用时浏览器 /login 一律 fail-closed（503），
     # 即使密码错误也直接 503，避免暴露账号是否存在（反枚举）。
@@ -552,65 +552,22 @@ async def login(request: LoginRequest, req: Request, response: Response):
     if not is_valid:
         # 2026-08-07 新增：累计失败计数（5 次后锁 30 分钟，由 ``UserDB.record_failed_login`` 内部处理）。
         # 这里仅在已存在的 user 上累计；不区分 username 是否存在，避免暴露账号是否存在。
-        try:
-            from app.shared.utils.auth.user_db import UserDB as _UserDB
-
-            try:
-                _existing = await _UserDB.get_user_by_username(request.username)
-            except Exception:  # noqa: BLE001
-                _existing = None
-            if _existing is not None:
-                # 注意：max_attempts/lockout_seconds 与 mfa_service._settings 优先级一致
-                mfa_service_ref = getattr(req.app.state, "mfa_service", None)
-                lockout_seconds = (
-                    getattr(mfa_service_ref, "_settings", None)
-                    and mfa_service_ref._settings.lockout_seconds
-                ) or 1800
-                max_attempts = (
-                    getattr(mfa_service_ref, "_settings", None)
-                    and mfa_service_ref._settings.max_attempts
-                ) or 5
-                # 2026-08-08 修复：早期版本使用 ``DatabasePool.fetchval`` 调用，
-                # 而 ``DatabasePool`` 没有 ``fetchval`` 方法导致 ``AttributeError`` 被
-                # 外层 ``except Exception: pass`` 静默吞掉，整条登录失败计数链路
-                # 静默失效（密码错 12 次后 ``users.failed_login_count`` 仍为 0），
-                # 用户表现"几次不锁定"。现改为 fetchrow + 兜底 + 路由层二次判定。
-                new_count = await _UserDB.record_failed_login(
-                    int(_existing.get("id")),
-                    max_attempts=max_attempts,
-                    lockout_seconds=lockout_seconds,
-                )
-                # 兜底二次判定：即便 ``record_failed_login`` 主路径 SQL CASE 漂移
-                # 未触发 locked_until 写入，路由层仍基于 new_count 显式拒绝锁定。
-                # 同步检查 DB 状态以避免误报（用户已存在 locked_until > now 时
-                # 立即短路返回）。
-                lock_state = await _UserDB.get_login_lock_state(int(_existing.get("id")))
-                now_ts = time.time()
-                is_locked = (
-                    (lock_state.get("locked_until") is not None
-                     and lock_state["locked_until"] > now_ts)
-                    or new_count >= max_attempts
-                )
-                if is_locked:
-                    _emit_login_event(
-                        username=request.username,
-                        result=LogResult.FAILURE,
-                        level=LogLevel.WARNING,
-                        message='用户被锁定',
-                    )
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="登录失败次数过多，账号已临时锁定",
-                    )
-        except HTTPException:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            # 2026-08-08 修复：原 ``except Exception: pass`` 完全吞掉失败
-            # 累计异常，已被验证导致登录锁定机制彻底静默失效。现改为
-            # ``logger.exception``：记录堆栈便于排障，但仍然不能让登录
-            # 接口因此返回 5xx（凭据错误本身仍返回 401，避免反枚举特性改变）。
-            logger.exception(
-                "[auth_router.login] record_failed_login raised: %s", exc
+        # 2026-09-12 渗透整改：失败累计委托 login_lockout.record_failed_login_and_is_locked，
+        # 与 /login-api 共用同一套锁定逻辑。
+        from app.shared.utils.auth.login_lockout import (
+            record_failed_login_and_is_locked,
+        )
+        locked = await record_failed_login_and_is_locked(request.username, req.app)
+        if locked:
+            _emit_login_event(
+                username=request.username,
+                result=LogResult.FAILURE,
+                level=LogLevel.WARNING,
+                message='用户被锁定',
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="登录失败次数过多，账号已临时锁定",
             )
 
         _emit_login_event(
@@ -870,6 +827,22 @@ async def login_api(request: ApiLoginRequest, req: Request, response: Response):
         is_valid = await jwt_auth.verify_credentials(request.username, request.password)
 
     if not is_valid:
+        # 2026-09-12 等保三级补齐：连续失败累计触发锁定（与 /login 共用助手）
+        from app.shared.utils.auth.login_lockout import (
+            record_failed_login_and_is_locked,
+        )
+        locked = await record_failed_login_and_is_locked(request.username, req.app)
+        if locked:
+            _emit_login_api_event(
+                username=request.username,
+                result=LogResult.FAILURE,
+                level=LogLevel.WARNING,
+                message='用户被锁定',
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="登录失败次数过多，账号已临时锁定",
+            )
         _emit_login_api_event(
             username=request.username,
             result=LogResult.FAILURE,
@@ -879,6 +852,22 @@ async def login_api(request: ApiLoginRequest, req: Request, response: Response):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="用户名或密码错误"
+        )
+
+    # 2026-09-12 等保三级补齐：锁定期间即使密码正确也拒绝（fail-closed）
+    from app.shared.utils.auth.login_lockout import check_login_lock
+    lock = await check_login_lock(request.username)
+    if lock is not None:
+        _emit_login_api_event(
+            username=request.username,
+            result=LogResult.FAILURE,
+            level=LogLevel.WARNING,
+            message='用户被锁定',
+            user_id=lock["user_id"],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="登录失败次数过多，账号已临时锁定",
         )
 
     # Memory 模式下自动创建用户记录
