@@ -15,6 +15,9 @@ description: "封装飞书 Open API 主动推送消息、文档或卡片；并�
 - 飞书 WebSocket (feishu-ws)
 - 飞书文件附件 (feishu-file-attachment)
 - 飞书 docx/pdf/xlsx 上传 (feishu-document-upload)
+- 飞书 docx (feishu-docx)
+- 飞书表格 (feishu-sheet)
+- 飞书知识库 (feishu-wiki)
 - markdown 渲染 (markdown-render)
 - 卡片渲染 (card-render)
 - 人工回路 (hitl)
@@ -25,6 +28,15 @@ description: "封装飞书 Open API 主动推送消息、文档或卡片；并�
 
 ### 主动推送（agent 调用）
 - `send_feishu_message` 工具：向飞书群/用户发送文本消息
+- `create_feishu_document` 工具：创建飞书 docx 文档
+- `append_feishu_document_blocks` 工具：追加 markdown block 到 docx
+- `create_feishu_table_in_document` 工具：在 docx 内插入表格
+- `create_feishu_spreadsheet` 工具：创建飞书 spreadsheet
+- `write_feishu_sheet_values` / `read_feishu_sheet_values` 工具：读写单元格
+- `create_wiki_node` 工具：在飞书知识空间下创建节点（包装已有 docx）
+- `create_wiki_node_from_markdown` 工具：一键把 markdown 内容写入飞书知识库节点
+- `get_wiki_node` / `list_wiki_nodes` / `move_wiki_node` / `rename_wiki_node` 工具：知识库节点管理
+- `list_feishu_files` 工具：列出飞书 drive 文件夹下的文件
 
 ### 被动接收（系统级服务，非工具）
 - `FeishuWebSocketService`：随 FastAPI lifespan 启停

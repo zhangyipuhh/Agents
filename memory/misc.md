@@ -651,3 +651,84 @@ FeishuWebSocketService._call_agent
 - **TestClient.delete() 不支持 `data` / `json` 关键字**：Starlette `TestClient.delete` 显式仅暴露 `params`、`headers`、`cookies` 等；如需发送 JSON body，应改用 `client.request("DELETE", url, headers=..., json=...)`（参见 `app/tests/shared/test_file_router.py::test_delete_files`）
 - **PortalRefreshTokenDB 仅暴露物理删除**：使用 `delete_token(token_hash)`，不存在 `revoke_token`（参见 `app/tests/shared/test_portal_refresh_token_db.py`）
 
+
+## 飞书文档工具（2026-09-12 落地）
+
+### 概述
+
+`app/shared/tools/skills/feishu/` 新增 4 个 Client 类 + 3 个 Tools 文件，封装飞书 docx / sheets / drive / wiki 四个 Open API 服务，供任意 agent 通过 ToolRegistry 自动发现与使用。
+
+### 客户端类（HTTP 调用层，不暴露给 LLM）
+
+- **`FeishuDocxClient`**：飞书 docx v1 服务
+  - `create_document(title, folder_token=None)` → POST `/open-apis/docx/v1/documents`
+  - `get_document_raw_content(document_id)` → GET `/open-apis/docx/v1/documents/{id}/raw_content`
+  - `list_blocks(document_id)` → GET `/open-apis/docx/v1/documents/{id}/blocks`
+  - `append_block_children(document_id, block_id, children)` → POST `/open-apis/docx/v1/documents/{id}/blocks/{block_id}/children`
+  - 模块级 `_md_to_blocks(markdown_text)` helper：复用 `MarkdownToCardConverter` 正则常量解析 markdown → docx block JSON（heading1/2/3, paragraph, bullet, ordered, code, table）
+
+- **`FeishuSheetsClient`**：飞书 sheets v3 / v2 服务
+  - `create_spreadsheet(title, folder_token=None)` → POST `/open-apis/sheets/v3/spreadsheets`
+  - `write_values(spreadsheet_token, range_, values)` → POST `/open-apis/sheets/v2/spreadsheets/{token}/values`
+  - `read_values(spreadsheet_token, range_)` → GET `/open-apis/sheets/v2/spreadsheets/{token}/values`
+
+- **`FeishuDriveClient`**：飞书 drive v1 服务（docx / sheets 共用）
+  - `list_files(folder_token=None)` → GET `/open-apis/drive/v1/files?folder_token=xxx`
+
+- **`FeishuWikiClient`**：飞书 wiki v2 服务
+  - `get_node(token, obj_type=None)` → GET `/open-apis/wiki/v2/spaces/get_node`
+  - `create_node(space_id, title, obj_token, parent_node_token=None, obj_type="docx")` → POST `/open-apis/wiki/v2/spaces/{space_id}/nodes`
+  - `list_nodes(space_id, parent_node_token=None)` → GET `/open-apis/wiki/v2/spaces/{space_id}/nodes`
+  - `move_node(space_id, node_token, target_parent_token=None)` → POST `/open-apis/wiki/v2/spaces/{space_id}/nodes/{node_token}/move`
+  - `rename_node(space_id, node_token, new_title)` → PATCH `/open-apis/wiki/v2/spaces/{space_id}/nodes/{node_token}`
+  - **`create_wiki_node_from_markdown(space_id, title, markdown_content, parent_node_token=None)`**：一键入口，组合 `FeishuDocxClient.create_document` + `_md_to_blocks` + `append_block_children` + `create_node`；任一中间步骤失败 → 整体失败并返回 `stage` 标记（不留下孤儿 wiki 节点）
+
+### LLM 可调用工具（@tool 装饰器，由 ToolRegistryService 源码扫描发现）
+
+#### FeishuDocxTools（7 件）
+- `create_feishu_document(title, folder_token=None)` → 创建飞书 docx
+- `get_feishu_document_content(document_id)` → 读取纯文本
+- `append_feishu_document_blocks(document_id, blocks)` → 追加 block
+- `share_feishu_document(document_id)` → 构造分享 URL
+- `list_feishu_files(folder_token=None)` → 列 drive 文件
+- `create_feishu_table_in_document(document_id, rows)` → 插入表格（首行视为表头）
+- `replace_feishu_document_block(document_id, block_id, new_blocks)` → 飞书 docx v1 不支持原地替换，本工具退化为「追加 + 标注 note」
+
+#### FeishuSheetsTools（3 件）
+- `create_feishu_spreadsheet(title, folder_token=None)`
+- `write_feishu_sheet_values(spreadsheet_token, range_, values)`
+- `read_feishu_sheet_values(spreadsheet_token, range_)`
+
+#### FeishuWikiTools（6 件）
+- `create_wiki_node(space_id, title, obj_token, parent_node_token=None, obj_type="docx")`
+- `get_wiki_node(token, obj_type=None)`
+- `list_wiki_nodes(space_id, parent_node_token=None)`
+- `move_wiki_node(space_id, node_token, target_parent_token=None)`
+- `rename_wiki_node(space_id, node_token, new_title)`
+- **`create_wiki_node_from_markdown(space_id, title, markdown_content, parent_node_token=None)`** ⭐ 「飞书知识库插入 md 文件」主线入口
+
+### 关键设计决策与复用契约
+
+1. **凭证模式**：复用 `FeishuEndpointResolver.resolve_current_endpoint` + `build_lark_client(endpoint)`（与 send_feishu_message 同款），**不**走 `FeishuClient.get_lark_client()` 旧单例路径（2026-09-11 重构后该路径与 DB 多渠道契约不一致）
+2. **Client 与 Tool 解耦**：Client 类是 HTTP 调用层（注入 `lark.Client`），Tools 文件是 @tool 装饰器层；Tools 调用 Client
+3. **失败模式**：所有失败以 ToolMessage 返回 `{"success": False, "error": ..., "code": ..., "log_id": ...}`，不抛异常（与 send_feishu_message 一致）
+4. **async 全程**：所有方法 `async def`，内部用 `asyncio.to_thread` 卸载同步 `lark.Client` HTTP 调用
+5. **Wiki 复用 Docx**：`FeishuWikiClient.__init__(lark_client, docx_client=...)` 强制接收 `FeishuDocxClient` 实例，`create_wiki_node_from_markdown` 内部三步链路 `docx.create → blocks.append → wiki.create_node`
+6. **md 解析复用**：`FeishuDocxClient._md_to_blocks` 复用 `MarkdownToCardConverter._RE_HEADING / _RE_FENCE / _RE_LIST / _RE_ORDERED_LIST / _RE_TABLE_ROW / _RE_TABLE_SEP` 正则常量，保证项目内 md 解析语义只有一份（卡片 + 文档共用解析逻辑）
+7. **不修改 app/core/、app/shared/routers/、MarkdownToCardConverter、FeishuMessageTools**；不新增 DB schema 或 .env 字段
+
+### 测试
+
+新增 8 个测试文件，共 120 用例全绿：
+- `test_md_to_blocks.py`（16）：md → blocks 转换单元测试
+- `test_feishu_docx_client.py`（14）：docx Client 单元测试
+- `test_feishu_sheets_client.py`（12）：sheets Client 单元测试
+- `test_feishu_drive_client.py`（7）：drive Client 单元测试
+- `test_feishu_wiki_client.py`（20）：wiki Client + 一键入口单元测试
+- `test_feishu_docx_tools.py`（23）：docx 7 工具单元测试
+- `test_feishu_sheets_tools.py`（9）：sheets 3 工具单元测试
+- `test_feishu_wiki_tools.py`（19）：wiki 6 工具 + 一键入口单元测试
+
+测试 conftest（`app/tests/shared/tools/skills/feishu/conftest.py`）扩展 mock lark_oapi.api.docx.v1 / sheets.v3 / sheets.v2 / drive.v1 / wiki.v2 五个子模块。
+
+反向用例 ≥ 7 条（含 docx_failure_no_orphan、permission_denied_returns_error、unclosed_fence_falls_back_to_paragraph、whitespace_only_md_returns_error 等）。

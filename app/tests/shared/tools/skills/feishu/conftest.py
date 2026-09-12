@@ -855,6 +855,772 @@ _lark_api_cardkit.v1 = _lark_api_cardkit_v1
 _lark_api.cardkit = _lark_api_cardkit
 
 
+# ---------------------------------------------------------------------------
+# 构造 lark_oapi.api.docx.v1 子模块（供 FeishuDocxClient 单元测试）
+# ---------------------------------------------------------------------------
+# 真实 SDK 关键方法路径（参考 lark-oapi 1.7.1）：
+#     from lark_oapi.api.docx.v1 import (
+#         CreateDocumentRequest, CreateDocumentRequestBody,
+#         GetDocumentRawContentRequest,
+#         ListDocumentBlocksRequest,
+#         CreateDocumentBlockChildrenRequest,
+#         CreateDocumentBlockChildrenRequestBody,
+#     )
+#     req = CreateDocumentRequest.builder().request_body(
+#         CreateDocumentRequestBody.builder().title("xxx").folder_token("yy").build()
+#     ).build()
+#     resp = client.docx.v1.document.create(req)
+#     resp2 = client.docx.v1.document_raw_content.get(req)
+#     resp3 = client.docx.v1.document_block.list(req)
+#     resp4 = client.docx.v1.document_block_children.create(req)
+#
+# 真实响应结构：response.success() 返回 bool，response.data 是对应响应对象
+# （document_id / content / items / 等）。本 mock 提供 builder 链 + 默认
+# 返回 success=False 的 MagicMock，测试通过 setattr 注入成功响应。
+_lark_api_docx = types.ModuleType("lark_oapi.api.docx")
+_lark_api_docx.__path__ = []
+_lark_api_docx_v1 = types.ModuleType("lark_oapi.api.docx.v1")
+
+
+class _DocxDocumentBuilder:
+    """模拟 CreateDocumentRequest.builder() 链。"""
+
+    def __init__(self):
+        self._request_body = None
+
+    def request_body(self, body):
+        self._request_body = body
+        return self
+
+    def build(self):
+        req = MagicMock(name="CreateDocumentRequest")
+        req._request_body = self._request_body
+        return req
+
+
+class _CreateDocumentRequest:
+    @staticmethod
+    def builder():
+        return _DocxDocumentBuilder()
+
+
+class _DocxDocumentBodyBuilder:
+    """模拟 CreateDocumentRequestBody.builder() 链。"""
+
+    def __init__(self):
+        self._title = None
+        self._folder_token = None
+
+    def title(self, t):
+        self._title = t
+        return self
+
+    def folder_token(self, ft):
+        self._folder_token = ft
+        return self
+
+    def build(self):
+        body = MagicMock(name="CreateDocumentRequestBody")
+        body._title = self._title
+        body._folder_token = self._folder_token
+        return body
+
+
+class _CreateDocumentRequestBody:
+    @staticmethod
+    def builder():
+        return _DocxDocumentBodyBuilder()
+
+
+class _DocxRawContentBuilder:
+    """模拟 GetDocumentRawContentRequest.builder() 链。"""
+
+    def __init__(self):
+        self._document_id = None
+
+    def document_id(self, did):
+        self._document_id = did
+        return self
+
+    def build(self):
+        req = MagicMock(name="GetDocumentRawContentRequest")
+        req._document_id = self._document_id
+        return req
+
+
+class _GetDocumentRawContentRequest:
+    @staticmethod
+    def builder():
+        return _DocxRawContentBuilder()
+
+
+class _DocxListBlocksBuilder:
+    """模拟 ListDocumentBlocksRequest.builder() 链。"""
+
+    def __init__(self):
+        self._document_id = None
+
+    def document_id(self, did):
+        self._document_id = did
+        return self
+
+    def build(self):
+        req = MagicMock(name="ListDocumentBlocksRequest")
+        req._document_id = self._document_id
+        return req
+
+
+class _ListDocumentBlocksRequest:
+    @staticmethod
+    def builder():
+        return _DocxListBlocksBuilder()
+
+
+class _DocxBlockChildrenBodyBuilder:
+    def __init__(self):
+        self._children = None
+
+    def children(self, c):
+        self._children = c
+        return self
+
+    def build(self):
+        body = MagicMock(name="CreateDocumentBlockChildrenRequestBody")
+        body._children = self._children
+        return body
+
+
+class _CreateDocumentBlockChildrenRequestBody:
+    @staticmethod
+    def builder():
+        return _DocxBlockChildrenBodyBuilder()
+
+
+class _DocxBlockChildrenBuilder:
+    def __init__(self):
+        self._document_id = None
+        self._block_id = None
+        self._request_body = None
+
+    def document_id(self, did):
+        self._document_id = did
+        return self
+
+    def block_id(self, bid):
+        self._block_id = bid
+        return self
+
+    def request_body(self, body):
+        self._request_body = body
+        return self
+
+    def build(self):
+        req = MagicMock(name="CreateDocumentBlockChildrenRequest")
+        req._document_id = self._document_id
+        req._block_id = self._block_id
+        req._request_body = self._request_body
+        return req
+
+
+class _CreateDocumentBlockChildrenRequest:
+    @staticmethod
+    def builder():
+        return _DocxBlockChildrenBuilder()
+
+
+_lark_api_docx_v1.CreateDocumentRequest = _CreateDocumentRequest
+_lark_api_docx_v1.CreateDocumentRequestBody = _CreateDocumentRequestBody
+_lark_api_docx_v1.GetDocumentRawContentRequest = _GetDocumentRawContentRequest
+_lark_api_docx_v1.ListDocumentBlocksRequest = _ListDocumentBlocksRequest
+_lark_api_docx_v1.CreateDocumentBlockChildrenRequestBody = (
+    _CreateDocumentBlockChildrenRequestBody
+)
+_lark_api_docx_v1.CreateDocumentBlockChildrenRequest = (
+    _CreateDocumentBlockChildrenRequest
+)
+
+
+# 把 docx 命名空间挂到 client builder：client.docx.v1.document.create(...) 等
+def _patched_client_build_docx(self):
+    client = _orig_client_build(self)
+    # 内部仍然走 _patched_client_build（含 cardkit），再次包装避免重复
+    # 直接扩展 MagicMock 自动接受任意属性即可
+    docx_namespace = types.SimpleNamespace()
+    docx_v1_namespace = types.SimpleNamespace()
+    docx_document_ns = types.SimpleNamespace()
+    docx_raw_ns = types.SimpleNamespace()
+    docx_block_ns = types.SimpleNamespace()
+    docx_block_children_ns = types.SimpleNamespace()
+
+    # 默认失败响应；测试通过 setattr 注入
+    docx_document_ns.create = MagicMock(
+        name="docx.v1.document.create",
+        return_value=MagicMock(success=lambda: False),
+    )
+    docx_raw_ns.get = MagicMock(
+        name="docx.v1.document_raw_content.get",
+        return_value=MagicMock(success=lambda: False),
+    )
+    docx_block_ns.list = MagicMock(
+        name="docx.v1.document_block.list",
+        return_value=MagicMock(success=lambda: False),
+    )
+    docx_block_children_ns.create = MagicMock(
+        name="docx.v1.document_block_children.create",
+        return_value=MagicMock(success=lambda: False),
+    )
+
+    docx_v1_namespace.document = docx_document_ns
+    docx_v1_namespace.document_raw_content = docx_raw_ns
+    docx_v1_namespace.document_block = docx_block_ns
+    docx_v1_namespace.document_block_children = docx_block_children_ns
+    docx_namespace.v1 = docx_v1_namespace
+    client.docx = docx_namespace
+    return client
+
+
+# 覆盖之前的 _patched_client_build（cardkit），把 docx 一起挂上
+def _patched_client_build_combined(self):
+    client = _patched_client_build_docx(self)
+    return client
+
+
+_ClientBuilder.build = _patched_client_build_combined
+
+
+_lark_api_docx.v1 = _lark_api_docx_v1
+_lark_api.docx = _lark_api_docx
+
+
+# ---------------------------------------------------------------------------
+# 构造 lark_oapi.api.sheets.v3 / sheets.v2 子模块
+# ---------------------------------------------------------------------------
+_lark_api_sheets = types.ModuleType("lark_oapi.api.sheets")
+_lark_api_sheets.__path__ = []
+_lark_api_sheets_v3 = types.ModuleType("lark_oapi.api.sheets.v3")
+_lark_api_sheets_v2 = types.ModuleType("lark_oapi.api.sheets.v2")
+
+
+# --- sheets v3: CreateSpreadsheetRequest ---
+class _SheetsV3SpreadsheetBodyBuilder:
+    def __init__(self):
+        self._title = None
+        self._folder_token = None
+
+    def title(self, t):
+        self._title = t
+        return self
+
+    def folder_token(self, ft):
+        self._folder_token = ft
+        return self
+
+    def build(self):
+        body = MagicMock(name="CreateSpreadsheetRequestBody")
+        body._title = self._title
+        body._folder_token = self._folder_token
+        return body
+
+
+class _CreateSpreadsheetRequestBody:
+    @staticmethod
+    def builder():
+        return _SheetsV3SpreadsheetBodyBuilder()
+
+
+class _SheetsV3SpreadsheetBuilder:
+    def __init__(self):
+        self._request_body = None
+
+    def request_body(self, body):
+        self._request_body = body
+        return self
+
+    def build(self):
+        req = MagicMock(name="CreateSpreadsheetRequest")
+        req._request_body = self._request_body
+        return req
+
+
+class _CreateSpreadsheetRequest:
+    @staticmethod
+    def builder():
+        return _SheetsV3SpreadsheetBuilder()
+
+
+_lark_api_sheets_v3.CreateSpreadsheetRequest = _CreateSpreadsheetRequest
+_lark_api_sheets_v3.CreateSpreadsheetRequestBody = _CreateSpreadsheetRequestBody
+
+
+# --- sheets v2: Write/Read SpreadsheetValues ---
+class _SheetsV2WriteBodyBuilder:
+    def __init__(self):
+        self._range = None
+        self._values = None
+
+    def range_(self, r):
+        self._range = r
+        return self
+
+    def values(self, v):
+        self._values = v
+        return self
+
+    def build(self):
+        body = MagicMock(name="WriteSpreadsheetValuesRequestBody")
+        body._range = self._range
+        body._values = self._values
+        return body
+
+
+class _WriteSpreadsheetValuesRequestBody:
+    @staticmethod
+    def builder():
+        return _SheetsV2WriteBodyBuilder()
+
+
+class _SheetsV2WriteBuilder:
+    def __init__(self):
+        self._spreadsheet_token = None
+        self._request_body = None
+
+    def spreadsheet_token(self, t):
+        self._spreadsheet_token = t
+        return self
+
+    def request_body(self, body):
+        self._request_body = body
+        return self
+
+    def build(self):
+        req = MagicMock(name="WriteSpreadsheetValuesRequest")
+        req._spreadsheet_token = self._spreadsheet_token
+        req._request_body = self._request_body
+        return req
+
+
+class _WriteSpreadsheetValuesRequest:
+    @staticmethod
+    def builder():
+        return _SheetsV2WriteBuilder()
+
+
+class _SheetsV2ReadBuilder:
+    def __init__(self):
+        self._spreadsheet_token = None
+        self._range = None
+
+    def spreadsheet_token(self, t):
+        self._spreadsheet_token = t
+        return self
+
+    def range_(self, r):
+        self._range = r
+        return self
+
+    def build(self):
+        req = MagicMock(name="GetSpreadsheetValuesRequest")
+        req._spreadsheet_token = self._spreadsheet_token
+        req._range = self._range
+        return req
+
+
+class _GetSpreadsheetValuesRequest:
+    @staticmethod
+    def builder():
+        return _SheetsV2ReadBuilder()
+
+
+_lark_api_sheets_v2.WriteSpreadsheetValuesRequest = _WriteSpreadsheetValuesRequest
+_lark_api_sheets_v2.WriteSpreadsheetValuesRequestBody = (
+    _WriteSpreadsheetValuesRequestBody
+)
+_lark_api_sheets_v2.GetSpreadsheetValuesRequest = _GetSpreadsheetValuesRequest
+
+
+def _patched_client_build_sheets(self):
+    client = _patched_client_build_combined(self)
+    sheets_ns = types.SimpleNamespace()
+    sheets_v3_ns = types.SimpleNamespace()
+    sheets_v2_ns = types.SimpleNamespace()
+
+    spreadsheet_v3_ns = types.SimpleNamespace()
+    spreadsheet_v3_ns.create = MagicMock(
+        name="sheets.v3.spreadsheet.create",
+        return_value=MagicMock(success=lambda: False),
+    )
+
+    spreadsheet_value_v2_ns = types.SimpleNamespace()
+    spreadsheet_value_v2_ns.write = MagicMock(
+        name="sheets.v2.spreadsheet_value.write",
+        return_value=MagicMock(success=lambda: False),
+    )
+    spreadsheet_value_v2_ns.get = MagicMock(
+        name="sheets.v2.spreadsheet_value.get",
+        return_value=MagicMock(success=lambda: False),
+    )
+
+    sheets_v3_ns.spreadsheet = spreadsheet_v3_ns
+    sheets_v2_ns.spreadsheet_value = spreadsheet_value_v2_ns
+    sheets_ns.v3 = sheets_v3_ns
+    sheets_ns.v2 = sheets_v2_ns
+    client.sheets = sheets_ns
+    return client
+
+
+_ClientBuilder.build = _patched_client_build_sheets
+
+
+_lark_api_sheets.v3 = _lark_api_sheets_v3
+_lark_api_sheets.v2 = _lark_api_sheets_v2
+_lark_api.sheets = _lark_api_sheets
+
+
+# ---------------------------------------------------------------------------
+# 构造 lark_oapi.api.drive.v1 子模块
+# ---------------------------------------------------------------------------
+_lark_api_drive = types.ModuleType("lark_oapi.api.drive")
+_lark_api_drive.__path__ = []
+_lark_api_drive_v1 = types.ModuleType("lark_oapi.api.drive.v1")
+
+
+class _DriveListFileBuilder:
+    def __init__(self):
+        self._folder_token = None
+
+    def folder_token(self, ft):
+        self._folder_token = ft
+        return self
+
+    def build(self):
+        req = MagicMock(name="ListFileRequest")
+        req._folder_token = self._folder_token
+        return req
+
+
+class _ListFileRequest:
+    @staticmethod
+    def builder():
+        return _DriveListFileBuilder()
+
+
+_lark_api_drive_v1.ListFileRequest = _ListFileRequest
+
+
+def _patched_client_build_drive(self):
+    client = _patched_client_build_sheets(self)
+    drive_ns = types.SimpleNamespace()
+    drive_v1_ns = types.SimpleNamespace()
+    drive_file_ns = types.SimpleNamespace()
+    drive_file_ns.list = MagicMock(
+        name="drive.v1.file.list",
+        return_value=MagicMock(success=lambda: False),
+    )
+    drive_v1_ns.file = drive_file_ns
+    drive_ns.v1 = drive_v1_ns
+    client.drive = drive_ns
+    return client
+
+
+_ClientBuilder.build = _patched_client_build_drive
+
+
+_lark_api_drive.v1 = _lark_api_drive_v1
+_lark_api.drive = _lark_api_drive
+
+
+# ---------------------------------------------------------------------------
+# 构造 lark_oapi.api.wiki.v2 子模块
+# ---------------------------------------------------------------------------
+_lark_api_wiki = types.ModuleType("lark_oapi.api.wiki")
+_lark_api_wiki.__path__ = []
+_lark_api_wiki_v2 = types.ModuleType("lark_oapi.api.wiki.v2")
+
+
+# --- GetNode ---
+class _WikiGetNodeBuilder:
+    def __init__(self):
+        self._token = None
+        self._obj_type = None
+
+    def token(self, t):
+        self._token = t
+        return self
+
+    def obj_type(self, ot):
+        self._obj_type = ot
+        return self
+
+    def build(self):
+        req = MagicMock(name="GetNodeSpaceRequest")
+        req._token = self._token
+        req._obj_type = self._obj_type
+        return req
+
+
+class _GetNodeSpaceRequest:
+    @staticmethod
+    def builder():
+        return _WikiGetNodeBuilder()
+
+
+# --- CreateSpaceNode ---
+class _WikiCreateSpaceNodeBodyBuilder:
+    def __init__(self):
+        self._obj_type = None
+        self._obj_token = None
+        self._node_type = None
+        self._title = None
+        self._parent_node_token = None
+
+    def obj_type(self, ot):
+        self._obj_type = ot
+        return self
+
+    def obj_token(self, tok):
+        self._obj_token = tok
+        return self
+
+    def node_type(self, nt):
+        self._node_type = nt
+        return self
+
+    def title(self, t):
+        self._title = t
+        return self
+
+    def parent_node_token(self, pt):
+        self._parent_node_token = pt
+        return self
+
+    def build(self):
+        body = MagicMock(name="CreateSpaceNodeRequestBody")
+        body._obj_type = self._obj_type
+        body._obj_token = self._obj_token
+        body._node_type = self._node_type
+        body._title = self._title
+        body._parent_node_token = self._parent_node_token
+        return body
+
+
+class _CreateSpaceNodeRequestBody:
+    @staticmethod
+    def builder():
+        return _WikiCreateSpaceNodeBodyBuilder()
+
+
+class _WikiCreateSpaceNodeBuilder:
+    def __init__(self):
+        self._space_id = None
+        self._request_body = None
+
+    def space_id(self, sid):
+        self._space_id = sid
+        return self
+
+    def request_body(self, body):
+        self._request_body = body
+        return self
+
+    def build(self):
+        req = MagicMock(name="CreateSpaceNodeRequest")
+        req._space_id = self._space_id
+        req._request_body = self._request_body
+        return req
+
+
+class _CreateSpaceNodeRequest:
+    @staticmethod
+    def builder():
+        return _WikiCreateSpaceNodeBuilder()
+
+
+# --- ListSpaceNode ---
+class _WikiListSpaceNodeBuilder:
+    def __init__(self):
+        self._space_id = None
+        self._parent_node_token = None
+
+    def space_id(self, sid):
+        self._space_id = sid
+        return self
+
+    def parent_node_token(self, pt):
+        self._parent_node_token = pt
+        return self
+
+    def build(self):
+        req = MagicMock(name="ListSpaceNodeRequest")
+        req._space_id = self._space_id
+        req._parent_node_token = self._parent_node_token
+        return req
+
+
+class _ListSpaceNodeRequest:
+    @staticmethod
+    def builder():
+        return _WikiListSpaceNodeBuilder()
+
+
+# --- MoveSpaceNode ---
+class _WikiMoveSpaceNodeBodyBuilder:
+    def __init__(self):
+        self._target_parent_token = None
+
+    def target_parent_token(self, tpt):
+        self._target_parent_token = tpt
+        return self
+
+    def build(self):
+        body = MagicMock(name="MoveSpaceNodeRequestBody")
+        body._target_parent_token = self._target_parent_token
+        return body
+
+
+class _MoveSpaceNodeRequestBody:
+    @staticmethod
+    def builder():
+        return _WikiMoveSpaceNodeBodyBuilder()
+
+
+class _WikiMoveSpaceNodeBuilder:
+    def __init__(self):
+        self._space_id = None
+        self._node_token = None
+        self._request_body = None
+
+    def space_id(self, sid):
+        self._space_id = sid
+        return self
+
+    def node_token(self, nt):
+        self._node_token = nt
+        return self
+
+    def request_body(self, body):
+        self._request_body = body
+        return self
+
+    def build(self):
+        req = MagicMock(name="MoveSpaceNodeRequest")
+        req._space_id = self._space_id
+        req._node_token = self._node_token
+        req._request_body = self._request_body
+        return req
+
+
+class _MoveSpaceNodeRequest:
+    @staticmethod
+    def builder():
+        return _WikiMoveSpaceNodeBuilder()
+
+
+# --- UpdateSpaceNode ---
+class _WikiUpdateSpaceNodeBodyBuilder:
+    def __init__(self):
+        self._title = None
+
+    def title(self, t):
+        self._title = t
+        return self
+
+    def build(self):
+        body = MagicMock(name="UpdateSpaceNodeRequestBody")
+        body._title = self._title
+        return body
+
+
+class _UpdateSpaceNodeRequestBody:
+    @staticmethod
+    def builder():
+        return _WikiUpdateSpaceNodeBodyBuilder()
+
+
+class _WikiUpdateSpaceNodeBuilder:
+    def __init__(self):
+        self._space_id = None
+        self._node_token = None
+        self._request_body = None
+
+    def space_id(self, sid):
+        self._space_id = sid
+        return self
+
+    def node_token(self, nt):
+        self._node_token = nt
+        return self
+
+    def request_body(self, body):
+        self._request_body = body
+        return self
+
+    def build(self):
+        req = MagicMock(name="UpdateSpaceNodeRequest")
+        req._space_id = self._space_id
+        req._node_token = self._node_token
+        req._request_body = self._request_body
+        return req
+
+
+class _UpdateSpaceNodeRequest:
+    @staticmethod
+    def builder():
+        return _WikiUpdateSpaceNodeBuilder()
+
+
+_lark_api_wiki_v2.GetNodeSpaceRequest = _GetNodeSpaceRequest
+_lark_api_wiki_v2.CreateSpaceNodeRequest = _CreateSpaceNodeRequest
+_lark_api_wiki_v2.CreateSpaceNodeRequestBody = _CreateSpaceNodeRequestBody
+_lark_api_wiki_v2.ListSpaceNodeRequest = _ListSpaceNodeRequest
+_lark_api_wiki_v2.MoveSpaceNodeRequest = _MoveSpaceNodeRequest
+_lark_api_wiki_v2.MoveSpaceNodeRequestBody = _MoveSpaceNodeRequestBody
+_lark_api_wiki_v2.UpdateSpaceNodeRequest = _UpdateSpaceNodeRequest
+_lark_api_wiki_v2.UpdateSpaceNodeRequestBody = _UpdateSpaceNodeRequestBody
+
+
+def _patched_client_build_wiki(self):
+    client = _patched_client_build_drive(self)
+    wiki_ns = types.SimpleNamespace()
+    wiki_v2_ns = types.SimpleNamespace()
+
+    space_ns = types.SimpleNamespace()
+    space_ns.get_node = MagicMock(
+        name="wiki.v2.space.get_node",
+        return_value=MagicMock(success=lambda: False),
+    )
+
+    space_node_ns = types.SimpleNamespace()
+    space_node_ns.create = MagicMock(
+        name="wiki.v2.space_node.create",
+        return_value=MagicMock(success=lambda: False),
+    )
+    space_node_ns.list = MagicMock(
+        name="wiki.v2.space_node.list",
+        return_value=MagicMock(success=lambda: False),
+    )
+    space_node_ns.move = MagicMock(
+        name="wiki.v2.space_node.move",
+        return_value=MagicMock(success=lambda: False),
+    )
+    space_node_ns.update = MagicMock(
+        name="wiki.v2.space_node.update",
+        return_value=MagicMock(success=lambda: False),
+    )
+
+    wiki_v2_ns.space = space_ns
+    wiki_v2_ns.space_node = space_node_ns
+    wiki_ns.v2 = wiki_v2_ns
+    client.wiki = wiki_ns
+    return client
+
+
+_ClientBuilder.build = _patched_client_build_wiki
+
+
+_lark_api_wiki.v2 = _lark_api_wiki_v2
+_lark_api.wiki = _lark_api_wiki
+
+
 # 注册到 sys.modules
 sys.modules["lark_oapi"] = _lark
 sys.modules["lark_oapi.api"] = _lark_api
@@ -862,6 +1628,15 @@ sys.modules["lark_oapi.api.im"] = _lark_api_im
 sys.modules["lark_oapi.api.im.v1"] = _lark_api_im_v1
 sys.modules["lark_oapi.api.cardkit"] = _lark_api_cardkit
 sys.modules["lark_oapi.api.cardkit.v1"] = _lark_api_cardkit_v1
+sys.modules["lark_oapi.api.docx"] = _lark_api_docx
+sys.modules["lark_oapi.api.docx.v1"] = _lark_api_docx_v1
+sys.modules["lark_oapi.api.sheets"] = _lark_api_sheets
+sys.modules["lark_oapi.api.sheets.v3"] = _lark_api_sheets_v3
+sys.modules["lark_oapi.api.sheets.v2"] = _lark_api_sheets_v2
+sys.modules["lark_oapi.api.drive"] = _lark_api_drive
+sys.modules["lark_oapi.api.drive.v1"] = _lark_api_drive_v1
+sys.modules["lark_oapi.api.wiki"] = _lark_api_wiki
+sys.modules["lark_oapi.api.wiki.v2"] = _lark_api_wiki_v2
 sys.modules["lark_oapi.ws"] = _ws_module
 sys.modules["lark_oapi.core"] = _lark_core
 sys.modules["lark_oapi.core.enum"] = _lark_core_enum
