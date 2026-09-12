@@ -9,7 +9,7 @@
 1. **双因素认证**：是否采用口令+短信/令牌/指纹等管理用户登录？管理员/运维账号必须双因素；普通用户建议至少双因素或强口令+验证码。
 2. ✅ **口令复杂度**：前端 `web/Agent/src/utils/passwordPolicy.js` 复刻同口径常量，RegisterView / UserSettingsDialog 全部接入；后端 `password_policy.validate_password` 已被 `register` / 管理员创建 / 本人改密 / `/login-api` memory 自动建号 / `UserDB.create_user` + `UserDB.update_password` 强制调用，覆盖所有写入边界；默认管理员与历史 `admin/admin123` / `admin/123456` 通过 `AuthBootstrapSettings` + `UserDB.ensure_admin_exists` 一次性轮换并清除 Refresh / Portal Token；登录接口不重新执行复杂度校验，避免历史账号被锁。详见 [`memory/auth.md`](auth.md) 的「口令策略强校验」与「AuthBootstrapSettings」段。
 3. **定期更换口令**：是否强制定期更换口令（建议90天内）？系统层面强制，不能仅依赖提示。
-4. **登录失败处理**：连续失败≥5次后是否锁定账户（≥30分钟）？需同时防暴力破解和防枚举。
+4. ✅ **登录失败处理**：连续失败≥5次后是否锁定账户（≥30分钟）？需同时防暴力破解和防枚举。**2026-09-12 落地**：`/login-api` 免验证码 server-to-server 端点接入共享 `login_lockout.py` 助手（`check_login_lock` + `record_failed_login_and_is_locked`），与 `/login` 共用一套锁定逻辑；阈值来自 `mfa_service._settings`（默认 5 次 / 1800 秒）。
 5. **会话超时**：是否设置会话超时自动退出（建议≤30分钟无操作）？敏感系统建议≤15分钟。
 6. **鉴别信息传输加密**：用户身份鉴别信息（口令、Token）在传输过程中是否加密？**🔒 必须走 HTTPS，禁止明文传输**。
 7. **用户唯一标识**：是否存在共享账号？是否实现用户唯一标识？一人一账号，审计可追溯。
@@ -18,13 +18,13 @@
 
 1. **最小权限原则**：是否按最小权限原则分配角色和权限？梳理角色矩阵，删除冗余权限。
 2. **权限分离**：是否实现权限分离（如系统管理员、审计管理员、业务操作员分离）？三权分立是等保三级硬性要求。
-3. **默认拒绝策略**：默认访问策略是否为默认拒绝所有，仅显式允许必要访问？白名单机制，不能是黑名单。
+3. ✅ **默认拒绝策略**：默认访问策略是否为默认拒绝所有，仅显式允许必要访问？白名单机制，不能是黑名单。**2026-09-12 落地**：`/api/admin/*` 全量扫描守卫（`app/tests/routers/test_admin_namespace_guard.py`），新增 admin 端点忘挂 `require_admin` / 菜单 ACL = CI 失败；普通用户自助读路径禁止放 `/api/admin/` 命名空间（如 # 触发器数据源 → `/api/user-servers`，OwnershipScope 归属过滤）；`require_admin_or_menu_acl` 工厂打 `__menu_acl_guard__` 标记供守卫识别。
 4. **敏感操作二次授权**：敏感操作（如资金转账、权限变更）是否需二次授权/审批？重要操作需复核或短信确认。
 5. **登录限制**：是否限制登录 IP/时间段/设备？建议对管理后台做 IP 白名单。
 
 ## 三、安全审计
 
-1. **审计覆盖范围**：是否对所有用户的重要操作（登录、退出、增删改、权限变更）进行审计？覆盖业务操作+系统管理操作。
+1. ✅ **审计覆盖范围**：是否对所有用户的重要操作（登录、退出、增删改、权限变更）进行审计？覆盖业务操作+系统管理操作。**2026-09-12 落地**：MCP admin 6 个变更点（create/update/delete/toggle_server/refresh_methods/toggle_method）通过 `LogService.emit` 写审计（action `mcp_*`）；fail-soft，emit 失败不影响业务响应。
 2. **审计字段完整性**：审计记录是否包含用户ID、时间、IP、操作类型、操作对象、结果？字段缺一不可。
 3. **审计留存时间**：审计记录留存时间是否≥6个月？等保三级硬性要求，不可删除。
 4. **审计记录保护**：审计记录是否防止非授权删除、修改或覆盖？日志独立存储，仅审计管理员可读。
@@ -32,11 +32,11 @@
 
 ## 四、入侵防范（输入验证 & 漏洞管理）
 
-1. **输入有效性检验**：是否对所有用户输入进行有效性检验？前端+后端双重校验，白名单优先。
-2. **XSS 防护**：是否对输出到页面的数据进行 HTML 编码/转义？使用框架自动转义（React/Vue），或手动编码。
+1. ✅ **输入有效性检验**：是否对所有用户输入进行有效性检验？前端+后端双重校验，白名单优先。**2026-09-12 落地**：用户可控纯文本字段（名称/标题/部门/职位/项目名/会话标题）全部接入 `PlainText` / `OptionalPlainText` 注解（`app/shared/utils/security/input_sanitizer.py`），bleach.clean 剥离 HTML 标签 + `html.unescape` 保留字面尖括号。
+2. ✅ **XSS 防护**：是否对输出到页面的数据进行 HTML 编码/转义？使用框架自动转义（React/Vue），或手动编码。**2026-09-12 落地**：前端 DOMPurify + safeMarkdown（2026-08-07）+ 后端 PlainText（2026-09-12）；CSP 收紧（`script-src 'self'` 去 unsafe-inline/eval）；存量 XSS 载荷清理 SQL `app/migrations/2026_09_12_strip_stored_xss_payloads.sql`。
 3. **SQL 注入防护**：是否使用参数化查询/预编译语句？禁止字符串拼接 SQL。
 4. **命令注入防护**：是否禁止用户输入直接拼接系统命令？使用白名单限制可执行命令。
-5. **文件上传漏洞**：是否限制上传文件类型、大小、路径？禁止上传可执行文件；上传目录不可执行。
+5. ✅ **文件上传漏洞**：是否限制上传文件类型、大小、路径？禁止上传可执行文件；上传目录不可执行。**2026-09-12 落地**：白名单 `.pdf/.doc/.docx/.txt/.md/.markdown/.csv/.json`（`upload_validation.validate_upload_extension`）；二进制类型魔数嗅探（`validate_upload_content`）防「shell.php 改名 shell.pdf」伪装；`/api/core`（分片上传）与 `/api/files/upload`（agent 传输）双入口接入。
 6. **路径遍历**：是否对用户提供的文件路径做规范化处理？禁止 `../` 等路径跳转。
 7. **漏洞扫描和修复**：是否建立漏洞扫描和修复机制，定期扫描并修补已知漏洞？建议每月扫描，高危漏洞≤7天修复。
 8. **入侵检测/告警**：是否对重要节点（如数据库、管理后台）部署入侵检测/告警？WAF、HIDS 或应用层监控。

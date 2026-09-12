@@ -509,3 +509,15 @@ app/{module}/bar/baz.py      →  app/tests/{module}/bar/test_baz.py
 - 禁止对外提供：未经授权不得向第三方接口、日志、测试环境输出个人信息。
 - 用户权利：必须支持用户查询、更正、删除其个人信息。
 - 日志脱敏：审计日志与系统日志中不得出现明文手机号、身份证、邮箱等个人敏感信息。
+
+### 安全开发强制标准（2026-09-12 渗透测试整改落地）
+
+> 以下条款与本章其他条款同级强制；机器值守项由测试直接执行，不得豁免。
+
+1. **路由授权默认拒绝**：凡 `/api/admin/` 前缀端点必须挂 `Depends(require_admin)` 或 `Depends(require_admin_or_menu_acl(...))` / `require_admin_or_any_menu_acl(...)`（router 级或端点级均可）；`app/tests/routers/test_admin_namespace_guard.py` 全量扫描强制值守，新增 admin 端点忘挂鉴权 = 测试直接失败，豁免白名单必须为空。普通用户自助读路径（如 # 触发器数据源）禁止放 `/api/admin/` 命名空间，应建独立非 admin 路由 + OwnershipScope 归属过滤（先例：`app/routers/user_server_self_router.py`）。
+2. **输入消毒**：所有用户可控纯文本字段（名称、标题、部门、职位等不预期 HTML 的字段）必须使用 `PlainText` / `OptionalPlainText` 注解类型声明（`app/shared/utils/security/input_sanitizer.py`）；富文本/Markdown 内容必须走前端 `safeMarkdown`（DOMPurify）渲染，禁止新增未消毒 v-html 汇点。
+3. **变更必审计**：任何增删改端点必须通过 `LogService.emit` 写审计日志（fail-soft），字段含操作人 user_id/username/IP/操作对象/结果。
+4. **CORS 默认拒绝**：新跨域需求只允许通过 `CORS_ALLOWED_ORIGINS` 环境变量显式加白；禁止在代码中硬编码 origin，禁止恢复 `*`。第三方 server-to-server 接入（login-api / portal token / X-Refresh-Token）不受 CORS 约束，无需为此放宽。
+5. **上传校验**：新上传入口必须调用 `upload_validation.validate_upload_extension`（二进制类型另调 `validate_upload_content` 魔数嗅探）；扩展名白名单变更必须与前端 accept 属性同步。
+6. **登录端点锁定对齐**：任何新的凭据校验端点（密码/TOTP/其他）必须接入 `app/shared/utils/auth/login_lockout.py` 的 `check_login_lock` + `record_failed_login_and_is_locked`，禁止裸调 `verify_credentials`。
+7. **安全头完整性**：nginx 新增任何含 `add_header` 的 location 块，必须整块显式重复全部安全头（CSP/HSTS/ACAO/XFO/XCTO/Referrer-Policy/Permissions-Policy/COOP/CORP/X-Permitted-CDP），不得依赖 server 级继承。
