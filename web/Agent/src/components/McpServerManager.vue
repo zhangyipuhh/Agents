@@ -59,7 +59,7 @@
           </div>
           <div class="form-row" v-if="formData.type === 'sse' || formData.type === 'http'">
             <label>URL</label>
-            <input v-model="formData.url" placeholder="http://10.20.8.178:1024/sse" />
+            <input v-model="formData.url" placeholder="http://<mcp-host>:<port>/sse" />
           </div>
           <div class="form-row" v-if="formData.type === 'stdio'">
             <label>Command（JSON 数组）</label>
