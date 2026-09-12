@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Request, status, Depends
 from pydantic import BaseModel
 from typing import List
 from app.shared.utils.auth.Safety import require_admin
+from app.shared.utils.security.input_sanitizer import PlainText
 
 router = APIRouter(prefix='/api/users', tags=['User Management'])
 
@@ -69,7 +70,7 @@ class UsernameUpdateRequest(BaseModel):
     Attributes:
         new_username (str): 新用户名
     """
-    new_username: str
+    new_username: PlainText
 
 
 class ProfileUpdateRequest(BaseModel):
@@ -88,10 +89,10 @@ class ProfileUpdateRequest(BaseModel):
         department (str): 部门
         position (str): 职位
     """
-    phone: str
-    email: str
-    department: str
-    position: str
+    phone: PlainText
+    email: PlainText
+    department: PlainText
+    position: PlainText
 
 
 class UserCreateRequest(BaseModel):
@@ -109,14 +110,14 @@ class UserCreateRequest(BaseModel):
         position (str): 职位
         allowed_agents (List[str]): 允许使用的智能体名称列表
     """
-    username: str
+    username: PlainText
     password: str
     role: str = 'user'
-    real_name: str = ''
-    phone: str = ''
-    email: str = ''
-    department: str = ''
-    position: str = ''
+    real_name: PlainText = ''
+    phone: PlainText = ''
+    email: PlainText = ''
+    department: PlainText = ''
+    position: PlainText = ''
     allowed_agents: List[str] = []
 
 
@@ -133,11 +134,11 @@ class UserUpdateRequest(BaseModel):
         role (str): 角色
         allowed_agents (List[str]): 允许使用的智能体名称列表
     """
-    real_name: str = ''
-    phone: str = ''
-    email: str = ''
-    department: str = ''
-    position: str = ''
+    real_name: PlainText = ''
+    phone: PlainText = ''
+    email: PlainText = ''
+    department: PlainText = ''
+    position: PlainText = ''
     role: str = 'user'
     allowed_agents: List[str] = []
 

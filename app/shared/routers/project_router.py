@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from app.shared.utils.auth.user_db import UserDB
 from app.shared.utils.project.project_db import ProjectDB
 from app.shared.utils.auth.session_db import SessionDB
+from app.shared.utils.security.input_sanitizer import PlainText
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ class ProjectCreateRequest(BaseModel):
         name: 项目名称（用户输入，1-50 字符）。
         uuid: 项目唯一标识；为空时由后端独立生成，不再强制等于 session_id。
     """
-    name: str
+    name: PlainText
     uuid: Optional[str] = None
 
 
@@ -79,7 +80,7 @@ class RenameProjectRequest(BaseModel):
     Attributes:
         name: 新的项目名称（1-50 字符）。
     """
-    name: str
+    name: PlainText
 
 
 def _project_to_dict(p: dict) -> dict:

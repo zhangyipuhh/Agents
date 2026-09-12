@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, timedelta
 from app.shared.utils.auth.Safety import jwt_auth
+from app.shared.utils.security.input_sanitizer import PlainText
 from app.core.config.settings import settings
 from app.core.database import DatabasePool
 
@@ -73,14 +74,14 @@ class RegisterRequest(BaseModel):
         captcha_key (str): 验证码 key
         captcha_code (str): 验证码输入值
     """
-    username: str
+    username: PlainText
     password: str
     confirm_password: str
-    real_name: str
-    phone: str
-    email: str
-    department: str = ""
-    position: str = ""
+    real_name: PlainText
+    phone: PlainText
+    email: PlainText
+    department: PlainText = ""
+    position: PlainText = ""
     captcha_key: str
     captcha_code: str
 

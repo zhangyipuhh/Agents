@@ -27,6 +27,7 @@ from app.shared.utils.files.session_path_manager import register_session_upload_
 from app.shared.utils.Session.SessionCache import session_cache
 from app.shared.utils.auth.session_db import SessionDB
 from app.shared.utils.files.attachment_db import AttachmentDB
+from app.shared.utils.security.input_sanitizer import PlainText
 from app.shared.utils.memory.conversation_db import ConversationDB
 from app.shared.utils.memory.checkpoint_history import CheckpointHistoryService
 from app.shared.utils.memory.checkpoint import get_async_checkpointer
@@ -78,7 +79,7 @@ class SessionTitleUpdateRequest(BaseModel):
     Attributes:
         title (str): 新标题
     """
-    title: str
+    title: PlainText
 
 
 class AdminBatchDeleteRequest(BaseModel):
