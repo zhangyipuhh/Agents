@@ -468,3 +468,131 @@ def test_invalidate_cache_skips_when_service_missing(client, admin_headers, monk
         assert response.status_code == 204
     finally:
         client.app.state.agent_config_service = original
+
+
+# =============================================================================
+# P0: 鉴权（2026-09-12 渗透报告 BFLA 整改：router 级 require_admin）
+# =============================================================================
+
+
+def test_list_servers_requires_admin(client, user_headers):
+    """普通用户 GET /servers 被拒 403。"""
+    response = client.get("/api/admin/mcp/servers", headers=user_headers)
+    assert response.status_code == 403
+    assert response.json()["detail"] == "需要管理员权限"
+
+
+def test_create_server_requires_admin(client, user_headers):
+    """普通用户 POST /servers 被拒 403（渗透报告 PoC 端点）。"""
+    response = client.post(
+        "/api/admin/mcp/servers",
+        headers=user_headers,
+        json={"name": "evil", "type": "sse", "url": "http://169.254.169.254/"},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "需要管理员权限"
+
+
+def test_update_server_requires_admin(client, user_headers):
+    """普通用户 PUT /servers/{name} 被拒 403。"""
+    response = client.put(
+        "/api/admin/mcp/servers/amap",
+        headers=user_headers,
+        json={"name": "amap", "type": "sse", "url": "http://x"},
+    )
+    assert response.status_code == 403
+
+
+def test_delete_server_requires_admin(client, user_headers):
+    """普通用户 DELETE /servers/{name} 被拒 403。"""
+    response = client.delete("/api/admin/mcp/servers/amap", headers=user_headers)
+    assert response.status_code == 403
+
+
+def test_toggle_server_requires_admin(client, user_headers):
+    """普通用户 POST /servers/{name}/toggle 被拒 403。"""
+    response = client.post(
+        "/api/admin/mcp/servers/amap/toggle?enabled=true", headers=user_headers,
+    )
+    assert response.status_code == 403
+
+
+def test_list_methods_requires_admin(client, user_headers):
+    """普通用户 GET /servers/{name}/methods 被拒 403。"""
+    response = client.get("/api/admin/mcp/servers/amap/methods", headers=user_headers)
+    assert response.status_code == 403
+
+
+def test_refresh_methods_requires_admin(client, user_headers):
+    """普通用户 POST /servers/{name}/refresh-methods 被拒 403。"""
+    response = client.post(
+        "/api/admin/mcp/servers/amap/refresh-methods", headers=user_headers,
+    )
+    assert response.status_code == 403
+
+
+def test_toggle_method_requires_admin(client, user_headers):
+    """普通用户 POST /servers/{name}/methods/{method}/toggle 被拒 403。"""
+    response = client.post(
+        "/api/admin/mcp/servers/amap/methods/search/toggle?enabled=true",
+        headers=user_headers,
+    )
+    assert response.status_code == 403
+
+
+def test_create_server_emits_audit_event(client, admin_headers, monkeypatch):
+    """创建 server 成功路径写入审计日志（等保三级安全审计：增删改必审计）。"""
+    emitted = []
+
+    class _Svc:
+        def emit(self, event):
+            emitted.append(event)
+
+    monkeypatch.setattr(
+        "app.routers.mcp_admin_router.get_log_service", lambda: _Svc(),
+    )
+
+    async def fake_create(self, config):
+        return {"name": config.name, "type": config.type, "enabled": True}
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.mcp_service.McpConfigService.create_server",
+        fake_create,
+    )
+
+    response = client.post(
+        "/api/admin/mcp/servers",
+        headers=admin_headers,
+        json={"name": "amap", "type": "sse", "url": "http://x"},
+    )
+    assert response.status_code == 201
+    assert len(emitted) == 1
+    assert emitted[0].action == "mcp_create_server"
+    assert emitted[0].target_name == "amap"
+
+
+def test_delete_server_emits_audit_event(client, admin_headers, monkeypatch):
+    """删除 server 成功路径写入审计日志。"""
+    emitted = []
+
+    class _Svc:
+        def emit(self, event):
+            emitted.append(event)
+
+    monkeypatch.setattr(
+        "app.routers.mcp_admin_router.get_log_service", lambda: _Svc(),
+    )
+
+    async def fake_delete(self, name):
+        return None
+
+    monkeypatch.setattr(
+        "app.shared.utils.agent.mcp_service.McpConfigService.delete_server",
+        fake_delete,
+    )
+
+    response = client.delete("/api/admin/mcp/servers/amap", headers=admin_headers)
+    assert response.status_code == 204
+    assert len(emitted) == 1
+    assert emitted[0].action == "mcp_delete_server"
+

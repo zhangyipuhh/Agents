@@ -14,14 +14,29 @@ import dataclasses
 import logging
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.shared.utils.agent.mcp_service import McpConfigService, McpServerConfig
+from app.shared.utils.auth.Safety import require_admin
+from app.shared.utils.log_service import (
+    LogEvent,
+    LogLevel,
+    LogResult,
+    LogType,
+    get_log_service,
+)
 
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/admin/mcp", tags=["MCP Admin"])
+# 2026-09-12 渗透整改（BFLA）：router 级 require_admin。
+# 与 agent_admin_router / tool_admin_router / skill_admin_router 对齐；
+# 此前 docstring 声称"需 admin 权限"但零强制，8 个端点对任意登录用户开放。
+router = APIRouter(
+    prefix="/api/admin/mcp",
+    tags=["MCP Admin"],
+    dependencies=[Depends(require_admin)],
+)
 
 
 def _get_service(request: Request) -> McpConfigService:
@@ -79,6 +94,48 @@ async def _invalidate_agent_config_cache(request: Request) -> None:
         await agent_service.invalidate_all_cache()
 
 
+def _emit_mcp_audit(
+    request: Request,
+    action: str,
+    target_name: str,
+    message: str,
+) -> None:
+    """写入 MCP 变更审计日志（fail-soft，emit 失败不影响业务响应）。
+
+    参数:
+        request: FastAPI Request 对象（取操作人 user_id/username/IP）。
+        action: 审计动作标识（如 mcp_create_server）。
+        target_name: 目标 MCP server 名。
+        message: 业务描述。
+
+    返回:
+        None
+    """
+    svc = get_log_service()
+    if svc is None:
+        return
+    client_ip = request.client.host if request.client else "unknown"
+    event = LogEvent(
+        action=action,
+        log_type=LogType.SYSTEM,
+        result=LogResult.SUCCESS,
+        level=LogLevel.INFO,
+        source="mcp_admin_router",
+        username=getattr(request.state, "username", "unknown"),
+        user_id=getattr(request.state, "user_id", None),
+        ip_address=client_ip,
+        target_type="mcp_server",
+        target_name=target_name,
+        message=message,
+    )
+    try:
+        svc.emit(event)
+    except Exception as exc:  # pragma: no cover - 防御性 fail-soft
+        logger.warning(
+            "[mcp_admin_router] emit audit failed: %s", type(exc).__name__,
+        )
+
+
 def _build_config_dict(server: McpServerConfig) -> dict:
     """将 McpServerConfig 转为 dict 供 registry 使用。
 
@@ -126,6 +183,10 @@ async def create_server(request: Request, config: McpServerConfig) -> Dict[str, 
 
     # 失效 agent_config 缓存（MCP 变更影响 agent 工具列表）
     await _invalidate_agent_config_cache(request)
+    _emit_mcp_audit(
+        request, "mcp_create_server", config.name,
+        f"新增 MCP server {config.name}（type={config.type}）",
+    )
     return result
 
 
@@ -157,6 +218,10 @@ async def update_server(request: Request, name: str, config: McpServerConfig) ->
 
     # 失效 agent_config 缓存（MCP 变更影响 agent 工具列表）
     await _invalidate_agent_config_cache(request)
+    _emit_mcp_audit(
+        request, "mcp_update_server", name,
+        f"更新 MCP server {name} 配置",
+    )
     return result
 
 
@@ -182,6 +247,10 @@ async def delete_server(request: Request, name: str) -> None:
 
     # 失效 agent_config 缓存（MCP 变更影响 agent 工具列表）
     await _invalidate_agent_config_cache(request)
+    _emit_mcp_audit(
+        request, "mcp_delete_server", name,
+        f"删除 MCP server {name}",
+    )
 
 
 @router.post("/servers/{name}/toggle")
@@ -209,6 +278,10 @@ async def toggle_server(request: Request, name: str, enabled: bool) -> Dict[str,
 
     # 失效 agent_config 缓存（MCP 变更影响 agent 工具列表）
     await _invalidate_agent_config_cache(request)
+    _emit_mcp_audit(
+        request, "mcp_toggle_server", name,
+        f"MCP server {name} 开关置为 enabled={enabled}",
+    )
     return {"name": name, "enabled": enabled}
 
 
@@ -229,6 +302,10 @@ async def refresh_methods(request: Request, name: str) -> Dict[str, Any]:
     service = _get_service(request)
     try:
         methods = await service.refresh_methods_from_server(name)
+        _emit_mcp_audit(
+            request, "mcp_refresh_methods", name,
+            f"刷新 MCP server {name} 方法列表（{len(methods)} 个）",
+        )
         return {"name": name, "methods_count": len(methods), "methods": methods}
     except Exception as e:
         logger.warning("Failed to refresh methods for server '%s': %s", name, e)
@@ -245,4 +322,8 @@ async def toggle_method(
     """启用/禁用单个 method。"""
     service = _get_service(request)
     await service.toggle_method(name, method, enabled)
+    _emit_mcp_audit(
+        request, "mcp_toggle_method", name,
+        f"MCP server {name} 方法 {method} 开关置为 enabled={enabled}",
+    )
     return {"server_name": name, "method_name": method, "enabled": enabled}
