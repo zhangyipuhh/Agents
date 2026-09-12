@@ -1004,10 +1004,14 @@ def setup_middleware(app: FastAPI):
     Args:
         app: FastAPI应用实例
     """
+    # 2026-09-12 渗透整改：CORS 默认拒绝，白名单走 settings.cors（env CORS_*）。
+    # 第三方 server-to-server 链路（login-api / portal token / X-Refresh-Token）
+    # 不受 CORS 约束；浏览器端跨域消费方需显式配置 CORS_ALLOWED_ORIGINS。
+    from app.core.config.settings import settings as _settings
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=_settings.cors.allowed_origins,
+        allow_credentials=_settings.cors.allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )

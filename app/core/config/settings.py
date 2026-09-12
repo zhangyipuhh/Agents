@@ -706,6 +706,59 @@ class DemonstrationSettings(BaseSettings):
         return bool(v)
 
 
+class CORSSettings(BaseSettings):
+    """CORS 跨域配置（2026-09-12 渗透整改新增）。
+
+    默认拒绝：allowed_origins 为空列表时不放行任何跨域 Origin
+    （同源请求不受 CORS 约束,主应用/nginx 反代/第三方 server-to-server
+    均不受影响）。仅当存在浏览器端跨域消费方时,通过环境变量显式加白。
+
+    - allowed_origins: 放行的 Origin 白名单。
+        环境变量 CORS_ALLOWED_ORIGINS（JSON list 或逗号分隔）。
+    - allow_credentials: 是否允许跨域携带凭据（Cookie/Authorization）。
+        环境变量 CORS_ALLOW_CREDENTIALS,默认 true。
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=_ENV_FILE_PATH,
+        env_file_encoding="utf-8",
+        env_prefix="CORS_",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    allowed_origins: List[str] = Field(
+        default_factory=list,
+        description="跨域 Origin 白名单（CORS_ALLOWED_ORIGINS,JSON list 或逗号分隔；空=全拒）",
+    )
+    allow_credentials: bool = Field(
+        default=True,
+        description="是否允许跨域携带凭据（CORS_ALLOW_CREDENTIALS）",
+    )
+
+    @field_validator("allowed_origins", mode="before")
+    @classmethod
+    def parse_origins(cls, v):
+        """支持 JSON list 与逗号分隔两种格式；空白 → 空列表。"""
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return []
+            if s.startswith("["):
+                import json as _json
+                return [str(o).strip() for o in _json.loads(s) if str(o).strip()]
+            return [o.strip() for o in s.split(",") if o.strip()]
+        return v
+
+    @field_validator("allow_credentials", mode="before")
+    @classmethod
+    def parse_bool(cls, v):
+        """将字符串转换为布尔值（与 RegistrationSecuritySettings.parse_bool 一致）。"""
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes", "on")
+        return bool(v)
+
+
 class SandboxSettings(BaseSettings):
     """
     沙箱容器化部署配置（2026-06-12 新增）
@@ -1132,6 +1185,8 @@ class Settings(BaseSettings):
     registration_security: RegistrationSecuritySettings = Field(
         default_factory=RegistrationSecuritySettings
     )
+    # 2026-09-12 新增（渗透整改）：CORS 默认拒绝 + 白名单可配。
+    cors: CORSSettings = Field(default_factory=CORSSettings)
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     skills: SkillsSettings = Field(default_factory=SkillsSettings)
     devops: DevOpsSettings = Field(default_factory=DevOpsSettings)

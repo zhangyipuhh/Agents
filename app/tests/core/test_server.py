@@ -54,3 +54,20 @@ def test_cors_middleware_registered():
     app = create_app()
     middleware_classes = [m.cls for m in app.user_middleware]
     assert CORSMiddleware in middleware_classes
+
+
+def test_cors_middleware_uses_settings_whitelist():
+    """setup_middleware 的 CORS 配置必须来自 settings.cors（禁止硬编码 *）。
+
+    2026-09-12 渗透整改：CORS 默认拒绝，allow_origins 来自 settings.cors.allowed_origins。
+    """
+    from app.core.config.settings import settings
+    from app.core.server import create_app
+
+    app = create_app()
+    cors_entries = [m for m in app.user_middleware if m.cls is CORSMiddleware]
+    assert len(cors_entries) == 1
+    kwargs = cors_entries[0].kwargs
+    assert kwargs["allow_origins"] == settings.cors.allowed_origins
+    assert kwargs["allow_origins"] != ["*"]
+    assert kwargs["allow_credentials"] == settings.cors.allow_credentials
