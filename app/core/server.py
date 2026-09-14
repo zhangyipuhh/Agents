@@ -135,13 +135,18 @@ async def lifespan(app: FastAPI):
 
     # 2026-09-14 新增：基本设置 seed + load(必须在 ensure_admin_exists / MfaService 初始化之前)
     # 把 .env 现值 seed 到 system_settings_groups 表(空表首次启动),后续以 DB 为准覆盖 settings 单例
+    # 2026-09-14 修订：SETTINGS_SECRET_KEY 缺失 → 自动 bootstrap 到 data/secrets/settings_secret.key(不再 fail-loud)
     if DatabasePool.is_enabled() and DatabasePool._pool is not None:
         try:
-            from app.core.config.settings_crypto import get_master_fernet
+            from app.core.config.settings_crypto import (
+                bootstrap_master_key,
+                get_master_fernet,
+            )
             from app.core.services.system_config_service import SystemConfigService
             from app.core.config.settings import settings as _settings
 
-            # 缺失或非法 SETTINGS_SECRET_KEY 时 fail-loud
+            # env 缺失时自动生成密钥落盘(env 非空但非法 → 下面 RuntimeError 透传 fail-loud)
+            bootstrap_master_key()
             get_master_fernet()
             system_config_service = SystemConfigService(
                 pool=DatabasePool._pool,
@@ -153,9 +158,9 @@ async def lifespan(app: FastAPI):
             app.state.system_config_service = system_config_service
             logging.info("[lifespan] SystemConfigService initialized: 22 groups seeded/loaded")
         except RuntimeError as fernet_exc:
-            # SETTINGS_SECRET_KEY 缺失/非法 → fail-loud,服务不启动
+            # SETTINGS_SECRET_KEY 非空但非法 → fail-loud(防止用错密钥静默启动导致 DB 中所有加密字段不可逆地变成乱码)
             logging.error(
-                "[lifespan] SystemConfigService 初始化失败: %s", fernet_exc
+                "[lifespan] SystemConfigService 初始化失败(Fernet 密钥非法): %s", fernet_exc
             )
             raise
         except Exception as syscfg_exc:

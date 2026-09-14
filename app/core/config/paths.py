@@ -75,6 +75,13 @@ DEVOPS_INSPECTION_SCRIPTS_CONFIG_PATH = os.path.join(
     _PROJECT_ROOT, "data", "devops", "inspection_scripts.yaml"
 )
 
+# 密钥存储目录（2026-09-14 新增，承载自动 bootstrap 的 Fernet 主密钥）
+#   * 完整结构：<项目根>/data/secrets/settings_secret.key
+#   * 文件权限 0600（仅 owner 可读写）
+#   * .gitignore 已忽略 data/secrets/，密钥不进入版本控制
+SECRETS_DIR = os.path.join(_PROJECT_ROOT, "data", "secrets")
+SETTINGS_SECRET_KEY_FILE = os.path.join(SECRETS_DIR, "settings_secret.key")
+
 from pathlib import Path
 import re as _re
 

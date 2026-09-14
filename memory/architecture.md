@@ -586,16 +586,44 @@ return data/upload/yyyy/mm/dd/{session_id}/
 
 ### 基本设置 SystemConfigService（2026-09-14 新增）
 
-.env 中运行期配置迁移到 PostgreSQL `system_settings_groups` 表（按 `group_key` 分组 JSONB），通过「基本设置」Tab 统一管理；`.env` 最终只保留 `DATABASE_URL` / `AUTH_STORAGE_MODE` / `SETTINGS_SECRET_KEY` / `VITE_API_TARGET`。
+.env 中运行期配置迁移到 PostgreSQL `system_settings_groups` 表（按 `group_key` 分组 JSONB），通过「基本设置」Tab 统一管理。
 
-- `SETTINGS_SECRET_KEY` — Fernet 主密钥（44 字节 url-safe base64），用于加密 `system_settings_groups` 表中敏感字段（`model_api_key` / `mfa_secret_key` / `devops_credential_key` / `auth_bootstrap.default_admin_password` 等）。生成命令：`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`。缺失或非法时 lifespan fail-loud RuntimeError 拒绝启动。
-- `app/core/config/settings_crypto.py`：`get_master_fernet` lru_cache 单例；`encrypt_value` / `decrypt_value`（`fernet:` 前缀识别 + 向前兼容）/ `mask_value`（`****` 或 `****<后4位>`）/ `is_encrypted`
+**密钥/凭据/配置 三分层存储**（2026-09-14 修订原则）：
+- **密钥层**（永远不入 DB）：`SETTINGS_SECRET_KEY` / `MFA_SECRET_KEY` / `DEVOPS_CREDENTIAL_KEY` / `AUTH_DEFAULT_ADMIN_PASSWORD` —— 丢失 = DB 中加密字段全报废，必须留 .env 或密钥文件
+- **凭据层**（Fernet 加密入 DB）：`model_api_key` / `mfa_secret_key` / `devops_credential_key` 等敏感字段 —— `sensitive_fields` 标记 + `fernet:` 前缀密文
+- **配置层**（明文入 DB）：URL / 温度 / 开关 / 端点定义 —— 不加密直接 JSONB 存储
+
+**SETTINGS_SECRET_KEY 自动 bootstrap**（2026-09-14 修订，鸡生蛋死锁修复）：
+- env 缺失/留空 → 自动生成 Fernet 密钥落盘到 `data/secrets/settings_secret.key`（权限 0600）+ WARNING 日志
+- env 非空但非法 → 仍 fail-loud RuntimeError（防止用错密钥静默启动导致 DB 中加密字段全报废）
+- env 合法 → 直接用 env 值
+- `data/` 已在 `.gitignore` 中，密钥文件不进版本控制
+
+- `SETTINGS_SECRET_KEY` — Fernet 主密钥（44 字节 url-safe base64），用于加密 `system_settings_groups` 表中敏感字段。生成命令：`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
+- `app/core/config/settings_crypto.py`：`bootstrap_master_key()` 首次启动生成密钥 + 读文件复用；`get_master_fernet` lru_cache 单例（env 缺失→bootstrap，env 非法→fail-loud）；`encrypt_value` / `decrypt_value`（`fernet:` 前缀识别 + 向前兼容）/ `mask_value`（`****` 或 `****<后4位>`）/ `is_encrypted`
+- `app/core/config/paths.py`：`SETTINGS_SECRET_KEY_FILE` 指向 `<项目根>/data/secrets/settings_secret.key`
 - `app/core/services/system_config_registry.py`：`SystemConfigRegistry` 类方法单例；`register(group_key, tab, label, settings_cls=, field_specs=, sensitive_fields=, description=)` + `get/all/has/list_by_tab/clear`；参数互斥校验；22 个组在 Settings 子类模块导入时自我注册（settings.py 注册 21 + ContractLLMSettings 注册 1，避免 service 反向 import features）
 - `app/core/services/system_config_service.py`：`SystemConfigService(pool, settings, log_service)` — `seed_from_settings`（空表 seed）/ `load_all`（DB → settings 单例覆盖 + 解密）/ `get_group`（脱敏）/ `list_groups`（按 tab 分组）/ `update_group`（校验 + 加密 + `****` 保持原值 + 审计）/ `reset_group`（pydantic default）
 - `app/routers/system_settings_admin_router.py`：`/api/admin/system-settings/{,*}` 4 端点；全部 `require_admin_or_menu_acl('system.basic-settings')`；更新/重置写 `LogService.emit(system_settings_update|reset)` 审计 fail-soft
-- `app/core/server.py` lifespan：DB 连接 + register_schemas 后调 `seed_from_settings` + `load_all`，**必须在 `ensure_admin_exists` / `MfaService` 之前**，否则这些组件拿到 env 现值而非 DB 覆盖值
-- 前端 `web/Agent/src/components/BasicSettingsManager.vue`（6 孙 Tab 容器）+ `basic-settings/{LLM,FileParser,Security,Network,SandboxTask,Misc}SettingsPanel.vue` + `GroupFormSection.vue`；UserSettingsDialog 一级菜单 `system.basic-settings` 渲染入口
+- `app/core/server.py` lifespan：DB 连接 + register_schemas 后调 `bootstrap_master_key()` + `get_master_fernet()` + `seed_from_settings` + `load_all`，**必须在 `ensure_admin_exists` / `MfaService` 之前**，否则这些组件拿到 env 现值而非 DB 覆盖值
+- 前端 `web/Agent/src/components/BasicSettingsManager.vue`（6 孙 Tab 容器 + 顶栏「主密钥状态」section 显示 SHA256 指纹 + 来源 + 备份提示）+ `basic-settings/{LLM,FileParser,Security,Network,SandboxTask,Misc}SettingsPanel.vue` + `GroupFormSection.vue`；UserSettingsDialog 一级菜单 `system.basic-settings` 渲染入口
 - 修改后**必须重启服务生效**（不在运行期热加载）
+
+### `.env` 精简分层（2026-09-14 修订）
+
+`.env` 仅保留以下 7 个真"启动期基础设施 + 密钥"字段，其余运行期配置全部入 DB：
+
+| 字段 | 类别 | 是否启动硬依赖 | 缺失行为 |
+|---|---|---|---|
+| `DATABASE_URL` | 启动基础设施 | 是（有默认值） | 默认 `postgresql://postgres:postgres@localhost:5432/feature_agent` |
+| `AUTH_STORAGE_MODE` | 启动基础设施 | 是（有默认值） | 默认 `memory` |
+| `VITE_API_TARGET` | 前端 dev | 否 | 缺失 vite 默认代理 |
+| `SETTINGS_SECRET_KEY` | 密钥 | 是 | 缺失 → 自动 bootstrap 到 `data/secrets/settings_secret.key` |
+| `MFA_SECRET_KEY` | 密钥 | 是 | 缺失 → MfaService 跳过初始化（fail-soft） |
+| `DEVOPS_CREDENTIAL_KEY` | 密钥 | 是 | 缺失 → DevOpsServerService 跳过初始化（fail-soft） |
+| `AUTH_DEFAULT_ADMIN_PASSWORD` | 口令 | 条件性 | bootstrap 启用时必填 |
+
+其他 18+ 个 .env 字段（model_* / file_parser_* / sandbox_* / task_scheduler_* / cors_* / skills_* / auth_idle_* / auth_cookie_* 等）首次启动由 lifespan seed 进 DB，后续通过「基本设置」UI 修改，`.env` 仅作首次 seed 真相源。
 - ~~`VITE_PORTAL_NAV_CONFIG`~~ — 已废弃，门户导航配置迁移到 `public/app-config.json` 运行时配置
 - `AGENT_CHAT_MAX_CONCURRENCY` — Agent 聊天接口最大并发数，超出时进入内存队列等待，默认 3
 - **沙箱容器化配置**：
