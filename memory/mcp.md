@@ -354,4 +354,91 @@ app/core/tools/mcp_registry.py
 - 覆盖：5 个方法存在性检查 / add_server 存储配置 / remove_server 删除配置 / toggle_server 更新 enabled / toggle_method 更新 method enabled
 - 测试特点：直接构造 `MCPToolsRegistry()` 实例（构造器无重初始化），通过 `asyncio.run()` 调用异步方法
 
+## MCP 工具加载受 system.enabled 闸门控制（2026-09-14 落地）
+
+### 背景与 bug
+
+`agents.tool_bindings` JSONB 字段支持 `tool_type="builtin"` 与 `tool_type="mcp"` 两种类型。`AgentConfigService._load_tools` 在 722-749 行对 MCP 类型条目**无条件**调用 `_mcp_registry.get_tools_with_server_async(server=..., names=[...])`，**绕过** `mcp_server_configs.enabled` 状态。system 配置禁用时仍尝试连接，触发 SSE `ConnectTimeout`（典型现象：用户配了 `高德地图MCP.enabled=false`，但智能体有 `tool_bindings` 指 `高德地图MCP.something` 仍连 SSE → ConnectTimeout + WARNING）。
+
+### 根根因（`_get_tools_with_server_async` 224 行 enabled 校验对 `server=` 单点路径失效）
+
+`app/core/tools/mcp_registry.py` 第 220-240 行：
+
+```python
+for server_name in server_names:
+    if server and server_name != server:
+        continue
+    server_config = self._server_configs.get(server_name, {})
+    if not server_config.get("enabled", True):
+        ...
+        continue
+    ...
+    server_tools_info = await self._client.get_server_tools(server_name)
+```
+
+当 `server="质检分析"` 单点查询时，第 222 行 `if server and server_name != server: continue` 命中后**立即**进入 240 行 `get_server_tools()`，**没有再走 224 行 enabled 校验**。enabled 校验仅对 `server=None`（全量遍历）的路径生效。
+
+### 修复方案
+
+**新增公共方法 `MCPToolsRegistry.is_server_enabled(name)`**（`app/core/tools/mcp_registry.py`）：
+
+```python
+def is_server_enabled(self, name: str) -> bool:
+    config = self._server_configs.get(name)
+    if config is None:
+        return True
+    return bool(config.get("enabled", True))
+```
+
+- 单一真相源：`self._server_configs`（lifespan 启动加载 + 热加载 `add_server` / `update_server` / `toggle_server` 全部更新此字典）
+- 不走 DB，避免与热加载内存态分叉
+- 向后兼容：缺失键或 enabled 字段缺失返回 True（与 `_get_tools_with_server_async` 224 行 `config.get("enabled", True)` 口径一致）
+
+**`_load_tools` MCP 分支前置 enabled 守卫**（`app/shared/utils/agent/agent_config_service.py` 736 行附近）：
+
+```python
+if not method_name:
+    logger.warning(...)
+    continue
+# system 配置 enabled 校验：system 禁用则静默跳过，不连 SSE
+if not self._mcp_registry.is_server_enabled(server_name):
+    logger.info("[_load_tools] agent=%s | skip mcp binding: server='%s' is disabled in system config ...", ...)
+    continue
+mcp_tools = await self._mcp_registry.get_tools_with_server_async(server=server_name, names=[method_name] if method_name else None)
+```
+
+### 不变边界
+
+- **`mcp_tags` 兜底分支保留不动**：用户已澄清 `mcp_tags` 与"system 配置"是两个独立维度；该路径走 `get_tools_with_server_async(tags=...)`，`_get_tools_with_server_async` 224 行 enabled 校验对此路径**已生效**
+- **admin UI 不动**：`AgentManager.vue` 仍可填 `tool_type="mcp"` 的条目；填写后等 system 启用即生效
+- **`.env` 不动**：用户硬约束；当前代码本来就不读 `.env` 里的 MCP 字段
+- **`agents.tool_bindings` 列、`agents.mcp_tags` 列结构不动**：向后兼容，存量数据无迁移压力
+- **不动 `_get_tools_with_server_async` 224 行校验位置**：本次只在 `_load_tools` 调用方前置校验，避免触动更多 caller；后续若有其他 caller 触发同类问题再扩展
+
+### 数据修复（一次性）
+
+`map_agent` 历史遗留的错配 binding（`tool_name="质检分析.quality_inspection_analysis"`，`tool_type="mcp"`）需清理，SQL：
+
+```sql
+UPDATE agents
+SET tool_bindings = (
+    SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
+    FROM jsonb_array_elements(tool_bindings) elem
+    WHERE elem->>'tool_type' <> 'mcp'
+),
+updated_at = CURRENT_TIMESTAMP
+WHERE name = 'map_agent';
+```
+
+清理前 `tool_bindings` 共 8 条（含 7 builtin + 1 mcp），清理后剩 7 条 builtin。`质检分析` server 是内网地址 `10.20.8.178:1024`（2026-09-12 渗透整改时已从前端 placeholder 删除），即使未来 system 启用也会连内网失败；删除 binding 防止「未来误开 enabled 后再次踩坑」。
+
+### 测试
+
+- `app/tests/shared/utils/agent/test_agent_config_service.py` 末尾新增 3 个 `_load_tools` 用例（system 禁用跳过 / system 启用加载 / builtin 不受 MCP 守卫影响）
+- `app/tests/core/tools/test_mcp_registry_runtime.py` 末尾新增 5 个 `is_server_enabled` 用例（enabled=True / enabled=False / server 缺失 / enabled 字段缺失 / toggle_server 同步）
+
+### 关键词
+
+`is_server_enabled`、`tool_bindings MCP type`、`system.enabled 闸门`、`MCPToolsRegistry._server_configs 单一真相源`、`server=` 单点查询绕开 enabled、`mcp_tags 兜底保留`、`.env 不动`、tool_bindings MCP 类型 data 修复
+
 

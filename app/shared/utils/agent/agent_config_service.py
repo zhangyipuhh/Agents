@@ -732,6 +732,13 @@ class AgentConfigService:
                         agent_name, tool_name,
                     )
                     continue
+                # system 配置 enabled 校验：system 禁用则静默跳过，不连 SSE
+                if not self._mcp_registry.is_server_enabled(server_name):
+                    logger.info(
+                        "[_load_tools] agent=%s | skip mcp binding: server='%s' is disabled in system config (mcp_server_configs.enabled=false)",
+                        agent_name, server_name,
+                    )
+                    continue
                 mcp_tools = await self._mcp_registry.get_tools_with_server_async(
                     server=server_name, names=[method_name] if method_name else None
                 )

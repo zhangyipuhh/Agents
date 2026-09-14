@@ -452,6 +452,29 @@ class MCPToolsRegistry:
             if method_name in methods:
                 methods[method_name]["enabled"] = enabled
 
+    def is_server_enabled(self, name: str) -> bool:
+        """
+        查询指定 MCP server 当前是否启用（系统配置）。
+
+        单一真相源为 self._server_configs（lifespan 启动加载 + 热加载
+        add_server / update_server / toggle_server 全部更新此字典）。
+        不在此处走 DB，避免与热加载内存态分叉。
+
+        参数:
+            name: MCP server 名称
+
+        返回:
+            bool: enabled=True 返回 True；缺失键或 enabled 字段缺失也
+                返回 True（向后兼容历史未配置 enabled 字段的行）
+
+        异常:
+            不抛出异常
+        """
+        config = self._server_configs.get(name)
+        if config is None:
+            return True
+        return bool(config.get("enabled", True))
+
     async def shutdown(self) -> None:
         """
         关闭注册中心，释放所有连接资源

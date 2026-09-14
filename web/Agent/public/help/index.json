@@ -8,7 +8,8 @@
       "children": [
         { "title": "智能体对话", "path": "features/chat" },
         { "title": "知识库", "path": "features/knowledge" },
-        { "title": "智能运维中心", "path": "features/ops-console" }
+        { "title": "智能运维中心", "path": "features/ops-console" },
+        { "title": "IP 白名单配置", "path": "features/ip-whitelist" }
       ]
     },
     { "title": "常见问题", "path": "faq" }

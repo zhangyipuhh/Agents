@@ -371,6 +371,130 @@ def test_registry_module_loads_without_import_error():
     异常:
         ImportError: 当 mcp 库 import 链失败时向上抛(测试失败)。
     """
+
+
+# =============================================================================
+# is_server_enabled 单一真相源测试（2026-09-14 新增）
+# 验证 is_server_enabled(name) 返回值与 self._server_configs 内存态一致；
+# 热加载 add_server / toggle_server 改变 _server_configs 后立即生效，
+# 无需走 DB，避免与热加载内存态分叉。
+# =============================================================================
+
+
+def test_is_server_enabled_returns_true_when_enabled_true():
+    """验证 enabled=True 时 is_server_enabled 返回 True。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 返回值不为 True 时抛出
+    """
+    registry = MCPToolsRegistry()
+    registry._server_configs = {"高德地图MCP": {"enabled": True}}
+    assert registry.is_server_enabled("高德地图MCP") is True
+
+
+def test_is_server_enabled_returns_false_when_enabled_false():
+    """验证 enabled=False 时 is_server_enabled 返回 False。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 返回值不为 False 时抛出
+    """
+    registry = MCPToolsRegistry()
+    registry._server_configs = {"质检分析": {"enabled": False}}
+    assert registry.is_server_enabled("质检分析") is False
+
+
+def test_is_server_enabled_returns_true_when_server_missing():
+    """验证缺失键时返回 True（向后兼容）。
+
+    server 不存在视为启用,与 _get_tools_with_server_async 224 行
+    ``config.get("enabled", True)`` 口径一致。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 返回值不为 True 时抛出
+    """
+    registry = MCPToolsRegistry()
+    registry._server_configs = {}
+    assert registry.is_server_enabled("不存在的server") is True
+
+
+def test_is_server_enabled_returns_true_when_enabled_field_missing():
+    """验证 enabled 字段缺失时返回 True（向后兼容）。
+
+    历史未配置 enabled 字段的行视为启用。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 返回值不为 True 时抛出
+    """
+    registry = MCPToolsRegistry()
+    registry._server_configs = {"老server": {"url": "http://x"}}
+    assert registry.is_server_enabled("老server") is True
+
+
+def test_is_server_enabled_reflects_toggle_server_change():
+    """验证热加载 toggle_server 改 enabled 后 is_server_enabled 同步。
+
+    单一真相源契约：is_server_enabled 仅读 self._server_configs 内存态；
+    toggle_server 直接改该字典，is_server_enabled 立即生效，无需走 DB。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 热加载后返回值未同步时抛出
+    """
+    registry = MCPToolsRegistry()
+    registry._server_configs = {"高德地图MCP": {"enabled": True}}
+    assert registry.is_server_enabled("高德地图MCP") is True
+
+    # 模拟 toggle_server(False)（不依赖 _client，简化测试）
+    registry._server_configs["高德地图MCP"]["enabled"] = False
+    assert registry.is_server_enabled("高德地图MCP") is False
+
+    # 再次 toggle 回 True
+    registry._server_configs["高德地图MCP"]["enabled"] = True
+    assert registry.is_server_enabled("高德地图MCP") is True
+
+
+def test_mcp_version_pinned_to_1x():
+    """验证当前安装的 mcp 包落在 1.x 区间。
+
+    参数:
+        无
+
+    返回值:
+        None
+
+    异常:
+        AssertionError: 当前 mcp 版本不在 1.x 区间时抛出
+        ImportError: 当 mcp 库 import 链失败时向上抛(测试失败)。
+    """
     import importlib
     import sys
 

@@ -3171,6 +3171,145 @@ def test_build_agent_instance_filters_disabled_skills(monkeypatch):
     assert captured_configs[0].enabled_skill_names == ["hgsc"]
 
 
+# ============== MCP binding 尊重 system.enabled 闸门测试 ==============
+
+def test_load_tools_skips_mcp_binding_when_system_disabled():
+    """测试 _load_tools 在 mcp_server_configs.enabled=false 时跳过 MCP binding。
+
+    端到端契约：tool_bindings 含 tool_type='mcp' 条目时，必须先查
+    mcp_registry.is_server_enabled()；system 禁用则不连 SSE、不调用
+    get_tools_with_server_async、tools 为空。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 禁用时仍尝试连接 MCP server 则抛出
+    """
+    service = AgentConfigService(MagicMock(), MagicMock())
+    mock_mcp_registry = MagicMock()
+    mock_mcp_registry.is_server_enabled = MagicMock(return_value=False)
+    mock_mcp_registry.get_tools_with_server_async = AsyncMock(
+        return_value=[(MagicMock(name="adapted"), "质检分析", {})]
+    )
+    service.set_mcp_registry(mock_mcp_registry)
+
+    agent_row = {
+        "tool_bindings": [
+            {
+                "tool_name": "质检分析.quality_inspection_analysis",
+                "tool_type": "mcp",
+                "enabled": True,
+            },
+        ],
+        "mcp_tags": [],
+    }
+    tools = asyncio.run(service._load_tools(agent_row))
+
+    assert tools == []
+    mock_mcp_registry.is_server_enabled.assert_called_once_with("质检分析")
+    mock_mcp_registry.get_tools_with_server_async.assert_not_called()
+
+
+def test_load_tools_loads_mcp_binding_when_system_enabled():
+    """测试 _load_tools 在 mcp_server_configs.enabled=true 时正常连接。
+
+    正向契约：system 启用时调用 get_tools_with_server_async(server=..., names=[...])
+    并把返回的 adapted_tool 灌入 tools 列表。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: 启用时未正确调用 registry 则抛出
+    """
+    service = AgentConfigService(MagicMock(), MagicMock())
+    adapted_tool = MagicMock(name="adapted_tool")
+    mock_mcp_registry = MagicMock()
+    mock_mcp_registry.is_server_enabled = MagicMock(return_value=True)
+    mock_mcp_registry.get_tools_with_server_async = AsyncMock(
+        return_value=[(adapted_tool, "质检分析", {})]
+    )
+    service.set_mcp_registry(mock_mcp_registry)
+
+    agent_row = {
+        "tool_bindings": [
+            {
+                "tool_name": "质检分析.quality_inspection_analysis",
+                "tool_type": "mcp",
+                "enabled": True,
+            },
+        ],
+        "mcp_tags": [],
+    }
+    tools = asyncio.run(service._load_tools(agent_row))
+
+    assert len(tools) == 1
+    assert tools[0] is adapted_tool
+    mock_mcp_registry.is_server_enabled.assert_called_once_with("质检分析")
+    mock_mcp_registry.get_tools_with_server_async.assert_called_once_with(
+        server="质检分析", names=["quality_inspection_analysis"]
+    )
+
+
+def test_load_tools_builtin_unaffected_by_mcp_enabled_check():
+    """测试 _load_tools builtin 分支不受 MCP enabled 校验影响。
+
+    回归保护：builtin binding 与 MCP binding 同存时，MCP 被 system 禁用，
+    builtin 仍正常加载；不存在误伤。
+
+    参数:
+        无
+
+    返回:
+        None
+
+    异常:
+        AssertionError: builtin 工具未加载或 MCP 守卫被误调则抛出
+    """
+    service = AgentConfigService(MagicMock(), MagicMock())
+    mock_tool = MagicMock(name="builtin_tool_instance")
+    mock_tool_info = MagicMock()
+    mock_tool_info.enabled = True
+    mock_tool_info.tool_instance = mock_tool
+    mock_tool_service = MagicMock()
+    mock_tool_service.get_tool_by_name = AsyncMock(return_value=mock_tool_info)
+    service.set_tool_service(mock_tool_service)
+
+    mock_mcp_registry = MagicMock()
+    mock_mcp_registry.is_server_enabled = MagicMock(return_value=False)
+    mock_mcp_registry.get_tools_with_server_async = AsyncMock(
+        return_value=[(MagicMock(name="adapted"), "质检分析", {})]
+    )
+    service.set_mcp_registry(mock_mcp_registry)
+
+    agent_row = {
+        "tool_bindings": [
+            {"tool_name": "search", "tool_type": "builtin", "enabled": True},
+            {
+                "tool_name": "质检分析.quality_inspection_analysis",
+                "tool_type": "mcp",
+                "enabled": True,
+            },
+        ],
+        "mcp_tags": [],
+    }
+    tools = asyncio.run(service._load_tools(agent_row))
+
+    # builtin 1 条加载成功；MCP 被 system 禁用跳过；最终 tools 长度 1
+    assert len(tools) == 1
+    assert tools[0] is mock_tool
+    mock_tool_service.get_tool_by_name.assert_called_once_with("search")
+    mock_mcp_registry.is_server_enabled.assert_called_once_with("质检分析")
+    mock_mcp_registry.get_tools_with_server_async.assert_not_called()
+
+
 # ============================================================
 # 2026-08-23 新增：prepare_overrides_with_dynamic_suffix 测试
 # 验证 chat 路由 / 定时任务分支共用的 service 层公共方法。
