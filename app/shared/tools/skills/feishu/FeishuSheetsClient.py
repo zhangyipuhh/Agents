@@ -1,16 +1,19 @@
 #!/usr/bin/python
 # -*- coding:utf-8 -*-
 """
-FeishuSheetsClient - 飞书 sheets v3 服务客户端
+FeishuSheetsClient - 飞书 sheets 服务客户端
 
 职责：
-    - 封装飞书 sheets v3 Open API（创建 spreadsheet / 读写单元格值）
+    - 封装飞书 sheets Open API（创建 spreadsheet / 读写单元格值）
     - 提供 ``create_spreadsheet`` / ``write_values`` / ``read_values`` 异步方法
     - 失败统一返回 ``{"success": False, "error", "code"}``，不抛异常
 
 注意：
-    - 写入 / 读取走 sheets v2 values 接口（项目主流用法与官方文档一致）；
-      创建走 sheets v3 spreadsheets 接口（最新 endpoint）
+    - 写入 / 读取走 ``lark.BaseRequest`` 原生 HTTP 调 sheets v2 values URL
+      （lark-oapi 1.7.1 已删除 ``lark_oapi.api.sheets.v2`` 子模块与
+      ``spreadsheet_value`` 资源类，只能走 raw HTTP；与本仓库
+      ``FeishuWebSocketService._fetch_bot_open_id`` 走同一路径）；
+      创建走 sheets v3 spreadsheets 资源类（仍由 SDK v3 提供）
     - 写入 range 形如 ``{sheet_id}!A1:D10``；首次创建后默认有 1 个 sheet，
       由 ``create_spreadsheet`` 返回 ``default_sheet_id`` 供后续写入使用
 """
@@ -21,7 +24,30 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
+from lark_oapi.core.enum import AccessTokenType, HttpMethod
+from lark_oapi.core.model import BaseRequest, RequestOption
+
 logger = logging.getLogger(__name__)
+
+
+def _parse_response(raw_content):
+    """把 ``response.raw.content``（bytes/str）解析为 JSON dict。
+
+    Args:
+        raw_content: ``lark.Client.request`` 返回的 ``RawResponse.content``。
+
+    Returns:
+        dict | None: 解析后的 JSON 字典；解析失败返回 ``None``。
+    """
+    try:
+        if isinstance(raw_content, bytes):
+            raw_content = raw_content.decode("utf-8")
+        if not raw_content:
+            return None
+        return json.loads(raw_content)
+    except (ValueError, UnicodeDecodeError) as e:  # noqa: BLE001
+        logger.warning("[feishu_sheets_client] 响应 JSON 解析失败: %s", e)
+        return None
 
 
 class FeishuSheetsClient:
@@ -109,6 +135,13 @@ class FeishuSheetsClient:
 
         对应 ``POST /open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values``。
 
+        实现说明：lark-oapi 1.7.1 已移除 ``lark_oapi.api.sheets.v2`` 子模块与
+        ``spreadsheet_value`` 资源类，本方法走 ``lark.BaseRequest`` 原生 HTTP
+        路径（与 ``FeishuWebSocketService._fetch_bot_open_id`` 同款）。
+
+        请求体按官方文档契约构造为 ``{"valueRange": {"range": ..., "values": ...}}``
+        形态。
+
         Args:
             spreadsheet_token: 表格 token
             range_: A1 范围字符串，``{sheet_id}!A1:D10``
@@ -128,38 +161,49 @@ class FeishuSheetsClient:
         if not values or not isinstance(values, list):
             return {"success": False, "error": "values 必须是非空二维数组"}
         try:
-            from lark_oapi.api.sheets.v2 import (
-                WriteSpreadsheetValuesRequest,
-                WriteSpreadsheetValuesRequestBody,
+            uri = (
+                f"/open-apis/sheets/v2/spreadsheets/"
+                f"{spreadsheet_token}/values"
             )
-            body = (
-                WriteSpreadsheetValuesRequestBody.builder()
-                .range_(range_)
-                .values(json.dumps(values, ensure_ascii=False))
-                .build()
+            body_json = json.dumps(
+                {"valueRange": {"range": range_, "values": values}},
+                ensure_ascii=False,
             )
-            req = (
-                WriteSpreadsheetValuesRequest.builder()
-                .spreadsheet_token(spreadsheet_token)
-                .request_body(body)
+            request = (
+                BaseRequest.builder()
+                .http_method(HttpMethod.POST)
+                .uri(uri)
+                .token_types({AccessTokenType.TENANT})
+                .body(body_json)
                 .build()
             )
             response = await asyncio.to_thread(
-                self._client.sheets.v2.spreadsheet_value.write, req
+                self._client.request,
+                request,
+                RequestOption.builder().build(),
             )
-            if not response.success():
+            raw = getattr(response, "raw", None)
+            payload = _parse_response(getattr(raw, "content", None) if raw else None)
+            if not payload:
+                return {"success": False, "error": "响应体为空或解析失败"}
+            code = payload.get("code")
+            if code not in (0, None):
                 return {
                     "success": False,
-                    "code": response.code,
-                    "msg": response.msg,
-                    "log_id": response.get_log_id(),
+                    "code": code,
+                    "msg": payload.get("msg"),
+                    "log_id": (
+                        payload.get("data", {}).get("log_id")
+                        if isinstance(payload.get("data"), dict)
+                        else None
+                    ),
                 }
-            data = response.data
+            data = payload.get("data") or {}
             return {
                 "success": True,
-                "updated_rows": getattr(data, "updated_rows", None) if data else None,
-                "updated_cols": getattr(data, "updated_cols", None) if data else None,
-                "updated_range": getattr(data, "updated_range", None) if data else None,
+                "updated_rows": data.get("updatedRows"),
+                "updated_cols": data.get("updatedColumns"),
+                "updated_range": data.get("updatedRange"),
             }
         except Exception as e:  # noqa: BLE001
             logger.warning("[feishu_sheets_client] write_values 失败: %s", e)
@@ -174,6 +218,10 @@ class FeishuSheetsClient:
 
         对应 ``GET /open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values``。
 
+        实现说明：lark-oapi 1.7.1 已移除 ``lark_oapi.api.sheets.v2`` 子模块与
+        ``spreadsheet_value`` 资源类，本方法走 ``lark.BaseRequest`` 原生 HTTP
+        路径（与 ``FeishuWebSocketService._fetch_bot_open_id`` 同款）。
+
         Args:
             spreadsheet_token: 表格 token
             range_: A1 范围字符串
@@ -187,25 +235,36 @@ class FeishuSheetsClient:
         if not range_:
             return {"success": False, "error": "range_ 缺失"}
         try:
-            from lark_oapi.api.sheets.v2 import GetSpreadsheetValuesRequest
-            req = (
-                GetSpreadsheetValuesRequest.builder()
-                .spreadsheet_token(spreadsheet_token)
-                .range_(range_)
+            uri = (
+                f"/open-apis/sheets/v2/spreadsheets/"
+                f"{spreadsheet_token}/values"
+            )
+            request = (
+                BaseRequest.builder()
+                .http_method(HttpMethod.GET)
+                .uri(uri)
+                .token_types({AccessTokenType.TENANT})
+                .queries({"range": range_})
                 .build()
             )
             response = await asyncio.to_thread(
-                self._client.sheets.v2.spreadsheet_value.get, req
+                self._client.request,
+                request,
+                RequestOption.builder().build(),
             )
-            if not response.success():
+            raw = getattr(response, "raw", None)
+            payload = _parse_response(getattr(raw, "content", None) if raw else None)
+            if not payload:
+                return {"success": False, "error": "响应体为空或解析失败"}
+            code = payload.get("code")
+            if code not in (0, None):
                 return {
                     "success": False,
-                    "code": response.code,
-                    "msg": response.msg,
-                    "log_id": response.get_log_id(),
+                    "code": code,
+                    "msg": payload.get("msg"),
                 }
-            data = response.data
-            raw_values = getattr(data, "values", []) if data else []
+            data = payload.get("data") or {}
+            raw_values = data.get("values") or []
             return {"success": True, "values": list(raw_values)}
         except Exception as e:  # noqa: BLE001
             logger.warning("[feishu_sheets_client] read_values 失败: %s", e)

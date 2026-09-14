@@ -273,9 +273,14 @@ _lark_core_enum = types.ModuleType("lark_oapi.core.enum")
 # 提供真实使用到的 token（GET、TENANT、USER、APP 等），其余值未在本测试触发
 # 路径中用到，不预先给出具体数值，避免错误假设 SDK 真实值。
 class _HttpMethod:
-    """模拟 lark_oapi.core.enum.HttpMethod（仅暴露本测试用到的 GET）。"""
+    """模拟 lark_oapi.core.enum.HttpMethod（GET / POST 均为本测试用到的值）。
+
+    真实 SDK 中 ``HttpMethod.POST`` / ``GET`` 是枚举字段（具体数值不重要，
+    仅作 ``==`` 比较 / 透传），本 mock 直接用字符串「GET」「POST」表示。
+    """
 
     GET = "GET"
+    POST = "POST"
 
 
 class _AccessTokenType:
@@ -339,12 +344,21 @@ class _BaseRequestBuilder:
 
     本 mock 严格实现该 builder 链：每个 setter 返回 ``self`` 便于链式调用，
     ``build()`` 构造一个 ``BaseRequest`` 实例并记录到 ``_BaseRequest.instances``。
+
+    扩展支持（FeishuSheetsClient.write_values / read_values 使用）：
+        - ``body(value)``：设置请求体（POST 时由 SDK 序列化为 JSON）
+        - ``queries(dict)``：设置 GET 查询参数
+        - ``headers(dict)`` / ``paths(dict)``：透传保留
     """
 
     def __init__(self):
         self._http_method = None
         self._uri = None
         self._token_types = None
+        self._body = None
+        self._queries = None
+        self._headers = None
+        self._paths = None
 
     def http_method(self, value):
         self._http_method = value
@@ -358,12 +372,30 @@ class _BaseRequestBuilder:
         self._token_types = value
         return self
 
+    def body(self, value):
+        self._body = value
+        return self
+
+    def queries(self, value):
+        self._queries = value
+        return self
+
+    def headers(self, value):
+        self._headers = value
+        return self
+
+    def paths(self, value):
+        self._paths = value
+        return self
+
     def build(self):
         """构造 BaseRequest 实例，复制 builder 字段并记录到类级 instances。"""
         req = _BaseRequest(
             http_method=self._http_method,
             uri=self._uri,
             token_types=self._token_types,
+            body=self._body,
+            queries=self._queries,
         )
         return req
 
@@ -375,6 +407,8 @@ class _BaseRequest:
         http_method: HTTP 方法（HttpMethod 枚举值）
         uri: 资源路径（str）
         token_types: token 类型列表（list[AccessTokenType]）
+        body: 请求体（POST 时为已序列化的 JSON 字符串或 dict）
+        queries: GET 查询参数字典
 
     Attributes:
         instances: 类级列表，记录所有 ``build()`` 完成的实例（用于测试断言）。
@@ -382,10 +416,12 @@ class _BaseRequest:
 
     instances: list = []
 
-    def __init__(self, *, http_method, uri, token_types):
+    def __init__(self, *, http_method, uri, token_types, body=None, queries=None):
         self.http_method = http_method
         self.uri = uri
         self.token_types = token_types
+        self.body = body
+        self.queries = queries
         _BaseRequest.instances.append(self)
 
     @staticmethod
@@ -1093,12 +1129,13 @@ _lark_api.docx = _lark_api_docx
 
 
 # ---------------------------------------------------------------------------
-# 构造 lark_oapi.api.sheets.v3 / sheets.v2 子模块
+# 构造 lark_oapi.api.sheets.v3 子模块（lark-oapi 1.7.1 已移除 v2；
+# write_values / read_values 改走 BaseRequest 原生 HTTP，详见
+# app/shared/tools/skills/feishu/FeishuSheetsClient.py）
 # ---------------------------------------------------------------------------
 _lark_api_sheets = types.ModuleType("lark_oapi.api.sheets")
 _lark_api_sheets.__path__ = []
 _lark_api_sheets_v3 = types.ModuleType("lark_oapi.api.sheets.v3")
-_lark_api_sheets_v2 = types.ModuleType("lark_oapi.api.sheets.v2")
 
 
 # --- sheets v3: CreateSpreadsheetRequest ---
@@ -1152,97 +1189,10 @@ _lark_api_sheets_v3.CreateSpreadsheetRequest = _CreateSpreadsheetRequest
 _lark_api_sheets_v3.CreateSpreadsheetRequestBody = _CreateSpreadsheetRequestBody
 
 
-# --- sheets v2: Write/Read SpreadsheetValues ---
-class _SheetsV2WriteBodyBuilder:
-    def __init__(self):
-        self._range = None
-        self._values = None
-
-    def range_(self, r):
-        self._range = r
-        return self
-
-    def values(self, v):
-        self._values = v
-        return self
-
-    def build(self):
-        body = MagicMock(name="WriteSpreadsheetValuesRequestBody")
-        body._range = self._range
-        body._values = self._values
-        return body
-
-
-class _WriteSpreadsheetValuesRequestBody:
-    @staticmethod
-    def builder():
-        return _SheetsV2WriteBodyBuilder()
-
-
-class _SheetsV2WriteBuilder:
-    def __init__(self):
-        self._spreadsheet_token = None
-        self._request_body = None
-
-    def spreadsheet_token(self, t):
-        self._spreadsheet_token = t
-        return self
-
-    def request_body(self, body):
-        self._request_body = body
-        return self
-
-    def build(self):
-        req = MagicMock(name="WriteSpreadsheetValuesRequest")
-        req._spreadsheet_token = self._spreadsheet_token
-        req._request_body = self._request_body
-        return req
-
-
-class _WriteSpreadsheetValuesRequest:
-    @staticmethod
-    def builder():
-        return _SheetsV2WriteBuilder()
-
-
-class _SheetsV2ReadBuilder:
-    def __init__(self):
-        self._spreadsheet_token = None
-        self._range = None
-
-    def spreadsheet_token(self, t):
-        self._spreadsheet_token = t
-        return self
-
-    def range_(self, r):
-        self._range = r
-        return self
-
-    def build(self):
-        req = MagicMock(name="GetSpreadsheetValuesRequest")
-        req._spreadsheet_token = self._spreadsheet_token
-        req._range = self._range
-        return req
-
-
-class _GetSpreadsheetValuesRequest:
-    @staticmethod
-    def builder():
-        return _SheetsV2ReadBuilder()
-
-
-_lark_api_sheets_v2.WriteSpreadsheetValuesRequest = _WriteSpreadsheetValuesRequest
-_lark_api_sheets_v2.WriteSpreadsheetValuesRequestBody = (
-    _WriteSpreadsheetValuesRequestBody
-)
-_lark_api_sheets_v2.GetSpreadsheetValuesRequest = _GetSpreadsheetValuesRequest
-
-
 def _patched_client_build_sheets(self):
     client = _patched_client_build_combined(self)
     sheets_ns = types.SimpleNamespace()
     sheets_v3_ns = types.SimpleNamespace()
-    sheets_v2_ns = types.SimpleNamespace()
 
     spreadsheet_v3_ns = types.SimpleNamespace()
     spreadsheet_v3_ns.create = MagicMock(
@@ -1250,21 +1200,20 @@ def _patched_client_build_sheets(self):
         return_value=MagicMock(success=lambda: False),
     )
 
-    spreadsheet_value_v2_ns = types.SimpleNamespace()
-    spreadsheet_value_v2_ns.write = MagicMock(
-        name="sheets.v2.spreadsheet_value.write",
-        return_value=MagicMock(success=lambda: False),
-    )
-    spreadsheet_value_v2_ns.get = MagicMock(
-        name="sheets.v2.spreadsheet_value.get",
-        return_value=MagicMock(success=lambda: False),
-    )
-
     sheets_v3_ns.spreadsheet = spreadsheet_v3_ns
-    sheets_v2_ns.spreadsheet_value = spreadsheet_value_v2_ns
     sheets_ns.v3 = sheets_v3_ns
-    sheets_ns.v2 = sheets_v2_ns
     client.sheets = sheets_ns
+    # 暴露 client.request —— FeishuSheetsClient.write_values / read_values
+    # 改走 BaseRequest 后通过 ``client.request(...)`` 调 v2 values 接口；
+    # 测试可通过 ``client.request = MagicMock(...)`` 注入成功 / 失败响应。
+    if not hasattr(client, "request"):
+        client.request = MagicMock(
+            name="lark.Client.request",
+            return_value=MagicMock(
+                name="response",
+                raw=MagicMock(name="response.raw", content=b""),
+            ),
+        )
     return client
 
 
@@ -1272,7 +1221,6 @@ _ClientBuilder.build = _patched_client_build_sheets
 
 
 _lark_api_sheets.v3 = _lark_api_sheets_v3
-_lark_api_sheets.v2 = _lark_api_sheets_v2
 _lark_api.sheets = _lark_api_sheets
 
 
@@ -1632,7 +1580,6 @@ sys.modules["lark_oapi.api.docx"] = _lark_api_docx
 sys.modules["lark_oapi.api.docx.v1"] = _lark_api_docx_v1
 sys.modules["lark_oapi.api.sheets"] = _lark_api_sheets
 sys.modules["lark_oapi.api.sheets.v3"] = _lark_api_sheets_v3
-sys.modules["lark_oapi.api.sheets.v2"] = _lark_api_sheets_v2
 sys.modules["lark_oapi.api.drive"] = _lark_api_drive
 sys.modules["lark_oapi.api.drive.v1"] = _lark_api_drive_v1
 sys.modules["lark_oapi.api.wiki"] = _lark_api_wiki

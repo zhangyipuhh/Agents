@@ -119,11 +119,20 @@ def test_create_sheets_tool_endpoint_resolve_fails(monkeypatch):
 def test_write_sheets_values_happy_path(monkeypatch):
     client = _make_lark_client()
     mock_resp = MagicMock()
-    mock_resp.success.return_value = True
-    mock_resp.data.updated_rows = 2
-    mock_resp.data.updated_cols = 3
-    mock_resp.data.updated_range = "sht1!A1:C2"
-    client.sheets.v2.spreadsheet_value.write.return_value = mock_resp
+    mock_resp.raw = MagicMock()
+    mock_resp.raw.content = json.dumps(
+        {
+            "code": 0,
+            "msg": "Success",
+            "data": {
+                "updatedRows": 2,
+                "updatedColumns": 3,
+                "updatedRange": "sht1!A1:C2",
+            },
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    client.request.return_value = mock_resp
     _patch_endpoint(monkeypatch, client)
 
     result = asyncio.run(write_feishu_sheet_values(
@@ -163,9 +172,16 @@ def test_write_sheets_values_empty_values_returns_error():
 def test_read_sheets_values_happy_path(monkeypatch):
     client = _make_lark_client()
     mock_resp = MagicMock()
-    mock_resp.success.return_value = True
-    mock_resp.data.values = [["x", "y"], ["z", "w"]]
-    client.sheets.v2.spreadsheet_value.get.return_value = mock_resp
+    mock_resp.raw = MagicMock()
+    mock_resp.raw.content = json.dumps(
+        {
+            "code": 0,
+            "msg": "Success",
+            "data": {"values": [["x", "y"], ["z", "w"]]},
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    client.request.return_value = mock_resp
     _patch_endpoint(monkeypatch, client)
 
     result = asyncio.run(read_feishu_sheet_values(

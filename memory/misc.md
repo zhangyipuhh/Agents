@@ -667,10 +667,10 @@ FeishuWebSocketService._call_agent
   - `append_block_children(document_id, block_id, children)` → POST `/open-apis/docx/v1/documents/{id}/blocks/{block_id}/children`
   - 模块级 `_md_to_blocks(markdown_text)` helper：复用 `MarkdownToCardConverter` 正则常量解析 markdown → docx block JSON（heading1/2/3, paragraph, bullet, ordered, code, table）
 
-- **`FeishuSheetsClient`**：飞书 sheets v3 / v2 服务
-  - `create_spreadsheet(title, folder_token=None)` → POST `/open-apis/sheets/v3/spreadsheets`
-  - `write_values(spreadsheet_token, range_, values)` → POST `/open-apis/sheets/v2/spreadsheets/{token}/values`
-  - `read_values(spreadsheet_token, range_)` → GET `/open-apis/sheets/v2/spreadsheets/{token}/values`
+- **`FeishuSheetsClient`**：飞书 sheets 服务
+  - `create_spreadsheet(title, folder_token=None)` → POST `/open-apis/sheets/v3/spreadsheets`（走 sheets v3 资源类）
+  - `write_values(spreadsheet_token, range_, values)` → POST `/open-apis/sheets/v2/spreadsheets/{token}/values`（走 `lark.BaseRequest` 原生 HTTP，lark-oapi 1.7.1 已移除 `lark_oapi.api.sheets.v2` 子模块与 `spreadsheet_value` 资源类；与 `FeishuWebSocketService._fetch_bot_open_id` 同款路径）
+  - `read_values(spreadsheet_token, range_)` → GET `/open-apis/sheets/v2/spreadsheets/{token}/values?range=<...>`（同上）
 
 - **`FeishuDriveClient`**：飞书 drive v1 服务（docx / sheets 共用）
   - `list_files(folder_token=None)` → GET `/open-apis/drive/v1/files?folder_token=xxx`
@@ -722,13 +722,13 @@ FeishuWebSocketService._call_agent
 新增 8 个测试文件，共 120 用例全绿：
 - `test_md_to_blocks.py`（16）：md → blocks 转换单元测试
 - `test_feishu_docx_client.py`（14）：docx Client 单元测试
-- `test_feishu_sheets_client.py`（12）：sheets Client 单元测试
+- `test_feishu_sheets_client.py`（27）：sheets Client 单元测试（含 BaseRequest builder 链断言 + 反向用例 7+）
 - `test_feishu_drive_client.py`（7）：drive Client 单元测试
 - `test_feishu_wiki_client.py`（20）：wiki Client + 一键入口单元测试
 - `test_feishu_docx_tools.py`（23）：docx 7 工具单元测试
 - `test_feishu_sheets_tools.py`（9）：sheets 3 工具单元测试
 - `test_feishu_wiki_tools.py`（19）：wiki 6 工具 + 一键入口单元测试
 
-测试 conftest（`app/tests/shared/tools/skills/feishu/conftest.py`）扩展 mock lark_oapi.api.docx.v1 / sheets.v3 / sheets.v2 / drive.v1 / wiki.v2 五个子模块。
+测试 conftest（`app/tests/shared/tools/skills/feishu/conftest.py`）扩展 mock lark_oapi.api.docx.v1 / sheets.v3 / drive.v1 / wiki.v2 / core.enum / core.model 六个子模块（lark-oapi 1.7.1 已移除 sheets.v2，故 sheets.v2 子模块 mock 已删除；write_values / read_values 改走 BaseRequest，测试通过 `client.request = MagicMock(...)` 注入响应）。
 
 反向用例 ≥ 7 条（含 docx_failure_no_orphan、permission_denied_returns_error、unclosed_fence_falls_back_to_paragraph、whitespace_only_md_returns_error 等）。
