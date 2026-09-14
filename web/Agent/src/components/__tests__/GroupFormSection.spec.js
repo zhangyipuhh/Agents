@@ -294,4 +294,79 @@ describe('GroupFormSection', () => {
     expect(wrapper.find('.required-mark').exists()).toBe(true);
     expect(wrapper.find('.required-mark').text()).toBe('*');
   });
+
+  it('section header 显示 group_key chip(后端组 key)', async () => {
+    const wrapper = mount(GroupFormSection, {
+      props: { groupKey: 'auth_cookie', label: '认证 Cookie', fields: [{ name: 'secure', label: 'Secure', type: 'bool' }] },
+    });
+    await flushPromises();
+    expect(wrapper.find('.group-key-chip').exists()).toBe(true);
+    expect(wrapper.find('.group-key-chip').text()).toBe('auth_cookie');
+  });
+
+  it('section header 统计配置项数量与敏感字段数量', async () => {
+    const wrapper = mount(GroupFormSection, {
+      props: {
+        groupKey: 'g', label: 'G',
+        fields: [
+          { name: 'a', label: 'A', type: 'str' },
+          { name: 'b', label: 'B', type: 'bool' },
+          { name: 'c', label: 'C', type: 'str', sensitive: true },
+        ],
+      },
+    });
+    await flushPromises();
+    const meta = wrapper.find('.group-card-meta').text();
+    expect(meta).toContain('配置项');
+    expect(meta).toContain('3');
+    expect(meta).toContain('敏感字段');
+    expect(meta).toContain('1');
+  });
+
+  it('每个字段显示 field-key chip(后端字段名)与 field-type chip(类型)', async () => {
+    const wrapper = mount(GroupFormSection, {
+      props: {
+        groupKey: 'g', label: 'G',
+        fields: [
+          { name: 'model_name', label: '模型名', type: 'str' },
+          { name: 'is_enabled', label: '启用', type: 'bool' },
+          { name: 'count', label: '计数', type: 'int' },
+        ],
+      },
+    });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="field-key-model_name"]').text()).toBe('model_name');
+    expect(wrapper.find('[data-testid="field-type-model_name"]').text()).toBe('str');
+    expect(wrapper.find('[data-testid="field-key-is_enabled"]').text()).toBe('is_enabled');
+    expect(wrapper.find('[data-testid="field-type-is_enabled"]').text()).toBe('bool');
+    expect(wrapper.find('[data-testid="field-type-count"]').text()).toBe('int');
+  });
+
+  it('敏感字段 type chip 显示 secret + 锁图标', async () => {
+    const wrapper = mount(GroupFormSection, {
+      props: {
+        groupKey: 'g', label: 'G',
+        fields: [{ name: 'api_key', label: 'API Key', type: 'str', sensitive: true }],
+      },
+    });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="field-type-api_key"]').text()).toBe('secret');
+    expect(wrapper.find('.sensitive-mark').exists()).toBe(true);
+  });
+
+  it('bool 字段显示当前值预览 chip', async () => {
+    api.fetchSystemSettingsGroup.mockResolvedValueOnce({
+      group_key: 'g', tab: 'g', label: 'G',
+      config: { feature: true },
+      updated_at: null, updated_by: null,
+    });
+    const wrapper = mount(GroupFormSection, {
+      props: {
+        groupKey: 'g', label: 'G',
+        fields: [{ name: 'feature', label: '启用特性', type: 'bool' }],
+      },
+    });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="field-current-feature"]').text()).toContain('true');
+  });
 });

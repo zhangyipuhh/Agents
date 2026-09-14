@@ -12,8 +12,13 @@
 1. 复用 `EmailSettingsManager` / `FeishuSettingsManager` / `MenuPermissionManager` 同款视觉 token：白底卡 `#ffffff` + 边框 `#e5e7eb` + 圆角 14px + 顶部 `.tablist` 蓝色 `#2563eb` 下划线 + 双列 `.form-grid` + `.alert.{error,success,warning}` 提示。
 2. `GroupFormSection.vue` props API：`{ groupKey, label, fields, description }`，支持字段类型 `str / int / float / bool / json / multiline-str / sensitive`，新增 `description`（组描述）+ `field.description`（字段说明）透传到 `.form-help`。
 3. bool 字段用纯 CSS toggle switch（`.switch > input + .slider`），敏感字段用 `<input type="password">`，JSON 字段用 textarea + 保存时尝试 `JSON.parse`（失败 alert 警告）。
-4. **删除主密钥状态卡**（原 BasicSettingsManager 里的假数据卡，`fingerprint='a1b2c3d4...'`）——三重理由：(a) 后端无对应端点；(b) fingerprint 派生自 Fernet 主密钥，展示 = 半暴露密钥派生信息；(c) 用户反问"为什么需要展示"质疑合理性。
-5. 零新依赖（无 naive-ui）、零后端改动、零 DB schema 改动、零 .env 改动、零 nginx 改动。
+4. **配置项元信息展示**（用户 2026-09-14 反馈"配置项也要展示出来"）：
+   - section header 显示 `.group-key-chip`（后端 group_key mono 字体蓝色 chip，如 `auth_cookie`）
+   - section header 统计文案「配置项 N 个 · 敏感字段 M 个」（`.group-card-meta`）
+   - 每个字段 label 旁显示 `.field-key-chip`（后端字段名 mono）+ `.field-type-chip`（类型：str/int/float/bool/json/secret/text）+ 可选 `*` 必填 + `🔒` 敏感标记
+   - bool 字段右侧追加 `.current-value`「当前值: true/false」预览
+5. **删除主密钥状态卡**（原 BasicSettingsManager 里的假数据卡，`fingerprint='a1b2c3d4...'`）——三重理由：(a) 后端无对应端点；(b) fingerprint 派生自 Fernet 主密钥，展示 = 半暴露密钥派生信息；(c) 用户反问"为什么需要展示"质疑合理性。
+6. 零新依赖（无 naive-ui）、零后端改动、零 DB schema 改动、零 .env 改动、零 nginx 改动。
 
 **最终契约**（用户 2026-09-14 确认）：
 - `BasicSettingsManager.vue`：6 个孙 Tab + 顶部黄色警告条「本页配置修改后需重启服务生效」。

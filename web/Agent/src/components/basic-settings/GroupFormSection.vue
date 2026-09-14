@@ -9,8 +9,15 @@
   <section class="group-card" data-testid="group-form-section">
     <header class="group-card-header">
       <div class="group-card-titles">
-        <h3 class="group-card-title">{{ label }}</h3>
+        <h3 class="group-card-title">
+          {{ label }}
+          <code class="group-key-chip" :title="`后端 group_key: ${groupKey}`">{{ groupKey }}</code>
+        </h3>
         <p v-if="description" class="group-card-desc">{{ description }}</p>
+        <p class="group-card-meta">
+          配置项 <strong>{{ fields.length }}</strong> 个 · 敏感字段
+          <strong>{{ sensitiveCount }}</strong> 个
+        </p>
       </div>
       <button
         type="button"
@@ -37,8 +44,13 @@
         :data-testid="`form-group-${field.name}`"
       >
         <label class="form-label" :for="`field-${field.name}`">
-          {{ field.label }}
-          <span v-if="field.required" class="required-mark" aria-label="必填">*</span>
+          <span class="form-label-text">{{ field.label }}</span>
+          <span class="field-meta">
+            <code class="field-key-chip" :data-testid="`field-key-${field.name}`" :title="`后端字段名: ${field.name}`">{{ field.name }}</code>
+            <span class="field-type-chip" :data-testid="`field-type-${field.name}`">{{ fieldTypeLabel(field) }}</span>
+            <span v-if="field.required" class="required-mark" aria-label="必填">*</span>
+            <span v-if="field.sensitive" class="sensitive-mark" aria-label="敏感字段" title="敏感字段(留空保持原值)">🔒</span>
+          </span>
         </label>
 
         <!-- 敏感字段 -->
@@ -66,6 +78,9 @@
           />
           <span class="slider"></span>
           <span class="switch-label">{{ formData[field.name] ? '开启' : '关闭' }}</span>
+          <span class="current-value" :data-testid="`field-current-${field.name}`">
+            当前值: <code>{{ formData[field.name] === undefined ? '∅' : (formData[field.name] ? 'true' : 'false') }}</code>
+          </span>
         </label>
 
         <!-- int / float -->
@@ -151,7 +166,7 @@
  *   - 错误反馈:alert.error 显示后端 message
  *   - 成功反馈:alert.success「保存成功,需重启服务生效」+ 更新底部「最后更新」时间
  */
-import { ref, reactive, watch, onMounted } from 'vue';
+import { ref, reactive, watch, onMounted, computed } from 'vue';
 import {
   fetchSystemSettingsGroup,
   updateSystemSettingsGroup,
@@ -173,6 +188,22 @@ const message = ref('');
 const error = ref('');
 const updatedAt = ref(null);
 const updatedBy = ref(null);
+
+// 计算属性:敏感字段计数 + 字段类型标签
+const sensitiveCount = computed(() => props.fields.filter(f => f.sensitive).length);
+
+function fieldTypeLabel(field) {
+  if (field.sensitive) return 'secret';
+  switch (field.type) {
+    case 'bool': return 'bool';
+    case 'int': return 'int';
+    case 'float': return 'float';
+    case 'json': return 'json';
+    case 'str':
+    default:
+      return field.multiline ? 'text' : 'str';
+  }
+}
 
 function clearAlerts() {
   message.value = '';
@@ -309,6 +340,20 @@ watch(() => props.groupKey, load);
   font-weight: 600;
   color: #111827;
   margin: 0 0 4px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.group-key-chip {
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  color: #2563eb;
+  background: #eff6ff;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 400;
 }
 
 .group-card-desc {
@@ -316,6 +361,18 @@ watch(() => props.groupKey, load);
   color: #6b7280;
   margin: 0;
   line-height: 1.5;
+}
+
+.group-card-meta {
+  font-size: 12px;
+  color: #9ca3af;
+  margin: 6px 0 0;
+  line-height: 1.4;
+}
+
+.group-card-meta strong {
+  color: #374151;
+  font-weight: 600;
 }
 
 .ghost-btn {
@@ -388,10 +445,69 @@ watch(() => props.groupKey, load);
   font-weight: 500;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.form-label-text {
+  font-weight: 500;
+  color: #111827;
+}
+
+.field-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.field-key-chip {
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  color: #4b5563;
+  background: #f3f4f6;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.field-type-chip {
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  color: #6b7280;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 400;
+  text-transform: lowercase;
+  white-space: nowrap;
 }
 
 .required-mark { color: #dc2626; font-weight: 700; }
+
+.sensitive-mark {
+  font-size: 12px;
+  color: #d97706;
+  cursor: help;
+}
+
+.current-value {
+  font-size: 12px;
+  color: #6b7280;
+  margin-left: 6px;
+}
+
+.current-value code {
+  font-family: 'Courier New', monospace;
+  background: #f9fafb;
+  border: 1px solid #f3f4f6;
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: #374151;
+}
 
 .form-input {
   width: 100%;
