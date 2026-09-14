@@ -59,6 +59,7 @@ class FeishuSheetsClient:
 
     def __init__(self, lark_client):
         self._client = lark_client
+        self._sheet_id_cache: dict = {}
 
     async def create_spreadsheet(
         self,
@@ -128,50 +129,54 @@ class FeishuSheetsClient:
     async def write_values(
         self,
         spreadsheet_token: str,
-        range_: str,
         values: List[List[Any]],
     ) -> Dict[str, Any]:
-        """写入单元格值。
+        """向飞书 spreadsheet 的第一个 sheet 写入全表数据。
 
-        对应 ``POST /open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values``。
+        对应 ``PUT /open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values/{sheet_id}``。
 
         实现说明：lark-oapi 1.7.1 已移除 ``lark_oapi.api.sheets.v2`` 子模块与
         ``spreadsheet_value`` 资源类，本方法走 ``lark.BaseRequest`` 原生 HTTP
         路径（与 ``FeishuWebSocketService._fetch_bot_open_id`` 同款）。
 
-        请求体按官方文档契约构造为 ``{"valueRange": {"range": ..., "values": ...}}``
-        形态。
+        请求体按官方文档契约构造为 ``{"valueRange": {"values": [...]}}`` 形态；
+        不传 ``range`` 字段，飞书会覆盖目标 sheet 的全表内容。
+
+        实现流程（2026-09-14 全表读写改造）：
+            1. 内部先调 ``metainfo`` 拿首个 sheet_id（缓存到实例，
+               避免对同一 token 重复查询）
+            2. 再 PUT ``/values/{sheet_id}`` 写入 values
 
         Args:
             spreadsheet_token: 表格 token
-            range_: A1 范围字符串，``{sheet_id}!A1:D10``
-            values: 二维数组
+            values: 二维数组（覆盖目标 sheet 全部区域）
 
         Returns:
-            dict: 成功 ``{"success": True, "updated_rows", "updated_cols",
-                "updated_range"}``；失败同上
+            dict: 成功 ``{"success": True, "sheet_id", "updated_rows",
+                "updated_cols", "updated_range", "revision"}``；失败同上
 
         Raises:
             无。所有异常被捕获并以 ``success=False`` 返回。
         """
         if not spreadsheet_token:
             return {"success": False, "error": "spreadsheet_token 缺失"}
-        if not range_:
-            return {"success": False, "error": "range_ 缺失"}
         if not values or not isinstance(values, list):
             return {"success": False, "error": "values 必须是非空二维数组"}
+        sheet_id = await self._get_default_sheet_id(spreadsheet_token)
+        if not sheet_id:
+            return {"success": False, "error": "无法获取 spreadsheet 的首个 sheet_id"}
         try:
             uri = (
                 f"/open-apis/sheets/v2/spreadsheets/"
-                f"{spreadsheet_token}/values"
+                f"{spreadsheet_token}/values/{sheet_id}"
             )
             body_json = json.dumps(
-                {"valueRange": {"range": range_, "values": values}},
+                {"valueRange": {"values": values}},
                 ensure_ascii=False,
             )
             request = (
                 BaseRequest.builder()
-                .http_method(HttpMethod.POST)
+                .http_method(HttpMethod.PUT)
                 .uri(uri)
                 .token_types({AccessTokenType.TENANT})
                 .body(body_json)
@@ -199,11 +204,14 @@ class FeishuSheetsClient:
                     ),
                 }
             data = payload.get("data") or {}
+            updates = data.get("updates") or {}
             return {
                 "success": True,
-                "updated_rows": data.get("updatedRows"),
-                "updated_cols": data.get("updatedColumns"),
-                "updated_range": data.get("updatedRange"),
+                "sheet_id": sheet_id,
+                "updated_rows": data.get("updatedRows") or updates.get("updatedRows"),
+                "updated_cols": data.get("updatedColumns") or updates.get("updatedColumns"),
+                "updated_range": data.get("updatedRange") or updates.get("updatedRange"),
+                "revision": data.get("revision"),
             }
         except Exception as e:  # noqa: BLE001
             logger.warning("[feishu_sheets_client] write_values 失败: %s", e)
@@ -212,39 +220,40 @@ class FeishuSheetsClient:
     async def read_values(
         self,
         spreadsheet_token: str,
-        range_: str,
     ) -> Dict[str, Any]:
-        """读取单元格值。
+        """读取飞书 spreadsheet 第一个 sheet 的全表数据。
 
-        对应 ``GET /open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values``。
+        对应 ``GET /open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values/{sheet_id}``。
 
         实现说明：lark-oapi 1.7.1 已移除 ``lark_oapi.api.sheets.v2`` 子模块与
         ``spreadsheet_value`` 资源类，本方法走 ``lark.BaseRequest`` 原生 HTTP
         路径（与 ``FeishuWebSocketService._fetch_bot_open_id`` 同款）。
 
+        2026-09-14 改造：删除 ``range_`` 入参，工具内部先调 ``metainfo`` 拿
+        首个 sheet_id（缓存到实例），再 GET ``/values/{sheet_id}`` 拉全表。
+
         Args:
             spreadsheet_token: 表格 token
-            range_: A1 范围字符串
 
         Returns:
-            dict: 成功 ``{"success": True, "values": list[list]}``；
-                失败同上
+            dict: 成功 ``{"success": True, "sheet_id", "values": list[list],
+                "revision"}``；失败同上
         """
         if not spreadsheet_token:
             return {"success": False, "error": "spreadsheet_token 缺失"}
-        if not range_:
-            return {"success": False, "error": "range_ 缺失"}
+        sheet_id = await self._get_default_sheet_id(spreadsheet_token)
+        if not sheet_id:
+            return {"success": False, "error": "无法获取 spreadsheet 的首个 sheet_id"}
         try:
             uri = (
                 f"/open-apis/sheets/v2/spreadsheets/"
-                f"{spreadsheet_token}/values"
+                f"{spreadsheet_token}/values/{sheet_id}"
             )
             request = (
                 BaseRequest.builder()
                 .http_method(HttpMethod.GET)
                 .uri(uri)
                 .token_types({AccessTokenType.TENANT})
-                .queries({"range": range_})
                 .build()
             )
             response = await asyncio.to_thread(
@@ -264,8 +273,80 @@ class FeishuSheetsClient:
                     "msg": payload.get("msg"),
                 }
             data = payload.get("data") or {}
-            raw_values = data.get("values") or []
-            return {"success": True, "values": list(raw_values)}
+            value_range = data.get("valueRange") or {}
+            raw_values = value_range.get("values") or data.get("values") or []
+            return {
+                "success": True,
+                "sheet_id": sheet_id,
+                "values": list(raw_values),
+                "revision": data.get("revision"),
+            }
         except Exception as e:  # noqa: BLE001
             logger.warning("[feishu_sheets_client] read_values 失败: %s", e)
             return {"success": False, "error": str(e)}
+
+    # ------------------------------------------------------------------
+    # 内部 helper
+    # ------------------------------------------------------------------
+    async def _get_default_sheet_id(self, spreadsheet_token: str) -> Optional[str]:
+        """拉取并缓存 spreadsheet 首个 sheet_id。
+
+        对应 ``GET /open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/metainfo``。
+        同一 token 多次调用复用缓存,避免重复 HTTP 请求。
+
+        Args:
+            spreadsheet_token: 表格 token
+
+        Returns:
+            Optional[str]: 首个 sheet_id;失败/空返回 None。
+        """
+        cached = self._sheet_id_cache.get(spreadsheet_token)
+        if cached:
+            return cached
+        try:
+            uri = (
+                f"/open-apis/sheets/v2/spreadsheets/"
+                f"{spreadsheet_token}/metainfo"
+            )
+            request = (
+                BaseRequest.builder()
+                .http_method(HttpMethod.GET)
+                .uri(uri)
+                .token_types({AccessTokenType.TENANT})
+                .build()
+            )
+            response = await asyncio.to_thread(
+                self._client.request,
+                request,
+                RequestOption.builder().build(),
+            )
+            raw = getattr(response, "raw", None)
+            payload = _parse_response(getattr(raw, "content", None) if raw else None)
+            if not payload:
+                return None
+            code = payload.get("code")
+            if code not in (0, None):
+                logger.warning(
+                    "[feishu_sheets_client] metainfo 失败 token=%s code=%s msg=%s",
+                    spreadsheet_token, code, payload.get("msg"),
+                )
+                return None
+            data = payload.get("data") or {}
+            sheets = data.get("sheets") or []
+            if not sheets:
+                return None
+            first = sheets[0]
+            # sheets[0] 可能是 dict 或 SDK 对象;取 sheetId 字段
+            if isinstance(first, dict):
+                sheet_id = first.get("sheetId") or first.get("sheet_id")
+            else:
+                sheet_id = getattr(first, "sheetId", None) or getattr(first, "sheet_id", None)
+            if sheet_id:
+                self._sheet_id_cache[spreadsheet_token] = sheet_id
+            return sheet_id
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[feishu_sheets_client] _get_default_sheet_id 失败 token=%s err=%s",
+                spreadsheet_token, e,
+            )
+            return None

@@ -92,26 +92,22 @@ async def create_feishu_spreadsheet(
     return Command(update={"messages": [_make_tool_message(tool_call_id, resp)]})
 
 
-@tool(description="向飞书 spreadsheet 写入单元格值。参数：spreadsheet_token（必填）、range_（必填，``{sheet_id}!A1:D10`` 形式）、values（必填，二维数组）。")
+@tool(description="向飞书 spreadsheet 的第一个 sheet 全表写入数据(覆盖式)。参数:spreadsheet_token(必填,从 https://xxx.feishu.cn/sheets/{token} 提取;wiki 节点 URL feishu.cn/wiki/... 与多维表格 URL feishu.cn/base/... 不能直接作为 spreadsheet_token)、values(必填,二维数组,行 x 列)。返回值含 sheet_id / updated_rows / updated_range / revision。")
 async def write_feishu_sheet_values(
     spreadsheet_token: str,
-    range_: str,
     values: List[List[Any]],
     runtime: ToolRuntime = None,
 ) -> Command:
-    """写入单元格值。
+    """向飞书 spreadsheet 的第一个 sheet 全表写入数据。
 
     Args:
-        spreadsheet_token: 飞书 spreadsheet token
-        range_: A1 范围字符串 ``{sheet_id}!A1:D10``
-        values: 二维数组
-        runtime: LangChain ToolRuntime
+        spreadsheet_token: 飞书 spreadsheet token。
+        values: 二维数组(覆盖目标 sheet 全部区域)。
+        runtime: LangChain ToolRuntime。
     """
     tool_call_id = getattr(runtime, "tool_call_id", "unknown") if runtime else "unknown"
     if not spreadsheet_token:
         return _error_cmd(tool_call_id, "spreadsheet_token 缺失")
-    if not range_:
-        return _error_cmd(tool_call_id, "range_ 缺失")
     if not values or not isinstance(values, list):
         return _error_cmd(tool_call_id, "values 必须是非空二维数组")
     if not runtime or not getattr(runtime, "state", None) or not runtime.state.get("agent_name"):
@@ -121,37 +117,29 @@ async def write_feishu_sheet_values(
         return _error_cmd(tool_call_id, "智能体飞书渠道缺失")
     resp = await sheets_client.write_values(
         spreadsheet_token=spreadsheet_token,
-        range_=range_,
         values=values,
     )
     return Command(update={"messages": [_make_tool_message(tool_call_id, resp)]})
 
 
-@tool(description="读取飞书 spreadsheet 单元格值。参数：spreadsheet_token（必填）、range_（必填）。")
+@tool(description="读取飞书 spreadsheet 第一个 sheet 的全表数据。参数:spreadsheet_token(必填,从 https://xxx.feishu.cn/sheets/{token} 提取;wiki 节点 URL feishu.cn/wiki/... 与多维表格 URL feishu.cn/base/... 不能直接作为 spreadsheet_token)。返回 {success, sheet_id, values: [[...]], revision}。")
 async def read_feishu_sheet_values(
     spreadsheet_token: str,
-    range_: str,
     runtime: ToolRuntime = None,
 ) -> Command:
-    """读取单元格值。
+    """读取飞书 spreadsheet 第一个 sheet 的全表数据。
 
     Args:
-        spreadsheet_token: 飞书 spreadsheet token
-        range_: A1 范围字符串
-        runtime: LangChain ToolRuntime
+        spreadsheet_token: 飞书 spreadsheet token。
+        runtime: LangChain ToolRuntime。
     """
     tool_call_id = getattr(runtime, "tool_call_id", "unknown") if runtime else "unknown"
     if not spreadsheet_token:
         return _error_cmd(tool_call_id, "spreadsheet_token 缺失")
-    if not range_:
-        return _error_cmd(tool_call_id, "range_ 缺失")
     if not runtime or not getattr(runtime, "state", None) or not runtime.state.get("agent_name"):
         return _error_cmd(tool_call_id, ERROR_NO_AGENT_NAME)
     _endpoint, sheets_client = await _resolve_sheets_client(runtime)
     if sheets_client is None:
         return _error_cmd(tool_call_id, "智能体飞书渠道缺失")
-    resp = await sheets_client.read_values(
-        spreadsheet_token=spreadsheet_token,
-        range_=range_,
-    )
+    resp = await sheets_client.read_values(spreadsheet_token=spreadsheet_token)
     return Command(update={"messages": [_make_tool_message(tool_call_id, resp)]})

@@ -281,6 +281,9 @@ class _HttpMethod:
 
     GET = "GET"
     POST = "POST"
+    PUT = "PUT"
+    DELETE = "DELETE"
+    PATCH = "PATCH"
 
 
 class _AccessTokenType:

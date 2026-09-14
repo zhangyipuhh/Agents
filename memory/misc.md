@@ -698,8 +698,13 @@ FeishuWebSocketService._call_agent
 
 #### FeishuSheetsTools（3 件）
 - `create_feishu_spreadsheet(title, folder_token=None)`
-- `write_feishu_sheet_values(spreadsheet_token, range_, values)`
-- `read_feishu_sheet_values(spreadsheet_token, range_)`
+- `write_feishu_sheet_values(spreadsheet_token, values)` — **2026-09-14 改造：删除 range_ 入参**；工具内部先调 metainfo 拿首个 sheet_id，再 `PUT /values/{sheet_id}` 全表覆盖写入
+- `read_feishu_sheet_values(spreadsheet_token)` — **2026-09-14 改造：删除 range_ 入参**；工具内部先调 metainfo 拿首个 sheet_id，再 `GET /values/{sheet_id}` 拉全表；同一 token 的 sheet_id 在 `FeishuSheetsClient._sheet_id_cache` 缓存复用
+
+> **sheets 工具入参契约（2026-09-14）**：
+> - `spreadsheet_token` 必须从 `https://xxx.feishu.cn/sheets/{token}` URL 提取
+> - wiki 节点 URL（`feishu.cn/wiki/...`）与多维表格 URL（`feishu.cn/base/...`）**不能直接作为 spreadsheet_token**；前者需先 `wiki/v2/spaces/get_node` 拿 `obj_token` 并确认 `obj_type=sheet`，后者要走 `FeishuBitableTools`
+> - 全表契约下，工具不传 range_ 也能跑通；LLM 不需要猜测 sheet_id
 
 #### FeishuWikiTools（6 件）
 - `create_wiki_node(space_id, title, obj_token, parent_node_token=None, obj_type="docx")`

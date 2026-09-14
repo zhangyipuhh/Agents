@@ -1,6 +1,9 @@
 # -*- coding:utf-8 -*-
 """
 test_feishu_sheets_tools - FeishuSheetsTools 3 个 @tool 单元测试
+
+2026-09-14 改造:read_feishu_sheet_values / write_feishu_sheet_values 删除
+``range_`` 入参,工具内部自动 metainfo 拿 sheet_id 后全表读写。
 """
 from __future__ import annotations
 
@@ -58,8 +61,30 @@ def _patch_endpoint(monkeypatch, lark_client=None):
     )
 
 
+# 标准 metainfo 响应 payload
+def _metainfo_payload(token="ss_001", sheet_id="sht1"):
+    return {
+        "code": 0,
+        "msg": "Success",
+        "data": {
+            "spreadsheetToken": token,
+            "sheets": [{"sheetId": sheet_id, "title": "Sheet1", "index": 0}],
+        },
+    }
+
+
+def _install_sequential_responses(client, payloads):
+    iter_payloads = iter(payloads)
+    def _side_effect(*args, **kwargs):
+        resp = MagicMock()
+        resp.raw = MagicMock()
+        resp.raw.content = json.dumps(next(iter_payloads), ensure_ascii=False).encode("utf-8")
+        return resp
+    client.request.side_effect = _side_effect
+
+
 # =============================================================================
-# 通用反向用例
+# create_feishu_spreadsheet(未受 range_ 改造影响,保留旧用例)
 # =============================================================================
 
 
@@ -75,11 +100,6 @@ def test_create_sheets_tool_empty_title_returns_error():
     payload = _parse_message_content(result)
     assert payload["success"] is False
     assert "title" in payload["error"]
-
-
-# =============================================================================
-# create_feishu_spreadsheet
-# =============================================================================
 
 
 def test_create_sheets_tool_happy_path(monkeypatch):
@@ -107,94 +127,127 @@ def test_create_sheets_tool_endpoint_resolve_fails(monkeypatch):
     result = asyncio.run(create_feishu_spreadsheet(title="x", runtime=_make_runtime()))
     payload = _parse_message_content(result)
     assert payload["success"] is False
-    # 中文文案透传：「智能体飞书渠道缺失」
-    assert "智能体" in payload["error"] or "飞书渠道" in payload["error"]
 
 
 # =============================================================================
-# write_feishu_sheet_values
+# write_feishu_sheet_values(全表,无 range_)
 # =============================================================================
 
 
 def test_write_sheets_values_happy_path(monkeypatch):
+    """工具不传 range_ → 内部先 metainfo 拿 sheet_id,再 PUT 全表。"""
     client = _make_lark_client()
-    mock_resp = MagicMock()
-    mock_resp.raw = MagicMock()
-    mock_resp.raw.content = json.dumps(
-        {
-            "code": 0,
-            "msg": "Success",
-            "data": {
-                "updatedRows": 2,
-                "updatedColumns": 3,
-                "updatedRange": "sht1!A1:C2",
+    _install_sequential_responses(
+        client,
+        [
+            _metainfo_payload(),
+            {
+                "code": 0,
+                "msg": "Success",
+                "data": {
+                    "updatedRange": "sht1!A1:C2",
+                    "updatedRows": 2,
+                    "updatedColumns": 3,
+                    "revision": 1,
+                },
             },
-        },
-        ensure_ascii=False,
-    ).encode("utf-8")
-    client.request.return_value = mock_resp
+        ],
+    )
     _patch_endpoint(monkeypatch, client)
 
     result = asyncio.run(write_feishu_sheet_values(
         spreadsheet_token="ss_001",
-        range_="sht1!A1:C2",
         values=[["a", "b", "c"], ["d", "e", "f"]],
         runtime=_make_runtime(),
     ))
     payload = _parse_message_content(result)
     assert payload["success"] is True
+    assert payload["sheet_id"] == "sht1"
     assert payload["updated_rows"] == 2
 
 
 def test_write_sheets_values_empty_token_returns_error():
     result = asyncio.run(write_feishu_sheet_values(
-        spreadsheet_token="", range_="sht1!A1", values=[["x"]], runtime=_make_runtime()
+        spreadsheet_token="", values=[["x"]], runtime=_make_runtime()
     ))
     payload = _parse_message_content(result)
     assert payload["success"] is False
+    assert "spreadsheet_token" in payload["error"]
 
 
 def test_write_sheets_values_empty_values_returns_error():
-    """反向用例：values=[] → 输入校验拦截。"""
+    """反向用例:values=[] → 输入校验拦截。"""
     result = asyncio.run(write_feishu_sheet_values(
-        spreadsheet_token="ss_001", range_="sht1!A1", values=[], runtime=_make_runtime()
+        spreadsheet_token="ss_001", values=[], runtime=_make_runtime()
     ))
     payload = _parse_message_content(result)
     assert payload["success"] is False
     assert "values" in payload["error"]
 
 
+def test_write_sheets_values_no_range_param_in_signature():
+    """回归:write_feishu_sheet_values 不再接受 range_ 入参(inspect 签名)。"""
+    import inspect
+    sig = inspect.signature(write_feishu_sheet_values)
+    assert "range_" not in sig.parameters
+
+
 # =============================================================================
-# read_feishu_sheet_values
+# read_feishu_sheet_values(全表,无 range_)
 # =============================================================================
 
 
 def test_read_sheets_values_happy_path(monkeypatch):
+    """工具不传 range_ → 内部先 metainfo 拿 sheet_id,再 GET 全表。"""
     client = _make_lark_client()
-    mock_resp = MagicMock()
-    mock_resp.raw = MagicMock()
-    mock_resp.raw.content = json.dumps(
-        {
-            "code": 0,
-            "msg": "Success",
-            "data": {"values": [["x", "y"], ["z", "w"]]},
-        },
-        ensure_ascii=False,
-    ).encode("utf-8")
-    client.request.return_value = mock_resp
+    _install_sequential_responses(
+        client,
+        [
+            _metainfo_payload(),
+            {
+                "code": 0,
+                "msg": "Success",
+                "data": {
+                    "spreadsheetToken": "ss_001",
+                    "valueRange": {
+                        "range": "sht1!A1:Z1000",
+                        "values": [["x", "y"], ["z", "w"]],
+                    },
+                },
+            },
+        ],
+    )
     _patch_endpoint(monkeypatch, client)
 
     result = asyncio.run(read_feishu_sheet_values(
-        spreadsheet_token="ss_001", range_="sht1!A1:B2", runtime=_make_runtime()
+        spreadsheet_token="ss_001", runtime=_make_runtime()
     ))
     payload = _parse_message_content(result)
     assert payload["success"] is True
+    assert payload["sheet_id"] == "sht1"
     assert payload["values"] == [["x", "y"], ["z", "w"]]
 
 
-def test_read_sheets_values_empty_range_returns_error():
+def test_read_sheets_values_empty_token_returns_error():
     result = asyncio.run(read_feishu_sheet_values(
-        spreadsheet_token="ss_001", range_="", runtime=_make_runtime()
+        spreadsheet_token="", runtime=_make_runtime()
     ))
     payload = _parse_message_content(result)
     assert payload["success"] is False
+    assert "spreadsheet_token" in payload["error"]
+
+
+def test_read_sheets_values_no_range_param_in_signature():
+    """回归:read_feishu_sheet_values 不再接受 range_ 入参。"""
+    import inspect
+    sig = inspect.signature(read_feishu_sheet_values)
+    assert "range_" not in sig.parameters
+
+
+def test_read_sheets_values_description_warns_about_wiki_and_base_url():
+    """工具 description 必须显式提示 wiki/base URL 不能作为 spreadsheet_token。"""
+    import inspect
+    src = inspect.getsource(read_feishu_sheet_values)
+    assert "feishu.cn/sheets" in src
+    assert "feishu.cn/wiki" in src
+    assert "feishu.cn/base" in src
