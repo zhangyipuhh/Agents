@@ -606,7 +606,7 @@ return data/upload/yyyy/mm/dd/{session_id}/
 - `app/core/services/system_config_service.py`：`SystemConfigService(pool, settings, log_service)` — `seed_from_settings`（空表 seed）/ `load_all`（DB → settings 单例覆盖 + 解密）/ `get_group`（脱敏）/ `list_groups`（按 tab 分组）/ `update_group`（校验 + 加密 + `****` 保持原值 + 审计）/ `reset_group`（pydantic default）
 - `app/routers/system_settings_admin_router.py`：`/api/admin/system-settings/{,*}` 4 端点；全部 `require_admin_or_menu_acl('system.basic-settings')`；更新/重置写 `LogService.emit(system_settings_update|reset)` 审计 fail-soft
 - `app/core/server.py` lifespan：DB 连接 + register_schemas 后调 `bootstrap_master_key()` + `get_master_fernet()` + `seed_from_settings` + `load_all`，**必须在 `ensure_admin_exists` / `MfaService` 之前**，否则这些组件拿到 env 现值而非 DB 覆盖值
-- 前端 `web/Agent/src/components/BasicSettingsManager.vue`（6 孙 Tab 容器 + 顶栏「主密钥状态」section 显示 SHA256 指纹 + 来源 + 备份提示）+ `basic-settings/{LLM,FileParser,Security,Network,SandboxTask,Misc}SettingsPanel.vue` + `GroupFormSection.vue`；UserSettingsDialog 一级菜单 `system.basic-settings` 渲染入口
+- 前端 `web/Agent/src/components/BasicSettingsManager.vue`（6 孙 Tab 容器，无 naive-ui 依赖，复用 EmailSettingsManager / FeishuSettingsManager 同款视觉 token）+ `basic-settings/{LLM,FileParser,Security,Network,SandboxTask,Misc}SettingsPanel.vue`（每 panel 含 description 字段透传到 form-help）+ `GroupFormSection.vue`（完整 props API + 字段类型 str/int/float/bool/json/sensitive + description 透传 + 纯 CSS toggle switch）；UserSettingsDialog 一级菜单 `system.basic-settings` 渲染入口
 - 修改后**必须重启服务生效**（不在运行期热加载）
 
 ### `.env` 精简分层（2026-09-14 修订）

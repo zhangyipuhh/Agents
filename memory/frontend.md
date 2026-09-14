@@ -2,6 +2,57 @@
 
 > 本文件是项目记忆分片，索引见根目录 project_memory.md。
 
+## `BasicSettingsManager` 全页面 UI 重设计（2026-09-14 渲染修复）
+
+**问题**：「基本设置」Tab "完全没有格式和配置项"——6 个孙 Tab 内部全部空白 + 一行行"保存 最后更新"。
+
+**根因**：`BasicSettingsManager` / `GroupFormSection` / 6 个 `*SettingsPanel` 模板里大量使用 `n-tabs` / `n-card` / `n-form` / `n-input` / `n-switch` / `n-input-number` / `n-button` / `n-alert` 等 **naive-ui 组件**，但项目 package.json **未安装 naive-ui**、main.js 也未注册——所有 n-* 元素在浏览器里退化为未知标签不渲染。截图里看到的"6 个 tab 标签行"是 `<n-tabs>` 未知元素 slot 内的标签文本侥幸显示；"保存 最后更新 by system-seed"是 `<GroupFormSection>` 末尾 `<div class="group-actions">` 内 `<n-button>` 退化为行内元素后文本裸露。
+
+**修复策略**（不是白名单修复，而是整套 UI 重设计）：
+1. 复用 `EmailSettingsManager` / `FeishuSettingsManager` / `MenuPermissionManager` 同款视觉 token：白底卡 `#ffffff` + 边框 `#e5e7eb` + 圆角 14px + 顶部 `.tablist` 蓝色 `#2563eb` 下划线 + 双列 `.form-grid` + `.alert.{error,success,warning}` 提示。
+2. `GroupFormSection.vue` props API：`{ groupKey, label, fields, description }`，支持字段类型 `str / int / float / bool / json / multiline-str / sensitive`，新增 `description`（组描述）+ `field.description`（字段说明）透传到 `.form-help`。
+3. bool 字段用纯 CSS toggle switch（`.switch > input + .slider`），敏感字段用 `<input type="password">`，JSON 字段用 textarea + 保存时尝试 `JSON.parse`（失败 alert 警告）。
+4. **删除主密钥状态卡**（原 BasicSettingsManager 里的假数据卡，`fingerprint='a1b2c3d4...'`）——三重理由：(a) 后端无对应端点；(b) fingerprint 派生自 Fernet 主密钥，展示 = 半暴露密钥派生信息；(c) 用户反问"为什么需要展示"质疑合理性。
+5. 零新依赖（无 naive-ui）、零后端改动、零 DB schema 改动、零 .env 改动、零 nginx 改动。
+
+**最终契约**（用户 2026-09-14 确认）：
+- `BasicSettingsManager.vue`：6 个孙 Tab + 顶部黄色警告条「本页配置修改后需重启服务生效」。
+- `GroupFormSection.vue`：每个 section 独立 alert/loading/saving 状态；保存成功后显示 alert.success「保存成功，需重启服务生效」+ 底部「最后更新 ... by ...」刷新；重置按钮触发 `confirm()` 弹原生确认。
+- `*SettingsPanel`：fields 数组每个字段新增 `description`（字段说明）+ 关键字段 `placeholder` 透传。
+
+**测试同步**：
+- `BasicSettingsManager.spec.js`：从 mock 占位组件重写为 import 真实组件，断言 6 个 tab label 顺序 / 默认 active='llm' / 切换 / panel 显隐 / 警告条 / 主密钥卡 DOM 不存在 / 可访问性（role=tab / aria-selected）。
+- `GroupFormSection.spec.js`（新增 18 用例）：字段类型映射（str/int/float/bool/json/sensitive/multiline）+ 加载成功/失败 + 保存成功/失败 + 重置确认/取消 + description 透传 + required 必填星号 + 敏感字段空串不传 payload。
+- `basic-settings/SettingsPanels.spec.js`（新增 12 用例）：6 个 *SettingsPanel 各自渲染对应 section 数 + title 文案。
+- 回归：`EmailSettingsManager.spec.js` (13) + `EmailSettingsManager.subtab-acl.spec.js` (7) + `FeishuSettingsManager.spec.js` (31) + `UserSettingsDialog.email-settings-l1.spec.js` (5) + `UserSettingsDialog.feishu-channel.spec.js` (4) = **60 用例零回归**。
+
+**反模式示例**（禁止再犯）：
+```vue
+<!-- ❌ naive-ui 依赖,项目未安装 -->
+<n-card :title="label">
+  <n-form>
+    <n-form-item :label="field.label">
+      <n-input v-model="formData[field.name]" />
+    </n-form-item>
+  </n-form>
+</n-card>
+```
+```vue
+<!-- ✅ 自写 HTML,复用 .form-group / .form-input / .alert 等 token -->
+<section class="group-card">
+  <header class="group-card-header">
+    <h3 class="group-card-title">{{ label }}</h3>
+  </header>
+  <div v-if="error" class="alert error">{{ error }}</div>
+  <div class="form-grid">
+    <div v-for="field in fields" :key="field.name" class="form-group">
+      <label class="form-label">{{ field.label }}</label>
+      <input class="form-input" :value="formData[field.name]" @input="formData[field.name] = $event.target.value" />
+    </div>
+  </div>
+</section>
+```
+
 ## 前端架构（web/Agent）
 
 `web/Agent/` 是基于 Vite + Vue 3 的多入口 SPA，对外提供三套独立页面（主 Agent、知识库、门户），共享同一套组件、工具函数与设计 token。
