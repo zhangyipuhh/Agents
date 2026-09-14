@@ -654,6 +654,8 @@ FeishuWebSocketService._call_agent
 
 ## 飞书文档工具（2026-09-12 落地）
 
+> **关键词索引**（Grep 用）：FeishuDocxClient、FeishuDocxTools（7 件）、FeishuSheetsClient、FeishuSheetsTools（3 件）、FeishuBitableClient、FeishuBitableTools（3 件，只读）、FeishuDriveClient、FeishuWikiClient、FeishuWikiTools（6 件）、create_wiki_node_from_markdown、MarkdownToCardConverter 复用、BaseRequest 原生 HTTP、`lark.BaseRequest`、`lark_oapi.api.sheets.v2` 移除、`lark_oapi.api.bitable.v1` 走 raw HTTP、`/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records`、`/open-apis/sheets/v2/spreadsheets/{token}/values`、`/open-apis/docx/v1/documents`、`/open-apis/wiki/v2/spaces`、`_md_to_blocks`、`_parse_response` 复用、tenant_access_token、page_size 钳制 [1,500]、list_records / get_record / search_records、list_feishu_bitable_records / get_feishu_bitable_record / search_feishu_bitable_records、filter_ / sort 透传
+
 ### 概述
 
 `app/shared/tools/skills/feishu/` 新增 4 个 Client 类 + 3 个 Tools 文件，封装飞书 docx / sheets / drive / wiki 四个 Open API 服务，供任意 agent 通过 ToolRegistry 自动发现与使用。
@@ -732,3 +734,52 @@ FeishuWebSocketService._call_agent
 测试 conftest（`app/tests/shared/tools/skills/feishu/conftest.py`）扩展 mock lark_oapi.api.docx.v1 / sheets.v3 / drive.v1 / wiki.v2 / core.enum / core.model 六个子模块（lark-oapi 1.7.1 已移除 sheets.v2，故 sheets.v2 子模块 mock 已删除；write_values / read_values 改走 BaseRequest，测试通过 `client.request = MagicMock(...)` 注入响应）。
 
 反向用例 ≥ 7 条（含 docx_failure_no_orphan、permission_denied_returns_error、unclosed_fence_falls_back_to_paragraph、whitespace_only_md_returns_error 等）。
+
+
+## 飞书多维表格只读工具（2026-09-14 落地）
+
+### 概述
+
+`app/shared/tools/skills/feishu/` 新增 1 个 Client + 1 个 Tools 文件，封装飞书多维表格（Bitable）v1 Open API 三个只读端点。本轮严格只读，**不**包含写入 / 字段元信息 / 表清单 / app 清单（后续 PR 扩展）。
+
+### 客户端（HTTP 调用层，不暴露给 LLM）
+
+**`FeishuBitableClient`**：飞书 Bitable v1 服务
+- `list_records(app_token, table_id, view_id=None, field_names=None, text_field_as_array=None, user_id_type=None, page_token=None, page_size=None)` → `GET /open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records`；返回 `{success, items, has_more, page_token, total}`
+- `get_record(app_token, table_id, record_id, user_id_type=None, with_shared_url=None, automatic_fields=None)` → `GET .../records/{record_id}`；返回 `{success, record}`
+- `search_records(app_token, table_id, view_id=None, filter_=None, sort=None, field_names=None, text_field_as_array=None, automatic_fields=None, page_token=None, page_size=None)` → `POST .../records/search`（filter/sort 复杂筛选）；返回 `{success, items, has_more, page_token, total}`
+
+### LLM 可调用工具（@tool 装饰器，由 ToolRegistryService 源码扫描发现）
+
+#### FeishuBitableTools（3 件）
+- `list_feishu_bitable_records(app_token, table_id, view_id=None, field_names=None, page_size=None, page_token=None)` → 列出多维表格记录（分页）
+- `get_feishu_bitable_record(app_token, table_id, record_id, with_shared_url=None)` → 获取单条记录详情
+- `search_feishu_bitable_records(app_token, table_id, filter_=None, sort=None, field_names=None, page_size=None, page_token=None)` → 按 filter / sort 复杂检索（分页）
+
+### 关键设计决策与复用契约
+
+1. **走 raw HTTP 而非 SDK `bitable.v1.*` 子模块**：与 `FeishuSheetsClient.write_values / read_values` 同款路径（`lark.BaseRequest` 原生 HTTP），规避 lark-oapi 1.7.x bitable 子模块历史签名漂移风险
+2. **凭证复用**：复用 `FeishuEndpointResolver.resolve_current_endpoint` + `build_lark_client`，与 send_feishu_message / FeishuDocxTools / FeishuSheetsTools / FeishuWikiTools 完全对齐
+3. **复用 `_parse_response`**：从 `FeishuSheetsClient` 直接 import，不重写
+4. **Token 类型**：所有端点走 `tenant_access_token`（与 sheets v2 values 一致）
+5. **`page_size` 钳制**：工具内部 `_clamp_page_size` 钳制到 `[1, 500]`（飞书官方上限 500），LLM 入参越界自动归位
+6. **filter / sort 透传**：不写语法翻译层，`@tool` description 写明官方 filter schema 供 LLM 参考；filter / sort 非空时 `view_id` 被官方忽略
+7. **不修改 app/core/、app/shared/routers/、MarkdownToCardConverter、FeishuMessageTools、FeishuSheetsTools**；不新增 DB schema 或 .env 字段；无前端改动；`__init__.py` 子模块清单补齐 docx/sheets/bitable/drive/wiki 五件套
+
+### 测试
+
+新增 2 个测试文件，共 56 用例全绿：
+- `test_feishu_bitable_client.py`（34）：Bitable Client 单元测试（happy / 反向 / 钳制 / token_type / http_method / 异常吞掉 / `_clamp_page_size` 参数化 10 条）
+- `test_feishu_bitable_tools.py`（22）：Bitable 3 工具单元测试（happy / agent_name 缺失 / endpoint resolve 失败 / build_lark_client 抛异常 / 入参缺失 / filter=None 边界 / API 错误透传）
+
+`app/tests/shared/tools/skills/feishu/conftest.py` 新增 `lark_oapi.api.bitable / .v1` 两个空模块占位（仅防 import 链断裂，工具走 raw HTTP 不真正 import SDK 类）。
+
+**全量回归**：`pytest app/tests/shared/utils/notification/ app/tests/shared/tools/skills/feishu/ app/tests/shared/utils/agent/ app/tests/core/agent/` 859 passed 零回归；`feishu` 单目录 430 passed（含本次 56 个新用例）。
+
+### 显式声明不做（留待后续 PR）
+
+- ❌ 创建 / 更新 / 删除 / 批量写入记录
+- ❌ 读取字段元信息（`list_fields`）—— LLM 拼 filter 字段名时需自备 schema
+- ❌ 列出数据表 / 列出多维表格 —— LLM 需自备 app_token / table_id
+- ❌ 自动翻页 helper —— 只返回 `has_more` + `page_token`，让 LLM 显式翻页，避免返回过大响应触发 `1254030 TooLargeResponse`
+

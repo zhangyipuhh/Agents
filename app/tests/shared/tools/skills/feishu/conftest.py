@@ -1569,6 +1569,20 @@ _lark_api_wiki.v2 = _lark_api_wiki_v2
 _lark_api.wiki = _lark_api_wiki
 
 
+# ---------------------------------------------------------------------------
+# 构造 lark_oapi.api.bitable.v1 子模块（2026-09-14 Bitable 只读工具落地）
+# ---------------------------------------------------------------------------
+# FeishuBitableClient 三个方法全部走 ``lark.BaseRequest`` 原生 HTTP 路径,
+# 不依赖 SDK 子模块的 Request/Response 类型;此 mock 仅保证 ``lark_oapi.api.bitable``
+# / ``lark_oapi.api.bitable.v1`` 模块可被 import 探测,避免无关链路 import 时
+# 触发 ``ImportError``。
+_lark_api_bitable = types.ModuleType("lark_oapi.api.bitable")
+_lark_api_bitable.__path__ = []
+_lark_api_bitable_v1 = types.ModuleType("lark_oapi.api.bitable.v1")
+_lark_api_bitable.v1 = _lark_api_bitable_v1
+_lark_api.bitable = _lark_api_bitable
+
+
 # 注册到 sys.modules
 sys.modules["lark_oapi"] = _lark
 sys.modules["lark_oapi.api"] = _lark_api
@@ -1584,6 +1598,8 @@ sys.modules["lark_oapi.api.drive"] = _lark_api_drive
 sys.modules["lark_oapi.api.drive.v1"] = _lark_api_drive_v1
 sys.modules["lark_oapi.api.wiki"] = _lark_api_wiki
 sys.modules["lark_oapi.api.wiki.v2"] = _lark_api_wiki_v2
+sys.modules["lark_oapi.api.bitable"] = _lark_api_bitable
+sys.modules["lark_oapi.api.bitable.v1"] = _lark_api_bitable_v1
 sys.modules["lark_oapi.ws"] = _ws_module
 sys.modules["lark_oapi.core"] = _lark_core
 sys.modules["lark_oapi.core.enum"] = _lark_core_enum
