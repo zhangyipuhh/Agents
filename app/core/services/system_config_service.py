@@ -119,7 +119,7 @@ class SystemConfigService:
         return result
 
     def _validate_config(self, meta: GroupMeta, config: Dict[str, Any]) -> Dict[str, Any]:
-        """pydantic 校验(支持 partial:只校验 config 中实际提供的 key)。
+        """pydantic 校验(支持 partial:只校验 config 中实际提供的 key,返回值仅含已校验字段)。
 
         设计动机(2026-09-14 修复):
             用户通过 UI 更新某组配置时,payload 只含**实际改动**的字段;
@@ -128,6 +128,7 @@ class SystemConfigService:
             1. DB 现存敏感字段是 fernet: 密文,pydantic 校验器看到非合法明文报错;
             2. 即便校验通过,也会因为重新加密 → 落库,绕了一圈毫无意义。
             修复后:只校验用户传入的 key,未传入的不校验也不写入。
+            返回值仅含 config 中传入的 key(用 model_dump(include=...) 避免 pydantic 默认值污染)。
 
         Raises:
             ValueError: 校验失败
@@ -136,7 +137,10 @@ class SystemConfigService:
             try:
                 # 用 Settings 子类校验,但不读 env(只传 config)
                 instance = meta.settings_cls(**config)
-                return instance.model_dump()
+                # 仅返回 config 中用户实际传入的字段,避免 pydantic 默认值污染(对未传字段默认填空串/0/false 等)
+                if config:
+                    return instance.model_dump(include=list(config.keys()))
+                return {}
             except ValidationError as exc:
                 raise ValueError(f"配置校验失败: {exc}") from exc
         # field_specs: 简单类型校验
