@@ -56,6 +56,7 @@ import ToolManager from './ToolManager.vue'
 import SkillManager from './SkillManager.vue'
 import TaskSchedulerManager from './TaskSchedulerManager.vue'
 import EmailSettingsManager from './EmailSettingsManager.vue'
+import BasicSettingsManager from './BasicSettingsManager.vue'
 // 2026-09-03 新增:飞书设置管理(消息设置 → 飞书设置 channel)
 import FeishuSettingsManager from './FeishuSettingsManager.vue'
 import MessageBubble from './MessageBubble.vue'
@@ -229,7 +230,11 @@ const NAV_MENU_METADATA = {
   // 2026-07-31 新增：一级菜单「消息设置」（id=messaging），为邮件/钉钉/飞书/企业微信等多通道消息统一入口
   // - 后端 MENU_CATALOG 注册为 level=1，icon_key='message'，sort_order=10
   // - 内部挂着 task-scheduler.email-settings（保持原 id）+ 三个 Tab
-  'messaging': { id: 'messaging', label: '消息设置', icon: 'M2 10c0-3.771 3.708-7 8.5-7s8.5 3.229 8.5 7-3.708 7-8.5 7c-.463 0-.922-.03-1.37-.088L5 19l1.395-3.72C3.829 14.057 2 12.146 2 10Z' }
+  'messaging': { id: 'messaging', label: '消息设置', icon: 'M2 10c0-3.771 3.708-7 8.5-7s8.5 3.229 8.5 7-3.708 7-8.5 7c-.463 0-.922-.03-1.37-.088L5 19l1.395-3.72C3.829 14.057 2 12.146 2 10Z' },
+  // 2026-09-14 新增：一级菜单「基本设置」(id=system.basic-settings)
+  // - 后端 MENU_CATALOG 注册为 level=1,icon_key='settings',sort_order=9
+  // - 路由 /api/admin/system-settings/*,内部含 6 孙 Tab
+  'system.basic-settings': { id: 'system.basic-settings', label: '基本设置', icon: 'M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z' }
 }
 
 /**
@@ -2274,6 +2279,11 @@ onMounted(() => {
                 <div v-show="activeEmailChannel === 'messaging.feishu'" class="tab-fill-wrapper" data-testid="messaging-channel-feishu-panel">
                   <FeishuSettingsManager :visible-menus="visibleMenus" :is-admin="isAdmin" />
                 </div>
+              </div>
+
+              <!-- 2026-09-14 新增：基本设置(admin) -->
+              <div v-if="isVisibleTab('system.basic-settings') && activeTab === 'system.basic-settings'" class="tab-fill-wrapper">
+                <BasicSettingsManager />
               </div>
 
               <!-- 权限管理（admin，2026-07-23 新增，2026-07-24 改造为子 Tab 切换） -->

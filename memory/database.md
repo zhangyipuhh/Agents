@@ -4,6 +4,23 @@
 
 ## 数据库设计
 
+### `system_settings_groups` 表（2026-09-14 新增）
+
+承接 `.env` 运行期配置的分组 JSONB 表；lifespan 启动时 `SystemConfigService.seed_from_settings()` 把空表 seed 为当前 settings 现值（env 现值 + pydantic default），后续以 DB 为准覆盖 settings 单例；敏感字段用 `SETTINGS_SECRET_KEY` Fernet 加密（值前缀 `fernet:` 标记）。
+
+| 列 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| group_key | TEXT PRIMARY KEY | — | 组 key（如 `llm` / `auth_cookie` / `cors` / `system`） |
+| config | JSONB NOT NULL | `'{}'::jsonb` | 配置（敏感字段值为 `fernet:` 前缀密文） |
+| updated_at | TIMESTAMP NOT NULL | `CURRENT_TIMESTAMP` | 最后更新时间 |
+| updated_by | TEXT NULL | NULL | 最后操作人 username |
+
+索引：`idx_system_settings_groups_updated_at(updated_at DESC)`（管理 UI 按更新时间排序）。
+
+22 个 group_key（settings.py 注册 21 + ContractLLMSettings 注册 1）：`llm` / `vision_llm` / `mcp_sampling` / `contract_llm` / `file_parser` / `auth_cookie` / `auth_bootstrap` / `auth_idle` / `mfa` / `registration_security` / `session` / `cors` / `portal_auth` / `third_party_executor` / `sandbox` / `task_scheduler` / `word_output` / `demonstration` / `mcp_tags` / `skills` / `devops` / `system`。
+
+迁移：`app/migrations/init_all_tables.sql` 第 16.7 节 `CREATE TABLE IF NOT EXISTS system_settings_groups (...)`，幂等可重复执行。
+
 ### users 表 + registration_approval_logs 表（2026-08-30 注册审批落地）
 
 `users` 表新增 4 列（迁移文件 `app/migrations/2026_08_30_add_user_registration_approval.sql` + `init_all_tables.sql` 幂等段同步落地）：

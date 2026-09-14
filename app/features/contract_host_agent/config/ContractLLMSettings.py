@@ -194,6 +194,19 @@ contract_llm_settings = ContractLLMSettings()
 contract_llm_config = contract_llm_settings.get_config()
 
 
+# 2026-09-14 新增: SystemConfigRegistry 自我注册(features 内注册,避免 core 反向 import)
+from app.core.services.system_config_registry import SystemConfigRegistry
+
+SystemConfigRegistry.register(
+    group_key="contract_llm",
+    tab="llm",
+    label="合同 LLM",
+    settings_cls=ContractLLMSettings,
+    sensitive_fields=["model_api_key"],
+    description="合同路由专属 LLM 配置",
+)
+
+
 if __name__ == "__main__":
     # 冒烟测试入口:python -m app.features.contract_host_agent.config.ContractLLMSettings
     print("ContractLLMSettings 实例字段:")

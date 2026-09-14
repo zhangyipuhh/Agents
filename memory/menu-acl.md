@@ -29,6 +29,10 @@
 
 完整定义见 `app/core/menu_registry.py`。
 
+### `system.basic-settings` 基本设置（2026-09-14 新增）
+
+`.env` 迁移到 DB 后的统一管理 UI；6 孙 Tab：LLM 模型 / 文件解析 / 安全认证 / 网络与集成 / 沙箱与任务 / 其他；对应路由 `/api/admin/system-settings/*`，`require_admin_or_menu_acl('system.basic-settings')` 鉴权；敏感字段 `model_api_key` / `mfa.secret_key` / `devops.credential_key` / `auth_bootstrap.default_admin_password` 用 `SETTINGS_SECRET_KEY` Fernet 加密落库，返回值脱敏为 `****`；用户提交 `****` 前缀或空串保持 DB 原值不修改。
+
 ### 一级菜单顺序（最终态，2026-07-31）
 
 `MENU_CATALOG` 一级菜单按 `sort_order` 升序排列如下：

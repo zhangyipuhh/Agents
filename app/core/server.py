@@ -133,6 +133,38 @@ async def lifespan(app: FastAPI):
             type(log_init_exc).__name__,
         )
 
+    # 2026-09-14 新增：基本设置 seed + load(必须在 ensure_admin_exists / MfaService 初始化之前)
+    # 把 .env 现值 seed 到 system_settings_groups 表(空表首次启动),后续以 DB 为准覆盖 settings 单例
+    if DatabasePool.is_enabled() and DatabasePool._pool is not None:
+        try:
+            from app.core.config.settings_crypto import get_master_fernet
+            from app.core.services.system_config_service import SystemConfigService
+            from app.core.config.settings import settings as _settings
+
+            # 缺失或非法 SETTINGS_SECRET_KEY 时 fail-loud
+            get_master_fernet()
+            system_config_service = SystemConfigService(
+                pool=DatabasePool._pool,
+                settings=_settings,
+                log_service=getattr(app.state, "log_service", None),
+            )
+            await system_config_service.seed_from_settings()
+            await system_config_service.load_all()
+            app.state.system_config_service = system_config_service
+            logging.info("[lifespan] SystemConfigService initialized: 22 groups seeded/loaded")
+        except RuntimeError as fernet_exc:
+            # SETTINGS_SECRET_KEY 缺失/非法 → fail-loud,服务不启动
+            logging.error(
+                "[lifespan] SystemConfigService 初始化失败: %s", fernet_exc
+            )
+            raise
+        except Exception as syscfg_exc:
+            logging.error(
+                "[lifespan] SystemConfigService 初始化失败: %s",
+                type(syscfg_exc).__name__,
+            )
+            raise
+
     # 启动时加载 Session 到内存缓存
     from app.shared.utils.auth.session_db import SessionDB
     await SessionDB.initialize()

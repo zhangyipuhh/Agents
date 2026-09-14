@@ -103,6 +103,9 @@ from app.routers.server_inspection_router import (
 from app.shared.routers.mfa_router import (
     router as mfa_router,  # 2026-08-07 新增：MFA 双因素认证（TOTP）
 )
+from app.routers.system_settings_admin_router import (
+    router as system_settings_admin_router,  # 2026-09-14 新增：基本设置管理
+)
 
 
 app = create_app()
@@ -145,6 +148,7 @@ def register_routers(target_app=None):
     _app.include_router(agent_permission_router)  # 2026-07-24 新增：智能体访问权限管理
     _app.include_router(log_router)  # 2026-07-29 新增：统一审计日志管理端查询
     _app.include_router(mfa_router)  # 2026-08-07 新增：MFA 双因素认证（TOTP）
+    _app.include_router(system_settings_admin_router)  # 2026-09-14 新增：基本设置管理
 
 
 register_routers()

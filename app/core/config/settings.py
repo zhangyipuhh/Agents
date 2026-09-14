@@ -1349,3 +1349,213 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# ============================================================================
+# 2026-09-14 新增：SystemConfigRegistry 自我注册
+# 注: 必须在 settings = Settings() 之后,确保各子 Settings 类已实例化
+# ============================================================================
+from app.core.services.system_config_registry import FieldSpec, SystemConfigRegistry
+
+SystemConfigRegistry.register(
+    group_key="llm",
+    tab="llm",
+    label="主模型",
+    settings_cls=LLMSettings,
+    sensitive_fields=["model_api_key"],
+    description="主 LLM 模型配置",
+)
+SystemConfigRegistry.register(
+    group_key="vision_llm",
+    tab="llm",
+    label="视觉模型",
+    settings_cls=VisionLLMSettings,
+    sensitive_fields=["model_api_key_vision"],
+    description="视觉 LLM 模型配置",
+)
+SystemConfigRegistry.register(
+    group_key="mcp_sampling",
+    tab="llm",
+    label="MCP Sampling 模型",
+    settings_cls=MCPSettings,
+    sensitive_fields=["mcp_sampling_model_api_key"],
+    description="MCP Server 回调 LLM 配置",
+)
+SystemConfigRegistry.register(
+    group_key="file_parser",
+    tab="file-parser",
+    label="文件解析",
+    settings_cls=FileParserSettings,
+    description="远程文件解析服务配置",
+)
+SystemConfigRegistry.register(
+    group_key="auth_cookie",
+    tab="security",
+    label="认证 Cookie",
+    settings_cls=AuthCookieSettings,
+    description="HttpOnly Cookie Secure / SameSite 配置",
+)
+SystemConfigRegistry.register(
+    group_key="auth_bootstrap",
+    tab="security",
+    label="默认管理员",
+    settings_cls=AuthBootstrapSettings,
+    sensitive_fields=["default_admin_password"],
+    description="lifespan 启动时默认管理员创建",
+)
+SystemConfigRegistry.register(
+    group_key="auth_idle",
+    tab="security",
+    label="闲置超时",
+    settings_cls=AuthIdleSettings,
+    description="会话 idle 超时自动退出",
+)
+SystemConfigRegistry.register(
+    group_key="mfa",
+    tab="security",
+    label="MFA 双因素",
+    settings_cls=MfaSettings,
+    sensitive_fields=["secret_key"],
+    description="TOTP 双因素认证配置",
+)
+SystemConfigRegistry.register(
+    group_key="registration_security",
+    tab="security",
+    label="注册审批",
+    settings_cls=RegistrationSecuritySettings,
+    description="注册审批 + IP 白名单",
+)
+SystemConfigRegistry.register(
+    group_key="session",
+    tab="security",
+    label="会话并发",
+    field_specs=[
+        FieldSpec(
+            name="agent_chat_max_concurrency",
+            field_type=int,
+            default=1,
+            getter=lambda s: s.agent_chat_max_concurrency,
+            setter=lambda s, v: setattr(s, "agent_chat_max_concurrency", v),
+            description="Agent 聊天接口最大并发数",
+        ),
+    ],
+)
+SystemConfigRegistry.register(
+    group_key="cors",
+    tab="network",
+    label="CORS 跨域",
+    settings_cls=CORSSettings,
+    description="跨域 origin 白名单",
+)
+SystemConfigRegistry.register(
+    group_key="portal_auth",
+    tab="network",
+    label="Portal 子 Token",
+    settings_cls=PortalAuthSettings,
+    description="Portal refresh token TTL",
+)
+SystemConfigRegistry.register(
+    group_key="third_party_executor",
+    tab="network",
+    label="第三方执行器",
+    settings_cls=ThirdPartyExecutorSettings,
+    description="第三方 SSH 命令执行器端点",
+)
+SystemConfigRegistry.register(
+    group_key="sandbox",
+    tab="sandbox-task",
+    label="沙箱",
+    settings_cls=SandboxSettings,
+    description="Docker 沙箱容器配置",
+)
+SystemConfigRegistry.register(
+    group_key="task_scheduler",
+    tab="sandbox-task",
+    label="任务调度",
+    field_specs=[
+        FieldSpec(
+            name="task_scheduler_enabled",
+            field_type=bool,
+            default=True,
+            getter=lambda s: s.task_scheduler_enabled,
+            setter=lambda s, v: setattr(s, "task_scheduler_enabled", v),
+            description="定时任务调度器总开关",
+        ),
+        FieldSpec(
+            name="task_scheduler_timezone",
+            field_type=str,
+            default="Asia/Shanghai",
+            getter=lambda s: s.task_scheduler_timezone,
+            setter=lambda s, v: setattr(s, "task_scheduler_timezone", v),
+            description="定时任务默认时区",
+        ),
+        FieldSpec(
+            name="task_scheduler_max_concurrency",
+            field_type=int,
+            default=1,
+            getter=lambda s: s.task_scheduler_max_concurrency,
+            setter=lambda s, v: setattr(s, "task_scheduler_max_concurrency", v),
+            description="定时任务全局最大并发",
+        ),
+    ],
+)
+SystemConfigRegistry.register(
+    group_key="word_output",
+    tab="misc",
+    label="Word 输出",
+    settings_cls=WordOutputSettings,
+    description="Word 文档高亮颜色 / 输出目录",
+)
+SystemConfigRegistry.register(
+    group_key="demonstration",
+    tab="misc",
+    label="演示模式",
+    settings_cls=DemonstrationSettings,
+    description="演示报告生成开关",
+)
+SystemConfigRegistry.register(
+    group_key="mcp_tags",
+    tab="misc",
+    label="MapAgent MCP 标签",
+    settings_cls=MCPSettings,
+    description="MapAgent MCP 工具标签过滤",
+)
+SystemConfigRegistry.register(
+    group_key="skills",
+    tab="misc",
+    label="Skills",
+    settings_cls=SkillsSettings,
+    description="skills 根路径 / bootstrap 路径",
+)
+SystemConfigRegistry.register(
+    group_key="devops",
+    tab="misc",
+    label="DevOps 凭据",
+    settings_cls=DevOpsSettings,
+    sensitive_fields=["credential_key"],
+    description="DevOps SSH 服务器凭据加密密钥",
+)
+SystemConfigRegistry.register(
+    group_key="system",
+    tab="misc",
+    label="系统开关",
+    field_specs=[
+        FieldSpec(
+            name="email_enabled",
+            field_type=bool,
+            default=True,
+            getter=lambda s: s.email_enabled,
+            setter=lambda s, v: setattr(s, "email_enabled", v),
+            description="邮件系统总开关",
+        ),
+        FieldSpec(
+            name="script_scan_enabled",
+            field_type=bool,
+            default=True,
+            getter=lambda s: s.script_scan_enabled,
+            setter=lambda s, v: setattr(s, "script_scan_enabled", v),
+            description="脚本扫描服务总开关",
+        ),
+    ],
+)
+

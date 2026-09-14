@@ -147,6 +147,7 @@
 | /api/ai-coding-check                | ai_coding_check_router | AI 代码检查 Agent                                                                                                                                                                     |
 | ├ POST /review                     |                        | 评审开发者数据（非流式 JSON API）                                                                                                                                                     |
 | /api/admin/email                    | email_admin_router     | 邮件系统管理（详见「邮件系统」章节）：SMTP 配置 CRUD + 连接测试 + 策略 CRUD + 测试发送（multipart/form-data）+ 按策略发送                                                           |
+| /api/admin/system-settings          | system_settings_admin_router | 基本设置管理（2026-09-14 新增，详见 memory/architecture.md「基本设置 SystemConfigService」章节）：GET 列表/单组（脱敏）+ PUT 更新（pydantic 校验 + Fernet 加密 + `****` 保持原值 + 审计）+ POST 重置；逐端点 `require_admin_or_menu_acl('system.basic-settings')` |
 | /api/notification                    | notification_router    | **通用通知渠道接口（2026-09-03 新增；无 /admin/ 段；`channel_type` 参数控制；本期仅暴露飞书，ACL 走 `messaging.feishu.{apps,policies,test}`；详见「通知渠道通用表设计原则」章节）** |
 
 ## 通知渠道通用接口（2026-09-03 新增）

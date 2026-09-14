@@ -2963,6 +2963,26 @@ DROP INDEX IF EXISTS idx_notification_targets_agent_name;
 CREATE INDEX IF NOT EXISTS idx_notification_targets_created_by_user_id
     ON notification_targets(created_by_user_id);
 
+-- ========== 16.7. system_settings_groups（系统基本设置分组配置表）==========
+-- 用途：承接 .env 中运行期配置，按 group_key 分组存储，config JSONB 内敏感字段
+--       使用 SETTINGS_SECRET_KEY Fernet 加密（值前缀 'fernet:' 标记）。
+-- 启动：lifespan 启动时 SystemConfigService.seed_from_settings() 把空表 seed 为
+--       当前 settings 现值（env 现值 + pydantic default）；后续启动以 DB 为准。
+CREATE TABLE IF NOT EXISTS system_settings_groups (
+    group_key   TEXT PRIMARY KEY,
+    config      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_by  TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_system_settings_groups_updated_at
+    ON system_settings_groups (updated_at DESC);
+
+COMMENT ON TABLE system_settings_groups IS '系统基本设置分组配置表(.env 迁移)';
+COMMENT ON COLUMN system_settings_groups.group_key IS '组 key，如 llm / auth_cookie / cors';
+COMMENT ON COLUMN system_settings_groups.config IS '配置 JSONB，敏感字段值为 fernet: 前缀密文';
+COMMENT ON COLUMN system_settings_groups.updated_by IS '最后操作人 username';
+
 -- ========== 17. agent_task_schedules / agent_task_runs（智能体定时任务）==========
 -- 应用内调度器的任务定义与执行历史。数据库是任务定义真相源；服务启动时加载 enabled 任务。
 -- 所有 DDL 使用 IF NOT EXISTS / IF NOT EXISTS（索引），幂等可重复执行。

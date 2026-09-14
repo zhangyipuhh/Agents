@@ -3673,6 +3673,63 @@ export async function replaceUserAgentGrants(userId, agentNames) {
   return response.json()
 }
 
+// ============================================================================
+// 基本设置（2026-09-14 新增）
+// ============================================================================
+
+/**
+ * 列出所有配置组（按 tab 分组）
+ * @returns {Promise<{tabs: Object<string, Array>}>}
+ */
+export async function fetchSystemSettings() {
+  const res = await fetchWithAuth('/api/admin/system-settings')
+  if (!res.ok) throw new Error(`加载基本设置失败: ${res.status}`)
+  return res.json()
+}
+
+/**
+ * 读单组配置（脱敏）
+ * @param {string} groupKey
+ * @returns {Promise<Object>}
+ */
+export async function fetchSystemSettingsGroup(groupKey) {
+  const res = await fetchWithAuth(`/api/admin/system-settings/${groupKey}`)
+  if (!res.ok) throw new Error(`加载配置组失败: ${res.status}`)
+  return res.json()
+}
+
+/**
+ * 更新单组配置
+ * @param {string} groupKey
+ * @param {Object} config
+ * @returns {Promise<Object>}
+ */
+export async function updateSystemSettingsGroup(groupKey, config) {
+  const res = await fetchWithAuth(`/api/admin/system-settings/${groupKey}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ config }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || `保存失败: ${res.status}`)
+  }
+  return res.json()
+}
+
+/**
+ * 重置单组为 default
+ * @param {string} groupKey
+ * @returns {Promise<Object>}
+ */
+export async function resetSystemSettingsGroup(groupKey) {
+  const res = await fetchWithAuth(`/api/admin/system-settings/${groupKey}/reset`, {
+    method: 'POST',
+  })
+  if (!res.ok) throw new Error(`重置失败: ${res.status}`)
+  return res.json()
+}
+
 // ============================================================
 // 用户服务器管理 API（2026-07-24 新增）
 // 对应后端 /api/admin/user-servers 管理接口

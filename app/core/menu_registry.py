@@ -138,6 +138,11 @@ MENU_CATALOG: List[MenuItem] = [
     MenuItem(id="permission-management.agent-access", level=2,
              parent_id="permission-management",
              label="智能体访问", icon_key="robot", sort_order=2, required_role="admin"),
+    # 2026-09-14 新增：基本设置菜单(.env 迁移到 DB 后的统一管理入口)
+    # - 6 孙 Tab: LLM 模型 / 文件解析 / 安全认证 / 网络与集成 / 沙箱与任务 / 其他
+    # - ACL: system.basic-settings(对应路由 require_admin_or_menu_acl)
+    MenuItem(id="system.basic-settings", level=1, parent_id=None,
+             label="基本设置", icon_key="settings", sort_order=9, required_role="admin"),
 ]
 
 
