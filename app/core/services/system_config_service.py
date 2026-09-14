@@ -119,7 +119,15 @@ class SystemConfigService:
         return result
 
     def _validate_config(self, meta: GroupMeta, config: Dict[str, Any]) -> Dict[str, Any]:
-        """pydantic 校验
+        """pydantic 校验(支持 partial:只校验 config 中实际提供的 key)。
+
+        设计动机(2026-09-14 修复):
+            用户通过 UI 更新某组配置时,payload 只含**实际改动**的字段;
+            其他未改字段既不出现在 config,也不应被校验。
+            原实现要求传入"完整 config"(含未改字段的 DB 现值),导致:
+            1. DB 现存敏感字段是 fernet: 密文,pydantic 校验器看到非合法明文报错;
+            2. 即便校验通过,也会因为重新加密 → 落库,绕了一圈毫无意义。
+            修复后:只校验用户传入的 key,未传入的不校验也不写入。
 
         Raises:
             ValueError: 校验失败
@@ -239,13 +247,18 @@ class SystemConfigService:
     ) -> Dict[str, Any]:
         """更新单组
 
-        敏感字段处理:
-        - 传 '****' 前缀或空串 → 保持 DB 原值
-        - 传非 '****' 明文 → 加密落库
+        契约(2026-09-14 修复,partial update):
+        - config 只含用户**实际改动**的字段;未传字段保持 DB 原值;
+        - 敏感字段:
+          * 传 '****' 或 '' → 从 payload 移除,落库时沿用 DB 现值(语义等价于"不改");
+          * 传其他非空明文 → 加密后落库覆盖。
+        - 校验只针对 config 里**用户实际传入**的字段(partial 校验),
+          不应要求传入完整 config,也不应把 DB 现存的 fernet: 密文塞进
+          pydantic 校验器(那是错的设计 — 校验器期望明文,密文只会报错)。
 
         Args:
             group_key: 组 key
-            config: 新配置(部分字段)
+            config: 用户改动的字段(部分字段)
             operator: 操作人 username
 
         Returns:
@@ -253,11 +266,22 @@ class SystemConfigService:
 
         Raises:
             KeyError: group_key 未注册
-            ValueError: pydantic 校验失败
+            ValueError: pydantic 校验失败(用户传入字段类型/格式不合法)
         """
         meta = SystemConfigRegistry.get(group_key)
 
-        # 读 DB 现值(用于敏感字段 '****' 保持)
+        # 1. 处理敏感字段占位符:从 payload 移除 '****'/'' 占位项,
+        #    让"用户不改 = payload 不含该项" = 落库时沿用 DB 现值(下文 partial merge)。
+        payload_to_apply: Dict[str, Any] = {}
+        for k, v in config.items():
+            if k in meta.sensitive_fields and isinstance(v, str) and v in ("****", ""):
+                continue
+            payload_to_apply[k] = v
+
+        # 2. partial 校验:只校验用户传入的字段
+        validated = self._validate_config(meta, payload_to_apply)
+
+        # 3. 读 DB 现值,partial merge(只覆盖用户传入的字段)
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT config FROM system_settings_groups WHERE group_key = $1",
@@ -269,18 +293,11 @@ class SystemConfigService:
             if isinstance(existing_config, str):
                 existing_config = json.loads(existing_config)
 
-        # 处理敏感字段 '****' 保持
         merged = dict(existing_config)
-        for k, v in config.items():
-            if k in meta.sensitive_fields:
-                if isinstance(v, str) and (v.startswith("****") or v == ""):
-                    continue  # 保持原值
-            merged[k] = v
-
-        # 校验
-        validated = self._validate_config(meta, merged)
-        # 加密
-        encrypted = self._encrypt_sensitive(meta, validated)
+        # 校验过的明文合并进 merged,已校验 / 已类型转换
+        merged.update(validated)
+        # 加密敏感字段(只对 payload 涉及的字段重新加密;DB 现存密文保持原值)
+        encrypted = self._encrypt_sensitive(meta, merged)
 
         # 落库
         async with self._pool.acquire() as conn:

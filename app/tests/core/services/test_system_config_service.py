@@ -16,7 +16,7 @@ from cryptography.fernet import Fernet
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.core.config.settings_crypto import encrypt_value, get_master_fernet
+from app.core.config.settings_crypto import decrypt_value, encrypt_value, get_master_fernet
 from app.core.services.system_config_registry import SystemConfigRegistry
 from app.core.services.system_config_service import SystemConfigService
 
@@ -244,7 +244,7 @@ class TestUpdateGroup:
 
     @pytest.mark.asyncio
     async def test_update_masked_value_keeps_original(self, fernet_key, fake_settings):
-        """敏感字段传 '****' 前缀 → 保持 DB 原值不变"""
+        """敏感字段传 '****' 前缀 → 保持 DB 原值明文不变(密文形式可能因 Fernet 每次带 IV/timestamp 而变化,但解密后明文必须一致)"""
         SystemConfigRegistry.register(
             group_key="llm", tab="llm", label="主模型",
             settings_cls=_LLMSettings, sensitive_fields=["model_api_key"],
@@ -259,8 +259,39 @@ class TestUpdateGroup:
             {"model_api_key": "****", "model_temperature": 0.9},
             operator="admin",
         )
-        assert conn.rows["llm"]["config"]["model_api_key"] == old_cipher
+        # Fernet 加密每次随机 IV/timestamp,密文 byte 不一致是正常;断言语义保持:解密后明文仍是 'sk-old'
+        stored = conn.rows["llm"]["config"]["model_api_key"]
+        assert stored.startswith("fernet:")
+        assert decrypt_value(stored) == "sk-old"
         assert conn.rows["llm"]["config"]["model_temperature"] == 0.9
+
+    @pytest.mark.asyncio
+    async def test_update_decrypts_existing_sensitive_before_validation(self, fernet_key, fake_settings):
+        """敏感字段 DB 现存为 fernet: 密文时,pydantic 校验前必须先解密,否则把密文当明文去校验会报错。
+
+        复现场景: 用户没传该敏感字段(payload 不含 secret_key),merged 沿用 DB 密文;
+        若直接 _validate_config(merged),pydantic 校验器看到 'fernet:gAAA...' 这种 base64
+        但末尾 padding 不合法 → ValueError,误以为用户输入了非法密钥。
+        """
+        # 用 _LLMSettings 充当"secret_key 类字段"载体(model_api_key 也是 str 类型,
+        # 我们的修复在 _validate_config 前调用 _decrypt_sensitive 通用处理所有 sensitive_fields,
+        # 与具体 Settings schema 无关)。
+        SystemConfigRegistry.register(
+            group_key="llm", tab="llm", label="主模型",
+            settings_cls=_LLMSettings, sensitive_fields=["model_api_key"],
+        )
+        legit_key = "sk-legit-32-byte-key-padded-here!"  # 明文任意非空字符串即可
+        old_cipher = encrypt_value(legit_key)
+        conn = _FakeConn(rows={
+            "llm": {"config": {"model_api_key": old_cipher}},
+        })
+        svc = SystemConfigService(pool=_FakePool(conn), settings=fake_settings)
+        # 用户只传一个无关字段,model_api_key 不传 → 应保持原值 + 不报校验失败
+        await svc.update_group("llm", {"model_name": "new"}, operator="admin")
+        stored = conn.rows["llm"]["config"]["model_api_key"]
+        assert stored.startswith("fernet:")
+        assert decrypt_value(stored) == legit_key
+        assert conn.rows["llm"]["config"]["model_name"] == "new"
 
     @pytest.mark.asyncio
     async def test_update_unknown_group_raises(self, fernet_key, fake_settings):

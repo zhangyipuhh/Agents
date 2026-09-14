@@ -134,7 +134,7 @@ describe('GroupFormSection', () => {
     expect(sw.find('.switch-label').text()).toBe('关闭');
   });
 
-  it('sensitive 字段渲染为 password input + placeholder「留空保持不变」', async () => {
+  it('sensitive 字段渲染为 password input + placeholder 显示脱敏值(无当前值时回退默认)', async () => {
     const wrapper = mount(GroupFormSection, {
       props: { groupKey: 'g', label: 'G', fields: [{ name: 'k', label: 'K', type: 'str', sensitive: true }] },
     });
@@ -142,6 +142,27 @@ describe('GroupFormSection', () => {
     const input = wrapper.find('[data-testid="field-input-k"]');
     expect(input.attributes('type')).toBe('password');
     expect(input.attributes('placeholder')).toBe('留空保持不变');
+  });
+
+  it('sensitive 字段从后端拉到脱敏值后,placeholder 显示「当前值: ****abcd | 留空保持不变」', async () => {
+    const wrapper = mount(GroupFormSection, {
+      props: { groupKey: 'g', label: 'G', fields: [{ name: 'k', label: 'K', type: 'str', sensitive: true }] },
+    });
+    await flushPromises();
+    // 默认 mock 返回 config: {} — 没值。改 mock 让它带脱敏值:
+    api.fetchSystemSettingsGroup.mockResolvedValueOnce({
+      group_key: 'g', tab: 'g', label: 'G',
+      config: { k: '****abcd' },
+      updated_at: null, updated_by: null,
+    });
+    // 重新触发 load,触发敏感字段占位符刷新
+    await wrapper.vm.load();
+    await flushPromises();
+    const input = wrapper.find('[data-testid="field-input-k"]');
+    expect(input.attributes('placeholder')).toContain('当前值: ****abcd');
+    expect(input.attributes('placeholder')).toContain('留空保持不变');
+    // input value 必须为空(不要把 '****abcd' 当成用户输入的明文)
+    expect(input.element.value).toBe('');
   });
 
   it('json 字段渲染为 textarea + 解析失败 alert', async () => {
@@ -191,6 +212,44 @@ describe('GroupFormSection', () => {
     expect(calledKey).toBe('llm');
     expect(calledPayload).not.toHaveProperty('model_api_key');  // 敏感字段空串 → 不传
     expect(calledPayload).toHaveProperty('model_name');           // 普通字段照常传
+  });
+
+  it('敏感字段从未填入(用户未改动)时,保存 payload 完全不包含该字段(不传空串/不传占位符)', async () => {
+    // 用户进 UI 看到敏感字段 placeholder 显示 "当前值: ****abcd | 留空保持不变",
+    // 不动该字段,直接点保存 — payload 必须不含 secret_key,后端无脑信任 "不在 payload = 不改"。
+    const wrapper = mount(GroupFormSection, {
+      props: {
+        groupKey: 'mfa', label: 'MFA 双因素',
+        fields: [
+          { name: 'issuer', label: 'Issuer', type: 'str' },
+          { name: 'secret_key', label: 'Secret Key', type: 'str', sensitive: true },
+          { name: 'mfa_required_for_admin', label: '管理员强制 MFA', type: 'bool' },
+        ],
+      },
+    });
+    await flushPromises();
+    // 用户只修改 issuer,其他不动
+    await wrapper.find('[data-testid="field-input-issuer"]').setValue('MyAIOps');
+    await wrapper.find('[data-testid="save-btn"]').trigger('click');
+    await flushPromises();
+    const [, calledPayload] = api.updateSystemSettingsGroup.mock.calls.at(-1);
+    expect(calledPayload).toEqual({ issuer: 'MyAIOps', mfa_required_for_admin: false });
+    expect(calledPayload).not.toHaveProperty('secret_key');
+  });
+
+  it('敏感字段用户实际输入新值时才传 payload', async () => {
+    const wrapper = mount(GroupFormSection, {
+      props: {
+        groupKey: 'mfa', label: 'MFA',
+        fields: [{ name: 'secret_key', label: 'Secret Key', type: 'str', sensitive: true }],
+      },
+    });
+    await flushPromises();
+    await wrapper.find('[data-testid="field-input-secret_key"]').setValue('NEW_FERNET_KEY_64CHAR_BASE64==');
+    await wrapper.find('[data-testid="save-btn"]').trigger('click');
+    await flushPromises();
+    const [, calledPayload] = api.updateSystemSettingsGroup.mock.calls.at(-1);
+    expect(calledPayload).toHaveProperty('secret_key', 'NEW_FERNET_KEY_64CHAR_BASE64==');
   });
 
   it('保存成功后显示 alert.success「保存成功,需重启服务生效」', async () => {

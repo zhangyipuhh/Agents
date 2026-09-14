@@ -49,7 +49,7 @@
             <code class="field-key-chip" :data-testid="`field-key-${field.name}`" :title="`后端字段名: ${field.name}`">{{ field.name }}</code>
             <span class="field-type-chip" :data-testid="`field-type-${field.name}`">{{ fieldTypeLabel(field) }}</span>
             <span v-if="field.required" class="required-mark" aria-label="必填">*</span>
-            <span v-if="field.sensitive" class="sensitive-mark" aria-label="敏感字段" title="敏感字段(留空保持原值)">🔒</span>
+            <span v-if="field.sensitive" class="sensitive-mark" aria-label="敏感字段" title="敏感字段(留空保持原值,填入新值将覆盖)">🔒</span>
           </span>
         </label>
 
@@ -59,7 +59,7 @@
           :id="`field-${field.name}`"
           type="password"
           class="form-input"
-          :placeholder="field.placeholder || '留空保持不变'"
+          :placeholder="sensitiveFieldPlaceholder(field)"
           :value="formData[field.name] || ''"
           :data-testid="`field-input-${field.name}`"
           @input="formData[field.name] = $event.target.value"
@@ -181,6 +181,8 @@ const props = defineProps({
 });
 
 const formData = reactive({});
+// 敏感字段后端脱敏占位符(用于 placeholder 提示),与 formData 解耦
+const sensitivePlaceholders = ref({});
 const loading = ref(false);
 const saving = ref(false);
 const resetting = ref(false);
@@ -205,6 +207,14 @@ function fieldTypeLabel(field) {
   }
 }
 
+// 敏感字段 placeholder:展示后端脱敏占位符(如 '****abcd'),提示用户
+// 当前值存在,但不暴露明文。留空 = 后端保持原值。
+function sensitiveFieldPlaceholder(field) {
+  const placeholder = sensitivePlaceholders.value[field.name];
+  if (placeholder) return `当前值: ${placeholder} | 留空保持不变`;
+  return field.placeholder || '留空保持不变';
+}
+
 function clearAlerts() {
   message.value = '';
   error.value = '';
@@ -219,7 +229,18 @@ async function load() {
     const cfg = typeof data.config === 'string' ? safeJsonParse(data.config, {}) : (data.config || {});
     // 清空 + 填充
     for (const k of Object.keys(formData)) delete formData[k];
-    Object.assign(formData, cfg);
+    // 敏感字段:后端已脱敏为 '****' / '****<后4位>' 占位符,前端不写入 formData,
+    // 仅记入 sensitivePlaceholders(用于 placeholder 提示 + 保存时跳过判断)。
+    // 用户留空 → 不传 payload → 后端保留原值。
+    // 用户输入新值 → 写入 formData → 提交时作为新明文覆盖。
+    for (const field of props.fields) {
+      if (field.sensitive && cfg[field.name]) {
+        sensitivePlaceholders.value[field.name] = String(cfg[field.name]);
+        // formData[field.name] 留空
+      } else {
+        formData[field.name] = cfg[field.name];
+      }
+    }
     updatedAt.value = data.updated_at;
     updatedBy.value = data.updated_by;
   } catch (e) {
@@ -261,10 +282,14 @@ async function handleSave() {
   clearAlerts();
   try {
     const payload = {};
+    let hasError = false;
     for (const field of props.fields) {
       const v = formData[field.name];
-      // 敏感字段空串/null → 不传(后端保持原值)
-      if (field.sensitive && (v === '' || v == null)) continue;
+      // 敏感字段:留空/null/undefined → 不传(后端保持原值)。
+      // 仅当用户实际输入了非空明文才提交 — 避免误传占位符或空字符串覆盖原值。
+      if (field.sensitive) {
+        if (v === '' || v == null) continue;
+      }
       // json 字段尝试解析
       if (field.type === 'json' && typeof v === 'string' && v.trim() !== '') {
         try {
@@ -272,18 +297,29 @@ async function handleSave() {
         } catch {
           error.value = `字段 ${field.label} 不是合法 JSON,已按原值提交`;
           payload[field.name] = v;
+          hasError = true;
         }
       } else {
-        payload[field.name] = v;
+        // bool 字段未初始化 → false 而非 undefined(避免污染 payload)
+        if (field.type === 'bool' && v === undefined) {
+          payload[field.name] = false;
+        } else {
+          payload[field.name] = v;
+        }
       }
     }
-    const data = await updateSystemSettingsGroup(props.groupKey, payload);
-    const cfg = typeof data.config === 'string' ? safeJsonParse(data.config, {}) : (data.config || {});
-    for (const k of Object.keys(formData)) delete formData[k];
-    Object.assign(formData, cfg);
-    updatedAt.value = data.updated_at;
-    updatedBy.value = data.updated_by;
-    message.value = '保存成功,需重启服务生效';
+    // JSON 解析失败但其他字段合法 → 不阻断提交(已落原值)
+    await updateSystemSettingsGroup(props.groupKey, payload);
+    // 保存成功后重新加载 — 敏感字段又会被脱敏为占位符,前端 formData 清空,sensitivePlaceholders 刷新。
+    // load 内部会清空 alerts,若 JSON 错误已设,需在 load 后再写一次。
+    await load();
+    if (hasError) {
+      // 保留 JSON 错误告警
+      error.value = 'JSON 字段含原值提交,详情见上方';
+      message.value = '已提交,含部分告警';
+    } else {
+      message.value = '保存成功,需重启服务生效';
+    }
   } catch (e) {
     error.value = e.message || '保存失败';
   } finally {
