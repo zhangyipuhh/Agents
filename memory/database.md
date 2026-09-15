@@ -166,6 +166,12 @@ AI 回复的赞/踩反馈入库表。同一用户对同一条 AI 回复只能保
 
 **服务**：`app/shared/utils/agent/task_scheduler_service.py::TaskSchedulerService`，由 lifespan 真实初始化到 `app.state.task_scheduler_service`；测试中只能注入真实 service 实例，不允许通过 `app.state.db = MagicMock()` 虚构生产不存在的依赖。`execute_schedule` 根据 `target_type` 分支：`agent` 复用 `build_agent_instance + agent.invoke`；`script` 通过 `script_discovery_service.get_script()` 取 `RegisteredScript`，构造 `ScriptContext` 调用 `registered.func(context)`，把返回值用 `normalize_script_result` 拆为 `(body, attachments)` 后写入 `output_text`。当 `notify_enabled=True` 且 `notify_policy_id` 非空时，调用 `_dispatch_script_email` 按策略模板渲染并通过 `EmailService.send_email` 发邮件（fail-soft：邮件失败仅记 warning，不污染 run 状态）。`TaskSchedulerService.__init__` 新增 `email_config_service` 入参（可选），由 `app/core/server.py::lifespan` 在初始化时透传 `app.state.email_config_service`。
 
+**running 行 stale 守卫（2026-09-15 落地）**：`agent_task_runs.status='running'` 可能因进程崩溃 / kill -9 / OOM / 容器重启等原因永久残留为孤儿行，导致后续所有同 schedule 触发在 `_get_running_run` 守卫命中后被立刻翻成 `skipped` + `previous run still running`，业务表现即"执行历史全是 skipped"。两层防御：
+1. **`_get_running_run` 加 `started_at > now() - make_interval(secs => RUN_STALE_THRESHOLD_SECONDS)` 守卫**（默认 1800s / 30 分钟），超时 running 行视为不存在，让后续触发正常进入执行链路；
+2. **`execute_schedule` 入口在 `_update_run(run_id, status='running')` 之后、`_install_run_logger` 之前**加一次 `UPDATE agent_task_runs SET status='failed', finished_at=now(), error_message=COALESCE(error_message,'') || E'\n[auto-recycle] ...'` 回收，把同 schedule 下其他超龄 running 孤儿行一次性翻成 failed（fail-soft：SQL 异常时仅 logger.exception 不阻断主任务）；
+3. 阈值 `RUN_STALE_THRESHOLD_SECONDS = 1800` 为模块级常量；如未来出现"长任务 > 30 分钟"场景，调大常量或改造为 `settings.task_scheduler.run_stale_seconds`；
+4. 测试 `app/tests/shared/utils/agent/test_task_scheduler_service.py` 新增 4 用例：`test_get_running_run_ignores_stale_running_row` / `test_get_running_run_returns_recent_running_within_threshold` / `test_execute_schedule_recycles_stale_running_before_installing_logger` / `test_execute_schedule_recycle_failure_does_not_break_main_task`，全部 PASS。
+
 ### 脚本定时任务系统（target_type='script'）
 
 定时任务支持 `target_type='script'` 类型，允许把 `app/scripts/` 下用 `@register_script` 装饰的 Python 异步函数绑定为定时任务，与智能体任务共用 `agent_task_schedules` 表、调度器、执行历史与日志文件。

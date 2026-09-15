@@ -368,6 +368,7 @@ def test_execute_schedule_skips_when_previous_run_is_running():
         "id": 1,
         "schedule_id": row["id"],
         "status": "running",
+        "started_at": datetime.utcnow(),  # 2026-09-15: 守卫要求 started_at 在阈值内
         "error_message": None,
     }
 
@@ -376,6 +377,191 @@ def test_execute_schedule_skips_when_previous_run_is_running():
     skipped_runs = [run for run in db.runs.values() if run["status"] == "skipped"]
     assert skipped_runs
     assert "previous run still running" in skipped_runs[0]["error_message"]
+
+
+# ===== running 行 stale 守卫测试（2026-09-15 新增） =====
+
+
+def test_get_running_run_ignores_stale_running_row():
+    """2026-09-15: stale 守卫 — ``_get_running_run`` 必须忽略超龄 running 行。
+
+    反向用例：构造一条 started_at 距今 31 分钟（超过 1800s 阈值）的 running
+    行；守卫应返回 None（视为不存在），让后续触发能正常进入执行链路。
+    """
+    from app.shared.utils.agent.task_scheduler_service import (
+        RUN_STALE_THRESHOLD_SECONDS,
+        TaskSchedulerService,
+    )
+
+    db = FakeDb()
+    service = TaskSchedulerService(db=db, agent_config_service=MagicMock(), scheduler=FakeScheduler())
+    row = asyncio.run(service.create_schedule(make_payload(), created_by_user_id=1))
+    db.runs[1] = {
+        "id": 1,
+        "schedule_id": row["id"],
+        "status": "running",
+        "started_at": datetime.utcnow() - __import__("datetime").timedelta(seconds=RUN_STALE_THRESHOLD_SECONDS + 60),
+        "error_message": None,
+    }
+
+    result = asyncio.run(service._get_running_run(row["id"]))
+
+    assert result is None, "超龄 running 行应被守卫过滤，不应让后续触发误判 previous run still running"
+
+
+def test_get_running_run_returns_recent_running_within_threshold():
+    """2026-09-15: stale 守卫 — 阈值内的 running 行仍被识别为「在跑」。
+
+    边界用例：构造 5 分钟前启动的 running 行；守卫应正常返回该行，
+    行为与改造前一致（避免误伤正在执行的任务）。
+    """
+    from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+
+    db = FakeDb()
+    service = TaskSchedulerService(db=db, agent_config_service=MagicMock(), scheduler=FakeScheduler())
+    row = asyncio.run(service.create_schedule(make_payload(), created_by_user_id=1))
+    db.runs[1] = {
+        "id": 1,
+        "schedule_id": row["id"],
+        "status": "running",
+        "started_at": datetime.utcnow() - __import__("datetime").timedelta(seconds=300),
+        "error_message": None,
+    }
+
+    result = asyncio.run(service._get_running_run(row["id"]))
+
+    assert result is not None
+    assert result["id"] == 1
+    assert result["status"] == "running"
+
+
+def test_execute_schedule_recycles_stale_running_before_installing_logger():
+    """2026-09-15: execute_schedule 入口必须回收超龄 running 孤儿行。
+
+    端到端用例：构造一条 31 分钟前的孤儿 running 行 + 同 schedule 触发；
+    断言 (1) 孤儿行被翻成 failed 且 error_message 含 [auto-recycle]；
+    (2) 新行正常推进（agent.invoke 成功 → status=success）。
+    """
+    from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+
+    class FakeAgent:
+        async def invoke(self, input_state, context, config):
+            return {"messages": [SimpleNamespace(content="执行完成")]}
+
+    fake_agent_config_service = MagicMock()
+    fake_agent_config_service.get_agent_config = AsyncMock(return_value=SimpleNamespace(display_name="地图智能体"))
+    fake_agent_config_service.build_agent_instance = AsyncMock(
+        return_value=(FakeAgent(), SimpleNamespace(session_id="task-1"), {"messages": []})
+    )
+    fake_agent_config_service.prepare_overrides_with_dynamic_suffix = AsyncMock(
+        side_effect=lambda ovrs, sid: ovrs or {}
+    )
+
+    db = FakeDb()
+    service = TaskSchedulerService(
+        db=db, agent_config_service=fake_agent_config_service, scheduler=FakeScheduler()
+    )
+    row = asyncio.run(service.create_schedule(make_payload(), created_by_user_id=1))
+
+    # 注入一条超龄 running 孤儿行（id=99，独立于 _create_run 自增 id=1）
+    orphan_started_at = datetime.utcnow() - __import__("datetime").timedelta(seconds=1860)
+    orphan_id = 99
+    db.runs[orphan_id] = {
+        "id": orphan_id,
+        "schedule_id": row["id"],
+        "session_id": "task-1-orphan",
+        "agent_name": "map_agent",
+        "prompt_snapshot": "历史 prompt",
+        "status": "running",
+        "trigger_type": "scheduled",
+        "scheduled_at": orphan_started_at,
+        "target_type": "agent",
+        "script_name": None,
+        "started_at": orphan_started_at,
+        "finished_at": None,
+        "duration_ms": None,
+        "output_text": None,
+        "error_message": None,
+        "created_at": orphan_started_at,
+    }
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr("app.shared.utils.auth.session_db.SessionDB.add_session", AsyncMock())
+    monkeypatch.setattr("app.shared.utils.auth.session_db.SessionDB.update_session_agent", AsyncMock())
+
+    asyncio.run(service.execute_schedule(row["id"], trigger_type="manual"))
+    monkeypatch.undo()
+
+    # 1) 孤儿行被回收
+    orphan = db.runs[orphan_id]
+    assert orphan["status"] == "failed"
+    assert orphan["finished_at"] is not None
+    assert orphan["error_message"] is not None
+    assert "[auto-recycle]" in orphan["error_message"]
+
+    # 2) 新行（id=1，由 _create_run 分配）正常推进到 success
+    new_run = db.runs[1]
+    assert new_run["status"] == "success"
+
+
+def test_execute_schedule_recycle_failure_does_not_break_main_task():
+    """2026-09-15: stale 回收 SQL 异常时必须 fail-soft，主任务正常推进。
+
+    防御性用例：把 ``_db.execute`` mock 成对含 auto-recycle 的 SQL 抛异常；
+    主任务应正常完成（success），不应因守卫失败而中断执行。
+    """
+    from app.shared.utils.agent.task_scheduler_service import TaskSchedulerService
+
+    class FakeAgent:
+        async def invoke(self, input_state, context, config):
+            return {"messages": [SimpleNamespace(content="执行完成")]}
+
+    fake_agent_config_service = MagicMock()
+    fake_agent_config_service.get_agent_config = AsyncMock(return_value=SimpleNamespace(display_name="地图智能体"))
+    fake_agent_config_service.build_agent_instance = AsyncMock(
+        return_value=(FakeAgent(), SimpleNamespace(session_id="task-1"), {"messages": []})
+    )
+    fake_agent_config_service.prepare_overrides_with_dynamic_suffix = AsyncMock(
+        side_effect=lambda ovrs, sid: ovrs or {}
+    )
+
+    db = FakeDb()
+    original_execute = db.execute
+
+    async def execute_with_recycle_failure(query, *args):
+        if "auto-recycle" in query:
+            raise RuntimeError("DB temporarily unavailable")
+        return await original_execute(query, *args)
+
+    db.execute = execute_with_recycle_failure
+    service = TaskSchedulerService(
+        db=db, agent_config_service=fake_agent_config_service, scheduler=FakeScheduler()
+    )
+    row = asyncio.run(service.create_schedule(make_payload(), created_by_user_id=1))
+
+    # 注入一条超龄 running 孤儿行（id=99，独立于 _create_run 自增 id=1）
+    orphan_started_at = datetime.utcnow() - __import__("datetime").timedelta(seconds=1860)
+    orphan_id = 99
+    db.runs[orphan_id] = {
+        "id": orphan_id,
+        "schedule_id": row["id"],
+        "status": "running",
+        "started_at": orphan_started_at,
+        "error_message": None,
+    }
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr("app.shared.utils.auth.session_db.SessionDB.add_session", AsyncMock())
+    monkeypatch.setattr("app.shared.utils.auth.session_db.SessionDB.update_session_agent", AsyncMock())
+
+    asyncio.run(service.execute_schedule(row["id"], trigger_type="manual"))
+    monkeypatch.undo()
+
+    success_runs = [r for r in db.runs.values() if r["status"] == "success"]
+    assert success_runs, "stale 守卫异常时主任务仍应正常推进到 success"
+    # 孤儿行应保持 running（守卫失败时不动它，由下一轮守卫再次尝试）
+    orphan = db.runs[orphan_id]
+    assert orphan["status"] == "running", "守卫失败不应误翻孤儿行"
 
 
 # ===== 任务运行日志落盘测试（2026-07-15 新增） =====
