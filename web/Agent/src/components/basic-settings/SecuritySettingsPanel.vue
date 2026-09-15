@@ -70,7 +70,13 @@ const mfaFields = [
 ];
 
 const regFields = [
-  { name: 'enabled', label: '启用注册审批', type: 'bool', description: '开启后新注册用户需 admin 审批激活(IP 白名单独立配置)' },
+  { name: 'enabled', label: '启用注册审批', type: 'bool', description: '开启后新注册用户需 admin 审批激活' },
+  { name: 'ip_whitelist', label: 'IP 白名单', type: 'json', multiline: true,
+    description: '允许注册的源 IP 列表(CIDR 或精确 IP),如 ["10.0.0.0/8","192.168.1.100"];留空表示不限制' },
+  { name: 'admin_notification_emails', label: 'Admin 通知邮箱', type: 'json', multiline: true,
+    description: '新注册待审批时抄送的邮箱列表,如 ["admin@corp.com"]' },
+  { name: 'feishu_notify_enabled', label: '同步发送飞书通知', type: 'bool',
+    description: '审批通知同时发到飞书(依赖飞书设置已配置)' },
 ];
 
 const sessionFields = [

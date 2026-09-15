@@ -2,6 +2,29 @@
 
 本章节面向系统管理员,介绍如何启用与配置注册接口 IP 白名单闸门,以及常见错误排查与审计日志查看方式。
 
+> ⚠️ **本章是「闸门 1」IP 白名单的详细文档**。闸门 2（admin 审批）详见「[用户管理 → 注册审批](/help/features/user-management#注册审批)」。
+
+## 1. 前置条件
+
+- 已部署系统，能通过 nginx 反向代理访问（**禁止绕过 nginx 直连 uvicorn**，否则白名单 fail-closed）
+- nginx 已配置 `proxy_set_header X-Real-IP $remote_addr;`
+- admin 角色（用于审批闸门 2 的 pending_approval 用户）
+
+## 2. 启用后的效果
+
+- `/api/auth/register` 仅接受白名单内 IP 的请求
+- 白名单外的 IP 立即返回 403 + 写审计日志 `register_ip_blocked`
+- 用户提交注册后，状态转 `pending_approval`，需 admin 调 `/api/users/{id}/approve` 才能登录
+- **空白名单 fail-closed**：未启用任何 IP 也拒绝所有注册请求（防止误配置导致外网可注册）
+
+## 3. 快速截图参考
+
+| 截图 | 描述 |
+|---|---|
+| ![nginx 配置](/help/screenshots/features-ip-whitelist/nginx-x-real-ip.png) | nginx `proxy_set_header X-Real-IP` 配置示例 |
+| ![.env 白名单配置](/help/screenshots/features-ip-whitelist/env-whitelist.png) | `REGISTRATION_SECURITY_IP_WHITELIST` JSON 列表 |
+| ![审计日志](/help/screenshots/features-ip-whitelist/audit-log.png) | `register_ip_blocked` 审计日志查询 |
+
 ## 概述
 
 注册安全采用「双闸门」访问控制,符合等保三级 §7.1.3 a/e 项要求:

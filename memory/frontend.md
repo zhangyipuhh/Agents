@@ -31,7 +31,25 @@
 - `basic-settings/SettingsPanels.spec.js`（新增 12 用例）：6 个 *SettingsPanel 各自渲染对应 section 数 + title 文案。
 - 回归：`EmailSettingsManager.spec.js` (13) + `EmailSettingsManager.subtab-acl.spec.js` (7) + `FeishuSettingsManager.spec.js` (31) + `UserSettingsDialog.email-settings-l1.spec.js` (5) + `UserSettingsDialog.feishu-channel.spec.js` (4) = **60 用例零回归**。
 
+## `注册审批 regFields 补齐 4 项字段`（2026-09-15 用户反馈"基本设置中缺少注册白名单"）
+
+**问题**：基本设置 → 安全认证 → 注册审批 section 只渲染了 `enabled` 一个 toggle，后端 `RegistrationSecuritySettings` 实际 4 字段（`enabled` / `ip_whitelist` / `admin_notification_emails` / `feishu_notify_enabled`），UI 缺 3 项 → 用户无法在 Web UI 配置 IP 白名单 / admin 通知邮箱 / 飞书审批通知开关，只能去 `.env` 改。
+
+**根因**：`SecuritySettingsPanel.vue::regFields` 初版只声明 1 项，注释骗用户"IP 白名单独立配置"但根本没入口。
+
+**修复**：`SecuritySettingsPanel.vue::regFields` 数组从 1 项扩为 4 项；`ip_whitelist` / `admin_notification_emails` 用 `type: 'json'` + `multiline: true`（复用既有 `JSON 格式,如 ["a", "b"]` placeholder + 保存时 JSON.parse 校验）；`feishu_notify_enabled` 用 `type: 'bool'`。字段顺序与后端 `RegistrationSecuritySettings`（settings.py:651-670）一一对齐。`enabled` description 括号 `(IP 白名单独立配置)` 删除（UI 上 IP 白名单就在隔壁，注释无意义）。
+
+**最终契约**：
+- `SecuritySettingsPanel.vue::regFields`：4 项 `{enabled (bool) / ip_whitelist (json) / admin_notification_emails (json) / feishu_notify_enabled (bool)}`，与后端 `RegistrationSecuritySettings` 字段一一对应
+- `GroupFormSection.vue`：零改动（bool/json/multiline 渲染能力已就绪）
+- `SystemConfigRegistry`：零改动（`registration_security` group 已注册）
+- 路由：`/api/admin/system-settings/registration_security` GET/PUT/POST reset 4 端点已就绪，partial update 语义保证未传字段保留
+- `.env`：4 个 env 字段契约（`REGISTRATION_SECURITY_{ENABLED,IP_WHITELIST,ADMIN_NOTIFICATION_EMAILS,FEISHU_NOTIFY_ENABLED}`）已就绪
+
+**零回归**：`SettingsPanels.spec.js` 12 + `EnumFieldsToSelect.spec.js` 11 = 23 个 basic-settings 用例全绿；既有 60 个相关用例零回归。
+
 **反模式示例**（禁止再犯）：
+
 ```vue
 <!-- ❌ naive-ui 依赖,项目未安装 -->
 <n-card :title="label">

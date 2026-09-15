@@ -9,7 +9,15 @@
         { "title": "智能体对话", "path": "features/chat" },
         { "title": "知识库", "path": "features/knowledge" },
         { "title": "智能运维中心", "path": "features/ops-console" },
-        { "title": "IP 白名单配置", "path": "features/ip-whitelist" }
+        { "title": "IP 白名单配置", "path": "features/ip-whitelist" },
+        { "title": "基本设置", "path": "features/basic-settings" },
+        { "title": "权限管理", "path": "features/permission-management" },
+        { "title": "智能体管理", "path": "features/agent-management" },
+        { "title": "定时任务调度", "path": "features/task-scheduler" },
+        { "title": "飞书通知", "path": "features/feishu-notification" },
+        { "title": "MCP 服务器管理", "path": "features/mcp-servers" },
+        { "title": "合同审批", "path": "features/contract-approval" },
+        { "title": "用户管理", "path": "features/user-management" }
       ]
     },
     { "title": "常见问题", "path": "faq" }
