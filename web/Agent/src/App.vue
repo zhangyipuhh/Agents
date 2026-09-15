@@ -1522,11 +1522,22 @@ async function handleSessionSwitch(targetSessionId) {
     />
 
     <!--
-      2026-07-01 新增：会话文件空间抽屉。
-      Push Drawer 模式，与 SubAgentDrawer 同布局机制，放在 app-layout 内与 main 同级。
-      2026-08-XX 接入 vue-router 后，SessionFileDrawer、FilePreviewModal、DislikeDialog
-      均随 chat 业务迁移到 views/AgentWorkspace.vue 内部，仅在 / 路由下渲染。
+      2026-09-15 修复：会话文件空间抽屉。
+      原本放 app-layout 内与 SubAgentDrawer 同级（push drawer，flex row 横向收缩主内容区）。
+      2026-08-XX 接入 vue-router 时被随 chat 业务迁到 views/AgentWorkspace.vue 内部的
+      .content-area（flex column），导致空态下被 .empty-layout > * 居中拉伸成卡片，
+      视觉上呈现"工作空间位置错误"。本 PR 恢复挂载到 .app-layout 横向 flex 中。
+      状态/方法来自 provide('chatWorkspace')，与 views/AgentWorkspace.vue 同一对象。
     -->
+    <SessionFileDrawer
+      :visible="chatWorkspace.sessionFileDrawerVisible"
+      :file-tree="chatWorkspace.sessionFileTree"
+      :loading="chatWorkspace.sessionFileDrawerLoading"
+      :error="chatWorkspace.sessionFileDrawerError"
+      :session-id="chatWorkspace.sessionId.value"
+      @close="chatWorkspace.closeSessionFileDrawer"
+      @file-click="chatWorkspace.handleSessionFileClick"
+    />
   </div>
 </template>
 

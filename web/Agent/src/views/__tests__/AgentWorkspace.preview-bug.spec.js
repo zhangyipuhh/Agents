@@ -116,7 +116,6 @@ describe('AgentWorkspace 弹窗默认值验证（2026-08-08 bug 排查）', () =
           InputBox: true,
           HumanApprovalBox: true,
           QueueStatusBanner: true,
-          SessionFileDrawer: true,
           DislikeDialog: true,
           Teleport: true,  // 防止 FilePreviewModal Teleport 跑挂测试
           Transition: true,
@@ -164,7 +163,6 @@ describe('AgentWorkspace 弹窗默认值验证（2026-08-08 bug 排查）', () =
           InputBox: true,
           HumanApprovalBox: true,
           QueueStatusBanner: true,
-          SessionFileDrawer: true,
           DislikeDialog: true,
           Teleport: true,
           Transition: true,
@@ -200,7 +198,6 @@ describe('AgentWorkspace 弹窗默认值验证（2026-08-08 bug 排查）', () =
           InputBox: true,
           HumanApprovalBox: true,
           QueueStatusBanner: true,
-          SessionFileDrawer: true,
           DislikeDialog: true,
           Teleport: true,
           Transition: true,
@@ -212,8 +209,8 @@ describe('AgentWorkspace 弹窗默认值验证（2026-08-08 bug 排查）', () =
     const modalBefore = wrapper.findComponent(FilePreviewModal)
     expect(modalBefore.props('isOpen')).toBe(false)
 
-    // 模拟 SessionFileDrawer 的 file-click 事件
-    await modalBefore.vm.$emit?.('close')  // noop
+    // 模拟工作空间抽屉（2026-09-15 修复后已移回 App.vue）抛出的 file-click 事件：
+    // AgentWorkspace 通过 ws.handleSessionFileClick 处理后驱动 FilePreviewModal 显示。
     await ws.handleSessionFileClick({ name: 'foo.txt', path: 'foo.txt', content: 'hello' })
     await flushPromises()
 

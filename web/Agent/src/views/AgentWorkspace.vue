@@ -70,17 +70,6 @@
       />
     </template>
 
-    <!-- 2026-07-01 新增：会话文件空间抽屉（chat 业务专用） -->
-    <SessionFileDrawer
-      :visible="ws.sessionFileDrawerVisible"
-      :file-tree="ws.sessionFileTree"
-      :loading="ws.sessionFileDrawerLoading"
-      :error="ws.sessionFileDrawerError"
-      :session-id="ws.sessionId.value"
-      @close="ws.closeSessionFileDrawer"
-      @file-click="ws.handleSessionFileClick"
-    />
-
     <!-- 2026-07-01 新增：文件预览弹窗（chat 业务专用） -->
     <FilePreviewModal
       :is-open="ws.filePreviewOpen"
@@ -112,7 +101,9 @@ import ChatArea from '../components/ChatArea.vue'
 import InputBox from '../components/InputBox.vue'
 import HumanApprovalBox from '../components/HumanApprovalBox.vue'
 import QueueStatusBanner from '../components/QueueStatusBanner.vue'
-import SessionFileDrawer from '../components/SessionFileDrawer.vue'
+// 2026-09-15 修复：SessionFileDrawer 已迁移回 App.vue 的 .app-layout 横向 flex 中
+// （与 SubAgentDrawer 同级），避免空态下被 .content-area.empty-layout > * 居中拉伸成卡片。
+// 此处不再 import。
 import FilePreviewModal from '../components/FilePreviewModal.vue'
 import DislikeDialog from '../components/DislikeDialog.vue'
 
