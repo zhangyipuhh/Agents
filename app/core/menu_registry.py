@@ -30,6 +30,9 @@ class MenuItem(BaseModel):
 
 
 # === 一级菜单 ===
+# 2026-09-15 调整：将「基本设置」上移到顶部第一位（sort_order=0），
+# 作为最高频管理入口；其余一级菜单 sort_order 顺次 +1。
+# id 保持不变，老 ACL 自动保留。
 MENU_CATALOG: List[MenuItem] = [
     MenuItem(id="profile", level=1, label="个人设置", icon_key="user",
              sort_order=1, required_role=None),
@@ -56,8 +59,9 @@ MENU_CATALOG: List[MenuItem] = [
     # - 删中间层原因：中间层在 UI 中"看不见"却参与 ACL，体验反直觉
     # - 删除前已确认数据库 user_menu_acl 中 0 条 `task-scheduler.email-settings` 记录，安全
     # - 端点 ACL key 仍为 `task-scheduler.email-settings.{server,policies,test}`，后端 router 零改动
+    # 2026-09-15 调整：sort_order 10→9（基本设置上移后顺次 +1）
     MenuItem(id="messaging", level=1, parent_id=None,
-             label="消息设置", icon_key="message", sort_order=10, required_role="admin"),
+             label="消息设置", icon_key="message", sort_order=9, required_role="admin"),
     # 2026-07-31 新增：channel 级「邮件设置」——messaging 下的第一个消息通道
     # - 全新 id `messaging.email`，无历史 ACL
     # - 作为 channel 入口权限：admin 默认可见；普通用户需被授权才能进入邮件设置页
@@ -141,8 +145,10 @@ MENU_CATALOG: List[MenuItem] = [
     # 2026-09-14 新增：基本设置菜单(.env 迁移到 DB 后的统一管理入口)
     # - 6 孙 Tab: LLM 模型 / 文件解析 / 安全认证 / 网络与集成 / 沙箱与任务 / 其他
     # - ACL: system.basic-settings(对应路由 require_admin_or_menu_acl)
+    # 2026-09-15 调整：sort_order 9→0，上移到顶部第一位（最高频管理入口）；
+    # 其余一级菜单 sort_order 顺次 +1。id 保持不变，老 ACL 自动保留。
     MenuItem(id="system.basic-settings", level=1, parent_id=None,
-             label="基本设置", icon_key="settings", sort_order=9, required_role="admin"),
+             label="基本设置", icon_key="settings", sort_order=0, required_role="admin"),
 ]
 
 

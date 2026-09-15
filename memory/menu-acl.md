@@ -33,12 +33,13 @@
 
 `.env` 迁移到 DB 后的统一管理 UI；6 孙 Tab：LLM 模型 / 文件解析 / 安全认证 / 网络与集成 / 沙箱与任务 / 其他；对应路由 `/api/admin/system-settings/*`，`require_admin_or_menu_acl('system.basic-settings')` 鉴权；敏感字段 `model_api_key` / `mfa.secret_key` / `devops.credential_key` / `auth_bootstrap.default_admin_password` 用 `SETTINGS_SECRET_KEY` Fernet 加密落库，返回值脱敏为 `****`；用户提交 `****` 前缀或空串保持 DB 原值不修改。
 
-### 一级菜单顺序（最终态，2026-07-31）
+### 一级菜单顺序（最终态，2026-09-15）
 
 `MENU_CATALOG` 一级菜单按 `sort_order` 升序排列如下：
 
 | sort_order | id | label | required_role |
 |---|---|---|---|
+| 0 | system.basic-settings | 基本设置 | admin |
 | 1 | profile | 个人设置 | None |
 | 2 | user-management | 用户管理 | admin |
 | 3 | permission-management | 权限管理 | admin |
@@ -47,8 +48,10 @@
 | 6 | tool-management | 工具管理 | admin |
 | 7 | skill-management | Skill 管理 | admin |
 | 8 | task-scheduler | 运维任务 | admin |
-| 9 | （已删除，见消息设置父菜单章节；中间层 task-scheduler.email-settings 于 2026-07-31 二次调整删除） | — | — |
-| 10 | messaging | 消息设置 | admin |
+| 9 | messaging | 消息设置 | admin |
+
+- 2026-09-15 调整：`system.basic-settings` 的 `sort_order` 由 9 改为 0，上移到顶部第一位（最高频管理入口）；`messaging` 由 10 改为 9（顺次 +1）。`id` 保持不变，老 ACL 零迁移。
+- 2026-07-31 调整：原 `task-scheduler.email-settings` 中间层（`sort_order=9`）删除，channel 级 `messaging.email` 接管；`messaging` 由 9 改为 10（顺次 +1）。
 
 前端 `web/Agent/src/components/UserSettingsDialog.vue` 的 `NAV_MENU_METADATA` 对象
 key 声明顺序与上表一致；2026-07-23 调整后，`email-settings` 不再是前端一级壳，

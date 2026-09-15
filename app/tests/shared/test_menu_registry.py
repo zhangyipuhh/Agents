@@ -146,14 +146,15 @@ def test_task_scheduler_children_no_longer_include_email_settings():
 
 
 # 2026-07-31 新增：「消息设置」一级菜单注册回归保护
+# 2026-09-15 调整：sort_order 10→9（基本设置上移到顶部第一位后顺次 +1）
 def test_messaging_is_new_level1_parent():
-    """messaging 是新增的一级菜单（level=1, parent_id=None, sort_order=10）。"""
+    """messaging 是新增的一级菜单（level=1, parent_id=None, sort_order=9）。"""
     item = next(m for m in MENU_CATALOG if m.id == "messaging")
     assert item.level == 1
     assert item.parent_id is None
     assert item.label == "消息设置"
     assert item.icon_key == "message"
-    assert item.sort_order == 10
+    assert item.sort_order == 9
     assert item.required_role == "admin"
     assert item.enabled is True
 
