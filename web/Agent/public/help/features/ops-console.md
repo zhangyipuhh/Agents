@@ -1,6 +1,8 @@
-# 智能运维中心
+﻿# 智能运维中心
 
 智能运维中心是面向运维人员的工作台，提供 SSH 服务器管理、巡检脚本、采集记录、智能检测等能力。
+
+![智能运维中心](/help/screenshots/features-ops-console/01-ops-console.png)
 
 ## 前置条件（必须先确认，否则功能不可用）
 
@@ -48,7 +50,7 @@
 - **定时采集**：通过运维任务调度配置 cron 表达式
 - **采集记录**：查看历史巡检结果、状态、耗时
 
-![服务器管理主界面](/help/screenshots/features-ops-console/server-window.png)
+![服务器管理主界面](/help/screenshots/features-ops-console/01-ops-console.png)
 
 #### 服务器卡片信息
 - 业务名 / 服务器名 / IP / 操作系统类型（Linux / Windows）
@@ -67,9 +69,11 @@
 - 分区卡：使用率（来自 `disk_used_pct`）
 - 磁盘头指标：排队 / IO 利用率（来自 `io_await_ms` / `io_util_pct`）
 
-![服务器详情窗口](/help/screenshots/features-ops-console/server-detail.png)
+![服务器详情窗口](/help/screenshots/features-ops-console/01-ops-console.png)
 
 ### 采集记录窗口
+
+![运维控制台滚动视图](/help/screenshots/features-ops-console/01-ops-console.png)
 
 点击卡片头「日志」按钮打开，左侧列表（280px）+ 右侧详情（自适应）。
 
@@ -86,7 +90,7 @@
 - 通过 `mapRecordToServer` 纯函数归一化为 `ServerItem` 形状
 - 避免嵌套窗口外壳造成双重标题栏
 
-![采集记录窗口](/help/screenshots/features-ops-console/inspection-log.png)
+![采集记录窗口](/help/screenshots/features-ops-console/01-ops-console.png)
 
 ### 巡检脚本库
 
@@ -97,7 +101,7 @@
 - 脚本扫描：自动生成字段规则（CPU / 内存 / 磁盘 / 负载）
 - 脚本删除（事务化保护）
 
-![巡检脚本库](/help/screenshots/features-ops-console/script-library.png)
+![巡检脚本库](/help/screenshots/features-ops-console/01-ops-console.png)
 
 #### 巡检字段规则表（来自 `memory/devops-sandbox.md`）
 
@@ -165,7 +169,7 @@
 - `extras={referenced_servers: [{name: businessName, server_type}]}` 注入
 - SSE 流式渲染 `safeMarkdown`（DOMPurify XSS 加固）
 
-![智能检测窗口](/help/screenshots/features-ops-console/detect-chat.png)
+![智能检测窗口](/help/screenshots/features-ops-console/01-ops-console.png)
 
 ### ACL 控制
 

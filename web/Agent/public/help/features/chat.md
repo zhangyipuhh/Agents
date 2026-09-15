@@ -1,6 +1,8 @@
-# 智能体对话
+﻿# 智能体对话
 
 智能体对话是系统最核心的功能模块。本章节介绍对话的高级使用技巧、工具调用、流式响应与中止、反馈机制。
+
+![智能体对话](/help/screenshots/features-chat/01-chat.png)
 
 ## 前置条件
 
@@ -55,7 +57,7 @@
 
 智能体在回答过程中会自动调用相应工具（如 SSH 执行、文件搜索、API 调用）。用户可在消息下方展开「工具调用详情」查看调用记录与返回值。
 
-![工具调用详情](/help/screenshots/features-chat/tool-call-detail.png)
+![工具调用详情](/help/screenshots/features-chat/01-chat.png)
 
 #### 工具调用展示规则
 - **OpenAI 风格**：`msg.tool_calls` 字段直接提取

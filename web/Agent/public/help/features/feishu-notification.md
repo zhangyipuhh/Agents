@@ -1,6 +1,8 @@
-# 飞书通知
+﻿# 飞书通知
 
 飞书通知模块负责**飞书 channel / target 配置**与 **LLM 工具 send_feishu_message 自动路由**。
+
+![飞书通知](/help/screenshots/features-feishu-notification/01-feishu.png)
 
 ## 前置条件
 
@@ -196,6 +198,8 @@ print(ciphertext)  # 存入 channel.config.app_id_encrypted
 ```
 
 ## WS 热加载机制
+
+![飞书通知滚动视图](/help/screenshots/features-feishu-notification/01-feishu.png)
 
 ### 启动时
 

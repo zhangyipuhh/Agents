@@ -2,6 +2,8 @@
 
 智能体管理模块负责**注册 / 配置 / 启停**所有 Agent。Agent 是 LangGraph + LangChain 1.x 的核心抽象，每个 Agent 包含 system_prompt、tool_bindings、skill_bindings 三层。
 
+![智能体管理](/help/screenshots/features-agent-management/01-agent-management.png)
+
 ## 前置条件
 
 - **admin 角色**（路由 `require_admin` router 级）

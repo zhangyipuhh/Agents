@@ -2,6 +2,8 @@
 
 合同审批模块由 3 个智能体组成（`HtAgent` / `DocAgent` / `ApprovalAgent`），负责合同 `.docx` 文档的解析、结构化抽取与自动审批。
 
+![合同审批](/help/screenshots/features-contract-approval/01-contract.png)
+
 ## 前置条件
 
 - 合同 `.docx` 文件**必须先上传到会话**（白名单内类型，详见「[快速入门 → 文件类型白名单](/help/getting-started#文件类型白名单来自安全策略)」）

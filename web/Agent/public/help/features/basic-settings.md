@@ -1,6 +1,8 @@
-# 基本设置
+﻿# 基本设置
 
 基本设置是 `.env` 配置迁入 DB 后的统一管理入口（2026-09-14 落地）。所有 22 组配置通过 `system_settings_groups` 表 + `SystemConfigRegistry` 注册。
+
+![基本设置](/help/screenshots/features-basic-settings/01-basic-settings.png)
 
 ## 前置条件
 
@@ -153,6 +155,8 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 ```
 
 ## 22 组完整清单
+
+![基本设置滚动视图](/help/screenshots/features-basic-settings/01-basic-settings.png)
 
 ```
 llm, llm.contract, file_parser, auth.password_policy, auth.mfa,

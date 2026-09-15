@@ -98,8 +98,24 @@ class FakeDb:
         if "FROM agent_task_schedules" in query and "WHERE id" in query:
             return self.schedules.get(args[0])
         if "status = 'running'" in query:
+            # 2026-09-15: 兼容 stale 守卫 SQL
+            # ``_get_running_run`` 形如 ``WHERE schedule_id = $1 AND status = 'running'
+            #   AND started_at > now() - make_interval(secs => $2)``;
+            # FakeDb 用 started_at 距 now 的秒数过滤。
             schedule_id = args[0]
-            return next((r for r in self.runs.values() if r["schedule_id"] == schedule_id and r["status"] == "running"), None)
+            threshold_seconds = args[1] if len(args) > 1 else None
+            now = datetime.utcnow()
+            candidates = [
+                r for r in self.runs.values()
+                if r["schedule_id"] == schedule_id and r["status"] == "running"
+            ]
+            if threshold_seconds is not None:
+                candidates = [
+                    r for r in candidates
+                    if r.get("started_at") is None
+                    or (now - r["started_at"]).total_seconds() <= threshold_seconds
+                ]
+            return next(iter(candidates), None) if candidates else None
         if "FROM users" in query:
             return {"id": args[0], "username": "admin"}
         if "INSERT INTO agent_task_schedules" in query:
@@ -160,13 +176,34 @@ class FakeDb:
             return self.schedules.get(args[0])
         if "FROM users" in query:
             return {"id": args[0], "username": "admin"}
-        if "status = 'running'" in query:
-            schedule_id = args[0]
-            return next((r for r in self.runs.values() if r["schedule_id"] == schedule_id and r["status"] == "running"), None)
         return None
 
     async def execute(self, query, *args):
         self.execute_calls.append((query, args))
+        # 2026-09-15: stale running 回收 SQL
+        # ``UPDATE agent_task_runs SET status = 'failed' ... WHERE schedule_id=$1
+        #   AND status='running' AND id <> $2
+        #   AND started_at <= now() - make_interval(secs => $3)``
+        if "UPDATE agent_task_runs" in query and "auto-recycle" in query:
+            schedule_id, exclude_run_id, threshold_seconds = args
+            now = datetime.utcnow()
+            count = 0
+            for run in self.runs.values():
+                if (
+                    run["schedule_id"] == schedule_id
+                    and run["id"] != exclude_run_id
+                    and run["status"] == "running"
+                    and run.get("started_at") is not None
+                    and (now - run["started_at"]).total_seconds() > threshold_seconds
+                ):
+                    run["status"] = "failed"
+                    run["finished_at"] = now
+                    existing = run.get("error_message") or ""
+                    marker = "[auto-recycle] 上一轮 running 已超过阈值仍未完成，自动标记失败"
+                    if marker not in existing:
+                        run["error_message"] = (existing + "\n" + marker) if existing else marker
+                    count += 1
+            return f"UPDATE {count}"
         if "UPDATE agent_task_runs" in query and "status = $2" in query:
             run_id = args[0]
             run = self.runs[run_id]

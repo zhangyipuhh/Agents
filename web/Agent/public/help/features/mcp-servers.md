@@ -2,6 +2,8 @@
 
 MCP（Model Context Protocol）服务器管理模块负责**配置第三方 MCP 服务**与**在智能体中启用 MCP 工具**。MCP 是 Anthropic 提出的开放标准，兼容 OpenAI 风格的 `tool_calls` 调用。
 
+![MCP 服务器管理](/help/screenshots/features-mcp-servers/01-mcp.png)
+
 ## 前置条件
 
 - **MCP server 进程运行**（stdio 模式）或 **MCP server 服务地址可达**（sse 模式）

@@ -2,6 +2,8 @@
 
 用户管理模块负责**用户账号状态**、**注册审批**、**密码重置**、**MFA 管理**与**会话查询**。
 
+![用户管理](/help/screenshots/features-user-management/01-user-management.png)
+
 ## 前置条件
 
 - **admin 角色**（路由 `require_admin`）

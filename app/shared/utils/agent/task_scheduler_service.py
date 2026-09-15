@@ -32,6 +32,18 @@ from app.shared.utils.email.template_renderer import build_render_context
 logger = logging.getLogger(__name__)
 
 
+# 2026-09-15 落地：running 行 stale 守卫阈值常量。
+# 进程崩溃 / kill -9 / OOM / 容器重启时，agent_task_runs.status='running'
+# 可能永久残留为孤儿行，导致后续所有 scheduled 与 manual 触发都
+# 在 _get_running_run 守卫被命中，新行被翻成 skipped + previous run still running。
+# 解决方案：_get_running_run 与 execute_schedule 入口同时按 started_at 阈值
+# 过滤/回收，阈值默认 1800 秒（30 分钟）。覆盖典型场景：
+#   - 脚本任务 < 5 分钟
+#   - agent 任务典型 1~10 分钟（含 LLM 调用）
+# 如未来出现"长任务 > 30 分钟"场景，调大常量或改造为 settings.task_scheduler.run_stale_seconds。
+RUN_STALE_THRESHOLD_SECONDS = 1800
+
+
 class TaskScheduleNotFoundError(Exception):
     """定时任务不存在时抛出。"""
 
@@ -725,6 +737,47 @@ class TaskSchedulerService:
                 started_at=started_at,
             )
 
+            # 2026-09-15：执行入口回收「超龄 running 孤儿行」。
+            # 进程崩溃 / kill -9 / OOM 后 ``agent_task_runs.status='running'``
+            # 可能永久残留；本守卫在每次新触发落地时把同 schedule 下超龄的
+            # 其他 running 行一次性翻成 failed，避免新行被 _get_running_run
+            # 命中后误判「previous run still running」。execute_schedule 在
+            # 串行 semaphore 内执行（同一 schedule 不会并发），故无需考虑
+            # 本次 run_id 与其他真实 running 行的混淆：本守卫只翻转
+            # ``id <> run_id AND started_at <= now() - 阈值`` 的行，新行因
+            # started_at 刚刚被 update 到当前时间必然不会被误翻。
+            try:
+                recycled_status = await self._db.execute(
+                    """
+                    UPDATE agent_task_runs
+                    SET status = 'failed',
+                        finished_at = now(),
+                        error_message = COALESCE(error_message, '') ||
+                                        E'\n[auto-recycle] 上一轮 running 已超过阈值仍未完成，自动标记失败'
+                    WHERE schedule_id = $1
+                      AND status = 'running'
+                      AND id <> $2
+                      AND started_at <= now() - make_interval(secs => $3)
+                    """,
+                    schedule_id,
+                    run_id,
+                    RUN_STALE_THRESHOLD_SECONDS,
+                )
+                # asyncpg 返回字符串形如 "UPDATE 3"
+                if recycled_status and recycled_status != "UPDATE 0":
+                    logger.warning(
+                        "Task schedule %s: 回收 %d 条超时 running 行（阈值 %ds）",
+                        schedule_id,
+                        int(recycled_status.split()[-1]),
+                        RUN_STALE_THRESHOLD_SECONDS,
+                    )
+            except Exception:
+                # 守卫失败不影响主任务执行；fail-soft 仅记 warning
+                logger.exception(
+                    "Task schedule %s: stale running 回收失败，跳过",
+                    schedule_id,
+                )
+
             run_logger = self._install_run_logger(run_id, schedule, session_id, started_at, trigger_type)
             target_type = schedule.get("target_type") or "agent"
             try:
@@ -1207,22 +1260,30 @@ class TaskSchedulerService:
         )
 
     async def _get_running_run(self, schedule_id: int) -> Optional[Dict[str, Any]]:
-        """查询同一任务是否已有 running 执行。
+        """查询同一任务是否存在正在执行的记录（自动忽略超时孤儿行）。
+
+        2026-09-15 起：引入 ``RUN_STALE_THRESHOLD_SECONDS`` 守卫，仅返回
+        ``started_at`` 距今不超过阈值的 running 行。防止进程崩溃/kill -9/
+        OOM/容器重启后遗留的孤儿行让后续触发全部被翻成 ``skipped`` +
+        ``previous run still running``。
 
         参数:
             schedule_id: 定时任务 ID。
 
         返回:
-            Optional[Dict[str, Any]]: 正在执行的记录；不存在时返回 None。
+            Optional[Dict[str, Any]]: 正在执行的记录；不存在/已超时则返回 None。
         """
         row = await self._db.fetchrow(
             """
             SELECT * FROM agent_task_runs
-            WHERE schedule_id = $1 AND status = 'running'
+            WHERE schedule_id = $1
+              AND status = 'running'
+              AND started_at > now() - make_interval(secs => $2)
             ORDER BY id DESC
             LIMIT 1
             """,
             schedule_id,
+            RUN_STALE_THRESHOLD_SECONDS,
         )
         return self._decode_run_row(row)
 

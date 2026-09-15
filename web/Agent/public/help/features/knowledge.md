@@ -1,6 +1,8 @@
-# 知识库
+﻿# 知识库
 
 知识库模块提供文档上传、检索与对话能力，支持个人知识库与团队共享知识库。
+
+![知识库](/help/screenshots/features-knowledge/01-knowledge.png)
 
 ## 前置条件
 
@@ -35,7 +37,7 @@
 4. `attachment_db` 写库（`file_path` / `parsed_file_path` / `status`）
 5. 异步任务推入解析队列
 
-![上传文档](/help/screenshots/features-knowledge/upload-doc.png)
+![上传文档](/help/screenshots/features-knowledge/01-knowledge.png)
 
 #### 上传后状态机
 

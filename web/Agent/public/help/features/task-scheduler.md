@@ -2,6 +2,8 @@
 
 定时任务调度模块负责**按 cron 表达式触发 SSH 巡检**与**手动执行巡检脚本**。所有调度记录在 `agent_task_schedules` 表中。
 
+![定时任务调度](/help/screenshots/features-task-scheduler/01-task-scheduler.png)
+
 ## 前置条件
 
 - 至少 1 台 `devops_servers`（admin 在「运维任务 → 服务器管理」配置）

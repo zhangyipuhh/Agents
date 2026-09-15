@@ -1,6 +1,8 @@
-# 常见问题
+﻿# 常见问题
 
 本章节汇总了用户使用过程中的高频问题与解决方案。
+
+![常见问题](/help/screenshots/faq/01-faq.png)
 
 ## 登录问题
 
@@ -57,6 +59,8 @@ DELETE FROM mfa_recovery_codes WHERE user_id=<id>;
 普通用户只能看到 `users.allowed_agents` JSONB 字段中授权的智能体。admin 在「权限管理 → 智能体访问」授权。
 
 ## 性能问题
+
+![常见问题滚动视图](/help/screenshots/faq/01-faq.png)
 
 ### 对话响应慢怎么办？
 

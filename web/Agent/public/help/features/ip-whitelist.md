@@ -19,11 +19,7 @@
 
 ## 3. 快速截图参考
 
-| 截图 | 描述 |
-|---|---|
-| ![nginx 配置](/help/screenshots/features-ip-whitelist/nginx-x-real-ip.png) | nginx `proxy_set_header X-Real-IP` 配置示例 |
-| ![.env 白名单配置](/help/screenshots/features-ip-whitelist/env-whitelist.png) | `REGISTRATION_SECURITY_IP_WHITELIST` JSON 列表 |
-| ![审计日志](/help/screenshots/features-ip-whitelist/audit-log.png) | `register_ip_blocked` 审计日志查询 |
+![IP 白名单配置文档](/help/screenshots/features-ip-whitelist/01-ip-whitelist.png)
 
 ## 概述
 

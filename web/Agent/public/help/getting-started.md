@@ -1,6 +1,8 @@
-# 快速入门
+﻿# 快速入门
 
 本章节介绍系统的核心功能与基本使用流程，帮助新用户快速上手。
+
+![快速入门](/help/screenshots/getting-started/01-getting-started.png)
 
 ## 前置条件
 
@@ -20,7 +22,7 @@
 3. 点击「登录」按钮
 4. 如系统启用了 MFA，登录后会要求输入 **6 位 TOTP 动态验证码**（详见下文「启用 MFA」）
 
-![登录页](/help/screenshots/getting-started/login-page.png)
+![登录页](/help/screenshots/getting-started/00-login.png)
 
 > **MFA 说明**：admin 账号首次登录后**强制**要求启用 TOTP（`MFA_ISSUER=AIOps`，可由环境变量覆盖）；普通用户可选。
 
@@ -59,7 +61,7 @@
 - **中部对话区**：与智能体对话的主交互区
 - **顶部输入区**：消息编辑、文件附件、斜杠命令、智能体切换器
 
-![主界面导览](/help/screenshots/getting-started/main-ui.png)
+![主界面导览](/help/screenshots/getting-started/01-getting-started.png)
 
 ### 切换智能体
 

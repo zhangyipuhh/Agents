@@ -1,6 +1,8 @@
-# 帮助中心
+﻿# 帮助中心
 
 欢迎使用本帮助文档。这里汇集了系统各功能模块的使用说明、常见问题解答与最佳实践建议。
+
+![帮助中心总览](/help/screenshots/overview/01-overview.png)
 
 ## 关于本平台
 
@@ -8,6 +10,8 @@
 
 - **管理员**：可以使用所有功能模块，包括用户管理、权限管理、Agent 管理、运维任务调度等
 - **普通用户**：可以使用智能体对话、知识库查询、智能运维中心（受 ACL 控制）等模块
+
+![主会话界面（admin 视角）](/help/screenshots/overview/00-homepage.png)
 
 ## 前置条件
 
@@ -26,6 +30,8 @@
 - **管理员**：可查阅「[权限管理](/help/features/permission-management)」「[基本设置](/help/features/basic-settings)」与「[常见问题](/help/faq)」
 
 ## 功能模块概览
+
+![主界面备选视角](/help/screenshots/overview/01-overview.png)
 
 平台按一级菜单划分 14 个主要模块，按用户角色归类如下：
 

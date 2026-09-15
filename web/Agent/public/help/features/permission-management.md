@@ -2,6 +2,8 @@
 
 权限管理模块负责**菜单可见性**与**智能体访问**两维度的 ACL 控制。本章节介绍菜单注册表、ACL 矩阵与授权流程。
 
+![权限管理](/help/screenshots/features-permission-management/01-permission.png)
+
 ## 前置条件
 
 - **admin 角色**（菜单 ACL 由 admin 维护）
