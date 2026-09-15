@@ -46,7 +46,7 @@ import GroupFormSection from './GroupFormSection.vue';
 
 const cookieFields = [
   { name: 'secure', label: 'Secure 标志', type: 'bool', description: 'HTTPS 下必须 true,禁止 Cookie 经明文传输' },
-  { name: 'samesite', label: 'SameSite', type: 'str', placeholder: 'lax / strict / none', description: 'CSRF 防护;跨站场景用 none + secure=true' },
+  { name: 'samesite', label: 'SameSite', type: 'select', options: ['lax', 'strict', 'none'], description: 'CSRF 防护;跨站场景用 none + secure=true' },
   { name: 'access_token_max_age', label: 'Access Token 有效期(秒)', type: 'int', description: '默认 1800(30 分钟)' },
   { name: 'refresh_token_max_age', label: 'Refresh Token 有效期(秒)', type: 'int', description: '默认 14 天' },
 ];

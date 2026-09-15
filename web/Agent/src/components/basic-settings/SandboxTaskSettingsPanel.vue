@@ -21,7 +21,7 @@
 import GroupFormSection from './GroupFormSection.vue';
 
 const sandboxFields = [
-  { name: 'sandbox_docker_mode', label: 'Docker 模式', type: 'str', placeholder: 'local / socket / dind / k8s', description: 'local: 直接调用本机 docker;socket: 挂载 docker.sock;dind: docker-in-docker;k8s: 通过 k8s API' },
+  { name: 'sandbox_docker_mode', label: 'Docker 模式', type: 'select', options: ['local', 'socket', 'dind', 'k8s'], description: 'local: 直接调用本机 docker;socket: 挂载 docker.sock;dind: docker-in-docker;k8s: 通过 k8s API' },
   { name: 'sandbox_docker_host', label: 'Docker Host', type: 'str', description: 'tcp://x.x.x.x:2375 或 unix:///var/run/docker.sock' },
   { name: 'sandbox_image', label: '镜像名', type: 'str', description: '沙箱 Agent 启动的基础镜像' },
   { name: 'sandbox_max_memory_mb', label: '内存上限(MB)', type: 'int', description: '容器内存硬限制,超出 OOM' },

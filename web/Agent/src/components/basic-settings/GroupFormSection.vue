@@ -1,7 +1,7 @@
 <!--
   GroupFormSection.vue
   通用单组表单 section 组件(2026-09-14 新增,2026-09-14 渲染修复)
-  fields: [{name, label, type, sensitive, placeholder, multiline, description, required}]
+  fields: [{name, label, type, sensitive, placeholder, multiline, description, required, options}]
   视觉风格与 EmailSettingsManager / FeishuSettingsManager 同款
   (复用 .settings-section / .form-group / .form-input / .alert / .primary-btn / .switch 等 token,零 naive-ui 依赖)
 -->
@@ -83,6 +83,26 @@
           </span>
         </label>
 
+        <!-- select / enum 下拉(2026-09-15 新增) -->
+        <select
+          v-else-if="field.type === 'select'"
+          :id="`field-${field.name}`"
+          class="form-input"
+          :value="formData[field.name] ?? ''"
+          :data-testid="`field-select-${field.name}`"
+          @change="formData[field.name] = $event.target.value"
+        >
+          <option value="">-- 请选择 --</option>
+          <!-- 兜底:已保存值不在 options 时,保留原值可选(避免保存自定义值后前端无法编辑) -->
+          <option
+            v-if="formData[field.name] !== undefined && formData[field.name] !== null && formData[field.name] !== '' && !field.options.includes(formData[field.name])"
+            :value="formData[field.name]"
+          >
+            {{ formData[field.name] }} (当前值)
+          </option>
+          <option v-for="opt in field.options" :key="opt" :value="opt">{{ opt }}</option>
+        </select>
+
         <!-- int / float -->
         <input
           v-else-if="field.type === 'int' || field.type === 'float'"
@@ -148,7 +168,7 @@
  * Props:
  *   groupKey    {string}  registry 中的 group_key(对应后端 /api/admin/system-settings/{groupKey})
  *   label       {string}  卡片标题(显示在 .group-card-title)
- *   fields      {Array}   字段元数据列表 [{name, label, type, sensitive, placeholder, multiline, description, required}]
+ *   fields      {Array}   字段元数据列表 [{name, label, type, sensitive, placeholder, multiline, description, required, options}]
  *   description {string=} 卡片描述(可选,显示在标题下方)
  *
  * 字段 type:
@@ -156,6 +176,7 @@
  *   - 'int' / 'float'     数字输入
  *   - 'bool'              toggle 开关
  *   - 'json'              textarea,保存时尝试 JSON.parse
+ *   - 'select'            下拉框,需配合 options:[string, ...] 使用
  *   - sensitive:true      密码输入框(留空 = 后端保持原值)
  *
  * 交互契约:
@@ -201,6 +222,7 @@ function fieldTypeLabel(field) {
     case 'int': return 'int';
     case 'float': return 'float';
     case 'json': return 'json';
+    case 'select': return 'enum';
     case 'str':
     default:
       return field.multiline ? 'text' : 'str';

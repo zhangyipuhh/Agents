@@ -17,7 +17,7 @@ import GroupFormSection from './GroupFormSection.vue';
 const fields = [
   { name: 'file_parser_enabled', label: '启用远程解析', type: 'bool', description: '总开关;关闭则只用本地解析' },
   { name: 'file_parser_server_url', label: '解析服务地址', type: 'str', description: '远程文件解析服务地址,支持 /parse 接口' },
-  { name: 'file_parser_output_format', label: '输出格式', type: 'str', placeholder: 'json / md', description: 'json: 结构化结果 / md: 纯文本' },
+  { name: 'file_parser_output_format', label: '输出格式', type: 'select', options: ['json', 'md'], description: 'json: 结构化结果 / md: 纯文本' },
   { name: 'file_parser_max_file_size', label: '最大文件大小(MB)', type: 'int', description: '超出此大小拒绝解析' },
   { name: 'file_parser_api_url', label: 'API 地址', type: 'str', description: '解析服务 API 网关地址(可能与 server_url 不同)' },
   { name: 'file_parser_max_retries', label: '最大轮询重试', type: 'int', description: '异步解析任务最大轮询次数' },
