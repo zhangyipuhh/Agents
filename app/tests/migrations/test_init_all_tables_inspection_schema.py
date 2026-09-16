@@ -248,3 +248,30 @@ def test_drop_segment_does_not_claim_runtime_fail_fast_semantics():
     assert "fail-fast" not in comment_segment.lower(), (
         "DROP 段注释不应再声称 fail-fast 行为；该语义已下沉到人工迁移 + 回填契约。"
     )
+
+
+# ============================================================================
+# 2026-09-16 静态契约:inspection_script_segments 分段表
+# 验证 init_all_tables.sql 包含 17.5.1 节的 DDL 与约束。
+# 端到端执行需要真实 DB,本测试只验证 SQL 文本契约。
+# ============================================================================
+
+
+def test_init_sql_contains_inspection_script_segments_table():
+    """init_all_tables.sql 应包含 inspection_script_segments 建表与约束。
+
+    断言:表名 / FK CASCADE / UNIQUE(script_id, segment_key) /
+    segment_key CHECK 正则 / script_id 索引 全部出现。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 任一关键 DDL 片段缺失
+    """
+    sql = _load_init_sql()
+    assert "CREATE TABLE IF NOT EXISTS inspection_script_segments" in sql
+    assert "REFERENCES inspection_scripts(id) ON DELETE CASCADE" in sql
+    assert "UNIQUE (script_id, segment_key)" in sql
+    assert "inspection_script_segments_key_chk" in sql
+    assert "idx_inspection_script_segments_script_id" in sql
