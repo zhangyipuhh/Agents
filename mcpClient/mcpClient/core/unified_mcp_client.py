@@ -131,6 +131,16 @@ def _convert_server_config(name: str, config: dict) -> dict:
     """
     raw = dict(config)
 
+    # 0. 防御性 trim（2026-09-16）：admin UI 复制粘贴可能引入前导/尾随空白，
+    # 直接喂给 httpx 会触发 UnsupportedProtocol。headers key 也一并 strip。
+    for _k in ("url", "type", "transport", "command"):
+        _v = raw.get(_k)
+        if isinstance(_v, str):
+            raw[_k] = _v.strip()
+    _hdrs = raw.get("headers")
+    if isinstance(_hdrs, dict):
+        raw["headers"] = {(k.strip() if isinstance(k, str) else k): v for k, v in _hdrs.items()}
+
     # 1. 确定 transport
     transport = raw.get("transport")
     if not transport:
@@ -647,19 +657,6 @@ class UnifiedMCPClient:
 
         if self._adapted_configs:
             logger.info("Creating MultiServerMCPClient with %d server configs", len(self._adapted_configs))
-            # 2026-09-16 DEBUG（临时诊断 gitee streamable_http 报 UnsupportedProtocol 根因）：
-            # 打印每个 server 的 url / headers keys / transport，确认 lifespan 启动时
-            # _adapted_configs 里的 url 真的是 https://...，排除 type 已切 http 但
-            # MultiServerMCPClient 内部仍拿到空 url 的可能。
-            for _name, _cfg in self._adapted_configs.items():
-                _url = _cfg.get("url")
-                _headers = _cfg.get("headers") or {}
-                logger.warning(
-                    "[MCP-DEBUG] server=%s url=%r transport=%s headers_keys=%s timeout=%r sse_read_timeout=%r",
-                    _name, _url, _cfg.get("transport"),
-                    sorted(_headers.keys()),
-                    _cfg.get("timeout"), _cfg.get("sse_read_timeout"),
-                )
             self._client = MultiServerMCPClient(self._adapted_configs, callbacks=mcp_callbacks)
             logger.info("MultiServerMCPClient created successfully")
         else:
