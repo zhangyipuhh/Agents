@@ -11,20 +11,19 @@
 | 路径 | 职责 |
 |---|---|
 | `app/shared/utils/devops_server_service.py` | `DevOpsServerService(db, config_path, credential_key, inspection_script_service)` 单例；`preload_all` / `scan_and_upsert` / `list_public_servers` / `get_server_detail` / `get_connection_config` / `server_exists` / `delete_server`；详情仅返回 `_DETAIL_FIELDS` 含 `inspection_script_id` / `inspection_script_name` / `inspection_script_display_name` 三键（脚本原文由 `InspectionScriptService` 单独提供） |
-| `app/shared/utils/inspection_script_service.py` | 2026-08-03 新增：`InspectionScriptService(db, config_path)` 单例；YAML 配置入口 `<项目根>/data/devops/inspection_scripts.yaml`；`preload_all` / `scan_and_upsert` / `list_scripts`（白名单 7 字段）/ `get_script_detail(id)` / `get_script_by_id(id)` / `get_script_by_name(name)` / `resolve_script_for_server(server_type, script_name)`；写路径持 `self._write_lock` |
+| `app/shared/utils/inspection_script_service.py` | **2026-09-16 改造**:移除 YAML 链路;`InspectionScriptService(db)` 单例(无 config_path 入参);默认脚本随代码资产 `app/shared/utils/inspection/default_scripts.py` 发布;`preload_all` 同时加载 `inspection_scripts` 组行 + `inspection_script_segments` 分段行,挂到 `rec["segments"]`;`seed_default_groups()` 在 lifespan 阶段幂等播种默认组/分段(只插不改);分段 CRUD `list_segments` / `upsert_segment(script_id, payload, segment_id=None)` / `delete_segment(script_id, segment_id)`;`get_script_detail` 返 `_DETAIL_FIELDS + segments`;`delete_script` 单事务内清 segments + 服务器解绑 |
 | `app/shared/tools/skills/devops/CommandInterceptor.py` | 命令策略过滤器，黑名单优先 + 白名单 allowlist + 精确/前缀/正则三模式 |
 | `app/shared/tools/skills/devops/SSHTools.py` | 3 个 `@tool(description=...)`：execute_command / execute_batch_commands / get_system_logs |
 | `app/shared/tools/skills/devops/InspectionQueryTools.py` | 1 个 `@tool(description=...)`：`query_inspection_records`（按 business_name 查 `server_inspection_records`，纯 DB 读，输出不含 IP，审计日志 action=`inspection_query_records`、log_type=`system`；**默认 `latest_only=True` 仅返回最新一条，无需传时间范围**；`latest_only=False` 时 `start` / `end` 改为**可选过滤**：双缺透传 `None` 给 `ServerInspectionRecordService.list_records`（服务层 `None`=不限界）返回最近 `limit` 条（默认 100 / 上限 1000），单侧缺失同理；payload 与审计 metadata 同步输出 `time_range_defaulted: bool`（双缺为 `True`）。仅当显式传入但 ISO8601 解析失败时报 `invalid_time`，不引入 silent 兜底。**根因修复（2026-08-17 ops-detect 智能检测窗口死循环）**：原契约要求 `latest_only=False` 时 `start` / `end` 必填，LLM 在「最近N天」相对时间面前常不传绝对区间，收到死胡同错误后原地重试至 `recursion_limit=100`；新契约让工具「总能工作」。服务实例经类级单例 `ServerInspectionRecordService.get_instance()` 获取，与 `DevOpsServerService` 同款契约） |
 | `app/routers/devops_server_admin_router.py` | `GET /api/admin/devops-servers`（列表端点 `Depends(require_admin_or_menu_acl("task-scheduler.server-management"))`）+ `GET /api/admin/devops-servers/{server_id}`（详情；仅 admin；返 `{id, business_name, server_type, updated_at, whitelist, inspection_script_id, inspection_script_name, inspection_script_display_name}`；脚本原文改走 `/api/admin/inspection-scripts/{id}`）+ `POST /api/admin/devops-servers/scan`（仅 admin）+ `DELETE /api/admin/devops-servers/{server_id}`（仅 admin；返 `204 No Content`），router 自身不再有 `dependencies=[Depends(require_admin)]`，每个端点显式声明权限 |
-| `app/routers/inspection_script_admin_router.py` | 2026-08-03 新增：`GET /api/admin/inspection-scripts`（列表 7 字段白名单：admin OR `task-scheduler.server-management` ACL）+ `POST /api/admin/inspection-scripts/scan`（admin only；返 `{scanned, inserted, updated, failed}` 4 整数）+ `GET /api/admin/inspection-scripts/{script_id}`（admin only；返完整详情含 `inspection_script` / `inspection_fields`；不存在 → 404 + 「脚本不存在」） |
+| `app/routers/inspection_script_admin_router.py` | **2026-09-16 改造**:移除 `/scan` 端点;新增分段 CRUD;`GET /api/admin/inspection-scripts`（列表 7 字段白名单：admin OR `task-scheduler.server-management` ACL）+ `GET /api/admin/inspection-scripts/{script_id}`（admin only；返完整详情含 `inspection_script` / `inspection_fields` / `segments`）+ `PUT /api/admin/inspection-scripts/{script_id}`（admin only）+ `DELETE /api/admin/inspection-scripts/{script_id}`（admin only；事务内清 segments + 服务器解绑）+ `GET/POST /api/admin/inspection-scripts/{script_id}/segments` + `PUT/DELETE /api/admin/inspection-scripts/{script_id}/segments/{segment_id}`（admin only；写审计 `inspection_segment_create/update/delete`） |
 
 ### 配置 / 路径常量（2026-07-15；2026-08-03 扩展）
 
 - `app/core/config/paths.py::DEVOPS_SERVER_CONFIG_PATH` = `<项目根>/data/devops/servers.yaml`
 - `app/core/config/paths.py::DEVOPS_SERVER_CONFIG_DIR` = `<项目根>/data/devops`
-- `app/core/config/paths.py::DEVOPS_INSPECTION_SCRIPTS_CONFIG_PATH`（2026-08-03 新增）= `<项目根>/data/devops/inspection_scripts.yaml`
-- `app/core/config/paths.py::resolve_devops_inspection_scripts_config_path(path)`（2026-08-03 新增）：绝对路径原样返回 / 相对项目根解析 / 空字符串抛 `ValueError`；语义与 `resolve_devops_server_config_path` 对齐
-- `app/core/config/settings.py::DevOpsSettings`：字段 `servers_config_path`（env `DEVOPS_SERVERS_CONFIG_PATH`）、`credential_key`（env `DEVOPS_CREDENTIAL_KEY`，空字符串走「延期到初始化时严格校验」语义，不让 import 崩溃）、`inspection.scripts_config_path`（env `DEVOPS_INSPECTION_SCRIPTS_CONFIG_PATH`，2026-08-03 新增）。`model_config` 声明 `env_prefix="DEVOPS_"`（2026-07-15 修复），使字段 `credential_key` 匹配 env `DEVOPS_CREDENTIAL_KEY`、`servers_config_path` 匹配 env `DEVOPS_SERVERS_CONFIG_PATH`
+- **2026-09-16 移除**:`app/core/config/paths.py::DEVOPS_INSPECTION_SCRIPTS_CONFIG_PATH`(原 2026-08-03 新增)与 `resolve_devops_inspection_scripts_config_path(path)` 同步下线(YAML 链路整体移除);函数保留为 deprecated shim 委托 `resolve_devops_server_config_path`,兼容旧 import。
+- `app/core/config/settings.py::DevOpsSettings`：字段 `servers_config_path`(env `DEVOPS_SERVERS_CONFIG_PATH`)、`credential_key`(env `DEVOPS_CREDENTIAL_KEY`,空字符串走「延期到初始化时严格校验」语义,不让 import 崩溃);**2026-09-16 移除** `inspection_scripts_config_path`(原 2026-08-03 新增)与对应 env `DEVOPS_INSPECTION_SCRIPTS_CONFIG_PATH`;新增 env `INSPECTION_DEFAULT_GROUPS_ENABLED`(2026-09-16 占位,默认 `true`,控制 lifespan 是否调用 `seed_default_groups`)。`model_config` 声明 `env_prefix="DEVOPS_"`(2026-07-15 修复),使字段 `credential_key` 匹配 env `DEVOPS_CREDENTIAL_KEY`、`servers_config_path` 匹配 env `DEVOPS_SERVERS_CONFIG_PATH`
 
 ### 数据库表 `devops_servers`（2026-07-15 新增；2026-08-03 改造）
 
@@ -51,41 +50,52 @@
 - CHECK：`inspection_parser IN ('json', 'kv', 'csv', 'raw')`（约束名 `inspection_scripts_parser_chk`）
 - 索引：`idx_inspection_scripts_platform(platform)` / `idx_inspection_scripts_name(name)`
 
-#### 服务 `InspectionScriptService`（`app/shared/utils/inspection_script_service.py`）
+#### 服务 `InspectionScriptService`（`app/shared/utils/inspection_script_service.py`，2026-09-16 重构）
 
-- 单例 + `set_instance` / `get_instance` / `reset`；构造 `InspectionScriptService(db, config_path)`，YAML 默认 `<项目根>/data/devops/inspection_scripts.yaml`，路径解析走 `resolve_devops_inspection_scripts_config_path`
-- `preload_all()`：`SELECT id, name, display_name, platform, version, inspection_parser, inspection_script, inspection_fields, created_at, updated_at FROM inspection_scripts ORDER BY id` 全量加载；`inspection_fields` 兼容 str（`json.loads`）/ list / 其它 → 统一还原为 `list[dict]`，非 str/list 兜底为 `[]`；持 `self._write_lock` 原子替换 `_cache: Dict[name, rec]` + `_id_cache: Dict[id, rec]`
-- `scan_and_upsert()`：读取 YAML；顶层 `dict` 取 `inspection_scripts` 键，list 直接用，非 list → `failed+=1`；逐 entry 调 `_normalize_entry` 做必填校验（`name` / `display_name` 非空字符串、`platform ∈ {linux, windows}`、`version` 默认空串、`inspection_parser ∈ {json,kv,csv,raw}`、`inspection_script` 空 / 纯空白 → `None` 且 rstrip 末尾换行、`inspection_fields` 复用 `normalize_inspection_fields` 归一化为 `list[dict]`）；同 name 重复直接拒绝（`failed+=1`，**不覆盖**）；单条 upsert 用 `INSERT ... ON CONFLICT (name) DO UPDATE ... RETURNING *, (xmax = 0) AS inserted` 一次往返，缓存通过 RETURNING 行同步 `_cache` / `_id_cache`
+- **构造签名**：`InspectionScriptService(db)` 单例；无 `config_path` 入参。`set_instance` / `get_instance` / `reset` 由 lifespan 注入到 `app.state.inspection_script_service`。
+- **缓存结构**：`_cache: Dict[name, rec]` 与 `_id_cache: Dict[id, rec]` 共享同一 rec dict 引用；`rec["segments"]` 字段保存全部分段列表（按 `sort_order, segment_key, id` 升序），由 `_write_lock` 保护。
+- `preload_all()`：DB 一次拉 `inspection_scripts` 行 + `inspection_script_segments` 行，按 `script_id` 聚合分段挂到 `rec["segments"]`；`inspection_fields` 兼容 str (`json.loads`) / list / 其它 → 统一还原为 `list[dict]`；持锁原子替换 `_cache` / `_id_cache`。日志 `preloaded N script(s) / M segment(s)`。
+- **分段 CRUD（2026-09-16 新增）**：
+  - `list_segments(script_id) -> Optional[List[dict]]`：白名单 9 字段（`id / script_id / segment_key / display_name / sort_order / script / enabled / created_at / updated_at`），组不存在返回 `None`。
+  - `upsert_segment(script_id, payload, segment_id=None) -> Optional[dict]`：校验 `segment_key` 正则 `^[a-z0-9][a-z0-9_-]{0,63}$` / `script` 非空 / `sort_order` 非负整数；组 parser != `'json'` 抛 `ValueError("仅 json 解析器的脚本组支持分段")`；DB 用 `ON CONFLICT (script_id, segment_key) DO UPDATE ... RETURNING id` 一次往返；成功后 `_reload_segments(script_id)` 重读并刷新 rec["segments"]（in-place,引用不变）。
+  - `delete_segment(script_id, segment_id) -> bool`：DB 返回 `DELETE n`；`n=0` 返 `False`，否则 reload。
+  - `_reload_segments(script_id)`：按 script_id 查全部分段,持锁更新 rec["segments"] 列表。
+- **`seed_default_groups() -> Dict[str, int]`（2026-09-16 新增）**：lifespan 阶段幂等播种 `app/shared/utils/inspection/default_scripts.py::DEFAULT_INSPECTION_GROUPS`（linux-bash + windows-ps-5.1 两组共 8 段）；策略：组不存在 → `INSERT ... ON CONFLICT (name) DO NOTHING RETURNING ...` 并同步缓存；组 segments 为空 → 逐段 `INSERT ... ON CONFLICT (script_id, segment_key) DO NOTHING`；reload segments。返 `{"groups_inserted", "segments_inserted", "skipped"}`。空库播种一次后 `groups_inserted=0 / segments_inserted=0`（幂等）。
+- `update_script_detail(script_id, payload)`：**D3 防御**——组存在 enabled 分段时拒绝切到非 json parser（返 `None`）；其余校验与原一致；`record["segments"]` 保留原列表（写组字段不动分段）。
+- `delete_script(script_id) -> bool`：单事务内 `SELECT name FOR UPDATE` → `UPDATE devops_servers SET inspection_script_id=NULL` → `DELETE FROM inspection_script_segments WHERE script_id=$1`（2026-09-16 新增显式清理,F K CASCADE 兜底） → `DELETE FROM inspection_scripts WHERE id=$1`；事务提交后清缓存 + 同 name 漂移到其它 id 的所有 `_id_cache` 残留。
 - 公开读 API：
-  - `list_scripts()`：返回白名单 7 字段 `id / name / display_name / platform / version / inspection_parser / updated_at`，**不**暴露 `inspection_script` / `inspection_fields`
-  - `get_script_detail(script_id)`：按 id 取完整详情（含 `inspection_script` + `inspection_fields`），未命中返回 `None`
-  - `get_script_by_id(script_id)` / `get_script_by_name(name)`：内部完整记录查询，供 `DevOpsServerService.get_connection_config` 注入解析
-  - `resolve_script_for_server(server_type, script_name=None)`：显式 `script_name` 命中 → 返回 id，未命中返回 `None`（不静默回退）；否则按 `_DEFAULT_SCRIPT_NAMES`（`linux → linux-bash` / `windows → windows-ps-5.1`）解析，未注册返回 `None`
-- 写路径（`preload_all` / `scan_and_upsert`）持 `self._write_lock`；读路径无锁
-- 字段规则强类型化：`inspection_fields` 在 `_normalize_entry` 中通过 `normalize_inspection_fields` 归一化为 `list[InspectionFieldRule]`，落库前再回退为 `list[dict]`（`json.dumps(..., ensure_ascii=False)` 入参）；2026-08-15 扩展 `ssd_warn/ssd_crit` 两键透传——`update_script_detail` 与 `_normalize_entry` 两处序列化白名单同步补键
+  - `list_scripts()`：白名单 7 字段。
+  - `get_script_detail(script_id)`：返 `_DETAIL_FIELDS + segments` 键（segments 含 `_SEGMENT_FIELDS` 9 字段）。
+  - `get_script_by_id(script_id)` / `get_script_by_name(name)`：内部完整记录（含 `segments`）。
+  - `resolve_script_for_server(server_type, script_name=None)`：默认名解析不变（`linux → linux-bash` / `windows → windows-ps-5.1`）。
+- **2026-09-16 移除**：`scan_and_upsert` / `_normalize_entry` / `_upsert_one_returning` / `_default_inspection_scripts_config_path` / `config_path` 字段全部下线(YAML 链路整体移除)。
 
-#### Admin 路由 `InspectionScriptAdminRouter`（`app/routers/inspection_script_admin_router.py`）
+#### Admin 路由 `InspectionScriptAdminRouter`（`app/routers/inspection_script_admin_router.py`，2026-09-16 重构）
 
-- 前缀 `/api/admin/inspection-scripts`，tags=`['Inspection Script Admin']`
-- `GET ""`：`Depends(require_admin_or_menu_acl("task-scheduler.server-management"))`；调 `svc.list_scripts()` 后再 `_LIST_FIELDS = (id, name, display_name, platform, version, inspection_parser, updated_at)` 防御性二次白名单过滤，**不**返回脚本原文
-- `POST /scan`：`Depends(require_admin)`；`await svc.scan_and_upsert()`；异常时 `logger.exception` 后返 500 + `"inspection script scan failed"`（不回显路径 / 原始 detail）；成功返 `{scanned, inserted, updated, failed, skipped}`（5 整数键白名单，2026-08-04 扩展）
-- `GET /{script_id}`：`Depends(require_admin)`；`svc.get_script_detail(script_id)`（同步）；未命中 → 404 + `"脚本不存在"`（不回显 script_id）；成功返完整详情（含 `inspection_script` 与 `inspection_fields`）
-- `PUT /{script_id}`（2026-08-04 新增）：`Depends(require_admin)`；请求体 `UpdateInspectionScriptRequest`；**`await svc.update_script_detail(script_id, payload)`**（2026-08-05 修正——router 必须 await async service 方法，否则拿到 coroutine 触发 `ResponseValidationError`）；不存在 / 入参非法 → 404 + `"脚本不存在"`
-- `DELETE /{script_id}`（2026-08-04 新增；**2026-08-05 事务化**）：`Depends(require_admin)`；`await svc.delete_script(script_id)`（同样必须 await）；成功 → 204 No Content；service 返回 False → 404 + `"脚本不存在"`。**事务化删除**：`InspectionScriptService.delete_script` 在 `async with self.db.acquire() as conn: async with conn.transaction():` 内依次执行 `SELECT name FROM inspection_scripts WHERE id=$1 FOR UPDATE` → `UPDATE devops_servers SET inspection_script_id=NULL WHERE inspection_script_id=$1` → `DELETE FROM inspection_scripts WHERE id=$1`；事务成功提交后用本次事务内读到的 name 清空 `_id_cache[id]` 与 `_cache[name]`，并清扫同 name 漂移到其它 id 的所有 `_id_cache` 残留；DB 异常向上抛出（路由层映射为通用 500），缓存保持原样。`devops_servers.inspection_script_id` 的 `ON DELETE SET NULL` FK 作为兜底保留。
-  - **asyncpg 事务访问方式**：`db` 是 `asyncpg.Pool`；事务 API 在 connection 而非 pool 上，必须先 `pool.acquire()` 拿连接再开 `connection.transaction()`。直接 `async with self.db.transaction():` 会触发 `AttributeError: 'Pool' object has no attribute 'transaction'`。测试桩需用 `db.acquire()` → CM 包裹 connection（含 `transaction()` 异步 CM）来模拟生产链路。
-- 服务未初始化：所有端点统一返 500 + `"InspectionScriptService not initialized"`
+- 前缀 `/api/admin/inspection-scripts`，tags=`['Inspection Script Admin']`（router 级无 `Depends(require_admin)`,各端点显式声明）。
+- `GET ""`：`Depends(require_admin_or_menu_acl("task-scheduler.server-management"))`；`svc.list_scripts()` 后 `_LIST_FIELDS = (id, name, display_name, platform, version, inspection_parser, updated_at)` 防御性二次白名单过滤。
+- `GET /{script_id}`：`Depends(require_admin)`；`svc.get_script_detail(script_id)` 同步；未命中 → 404 + `"脚本不存在"`；成功返 `_DETAIL_FIELDS + segments`。
+- `PUT /{script_id}`：`Depends(require_admin)`；请求体 `UpdateInspectionScriptRequest`；**`await svc.update_script_detail(script_id, payload)`**；不存在 / 入参非法 / D3 拒绝 → 404 + `"脚本不存在"`。
+- `DELETE /{script_id}`：`Depends(require_admin)`；`await svc.delete_script(script_id)` → 204；service 返回 False → 404。事务内 `DELETE FROM inspection_script_segments WHERE script_id=$1` 显式清理 + 服务器解绑 + 脚本删除 3 步串行。
+- **分段 CRUD 端点（2026-09-16 新增,4 个）**：
+  - `GET /{script_id}/segments`：`Depends(require_admin)`；`svc.list_segments(script_id)` 同步；组不存在 → 404 + `"脚本不存在"`。
+  - `POST /{script_id}/segments`：请求体 `UpsertSegmentRequest(segment_key, display_name, sort_order, script, enabled)`（segment_key 1-64 字符 / script 非空 / sort_order `>=0`）；`svc.upsert_segment(script_id, req.model_dump())`；`ValueError` → 400 + 原始消息；record `None` → 404；成功 → 200 + 分段白名单 dict + 审计 `inspection_segment_create`（通过 `LogService.emit` 写入 audit_logs,`target_type="inspection_script_segment"`, `target_name="{script_id}/{segment_key}"`, fail-soft）。
+  - `PUT /{script_id}/segments/{segment_id}`：`Depends(require_admin)`；同样上抛 `ValueError` → 400；`record=None` → 404 + `"分段不存在"`；成功 → 200 + 审计 `inspection_segment_update`。
+  - `DELETE /{script_id}/segments/{segment_id}`：`Depends(require_admin)`；`svc.delete_segment(script_id, segment_id)`；`False` → 404 + `"分段不存在"`；成功 → 204 + 审计 `inspection_segment_delete`。
+- 服务未初始化：所有端点统一返 500 + `"InspectionScriptService not initialized"`。
+- **2026-09-16 移除**：`POST /scan` 端点（YAML 链路整体下线,前端 `web/Agent/src/utils/api.js::scanInspectionScripts` 与 `TaskSchedulerManager.vue` 扫描按钮 + 5 字段 summary DOM 同步移除）。
 
 #### `DevOpsServerService` 与脚本库的协作契约
 
 - 构造入参新增 `inspection_script_service`；`get_connection_config(business_name)` 通过 `inspection_script_id` 调 `inspection_script_service.get_script_by_id(script_id)` 取脚本原文；`inspection_fields` **仅此一处**调用 `normalize_inspection_fields` 转 `list[InspectionFieldRule]`（service 是序列化/结构化的唯一真相源，脚本侧不再重复归一化）
-- **返回值结构（2026-08-04 扩展）**：`get_connection_config` 返 14 键 = 基础 7 键（`ip` / `port` / `username` / `password` / `server_type` / `blacklist` / `whitelist`）+ 脚本原文 3 键（`inspection_script` / `inspection_parser` / `inspection_fields`）+ 脚本库元数据 4 键（`inspection_script_name` / `inspection_script_display_name` / `inspection_script_platform` / `inspection_script_version`）。4 个元数据键供 `ServerOpsItem` 透传到脚本层日志 / docx / 邮件正文选择性展示（运维场景下显示"该服务器使用了 linux-bash"或"Windows PowerShell 5.1"），**不**包含 `inspection_script_id`（避免与 `_cache` 内部 id 混淆）
+- **返回值结构（2026-08-04 扩展；2026-09-16 扩展为 16 键）**：`get_connection_config` 返 16 键 = 基础 7 键（`ip` / `port` / `username` / `password` / `server_type` / `blacklist` / `whitelist`）+ 脚本原文 3 键（`inspection_script` / `inspection_parser` / `inspection_fields`）+ 脚本库元数据 4 键（`inspection_script_name` / `inspection_script_display_name` / `inspection_script_platform` / `inspection_script_version`）+ **分段脚本键 `inspection_script_segments`（2026-09-16 新增,第 16 键）** + `ssh_timeout`。`inspection_script_segments` 形态：`[{segment_key: str, script: str}, ...]`，仅 `parser == "json"` 时透传；过滤 disabled / script 空白；顺序由 service 缓存（`sort_order` 升序）保证。脚本原文 / 字段规则完全跟随脚本库条目，服务器层不可覆盖。
 - 脚本未关联（`inspection_script_id IS NULL`）/ InspectionScriptService 未注入 / 脚本库条目不存在 → `get_connection_config` 抛 `ValueError`（错误消息分别含「服务器未关联巡检脚本（inspection_script_id 为空）」/「巡检脚本库条目不存在或已被删除」/「InspectionScriptService 未注入」），由 `server_ops._run_one` 归并为 `skipped=True` 并透传 ValueError 原文到 `error_message` / `inspection_error`，不返回半残 dict
 - `_normalize_entry` 在 YAML 扫描阶段调 `inspection_script_service.resolve_script_for_server(server_type, inspection_script_name)`：未命中（无显式 name 且 server_type 默认脚本未注册 / 显式 name 未注册）→ 该条目记 `failed`，不阻断其他条目
 - `get_server_detail(server_id)` 走 `inspection_script_service.get_script_by_id(script_id)` 解析 `inspection_script_name` / `inspection_script_display_name`；返回字段仅含元数据（**不**返回脚本原文，原文改走 `/api/admin/inspection-scripts/{id}`）
 
-### 巡检脚本库 `inspection_scripts`（2026-08-03 新增；当前契约）
+### 巡检脚本库 `inspection_scripts`（2026-08-03 新增；2026-09-16 分段化重构）
 
-> 本段是「巡检脚本库 `inspection_scripts`」章节的扩展段，记录 YAML 当前契约 / 脚本输出形态 / 运维踩坑回归保护等落地细节。前一段「服务 `InspectionScriptService`」是模块契约，本段是数据契约。
+> 本段是「巡检脚本库 `inspection_scripts`」章节的扩展段，记录分段化数据契约 / 字段规则 / 默认脚本资产形态 / 合并语义等落地细节。前一段「服务 `InspectionScriptService`」是模块契约,本段是数据契约 + 运行时契约。
 
 #### 字段规则行规则（元素 schema）
 
@@ -94,12 +104,63 @@
 - `unit`：字符串；缺省 / 缺失 = `""`；空单位时填 `""`，**不要写 null**。
 - `direction`：`"high"` | `"low"` | `"ignore"` 三选一。
 - `warn` / `crit`：`high` 时 `warn <= crit`，`low` 时 `warn >= crit`（边界包含）；`ignore` 时必须为 `None`。
-- `ssd_warn` / `ssd_crit`（2026-08-15 新增）：可选成对；缺省 `None`；必须同为有限数字（拒绝 `bool`/字符串/`NaN`）；`high` 时 `ssd_warn <= ssd_crit`，`low` 时 `ssd_warn >= ssd_crit`；`ignore` 规则禁止携带；用于 disks 数组元素级介质匹配——`disk_type=="ssd"` 元素走 SSD 阈值，其它（含缺失 / `"hdd"` / 未知）兜底 `warn`/`crit`。
+- `ssd_warn` / `ssd_crit`（2026-08-15 新增）：可选成对；缺省 `None`；必须同为有限数字（拒绝 `bool`/字符串/`NaN`）；`high` 时 `ssd_warn <= ssd_crit`，`low` 时 `ssd_warn >= ssd_crit`；`ignore` 规则禁止携带；用于 disks 数组元素级介质匹配——`disk_type=="ssd"` 元素走 SSD 阈值,其它(含缺失 / `"hdd"` / 未知)兜底 `warn`/`crit`。
 
-#### YAML 当前契约（`data/devops/inspection_scripts.yaml`）
+#### 分段表 `inspection_script_segments`（2026-09-16 新增）
 
-- **`linux-bash`**（默认 linux 平台，2026-08-15 扩展 IO）：6 条规则——`disk_used_pct / 磁盘使用率 / % / high / 80 / 90`、`mem_used_pct / 内存使用率 / % / high / 80 / 90`、`cpu_idle_pct / CPU 空闲率 / % / low / 20 / 10`、`load_1m / 1 分钟平均负载 / "" / high / 4.0 / 8.0`、`io_util_pct / 磁盘 IO 利用率 / % / high / 80 / 90`、`io_await_ms / 磁盘 IO 平均等待 / ms / high / 100 / 200 / ssd 20 / 50`
-- **`windows-ps-5.1`**（默认 windows 平台，2026-08-15 扩展 IO）：6 条规则——`disk_used_pct / 磁盘使用率 / % / high / 80 / 90`、`mem_used_pct / 内存使用率 / % / high / 80 / 90`、`cpu_used_pct / CPU 使用率 / % / high / 80 / 95`、`uptime_hours / 系统运行时间 / 小时 / ignore / null / null`、`io_util_pct / 磁盘 IO 利用率 / % / high / 80 / 90`、`io_await_ms / 磁盘 IO 平均等待 / ms / high / 100 / 200 / ssd 20 / 50`
+- 列：`id SERIAL PK` / `script_id INTEGER NOT NULL REFERENCES inspection_scripts(id) ON DELETE CASCADE` / `segment_key VARCHAR(64) NOT NULL`（正则 `^[a-z0-9][a-z0-9_-]{0,63}$`）/ `display_name VARCHAR(200) NOT NULL DEFAULT ''` / `sort_order INTEGER NOT NULL DEFAULT 0` / `script TEXT NOT NULL` / `enabled BOOLEAN NOT NULL DEFAULT TRUE` / `created_at` / `updated_at`
+- CHECK：`inspection_script_segments_key_chk`（`segment_key` 正则）
+- UNIQUE：`inspection_script_segments_uq (script_id, segment_key)`（同组 segment_key 唯一）
+- 索引：`idx_inspection_script_segments_script_id(script_id)`
+- 迁移文件：`app/migrations/2026_09_16_add_inspection_script_segments.sql`（单独迁移）+ `init_all_tables.sql` 17.5.1 节
+
+#### 默认分段脚本资产（2026-09-16 新增，`app/shared/utils/inspection/default_scripts.py`）
+
+代码资产 `DEFAULT_INSPECTION_GROUPS: List[dict]`,每组结构 `{name, display_name, platform, version, inspection_parser, inspection_fields, segments: [{segment_key, display_name, sort_order, script}, ...]}`;lifespan 阶段 `InspectionScriptService.seed_default_groups()` 幂等播种(只插不改,保留人工编辑)。
+
+- **`linux-bash`**（4 段,2026-09-16 拆分自原单体脚本）: 
+  - `disk-usage`(sort_order=10):`df -P` + `df -i` 采集分区使用率与 inode 最大值,Linux 设备名命名规则推断 host_disk/partition(不依赖 lsblk,兼容老内核 / sandbox / cgroup 受限环境)
+  - `disk-io`(sort_order=20):`/proc/diskstats` 双采样(间隔 1s) + `/sys/block/<dev>/queue/rotational` 介质探测,计算 `io_util_pct`/`io_await_ms`/`disk_type`(hdd/ssd),零 sysstat 依赖
+  - `memory`(sort_order=30):`free` 采集 `mem_used_pct`(基于 available 非 used)与 `swap_used_pct`(swap total=0 兜底 0)
+  - `cpu`(sort_order=40):`/proc/stat` 双采样 + `awk NR==FNR/!=FNR` 双文件扫描计算 `cpu_idle_pct`/`cpu_iowait_pct`,`/proc/loadavg` 取 `load_1m`;兼容 POSIX 老版,无 bash4+ 进程替换
+- **`windows-ps-5.1`**（4 段,2026-09-16 拆分）:全部 `Get-WmiObject` 系列(`Get-CimInstance` 不引入,保持老版 PS 5.1 / WMI-only 环境兼容)
+  - `disk-usage`:`Win32_DiskDrive` DeviceID 索引 + `Win32_PerfFormattedData_PerfDisk_PhysicalDisk` Name 字段解析物理盘归属,`Get-PSDrive` 采集各盘符使用率,`fsutil fsinfo ntfsinfo` 采集 MFT 使用率(无 admin 兜底 0)
+  - `disk-io`:`MSFT_PhysicalDisk.MediaType=4 → ssd`,否则 hdd,`Win32_PerfFormattedData_PerfDisk_PhysicalDisk.PercentDiskTime` / `AvgDiskSecPerTransfer * 1000` 取 IO 利用率与平均等待(ms,1 位小数)
+  - `memory`:`Win32_OperatingSystem` 计算内存使用率,`Win32_PageFileUsage` 累加所有页面文件(allocated/used)使用率
+  - `cpu`:`Win32_Processor` 取 LoadPercentage,`Win32_PerfFormattedData_PerfOS_Processor` 取 PercentInterruptTime + PercentDPCTime 累加除以核心数(`iowait` 等价);`Write-Output` 单行 JSON
+- **PowerShell 单引号字符串兜底**：Windows 单引号字符串不能含单引号,脚本内 `Replace('\', '\\')` 等反斜杠字面量在 Python `r"""` 源里被保留为 `\`,渲染到 PS 时仍正确工作;`[CHAR39]` 占位用于含单引号场景(未在本批次使用)。
+
+#### 合并语义 D1(`app/shared/utils/inspection/merger.py`)
+
+`merge_inspection_fragments(fragments) -> (merged, conflicts)` 纯函数,无副作用:
+- `dict + dict` → 递归合并;
+- `list + list` → 按片段顺序拼接(`disks` 数组元素 usage 段 + io 段拼回同一数组,与改造前 `DISKS_ALL="${DISKS},${DISKS_IO}"` 完全等价);
+- 其它类型冲突 → 后者覆盖,键点路径记入 `conflicts`(供 `server_ops` 写 warning 日志)。
+- linux 四分段合并后键集 `{disks, inode_used_pct, mem_used_pct, swap_used_pct, cpu_idle_pct, cpu_iowait_pct, load_1m}`;`disks` 含 usage + io 共 2 元素。
+
+#### 宽松聚合语义 D2(`app/scripts/server_ops.py::_run_one_segmented`)
+
+| 场景 | `success` | `inspection_status` | 说明 |
+|---|---|---|---|
+| 全 N 段 `exit==0` 且合法 JSON | True | 评估结果 | 正常路径 |
+| 部分段 `exit!=0` / 非法 JSON | True | 评估结果(缺失字段 → 字段级 crit) | `inspection_error` 追加 `分段 <key> 执行失败(exit=N)` / `分段 <key> 输出非法 JSON` |
+| 全段失败 | False | crit | 与现状 SSH 失败分支同构 |
+| SSH 连接/鉴权异常 | False | crit | 与现状异常分支同构 |
+
+聚合字段:`duration_ms` = 各段耗时之和;`stdout` = 各段原文 `\n` 拼接;`stderr` = 非空段加 `[segment_key] ` 前缀拼接;`exit_code` = 0 或首个非零值。
+**冲突日志**：合并结果 `conflicts` 非空时写 `logger.warning("server biz=%s 分段输出键冲突(后者覆盖): %s", ...)`,运维可按段键排查重复输出字段。
+
+#### parser 约束 D3
+
+分段模式仅支持 `json`,三层防护:
+1. `upsert_segment`:组 parser != `'json'` 抛 `ValueError("仅 json 解析器的脚本组支持分段")`;
+2. `update_script_detail`:目标 parser != `'json'` 且组存在 enabled 分段 → 返 `None`(拒绝);
+3. `get_connection_config` 16 键:`parser != "json"` 时 `inspection_script_segments` 恒为 `[]`(防御性过滤)。
+
+#### SSH 执行器 D4(`app/shared/utils/ssh/executor.py`)
+
+- `execute_script_batch(config, scripts) -> List[SSHExecResult]`:单 SSH 连接顺序执行多段;connect/鉴权失败向上抛(与 `execute_script` 语义一致);单段 exec 异常折叠为 `SSHExecResult(success=False, exit_code=1, stderr="executor:Type: msg")` 并继续后续分段;`connect` 闭包 `finally` 释放连接。
+- 抽 `_exec_one(client, config, script)` 共用核心;`execute_script` 改造为薄封装;新增空脚本校验保留 `ValueError("script 不能为空")` 不连 SSH。
 
 #### 巡检脚本输出形态
 
@@ -131,7 +192,10 @@
 > `DevOpsServerService` 是 `InspectionScriptService` 的**强依赖**：未注入 InspectionScriptService 时构造 DevOpsServerService 会得到半残元数据（`get_connection_config` 缺脚本字段 / admin 详情误返回 None 元数据）。lifespan 通过「前置初始化 + 缺失则跳过构造」的方式避免半残实例被注入到 `app.state`。
 
 - **强依赖链**：`EmailConfigService`（早于 TaskScheduler）→ `AgentConfigService` / `McpConfigService` / `ToolRegistryService` / `SkillRegistryService` → `MCPToolsRegistry` → **`InspectionScriptService`（2026-08-03 新增）** → **`DevOpsServerService`（依赖 InspectionScriptService）** → `ApiConfigService` → `UserServerService` → `ScriptDiscoveryService` → `TaskSchedulerService`
-- **2026-08-03 新增段 `InspectionScriptService` 初始化**：DB 池就绪后调用 `_preload_and_publish_service(app, InspectionScriptService, ..., constructor_kwargs={"db": db_pool, "config_path": str(resolve_devops_inspection_scripts_config_path(settings.devops.inspection.scripts_config_path))})`；构造 / preload 任一异常 → `app.state.inspection_script_service = None`，**不**调用 `set_instance`，避免半残实例被注入导致 DevOpsServerService 拿到缺失字段的元数据
+- **2026-09-16 改造段 `InspectionScriptService` 初始化**：
+  - DB 池就绪后调用 `_preload_and_publish_service(app, InspectionScriptService, ..., constructor_kwargs={"db": db_pool})`(移除 `config_path` 入参, YAML 链路下线);
+  - `iss_instance is not None` 时,在 lifespan 内 try/except 调 `await iss_instance.seed_default_groups()` 幂等播种 `app/shared/utils/inspection/default_scripts.py::DEFAULT_INSPECTION_GROUPS`(2 组 + 8 段);播种失败仅 `logging.exception` 不阻断启动,运维可后续通过 admin API 手工维护;
+  - 构造 / preload 任一异常 → `app.state.inspection_script_service = None`,不调 `set_instance`。
 - **2026-08-03 改造段 `DevOpsServerService` 初始化**：密钥诊断通过 + `getattr(app.state, "inspection_script_service", None) is not None` → 调用 `_preload_and_publish_service(app, DevOpsServerService, ..., constructor_kwargs={"db": db_pool, "config_path": ..., "credential_key": ..., "inspection_script_service": getattr(app.state, "inspection_script_service", None)})`；密钥诊断失败 → 挂 `devops_server_service_hint = diag.hint`，admin router 500 + hint；**InspectionScriptService 缺失** → 挂 `devops_server_service_hint = "InspectionScriptService 未初始化（缺失或构造失败），DevOpsServerService 作为其强依赖同样不构造..."`，admin router 500 + hint，**不构造 DevOpsServerService**（防止半残 None 元数据被注入 app.state）；构造 / preload 异常同样经 `_preload_and_publish_service` 走 None 兜底 + hint 保留
 - **`_preload_and_publish_service` 统一发布辅助**（`app/core/server.py::lifespan` 顶部私有 helper）：构造 → preload 协程 → `set_instance`（成功才调用）→ 挂 `app.state.<state_attribute>`；任一阶段异常统一写 `app.state.<state_attribute> = None` + 不调用 `set_instance`，杜绝半残实例污染下游
 - **清理阶段顺序**（与启动顺序**相反**）：`TaskSchedulerService.shutdown()` → `MCPToolsRegistry.shutdown()` → `DevOpsServerService.reset()` + `app.state.devops_server_service = None` → **`InspectionScriptService.reset()` + `app.state.inspection_script_service = None`（2026-08-03 新增）** → `ScriptDiscoveryService` 引用置 None → `FeishuWebSocketService.stop()` → `SkillsService.reset()` → `LogService.stop()` → `DatabasePool.close()`
@@ -308,7 +372,7 @@
 - 脚本任务的 `server_list` 候选来自同一脱敏清单，提交值只包含 `business_name` 字符串数组；连接配置仍仅允许服务端通过 `DevOpsServerService.get_connection_config(business_name)` 获取，`ip` / `port` / `username` / `password` / `blacklist` / `whitelist` 不得写入 `script_args` 或前端 DOM。
 - 列表加载失败显示「服务器列表加载失败」，扫描失败显示「扫描失败，请稍后重试」，两者状态独立。
 
-### 前端按需脚本详情 / 扫描说明（2026-08-03 新增）
+### 前端按需脚本详情 / 扫描说明（2026-08-03 新增；2026-09-16 移除扫描入口）
 
 - **详情按需两段式加载（2026-08-03 改造）**：`TaskSchedulerManager.vue::openScriptDialog(row)` 改为两段式——
   1. 先 `fetchDevOpsServerDetail(row.id)` 调 `GET /api/admin/devops-servers/{id}` 取 `inspection_script_id` 等元数据
@@ -317,8 +381,7 @@
   4. 脚本详情失败 → 弹窗保留 devops meta 并显示「脚本原文加载失败，请稍后重试」（脱敏文案，不回显后端 detail）
 - **服务器详情元数据契约**：弹窗头部新增「平台 / 版本」展示（来自 `inspection_script_display_name` + `inspection_script_name`）；弹窗内容以 `<pre class="script-content">` 等宽字体保留换行/缩进（`white-space: pre`）展示 `inspection_script`，未配置显示「未配置巡检脚本」空态，标题旁附解析器标签 `inspection_parser`
 - **白名单弹窗契约不变**：与巡检脚本弹窗互斥（同一时刻仅一个 open），通过 `whitelistDialog.open` / `scriptDialog.open` 互斥切换；列表端点契约不变仍只返 4 字段
-- **巡检脚本库扫描面板（2026-08-03 新增）**：`TaskSchedulerManager.vue` 服务器 Tab 内独立 `<section class="inspection-script-scan" data-testid="inspection-script-scan-section">`，仅 admin 可见；含扫描按钮（`data-testid="scan-inspection-scripts-btn"`）+ 提示文案「从 `data/devops/inspection_scripts.yaml` 同步所有平台巡检脚本；仅展示扫描统计，不暴露脚本原文」+ 独立的扫描统计 / 错误区域（`inspectionScanSummary` / `inspectionScanErrorMessage` / `inspectionScanSuccessMessage`），不影响服务器扫描的提示
-- **触发函数 `triggerInspectionScriptsScan`**：admin only；带防重复提交（`isScanningInspectionScripts.value` 短路）；调 `scanInspectionScripts()` → `POST /api/admin/inspection-scripts/scan`；失败时使用脱敏文案「巡检脚本扫描失败，请稍后重试」，不回显后端 detail；成功解析 `{scanned, inserted, updated, failed}` 4 字段整数并写入 `inspectionScanSummary`，未知字段不进入 DOM
+- **2026-09-16 移除扫描入口**：YAML 链路整体下线,服务器 Tab 内 `inspection-script-scan-section` / 扫描按钮 / 5 字段 summary / `triggerInspectionScriptsScan` 全部移除;前端文案改为「默认脚本在 lifespan 阶段自动播种;运维可通过右侧编辑面板维护分组」。`TaskSchedulerManager.partial-failure.spec.js` 同步移除 `scanInspectionScripts` mock。
 ### 服务器采集落库服务 `ServerInspectionRecordService`（2026-08-05 新增）
 
 - 位置：`app/shared/utils/server_inspection_record_service.py`
@@ -347,15 +410,14 @@
   - `fetchInspectionScriptDetail(scriptId)` → `GET /api/admin/inspection-scripts/{scriptId}`（admin only；404 → Error「脚本不存在」，500 → Error 含后端 detail 不回显 script_id）
   - `updateInspectionScript(scriptId, payload)` → `PUT /api/admin/inspection-scripts/{scriptId}`（admin only，2026-08-04 新增；编辑保存接口）
 
-### 巡检脚本库独立 Tab（2026-08-04 新增）
+### 巡检脚本库独立 Tab（2026-08-04 新增；2026-09-16 移除扫描按钮）
 
 - **菜单权限**：新二级菜单 `task-scheduler.inspection-script-library`（`level=2`，`parent_id='task-scheduler'`，`sort_order=6`，`required_role='admin'`，`icon_key='code'`），从 `task-scheduler.server-management` 拆出独立授权；端点 ACL key 同步替换（列表端点从 `server-management` 迁出为新菜单权限；scan / detail / update 仍 admin only）
 - **前端容器**：`TaskSchedulerManager.vue` 新增第 6 个子 Tab（`TAB_LIBRARY = 'library'`），`data-testid="panel-library"`。左右分栏：左侧 `InspectionScriptLibraryPanel`（搜索框 + 节点列表，按 `name / display_name / platform / version` 过滤），右侧 `InspectionScriptEditorPanel`（编辑表单：display_name / platform / version / inspection_parser / 脚本正文多行 textarea / 字段规则表格 + 新增 / 删除）
-- **扫描入口迁移**：2026-08-03 旧设计放在「服务器扫描入库」Tab 顶部（`inspection-script-scan-section`），2026-08-04 已迁出至「巡检脚本库」Tab 顶部（`library-scan-btn`）。5 字段扫描统计（`scanned/inserted/updated/skipped/failed`）写入 `libraryScanSummary`
-- **编辑优先扫描**：`InspectionScriptService.scan_and_upsert` 改造为「DB 中已有 `name` 跳过更新」——写循环前增加 `if name in self._cache: stats["skipped"] += 1; continue`，不再触发 `_upsert_one_returning`，人工编辑内容不被覆盖
-- **保存工作流**：选中节点 → 编辑器 watch 监听 `props.scriptId` 调 `fetchInspectionScriptDetail` 拉详情 → 用户改字段 → 点保存调 `updateInspectionScript(scriptId, payload)` → 成功后 `form` 同步为后端最新记录 + 顶部出现成功提示（`onLibraryScriptSaved` 回调写入 `libraryScanSuccessMessage`）
-- **服务新增 `update_script_detail`**：`UPDATE inspection_scripts SET ... WHERE id = $1 RETURNING ...` 单条往返；白名单校验 `platform ∈ {linux, windows}` / `inspection_parser ∈ _VALID_PARSERS` / `display_name` 非空；写后立即同步 `_cache[name]` / `_id_cache[script_id]`（持 `_write_lock`）；DB 写入异常 / 入参非法 / script_id 不存在均返回 `None`（不抛）
-- **服务新增 `delete_script(id) -> bool`**：`DELETE FROM inspection_scripts WHERE id = $1` 单条往返；入参非法（`None` / 非 int / `<=0`）→ `False`；DB 返回非 `DELETE n` 格式或 `n=0`（无匹配行）→ `False`；DB 异常 → `logger.exception` 后 `False`；命中 `DELETE 1` → 持 `_write_lock` 同步移除 `_id_cache[script_id]` 与 `_cache[name]`（仅当 `_cache[name]['id'] == script_id` 才动 `_cache`），返回 `True`。`devops_servers.inspection_script_id` 外键为 `ON DELETE SET NULL`，无需手动清理服务器端缓存
+- **2026-09-16 移除扫描按钮与状态**:`triggerLibraryScan` / `library-scan-btn` / `library-scan-loading` / `library-scan-summary` / `library-scan-status` / `library-scan-error` / `isLibraryScanning` / `libraryScanSummary` / `libraryScanErrorMessage` / `libraryScanSuccessMessage` 全部下线;`libraryListRefreshToken` 保留(子组件 props 仍在用)。编辑后保存提示改用通用 `librarySaveSuccess`(响应元素 `data-testid="library-save-status"`)。
+- **保存工作流**：选中节点 → 编辑器 watch 监听 `props.scriptId` 调 `fetchInspectionScriptDetail` 拉详情 → 用户改字段 → 点保存调 `updateInspectionScript(scriptId, payload)` → 成功后 `form` 同步为后端最新记录 + 顶部出现成功提示(`onLibraryScriptSaved` 回调写入 `librarySaveSuccess`)。
+- **服务新增 `update_script_detail`**：`UPDATE inspection_scripts SET ... WHERE id = $1 RETURNING ...` 单条往返；白名单校验 `platform ∈ {linux, windows}` / `inspection_parser ∈ _VALID_PARSERS` / `display_name` 非空 / **D3 防御:组存在 enabled 分段且 parser 切到非 json → 返 None**；写后立即同步 `_cache[name]` / `_id_cache[script_id]`(持 `_write_lock`)；`record["segments"]` 保留原列表(本方法不管理分段);DB 写入异常 / 入参非法 / script_id 不存在均返回 `None`(不抛)。
+- **服务新增 `delete_script(id) -> bool`**：单事务内依次执行 `SELECT name FOR UPDATE` → `UPDATE devops_servers SET inspection_script_id=NULL` → `DELETE FROM inspection_script_segments WHERE script_id=$1`(2026-09-16 新增显式清理,F K CASCADE 兜底) → `DELETE FROM inspection_scripts WHERE id=$1`;事务提交后清缓存 + 同 name 漂移到其它 id 的所有 `_id_cache` 残留。
 
 ### 安全约束
 
@@ -415,7 +477,7 @@
 
 ### 测试覆盖
 
-- `app/tests/shared/test_devops_server_service.py` —— 44 个用例（含 2026-07-22 增补 `delete_server` / `server_exists` 4 个用例 + 巡检脚本字段 9 个用例）：Fernet 校验、Singleton、preload、扫描别名/字段/统计 / `servers:` 顶层 dict / 重复拒绝 / 缓存 RETURNING 同步 / 路径 resolver / 默认路径来自 paths / `_ensure_list` 防御性 JSONB 反序列化（9 个用例覆盖 list 透传 / JSON 字符串还原 / dict 包装 / 非法 JSON 兜底 / None 与基本类型兜底 / `preload_all` 与 `get_connection_config` 端到端字符串还原）/ **巡检脚本字段 9 个用例**（`_normalize_entry` str / literal block / 空 → None / 非法 parser → failed、`scan_and_upsert` 写缓存 + SQL 含新列 + 字面块换行保留、`preload_all` 加载 + 默认值回落、`get_connection_config` 暴露字段）。
+- `app/tests/shared/test_devops_server_service.py` —— 47 个用例（**2026-09-16 增补分段 3 个用例**：parser=json 组返 enabled 且非空白分段有序 / parser != json 恒空 / 无分段保留 legacy 原文）：Fernet 校验、Singleton、preload、扫描别名/字段/统计 / `servers:` 顶层 dict / 重复拒绝 / 缓存 RETURNING 同步 / 路径 resolver / 默认路径来自 paths / `_ensure_list` 防御性 JSONB 反序列化（9 个用例覆盖 list 透传 / JSON 字符串还原 / dict 包装 / 非法 JSON 兜底 / None 与基本类型兜底 / `preload_all` 与 `get_connection_config` 端到端字符串还原）/ **巡检脚本字段 9 个用例**（`_normalize_entry` str / literal block / 空 → None / 非法 parser → failed、`scan_and_upsert` 写缓存 + SQL 含新列 + 字面块换行保留、`preload_all` 加载 + 默认值回落、`get_connection_config` 暴露字段）。
 - `app/tests/shared/utils/test_devops_server_service.py` —— 10 个用例（2026-07-15 新增）：单例生命周期、`credential_key` 校验（空/非法）、`_write_lock` 类型校验（Bug-6）、`preload_all` 与 `scan_and_upsert` 写路径持锁观测、并发 `scan_and_upsert` 序列化、`_ensure_list` 防御性还原（list / dict / str-JSON / None / 非 JSON / 数字）、`list_public_servers` 严格白名单字段不外泄、`get_connection_config` 未注册业务名抛 KeyError。
 - `app/tests/shared/tools/skills/devops/test_command_interceptor.py` —— 31 个用例（2026-07-15 扩展）：原 23 + Bug-1/Bug-2 回归 8 个（`normalize_segment` 去除前导 `|`/`;`、精确白名单 `system.service` / `100%` 按字面量匹配、`^` 前缀仍走正则、`\d` 转义序列仍走正则、管道后续子段精确白名单命中、子段未列入拒绝）。
 - `app/tests/shared/tools/skills/devops/test_ssh_tools.py` —— 56 个用例（2026-07-15 扩展 27 + **2026-08-05 改 async + 2 个 in-flight loop 回归** 56）：原 17 + Bug-3/4/5/7 回归 10 个（Fernet ValueError 通用化、业务名 MagicMock 兜底、`_open_client` 传 timeout / auth_timeout / banner_timeout、`_clamp_timeout` 钳制边界、`execute_batch_commands` 拒绝 None / 空列表）+ **2026-08-05 新增** `test_execute_command_works_inside_running_event_loop` / `test_execute_command_third_party_inside_running_event_loop` 保护 LangGraph ToolNode in-flight loop 内直接 await 不再触发 RuntimeError。
