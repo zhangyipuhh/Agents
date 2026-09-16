@@ -116,7 +116,7 @@
 
 #### 默认分段脚本资产（2026-09-16 新增，`app/shared/utils/inspection/default_scripts.py`）
 
-代码资产 `DEFAULT_INSPECTION_GROUPS: List[dict]`,每组结构 `{name, display_name, platform, version, inspection_parser, inspection_fields, segments: [{segment_key, display_name, sort_order, script}, ...]}`;lifespan 阶段 `InspectionScriptService.seed_default_groups()` 幂等播种(只插不改,保留人工编辑)。
+代码资产 `DEFAULT_INSPECTION_GROUPS: List[dict]`,每组结构 `{name, display_name, platform, version, inspection_parser, inspection_fields, segments: [{segment_key, display_name, sort_order, script}, ...]}`;lifespan 阶段 `InspectionScriptService.seed_default_groups()` 幂等播种(只插不改,保留人工编辑);**2026-09-16 晚:已知默认段内容与代码资产不一致时自动 UPDATE(运维自定义段不覆盖;新 stats 键 `segments_updated`)**。
 
 - **`linux-bash`**（4 段,2026-09-16 拆分自原单体脚本;**2026-09-16 晚**:`disk-usage` 段 host_disk 命名空间与 `disk-io` 段对齐 + 扩展识别覆盖 zram/dm-/loop/md/drbd + 虚拟设备主动入 `_orphan_`):
   - `disk-usage`(sort_order=10):`df -P` + `df -i` 采集分区使用率与 inode 最大值,Linux 设备名命名规则推断 host_disk/partition(不依赖 lsblk,兼容老内核 / sandbox / cgroup 受限环境);**host_disk 命名空间统一**(物理盘:sd/vd/xvd/nvme/mmcblk/zram/dm-/loop/md/drbd;虚拟/网络:overlay/fuse.*/127.0.0.1:*/none 等 → `host_disk="_orphan_"`,与 ops_report `_orphan_` 虚拟组语义对齐;未识别设备 → `host_disk=dev` 兜底);**Capacity 列同时接受 `^[0-9]+%?$`**(Linux 原生输出含 `%`,Git Bash/Windows 不含,正则兼容两者)

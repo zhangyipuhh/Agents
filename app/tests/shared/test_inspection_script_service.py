@@ -319,13 +319,19 @@ def test_seed_default_groups_inserts_when_absent_and_idempotent():
             if n <= 4:
                 # 第一次 seed:每次 reload 都返回 [](模拟"刚插入尚未 reload")
                 return []
-            # 第二次 seed:模拟"已存在 segments"
+            # 第二次 seed:模拟"已存在 segments 且内容与代码一致"(触发 skipped)
+            from app.shared.utils.inspection.default_scripts import DEFAULT_INSPECTION_GROUPS
             sid = args[0] if args else 1
+            name = "linux-bash" if sid == 1 else "windows-ps-5.1"
+            grp = next(g for g in DEFAULT_INSPECTION_GROUPS if g["name"] == name)
             return [{
-                "id": 100, "script_id": sid, "segment_key": "cpu",
-                "display_name": "CPU", "sort_order": 40, "script": "echo 1",
+                "id": 100, "script_id": sid,
+                "segment_key": s["segment_key"],
+                "display_name": s["display_name"],
+                "sort_order": s["sort_order"],
+                "script": s["script"],
                 "enabled": True, "created_at": None, "updated_at": None,
-            }]
+            } for s in grp["segments"]]
         return []
 
     db.fetchrow = AsyncMock(side_effect=_fetchrow)
@@ -340,6 +346,125 @@ def test_seed_default_groups_inserts_when_absent_and_idempotent():
     assert stats2["groups_inserted"] == 0
     assert stats2["segments_inserted"] == 0
     assert stats2["skipped"] == 2
+
+
+def test_seed_default_groups_updates_known_segment_when_script_changed():
+    """已知默认段存在但内容与代码资产不一致 → UPDATE 该段(运维自定义段不覆盖)。
+
+    2026-09-16 晚:disk-usage 段 awk 修正后,已存在 inspection_script_segments
+    行需要重新落库才能生效。本测试锁定 seed_default_groups 的"已知默认段
+    内容演进"行为:DEFAULT_INSPECTION_GROUPS 列出的 segment_key 在 DB 已存在
+    且 script 与代码不一致时,自动 UPDATE;不存在于已知集合的段(DB-only)
+    不动。
+    """
+    from app.shared.utils.inspection.default_scripts import DEFAULT_INSPECTION_GROUPS
+    from app.shared.utils.inspection_script_service import InspectionScriptService
+
+    db = _make_db()
+    svc = InspectionScriptService(db)
+
+    # preload_all 拉 inspection_scripts 主表 → 两组都已存在
+    async def _fetch_main(sql, *args):
+        if "FROM inspection_scripts" in sql and "RETURNING" not in sql:
+            return [
+                {"id": 1, "name": "linux-bash", "display_name": "Linux Bash",
+                 "platform": "linux", "version": "bash", "inspection_parser": "json",
+                 "inspection_script": None, "inspection_fields": "[]",
+                 "created_at": None, "updated_at": None},
+                {"id": 2, "name": "windows-ps-5.1", "display_name": "Windows PS",
+                 "platform": "windows", "version": "ps-5.1", "inspection_parser": "json",
+                 "inspection_script": None, "inspection_fields": "[]",
+                 "created_at": None, "updated_at": None},
+            ]
+        return []
+
+    db.fetch = AsyncMock(side_effect=_fetch_main)
+    asyncio.run(svc.preload_all())
+
+    # 模拟:linux-bash 组 + windows-ps-5.1 组都已存在;linux-bash disk-usage 段
+    # 的 script 与代码资产不一致(模拟"运维前一轮代码已经入库"),其他段一致。
+    linux_group = next(g for g in DEFAULT_INSPECTION_GROUPS if g["name"] == "linux-bash")
+    win_group = next(g for g in DEFAULT_INSPECTION_GROUPS if g["name"] == "windows-ps-5.1")
+    linux_disk_usage_default = next(s for s in linux_group["segments"] if s["segment_key"] == "disk-usage")
+    # 同名"运维自定义段":DB 存在但 segment_key 不在已知集合 → 不应被 UPDATE
+    custom_segment_key = "custom-legacy-segment"
+    stale_script = "# STALE OLD SCRIPT BEFORE FIX\n"
+
+    # 准备 fixture:每个默认段已有 DB 行(第一次 seed 后 reload 看到的)
+    def _mk_db_row(script_id, seg_def, override_script=None):
+        return {
+            "id": script_id + 1000,
+            "script_id": script_id,
+            "segment_key": seg_def["segment_key"],
+            "display_name": seg_def["display_name"],
+            "sort_order": seg_def["sort_order"],
+            "script": override_script if override_script is not None else seg_def["script"],
+            "enabled": True,
+            "created_at": None,
+            "updated_at": None,
+        }
+
+    # group id: linux=1, windows=2;segment id 基于 group id
+    rows_by_group = {
+        1: [_mk_db_row(1, s) for s in linux_group["segments"]],
+        2: [_mk_db_row(2, s) for s in win_group["segments"]],
+    }
+    # 把 linux disk-usage 段 script 改为"过期版本",触发 UPDATE
+    for r in rows_by_group[1]:
+        if r["segment_key"] == "disk-usage":
+            r["script"] = stale_script
+    # 在 linux 组加一个"运维自定义段"(segment_key 不在已知集合)→ 不应被 UPDATE
+    custom_row = _mk_db_row(1, {
+        "segment_key": custom_segment_key,
+        "display_name": "运维自定义",
+        "sort_order": 999,
+        "script": "# CUSTOM SCRIPT, DO NOT TOUCH\n",
+    })
+    # 给 custom 段一个独立的 id,避免与默认段 id 冲突
+    custom_row["id"] = 9999
+    rows_by_group[1].append(custom_row)
+
+    update_calls = []
+    fetch_count = {"n": 0}
+
+    async def _fetch(sql, *args):
+        fetch_count["n"] += 1
+        if "FROM inspection_script_segments" in sql and args:
+            sid = int(args[0])
+            return list(rows_by_group.get(sid, []))
+        return []
+
+    async def _execute(sql, *args):
+        if sql.strip().upper().startswith("UPDATE INSPECTION_SCRIPT_SEGMENTS"):
+            update_calls.append({"sql": sql, "args": args})
+            return "UPDATE 1"
+        return "INSERT 0 0"
+
+    db.fetch = AsyncMock(side_effect=_fetch)
+    db.execute = AsyncMock(side_effect=_execute)
+
+    stats = asyncio.run(svc.seed_default_groups())
+    # 两组都已存在 → groups_inserted=0
+    assert stats["groups_inserted"] == 0
+    # 已存在的 segments 不再走 INSERT 路径 → segments_inserted=0
+    assert stats["segments_inserted"] == 0
+    # windows 段全部一致 → skipped+1;linux 段 disk-usage 触发 UPDATE → 不 skipped
+    assert stats["skipped"] == 1
+    # linux disk-usage 段(stale)→ UPDATE 触发;windows disk-usage 段(一致)→ 不触发
+    # 故 segments_updated 应该是 1(只有 linux disk-usage)
+    assert stats["segments_updated"] == 1
+    assert len(update_calls) == 1
+    upd = update_calls[0]
+    # UPDATE 接收的参数顺序:(script, display_name, sort_order, id)
+    new_script = upd["args"][0]
+    assert new_script == linux_disk_usage_default["script"]
+    assert upd["args"][1] == linux_disk_usage_default["display_name"]
+    assert int(upd["args"][2]) == linux_disk_usage_default["sort_order"]
+    # id 是 linux disk-usage 段的 id(原 fixture 给的 segment_id + 1000)
+    assert int(upd["args"][3]) == 1 + 1000
+    # 运维自定义段(custom-legacy-segment)从未进入 UPDATE 调用
+    custom_ids = {r["id"] for r in rows_by_group[1] if r["segment_key"] == custom_segment_key}
+    assert custom_ids.isdisjoint({int(c["args"][3]) for c in update_calls})
 
 
 # ----------------------------------------------------------------------

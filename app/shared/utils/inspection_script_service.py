@@ -613,18 +613,23 @@ class InspectionScriptService:
             1. 组名不在缓存 → INSERT 组行(ON CONFLICT DO NOTHING),
                RETURNING 行同步缓存;
             2. 组 segments 为空 → 逐段 INSERT ... ON CONFLICT DO NOTHING,
-               完成后 _reload_segments。
+               完成后 _reload_segments;
+            3. **2026-09-16 晚:已知默认段存在但内容与代码资产不一致 → UPDATE
+               (仅对 DEFAULT_INSPECTION_GROUPS 段名集合生效;运维自定义段不覆盖)**。
 
         返回:
-            Dict[str, int]: {"groups_inserted", "segments_inserted", "skipped"}
+            Dict[str, int]: {"groups_inserted", "segments_inserted", "skipped", "segments_updated"}
         """
         from app.shared.utils.inspection.default_scripts import (
             DEFAULT_INSPECTION_GROUPS,
         )
 
-        stats = {"groups_inserted": 0, "segments_inserted": 0, "skipped": 0}
+        stats = {"groups_inserted": 0, "segments_inserted": 0, "skipped": 0, "segments_updated": 0}
         for group in DEFAULT_INSPECTION_GROUPS:
             name = group["name"]
+            # 2026-09-16 晚:本组所有已知默认段 key 集合(用于「已知默认段覆盖」边界判定)
+            known_segment_keys = {seg["segment_key"] for seg in group["segments"]}
+            known_segments_by_key = {seg["segment_key"]: seg for seg in group["segments"]}
             rec = self.get_script_by_name(name)
             if rec is None:
                 row = await self.db.fetchrow(
@@ -664,20 +669,45 @@ class InspectionScriptService:
             # 避免上次 reload 返回 [] 而误判为可播种。
             await self._reload_segments(int(rec["id"]))
             rec = self.get_script_by_name(name) or {}
-            if rec.get("segments"):
-                stats["skipped"] += 1
-                continue
-            for seg in group["segments"]:
-                await self.db.execute(
-                    "INSERT INTO inspection_script_segments "
-                    "(script_id, segment_key, display_name, sort_order, script, "
-                    " enabled, created_at, updated_at) "
-                    "VALUES ($1, $2, $3, $4, $5, TRUE, NOW(), NOW()) "
-                    "ON CONFLICT (script_id, segment_key) DO NOTHING",
-                    int(rec["id"]), seg["segment_key"], seg["display_name"],
-                    int(seg["sort_order"]), seg["script"],
-                )
-                stats["segments_inserted"] += 1
+            existing_segments = list(rec.get("segments") or [])
+            existing_by_key = {seg["segment_key"]: seg for seg in existing_segments}
+            if not existing_segments:
+                # 全组无段 → 全部 INSERT
+                for seg in group["segments"]:
+                    await self.db.execute(
+                        "INSERT INTO inspection_script_segments "
+                        "(script_id, segment_key, display_name, sort_order, script, "
+                        " enabled, created_at, updated_at) "
+                        "VALUES ($1, $2, $3, $4, $5, TRUE, NOW(), NOW()) "
+                        "ON CONFLICT (script_id, segment_key) DO NOTHING",
+                        int(rec["id"]), seg["segment_key"], seg["display_name"],
+                        int(seg["sort_order"]), seg["script"],
+                    )
+                    stats["segments_inserted"] += 1
+            else:
+                # 2026-09-16 晚:已知默认段 → 内容不一致时 UPDATE(允许代码资产演进;
+                # 运维自定义段不覆盖 —— 按 segment_key 是否在 known_segment_keys 判定)
+                group_updated = 0
+                for key, default_seg in known_segments_by_key.items():
+                    exist = existing_by_key.get(key)
+                    if exist is None or not exist.get("id"):
+                        continue  # 默认段在 DB 不存在(运维可能删了) → 不补,保留运维意图
+                    if exist.get("script") == default_seg["script"]:
+                        continue
+                    await self.db.execute(
+                        "UPDATE inspection_script_segments "
+                        "SET script = $1, display_name = $2, sort_order = $3, "
+                        "    updated_at = NOW() "
+                        "WHERE id = $4",
+                        default_seg["script"],
+                        default_seg["display_name"],
+                        int(default_seg["sort_order"]),
+                        int(exist["id"]),
+                    )
+                    stats["segments_updated"] += 1
+                    group_updated += 1
+                if group_updated == 0:
+                    stats["skipped"] += 1
             await self._reload_segments(int(rec["id"]))
         return stats
 
