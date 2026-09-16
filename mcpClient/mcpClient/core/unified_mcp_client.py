@@ -737,13 +737,17 @@ class UnifiedMCPClient:
 
     async def get_server_tools(self, server_name: str) -> Optional[dict]:
         if server_name not in self._server_configs:
+            logger.warning("[MCP-DBG] get_server_tools: %s not in _server_configs", server_name)
             return None
 
         if self._client is None:
+            logger.warning("[MCP-DBG] get_server_tools: _client is None")
             return None
 
+        logger.warning("[MCP-DBG] get_server_tools: about to call _client.get_tools for %s", server_name)
         try:
             tools = await self._client.get_tools(server_name=server_name)
+            logger.warning("[MCP-DBG] get_server_tools: got %d tools for %s", len(tools) if tools else 0, server_name)
         except Exception as e:
             logger.warning(
                 "从服务器 '%s' 获取工具时出错: %s",
