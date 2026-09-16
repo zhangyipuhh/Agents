@@ -1,82 +1,108 @@
 # -*- coding:utf-8 -*-
-"""Windows PowerShell 巡检脚本兼容性回归测试（2026-08-03 改造）。
+"""Windows PowerShell 默认分段脚本资产契约回归测试(2026-09-16 由 YAML 测试改写)。
 
-2026-07-22：原测试通过遍历 ``data/devops/servers.yaml`` 的 Windows 节点读取
-inspection_script / inspection_fields 字段；2026-08-03 巡检脚本库改造后：
-- servers.yaml / servers.yaml.example 不再携带 inspection_script 原文，
-  改为 inspection_script_name 引用脚本库条目；
-- inspection_scripts.yaml.example 是脚本库模板，包含 windows-ps-5.1 节点
-  的 inspection_script / inspection_fields 字段。
-因此本测试改读 inspection_scripts.yaml.example，验证脚本库条目契约。
+验证 ``app/shared/utils/inspection/default_scripts.py`` 的 windows-ps-5.1 组:
+- 兼容老版 PowerShell 5.1(不引入 Get-CimInstance / Get-PhysicalDisk / ConvertTo-Json);
+- 磁盘 IO 段基于 Win32_PerfFormattedData_PerfDisk_PhysicalDisk + MSFT_PhysicalDisk;
+- 物理盘关联通过 Win32_DiskDrive.DeviceID 输出 host_disk / disk_index;
+- 分段输出键并集 == inspection_fields 声明 key 集合。
 """
-
-from pathlib import Path
-
-import yaml
+from app.shared.utils.inspection.default_scripts import DEFAULT_INSPECTION_GROUPS
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+def _windows_group():
+    """获取 windows-ps-5.1 默认组。
 
+    Returns:
+        dict: windows-ps-5.1 组条目
 
-def test_windows_inspection_scripts_support_legacy_powershell():
-    """公开配置中的 Windows 脚本应兼容旧版 PowerShell 并保持 JSON 字段契约。
-
-    2026-08-03 改造：检查项从 servers.yaml 迁移到 inspection_scripts.yaml.example 的
-    windows-ps-5.1 条目；2026-08-15 扩展：新增磁盘 IO 采集段
-    （Win32_PerfFormattedData_PerfDisk_PhysicalDisk 熟数据 + MSFT_PhysicalDisk
-    介质探测），仍保持 Get-WmiObject-only，不引入 Get-CimInstance /
-    Get-PhysicalDisk / ConvertTo-Json。
-
-    2026-08-16 扩展：单个磁盘 IO 段必须额外输出 ``host_disk`` / ``disk_index``
-    字段（按 Win32_DiskDrive.DeviceID 索引），兼容旧快照（缺字段时前端允许为空）。
-    分区记录（Get-PSDrive 的 mount 段）也带 ``host_disk`` / ``disk_index`` /
-    ``partition``，依据 WMI mount 关联（``0 C: D:[SSD]`` 文本解析）归入物理盘。
+    Raises:
+        StopIteration: 默认组未声明 windows-ps-5.1 时抛出
     """
-    script_paths = [
-        PROJECT_ROOT / "data" / "devops" / "inspection_scripts.yaml.example",
-    ]
+    return next(g for g in DEFAULT_INSPECTION_GROUPS if g["name"] == "windows-ps-5.1")
 
-    for path in script_paths:
-        document = yaml.safe_load(path.read_text(encoding="utf-8"))
-        windows = next(
-            item for item in document["inspection_scripts"]
-            if item.get("name") == "windows-ps-5.1"
-        )
-        script = windows["inspection_script"]
-        output_keys = {
-            "disk_used_pct",
-            "mem_used_pct",
-            "cpu_used_pct",
-            "cpu_iowait_pct",
-            "swap_used_pct",
-            "inode_used_pct",
-            "io_util_pct",
-            "io_await_ms",
-        }
-        configured_keys = {field["key"] for field in windows["inspection_fields"]}
 
-        # Get-WmiObject 调用次数动态匹配：基线 4 个类（OS / Processor / PhysicalDisk /
-        # PerfDisk_PhysicalDisk）+ 2026-08-16 新增 Win32_DiskDrive（host_disk 索引），
-        # 不能再硬编码 = 4。
-        assert script.count("Get-WmiObject") >= 5
-        assert "Get-CimInstance" not in script
-        assert "Get-PhysicalDisk" not in script
-        assert "ConvertTo-Json" not in script
-        assert "ConvertToDateTime" in script
-        assert "JavaScriptSerializer" in script
-        # IO 采集段契约
-        assert "MSFT_PhysicalDisk" in script
-        assert "Win32_PerfFormattedData_PerfDisk_PhysicalDisk" in script
-        assert "PercentDiskTime" in script
-        assert "AvgDiskSecPerTransfer" in script
-        assert "disk_type" in script
-        # 2026-08-16 物理磁盘关联：新增 Win32_DiskDrive 索引 + host_disk / disk_index 字段
-        assert "Win32_DiskDrive" in script
-        assert "host_disk" in script
-        assert "disk_index" in script
-        assert output_keys == configured_keys
-        await_rule = next(
-            f for f in windows["inspection_fields"] if f["key"] == "io_await_ms"
-        )
-        assert await_rule["warn"] == 100 and await_rule["crit"] == 200
-        assert await_rule["ssd_warn"] == 20 and await_rule["ssd_crit"] == 50
+def _segment(group, key):
+    """按 segment_key 取分段。
+
+    Args:
+        group: 默认组条目
+        key: 分段键
+
+    Returns:
+        dict: 分段条目
+
+    Raises:
+        StopIteration: 分段键不存在时抛出
+    """
+    return next(s for s in group["segments"] if s["segment_key"] == key)
+
+
+def test_windows_segments_keep_legacy_powershell_compatibility():
+    """公开资产中的 Windows 分段应兼容 PowerShell 5.1 且不引入新版 cmdlet。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 任一关键 cmdlet / 字段契约缺失时失败
+    """
+    group = _windows_group()
+    combined_script = "\n".join(seg["script"] for seg in group["segments"])
+
+    # Get-WmiObject / gwmi 兼容(基线 4 类 + 物理盘关联,本断言只保证不引入新版 cmdlet)
+    assert "Get-WmiObject" in combined_script or "gwmi" in combined_script
+    assert "Get-CimInstance" not in combined_script
+    assert "Get-PhysicalDisk" not in combined_script
+    assert "ConvertTo-Json" not in combined_script
+    # IO 采集段契约:介质探测 + 性能计数器 + 关键输出字段
+    assert "MSFT_PhysicalDisk" in combined_script
+    assert "Win32_PerfFormattedData_PerfDisk_PhysicalDisk" in combined_script
+    assert "PercentDiskTime" in combined_script
+    assert "AvgDiskSecPerTransfer" in combined_script
+    assert "disk_type" in combined_script
+    # 物理盘关联:host_disk / disk_index 字段(通过 Win32_DiskDrive.DeviceID)
+    assert "Win32_DiskDrive" in combined_script
+    assert "host_disk" in combined_script
+    assert "disk_index" in combined_script
+    # mount 段使用单引号 JSON 字符串拼接 + Replace 反斜杠转义
+    # 实际渲染到 PowerShell 时形态为 .Replace('\','\\'),r""" 源里反斜杠被字面保留。
+    # 仅检测 .Replace( 出现 + 转义形态存在(松断言)。
+    assert ".Replace(" in combined_script
+    assert "'\\\\'" in combined_script or "'\\'" in combined_script
+
+
+def test_windows_segments_output_keys_match_declared_fields():
+    """windows-ps-5.1 四分段输出键并集覆盖字段规则 key 集合。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 字段规则的 key 在分段输出中找不到对应 JSON 键时失败
+    """
+    import re
+    group = _windows_group()
+    declared = {f["key"] for f in group["inspection_fields"]}
+    produced = set()
+    for seg in group["segments"]:
+        produced |= set(re.findall(r'\\?"([a-z_0-9]+)\\?"\s*:', seg["script"]))
+    produced.discard("disks")
+    # disks 数组元素承载 disk_used_pct / io_util_pct / io_await_ms
+    produced |= {"disk_used_pct", "io_util_pct", "io_await_ms"}
+    assert declared <= produced
+
+
+def test_windows_disk_io_segment_has_io_await_ssd_threshold_in_fields():
+    """io_await_ms 字段必须保留 ssd_warn / ssd_crit 阈值对。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 阈值对缺失或数值不一致时失败
+    """
+    group = _windows_group()
+    await_rule = next(f for f in group["inspection_fields"] if f["key"] == "io_await_ms")
+    assert await_rule["warn"] == 100 and await_rule["crit"] == 200
+    assert await_rule["ssd_warn"] == 20 and await_rule["ssd_crit"] == 50

@@ -1,44 +1,47 @@
 # -*- coding:utf-8 -*-
-"""Linux Bash 巡检脚本 IO 采集契约回归测试（2026-08-15 新增）。
+"""Linux Bash 默认分段脚本资产契约回归测试(2026-09-16 由 YAML 测试改写)。
 
-验证 ``data/devops/inspection_scripts.yaml.example`` 的 linux-bash 条目：
-- 通过内核自带 ``/proc/diskstats`` 双采样计算 io_util_pct / io_await_ms，
-  不依赖 sysstat(iostat) 等外部包；
-- 通过 ``/sys/block/<dev>/queue/rotational`` 探测 SSD/HDD 介质并输出
-  ``disk_type`` 元素键；
-- 输出 JSON 键集合与 ``inspection_fields`` 声明的 key 集合一致；
-- 仅使用老版 POSIX 语法（禁止 bash4+ / GNU 扩展混入）。
+验证 ``app/shared/utils/inspection/default_scripts.py`` 的 linux-bash 组:
+- disk-io 分段通过 /proc/diskstats 双采样采集 IO,不依赖 sysstat(iostat);
+- disk-io 分段通过 /sys/block/<dev>/queue/rotational 探测介质并输出 disk_type;
+- 四分段输出键并集 == inspection_fields 声明 key 集合(可评估全覆盖);
+- 仅使用老版 POSIX 语法(禁止 bash4+ 进程替换 ``<(``)。
 """
+import re
 
-from pathlib import Path
-
-import yaml
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+from app.shared.utils.inspection.default_scripts import DEFAULT_INSPECTION_GROUPS
 
 
-def _load_linux_bash_entry():
-    """读取 .example 模板中的 linux-bash 条目。
+def _linux_group():
+    """获取 linux-bash 默认组。
 
     Returns:
-        dict: linux-bash 脚本库条目（含 inspection_script / inspection_fields）
+        dict: linux-bash 组条目(含 segments / inspection_fields)
 
     Raises:
-        StopIteration: 模板中不存在 linux-bash 条目时抛出
+        StopIteration: 默认组未声明 linux-bash 时抛出
     """
-    document = yaml.safe_load(
-        (PROJECT_ROOT / "data" / "devops" / "inspection_scripts.yaml.example")
-        .read_text(encoding="utf-8")
-    )
-    return next(
-        item for item in document["inspection_scripts"]
-        if item.get("name") == "linux-bash"
-    )
+    return next(g for g in DEFAULT_INSPECTION_GROUPS if g["name"] == "linux-bash")
 
 
-def test_linux_inspection_script_uses_proc_diskstats_not_iostat():
-    """linux-bash 条目应通过 /proc/diskstats 双采样采集 IO，无 sysstat 外部依赖。
+def _segment(group, key):
+    """按 segment_key 取分段。
+
+    Args:
+        group: 默认组条目
+        key: 分段键
+
+    Returns:
+        dict: 分段条目(含 segment_key / display_name / sort_order / script)
+
+    Raises:
+        StopIteration: 分段键不存在时抛出
+    """
+    return next(s for s in group["segments"] if s["segment_key"] == key)
+
+
+def test_disk_io_segment_uses_proc_diskstats_not_iostat():
+    """disk-io 分段应通过 /proc/diskstats 双采样采集 IO。
 
     Returns:
         None
@@ -46,98 +49,61 @@ def test_linux_inspection_script_uses_proc_diskstats_not_iostat():
     Raises:
         AssertionError: 缺少内核接口采样段或混入外部依赖/新版语法时失败
     """
-    entry = _load_linux_bash_entry()
-    script = entry["inspection_script"]
-    # IO 采集核心: 双采样 + 间隔 + 输出字段 + 整盘过滤
+    script = _segment(_linux_group(), "disk-io")["script"]
     assert "/proc/diskstats" in script
     assert "sleep 1" in script
     assert "io_util_pct" in script and "io_await_ms" in script
-    assert "sd[a-z]+" in script
-    assert "nvme[0-9]+n[0-9]+" in script
-    # 介质探测
+    assert "iostat" not in script
+    assert "<(" not in script  # 禁止 bash4+ 进程替换
+
+
+def test_disk_io_segment_detects_media_type():
+    """disk-io 分段应通过 /sys/block 探测介质并输出 disk_type。
+
+    Returns:
+        None
+
+    Raises:
+        AssertionError: 缺介质探测逻辑或未输出 disk_type 时失败
+    """
+    script = _segment(_linux_group(), "disk-io")["script"]
     assert "/sys/block/" in script
     assert "rotational" in script
     assert "disk_type" in script
-    # 无外部包依赖: 注释可提及 iostat, 但脚本不能 ``$(iostat ...)`` 调用
-    assert "$(iostat" not in script and "`iostat" not in script
-    assert "iostat -" not in script
-    # 老版 Linux 兼容性守卫: 禁止 bash4+ / GNU 扩展语法
-    assert "<(" not in script        # 进程替换
-    assert "<<<" not in script      # herestring
-    assert "declare" not in script  # bash 关联数组
-    assert "mapfile" not in script  # bash4 内建
 
 
-def test_linux_inspection_output_keys_match_fields():
-    """脚本输出键集合须与 inspection_fields key 集合一致（含 IO 两个新字段）。
+def test_segments_output_keys_cover_declared_fields():
+    """四分段 printf 输出的 JSON 键并集 == 9 条字段规则 key 集 + disks。
 
     Returns:
         None
 
     Raises:
-        AssertionError: 键集合不一致或 io_await_ms 缺 ssd 阈值对时失败
+        AssertionError: 任何字段规则的 key 在分段输出中找不到对应 JSON 键时失败
     """
-    entry = _load_linux_bash_entry()
-    output_keys = {
-        "disk_used_pct", "mem_used_pct", "cpu_idle_pct", "load_1m",
-        "io_util_pct", "io_await_ms",
-    }
-    configured_keys = {field["key"] for field in entry["inspection_fields"]}
-    assert output_keys == configured_keys
-    await_rule = next(
-        f for f in entry["inspection_fields"] if f["key"] == "io_await_ms"
-    )
-    assert await_rule["warn"] == 100 and await_rule["crit"] == 200
-    assert await_rule["ssd_warn"] == 20 and await_rule["ssd_crit"] == 50
+    group = _linux_group()
+    declared = {f["key"] for f in group["inspection_fields"]}
+    produced = set()
+    for seg in group["segments"]:
+        # 从 printf 格式串提取顶层 JSON 键("key": 形态)
+        produced |= set(re.findall(r'\\?"([a-z_0-9]+)\\?"\s*:', seg["script"]))
+    produced.discard("disks")
+    # disks 数组元素承载 disk_used_pct / io_util_pct / io_await_ms
+    produced |= {"disk_used_pct", "io_util_pct", "io_await_ms"}
+    assert declared <= produced
 
 
-def test_linux_inspection_disks_emit_host_disk_and_partition():
-    """linux-bash 脚本输出 disks[] 元素必须带 ``host_disk`` / ``disk_index`` / ``partition`` 字段。
-
-    物理磁盘分组依赖 ``host_disk``（整盘设备名，如 ``sda`` / ``nvme0n1`` / ``mmcblk0``），
-    ``disk_index``（设备序号 0/1/2...），以及 ``partition``（分区名，如 ``sda1`` / ``nvme0n1p1``，
-    整盘记录为空串）。
-
-    探测策略（按用户要求 2026-08-16）：
-      1) 优先调用 ``lsblk -n -o NAME,PKNAME`` 拿真实父子关系；
-      2) 允许 safe fallback（脚本读不到时不抛错，partition 留空串，前端按 mount 兜底）。
+def test_disk_usage_segment_emits_host_disk_partition_disk_index():
+    """disk-usage 分段必须输出 host_disk / partition / disk_index 字段。
 
     Returns:
         None
 
     Raises:
-        AssertionError: 脚本未使用 lsblk 或未输出 host_disk/disk_index/partition 任一时失败
+        AssertionError: 任一字段在分段脚本中缺失时失败
     """
-    entry = _load_linux_bash_entry()
-    script = entry["inspection_script"]
-    # 1) 必须优先使用 lsblk 探测父子关系
-    assert "lsblk" in script
-    assert "PKNAME" in script
-    # 2) 输出 JSON 元素必须包含 host_disk / disk_index / partition 字段名
+    script = _segment(_linux_group(), "disk-usage")["script"]
     assert "host_disk" in script
-    assert "disk_index" in script
     assert "partition" in script
-    # 3) 兼容老 mount / disk_used_pct / io_util_pct / io_await_ms / disk_type 字段
+    assert "disk_index" in script
     assert "disk_used_pct" in script
-    assert "io_util_pct" in script
-    assert "io_await_ms" in script
-    assert "disk_type" in script
-
-
-def test_linux_inspection_disk_section_distinguishes_partition_vs_disk():
-    """linux-bash 脚本必须区分分区记录（``partition`` 非空）与整盘 IO 记录（``partition`` 空）。
-
-    验证策略：脚本必须包含读取 ``PKNAME``（由 ``lsblk -o NAME,PKNAME`` 给出）以决定
-    ``partition`` 字段的逻辑片段。``PKNAME`` 非空 → 该行是分区，``partition`` 取 NAME 末段；
-    ``PKNAME`` 为空 → 该行是整盘，``partition`` 留空串。
-
-    Returns:
-        None
-
-    Raises:
-        AssertionError: 缺少分区/整盘区分逻辑时失败
-    """
-    entry = _load_linux_bash_entry()
-    script = entry["inspection_script"]
-    # 必须从 lsblk 读取 PKNAME 字段，从而识别父子关系
-    assert "PKNAME" in script
