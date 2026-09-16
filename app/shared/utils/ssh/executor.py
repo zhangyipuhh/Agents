@@ -2,7 +2,7 @@
 """与 LangChain 解耦的 Paramiko SSH 脚本执行器。"""
 
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, List, Mapping
 
 import paramiko
 
@@ -26,7 +26,7 @@ def _decode_remote_bytes(raw: bytes) -> str:
     解码策略(2026-08-16 调整):
       1. 优先 UTF-8 + ``backslashreplace``: 任何非法字节序列会被转义为 ``\\xNN``,
         既不丢信息也不会污染日志;Linux 远端默认 UTF-8 输出几乎全部走这条路径。
-      2. 若 UTF-8 解码结果中含 **多个** Unicode 替换符 ``U+FFFD`` (``�``),
+      2. 若 UTF-8 解码结果中含 **多个** Unicode 替换符 ``U+FFFD`` (````),
         判定为远端实际输出 GBK/CP936(中文 Windows cmd / PowerShell 默认编码),
         fallback 用 GBK 重解原始字节,保留可读中文(stderr "参数太长" 等)。
 
@@ -53,6 +53,37 @@ def _decode_remote_bytes(raw: bytes) -> str:
             return raw.decode("utf-8", errors="replace").strip()
 
 
+def _exec_one(
+    client: "paramiko.SSHClient",
+    config: Mapping[str, Any],
+    script: str,
+) -> SSHExecResult:
+    """在已连接 client 上执行单段脚本(wrap → exec → 解码 → 收退出码)。
+
+    参数:
+        client: 已 connect 的 paramiko SSHClient。
+        config: 连接配置(server_type / ssh_timeout)。
+        script: 脚本文本。
+
+    返回:
+        SSHExecResult
+    """
+    wrapped = wrap_script_for_platform(config.get("server_type", ""), script)
+    safe_timeout = config.get("ssh_timeout") or 30
+    stdin, stdout, stderr = client.exec_command(wrapped, timeout=safe_timeout)
+    # Windows OpenSSH 默认 shell 在非 PTY 通道下持续等待 stdin,关闭写端无副作用
+    stdin.close()
+    output = _decode_remote_bytes(stdout.read())
+    error = _decode_remote_bytes(stderr.read())
+    exit_code = stdout.channel.recv_exit_status()
+    return SSHExecResult(
+        success=exit_code == 0 and not error,
+        stdout=output,
+        stderr=error,
+        exit_code=exit_code,
+    )
+
+
 def execute_script(
     config: Mapping[str, Any],
     script: str,
@@ -65,7 +96,7 @@ def execute_script(
                 ssh_timeout 由 ``DevOpsServerService.get_connection_config`` 高内聚解析，
                 默认 30，钳制 ``[1, 120]``。
         script: 需要在远端执行的完整脚本文本。
-        timeout: **已废弃**（2026-08-19），保留仅为向后兼容签名；运行时被忽略。
+        timeout: **已废弃**(2026-08-19),保留仅为向后兼容签名;运行时被忽略。
 
     Returns:
         SSHExecResult: 包含标准输出、标准错误、退出码和成功状态的结果。
@@ -75,11 +106,8 @@ def execute_script(
         paramiko.AuthenticationException: SSH 认证失败。
         paramiko.SSHException: SSH 连接或通道执行失败。
     """
-    wrapped = wrap_script_for_platform(config.get("server_type", ""), script)
-    # 2026-08-19 高内聚：直接取 service 给的已钳制值；不再调 clamp_timeout。
-    # 缺省回退 30（与原 default=30 对齐）由 ``resolve_ssh_timeout`` 在 service 内完成。
-    # ``.get(..., 30)`` 兜底是给测试 fixture 容错（生产 service 必给此字段）。
-    safe_timeout = config.get("ssh_timeout") or 30
+    if not script or not script.strip():
+        raise ValueError("script 不能为空")
     connect_timeout = clamp_timeout(
         config.get("ssh_connect_timeout"), default=10, lo=1, hi=60
     )
@@ -95,24 +123,58 @@ def execute_script(
             auth_timeout=connect_timeout,
             banner_timeout=connect_timeout,
         )
-        stdin, stdout, stderr = client.exec_command(wrapped, timeout=safe_timeout)
-        # Windows OpenSSH 的默认 shell 在非 PTY 通道下会持续等待 stdin,
-        # 不发送 EOF 远端进程不退出、stdout.read() 一直阻塞直至超时;
-        # 巡检脚本均不读 stdin,关闭 stdin 写端对 Linux / Windows 均无副作用。
-        stdin.close()
-        # 2026-08-16 兼容 Windows 中文环境 stderr:
-        # 原策略硬编码 UTF-8 + errors="replace",会把 Windows cmd/PowerShell 默认 GBK
-        # 输出(中文错误信息,如"参数太长")的每个字节替换为 U+FFFD,日志中无法读出原文。
-        # 新策略:走 _decode_remote_bytes 优先 UTF-8 + backslashreplace,
-        # 含 >=3 个 U+FFFD 时 fallback GBK,保留可读中文。
-        output = _decode_remote_bytes(stdout.read())
-        error = _decode_remote_bytes(stderr.read())
-        exit_code = stdout.channel.recv_exit_status()
-        return SSHExecResult(
-            success=exit_code == 0 and not error,
-            stdout=output,
-            stderr=error,
-            exit_code=exit_code,
+        return _exec_one(client, config, script)
+    finally:
+        client.close()
+
+
+def execute_script_batch(
+    config: Mapping[str, Any],
+    scripts: List[str],
+) -> List[SSHExecResult]:
+    """单 SSH 连接顺序执行多段巡检脚本(2026-09-16 新增)。
+
+    参数:
+        config: 与 ``execute_script`` 同形。
+        scripts: 分段脚本文本列表(按执行顺序)。
+
+    返回:
+        List[SSHExecResult]: 与 scripts 等长、按序对应;单段 exec 异常折叠为
+        ``SSHExecResult(success=False, exit_code=1,
+        stderr="executor:Type: msg")`` 并继续后续分段。
+
+    异常:
+        paramiko.AuthenticationException / SSHException: connect/鉴权失败
+        向上抛(与 ``execute_script`` 语义一致,此时无任何分段结果)。
+    """
+    safe_connect = clamp_timeout(
+        config.get("ssh_connect_timeout"), default=10, lo=1, hi=60
+    )
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        client.connect(
+            hostname=config["ip"],
+            port=int(config.get("port") or 22),
+            username=config["username"],
+            password=config["password"],
+            timeout=safe_connect,
+            auth_timeout=safe_connect,
+            banner_timeout=safe_connect,
         )
+        results: List[SSHExecResult] = []
+        for script in scripts:
+            try:
+                results.append(_exec_one(client, config, script))
+            except Exception as exc:  # noqa: BLE001 - 单段失败不中断后续分段
+                results.append(
+                    SSHExecResult(
+                        success=False,
+                        stdout="",
+                        stderr=f"executor:{type(exc).__name__}: {exc}",
+                        exit_code=1,
+                    )
+                )
+        return results
     finally:
         client.close()

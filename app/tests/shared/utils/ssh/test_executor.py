@@ -180,3 +180,102 @@ def test_execute_script_ssh_timeout_uses_config_only(monkeypatch):
     execute_script(cfg, "echo ok", timeout=999999)
     _args, kwargs = client.exec_command.call_args
     assert kwargs.get("timeout") == 30
+
+
+# ============================================================================
+# 2026-09-16 新增：execute_script_batch 单 SSH 连接分段执行
+# ============================================================================
+
+
+def _make_batch_paramiko(monkeypatch, exec_side_effects):
+    """为 execute_script_batch 构造 paramiko 桩:exec_command 按 side_effects 序列返回。"""
+    import paramiko as real_paramiko  # 用于类型比对
+
+    client = MagicMock(name="ssh-client-batch")
+    iter_effects = list(exec_side_effects)
+
+    def _exec_side_effect(*args, **kwargs):
+        effect = iter_effects.pop(0) if iter_effects else ("", "", 0)
+        if isinstance(effect, BaseException) and not isinstance(effect, tuple):
+            raise effect
+        stdout_text, stderr_text, exit_code = effect
+        stdout = MagicMock()
+        stderr = MagicMock()
+        stdout.read.return_value = stdout_text.encode("utf-8")
+        stderr.read.return_value = stderr_text.encode("utf-8")
+        stdout.channel.recv_exit_status.return_value = exit_code
+        return (MagicMock(), stdout, stderr)
+
+    client.exec_command.side_effect = _exec_side_effect
+
+    paramiko_mock = MagicMock()
+    paramiko_mock.SSHClient.return_value = client
+    paramiko_mock.AutoAddPolicy.return_value = MagicMock()
+    paramiko_mock.AuthenticationException = real_paramiko.AuthenticationException
+    monkeypatch.setattr("app.shared.utils.ssh.executor.paramiko", paramiko_mock)
+    return client
+
+
+def test_execute_script_batch_reuses_single_connection(monkeypatch, ssh_config):
+    """batch 应只 connect 一次,逐段 exec_command,结果按序返回。"""
+    from app.shared.utils.ssh.executor import execute_script_batch
+
+    client = _make_batch_paramiko(
+        monkeypatch,
+        [("seg1\n", "", 0), ("seg2\n", "", 0), ("seg3\n", "", 0)],
+    )
+
+    results = execute_script_batch(ssh_config, ["echo 1", "echo 2", "echo 3"])
+
+    assert client.connect.call_count == 1
+    assert client.exec_command.call_count == 3
+    assert [r.exit_code for r in results] == [0, 0, 0]
+    assert [r.stdout for r in results] == ["seg1", "seg2", "seg3"]
+    client.close.assert_called_once()
+
+
+def test_execute_script_batch_segment_failure_does_not_abort(monkeypatch, ssh_config):
+    """单段 exec 抛异常折叠为失败结果并继续后续分段。"""
+    from app.shared.utils.ssh.executor import execute_script_batch
+
+    client = _make_batch_paramiko(
+        monkeypatch,
+        [
+            ("seg1\n", "", 0),
+            RuntimeError("boom"),
+            ("seg3\n", "", 0),
+        ],
+    )
+
+    results = execute_script_batch(ssh_config, ["a", "b", "c"])
+
+    assert results[0].success is True
+    assert results[1].success is False
+    assert results[1].exit_code == 1
+    assert "RuntimeError" in results[1].stderr
+    assert "boom" in results[1].stderr
+    assert results[2].success is True
+    assert results[2].exit_code == 0
+    assert client.exec_command.call_count == 3
+    client.close.assert_called_once()
+
+
+def test_execute_script_batch_connect_failure_raises(monkeypatch, ssh_config):
+    """connect / 鉴权失败向上抛(与 execute_script 语义一致),无任何分段结果。"""
+    import paramiko
+
+    from app.shared.utils.ssh.executor import execute_script_batch
+
+    client = MagicMock(name="ssh-client-connect-fail")
+    client.connect.side_effect = paramiko.AuthenticationException("auth failed")
+
+    paramiko_mock = MagicMock()
+    paramiko_mock.SSHClient.return_value = client
+    paramiko_mock.AutoAddPolicy.return_value = MagicMock()
+    paramiko_mock.AuthenticationException = paramiko.AuthenticationException
+    monkeypatch.setattr("app.shared.utils.ssh.executor.paramiko", paramiko_mock)
+
+    with pytest.raises(paramiko.AuthenticationException):
+        execute_script_batch(ssh_config, ["echo 1"])
+
+    client.exec_command.assert_not_called()
