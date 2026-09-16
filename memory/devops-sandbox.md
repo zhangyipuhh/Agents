@@ -118,8 +118,8 @@
 
 代码资产 `DEFAULT_INSPECTION_GROUPS: List[dict]`,每组结构 `{name, display_name, platform, version, inspection_parser, inspection_fields, segments: [{segment_key, display_name, sort_order, script}, ...]}`;lifespan 阶段 `InspectionScriptService.seed_default_groups()` 幂等播种(只插不改,保留人工编辑)。
 
-- **`linux-bash`**（4 段,2026-09-16 拆分自原单体脚本）: 
-  - `disk-usage`(sort_order=10):`df -P` + `df -i` 采集分区使用率与 inode 最大值,Linux 设备名命名规则推断 host_disk/partition(不依赖 lsblk,兼容老内核 / sandbox / cgroup 受限环境)
+- **`linux-bash`**（4 段,2026-09-16 拆分自原单体脚本;**2026-09-16 晚**:`disk-usage` 段 host_disk 命名空间与 `disk-io` 段对齐 + 扩展识别覆盖 zram/dm-/loop/md/drbd + 虚拟设备主动入 `_orphan_`):
+  - `disk-usage`(sort_order=10):`df -P` + `df -i` 采集分区使用率与 inode 最大值,Linux 设备名命名规则推断 host_disk/partition(不依赖 lsblk,兼容老内核 / sandbox / cgroup 受限环境);**host_disk 命名空间统一**(物理盘:sd/vd/xvd/nvme/mmcblk/zram/dm-/loop/md/drbd;虚拟/网络:overlay/fuse.*/127.0.0.1:*/none 等 → `host_disk="_orphan_"`,与 ops_report `_orphan_` 虚拟组语义对齐;未识别设备 → `host_disk=dev` 兜底);**Capacity 列同时接受 `^[0-9]+%?$`**(Linux 原生输出含 `%`,Git Bash/Windows 不含,正则兼容两者)
   - `disk-io`(sort_order=20):`/proc/diskstats` 双采样(间隔 1s) + `/sys/block/<dev>/queue/rotational` 介质探测,计算 `io_util_pct`/`io_await_ms`/`disk_type`(hdd/ssd),零 sysstat 依赖
   - `memory`(sort_order=30):`free` 采集 `mem_used_pct`(基于 available 非 used)与 `swap_used_pct`(swap total=0 兜底 0)
   - `cpu`(sort_order=40):`/proc/stat` 双采样 + `awk NR==FNR/!=FNR` 双文件扫描计算 `cpu_idle_pct`/`cpu_iowait_pct`,`/proc/loadavg` 取 `load_1m`;兼容 POSIX 老版,无 bash4+ 进程替换

@@ -127,7 +127,7 @@ def _run_disk_usage_awk(df_input: str) -> list[dict]:
         list[dict]: `disks` 数组元素列表,每个元素含 mount / host_disk / disk_used_pct 等
 
     异常:
-        pytest.skip: 当前环境无 awk 时跳过(Windows 无 awk 时 fallback)
+        pytest.skip: 当前环境无 Git Bash / awk 时跳过(Windows 无 Git Bash 时 fallback)
     """
     script = _segment(_linux_group(), "disk-usage")["script"]
     # 提取 df -P | awk '...' 之间的 awk 程序(支持多行)
@@ -136,30 +136,41 @@ def _run_disk_usage_awk(df_input: str) -> list[dict]:
         match = re.search(r"awk '(.*?)'", script, flags=re.DOTALL)
     assert match, "disk-usage 分段中未找到 awk 程序"
     awk_program = match.group(1)
-    awk_bin = shutil.which("awk") or shutil.which("gawk")
-    if not awk_bin:
-        # Windows 兜底:Git Bash 自带 awk.exe
-        for path in (
-            r"C:\Program Files\Git\usr\bin\awk.exe",
-            r"C:\Program Files (x86)\Git\usr\bin\awk.exe",
-        ):
-            if os.path.isfile(path):
-                awk_bin = path
-                break
-    if not awk_bin:
+    # 通过 Git Bash + herestring 喂 awk(直接 awk.exe 在 Windows 下 stdin 行为不可靠;
+    # shutil.which("bash") 在 Windows 上会优先返回 system32\bash.EXE — 那不是 Git Bash,跳过)
+    bash_candidates = [
+        shutil.which("bash"),
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files\Git\usr\bin\bash.exe",
+        "/usr/bin/bash",
+        "/bin/bash",
+    ]
+    bash_bin = None
+    for cand in bash_candidates:
+        if not cand:
+            continue
+        # 排除 system32\bash.EXE(Win10 Ubuntu on Windows,不是 Git Bash)
+        if "system32" in cand.lower():
+            continue
+        if os.path.isfile(cand):
+            bash_bin = cand
+            break
+    if not bash_bin:
         import pytest
-        pytest.skip("当前环境无 awk 命令,跳过 host_disk 推导解析测试")
-    # DISKS=$(df -P | awk '...') 的 awk 直接吃 stdin,所以把合成 df 输入喂给它
-    proc = subprocess.run(
-        [awk_bin, awk_program],
-        input=df_input, capture_output=True, text=True, timeout=10,
+        pytest.skip("当前环境无 Git Bash,跳过 host_disk 推导解析测试")
+    bash_script = (
+        "/usr/bin/awk '" + awk_program.replace("'", "'\\''") + "' <<'EOF'\n"
+        + df_input + "\nEOF\n"
     )
-    assert proc.returncode == 0, f"awk 失败: {proc.stderr}"
+    proc = subprocess.run(
+        [bash_bin, "-c", bash_script],
+        capture_output=True, text=True, timeout=10,
+        env={**os.environ, "PATH": r"C:\Program Files\Git\usr\bin;C:\Program Files\Git\mingw64\bin"},
+    )
+    assert proc.returncode == 0, f"awk 失败: stderr={proc.stderr}"
     raw = proc.stdout.strip()
     if not raw:
         return []
-    # 原脚本把 DISKS 包进 printf '{"disks":%s,"inode_used_pct":%s}' "[${DISKS}]"
-    # 这里我们只跑 awk 解析器,直接抓 disks 元素序列
     wrapped = "[" + raw + "]"
     return json.loads(wrapped)
 
@@ -173,16 +184,17 @@ def test_disk_usage_recognizes_raid_lvm_zram():
     Raises:
         AssertionError: 任一设备 host_disk 推导不符合预期时失败
     """
+    # 注意:Capacity 列采用「数字 + 可选 %」形式(兼容 Git Bash 与 Linux df -P)
     df_input = (
         "Filesystem      1024-blocks    Used Available Capacity Mounted on\n"
-        "/dev/sda1           100000   50000     50000      50% /\n"
-        "/dev/nvme0n1p1      200000  100000    100000      50% /data\n"
-        "/dev/mmcblk0p1       30000   10000     20000      33% /boot\n"
-        "/dev/zram0           16384    4096     12288      25% /swap0\n"
-        "/dev/dm-0           500000  200000    300000      40% /lvm0\n"
-        "/dev/loop0            8192    1024      7168      13% /snap0\n"
-        "/dev/md0            800000  400000    400000      50% /raid0\n"
-        "/dev/drbd0          900000  450000    450000      50% /drbd0\n"
+        "/dev/sda1           100000   50000     50000      50 /\n"
+        "/dev/nvme0n1p1      200000  100000    100000      50 /data\n"
+        "/dev/mmcblk0p1       30000   10000     20000      33 /boot\n"
+        "/dev/zram0           16384    4096     12288      25 /swap0\n"
+        "/dev/dm-0           500000  200000    300000      40 /lvm0\n"
+        "/dev/loop0            8192    1024      7168      13 /snap0\n"
+        "/dev/md0            800000  400000    400000      50 /raid0\n"
+        "/dev/drbd0          900000  450000    450000      50 /drbd0\n"
     )
     disks = _run_disk_usage_awk(df_input)
     by_mount = {d["mount"]: d for d in disks}
@@ -217,10 +229,10 @@ def test_disk_usage_orphan_for_virtual_devices():
     """
     df_input = (
         "Filesystem      1024-blocks    Used Available Capacity Mounted on\n"
-        "overlay           100000   50000     50000      50% /var/lib/container\n"
-        "fuse.mergerfs     200000  100000    100000      50% /mnt/merge\n"
-        "127.0.0.1:/vol    300000  150000    150000      50% /mnt/nfs\n"
-        "none                 100       50        50      50% /sys/fs/cgroup\n"
+        "overlay           100000   50000     50000      50 /var/lib/container\n"
+        "fuse.mergerfs     200000  100000    100000      50 /mnt/merge\n"
+        "127.0.0.1:/vol    300000  150000    150000      50 /mnt/nfs\n"
+        "none                 100       50        50      50 /sys/fs/cgroup\n"
     )
     # 注:tmpfs 会被 line 34 的正则前缀过滤掉,不进入 awk 主逻辑;
     # 本测试只覆盖「能走到主分支的虚拟设备」——overlay / fuse / 127.0.0.1 / none
@@ -247,11 +259,11 @@ def test_disk_usage_regression_std_dev():
     """
     df_input = (
         "Filesystem      1024-blocks    Used Available Capacity Mounted on\n"
-        "/dev/sda1           100000   50000     50000      50% /\n"
-        "/dev/sda2           100000   10000     90000      10% /var\n"
-        "/dev/nvme0n1p1      200000  100000    100000      50% /data\n"
-        "/dev/nvme0n1p2      200000   20000    180000      10% /data2\n"
-        "/dev/mmcblk0p1       30000   10000     20000      33% /boot\n"
+        "/dev/sda1           100000   50000     50000      50 /\n"
+        "/dev/sda2           100000   10000     90000      10 /var\n"
+        "/dev/nvme0n1p1      200000  100000    100000      50 /data\n"
+        "/dev/nvme0n1p2      200000   20000    180000      10 /data2\n"
+        "/dev/mmcblk0p1       30000   10000     20000      33 /boot\n"
     )
     disks = _run_disk_usage_awk(df_input)
     by_mount = {d["mount"]: d for d in disks}

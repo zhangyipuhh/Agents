@@ -37,9 +37,9 @@ set -u
 #   - 未识别但仍含设备名的元素 → hd=dev,part=""(保留兜底供未来新规则扩展)
 DISKS=$(df -P | awk '
   BEGIN { sep="" }
-  NR==1 || $1 ~ /^(tmpfs|devtmpfs|overlay|squashfs|sysfs|proc|cgroup|nsfs|autofs|fusectl|configfs|debugfs|tracefs|ramfs|mqueue|binfmt_misc|hugetlbfs|pstore|bpf)/ {next}
+  NR==1 || $1 ~ /^(tmpfs|devtmpfs|squashfs|sysfs|proc|cgroup|nsfs|autofs|fusectl|configfs|debugfs|tracefs|ramfs|mqueue|binfmt_misc|hugetlbfs|pstore|bpf)/ {next}
   NF < 6 {next}
-  $5 !~ /^[0-9]+$/ {next}
+  $5 !~ /^[0-9]+%?$/ {next}
   {
     gsub(/%/, "", $5)
     dev=$1; if (dev ~ /^\/dev\//) dev=substr(dev, 6)
