@@ -10,11 +10,14 @@
     - :func:`normalize_inspection_fields`
     - :func:`parse_inspection_output`
     - :func:`evaluate_inspection_fields`
+    - :func:`merge_inspection_fragments`
 
-实现位于 :mod:`app.shared.utils.inspection.parser`。
+实现位于 :mod:`app.shared.utils.inspection.parser` /
+:mod:`app.shared.utils.inspection.merger`。
 """
 from __future__ import annotations
 
+from app.shared.utils.inspection.merger import merge_inspection_fragments
 from app.shared.utils.inspection.parser import (
     InspectionEvaluation,
     InspectionFieldResult,
@@ -31,6 +34,7 @@ __all__ = [
     "InspectionFieldRule",
     "InspectionParseError",
     "evaluate_inspection_fields",
+    "merge_inspection_fragments",
     "normalize_inspection_fields",
     "parse_inspection_output",
 ]
