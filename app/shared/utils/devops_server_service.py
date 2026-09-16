@@ -465,7 +465,7 @@ class DevOpsServerService:
             ``inspection_script`` / ``inspection_parser`` / ``inspection_fields`` +
             ``inspection_script_name`` / ``inspection_script_display_name`` /
             ``inspection_script_platform`` / ``inspection_script_version`` +
-            ``ssh_timeout`` 共 15 键
+            ``ssh_timeout`` 与 ``inspection_script_segments`` 共 16 键
 
         Raises:
             KeyError: 业务名不存在时抛出
@@ -517,6 +517,20 @@ class DevOpsServerService:
         inspection_script_platform = script_rec.get("platform")
         inspection_script_version = script_rec.get("version")
 
+        # 2026-09-16 新增：分段脚本键（第 16 键）。仅 json 解析器透传；
+        # 过滤 disabled 与空白 script；顺序由 service 缓存（sort_order 升序）保证。
+        raw_segments = script_rec.get("segments") or []
+        if inspection_parser == "json":
+            inspection_script_segments = [
+                {"segment_key": seg.get("segment_key"), "script": seg.get("script")}
+                for seg in raw_segments
+                if seg.get("enabled")
+                and isinstance(seg.get("script"), str)
+                and seg.get("script").strip()
+            ]
+        else:
+            inspection_script_segments = []
+
         return {
             "ip": rec.get("ip"),
             "port": int(rec.get("port") or 22),
@@ -532,6 +546,7 @@ class DevOpsServerService:
             "inspection_script_display_name": inspection_script_display_name,
             "inspection_script_platform": inspection_script_platform,
             "inspection_script_version": inspection_script_version,
+            "inspection_script_segments": inspection_script_segments,
             # 2026-08-19：高内聚——所有 SSH 执行链路直接取该值，禁止二次 clamp
             "ssh_timeout": resolve_ssh_timeout(rec.get("ssh_timeout")),
         }

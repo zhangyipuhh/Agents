@@ -1132,3 +1132,79 @@ def test_get_connection_config_includes_ssh_timeout_key():
     assert "ssh_timeout" in cfg
     assert cfg["ssh_timeout"] == 60
     assert isinstance(cfg["ssh_timeout"], int)
+
+
+# ============================================================================
+# 2026-09-16 新增：get_connection_config 第 16 键 inspection_script_segments
+# ============================================================================
+
+
+def test_get_connection_config_returns_enabled_json_segments_only():
+    """parser=json 组:返回 enabled 且非空白分段 [{segment_key, script}],有序。"""
+    svc = _make_service()
+    encrypted = svc._fernet.encrypt(b"x")
+    svc._cache = {
+        "alpha": {
+            "id": 1, "business_name": "alpha", "ip": "10.0.0.1", "port": 22,
+            "username": "u", "password_encrypted": encrypted,
+            "server_type": "linux", "blacklist": [], "whitelist": ["ls"],
+            "inspection_script_id": 1, "ssh_timeout": 30,
+            "created_at": None, "updated_at": None,
+        }
+    }
+    # 注入分段到 InspectionScriptService 替身
+    iss = svc.inspection_script_service
+    iss._id_cache[1]["segments"] = [
+        {"segment_key": "disk-usage", "script": "echo du", "enabled": True, "sort_order": 10},
+        {"segment_key": "cpu", "script": "echo cpu", "enabled": True, "sort_order": 40},
+        {"segment_key": "memory", "script": "echo mem", "enabled": False, "sort_order": 30},
+        {"segment_key": "disk-io", "script": "  ", "enabled": True, "sort_order": 20},
+    ]
+    cfg = svc.get_connection_config("alpha")
+    assert "inspection_script_segments" in cfg
+    # 仅 enabled 且非空白;顺序按 sort_order 升序
+    keys = [s["segment_key"] for s in cfg["inspection_script_segments"]]
+    assert keys == ["disk-usage", "cpu"]
+
+
+def test_get_connection_config_filters_segments_for_non_json_parser():
+    """parser != json 组:segments 恒为 [](防御性过滤)。"""
+    svc = _make_service()
+    encrypted = svc._fernet.encrypt(b"x")
+    svc._cache = {
+        "alpha": {
+            "id": 1, "business_name": "alpha", "ip": "10.0.0.1", "port": 22,
+            "username": "u", "password_encrypted": encrypted,
+            "server_type": "linux", "blacklist": [], "whitelist": ["ls"],
+            "inspection_script_id": 42, "ssh_timeout": 30,
+            "created_at": None, "updated_at": None,
+        }
+    }
+    iss = svc.inspection_script_service
+    iss._id_cache[42]["inspection_parser"] = "kv"
+    iss._id_cache[42]["segments"] = [
+        {"segment_key": "cpu", "script": "echo c", "enabled": True, "sort_order": 40},
+    ]
+    cfg = svc.get_connection_config("alpha")
+    assert cfg["inspection_script_segments"] == []
+
+
+def test_get_connection_config_empty_segments_keeps_legacy_key():
+    """无分段组:segments=[] 且 legacy inspection_script 原样返回。"""
+    svc = _make_service()
+    encrypted = svc._fernet.encrypt(b"x")
+    svc._cache = {
+        "alpha": {
+            "id": 1, "business_name": "alpha", "ip": "10.0.0.1", "port": 22,
+            "username": "u", "password_encrypted": encrypted,
+            "server_type": "linux", "blacklist": [], "whitelist": ["ls"],
+            "inspection_script_id": 1, "ssh_timeout": 30,
+            "created_at": None, "updated_at": None,
+        }
+    }
+    iss = svc.inspection_script_service
+    iss._id_cache[1]["segments"] = []
+    cfg = svc.get_connection_config("alpha")
+    assert cfg["inspection_script_segments"] == []
+    # legacy 单脚本原文仍返回
+    assert cfg["inspection_script"] == "echo linux"
