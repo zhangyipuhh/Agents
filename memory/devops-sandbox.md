@@ -382,6 +382,41 @@
 - **服务器详情元数据契约**：弹窗头部新增「平台 / 版本」展示（来自 `inspection_script_display_name` + `inspection_script_name`）；弹窗内容以 `<pre class="script-content">` 等宽字体保留换行/缩进（`white-space: pre`）展示 `inspection_script`，未配置显示「未配置巡检脚本」空态，标题旁附解析器标签 `inspection_parser`
 - **白名单弹窗契约不变**：与巡检脚本弹窗互斥（同一时刻仅一个 open），通过 `whitelistDialog.open` / `scriptDialog.open` 互斥切换；列表端点契约不变仍只返 4 字段
 - **2026-09-16 移除扫描入口**：YAML 链路整体下线,服务器 Tab 内 `inspection-script-scan-section` / 扫描按钮 / 5 字段 summary / `triggerInspectionScriptsScan` 全部移除;前端文案改为「默认脚本在 lifespan 阶段自动播种;运维可通过右侧编辑面板维护分组」。`TaskSchedulerManager.partial-failure.spec.js` 同步移除 `scanInspectionScripts` mock。
+
+### 前端分段编辑面板 UI（2026-09-16 新增）
+
+> 后端 API 已就绪(分段 CRUD 4 端点 + inspection_script_segments 表 + 默认播种),本次把 `InspectionScriptEditorPanel.vue` 从单 textarea 重构为「分段卡片 + 字段规则表格 + 折叠只读区」三段式 UI,API 契约不变。
+
+- **拆分边界(D1)**:
+  - **脚本正文 = 按段拆分**:每段独立 `<textarea>` + 段级 `enabled` 复选框 / `sort_order` 数字输入 / `display_name` 输入 / 上移下移按钮 / 删除按钮(后端 `UpsertSegmentRequest` 5 字段一一对齐);`segment_key` 编辑期禁用(避免同名 upsert 误用)。
+  - **字段规则 = 保留为单一表格**(组级共享 `inspection_fields` JSONB,不分段),与组字段同 PUT。
+  - **legacy `inspection_script` 字段 = 折叠区只读显示**(UI 派生 `inspectionScriptCombined`:按 sort_order 拼接 enabled 段,段间 `\n\n# --- segment {key} ---\n\n`);保存 PUT payload **不**含该字段(后端仍接受,前端主动不发降冲突)。
+
+- **数据契约(已就绪)**:
+  - `app/shared/utils/inspection_script_service.py::_SEGMENT_FIELDS` 9 字段:`id / script_id / segment_key / display_name / sort_order / script / enabled / created_at / updated_at`。
+  - `app/routers/inspection_script_admin_router.py::UpsertSegmentRequest` 字段:`segment_key / display_name / sort_order / script / enabled`(admin only)。
+
+- **前端封装(2026-09-16 新增到 `web/Agent/src/utils/api.js`)**:
+  - `fetchInspectionScriptSegments(scriptId)` → `GET .../segments`
+  - `createInspectionScriptSegment(scriptId, payload)` → `POST .../segments`(upsert 语义:同名 segment_key 覆盖)
+  - `updateInspectionScriptSegment(scriptId, segmentId, payload)` → `PUT .../segments/{id}`
+  - `deleteInspectionScriptSegment(scriptId, segmentId)` → `DELETE .../segments/{id}`(204 No Content)
+  - 错误处理沿用项目统一模式:非 ok 时 `await response.json().catch(() => ({}))` 透传 `detail`,抛出 `Error(detail.detail || 中文降级文案)`。
+
+- **watch + dirty 检测(D4)**:
+  - `scriptId` 变化时 `Promise.all([fetchInspectionScriptDetail, fetchInspectionScriptSegments])` 并行拉数据;任一失败合并到 `errorMessage`。
+  - `loadedSegments = JSON.parse(JSON.stringify(segments))` 深拷贝;`isSegmentDirty(a, b)` 仅比对 5 字段(`segment_key / display_name / sort_order / script / enabled`),`enabled` 按 bool 严格相等,其他 `String(av ?? '') !== String(bv ?? '')`。
+  - 「保存组字段」与「保存分段」独立按钮:**组字段 PUT** 仅发 `display_name / platform / version / inspection_parser / inspection_fields`;**段保存**遍历 dirty 列表并行 `Promise.allSettled` 调用 POST/PUT,失败项填 `segmentErrors[i] = error.message`,成功后 status 提示「分段保存成功」/「部分保存成功,N 项失败」/「保存失败」。
+
+- **段 CRUD UI 行为**:
+  - 新增段:点击「新增段」按钮 → `window.prompt("segment_key")` → 客户端正则 `^[a-z0-9][a-z0-9_-]{0,63}$` 校验 + 重复 key 检查 → 本地乐观新增带 `_localNew: true` 标记 → 点「保存分段」时统一 POST;`window` 不存在(jsdom/SSR)时静默跳过。
+  - 删除段:右上角「删除」按钮 → `window.confirm` 二次确认 → 已有 id 走 DELETE;`_localNew` 直接本地移除,不发请求。
+  - 排序:`▲▼` 按钮本地交换数组顺序 + 同步更新每段 `sort_order = i * 10`;点「保存分段」时通过各段 PUT 持久化。
+
+- **测试同步(`web/Agent/src/components/__tests__/InspectionScriptEditorPanel.spec.js`)**:
+  - 旧 6 用例全部保留;`test_loads_detail_on_id` 断言段卡片数量 = `segments.length`;`test_save_button_triggers_put` 新增 `expect(body).not.toHaveProperty('inspection_script')` 与 `expect(body).not.toHaveProperty('segments')`;`test_field_rule_add_remove` / `test_save_payload_preserves_ssd_thresholds` 与 legacy 单脚本时代一致,沿用。
+  - 新增 5 用例:`test_segments_loaded_after_detail`(段卡片渲染) / `test_segment_toggle_enabled`(复选框翻转) / `test_segment_save_sends_dirty_only`(dirty 唯一 PUT) / `test_segment_save_partial_failure_shows_segment_error`(失败段卡片显示 `.segment-error` 红字) / `test_segment_legacy_combined_view_only_readonly`(`<pre>` 拼接内容且无 `<textarea>`)。
+  - `TaskSchedulerManager.partial-failure.spec.js` mock 列表同步追加 4 个分段 API stub(`fetchInspectionScriptSegments / createInspectionScriptSegment / updateInspectionScriptSegment / deleteInspectionScriptSegment`)。
 ### 服务器采集落库服务 `ServerInspectionRecordService`（2026-08-05 新增）
 
 - 位置：`app/shared/utils/server_inspection_record_service.py`

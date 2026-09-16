@@ -2861,6 +2861,118 @@ export async function deleteInspectionScript(scriptId) {
 }
 
 /**
+ * 按 script_id 列出巡检脚本的全部分段（2026-09-16 新增）
+ * 调用 GET /api/admin/inspection-scripts/{script_id}/segments，admin only。
+ * 响应严格只含白名单 9 字段（id / script_id / segment_key / display_name /
+ * sort_order / script / enabled / created_at / updated_at），按 sort_order 升序。
+ * @param {number|string} scriptId - inspection_scripts 主键 id
+ * @returns {Promise<Array<{
+ *   id: number, script_id: number, segment_key: string, display_name: string,
+ *   sort_order: number, script: string, enabled: boolean,
+ *   created_at: string|null, updated_at: string|null
+ * }>>}
+ * @throws {Error} 404（脚本不存在）/ 500（服务未初始化）/ 其他错误。
+ *   错误 message 仅含后端 detail，不回显 script_id 等敏感信息
+ */
+export async function fetchInspectionScriptSegments(scriptId) {
+  if (scriptId == null) {
+    throw new Error('fetchInspectionScriptSegments: scriptId 不能为空')
+  }
+  const response = await fetchWithAuth(
+    `/api/admin/inspection-scripts/${encodeURIComponent(scriptId)}/segments`,
+    { method: 'GET' }
+  )
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `获取巡检脚本分段失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 创建巡检脚本分段（admin only，2026-09-16 新增）
+ * 调用 POST /api/admin/inspection-scripts/{script_id}/segments。
+ * 后端 upsert 语义（ON CONFLICT (script_id, segment_key) DO UPDATE）：
+ * segment_key 已存在则覆盖。
+ * @param {number|string} scriptId - 所属组 id
+ * @param {Object} payload - 分段请求体 `{segment_key, display_name, sort_order, script, enabled}`
+ * @returns {Promise<Object>} 分段白名单 dict（含 id / created_at / updated_at）
+ * @throws {Error} 400（校验错 / 非 json 解析器）/ 404（脚本不存在）/ 422（Pydantic 校验）/ 其他。
+ *   错误 message 优先含后端 detail（如 `segment_key 非法(...)`）
+ */
+export async function createInspectionScriptSegment(scriptId, payload) {
+  if (scriptId == null) {
+    throw new Error('createInspectionScriptSegment: scriptId 不能为空')
+  }
+  const response = await fetchWithAuth(
+    `/api/admin/inspection-scripts/${encodeURIComponent(scriptId)}/segments`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    }
+  )
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `创建巡检分段失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 按 segment_id 更新巡检脚本分段（admin only，2026-09-16 新增）
+ * 调用 PUT /api/admin/inspection-scripts/{script_id}/segments/{segment_id}。
+ * segment_key 不可在 PUT 中修改（与后端 ON CONFLICT 行为匹配）。
+ * @param {number|string} scriptId - 所属组 id
+ * @param {number|string} segmentId - 分段 id
+ * @param {Object} payload - 分段请求体 `{segment_key, display_name, sort_order, script, enabled}`
+ * @returns {Promise<Object>} 更新后的分段白名单 dict
+ * @throws {Error} 400 / 404（分段不存在）/ 422 / 其他。
+ */
+export async function updateInspectionScriptSegment(scriptId, segmentId, payload) {
+  if (scriptId == null || segmentId == null) {
+    throw new Error('updateInspectionScriptSegment: scriptId/segmentId 不能为空')
+  }
+  const response = await fetchWithAuth(
+    `/api/admin/inspection-scripts/${encodeURIComponent(scriptId)}/segments/${encodeURIComponent(segmentId)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    }
+  )
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `更新巡检分段失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+/**
+ * 按 segment_id 删除巡检脚本分段（admin only，2026-09-16 新增）
+ * 调用 DELETE /api/admin/inspection-scripts/{script_id}/segments/{segment_id}。
+ * 后端返回 204 No Content。
+ * @param {number|string} scriptId - 所属组 id
+ * @param {number|string} segmentId - 分段 id
+ * @returns {Promise<void>} 无返回值
+ * @throws {Error} 404（分段不存在）/ 500（服务未初始化）/ 其他错误。
+ */
+export async function deleteInspectionScriptSegment(scriptId, segmentId) {
+  if (scriptId == null || segmentId == null) {
+    throw new Error('deleteInspectionScriptSegment: scriptId/segmentId 不能为空')
+  }
+  const response = await fetchWithAuth(
+    `/api/admin/inspection-scripts/${encodeURIComponent(scriptId)}/segments/${encodeURIComponent(segmentId)}`,
+    { method: 'DELETE' }
+  )
+  // 204 No Content 无响应体
+  if (!response.ok && response.status !== 204) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `删除巡检分段失败: ${response.status}`)
+  }
+}
+
+/**
  * 按 script_id 更新巡检脚本库条目（admin only，2026-08-04 新增）
  * 调用 PUT /api/admin/inspection-scripts/{script_id}。
  * 请求体包含 display_name / platform / version / inspection_parser /

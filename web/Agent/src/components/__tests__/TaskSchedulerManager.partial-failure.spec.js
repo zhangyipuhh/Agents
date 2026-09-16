@@ -34,6 +34,11 @@ vi.mock('../../utils/api.js', () => ({
   // 2026-09-16 移除:scanInspectionScripts(YAML 扫描链路整体移除)
   fetchInspectionScripts: vi.fn().mockResolvedValue([]),
   fetchInspectionScriptDetail: vi.fn().mockResolvedValue(null),
+  // 2026-09-16 新增:分段编辑面板 watch scriptId 时调用 fetchInspectionScriptSegments
+  fetchInspectionScriptSegments: vi.fn().mockResolvedValue([]),
+  createInspectionScriptSegment: vi.fn().mockResolvedValue({}),
+  updateInspectionScriptSegment: vi.fn().mockResolvedValue({}),
+  deleteInspectionScriptSegment: vi.fn().mockResolvedValue(undefined),
   updateDevOpsServerInspectionScript: vi.fn().mockResolvedValue({}),
   deleteDevOpsServer: vi.fn().mockResolvedValue({}),
   fetchDevOpsServerDetail: vi.fn().mockResolvedValue(null),
