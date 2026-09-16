@@ -657,6 +657,9 @@ class UnifiedMCPClient:
 
         if self._adapted_configs:
             logger.info("Creating MultiServerMCPClient with %d server configs", len(self._adapted_configs))
+            # 2026-09-16 临时诊断（确认 url 在生产进程 _adapted_configs 里是否真的无空格）
+            for _n, _c in self._adapted_configs.items():
+                logger.warning("[MCP-DBG] %s url=%r transport=%r", _n, _c.get("url"), _c.get("transport"))
             self._client = MultiServerMCPClient(self._adapted_configs, callbacks=mcp_callbacks)
             logger.info("MultiServerMCPClient created successfully")
         else:

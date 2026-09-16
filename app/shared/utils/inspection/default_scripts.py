@@ -29,6 +29,12 @@ set -u
 # 磁盘使用率分段:df -P 采集各分区使用率 + df -i 采集 inode 最大使用率。
 # 不依赖 lsblk(老内核 / sandbox / cgroup 受限环境 lsblk 不可用);
 # 直接从 df -P 第一列设备名按 Linux 命名规则推断 host_disk / partition。
+# host_disk 命名空间与 disk-io 段对齐(/proc/diskstats 物理盘名),
+# 保证 merge_inspection_fragments 后同 mount 的 usage + io 元素能正确分组:
+#   - 物理盘正则:sd/vd/xvd/nvme/mmcblk/zram/dm-/loop/md/drbd
+#   - 虚拟/网络设备(overlay/tmpfs/fuse.mergerfs/127.0.0.1:/vol/none 等) → hd="_orphan_"
+#     (与 ops_report._server_disk_inventory_rows 的 _orphan_ 虚拟组语义对齐)
+#   - 未识别但仍含设备名的元素 → hd=dev,part=""(保留兜底供未来新规则扩展)
 DISKS=$(df -P | awk '
   BEGIN { sep="" }
   NR==1 || $1 ~ /^(tmpfs|devtmpfs|overlay|squashfs|sysfs|proc|cgroup|nsfs|autofs|fusectl|configfs|debugfs|tracefs|ramfs|mqueue|binfmt_misc|hugetlbfs|pstore|bpf)/ {next}
@@ -43,6 +49,18 @@ DISKS=$(df -P | awk '
       p=index(dev, "p"); hd=substr(dev, 1, p-1); part=dev
     } else if (dev ~ /^mmcblk[0-9]+p[0-9]+$/) {
       p=index(dev, "p"); hd=substr(dev, 1, p-1); part=dev
+    } else if (dev ~ /^zram[0-9]+$/) {
+      hd="zram"; part=dev
+    } else if (dev ~ /^dm-[0-9]+$/) {
+      hd=dev; part=""
+    } else if (dev ~ /^loop[0-9]+$/) {
+      hd=dev; part=""
+    } else if (dev ~ /^md[0-9]+$/) {
+      hd=dev; part=""
+    } else if (dev ~ /^drbd[0-9]+$/) {
+      hd=dev; part=""
+    } else if (dev ~ /^(overlay|nsfs|autofs|fusectl|configfs|debugfs|hugetlbfs|mqueue|pstore|ramfs|securityfs|selinuxfs|squashfs|tracefs|none)$/ || dev ~ /^fuse\./ || dev ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:/) {
+      hd="_orphan_"; part=$6
     } else {
       hd=dev; part=""
     }
