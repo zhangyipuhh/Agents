@@ -3076,12 +3076,16 @@ ALTER TABLE agent_task_runs DROP CONSTRAINT IF EXISTS agent_task_runs_target_typ
 ALTER TABLE agent_task_runs ADD CONSTRAINT agent_task_runs_target_type_chk
     CHECK (target_type IN ('agent', 'script'));
 
--- ========== 17.5. inspection_scripts（DevOps 巡检脚本库，2026-08-03 新增）==========
+-- ========== 17.5. inspection_scripts（DevOps 巡检脚本库，2026-08-03 新增；2026-09-16 重构）==========
 -- 统一巡检脚本库：原先 devops_servers.inspection_script / inspection_parser /
 -- inspection_fields 三列被抽离到独立表，devops_servers 仅保留 inspection_script_id 外键。
 -- 脚本按「平台 + 版本」命名（如 linux-bash / windows-ps-5.1 / windows-ps-7+），
 -- inspection_fields 完全跟随脚本库条目，服务器层不可覆盖。
--- 由 InspectionScriptService.scan_and_upsert 读取 data/devops/inspection_scripts.yaml 写入。
+-- 2026-09-16 重构：移除 YAML 链路（InspectionScriptService.scan_and_upsert / data/devops/inspection_scripts.yaml
+-- 已下线）；默认脚本随代码资产 app/shared/utils/inspection/default_scripts.py 发布，
+-- lifespan 阶段 InspectionScriptService.seed_default_groups() 幂等播种（只插已知默认组，已知默认段
+-- 内容与代码资产不一致时自动 UPDATE；运维自定义段不覆盖；新 stats 键 segments_updated）。
+-- 本表 inspection_script 列保留为 NULL（向后兼容旧库已写值的快照），运维执行仍走 inspection_script_segments。
 CREATE TABLE IF NOT EXISTS inspection_scripts (
     id                SERIAL PRIMARY KEY,
     name              VARCHAR(100) UNIQUE NOT NULL,
