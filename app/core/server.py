@@ -552,23 +552,27 @@ async def lifespan(app: FastAPI):
             # DevOpsServerService 检测到 ``app.state.inspection_script_service is None``
             # 时改为挂 hint 跳过构造（见下方 18.* 段）。
             if DatabasePool.is_enabled() and DatabasePool._pool is not None:
-                from app.core.config.paths import resolve_devops_inspection_scripts_config_path
                 from app.shared.utils.inspection_script_service import InspectionScriptService
 
-                cfg_path = resolve_devops_inspection_scripts_config_path(
-                    settings.devops.inspection_scripts_config_path
-                )
                 iss_instance = await _preload_and_publish_service(
                     app=app,
                     service_class=InspectionScriptService,
                     service_name="InspectionScriptService",
                     state_attribute="inspection_script_service",
-                    constructor_kwargs={
-                        "db": DatabasePool._pool,
-                        "config_path": str(cfg_path),
-                    },
+                    constructor_kwargs={"db": DatabasePool._pool},
                 )
                 if iss_instance is not None:
+                    # 2026-09-16 新增:默认巡检组/分段空库幂等播种(只插不改)。
+                    # 播种失败不阻断启动(管理员仍可通过 API 手工维护)。
+                    try:
+                        seed_stats = await iss_instance.seed_default_groups()
+                        logging.info(
+                            "[lifespan] InspectionScriptService seed: %s", seed_stats,
+                        )
+                    except Exception:
+                        logging.exception(
+                            "[lifespan] InspectionScriptService seed_default_groups failed"
+                        )
                     logging.info(
                         "[lifespan] InspectionScriptService initialized: %d script(s)",
                         len(iss_instance._cache),
@@ -620,8 +624,8 @@ async def lifespan(app: FastAPI):
                             "InspectionScriptService 未初始化（缺失或构造失败），"
                             "DevOpsServerService 作为其强依赖同样不构造。"
                             "请检查 lifespan 中 InspectionScriptService 初始化段："
-                            "data/devops/inspection_scripts.yaml 是否存在 / "
-                            "inspection_scripts 表是否已建库 / DB 连接是否可用。"
+                            "inspection_scripts / inspection_script_segments 表是否已建库 / "
+                            "DB 连接是否可用。"
                             "admin /api/admin/devops-servers 将返回 500 + 本 hint。"
                         )
                         app.state.devops_server_service = None
