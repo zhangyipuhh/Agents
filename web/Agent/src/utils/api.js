@@ -2806,23 +2806,6 @@ export async function fetchInspectionScripts() {
 }
 
 /**
- * 触发巡检脚本库扫描入库（POST /api/admin/inspection-scripts/scan）
- * 权限：admin only。响应严格只含 scanned / inserted / updated / failed 4 个整数。
- * @returns {Promise<{scanned: number, inserted: number, updated: number, failed: number}>}
- * @throws {Error} 请求失败时抛出错误
- */
-export async function scanInspectionScripts() {
-  const response = await fetchWithAuth('/api/admin/inspection-scripts/scan', {
-    method: 'POST',
-  })
-  if (!response.ok) {
-    const detail = await response.json().catch(() => ({}))
-    throw new Error(detail.detail || `扫描巡检脚本失败: ${response.status}`)
-  }
-  return response.json()
-}
-
-/**
  * 按 script_id 取巡检脚本完整详情（含 inspection_script 与 inspection_fields）
  * 调用 GET /api/admin/inspection-scripts/{script_id}。
  * 权限：admin only。

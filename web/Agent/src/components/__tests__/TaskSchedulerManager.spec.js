@@ -3852,13 +3852,13 @@ describe('TaskSchedulerManager 组件', () => {
 })
 
 /**
- * 巡检脚本库 Tab 端到端契约（2026-08-04 新增）
+ * 巡检脚本库 Tab 端到端契约(2026-08-04 新增;2026-09-16 移除扫描按钮)
  *
- * 覆盖：
+ * 覆盖:
  *  - admin 可见「巡检脚本库」Tab 且排在第 6 个
  *  - 普通用户未授权时 Tab 不渲染
  *  - 切换到「巡检脚本库」Tab 后渲染左右分栏
- *  - 扫描按钮触发 POST /api/admin/inspection-scripts/scan
+ *  - 2026-09-16 移除:扫描按钮 / library-scan-btn / library-scan-summary 均不应存在
  *  - 选中节点后保存触发 PUT /api/admin/inspection-scripts/{id}
  *  - 服务器扫描 Tab 不再含脚本库扫描入口
  */
@@ -3917,24 +3917,21 @@ describe('TaskSchedulerManager 巡检脚本库 Tab（2026-08-04 新增）', () =
     wrapper.unmount()
   })
 
-  it('test_library_scan_button_triggers_post 点击扫描按钮触发 POST', async () => {
+  it('test_library_scan_button_removed 2026-09-16:扫描按钮已移除', async () => {
     const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
     await flushPromises()
     const libTab = wrapper.findAll('[role="tab"]').find((t) => t.text() === '巡检脚本库')
     await libTab.trigger('click')
     await flushPromises()
-    const before = global.fetch.mock.calls.filter(
-      ([url, opts]) => typeof url === 'string' && url === '/api/admin/inspection-scripts/scan' && (opts?.method || 'GET').toUpperCase() === 'POST'
+    // 扫描按钮与 summary DOM 不应存在
+    expect(wrapper.find('[data-testid="library-scan-btn"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="library-scan-summary"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="library-scan-status"]').exists()).toBe(false)
+    // 任何 /scan 调用都不应被发起
+    const scanCalls = global.fetch.mock.calls.filter(
+      ([url, opts]) => typeof url === 'string' && url.includes('/inspection-scripts/scan')
     )
-    expect(before.length).toBe(0)
-    await wrapper.find('[data-testid="library-scan-btn"]').trigger('click')
-    await flushPromises()
-    const after = global.fetch.mock.calls.filter(
-      ([url, opts]) => typeof url === 'string' && url === '/api/admin/inspection-scripts/scan' && (opts?.method || 'GET').toUpperCase() === 'POST'
-    )
-    expect(after.length).toBe(1)
-    // 5 字段 summary 中含扫描数 5
-    expect(wrapper.find('[data-testid="library-scan-summary"]').exists()).toBe(true)
+    expect(scanCalls.length).toBe(0)
     wrapper.unmount()
   })
 
@@ -3956,20 +3953,8 @@ describe('TaskSchedulerManager 巡检脚本库 Tab（2026-08-04 新增）', () =
       ([url, opts]) => typeof url === 'string' && url === '/api/admin/inspection-scripts/42' && (opts?.method || 'GET').toUpperCase() === 'PUT'
     )
     expect(puts.length).toBe(1)
-    wrapper.unmount()
-  })
-
-  it('test_scan_summary_contains_skipped_field 扫描 summary 包含跳过字段', async () => {
-    const wrapper = mount(TaskSchedulerManager, { props: { isAdmin: true } })
-    await flushPromises()
-    const libTab = wrapper.findAll('[role="tab"]').find((t) => t.text() === '巡检脚本库')
-    await libTab.trigger('click')
-    await flushPromises()
-    await wrapper.find('[data-testid="library-scan-btn"]').trigger('click')
-    await flushPromises()
-    const summary = wrapper.find('[data-testid="library-scan-summary"]')
-    expect(summary.exists()).toBe(true)
-    expect(summary.text()).toContain('跳过')
+    // 保存成功后应展示 library-save-status 提示
+    expect(wrapper.find('[data-testid="library-save-status"]').exists()).toBe(true)
     wrapper.unmount()
   })
 })

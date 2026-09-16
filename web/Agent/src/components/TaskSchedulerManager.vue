@@ -35,7 +35,6 @@ import {
   fetchDevOpsServerDetail,  // 2026-07-22 新增：服务器详情（白名单 + 巡检脚本）
   fetchInspectionScripts,  // 2026-08-04 新增：服务器表格下拉选项来源（白名单字段）
   fetchInspectionScriptDetail,  // 2026-08-03 新增：按需取巡检脚本完整原文 + 字段规则
-  scanInspectionScripts,  // 2026-08-03 新增：触发巡检脚本库扫描入库
   updateDevOpsServerInspectionScript,  // 2026-08-04 新增：服务器表格下拉即时保存
   fetchScripts,
   scanScripts,
@@ -132,13 +131,11 @@ const scanSummary = ref(null)
 const hasLoaded = ref(false)
 // 删除状态：当前正在删除的行 id（防重复点击）
 const isDeletingRowId = ref(null)
-// 2026-08-04 改造：巡检脚本扫描状态移至「巡检脚本库」Tab
-// 扫描（5 字段：scanned/inserted/updated/skipped/failed）与 librarySelectedScriptId 状态独立
-const isLibraryScanning = ref(false)
-const libraryScanErrorMessage = ref('')
-const libraryScanSuccessMessage = ref('')
-const libraryScanSummary = ref(null)
+// 2026-09-16 移除:isLibraryScanning / libraryScanErrorMessage / libraryScanSummary
+// 等 YAML 扫描状态变量(扫描链路整体移除,默认脚本通过 lifespan 播种)。
 const libraryListRefreshToken = ref(0)
+// 2026-09-16 新增:脚本保存成功提示(YAML 扫描链路已移除)。
+const librarySaveSuccess = ref('')
 // 2026-08-04 新增：巡检脚本库 Tab 选中节点 + 保存结果
 const librarySelectedScriptId = ref(null)
 
@@ -2075,29 +2072,8 @@ async function triggerServerScan() {
   }
 }
 
-/**
- * 2026-08-04 改造：触发「巡检脚本库」Tab 扫描入库（POST /api/admin/inspection-scripts/scan）。
- * 仅 admin 可触发；带防重复提交；失败时使用脱敏文案，不回显后端 detail。
- * 扫描结果展示到独立的 summary 区域（libraryScanSummary，5 字段），不影响服务器扫描的提示。
- * @returns {Promise<void>} 无返回值
- */
-async function triggerLibraryScan() {
-  if (isLibraryScanning.value) return
-  isLibraryScanning.value = true
-  libraryScanErrorMessage.value = ''
-  libraryScanSuccessMessage.value = ''
-  libraryScanSummary.value = null
-  try {
-    const summary = await scanInspectionScripts()
-    libraryScanSummary.value = sanitizeSummary(summary)
-    libraryScanSuccessMessage.value = '巡检脚本扫描完成'
-    libraryListRefreshToken.value += 1
-  } catch {
-    libraryScanErrorMessage.value = '巡检脚本扫描失败，请稍后重试'
-  } finally {
-    isLibraryScanning.value = false
-  }
-}
+// 2026-09-16 移除:triggerLibraryScan / 扫描按钮。YAML 链路整体移除,默认脚本
+// 通过 lifespan 播种;运维变更走 InspectionScriptEditorPanel 的保存按钮。
 
 /**
  * 2026-08-04 新增：InspectionScriptEditorPanel 保存成功后的回调。
@@ -2106,7 +2082,8 @@ async function triggerLibraryScan() {
  */
 function onLibraryScriptSaved(detail) {
   if (!detail) return
-  libraryScanSuccessMessage.value = `脚本「${detail.display_name || detail.name || ''}」保存成功`
+  // 2026-09-16 改造:保存成功提示改用通用 save 提示文案(YAML 扫描链路已移除)。
+  librarySaveSuccess.value = `脚本「${detail.display_name || detail.name || ''}」保存成功`
 }
 
 /**
@@ -4009,48 +3986,16 @@ onBeforeUnmount(() => {
         <header class="detail-header">
           <div>
             <h3>巡检脚本库</h3>
-            <p>左侧为脚本节点列表；右侧为可编辑详情。数据库内容优先，再次扫描不会覆盖已编辑条目。</p>
-          </div>
-          <div class="actions">
-            <button
-              type="button"
-              class="primary-btn"
-              data-testid="library-scan-btn"
-              :disabled="isLibraryScanning"
-              :aria-busy="isLibraryScanning ? 'true' : 'false'"
-              @click="triggerLibraryScan"
-            >
-              <span v-if="isLibraryScanning" data-testid="library-scan-loading">扫描中...</span>
-              <span v-else>巡检脚本扫描</span>
-            </button>
+            <p>左侧为脚本节点列表；右侧为可编辑详情。默认脚本在 lifespan 阶段自动播种；运维可通过右侧编辑面板维护分组。</p>
           </div>
         </header>
         <div
-          v-if="libraryScanErrorMessage"
-          class="alert error"
-          data-testid="library-scan-error"
-          role="alert"
-        >
-          {{ libraryScanErrorMessage }}
-        </div>
-        <div
-          v-if="libraryScanSuccessMessage"
+          v-if="librarySaveSuccess"
           class="alert success"
-          data-testid="library-scan-status"
+          data-testid="library-save-status"
           role="status"
         >
-          {{ libraryScanSuccessMessage }}
-        </div>
-        <div
-          v-if="libraryScanSummary"
-          class="alert info summary"
-          data-testid="library-scan-summary"
-        >
-          <span>扫描 {{ libraryScanSummary.scanned }}</span>
-          <span>新增 {{ libraryScanSummary.inserted }}</span>
-          <span>更新 {{ libraryScanSummary.updated }}</span>
-          <span>跳过 {{ libraryScanSummary.skipped ?? 0 }}</span>
-          <span>失败 {{ libraryScanSummary.failed }}</span>
+          {{ librarySaveSuccess }}
         </div>
         <div class="library-layout">
           <aside class="library-aside" data-testid="library-aside">
