@@ -2,7 +2,7 @@
 
 合同审批模块由 3 个智能体组成（`HtAgent` / `DocAgent` / `ApprovalAgent`），负责合同 `.docx` 文档的解析、结构化抽取与自动审批。
 
-![合同审批](/help/screenshots/features-contract-approval/01-contract.png)
+> 使用方式：在会话中上传合同 `.docx` 文件，切换到合同审批智能体（如 `contract_host_agent`）后发起审批指令，智能体将自动完成「验证 → 审批中 → 完成 → 确认」四段工作流。
 
 ## 前置条件
 

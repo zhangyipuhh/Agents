@@ -10,6 +10,15 @@
 - **AGENTS.md 文件必须先存在**（项目根 `agents/<name>/AGENTS.md`，如 `agents/project/AGENTS.md`）
 - 内容包含 system prompt + 工具约束说明（参考已有 11 个内置 Agent）
 
+## 界面导览
+
+「智能体管理」为左中右三栏：左侧智能体卡片列表（含启用开关与删除按钮），中间编辑面板含 4 个 Tab——**基本信息 / 配置字段 / 工具绑定 / Skill 绑定**。
+
+#### 操作要点
+- 「新增智能体」：填写 name / display_name / agents_md_path 等字段（详见下文 API 契约）
+- 左侧开关：启用 / 停用即时生效（内存缓存同步刷新）
+- 「保存修改」：写入 DB + 刷新 `AgentConfigService._cache`
+
 ## 新增智能体
 
 ### API 端点

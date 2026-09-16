@@ -34,6 +34,12 @@ MCP（Model Context Protocol）服务器管理模块负责**配置第三方 MCP 
 - 进程内缓存 `_server_configs`（lifespan 加载 + 热加载同步）
 - `is_server_enabled(name)` 是**唯一真相源**
 
+## 界面导览
+
+「MCP 管理」左侧为服务器卡片列表（卡片右上角开关即 `enabled` 闸门），右侧为选中服务器的详情与工具方法列表。「+ 新增服务器」支持 stdio / sse 两种传输协议。
+
+> ⚠️ 开关关闭后，该 server 的全部工具立即从智能体可调用列表中消失（绕过 `system.enabled` 校验的问题已于 2026-09-12 修复）。
+
 ## 配置字段
 
 ### MCP server 配置
