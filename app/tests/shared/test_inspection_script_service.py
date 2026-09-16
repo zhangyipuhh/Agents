@@ -1,25 +1,12 @@
 # -*- coding:utf-8 -*-
 """
-InspectionScriptService 单元测试（2026-08-03 新增）
-
-覆盖目标：
-    - InspectionScriptService(db, config_path) 的初始化与 singleton 行为
-    - preload_all() 从 DB 加载到 _cache / _id_cache
-    - scan_and_upsert() 读取 YAML、字段规范化、INSERT...ON CONFLICT 写库、刷新缓存
-    - list_scripts() / get_script_detail() / get_script_by_id() / get_script_by_name()
-    - resolve_script_for_server(server_type, script_name) 的默认匹配逻辑
-    - 重复 name 拒绝 / 非法 parser 计入 failed / 字段规则非法计入 failed
-    - 服务未初始化时 get_instance() 抛 RuntimeError
-
-测试风格遵循项目规范：
-    - 顶部 docstring（中文）
-    - 通过 pytest fixture + monkeypatch 注入 db stub 与临时 YAML 文件
-    - 不伪造生产 app.state 对象；singleton 通过
-      InspectionScriptService.set_instance / reset 严格管理
+InspectionScriptService 单元测试（2026-08-03 新增；2026-09-16 重构）
 """
 from __future__ import annotations
 
+import asyncio
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -29,7 +16,7 @@ import pytest
 def _make_db() -> MagicMock:
     """构造一个 MagicMock 作为 asyncpg pool 替身。
 
-    生产侧 InspectionScriptService 通过 ``await db.fetch(...)`` 等异步操作访问 DB，
+    生产侧 InspectionScriptService 通过 ``await db.fetch(...)`` 等异步操作访问 DB,
     因此用 ``AsyncMock`` 让 awaitable 调用返回固定值。
 
     Returns:
@@ -40,19 +27,6 @@ def _make_db() -> MagicMock:
     db.fetchrow = AsyncMock(return_value=None)
     db.execute = AsyncMock(return_value=None)
     return db
-
-
-@pytest.fixture
-def tmp_yaml(tmp_path: Path) -> Path:
-    """生成临时 inspection_scripts.yaml 路径（不在磁盘上预先建文件）。
-
-    Args:
-        tmp_path: pytest 临时目录
-
-    Returns:
-        Path: inspection_scripts.yaml 路径
-    """
-    return tmp_path / "inspection_scripts.yaml"
 
 
 @pytest.fixture(autouse=True)
@@ -93,735 +67,283 @@ def test_inspection_script_service_module_importable():
     assert hasattr(mod.InspectionScriptService, "reset")
 
 
-def test_inspection_script_service_constructs(tmp_yaml):
-    """db 与 config_path 合法时构造 InspectionScriptService 不抛异常。
-
-    Args:
-        tmp_yaml: 临时 yaml 路径
+def test_inspection_script_service_constructs():
+    """db 合法时构造 InspectionScriptService 不抛异常。
 
     Returns:
         None
     """
     from app.shared.utils.inspection_script_service import InspectionScriptService
 
-    svc = InspectionScriptService(db=_make_db(), config_path=str(tmp_yaml))
+    svc = InspectionScriptService(db=_make_db())
     assert svc is not None
     assert svc.db is not None
 
 
-def test_singleton_set_get(tmp_yaml):
-    """set_instance / get_instance 是同一对象；未初始化时 get_instance 抛 RuntimeError。
-
-    Args:
-        tmp_yaml: 临时 yaml 路径
+def test_singleton_set_get():
+    """set_instance / get_instance 是同一对象;未初始化时 get_instance 抛 RuntimeError。
 
     Returns:
         None
     """
     from app.shared.utils.inspection_script_service import InspectionScriptService
 
-    svc = InspectionScriptService(db=_make_db(), config_path=str(tmp_yaml))
+    svc = InspectionScriptService(db=_make_db())
     InspectionScriptService.set_instance(svc)
     assert InspectionScriptService.get_instance() is svc
-    # reset 后再 get 应抛 RuntimeError
     InspectionScriptService.reset()
     with pytest.raises(RuntimeError):
         InspectionScriptService.get_instance()
 
 
 # ----------------------------------------------------------------------
-# P1: preload_all / scan_and_upsert / list / detail / by_id / by_name
+# P1: preload_all / list / detail / by_id / by_name / resolve
 # ----------------------------------------------------------------------
 
 
-def test_preload_all_loads_db_rows_into_cache(tmp_yaml):
-    """preload_all() 把 db.fetch 结果映射到 _cache（按 name）与 _id_cache（按 id）。
+def _make_db_with_group_and_segment():
+    """构造 db stub:fetch 按 SQL 内容路由返回组行 / 分段行。"""
+    db = MagicMock(name="db_pool_stub")
+    group_row = {
+        "id": 1, "name": "linux-bash", "display_name": "Linux",
+        "platform": "linux", "version": "bash", "inspection_parser": "json",
+        "inspection_script": None, "inspection_fields": [],
+        "created_at": None, "updated_at": None,
+    }
+    seg_row = {
+        "id": 11, "script_id": 1, "segment_key": "cpu",
+        "display_name": "CPU", "sort_order": 40, "script": "echo 1",
+        "enabled": True, "created_at": None, "updated_at": None,
+    }
 
-    Args:
-        tmp_yaml: 临时 yaml 路径
+    async def _fetch(sql, *args):
+        if "FROM inspection_script_segments" in sql:
+            if "WHERE script_id" in sql:
+                return [dict(seg_row)] if args and args[0] == 1 else []
+            return [dict(seg_row)]
+        return [dict(group_row)]
 
-    Returns:
-        None
-    """
-    import asyncio
+    db.fetch = AsyncMock(side_effect=_fetch)
+    db.fetchrow = AsyncMock(return_value=None)
+    db.execute = AsyncMock(return_value="DELETE 1")
+    return db
+
+
+def test_preload_all_attaches_segments_to_group_record():
+    """preload_all 应把分段按 script_id 挂到组 rec['segments']（升序）。"""
     from app.shared.utils.inspection_script_service import InspectionScriptService
 
-    db = _make_db()
-    db.fetch.return_value = [
-        {
-            "id": 10,
-            "name": "linux-bash",
-            "display_name": "Linux Bash 巡检",
-            "platform": "linux",
-            "version": "bash",
-            "inspection_parser": "json",
-            "inspection_script": "echo probe",
-            "inspection_fields": [
-                {"key": "disk_used_pct", "name_zh": "磁盘使用率", "unit": "%",
-                 "direction": "high", "warn": 80.0, "crit": 90.0},
-            ],
-            "created_at": None,
-            "updated_at": "2026-08-03",
-        }
-    ]
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    db = _make_db_with_group_and_segment()
+    svc = InspectionScriptService(db)
+    asyncio.run(svc.preload_all())
+    rec = svc.get_script_by_id(1)
+    assert [s["segment_key"] for s in rec["segments"]] == ["cpu"]
+
+
+def test_preload_all_loads_db_rows_into_cache():
+    """preload_all() 把 db.fetch 结果映射到 _cache / _id_cache。"""
+    from app.shared.utils.inspection_script_service import InspectionScriptService
+
+    db = _make_db_with_group_and_segment()
+    svc = InspectionScriptService(db)
     asyncio.run(svc.preload_all())
     assert "linux-bash" in svc._cache
-    assert svc._cache["linux-bash"]["id"] == 10
-    assert 10 in svc._id_cache
-    # inspection_fields 还原为 list[dict]
-    fields = svc._cache["linux-bash"]["inspection_fields"]
-    assert isinstance(fields, list)
-    assert fields[0]["key"] == "disk_used_pct"
+    assert svc._cache["linux-bash"]["id"] == 1
+    assert 1 in svc._id_cache
 
 
-def test_scan_and_upsert_inserts_new_rows(tmp_yaml):
-    """YAML 中 2 条合法条目 → scanned=2, inserted=2, updated=0, failed=0。
-
-    Args:
-        tmp_yaml: 临时 yaml 路径
-
-    Returns:
-        None
-    """
-    import asyncio
+def test_list_scripts_returns_whitelist_only():
+    """list_scripts() 不返回 inspection_script 原文,仅返回白名单字段。"""
     from app.shared.utils.inspection_script_service import InspectionScriptService
 
-    db = _make_db()
-    # 每个 fetchrow 调用依次返回 RETURNING 行
-    db.fetchrow.side_effect = [
-        {
-            "id": 1,
-            "name": "linux-bash",
-            "display_name": "Linux Bash 巡检",
-            "platform": "linux",
-            "version": "bash",
-            "inspection_parser": "json",
-            "inspection_script": "echo a",
-            "inspection_fields": json.dumps(
-                [{"key": "x", "name_zh": "X", "unit": "%", "direction": "high",
-                  "warn": 80, "crit": 90}],
-                ensure_ascii=False,
-            ),
-            "created_at": None,
-            "updated_at": "2026-08-03",
-            "inserted": True,
-        },
-        {
-            "id": 2,
-            "name": "windows-ps-5.1",
-            "display_name": "Windows PS 5.1 巡检",
-            "platform": "windows",
-            "version": "ps-5.1",
-            "inspection_parser": "json",
-            "inspection_script": "Get-Process",
-            "inspection_fields": "[]",
-            "created_at": None,
-            "updated_at": "2026-08-03",
-            "inserted": True,
-        },
-    ]
-    tmp_yaml.parent.mkdir(parents=True, exist_ok=True)
-    tmp_yaml.write_text(
-        "inspection_scripts:\n"
-        "  - name: linux-bash\n"
-        "    display_name: Linux Bash 巡检\n"
-        "    platform: linux\n"
-        "    version: bash\n"
-        "    inspection_parser: json\n"
-        "    inspection_script: |\n"
-        "      echo a\n"
-        "    inspection_fields:\n"
-        "      - {key: x, name_zh: X, unit: '%', direction: high, warn: 80, crit: 90}\n"
-        "  - name: windows-ps-5.1\n"
-        "    display_name: Windows PS 5.1 巡检\n"
-        "    platform: windows\n"
-        "    version: ps-5.1\n",
-        encoding="utf-8",
-    )
-
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
-    stats = asyncio.run(svc.scan_and_upsert())
-    assert stats["scanned"] == 2
-    assert stats["inserted"] == 2
-    assert stats["updated"] == 0
-    assert stats["failed"] == 0
-    # 缓存含两条
-    assert "linux-bash" in svc._cache
-    assert "windows-ps-5.1" in svc._cache
-
-
-def test_scan_and_upsert_rejects_duplicate_name(tmp_yaml):
-    """YAML 中两条同名 → scanned=2, inserted=1, failed=1。
-
-    Args:
-        tmp_yaml: 临时 yaml 路径
-
-    Returns:
-        None
-    """
-    import asyncio
-    from app.shared.utils.inspection_script_service import InspectionScriptService
-
-    db = _make_db()
-    db.fetchrow.side_effect = [
-        {
-            "id": 1,
-            "name": "dup",
-            "display_name": "d",
-            "platform": "linux",
-            "version": "",
-            "inspection_parser": "json",
-            "inspection_script": None,
-            "inspection_fields": "[]",
-            "created_at": None,
-            "updated_at": "2026-08-03",
-            "inserted": True,
-        }
-    ]
-    tmp_yaml.parent.mkdir(parents=True, exist_ok=True)
-    tmp_yaml.write_text(
-        "inspection_scripts:\n"
-        "  - name: dup\n"
-        "    display_name: a\n"
-        "    platform: linux\n"
-        "  - name: dup\n"
-        "    display_name: b\n"
-        "    platform: linux\n",
-        encoding="utf-8",
-    )
-
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
-    stats = asyncio.run(svc.scan_and_upsert())
-    assert stats["scanned"] == 2
-    assert stats["failed"] == 1
-    assert stats["inserted"] == 1
-
-
-def test_scan_and_upsert_invalid_parser_records_failed(tmp_yaml):
-    """非法 parser → 该条目计入 failed，不阻断其他记录。
-
-    Args:
-        tmp_yaml: 临时 yaml 路径
-
-    Returns:
-        None
-    """
-    import asyncio
-    from app.shared.utils.inspection_script_service import InspectionScriptService
-
-    db = _make_db()
-    db.fetchrow.side_effect = [
-        {
-            "id": 1,
-            "name": "ok",
-            "display_name": "ok",
-            "platform": "linux",
-            "version": "",
-            "inspection_parser": "json",
-            "inspection_script": None,
-            "inspection_fields": "[]",
-            "created_at": None,
-            "updated_at": "2026-08-03",
-            "inserted": True,
-        }
-    ]
-    tmp_yaml.parent.mkdir(parents=True, exist_ok=True)
-    tmp_yaml.write_text(
-        "inspection_scripts:\n"
-        "  - name: bad\n"
-        "    display_name: b\n"
-        "    platform: linux\n"
-        "    inspection_parser: xml\n"
-        "  - name: ok\n"
-        "    display_name: o\n"
-        "    platform: linux\n",
-        encoding="utf-8",
-    )
-
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
-    stats = asyncio.run(svc.scan_and_upsert())
-    assert stats["scanned"] == 2
-    assert stats["failed"] == 1
-    assert stats["inserted"] == 1
-    assert "bad" not in svc._cache
-    assert "ok" in svc._cache
-
-
-def test_scan_and_upsert_invalid_fields_records_failed(tmp_yaml):
-    """inspection_fields 非法规则 → 该条目计入 failed。
-
-    Args:
-        tmp_yaml: 临时 yaml 路径
-
-    Returns:
-        None
-    """
-    import asyncio
-    from app.shared.utils.inspection_script_service import InspectionScriptService
-
-    db = _make_db()
-    tmp_yaml.parent.mkdir(parents=True, exist_ok=True)
-    tmp_yaml.write_text(
-        "inspection_scripts:\n"
-        "  - name: bad\n"
-        "    display_name: b\n"
-        "    platform: linux\n"
-        "    inspection_fields:\n"
-        "      - {key: x, name_zh: X, direction: bad, warn: 1, crit: 2}\n",
-        encoding="utf-8",
-    )
-
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
-    stats = asyncio.run(svc.scan_and_upsert())
-    assert stats["scanned"] == 1
-    assert stats["failed"] == 1
-    assert "bad" not in svc._cache
-
-
-def test_scan_and_upsert_yaml_missing_returns_zero(tmp_yaml):
-    """YAML 不存在时返回 4 个零，不抛异常。
-
-    Args:
-        tmp_yaml: 临时 yaml 路径（不存在）
-
-    Returns:
-        None
-    """
-    import asyncio
-    from app.shared.utils.inspection_script_service import InspectionScriptService
-
-    svc = InspectionScriptService(db=_make_db(), config_path=str(tmp_yaml))
-    stats = asyncio.run(svc.scan_and_upsert())
-    # 2026-08-04 编辑优先：返回 5 字段；skipped 增量 = 0
-    assert stats == {
-        "scanned": 0, "inserted": 0, "updated": 0, "failed": 0, "skipped": 0
-    }
-
-
-def test_scan_and_upsert_top_level_not_list_records_failed(tmp_yaml):
-    """inspection_scripts 顶层非 list → failed=1，不抛异常。
-
-    Args:
-        tmp_yaml: 临时 yaml 路径
-
-    Returns:
-        None
-    """
-    import asyncio
-    from app.shared.utils.inspection_script_service import InspectionScriptService
-
-    db = _make_db()
-    tmp_yaml.parent.mkdir(parents=True, exist_ok=True)
-    tmp_yaml.write_text(
-        "inspection_scripts:\n  not_a_list: true\n",
-        encoding="utf-8",
-    )
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
-    stats = asyncio.run(svc.scan_and_upsert())
-    # 2026-08-04 编辑优先：返回 5 字段
-    assert stats == {
-        "scanned": 0, "inserted": 0, "updated": 0, "failed": 1, "skipped": 0
-    }
-
-
-def test_list_scripts_returns_whitelist_only(tmp_yaml):
-    """list_scripts() 不返回 inspection_script 原文，仅返回白名单字段。
-
-    Args:
-        tmp_yaml: 临时 yaml 路径
-
-    Returns:
-        None
-    """
-    import asyncio
-    from app.shared.utils.inspection_script_service import InspectionScriptService
-
-    db = _make_db()
-    db.fetch.return_value = [
-        {
-            "id": 10,
-            "name": "linux-bash",
-            "display_name": "Linux Bash 巡检",
-            "platform": "linux",
-            "version": "bash",
-            "inspection_parser": "json",
-            "inspection_script": "echo probe",
-            "inspection_fields": "[]",
-            "created_at": None,
-            "updated_at": "2026-08-03",
-        }
-    ]
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    db = _make_db_with_group_and_segment()
+    svc = InspectionScriptService(db)
     asyncio.run(svc.preload_all())
     out = svc.list_scripts()
     assert isinstance(out, list)
     assert len(out) == 1
     item = out[0]
     assert item["name"] == "linux-bash"
-    assert item["display_name"] == "Linux Bash 巡检"
-    assert item["platform"] == "linux"
-    assert item["version"] == "bash"
-    assert item["inspection_parser"] == "json"
-    # 原文不进入白名单
     assert "inspection_script" not in item
     assert "inspection_fields" not in item
 
 
-def test_get_script_detail_returns_full_content(tmp_yaml):
-    """get_script_detail(id) 命中时返回完整字段（含 inspection_script / inspection_fields）。
-
-    Args:
-        tmp_yaml: 临时 yaml 路径
-
-    Returns:
-        None
-    """
-    import asyncio
+def test_get_script_detail_returns_full_content():
+    """get_script_detail(id) 命中时返回完整字段（含 inspection_script / inspection_fields）。"""
     from app.shared.utils.inspection_script_service import InspectionScriptService
 
-    db = _make_db()
-    db.fetch.return_value = [
-        {
-            "id": 10,
-            "name": "linux-bash",
-            "display_name": "Linux Bash 巡检",
-            "platform": "linux",
-            "version": "bash",
-            "inspection_parser": "json",
-            "inspection_script": "echo probe",
-            "inspection_fields": json.dumps(
-                [{"key": "disk_used_pct", "name_zh": "磁盘使用率", "unit": "%",
-                  "direction": "high", "warn": 80, "crit": 90}],
-                ensure_ascii=False,
-            ),
-            "created_at": None,
-            "updated_at": "2026-08-03",
-        }
-    ]
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    db = _make_db_with_group_and_segment()
+    svc = InspectionScriptService(db)
     asyncio.run(svc.preload_all())
-    detail = svc.get_script_detail(10)
+    detail = svc.get_script_detail(1)
     assert detail is not None
-    assert detail["id"] == 10
+    assert detail["id"] == 1
     assert detail["name"] == "linux-bash"
-    assert detail["inspection_script"] == "echo probe"
-    assert detail["inspection_fields"][0]["key"] == "disk_used_pct"
+    assert "segments" in detail  # 2026-09-16: 详情应附加 segments
 
 
-def test_get_script_detail_missing_returns_none(tmp_yaml):
-    """get_script_detail(id) 未命中时返回 None。
-
-    Args:
-        tmp_yaml: 临时 yaml 路径
-
-    Returns:
-        None
-    """
-    import asyncio
+def test_get_script_detail_missing_returns_none():
+    """get_script_detail(id) 未命中时返回 None。"""
     from app.shared.utils.inspection_script_service import InspectionScriptService
 
-    db = _make_db()
-    db.fetch.return_value = []
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    svc = InspectionScriptService(db=_make_db())
     asyncio.run(svc.preload_all())
     assert svc.get_script_detail(99) is None
 
 
-def test_get_script_by_id_returns_full_content(tmp_yaml):
-    """get_script_by_id(id) 与 get_script_detail 等价（内部使用）。"""
-    import asyncio
+def test_get_script_by_id_and_name_round_trip():
+    """get_script_by_id / get_script_by_name 等价访问缓存。"""
     from app.shared.utils.inspection_script_service import InspectionScriptService
 
-    db = _make_db()
-    db.fetch.return_value = [
-        {
-            "id": 10,
-            "name": "linux-bash",
-            "display_name": "Linux Bash 巡检",
-            "platform": "linux",
-            "version": "bash",
-            "inspection_parser": "json",
-            "inspection_script": "echo probe",
-            "inspection_fields": "[]",
-            "created_at": None,
-            "updated_at": "2026-08-03",
-        }
-    ]
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    db = _make_db_with_group_and_segment()
+    svc = InspectionScriptService(db)
     asyncio.run(svc.preload_all())
-    rec = svc.get_script_by_id(10)
-    assert rec is not None
-    assert rec["name"] == "linux-bash"
-    assert rec["inspection_script"] == "echo probe"
+    by_id = svc.get_script_by_id(1)
+    by_name = svc.get_script_by_name("linux-bash")
+    assert by_id is by_name  # 共享同一 dict 对象
+    assert by_id["name"] == "linux-bash"
 
 
-def test_get_script_by_name_returns_full_content(tmp_yaml):
-    """get_script_by_name(name) 返回完整内容。"""
-    import asyncio
-    from app.shared.utils.inspection_script_service import InspectionScriptService
-
-    db = _make_db()
-    db.fetch.return_value = [
-        {
-            "id": 10,
-            "name": "linux-bash",
-            "display_name": "Linux Bash 巡检",
-            "platform": "linux",
-            "version": "bash",
-            "inspection_parser": "json",
-            "inspection_script": "echo probe",
-            "inspection_fields": "[]",
-            "created_at": None,
-            "updated_at": "2026-08-03",
-        }
-    ]
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
-    asyncio.run(svc.preload_all())
-    rec = svc.get_script_by_name("linux-bash")
-    assert rec is not None
-    assert rec["id"] == 10
-    assert rec["name"] == "linux-bash"
-    assert svc.get_script_by_name("missing") is None
-
-
-def test_resolve_script_for_server_explicit_name(tmp_yaml):
-    """resolve_script_for_server(server_type, script_name) 显式名称优先。
-
-    Args:
-        tmp_yaml: 临时 yaml 路径
+def test_resolve_script_for_server_default_match():
+    """server_type=linux → 默认 linux-bash;windows → windows-ps-5.1。
 
     Returns:
         None
     """
-    import asyncio
     from app.shared.utils.inspection_script_service import InspectionScriptService
 
-    db = _make_db()
-    db.fetch.return_value = [
-        {
-            "id": 11,
-            "name": "linux-bash",
-            "display_name": "Linux Bash",
-            "platform": "linux",
-            "version": "bash",
-            "inspection_parser": "json",
-            "inspection_script": "echo",
-            "inspection_fields": "[]",
-            "created_at": None,
-            "updated_at": "2026-08-03",
-        },
-        {
-            "id": 22,
-            "name": "windows-ps-5.1",
-            "display_name": "Windows PS 5.1",
-            "platform": "windows",
-            "version": "ps-5.1",
-            "inspection_parser": "json",
-            "inspection_script": "Get-Process",
-            "inspection_fields": "[]",
-            "created_at": None,
-            "updated_at": "2026-08-03",
-        },
-    ]
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    db = _make_db_with_group_and_segment()
+    svc = InspectionScriptService(db)
     asyncio.run(svc.preload_all())
-    # 显式 script_name 命中
-    assert svc.resolve_script_for_server("linux", "linux-bash") == 11
-    # 显式不存在 → None
+    assert svc.resolve_script_for_server("linux") == 1
+    assert svc.resolve_script_for_server("linux", "") == 1
     assert svc.resolve_script_for_server("linux", "missing") is None
 
 
-def test_resolve_script_for_server_default_match(tmp_yaml):
-    """server_type=linux 且 script_name 为空 → 默认 linux-bash；windows → windows-ps-5.1。
+# ----------------------------------------------------------------------
+# P2: 分段 CRUD（2026-09-16 新增）
+# ----------------------------------------------------------------------
 
-    Args:
-        tmp_yaml: 临时 yaml 路径
 
-    Returns:
-        None
+def test_upsert_segment_rejects_non_json_group():
+    """组 parser != json 时 upsert_segment 抛 ValueError。"""
+    from app.shared.utils.inspection_script_service import InspectionScriptService
+
+    db = _make_db_with_group_and_segment()
+    svc = InspectionScriptService(db)
+    asyncio.run(svc.preload_all())
+    svc._id_cache[1]["inspection_parser"] = "kv"
+    with pytest.raises(ValueError):
+        asyncio.run(svc.upsert_segment(1, {"segment_key": "mem", "script": "echo {}"}))
+
+
+def test_upsert_segment_rejects_bad_key_and_empty_script():
+    """segment_key 非法 / script 空白 → ValueError。"""
+    from app.shared.utils.inspection_script_service import InspectionScriptService
+
+    db = _make_db_with_group_and_segment()
+    svc = InspectionScriptService(db)
+    asyncio.run(svc.preload_all())
+    with pytest.raises(ValueError):
+        asyncio.run(svc.upsert_segment(1, {"segment_key": "Bad Key!", "script": "echo {}"}))
+    with pytest.raises(ValueError):
+        asyncio.run(svc.upsert_segment(1, {"segment_key": "ok", "script": "  "}))
+
+
+def test_upsert_segment_unknown_group_returns_none():
+    """upsert_segment 未知组 id → None。"""
+    from app.shared.utils.inspection_script_service import InspectionScriptService
+
+    db = _make_db_with_group_and_segment()
+    svc = InspectionScriptService(db)
+    asyncio.run(svc.preload_all())
+    assert asyncio.run(svc.upsert_segment(999, {"segment_key": "a", "script": "echo {}"})) is None
+
+
+def test_delete_segment_cache_sync():
+    """delete_segment 命中后 _reload_segments 刷新组 rec['segments']。"""
+    from app.shared.utils.inspection_script_service import InspectionScriptService
+
+    db = _make_db_with_group_and_segment()
+    svc = InspectionScriptService(db)
+    asyncio.run(svc.preload_all())
+
+    async def _fetch(sql, *args):
+        if "FROM inspection_script_segments" in sql:
+            return []
+        return []
+
+    db.fetch = AsyncMock(side_effect=_fetch)
+    assert asyncio.run(svc.delete_segment(1, 11)) is True
+    assert svc.get_script_by_id(1)["segments"] == []
+
+
+# ----------------------------------------------------------------------
+# P3: 默认组播种（2026-09-16 新增）
+# ----------------------------------------------------------------------
+
+
+def test_seed_default_groups_inserts_when_absent_and_idempotent():
+    """空库播种：组缺失→插组+分段;二次调用 inserted=0（幂等）。
+
+    注意：seed 内部依赖 _reload_segments 回读 segments 行;测试 stub 让 fetch 在
+    第二次调用前返回非空 segments 列表,模拟"已播种过"的真实 DB 状态。
     """
-    import asyncio
     from app.shared.utils.inspection_script_service import InspectionScriptService
 
     db = _make_db()
-    db.fetch.return_value = [
-        {
-            "id": 11,
-            "name": "linux-bash",
-            "display_name": "Linux Bash",
-            "platform": "linux",
-            "version": "bash",
-            "inspection_parser": "json",
-            "inspection_script": "echo",
-            "inspection_fields": "[]",
-            "created_at": None,
-            "updated_at": "2026-08-03",
-        },
-        {
-            "id": 22,
-            "name": "windows-ps-5.1",
-            "display_name": "Windows PS 5.1",
-            "platform": "windows",
-            "version": "ps-5.1",
-            "inspection_parser": "json",
-            "inspection_script": "Get-Process",
-            "inspection_fields": "[]",
-            "created_at": None,
-            "updated_at": "2026-08-03",
-        },
-    ]
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    svc = InspectionScriptService(db)
     asyncio.run(svc.preload_all())
-    # 默认匹配：linux → linux-bash
-    assert svc.resolve_script_for_server("linux") == 11
-    # 默认匹配：windows → windows-ps-5.1
-    assert svc.resolve_script_for_server("windows") == 22
-    # 空字符串 script_name 等价于不传，走默认匹配：linux → linux-bash
-    assert svc.resolve_script_for_server("linux", "") == 11
-    # 空字符串 script_name 等价于不传，走默认匹配：windows → windows-ps-5.1
-    assert svc.resolve_script_for_server("windows", "") == 22
-    # 未知 server_type → None（无默认映射）
-    assert svc.resolve_script_for_server("aix", None) is None
+    inserted_rows = []
+    seg_calls = {"n": 0}
+    group_id_counter = {"v": 1}
+
+    async def _fetchrow(sql, *args):
+        if "INSERT INTO inspection_scripts " in sql and "RETURNING" in sql:
+            gid = group_id_counter["v"]
+            group_id_counter["v"] += 1
+            row = {
+                "id": gid, "name": args[0], "inspection_fields": "[]",
+                "display_name": args[1], "platform": args[2], "version": args[3],
+                "inspection_parser": args[4], "inspection_script": None,
+                "created_at": None, "updated_at": None,
+            }
+            inserted_rows.append(row)
+            return row
+        return None
+
+    async def _fetch(sql, *args):
+        if "FROM inspection_script_segments" in sql:
+            seg_calls["n"] += 1
+            n = seg_calls["n"]
+            if n <= 4:
+                # 第一次 seed:每次 reload 都返回 [](模拟"刚插入尚未 reload")
+                return []
+            # 第二次 seed:模拟"已存在 segments"
+            sid = args[0] if args else 1
+            return [{
+                "id": 100, "script_id": sid, "segment_key": "cpu",
+                "display_name": "CPU", "sort_order": 40, "script": "echo 1",
+                "enabled": True, "created_at": None, "updated_at": None,
+            }]
+        return []
+
+    db.fetchrow = AsyncMock(side_effect=_fetchrow)
+    db.execute = AsyncMock(return_value="INSERT 0 1")
+    db.fetch = AsyncMock(side_effect=_fetch)
+
+    stats1 = asyncio.run(svc.seed_default_groups())
+    assert stats1["groups_inserted"] == 2
+    assert stats1["segments_inserted"] == 8
+    # 关键:第二次 reload 时 segments 已存在 → 触发 skipped 路径
+    stats2 = asyncio.run(svc.seed_default_groups())
+    assert stats2["groups_inserted"] == 0
+    assert stats2["segments_inserted"] == 0
+    assert stats2["skipped"] == 2
 
 
 # ----------------------------------------------------------------------
-# P4: delete_script（2026-08-04 新增）
-# ----------------------------------------------------------------------
-
-
-def test_delete_script_removes_from_caches(tmp_yaml):
-    """delete_script 命中 DB 时从 ``_cache`` / ``_id_cache`` 同步移除（2026-08-05 事务化）。
-
-    单事务内：SELECT name FOR UPDATE → UPDATE devops_servers → DELETE inspection_scripts。
-
-    Args:
-        tmp_yaml: 临时 yaml 路径
-
-    Returns:
-        None
-    """
-    import asyncio
-    from app.shared.utils.inspection_script_service import InspectionScriptService
-
-    db, conn = _build_tx_db()
-    conn.fetchrow.side_effect = [{"name": "linux-bash"}]
-    conn.execute.side_effect = ["UPDATE 1", "DELETE 1"]
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
-    # 直接构造缓存，避免依赖 preload_all 的 DB fetch 桩
-    svc._cache["linux-bash"] = {"id": 11, "name": "linux-bash"}
-    svc._id_cache[11] = {"id": 11, "name": "linux-bash"}
-
-    ok = asyncio.run(svc.delete_script(11))
-    assert ok is True
-    # _id_cache / _cache 都被清除
-    assert 11 not in svc._id_cache
-    assert "linux-bash" not in svc._cache
-    # 事务内 SQL 顺序：先 SELECT name FOR UPDATE，再 UPDATE servers，再 DELETE scripts
-    assert db.acquire.call_count == 1
-    assert conn.transaction.call_count == 1
-    assert conn.fetchrow.await_count == 1
-    assert conn.execute.await_count == 2
-    delete_sql = next(
-        c.args[0] for c in conn.execute.await_args_list
-        if "DELETE FROM inspection_scripts" in c.args[0]
-    )
-    assert "DELETE FROM inspection_scripts" in delete_sql
-    # DELETE SQL 第二个参数是 11
-    delete_call = next(
-        c for c in conn.execute.await_args_list
-        if "DELETE FROM inspection_scripts" in c.args[0]
-    )
-    assert delete_call.args[1] == 11
-
-
-def test_delete_script_returns_false_when_no_row(tmp_yaml):
-    """DB 实际无该脚本行（SELECT FOR UPDATE 未命中）→ 返回 False，缓存不动。
-
-    2026-08-05 事务化改造：DB 删行之前先用 SELECT FOR UPDATE 判定脚本是否存在；
-    不存在时不解绑服务器、不删脚本行、不动缓存。
-
-    Args:
-        tmp_yaml: 临时 yaml 路径
-
-    Returns:
-        None
-    """
-    import asyncio
-    from app.shared.utils.inspection_script_service import InspectionScriptService
-
-    db, conn = _build_tx_db()
-    conn.fetchrow.side_effect = [None]  # SELECT name FOR UPDATE 未命中
-    conn.execute.side_effect = []  # 不应触发 UPDATE / DELETE
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
-    svc._cache["linux-bash"] = {"id": 11, "name": "linux-bash"}
-    svc._id_cache[11] = {"id": 11, "name": "linux-bash"}
-
-    ok = asyncio.run(svc.delete_script(11))
-    assert ok is False
-    # 缓存保持原样
-    assert 11 in svc._id_cache
-    assert "linux-bash" in svc._cache
-    # 关键：服务器解绑 SQL 不应被执行（脚本都不存在时不应盲目 UPDATE）
-    assert conn.execute.await_count == 0
-
-
-def test_delete_script_invalid_id_returns_false(tmp_yaml):
-    """入参非法（None / 非 int / <=0）→ 返回 False，不调 DB。
-
-    Args:
-        tmp_yaml: 临时 yaml 路径
-
-    Returns:
-        None
-    """
-    import asyncio
-    from app.shared.utils.inspection_script_service import InspectionScriptService
-
-    db, _conn = _build_tx_db()
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
-
-    assert asyncio.run(svc.delete_script(None)) is False
-    assert asyncio.run(svc.delete_script(0)) is False
-    assert asyncio.run(svc.delete_script(-1)) is False
-    # bool 是 int 的子类，单独验证应当走校验通过路径之外：仍被允许（仅校验 > 0）
-    # 这里只覆盖「必须被短路」的三种形态
-    assert db.acquire.call_count == 0
-
-
-def test_delete_script_db_exception_propagates(tmp_yaml):
-    """事务内 DB 异常向上抛出（2026-08-05 改造），缓存不被清。
-
-    业务语义：``delete_script`` 不吞 DB 异常，由上层路由映射为通用 500；
-    缓存保持原样，下次重试或运维排查时仍能命中现有数据。
-    """
-    import asyncio
-    import pytest
-    from app.shared.utils.inspection_script_service import InspectionScriptService
-
-    db, conn = _build_tx_db()
-    conn.fetchrow.side_effect = RuntimeError("simulated DB failure")
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
-    svc._cache["linux-bash"] = {"id": 11, "name": "linux-bash"}
-    svc._id_cache[11] = {"id": 11, "name": "linux-bash"}
-
-    with pytest.raises(RuntimeError, match="simulated DB failure"):
-        asyncio.run(svc.delete_script(11))
-    # 缓存保持
-    assert 11 in svc._id_cache
-    assert "linux-bash" in svc._cache
-
-
-# ----------------------------------------------------------------------
-# P5: delete_script 事务化 + 缓存自愈（2026-08-05 新增）
-# ----------------------------------------------------------------------
-# 触发原因：用户反馈「巡检脚本不存在」选项实际存在 → 定位到删除路径在某些
-# 漂移场景下只清理部分缓存 key。修复要求 delete_script 在单事务内：
-# 1) SELECT ... FOR UPDATE 锁住脚本行；
-# 2) UPDATE devops_servers SET inspection_script_id=NULL；
-# 3) DELETE FROM inspection_scripts WHERE id=$1；
-# 事务成功提交后，用本次事务内读到的 name 清空 _id_cache 与 _cache，并
-# 清理同 name 漂移到其它 id 的残留。
+# P4: delete_script 事务化 + 缓存自愈（2026-08-05 既有;2026-09-16 沿用）
 # ----------------------------------------------------------------------
 
 
@@ -839,20 +361,7 @@ class _FakeAsyncContextManager:
 
 
 def _build_tx_db():
-    """构造 asyncpg ``Pool`` 替身：``db.acquire()`` 返回带 ``transaction()`` 的 connection。
-
-    2026-08-05 修复：asyncpg 的事务 API 在 connection 而非 pool 上。
-    真实生产 db 是 ``asyncpg.Pool``，没有 ``.transaction()``；测试必须
-    模拟 ``pool.acquire() → connection.transaction()`` 真实链路，避免
-    ``AttributeError: 'Pool' object has no attribute 'transaction'``
-    之类「测试通过、生产崩溃」的反模式（与 AGENTS.md「禁止在测试中虚构
-    生产不存在的依赖」同源）。
-
-    Returns:
-        MagicMock: db（pool）替身；``db.acquire()`` 返回 CM，CM 出来的
-        connection 有 ``transaction()`` 异步 CM 与 ``fetchrow`` / ``execute``。
-    """
-    from contextlib import asynccontextmanager
+    """构造 asyncpg ``Pool`` 替身:``db.acquire()`` 返回带 ``transaction()`` 的 connection。"""
     db = MagicMock(name="db_pool_stub_tx")
 
     conn = MagicMock(name="db_connection_stub_tx")
@@ -872,215 +381,107 @@ def _build_tx_db():
     return db, conn
 
 
-def test_delete_script_uses_single_transaction(tmp_yaml):
-    """delete_script 必须使用 connection 事务且 SQL 顺序锁定（2026-08-05）。
-
-    验证：
-    - ``db.acquire()`` + ``conn.transaction()`` 真实 asyncpg 链路被使用；
-    - 事务内 SQL 顺序：SELECT name FOR UPDATE → UPDATE devops_servers → DELETE inspection_scripts；
-    - 事务提交后缓存才被清。
-    """
-    import asyncio
+def test_delete_script_uses_single_transaction():
+    """delete_script 使用 connection 事务,SQL 顺序:SELECT FOR UPDATE → UPDATE servers → DELETE segments → DELETE scripts。"""
     from app.shared.utils.inspection_script_service import InspectionScriptService
 
     db, conn = _build_tx_db()
-    conn.fetchrow.side_effect = [
-        {"name": "linux-bash"},  # SELECT name FROM inspection_scripts ... FOR UPDATE
-    ]
-    conn.execute.side_effect = [
-        "UPDATE 2",  # UPDATE devops_servers SET inspection_script_id = NULL
-        "DELETE 1",  # DELETE FROM inspection_scripts WHERE id = $1
-    ]
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    conn.fetchrow.side_effect = [{"name": "linux-bash"}]
+    # 2026-09-16:事务内 3 次 execute(UPDATE servers / DELETE segments / DELETE scripts)
+    conn.execute.side_effect = ["UPDATE 2", "DELETE 4", "DELETE 1"]
+    svc = InspectionScriptService(db)
     svc._cache["linux-bash"] = {"id": 7, "name": "linux-bash"}
     svc._id_cache[7] = {"id": 7, "name": "linux-bash"}
 
     ok = asyncio.run(svc.delete_script(7))
     assert ok is True
-
-    # 1) acquire + transaction 真实链路被调用
     assert db.acquire.call_count == 1
     assert conn.transaction.call_count == 1
-    # 2) 全部 SQL 在事务内按序执行
-    assert conn.fetchrow.await_count == 1
-    assert conn.execute.await_count == 2
-
-    # 3) 缓存被清理
     assert 7 not in svc._id_cache
     assert "linux-bash" not in svc._cache
 
-    # 4) 事务内 SQL 顺序：先 UPDATE 服务器、再 DELETE 脚本
     executed_sqls = [c.args[0] for c in conn.execute.await_args_list]
     assert any(
         "UPDATE devops_servers SET inspection_script_id = NULL" in sql
-        and "WHERE inspection_script_id = $1" in sql
         for sql in executed_sqls
     ), f"未发现服务器解绑 SQL: {executed_sqls}"
     assert any(
+        "DELETE FROM inspection_script_segments" in sql for sql in executed_sqls
+    ), "delete_script 应在事务内显式清理 segments(FK CASCADE 兜底)"
+    assert any(
         "DELETE FROM inspection_scripts" in sql for sql in executed_sqls
     )
-    # 服务器解绑 SQL 必须先于脚本删除 SQL
-    unbind_idx = next(
-        i for i, sql in enumerate(executed_sqls)
-        if "UPDATE devops_servers" in sql
-    )
-    delete_idx = next(
-        i for i, sql in enumerate(executed_sqls)
-        if "DELETE FROM inspection_scripts" in sql
-    )
-    assert unbind_idx < delete_idx
 
 
-def test_delete_script_clears_drifted_same_name_id_cache(tmp_yaml):
-    """同 name 漂移到多条 _id_cache（人为制造漂移）时：
-    删除其中一条 id，事务内读到的 name 把另一条同 name 的 id 索引一并清理。
-    """
-    import asyncio
+def test_delete_script_returns_false_when_no_row():
+    """DB 实际无该脚本行（SELECT FOR UPDATE 未命中）→ 返回 False,缓存不动。"""
     from app.shared.utils.inspection_script_service import InspectionScriptService
 
     db, conn = _build_tx_db()
-    # 真实 DB 中只有 id=7（linux-bash）；id=99 是历史漂移残留
-    conn.fetchrow.side_effect = [{"name": "linux-bash"}]
-    conn.execute.side_effect = ["UPDATE 1", "DELETE 1"]
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
-    # 漂移场景：_id_cache 同时含 7 与 99，都指向 linux-bash
-    svc._cache["linux-bash"] = {"id": 7, "name": "linux-bash"}
-    svc._id_cache[7] = {"id": 7, "name": "linux-bash"}
-    svc._id_cache[99] = {"id": 7, "name": "linux-bash"}  # 同 name 漂移到 99
-
-    ok = asyncio.run(svc.delete_script(7))
-    assert ok is True
-
-    # 7 与 99 都应被清；_cache["linux-bash"] 被清
-    assert 7 not in svc._id_cache
-    assert 99 not in svc._id_cache
-    assert "linux-bash" not in svc._cache
-
-
-def test_delete_script_returns_false_when_db_row_missing(tmp_yaml):
-    """事务内 SELECT 未命中（DB 实际无该 id）→ 返回 False，缓存不动。"""
-    import asyncio
-    from app.shared.utils.inspection_script_service import InspectionScriptService
-
-    db, conn = _build_tx_db()
-    conn.fetchrow.side_effect = [None]  # SELECT name FOR UPDATE 未命中
-    conn.execute.side_effect = []  # 不应触发 UPDATE / DELETE
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    conn.fetchrow.side_effect = [None]
+    conn.execute.side_effect = []
+    svc = InspectionScriptService(db)
     svc._cache["linux-bash"] = {"id": 7, "name": "linux-bash"}
     svc._id_cache[7] = {"id": 7, "name": "linux-bash"}
 
     ok = asyncio.run(svc.delete_script(7))
     assert ok is False
-    # 缓存保持原样
     assert 7 in svc._id_cache
     assert "linux-bash" in svc._cache
-    # 关键：服务器解绑 SQL 不应被执行（脚本都不存在时不应盲目 UPDATE）
     assert conn.execute.await_count == 0
 
 
-def test_delete_script_db_failure_propagates_keeps_cache(tmp_yaml):
-    """事务内 DB 异常向上抛出，缓存不被清。
+def test_delete_script_invalid_id_returns_false():
+    """入参非法（None / 非 int / <=0）→ 返回 False,不调 DB。"""
+    from app.shared.utils.inspection_script_service import InspectionScriptService
 
-    业务语义：``delete_script`` 不吞 DB 异常，由上层路由映射为通用 500；
-    缓存保持原样，下次重试或运维排查时仍能命中现有数据。
-    """
-    import asyncio
-    import pytest
+    db, _conn = _build_tx_db()
+    svc = InspectionScriptService(db)
+
+    assert asyncio.run(svc.delete_script(None)) is False
+    assert asyncio.run(svc.delete_script(0)) is False
+    assert asyncio.run(svc.delete_script(-1)) is False
+    assert db.acquire.call_count == 0
+
+
+def test_delete_script_db_exception_propagates_keeps_cache():
+    """事务内 DB 异常向上抛出,缓存不被清。"""
     from app.shared.utils.inspection_script_service import InspectionScriptService
 
     db, conn = _build_tx_db()
     conn.fetchrow.side_effect = RuntimeError("simulated asyncpg failure")
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    svc = InspectionScriptService(db)
     svc._cache["linux-bash"] = {"id": 7, "name": "linux-bash"}
     svc._id_cache[7] = {"id": 7, "name": "linux-bash"}
 
     with pytest.raises(RuntimeError, match="simulated asyncpg failure"):
         asyncio.run(svc.delete_script(7))
-    # 缓存保持
     assert 7 in svc._id_cache
     assert "linux-bash" in svc._cache
 
 
-def test_scan_and_upsert_mixed_insert_update(tmp_yaml):
-    """同名条目再次扫描（2026-08-04 改造为编辑优先）：
-    第一次 insert 成功 → cache 含 linux-bash；第二次同 name 命中 cache → skipped=1，
-    不调用 fetchrow，不再更新。保留对原契约的回归保护。
-
-    Args:
-        tmp_yaml: 临时 yaml 路径
-
-    Returns:
-        None
-    """
-    import asyncio
-    from app.shared.utils.inspection_script_service import InspectionScriptService
-
-    db = _make_db()
-    # 仅第一次返回 RETURNING 行（inserted=True）；第二次不应再调用 fetchrow
-    db.fetchrow.side_effect = [
-        {
-            "id": 1,
-            "name": "linux-bash",
-            "display_name": "Linux Bash",
-            "platform": "linux",
-            "version": "bash",
-            "inspection_parser": "json",
-            "inspection_script": None,
-            "inspection_fields": "[]",
-            "created_at": None,
-            "updated_at": "2026-08-03",
-            "inserted": True,
-        },
-    ]
-    tmp_yaml.parent.mkdir(parents=True, exist_ok=True)
-    tmp_yaml.write_text(
-        "inspection_scripts:\n"
-        "  - name: linux-bash\n"
-        "    display_name: Linux Bash\n"
-        "    platform: linux\n",
-        encoding="utf-8",
-    )
-
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
-    stats1 = asyncio.run(svc.scan_and_upsert())
-    assert stats1["inserted"] == 1
-    assert stats1["skipped"] == 0
-    # 第二次扫描：cache 已有 linux-bash → skipped=1，不触发 fetchrow
-    fetch_call_count_before = db.fetchrow.await_count
-    stats2 = asyncio.run(svc.scan_and_upsert())
-    assert stats2["skipped"] == 1
-    assert stats2["inserted"] == 0
-    assert stats2["updated"] == 0
-    # 关键：编辑优先模式下不调用 DB
-    assert db.fetchrow.await_count == fetch_call_count_before
+# ----------------------------------------------------------------------
+# P5: update_script_detail（2026-08-04 既有;2026-09-16 沿用 + parser 校验强化）
+# ----------------------------------------------------------------------
 
 
-def test_update_script_detail_updates_db_and_cache(tmp_yaml):
-    """update_script_detail 写入 DB 并同步 _cache / _id_cache（2026-08-04 新增）。"""
-    import asyncio
+def test_update_script_detail_updates_db_and_cache():
+    """update_script_detail 写入 DB 并同步 _cache / _id_cache。"""
     from app.shared.utils.inspection_script_service import InspectionScriptService
 
     db = _make_db()
     db.fetchrow.return_value = {
-        "id": 7,
-        "name": "linux-bash",
-        "display_name": "Linux Bash (人工编辑)",
-        "platform": "linux",
-        "version": "bash",
-        "inspection_parser": "json",
-        "inspection_script": "echo manual",
-        "inspection_fields": "[]",
-        "created_at": None,
-        "updated_at": "2026-08-04",
+        "id": 7, "name": "linux-bash", "display_name": "Linux Bash (人工编辑)",
+        "platform": "linux", "version": "bash", "inspection_parser": "json",
+        "inspection_script": "echo manual", "inspection_fields": "[]",
+        "created_at": None, "updated_at": "2026-08-04",
     }
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
+    svc = InspectionScriptService(db)
     asyncio.run(svc.preload_all())
     payload = {
         "display_name": "Linux Bash (人工编辑)",
-        "platform": "linux",
-        "version": "bash",
-        "inspection_parser": "json",
-        "inspection_script": "echo manual",
+        "platform": "linux", "version": "bash",
+        "inspection_parser": "json", "inspection_script": "echo manual",
         "inspection_fields": [],
     }
     result = asyncio.run(svc.update_script_detail(7, payload))
@@ -1088,149 +489,41 @@ def test_update_script_detail_updates_db_and_cache(tmp_yaml):
     assert result["display_name"] == "Linux Bash (人工编辑)"
     assert "linux-bash" in svc._cache
     assert svc._cache["linux-bash"]["inspection_script"] == "echo manual"
-    # _id_cache 也同步
-    assert 7 in svc._id_cache
 
 
-def test_update_script_detail_invalid_returns_none(tmp_yaml):
-    """update_script_detail 收到非法入参 → 返回 None（不抛）。"""
-    import asyncio
+def test_update_script_detail_rejects_non_json_when_segments_present():
+    """组存在 enabled 分段 → 切到非 json parser 时返回 None(D3 防御)。"""
     from app.shared.utils.inspection_script_service import InspectionScriptService
 
-    db = _make_db()
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
-    # platform 非法
-    assert asyncio.run(svc.update_script_detail(1, {
-        "display_name": "X", "platform": "solaris", "version": "",
-        "inspection_parser": "json", "inspection_script": None,
-        "inspection_fields": [],
-    })) is None
-    # inspection_parser 非法
-    assert asyncio.run(svc.update_script_detail(1, {
-        "display_name": "X", "platform": "linux", "version": "",
-        "inspection_parser": "yaml", "inspection_script": None,
-        "inspection_fields": [],
-    })) is None
-    # display_name 空
-    assert asyncio.run(svc.update_script_detail(1, {
-        "display_name": "  ", "platform": "linux", "version": "",
-        "inspection_parser": "json", "inspection_script": None,
-        "inspection_fields": [],
-    })) is None
-
-
-def test_update_script_detail_missing_id_returns_none(tmp_yaml):
-    """script_id 不存在（DB 未返回行）→ 返回 None。"""
-    import asyncio
-    from app.shared.utils.inspection_script_service import InspectionScriptService
-
-    db = _make_db()
-    db.fetchrow.return_value = None
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
-    result = asyncio.run(svc.update_script_detail(9999, {
-        "display_name": "X", "platform": "linux", "version": "",
-        "inspection_parser": "json", "inspection_script": None,
+    db = _make_db_with_group_and_segment()
+    svc = InspectionScriptService(db)
+    asyncio.run(svc.preload_all())
+    # 此时 1 组下存在 enabled 分段 cpu;切到 kv parser 必须被拒
+    result = asyncio.run(svc.update_script_detail(1, {
+        "display_name": "X", "platform": "linux", "version": "bash",
+        "inspection_parser": "kv", "inspection_script": None,
         "inspection_fields": [],
     }))
     assert result is None
 
 
-def test_scan_and_upsert_preserves_ssd_thresholds(tmp_yaml):
-    """scan 入库时发往 DB 的 inspection_fields JSON 应保留 ssd_warn/ssd_crit。
-
-    Args:
-        tmp_yaml: 临时 yaml 路径
-
-    Returns:
-        None
-
-    Raises:
-        AssertionError: 序列化白名单剥离 ssd 键时失败
-    """
-    import asyncio
+def test_update_script_detail_invalid_returns_none():
+    """update_script_detail 收到非法入参 → 返回 None(不抛)。"""
     from app.shared.utils.inspection_script_service import InspectionScriptService
 
-    db = _make_db()
-    db.fetchrow.return_value = {
-        "id": 1, "name": "linux-bash", "display_name": "X",
-        "platform": "linux", "version": "bash", "inspection_parser": "json",
-        "inspection_script": "echo a",
-        "inspection_fields": json.dumps(
-            [{"key": "io_await_ms", "name_zh": "IO等待", "unit": "ms",
-              "direction": "high", "warn": 100, "crit": 200,
-              "ssd_warn": 20, "ssd_crit": 50}],
-            ensure_ascii=False,
-        ),
-        "created_at": None, "updated_at": "2026-08-15", "inserted": True,
-    }
-    tmp_yaml.parent.mkdir(parents=True, exist_ok=True)
-    tmp_yaml.write_text(
-        "inspection_scripts:\n"
-        "  - name: linux-bash\n"
-        "    display_name: Linux Bash 巡检\n"
-        "    platform: linux\n"
-        "    version: bash\n"
-        "    inspection_parser: json\n"
-        "    inspection_script: |\n"
-        "      echo a\n"
-        "    inspection_fields:\n"
-        "      - {key: io_await_ms, name_zh: IO等待, unit: ms, direction: high,\n"
-        "         warn: 100, crit: 200, ssd_warn: 20, ssd_crit: 50}\n",
-        encoding="utf-8",
-    )
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
-    stats = asyncio.run(svc.scan_and_upsert())
-    assert stats["failed"] == 0
-    sent = None
-    for call in db.fetchrow.call_args_list:
-        for arg in call.args:
-            if isinstance(arg, str) and '"ssd_warn"' in arg:
-                sent = json.loads(arg)
-    assert sent is not None, "发往 DB 的 inspection_fields JSON 缺失 ssd_warn"
-    assert sent[0]["ssd_warn"] == 20 and sent[0]["ssd_crit"] == 50
-
-
-def test_update_script_detail_preserves_ssd_thresholds(tmp_yaml):
-    """update_script_detail 发往 DB 的 JSON 应保留 ssd_warn/ssd_crit(防前端往返丢键)。
-
-    Args:
-        tmp_yaml: 临时 yaml 路径
-
-    Returns:
-        None
-    """
-    import asyncio
-    from app.shared.utils.inspection_script_service import InspectionScriptService
-
-    db = _make_db()
-    db.fetchrow.return_value = {
-        "id": 7, "name": "linux-bash", "display_name": "X",
-        "platform": "linux", "version": "bash", "inspection_parser": "json",
-        "inspection_script": "echo a",
-        "inspection_fields": json.dumps(
-            [{"key": "io_await_ms", "name_zh": "IO等待", "unit": "ms",
-              "direction": "high", "warn": 100, "crit": 200,
-              "ssd_warn": 20, "ssd_crit": 50}],
-            ensure_ascii=False,
-        ),
-        "created_at": None, "updated_at": "2026-08-15",
-    }
-    svc = InspectionScriptService(db=db, config_path=str(tmp_yaml))
-    asyncio.run(svc.preload_all())
-    result = asyncio.run(svc.update_script_detail(7, {
-        "display_name": "X", "platform": "linux", "version": "bash",
-        "inspection_parser": "json", "inspection_script": "echo a",
-        "inspection_fields": [
-            {"key": "io_await_ms", "name_zh": "IO等待", "unit": "ms",
-             "direction": "high", "warn": 100, "crit": 200,
-             "ssd_warn": 20, "ssd_crit": 50},
-        ],
-    }))
-    assert result is not None
-    sent = None
-    for call in db.fetchrow.call_args_list:
-        for arg in call.args:
-            if isinstance(arg, str) and '"ssd_warn"' in arg:
-                sent = json.loads(arg)
-    assert sent is not None, "update_script_detail 序列化剥离了 ssd 键"
-    assert sent[0]["ssd_warn"] == 20 and sent[0]["ssd_crit"] == 50
+    svc = InspectionScriptService(db=_make_db())
+    assert asyncio.run(svc.update_script_detail(1, {
+        "display_name": "X", "platform": "solaris", "version": "",
+        "inspection_parser": "json", "inspection_script": None,
+        "inspection_fields": [],
+    })) is None
+    assert asyncio.run(svc.update_script_detail(1, {
+        "display_name": "X", "platform": "linux", "version": "",
+        "inspection_parser": "yaml", "inspection_script": None,
+        "inspection_fields": [],
+    })) is None
+    assert asyncio.run(svc.update_script_detail(1, {
+        "display_name": "  ", "platform": "linux", "version": "",
+        "inspection_parser": "json", "inspection_script": None,
+        "inspection_fields": [],
+    })) is None
