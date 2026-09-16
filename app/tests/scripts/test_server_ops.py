@@ -1,4 +1,4 @@
-﻿# -*- coding:utf-8 -*-
+# -*- coding:utf-8 -*-
 """
 ``app.scripts.server_ops`` 标准化巡检执行器测试。
 
@@ -2076,3 +2076,283 @@ def test_run_one_passes_config_without_timeout_kwarg(monkeypatch):
     cfg, _script = captured_call["args"]
     # 关键断言：cfg 必须含 ssh_timeout 键，且不被 _run_one 二次计算
     assert cfg.get("ssh_timeout") == 75
+
+
+# ============================================================================
+# 2026-09-16 新增：分段巡检执行路径(_run_one_segmented)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_run_server_ops_segmented_merges_fragments(monkeypatch):
+    """四分段输出合并后:parsed_values 键集/字段评估与单体大 JSON 等价。"""
+    from app.shared.utils.ssh.executor import SSHExecResult
+
+    def fake_execute_script_batch(cfg, scripts):
+        # 4 段顺序返回:disk-usage / disk-io / memory / cpu
+        return [
+            SSHExecResult(True, '{"disks":[{"mount":"/","disk_used_pct":42}],"inode_used_pct":3}', "", 0),
+            SSHExecResult(True, '{"disks":[{"mount":"vda[HDD]","io_util_pct":0.5,"io_await_ms":1.2,"disk_type":"hdd"}]}', "", 0),
+            SSHExecResult(True, '{"mem_used_pct":55,"swap_used_pct":0}', "", 0),
+            SSHExecResult(True, '{"cpu_idle_pct":92.5,"cpu_iowait_pct":0.3,"load_1m":0.12}', "", 0),
+        ]
+
+    monkeypatch.setattr(
+        "app.scripts.server_ops.execute_script_batch", fake_execute_script_batch,
+    )
+
+    service = _StubDevOpsService(configs={
+        "biz-A": {
+            "ip": "10.0.0.1", "port": 22, "username": "u", "password": "p",
+            "server_type": "linux",
+            "inspection_script": "echo legacy",  # 分段路径不使用 legacy
+            "inspection_parser": "json",
+            "inspection_fields": [
+                {"key": "disk_used_pct", "name_zh": "磁盘使用率", "unit": "%",
+                 "direction": "high", "warn": 80, "crit": 90},
+                {"key": "mem_used_pct", "name_zh": "内存", "unit": "%",
+                 "direction": "high", "warn": 80, "crit": 90},
+                {"key": "cpu_idle_pct", "name_zh": "CPU 空闲", "unit": "%",
+                 "direction": "low", "warn": 20, "crit": 10},
+                {"key": "cpu_iowait_pct", "name_zh": "iowait", "unit": "%",
+                 "direction": "high", "warn": 20, "crit": 40},
+                {"key": "swap_used_pct", "name_zh": "swap", "unit": "%",
+                 "direction": "high", "warn": 30, "crit": 60},
+                {"key": "inode_used_pct", "name_zh": "inode", "unit": "%",
+                 "direction": "high", "warn": 80, "crit": 90},
+                {"key": "load_1m", "name_zh": "load", "unit": "",
+                 "direction": "high", "warn": 4.0, "crit": 8.0},
+                {"key": "io_util_pct", "name_zh": "io_util", "unit": "%",
+                 "direction": "high", "warn": 80, "crit": 90},
+                {"key": "io_await_ms", "name_zh": "io_await", "unit": "ms",
+                 "direction": "high", "warn": 100, "crit": 200,
+                 "ssd_warn": 20, "ssd_crit": 50},
+            ],
+            "inspection_script_segments": [
+                {"segment_key": "disk-usage", "script": "echo du"},
+                {"segment_key": "disk-io", "script": "echo di"},
+                {"segment_key": "memory", "script": "echo m"},
+                {"segment_key": "cpu", "script": "echo c"},
+            ],
+        },
+    })
+    ctx = _make_context_with_service(service, {"server_list": ["biz-A"]})
+    report = await run_server_ops(ctx)
+    item = report.items[0]
+    assert item.success is True
+    assert set(item.parsed_values) == {
+        "disks", "inode_used_pct", "mem_used_pct", "swap_used_pct",
+        "cpu_idle_pct", "cpu_iowait_pct", "load_1m",
+    }
+    assert len(item.parsed_values["disks"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_run_server_ops_segmented_partial_failure_marks_missing_fields_crit(monkeypatch):
+    """cpu 段 exit=1:success=True,cpu_idle_pct 字段 crit,inspection_error 含分段备注。"""
+    from app.shared.utils.ssh.executor import SSHExecResult
+
+    def fake_execute_script_batch(cfg, scripts):
+        return [
+            SSHExecResult(True, '{"disks":[],"inode_used_pct":3}', "", 0),
+            SSHExecResult(True, '{"disks":[]}', "", 0),
+            SSHExecResult(True, '{"mem_used_pct":50,"swap_used_pct":0}', "", 0),
+            SSHExecResult(False, "", "boom", 1),
+        ]
+
+    monkeypatch.setattr(
+        "app.scripts.server_ops.execute_script_batch", fake_execute_script_batch,
+    )
+
+    service = _StubDevOpsService(configs={
+        "biz-A": {
+            "ip": "10.0.0.1", "port": 22, "username": "u", "password": "p",
+            "server_type": "linux",
+            "inspection_script": "echo legacy",
+            "inspection_parser": "json",
+            "inspection_fields": [
+                {"key": "cpu_idle_pct", "name_zh": "CPU 空闲", "unit": "%",
+                 "direction": "low", "warn": 20, "crit": 10},
+            ],
+            "inspection_script_segments": [
+                {"segment_key": "disk-usage", "script": "echo du"},
+                {"segment_key": "disk-io", "script": "echo di"},
+                {"segment_key": "memory", "script": "echo m"},
+                {"segment_key": "cpu", "script": "echo c"},
+            ],
+        },
+    })
+    ctx = _make_context_with_service(service, {"server_list": ["biz-A"]})
+    report = await run_server_ops(ctx)
+    item = report.items[0]
+    assert item.success is True
+    assert item.inspection_status == "crit"
+    assert "分段 cpu 执行失败(exit=1)" in item.inspection_error
+    cpu_fields = [f for f in item.field_results if f["key"] == "cpu_idle_pct"]
+    assert cpu_fields and cpu_fields[0]["status"] == "crit"
+
+
+@pytest.mark.asyncio
+async def test_run_server_ops_segmented_invalid_json_segment_recorded(monkeypatch):
+    """非法 JSON 分段记「输出非法 JSON」,其余分段正常合并。"""
+    from app.shared.utils.ssh.executor import SSHExecResult
+
+    def fake_execute_script_batch(cfg, scripts):
+        return [
+            SSHExecResult(True, '{"disks":[]}', "", 0),
+            SSHExecResult(True, "not json", "", 0),  # 非法 JSON
+            SSHExecResult(True, '{"mem_used_pct":50,"swap_used_pct":0}', "", 0),
+            SSHExecResult(True, '{"cpu_idle_pct":50,"cpu_iowait_pct":0,"load_1m":0.5}', "", 0),
+        ]
+
+    monkeypatch.setattr(
+        "app.scripts.server_ops.execute_script_batch", fake_execute_script_batch,
+    )
+
+    service = _StubDevOpsService(configs={
+        "biz-A": {
+            "ip": "10.0.0.1", "port": 22, "username": "u", "password": "p",
+            "server_type": "linux",
+            "inspection_script": "echo legacy",
+            "inspection_parser": "json",
+            "inspection_fields": [
+                {"key": "cpu_idle_pct", "name_zh": "CPU 空闲", "unit": "%",
+                 "direction": "low", "warn": 20, "crit": 10},
+            ],
+            "inspection_script_segments": [
+                {"segment_key": "disk-usage", "script": "echo du"},
+                {"segment_key": "disk-io", "script": "echo bad"},
+                {"segment_key": "memory", "script": "echo m"},
+                {"segment_key": "cpu", "script": "echo c"},
+            ],
+        },
+    })
+    ctx = _make_context_with_service(service, {"server_list": ["biz-A"]})
+    report = await run_server_ops(ctx)
+    item = report.items[0]
+    assert "分段 disk-io 输出非法 JSON" in item.inspection_error
+    assert item.success is True
+
+
+@pytest.mark.asyncio
+async def test_run_server_ops_segmented_all_failed_marks_success_false(monkeypatch):
+    """全部分段 exit!=0 → success=False + crit(与单体 SSH 失败同构)。"""
+    from app.shared.utils.ssh.executor import SSHExecResult
+
+    def fake_execute_script_batch(cfg, scripts):
+        return [
+            SSHExecResult(False, "", "e1", 1),
+            SSHExecResult(False, "", "e2", 2),
+            SSHExecResult(False, "", "e3", 1),
+            SSHExecResult(False, "", "e4", 1),
+        ]
+
+    monkeypatch.setattr(
+        "app.scripts.server_ops.execute_script_batch", fake_execute_script_batch,
+    )
+
+    service = _StubDevOpsService(configs={
+        "biz-A": {
+            "ip": "10.0.0.1", "port": 22, "username": "u", "password": "p",
+            "server_type": "linux",
+            "inspection_script": "echo legacy",
+            "inspection_parser": "json",
+            "inspection_fields": [],
+            "inspection_script_segments": [
+                {"segment_key": "a", "script": "echo a"},
+                {"segment_key": "b", "script": "echo b"},
+                {"segment_key": "c", "script": "echo c"},
+                {"segment_key": "d", "script": "echo d"},
+            ],
+        },
+    })
+    ctx = _make_context_with_service(service, {"server_list": ["biz-A"]})
+    report = await run_server_ops(ctx)
+    item = report.items[0]
+    assert item.success is False
+    assert item.inspection_status == "crit"
+
+
+@pytest.mark.asyncio
+async def test_run_server_ops_without_segments_uses_legacy_path(monkeypatch):
+    """无 segments 键 → 走 execute_script 单脚本路径(不调用 batch)。"""
+    from app.shared.utils.ssh.executor import SSHExecResult
+
+    batch_called = {"n": 0}
+    single_called = {"n": 0}
+
+    def fake_execute_script_batch(cfg, scripts):
+        batch_called["n"] += 1
+        return [SSHExecResult(True, '{}', "", 0)]
+
+    def fake_execute_script(cfg, script, timeout=None):
+        single_called["n"] += 1
+        return SSHExecResult(True, '{}', "", 0)
+
+    monkeypatch.setattr(
+        "app.scripts.server_ops.execute_script_batch", fake_execute_script_batch,
+    )
+    monkeypatch.setattr(
+        "app.scripts.server_ops.execute_script", fake_execute_script,
+    )
+
+    # inspection_script_segments 不在 cfg(legacy 单脚本路径)
+    service = _StubDevOpsService(configs={
+        "biz-A": {
+            "ip": "10.0.0.1", "port": 22, "username": "u", "password": "p",
+            "server_type": "linux",
+            "inspection_script": "echo legacy",
+            "inspection_parser": "json",
+            "inspection_fields": [],
+            # 注意:没有 inspection_script_segments 键
+        },
+    })
+    ctx = _make_context_with_service(service, {"server_list": ["biz-A"]})
+    report = await run_server_ops(ctx)
+    assert report.items[0].success is True
+    assert batch_called["n"] == 0
+    assert single_called["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_run_server_ops_segmented_third_party_loops_per_segment(monkeypatch):
+    """第三方分支:逐段调 execute_third_party_script,次数 == 分段数。"""
+    from app.shared.utils.ssh.executor import SSHExecResult
+
+    tp_calls = {"n": 0}
+
+    def fake_execute_third_party_script(cfg, script, endpoint_name=None):
+        tp_calls["n"] += 1
+        return SSHExecResult(True, f'{{"seg_{tp_calls["n"]}":true}}', "", 0)
+
+    monkeypatch.setattr(
+        "app.scripts.server_ops.execute_third_party_script",
+        fake_execute_third_party_script,
+        raising=False,  # 模块内 lazy import,需要 setattr 即使不存在
+    )
+    # 实际模块内是 lazy import,所以需要 patch 'app.shared.utils.executor.third_party_ssh.execute_third_party_script'
+    monkeypatch.setattr(
+        "app.shared.utils.executor.third_party_ssh.execute_third_party_script",
+        fake_execute_third_party_script,
+    )
+
+    service = _StubDevOpsService(configs={
+        "biz-A": {
+            "ip": "10.0.0.1", "port": 22, "username": "u", "password": "p",
+            "server_type": "linux",
+            "inspection_script": "echo legacy",
+            "inspection_parser": "json",
+            "inspection_fields": [],
+            "inspection_script_segments": [
+                {"segment_key": "a", "script": "echo a"},
+                {"segment_key": "b", "script": "echo b"},
+                {"segment_key": "c", "script": "echo c"},
+            ],
+        },
+    })
+    ctx = _make_context_with_service(service, {"server_list": ["biz-A"]})
+    report = await run_server_ops(
+        ctx, use_third_party=True, third_party_endpoint_name="tp1",
+    )
+    assert tp_calls["n"] == 3
+    assert report.items[0].success is True

@@ -66,11 +66,13 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from app.scripts.base import ScriptContext, ScriptExecutionError
-from app.shared.utils.ssh.executor import SSHExecResult, execute_script
+from app.shared.utils.ssh.executor import SSHExecResult, execute_script, execute_script_batch
 from app.shared.utils.inspection.parser import (
+    InspectionParseError,
     evaluate_inspection_fields,
     parse_inspection_output,
 )
+from app.shared.utils.inspection.merger import merge_inspection_fragments
 
 
 # stdout 摘要最大长度（与 api_check_runs.response_body 的截断策略保持一致，
@@ -638,6 +640,18 @@ async def _run_one(
     script_platform = config.get("inspection_script_platform") if isinstance(config, dict) else None
     script_version = config.get("inspection_script_version") if isinstance(config, dict) else None
 
+    # 3.5) 2026-09-16 新增：分段脚本分派。inspection_script_segments 非空且
+    #      parser=json 时走 _run_one_segmented 宽松聚合路径；其余情况走 legacy。
+    segments = config.get("inspection_script_segments") if isinstance(config, dict) else None
+    if segments and str(config.get("inspection_parser") or "json") == "json":
+        return await _run_one_segmented(
+            business_name,
+            config,
+            segments,
+            use_third_party=use_third_party,
+            third_party_endpoint_name=third_party_endpoint_name,
+        )
+
     # 4) 执行 SSH（同步阻塞通过 to_thread 包装；2026-08-19 高内聚：timeout 由 executor
     #    从 config["ssh_timeout"] 直接读取，_run_one 不再做中间变量计算）
     started = time.perf_counter()
@@ -737,6 +751,175 @@ async def _run_one(
         exit_code=int(result.exit_code),
         stdout=result.stdout or "",
         stderr=result.stderr or "",
+        duration_ms=duration_ms,
+        error_message="",
+        inspection_parser=parser,
+        parsed_values=evaluation.parsed_values,
+        field_results=[vars(field_result) for field_result in evaluation.fields],
+        inspection_status=evaluation.status,
+        inspection_error=eval_error,
+        inspection_script_name=script_name,
+        inspection_script_display_name=script_display_name,
+        inspection_script_platform=script_platform,
+        inspection_script_version=script_version,
+    )
+
+
+async def _run_one_segmented(
+    business_name: str,
+    config: Dict[str, Any],
+    segments: List[Dict[str, Any]],
+    *,
+    use_third_party: bool = False,
+    third_party_endpoint_name: Optional[str] = None,
+) -> ServerOpsItem:
+    """分段循环执行单台服务器巡检并产出 ``ServerOpsItem``(2026-09-16 新增)。
+
+    宽松聚合语义(D2):
+        * 逐段执行,exit!=0 / 输出非法 JSON 记 ``segment_errors``;
+        * 至少一段成功 → 合并成功片段并评估(缺失字段按既有规则字段级 crit);
+        * 全部失败 → ``success=False`` + crit(与单体 SSH 失败分支同构);
+        * connect/鉴权异常 → crit(与单体异常分支同构)。
+
+    参数:
+        business_name: 服务器业务名。
+        config: ``get_connection_config`` 返回的完整配置(含 16 键)。
+        segments: 有序分段列表 ``[{segment_key, script}]``。
+        use_third_party / third_party_endpoint_name: 第三方执行器开关与端点名。
+
+    返回:
+        ServerOpsItem
+
+    异常:
+        无(所有异常内部分级吸收)。
+    """
+    keys = [str(seg.get("segment_key") or f"segment-{i}") for i, seg in enumerate(segments)]
+    scripts = [str(seg.get("script") or "") for seg in segments]
+    script_name = config.get("inspection_script_name") if isinstance(config, dict) else None
+    script_display_name = config.get("inspection_script_display_name") if isinstance(config, dict) else None
+    script_platform = config.get("inspection_script_platform") if isinstance(config, dict) else None
+    script_version = config.get("inspection_script_version") if isinstance(config, dict) else None
+
+    started = time.perf_counter()
+    try:
+        if use_third_party:
+            from app.shared.utils.executor.third_party_ssh import execute_third_party_script
+            results: List[SSHExecResult] = []
+            for seg_script in scripts:
+                results.append(await asyncio.to_thread(
+                    execute_third_party_script, dict(config), seg_script,
+                    endpoint_name=third_party_endpoint_name,
+                ))
+        else:
+            results = await asyncio.to_thread(
+                execute_script_batch, dict(config), scripts,
+            )
+    except Exception as exc:  # noqa: BLE001 - 连接/鉴权级失败
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        msg = f"{type(exc).__name__}: {exc}"
+        return ServerOpsItem(
+            business_name=business_name,
+            success=False,
+            duration_ms=duration_ms,
+            error_message=msg,
+            inspection_status="crit",
+            inspection_error=msg,
+            inspection_script_name=script_name,
+            inspection_script_display_name=script_display_name,
+            inspection_script_platform=script_platform,
+            inspection_script_version=script_version,
+        )
+
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    parser = "json"
+    fragments: List[Dict[str, Any]] = []
+    segment_errors: List[str] = []
+    stdout_parts: List[str] = []
+    stderr_parts: List[str] = []
+    first_nonzero_exit = 0
+
+    for key, seg_result in zip(keys, results):
+        stdout_parts.append(seg_result.stdout or "")
+        seg_stderr = (seg_result.stderr or "").strip()
+        if seg_stderr:
+            stderr_parts.append(f"[{key}] {seg_stderr}")
+        if int(seg_result.exit_code) != 0:
+            if first_nonzero_exit == 0:
+                first_nonzero_exit = int(seg_result.exit_code)
+            segment_errors.append(f"分段 {key} 执行失败(exit={int(seg_result.exit_code)})")
+            continue
+        try:
+            fragment = parse_inspection_output(parser, seg_result.stdout or "")
+            if not isinstance(fragment, dict):
+                raise InspectionParseError(
+                    f"分段 {key} 输出不是顶层 JSON object"
+                )
+            fragments.append(fragment)
+        except Exception:  # noqa: BLE001 - 分段解析失败记备注继续
+            segment_errors.append(f"分段 {key} 输出非法 JSON")
+
+    if not fragments:
+        err = "; ".join(segment_errors) or _SSH_EXEC_FAILURE_DEFAULT_ERROR
+        return ServerOpsItem(
+            business_name=business_name,
+            success=False,
+            exit_code=first_nonzero_exit or 1,
+            stdout="\n".join(stdout_parts),
+            stderr="\n".join(stderr_parts),
+            duration_ms=duration_ms,
+            error_message=err,
+            inspection_parser=parser,
+            inspection_status="crit",
+            inspection_error=err,
+            inspection_script_name=script_name,
+            inspection_script_display_name=script_display_name,
+            inspection_script_platform=script_platform,
+            inspection_script_version=script_version,
+        )
+
+    merged_values, conflicts = merge_inspection_fragments(fragments)
+    if conflicts:
+        logger.warning(
+            "server biz=%s 分段输出键冲突(后者覆盖): %s",
+            business_name, ",".join(conflicts),
+        )
+
+    try:
+        raw_rules = config.get("inspection_fields")
+        rules = raw_rules if isinstance(raw_rules, list) else []
+        evaluation = evaluate_inspection_fields(merged_values, rules, parser)
+    except Exception as exc:  # noqa: BLE001 - 评估失败保留聚合输出
+        msg = f"{type(exc).__name__}: {exc}"
+        full_err = f"{_PARSE_EVAL_FAILURE_PREFIX}: {msg}"
+        return ServerOpsItem(
+            business_name=business_name,
+            success=False,
+            exit_code=first_nonzero_exit,
+            stdout="\n".join(stdout_parts),
+            stderr="\n".join(stderr_parts),
+            duration_ms=duration_ms,
+            error_message=full_err,
+            inspection_parser=parser,
+            parsed_values=None,
+            field_results=[],
+            inspection_status="crit",
+            inspection_error=full_err,
+            inspection_script_name=script_name,
+            inspection_script_display_name=script_display_name,
+            inspection_script_platform=script_platform,
+            inspection_script_version=script_version,
+        )
+
+    eval_error = evaluation.error_message or ""
+    if segment_errors:
+        note = "; ".join(segment_errors)
+        eval_error = f"{eval_error}; {note}" if eval_error else note
+    return ServerOpsItem(
+        business_name=business_name,
+        success=True,
+        exit_code=first_nonzero_exit,
+        stdout="\n".join(stdout_parts),
+        stderr="\n".join(stderr_parts),
         duration_ms=duration_ms,
         error_message="",
         inspection_parser=parser,
